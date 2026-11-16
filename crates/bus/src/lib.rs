@@ -21,7 +21,7 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int};
 use std::hash::{BuildHasherDefault, Hasher};
@@ -156,8 +156,16 @@ impl Hasher for IdHasher {
     }
 }
 
+/// The packets being reassembled, by message id.
+type Packets = HashMap<u64, Packet, BuildHasherDefault<IdHasher>>;
+
+/// This bus's pipe records, by descriptor.
+type PipeSockets = Vec<Option<Socket<'static>>>;
+
 /// Its methods take `&self`: the server lends the bus through a `Copy` handle, so
-/// each field is a cell, borrowed for one call at a time.
+/// each field is a cell. The packets and pipe records are boxed, so a take moves a
+/// pointer, and are taken out and put back around each access, which asks no
+/// [`TrustedAllocator`] and calls nothing back into the server or PHP.
 pub struct Bus {
     /// Null, or the block [`Bus::alloc_buffer`] made: `buffer_size` bytes, and at
     /// least [`BUFFER_MIN`], until [`Bus::free_buffer`].
@@ -166,10 +174,10 @@ pub struct Bus {
     buffer_owner: Cell<Option<TrustedAllocator>>,
     buffer_size: Cell<usize>,
     always_chunked: Cell<bool>,
-    packets: RefCell<HashMap<u64, Packet, BuildHasherDefault<IdHasher>>>,
+    packets: Cell<Option<Box<Packets>>>,
     /// `pipe_sockets_`: by descriptor, this bus's own records of the pipes, which
     /// `init_pipe_socket` made and only the bus's drop frees.
-    pipe_sockets: RefCell<Vec<Option<Socket<'static>>>>,
+    pipe_sockets: Cell<Option<Box<PipeSockets>>>,
     /// `id_generator_`: the counter that numbers each written message.
     next_id: Cell<Option<&'static AtomicU64>>,
 }
@@ -182,7 +190,12 @@ impl Drop for Bus {
         #[cfg(not(feature = "upstream-symbols"))]
         let free_socket: unsafe fn(*mut SocketRecord) = SocketRecord::free;
         // By descriptor, as `init_pipe_socket` recorded them.
-        for record in self.pipe_sockets.get_mut().drain(..).flatten() {
+        let records = self
+            .pipe_sockets
+            .get_mut()
+            .take()
+            .map_or_else(Vec::new, |b| *b);
+        for record in records.into_iter().flatten() {
             record.edit(|record| record.fd = -1);
             // SAFETY: a record `init_pipe_socket` made, used by nothing else now and
             // freed once: the bus is dropping.
@@ -200,6 +213,40 @@ use swoole_rs_tls::upstream::writev_sync;
 #[cfg(not(feature = "upstream-symbols"))]
 fn writev_sync(socket: Socket<'_>, vectors: &[std::io::IoSlice<'_>]) -> isize {
     swoole_rs_corebase::sys::writev(socket.fd(), vectors)
+}
+
+/// `f` over the packets or pipe records `cell` boxes, taken out and put back; `None`,
+/// without calling `f`, while the bus has none yet. `f` asks no [`TrustedAllocator`]
+/// (which may bail out) and calls nothing back; what it removes it returns, to be
+/// freed once `cell` holds its value again.
+fn lend<T, R>(cell: &Cell<Option<Box<T>>>, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+    let mut value = cell.take()?;
+    let out = f(&mut value);
+    put_back(cell, value);
+    Some(out)
+}
+
+/// [`lend`], which first makes an empty value while `cell` holds none.
+fn lend_or_default<T: Default, R>(cell: &Cell<Option<Box<T>>>, f: impl FnOnce(&mut T) -> R) -> R {
+    let mut value = cell.take().unwrap_or_default();
+    let out = f(&mut value);
+    put_back(cell, value);
+    out
+}
+
+fn put_back<T>(cell: &Cell<Option<Box<T>>>, value: Box<T>) {
+    // `set` would call the drop glue for the `None` it replaces, on every access.
+    if let Some(nested) = cell.replace(Some(value)) {
+        release(nested);
+    }
+}
+
+/// Drops what a nested [`lend`] put back, out of line: it never happens, and the
+/// table walk would grow every caller.
+#[cold]
+#[inline(never)]
+fn release<T>(value: T) {
+    drop(value);
 }
 
 fn aligned(size: usize) -> usize {
@@ -222,8 +269,8 @@ impl Bus {
             buffer_owner: Cell::new(None),
             buffer_size: Cell::new(buffer_size),
             always_chunked: Cell::new(false),
-            packets: RefCell::new(HashMap::default()),
-            pipe_sockets: RefCell::new(Vec::new()),
+            packets: Cell::new(None),
+            pipe_sockets: Cell::new(None),
             next_id: Cell::new(None),
         }
     }
@@ -291,12 +338,10 @@ impl Bus {
     #[must_use]
     pub fn memory_size(&self) -> usize {
         self.buffer_size.get()
-            + self
-                .packets
-                .borrow()
-                .values()
-                .map(|p| p.size)
-                .sum::<usize>()
+            + lend(&self.packets, |packets| {
+                packets.values().map(|p| p.size).sum::<usize>()
+            })
+            .unwrap_or(0)
     }
 
     /// `MessageBus::get_packet`.
@@ -308,13 +353,14 @@ impl Bus {
             // `pass` stored it.
             self.front().map_or(EMPTY, |front| front.packet.get())
         } else if head.flags & OBJ_PTR != 0 {
-            self.packets
-                .borrow()
-                .get(&head.msg_id)
-                .map_or(EMPTY, |p| BusPacket {
+            lend(&self.packets, |packets| {
+                packets.get(&head.msg_id).map(|p| BusPacket {
                     length: p.length,
                     data: p.data.cast(),
                 })
+            })
+            .flatten()
+            .unwrap_or(EMPTY)
         } else {
             BusPacket {
                 length: head.len as usize,
@@ -345,20 +391,28 @@ impl Bus {
     /// `MessageBus::move_packet`: the current packet's block, now the caller's.
     pub fn move_packet(&self) -> *mut c_char {
         let id = self.head().msg_id;
-        self.packets
-            .borrow_mut()
-            .get_mut(&id)
-            .map_or(ptr::null_mut(), |p| {
-                std::mem::replace(&mut p.data, ptr::null_mut()).cast()
-            })
+        lend(&self.packets, |packets| {
+            let packet = packets.get_mut(&id)?;
+            Some(std::mem::replace(&mut packet.data, ptr::null_mut()).cast())
+        })
+        .flatten()
+        .unwrap_or(ptr::null_mut())
     }
 
     /// `MessageBus::pop`: frees the current packet once its last chunk arrived.
+    #[inline]
     pub fn pop(&self) {
         let head = self.head();
         if head.flags & END != 0 {
-            self.packets.borrow_mut().remove(&head.msg_id);
+            self.remove(head.msg_id);
         }
+    }
+
+    /// Frees the packet `id`, once the packets are back. Out of line, so that the
+    /// check in [`Bus::pop`] stays cheap on every message.
+    #[inline(never)]
+    fn remove(&self, id: u64) {
+        drop(lend(&self.packets, |packets| packets.remove(&id)));
     }
 
     /// Allocates the block `Event::Allocate` asked for and hands it to the current
@@ -379,17 +433,19 @@ impl Bus {
             // `throw std::bad_alloc()`, which nothing catches.
             swoole_rs_corebase::fatal("out of memory");
         }
-        let mut packets = self.packets.borrow_mut();
-        let packet = packets.entry(self.head().msg_id).or_insert(Packet {
-            data: ptr::null_mut(),
-            length: 0,
-            size: 0,
-            allocator,
+        let id = self.head().msg_id;
+        lend_or_default(&self.packets, |packets| {
+            let packet = packets.entry(id).or_insert(Packet {
+                data: ptr::null_mut(),
+                length: 0,
+                size: 0,
+                allocator,
+            });
+            // A reallocation already moved the old block.
+            packet.data = data.cast();
+            packet.size = state.size;
+            packet.allocator = allocator;
         });
-        // A reallocation already moved the old block.
-        packet.data = data.cast();
-        packet.size = state.size;
-        packet.allocator = allocator;
     }
 
     /// `MessageBus::read` (stream pipes, `dgram == false`) and
@@ -431,59 +487,75 @@ impl Bus {
             let head = self.head();
             let (buffer, payload) = (self.buffer.get(), self.data());
             let buffer_size = self.buffer_size.get();
-            let mut packets = self.packets.borrow_mut();
-            let Some(packet) = packets.get_mut(&head.msg_id) else {
-                if head.flags & BEGIN != 0 {
+            // The packets stay out across the stream's readv: one syscall on a
+            // nonblocking pipe, which neither yields nor calls back.
+            let read = lend(&self.packets, |packets| {
+                let packet = packets.get_mut(&head.msg_id)?;
+                Some('chunk: {
+                    Ok(if dgram {
+                        let count = state.received.cast_unsigned().saturating_sub(HEAD);
+                        let length = packet.length + count;
+                        if length > packet.size || packet.data.is_null() {
+                            break 'chunk Err(Self::allocate(
+                                state,
+                                packet.data,
+                                Some(packet.allocator),
+                                length,
+                            ));
+                        }
+                        let tail = packet.data.wrapping_add(packet.length);
+                        // SAFETY: the datagram's payload follows the header in the buffer, and
+                        // the packet's tail has room for it (checked above); they never overlap.
+                        unsafe { ptr::copy_nonoverlapping(payload, tail, count) };
+                        packet.length = length;
+                        state.received
+                    } else {
+                        let remain = (head.len as usize).wrapping_sub(packet.length);
+                        let iov = [
+                            libc::iovec {
+                                iov_base: buffer.cast(),
+                                iov_len: HEAD,
+                            },
+                            libc::iovec {
+                                iov_base: packet.data.wrapping_add(packet.length).cast(),
+                                iov_len: (buffer_size - HEAD).min(remain),
+                            },
+                        ];
+                        // SAFETY: both iovecs name writable memory: the buffer's header and
+                        // the packet's unfilled tail (at most `remain` bytes).
+                        let n = unsafe { libc::readv(fd, iov.as_ptr(), 2) };
+                        if n == 0 {
+                            state.event = Some(Event::ReadvClosed);
+                            break 'chunk Err(-1);
+                        }
+                        if n < 0 && waits(nobufs) {
+                            break 'chunk Err(0);
+                        }
+                        if n > 0 {
+                            packet.length = packet
+                                .length
+                                .wrapping_add(n.cast_unsigned().wrapping_sub(HEAD));
+                        }
+                        n
+                    })
+                })
+            })
+            .flatten();
+            let n = match read {
+                Some(Ok(n)) => n,
+                Some(Err(n)) => return n,
+                None if head.flags & BEGIN != 0 => {
                     return Self::allocate(state, ptr::null_mut(), None, head.len as usize);
                 }
-                state.event = Some(Event::Abnormal);
-                if dgram {
-                    return -1;
-                }
-                // Read the chunk's header from the pipe and discard it.
-                self.fill(HEAD, |slots| sys::recv(fd, slots, 0));
-                return 0;
-            };
-            let n = if dgram {
-                let count = state.received.cast_unsigned().saturating_sub(HEAD);
-                let length = packet.length + count;
-                if length > packet.size || packet.data.is_null() {
-                    return Self::allocate(state, packet.data, Some(packet.allocator), length);
-                }
-                let tail = packet.data.wrapping_add(packet.length);
-                // SAFETY: the datagram's payload follows the header in the buffer, and
-                // the packet's tail has room for it (checked above); they never overlap.
-                unsafe { ptr::copy_nonoverlapping(payload, tail, count) };
-                packet.length = length;
-                state.received
-            } else {
-                let remain = (head.len as usize).wrapping_sub(packet.length);
-                let iov = [
-                    libc::iovec {
-                        iov_base: buffer.cast(),
-                        iov_len: HEAD,
-                    },
-                    libc::iovec {
-                        iov_base: packet.data.wrapping_add(packet.length).cast(),
-                        iov_len: (buffer_size - HEAD).min(remain),
-                    },
-                ];
-                // SAFETY: both iovecs name writable memory: the buffer's header and
-                // the packet's unfilled tail (at most `remain` bytes).
-                let n = unsafe { libc::readv(fd, iov.as_ptr(), 2) };
-                if n == 0 {
-                    state.event = Some(Event::ReadvClosed);
-                    return -1;
-                }
-                if n < 0 && waits(nobufs) {
+                None => {
+                    state.event = Some(Event::Abnormal);
+                    if dgram {
+                        return -1;
+                    }
+                    // Read the chunk's header from the pipe and discard it.
+                    self.fill(HEAD, |slots| sys::recv(fd, slots, 0));
                     return 0;
                 }
-                if n > 0 {
-                    packet.length = packet
-                        .length
-                        .wrapping_add(n.cast_unsigned().wrapping_sub(HEAD));
-                }
-                n
             };
             state.chunks = state.chunks.wrapping_add(1);
             let flags = self.head().flags;
@@ -744,11 +816,12 @@ impl Bus {
     /// Packets being reassembled.
     #[must_use]
     pub fn count(&self) -> usize {
-        self.packets.borrow().len()
+        lend(&self.packets, |packets| packets.len()).unwrap_or(0)
     }
 
+    /// Frees every packet, once the (empty) packets are back.
     pub fn clear(&self) {
-        self.packets.borrow_mut().clear();
+        drop(lend(&self.packets, std::mem::take));
     }
 
     /// `MessageBus::read(sock)` (`read_with_buffer` when `dgram`): allocates each
@@ -854,19 +927,21 @@ impl Bus {
         let Ok(index) = usize::try_from(fd) else {
             return;
         };
-        let mut pipe_sockets = self.pipe_sockets.borrow_mut();
-        if index >= pipe_sockets.len() {
-            pipe_sockets.resize(index + 1, None);
-        }
         // `make_socket`: a new record, which the bus frees on drop.
         let socket = Box::leak(Box::new(SocketRecord::with_fd(fd, /* SW_FD_PIPE */ 3)));
         socket.output.buffer_size = u32::MAX;
         if !socket.output.nonblock {
             swoole_rs_reactor::socket_upstream::socket_set_fd_option(socket, 1, -1);
         }
-        if let Some(slot) = pipe_sockets.get_mut(index) {
-            *slot = Some(Socket::new(socket));
-        }
+        let socket = Socket::new(socket);
+        lend_or_default(&self.pipe_sockets, |sockets| {
+            if index >= sockets.len() {
+                sockets.resize(index + 1, None);
+            }
+            if let Some(slot) = sockets.get_mut(index) {
+                *slot = Some(socket);
+            }
+        });
     }
 
     /// `MessageBus::get_pipe_socket`: the record `init_pipe_socket` made for `fd`.
@@ -882,7 +957,10 @@ impl Bus {
     #[inline]
     pub fn pipe(&self, fd: c_int) -> Option<Socket<'_>> {
         let index = usize::try_from(fd).ok()?;
-        self.pipe_sockets.borrow().get(index).copied().flatten()
+        lend(&self.pipe_sockets, |sockets| {
+            sockets.get(index).copied().flatten()
+        })
+        .flatten()
     }
 }
 
@@ -1043,7 +1121,7 @@ mod tests {
             assert!(pipe.write(id, &data));
             assert_eq!(pipe.read(false).unwrap(), data, "packet {id}");
         }
-        assert!(pipe.bus.packets.borrow().is_empty());
+        assert_eq!(pipe.bus.count(), 0);
     }
 
     #[test]
@@ -1055,7 +1133,7 @@ mod tests {
             assert!(pipe.write(id, &data));
             assert_eq!(pipe.read(true).unwrap(), data, "packet {id}");
         }
-        assert!(pipe.bus.packets.borrow().is_empty());
+        assert_eq!(pipe.bus.count(), 0);
     }
 
     #[test]
@@ -1071,13 +1149,8 @@ mod tests {
         );
         assert_eq!((state.event, state.size), (Some(Event::Allocate), 5000));
         pipe.bus.grow(&state, allocator());
-        let data = pipe
-            .bus
-            .packets
-            .borrow()
-            .get(&9)
+        let data = lend(&pipe.bus.packets, |packets| packets.get(&9).unwrap().data)
             .unwrap()
-            .data
             .cast::<c_void>();
         assert_eq!(pipe.bus.memory_size(), 4096 + 5000);
         assert!(pipe.bus.read(pipe.fds[1], false, &mut state, &mut nobufs) > 0);
@@ -1102,7 +1175,7 @@ mod tests {
         let sent = unsafe { libc::send(pipe.fds[0], ptr::from_ref(&head).cast(), HEAD, 0) };
         assert_eq!(sent.cast_unsigned(), HEAD);
         assert_eq!(pipe.read(true), None);
-        assert_eq!(pipe.bus.packets.borrow().len(), 0);
+        assert_eq!(pipe.bus.count(), 0);
     }
 
     #[test]
