@@ -62,13 +62,16 @@ pub enum FdType {
     SW_FD_DGRAM_CLIENT = 18,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(non_camel_case_types, reason = "upstream's identifiers")]
-pub enum SocketFlag {
-    SW_SOCK_NONBLOCK = 4,
-    SW_SOCK_CLOEXEC = 8,
-    SW_SOCK_SSL = 512,
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SocketFlag(core::ffi::c_int);
+
+impl SocketFlag {
+    pub const SW_SOCK_NONBLOCK: Self = Self(4);
+    pub const SW_SOCK_CLOEXEC: Self = Self(8);
+    pub const SW_SOCK_SSL: Self = Self(512);
 }
+
+crate::impl_flags!(SocketFlag, core::ffi::c_int);
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -209,30 +212,36 @@ pub enum TraverseOperation {
     SW_TRAVERSE_STOP = 2,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(non_camel_case_types, reason = "upstream's identifiers")]
-pub enum EventDataFlag {
-    SW_EVENT_DATA_NORMAL = 0,
-    SW_EVENT_DATA_PTR = 2,
-    SW_EVENT_DATA_CHUNK = 4,
-    SW_EVENT_DATA_BEGIN = 8,
-    SW_EVENT_DATA_END = 16,
-    SW_EVENT_DATA_OBJ_PTR = 32,
-    SW_EVENT_DATA_POP_PTR = 64,
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EventDataFlag(u8);
+
+impl EventDataFlag {
+    pub const SW_EVENT_DATA_NORMAL: Self = Self(0);
+    pub const SW_EVENT_DATA_PTR: Self = Self(2);
+    pub const SW_EVENT_DATA_CHUNK: Self = Self(4);
+    pub const SW_EVENT_DATA_BEGIN: Self = Self(8);
+    pub const SW_EVENT_DATA_END: Self = Self(16);
+    pub const SW_EVENT_DATA_OBJ_PTR: Self = Self(32);
+    pub const SW_EVENT_DATA_POP_PTR: Self = Self(64);
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(non_camel_case_types, reason = "upstream's identifiers")]
-pub enum TaskFlag {
-    SW_TASK_TMPFILE = 1,
-    SW_TASK_SERIALIZE = 2,
-    SW_TASK_NONBLOCK = 4,
-    SW_TASK_CALLBACK = 8,
-    SW_TASK_WAITALL = 16,
-    SW_TASK_COROUTINE = 32,
-    SW_TASK_PEEK = 64,
-    SW_TASK_NOREPLY = 128,
+crate::impl_flags!(EventDataFlag, u8);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TaskFlag(u16);
+
+impl TaskFlag {
+    pub const SW_TASK_TMPFILE: Self = Self(1);
+    pub const SW_TASK_SERIALIZE: Self = Self(2);
+    pub const SW_TASK_NONBLOCK: Self = Self(4);
+    pub const SW_TASK_CALLBACK: Self = Self(8);
+    pub const SW_TASK_WAITALL: Self = Self(16);
+    pub const SW_TASK_COROUTINE: Self = Self(32);
+    pub const SW_TASK_PEEK: Self = Self(64);
+    pub const SW_TASK_NOREPLY: Self = Self(128);
 }
+
+crate::impl_flags!(TaskFlag, u16);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(non_camel_case_types, reason = "upstream's identifiers")]

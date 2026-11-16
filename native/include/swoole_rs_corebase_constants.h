@@ -226,6 +226,42 @@ typedef enum swForkType {
   SW_FORK_PRECHECK = 8,
 } swForkType;
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #define SW_DATA_EOF "\r\n\r\n"
 #define SW_TASK_TMP_DIR "/tmp"
 #define SW_TASK_TMP_FILE "swoole.task.XXXXXX"

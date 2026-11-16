@@ -494,7 +494,7 @@ pub fn freeze_socket_context(
     // Leaf updates, before OpenSSL callbacks may run.
     owner.edit(|fields| {
         if dtls {
-            fields.protocols = crate::SslVersion::SW_SSL_DTLS as u32;
+            fields.protocols = crate::SslVersion::SW_SSL_DTLS.bits();
         }
         fields.http_v2 = http2;
     });
