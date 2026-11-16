@@ -5,10 +5,10 @@
 //! build) they are defined under their upstream (Itanium) symbols and
 //! `socket.cc` no longer defines them.
 use crate::{
-    Accept, Cert, CertRef, HandshakeLog, SocketTls, Ssl, SslIoResult, swr_v1_socket_ssl_accept,
-    swr_v1_socket_ssl_clear, swr_v1_socket_ssl_connect, swr_v1_socket_ssl_error_reason,
-    swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_recv, swr_v1_socket_ssl_send,
-    swr_v1_socket_ssl_shutdown, swr_v1_socket_ssl_verify,
+    Accept, Cert, CertRef, HandshakeLog, SocketTls, Ssl, SslIoResult, ssl_shutdown,
+    swr_v1_socket_ssl_accept, swr_v1_socket_ssl_clear, swr_v1_socket_ssl_connect,
+    swr_v1_socket_ssl_error_reason, swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_recv,
+    swr_v1_socket_ssl_send, swr_v1_socket_ssl_verify,
 };
 use openssl_sys::{X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK};
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
@@ -1029,15 +1029,15 @@ pub fn socket_ssl_shutdown(socket: Socket<'_>) -> bool {
         socket,
         |record| (record.ssl_quiet_shutdown, record.ssl_closed),
         |tls, ssl, (quiet, mut closed)| {
-            let result = swr_v1_socket_ssl_shutdown(tls, ssl, &mut closed, quiet, repaired);
+            let result = ssl_shutdown(tls, ssl, &mut closed, quiet, repaired);
             (result, closed)
         },
     ) else {
         return false;
     };
     socket.edit(|record| record.ssl_closed = closed);
-    if result == 2 {
-        let (reason, error) = swr_v1_socket_ssl_error_reason();
+    if let Err(error) = result {
+        let (reason, error) = error.reason();
         let error = match error {
             Some(error) => error.to_string_lossy().into_owned(),
             None if repaired => "no OpenSSL reason available".into(),
@@ -1048,7 +1048,7 @@ pub fn socket_ssl_shutdown(socket: Socket<'_>) -> bool {
             format_args!("SSL_shutdown() failed, reason={reason}, error_string={error}"),
         );
     }
-    result == 1
+    matches!(result, Ok(true))
 }
 
 /// `SSL_set_tlsext_host_name` on the record's SSL: false without one, or when OpenSSL
