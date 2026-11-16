@@ -1,7 +1,7 @@
 //! `Swoole\Coroutine\Scheduler`, the coroutine options (`Co::set()`,
 //! `Co::getOptions()`, `php_swoole_set_coroutine_option`) and the reactor's
 //! user exit condition: what `swoole_coroutine_scheduler.cc` held.
-use crate::{host, runtime};
+use crate::{host, put_back, runtime};
 use std::{cell::Cell, collections::VecDeque, mem::ManuallyDrop, rc::Rc};
 use swoole_rs_corebase::CCast;
 use swoole_rs_phpstubs::coroutine_scheduler;
@@ -27,15 +27,6 @@ per_thread! {
     /// The references crates/corebase's PHP name resolvers hold (crates/phpclients),
     /// one per entry, until a remove or RSHUTDOWN unlinks it.
     static NAME_RESOLVERS: Cell<Vec<Owned>> = Cell::new(Vec::new());
-}
-
-/// `f` of the value taken out of `cell`, which is put back after: a nested
-/// use meanwhile sees the default.
-fn put_back<T: Default, R>(cell: &Cell<T>, f: impl FnOnce(&mut T) -> R) -> R {
-    let mut value = cell.take();
-    let result = f(&mut value);
-    cell.set(value);
-    result
 }
 
 /// `f` on this thread's kept PHP name resolvers, taken out meanwhile. `f`
