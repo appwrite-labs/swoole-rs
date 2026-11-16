@@ -653,7 +653,7 @@ impl Handle {
     /// first: the send may raise a callback that reaches the proxy again.
     fn socks5_send(self, length: usize) -> isize {
         let packet = self
-            .with_proxy(Proxy::Socks5, |proxy| proxy.packet().map(|packet| *packet))
+            .with_proxy(Proxy::Socks5, |proxy| proxy.with_packet(|packet| *packet))
             .flatten()
             .unwrap_or([0; 512]);
         send(self, packet.get(..length).unwrap_or_default(), 0)
@@ -1239,7 +1239,7 @@ fn inet_addr(this: Handle, host: &CStr, port: c_int) -> bool {
             let Some(next) = this.with_proxy(which, |proxy| {
                 proxy.set_string(3, host.to_bytes());
                 proxy.update(|fields| fields.target_port = port);
-                (proxy.string(0).to_vec(), proxy.fields().port)
+                (proxy.string(0), proxy.fields().port)
             }) else {
                 continue;
             };
