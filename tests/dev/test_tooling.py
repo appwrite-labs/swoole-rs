@@ -326,9 +326,10 @@ class Lanes(unittest.TestCase):
         self.assertIn('dev.py docker [--iouring] [-- dev.py arguments | -- SCRIPT.py arguments | -- cargo arguments]',
                       ' '.join(result.stdout.split()))
 
-    def test_docker_iouring_only_adds_the_io_uring_seccomp_profile(self):
+    def test_docker_iouring_adds_the_io_uring_profile_and_sys_resource(self):
         # Docker's default seccomp profile answers io_uring_setup with EPERM (#4167); --iouring
-        # swaps in that profile plus the three io_uring syscalls, and nothing else.
+        # swaps in that profile plus the three io_uring syscalls, and adds CAP_SYS_RESOURCE
+        # so the ring's sendfile pipe can grow past an exhausted per-user quota (#4230).
         def argv(*arguments):
             run = patch.object(dev.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=''))
             with run as mock, patch.object(dev.subprocess, 'check_output', return_value=f'{ROOT}/.git\n'), \
@@ -340,7 +341,8 @@ class Lanes(unittest.TestCase):
         plain, opted = argv('--', *cargo), argv('--iouring', '--', *cargo)
         self.assertFalse([part for part in plain if 'seccomp' in part or 'privileged' in part or part.startswith('--cap')])
         self.assertEqual([part for part in opted if part not in plain],
-                         ['--security-opt', f'seccomp={ROOT}/tools/docker-seccomp-iouring.json'])
+                         ['--security-opt', f'seccomp={ROOT}/tools/docker-seccomp-iouring.json',
+                          '--cap-add', 'SYS_RESOURCE'])
         profile = json.loads((ROOT / 'tools/docker-seccomp-iouring.json').read_text())
         self.assertEqual(profile['defaultAction'], 'SCMP_ACT_ERRNO')
         self.assertEqual(profile['syscalls'][-1], {'names': ['io_uring_enter', 'io_uring_register', 'io_uring_setup'],
