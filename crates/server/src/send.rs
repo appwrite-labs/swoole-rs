@@ -24,8 +24,8 @@ use swoole_rs_corebase::log::LogLevel::{
 };
 use swoole_rs_corebase::{CCast, DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{ChangeOp, Drain, Interest, Socket, record_send, record_write, steady_ms};
+use swoole_rs_reactor::{Events, SocketFields};
 
 fn error(level: swoole_rs_corebase::log::LogLevel, code: E, message: core::fmt::Arguments<'_>) {
     log::error_log(level, code as c_int, c"Server::send_to_connection", message);
@@ -263,21 +263,21 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         };
     }
     let (mut data, file) = (data, kind == Some(ServerEvent::SendFile));
-    let out_empty = sock.read(|s| out_buffer(s).is_none_or(swr_cpp_buffer_empty));
+    let (out_empty, unbuffered, direct) = sock.read(output_state);
     if out_empty {
         if close {
             reactor.close(sock);
             return true;
         }
-        if !file && sock.read(|s| s.direct_send) && direct_send(conn, sock, &mut data, first) {
+        if !file && direct && direct_send(conn, sock, &mut data, first) {
             return true;
         }
-        if sock.read(|s| s.output.out_buffer.is_none()) {
+        if unbuffered {
             let buffer = Some(new_buffer(SW_SEND_BUFFER_SIZE));
             sock.edit(|s| s.output.out_buffer = buffer);
         }
     }
-    let queued = || sock.read(|s| out_buffer(s).map_or(0, swr_cpp_buffer_length));
+    let port = serv.port_by_server_fd(conn.server_fd());
     if close {
         sock.read(|s| out_buffer(s).map(swr_cpp_buffer_typed_close));
         conn.set_close_queued(true);
@@ -296,7 +296,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         }
         let callback = |index| state.callbacks.slot(index).is_set();
         let (on_full, on_empty) = (callback(BufferFull), callback(BufferEmpty));
-        if queued() >= sock.read(|s| s.output.buffer_size) {
+        if sock.read(|s| queued(s) >= s.output.buffer_size) {
             if send_yield {
                 yield_error();
             } else {
@@ -310,16 +310,14 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         }
         // `Buffer::append`'s `uint32_t` size.
         let size = data.len().c_cast::<u32>() as usize;
-        sock.read(|s| out_buffer(s).map(|b| b.append(data.get(..size).unwrap_or(data))));
-        conn.set_send_queued_bytes(queued());
-        let port = serv.port_by_server_fd(conn.server_fd());
+        let bytes = sock.read(|s| append(s, data.get(..size).unwrap_or(data)));
+        conn.set_send_queued_bytes(bytes);
         let high = port.map_or(u32::MAX, |port| port.config().buffer_high_watermark.get());
-        if on_full && !conn.high_watermark() && queued() >= high {
+        if on_full && !conn.high_watermark() && bytes >= high {
             crate::server_methods::notify(serv, conn, ServerEvent::BufferFull);
             conn.set_high_watermark(true);
         }
     }
-    let port = serv.port_by_server_fd(conn.server_fd());
     let idle = port.map_or(0.0, |port| port.config().max_idle_time.get());
     if idle > 0.0 && sock.read(|s| s.output.send_timer.is_none()) {
         idle_timer(conn, sock, idle);
@@ -328,6 +326,27 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         reactor.interest(sock, Interest::AddWrite);
     }
     true
+}
+
+/// Whether the socket's output buffer is missing or empty, whether it is missing, and
+/// whether the socket sends directly.
+fn output_state(s: &SocketFields) -> (bool, bool, bool) {
+    let buffer = out_buffer(s);
+    let empty = buffer.is_none_or(swr_cpp_buffer_empty);
+    (empty, buffer.is_none(), s.direct_send)
+}
+
+/// The bytes queued in the socket's output buffer.
+fn queued(s: &SocketFields) -> u32 {
+    out_buffer(s).map_or(0, swr_cpp_buffer_length)
+}
+
+/// Queues `data` in the socket's output buffer, if it has one: the bytes queued after.
+fn append(s: &SocketFields, data: &[u8]) -> u32 {
+    if let Some(buffer) = out_buffer(s) {
+        buffer.append(data);
+    }
+    queued(s)
 }
 
 /// Writes the bytes straight to the socket: true when all of them went, else the rest

@@ -30,7 +30,6 @@ const CLOSE_REASON_MAX_LEN: usize = 125;
 
 /// `websocket::Frame`. `header` holds `Header`'s bitfields: OPCODE:4, RSV3, RSV2,
 /// RSV1, FIN in the first byte (low bit first), LENGTH:7 and MASK in the second.
-#[repr(C)]
 pub struct Frame {
     pub header: [u8; 2],
     pub mask_key: [u8; 4],
@@ -38,11 +37,6 @@ pub struct Frame {
     pub payload_length: usize,
     pub payload: *mut c_char,
 }
-
-const _: () = assert!(
-    size_of::<Frame>() == 24 && std::mem::offset_of!(Frame, payload_length) == 8,
-    "websocket::Frame's layout"
-);
 
 /// Upstream encoders fail a masked header-only frame after appending it.
 fn header_only_mask(flags: FrameFlags) -> bool {

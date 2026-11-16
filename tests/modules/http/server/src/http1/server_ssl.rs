@@ -27,7 +27,6 @@ const SW_ERROR_WRONG_OPERATION: c_int = 509;
 const F_GETFD: c_int = 1;
 
 unsafe extern "C" {
-    fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut c_void;
     #[link_name = "_Z13sw_shm_mallocm"]
     fn sw_shm_malloc(size: usize) -> *mut c_void;
     fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
@@ -159,8 +158,8 @@ struct SyncClient {
 
 impl SyncClient {
     fn new(kind: c_int) -> Self {
-        // SAFETY: no preconditions.
-        let state = unsafe { swr_v1_clients_new(kind, false) };
+        let state: *mut c_void = native::create(kind, false)
+            .map_or(std::ptr::null_mut(), |client| client.as_ptr().cast());
         assert!(!state.is_null(), "the client has a socket");
         Self {
             state,

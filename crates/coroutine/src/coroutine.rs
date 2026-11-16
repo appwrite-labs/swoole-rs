@@ -129,7 +129,6 @@ impl Coroutine {
 /// ([`Coroutine::mark_canceled`]), `call(co, data)` copies the yield's closure
 /// out of `data` and runs the copy, which wakes it and returns whether it did.
 /// The copy keeps the call off the yield's frame, which the wake may end.
-#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Canceler {
     pub call: unsafe fn(*mut c_void, *const c_void) -> bool,

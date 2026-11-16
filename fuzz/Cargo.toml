@@ -249,5 +249,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "http_decompress"
+path = "fuzz_targets/http_decompress.rs"
+test = false
+doc = false
+bench = false
+
 # Built only by `cargo +nightly fuzz`, outside the pinned stable workspace.
 [workspace]

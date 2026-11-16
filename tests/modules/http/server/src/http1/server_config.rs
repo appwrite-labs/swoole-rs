@@ -17,8 +17,6 @@ unsafe extern "C-unwind" {
     /// `SwooleG`, whose first member is `max_sockets`.
     #[link_name = "SwooleG"]
     static mut SWOOLE_G_MAX_SOCKETS: u32;
-    /// `SW_CPU_NUM`.
-    fn swr_v1_core_cpu_num() -> u16;
     #[link_name = "_Z20swoole_get_log_levelv"]
     fn swoole_get_log_level() -> c_int;
 }
@@ -34,8 +32,7 @@ fn set_max_sockets(value: u32) {
 }
 
 fn cpu_num() -> u32 {
-    // SAFETY: reads swoole_init's CPU count.
-    u32::from(unsafe { swr_v1_core_cpu_num() })
+    u32::from(swoole_rs_corebase::swr_v1_core_cpu_num())
 }
 
 impl Server {
