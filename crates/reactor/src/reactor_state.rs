@@ -13,14 +13,6 @@ use swoole_rs_corebase::HookType;
 /// `Reactor::close`: frees `socket`, one of the reactor's.
 pub type ReactorClose = extern "C-unwind" fn(crate::Running<'_>, crate::OwnedSocket) -> c_int;
 
-/// `Reactor::idle_task` and `future_task` (`Swoole\Event::cycle`): unset until set.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ReactorTask {
-    pub callback: Option<crate::DeferCall>,
-    pub data: *mut c_void,
-}
-
 #[repr(C)]
 pub struct ReactorFields {
     pub kind: c_int,
@@ -40,13 +32,14 @@ pub struct ReactorFields {
     pub max_socket: u32,
     pub last_malloc_trim_time: libc::time_t,
     pub close: Option<ReactorClose>,
-    pub idle_task: ReactorTask,
-    pub future_task: ReactorTask,
-    // Rust-only fields follow the native head. No native caller reads these queues.
+    // Rust-only fields follow the native head. No native caller reads these.
     /// No queue until a task is deferred; detached before its callbacks run.
     pub defer_tasks: Option<crate::ReactorDeferred>,
     /// Callbacks run as the reactor is destroyed.
     pub destroy_callbacks: Option<crate::ReactorDeferred>,
+    /// `Reactor::idle_task` and `future_task` (`Swoole\Event::cycle`): none until set.
+    pub idle_task: Option<std::rc::Rc<dyn crate::event_api::CycleTask>>,
+    pub future_task: Option<std::rc::Rc<dyn crate::event_api::CycleTask>>,
 }
 
 /// The C++ `Reactor` object (`swr_v1_reactor_head`, which the methods-only class
@@ -74,7 +67,7 @@ const _: () = assert!(
 );
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(
-    size_of::<ReactorPrepared>() == 32 && std::mem::offset_of!(ReactorFields, defer_tasks) == 96,
+    size_of::<ReactorPrepared>() == 32 && std::mem::offset_of!(ReactorFields, defer_tasks) == 64,
     "swr_v1_reactor_head's layout"
 );
 
@@ -202,14 +195,8 @@ impl ReactorState {
                 close: None,
                 defer_tasks: None,
                 destroy_callbacks: None,
-                idle_task: ReactorTask {
-                    callback: None,
-                    data: ptr::null_mut(),
-                },
-                future_task: ReactorTask {
-                    callback: None,
-                    data: ptr::null_mut(),
-                },
+                idle_task: None,
+                future_task: None,
             },
             registry: Registry::default(),
             handlers: Handlers::default(),

@@ -478,23 +478,23 @@ fn defer(call: &Call) {
 struct Cycle(Rc<Callable>);
 
 impl CycleTask for Cycle {
-    fn run(&self) {
-        // Its own reference: the callback may clear this task.
-        let callable = Rc::clone(&self.0);
-        let result = invoke(&callable, None).and_then(|ok| {
+    /// The task is its own reference, which the callback may clear it under, given
+    /// up before a bailout is raised so the reactor can still free it.
+    fn run(self: Rc<Self>) {
+        let result = invoke(&self.0, None).and_then(|ok| {
             if ok {
                 Ok(())
             } else {
                 native::warning(c"Swoole\\Event::end callback handler error")
             }
         });
-        drop(callable);
+        drop(self);
         bailout::raise(result);
     }
 
     /// Release the callable, then raise a destructor's bailout from this
     /// frame, which owns nothing by then.
-    fn retire(self: Box<Self>) {
+    fn retire(self: Rc<Self>) {
         drop(self);
         bailout::finish();
     }
@@ -527,7 +527,7 @@ fn cycle(call: &Call) {
             call.set_bool(false);
             return;
         };
-        event_api::swoole_event_cycle(before, Some(Box::new(Cycle(callback))));
+        event_api::swoole_event_cycle(before, Some(Rc::new(Cycle(callback))));
     }
     call.set_bool(true);
 }
