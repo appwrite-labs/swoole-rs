@@ -661,14 +661,14 @@ fn attach() {
 }
 
 /// The exit condition: no timer is pending.
-extern "C-unwind" fn idle(_event_num: &mut usize) -> bool {
+fn idle(_event_num: &mut usize) -> bool {
     crate::wrapper::current().is_none_or(|timer| timer.count() == 0)
 }
 
 /// The reactor's destroy callback: frees this thread's timer, closing a
 /// selection a bailout left. `swoole_event_free` destroys the thread's reactor
 /// before it clears it, so the thread's reactor is the one being destroyed.
-extern "C-unwind" fn destroyed(_data: *mut c_void) {
+fn destroyed() {
     let Some(timer) = crate::wrapper::current() else {
         return;
     };

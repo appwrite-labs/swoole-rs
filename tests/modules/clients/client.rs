@@ -65,26 +65,6 @@ const EINPROGRESS: c_int = 115;
 const SIGIO: c_int = 29;
 const SIGPIPE: c_int = 13;
 
-/// crates/clients' `ClientRecord`, the head of `network::Client`, with Linux's
-/// 120-byte `network::Address`.
-#[repr(C)]
-struct Record {
-    http2: bool,
-    open_length_check: bool,
-    open_eof_check: bool,
-    protocol: [u64; 8],
-    server_addr: [u8; 120],
-    remote_addr: [u8; 120],
-    socket: *mut c_void,
-    object: *mut c_void,
-    buffer: *mut c_void,
-}
-
-const _: () = assert!(
-    std::mem::offset_of!(Record, socket) == 312 && size_of::<Record>() == 336,
-    "ClientRecord's layout moved"
-);
-
 unsafe extern "C" {
     #[link_name = "_ZNK6swoole7network6Socket12has_timedoutEv"]
     fn socket_has_timedout(socket: *const c_void) -> bool;
@@ -215,13 +195,10 @@ impl<'a> Client<'a> {
         cli
     }
 
-    fn record(&self) -> &Record {
-        // SAFETY: the live client, whose head is the record.
-        unsafe { &*self.state.cast::<Record>() }
-    }
-
     pub(super) fn socket(&self) -> *mut c_void {
-        self.record().socket
+        self.client()
+            .socket()
+            .map_or(std::ptr::null_mut(), |socket| socket.as_ptr().cast())
     }
 
     /// Installs the callbacks set so far, as assigning `onConnect` and the rest does.

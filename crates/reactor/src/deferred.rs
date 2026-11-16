@@ -8,7 +8,6 @@ use crate::event_api::Deferred;
 use crate::reactor_state::ReactorFields;
 use std::collections::VecDeque;
 use std::ffi::c_void;
-use std::ptr;
 
 /// A deferred call. `dispose`, when set, releases `data` if the call never runs.
 pub type DeferCall = unsafe extern "C-unwind" fn(*mut c_void);
@@ -20,6 +19,8 @@ enum Task {
         data: *mut c_void,
         dispose: Option<DeferDispose>,
     },
+    /// A destroy callback that takes nothing ([`crate::event_api::on_destroy`]).
+    Call(fn()),
     Value(Box<dyn Erased>),
 }
 
@@ -55,6 +56,7 @@ impl Task {
         match self {
             // SAFETY: the task's own contract, from whoever queued it.
             Self::Native { call, data, .. } => unsafe { call(data) },
+            Self::Call(call) => call(),
             Self::Value(value) => value.run(),
         }
     }
@@ -70,7 +72,7 @@ impl Task {
                 // SAFETY: the task never ran, so its data is still the queue's.
                 unsafe { dispose(data) };
             }
-            Self::Native { .. } => {}
+            Self::Native { .. } | Self::Call(_) => {}
             Self::Value(value) => value.dispose(),
         }
     }
@@ -140,22 +142,9 @@ pub fn defer_destroy_value(reactor: crate::Running<'_>, value: impl Deferred) {
     reactor.with(|state| push(&mut state.fields.destroy_callbacks, task));
 }
 
-/// `Reactor::add_destroy_callback(fn, nullptr)` of a `call` that is sound with any data.
-pub(crate) fn defer_destroy_any(
-    fields: &mut ReactorFields,
-    call: extern "C-unwind" fn(*mut c_void),
-) {
-    push_destroy(fields, call, ptr::null_mut());
-}
-
-/// Appends `call(data)` to the destroy queue, which runs it as the reactor is destroyed.
-fn push_destroy(fields: &mut ReactorFields, call: DeferCall, data: *mut c_void) {
-    let task = Task::Native {
-        call,
-        data,
-        dispose: None,
-    };
-    push(&mut fields.destroy_callbacks, task);
+/// `Reactor::add_destroy_callback(fn, nullptr)` of a `call` that takes nothing.
+pub(crate) fn defer_destroy_call(fields: &mut ReactorFields, call: fn()) {
+    push(&mut fields.destroy_callbacks, Task::Call(call));
 }
 
 /// The `PRIORITY_DEFER_TASK` end callback over `Reactor::defer_tasks`: the queue is
@@ -193,6 +182,7 @@ pub(crate) fn run_defer(reactor: Running<'_>) {
 pub(crate) mod tests {
     use super::*;
     use crate::reactor_state::tests::running;
+    use std::ptr;
 
     /// [`super::defer`] onto `fields`' queue rather than the thread's reactor.
     pub(crate) unsafe fn defer(
