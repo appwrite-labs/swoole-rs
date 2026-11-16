@@ -119,8 +119,9 @@ fn accept(
         // SAFETY: the connection added above, which nothing else uses yet.
         unsafe { ptr::write_bytes(conn, 0, 1) };
     }
-    // SAFETY: the socket just made, which nothing uses afterwards.
-    unsafe { swoole_rs_tls::upstream::socket_free(Some(socket)) };
+    // SAFETY: the heap record made above, which nothing uses afterwards.
+    let socket = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(socket) };
+    swoole_rs_tls::upstream::socket_free(Some(socket));
     None
 }
 

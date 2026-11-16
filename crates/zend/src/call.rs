@@ -132,6 +132,14 @@ fn coerce<T>(
 #[repr(transparent)]
 pub struct ReturnSlot<'a>(&'a Value);
 
+/// A call's frame, lent to C for the call: the live `execute_data` Zend passed
+/// the handler, with its function, `$this` and arguments, which C may parse as
+/// a handler's own `ZEND_PARSE_PARAMETERS` block does. One pointer wide, as C
+/// takes a `zend_execute_data *`.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct CallFrame<'a>(*mut zend_execute_data, std::marker::PhantomData<&'a Call>);
+
 /// One call of an internal function or method: what Zend passes a handler
 /// (`INTERNAL_FUNCTION_PARAMETERS`).
 pub struct Call {
@@ -550,6 +558,13 @@ impl Call {
     #[inline]
     pub fn return_slot(&self) -> ReturnSlot<'_> {
         ReturnSlot(self.ret())
+    }
+
+    /// The frame, lent to C for the call.
+    #[must_use]
+    #[inline]
+    pub fn call_frame(&self) -> CallFrame<'_> {
+        CallFrame(self.frame, std::marker::PhantomData)
     }
 
     /// `RETVAL_ZVAL(value, 0, 0)` of a value this owns.

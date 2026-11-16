@@ -366,6 +366,31 @@ impl DataHead {
     pub const fn event(&self) -> Option<ServerEvent> {
         ServerEvent::from_code(self.kind)
     }
+
+    /// The head's bytes as native code lays them out (padding zeroed).
+    #[must_use]
+    #[inline]
+    pub fn to_bytes(&self) -> [u8; size_of::<Self>()] {
+        use std::mem::offset_of;
+        let mut bytes = [0; size_of::<Self>()];
+        let fields: [(usize, &[u8]); 9] = [
+            (offset_of!(Self, fd), &self.fd.to_ne_bytes()),
+            (offset_of!(Self, msg_id), &self.msg_id.to_ne_bytes()),
+            (offset_of!(Self, len), &self.len.to_ne_bytes()),
+            (offset_of!(Self, reactor_id), &self.reactor_id.to_ne_bytes()),
+            (offset_of!(Self, kind), &[self.kind, self.flags]),
+            (offset_of!(Self, server_fd), &self.server_fd.to_ne_bytes()),
+            (offset_of!(Self, ext_flags), &self.ext_flags.to_ne_bytes()),
+            (offset_of!(Self, reserved), &self.reserved.to_ne_bytes()),
+            (offset_of!(Self, time), &self.time.to_ne_bytes()),
+        ];
+        for (at, field) in fields {
+            if let Some(to) = bytes.get_mut(at..at + field.len()) {
+                to.copy_from_slice(field);
+            }
+        }
+        bytes
+    }
 }
 
 /// `DataHead::dump`: the fields in upstream's format, with `sw_snprintf`'s

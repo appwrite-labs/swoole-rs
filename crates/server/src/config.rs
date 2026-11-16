@@ -5,8 +5,8 @@
 //! operations read these records directly, without per-field native callbacks.
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{
-    AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicU64,
-    AtomicUsize, Ordering::Relaxed,
+    AtomicBool, AtomicI32, AtomicI64, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize,
+    Ordering::Relaxed,
 };
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
 use swoole_rs_memory::members::Shm;
@@ -255,7 +255,8 @@ pub struct ServerConfig {
     pub upload_max_filesize: Setting<usize>,
     pub http_compression_level: Setting<u8>,
     pub compression_min_length: Setting<u32>,
-    pub recv_buffer_allocator: AtomicPtr<c_void>,
+    /// The allocator of the sessions' receive buffers, `None` for the default.
+    pub recv_buffer_allocator: Shared<Option<swoole_rs_corebase::TrustedAllocator>>,
     pub recv_buffer_size: usize,
     pub message_queue_key: Setting<u64>,
     /// `Server::Mode`, fixed by the constructor.
@@ -440,7 +441,7 @@ impl Default for ServerConfig {
             upload_max_filesize: Setting::new(0),
             http_compression_level: Setting::new(0),
             compression_min_length: Setting::new(20),
-            recv_buffer_allocator: AtomicPtr::default(),
+            recv_buffer_allocator: Shared::new(None),
             recv_buffer_size: 65_536,
             message_queue_key: Setting::new(0),
             mode_: Mode::Base,
@@ -498,7 +499,7 @@ impl ServerConfig {
         &mut self,
         cpu_num: u32,
         timezone: libc::c_long,
-        allocator: *const c_void,
+        allocator: Option<swoole_rs_corebase::TrustedAllocator>,
     ) {
         self.reactor_num
             .set(u16::try_from(cpu_num.min(8)).unwrap_or(8));
@@ -507,8 +508,7 @@ impl ServerConfig {
         self.http_compression.set(true);
         self.http_compression_level.set(1);
         self.compression_min_length.set(20);
-        self.recv_buffer_allocator
-            .store(allocator.cast_mut(), Relaxed);
+        self.recv_buffer_allocator.set(allocator);
     }
 }
 
@@ -520,7 +520,7 @@ mod tests {
     fn runtime_defaults() {
         let mut server = TestServer::new();
         let config = server.config_mut();
-        config.init_defaults(16, 3600, core::ptr::null());
+        config.init_defaults(16, 3600, None);
         assert_eq!(config.worker_num.get(), 16);
         assert_eq!(config.reactor_num.get(), 8);
         assert_eq!(config.timezone_, 3600);

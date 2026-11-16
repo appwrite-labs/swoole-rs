@@ -7,29 +7,21 @@ use swoole_rs_protocols_ffi::{Dispatched, ORIGIN, Received, RespConnection, Resp
 use swoole_rs_reactor::{Caught, Socket};
 use swoole_rs_server::reactor_entry::RecvData;
 
+use crate::framing_recv::Lent;
+
 /// The connection's socket, receive buffer and request, and where a whole command
-/// goes. The buffer and request stay raw: the dispatch may free both.
+/// goes. The buffer and request stay lent: the dispatch may free both.
 struct Connection<'a, D> {
     socket: Socket<'a>,
-    buffer: Buffer,
+    buffer: Lent<'a>,
     request: *mut RespRequest,
     fd: c_int,
     dispatch: D,
 }
 
-/// The live receive buffer.
-struct Buffer(*mut CppString);
-
-impl Buffer {
-    fn string(&mut self) -> &mut CppString {
-        // SAFETY: the live receive buffer; this borrow is not held across the dispatch.
-        unsafe { &mut *self.0 }
-    }
-}
-
 impl<D> Connection<'_, D> {
     fn string(&mut self) -> &mut CppString {
-        self.buffer.string()
+        self.buffer.get()
     }
 }
 
@@ -68,7 +60,7 @@ impl<D: FnMut(RecvData<'_>) -> bool> RespConnection for Connection<'_, D> {
     }
 
     fn dispatch(&mut self) -> Dispatched {
-        let buffer = self.buffer.string();
+        let buffer = self.buffer.get();
         if !(self.dispatch)(RecvData::new(DataHead::default(), buffer.view())) {
             return Dispatched::Failed;
         }
@@ -90,13 +82,13 @@ impl<D: FnMut(RecvData<'_>) -> bool> RespConnection for Connection<'_, D> {
 /// `Server::dispatch_task`'s): whether the connection stays open.
 ///
 /// # Safety
-/// `buffer` is live, and `conn` is a session of this reactor's redis port, whose
-/// request state, if any, this reactor made.
-pub(crate) unsafe fn recv_packet(
+/// `conn` is a session of this reactor's redis port, whose request state, if any,
+/// this reactor made.
+pub(crate) unsafe fn recv_packet<'a>(
     max_length: u32,
-    conn: swoole_rs_server::Connection<'_>,
-    socket: Socket<'_>,
-    buffer: *mut CppString,
+    conn: swoole_rs_server::Connection<'a>,
+    socket: Socket<'a>,
+    buffer: Lent<'a>,
     dispatch: impl FnMut(RecvData<'_>) -> bool,
 ) -> bool {
     // Zeroed, which every field of a RespRequest takes (`RespState::TotalLine`).
@@ -106,7 +98,7 @@ pub(crate) unsafe fn recv_packet(
     };
     let mut connection = Connection {
         socket,
-        buffer: Buffer(buffer),
+        buffer,
         request,
         fd: conn.fd(),
         dispatch,
@@ -156,7 +148,7 @@ mod tests {
                 max_length,
                 (&mut conn).into(),
                 handle,
-                &raw mut buffer,
+                Lent::new(&mut buffer),
                 dispatch,
             )
         });

@@ -77,7 +77,7 @@ fn head_bytes<const N: usize>(out: &[u64], at: usize) -> [u8; N] {
 /// (null or a live native socket) and `data`, which holds `length` bytes.
 pub struct PoolCall<'a> {
     pub(crate) pool: crate::process_pool::PoolRef<'a>,
-    pub(crate) worker: *mut c_void,
+    pub(crate) worker: Option<Record<'a>>,
     pub(crate) socket: *mut c_void,
     pub(crate) data: *mut c_void,
     pub(crate) length: usize,
@@ -89,7 +89,7 @@ pub struct PoolCall<'a> {
 }
 
 impl<'a> PoolCall<'a> {
-    pub(crate) fn new(pool: crate::process_pool::PoolRef<'a>, worker: *mut c_void) -> Self {
+    pub(crate) fn new(pool: crate::process_pool::PoolRef<'a>, worker: Option<Record<'a>>) -> Self {
         Self {
             pool,
             worker,
@@ -110,10 +110,8 @@ impl<'a> PoolCall<'a> {
 
     /// The live worker, if the call has one.
     #[must_use]
-    pub fn worker(&self) -> Option<Record<'_>> {
-        // SAFETY: only this crate makes a call, over null or one of its pool's live
-        // workers, whose owner orders the writes made through the handle.
-        unsafe { Record::from_raw(self.worker.cast()) }
+    pub fn worker(&self) -> Option<Record<'a>> {
+        self.worker
     }
 
     /// The live native socket the hook works on, or null.
@@ -151,6 +149,21 @@ impl<'a> PoolCall<'a> {
         // least `length` initialized bytes (a zeroed receive buffer, or the bytes a
         // send lends) that outlives the hook, and so this borrow of its call.
         unsafe { std::slice::from_raw_parts(self.data.cast(), self.length) }
+    }
+
+    /// [`PoolCall::lent_socket`] and the [`PoolCall::length`] bytes at
+    /// [`PoolCall::data`], lent to a read that fills them, for this borrow of the call.
+    pub fn socket_fill(
+        &mut self,
+    ) -> (
+        Option<crate::worker_record::NativeSocket<'_>>,
+        swoole_rs_corebase::lent::Fill<'_>,
+    ) {
+        // SAFETY: only this crate makes a call: `data` is null or a buffer of at least
+        // `length` writable bytes that outlives the hook, which nothing else reaches
+        // while this borrow of its call lasts.
+        let fill = unsafe { swoole_rs_corebase::lent::Fill::from_raw(self.data, self.length) };
+        (crate::worker_record::NativeSocket::lend(self.socket), fill)
     }
 
     #[must_use]
@@ -241,7 +254,7 @@ struct Worker<'a> {
     /// `swr_v1_process_pool_ipc_respond` does.
     ipc: *mut PoolIpc,
     pool: crate::process_pool::PoolRef<'a>,
-    worker: *mut c_void,
+    worker: Record<'a>,
 }
 
 impl<'a> Worker<'a> {
@@ -253,7 +266,7 @@ impl<'a> Worker<'a> {
     }
 
     fn call(&self) -> PoolCall<'a> {
-        PoolCall::new(self.pool, self.worker)
+        PoolCall::new(self.pool, Some(self.worker))
     }
 
     fn running(&self) -> bool {
@@ -877,7 +890,7 @@ pub fn pool_run(
         native,
         ipc,
         pool: pool_loop.pool,
-        worker: pool_loop.worker.raw().cast(),
+        worker: pool_loop.worker,
     };
     let mode = mode(pool_loop.ipc_mode);
     match protocol {
@@ -924,7 +937,7 @@ pub(crate) fn swr_v1_process_worker_send(
     flags: c_int,
 ) -> Option<usize> {
     let length = data.len();
-    let mut call = PoolCall::new(pool, ptr::null_mut());
+    let mut call = PoolCall::new(pool, None);
     if queue {
         // `mtype`, then `data` in native-endian words, zero-padded.
         let message: Vec<u64> = std::iter::once(u64::from(worker_id) + 1)
@@ -975,7 +988,7 @@ pub(crate) fn pool_dispatch<'a>(
     // The worker's id, as upstream's `*dst_worker_id += start_id` leaves it.
     let target = i64::from(index) + i64::from(start_id);
     let Some(worker) = workers(index as usize) else {
-        let call = PoolCall::new(pool, ptr::null_mut());
+        let call = PoolCall::new(pool, None);
         native.warn(
             &call,
             Warning::Send {
@@ -988,7 +1001,7 @@ pub(crate) fn pool_dispatch<'a>(
     let (id, pipe) = (worker.id(), worker.pipe_master());
     let flags = PIPE_MASTER | if blocking { 0 } else { PIPE_NONBLOCK };
     if swr_v1_process_worker_send(native, pool, pipe, queue, id, event, flags).is_none() {
-        let call = PoolCall::new(pool, ptr::null_mut());
+        let call = PoolCall::new(pool, None);
         native.warn(
             &call,
             Warning::Send {

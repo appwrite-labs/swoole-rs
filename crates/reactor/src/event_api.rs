@@ -218,7 +218,7 @@ pub extern "C" fn swoole_event_get_socket(fd: c_int) -> *mut c_void {
 /// without a reactor. `f` reaches no reactor: the registry is shared while it runs.
 fn with_registry<T>(f: impl FnOnce(Option<&crate::Registry>) -> T) -> Option<T> {
     let reactor = running()?;
-    Some(f(Some(reactor.registry())))
+    Some(reactor.registry(|registry| f(Some(registry))))
 }
 
 /// The thread's `Reactor`'s prepared views (`SwooleTG.reactor`), or `None` without one.
@@ -259,6 +259,12 @@ pub fn on_destroy(call: fn()) {
 /// `sw_reactor()->running = running`, when there is a reactor.
 pub fn swoole_event_set_running(running: bool) {
     field_mut(|fields| fields.running = running);
+}
+
+/// `sw_reactor()->timeout_msec = msec`, when there is a reactor.
+#[inline]
+pub fn swoole_event_set_timeout_msec(msec: c_int) {
+    field_mut(|fields| fields.timeout_msec = msec);
 }
 
 /// `sw_reactor()->once = once`, when there is a reactor.

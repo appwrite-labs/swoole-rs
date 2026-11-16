@@ -5,17 +5,17 @@
 //! measure protocol tables hold through crates/ports' `websocket_length`,
 //! `upstream-symbols` also defines under its upstream (Itanium) symbol.
 use std::ffi::{CStr, c_char, c_int};
-use std::mem::MaybeUninit;
 use swoole_rs_corebase::CCast;
 
 use swoole_rs_buffer::string::CppString;
+use swoole_rs_corebase::lent::Spare;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::PacketLength;
 
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_websocket::{
     DecodeErrorKind, DecodedFrame, EncodeError, FrameFlags, Opcode, control_invalid,
-    decode_in_place, encode_close_into, encode_parts, encoded_size, frame_length,
+    decode_in_place, encode_close, encode_frame, encoded_size, frame_length,
 };
 
 /// `SW_ERROR_WEBSOCKET_INCOMPLETE_PACKET`.
@@ -44,11 +44,11 @@ fn header_only_mask(flags: FrameFlags) -> bool {
 }
 
 /// `encode`/`pack_close_frame`'s tail: reserve `size` bytes past the buffer's
-/// length, let `write` fill them, and count them only when it wrote `size`.
+/// length, and append what `write` writes there: whether it wrote `size`.
 fn append_frame(
     buffer: &mut CppString,
     size: usize,
-    write: impl FnOnce(&mut [MaybeUninit<u8>]) -> Result<usize, EncodeError>,
+    write: impl FnOnce(&mut Spare<'_>) -> Result<usize, EncodeError>,
 ) -> bool {
     let length = buffer.len();
     if size > usize::MAX - length {
@@ -57,15 +57,7 @@ fn append_frame(
     if length + size > buffer.size() {
         buffer.reserve(length + size);
     }
-    let Some(spare) = buffer.spare().get_mut(..size) else {
-        return false;
-    };
-    if write(spare) != Ok(size) {
-        return false;
-    }
-    // SAFETY: `write` filled the `size` bytes after the content, inside the buffer.
-    unsafe { buffer.set_len(length + size) };
-    true
+    buffer.fill(write) == Ok(size)
 }
 
 fn control_warning(origin: &CStr, opcode: u8, fin: u8, length: usize) {
@@ -170,7 +162,7 @@ pub fn encode(buffer: &mut CppString, data: &[u8], opcode: u8, flags: u8) -> boo
     };
     let data = if flags.is_header_only() { &[] } else { data };
     append_frame(buffer, size, |out| {
-        encode_parts(length, data, opcode, flags, out)
+        encode_frame(length, data, opcode, flags, out)
     }) && !header_only_mask(flags)
 }
 
@@ -231,9 +223,8 @@ pub fn pack_close_frame(buffer: &mut CppString, code: c_int, reason: &[u8], flag
     let Ok(size) = encoded_size(length + CLOSE_CODE_LEN, flags.with_final()) else {
         return false;
     };
-    append_frame(buffer, size, |out| {
-        encode_close_into(code, reason, flags, out)
-    }) && !header_only_mask(flags)
+    append_frame(buffer, size, |out| encode_close(code, reason, flags, out))
+        && !header_only_mask(flags)
 }
 
 /// `void print_frame(const Frame *frame)`, of a frame's `header` and its payload's bytes.

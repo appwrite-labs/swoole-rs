@@ -1,6 +1,7 @@
 //! Complete-frame codec and the pinned server's message/control policy.
 //! Allocation, connection state, PHP and callbacks stay with the native caller.
 use std::mem::MaybeUninit;
+use swoole_rs_corebase::lent::{Spare, lend_spare};
 
 use crate::{LengthError, Opcode, frame_length, header, mask};
 
@@ -190,14 +191,29 @@ pub fn encoded_size(length: usize, flags: FrameFlags) -> Result<usize, EncodeErr
 /// unused for a header-only frame. Returns the number of initialized output bytes.
 ///
 /// # Errors
-/// An overflowing length, invalid control frame, mismatched payload length or
-/// short output. Errors leave `out` untouched.
+/// As for [`encode_frame`].
 pub fn encode_parts(
     length: usize,
     data: &[u8],
     opcode: Opcode,
     flags: FrameFlags,
     out: &mut [MaybeUninit<u8>],
+) -> Result<usize, EncodeError> {
+    lend_spare(out, |out| encode_frame(length, data, opcode, flags, out)).0
+}
+
+/// One frame of a `length`-byte payload written into `out`'s room, as
+/// [`encode_parts`]: the bytes written.
+///
+/// # Errors
+/// An overflowing length, invalid control frame, mismatched payload length or
+/// short output. Errors leave `out` untouched.
+pub fn encode_frame(
+    length: usize,
+    data: &[u8],
+    opcode: Opcode,
+    flags: FrameFlags,
+    out: &mut Spare<'_>,
 ) -> Result<usize, EncodeError> {
     let size = encoded_size(length, flags)?;
     if control_invalid(opcode, flags, length) {
@@ -206,25 +222,20 @@ pub fn encode_parts(
     if !flags.is_header_only() && length != data.len() {
         return Err(EncodeError::PayloadLength);
     }
+    if size > out.room() {
+        return Err(EncodeError::OutputTooSmall);
+    }
+    // `size` is the header, the key when masked, and the payload unless header-only.
     let (header, header_length) = header(length as u64, opcode, flags);
-    let (head, rest) = out
-        .get_mut(..size)
-        .and_then(|out| out.split_at_mut_checked(header_length))
-        .ok_or(EncodeError::OutputTooSmall)?;
-    head.write_copy_of_slice(header.get(..header_length).unwrap_or_default());
-    let payload = match rest.split_first_chunk_mut::<4>() {
-        Some((key, payload)) if flags.is_masked() => {
-            key.write_copy_of_slice(&MASK_KEY);
-            payload
-        }
-        _ => rest,
-    };
-    // Not header-only: `size` left exactly the payload's bytes.
-    if !flags.is_header_only() {
-        let payload = payload.write_copy_of_slice(data);
-        if flags.is_masked() {
-            mask(payload, MASK_KEY);
-        }
+    out.put(header.get(..header_length).unwrap_or_default());
+    if flags.is_masked() {
+        out.put(&MASK_KEY);
+    }
+    if !flags.is_header_only()
+        && let Some(payload) = out.put(data)
+        && flags.is_masked()
+    {
+        mask(payload, MASK_KEY);
     }
     Ok(size)
 }
@@ -254,6 +265,19 @@ pub fn encode_close_into(
     flags: FrameFlags,
     out: &mut [MaybeUninit<u8>],
 ) -> Result<usize, EncodeError> {
+    lend_spare(out, |out| encode_close(code, reason, flags, out)).0
+}
+
+/// [`encode_close_into`] written into `out`'s room.
+///
+/// # Errors
+/// As for [`encode_close_into`].
+pub fn encode_close(
+    code: i32,
+    reason: &[u8],
+    flags: FrameFlags,
+    out: &mut Spare<'_>,
+) -> Result<usize, EncodeError> {
     let mut payload = [0u8; 127];
     let Some((code_bytes, reason_bytes)) = payload
         .get_mut(..reason.len() + 2)
@@ -270,7 +294,13 @@ pub fn encode_close_into(
     *code_bytes = code.to_be_bytes();
     reason_bytes.copy_from_slice(reason);
     let payload = payload.get(..reason.len() + 2).unwrap_or_default();
-    encode_into(payload, Opcode::Close, flags.with_final(), out)
+    encode_frame(
+        payload.len(),
+        payload,
+        Opcode::Close,
+        flags.with_final(),
+        out,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Default)]

@@ -19,9 +19,9 @@ use crate::lent::{self, Drain, Fill};
 /// either side of the boundary.
 ///
 /// Invariant: it points at a NUL-terminated string live for `'a`. Rust makes one only
-/// from a `&'a CStr`. The other source is a parameter (or declared static) of this type
-/// on the C boundary, where the C caller's `const char *` contract stands for the
-/// constructor, as it does for a `&T` parameter there.
+/// from a `&'a CStr`. The other source is a parameter, declared static or declared
+/// return value of this type on the C boundary, where the C side's `const char *`
+/// contract stands for the constructor, as it does for a `&T` there.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct Text<'a>(NonNull<libc::c_char>, PhantomData<&'a CStr>);
@@ -361,7 +361,6 @@ plain!(
     libc::group_req,
     libc::group_source_req,
     libc::hostent,
-    libc::ifreq,
     libc::in_addr,
     libc::in6_addr,
     libc::in6_pktinfo,
@@ -392,6 +391,8 @@ plain!(
     libc::ifconf,
     #[cfg(any(target_os = "linux", target_os = "android"))]
     libc::signalfd_siginfo,
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    libc::epoll_event,
     #[cfg(any(target_os = "linux", target_os = "android"))]
     libc::statx,
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -534,10 +535,9 @@ pub fn getsockopt<T: Pod>(
     name: c_int,
     value: &mut T,
 ) -> std::io::Result<libc::socklen_t> {
-    let mut length = socklen::<T>();
-    // SAFETY: `value` holds the `length` writable bytes given, and any bytes are a `T`.
-    let status =
-        unsafe { libc::getsockopt(fd, level, name, (&raw mut *value).cast(), &raw mut length) };
+    let (status, length) = lent::lend_value_out(value, |at, length| {
+        lent::getsockopt(fd, level, name, at, length)
+    });
     status_result(status)?;
     Ok(length)
 }
@@ -898,6 +898,70 @@ pub enum InterfaceRequest {
     Name,
 }
 
+/// A `struct ifreq` as its bytes, which the kernel copies in and out whole:
+/// the interface's name, then the `ifr_ifru` union a request reads or fills,
+/// whose fields are read from the bytes rather than through the union.
+#[derive(Clone, Copy)]
+pub struct Ifreq([u8; size_of::<libc::ifreq>()]);
+
+impl Default for Ifreq {
+    fn default() -> Self {
+        Self([0; size_of::<libc::ifreq>()])
+    }
+}
+
+impl Ifreq {
+    /// A request on the interface `name`: its first `IFNAMSIZ - 1` bytes,
+    /// NUL-terminated.
+    #[must_use]
+    pub fn named(name: &[u8]) -> Self {
+        let mut request = Self::default();
+        for (slot, &byte) in request.0.iter_mut().zip(name).take(libc::IFNAMSIZ - 1) {
+            *slot = byte;
+        }
+        request
+    }
+
+    /// `ifr_name`, up to its NUL within `IFNAMSIZ`.
+    #[must_use]
+    pub fn name(&self) -> &CStr {
+        let name = self.0.get(..libc::IFNAMSIZ).unwrap_or_default();
+        CStr::from_bytes_until_nul(name).unwrap_or_default()
+    }
+
+    /// `ifr_ifru`'s bytes.
+    fn value(&self) -> &[u8] {
+        self.0.get(libc::IFNAMSIZ..).unwrap_or_default()
+    }
+
+    /// Sets `ifru_ifindex`, the interface `SIOCGIFNAME` names.
+    pub fn set_index(&mut self, index: c_int) {
+        let value = self.0.get_mut(libc::IFNAMSIZ..).unwrap_or_default();
+        if let Some(slot) = value.first_chunk_mut() {
+            *slot = index.to_ne_bytes();
+        }
+    }
+
+    /// `((struct sockaddr_in *) &ifru_addr)->sin_addr`, as `SIOCGIFADDR`
+    /// fills it: the four bytes after the family and port on every platform.
+    #[must_use]
+    pub fn ipv4(&self) -> libc::in_addr {
+        let s_addr = match *self.value() {
+            [_, _, _, _, a, b, c, d, ..] => u32::from_ne_bytes([a, b, c, d]),
+            _ => 0,
+        };
+        libc::in_addr { s_addr }
+    }
+
+    /// `ifru_hwaddr.sa_data`, as `SIOCGIFHWADDR` fills it: the fourteen bytes
+    /// after the two of the family.
+    #[must_use]
+    pub fn sa_data(&self) -> [u8; 14] {
+        let data = self.value().get(2..).unwrap_or_default();
+        data.first_chunk().copied().unwrap_or_default()
+    }
+}
+
 /// `ioctl(fd, request, value)`.
 ///
 /// # Errors
@@ -905,7 +969,7 @@ pub enum InterfaceRequest {
 pub fn interface_ioctl(
     fd: c_int,
     request: InterfaceRequest,
-    value: &mut libc::ifreq,
+    value: &mut Ifreq,
 ) -> std::io::Result<()> {
     // The request numbers as `ioctl` takes them (an int on musl).
     #[cfg(target_os = "linux")]
@@ -919,8 +983,9 @@ pub fn interface_ioctl(
     let request = match request {
         InterfaceRequest::Address => libc::SIOCGIFADDR,
     };
-    // SAFETY: each request reads and writes only the one live ifreq.
-    nonnegative_result(unsafe { libc::ioctl(fd, request, std::ptr::from_mut(value)) }).map(drop)
+    // SAFETY: each request copies in and out only the one ifreq's bytes,
+    // which `value` holds, at any alignment.
+    nonnegative_result(unsafe { libc::ioctl(fd, request, value.0.as_mut_ptr()) }).map(drop)
 }
 
 /// The head of a list `getifaddrs` stored, not yet freed. Only `getifaddrs` makes one

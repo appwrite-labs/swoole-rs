@@ -147,6 +147,20 @@ pub fn lend_in<T, N: Narrow, R>(
     )
 }
 
+/// Lends `value`'s bytes to `call` as an [`Out`] and its [`Count`]. Any bytes are a `T`.
+#[inline]
+pub(crate) fn lend_value_out<T: crate::sys::Pod, N: Narrow, R>(
+    value: &mut T,
+    call: impl for<'id> FnOnce(Out<'id>, &mut Count<'id, N>) -> R,
+) -> (R, N) {
+    let mut count = Count(N::narrow(size_of::<T>()), PhantomData);
+    let out = call(
+        Out(std::ptr::from_mut(value).cast(), PhantomData),
+        &mut count,
+    );
+    (out, count.0)
+}
+
 /// Lends `value`'s bytes to `call` as an [`In`] and its [`Count`].
 #[inline]
 pub(crate) fn lend_value<T, N: Narrow, R>(
@@ -263,6 +277,15 @@ unsafe extern "C" {
         count: Count<'id, libc::nfds_t>,
         timeout: c_int,
     ) -> c_int;
+    /// Writes at most `length`'s bytes of `value`, and how many it stored into
+    /// `length`, which is never more than the count it read there.
+    pub(crate) safe fn getsockopt<'id>(
+        fd: c_int,
+        level: c_int,
+        name: c_int,
+        value: Out<'id>,
+        length: &mut Count<'id, libc::socklen_t>,
+    ) -> c_int;
     pub(crate) safe fn setsockopt<'id>(
         fd: c_int,
         level: c_int,
@@ -277,6 +300,18 @@ unsafe extern "C" {
         format: crate::sys::Text<'_>,
         tm: &libc::tm,
     ) -> usize;
+    /// Fills `entry`, its lists in `buffer`, stores it (or null) in `found` and the
+    /// resolver's error in `error`.
+    #[cfg(target_os = "linux")]
+    pub(crate) safe fn gethostbyname2_r<'id>(
+        name: crate::sys::Text<'_>,
+        family: c_int,
+        entry: &mut libc::hostent,
+        buffer: Out<'id, c_char>,
+        length: Count<'id>,
+        found: &mut *mut libc::hostent,
+        error: &mut c_int,
+    ) -> c_int;
     /// Fills `entry`, its strings in `strings`, and stores it (or null) in `found`.
     pub(crate) safe fn getgrnam_r<'id>(
         name: crate::sys::Text<'_>,
@@ -470,6 +505,143 @@ impl Fill<'_> {
             len,
             lent: PhantomData,
         }
+    }
+}
+
+/// What a call declared `safe` returns when it writes into an [`Out`]: how many of
+/// that lending's first `N`s it wrote, or a negative failure. Only an extern block's
+/// declaration gives a call this result, so the declaration is the promise.
+#[repr(transparent)]
+pub struct Wrote<'id, N = isize>(N, Brand<'id>);
+
+/// The room past a buffer's content, lent to whatever fills it from the front: `len`
+/// writable bytes at `at`, reached through nothing else for the lending, the first
+/// `filled` of them written. Only [`lend_spare`] makes one, and only a write that put
+/// bytes there (a read below, [`Spare::put`], or a call whose declared result is a
+/// [`Wrote`]) moves `filled`, so the count a lending ends with is of written bytes. The
+/// brand keeps two lendings' rooms from trading places.
+pub struct Spare<'s> {
+    at: *mut u8,
+    filled: usize,
+    len: usize,
+    lent: Brand<'s>,
+}
+
+/// Lends `room` to `fill`: what it returned, and how many of `room`'s first bytes it
+/// wrote.
+#[inline]
+pub fn lend_spare<R>(
+    room: &mut [impl ReadSlot],
+    fill: impl for<'s> FnOnce(&mut Spare<'s>) -> R,
+) -> (R, usize) {
+    let mut spare = Spare {
+        at: room.as_mut_ptr().cast(),
+        filled: 0,
+        len: room.len(),
+        lent: PhantomData,
+    };
+    let result = fill(&mut spare);
+    (result, spare.filled)
+}
+
+impl<S: ReadSlot> Fill<'_, S> {
+    /// The bytes lent to `fill` as a [`Spare`]: a C lender's room, which counts nothing.
+    #[inline]
+    pub fn spare<R>(&mut self, fill: impl for<'s> FnOnce(&mut Spare<'s>) -> R) -> R {
+        fill(&mut Spare {
+            at: self.at.cast(),
+            filled: 0,
+            len: self.len,
+            lent: PhantomData,
+        })
+    }
+}
+
+impl Spare<'_> {
+    /// How many bytes are left to fill.
+    #[inline]
+    #[must_use]
+    pub fn room(&self) -> usize {
+        self.len - self.filled
+    }
+
+    /// Counts `wrote` bytes past the written ones: what a read returned, which never
+    /// counts past the room (`MSG_TRUNC` reports a datagram's whole length).
+    #[inline]
+    fn count(&mut self, wrote: Option<usize>) -> Option<usize> {
+        if let Some(n) = wrote {
+            self.filled += n.min(self.room());
+        }
+        wrote
+    }
+
+    /// The room left as a [`Fill`], for a read its own result counts.
+    #[inline]
+    fn rest(&mut self) -> Fill<'_> {
+        Fill {
+            at: self.at.wrapping_add(self.filled).cast(),
+            len: self.room(),
+            lent: PhantomData,
+        }
+    }
+
+    /// The written bytes.
+    #[inline]
+    #[must_use]
+    pub fn written(&mut self) -> &mut [u8] {
+        if self.at.is_null() {
+            return &mut [];
+        }
+        // SAFETY: the type's invariant: the first `filled` of the lent bytes are written,
+        // and this borrows the only handle to them.
+        unsafe { std::slice::from_raw_parts_mut(self.at, self.filled) }
+    }
+
+    /// Writes all of `data` after the written bytes, and counts it: the copy, or `None`,
+    /// writing nothing, when it doesn't fit.
+    #[inline]
+    pub fn put(&mut self, data: &[u8]) -> Option<&mut [u8]> {
+        let start = self.filled;
+        let mut rest = self.rest();
+        let to = rest.slots().get_mut(..data.len())?;
+        to.write_copy_of_slice(data);
+        self.filled += data.len();
+        self.written().get_mut(start..)
+    }
+
+    /// The room to `call`, as an address and its count, and counts what its declared
+    /// result says it wrote: that result.
+    #[inline]
+    pub fn lend<N: Narrow, R: Copy + TryInto<usize>>(
+        &mut self,
+        call: impl for<'id> FnOnce(Out<'id>, Count<'id, N>) -> Wrote<'id, R>,
+    ) -> R {
+        let at = self.at.wrapping_add(self.filled).cast();
+        let Wrote(n, _) = call(
+            Out(at, PhantomData),
+            Count(N::narrow(self.room()), PhantomData),
+        );
+        self.count(n.try_into().ok());
+        n
+    }
+
+    /// recv(2) into the room, as [`Fill::recv`].
+    #[inline]
+    pub fn recv(&mut self, fd: c_int, flags: c_int) -> Option<usize> {
+        let received = self.rest().recv(fd, flags);
+        self.count(received)
+    }
+
+    /// recvfrom(2) into the room, as [`Fill::recvfrom`].
+    #[inline]
+    pub fn recvfrom(
+        &mut self,
+        fd: c_int,
+        flags: c_int,
+        address: &mut SocketAddress,
+    ) -> Option<usize> {
+        let received = self.rest().recvfrom(fd, flags, address);
+        self.count(received)
     }
 }
 

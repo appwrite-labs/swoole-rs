@@ -508,7 +508,7 @@ mod tests {
     /// The mock settings' `package_length_func` callback.
     unsafe extern "C" fn length_func(
         _: *const Protocol,
-        _: *mut c_void,
+        _: Option<swoole_rs_clients::protocol::Socket<'_>>,
         _: &mut PacketLength,
     ) -> isize {
         11

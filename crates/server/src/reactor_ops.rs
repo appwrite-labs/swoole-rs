@@ -84,12 +84,22 @@ pub(crate) struct ThreadRecord {
 }
 
 /// `SwooleG.std_allocator`.
-pub(crate) static STD_ALLOCATOR: CoreAllocator = CoreAllocator {
+static STD_ALLOCATOR: CoreAllocator = CoreAllocator {
     malloc: Some(swoole_rs_corebase::sys::malloc),
     calloc: Some(swoole_rs_corebase::sys::calloc),
     realloc: Some(libc::realloc),
     free: Some(libc::free),
 };
+
+/// `SwooleG.std_allocator`, vouched for.
+#[cfg_attr(
+    not(any(test, feature = "upstream-symbols")),
+    expect(dead_code, reason = "only the hybrid makes servers and message buses")
+)]
+pub(crate) const STD: TrustedAllocator =
+    // SAFETY: libc's `malloc`, `calloc`, `realloc` and `free`, which keep the
+    // allocator contract.
+    unsafe { TrustedAllocator::new(&STD_ALLOCATOR) };
 
 /// A `MessageBus` record: the Rust bus, then the allocator its packets and buffer
 /// come from. Only the constructors here fill one, with `SwooleG.std_allocator` or
@@ -109,12 +119,9 @@ pub(crate) struct PoolBus {
 impl PoolBus {
     /// A record of `bus` over `SwooleG.std_allocator`.
     pub(crate) fn std(bus: Box<swoole_rs_bus::MessageBus>) -> Self {
-        // SAFETY: libc's `malloc`, `calloc`, `realloc` and `free`, which keep the
-        // allocator contract.
-        let std = unsafe { TrustedAllocator::new(&STD_ALLOCATOR) };
         Self {
             bus,
-            allocator: Cell::new(std),
+            allocator: Cell::new(STD),
         }
     }
 

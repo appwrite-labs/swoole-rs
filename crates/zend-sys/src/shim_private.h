@@ -24,7 +24,10 @@ HashTable *swr_zend_facade_function_table(void);
  * a bailout). */
 zend_object *swr_zend_object_deny(zend_class_entry *ce, bool *bailed);
 #include "zend_smart_str.h"
-int swr_zend_try_facade_callable_frame(zval *, zend_object *, zend_execute_data *, uint32_t, zend_fcall_info_cache *, char **, bool *);
+/* zend_is_callable_at_frame(value, $this of frame or NULL, frame, 0, cache, NULL)
+ * inside zend_try: 1 if it bailed out, else *result says whether it is callable. */
+int swr_zend_try_facade_callable_frame(zval *value, zend_execute_data *frame, zend_fcall_info_cache *cache,
+                                       bool *result);
 int swr_zend_try_facade_register_functions(const zend_function_entry *, HashTable *, int, int *);
 HashTable *swr_zend_facade_compiler_functions(void);
 #endif

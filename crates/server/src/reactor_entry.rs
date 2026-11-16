@@ -119,8 +119,10 @@ pub fn on_write(reactor: Running<'_>, event: &mut Event) -> c_int {
 #[must_use]
 pub extern "C-unwind" fn close_connection(
     reactor: Running<'_>,
-    socket: swoole_rs_reactor::Socket<'static>,
+    socket: swoole_rs_reactor::OwnedSocket,
 ) -> c_int {
+    // Back to the connection, whose close frees it.
+    let socket = socket.leak();
     handler(reactor, |serv, reactor| {
         crate::conn_io::close_connection(serv, reactor, Some(socket))
     })
