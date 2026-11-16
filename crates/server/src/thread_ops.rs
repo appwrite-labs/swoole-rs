@@ -302,7 +302,7 @@ fn send_close_force(serv: view::Server<'_>, conn: Connection<'_>, session: c_lon
 }
 
 /// `ReactorThread_onPipeRead`: a worker's message.
-extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     let reactor = Reactor::running(reactor);
     // The handler is registered only on reactors that hold a server.
     let Some(serv) = reactor.server() else {

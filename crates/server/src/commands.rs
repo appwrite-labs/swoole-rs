@@ -190,7 +190,12 @@ pub(crate) fn send(
         };
         head(&mut info);
         let pool = serv.event_pool_ref();
-        return swoole_rs_process::methods::push_event(pool, &info, data);
+        return swoole_rs_process::methods::push_event(
+            crate::process_pool_native(),
+            pool,
+            &info,
+            data,
+        );
     }
     if route.target == Target::TaskWorker {
         let mut buf = swoole_rs_process::task_file::TaskBuffer::default();
@@ -204,6 +209,7 @@ pub(crate) fn send(
         let (gs, pool) = (serv.counters(), serv.task_pool_ref());
         let dispatch = || {
             Ok(swoole_rs_process::methods::dispatch(
+                crate::process_pool_native(),
                 pool,
                 task,
                 Some(process_id.into()),

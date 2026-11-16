@@ -796,8 +796,8 @@ pub(crate) fn swr_v1_process_pool_ipc_set_listener(ipc: &mut PoolIpc, socket: *m
 }
 
 /// The stream listener, or null.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_process_pool_ipc_listener(ipc: &PoolIpc) -> *mut c_void {
+#[must_use]
+pub fn swr_v1_process_pool_ipc_listener(ipc: &PoolIpc) -> *mut c_void {
     ipc.stream
         .as_ref()
         .map_or(ptr::null_mut(), |stream| stream.socket)
@@ -1099,6 +1099,7 @@ mod tests {
     #[derive(Default)]
     struct Script {
         rounds: u32,
+        ops: Vec<(crate::process_pool::Op, u64)>,
         accepts: Vec<usize>,
         recvs: Vec<Vec<u8>>,
         reads: Vec<(Vec<u8>, c_int)>,
@@ -1141,10 +1142,16 @@ mod tests {
     }
 
     /// The scripted hooks, over the thread's [`Script`].
-    struct Scripted;
+    pub(super) struct Scripted;
+
+    pub(super) fn take_ops() -> Vec<(crate::process_pool::Op, u64)> {
+        with(|script| std::mem::take(&mut script.ops))
+    }
 
     impl PoolNative for Scripted {
-        fn call(&self, _: &PoolCall, _: crate::process_pool::Op, _: u64) {}
+        fn call(&self, _: &PoolCall, op: crate::process_pool::Op, arg: u64) {
+            with(|script| script.ops.push((op, arg)));
+        }
         fn event_init(&self, _: &PoolCall) -> bool {
             unreachable!("loop-only fixture")
         }
@@ -1420,3 +1427,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/modules/process/native_methods.rs"]
+mod native_methods_tests;

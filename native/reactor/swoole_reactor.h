@@ -26,7 +26,6 @@ class Reactor : public swr_v1_reactor_head {
     void erase_end_callback(int _id) {
         swr_v1_reactor_set_end(handle(), _id, nullptr);
     }
-    void set_handler(int fd_type, int event, ReactorHandler handler);
     bool isset_handler(int fd_type, int event) const;
 
     bool ready() const {
@@ -55,5 +54,4 @@ class Reactor : public swr_v1_reactor_head {
 SW_API int swoole_event_init(int flags);
 SW_API swoole::network::Socket *swoole_event_get_socket(int fd);
 SW_API int swoole_event_wait();
-SW_API void swoole_event_set_handler(int fd_type, int event, swoole::ReactorHandler handler);
 SW_API bool swoole_event_is_available();

@@ -428,7 +428,7 @@ pub fn http_inflate(bytes: &[u8]) {
         }
     };
     let _ = decoder().decode(body);
-    let _ = in_chunks(decoder(), body, lengths);
+    let _ = in_chunks(decoder(), Inflate::decode, body, lengths);
     let level = c_int::from(mode >> 3) % 10;
     let stream = swoole_rs_deflate::compress(body, 2 * body.len() + 64, window_bits, level)
         .unwrap_or_else(|failure| panic!("compress {window_bits} at {level}: {failure:?}"));
@@ -442,15 +442,79 @@ pub fn http_inflate(bytes: &[u8]) {
         return;
     }
     assert_eq!(
-        in_chunks(decoder(), &stream, lengths).as_deref(),
+        in_chunks(decoder(), Inflate::decode, &stream, lengths).as_deref(),
         Some(body),
         "chunks {lengths:?}"
     );
 }
 
-/// `stream` through `inflate` in chunks of `lengths` (0 as 1), then the rest in one:
+/// An HTTP client's Brotli or zstd response body (the first byte's low bit), compressed
+/// at the level its other bits pick, through `Client::decompress_response`'s decoder in
+/// the chunks the second byte counts, gives the body back. The body as it is decodes
+/// without a panic in chunks of at most 16 bytes, until one fails or the output passes
+/// 16 MiB: a few bytes of Brotli can expand to 16 MiB, so it is never fed whole.
+pub fn http_decompress(bytes: &[u8]) {
+    use swoole_rs_inflate::{brotli, zstd};
+    let Some((&[mode, count], rest)) = bytes.split_first_chunk::<2>() else {
+        return;
+    };
+    let (lengths, body) = rest.split_at(usize::from(count % 16).min(rest.len()));
+    let level = i32::from(mode >> 1);
+    if mode & 1 == 0 {
+        let stream = brotli::compress(body, level % 12).expect("BrotliEncoderCompress");
+        let new = || brotli::Decoder::new().expect("BrotliDecoderCreateInstance");
+        round_trip(
+            new,
+            |decoder, chunk| decoder.decode(chunk).ok(),
+            body,
+            &stream,
+            lengths,
+        );
+    } else {
+        // -3 to 19: zstd's fast levels and all but its slowest ultra ones.
+        let stream = zstd::compress(body, level % 23 - 3).expect("ZSTD_compress");
+        let new = || zstd::Decoder::new().expect("ZSTD_initDStream");
+        round_trip(
+            new,
+            |decoder, chunk| decoder.decode(chunk).ok(),
+            body,
+            &stream,
+            lengths,
+        );
+    }
+}
+
+/// `http_decompress` for one decoder: `body` in small chunks, then `stream` in `lengths`.
+fn round_trip<D>(
+    new: impl Fn() -> D,
+    decode: impl for<'a> Fn(&'a mut D, &[u8]) -> Option<&'a [u8]>,
+    body: &[u8],
+    stream: &[u8],
+    lengths: &[u8],
+) {
+    let mut decoder = new();
+    let mut produced = 0;
+    for chunk in body.chunks(lengths.first().map_or(16, |&n| usize::from(n % 16) + 1)) {
+        match decode(&mut decoder, chunk) {
+            Some(out) if produced + out.len() <= 1 << 24 => produced += out.len(),
+            _ => break,
+        }
+    }
+    assert_eq!(
+        in_chunks(new(), decode, stream, lengths).as_deref(),
+        Some(body),
+        "{stream:?} in {lengths:?}"
+    );
+}
+
+/// `stream` through `decoder` in chunks of `lengths` (0 as 1), then the rest in one:
 /// what they produced, or None once one fails.
-fn in_chunks(mut inflate: Inflate, mut stream: &[u8], lengths: &[u8]) -> Option<Vec<u8>> {
+fn in_chunks<D>(
+    mut decoder: D,
+    decode: impl for<'a> Fn(&'a mut D, &[u8]) -> Option<&'a [u8]>,
+    mut stream: &[u8],
+    lengths: &[u8],
+) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     let lengths = lengths.iter().map(|&n| usize::from(n.max(1)));
     for length in lengths.chain([usize::MAX]) {
@@ -458,7 +522,7 @@ fn in_chunks(mut inflate: Inflate, mut stream: &[u8], lengths: &[u8]) -> Option<
             break;
         }
         let (chunk, tail) = stream.split_at(length.min(stream.len()));
-        out.extend_from_slice(inflate.decode(chunk)?);
+        out.extend_from_slice(decode(&mut decoder, chunk)?);
         stream = tail;
     }
     Some(out)

@@ -362,24 +362,30 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
             }
         }
     }
-    if conn.overflow() && output(sock).0 < sock.read(|s| s.output.buffer_size) {
+    let queued = output(sock).0;
+    if conn.overflow() && queued < sock.read(|s| s.output.buffer_size) {
         conn.set_overflow(false);
     }
     let buffer_empty = state.callbacks.slot(CallbackKind::BufferEmpty).is_set();
     let low_watermark = port.map_or(0, |port| port.buffer_low_watermark.get());
-    if buffer_empty && conn.high_watermark() && output(sock).0 <= low_watermark {
+    if buffer_empty && conn.high_watermark() && queued <= low_watermark {
         conn.set_high_watermark(false);
         crate::server_methods::notify(serv, conn, ServerEvent::BufferEmpty);
     }
-    if let Some(timer) = sock.read(|s| s.output.send_timer) {
-        if output(sock).1 {
+    // Read after the notification, which may queue more.
+    let (timer, removed, empty) = sock.read(|s| {
+        let empty = out_buffer(s).is_none_or(swr_cpp_buffer_empty);
+        (s.output.send_timer, s.removed, empty)
+    });
+    if let Some(timer) = timer {
+        if empty {
             del_id(timer);
             sock.edit(|s| s.output.send_timer = None);
         } else if let Some(port) = port {
             delay_held(timer, port.max_idle_time.get().c_cast::<c_long>());
         }
     }
-    if !conn.peer_closed() && !sock.read(|s| s.removed) && output(sock).1 {
+    if !conn.peer_closed() && !removed && empty {
         // A notified close no longer reads: it only drains.
         if BUILT_PREQUEUE {
             reactor.interest(sock, swoole_rs_reactor::Interest::RemoveWrite);

@@ -340,7 +340,7 @@ mod tests {
         HANDLED.with_borrow_mut(core::mem::take)
     }
 
-    extern "C" fn record_error(
+    fn record_error(
         _: swoole_rs_reactor::Running<'_>,
         event: &mut swoole_rs_reactor::Event,
     ) -> c_int {

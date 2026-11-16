@@ -85,7 +85,6 @@ impl Rejection {
 }
 
 /// What `Server::command` knows when it is called.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CommandInput {
     pub started: bool,

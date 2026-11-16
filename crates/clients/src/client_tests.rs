@@ -233,7 +233,11 @@ pub(super) extern "C" fn async_dispatch(event: &AsyncEvent<'_>) -> *mut c_void {
     core::ptr::without_provenance_mut(8)
 }
 // crates/tls's TLS operations, over its own context.
-pub(super) fn tls_session(_: Socket<'_>, _: &TlsSettings) -> bool {
+fn tls_freeze(owner: &TlsContext) -> Option<TlsSettings> {
+    log("ssl create");
+    super::tls_freeze(owner)
+}
+pub(super) fn tls_session(_: &TlsSettings, _: Socket<'_>) -> bool {
     log(format!("ssl session {SSL_CLIENT}"));
     true
 }
@@ -296,6 +300,12 @@ fn new_client(kind: c_int, is_async: bool) -> *mut Client {
         connect: ops::connect,
         event: ops::event,
         socket_error: ops::socket_error,
+        tls_freeze,
+        tls_session,
+        tls_connect: socket_ssl_connect,
+        tls_set_host_name: socket_ssl_set_host_name,
+        tls_verify: socket_ssl_verify,
+        tls_check_host: socket_ssl_check_host,
     };
     create_with(kind, is_async, &OPS).map_or(core::ptr::null_mut(), |handle| handle.0)
 }

@@ -21,8 +21,7 @@ fn offsets() -> impl Iterator<Item = usize> {
 /// [`STACK_PROTECT`]) a mapping whose lowest page is inaccessible, freed when dropped.
 /// A context without a stack of its own (a thread's) holds none: `at` is null. The
 /// fields are private, so a non-null `at` is always what [`Stack::alloc`] made with
-/// this `size` and these `flags`. It lies in the context's record where C reads it.
-#[repr(C)]
+/// this `size` and these `flags`.
 pub struct Stack {
     at: *mut u8,
     size: u32,
@@ -31,10 +30,6 @@ pub struct Stack {
 }
 
 impl Stack {
-    /// Where the size lies in the record, for the context's layout test.
-    #[cfg(test)]
-    pub(crate) const SIZE_OFFSET: usize = core::mem::offset_of!(Self, size);
-
     /// No stack, for a context of `flags`.
     #[must_use]
     pub const fn none(flags: u32) -> Self {

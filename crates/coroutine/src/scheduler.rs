@@ -318,11 +318,7 @@ pub fn yield_with_cancel_armed<F: FnOnce(*mut c_void) -> bool + Copy>(
 ///
 /// # Safety
 /// `callback` takes `data`; the caller's frames own nothing with a destructor.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_coroutine_bail(
-    callback: Option<Routine>,
-    data: *mut c_void,
-) {
+pub unsafe fn swr_v1_coroutine_bail(callback: Option<Routine>, data: *mut c_void) {
     let inside = !current().is_null();
     if inside && callback.is_none() {
         log::error(

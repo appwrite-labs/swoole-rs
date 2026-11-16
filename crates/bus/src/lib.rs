@@ -66,7 +66,6 @@ enum Event {
 }
 
 /// `swoole::PacketPtr`.
-#[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct BusPacket {
     pub length: usize,

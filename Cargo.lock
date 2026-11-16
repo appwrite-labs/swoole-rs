@@ -598,6 +598,7 @@ dependencies = [
  "swoole-rs-ossupport",
  "swoole-rs-process",
  "swoole-rs-reactor",
+ "swoole-rs-server",
  "swoole-rs-timer",
  "swoole-rs-tls",
 ]

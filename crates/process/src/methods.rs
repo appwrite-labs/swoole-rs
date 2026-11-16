@@ -1,6 +1,6 @@
 //! The `ProcessPool` and `Worker` methods (once `src/os/process_pool.cc`) that are
-//! whole Rust operations. Each runs over crates/server's [`PoolNative`] side as its
-//! C++ forward did.
+//! whole Rust operations. Each receives its [`PoolNative`] effects from the
+//! caller: crates/server's implementation in production, a supplied host in tests.
 
 use crate::process_pool::Protocol;
 use crate::task_file::Packed;
@@ -26,23 +26,6 @@ use crate::worker_globals::{
 };
 use crate::worker_record::WorkerRecord;
 
-/// crates/server's side, which every method below lends its export
-/// (`crates/server/src/pool_native.rs`); tests drive the exports with their own
-/// hosts and never reach it.
-fn native() -> &'static dyn PoolNative {
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
-    {
-        // crates/server's, in the same archive; declared, since crates/server
-        // depends on this crate.
-        unsafe extern "Rust" {
-            safe fn swr_v1_process_pool_native() -> &'static dyn PoolNative;
-        }
-        swr_v1_process_pool_native()
-    }
-    #[cfg(not(all(feature = "upstream-symbols", not(test))))]
-    swoole_rs_corebase::fatal("no native process pool without upstream-symbols")
-}
-
 /// A method's result; a callback's bailout is raised once the method's frames are
 /// gone. This frame holds nothing, so the `longjmp` may cross it.
 pub fn raised<T: Default>(result: Result<T, Bailed>) -> T {
@@ -57,8 +40,8 @@ pub fn raised<T: Default>(result: Result<T, Bailed>) -> T {
 macro_rules! pool_methods {
     ($(fn $name:ident($($p:ident: $t:ty),*) -> $r:ty = $($raised:ident)? |$pool:ident| $call:expr;)*) => {$(
         #[doc = concat!("`ProcessPool::", stringify!($name), "`.")]
-        pub fn $name(pool: PoolRef<'_>, $($p: $t),*) -> $r {
-            $($raised)?(with(native(), pool, |$pool| $call))
+        pub fn $name(native: &dyn PoolNative, pool: PoolRef<'_>, $($p: $t),*) -> $r {
+            $($raised)?(with(native, pool, |$pool| $call))
         }
     )*};
 }
@@ -87,60 +70,77 @@ pool_methods! {
 /// `data`'s) and `data`; false when the pool has no message box, `data` does not
 /// fit, or the push fails.
 #[must_use]
-pub fn push_event(pool: PoolRef<'_>, head: &swoole_rs_corebase::DataHead, data: &[u8]) -> bool {
-    swr_v1_process_pool_push_event(native(), pool, head, data)
+pub fn push_event(
+    native: &dyn PoolNative,
+    pool: PoolRef<'_>,
+    head: &swoole_rs_corebase::DataHead,
+    data: &[u8],
+) -> bool {
+    swr_v1_process_pool_push_event(native, pool, head, data)
 }
 
 /// `ProcessPool::stop(worker)`; nothing when `worker` is none of the pool's.
-pub fn stop(pool: PoolRef<'_>, worker: *mut WorkerRecord) {
+pub fn stop(native: &dyn PoolNative, pool: PoolRef<'_>, worker: *mut WorkerRecord) {
     if let Some(worker) = pool.worker_of(worker) {
-        with(native(), pool, |p| p.stop(worker.raw()));
+        with(native, pool, |p| p.stop(worker.raw()));
     }
 }
 
 /// `ProcessPool::signal(signo, worker)`, in `worker` or (null, or none of the
 /// pool's) the master.
-pub fn signal(pool: PoolRef<'_>, signo: c_int, worker: *mut WorkerRecord) {
+pub fn signal(native: &dyn PoolNative, pool: PoolRef<'_>, signo: c_int, worker: *mut WorkerRecord) {
     let worker = pool.worker_of(worker).map_or(ptr::null_mut(), Worker::raw);
-    raised(with(native(), pool, |p| p.signal(signo, worker)));
+    raised(with(native, pool, |p| p.signal(signo, worker)));
 }
 
 /// `ProcessPool::spawn(worker)`, whose pid every caller ignores; nothing when `worker`
 /// is none of the pool's.
-pub fn spawn(pool: PoolRef<'_>, worker: *mut WorkerRecord) {
+pub fn spawn(native: &dyn PoolNative, pool: PoolRef<'_>, worker: *mut WorkerRecord) {
     if let Some(worker) = pool.worker_of(worker) {
-        raised(with(native(), pool, |p| p.spawn(worker.raw())));
+        raised(with(native, pool, |p| p.spawn(worker.raw())));
     }
 }
 
 /// `ProcessPool::create(worker_num, msgqueue_key, ipc_mode)`.
 #[must_use]
-pub fn create(pool: PoolRef<'_>, worker_num: u32, key: c_int, mode: c_int) -> bool {
+pub fn create(
+    native: &dyn PoolNative,
+    pool: PoolRef<'_>,
+    worker_num: u32,
+    key: c_int,
+    mode: c_int,
+) -> bool {
     let mode = u8::try_from(mode.cast_unsigned() & 0xff).unwrap_or_default();
-    swr_v1_process_pool_create(native(), pool, worker_num, key, mode)
+    swr_v1_process_pool_create(native, pool, worker_num, key, mode)
 }
 
 /// `ProcessPool::push_message(type, data, length)`.
 #[must_use]
-pub fn push_message(pool: PoolRef<'_>, kind: u8, data: &[u8]) -> bool {
-    swr_v1_process_pool_push(native(), pool, kind, data)
+pub fn push_message(native: &dyn PoolNative, pool: PoolRef<'_>, kind: u8, data: &[u8]) -> bool {
+    swr_v1_process_pool_push(native, pool, kind, data)
 }
 
 /// `push_message(SW_WORKER_MESSAGE_STOP, WorkerStopMessage { pid, worker_id })`:
 /// the C layout's 4-byte pid, 2-byte id and 2 bytes of padding.
 #[must_use]
-pub fn push_stop(pool: PoolRef<'_>, pid: c_int, worker_id: u16) -> bool {
+pub fn push_stop(native: &dyn PoolNative, pool: PoolRef<'_>, pid: c_int, worker_id: u16) -> bool {
     /// `SW_WORKER_MESSAGE_STOP`.
     const WORKER_MESSAGE_STOP: u8 = 1;
     let ([a, b, c, d], [e, f]) = (pid.to_ne_bytes(), worker_id.to_ne_bytes());
-    push_message(pool, WORKER_MESSAGE_STOP, &[a, b, c, d, e, f, 0, 0])
+    push_message(native, pool, WORKER_MESSAGE_STOP, &[a, b, c, d, e, f, 0, 0])
 }
 
 /// `ProcessPool::dispatch(data, dst_worker_id)`, or `dispatch_sync` when
 /// `blocking`, of `task` to `worker`, else one the pool schedules.
 #[must_use]
-pub fn dispatch(pool: PoolRef<'_>, task: Packed<'_>, worker: Option<u32>, blocking: bool) -> bool {
-    swr_v1_process_pool_dispatch_event(native(), pool, task.bytes(), worker, blocking)
+pub fn dispatch(
+    native: &dyn PoolNative,
+    pool: PoolRef<'_>,
+    task: Packed<'_>,
+    worker: Option<u32>,
+    blocking: bool,
+) -> bool {
+    swr_v1_process_pool_dispatch_event(native, pool, task.bytes(), worker, blocking)
 }
 
 /// `ProcessPool::add_worker(worker)`: keeps an existing entry for the pid; nothing
@@ -173,7 +173,12 @@ pub fn is_worker_running(pool: PoolRef<'_>, worker: Worker<'_>) -> bool {
 /// the pipe end `flags` names. None for a worker no pool holds, which upstream
 /// doesn't send through.
 #[must_use]
-pub fn send_pipe_message(worker: Worker<'_>, data: &[u8], flags: c_int) -> Option<usize> {
+pub fn send_pipe_message(
+    native: &dyn PoolNative,
+    worker: Worker<'_>,
+    data: &[u8],
+    flags: c_int,
+) -> Option<usize> {
     /// `SW_PIPE_MASTER`.
     const PIPE_MASTER: c_int = 1;
     let pool = worker.pool_ref()?;
@@ -184,7 +189,7 @@ pub fn send_pipe_message(worker: Worker<'_>, data: &[u8], flags: c_int) -> Optio
         worker.pipe_worker()
     };
     let queue = pool.use_msgqueue();
-    swr_v1_process_worker_send(native(), pool, pipe, queue, id, data, flags)
+    swr_v1_process_worker_send(native, pool, pipe, queue, id, data, flags)
 }
 
 #[cfg(feature = "upstream-symbols")]
@@ -277,7 +282,12 @@ pub fn response(pool: PoolRef<'_>, data: &[u8]) -> bool {
 /// False for a `worker_id` the pool has no worker for, or a pool without pipes.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
-pub fn send_message(pool: PoolRef<'_>, worker_id: u32, message: &[u8]) -> bool {
+pub fn send_message(
+    native: &dyn PoolNative,
+    pool: PoolRef<'_>,
+    worker_id: u32,
+    message: &[u8],
+) -> bool {
     use swoole_rs_corebase::DataHead;
     let handle = pool;
     let pool = pool.record();
@@ -295,7 +305,7 @@ pub fn send_message(pool: PoolRef<'_>, worker_id: u32, message: &[u8]) -> bool {
         // loop while one is available. Upstream returns its ssize_t as the bool, so a
         // failure is true too.
         let (id, flags) = (worker.id(), crate::pool::PIPE_NONBLOCK);
-        let sent = swr_v1_process_worker_send(native(), handle, pipe, false, id, message, flags);
+        let sent = swr_v1_process_worker_send(native, handle, pipe, false, id, message, flags);
         return sent != Some(0);
     }
     let mut head = DataHead {
@@ -304,7 +314,7 @@ pub fn send_message(pool: PoolRef<'_>, worker_id: u32, message: &[u8]) -> bool {
         ..DataHead::default()
     };
     // The pool's bus (not null, checked above) and the worker's master pipe.
-    native().bus_write(handle, worker, &mut head, message)
+    native.bus_write(handle, worker, &mut head, message)
 }
 
 /// `ProcessPool::pop_message(data, size)`: the next message in the master's box,

@@ -161,13 +161,27 @@ pub(super) unsafe fn string_set(slot: *const c_void, value: &[u8]) -> c_int {
     }
 }
 
-/// `OwnedTlsPrepared` (crates/tls/src/owned.rs).
-#[repr(C)]
+/// `OwnedTlsPrepared` (crates/tls/src/owned.rs), its fields seen as [`TlsFields`].
 #[derive(Clone, Copy)]
 pub(super) struct TlsPrepared {
     pub(super) owner: *const c_void,
     pub(super) fields: *mut TlsFields,
     pub(super) strings: [*const c_void; 11],
+}
+
+impl From<swoole_rs_tls::OwnedTlsPrepared> for TlsPrepared {
+    fn from(view: swoole_rs_tls::OwnedTlsPrepared) -> Self {
+        Self {
+            owner: view.owner.cast(),
+            fields: view.fields.cast(),
+            strings: view.strings.map(<*const _>::cast),
+        }
+    }
+}
+
+/// A new `SSLContext` owner (crates/tls's `owner_new`), holding one reference, and its view.
+pub(super) fn tls_owner_new() -> TlsPrepared {
+    swoole_rs_tls::owner_new(swoole_rs_tls::tls_warning).into()
 }
 
 /// `OwnedTlsFields`, up to `allow_self_signed`.
@@ -205,8 +219,6 @@ unsafe extern "C" {
         host: std::io::IoSlice<'_>,
         port: c_int,
     ) -> bool;
-
-    pub(super) safe fn swr_v1_tls_owner_new() -> TlsPrepared;
 
     #[link_name = "_ZN6swoole6String3popEm"]
     fn string_pop(this: *mut CppString, init_size: usize) -> *mut u8;
@@ -510,12 +522,7 @@ impl Sock {
             return false;
         }
         let owner = self.co().tls_context().expect("enable_ssl made one");
-        let view = swoole_rs_tls::swr_v1_tls_owner_view(&owner);
-        self.tls.set(Some(TlsPrepared {
-            owner: view.owner.cast(),
-            fields: view.fields.cast(),
-            strings: view.strings.map(<*const _>::cast),
-        }));
+        self.tls.set(Some(swoole_rs_tls::owner_view(&owner).into()));
         true
     }
 
