@@ -93,7 +93,7 @@ fn ring(host: &Host) -> Option<&'static crate::uring::Host> {
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int {
     if coroutine().is_none() {
-        return sys::socket(domain, kind, protocol);
+        return sys::socket(domain, kind, protocol).unwrap_or(-1);
     }
     adopt((sockets().open)(domain, kind, protocol)).unwrap_or(-1)
 }

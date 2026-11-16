@@ -87,12 +87,11 @@ fn add_address(array: &mut OwnedArray, name: &[u8], address: &[u8]) {
 fn local_mac(call: &Call) {
     use swoole_rs_corebase::sys::{InterfaceRequest, interface_ioctl, zeroed};
 
-    let sock = swoole_rs_corebase::sys::socket(libc::AF_INET, libc::SOCK_DGRAM, 0);
-    if sock < 0 {
+    let Ok(sock) = swoole_rs_corebase::sys::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) else {
         sys_warning(b"socket creation failed");
         call.set_bool(false);
         return;
-    }
+    };
     // Upstream's `SIOCGIFCONF` list: an entry for each IPv4 address, named by the
     // label its address carries, which `getifaddrs` lists the same way.
     let Some(interfaces) = Interfaces::new() else {

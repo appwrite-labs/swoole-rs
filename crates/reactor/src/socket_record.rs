@@ -489,7 +489,7 @@ impl SocketFields {
             },
             borrows: AtomicU32::new(0),
         };
-        copy.fd = sys::dup(copy.fd);
+        copy.fd = sys::dup(copy.fd).unwrap_or(-1);
         copy.into_raw()
     }
 

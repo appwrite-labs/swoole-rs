@@ -89,16 +89,18 @@ pub(crate) fn from_fd(fd: i32, kind: i32) -> Result<Option<Owned>, Bailout> {
 /// An object over a duplicate of `fd`, which stays borrowed.
 pub(super) fn duplicate(fd: i32, kind: i32) -> Result<Option<Owned>, Bailout> {
     native::check_reactor()?;
-    let duplicate = swoole_rs_corebase::sys::dup(fd);
-    if duplicate < 0 {
-        let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        crate::net::warn_sys(&format!("dup({fd}) failed"), error);
-        return if swoole_rs_zend::bailout::pending() {
-            Err(Bailout)
-        } else {
-            Ok(None)
-        };
-    }
+    let duplicate = match swoole_rs_corebase::sys::dup(fd) {
+        Ok(duplicate) => duplicate,
+        Err(error) => {
+            let error = error.raw_os_error().unwrap_or(0);
+            crate::net::warn_sys(&format!("dup({fd}) failed"), error);
+            return if swoole_rs_zend::bailout::pending() {
+                Err(Bailout)
+            } else {
+                Ok(None)
+            };
+        }
+    };
     // The new duplicate, which nothing else owns.
     from_fd(duplicate, kind)
 }
