@@ -12,7 +12,6 @@ use std::{
     borrow::Cow,
     cell::Cell,
     ffi::{CStr, c_int},
-    ptr,
     sync::Arc,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
@@ -1275,18 +1274,6 @@ pub(crate) const SETTING_COMPRESSION: u8 = 1 << 4;
 /// `SW_WEBSOCKET_DEFAULT_BUFFER`.
 const DEFAULT_BUFFER: usize = 4096;
 
-/// `sock->recv_packet(timeout)` on a coroutine socket, with the packet: its
-/// read buffer's bytes.
-fn sock_recv(socket: co::Co, timeout: f64) -> (Option<usize>, *mut u8, usize) {
-    let received = co::recv_packet(socket, timeout);
-    if received <= Some(0) {
-        return (received, ptr::null_mut(), 0);
-    }
-    // A packet read leaves it in the socket's read buffer.
-    let (data, len) = socket.with_buffer(false, |buffer| (buffer.as_mut_ptr(), buffer.len()));
-    (received, data, len)
-}
-
 /// A message being assembled from fragments: its payload so far, and the
 /// first frame's opcode and flags.
 pub(crate) struct Message {
@@ -1338,103 +1325,117 @@ fn payload_string(payload: &[u8], compressed: bool) -> Option<Owned> {
 /// `false` when the socket read failed, `""` when it closed, `null` on any
 /// other error.
 pub(crate) fn recv(settings: u8, slot: &mut Assembly, socket: co::Co, timeout: f64) -> Owned {
-    let func = c"websocket::recv_frame";
     loop {
-        let (received, data, length) = sock_recv(socket, timeout);
+        let received = co::recv_packet(socket, timeout);
         if received.is_none() {
             return Owned::bool(false);
         }
         if received == Some(0) {
             return Owned::string(ZString::empty());
         }
-        if length < 2 {
-            return protocol_error();
+        // A packet read leaves it in the socket's read buffer, which a send may not
+        // use while it is lent: a reply waits for the loan to end.
+        let next = socket.with_buffer(false, |buffer| {
+            receive(settings, slot, socket, buffer.view_mut())
+        });
+        match next {
+            Next::Done(frame) => return frame,
+            Next::Reply(opcode, payload) => reply(settings, socket, opcode.code(), &payload),
+            Next::Recv => {}
         }
-        // SAFETY: the socket's read buffer, `length` bytes, unmasked in place.
-        let buffer = unsafe { std::slice::from_raw_parts_mut(data, length) };
-        let Some(frame) = decode(buffer) else {
-            return protocol_error();
-        };
-        // `decode` accepted the frame, so the buffer holds its whole payload.
-        let payload = buffer
-            .get(frame.header_length..)
-            .and_then(|rest| rest.get(..frame.payload_length))
-            .unwrap_or_default();
-        let opcode = frame.opcode;
-        let respond = match opcode {
-            Opcode::Ping if settings & OPEN_PING_FRAME == 0 => {
-                reply(settings, socket, Opcode::Pong.code(), payload);
-                continue;
-            }
-            Opcode::Pong if settings & OPEN_PONG_FRAME == 0 => continue,
-            Opcode::Close if settings & OPEN_CLOSE_FRAME == 0 => {
-                reply(settings, socket, Opcode::Close.code(), payload);
-                continue;
-            }
-            opcode => opcode.is_control(),
-        };
-        if respond {
-            let payload = Owned::string(ZString::new(payload));
-            return deliver(socket, opcode.code(), &payload, FLAG_FIN);
+    }
+}
+
+/// What [`recv`] does after one packet.
+enum Next {
+    Done(Owned),
+    /// Answer a control frame with its payload, then read the next packet.
+    Reply(Opcode, Vec<u8>),
+    Recv,
+}
+
+/// One packet of [`recv`], `packet`, unmasked in place.
+fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8]) -> Next {
+    let func = c"websocket::recv_frame";
+    if packet.len() < 2 {
+        return Next::Done(protocol_error());
+    }
+    let Some(frame) = decode(packet) else {
+        return Next::Done(protocol_error());
+    };
+    // `decode` accepted the frame, so the packet holds its whole payload.
+    let payload = packet
+        .get(frame.header_length..)
+        .and_then(|rest| rest.get(..frame.payload_length))
+        .unwrap_or_default();
+    let opcode = frame.opcode;
+    let respond = match opcode {
+        Opcode::Ping if settings & OPEN_PING_FRAME == 0 => {
+            return Next::Reply(Opcode::Pong, payload.to_vec());
         }
-        if opcode == Opcode::Continuation {
-            let Some(message) = slot.as_mut() else {
-                warning(
-                    func,
-                    "A continuation frame cannot stand alone and MUST be preceded by an initial frame whose \
-                     opcode indicates either text or binary data.",
-                );
-                return Owned::null();
-            };
-            message.data.extend_from_slice(payload);
-            if !frame.flags.is_final() {
-                continue;
-            }
-            // The whole message is assembled: release its memory once delivered.
-            let Some(message) = slot.take() else {
-                return Owned::null();
-            };
-            let complete = message.metadata;
-            let Some(payload) = payload_string(&message.data, complete.flags.is_compressed())
-            else {
-                return protocol_error();
-            };
-            return deliver(
-                socket,
-                complete.opcode.code(),
-                &payload,
-                complete.flags.with_final().bits(),
-            );
+        Opcode::Pong if settings & OPEN_PONG_FRAME == 0 => return Next::Recv,
+        Opcode::Close if settings & OPEN_CLOSE_FRAME == 0 => {
+            return Next::Reply(Opcode::Close, payload.to_vec());
         }
-        if slot.is_some() {
+        opcode => opcode.is_control(),
+    };
+    if respond {
+        let payload = Owned::string(ZString::new(payload));
+        return Next::Done(deliver(socket, opcode.code(), &payload, FLAG_FIN));
+    }
+    if opcode == Opcode::Continuation {
+        let Some(message) = slot.as_mut() else {
             warning(
                 func,
-                "All fragments of a message, except for the initial frame, must use the continuation \
-                 frame opcode(0).",
+                "A continuation frame cannot stand alone and MUST be preceded by an initial frame whose \
+                 opcode indicates either text or binary data.",
             );
-            return Owned::null();
-        }
-        if frame.flags.is_final() {
-            let Some(payload) = payload_string(payload, frame.flags.is_compressed()) else {
-                return protocol_error();
-            };
-            return deliver(socket, opcode.code(), &payload, frame.flags.bits());
-        }
-        let size = if payload.is_empty() {
-            DEFAULT_BUFFER
-        } else {
-            payload.len()
+            return Next::Done(Owned::null());
         };
-        let mut data = Vec::with_capacity(size);
-        data.extend_from_slice(payload);
-        *slot = Some(Box::new(Message {
-            data,
-            metadata: FrameMetadata {
-                opcode,
-                flags: frame.flags,
-            },
-        }));
+        message.data.extend_from_slice(payload);
+        if !frame.flags.is_final() {
+            return Next::Recv;
+        }
+        // The whole message is assembled: release its memory once delivered.
+        let Some(message) = slot.take() else {
+            return Next::Done(Owned::null());
+        };
+        let complete = message.metadata;
+        let Some(payload) = payload_string(&message.data, complete.flags.is_compressed()) else {
+            return Next::Done(protocol_error());
+        };
+        let flags = complete.flags.with_final().bits();
+        return Next::Done(deliver(socket, complete.opcode.code(), &payload, flags));
     }
+    if slot.is_some() {
+        warning(
+            func,
+            "All fragments of a message, except for the initial frame, must use the continuation \
+             frame opcode(0).",
+        );
+        return Next::Done(Owned::null());
+    }
+    if frame.flags.is_final() {
+        let Some(payload) = payload_string(payload, frame.flags.is_compressed()) else {
+            return Next::Done(protocol_error());
+        };
+        return Next::Done(deliver(socket, opcode.code(), &payload, frame.flags.bits()));
+    }
+    let size = if payload.is_empty() {
+        DEFAULT_BUFFER
+    } else {
+        payload.len()
+    };
+    let mut data = Vec::with_capacity(size);
+    data.extend_from_slice(payload);
+    *slot = Some(Box::new(Message {
+        data,
+        metadata: FrameMetadata {
+            opcode,
+            flags: frame.flags,
+        },
+    }));
+    Next::Recv
 }
 
 #[cfg(test)]
