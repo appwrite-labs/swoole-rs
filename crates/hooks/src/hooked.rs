@@ -102,7 +102,7 @@ pub extern "C" fn swoole_coroutine_socket(domain: c_int, kind: c_int, protocol: 
 #[must_use]
 pub fn swoole_coroutine_send(fd: c_int, buf: &[u8], flags: c_int) -> ssize_t {
     match hooked(fd) {
-        Some((_, socket)) => socket.send(buf),
+        Some((_, socket)) => socket.send(buf).map_or(-1, usize::cast_signed),
         None => sys::send(fd, buf, flags),
     }
 }
@@ -111,7 +111,7 @@ pub fn swoole_coroutine_send(fd: c_int, buf: &[u8], flags: c_int) -> ssize_t {
 #[must_use]
 pub fn sendmsg(fd: c_int, msg: &SendMessage<'_>, flags: c_int) -> ssize_t {
     match hooked(fd) {
-        Some((_, socket)) => socket.sendmsg(msg, flags),
+        Some((_, socket)) => socket.sendmsg(msg, flags).map_or(-1, usize::cast_signed),
         None => msg.send(fd, flags),
     }
 }
@@ -119,7 +119,7 @@ pub fn sendmsg(fd: c_int, msg: &SendMessage<'_>, flags: c_int) -> ssize_t {
 /// Hooked `recvmsg(2)` into `msg`.
 pub fn recvmsg(fd: c_int, msg: &mut RecvMessage<'_>, flags: c_int) -> ssize_t {
     match hooked(fd) {
-        Some((_, socket)) => socket.recvmsg(msg, flags),
+        Some((_, socket)) => socket.recvmsg(msg, flags).map_or(-1, usize::cast_signed),
         None => msg.recv(fd, flags),
     }
 }
@@ -134,6 +134,7 @@ pub fn swoole_coroutine_recv(fd: c_int, buf: &mut [u8], flags: c_int) -> ssize_t
     } else {
         socket.recv(buf)
     }
+    .map_or(-1, usize::cast_signed)
 }
 
 /// Hooked `connect(2)` of `fd` to `address`.
@@ -355,7 +356,7 @@ pub fn read(fd: c_int, buf: &mut [MaybeUninit<u8>]) -> ssize_t {
         return sys::read(fd, buf);
     }
     if let Some(socket) = socket_map::get(fd) {
-        return socket.read(buf);
+        return socket.read(buf).map_or(-1, usize::cast_signed);
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {
@@ -393,7 +394,7 @@ pub fn write(fd: c_int, buf: &[u8]) -> ssize_t {
         return sys::write(fd, buf);
     }
     if let Some(socket) = socket_map::get(fd) {
-        return socket.write(buf);
+        return socket.write(buf).map_or(-1, usize::cast_signed);
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {

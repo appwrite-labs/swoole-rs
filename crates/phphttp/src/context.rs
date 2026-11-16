@@ -213,7 +213,7 @@ pub(crate) fn send(mut ctx: Ctx, data: &[u8]) -> bool {
     let state = ctx.state();
     match socket(state) {
         // True once every byte is sent.
-        Some(socket) => socket.send_all(data).cast_unsigned() == data.len(),
+        Some(socket) => socket.send_all(data) == Some(data.len()),
         None => server_send(server(state), state.fd, data),
     }
 }

@@ -150,6 +150,11 @@ impl Drop for OpenFile {
     }
 }
 
+/// A transfer's byte count, or `None` for its -1.
+fn count(n: isize) -> Option<usize> {
+    usize::try_from(n).ok()
+}
+
 impl Co {
     /// `Socket::getsockname()`, into the open socket's `network::Socket`.
     #[must_use]
@@ -168,15 +173,15 @@ impl Co {
 
     /// `Socket::recv_with_buffer(buf, n)` into `out`, which is outside the socket's
     /// read buffer: the count of `out`'s first slots it wrote, or -1.
-    pub fn recv_with_buffer(self, out: &mut [impl ReadSlot]) -> isize {
-        recv_buffered(self, out)
+    pub fn recv_with_buffer(self, out: &mut [impl ReadSlot]) -> Option<usize> {
+        count(recv_buffered(self, out))
     }
 
     /// `Socket::recv_line(buf, maxlen)` of at most `out.len()` bytes, one buffered
     /// byte at a time, into `out`, which is outside the socket's read buffer: the
     /// count of `out`'s first slots it wrote, or -1.
-    pub fn recv_line(self, out: &mut [impl ReadSlot]) -> isize {
-        recv_line(out, |at| recv_buffered(self, at))
+    pub fn recv_line(self, out: &mut [impl ReadSlot]) -> Option<usize> {
+        count(recv_line(out, |at| recv_buffered(self, at)))
     }
 
     /// `Socket::set_option(level, optname, optval, optlen)`: `setsockopt`, warning on
@@ -355,9 +360,9 @@ impl Co {
     /// the host's address, resolving its name when it is not an address; -1 with the
     /// error set. In a coroutine.
     #[must_use]
-    pub fn sendto(self, host: &[u8], port: c_int, buf: &[u8]) -> isize {
+    pub fn sendto(self, host: &[u8], port: c_int, buf: &[u8]) -> Option<usize> {
         if !available(self, Events::WRITE) {
-            return -1;
+            return None;
         }
         let (kind, domain) = (self.kind(), self.sock_domain());
         let (socket_type, timeout) = self
@@ -365,7 +370,7 @@ impl Co {
             .unwrap_or_default();
         if !SocketType::from_raw(socket_type).is_some_and(SocketType::is_dgram) {
             set_err(self, libc::EPROTONOSUPPORT);
-            return -1;
+            return None;
         }
         let mut address = SocketAddress::default();
         let mut assigned = assign(&mut address, kind, host, port);
@@ -377,17 +382,17 @@ impl Co {
         }
         if !assigned {
             default_err(self, log::last_error());
-            return -1;
+            return None;
         }
         let to = (&raw mut address.addr).cast::<libc::sockaddr>();
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::sendto(ops, buf, &address)) {
-            return n;
+            return count(n);
         }
         let length = address.len;
         let call = call!(|s, at, len| libc::sendto(s.fd(), at.cast(), len, 0, to, length));
         // Availability was checked above.
-        self.transfer(RETRY_INTERRUPTED | CHECKED, Buffer::write(buf), call)
+        count(self.transfer(RETRY_INTERRUPTED | CHECKED, Buffer::write(buf), call))
     }
 
     /// The peer certificate's PEM, or empty with the error set when there is none.
@@ -404,75 +409,75 @@ impl Co {
     }
 
     /// `Socket::recv(buf, n)`: the count of `buf`'s first slots it wrote, or -1.
-    pub fn recv(self, buf: &mut [impl ReadSlot]) -> isize {
+    pub fn recv(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::recv(ops, buf)) {
-            return n;
+            return count(n);
         }
         let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0));
-        self.transfer(0, Buffer::read(buf), call)
+        count(self.transfer(0, Buffer::read(buf), call))
     }
 
     /// `Socket::send(buf, n)`.
     #[must_use]
-    pub fn send(self, buf: &[u8]) -> isize {
+    pub fn send(self, buf: &[u8]) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::send(ops, ring::SEND, buf)) {
-            return n;
+            return count(n);
         }
         let call = call!(|s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0));
-        self.transfer(0, Buffer::write(buf), call)
+        count(self.transfer(0, Buffer::write(buf), call))
     }
 
     /// `Socket::recv_all(buf, n)`: the count of `buf`'s first slots it wrote, or -1.
-    pub fn recv_all(self, buf: &mut [impl ReadSlot]) -> isize {
+    pub fn recv_all(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::recv_all(ops, buf)) {
-            return n;
+            return count(n);
         }
         let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0));
-        self.transfer(ALL, Buffer::read(buf), call)
+        count(self.transfer(ALL, Buffer::read(buf), call))
     }
 
     /// `Socket::send_all(buf, n)`.
     #[must_use]
-    pub fn send_all(self, buf: &[u8]) -> isize {
+    pub fn send_all(self, buf: &[u8]) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::send_all(ops, buf)) {
-            return n;
+            return count(n);
         }
         let call = call!(|s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0));
-        self.transfer(ALL, Buffer::write(buf), call)
+        count(self.transfer(ALL, Buffer::write(buf), call))
     }
 
     /// `Socket::read(buf, n)`.
-    pub fn read(self, buf: &mut [impl ReadSlot]) -> isize {
+    pub fn read(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::read(ops, buf)) {
-            return n;
+            return count(n);
         }
         let call = call!(|s, at, len| libc::read(s.fd(), at.cast(), len));
-        self.transfer(0, Buffer::read(buf), call)
+        count(self.transfer(0, Buffer::read(buf), call))
     }
 
     /// `Socket::write(buf, n)`.
     #[must_use]
-    pub fn write(self, buf: &[u8]) -> isize {
+    pub fn write(self, buf: &[u8]) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::send(ops, ring::WRITE, buf)) {
-            return n;
+            return count(n);
         }
         let call = call!(|s, at, len| libc::write(s.fd(), at.cast(), len));
-        self.transfer(0, Buffer::write(buf), call)
+        count(self.transfer(0, Buffer::write(buf), call))
     }
 
     /// `Socket::readv(io_vector)` or `writev`, in the direction the vector was made
     /// for, or with `all` `readv_all` or `writev_all`.
     #[must_use]
-    pub fn vector(self, vector: &mut IoVector<'_>, all: bool) -> isize {
+    pub fn vector(self, vector: &mut IoVector<'_>, all: bool) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::swr_v1_hook_uring_vector(ops, vector, all)) {
-            return n;
+            return count(n);
         }
         let event = if vector.write() {
             Events::WRITE
@@ -482,11 +487,11 @@ impl Co {
         if all {
             let call =
                 |vector: &mut IoVector<'_>| self.with_network(|s| vector.transfer(s)).unwrap_or(-1);
-            return vector_all(self, event, vector, call, IoVector::remaining);
+            return count(vector_all(self, event, vector, call, IoVector::remaining));
         }
         // The vector carries its own buffers.
         let each = |s: Socket<'_>, _: *mut u8, _: usize| vector.transfer(s);
-        self.transfer(0, Buffer::none(event), each)
+        count(self.transfer(0, Buffer::none(event), each))
     }
 
     /// `set_err(error, message)` with owned text. A failed copy (allocation) leaves
@@ -581,7 +586,7 @@ impl Co {
 
     /// `Socket::recvfrom(buf, n)`: into the `network::Socket`'s peer address, retrying
     /// `EINTR` at once; the count of `buf`'s first slots it wrote, or -1.
-    pub fn recvfrom_peer(self, buf: &mut [impl ReadSlot]) -> isize {
+    pub fn recvfrom_peer(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
         let receive = |addr, addrlen| {
             #[cfg(feature = "iouring")]
             // The ring's path fills the same record's peer address itself.
@@ -593,69 +598,69 @@ impl Co {
             let call = call!(|_, at, len| libc::recvfrom(fd, at.cast(), len, 0, addr, addrlen));
             self.transfer(RETRY_INTERRUPTED, Buffer::read(buf), call)
         };
-        crate::transfer::recvfrom_peer(self, receive)
+        count(crate::transfer::recvfrom_peer(self, receive))
     }
 
     /// `Socket::recvmsg(msg, flags)`.
-    pub fn recvmsg(self, msg: &mut RecvMessage<'_>, flags: c_int) -> isize {
+    pub fn recvmsg(self, msg: &mut RecvMessage<'_>, flags: c_int) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ops.recvmsg(msg, flags)) {
-            return n;
+            return count(n);
         }
         let fd = self.sock_fd();
         let call = |_: Socket<'_>, _: *mut u8, _: usize| msg.recv(fd, flags);
-        self.transfer(0, Buffer::none(Events::READ), call)
+        count(self.transfer(0, Buffer::none(Events::READ), call))
     }
 
     /// `Socket::sendmsg(msg, flags)`.
     #[must_use]
-    pub fn sendmsg(self, msg: &SendMessage<'_>, flags: c_int) -> isize {
+    pub fn sendmsg(self, msg: &SendMessage<'_>, flags: c_int) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ops.sendmsg(msg, flags)) {
-            return n;
+            return count(n);
         }
         let fd = self.sock_fd();
         let call = |_: Socket<'_>, _: *mut u8, _: usize| msg.send(fd, flags);
-        self.transfer(0, Buffer::none(Events::WRITE), call)
+        count(self.transfer(0, Buffer::none(Events::WRITE), call))
     }
 
     /// `Socket::recv_once(buf, n)`: one `network::Socket` receive, no wait; the count
     /// of `buf`'s first slots it wrote, or -1. The socket is open.
-    pub fn recv_once(self, buf: &mut [impl ReadSlot]) -> isize {
+    pub fn recv_once(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
         let mut io = || {
             self.with_network(|socket| recv(socket, buf, 0))
                 .unwrap_or(-1)
         };
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::once(ops, &mut io)) {
-            return n;
+            return count(n);
         }
-        io()
+        count(io())
     }
 
     /// `Socket::send_once(buf, n)`: one `network::Socket` send, no wait. The socket
     /// is open.
     #[must_use]
-    pub fn send_once(self, buf: &[u8]) -> isize {
+    pub fn send_once(self, buf: &[u8]) -> Option<usize> {
         let io = || {
             self.with_network(|socket| send(socket, buf, 0))
                 .unwrap_or(-1)
         };
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::once(ops, io)) {
-            return n;
+            return count(n);
         }
-        io()
+        count(io())
     }
 
     /// `Socket::peek(buf, n)`: one `network::Socket` peek, then `check_return_value`;
     /// the count of `buf`'s first slots it wrote, or -1. The socket is open.
-    pub fn peek(self, buf: &mut [impl ReadSlot]) -> isize {
+    pub fn peek(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
         let result = self
             .with_network(|socket| peek(socket, buf, 0))
             .unwrap_or(-1);
         check(self, result);
-        result
+        count(result)
     }
 
     /// `Socket::poll(event, timeout)`.

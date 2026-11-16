@@ -413,12 +413,18 @@ fn write(stream: Stream<'_>, data: &[u8]) -> Result<isize, Bailout> {
     let (socket, blocking) = (Rc::clone(&net.socket), net.blocking.get());
     let count = data.len();
     if !vm_active() {
-        return Ok(socket.send(SendOp::Sync, data));
+        return Ok(socket
+            .send(SendOp::Sync, data)
+            .map_or(-1, usize::cast_signed));
     }
     let mut written = if blocking {
-        socket.send(SendOp::All, data)
+        socket
+            .send(SendOp::All, data)
+            .map_or(-1, usize::cast_signed)
     } else {
-        let written = socket.send(SendOp::Once, data);
+        let written = socket
+            .send(SendOp::Once, data)
+            .map_or(-1, usize::cast_signed);
         socket.set_error(errno());
         written
     };
@@ -467,12 +473,18 @@ fn read(stream: Stream<'_>, out: &mut [MaybeUninit<u8>]) -> Result<isize, Bailou
     };
     let (socket, blocking) = (Rc::clone(&net.socket), net.blocking.get());
     if !vm_active() {
-        return Ok(socket.recv(RecvOp::Sync, out));
+        return Ok(socket
+            .recv(RecvOp::Sync, out)
+            .map_or(-1, usize::cast_signed));
     }
     let mut read = if blocking && !stream.fields(|stream| swr_zend_stream_buffered(stream)) {
-        socket.recv(RecvOp::Recv, out)
+        socket
+            .recv(RecvOp::Recv, out)
+            .map_or(-1, usize::cast_signed)
     } else {
-        let read = socket.recv(RecvOp::Once, out);
+        let read = socket
+            .recv(RecvOp::Once, out)
+            .map_or(-1, usize::cast_signed);
         socket.set_error(errno());
         read
     };
@@ -758,7 +770,9 @@ fn xport_api(stream: Stream<'_>, socket: &Socket, xport: Xport<'_>) -> Result<()
                     // SAFETY: Zend lends `buflen` bytes at `buf` for the call.
                     unsafe { std::slice::from_raw_parts(p.inputs.buf.cast(), p.inputs.buflen) }
                 };
-                socket.send(SendOp::Send, data)
+                socket
+                    .send(SendOp::Send, data)
+                    .map_or(-1, usize::cast_signed)
             } else {
                 // SAFETY: Zend lends `buflen` bytes at `buf` and `addrlen` at `addr`.
                 unsafe {
@@ -786,7 +800,11 @@ fn xport_api(stream: Stream<'_>, socket: &Socket, xport: Xport<'_>) -> Result<()
                 return oob(p);
             }
             p.outputs.returncode = if p.inputs.flags & STREAM_PEEK == STREAM_PEEK {
-                returncode(socket.recv(RecvOp::Peek, buffer(p)))
+                returncode(
+                    socket
+                        .recv(RecvOp::Peek, buffer(p))
+                        .map_or(-1, usize::cast_signed),
+                )
             } else {
                 recvfrom(socket, p)
             };
@@ -1001,7 +1019,11 @@ fn buffer(param: &mut php_stream_xport_param) -> &mut [MaybeUninit<u8>] {
 fn recvfrom(socket: &Socket, param: &mut php_stream_xport_param) -> c_int {
     let (want_textaddr, want_addr) = (param.want_textaddr() != 0, param.want_addr() != 0);
     if !want_textaddr && !want_addr {
-        return returncode(socket.recv(RecvOp::Recv, buffer(param)));
+        return returncode(
+            socket
+                .recv(RecvOp::Recv, buffer(param))
+                .map_or(-1, usize::cast_signed),
+        );
     }
     let mut peer: sockaddr_storage = swoole_rs_corebase::sys::zeroed();
     let (received, size) = socket.recvfrom(buffer(param), &mut peer);

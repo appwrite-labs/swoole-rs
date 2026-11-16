@@ -572,7 +572,10 @@ impl Client {
     }
 
     fn send_all(socket: Co, data: &[u8]) -> bool {
-        sw_rs_http2_send_complete(socket.send_all(data), data.len())
+        sw_rs_http2_send_complete(
+            socket.send_all(data).map_or(-1, usize::cast_signed),
+            data.len(),
+        )
     }
 
     fn send_setting(&self) -> bool {

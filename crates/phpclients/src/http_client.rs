@@ -976,7 +976,6 @@ impl Client {
         let Some(socket) = self.co() else {
             return false;
         };
-        let mut received: isize;
         let mut total = 0_usize;
         let mut header_completed = false;
         let mut header_offset = 0_usize;
@@ -996,11 +995,11 @@ impl Client {
             if controller.timed_out(swoole_rs_reactor::TimeoutKind::READ) {
                 break;
             }
-            received = socket.recv_input();
+            let received = socket.recv_input();
             let (buffer, mut length, size) =
                 socket.with_input(|input| (input.as_mut_ptr(), input.len(), input.size()));
-            if received <= 0 {
-                if received == 0 {
+            let Some(mut count) = received.filter(|&n| n > 0) else {
+                if received == Some(0) {
                     socket.set_err(libc::ECONNRESET);
                     if total > 0 && !hooks.parser.should_keep_alive() {
                         hooks.finish();
@@ -1008,8 +1007,7 @@ impl Client {
                     }
                 }
                 break;
-            }
-            let mut count = received.unsigned_abs();
+            };
             if !header_completed {
                 length += count;
                 let ended = socket.with_input(|input| {

@@ -63,11 +63,11 @@ pub enum RecvError {
 /// # Errors
 /// [`RecvError::Canceled`] for a cancelled empty receive, else `Failed` for a
 /// negative one.
-pub fn received(n: isize, canceled: bool) -> Result<usize, RecvError> {
-    if n <= 0 && canceled {
+pub fn received(n: Option<usize>, canceled: bool) -> Result<usize, RecvError> {
+    if canceled && n.is_none_or(|n| n == 0) {
         return Err(RecvError::Canceled);
     }
-    usize::try_from(n).map_err(|_| RecvError::Failed)
+    n.ok_or(RecvError::Failed)
 }
 
 fn u16_at(packet: &[u8], at: usize) -> u16 {

@@ -926,12 +926,11 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             set_recv_wait(socket, true);
             let buffer = conn.buffer();
             let length = buffer.len();
-            let received = socket.recv(buffer.spare());
-            if received <= 0 {
+            let Some(received) = socket.recv(buffer.spare()).filter(|&n| n > 0) else {
                 break;
-            }
+            };
             // SAFETY: the receive wrote `received` bytes into the free space.
-            unsafe { buffer.set_len(length + received.cast_unsigned()) };
+            unsafe { buffer.set_len(length + received) };
         }
         step = Step::Recv;
         let mut context =

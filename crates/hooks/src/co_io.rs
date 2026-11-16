@@ -213,6 +213,7 @@ mod native {
         } else {
             socket.recv(buf)
         }
+        .map_or(-1, usize::cast_signed)
     }
 
     fn package_length(socket: Co, size: u32, header: &mut u32) -> isize {
