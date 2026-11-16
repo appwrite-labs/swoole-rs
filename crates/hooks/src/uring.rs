@@ -6,8 +6,9 @@
 //! the coroutine switches and the log lines, reached through [`Host`].
 //!
 //! An operation runs on the calling coroutine's stack: its [`Event`] lives in the
-//! operation's frame while the coroutine is suspended, and the completion handler
-//! ([`wakeup`]) writes the result into it before resuming it.
+//! operation's frame while the coroutine is suspended. Its request is numbered by a
+//! [`Slot`] of the engine's, the user data the completion handler ([`wakeup`]) finds
+//! it by: the handler writes the result there before resuming the coroutine.
 
 use crate::vector::{IoVector, RecvMessage, SendMessage};
 use io_uring::types::{Fd, FsyncFlags, Timespec};
@@ -44,9 +45,9 @@ pub struct Host {
     pub current: extern "C" fn() -> *mut c_void,
     /// The thread's engine, created on first use (none if it failed).
     pub instance: fn() -> Option<Rc<Uring>>,
-    /// Suspend `coroutine`, the running one, until [`wakeup`] wakes it, storing the
-    /// park's waker in `waker` first; cancelling it calls [`cancel`] with `event`.
-    pub suspend: fn(coroutine: *mut c_void, event: *mut c_void, waker: &Cell<Option<Waker>>),
+    /// Suspend `coroutine`, the running one, until [`wakeup`] wakes it, handing the
+    /// park's waker to `arm` first; cancelling it calls [`cancel`] with `event`.
+    pub suspend: fn(coroutine: *mut c_void, event: u64, arm: &mut dyn FnMut(Waker)),
     /// `co->resume()` of a parked request's coroutine.
     pub resume: fn(Waker),
     /// `swoole_event_is_running()`.
@@ -82,16 +83,81 @@ pub struct Opened {
     pub status: Result<(), OpenError>,
 }
 
-/// A request, in its operation's frame while that suspends: the ring and the wait
-/// queue reach it by address, shared, so its effects sit in cells.
+/// A request, made in its operation's frame: the entry, and its linked timeout,
+/// which the frame keeps in place for the ring until the completion.
 struct Event {
     coroutine: *mut c_void,
     data: squeue::Entry,
-    /// The suspended operation's waker, which the completion wakes.
-    waker: Cell<Option<Waker>>,
-    result: Cell<io::Result<isize>>,
     /// The linked timeout, when the operation has one.
     timeout: Option<Timespec>,
+}
+
+/// A request's entries, its user data the number of its [`Slot`], and its linked
+/// timeout's when it has one: what the ring, or the wait queue, is given.
+struct Request {
+    entry: squeue::Entry,
+    timeout: Option<squeue::Entry>,
+}
+
+/// A request in flight: the suspended operation's waker, which the completion takes,
+/// and the completion's result, which the operation takes when it resumes. A request
+/// whose operation stopped waiting first keeps its number until its completion
+/// arrives, so that completion reaches no later request.
+#[derive(Default)]
+struct Slot {
+    waker: Option<Waker>,
+    result: Option<io::Result<isize>>,
+    /// The operation resumed before the completion and no longer waits for it.
+    abandoned: bool,
+}
+
+/// The requests in flight, each numbered by its index, and the numbers free again.
+#[derive(Default)]
+struct Slots {
+    slots: Vec<Slot>,
+    free: Vec<usize>,
+}
+
+impl Slots {
+    /// A free slot's number.
+    fn open(&mut self) -> usize {
+        self.free.pop().unwrap_or_else(|| {
+            self.slots.push(Slot::default());
+            self.slots.len() - 1
+        })
+    }
+
+    fn slot(&mut self, id: u64) -> Option<&mut Slot> {
+        self.slots.get_mut(usize::try_from(id).ok()?)
+    }
+
+    /// Stores the completion's `result`: the waker to resume, if one is parked. An
+    /// abandoned request's number is free again instead.
+    fn complete(&mut self, id: u64, result: io::Result<isize>) -> Option<Waker> {
+        let index = usize::try_from(id).ok()?;
+        let slot = self.slots.get_mut(index)?;
+        if slot.abandoned {
+            *slot = Slot::default();
+            self.free.push(index);
+            return None;
+        }
+        slot.result = Some(result);
+        slot.waker.take()
+    }
+
+    /// The operation's end: the completed request's result, its number free again,
+    /// or none, the request abandoned, when it has not completed.
+    fn close(&mut self, id: u64) -> Option<io::Result<isize>> {
+        let index = usize::try_from(id).ok()?;
+        let slot = self.slots.get_mut(index)?;
+        slot.waker = None;
+        let Some(result) = slot.result.take() else {
+            slot.abandoned = true;
+            return None;
+        };
+        self.free.push(index);
+        Some(result)
+    }
 }
 
 /// The ring and its bookkeeping. Resuming a request's coroutine may start another
@@ -105,10 +171,12 @@ pub struct Uring {
     fd: c_int,
     host: &'static Host,
     task_num: Cell<u32>,
+    /// The requests in flight, which their user data numbers.
+    slots: Cell<Slots>,
     /// Requests waiting for room in the ring.
-    waiting: Cell<VecDeque<*const Event>>,
-    /// Completed events and their results.
-    ready: Cell<Vec<(*const Event, isize)>>,
+    waiting: Cell<VecDeque<Request>>,
+    /// Completed requests' user data and results.
+    ready: Cell<Vec<(u64, isize)>>,
 }
 
 use swoole_rs_corebase::sys::errno;
@@ -213,8 +281,6 @@ impl Event {
         Self {
             coroutine: (host.current)(),
             data,
-            waker: Cell::new(None),
-            result: Cell::new(Ok(0)),
             timeout: None,
         }
     }
@@ -231,18 +297,31 @@ impl Event {
         let Some(engine) = (host.instance)() else {
             return Err(io::Error::last_os_error());
         };
-        engine.dispatch(&self);
+        let id = engine.with_slots(Slots::open) as u64;
+        // The linked timeout's entry points into this frame, which keeps the event
+        // until the completion.
+        engine.dispatch(Request {
+            entry: self.data.user_data(id),
+            timeout: self.timeout.as_ref().map(|timeout| {
+                opcode::LinkTimeout::new(timeout)
+                    .build()
+                    .user_data(TIMEOUT_EVENT)
+            }),
+        });
         engine.task_num.set(engine.task_num.get() + 1);
-        // The thread keeps the engine; this frame holds nothing across the switch.
-        drop(engine);
-        // The wakeup handler resumes this coroutine; the event stays in this frame
-        // until then.
-        (host.suspend)(
-            self.coroutine,
-            ptr::from_ref(&self).cast_mut().cast(),
-            &self.waker,
-        );
-        self.result.into_inner()
+        // The park's waker goes to the slot, and the engine with it: the thread
+        // keeps the engine, and this frame holds nothing across the switch.
+        let mut engine = Some(engine);
+        (host.suspend)(self.coroutine, id, &mut |waker| {
+            if let Some(engine) = engine.take() {
+                engine.with_slots(|slots| slots.slot(id).map(|slot| slot.waker = Some(waker)));
+            }
+        });
+        // The wakeup handler stored the result before resuming this coroutine.
+        engine
+            .or_else(|| (host.instance)())
+            .and_then(|engine| engine.with_slots(|slots| slots.close(id)))
+            .unwrap_or(Ok(0))
     }
 }
 
@@ -257,6 +336,15 @@ impl Uring {
             drop(nested);
         }
         Some(result)
+    }
+
+    /// `f` over the requests in flight, taken out meanwhile, as `f` neither runs a
+    /// coroutine nor calls back.
+    fn with_slots<R>(&self, f: impl FnOnce(&mut Slots) -> R) -> R {
+        let mut slots = self.slots.take();
+        let result = f(&mut slots);
+        self.slots.set(slots);
+        result
     }
 
     /// The submission queue's used slots and its size; a ring in use has no room.
@@ -276,9 +364,9 @@ impl Uring {
     /// Queue `entries` together, in the free slots the caller saw there are.
     fn push(&self, entries: &[squeue::Entry]) {
         let pushed = self.with_ring(|ring| {
-            // SAFETY: an event's entry points into its operation's arguments and frame
-            // (`request`'s contract), and its timeout into the event itself: all live
-            // until the completion, which the suspended operation waits for.
+            // SAFETY: a request's entry points into its operation's arguments and frame
+            // (`request`'s contract), and its timeout's into the event in that frame:
+            // all live until the completion, which the suspended operation waits for.
             unsafe { ring.submission().push_multiple(entries) }
         });
         debug_assert!(
@@ -287,30 +375,25 @@ impl Uring {
         );
     }
 
-    /// Queue `event` in the ring, or in the wait queue when the ring is full. Both
-    /// keep its address: it stays suspended in its operation until its completion,
-    /// so every request the ring holds is an event suspended in its operation.
-    fn dispatch(&self, event: &Event) {
+    /// Queue `request` in the ring, or in the wait queue when the ring is full. Its
+    /// operation stays suspended until its completion, so every request the ring
+    /// holds is of an event suspended in its operation.
+    fn dispatch(&self, request: Request) {
         let space = self.sq_space_left();
         if space == 0 {
             let mut waiting = self.waiting.take();
-            waiting.push_back(event);
+            waiting.push_back(request);
             self.waiting.set(waiting);
             return;
         }
-        if event.timeout.is_some() && space < 2 {
+        if request.timeout.is_some() && space < 2 {
             (self.host.timeout_full)(self.fd());
         }
-        // User data identifies the event on completion.
-        let entry = event.data.clone().user_data(ptr::from_ref(event) as u64);
-        match &event.timeout {
-            Some(timeout) if space >= 2 => self.push(&[
-                entry.flags(squeue::Flags::IO_LINK),
-                opcode::LinkTimeout::new(timeout)
-                    .build()
-                    .user_data(TIMEOUT_EVENT),
-            ]),
-            _ => self.push(&[entry]),
+        match request.timeout {
+            Some(timeout) if space >= 2 => {
+                self.push(&[request.entry.flags(squeue::Flags::IO_LINK), timeout]);
+            }
+            _ => self.push(&[request.entry]),
         }
         let mut ring = self;
         submit(&mut ring, false);
@@ -415,6 +498,7 @@ pub fn open(config: Config, host: &'static Host) -> Opened {
         ring: Cell::new(Some(Box::new(ring))),
         host,
         task_num: Cell::new(0),
+        slots: Cell::default(),
         waiting: Cell::default(),
         ready: Cell::new(Vec::with_capacity(QUEUE_SIZE as usize)),
     };
@@ -491,7 +575,7 @@ pub fn wakeup(engine: &Uring) -> bool {
             for cqe in ring.completion().take(QUEUE_SIZE as usize) {
                 harvested = true;
                 if cqe.user_data() != TIMEOUT_EVENT {
-                    ready.push((cqe.user_data() as *const Event, cqe.result() as isize));
+                    ready.push((cqe.user_data(), cqe.result() as isize));
                 }
             }
             harvested
@@ -510,18 +594,10 @@ pub fn wakeup(engine: &Uring) -> bool {
             let Some(waiting) = waiting else {
                 break;
             };
-            // SAFETY: a queued event is suspended in its operation, and nothing
-            // else borrows it.
-            engine.dispatch(unsafe { &*waiting });
+            engine.dispatch(waiting);
         }
-        for &(event, result) in &ready {
-            let waker = {
-                // SAFETY: user data is an event suspended in its operation, which
-                // only shares it until its coroutine resumes.
-                let event = unsafe { &*event };
-                event.result.set(complete(result));
-                event.waker.get()
-            };
+        for &(id, result) in &ready {
+            let waker = engine.with_slots(|slots| slots.complete(id, complete(result)));
             engine.task_num.set(engine.task_num.get() - 1);
             // The coroutine suspended in that event's operation, which may re-enter
             // the engine.
@@ -534,11 +610,11 @@ pub fn wakeup(engine: &Uring) -> bool {
     }
 }
 
-/// Cancel the request whose event is at `event`, as a coroutine cancelling a
-/// suspended one does. The kernel only compares the address with each request's
-/// user data.
-pub fn cancel(host: &Host, event: *mut c_void) -> bool {
-    let cancel = opcode::AsyncCancel::new(event.addr() as u64).build();
+/// Cancel the request numbered `event`, as a coroutine cancelling a suspended one
+/// does. The kernel only compares the number with each request's user data.
+#[must_use]
+pub fn cancel(host: &Host, event: u64) -> bool {
+    let cancel = opcode::AsyncCancel::new(event).build();
     matches!(Event::new(host, cancel).execute(host), Ok(0))
 }
 
@@ -916,7 +992,7 @@ pub(crate) mod testing {
     fn instance() -> Option<Rc<Uring>> {
         ENGINE.with_borrow(Clone::clone)
     }
-    fn suspend(_coroutine: *mut c_void, _event: *mut c_void, _waker: &Cell<Option<Waker>>) {
+    fn suspend(_coroutine: *mut c_void, _event: u64, _arm: &mut dyn FnMut(Waker)) {
         let engine = instance().expect("a test engine");
         engine.submit_queued();
         while engine.task_num() > 0 {
@@ -1263,6 +1339,41 @@ mod tests {
         assert_eq!(complete(0).unwrap(), 0);
         assert_eq!(complete(123).unwrap(), 123);
         assert_eq!(errno(), libc::EINTR);
+    }
+
+    /// A completion reaches its request's slot by number: it takes the parked waker
+    /// and leaves the result, which closing takes and frees the number for reuse. A
+    /// number closed before its completion stays taken until that arrives. An unknown
+    /// number reaches nothing.
+    #[test]
+    fn slots_number_requests_until_closed() {
+        let mut slots = Slots::default();
+        let (first, second) = (slots.open() as u64, slots.open() as u64);
+        assert_ne!(first, second);
+        if let Some(slot) = slots.slot(second) {
+            slot.waker = Some(Waker::NONE);
+        }
+        assert_eq!(slots.complete(second, Ok(7)), Some(Waker::NONE));
+        assert_eq!(slots.complete(first, Ok(3)), None, "nothing parked");
+        assert_eq!(slots.complete(99, Ok(1)), None, "an unknown number");
+        assert_eq!(slots.close(second).and_then(Result::ok), Some(7));
+        assert_eq!(slots.open() as u64, second, "a closed number is reused");
+        assert!(
+            slots.close(second).is_none(),
+            "closed before its completion"
+        );
+        let third = slots.open() as u64;
+        assert!(
+            third != first && third != second,
+            "an abandoned number stays taken"
+        );
+        assert_eq!(
+            slots.complete(second, Ok(9)),
+            None,
+            "its completion wakes nothing"
+        );
+        assert_eq!(slots.open() as u64, second, "then the number is free");
+        assert_eq!(slots.close(first).and_then(Result::ok), Some(3));
     }
 
     #[test]

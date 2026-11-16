@@ -157,6 +157,86 @@ mod closure {
     }
 }
 
+/// The callbacks of this thread's [`TimerNode::owning`] nodes, by slot. A thread's
+/// timer, and so its nodes, stay on that thread.
+mod owned {
+    use std::cell::Cell;
+    use std::ffi::c_void;
+    use std::rc::Rc;
+
+    #[derive(Default)]
+    pub(super) struct Slots {
+        slots: Vec<Option<Rc<dyn Fn()>>>,
+        /// Emptied slots, reused first.
+        free: Vec<usize>,
+    }
+
+    thread_local! {
+        static SLOTS: Cell<Slots> = const {
+            Cell::new(Slots {
+                slots: Vec::new(),
+                free: Vec::new(),
+            })
+        };
+    }
+
+    /// `f` over this thread's slots, taken out for the call. `f` only moves callbacks
+    /// in and out: none runs or drops inside it, so nothing reaches the slots while
+    /// they are out. None after the thread's teardown dropped them.
+    fn with<R>(f: impl FnOnce(&mut Slots) -> R) -> Option<R> {
+        SLOTS
+            .try_with(|slots| {
+                let mut taken = slots.take();
+                let out = f(&mut taken);
+                slots.set(taken);
+                out
+            })
+            .ok()
+    }
+
+    pub(super) fn insert(f: Rc<dyn Fn()>) -> usize {
+        let slot = with(|s| {
+            if let Some(slot) = s.free.pop()
+                && let Some(entry) = s.slots.get_mut(slot)
+            {
+                *entry = Some(f);
+                return slot;
+            }
+            s.slots.push(Some(f));
+            s.slots.len() - 1
+        });
+        slot.unwrap_or_else(|| swoole_rs_corebase::fatal("a timer added during thread teardown"))
+    }
+
+    /// Runs `slot`'s callback, held for the call: it may add owning nodes, moving
+    /// the slots. A Zend bailout out of it leaks that hold, and so what it captured.
+    pub(super) fn run(slot: usize) {
+        if let Some(f) = with(|s| s.slots.get(slot).cloned().flatten()).flatten() {
+            f();
+        }
+    }
+
+    /// The node's `plain_drop`: frees the slot its `data` keeps, then drops the
+    /// callback, once the slots are back.
+    pub(super) extern "C-unwind" fn free(data: *mut c_void) {
+        let slot = data.addr();
+        let f = with(|s| {
+            let f = s.slots.get_mut(slot).and_then(Option::take);
+            if f.is_some() {
+                s.free.push(slot);
+            }
+            f
+        });
+        drop(f);
+    }
+
+    /// This thread's slots: (made, free).
+    #[cfg(test)]
+    pub(super) fn counts() -> (usize, usize) {
+        with(|s| (s.slots.len(), s.free.len())).unwrap_or_default()
+    }
+}
+
 impl TimerNode {
     pub(crate) fn new(callback: Option<Callback>, data: *mut c_void) -> Self {
         Self {
@@ -180,6 +260,19 @@ impl TimerNode {
     pub(crate) fn closure(f: Closure) -> Self {
         let mut node = Self::new(None, std::ptr::null_mut());
         node.closure = Some(f);
+        node
+    }
+
+    /// A node whose callback is `f`, which it owns: what `f` captured is dropped with
+    /// the node, once it fires for the last time, is deleted, or its timer is freed.
+    /// `f` waits in an [`owned`] slot, which the node keeps in `data`, calls through its
+    /// closure and frees as its `plain_drop`: no field or branch the other kinds pay for.
+    pub(crate) fn owning(f: std::rc::Rc<dyn Fn()>) -> Self {
+        let slot = owned::insert(f);
+        let mut node = Self::closure(Closure::new(move || owned::run(slot)));
+        node.data = std::ptr::without_provenance_mut(slot);
+        let free: Plain = owned::free;
+        node.plain_drop = Some(free);
         node
     }
 
@@ -1080,6 +1173,56 @@ mod tests {
         assert!(intact.get(), "parent_intact");
         assert!(drained, "parent_drained");
         assert_eq!(p.destructors(), 2, "parent_destructors");
+    }
+
+    #[test]
+    fn an_owning_node_drops_its_capture_with_the_node() {
+        let p = Probe::new();
+        let timer = p.timer();
+        let capture = Rc::new(Cell::new(0));
+        let ids = Rc::new(Cell::new(0));
+        // A tick that removes itself when it fires, while its callback runs.
+        let add = |persistent, remove: bool| {
+            let (seen, me) = (Rc::clone(&capture), Rc::clone(&ids));
+            let f = Rc::new(move || {
+                seen.set(seen.get() + 1);
+                if remove {
+                    assert!(timer.remove(me.get()));
+                }
+            });
+            let (_, id) = timer
+                .add(1000, persistent, TimerNode::owning(f))
+                .expect("add failed");
+            timer.update(id, 0);
+            id
+        };
+        let (_once, deleted, _tick) = (add(false, false), add(false, false), add(true, false));
+        ids.set(add(true, true));
+        assert_eq!(Rc::strong_count(&capture), 5, "held by each node");
+        assert!(timer.remove(deleted));
+        assert_eq!(Rc::strong_count(&capture), 4, "dropped on delete");
+        timer.select();
+        timer.select();
+        assert_eq!(capture.get(), 3, "the one-shot and both ticks ran");
+        assert_eq!(
+            Rc::strong_count(&capture),
+            2,
+            "dropped once the one-shot fired and the tick removed itself"
+        );
+        p.free();
+        assert_eq!(
+            Rc::strong_count(&capture),
+            1,
+            "dropped when the timer is freed"
+        );
+        let (made, free) = owned::counts();
+        assert_eq!(made, free, "every slot freed for reuse");
+        let again = Probe::new();
+        again
+            .timer()
+            .add(1000, false, TimerNode::owning(Rc::new(|| {})));
+        assert_eq!(owned::counts(), (made, free - 1), "a freed slot reused");
+        again.free();
     }
 
     #[test]

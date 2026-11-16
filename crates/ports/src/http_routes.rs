@@ -6,6 +6,7 @@
 use std::ffi::c_int;
 
 use swoole_rs_clients::protocol::{Protocol, Socket};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
 use swoole_rs_corebase::{WebSocketStatus, log};
@@ -58,7 +59,20 @@ pub fn websocket_length(
     _socket: Option<Socket<'_>>,
     pl: &mut PacketLength,
 ) -> isize {
-    swoole_rs_websocket_ffi::frame_api::package_length(pl)
+    let (length, header) = match swoole_rs_websocket::frame_length(pl.bytes()) {
+        Ok(frame) => (frame.total.c_cast::<isize>(), Some(frame.header_length)),
+        Err(error) => (
+            match error {
+                swoole_rs_websocket::LengthError::IncompleteHeader { .. } => 0,
+                swoole_rs_websocket::LengthError::Overflow { .. } => -1,
+            },
+            error.header_length(),
+        ),
+    };
+    if let Some(header) = header {
+        pl.header_len = header.c_cast::<u32>();
+    }
+    length
 }
 
 /// `get_package_length_size`'s result for `conn`.
@@ -94,6 +108,7 @@ pub mod exports {
     use std::mem::MaybeUninit;
     use swoole_rs_corebase::CCast;
 
+    use crate::frame_api::decode_frame;
     use swoole_rs_buffer::string::boxed_string;
     use swoole_rs_clients::protocol::Protocol;
     use swoole_rs_corebase::DataHead;
@@ -105,7 +120,6 @@ pub mod exports {
     use swoole_rs_websocket::{
         Action, Context, FrameFlags, Opcode, PolicyError, decide_frame, encode_frame,
     };
-    use swoole_rs_websocket_ffi::frame_api::decode_frame;
 
     use super::{Session, WEBSOCKET_FRAME_HEADER_SIZE, length_size, route};
     use crate::framing_recv::{Packages, Recv, paused, send_data};

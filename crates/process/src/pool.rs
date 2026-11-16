@@ -74,14 +74,15 @@ fn head_bytes<const N: usize>(out: &[u64], at: usize) -> [u8; N] {
     })
 }
 
-/// A stream connection `accept` made: its native owner, which this crate keeps
-/// and hands back to the hooks without knowing its type.
+/// A stream socket's native owner, which this crate keeps and hands back to the
+/// hooks without knowing its type: the listener `listen` makes, or a connection
+/// `accept` makes.
 pub type Connection = Rc<dyn Any>;
 
 /// One hook's arguments and results. Only this crate makes and fills one, over
 /// objects live for the hook: its pool and worker (null when none), its socket
-/// (null or a live native socket: a worker's pipe end or the stream listener),
-/// the stream connection it serves, and `data`, which holds `length` bytes.
+/// (null or a live native socket: a worker's pipe end), the stream connection it
+/// serves (or the listener `close` frees), and `data`, which holds `length` bytes.
 pub struct PoolCall<'a> {
     pub(crate) pool: crate::process_pool::PoolRef<'a>,
     pub(crate) worker: Option<Record<'a>>,
@@ -123,13 +124,8 @@ impl<'a> PoolCall<'a> {
         self.worker
     }
 
-    /// The live native socket the hook works on, or null.
-    #[must_use]
-    pub fn socket(&self) -> *mut c_void {
-        self.socket
-    }
-
-    /// [`PoolCall::socket`], lent for this borrow of the call; `None` without one.
+    /// The worker's pipe end the hook works on, lent for this borrow of the call;
+    /// `None` without one.
     #[must_use]
     pub fn lent_socket(&self) -> Option<crate::worker_record::NativeSocket<'_>> {
         crate::worker_record::NativeSocket::lend(self.socket)
@@ -213,7 +209,7 @@ pub struct PoolIpc {
 }
 
 struct Stream {
-    socket: *mut c_void,
+    listener: Option<Connection>,
     file: Option<CString>,
     port: c_int,
     connection: Option<Connection>,
@@ -709,7 +705,7 @@ pub fn raise_bailout() {
 #[must_use]
 pub fn pool_ipc_new(listener: bool) -> *mut PoolIpc {
     let stream = listener.then_some(Stream {
-        socket: ptr::null_mut(),
+        listener: None,
         file: None,
         port: 0,
         connection: None,
@@ -724,15 +720,14 @@ pub fn pool_ipc_new(listener: bool) -> *mut PoolIpc {
 /// Free the state, which the caller takes back from the handle [`pool_ipc_new`]
 /// leaked; `close` frees the listener. A listener's address is a socket file,
 /// unlinked as upstream does (a TCP host is unlinked too, harmlessly).
-pub fn pool_ipc_free(ipc: PoolIpc, close: impl FnOnce(*mut c_void)) {
+pub fn pool_ipc_free(ipc: PoolIpc, close: impl FnOnce(Connection)) {
     if let Some(stream) = ipc.stream
-        && !stream.socket.is_null()
+        && let Some(listener) = stream.listener
     {
         if let Some(file) = &stream.file {
             _ = swoole_rs_corebase::sys::unlink(file);
         }
-        // The listener, freed once.
-        close(stream.socket);
+        close(listener);
     }
 }
 
@@ -805,20 +800,18 @@ pub fn swr_v1_process_pool_ipc_send_sync(ipc: Option<&PoolIpc>, data: &[u8]) -> 
     swr_v1_process_pool_ipc_send(ipc, data, true)
 }
 
-/// Keep the listener the native side created; `socket` is a native socket it now owns.
+/// Keep the listener the native side created.
 #[cfg(any(feature = "upstream-symbols", test))]
-pub(crate) fn swr_v1_process_pool_ipc_set_listener(ipc: &mut PoolIpc, socket: *mut c_void) {
+pub(crate) fn swr_v1_process_pool_ipc_set_listener(ipc: &mut PoolIpc, listener: Connection) {
     if let Some(stream) = ipc.stream.as_mut() {
-        stream.socket = socket;
+        stream.listener = Some(listener);
     }
 }
 
-/// The stream listener, or null.
+/// The stream listener, if any.
 #[must_use]
-pub fn swr_v1_process_pool_ipc_listener(ipc: &PoolIpc) -> *mut c_void {
-    ipc.stream
-        .as_ref()
-        .map_or(ptr::null_mut(), |stream| stream.socket)
+pub fn swr_v1_process_pool_ipc_listener(ipc: &PoolIpc) -> Option<&Connection> {
+    ipc.stream.as_ref()?.listener.as_ref()
 }
 
 /// The listener's address and port, none without one.
@@ -1067,7 +1060,7 @@ mod tests {
         unsafe {
             assert!(!swr_v1_process_pool_ipc_address(&mut *ipc, c"/tmp/x", 1));
             assert!(pool_ipc_address(&*ipc).is_none());
-            assert!(swr_v1_process_pool_ipc_listener(&*ipc).is_null());
+            assert!(swr_v1_process_pool_ipc_listener(&*ipc).is_none());
             pool_ipc_free(*Box::from_raw(ipc), |_| {});
         }
     }
