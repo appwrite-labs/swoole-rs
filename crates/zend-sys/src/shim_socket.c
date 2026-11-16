@@ -57,9 +57,11 @@ int swr_zend_try_object_properties(zend_object *object, zval *out) {
     return bailed;
 }
 
-HashTable *swr_zend_convert_to_array(zval *value) {
-    convert_to_array(value);
-    return Z_ARRVAL_P(value);
+int swr_zend_try_convert_to_array(zval *value) {
+    volatile int bailed = 0;
+    SWR_ZEND_TRY { convert_to_array(value); }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
+    return bailed;
 }
 
 /* Whether `value` is a PHP value or a reference to one: a slot the engine keeps for

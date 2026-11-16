@@ -38,7 +38,7 @@ const HEAD_LEN: usize = 16;
 const HEAD_SERVER_FD: usize = 24;
 const HEAD_EXT_FLAGS: usize = 26;
 /// `SW_TASK_TMPFILE`: the task's data is a `PacketTask` naming a temporary file.
-const TASK_TMPFILE: u16 = 1;
+const TASK_TMPFILE: u16 = swoole_rs_corebase::constants::TaskFlag::SW_TASK_TMPFILE.bits();
 /// `sizeof(PacketTask)`: its `size_t` length and `SW_TASK_TMP_PATH_SIZE` path.
 const PACKET_TASK: u32 = 8 + 256;
 /// `sizeof(long)`, `QueueNode::mtype`.

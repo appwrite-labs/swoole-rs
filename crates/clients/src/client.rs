@@ -196,13 +196,6 @@ pub struct Socks5 {
     pub handshake: fn(&ProxyState, &[u8]) -> Option<usize>,
 }
 
-/// A `String`'s free tail: where the next read lands and how much fits.
-#[derive(Clone, Copy)]
-struct Tail {
-    str: *mut c_char,
-    size: usize,
-}
-
 /// The public, trivially copyable fields of `network::Client`.
 #[derive(Clone, Copy)]
 pub struct ClientRecord {
@@ -536,15 +529,9 @@ impl Handle {
         }
     }
 
-    /// The input buffer's free tail; the buffer exists.
-    fn input_tail(self) -> Tail {
-        self.edit_input(|buffer, _, _| {
-            let length = buffer.len();
-            Tail {
-                str: buffer.as_mut_ptr().wrapping_add(length).cast(),
-                size: buffer.size() - length,
-            }
-        })
+    /// Where the input buffer's next read lands; the buffer exists.
+    fn input_tail(self) -> *const c_char {
+        self.edit_input(|buffer, _, _| buffer.as_mut_ptr().wrapping_add(buffer.len()).cast())
     }
 
     /// One read into the input buffer's free tail; the buffer exists.
@@ -579,7 +566,8 @@ impl Handle {
     /// `Client::socks5_handshake`: applies `length` received bytes at `data` and
     /// sends the answer the proxy packed.
     fn socks5_handshake(self, data: *const c_char, length: usize) -> bool {
-        // SAFETY: the received buffer lends `length` initialized bytes at `data`.
+        // SAFETY: `data` is where the last receive wrote `length` bytes, in the live
+        // input buffer.
         let reply = unsafe { std::slice::from_raw_parts(data.cast(), length) };
         let n = self
             .with_proxy(Proxy::Socks5, |proxy| {
@@ -1752,7 +1740,7 @@ fn connect_failed(this: Handle) -> bool {
 /// `Client_onStreamRead`: the proxy and TLS handshakes that finish a connect,
 /// then framed or plain reads, on a live async stream client with its input buffer.
 fn on_read(this: Handle) -> bool {
-    let Tail { str: buf, size } = this.input_tail();
+    let buf = this.input_tail();
     let do_ssl_handshake = this.flag(Flag::OpenSsl);
     let http = this.proxy_state(Proxy::Http);
     if http.is_some_and(|state| state != HTTP_PROXY_READY) {
@@ -1774,12 +1762,11 @@ fn on_read(this: Handle) -> bool {
     let socks5 = this.proxy_state(Proxy::Socks5);
     if socks5.is_some_and(|state| state != SOCKS5_READY) {
         let n = this.edit_input(|input, socket, ops| (ops.recv_append)(socket, input));
-        if n <= Some(0) {
+        let Some(n) = n.filter(|&n| n > 0) else {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
-        }
-        // Upstream hands the handshake the buffer's free size, not what was read.
-        if !this.socks5_handshake(buf, size) {
+        };
+        if !this.socks5_handshake(buf, n) {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         }

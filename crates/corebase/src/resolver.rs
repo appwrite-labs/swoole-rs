@@ -122,11 +122,12 @@ pub struct Resolved {
 pub(crate) const DIAGNOSTIC_FAILED: c_int = c_int::MIN;
 /// `network::getaddrinfo`: resolves `host` (and `service`, none for none) into at
 /// most `results.len()` socket addresses; `unknown` reports an entry of another
-/// family, which keeps its slot, and false from it stops the walk.
-pub(crate) fn resolve_addresses(
+/// family, which keeps its slot, and false from it stops the walk. `hints` are the
+/// family, socket type, protocol and flags.
+pub fn resolve_addresses(
     host: &CStr,
     service: Option<&CStr>,
-    hints: (c_int, c_int, c_int),
+    hints: (c_int, c_int, c_int, c_int),
     results: &mut [libc::sockaddr_in6],
     mut unknown: impl FnMut(c_int) -> bool,
 ) -> Resolved {
@@ -202,11 +203,15 @@ enum TextRoom {
 struct Hints(libc::addrinfo);
 
 impl Hints {
-    /// The family, socket type and protocol, flags zero.
-    fn new((family, socktype, protocol): (c_int, c_int, c_int)) -> Self {
+    /// The family, socket type, protocol and flags.
+    fn new((family, socktype, protocol, flags): (c_int, c_int, c_int, c_int)) -> Self {
         let mut request: libc::addrinfo = crate::sys::zeroed();
-        (request.ai_family, request.ai_socktype, request.ai_protocol) =
-            (family, socktype, protocol);
+        (
+            request.ai_family,
+            request.ai_socktype,
+            request.ai_protocol,
+            request.ai_flags,
+        ) = (family, socktype, protocol, flags);
         Self(request)
     }
 }
@@ -257,7 +262,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no getaddrinfo")]
     fn resolves_addresses_through_libc() {
         let mut results: [libc::sockaddr_in6; 16] = unsafe { std::mem::zeroed() };
-        let hints = (libc::AF_INET, libc::SOCK_STREAM, 0);
+        let hints = (libc::AF_INET, libc::SOCK_STREAM, 0, 0);
         let found = resolve_addresses(c"127.0.0.1", Some(c"80"), hints, &mut results, |_| true);
         assert_eq!(found, Resolved { error: 0, count: 1 });
         let v4 = unsafe { &*results.as_ptr().cast::<libc::sockaddr_in>() };
@@ -265,7 +270,7 @@ mod tests {
             (u16::from_be(v4.sin_port), v4.sin_addr.s_addr.to_ne_bytes()),
             (80, [127, 0, 0, 1])
         );
-        let hints = (libc::AF_INET, 0, 0);
+        let hints = (libc::AF_INET, 0, 0, 0);
         let service = Some(c"no-such-service-swr");
         let failed = resolve_addresses(c"127.0.0.1", service, hints, &mut results, |_| true);
         assert_ne!(failed.error, 0);

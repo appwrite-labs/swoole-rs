@@ -158,7 +158,7 @@ impl ResolverRequest {
         let result = resolve_addresses(
             &name,
             service.as_deref(),
-            (hints.family, hints.socktype, hints.protocol),
+            (hints.family, hints.socktype, hints.protocol, 0),
             &mut found,
             unknown,
         );
