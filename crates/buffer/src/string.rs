@@ -219,6 +219,12 @@ impl CppString {
         source.offset = 0;
     }
 
+    /// The allocator that made the buffer, none before one did.
+    #[must_use]
+    pub const fn allocator(&self) -> Option<TrustedAllocator> {
+        self.allocator
+    }
+
     /// The `length` bytes at `str`.
     #[must_use]
     pub fn view(&self) -> &[u8] {

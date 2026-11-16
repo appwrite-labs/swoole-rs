@@ -28,7 +28,7 @@ use swoole_rs_phpswoole::SocketSettings;
 use swoole_rs_reactor::Events;
 use swoole_rs_zend::{
     Array, ArrayMut, Call, CallFrame, Custom, CustomClass, Key as ArrayKey, Minit, Owned,
-    OwnedArray, Props, Value, ZString, bailout, handlers, method_table, string,
+    OwnedArray, Props, Value, ZString, bailout, handlers, method_table,
     sys::{self as z, ZEND_ACC_FINAL, ZEND_ACC_PUBLIC, zend_long, zval},
 };
 
@@ -293,12 +293,9 @@ const HTTP2_FRAME_HEADER_SIZE: u8 = 9;
 /// the request's `length` bytes, in a zend string the buffer allocated,
 /// become `zdata`; the buffer starts a new allocation.
 fn request_data(mut context: Ctx, buffer: &mut Buffer, length: usize) {
-    let data = buffer.pop(BUFFER_SIZE_BIG);
-    let string = string::from_val(data);
-    // SAFETY: the zend string allocator's unshared string, holding `length`
-    // bytes and room for the NUL; its one reference moves into `zdata`.
-    let string = unsafe { string::ZBuf::from_raw(string, length) };
-    context.state().request.zdata = Owned::string(string.into_zstring());
+    if let Some(data) = swoole_rs_phpclients::pop_string(buffer, BUFFER_SIZE_BIG, length) {
+        context.state().request.zdata = Owned::string(data);
+    }
 }
 
 /// HTTP/2 on the connection: the server's SETTINGS frame, then frames by
