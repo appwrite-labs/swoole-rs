@@ -658,7 +658,11 @@ mod tests {
     /// `Owner::init` declares the reactor's `swoole_signal_set` by symbol: naming it
     /// links its object into the test binary on every linker.
     #[used]
-    static SIGNAL_SET: unsafe extern "C" fn(c_int, usize, bool) -> usize =
+    static SIGNAL_SET: extern "C" fn(
+        c_int,
+        swoole_rs_reactor::signal_upstream::Handler,
+        bool,
+    ) -> swoole_rs_reactor::signal_upstream::Handler =
         swoole_rs_reactor::signal_upstream::swoole_signal_set;
 
     /// The reactor's signal code calls `Socket::free`, which crates/tls defines and
