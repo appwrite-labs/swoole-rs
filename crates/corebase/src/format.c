@@ -23,11 +23,6 @@ size_t swr_c_sw_snprintf(char *buf, size_t size, const char *format, ...) {
     return swr_v1_core_format_result(buf, size, retval, true);
 }
 
-/* C's stdout, for Rust's Stream::stdout. */
-FILE *swr_v1_core_libc_stdout(void) {
-    return stdout;
-}
-
 int swr_c_sw_printf(const char *format, ...) {
     va_list args;
     va_start(args, format);

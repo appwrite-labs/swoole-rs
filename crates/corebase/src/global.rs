@@ -146,16 +146,19 @@ pub struct Stream(ptr::NonNull<libc::FILE>);
 // stream stays open (the type's invariant), so it may be used from any thread.
 unsafe impl Send for Stream {}
 
-// format.c's: C's `stdout`, which a hosted C program always has open.
+// C's `stdout` (Apple's libc names it `__stdoutp`), which a hosted C program always
+// has open.
 unsafe extern "C" {
-    safe fn swr_v1_core_libc_stdout() -> Stream;
+    #[cfg_attr(target_vendor = "apple", link_name = "__stdoutp")]
+    #[cfg_attr(not(target_vendor = "apple"), link_name = "stdout")]
+    safe static C_STDOUT: Stream;
 }
 
 impl Stream {
     /// C's `stdout`.
     #[must_use]
     pub fn stdout() -> Self {
-        swr_v1_core_libc_stdout()
+        C_STDOUT
     }
 
     /// The stream at `raw`, none for null.
