@@ -8,9 +8,10 @@ use crate::{
     worker::{self, WorkerView},
 };
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell},
     ffi::{CStr, c_int, c_long},
     ptr,
+    rc::Rc,
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_corebase::CCast;
@@ -66,8 +67,9 @@ static ROUND_ID: AtomicU32 = AtomicU32::new(0);
 /// the pool frees. Only `queue` is ever freed here, by dropping it.
 #[derive(Default)]
 struct Process {
-    /// Dropped first, as the C++ object's free releases it before the worker.
-    socket: RefCell<Option<Owned>>,
+    /// Set by the first `exportSocket` that makes one. Dropped first, as the
+    /// C++ object's free releases it before the worker.
+    socket: OnceCell<Owned>,
     worker: WorkerSlot,
     /// Whether its pipe type is `PIPE_TYPE_STREAM`, all `exportSocket` asks of it.
     stream_pipe: Cell<bool>,
@@ -504,7 +506,7 @@ fn use_queue(call: &Call) {
     }
     let id = queue.id();
     if let Some(process) = process {
-        process.worker.queue.own(worker, Box::new(queue));
+        process.worker.queue.own(worker, queue);
     }
     let mode = mode.c_cast::<u8>();
     worker.set_msgqueue_mode(mode);
@@ -563,18 +565,19 @@ impl WorkerSlot {
 }
 
 /// The queue a Process owns, if any. A worker's queue pointer is set from here
-/// or borrowed from a pool; only the box held here is ever freed, by dropping it.
+/// or borrowed from a pool; only the queue held here is ever freed, by dropping
+/// it. It is taken out only to destroy it, and its `Rc` is never cloned. The
+/// worker's pointer is the `Rc`'s own, which moving the `Rc` in and out of the
+/// cell leaves valid, where moving a box would not.
 #[derive(Default)]
-struct QueueSlot(RefCell<Option<Box<QueueRecord>>>);
+struct QueueSlot(Cell<Option<Rc<QueueRecord>>>);
 
 impl QueueSlot {
     /// Takes `queue` and points `worker` at it; a queue it owned before is dropped.
-    fn own(&self, worker: Worker<'_>, queue: Box<QueueRecord>) {
-        let mut owned = self.0.borrow_mut();
-        // Point at the box once it is in place: moving it would invalidate an earlier pointer.
-        let queue = owned.insert(queue);
-        let queue = ptr::from_mut(&mut **queue).cast();
-        worker.set_queue(queue);
+    fn own(&self, worker: Worker<'_>, queue: QueueRecord) {
+        let queue = Rc::new(queue);
+        worker.set_queue(Rc::as_ptr(&queue).cast_mut().cast());
+        drop(self.0.replace(Some(queue)));
     }
 
     /// `freeQueue` on `worker`: destroys and drops a queue this slot owns, and only
@@ -583,12 +586,17 @@ impl QueueSlot {
         if queue_of(worker).is_null() {
             return false;
         }
-        let mut owned = self.0.borrow_mut();
-        if owned.as_mut().is_some_and(|queue| !queue.destroy()) {
+        let mut owned = self.0.take();
+        if owned
+            .as_mut()
+            .and_then(Rc::get_mut)
+            .is_some_and(|queue| !queue.destroy())
+        {
+            self.0.set(owned);
             return false;
         }
         worker.set_queue(ptr::null_mut());
-        *owned = None;
+        drop(owned);
         true
     }
 }
@@ -757,11 +765,13 @@ fn export_socket(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let mut socket = process.socket.borrow_mut();
-    if socket.is_none() {
-        *socket = host::dup_socket(pipe, process.stream_pipe.get());
+    if process.socket.get().is_none()
+        && let Some(socket) = host::dup_socket(pipe, process.stream_pipe.get())
+    {
+        // Making it runs no PHP, so nothing set one meanwhile.
+        _ = process.socket.set(socket);
     }
-    match socket.as_ref() {
+    match process.socket.get() {
         // The object keeps its reference; the return value takes a new one.
         Some(socket) => call.set_owned(socket.copy()),
         None => call.set_bool(false),
@@ -1144,7 +1154,7 @@ mod tests {
         let worker = worker(&slot);
         let queue = QueueRecord::new(libc::IPC_PRIVATE, true, 0);
         let id = queue.id();
-        slot.queue.own(worker, Box::new(queue));
+        slot.queue.own(worker, queue);
         assert_eq!(
             with_queue(worker, QueueRecord::id),
             Some(id),

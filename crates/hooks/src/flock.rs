@@ -2,7 +2,7 @@
 //! exclusive or shared lock becomes non-blocking attempts with `System::sleep` between
 //! them, backing off from `SW_FILE_LOCK_DEFAULT_SECOND` to `SW_FILE_LOCK_MAX_SECOND`;
 //! unlocking, `LOCK_NB` and calls outside a coroutine go straight to flock.
-use crate::stdio::NATIVE;
+use crate::stdio::runtime;
 use swoole_rs_corebase::constants::{SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND};
 use swoole_rs_corebase::set_errno;
 use swoole_rs_reactor::backoff;
@@ -44,10 +44,11 @@ fn coroutine_flock(
 /// EINVAL as errno and the last error.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_flock(fd: i32, operation: i32) -> i32 {
-    let sleep = (NATIVE.in_coroutine)().then_some(NATIVE.sleep);
+    let runtime = runtime();
+    let sleep = (runtime.in_coroutine)().then_some(runtime.sleep);
     coroutine_flock(fd, operation, sleep).unwrap_or_else(|()| {
         set_errno(libc::EINVAL);
-        (NATIVE.set_last_error)(libc::EINVAL);
+        (runtime.set_last_error)(libc::EINVAL);
         -1
     })
 }

@@ -461,26 +461,27 @@ pub extern "C" fn swoole_version_compare(left: sys::Text<'_>, right: sys::Text<'
     }
 }
 
-/// Native stack-owned iterator state; no retained pointer or allocation.
-#[repr(C)]
-#[derive(Default)]
-pub struct MkdirState {
-    pub length: usize,
-    pub next: usize,
+/// Why a recursive directory creation stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MkdirError {
+    /// The failing syscall's errno; its prefix remains in the scratch buffer.
+    Io(i32),
+    TooLong,
+    InvalidState,
 }
 
-/// Prepare/cut the next mkdir prefix in `output`. 0=done, 1=prefix, 2=too long,
-/// 3=invalid state/storage. The caller's access/mkdir/logging run after each return.
-/// `state` starts zeroed, then stays unmodified between calls, as does `output`; stop
-/// on any result other than 1.
-pub fn swr_v1_corebase_mkdir_next(
-    input: &[u8],
-    output: &mut [u8],
-    state: &mut MkdirState,
-) -> c_int {
+#[derive(Default)]
+struct MkdirState {
+    length: usize,
+    next: usize,
+}
+
+/// Cut the next prefix; true means ready, false means done. The next call
+/// restores the slash. Keep state/output unchanged between calls.
+fn mkdir_next(input: &[u8], output: &mut [u8], state: &mut MkdirState) -> Result<bool, MkdirError> {
     let capacity = output.len();
     if capacity == 0 {
-        return 3;
+        return Err(MkdirError::InvalidState);
     }
     let put = |output: &mut [u8], index: usize, byte: u8| {
         if let Some(slot) = output.get_mut(index) {
@@ -489,10 +490,10 @@ pub fn swr_v1_corebase_mkdir_next(
     };
     if state.next == 0 {
         if input.len() >= capacity {
-            return 2;
+            return Err(MkdirError::TooLong);
         }
         if input.is_empty() {
-            return 3;
+            return Err(MkdirError::InvalidState);
         }
         let prefix = input
             .iter()
@@ -501,7 +502,7 @@ pub fn swr_v1_corebase_mkdir_next(
         let append = input.last() != Some(&b'/');
         let length = prefix + usize::from(append);
         if length >= capacity {
-            return 2;
+            return Err(MkdirError::TooLong);
         }
         for (index, &byte) in input.iter().take(prefix).enumerate() {
             put(output, index, byte);
@@ -514,7 +515,7 @@ pub fn swr_v1_corebase_mkdir_next(
         state.next = 1;
     } else {
         if state.length >= capacity || state.next > state.length {
-            return 3;
+            return Err(MkdirError::InvalidState);
         }
         put(output, state.next - 1, b'/');
     }
@@ -522,35 +523,49 @@ pub fn swr_v1_corebase_mkdir_next(
         if output.get(index) == Some(&b'/') {
             put(output, index, 0);
             state.next = index + 1;
-            return 1;
+            return Ok(true);
         }
     }
-    0
+    Ok(false)
 }
 
-/// Create every path prefix directly, retaining the public warning facade.
-/// 0 success,1 syscall failure (the failing terminated prefix is in scratch),
-/// 2 path bound exceeded. No allocation or native callback occurs here.
-pub fn swr_v1_corebase_mkdir_complete(input: &[u8], scratch: &mut [u8]) -> i32 {
+/// Create each path prefix without allocation, retaining the failed prefix in
+/// `scratch` for the caller's warning.
+///
+/// # Errors
+/// A syscall failure, path bound exceeded, or invalid input/storage.
+pub fn mkdir_recursive(input: &[u8], scratch: &mut [u8]) -> Result<(), MkdirError> {
     let mut state = MkdirState::default();
-    loop {
-        let step = swr_v1_corebase_mkdir_next(input, scratch, &mut state);
-        if step != 1 {
-            return step;
-        }
-        // The prefix the cursor just terminated inside scratch.
-        let Ok(prefix) = CStr::from_bytes_until_nul(scratch) else {
-            return 3;
-        };
-        if sys::access(prefix, libc::R_OK) != 0 && sys::mkdir(prefix, 0o755) == -1 {
-            return 1;
+    while mkdir_next(input, scratch, &mut state)? {
+        let prefix = CStr::from_bytes_until_nul(scratch).map_err(|_| MkdirError::InvalidState)?;
+        if sys::access(prefix, libc::R_OK).is_err() {
+            sys::mkdir(prefix, 0o755)
+                .map_err(|error| MkdirError::Io(error.raw_os_error().unwrap_or(0)))?;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Preserve the original cursor and upstream test's status assertions.
+    fn mkdir_status(error: MkdirError) -> i32 {
+        match error {
+            MkdirError::Io(_) => 1,
+            MkdirError::TooLong => 2,
+            MkdirError::InvalidState => 3,
+        }
+    }
+
+    fn swr_v1_corebase_mkdir_next(input: &[u8], output: &mut [u8], state: &mut MkdirState) -> i32 {
+        mkdir_next(input, output, state).map_or_else(mkdir_status, i32::from)
+    }
+
+    fn swr_v1_corebase_mkdir_complete(input: &[u8], scratch: &mut [u8]) -> i32 {
+        mkdir_recursive(input, scratch).map_or_else(mkdir_status, |()| 0)
+    }
 
     #[test]
     fn mkdir_prefixes_preserve_slashes_and_original_nul_order() {

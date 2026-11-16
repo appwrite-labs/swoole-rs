@@ -3,9 +3,7 @@
 //! SOCKS5 and HTTP proxy exchanges and the TLS handshake) over the socket's record,
 //! its proxies' owners and its resolver context, and `ssl_handshake`'s steps and
 //! waits. Native code keeps only the name lookup (`Host::lookup`).
-use crate::co_io::{
-    Message, NATIVE, available, borrowed_err, default_err, errno, owned_err, set_err,
-};
+use crate::co_io::{Message, available, borrowed_err, default_err, errno, ops, owned_err, set_err};
 use crate::co_socket::{Co, reinit};
 use crate::packet::recv_packet;
 use crate::socket_members::assign;
@@ -406,7 +404,7 @@ impl Connecting for Live<'_> {
             .net(|network| network.timeouts.dns)
             .unwrap_or(0.0);
         let mut address = Vec::<u8>::new();
-        let co = (NATIVE.current)();
+        let co = (ops().current)();
         // Locked like wait_event.
         self.socket.with_state(|state| state.bind(Events::RDWR, co));
         let with_port =

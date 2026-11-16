@@ -90,7 +90,7 @@ their assertions run now:
 | --- | --- |
 | `base.clamp` | `crates/process` `process_pool.rs` `base_clamp`, over `max_package_size`'s clamp (the one `swoole::clamp` caller) |
 | `base.datahead_dump` | `host.rs` `base_datahead_dump` (same input and assertion; `print` is gone) |
-| `base.mkdir_recursive` | `lib.rs` `base_mkdir_recursive`, over `swr_v1_corebase_mkdir_complete` |
+| `base.mkdir_recursive` | `lib.rs` `base_mkdir_recursive`, over `mkdir_recursive` (test adapter preserves the original status assertion) |
 | `base.hook`, `base.snprintf` | `hook.rs` and `host.rs` tests |
 | `base.intersection` | `crates/http` `static_context/selection.rs` `base_intersection`, over the index-file loop that took its job |
 | `base.dirname`, `base.string_format` | none: nothing in the hybrid takes a dirname or formats into a fresh buffer, so there is no function to test |
@@ -136,3 +136,10 @@ that took their callers, same inputs and expected values (`cargo test`):
 Results retain the failing syscall errno after another operation changes it, leave the
 output untouched on failure, and round-trip byte-valued options. Existing socket-call
 assertions retain their original integer/optional observations through local adapters.
+
+Filesystem status calls (`access`, `mkdir`, `unlink`, `chdir`, `chroot`) return
+`io::Result<()>`. Recursive mkdir returns `MkdirError`, carrying the syscall errno
+or a named path/state failure. The cursor tests retain every original assertion
+through local status adapters. `corebase-startup` checks real creation, repeated
+slashes and a file-parent error against the pinned engine, including warnings
+and last-error publication after releasing the task-path lock.

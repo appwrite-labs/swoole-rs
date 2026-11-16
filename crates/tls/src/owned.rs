@@ -585,7 +585,7 @@ fn readable(path: &[u8], origin: &CStr, what: &str) -> bool {
     let name = path.split(|&b| b == 0).next().unwrap_or_default();
     let terminated = [name, b"\0"].concat();
     let found = CStr::from_bytes_with_nul(&terminated)
-        .is_ok_and(|name| swoole_rs_corebase::sys::access(name, libc::R_OK) >= 0);
+        .is_ok_and(|name| swoole_rs_corebase::sys::access(name, libc::R_OK).is_ok());
     if !found {
         let name = String::from_utf8_lossy(name);
         swoole_rs_corebase::log::warning(origin, format_args!("ssl {what} file[{name}] not found"));

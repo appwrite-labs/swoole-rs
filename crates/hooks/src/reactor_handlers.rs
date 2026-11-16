@@ -8,11 +8,6 @@ use core::ffi::{c_int, c_void};
 use swoole_rs_corebase::constants::FdType;
 use swoole_rs_reactor::{Event, Events, Handler, Running};
 
-#[cfg(not(test))]
-use defer_resume as wake;
-#[cfg(test)]
-use tests::wake;
-
 /// The fired socket's object and fd.
 fn fired(event: &Event) -> (*mut c_void, c_int) {
     let object = event.socket().map_or(core::ptr::null_mut(), |socket| {
@@ -97,9 +92,12 @@ extern "C" fn iouring_ready(_: Running<'_>, _: &mut Event) -> c_int {
     crate::iouring::ready()
 }
 
-/// `sw_reactor()->defer([co] { co->resume(); })`.
-#[cfg(not(test))]
-fn defer_resume(co: Parked) {
+/// `sw_reactor()->defer([co] { co->resume(); })`, or the unit tests' recorder.
+fn wake(co: Parked) {
+    #[cfg(test)]
+    if let Some(wake) = tests::WAKE {
+        return wake(co);
+    }
     // Upstream dereferences the thread's null reactor; abort instead.
     if swoole_rs_reactor::event_api::swoole_event_defer_value(co).is_err() {
         swoole_rs_corebase::fatal("no reactor to defer the resume to");
@@ -129,11 +127,13 @@ mod tests {
     fn set(fd_type: c_int, events: Events, handler: Handler) {
         HANDLERS.with_borrow_mut(|handlers| handlers.push((fd_type, events, handler)));
     }
+    /// Records the wake in place of deferring it.
+    pub(super) const WAKE: Option<fn(Parked)> = Some(wake);
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the native wake's signature, which defers it"
     )]
-    pub(super) fn wake(co: Parked) {
+    fn wake(co: Parked) {
         assert_eq!(co.co(), CO);
         WOKEN.set(WOKEN.get() + 1);
     }

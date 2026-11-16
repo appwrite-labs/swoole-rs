@@ -234,13 +234,25 @@ impl<T> PhpLocal<T> {
     }
 }
 
-impl<T> PhpLocal<std::cell::RefCell<T>> {
-    pub fn with_borrow<R>(&'static self, php: Php<'_>, f: impl FnOnce(&T) -> R) -> R {
-        self.with(php, |cell| f(&cell.borrow()))
+impl<T> PhpLocal<std::cell::Cell<T>> {
+    /// `Cell::set`: the old value is dropped here, after it is out of the cell.
+    pub fn set(&'static self, php: Php<'_>, value: T) {
+        self.with(php, |cell| cell.set(value));
     }
 
-    pub fn with_borrow_mut<R>(&'static self, php: Php<'_>, f: impl FnOnce(&mut T) -> R) -> R {
-        self.with(php, |cell| f(&mut cell.borrow_mut()))
+    /// `Cell::replace`: the value, with `value` in its place.
+    #[must_use]
+    pub fn replace(&'static self, php: Php<'_>, value: T) -> T {
+        self.with(php, |cell| cell.replace(value))
+    }
+
+    /// `Cell::take`: the value, with its default in its place.
+    #[must_use]
+    pub fn take(&'static self, php: Php<'_>) -> T
+    where
+        T: Default,
+    {
+        self.with(php, std::cell::Cell::take)
     }
 }
 
@@ -248,9 +260,5 @@ impl<T: Copy> PhpLocal<std::cell::Cell<T>> {
     #[must_use]
     pub fn get(&'static self, php: Php<'_>) -> T {
         self.with(php, std::cell::Cell::get)
-    }
-
-    pub fn set(&'static self, php: Php<'_>, value: T) {
-        self.with(php, |cell| cell.set(value));
     }
 }

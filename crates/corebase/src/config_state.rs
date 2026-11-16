@@ -169,7 +169,7 @@ use crate::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 enum TaskDir {
     Relative,
     /// `swoole_mkdir_recursive` failed; the failing prefix is in `scratch`.
-    Mkdir(i32),
+    Mkdir(crate::MkdirError),
     TooLong,
 }
 
@@ -184,11 +184,8 @@ fn set_task_path(
     if bytes.first() != Some(&b'/') {
         return Err(TaskDir::Relative);
     }
-    if crate::sys::access(dir, libc::R_OK) < 0 {
-        let status = crate::swr_v1_corebase_mkdir_complete(bytes, scratch);
-        if status != 0 {
-            return Err(TaskDir::Mkdir(status));
-        }
+    if crate::sys::access(dir, libc::R_OK).is_err() {
+        crate::mkdir_recursive(bytes, scratch).map_err(TaskDir::Mkdir)?;
     }
     let path = [bytes, b"/", crate::constants::SW_TASK_TMP_FILE.as_bytes()].concat();
     let length = path.len();
@@ -212,8 +209,7 @@ pub fn set_task_tmpdir(dir: &CStr) -> bool {
     drop(slot);
     let mkdir = c"swoole_mkdir_recursive";
     match result {
-        Err(TaskDir::Mkdir(1)) => {
-            let code = crate::sys::errno();
+        Err(TaskDir::Mkdir(crate::MkdirError::Io(code))) => {
             let failed = CStr::from_bytes_until_nul(&scratch).unwrap_or_default();
             let failed = failed.to_string_lossy();
             crate::log::sys_warning_errno(code, mkdir, format_args!("mkdir('{failed}') failed"));
