@@ -10,9 +10,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_httpbindings::{RequestOption, request_option};
 use swoole_rs_phpstubs::http_request;
 use swoole_rs_phpswoole::MinitArgs;
-use swoole_rs_zend::{
-    Call, Custom, CustomClass, Key, Object, Value, handlers, sys::ZEND_ACC_PUBLIC,
-};
+use swoole_rs_zend::{Call, Custom, CustomClass, Key, Value, handlers, sys::ZEND_ACC_PUBLIC};
 use swoole_rs_zend::{method_table, sys as z};
 
 pub(crate) static REQUEST: CustomClass<Data> = CustomClass::new();
@@ -28,21 +26,22 @@ impl Custom for Data {
     fn new() -> Self {
         Self(Holder::new(None))
     }
+
+    /// The object goes: the uploads it received are removed.
+    fn free(&self, this: &Value) {
+        if let Some(mut ctx) = self.0.get()
+            && ctx.state().request.ztmpfiles.get().is_some()
+        {
+            parse::release_uploads(this);
+        }
+    }
 }
 
-/// The object goes: its uploads are removed and the context, unless the
-/// response still holds it, freed.
+/// Then the context, unless the response still holds it, is freed.
 impl Drop for Data {
     fn drop(&mut self) {
         let Some(mut ctx) = self.0.get() else { return };
-        let state = ctx.state();
-        if state.request.ztmpfiles.get().is_some() {
-            let std = Object::std(std::ptr::from_mut(self).cast::<Object<Self>>());
-            // SAFETY: the request object, its properties still live, and the
-            // declared `tmpfiles` slot's offset.
-            unsafe { z::swr_zend_http_uploads_release(std, parse::tmpfiles_offset()) };
-        }
-        state.request.zobject.clear();
+        ctx.state().request.zobject.clear();
         // SAFETY: the context the object held.
         unsafe { context::free(ctx) };
     }

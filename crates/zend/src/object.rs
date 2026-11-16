@@ -210,6 +210,10 @@ pub trait Custom: Sized + 'static {
     /// went, so Zend frees it next unless this step gives it a new one; at
     /// shutdown an object something still holds is destructed with `last` false.
     fn destruct(&self, _last: bool) {}
+    /// The object's `free_obj` step before its data drops: `this` names the
+    /// object, whose properties are still live, without a reference of its
+    /// own. Zend frees the object next, so it must not run PHP code.
+    fn free(&self, _this: &Value) {}
     /// Whether PHP may serialize the objects, asked once, when the class registers.
     #[must_use]
     fn serializable() -> bool {
@@ -292,13 +296,20 @@ unsafe extern "C" fn create<T: Custom>(ce: *mut zend_class_entry) -> *mut zend_o
     LaidOut::<T>(ce, PhantomData).create(T::new())
 }
 
-/// `T`'s `free_obj` handler: drop the data, then free the standard object.
+/// `T`'s `free_obj` handler: [`Custom::free`], drop the data, then free the
+/// standard object.
 /// A bailout the drop defers (releasing a callable can run PHP code) is
 /// raised last, unless one was already pending.
 /// # Safety
 /// Zend calls it once, with one of `T`'s objects whose last reference went.
 unsafe extern "C" fn free<T: Custom>(std: *mut zend_object) {
     bailout::finish_after(|| {
+        // Per Zend, a live object of `T`'s class until the drop below.
+        let object = ObjectRef(std, PhantomData);
+        if let Some(data) = object.custom::<T>() {
+            let mut this = object.copy_value();
+            data.free(Value::of(&mut this));
+        }
         // SAFETY: per Zend; nothing borrows the data any more.
         unsafe { Object::<T>::data_ptr(std).drop_in_place() };
         // SAFETY: as above.
