@@ -26,7 +26,7 @@ pub fn exec(command: &CStr, errors: bool, status: &mut c_int) -> Option<Vec<u8>>
         return None;
     };
     // `SocketImpl socket(fd, SW_SOCK_UNIX_STREAM)`, which takes the pipe.
-    let owned = crate::co_socket::owned(fd, 0, SocketType::SW_SOCK_UNIX_STREAM as c_int, 0);
+    let owned = crate::co_socket::owned(fd, 0, SocketType::SW_SOCK_UNIX_STREAM as c_int, 0, false);
     let socket = owned.co();
     let mut output = Vec::new();
     let mut chunk = vec![0; CHUNK];

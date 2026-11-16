@@ -82,11 +82,19 @@ impl HeapEvent {
         core::mem::ManuallyDrop::new(self).0
     }
 
+    /// The copy, shared. The one other party that reaches it, the dispatching
+    /// coroutine, only sets `canceled` (an atomic) until its completion, and the
+    /// worker writes its result only once it has finished reading.
+    fn event(&self) -> &AsyncEvent {
+        // SAFETY: the type's invariant: the live copy, written through no other
+        // pointer but its atomic `canceled` while its owner borrows it.
+        unsafe { &*self.0 }
+    }
+
     /// Hands the copy to the reactor thread that owns its pipe, or frees it if the
     /// write fails.
     fn send(self) {
-        // SAFETY: the live copy, whose `pipe_socket` nothing writes once dispatched.
-        let pipe = unsafe { (*self.0).pipe_socket };
+        let pipe = self.event().pipe_socket;
         // SAFETY: the type's invariant: the live write end of the event's pipe.
         let socket = unsafe { Socket::from_ptr(pipe.cast()) };
         let token = self.0.expose_provenance().to_ne_bytes();
@@ -115,9 +123,9 @@ impl Drop for HeapEvent {
 /// was canceled, then sends the event back with the copy's result.
 extern "C" fn execute(token: usize) {
     let event = HeapEvent::of_token(token);
-    // SAFETY: the pool passes a dispatched event; until it is sent back the reactor
-    // thread only sets `canceled`, atomically, and reads nothing the worker writes.
-    let mut job = unsafe { &*event.0 }.clone();
+    // Until it is sent back the reactor thread only sets `canceled`, atomically, and
+    // reads nothing the worker writes.
+    let mut job = event.event().clone();
     match job.handler {
         None => (job.error, job.retval) = (AIO_BAD_REQUEST, -1),
         Some(_) if job.canceled.load(Relaxed) != 0 => (job.error, job.retval) = (AIO_CANCELED, -1),
@@ -300,8 +308,8 @@ pub extern "C" fn dispatch(request: &AsyncEvent) -> *mut AsyncEvent {
 /// A completed event on its reactor thread: runs its callback unless canceled.
 fn complete(token: usize) {
     let event = HeapEvent::of_token(token);
-    // SAFETY: the worker sent the event back and no longer touches it.
-    let event_ref = unsafe { &*event.0 };
+    // The worker sent the event back and no longer touches it.
+    let event_ref = event.event();
     if event_ref.canceled.load(Relaxed) == 0
         && let Some(callback) = event_ref.callback
     {
