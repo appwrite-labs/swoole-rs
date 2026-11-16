@@ -92,12 +92,11 @@ fn local_mac(call: &Call) {
     // Upstream's 4096-byte buffer, as whole requests.
     const REQUESTS: usize = 4096 / size_of::<libc::ifreq>();
 
-    let sock = swoole_rs_corebase::sys::socket(libc::AF_INET, libc::SOCK_DGRAM, 0);
-    if sock < 0 {
+    let Ok(sock) = swoole_rs_corebase::sys::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) else {
         sys_warning(b"socket creation failed");
         call.set_bool(false);
         return;
-    }
+    };
     let mut buffer: [libc::ifreq; REQUESTS] = zeroed();
     let mut conf: libc::ifconf = zeroed();
     let length = c_int::try_from(size_of_val(&buffer)).unwrap_or(c_int::MAX);

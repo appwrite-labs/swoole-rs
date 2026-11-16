@@ -143,3 +143,8 @@ or a named path/state failure. The cursor tests retain every original assertion
 through local status adapters. `corebase-startup` checks real creation, repeated
 slashes and a file-parent error against the pinned engine, including warnings
 and last-error publication after releasing the task-path lock.
+
+`corebase::sys` descriptor tests cover typed `socket`, `dup` and `dup2` results:
+errors retain errno, failed duplication leaves its target open, self-duplication
+returns the target, and duplicated pipe descriptors share their original behavior.
+PHP and native adapters retain their existing integer and warning contracts.

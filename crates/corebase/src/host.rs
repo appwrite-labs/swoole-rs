@@ -112,16 +112,16 @@ pub fn swoole_shell_exec(command: &CStr, get_error_stream: bool) -> Option<(c_in
         _ = close(read);
         if get_error_stream {
             if write == libc::STDOUT_FILENO {
-                dup2(write, libc::STDERR_FILENO);
+                _ = dup2(write, libc::STDERR_FILENO);
             } else if write == libc::STDERR_FILENO {
-                dup2(write, libc::STDOUT_FILENO);
+                _ = dup2(write, libc::STDOUT_FILENO);
             } else {
-                dup2(write, libc::STDOUT_FILENO);
-                dup2(write, libc::STDERR_FILENO);
+                _ = dup2(write, libc::STDOUT_FILENO);
+                _ = dup2(write, libc::STDERR_FILENO);
                 _ = close(write);
             }
         } else if write != libc::STDOUT_FILENO {
-            dup2(write, libc::STDOUT_FILENO);
+            _ = dup2(write, libc::STDOUT_FILENO);
             _ = close(write);
         }
         let argv = [
@@ -554,8 +554,9 @@ pub extern "C" fn swoole_system_random(min: c_int, max: c_int) -> c_int {
 
 /// `dup2` onto stdout, then stderr: each call's errno, 0 when it succeeded.
 fn redirect(new_fd: c_int) -> [c_int; 2] {
-    [libc::STDOUT_FILENO, libc::STDERR_FILENO]
-        .map(|target| if dup2(new_fd, target) < 0 { errno() } else { 0 })
+    [libc::STDOUT_FILENO, libc::STDERR_FILENO].map(|target| {
+        dup2(new_fd, target).map_or_else(|error| error.raw_os_error().unwrap_or(0), |_| 0)
+    })
 }
 
 /// `void swoole_redirect_stdout(int new_fd)`: `dup2` onto stdout, then stderr.
