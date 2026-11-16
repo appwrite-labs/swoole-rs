@@ -345,8 +345,7 @@ impl<'a> Server<'a> {
     /// `Server::get_connection_num()`: the per-worker cells when there are any.
     #[must_use]
     pub fn connection_num(self) -> usize {
-        let gs = self.counters();
-        self.connections(&gs.connection_num, gs.cells())
+        self.connections(&self.counters().connection_num, self.cells())
     }
 
     /// The sum of a record's per-worker connection `cells`, or its one shared
@@ -369,10 +368,15 @@ impl<'a> Server<'a> {
             .filter(|_| id < self.config().worker_num.get() as usize)
     }
 
+    /// The server's per-worker connection counts; none when it keeps one total.
+    fn cells(self) -> &'a [AtomicU32] {
+        crate::shared::words(&self.state().tables_ref().connection_nums)
+    }
+
     /// Event worker `id`'s count of the server's connections (base mode's
     /// `gs->connection_nums[id]`), if the server counts them per worker.
     pub(crate) fn worker_connections(self, id: usize) -> Option<&'a AtomicU32> {
-        self.cell(self.counters().cells(), id)
+        self.cell(self.cells(), id)
     }
 
     /// Event worker `id`'s count of `port`'s connections, as [`Self::worker_connections`];
@@ -382,7 +386,7 @@ impl<'a> Server<'a> {
         port: Port<'a>,
         id: usize,
     ) -> Option<&'a AtomicU32> {
-        self.cell(port.config().counters()?.cells(), id)
+        self.cell(port.config().cells(), id)
     }
 
     /// `Server::get_connection_verify(session_id)`.
@@ -436,7 +440,7 @@ impl<'a> Server<'a> {
     pub(crate) fn port_connections(self, config: &PortConfig) -> usize {
         config
             .counters()
-            .map_or(0, |gs| self.connections(&gs.connection_num, gs.cells()))
+            .map_or(0, |gs| self.connections(&gs.connection_num, config.cells()))
     }
 
     /// `Server::get_max_connection()`.
@@ -482,7 +486,7 @@ impl<'a> Server<'a> {
     /// The server's worker arrays and counts.
     #[must_use]
     pub fn workers(self) -> ServerWorkers<'a> {
-        let config = self.config();
+        let (config, tables) = (self.config(), self.state().tables_ref());
         let array = |records: &swoole_rs_memory::members::Shm, count: usize| {
             let base = records.as_ptr().cast::<WorkerRecord>();
             if base.is_null() {
@@ -490,19 +494,19 @@ impl<'a> Server<'a> {
             }
             // SAFETY: `create` maps `workers` with `worker_num` records, and the
             // factory's start `user_workers` with one per added user worker
-            // (`add_worker` refuses once the factory exists); each stays mapped, as the
-            // counts stay, until the server is destroyed after its pools stop.
+            // (`add_worker` refuses once the factory exists); the counts stay, and only
+            // the tables' `unmap`, through `&mut`, unmaps either.
             unsafe { core::slice::from_raw_parts::<'a, WorkerRecord>(base, count) }
         };
         let (events, users) = (config.worker_num.get(), self.user_worker_num());
         ServerWorkers::new(
             (
                 self.event_pool_ref(),
-                array(&config.workers, events as usize),
+                array(&tables.workers, events as usize),
                 events,
             ),
             (self.task_pool_ref(), config.task_worker_num.get()),
-            (array(&config.user_workers, users), users),
+            (array(&tables.user_workers, users), users),
         )
     }
 
@@ -878,20 +882,20 @@ mod tests {
         let serv = server.serv();
         let mut counters = PortCounters::default();
         counters.connection_num.store(99, Ordering::Relaxed);
-        let port = PortConfig::boxed(0);
+        let mut port = PortConfig::boxed(0);
         port.gs.set((&raw mut counters).cast());
         serv.config().worker_num.set(2);
         assert_eq!(serv.port_connections(&port), 99);
-        counters.connection_nums = swoole_rs_memory::members::Shm::calloc(2, 4);
-        counters.cells()[0].store(3, Ordering::Relaxed);
-        counters.cells()[1].store(5, Ordering::Relaxed);
-        port.gs.set((&raw mut counters).cast());
+        port.connection_nums
+            .fill(swoole_rs_memory::members::Shm::calloc(2, 4));
+        port.cells()[0].store(3, Ordering::Relaxed);
+        port.cells()[1].store(5, Ordering::Relaxed);
         assert_eq!(serv.port_connections(&port), 8);
         serv.config().worker_num.set(0);
         assert_eq!(serv.port_connections(&port), 0);
         port.gs.set(core::ptr::null_mut());
         assert_eq!(serv.port_connections(&port), 0, "no counters yet");
-        counters.connection_nums.free();
+        port.connection_nums.free();
     }
 
     /// A worker hook gets `{ server, worker id }`; a server hook, the server.

@@ -79,16 +79,14 @@ fn schedule_worker(serv: Server, fd: c_int, data: Option<&swoole_rs_server::Send
     usize::try_from(worker_id).unwrap()
 }
 
-use swoole_rs_process::worker_record::WorkerRecord;
-
 type Worker = swoole_rs_process::worker_record::Worker<'static>;
 
 /// `serv.workers[i]`: the event worker array.
 fn worker(serv: Server, id: usize) -> Worker {
     assert!(id < serv.config().worker_num.get() as usize);
-    let workers = serv.config().workers.as_ptr().cast::<WorkerRecord>();
-    // SAFETY: the created server's `worker_num` event workers.
-    unsafe { Worker::new(workers.add(id)) }
+    serv.view()
+        .worker_record(u16::try_from(id).unwrap())
+        .unwrap()
 }
 
 /// A process-mode Server of `worker_num` workers and `dispatch_mode`, listening on

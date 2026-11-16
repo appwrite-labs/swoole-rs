@@ -575,9 +575,10 @@ impl Drop for ServerState {
             &mut self.tables,
             std::rc::Rc::new(crate::records::ServerTables::default()),
         ));
-        self.config
-            .gs
-            .replace(swoole_rs_memory::members::Shm::empty());
+        // The state's own configuration, so nothing borrows its shared record.
+        if let Some(config) = std::rc::Rc::get_mut(&mut self.config) {
+            config.gs.free();
+        }
     }
 }
 

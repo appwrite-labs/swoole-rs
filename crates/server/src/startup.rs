@@ -122,9 +122,10 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
     }
     tables.map_sessions(sessions);
     let count = state.ports.len();
-    let port_gs = Shm::calloc(count, size_of::<PortCounters>());
-    let list = port_gs.as_ptr().cast::<PortCounters>();
-    tables.port_gs_list.replace(port_gs);
+    tables
+        .port_gs_list
+        .fill(Shm::calloc(count, size_of::<PortCounters>()));
+    let list = tables.port_gs_list.as_ptr().cast::<PortCounters>();
     if list.is_null() {
         let size = size_of::<PortCounters>();
         let m = format_args!("sw_shm_calloc({count}, {size}) for port_connection_num_array failed");
@@ -147,7 +148,7 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
         log::sys_warning(c"Server::create", m);
         return false;
     }
-    config.workers.replace(workers);
+    tables.workers.fill(workers);
     let factory = match state.config_ref().mode_ {
         Mode::Base => crate::base_factory::create(serv),
         Mode::Process => hybrid().process_factory(serv),
@@ -161,7 +162,7 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
         let Some(results) = create_task_workers(serv) else {
             return false;
         };
-        config.task_results.replace(results);
+        tables.task_results.fill(results);
         if !hybrid().task_workers(serv) {
             return false;
         }
@@ -491,60 +492,38 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
     }
     hybrid().step(serv, Step::ReleasePipeBuffers);
     hybrid().step(serv, Step::ClosePorts);
-    unmap(&config.user_workers);
     hybrid().step(serv, Step::ClearSignals);
     if let Some(gs) = gs {
         gs.start.store(false, SeqCst);
         gs.shutdown.store(true, SeqCst);
     }
     state.callbacks.call_server(ServerSlot::Shutdown, serv);
-    match mode {
-        Mode::Base => destroy_base_factory(state),
-        Mode::Process => _ = hybrid().step(serv, Step::DestroyProcessFactory),
-        // `destroy_thread_factory` frees only tables, which `free_server` frees.
-        Mode::Thread => {}
+    // `destroy_base_factory` and `destroy_thread_factory` free only tables, which
+    // `free_server` frees, and port counts, which go with their ports.
+    if mode == Mode::Process {
+        hybrid().step(serv, Step::DestroyProcessFactory);
     }
     if config.task_worker_num.get() > 0 {
-        unmap(&config.task_results);
         hybrid().step(serv, Step::DestroyTaskPool);
     }
     free_server(serv);
 }
 
-/// `SharedMemory::free` of a table or configuration mapping, through `&`: the
-/// field is a cell, which only the master writes, once no other thread or process
-/// uses the server.
-fn unmap(shm: &Shm) {
-    shm.replace(Shm::empty());
-}
-
-/// `Server::destroy_base_factory()`: the connection counts, the server's and each
-/// port's, which no other process shares once the workers are reaped. The connection
-/// list goes with the other tables, in [`free_server`].
-fn destroy_base_factory(state: &crate::ServerState) {
-    if let Some(gs) = crate::shared::server_counters(state) {
-        unmap(&gs.connection_nums);
-    }
-    for port in &state.ports {
-        if let Some(gs) = port.config().counters() {
-            unmap(&gs.connection_nums);
-        }
-    }
-}
-
-/// The tables (the connection and session lists and the reactor threads, which every
-/// mode's factory destroy left), port counters, workers and factory, then
-/// `SwooleG.server`.
+/// The tables (the server's mappings but its shared record and its ports' counts, and
+/// the reactor threads, which every mode's factory destroy left) and factory, then
+/// `SwooleG.server`. The ports stop naming their counters, which go with the tables.
 fn free_server(serv: view::Server<'_>) {
     let state = serv.state();
+    for port in &state.ports {
+        port.set_gs(core::ptr::null_mut());
+    }
     // SAFETY: the master's teardown, once the workers, reactor threads and shutdown
-    // callbacks are done: nothing borrows the tables while this lives.
+    // callbacks are done and no port names its counters: nothing borrows the tables,
+    // or anything lent out of them, while this lives.
     let tables = unsafe { &mut *state.tables() };
-    tables.unmap_lists();
+    tables.unmap();
     drop(tables.take_reactor_threads());
-    let (tables, config) = (state.tables_ref(), state.config_ref());
-    unmap(&tables.port_gs_list);
-    unmap(&config.workers);
+    let config = state.config_ref();
     if !config.factory_.get().is_null() {
         hybrid().step(serv, Step::DeleteFactory);
         config.factory_.set(core::ptr::null_mut());
@@ -561,7 +540,6 @@ pub(crate) fn release_abandoned_base(serv: view::Server<'_>) {
     if let Some(gs) = crate::shared::server_counters(state) {
         gs.shutdown.store(true, SeqCst);
     }
-    destroy_base_factory(state);
     free_server(serv);
 }
 
@@ -719,7 +697,7 @@ mod tests {
         let free = |live: &LiveServer| {
             let tables = unsafe { &mut *state.tables() };
             assert!(tables.sessions_mapped(), "sessions");
-            assert!(!config(live).workers.is_null(), "workers");
+            assert!(!tables.workers.is_null(), "workers");
             let port = state.ports.get(0).unwrap().config();
             assert_eq!(
                 port.gs.get().addr(),
@@ -728,9 +706,7 @@ mod tests {
             );
             assert_eq!(config(live).factory_.get().addr(), 0x70, "the factory");
             config(live).factory_.set(core::ptr::null_mut());
-            config(live).workers.free();
-            tables.unmap_lists();
-            tables.port_gs_list.free();
+            tables.unmap();
         };
         free(&live);
 
@@ -742,14 +718,12 @@ mod tests {
             state.tables_ref().connections_mapped(),
             "the worker's own connections"
         );
-        let gs = config(&live)
-            .gs
-            .as_ptr()
-            .cast::<crate::shared::ServerShared>();
-        unsafe { (*gs).counters.connection_nums.free() };
+        assert!(
+            !state.tables_ref().connection_nums.is_null(),
+            "server counts"
+        );
         let port = state.ports.get(0).unwrap().config();
-        let port_gs = port.gs.get().cast::<PortCounters>();
-        unsafe { (*port_gs).connection_nums.free() };
+        assert_eq!(port.cells().len(), 2, "a port count per worker");
         free(&live);
     }
 
@@ -1015,7 +989,8 @@ mod tests {
             let tables = live.state().tables_ref();
             assert!(!tables.sessions_mapped(), "sessions freed");
             assert!(tables.port_gs_list.is_null(), "port counters freed");
-            assert!(config(&live).workers.is_null(), "workers freed");
+            assert!(live.port().counters().is_none(), "and no port names them");
+            assert!(tables.workers.is_null(), "workers freed");
             assert!(config(&live).factory_.get().is_null(), "factory deleted");
             assert!(!tables.connections_mapped(), "connections freed");
         }

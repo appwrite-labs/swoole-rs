@@ -464,11 +464,11 @@ mod tests {
         // zeroed event pool, past the counters.
         config.gs =
             swoole_rs_memory::members::Shm::calloc(1, size_of::<crate::shared::ServerShared>());
-        config.workers = naming(&mut workers);
         config.worker_num.set(4);
         config.reactor_num.set(2);
         config.mode_ = Mode::Base;
         let tables = server.tables_mut();
+        tables.workers = naming(&mut workers);
         *tables.connection_list_mut() = naming(&mut connections);
         tables.reactor_pipe_num.set(2);
         // SAFETY: the table just named holds 4 records.

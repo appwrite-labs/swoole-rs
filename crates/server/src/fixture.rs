@@ -142,6 +142,11 @@ impl LiveServer {
         self.server.config_mut()
     }
 
+    /// The tables, to write.
+    pub(crate) fn tables_mut(&mut self) -> &mut crate::records::ServerTables {
+        self.server.tables_mut()
+    }
+
     pub(crate) fn counters(&self) -> &ServerCounters {
         &self.shared.counters
     }

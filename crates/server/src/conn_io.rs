@@ -546,14 +546,18 @@ fn queue_close(conn: Connection<'_>, sock: Socket<'_>) {
 /// base mode counts per reactor.
 fn count_close(state: &crate::ServerState, port: Option<&PortConfig>, reactor: Reactor) {
     let gs = crate::shared::server_counters(state);
-    let (Some(gs), Some(port)) = (gs, port.and_then(PortConfig::counters)) else {
+    let (Some(gs), Some(config)) = (gs, port) else {
+        return;
+    };
+    let Some(port) = config.counters() else {
         return;
     };
     gs.close_count.fetch_add(1, SeqCst);
     port.close_count.fetch_add(1, SeqCst);
     if state.config_ref().mode_ == Mode::Base {
         let id = usize::from(reactor.handle().id());
-        for cells in [gs.cells(), port.cells()] {
+        let server = crate::shared::words(&state.tables_ref().connection_nums);
+        for cells in [server, config.cells()] {
             if let Some(cell) = cells.get(id) {
                 cell.fetch_sub(1, SeqCst);
             }
