@@ -237,7 +237,7 @@ pub fn listen_socket(
 /// listener, which it records with its address.
 #[cfg(any(feature = "upstream-symbols", test))]
 fn listen(pool: &PoolRecord, host: &CStr, port: c_int, make: impl FnOnce() -> *mut c_void) -> bool {
-    if pool.ipc_mode != crate::process_pool::IpcMode::Socket {
+    if pool.ipc_mode.get() != crate::process_pool::IpcMode::Socket {
         swoole_rs_corebase::log::error_log(
             swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
             swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int,
@@ -292,7 +292,7 @@ pub fn send_message(
     let handle = pool;
     let pool = pool.record();
     // `get_worker`: the pool's record for `worker_id`.
-    let index = worker_id.wrapping_sub(u32::from(pool.start_id)) as usize;
+    let index = worker_id.wrapping_sub(u32::from(pool.start_id.get())) as usize;
     // `pipes` owns the workers' pipes: `create` makes one per worker or none, and
     // `destroy` frees them and clears it.
     let Some(worker) = pool.worker(index).filter(|_| pool.has_pipes()) else {
@@ -597,9 +597,9 @@ pub(crate) mod tests {
     fn listen_needs_a_socket_pool_and_keeps_its_listener() {
         install();
         // SAFETY: a zeroed record is a pool before `create`.
-        let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
-        pool.ipc = pool_ipc_new(true);
-        pool.ipc_mode = crate::process_pool::IpcMode::UnixSock;
+        let pool: PoolRecord = unsafe { std::mem::zeroed() };
+        pool.ipc.set(pool_ipc_new(true));
+        pool.ipc_mode.set(crate::process_pool::IpcMode::UnixSock);
         let refused = listen(&pool, c"127.0.0.1", 9501, || make(1, 9501));
         assert!(!refused, "an SW_IPC_UNIXSOCK pool has no stream listener");
         assert_eq!(
@@ -612,28 +612,28 @@ pub(crate) mod tests {
             )],
             "the upstream warning"
         );
-        pool.ipc_mode = crate::process_pool::IpcMode::Socket;
+        pool.ipc_mode.set(crate::process_pool::IpcMode::Socket);
         let failed = listen(&pool, c"127.0.0.1", 9502, || make(1, 9502));
         assert!(!failed, "no socket, no listener");
         // SAFETY: the pool's IPC state.
         assert!(
-            swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc }).is_null(),
+            swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc.get() }).is_null(),
             "none kept"
         );
         let listened = listen(&pool, c"127.0.0.1", 9501, || make(1, 9501));
         assert!(listened, "listening");
         // SAFETY: the pool's IPC state.
-        let listener = swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc });
+        let listener = swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc.get() });
         assert_eq!(
             listener.cast_const(),
             (&raw const LISTENER).cast(),
             "the socket is kept"
         );
         // SAFETY: the pool's IPC state.
-        let address = pool_ipc_address(unsafe { &*pool.ipc });
+        let address = pool_ipc_address(unsafe { &*pool.ipc.get() });
         assert_eq!(address, Some((c"127.0.0.1", 9501)), "and its address");
         // SAFETY: the pool's IPC state, not used again.
-        pool_ipc_free(*unsafe { Box::from_raw(pool.ipc) }, keep);
+        pool_ipc_free(*unsafe { Box::from_raw(pool.ipc.get()) }, keep);
     }
 
     #[test]
@@ -667,7 +667,7 @@ pub(crate) mod tests {
     fn a_response_needs_a_connection() {
         // SAFETY: a zeroed record is a pool before `create`.
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
-        pool.ipc = pool_ipc_new(true);
+        pool.ipc.set(pool_ipc_new(true));
         assert!(!response(PoolRef::from(&mut pool), b"ok"), "no connection");
         assert_eq!(
             swoole_rs_corebase::log::last_error(),
@@ -675,7 +675,7 @@ pub(crate) mod tests {
             "SW_ERROR_INVALID_PARAMS"
         );
         // SAFETY: the pool's IPC state, not used again.
-        pool_ipc_free(*unsafe { Box::from_raw(pool.ipc) }, keep);
+        pool_ipc_free(*unsafe { Box::from_raw(pool.ipc.get()) }, keep);
     }
 
     #[test]

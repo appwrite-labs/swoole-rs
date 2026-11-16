@@ -12,6 +12,7 @@
 
 use crate::task_file::Packed;
 use crate::worker_record::{Worker, WorkerType};
+use core::cell::Cell;
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::AtomicU32;
@@ -48,47 +49,50 @@ fn lend<T: ?Sized, R>(owner: &Owner<T>, f: impl FnOnce(&mut T) -> R) -> Option<R
 
 /// `swoole::ProcessPool`'s fields, in order. Rust owns this layout; the C++ view
 /// takes its fields from here (`SWR_POOL_RECORD_FIELDS`, `tools/process_records.py`).
+/// Every field but the three owners the record lends in place (`registry`, `queue`
+/// and `message_box`) is a cell or an atomic, so a handle writes it through
+/// `&PoolRecord` while other loans of the record are live.
 #[repr(C)]
 pub struct PoolRecord {
-    pub running: bool,
-    pub reload_init: bool,
-    pub read_message: bool,
-    pub started: bool,
-    pub schedule_by_sysvmsg: bool,
-    pub is_async: bool,
-    pub ipc_mode: IpcMode,
-    pub protocol_type: c_int,
-    pub master_pid: c_int,
-    pub max_wait_time: u32,
-    pub reload_count: u64,
-    pub reload_last_time: i64,
-    pub kind: u8,
-    pub start_id: u16,
-    pub use_msgqueue: bool,
-    pub use_socket: bool,
-    pub max_packet_size: u32,
-    pub msgqueue_key: c_int,
-    pub(crate) worker_num: u32,
-    pub max_request: u32,
-    pub max_request_grace: u32,
-    pub scheduler_warning: bool,
-    pub warning_time: i64,
-    pub(crate) on_start: Option<PoolFn>,
-    pub(crate) on_shutdown: Option<PoolFn>,
-    pub(crate) on_before_reload: Option<PoolFn>,
-    pub(crate) on_after_reload: Option<PoolFn>,
-    pub(crate) on_task: Option<TaskFn>,
-    pub(crate) on_worker_start: Option<WorkerFn>,
-    pub(crate) on_message: Option<MessageFn>,
-    pub(crate) on_worker_exit: Option<WorkerFn>,
-    pub(crate) on_worker_stop: Option<WorkerFn>,
-    pub(crate) on_worker_error: Option<ErrorFn>,
-    pub(crate) on_worker_message: Option<EventFn>,
-    pub(crate) on_worker_not_found: Option<NotFoundFn>,
-    pub(crate) main_loop: Option<MainLoopFn>,
+    pub running: Cell<bool>,
+    pub reload_init: Cell<bool>,
+    pub read_message: Cell<bool>,
+    pub started: Cell<bool>,
+    pub schedule_by_sysvmsg: Cell<bool>,
+    pub is_async: Cell<bool>,
+    pub ipc_mode: Cell<IpcMode>,
+    pub protocol_type: Cell<c_int>,
+    pub master_pid: Cell<c_int>,
+    pub max_wait_time: Cell<u32>,
+    pub reload_count: Cell<u64>,
+    pub reload_last_time: Cell<i64>,
+    pub kind: Cell<u8>,
+    pub start_id: Cell<u16>,
+    pub use_msgqueue: Cell<bool>,
+    pub use_socket: Cell<bool>,
+    pub max_packet_size: Cell<u32>,
+    pub msgqueue_key: Cell<c_int>,
+    pub(crate) worker_num: Cell<u32>,
+    pub max_request: Cell<u32>,
+    pub max_request_grace: Cell<u32>,
+    pub scheduler_warning: Cell<bool>,
+    pub warning_time: Cell<i64>,
+    pub(crate) on_start: Cell<Option<PoolFn>>,
+    pub(crate) on_shutdown: Cell<Option<PoolFn>>,
+    pub(crate) on_before_reload: Cell<Option<PoolFn>>,
+    pub(crate) on_after_reload: Cell<Option<PoolFn>>,
+    pub(crate) on_task: Cell<Option<TaskFn>>,
+    pub(crate) on_worker_start: Cell<Option<WorkerFn>>,
+    pub(crate) on_message: Cell<Option<MessageFn>>,
+    pub(crate) on_worker_exit: Cell<Option<WorkerFn>>,
+    pub(crate) on_worker_stop: Cell<Option<WorkerFn>>,
+    pub(crate) on_worker_error: Cell<Option<ErrorFn>>,
+    pub(crate) on_worker_message: Cell<Option<EventFn>>,
+    pub(crate) on_worker_not_found: Cell<Option<NotFoundFn>>,
+    pub(crate) main_loop: Cell<Option<MainLoopFn>>,
     /// The round robin's next worker, which other processes update atomically.
     pub round_id: AtomicU32,
-    pub(crate) workers: *mut WorkerRecord,
+    pub(crate) workers: Cell<*mut WorkerRecord>,
     pipes: Owner<Pipes>,
     // The records and resource owners are private: outside code uses the handle's
     // operations. The hooks are installed together ([`PoolRef::install`]), and `ptr`
@@ -97,18 +101,18 @@ pub struct PoolRecord {
     pub(crate) registry: Option<Box<WorkerRegistry>>,
     /// A message-queue pool's queue, which goes as the registry does.
     pub(crate) queue: Option<Box<swoole_rs_ossupport::QueueRecord>>,
-    pub(crate) ipc: *mut PoolIpc,
+    pub(crate) ipc: Cell<*mut PoolIpc>,
     pub(crate) message_box: SharedChannel,
     message_bus: Owner<Box<dyn std::any::Any>>,
     reload_task: Owner<ReloadTask>,
-    pub(crate) ptr: *mut c_void,
+    pub(crate) ptr: Cell<*mut c_void>,
     /// The `max_wait_time` timer `wait` arms to SIGKILL the workers still
     /// running. It stays armed after `wait` returns, which reaps only the first,
     /// and goes with the pool: `destroy`, or dropping the record, deletes it.
-    pub kill_timer: Option<ArmedTimer>,
+    pub kill_timer: Cell<Option<ArmedTimer>>,
     /// The key `ptr` is held under ([`PoolRef::hold`]), or null for none. A raw
     /// pointer, compared and never read, so a zeroed record holds nothing.
-    pub(crate) ptr_key: *const PoolObjectKey,
+    pub(crate) ptr_key: Cell<*const PoolObjectKey>,
 }
 
 /// A kind of object a pool's `ptr` holds ([`PoolRef::hold`]), named by the address of a
@@ -146,67 +150,67 @@ impl PoolRecord {
     #[must_use]
     pub const fn empty() -> Self {
         Self {
-            running: false,
-            reload_init: false,
-            read_message: false,
-            started: false,
-            schedule_by_sysvmsg: false,
-            is_async: false,
-            ipc_mode: IpcMode::None,
-            protocol_type: 0,
-            master_pid: 0,
-            max_wait_time: 0,
-            reload_count: 0,
-            reload_last_time: 0,
-            kind: 0,
-            start_id: 0,
-            use_msgqueue: false,
-            use_socket: false,
-            max_packet_size: 0,
-            msgqueue_key: 0,
-            worker_num: 0,
-            max_request: 0,
-            max_request_grace: 0,
-            scheduler_warning: false,
-            warning_time: 0,
-            on_start: None,
-            on_shutdown: None,
-            on_before_reload: None,
-            on_after_reload: None,
-            on_task: None,
-            on_worker_start: None,
-            on_message: None,
-            on_worker_exit: None,
-            on_worker_stop: None,
-            on_worker_error: None,
-            on_worker_message: None,
-            on_worker_not_found: None,
-            main_loop: None,
+            running: Cell::new(false),
+            reload_init: Cell::new(false),
+            read_message: Cell::new(false),
+            started: Cell::new(false),
+            schedule_by_sysvmsg: Cell::new(false),
+            is_async: Cell::new(false),
+            ipc_mode: Cell::new(IpcMode::None),
+            protocol_type: Cell::new(0),
+            master_pid: Cell::new(0),
+            max_wait_time: Cell::new(0),
+            reload_count: Cell::new(0),
+            reload_last_time: Cell::new(0),
+            kind: Cell::new(0),
+            start_id: Cell::new(0),
+            use_msgqueue: Cell::new(false),
+            use_socket: Cell::new(false),
+            max_packet_size: Cell::new(0),
+            msgqueue_key: Cell::new(0),
+            worker_num: Cell::new(0),
+            max_request: Cell::new(0),
+            max_request_grace: Cell::new(0),
+            scheduler_warning: Cell::new(false),
+            warning_time: Cell::new(0),
+            on_start: Cell::new(None),
+            on_shutdown: Cell::new(None),
+            on_before_reload: Cell::new(None),
+            on_after_reload: Cell::new(None),
+            on_task: Cell::new(None),
+            on_worker_start: Cell::new(None),
+            on_message: Cell::new(None),
+            on_worker_exit: Cell::new(None),
+            on_worker_stop: Cell::new(None),
+            on_worker_error: Cell::new(None),
+            on_worker_message: Cell::new(None),
+            on_worker_not_found: Cell::new(None),
+            main_loop: Cell::new(None),
             round_id: AtomicU32::new(0),
-            workers: ptr::null_mut(),
+            workers: Cell::new(ptr::null_mut()),
             pipes: Owner::new(None),
             registry: None,
             queue: None,
-            ipc: ptr::null_mut(),
+            ipc: Cell::new(ptr::null_mut()),
             message_box: SharedChannel::none(),
             message_bus: Owner::new(None),
             reload_task: Owner::new(None),
-            ptr: ptr::null_mut(),
-            kill_timer: None,
-            ptr_key: ptr::null(),
+            ptr: Cell::new(ptr::null_mut()),
+            kill_timer: Cell::new(None),
+            ptr_key: Cell::new(ptr::null()),
         }
     }
 
     /// The pool's worker count: how many records `workers` holds.
     #[must_use]
     pub fn worker_num(&self) -> u32 {
-        self.worker_num
+        self.worker_num.get()
     }
 
     /// The pool's `worker_num` worker records, or null before `create`.
     #[must_use]
     pub fn workers(&self) -> *mut WorkerRecord {
-        self.workers
+        self.workers.get()
     }
 
     /// The `SysV` message queue of a message-queue pool, or null.
@@ -220,7 +224,7 @@ impl PoolRecord {
     /// The pool's IPC state, or null before `create`.
     #[must_use]
     pub fn ipc(&self) -> *mut PoolIpc {
-        self.ipc
+        self.ipc.get()
     }
 
     /// The pool's message box (a shared-memory channel), or null.
@@ -237,12 +241,12 @@ impl PoolRecord {
     /// The pool's worker at `index`, or `None` past `worker_num`.
     #[must_use]
     pub fn worker(&self, index: usize) -> Option<Worker<'_>> {
-        if self.workers.is_null() || index >= self.worker_num as usize {
+        if self.workers.get().is_null() || index >= self.worker_num.get() as usize {
             return None;
         }
         // SAFETY: `workers` holds the pool's `worker_num` records, live as long as the
         // pool (the field is crate-private; `set_workers` states it).
-        Some(unsafe { Worker::new(self.workers.wrapping_add(index)) })
+        Some(unsafe { Worker::new(self.workers.get().wrapping_add(index)) })
     }
 
     /// Sets `workers`.
@@ -250,7 +254,7 @@ impl PoolRecord {
     /// # Safety
     /// `workers` holds the pool's `worker_num` records, live as long as the pool.
     pub unsafe fn set_workers(&mut self, workers: *mut WorkerRecord) {
-        self.workers = workers;
+        self.workers.set(workers);
     }
 
     /// The pool's worker at `raw`, or `None` when `raw` is none of its records.
@@ -263,9 +267,9 @@ impl PoolRecord {
     /// records.
     #[must_use]
     pub fn index_of(&self, raw: *const WorkerRecord) -> Option<usize> {
-        let offset = raw.addr().checked_sub(self.workers.addr())?;
+        let offset = raw.addr().checked_sub(self.workers.get().addr())?;
         let index = offset / size_of::<WorkerRecord>();
-        let own = !self.workers.is_null() && index < self.worker_num as usize;
+        let own = !self.workers.get().is_null() && index < self.worker_num.get() as usize;
         (own && offset % size_of::<WorkerRecord>() == 0).then_some(index)
     }
 
@@ -274,7 +278,7 @@ impl PoolRecord {
         // SAFETY: `ipc` is crate-private: null, or the state `create` made until
         // `destroy` frees it. Only these calls borrow it, none across a callback, so
         // nothing else borrows it while `f` runs.
-        unsafe { self.ipc.as_mut() }.map(f)
+        unsafe { self.ipc.get().as_mut() }.map(f)
     }
 
     /// The pool's stream listener (a native socket), or null.
@@ -308,9 +312,22 @@ impl PoolRecord {
     }
 }
 
+/// [`PoolRef::reset`]: each owner field, then each cell field, takes its value in
+/// [`PoolRecord::empty`], forgetting the old one. The pattern names every field, so
+/// a field added to the record and not here fails to compile.
+macro_rules! reset {
+    ($pool:ident; $($cell:ident),* ; $($owner:ident),*) => {{
+        let PoolRecord { $($cell,)* $($owner,)* round_id } = PoolRecord::empty();
+        $(_ = core::mem::ManuallyDrop::new($pool.replace(|record| &mut record.$owner, $owner));)*
+        let record = $pool.record();
+        $(_ = core::mem::ManuallyDrop::new(record.$cell.replace($cell.into_inner()));)*
+        record.round_id.store(round_id.into_inner(), core::sync::atomic::Ordering::Relaxed);
+    }};
+}
+
 /// A live pool, as the pool passes one to its callbacks. Like [`Worker`], it reads
-/// and writes through the pointer and makes no lasting reference to the record,
-/// which the pool's own code and signal handlers write while a callback runs.
+/// and writes the record's cells a field at a time, as the pool's own code and
+/// signal handlers do while a callback runs.
 ///
 /// Any record is a pool the operations over this handle can run on: a zeroed one,
 /// or one `create` made. The fields they trust (`worker_num` and the pointers from
@@ -427,15 +444,45 @@ impl<'a> PoolRef<'a> {
     /// before is forgotten, not freed. An empty pool's fields are valid values for
     /// every handle that reads them.
     pub fn reset(self) {
-        _ = core::mem::ManuallyDrop::new(self.replace(|record| record, PoolRecord::empty()));
+        reset!(
+            self;
+            running, reload_init, read_message, started, schedule_by_sysvmsg, is_async,
+            ipc_mode, protocol_type, master_pid, max_wait_time, reload_count,
+            reload_last_time, kind, start_id, use_msgqueue, use_socket, max_packet_size,
+            msgqueue_key, worker_num, max_request, max_request_grace, scheduler_warning,
+            warning_time, on_start, on_shutdown, on_before_reload, on_after_reload, on_task,
+            on_worker_start, on_message, on_worker_exit, on_worker_stop, on_worker_error,
+            on_worker_message, on_worker_not_found, main_loop, workers, pipes, ipc,
+            message_bus, reload_task, ptr, kill_timer, ptr_key;
+            registry, queue, message_box
+        );
     }
 
-    /// Puts `value` in the place `field` projects from the record, and returns what
-    /// was there. `field` is a plain fn, which cannot reach the pool to borrow it again.
+    /// Puts `value` in the owner field `field` projects from the record (its
+    /// registry, queue or message box, which the record lends in place), and
+    /// returns what was there. `field` is a plain fn, which cannot reach the pool to
+    /// borrow it again. Every other field is a cell, written through `&PoolRecord`.
     fn replace<T>(self, field: fn(&mut PoolRecord) -> &mut T, value: T) -> T {
         // SAFETY: `new`'s contract: a live pool for `'a`, borrowed only for the
-        // projection and the swap.
+        // projection and the swap. The owner fields are written only by `create`,
+        // `destroy` and `reset`, which no loan of them (`with_registry`,
+        // `with_queue`, the message box's) spans.
         core::mem::replace(field(unsafe { &mut *self.raw }), value)
+    }
+
+    /// Sets the pool's registry.
+    pub(crate) fn set_registry(self, registry: Option<Box<WorkerRegistry>>) {
+        drop(self.replace(|record| &mut record.registry, registry));
+    }
+
+    /// Sets the pool's message queue.
+    pub(crate) fn set_queue(self, queue: Option<Box<swoole_rs_ossupport::QueueRecord>>) {
+        drop(self.replace(|record| &mut record.queue, queue));
+    }
+
+    /// Sets the pool's message box.
+    pub(crate) fn set_message_box(self, message_box: SharedChannel) {
+        _ = self.replace(|record| &mut record.message_box, message_box);
     }
 }
 
@@ -448,7 +495,7 @@ impl<'a> PoolRef<'a> {
 
     /// Takes the pool's message box out, leaving none.
     pub(crate) fn take_message_box(self) -> SharedChannel {
-        self.replace(|record| &mut record.message_box, SharedChannel::default())
+        self.replace(|record| &mut record.message_box, SharedChannel::none())
     }
 
     /// The record, for this crate's operations, which read it in place.
@@ -1422,7 +1469,7 @@ macro_rules! getters {
         #[doc = concat!("The record's `", stringify!($field), "`.")]
         #[must_use]
         $vis fn $field(self) -> $ty {
-            self.record().$field
+            self.record().$field.get()
         }
     };
     (
@@ -1443,13 +1490,13 @@ macro_rules! getters {
     };
 }
 
-/// [`PoolRef`]'s field writes, and [`Pool`]'s over its handle. The fields the pool's
-/// operations trust are written only from this crate.
+/// [`PoolRef`]'s field writes, and [`Pool`]'s over its handle: X/// `&PoolRecord`, dropping the old value. The fields the pool's operations trust are
+/// written only from this crate.
 macro_rules! setters {
     (@set $vis:vis $field:ident / $set:ident: $ty:ty) => {
         #[doc = concat!("Sets the record's `", stringify!($field), "`.")]
         $vis fn $set(self, value: $ty) {
-            _ = self.replace(|record| &mut record.$field, value);
+            _ = self.record().$field.replace(value);
         }
     };
     (
@@ -1536,10 +1583,7 @@ setters!(
     pub max_request_grace / set_max_request_grace: u32,
     pub scheduler_warning / set_scheduler_warning: bool,
     pub(crate) workers / set_workers: *mut WorkerRecord,
-    pub(crate) registry / set_registry: Option<Box<WorkerRegistry>>,
-    pub(crate) queue / set_queue: Option<Box<swoole_rs_ossupport::QueueRecord>>,
     pub(crate) ipc / set_ipc: *mut PoolIpc,
-    pub(crate) message_box / set_message_box: SharedChannel,
     pub kill_timer / set_kill_timer: Option<ArmedTimer>
     ;
     pub is_async / set_is_async: bool,
@@ -1634,7 +1678,7 @@ impl<H: PoolHost> Pool<'_, H> {
                 let Some(queue) = swoole_rs_ossupport::QueueRecord::open(key) else {
                     return false;
                 };
-                self.set_queue(Some(queue));
+                self.p.set_queue(Some(queue));
             }
             IpcMode::UnixSock => {
                 self.p.set_pipes(Some(Box::default()));
@@ -1652,7 +1696,7 @@ impl<H: PoolHost> Pool<'_, H> {
             IpcMode::Socket => self.set_use_socket(true),
             IpcMode::None => {}
         }
-        self.set_registry(Some(Box::default()));
+        self.p.set_registry(Some(Box::default()));
         self.set_ipc(pool_ipc_new(mode == IpcMode::Socket));
         self.set_ipc_mode(mode);
         self.set_protocol(Protocol::Task);
@@ -1670,7 +1714,7 @@ impl<H: PoolHost> Pool<'_, H> {
         if message_box.is_none() {
             return false;
         }
-        self.set_message_box(message_box);
+        self.p.set_message_box(message_box);
         true
     }
 
@@ -2172,7 +2216,7 @@ impl<H: PoolHost> Pool<'_, H> {
     pub(crate) fn destroy(&mut self) {
         self.set_kill_timer(None);
         self.p.set_pipes(None);
-        self.set_queue(None);
+        self.p.set_queue(None);
         let ipc = self.ipc();
         if !ipc.is_null() {
             // SAFETY: the pool's IPC state, the box `pool_ipc_new` leaked (the field is
@@ -2182,7 +2226,7 @@ impl<H: PoolHost> Pool<'_, H> {
             pool_ipc_free(*ipc, |socket| self.h.close(socket));
         }
         self.set_ipc(ptr::null_mut());
-        self.set_registry(None);
+        self.p.set_registry(None);
         self.h.free_box();
         self.p.set_message_bus(None);
         self.op(Op::FreeWorkers, 0);
@@ -2441,7 +2485,7 @@ mod tests {
             {
                 let timer = ArmedTimer::new(1, KILL_TIMER_ID, crate::armed_timer::tests::record);
                 // SAFETY: the fixture's record, which outlives its pool.
-                unsafe { record.as_mut() }.kill_timer = Some(timer);
+                unsafe { record.as_mut() }.kill_timer.set(Some(timer));
             }
             self.answers.get(&op).copied().unwrap_or(1)
         }
@@ -2576,11 +2620,13 @@ mod tests {
         }
 
         fn pool(&mut self, mut script: Script) -> Pool<'_, Script> {
-            self.record.workers = self.workers.as_mut_ptr();
+            self.record.workers.set(self.workers.as_mut_ptr());
             // `create` takes the workers `Op::AllocWorkers` answers.
             let workers = self.workers.as_mut_ptr().expose_provenance().cast_signed() as i64;
             script.answers.entry(Op::AllocWorkers).or_insert(workers);
-            self.record.worker_num = u32::try_from(self.workers.len()).unwrap();
+            self.record
+                .worker_num
+                .set(u32::try_from(self.workers.len()).unwrap());
             // The script and the pool share one raw pointer, so neither
             // invalidates the other.
             let p = &raw mut *self.record;
@@ -2626,13 +2672,13 @@ mod tests {
             worker.set_pid(c_int::try_from(child.id()).unwrap());
         }
         let mut pool = fixture.pool(Script::default());
-        record(&mut pool).max_wait_time = 3;
+        record(&mut pool).max_wait_time.set(3);
         assert!(matches!(pool.wait(), Ok(())));
         for child in &mut children {
             child.wait().unwrap();
         }
         assert!(ops(&pool).contains(&Op::KillTimer));
-        assert!(record(&mut pool).kill_timer.is_some());
+        assert!(record(&mut pool).kill_timer.get_mut().is_some());
         assert_eq!(crate::armed_timer::tests::cancelled(), []);
         drop(pool);
         drop(fixture);
@@ -2644,9 +2690,9 @@ mod tests {
         let mut fixture = Fixture::new(0);
         let mut pool = fixture.pool(Script::default());
         let timer = ArmedTimer::new(1, KILL_TIMER_ID, crate::armed_timer::tests::record);
-        record(&mut pool).kill_timer = Some(timer);
+        record(&mut pool).kill_timer.set(Some(timer));
         pool.destroy();
-        assert!(record(&mut pool).kill_timer.is_none());
+        assert!(record(&mut pool).kill_timer.get_mut().is_none());
         assert_eq!(crate::armed_timer::tests::cancelled(), [KILL_TIMER_ID]);
     }
 
@@ -2683,7 +2729,7 @@ mod tests {
             ]
         );
         assert_eq!(pool.ipc_mode(), IpcMode::UnixSock);
-        assert_eq!(record(&mut pool).protocol_type, Protocol::Task.code());
+        assert_eq!(record(&mut pool).protocol_type.get(), Protocol::Task.code());
         assert_eq!(pool.max_packet_size(), SW_INPUT_BUFFER_SIZE);
         assert_eq!(pool.max_wait_time(), SW_WORKER_MAX_WAIT_TIME);
         assert!(!pool.p.registry().is_null());
@@ -2732,7 +2778,7 @@ mod tests {
         pool.set_start_id(5);
         pool.set_kind(4);
         assert!(pool.start_check());
-        assert!(pool.running() && record(&mut pool).started);
+        assert!(pool.running() && record(&mut pool).started.get());
         assert_eq!(pool.master_pid(), getpid());
         // SAFETY: the fixture's records.
         unsafe {
@@ -2761,7 +2807,7 @@ mod tests {
             ..Script::default()
         };
         let mut pool = fixture.pool(script);
-        record(&mut pool).on_start = Some(on_start);
+        record(&mut pool).on_start.set(Some(on_start));
         assert!(pool.start().is_err());
         assert!(!ops(&pool).contains(&Op::Fork));
     }
@@ -2772,7 +2818,7 @@ mod tests {
         let mut script = Script::default();
         script.answers.insert(Op::Fork, 4321);
         let mut pool = fixture.pool(script);
-        pool.set_registry(Some(Box::default()));
+        pool.p.set_registry(Some(Box::default()));
         let worker = pool.worker(0);
         assert_eq!(pool.spawn(worker).ok(), Some(Some(4321)));
         assert_eq!(pool.worker_by_pid(4321), worker);
@@ -2803,8 +2849,9 @@ mod tests {
         let mut pool = fixture.pool(Script::default());
         assert!(!pool.detach());
         pool.set_running(true);
-        pool.set_message_box(SharedChannel::make(64, 16, 0).expect("a box"));
-        record(&mut pool).is_async = true;
+        pool.p
+            .set_message_box(SharedChannel::make(64, 16, 0).expect("a box"));
+        record(&mut pool).is_async.set(true);
         assert!(pool.detach());
         assert!(!pool.running());
         assert_eq!(
@@ -2859,7 +2906,8 @@ mod tests {
         script.answers.insert(Op::PushStop, -1);
         let mut pool = fixture.pool(script);
         pool.set_running(true);
-        pool.set_message_box(SharedChannel::make(64, 16, 0).expect("a box"));
+        pool.p
+            .set_message_box(SharedChannel::make(64, 16, 0).expect("a box"));
         assert!(!pool.detach());
         assert!(pool.running());
         assert_eq!(
@@ -2879,7 +2927,7 @@ mod tests {
         script.answers.insert(Op::EventWait, -1);
         let mut pool = fixture.pool(script);
         pool.set_ipc_mode(IpcMode::UnixSock);
-        record(&mut pool).on_message = Some(on_message);
+        record(&mut pool).on_message.set(Some(on_message));
         pool.p.set_message_bus(Some(Box::new(())));
         assert!(!pool.run_async(pool.worker(0)), "the loop's failure");
         assert_eq!(
@@ -2896,7 +2944,7 @@ mod tests {
         let mut script = Script::default();
         script.answers.insert(Op::EventAvailable, 0);
         let mut pool = fixture.pool(script);
-        record(&mut pool).on_worker_exit = Some(on_worker_exit);
+        record(&mut pool).on_worker_exit.set(Some(on_worker_exit));
         pool.stop(pool.worker(0));
         assert_eq!(ops(&pool), [Op::WorkerShutdown, Op::EventAvailable]);
     }
@@ -2942,11 +2990,11 @@ mod tests {
         let file = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
         let mut fixture = Fixture::new(0);
         let mut pool = fixture.pool(Script::default());
-        record(&mut pool).use_socket = true;
+        record(&mut pool).use_socket.set(true);
         let ipc = pool_ipc_new(true);
         // SAFETY: a live handle.
         crate::pool::swr_v1_process_pool_ipc_address(unsafe { &mut *ipc }, &file, 0);
-        record(&mut pool).ipc = ipc;
+        record(&mut pool).ipc.set(ipc);
         let mut event = [0u8; 64];
         event[EVENT_LEN] = 3;
         event[HEAD_SIZE as usize..][..3].copy_from_slice(b"abc");
@@ -2965,18 +3013,18 @@ mod tests {
         }
         assert_eq!(ops(&pool), Vec::<Op>::new());
         std::fs::remove_file(&path).unwrap();
-        record(&mut pool).ipc = ptr::null_mut();
+        record(&mut pool).ipc.set(ptr::null_mut());
         // SAFETY: the handle made above; it has no listener to close.
         pool_ipc_free(*unsafe { Box::from_raw(ipc) }, close);
         // A pool whose listener is gone fails.
         let ipc = pool_ipc_new(true);
         // SAFETY: as above.
         crate::pool::swr_v1_process_pool_ipc_address(unsafe { &mut *ipc }, &file, 0);
-        record(&mut pool).ipc = ipc;
+        record(&mut pool).ipc.set(ipc);
         for blocking in [true, false] {
             assert!(!pool.dispatch(&event, None, blocking));
         }
-        record(&mut pool).ipc = ptr::null_mut();
+        record(&mut pool).ipc.set(ptr::null_mut());
         // SAFETY: as above.
         pool_ipc_free(*unsafe { Box::from_raw(ipc) }, close);
     }
@@ -3000,7 +3048,7 @@ mod tests {
     fn an_unknown_child_is_reported() {
         let mut fixture = Fixture::new(0);
         let mut pool = fixture.pool(Script::default());
-        pool.set_registry(Some(Box::default()));
+        pool.p.set_registry(Some(Box::default()));
         assert!(!pool.reap(99, 0));
         assert_eq!(pool.h.log, [(Op::Log(Log::UnknownChild), 99)]);
         pool.destroy();

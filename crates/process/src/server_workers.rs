@@ -301,8 +301,8 @@ mod tests {
         ];
         let mut event_pool = pool();
         let mut task_pool = pool();
-        task_pool.workers = tasks_ptr;
-        event_pool.reload_count = 91;
+        task_pool.workers.set(tasks_ptr);
+        event_pool.reload_count.set(91);
         let view = unsafe {
             ServerWorkers::new(
                 (PoolRef::new(&raw mut event_pool), events_ptr, 2),
@@ -316,13 +316,13 @@ mod tests {
             (&SERVER, (&raw mut server).cast()),
             pending_ptrs.map(|worker| unsafe { Worker::new(worker) }),
         );
-        assert_eq!(event_pool.workers, events_ptr);
-        assert_eq!(event_pool.ptr, (&raw mut server).cast());
+        assert_eq!(event_pool.workers.get(), events_ptr);
+        assert_eq!(event_pool.ptr.get(), (&raw mut server).cast());
         assert_eq!(
             (
-                event_pool.worker_num,
-                event_pool.use_msgqueue,
-                event_pool.reload_count
+                event_pool.worker_num.get(),
+                event_pool.use_msgqueue.get(),
+                event_pool.reload_count.get()
             ),
             (2, false, 91)
         );

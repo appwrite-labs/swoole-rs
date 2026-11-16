@@ -13,9 +13,9 @@ fn methods_use_the_supplied_host_without_a_server_link_or_registration() {
     methods::set_start_id(&Scripted, pool, -1);
     methods::set_type(&Scripted, pool, WorkerType::Task);
     methods::set_max_request(&Scripted, pool, 10, 3);
-    assert_eq!(pool.record().protocol_type, Protocol::Stream.code());
+    assert_eq!(pool.record().protocol_type.get(), Protocol::Stream.code());
     assert_eq!(pool.start_id(), u16::MAX);
-    assert_eq!(pool.record().kind, WorkerType::Task.code());
+    assert_eq!(pool.record().kind.get(), WorkerType::Task.code());
     assert_eq!((pool.max_request(), pool.max_request_grace()), (10, 3));
     assert_eq!(
         take_ops(),
@@ -41,7 +41,7 @@ fn start_check_keeps_the_missing_listener_warning_with_a_supplied_host() {
     take_ops();
     methods::tests::install();
     let mut record = PoolRecord::empty();
-    record.ipc_mode = IpcMode::Socket;
+    record.ipc_mode.set(IpcMode::Socket);
     let pool = PoolRef::from(&mut record);
     assert!(!methods::start_check(&Scripted, pool));
     assert_eq!(take_ops(), []);
