@@ -9,7 +9,9 @@ use crate::process_pool::IpcMode;
 use core::cell::Cell;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, Ordering,
+};
 use std::ffi::{c_int, c_void};
 use swoole_rs_locks::SharedMutex;
 
@@ -127,7 +129,7 @@ pub enum PipeEnd {
 /// to the others, and sends through the record no more.
 #[repr(C)]
 pub struct WorkerRecord {
-    pub(crate) pid: Cell<c_int>,
+    pub(crate) pid: AtomicI32,
     id: Cell<u32>,
     pool: Cell<*mut c_void>,
     queue: Cell<*mut c_void>,
@@ -169,7 +171,7 @@ impl WorkerRecord {
     pub fn empty() -> Self {
         let null = || Cell::new(core::ptr::null_mut());
         Self {
-            pid: Cell::new(0),
+            pid: AtomicI32::new(0),
             id: Cell::new(0),
             pool: null(),
             queue: null(),
@@ -217,12 +219,12 @@ impl WorkerRecord {
     /// The worker's process (or thread) id.
     #[must_use]
     pub fn pid(&self) -> c_int {
-        self.pid.get()
+        self.pid.load(Ordering::Relaxed)
     }
 
     /// Sets the worker's process (or thread) id.
     pub fn set_pid(&mut self, pid: c_int) {
-        self.pid.set(pid);
+        *self.pid.get_mut() = pid;
     }
 
     pub fn set_id(&mut self, id: u32) {
@@ -376,7 +378,7 @@ impl<'a> Worker<'a> {
     pub fn get(self) -> WorkerRecord {
         let r = self.record();
         WorkerRecord {
-            pid: r.pid.clone(),
+            pid: AtomicI32::new(r.pid.load(Ordering::Relaxed)),
             id: r.id.clone(),
             pool: r.pool.clone(),
             queue: r.queue.clone(),
@@ -434,7 +436,7 @@ impl<'a> Worker<'a> {
             ptr,
         } = record;
         let r = self.record();
-        r.pid.set(pid.into_inner());
+        r.pid.store(pid.into_inner(), Ordering::Relaxed);
         r.id.set(id.into_inner());
         r.pool.set(pool.into_inner());
         r.queue.set(queue.into_inner());
@@ -491,7 +493,7 @@ impl<'a> Worker<'a> {
     );
     field!(
         /// The worker's process (or thread) id.
-        pid, pub set_pid, pid: c_int
+        pid, pub set_pid, atomic pid: c_int
     );
     field!(
         /// The worker's message queue, or null.
@@ -813,7 +815,7 @@ mod tests {
         let mut fds: [c_int; 2] = [7, 9];
         let mut workers: [WorkerRecord; 2] = unsafe { core::mem::zeroed() };
         workers[1].id.set(u32::MAX);
-        workers[1].pid.set(41);
+        *workers[1].pid.get_mut() = 41;
         workers[1].pipe_master.set((&raw mut fds[0]).cast());
         workers[1].pipe_worker.set((&raw mut fds[1]).cast());
         workers[1].pipe_object.set(core::ptr::dangling_mut());
@@ -827,7 +829,7 @@ mod tests {
             copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 2, &mut copy),
             -1
         );
-        assert_eq!(copy.pid.get(), 0);
+        assert_eq!(*copy.pid.get_mut(), 0);
         // Another process's worker: the master's end of its pipe.
         assert_eq!(
             copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
@@ -835,7 +837,7 @@ mod tests {
         );
         assert_eq!(
             (
-                copy.pid.get(),
+                *copy.pid.get_mut(),
                 *copy.pipe_current.get_mut(),
                 copy.pipe_object.get()
             ),
@@ -892,7 +894,7 @@ mod tests {
     #[test]
     fn retirement_resets_counters_preserving_identity_and_clamps_underflow() {
         let mut record: WorkerRecord = unsafe { core::mem::zeroed() };
-        record.pid.set(17);
+        *record.pid.get_mut() = 17;
         record.id.set(29);
         record.concurrency = AtomicU32::new(3);
         record.request_count.set(7);
@@ -904,7 +906,7 @@ mod tests {
         unsafe { Worker::new(&raw mut record) }.reset_counters(&total);
         assert_eq!(
             (
-                record.pid.get(),
+                *record.pid.get_mut(),
                 record.id.get(),
                 total.load(core::sync::atomic::Ordering::SeqCst),
                 *record.concurrency.get_mut()
@@ -956,7 +958,7 @@ mod tests {
     #[test]
     fn get_copies_every_field_around_the_status() {
         let mut record: WorkerRecord = unsafe { std::mem::zeroed() };
-        record.pid.set(41);
+        *record.pid.get_mut() = 41;
         record.id.set(7);
         record.kind.set(3);
         record.msgqueue_mode.set(2);
@@ -966,7 +968,7 @@ mod tests {
         let copy = worker.get();
         assert_eq!(
             (
-                copy.pid.get(),
+                copy.pid(),
                 copy.id.get(),
                 copy.status.into_inner(),
                 copy.kind.get(),
