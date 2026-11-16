@@ -1,9 +1,9 @@
 //! Coroutine stacks: allocation (heap, or a mapping with a guard page), the
 //! usage markers and their exponential sampling. context.rs switches onto it.
 
-use core::ffi::c_void;
+use core::ffi::{c_int, c_void};
 use core::mem::MaybeUninit;
-use std::ptr;
+use std::ptr::{self, NonNull};
 use swoole_rs_corebase::sys;
 
 const START: usize = 64 * 1024;
@@ -63,16 +63,20 @@ impl Stack {
             mark(unsafe { std::slice::from_raw_parts_mut(stack.cast::<MaybeUninit<u8>>(), bytes) });
         }
         if flags & STACK_PROTECT != 0 {
-            let page = sys::sysconf(libc::_SC_PAGESIZE);
-            // SAFETY: the mapping starts at `stack`; protecting its first page only
-            // removes access to memory nothing references yet.
-            unsafe {
-                libc::mprotect(
-                    stack,
-                    usize::try_from(page).unwrap_or(4096),
-                    libc::PROT_NONE,
-                )
-            };
+            /// The mapping just made, which nothing references: only this block makes one.
+            #[repr(transparent)]
+            struct Fresh(*mut c_void);
+            /// `PROT_NONE`, the one protection given.
+            #[repr(transparent)]
+            struct NoAccess(c_int);
+            unsafe extern "C" {
+                /// Makes the first `len` bytes of a fresh mapping, rounded up to its
+                /// pages, inaccessible: memory nothing references, within the mapping
+                /// when `len` is at most its size.
+                safe fn mprotect(at: Fresh, len: usize, protection: NoAccess) -> c_int;
+            }
+            let page = usize::try_from(sys::sysconf(libc::_SC_PAGESIZE)).unwrap_or(4096);
+            mprotect(Fresh(stack), page.min(bytes), NoAccess(libc::PROT_NONE));
         }
         Some(Self {
             at: stack.cast(),
@@ -96,16 +100,27 @@ impl Stack {
 
 impl Drop for Stack {
     fn drop(&mut self) {
-        let stack = self.at.cast::<c_void>();
-        if stack.is_null() {
-            return;
+        /// The allocation a dropped stack held, as [`Stack::alloc`] made it: only this
+        /// drop makes one, once per stack.
+        #[repr(transparent)]
+        struct Released(NonNull<u8>);
+        #[expect(
+            suspicious_runtime_symbol_definitions,
+            reason = "`free`'s C signature; declared safe because it takes only a \
+                      `Released`, the one malloc'd block a stack owned"
+        )]
+        unsafe extern "C" {
+            safe fn free(block: Released);
+            /// Unmaps a stack's mapping, given the size it was made with.
+            safe fn munmap(mapping: Released, len: usize) -> c_int;
         }
+        let Some(stack) = NonNull::new(self.at) else {
+            return;
+        };
         if self.flags & STACK_PROTECT == 0 {
-            // SAFETY: the live malloc allocation `alloc` made, freed once.
-            unsafe { libc::free(stack) };
+            free(Released(stack));
         } else {
-            // SAFETY: the live mapping of `size` bytes `alloc` made, unmapped once.
-            unsafe { libc::munmap(stack, self.size as usize) };
+            munmap(Released(stack), self.size());
         }
     }
 }
