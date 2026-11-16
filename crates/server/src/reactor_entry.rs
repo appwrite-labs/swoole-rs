@@ -189,12 +189,12 @@ pub unsafe extern "C-unwind" fn dispatch_task(
             c.recv_queued_bytes.fetch_add(len, SeqCst);
         }
         let info = swoole_rs_corebase::DataHead {
-            server_fd: crate::base_factory::low16(c.server_fd),
-            reactor_id: c.reactor_id.into(),
+            server_fd: crate::base_factory::low16(c.server_fd.get()),
+            reactor_id: c.reactor_id.get().into(),
             ext_flags: rdata.info.ext_flags,
             kind: swoole_rs_corebase::ServerEvent::RecvData.code(),
-            time: c.last_recv_time,
-            fd: c.fd.into(),
+            time: c.last_recv_time.get(),
+            fd: c.fd.get().into(),
             len,
             ..swoole_rs_corebase::DataHead::default()
         };
@@ -202,8 +202,8 @@ pub unsafe extern "C-unwind" fn dispatch_task(
         // readable and unwritten until the dispatch returns.
         let task = unsafe { SendData::from_raw(info, rdata.data.cast()) };
         (
-            server.port_of_fd(c.fd),
-            c.reactor_id,
+            server.port_of_fd(c.fd.get()),
+            c.reactor_id.get(),
             task,
             &c.recv_queued_bytes,
         )

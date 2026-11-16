@@ -12,7 +12,7 @@ use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_TRACE, SW_LOG_WARNING};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
-use swoole_rs_utilities::misc::swoole_hash_php;
+use swoole_rs_utilities::swoole_hash;
 
 /// `DISPATCH_RESULT_USERFUNC_FALLBACK`.
 const USERFUNC_FALLBACK: c_int = -3;
@@ -85,11 +85,32 @@ fn ip_key(state: &crate::ServerState, fd: c_long, send: Option<&SendData>) -> u3
     {
         u32::from_be(addr.addr.v4().sin_addr.s_addr)
     } else {
-        let v6 = (&raw const addr.addr).cast::<c_char>();
-        // SAFETY: the address's storage holds a whole `sockaddr_in6`.
-        let hash = unsafe { swoole_hash_php(v6, size_of::<libc::sockaddr_in6>()) };
-        hash.c_cast::<u32>()
+        swoole_hash(&v6_bytes(addr.addr.v6()), 0, c_char::MIN != 0).c_cast::<u32>()
     }
+}
+
+/// A `sockaddr_in6`'s bytes as they lie in memory: its fields, which leave no padding.
+fn v6_bytes(v6: &libc::sockaddr_in6) -> [u8; size_of::<libc::sockaddr_in6>()] {
+    #[cfg(target_vendor = "apple")]
+    let head = [v6.sin6_len, v6.sin6_family];
+    #[cfg(not(target_vendor = "apple"))]
+    let head = v6.sin6_family.to_ne_bytes();
+    let parts: [&[u8]; 5] = [
+        &head,
+        &v6.sin6_port.to_ne_bytes(),
+        &v6.sin6_flowinfo.to_ne_bytes(),
+        &v6.sin6_addr.s6_addr,
+        &v6.sin6_scope_id.to_ne_bytes(),
+    ];
+    let mut bytes = [0; size_of::<libc::sockaddr_in6>()];
+    let mut at = 0;
+    for part in parts {
+        if let Some(to) = bytes.get_mut(at..at + part.len()) {
+            to.copy_from_slice(part);
+        }
+        at += part.len();
+    }
+    bytes
 }
 
 /// What [`lowest`] compares.
@@ -442,6 +463,24 @@ mod tests {
 
     const SOCK_UDP: c_int = SocketType::SW_SOCK_UDP.raw();
     const SOCK_UNIX_STREAM: c_int = SocketType::SW_SOCK_UNIX_STREAM.raw();
+
+    /// The bytes the IPv6 hash reads are the address's memory, as upstream hashed it.
+    #[test]
+    fn v6_bytes_are_the_address_in_memory() {
+        let mut v6: libc::sockaddr_in6 = unsafe { core::mem::zeroed() };
+        v6.sin6_family = 10;
+        v6.sin6_port = 0x5091;
+        v6.sin6_flowinfo = 0x0102_0304;
+        v6.sin6_addr.s6_addr = core::array::from_fn(|i| u8::try_from(0xa0 + i).unwrap());
+        v6.sin6_scope_id = 0x0506_0708;
+        let memory = unsafe {
+            core::slice::from_raw_parts(
+                (&raw const v6).cast::<u8>(),
+                size_of::<libc::sockaddr_in6>(),
+            )
+        };
+        assert_eq!(v6_bytes(&v6), memory);
+    }
 
     /// The live server with `n` event workers in `dispatch` mode: their records, and
     /// the server.

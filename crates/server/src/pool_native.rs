@@ -455,9 +455,7 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) -> i64 {
 /// hook, as every `PoolCall` crates/process makes holds.
 #[inline]
 fn lent_socket<'c>(c: &'c PoolCall<'_>) -> Option<Socket<'c>> {
-    // SAFETY: a call's socket is null or a live native socket lent for the hook,
-    // so for this borrow of the call.
-    unsafe { Socket::from_ptr(c.socket().cast()) }
+    c.lent_socket().map(Socket::lent)
 }
 
 fn io(c: &mut PoolCall, io: impl FnOnce(&PoolCall) -> isize) {

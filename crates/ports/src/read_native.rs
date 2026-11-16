@@ -6,7 +6,7 @@ use core::ffi::{CStr, c_int};
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use std::cell::{Cell, UnsafeCell};
+use std::cell::Cell;
 use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
 use swoole_rs_corebase::constants::{
     EventDataFlag::SW_EVENT_DATA_POP_PTR, SW_BUFFER_SIZE_BIG, SW_HTTP_100_CONTINUE_PACKET,
@@ -69,11 +69,9 @@ pub(crate) fn on_read(
         return -1;
     };
     // A connection socket's object is its connection: the event as `read` lent it.
-    let conn = socket
-        .read(|s| s.object)
-        .cast::<UnsafeCell<ConnectionRecord>>();
-    // SAFETY: the event's live connection slot, shared through the slot's field-wise
-    // handle; `UnsafeCell` has the record's layout.
+    let conn = socket.read(|s| s.object).cast::<ConnectionRecord>();
+    // SAFETY: the event's live connection slot, shared through the slot's handle, as
+    // its fields are cells and atomics.
     let conn = Slot::from(unsafe { &*conn });
     let port = port.config();
     let mut read = Read {

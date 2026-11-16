@@ -513,16 +513,18 @@ impl<'a> PoolRef<'a> {
         self.record().worker(index)
     }
 
-    /// The pool's stream listener (a native socket), or null.
+    /// The pool's stream listener, which its IPC owns until `destroy` frees it, or
+    /// `None` without one.
     #[must_use]
-    pub fn ipc_listener(self) -> *mut c_void {
-        self.record().ipc_listener()
+    pub fn ipc_listener(self) -> Option<crate::worker_record::NativeSocket<'a>> {
+        crate::worker_record::NativeSocket::lend(self.record().ipc_listener())
     }
 
-    /// The stream connection being served (a native socket), or null.
+    /// The stream connection being served, which the worker loop frees once it is
+    /// answered, or `None` without one.
     #[must_use]
-    pub fn ipc_connection(self) -> *mut c_void {
-        self.record().ipc_connection()
+    pub fn ipc_connection(self) -> Option<crate::worker_record::NativeSocket<'a>> {
+        crate::worker_record::NativeSocket::lend(self.record().ipc_connection())
     }
 
     /// The worker loop's receive buffer and its size in bytes; null and 0 before

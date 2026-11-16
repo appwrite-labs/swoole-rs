@@ -109,11 +109,9 @@ fn paused(socket: &SocketFields) -> bool {
     if !socket.removed || socket.fd_type != SW_FD_SESSION as c_int || socket.object.is_null() {
         return false;
     }
-    let conn = socket
-        .object
-        .cast::<core::cell::UnsafeCell<ConnectionRecord>>();
-    // SAFETY: a session socket's object is its live connection slot, shared through
-    // the slot's field-wise handle; `UnsafeCell` has the record's layout.
+    let conn = socket.object.cast::<ConnectionRecord>();
+    // SAFETY: a session socket's object is its live connection slot, whose fields
+    // are cells and atomics, so it is shared through the slot's handle.
     let conn = swoole_rs_server::Connection::from(unsafe { &*conn });
     conn.is_active()
         && conn.closed().load(Ordering::Relaxed) == 0
