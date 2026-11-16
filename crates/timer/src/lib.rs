@@ -30,6 +30,8 @@ pub use wrapper::{
     swoole_timer_free, swoole_timer_get_next_msec, swoole_timer_is_available, swoole_timer_select,
     thread_timer_count, thread_timer_detached, thread_timer_reinit,
 };
+#[cfg(feature = "upstream-symbols")]
+pub use wrapper::{swoole_timer_exists, swoole_timer_get};
 
 /// What a queue operation did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

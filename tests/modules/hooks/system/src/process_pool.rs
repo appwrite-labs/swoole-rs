@@ -29,8 +29,9 @@ use swoole_rs_process::worker_record::{
     Worker as WorkerHandle, swr_v1_worker_init, swr_v1_worker_shutdown,
 };
 
-use super::timer::{TimerNode, after, swoole_timer_del, swoole_timer_free, tick};
+use super::timer::{TimerNode, after, swoole_timer_del, tick};
 use super::{SIGKILL, TEST_STR, last_error, random_bytes};
+use swoole_rs_timer::{swoole_timer_clear, swoole_timer_free, swoole_timer_is_available};
 
 const SW_OK: c_int = 0;
 const SW_ERR: c_int = -1;
@@ -226,8 +227,6 @@ struct Worker {
 
 unsafe extern "C" {
     static swr_case_process_layout: [usize; 6];
-    #[link_name = "_Z18swoole_timer_clearl"]
-    fn swoole_timer_clear(timer_id: c_long) -> bool;
 
     #[link_name = "_Z22swoole_set_worker_typei"]
     fn swoole_set_worker_type(kind: c_int);
@@ -240,8 +239,6 @@ unsafe extern "C" {
     fn swoole_signal_clear();
     #[link_name = "_Z23swoole_signal_block_allv"]
     fn swoole_signal_block_all();
-    #[link_name = "_Z25swoole_timer_is_availablev"]
-    fn swoole_timer_is_available() -> bool;
     #[link_name = "_Z20swoole_system_randomii"]
     fn swoole_system_random(min: c_int, max: c_int) -> c_int;
     #[link_name = "_Z17swoole_random_intv"]
@@ -1369,13 +1366,11 @@ fn async_mb() {
     assert_eq!(create(pool, 1, 0, SW_IPC_UNIXSOCK), SW_OK);
     assert_eq!(create_message_bus(pool), SW_OK);
 
-    // SAFETY: this thread's timer and the process's signal table.
-    unsafe {
-        if swoole_timer_is_available() {
-            swoole_timer_free();
-        }
-        swoole_signal_clear();
+    if swoole_timer_is_available() {
+        swoole_timer_free();
     }
+    // SAFETY: the process's signal table.
+    unsafe { swoole_signal_clear() };
 
     // init
     set_protocol(pool, Protocol::Task);
@@ -2139,11 +2134,9 @@ fn reload_from_child_exit_callback() {
     counter_set(6, child_pid);
     assert_eq!(wait(pool), SW_OK);
     wait_all_child_processes();
-    // SAFETY: this thread's timer.
-    unsafe { swoole_timer_clear(watchdog) };
+    _ = swoole_timer_clear(watchdog);
     if counter_get(31) != 0 {
-        // SAFETY: as above.
-        unsafe { swoole_timer_clear(completion) };
+        _ = swoole_timer_clear(completion);
     }
     assert_eq!(counter_get(31), 0);
     assert_eq!(counter_get(26), 0);
@@ -2152,7 +2145,7 @@ fn reload_from_child_exit_callback() {
     assert_eq!(counter_get(27), 1);
     assert_eq!(counter_get(0), 2);
     assert_eq!(counter_get(1), 2);
-    // SAFETY: once; then this thread's timer and the signal table.
+    // SAFETY: once; then the signal table.
     unsafe {
         pool_destroy(pool);
         swoole_timer_free();
