@@ -590,7 +590,7 @@ pub(crate) mod tests {
         wrapped(|fd, _| unsafe {
             // The members record a failure on the socket.
             let mut addr = SocketAddress::default();
-            addr.addr.unix_mut().sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).unwrap();
+            addr.addr.un.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).unwrap();
             addr.len = libc::socklen_t::try_from(size_of::<libc::sa_family_t>()).unwrap();
             assert_eq!(connect(fd, &addr).map_or(-1, |()| 0), -1);
             assert_ne!(err_code(fd), 0);

@@ -1416,12 +1416,12 @@ fn bind_unix(this: Handle) -> bool {
     let path = format!("/tmp/swoole-client.{pid}.{}.sock", socket.fd());
     let bound = std::ffi::CString::new(path.as_str()).unwrap_or_default();
     let bound_ok = socket.edit(|socket| {
-        let address = socket.info.addr.unix_mut();
-        for (slot, byte) in address.sun_path.iter_mut().zip(path.bytes().chain([0])) {
-            *slot = c_char::from_ne_bytes([byte]);
-        }
-        let family = libc::AF_UNIX.c_cast::<libc::sa_family_t>();
-        address.sun_family = family;
+        socket.info.addr.edit_unix(|address| {
+            for (slot, byte) in address.sun_path.iter_mut().zip(path.bytes().chain([0])) {
+                *slot = c_char::from_ne_bytes([byte]);
+            }
+            address.sun_family = libc::AF_UNIX.c_cast::<libc::sa_family_t>();
+        });
         _ = swoole_rs_corebase::sys::unlink(&bound);
         // The address just written, bound at `sizeof(sockaddr_un)`; the record keeps
         // its own length.
