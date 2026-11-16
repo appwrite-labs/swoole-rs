@@ -22,7 +22,8 @@ use swoole_rs_httpbindings::{
 };
 use swoole_rs_zend::sys::zval;
 use swoole_rs_zend::{
-    ArrayMut, Declared, Interned, Minit, Owned, OwnedArray, Separated, Value, ZStr, ZString,
+    ArrayMut, Declared, Insertions, Interned, Minit, Owned, OwnedArray, Separated, Value, ZStr,
+    ZString,
 };
 
 /// A request's multipart parser and the upload it is writing.
@@ -363,9 +364,9 @@ fn raw_property(state: &mut State, which: Property) -> *mut zval {
 
 /// New server keys share one separation as well as the property loan.
 #[inline(always)]
-pub(crate) fn edit_server(state: &mut State, edit: impl FnOnce(&mut Separated<'_>)) {
+pub(crate) fn edit_server(state: &mut State, edit: impl FnOnce(&mut Insertions<'_>)) {
     self::edit(&mut state.request, Property::Server, |server| {
-        if let Some(mut server) = server.separate() {
+        if let Some(mut server) = server.separate().and_then(Separated::insertions) {
             edit(&mut server);
         }
     });
@@ -381,7 +382,7 @@ pub(crate) fn add_server(state: &mut State, name: Key, value: Owned) {
 
 /// One known key in a batch whose server array is already lent.
 #[inline(always)]
-pub(crate) fn add_field(server: &mut Separated<'_>, name: Key, value: Owned) {
+pub(crate) fn add_field(server: &mut Insertions<'_>, name: Key, value: Owned) {
     if let Some(key) = key(name) {
         server.add_new(key, value);
     }

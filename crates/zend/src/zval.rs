@@ -53,27 +53,33 @@ unsafe extern "C" {
     /// `zend_hash_next_index_insert`: the table takes `value` under its next
     /// index, or (null, at `ZEND_LONG_MAX`) leaves it to the caller. No PHP
     /// code runs.
-    safe fn zend_hash_next_index_insert(table: Table<'_>, value: Given<'_>) -> *mut zval;
+    safe fn zend_hash_next_index_insert(table: Insertions<'_>, value: Given<'_>) -> *mut zval;
     /// `zend_hash_index_add`: the table takes `value` under `index`, or (null,
     /// the index taken) leaves it to the caller. No PHP code runs.
-    safe fn zend_hash_index_add(table: Table<'_>, index: zend_ulong, value: Given<'_>)
-    -> *mut zval;
+    safe fn zend_hash_index_add(
+        table: Insertions<'_>,
+        index: zend_ulong,
+        value: Given<'_>,
+    ) -> *mut zval;
     /// `zend_hash_add_new`: the table takes `value` under `key`, which it
     /// references itself. No PHP code runs: it releases nothing.
-    safe fn zend_hash_add_new(table: Table<'_>, key: &ZStr, value: Given<'_>) -> *mut zval;
+    safe fn zend_hash_add_new(table: Insertions<'_>, key: &ZStr, value: Given<'_>) -> *mut zval;
     /// `zend_hash_update` under `key`, or `zend_hash_index_update` under
     /// `index` for none, inside `zend_try` (nonzero for a bailout): the table
     /// takes `value` and references the key itself; the value it replaces is
     /// released, which can run `__destruct`.
     safe fn swr_zend_try_hash_update(
-        table: Table<'_>,
+        table: Insertions<'_>,
         key: Option<&ZStr>,
         index: zend_ulong,
         value: Given<'_>,
     ) -> std::ffi::c_int;
     /// `zend_hash_index_del` inside `zend_try` (nonzero for a bailout): the
     /// value under `index`, if any, is released, which can run `__destruct`.
-    safe fn swr_zend_try_hash_index_del(table: Table<'_>, index: zend_ulong) -> std::ffi::c_int;
+    safe fn swr_zend_try_hash_index_del(
+        table: Insertions<'_>,
+        index: zend_ulong,
+    ) -> std::ffi::c_int;
     /// `add_next_index_stringl`: the array takes a new string of the lent bytes
     /// (an `IoSlice` is an iovec) under its next index. No PHP code runs.
     safe fn swr_lent_push_bytes(array: Separated<'_>, bytes: IoSlice<'_>);
@@ -222,11 +228,10 @@ struct Dying<'a>(&'a Value);
 #[repr(transparent)]
 struct Given<'a>(&'a mut zval);
 
-/// The table of a [`Separated`] array, which [`Separated::table`] gives up the
-/// borrow for: unshared and not immutable, so a write may change it in place,
-/// and nothing borrows an element while it does.
+/// New-key writes to one separated table. It exposes no values or copies of
+/// the array, so the exclusive borrow lasts across consecutive insertions.
 #[repr(transparent)]
-struct Table<'a>(&'a Array);
+pub struct Insertions<'a>(&'a Array);
 
 /// A call's arguments lent to C (`swr_zvals`): `argc` zvals from `argv`, which
 /// the callee reads and copies, keeping no pointer to them. Made only from a
@@ -1679,7 +1684,7 @@ impl ArrayMut {
     /// `value` is released when the index is taken.
     #[inline]
     pub fn insert_index(&mut self, index: zend_ulong, value: Owned) {
-        let Some(table) = self.separate().and_then(Separated::table) else {
+        let Some(table) = self.separate().and_then(Separated::insertions) else {
             return;
         };
         let mut value = value.into_zval();
@@ -1693,7 +1698,7 @@ impl ArrayMut {
     /// caller knows is absent, and references the key itself.
     #[inline]
     pub fn add_new(&mut self, key: &ZStr, value: Owned) {
-        if let Some(mut array) = self.separate() {
+        if let Some(mut array) = self.separate().and_then(Separated::insertions) {
             array.add_new(key, value);
         }
     }
@@ -1714,7 +1719,7 @@ impl ArrayMut {
     /// [`ArrayMut::update`] under `key`, or under `index` for none.
     #[inline]
     fn update_at(&mut self, key: Option<&ZStr>, index: zend_ulong, value: Owned) {
-        let Some(table) = self.separate().and_then(Separated::table) else {
+        let Some(table) = self.separate().and_then(Separated::insertions) else {
             return;
         };
         let mut value = value.into_zval();
@@ -1730,7 +1735,7 @@ impl ArrayMut {
     /// and a bailout its `__destruct` raises is deferred.
     #[inline]
     pub fn remove_index(&mut self, index: zend_ulong) {
-        if let Some(table) = self.separate().and_then(Separated::table) {
+        if let Some(table) = self.separate().and_then(Separated::insertions) {
             bailout::defer(bailout::trapped(swr_zend_try_hash_index_del(table, index)));
         }
     }
@@ -1774,7 +1779,7 @@ impl ArrayMut {
 #[repr(transparent)]
 pub struct Separated<'a>(&'a mut ArrayMut);
 
-impl<'a> Separated<'a> {
+impl Insertions<'_> {
     /// `zend_hash_add_new` for a key the caller knows is absent. Unlike an
     /// update, this releases no value and runs no PHP code, so it keeps the
     /// exclusive borrow for another insertion without separating again.
@@ -1783,18 +1788,17 @@ impl<'a> Separated<'a> {
         if bailout::pending() {
             return;
         }
-        let Some(table) = self.0.array().map(Table) else {
-            return;
-        };
         let mut value = value.into_zval();
-        zend_hash_add_new(table, key, Given(&mut value));
+        zend_hash_add_new(Insertions(self.0), key, Given(&mut value));
     }
+}
 
+impl<'a> Separated<'a> {
     /// `add_next_index_zval`: the array takes `value`, which is released
     /// instead when the array has no next index (it would pass `ZEND_LONG_MAX`).
     #[inline]
     pub fn push(self, value: Owned) {
-        let Some(table) = self.table() else {
+        let Some(table) = self.insertions() else {
             return;
         };
         let mut value = value.into_zval();
@@ -1804,11 +1808,12 @@ impl<'a> Separated<'a> {
         }
     }
 
-    /// The table `separate` checked was there, for one write.
+    /// Retain this table for new-key writes, which cannot release an existing
+    /// value or expose the array to another holder.
     #[inline]
-    fn table(self) -> Option<Table<'a>> {
+    pub fn insertions(self) -> Option<Insertions<'a>> {
         let array: &'a ArrayMut = self.0;
-        array.array().map(Table)
+        array.array().map(Insertions)
     }
 
     /// `add_assoc_zval_ex(array, key, value)`, with a released value's
