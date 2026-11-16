@@ -158,8 +158,7 @@ pub mod exports {
         };
         let bytes: &[u8] = bytes;
         let conn = s.conn;
-        // Out of the connection while this frame works on it: a close the dispatch
-        // runs finds none to free.
+        // Out of the connection while this frame works on it.
         let fragment = conn.take_websocket_buffer();
         let mut context = Context {
             has_fragment: fragment.is_some(),
