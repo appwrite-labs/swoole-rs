@@ -15,7 +15,6 @@ use std::{
     borrow::Cow,
     cell::{Cell, OnceCell},
     ffi::{CStr, CString},
-    ptr,
     rc::Rc,
     sync::atomic::{AtomicU32, Ordering},
 };
@@ -181,45 +180,65 @@ struct Client {
     bailout: Cell<bool>,
 }
 
-/// One response's parser and the header name it last saw, with the client
-/// it reports to, shared: the callbacks can run `write_func`.
+/// One response's parser, with the client it reports to, shared: the callbacks
+/// can run `write_func`.
 struct Hooks<'a> {
     parser: &'a mut Parser,
     client: &'a Client,
-    field: (*const u8, usize),
 }
 
-impl Callbacks for Hooks<'_> {
+/// One parse call's callbacks: the response's hooks and the header name they
+/// last saw, a span of the call's input.
+struct Spans<'h, 'a, 'i> {
+    hooks: &'h mut Hooks<'a>,
+    field: &'i [u8],
+}
+
+impl<'i> Callbacks<'i> for Spans<'_, '_, 'i> {
     fn parser(&mut self) -> &mut Parser {
-        self.parser
+        self.hooks.parser
     }
 
-    fn on_header_field(&mut self, data: &[u8]) -> c_int {
-        self.field = (data.as_ptr(), data.len());
+    fn on_header_field(&mut self, data: &'i [u8]) -> c_int {
+        self.field = data;
         0
     }
 
     fn on_header_value(&mut self, data: &[u8]) -> c_int {
-        on_header_value(self, data)
+        on_header_value(self.hooks, self.field, data)
     }
 
     fn on_headers_complete(&mut self) -> c_int {
-        c_int::from(self.client.head.get() || self.parser.status_code == NO_CONTENT)
+        let hooks = &self.hooks;
+        c_int::from(hooks.client.head.get() || hooks.parser.status_code == NO_CONTENT)
     }
 
     fn on_body(&mut self, data: &[u8]) -> c_int {
-        on_body(self.client, data)
+        on_body(self.hooks.client, data)
     }
 
     fn on_message_complete(&mut self) -> c_int {
-        on_message_complete(self)
+        on_message_complete(self.hooks)
     }
 }
 
-impl Hooks<'_> {
+impl<'a> Hooks<'a> {
+    /// The callbacks for one call, with no header name seen yet.
+    fn spans<'i>(&mut self) -> Spans<'_, 'a, 'i> {
+        Spans {
+            hooks: self,
+            field: &[],
+        }
+    }
+
+    /// `llhttp_finish`.
+    fn finish(&mut self) {
+        llhttp::finish(&mut self.spans());
+    }
+
     /// `swoole_llhttp_parser_execute`: how many bytes parsed; a pause resumes.
     fn parse(&mut self, data: &[u8]) -> usize {
-        let result = llhttp::execute(self, data);
+        let result = llhttp::execute(&mut self.spans(), data);
         if result == llhttp::HPE_OK {
             return data.len();
         }
@@ -961,7 +980,6 @@ impl Client {
         let mut hooks = Hooks {
             parser,
             client: self,
-            field: (ptr::null(), 0),
         };
         let timeout = if timeout == 0.0 {
             self.response_timeout.get()
@@ -981,7 +999,7 @@ impl Client {
                 if received == 0 {
                     socket.set_err(libc::ECONNRESET);
                     if total > 0 && !hooks.parser.should_keep_alive() {
-                        llhttp::finish(&mut hooks);
+                        hooks.finish();
                         success = true;
                     }
                 }
@@ -1029,7 +1047,7 @@ impl Client {
                 break;
             }
             if self.event_stream.get() && hooks.parser.needs_eof() {
-                llhttp::finish(&mut hooks);
+                hooks.finish();
             }
             if self.completed.get() {
                 if hooks.parser.upgrade && count > parsed + WEBSOCKET_HEADER {
@@ -1421,11 +1439,8 @@ impl<'a> FilePart<'a> {
     }
 }
 
-fn on_header_value(hooks: &Hooks, data: &[u8]) -> c_int {
+fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> c_int {
     let client = hooks.client;
-    let (field, field_length) = hooks.field;
-    // SAFETY: llhttp's span points into the buffer being parsed.
-    let name = unsafe { std::slice::from_raw_parts(field, field_length) };
     let lowered;
     let name = if client.lowercase_header.get() {
         lowered = name.to_ascii_lowercase();

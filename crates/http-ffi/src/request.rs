@@ -618,7 +618,7 @@ fn form_of(request: &mut HttpRequest) -> &mut HttpForm {
 }
 
 /// The multipart parser's callbacks, which rewrite the body into the saved buffer.
-impl Parts for HttpRequest {
+impl Parts<'_> for HttpRequest {
     fn on_header_field(&mut self, data: &[u8]) -> Flow {
         let max_length = self.max_length as usize;
         let form = form_of(self);

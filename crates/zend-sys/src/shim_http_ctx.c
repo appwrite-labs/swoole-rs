@@ -27,8 +27,8 @@ zend_long swr_zend_http_max_input_vars(void) {
     return PG(max_input_vars);
 }
 
-void swr_zend_http_upload(zval *tmpfiles, const char *file, size_t length) {
-    zend_string *path = zend_string_init(file, length, 0);
+void swr_zend_http_upload(zval *tmpfiles, struct iovec file) {
+    zend_string *path = zend_string_init(file.iov_base, file.iov_len, 0);
     add_next_index_str(tmpfiles, zend_string_copy(path));
     if (SG(rfc1867_uploaded_files)) {
         zend_hash_add_ptr(SG(rfc1867_uploaded_files), path, path);

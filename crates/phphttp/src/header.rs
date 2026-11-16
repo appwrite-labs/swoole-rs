@@ -76,6 +76,7 @@ pub(crate) fn response_property(state: &mut State, which: Property) -> *mut zval
         Property::Trailer => (&mut response.ztrailer, trailer),
     };
     slot.init_array(&response.zobject, property, 8)
+        .map_or(ptr::null_mut(), Value::as_ptr)
 }
 
 /// `sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, name)`, when it

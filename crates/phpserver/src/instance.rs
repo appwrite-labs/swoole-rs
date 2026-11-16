@@ -18,6 +18,7 @@ use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_NOTICE
 use swoole_rs_corebase::{
     constants::EventDataFlag::{SW_EVENT_DATA_OBJ_PTR, SW_EVENT_DATA_POP_PTR},
     log,
+    sys::Text,
 };
 pub use swoole_rs_ports::PortCallback;
 use swoole_rs_process::{methods::worker_is_running, worker_globals, worker_record};
@@ -26,7 +27,7 @@ use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
     Owned, Value, ZString, bailout,
     string::{self, ZBuf},
-    sys::{swr_zend_mkdir_recursive, zval},
+    sys::zval,
 };
 
 thread_local! {
@@ -160,8 +161,13 @@ pub fn php_swoole_create_dir(path: &[u8]) -> bool {
     // `access(path, F_OK) == 0`: it resolves, symbolic links followed.
     let exists = std::path::Path::new(std::ffi::OsStr::from_bytes(path)).exists();
     let path = CString::new(path).unwrap_or_default();
-    // SAFETY: a NUL-terminated path.
-    exists || unsafe { swr_zend_mkdir_recursive(path.as_ptr()) }
+    exists || swr_zend_mkdir_recursive(Text::from(path.as_c_str()))
+}
+
+unsafe extern "C" {
+    /// `php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE | REPORT_ERRORS)`:
+    /// it reads the string and keeps none of it.
+    safe fn swr_zend_mkdir_recursive(path: Text<'_>) -> bool;
 }
 
 /// `php_swoole_server_check_kernel_nobufs`: in a coroutine, pause 10 ms after a

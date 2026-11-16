@@ -161,23 +161,25 @@ const CHUNKED_STARTS: [u64; 256] = starts(&CHUNKED);
 const PREFACE_STARTS: [u64; 256] = starts(&PREFACE);
 
 /// The callbacks: each returns 0 to go on, `HPE_PAUSED` to pause, or an error.
-pub trait Callbacks {
+/// A span is a slice of the input `execute` was given, lent for that whole call
+/// (`'i`), so a callback may keep one span to read with a later one.
+pub trait Callbacks<'i> {
     /// The parser these callbacks drive, which they may read and change.
     fn parser(&mut self) -> &mut Parser;
-    fn on_url(&mut self, _data: &[u8]) -> i32 {
+    fn on_url(&mut self, _data: &'i [u8]) -> i32 {
         0
     }
-    fn on_header_field(&mut self, _data: &[u8]) -> i32 {
+    fn on_header_field(&mut self, _data: &'i [u8]) -> i32 {
         0
     }
-    fn on_header_value(&mut self, _data: &[u8]) -> i32 {
+    fn on_header_value(&mut self, _data: &'i [u8]) -> i32 {
         0
     }
     /// 1 skips the body, 2 also treats the message as an upgrade.
     fn on_headers_complete(&mut self) -> i32 {
         0
     }
-    fn on_body(&mut self, _data: &[u8]) -> i32 {
+    fn on_body(&mut self, _data: &'i [u8]) -> i32 {
         0
     }
     fn on_message_complete(&mut self) -> i32 {
@@ -466,7 +468,7 @@ impl Parser {
 }
 
 /// `llhttp_execute`: parse `data`, returning `HPE_OK` or the error that stopped it.
-pub fn execute(cb: &mut (impl Callbacks + ?Sized), data: &[u8]) -> i32 {
+pub fn execute<'i>(cb: &mut (impl Callbacks<'i> + ?Sized), data: &'i [u8]) -> i32 {
     let parser = cb.parser();
     if parser.error != 0 {
         return parser.error;
@@ -494,7 +496,7 @@ pub fn execute(cb: &mut (impl Callbacks + ?Sized), data: &[u8]) -> i32 {
 }
 
 /// `llhttp_finish`: the end of input.
-pub fn finish(cb: &mut (impl Callbacks + ?Sized)) -> i32 {
+pub fn finish<'i>(cb: &mut (impl Callbacks<'i> + ?Sized)) -> i32 {
     let parser = cb.parser();
     if parser.error != 0 {
         return 0;
@@ -510,9 +512,9 @@ pub fn finish(cb: &mut (impl Callbacks + ?Sized)) -> i32 {
 }
 
 /// One call's input and position.
-struct Run<'a, C: ?Sized> {
+struct Run<'a, 'i, C: ?Sized> {
     cb: &'a mut C,
-    data: &'a [u8],
+    data: &'i [u8],
     p: usize,
 }
 
@@ -677,7 +679,7 @@ fn digit(c: u8) -> Option<u8> {
     c.is_ascii_digit().then(|| c - b'0')
 }
 
-impl<C: Callbacks + ?Sized> Run<'_, C> {
+impl<'i, C: Callbacks<'i> + ?Sized> Run<'_, 'i, C> {
     fn parser(&mut self) -> &mut Parser {
         self.cb.parser()
     }
