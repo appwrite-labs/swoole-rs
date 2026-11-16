@@ -386,13 +386,14 @@ pub(crate) fn swr_v1_hook_uring_poll(
         timeout
     })
     .c_cast::<c_int>();
-    let rc = uring::poll(ops.host(), &mut fd, milliseconds);
-    if rc != 1 {
-        let error = if rc == 0 { libc::ETIMEDOUT } else { errno() };
-        (ops.set_err)(ops.socket, error);
-        return false;
-    }
-    true
+    let error = match uring::poll(ops.host(), &mut fd, milliseconds) {
+        Ok(1) => return true,
+        Ok(0) => libc::ETIMEDOUT,
+        Ok(_) => errno(),
+        Err(error) => error.raw_os_error().unwrap_or_else(errno),
+    };
+    (ops.set_err)(ops.socket, error);
+    false
 }
 
 /// `UringSocket::accept`'s connection: the ring's accept (under the read timeout,

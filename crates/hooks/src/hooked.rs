@@ -213,7 +213,7 @@ pub unsafe extern "C" fn swoole_coroutine_poll(
     if let Some(ring) = crate::stdio::host().and_then(ring)
         && let [fd] = fds
     {
-        return crate::uring::poll(ring, fd, timeout);
+        return crate::uring::poll(ring, fd, timeout).unwrap_or(-1);
     }
     crate::poll::poll(fds, timeout, &crate::poll::NATIVE).map_or(-1, CCast::c_cast::<c_int>)
 }
