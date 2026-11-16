@@ -193,6 +193,29 @@ the same pipeline size (recorded in the JSON); batching changes latency and serv
 per read. `client_cpu` records load-generator CPU seconds per wall second, so a client near
 one core (two for wrk) can bound the measured throughput even when server CPU is lower.
 
+### Branch sampling (sample PGO)
+
+Sample-based PGO (`-Cprofile-sample-use`, #4380) needs a `perf record -b` profile:
+LBR on Intel, LBRv2 (`amd_lbr_v2`) on AMD Zen 4, or BRBE/SPE on Arm. `benchmarks/branch_probe.py`
+says whether a machine can record one. It reports the PMUs perf can open, builds a small
+Rust program with line tables, records it with `perf record -b` and counts the branch-stack
+entries `perf script` decodes; `--convert` also makes an LLVM sample profile of it
+(llvm-profgen, else create_llvm_prof), checks its hot function has samples and rebuilds with
+the profile. It exits 0 only when every step produced real data. `wall.py` runs it after its
+load and stores the result as `branch_sampling` in its JSON, so the nightly records whether
+the `steady` runner can.
+
+The gcrunner presets are all C3D or N2D, and Compute Engine offers a guest PMU only on C4,
+C4A, M4 and A4X, and only when the instance asks for one
+(`advancedMachineFeatures.performanceMonitoringUnit`), which gcrunner doesn't set; the
+nightly's hardware counters are empty for that reason (#4465). Docker Desktop's VM exposes no
+hardware PMU either. On a machine that can:
+
+```sh
+sudo sysctl kernel.perf_event_paranoid=-1
+python3 benchmarks/branch_probe.py --convert --keep target/branch-probe
+```
+
 ## Memory (nightly)
 
 `benchmarks/memory.py` starts each engine's server for a workload and reads

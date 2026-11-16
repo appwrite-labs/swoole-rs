@@ -30,9 +30,9 @@ use swoole_rs_zend::sys::{
     zend_fcall_info_cache, zend_fiber_context, zend_fiber_status,
     zend_fiber_status_ZEND_FIBER_STATUS_DEAD, zend_fiber_status_ZEND_FIBER_STATUS_INIT,
     zend_fiber_status_ZEND_FIBER_STATUS_RUNNING, zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED,
-    zend_object, zval,
+    zend_object, zend_op, zval,
 };
-use swoole_rs_zend::{Callable, Emalloc, Function, Owned, Value, bailout};
+use swoole_rs_zend::{Callable, Emalloc, Owned, Value, bailout};
 
 unsafe extern "C" {
     /// `init_main_context`'s VM half: clears `EG(opline_before_exception)`,
@@ -87,6 +87,9 @@ unsafe extern "C" {
     safe fn zend_observer_fiber_switch_notify(from: Fiber, to: Fiber);
     /// The fiber observers' notice that a live fiber goes; it stays allocated.
     safe fn zend_observer_fiber_destroy_notify(fiber: Fiber);
+    /// Sets a live fiber's status, as Zend's fiber observers read it.
+    #[link_name = "swr_zend_coroutine_fiber_status"]
+    safe fn set_fiber_status(fiber: Fiber, status: zend_fiber_status);
 }
 
 /// A live fiber context: the main context's `EG(main_fiber_context)`, or a
@@ -103,8 +106,7 @@ pub(crate) struct Mock(Box<UnsafeCell<zend_fiber_context>, Emalloc>);
 impl Fiber {
     /// Set its status, as Zend's fiber observers read it.
     fn set_status(self, status: zend_fiber_status) {
-        // SAFETY: a live fiber (the handle's invariant); a field write.
-        unsafe { (*self.0.as_ptr()).status = status };
+        set_fiber_status(self, status);
     }
 }
 
@@ -163,10 +165,6 @@ impl Exception {
 /// field.
 pub(crate) const INVALID: usize = usize::MAX;
 
-/// `zend_function.type`: `ZEND_INTERNAL_FUNCTION` and `ZEND_USER_FUNCTION`.
-pub(crate) const INTERNAL_FUNCTION: u8 = 1;
-pub(crate) const USER_FUNCTION: u8 = 2;
-
 /// `PHPCoroutine::Args`, built by `create` for the new coroutine's entry, which
 /// copies them in before its first switch, while `create`'s frame still lends
 /// the arguments and callable they point to.
@@ -174,6 +172,8 @@ pub(crate) const USER_FUNCTION: u8 = 2;
 pub(crate) struct Args {
     /// The resolved callable.
     pub(crate) fcc: zend_fcall_info_cache,
+    /// `op_array.opcodes` of a user function; none for an internal one.
+    pub(crate) opcodes: Option<*mut zend_op>,
     pub(crate) argv: *mut zval,
     pub(crate) argc: u32,
     pub(crate) callable: *mut zval,
@@ -185,6 +185,8 @@ pub(crate) struct Context {
     /// The coroutine's callable, laid out as `zend::Function`; its
     /// `function_name` stays undefined, since `callable` holds that reference.
     call: swr_zend_callable,
+    /// The first instruction of `call`'s function, a user function's.
+    opcodes: Option<*mut zend_op>,
     /// The callable zval's reference (upstream's `Z_TRY_ADDREF` of it).
     callable: Owned,
     return_value: Owned,
@@ -221,6 +223,7 @@ impl Context {
         Self {
             vm: swoole_rs_zend::zeroed(),
             call: swoole_rs_zend::zeroed(),
+            opcodes: None,
             callable: Owned::empty(),
             return_value: Owned::empty(),
             co: None,
@@ -609,6 +612,7 @@ fn open(args: Args, context: &mut Context) -> Option<Ctx> {
     let retval = this.return_value();
     this.with(|context| {
         context.call.fcc = args.fcc;
+        context.opcodes = args.opcodes;
         let fci = &mut context.call.fci;
         fci.size = size_of::<zend_fcall_info>();
         fci.object = ptr::null_mut();
@@ -632,12 +636,10 @@ fn open(args: Args, context: &mut Context) -> Option<Ctx> {
 pub(crate) extern "C" fn enter(ctx: Ctx) -> Option<Call> {
     host::coro_hook(false, ctx.ptr().cast());
     let fiber = ctx.fiber();
-    let handler = ctx.with(|context| context.call.fcc.function_handler);
-    // SAFETY: a resolved callable's handler, which the context's call holds.
-    let function = unsafe { Function::from_ptr(handler) };
+    let (handler, opcodes) =
+        ctx.with(|context| (context.call.fcc.function_handler, context.opcodes));
     if fiber.is_some()
-        && let Some(function) = function.filter(|function| function.kind() == Function::USER)
-        && let Some(opcodes) = function.opcodes()
+        && let Some(opcodes) = opcodes
     {
         let mut frame: zend_execute_data = swoole_rs_zend::zeroed();
         // A user function is its op array.

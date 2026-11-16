@@ -181,5 +181,8 @@ pinned headers, alongside the exhaustive enum tables. Socket options, task-file
 flags, event payload selection and TLS protocol options retain their existing
 runtime tests; conversion to integers happens at the native fields and calls.
 
+`lent.rs` checks that capped output counts preserve zero, never exceed the lent
+allocation, and saturate oversized limits without wrapping signed syscall counts.
+
 `spare.rs` verifies scalar receive appends, zero/error results, datagram truncation,
 and a real short `readv` spanning an empty room without exposing unwritten bytes.

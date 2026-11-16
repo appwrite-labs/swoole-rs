@@ -303,34 +303,6 @@ impl<'a> Connection<'a> {
         request
     }
 
-    /// The redis request state a session holds, or `None`: a redis port's session
-    /// holds nothing else.
-    #[must_use]
-    pub fn resp_request(self) -> Option<*mut swoole_rs_protocols::RespRequest> {
-        decode(self.object())
-    }
-
-    /// The session holds `request`, whose address comes back; the slot keeps it until
-    /// [`Self::take_resp_request`].
-    #[must_use]
-    pub fn set_resp_request(
-        self,
-        request: Box<swoole_rs_protocols::RespRequest>,
-    ) -> *mut swoole_rs_protocols::RespRequest {
-        let request = Box::into_raw(request);
-        self.set_object(encode(request));
-        request
-    }
-
-    /// The redis request state the session held, which the slot no longer names: the
-    /// box [`Self::set_resp_request`] took, in the process that stored it.
-    #[must_use]
-    pub fn take_resp_request(self) -> Option<*mut swoole_rs_protocols::RespRequest> {
-        let request = self.resp_request();
-        self.clear_object();
-        request
-    }
-
     /// `Server::store_pipe_fd`: a pipe end's slot names its pipe, which nothing reads
     /// back as a port. An address with the top bit set, which no user-space pointer
     /// has, is not kept.
@@ -404,11 +376,9 @@ pub struct ServerTables {
     /// Armed when accepting runs out of fds and cleared by its callback, at runtime.
     pub enable_accept_timer: swoole_rs_corebase::timer_key::AtomicHeld,
     pub reactor_pipe_num: Cell<u16>,
-    /// How many records `reactor_threads` holds. Private with it: only [`Self::install_reactor_threads`] and
-    /// [`Self::take_reactor_threads`] write the pair.
-    reactor_thread_num: Cell<u16>,
-    /// `ReactorThread[]`: null, or the array `install_reactor_threads` leaked.
-    reactor_threads: Cell<*mut c_void>,
+    /// `ReactorThread[]`: the array [`Self::install_reactor_threads`] gave, until
+    /// [`Self::take_reactor_threads`].
+    reactor_threads: core::cell::OnceCell<Box<[ThreadRecord]>>,
     /// `&Server::message_bus`, whose `MessageBus` starts with its Rust bus: the
     /// one `swr_v1_server_new` made, which the tables own.
     #[cfg(feature = "upstream-symbols")]
@@ -505,46 +475,27 @@ impl ServerTables {
 )]
 impl ServerTables {
     /// `reactor_threads = threads`: the tables keep the array until
-    /// [`Self::take_reactor_threads`]. One already kept is leaked, so a record read
-    /// from it stays valid.
+    /// [`Self::take_reactor_threads`]. A factory makes one per create, which its
+    /// destroy takes, so a second is a bug, which aborts.
     pub(crate) fn install_reactor_threads(&self, threads: Box<[ThreadRecord]>) {
-        let Ok(count) = u16::try_from(threads.len()) else {
+        if u16::try_from(threads.len()).is_err() {
             swoole_rs_corebase::fatal("more reactor threads than a reactor id counts");
-        };
-        self.reactor_threads.set(Box::into_raw(threads).cast());
-        self.reactor_thread_num.set(count);
+        }
+        if self.reactor_threads.set(threads).is_err() {
+            swoole_rs_corebase::fatal("a server's reactor threads made twice");
+        }
     }
 
     /// `delete[] reactor_threads`'s array, to drop: the tables forget it. Exclusive
     /// access means no record lent by [`Self::reactor_thread`] is still borrowed.
     pub(crate) fn take_reactor_threads(&mut self) -> Option<Box<[ThreadRecord]>> {
-        let threads = self.reactor_threads.replace(core::ptr::null_mut());
-        let count = usize::from(self.reactor_thread_num.take());
-        if threads.is_null() {
-            return None;
-        }
-        let threads = core::ptr::slice_from_raw_parts_mut(threads.cast::<ThreadRecord>(), count);
-        // SAFETY: the box of `count` records `install_reactor_threads` leaked, which
-        // the tables no longer name; only those two methods write the pair.
-        Some(unsafe { Box::from_raw(threads) })
+        self.reactor_threads.take()
     }
 
     /// `serv->get_thread(id)`: reactor thread `id`'s record, or `None` past the last
     /// or before a factory made them.
     pub(crate) fn reactor_thread(&self, id: usize) -> Option<&ThreadRecord> {
-        if id >= usize::from(self.reactor_thread_num.get()) {
-            return None;
-        }
-        // SAFETY: within the live array of `reactor_thread_num` records
-        // `install_reactor_threads` leaked, which is freed only through `&mut self`
-        // (an install leaks the array it replaces).
-        Some(unsafe {
-            &*self
-                .reactor_threads
-                .get()
-                .cast::<ThreadRecord>()
-                .wrapping_add(id)
-        })
+        self.reactor_threads.get()?.get(id)
     }
 }
 
@@ -557,8 +508,7 @@ impl Default for ServerTables {
             max_connection: Cell::new(0),
             enable_accept_timer: swoole_rs_corebase::timer_key::AtomicHeld::new(),
             reactor_pipe_num: Cell::new(0),
-            reactor_thread_num: Cell::new(0),
-            reactor_threads: Cell::new(core::ptr::null_mut()),
+            reactor_threads: core::cell::OnceCell::new(),
             #[cfg(feature = "upstream-symbols")]
             message_bus: None,
         }

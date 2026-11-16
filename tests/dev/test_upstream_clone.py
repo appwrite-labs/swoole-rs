@@ -1,4 +1,5 @@
 """An interrupted upstream clone never leaves a half-checked-out pin (#2495)."""
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -67,6 +68,35 @@ class StrayTree(unittest.TestCase):
             with patch.object(build_upstream, 'clone', side_effect=AssertionError('cloned over a checkout')):
                 build_upstream.prepare_pin(pin)
             self.assertEqual((pin / 'kept').read_text(), 'kept\n')
+
+
+class ReadOnlyRunner(unittest.TestCase):
+    """phpize copies PHP's run-tests.php read-only; a profile lends the pin its runner (#4460)."""
+
+    def lend(self, pinned):
+        with tempfile.TemporaryDirectory() as temporary:
+            source, pin = Path(temporary, 'profile/src'), Path(temporary, 'upstream/src')
+            source.mkdir(parents=True)
+            pin.mkdir(parents=True)
+            (source / 'run-tests.php').write_text('official\n')
+            (source / 'run-tests.php').chmod(0o555)
+            runner = pin / 'run-tests.php'
+            runner.write_text(pinned)
+            runner.chmod(0o555)
+            os.utime(runner, ns=(1, 1))
+            before = runner.stat()
+            build_upstream.runner(source, pin)
+            after = runner.stat()
+            self.assertEqual(runner.read_text(), 'official\n')
+            self.assertEqual(after.st_mode & 0o777, 0o555)
+            return before, after
+
+    def test_an_identical_read_only_runner_is_left_untouched(self):
+        before, after = self.lend('official\n')
+        self.assertEqual((after.st_ino, after.st_mtime_ns), (before.st_ino, before.st_mtime_ns))
+
+    def test_a_different_read_only_runner_is_replaced(self):
+        self.lend('older php\n')
 
 
 if __name__ == '__main__':

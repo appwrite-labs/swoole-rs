@@ -20,6 +20,8 @@ zend_string *swr_zend_http_build_query(zval *data);
 bool swr_zend_instanceof(const zend_class_entry *ce, const zend_class_entry *parent);
 /* Whether `ce`'s properties_info names `member`. */
 bool swr_zend_class_declares(const zend_class_entry *ce, zend_string *member);
+/* The class `ce` inherits from last: its resolved parents' last, or `ce`. */
+zend_class_entry *swr_zend_class_root(zend_class_entry *ce);
 
 /* SEPARATE_ARRAY of a zval holding an array; anything else is left alone. */
 void swr_zend_separate_array(zval *array);

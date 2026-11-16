@@ -32,6 +32,21 @@ class Exclusive(unittest.TestCase):
                         self.fail('Concurrent writer acquired lock')
 
 
+class ReservedPort(unittest.TestCase):
+    def test_server_listens_while_allocators_skip_the_port(self):
+        import socket
+        with harness.reserved_port() as port:
+            # A plain bind is what bind(0) and connect() would need; the server binds as Swoole does.
+            with socket.socket() as other, self.assertRaises(OSError):
+                other.bind(('127.0.0.1', port))
+            with socket.socket() as listener:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listener.bind(('127.0.0.1', port))
+                listener.listen()
+                with socket.create_connection(('127.0.0.1', port)), listener.accept()[0]:
+                    pass
+
+
 class Overlays(unittest.TestCase):
     def test_only_selected_contracts_are_staged_and_collisions_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
