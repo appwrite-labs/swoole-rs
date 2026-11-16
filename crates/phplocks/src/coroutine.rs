@@ -27,11 +27,11 @@ static HOST: CoroutineHost = CoroutineHost {
     #[cfg(not(feature = "iouring"))]
     wait: None,
     #[cfg(feature = "iouring")]
-    wait: Some(host::wait),
+    wait: Some(swoole_rs_hooks::iouring::futex_wait),
     #[cfg(not(feature = "iouring"))]
     wake: None,
     #[cfg(feature = "iouring")]
-    wake: Some(host::wake),
+    wake: Some(swoole_rs_hooks::iouring::futex_wakeup),
     warning: host::warning,
 };
 
@@ -46,16 +46,6 @@ mod host {
     /// The lock sleeps only inside a coroutine.
     pub(super) fn sleep(seconds: f64) -> bool {
         swoole_rs_phpcoroutines::sleep(seconds)
-    }
-    /// `Iouring::futex_wait`.
-    #[cfg(feature = "iouring")]
-    pub(super) fn wait(word: &std::sync::atomic::AtomicU32) -> i32 {
-        swoole_rs_hooks::iouring::futex_wait(word)
-    }
-    /// `Iouring::futex_wakeup`.
-    #[cfg(feature = "iouring")]
-    pub(super) fn wake(word: &std::sync::atomic::AtomicU32) -> i32 {
-        swoole_rs_hooks::iouring::futex_wakeup(word)
     }
     pub(super) fn warning() {
         swoole_rs_corebase::log::warning(
