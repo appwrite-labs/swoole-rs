@@ -228,18 +228,23 @@ fn failed(code: c_int) -> c_int {
 
 /// `sw_atomic_futex_wait` without futex: take the word's token (1 -> 0),
 /// polling every millisecond until a wakeup or `timeout` (seconds, <= 0 for
-/// none). Returns 0, or -1 with the error recorded as the last error.
+/// none). Whether it took the token; a failure's error is recorded as the last error.
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn registry_wait(word: &AtomicU32, timeout: f64) -> c_int {
-    with(word, |registry, word| registry.wait(word, timeout)).map_or_else(failed, |()| 0)
+pub(crate) fn registry_wait(word: &AtomicU32, timeout: f64) -> bool {
+    with(word, |registry, word| registry.wait(word, timeout))
+        .map_err(failed)
+        .is_ok()
 }
 
 /// `sw_atomic_futex_wakeup` without futex: publish the token (0 -> 1) and
-/// notify up to `n` registered waiters. Returns the number notified, or -1
-/// with the error recorded as the last error.
+/// notify up to `n` registered waiters. Returns the number notified, or none with
+/// the error recorded as the last error.
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn registry_wakeup(word: &AtomicU32, n: c_int) -> c_int {
-    with(word, |registry, word| registry.wakeup(word, n)).unwrap_or_else(failed)
+pub(crate) fn registry_wakeup(word: &AtomicU32, n: c_int) -> Option<u32> {
+    with(word, |registry, word| registry.wakeup(word, n))
+        .map_err(failed)
+        .ok()
+        .map(|notified| u32::try_from(notified).unwrap_or(0))
 }
 
 #[cfg(test)]

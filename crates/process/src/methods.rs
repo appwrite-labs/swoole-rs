@@ -506,7 +506,7 @@ pub fn logger_op(op: swoole_rs_corebase::native::LoggerOp) {
     };
     match op {
         LoggerOp::New => {
-            let stdout = swoole_rs_corebase::swr_v1_core_stdout().cast();
+            let stdout = swoole_rs_corebase::swr_v1_core_stdout();
             let logger = std::sync::Arc::new(Logger::new(stdout, swr_logger_host));
             LOGGER.store(std::sync::Arc::as_ptr(&logger).cast_mut(), Relaxed);
             // A logger `new` replaces is leaked, as upstream's pointer overwrite does.

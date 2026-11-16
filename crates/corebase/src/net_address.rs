@@ -113,9 +113,11 @@ fn literal(family: c_int, host: &[u8]) -> Option<[u8; 16]> {
 }
 
 /// Fills `address` and `*length` for `kind`, `host` (its first `host.len()` bytes,
-/// read up to any NUL) and `port`; 0, or the `SW_ERROR_*` code to set as the last
-/// error. A host that is not an IP literal of the family goes to `fallback`, which
-/// returns its address bytes or the error.
+/// read up to any NUL) and `port`. A host that is not an IP literal of the family
+/// goes to `fallback`, which returns its address bytes or the error.
+///
+/// # Errors
+/// The `SW_ERROR_*` code to set as the last error.
 pub fn assign(
     address: &mut AddressStorage,
     length: &mut libc::socklen_t,
@@ -123,10 +125,8 @@ pub fn assign(
     host: &[u8],
     port: c_int,
     fallback: impl FnOnce(c_int) -> Result<[u8; 16], c_int>,
-) -> c_int {
-    let Ok(port) = u16::try_from(port) else {
-        return BAD_PORT;
-    };
+) -> Result<(), c_int> {
+    let port = u16::try_from(port).map_err(|_| BAD_PORT)?;
     let port = port.to_be();
     let size = |of: usize| libc::socklen_t::try_from(of).unwrap_or(0);
     let text = c_str(host);
@@ -136,26 +136,20 @@ pub fn assign(
             address.inet_v4.sin_family = libc::sa_family_t::try_from(libc::AF_INET).unwrap_or(0);
             address.inet_v4.sin_port = port;
             *length = size(size_of::<libc::sockaddr_in>());
-            let [a, b, c, d, ..] = match resolved(libc::AF_INET) {
-                Ok(bytes) => bytes,
-                Err(error) => return error,
-            };
+            let [a, b, c, d, ..] = resolved(libc::AF_INET)?;
             address.inet_v4.sin_addr.s_addr = u32::from_ne_bytes([a, b, c, d]);
-            0
+            Ok(())
         }
         Some(kind) if kind.is_inet6() => {
             address.inet_v6.sin6_family = libc::sa_family_t::try_from(libc::AF_INET6).unwrap_or(0);
             address.inet_v6.sin6_port = port;
             *length = size(size_of::<libc::sockaddr_in6>());
-            match resolved(libc::AF_INET6) {
-                Ok(bytes) => address.inet_v6.sin6_addr.s6_addr = bytes,
-                Err(error) => return error,
-            }
-            0
+            address.inet_v6.sin6_addr.s6_addr = resolved(libc::AF_INET6)?;
+            Ok(())
         }
         Some(kind) if kind.is_local() => {
             if host.len() >= SUN_PATH - 1 {
-                return NAME_TOO_LONG;
+                return Err(NAME_TOO_LONG);
             }
             address.un.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).unwrap_or(0);
             let path = &mut address.unix_mut().sun_path;
@@ -165,9 +159,9 @@ pub fn assign(
             }
             *path.last_mut().unwrap_or(&mut 0) = 0;
             *length = size(SUN_PATH);
-            0
+            Ok(())
         }
-        _ => BAD_SOCKET_TYPE,
+        _ => Err(BAD_SOCKET_TYPE),
     }
 }
 

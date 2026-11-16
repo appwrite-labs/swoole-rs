@@ -6,7 +6,6 @@
     reason = "the C type names, as curl.h spells them"
 )]
 
-use std::cell::Cell;
 use std::ffi::{c_int, c_long, c_void};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
@@ -125,15 +124,6 @@ unsafe extern "C" {
     pub safe fn curl_multi_timeout(
         multi: Option<LiveMulti<'_>>,
         milliseconds: &mut c_long,
-    ) -> CURLMcode;
-    /// Acts on `s` (or the timeout), writing the running count to `running_handles`,
-    /// which may be read meanwhile: it may run the multi's socket and timer callbacks
-    /// and its easy handles' own. `CURLM_BAD_HANDLE` without a handle.
-    pub safe fn curl_multi_socket_action(
-        multi: Option<LiveMulti<'_>>,
-        s: curl_socket_t,
-        ev_bitmask: c_int,
-        running_handles: &Cell<c_int>,
     ) -> CURLMcode;
     /// The next message of the handle's queue, which libcurl keeps until the handle's
     /// next call, or null (as without a handle): it pops the queue and runs no callback.

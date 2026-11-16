@@ -26,6 +26,41 @@ unsafe extern "C" {
 #[cfg(not(target_os = "linux"))]
 static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// A resolver's `hostent`, as `gethostbyname` and c-ares fill one: `h_addr_list` is
+/// a null-terminated list (unaligned on some libcs, Apple's) of addresses of
+/// `h_length` bytes each, all live as long as the entry is borrowed.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Hostent<'a>(&'a libc::hostent);
+
+impl<'a> Hostent<'a> {
+    /// Whether `h_addrtype` is `AF_INET`.
+    #[must_use]
+    pub fn is_inet(self) -> bool {
+        self.0.h_addrtype == libc::AF_INET
+    }
+
+    /// The entry's addresses, in the list's order, `h_length` bytes each.
+    pub fn addresses(self) -> impl Iterator<Item = &'a [u8]> {
+        let length = usize::try_from(self.0.h_length).unwrap_or(0);
+        let mut slot = self.0.h_addr_list;
+        std::iter::from_fn(move || {
+            if slot.is_null() {
+                return None;
+            }
+            // SAFETY: `slot` is a slot of the null-terminated list, at or before its
+            // null (the type's invariant), read unaligned.
+            let address = unsafe { slot.read_unaligned() };
+            if address.is_null() {
+                return None;
+            }
+            slot = slot.wrapping_add(1);
+            // SAFETY: each address holds `h_length` bytes, live with the entry.
+            Some(unsafe { std::slice::from_raw_parts(address.cast::<u8>(), length) })
+        })
+    }
+}
+
 /// `network::gethostbyname(flags, name)`: the first address of `name` for the
 /// flags' family (`h_length` bytes, zero if it has none) and its length, or none if
 /// it does not resolve.
@@ -77,18 +112,16 @@ fn lookup(flags: c_int, name: &CStr) -> Option<([c_char; 46], usize)> {
     };
     let length = usize::try_from(entry.h_length).unwrap_or(0).min(46);
     let mut bytes: [c_char; 46] = [0; 46];
-    // SAFETY: the resolver filled `entry`: `h_addr_list` is its null-terminated list,
-    // which some libcs (Apple's) do not align.
-    let first = unsafe { entry.h_addr_list.read_unaligned() };
-    if !first.is_null() {
-        // SAFETY: each address holds `h_length` bytes.
-        unsafe { std::ptr::copy_nonoverlapping(first, bytes.as_mut_ptr(), length) };
+    // The resolver filled `entry`.
+    if let Some(first) = Hostent(&entry).addresses().next() {
+        for (byte, &address) in bytes.iter_mut().zip(first) {
+            *byte = c_char::from_ne_bytes([address]);
+        }
     }
     Some((bytes, length))
 }
 
 /// What `getaddrinfo` found.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Resolved {
     /// getaddrinfo's error, or 0.

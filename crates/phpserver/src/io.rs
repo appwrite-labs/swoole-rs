@@ -173,8 +173,7 @@ fn socket_sendto(socket: Option<(c_int, c_int)>, host: &[u8], port: i64, data: &
     };
     let mut address = SocketAddress::default();
     let port = port.c_cast::<c_int>();
-    let error = assign(&mut address.addr, &mut address.len, kind, host, port, true);
-    if error != 0 {
+    if let Err(error) = assign(&mut address.addr, &mut address.len, kind, host, port, true) {
         swoole_rs_corebase::log::set_last_error(error);
         return -1;
     }

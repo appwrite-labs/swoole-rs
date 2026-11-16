@@ -39,9 +39,9 @@ fn assign(address: &mut Address, kind: c_int, host: &str, port: c_int) {
     // SAFETY: the record's union, which is `AddressStorage`'s size and alignment.
     let storage = unsafe { &mut *(&raw mut address.addr).cast::<AddressStorage>() };
     let host = host.as_bytes_with_nul();
-    let error =
+    let assigned =
         swoole_rs_clients::address::assign(storage, &mut address.len, kind, host, port, false);
-    assert_eq!(error, 0);
+    assert_eq!(assigned, Ok(()));
 }
 
 /// `network::Socket fake_sock{}; fake_sock.fd = fd`, its `info` assigned when `address`

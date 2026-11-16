@@ -61,9 +61,9 @@ struct RwLock {
     lock: Words<RW_LOCK>,
     attr: Words<RW_ATTR>,
 }
-/// A spinlock's storage.
+/// A spinlock's storage: a word, the lock in its first bytes.
 #[cfg(target_os = "linux")]
-type Spin = AtomicU32;
+type Spin = AtomicU64;
 
 const _: () = {
     assert!(
@@ -81,9 +81,9 @@ const _: () = {
 };
 #[cfg(target_os = "linux")]
 const _: () = assert!(
-    size_of::<Spin>() == size_of::<pthread_spinlock_t>()
-        && align_of::<Spin>() == align_of::<pthread_spinlock_t>(),
-    "the word is C's spinlock"
+    size_of::<Spin>() >= size_of::<pthread_spinlock_t>()
+        && align_of::<Spin>() >= align_of::<pthread_spinlock_t>(),
+    "the word holds C's spinlock"
 );
 
 /// A mutex in storage live for `'a`: one [`init_mutex`] made, or [`SharedMutex`]'s
@@ -226,11 +226,11 @@ impl RwLock {
     }
 }
 // Match sw_wait_for's exact attempt/sleep/backoff order, including its final attempt.
-fn poll(mut timeout: i32, mut attempt: impl FnMut() -> i32) -> i32 {
+fn poll(mut timeout: i32, mut attempt: impl FnMut() -> i32) -> Result<(), i32> {
     let mut sleep: i32 = 1;
     while timeout >= 0 {
         if attempt() == 0 {
-            return 0;
+            return Ok(());
         }
         sys::usleep(sleep.wrapping_mul(1000).cast_unsigned());
         sleep = sleep.wrapping_mul(2);
@@ -241,7 +241,7 @@ fn poll(mut timeout: i32, mut attempt: impl FnMut() -> i32) -> i32 {
             timeout = timeout.wrapping_sub(sleep);
         }
     }
-    ETIMEDOUT
+    Err(ETIMEDOUT)
 }
 #[cfg(target_os = "linux")]
 fn deadline(millis: i32) -> timespec {
@@ -268,23 +268,23 @@ enum Live<'a> {
 impl Live<'_> {
     /// `Lock::lock(operation, timeout)` with the timed waits `capabilities` names (bit 0
     /// mutex timedlock, bit 1 rwlock timed{rd,wr}lock, from native configure).
-    fn lock(self, operation: i32, timeout: i32, capabilities: u32) -> i32 {
+    fn lock(self, operation: i32, timeout: i32, capabilities: u32) -> Result<(), i32> {
         #[cfg(not(target_os = "linux"))]
         let _ = capabilities;
         match self {
             Self::Mutex(lock) => {
                 let try_lock = || pthread_mutex_trylock(lock);
                 if operation & LOCK_NB != 0 {
-                    return try_lock();
+                    return pthread_result(try_lock());
                 }
                 if timeout > 0 {
                     #[cfg(target_os = "linux")]
                     if capabilities & 1 != 0 {
-                        return pthread_mutex_timedlock(lock, &deadline(timeout));
+                        return pthread_result(pthread_mutex_timedlock(lock, &deadline(timeout)));
                     }
                     return poll(timeout, try_lock);
                 }
-                pthread_mutex_lock(lock)
+                pthread_result(pthread_mutex_lock(lock))
             }
             Self::RwLock(lock) => {
                 let read = operation & LOCK_SH != 0;
@@ -296,46 +296,46 @@ impl Live<'_> {
                     }
                 };
                 if operation & LOCK_NB != 0 {
-                    return try_lock();
+                    return pthread_result(try_lock());
                 }
                 if timeout > 0 {
                     #[cfg(target_os = "linux")]
                     if capabilities & 2 != 0 {
                         let deadline = deadline(timeout);
-                        return if read {
+                        return pthread_result(if read {
                             pthread_rwlock_timedrdlock(lock, &deadline)
                         } else {
                             pthread_rwlock_timedwrlock(lock, &deadline)
-                        };
+                        });
                     }
                     return poll(timeout, try_lock);
                 }
-                if read {
+                pthread_result(if read {
                     pthread_rwlock_rdlock(lock)
                 } else {
                     pthread_rwlock_wrlock(lock)
-                }
+                })
             }
             #[cfg(target_os = "linux")]
             Self::Spin(lock) => {
                 let try_lock = || pthread_spin_trylock(lock);
                 if operation & LOCK_NB != 0 {
-                    return try_lock();
+                    return pthread_result(try_lock());
                 }
                 if timeout > 0 {
                     return poll(timeout, try_lock);
                 }
-                pthread_spin_lock(lock)
+                pthread_result(pthread_spin_lock(lock))
             }
         }
     }
 
-    fn unlock(self) -> i32 {
+    fn unlock(self) -> Result<(), i32> {
         match self {
-            Self::Mutex(lock) => pthread_mutex_unlock(lock),
-            Self::RwLock(lock) => pthread_rwlock_unlock(lock),
+            Self::Mutex(lock) => pthread_result(pthread_mutex_unlock(lock)),
+            Self::RwLock(lock) => pthread_result(pthread_rwlock_unlock(lock)),
             #[cfg(target_os = "linux")]
-            Self::Spin(lock) => pthread_spin_unlock(lock),
+            Self::Spin(lock) => pthread_result(pthread_spin_unlock(lock)),
         }
     }
 }
@@ -463,10 +463,8 @@ impl Lock {
             }
             #[cfg(target_os = "linux")]
             Kind::Spin => {
-                let word: *mut AtomicU64 = storage.first_mut()?;
-                // SAFETY: the first bytes of an exclusive word that lives for the program,
-                // which has a spinlock's size and alignment to spare.
-                let spin = unsafe { &mut *word.cast::<Spin>() };
+                // An exclusive word that lives for the program.
+                let spin: &'static mut Spin = storage.first_mut()?;
                 (pthread_spin_init(spin, 1) == 0).then_some(Self(Held::SharedSpin(spin)))
             }
         }
@@ -493,25 +491,21 @@ impl Lock {
     pub fn lock(&self, operation: i32, timeout: i32, capabilities: u32) -> Result<(), i32> {
         let lock = self.live();
         // A blocking mutex lock, the common case, is small enough to inline.
-        let code = if let Live::Mutex(mutex) = lock
+        if let Live::Mutex(mutex) = lock
             && operation & LOCK_NB == 0
             && timeout <= 0
         {
-            pthread_mutex_lock(mutex)
+            pthread_result(pthread_mutex_lock(mutex))
         } else {
             lock.lock(operation, timeout, capabilities)
-        };
-        if code == 0 { Ok(()) } else { Err(code) }
+        }
     }
 
     /// `Lock::unlock()`.
     /// # Errors
     /// The errno of a lock not released.
     pub fn unlock(&self) -> Result<(), i32> {
-        match self.live().unlock() {
-            0 => Ok(()),
-            code => Err(code),
-        }
+        self.live().unlock()
     }
 }
 
@@ -768,16 +762,21 @@ pub fn barrier_destroy(barrier: &Barrier) {
 #[cfg(target_os = "linux")]
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_locks_wait(word: Option<&AtomicU32>, timeout: f64) -> i32 {
-    word.map_or(-1, |word| wait(word, timeout))
+    if word.is_some_and(|word| wait(word, timeout)) {
+        0
+    } else {
+        -1
+    }
 }
 
-/// [`swr_v1_locks_wait`] on a word.
+/// [`swr_v1_locks_wait`] on a word: whether it took the word's token.
 #[cfg(target_os = "linux")]
-pub fn wait(a: &AtomicU32, timeout: f64) -> i32 {
+#[must_use]
+pub fn wait(a: &AtomicU32, timeout: f64) -> bool {
     if a.compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
     {
-        return 0;
+        return true;
     }
     let duration = timespec {
         tv_sec: timeout as time_t,
@@ -802,24 +801,21 @@ pub fn wait(a: &AtomicU32, timeout: f64) -> i32 {
             0,
         )
     };
-    if a.compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
+    a.compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
-    {
-        0
-    } else {
-        -1
-    }
 }
 /// Futex wake on a native atomic word.
 #[cfg(target_os = "linux")]
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_locks_wakeup(word: Option<&AtomicU32>, n: i32) -> i32 {
-    word.map_or(-1, |word| wakeup(word, n))
+    word.and_then(|word| wakeup(word, n))
+        .map_or(-1, |woken| i32::try_from(woken).unwrap_or(i32::MAX))
 }
 
-/// [`swr_v1_locks_wakeup`] on a word.
+/// [`swr_v1_locks_wakeup`] on a word: the waiters woken, or none when the wake failed.
 #[cfg(target_os = "linux")]
-pub fn wakeup(a: &AtomicU32, n: i32) -> i32 {
+#[must_use]
+pub fn wakeup(a: &AtomicU32, n: i32) -> Option<u32> {
     if a.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
     {
@@ -836,9 +832,9 @@ pub fn wakeup(a: &AtomicU32, n: i32) -> i32 {
             )
         };
         // FUTEX_WAKE returns -1 or at most `n` woken waiters.
-        woken.c_cast::<i32>()
+        u32::try_from(woken).ok()
     } else {
-        0
+        Some(0)
     }
 }
 

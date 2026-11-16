@@ -142,7 +142,7 @@ pub(crate) fn cmpset<H: Holder>(call: &Call) {
 pub(crate) fn wait<H: Holder<Word = AtomicU32>>(call: &Call) {
     match call.arity(0, 1).and_then(|()| call.double(1, 1.0)) {
         Ok(timeout) => {
-            call.set_bool(word::<H>(call).is_some_and(|word| futex_wait(word, timeout) >= 0));
+            call.set_bool(word::<H>(call).is_some_and(|word| futex_wait(word, timeout)));
         }
         Err(_) => failed(call),
     }
@@ -152,8 +152,8 @@ pub(crate) fn wait<H: Holder<Word = AtomicU32>>(call: &Call) {
 pub(crate) fn wakeup<H: Holder<Word = AtomicU32>>(call: &Call) {
     match call.arity(0, 1).and_then(|()| call.long(1, 1)) {
         Ok(count) => {
-            let woken = word::<H>(call).map(|word| futex_wakeup(word, count.c_cast::<i32>()));
-            call.set_bool(woken.is_some_and(|woken| woken >= 0));
+            let woken = word::<H>(call).and_then(|word| futex_wakeup(word, count.c_cast::<i32>()));
+            call.set_bool(woken.is_some());
         }
         Err(_) => failed(call),
     }
