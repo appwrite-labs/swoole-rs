@@ -13,6 +13,7 @@ use openssl_sys::{
 use std::ffi::CStr;
 use std::os::raw::{c_int, c_long, c_ulong};
 use swoole_rs_corebase::constants::ReturnCode;
+use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_error::ErrorCode;
@@ -102,8 +103,14 @@ pub fn swr_v1_socket_ssl_recv(
     ssl: Ssl,
     buffer: &mut [impl ReadSlot],
 ) -> SslIoResult {
+    lend_spare(buffer, |spare| ssl_recv_into(tls, ssl, spare)).0
+}
+
+/// [`swr_v1_socket_ssl_recv`] into `spare`'s room.
+#[inline]
+pub fn ssl_recv_into(tls: &mut SocketTls, ssl: Ssl, spare: &mut Spare<'_>) -> SslIoResult {
     clear_errors();
-    classify(tls, ssl.read(buffer), false)
+    classify(tls, ssl.read_into(spare), false)
 }
 
 /// `Socket::ssl_send`: `SSL_write` of `data` (native code applies the DTLS chunk

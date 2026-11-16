@@ -12,6 +12,7 @@
 use std::ffi::{c_int, c_void};
 use std::mem::{MaybeUninit, offset_of};
 use std::ptr;
+use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::{CCast, TrustedAllocator};
 
 /// `swoole::String` (`string.cc` asserts the same layout).
@@ -148,6 +149,28 @@ impl CppString {
     #[inline]
     pub const unsafe fn set_len(&mut self, length: usize) {
         self.length = length;
+    }
+
+    /// Appends what `fill` writes into the room past the content: what it returned.
+    #[inline]
+    pub fn fill<R>(&mut self, fill: impl for<'s> FnOnce(&mut Spare<'s>) -> R) -> R {
+        let (result, filled) = lend_spare(self.spare(), fill);
+        self.length += filled;
+        result
+    }
+
+    /// Replaces the content with what `fill` writes from the start of the allocation,
+    /// when it returns `Some`; otherwise the content keeps its length (its bytes may be
+    /// overwritten).
+    pub fn refill<T>(
+        &mut self,
+        fill: impl for<'s> FnOnce(&mut Spare<'s>) -> Option<T>,
+    ) -> Option<T> {
+        let (result, filled) = lend_spare(self.allocation(), fill);
+        if result.is_some() {
+            self.length = filled;
+        }
+        result
     }
 
     /// `String::alloc`: a fresh buffer, from the standard allocator when `with` is `None`.

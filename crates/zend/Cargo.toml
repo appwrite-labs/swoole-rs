@@ -13,6 +13,7 @@ description = "Thin safe Zend layer: call frames, objects, classes and errors"
 php = ["dep:swoole-rs-zend-sys", "swoole-rs-zend-sys/php"]
 
 [dependencies]
+swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-zend-sys = { path = "../zend-sys", optional = true }
 
 [lints]
