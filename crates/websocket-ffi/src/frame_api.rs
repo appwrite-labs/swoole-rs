@@ -187,7 +187,7 @@ pub fn decode(frame: &mut Frame, data: &mut [u8]) -> bool {
         Ok(decoded) => (decoded, true, true),
         Err((decoded, filled)) => (decoded, false, filled),
     };
-    let flags = decoded.flags;
+    let flags = decoded.flags.bits();
     // Header's bitfields: FIN 1 -> bit 7, RSV1 4 -> 6, RSV2 8 -> 5, RSV3 16 -> 4.
     frame.header[0] = (decoded.opcode.code() & 15)
         | (flags & 16)
