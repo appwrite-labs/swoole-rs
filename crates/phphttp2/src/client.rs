@@ -446,7 +446,7 @@ impl Client {
             kind
         });
         // The conn takes the new object's reference.
-        let Some(zsocket) = swoole_rs_phpclients::create_socket(kind.socket_type) else {
+        let Some(zsocket) = swoole_rs_phpclients::create_socket(kind.socket_type.raw()) else {
             if !swoole_rs_zend::bailout::pending() {
                 let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
                 self.update_error(error, strerror(error).as_bytes());

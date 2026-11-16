@@ -280,7 +280,7 @@ fn convert_to_type(domain: c_int, kind: c_int) -> c_int {
 fn convert_host_to_type(host: &mut String) -> c_int {
     let plan = swoole_rs_reactor::host_type(host.as_bytes());
     host.drain(..plan.erase);
-    plan.socket_type
+    plan.socket_type.raw()
 }
 
 fn get_domain_and_type(kind: c_int, domain: &mut c_int, sock_type: &mut c_int) -> c_int {
