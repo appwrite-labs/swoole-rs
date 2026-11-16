@@ -161,16 +161,6 @@ impl Stream {
         C_STDOUT
     }
 
-    /// The stream at `raw`, none for null.
-    ///
-    /// # Safety
-    /// `raw` is null or an open stream that nothing closes while this, or a copy of
-    /// it, is in use.
-    #[must_use]
-    pub unsafe fn new(raw: *mut libc::FILE) -> Option<Self> {
-        ptr::NonNull::new(raw).map(Self)
-    }
-
     #[must_use]
     pub const fn as_ptr(self) -> *mut libc::FILE {
         self.0.as_ptr()

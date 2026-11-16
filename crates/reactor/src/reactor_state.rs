@@ -95,7 +95,7 @@ pub(crate) enum Backend {
         target_os = "netbsd",
         target_os = "dragonfly"
     ))]
-    Kqueue(Vec<libc::kevent>, c_int),
+    Kqueue(Vec<libc::kevent>),
 }
 impl Drop for ReactorState {
     fn drop(&mut self) {
@@ -269,7 +269,7 @@ impl ReactorState {
                 target_os = "netbsd",
                 target_os = "dragonfly"
             ))]
-            BackendKind::Kqueue => Backend::Kqueue(output(length), count),
+            BackendKind::Kqueue => Backend::Kqueue(output(length)),
             _ => Backend::Poll(PollSnapshot::new(length)),
         };
         self.backend_limit = count;
@@ -304,6 +304,10 @@ fn output<T: swoole_rs_corebase::sys::Zeroed>(count: usize) -> Vec<T> {
 // under their upstream symbols; declared, since both depend on this crate.
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
+    #[expect(
+        improper_ctypes,
+        reason = "the socket record is opaque behind its handle; Rust defines both sides"
+    )]
     safe fn reactor_close(reactor: crate::Running<'_>, socket: crate::OwnedSocket) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System12init_reactorEPNS_7ReactorE"]
     safe fn system_init_reactor(reactor: crate::Running<'_>);
@@ -315,6 +319,11 @@ unsafe extern "C-unwind" {
 unsafe extern "C" {
     safe fn swr_v1_clients_init_reactor(reactor: crate::Running<'_>);
     #[link_name = "_ZN6swoole7Reactor18_writable_callbackEPS0_PNS_5EventE"]
+    #[expect(
+        improper_ctypes,
+        reason = "the event's socket record is opaque behind its reference; Rust defines \
+                  both sides"
+    )]
     safe fn reactor_writable_callback(
         reactor: crate::Running<'_>,
         event: &mut crate::Event,
@@ -512,7 +521,7 @@ impl ReactorState {
     #[inline]
     pub(crate) fn kqueue_entry(&self, index: usize) -> Option<libc::kevent> {
         match &self.backend {
-            Backend::Kqueue(array, _) => array.get(index).copied(),
+            Backend::Kqueue(array) => array.get(index).copied(),
             _ => None,
         }
     }
@@ -532,7 +541,7 @@ impl ReactorState {
                 target_os = "netbsd",
                 target_os = "dragonfly"
             ))]
-            Backend::Kqueue(array, _) => array.as_ptr().cast(),
+            Backend::Kqueue(array) => array.as_ptr().cast(),
         }
     }
 }
@@ -571,20 +580,21 @@ fn backend_wait(
         }
         #[cfg(target_os = "linux")]
         Backend::Epoll(array) => {
-            // SAFETY: a valid owned epoll fd and its writable output array of
-            // max_event_num records.
-            unsafe {
-                libc::epoll_wait(
-                    owner.backend_fd,
-                    array.as_mut_ptr().cast(),
-                    c_int::try_from(owner.fields.max_event_num).unwrap_or(c_int::MAX),
-                    if deferred {
-                        0
-                    } else {
-                        owner.fields.timeout_msec
-                    },
-                )
-            }
+            let timeout = if deferred {
+                0
+            } else {
+                owner.fields.timeout_msec
+            };
+            let epfd = owner.backend_fd;
+            // `max_event_num` records, which a caller may lower (to 0: EINVAL), never
+            // past the array.
+            let limit = array
+                .len()
+                .min(usize::try_from(owner.fields.max_event_num).unwrap_or(usize::MAX));
+            let (array, _) = array.split_at_mut(limit);
+            swoole_rs_corebase::lent::lend_out(array, |events, count| {
+                wait::epoll_wait(epfd, events, count, timeout)
+            })
         }
         #[cfg(any(
             target_os = "macos",
@@ -593,26 +603,79 @@ fn backend_wait(
             target_os = "netbsd",
             target_os = "dragonfly"
         ))]
-        Backend::Kqueue(array, count) => {
+        Backend::Kqueue(array) => {
             let timeout = crate::kqueue_timeout(
                 owner.fields.timeout_msec,
                 owner.fields.timeout_msec <= 0 && deferred,
             );
-            // SAFETY: valid owned kqueue, output array of `count` records and optional
-            // stack timeout.
-            unsafe {
-                libc::kevent(
-                    owner.backend_fd,
-                    ptr::null(),
-                    0,
-                    array.as_mut_ptr().cast(),
-                    *count,
-                    timeout.as_ref().map_or(ptr::null(), ptr::from_ref),
+            let kq = owner.backend_fd;
+            swoole_rs_corebase::lent::lend_out(array, |events, count| {
+                wait::kevent(
+                    kq,
+                    None,
+                    wait::NoChanges::Zero,
+                    events,
+                    count,
+                    timeout.as_ref(),
                 )
-            }
+            })
         }
     };
     usize::try_from(ready).map_err(|_| std::io::Error::last_os_error())
+}
+
+/// The backends' kernel waits, over an output array lent with its length.
+mod wait {
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    /// No value: a null-only change list.
+    pub(super) enum Nothing {}
+
+    /// The length of a null change list.
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    #[repr(i32)]
+    pub(super) enum NoChanges {
+        Zero = 0,
+    }
+
+    // libc's. Each writes at most the lent count of records to the lent array and reads
+    // nothing else but the optional timeout; `kevent` reads no change from its null list.
+    // They keep nothing, so they are declared `safe`.
+    unsafe extern "C" {
+        #[cfg(target_os = "linux")]
+        pub(super) safe fn epoll_wait<'id>(
+            epfd: libc::c_int,
+            events: swoole_rs_corebase::lent::Out<'id, libc::epoll_event>,
+            count: swoole_rs_corebase::lent::Count<'id, libc::c_int>,
+            timeout: libc::c_int,
+        ) -> libc::c_int;
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
+        pub(super) safe fn kevent<'id>(
+            kq: libc::c_int,
+            changes: Option<&'static Nothing>,
+            change_count: NoChanges,
+            events: swoole_rs_corebase::lent::Out<'id, libc::kevent>,
+            count: swoole_rs_corebase::lent::Count<'id, libc::c_int>,
+            timeout: Option<&libc::timespec>,
+        ) -> libc::c_int;
+    }
 }
 /// The wait loop's initial state transition, over the actual borrowed slots.
 pub(crate) const fn before_wait(fields: &mut ReactorFields) {

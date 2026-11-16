@@ -1,24 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/reactor/base.cc (Swoole contributors).
 //! The reactor's deferred queues (`Reactor::defer_tasks`, `Reactor::destroy_callbacks`):
-//! FIFO native `(call, data)` pairs, with a `dispose` that releases a task's data when
-//! the queue is freed unrun, and Rust values ([`crate::event_api::Deferred`]).
+//! FIFO Rust values ([`crate::event_api::Deferred`]), each disposed of when the queue is
+//! freed unrun.
 use crate::Running;
 use crate::event_api::Deferred;
 use crate::reactor_state::ReactorFields;
 use std::collections::VecDeque;
 use std::ffi::c_void;
 
-/// A deferred call. `dispose`, when set, releases `data` if the call never runs.
+/// A native callback over its data: a cycle task's or a timer's.
 pub type DeferCall = unsafe extern "C-unwind" fn(*mut c_void);
-pub type DeferDispose = DeferCall;
 
 enum Task {
-    Native {
-        call: DeferCall,
-        data: *mut c_void,
-        dispose: Option<DeferDispose>,
-    },
     /// A destroy callback that takes nothing ([`crate::event_api::on_destroy`]).
     Call(fn()),
     /// base.cc's `socket_free_defer` of a record the task owns: closed and freed when
@@ -57,8 +51,6 @@ impl Task {
     /// Runs it; the queue no longer holds it.
     fn run(self) {
         match self {
-            // SAFETY: the task's own contract, from whoever queued it.
-            Self::Native { call, data, .. } => unsafe { call(data) },
             Self::Call(call) => call(),
             Self::Free(socket) => socket.into_box().close_and_free(),
             Self::Value(value) => value.run(),
@@ -68,15 +60,7 @@ impl Task {
     /// Releases it unrun.
     fn dispose(self) {
         match self {
-            Self::Native {
-                data,
-                dispose: Some(dispose),
-                ..
-            } => {
-                // SAFETY: the task never ran, so its data is still the queue's.
-                unsafe { dispose(data) };
-            }
-            Self::Native { .. } | Self::Call(_) => {}
+            Self::Call(_) => {}
             Self::Free(socket) => socket.into_box().close_and_free(),
             Self::Value(value) => value.dispose(),
         }
@@ -118,25 +102,6 @@ pub(crate) fn run_destroy(reactor: Running<'_>) {
     while let Some(task) = reactor.with(next) {
         task.run();
     }
-}
-
-/// `Reactor::defer(fn, data)` on the thread's reactor; `dispose(data)` instead if the
-/// reactor is freed first. False, queuing nothing, without a reactor.
-///
-/// # Safety
-/// `call(data)` is sound when the loop runs it, and `dispose(data)` when the reactor
-/// is freed first.
-pub unsafe fn defer(call: DeferCall, data: *mut c_void, dispose: Option<DeferDispose>) -> bool {
-    queue(Task::Native {
-        call,
-        data,
-        dispose,
-    })
-}
-
-/// Appends `task` to the thread reactor's `defer_tasks`: false without a reactor.
-fn queue(task: Task) -> bool {
-    crate::event_api::field_mut(|fields| push(&mut fields.defer_tasks, task)).is_some()
 }
 
 /// `swoole_event_defer(socket_free_defer, socket)`: the thread's reactor closes and
@@ -197,19 +162,33 @@ pub(crate) mod tests {
     use crate::reactor_state::tests::running;
     use std::ptr;
 
-    /// [`super::defer`] onto `fields`' queue rather than the thread's reactor.
+    /// A native `(call, data)` task, with a `dispose` of its data if it never runs.
+    struct Native {
+        call: DeferCall,
+        data: *mut c_void,
+        dispose: Option<DeferCall>,
+    }
+
+    impl Deferred for Native {
+        fn run(self) {
+            unsafe { (self.call)(self.data) };
+        }
+
+        fn dispose(self) {
+            if let Some(dispose) = self.dispose {
+                unsafe { dispose(self.data) };
+            }
+        }
+    }
+
+    /// The native task `call(data)` onto `fields`' queue rather than the thread's reactor.
     pub(crate) unsafe fn defer(
         fields: *mut ReactorFields,
         call: DeferCall,
         data: *mut c_void,
-        dispose: Option<DeferDispose>,
+        dispose: Option<DeferCall>,
     ) {
-        let task = Task::Native {
-            call,
-            data,
-            dispose,
-        };
-        push(unsafe { &mut (*fields).defer_tasks }, task);
+        push_native(unsafe { &mut (*fields).defer_tasks }, call, data, dispose);
     }
     use std::cell::RefCell;
 
@@ -249,14 +228,14 @@ pub(crate) mod tests {
         slot: &mut Option<Box<ReactorDeferred>>,
         call: DeferCall,
         data: *mut c_void,
-        dispose: Option<DeferDispose>,
+        dispose: Option<DeferCall>,
     ) {
-        let task = Task::Native {
+        let task = Native {
             call,
             data,
             dispose,
         };
-        push(slot, task);
+        push(slot, Task::Value(Box::new(task)));
     }
 
     /// base.cc's `Reactor::defer` and the defer end callback: FIFO, a task's own defer

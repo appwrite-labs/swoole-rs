@@ -1007,9 +1007,16 @@ unsafe fn add_or_update() {
     }
 }
 
-extern "C-unwind" fn increment(count: *mut c_void) {
-    // SAFETY: the case's counter.
-    unsafe { *count.cast::<c_int>() += 1 };
+/// Increments the case's counter when the loop runs it.
+struct Increment(*mut c_int);
+
+impl swoole_rs_ffi::event_api::Deferred for Increment {
+    fn run(self) {
+        // SAFETY: the case's counter.
+        unsafe { *self.0 += 1 };
+    }
+
+    fn dispose(self) {}
 }
 
 unsafe fn defer_task() {
@@ -1020,7 +1027,7 @@ unsafe fn defer_task() {
 
         let count: *mut c_int = Box::into_raw(Box::new(0));
         // `reactor->defer(fn, count)` on the thread's reactor, which `reactor` is.
-        assert!(swoole_rs_ffi::defer(increment, count.cast(), None));
+        assert!(swoole_rs_ffi::event_api::swoole_event_defer_value(Increment(count)).is_ok());
         let _ = event_api::swoole_event_wait();
         assert_eq!(*count, 1);
         drop(Box::from_raw(count));
