@@ -4,7 +4,7 @@
 //! Rust's framing with the same inputs. `ported.txt` holds the pinned bodies'
 //! traces, one line per scenario, without their EOF scans and `String::clear`
 //! calls, which Rust performs itself.
-use super::{BufferSync, Failure, ReadBuffer, recv_packet};
+use super::{BufferSync, Failure, Length, ReadBuffer, recv_packet};
 use crate::co_io::{Host, TEST_HOST as HOST, errno, set_errno};
 use crate::co_socket::{Co, CoSocket, TestSocket};
 use core::fmt::Write;
@@ -133,22 +133,22 @@ fn recv(_: Co, buf: &mut [core::mem::MaybeUninit<u8>], all: bool) -> Option<usiz
     })
 }
 
-fn package_length(_: Co, n: u32, header: &mut u32) -> isize {
+fn package_length(_: Co, n: u32, header: &mut u32) -> Length {
     with(|s| {
         s.trace.push(format!("parse:{n}"));
         *header = 4;
         let length = s.lengths[s.parsed.min(s.lengths.len() - 1)];
         s.parsed += 1;
         s.trace.push(format!("trace:{length}:{n}"));
-        length
+        Length::of(length)
     })
 }
 
-fn packet_fail(_: Co, kind: Failure, length: isize) {
+fn packet_fail(_: Co, kind: Failure) {
     with(|s| {
         let (error, message) = match kind {
             Failure::LengthNotFound => (1781, "get package length failed"),
-            Failure::TooLarge => {
+            Failure::TooLarge(length) => {
                 s.trace.extend(["address".into(), "port".into()]);
                 s.trace.push(format!("diagnostic:private:9602:{length}"));
                 (1782, "native diagnostic")

@@ -51,8 +51,8 @@ impl<'a> ReadEvent<'a> {
 
 /// `int (*onRead)(Reactor *, ListenPort *, Event *)`: a port's readable callback, which
 /// the server's connection read calls under the running reactor, with the
-/// connection's port.
-pub type Reader = fn(swoole_rs_reactor::Running<'_>, Port<'_>, ReadEvent<'_>) -> c_int;
+/// connection's port; false where upstream's returns `SW_ERR`.
+pub type Reader = fn(swoole_rs_reactor::Running<'_>, Port<'_>, ReadEvent<'_>) -> bool;
 
 /// `ListenPort::onRead`'s slot: null, or a [`Reader`].
 #[repr(transparent)]

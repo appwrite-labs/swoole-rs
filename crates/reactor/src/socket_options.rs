@@ -178,10 +178,19 @@ pub fn swr_v1_socket_uncork(
 
 /// `SO_RCVBUF` (`recv`), `SO_SNDBUF` (`send`) or both, send first, as
 /// `set_buffer_size` does.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_buffer_size(fd: c_int, recv: bool, send: bool, size: u32) -> bool {
-    let set = |name| swr_v1_socket_set_int(fd, libc::SOL_SOCKET, name, size.cast_signed());
-    (!send || set(libc::SO_SNDBUF)) && (!recv || set(libc::SO_RCVBUF))
+///
+/// # Errors
+/// The first failed setsockopt(2)'s.
+pub fn set_socket_buffer_size(fd: c_int, recv: bool, send: bool, size: u32) -> std::io::Result<()> {
+    let set =
+        |name| swoole_rs_corebase::sys::setsockopt(fd, libc::SOL_SOCKET, name, &size.cast_signed());
+    if send {
+        set(libc::SO_SNDBUF)?;
+    }
+    if recv {
+        set(libc::SO_RCVBUF)?;
+    }
+    Ok(())
 }
 
 /// `_set_timeout`: `SO_SNDTIMEO` (`send`) or `SO_RCVTIMEO` to `timeout` seconds,
@@ -299,12 +308,12 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no setsockopt")]
     fn buffers_and_timeouts() {
         let fd = tcp();
-        assert!(swr_v1_socket_buffer_size(fd, true, true, 65536));
+        assert!(set_socket_buffer_size(fd, true, true, 65536).is_ok());
         assert!(swr_v1_socket_kernel_timeout(fd, true, 1.5));
         assert!(swr_v1_socket_kernel_timeout(fd, false, 0.25));
         assert!(swr_v1_socket_tcp_nodelay(fd, 1));
         assert!(swr_v1_socket_reset_on_close(fd));
         close(fd);
-        assert!(!swr_v1_socket_buffer_size(-1, false, true, 1));
+        assert!(set_socket_buffer_size(-1, false, true, 1).is_err());
     }
 }
