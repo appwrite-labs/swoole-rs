@@ -1202,7 +1202,8 @@ mod tests {
         )
         .unwrap();
         let length = getsockopt(left, libc::SOL_SOCKET, libc::SO_KEEPALIVE, &mut value).unwrap();
-        assert_eq!((length, value), (socklen::<c_int>(), 1));
+        // Linux reports 1, macOS the option's flag bit; both mean on.
+        assert_eq!((length, value != 0), (socklen::<c_int>(), true));
         assert_eq!(close(left), 0);
         assert_eq!(close(right), 0);
     }
