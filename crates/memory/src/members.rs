@@ -12,7 +12,7 @@
 //! carries.
 
 use crate::global::{self, Global};
-use crate::table::Table;
+use crate::table::{Handle, Table};
 use core::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::ptr;
@@ -524,7 +524,7 @@ fn php_hash(key: &[u8], compared: usize) -> u64 {
 
 /// `Table::create()`: lays the table out in a fresh shared arena.
 #[must_use]
-pub fn swr_table_create(table: &mut Table) -> bool {
+pub fn swr_table_create(table: &mut Handle) -> bool {
     let size = table.arena_size();
     if size == 0 {
         return false;
@@ -545,7 +545,7 @@ pub fn swr_table_create(table: &mut Table) -> bool {
 /// Dropping it leaves the table to the processes that share it (forked workers
 /// may still use it), as upstream's objects do.
 pub struct SharedTable {
-    table: &'static mut Table,
+    table: Handle,
     destroyed: std::cell::Cell<bool>,
 }
 
@@ -561,7 +561,7 @@ impl SharedTable {
         let table = Table::init(slot, rows, conflict, php_hash, table_warning, table_error)?;
         table.set_hash(hash);
         Some(Self {
-            table,
+            table: Handle::new(table),
             destroyed: std::cell::Cell::new(false),
         })
     }
@@ -573,7 +573,7 @@ impl SharedTable {
 
     /// `Table::create()` ([`swr_table_create`]).
     pub fn create(&mut self) -> bool {
-        swr_table_create(self.table)
+        swr_table_create(&mut self.table)
     }
 
     /// `Table::destroy()`, once this is dropped.
@@ -583,20 +583,18 @@ impl SharedTable {
 }
 
 impl std::ops::Deref for SharedTable {
-    type Target = Table;
+    type Target = Handle;
 
-    fn deref(&self) -> &Table {
-        self.table
+    fn deref(&self) -> &Handle {
+        &self.table
     }
 }
 
 impl Drop for SharedTable {
     fn drop(&mut self) {
         if self.destroyed.get() {
-            // `Table::destroy()`: frees the arena, then the header.
-            // SAFETY: a made table, destroyed once: nothing uses it any more.
-            let arena = unsafe { self.table.destroy() };
-            Shm(Cell::new(arena.cast())).free();
+            // `Table::destroy()`: frees the arena; the pool keeps the header.
+            self.table.destroy().free();
         }
     }
 }
