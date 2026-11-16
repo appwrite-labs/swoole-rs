@@ -33,9 +33,10 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'target/tsan'
 SANITIZE = '-fsanitize=thread -fno-omit-frame-pointer'
 FAMILIES = ['swoole_thread', 'swoole_atomic', 'swoole_lock']
-# Reports outside upstream's run that main's run has. Lower it with each fix. Main's nightly runs
-# have had 6 or 7 since the HTTP read path stopped reading a closed slot (#3418).
-LIMIT = 7
+# Reports outside upstream's run that main's run has. Lower it with each fix. 4 on CI once a thread-mode
+# worker record's copy and a new connection's publish stopped racing (#4286): the 3 wrong-thread
+# unlocks that upstream's run has too, and TSan's "can't find longjmp buf".
+LIMIT = 4
 
 
 def sanitized(reports, name):
