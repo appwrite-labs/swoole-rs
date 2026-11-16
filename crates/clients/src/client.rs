@@ -749,19 +749,19 @@ const fn status(ok: bool) -> c_int {
     if ok { OK } else { ERR }
 }
 
-extern "C" fn on_stream_read(_: Running<'_>, event: &mut Event) -> c_int {
+fn on_stream_read(_: Running<'_>, event: &mut Event) -> c_int {
     status(event_client(event).is_some_and(on_read))
 }
 
-extern "C" fn on_dgram_read(_: Running<'_>, event: &mut Event) -> c_int {
+fn on_dgram_read(_: Running<'_>, event: &mut Event) -> c_int {
     status(event_client(event).is_some_and(on_datagram))
 }
 
-extern "C" fn on_writable(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_writable(reactor: Running<'_>, event: &mut Event) -> c_int {
     status(event_client(event).is_some_and(|this| on_write(this, reactor, event)))
 }
 
-extern "C" fn on_failure(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_failure(reactor: Running<'_>, event: &mut Event) -> c_int {
     status(event_client(event).is_some_and(|this| on_error(this, reactor, event)))
 }
 

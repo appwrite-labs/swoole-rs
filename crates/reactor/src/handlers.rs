@@ -1,5 +1,5 @@
 //! The reactor's handler tables (upstream `Reactor::read_handler`, `write_handler`,
-//! `error_handler` and the two defaults): which native `ReactorHandler` runs for an
+//! `error_handler` and the two defaults): which `Handler` runs for an
 //! fd type's read, write or error readiness.
 use crate::{Event, Events};
 use std::cell::Cell;
@@ -7,9 +7,9 @@ use std::ffi::{c_int, c_void};
 use std::marker::PhantomData;
 
 /// `ReactorHandler`: `int (*)(Reactor *, Event *)`. The loop lends the handler its
-/// reactor and the event it prepared for this call.
+/// reactor and the event it prepared for this call. Only Rust registers and calls one.
 /// A handler runs only for the fd types and reactors it was registered with.
-pub type Handler = extern "C" fn(Running<'_>, &mut Event) -> c_int;
+pub type Handler = fn(Running<'_>, &mut Event) -> c_int;
 
 /// A getter and setter of one of the reactor's fields, each borrowing its state for
 /// the one read or write.
@@ -342,13 +342,13 @@ pub fn swr_v1_reactor_handlers_set_default(
 mod tests {
     use super::*;
 
-    extern "C" fn one(_: Running<'_>, _: &mut Event) -> c_int {
+    fn one(_: Running<'_>, _: &mut Event) -> c_int {
         1
     }
-    extern "C" fn two(_: Running<'_>, _: &mut Event) -> c_int {
+    fn two(_: Running<'_>, _: &mut Event) -> c_int {
         2
     }
-    extern "C" fn three(_: Running<'_>, _: &mut Event) -> c_int {
+    fn three(_: Running<'_>, _: &mut Event) -> c_int {
         3
     }
 

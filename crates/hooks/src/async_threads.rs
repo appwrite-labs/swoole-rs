@@ -318,7 +318,7 @@ fn complete(token: usize) {
 
 /// Upstream's `AsyncThreads::callback`, the pipe's reactor handler: completes every event
 /// waiting on the pipe.
-pub extern "C" fn callback(_: Running<'_>, event: &mut Event) -> c_int {
+pub fn callback(_: Running<'_>, event: &mut Event) -> c_int {
     if pool_complete(event.fd(), complete).is_none() {
         log::sys_warning(
             c"AsyncThreads::callback",

@@ -127,7 +127,7 @@ pub(crate) fn connection_incoming(
 ///
 /// Registered only on a server's reactor (its `ptr` is the live `Server`) for its
 /// listening sockets.
-pub(crate) extern "C" fn accept_connection(
+pub(crate) fn accept_connection(
     reactor: swoole_rs_reactor::Running<'_>,
     event: &mut swoole_rs_reactor::Event,
 ) -> c_int {

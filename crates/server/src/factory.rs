@@ -145,7 +145,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
 ///
 /// Registered only on the master's reactor, whose `ptr` is the live server, for its
 /// command pipe.
-extern "C" fn accept_command_result(
+fn accept_command_result(
     reactor: swoole_rs_reactor::Running<'_>,
     event: &mut swoole_rs_reactor::Event,
 ) -> c_int {
