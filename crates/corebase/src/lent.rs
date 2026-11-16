@@ -135,6 +135,55 @@ pub(crate) fn lend_value<T, N: Narrow, R>(
     )
 }
 
+/// A lent buffer that starts with a header `H` and then holds its [`Count`]'s bytes,
+/// for a call that writes the header and up to that many bytes after it: writable for
+/// them and reached through nothing else for `'id`. Only a lending mints one, with its
+/// count.
+#[repr(transparent)]
+pub struct HeadedOut<'id, H>(*mut H, Brand<'id>);
+
+/// As [`HeadedOut`], for a call that reads the header and up to the count's bytes
+/// after it: readable for them and not written for `'id`.
+#[repr(transparent)]
+pub struct HeadedIn<'id, H>(*const H, Brand<'id>);
+
+impl Count<'_> {
+    /// At most `limit` of the same lending's items.
+    #[inline]
+    #[must_use]
+    pub fn at_most(self, limit: usize) -> Self {
+        Self(self.0.min(limit), PhantomData)
+    }
+}
+
+/// Lends `node`, a header `H` and then plain bytes, to `call` as a [`HeadedOut`] and the
+/// count of bytes after the header; `None`, without calling it, when `node` is shorter
+/// than the header. Any bytes are a value of `node`'s plain elements.
+#[inline]
+pub fn lend_headed_out<H, T: crate::sys::Pod, R>(
+    node: &mut [T],
+    call: impl for<'id> FnOnce(HeadedOut<'id, H>, Count<'id>) -> R,
+) -> Option<R> {
+    let after = size_of_val(node).checked_sub(size_of::<H>())?;
+    Some(call(
+        HeadedOut(node.as_mut_ptr().cast(), PhantomData),
+        Count(after, PhantomData),
+    ))
+}
+
+/// As [`lend_headed_out`], for a call that only reads `node`.
+#[inline]
+pub fn lend_headed_in<H, T: crate::sys::Pod, R>(
+    node: &[T],
+    call: impl for<'id> FnOnce(HeadedIn<'id, H>, Count<'id>) -> R,
+) -> Option<R> {
+    let after = size_of_val(node).checked_sub(size_of::<H>())?;
+    Some(call(
+        HeadedIn(node.as_ptr().cast(), PhantomData),
+        Count(after, PhantomData),
+    ))
+}
+
 /// Lends `vectors` to `call` as the iovec array they are ABI-compatible with (std's
 /// guarantee for `IoSlice` on Unix), each naming readable bytes.
 #[inline]
