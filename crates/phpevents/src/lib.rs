@@ -754,7 +754,7 @@ fn dispatch(call: &Call) {
 }
 
 /// `php_swoole_reactor_init()`: whether the event loop is ready. Raises a
-/// bailout, so only an export C calls may call it last.
+/// bailout, so it is its caller's last step (`swoole_rs_phpswoole::EventSteps`).
 #[must_use]
 pub fn reactor_init() -> bool {
     let result = loop_driver::init().unwrap_or_else(|error| {

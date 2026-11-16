@@ -15,12 +15,6 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
 };
 
-// crates/phpevents' functions: declared, since crates/phpevents depends on this crate.
-unsafe extern "C" {
-    /// crates/phpevents: safe as crates/phpcoroutines declares it, over a live value.
-    safe fn php_swoole_convert_to_fd(value: Option<&Value>) -> c_int;
-}
-
 /// `new SocketImpl(...)` inside `zend_try`, since the constructor's warnings can
 /// run a PHP error handler: the socket is in `made`, which owns it before a
 /// handler can bail out. By `domain`, `kind` and `protocol` with `family`, else
@@ -418,7 +412,7 @@ pub fn coroutine_check() -> Result<(), Bailout> {
 /// The warning's error handler bailed out.
 pub fn convert_to_fd(value: &Value) -> Result<i32, Bailout> {
     let mut fd = -1;
-    let convert = || fd = php_swoole_convert_to_fd(Some(value));
+    let convert = || fd = swoole_rs_phpswoole::convert_to_fd(Some(value)).unwrap_or(-1);
     // The body holds a copy and the result slot.
     swoole_rs_zend::contain_with(convert)?;
     Ok(fd)
