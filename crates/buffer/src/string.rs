@@ -613,6 +613,14 @@ pub fn new_string(data: &[u8]) -> *mut CppString {
     from_bytes(Box::leak(Box::new_uninit()), data)
 }
 
+/// `new String(size, with)`, owned: [`CppString::dispose`] frees its bytes.
+#[must_use]
+pub fn boxed_sized_string(size: usize, with: Option<TrustedAllocator>) -> Box<CppString> {
+    let mut string = Box::new(CppString::EMPTY);
+    string.alloc(size, with);
+    string
+}
+
 /// `new String(size, with)`, in boxed storage [`delete_string`] frees.
 #[must_use]
 pub fn new_sized_string(size: usize, with: Option<TrustedAllocator>) -> *mut CppString {

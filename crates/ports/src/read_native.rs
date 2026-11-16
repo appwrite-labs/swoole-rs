@@ -7,7 +7,7 @@ use core::ptr;
 use core::sync::atomic::Ordering;
 
 use std::cell::Cell;
-use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
+use swoole_rs_buffer::string::{CppString, boxed_sized_string};
 use swoole_rs_corebase::constants::{
     EventDataFlag::SW_EVENT_DATA_POP_PTR, SW_BUFFER_SIZE_BIG, SW_HTTP_100_CONTINUE_PACKET,
     SW_HTTP_BAD_REQUEST_PACKET, SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET,
@@ -118,7 +118,9 @@ impl<'a> Read<'a> {
         let (len, size) = (string.len() as u64, string.size() as u64);
         length >= size / 2
             && length == len
-            && ptr::eq(self.buffer, self.socket.read(|s| s.recv_buffer).cast())
+            && self.socket.read(|s| {
+                (s.recv_buffer.as_ref()).is_some_and(|held| ptr::eq(Box::as_ptr(held), self.buffer))
+            })
     }
 
     /// `socket->removed`: out of the reactor, as a close leaves it.
@@ -132,9 +134,11 @@ impl<'a> Read<'a> {
 
     /// `serv->get_recv_buffer(socket)`.
     fn recv_buffer(&self) -> *mut CppString {
-        let held = self.socket.read(|s| s.recv_buffer);
-        if !held.is_null() {
-            return held.cast();
+        let held = self
+            .socket
+            .edit(|s| s.recv_buffer.as_mut().map(Box::as_mut_ptr));
+        if let Some(held) = held {
+            return held;
         }
         let allocator = self.config().recv_buffer_allocator.load(Ordering::Relaxed);
         // SAFETY: the server's allocator, null or a `swoole::Allocator` that lives for
@@ -143,9 +147,9 @@ impl<'a> Read<'a> {
         let allocator = unsafe {
             std::mem::transmute::<*mut core::ffi::c_void, Option<TrustedAllocator>>(allocator)
         };
-        let made = new_sized_string(SW_BUFFER_SIZE_BIG as usize, allocator);
-        self.socket.edit(|s| s.recv_buffer = made.cast());
-        made
+        let made = boxed_sized_string(SW_BUFFER_SIZE_BIG as usize, allocator);
+        self.socket
+            .edit(|s| Box::as_mut_ptr(s.recv_buffer.insert(made)))
     }
 
     fn send_bytes(&self, packet: &[u8]) {
@@ -218,18 +222,12 @@ impl Connection for Read<'_> {
 
     #[inline]
     fn release(&mut self, if_empty: bool) -> bool {
-        let held = self.socket.read(|s| s.recv_buffer).cast::<CppString>();
-        let release = !held.is_null() && {
-            // SAFETY: the socket's receive buffer, when set, is live.
-            let held = unsafe { &*held };
-            (!if_empty || held.is_empty()) && held.size() > SW_BUFFER_SIZE_BIG as usize * 2
-        };
-        if release {
-            // SAFETY: `new String`'s, which nothing uses after.
-            unsafe { delete_string(held) };
-            self.socket.edit(|s| s.recv_buffer = ptr::null_mut());
-        }
-        release
+        let released = self.socket.edit(|s| {
+            s.recv_buffer.take_if(|held| {
+                (!if_empty || held.is_empty()) && held.size() > SW_BUFFER_SIZE_BIG as usize * 2
+            })
+        });
+        released.map(|mut held| held.dispose()).is_some()
     }
 
     #[inline(always)]

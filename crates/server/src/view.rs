@@ -767,7 +767,13 @@ pub(crate) fn set_nonblock(sock: Socket<'_>) {
 #[must_use]
 pub fn recv_buffer(conn: Connection<'_>) -> *mut c_void {
     conn.socket().map_or(core::ptr::null_mut(), |socket| {
-        socket.read(|s| s.recv_buffer)
+        socket.edit(|s| {
+            s.recv_buffer
+                .as_mut()
+                .map_or(core::ptr::null_mut(), |buffer| {
+                    Box::as_mut_ptr(buffer).cast()
+                })
+        })
     })
 }
 
