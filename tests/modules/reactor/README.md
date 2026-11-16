@@ -47,3 +47,7 @@ the TESTs left the build (#1674).
 The server in `send` is a plain TCP listener replying as upstream's `Server`
 `onReceive` does (`"Server: "` + body, framed, then a zero-length frame). The
 Rust test also checks that each response callback runs exactly once.
+
+Deferred-queue Rust regressions also check callbacks appended during destruction
+retain FIFO order, and a caught nested escape leaves its unrun tasks to the
+reactor while the outer pass completes.

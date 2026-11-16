@@ -643,7 +643,7 @@ mod tests {
         PROBE.set((begin_stops, 0));
         if deferred {
             // SAFETY: the state's own field; the queue is detached after the wait.
-            unsafe { (*state.fields).defer_tasks = Some(Box::default()) };
+            unsafe { (*state.fields).defer_tasks = Some(crate::ReactorDeferred::default()) };
         }
         let ops = WaitOps {
             reactor: running(state.owner),
