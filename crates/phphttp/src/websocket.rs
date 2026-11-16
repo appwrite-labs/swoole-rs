@@ -659,7 +659,7 @@ fn decode(data: &mut [u8]) -> Option<DecodedFrame> {
                 func,
                 &format!(
                     "invalid compressed websocket control frame received: opcode={}",
-                    frame.opcode
+                    frame.opcode.code()
                 ),
             );
             return None;
@@ -712,7 +712,11 @@ fn unpack(call: &Call) {
         Owned::string(ZString::new(payload))
     };
     // The Frame takes its own reference to the payload.
-    call.set_owned(construct(i64::from(frame.opcode), &zpayload, frame.flags));
+    call.set_owned(construct(
+        i64::from(frame.opcode.code()),
+        &zpayload,
+        frame.flags,
+    ));
 }
 
 /// `php_swoole_server_get_and_check_server(ZEND_THIS)` and the running check.
@@ -1346,24 +1350,23 @@ pub(crate) fn recv(settings: u8, slot: &mut Assembly, socket: co::Co, timeout: f
             .and_then(|rest| rest.get(..frame.payload_length))
             .unwrap_or_default();
         let opcode = frame.opcode;
-        let respond = match Opcode::from_code(opcode) {
-            Some(Opcode::Ping) if settings & OPEN_PING_FRAME == 0 => {
+        let respond = match opcode {
+            Opcode::Ping if settings & OPEN_PING_FRAME == 0 => {
                 reply(settings, socket, Opcode::Pong.code(), payload);
                 continue;
             }
-            Some(Opcode::Pong) if settings & OPEN_PONG_FRAME == 0 => continue,
-            Some(Opcode::Close) if settings & OPEN_CLOSE_FRAME == 0 => {
+            Opcode::Pong if settings & OPEN_PONG_FRAME == 0 => continue,
+            Opcode::Close if settings & OPEN_CLOSE_FRAME == 0 => {
                 reply(settings, socket, Opcode::Close.code(), payload);
                 continue;
             }
-            Some(opcode) => opcode.is_control(),
-            None => false,
+            opcode => opcode.is_control(),
         };
         if respond {
             let payload = Owned::string(ZString::new(payload));
-            return deliver(socket, opcode, &payload, FLAG_FIN);
+            return deliver(socket, opcode.code(), &payload, FLAG_FIN);
         }
-        if opcode == Opcode::Continuation.code() {
+        if opcode == Opcode::Continuation {
             let Some(message) = slot.as_mut() else {
                 warning(
                     func,
@@ -1399,7 +1402,7 @@ pub(crate) fn recv(settings: u8, slot: &mut Assembly, socket: co::Co, timeout: f
             let Some(payload) = payload_string(payload, frame.flags & FLAG_RSV1 != 0) else {
                 return protocol_error();
             };
-            return deliver(socket, opcode, &payload, frame.flags);
+            return deliver(socket, opcode.code(), &payload, frame.flags);
         }
         let size = if payload.is_empty() {
             DEFAULT_BUFFER
@@ -1410,7 +1413,7 @@ pub(crate) fn recv(settings: u8, slot: &mut Assembly, socket: co::Co, timeout: f
         data.extend_from_slice(payload);
         *slot = Some(Box::new(Message {
             data,
-            ext_flags: u16::from_be_bytes([opcode, frame.flags]),
+            ext_flags: u16::from_be_bytes([opcode.code(), frame.flags]),
         }));
     }
 }
