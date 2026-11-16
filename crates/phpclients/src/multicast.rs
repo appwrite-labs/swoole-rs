@@ -456,7 +456,7 @@ fn change(
 #[cfg(target_os = "linux")]
 fn interface_name(fd: c_int, index: c_uint, request: &mut libc::ifreq) -> bool {
     request.ifr_ifru.ifru_ifindex = c_int::try_from(index).unwrap_or(-1);
-    interface_ioctl(fd, InterfaceRequest::Name, request) != -1
+    interface_ioctl(fd, InterfaceRequest::Name, request).is_ok()
 }
 
 /// `if_indextoname`: the interface's name into `request`.
@@ -482,7 +482,7 @@ fn interface_address(s: Sock, index: c_uint) -> Result<Option<in_addr>, Stop> {
     }
     let mut request: libc::ifreq = zeroed();
     let named = interface_name(s.fd, index, &mut request);
-    if !named || interface_ioctl(s.fd, InterfaceRequest::Address, &mut request) == -1 {
+    if !named || interface_ioctl(s.fd, InterfaceRequest::Address, &mut request).is_err() {
         let error = errno();
         warn(format!("Failed obtaining address for interface {index}: error {error}").as_bytes())?;
         return Ok(None);

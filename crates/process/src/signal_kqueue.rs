@@ -46,8 +46,8 @@ pub fn signal_kqueue_set(kq: c_int, signo: c_int, handler: Handler, failed: &mut
         // The table slot (`swoole::Signal *`), which the reactor dispatches.
         event.udata = std::ptr::from_ref(slot).cast_mut().cast();
     }
-    let n = swoole_rs_corebase::sys::kevent_change(kq, &event);
-    *failed = n < 0 && handler != 0;
+    let changed = swoole_rs_corebase::sys::kevent_change(kq, &event);
+    *failed = changed.is_err() && handler != 0;
     Handler(origin)
 }
 

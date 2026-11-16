@@ -23,8 +23,9 @@ struct File(libc::c_int);
 impl File {
     fn open(path: &[u8]) -> Option<Self> {
         let path = CString::new(path).ok()?;
-        let fd = swoole_rs_corebase::sys::open(&path, libc::O_RDONLY, 0);
-        (fd >= 0).then_some(Self(fd))
+        swoole_rs_corebase::sys::open(&path, libc::O_RDONLY, 0)
+            .ok()
+            .map(Self)
     }
 
     /// One read of up to `buf.len()` bytes at `offset`, on the thread pool

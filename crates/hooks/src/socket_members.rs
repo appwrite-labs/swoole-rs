@@ -83,11 +83,7 @@ struct Accepting {
 
 impl Setup for Accepting {
     fn fail(&mut self, error: c_int) {
-        if error < 0 {
-            default_err(self.socket, log::last_error());
-        } else {
-            set_err(self.socket, error);
-        }
+        set_err(self.socket, error);
     }
 
     fn wait(&mut self, event: Events) -> bool {
@@ -97,10 +93,13 @@ impl Setup for Accepting {
         ready
     }
 
-    fn call(&mut self, _: c_int) -> c_int {
+    fn accept(&mut self) -> std::io::Result<()> {
         // The new heap record, which nothing else holds.
         self.conn = self.socket.net(SocketFields::accepted).flatten();
-        if self.conn.is_none() { -1 } else { 0 }
+        self.conn
+            .as_ref()
+            .map(|_| ())
+            .ok_or_else(std::io::Error::last_os_error)
     }
 }
 
@@ -144,9 +143,7 @@ struct OpenFile(c_int);
 
 impl Drop for OpenFile {
     fn drop(&mut self) {
-        if self.0 != -1 {
-            _ = sys::close(self.0);
-        }
+        _ = sys::close(self.0);
     }
 }
 
@@ -510,13 +507,13 @@ impl Co {
         if !available(self, Events::WRITE) {
             return false;
         }
-        let file = OpenFile(sys::open(filename, libc::O_RDONLY, 0));
         let name = filename.to_string_lossy();
-        if file.0 == -1 {
+        let Ok(fd) = sys::open(filename, libc::O_RDONLY, 0) else {
             let error = errno();
             self.set_err_text(error, &format!("open({name}) failed, {}", strerror(error)));
             return false;
-        }
+        };
+        let file = OpenFile(fd);
         let end = if length == 0 {
             let Some(stat) = sys::fstat(file.0) else {
                 let error = errno();

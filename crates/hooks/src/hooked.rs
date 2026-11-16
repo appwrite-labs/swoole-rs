@@ -320,9 +320,8 @@ pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     if coroutine().is_none() {
         return sys::close(fd).map_or(-1, |()| 0);
     }
-    let result = socket_map::close(fd, Co::close);
-    if result <= 0 {
-        return result;
+    if let Some(closed) = socket_map::close(fd, Co::close) {
+        return if closed { 0 } else { -1 };
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {
