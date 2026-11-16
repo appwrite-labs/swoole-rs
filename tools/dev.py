@@ -545,6 +545,23 @@ def docker_image(architecture):
 # Inside the container: the pinned toolchain, the locked crates and the pinned upstream
 # build, then dev.py with the image's PHP extensions unless the command names its own.
 DOCKER_SCRIPT = r'''set -e
+# Started as root: give the invoking user the toolchain and crate volumes, and what an
+# earlier root run left on the build mounts, then run the rest as them, so the host can
+# remove everything a run writes (#4303).
+if [ -n "${SWR_USER:-}" ] && [ "$(id -u)" = 0 ]; then
+    for dir in /usr/local/rustup /usr/local/cargo/registry; do
+        [ "$(stat -c %u:%g "$dir")" = "$SWR_USER" ] || chown -R "$SWR_USER" "$dir"
+    done
+    chown "$SWR_USER" /usr/local/cargo
+    builds="$SWR_TARGET target/upstream target/upstream-builds target/ext"
+    if [ -n "$(find $builds -maxdepth 1 -uid 0 -print -quit 2>/dev/null)" ]; then
+        find $builds -uid 0 -exec chown -h "$SWR_USER" {} + 2>/dev/null || true
+    fi
+    mkdir -p /tmp/home && chown "$SWR_USER" /tmp/home
+    exec setpriv --reuid "${SWR_USER%%:*}" --regid "${SWR_USER#*:}" --clear-groups \
+        ${SWR_CAPS:+--inh-caps "$SWR_CAPS" --ambient-caps "$SWR_CAPS"} \
+        env HOME=/tmp/home bash -c "$BASH_EXECUTION_STRING" "$0" "$@"
+fi
 git config --global --add safe.directory '*'
 # Cargo builds into the target/docker of the worktree it runs in: worktrees sharing one
 # target dir hash a crate alike, so each takes the other's build of it as fresh.
@@ -579,8 +596,9 @@ exec python3 tools/dev.py "$@" $extensions
 DOCKER_IOURING_SECCOMP = ROOT / 'tools/docker-seccomp-iouring.json'
 # The ring's sendfile splices through a pipe it grows to 1 MiB, as upstream does. A
 # container's root shares the host VM's per-user pipe quota (pipe-user-pages-soft), which
-# a busy host exhausts: pipes then shrink to two pages and the resize fails (#4230).
-DOCKER_IOURING_CAPS = ['--cap-add', 'SYS_RESOURCE']
+# a busy host exhausts: pipes then shrink to two pages and the resize fails (#4230). The
+# lane keeps the capability as the invoking user's ambient one.
+DOCKER_IOURING_CAPS = ['--cap-add', 'SYS_RESOURCE', '-e', 'SWR_CAPS=+sys_resource']
 
 
 def docker(arguments):
@@ -635,6 +653,8 @@ def docker(arguments):
                '-v', f'swr-rustup-{architecture}:/usr/local/rustup',
                '-v', f'swr-cargo-{architecture}:/usr/local/cargo/registry',
                '-e', f'SWR_TARGET={(private / "cargo").relative_to(ROOT)}',
+               # Docker Desktop (macOS) already gives the host user what a container writes.
+               *(['-e', f'SWR_USER={os.getuid()}:{os.getgid()}'] if sys.platform == 'linux' and os.getuid() else []),
                *[part for variable in git_config for part in ('-e', variable)],
                image, 'bash', '-c', DOCKER_SCRIPT, 'dev.py', *arguments]
     return subprocess.run(command).returncode
