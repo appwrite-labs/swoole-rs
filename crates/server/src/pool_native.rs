@@ -36,7 +36,7 @@ use swoole_rs_process::process_pool::{
 };
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
-use swoole_rs_reactor::event_api::{set_handler, swoole_event_is_available, swoole_event_write};
+use swoole_rs_reactor::event_api::{event_write, set_handler, swoole_event_is_available};
 use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_timer::{
     swoole_timer_create, swoole_timer_free, swoole_timer_get_next_msec, swoole_timer_is_available,
@@ -663,8 +663,10 @@ impl PoolNative for Native {
     fn pipe_write(&self, c: &mut PoolCall) {
         if c.flags() != 0 && swoole_event_is_available() {
             io(c, |c| {
-                // SAFETY: the worker's pipe, in this thread's loop.
-                unsafe { swoole_event_write(c.socket().cast(), c.data(), c.length()) }
+                // The worker's pipe, in this thread's loop.
+                let pipe = c.lent_socket().map(Socket::lent);
+                pipe.and_then(crate::reactor_handle::registered)
+                    .map_or(-1, |pipe| event_write(pipe, c.bytes()))
             });
         } else {
             self.send(c);
