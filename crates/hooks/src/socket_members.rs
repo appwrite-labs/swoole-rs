@@ -414,7 +414,8 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::recv(ops, buf)) {
             return count(n);
         }
-        let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0));
+        let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0)
+            .map_or(-1, usize::cast_signed));
         count(self.transfer(0, Buffer::read(buf), call))
     }
 
@@ -425,7 +426,10 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::send(ops, ring::SEND, buf)) {
             return count(n);
         }
-        let call = call!(|s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0));
+        let call = call!(
+            |s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0)
+                .map_or(-1, usize::cast_signed)
+        );
         count(self.transfer(0, Buffer::write(buf), call))
     }
 
@@ -435,7 +439,8 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::recv_all(ops, buf)) {
             return count(n);
         }
-        let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0));
+        let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0)
+            .map_or(-1, usize::cast_signed));
         count(self.transfer(ALL, Buffer::read(buf), call))
     }
 
@@ -446,7 +451,10 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::send_all(ops, buf)) {
             return count(n);
         }
-        let call = call!(|s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0));
+        let call = call!(
+            |s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0)
+                .map_or(-1, usize::cast_signed)
+        );
         count(self.transfer(ALL, Buffer::write(buf), call))
     }
 

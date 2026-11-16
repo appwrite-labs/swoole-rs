@@ -254,7 +254,7 @@ mod tests {
             ..SocketAddress::default()
         };
         let n = crate::Fill::new(&mut buffer).recvfrom(a, 0, &mut address);
-        assert_eq!(&buffer[..n.cast_unsigned()], b"hello");
+        assert_eq!(&buffer[..n.unwrap()], b"hello");
         close(&[a, b]);
     }
 

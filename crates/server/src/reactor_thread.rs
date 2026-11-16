@@ -82,7 +82,7 @@ fn receive_packets(
         // during the call.
         let n = unsafe { swoole_rs_reactor::Fill::from_raw(data, size - head) }
             .recvfrom(fd, 0, address);
-        let Ok(length @ 1..) = u32::try_from(n) else {
+        let Some(length @ 1..) = n.and_then(|n| u32::try_from(n).ok()) else {
             if std::io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN) {
                 return true;
             }

@@ -129,27 +129,26 @@ pub fn record_recv<S: ReadSlot>(
     socket: Socket<'_>,
     mut buffer: Fill<'_, S>,
     flags: c_int,
-    tls: impl Fn(Socket<'_>, Fill<'_, S>) -> isize,
+    tls: impl Fn(Socket<'_>, Fill<'_, S>) -> Option<usize>,
     now: SteadyMs,
-) -> isize {
+) -> Option<usize> {
     let (fd, nonblock, dont_restart, secure) = io_of(socket);
     let total = loop {
         let total = if secure {
             let mut rest = buffer.reborrow();
-            let mut total: isize = 0;
+            let (mut sum, mut total) = (0, Some(0));
             while !rest.is_empty() {
                 let read = tls(socket, rest.reborrow());
-                if read <= 0 {
-                    if total == 0 {
+                let Some(read @ 1..) = read else {
+                    if sum == 0 {
                         total = read;
                     }
                     break;
-                }
-                total += read;
+                };
+                sum += read;
+                total = Some(sum);
                 // A full buffer ends the loop, as does a blocking read without `MSG_WAITALL`.
-                if !(nonblock || flags & libc::MSG_WAITALL != 0)
-                    || !rest.advance(read.cast_unsigned())
-                {
+                if !(nonblock || flags & libc::MSG_WAITALL != 0) || !rest.advance(read) {
                     break;
                 }
             }
@@ -157,25 +156,25 @@ pub fn record_recv<S: ReadSlot>(
         } else {
             buffer.recv(fd, flags)
         };
-        if !(total < 0 && interrupted() && !dont_restart) {
+        if !(total.is_none() && interrupted() && !dont_restart) {
             break total;
         }
     };
-    if total > 0
+    if let Some(received @ 1..) = total
         && socket.edit(|record| {
-            record.total_recv_bytes += total.cast_unsigned();
+            record.total_recv_bytes += received;
             record.recv_timer.is_some()
         })
     {
         let time = now();
         socket.edit(|record| record.last_received_time = time);
-    } else if total < 0 {
+    } else if total.is_none() {
         // Nothing since the call has touched errno.
         let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         if socket.catch_error(error) == crate::Caught::Wait
             && socket.read(|record| record.event_hup)
         {
-            return 0;
+            return Some(0);
         }
     }
     total
@@ -188,9 +187,9 @@ pub fn record_send(
     socket: Socket<'_>,
     data: Drain<'_>,
     flags: c_int,
-    tls: impl Fn(Socket<'_>, Drain<'_>) -> isize,
+    tls: impl Fn(Socket<'_>, Drain<'_>) -> Option<usize>,
     now: SteadyMs,
-) -> isize {
+) -> Option<usize> {
     let (fd, _, dont_restart, secure) = io_of(socket);
     let write = || {
         if secure {
@@ -203,7 +202,11 @@ pub fn record_send(
 }
 
 /// [`record_send`]'s retries and counts around any `write` to the record's fd.
-pub fn record_write(socket: Socket<'_>, write: impl Fn(c_int) -> isize, now: SteadyMs) -> isize {
+pub fn record_write(
+    socket: Socket<'_>,
+    write: impl Fn(c_int) -> Option<usize>,
+    now: SteadyMs,
+) -> Option<usize> {
     let (fd, _, dont_restart, _) = io_of(socket);
     counted(socket, dont_restart, || write(fd), now)
 }
@@ -214,18 +217,18 @@ pub fn record_write(socket: Socket<'_>, write: impl Fn(c_int) -> isize, now: Ste
 fn counted(
     socket: Socket<'_>,
     dont_restart: bool,
-    write: impl Fn() -> isize,
+    write: impl Fn() -> Option<usize>,
     now: SteadyMs,
-) -> isize {
+) -> Option<usize> {
     let sent = loop {
         let sent = write();
-        if !(sent < 0 && interrupted() && !dont_restart) {
+        if !(sent.is_none() && interrupted() && !dont_restart) {
             break sent;
         }
     };
-    if sent > 0
+    if let Some(sent @ 1..) = sent
         && socket.edit(|record| {
-            record.total_send_bytes += sent.cast_unsigned();
+            record.total_send_bytes += sent;
             record.output.send_timer.is_some()
         })
     {
@@ -241,8 +244,8 @@ pub fn record_peek<S: ReadSlot>(
     socket: Socket<'_>,
     mut buffer: Fill<'_, S>,
     flags: c_int,
-    tls: impl Fn(Socket<'_>, Fill<'_, S>) -> isize,
-) -> isize {
+    tls: impl Fn(Socket<'_>, Fill<'_, S>) -> Option<usize>,
+) -> Option<usize> {
     let (fd, _, _, secure) = io_of(socket);
     loop {
         let peeked = if secure {
@@ -250,7 +253,7 @@ pub fn record_peek<S: ReadSlot>(
         } else {
             buffer.recv(fd, flags | libc::MSG_PEEK)
         };
-        if !(peeked < 0 && interrupted()) {
+        if !(peeked.is_none() && interrupted()) {
             return peeked;
         }
     }
