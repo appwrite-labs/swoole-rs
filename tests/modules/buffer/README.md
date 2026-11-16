@@ -112,3 +112,8 @@ checkout (`target/upstream/src`).
 | `swoole::Buffer`'s methods, sendfile tokens and their disposers | Rust |
 | `swoole::String`'s methods (growth, edits, copy/move, search, split, random bytes) | Rust, under the upstream symbols, calling the String's own allocator |
 | `format_impl`'s printf varargs, inline accessors | C++ |
+
+The Rust-only `OwnedString` wraps the ABI record with its existing disposal path.
+`popped_owner_keeps_the_prefix_and_frees_each_allocation_once` checks an exact
+13-byte allocation, an independently retained unread tail, prefix truncation and
+one allocator release for each owner. The raw ABI pop still transfers its block.
