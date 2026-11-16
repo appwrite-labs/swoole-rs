@@ -42,6 +42,7 @@ enum Request {
     Connect,
 }
 
+#[derive(Default)]
 struct Packet {
     size: Option<usize>,
     /// Upstream's notice for a refused connect request.
@@ -58,16 +59,15 @@ fn ssize(size: Option<usize>) -> isize {
 /// Packs `request` into the owner's packet.
 fn packet(proxy: &Socks5Proxy<'_>, request: Request) -> Packet {
     let owner = proxy.owner;
+    owner
+        .with_packet(|buffer| pack(owner, request, buffer))
+        .unwrap_or_default()
+}
+
+/// Packs `request` into `buffer`, the owner's packet.
+fn pack(owner: &ProxyState, request: Request, buffer: &mut [u8]) -> Packet {
     let fields = owner.fields();
-    let mut result = Packet {
-        size: None,
-        notice: None,
-        last_error: 0,
-    };
-    let Some(mut buffer) = owner.packet() else {
-        return result;
-    };
-    let buffer = &mut buffer[..];
+    let mut result = Packet::default();
     match request {
         Request::Negotiate => {
             if let Some(method) = socks_negotiate(!owner.string(1).is_empty(), buffer) {
@@ -301,7 +301,7 @@ mod tests {
         owner.update(|fields| fields.target_port = 80);
 
         assert_eq!(pack_connect_request(p), 262);
-        let buf = *owner.packet().unwrap();
+        let buf = owner.with_packet(|packet| *packet).unwrap();
         assert_eq!(buf[3], 0x03);
         assert_eq!(buf[4], u8::MAX);
         assert_eq!(&buf[5..5 + target_host.len()], &target_host[..]);
@@ -324,7 +324,11 @@ mod tests {
         assert_eq!(pack_negotiate_request(p), 3);
         assert_eq!(owner.fields().method, 2);
         owner.update(|fields| fields.state = 1);
-        let buffer = |n: isize| owner.packet().unwrap()[..usize::try_from(n).unwrap()].to_vec();
+        let buffer = |n: isize| {
+            owner
+                .with_packet(|packet| packet[..usize::try_from(n).unwrap()].to_vec())
+                .unwrap()
+        };
         // Too short, then the wrong method: failures that leave the state alone.
         assert_eq!(unsafe { handshake_step(p, [5u8].as_ptr(), 1) }, -1);
         assert_eq!(unsafe { handshake_step(p, [5u8, 0].as_ptr(), 2) }, -1);

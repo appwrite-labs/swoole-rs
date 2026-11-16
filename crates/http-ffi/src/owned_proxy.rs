@@ -126,7 +126,7 @@ mod tests {
             }
         }
         fn get(&self, index: usize) -> Vec<u8> {
-            self.0.string(index).to_vec()
+            self.0.string(index)
         }
         fn fields(&self) -> [Vec<u8>; 3] {
             [0, 1, 2].map(|index| self.get(index))
