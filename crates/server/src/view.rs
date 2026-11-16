@@ -195,9 +195,7 @@ impl<'a> Server<'a> {
     /// The server's configuration.
     #[must_use]
     pub fn config(self) -> &'a ServerConfig {
-        // SAFETY: the config allocation lives as long as the server, and writers
-        // hold no reference across a read.
-        unsafe { &*self.fields().config }
+        self.state().config_ref()
     }
 
     /// `serv->get_worker_message_bus()->move_packet()`: the bus no longer frees
@@ -481,11 +479,11 @@ impl<'a> Server<'a> {
         );
         let tasks = (self.task_pool_ref(), config.task_worker_num.get());
         let users = (config.user_workers.as_ptr().cast(), self.user_worker_num());
-        // SAFETY: `create` maps `workers` with `worker_num` records, and the factory's
-        // start `user_workers` with one per added user worker (`add_worker` refuses
-        // once the factory exists); each stays mapped, as the counts stay, until the
-        // server is destroyed after its pools stop. The same arrays `worker_record`
-        // lends records of.
+        // SAFETY: `create` maps `workers` with `worker_num` records, the task pool's
+        // create its array with `task_worker_num`, and the factory's start
+        // `user_workers` with one per added user worker (`add_worker` refuses once the
+        // factory exists); each stays mapped, as the counts stay, until the server is
+        // destroyed after its pools stop.
         unsafe { ServerWorkers::new(events, tasks, users) }
     }
 
@@ -499,9 +497,7 @@ impl<'a> Server<'a> {
     /// [`Server::worker`]'s record, or `None` past the last.
     #[must_use]
     pub fn worker_record(self, id: u16) -> Option<Worker<'a>> {
-        // SAFETY: null or one of the server's live workers, in memory the server
-        // keeps for `'a`.
-        unsafe { Worker::from_raw(self.worker(id)) }
+        self.workers().get(id)
     }
 
     /// The `index`th user worker `worker_methods::add_worker` added, or `None` past the

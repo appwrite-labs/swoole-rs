@@ -138,18 +138,6 @@ impl<'a, T> From<&'a mut T> for Slot<'a, T> {
 }
 
 impl<T> Slot<'_, T> {
-    /// The slot at `raw`, or `None` when it is null.
-    ///
-    /// # Safety
-    /// `raw` is null or a slot live for the handle's life, whose writes the server's own
-    /// synchronization orders, and a port it holds ([`Connection::port`]) is too.
-    #[must_use]
-    pub unsafe fn from_ptr(raw: *mut T) -> Option<Self> {
-        // SAFETY: as the caller guarantees; the record's fields are cells and atomics,
-        // so a shared reference lets the writes others make through the table go on.
-        unsafe { raw.as_ref() }.map(Self::from)
-    }
-
     /// The table's own pointer to the slot.
     #[must_use]
     pub fn as_ptr(self) -> *mut T {
@@ -280,8 +268,7 @@ impl<'a> Connection<'a> {
         // SAFETY: a positive object is a port: everything else is null or `encode`d
         // negative, and only `hold_port` stores one, from the port list of the server
         // whose table holds the slot. The server frees its ports only with that table, so
-        // the port lives as long as the slot's borrow (or, for a `from_ptr` handle, as its
-        // caller guarantees).
+        // the port lives as long as the slot's borrow.
         unsafe { raw.cast::<crate::port_config::PortConfig>().as_ref() }
             .map(crate::view::Port::from)
     }
@@ -532,11 +519,6 @@ impl ServerTables {
                 .cast::<ThreadRecord>()
                 .wrapping_add(id)
         })
-    }
-
-    /// `serv->reactor_threads`, for the dispatch path's unchecked index.
-    pub(crate) fn reactor_threads_ptr(&self) -> *mut c_void {
-        self.reactor_threads.get()
     }
 }
 
