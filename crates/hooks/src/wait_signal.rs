@@ -17,6 +17,8 @@ const WRONG_OPERATION: i32 = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATIO
 /// A coroutine waiting for a signal (upstream's `SignalListener`).
 struct Listener {
     co: *mut c_void,
+    /// How the signal handler resumes `co`: the wait's [`SignalOps::resume`].
+    resume: unsafe extern "C-unwind" fn(*mut c_void),
     signo: Cell<Option<i32>>,
 }
 
@@ -134,7 +136,7 @@ pub extern "C" fn swr_v1_hook_signal_wake(signo: i32) {
     waiting.signo.set(Some(signo));
     // SAFETY: the listener's coroutine, parked in `wait_signal`, which unpublishes
     // every slot before it returns.
-    unsafe { (NATIVE.resume)(waiting.co) };
+    unsafe { (waiting.resume)(waiting.co) };
 }
 
 /// `signo` as upstream's `std::vector<int>` holds it.
@@ -167,6 +169,7 @@ fn wait_signal(signals: &[c_long], timeout: f64, ops: &SignalOps) -> Result<i32,
     let co = (ops.current)();
     let waiting = Rc::new(Listener {
         co,
+        resume: ops.resume,
         signo: Cell::new(None),
     });
     if (ops.busy)() {
@@ -221,7 +224,6 @@ fn wait_signal(signals: &[c_long], timeout: f64, ops: &SignalOps) -> Result<i32,
 
 /// System's signal operations: registration through the signal table (on the loop's
 /// thread under thread contexts), the reactor's exit condition and the coroutine.
-#[cfg(not(test))]
 static NATIVE: SignalOps = SignalOps {
     current: crate::wait_event::native::current,
     busy: native::busy,
@@ -231,11 +233,6 @@ static NATIVE: SignalOps = SignalOps {
     resume: swoole_rs_coroutine::resume,
 };
 
-/// The unit tests link no signal table: theirs is the fake.
-#[cfg(test)]
-static NATIVE: SignalOps = tests::OPS;
-
-#[cfg(not(test))]
 mod native {
     use super::{Previous, Records};
     use core::ffi::c_int;
@@ -394,8 +391,6 @@ mod tests {
     extern "C-unwind" fn resume(_: *mut c_void) {
         log("resume".into());
     }
-
-    pub(super) const OPS: SignalOps = ops(idle, timed_out);
 
     const fn ops(busy_check: fn() -> bool, park: fn(f64) -> bool) -> SignalOps {
         SignalOps {

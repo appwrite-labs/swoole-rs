@@ -39,18 +39,23 @@ pub struct SocketOps {
 }
 
 /// `SW_SOCK_RAW`.
-#[cfg(not(test))]
 const SOCK_RAW: c_int = 7;
 
 /// The sockets the hooks make.
-#[cfg(not(test))]
-pub(crate) const SOCKETS: SocketOps = SocketOps {
+const SOCKETS: SocketOps = SocketOps {
     open: |domain, kind, protocol| crate::co_socket::make(-1, domain, kind, protocol, true),
     wrap: |fd| crate::co_socket::make(fd, 0, SOCK_RAW, 0, false),
     free: crate::co_socket::swr_v1_hook_co_socket_free,
 };
-#[cfg(test)]
-pub(crate) use tests::OPS as SOCKETS;
+
+/// [`SOCKETS`], or the unit tests' recording fakes.
+pub(crate) fn sockets() -> &'static SocketOps {
+    #[cfg(test)]
+    if let Some(ops) = tests::SOCKETS {
+        return ops;
+    }
+    &SOCKETS
+}
 
 /// `get_socket_ex`: inside a coroutine, the host and `fd`'s socket. Otherwise
 /// none, with errno `EWOULDBLOCK` outside a coroutine or `ENOTSOCK` without a socket.
@@ -69,7 +74,7 @@ pub(crate) struct Owned(Co);
 impl Owned {
     /// `new SocketImpl(domain, type, protocol)`, which only the result holds.
     pub(crate) fn open(domain: c_int, kind: c_int, protocol: c_int) -> Self {
-        Self((SOCKETS.open)(domain, kind, protocol))
+        Self((sockets().open)(domain, kind, protocol))
     }
 
     /// The socket, live while this is.
@@ -81,7 +86,7 @@ impl Owned {
 impl Drop for Owned {
     fn drop(&mut self) {
         // SAFETY: only this module makes an `Owned`, of a socket nothing else holds.
-        unsafe { (SOCKETS.free)(self.0.this()) };
+        unsafe { (sockets().free)(self.0.this()) };
     }
 }
 
@@ -113,7 +118,7 @@ pub extern "C" fn swoole_coroutine_socket(domain: c_int, kind: c_int, protocol: 
     if coroutine().is_none() {
         return sys::socket(domain, kind, protocol);
     }
-    adopt((SOCKETS.open)(domain, kind, protocol)).unwrap_or(-1)
+    adopt((sockets().open)(domain, kind, protocol)).unwrap_or(-1)
 }
 
 /// Hooked `send(2)` of `buf`.
@@ -189,7 +194,7 @@ pub fn accept(fd: c_int, peer: &mut SocketAddress) -> c_int {
 #[must_use]
 pub fn poll_fake(fds: &mut [pollfd], timeout: c_int) -> c_int {
     let [fd] = fds else {
-        (crate::stdio::NATIVE.set_last_error)(INVALID_PARAMS);
+        (crate::stdio::runtime().set_last_error)(INVALID_PARAMS);
         log::warning(
             c"swoole_coroutine_poll_fake",
             format_args!("fake poll() implementation, only supports one fd"),
@@ -242,7 +247,7 @@ pub extern "C" fn swoole_coroutine_socket_create(fd: c_int) -> c_int {
     if coroutine().is_none() {
         return -1;
     }
-    let socket = (SOCKETS.wrap)(fd);
+    let socket = (sockets().wrap)(fd);
     if adopt(socket).is_none() {
         return -1;
     }
@@ -346,7 +351,7 @@ pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     if let Some(ring) = crate::stdio::host().and_then(ring) {
         return crate::uring::close_fd(ring, fd);
     }
-    swr_v1_hook_close_fd(fd, Some(crate::stdio::NATIVE.offload))
+    swr_v1_hook_close_fd(fd, Some(crate::stdio::runtime().offload))
 }
 
 /// Hooked `read(2)`, as [`read`].
@@ -382,7 +387,7 @@ pub fn read(fd: c_int, buf: &mut [MaybeUninit<u8>]) -> ssize_t {
     if let Some(ring) = crate::stdio::host().and_then(ring) {
         return crate::uring::read(ring, fd, buf, -1.0);
     }
-    on_pool(Some(crate::stdio::NATIVE.offload), -1, || {
+    on_pool(Some(crate::stdio::runtime().offload), -1, || {
         let mut socket = blocking(fd, false);
         swoole_rs_tls::upstream::read_sync(Socket::new(&mut socket), buf)
     })
@@ -408,6 +413,7 @@ pub unsafe extern "C" fn swoole_coroutine_write(
 }
 
 /// The hooked `write(2)` of `buf`, as [`read`].
+#[must_use]
 pub fn write(fd: c_int, buf: &[u8]) -> ssize_t {
     if coroutine().is_none() {
         return sys::write(fd, buf);
@@ -419,7 +425,7 @@ pub fn write(fd: c_int, buf: &[u8]) -> ssize_t {
     if let Some(ring) = crate::stdio::host().and_then(ring) {
         return crate::uring::write(ring, fd, buf, -1.0);
     }
-    on_pool(Some(crate::stdio::NATIVE.offload), -1, || {
+    on_pool(Some(crate::stdio::runtime().offload), -1, || {
         let mut socket = blocking(fd, true);
         swoole_rs_tls::upstream::write_sync(Socket::new(&mut socket), buf)
     })
@@ -516,8 +522,8 @@ pub(crate) mod tests {
         ));
     }
 
-    /// The test host's sockets.
-    pub(crate) const OPS: SocketOps = SocketOps { open, wrap, free };
+    /// The test host's sockets, in place of the native ones.
+    pub(crate) const SOCKETS: Option<&SocketOps> = Some(&SocketOps { open, wrap, free });
 
     fn err_code(fd: c_int) -> c_int {
         socket_map::get(fd).unwrap().err_code()

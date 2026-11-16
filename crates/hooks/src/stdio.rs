@@ -67,7 +67,6 @@ pub(crate) struct Ops {
 }
 
 /// The coroutine runtime's.
-#[cfg(not(test))]
 pub(crate) static NATIVE: Ops = Ops {
     in_coroutine: native::in_coroutine,
     offload: crate::offload::async_job,
@@ -75,11 +74,6 @@ pub(crate) static NATIVE: Ops = Ops {
     set_last_error: swoole_rs_corebase::log::set_last_error,
 };
 
-/// The unit tests link no runtime: theirs is the fake.
-#[cfg(test)]
-pub(crate) static NATIVE: Ops = tests::OPS;
-
-#[cfg(not(test))]
 mod native {
     use libc::c_int;
 
@@ -117,7 +111,6 @@ static HOST: OnceLock<&'static Host> = OnceLock::new();
 static RUNTIME: OnceLock<&'static Ops> = OnceLock::new();
 
 /// Install the build's [`Host`] and the runtime: native's `swoole_init` calls it.
-#[cfg(not(test))]
 pub fn swr_v1_hook_install() {
     use swoole_rs_corebase::{Switch, built_with};
     static BUILT: OnceLock<Host> = OnceLock::new();
@@ -125,22 +118,29 @@ pub fn swr_v1_hook_install() {
     let uring = Some(&crate::iouring::HOST);
     #[cfg(all(feature = "iouring", not(feature = "upstream-symbols")))]
     let uring = None;
-    set_host(BUILT.get_or_init(|| Host {
+    let host = BUILT.get_or_init(|| Host {
         #[cfg(feature = "iouring")]
         uring,
         uring_statx: built_with(Switch::IouringStatx),
         uring_ftruncate: built_with(Switch::IouringFtruncate),
         uring_futex: built_with(Switch::IouringFutex),
         uring_socket: built_with(Switch::UringSocket),
-    }));
+    });
+    set_host(host, &NATIVE);
     #[cfg(all(feature = "iouring", feature = "upstream-symbols"))]
     swoole_rs_reactor::register_uring(&crate::iouring::REACTOR);
     crate::co_io::install_native();
 }
 
-fn set_host(host: &'static Host) {
+/// Installs `host` and the runtime `ops` the hooked functions use from now on.
+fn set_host(host: &'static Host, ops: &'static Ops) {
     HOST.get_or_init(|| host);
-    RUNTIME.get_or_init(|| &NATIVE);
+    RUNTIME.get_or_init(|| ops);
+}
+
+/// The installed runtime, or the coroutine runtime's before native installs one.
+pub(crate) fn runtime() -> &'static Ops {
+    RUNTIME.get().copied().unwrap_or(&NATIVE)
 }
 
 pub(crate) fn host() -> Option<&'static Host> {
@@ -149,7 +149,7 @@ pub(crate) fn host() -> Option<&'static Host> {
 
 /// The host inside a coroutine (hook.cc's `!is_no_coro()`), else none.
 pub(crate) fn coroutine() -> Option<&'static Host> {
-    host().filter(|_| (NATIVE.in_coroutine)())
+    host().filter(|_| (runtime().in_coroutine)())
 }
 
 /// `async_job` inside a coroutine, else none: the call runs here.
@@ -165,7 +165,7 @@ pub fn offload() -> Option<Offload> {
 #[cfg(feature = "iouring")]
 fn ring(gate: fn(&Host) -> bool) -> Option<&'static crate::uring::Host> {
     let uring = host().filter(|host| gate(host))?.uring?;
-    (NATIVE.in_coroutine)().then_some(uring)
+    (runtime().in_coroutine)().then_some(uring)
 }
 
 /// Each hooked function: `ring` names its `io_uring` operation over arguments that
@@ -265,13 +265,13 @@ pub fn swr_v1_hook_close_fd(fd: c_int, offload: Option<Offload>) -> c_int {
 /// Hooked `sleep`: `System::sleep` (fatal outside a coroutine, as upstream).
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_sleep(sec: c_int) {
-    (NATIVE.sleep)(f64::from(sec));
+    (runtime().sleep)(f64::from(sec));
 }
 
 /// Hooked `usleep`, with upstream's 1024-based conversion.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_usleep(usec: c_int) {
-    (NATIVE.sleep)(f64::from(usec) / 1024.0 / 1024.0);
+    (runtime().sleep)(f64::from(usec) / 1024.0 / 1024.0);
 }
 
 /// Hooked `getaddrinfo`, always on the pool: upstream does not test for a coroutine.
@@ -312,7 +312,7 @@ pub fn swoole_coroutine_getaddrinfo(
         // The list is the caller's to free on this thread: only its address crosses.
         (found, list.expose_provenance())
     };
-    let Some((found, list)) = on_pool(Some(NATIVE.offload), None, || Some(call())) else {
+    let Some((found, list)) = on_pool(Some(runtime().offload), None, || Some(call())) else {
         return -1;
     };
     // getaddrinfo stores a list only when it finds one.
@@ -328,6 +328,7 @@ unsafe extern "C" {
 
 /// Hooked `gethostbyname`, always on the pool: the lookup's `h_errno` (0 if the
 /// pool refused it) becomes this thread's.
+#[must_use]
 pub fn swoole_coroutine_gethostbyname(name: &CStr) -> *mut hostent {
     let call = || {
         // SAFETY: a C string.
@@ -339,7 +340,7 @@ pub fn swoole_coroutine_gethostbyname(name: &CStr) -> *mut hostent {
             swoole_rs_corebase::sys::h_errno(),
         )
     };
-    let (entry, error) = on_pool(Some(NATIVE.offload), (0, 0), call);
+    let (entry, error) = on_pool(Some(runtime().offload), (0, 0), call);
     swoole_rs_corebase::sys::set_h_errno(error);
     std::ptr::with_exposed_provenance_mut(entry)
 }
@@ -409,7 +410,7 @@ pub(crate) mod tests {
 
     /// `call` under the test host in `mode`.
     pub(crate) fn with<T>(mode: Mode, call: impl FnOnce() -> T) -> T {
-        set_host(&TEST_HOST);
+        set_host(&TEST_HOST, &OPS);
         MODE.set(mode);
         let result = call();
         MODE.set(Mode::Here);

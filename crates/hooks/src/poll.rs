@@ -290,7 +290,6 @@ pub fn swr_v1_hook_poll<S>(fds: &mut [libc::pollfd], timeout: i32, ops: &PollOps
 }
 
 /// System's poll operations: the reactor, the timer and the current coroutine.
-#[cfg(not(test))]
 pub static NATIVE: PollOps<crate::wait_event::Watch> = PollOps {
     add: native::add,
     timer_add: native::timer_add,
@@ -302,14 +301,6 @@ pub static NATIVE: PollOps<crate::wait_event::Watch> = PollOps {
     },
 };
 
-/// The unit tests link no reactor: theirs is the fake.
-#[cfg(test)]
-pub static NATIVE: PollOps<TestSocket> = tests::OPS;
-
-#[cfg(test)]
-pub use tests::Socket as TestSocket;
-
-#[cfg(not(test))]
 pub(crate) mod native {
     use super::{Events, Registered, Timer};
     use crate::wait_event::native::{Object, Watch};
@@ -377,7 +368,7 @@ mod tests {
         LOG.with_borrow_mut(std::mem::take)
     }
     /// The fake reactor's socket for an fd: dropping it takes it off.
-    pub struct Socket(i32);
+    pub(crate) struct Socket(i32);
 
     impl Drop for Socket {
         fn drop(&mut self) {

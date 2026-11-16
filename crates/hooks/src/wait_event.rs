@@ -197,10 +197,6 @@ pub(crate) mod native {
     #[derive(Clone, Copy)]
     pub(crate) enum Object {
         /// A hooked poll's task (`SW_FD_CO_POLL`).
-        #[cfg_attr(
-            test,
-            expect(dead_code, reason = "the unit tests' polls use a fake reactor")
-        )]
         Poll(crate::poll::Registered),
         /// A `wait_event` waiter (`SW_FD_CO_EVENT`).
         Waiter(super::Registered),
