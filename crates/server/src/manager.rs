@@ -6,7 +6,7 @@
     not(any(test, feature = "upstream-symbols")),
     expect(dead_code, reason = "only the hybrid runs the manager")
 )]
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 use core::ffi::c_int;
 use core::ops::Range;
 
@@ -21,7 +21,7 @@ pub(crate) struct Manager {
     reload_all_workers: Cell<bool>,
     reload_task_workers: Cell<bool>,
     force_kill: Cell<bool>,
-    kill_workers: RefCell<Vec<c_int>>,
+    kill_workers: Cell<Vec<c_int>>,
 }
 
 /// The reload the manager starts next.
@@ -48,13 +48,19 @@ impl Manager {
 
     /// Arms SIGALRM's force kill of `pids`, the children shutdown waits for.
     fn arm_kill(&self, pids: Vec<c_int>) {
+        // In before SIGALRM's handler can see `force_kill`; the old list drops once out.
+        drop(self.kill_workers.replace(pids));
         self.force_kill.set(true);
-        *self.kill_workers.borrow_mut() = pids;
     }
 
     /// The pids SIGALRM kills: none until shutdown arms it.
     fn kill_list(&self) -> Option<Vec<c_int>> {
-        let pids = || self.kill_workers.borrow().clone();
+        // Taken and put back around the copy, before the handler sends any kill.
+        let pids = || {
+            let pids = self.kill_workers.take();
+            self.kill_workers.set(pids.clone());
+            pids
+        };
         self.force_kill.get().then(pids)
     }
 
