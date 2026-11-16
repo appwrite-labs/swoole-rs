@@ -161,8 +161,7 @@ fn verify_ssl(
     let config = port.map(view::Port::config);
     let (verify_peer, allow_self_signed) = config
         .and_then(|config| config.tls.settings.get())
-        .map(|settings| (settings.verify_peer(), settings.allow_self_signed()))
-        .unwrap_or_default();
+        .map_or_default(|settings| (settings.verify_peer(), settings.allow_self_signed()));
     let peer =
         || with_thread_buffer(|buffer| tls::socket_ssl_peer_certificate_string(sock, buffer));
     let verified = || tls::socket_ssl_verify(sock, allow_self_signed);

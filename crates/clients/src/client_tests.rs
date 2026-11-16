@@ -860,3 +860,19 @@ fn pending_handshake_keeps_its_hostname_and_verification_snapshot() {
     );
     free(client);
 }
+
+#[test]
+fn the_framed_receive_buffer_stays_usable_across_input_edits() {
+    let client = client(1, true, true);
+    Handle(client).input_init();
+    Handle(client).input_clear();
+    // crates/ports' framed receive reads the buffer through the record's pointer.
+    let size = Handle(client).with_framed(|_, _, buffer| unsafe { (*buffer).size() });
+    assert!(size >= CLIENT_BUFFER_SIZE);
+    Handle(client).input_clear();
+    assert_eq!(
+        Handle(client).with_framed(|_, _, buffer| unsafe { (*buffer).len() }),
+        0
+    );
+    free(client);
+}

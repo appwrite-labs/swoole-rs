@@ -1409,7 +1409,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no fcntl for these flags")]
     fn fcntl_errors_keep_errno_and_success_keeps_flags() {
         let error = fcntl(-1, libc::F_GETFL, 0).unwrap_err();
         set_errno(libc::EINTR);
@@ -1443,7 +1442,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no poll")]
     fn poll_distinguishes_timeout_readiness_and_invalid_descriptors() {
         let [reader, writer] = pipe().unwrap();
         let mut event = libc::pollfd {

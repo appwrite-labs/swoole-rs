@@ -944,14 +944,10 @@ fn enable_crypto(stream: Stream<'_>, socket: &Socket, activate: bool) -> Result<
         socket.ssl_close();
         return Ok(false);
     }
-    if context.is_some()
+    Ok(!(context.is_some()
         && socket.ssl_available()
         && option_true(stream, c"ssl", c"capture_peer_cert")
-        && !capture_peer_certs(stream, socket)?
-    {
-        return Ok(false);
-    }
-    Ok(true)
+        && !capture_peer_certs(stream, socket)?))
 }
 
 /// `php_openssl_capture_peer_certs`: the `peer_certificate` (and with

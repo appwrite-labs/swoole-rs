@@ -122,7 +122,7 @@ fn failed(event: &str) -> Called {
     if crate::server::display_errors() {
         let held = ServerObject::running();
         let object = held.as_deref().and_then(ServerObject::of);
-        let name = object.map(crate::lifecycle::class).unwrap_or_default();
+        let name = object.map_or_default(crate::lifecycle::class);
         let text = message!("{name}->{event} handler error");
         if report(E_WARNING, text.as_cstr()).is_err() {
             return Called::Bailout;
