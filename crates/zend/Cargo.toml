@@ -18,3 +18,7 @@ swoole-rs-zend-sys = { path = "../zend-sys", optional = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "allocator"
+path = "../../tests/modules/zend/allocator.rs"

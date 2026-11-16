@@ -20,11 +20,11 @@ use swoole_rs_phpstubs::client_async;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, Minit, ObjectRef, Owned, ZString,
     bailout::{self, Bailout},
+    deny_unset,
     host::callable::Callable,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, zend_class_entry, zend_object_handlers, zval,
     },
-    unset_property_deny,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -74,7 +74,7 @@ const DNS_RESOLVE_FAILED: c_int =
 fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
     entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
     handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
+    deny_unset(handlers);
 }
 
 method_table! {

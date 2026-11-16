@@ -671,6 +671,7 @@ name = "swoole-rs-locale"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-corebase",
 ]
 
 [[package]]
@@ -1146,7 +1147,6 @@ dependencies = [
  "swoole-rs-oracle",
  "swoole-rs-ossupport",
  "swoole-rs-process",
- "swoole-rs-protocols",
  "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-timer",

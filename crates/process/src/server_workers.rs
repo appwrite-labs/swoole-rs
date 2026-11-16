@@ -7,32 +7,28 @@ use crate::worker_record::WorkerRecord;
 use core::ffi::c_void;
 
 /// Loans of the existing canonical arrays. Event/task records belong to their
-/// shared pools; user records belong to the Server's shared allocation. Only
-/// [`ServerWorkers::new`] fills the fields, so its contract holds for every view.
+/// shared pools; user records belong to the Server's shared allocation. An array
+/// not mapped yet is empty, while its count is still the configured one.
 pub struct ServerWorkers<'a> {
     event_pool: PoolRef<'a>,
     task_pool: PoolRef<'a>,
-    event_workers: *mut WorkerRecord,
-    user_workers: *mut WorkerRecord,
+    event_workers: &'a [WorkerRecord],
+    user_workers: &'a [WorkerRecord],
     event_count: u32,
     task_count: u32,
     user_count: usize,
 }
 
 impl<'a> ServerWorkers<'a> {
-    /// A server's worker arrays and counts.
-    ///
-    /// # Safety
-    /// `event_workers` is null or `event_count` live records, `task_pool`'s workers
-    /// null or `task_count` live records, and `user_workers` null or `user_count` live
-    /// records, each live for `'a` and for as long as `event_pool`; the process protocol that owns them orders the field writes made
-    /// through them (as [`Worker::new`]).
+    /// A server's worker arrays and counts: the event workers (the pool, its array and
+    /// count), the task pool and its count, and the user workers' array and count.
+    /// Each array is empty (not mapped yet) or holds exactly its count.
     #[must_use]
     #[inline]
-    pub unsafe fn new(
-        (event_pool, event_workers, event_count): (PoolRef<'a>, *mut WorkerRecord, u32),
+    pub fn new(
+        (event_pool, event_workers, event_count): (PoolRef<'a>, &'a [WorkerRecord], u32),
         (task_pool, task_count): (PoolRef<'a>, u32),
-        (user_workers, user_count): (*mut WorkerRecord, usize),
+        (user_workers, user_count): (&'a [WorkerRecord], usize),
     ) -> Self {
         Self {
             event_pool,
@@ -68,23 +64,30 @@ impl<'a> ServerWorkers<'a> {
 
     /// Event worker `index`, or `None` past the last or before the array exists.
     fn event(&self, index: usize) -> Option<Worker<'a>> {
-        Self::slot(self.event_workers, self.event_count as usize, index)
+        Self::slot(self.event_workers, index)
     }
 
     /// User worker `index`, or `None` past the last or before the array exists.
     #[must_use]
     pub fn user(&self, index: usize) -> Option<Worker<'a>> {
-        Self::slot(self.user_workers, self.user_count, index)
+        Self::slot(self.user_workers, index)
     }
 
-    /// Record `index` of one of the arrays `new` was given, with its count.
-    fn slot(workers: *mut WorkerRecord, count: usize, index: usize) -> Option<Worker<'a>> {
-        if workers.is_null() || index >= count {
-            return None;
+    /// Record `index` of one of the arrays `new` was given, each empty or holding
+    /// exactly its count.
+    #[inline]
+    fn slot(workers: &'a [WorkerRecord], index: usize) -> Option<Worker<'a>> {
+        workers.get(index).map(Worker::from)
+    }
+
+    /// The event array as the pool holds it, and how many of its records the pool
+    /// may count: null and `event_count` before it is mapped (the pool then has none).
+    fn event_array(&self, count: u32) -> (*mut WorkerRecord, u32) {
+        if self.event_workers.is_empty() {
+            return (core::ptr::null_mut(), count);
         }
-        // SAFETY: `new`'s contract: a non-null array holds its count of live records
-        // for `'a`, and `index` is below it.
-        Some(unsafe { Worker::new(workers.wrapping_add(index)) })
+        let len = u32::try_from(self.event_workers.len()).unwrap_or(u32::MAX);
+        (self.event_workers.as_ptr().cast_mut(), count.min(len))
     }
 
     /// `Server::get_worker(id)`: event workers, then task workers, then user workers;
@@ -105,7 +108,7 @@ impl<'a> ServerWorkers<'a> {
         if id < user_start {
             // The task pool's canonical array has task_count slots.
             let index = id.wrapping_sub(self.event_count) as usize;
-            return Self::slot(self.task_pool.workers(), self.task_count as usize, index);
+            return self.task_pool.worker(index);
         }
         self.user(id.wrapping_sub(user_start) as usize)
     }
@@ -116,17 +119,17 @@ impl<'a> ServerWorkers<'a> {
     /// missing.
     pub fn adopt_event_workers(&self) {
         let pool = self.event_pool;
-        let count = pool.worker_num().min(self.event_count);
-        if pool.workers().is_null() || self.event_workers.is_null() {
+        if pool.workers().is_null() || self.event_workers.is_empty() {
             return;
         }
+        let (workers, count) = self.event_array(pool.worker_num().min(self.event_count));
         for index in 0..count as usize {
             if let Some((from, to)) = pool.worker(index).zip(self.event(index)) {
                 to.put(from.get());
             }
         }
-        // The server's array, which `new` says outlives the pool, of `count` records.
-        pool.set_workers(self.event_workers);
+        // The server's array, lent for as long as the pool, of at least `count` records.
+        pool.set_workers(workers);
         pool.set_worker_num(count);
         for (id, index) in (0u32..).zip(0..count as usize) {
             if let Some(worker) = pool.worker(index) {
@@ -150,9 +153,10 @@ pub fn swr_v1_process_server_workers_start<'w>(
     // Startup owns the event pool before the factory starts; a field at a time.
     let pool = view.event_pool;
     pool.hold(key, server);
-    // The canonical event array, live for the pool's worker count (`new`'s contract).
-    pool.set_workers(view.event_workers);
-    pool.set_worker_num(view.event_count);
+    // The canonical event array, lent for as long as the pool, of at least the count.
+    let (workers, count) = view.event_array(view.event_count);
+    pool.set_workers(workers);
+    pool.set_worker_num(count);
     // This original event pool uses its pipes rather than a message queue.
     pool.set_use_msgqueue(false);
     for index in 0..view.event_count {
@@ -244,9 +248,13 @@ mod tests {
         let tasks = task_pool.registry();
         let view = unsafe {
             ServerWorkers::new(
-                (PoolRef::new(&raw mut event_pool), workers, 2),
+                (
+                    PoolRef::new(&raw mut event_pool),
+                    core::slice::from_raw_parts(workers, 2),
+                    2,
+                ),
                 (PoolRef::new(&raw mut task_pool), 1),
-                (&raw mut user, 1),
+                (core::slice::from_raw_parts(&raw mut user, 1), 1),
             )
         };
         // Event pool workers remain null before publication: PID lookup has
@@ -303,11 +311,16 @@ mod tests {
         let mut task_pool = pool();
         task_pool.workers = tasks_ptr;
         event_pool.reload_count = 91;
+        task_pool.worker_num = 1;
         let view = unsafe {
             ServerWorkers::new(
-                (PoolRef::new(&raw mut event_pool), events_ptr, 2),
+                (
+                    PoolRef::new(&raw mut event_pool),
+                    core::slice::from_raw_parts(events_ptr, 2),
+                    2,
+                ),
                 (PoolRef::new(&raw mut task_pool), 1),
-                (users_ptr, 3),
+                (core::slice::from_raw_parts(users_ptr, 3), 3),
             )
         };
         let mut server = 0_u8;

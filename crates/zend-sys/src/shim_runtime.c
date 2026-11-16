@@ -149,8 +149,8 @@ void *swr_zend_runtime_transport(struct iovec name) {
     return zend_hash_str_find_ptr(php_stream_xport_get_hash(), name.iov_base, name.iov_len);
 }
 
-int swr_zend_runtime_set_transport(const char *name, void *factory, bool remove) {
-    if (remove) {
+int swr_zend_runtime_set_transport(const char *name, void *factory) {
+    if (!factory) {
         return php_stream_xport_unregister(name);
     }
     return php_stream_xport_register(name, (php_stream_transport_factory) factory);

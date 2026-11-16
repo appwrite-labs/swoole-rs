@@ -49,8 +49,8 @@ impl SslContext {
 
     /// `RustStringView::operator=(const std::string &)`.
     fn set(&self, slot: usize, value: &str) {
-        // SAFETY: the owner's live slot; `value` is readable for its length.
-        let status = unsafe { string_set(self.0.strings[slot], value.as_bytes()) };
+        // SAFETY: the live owner this context made, which only this test configures.
+        let status = unsafe { string_set(self.0.owner, slot, value.as_bytes()) };
         assert!(status >= 0);
     }
 

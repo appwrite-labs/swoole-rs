@@ -12,7 +12,7 @@ void swr_zend_after_fork(void *unused);
 /* SwooleG.print_backtrace: "Stack trace:" to stderr, then the PHP backtrace. */
 void swr_zend_print_stack_trace(void);
 /* SwooleG.fatal_error: throw Swoole\Error(message, code) and print it as an
- * E_ERROR, then swr_v1_phpswoole_fatal_exit(code). */
+ * E_ERROR, then swr_v1_phpswoole_fatal_exit(&code). */
 void swr_zend_fatal_error(int code, const char *format, ...);
 /* The module globals (zend_swoole_globals): ZEND_INIT_MODULE_GLOBALS with ctor,
  * returning what the INI handlers take (the TSRM id under ZTS, else `nts`), and

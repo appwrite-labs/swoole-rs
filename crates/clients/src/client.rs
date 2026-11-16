@@ -10,7 +10,7 @@
 //! reference to the state lives across one: operations work on a raw [`Handle`]
 //! and borrow the state only between effects. A PHP bailout in a callback
 //! longjmps out, so nothing that needs dropping is held across one.
-use crate::protocol::Protocol;
+use crate::protocol::{Package, Protocol};
 use core::cell::{Cell, OnceCell};
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
@@ -23,7 +23,7 @@ use swoole_rs_corebase::constants::{
     FdType, ResultCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE,
     SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
 };
-use swoole_rs_corebase::net_types::{PacketLength, RecvData, SocketAddress};
+use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
 use swoole_rs_corebase::sys::{ReadBuffer, ReadSlot};
 use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
 use swoole_rs_error::ErrorCode;
@@ -619,18 +619,18 @@ impl Handle {
 
 /// `Client_onPackage`: a framed package for `onReceive`; the receive loop stops
 /// once the callback left the socket waiting to close. Only a client's protocol
-/// holds it, and [`OnPackage`](crate::protocol::OnPackage)'s contract has a caller pass that protocol's socket,
-/// a client's, whose free is deferred past the call: as for the reactor handlers
-/// below, the socket's kind is what makes its object a client.
-extern "C-unwind" fn on_package(
-    _: *const Protocol,
-    socket: Socket<'_>,
-    package: &RecvData,
-) -> c_int {
+/// holds it, and a client's framed receive calls it with that client's socket, whose
+/// free is deferred past the call: as for the reactor handlers below, the socket's
+/// kind is what makes its object a client.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`OnPackage` lends the package by value"
+)]
+fn on_package(_: *const Protocol, socket: Socket<'_>, package: Package<'_>) -> c_int {
     Handle(socket.read(|socket| socket.object).cast()).call(
         ClientEvent::Receive,
-        package.data.cast(),
-        package.info.len as usize,
+        package.as_ptr().cast(),
+        package.len(),
     );
     if socket.read(|socket| socket.output.close_wait) {
         ERR
