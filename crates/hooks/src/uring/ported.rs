@@ -164,14 +164,14 @@ fn write_and_read() {
 
         let data = b"aaaaaaaaaaaaaaaaaaaaaaa";
         let length = data.len();
-        let result = uring::write(&HOST, fd, &data[..length], -1.0);
+        let result = uring::write(&HOST, fd, &data[..length], -1.0).map_or(-1, usize::cast_signed);
         assert!(result > 0, "write");
         assert_eq!(result, length.cast_signed(), "written");
 
         libc::lseek(fd, 0, libc::SEEK_SET);
 
         let mut buf = [0_u8; 128];
-        let result = uring::read(&HOST, fd, &mut buf[..128], -1.0);
+        let result = uring::read(&HOST, fd, &mut buf[..128], -1.0).map_or(-1, usize::cast_signed);
         assert!(result > 0, "read");
         assert_eq!(result, length.cast_signed(), "read back");
         assert_eq!(&buf[..length], data, "contents");
@@ -210,7 +210,8 @@ fn fstat_and_stat() {
             .unwrap_or(-1);
         assert!(fd > 0, "open");
 
-        let written = uring::write(&HOST, fd, TEST_STR.as_bytes(), -1.0);
+        let written =
+            uring::write(&HOST, fd, TEST_STR.as_bytes(), -1.0).map_or(-1, usize::cast_signed);
         assert_eq!(written, TEST_STR.len().cast_signed(), "write");
 
         assert_eq!(status(uring::fstat(&HOST, fd, &mut statbuf)), 0, "fstat");
@@ -236,12 +237,14 @@ fn fsync_and_fdatasync() {
 
         let data = b"aaaaaaaaaaaaaaaaaaaaaaa";
         let length = data.len();
-        let write_length = uring::write(&HOST, fd, &data[..length], -1.0);
+        let write_length =
+            uring::write(&HOST, fd, &data[..length], -1.0).map_or(-1, usize::cast_signed);
         assert_eq!(write_length, length.cast_signed(), "write");
 
         assert_eq!(status(uring::fsync(&HOST, fd)), 0, "fsync");
 
-        let write_length = uring::write(&HOST, fd, &data[..length], -1.0);
+        let write_length =
+            uring::write(&HOST, fd, &data[..length], -1.0).map_or(-1, usize::cast_signed);
         assert_eq!(write_length, length.cast_signed(), "write");
 
         assert_eq!(status(uring::fdatasync(&HOST, fd)), 0, "fdatasync");
@@ -263,7 +266,8 @@ fn ftruncate() {
 
         let data = b"aaaaaaaaaaaaaaaaaaaaaaa";
         let length = data.len();
-        let write_length = uring::write(&HOST, fd, &data[..length], -1.0);
+        let write_length =
+            uring::write(&HOST, fd, &data[..length], -1.0).map_or(-1, usize::cast_signed);
         assert_eq!(write_length, length.cast_signed(), "write");
 
         assert_eq!(status(uring::ftruncate(&HOST, fd, 0)), 0, "ftruncate");
@@ -289,17 +293,17 @@ fn http_get(socket_calls: bool) {
 
         let req = http_get_request(TEST_HTTP_DOMAIN, "/");
         let rv = if socket_calls {
-            uring::send(&HOST, fd, req.as_bytes(), 0, -1.0)
+            uring::send(&HOST, fd, req.as_bytes(), 0, -1.0).map_or(-1, usize::cast_signed)
         } else {
-            uring::write(&HOST, fd, req.as_bytes(), -1.0)
+            uring::write(&HOST, fd, req.as_bytes(), -1.0).map_or(-1, usize::cast_signed)
         };
         assert_eq!(rv, req.len().cast_signed(), "request sent");
 
         let mut buf = [0_u8; 4096];
         let rv = if socket_calls {
-            uring::recv(&HOST, fd, &mut buf, 0, -1.0)
+            uring::recv(&HOST, fd, &mut buf, 0, -1.0).map_or(-1, usize::cast_signed)
         } else {
-            uring::read(&HOST, fd, &mut buf, -1.0)
+            uring::read(&HOST, fd, &mut buf, -1.0).map_or(-1, usize::cast_signed)
         };
         assert!(rv > 100, "response");
 
@@ -359,7 +363,7 @@ fn sendfile() {
 
     with_engine(|| {
         let mut data = vec![0_u8; 250_000];
-        let result = uring::read(&HOST, pairs[1], &mut data, -1.0);
+        let result = uring::read(&HOST, pairs[1], &mut data, -1.0).map_or(-1, usize::cast_signed);
         let _closed = status(uring::close_fd(&HOST, pairs[1]));
         assert_eq!(result, TEST_JPG_SIZE.cast_signed(), "read");
     });
@@ -399,7 +403,8 @@ fn accept() {
                 assert_eq!(retval, 0, "connect");
 
                 let test_message = b"test_data";
-                let sent_bytes = uring::send(&HOST, client_sock, test_message, 0, -1.0);
+                let sent_bytes = uring::send(&HOST, client_sock, test_message, 0, -1.0)
+                    .map_or(-1, usize::cast_signed);
                 assert_eq!(sent_bytes, test_message.len().cast_signed(), "send");
 
                 let _closed = status(uring::close_fd(&HOST, client_sock));
@@ -410,7 +415,8 @@ fn accept() {
         assert!(client_sock > 0, "accept");
 
         let mut buffer = [0_u8; 256];
-        let received_bytes = uring::recv(&HOST, client_sock, &mut buffer[..255], 0, -1.0);
+        let received_bytes = uring::recv(&HOST, client_sock, &mut buffer[..255], 0, -1.0)
+            .map_or(-1, usize::cast_signed);
         assert!(received_bytes > 0, "recv");
         assert_eq!(
             CStr::from_bytes_until_nul(&buffer).unwrap(),
@@ -563,10 +569,11 @@ fn poll() {
 
         let writer = thread::spawn(move || {
             with_engine(|| {
-                let result = uring::write(&HOST, fd0, &buffer, -1.0);
+                let result = uring::write(&HOST, fd0, &buffer, -1.0).map_or(-1, usize::cast_signed);
                 assert!(result > 0, "write");
                 let _slept = uring::sleep(&HOST, 0.1);
-                let result = uring::write(&HOST, fd1, &buffer[..16 * 1024], -1.0);
+                let result = uring::write(&HOST, fd1, &buffer[..16 * 1024], -1.0)
+                    .map_or(-1, usize::cast_signed);
                 assert!(result > 0, "write back");
             });
         });
@@ -582,7 +589,7 @@ fn poll() {
         );
         assert_ne!(fds[0].revents & libc::POLLIN, 0, "POLLIN");
 
-        let result = uring::read(&HOST, fd1, &mut buf, -1.0);
+        let result = uring::read(&HOST, fd1, &mut buf, -1.0).map_or(-1, usize::cast_signed);
         assert!(result > 1024, "read");
 
         // `poll(fds, 2, 1000)`: the engine's poll takes one pollfd (README).

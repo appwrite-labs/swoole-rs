@@ -154,10 +154,11 @@ impl Sock {
             RECV => recv(&self.ops, buf),
             _ => send(&self.ops, op, buf),
         }
+        .map_or(-1, usize::cast_signed)
     }
 
     fn send(&self, data: &[u8]) -> isize {
-        send(&self.ops, SEND, data)
+        send(&self.ops, SEND, data).map_or(-1, usize::cast_signed)
     }
 
     /// `accept()`: the accepted connection.
@@ -179,7 +180,7 @@ impl Sock {
             Vectors::Read(unsafe { core::slice::from_raw_parts_mut(at.cast(), count) })
         };
         let mut vector = IoVector::new(vectors).expect("IOVector");
-        swr_v1_hook_uring_vector(&self.ops, &mut vector, all)
+        swr_v1_hook_uring_vector(&self.ops, &mut vector, all).map_or(-1, usize::cast_signed)
     }
 
     fn set_buffer_size(&self, option: c_int, size: c_int) {
@@ -525,7 +526,7 @@ fn sendmsg_and_recvmsg() {
             let mut msg = RecvMessage::new(&mut ivec);
 
             let ret = sock.ops.recvmsg(&mut msg, 0);
-            buf.truncate(ret.max(0).unsigned_abs());
+            buf.truncate(ret.unwrap_or(0));
             assert_eq!(buf, text);
         },
         || {
@@ -535,7 +536,7 @@ fn sendmsg_and_recvmsg() {
 
             let ret = sock.ops.sendmsg(&msg, 0);
             drop(sock);
-            assert_eq!(ret, length.cast_signed());
+            assert_eq!(ret, Some(length));
         },
     );
 }
@@ -553,11 +554,11 @@ fn sendto(sock: &Sock, to: &Address, data: &[u8]) -> isize {
             to.len as usize,
         );
     }
-    super::sendto(&sock.ops, data, &address)
+    super::sendto(&sock.ops, data, &address).map_or(-1, usize::cast_signed)
 }
 
 fn recvfrom(sock: &Sock, buf: &mut [u8], from: Option<&mut Address>) -> isize {
-    let result = recvfrom_peer(&sock.ops, buf);
+    let result = recvfrom_peer(&sock.ops, buf).map_or(-1, usize::cast_signed);
     if let (Some(from), Some(info)) = (from, sock.ops.socket.net(|record| record.info)) {
         from.len = info.len;
         unsafe {
@@ -790,7 +791,7 @@ fn send_and_recv_all() {
             sock.set_buffer_size(libc::SO_RCVBUF, 65536);
 
             let mut rbuf = vec![0_u8; wbuf.len()];
-            let result = recv_all(&sock.ops, &mut rbuf);
+            let result = recv_all(&sock.ops, &mut rbuf).map_or(-1, usize::cast_signed);
             assert_eq!(result, wbuf.len().cast_signed());
             assert_eq!(rbuf, wbuf);
             thread::sleep(std::time::Duration::from_millis(100));
@@ -799,7 +800,10 @@ fn send_and_recv_all() {
             let sock = Sock::new(pairs[0]);
             sock.set_buffer_size(libc::SO_SNDBUF, 65536);
 
-            assert_eq!(send_all(&sock.ops, &wbuf), wbuf.len().cast_signed());
+            assert_eq!(
+                send_all(&sock.ops, &wbuf).map_or(-1, usize::cast_signed),
+                wbuf.len().cast_signed()
+            );
 
             thread::sleep(std::time::Duration::from_millis(100));
         },

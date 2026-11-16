@@ -362,7 +362,7 @@ pub fn read(fd: c_int, buf: &mut [MaybeUninit<u8>]) -> ssize_t {
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {
-        return crate::uring::read(ring, fd, buf, -1.0);
+        return crate::uring::read(ring, fd, buf, -1.0).map_or(-1, usize::cast_signed);
     }
     on_pool(Some(crate::stdio::runtime().offload), -1, || {
         let mut socket = blocking(fd, false);
@@ -401,7 +401,7 @@ pub fn write(fd: c_int, buf: &[u8]) -> ssize_t {
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {
-        return crate::uring::write(ring, fd, buf, -1.0);
+        return crate::uring::write(ring, fd, buf, -1.0).map_or(-1, usize::cast_signed);
     }
     on_pool(Some(crate::stdio::runtime().offload), -1, || {
         let mut socket = blocking(fd, true);

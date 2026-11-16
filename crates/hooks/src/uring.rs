@@ -543,7 +543,11 @@ unsafe fn request(host: &Host, timeout: f64, entry: squeue::Entry) -> io::Result
     Event::new(host, entry).with_timeout(timeout).execute(host)
 }
 
-// Transfer callers still use the syscall protocol until their Result migration.
+/// A transfer's bytes moved, or `None` with errno set.
+fn moved(result: io::Result<isize>) -> Option<usize> {
+    result.ok().and_then(|n| usize::try_from(n).ok())
+}
+
 fn transfer_result(result: io::Result<isize>) -> isize {
     result.unwrap_or(-1)
 }
@@ -587,16 +591,16 @@ macro_rules! safe_operations {
 }
 
 safe_operations! {
-    pub fn recv(fd: c_int, buf: &mut [impl ReadSlot], flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::Recv::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len().c_cast::<u32>()).flags(flags), transfer_result;
-    pub fn send(fd: c_int, buf: &[u8], flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<u32>()).flags(flags), transfer_result;
+    pub fn recv(fd: c_int, buf: &mut [impl ReadSlot], flags: c_int, timeout: f64) -> Option<usize>,
+        timeout timeout, opcode::Recv::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len().c_cast::<u32>()).flags(flags), moved;
+    pub fn send(fd: c_int, buf: &[u8], flags: c_int, timeout: f64) -> Option<usize>,
+        timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<u32>()).flags(flags), moved;
     pub fn close_fd(fd: c_int) -> io::Result<()>,
         timeout -1.0, opcode::Close::new(Fd(fd)), file_status;
-    pub fn read(fd: c_int, buf: &mut [impl ReadSlot], timeout: f64) -> isize,
-        timeout timeout, opcode::Read::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), transfer_result;
-    pub fn write(fd: c_int, buf: &[u8], timeout: f64) -> isize,
-        timeout timeout, opcode::Write::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), transfer_result;
+    pub fn read(fd: c_int, buf: &mut [impl ReadSlot], timeout: f64) -> Option<usize>,
+        timeout timeout, opcode::Read::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), moved;
+    pub fn write(fd: c_int, buf: &[u8], timeout: f64) -> Option<usize>,
+        timeout timeout, opcode::Write::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), moved;
     pub fn futex_wait(futex: &AtomicU32) -> io::Result<c_int>,
         timeout -1.0, opcode::FutexWait::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), |result: io::Result<isize>| result.map(CCast::c_cast::<c_int>);
     pub fn futex_wakeup(futex: &AtomicU32) -> io::Result<c_int>,
@@ -618,10 +622,10 @@ safe_operations! {
             opcode::Accept::new(Fd(fd), (&raw mut address.addr).cast(), &raw mut address.len).flags(flags)
         }, int;
     /// `IORING_OP_SEND` of `buf` to `address`, of which the kernel reads at most its storage.
-    pub fn sendto(fd: c_int, buf: &[u8], address: &SocketAddress, timeout: f64) -> isize,
+    pub fn sendto(fd: c_int, buf: &[u8], address: &SocketAddress, timeout: f64) -> Option<usize>,
         timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<u32>())
             .dest_addr((&raw const address.addr).cast())
-            .dest_addr_len(address.len.min(SocketAddress::CAPACITY)), transfer_result;
+            .dest_addr_len(address.len.min(SocketAddress::CAPACITY)), moved;
     /// `IORING_OP_CONNECT` of `fd` to `address`, of which the kernel reads at most its storage.
     pub fn connect(fd: c_int, address: &SocketAddress, timeout: f64) -> c_int,
         timeout timeout, opcode::Connect::new(
@@ -630,11 +634,11 @@ safe_operations! {
             address.len.min(SocketAddress::CAPACITY),
         ), int;
     /// `IORING_OP_RECVMSG` into `message`'s buffers.
-    pub fn recvmsg(fd: c_int, message: &mut RecvMessage<'_>, flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::RecvMsg::new(Fd(fd), message.as_mut_ptr()).flags(flags.cast_unsigned()), transfer_result;
+    pub fn recvmsg(fd: c_int, message: &mut RecvMessage<'_>, flags: c_int, timeout: f64) -> Option<usize>,
+        timeout timeout, opcode::RecvMsg::new(Fd(fd), message.as_mut_ptr()).flags(flags.cast_unsigned()), moved;
     /// `IORING_OP_SENDMSG` of `message`'s buffers.
-    pub fn sendmsg(fd: c_int, message: &SendMessage<'_>, flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::SendMsg::new(Fd(fd), message.as_ptr()).flags(flags.cast_unsigned()), transfer_result;
+    pub fn sendmsg(fd: c_int, message: &SendMessage<'_>, flags: c_int, timeout: f64) -> Option<usize>,
+        timeout timeout, opcode::SendMsg::new(Fd(fd), message.as_ptr()).flags(flags.cast_unsigned()), moved;
     /// `IORING_OP_POLL_ADD` of `fd`, which carries no pointer.
     fn poll_add(fd: c_int, events: u32, timeout: f64) -> io::Result<c_int>,
         timeout timeout, opcode::PollAdd::new(Fd(fd), events), |result: io::Result<isize>| result.map(CCast::c_cast::<c_int>);
@@ -659,7 +663,7 @@ safe_operations! {
 /// `IORING_OP_READV` into `vector`'s remaining buffers, or `IORING_OP_WRITEV` from
 /// them, as the vector was made for.
 #[must_use]
-pub fn vector(host: &Host, fd: c_int, vector: &IoVector<'_>, timeout: f64) -> isize {
+pub fn vector(host: &Host, fd: c_int, vector: &IoVector<'_>, timeout: f64) -> Option<usize> {
     let iovecs = vector.iovecs();
     let count = c_int::try_from(iovecs.len()).unwrap_or(0).cast_unsigned();
     let iov = iovecs.as_ptr();
@@ -676,7 +680,7 @@ pub fn vector(host: &Host, fd: c_int, vector: &IoVector<'_>, timeout: f64) -> is
     // `&mut` methods move, and their buffers, valid in its direction while it lives
     // (the type's invariant); the request completes before `request` returns.
     let result = unsafe { request(host, timeout, entry) };
-    transfer_result(result)
+    moved(result)
 }
 
 /// Sleep `seconds` in the ring's timer: 0 when it expired, -1 if cancelled.
