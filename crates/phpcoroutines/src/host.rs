@@ -9,7 +9,7 @@ use std::{
 use swoole_rs_corebase::CCast;
 use swoole_rs_coroutine::Resume;
 use swoole_rs_zend::{
-    E_ERROR, Value, Zvals, bailout,
+    E_ERROR, Zvals, bailout,
     sys::{zend_execute_data, zval},
 };
 
@@ -511,14 +511,16 @@ extern "C" fn bail_out(_: *mut c_void) {
 extern "C" fn defers(ctx: Ctx) {
     while let Some((task, returned)) = crate::context::defer_next(ctx) {
         let (callee, mut args) = task.call_parts();
-        // SAFETY: the context's live return value, which it keeps through the call.
-        if let Some(returned) = returned.and_then(|value| unsafe { Value::from_ptr(value) }) {
+        if let Some(returned) = &returned {
             args = Zvals::one(returned);
         }
         // The call's own frame: the task keeps its arguments, which its release
         // drops, and its result goes to a temporary destroyed after the call.
         let temporary = swoole_rs_zend::Owned::default();
         let called = bailout::call(callee, args, None, &temporary);
+        // The context still holds the return value, so no destructor runs here,
+        // before anything below can bail out past this frame.
+        drop(returned);
         let failed = !matches!(called, Ok(true));
         bailout::defer(called.map(drop));
         if bailout::pending() {

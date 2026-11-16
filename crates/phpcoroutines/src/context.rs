@@ -539,13 +539,15 @@ pub(crate) extern "C" fn enter(ctx: Ctx) -> Option<Call> {
     NonNull::new(ctx.call()).map(Call)
 }
 
-/// The next defer task (last in, first out), and the coroutine's return value,
-/// its one argument, when it has one; none when no task is left.
+/// The next defer task (last in, first out), and a copy of the coroutine's
+/// return value, its one argument, when it has one; none when no task is left.
 #[inline]
-pub(crate) fn defer_next(ctx: Ctx) -> Option<(Callable, Option<*mut zval>)> {
+pub(crate) fn defer_next(ctx: Ctx) -> Option<(Callable, Option<Owned>)> {
     let task = ctx.defers(|defers| defers.as_mut()?.pop())?;
-    let returned = ctx.with(|context| context.return_value.kind()) != IS_UNDEF;
-    Some((task, returned.then(|| ctx.return_value())))
+    let returned = ctx.with(|context| {
+        (context.return_value.kind() != IS_UNDEF).then(|| context.return_value.copy())
+    });
+    Some((task, returned))
 }
 
 /// `save_context`: the running VM's state into the running context, as a switch
