@@ -610,6 +610,18 @@ impl Spare<'_> {
         let read = self.rest().read(fd);
         self.count(read)
     }
+
+    /// recvfrom(2) into the room, as [`Fill::recvfrom`].
+    #[inline]
+    pub fn recvfrom(
+        &mut self,
+        fd: c_int,
+        flags: c_int,
+        address: &mut SocketAddress,
+    ) -> Option<usize> {
+        let received = self.rest().recvfrom(fd, flags, address);
+        self.count(received)
+    }
 }
 
 /// `len` bytes at `at` that a write reads, lent for `'a`: null, or readable and not
