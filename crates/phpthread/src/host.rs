@@ -42,10 +42,9 @@ pub(crate) fn co_socket_cast(object: &Value) -> Option<(c_int, c_int)> {
     if descriptor < 0 {
         return Some((-1, 0));
     }
-    let fd = swoole_rs_corebase::sys::dup(descriptor);
-    if fd < 0 {
+    let Ok(fd) = swoole_rs_corebase::sys::dup(descriptor) else {
         return Some((-1, 0));
-    }
+    };
     Some((fd, kind))
 }
 

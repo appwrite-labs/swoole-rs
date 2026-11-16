@@ -69,7 +69,7 @@ fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
         return false;
     }
     // dup2 onto the standard descriptors, as upstream.
-    let redirected = (0..3).all(|target| sys::dup2(fd, target) >= 0);
+    let redirected = (0..3).all(|target| sys::dup2(fd, target).is_ok());
     if !redirected {
         log::sys_warning(c"swoole_daemon", format_args!("dup2() failed"));
     }
