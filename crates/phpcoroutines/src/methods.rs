@@ -8,15 +8,9 @@ use crate::{
         self, SW_ERROR_CO_CANCELED, SW_ERROR_CO_NOT_EXISTS, SW_ERROR_INVALID_PARAMS,
         SW_ERROR_WRONG_OPERATION,
     },
-    leased, runtime, tracer,
+    leased, put_back, runtime, tracer,
 };
-use std::{
-    cell::{Cell, RefCell},
-    ffi::c_long,
-    mem::ManuallyDrop,
-    ptr,
-    rc::Rc,
-};
+use std::{cell::Cell, ffi::c_long, mem::ManuallyDrop, ptr, rc::Rc};
 use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
     Call, Callable, E_ERROR, E_WARNING, Owned, OwnedArray, Php,
@@ -130,15 +124,15 @@ fn exists(call: &Call) {
 
 per_thread! {
     /// The ids of the coroutines suspended by `Co::yield()`, sorted
-    /// (`user_yield_coros`). Ids rise, so a yield usually appends.
-    static YIELDED: RefCell<Vec<c_long>> = RefCell::new(Vec::new());
+    /// (`user_yield_coros`). Ids rise, so a yield usually appends. Taken out
+    /// and put back around a search and an insert or remove.
+    static YIELDED: Cell<Vec<c_long>> = Cell::new(Vec::new());
 }
 
 /// Adds `cid` to [`YIELDED`] or takes it out; whether it was there.
 fn set_yielded(cid: c_long, yielded: bool) -> bool {
     YIELDED.with(|ids| {
-        let mut ids = ids.borrow_mut();
-        match (ids.binary_search(&cid), yielded) {
+        put_back(ids, |ids| match (ids.binary_search(&cid), yielded) {
             (Ok(at), false) => {
                 ids.remove(at);
                 true
@@ -148,7 +142,7 @@ fn set_yielded(cid: c_long, yielded: bool) -> bool {
                 false
             }
             (found, _) => found.is_ok(),
-        }
+        })
     })
 }
 
@@ -193,7 +187,9 @@ fn resume(call: &Call) {
 /// A `Co::join()` in progress: the contexts it still waits for, each of which
 /// holds it until it closes or the join gives up.
 pub(crate) struct Join {
-    pending: RefCell<Vec<Ctx>>,
+    /// Taken out and put back around list edits, which neither yield nor run
+    /// PHP code.
+    pending: Cell<Vec<Ctx>>,
     co: host::Co,
     canceled: Cell<bool>,
 }
@@ -202,12 +198,13 @@ impl Join {
     /// A joined coroutine closed: once none are left, resume the joiner from
     /// the event loop (unless it gave up first).
     pub(crate) fn closed(self: Rc<Self>, ctx: Ctx) {
-        let mut pending = self.pending.borrow_mut();
-        pending.retain(|&pending| pending != ctx);
-        if !pending.is_empty() {
+        let waiting = put_back(&self.pending, |pending| {
+            pending.retain(|&pending| pending != ctx);
+            !pending.is_empty()
+        });
+        if waiting {
             return;
         }
-        drop(pending);
         let resume = JoinResume { join: self };
         if swoole_rs_reactor::event_api::swoole_event_defer_value(resume).is_err() {
             // Upstream dereferences `sw_reactor()` here unchecked.
@@ -215,10 +212,11 @@ impl Join {
         }
     }
 
-    /// Stop waiting for the contexts registered so far.
+    /// Stop waiting for the contexts registered so far, which leave the list
+    /// for good: none of them holds the join after.
     fn forget(&self) {
         // A context still waited for is live.
-        for ctx in self.pending.borrow().iter() {
+        for ctx in self.pending.take() {
             drop(ctx.replace_join(None));
         }
     }
@@ -282,13 +280,16 @@ fn join(call: &Call) {
         return;
     }
     let join = Rc::new(Join {
-        pending: RefCell::new(pending),
+        pending: Cell::new(pending),
         co,
         canceled: Cell::new(false),
     });
-    for ctx in join.pending.borrow().iter() {
-        drop(ctx.replace_join(Some(Rc::clone(&join))));
-    }
+    // Each context was joined by none, so no join is replaced.
+    put_back(&join.pending, |pending| {
+        for &ctx in pending.iter() {
+            drop(ctx.replace_join(Some(Rc::clone(&join))));
+        }
+    });
     // This frame lives on the running coroutine's stack, which no bailout
     // unwinds while it waits.
     if !host::yield_ex(co, timeout) {

@@ -1,9 +1,9 @@
 //! MINIT: `Swoole\Coroutine` and its iterator, context and exception
 //! classes, the constants, `Swoole\ExitException`, the exit and `@` opcode
 //! handlers and the coroutine-aware autoloader.
-use crate::{context, host, runtime};
+use crate::{context, host, put_back, runtime};
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
     collections::{HashMap, VecDeque},
     ffi::{CStr, c_int, c_long},
     hash::{BuildHasherDefault, DefaultHasher},
@@ -220,7 +220,7 @@ pub extern "C" fn php_swoole_coroutine_rinit() {
 
 /// `php_swoole_coroutine_rshutdown`: a bailout in deactivation is raised.
 pub extern "C" fn php_swoole_coroutine_rshutdown() {
-    AUTOLOADING.with(|a| a.borrow_mut().clear());
+    drop(AUTOLOADING.with(Cell::take));
     if runtime::shutdown() {
         runtime::raise();
     }
@@ -364,10 +364,20 @@ struct Loading {
     waiters: VecDeque<Waiter>,
 }
 
+/// The coroutines loading classes, by lowercase class name.
+type Loads = HashMap<Vec<u8>, Loading, BuildHasherDefault<DefaultHasher>>;
+
 per_thread! {
-    /// Classes being autoloaded, by lowercase name (`SWOOLE_G(in_autoload)`).
-    static AUTOLOADING: RefCell<HashMap<Vec<u8>, Loading, BuildHasherDefault<DefaultHasher>>> =
-        RefCell::new(HashMap::with_hasher(BuildHasherDefault::new()));
+    /// Classes being autoloaded (`SWOOLE_G(in_autoload)`). Taken out and put
+    /// back around one lookup, insert or remove, which runs no PHP code and
+    /// cannot reach `autoload` again; the autoloader runs, and coroutines
+    /// wait and are woken, with it back.
+    static AUTOLOADING: Cell<Loads> = Cell::new(Loads::with_hasher(BuildHasherDefault::new()));
+}
+
+/// `f` on the classes being autoloaded, taken out meanwhile.
+fn autoloading<R>(f: impl FnOnce(&mut Loads) -> R) -> R {
+    AUTOLOADING.with(|loads| put_back(loads, f))
 }
 
 /// Run Zend's autoloader, trapping its bailouts.
@@ -396,7 +406,7 @@ extern "C" fn autoload(name: &ZStr, lc_name: &ZStr) -> *mut zend_class_entry {
     // SAFETY: Zend marked the class as loading.
     unsafe { swr_zend_autoload_forget(lc_name.as_ptr()) };
     let key = lc_name.bytes().to_vec();
-    let waiting = AUTOLOADING.with(|a| match a.borrow_mut().get_mut(&key) {
+    let waiting = autoloading(|loads| match loads.get_mut(&key) {
         Some(loading) if loading.owner == current => Some(None),
         Some(loading) => {
             let found = Rc::new(Cell::new(ptr::null_mut()));
@@ -417,8 +427,9 @@ extern "C" fn autoload(name: &ZStr, lc_name: &ZStr) -> *mut zend_class_entry {
         }
         None => {}
     }
-    AUTOLOADING.with(|a| {
-        a.borrow_mut().insert(
+    // None loads it (that was the lookup's `None`), so nothing is replaced.
+    let replaced = autoloading(|loads| {
+        loads.insert(
             key.clone(),
             Loading {
                 owner: current,
@@ -426,8 +437,9 @@ extern "C" fn autoload(name: &ZStr, lc_name: &ZStr) -> *mut zend_class_entry {
             },
         )
     });
+    drop(replaced);
     let loaded = load(name, lc_name);
-    let loading = AUTOLOADING.with(|a| a.borrow_mut().remove(&key));
+    let loading = autoloading(|loads| loads.remove(&key));
     drop(key);
     let Ok(ce) = loaded else {
         drop(loading);
