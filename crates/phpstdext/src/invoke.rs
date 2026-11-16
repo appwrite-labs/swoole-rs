@@ -4,11 +4,11 @@
 //! `swoole_*` wrappers that move that first argument where the function
 //! expects it.
 use crate::{
-    CONTINUE, DISPATCH, Frame, Op,
+    Frame, Next, Op,
     aliases::{self, Receiver},
 };
 use std::{
-    ffi::{CStr, c_int, c_void},
+    ffi::{CStr, c_void},
     ptr, slice,
     sync::atomic::{AtomicPtr, Ordering},
 };
@@ -65,25 +65,25 @@ pub(crate) struct MethodCall;
 
 impl Handler for MethodCall {
     const OPCODE: u32 = swoole_rs_zend::sys::ZEND_INIT_METHOD_CALL;
-    fn run(frame: Frame<'_>) -> c_int {
+    fn run(frame: Frame<'_>) -> Next {
         let op = Op::current(frame);
         let Some(object) = op.op1() else {
-            return DISPATCH;
+            return Next::Dispatch;
         };
         // The method name: op2's literal, `RT_CONSTANT(opline, opline->op2)`,
         // which lives as long as the script. A name computed at run time is
         // left to Zend.
         if u32::from(op.op2_type) != IS_CONST {
-            return DISPATCH;
+            return Next::Dispatch;
         }
         let Some(name) = op.op2() else {
-            return DISPATCH;
+            return Next::Dispatch;
         };
         let receiver = match object.dereferenced().kind() {
             IS_ARRAY => Receiver::Array,
             IS_STRING => Receiver::String,
             IS_RESOURCE => Receiver::Stream,
-            _ => return DISPATCH,
+            _ => return Next::Dispatch,
         };
         // Zend's request allocator, freed by the method call. The literal is
         // a plain copy, as upstream's.
@@ -110,7 +110,7 @@ impl Handler for MethodCall {
             );
         };
         frame.skip(1);
-        CONTINUE
+        Next::Continue
     }
 }
 

@@ -6,7 +6,7 @@
 #include "SAPI.h"
 #include "php_variables.h"
 
-/* crates/phpstdext's opcode handlers return these by value. */
+/* crates/zend's opcode::handler returns these by value. */
 _Static_assert(ZEND_USER_OPCODE_CONTINUE == 0, "ZEND_USER_OPCODE_CONTINUE");
 _Static_assert(ZEND_USER_OPCODE_DISPATCH == 2, "ZEND_USER_OPCODE_DISPATCH");
 
