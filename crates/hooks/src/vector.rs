@@ -8,9 +8,7 @@ use crate::co_socket::Co;
 use crate::socket_wait::wait_barrier;
 use core::ffi::c_int;
 use core::marker::PhantomData;
-use core::mem::MaybeUninit;
 use std::io::{IoSlice, IoSliceMut};
-use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{
     Drain, Fill, ReactorIov, Socket, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned,
@@ -114,37 +112,13 @@ pub enum Vectors<'a, 'b> {
     Write(&'a [IoSlice<'b>]),
 }
 
-/// One buffer a vectored read fills, as an `iovec`: slots that may not be written
-/// yet, lent for `'b`.
-#[repr(transparent)]
-pub struct ReadVec<'b> {
-    iov: libc::iovec,
-    lent: PhantomData<&'b mut [MaybeUninit<u8>]>,
-}
+pub use swoole_rs_reactor::ReadVec;
 
-impl<'b> ReadVec<'b> {
-    /// The vector over `slots`.
-    #[must_use]
-    pub fn new(slots: &'b mut [impl ReadSlot]) -> Self {
-        Self {
-            iov: libc::iovec {
-                iov_base: slots.as_mut_ptr().cast(),
-                iov_len: slots.len(),
-            },
-            lent: PhantomData,
-        }
-    }
-}
-
-/// A `network::IOVector` over a copy of the caller's iovecs, destroyed on drop, and
-/// the direction it was made for. The buffers the iovecs name are borrowed for `'a`
-/// as [`Vectors`] lent them: writable and reached through nothing else for a read,
-/// readable for a write.
-#[repr(C)]
+/// A `network::IOVector` over a copy of the caller's iovecs, destroyed on drop. The
+/// buffers the iovecs name are borrowed for `'a` as [`Vectors`] lent them: writable
+/// and reached through nothing else for a read, readable for a write.
 pub struct IoVector<'a> {
-    owner: Box<ReactorIov>,
-    write: bool,
-    lent: PhantomData<Vectors<'a, 'a>>,
+    owner: Box<ReactorIov<'a>>,
 }
 
 /// What is left of one of an [`IoVector`]'s buffers, lent in the vector's direction:
@@ -160,27 +134,19 @@ impl<'a> IoVector<'a> {
     /// they were lent; none when the copy fails, where `IOVector`'s constructor throws.
     #[must_use]
     pub fn new(vectors: Vectors<'a, '_>) -> Option<Self> {
-        let write = matches!(vectors, Vectors::Write(_));
         let owner = match vectors {
-            Vectors::Read(read) => ReactorIov::new(read.iter().map(|vector| vector.iov)),
-            Vectors::Write(written) => ReactorIov::new(written.iter().map(|bytes| libc::iovec {
-                iov_base: bytes.as_ptr().cast_mut().cast(),
-                iov_len: bytes.len(),
-            })),
+            Vectors::Read(read) => ReactorIov::reading(read),
+            Vectors::Write(written) => ReactorIov::writing(written),
         }?;
-        Some(Self {
-            owner,
-            write,
-            lent: PhantomData,
-        })
+        Some(Self { owner })
     }
 
     /// Whether the vector was made to write from.
-    pub(crate) const fn write(&self) -> bool {
-        self.write
+    pub(crate) fn write(&self) -> bool {
+        self.owner.write()
     }
 
-    fn owner(&self) -> &ReactorIov {
+    fn owner(&self) -> &ReactorIov<'a> {
         &self.owner
     }
 
@@ -215,7 +181,7 @@ impl<'a> IoVector<'a> {
     /// moved; the caller advances the vector by that, once ([`update`](Self::update)).
     #[cfg(feature = "iouring")]
     pub(crate) fn transfer_each(&mut self, mut io: impl FnMut(Lent<'_>) -> isize) -> isize {
-        let write = self.write;
+        let write = self.write();
         let mut total = 0isize;
         let mut result = 0isize;
         'iovecs: for iov in self.iovecs() {
@@ -253,9 +219,7 @@ impl<'a> IoVector<'a> {
             |data: Drain<'_>| ssl_send_drain(socket, data),
         );
         let tls = (!ssl.is_null()).then_some(&calls);
-        // SAFETY: buffers valid in the vector's direction while it lives (the type's
-        // invariant).
-        unsafe { swr_v1_socket_iov_owned(fd, self.write, &mut self.owner, tls) }
+        swr_v1_socket_iov_owned(fd, &mut self.owner, tls)
     }
 }
 
