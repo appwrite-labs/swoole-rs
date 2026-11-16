@@ -1,11 +1,9 @@
 //! `SwooleG`'s storage. Rust defines the symbol; `swoole::Global`
 //! (`native/corebase/swoole.h`) is its layout: the configuration fields native
-//! code reads in place, then its empty accessor members (`RustField` over
-//! `global.rs`'s record), whose bytes `views` reserves. Both sides assert the
-//! layout.
+//! code reads in place. Both sides assert the layout.
 use std::ffi::{CStr, CString, c_void};
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 #[repr(C)]
@@ -72,14 +70,12 @@ struct Global {
     dns_cache_refresh_time: AtomicU64,
     /// `swoole::Allocator`: `malloc`, `calloc`, `realloc` and `free`, or null.
     std_allocator: [AtomicPtr<c_void>; 4],
-    /// The empty accessor members' bytes.
-    views: [AtomicU8; 3],
 }
 
 const _: () = assert!(
     std::mem::offset_of!(Global, dns_cache_refresh_time) == 8
         && std::mem::offset_of!(Global, std_allocator) == 16
-        && size_of::<Global>() == 56
+        && size_of::<Global>() == 48
         && size_of::<CoreAllocator>() == 32,
     "swoole.h asserts the same `swoole::Global` layout"
 );
@@ -90,7 +86,6 @@ static SWOOLE_G: Global = Global {
     max_sockets: AtomicU32::new(0),
     dns_cache_refresh_time: AtomicU64::new(0),
     std_allocator: [const { AtomicPtr::new(std::ptr::null_mut()) }; 4],
-    views: [const { AtomicU8::new(0) }; 3],
 };
 
 /// `SwooleG.task_tmpfile`, `None` when empty. Its lock is `sw_thread_lock`, which
@@ -132,9 +127,6 @@ pub(crate) fn reset() {
     SWOOLE_G.max_sockets.store(0, Relaxed);
     SWOOLE_G.dns_cache_refresh_time.store(0, Relaxed);
     set_allocator([std::ptr::null_mut(); 4]);
-    for byte in &SWOOLE_G.views {
-        byte.store(0, Relaxed);
-    }
     *task_slot() = None;
 }
 
@@ -331,8 +323,12 @@ mod tests {
         assert!(held.to_bytes().len() >= 256);
         std::fs::remove_dir_all(root).unwrap();
 
+        SWOOLE_G
+            .dns_cache_refresh_time
+            .store(2.5_f64.to_bits(), Relaxed);
         reset();
         assert_eq!(max_sockets(), 0);
+        assert_eq!(SWOOLE_G.dns_cache_refresh_time.load(Relaxed), 0);
         let allocator = unsafe {
             std::ptr::from_ref(&SWOOLE_G.std_allocator)
                 .cast::<CoreAllocator>()
