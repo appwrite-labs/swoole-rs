@@ -470,16 +470,11 @@ pub struct CapacityState {
     tail_tag: u8,
 }
 #[must_use]
-pub fn swr_v1_memory_channel_full(state: Option<&CapacityState>) -> i32 {
-    let Some(state) = state else {
-        return -1;
-    };
+pub fn swr_v1_memory_channel_full(state: &CapacityState) -> bool {
     let occupied = state
         .bytes
         .wrapping_add(state.num.c_cast::<usize>().wrapping_mul(4));
-    i32::from(
-        state.head == state.tail && state.tail_tag != state.head_tag || occupied == state.size,
-    )
+    state.head == state.tail && state.tail_tag != state.head_tag || occupied == state.size
 }
 
 #[cfg(test)]

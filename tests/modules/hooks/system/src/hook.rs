@@ -6,7 +6,8 @@
 //! crates/hooks' `hooked::connect`, `accept`, `poll_fake`, `sendmsg` and `recvmsg`: they take
 //! the address as crates/corebase's `SocketAddress` (`Address::assign` is crates/clients'
 //! `address::assign`), the pollfds as a slice and the message as its borrowed buffers.
-//! `swoole_coroutine_send` and `_recv` are `hooked`'s, over byte slices.
+//! The Rust socket operations return `io::Result`; local conversions below keep
+//! the original integer assertions. `hooked::send` and `recv` take byte slices.
 //! `swoole_coroutine_getaddrinfo` and `_gethostbyname` are `stdio`'s, over `&CStr` names.
 
 use super::socket::SW_SOCK_TCP;
@@ -513,7 +514,7 @@ fn test_hook_socket() {
         80,
         true,
     );
-    assert_eq!(hooked::connect(sock, &sa), 0);
+    assert_eq!(hooked::connect(sock, &sa).map_or(-1, |()| 0), 0);
     // SAFETY: waits on `sock`.
     assert_eq!(
         unsafe { swoole_coroutine_socket_wait_event(sock, SW_EVENT_WRITE, 5.0) },
@@ -522,7 +523,7 @@ fn test_hook_socket() {
 
     let req: &[u8] =
         b"GET / HTTP/1.1\r\nHost: www.baidu.com\r\nConnection: close\r\nKeepAlive: off\r\n\r\n";
-    let sent = hooked::swoole_coroutine_send(sock, req, 0);
+    let sent = hooked::send(sock, req, 0).map_or(-1, usize::cast_signed);
     assert_eq!(sent, isize::try_from(req.len()).unwrap());
 
     // swoole::String resp(1024)
@@ -530,7 +531,7 @@ fn test_hook_socket() {
     let mut length = 0;
     loop {
         let spare = &mut resp[length..];
-        let n = hooked::swoole_coroutine_recv(sock, spare, 0);
+        let n = hooked::recv(sock, spare, 0).map_or(-1, usize::cast_signed);
         if n <= 0 {
             break;
         }
@@ -845,7 +846,7 @@ fn sendmsg_and_recvmsg() {
             let ivec = [std::io::IoSlice::new(text)];
             let msg = hooked::SendMessage::new(&ivec);
 
-            let ret = hooked::sendmsg(pairs[0], &msg, 0);
+            let ret = hooked::sendmsg(pairs[0], &msg, 0).map_or(-1, usize::cast_signed);
             assert_eq!(co_close(pairs[0]), 0);
             assert_eq!(ret, isize::try_from(length).unwrap());
         });
@@ -854,7 +855,7 @@ fn sendmsg_and_recvmsg() {
         let mut ivec = [std::io::IoSliceMut::new(&mut buf[..length])];
         let mut msg = hooked::RecvMessage::new(&mut ivec);
 
-        let ret = hooked::recvmsg(pairs[1], &mut msg, 0);
+        let ret = hooked::recvmsg(pairs[1], &mut msg, 0).map_or(-1, usize::cast_signed);
         buf[usize::try_from(ret).unwrap()] = 0;
         assert_eq!(co_close(pairs[1]), 0);
         assert_eq!(super::c_str(&buf), text);
@@ -1223,22 +1224,27 @@ fn accept() {
                 // getsockname(server_sock, &actual_server_addr, &addr_len)
                 let mut actual_server_addr = SocketAddress::default();
                 assert!(actual_server_addr.local_name(server_sock).is_ok());
-                assert_eq!(hooked::connect(client_sock, &actual_server_addr), 0);
+                assert_eq!(
+                    hooked::connect(client_sock, &actual_server_addr).map_or(-1, |()| 0),
+                    0
+                );
 
                 let test_message = b"test_data";
-                let sent_bytes = hooked::swoole_coroutine_send(client_sock, test_message, 0);
+                let sent_bytes =
+                    hooked::send(client_sock, test_message, 0).map_or(-1, usize::cast_signed);
                 assert_eq!(sent_bytes, 9);
 
                 swoole_coroutine_close(client_sock);
             });
 
             let mut client_addr = SocketAddress::default();
-            let client_sock = hooked::accept(server_sock, &mut client_addr);
+            let client_sock = hooked::accept(server_sock, &mut client_addr).unwrap_or(-1);
             assert!(client_sock > 0);
 
             let mut buffer = [0u8; 256];
             let len = buffer.len() - 1;
-            let received_bytes = hooked::swoole_coroutine_recv(client_sock, &mut buffer[..len], 0);
+            let received_bytes =
+                hooked::recv(client_sock, &mut buffer[..len], 0).map_or(-1, usize::cast_signed);
             assert!(received_bytes > 0);
             assert_eq!(CStr::from_bytes_until_nul(&buffer).unwrap(), c"test_data");
 

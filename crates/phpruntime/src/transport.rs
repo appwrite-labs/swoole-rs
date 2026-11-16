@@ -37,12 +37,12 @@ pub(crate) fn register_async(coroutine: *mut c_void) {
     }
 }
 
-/// Register `factory` as transport `name`, or with `remove` unregister it.
-/// `SUCCESS` or `FAILURE`.
-fn set(name: &CStr, factory: *mut c_void, remove: bool) -> i32 {
+/// Register `factory` as transport `name`, or with `remove` unregister it: whether
+/// PHP reported `SUCCESS`.
+fn set(name: &CStr, factory: *mut c_void, remove: bool) -> bool {
     // SAFETY: a NUL-terminated name and a factory (or null) of PHP's or the
     // coroutine one.
-    unsafe { swr_zend_runtime_set_transport(name.as_ptr(), factory, remove) }
+    unsafe { swr_zend_runtime_set_transport(name.as_ptr(), factory, remove) == 0 }
 }
 
 /// RINIT, on the main thread: remember what PHP registered.
@@ -54,10 +54,10 @@ pub(crate) fn remember() {
 }
 
 /// Register `coroutine` (`hook`) or the original factory for transport `index`;
-/// an ssl or tls transport PHP never had is unregistered. `SUCCESS` or `FAILURE`.
-pub(crate) fn register(index: usize, hook: bool, coroutine: *mut c_void) -> i32 {
+/// an ssl or tls transport PHP never had is unregistered. Whether PHP took it.
+pub(crate) fn register(index: usize, hook: bool, coroutine: *mut c_void) -> bool {
     let (Some(slot), Some(name)) = (ORIGINAL.get(index), NAMES.get(index)) else {
-        return -1;
+        return false;
     };
     let original = slot.load(Ordering::Relaxed);
     let (factory, remove) = if hook {

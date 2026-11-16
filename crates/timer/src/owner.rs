@@ -399,7 +399,8 @@ impl Owner {
                 unsafe { (*fields).timeout_msec = msec };
             }
             _ => {
-                swr_v1_timer_system_set(msec);
+                // Upstream's set() callers ignore its status too.
+                _ = swr_v1_timer_system_set(msec);
             }
         }
     }

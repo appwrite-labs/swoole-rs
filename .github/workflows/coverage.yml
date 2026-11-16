@@ -146,18 +146,9 @@ jobs:
       - name: Prepare swoole/library
         run: python3 corpus/library/run.py --prepare
       - name: Start library services
-        working-directory: target/library/src
         run: |
           echo '127.0.0.1 consul local.httpbin.org mongodb mysql nacos oracle pgsql php-fpm redis' | sudo tee -a /etc/hosts
-          compose="docker compose -f docker-compose.yml -f docker-compose.host.yml"
-          $compose up -d consul httpbin mongodb mysql nacos oracle pgsql php-fpm redis
-          for _ in $(seq 120); do
-            $compose logs oracle | grep -q 'DATABASE IS READY TO USE' \
-              && $compose exec -T mysql mysqladmin ping -uusername -ppassword --silent \
-              && curl -sf -o /dev/null http://127.0.0.1:8848/nacos/ && exit 0
-            sleep 5
-          done
-          $compose ps && exit 1
+          python3 corpus/library/run.py --services
       - name: Run swoole/library suite
         run: python3 corpus/library/run.py --engine cargo=target/phpt/cargo.so --output target/coverage/library.json || true
       - uses: actions/upload-artifact@v7

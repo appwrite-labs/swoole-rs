@@ -259,9 +259,10 @@ pub fn version() -> String {
 }
 
 /// `swoole_pgsql_socket_poll`: wait for `event` on the connection's socket;
-/// 1 ready, 0 timed out, -1 failed. A failed coroutine wait (cancelled, or
-/// refused by the reactor) is recorded against the connection.
-fn socket_poll(conn: Conn, event: Events) -> c_int {
+/// whether it became ready before the timeout, or `None` when the wait failed. A
+/// failed coroutine wait (cancelled, or refused by the reactor) is recorded against
+/// the connection.
+fn socket_poll(conn: Conn, event: Events) -> Option<bool> {
     let fd = conn.socket();
     if blocking() {
         let mut poll = libc::pollfd {
@@ -273,36 +274,35 @@ fn socket_poll(conn: Conn, event: Events) -> c_int {
         let timeout = (POLL_TIMEOUT * 1000.0).c_cast::<c_int>();
         let result = swoole_rs_corebase::sys::poll(core::slice::from_mut(&mut poll), timeout);
         return match result {
-            Ok(ready) => ready,
-            Err(error) if error.raw_os_error() == Some(libc::EINTR) => 0,
-            Err(_) => -1,
+            Ok(ready) => Some(ready > 0),
+            Err(error) if error.raw_os_error() == Some(libc::EINTR) => Some(false),
+            Err(_) => None,
         };
     }
     // The hook is on, so a coroutine runs the request, as upstream requires.
     if wait_event(fd, event, POLL_TIMEOUT).is_ok() {
-        return 1;
+        return Some(true);
     }
     let code = swoole_rs_corebase::log::last_error();
     if code == CO_TIMEDOUT {
-        return 0;
+        return Some(false);
     }
     with_io_errors(|errors| {
         if !errors.iter().any(|(c, _, _)| *c == conn) {
             errors.push((conn, if code == 0 { libc::EIO } else { code }, false));
         }
     });
-    -1
+    None
 }
 
-/// `swoole_pgsql_flush`: flush the outgoing request, waiting while it would block.
-fn flush(conn: Conn) -> c_int {
+/// `swoole_pgsql_flush`: flush the outgoing request, waiting while it would block;
+/// whether all of it went.
+fn flush(conn: Conn) -> bool {
     loop {
-        let flushed = PQflush(conn);
-        if flushed != 1 {
-            return flushed;
-        }
-        if socket_poll(conn, Events::WRITE) < 0 {
-            return -1;
+        match PQflush(conn) {
+            1 if socket_poll(conn, Events::WRITE).is_some() => {}
+            0 => return true,
+            _ => return false,
         }
     }
 }
@@ -310,7 +310,7 @@ fn flush(conn: Conn) -> c_int {
 /// `swoole_pgsql_wait_result`: read until libpq holds a whole result.
 fn wait_result(conn: Conn) -> bool {
     while conn.is_busy() {
-        if socket_poll(conn, Events::READ) < 0 || !conn.consume_input() {
+        if socket_poll(conn, Events::READ).is_none() || !conn.consume_input() {
             return false;
         }
     }
@@ -321,7 +321,7 @@ fn wait_result(conn: Conn) -> bool {
 /// Without the hook one poll precedes `PQgetResult`, which may then block.
 fn get_result(conn: Conn) -> *mut PGresult {
     let blocking = blocking();
-    if blocking && socket_poll(conn, Events::READ) < 0 {
+    if blocking && socket_poll(conn, Events::READ).is_none() {
         return ptr::null_mut();
     }
     let mut last = None;
@@ -341,7 +341,7 @@ fn get_result(conn: Conn) -> *mut PGresult {
 
 /// A sent request's result: flush, then wait for it.
 fn finish(conn: Conn, sent: c_int) -> *mut PGresult {
-    if sent == 0 || flush(conn) == -1 {
+    if sent == 0 || !flush(conn) {
         return ptr::null_mut();
     }
     get_result(conn)
@@ -398,12 +398,14 @@ fn wait_connect(conn: Conn, poll_connection: fn(Conn) -> PostgresPollingStatusTy
                 return false;
             }
         };
-        let polled = socket_poll(conn, event);
-        if polled < 0 || (timeout > 0 && start.elapsed().as_secs() / targets >= timeout) {
+        let Some(ready) = socket_poll(conn, event) else {
+            break;
+        };
+        if timeout > 0 && start.elapsed().as_secs() / targets >= timeout {
             break;
         }
         // libpq sends its first packet from these states and assumes the socket is writable.
-        if polled == 0
+        if !ready
             && matches!(
                 conn.status(),
                 ConnStatusType::CONNECTION_STARTED | ConnStatusType::CONNECTION_MADE
