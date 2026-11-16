@@ -499,10 +499,11 @@ pub(crate) fn swr_workers_signal_set(
 
 /// `Server::worker_signal_handler(signo)`, over `SwooleG.server`.
 pub(crate) extern "C" fn worker_signal_handler(signo: c_int) {
-    // SAFETY: a worker's signal runs while its server lives; the view ends with it.
-    let Some(serv) = (unsafe { view::Server::current() }) else {
+    // A share keeps the server live while the handler reads it.
+    let Some(share) = crate::SharedServer::current() else {
         return;
     };
+    let serv = share.view();
     let live = swoole_rs_corebase::swr_v1_core_running() && serv.state().running();
     _ = with_current(|&worker| {
         if !live {

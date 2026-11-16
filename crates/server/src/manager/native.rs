@@ -396,10 +396,11 @@ impl Reap for Reaping<'_> {
 /// inherits these handlers; it must not act as the manager (reopening the log
 /// would send SIGWINCH back to itself forever).
 extern "C" fn signal_handler(signo: c_int) {
-    // SAFETY: the manager's signal runs while its server lives; the view ends with it.
-    let Some(serv) = (unsafe { view::Server::current() }) else {
+    // A share keeps the server live while the handler reads it.
+    let Some(share) = crate::SharedServer::current() else {
         return;
     };
+    let serv = share.view();
     if signo == libc::SIGTERM {
         // Before `wait` sets up the manager too: `main` takes it while forking.
         if is_manager(serv) {
