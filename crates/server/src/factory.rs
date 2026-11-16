@@ -463,7 +463,7 @@ impl crate::hybrid::Hybrid for Linked {
         crate::process_factory::native::send(serv, to, send)
     }
 
-    fn to_reactor_thread(&self, serv: crate::view::Server<'_>, head: &DataHead) -> isize {
+    fn to_reactor_thread(&self, serv: crate::view::Server<'_>, head: &DataHead) -> Option<usize> {
         crate::event_worker::native::send_to_reactor_thread(serv, head)
     }
 }

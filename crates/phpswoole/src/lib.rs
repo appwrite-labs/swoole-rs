@@ -194,6 +194,12 @@ pub fn check_reactor() {
     }
 }
 
+/// The bundled `proc_open` requests the same initialization as Rust callers.
+#[unsafe(no_mangle)]
+pub extern "C" fn php_swoole_check_reactor() {
+    check_reactor();
+}
+
 // crates/phpevents' functions: declared, since crates/phpevents depends on this crate.
 unsafe extern "C" {
     /// crates/phpevents' loop setup, on this thread.

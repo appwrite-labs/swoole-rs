@@ -383,11 +383,12 @@ pub mod exports {
     impl Packages for Frames<'_> {
         const HEAD: Option<u32> = Some(WEBSOCKET_FRAME_HEADER_SIZE as u32);
         #[inline(always)]
-        fn length(&self, _: &Recv<'_>, bytes: &[u8]) -> i64 {
+        fn length(&self, _: &Recv<'_>, bytes: &[u8]) -> Option<usize> {
             match swoole_rs_websocket::frame_length(bytes) {
-                Ok(frame) => i64::try_from(frame.total).unwrap_or(-1),
-                Err(swoole_rs_websocket::LengthError::IncompleteHeader { .. }) => 0,
-                Err(swoole_rs_websocket::LengthError::Overflow { .. }) => -1,
+                // A frame longer than `ssize_t` holds is malformed.
+                Ok(frame) => isize::try_from(frame.total).ok().map(isize::cast_unsigned),
+                Err(swoole_rs_websocket::LengthError::IncompleteHeader { .. }) => Some(0),
+                Err(swoole_rs_websocket::LengthError::Overflow { .. }) => None,
             }
         }
         #[inline(always)]

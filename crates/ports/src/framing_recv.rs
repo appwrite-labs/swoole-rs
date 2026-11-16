@@ -14,10 +14,9 @@ use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_WARNIN
 use swoole_rs_corebase::net_types::{PacketLength, RecvData};
 use swoole_rs_corebase::{DataHead, log, swr_v1_core_pagesize};
 use swoole_rs_error::ErrorCode;
-use swoole_rs_framing::recv::{self, Buffer, Effects, recv};
+use swoole_rs_framing::recv::{self, Buffer, Effects, Received, Status, recv};
 use swoole_rs_framing::recv::{
-    FLAG_DYNAMIC, FLAG_PAUSED, FLAG_REMOVED, FLAG_SKIP, FLAG_TLS, FLAG_WAIT, Mode, Op, RECV_CLOSE,
-    RECV_DONE,
+    FLAG_DYNAMIC, FLAG_PAUSED, FLAG_REMOVED, FLAG_SKIP, FLAG_TLS, FLAG_WAIT, Mode, Op,
 };
 use swoole_rs_framing::{DefaultLength, UnpackError, default_length, unpack};
 use swoole_rs_reactor::{Caught, Socket, SocketFields, swr_v1_socket_reset_on_close};
@@ -40,6 +39,10 @@ impl Recv<'_> {
     fn string(&self) -> &CppString {
         // SAFETY: the receive's live buffer, changed only inside an effect.
         unsafe { &*self.buffer }
+    }
+    fn string_mut(&mut self) -> &mut CppString {
+        // SAFETY: the receive's live buffer; no other reference to it is live.
+        unsafe { &mut *self.buffer }
     }
 }
 
@@ -113,16 +116,15 @@ impl<'a> Package<'a> {
 pub(crate) trait Packages {
     /// The fixed length header size, or `None` to ask the protocol's callbacks.
     const HEAD: Option<u32>;
-    /// `get_package_length` over the buffered `bytes`: the protocol's, -1 without one.
+    /// `get_package_length` over the buffered `bytes`: `None` for malformed bytes,
+    /// `Some(0)` while the header is incomplete. The protocol's, `None` without one.
     #[inline(always)]
-    fn length(&self, r: &Recv<'_>, bytes: &[u8]) -> i64 {
+    fn length(&self, r: &Recv<'_>, bytes: &[u8]) -> Option<usize> {
         let mut pl = PacketLength::new(bytes);
-        let Some(get) = r.protocol().get_package_length else {
-            return -1;
-        };
+        let get = r.protocol().get_package_length?;
         // SAFETY: upstream's call over the live protocol, socket and buffer.
         let length = unsafe { get(r.protocol, r.socket.as_ptr().cast(), &mut pl) };
-        length as i64
+        usize::try_from(length).ok()
     }
     /// `onPackage` over a whole package; whether it succeeded. No reference to the
     /// protocol is held across it: the callback may run PHP that rewrites it.
@@ -168,7 +170,7 @@ impl Packages for Callbacks {
 /// socket holds: only this receive writes it, so a flag that didn't change costs no edit.
 struct With<'a, K>(Recv<'a>, bool, K);
 
-impl<K> With<'_, K> {
+impl<K: Packages> With<'_, K> {
     /// `socket->recv_wait = flags & FLAG_WAIT`, when it differs.
     #[inline(always)]
     fn apply_wait(&mut self, flags: u32) {
@@ -177,6 +179,23 @@ impl<K> With<'_, K> {
             self.1 = wait;
             self.0.socket.edit(|s| s.recv_wait = wait);
         }
+    }
+
+    /// `flags` from the socket, after an effect that may have removed, paused or
+    /// closed it.
+    #[inline(always)]
+    fn refresh(&mut self, flags: &mut u32) {
+        *flags = self.0.socket.read(|s| socket_flags(&self.2, s));
+        self.1 = *flags & FLAG_WAIT != 0;
+    }
+
+    /// Runs `f` between applying `flags`' wait and refreshing them.
+    #[inline(always)]
+    fn around<T>(&mut self, flags: &mut u32, f: impl FnOnce(&mut Recv<'_>) -> T) -> T {
+        self.apply_wait(*flags);
+        let result = f(&mut self.0);
+        self.refresh(flags);
+        result
     }
 }
 
@@ -225,16 +244,58 @@ fn proto_error(socket: Socket<'_>, code: ErrorCode, origin: &CStr, message: &str
 
 impl<K: Packages> Effects for With<'_, K> {
     #[inline(always)]
-    fn effect(&mut self, op: Op, arg: u64, flags: &mut u32) -> i64 {
+    fn effect(&mut self, op: Op, arg: usize, flags: &mut u32) {
+        self.around(flags, |r| rare(r, op, arg));
+    }
+    /// A read leaves the socket as it was; only a failed one refreshes `flags`.
+    #[inline(always)]
+    fn recv(&mut self, size: usize, flags: &mut u32) -> Received {
         self.apply_wait(*flags);
-        let result = effect(&self.0, &self.2, op, arg);
-        // A read or a length leaves the socket as it was; a callback or a failure
-        // may remove, pause or close it.
-        if !matches!(op, Op::Recv | Op::GetLength) || result < 0 {
-            *flags = self.0.socket.read(|s| socket_flags(&self.2, s));
-            self.1 = *flags & FLAG_WAIT != 0;
+        let socket = self.0.socket;
+        let b = self.0.string_mut();
+        // The loop asks for at most the buffer's free tail.
+        let tail = b.spare().get_mut(..size).unwrap_or_default();
+        if let Some(n) = swoole_rs_tls::upstream::recv(socket, tail, 0) {
+            return Received::Bytes(n);
         }
-        result
+        let received = failed_recv(&self.0, size);
+        self.refresh(flags);
+        received
+    }
+    /// A length leaves the socket as it was; only a failed one refreshes `flags`.
+    #[inline(always)]
+    fn length(&mut self, from: usize, flags: &mut u32) -> Option<usize> {
+        self.apply_wait(*flags);
+        let length = self.2.length(
+            &self.0,
+            self.0.string().view().get(from..).unwrap_or_default(),
+        );
+        if length.is_none() {
+            self.refresh(flags);
+        }
+        length
+    }
+    #[inline(always)]
+    fn dispatch(&mut self, from: usize, flags: &mut u32) -> bool {
+        self.apply_wait(*flags);
+        let r = &self.0;
+        // SAFETY: the receive's live buffer; no other reference to it is live.
+        let b = unsafe { &mut *r.buffer };
+        let length = usize::try_from(b.offset().unsigned_abs()).unwrap_or(usize::MAX);
+        let handled = self.2.dispatch(r, Package::of(b, from, length));
+        self.refresh(flags);
+        handled
+    }
+    fn split(&mut self, flags: &mut u32) -> Option<usize> {
+        self.around(flags, split)
+    }
+    fn ssl_pending(&mut self, flags: &mut u32) -> bool {
+        self.around(flags, |r| {
+            swoole_rs_tls::Ssl::of(r.socket).is_some_and(|ssl| ssl.pending() > 0)
+        })
+    }
+    fn page(&mut self, flags: &mut u32) -> usize {
+        self.around(flags, |_| swr_v1_core_pagesize() as usize)
     }
     #[inline(always)]
     fn buffer(&self) -> Buffer {
@@ -247,8 +308,7 @@ impl<K: Packages> Effects for With<'_, K> {
     }
     #[inline(always)]
     fn set_buffer(&mut self, length: usize, offset: i64) {
-        // SAFETY: the receive's live buffer; no other reference to it is live.
-        let b = unsafe { &mut *self.0.buffer };
+        let b = self.0.string_mut();
         // SAFETY: framing::recv counts only the bytes its receives wrote.
         unsafe { b.set_len(length) };
         b.set_offset(offset);
@@ -270,108 +330,78 @@ impl<K: Packages> Effects for With<'_, K> {
     }
 }
 
-/// Each call site's op is a constant, so the match folds: every frame's receive,
-/// length and dispatch run inline, and a failed receive and the rare ops don't.
-#[inline(always)]
-fn effect<K: Packages>(r: &Recv<'_>, k: &K, op: Op, arg: u64) -> i64 {
-    // SAFETY: the receive's live buffer; no other reference to it is live.
-    let b = unsafe { &mut *r.buffer };
-    let s = r.socket;
-    match op {
-        Op::Recv => {
-            let size = usize::try_from(arg).unwrap_or(usize::MAX);
-            // The loop asks for at most the buffer's free tail.
-            let tail = b.spare().get_mut(..size).unwrap_or_default();
-            if let Some(n) = swoole_rs_tls::upstream::recv(s, tail, 0) {
-                return n.cast_signed() as i64;
-            }
-            rare(r, b, s, op, arg)
-        }
-        Op::GetLength => k.length(r, b.view().get(start(arg)..).unwrap_or_default()),
-        Op::Dispatch => {
-            let length = usize::try_from(b.offset().unsigned_abs()).unwrap_or(usize::MAX);
-            if k.dispatch(r, Package::of(b, start(arg), length)) {
-                0
-            } else {
-                -1
-            }
-        }
-        _ => rare(r, b, s, op, arg),
-    }
-}
-
-/// A byte position the loop passed as an effect's arg.
-#[inline(always)]
-fn start(arg: u64) -> usize {
-    usize::try_from(arg).unwrap_or(usize::MAX)
-}
-
-/// A failed `Op::Recv`, and the effects a frame rarely needs.
-#[cold]
-#[inline(never)]
-fn rare(r: &Recv<'_>, b: &mut CppString, s: Socket<'_>, op: Op, arg: u64) -> i64 {
-    let length_mode = r.mode == Mode::Length;
-    let origin = if length_mode {
+/// The function a log names.
+fn origin(r: &Recv<'_>) -> &'static CStr {
+    if r.mode == Mode::Length {
         c"Protocol::recv_with_length_protocol"
     } else {
         c"Protocol::recv_with_eof_protocol"
-    };
-    let size = usize::try_from(arg).unwrap_or(usize::MAX);
-    match op {
-        Op::Recv => {
-            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            match s.catch_error(errno) {
-                Caught::Error => {
-                    if length_mode {
-                        log::sys_warning_errno(
-                            errno,
-                            origin,
-                            format_args!("recv({}, {arg}) failed", s.fd()),
-                        );
-                    } else {
-                        log::sys_warning_errno(
-                            errno,
-                            origin,
-                            format_args!("recv from socket#{} failed", s.fd()),
-                        );
-                    }
-                    RECV_DONE
-                }
-                Caught::Close => RECV_CLOSE,
-                Caught::Wait | Caught::Invalid | Caught::ReduceSize => RECV_DONE,
+    }
+}
+
+/// A failed read of at most `size` bytes: `catch_read_error` decides.
+#[cold]
+#[inline(never)]
+fn failed_recv(r: &Recv<'_>, size: usize) -> Received {
+    let s = r.socket;
+    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    match s.catch_error(errno) {
+        Caught::Error => {
+            let origin = origin(r);
+            if r.mode == Mode::Length {
+                log::sys_warning_errno(
+                    errno,
+                    origin,
+                    format_args!("recv({}, {size}) failed", s.fd()),
+                );
+            } else {
+                log::sys_warning_errno(
+                    errno,
+                    origin,
+                    format_args!("recv from socket#{} failed", s.fd()),
+                );
             }
+            Received::Done
         }
-        Op::Extend => {
-            b.extend(size);
-            0
-        }
-        Op::Reduce => {
-            b.reduce(arg.cast_signed());
-            0
-        }
-        Op::Split => {
-            // A copy: `onPackage` may run PHP whose `set()` rewrites the protocol.
-            let (eof, eof_len) = {
-                let p = r.protocol();
-                (p.package_eof, p.package_eof_len)
-            };
-            // The protocol's settings bound the length by the array.
-            let Some(eof) = eof.get(..usize::from(eof_len)) else {
-                return -1;
-            };
-            // Each part to `onPackage`, while the socket stays.
-            b.split(eof, |data, length| {
-                // SAFETY: the part, inside the buffer, which the split lends.
-                let part = unsafe { Package::from_raw(data, length) };
-                protocol_dispatch(r, &part) && !s.read(|s| s.removed)
-            }) as i64
-        }
-        Op::SslPending => swoole_rs_tls::Ssl::of(s).map_or(0, |ssl| i64::from(ssl.pending())),
-        Op::ClearSkip => {
-            s.edit(|s| s.skip_recv = false);
-            0
-        }
-        Op::Page => i64::from(swr_v1_core_pagesize()),
+        Caught::Close => Received::Close,
+        Caught::Wait | Caught::Invalid | Caught::ReduceSize => Received::Done,
+    }
+}
+
+/// `buffer->split` on the EOF, each part to `onPackage` while the socket stays.
+#[cold]
+#[inline(never)]
+fn split(r: &mut Recv<'_>) -> Option<usize> {
+    let s = r.socket;
+    // A copy: `onPackage` may run PHP whose `set()` rewrites the protocol.
+    let (eof, eof_len) = {
+        let p = r.protocol();
+        (p.package_eof, p.package_eof_len)
+    };
+    // The protocol's settings bound the length by the array.
+    let eof = eof.get(..usize::from(eof_len))?;
+    // SAFETY: the receive's live buffer; the parts the split lends are its only use.
+    let b = unsafe { &mut *r.buffer };
+    usize::try_from(b.split(eof, |data, length| {
+        // SAFETY: the part, inside the buffer, which the split lends.
+        let part = unsafe { Package::from_raw(data, length) };
+        protocol_dispatch(r, &part) && !s.read(|s| s.removed)
+    }))
+    .ok()
+}
+
+/// The effects a frame rarely needs.
+#[cold]
+#[inline(never)]
+fn rare(r: &mut Recv<'_>, op: Op, arg: usize) {
+    let s = r.socket;
+    let length_mode = r.mode == Mode::Length;
+    let origin = origin(r);
+    let b = r.string_mut();
+    match op {
+        Op::Extend => b.extend(arg),
+        Op::Reduce => b.reduce(i64::try_from(arg).unwrap_or(i64::MAX)),
+        Op::ClearSkip => s.edit(|s| s.skip_recv = false),
         Op::LogMalformed => {
             let message = format!("received {} bytes of malformed data, remote_addr=", b.len());
             proto_error(
@@ -380,7 +410,6 @@ fn rare(r: &Recv<'_>, b: &mut CppString, s: Socket<'_>, op: Op, arg: u64) -> i64
                 origin,
                 &message,
             );
-            0
         }
         Op::LogNoLength => {
             log::error_log(
@@ -392,14 +421,10 @@ fn rare(r: &Recv<'_>, b: &mut CppString, s: Socket<'_>, op: Op, arg: u64) -> i64
                     b.len()
                 ),
             );
-            0
         }
         Op::LogTooLarge => {
             let message = if length_mode {
-                format!(
-                    "the received packet length {} is too large, remote_addr=",
-                    arg.cast_signed()
-                )
+                format!("the received packet length {arg} is too large, remote_addr=")
             } else {
                 format!("The received data packet is too large, length={}", b.len())
             };
@@ -409,10 +434,8 @@ fn rare(r: &Recv<'_>, b: &mut CppString, s: Socket<'_>, op: Op, arg: u64) -> i64
                 origin,
                 &message,
             );
-            0
         }
-        Op::Reset => i64::from(swr_v1_socket_reset_on_close(s.fd())) - 1,
-        _ => swoole_rs_corebase::fatal("an unknown framing op"),
+        Op::Reset => _ = swr_v1_socket_reset_on_close(s.fd()),
     }
 }
 
@@ -427,7 +450,7 @@ pub(crate) unsafe fn receive<K: Packages>(
     buffer: *mut CppString,
     mode: Mode,
     packages: K,
-) -> c_int {
+) -> Status {
     let mut r = With::<K>(
         Recv {
             mode,
@@ -456,7 +479,7 @@ pub(crate) unsafe fn receive<K: Packages>(
     }
     let status = recv(mode, head, &mut flags, &mut r);
     r.apply_wait(flags);
-    status as c_int
+    status
 }
 
 /// `int Protocol::recv_with_length_protocol(Socket *, String *) const` when `LENGTH`, else
@@ -468,7 +491,7 @@ fn client_recv<const LENGTH: bool>(
 ) -> c_int {
     let mode = if LENGTH { Mode::Length } else { Mode::Eof };
     // SAFETY: the live protocol and input buffer `Framing::new` asks for.
-    unsafe { receive(protocol, socket, buffer, mode, Callbacks) }
+    unsafe { receive(protocol, socket, buffer, mode, Callbacks) as c_int }
 }
 
 /// The framed receives a client's reads use, which `swoole_init` registers

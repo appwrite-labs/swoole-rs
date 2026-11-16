@@ -14,7 +14,7 @@ use swoole_rs_corebase::constants::{
     SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
 use swoole_rs_corebase::{DataHead, TrustedAllocator, WebSocketStatus, log};
-use swoole_rs_framing::recv::Mode;
+use swoole_rs_framing::recv::{Mode, Status};
 use swoole_rs_http_ffi::{HttpRequest, HttpString};
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
 use swoole_rs_reactor::{Caught, Event, Fill, Running, Socket};
@@ -159,25 +159,24 @@ impl<'a> Read<'a> {
     /// One receive of `mode` through the port's protocol, its packages handled by
     /// `packages`.
     #[inline(always)]
-    fn framed(&self, mode: Mode, packages: impl Packages) -> i64 {
+    fn framed(&self, mode: Mode, packages: impl Packages) -> bool {
         let protocol = self.port.protocol.as_ptr().cast_const();
         // SAFETY: the port's protocol and the current buffer.
-        i64::from(unsafe {
-            framing_recv::receive(protocol, self.socket, self.buffer, mode, packages)
-        })
+        let status =
+            unsafe { framing_recv::receive(protocol, self.socket, self.buffer, mode, packages) };
+        status != Status::Err
     }
 }
 
 impl Connection for Read<'_> {
     #[inline]
-    fn recv(&mut self, whole: bool) -> i64 {
+    fn recv(&mut self, whole: bool) -> Option<usize> {
         if whole {
             // The receive replaces the content, which the caller sets afresh.
             self.buffer().length = 0;
         }
         let socket = self.socket;
         recv_fill(socket, Fill::new(self.string().spare()), 0)
-            .map_or(-1, |n| n.cast_signed() as i64)
     }
 
     fn catch_error(&mut self) -> Caught {
@@ -231,7 +230,7 @@ impl Connection for Read<'_> {
     }
 
     #[inline(always)]
-    fn receive(&mut self, framing: Framing) -> i64 {
+    fn receive(&mut self, framing: Framing) -> bool {
         match framing {
             Framing::Length if self.frames => self.framed(Mode::Length, Frames(self.session())),
             // An HTTP/2 stream's frames, through the port's own callbacks.
@@ -248,7 +247,7 @@ impl Connection for Read<'_> {
                 let dispatch =
                     |data: swoole_rs_server::reactor_entry::RecvData<'_>| session.task(data);
                 // SAFETY: the current buffer; the connection's object is its request.
-                let open = unsafe {
+                unsafe {
                     crate::resp_recv::recv_packet(
                         max_length,
                         session.conn,
@@ -256,8 +255,7 @@ impl Connection for Read<'_> {
                         buffer,
                         dispatch,
                     )
-                };
-                if open { 0 } else { -1 }
+                }
             }
         }
     }

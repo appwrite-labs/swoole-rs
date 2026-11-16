@@ -444,7 +444,8 @@ pub(crate) fn sendfile(
                 Some(&mut offset),
                 end,
                 ops.tls.write_timeout,
-            );
+            )
+            .map_or(-1, usize::cast_signed);
         }
         let (total, warn) = ops.tls.sendfile(file, &mut offset, end, |error| {
             ops.socket.catch_error(error)

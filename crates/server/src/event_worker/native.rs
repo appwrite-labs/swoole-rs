@@ -609,8 +609,9 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
 }
 
 /// `Server::send_to_reactor_thread(head, sizeof(*head), head->fd)`: the event `head`
-/// to its session's reactor pipe, through the event loop when there is one.
-pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) -> isize {
+/// to its session's reactor pipe, through the event loop when there is one: the bytes
+/// written, or `None` when it failed.
+pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) -> Option<usize> {
     let (tables, config) = (serv.state().tables_ref(), serv.config());
     // `serv->get_reactor_pipe_socket(session_id, info->reactor_id)`.
     let pipes = c_long::from(tables.reactor_pipe_num.get());
@@ -619,17 +620,15 @@ pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) ->
     let pipe = serv
         .worker_record(u16::try_from(id).unwrap_or(u16::MAX))
         .and_then(|worker| worker_pipe(worker, false));
-    let Some(pipe) = pipe else {
-        return -1;
-    };
+    let pipe = pipe?;
     let info = swoole_rs_process::process_pool::head_view(head);
     if swoole_rs_reactor::event_api::swoole_event_is_available() {
-        crate::reactor_handle::registered(pipe).map_or(-1, |pipe| {
-            swoole_rs_reactor::event_api::event_write(pipe, info)
+        crate::reactor_handle::registered(pipe).and_then(|pipe| {
+            usize::try_from(swoole_rs_reactor::event_api::event_write(pipe, info)).ok()
         })
     } else {
         let event = swoole_rs_reactor::Drain::new(info);
-        swoole_rs_tls::upstream::send_sync_drain(pipe, event, 0).map_or(-1, usize::cast_signed)
+        swoole_rs_tls::upstream::send_sync_drain(pipe, event, 0)
     }
 }
 

@@ -4,11 +4,13 @@
  * order and types. swoole_rs_coroutine_socket.h derives Socket from it and adds no
  * fields. Rust initialises, opens, accepts and releases records; both sides assert the
  * offsets below. network::Socket is the reactor's record. */
-#include "swoole_rs_hooks.h"
 #include "swoole_socket.h"
 #include "swoole_protocol.h"
 #include <stddef.h>
 #include <sys/uio.h>
+
+// Rust owns the connection state; C++ only keeps its opaque pointer.
+struct swr_v1_hook_socket_state;
 
 struct swr_v1_co_socket {
     int errCode;

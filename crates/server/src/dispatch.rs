@@ -191,7 +191,7 @@ pub fn feedback(serv: Server<'_>, conn: crate::Connection<'_>, event: ServerEven
         ..Default::default()
     };
     if serv.config().mode_ == Mode::Process {
-        return crate::hybrid::hybrid().to_reactor_thread(serv, &info) > 0;
+        return crate::hybrid::hybrid().to_reactor_thread(serv, &info) > Some(0);
     }
     crate::send::send_event_to_connection(serv, &info, &[])
 }

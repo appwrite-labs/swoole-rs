@@ -6,7 +6,6 @@
  * `new` or a local one is released by ~Socket. Only ext/ssh2 uses it from C++: the
  * other members are Rust's `Co` methods. */
 #include "swoole_socket.h"
-#include "swoole_rs_hooks.h"
 
 #include "swoole_coroutine.h"
 #include "swoole_protocol.h"
