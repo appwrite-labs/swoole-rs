@@ -7,11 +7,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 use swoole_rs_odbc_sys::{SQLINTEGER, SQLRETURN};
-use swoole_rs_zend::{
-    Minit,
-    pdo::{Driver, php_pdo_register_driver},
-    sys::E_CORE_ERROR,
-};
+use swoole_rs_zend::{Minit, pdo::Driver, sys::E_CORE_ERROR};
 
 unsafe extern "C" {
     /// The bundled driver (`thirdparty/php*/pdo_odbc/odbc_driver.c`).
@@ -104,9 +100,9 @@ pub fn minit(minit: &Minit) {
     }
     // Registering replaces pdo_odbc's own.
     pdo.unregister(&swoole_pdo_odbc_driver);
-    // SAFETY: MINIT, with PDO loaded. PDO raises `E_ERROR` for a driver built
-    // against another PDO API: no frame up to the step's `zend_try` owns a drop.
-    unsafe { php_pdo_register_driver(&swoole_pdo_odbc_driver) };
+    // A bailout (`E_ERROR` for a driver built against another PDO API) is raised
+    // from this outermost Rust frame.
+    swoole_rs_zend::bailout::raise(pdo.register(&swoole_pdo_odbc_driver));
 }
 
 #[cfg(test)]

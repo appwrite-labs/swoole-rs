@@ -35,9 +35,9 @@ use swoole_rs_curl_sys::{
     CURLE_FAILED_INIT, CURLE_OK, CURLINFO_PRIVATE, CURLM, CURLM_INTERNAL_ERROR, CURLM_OK,
     CURLMOPT_SOCKETDATA, CURLMOPT_SOCKETFUNCTION, CURLMOPT_TIMERDATA, CURLMOPT_TIMERFUNCTION,
     CURLMSG_DONE, CURLMcode, CURLOPT_PRIVATE, CURLcode, LiveMulti, MultiHandle, curl_easy_getinfo,
-    curl_easy_reset, curl_easy_setopt, curl_multi_add_handle, curl_multi_cleanup,
-    curl_multi_info_read, curl_multi_init, curl_multi_remove_handle, curl_multi_setopt,
-    curl_multi_socket_action, curl_multi_timeout, curl_socket_t,
+    curl_easy_setopt, curl_multi_add_handle, curl_multi_cleanup, curl_multi_info_read,
+    curl_multi_init, curl_multi_remove_handle, curl_multi_setopt, curl_multi_socket_action,
+    curl_multi_timeout, curl_socket_t,
 };
 use swoole_rs_reactor::Events;
 
@@ -632,16 +632,21 @@ fn release(multi: Rc<Multi>) {
     drop(multi);
 }
 
-/// `Multi::release` of the multi `swoole_curl_multi_new` gave C++.
-/// # Safety
-/// `multi` is null or came from `swoole_curl_multi_new`; nothing uses it afterwards.
+/// The reference [`swoole_curl_multi_new`] gave C++, which C++ gives back to
+/// [`swr_v1_curl_multi_free`] and uses no more. Only that export's parameter makes
+/// one, where the C caller's contract stands for the constructor; it is not `Copy`,
+/// so it is released once.
+#[repr(transparent)]
+pub struct Released(ptr::NonNull<Multi>);
+
+/// `Multi::release` of the multi `swoole_curl_multi_new` gave C++; nothing for null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_multi_free(multi: *mut Multi) {
-    if multi.is_null() {
+pub extern "C" fn swr_v1_curl_multi_free(multi: Option<Released>) {
+    let Some(Released(multi)) = multi else {
         return;
-    }
-    // SAFETY: per the caller, the reference `swoole_curl_multi_new` gave up.
-    release(unsafe { Rc::from_raw(multi) });
+    };
+    // SAFETY: the reference `swoole_curl_multi_new` gave up, as the type carries.
+    release(unsafe { Rc::from_raw(multi.as_ptr()) });
 }
 
 /// `Multi::get_multi_handle`.
@@ -727,11 +732,28 @@ pub extern "C" fn swr_v1_curl_create_handle(cp: Easy<'_>) -> *mut Handle {
     handle
 }
 
+/// An easy handle on which no transfer runs, and whose Swoole handle nothing else
+/// uses, during the call: the parameter of the exports that reset or run it, where
+/// the C caller's contract stands for the constructor, as for [`Easy`].
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Idle<'a>(Easy<'a>);
+
+/// An [`Idle`] easy handle whose Swoole handle nothing uses after the call:
+/// [`swr_v1_curl_destroy_handle`]'s parameter, made as [`Idle`] is.
+#[repr(transparent)]
+pub struct Retired<'a>(Easy<'a>);
+
+unsafe extern "C" {
+    /// libcurl's, with the handle typed as idle: it clears the handle's options and
+    /// state, which no transfer is using.
+    safe fn curl_easy_reset(easy: Idle<'_>);
+}
+
 /// `swoole::curl::destroy_handle`.
-/// # Safety
-/// No transfer of `cp` runs, and nothing uses its Swoole handle afterwards.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_destroy_handle(cp: Easy<'_>) {
+pub extern "C" fn swr_v1_curl_destroy_handle(cp: Retired<'_>) {
+    let Retired(cp) = cp;
     let handle = cp.handle_ptr();
     if handle.is_null() {
         return;
@@ -745,15 +767,12 @@ pub unsafe extern "C" fn swr_v1_curl_destroy_handle(cp: Easy<'_>) {
 }
 
 /// `swoole_curl_easy_reset`: `curl_easy_reset`, keeping the handle.
-/// # Safety
-/// As `curl_easy_reset`: no transfer of `cp` runs.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_curl_easy_reset(cp: Easy<'_>) {
-    let handle = cp.handle_ptr();
-    // SAFETY: per the caller.
-    unsafe { curl_easy_reset(cp.0) };
+pub extern "C" fn swoole_curl_easy_reset(cp: Idle<'_>) {
+    let handle = cp.0.handle_ptr();
+    curl_easy_reset(cp);
     // The easy handle keeps the Swoole handle it held.
-    cp.set_private(handle);
+    cp.0.set_private(handle);
 }
 
 #[cfg(not(test))]
