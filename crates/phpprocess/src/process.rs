@@ -859,15 +859,13 @@ fn exec(call: &Call) {
         .chain(strings.iter().map(|string| Some(string.c_str().into())))
         .chain(std::iter::once(None))
         .collect();
-    if swoole_rs_corebase::sys::execv(path, &argv) < 0 {
-        sys(
-            E_WARNING,
-            &message!("execv({}) failed", String::from_utf8_lossy(file.bytes())),
-        );
-        call.set_bool(false);
-    } else {
-        call.set_bool(true);
-    }
+    // Only a failure returns.
+    swoole_rs_corebase::sys::execv(path, &argv);
+    sys(
+        E_WARNING,
+        &message!("execv({}) failed", String::from_utf8_lossy(file.bytes())),
+    );
+    call.set_bool(false);
 }
 
 fn daemon(call: &Call) {

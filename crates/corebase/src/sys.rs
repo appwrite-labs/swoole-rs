@@ -642,14 +642,13 @@ pub fn open(path: &CStr, flags: c_int, mode: libc::mode_t) -> c_int {
 }
 
 /// `execv(3)`: runs `path` in place of this process, with `argv` as its arguments,
-/// which end with `None` (C's null). Returns only on failure: -1, with errno set
-/// by `execv`, or as it was when `argv` doesn't end with `None`. Allocates nothing,
+/// which end with `None` (C's null). Returns only on failure, with errno set by
+/// `execv`, or as it was when `argv` doesn't end with `None`. Allocates nothing,
 /// so a forked child may call it.
-pub fn execv(path: &CStr, argv: &[Option<Text<'_>>]) -> c_int {
-    if !matches!(argv.last(), Some(None)) {
-        return -1;
+pub fn execv(path: &CStr, argv: &[Option<Text<'_>>]) {
+    if matches!(argv.last(), Some(None)) {
+        c::execv(path.into(), Argv(NonNull::from(argv).cast(), PhantomData));
     }
-    c::execv(path.into(), Argv(NonNull::from(argv).cast(), PhantomData))
 }
 
 /// `unlink(2)`.
@@ -1063,10 +1062,15 @@ mod tests {
 
     #[test]
     fn execv_refuses_a_list_without_its_end() {
-        assert_eq!(execv(c"/bin/true", &[Some(c"true".into())]), -1);
-        assert_eq!(execv(c"/bin/true", &[]), -1);
+        // Each returns instead of running the program.
+        execv(c"/bin/true", &[Some(c"true".into())]);
+        execv(c"/bin/true", &[]);
         // A path that doesn't exist fails in execv itself.
-        assert_eq!(execv(c"/nonexistent/swoole-rs", &[None]), -1);
+        execv(c"/nonexistent/swoole-rs", &[None]);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ENOENT)
+        );
     }
 
     #[test]
