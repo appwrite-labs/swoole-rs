@@ -188,7 +188,7 @@ mod tests {
     const NO_TLS: Option<&(Read, Write)> = None;
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no datagram socketpair")]
+    #[cfg_attr(miri, ignore = "Miri's socketpair can't peek")]
     fn plain_send_recv_and_peek() {
         use crate::lent::raw::{socket_record_peek, socket_record_recv, socket_record_send};
         use crate::{Socket, SocketRecord, steady_ms};
