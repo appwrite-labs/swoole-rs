@@ -24,6 +24,7 @@
 
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use swoole_rs_corebase::log::last_error;
 // The crates, once: the C++ in libswoole.a and the cases call them by symbol.
 use swoole_rs_ffi as _;
 use swoole_rs_hooks::poll::PollFd;
@@ -120,7 +121,6 @@ unsafe extern "C-unwind" {
     fn swoole_random_bytes(buf: *mut c_char, size: usize) -> usize;
     #[link_name = "_ZN6swoole6StringC1EmPKNS_9AllocatorE"]
     fn string_new(this: *mut CppString, size: usize, allocator: *const c_void);
-    fn swr_v1_core_last_error() -> c_int;
 
     fn swoole_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long;
     fn swoole_coroutine_get_id() -> c_long;
@@ -160,11 +160,6 @@ unsafe extern "C" {
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
-fn last_error() -> c_int {
-    // SAFETY: reads this thread's last error.
-    unsafe { swr_v1_core_last_error() }
 }
 
 /// The bytes before the first NUL, as `ASSERT_STREQ` compares.

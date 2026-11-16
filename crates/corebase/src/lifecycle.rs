@@ -19,11 +19,8 @@ const FORK_PRECHECK: c_int = 8;
 const OPERATION_NOT_SUPPORT: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
 
-/// `swoole::ThreadGlobal`, `SwooleTG`: Rust holds each thread's, and native code
-/// reaches it through `swr_v1_core_thread_global` (swoole.h's `SwooleTG`), whose
-/// struct asserts this layout.
-#[repr(C)]
-pub struct ThreadGlobal {
+/// `swoole::ThreadGlobal`, `SwooleTG`: each thread's, which only Rust reads.
+struct ThreadGlobal {
     id: Cell<u16>,
     kind: Cell<u8>,
     main_thread: Cell<bool>,
@@ -33,14 +30,6 @@ pub struct ThreadGlobal {
     message_bus: Cell<*mut c_void>,
     async_threads: Cell<*mut c_void>,
 }
-
-const _: () = assert!(
-    std::mem::offset_of!(ThreadGlobal, main_thread) == 3
-        && std::mem::offset_of!(ThreadGlobal, buffer_stack) == 8
-        && std::mem::offset_of!(ThreadGlobal, async_threads) == 40
-        && size_of::<ThreadGlobal>() == 48,
-    "swoole_rs_corebase_state.h asserts the same `swoole::ThreadGlobal` layout"
-);
 
 thread_local! {
     static THREAD: ThreadGlobal = const {
@@ -55,22 +44,6 @@ thread_local! {
             async_threads: Cell::new(ptr::null_mut()),
         }
     };
-}
-
-/// This thread's `SwooleTG`, live for the thread's life (it has no destructor). Every
-/// field is a cell, so native code may write through the pointer.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_thread_global() -> *mut ThreadGlobal {
-    THREAD.with(|thread| ptr::from_ref(thread).cast_mut())
-}
-
-/// `&SwooleTG.timer`, for crates/timer and crates/server.
-#[must_use]
-pub fn swr_v1_core_timer_slot() -> *mut *mut c_void {
-    // The field's address inside this thread's live record; computing it reads nothing.
-    swr_v1_core_thread_global()
-        .wrapping_byte_add(std::mem::offset_of!(ThreadGlobal, timer))
-        .cast()
 }
 
 /// `SwooleTG.timer`: this thread's timer, or null.
@@ -146,8 +119,7 @@ pub fn set_thread_async_threads(threads: *mut c_void) {
 /// configuration, the native leaves (`NativeHost::init`: streams, logger, memory
 /// pool, signalfd, bug report) and the main thread. Once per process; later calls
 /// do nothing. crates/ffi's `swoole_init` registers the host, then calls this.
-#[unsafe(no_mangle)]
-pub extern "C-unwind" fn swr_v1_core_swoole_init() {
+pub fn swr_v1_core_swoole_init() {
     if !crate::swr_v1_core_init() {
         return;
     }
@@ -474,5 +446,23 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    /// `record_views.py`'s `SwooleTG` checks: each thread has its own record, zero
+    /// until set, and the main thread's survives another thread's writes.
+    #[test]
+    fn thread_records_are_per_thread() {
+        swoole_thread_init(true);
+        set_thread(3, 19);
+        std::thread::spawn(|| {
+            assert_eq!((thread_id(), thread_kind()), (0, 0));
+            assert!(!swoole_is_main_thread());
+            set_thread(0, 23);
+            assert_eq!(thread_id(), 23);
+        })
+        .join()
+        .unwrap();
+        assert_eq!((thread_id(), thread_kind()), (19, 3));
+        assert!(swoole_is_main_thread());
     }
 }
