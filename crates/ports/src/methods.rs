@@ -295,9 +295,9 @@ struct Callbacks {
 const CALLBACKS: Callbacks = {
     use crate::http_routes::exports as http;
     Callbacks {
-        dispatch_task: http::dispatch_task,
-        http_dispatch_frame: http::dispatch_frame,
-        websocket_dispatch_frame: http::websocket_dispatch_frame,
+        dispatch_task: http::on_package::<http::Task>,
+        http_dispatch_frame: http::on_package::<http::HttpFrame>,
+        websocket_dispatch_frame: http::on_package::<http::WebSocketFrame>,
         default_length: crate::framing_recv::default_length_func,
         http_length: http::get_package_length,
         http_length_size: http::get_package_length_size,

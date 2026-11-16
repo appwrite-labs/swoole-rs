@@ -242,10 +242,20 @@ impl Connection for Read<'_> {
             Framing::Length => self.framed(Mode::Length, Tasks(self.session())),
             Framing::Eof => self.framed(Mode::Eof, Tasks(self.session())),
             Framing::Redis => {
-                let (port, socket, buffer, conn) = (self.port, self.socket, self.buffer, self.conn);
+                let (session, buffer) = (self.session(), self.buffer);
+                let max_length = self.port.protocol.get().package_max_length;
+                // A redis port's `onPackage` is `dispatch_task`.
+                let dispatch =
+                    |data: swoole_rs_server::reactor_entry::RecvData<'_>| session.task(data);
                 // SAFETY: the current buffer; the connection's object is its request.
                 let open = unsafe {
-                    crate::resp_recv::recv_packet(&port.protocol.get(), conn, socket, buffer)
+                    crate::resp_recv::recv_packet(
+                        max_length,
+                        session.conn,
+                        session.socket,
+                        buffer,
+                        dispatch,
+                    )
                 };
                 if open { 0 } else { -1 }
             }

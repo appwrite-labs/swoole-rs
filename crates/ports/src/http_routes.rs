@@ -132,34 +132,6 @@ pub mod exports {
         Connection::from(unsafe { &*conn.cast::<swoole_rs_server::ConnectionRecord>() })
     }
 
-    /// The session and package of an `onPackage` call on a server port; `None` for a
-    /// socket outside the server's connection table.
-    ///
-    /// # Safety
-    /// Upstream's: the port's protocol (its `private_data_2` the server), a connection
-    /// socket of that port, and a whole package of it, which the handler may change.
-    unsafe fn package<'a>(
-        proto: *const Protocol,
-        socket: Socket<'a>,
-        rdata: &RecvData,
-    ) -> Option<(Session<'a>, Package<'a>)> {
-        // SAFETY: as the caller guarantees.
-        let serv = unsafe { (*proto).private_data_2 };
-        // SAFETY: a port's protocol keeps its live server.
-        let server = unsafe { view::Server::from_raw(serv) };
-        let conn = server.at(socket.fd())?;
-        // SAFETY: the package's `len` bytes, as the caller guarantees.
-        let package = unsafe { Package::from_raw(rdata.data, rdata.info.len as usize) };
-        Some((
-            Session {
-                server,
-                conn,
-                socket,
-            },
-            package,
-        ))
-    }
-
     /// `SW_WEBSOCKET_HEADER_LEN + SW_WEBSOCKET_CLOSE_CODE_LEN + SW_WEBSOCKET_CLOSE_REASON_MAX_LEN`.
     const CLOSE_REPLY_MAX: usize = 2 + 2 + 125;
 
@@ -311,42 +283,75 @@ pub mod exports {
         true
     }
 
-    /// `int websocket::dispatch_frame(const Protocol *, Socket *, const RecvData *)`:
-    /// [`websocket_frame`] over the call's session and frame.
-    ///
-    /// # Safety
-    /// Upstream's: the port's protocol (its `private_data_2` the server), a
-    /// connection socket of that port, and its whole frame, which this unmasks in place.
-    #[must_use]
-    pub unsafe extern "C-unwind" fn websocket_dispatch_frame(
-        proto: *const Protocol,
-        socket: Socket<'_>,
-        rdata: &RecvData,
-    ) -> c_int {
-        // SAFETY: as the caller guarantees.
-        let Some((s, frame)) = (unsafe { package(proto, socket, rdata) }) else {
-            return -1;
-        };
-        if websocket_frame(s, frame) { 0 } else { -1 }
+    /// What a server port protocol's `onPackage` does with a session's package.
+    pub(crate) trait Handler {
+        /// Handles `package`, which came with the head `info`; whether the connection
+        /// reads on.
+        fn handle(s: Session<'_>, package: Package<'_>, info: DataHead) -> bool;
     }
 
     /// `static int Server::dispatch_task(const Protocol *, Socket *, const RecvData *)`:
-    /// a data frame to the workers. A port protocol's `onPackage`.
+    /// a data frame to the workers.
+    pub(crate) struct Task;
+
+    impl Handler for Task {
+        fn handle(s: Session<'_>, mut package: Package<'_>, info: DataHead) -> bool {
+            s.task(package.send_data(info))
+        }
+    }
+
+    /// `int websocket::dispatch_frame(const Protocol *, Socket *, const RecvData *)`:
+    /// [`websocket_frame`].
+    pub(crate) struct WebSocketFrame;
+
+    impl Handler for WebSocketFrame {
+        fn handle(s: Session<'_>, package: Package<'_>, _: DataHead) -> bool {
+            websocket_frame(s, package)
+        }
+    }
+
+    /// `int dispatch_frame(const Protocol *, Socket *, const RecvData *)`: a frame to
+    /// WebSocket past the handshake, else to the workers for an HTTP/2 stream.
+    pub(crate) struct HttpFrame;
+
+    impl Handler for HttpFrame {
+        fn handle(s: Session<'_>, package: Package<'_>, info: DataHead) -> bool {
+            match route(s.conn, || Some(true), || Some(false), None) {
+                Some(true) => WebSocketFrame::handle(s, package, info),
+                Some(false) => Task::handle(s, package, info),
+                None => false,
+            }
+        }
+    }
+
+    /// A server port protocol's `onPackage`: `H` over the session of `socket` and the
+    /// package, -1 for a socket outside the server's connection table.
     ///
     /// # Safety
     /// Upstream's: the port's protocol (its `private_data_2` the server), a live
-    /// session socket of that port, and its package.
+    /// connection socket of that port, and a whole package of it, which `H` may
+    /// change in place.
     #[must_use]
-    pub unsafe extern "C-unwind" fn dispatch_task(
+    pub(crate) unsafe extern "C-unwind" fn on_package<H: Handler>(
         proto: *const Protocol,
         socket: Socket<'_>,
         rdata: &RecvData,
     ) -> c_int {
         // SAFETY: as the caller guarantees.
-        let Some((s, mut data)) = (unsafe { package(proto, socket, rdata) }) else {
+        let serv = unsafe { (*proto).private_data_2 };
+        // SAFETY: a port's protocol keeps its live server.
+        let server = unsafe { view::Server::from_raw(serv) };
+        let Some(conn) = server.at(socket.fd()) else {
             return -1;
         };
-        if s.task(data.send_data(rdata.info)) {
+        // SAFETY: the package's `len` bytes, as the caller guarantees.
+        let package = unsafe { Package::from_raw(rdata.data, rdata.info.len as usize) };
+        let s = Session {
+            server,
+            conn,
+            socket,
+        };
+        if H::handle(s, package, rdata.info) {
             0
         } else {
             -1
@@ -354,7 +359,7 @@ pub mod exports {
     }
 
     /// A session's packages, all [`Session::task`]'s: an EOF or length port's, whose
-    /// protocol's `onPackage` `init_protocol` set to [`dispatch_task`] with its reader.
+    /// protocol's `onPackage` `init_protocol` set to [`Task`]'s with its reader.
     pub(crate) struct Tasks<'a>(pub(crate) Session<'a>);
 
     impl Packages for Tasks<'_> {
@@ -432,28 +437,6 @@ pub mod exports {
     pub unsafe extern "C" fn get_package_length_size(socket: *mut c_void) -> u8 {
         // SAFETY: as the caller guarantees.
         length_size(unsafe { connection(socket.cast()) })
-    }
-
-    /// `int dispatch_frame(const Protocol *, Socket *, const RecvData *)`.
-    ///
-    /// # Safety
-    /// Upstream's: the port's protocol, a connection socket and its data.
-    #[must_use]
-    pub unsafe extern "C-unwind" fn dispatch_frame(
-        proto: *const Protocol,
-        socket: Socket<'_>,
-        rdata: &RecvData,
-    ) -> c_int {
-        // SAFETY: as the caller guarantees.
-        let Some((s, mut package)) = (unsafe { package(proto, socket, rdata) }) else {
-            return -1;
-        };
-        let done = match route(s.conn, || Some(true), || Some(false), None) {
-            Some(true) => websocket_frame(s, package),
-            Some(false) => s.task(package.send_data(rdata.info)),
-            None => false,
-        };
-        if done { 0 } else { -1 }
     }
 }
 
