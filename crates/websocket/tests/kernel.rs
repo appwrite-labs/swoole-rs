@@ -3,9 +3,21 @@ use swoole_rs_websocket::{frame_length, header};
 /// The deleted `swr_v1_ws_frame_length`'s view: the header length lands in
 /// `header` once known.
 fn parse(bytes: &[u8], header: &mut u32) -> i64 {
-    let (total, known) = frame_length(bytes);
+    let (total, known) = match frame_length(bytes) {
+        Ok(frame) => (
+            i64::try_from(frame.total).unwrap_or(-1),
+            Some(frame.header_length),
+        ),
+        Err(error) => (
+            match error {
+                swoole_rs_websocket::LengthError::IncompleteHeader { .. } => 0,
+                swoole_rs_websocket::LengthError::Overflow { .. } => -1,
+            },
+            error.header_length(),
+        ),
+    };
     if let Some(known) = known {
-        *header = known;
+        *header = u32::try_from(known).unwrap_or(u32::MAX);
     }
     total
 }

@@ -1,10 +1,7 @@
 //! MINIT and MSHUTDOWN for the bundled `pdo_firebird` driver (upstream's
 //! `php_swoole_firebird_minit`): PDO's `FB_*` constants unless `pdo_firebird`
 //! declared them, and the driver.
-use swoole_rs_zend::{
-    Minit, Mshutdown,
-    pdo::{Driver, php_pdo_register_driver},
-};
+use swoole_rs_zend::{Minit, Mshutdown, pdo::Driver};
 
 unsafe extern "C" {
     /// The bundled driver (`thirdparty/php*/pdo_firebird/firebird_driver.c`).
@@ -32,9 +29,9 @@ pub fn minit(minit: &Minit) {
     }
     // Registering replaces pdo_firebird's own.
     pdo.unregister(&swoole_pdo_firebird_driver);
-    // SAFETY: MINIT, with PDO loaded. PDO raises `E_ERROR` for a driver built
-    // against another PDO API: no frame up to the step's `zend_try` owns a drop.
-    unsafe { php_pdo_register_driver(&swoole_pdo_firebird_driver) };
+    // A bailout (`E_ERROR` for a driver built against another PDO API) is raised
+    // from this outermost Rust frame.
+    swoole_rs_zend::bailout::raise(pdo.register(&swoole_pdo_firebird_driver));
 }
 
 /// `php_swoole_firebird_mshutdown`.

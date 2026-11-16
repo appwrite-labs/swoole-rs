@@ -4,6 +4,7 @@
 #ifndef SWOOLE_RS_ZEND_SHIM_RUNTIME_H
 #define SWOOLE_RS_ZEND_SHIM_RUNTIME_H
 #include "php.h"
+#include <sys/uio.h>
 
 /* Swoole's copy_arginfo: a persistent copy of a function's arginfo (and the
  * return slot before it) with its class-name types duplicated. */
@@ -36,7 +37,7 @@ int swr_zend_runtime_select_args(zend_execute_data *execute_data,
                                  zend_long *micros,
                                  bool *micros_null);
 /* The stream transport factory registered as name, or NULL. */
-void *swr_zend_runtime_transport(const char *name, size_t length);
+void *swr_zend_runtime_transport(struct iovec name);
 /* php_stream_xport_register(name, factory), or php_stream_xport_unregister(name)
  * (remove): SUCCESS or FAILURE. */
 int swr_zend_runtime_set_transport(const char *name, void *factory, bool remove);

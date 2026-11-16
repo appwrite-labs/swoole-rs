@@ -2,7 +2,7 @@
 //! `init`/`listen`. The BIO owns its session: the socket's SSL holds the BIO, and the
 //! session goes when OpenSSL destroys it, so a session is reached through its socket.
 use crate::handle::{BioMethod, CText};
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 use core::ffi::{c_char, c_int, c_long, c_void};
 use core::marker::{PhantomData, PhantomPinned};
 use core::mem::MaybeUninit;
@@ -19,6 +19,7 @@ struct Datagram {
     bytes: Box<[MaybeUninit<u8>]>,
     length: u16,
 }
+type Queue = VecDeque<Datagram>;
 impl Datagram {
     /// The payload's length.
     fn length(&self) -> u16 {
@@ -39,7 +40,9 @@ pub struct DtlsSession {
     peer: AddressStorage,
     listened: Cell<bool>,
     peek: Cell<bool>,
-    queue: RefCell<VecDeque<Datagram>>,
+    /// Taken out and put back around a push, pop or scan, never around a call into
+    /// OpenSSL or one that yields.
+    queue: Cell<Queue>,
     /// The port's context, which upstream's session holds a reference to.
     _context: Option<std::sync::Arc<crate::TlsSettings>>,
 }
@@ -56,7 +59,7 @@ impl DtlsSession {
             peer,
             listened: Cell::new(false),
             peek: Cell::new(false),
-            queue: RefCell::new(VecDeque::new()),
+            queue: Cell::new(Queue::new()),
             _context: context,
         }
     }
@@ -73,6 +76,14 @@ impl DtlsSession {
         )?)
     }
 
+    /// `edit` over the queue, taken out and put back.
+    fn with_queue<R>(&self, edit: impl FnOnce(&mut Queue) -> R) -> R {
+        let mut queue = self.queue.take();
+        let result = edit(&mut queue);
+        self.queue.set(queue);
+        result
+    }
+
     /// Whether `listen` has published the session.
     #[must_use]
     pub fn listened(&self) -> bool {
@@ -86,35 +97,37 @@ impl DtlsSession {
 pub fn dtls_session_receive(owner: &DtlsSession, fd: c_int, size: usize) -> bool {
     let mut bytes = Box::new_uninit_slice(size);
     let read = swoole_rs_corebase::sys::read(fd, &mut bytes);
-    let mut queue = owner.queue.borrow_mut();
-    if queue.try_reserve(1).is_err() {
-        return false;
-    }
-    queue.push_back(Datagram {
-        bytes,
-        length: read.c_cast::<u16>(),
-    });
-    true
+    owner.with_queue(|queue| {
+        if queue.try_reserve(1).is_err() {
+            return false;
+        }
+        queue.push_back(Datagram {
+            bytes,
+            length: read.c_cast::<u16>(),
+        });
+        true
+    })
 }
 
 /// A copy of `data` queued as one datagram: as many of its bytes as upstream's `u16`
 /// header counts; false when it can't allocate.
 pub fn swr_v1_tls_dtls_append(owner: &DtlsSession, data: &[u8]) -> bool {
-    let mut queue = owner.queue.borrow_mut();
-    if queue.try_reserve(1).is_err() {
-        return false;
-    }
-    let length = usize::from(data.len().c_cast::<u16>());
-    let mut bytes = Vec::new();
-    if bytes.try_reserve_exact(length).is_err() {
-        return false;
-    }
-    bytes.extend(data.iter().take(length).map(|&byte| MaybeUninit::new(byte)));
-    queue.push_back(Datagram {
-        bytes: bytes.into_boxed_slice(),
-        length: length.c_cast::<u16>(),
-    });
-    true
+    owner.with_queue(|queue| {
+        if queue.try_reserve(1).is_err() {
+            return false;
+        }
+        let length = usize::from(data.len().c_cast::<u16>());
+        let mut bytes = Vec::new();
+        if bytes.try_reserve_exact(length).is_err() {
+            return false;
+        }
+        bytes.extend(data.iter().take(length).map(|&byte| MaybeUninit::new(byte)));
+        queue.push_back(Datagram {
+            bytes: bytes.into_boxed_slice(),
+            length: length.c_cast::<u16>(),
+        });
+        true
+    })
 }
 
 /// The front datagram's length, as much of it as `requested` bytes hold, copied into
@@ -126,28 +139,33 @@ pub fn swr_v1_tls_dtls_read(
     buffer: &mut [MaybeUninit<u8>],
     requested: c_int,
 ) -> Option<c_int> {
-    let mut queue = owner.queue.borrow_mut();
-    let front = queue.front()?;
-    // No more than `buffer` holds, so a datagram is never popped uncopied.
-    let length = c_int::from(front.length())
-        .min(requested)
-        .min(c_int::try_from(buffer.len()).unwrap_or(c_int::MAX));
-    if let Ok(copied) = usize::try_from(length) {
-        if let (Some(out), Some(source)) = (buffer.get_mut(..copied), front.payload().get(..copied))
-        {
-            out.copy_from_slice(source);
+    let peek = owner.peek.get();
+    owner.with_queue(|queue| {
+        let front = queue.front()?;
+        // No more than `buffer` holds, so a datagram is never popped uncopied.
+        let length = c_int::from(front.length())
+            .min(requested)
+            .min(c_int::try_from(buffer.len()).unwrap_or(c_int::MAX));
+        if let Ok(copied) = usize::try_from(length) {
+            if let (Some(out), Some(source)) =
+                (buffer.get_mut(..copied), front.payload().get(..copied))
+            {
+                out.copy_from_slice(source);
+            }
+            if !peek {
+                queue.pop_front();
+            }
         }
-        if !owner.peek.get() {
-            queue.pop_front();
-        }
-    }
-    Some(length)
+        Some(length)
+    })
 }
 
 /// The queued datagrams' total length.
 pub fn swr_v1_tls_dtls_length(owner: &DtlsSession) -> usize {
-    owner.queue.borrow().iter().fold(0usize, |total, buffer| {
-        total.wrapping_add(usize::from(buffer.length()))
+    owner.with_queue(|queue| {
+        queue.iter().fold(0usize, |total, buffer| {
+            total.wrapping_add(usize::from(buffer.length()))
+        })
     })
 }
 
@@ -160,7 +178,7 @@ fn swr_v1_tls_dtls_control(
     value: c_long,
 ) -> c_long {
     match command {
-        Command::Eof => c_long::from(owner.queue.borrow().is_empty()),
+        Command::Eof => c_long::from(owner.with_queue(|queue| queue.is_empty())),
         Command::GetClose => shutdown,
         Command::Pending => swr_v1_tls_dtls_length(owner).c_cast::<c_long>(),
         Command::SetClose | Command::Ignore => 0,
@@ -556,9 +574,9 @@ mod tests {
         assert_eq!(owner.length(), 0);
         assert_eq!(owner.read(1).0, None);
         owner.append(b"");
-        assert!(!owner.session().queue.borrow().is_empty());
+        assert!(!owner.session().with_queue(|queue| queue.is_empty()));
         assert_eq!(owner.read(0).0, Some(0));
-        assert!(owner.session().queue.borrow().is_empty());
+        assert!(owner.session().with_queue(|queue| queue.is_empty()));
     }
 
     #[test]

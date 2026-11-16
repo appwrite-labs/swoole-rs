@@ -102,11 +102,11 @@ pub use socket_record::*;
 pub mod event_api;
 #[cfg(unix)]
 pub mod reactor_upstream;
-#[cfg(all(unix, feature = "upstream-symbols", not(test)))]
+#[cfg(all(unix, feature = "upstream-symbols"))]
 pub mod signal_upstream;
 #[cfg(unix)]
 pub mod socket_upstream;
-#[cfg(all(unix, feature = "upstream-symbols", not(test)))]
+#[cfg(all(unix, feature = "upstream-symbols"))]
 pub mod wait_upstream;
 
 mod iov_progress;

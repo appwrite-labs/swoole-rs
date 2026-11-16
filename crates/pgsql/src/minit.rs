@@ -4,10 +4,7 @@
 use pq_sys::PGTransactionStatusType::{
     PQTRANS_ACTIVE, PQTRANS_IDLE, PQTRANS_INERROR, PQTRANS_INTRANS, PQTRANS_UNKNOWN,
 };
-use swoole_rs_zend::{
-    Minit, Mshutdown,
-    pdo::{Driver, php_pdo_register_driver},
-};
+use swoole_rs_zend::{Minit, Mshutdown, pdo::Driver};
 
 unsafe extern "C" {
     /// The bundled driver (`thirdparty/php*/pdo_pgsql/pgsql_driver.c`).
@@ -38,9 +35,9 @@ pub fn minit(minit: &Minit) {
     }
     // Registering replaces pdo_pgsql's own.
     pdo.unregister(&swoole_pdo_pgsql_driver);
-    // SAFETY: MINIT, with PDO loaded. PDO raises `E_ERROR` for a driver built
-    // against another PDO API: no frame up to the step's `zend_try` owns a drop.
-    unsafe { php_pdo_register_driver(&swoole_pdo_pgsql_driver) };
+    // A bailout (`E_ERROR` for a driver built against another PDO API) is raised
+    // from this outermost Rust frame.
+    swoole_rs_zend::bailout::raise(pdo.register(&swoole_pdo_pgsql_driver));
 }
 
 /// `php_swoole_pgsql_mshutdown`.

@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <sys/uio.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -29,8 +30,9 @@ void swr_v1_utils_spinlock(const uint32_t *, uint32_t cpus, uint32_t backoff_lim
 int32_t swr_v1_utils_wait(const uint32_t *, double timeout);
 int32_t swr_v1_utils_wakeup(const uint32_t *, int32_t n);
 #endif
-/* Borrowed bytes and independent aligned outputs; returns a substring span, never allocates. */
-int32_t swr_v1_utils_pretty_range(const uint8_t *, size_t, uint8_t strip, size_t *, size_t *);
+/* Rust's IoSlice: borrowed bytes, live for the call, whose base is never null. With
+ * independent aligned outputs; returns a substring span, never allocates. */
+int32_t swr_v1_utils_pretty_range(struct iovec name, uint8_t strip, size_t *, size_t *);
 /* swoole::Logger (crates/utilities/src/logger.rs). Worker identity, backtraces
  * and stdout redirection call back into the host (swr_logger_host, crates/process), and
  * diagnostics into corebase's log host, after the logger's lock is released. */

@@ -7,7 +7,7 @@ use std::ffi::c_int;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::SocketAddrV4;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
@@ -61,14 +61,16 @@ fn set_flags(fd: c_int, get: c_int, set: c_int, flag: c_int, on: bool) -> io::Re
     Ok(())
 }
 
+unsafe extern "C" {
+    /// `socket(2)`: a fresh descriptor the caller owns, or -1 (`None`: an `OwnedFd`
+    /// never holds -1). It takes plain values.
+    safe fn socket(domain: c_int, kind: c_int, protocol: c_int) -> Option<OwnedFd>;
+}
+
 /// A non-blocking connect; `EINPROGRESS` is success.
 fn connect(family: c_int, addr: AddressStorage, len: libc::socklen_t) -> io::Result<OwnedFd> {
-    let fd = swoole_rs_corebase::sys::socket(family, libc::SOCK_STREAM, 0);
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: a fresh descriptor nothing else owns.
-    let socket = unsafe { OwnedFd::from_raw_fd(fd) };
+    let socket = socket(family, libc::SOCK_STREAM, 0).ok_or_else(io::Error::last_os_error)?;
+    let fd = socket.as_raw_fd();
     set_flags(fd, libc::F_GETFD, libc::F_SETFD, libc::FD_CLOEXEC, true)?;
     set_flags(fd, libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK, true)?;
     let address = SocketAddress { addr, len, kind: 0 };
@@ -149,8 +151,8 @@ impl Stream {
         };
         while sys::poll(std::slice::from_mut(&mut poll), -1) < 0 && errno() == libc::EINTR {}
         let mut error: c_int = 0;
-        let got = sys::getsockopt_int(fd, libc::SOL_SOCKET, libc::SO_ERROR, &mut error);
-        self.err_code = if got < 0 { errno() } else { error };
+        let got = sys::getsockopt(fd, libc::SOL_SOCKET, libc::SO_ERROR, &mut error);
+        self.err_code = got.map_or_else(|error| error.raw_os_error().unwrap_or(0), |_| error);
         if self.err_code != 0 {
             connect_failed(self.err_code);
             return false;

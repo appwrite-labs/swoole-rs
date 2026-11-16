@@ -8,7 +8,7 @@
 )]
 use core::ffi::c_int;
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub mod native;
 
 /// `signal_init`'s handlers.

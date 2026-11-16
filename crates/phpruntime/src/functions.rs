@@ -12,6 +12,7 @@ use crate::{
 use std::{
     collections::HashMap,
     ffi::CStr,
+    io::IoSlice,
     ptr::{self, NonNull},
     rc::Rc,
     sync::{LazyLock, Mutex, MutexGuard, PoisonError},
@@ -21,11 +22,10 @@ use swoole_rs_zend::{
     Call, E_WARNING, Function, Owned, ZStr, ZString, bailout,
     host::callable::Callable,
     sys::{
-        PHP_VERSION_ID, ZEND_ACC_FAKE_CLOSURE, swr_zend_function_find,
-        swr_zend_runtime_call_handler, swr_zend_runtime_copy_arginfo, swr_zend_runtime_disabled,
-        swr_zend_runtime_free_arginfo, swr_zend_runtime_unsupported, zend_class_entry,
-        zend_execute_data, zend_fcall_info, zend_internal_arg_info, zend_internal_function,
-        zif_handler, zval,
+        PHP_VERSION_ID, ZEND_ACC_FAKE_CLOSURE, swr_zend_runtime_call_handler,
+        swr_zend_runtime_copy_arginfo, swr_zend_runtime_disabled, swr_zend_runtime_free_arginfo,
+        swr_zend_runtime_unsupported, zend_class_entry, zend_execute_data, zend_fcall_info,
+        zend_function, zend_internal_arg_info, zend_internal_function, zif_handler, zval,
     },
 };
 
@@ -38,6 +38,9 @@ unsafe extern "C" {
     fn zif_swoole_proc_terminate(frame: *mut zend_execute_data, value: *mut zval);
     fn zif_swoole_coroutine_gethostbyname(frame: *mut zend_execute_data, value: *mut zval);
     fn zif_swoole_exit(frame: *mut zend_execute_data, value: *mut zval);
+    /// The running request's function `name` (`EG(function_table)`), which it
+    /// reads from the lent bytes (an `IoSlice` is an iovec): null for none.
+    safe fn swr_zend_function_find(name: IoSlice<'_>) -> *mut zend_function;
 }
 
 /// An internal function the running request's function table holds. Only
@@ -50,8 +53,7 @@ impl Entry {
     /// `zend::get_function(name)`: the table's function `name`, if it is an
     /// internal one (one PHP code declared has no handler to swap).
     fn find(name: &[u8]) -> Option<Self> {
-        // SAFETY: a name and its length, which Zend reads.
-        let found = unsafe { swr_zend_function_find(name.as_ptr().cast(), name.len()) };
+        let found = swr_zend_function_find(IoSlice::new(name));
         // SAFETY: null, or a function the table holds for the request.
         let function = unsafe { Function::from_ptr(found) }?;
         if function.kind() != Function::INTERNAL {

@@ -1,10 +1,11 @@
 //! Internal classes registered at MINIT, with their object handlers.
 use crate::{
     Minit, Parent, Value, ZStr,
-    arginfo::Table,
+    arginfo::{Rows, Table},
+    helpers::CText,
     sys::{
-        ZEND_ACC_RESOLVED_PARENT, swr_zend_register_class, zend_class_entry, zend_long,
-        zend_object, zend_object_handlers, zend_string, zend_throw_exception, zval,
+        ZEND_ACC_RESOLVED_PARENT, zend_class_entry, zend_long, zend_object, zend_object_handlers,
+        zend_string, zend_throw_exception, zval,
     },
 };
 use std::{
@@ -15,6 +16,14 @@ use std::{
 };
 
 unsafe extern "C" {
+    /// `INIT_CLASS_ENTRY_EX` then `zend_register_internal_class_ex`: the new
+    /// entry, registered under `name` with `methods`, extending `parent`.
+    /// Private, so only [`Class::register_child`] calls it, with the MINIT token.
+    safe fn swr_zend_register_class(
+        name: CText<'_>,
+        methods: Rows,
+        parent: Parent,
+    ) -> *mut zend_class_entry;
     /// Zend's standard object handlers: a C `const`, initialised statically and
     /// never written.
     safe static std_object_handlers: zend_object_handlers;
@@ -194,12 +203,8 @@ impl Class {
             ),
             Some(layout) => assert!(ptr::eq(self, layout.0), "a CustomClass's own layout"),
         }
-        let methods = methods.as_ptr();
-        let parent = parent.map_or(ptr::null_mut(), Parent::entry);
-        // SAFETY: MINIT (the token), with a NUL-terminated name, a static,
-        // terminated table of typed rows or none, and a registered parent or none.
         let entry =
-            unsafe { swr_zend_register_class(name.as_ptr(), name.count_bytes(), methods, parent) };
+            swr_zend_register_class(name.into(), methods.rows(), parent.unwrap_or(Parent::NONE));
         let mut handlers = std_object_handlers;
         // SAFETY: Zend returned the registered entry, which nothing else uses yet.
         let registered = unsafe { &mut *entry };

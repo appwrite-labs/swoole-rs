@@ -9,6 +9,7 @@ use crate::handlers::Handler;
 use crate::{Events, ReactorFields, SocketRecord};
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
+use std::io::IoSlice;
 use std::rc::Rc;
 
 /// `SwooleTG.reactor`.
@@ -154,21 +155,26 @@ pub fn event_write(socket: crate::Socket<'static>, data: &[u8]) -> isize {
     unsafe { write(reactor, socket.as_ptr(), data.as_ptr().cast(), data.len()) }
 }
 
-/// `ssize_t swoole_event_writev(Socket *socket, const iovec *iov, size_t iovcnt)`.
-///
-/// # Safety
-/// As `Reactor::writev`, with a live `SwooleTG.reactor`.
-pub unsafe extern "C-unwind" fn swoole_event_writev(
-    socket: *mut SocketRecord,
-    iov: *const libc::iovec,
-    iovcnt: usize,
-) -> isize {
+/// `ssize_t swoole_event_writev(Socket *socket, const iovec *iov, size_t iovcnt)` of
+/// `vectors` on a socket that is never freed while registered (what can't all go out
+/// is copied and the socket registered for writing).
+#[must_use]
+pub fn swoole_event_writev(socket: crate::Socket<'static>, vectors: &[IoSlice<'_>]) -> isize {
     let reactor = current();
     let Some(writev) = field(|fields| fields.writev).flatten() else {
         swoole_rs_corebase::fatal("the reactor has no writev function")
     };
-    // SAFETY: as the caller promises.
-    unsafe { writev(reactor, socket, iov, iovcnt) }
+    // SAFETY: `Reactor::writev` of the thread's live reactor, which only its
+    // constructor sets: a live record that outlives its registration, and iovecs (an
+    // `IoSlice` is one) over readable bytes, which it copies.
+    unsafe {
+        writev(
+            reactor,
+            socket.as_ptr(),
+            vectors.as_ptr().cast(),
+            vectors.len(),
+        )
+    }
 }
 
 /// `void swoole_event_set_handler(int fd_type, int event, ReactorHandler handler)`;
@@ -455,7 +461,7 @@ pub fn swoole_event_defer_value<T: Deferred>(value: T) -> Result<(), T> {
 }
 
 /// `int swoole_event_wait()`: run the loop unless it may already exit, then free it.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 #[unsafe(export_name = "_Z17swoole_event_waitv")]
 #[must_use]
 pub extern "C-unwind" fn swoole_event_wait() -> c_int {

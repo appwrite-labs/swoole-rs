@@ -3,7 +3,7 @@
 //! registration, reactor exit condition and coroutine operations are here; tests
 //! pass their own `SignalOps`.
 use std::cell::Cell;
-use std::ffi::{c_int, c_long, c_void};
+use std::ffi::{c_long, c_void};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, Ordering::Relaxed};
 use swoole_rs_corebase::CCast;
@@ -17,7 +17,7 @@ const WRONG_OPERATION: i32 = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATIO
 /// A coroutine waiting for a signal (upstream's `SignalListener`).
 struct Listener {
     co: *mut c_void,
-    signo: Cell<i32>,
+    signo: Cell<Option<i32>>,
 }
 
 /// Which listener each signal wakes (upstream's `listeners`). A non-null slot owns
@@ -64,13 +64,17 @@ impl Previous {
     };
 }
 
-/// What `wait_signal` returns.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Signalled {
-    /// The signal that arrived, or -1.
-    signo: i32,
-    /// For native to set as the last error, or 0.
-    last_error: i32,
+/// Why a coroutine did not receive a signal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignalWaitError {
+    /// Another async signal listener is registered.
+    Busy,
+    /// A signal is outside the supported range or is SIGCHLD.
+    InvalidSignal,
+    /// Handler registration could not reach the event loop.
+    NoReactor,
+    /// The wait timed out, was cancelled, or resumed without a signal.
+    Interrupted,
 }
 
 fn listener(signo: i32) -> Option<&'static AtomicPtr<Listener>> {
@@ -127,7 +131,7 @@ pub extern "C" fn swr_v1_hook_signal_wake(signo: i32) {
     let Some(waiting) = take(slot, None) else {
         return;
     };
-    waiting.signo.set(signo);
+    waiting.signo.set(Some(signo));
     // SAFETY: the listener's coroutine, parked in `wait_signal`, which unpublishes
     // every slot before it returns.
     unsafe { (NATIVE.resume)(waiting.co) };
@@ -138,38 +142,42 @@ fn narrow(signo: c_long) -> i32 {
     signo.c_cast::<i32>()
 }
 
-/// `int System::wait_signal(const std::vector<int> &signals, double timeout)`: the
-/// signal that arrived, or -1 with the last error set. Outside a coroutine it is
-/// upstream's fatal error.
-#[must_use]
-pub fn system_wait_signal(signals: &[c_long], timeout: f64) -> c_int {
-    let signalled = wait_signal(signals, timeout, &NATIVE);
-    if signalled.last_error != 0 {
-        swoole_rs_corebase::log::set_last_error(signalled.last_error);
+/// Waits for a signal, preserving the runtime's last error on interruption.
+/// Outside a coroutine this is upstream's fatal error.
+///
+/// # Errors
+/// Another listener is registered, a signal is invalid, registration cannot reach
+/// the reactor, or the wait ends without a signal.
+pub fn system_wait_signal(signals: &[c_long], timeout: f64) -> Result<i32, SignalWaitError> {
+    let result = wait_signal(signals, timeout, &NATIVE);
+    let error = match result {
+        Err(SignalWaitError::Busy) => libc::EBUSY,
+        Err(SignalWaitError::InvalidSignal) => libc::EINVAL,
+        Err(SignalWaitError::NoReactor) => WRONG_OPERATION,
+        _ => 0,
+    };
+    if error != 0 {
+        swoole_rs_corebase::log::set_last_error(error);
     }
-    signalled.signo
+    result
 }
 
 /// Waits for any of `signals` for up to `timeout` seconds.
-fn wait_signal(signals: &[c_long], timeout: f64, ops: &SignalOps) -> Signalled {
+fn wait_signal(signals: &[c_long], timeout: f64, ops: &SignalOps) -> Result<i32, SignalWaitError> {
     let co = (ops.current)();
     let waiting = Rc::new(Listener {
         co,
-        signo: Cell::new(-1),
+        signo: Cell::new(None),
     });
-    let failed = |last_error| Signalled {
-        signo: -1,
-        last_error,
-    };
     if (ops.busy)() {
-        return failed(libc::EBUSY);
+        return Err(SignalWaitError::Busy);
     }
     let signals = signals.iter().map(|&signo| narrow(signo));
     if signals
         .clone()
         .any(|signo| signo == libc::SIGCHLD || listener(signo).is_none())
     {
-        return failed(libc::EINVAL);
+        return Err(SignalWaitError::InvalidSignal);
     }
     // Deferred registrations reach these only while the wait holds them.
     let previous: Rc<Records> = Rc::new([const { Cell::new(Previous::NONE) }; SIGNO_MAX as usize]);
@@ -201,13 +209,14 @@ fn wait_signal(signals: &[c_long], timeout: f64, ops: &SignalOps) -> Signalled {
         (ops.listen)(signo, &previous, false);
     }
     if !listening {
-        return failed(WRONG_OPERATION);
+        return Err(SignalWaitError::NoReactor);
     }
     (ops.waiting)(false);
-    Signalled {
-        signo: if woken { waiting.signo.get() } else { -1 },
-        last_error: 0,
-    }
+    waiting
+        .signo
+        .get()
+        .filter(|_| woken)
+        .ok_or(SignalWaitError::Interrupted)
 }
 
 /// System's signal operations: registration through the signal table (on the loop's
@@ -399,10 +408,33 @@ mod tests {
         }
     }
 
+    /// What `wait_signal` returns.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct Signalled {
+        /// The signal that arrived, or -1.
+        signo: i32,
+        /// For native to set as the last error, or 0.
+        last_error: i32,
+    }
+
     fn wait(signals: &[i32], ops: &SignalOps) -> (Signalled, Vec<String>) {
         LOG.with_borrow_mut(Vec::clear);
         let signals: Vec<c_long> = signals.iter().map(|&signo| signo.into()).collect();
-        let result = wait_signal(&signals, 1.0, ops);
+        let result = match wait_signal(&signals, 1.0, ops) {
+            Ok(signo) => Signalled {
+                signo,
+                last_error: 0,
+            },
+            Err(error) => Signalled {
+                signo: -1,
+                last_error: match error {
+                    SignalWaitError::Busy => libc::EBUSY,
+                    SignalWaitError::InvalidSignal => libc::EINVAL,
+                    SignalWaitError::NoReactor => WRONG_OPERATION,
+                    SignalWaitError::Interrupted => 0,
+                },
+            },
+        };
         (result, LOG.with_borrow_mut(std::mem::take))
     }
 

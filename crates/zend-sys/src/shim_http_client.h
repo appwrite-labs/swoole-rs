@@ -5,8 +5,6 @@
 #define SWOOLE_RS_ZEND_SHIM_HTTP_CLIENT_H
 #include "shim.h"
 
-/* sw_zend_read_property_not_null_ex: the property, or NULL when it is null. */
-zval *swr_zend_property_not_null(zend_object *object, const char *name, size_t length);
 /* Swoole's zend::array_add_or_merge: add `element` (taking it over) under `key`,
  * or turn an existing value into a list and append to it. */
 void swr_zend_array_add_or_merge(zval *array, const char *key, size_t length, zval *element);

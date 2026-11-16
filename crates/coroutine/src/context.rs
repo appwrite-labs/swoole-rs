@@ -115,7 +115,11 @@ impl Drop for Context {
     }
 }
 
-type StartSwitch = unsafe extern "C" fn(*mut *mut c_void, *const c_void, usize);
+/// `__sanitizer_start_switch_fiber(fake_stack_save, bottom, size)`: records the stack
+/// the next switch lands on and, given somewhere to save it, sets the current fake
+/// stack aside there. It only writes through `fake_stack_save` and dereferences
+/// neither the stack nor its bottom, so it is safe to call.
+type StartSwitch = extern "C" fn(Option<&mut *mut c_void>, *const c_void, usize);
 type FinishSwitch = unsafe extern "C" fn(*mut c_void, *mut *const c_void, *mut usize);
 
 // ThreadSanitizer's fiber calls. Each coroutine runs as its own fiber: TSan keeps a
@@ -157,7 +161,8 @@ fn asan() -> Option<(StartSwitch, FinishSwitch)> {
             return None;
         }
         // SAFETY: two non-null addresses of functions the sanitizer interface declares
-        // with these signatures, in the order of `Fibers`' fields.
+        // with these signatures (a nullable `void **` is an `Option<&mut>`), in the
+        // order of `Fibers`' fields.
         let Fibers(start, finish) =
             unsafe { std::mem::transmute::<[*mut c_void; 2], Fibers>([start, finish]) };
         Some((start, finish))
@@ -206,14 +211,12 @@ pub(crate) fn swap_in(co: Co) -> bool {
             return Err(ended);
         }
         if let Some((start, _)) = asan {
-            // SAFETY: announces the switch onto the context's stack.
-            unsafe {
-                start(
-                    &raw mut fake_stack,
-                    ctx.stack.base().cast(),
-                    ctx.stack.size(),
-                );
-            };
+            // Announces the switch onto the context's stack.
+            start(
+                Some(&mut fake_stack),
+                ctx.stack.base().cast(),
+                ctx.stack.size(),
+            );
         }
         #[cfg(tsan)]
         {
@@ -253,13 +256,9 @@ pub(crate) fn swap_out(co: Co) {
         }
         if let Some((start, _)) = asan {
             // A finished context never resumes, so ASan may free its fake stack now.
-            let save = if ctx.end.get() {
-                ptr::null_mut()
-            } else {
-                &raw mut fake_stack
-            };
-            // SAFETY: announces the switch back to the stack that switched in.
-            unsafe { start(save, ctx.asan_bottom, ctx.asan_size) };
+            let save = (!ctx.end.get()).then_some(&mut fake_stack);
+            // Announces the switch back to the stack that switched in.
+            start(save, ctx.asan_bottom, ctx.asan_size);
         }
         #[cfg(tsan)]
         // SAFETY: the fiber that switched this context in, which runs from the jump on.

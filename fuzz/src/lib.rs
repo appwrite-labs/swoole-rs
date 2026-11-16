@@ -228,8 +228,20 @@ pub fn ws_frame_length(bytes: &[u8]) {
     let mut want_header = 0;
     // SAFETY: reads `bytes` and writes one local u32.
     let want = unsafe { upstream_ws::frame_length(bytes.as_ptr(), bytes.len(), &mut want_header) };
-    let (got, got_header) = frame_length(bytes);
-    let got_header = got_header.unwrap_or(0);
+    let (got, got_header) = match frame_length(bytes) {
+        Ok(frame) => (
+            i64::try_from(frame.total).unwrap(),
+            Some(frame.header_length),
+        ),
+        Err(error) => (
+            match error {
+                swoole_rs_websocket::LengthError::IncompleteHeader { .. } => 0,
+                swoole_rs_websocket::LengthError::Overflow { .. } => -1,
+            },
+            error.header_length(),
+        ),
+    };
+    let got_header = u32::try_from(got_header.unwrap_or(0)).unwrap();
     // Some lengths are outside the compared domain; Rust reports -1 there.
     assert!(
         want as i64 == got || got == -1 && want < 0,
@@ -249,13 +261,10 @@ pub fn ws_decode(bytes: &[u8]) {
     let mut want = upstream_ws::Frame::default();
     // SAFETY: upstream owns its copy of the frame and its output.
     let ok = unsafe { upstream_ws::decode(theirs.as_mut_ptr(), theirs.len(), &mut want) };
-    let (total, got) = decode_in_place(&mut ours);
-    assert_eq!(
-        ok,
-        total > 0 && bytes.len() as i64 >= total,
-        "verdict ({total}) for {bytes:?}"
-    );
+    let result = decode_in_place(&mut ours);
+    assert_eq!(ok, result.is_ok(), "verdict ({result:?}) for {bytes:?}");
     if ok {
+        let got = result.expect("the verdict comparison succeeded");
         let got = upstream_ws::Frame {
             payload_length: got.payload_length as u64,
             header_length: got.header_length as u16,

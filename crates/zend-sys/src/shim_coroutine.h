@@ -88,7 +88,7 @@ void swr_zend_vm_interrupt_raise(zend_atomic_bool *flag);
 typedef zend_class_entry *(*swr_zend_autoload_handler)(zend_string *name, zend_string *lc_name);
 /* zend_autoload = handler; returns the previous one. */
 swr_zend_autoload_handler swr_zend_coroutine_set_autoload(swr_zend_autoload_handler handler);
-/* zend_hash_del(EG(in_autoload), lc_name). */
+/* zend_hash_del(EG(in_autoload), lc_name), when the executor has that table. */
 void swr_zend_autoload_forget(zend_string *lc_name);
 /* *result = handler(name, lc_name) inside zend_try: 1 if it bailed out. */
 int swr_zend_autoload_try(swr_zend_autoload_handler handler, zend_string *name, zend_string *lc_name,
@@ -129,4 +129,7 @@ void swr_zend_coroutine_locate(zend_object *exception);
 /* Make the suspended frame in `vm` throw on resume, as
  * zend_throw_exception_internal() does for a user frame. */
 void swr_zend_coroutine_redirect(swr_zend_coroutine_vm *vm);
+/* PHPCoroutine::deadlock_check's report of `count` sleeping coroutines,
+ * through stdio's printf as upstream's. */
+void swr_zend_coroutine_deadlock_report(unsigned long count);
 #endif

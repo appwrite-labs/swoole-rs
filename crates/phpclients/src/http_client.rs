@@ -35,14 +35,6 @@ use swoole_rs_zend::{
 use swoole_rs_zend::{method_table, sys as z};
 
 unsafe extern "C" {
-    /// `sw_zend_read_property_not_null_ex`: null (`None`) for a null property,
-    /// or the slot of the property `object`'s class declares as the `length`
-    /// bytes at `name`, which lives as long as the object.
-    fn swr_zend_property_not_null<'a>(
-        object: *mut z::zend_object,
-        name: *const std::ffi::c_char,
-        length: usize,
-    ) -> Option<&'a Value>;
     /// `SEPARATE_ARRAY` of an array zval (anything else is left alone): a
     /// shared table is copied for the slot, and its count only drops, so it
     /// stays live for whoever else holds it.
@@ -143,7 +135,6 @@ struct Conn {
 /// a `&mut` would stay live across `write_func` and socket yields, while the
 /// PHP code they run calls the client's methods.
 struct Client {
-    object: *mut zend_object,
     conn: Rc<Conn>,
     host: Vec<u8>,
     socket_type: i64,
@@ -352,12 +343,13 @@ impl Client {
         slot.unwrap_or_else(|| swoole_rs_corebase::fatal("an undeclared client property"))
     }
 
-    /// `sw_zend_read_property_not_null_ex`: the declared property `name` unless it is null.
+    /// `sw_zend_read_property_not_null_ex`: the declared property `name`
+    /// unless it is null (or undefined), read from its slot as
+    /// [`Client::property`] reads the others.
     fn not_null(&self, name: &CStr) -> Option<&Value> {
-        let (name, length) = (name.as_ptr(), name.count_bytes());
-        // SAFETY: the object outlives its client, as its slots do, and its class
-        // declares `name`.
-        unsafe { swr_zend_property_not_null(self.object, name, length) }
+        self.props()
+            .slot(name)
+            .filter(|value| !matches!(value.kind(), z::IS_NULL | z::IS_UNDEF))
     }
 
     /// `callable($client, $data)` inside `zend_try`: whether the call succeeded, or
@@ -392,7 +384,6 @@ impl Client {
         });
         let mut host = host.to_vec();
         Self {
-            object,
             conn,
             socket_type: request::socket_type(&mut host),
             host,

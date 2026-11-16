@@ -137,8 +137,8 @@ void swr_zend_runtime_env_lock(bool lock) {
 #endif
 }
 
-void *swr_zend_runtime_transport(const char *name, size_t length) {
-    return zend_hash_str_find_ptr(php_stream_xport_get_hash(), name, length);
+void *swr_zend_runtime_transport(struct iovec name) {
+    return zend_hash_str_find_ptr(php_stream_xport_get_hash(), name.iov_base, name.iov_len);
 }
 
 int swr_zend_runtime_set_transport(const char *name, void *factory, bool remove) {

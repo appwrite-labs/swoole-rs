@@ -17,7 +17,7 @@ use std::{
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_zend::{
     Call, Minit, Owned, OwnedArray, Value, bailout,
-    sys::{PHP_STREAM_FLAG_NO_CLOSE, php_stream, swr_zend_bailout_to, swr_zend_thread_set_argv},
+    sys::{PHP_STREAM_FLAG_NO_CLOSE, php_stream, swr_zend_bailout_to},
 };
 
 /// A `php://stdin`, `stdout` or `stderr` stream a thread's prologue opened,
@@ -60,6 +60,14 @@ unsafe extern "C" {
     /// Register the stream's resource as the constant `name`, which takes it.
     #[link_name = "swr_zend_register_stream_constant"]
     safe fn stdio_constant(name: swoole_rs_corebase::sys::Text<'_>, stream: Stdio);
+}
+
+unsafe extern "C" {
+    /// `$argv` (a copy of `argv`, which stays the caller's) and `$argc` in the
+    /// request's symbol table. Replacing an entry there runs no PHP code: the
+    /// prologue's symbol table holds no `$argv` or `$argc` yet.
+    #[link_name = "swr_zend_thread_set_argv"]
+    safe fn set_argv(argv: &Value, argc: i64);
 }
 
 // crates/zend-sys' shims that take nothing and can't run PHP or bail out: the calling
@@ -226,9 +234,8 @@ extern "C" fn prologue(start: &mut Start) {
         let global_argv = crate::host::unserialize(&data);
         drop(data);
         bailout::finish();
-        let mut global_argv = global_argv.into_zval();
-        // SAFETY: the symbol table takes the value.
-        unsafe { swr_zend_thread_set_argv(&raw mut global_argv, i64::from(start.argc)) };
+        // The symbol table takes a reference of its own; this one goes with `global_argv`.
+        set_argv(&global_argv, i64::from(start.argc));
     }
     if let Some(argv) = start.argv.take() {
         let array = argv.0.to_array();

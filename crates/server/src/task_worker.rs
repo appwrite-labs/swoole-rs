@@ -12,7 +12,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING;
 use swoole_rs_process::task_sync::ResultSlot;
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub mod native;
 
 /// `serv->task_results[worker_id]`: the event worker's result slot, which task

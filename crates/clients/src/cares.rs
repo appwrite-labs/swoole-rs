@@ -4,7 +4,7 @@
 //! Only Swoole's reactor drives c-ares; no c-ares event thread is enabled.
 use crate::ip::swr_v1_clients_ip_text;
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell},
     ffi::{CStr, c_int, c_void},
     ptr,
     sync::{
@@ -84,18 +84,20 @@ mod co {
 }
 const ORIGIN: &std::ffi::CStr = c"coroutine::dns_lookup_impl_with_cares";
 /// A query's state, shared with its c-ares callbacks through the userdata
-/// pointer: each field is changed in place, so no borrow of it spans an effect.
+/// pointer: each field is a cell set in place or taken out and put back around
+/// plain Rust work, never around a c-ares call, which can run the callbacks.
 struct Query {
-    /// The channel the query runs on, live while a wrapper is registered.
-    channel: Cell<*const sdk::Channel>,
+    /// The channel the query runs on, set once initialised and destroyed before the
+    /// query goes: a registered wrapper finds it here.
+    channel: OnceCell<sdk::OwnedChannel>,
     error: Cell<i32>,
     completed: Cell<bool>,
     coroutine: Cell<*mut c_void>,
     retired: Arc<AtomicBool>,
     /// The wrapper of each descriptor c-ares watches, live until `socket_state` detaches it: one per
     /// server it asks, so a list beats a hash map.
-    sockets: RefCell<Vec<(i32, EventSocket)>>,
-    results: RefCell<Vec<Vec<u8>>>,
+    sockets: Cell<Vec<(i32, EventSocket)>>,
+    results: Cell<Vec<Vec<u8>>>,
 }
 struct Completion {
     retired: Arc<AtomicBool>,
@@ -130,10 +132,13 @@ fn process(event: &Event, write: bool) -> i32 {
     // SAFETY: a registered wrapper's object is its query (`socket_state` sets it), which
     // `lookup` keeps until the channel is destroyed and the wrappers with it; the query
     // is only shared, never borrowed mutably.
-    let channel = unsafe { &*data }.channel.get();
+    let query = unsafe { &*data };
+    // A wrapper is registered only by the channel's callback, so the channel is set.
+    let Some(channel) = query.channel.get() else {
+        return -1;
+    };
     let (read, write) = if write { (-1, fd) } else { (fd, -1) };
-    // SAFETY: as above: the channel `lookup` owns outlives its registered wrappers.
-    sdk::ares_process_fd(unsafe { &*channel }, read, write);
+    sdk::ares_process_fd(channel, read, write);
     0
 }
 /// Reactor destruction: no query still uses the library after its channel was destroyed.
@@ -162,21 +167,19 @@ extern "C" fn socket_state(query: &Query, fd: i32, readable: i32, writable: i32)
     } else {
         Events::NONE
     };
-    let registered = query
-        .sockets
-        .borrow()
-        .iter()
-        .position(|&(watched, _)| watched == fd);
-    if let Some(index) = registered {
+    // Taken out and put back on every path below; while out, only the reactor's
+    // registration calls run, which neither yield nor reach c-ares.
+    let mut sockets = query.sockets.take();
+    if let Some(index) = sockets.iter().position(|&(watched, _)| watched == fd) {
         if events.is_empty() {
             // Out of the registry, then out of the reactor and freed keeping the
             // descriptor, which c-ares keeps: `Socket::free` defers the record to the
             // next pass while a reactor runs, as the event being handled may hold it.
-            let (_, wrapper) = query.sockets.borrow_mut().remove(index);
+            let (_, wrapper) = sockets.remove(index);
+            query.sockets.set(sockets);
             wrapper.free(true);
             return;
         }
-        let sockets = query.sockets.borrow();
         if let Some((_, wrapper)) = sockets.get(index) {
             // Update this registered wrapper, which lives until it is freed above.
             _ = if wrapper.events().is_empty() {
@@ -185,8 +188,10 @@ extern "C" fn socket_state(query: &Query, fd: i32, readable: i32, writable: i32)
                 wrapper.set(events)
             };
         }
+        query.sockets.set(sockets);
         return;
     }
+    query.sockets.set(sockets);
     if events.is_empty() {
         log::warning(ORIGIN, format_args!("error events, fd={fd}"));
         return;
@@ -199,7 +204,9 @@ extern "C" fn socket_state(query: &Query, fd: i32, readable: i32, writable: i32)
     wrapper.socket().edit(|wrapper| wrapper.object = data);
     // Register this fresh wrapper.
     _ = wrapper.add(events);
-    query.sockets.borrow_mut().push((fd, wrapper));
+    let mut sockets = query.sockets.take();
+    sockets.push((fd, wrapper));
+    query.sockets.set(sockets);
 }
 extern "C" fn host(query: &Query, status: i32, timeouts: i32, entry: Option<&libc::hostent>) {
     if timeouts > 0 || status != metadata().success {
@@ -229,7 +236,9 @@ extern "C" fn host(query: &Query, status: i32, timeouts: i32, entry: Option<&lib
             let text = swr_v1_clients_ip_text(version, address);
             let length = usize::try_from(text.length).unwrap_or(0);
             let text = text.bytes.get(..length).unwrap_or_default().to_vec();
-            query.results.borrow_mut().push(text);
+            let mut results = query.results.take();
+            results.push(text);
+            query.results.set(results);
             // The SDK address list has another slot or its terminating null.
             addresses = addresses.wrapping_add(1);
         }
@@ -273,14 +282,14 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
     let coroutine = co::current();
     // Boxed for a stable address; only shared from here on, by this frame and by
     // the callbacks, which reach it through the userdata pointer made from `query`.
-    let owner = Box::new(Query {
-        channel: Cell::new(ptr::null_mut()),
+    let mut owner = Box::new(Query {
+        channel: OnceCell::new(),
         error: Cell::new(0),
         completed: Cell::new(false),
         coroutine: Cell::new(coroutine),
         retired: Arc::new(AtomicBool::new(false)),
-        sockets: RefCell::new(Vec::new()),
-        results: RefCell::new(Vec::new()),
+        sockets: Cell::new(Vec::new()),
+        results: Cell::new(Vec::new()),
     });
     let query: &Query = &owner;
     let mut channel = None;
@@ -299,12 +308,14 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
             mask,
         )
     };
+    // Publish the initialized channel before issuing any SDK query.
     if let Some(channel) = channel.filter(|_| status == metadata.success) {
-        // Publish the initialized channel before issuing any SDK query.
-        query.channel.set(&raw const *channel);
+        _ = query.channel.set(channel);
+    }
+    if let Some(channel) = query.channel.get() {
         if let Some(server) = server {
             if metadata.server_api != 0 {
-                swrs_cares_server(&channel, server.into(), port);
+                swrs_cares_server(channel, server.into(), port);
                 if metadata.server_api == 1 && u32::from(port) != SW_DNS_SERVER_PORT {
                     log::warning(
                         ORIGIN,
@@ -316,7 +327,7 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
             }
         }
         // SAFETY: as for `swrs_cares_init`.
-        unsafe { ares_gethostbyname(&channel, domain.into(), family, Some(host), query) };
+        unsafe { ares_gethostbyname(channel, domain.into(), family, Some(host), query) };
         let done = query.error.get() != 0 || query.completed.get();
         if !done {
             // `co->yield_ex(timeout)` of the query's coroutine, which is the running
@@ -326,10 +337,10 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
             _ = co::yield_resumed(code);
             if code == co::Resume::Canceled {
                 // Runs only callbacks on this live query, synchronously.
-                sdk::ares_cancel(&channel);
+                sdk::ares_cancel(channel);
             } else if code == co::Resume::TimedOut {
                 // Process SDK timeouts before recording the original timeout status.
-                sdk::ares_process_fd(&channel, -1, -1);
+                sdk::ares_process_fd(channel, -1, -1);
                 // Record timeout after SDK callbacks, matching original order.
                 query.error.set(metadata.timeout);
             }
@@ -349,8 +360,6 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
         }
         // All deferred completions share this token; none may resume a retired query.
         query.retired.store(true, Ordering::Relaxed);
-        // `ares_destroy`, while the query lives for its synchronous callbacks.
-        drop(channel);
     } else {
         let reason = ares_strerror(status).get().to_string_lossy();
         log::warning(
@@ -358,6 +367,8 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
             format_args!("ares_init_options() failed, Error: {reason}[{status}]"),
         );
     }
+    // `ares_destroy`, while the query lives for its synchronous callbacks.
+    drop(owner.channel.take());
     // The channel no longer retains the userdata: the owner goes, once.
     owner.results.into_inner()
 }

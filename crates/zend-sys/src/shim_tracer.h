@@ -5,6 +5,7 @@
 #ifndef SWOOLE_RS_ZEND_SHIM_TRACER_H
 #define SWOOLE_RS_ZEND_SHIM_TRACER_H
 #include "php.h"
+#include <sys/uio.h>
 #include "zend_observer.h"
 #include "zend_builtin_functions.h"
 
@@ -28,7 +29,7 @@ uint32_t swr_zend_tracer_lineno(void);
 
 /* ZEND_WRITE(text, length) inside zend_try (output handlers run PHP): 1 if it
  * bailed out. */
-int swr_zend_try_write(const char *text, size_t length);
+int swr_zend_try_write(struct iovec text);
 
 /* number_format(number) with "." and ",": a request string. */
 zend_string *swr_zend_number_format(zend_long number);

@@ -94,24 +94,13 @@ fn park<S>(fd: i32, events: Events, timeout: f64, ops: &EventWaitOps<S>) -> Resu
     parked.map(|()| waiter.revents.get())
 }
 
-/// What `wait_event` returns.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct WaitEvent {
-    /// The fired events, or -1.
-    pub result: i32,
-    /// For native to set as the last error, or 0.
-    pub last_error: i32,
-    /// For native to set as errno, or 0.
-    pub error: i32,
-}
-
-const fn failed(last_error: i32, error: i32) -> WaitEvent {
-    WaitEvent {
-        result: -1,
-        last_error,
-        error,
-    }
+/// A failed event wait, retaining where upstream publishes its error code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitError {
+    /// Invalid event bits or an immediate poll failure: Swoole's last error.
+    Poll(i32),
+    /// Reactor registration or the suspended wait failed: errno.
+    Coroutine(i32),
 }
 
 /// `translate_events_to_poll`.
@@ -144,35 +133,25 @@ pub(crate) fn from_poll(revents: i16) -> Events {
     events
 }
 
-/// `int System::wait_event(int fd, int events, double timeout)`: the fired events, or
-/// -1 with errno and the last error set.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole9coroutine6System10wait_eventEiid")
-)]
-#[must_use]
-pub extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -> i32 {
-    wait_event(fd, Events::from_bits(events), timeout).map_or(-1, Events::bits)
-}
-
-/// `System::wait_event`: the fired events, or none with errno and the last error set.
+/// `System::wait_event`: the fired events, publishing the error on failure.
 /// Outside a coroutine a nonzero `timeout` is upstream's fatal error, which does not
 /// return.
-#[must_use]
-pub fn wait_event(fd: i32, events: Events, timeout: f64) -> Option<Events> {
+///
+/// # Errors
+/// Invalid events, immediate polling, reactor registration, or the suspended wait.
+pub fn wait_event(fd: i32, events: Events, timeout: f64) -> Result<Events, WaitError> {
     let ops = EventWaitOps {
         current: native::current,
         add: |fd, events, waiter| Watch::add(fd, events, native::Object::Waiter(waiter)),
         park: native::park,
     };
-    let waited = swr_v1_hook_wait_event(fd, events, timeout, &ops);
-    if waited.last_error != 0 {
-        swoole_rs_corebase::log::set_last_error(waited.last_error);
+    let waited = wait_with(fd, events, timeout, &ops);
+    match waited {
+        Err(WaitError::Poll(code)) if code != 0 => swoole_rs_corebase::log::set_last_error(code),
+        Err(WaitError::Coroutine(code)) if code != 0 => crate::co_io::set_errno(code),
+        _ => {}
     }
-    if waited.error != 0 {
-        crate::co_io::set_errno(waited.error);
-    }
-    (waited.result >= 0).then(|| Events::from_bits(waited.result))
+    waited
 }
 
 /// The event waiter's reactor socket and coroutine: upstream's `make_socket`,
@@ -267,16 +246,15 @@ pub(crate) mod native {
 }
 
 /// Waits for `events` (only `SW_EVENT_READ`/`WRITE` count) on `fd`.
-#[must_use]
-pub fn swr_v1_hook_wait_event<S>(
+pub(crate) fn wait_with<S>(
     fd: i32,
     events: Events,
     timeout: f64,
     ops: &EventWaitOps<S>,
-) -> WaitEvent {
+) -> Result<Events, WaitError> {
     let events = events & Events::RDWR;
     if events.is_empty() {
-        return failed(libc::EINVAL, 0);
+        return Err(WaitError::Poll(libc::EINVAL));
     }
     if timeout == 0.0 {
         let mut pfd = libc::pollfd {
@@ -287,34 +265,25 @@ pub fn swr_v1_hook_wait_event<S>(
         let ready = swoole_rs_corebase::sys::poll(core::slice::from_mut(&mut pfd), 0);
         if ready == 1 {
             if pfd.revents & libc::POLLNVAL != 0 {
-                return failed(libc::EBADF, 0);
+                return Err(WaitError::Poll(libc::EBADF));
             }
-            return WaitEvent {
-                result: from_poll(pfd.revents).bits(),
-                ..WaitEvent::default()
-            };
+            return Ok(from_poll(pfd.revents));
         }
         let error = if ready < 0 {
             std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
         } else {
             libc::ETIMEDOUT
         };
-        return failed(error, 0);
+        return Err(WaitError::Poll(error));
     }
-    let fired = match park(fd, events, timeout, ops) {
-        Ok(fired) => fired,
-        Err(error) => return failed(0, error),
-    };
+    let fired = park(fd, events, timeout, ops).map_err(WaitError::Coroutine)?;
     // Error readiness becomes the requested read/write bits.
     let result = if fired.intersects(Events::ERROR) {
         fired.without(Events::ERROR) | events
     } else {
         fired
     };
-    WaitEvent {
-        result: result.bits(),
-        ..WaitEvent::default()
-    }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -327,6 +296,22 @@ mod tests {
     use super::*;
 
     use std::cell::Cell;
+
+    // Adapt the typed result to the former gate record, preserving every assertion.
+    #[derive(Debug, Default, PartialEq, Eq)]
+    struct WaitEvent {
+        result: i32,
+        last_error: i32,
+        error: i32,
+    }
+
+    const fn failed(last_error: i32, error: i32) -> WaitEvent {
+        WaitEvent {
+            result: -1,
+            last_error,
+            error,
+        }
+    }
 
     const CO: *mut c_void = 0x10 as *mut c_void;
 
@@ -402,7 +387,14 @@ mod tests {
 
     fn wait(fd: i32, events: Events, timeout: f64, park: fn(f64) -> Result<(), i32>) -> WaitEvent {
         let ops = EventWaitOps { current, add, park };
-        swr_v1_hook_wait_event(fd, events, timeout, &ops)
+        match wait_with(fd, events, timeout, &ops) {
+            Ok(events) => WaitEvent {
+                result: events.bits(),
+                ..WaitEvent::default()
+            },
+            Err(WaitError::Poll(code)) => failed(code, 0),
+            Err(WaitError::Coroutine(code)) => failed(0, code),
+        }
     }
 
     #[test]

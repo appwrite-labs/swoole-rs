@@ -7,9 +7,9 @@
 //! Contexts are reached through a [`Ctx`] handle, which reads and writes one
 //! field at a time: another coroutine may change a suspended context
 //! (`Co::cancel`, `Co::join`), so no reference to one lives across a switch.
-use crate::{host, methods::Join, runtime};
+use crate::{host, methods::Join, put_back, runtime};
 use std::{
-    cell::{RefCell, UnsafeCell},
+    cell::{Cell, UnsafeCell},
     ffi::{c_int, c_long, c_void},
     mem,
     ptr::{self, NonNull},
@@ -145,6 +145,18 @@ fn fcc(callable: *mut swr_zend_callable) -> *mut zend_fcall_info_cache {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Ctx(NonNull<Context>);
 
+/// The frame Zend ran before a swap to another one, made current again on drop.
+/// Only [`Ctx::in_frame`] and [`enter`] make one, of `swr_zend_coroutine_set_frame`'s
+/// result, and they neither switch coroutines nor bail out until it drops.
+struct Restore(*mut zend_execute_data);
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        // SAFETY: the running coroutine's own frame, current when this was made.
+        unsafe { swr_zend_coroutine_set_frame(self.0) };
+    }
+}
+
 /// `get`/`set` for `Copy` fields: one read or write of a live context's field.
 macro_rules! fields {
     ($($field:ident, $set:ident: $ty:ty;)*) => {
@@ -242,11 +254,8 @@ impl Ctx {
         }
         // SAFETY: a live context that is not running was switched out, and its
         // saved frame stays live until it resumes, which `f` does not let it.
-        let running = unsafe { swr_zend_coroutine_set_frame(self.execute_data()) };
-        let result = f();
-        // SAFETY: the running coroutine's own frame, read above.
-        unsafe { swr_zend_coroutine_set_frame(running) };
-        result
+        let _running = Restore(unsafe { swr_zend_coroutine_set_frame(self.execute_data()) });
+        f()
     }
 
     /// Its VM stack chain.
@@ -296,8 +305,9 @@ impl Ctx {
 
 per_thread! {
     static MAIN: UnsafeCell<Context> = UnsafeCell::new(Context::EMPTY);
-    /// The armed `Co::setTimeLimit` timers, by coroutine id: few at a time, so a list.
-    static TIME_LIMITS: RefCell<Vec<(c_long, Held)>> = RefCell::new(Vec::new());
+    /// The armed `Co::setTimeLimit` timers, by coroutine id: few at a time, so a
+    /// list. Taken out and put back around one swap, which releases nothing.
+    static TIME_LIMITS: Cell<Vec<(c_long, Held)>> = Cell::new(Vec::new());
 }
 
 /// Coroutine `cid`'s time-limit timer becomes `timer` (none: it fired, or the
@@ -306,13 +316,14 @@ pub(crate) fn swap_time_limit(ctx: Ctx, cid: c_long, timer: Option<Held>) -> Opt
     let limited = ctx.time_limited();
     ctx.set_time_limited(timer.is_some());
     TIME_LIMITS.with(|limits| {
-        let mut limits = limits.borrow_mut();
-        let old = limits
-            .iter()
-            .position(|&(owner, _)| limited && owner == cid)
-            .map(|at| limits.swap_remove(at).1);
-        limits.extend(timer.map(|timer| (cid, timer)));
-        old
+        put_back(limits, |limits| {
+            let old = limits
+                .iter()
+                .position(|&(owner, _)| limited && owner == cid)
+                .map(|at| limits.swap_remove(at).1);
+            limits.extend(timer.map(|timer| (cid, timer)));
+            old
+        })
     })
 }
 
@@ -481,11 +492,10 @@ pub(crate) fn enter(ctx: Ctx) -> *mut swr_zend_callable {
         // A user function is its op array.
         frame.opline = opcodes;
         frame.func = handler;
-        // SAFETY: the frame outlives the notification.
-        let previous = unsafe { swr_zend_coroutine_set_frame(&raw mut frame) };
+        // SAFETY: the frame outlives the notification, and `_previous`, which
+        // drops before it.
+        let _previous = Restore(unsafe { swr_zend_coroutine_set_frame(&raw mut frame) });
         fiber_switch_try_notify(origin(ctx), ctx);
-        // SAFETY: as above.
-        unsafe { swr_zend_coroutine_set_frame(previous) };
     }
     ctx.call()
 }

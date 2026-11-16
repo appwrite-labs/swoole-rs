@@ -127,8 +127,9 @@ aliases are never uninstalled.
   socket, timer, deferred completion and coroutine operations are Rust too
   (`poll::NATIVE`); `stream_select`'s rows merge by fd in the order libstdc++'s
   `unordered_map<int, _>` iterated upstream's map (`socket_poll_rows`).
-- `System::wait_event` and `System::init_reactor` are Rust under their upstream
-  symbols (`wait_event.rs`, `reactor_handlers.rs`). `wait_event` masks to read/write
+- Event waits return `Result<Events, WaitError>` in Rust (`wait_event.rs`); the
+  unused `System::wait_event` symbol is removed. `System::init_reactor` retains its
+  upstream symbol (`reactor_handlers.rs`). `wait_event` masks to read/write
   (none is EINVAL), answers a zero timeout with one `poll(2)` (POLLNVAL is EBADF,
   nothing ready is ETIMEDOUT), and otherwise parks as an `EventWaiter` on a
   `SW_FD_CO_EVENT` socket, yielding through `Coroutine::yield_ex`; it sets the last
@@ -140,13 +141,14 @@ aliases are never uninstalled.
   whole read or write (`File::read_all`, `write_all`, `read_content` semantics),
   fsync and unlock on the async pool, into a `Vec`, logging each warning on the pool
   thread as upstream named it (`System::read_file`, `File::read_all`, ...).
-  `write_file` keeps its upstream symbol; `read_file` is a plain Rust function.
+  Both are plain Rust functions returning `Result`; errors distinguish pool
+  refusal from the worker's open/lock I/O error.
 - `System::wait_signal` is Rust (`wait_signal.rs`): the listener table, the
   EBUSY/EINVAL checks, registering through the signal table (deferred to the loop's
   thread while thread contexts are active), the reactor exit condition and
   `signal_async_listener_num`, the park, the wake-up handler `hook_signal_wake`
   (clears the slot, records the signal, resumes) and the unregistering after it.
-  It is the plain Rust `system_wait_signal`.
+  It is the plain Rust `system_wait_signal`, returning a signal or a named error.
 - The hooked stdio, directory and file-system functions (`fopen`, `fdopen`,
   `freopen`, `fread`, `fwrite`, `fgets`, `fputs`, `feof`, `fflush`, `fclose`,
   `opendir`, `readdir`, `closedir`, `open`, `fstat`, `stat`, `lstat`, `unlink`,

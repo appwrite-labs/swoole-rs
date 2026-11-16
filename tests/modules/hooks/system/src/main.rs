@@ -26,7 +26,6 @@ use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 // The crates, once: the C++ in libswoole.a and the cases call them by symbol.
 use swoole_rs_ffi as _;
-use swoole_rs_hooks::file_io::read_file;
 use swoole_rs_hooks::poll::PollFd;
 use swoole_rs_reactor::Events;
 
@@ -139,8 +138,6 @@ unsafe extern "C-unwind" {
 
     #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
     fn system_sleep(sec: f64) -> c_int;
-    #[link_name = "_ZN6swoole9coroutine6System10wait_eventEiid"]
-    fn system_wait_event(fd: c_int, events: c_int, timeout: f64) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System7waitpidEiPiid"]
     fn system_waitpid(pid: c_int, status: *mut c_int, options: c_int, timeout: f64) -> c_int;
 }
@@ -216,12 +213,12 @@ fn co_sleep(sec: f64) -> c_int {
 }
 
 fn wait_event(fd: c_int, events: c_int, timeout: f64) -> c_int {
-    // SAFETY: called in a coroutine.
-    unsafe { system_wait_event(fd, events, timeout) }
+    swoole_rs_hooks::wait_event::wait_event(fd, Events::from_bits(events), timeout)
+        .map_or(-1, Events::bits)
 }
 
 fn wait_signal(signal: c_int, timeout: f64) -> c_int {
-    swoole_rs_hooks::wait_signal::system_wait_signal(&[c_long::from(signal)], timeout)
+    swoole_rs_hooks::wait_signal::system_wait_signal(&[c_long::from(signal)], timeout).unwrap_or(-1)
 }
 
 fn waitpid(pid: c_int, status: &mut c_int, options: c_int, timeout: f64) -> c_int {
@@ -229,8 +226,13 @@ fn waitpid(pid: c_int, status: &mut c_int, options: c_int, timeout: f64) -> c_in
     unsafe { system_waitpid(pid, status, options, timeout) }
 }
 
+fn read_file(file: &CStr, lock: bool) -> Option<Vec<u8>> {
+    swoole_rs_hooks::file_io::read_file(file, lock).ok()
+}
+
 fn write_file(file: &CStr, buf: &[u8], lock: bool, flags: c_int) -> isize {
     swoole_rs_hooks::file_io::write_file(file, buf, lock, flags)
+        .map_or(-1, |n| isize::try_from(n).unwrap_or(isize::MAX))
 }
 
 /// `System::getaddrinfo`.
@@ -257,7 +259,7 @@ fn getaddrinfo(
 
 /// `System::socket_poll` over core-tests' one-entry map.
 fn socket_poll(fds: &mut [PollFd], timeout: f64) -> bool {
-    swoole_rs_hooks::poll::socket_poll(fds, timeout, &swoole_rs_hooks::poll::NATIVE)
+    swoole_rs_hooks::poll::socket_poll(fds, timeout, &swoole_rs_hooks::poll::NATIVE).is_ok()
 }
 
 /// core-tests' `UnixSocket`: socketpair(2); the master (socks[1]) writes, the worker

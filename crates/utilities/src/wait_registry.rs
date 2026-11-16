@@ -328,7 +328,9 @@ mod tests {
     #[test]
     fn entries_reuse_idle_slots_once_full() {
         let words = swr_v1_utils_wait_registry_size().div_ceil(8);
-        let memory = Vec::from_iter((0..words).map(|_| AtomicU64::new(0))).leak();
+        let memory: &'static [AtomicU64] =
+            Vec::from_iter((0..words).map(|_| AtomicU64::new(0))).leak();
+        let owned = std::ptr::from_ref(memory).cast_mut();
         let registry = &Registry::of(memory).unwrap();
         let locked = registry.lock();
         for address in 1..=ENTRIES {
@@ -354,5 +356,9 @@ mod tests {
             registry.entry(&locked, 7 << 3, false).is_some(),
             "lookup only"
         );
+        drop(locked);
+        // SAFETY: the words leaked above, which nothing borrows once the lock is
+        // released and this registry view is no longer used.
+        drop(unsafe { Box::from_raw(owned) });
     }
 }

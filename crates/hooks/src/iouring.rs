@@ -5,7 +5,7 @@
 //! The instance is created on the first request, registers the ring fd, the exit
 //! condition and the end-of-loop submit, and is freed with the reactor.
 use crate::uring::{self, Config, Host, OpenError, Uring};
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::rc::Rc;
 use std::sync::atomic::AtomicU32;
@@ -24,8 +24,22 @@ struct Iouring {
 }
 
 thread_local! {
-    /// `SwooleTG.iouring`.
-    static INSTANCE: RefCell<Option<Iouring>> = const { RefCell::new(None) };
+    /// `SwooleTG.iouring`. Taken out and put back around a look at it
+    /// ([`with_instance`]), which runs no coroutine.
+    static INSTANCE: Cell<Option<Iouring>> = const { Cell::new(None) };
+}
+
+/// `f` over the thread's instance, taken out meanwhile.
+fn with_instance<R>(f: impl FnOnce(Option<&Iouring>) -> R) -> R {
+    INSTANCE.with(|cell| {
+        let instance = cell.take();
+        let result = f(instance.as_ref());
+        // `set` would call the drop glue for the `None` it replaces.
+        if let Some(nested) = cell.replace(instance) {
+            drop(nested);
+        }
+        result
+    })
 }
 
 /// The engine's callbacks into the coroutine scheduler, the thread's instance and
@@ -42,7 +56,7 @@ pub(crate) static HOST: Host = Host {
 
 /// `Iouring::get_instance()->engine`, creating the instance on first use.
 fn instance() -> Option<Rc<Uring>> {
-    if INSTANCE.with_borrow(Option::is_none) {
+    if with_instance(|instance| instance.is_none()) {
         if !swoole_event_is_available() {
             log::error(
                 c"Iouring::get_instance",
@@ -148,7 +162,7 @@ fn create() -> Iouring {
 
 /// The exit condition: requests in flight or waiting keep the loop running.
 extern "C-unwind" fn idle(event_num: &mut usize) -> bool {
-    if INSTANCE.with_borrow(Option::is_some)
+    if with_instance(|instance| instance.is_some())
         && with_engine(|engine| engine.task_num() == 0 && engine.waiting_num() == 0).unwrap_or(true)
     {
         *event_num -= 1;
@@ -221,7 +235,7 @@ fn waitpid(
 /// The thread's engine, or none before the first request (`SwooleTG.iouring`).
 /// Resuming coroutines re-enters the instance, so callers hold their own handle.
 fn current() -> Option<Rc<Uring>> {
-    INSTANCE.with_borrow(|iouring| iouring.as_ref()?.engine.clone())
+    with_instance(|iouring| iouring?.engine.clone())
 }
 
 /// `f` over the thread's engine once it has one.

@@ -9,18 +9,18 @@ use swoole_rs_zend::{Owned, Value, bailout::Bailout, new_object, sys as z};
 /// free leaves the callback to the exit. Do not call close: shutdown can
 /// otherwise resume other coroutines. The object's drop: nothing else holds it,
 /// and no method remains suspended on it.
-pub(super) fn release(data: &Data) -> Result<(), Bailout> {
-    let Some(co) = data.co() else {
+pub(super) fn release(data: &mut Data) -> Result<(), Bailout> {
+    let Some(socket) = data.socket.take() else {
         return Ok(());
     };
+    let co = socket.co();
     let freed = co.free_length_callable();
     if data.has_stream() {
         // The still-owned core socket relinquishes the fd before the stream closes it.
         co.move_fd();
         drop(data.stream.take());
     }
-    // SAFETY: the dropping object's socket, which nothing else holds; freed once.
-    freed.and(unsafe { swoole_rs_phpruntime::co::free(co.as_ptr()) })
+    freed.and(socket.free())
 }
 
 /// Free the length callback, then close an imported stream or the owned core socket.
@@ -55,7 +55,7 @@ pub(super) fn close(sock: Sock, socket: Co) -> Result<(), Bailout> {
 /// Construct the PHP object over an already allocated core socket, which it
 /// owns: when the allocation bails out, the socket goes with the data.
 pub(super) fn make_object(socket: NewSocket) -> Result<Owned, Bailout> {
-    let object = new_object(Data::owning(Some(socket.into_co())));
+    let object = new_object(Data::owning(Some(socket)));
     Sock::of(&object).ok_or(Bailout)?.publish();
     Ok(object)
 }

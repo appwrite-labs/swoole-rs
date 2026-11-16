@@ -50,7 +50,7 @@ int swr_zend_thread_request(const char *file, const char *path_translated, int a
 /* ts_free_thread(). */
 void swr_zend_thread_leave(void);
 /* $argv and $argc in the global symbol table, which takes `argv`. */
-void swr_zend_thread_set_argv(zval *argv, zend_long argc);
+void swr_zend_thread_set_argv(const zval *argv, zend_long argc);
 /* The main request's script (SG(request_info).path_translated), argc and global
  * $argv (null if none). */
 zval *swr_zend_thread_main_request(const char **path, int *argc);

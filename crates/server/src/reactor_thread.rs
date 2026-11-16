@@ -168,7 +168,7 @@ pub(crate) fn heartbeat_check(serv: view::Server<'_>, reactor: Reactor) {
 /// The destroy callback `ReactorThread::shutdown` adds: close each connection
 /// `reactor` owns.
 #[cfg_attr(
-    not(all(feature = "upstream-symbols", not(test))),
+    not(feature = "upstream-symbols"),
     expect(
         dead_code,
         reason = "its caller is the reactor threads' destroy callback"
@@ -250,7 +250,7 @@ mod tests {
         let server = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         server.set_nonblocking(true).unwrap();
         let fd = std::os::fd::AsRawFd::as_raw_fd(&server);
-        let slot = live.state().tables_ref().hold_port(0, fd).unwrap();
+        let slot = live.state().hold_port(0, fd).unwrap();
         slot.set_fd(fd);
         slot.set_socket_type(2); // SW_SOCK_UDP
         let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();

@@ -31,8 +31,8 @@ upstream's and keep what C++ and the utilities gates use; nothing built includes
   Austin (64-bit state, signed-int promotions), promoting the host `char`. Austin has
   undefined negative left shifts on high bytes upstream; only ASCII Austin input is
   defined parity, Rust wraps deterministically otherwise.
-- `swr_v1_utils_pretty_range`: offset/length for `Logger::get_pretty_name`. Never
-  writes input. Invalid outputs/ranges return -1; outputs are zeroed first; no
+- `swr_v1_utils_pretty_range`: offset/length for `Logger::get_pretty_name`, over a
+  `struct iovec` (Rust's `IoSlice`). Never writes input. Null outputs return -1; no
   bracket returns an empty span. Native builds the `std::string` afterwards.
 ## Concurrency primitives
 

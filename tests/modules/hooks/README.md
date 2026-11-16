@@ -28,7 +28,19 @@ excluding `getaddrinfo` (external DNS and network) and `getaddrinfo_timeout` (a
 lookup that misses the resolver cache), as the GoogleTest run did. Where
 upstream's `System` signature carries C++ library types the cases call the hooks
 crate's Rust functions instead (`file_io::read_file`, `wait_signal::system_wait_signal`,
-`poll::socket_poll`), or `resolve::system_getaddrinfo`.
+`poll::socket_poll`), or `resolve::system_getaddrinfo`. Whole-file operations and
+signal waits return typed `Result`s; local adapters retain the original test
+assertions and expected integer/optional outcomes. `file_io` also checks that
+pool refusal is distinct from an I/O error carried back from the worker thread.
+
+Event waits and descriptor polls return typed `Result`s too. `WaitError` preserves
+whether validation/immediate polling sets Swoole's last error or a suspended wait
+sets errno. Poll failures distinguish an I/O error, no registered descriptor and
+timeout; PHP keeps its existing false/zero results. `swoole_coroutine_poll` retains
+the native integer ABI. `System::wait_event` had only the Rust original-test caller;
+it now calls `wait_event` by path, and the unused C++ symbol is removed. The Rust-only `PollFd` has
+no C layout requirement, and the old `WaitEvent` status record survives only as
+a test adapter so the original assertions stay intact.
 
 `core-tests/src/coroutine/hook.cpp` is Rust too: `system/src/hook.rs` holds its 26
 TESTs, one function each (`coroutine_hook.<name>`, upstream's names, inputs and

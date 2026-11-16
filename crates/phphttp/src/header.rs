@@ -5,7 +5,7 @@ use crate::host::{self, Property};
 use crate::parse::CAPABILITIES;
 use crate::state::{Slot, State};
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::ffi::{CStr, c_int};
 use std::ptr;
 use std::sync::atomic::Ordering::Relaxed;
@@ -40,19 +40,21 @@ const TRAILER_LINE: usize = 65536;
 static PROPERTIES: [Declared; 3] = [const { Declared::new() }; 3];
 
 php_local! {
-    static OUT: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+    static OUT: Cell<Vec<u8>> = Cell::new(Vec::new());
 }
 
-/// Each send owns its bytes across yields and reentry; only an idle buffer is cached.
+/// Each send owns its bytes across yields and reentry; only an idle buffer is
+/// cached, and the larger of the two goes back.
 pub(crate) fn buffer<R>(f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
-    let mut out = OUT.with_borrow_mut(std::mem::take);
+    let mut out = OUT.take();
     out.clear();
     let result = f(&mut out);
-    OUT.with_borrow_mut(|idle| {
-        if out.capacity() <= TRAILER_LINE && out.capacity() > idle.capacity() {
-            *idle = out;
-        }
-    });
+    let idle = OUT.take();
+    if out.capacity() <= TRAILER_LINE && out.capacity() > idle.capacity() {
+        OUT.set(out);
+    } else {
+        OUT.set(idle);
+    }
     result
 }
 
@@ -575,7 +577,9 @@ mod tests {
         assert!(result.is_err());
         buffer(|out| assert!(out.is_empty() && out.capacity() >= b"pending response".len()));
         buffer(|out| out.resize(TRAILER_LINE + 1, 0));
-        OUT.with_borrow(|idle| assert!(idle.capacity() <= TRAILER_LINE));
+        let idle = OUT.take();
+        assert!(idle.capacity() <= TRAILER_LINE);
+        OUT.set(idle);
     }
 
     #[test]

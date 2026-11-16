@@ -11,7 +11,7 @@
 
 use std::collections::TryReserveError;
 use std::ffi::c_char;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::{PoisonError, RwLock};
 use swoole_rs_error::IgnoredErrors;
 
 // The archive's ABI queries live here, not in crates/ffi, whose object holds
@@ -115,39 +115,35 @@ pub extern "C" fn export_throw_error(code: i32) -> ! {
 }
 
 /// The process-global set behind `swoole_ignore_error` and `swoole_is_ignored_error`:
-/// null until the first insert, then a set that lives for the rest of the process,
-/// so a read is one load and a lookup, as upstream's unsynchronized set was.
-struct Ignored(AtomicPtr<IgnoredErrors>);
+/// empty until the first insert, then one set. The set sits in a one-element `Vec`
+/// rather than in place: allocating that holder is a failure point of its own, as
+/// upstream's set handle was. Inserts come once at startup, so a read's lock is never
+/// contended.
+struct Ignored(RwLock<Vec<IgnoredErrors>>);
 
 static IGNORED: Ignored = Ignored::new();
 
 impl Ignored {
     const fn new() -> Self {
-        Self(AtomicPtr::new(std::ptr::null_mut()))
+        Self(RwLock::new(Vec::new()))
     }
 
     /// Insert idempotently. When allocation fails the set, or its absence, is unchanged.
-    /// # Safety
-    /// No other thread inserts or reads during the call: upstream's set forbids
-    /// concurrent mutation too.
-    unsafe fn insert(&self, code: i32) -> Result<(), TryReserveError> {
-        // SAFETY: null or the set a first insert leaked, which the caller alone uses.
-        if let Some(values) = unsafe { self.0.load(Ordering::Relaxed).as_mut() } {
+    fn insert(&self, code: i32) -> Result<(), TryReserveError> {
+        let mut holder = self.0.write().unwrap_or_else(PoisonError::into_inner);
+        if let Some(values) = holder.first_mut() {
             return values.try_insert(code);
         }
         let values = IgnoredErrors::try_with(code)?;
-        // A one-element Vec, not a Box: Box::new aborts when it cannot allocate.
-        let mut holder = Vec::new();
+        // Box::new would abort when it cannot allocate.
         holder.try_reserve_exact(1)?;
         holder.push(values);
-        self.0.store(holder.leak().as_mut_ptr(), Ordering::Relaxed);
         Ok(())
     }
 
     fn contains(&self, code: i32) -> bool {
-        // SAFETY: null or the leaked set, which nothing frees; inserts exclude readers.
-        unsafe { self.0.load(Ordering::Relaxed).as_ref() }
-            .is_some_and(|values| values.contains(code))
+        let holder = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        holder.first().is_some_and(|values| values.contains(code))
     }
 }
 
@@ -158,8 +154,7 @@ impl Ignored {
     unsafe(export_name = "_Z19swoole_ignore_errori")
 )]
 pub extern "C" fn swoole_ignore_error(code: i32) {
-    // SAFETY: the extension serializes ignored-error writes, as upstream required.
-    if unsafe { IGNORED.insert(code) }.is_err() {
+    if IGNORED.insert(code).is_err() {
         #[expect(
             clippy::unused_result_ok,
             reason = "the process aborts next, stderr or not"
@@ -269,29 +264,25 @@ mod tests {
     #[test]
     fn allocation_failure_preserves_membership_and_publication() {
         let state = Ignored::new();
-        unsafe {
-            assert!(!state.contains(1));
-            FAIL.with(|flag| flag.set(1));
-            assert!(state.insert(1).is_err());
-            assert!(state.0.load(Ordering::Relaxed).is_null());
-            FAIL.with(|flag| flag.set(2)); // Fail handle allocation after bucket allocation.
-            assert!(state.insert(1).is_err());
-            assert!(state.0.load(Ordering::Relaxed).is_null());
-            assert!(state.insert(1).is_ok());
-            // Fill the actual allocation so the next distinct value must reserve.
-            let capacity = (*state.0.load(Ordering::Relaxed)).capacity();
-            for code in 2..=i32::try_from(capacity).expect("capacity fits an error code") {
-                assert!(state.insert(code).is_ok());
-            }
-            FAIL.with(|flag| flag.set(1));
-            assert!(state.insert(i32::MIN).is_err());
-            assert!(!state.contains(i32::MIN));
-            assert!(state.contains(1));
-            assert!(state.insert(1).is_ok());
-            // The global set lives for the process; this one is the test's to free. A
-            // one-element allocation has a Box's layout.
-            drop(Box::from_raw(state.0.load(Ordering::Relaxed)));
+        let empty = || state.0.read().unwrap().is_empty();
+        assert!(!state.contains(1));
+        FAIL.with(|flag| flag.set(1));
+        assert!(state.insert(1).is_err());
+        assert!(empty());
+        FAIL.with(|flag| flag.set(2)); // Fail handle allocation after bucket allocation.
+        assert!(state.insert(1).is_err());
+        assert!(empty());
+        assert!(state.insert(1).is_ok());
+        // Fill the actual allocation so the next distinct value must reserve.
+        let capacity = state.0.read().unwrap()[0].capacity();
+        for code in 2..=i32::try_from(capacity).expect("capacity fits an error code") {
+            assert!(state.insert(code).is_ok());
         }
+        FAIL.with(|flag| flag.set(1));
+        assert!(state.insert(i32::MIN).is_err());
+        assert!(!state.contains(i32::MIN));
+        assert!(state.contains(1));
+        assert!(state.insert(1).is_ok());
     }
 
     /// The former `tests/modules/error/allocator.cc`, on the process-global set: bucket,
@@ -302,7 +293,7 @@ mod tests {
     fn global_set_allocation_faults() {
         fn fail_insert(code: i32, allocation: usize) {
             FAIL.with(|flag| flag.set(allocation));
-            assert!(unsafe { IGNORED.insert(code) }.is_err());
+            assert!(IGNORED.insert(code).is_err());
             assert_eq!(FAIL.with(Cell::get), 0);
             assert!(!swoole_is_ignored_error(code));
         }
@@ -315,7 +306,7 @@ mod tests {
         assert_eq!(FAIL.with(Cell::get), 1);
         let mut failed = 0;
         for code in 2..100 {
-            if unsafe { IGNORED.insert(code) }.is_err() {
+            if IGNORED.insert(code).is_err() {
                 failed = code;
                 break;
             }
