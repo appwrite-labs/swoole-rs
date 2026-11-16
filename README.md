@@ -56,8 +56,12 @@ What is not:
   since failed, and a run by hand on 2026-11-11 passed. No Appwrite deployment uses it.
 - **Memory safety is not demonstrated.** The code has 5,699 `unsafe` blocks, fns and
   impls, and 17 of 67 crates forbid `unsafe`
-  ([per crate](https://github.com/appwrite-labs/swoole-rs/blob/badges/unsafe.md)). Much of
-  it is a close port of C++ that still passes raw pointers between crates. The
+  ([per crate](https://github.com/appwrite-labs/swoole-rs/blob/badges/unsafe.md)). That
+  count is Rust outside tests only. It leaves out the C the crates still compile (about
+  4,000 lines, almost all in `crates/zend-sys`; `tools/budget.py` counts them separately)
+  and calls through `safe fn` declarations of C functions, which have no `unsafe` at the
+  call; `tools/externs.py` checks 591 of those 984 declarations against the C headers (both figures from 2026-11-16). Much of
+  the Rust is a close port of C++ that still passes raw pointers between crates. The
   AddressSanitizer run fails on `main`, and ThreadSanitizer has open reports in thread
   mode ([#3342](https://github.com/appwrite-labs/swoole-rs/issues/3342),
   [#3343](https://github.com/appwrite-labs/swoole-rs/issues/3343)). Miri, the fuzzers
