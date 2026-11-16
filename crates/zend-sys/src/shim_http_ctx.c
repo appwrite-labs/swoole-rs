@@ -49,6 +49,13 @@ void swr_zend_http_release_objects(void *arg) {
     zval_ptr_dtor(release->response);
 }
 
+void swr_zend_http_rtrim(zend_string *text, size_t length) {
+    if (length < ZSTR_LEN(text)) {
+        memset(ZSTR_VAL(text) + length, 0, ZSTR_LEN(text) - length);
+        ZSTR_LEN(text) = length;
+    }
+}
+
 int swr_zend_http_try_release_objects(swr_zend_http_release *release) {
     return swr_zend_try(swr_zend_http_release_objects, release);
 }

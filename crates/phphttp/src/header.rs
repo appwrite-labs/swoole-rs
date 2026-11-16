@@ -7,7 +7,6 @@ use crate::state::{Slot, State};
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::ffi::{CStr, c_int};
-use std::ptr;
 use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_deflate::{DEFLATE, Failure, GZIP, bound, compress as deflate};
@@ -18,7 +17,7 @@ use swoole_rs_httpbindings::{
 use swoole_rs_inflate::brotli::{self, MAX_QUALITY, MIN_QUALITY};
 use swoole_rs_inflate::zstd;
 use swoole_rs_zend::{
-    Array, Class, Declared, HeldArray, Key, Separated, Value, ZStr, ZString, bailout, string,
+    Array, Class, Declared, HeldArray, Key, Separated, Value, ZStr, ZString, bailout,
 };
 
 /// llhttp's `HTTP_HEAD`.
@@ -197,11 +196,9 @@ fn add_custom_header(
         .rposition(|byte| !byte.is_ascii_whitespace_c())
         .map_or(0, |last| last + 1);
     if trimmed != length {
-        let val = string::val(text.as_ptr());
-        // SAFETY: the string holds `length` bytes; `swoole::rtrim` zeroes the trimmed ones.
-        unsafe { ptr::write_bytes(val.wrapping_add(trimmed), 0, length - trimmed) };
-        // SAFETY: as above: `ZSTR_LEN(str) = swoole::rtrim(...)`.
-        unsafe { (*text.as_ptr()).len = trimmed };
+        // SAFETY: the live string, which no borrow reads across the write
+        // (`bytes` is read again below); `swoole::rtrim` writes it in place.
+        unsafe { swoole_rs_zend::sys::swr_zend_http_rtrim(text.as_ptr(), trimmed) };
     }
     let bytes = text.bytes();
     if !has_crlf(bytes) {
