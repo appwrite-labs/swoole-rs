@@ -219,19 +219,16 @@ mod native {
         // The receive owns its allocation while parked. A PHP bailout abandons
         // this frame without dropping it, so teardown cannot free bytes a pending
         // io_uring request may still write. No socket metadata loan spans a yield.
-        let mut string = socket.take_buffer(false)?;
-        let result = if at <= string.len() {
-            string.truncate(at);
-            string
-                .fill_within(length, |spare| {
-                    socket.recv_spare(if all { Receive::All } else { Receive::Recv }, spare)
-                })
-                .map(|_| string.len() - at)
-        } else {
-            None
-        };
-        socket.put_read_buffer(string);
-        result
+        let mut string = socket.own_read_buffer();
+        if at > string.len() {
+            return None;
+        }
+        string.truncate(at);
+        string
+            .fill_within(length, |spare| {
+                socket.recv_spare(if all { Receive::All } else { Receive::Recv }, spare)
+            })
+            .map(|_| string.len() - at)
     }
 
     fn package_length(socket: Co, size: u32, header: &mut u32) -> crate::packet::Length {
@@ -243,25 +240,20 @@ mod native {
         // The callback may bail out or reach the socket again, so it reads a read
         // buffer this frame owns: taken from the record meanwhile, as a receive takes
         // it, and leaked by a bailout.
-        let taken = socket.take_buffer(false);
-        let length = {
-            let view = taken.as_deref().map_or(&[][..], |string| string.view());
-            let mut packet = PacketLength::new(view.get(..size as usize).unwrap_or(view));
-            let mut measure =
-                |net: Option<swoole_rs_reactor::Socket<'_>>| call(&protocol, net, &mut packet);
-            let length = socket
-                .with_network(|net| measure(Some(net)))
-                .unwrap_or_else(|| measure(None));
-            *header = packet.header_len;
-            length
-        };
-        if let Some(string) = taken {
-            // One a nested receive made goes; the packet's comes back.
-            if let Some(mut nested) = socket.take_buffer(false) {
-                nested.dispose();
-            }
-            socket.put_read_buffer(string);
+        let taken = socket.own_read_buffer();
+        let view = taken.view();
+        let mut packet = PacketLength::new(view.get(..size as usize).unwrap_or(view));
+        let mut measure =
+            |net: Option<swoole_rs_reactor::Socket<'_>>| call(&protocol, net, &mut packet);
+        let length = socket
+            .with_network(|net| measure(Some(net)))
+            .unwrap_or_else(|| measure(None));
+        *header = packet.header_len;
+        // One a nested receive made goes; the guard restores the packet's buffer.
+        if let Some(mut nested) = socket.take_buffer(false) {
+            nested.dispose();
         }
+        drop(taken);
         crate::packet::Length::of(length)
     }
 
