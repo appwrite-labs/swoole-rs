@@ -9,8 +9,8 @@ unsafe extern "C" {
     safe fn swr_bytes_hash(key: IoSlice<'_>) -> zend_ulong;
     /// `zend_string_alloc(length, 0)`: a new string's address, from Zend's
     /// request allocator, which never returns null nor, past `memory_limit`,
-    /// bails out (docs/zend.md, `memory_limit`). It takes a length and reads
-    /// nothing; only [`alloc`] calls it, with a length whose sum cannot wrap.
+    /// bails out (docs/zend.md, `memory_limit`). It takes any length and reads
+    /// nothing: the shim aborts on one whose header and NUL would wrap.
     safe fn swr_zend_string_alloc(length: usize) -> *mut zend_string;
 }
 
@@ -48,7 +48,6 @@ pub fn alloc(length: usize) -> *mut zend_string {
         isize::try_from(length).is_ok(),
         "string length {length} overflows"
     );
-    // The header plus `length` plus the NUL cannot wrap (asserted above).
     swr_zend_string_alloc(length)
 }
 
