@@ -34,6 +34,10 @@ jobs:
           tool: cbindgen@0.29.4,cargo-deny@0.18.9
       - name: Check licence headers
         run: tools/headers.sh --check
+      # Each hand-written extern "C" fn's arity and argument widths, against PHP's,
+      # zend-sys's, OpenSSL's and glibc's headers (installed above).
+      - name: Check extern declarations
+        run: python3 tools/externs.py
       # Dependencies: advisories, licences, bans (no async runtime) and sources (deny.toml).
       # Unused ones fail clippy above: Cargo's unused_dependencies lint (root Cargo.toml).
       - name: Check dependencies
