@@ -93,16 +93,12 @@ pub(crate) struct Request {
 /// initial state, which `context::alloc` writes.
 #[repr(C)]
 pub(crate) struct Parse {
-    pub(crate) header_name: *const u8,
-    pub(crate) header_name_len: usize,
     pub(crate) header_value_len: usize,
     /// `Request::parse()`: spans llhttp flushed at the end of an input buffer.
     pub(crate) url_length: usize,
     pub(crate) header_name_offset: usize,
     pub(crate) header_name_length: usize,
     pub(crate) header_value_length: usize,
-    pub(crate) tmp_content_type: *const u8,
-    pub(crate) tmp_content_type_len: usize,
     pub(crate) form_data_name: Option<Box<[u8]>>,
     pub(crate) input_name: Option<Box<[u8]>>,
     /// The current upload's `$_FILES` entry (`IS_UNDEF` when there is none).

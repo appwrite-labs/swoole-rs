@@ -30,10 +30,14 @@ pub(crate) struct Multipart {
 /// The upload file being written, buffered as upstream's `fdopen` stream was.
 type Upload = BufWriter<File>;
 
-/// The multipart parser's callbacks: the context and the current upload's stream.
-struct Parts<'a> {
+/// The multipart parser's callbacks: the context, the current upload's stream,
+/// and the current part header's name and the last unclaimed `Content-Type`,
+/// both spans of the call's input.
+struct Parts<'a, 'i> {
     state: &'a mut State,
     fp: &'a mut Option<Upload>,
+    name: &'i [u8],
+    content_type: Option<&'i [u8]>,
 }
 
 unsafe extern "C" {
@@ -76,13 +80,14 @@ const UPLOAD_FILE_READY: i64 = 8;
 const CODECS: u32 = 7;
 const COMPRESSION: u32 = 8;
 
-/// The server's llhttp callbacks, over a context's state.
-struct Server<'a>(&'a mut State);
+/// The server's llhttp callbacks, over a context's state, with the current
+/// header's name, a span of the call's input.
+struct Server<'a, 'i>(&'a mut State, &'i [u8]);
 
 /// `Request::parse()`'s: input arrives in pieces appended to `request.zdata`.
 struct Pieces<'a>(&'a mut State);
 
-impl Callbacks for Server<'_> {
+impl<'i> Callbacks<'i> for Server<'_, 'i> {
     fn parser(&mut self) -> &mut Parser {
         &mut self.0.parser
     }
@@ -91,12 +96,13 @@ impl Callbacks for Server<'_> {
         url(self.0, data)
     }
 
-    fn on_header_field(&mut self, data: &[u8]) -> c_int {
+    fn on_header_field(&mut self, data: &'i [u8]) -> c_int {
         // A request's trailer fields are ignored.
         if self.0.parser.flags & TRAILING != 0 {
             return 0;
         }
-        header_field(self.0, data.as_ptr(), data.len());
+        self.1 = data;
+        self.0.parse.header_value_len = 0;
         0
     }
 
@@ -104,7 +110,7 @@ impl Callbacks for Server<'_> {
         if self.0.parser.flags & TRAILING != 0 {
             return 0;
         }
-        header_value(self.0, data)
+        header_value(self.0, self.1, data)
     }
 
     fn on_headers_complete(&mut self) -> c_int {
@@ -120,7 +126,7 @@ impl Callbacks for Server<'_> {
     }
 }
 
-impl Callbacks for Pieces<'_> {
+impl Callbacks<'_> for Pieces<'_> {
     fn parser(&mut self) -> &mut Parser {
         &mut self.0.parser
     }
@@ -150,14 +156,15 @@ impl Callbacks for Pieces<'_> {
     }
 }
 
-impl swoole_rs_http::multipart_parser::Parts for Parts<'_> {
-    fn on_header_field(&mut self, data: &[u8]) -> Flow {
-        header_field(self.state, data.as_ptr(), data.len());
+impl<'i> swoole_rs_http::multipart_parser::Parts<'i> for Parts<'_, 'i> {
+    fn on_header_field(&mut self, data: &'i [u8]) -> Flow {
+        self.name = data;
+        self.state.parse.header_value_len = 0;
         Flow::Go
     }
 
-    fn on_header_value(&mut self, data: &[u8]) -> Flow {
-        if part_header_value(self.state, data) {
+    fn on_header_value(&mut self, data: &'i [u8]) -> Flow {
+        if part_header_value(self, data) {
             Flow::Go
         } else {
             Flow::Fail
@@ -414,7 +421,7 @@ fn execute(state: &mut State, pieces: bool, input: &[u8]) -> usize {
     let result = if pieces {
         llhttp::execute(&mut Pieces(state), input)
     } else {
-        llhttp::execute(&mut Server(state), input)
+        llhttp::execute(&mut Server(state, &[]), input)
     };
     if result == 0 {
         return input.len();
@@ -477,12 +484,6 @@ fn url(state: &mut State, span: &[u8]) -> c_int {
     0
 }
 
-fn header_field(state: &mut State, at: *const u8, length: usize) {
-    state.parse.header_name = at;
-    state.parse.header_name_len = length;
-    state.parse.header_value_len = 0;
-}
-
 fn on_piece_url(state: &mut State, at: *const c_char, length: usize) -> c_int {
     state.parse.url_length += length;
     let (start, total) = zdata_span(state);
@@ -517,12 +518,16 @@ fn on_piece_header_value(state: &mut State, at: *const c_char, length: usize) ->
     if at.wrapping_add(length).cast() == start.wrapping_add(total) {
         return 0;
     }
-    let name = start.wrapping_add(state.parse.header_name_offset);
-    header_field(state, name, state.parse.header_name_length);
+    state.parse.header_value_len = 0;
     // A reference of its own to `zdata`, which `header_value` reads but doesn't replace.
     let held = state.request.zdata.copy();
+    let offset = state.parse.header_name_offset;
+    let name = held.bytes().unwrap_or_default();
+    let name = name
+        .get(offset..offset.saturating_add(state.parse.header_name_length))
+        .unwrap_or_default();
     let value = pieces(&held, at, length, state.parse.header_value_length);
-    let result = header_value(state, value);
+    let result = header_value(state, name, value);
     state.parse.header_name_length = 0;
     state.parse.header_value_length = 0;
     result
@@ -562,11 +567,8 @@ fn websocket_connection(state: &State) -> bool {
     true
 }
 
-fn header_value(state: &mut State, value_: &[u8]) -> c_int {
+fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> c_int {
     let length = value_.len();
-    // SAFETY: the current header's name, inside llhttp's input.
-    let name =
-        unsafe { std::slice::from_raw_parts(state.parse.header_name, state.parse.header_name_len) };
     let compression = CAPABILITIES.load(Relaxed) & COMPRESSION != 0 && state.enable_compression;
     let action = request_header(
         name,
@@ -656,7 +658,6 @@ fn on_headers_complete(state: &mut State) -> c_int {
 
     state.keepalive = state.parser.should_keep_alive();
     state.recv_chunked = state.parser.flags & CHUNKED != 0;
-    state.parse.header_name = ptr::null();
     0
 }
 
@@ -806,7 +807,13 @@ pub(crate) fn multipart_parse(state: &mut State, data: &[u8]) -> bool {
         return false;
     };
     let Multipart { parser, fp } = &mut *multipart;
-    let parsed = parser.execute(&mut Parts { state, fp }, data);
+    let mut parts = Parts {
+        state,
+        fp,
+        name: &[],
+        content_type: None,
+    };
+    let parsed = parser.execute(&mut parts, data);
     let mut reason = parser.error_message();
     state.mt_parser = Some(multipart);
     let func = c"Context::parse_multipart_data";
@@ -874,8 +881,8 @@ fn position(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-fn part_header_value(state: &mut State, value_: &[u8]) -> bool {
-    let length = value_.len();
+fn part_header_value<'i>(parts: &mut Parts<'_, 'i>, value_: &'i [u8]) -> bool {
+    let (state, name) = (&mut *parts.state, parts.name);
     let func = c"multipart_body_on_header_value";
     // Hash collision attack
     let max_input_vars = max_input_vars();
@@ -887,9 +894,6 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> bool {
     }
     state.parse.input_var_num = state.parse.input_var_num.wrapping_add(1);
 
-    // SAFETY: the current part header's name, inside the parser's input.
-    let name =
-        unsafe { std::slice::from_raw_parts(state.parse.header_name, state.parse.header_name_len) };
     if name.eq_ignore_ascii_case(b"content-disposition") {
         let offset = if position(value_, b"form-data;").is_some() {
             b"form-data;".len()
@@ -945,19 +949,8 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> bool {
             }
             state.parse.input_name = Some(c_copy(&form_name));
             let mut header = OwnedArray::default();
-            if state.parse.tmp_content_type.is_null() {
-                header.insert_bytes(b"type", Some(b""));
-            } else {
-                // SAFETY: a span of the parser's input, still live.
-                let content_type = unsafe {
-                    std::slice::from_raw_parts(
-                        state.parse.tmp_content_type,
-                        state.parse.tmp_content_type_len,
-                    )
-                };
-                header.insert_bytes(b"type", Some(content_type));
-                state.parse.tmp_content_type = ptr::null();
-            }
+            let content_type = parts.content_type.take();
+            header.insert_bytes(b"type", Some(content_type.unwrap_or_default()));
             header.insert_bytes(b"tmp_name", Some(b""));
             header.insert_long(b"size", 0);
             let filename = trimmed(filename, filename_len);
@@ -981,8 +974,7 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> bool {
                 upload_bytes(state, b"type", value_);
             }
         } else {
-            state.parse.tmp_content_type = value_.as_ptr();
-            state.parse.tmp_content_type_len = length;
+            parts.content_type = Some(value_);
         }
     } else if name.eq_ignore_ascii_case(b"swoole-upload-file") && state.upload_preprocessed {
         // When the "SW_HTTP_UPLOAD_FILE" header appears in the request, it indicates that the uploaded file has been

@@ -137,7 +137,7 @@ struct R {
     log: Log,
 }
 
-impl Callbacks for R {
+impl Callbacks<'_> for R {
     fn parser(&mut self) -> &mut RParser {
         &mut self.parser
     }
