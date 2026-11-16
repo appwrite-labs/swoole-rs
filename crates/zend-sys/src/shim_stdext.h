@@ -20,8 +20,11 @@ int swr_zend_try_call_known(zend_function *fn, zval *retval, swr_zvals args);
  * bailed out, else *ce is the class or NULL. */
 int swr_zend_try_lookup_class(zend_string *name, zend_class_entry **ce);
 
-/* zend_vm_stack_push_call_frame(ZEND_CALL_NESTED_FUNCTION, fn, num_args, object). */
-zend_execute_data *swr_zend_push_nested_call(zend_function *fn, uint32_t num_args, void *object);
+/* zend_vm_stack_push_call_frame(ZEND_CALL_NESTED_FUNCTION, fn, num_args, object),
+ * given `run_time_cache` and linked as execute_data's next call (EX(call)), as
+ * an INIT_* handler leaves it. */
+void swr_zend_push_nested_call(zend_execute_data *execute_data, zend_function *fn, uint32_t num_args,
+                               void *object, void *run_time_cache);
 
 /* sapi_module.treat_data(PARSE_STRING, text, array): `text` is emalloc'd and
  * the SAPI frees it. */
