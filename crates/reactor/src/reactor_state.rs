@@ -529,22 +529,27 @@ impl ReactorState {
         view
     }
 }
-/// Actual kernel wait over the owner's stable arrays. No native callbacks run.
+/// Actual kernel wait over the owner's stable arrays: the ready count, or the
+/// wait's error, errno still set for the warning. No native callbacks run.
 // Its one caller, the wait loop, runs it once per iteration (#1435).
 #[inline(always)]
 pub(crate) fn kernel_wait(
     reactor: crate::Running<'_>,
     deferred: bool,
-    entries: &mut c_int,
-) -> c_int {
+    entries: &mut usize,
+) -> std::io::Result<usize> {
     // The kernel wait runs no native callback, so the borrow reaches no reactor.
     reactor.with(|owner| backend_wait(owner, deferred, entries))
 }
 
 /// [`kernel_wait`] over the borrowed state.
 #[inline(always)]
-fn backend_wait(owner: &mut ReactorState, deferred: bool, entries: &mut c_int) -> c_int {
-    match &mut owner.backend {
+fn backend_wait(
+    owner: &mut ReactorState,
+    deferred: bool,
+    entries: &mut usize,
+) -> std::io::Result<usize> {
+    let ready = match &mut owner.backend {
         Backend::None => -1,
         Backend::Poll(snapshot) => {
             let count = snapshot.fill(&owner.registry);
@@ -554,7 +559,8 @@ fn backend_wait(owner: &mut ReactorState, deferred: bool, entries: &mut c_int) -
             } else {
                 owner.fields.timeout_msec
             };
-            swoole_rs_corebase::sys::poll(snapshot.filled(), timeout).unwrap_or(-1)
+            return swoole_rs_corebase::sys::poll(snapshot.filled(), timeout)
+                .map(|ready| ready.unsigned_abs() as usize);
         }
         #[cfg(target_os = "linux")]
         Backend::Epoll(array) => {
@@ -598,7 +604,8 @@ fn backend_wait(owner: &mut ReactorState, deferred: bool, entries: &mut c_int) -
                 )
             }
         }
-    }
+    };
+    usize::try_from(ready).map_err(|_| std::io::Error::last_os_error())
 }
 /// The wait loop's initial state transition, over the actual borrowed slots.
 pub(crate) const fn before_wait(fields: &mut ReactorFields) {
@@ -780,7 +787,10 @@ pub(crate) mod tests {
                 (*state.fields).timeout_msec = 0;
                 let view = (*state.owner).backend_view();
                 let mut entries = 0;
-                assert_eq!(kernel_wait(running(state.owner), false, &mut entries), 1);
+                assert_eq!(
+                    kernel_wait(running(state.owner), false, &mut entries).ok(),
+                    Some(1)
+                );
                 assert_eq!(view.events, (*state.owner).backend_view().events);
                 if kind == 3 {
                     assert_eq!(entries, 1);

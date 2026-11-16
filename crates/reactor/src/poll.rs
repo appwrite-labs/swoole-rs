@@ -1,7 +1,7 @@
 //! The poll backend's bounded snapshot: a pollfd and socket per registered fd,
 //! rebuilt from the registry before each `poll()`.
 use crate::registry::Registry;
-use std::ffi::{c_int, c_void};
+use std::ffi::c_void;
 
 /// `translate_events_to_poll`: the poll bits for swoole `events`.
 #[must_use]
@@ -36,7 +36,7 @@ impl PollSnapshot {
 
     /// `ReactorPoll::set_events`: rebuilds the snapshot from `registry`, within the
     /// room it was made with; the entry count.
-    pub(crate) fn fill(&mut self, registry: &Registry) -> c_int {
+    pub(crate) fn fill(&mut self, registry: &Registry) -> usize {
         let limit = self.entries.capacity().min(self.sockets.capacity());
         self.entries.clear();
         self.sockets.clear();
@@ -48,7 +48,7 @@ impl PollSnapshot {
             });
             self.sockets.push(socket);
         }
-        c_int::try_from(self.entries.len()).unwrap_or(c_int::MAX)
+        self.entries.len()
     }
 
     /// The pollfd array, which `poll()` fills in.
