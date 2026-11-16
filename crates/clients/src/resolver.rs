@@ -41,7 +41,9 @@ impl Request {
         self.0.as_ptr()
     }
 
-    fn get(&self) -> &ResolverRequest {
+    /// The record, for an event's `data`.
+    #[must_use]
+    pub fn get(&self) -> &ResolverRequest {
         &self.0
     }
 
