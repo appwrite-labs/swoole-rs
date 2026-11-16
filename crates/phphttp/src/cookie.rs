@@ -1,6 +1,6 @@
 //! PHP `Swoole\Http\Cookie`: class registration, objects and every method, and
 //! the `Set-Cookie` line `Swoole\Http\Response::cookie()` sends.
-use std::{cell::RefCell, ffi::CStr};
+use std::{cell::Cell, ffi::CStr};
 use swoole_rs_phpstubs::http_cookie;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{Call, Custom, CustomClass, Owned, OwnedArray, Value, ZStr, ZString};
@@ -12,8 +12,9 @@ const COOKIE_UNAVAILABLE: std::ffi::c_int = 7107;
 static COOKIE: CustomClass<Held> = CustomClass::new();
 
 /// `struct HttpCookieObject { Cookie *cookie; zend_object std; }`: no cookie
-/// until `__construct` runs. Borrows never span PHP code.
-struct Held(RefCell<Option<Cookie>>);
+/// until `__construct` runs. The cookie is taken out and put back with nothing
+/// in between that runs PHP code, and what it replaces is released after.
+struct Held(Cell<Option<Cookie>>);
 
 impl Custom for Held {
     fn class() -> &'static CustomClass<Self> {
@@ -21,14 +22,18 @@ impl Custom for Held {
     }
 
     fn new() -> Self {
-        Self(RefCell::new(None))
+        Self(Cell::new(None))
     }
 }
 
 impl Held {
-    /// `f` on the constructed cookie.
+    /// `f` on the constructed cookie, taken out and put back; what `f` returns
+    /// (such as a replaced field) is dropped by the caller, after the put-back.
     fn with<R>(&self, f: impl FnOnce(&mut Cookie) -> R) -> Option<R> {
-        self.0.borrow_mut().as_mut().map(f)
+        let mut cookie = self.0.take();
+        let result = cookie.as_mut().map(f);
+        self.0.set(cookie);
+        result
     }
 
     /// `Cookie::toString`: the line, or None after a warning, which resets the
@@ -101,18 +106,19 @@ impl Cookie {
         }
     }
 
-    /// `HTTP_COOKIE_WITH_STR`: keep a reference to a non-empty string, else none.
-    fn set(&mut self, field: usize, string: Option<&ZStr>) {
-        if let Some(slot) = self.fields.get_mut(field) {
-            *slot = string
-                .filter(|string| !string.bytes().is_empty())
-                .map(ZStr::to_owned);
-        }
+    /// `HTTP_COOKIE_WITH_STR`: keep a reference to a non-empty string, else
+    /// none. Gives back the string it replaced.
+    fn set(&mut self, field: usize, string: Option<&ZStr>) -> Option<ZString> {
+        let string = string
+            .filter(|string| !string.bytes().is_empty())
+            .map(ZStr::to_owned);
+        std::mem::replace(self.fields.get_mut(field)?, string)
     }
 
-    /// `Cookie::reset`, which also turns encoding back on.
-    fn reset(&mut self) {
-        *self = Self::new(true);
+    /// `Cookie::reset`, which also turns encoding back on. Gives back the old
+    /// cookie.
+    fn reset(&mut self) -> Self {
+        std::mem::replace(self, Self::new(true))
     }
 
     /// `Cookie::toString`: the line, or None after a warning.
@@ -226,7 +232,7 @@ pub fn php_swoole_http_cookie_minit(args: &MinitArgs) {
 /// `php_swoole_http_get_cooke_safety`: a constructed cookie's object, or
 /// Swoole's `SW_ERROR_HTTP_COOKIE_UNAVAILABLE` (upstream then dereferences null).
 fn constructed(held: Option<&Held>) -> Option<&Held> {
-    let held = held.filter(|held| held.0.borrow().is_some());
+    let held = held.filter(|held| held.with(|_| ()).is_some());
     if held.is_none() {
         crate::host::set_last_error(COOKIE_UNAVAILABLE);
     }
@@ -243,15 +249,15 @@ fn construct(call: &Call) {
     let Ok(encode) = call.arity(0, 1).and_then(|()| call.bool(1, true)) else {
         return;
     };
-    let Some(Held(cookie)) = call.custom() else {
+    let Some(held) = call.custom::<Held>() else {
         return;
     };
-    if cookie.borrow().is_some() {
+    if held.with(|_| ()).is_some() {
         call.throw_constructed_twice();
         call.set_bool(false);
         return;
     }
-    *cookie.borrow_mut() = Some(Cookie::new(encode));
+    held.0.set(Some(Cookie::new(encode)));
 }
 
 /// `with<Field>(string $field)`: set a string field and return `$this`.

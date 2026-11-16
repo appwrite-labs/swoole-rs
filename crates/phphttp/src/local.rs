@@ -4,7 +4,7 @@
 //! parallel, so they keep it per thread.
 
 /// `thread_local!` on ZTS and in tests; a [`Process`] static otherwise. Both
-/// offer the `LocalKey` methods the crate uses on `Cell` and `RefCell`.
+/// offer the `LocalKey` methods the crate uses on `Cell`.
 macro_rules! php_local {
     ($($(#[$attr:meta])* static $name:ident: $ty:ty = $init:expr;)+) => {$(
         #[cfg(any(zts, panic = "unwind"))]
@@ -24,13 +24,6 @@ pub(crate) struct Process<T>(pub(crate) T);
 unsafe impl<T> Sync for Process<T> {}
 
 #[cfg(not(any(zts, panic = "unwind")))]
-impl<T> Process<std::cell::RefCell<T>> {
-    pub(crate) fn with_borrow_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
-        f(&mut self.0.borrow_mut())
-    }
-}
-
-#[cfg(not(any(zts, panic = "unwind")))]
 impl<T> Process<std::cell::Cell<T>> {
     pub(crate) fn take(&self) -> T
     where
@@ -40,5 +33,8 @@ impl<T> Process<std::cell::Cell<T>> {
     }
     pub(crate) fn set(&self, value: T) {
         self.0.set(value);
+    }
+    pub(crate) fn replace(&self, value: T) -> T {
+        self.0.replace(value)
     }
 }
