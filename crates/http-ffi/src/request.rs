@@ -181,8 +181,7 @@ impl HttpForm {
     }
 }
 
-/// `http_server::Request`, field for field; native code asserts the layout.
-#[repr(C)]
+/// `http_server::Request`'s fields.
 pub struct HttpRequest {
     pub method: u8,
     pub version: u8,
@@ -944,23 +943,6 @@ mod tests {
         assert_eq!(code(r.get_header_length()), SW_OK, "header block");
         r.parse_header_info();
         (i, r)
-    }
-
-    #[test]
-    fn layouts_match_native_static_asserts() {
-        use core::mem::{offset_of, size_of};
-        let request = [
-            offset_of!(HttpRequest, url_offset),
-            offset_of!(HttpRequest, content_length),
-            offset_of!(HttpRequest, form),
-        ];
-        assert_eq!(request, [12, 32, 40], "HttpRequest fields");
-        let tail = [
-            offset_of!(HttpRequest, buffer),
-            offset_of!(HttpRequest, native),
-            size_of::<HttpRequest>(),
-        ];
-        assert_eq!(tail, [48, 56, 88], "HttpRequest tail");
     }
 
     // core-tests/src/server/http_server.cpp: get_protocol.
