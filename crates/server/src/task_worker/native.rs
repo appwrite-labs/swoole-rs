@@ -235,9 +235,7 @@ extern "C" fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int 
     };
     let fd = event.socket().map_or(-1, Socket::fd);
     let mut buf = EventData([0; EVENT_DATA_SIZE]);
-    let read = swoole_rs_corebase::sys::read(fd, &mut buf.0);
-    let task = usize::try_from(read)
-        .ok()
+    let task = swoole_rs_corebase::sys::read(fd, &mut buf.0)
         .filter(|&read| read > 0)
         .and_then(|read| Packed::from_bytes(buf.0.get(..read)?));
     let Some(task) = task else {

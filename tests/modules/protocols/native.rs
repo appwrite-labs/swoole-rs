@@ -15,8 +15,8 @@ use core::ffi::CStr;
 use swoole_rs_corebase::{ProxyState, net_types::PacketLength, set_errno, sys::errno};
 use swoole_rs_oracle::{protocols as pinned, resp_stream, socks5};
 use swoole_rs_protocols::{
-    ConnectRefusal, Malformed, RespKind, RespPhpState, RespRequest, mqtt_frame_length, resp_format,
-    resp_handler_key, resp_php_next, resp_spans, socks_auth, socks_connect,
+    ConnectRefusal, Malformed, RespKind, RespPhpState, RespRequest, resp_format, resp_handler_key,
+    resp_php_next, resp_spans, socks_auth, socks_connect,
 };
 use swoole_rs_protocols_ffi as ffi;
 use swoole_rs_protocols_ffi::{Dispatched, Received, RespConnection, recv_packet};
@@ -532,7 +532,11 @@ fn parse_replies() {
 fn bounded_failures_leave_output() {
     let untouched = [0xa5u8; 16];
     let mut output = untouched;
-    assert_eq!(mqtt_frame_length(&[]), 0);
+    assert_eq!(
+        swoole_rs_protocols::mqtt_frame_length(&[]).map_or(-1, |length| length
+            .map_or(0, |n| i64::try_from(n).unwrap_or(-1))),
+        0
+    );
     assert_eq!(socks_auth(&[], &[], &mut output[..2]), None);
     assert_eq!(output, untouched);
     assert_eq!(

@@ -103,7 +103,7 @@ pub extern "C" fn swoole_coroutine_socket(domain: c_int, kind: c_int, protocol: 
 pub fn swoole_coroutine_send(fd: c_int, buf: &[u8], flags: c_int) -> ssize_t {
     match hooked(fd) {
         Some((_, socket)) => socket.send(buf).map_or(-1, usize::cast_signed),
-        None => sys::send(fd, buf, flags),
+        None => sys::send(fd, buf, flags).map_or(-1, usize::cast_signed),
     }
 }
 
@@ -112,7 +112,7 @@ pub fn swoole_coroutine_send(fd: c_int, buf: &[u8], flags: c_int) -> ssize_t {
 pub fn sendmsg(fd: c_int, msg: &SendMessage<'_>, flags: c_int) -> ssize_t {
     match hooked(fd) {
         Some((_, socket)) => socket.sendmsg(msg, flags).map_or(-1, usize::cast_signed),
-        None => msg.send(fd, flags),
+        None => msg.send(fd, flags).map_or(-1, usize::cast_signed),
     }
 }
 
@@ -120,14 +120,14 @@ pub fn sendmsg(fd: c_int, msg: &SendMessage<'_>, flags: c_int) -> ssize_t {
 pub fn recvmsg(fd: c_int, msg: &mut RecvMessage<'_>, flags: c_int) -> ssize_t {
     match hooked(fd) {
         Some((_, socket)) => socket.recvmsg(msg, flags).map_or(-1, usize::cast_signed),
-        None => msg.recv(fd, flags),
+        None => msg.recv(fd, flags).map_or(-1, usize::cast_signed),
     }
 }
 
 /// Hooked `recv(2)` into `buf`; `MSG_PEEK` peeks, other flags are the socket's.
 pub fn swoole_coroutine_recv(fd: c_int, buf: &mut [u8], flags: c_int) -> ssize_t {
     let Some((_, socket)) = hooked(fd) else {
-        return sys::recv(fd, buf, flags);
+        return sys::recv(fd, buf, flags).map_or(-1, usize::cast_signed);
     };
     if flags & libc::MSG_PEEK != 0 {
         socket.peek(buf)
@@ -355,7 +355,7 @@ pub unsafe extern "C" fn swoole_coroutine_read(
 /// the ring, or waits for readiness and reads on the pool.
 pub fn read(fd: c_int, buf: &mut [MaybeUninit<u8>]) -> ssize_t {
     if coroutine().is_none() {
-        return sys::read(fd, buf);
+        return sys::read(fd, buf).map_or(-1, usize::cast_signed);
     }
     if let Some(socket) = socket_map::get(fd) {
         return socket.read(buf).map_or(-1, usize::cast_signed);
@@ -394,7 +394,7 @@ pub unsafe extern "C" fn swoole_coroutine_write(
 #[must_use]
 pub fn write(fd: c_int, buf: &[u8]) -> ssize_t {
     if coroutine().is_none() {
-        return sys::write(fd, buf);
+        return sys::write(fd, buf).map_or(-1, usize::cast_signed);
     }
     if let Some(socket) = socket_map::get(fd) {
         return socket.write(buf).map_or(-1, usize::cast_signed);

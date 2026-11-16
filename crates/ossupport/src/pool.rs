@@ -305,8 +305,7 @@ impl Pool {
 pub fn complete(fd: c_int, mut complete: impl FnMut(usize)) -> Option<usize> {
     const TOKEN: usize = size_of::<usize>();
     let mut events = [0_u8; 128 * TOKEN];
-    let n = swoole_rs_corebase::sys::read(fd, &mut events);
-    let count = usize::try_from(n).ok()? / TOKEN;
+    let count = swoole_rs_corebase::sys::read(fd, &mut events)? / TOKEN;
     for token in events.as_chunks::<TOKEN>().0.iter().take(count) {
         complete(usize::from_ne_bytes(*token));
     }

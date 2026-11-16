@@ -540,7 +540,8 @@ pub fn http_header(bytes: &[u8]) {
 pub fn mqtt_length(bytes: &[u8]) {
     let data: Vec<c_char> = bytes.iter().map(|&byte| byte as c_char).collect();
     let size = data.len().min(u32::MAX as usize) as u32;
-    let got = swoole_rs_protocols::mqtt_frame_length(&bytes[..size as usize]);
+    let got = swoole_rs_protocols::mqtt_frame_length(&bytes[..size as usize])
+        .map_or(-1, |length| length.map_or(0, |n| i64::try_from(n).unwrap_or(-1)));
     if size == 0 {
         return;
     }

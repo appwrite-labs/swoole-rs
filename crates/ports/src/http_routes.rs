@@ -101,7 +101,7 @@ pub mod exports {
         _socket: *mut c_void,
         pl: &mut PacketLength,
     ) -> isize {
-        swoole_rs_http2::frame_length(pl.bytes())
+        swoole_rs_http2::frame_length(pl.bytes()).map_or(0, usize::cast_signed)
     }
 
     /// The connection a server socket's `object` holds.

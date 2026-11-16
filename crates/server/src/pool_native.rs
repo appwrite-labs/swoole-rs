@@ -200,7 +200,7 @@ extern "C" fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
     // which only this handler fills and nothing borrows meanwhile.
     let packet = unsafe { core::slice::from_raw_parts_mut(packet.cast::<u8>(), size) };
     let n = swoole_rs_corebase::sys::read(fd(event.socket()), packet);
-    if n < 0 && errno() != libc::EINTR {
+    if n.is_none() && errno() != libc::EINTR {
         log::sys_warning(
             c"ProcessPool::recv_packet",
             format_args!("failed to read({}) pipe", event.fd()),
@@ -211,9 +211,7 @@ extern "C" fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
         ..DataHead::default()
     };
     // The bytes read: none when the read failed.
-    let read = packet
-        .get(..usize::try_from(n).unwrap_or(0))
-        .unwrap_or_default();
+    let read = packet.get(..n.unwrap_or(0)).unwrap_or_default();
     pool.call_on_message(&RecvData::new(info, read));
     0
 }

@@ -498,15 +498,15 @@ pub fn sw_rs_http2_decode_frame(
     })
 }
 
-/// `swoole::http2::get_frame_length` over the buffered bytes: 0 until the nine-byte
+/// `swoole::http2::get_frame_length` over the buffered bytes: None until the nine-byte
 /// frame header is buffered, then the whole frame's length.
 #[must_use]
-pub fn frame_length(buffered: &[u8]) -> isize {
+pub fn frame_length(buffered: &[u8]) -> Option<usize> {
     match buffered {
         &[b0, b1, b2, _, _, _, _, _, _, ..] => {
-            isize::try_from(u32::from_be_bytes([0, b0, b1, b2])).map_or(-1, |length| length + 9)
+            Some(((usize::from(b0) << 16) | (usize::from(b1) << 8) | usize::from(b2)) + 9)
         }
-        _ => 0,
+        _ => None,
     }
 }
 
@@ -880,8 +880,11 @@ mod tests {
     #[test]
     fn framing_and_short_prefix() {
         let bytes = header(255, 0x00ff_ffff, 0x80, 0xffff_ffff);
-        assert_eq!(frame_length(&bytes[..8]), 0);
-        assert_eq!(frame_length(&bytes), 0x00ff_ffff + 9);
+        assert_eq!(frame_length(&bytes[..8]).map_or(0, usize::cast_signed), 0);
+        assert_eq!(
+            frame_length(&bytes).map_or(0, usize::cast_signed),
+            0x00ff_ffff + 9
+        );
         assert_eq!(sw_rs_http2_decode_frame(&bytes[..8], 0, false), None);
         let f = sw_rs_http2_decode_frame(&bytes, 0, false).unwrap();
         assert_eq!(f.stream_id, 0x7fff_ffff);
