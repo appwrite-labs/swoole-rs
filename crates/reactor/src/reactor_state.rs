@@ -767,8 +767,9 @@ pub(crate) mod tests {
                             fds[0],
                             ptr::from_mut(&mut socket).cast(),
                             crate::Events::from_bits(512)
-                        ),
-                        0
+                        )
+                        .ok(),
+                        Some(())
                     );
                 }
                 #[cfg(not(target_os = "linux"))]
