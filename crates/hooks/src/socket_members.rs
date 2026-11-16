@@ -174,14 +174,14 @@ impl Co {
     /// `Socket::recv_with_buffer(buf, n)` into `out`, which is outside the socket's
     /// read buffer: the count of `out`'s first slots it wrote, or -1.
     pub fn recv_with_buffer(self, out: &mut [impl ReadSlot]) -> Option<usize> {
-        count(recv_buffered(self, out))
+        recv_buffered(self, out)
     }
 
     /// `Socket::recv_line(buf, maxlen)` of at most `out.len()` bytes, one buffered
     /// byte at a time, into `out`, which is outside the socket's read buffer: the
     /// count of `out`'s first slots it wrote, or -1.
     pub fn recv_line(self, out: &mut [impl ReadSlot]) -> Option<usize> {
-        count(recv_line(out, |at| recv_buffered(self, at)))
+        recv_line(out, |at| recv_buffered(self, at))
     }
 
     /// `Socket::set_option(level, optname, optval, optlen)`: `setsockopt`, warning on

@@ -39,10 +39,10 @@ impl Bytes<'_> {
 
     /// The host's `recv` of `socket` into the free space, which then counts what it
     /// wrote.
-    fn recv(&mut self, socket: Co) -> isize {
+    fn recv(&mut self, socket: Co) -> Option<usize> {
         let free = self.all.get_mut(self.filled..).unwrap_or_default();
         let received = (host().recv)(socket, free, false);
-        if let Ok(count) = usize::try_from(received) {
+        if let Some(count) = received {
             self.filled = (self.filled + count).min(self.all.len());
         }
         received
@@ -53,20 +53,20 @@ impl Bytes<'_> {
 /// to `*offset`: up to `out.len()` bytes into `out`, refilling it with one `recv`
 /// when it holds too few. `recv` gets the buffer's length and offset, to publish
 /// before it may yield, and the buffer to receive into; it returns the bytes read,
-/// 0 at EOF or -1 on error.
+/// 0 at EOF or None on error.
 fn read_buffered<S: ReadSlot>(
     data: &mut Bytes<'_>,
     offset: &mut usize,
     out: &mut [S],
-    recv: impl FnOnce(usize, usize, &mut Bytes<'_>) -> isize,
-) -> isize {
+    recv: impl FnOnce(usize, usize, &mut Bytes<'_>) -> Option<usize>,
+) -> Option<usize> {
     let mut at = (*offset).min(data.filled);
     let held = data.filled - at;
     let take = S::copy_in(out, data.content().get(at..).unwrap_or_default());
     at += take;
     if out.len() <= held {
         *offset = at;
-        return take.cast_signed();
+        return Some(take);
     }
     // `String::reduce`: drop the consumed half.
     if at >= data.all.len() / 2 && at > 0 {
@@ -75,28 +75,24 @@ fn read_buffered<S: ReadSlot>(
     }
     *offset = at;
     let received = recv(data.filled, at, data);
-    if received <= 0 {
-        return if held > 0 {
-            held.cast_signed()
-        } else {
-            received
-        };
+    if received <= Some(0) {
+        return if held > 0 { Some(held) } else { received };
     }
     let copied = S::copy_in(
         out.get_mut(held..).unwrap_or_default(),
         data.content().get(at..).unwrap_or_default(),
     );
     *offset = at + copied;
-    (held + copied).cast_signed()
+    Some(held + copied)
 }
 
 /// `recv_line`: bytes up to and including the first `\n` or `\r`, at most
 /// `out.len()`, one `read` (`recv_with_buffer`) of a byte at a time, each copied to
-/// the next of `out`'s slots. -1 on error; at EOF, what was read.
+/// the next of `out`'s slots. None on error; at EOF, what was read.
 pub(crate) fn recv_line<S: ReadSlot>(
     out: &mut [S],
-    mut read: impl FnMut(&mut [u8]) -> isize,
-) -> isize {
+    mut read: impl FnMut(&mut [u8]) -> Option<usize>,
+) -> Option<usize> {
     let limit = out.len();
     let mut count = 0;
     let mut last = 0;
@@ -108,12 +104,9 @@ pub(crate) fn recv_line<S: ReadSlot>(
             count += 1;
         }
         if count < limit {
-            last = read(&mut byte);
-            if last < 0 {
-                return -1;
-            }
+            last = read(&mut byte)?;
             if last == 0 {
-                return count.cast_signed();
+                return Some(count);
             }
             S::copy_in(out.get_mut(count..).unwrap_or_default(), &byte);
         }
@@ -121,7 +114,7 @@ pub(crate) fn recv_line<S: ReadSlot>(
     if count < limit {
         count += 1;
     }
-    count.cast_signed()
+    Some(count)
 }
 
 struct Context {
@@ -151,9 +144,9 @@ fn buffer(socket: Co) -> Context {
 
 /// `Socket::recv_with_buffer`, including availability and lazy buffer allocation.
 /// `out` cannot overlap the socket's buffer.
-pub fn recv_buffered(socket: Co, out: &mut [impl ReadSlot]) -> isize {
+pub fn recv_buffered(socket: Co, out: &mut [impl ReadSlot]) -> Option<usize> {
     if !available(socket, Events::READ) {
-        return -1;
+        return None;
     }
     let mut ctx = buffer(socket);
     let all = if ctx.view.str.is_null() {
@@ -190,14 +183,14 @@ mod tests {
     }
 
     impl Source {
-        fn recv(&mut self, into: &mut Bytes<'_>) -> isize {
+        fn recv(&mut self, into: &mut Bytes<'_>) -> usize {
             self.calls += 1;
             let at = &mut into.all[into.filled..];
             let n = at.len().min(self.data.len());
             at[..n].write_copy_of_slice(&self.data[..n]);
             into.filled += n;
             self.data.drain(..n);
-            n.cast_signed()
+            n
         }
     }
 
@@ -221,7 +214,7 @@ mod tests {
             }
         }
 
-        fn read(&mut self, n: usize) -> (isize, Vec<u8>) {
+        fn read(&mut self, n: usize) -> (Option<usize>, Vec<u8>) {
             let mut out = vec![0; n];
             let source = &mut self.source;
             let mut data = Bytes {
@@ -229,10 +222,10 @@ mod tests {
                 filled: self.length,
             };
             let got = read_buffered(&mut data, &mut self.offset, &mut out, |_, _, data| {
-                source.recv(data)
+                Some(source.recv(data))
             });
             self.length = data.filled;
-            out.truncate(got.max(0).unsigned_abs());
+            out.truncate(got.unwrap_or(0));
             (got, out)
         }
     }
@@ -240,13 +233,13 @@ mod tests {
     #[test]
     fn reads_are_served_from_the_buffer_and_refilled() {
         let mut b = Buffered::new(8, b"abcdefghij");
-        assert_eq!(b.read(3), (3, b"abc".to_vec()));
+        assert_eq!(b.read(3), (Some(3), b"abc".to_vec()));
         assert_eq!((b.length, b.offset, b.source.calls), (8, 3, 1));
-        assert_eq!(b.read(4), (4, b"defg".to_vec()));
+        assert_eq!(b.read(4), (Some(4), b"defg".to_vec()));
         // 1 byte held; the consumed half is dropped before the refill.
-        assert_eq!(b.read(4), (3, b"hij".to_vec()));
+        assert_eq!(b.read(4), (Some(3), b"hij".to_vec()));
         assert_eq!((b.length, b.offset), (2, 2));
-        assert_eq!(b.read(2), (0, vec![]));
+        assert_eq!(b.read(2), (Some(0), vec![]));
     }
 
     #[test]
@@ -259,12 +252,12 @@ mod tests {
                 at[..bytes.len()].copy_from_slice(&bytes);
                 got
             });
-            out.truncate(n.max(0).unsigned_abs());
+            out.truncate(n.unwrap_or(0));
             (n, out)
         };
-        assert_eq!(line(&mut b, 10), (3, b"ab\n".to_vec()));
-        assert_eq!(line(&mut b, 1), (1, b"c".to_vec()));
-        assert_eq!(line(&mut b, 10), (1, b"d".to_vec()));
-        assert_eq!(line(&mut b, 10), (0, vec![]));
+        assert_eq!(line(&mut b, 10), (Some(3), b"ab\n".to_vec()));
+        assert_eq!(line(&mut b, 1), (Some(1), b"c".to_vec()));
+        assert_eq!(line(&mut b, 10), (Some(1), b"d".to_vec()));
+        assert_eq!(line(&mut b, 10), (Some(0), vec![]));
     }
 }

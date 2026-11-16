@@ -1266,9 +1266,9 @@ const DEFAULT_BUFFER: usize = 4096;
 
 /// `sock->recv_packet(timeout)` on a coroutine socket, with the packet: its
 /// read buffer's bytes.
-fn sock_recv(socket: co::Co, timeout: f64) -> (isize, *mut u8, usize) {
+fn sock_recv(socket: co::Co, timeout: f64) -> (Option<usize>, *mut u8, usize) {
     let received = co::recv_packet(socket, timeout);
-    if received <= 0 {
+    if received <= Some(0) {
         return (received, ptr::null_mut(), 0);
     }
     // A packet read leaves it in the socket's read buffer.
@@ -1330,10 +1330,10 @@ pub(crate) fn recv(settings: u8, slot: &mut Assembly, socket: co::Co, timeout: f
     let func = c"websocket::recv_frame";
     loop {
         let (received, data, length) = sock_recv(socket, timeout);
-        if received < 0 {
+        if received.is_none() {
             return Owned::bool(false);
         }
-        if received == 0 {
+        if received == Some(0) {
             return Owned::string(ZString::empty());
         }
         if length < 2 {
