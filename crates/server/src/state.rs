@@ -511,7 +511,7 @@ impl ServerState {
     pub(crate) fn unlink_pid(&self) {
         let file = self.text(ServerText::PidFile);
         if !file.is_empty() {
-            swoole_rs_corebase::sys::unlink(&c_path(&file));
+            _ = swoole_rs_corebase::sys::unlink(&c_path(&file));
         }
     }
 

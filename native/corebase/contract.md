@@ -44,14 +44,14 @@ bailout or panic crosses the ABI. All spans and pointer differences fit
 - The global hook table (`hook.rs`) is Rust's: `swoole_add_hook`,
   `swoole_call_hook` (over the list as the call began) and `swoole_isset_hook`.
 
-## `mkdir_next`
+## Recursive mkdir
 
-Bounded path copying and component iteration. The native stack owns a
-zero-initialized two-`size_t` state and a `PATH_MAX` scratch buffer. Return
-values: 1 = next NUL-cut prefix is ready for native `access(R_OK)`/`mkdir(0755)`
-(the next call restores the slash and continues); 0 = done; 2 = emit the original
-too-long warning; 3 = invalid state/storage. Input, output and state must be
-disjoint; state/output must not change between steps.
+`mkdir_recursive` and its private prefix cursor run entirely in Rust. The cursor
+has plain Rust state and returns `Result<bool, MkdirError>`; true prepares a
+NUL-cut prefix and the next step restores its slash. The operation returns a
+named syscall, path-bound or invalid-state error. A syscall error captures errno
+and leaves its failed prefix in the scratch buffer for the original warning.
+The task-path caller carries that error across releasing its lock.
 
 Order matches upstream: raw `std::string` length check first, then copy up to the
 first NUL, with the trailing-slash decision taken from the last raw byte, so

@@ -1011,7 +1011,7 @@ pub fn close(this: Handle) -> bool {
         let path = saved.read(|socket| socket.info.addr.unix().sun_path);
         let path = path.map(|byte| byte.to_ne_bytes()[0]);
         if let Ok(path) = CStr::from_bytes_until_nul(&path) {
-            swoole_rs_corebase::sys::unlink(path);
+            _ = swoole_rs_corebase::sys::unlink(path);
         }
     }
     if this.flag(Flag::Async) {
@@ -1533,7 +1533,7 @@ fn bind_unix(this: Handle) -> bool {
         #[expect(clippy::cast_possible_truncation, reason = "AF_UNIX fits sa_family_t")]
         let family = libc::AF_UNIX as libc::sa_family_t;
         address.sun_family = family;
-        swoole_rs_corebase::sys::unlink(&bound);
+        _ = swoole_rs_corebase::sys::unlink(&bound);
         // The address just written, bound at `sizeof(sockaddr_un)`; the record keeps
         // its own length.
         let mut local = socket.info;

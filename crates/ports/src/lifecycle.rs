@@ -285,7 +285,7 @@ pub(crate) fn close(config: &PortConfig) {
         let mut path = config.host_bytes().to_vec();
         path.push(0);
         if let Ok(path) = CStr::from_bytes_until_nul(&path) {
-            sys::unlink(path);
+            _ = sys::unlink(path);
         }
     }
 }
