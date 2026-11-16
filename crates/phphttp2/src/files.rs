@@ -46,7 +46,7 @@ impl File {
 
 impl Drop for File {
     fn drop(&mut self) {
-        swoole_rs_corebase::sys::close(self.0);
+        _ = swoole_rs_corebase::sys::close(self.0);
     }
 }
 

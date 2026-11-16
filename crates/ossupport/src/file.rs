@@ -46,7 +46,7 @@ fn to_off(done: usize) -> off_t {
 pub fn file_open(fd: c_int, path: &CStr, flags: c_int, mode: c_int) -> c_int {
     if fd != -1 {
         // The caller's previous descriptor, released here as upstream does.
-        sys::close(fd);
+        _ = sys::close(fd);
     }
     let mode = if flags & libc::O_CREAT == 0 || mode != 0 {
         mode
@@ -62,7 +62,7 @@ pub fn file_open(fd: c_int, path: &CStr, flags: c_int, mode: c_int) -> c_int {
     reason = "upstream's callers ignore File::close's result"
 )]
 pub fn file_close(fd: c_int) -> bool {
-    fd != -1 && sys::close(fd) == 0
+    fd != -1 && sys::close(fd).is_ok()
 }
 
 /// A writable file name template, NUL-terminated within the bytes it borrows: what

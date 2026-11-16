@@ -316,7 +316,7 @@ pub extern "C" fn swoole_coroutine_socket_wait_event(
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     if coroutine().is_none() {
-        return sys::close(fd);
+        return sys::close(fd).map_or(-1, |()| 0);
     }
     let result = socket_map::close(fd, Co::close);
     if result <= 0 {

@@ -235,7 +235,7 @@ pub(crate) fn close_socket(config: &PortConfig) {
     // (`SocketRecord::into_raw`) and nothing else uses, taken back to drop.
     let socket = unsafe { Box::from_raw(socket) };
     let fd = socket.fd;
-    if swoole_rs_corebase::sys::close(fd) < 0 {
+    if swoole_rs_corebase::sys::close(fd).is_err() {
         log::sys_warning(
             c"ListenPort::close_socket",
             format_args!("close({fd}) failed"),

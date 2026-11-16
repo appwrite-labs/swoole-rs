@@ -260,7 +260,9 @@ hooked! {
 /// Hooked `close` of an fd that is no coroutine socket, on the pool (`offload`).
 #[must_use]
 pub fn swr_v1_hook_close_fd(fd: c_int, offload: Option<Offload>) -> c_int {
-    on_pool(offload, -1, || swoole_rs_corebase::sys::close(fd))
+    on_pool(offload, -1, || {
+        swoole_rs_corebase::sys::close(fd).map_or(-1, |()| 0)
+    })
 }
 
 /// Hooked `sleep`: `System::sleep` (fatal outside a coroutine, as upstream).

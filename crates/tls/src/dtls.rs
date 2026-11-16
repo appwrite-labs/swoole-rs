@@ -585,8 +585,8 @@ mod tests {
         let [read, write] = swoole_rs_corebase::sys::pipe().unwrap();
         assert_eq!(swoole_rs_corebase::sys::write(write, b"abc"), 3);
         assert!(dtls_session_receive(owner.session(), read, 5));
-        swoole_rs_corebase::sys::close(read);
-        swoole_rs_corebase::sys::close(write);
+        _ = swoole_rs_corebase::sys::close(read);
+        _ = swoole_rs_corebase::sys::close(write);
         assert_eq!(owner.read(3).1, b"abc");
         let fatal = SslFailure {
             returned: -1,

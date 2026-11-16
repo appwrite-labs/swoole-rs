@@ -191,8 +191,8 @@ pub(crate) fn pipe_close(worker: Worker<'_>, which: i64) -> bool {
         return false;
     }
     match which {
-        CLOSE_READ => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_RD) == 0,
-        CLOSE_WRITE => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_WR) == 0,
+        CLOSE_READ => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_RD).is_ok(),
+        CLOSE_WRITE => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_WR).is_ok(),
         _ => {
             // SAFETY: the worker's live pair, boxed as [`open_pipe`] and crates/server's
             // pools make them; the record keeps it unless it is deleted below, and

@@ -106,7 +106,7 @@ fn local_mac(call: &Call) {
     // SAFETY: a socket and an ifconf over a live buffer.
     if unsafe { libc::ioctl(sock, SIOCGIFCONF, &raw mut conf) } < 0 {
         sys_warning(b"ioctl SIOCGIFCONF failed");
-        swoole_rs_corebase::sys::close(sock);
+        _ = swoole_rs_corebase::sys::close(sock);
         call.set_bool(false);
         return;
     }
@@ -136,7 +136,7 @@ fn local_mac(call: &Call) {
             add_address(&mut array, name.to_bytes(), &bytes);
         }
     }
-    swoole_rs_corebase::sys::close(sock);
+    _ = swoole_rs_corebase::sys::close(sock);
     call.set_owned(array.into_owned());
 }
 

@@ -465,8 +465,11 @@ pub fn pwrite(fd: c_int, buf: &[u8], offset: off_t) -> isize {
 }
 
 /// `close(2)`.
-pub fn close(fd: c_int) -> c_int {
-    c::close(fd)
+///
+/// # Errors
+/// The syscall's errno.
+pub fn close(fd: c_int) -> std::io::Result<()> {
+    status_result(c::close(fd))
 }
 
 /// `writev(2)` of `vectors`.
@@ -479,8 +482,11 @@ pub fn writev(fd: c_int, vectors: &[std::io::IoSlice<'_>]) -> isize {
 }
 
 /// `listen(2)`.
-pub fn listen(fd: c_int, backlog: c_int) -> c_int {
-    c::listen(fd, backlog)
+///
+/// # Errors
+/// The syscall's errno.
+pub fn listen(fd: c_int, backlog: c_int) -> std::io::Result<()> {
+    status_result(c::listen(fd, backlog))
 }
 
 /// `socket(2)`.
@@ -490,8 +496,11 @@ pub fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int {
 }
 
 /// `shutdown(2)`.
-pub fn shutdown(fd: c_int, how: c_int) -> c_int {
-    c::shutdown(fd, how)
+///
+/// # Errors
+/// The syscall's errno.
+pub fn shutdown(fd: c_int, how: c_int) -> std::io::Result<()> {
+    status_result(c::shutdown(fd, how))
 }
 
 /// `getsockopt(2)` into `value`: the length the kernel stored.
@@ -581,8 +590,11 @@ pub fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
 }
 
 /// `flock(2)`.
-pub fn flock(fd: c_int, operation: c_int) -> c_int {
-    c::flock(fd, operation)
+///
+/// # Errors
+/// The syscall's errno.
+pub fn flock(fd: c_int, operation: c_int) -> std::io::Result<()> {
+    status_result(c::flock(fd, operation))
 }
 
 /// `poll(2)` of `fds`.
@@ -612,13 +624,19 @@ pub fn sleep(seconds: libc::c_uint) -> libc::c_uint {
 }
 
 /// `usleep(3)`.
-pub fn usleep(microseconds: libc::useconds_t) -> c_int {
-    c::usleep(microseconds)
+///
+/// # Errors
+/// The syscall's errno.
+pub fn usleep(microseconds: libc::useconds_t) -> std::io::Result<()> {
+    status_result(c::usleep(microseconds))
 }
 
 /// `nanosleep(2)` for `request`, the time left going to `remaining`.
-pub fn nanosleep(request: &libc::timespec, remaining: &mut libc::timespec) -> c_int {
-    c::nanosleep(request, Some(remaining))
+///
+/// # Errors
+/// The syscall's errno.
+pub fn nanosleep(request: &libc::timespec, remaining: &mut libc::timespec) -> std::io::Result<()> {
+    status_result(c::nanosleep(request, Some(remaining)))
 }
 
 /// `mmap(2)` of a fresh anonymous read-write mapping of `len` bytes, `MAP_SHARED`
@@ -1068,15 +1086,21 @@ pub fn getpriority(which: c_int, who: libc::id_t) -> c_int {
 }
 
 /// `setpriority(2)`.
-pub fn setpriority(which: c_int, who: libc::id_t, priority: c_int) -> c_int {
+///
+/// # Errors
+/// The syscall's errno.
+pub fn setpriority(which: c_int, who: libc::id_t, priority: c_int) -> std::io::Result<()> {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     let which = which.cast_unsigned();
-    c::setpriority(which, who, priority)
+    status_result(c::setpriority(which, who, priority))
 }
 
 /// `setitimer(2)`, discarding the previous timer.
-pub fn setitimer(which: c_int, value: &libc::itimerval) -> c_int {
-    c::setitimer(which, value, None)
+///
+/// # Errors
+/// The syscall's errno.
+pub fn setitimer(which: c_int, value: &libc::itimerval) -> std::io::Result<()> {
+    status_result(c::setitimer(which, value, None))
 }
 
 /// `localtime_r(3)`: `time`'s calendar in the local zone, None when it has none.
@@ -1185,10 +1209,10 @@ mod tests {
         set_errno(0);
         assert_eq!(errno(), 0);
         for fd in [reader, writer, copy] {
-            assert_eq!(close(fd), 0);
+            assert!(close(fd).is_ok());
         }
         // Not `copy` again: a test on another thread may already hold that number.
-        assert_eq!(close(-1), -1);
+        assert!(close(-1).is_err());
         assert_eq!(errno(), libc::EBADF);
     }
 
@@ -1231,8 +1255,8 @@ mod tests {
         let length = getsockopt(left, libc::SOL_SOCKET, libc::SO_KEEPALIVE, &mut value).unwrap();
         // Linux reports 1, macOS the option's flag bit; both mean on.
         assert_eq!((length, value != 0), (socklen::<c_int>(), true));
-        assert_eq!(close(left), 0);
-        assert_eq!(close(right), 0);
+        assert!(close(left).is_ok());
+        assert!(close(right).is_ok());
     }
 
     #[test]
@@ -1254,8 +1278,8 @@ mod tests {
         assert_eq!(recv(right, &mut buf, libc::MSG_PEEK), 3);
         assert_eq!(recv(right, &mut buf, 0), 3);
         assert_eq!(&buf[..3], b"abc");
-        assert_eq!(close(left), 0);
-        assert_eq!(close(right), 0);
+        assert!(close(left).is_ok());
+        assert!(close(right).is_ok());
         assert!(socketpair(-1, 0, 0).is_none());
         assert!(
             getsockopt(-1, libc::SOL_SOCKET, libc::SO_TYPE, &mut kind)

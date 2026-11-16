@@ -1039,7 +1039,7 @@ pub fn close(this: Handle) -> bool {
         return true;
     };
     // Once: -1 marks the client's descriptor closed.
-    swoole_rs_corebase::sys::close(fd) == 0
+    swoole_rs_corebase::sys::close(fd).is_ok()
 }
 
 /// `Client::shutdown(how)`. Upstream's `SHUT_RDWR` records only a read shutdown.
@@ -1051,9 +1051,9 @@ pub fn shutdown(this: Handle, how: c_int) -> bool {
     let fd = this.socket().fd();
     let call = |how| swoole_rs_corebase::sys::shutdown(fd, how);
     match how {
-        libc::SHUT_RD if this.flag(Flag::ShutdownRead) || call(how) != 0 => false,
-        libc::SHUT_WR if this.flag(Flag::ShutdownWrite) || call(how) < 0 => false,
-        libc::SHUT_RDWR if call(how) < 0 => false,
+        libc::SHUT_RD if this.flag(Flag::ShutdownRead) || call(how).is_err() => false,
+        libc::SHUT_WR if this.flag(Flag::ShutdownWrite) || call(how).is_err() => false,
+        libc::SHUT_RDWR if call(how).is_err() => false,
         libc::SHUT_RD | libc::SHUT_RDWR => {
             this.set(Flag::ShutdownRead, true);
             true

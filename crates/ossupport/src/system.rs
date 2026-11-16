@@ -73,7 +73,7 @@ fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
     if !redirected {
         log::sys_warning(c"swoole_daemon", format_args!("dup2() failed"));
     }
-    sys::close(fd);
+    _ = sys::close(fd);
     redirected
 }
 

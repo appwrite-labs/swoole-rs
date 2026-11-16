@@ -379,7 +379,7 @@ impl Record {
         for fd in std::mem::replace(&mut self.notify, [-1, -1]) {
             if fd >= 0 {
                 // The record owns this descriptor.
-                sys::close(fd);
+                _ = sys::close(fd);
             }
         }
     }
