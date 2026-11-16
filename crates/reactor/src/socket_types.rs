@@ -87,20 +87,26 @@ pub(crate) const CLOEXEC: c_int =
 /// `swoole::socket`: socket(2) with `SW_SOCK_NONBLOCK`/`SW_SOCK_CLOEXEC` applied,
 /// atomically where the platform has `SOCK_NONBLOCK`/`SOCK_CLOEXEC`, else by fcntl.
 /// As upstream, a failed fcntl closes the socket but still returns its number.
-#[must_use]
-pub fn swr_v1_socket_open(domain: c_int, kind: c_int, protocol: c_int, flags: c_int) -> c_int {
+///
+/// # Errors
+/// socket(2)'s error.
+pub fn swr_v1_socket_open(
+    domain: c_int,
+    kind: c_int,
+    protocol: c_int,
+    flags: c_int,
+) -> std::io::Result<c_int> {
     let (nonblock, cloexec) = (flags & NONBLOCK != 0, flags & CLOEXEC != 0);
     #[cfg(target_os = "linux")]
     {
         let extra = if nonblock { libc::SOCK_NONBLOCK } else { 0 }
             | if cloexec { libc::SOCK_CLOEXEC } else { 0 };
-        swoole_rs_corebase::sys::socket(domain, kind | extra, protocol).unwrap_or(-1)
+        swoole_rs_corebase::sys::socket(domain, kind | extra, protocol)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let fd = swoole_rs_corebase::sys::socket(domain, kind, protocol).unwrap_or(-1);
-        if fd >= 0
-            && (nonblock || cloexec)
+        let fd = swoole_rs_corebase::sys::socket(domain, kind, protocol)?;
+        if (nonblock || cloexec)
             && !crate::swr_v1_socket_fd_option(
                 fd,
                 nonblock.then_some(true),
@@ -110,7 +116,7 @@ pub fn swr_v1_socket_open(domain: c_int, kind: c_int, protocol: c_int, flags: c_
         {
             _ = swoole_rs_corebase::sys::close(fd);
         }
-        fd
+        Ok(fd)
     }
 }
 
@@ -137,8 +143,8 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no network sockets")]
     fn open_applies_the_flags() {
-        let fd = swr_v1_socket_open(libc::AF_INET, libc::SOCK_STREAM, 0, NONBLOCK | CLOEXEC);
-        assert!(fd >= 0, "a socket");
+        let fd = swr_v1_socket_open(libc::AF_INET, libc::SOCK_STREAM, 0, NONBLOCK | CLOEXEC)
+            .expect("a socket");
         // SAFETY: fcntl(F_GETFL/F_GETFD) on a socket this test opened.
         unsafe {
             assert_ne!(
@@ -154,7 +160,7 @@ mod tests {
             libc::close(fd);
         }
         assert!(
-            swr_v1_socket_open(-1, libc::SOCK_STREAM, 0, 0) < 0,
+            swr_v1_socket_open(-1, libc::SOCK_STREAM, 0, 0).is_err(),
             "bad domain"
         );
     }

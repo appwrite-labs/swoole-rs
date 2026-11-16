@@ -1682,7 +1682,7 @@ pub fn send(this: Handle, data: &[u8], flags: c_int) -> Option<usize> {
 fn send_async(this: Handle, data: &[u8]) -> Option<usize> {
     let mut n = Some(data.len());
     // The live client's socket, deleted from the reactor before its record is freed.
-    if event_write(this.socket(), data) < 0 {
+    if event_write(this.socket(), data).is_none() {
         if log::last_error() != ERROR_OUTPUT_BUFFER_OVERFLOW {
             return None;
         }

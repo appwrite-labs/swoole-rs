@@ -480,7 +480,7 @@ unsafe fn write_case() {
         assert!(event_api::event_add(handle(sock(&p, false)), Events::READ));
 
         let n = event_api::event_write(handle(sock(&p, true)), HELLO);
-        assert_eq!(n, HELLO.len() as isize);
+        assert_eq!(n, Some(HELLO.len()));
 
         assert_eq!(event_api::swoole_event_wait(), SW_OK);
         assert!(tg_reactor().is_null());
@@ -536,7 +536,10 @@ unsafe fn writev() {
         let _ = swoole_rs_ffi::swoole_event_init(SW_EVENTLOOP_WAIT_EXIT);
 
         let iov = [IoSlice::new(b"hello "), IoSlice::new(b"world\n")];
-        assert_eq!(event_api::swoole_event_writev(handle(fake_sock), &iov), 12);
+        assert_eq!(
+            event_api::swoole_event_writev(handle(fake_sock), &iov),
+            Some(12)
+        );
 
         let mut buf = [0u8; 32];
         assert_eq!(sock_read(sock(&p, false), &mut buf), 12);
@@ -544,7 +547,10 @@ unsafe fn writev() {
 
         // `fake_sock.ssl = (SSL *) -1`: a non-null SSL the write refuses before using.
         (*fake_sock).fields.set_ssl(usize::MAX as *mut c_void);
-        assert_eq!(event_api::swoole_event_writev(handle(fake_sock), &iov), -1);
+        assert_eq!(
+            event_api::swoole_event_writev(handle(fake_sock), &iov),
+            None
+        );
         assert_eq!(
             last_error(),
             error(ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT)
@@ -610,14 +616,14 @@ unsafe fn write_2m() {
         (*socket).fields.output.buffer_size = 2 * 1024 * 1024;
 
         let n = event_api::event_write(handle(socket), &data);
-        assert_eq!(n, data.len() as isize);
+        assert_eq!(n, Some(data.len()));
         assert!(out_buffer_length(socket) > 1024);
 
         println!("{}", out_buffer_length(socket));
 
         assert_eq!(
             event_api::event_write(handle(socket), &data[..256 * 1024]),
-            SW_ERR as isize
+            None
         );
         assert_eq!(
             last_error(),
@@ -655,7 +661,7 @@ unsafe fn bad_fd() {
         let socket = swoole_rs_ffi::socket_upstream::make_socket_fd(999999, SW_FD_STREAM_CLIENT);
         (*socket).fields.output.nonblock = true;
         let n = event_api::event_write(handle(socket), b"hello world");
-        assert_eq!(n, SW_ERR as isize);
+        assert_eq!(n, None);
         assert_eq!(last_error(), EBADF);
         let _ = swoole_rs_ffi::swoole_event_free();
         // `socket->move_fd()`.
@@ -1212,7 +1218,7 @@ unsafe fn drain_write_buffer() {
         let wsock = sock(&p, true);
 
         let n = event_api::event_write(handle(wsock), &data);
-        assert_eq!(n, data.len() as isize);
+        assert_eq!(n, Some(data.len()));
         assert!(out_buffer_length(wsock) > 1024);
 
         let rsock = sock(&p, false) as usize;
