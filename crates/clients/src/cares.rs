@@ -67,20 +67,13 @@ unsafe extern "C" {
 /// The coroutine a query parks: a `swoole::Coroutine`, which starts with its
 /// `swoole_rs_coroutine::Coroutine`.
 mod co {
-    use std::ffi::c_void;
-    use swoole_rs_coroutine::{Coroutine, State};
-
-    pub(super) use swoole_rs_coroutine::{Resume, resume, yield_resumed, yield_timed};
+    pub(super) use swoole_rs_coroutine::{
+        Resume, coroutine_waiting as waiting, current_cid as cid, resume, yield_resumed,
+        yield_timed,
+    };
 
     /// `Coroutine::get_current_safe()`.
     pub(super) use swoole_rs_coroutine::current_safe as current;
-
-    pub(super) fn suspending(co: *mut c_void) -> bool {
-        let co = co.cast::<Coroutine>();
-        // SAFETY: a live coroutine's scalar field.
-        let state = unsafe { (*co).state };
-        state == State::Waiting
-    }
 }
 const ORIGIN: &std::ffi::CStr = c"coroutine::dns_lookup_impl_with_cares";
 /// A query's state, shared with its c-ares callbacks through the userdata
@@ -93,6 +86,9 @@ struct Query {
     error: Cell<i32>,
     completed: Cell<bool>,
     coroutine: Cell<*mut c_void>,
+    /// The id of the coroutine `coroutine` names, which the scheduler checks is
+    /// still waiting.
+    cid: std::ffi::c_long,
     retired: Arc<AtomicBool>,
     /// The wrapper of each descriptor c-ares watches, live until `socket_state` detaches it: one per
     /// server it asks, so a list beats a hash map.
@@ -229,8 +225,8 @@ extern "C" fn host(query: &Query, status: i32, timeouts: i32, entry: Option<Host
         }
     }
     let coroutine = query.coroutine.get();
-    // A nonnull identity is the query's original live coroutine.
-    if !coroutine.is_null() && co::suspending(coroutine) {
+    // Nonnull until a completion is queued; the query's coroutine, if still parked.
+    if !coroutine.is_null() && co::waiting(query.cid) {
         let retired = query.retired.clone();
         let task = Completion {
             retired,
@@ -272,6 +268,7 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
         error: Cell::new(0),
         completed: Cell::new(false),
         coroutine: Cell::new(coroutine),
+        cid: co::cid(),
         retired: Arc::new(AtomicBool::new(false)),
         sockets: Cell::new(Vec::new()),
         results: Cell::new(Vec::new()),

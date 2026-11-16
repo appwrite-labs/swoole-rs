@@ -92,6 +92,12 @@ pub fn coroutine_get(cid: c_long) -> *mut c_void {
     with_scheduler(|s| s.get(cid))
 }
 
+/// [`Scheduler::waiting`] on this thread.
+#[must_use]
+pub fn coroutine_waiting(cid: c_long) -> bool {
+    with_scheduler(|s| s.waiting(cid))
+}
+
 /// [`Scheduler::older_native`] on this thread.
 #[must_use]
 pub fn coroutine_older(before: c_long) -> Option<(c_long, *mut c_void)> {
