@@ -3,7 +3,7 @@ use crate::{
     CONTINUE, DISPATCH, Frame, Op, offset,
     typed::{self, KeyType, Typed},
 };
-use std::{borrow::Cow, ffi::c_int, ptr};
+use std::{borrow::Cow, ffi::c_int};
 use swoole_rs_zend::{
     Owned, Value,
     bailout::{self, Bailout},
@@ -13,19 +13,24 @@ use swoole_rs_zend::{
 
 unsafe extern "C" {
     fn swr_phpstdext_undefined_cv(frame: *mut zend_execute_data, var: u32) -> u8;
-    fn swr_phpstdext_dimension(
+    /// The table's writable element for `key` into `result`, left alone on a
+    /// bailout: none when the lookup failed, else a slot of the table that lives
+    /// while nothing else changes it.
+    fn swr_phpstdext_dimension<'a>(
         frame: *mut zend_execute_data,
         table: *mut z::HashTable,
         key: *const zval,
         constant: bool,
-        result: *mut *mut zval,
+        result: &mut Option<&'a Value>,
     ) -> u8;
-    fn swr_phpstdext_assign(
+    /// `zend_assign_to_variable` into `result`, left alone on a bailout: the
+    /// assigned slot, none when the assignment failed.
+    fn swr_phpstdext_assign<'a>(
         slot: *mut zval,
         value: *mut zval,
         kind: u8,
         strict: bool,
-        result: *mut *mut zval,
+        result: &mut Option<&'a Value>,
     ) -> u8;
     fn swr_phpstdext_binary(slot: *mut zval, value: *mut zval, op: *const zend_op) -> u8;
     fn swr_phpstdext_typed_ref(
@@ -34,6 +39,9 @@ unsafe extern "C" {
         value: *mut zval,
         op: *const zend_op,
     ) -> u8;
+    /// The new element's slot, none when the next index is taken.
+    #[link_name = "zend_hash_next_index_insert"]
+    fn next_index_insert<'a>(table: *mut z::HashTable, value: *mut zval) -> Option<&'a Value>;
 }
 // crates/zend-sys' shims that take only live zvals, or nothing.
 unsafe extern "C" {
@@ -130,20 +138,20 @@ fn strict(frame: Frame) -> bool {
 fn assign(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout> {
     let value = data.value();
     let ht = own.table();
-    let mut slot = ptr::null_mut();
-    if key.kind() == z::IS_NULL {
+    let slot = if key.kind() == z::IS_NULL {
         // SAFETY: a live table, which takes the original operand reference on
         // successful insertion.
-        slot = unsafe { z::zend_hash_next_index_insert(ht, value.as_ptr()) };
-        if slot.is_null() {
+        let slot = unsafe { next_index_insert(ht, value.as_ptr()) };
+        if slot.is_none() {
             // Zend's exact occupied-next-index error, below a native trap.
             leaf(swr_zend_try_stdext_cannot_add())?;
 
             // This assignment failed before publishing its result.
             return data.abandon(op);
         }
+        slot
     } else {
-        let mut variable = ptr::null_mut();
+        let mut variable = None;
         // SAFETY: lookup uses this assignment's original constant-key distinction.
         leaf(unsafe {
             swr_phpstdext_dimension(
@@ -151,26 +159,34 @@ fn assign(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout> {
                 ht,
                 key.as_ptr(),
                 u32::from(op.op2_type) == z::IS_CONST,
-                &raw mut variable,
+                &mut variable,
             )
         })?;
-        if variable.is_null() {
+        let Some(variable) = variable else {
             // The native dimension lookup failed before assignment.
             return data.abandon(op);
-        }
+        };
         let strict = strict(op.frame);
+        let mut slot = None;
         // SAFETY: Zend performs its original assignment/refcount effect below a trap.
         leaf(unsafe {
-            swr_phpstdext_assign(variable, value.as_ptr(), data.kind(), strict, &raw mut slot)
+            swr_phpstdext_assign(
+                variable.as_ptr(),
+                value.as_ptr(),
+                data.kind(),
+                strict,
+                &mut slot,
+            )
         })?;
-        if slot.is_null() {
-            // The native assignment failed before result publication.
-            return data.abandon(op);
-        }
-    }
+        slot
+    };
+    let Some(slot) = slot else {
+        // The native assignment failed before result publication.
+        return data.abandon(op);
+    };
     if let Some(result) = op.result() {
-        // SAFETY: Zend's copy retains the inserted/assigned payload for the result.
-        unsafe { z::swr_zval_copy(result.as_ptr(), slot) };
+        // Zend's copy retains the inserted/assigned payload for the result.
+        copy_into(result, slot);
     }
     if u32::from(data.kind()) == z::IS_VAR {
         // Retain the variable value before the original FREE_OP decrements it.
@@ -184,7 +200,7 @@ fn assign(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout> {
 fn assign_op(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout> {
     let value = data.value();
     let ht = own.table();
-    let mut slot = ptr::null_mut();
+    let mut slot = None;
     // Upstream selects W_CONST from the value's OP_DATA type here, unlike ASSIGN_DIM.
     // SAFETY: retain that exact distinction when invoking the native VM primitive.
     leaf(unsafe {
@@ -193,11 +209,10 @@ fn assign_op(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout>
             ht,
             key.as_ptr(),
             u32::from(data.kind()) == z::IS_CONST,
-            &raw mut slot,
+            &mut slot,
         )
     })?;
-    // SAFETY: null, or the live writable array-element slot the lookup returned.
-    let Some(element) = (unsafe { Value::from_ptr(slot) }) else {
+    let Some(element) = slot else {
         // Dimension lookup failed before the operation's result exists.
         return data.abandon(op);
     };

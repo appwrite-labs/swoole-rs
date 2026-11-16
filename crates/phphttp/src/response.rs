@@ -644,6 +644,8 @@ fn refuse(call: &Call, message: &str) {
 fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     let mut paired = false;
     let mut ctx = None;
+    // The running server's share, which keeps it while this method reads it.
+    let shared;
     let mut server = None;
     let mut socket = None;
     if let Some(pair) = object.array() {
@@ -691,8 +693,8 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         }
     } else {
         fd = object.long();
-        // SAFETY: the running server, which nothing deletes during this method.
-        server = unsafe { swoole_rs_server::view::Server::current() };
+        shared = swoole_rs_server::SharedServer::current();
+        server = shared.as_ref().map(swoole_rs_server::SharedServer::view);
     }
     if server.is_some_and(|server| !server.is_started()) {
         return refuse(call, "server is not running");

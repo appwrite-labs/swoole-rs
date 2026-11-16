@@ -145,6 +145,18 @@ fn fcc(callable: *mut swr_zend_callable) -> *mut zend_fcall_info_cache {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Ctx(NonNull<Context>);
 
+/// The frame Zend ran before a swap to another one, made current again on drop.
+/// Only [`Ctx::in_frame`] and [`enter`] make one, of `swr_zend_coroutine_set_frame`'s
+/// result, and they neither switch coroutines nor bail out until it drops.
+struct Restore(*mut zend_execute_data);
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        // SAFETY: the running coroutine's own frame, current when this was made.
+        unsafe { swr_zend_coroutine_set_frame(self.0) };
+    }
+}
+
 /// `get`/`set` for `Copy` fields: one read or write of a live context's field.
 macro_rules! fields {
     ($($field:ident, $set:ident: $ty:ty;)*) => {
@@ -242,11 +254,8 @@ impl Ctx {
         }
         // SAFETY: a live context that is not running was switched out, and its
         // saved frame stays live until it resumes, which `f` does not let it.
-        let running = unsafe { swr_zend_coroutine_set_frame(self.execute_data()) };
-        let result = f();
-        // SAFETY: the running coroutine's own frame, read above.
-        unsafe { swr_zend_coroutine_set_frame(running) };
-        result
+        let _running = Restore(unsafe { swr_zend_coroutine_set_frame(self.execute_data()) });
+        f()
     }
 
     /// Its VM stack chain.
@@ -481,11 +490,10 @@ pub(crate) fn enter(ctx: Ctx) -> *mut swr_zend_callable {
         // A user function is its op array.
         frame.opline = opcodes;
         frame.func = handler;
-        // SAFETY: the frame outlives the notification.
-        let previous = unsafe { swr_zend_coroutine_set_frame(&raw mut frame) };
+        // SAFETY: the frame outlives the notification, and `_previous`, which
+        // drops before it.
+        let _previous = Restore(unsafe { swr_zend_coroutine_set_frame(&raw mut frame) });
         fiber_switch_try_notify(origin(ctx), ctx);
-        // SAFETY: as above.
-        unsafe { swr_zend_coroutine_set_frame(previous) };
     }
     ctx.call()
 }
