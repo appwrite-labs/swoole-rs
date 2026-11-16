@@ -5,6 +5,8 @@ name: PHP versions
 # version's headers, so a struct layout, inline function or VM change breaks the Cargo
 # build on that version alone. Any test that passes on upstream must pass on the Cargo
 # build. No services: the tests that need one skip on both engines, as do the network ones.
+# PHP 8.3 runs here on arm64 alone (GitHub's ubuntu-24.04-arm; gcrunner has no arm64 shape):
+# every other job in CI is x86-64, and a release ships arm64 binaries (#4507).
 # Nightly; a PR that changes this workflow or php.sh runs it too.
 on:
   schedule:
@@ -18,13 +20,17 @@ defaults:
 
 jobs:
   build:
-    name: Build PHP ${{ matrix.php }}
-    runs-on: gcrunner=${{ github.run_id }}/runner=build
-    timeout-minutes: 40
+    name: Build PHP ${{ matrix.php }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || format('gcrunner={0}/runner=build', github.run_id) }}
+    # The arm64 runner has 4 cores where `build` has 8.
+    timeout-minutes: ${{ matrix.arch == 'arm64' && 60 || 40 }}
     strategy:
       fail-fast: false
       matrix:
         php: ['8.2', '8.4', '8.5']
+        arch: [x64]
+        include:
+          - {php: '8.3', arch: arm64}
     env:
       PHP_SERIES: ${{ matrix.php }}
     steps:
@@ -46,7 +52,7 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: target/php
-          key: php-${{ matrix.php }}-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
+          key: php-${{ matrix.php }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
       - name: Build PHP
         run: .devcontainer/php.sh target/php
       - name: Fetch crates
@@ -68,16 +74,22 @@ jobs:
 
   # A version whose build failed fails its shards too; the others still run.
   phpt:
-    name: PHPT PHP ${{ matrix.php }} ${{ matrix.shard }}/4
+    name: PHPT PHP ${{ matrix.php }} ${{ matrix.arch }} ${{ matrix.shard }}/4
     needs: build
     if: ${{ !cancelled() }}
-    runs-on: gcrunner=${{ github.run_id }}/runner=standard
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || format('gcrunner={0}/runner=standard', github.run_id) }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         php: ['8.2', '8.4', '8.5']
+        arch: [x64]
         shard: [1, 2, 3, 4]
+        include:
+          - {php: '8.3', arch: arm64, shard: 1}
+          - {php: '8.3', arch: arm64, shard: 2}
+          - {php: '8.3', arch: arm64, shard: 3}
+          - {php: '8.3', arch: arm64, shard: 4}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: ./.github/actions/install
@@ -92,7 +104,7 @@ jobs:
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: target/php
-          key: php-${{ matrix.php }}-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
+          key: php-${{ matrix.php }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
           fail-on-cache-miss: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
