@@ -1701,7 +1701,7 @@ impl<H: PoolHost> Pool<'_, H> {
     /// `ProcessPool::kill_all_workers`.
     pub(crate) fn kill_all_workers(&mut self, signo: c_int) {
         for index in 0..self.worker_num() {
-            kill(self.worker_at(index).pid(), signo);
+            _ = kill(self.worker_at(index).pid(), signo);
         }
     }
 
@@ -1719,7 +1719,7 @@ impl<H: PoolHost> Pool<'_, H> {
             self.set_running(false);
             true
         } else {
-            kill(self.master_pid(), libc::SIGTERM) == 0
+            kill(self.master_pid(), libc::SIGTERM).is_ok()
         }
     }
 
@@ -1892,7 +1892,7 @@ impl<H: PoolHost> Pool<'_, H> {
         }
         for index in 0..self.worker_num() {
             let pid = self.worker_at(index).pid();
-            if kill(pid, libc::SIGTERM) < 0 {
+            if kill(pid, libc::SIGTERM).is_err() {
                 self.op(Op::Log(Log::KillFailed), u64::from(pid.cast_unsigned()));
             }
         }
@@ -1921,7 +1921,7 @@ impl<H: PoolHost> Pool<'_, H> {
             ..*head
         };
         let message = [&head_view(&head)[..], data].concat();
-        self.h.push_box(&message) && kill(self.master_pid(), libc::SIGIO) == 0
+        self.h.push_box(&message) && kill(self.master_pid(), libc::SIGIO).is_ok()
     }
 
     /// `ProcessPool::push_message(type, data, length)`.

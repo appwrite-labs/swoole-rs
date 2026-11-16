@@ -610,8 +610,8 @@ fn kill(call: &Call) {
         return;
     };
     let (pid, sig) = (pid.c_cast::<c_int>(), sig.c_cast::<c_int>());
-    if swoole_rs_process::os::kill(pid, sig) < 0 {
-        if !(sig == 0 && errno() == libc::ESRCH) {
+    if let Err(error) = swoole_rs_process::os::kill(pid, sig) {
+        if !(sig == 0 && error.raw_os_error() == Some(libc::ESRCH)) {
             sys(E_WARNING, &message!("kill({pid}, {sig}) failed"));
         }
         call.set_bool(false);
@@ -673,7 +673,7 @@ fn start(call: &Call) {
         return;
     };
     let pid = view(worker).pid;
-    if pid != 0 && swoole_rs_process::os::kill(pid, 0) == 0 {
+    if pid != 0 && swoole_rs_process::os::kill(pid, 0).is_ok() {
         fatal(E_WARNING, &message!("process has already been started"));
         call.set_bool(false);
         return;

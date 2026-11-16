@@ -208,8 +208,8 @@ impl Live {
             }
             let owner = self.owner().load(Ordering::Relaxed);
             // Signal 0 only checks that `owner` exists.
-            if swoole_rs_corebase::sys::kill(owner, 0) < 0
-                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            if swoole_rs_corebase::sys::kill(owner, 0)
+                .is_err_and(|error| error.raw_os_error() == Some(libc::ESRCH))
             {
                 word.store(1, Ordering::Relaxed);
                 let message =

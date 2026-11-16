@@ -170,15 +170,13 @@ pub fn is_worker_running(pool: PoolRef<'_>, worker: Worker<'_>) -> bool {
 }
 
 /// `Worker::send_pipe_message(buf, n, flags)` of `data`: through its pool's queue or
-/// the pipe end `flags` names. -1 for a worker no pool holds, which upstream
+/// the pipe end `flags` names. None for a worker no pool holds, which upstream
 /// doesn't send through.
 #[must_use]
-pub fn send_pipe_message(worker: Worker<'_>, data: &[u8], flags: c_int) -> isize {
+pub fn send_pipe_message(worker: Worker<'_>, data: &[u8], flags: c_int) -> Option<usize> {
     /// `SW_PIPE_MASTER`.
     const PIPE_MASTER: c_int = 1;
-    let Some(pool) = worker.pool_ref() else {
-        return -1;
-    };
+    let pool = worker.pool_ref()?;
     let id = worker.id();
     let pipe = if flags & PIPE_MASTER != 0 {
         worker.pipe_master()
@@ -294,9 +292,11 @@ pub fn send_message(pool: PoolRef<'_>, worker_id: u32, message: &[u8]) -> bool {
     let length = message.len();
     if !pool.has_message_bus() {
         // `pipe_master->send_async(message)`: the pipe's write, through the event
-        // loop while one is available.
+        // loop while one is available. Upstream returns its ssize_t as the bool, so a
+        // failure is true too.
         let (id, flags) = (worker.id(), crate::pool::PIPE_NONBLOCK);
-        return swr_v1_process_worker_send(native(), handle, pipe, false, id, message, flags) != 0;
+        let sent = swr_v1_process_worker_send(native(), handle, pipe, false, id, message, flags);
+        return sent != Some(0);
     }
     let mut head = DataHead {
         reactor_id: swoole_get_worker_id().c_cast::<i16>(),

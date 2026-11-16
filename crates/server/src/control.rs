@@ -119,7 +119,7 @@ pub fn shutdown(serv: Server<'_>) -> bool {
     } else {
         gs.master_pid.load(Relaxed)
     };
-    if swoole_rs_process::os::kill(pid, libc::SIGTERM) < 0 {
+    if swoole_rs_process::os::kill(pid, libc::SIGTERM).is_err() {
         let m = format_args!("failed to shutdown, kill({pid}, SIGTERM) failed");
         warn(E::SW_ERROR_SYSTEM_CALL_FAIL, c"Server::shutdown", m);
         return false;
@@ -165,7 +165,7 @@ fn reopen_logger(serv: Server<'_>) {
     reopen_log();
     if mode(serv) == Mode::Process {
         let manager = serv.counters().manager_pid.load(Relaxed);
-        swoole_rs_process::os::kill(manager, libc::SIGWINCH);
+        _ = swoole_rs_process::os::kill(manager, libc::SIGWINCH);
     }
 }
 

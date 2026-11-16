@@ -125,13 +125,13 @@ impl WorkerRegistry {
         &self,
         category: c_int,
         signo: c_int,
-        kill: impl Fn(c_int, c_int) -> c_int,
+        kill: impl Fn(c_int, c_int) -> std::io::Result<()>,
         wait: impl Fn(c_int) -> c_int,
         warn: impl Fn(c_int),
     ) {
         let pids = self.pids(category);
         for &pid in &pids {
-            kill(pid, signo);
+            _ = kill(pid, signo);
         }
         for &pid in &pids {
             if wait(pid) < 0 {
@@ -171,9 +171,13 @@ mod tests {
         static WARNED: RefCell<Vec<c_int>> = const { RefCell::new(Vec::new()) };
     }
 
-    fn record_kill(pid: c_int, signo: c_int) -> c_int {
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "sys::kill's signature, which it stands in for"
+    )]
+    fn record_kill(pid: c_int, signo: c_int) -> std::io::Result<()> {
         KILLED.with(|k| k.borrow_mut().push((pid, signo)));
-        0
+        Ok(())
     }
     fn record_wait_ok(pid: c_int) -> c_int {
         WAITED.with(|w| w.borrow_mut().push(pid));
