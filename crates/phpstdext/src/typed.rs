@@ -238,11 +238,11 @@ impl Parsed {
         };
         // SAFETY: `room`, aligned and long enough (checked), holds the header.
         unsafe { info.write(header) };
-        let text = info
-            .wrapping_byte_add(offset_of!(TypeInfo, text))
-            .cast::<u8>();
-        // SAFETY: `room` holds the text and its NUL after the header (checked).
-        unsafe { ptr::copy_nonoverlapping(self.text.as_ptr(), text, self.text.len()) };
+        // The text and its NUL, after the header (the length is checked above).
+        let start = offset_of!(TypeInfo, text);
+        if let Some(text) = room.get_mut(start..start + self.text.len()) {
+            text.write_copy_of_slice(&self.text);
+        }
     }
 }
 
