@@ -9,6 +9,7 @@ use std::{
     cell::{Cell, OnceCell},
     ffi::c_void,
     ptr,
+    rc::{Rc, Weak},
     sync::atomic::Ordering,
 };
 use swoole_rs_phpstubs::server_port;
@@ -24,7 +25,7 @@ use swoole_rs_zend::{method_table, sys as z};
 const CALLBACKS: usize = swoole_rs_ports::PortCallback::ALL.len();
 
 /// `swoole::ServerPortProperty`: the port's callables and its server. The
-/// server's dispatch reads it through the port's link, and PHP code a method
+/// server's dispatch finds it through [`PROPERTIES`], and PHP code a method
 /// runs can call this object's methods, so every field is a cell and the
 /// property is only ever borrowed shared. A callback slot is taken out and put
 /// back with nothing in between that runs PHP code.
@@ -38,7 +39,7 @@ pub struct PortProperty {
 
 impl PortProperty {
     /// `callbacks[kind]`: the callable, a reference the call holds, or none.
-    pub(crate) fn callback(&self, kind: swoole_rs_ports::PortCallback) -> Option<Callable> {
+    fn callback(&self, kind: swoole_rs_ports::PortCallback) -> Option<Callable> {
         let slot = self.callbacks.get(kind.index())?;
         let callable = slot.take();
         let copy = callable.clone();
@@ -47,12 +48,44 @@ impl PortProperty {
     }
 }
 
+thread_local! {
+    /// `php_swoole_server_{get,set}_port_property`: this thread's
+    /// `ServerPortProperty` of each port, by the port's `object_id`. Upstream keeps
+    /// one per thread in thread mode, where each worker thread has Port objects of
+    /// its own for the shared ports, and in the port's `ptr` otherwise, where one
+    /// thread runs PHP. The Port object owns its property; this only finds it.
+    /// Taken out and put back around each access, which runs no PHP code.
+    static PROPERTIES: Cell<Vec<Weak<PortProperty>>> = const { Cell::new(Vec::new()) };
+}
+
+/// `f` over this thread's [`PROPERTIES`], taken out and put back.
+fn with_properties<R>(f: impl FnOnce(&mut Vec<Weak<PortProperty>>) -> R) -> R {
+    PROPERTIES.with(|cell| {
+        let mut properties = cell.take();
+        let result = f(&mut properties);
+        cell.set(properties);
+        result
+    })
+}
+
+/// `php_swoole_server_get_port_property(port)->callbacks[kind]`: the callable,
+/// a reference the call holds; none without one, or without a live Port object
+/// of this thread's for the port.
+pub(crate) fn callback(
+    port: view::Port<'_>,
+    kind: swoole_rs_ports::PortCallback,
+) -> Option<Callable> {
+    let index = usize::from(port.config().object_id);
+    let property = with_properties(|properties| properties.get(index).and_then(Weak::upgrade));
+    property?.callback(kind)
+}
+
 /// `ServerPortObject` without its `zend_object`: the `ListenPort` and property.
 pub struct PortData {
     /// Which of the server's ports, by address; null before `new_object` and
     /// after `release`.
     port: Cell<*mut c_void>,
-    property: PortProperty,
+    property: Rc<PortProperty>,
 }
 
 impl Custom for PortData {
@@ -64,11 +97,11 @@ impl Custom for PortData {
     fn new() -> Self {
         Self {
             port: Cell::new(ptr::null_mut()),
-            property: PortProperty {
+            property: Rc::new(PortProperty {
                 callbacks: Default::default(),
                 serv: OnceCell::new(),
                 bound: Cell::new(false),
-            },
+            }),
         }
     }
 
@@ -156,10 +189,16 @@ pub(crate) fn new_object(serv: SharedServer, port: view::Port<'_>) -> Owned {
     // A new object has no server yet.
     data.property.serv.get_or_init(|| serv);
     data.property.bound.set(true);
-    let config = port.config();
-    // The object's property lives as long as the port's link, which only reads it.
-    let property = ptr::from_ref(&data.property).cast_mut().cast();
-    crate::server::port_property(config.object_id, &config.ptr, property, true);
+    // `php_swoole_server_set_port_property`.
+    let index = usize::from(port.config().object_id);
+    with_properties(|properties| {
+        if properties.len() <= index {
+            properties.resize(index + 1, Weak::new());
+        }
+        if let Some(entry) = properties.get_mut(index) {
+            *entry = Rc::downgrade(&data.property);
+        }
+    });
     zport
 }
 

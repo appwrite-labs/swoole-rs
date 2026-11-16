@@ -5,12 +5,10 @@
 use crate::RecvData;
 use crate::callable::Callable;
 use crate::lifecycle::ServerObject;
-use crate::port::PortProperty;
 use std::os::unix::ffi::OsStrExt;
 use std::{
     cell::Cell,
     ffi::{CString, c_int, c_long},
-    ptr,
     rc::Rc,
 };
 use swoole_rs_buffer::string::CppString;
@@ -75,18 +73,9 @@ pub fn php_swoole_server_of(value: &Value) -> Option<view::Server<'_>> {
     ServerObject::server_of(value)
 }
 
-/// `php_swoole_server_get_port_property`: the port's `ServerPortProperty`, or null.
-fn port_property<'a>(port: Option<view::Port<'_>>) -> Option<&'a PortProperty> {
-    let config = port?.config();
-    let property =
-        crate::server::port_property(config.object_id, &config.ptr, ptr::null_mut(), false);
-    // SAFETY: null, or the property its Port object holds while the port lives.
-    unsafe { property.cast::<PortProperty>().as_ref() }
-}
-
 /// The port's callback `kind`, or none.
 fn port_callback(port: Option<view::Port<'_>>, kind: PortCallback) -> Option<Callable> {
-    port_property(port)?.callback(kind)
+    crate::port::callback(port?, kind)
 }
 
 /// `php_swoole_server_isset_callback`: the port, or the primary port, has callback `kind`.
