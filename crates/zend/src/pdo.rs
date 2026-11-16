@@ -25,9 +25,9 @@ unsafe extern "C" {
 // only the methods of a [`Pdo`] or an [`Mshutdown`], the tokens of those two
 // phases, call them.
 unsafe extern "C" {
-    /// PDO's `php_pdo_register_driver`: `SUCCESS` (0) or `FAILURE` (-1). A driver
-    /// built for another PDO API raises `E_ERROR`, which may bail out: only
-    /// [`Pdo::register`] calls it, inside `zend_try`.
+    /// PDO's `php_pdo_register_driver`: `SUCCESS` (0) or `FAILURE` (-1). Unlike the
+    /// others it is not total: a driver built for another PDO API raises `E_ERROR`,
+    /// which may bail out, so only [`Pdo::register`] calls it, inside `zend_try`.
     safe fn php_pdo_register_driver(driver: &'static Driver) -> c_int;
     /// PDO's `php_pdo_unregister_driver`: nothing once PDO has shut down, or
     /// when it is not loaded. It raises no error.
