@@ -313,8 +313,10 @@ fn write(call: &Call) {
         error.defer();
         return;
     }
-    let written = with_sockets(php, |sockets| sockets.get(fd).map(|r| r.socket.write(data)));
-    call.set_bool(written.is_some_and(|written| written >= 0));
+    let written = with_sockets(php, |sockets| {
+        sockets.get(fd).and_then(|r| r.socket.write(data))
+    });
+    call.set_bool(written.is_some());
 }
 
 /// `set(mixed $fd, ?callable $read = null, ?callable $write = null, int $events = 0)`.

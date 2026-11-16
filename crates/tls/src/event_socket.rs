@@ -70,11 +70,12 @@ impl EventSocket {
         event_api::event_del(self.0)
     }
 
-    /// `swoole_event_write(socket, data, len)`.
+    /// `swoole_event_write(socket, data, len)`: the bytes taken, `None` when it failed
+    /// or no reactor runs.
     #[must_use]
-    pub fn write(&self, data: &[u8]) -> isize {
+    pub fn write(&self, data: &[u8]) -> Option<usize> {
         if !reactor() {
-            return -1;
+            return None;
         }
         event_api::event_write(self.0, data)
     }

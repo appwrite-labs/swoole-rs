@@ -172,14 +172,10 @@ pub(super) fn socket_sendfile_async(_: Socket<'_>, _: &CStr, _: i64, _: usize) -
     true
 }
 /// crates/reactor's, which reads the thread's reactor.
-pub(super) fn event_write(_: swoole_rs_reactor::Socket<'static>, data: &[u8]) -> isize {
+pub(super) fn event_write(_: swoole_rs_reactor::Socket<'static>, data: &[u8]) -> Option<usize> {
     let length = data.len();
     log(format!("write {length}"));
-    if log::last_error() == ERROR_OUTPUT_BUFFER_OVERFLOW {
-        ERR as isize
-    } else {
-        OK as isize
-    }
+    (log::last_error() != ERROR_OUTPUT_BUFFER_OVERFLOW).then_some(length)
 }
 /// crates/tls's `Reactor::_writable_callback`.
 pub(super) fn writable_callback(

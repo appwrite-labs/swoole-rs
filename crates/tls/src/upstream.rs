@@ -1015,7 +1015,7 @@ pub unsafe extern "C-unwind" fn socket_send_async(
     if swoole_rs_reactor::socket_upstream::event_reactor().is_none() {
         return send_sync_drain(socket, data, 0).map_or(-1, usize::cast_signed);
     }
-    swoole_rs_reactor::event_api::event_write(socket, data.bytes())
+    swoole_rs_reactor::event_api::event_write(socket, data.bytes()).map_or(-1, usize::cast_signed)
 }
 
 /// `bool Socket::ssl_shutdown()`: false without an SSL.
