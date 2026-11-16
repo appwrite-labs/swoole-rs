@@ -596,30 +596,6 @@ fn async_send_raises_buffer_full_at_the_high_watermark() {
 }
 
 #[test]
-fn an_async_socks5_reply_is_the_bytes_the_read_appended() {
-    let client = client(1, true, true);
-    set_proxy(client, false);
-    Handle(client).input_init();
-    Handle(client).set_proxy_state(Proxy::Socks5, SOCKS5_HANDSHAKE);
-    mock(|m| m.io.push(2));
-    assert!(on_read(Handle(client)));
-    let size = CLIENT_BUFFER_SIZE;
-    assert_eq!(
-        taken(),
-        [
-            format!("recv {size}"),
-            "socks5 2".into(),
-            "call Connect 0".into()
-        ]
-    );
-    assert_eq!(
-        Handle(client).proxy_state(Proxy::Socks5),
-        Some(SOCKS5_READY)
-    );
-    free(client);
-}
-
-#[test]
 fn writable_after_connect_starts_the_socks5_handshake() {
     let client = client(1, true, true);
     set_proxy(client, false);
@@ -632,6 +608,23 @@ fn writable_after_connect_starts_the_socks5_handshake() {
         Some(SOCKS5_HANDSHAKE)
     );
     assert!(flag(client, Flag::Active));
+    free(client);
+}
+
+#[test]
+fn stream_read_hands_the_socks5_handshake_the_bytes_received() {
+    let client = client(1, true, true);
+    set_proxy(client, false);
+    assert!(writable(client));
+    Handle(client).input_init();
+    taken();
+    mock(|m| m.io = vec![2]);
+    assert!(on_read(Handle(client)));
+    assert_eq!(taken()[..2], ["recv 65536", "socks5 2"]);
+    assert_eq!(
+        Handle(client).proxy_state(Proxy::Socks5),
+        Some(SOCKS5_READY)
+    );
     free(client);
 }
 

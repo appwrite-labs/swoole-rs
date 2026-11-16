@@ -530,10 +530,7 @@ impl Handle {
 
     /// Where the input buffer's next read lands; the buffer exists.
     fn input_tail(self) -> *const c_char {
-        self.edit_input(|buffer, _, _| {
-            let length = buffer.len();
-            buffer.as_mut_ptr().wrapping_add(length).cast()
-        })
+        self.edit_input(|buffer, _, _| buffer.as_mut_ptr().wrapping_add(buffer.len()).cast())
     }
 
     /// One read into the input buffer's free tail; the buffer exists.
