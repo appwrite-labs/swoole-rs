@@ -1,4 +1,4 @@
-//! `sw_zend_string_allocator()`: the `swoole::Allocator` whose buffers are the
+//! The `swoole::Allocator` whose buffers are the
 //! `ZSTR_VAL` of `zend_string`s, so a received message becomes a PHP string
 //! without a copy.
 use std::{ffi::c_void, mem::MaybeUninit};
@@ -15,20 +15,12 @@ static ZEND_STRING_ALLOCATOR: CoreAllocator = CoreAllocator {
     free: Some(free),
 };
 
-/// The allocator `sw_zend_string_allocator()` returns, for Rust callers and a
-/// socket's buffers.
+/// The allocator, for Rust callers and a socket's buffers.
 #[must_use]
 pub fn zend_string_allocator() -> TrustedAllocator {
     // SAFETY: each callback hands out or takes back the value of a Zend string
     // of the size asked for, or null when the allocation fails.
     unsafe { TrustedAllocator::new(&ZEND_STRING_ALLOCATOR) }
-}
-
-/// `const swoole::Allocator *sw_zend_string_allocator()`.
-#[unsafe(export_name = "_Z24sw_zend_string_allocatorv")]
-#[must_use]
-pub extern "C" fn sw_zend_string_allocator() -> *const c_void {
-    (&raw const ZEND_STRING_ALLOCATOR).cast()
 }
 
 extern "C" fn malloc(size: usize) -> *mut c_void {

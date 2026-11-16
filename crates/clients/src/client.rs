@@ -1492,11 +1492,7 @@ impl SocketOps {
         sendfile_sync: swoole_rs_tls::upstream::sendfile_sync,
         sendfile_async: swoole_rs_tls::upstream::socket_sendfile_async,
         free_socket: |socket| swoole_rs_tls::upstream::socket_free(socket),
-        close_tls: |socket| {
-            // SAFETY: only close calls this; session handles live only for their
-            // operation, and none is running on the closing client.
-            unsafe { swoole_rs_tls::upstream::socket_ssl_close(socket) };
-        },
+        close_tls: swoole_rs_tls::upstream::socket_ssl_close,
         write: swoole_rs_reactor::event_api::event_write,
         writable: swoole_rs_tls::reactor_write::reactor_writable_callback,
         make_socket: ops::make_socket,

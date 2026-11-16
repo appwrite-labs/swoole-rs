@@ -145,7 +145,6 @@ pub extern "C" fn system_waitpid(
 }
 
 /// `pid_t System::wait(int *, double timeout)`: any child.
-#[unsafe(export_name = "_ZN6swoole9coroutine6System4waitEPid")]
 pub extern "C" fn system_wait(status: &mut c_int, timeout: f64) -> libc::pid_t {
     system_waitpid(-1, status, 0, timeout)
 }

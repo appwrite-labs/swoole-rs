@@ -7,7 +7,6 @@ use swoole_rs_protocols::mqtt_frame_length;
 const MAX_LENGTH_SIZE: u8 = 4;
 
 /// `swoole::mqtt::set_protocol(protocol)`.
-#[unsafe(export_name = "_ZN6swoole4mqtt12set_protocolEPNS_8ProtocolE")]
 pub extern "C" fn set_protocol(protocol: &mut Protocol) {
     protocol.package_length_size = MAX_LENGTH_SIZE;
     protocol.package_length_offset = 1;

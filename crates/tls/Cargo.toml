@@ -22,7 +22,7 @@ swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"
-openssl-sys = "=0.9.117"
+openssl-sys = "=0.9.118"
 
 [lib]
 name = "swoole_rs_tls"

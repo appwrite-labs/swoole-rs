@@ -83,7 +83,7 @@ swoole-rs-curl = { path = "../curl", optional = true }
 swoole-rs-ssh2 = { path = "../ssh2", optional = true }
 
 [build-dependencies]
-cc = "=1.10.0"
+cc = "=1.11.1"
 
 [lints]
 workspace = true

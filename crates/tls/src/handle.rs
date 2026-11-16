@@ -5,9 +5,8 @@
 //! through their methods. `Ssl<'a>` and `Bio<'a>` borrow their owner for `'a`, so a
 //! handle can't outlive the record or SSL it came from, and the calls that need only a
 //! live handle are declared `safe`. An SSL's BIOs are set only while this side owns
-//! it ([`OwnedSsl`]), before any handle exists. What frees an SSL within `'a` is
-//! unsafe: the crate's own constructors from raw pointers and
-//! `upstream::socket_ssl_close`.
+//! it ([`OwnedSsl`]), before any handle exists. Socket operations retain a
+//! [`HeldSsl`] reference; closing the socket slot cannot free a borrowed session.
 use crate::context::SslCtx;
 use openssl_sys::{
     BIO, OPENSSL_STACK, SSL, SSL_CIPHER, SSL_CTRL_MODE, SSL_CTRL_SET_TLSEXT_HOSTNAME, SSL_CTX,
@@ -56,6 +55,7 @@ unsafe extern "C" {
     safe fn BIO_ctrl_pending(bio: Bio<'_>) -> usize;
     safe fn BIO_method_type(bio: Bio<'_>) -> c_int;
     safe fn PEM_write_bio_X509(bio: Bio<'_>, cert: CertRef<'_>) -> c_int;
+    safe fn SSL_up_ref(ssl: Ssl<'_>) -> c_int;
     safe fn SSL_get_error(ssl: Ssl<'_>, result: c_int) -> c_int;
     /// Writes at most `length` bytes of `buffer`, the count its lending gives.
     safe fn SSL_read<'id>(
@@ -265,12 +265,44 @@ pub fn error_string(error: c_ulong) -> String {
 }
 
 /// A live SSL on this thread for `'a`. A socket record's is live while the record
-/// holds it: `Socket::ssl_create` gives it one, and the unsafe `socket_ssl_close`
-/// takes it and frees it, its caller promising that no handle to the SSL or its BIOs
-/// is used afterwards.
+/// holds it: socket operations borrow a retained [`HeldSsl`], while a new
+/// session's setup borrows its [`OwnedSsl`].
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ssl<'a>(NonNull<SSL>, PhantomData<&'a SSL>);
+
+/// An operation's retained SSL reference, still bounded by the socket record's
+/// lifetime. Its handles borrow this lease, so none can survive its release.
+///
+/// ```compile_fail
+/// use swoole_rs_reactor::Socket;
+/// use swoole_rs_tls::Ssl;
+/// fn escape(socket: Socket<'_>) -> Option<Ssl<'_>> {
+///     let held = Ssl::of(socket)?;
+///     Some(held.get())
+/// }
+/// ```
+#[derive(Debug)]
+pub struct HeldSsl<'a>(NonNull<SSL>, PhantomData<Socket<'a>>);
+
+impl HeldSsl<'_> {
+    #[must_use]
+    pub fn get(&self) -> Ssl<'_> {
+        Ssl(self.0, PhantomData)
+    }
+}
+
+impl Drop for HeldSsl<'_> {
+    fn drop(&mut self) {
+        /// The one reference acquired by `SSL_up_ref`, released once by this drop.
+        #[repr(transparent)]
+        struct Released(NonNull<SSL>);
+        unsafe extern "C" {
+            safe fn SSL_free(ssl: Released);
+        }
+        SSL_free(Released(self.0));
+    }
+}
 
 /// An entry of OpenSSL's static cipher table.
 #[repr(transparent)]
@@ -287,25 +319,29 @@ pub struct Cipher {
 }
 
 impl<'a> Ssl<'a> {
-    /// The SSL of `socket`'s record, or None without one, for as long as the record.
+    /// Retain the record's SSL for this operation. Handles borrowed from the
+    /// returned lease remain live even if another operation closes the SSL slot.
     #[must_use]
-    pub fn of(socket: Socket<'a>) -> Option<Self> {
+    pub fn of(socket: Socket<'a>) -> Option<HeldSsl<'a>> {
         Self::of_reading(socket, |_| ()).0
     }
 
     /// [`Self::of`], and `read` over the record's fields in the same read of it.
+    /// # Panics
+    /// When OpenSSL cannot retain the live session reference.
     pub fn of_reading<T>(
         socket: Socket<'a>,
         read: impl FnOnce(&SocketFields) -> T,
-    ) -> (Option<Self>, T) {
-        let (ssl, value) = socket.read(|record| (record.ssl(), read(record)));
-        // The record's `ssl` is null or the live SSL its `SocketSsl` owns, freed with
-        // the record or by the unsafe `take_ssl`, whose caller promises that no handle
-        // to it is used afterwards; `set_ssl` leaves one it replaces unfreed.
-        (
-            NonNull::new(ssl.cast()).map(|ssl| Self(ssl, PhantomData)),
-            value,
-        )
+    ) -> (Option<HeldSsl<'a>>, T) {
+        socket.read(|record| {
+            let held = NonNull::new(record.ssl().cast()).map(|ptr| {
+                // The record owns this reference throughout its read. Retain
+                // another before any callback or coroutine can close the slot.
+                assert_eq!(SSL_up_ref(Self(ptr, PhantomData)), 1, "SSL_up_ref failed");
+                HeldSsl(ptr, PhantomData)
+            });
+            (held, read(record))
+        })
     }
 
     #[must_use]
