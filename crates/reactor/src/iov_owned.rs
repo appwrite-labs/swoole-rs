@@ -305,10 +305,13 @@ mod tests {
     #[test]
     fn owned_cursor_keeps_original_length_and_updates_live_state() {
         for count in [0, 1, 3, 17, 65] {
+            // One pointer for every descriptor: each `as_mut_ptr` on the array would
+            // reborrow it whole and invalidate the ones taken before (Miri).
             let mut bytes = [0u8; 128];
+            let base = bytes.as_mut_ptr();
             let source: Vec<_> = (0..count)
                 .map(|i| libc::iovec {
-                    iov_base: bytes.as_mut_ptr().wrapping_add(i).cast(),
+                    iov_base: base.wrapping_add(i).cast(),
                     iov_len: 1,
                 })
                 .collect();
@@ -334,7 +337,7 @@ mod tests {
             ));
             if count > 0 {
                 assert_eq!(source[0].iov_len, 1);
-                assert_eq!(source[0].iov_base, bytes.as_mut_ptr().cast());
+                assert_eq!(source[0].iov_base, base.cast());
             }
         }
     }
@@ -342,10 +345,13 @@ mod tests {
     #[test]
     fn iov_owned_positive_construct_copy_length_cursor_and_release() {
         for count in [1, 3, 17, 65] {
+            // One pointer for every descriptor: each `as_mut_ptr` on the array would
+            // reborrow it whole and invalidate the ones taken before (Miri).
             let mut bytes = [0u8; 128];
+            let base = bytes.as_mut_ptr();
             let source: Vec<_> = (0..count)
                 .map(|i| libc::iovec {
-                    iov_base: bytes.as_mut_ptr().wrapping_add(i).cast(),
+                    iov_base: base.wrapping_add(i).cast(),
                     iov_len: 1,
                 })
                 .collect();
@@ -367,8 +373,9 @@ mod tests {
         // Normal positive partial consumption moves only the vector's copy; final
         // completion must not touch that descriptor again.
         let mut bytes = [0u8; 7];
+        let base = bytes.as_mut_ptr();
         let source = libc::iovec {
-            iov_base: bytes.as_mut_ptr().cast(),
+            iov_base: base.cast(),
             iov_len: 7,
         };
         let mut vectors = reading(&[source]);
@@ -377,7 +384,7 @@ mod tests {
         let partial = swr_v1_reactor_iov_view(&owner);
         assert_eq!((partial.offset_bytes, partial.remain_count), (2, 1));
         let current = descriptors(&owner)[0];
-        assert_eq!(current.iov_base, bytes.as_mut_ptr().wrapping_add(2).cast());
+        assert_eq!(current.iov_base, base.wrapping_add(2).cast());
         assert_eq!(current.iov_len, 5);
         owner.advance(5);
         let last = swr_v1_reactor_iov_view(&owner);
@@ -554,13 +561,14 @@ mod tests {
     #[test]
     fn iov_vector_keeps_offset_across_a_boundary() {
         let mut data = *b"abcde";
+        let base = data.as_mut_ptr();
         let input = [
             libc::iovec {
-                iov_base: data.as_mut_ptr().cast(),
+                iov_base: base.cast(),
                 iov_len: 2,
             },
             libc::iovec {
-                iov_base: data.as_mut_ptr().wrapping_add(2).cast(),
+                iov_base: base.wrapping_add(2).cast(),
                 iov_len: 3,
             },
         ];
