@@ -70,3 +70,27 @@ def test_request_metadata_separates_the_current_property(engine):
         ]
         assert isinstance(current['request_time'], int)
         assert isinstance(current['request_time_float'], float)
+
+
+@pytest.mark.parametrize(('method', 'protocol'), [
+    ('GET', 'HTTP/1.1'), ('POST', 'HTTP/1.1'), ('M-SEARCH', 'HTTP/1.1'),
+    ('GET_PARAMETER', 'RTSP/1.0'), ('QUERY', 'HTTP/1.1'),
+])
+def test_request_method_strings_separate_on_write(engine, method, protocol):
+    code = r'''
+    function request($method, $protocol) {
+        $request = Swoole\Http\Request::create();
+        $request->parse("$method / $protocol\r\nHost: localhost\r\n\r\n");
+        return $request;
+    }
+    $first = request($argv[1], $argv[2]);
+    $second = request($argv[1], $argv[2]);
+    $copy = $first->server['request_method'];
+    $first->server['request_method'][0] = '!';
+    $third = request($argv[1], $argv[2]);
+    echo json_encode([$copy, $first->server['request_method'],
+                      $second->server['request_method'], $third->server['request_method']]);
+    '''
+    result = subprocess.run(engine.command('-r', code, method, protocol), capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout) == [method, '!' + method[1:], method, method]
