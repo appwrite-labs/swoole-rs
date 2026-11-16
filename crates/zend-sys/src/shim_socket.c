@@ -42,8 +42,19 @@ int swr_zend_gethostbyname4(const char *host, struct in_addr *address) {
     return 0;
 }
 
-HashTable *swr_zend_object_properties(zval *object) {
-    return Z_OBJPROP_P(object);
+int swr_zend_try_object_properties(zend_object *object, zval *out) {
+    HashTable *volatile table = NULL;
+    volatile int bailed = 0;
+    SWR_ZEND_TRY { table = object->handlers->get_properties(object); }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
+    if (table) {
+        GC_TRY_ADDREF(table);
+        ZVAL_ARR(out, table);
+        if (GC_FLAGS(table) & GC_IMMUTABLE) {
+            Z_TYPE_INFO_P(out) = IS_ARRAY;
+        }
+    }
+    return bailed;
 }
 
 HashTable *swr_zend_convert_to_array(zval *value) {

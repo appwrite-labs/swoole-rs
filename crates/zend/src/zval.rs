@@ -9,10 +9,8 @@ use crate::{
         _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, HashPosition, HashTable, IS_ARRAY,
         IS_DOUBLE, IS_FALSE, IS_INDIRECT, IS_INTERNED_STRING_EX, IS_LONG, IS_NULL, IS_OBJECT,
         IS_PTR, IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
-        add_next_index_stringl, swr_zend_array_add_or_merge, swr_zend_try_hash_update,
-        swr_zend_try_symtable_update, zend_class_entry, zend_hash_add_new, zend_hash_index_add,
-        zend_hash_next_index_insert, zend_long, zend_object, zend_reference, zend_string,
-        zend_ulong, zend_value, zval,
+        zend_class_entry, zend_long, zend_object, zend_reference, zend_string, zend_ulong,
+        zend_value, zval,
     },
 };
 use std::{
@@ -39,9 +37,54 @@ unsafe extern "C" {
     /// `zend_hash_str_find`: as [`zend_hash_index_find`], under the `length`
     /// bytes at `key`, which it reads.
     fn zend_hash_str_find(table: &Array, key: *const c_char, length: usize) -> Option<&Value>;
-    /// `Z_OBJPROP_P` of an object zval: its property table, which its
-    /// `get_properties` handler may build; null (`None`) for none.
-    fn swr_zend_object_properties(object: &Value) -> Option<&Array>;
+    /// `Z_OBJPROP` of a live object inside `zend_try` (nonzero for a bailout:
+    /// its `get_properties` handler may build the table, and a lazy object's
+    /// initializer runs PHP code): `out` then holds the table, if it has one,
+    /// with a reference of its own, in place of what it held, which is not
+    /// released.
+    safe fn swr_zend_try_object_properties(
+        object: crate::ObjectRef<'_>,
+        out: &Owned,
+    ) -> std::ffi::c_int;
+    /// `zend_hash_next_index_insert`: the table takes `value` under its next
+    /// index, or (null, at `ZEND_LONG_MAX`) leaves it to the caller. No PHP
+    /// code runs.
+    safe fn zend_hash_next_index_insert(table: Table<'_>, value: Given<'_>) -> *mut zval;
+    /// `zend_hash_index_add`: the table takes `value` under `index`, or (null,
+    /// the index taken) leaves it to the caller. No PHP code runs.
+    safe fn zend_hash_index_add(table: Table<'_>, index: zend_ulong, value: Given<'_>)
+    -> *mut zval;
+    /// `zend_hash_add_new`: the table takes `value` under `key`, which it
+    /// references itself. No PHP code runs: it releases nothing.
+    safe fn zend_hash_add_new(table: Table<'_>, key: &ZStr, value: Given<'_>) -> *mut zval;
+    /// `zend_hash_update` under `key`, or `zend_hash_index_update` under
+    /// `index` for none, inside `zend_try` (nonzero for a bailout): the table
+    /// takes `value` and references the key itself; the value it replaces is
+    /// released, which can run `__destruct`.
+    safe fn swr_zend_try_hash_update(
+        table: Table<'_>,
+        key: Option<&ZStr>,
+        index: zend_ulong,
+        value: Given<'_>,
+    ) -> std::ffi::c_int;
+    /// `zend_hash_index_del` inside `zend_try` (nonzero for a bailout): the
+    /// value under `index`, if any, is released, which can run `__destruct`.
+    safe fn swr_zend_try_hash_index_del(table: Table<'_>, index: zend_ulong) -> std::ffi::c_int;
+    /// `add_next_index_stringl`: the array takes a new string of the lent bytes
+    /// (an `IoSlice` is an iovec) under its next index. No PHP code runs.
+    safe fn swr_lent_push_bytes(array: Separated<'_>, bytes: IoSlice<'_>);
+    /// `add_assoc_zval_ex` inside `zend_try` (nonzero for a bailout): the array
+    /// takes `value` under the lent key, which Zend copies; the value it
+    /// replaces is released, which can run `__destruct`.
+    safe fn swr_lent_symtable_update(
+        array: Separated<'_>,
+        key: IoSlice<'_>,
+        value: Given<'_>,
+    ) -> std::ffi::c_int;
+    /// Swoole's `zend::array_add_or_merge`: the array takes `value` under the
+    /// lent key, which Zend copies, or appends it to what is there, made a list
+    /// first unless it is one. No PHP code runs: it releases nothing.
+    safe fn swr_lent_array_add_or_merge(array: Separated<'_>, key: IoSlice<'_>, value: Given<'_>);
     /// `zend_zval_value_name`: it reads the zval, and returns a static type
     /// name or the name of the object's class, which outlives its objects.
     /// `mixed` for a slot that holds no PHP value.
@@ -167,6 +210,19 @@ unsafe extern "C" {
 /// it, once, and nothing reads it again.
 #[repr(transparent)]
 struct Dying<'a>(&'a Value);
+
+/// The zval an [`Owned`] gave up ([`Owned::into_zval`]) to a Zend function
+/// that takes its reference over (or, where it says so, leaves it to the
+/// caller, who releases it): made only from that zval, for that one call, so
+/// nothing releases the reference twice.
+#[repr(transparent)]
+struct Given<'a>(&'a mut zval);
+
+/// The table of a [`Separated`] array, which [`Separated::table`] gives up the
+/// borrow for: unshared and not immutable, so a write may change it in place,
+/// and nothing borrows an element while it does.
+#[repr(transparent)]
+struct Table<'a>(&'a Array);
 
 /// A call's arguments lent to C (`swr_zvals`): `argc` zvals from `argv`, which
 /// the callee reads and copies, keeping no pointer to them. Made only from a
@@ -406,12 +462,20 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn str(&self) -> Option<&ZStr> {
-        if self.kind() != IS_STRING {
+        self.held()
+    }
+
+    /// The counted value a zval of `T`'s kind holds, borrowed: what
+    /// `Z_STR_P` and `Z_ARRVAL_P` read.
+    #[inline]
+    fn held<T: Held>(&self) -> Option<&T> {
+        if self.kind() != T::KIND {
             return None;
         }
-        // SAFETY: a string zval holds `str`, never null, which it keeps alive
-        // while borrowed; `ZStr` is a transparent string.
-        Some(unsafe { &*self.payload::<ZStr>() })
+        // SAFETY: a zval of `T`'s kind holds a pointer to a live `T` (`str`, a
+        // string, or `arr`, a table: never null), which it keeps while
+        // borrowed; `T` is that type, transparent.
+        Some(unsafe { &*self.payload::<T>() })
     }
 
     /// `Z_OBJ_P` of an object.
@@ -461,10 +525,20 @@ impl Value {
         self.0.set(value.into_zval());
     }
 
+    /// `Z_TYPE_INFO_P(value) = IS_NULL`: null, its value word and `u2` left as
+    /// they were and what it held not released, for a slot holding nothing
+    /// that needs it. One store of the type word.
+    #[inline]
+    pub(crate) fn retype_null(&self) {
+        let mut value = self.0.get();
+        value.u1.type_info = IS_NULL;
+        self.0.set(value);
+    }
+
     /// Lend what the zval holds to `edit`, with null in its place meanwhile,
     /// then put it back and release whatever `edit` left there. The caller
     /// holds nothing borrowed from the zval.
-    pub(crate) fn lend<R>(&self, edit: impl FnOnce(&mut Owned) -> R) -> R {
+    pub fn lend<R>(&self, edit: impl FnOnce(&mut Owned) -> R) -> R {
         let mut held = Owned::null();
         // Two distinct zvals: nothing borrows this one's content, and `held`
         // is this frame's.
@@ -610,16 +684,11 @@ impl Value {
     /// # Errors
     /// The callable bailed out.
     pub fn call(&self) -> Result<Owned, bailout::Bailout> {
-        let mut callable = self.copy();
+        // Nothing is called while a bailout is pending: upstream never ran past it.
+        bailout::outcome(())?;
+        let callable = self.copy();
         let result = Owned::default();
-        let mut fci = crate::EMPTY_FCI;
-        fci.size = size_of::<crate::sys::zend_fcall_info>();
-        // ZVAL_COPY_VALUE of the reference `callable` holds through the call.
-        fci.function_name = *callable.0.0.get_mut();
-        fci.retval = result.as_ptr();
-        // SAFETY: a live callable and a return slot this owns; no Rust borrow
-        // spans the call.
-        let called = unsafe { bailout::call(&raw mut fci, ptr::null_mut()) };
+        let called = crate::host::user_call(&callable, Zvals::owned(&[]), &result);
         drop(callable);
         called?;
         Ok(result)
@@ -760,18 +829,18 @@ impl Value {
     }
 
     /// `Z_OBJPROP_P` of an object: its property table, which Zend builds if
-    /// need be and the object keeps.
-    /// # Safety
-    /// No PHP code runs while the table is borrowed: a property write can
-    /// resize the table or replace it.
+    /// need be, held as [`Value::hold`] holds an array, so a property write
+    /// meanwhile separates the object's table instead of changing this one.
+    /// None for no object or no table, or after a bailout, which is deferred.
     #[must_use]
-    #[inline]
-    pub unsafe fn properties(&self) -> Option<&Array> {
-        if self.kind() != IS_OBJECT {
-            return None;
-        }
-        // SAFETY: a live object zval, whose table it keeps while borrowed.
-        unsafe { swr_zend_object_properties(self) }
+    pub fn properties(&self) -> Option<HeldArray> {
+        let object = self.object_ref()?;
+        let table = Owned::default();
+        bailout::trapped(swr_zend_try_object_properties(object, &table))
+            .map_err(bailout::Bailout::defer)
+            .ok()?;
+        table.array()?;
+        Some(HeldArray(table))
     }
 
     /// `Z_TRY_ADDREF_P`: one more reference to what a counted zval holds, which
@@ -800,12 +869,7 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn array(&self) -> Option<&Array> {
-        if self.kind() != IS_ARRAY {
-            return None;
-        }
-        // SAFETY: an array zval holds `arr`, which it keeps while borrowed;
-        // `Array` is a transparent table.
-        Some(unsafe { &*self.payload::<Array>() })
+        self.held()
     }
 
     /// `Z_ARRVAL_P` of an array, as the pointer the zval holds: unlike a borrow
@@ -834,6 +898,20 @@ impl Value {
         swr_zval_try_addref(&owned);
         owned
     }
+}
+
+/// A transparent view of what a zval of kind `KIND` points to: only
+/// [`ZStr`] (`IS_STRING`) and [`Array`] (`IS_ARRAY`), for [`Value::held`].
+trait Held {
+    const KIND: u32;
+}
+
+impl Held for ZStr {
+    const KIND: u32 = IS_STRING;
+}
+
+impl Held for Array {
+    const KIND: u32 = IS_ARRAY;
 }
 
 /// A borrowed hash table (`zend_array`).
@@ -1077,17 +1155,20 @@ impl ZStr {
     #[must_use]
     #[inline]
     pub fn bytes(&self) -> &[u8] {
-        let length = self.head().len.get();
-        // SAFETY: a live string holds `len` bytes at `val`, which it keeps while
-        // borrowed.
-        unsafe { std::slice::from_raw_parts(crate::string::val(self.as_ptr()), length) }
+        self.val::<false>()
     }
 
     /// The bytes and the NUL Zend keeps after them; a NUL among the bytes stays.
     #[must_use]
     #[inline]
     pub fn bytes_with_nul(&self) -> &[u8] {
-        let length = self.head().len.get() + 1;
+        self.val::<true>()
+    }
+
+    /// `ZSTR_VAL` for `ZSTR_LEN` bytes, and the NUL after them when `NUL`.
+    #[inline]
+    fn val<const NUL: bool>(&self) -> &[u8] {
+        let length = self.head().len.get() + usize::from(NUL);
         // SAFETY: a live string holds `len` bytes at `val` and a NUL after
         // them, which it keeps while borrowed.
         unsafe { std::slice::from_raw_parts(crate::string::val(self.as_ptr()), length) }
@@ -1435,6 +1516,12 @@ impl Owned {
     pub fn into_zval(self) -> zval {
         *std::mem::ManuallyDrop::new(self).0.0.get_mut()
     }
+
+    /// The zval a [`Given`] left to its giver, with the reference it holds.
+    #[inline]
+    fn from_zval(value: zval) -> Self {
+        Self(Value(Cell::new(value)))
+    }
 }
 
 /// An array this owns (`array_init`), which pushes fill.
@@ -1491,11 +1578,9 @@ impl ArrayMut {
     /// `add_next_index_stringl`: Zend copies the bytes.
     #[inline]
     pub fn push_bytes(&mut self, data: &[u8]) {
-        let Some(array) = self.separate().map(|array| array.zval()) else {
-            return;
-        };
-        // SAFETY: a live array.
-        unsafe { add_next_index_stringl(array, data.as_ptr().cast(), data.len()) };
+        if let Some(array) = self.separate() {
+            swr_lent_push_bytes(array, IoSlice::new(data));
+        }
     }
 
     /// `add_next_index_long`.
@@ -1548,14 +1633,13 @@ impl ArrayMut {
     /// instead when the array has no next index (it would pass `ZEND_LONG_MAX`).
     #[inline]
     pub fn push(&mut self, value: Owned) {
-        let Some(array) = self.separate().map(|array| array.table()) else {
+        let Some(table) = self.separate().and_then(Separated::table) else {
             return;
         };
-        // SAFETY: a live array; it copies the zval in when it inserts it.
-        let added = unsafe { zend_hash_next_index_insert(array, value.as_ptr()) };
-        if !added.is_null() {
-            #[expect(clippy::mem_forget, reason = "the array owns the zval it copied in")]
-            std::mem::forget(value);
+        let mut value = value.into_zval();
+        if zend_hash_next_index_insert(table, Given(&mut value)).is_null() {
+            // Left to this, which releases it.
+            drop(Owned::from_zval(value));
         }
     }
 
@@ -1572,14 +1656,13 @@ impl ArrayMut {
     /// `value` is released when the index is taken.
     #[inline]
     pub fn insert_index(&mut self, index: zend_ulong, value: Owned) {
-        let Some(array) = self.separate().map(|array| array.table()) else {
+        let Some(table) = self.separate().and_then(Separated::table) else {
             return;
         };
-        // SAFETY: a live table; it copies the zval in when it adds it.
-        let added = unsafe { zend_hash_index_add(array, index, value.as_ptr()) };
-        if !added.is_null() {
-            #[expect(clippy::mem_forget, reason = "the array owns the zval it copied in")]
-            std::mem::forget(value);
+        let mut value = value.into_zval();
+        if zend_hash_index_add(table, index, Given(&mut value)).is_null() {
+            // Left to this, which releases it.
+            drop(Owned::from_zval(value));
         }
     }
 
@@ -1587,53 +1670,59 @@ impl ArrayMut {
     /// caller knows is absent, and references the key itself.
     #[inline]
     pub fn add_new(&mut self, key: &ZStr, value: Owned) {
-        let Some(array) = self.separate().map(|array| array.table()) else {
+        let Some(table) = self.separate().and_then(Separated::table) else {
             return;
         };
         let mut value = value.into_zval();
-        // SAFETY: a live table and key; the table takes the value.
-        unsafe { zend_hash_add_new(array, key.as_ptr(), &raw mut value) };
+        zend_hash_add_new(table, key, Given(&mut value));
     }
 
     /// `zend_hash_update`: the array takes over `value` under `key`, releasing
     /// what was there (as [`Owned`]'s drop does), and references the key itself.
     #[inline]
     pub fn update(&mut self, key: &ZStr, value: Owned) {
-        self.update_at(key.as_ptr(), 0, value);
+        self.update_at(Some(key), 0, value);
     }
 
     /// `zend_hash_index_update`, as [`ArrayMut::update`].
     #[inline]
     pub fn update_index(&mut self, index: zend_ulong, value: Owned) {
-        self.update_at(ptr::null_mut(), index, value);
+        self.update_at(None, index, value);
     }
 
-    /// [`ArrayMut::update`] under `key`, or under `index` when `key` is null.
+    /// [`ArrayMut::update`] under `key`, or under `index` for none.
     #[inline]
-    fn update_at(&mut self, key: *mut zend_string, index: zend_ulong, value: Owned) {
-        let Some(array) = self.separate().map(|array| array.table()) else {
+    fn update_at(&mut self, key: Option<&ZStr>, index: zend_ulong, value: Owned) {
+        let Some(table) = self.separate().and_then(Separated::table) else {
             return;
         };
         let mut value = value.into_zval();
-        // SAFETY: a live table and a borrowed key or null; the table takes the
-        // value and references the key itself.
-        bailout::defer(bailout::trapped(unsafe {
-            swr_zend_try_hash_update(array, key, index, &raw mut value)
-        }));
+        bailout::defer(bailout::trapped(swr_zend_try_hash_update(
+            table,
+            key,
+            index,
+            Given(&mut value),
+        )));
     }
 
-    /// `swr_zend_array_add_or_merge`: `value` under `key`, or appended to what
-    /// is there, made a list first unless it is one.
+    /// `zend_hash_index_del`: the value under `index`, if any, is released,
+    /// and a bailout its `__destruct` raises is deferred.
+    #[inline]
+    pub fn remove_index(&mut self, index: zend_ulong) {
+        if let Some(table) = self.separate().and_then(Separated::table) {
+            bailout::defer(bailout::trapped(swr_zend_try_hash_index_del(table, index)));
+        }
+    }
+
+    /// Swoole's `zend::array_add_or_merge`: `value` under `key`, or appended to
+    /// what is there, made a list first unless it is one.
     #[inline]
     pub fn merge(&mut self, key: &[u8], value: Owned) {
-        let Some(array) = self.separate().map(|array| array.zval()) else {
+        let Some(array) = self.separate() else {
             return;
         };
         let mut value = value.into_zval();
-        // SAFETY: a live array; it takes the value, and Zend copies the key.
-        unsafe {
-            swr_zend_array_add_or_merge(array, crate::key_ptr(key), key.len(), &raw mut value);
-        }
+        swr_lent_array_add_or_merge(array, IoSlice::new(key), Given(&mut value));
     }
 
     /// `php_array_merge(this, source)`, with a replaced value's `__destruct`
@@ -1654,42 +1743,50 @@ impl ArrayMut {
     #[must_use]
     #[inline]
     pub fn as_mut_ptr(&mut self) -> Option<*mut zval> {
-        self.separate().map(|array| array.zval())
+        self.separate().map(|array| array.0.as_ptr())
     }
+}
+
+/// `add_assoc_stringl_ex`, or `add_assoc_null_ex` when `value` is `None`,
+/// without separating the array; nothing once a bailout is pending.
+/// # Safety
+/// `array` is a live array zval that nothing else borrows for the call, whose
+/// table may be written in place: no other holder may see the write, or the
+/// caller writes it there as upstream does.
+pub unsafe fn set_key(array: *mut zval, key: &[u8], value: Option<&[u8]>) {
+    if bailout::pending() {
+        return;
+    }
+    let value = value.map_or_else(Owned::null, |value| ZString::new(value).into());
+    // SAFETY: per the caller, which vouches for the write in place that
+    // `Separated` stands for.
+    Separated(unsafe { ArrayMut::from_ptr(array) }).update(key, value);
 }
 
 /// An [`ArrayMut`] that [`ArrayMut::separate`] separated: its array has no
 /// other holder and is not immutable while this borrows it, so only this may
-/// change the table in place.
+/// change the table in place. One pointer wide, as C takes the `zval *`.
+#[repr(transparent)]
 pub struct Separated<'a>(&'a mut ArrayMut);
 
-impl Separated<'_> {
+impl<'a> Separated<'a> {
+    /// The table `separate` checked was there, for one write.
     #[inline]
-    fn zval(&self) -> *mut zval {
-        self.0.0.as_ptr()
-    }
-
-    /// The table `separate` checked was there.
-    #[inline]
-    fn table(&self) -> *mut HashTable {
-        self.0.0.array().map_or(ptr::null_mut(), Array::as_ptr)
+    fn table(self) -> Option<Table<'a>> {
+        let array: &'a ArrayMut = self.0;
+        array.array().map(Table)
     }
 
     /// `add_assoc_zval_ex(array, key, value)`, with a released value's
     /// `__destruct` run inside `zend_try` and a bailout deferred.
     #[inline]
-    fn update(&self, key: &[u8], value: Owned) {
+    fn update(self, key: &[u8], value: Owned) {
         let mut value = value.into_zval();
-        // SAFETY: a live array this zval alone holds; it takes the value, and
-        // Zend copies the key.
-        bailout::defer(bailout::trapped(unsafe {
-            swr_zend_try_symtable_update(
-                self.zval(),
-                crate::key_ptr(key),
-                key.len(),
-                &raw mut value,
-            )
-        }));
+        bailout::defer(bailout::trapped(swr_lent_symtable_update(
+            self,
+            IoSlice::new(key),
+            Given(&mut value),
+        )));
     }
 
     /// `zend_hash_clean`; a destructor's bailout is deferred. It takes the

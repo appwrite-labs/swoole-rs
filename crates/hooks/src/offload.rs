@@ -3,7 +3,7 @@
 //! `async::dispatch` and the coroutine operations.
 use core::ffi::{c_int, c_void};
 use core::mem::{offset_of, size_of};
-use core::sync::atomic::{AtomicU8, Ordering::Relaxed};
+use core::sync::atomic::{AtomicI32, AtomicIsize, AtomicU8, Ordering::Relaxed};
 use swoole_rs_corebase::set_errno;
 
 /// `async::Handler`: runs on a pool thread over its own copy of the event, of which
@@ -20,10 +20,12 @@ pub struct AsyncEvent {
     pub task_id: usize,
     /// The dispatching thread may set it while a pool thread reads it.
     pub canceled: AtomicU8,
-    pub error: c_int,
+    /// The result, which a pool thread stores into its heap copy while the
+    /// dispatching thread may set `canceled` there: [`AsyncEvent::result`].
+    error: AtomicI32,
     /// The request's resolver record: one reference per heap copy, or null.
     pub(crate) data: *mut swoole_rs_corebase::ResolverRequest,
-    pub retval: isize,
+    retval: AtomicIsize,
     pub pipe_socket: *mut c_void,
     pub timestamp: f64,
     /// What the handler and completion read; paired with them at construction.
@@ -53,15 +55,33 @@ impl AsyncEvent {
         Self {
             task_id: 0,
             canceled: AtomicU8::new(0),
-            error: 0,
+            error: AtomicI32::new(0),
             data: core::ptr::null_mut(),
-            retval: 0,
+            retval: AtomicIsize::new(0),
             pipe_socket,
             timestamp: 0.0,
             object,
             handler,
             callback,
         }
+    }
+
+    /// `(retval, error)`.
+    #[must_use]
+    pub fn result(&self) -> (isize, c_int) {
+        (self.retval.load(Relaxed), self.error.load(Relaxed))
+    }
+
+    /// `retval` and `error`, set by the event's owner.
+    pub fn set_result(&mut self, retval: isize, error: c_int) {
+        *self.retval.get_mut() = retval;
+        *self.error.get_mut() = error;
+    }
+
+    /// `retval` and `error`, stored through a shared copy: the pool's result.
+    pub(crate) fn publish(&self, (retval, error): (isize, c_int)) {
+        self.retval.store(retval, Relaxed);
+        self.error.store(error, Relaxed);
     }
 
     /// The object the handler and completion read.
@@ -82,6 +102,8 @@ impl Clone for AsyncEvent {
     fn clone(&self) -> Self {
         Self {
             canceled: AtomicU8::new(self.canceled.load(Relaxed)),
+            error: AtomicI32::new(self.error.load(Relaxed)),
+            retval: AtomicIsize::new(self.retval.load(Relaxed)),
             ..*self
         }
     }
@@ -132,8 +154,8 @@ extern "C" fn run_job(event: &mut AsyncEvent) {
     if let Some(job) = &mut task.job {
         job();
     }
-    event.error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-    event.retval = 0;
+    let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    event.set_result(0, error);
 }
 
 /// The reactor thread's completion: resumes the parked coroutine unless it gave up.
@@ -174,18 +196,18 @@ pub fn swr_v1_hook_async(
         // SAFETY: the pool's copy lives until `completed` returns, which resumed us.
         let done = unsafe { &*dispatched };
         *event.canceled.get_mut() = done.canceled.load(Relaxed);
-        event.error = done.error;
-        event.retval = done.retval;
-        set_errno(done.error);
+        let (retval, error) = done.result();
+        event.set_result(retval, error);
+        set_errno(error);
         true
     } else {
         // SAFETY: the pool's copy is pending, live until its completion on this
         // thread; canceling it keeps `completed` off `task`.
         unsafe { (*dispatched).canceled.store(1, Relaxed) };
         *event.canceled.get_mut() = 1;
-        event.retval = -1;
-        event.error = (ops.last_error)();
-        set_errno(event.error);
+        let error = (ops.last_error)();
+        event.set_result(-1, error);
+        set_errno(error);
         false
     }
 }
@@ -219,7 +241,7 @@ pub fn swr_v1_hook_async_job(job: &mut (dyn FnMut() + Send), ops: &AsyncOps) -> 
     // Parks this coroutine until `completed` resumes it.
     (ops.park)();
     // SAFETY: the pool's copy lives until `completed` returns, which resumed us.
-    set_errno(unsafe { (*dispatched).error });
+    set_errno(unsafe { &*dispatched }.result().1);
     true
 }
 
@@ -281,13 +303,12 @@ mod tests {
     };
 
     extern "C" fn handler(event: &mut AsyncEvent) {
-        event.retval = 7;
-        event.error = 3;
+        event.set_result(7, 3);
     }
 
     fn empty() -> AsyncEvent {
         let mut event = AsyncEvent::empty();
-        event.retval = 1;
+        event.set_result(1, 0);
         event
     }
 
@@ -316,8 +337,8 @@ mod tests {
         assert!(swr_v1_hook_async(&mut event, handler, 1.0, &OPS));
         assert_eq!(
             (
-                event.retval,
-                event.error,
+                event.result().0,
+                event.result().1,
                 event.canceled.load(Relaxed),
                 errno(),
                 RESUMED.get()
@@ -331,8 +352,8 @@ mod tests {
         TIME_OUT.set(false);
         assert_eq!(
             (
-                event.retval,
-                event.error,
+                event.result().0,
+                event.result().1,
                 event.canceled.load(Relaxed),
                 errno()
             ),

@@ -230,19 +230,21 @@ struct Tail {
 
 /// `async::Handler`: runs on a pool thread over its own copy of the event, of which
 /// the pool keeps `error` and `retval`.
-type AsyncHandler = extern "C" fn(&mut AsyncEvent);
+type AsyncHandler = extern "C" fn(&mut AsyncEvent<'_>);
 
 /// The completion, on the dispatching thread.
-type AsyncCallback = extern "C" fn(&AsyncEvent);
+type AsyncCallback = extern "C" fn(&AsyncEvent<'_>);
 
 /// Upstream's `AsyncEvent` as crates/hooks' pool takes it, its request a counted
-/// DNS record.
+/// DNS record: the event [`dns_lookup`] builds borrows its request, and each copy the
+/// pool makes holds a reference of its own, so the record outlives every borrow of
+/// an event.
 #[repr(C)]
-struct AsyncEvent {
+struct AsyncEvent<'a> {
     task_id: usize,
     canceled: u8,
     error: c_int,
-    data: *mut ResolverRequest,
+    data: Option<&'a ResolverRequest>,
     retval: isize,
     pipe_socket: *mut c_void,
     timestamp: f64,
@@ -251,12 +253,10 @@ struct AsyncEvent {
     callback: Option<AsyncCallback>,
 }
 
-impl AsyncEvent {
+impl AsyncEvent<'_> {
     /// The event's request; none on an event built without one.
     fn request(&self) -> Option<&ResolverRequest> {
-        // SAFETY: only this module builds an event, whose request is null or a
-        // record the event (and each copy the pool makes of it) keeps live.
-        unsafe { self.data.as_ref() }
+        self.data
     }
 }
 
@@ -280,7 +280,7 @@ unsafe extern "C" {
         improper_ctypes,
         reason = "the request record is opaque behind its pointer; Rust defines both sides"
     )]
-    safe fn async_dispatch(event: &AsyncEvent) -> *mut c_void;
+    safe fn async_dispatch(event: &AsyncEvent<'_>) -> *mut c_void;
 }
 
 /// The public, trivially copyable fields of `network::Client`. C++ keeps typed
@@ -1275,7 +1275,7 @@ fn dns_lookup(this: Handle) -> bool {
         task_id: 0,
         canceled: 0,
         error: 0,
-        data: request.as_ptr(),
+        data: Some(request.get()),
         retval: 0,
         pipe_socket: core::ptr::null_mut(),
         timestamp: 0.0,
@@ -1289,7 +1289,7 @@ fn dns_lookup(this: Handle) -> bool {
 
 /// `async::handler_gethostbyname`, on a pool thread, over a copy of the event
 /// [`dns_lookup`] dispatched.
-extern "C" fn resolve(event: &mut AsyncEvent) {
+extern "C" fn resolve(event: &mut AsyncEvent<'_>) {
     // Its request record, held by the copy.
     if let Some(request) = event.request() {
         (event.retval, event.error) = crate::resolver::host(request);
@@ -1298,7 +1298,7 @@ extern "C" fn resolve(event: &mut AsyncEvent) {
 
 /// `Client_onResolveCompleted`, on the client's thread, over the completed copy
 /// of the event [`dns_lookup`] dispatched.
-extern "C" fn resolve_completed(event: &AsyncEvent) {
+extern "C" fn resolve_completed(event: &AsyncEvent<'_>) {
     // Its request record, held by the copy.
     let Some(request) = event.request() else {
         return;

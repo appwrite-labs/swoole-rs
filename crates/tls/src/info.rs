@@ -2,7 +2,6 @@
 //! renegotiation `swoole_debug` exists only in `SW_DEBUG` builds, which the hybrid isn't.
 use crate::{Ssl, SslCtx};
 use std::ffi::c_int;
-use swoole_rs_reactor::Socket;
 // OpenSSL's declaration; openssl-sys does not bind this entry point. It
 // stores the callback in the live context, and calls it with the live, non-null SSL
 // whose state changed, which is what a callback of this type takes.
@@ -20,11 +19,7 @@ pub(crate) extern "C" fn info(ssl: Ssl<'_>, where_: c_int, _result: c_int) {
     if !renegotiating && !handshake_done {
         return;
     }
-    let socket = ssl.ex_data(crate::swr_v1_tls_connection_index());
-    // SAFETY: the SSL's connection ex data is null or its live socket record, as
-    // `socket_ssl_new` registered it (the record that owns the SSL), before any
-    // handshake callback; its owning event loop dispatches this.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
+    let Some(socket) = ssl.socket() else {
         return;
     };
     if renegotiating {

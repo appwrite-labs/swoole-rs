@@ -32,9 +32,9 @@ const BUFFER: usize = 16384;
 
 /// The opaque `BrotliDecoderState`.
 type State = c_void;
-/// A decoder state `BrotliDecoderCreateInstance` made, live until the unsafe
-/// `BrotliDecoderDestroyInstance` of it, whose caller drops the owner unused. It is
-/// not `Send`, as the pointer it replaced was not.
+/// A decoder state `BrotliDecoderCreateInstance` made, live until
+/// `BrotliDecoderDestroyInstance` consumes it. It is neither `Copy` nor `Clone`, so it
+/// is destroyed once, and not `Send`, as the pointer it replaced was not.
 #[repr(transparent)]
 struct Owned(NonNull<State>);
 
@@ -71,14 +71,15 @@ unsafe extern "C" {
         encoded_size: *mut usize,
         encoded_buffer: *mut u8,
     ) -> c_int;
-    /// A new decoder state on malloc, or none. Its caller owns it until the unsafe
+    /// A new decoder state on malloc, or none. Its caller owns it until
     /// `BrotliDecoderDestroyInstance`.
     safe fn BrotliDecoderCreateInstance(
         alloc: DefaultAllocator,
         free: DefaultAllocator,
         opaque: DefaultAllocator,
     ) -> Option<Owned>;
-    fn BrotliDecoderDestroyInstance(state: *mut State);
+    /// Frees the state it is given, which no one holds afterwards.
+    safe fn BrotliDecoderDestroyInstance(state: Owned);
     fn BrotliDecoderDecompressStream(
         state: *mut State,
         available_in: *mut usize,
@@ -125,7 +126,8 @@ pub fn compress(input: &[u8], quality: i32) -> Option<Vec<u8>> {
 
 /// A response's Brotli decoder. `out` holds the bytes the last chunk produced.
 pub struct Decoder {
-    state: Owned,
+    /// Some until `drop` destroys it.
+    state: Option<Owned>,
     out: Vec<u8>,
 }
 
@@ -137,7 +139,7 @@ impl Decoder {
         let state = BrotliDecoderCreateInstance(None, None, None)
             .ok_or("BrotliDecoderCreateInstance() failed")?;
         Ok(Self {
-            state,
+            state: Some(state),
             out: Vec::new(),
         })
     }
@@ -149,17 +151,18 @@ impl Decoder {
     pub fn decode(&mut self, input: &[u8]) -> Result<&[u8], String> {
         self.out.clear();
         let (mut next_in, mut available_in) = (input.as_ptr(), input.len());
+        let state = self.state.as_ref().map_or(null_mut(), Owned::as_ptr);
         loop {
             self.out.reserve(BUFFER);
             let spare = self.out.spare_capacity_mut();
             let (mut next_out, room) = (spare.as_mut_ptr().cast::<u8>(), spare.len());
             let mut available_out = room;
-            // SAFETY: the decoder's live state; `next_in` has `available_in` readable
+            // SAFETY: the decoder's live state (`state` is Some until `drop`); `next_in` has `available_in` readable
             // bytes left of `input` and `next_out` `available_out` writable bytes of
             // `out`'s spare capacity. libbrotli accepts a null `total_out`.
             let result = unsafe {
                 BrotliDecoderDecompressStream(
-                    self.state.as_ptr(),
+                    state,
                     &raw mut available_in,
                     &raw mut next_in,
                     &raw mut available_out,
@@ -180,7 +183,10 @@ impl Decoder {
 
     /// `BrotliDecoderDecompressStream() failed, <BrotliDecoderErrorString>`.
     fn error(&self) -> String {
-        let code = BrotliDecoderGetErrorCode(self.state.live());
+        let code = self
+            .state
+            .as_ref()
+            .map_or(0, |state| BrotliDecoderGetErrorCode(state.live()));
         let reason = BrotliDecoderErrorString(code).get();
         format!(
             "BrotliDecoderDecompressStream() failed, {}",
@@ -191,8 +197,9 @@ impl Decoder {
 
 impl Drop for Decoder {
     fn drop(&mut self) {
-        // SAFETY: the state `new` created, destroyed once.
-        unsafe { BrotliDecoderDestroyInstance(self.state.as_ptr()) };
+        if let Some(state) = self.state.take() {
+            BrotliDecoderDestroyInstance(state);
+        }
     }
 }
 

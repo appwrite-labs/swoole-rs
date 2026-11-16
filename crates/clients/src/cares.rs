@@ -13,10 +13,10 @@ use std::{
     },
 };
 use swoole_rs_cares_sys::{self as sdk, swrs_cares_metadata as metadata};
-use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::{FdType, SW_DNS_SERVER_PORT};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::Text;
+use swoole_rs_corebase::{CCast, Hostent};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::{Event, Events, Running, SocketRecord, event_api};
 use swoole_rs_tls::event_socket::EventSocket;
@@ -25,7 +25,7 @@ use swoole_rs_tls::event_socket::EventSocket;
 type SocketState = extern "C" fn(&Query, c_int, c_int, c_int);
 /// A lookup's callback: `(query, status, timeouts, entry)`, the entry lent for the
 /// call and only on success.
-type HostCallback = extern "C" fn(&Query, c_int, c_int, Option<&libc::hostent>);
+type HostCallback = extern "C" fn(&Query, c_int, c_int, Option<Hostent<'_>>);
 #[expect(
     improper_ctypes,
     reason = "c-ares keeps a `Query` only as the opaque userdata it hands back"
@@ -208,7 +208,7 @@ extern "C" fn socket_state(query: &Query, fd: i32, readable: i32, writable: i32)
     sockets.push((fd, wrapper));
     query.sockets.set(sockets);
 }
-extern "C" fn host(query: &Query, status: i32, timeouts: i32, entry: Option<&libc::hostent>) {
+extern "C" fn host(query: &Query, status: i32, timeouts: i32, entry: Option<Hostent<'_>>) {
     if timeouts > 0 || status != metadata().success {
         let error = if timeouts > 0 {
             ErrorCode::SW_ERROR_DNSLOOKUP_RESOLVE_TIMEOUT as i32
@@ -217,30 +217,15 @@ extern "C" fn host(query: &Query, status: i32, timeouts: i32, entry: Option<&lib
         };
         query.error.set(error);
     } else if let Some(entry) = entry {
-        // The terminated address list, and the family of the storage its slots name.
-        let mut addresses = entry.h_addr_list;
-        let family = entry.h_addrtype;
-        while !addresses.is_null() {
-            // SAFETY: each list slot is valid until the first null terminator.
-            let address = unsafe { *addresses };
-            if address.is_null() {
-                break;
-            }
-            let (version, length) = if family == libc::AF_INET {
-                (4, 4)
-            } else {
-                (6, 16)
-            };
-            // SAFETY: the successful hostent supplies 4 or 16 initialized address bytes.
-            let address = unsafe { std::slice::from_raw_parts(address.cast::<u8>(), length) };
+        // The family of the storage the addresses are.
+        let version = if entry.is_inet() { 4 } else { 6 };
+        for address in entry.addresses() {
             let text = swr_v1_clients_ip_text(version, address);
             let length = usize::try_from(text.length).unwrap_or(0);
             let text = text.bytes.get(..length).unwrap_or_default().to_vec();
             let mut results = query.results.take();
             results.push(text);
             query.results.set(results);
-            // The SDK address list has another slot or its terminating null.
-            addresses = addresses.wrapping_add(1);
         }
     }
     let coroutine = query.coroutine.get();

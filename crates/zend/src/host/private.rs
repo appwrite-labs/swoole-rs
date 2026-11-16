@@ -208,14 +208,9 @@ pub fn function_call(
     let mut ran = false;
     let success = if coroutine {
         if let Some(retval) = retval {
-            // SAFETY: the caller's live return slot, whose type alone this
-            // writes: coroutines publish null before creation and have no
-            // return value.
-            unsafe {
-                (*retval.as_ptr()).u1 = sys::_zval_struct__bindgen_ty_1 {
-                    type_info: sys::IS_NULL,
-                }
-            };
+            // The caller's return slot, whose type alone this writes:
+            // coroutines publish null before creation and have no return value.
+            retval.retype_null();
         }
         let mut result: c_long = -1;
         // SAFETY: the leaf (`Creator`) and `then` (`Then`) are as their makers
@@ -253,6 +248,26 @@ pub fn function_call(
 /// No [`Then`].
 pub const NO_THEN: Then = Then(None, ptr::null_mut());
 
+/// `call_user_function(EG(function_table), NULL, name, retval, args)` inside
+/// `zend_try`: `zend_call_function`'s result, 0 when the call ran. `retval`
+/// holds what it returned, in place of what it held, which is not released.
+/// # Errors
+/// The call bailed out.
+pub(crate) fn user_call(
+    name: &crate::Value,
+    args: crate::zval::Zvals<'_>,
+    retval: &Owned,
+) -> Result<c_int, bailout::Bailout> {
+    let mut result = -1;
+    bailout::trapped(swr_zend_try_facade_user_call(
+        name,
+        args,
+        retval,
+        &mut result,
+    ))?;
+    Ok(result)
+}
+
 /// `zend::function::call(name, args)` into `retval`, an undefined slot of the
 /// caller's, a bailout left pending: the caller finishes or relays it. The
 /// arguments are lent as they are; Zend copies them into the call.
@@ -262,13 +277,11 @@ pub fn named_call_into(name: &[u8], args: &[Owned], retval: &Owned) {
     }
     // ZVAL_STRINGL: the complete binary function name, in a request string.
     let function = Owned::string(crate::ZString::new(name));
-    let mut result = -1;
-    bailed(swr_zend_try_facade_user_call(
-        &function,
-        crate::zval::Zvals::owned(args),
-        retval,
-        &mut result,
-    ));
+    let result =
+        user_call(&function, crate::zval::Zvals::owned(args), retval).unwrap_or_else(|bailout| {
+            bailout.defer();
+            -1
+        });
     if bailout::pending() {
         // Upstream never ran past a bailout to release the name.
         #[expect(

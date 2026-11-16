@@ -22,7 +22,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_locks::SharedMutex;
-use swoole_rs_phpcoroutines::Coroutine;
+use swoole_rs_phpcoroutines::{Coroutine, Waiter};
 use swoole_rs_phpswoole::unserialize_from;
 use swoole_rs_process::{
     methods::{self, swoole_get_worker_id},
@@ -179,7 +179,8 @@ impl MultiTask for Multi<'_> {
 /// `taskCo`/`taskWaitMulti` for results written into `result`, which becomes
 /// the call's return value. The waiting call owns it; the pending table refers to it.
 struct TaskCo {
-    co: Coroutine,
+    /// The waiting call's wait.
+    waiter: Waiter,
     /// Taken out and put back with nothing in between that yields or runs PHP
     /// code.
     result: Cell<Owned>,
@@ -477,7 +478,7 @@ fn taskwait(call: &Call) {
         return call.set_bool(false);
     };
     let dst = target(dst);
-    let Some(co) = Coroutine::current() else {
+    if Coroutine::current().is_none() {
         let Some(mut tasks) = wait_state(serv) else {
             return call.set_bool(false);
         };
@@ -497,10 +498,10 @@ fn taskwait(call: &Call) {
             call.set_bool(false);
         }
         return;
-    };
+    }
     flag(&mut buf, NONBLOCK | COROUTINE);
     let task_co = Rc::new(TaskCo {
-        co,
+        waiter: Waiter::default(),
         result: Cell::default(),
         list: OnceCell::new(),
         count: Cell::new(1),
@@ -510,7 +511,7 @@ fn taskwait(call: &Call) {
     }
     pending(serv, |p| p.coroutines.insert(id, Rc::downgrade(&task_co)));
     // onFinish resumes it.
-    let done = swoole_rs_phpcoroutines::suspend_for(timeout);
+    let done = task_co.waiter.wait_for(timeout);
     pending(serv, |p| p.coroutines.remove(&id));
     if done {
         call.set_owned(task_co.result.take());
@@ -588,11 +589,11 @@ fn task_co(call: &Call, fill_false: bool) {
     if let Err(bailout) = swoole_rs_phpruntime::coroutine_check() {
         return bailout.defer();
     }
-    let Some(co) = Coroutine::current() else {
+    if Coroutine::current().is_none() {
         return;
-    };
+    }
     let task_co = Rc::new(TaskCo {
-        co,
+        waiter: Waiter::default(),
         result: Cell::new(OwnedArray::default().into_owned()),
         list: OnceCell::new(),
         count: Cell::new(0),
@@ -628,7 +629,7 @@ fn task_co(call: &Call, fill_false: bool) {
     let list = task_co.list.get_or_init(|| list);
     task_co.count.set(n_task);
     // onFinish resumes it.
-    if !swoole_rs_phpcoroutines::suspend_for(timeout) {
+    if !task_co.waiter.wait_for(timeout) {
         task_co.with_result(|result| {
             let Some(array) = result.array_mut() else {
                 return;
@@ -839,11 +840,7 @@ fn resume(server: view::Server<'_>, id: i64, data: Owned) -> Result<(), Bailout>
             return Ok(());
         }
     }
-    let co = task_co.co;
-    drop(task_co);
-    // SAFETY: the waiting coroutine; this frame owns nothing that needs a drop.
-    unsafe { co.wake(false) };
-    Ok(())
+    task_co.waiter.wake()
 }
 
 #[cfg(test)]

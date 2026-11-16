@@ -4,7 +4,6 @@
 //! error, errno and logs included. With `upstream-symbols` (the hybrid's reactor
 //! build) they are defined under their upstream (Itanium) symbols and
 //! `socket.cc` no longer defines them.
-use crate::handle::CText;
 use crate::{
     Accept, Cert, CertRef, HandshakeLog, SocketTls, Ssl, SslIoResult, swr_v1_socket_ssl_accept,
     swr_v1_socket_ssl_clear, swr_v1_socket_ssl_connect, swr_v1_socket_ssl_error_reason,
@@ -20,6 +19,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::SocketFlag;
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
 use swoole_rs_corebase::sys::ReadSlot;
+use swoole_rs_corebase::sys::Text;
 use swoole_rs_corebase::{log, set_errno};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::socket_upstream::{
@@ -35,7 +35,7 @@ use swoole_rs_reactor::{
 // libcrypto's own declaration: it reads only the code, and answers one of its
 // static strings.
 unsafe extern "C" {
-    safe fn X509_verify_cert_error_string(error: c_long) -> Option<CText<'static>>;
+    safe fn X509_verify_cert_error_string(error: c_long) -> Option<Text<'static>>;
 }
 
 /// `SW_LOG_NOTICE`, `SW_LOG_WARNING`, `SW_ERROR_FILE_EMPTY` and `SW_ERROR_INVALID_PARAMS`.
@@ -644,7 +644,7 @@ pub fn socket_ssl_check_host(socket: Socket<'_>, name: &CStr) -> bool {
     let Some(cert) = ssl_get_peer_certificate(socket) else {
         return false;
     };
-    if cert.get().matches_host(name.to_bytes()) {
+    if cert.get().matches_host(name) {
         return true;
     }
     log::warning(
@@ -793,7 +793,7 @@ fn file_request(
 #[must_use]
 pub extern "C" fn socket_sendfile_sync(
     socket: Socket<'_>,
-    filename: CText<'_>,
+    filename: Text<'_>,
     offset: libc::off_t,
     length: usize,
 ) -> c_int {
@@ -1154,11 +1154,8 @@ fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> bool {
         // the platform's, which reads the NUL-terminated source and writes at
         // most an IPv6 address's 16 bytes (nothing for a family it doesn't know).
         unsafe extern "C" {
-            safe fn inet_pton(
-                family: c_int,
-                source: CText<'_>,
-                destination: &mut [u8; 16],
-            ) -> c_int;
+            safe fn inet_pton(family: c_int, source: Text<'_>, destination: &mut [u8; 16])
+            -> c_int;
         }
         let mut bytes = [0; 16];
         let parsed =
@@ -1186,7 +1183,7 @@ fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> bool {
 )]
 pub extern "C-unwind" fn make_server_socket(
     kind: c_int,
-    address: CText<'_>,
+    address: Text<'_>,
     port: c_int,
     backlog: c_int,
 ) -> *mut SocketRecord {

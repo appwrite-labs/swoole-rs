@@ -333,9 +333,7 @@ impl SharedChannel {
 
     /// `Channel::destroy`: the mutex, the pipe and the mapping, leaving no channel.
     pub fn free(&mut self) {
-        // SAFETY: null, or the record `make` initialised, which `&mut self` holds
-        // alone: no `get` borrow is live.
-        let Some(record) = (unsafe { self.0.as_ptr().cast::<Record>().as_mut() }) else {
+        let Some(record) = self.get() else {
             return;
         };
         if record.flags & LOCK != 0 {
@@ -375,8 +373,9 @@ impl Record {
         Ok(())
     }
 
-    fn close_pipe(&mut self) {
-        for fd in std::mem::replace(&mut self.notify, [-1, -1]) {
+    /// Closes the pipe `open` made; the record is freed next, so nothing reads it again.
+    fn close_pipe(&self) {
+        for fd in self.notify {
             if fd >= 0 {
                 // The record owns this descriptor.
                 _ = sys::close(fd);

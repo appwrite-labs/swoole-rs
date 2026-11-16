@@ -58,7 +58,7 @@ fn sw_logger() -> &'static Logger {
         backtrace,
         identity,
     };
-    Box::leak(Box::new(Logger::new(std::ptr::null_mut(), host)))
+    Box::leak(Box::new(Logger::new(None, host)))
 }
 
 fn put(logger: &Logger, level: c_int, text: &str) {

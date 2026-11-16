@@ -189,7 +189,7 @@ pub fn send_pipe_message(worker: Worker<'_>, data: &[u8], flags: c_int) -> Optio
 
 #[cfg(feature = "upstream-symbols")]
 // crates/tls defines it under its upstream symbol, as a safe Rust fn taking
-// plain values and a `CText` (the same repr as `Text`); declared, since
+// plain values and a `Text`; declared, since
 // crates/tls (through crates/reactor) depends on this crate. It returns a native
 // socket the caller owns, or null.
 unsafe extern "C-unwind" {
@@ -506,7 +506,7 @@ pub fn logger_op(op: swoole_rs_corebase::native::LoggerOp) {
     };
     match op {
         LoggerOp::New => {
-            let stdout = swoole_rs_corebase::swr_v1_core_stdout().cast();
+            let stdout = swoole_rs_corebase::swr_v1_core_stdout();
             let logger = std::sync::Arc::new(Logger::new(stdout, swr_logger_host));
             LOGGER.store(std::sync::Arc::as_ptr(&logger).cast_mut(), Relaxed);
             // A logger `new` replaces is leaked, as upstream's pointer overwrite does.

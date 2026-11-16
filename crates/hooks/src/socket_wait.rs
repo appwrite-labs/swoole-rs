@@ -132,18 +132,17 @@ impl Wait {
     }
 }
 
-/// A write's buffer slot: where its bytes are. A wait may move them to the socket's
-/// write buffer and point the slot there.
+/// A write's buffer slot: the caller's bytes, and where the write sends them from. A
+/// wait may move them to the socket's write buffer and point the slot there.
 pub(crate) struct WriteSlot<'a> {
     at: &'a mut *mut u8,
-    length: usize,
+    written: &'a [u8],
 }
 
 impl<'a> WriteSlot<'a> {
-    /// # Safety
-    /// `*at` points to `length` readable bytes, which stay so while the slot lives.
-    pub(crate) unsafe fn new(at: &'a mut *mut u8, length: usize) -> Self {
-        Self { at, length }
+    /// The write of `written`, which `*at` sends from until a wait moves them.
+    pub(crate) fn new(at: &'a mut *mut u8, written: &'a [u8]) -> Self {
+        Self { at, written }
     }
 
     /// Where the bytes are now.
@@ -151,8 +150,13 @@ impl<'a> WriteSlot<'a> {
         *self.at
     }
 
+    /// The caller's bytes, which a move copies.
+    pub(crate) fn written(&self) -> &[u8] {
+        self.written
+    }
+
     pub(crate) fn length(&self) -> usize {
-        self.length
+        self.written.len()
     }
 
     /// The bytes moved to `bytes`, still `length` of them and live as long.
@@ -325,11 +329,7 @@ mod tests {
         }
         let mut slot = core::ptr::null_mut();
         // The test host's `buffer` only logs the length.
-        wait(
-            socket.co(),
-            event,
-            Some(unsafe { WriteSlot::new(&mut slot, 4) }),
-        )
+        wait(socket.co(), event, Some(WriteSlot::new(&mut slot, &[0; 4])))
     }
 
     fn effects() -> Vec<String> {

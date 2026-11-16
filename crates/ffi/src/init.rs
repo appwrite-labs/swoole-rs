@@ -4,7 +4,7 @@
 //! it, so this archive, which has them all, registers them before corebase's body
 //! runs (`swoole_rs_corebase::native`). src/fatal.c holds what stays C.
 use std::cell::Cell;
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_char, c_int};
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::native::{self, LoggerOp, NativeHost};
@@ -14,7 +14,6 @@ use swoole_rs_memory::members::pool;
 // src/fatal.c.
 unsafe extern "C" {
     fn swr_v1_ffi_fatal_error(code: c_int, format: *const c_char, ...);
-    safe fn swr_v1_ffi_stdout() -> *mut c_void;
 }
 
 thread_local! {
@@ -56,7 +55,7 @@ extern "C-unwind" fn swoole_init() {
 /// `swoole_init`'s native leaves, in upstream's order.
 fn init() {
     swoole_rs_error::swoole_clear_last_error_msg();
-    swoole_rs_corebase::swr_v1_core_set_stdout(swr_v1_ffi_stdout());
+    swoole_rs_corebase::swr_v1_core_set_stdout(Some(swoole_rs_corebase::Stream::stdout()));
     swoole_rs_corebase::set_fatal_error(Some(swr_v1_ffi_fatal_error));
     swoole_rs_process::methods::logger_op(LoggerOp::New);
     if built_with(Switch::Debug) {

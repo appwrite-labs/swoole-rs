@@ -116,6 +116,46 @@ unsafe extern "C" {
     #[link_name = "libssh2_sftp_fstat_ex"]
     safe fn fstat(handle: SftpHandle, attrs: &mut LIBSSH2_SFTP_ATTRIBUTES, setstat: c_int)
     -> c_int;
+    /// Opens a channel of the type `kind` names, which libssh2 reads for the length
+    /// [`KindLength`] gives it, with no message ([`NoMessage`]).
+    #[link_name = "libssh2_channel_open_ex"]
+    safe fn channel_open(
+        session: Session,
+        kind: &[u8; 8],
+        kind_length: KindLength,
+        window_size: c_uint,
+        packet_size: c_uint,
+        message: Option<&c_char>,
+        message_length: NoMessage,
+    ) -> *mut LIBSSH2_CHANNEL;
+}
+
+/// The channel type length excludes its trailing NUL.
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum KindLength {
+    Session = 7,
+}
+
+/// `channel_open`'s message length: none.
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum NoMessage {
+    Empty = 0,
+}
+
+/// `libssh2_channel_open_session(session)`: a session channel with libssh2's default
+/// window and packet sizes.
+fn open_session(session: Session) -> *mut LIBSSH2_CHANNEL {
+    channel_open(
+        session,
+        b"session\0",
+        KindLength::Session,
+        2 * 1024 * 1024,
+        32768,
+        None,
+        NoMessage::Empty,
+    )
 }
 
 /// The lent wait and the session it can wait on, as an export received them.
@@ -138,6 +178,11 @@ impl Wait<'_> {
     /// Park the coroutine until `event` on the session's socket.
     fn park(&self, event: c_int) -> bool {
         (self.ops.wait)(self.session, event)
+    }
+
+    /// `call`, retried as its [`Answer`] says.
+    fn run<R: Answer>(&self, call: impl FnMut() -> R) -> R::Result {
+        R::retried(self, call)
     }
 
     /// [`retry`](Self::retry) from the event the session is blocked on now.
@@ -209,10 +254,32 @@ impl Narrow for usize {
     }
 }
 
+/// A hooked call's result, which says how the call is retried: an `int` one (narrowed
+/// as [`Narrow`]) while it is `EAGAIN`, a handle while it is null with `EAGAIN` the
+/// session's `last_errno`.
+trait Answer: Sized {
+    type Result;
+    fn retried(wait: &Wait<'_>, call: impl FnMut() -> Self) -> Self::Result;
+}
+
+impl<N: Narrow> Answer for N {
+    type Result = c_int;
+    fn retried(wait: &Wait<'_>, mut call: impl FnMut() -> Self) -> Self::Result {
+        wait.call(|| call().narrow())
+    }
+}
+
+impl<T> Answer for *mut T {
+    type Result = Self;
+    fn retried(wait: &Wait<'_>, call: impl FnMut() -> Self) -> Self {
+        wait.call_pointer(call)
+    }
+}
+
 /// One export per hooked libssh2 function.
 macro_rules! hooks {
-    ($($kind:ident $export:ident($($arg:ident: $ty:ty),*) -> $ret:ty => $function:ident;)*) => {$(
-        hooks!(@$kind $export($($arg: $ty),*) -> $ret => $function);
+    ($($export:ident($($arg:ident: $ty:ty),*) -> $ret:ty => $function:ident;)*) => {$(
+        hooks!(@export $export($($arg: $ty),*) -> $ret => $function);
     )*
         /// C call-site forwarding, derived from the same typed Rust hook inventory.
         pub const NATIVE_DISPATCH: &str = concat!($(hooks!(@dispatch $function, $export($($arg),*))),*);
@@ -224,67 +291,57 @@ macro_rules! hooks {
         concat!("#undef ", stringify!($function), "\n#define ", stringify!($function), "(", hooks!(@params $($arg),*), ") ",
                 stringify!($export), "(ssh2_bound(session), session", $(", ", stringify!($arg),)* ")\n")
     };
-    (@int $export:ident($($arg:ident: $ty:ty),*) -> $ret:ty => $function:ident) => {
-        #[doc = concat!("`", stringify!($function), "`, retried while it says `EAGAIN`.")]
+    (@export $export:ident($($arg:ident: $ty:ty),*) -> $ret:ty => $function:ident) => {
+        #[doc = concat!("`", stringify!($function), "`, retried while it fails with `EAGAIN`.")]
         /// # Safety
         /// `ops` is the lent table, `wait_on` a live session it can wait on, and
         /// the rest are the libssh2 function's arguments.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $export(ops: &Ops, wait_on: Session, $($arg: $ty),*) -> $ret {
             // SAFETY: the caller's arguments, as libssh2 takes them.
-            Wait { ops, session: wait_on }.call(|| unsafe { $function($($arg),*) }.narrow())
-        }
-    };
-    (@pointer $export:ident($($arg:ident: $ty:ty),*) -> $ret:ty => $function:ident) => {
-        #[doc = concat!("`", stringify!($function), "`, retried while it fails with `EAGAIN`.")]
-        /// # Safety
-        /// As the `int` exports.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $export(ops: &Ops, wait_on: Session, $($arg: $ty),*) -> $ret {
-            // SAFETY: the caller's arguments, as libssh2 takes them.
-            Wait { ops, session: wait_on }.call_pointer(|| unsafe { $function($($arg),*) })
+            Wait { ops, session: wait_on }.run(|| unsafe { $function($($arg),*) })
         }
     };
 }
 
 hooks! {
-    int swoole_libssh2_session_handshake(session: *mut LIBSSH2_SESSION, sock: c_int) -> c_int => libssh2_session_handshake;
-    int swoole_libssh2_channel_setenv_ex(channel: *mut LIBSSH2_CHANNEL, varname: *const c_char, varname_len: c_uint, value: *const c_char, value_len: c_uint) -> c_int => libssh2_channel_setenv_ex;
-    int swoole_libssh2_channel_request_pty_ex(channel: *mut LIBSSH2_CHANNEL, term: *const c_char, term_len: c_uint, modes: *const c_char, modes_len: c_uint, width: c_int, height: c_int, width_px: c_int, height_px: c_int) -> c_int => libssh2_channel_request_pty_ex;
-    int swoole_libssh2_channel_flush_ex(channel: *mut LIBSSH2_CHANNEL, streamid: c_int) -> c_int => libssh2_channel_flush_ex;
-    int swoole_libssh2_channel_read_ex(channel: *mut LIBSSH2_CHANNEL, stream_id: c_int, buf: *mut c_char, buflen: usize) -> c_int => libssh2_channel_read_ex;
-    int swoole_libssh2_channel_write_ex(channel: *mut LIBSSH2_CHANNEL, stream_id: c_int, buf: *const c_char, buflen: usize) -> c_int => libssh2_channel_write_ex;
-    int swoole_libssh2_channel_eof(channel: *mut LIBSSH2_CHANNEL) -> c_int => libssh2_channel_eof;
-    int swoole_libssh2_channel_close(channel: *mut LIBSSH2_CHANNEL) -> c_int => libssh2_channel_close;
-    int swoole_libssh2_channel_send_eof(channel: *mut LIBSSH2_CHANNEL) -> c_int => libssh2_channel_send_eof;
-    int swoole_libssh2_channel_get_exit_status(channel: *mut LIBSSH2_CHANNEL) -> c_int => libssh2_channel_get_exit_status;
-    int swoole_libssh2_channel_request_pty_size_ex(channel: *mut LIBSSH2_CHANNEL, width: c_int, height: c_int, width_px: c_int, height_px: c_int) -> c_int => libssh2_channel_request_pty_size_ex;
-    pointer swoole_libssh2_channel_forward_listen_ex(session: *mut LIBSSH2_SESSION, host: *const c_char, port: c_int, bound_port: *mut c_int, queue_maxsize: c_int) -> *mut LIBSSH2_LISTENER => libssh2_channel_forward_listen_ex;
-    pointer swoole_libssh2_channel_forward_accept(listener: *mut LIBSSH2_LISTENER) -> *mut LIBSSH2_CHANNEL => libssh2_channel_forward_accept;
-    int swoole_libssh2_channel_forward_cancel(listener: *mut LIBSSH2_LISTENER) -> c_int => libssh2_channel_forward_cancel;
-    int swoole_libssh2_sftp_stat_ex(sftp: *mut LIBSSH2_SFTP, path: *const c_char, path_len: c_uint, stat_type: c_int, attrs: *mut LIBSSH2_SFTP_ATTRIBUTES) -> c_int => libssh2_sftp_stat_ex;
-    int swoole_libssh2_sftp_symlink_ex(sftp: *mut LIBSSH2_SFTP, path: *const c_char, path_len: c_uint, target: *mut c_char, target_len: c_uint, link_type: c_int) -> c_int => libssh2_sftp_symlink_ex;
-    int swoole_libssh2_sftp_tell(handle: *mut LIBSSH2_SFTP_HANDLE) -> c_int => libssh2_sftp_tell;
-    int swoole_libssh2_sftp_read(handle: *mut LIBSSH2_SFTP_HANDLE, buffer: *mut c_char, buffer_maxlen: usize) -> c_int => libssh2_sftp_read;
-    int swoole_libssh2_sftp_write(handle: *mut LIBSSH2_SFTP_HANDLE, buffer: *const c_char, count: usize) -> c_int => libssh2_sftp_write;
-    pointer swoole_libssh2_sftp_init(session: *mut LIBSSH2_SESSION) -> *mut LIBSSH2_SFTP => libssh2_sftp_init;
-    pointer swoole_libssh2_scp_recv(session: *mut LIBSSH2_SESSION, path: *const c_char, sb: *mut libc::stat) -> *mut LIBSSH2_CHANNEL => libssh2_scp_recv;
-    pointer swoole_libssh2_scp_send_ex(session: *mut LIBSSH2_SESSION, path: *const c_char, mode: c_int, size: usize, mtime: c_long, atime: c_long) -> *mut LIBSSH2_CHANNEL => libssh2_scp_send_ex;
-    int swoole_libssh2_sftp_unlink_ex(sftp: *mut LIBSSH2_SFTP, filename: *const c_char, filename_len: c_uint) -> c_int => libssh2_sftp_unlink_ex;
-    int swoole_libssh2_sftp_rename_ex(sftp: *mut LIBSSH2_SFTP, source_filename: *const c_char, source_filename_len: c_uint, dest_filename: *const c_char, dest_filename_len: c_uint, flags: c_long) -> c_int => libssh2_sftp_rename_ex;
-    int swoole_libssh2_sftp_mkdir_ex(sftp: *mut LIBSSH2_SFTP, path: *const c_char, path_len: c_uint, mode: c_long) -> c_int => libssh2_sftp_mkdir_ex;
-    int swoole_libssh2_sftp_rmdir_ex(sftp: *mut LIBSSH2_SFTP, path: *const c_char, path_len: c_uint) -> c_int => libssh2_sftp_rmdir_ex;
-    int swoole_libssh2_agent_connect(agent: *mut LIBSSH2_AGENT) -> c_int => libssh2_agent_connect;
-    int swoole_libssh2_agent_list_identities(agent: *mut LIBSSH2_AGENT) -> c_int => libssh2_agent_list_identities;
-    int swoole_libssh2_agent_get_identity(agent: *mut LIBSSH2_AGENT, store: *mut *mut libssh2_agent_publickey, prev: *mut libssh2_agent_publickey) -> c_int => libssh2_agent_get_identity;
-    int swoole_libssh2_agent_userauth(agent: *mut LIBSSH2_AGENT, username: *const c_char, identity: *mut libssh2_agent_publickey) -> c_int => libssh2_agent_userauth;
-    int swoole_libssh2_agent_disconnect(agent: *mut LIBSSH2_AGENT) -> c_int => libssh2_agent_disconnect;
-    pointer swoole_libssh2_userauth_list(session: *mut LIBSSH2_SESSION, username: *const c_char, username_len: c_uint) -> *mut c_char => libssh2_userauth_list;
-    int swoole_libssh2_userauth_password_ex(session: *mut LIBSSH2_SESSION, username: *const c_char, username_len: c_uint, password: *const c_char, password_len: c_uint, passwd_change_cb: Option<PasswdChangeReq>) -> c_int => libssh2_userauth_password_ex;
-    int swoole_libssh2_userauth_publickey_fromfile_ex(session: *mut LIBSSH2_SESSION, username: *const c_char, username_len: c_uint, publickey: *const c_char, privatekey: *const c_char, passphrase: *const c_char) -> c_int => libssh2_userauth_publickey_fromfile_ex;
-    int swoole_libssh2_userauth_publickey_frommemory(session: *mut LIBSSH2_SESSION, username: *const c_char, username_len: usize, publickeyfiledata: *const c_char, publickeyfiledata_len: usize, privatekeyfiledata: *const c_char, privatekeyfiledata_len: usize, passphrase: *const c_char) -> c_int => libssh2_userauth_publickey_frommemory;
-    int swoole_libssh2_userauth_hostbased_fromfile_ex(session: *mut LIBSSH2_SESSION, username: *const c_char, username_len: c_uint, publickey: *const c_char, privatekey: *const c_char, passphrase: *const c_char, hostname: *const c_char, hostname_len: c_uint, local_username: *const c_char, local_username_len: c_uint) -> c_int => libssh2_userauth_hostbased_fromfile_ex;
-    int swoole_libssh2_userauth_authenticated(session: *mut LIBSSH2_SESSION) -> c_int => libssh2_userauth_authenticated;
+    swoole_libssh2_session_handshake(session: *mut LIBSSH2_SESSION, sock: c_int) -> c_int => libssh2_session_handshake;
+    swoole_libssh2_channel_setenv_ex(channel: *mut LIBSSH2_CHANNEL, varname: *const c_char, varname_len: c_uint, value: *const c_char, value_len: c_uint) -> c_int => libssh2_channel_setenv_ex;
+    swoole_libssh2_channel_request_pty_ex(channel: *mut LIBSSH2_CHANNEL, term: *const c_char, term_len: c_uint, modes: *const c_char, modes_len: c_uint, width: c_int, height: c_int, width_px: c_int, height_px: c_int) -> c_int => libssh2_channel_request_pty_ex;
+    swoole_libssh2_channel_flush_ex(channel: *mut LIBSSH2_CHANNEL, streamid: c_int) -> c_int => libssh2_channel_flush_ex;
+    swoole_libssh2_channel_read_ex(channel: *mut LIBSSH2_CHANNEL, stream_id: c_int, buf: *mut c_char, buflen: usize) -> c_int => libssh2_channel_read_ex;
+    swoole_libssh2_channel_write_ex(channel: *mut LIBSSH2_CHANNEL, stream_id: c_int, buf: *const c_char, buflen: usize) -> c_int => libssh2_channel_write_ex;
+    swoole_libssh2_channel_eof(channel: *mut LIBSSH2_CHANNEL) -> c_int => libssh2_channel_eof;
+    swoole_libssh2_channel_close(channel: *mut LIBSSH2_CHANNEL) -> c_int => libssh2_channel_close;
+    swoole_libssh2_channel_send_eof(channel: *mut LIBSSH2_CHANNEL) -> c_int => libssh2_channel_send_eof;
+    swoole_libssh2_channel_get_exit_status(channel: *mut LIBSSH2_CHANNEL) -> c_int => libssh2_channel_get_exit_status;
+    swoole_libssh2_channel_request_pty_size_ex(channel: *mut LIBSSH2_CHANNEL, width: c_int, height: c_int, width_px: c_int, height_px: c_int) -> c_int => libssh2_channel_request_pty_size_ex;
+    swoole_libssh2_channel_forward_listen_ex(session: *mut LIBSSH2_SESSION, host: *const c_char, port: c_int, bound_port: *mut c_int, queue_maxsize: c_int) -> *mut LIBSSH2_LISTENER => libssh2_channel_forward_listen_ex;
+    swoole_libssh2_channel_forward_accept(listener: *mut LIBSSH2_LISTENER) -> *mut LIBSSH2_CHANNEL => libssh2_channel_forward_accept;
+    swoole_libssh2_channel_forward_cancel(listener: *mut LIBSSH2_LISTENER) -> c_int => libssh2_channel_forward_cancel;
+    swoole_libssh2_sftp_stat_ex(sftp: *mut LIBSSH2_SFTP, path: *const c_char, path_len: c_uint, stat_type: c_int, attrs: *mut LIBSSH2_SFTP_ATTRIBUTES) -> c_int => libssh2_sftp_stat_ex;
+    swoole_libssh2_sftp_symlink_ex(sftp: *mut LIBSSH2_SFTP, path: *const c_char, path_len: c_uint, target: *mut c_char, target_len: c_uint, link_type: c_int) -> c_int => libssh2_sftp_symlink_ex;
+    swoole_libssh2_sftp_tell(handle: *mut LIBSSH2_SFTP_HANDLE) -> c_int => libssh2_sftp_tell;
+    swoole_libssh2_sftp_read(handle: *mut LIBSSH2_SFTP_HANDLE, buffer: *mut c_char, buffer_maxlen: usize) -> c_int => libssh2_sftp_read;
+    swoole_libssh2_sftp_write(handle: *mut LIBSSH2_SFTP_HANDLE, buffer: *const c_char, count: usize) -> c_int => libssh2_sftp_write;
+    swoole_libssh2_sftp_init(session: *mut LIBSSH2_SESSION) -> *mut LIBSSH2_SFTP => libssh2_sftp_init;
+    swoole_libssh2_scp_recv(session: *mut LIBSSH2_SESSION, path: *const c_char, sb: *mut libc::stat) -> *mut LIBSSH2_CHANNEL => libssh2_scp_recv;
+    swoole_libssh2_scp_send_ex(session: *mut LIBSSH2_SESSION, path: *const c_char, mode: c_int, size: usize, mtime: c_long, atime: c_long) -> *mut LIBSSH2_CHANNEL => libssh2_scp_send_ex;
+    swoole_libssh2_sftp_unlink_ex(sftp: *mut LIBSSH2_SFTP, filename: *const c_char, filename_len: c_uint) -> c_int => libssh2_sftp_unlink_ex;
+    swoole_libssh2_sftp_rename_ex(sftp: *mut LIBSSH2_SFTP, source_filename: *const c_char, source_filename_len: c_uint, dest_filename: *const c_char, dest_filename_len: c_uint, flags: c_long) -> c_int => libssh2_sftp_rename_ex;
+    swoole_libssh2_sftp_mkdir_ex(sftp: *mut LIBSSH2_SFTP, path: *const c_char, path_len: c_uint, mode: c_long) -> c_int => libssh2_sftp_mkdir_ex;
+    swoole_libssh2_sftp_rmdir_ex(sftp: *mut LIBSSH2_SFTP, path: *const c_char, path_len: c_uint) -> c_int => libssh2_sftp_rmdir_ex;
+    swoole_libssh2_agent_connect(agent: *mut LIBSSH2_AGENT) -> c_int => libssh2_agent_connect;
+    swoole_libssh2_agent_list_identities(agent: *mut LIBSSH2_AGENT) -> c_int => libssh2_agent_list_identities;
+    swoole_libssh2_agent_get_identity(agent: *mut LIBSSH2_AGENT, store: *mut *mut libssh2_agent_publickey, prev: *mut libssh2_agent_publickey) -> c_int => libssh2_agent_get_identity;
+    swoole_libssh2_agent_userauth(agent: *mut LIBSSH2_AGENT, username: *const c_char, identity: *mut libssh2_agent_publickey) -> c_int => libssh2_agent_userauth;
+    swoole_libssh2_agent_disconnect(agent: *mut LIBSSH2_AGENT) -> c_int => libssh2_agent_disconnect;
+    swoole_libssh2_userauth_list(session: *mut LIBSSH2_SESSION, username: *const c_char, username_len: c_uint) -> *mut c_char => libssh2_userauth_list;
+    swoole_libssh2_userauth_password_ex(session: *mut LIBSSH2_SESSION, username: *const c_char, username_len: c_uint, password: *const c_char, password_len: c_uint, passwd_change_cb: Option<PasswdChangeReq>) -> c_int => libssh2_userauth_password_ex;
+    swoole_libssh2_userauth_publickey_fromfile_ex(session: *mut LIBSSH2_SESSION, username: *const c_char, username_len: c_uint, publickey: *const c_char, privatekey: *const c_char, passphrase: *const c_char) -> c_int => libssh2_userauth_publickey_fromfile_ex;
+    swoole_libssh2_userauth_publickey_frommemory(session: *mut LIBSSH2_SESSION, username: *const c_char, username_len: usize, publickeyfiledata: *const c_char, publickeyfiledata_len: usize, privatekeyfiledata: *const c_char, privatekeyfiledata_len: usize, passphrase: *const c_char) -> c_int => libssh2_userauth_publickey_frommemory;
+    swoole_libssh2_userauth_hostbased_fromfile_ex(session: *mut LIBSSH2_SESSION, username: *const c_char, username_len: c_uint, publickey: *const c_char, privatekey: *const c_char, passphrase: *const c_char, hostname: *const c_char, hostname_len: c_uint, local_username: *const c_char, local_username_len: c_uint) -> c_int => libssh2_userauth_hostbased_fromfile_ex;
+    swoole_libssh2_userauth_authenticated(session: *mut LIBSSH2_SESSION) -> c_int => libssh2_userauth_authenticated;
 }
 
 #[cfg(test)]

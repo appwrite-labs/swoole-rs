@@ -28,8 +28,8 @@ use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_phpswoole::SocketSettings;
 use swoole_rs_reactor::Events;
 use swoole_rs_zend::{
-    Array, Call, Custom, CustomClass, Key as ArrayKey, Minit, Owned, OwnedArray, Props, Value,
-    ZString, bailout, handlers, method_table, string,
+    Array, ArrayMut, Call, Custom, CustomClass, Key as ArrayKey, Minit, Owned, OwnedArray, Props,
+    Value, ZString, bailout, handlers, method_table, string,
     sys::{self as z, ZEND_ACC_FINAL, ZEND_ACC_PUBLIC, zend_long, zval},
 };
 
@@ -130,8 +130,10 @@ impl HttpServer {
         self.websocket_settings.set(bits | websocket::IN_SERVER);
     }
 
-    fn clients(&self) -> *mut z::HashTable {
-        self.clients.array().map_or(ptr::null_mut(), Array::as_ptr)
+    /// `edit` of the connections array, lent out of its slot.
+    fn clients(&self, edit: impl FnOnce(&mut ArrayMut)) {
+        self.clients
+            .lend(|clients| clients.array_mut().map(|clients| edit(clients)));
     }
 
     /// `set_handler`: `handle` replaces the pattern's handler, if any.
@@ -777,7 +779,6 @@ fn shutdown(call: &Call) {
     server.running.set(false);
     server.socket.cancel(Events::READ);
     // Connections waiting for their next request stop waiting.
-    let clients = server.clients();
     let mut waiting: Vec<(z::zend_ulong, Co)> = Vec::new();
     if let Some(connections) = server.clients.array() {
         connections.for_each(|key, connection| {
@@ -795,8 +796,7 @@ fn shutdown(call: &Call) {
     for (index, socket) in waiting {
         // The array's connection objects keep their sockets live.
         socket.cancel(Events::READ);
-        // SAFETY: the live array and one of its keys.
-        unsafe { z::zend_hash_index_del(clients, index) };
+        server.clients(|clients| clients.remove_index(index));
     }
 }
 
@@ -873,11 +873,9 @@ fn on_accept(call: &Call) {
         return;
     }
     let cid = swoole_rs_phpcoroutines::get_cid();
-    // A reference for the server's array, which stays taken when the array
-    // already holds the key, as upstream's.
-    let mut kept = zconn.copy().into_zval();
-    // SAFETY: the server's live array, which copies the connection's zval in.
-    unsafe { z::zend_hash_index_add(server.clients(), cid.cast_unsigned(), &raw mut kept) };
+    // A reference for the server's array (released instead if a key were
+    // there already: a cid never repeats).
+    server.clients(|clients| clients.insert_index(cid.cast_unsigned(), zconn.copy()));
     let (remote_addr, remote_port) = address(socket);
     // The network socket's address becomes the local one.
     let _named = socket.getsockname();
@@ -898,8 +896,7 @@ fn on_accept(call: &Call) {
     let result = serve(&mut conn, &peer);
     drop(peer);
     if result.is_ok() {
-        // SAFETY: the server's live array.
-        unsafe { z::zend_hash_index_del(server.clients(), cid.cast_unsigned()) };
+        server.clients(|clients| clients.remove_index(cid.cast_unsigned()));
     }
     bailout::defer(result);
 }

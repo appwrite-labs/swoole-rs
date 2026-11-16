@@ -70,3 +70,10 @@ int swr_lent_call_method(zend_object *object, zend_class_entry *scope, struct io
 zend_string *swr_lent_format_date(struct iovec format, zend_long timestamp, bool local) {
     return php_format_date(format.iov_base, format.iov_len, timestamp, local);
 }
+
+void swr_lent_push_bytes(zval *array, struct iovec bytes) {
+    /* add_next_index_stringl's body, so the push stays one call. */
+    zval string;
+    ZVAL_STRINGL(&string, bytes.iov_base, bytes.iov_len);
+    zend_hash_next_index_insert(Z_ARRVAL_P(array), &string);
+}

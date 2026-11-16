@@ -57,6 +57,7 @@ impl<T: sealed::Zero> Record for T {}
 impl sealed::Zero for zend_fcall_info {}
 impl sealed::Zero for zend_fcall_info_cache {}
 impl sealed::Zero for crate::sys::zend_execute_data {}
+impl sealed::Zero for crate::sys::zend_fiber_context {}
 impl sealed::Zero for crate::sys::zend_function_entry {}
 impl sealed::Zero for crate::sys::zend_module_entry {}
 impl sealed::Zero for crate::sys::zend_object_handlers {}

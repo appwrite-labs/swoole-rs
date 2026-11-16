@@ -404,6 +404,20 @@ pub fn socket_ssl_new(
     context: Option<&crate::SslCtx>,
     flags: c_int,
 ) -> Result<(), SslNewError> {
+    socket_ssl_new_over(socket, context, flags, None)
+}
+
+/// [`socket_ssl_new`] whose SSL reads and writes through `bio`, when given, in place
+/// of the descriptor (`bio` goes with the SSL, or here when `SSL_new` fails).
+///
+/// # Errors
+/// As [`socket_ssl_new`].
+pub(crate) fn socket_ssl_new_over(
+    socket: swoole_rs_reactor::Socket<'_>,
+    context: Option<&crate::SslCtx>,
+    flags: c_int,
+    bio: Option<crate::OwnedBio>,
+) -> Result<(), SslNewError> {
     socket.edit(|record| want(&mut record.tls, false, false));
     clear_errors();
     let Some(mut made) = crate::handle::SSL_new(context) else {
@@ -412,27 +426,33 @@ pub fn socket_ssl_new(
         return Err(SslNewError::New);
     };
     made.get().set_mode(SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
-    let made_up = if made.set_fd(socket.fd()) {
+    let attached = match bio {
+        Some(bio) => {
+            made.set_bio(bio);
+            true
+        }
+        None => made.set_fd(socket.fd()),
+    };
+    let made_up = if attached {
         if flags & CLIENT != 0 {
             made.get().set_connect_state();
         } else if flags & SERVER != 0 {
             made.get().set_accept_state();
         }
-        // The record that will own the SSL, and so outlives it: the one ex data the
-        // info callback reads at the connection's index, which only this sets.
-        let (index, this) = (crate::swr_v1_tls_connection_index(), socket.as_ptr().cast());
-        if crate::handle::SSL_set_ex_data(made.get(), index, this) == 0 {
-            Err(SslNewError::ExData)
-        } else {
+        // The record that takes the SSL below, and so outlives it.
+        if made.set_connection(socket) {
             Ok(())
+        } else {
+            Err(SslNewError::ExData)
         }
     } else {
         Err(SslNewError::SetFd(peek_error()))
     };
     let made = made.into_raw();
     socket.edit(|record| {
-        // SAFETY: the new SSL, which nothing else holds: the record owns it from now
-        // on and frees it only in `ssl_close`.
+        // SAFETY: the new SSL, which nothing else holds and whose connection ex data
+        // is null or this record: the record owns it from now on and frees it only in
+        // `ssl_close`.
         unsafe { record.set_ssl(made.cast()) };
         if made_up.is_ok() {
             record.tls.state = SslState::SW_SSL_STATE_HANDSHAKE;
@@ -569,7 +589,10 @@ mod tests {
         unsafe {
             let check = |cert, name: &str| {
                 let cert = Cert(std::ptr::NonNull::new(cert).unwrap());
-                if cert.get().matches_host(name.as_bytes()) {
+                if cert
+                    .get()
+                    .matches_host(&std::ffi::CString::new(name).unwrap())
+                {
                     1
                 } else {
                     2

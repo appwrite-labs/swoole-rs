@@ -166,10 +166,11 @@ pub unsafe extern "C-unwind" fn reactor_writev(
     }
     // SAFETY: as the caller promises: `count` iovecs.
     let raw = unsafe { std::slice::from_raw_parts(iov, count) };
+    // SAFETY: the same iovecs, over readable bytes, which an `IoSlice` is laid out as.
+    // One at a null base, which no `IoSlice` has, is never read as a slice: only the
+    // parts `raw` shows at a non-null base are used.
+    let vectors = unsafe { std::slice::from_raw_parts(iov.cast::<IoSlice<'_>>(), count) };
     if raw.iter().all(|part| !part.iov_base.is_null()) {
-        // SAFETY: as the caller promises: iovecs over readable bytes, none at null,
-        // which an `IoSlice` is laid out as.
-        let vectors = unsafe { std::slice::from_raw_parts(iov.cast::<IoSlice<'_>>(), count) };
         return write(reactor, socket, WritePayload::Vectors(vectors));
     }
     // A `{NULL, 0}` part is empty; a null base with a length is refused.
@@ -181,12 +182,13 @@ pub unsafe extern "C-unwind" fn reactor_writev(
     }
     let vectors: Vec<IoSlice<'_>> = raw
         .iter()
-        .map(|part| {
+        .zip(vectors)
+        .map(|(part, &vector)| {
             if part.iov_base.is_null() {
-                return IoSlice::new(&[]);
+                IoSlice::new(&[])
+            } else {
+                vector
             }
-            // SAFETY: as the caller promises: `iov_len` readable bytes at a non-null base.
-            IoSlice::new(unsafe { std::slice::from_raw_parts(part.iov_base.cast(), part.iov_len) })
         })
         .collect();
     write(reactor, socket, WritePayload::Vectors(&vectors))

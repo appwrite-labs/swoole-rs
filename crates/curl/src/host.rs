@@ -206,10 +206,10 @@ pub extern "C" fn swoole_curl_multi_new() -> *mut Multi {
 /// The fatal error may longjmp: the caller's frames own nothing that needs a drop.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swoole_curl_check_bound_co(multi: &Multi) -> *mut c_void {
-    if let Some(waiter) = multi.co.get() {
+    // On the stack, NUL-terminated: the fatal error may longjmp past this frame.
+    let mut buffer = [0u8; 128];
+    let (code, message) = if let Some(waiter) = multi.co.get() {
         swoole_rs_coroutine::set_socket_bound_cid(waiter.cid);
-        // On the stack, NUL-terminated: the fatal error may longjmp past this frame.
-        let mut buffer = [0u8; 128];
         let (mut text, _) = buffer.split_at_mut(127);
         // A longer message is cut short.
         write!(
@@ -219,21 +219,17 @@ pub unsafe extern "C" fn swoole_curl_check_bound_co(multi: &Multi) -> *mut c_voi
         )
         .unwrap_or_default();
         let message = CStr::from_bytes_until_nul(&buffer).unwrap_or(c"");
-        // SAFETY: Swoole's fatal error hook; nothing here needs a drop.
-        unsafe { swoole_rs_corebase::fatal_error(CO_HAS_BEEN_BOUND, message) };
-        return std::ptr::null_mut();
-    }
-    let co = current();
-    if co.is_null() {
-        // SAFETY: as above; nothing here needs a drop.
-        unsafe {
-            swoole_rs_corebase::fatal_error(
-                CO_OUT_OF_COROUTINE,
-                c"API must be called in the coroutine",
-            );
-        };
-    }
-    co
+        (CO_HAS_BEEN_BOUND, message)
+    } else {
+        let co = current();
+        if !co.is_null() {
+            return co;
+        }
+        (CO_OUT_OF_COROUTINE, c"API must be called in the coroutine")
+    };
+    // SAFETY: Swoole's fatal error hook; nothing here needs a drop.
+    unsafe { swoole_rs_corebase::fatal_error(code, message) };
+    ptr::null_mut()
 }
 
 /// `swoole_curl_easy_perform`: `curl_easy_perform` in the handle's own multi;

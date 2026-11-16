@@ -6,7 +6,7 @@
 use core::ffi::{CStr, c_int};
 use std::ffi::CString;
 use swoole_rs_corebase::{
-    ResolveError, ResolverCompletion, ResolverRequest, log, ntop, swr_v1_core_resolver_free,
+    ResolveError, ResolverCompletion, ResolverRef, ResolverRequest, log, ntop,
 };
 
 /// `SW_ERROR_DNSLOOKUP_RESOLVE_FAILED`.
@@ -17,7 +17,7 @@ const RESOLVE_TIMEOUT: c_int =
 const AIO_TIMEOUT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_AIO_TIMEOUT as c_int;
 
 /// A request record, freed with this.
-pub struct Request(*mut ResolverRequest);
+pub struct Request(ResolverRef);
 
 impl Request {
     /// A record for `name` and `service`.
@@ -29,22 +29,22 @@ impl Request {
         name: &[u8],
         service: &[u8],
     ) -> Self {
-        let prepared = ResolverRequest::create(family, socktype, protocol, name, service);
-        if prepared.owner.is_null() {
-            std::alloc::handle_alloc_error(std::alloc::Layout::new::<ResolverRequest>());
-        }
-        Self(prepared.owner)
+        let request = ResolverRequest::create(family, socktype, protocol, name, service);
+        Self(request.unwrap_or_else(|| {
+            std::alloc::handle_alloc_error(std::alloc::Layout::new::<ResolverRequest>())
+        }))
     }
 
     /// The record, for an event's `data`.
     #[must_use]
     pub const fn as_ptr(&self) -> *mut ResolverRequest {
-        self.0
+        self.0.as_ptr()
     }
 
-    fn get(&self) -> &ResolverRequest {
-        // SAFETY: live until this drops.
-        unsafe { &*self.0 }
+    /// The record, for an event's `data`.
+    #[must_use]
+    pub fn get(&self) -> &ResolverRequest {
+        &self.0
     }
 
     /// The text address `host` wrote.
@@ -73,13 +73,6 @@ impl Request {
         let done =
             ResolverCompletion::after_await(retval, error, request, AIO_TIMEOUT, RESOLVE_TIMEOUT);
         done.failed.then_some(done.error)
-    }
-}
-
-impl Drop for Request {
-    fn drop(&mut self) {
-        // SAFETY: this request's own reference.
-        unsafe { swr_v1_core_resolver_free(self.0) };
     }
 }
 
