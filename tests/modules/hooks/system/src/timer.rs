@@ -1,5 +1,5 @@
 //! Upstream's `core-tests/src/os/timer.cpp`, one function per TEST with the same inputs
-//! and expected values, over the Rust timer (crates/timer) under its upstream symbols.
+//! and expected values, over the Rust timer (crates/timer).
 //! `SwooleTG.timer` is crates/corebase's `thread_timer`.
 
 use std::cell::Cell;
@@ -7,6 +7,10 @@ use std::ffi::{c_int, c_long, c_void};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{SW_ERR, last_error, sleep};
+use swoole_rs_timer::{
+    realtime_add, swoole_timer_clear, swoole_timer_exists, swoole_timer_free, swoole_timer_get,
+    swoole_timer_select,
+};
 
 const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
 const SW_ERROR_INVALID_PARAMS: c_int = 505;
@@ -41,24 +45,12 @@ unsafe extern "C" {
     pub(super) fn swoole_timer_del(tnode: *mut TimerNode) -> bool;
     #[link_name = "_Z18swoole_timer_delayPN6swoole9TimerNodeEl"]
     fn swoole_timer_delay(tnode: *mut TimerNode, delay_ms: c_long);
-    #[link_name = "_Z19swoole_timer_existsl"]
-    fn swoole_timer_exists(timer_id: c_long) -> bool;
-    #[link_name = "_Z18swoole_timer_clearl"]
-    fn swoole_timer_clear(timer_id: c_long) -> bool;
-    #[link_name = "_Z16swoole_timer_getl"]
-    fn swoole_timer_get(timer_id: c_long) -> *mut TimerNode;
-    #[link_name = "_Z17swoole_timer_freev"]
-    pub(super) fn swoole_timer_free();
-    #[link_name = "_Z19swoole_timer_selectv"]
-    fn swoole_timer_select();
     #[link_name = "_Z22swoole_signal_dispatchv"]
     fn swoole_signal_dispatch();
     #[link_name = "_Z17swoole_event_initi"]
     fn swoole_event_init(flags: c_int) -> c_int;
     #[link_name = "_Z17swoole_event_waitv"]
     fn swoole_event_wait() -> c_int;
-    #[link_name = "_ZN6swoole12realtime_addEP8timespecl"]
-    fn realtime_add(time: *mut [i64; 2], add_msec: i64);
 }
 
 unsafe extern "C-unwind" {
@@ -189,16 +181,15 @@ fn sys() {
         unsafe {
             sleep(10);
             swoole_signal_dispatch();
-            if swoole_rs_corebase::swr_v1_core_signal_alarm() {
-                swoole_timer_select();
-            }
+        }
+        if swoole_rs_corebase::swr_v1_core_signal_alarm() {
+            swoole_timer_select();
         }
     }
 
     let ms2 = now_ms();
 
-    // SAFETY: frees this thread's timer.
-    unsafe { swoole_timer_free() };
+    swoole_timer_free();
 
     assert!(ms2.wrapping_sub(ms1) <= 510);
     assert_eq!(counter[0].get(), 1);
@@ -233,27 +224,23 @@ fn async_() {
 fn exists() {
     let timer_id = tick(100, |_| {});
 
-    // SAFETY: a timer id.
-    assert!(unsafe { swoole_timer_exists(timer_id) });
+    assert!(swoole_timer_exists(timer_id));
 }
 
 fn clear() {
     let timer_id = tick(100, |_| {});
 
-    // SAFETY: a timer id.
-    unsafe { swoole_timer_clear(timer_id) };
-    // SAFETY: as above.
-    assert!(!unsafe { swoole_timer_exists(timer_id) });
+    _ = swoole_timer_clear(timer_id);
+    assert!(!swoole_timer_exists(timer_id));
 }
 
 fn get() {
     let timer_id = tick(100, |_| {});
 
+    let timer_node = swoole_timer_get(timer_id).cast::<TimerNode>();
     // SAFETY: a live timer's node.
-    let timer_node = unsafe { swoole_timer_get(timer_id) };
     assert_eq!(unsafe { (*timer_node).id }, timer_id);
-    // SAFETY: frees this thread's timer.
-    unsafe { swoole_timer_free() };
+    swoole_timer_free();
 }
 
 fn delay() {
@@ -265,7 +252,7 @@ fn delay() {
     // SAFETY: a live timer's node, delayed, then the loop runs it; deleting it after
     // it ran is upstream's sequence.
     unsafe {
-        let timer_node = swoole_timer_get(timer_id);
+        let timer_node = swoole_timer_get(timer_id).cast();
         swoole_timer_delay(timer_node, 100);
         event_wait();
         assert!(ms2.get().wrapping_sub(ms1) >= 100);
@@ -330,12 +317,14 @@ fn reinit() {
 }
 
 fn realtime_add_() {
-    let mut ts = [1, 900 * SW_NUM_MILLION];
+    let mut ts = libc::timespec {
+        tv_sec: 1,
+        tv_nsec: 900 * SW_NUM_MILLION,
+    };
 
-    // SAFETY: a writable timespec (tv_sec, tv_nsec).
-    unsafe { realtime_add(&raw mut ts, 1905) };
-    assert_eq!(ts[0], 3);
-    assert_eq!(ts[1], 805 * SW_NUM_MILLION);
+    realtime_add(&mut ts, 1905);
+    assert_eq!(ts.tv_sec, 3);
+    assert_eq!(ts.tv_nsec, 805 * SW_NUM_MILLION);
 }
 
 pub(super) const CASES: super::Cases = &[
