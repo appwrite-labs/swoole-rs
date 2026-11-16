@@ -16,7 +16,7 @@ it through crates/ports' upstream symbols below. Feature bit 4096; graduated.
   extend/reduce/clear/split, `SSL_pending`, logs) goes through its generic
   `Effects::effect`, which refreshes the socket's removed/recv_wait/ssl flags after it.
 - `crates/ports/src/framing_recv.rs` is those effects over the real socket, String and
-  callbacks. It defines `default_length_func`, `swoole_unpack`, `swoole_hton64`, `swoole_ntoh64`,
+  callbacks. It defines `default_length_func`, `swoole_hton64`, `swoole_ntoh64`,
   `Protocol::recv_with_length_protocol` and `recv_with_eof_protocol` as plain Rust: `swoole_init` registers them for
   crates/clients (`FRAMING`), which ports depends on. Every protocol callback in swoole.so
   is Rust or PHP, so no C++ exception reaches it.

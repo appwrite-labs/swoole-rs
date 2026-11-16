@@ -7,12 +7,8 @@ use std::io::{Read, Write};
 const PACKET: &[u8] = b"hello world\n";
 
 /// `send_buffer`'s `onReceive`: the packet, answered with 16 MiB of `A` and a close.
-unsafe extern "C" fn send_buffer_receive(
-    _: *mut c_void,
-    serv: *mut c_void,
-    req: *mut RecvData,
-) -> c_int {
-    let serv = Server(serv);
+extern "C" fn send_buffer_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+    let serv = Server(serv.raw());
     let (session, data) = request(req);
     expect(data == PACKET, "string(req->data, req->info.len) == packet");
 
@@ -32,8 +28,8 @@ unsafe extern "C" fn send_buffer_receive(
 
 /// `send_buffer`'s `onWorkerStart`, where upstream unlocks the mutex its client thread
 /// waits on: the client starts here.
-unsafe extern "C" fn send_buffer_worker_start(_: *mut c_void, serv: *mut c_void, _: *mut c_void) {
-    let port = Server(serv).get_primary_port().port();
+extern "C" fn send_buffer_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+    let port = Server(serv.raw()).get_primary_port().port();
     // SAFETY: getpid(2).
     client_thread(
         || unsafe { getpid() },
@@ -65,8 +61,8 @@ fn send_buffer() {
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(Slot::WorkerStart, send_buffer_worker_start as *const c_void);
-    serv.set_callback(Slot::Receive, send_buffer_receive as *const c_void);
+    serv.set_callback(Callback::WorkerStart(send_buffer_worker_start));
+    serv.set_callback(Callback::Receive(send_buffer_receive));
 
     serv.start();
     join_client();
