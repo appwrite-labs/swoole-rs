@@ -105,17 +105,6 @@ unsafe extern "C" {
     fn free(pointer: *mut c_void);
 }
 
-/// `swoole::Event`.
-#[repr(C)]
-struct Event {
-    fd: c_int,
-    reactor_id: i16,
-    fd_type: c_int,
-    socket: *mut Record,
-}
-
-type Handler = unsafe extern "C" fn(*mut c_void, *mut Event) -> c_int;
-
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole11make_socketE12swSocketType8swFdTypei"]
     fn make_socket3(kind: c_int, fd_type: c_int, flags: c_int) -> *mut Record;
@@ -166,8 +155,6 @@ unsafe extern "C-unwind" {
     fn socket_ssl_get_error_reason(reason: *mut c_int) -> *const c_char;
     #[link_name = "_Z15swoole_ssl_initv"]
     fn swoole_ssl_init();
-    #[link_name = "_Z24swoole_event_set_handleriiPFiPN6swoole7ReactorEPNS_5EventEE"]
-    fn swoole_event_set_handler(fd_type: c_int, event: c_int, handler: Handler);
     #[link_name = "_ZN6swoole7network6Socket8get_nameEv"]
     fn socket_get_name(socket: *mut Record) -> c_int;
     #[link_name = "_ZN6swoole7network6Socket13get_peer_nameEPNS0_7AddressE"]
@@ -866,9 +853,14 @@ fn send_async_1() {
     sock.free();
 }
 
-unsafe extern "C" fn send_async_2_read(_: *mut c_void, event: *mut Event) -> c_int {
-    // SAFETY: the reactor's event and its socket.
-    let socket = Socket(unsafe { (*event).socket });
+fn send_async_2_read(_: swoole_rs_ffi::Running<'_>, event: &mut swoole_rs_ffi::Event) -> c_int {
+    let socket = Socket(
+        event
+            .socket()
+            .expect("the read event's socket")
+            .as_ptr()
+            .cast(),
+    );
     let mut buf = vec![0_u8; SW_STACK_BUFFER_SIZE];
     let n = socket.recv_sync(&mut buf, 0);
     assert!(n > 0);
@@ -889,7 +881,11 @@ fn send_async_2() {
 
     // SAFETY: the live loop; the handler reads the socket once.
     unsafe {
-        swoole_event_set_handler(SW_FD_STREAM_CLIENT, SW_EVENT_READ, send_async_2_read);
+        swoole_rs_ffi::event_api::set_handler(
+            SW_FD_STREAM_CLIENT,
+            swoole_rs_ffi::Events::READ,
+            Some(send_async_2_read),
+        );
         let socket = swoole_rs_ffi::Socket::from_ptr(sock.0.cast()).unwrap();
         let _ = swoole_rs_ffi::event_api::event_add(
             socket,

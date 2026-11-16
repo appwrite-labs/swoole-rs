@@ -1,17 +1,24 @@
 use super::*;
 
+struct NativeClient(Handle);
+
+impl Drop for NativeClient {
+    fn drop(&mut self) {
+        // Other client-test effects still substitute TLS close. This owner made
+        // a native session, so release it before freeing the client and socket.
+        if !self.0.socket().read(|record| record.ssl().is_null()) {
+            unsafe { swoole_rs_tls::upstream::socket_ssl_close(self.0.socket()) };
+        }
+        unsafe { self.0.free() };
+    }
+}
+
 /// The native socket-control table is compiled in this test binary too. Its
 /// constructors, address writes, timeout options and connect modes run against
 /// loopback sockets; the scripted tests above still exercise failure ordering.
 #[test]
 #[cfg_attr(miri, ignore = "requires TCP sockets and kernel timeout options")]
 fn native_socket_control_connects_and_keeps_failed_assignment_atomic() {
-    struct NativeClient(Handle);
-    impl Drop for NativeClient {
-        fn drop(&mut self) {
-            unsafe { self.0.free() };
-        }
-    }
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     let port = c_int::from(listener.local_addr().unwrap().port());
     for mode in [Some(ConnectMode::Raw), Some(ConnectMode::Sync), None] {
@@ -82,12 +89,6 @@ fn native_connect_timer_is_cancelled_before_client_release() {
             swoole_rs_timer::swoole_timer_free();
         }
     }
-    struct NativeClient(Handle);
-    impl Drop for NativeClient {
-        fn drop(&mut self) {
-            unsafe { self.0.free() };
-        }
-    }
     assert!(!swoole_rs_timer::swoole_timer_is_available());
     swoole_rs_timer::swoole_timer_create(true);
     let _timer = Timer;
@@ -101,4 +102,58 @@ fn native_connect_timer_is_cancelled_before_client_release() {
     assert_eq!(swoole_rs_timer::thread_timer_count(), 0);
     this.timer_clear();
     assert_eq!(swoole_rs_timer::thread_timer_count(), 0);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "requires TCP sockets and OpenSSL")]
+fn native_tls_effects_keep_the_session_and_settings_while_the_peer_is_pending() {
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let owner = NativeClient(create(SocketType::SW_SOCK_TCP as c_int, false).unwrap());
+    let this = owner.0;
+    let effects = this.get().socket_ops;
+    assert!(!(effects.tls_connect)(this.socket()));
+    assert!(!(effects.tls_verify)(this.socket(), false));
+    assert!(!(effects.tls_check_host)(this.socket(), c"first.test"));
+    assert!((effects.assign)(
+        this,
+        c"127.0.0.1",
+        c_int::from(listener.local_addr().unwrap().port()),
+        false
+    ));
+    assert!((effects.connect)(this, ConnectMode::Raw));
+    let (_peer, _) = listener.accept().unwrap();
+    assert!(this.socket().edit(|record| {
+        swoole_rs_reactor::socket_upstream::socket_set_fd_option(record, 1, -1)
+    }));
+    assert!(enable_ssl(this).is_some());
+    let context = this.get().tls_context().unwrap().clone();
+    assert!(
+        context
+            .borrow_configuration()
+            .set_text(swoole_rs_tls::Text::HostName, b"first.test")
+    );
+    assert!(ssl_handshake(this));
+    let session = this.socket().read(swoole_rs_reactor::SocketFields::ssl);
+    assert!(!session.is_null());
+    assert_eq!(this.tls_state(), SSL_STATE_WAIT_STREAM);
+    assert!(this.socket().read(|record| record.tls.want_read));
+    assert_eq!(
+        this.get().tls_settings.get().unwrap().host_name(),
+        c"first.test"
+    );
+    assert!(
+        context
+            .borrow_configuration()
+            .set_text(swoole_rs_tls::Text::HostName, b"later.test")
+    );
+    assert!(ssl_handshake(this));
+    assert_eq!(
+        this.socket().read(swoole_rs_reactor::SocketFields::ssl),
+        session
+    );
+    assert_eq!(
+        this.get().tls_settings.get().unwrap().host_name(),
+        c"first.test"
+    );
+    assert_eq!(this.tls_state(), SSL_STATE_WAIT_STREAM);
 }

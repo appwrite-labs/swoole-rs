@@ -88,20 +88,6 @@ pub extern "C" fn reactor_interest(
 
 /// `void Reactor::set_handler(int fd_type, int event, ReactorHandler handler)`:
 /// upstream asserts the event names a table.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7Reactor11set_handlerEiiPFiPS0_PNS_5EventEE")
-)]
-pub extern "C" fn reactor_set_handler(
-    reactor: crate::Running<'_>,
-    fd_type: c_int,
-    event: c_int,
-    handler: Option<Handler>,
-) {
-    set_handler(reactor, fd_type, crate::Events::from_bits(event), handler);
-}
-
-/// [`reactor_set_handler`] for typed `event`.
 pub fn set_handler(
     reactor: crate::Running<'_>,
     fd_type: c_int,

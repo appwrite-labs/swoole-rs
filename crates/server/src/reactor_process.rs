@@ -186,7 +186,7 @@ fn add_pipes(reactor: Reactor, worker: Worker<'_>) -> bool {
 }
 
 /// `ReactorProcess_onClose`: the reactor's default error handler.
-extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
     let reactor = Reactor::running(reactor);
     let closed = reactor
         .server()

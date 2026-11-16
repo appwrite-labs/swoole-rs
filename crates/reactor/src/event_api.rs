@@ -187,15 +187,6 @@ pub fn swoole_event_writev(
 /// `void swoole_event_set_handler(int fd_type, int event, ReactorHandler handler)`;
 /// nothing without a reactor. A `Handler` is a safe function, sound with the live
 /// reactor and event the loop calls it with.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z24swoole_event_set_handleriiPFiPN6swoole7ReactorEPNS_5EventEE")
-)]
-pub extern "C" fn swoole_event_set_handler(fd_type: c_int, event: c_int, handler: Option<Handler>) {
-    set_handler(fd_type, Events::from_bits(event), handler);
-}
-
-/// [`swoole_event_set_handler`] for typed `event`.
 pub fn set_handler(fd_type: c_int, event: Events, handler: Option<Handler>) {
     if let Some(reactor) = running() {
         crate::reactor_upstream::set_handler(reactor, fd_type, event, handler);
@@ -315,7 +306,7 @@ pub trait FdHandler {
     fn handle(fd: c_int) -> bool;
 }
 
-extern "C" fn fd_handler<H: FdHandler>(_: crate::Running<'_>, event: &mut crate::Event) -> c_int {
+fn fd_handler<H: FdHandler>(_: crate::Running<'_>, event: &mut crate::Event) -> c_int {
     if H::handle(event.fd()) { 0 } else { -1 }
 }
 

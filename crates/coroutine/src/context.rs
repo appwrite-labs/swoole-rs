@@ -20,7 +20,6 @@ use swoole_rs_corebase::CCast;
 /// coroutine's `Co`. Both stacks reach it through that handle, and neither holds a
 /// mutable borrow across a switch. Dropping it frees its stack, or joins its
 /// thread, so it is dropped only once its coroutine ended (or never ran).
-#[repr(C)]
 pub struct Context {
     /// The suspended context.
     fctx: *mut c_void,
@@ -371,17 +370,6 @@ extern "C" fn first_frame(transfer: Transfer) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    #[cfg(target_pointer_width = "64")]
-    fn record_layout_keeps_the_offsets_c_reads() {
-        assert_eq!(std::mem::offset_of!(Context, stack), 16);
-        assert_eq!(
-            std::mem::offset_of!(Context, stack) + Stack::SIZE_OFFSET,
-            24
-        );
-        assert_eq!(std::mem::offset_of!(Context, end), 64);
-    }
 
     struct Log {
         co: Option<Co>,

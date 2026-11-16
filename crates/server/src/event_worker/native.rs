@@ -461,7 +461,7 @@ fn try_exit(serv: view::Server<'_>, reactor: Reactor) {
 }
 
 /// `Worker_onPipeReceive`: a message from a reactor thread or the master (process mode).
-extern "C" fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
     // Registered only on a worker's reactor, which holds its server.
     let Some(serv) = Reactor::running(reactor).server() else {
         return -1;

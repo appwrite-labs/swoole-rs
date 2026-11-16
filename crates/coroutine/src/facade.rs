@@ -101,11 +101,7 @@ extern "C" fn clock() -> c_long {
 ///
 /// # Safety
 /// `routine` takes `arg`; the caller's frames own nothing with a destructor.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_coroutine_create(
-    routine: Routine,
-    arg: *mut c_void,
-) -> c_long {
+pub unsafe fn swr_v1_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long {
     let flags = build() & (THREAD | STACK_PROTECT | STACK_MARK);
     let stack_size = with_scheduler(|s| s.stack_size);
     // SAFETY: `routine` takes `arg`, as the caller promises.

@@ -16,7 +16,7 @@ fn fired(event: &Event) -> (*mut c_void, c_int) {
     (object, event.fd())
 }
 
-extern "C" fn poll_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
+fn poll_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
     let (task, fd) = fired(event);
     // SAFETY: a `SW_FD_CO_POLL` socket, whose object is its parked poll task.
     let task = unsafe { &*task.cast::<crate::poll::Task<'_>>() };
@@ -24,7 +24,7 @@ extern "C" fn poll_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> 
     0
 }
 
-extern "C" fn waiter_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
+fn waiter_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
     let (waiter, _) = fired(event);
     // SAFETY: a `SW_FD_CO_EVENT` socket, whose object is its parked waiter.
     let waiter = unsafe { &*waiter.cast::<crate::wait_event::Waiter>() };
@@ -88,7 +88,7 @@ pub extern "C" fn system_init_reactor(reactor: Running<'_>) {
 
 /// `Iouring::callback`.
 #[cfg(all(feature = "upstream-symbols", feature = "iouring"))]
-extern "C" fn iouring_ready(_: Running<'_>, _: &mut Event) -> c_int {
+fn iouring_ready(_: Running<'_>, _: &mut Event) -> c_int {
     if crate::iouring::ready() { 0 } else { -1 }
 }
 
