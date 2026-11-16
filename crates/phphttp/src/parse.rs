@@ -445,11 +445,11 @@ fn execute(state: &mut State, pieces: bool, input: &[u8]) -> usize {
     } else {
         llhttp::execute(&mut Server(state, &[]), input)
     };
-    if result == 0 {
+    let Err(error) = result else {
         return input.len();
-    }
+    };
     let parser = &mut state.parser;
-    match result {
+    match error {
         PAUSED => parser.resume(),
         PAUSED_UPGRADE => parser.resume_after_upgrade(),
         _ => {}

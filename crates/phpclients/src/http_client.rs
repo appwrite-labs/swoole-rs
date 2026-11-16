@@ -237,13 +237,13 @@ impl<'a> Hooks<'a> {
 
     /// `llhttp_finish`.
     fn finish(&mut self) {
-        llhttp::finish(&mut self.spans());
+        let _finished = llhttp::finish(&mut self.spans());
     }
 
     /// `swoole_llhttp_parser_execute`: how many bytes parsed; a pause resumes.
     fn parse(&mut self, data: &[u8]) -> usize {
         let result = llhttp::execute(&mut self.spans(), data);
-        if result == llhttp::HPE_OK {
+        if result.is_ok() {
             return data.len();
         }
         let parsed = self.parser.error_pos();

@@ -67,7 +67,7 @@ impl Http {
 
     /// `swoole_llhttp_parser_execute(parser, &http_parser_settings, data, length)`.
     fn execute(&mut self, data: &[u8]) -> usize {
-        let result = llhttp::execute(self, data);
+        let result = llhttp::execute(self, data).map_or_else(|code| code, |()| HPE_OK);
         if result == HPE_OK {
             return data.len();
         }

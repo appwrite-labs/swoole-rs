@@ -15,7 +15,7 @@ use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_clos
 use swoole_rs_http2::{
     FrameAction, FrameType, HeaderKind, HeaderRole, Http2FrameFacts, Http2Settings,
     Http2WindowPlan, Media, QueueAction,
-    hpack::{Decoder, Encoder, Error},
+    hpack::{self, Decoder, Encoder, Error},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_decode_frame, sw_rs_http2_default_settings,
     sw_rs_http2_header_plan, sw_rs_http2_headers_flags, sw_rs_http2_inflate_step,
     sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header, sw_rs_http2_pack_settings,
@@ -228,8 +228,9 @@ struct Client {
     /// The request header arena, taken out while a request is built.
     headers: Cell<Headers>,
     queue: Cell<Queue>,
-    /// The connection's HPACK codecs, while connected.
-    hpack: Cell<Option<(Decoder, Encoder)>>,
+    /// The connection's HPACK codecs and the buffers the decoder decodes
+    /// fields into, while connected.
+    hpack: Cell<Option<(Decoder, hpack::Field, Encoder)>>,
 }
 
 fn strerror(code: c_int) -> String {
@@ -387,7 +388,10 @@ impl Client {
 
     /// `f` over the HPACK codecs, taken out and put back: nothing in `f` yields
     /// or runs PHP code.
-    fn with_hpack<R>(&self, f: impl FnOnce(&mut Option<(Decoder, Encoder)>) -> R) -> R {
+    fn with_hpack<R>(
+        &self,
+        f: impl FnOnce(&mut Option<(Decoder, hpack::Field, Encoder)>) -> R,
+    ) -> R {
         let mut hpack = self.hpack.take();
         let result = f(&mut hpack);
         self.hpack.set(hpack);
@@ -490,6 +494,7 @@ impl Client {
         self.remote_window.set(remote.init_window_size);
         self.hpack.replace(Some((
             Decoder::default(),
+            hpack::Field::default(),
             Encoder::new(self.local.header_table_size),
         )));
         if !self.send(PREFACE) || !self.send_setting() {
@@ -683,7 +688,7 @@ impl Client {
         }
         let mut frame = vec![0_u8; FRAME_HEADER];
         self.with_hpack(|hpack| {
-            if let Some((_, encoder)) = hpack.as_mut() {
+            if let Some((_, _, encoder)) = hpack.as_mut() {
                 encoder.encode(set.list(), &mut frame);
             }
         });
@@ -1010,7 +1015,7 @@ impl Client {
         }
         if plan.change_deflater {
             self.with_hpack(|hpack| {
-                if let Some((_, encoder)) = hpack.as_mut() {
+                if let Some((_, _, encoder)) = hpack.as_mut() {
                     encoder.set_table_size(number);
                 }
             });
@@ -1130,15 +1135,22 @@ impl Client {
         // Nothing in the loop yields or runs user code: the response is this
         // client's alone until a receive returns it.
         self.with_hpack(|hpack| {
-            let (decoder, _) = hpack.as_mut()?;
-            self.decode_block(decoder, id, input, headers, cookies, set_cookie_headers)
+            let (decoder, field, _) = hpack.as_mut()?;
+            self.decode_block(
+                (decoder, field),
+                id,
+                input,
+                headers,
+                cookies,
+                set_cookie_headers,
+            )
         })
     }
 
     /// `decode_headers` with the HPACK decoder taken out.
     fn decode_block(
         &self,
-        decoder: &mut Decoder,
+        (decoder, field): (&Decoder, &mut hpack::Field),
         id: u32,
         mut input: &[u8],
         headers: &mut ArrayMut,
@@ -1146,7 +1158,7 @@ impl Client {
         set_cookie_headers: &mut ArrayMut,
     ) -> Option<Error> {
         loop {
-            let step = match decoder.decode(input, true) {
+            let step = match decoder.decode(input, true, field) {
                 Ok(step) => step,
                 Err(error) => break Some(error),
             };
