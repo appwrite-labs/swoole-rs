@@ -234,7 +234,7 @@ pub fn http_chunked(bytes: &[u8]) {
     for chunk in input.chunks(usize::from(step).max(1)) {
         let start = chunk.as_ptr() as usize;
         CHUNK.set((start, start + chunk.len()));
-        if llhttp::execute(&mut parser, chunk) != llhttp::HPE_OK {
+        if llhttp::execute(&mut parser, chunk).is_err() {
             break;
         }
     }
