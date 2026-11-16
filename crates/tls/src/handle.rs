@@ -4,13 +4,14 @@
 //! (a borrowed and an owned certificate), and this thread's error queue. Callers go
 //! through their methods. `Ssl<'a>` and `Bio<'a>` borrow their owner for `'a`, so a
 //! handle can't outlive the record or SSL it came from, and the calls that need only a
-//! live handle are declared `safe`. What frees an SSL or replaces its BIOs within
-//! `'a` is unsafe: the crate's own constructors from raw pointers, `Ssl::set_fd`,
-//! `Ssl::set_bio` and `upstream::socket_ssl_close`.
+//! live handle are declared `safe`. An SSL's BIOs are set only while this side owns
+//! it ([`OwnedSsl`]), before any handle exists. What frees an SSL within `'a` is
+//! unsafe: the crate's own constructors from raw pointers and
+//! `upstream::socket_ssl_close`.
 use crate::context::SslCtx;
 use openssl_sys::{
     BIO, OPENSSL_STACK, SSL, SSL_CIPHER, SSL_CTRL_MODE, SSL_CTRL_SET_TLSEXT_HOSTNAME, SSL_CTX,
-    SSL_set_bio, TLSEXT_NAMETYPE_host_name, X509, stack_st_X509,
+    TLSEXT_NAMETYPE_host_name, X509, stack_st_X509,
 };
 use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong, c_void};
 use std::marker::PhantomData;
@@ -123,8 +124,9 @@ unsafe extern "C" {
     /// Gives the fresh SSL socket BIOs over `fd`, freeing the ones it had, which only
     /// a borrow of the [`OwnedSsl`] the exclusive `Fresh` was taken from could reach.
     safe fn SSL_set_fd(ssl: Fresh<'_>, fd: c_int) -> c_int;
-    /// Gives the fresh SSL `bio` for both directions, taking the one reference
-    /// [`Given`] carries, and frees the BIOs it had, as `SSL_set_fd` does.
+    /// Gives the fresh SSL `read` and `write` (the same BIO for both directions takes
+    /// one reference), taking the references [`Given`] carries, and frees the BIOs it
+    /// had, as `SSL_set_fd` does.
     #[link_name = "SSL_set_bio"]
     safe fn set_bios(ssl: Fresh<'_>, read: Given, write: Given);
     /// A new SSL of `ctx`, which it references; null on failure, or without a context.
@@ -497,22 +499,8 @@ impl<'a> Ssl<'a> {
         SSL_set_connect_state(self);
     }
 
-    /// `SSL_set_bio`: the SSL takes both BIOs (one reference when they are the same
-    /// BIO) and frees them with itself; the handles borrow them meanwhile.
-    ///
-    /// # Safety
-    /// No handle to the SSL's current BIOs is used afterwards: it frees them.
-    pub unsafe fn set_bio(self, read: OwnedBio, write: Option<OwnedBio>) -> (Bio<'a>, Bio<'a>) {
-        let read = read.into_raw();
-        let write = write.map_or(read, OwnedBio::into_raw);
-        // SAFETY: a live SSL takes the references this side owned, and frees the BIOs
-        // it replaces, which the caller promises have no handle in use.
-        unsafe { SSL_set_bio(self.as_ptr(), read.as_ptr(), write.as_ptr()) };
-        (Bio(read, PhantomData), Bio(write, PhantomData))
-    }
-
-    /// `SSL_get_rbio` (`get0`), None without one: live until the SSL is freed or the
-    /// unsafe `set_bio`/`set_fd` replace it.
+    /// `SSL_get_rbio` (`get0`), None without one: live until the SSL is freed (its
+    /// BIOs are set before a handle to it exists).
     #[must_use]
     pub fn read_bio(self) -> Option<Bio<'a>> {
         SSL_get_rbio(self)
@@ -759,9 +747,9 @@ impl Drop for Cert {
 #[derive(Debug)]
 pub(crate) struct OwnedSsl(SocketSsl);
 
-/// The one reference to a BIO an [`OwnedBio`] gave up, passed as both of
-/// `SSL_set_bio`'s BIOs, which then takes that one reference: only
-/// [`OwnedSsl::set_bio`] makes one.
+/// The one reference to a BIO an [`OwnedBio`] gave up, passed to `SSL_set_bio`, which
+/// then takes it (once when passed as both BIOs): only [`OwnedSsl::set_bio`] makes
+/// one.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 struct Given(NonNull<BIO>);
@@ -786,11 +774,13 @@ impl OwnedSsl {
         SSL_set_fd(Fresh(self.ptr(), PhantomData), fd) != 0
     }
 
-    /// `SSL_set_bio(ssl, bio, bio)`: the SSL takes `bio` for both directions and frees
-    /// it with itself. The BIOs it frees are reachable only through borrows of `self`.
-    pub(crate) fn set_bio(&mut self, bio: OwnedBio) {
-        let bio = Given(bio.into_raw());
-        set_bios(Fresh(self.ptr(), PhantomData), bio, bio);
+    /// `SSL_set_bio(ssl, read, write)`: the SSL takes `read`, and `write` or else
+    /// `read` again for writes, and frees them with itself. The BIOs it frees are
+    /// reachable only through borrows of `self`.
+    pub(crate) fn set_bio(&mut self, read: OwnedBio, write: Option<OwnedBio>) {
+        let read = Given(read.into_raw());
+        let write = write.map_or(read, |write| Given(write.into_raw()));
+        set_bios(Fresh(self.ptr(), PhantomData), read, write);
     }
 
     /// Records `socket`, which takes the SSL next, as its connection's ex data, which

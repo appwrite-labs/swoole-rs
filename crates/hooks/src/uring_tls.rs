@@ -49,7 +49,7 @@ use swoole_rs_corebase::sys::errno;
 
 impl<'a, S> Tls<'a, S> {
     /// The view with `ssl` as its session, over the session's own BIOs while they are
-    /// memory BIOs (as [`crate::uring_socket::tls_session`] sets them), else none.
+    /// memory BIOs (as a `UringSocket`'s session is made), else none.
     pub(crate) fn with_session(self, ssl: Option<Ssl<'a>>) -> Self {
         let memory = |bio: Option<Bio<'a>>| bio.filter(|bio| bio.is_memory());
         Self {

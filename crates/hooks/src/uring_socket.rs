@@ -18,7 +18,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::{Events, SocketFields, SocketRecord};
-use swoole_rs_tls::{OwnedBio, Ssl};
+use swoole_rs_tls::Ssl;
 
 /// The socket's view and effects.
 pub struct UringSocketOps<'a> {
@@ -417,8 +417,11 @@ pub(crate) fn accept(socket: Co, ops: &UringSocketOps<'_>) -> Option<OwnedCo> {
         .unwrap_or_default();
     conn.output.nonblock = true;
     conn.cloexec = true;
-    let client = socket.adopt(Box::new(conn));
+    // A `UringSocket` before it shares the server's TLS, so its session is over the
+    // ring's memory BIOs.
+    let client = crate::co_socket::accepted(socket, Box::new(conn));
     crate::socket_extra::swr_v1_hook_co_socket_uring(client.co());
+    client.co().share_tls(socket);
     Some(client)
 }
 
@@ -487,33 +490,7 @@ pub(crate) fn poll(ops: &UringSocketOps<'_>, event: Events, timeout: f64) -> boo
     swr_v1_hook_uring_poll(ops, event, events, timeout)
 }
 
-/// `UringSocket::ssl_handshake`'s session: `create` makes the socket's own, then
-/// it runs over a pair of memory BIOs the ring pumps, on the socket's side. False
-/// when `create` fails or leaves no session.
-pub(crate) fn tls_session(socket: Co, create: impl FnOnce() -> bool) -> bool {
-    if !create() {
-        return false;
-    }
-    let server = socket.ssl_is_server();
-    let made = socket.with_network(|network| {
-        let session = Ssl::of(network)?;
-        let (Some(rbio), Some(wbio)) = (OwnedBio::memory(), OwnedBio::memory()) else {
-            return None;
-        };
-        // SAFETY: `create` just made the session, whose socket BIO no handle holds.
-        unsafe { session.set_bio(rbio, Some(wbio)) };
-        if server {
-            session.set_accept_state();
-        } else {
-            session.set_connect_state();
-        }
-        Some(())
-    });
-    made.flatten().is_some()
-}
-
-/// One `UringSocket` handshake step through the ring, failed without a session
-/// from [`tls_session`].
+/// One `UringSocket` handshake step through the ring, failed without a session.
 pub(crate) fn tls_step(socket: Co) -> crate::connect::Step {
     with(socket, |ops| handshake_step(socket, ops)).unwrap_or(crate::connect::Step::Failed)
 }
@@ -669,12 +646,11 @@ mod tests {
             ssl::SSL_set_bio(made, own, own);
             co.net(|record| record.set_ssl(Some(crate::co_socket::record_ssl(made.cast()))));
             assert_eq!(bios(), (made, null(), null()), "the socket's own BIO");
-            let (read, write) = (OwnedBio::memory().unwrap(), OwnedBio::memory());
-            let pair = with(co, |ops| {
-                let (read, write) = ops.tls.ssl.unwrap().set_bio(read, write);
-                (read.as_ptr(), write.as_ptr())
-            });
-            let (read, write) = pair.unwrap();
+            let (read, write) = (
+                ssl::BIO_new(ssl::BIO_s_mem()),
+                ssl::BIO_new(ssl::BIO_s_mem()),
+            );
+            ssl::SSL_set_bio(made, read, write);
             assert_eq!(bios(), (made, read, write), "the memory pair");
             // Freed below.
             co.net(|record| record.set_ssl(None));

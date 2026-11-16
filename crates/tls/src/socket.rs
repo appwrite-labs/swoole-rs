@@ -422,8 +422,9 @@ pub fn socket_ssl_new(
     socket_ssl_new_over(socket, context, flags, None)
 }
 
-/// [`socket_ssl_new`] whose SSL reads and writes through `bio`, when given, in place
-/// of the descriptor (`bio` goes with the SSL, or here when `SSL_new` fails).
+/// [`socket_ssl_new`] whose SSL reads through the first of `bios` and writes through
+/// the second (else the first), when given, in place of the descriptor (they go with
+/// the SSL, or here when `SSL_new` fails).
 ///
 /// # Errors
 /// As [`socket_ssl_new`].
@@ -431,7 +432,7 @@ pub(crate) fn socket_ssl_new_over(
     socket: swoole_rs_reactor::Socket<'_>,
     context: Option<&crate::SslCtx>,
     flags: c_int,
-    bio: Option<crate::OwnedBio>,
+    bios: Option<(crate::OwnedBio, Option<crate::OwnedBio>)>,
 ) -> Result<(), SslNewError> {
     socket.edit(|record| want(&mut record.tls, false, false));
     clear_errors();
@@ -441,9 +442,9 @@ pub(crate) fn socket_ssl_new_over(
         return Err(SslNewError::New);
     };
     made.get().set_mode(SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
-    let attached = match bio {
-        Some(bio) => {
-            made.set_bio(bio);
+    let attached = match bios {
+        Some((read, write)) => {
+            made.set_bio(read, write);
             true
         }
         None => made.set_fd(socket.fd()),
@@ -730,6 +731,28 @@ mod tests {
             let ssl = record.take_ssl().unwrap();
             assert_eq!(SSL_is_server(ssl.as_non_null().as_ptr()), 1, "accept state");
             drop(ssl);
+            // A memory pair: the SSL reads through the first and writes through the
+            // second.
+            let (read, write) = (
+                crate::OwnedBio::memory().unwrap(),
+                crate::OwnedBio::memory(),
+            );
+            let bios = (read.bio().as_ptr(), write.as_ref().unwrap().bio().as_ptr());
+            let socket = swoole_rs_reactor::Socket::from_ptr(&raw mut record).unwrap();
+            let shared = context.cast::<crate::SslCtx>().as_ref();
+            let made = socket_ssl_new_over(socket, shared, SERVER, Some((read, write)));
+            assert_eq!(made, Ok(()));
+            let owner = record.take_ssl().unwrap();
+            let ssl = owner.as_non_null().as_ptr();
+            assert_eq!(
+                (
+                    openssl_sys::SSL_get_rbio(ssl),
+                    openssl_sys::SSL_get_wbio(ssl)
+                ),
+                bios
+            );
+            assert_eq!(SSL_is_server(ssl), 1, "accept state");
+            drop(owner);
             SSL_CTX_free(context);
 
             assert_eq!(swr_v1_socket_ssl_peek_reason(), 0, "empty queue");
