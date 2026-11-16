@@ -698,21 +698,29 @@ fn on_headers_complete(state: &mut State) -> Step {
 
     let method = method_name(state);
     let method = Owned::string(ZString::new(method.as_bytes()));
-    add_server(
-        state,
-        [
-            (Key::RequestMethod, method),
-            (Key::RequestUri, Owned::string(uri)),
-            (Key::PathInfo, Owned::string(decoded)),
-        ],
-    );
-    request_times(state);
+    let now = swoole_rs_corebase::time_now();
+    let float = swoole_rs_corebase::microtime();
     let protocol = if state.request.version == 101 {
         Key::Http11
     } else {
         Key::Http10
     };
-    add_protocol(state, protocol);
+    edit(&mut state.request, Property::Server, |server| {
+        for (name, value) in [
+            (Key::RequestMethod, method),
+            (Key::RequestUri, Owned::string(uri)),
+            (Key::PathInfo, Owned::string(decoded)),
+            (Key::RequestTime, Owned::long(now)),
+            (Key::RequestTimeFloat, Owned::double(float)),
+        ] {
+            if let Some(key) = key(name) {
+                server.add_new(key, value);
+            }
+        }
+        if let (Some(name), Some(protocol)) = (key(Key::ServerProtocol), key(protocol)) {
+            server.add_new(name, Owned::string(protocol.to_owned()));
+        }
+    });
 
     state.keepalive = state.parser.should_keep_alive();
     state.recv_chunked = state.parser.flags & CHUNKED != 0;

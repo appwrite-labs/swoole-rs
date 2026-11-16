@@ -167,6 +167,7 @@ fn or_false(call: &Call, done: Option<()>) {
     }
 }
 
+#[inline]
 fn property<'a>(ctx: &'a mut Ctx, which: Property) -> Option<&'a Value> {
     crate::header::response_property(ctx.state(), which)
 }

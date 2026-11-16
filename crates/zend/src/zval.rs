@@ -557,7 +557,10 @@ impl Value {
     /// the array under it. None for anything but an array.
     #[inline(always)]
     pub fn edit_array<R>(&self, edit: impl FnOnce(&mut ArrayMut) -> R) -> Option<R> {
-        self.lend(|held| held.array_mut().map(|array| edit(array)))
+        let mut held = Owned::from_zval(self.0.replace(Owned::null().into_zval()));
+        let result = held.array_mut().map(|array| edit(array));
+        drop(Owned::from_zval(self.0.replace(held.into_zval())));
+        result
     }
 
     /// Property writes on the object this holds, under `scope` (Zend's view of
