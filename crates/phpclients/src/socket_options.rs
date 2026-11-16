@@ -786,11 +786,13 @@ fn import(call: &Call) {
         return call.set_bool(false);
     }
     let kind = swoole_rs_reactor::swr_v1_socket_type(domain, kind);
-    let flags = swoole_rs_corebase::sys::fcntl(fd, libc::F_GETFL, 0);
-    if flags < 0 {
-        warn_sys("fcntl(F_GETFL) failed", errno());
-        return call.set_bool(false);
-    }
+    let flags = match swoole_rs_corebase::sys::fcntl(fd, libc::F_GETFL, 0) {
+        Ok(flags) => flags,
+        Err(error) => {
+            warn_sys("fcntl(F_GETFL) failed", error.raw_os_error().unwrap_or(0));
+            return call.set_bool(false);
+        }
+    };
     // The stream's own descriptor, which the object takes over with the stream.
     let object =
         match crate::socket::owner::import_stream(fd, kind, flags & libc::O_NONBLOCK, stream_value)

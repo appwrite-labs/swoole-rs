@@ -148,3 +148,9 @@ and last-error publication after releasing the task-path lock.
 errors retain errno, failed duplication leaves its target open, self-duplication
 returns the target, and duplicated pipe descriptors share their original behavior.
 PHP and native adapters retain their existing integer and warning contracts.
+
+`sys::fcntl` and `sys::poll` retain captured errno in `io::Result`; readiness and
+zero timeout counts remain distinct from errors. Unit tests cover descriptor
+flag/duplication behavior, failed flag operations, pipe readiness, ignored negative
+descriptors and `POLLNVAL` as a successful readiness result. Native poll adapters
+retain their integer ABI, and caller EINTR retries use the captured error.

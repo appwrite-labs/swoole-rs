@@ -185,7 +185,7 @@ pub fn poll_fake(fds: &mut [pollfd], timeout: c_int) -> c_int {
     if fd_poll_fake(fd, timeout, socket) {
         1
     } else {
-        sys::poll(core::slice::from_mut(fd), timeout)
+        sys::poll(core::slice::from_mut(fd), timeout).unwrap_or(-1)
     }
 }
 
@@ -209,7 +209,7 @@ pub unsafe extern "C" fn swoole_coroutine_poll(
         unsafe { core::slice::from_raw_parts_mut(fds, usize::try_from(nfds).unwrap_or(0)) }
     };
     if timeout == 0 || coroutine().is_none() {
-        return sys::poll(fds, timeout);
+        return sys::poll(fds, timeout).unwrap_or(-1);
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring)
@@ -303,7 +303,7 @@ pub extern "C" fn swoole_coroutine_socket_wait_event(
             core::slice::from_mut(&mut poll),
             (timeout * 1000.0).c_cast::<c_int>(),
         );
-        return if ready == 1 { 0 } else { -1 };
+        return if matches!(ready, Ok(1)) { 0 } else { -1 };
     };
     let event = swoole_rs_reactor::Events::from_bits(event);
     let saved = fd_wait(socket, event, timeout);

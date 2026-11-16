@@ -62,14 +62,11 @@ pub fn fd_wait(
     };
     let timeout = if timeout_ms < 0 { -1 } else { timeout_ms };
     loop {
-        let ready = swoole_rs_corebase::sys::poll(std::slice::from_mut(&mut event), timeout);
-        if ready == 0 {
-            return Err(IoError::TimedOut);
-        }
-        if ready > 0 {
-            return Ok(());
-        }
-        let error = errno();
+        let error = match swoole_rs_corebase::sys::poll(std::slice::from_mut(&mut event), timeout) {
+            Ok(0) => return Err(IoError::TimedOut),
+            Ok(_) => return Ok(()),
+            Err(error) => error.raw_os_error().unwrap_or(0),
+        };
         if error != libc::EINTR || dont_restart {
             return Err(IoError::Failed(error));
         }
