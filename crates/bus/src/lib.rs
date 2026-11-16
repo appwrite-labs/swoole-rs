@@ -305,6 +305,24 @@ impl Bus {
             && HEAD.saturating_add(head.len as usize) <= self.buffer_size.get()
     }
 
+    /// `f` over the whole current message as its sender packed it: the head and
+    /// the `len` bytes it counts. `None`, without calling `f`, unless the buffer
+    /// holds it whole ([`Self::holds_whole`]).
+    pub fn with_whole<R>(&self, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+        if !self.holds_whole() {
+            return None;
+        }
+        let length = HEAD + self.head().len as usize;
+        // SAFETY: `holds_whole` put the head and its `len` bytes within the set
+        // buffer's `buffer_size` bytes, live until `free_buffer`, and the read that
+        // set the head wrote them in the same piece. Only the bus's own reads and
+        // `free_buffer` write them, and the bus's owner runs neither on this thread
+        // while it handles the message `f` is given.
+        Some(f(unsafe {
+            std::slice::from_raw_parts(self.buffer.get().cast::<u8>(), length)
+        }))
+    }
+
     fn set_flags(&self, flags: u8) {
         if let Some(head) = self.head_cell() {
             head.set(BusHead {

@@ -329,12 +329,17 @@ unsafe fn pool_dispatch_sync(
     data: *mut EventData,
     worker_id: *mut c_int,
 ) -> c_int {
+    // SAFETY: as the caller guarantees: `data` is a whole `EventData`.
+    let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size_of::<EventData>()) };
+    let Some(task) = swoole_rs_process::task_file::Packed::from_bytes(bytes) else {
+        return SW_ERR;
+    };
     // SAFETY: as the caller guarantees.
     let sent = unsafe {
         pm::dispatch(
             swoole_rs_server::process_pool_native(),
             swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
-            swoole_rs_process::task_file::Packed::from_raw(data.cast()),
+            task,
             u32::try_from(*worker_id).ok(),
             true,
         )
