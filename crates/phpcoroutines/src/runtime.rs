@@ -20,7 +20,7 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     host::{Creator, NO_THEN, Trap, function_call},
     message,
-    sys::{zend_atomic_bool, zend_execute_data, zval},
+    sys::{zend_execute_data, zval},
 };
 
 /// `SW_DEFAULT_MAX_CORO_NUM`.
@@ -282,9 +282,11 @@ pub(crate) fn raise() {
 }
 
 unsafe extern "C" {
-    /// `&EG(vm_interrupt)`: the address of this PHP thread's interrupt flag. It
-    /// takes nothing from its caller and runs no PHP code.
-    safe fn swr_zend_vm_interrupt() -> *mut zend_atomic_bool;
+    /// `&EG(vm_interrupt)`: this PHP thread's interrupt flag, a `zend_atomic_bool`
+    /// (an atomic bool, as `AtomicBool` is) of its executor, which outlives the
+    /// interrupt thread `interrupt_stop` joins; Zend and that thread only touch it
+    /// atomically. It takes nothing from its caller and runs no PHP code.
+    safe fn swr_zend_vm_interrupt() -> &'static AtomicBool;
 }
 
 fn interrupt_start() {
@@ -292,10 +294,7 @@ fn interrupt_start() {
         return;
     }
     let running = Arc::new(AtomicBool::new(true));
-    // SAFETY: `EG(vm_interrupt)`, a `zend_atomic_bool` (an atomic bool, as
-    // `AtomicBool` is) of this thread's executor, which outlives the interrupt
-    // thread `interrupt_stop` joins; Zend and the thread only touch it atomically.
-    let flag: &'static AtomicBool = unsafe { AtomicBool::from_ptr(swr_zend_vm_interrupt().cast()) };
+    let flag = swr_zend_vm_interrupt();
     let shared = Arc::clone(&running);
     // The thread inherits a fully blocked mask (upstream's `interrupt_thread_start`).
     let spawned = swoole_rs_corebase::with_signals_blocked(|| {
