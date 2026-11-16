@@ -24,18 +24,12 @@ use swoole_rs_zend::{method_table, sys as z};
 /// `PHP_SWOOLE_SERVER_PORT_CALLBACK_NUM`.
 const CALLBACKS: usize = swoole_rs_ports::PortCallback::ALL.len();
 
-/// `swoole::ServerPortProperty`: the port's callables and its server. The
-/// server's dispatch finds it through the port's weak slot (or [`PROPERTIES`]
-/// in thread mode), and PHP code a method
-/// runs can call this object's methods, so every field is a cell and the
-/// property is only ever borrowed shared. A callback slot is taken out and put
-/// back with nothing in between that runs PHP code.
+/// The port's callables, shared with dispatch through the port's slot (or
+/// [`PROPERTIES`] in thread mode). Server ownership stays in [`PortData`] so
+/// the dispatch reference cannot form a cycle. A callback slot is taken out
+/// and put back with nothing in between that runs PHP code.
 pub struct PortProperty {
     callbacks: [Cell<Option<Callable>>; CALLBACKS],
-    /// The port's share in its server, once `new_object` bound it.
-    serv: OnceCell<SharedServer>,
-    /// Whether the port names its server: from `new_object` until `release`.
-    bound: Cell<bool>,
 }
 
 impl PortProperty {
@@ -81,7 +75,7 @@ pub(crate) fn callback(
         let index = usize::from(config.object_id);
         with_properties(|properties| properties.get(index).and_then(Weak::upgrade))?.callback(kind)
     } else {
-        let property = config.property.get()?.upgrade()?;
+        let property = config.property.get()?;
         property.downcast_ref::<PortProperty>()?.callback(kind)
     }
 }
@@ -92,6 +86,10 @@ pub struct PortData {
     /// after `release`.
     port: Cell<*mut c_void>,
     property: Rc<PortProperty>,
+    /// The port's share in its server, once `new_object` bound it.
+    serv: OnceCell<SharedServer>,
+    /// Whether the port names its server: from `new_object` until `release`.
+    bound: Cell<bool>,
 }
 
 impl Custom for PortData {
@@ -105,9 +103,9 @@ impl Custom for PortData {
             port: Cell::new(ptr::null_mut()),
             property: Rc::new(PortProperty {
                 callbacks: Default::default(),
-                serv: OnceCell::new(),
-                bound: Cell::new(false),
             }),
+            serv: OnceCell::new(),
+            bound: Cell::new(false),
         }
     }
 
@@ -126,29 +124,25 @@ impl Drop for PortData {
 impl PortData {
     /// The bound server: none before `new_object` binds it and after `release`.
     fn server(&self) -> Option<view::Server<'_>> {
-        let serv = self
-            .property
-            .serv
-            .get()
-            .filter(|_| self.property.bound.get());
+        let serv = self.serv.get().filter(|_| self.bound.get());
         serv.map(SharedServer::view)
     }
 
     /// The bound `ListenPort`, one of its server's: none before `new_object`
     /// binds it and after `release`.
     fn port(&self) -> Option<view::Port<'_>> {
-        crate::server::port_of(self.property.serv.get()?.view(), self.port.get())
+        crate::server::port_of(self.serv.get()?.view(), self.port.get())
     }
 
     /// `php_swoole_server_port_deref`: drop the callables and the port's link,
     /// all of them even when a destructor leaves a bailout pending.
     fn release(&self) {
-        if self.property.bound.get() {
+        if self.bound.get() {
             for slot in &self.property.callbacks {
                 // Out of its slot first: a destructor this runs may reach the slot again.
                 drop(slot.take());
             }
-            self.property.bound.set(false);
+            self.bound.set(false);
         }
         if let Some(port) = self.port()
             && crate::lifecycle::owns_shared()
@@ -193,12 +187,12 @@ pub(crate) fn new_object(serv: SharedServer, port: view::Port<'_>) -> Owned {
     };
     data.port.set(port.raw());
     // A new object has no server yet.
-    data.property.serv.get_or_init(|| serv);
-    data.property.bound.set(true);
+    data.serv.get_or_init(|| serv);
+    data.bound.set(true);
     // `php_swoole_server_set_port_property`.
     let config = port.config();
-    let property = Rc::downgrade(&data.property);
     if crate::server::THREAD.load(Ordering::Relaxed) {
+        let property = Rc::downgrade(&data.property);
         let index = usize::from(config.object_id);
         with_properties(|properties| {
             if properties.len() <= index {
@@ -210,7 +204,7 @@ pub(crate) fn new_object(serv: SharedServer, port: view::Port<'_>) -> Owned {
         });
     } else {
         // Each non-threaded ListenPort gets its object once: during bind, or listen.
-        config.property.get_or_init(|| property);
+        config.property.get_or_init(|| data.property.clone());
     }
     zport
 }
