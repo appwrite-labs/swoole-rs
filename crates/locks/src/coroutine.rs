@@ -44,9 +44,7 @@ fn outside(host: &CoroutineHost) -> Result<(), i32> {
     Err(ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as i32)
 }
 
-fn last_errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno as last_errno;
 
 impl CoroutineLock {
     /// A new unlocked lock; aborts when the host is inconsistent or has no storage.

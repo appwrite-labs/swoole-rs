@@ -62,9 +62,7 @@ fn set_cookie_split_matches_upstream() {
     assert_eq!(cookies.len(), 1034);
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 fn set_errno(value: c_int) {
     #[cfg(target_os = "linux")]

@@ -34,9 +34,7 @@ pub enum TaskFileError {
     Pread { error: i32, fd: i32, read: usize },
 }
 
-pub(crate) fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+pub(crate) use swoole_rs_corebase::sys::errno;
 
 /// Fills `buffer` from the start of the file at `path`, and unlinks the file once
 /// it is read whole, unless `peek`.

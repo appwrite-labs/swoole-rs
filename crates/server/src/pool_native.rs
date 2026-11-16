@@ -66,9 +66,7 @@ fn ipc_listener(pool: Pool<'_>) -> Option<Socket<'_>> {
     crate::view::pool_ipc_listener(pool)
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 fn exit_status(exited: u64) -> ExitStatus {
     ExitStatus::new((exited & 0xffff_ffff) as c_int, (exited >> 32) as c_int)

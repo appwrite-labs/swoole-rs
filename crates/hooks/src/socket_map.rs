@@ -136,9 +136,7 @@ mod tests {
         socket
     }
 
-    fn errno() -> c_int {
-        std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-    }
+    use swoole_rs_corebase::sys::errno;
 
     #[test]
     fn lends_until_removed() {

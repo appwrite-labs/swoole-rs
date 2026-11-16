@@ -62,9 +62,7 @@ fn clear_mask() {
     }
 }
 
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 fn slot(signo: c_int) -> Option<&'static Slot> {
     SIGNALS.get(usize::try_from(signo).ok()?)

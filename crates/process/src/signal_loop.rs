@@ -70,9 +70,7 @@ pub struct DescriptorOps {
     target_os = "openbsd",
     target_os = "dragonfly"
 ))]
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 /// `swoole_signal_set` over the configured backend: the previous handler.
 #[must_use]
