@@ -34,8 +34,8 @@ operation's context and answers its ops. Decisions it keeps from upstream:
   logs the open/pread warnings and builds the packet.
 - The signal table (upstream `src/os/signal.cc`; facades in
   `crates/reactor/src/signal_upstream.rs`) is `SIGNALS` (`crates/process/src/signal.rs`),
-  which the kqueue path shares (a slot is the kqueue event's udata);
-  `native/process/swoole_signal.h` keeps the signal functions C++ still calls. Rust registers handlers through sigaction, runs the deferred and
+  which the kqueue path shares (a slot is the kqueue event's udata); no C++ calls
+  the signal functions, so no header declares them. Rust registers handlers through sigaction, runs the deferred and
   immediate async handlers (atomic stores; the immediate one calls
   `swoole_signal_callback` in the signal frame as upstream), dispatches marked
   signals and blocks/unblocks every signal. Dispatch's callback may run PHP; no Rust value with a

@@ -100,7 +100,6 @@ namespace swoole {
 class Reactor;
 class String;
 class Timer;
-struct TimerNode;
 struct Event;
 class Pipe;
 class UnixSocket;
@@ -141,7 +140,6 @@ uint64_t swoole_random_int();
 size_t swoole_random_bytes(char *buf, size_t size);
 
 //----------------------Tool Function---------------------
-uint32_t swoole_common_multiple(uint32_t u, uint32_t v);
 uint32_t swoole_common_divisor(uint32_t u, uint32_t v);
 
 int swoole_rand();
@@ -154,8 +152,6 @@ pid_t swoole_fork(int flags);
 
 namespace swoole {
 typedef long SessionId;
-typedef long TaskId;
-typedef uint32_t WorkerId;
 typedef swSocketType SocketType;
 typedef swFdType FdType;
 

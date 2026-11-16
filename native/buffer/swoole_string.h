@@ -60,7 +60,6 @@ class String {
     void reserve(size_t new_size);
     char *release();
     void append(int value);
-    bool append_random_bytes(size_t length, bool base64 = false);
     void write(off_t _offset, const String &write_str);
 
     void print(bool print_value = true) const;

@@ -72,11 +72,9 @@ struct Socket : swr_v1_socket {
         return sock_fd;
     }
 
-    int wait_event(int timeout_ms, int _events) const;
     void free();
 };
 
 }  // namespace network
 
-network::Socket *make_socket(int fd, FdType fd_type);
 }  // namespace swoole

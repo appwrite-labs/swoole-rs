@@ -29,8 +29,6 @@ class SocketPair {
     bool ready() const {
         return master_socket != nullptr && worker_socket != nullptr;
     }
-
-    void set_blocking(bool _blocking);
 };
 
 class Pipe : public SocketPair {
@@ -41,6 +39,5 @@ class Pipe : public SocketPair {
 class UnixSocket : public SocketPair {
   public:
     UnixSocket(bool blocking, int _protocol);
-    bool set_buffer_size(size_t _size) const;
 };
 }  // namespace swoole

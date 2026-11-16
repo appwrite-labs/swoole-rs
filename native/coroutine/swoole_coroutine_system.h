@@ -10,7 +10,6 @@ namespace swoole {
 namespace coroutine {
 class System {
   public:
-    static void init_reactor(Reactor *reactor);
     static int sleep(double sec);
     static pid_t waitpid(pid_t _pid, int *_stat_loc, int _options, double timeout = -1);
     static pid_t waitpid_safe(pid_t _pid, int *_stat_loc, int _options);
