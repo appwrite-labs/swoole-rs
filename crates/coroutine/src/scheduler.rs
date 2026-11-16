@@ -6,7 +6,7 @@
 //! build without `upstream-symbols`; facade.rs builds the rest on them.
 use crate::context::{self, Native};
 use crate::coroutine::{self as ops, Co, Sched};
-use crate::{Bailout, Canceler, Coroutine, CoroutineTask, Hooks, Scheduler};
+use crate::{Canceler, Coroutine, CoroutineTask, Hooks, Routine, Scheduler};
 use core::cell::UnsafeCell;
 use core::ffi::{c_long, c_void};
 use core::ptr::{self, NonNull};
@@ -32,6 +32,7 @@ const fn fresh() -> Scheduler {
             swap_out: context::swap_out,
             destroy,
             bailout: None,
+            bailout_data: ptr::null_mut(),
             clock: None,
         },
         live: None,
@@ -139,7 +140,7 @@ fn destroy(co: Co) {
 }
 
 /// The bailout callback once nothing can resume (upstream's `bailed_out`).
-pub(crate) extern "C" fn bailed_out() {
+pub(crate) extern "C" fn bailed_out(_: *mut c_void) {
     log::error(
         c"Coroutine::bailout",
         format_args!("have been bailout, can not resume any coroutine"),
@@ -311,15 +312,13 @@ pub fn yield_with_cancel_armed<F: FnOnce(*mut c_void) -> bool + Copy>(
 }
 
 /// `static void Coroutine::bailout(callback)`: inside a coroutine the
-/// outermost one switches to the main context, where `callback` runs (a PHP
-/// bailout that never returns; otherwise the process exits); outside one, later
-/// resumes are refused.
+/// outermost one switches to the main context, where `callback(data)` runs (a
+/// PHP bailout that never returns; otherwise the process exits); outside one,
+/// later resumes are refused.
 ///
-/// As [`suspend`], it asks nothing of its caller: the coroutine's stack is left
-/// parked for good, so what the caller's frames own is leaked, never freed under
-/// them. A longjmp out of `callback` crosses the main stack's frames, which
-/// [`resume`]'s caller vouched for.
-pub fn swr_v1_coroutine_bail(callback: Option<Bailout>) {
+/// # Safety
+/// `callback` takes `data`; the caller's frames own nothing with a destructor.
+pub unsafe fn swr_v1_coroutine_bail(callback: Option<Routine>, data: *mut c_void) {
     let inside = !current().is_null();
     if inside && callback.is_none() {
         log::error(
@@ -328,7 +327,11 @@ pub fn swr_v1_coroutine_bail(callback: Option<Bailout>) {
         );
     }
     with_scheduler(|s| {
-        s.hooks.bailout = if inside { callback } else { Some(bailed_out) };
+        (s.hooks.bailout, s.hooks.bailout_data) = if inside {
+            (callback, data)
+        } else {
+            (Some::<Routine>(bailed_out), ptr::null_mut())
+        };
     });
     ops::bailout(Sched::this());
     if inside {

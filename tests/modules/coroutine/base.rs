@@ -8,9 +8,9 @@
 //! `swr_v1_context`; swoole_rs_coroutine.h): its getters are field reads here, its
 //! operations crates/coroutine's `suspend` and `resume`, the `swr_v1_coroutine_*`
 //! exports and upstream symbols.
-//! `Coroutine::create` and `coroutine::run` take a function and its data, and
-//! `Coroutine::bailout` a function, here (crates/coroutine's `swr_v1_coroutine_create`
-//! over an `Entry`, `swr_v1_coroutine_bail`, and `swoole_coroutine_create`).
+//! `Coroutine::create`, `coroutine::run` and `Coroutine::bailout` take a function and
+//! its data here (crates/coroutine's `swr_v1_coroutine_create` and
+//! `swr_v1_coroutine_bail`, and `swoole_coroutine_create`).
 
 use super::hook::{
     ST_SIZE, Stat, swoole_coroutine_fstat, swoole_coroutine_fsync, swoole_coroutine_ftruncate,
@@ -110,8 +110,7 @@ fn create<'a>(body: impl FnOnce() + 'a) -> c_long {
     let arg = Box::into_raw(Box::new(body)).cast::<c_void>();
     // SAFETY: `trampoline` takes the box `arg` owns; the borrows outlive the
     // coroutine, as the C++ lambdas' captures do.
-    let entry = unsafe { swoole_rs_coroutine::Entry::new(routine, arg) };
-    swoole_rs_coroutine::swr_v1_coroutine_create(entry)
+    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(routine, arg) }
 }
 
 /// [`trampoline`] as crates/coroutine's `Routine`, which it catches any unwind for.
@@ -255,25 +254,18 @@ unsafe extern "C" fn call(data: *mut c_void) {
     }
 }
 
-thread_local! {
-    /// The closure `bailout` hands the main context, live until it runs.
-    static BAILOUT: Cell<*mut c_void> = const { Cell::new(std::ptr::null_mut()) };
-}
-
-/// Runs the closure [`BAILOUT`] holds.
-extern "C" fn call_bailout() {
-    // SAFETY: `bailout`'s closure, which outlives the call or the process ends first.
-    unsafe { call(BAILOUT.get()) }
-}
-
 /// `Coroutine::bailout(fn)`, or `bailout(nullptr)` for `None`.
 fn bailout(body: Option<&dyn Fn()>) {
     match body {
-        Some(body) => {
-            BAILOUT.set((&raw const body).cast_mut().cast());
-            swoole_rs_coroutine::swr_v1_coroutine_bail(Some(call_bailout));
-        }
-        None => swoole_rs_coroutine::swr_v1_coroutine_bail(None),
+        // SAFETY: `body` outlives the call, or the process ends first.
+        Some(body) => unsafe {
+            swoole_rs_coroutine::swr_v1_coroutine_bail(
+                Some(call),
+                (&raw const body).cast_mut().cast(),
+            )
+        },
+        // SAFETY: no callback.
+        None => unsafe { swoole_rs_coroutine::swr_v1_coroutine_bail(None, std::ptr::null_mut()) },
     }
 }
 

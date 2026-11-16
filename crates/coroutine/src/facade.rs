@@ -13,6 +13,7 @@ use crate::scheduler::{bailed_out, current, with_scheduler, yield_with_cancel_ar
 use crate::thread::{Entry, THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init};
 use crate::{Canceler, Coroutine, Resume, Routine, STACK_MARK, STACK_PROTECT, Scheduler};
 use core::ffi::{c_int, c_long, c_void};
+use core::ptr;
 use std::ffi::{CStr, CString};
 use std::io;
 use std::sync::OnceLock;
@@ -93,18 +94,21 @@ extern "C" fn clock() -> c_long {
     steady_usec()
 }
 
-/// `Coroutine::create(routine, arg)`: a new coroutine runs `entry` until it first
-/// yields or ends. Its id, or -1 when its thread context failed to start (the last
-/// error is the errno). As [`spawn`], a fatal error or the coroutine's bailout may
-/// longjmp over the caller's frames, leaking what they own.
-pub fn swr_v1_coroutine_create(entry: Entry) -> c_long {
+/// `Coroutine::create(routine, arg)`: a new coroutine runs `routine(arg)` until
+/// it first yields or ends. Its id, or -1 when its thread context failed to
+/// start (the last error is the errno).
+///
+/// # Safety
+/// `routine` takes `arg`; the caller's frames own nothing with a destructor.
+pub unsafe fn swr_v1_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long {
     let flags = build() & (THREAD | STACK_PROTECT | STACK_MARK);
     let stack_size = with_scheduler(|s| s.stack_size);
+    // SAFETY: `routine` takes `arg`, as the caller promises.
+    let entry = unsafe { Entry::new(routine, arg) };
     let ctx = match Context::new(stack_size, flags, entry) {
         Ok(ctx) => ctx,
         Err(Unmade::NoStack) => {
-            // SAFETY: creation leaks what the caller's frames own (as `spawn` says),
-            // and this frame owns nothing.
+            // SAFETY: the caller's frames own nothing with a destructor, nor does this one.
             unsafe { fatal_error(SW_ERROR_MALLOC_FAIL, c"failed to malloc stack memory.") };
             std::process::exit(254);
         }
@@ -165,6 +169,7 @@ pub extern "C-unwind" fn deactivate() {
     }
     with_scheduler(|s| {
         s.hooks.bailout = Some(bailed_out);
+        s.hooks.bailout_data = ptr::null_mut();
         s.set_active(false);
     });
 }
@@ -298,8 +303,7 @@ pub fn spawn<F: FnOnce() + Copy + 'static>(entry: F) -> c_long {
     // SAFETY: `take::<F>` copies the `F` at its data, `entry` on this frame, which
     // lives until the coroutine first switches back: creation runs it until then,
     // and it copies the entry first.
-    let entry = unsafe { Entry::new(take::<F>, (&raw const entry).cast_mut().cast()) };
-    swr_v1_coroutine_create(entry)
+    unsafe { swr_v1_coroutine_create(take::<F>, (&raw const entry).cast_mut().cast()) }
 }
 
 /// `long swoole_coroutine_create(void (*)(void *), void *)`: in the running
@@ -318,8 +322,8 @@ unsafe extern "C-unwind" fn swoole_coroutine_create(routine: Routine, arg: *mut 
         }
         activate();
     }
-    // SAFETY: `routine` takes `arg`, as the caller promises.
-    let cid = swr_v1_coroutine_create(unsafe { Entry::new(routine, arg) });
+    // SAFETY: as the caller promises.
+    let cid = unsafe { swr_v1_coroutine_create(routine, arg) };
     if fresh {
         (host.event_wait)();
         deactivate();

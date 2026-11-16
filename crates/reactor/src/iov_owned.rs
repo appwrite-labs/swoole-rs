@@ -308,7 +308,7 @@ mod tests {
             let mut bytes = [0u8; 128];
             let source: Vec<_> = (0..count)
                 .map(|i| libc::iovec {
-                    iov_base: bytes.as_mut_ptr().wrapping_add(i).cast(),
+                    iov_base: (&raw mut bytes).cast::<u8>().wrapping_add(i).cast(),
                     iov_len: 1,
                 })
                 .collect();
@@ -334,7 +334,7 @@ mod tests {
             ));
             if count > 0 {
                 assert_eq!(source[0].iov_len, 1);
-                assert_eq!(source[0].iov_base, bytes.as_mut_ptr().cast());
+                assert_eq!(source[0].iov_base, (&raw mut bytes).cast::<u8>().cast());
             }
         }
     }
@@ -345,7 +345,7 @@ mod tests {
             let mut bytes = [0u8; 128];
             let source: Vec<_> = (0..count)
                 .map(|i| libc::iovec {
-                    iov_base: bytes.as_mut_ptr().wrapping_add(i).cast(),
+                    iov_base: (&raw mut bytes).cast::<u8>().wrapping_add(i).cast(),
                     iov_len: 1,
                 })
                 .collect();
@@ -368,7 +368,7 @@ mod tests {
         // completion must not touch that descriptor again.
         let mut bytes = [0u8; 7];
         let source = libc::iovec {
-            iov_base: bytes.as_mut_ptr().cast(),
+            iov_base: (&raw mut bytes).cast::<u8>().cast(),
             iov_len: 7,
         };
         let mut vectors = reading(&[source]);
@@ -377,7 +377,10 @@ mod tests {
         let partial = swr_v1_reactor_iov_view(&owner);
         assert_eq!((partial.offset_bytes, partial.remain_count), (2, 1));
         let current = descriptors(&owner)[0];
-        assert_eq!(current.iov_base, bytes.as_mut_ptr().wrapping_add(2).cast());
+        assert_eq!(
+            current.iov_base,
+            (&raw mut bytes).cast::<u8>().wrapping_add(2).cast()
+        );
         assert_eq!(current.iov_len, 5);
         owner.advance(5);
         let last = swr_v1_reactor_iov_view(&owner);

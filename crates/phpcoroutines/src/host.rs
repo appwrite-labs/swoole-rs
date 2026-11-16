@@ -483,8 +483,8 @@ pub(crate) fn create(args: crate::context::Args) -> c_long {
 /// bails the whole process out. Its frame owns nothing to drop.
 fn main(args: crate::context::Args) {
     if crate::context::run(args) {
-        // The main context runs `bail_out`; this frame owns nothing.
-        swoole_rs_coroutine::swr_v1_coroutine_bail(Some(bail_out));
+        // SAFETY: the main context runs `bail_out`; this frame owns nothing.
+        unsafe { swoole_rs_coroutine::swr_v1_coroutine_bail(Some(bail_out), std::ptr::null_mut()) };
     }
 }
 
@@ -496,7 +496,7 @@ pub(crate) fn run(ctx: Ctx) -> bool {
 
 /// The bailout of a coroutine that ended in an exception or a bailout, in the
 /// main context: the loop stops, then PHP bails out.
-extern "C" fn bail_out() {
+extern "C" fn bail_out(_: *mut c_void) {
     swoole_rs_reactor::event_api::swoole_event_bail_out();
     bailout::raise(Err(bailout::Bailout));
 }

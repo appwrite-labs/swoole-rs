@@ -260,7 +260,8 @@ pub(crate) fn swap_in(co: Co) -> bool {
     let mut fake_stack = FakeStack::NONE;
     let fctx = co.read_context(|ctx| {
         if let Some(thread) = &ctx.thread {
-            let ended = thread.swap_in();
+            // SAFETY: as the scheduler passes it; this thread holds the baton.
+            let ended = unsafe { thread.swap_in() };
             ctx.end.set(ended);
             return Err(ended);
         }
@@ -306,7 +307,8 @@ pub(crate) fn swap_out(co: Co) {
     let mut fake_stack = FakeStack::NONE;
     let swap_fctx = co.read_context(|ctx| {
         if let Some(thread) = &ctx.thread {
-            thread.swap_out();
+            // SAFETY: the running thread, as the scheduler passes it.
+            unsafe { thread.swap_out() };
             return None;
         }
         if let Some((start, _)) = asan {
