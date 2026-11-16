@@ -79,8 +79,11 @@ pub(crate) fn text(bytes: &[u8]) -> CString {
 /// `php_swoole_fatal_error(level, "%s", message)`.
 fn fatal(level: u32, message: &[u8]) -> Result<(), Stop> {
     let message = text(message);
-    #[expect(clippy::cast_possible_wrap, reason = "E_* levels are small")]
-    net::report(ErrorKind::Fatal, level as c_int, &message.to_string_lossy());
+    net::report(
+        ErrorKind::Fatal,
+        level.c_cast::<c_int>(),
+        &message.to_string_lossy(),
+    );
     checked()
 }
 
@@ -580,8 +583,7 @@ fn option_pair(table: &Array, keys: [&CStr; 2]) -> Result<Option<[i64; 2]>, Stop
         if slot.is_none() {
             let message = format!("no key \"{}\" passed in optval", key.to_string_lossy());
             let message = CString::new(message).unwrap_or_default();
-            #[expect(clippy::cast_possible_wrap, reason = "E_WARNING is 2")]
-            bailout::defer(report(E_WARNING as i32, &message));
+            bailout::defer(report(E_WARNING.c_cast::<i32>(), &message));
             return checked().map(|()| None);
         }
     }

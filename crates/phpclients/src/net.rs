@@ -1026,8 +1026,10 @@ fn recv_length(
         }
     }
     let buffered = frame.buffer.len();
-    #[expect(clippy::cast_possible_wrap, reason = "lengths below 4 GiB")]
-    let (header_length, have) = (header as i64, buffered as i64);
+    let (header_length, have) = (
+        i64::try_from(header).unwrap_or(i64::MAX),
+        i64::try_from(buffered).unwrap_or(i64::MAX),
+    );
     if length < 0 {
         call.set_empty_string();
         return None;

@@ -272,9 +272,8 @@ impl Co {
         self.0.check_liveness()
     }
 
-    #[expect(clippy::cast_possible_truncation, reason = "an event bit set")]
     pub(crate) fn bound_cid(self, event: i64) -> i64 {
-        self.0.bound_cid(Events::from_bits(event as c_int))
+        self.0.bound_cid(Events::from_bits(event.c_cast::<c_int>()))
     }
 
     /// A timeout of `kind` for the guard's life (`TimeoutSetter`).

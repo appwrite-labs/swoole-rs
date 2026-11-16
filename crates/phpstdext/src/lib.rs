@@ -38,10 +38,6 @@ const _: () = assert!(
 
 /// Install the complete Rust-owned opcode handlers, then stdext's function overrides:
 /// a MINIT step, which the token shows runs before any PHP code executes.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "Zend opcode constants are encoded in its opcode byte"
-)]
 pub fn stdext_minit(minit: &swoole_rs_zend::Minit) {
     let handlers: [(u32, user_opcode_handler_t); 5] = [
         (
@@ -66,9 +62,11 @@ pub fn stdext_minit(minit: &swoole_rs_zend::Minit) {
         ),
     ];
     for (opcode, handler) in handlers {
+        // Zend's opcode constants fit its opcode byte.
+        let opcode = u8::try_from(opcode).unwrap_or_default();
         // SAFETY: MINIT; each handler is installed for the one opcode its body
         // is written for, and lives for the process.
-        unsafe { swoole_rs_zend::sys::zend_set_user_opcode_handler(opcode as u8, handler) };
+        unsafe { swoole_rs_zend::sys::zend_set_user_opcode_handler(opcode, handler) };
     }
     // Function lookups, then overrides, in the original order.
     invoke::install(minit);

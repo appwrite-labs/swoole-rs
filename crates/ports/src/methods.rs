@@ -331,8 +331,7 @@ fn init_protocol_callbacks(
     let c = &CALLBACKS;
     if config.open_eof_check.get() {
         if u32::from(protocol.package_eof_len) > SW_DATA_EOF_MAXLEN {
-            #[expect(clippy::cast_possible_truncation, reason = "SW_DATA_EOF_MAXLEN is 8")]
-            let max = SW_DATA_EOF_MAXLEN as u8;
+            let max = u8::try_from(SW_DATA_EOF_MAXLEN).unwrap_or(u8::MAX);
             protocol.package_eof_len = max;
         }
         protocol.on_package = Some(c.dispatch_task);
@@ -392,8 +391,7 @@ pub fn set_eof_protocol(config: &mut PortConfig, eof: &[u8], find_from_right: bo
     for (slot, &byte) in protocol.package_eof.iter_mut().zip(eof) {
         *slot = byte;
     }
-    #[expect(clippy::cast_possible_truncation, reason = "at most 8")]
-    let length = length as u8;
+    let length = u8::try_from(length).unwrap_or(u8::MAX);
     protocol.package_eof_len = length;
 }
 
@@ -921,14 +919,15 @@ mod tests {
 
     /// The EOF setter (was tests/modules/ports/settings.cc).
     #[test]
-    #[expect(clippy::cast_possible_truncation, reason = "below 256")]
     fn set_eof_protocol_copies_at_most_eight_bytes() {
         for length in [0usize, 1, 2, 7, 8, 9, 16, 1024] {
             for right in [false, true] {
                 let mut port = Fresh::new();
                 let config = port.config();
                 config.protocol.get_mut().package_eof = *b"xxxxxxxx";
-                let value: Vec<u8> = (0..length).map(|i| (i % 256) as u8).collect();
+                let value: Vec<u8> = (0..length)
+                    .map(|i| u8::try_from(i % 256).unwrap_or_default())
+                    .collect();
                 set_eof_protocol(config, &value, right);
                 let kept = length.min(8);
                 let mut eof = *b"xxxxxxxx";

@@ -103,15 +103,13 @@ impl HttpServer {
             compression_level: Cell::new(Z_BEST_SPEED),
             compression_min_length: Cell::new(COMPRESSION_MIN_LENGTH_DEFAULT),
             compression_types: Cell::default(),
-            #[expect(clippy::cast_possible_truncation, reason = "the bit fits")]
-            websocket_settings: Cell::new(websocket::IN_SERVER as u8),
+            websocket_settings: Cell::new(websocket::IN_SERVER),
             upload_tmp_dir: Cell::new(Rc::new(c"/tmp".to_owned())),
         }
     }
 
     /// `WebSocket::apply_setting(hs->websocket_settings, vht, true)`, the
     /// settings a coroutine server's contexts read.
-    #[expect(clippy::cast_possible_truncation, reason = "the bits fit")]
     fn apply_websocket(&self, table: &Array) {
         let mut bits = self.websocket_settings.get();
         let mut flag = |key: &[u8], bit: u8| {
@@ -126,20 +124,10 @@ impl HttpServer {
         if websocket::ZLIB.load(Relaxed) {
             flag(b"websocket_compression", websocket::SETTING_COMPRESSION);
         }
-        flag(
-            b"open_websocket_close_frame",
-            websocket::OPEN_CLOSE_FRAME as u8,
-        );
-        flag(
-            b"open_websocket_ping_frame",
-            websocket::OPEN_PING_FRAME as u8,
-        );
-        flag(
-            b"open_websocket_pong_frame",
-            websocket::OPEN_PONG_FRAME as u8,
-        );
-        self.websocket_settings
-            .set(bits | websocket::IN_SERVER as u8);
+        flag(b"open_websocket_close_frame", websocket::OPEN_CLOSE_FRAME);
+        flag(b"open_websocket_ping_frame", websocket::OPEN_PING_FRAME);
+        flag(b"open_websocket_pong_frame", websocket::OPEN_PONG_FRAME);
+        self.websocket_settings.set(bits | websocket::IN_SERVER);
     }
 
     fn clients(&self) -> *mut z::HashTable {

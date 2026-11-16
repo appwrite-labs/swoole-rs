@@ -173,8 +173,7 @@ impl MultipartParser {
             text.push(found);
         } else {
             // `%.2x` of a signed char: bytes past 0x7f print sign-extended.
-            #[expect(clippy::cast_possible_wrap, reason = "C's signed char")]
-            let shown = i32::from(found as i8).cast_unsigned();
+            let shown = i32::from(found.cast_signed()).cast_unsigned();
             text.extend_from_slice(format!("\\x{shown:02x}").as_bytes());
         }
         text.push(b'\'');

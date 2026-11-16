@@ -124,12 +124,8 @@ fn timespec(seconds: f64) -> libc::timespec {
 
 /// `ts` as the ring takes it. A negative field stays one the kernel refuses.
 fn kernel_timespec(ts: libc::timespec) -> Timespec {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "nanoseconds are below a second's; a negative count stays out of range"
-    )]
-    let nsec = ts.tv_nsec as u32;
+    // Nanoseconds are below a second's; a negative count stays out of range.
+    let nsec = ts.tv_nsec.c_cast::<u32>();
     Timespec::new().sec(ts.tv_sec.cast_unsigned()).nsec(nsec)
 }
 
@@ -193,11 +189,8 @@ fn wait_status(code: c_int, status: c_int) -> c_int {
 /// cancelled request (its linked timeout fired) reports `ETIMEDOUT`.
 fn complete(result: isize) -> isize {
     if result < 0 {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "io_uring results are an i32 cqe.res"
-        )]
-        let error = result.wrapping_neg() as c_int;
+        // An io_uring result is an i32 `cqe.res`.
+        let error = result.wrapping_neg().c_cast::<c_int>();
         set_errno(if error == libc::ECANCELED {
             libc::ETIMEDOUT
         } else {
@@ -714,8 +707,7 @@ pub fn sendfile(
         let from = start.map_or(-1, |start| {
             start + i64::try_from(total_sent).unwrap_or(i64::MAX)
         });
-        #[expect(clippy::cast_possible_truncation, reason = "at most the pipe size")]
-        let nbytes = to_send as c_uint;
+        let nbytes = c_uint::try_from(to_send).unwrap_or(c_uint::MAX);
         let ret1 = splice(in_fd, from, write_end, nbytes);
         if ret1 <= 0 {
             if total_sent > 0 {

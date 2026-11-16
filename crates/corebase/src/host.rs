@@ -220,15 +220,15 @@ pub extern "C" fn microtime() -> f64 {
         tv_sec: 0,
         tv_nsec: 0,
     });
+    // system_clock's signed nanosecond count, converted as libstdc++ does.
     #[expect(
-        clippy::cast_precision_loss,
         clippy::useless_conversion,
-        reason = "system_clock's signed nanosecond count, converted as libstdc++ does; \
-                  time_t and c_long are i64 on the 64-bit targets only on some hosts"
+        reason = "time_t and c_long are i64 on the 64-bit targets only on some hosts"
     )]
     let nanos = i64::from(now.tv_sec)
         .wrapping_mul(1_000_000_000)
-        .wrapping_add(i64::from(now.tv_nsec)) as f64;
+        .wrapping_add(i64::from(now.tv_nsec))
+        .c_cast::<f64>();
     nanos / 1e9
 }
 
@@ -507,11 +507,8 @@ pub extern "C" fn swoole_rand(min: c_int, max: c_int) -> c_int {
         let value = next();
         if value < limit {
             let offset = i64::try_from(value % span).unwrap_or_default();
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "min + offset lies in min..=max"
-            )]
-            return (i64::from(min) + offset) as c_int;
+            // min + offset lies in min..=max.
+            return c_int::try_from(i64::from(min) + offset).unwrap_or(max);
         }
     }
 }

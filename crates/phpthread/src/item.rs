@@ -255,11 +255,11 @@ impl Item {
     /// when two types' `TYPE_PAIR`s collide.
     fn raw(&self) -> u64 {
         match &self.value {
-            #[expect(clippy::cast_sign_loss, reason = "the union's bits")]
-            Value::Bare(value) | Value::Long(value) => *value as u64,
+            Value::Bare(value) | Value::Long(value) => value.cast_unsigned(),
             Value::Double(value) => value.to_bits(),
-            #[expect(clippy::cast_sign_loss, reason = "the union's bits")]
-            Value::Socket { fd, kind } => (u64::from(*kind as u32) << 32) | u64::from(*fd as u32),
+            Value::Socket { fd, kind } => {
+                (u64::from(kind.cast_unsigned()) << 32) | u64::from(fd.cast_unsigned())
+            }
             Value::Resource(resource) => resource
                 .as_ref()
                 .map_or(0, |r| Arc::as_ptr(r).addr() as u64),
@@ -270,9 +270,8 @@ impl Item {
         }
     }
 
-    #[expect(clippy::cast_possible_wrap, reason = "the union's bits")]
     fn lval(&self) -> i64 {
-        self.raw() as i64
+        self.raw().cast_signed()
     }
 
     fn dval(&self) -> f64 {

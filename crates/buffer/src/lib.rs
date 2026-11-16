@@ -41,12 +41,8 @@ pub enum Error {
 }
 
 /// A data chunk's length: chunks hold at most `chunk_size: u32` bytes (`appendv`).
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "a data chunk holds at most chunk_size: u32 bytes"
-)]
 pub(crate) fn chunk_length(bytes: &[u8]) -> u32 {
-    bytes.len() as u32
+    u32::try_from(bytes.len()).unwrap_or(u32::MAX)
 }
 
 enum Entry {

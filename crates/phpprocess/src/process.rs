@@ -533,8 +533,7 @@ fn stat_queue(call: &Call) {
     };
     call.set_array();
     call.add_assoc_long(c"queue_num", num.c_cast::<i64>());
-    #[expect(clippy::cast_possible_wrap, reason = "as above")]
-    call.add_assoc_long(c"queue_bytes", bytes as i64);
+    call.add_assoc_long(c"queue_bytes", bytes.c_cast::<i64>());
 }
 
 fn free_queue(call: &Call) {
@@ -931,8 +930,7 @@ fn exit(call: &Call) {
     if swoole_rs_reactor::event_api::swoole_event_is_available() {
         swoole_rs_reactor::swoole_event_free();
     }
-    #[expect(clippy::cast_possible_truncation, reason = "0..=255")]
-    std::process::exit(code as c_int)
+    std::process::exit(c_int::try_from(code).unwrap_or_default())
 }
 
 fn close(call: &Call) {

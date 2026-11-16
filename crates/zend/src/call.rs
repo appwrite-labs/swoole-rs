@@ -431,19 +431,11 @@ impl Call {
     /// `ZEND_PARSE_PARAMETERS_END`'s report of a wrong argument.
     #[cold]
     fn wrong(n: u32, arg: &Value, expected: zend_expected_type) -> Invalid {
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "ZPP error codes are small; Zend's macro passes the same int"
-        )]
+        // ZPP error codes are small; Zend's macro passes the same int.
+        let code = i32::try_from(ZPP_ERROR_WRONG_ARG).unwrap_or_default();
         // SAFETY: as Zend's macro does, with the argument that failed to parse.
         unsafe {
-            zend_wrong_parameter_error(
-                ZPP_ERROR_WRONG_ARG as i32,
-                n,
-                ptr::null_mut(),
-                expected,
-                arg.as_ptr(),
-            );
+            zend_wrong_parameter_error(code, n, ptr::null_mut(), expected, arg.as_ptr());
         }
         Invalid
     }

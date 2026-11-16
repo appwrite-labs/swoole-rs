@@ -246,8 +246,7 @@ fn default_protocol() -> Protocol {
     Protocol {
         split_by_eof: false,
         package_eof,
-        #[expect(clippy::cast_possible_truncation, reason = "a four-byte literal")]
-        package_eof_len: SW_DATA_EOF.len() as u8,
+        package_eof_len: u8::try_from(SW_DATA_EOF.len()).unwrap_or(u8::MAX),
         package_length_type: b'N',
         package_length_size: 4,
         package_length_offset: 0,
