@@ -16,6 +16,20 @@ struct Mock {
     /// The record `make_socket` allocated; the client releases it.
     socket: Option<core::ptr::NonNull<SocketRecord>>,
     fail_socket: bool,
+    /// The records `socket_free` released, which tests still read: freed with the test.
+    freed: Freed,
+}
+
+#[derive(Default)]
+struct Freed(Vec<Socket<'static>>);
+
+impl Drop for Freed {
+    fn drop(&mut self) {
+        for socket in self.0.drain(..) {
+            // SAFETY: `make_socket`'s record, which the client released once.
+            unsafe { SocketRecord::free(Some(socket)) };
+        }
+    }
 }
 
 thread_local! {
@@ -102,19 +116,27 @@ fn sock() -> &'static mut SocketFields {
 
 /// `f` over `sw_tg_buffer()`: a 64-byte String per test thread.
 pub(super) fn with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
+    /// Freed with the test's thread.
+    struct Shared(CppString);
+    impl Drop for Shared {
+        fn drop(&mut self) {
+            self.0.dispose();
+        }
+    }
     thread_local! {
-        static SHARED: std::cell::RefCell<CppString> = {
+        static SHARED: std::cell::RefCell<Shared> = {
             let mut buffer = CppString::EMPTY;
             buffer.alloc(64, None);
-            std::cell::RefCell::new(buffer)
+            std::cell::RefCell::new(Shared(buffer))
         };
     }
-    SHARED.with_borrow_mut(f)
+    SHARED.with_borrow_mut(|shared| f(&mut shared.0))
 }
 
 // crates/tls's socket operations.
-pub(super) unsafe fn socket_free(_: Option<Socket<'static>>) {
+pub(super) unsafe fn socket_free(socket: Option<Socket<'static>>) {
     log("free");
+    mock(|m| m.freed.0.extend(socket));
 }
 /// crates/tls's slice-taking transfers.
 pub(super) mod net {
@@ -208,13 +230,9 @@ fn listener(event: ClientEvent, _: *const c_char, length: usize) {
         sock().object = core::ptr::null_mut();
     }
 }
-/// crates/timer's `add_fn_sec_id`: logs, adds nothing.
+/// The connect timer: logs, adds nothing.
 #[expect(clippy::unnecessary_wraps, reason = "crates/timer's signature")]
-pub(super) fn add_fn_sec_id(
-    timeout: f64,
-    _: bool,
-    _: impl Fn() + Copy + 'static,
-) -> Option<swoole_rs_timer::Held> {
+pub(super) fn timer_add(timeout: f64, _: Handle) -> Option<swoole_rs_timer::Held> {
     log(format!("timer {timeout}"));
     Some(swoole_rs_timer::Held::detached(1))
 }
@@ -302,6 +320,8 @@ fn new_client(kind: c_int, is_async: bool) -> *mut Client {
         connect: ops::connect,
         event: ops::event,
         socket_error: ops::socket_error,
+        timer_add,
+        timer_delete: del_id,
         tls_freeze,
         tls_session,
         tls_connect: socket_ssl_connect,
@@ -653,7 +673,8 @@ fn datagram_sends_fail_with_sendto_and_dtls_sends_as_a_stream() {
 #[test]
 fn public_record_defaults_and_direct_framing_writes_drive_reads() {
     let client = client(1, true, true);
-    let fields = client.cast::<ClientRecord>();
+    // SAFETY: the live client.
+    let fields = unsafe { (*client).record.as_ptr() };
     unsafe {
         assert!(!(*fields).http2 && !(*fields).open_eof_check && !(*fields).open_length_check);
         assert_eq!((*fields).remote_addr.kind, 1);
@@ -690,7 +711,8 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
 #[test]
 fn datagram_peer_is_a_snapshot() {
     let client = client(2, false, false);
-    let fields = client.cast::<ClientRecord>();
+    // SAFETY: the live client.
+    let fields = unsafe { (*client).record.as_ptr() };
     unsafe {
         (*fields).remote_addr.len = 17;
         (*fields).remote_addr.kind = 4;

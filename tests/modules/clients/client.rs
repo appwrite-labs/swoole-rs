@@ -65,30 +65,7 @@ const EINPROGRESS: c_int = 115;
 const SIGIO: c_int = 29;
 const SIGPIPE: c_int = 13;
 
-/// crates/clients' `ClientRecord`, the head of `network::Client`, with Linux's
-/// 120-byte `network::Address`.
-#[repr(C)]
-struct Record {
-    http2: bool,
-    open_length_check: bool,
-    open_eof_check: bool,
-    protocol: [u64; 8],
-    server_addr: [u8; 120],
-    remote_addr: [u8; 120],
-    socket: *mut c_void,
-    object: *mut c_void,
-    buffer: *mut c_void,
-}
-
-const _: () = assert!(
-    std::mem::offset_of!(Record, socket) == 312 && size_of::<Record>() == 336,
-    "ClientRecord's layout moved"
-);
-
 unsafe extern "C" {
-    fn swr_v1_clients_address_host(address: *const c_void) -> *const c_char;
-    fn swr_v1_clients_address_port(address: *const c_void) -> c_int;
-
     #[link_name = "_ZNK6swoole7network6Socket12has_timedoutEv"]
     fn socket_has_timedout(socket: *const c_void) -> bool;
     #[link_name = "_Z17swoole_event_initi"]
@@ -218,13 +195,10 @@ impl<'a> Client<'a> {
         cli
     }
 
-    fn record(&self) -> &Record {
-        // SAFETY: the live client, whose head is the record.
-        unsafe { &*self.state.cast::<Record>() }
-    }
-
     pub(super) fn socket(&self) -> *mut c_void {
-        self.record().socket
+        self.client()
+            .socket()
+            .map_or(std::ptr::null_mut(), |socket| socket.as_ptr().cast())
     }
 
     /// Installs the callbacks set so far, as assigning `onConnect` and the rest does.
@@ -374,12 +348,11 @@ impl<'a> Client<'a> {
         } else {
             SW_ERR
         };
-        let address = (&raw const address).cast();
-        // SAFETY: the address Rust filled.
-        let host = unsafe { CStr::from_ptr(swr_v1_clients_address_host(address)) };
-        // SAFETY: as above.
-        let port = unsafe { swr_v1_clients_address_port(address) };
-        (result, host.to_str().unwrap().to_owned(), port)
+        let host = swoole_rs_clients::address::with_host(&address, |host| {
+            host.to_str().unwrap().to_owned()
+        });
+        let port = swoole_rs_clients::address::address_port(&address).into();
+        (result, host, port)
     }
 
     pub(super) fn enable_ssl_encrypt(&self) -> c_int {

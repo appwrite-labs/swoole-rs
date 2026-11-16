@@ -275,10 +275,7 @@ unsafe extern "C" {
     safe fn async_dispatch(event: &AsyncEvent<'_>) -> *mut c_void;
 }
 
-/// The public, trivially copyable fields of `network::Client`. C++ keeps typed
-/// aliases in its base record; protocol callbacks and addresses retain their
-/// original identity and lifetime, including direct SDK field writes.
-#[repr(C)]
+/// The public, trivially copyable fields of `network::Client`.
 #[derive(Clone, Copy)]
 pub struct ClientRecord {
     pub http2: bool,
@@ -294,20 +291,7 @@ pub struct ClientRecord {
     pub buffer: *mut c_void,
 }
 
-const _: () = {
-    use core::mem::{offset_of, size_of};
-    assert!(
-        offset_of!(ClientRecord, protocol) == 8
-            && offset_of!(ClientRecord, server_addr) == 72
-            && offset_of!(ClientRecord, remote_addr) == 72 + size_of::<SocketAddress>()
-            && offset_of!(ClientRecord, socket) == 72 + 2 * size_of::<SocketAddress>()
-            && size_of::<ClientRecord>() == 96 + 2 * size_of::<SocketAddress>(),
-        "network::Client's public record layout moved"
-    );
-};
-
-/// One client's state, its public record first: `network::Client`.
-#[repr(C)]
+/// One client's state: `network::Client`.
 pub struct Client {
     record: Cell<ClientRecord>,
     socket_ops: &'static SocketOps,
@@ -691,7 +675,7 @@ impl Handle {
 
     fn timer_clear(self) {
         if let Some(timer) = self.get().timer.take() {
-            del_id(timer);
+            (self.get().socket_ops.timer_delete)(timer);
         }
     }
 
@@ -701,12 +685,6 @@ impl Handle {
         self.call(ClientEvent::Connect, core::ptr::null(), 0);
     }
 }
-
-// The unit tests log timers instead.
-#[cfg(not(test))]
-use swoole_rs_timer::{add_fn_sec as add_fn_sec_id, del_id};
-#[cfg(test)]
-use tests::{add_fn_sec_id, del_id};
 
 /// `Client_onPackage`: a framed package for `onReceive`; the receive loop stops
 /// once the callback left the socket waiting to close. Only a client's protocol
@@ -1424,7 +1402,7 @@ fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> bo
             // handler runs the proxy and TLS handshakes.
             if !connected && timeout > 0.0 {
                 // The client deletes the timer before it goes.
-                let timer = add_fn_sec_id(timeout, false, move || on_timeout(this));
+                let timer = (this.get().socket_ops.timer_add)(timeout, this);
                 this.get().timer.set(timer);
                 if timer.is_none() {
                     return false;
@@ -1551,6 +1529,8 @@ struct SocketOps {
     connect: fn(Handle, ConnectMode) -> bool,
     event: fn(Handle, EventOp, Events) -> bool,
     socket_error: fn(Handle, &mut c_int) -> bool,
+    timer_add: fn(f64, Handle) -> Option<swoole_rs_timer::Held>,
+    timer_delete: fn(swoole_rs_timer::Held),
     tls_freeze: fn(&TlsContext) -> Option<TlsSettings>,
     tls_session: fn(&TlsSettings, Socket<'_>) -> bool,
     tls_connect: fn(Socket<'_>) -> bool,
@@ -1570,6 +1550,10 @@ impl SocketOps {
         connect: ops::connect,
         event: ops::event,
         socket_error: ops::socket_error,
+        timer_add: |timeout, this| {
+            swoole_rs_timer::add_fn_sec(timeout, false, move || on_timeout(this))
+        },
+        timer_delete: swoole_rs_timer::del_id,
         tls_freeze,
         tls_session: TlsSettings::create_client_session,
         tls_connect: swoole_rs_tls::upstream::socket_ssl_connect,

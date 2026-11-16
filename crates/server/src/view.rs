@@ -711,6 +711,13 @@ pub fn worker_pipe_end(worker: Worker<'_>, end: PipeEnd) -> Option<Socket<'_>> {
     worker.pipe(end).map(Socket::lent)
 }
 
+/// [`worker_pipe_end`] as a reactor may hold it: a pipe end is freed only with its
+/// pair, after the event loops that watch it, so a write that queues may register it.
+#[must_use]
+pub fn registered_pipe_end(worker: Worker<'_>, end: PipeEnd) -> Option<Socket<'static>> {
+    worker_pipe_end(worker, end).and_then(crate::reactor_handle::registered)
+}
+
 /// The master end (`master`) or the worker end of `worker`'s pipe, or `None` while
 /// it has none.
 #[inline]

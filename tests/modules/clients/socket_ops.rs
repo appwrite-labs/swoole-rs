@@ -78,6 +78,32 @@ fn native_socket_control_connects_and_keeps_failed_assignment_atomic() {
     }
 }
 
+/// A manually driven thread timer keeps this test independent of signals and
+/// wall-clock timing while exercising the native create/cancel effects.
+#[test]
+#[cfg_attr(miri, ignore = "requires a native socket and thread timer")]
+fn native_connect_timer_is_cancelled_before_client_release() {
+    struct Timer;
+    impl Drop for Timer {
+        fn drop(&mut self) {
+            swoole_rs_timer::swoole_timer_free();
+        }
+    }
+    assert!(!swoole_rs_timer::swoole_timer_is_available());
+    swoole_rs_timer::swoole_timer_create(true);
+    let _timer = Timer;
+    let client = NativeClient(create(SocketType::SW_SOCK_TCP as c_int, true).unwrap());
+    let this = client.0;
+    let held = (this.get().socket_ops.timer_add)(60.0, this).unwrap();
+    this.get().timer.set(Some(held));
+    assert_eq!(swoole_rs_timer::thread_timer_count(), 1);
+    this.timer_clear();
+    assert!(this.get().timer.get().is_none());
+    assert_eq!(swoole_rs_timer::thread_timer_count(), 0);
+    this.timer_clear();
+    assert_eq!(swoole_rs_timer::thread_timer_count(), 0);
+}
+
 #[test]
 #[cfg_attr(miri, ignore = "requires TCP sockets and OpenSSL")]
 fn native_tls_effects_keep_the_session_and_settings_while_the_peer_is_pending() {

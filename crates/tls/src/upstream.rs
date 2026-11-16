@@ -997,25 +997,15 @@ pub fn socket_sendfile_async(
 }
 
 /// `ssize_t Socket::send_async(const void *data, size_t length)`: through the event
-/// loop when there is one, else `send_sync`. The loop may register the socket to
-/// send what it queues, so it is a record live until an unsafe free.
-///
-/// # Safety
-/// `data` denotes `length` readable bytes.
-#[cfg(feature = "upstream-symbols")]
-#[unsafe(export_name = "_ZN6swoole7network6Socket10send_asyncEPKvm")]
+/// loop when there is one, else `send_sync`: the bytes taken, `None` when it failed.
+/// The loop may register the socket to send what it queues, so it is a record live
+/// until an unsafe free.
 #[must_use]
-pub unsafe extern "C-unwind" fn socket_send_async(
-    socket: Socket<'static>,
-    data: *const std::ffi::c_void,
-    length: usize,
-) -> isize {
-    // SAFETY: as the caller promises.
-    let data = unsafe { Drain::from_raw(data, length) };
+pub fn send_async(socket: Socket<'static>, data: &[u8]) -> Option<usize> {
     if swoole_rs_reactor::socket_upstream::event_reactor().is_none() {
-        return send_sync_drain(socket, data, 0).map_or(-1, usize::cast_signed);
+        return send_sync(socket, data, 0);
     }
-    swoole_rs_reactor::event_api::event_write(socket, data.bytes()).map_or(-1, usize::cast_signed)
+    swoole_rs_reactor::event_api::event_write(socket, data)
 }
 
 /// `bool Socket::ssl_shutdown()`: false without an SSL.
