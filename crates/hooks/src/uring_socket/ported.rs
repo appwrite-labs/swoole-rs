@@ -167,8 +167,9 @@ impl Sock {
             len: socklen::<libc::sockaddr_storage>(),
             ..SocketAddress::default()
         };
-        let fd = swr_v1_hook_uring_accept(&self.ops, &mut address);
-        (fd >= 0).then(|| Self::new(fd))
+        accept_descriptor(&self.ops, &mut address)
+            .ok()
+            .map(Self::new)
     }
 
     fn vector(&self, iov: &mut [libc::iovec], write: bool, all: bool) -> isize {

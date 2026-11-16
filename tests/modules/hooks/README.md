@@ -444,3 +444,9 @@ ambient-errno `ETIME` rule even when ring creation fails. Sendfile retains the
 first failure, completed output on a later error/EOF, short-output stopping and
 explicit offset advancement. Scripted splice tests cover those branches without
 a ring; original runtime tests still require successful io_uring setup.
+
+The ring socket accept helper keeps `io::Result` through socket error publication
+and descriptor adoption. TLS sendfile reports an optional `TlsWarning` alongside
+completed bytes; the original scripted cases retain read/write warnings, retry,
+EOF, zero-send and partial-progress expectations. Ring sendfile completion compares
+unsigned byte counts without a negative error sentinel.

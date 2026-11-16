@@ -2,7 +2,6 @@
 //! `SW_SENDFILE_CHUNK_SIZE` until the range is sent, waiting for the socket when a
 //! send would block. `Socket::sendfile` (`socket_members.rs`) opens and measures
 //! the file and writes the errors.
-use core::ffi::c_int;
 use swoole_rs_reactor::Caught;
 
 const CHUNK: usize = swoole_rs_corebase::constants::SW_SENDFILE_CHUNK_SIZE as usize;
@@ -49,9 +48,12 @@ pub(crate) fn send_range(
 
 /// `SW_BUFFER_SIZE_BIG`, `UringSocket::ssl_sendfile`'s stack buffer.
 pub const TLS_CHUNK: usize = 65536;
-/// [`tls_sendfile`]'s warnings: none, `pread() failed`, `write() failed`.
-pub const TLS_WARN_PREAD: c_int = 1;
-pub const TLS_WARN_WRITE: c_int = 2;
+/// The operation whose failure stopped [`tls_sendfile`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TlsWarning {
+    Read,
+    Write,
+}
 
 /// `UringSocket::ssl_sendfile`'s loop over `size` bytes from `*offset`: each
 /// chunk is read (`pread`, always of upstream's `min(size, buffer)` bytes) and
@@ -64,32 +66,33 @@ pub fn tls_sendfile(
     mut pread: impl FnMut(&mut [u8], libc::off_t) -> Option<usize>,
     mut send: impl FnMut(&[u8]) -> Option<usize>,
     mut catch: impl FnMut() -> Option<Caught>,
-) -> (usize, c_int) {
+) -> (usize, Option<TlsWarning>) {
     let mut buf = vec![0_u8; size.min(TLS_CHUNK)];
     let mut total = 0;
     while total < size {
         let Some(n @ 1..) = pread(&mut buf, *offset) else {
-            return (total, TLS_WARN_PREAD);
+            return (total, Some(TlsWarning::Read));
         };
         match send(buf.get(..n).unwrap_or(&buf)) {
-            Some(0) => return (total, 0),
+            Some(0) => return (total, None),
             Some(sent) => {
                 *offset += libc::off_t::try_from(sent).unwrap_or(libc::off_t::MAX);
                 total += sent;
             }
             None => match catch() {
-                Some(Caught::Error) => return (total, TLS_WARN_WRITE),
-                Some(Caught::Close) => return (total, 0),
+                Some(Caught::Error) => return (total, Some(TlsWarning::Write)),
+                Some(Caught::Close) => return (total, None),
                 _ => {}
             },
         }
     }
-    (total, 0)
+    (total, None)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::ffi::c_int;
     use std::cell::RefCell;
 
     thread_local! {
@@ -164,7 +167,7 @@ mod tests {
         size: usize,
         sends: &[Option<isize>],
         class: Option<Caught>,
-    ) -> (usize, c_int, libc::off_t, Vec<usize>) {
+    ) -> (usize, Option<TlsWarning>, libc::off_t, Vec<usize>) {
         let mut offset = 0;
         let mut script = sends.iter();
         let mut reads = Vec::new();
@@ -194,11 +197,11 @@ mod tests {
     #[test]
     fn tls_sendfile_sends_the_range() {
         let file = vec![7_u8; 100];
-        assert_eq!(tls(&file, 100, &[], None), (100, 0, 100, vec![100]));
+        assert_eq!(tls(&file, 100, &[], None), (100, None, 100, vec![100]));
         // A short send leaves the rest for the next read, always of the first size.
         assert_eq!(
             tls(&file, 100, &[Some(40)], None),
-            (100, 0, 100, vec![100, 100])
+            (100, None, 100, vec![100, 100])
         );
     }
 
@@ -208,21 +211,21 @@ mod tests {
         // Reading past the end warns "pread() failed".
         assert_eq!(
             tls(&file, 20, &[], None),
-            (10, TLS_WARN_PREAD, 10, vec![20, 20])
+            (10, Some(TlsWarning::Read), 10, vec![20, 20])
         );
-        assert_eq!(tls(&file, 10, &[Some(0)], None).1, 0);
+        assert_eq!(tls(&file, 10, &[Some(0)], None).1, None);
         assert_eq!(
             tls(&file, 10, &[Some(-1)], Some(Caught::Error)).1,
-            TLS_WARN_WRITE
+            Some(TlsWarning::Write)
         );
         assert_eq!(
             tls(&file, 10, &[Some(-1)], Some(Caught::Close)),
-            (0, 0, 0, vec![10])
+            (0, None, 0, vec![10])
         );
         // A send that would block is retried.
         assert_eq!(
             tls(&file, 10, &[Some(-1)], Some(Caught::Wait)),
-            (10, 0, 10, vec![10, 10])
+            (10, None, 10, vec![10, 10])
         );
     }
 }
