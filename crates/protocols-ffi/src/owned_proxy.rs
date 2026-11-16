@@ -89,7 +89,7 @@ fn pack(owner: &ProxyState, request: Request, buffer: &mut [u8]) -> Packet {
             let (kind, address): (u8, &[u8]) = if fields.dns_tunnel != 0 {
                 (3, name)
             } else {
-                let error = swoole_rs_clients::address::assign(
+                let assigned = swoole_rs_clients::address::assign(
                     &mut address,
                     &mut length,
                     fields.socket_type,
@@ -97,7 +97,7 @@ fn pack(owner: &ProxyState, request: Request, buffer: &mut [u8]) -> Packet {
                     fields.target_port,
                     false,
                 );
-                if error != 0 {
+                if let Err(error) = assigned {
                     result.notice = Some(
                         "When disable SOCKS5 proxy DNS tunnel connection, the destination host must be an IP address.",
                     );

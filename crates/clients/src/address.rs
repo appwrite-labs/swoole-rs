@@ -42,8 +42,10 @@ fn parse_ip(family: c_int, host: &CStr, destination: &mut [u8; 16]) -> bool {
     }
 }
 
-/// [`assign`] with `resolve` for a host that is no IP literal: the address, or the
-/// `SW_ERROR_*` code.
+/// [`assign`] with `resolve` for a host that is no IP literal.
+///
+/// # Errors
+/// The `SW_ERROR_*` code.
 pub fn assign_with(
     address: &mut AddressStorage,
     length: &mut libc::socklen_t,
@@ -51,9 +53,9 @@ pub fn assign_with(
     host: &[u8],
     port: c_int,
     resolve: impl FnOnce(c_int, &CStr) -> Result<[u8; 16], c_int>,
-) -> c_int {
+) -> Result<(), c_int> {
     let Some((&0, bytes)) = host.split_last() else {
-        return BAD_HOST_ADDR;
+        return Err(BAD_HOST_ADDR);
     };
     // Only a host that is no IP literal of the family needs the name.
     swoole_rs_corebase::net_address::assign(address, length, kind, bytes, port, |family| {
@@ -68,11 +70,13 @@ pub fn assign_with(
     })
 }
 
-/// `Address::assign(kind, host, port, resolve)`: fills `address` and `*length`;
-/// 0, or the `SW_ERROR_*` code for the caller to set as the last error. `host` is
-/// the host's bytes and the NUL that ends them (`std::string::c_str()`): a resolver
-/// reads it up to its first NUL. `resolve` looks up a host that is no IP literal
-/// with `gethostbyname`.
+/// `Address::assign(kind, host, port, resolve)`: fills `address` and `*length`.
+/// `host` is the host's bytes and the NUL that ends them (`std::string::c_str()`):
+/// a resolver reads it up to its first NUL. `resolve` looks up a host that is no IP
+/// literal with `gethostbyname`.
+///
+/// # Errors
+/// The `SW_ERROR_*` code for the caller to set as the last error.
 pub fn assign(
     address: &mut AddressStorage,
     length: &mut libc::socklen_t,
@@ -80,7 +84,7 @@ pub fn assign(
     host: &[u8],
     port: c_int,
     resolve: bool,
-) -> c_int {
+) -> Result<(), c_int> {
     assign_with(address, length, kind, host, port, |family, name| {
         if !resolve {
             return Err(BAD_HOST_ADDR);
@@ -324,10 +328,10 @@ mod tests {
         let mut length = 0;
         let storage = unsafe { &mut *(&raw mut address).cast::<AddressStorage>() };
         let host = host.to_bytes_with_nul();
-        let error = assign_with(storage, &mut length, kind, host, port, |family, _| {
+        let assigned = assign_with(storage, &mut length, kind, host, port, |family, _| {
             resolve.map_or(Err(BAD_HOST_ADDR), |found| lookup(family, found))
         });
-        (error, address, length)
+        (assigned.err().unwrap_or(0), address, length)
     }
 
     #[test]
@@ -393,8 +397,8 @@ mod tests {
             ..SocketAddress::default()
         };
         let (storage, length) = (&mut address.addr, &mut address.len);
-        let error = super::assign(storage, length, kind, host.to_bytes_with_nul(), 80, false);
-        assert_eq!(error, 0, "{host:?}");
+        let assigned = super::assign(storage, length, kind, host.to_bytes_with_nul(), 80, false);
+        assert_eq!(assigned, Ok(()), "{host:?}");
         address
     }
 

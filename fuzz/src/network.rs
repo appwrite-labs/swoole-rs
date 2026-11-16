@@ -107,7 +107,7 @@ pub fn dns_reply(bytes: &[u8]) {
         c_char::MIN != 0,
     );
     let expected = if exchange.pushed.is_empty() { 711 } else { 0 };
-    assert_eq!(result, expected, "reply {reply:?}");
+    assert_eq!(result.err().unwrap_or(0), expected, "reply {reply:?}");
     for text in &exchange.pushed {
         let text = std::str::from_utf8(text).expect("address text");
         text.parse::<IpAddr>().expect("an IP address");
