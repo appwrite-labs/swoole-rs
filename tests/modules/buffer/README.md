@@ -35,7 +35,7 @@ The project-written fixtures are ported there too, with the same inputs and chec
 
 | Command (dev.py phase) | Checks |
 | --- | --- |
-| `string/test_gate.py --archive A --sanitize` (`string-originals`) | `core-tests/src/core/string.cpp` compiled unchanged under GoogleTest: all 23 TESTs on the pin; on the hybrid the two whose subject is still C++ there (`format_1`, `format_2`: `format` is a template in the header). Seven (`ltrim`, `rtrim`, `strnpos`, `strnstr`, `substr_len`, `starts_with`, `ends_with`) test inline helpers that left the hybrid's headers (#2089), so they run on the pin only |
+| `string/test_gate.py --sanitize` (`string-originals`) | `core-tests/src/core/string.cpp` compiled unchanged under GoogleTest: all 23 TESTs, on the pin only. Seven (`ltrim`, `rtrim`, `strnpos`, `strnstr`, `substr_len`, `starts_with`, `ends_with`) test inline helpers that left the hybrid's headers (#2089); `format_1` and `format_2` test the `format` templates, which left `swoole_string.h` once no compiled C++ instantiated them (#4310) |
 
 `swoole::String`'s methods are Rust. The other fourteen TESTs are ported to
 `string/originals.rs` (`cargo test -p swoole-rs-buffer`), one Rust test per `TEST`, each C++
@@ -67,7 +67,7 @@ The project-written `compatibility.cc` consumer is ported there too:
 The header declares only what C++ still calls or a fixture links: the sized constructor,
 copy and move construction, the destructor, `substr`, `extend`, `reserve`,
 `release`, `append` (bytes and `int`), `append_random_bytes` (the http server fixture
-links it), `write(String)`, `print`, `pop`, `reduce` and the `format` templates. Assignment is
+links it), `write(String)`, `print`, `pop` and `reduce`. Assignment is
 deleted; the byte-pointer constructor, `set_null_terminated`, `grow`, `repeat`, `contains`, `starts_with`,
 `ends_with`, `equals`, `append(String)`, `write(bytes)` and `split` have no C++ caller and
 no symbol: Rust uses `CppString`'s methods and its `view()`.

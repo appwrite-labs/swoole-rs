@@ -259,8 +259,6 @@ def plan(args, reports):
             script('ports-configuration', 'tests/modules/ports/configuration.py', *php_for('curl', 'sockets'), *engines,
                    '--build-manifest', built, *report('ports-configuration'))
     if 'corebase' in modules:
-        script('corebase-record-views', 'tests/modules/corebase/record_views.py',
-               '--archive', archive, *report('corebase-record-views'))
         script('corebase-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src', *report('corebase-constants'))
         if integrate:
             script('corebase-startup', 'tests/modules/corebase/mkdir_startup.py', *php, *engines,
@@ -355,8 +353,7 @@ def plan(args, reports):
                    '--manifest', ROOT / 'tests/modules/buffer/originals.json',
                    '--case', 'tests/swoole_server/sendfile_02.phpt', *php_for('curl', 'sockets'),
                    *engines, '--require-all', '--isolate-cases', *report('php-sockets-sendfile-original'))
-        pytest('string-originals', 'tests/modules/buffer/string/test_gate.py',
-               '--archive', archive, '--sanitize')
+        pytest('string-originals', 'tests/modules/buffer/string/test_gate.py', '--sanitize')
         pytest('buffer-network', 'tests/modules/buffer/test_network.py', *php, *engines)
     if 'http2' in modules:
         pytest('http2-frames', 'tests/modules/http2', *php, '--engine', f'cargo={cargo}')

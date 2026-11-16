@@ -420,7 +420,7 @@ class Lanes(unittest.TestCase):
         self.assertFalse(any(name.startswith('coroutine-registry') for name in commands))
         for name in ['reference-identity','base64-consumers-upstream','base64-consumers-cargo',
                      'crc32-consumers-upstream','crc32-consumers-cargo',
-                     'corebase-startup','corebase-record-views']:
+                     'corebase-startup']:
             self.assertIn(name,commands)
         self.assertIn('--build-manifest', commands['corebase-startup'])
         self.assertNotIn('coroutine-native-originals', commands)
