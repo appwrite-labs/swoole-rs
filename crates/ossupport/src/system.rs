@@ -40,6 +40,19 @@ unsafe extern "C" {
     #[cfg(not(target_vendor = "apple"))]
     #[link_name = "pthread_setname_np"]
     safe fn pthread_setname(thread: CurrentThread, name: Text<'_>) -> c_int;
+    /// Stores a live thread's policy and parameters: 0 or an error number.
+    safe fn pthread_getschedparam(
+        thread: CurrentThread,
+        policy: &mut c_int,
+        param: &mut libc::sched_param,
+    ) -> c_int;
+    /// Sets a live thread's policy and parameters: 0 or an error number; a policy or
+    /// priority the thread can't take is one.
+    safe fn pthread_setschedparam(
+        thread: CurrentThread,
+        policy: c_int,
+        param: &libc::sched_param,
+    ) -> c_int;
 }
 
 #[must_use]
@@ -268,6 +281,18 @@ impl CurrentThread {
     #[must_use]
     pub fn get() -> Self {
         Self(libc_pthread_self(), std::marker::PhantomData)
+    }
+
+    /// `pthread_getschedparam`: whether it filled `policy` and `param`.
+    #[must_use]
+    pub fn get_sched(self, policy: &mut c_int, param: &mut libc::sched_param) -> bool {
+        pthread_getschedparam(self, policy, param) == 0
+    }
+
+    /// `pthread_setschedparam`: whether the thread took `policy` and `param`.
+    #[must_use]
+    pub fn set_sched(self, policy: c_int, param: &libc::sched_param) -> bool {
+        pthread_setschedparam(self, policy, param) == 0
     }
 }
 
