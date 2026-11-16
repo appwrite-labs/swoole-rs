@@ -21,6 +21,7 @@ struct swr_v1_coroutine {
     void *task, *cancel_fn;
     swr_v1_coroutine *origin, *first_child, *prev_sibling, *next_sibling;
     long init_msec, switch_usec, execute_usec;
+    uint64_t parks; /* odd while parked; each park's own value */
 };
 typedef struct {
     swr_v1_coroutine *current;

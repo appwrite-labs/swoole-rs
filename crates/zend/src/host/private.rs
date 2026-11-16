@@ -1,7 +1,7 @@
 //! Shared object/property and callback custody operations for native PHP callers.
 use crate::{
     Owned, bailout,
-    sys::{self, zend_fcall_info, zend_fcall_info_cache, zend_object, zval},
+    sys::{self, zend_fcall_info_cache, zend_object, zval},
 };
 use std::{
     ffi::{CStr, c_int, c_long, c_void},
@@ -122,11 +122,11 @@ pub(super) fn callable_warning(message: &CStr) {
 /// bailed out (the bailout deferred). An unresolved cache is reported as a bad
 /// function.
 pub(super) fn direct_call(
-    Callee(cache, _): Callee<'_>,
+    callee: Callee<'_>,
     args: crate::zval::Zvals<'_>,
     retval: Option<&crate::Value>,
 ) -> bool {
-    let mut call = crate::EMPTY_FCI;
+    let cache = callee.0;
     // The call's result when the caller wants none; undefined otherwise.
     let temporary = Owned::default();
     // SAFETY: a non-null cache is a callable's, which keeps it initialised
@@ -135,12 +135,8 @@ pub(super) fn direct_call(
         callable_warning(c"Bad function");
         return false;
     }
-    call.size = size_of::<zend_fcall_info>();
-    call.retval = retval.unwrap_or(&temporary).as_ptr();
-    call.param_count = args.argc();
-    call.params = args.argv();
-    // SAFETY: initialized frame/cache/arguments; no Rust borrow spans invocation.
-    let result = unsafe { bailout::call(&raw mut call, cache) };
+    // No Rust borrow spans the call.
+    let result = bailout::call(callee, args, None, retval.unwrap_or(&temporary));
     let result = match result {
         Ok(ran) => ran,
         Err(error) => {
@@ -203,6 +199,17 @@ pub struct Callee<'a>(
     pub(crate) *mut zend_fcall_info_cache,
     pub(crate) std::marker::PhantomData<&'a zend_fcall_info_cache>,
 );
+
+impl Callee<'_> {
+    /// The cache at `cache`, lent for a call.
+    /// # Safety
+    /// `cache` is null, or the resolved (or empty) cache of a callable whose
+    /// owner keeps it for the borrow, as [`super::Callable::cache_ptr`] lends one.
+    #[must_use]
+    pub unsafe fn from_raw(cache: *mut zend_fcall_info_cache) -> Self {
+        Self(cache, std::marker::PhantomData)
+    }
+}
 
 /// Invoke directly or create a coroutine, preserving the immediate fatal-exception check;
 /// in a coroutine, then `then`. The call writes its result into `retval`, in place of

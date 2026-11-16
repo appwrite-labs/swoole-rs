@@ -35,12 +35,11 @@ unsafe extern "C" {
 /// `SW_ERROR_WRONG_OPERATION`.
 const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 
-/// `f` over the process's server (`sw_server()`), or `None` while it has none.
-/// Each `f` here reads the server's config and worker records and returns; none
-/// drops the server's last share, and the view can't outlive the call.
+/// `f` over the process's server (`sw_server()`), or `None` while it has none,
+/// through a share that keeps it live while `f` runs. Every caller is a setup
+/// path (a Process's construction, a loop's or a signal's first use).
 fn with_server<R>(f: impl FnOnce(view::Server<'_>) -> R) -> Option<R> {
-    // SAFETY: nothing deletes the server while `f`, a read, runs.
-    unsafe { view::Server::current() }.map(f)
+    swoole_rs_server::SharedServer::current().map(|share| f(share.view()))
 }
 
 /// Why this process may not construct a Process.

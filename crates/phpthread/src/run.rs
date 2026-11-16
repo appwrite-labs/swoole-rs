@@ -376,11 +376,9 @@ pub fn main_script() -> Option<CString> {
 }
 
 /// RINIT: the main thread keeps its script path and `$argv` for new threads.
-/// # Safety
-/// RINIT.
-pub unsafe extern "C" fn thread_rinit() {
+pub fn thread_rinit(_request: swoole_rs_zend::Request<'_>) {
     unsafe extern "C" {
-        /// In RINIT, which this function's contract is: SAPI's script path and
+        /// In RINIT, which this function's `Request` stands for: SAPI's script path and
         /// `argc`, and `$argv`, each live for the request, or none.
         safe fn swr_zend_thread_main_request<'r>(
             path: &mut Option<Text<'r>>,

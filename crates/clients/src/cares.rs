@@ -69,7 +69,9 @@ mod co {
     use std::ffi::c_long;
     use swoole_rs_coroutine::State;
 
-    pub(super) use swoole_rs_coroutine::{Resume, current_cid, resume, yield_resumed, yield_timed};
+    pub(super) use swoole_rs_coroutine::{
+        Resume, Waker, current_cid, yield_resumed, yield_timed_armed,
+    };
 
     /// `Coroutine::get_current_safe()`.
     pub(super) use swoole_rs_coroutine::current_safe as current;
@@ -89,8 +91,9 @@ struct Query {
     channel: OnceCell<sdk::OwnedChannel>,
     error: Cell<i32>,
     completed: Cell<bool>,
-    /// The coroutine to resume, null once a completion is queued.
-    coroutine: Cell<*mut c_void>,
+    /// The parked coroutine's waker, which its park stores; none before it parks
+    /// and once a completion is queued.
+    waker: Cell<Option<co::Waker>>,
     /// The query's coroutine's id, which the coroutine crate looks up.
     cid: c_long,
     retired: Arc<AtomicBool>,
@@ -101,17 +104,17 @@ struct Query {
 }
 struct Completion {
     retired: Arc<AtomicBool>,
-    coroutine: *mut c_void,
-    resume: unsafe extern "C-unwind" fn(*mut c_void),
+    waker: co::Waker,
+    resume: fn(co::Waker),
 }
 /// The deferred resume: the reactor runs it after the pass, unless the query
 /// retired first, or drops it if the reactor is freed first.
 impl event_api::Deferred for Completion {
     fn run(self) {
         if !self.retired.load(Ordering::Relaxed) {
-            // SAFETY: a query is retired before its coroutine may end, so a live
-            // query's coroutine is still parked waiting for this resume.
-            unsafe { (self.resume)(self.coroutine) };
+            // A query is retired before its coroutine may end, so a live query's
+            // coroutine is still parked waiting for this resume.
+            (self.resume)(self.waker);
         }
     }
     fn dispose(self) {}
@@ -229,22 +232,22 @@ extern "C" fn host(query: &Query, status: i32, timeouts: i32, entry: Option<Host
             query.results.set(results);
         }
     }
-    let coroutine = query.coroutine.get();
-    // A nonnull identity is the query's original coroutine, which waits for this
+    let waker = query.waker.get();
+    // A waker is the query's original coroutine's park, which waits for this
     // completion while suspended.
-    if !coroutine.is_null() && co::suspending(query.cid) {
+    if let Some(waker) = waker.filter(|_| co::suspending(query.cid)) {
         let retired = query.retired.clone();
         let task = Completion {
             retired,
-            coroutine,
-            resume: co::resume,
+            waker,
+            resume: co::Waker::wake,
         };
         // c-ares runs on a thread whose reactor is live.
         if event_api::swoole_event_defer_value(task).is_err() {
             swoole_rs_corebase::fatal("c-ares finished on a thread with no reactor");
         }
         // A completion was queued, so further SDK callbacks cannot enqueue it again.
-        query.coroutine.set(ptr::null_mut());
+        query.waker.set(None);
     } else {
         // Synchronous completion is recorded before the initiating SDK call returns.
         query.completed.set(true);
@@ -273,7 +276,7 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
         channel: OnceCell::new(),
         error: Cell::new(0),
         completed: Cell::new(false),
-        coroutine: Cell::new(coroutine),
+        waker: Cell::new(None),
         cid: co::current_cid(),
         retired: Arc::new(AtomicBool::new(false)),
         sockets: Cell::new(Vec::new()),
@@ -321,7 +324,8 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
             // `co->yield_ex(timeout)` of the query's coroutine, which is the running
             // one; no Rust reference spans the suspension. The code is the resume code
             // the coroutine holds as it runs again.
-            let code = co::yield_timed(coroutine, timeout);
+            let arm = |waker| query.waker.set(Some(waker));
+            let code = co::yield_timed_armed(coroutine, timeout, arm);
             _ = co::yield_resumed(code);
             if code == co::Resume::Canceled {
                 // Runs only callbacks on this live query, synchronously.
@@ -371,13 +375,13 @@ mod tests {
     thread_local! {
         static RESUMED: Cell<usize> = const { Cell::new(0) };
     }
-    unsafe extern "C-unwind" fn count_resume(_: *mut c_void) {
+    fn count_resume(_: co::Waker) {
         RESUMED.set(RESUMED.get() + 1);
     }
     fn completion(retired: &Arc<AtomicBool>) -> Completion {
         Completion {
             retired: retired.clone(),
-            coroutine: ptr::null_mut(),
+            waker: co::Waker::NONE,
             resume: count_resume,
         }
     }

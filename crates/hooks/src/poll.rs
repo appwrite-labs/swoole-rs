@@ -3,10 +3,12 @@
 //! each fd is registered with the reactor, the coroutine parks, and the first
 //! readiness or the timer wakes it once. [`NATIVE`] registers with the reactor, arms
 //! the timer and parks; tests pass their own [`PollOps`].
+use crate::resolve::WakerSlot;
 use crate::wait_event::{from_poll, to_poll};
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use swoole_rs_coroutine::Waker;
 use swoole_rs_reactor::Events;
 
 /// Why no descriptor became ready.
@@ -41,8 +43,8 @@ pub struct PollOps<S> {
     timer_add: fn(f64, Registered) -> Option<Timer>,
     /// `Coroutine::get_current_safe()`.
     current: extern "C" fn() -> *mut c_void,
-    /// `co->yield()`.
-    park: fn(),
+    /// `co->yield()`, its waker stored first.
+    park: fn(&WakerSlot),
     /// What the readiness and timer callbacks do.
     wake: Wake,
 }
@@ -90,7 +92,8 @@ impl<S> Sockets for Vec<Cell<Option<S>>> {
 pub struct Task<'a> {
     fds: &'a [Cell<PollFd>],
     sockets: &'a dyn Sockets,
-    co: *mut c_void,
+    /// The parked coroutine's waker, which the park stores.
+    waker: WakerSlot,
     timer: Cell<Option<Timer>>,
     success: Cell<bool>,
     wait: Cell<bool>,
@@ -98,11 +101,11 @@ pub struct Task<'a> {
 }
 
 impl Task<'_> {
-    /// Unregisters the sockets: the coroutine to resume once this borrow ends, as
-    /// resuming it returns from the poll and pops the task.
-    fn finish(&self) -> *mut c_void {
+    /// Unregisters the sockets: the coroutine to wake once this borrow ends, as
+    /// waking it returns from the poll and pops the task.
+    fn finish(&self) -> Option<Waker> {
         self.sockets.clean();
-        self.co
+        self.waker.get()
     }
 }
 
@@ -137,13 +140,13 @@ pub fn ready(task: &Task<'_>, fd: i32, event: Events) {
 /// The deferred wake after the first readiness: the coroutine to resume once the
 /// borrow of `task` ends.
 #[must_use]
-pub fn completed(task: &Task<'_>) -> *mut c_void {
+pub fn completed(task: &Task<'_>) -> Option<Waker> {
     task.finish()
 }
 
 /// The poll's timer fired: the coroutine to resume once the borrow of `task` ends.
 #[must_use]
-pub fn timeout(task: &Task<'_>) -> *mut c_void {
+pub fn timeout(task: &Task<'_>) -> Option<Waker> {
     task.timer.set(None);
     task.success.set(false);
     task.wait.set(false);
@@ -177,10 +180,12 @@ fn poll_sockets<S>(fds: &[Cell<PollFd>], timeout: f64, ops: &PollOps<S>) -> Resu
         return poll_now(fds);
     }
     let sockets: Vec<Cell<Option<S>>> = fds.iter().map(|_| Cell::new(None)).collect();
+    // Fatal outside a coroutine.
+    (ops.current)();
     let task = Task {
         fds,
         sockets: &sockets,
-        co: (ops.current)(),
+        waker: WakerSlot::new(None),
         timer: Cell::new(None),
         success: Cell::new(false),
         wait: Cell::new(true),
@@ -202,8 +207,8 @@ fn poll_sockets<S>(fds: &[Cell<PollFd>], timeout: f64, ops: &PollOps<S>) -> Resu
         // The timer is deleted or fires before the coroutine resumes.
         task.timer.set((ops.timer_add)(timeout, registered));
     }
-    // Callbacks reach `task` while `co` is parked.
-    (ops.park)();
+    // Callbacks reach `task` while the coroutine is parked.
+    (ops.park)(&task.waker);
     if task.success.get() {
         Ok(())
     } else {
@@ -332,7 +337,7 @@ pub static NATIVE: PollOps<crate::wait_event::Watch> = PollOps {
 pub(crate) mod native {
     use super::{Events, Registered, Timer};
     use crate::wait_event::native::{Object, Watch};
-    use swoole_rs_coroutine::resume;
+    use swoole_rs_coroutine::Waker;
     use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
 
     use swoole_rs_timer::{add_fn_sec, del_id};
@@ -347,12 +352,14 @@ pub(crate) mod native {
 
     /// A parked poll's wake-up, by its timer or its deferred completion: `pick` ends
     /// the wait over the task and names its coroutine, which resumes.
-    fn wake(task: Registered, pick: impl FnOnce(&super::Task<'_>) -> *mut core::ffi::c_void) {
+    fn wake(task: Registered, pick: impl FnOnce(&super::Task<'_>) -> Option<Waker>) {
         // SAFETY: `Registered`'s invariant: the task is live and in place until its
         // timer has fired or been deleted and its deferred wake has run.
-        let co = pick(unsafe { task.0.as_ref() });
-        // SAFETY: the poll's parked coroutine; nothing borrows its task now.
-        unsafe { resume(co) };
+        let waker = pick(unsafe { task.0.as_ref() });
+        // Nothing borrows the task now.
+        if let Some(waker) = waker {
+            waker.wake();
+        }
     }
 
     pub(super) fn timer_del(Timer(timer): Timer) {
@@ -443,8 +450,9 @@ mod tests {
         std::ptr::dangling_mut()
     }
     /// The reactor runs while parked: fire an event (or the timer), then the defer.
-    fn park() {
+    fn park(waker: &WakerSlot) {
         log("park".into());
+        waker.set(Some(Waker::NONE));
         let task = unsafe { TASK.get().unwrap().0.as_ref() };
         let co = match FIRE.get() {
             Some((fd, event)) => {
@@ -454,9 +462,9 @@ mod tests {
             }
             None => timeout(task),
         };
-        resume(co);
+        resume(co.unwrap());
     }
-    fn resume(_: *mut c_void) {
+    fn resume(_: Waker) {
         log("resume".into());
     }
     pub(super) const OPS: PollOps<Socket> = PollOps {
@@ -491,7 +499,7 @@ mod tests {
             let task = Box::into_raw(Box::new(Task {
                 fds: std::slice::from_ref(&row),
                 sockets: &sockets,
-                co: std::ptr::null_mut(),
+                waker: WakerSlot::new(None),
                 timer: Cell::new(None),
                 success: Cell::new(true),
                 wait: Cell::new(false),
@@ -500,7 +508,7 @@ mod tests {
             let co = wake(unsafe { &*task });
             // The resume.
             drop(unsafe { Box::from_raw(task) });
-            assert!(co.is_null());
+            assert!(co.is_none());
         }
     }
 
@@ -714,7 +722,7 @@ mod tests {
             let task = Task {
                 fds: std::slice::from_ref(&row),
                 sockets: &sockets,
-                co: std::ptr::null_mut(),
+                waker: WakerSlot::new(None),
                 timer: Cell::new(timer.then_some(Timer(FAKE_TIMER))),
                 success: Cell::new(false),
                 wait: Cell::new(wait),

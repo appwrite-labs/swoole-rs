@@ -84,10 +84,14 @@ pub(crate) mod host {
     pub(crate) fn current_cid() -> c_long {
         -1
     }
-    pub(crate) fn yield_(_co: *mut c_void, _timeout: f64) -> bool {
+    pub(crate) fn yield_(
+        _co: *mut c_void,
+        _timeout: f64,
+        _arm: impl FnOnce(swoole_rs_coroutine::Waker),
+    ) -> bool {
         false
     }
-    pub(crate) unsafe fn resume(_co: *mut c_void) {}
+    pub(crate) fn wake(_waker: swoole_rs_coroutine::Waker) {}
     /// Holds a reference for the wake-up, as the real one does; the test's
     /// `free` plays the wake-up's release of it.
     pub(crate) fn defer(multi: &Multi) {

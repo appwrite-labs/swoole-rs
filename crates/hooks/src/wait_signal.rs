@@ -2,11 +2,13 @@
 //! `signals` arrives. The listener table, the wake-up handler and [`NATIVE`]'s signal
 //! registration, reactor exit condition and coroutine operations are here; tests
 //! pass their own `SignalOps`.
+use crate::resolve::WakerSlot;
 use std::cell::Cell;
 use std::ffi::{c_long, c_void};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, Ordering::Relaxed};
 use swoole_rs_corebase::CCast;
+use swoole_rs_coroutine::Waker;
 use swoole_rs_reactor::signal_upstream::Handler;
 
 /// `SW_SIGNO_MAX`.
@@ -16,7 +18,8 @@ const WRONG_OPERATION: i32 = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATIO
 
 /// A coroutine waiting for a signal (upstream's `SignalListener`).
 struct Listener {
-    co: *mut c_void,
+    /// The parked coroutine's waker, which its park stores.
+    waker: WakerSlot,
     /// The wait's operations, whose `resume` the signal handler calls.
     ops: &'static SignalOps,
     signo: Cell<Option<i32>>,
@@ -41,10 +44,11 @@ struct SignalOps {
     listen: fn(i32, &Rc<Records>, bool) -> bool,
     /// The reactor exit condition and `signal_async_listener_num++` (true), or `--`.
     waiting: fn(bool),
-    /// `co->yield_ex(timeout)`: false on timeout or cancellation.
-    yield_for: fn(f64) -> bool,
+    /// `co->yield_ex(timeout)`, its waker stored first: false on timeout or
+    /// cancellation.
+    yield_for: fn(f64, &WakerSlot) -> bool,
     /// `co->resume()` of a parked coroutine.
-    resume: unsafe extern "C-unwind" fn(*mut c_void),
+    resume: fn(Waker),
 }
 
 /// A signal's handler from before a wait installed its own (upstream's `PreviousSignal`).
@@ -134,9 +138,9 @@ pub extern "C" fn swr_v1_hook_signal_wake(signo: i32) {
         return;
     };
     waiting.signo.set(Some(signo));
-    // SAFETY: the listener's coroutine, parked in `wait_signal`, which unpublishes
-    // every slot before it returns.
-    unsafe { (waiting.ops.resume)(waiting.co) };
+    if let Some(waker) = waiting.waker.get() {
+        (waiting.ops.resume)(waker);
+    }
 }
 
 /// `signo` as upstream's `std::vector<int>` holds it.
@@ -170,9 +174,10 @@ fn wait_signal(
     timeout: f64,
     ops: &'static SignalOps,
 ) -> Result<i32, SignalWaitError> {
-    let co = (ops.current)();
+    // Fatal outside a coroutine.
+    (ops.current)();
     let waiting = Rc::new(Listener {
-        co,
+        waker: WakerSlot::new(None),
         ops,
         signo: Cell::new(None),
     });
@@ -202,7 +207,7 @@ fn wait_signal(
     if listening {
         (ops.waiting)(true);
     }
-    let woken = listening && (ops.yield_for)(timeout);
+    let woken = listening && (ops.yield_for)(timeout, &waiting.waker);
     // However the wait ended, no signal wakes it any more.
     drop(published);
     for signo in signals {
@@ -233,8 +238,8 @@ static NATIVE: SignalOps = SignalOps {
     busy: native::busy,
     listen: native::listen,
     waiting: native::waiting,
-    yield_for: crate::resolve::park_for,
-    resume: swoole_rs_coroutine::resume,
+    yield_for: crate::resolve::park_for_armed,
+    resume: Waker::wake,
 };
 
 mod native {
@@ -384,19 +389,20 @@ mod tests {
         log(format!("waiting {on}"));
     }
     /// Stands in for a park during which SIGUSR2 arrives.
-    fn signalled(_: f64) -> bool {
+    fn signalled(_: f64, waker: &WakerSlot) -> bool {
+        waker.set(Some(Waker::NONE));
         swr_v1_hook_signal_wake(libc::SIGUSR2);
         swr_v1_hook_signal_wake(libc::SIGUSR2);
         true
     }
-    fn timed_out(_: f64) -> bool {
+    fn timed_out(_: f64, _: &WakerSlot) -> bool {
         false
     }
-    extern "C-unwind" fn resume(_: *mut c_void) {
+    fn resume(_: Waker) {
         log("resume".into());
     }
 
-    const fn ops(busy_check: fn() -> bool, park: fn(f64) -> bool) -> SignalOps {
+    const fn ops(busy_check: fn() -> bool, park: fn(f64, &WakerSlot) -> bool) -> SignalOps {
         SignalOps {
             current,
             busy: busy_check,

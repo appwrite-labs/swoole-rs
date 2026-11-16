@@ -20,12 +20,12 @@ use std::{
 use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_zend::{
     Call, E_WARNING, Owned, ZStr, ZString, bailout,
-    host::callable::Callable,
+    host::{Callee, callable::Callable},
     sys::{
         PHP_VERSION_ID, ZEND_ACC_FAKE_CLOSURE, swr_zend_runtime_call_handler,
         swr_zend_runtime_copy_arginfo, swr_zend_runtime_disabled, swr_zend_runtime_free_arginfo,
-        swr_zend_runtime_unsupported, zend_class_entry, zend_execute_data, zend_fcall_info,
-        zend_internal_arg_info, zend_internal_function, zif_handler, zval,
+        swr_zend_runtime_unsupported, zend_class_entry, zend_execute_data, zend_internal_arg_info,
+        zend_internal_function, zif_handler, zval,
     },
 };
 
@@ -421,14 +421,10 @@ pub(crate) fn user_func(call: &Call) -> Result<(), Bailout> {
         throw(&message, SW_ERROR_UNDEFINED_BEHAVIOR);
         return Ok(());
     };
-    let mut fci = swoole_rs_zend::EMPTY_FCI;
-    fci.size = size_of::<zend_fcall_info>();
-    fci.retval = value;
-    fci.param_count = call.num_args();
-    fci.params = call.zval(1);
-    // SAFETY: the frame's arguments and return slot, and the cache of a resolved
-    // callable its record keeps until RSHUTDOWN.
-    unsafe { bailout::call(&raw mut fci, fcc) }.map(|_| ())
+    // SAFETY: the cache of a resolved callable its record keeps until RSHUTDOWN.
+    let callee = unsafe { Callee::from_raw(fcc) };
+    // The frame's arguments and return slot, handed on.
+    bailout::call(callee, call.args(), None, call.ret()).map(|_| ())
 }
 
 /// A class Zend's class table held when [`ClassRef::lookup`] or
