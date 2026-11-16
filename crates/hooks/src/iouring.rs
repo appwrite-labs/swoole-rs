@@ -222,7 +222,7 @@ fn waitpid(
     options: c_int,
     timeout: f64,
 ) -> libc::pid_t {
-    uring::waitpid(&HOST, pid, status, options, timeout)
+    uring::waitpid(&HOST, pid, status, options, timeout).unwrap_or(-1)
 }
 
 /// The thread's engine, or none before the first request (`SwooleTG.iouring`).
@@ -254,12 +254,12 @@ pub fn stats() -> Option<(u32, usize, f32)> {
 /// it failed (upstream's nonzero).
 #[must_use]
 pub fn futex_wait(word: &AtomicU32) -> bool {
-    uring::futex_wait(&HOST, word) == 0
+    uring::futex_wait(&HOST, word).is_ok_and(|count| count == 0)
 }
 
 /// `Iouring::futex_wakeup` on `word`, in a coroutine: false with errno set when
 /// it failed (upstream's negative).
 #[must_use]
 pub fn futex_wakeup(word: &AtomicU32) -> bool {
-    uring::futex_wakeup(&HOST, word) >= 0
+    uring::futex_wakeup(&HOST, word).is_ok()
 }
