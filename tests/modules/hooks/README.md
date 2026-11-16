@@ -470,3 +470,10 @@ and descriptor adoption. TLS sendfile reports an optional `TlsWarning` alongside
 completed bytes; the original scripted cases retain read/write warnings, retry,
 EOF, zero-send and partial-progress expectations. Ring sendfile completion compares
 unsigned byte counts without a negative error sentinel.
+
+The cURL multi-engine tests in `curl.rs` inject recording host operations into
+`Multi`. Both builds compile the native reactor/coroutine and PHP adapters and
+share the owned reactor socket implementation. Existing cases cover libcurl's
+socket registration, event coalescing, waiterless removal, queued wake-up release,
+handle reset and timer cancellation. A native socket ownership case also verifies
+that freeing a watch twice leaves the libcurl-owned descriptor open.

@@ -26,15 +26,7 @@ pub extern "C" fn sw_spinlock(lock: Option<&AtomicU32>) {
     unsafe(export_name = "_Z20sw_atomic_futex_waitPVjd")
 )]
 pub extern "C" fn sw_atomic_futex_wait(atomic: Option<&AtomicU32>, timeout: f64) -> c_int {
-    #[cfg(target_os = "linux")]
-    {
-        crate::swr_v1_utils_wait(atomic, timeout)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        crate::wait_registry::atomic(atomic)
-            .map_or_else(|e| e, |word| if futex_wait(word, timeout) { 0 } else { -1 })
-    }
+    word(atomic).map_or_else(|e| e, |word| if futex_wait(word, timeout) { 0 } else { -1 })
 }
 
 /// `int sw_atomic_futex_wakeup(sw_atomic_t *atomic, int n)`: the waiters woken.
@@ -44,19 +36,24 @@ pub extern "C" fn sw_atomic_futex_wait(atomic: Option<&AtomicU32>, timeout: f64)
     unsafe(export_name = "_Z22sw_atomic_futex_wakeupPVji")
 )]
 pub extern "C" fn sw_atomic_futex_wakeup(atomic: Option<&AtomicU32>, n: c_int) -> c_int {
+    word(atomic).map_or_else(
+        |e| e,
+        |word| {
+            futex_wakeup(word, n).map_or(-1, |woken| c_int::try_from(woken).unwrap_or(c_int::MAX))
+        },
+    )
+}
+
+/// The word a wait or wake takes: -1 for none, which records `EINVAL` as the last error
+/// where the registry stands in for the futex.
+fn word(atomic: Option<&AtomicU32>) -> Result<&AtomicU32, c_int> {
     #[cfg(target_os = "linux")]
     {
-        crate::swr_v1_utils_wakeup(atomic, n)
+        atomic.ok_or(-1)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        crate::wait_registry::atomic(atomic).map_or_else(
-            |e| e,
-            |word| {
-                futex_wakeup(word, n)
-                    .map_or(-1, |woken| c_int::try_from(woken).unwrap_or(c_int::MAX))
-            },
-        )
+        crate::wait_registry::atomic(atomic)
     }
 }
 

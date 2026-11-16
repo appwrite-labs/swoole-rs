@@ -384,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn close_notifies_the_worker_unless_the_close_is_queued() {
         let (live, _clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
@@ -406,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn close_closes_a_socket_already_out_of_the_reactor() {
         let (live, _clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
@@ -418,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn heartbeat_closes_or_notifies_idle_connections() {
         let (live, _clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());

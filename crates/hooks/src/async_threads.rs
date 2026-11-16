@@ -268,9 +268,8 @@ fn create() -> *mut AsyncThreads {
 
 /// The thread's pool, created first when it has none: null, with the last error
 /// set, when that fails.
-#[unsafe(no_mangle)]
 #[must_use]
-pub extern "C" fn swr_v1_async_threads_ensure() -> *mut AsyncThreads {
+pub fn ensure() -> *mut AsyncThreads {
     let threads = thread_async_threads().cast::<AsyncThreads>();
     if threads.is_null() { create() } else { threads }
 }
@@ -283,7 +282,7 @@ pub extern "C" fn swr_v1_async_threads_ensure() -> *mut AsyncThreads {
 )]
 #[must_use]
 pub extern "C" fn dispatch(request: &AsyncEvent) -> *mut AsyncEvent {
-    if swr_v1_async_threads_ensure().is_null() {
+    if ensure().is_null() {
         return ptr::null_mut();
     }
     let mut fields = request.clone();
