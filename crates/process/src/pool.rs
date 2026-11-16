@@ -1135,8 +1135,18 @@ mod tests {
     struct Scripted;
 
     impl PoolNative for Scripted {
-        fn call(&self, _: &PoolCall, _: crate::process_pool::Op, _: u64) -> i64 {
-            0
+        fn call(&self, _: &PoolCall, _: crate::process_pool::Op, _: u64) {}
+        fn event_init(&self, _: &PoolCall) -> bool {
+            unreachable!("loop-only fixture")
+        }
+        fn event_available(&self) -> bool {
+            unreachable!("loop-only fixture")
+        }
+        fn event_wait(&self) -> c_int {
+            unreachable!("loop-only fixture")
+        }
+        fn waitpid(&self, _: c_int) -> bool {
+            unreachable!("loop-only fixture")
         }
         fn new_pipe(&self, _: &PoolCall) -> Result<(), crate::process_pool::PipeError> {
             unreachable!("loop-only fixture")
