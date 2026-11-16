@@ -12,11 +12,11 @@ use std::{
     borrow::Cow,
     cell::Cell,
     ffi::{CStr, c_int},
-    mem::MaybeUninit,
     ptr,
     sync::Arc,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
+use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING};
 use swoole_rs_corebase::{CCast, WebSocketStatus};
 use swoole_rs_phpruntime::co;
@@ -27,8 +27,7 @@ use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_websocket::{
     DecodeErrorKind, DecodedFrame, Delivery, EncodeError, FrameFlags, FrameMetadata, Opcode,
-    control_invalid, encode_close_into, encode_into, encoded_size, header, message_policy,
-    pack_policy,
+    control_invalid, encode_close, encode_frame, encoded_size, header, message_policy, pack_policy,
 };
 use swoole_rs_zend::{
     Array, Call, Class, Declared, Minit, Owned, Value, ZStr, ZString, bailout, handlers,
@@ -463,17 +462,14 @@ const INLINE: usize = 128;
 
 /// An encoded frame, on the stack when it fits.
 pub(crate) enum Frame {
-    Inline([MaybeUninit<u8>; INLINE], usize),
+    Inline([u8; INLINE], usize),
     Heap(ZString),
 }
 
 impl Frame {
     pub(crate) fn bytes(&self) -> &[u8] {
         match self {
-            Self::Inline(buffer, size) => buffer.get(..*size).map_or(&[], |bytes| {
-                // SAFETY: `encoded` keeps an inline frame only once `size` bytes are written.
-                unsafe { bytes.assume_init_ref() }
-            }),
+            Self::Inline(buffer, size) => buffer.get(..*size).unwrap_or_default(),
             Self::Heap(string) => string.bytes(),
         }
     }
@@ -491,21 +487,16 @@ impl Frame {
 /// `size`.
 fn encoded(
     size: usize,
-    write: impl FnOnce(&mut [MaybeUninit<u8>]) -> Result<usize, EncodeError>,
+    write: impl FnOnce(&mut Spare<'_>) -> Result<usize, EncodeError>,
 ) -> Option<Frame> {
     if size <= INLINE {
-        let mut buffer = [MaybeUninit::uninit(); INLINE];
-        return (write(&mut buffer).ok()? == size).then_some(Frame::Inline(buffer, size));
+        let mut buffer = [0; INLINE];
+        let written = lend_spare(&mut buffer, write).0;
+        return (written.ok()? == size).then_some(Frame::Inline(buffer, size));
     }
     let mut out = string::ZBuf::with_capacity(size);
-    // The fresh string's `size` unwritten bytes.
-    if write(out.spare_capacity_mut()).ok()? != size {
-        // Dropped: the string is freed.
-        return None;
-    }
-    // SAFETY: `write` filled all `size` bytes of the capacity.
-    unsafe { out.set_len(size) };
-    Some(Frame::Heap(out.into_zstring()))
+    // The fresh string's `size` unwritten bytes; dropped, the string is freed.
+    (out.fill(write).ok()? == size).then(|| Frame::Heap(out.into_zstring()))
 }
 
 /// Upstream's encoders fail a masked header-only frame after writing it.
@@ -530,7 +521,9 @@ pub(crate) fn encode(data: &[u8], opcode: u8, flags: u8) -> Option<Frame> {
         return None;
     }
     let size = encoded_size(data.len(), flags).ok()?;
-    let frame = encoded(size, |out| encode_into(data, opcode, flags, out))?;
+    let frame = encoded(size, |out| {
+        encode_frame(data.len(), data, opcode, flags, out)
+    })?;
     (!header_only_mask(flags)).then_some(frame)
 }
 
@@ -557,7 +550,7 @@ fn close_frame(code: i32, reason: &[u8], flags: u8) -> Option<Frame> {
         return None;
     }
     let size = encoded_size(reason.len() + 2, flags.with_final()).ok()?;
-    let frame = encoded(size, |out| encode_close_into(code, reason, flags, out))?;
+    let frame = encoded(size, |out| encode_close(code, reason, flags, out))?;
     (!header_only_mask(flags)).then_some(frame)
 }
 

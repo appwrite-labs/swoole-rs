@@ -97,12 +97,13 @@ pub mod exports {
     use swoole_rs_buffer::string::boxed_string;
     use swoole_rs_clients::protocol::Protocol;
     use swoole_rs_corebase::DataHead;
+    use swoole_rs_corebase::lent::lend_spare;
     use swoole_rs_corebase::net_types::{PacketLength, RecvData};
     use swoole_rs_corebase::{WebSocketStatus, log};
-    use swoole_rs_reactor::{Drain, Socket, SocketRecord};
+    use swoole_rs_reactor::{Socket, SocketRecord};
     use swoole_rs_server::{Connection, view};
     use swoole_rs_websocket::{
-        Action, Context, FrameFlags, Opcode, PolicyError, decide_frame, encode_parts,
+        Action, Context, FrameFlags, Opcode, PolicyError, decide_frame, encode_frame,
     };
     use swoole_rs_websocket_ffi::frame_api::decode_frame;
 
@@ -239,20 +240,13 @@ pub mod exports {
             Action::ClientClose => {
                 task(payload);
                 let mut reply = [MaybeUninit::<u8>::uninit(); CLOSE_REPLY_MAX];
-                let size = payload.and_then(|payload| {
-                    encode_parts(
-                        payload.len(),
-                        payload,
-                        Opcode::Close,
-                        FrameFlags::default().with_final(),
-                        &mut reply,
-                    )
-                    .ok()
-                });
-                if let Some(size) = size {
-                    // SAFETY: the encoded reply's `size` bytes.
-                    let reply = unsafe { Drain::from_raw(reply.as_ptr().cast(), size) };
-                    _ = swoole_rs_tls::upstream::send_drain(s.socket, reply, 0);
+                if let Some(payload) = payload {
+                    lend_spare(&mut reply, |out| {
+                        let close = FrameFlags::default().with_final();
+                        if encode_frame(payload.len(), payload, Opcode::Close, close, out).is_ok() {
+                            _ = swoole_rs_tls::upstream::send(s.socket, out.written(), 0);
+                        }
+                    });
                 }
                 return false;
             }

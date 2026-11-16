@@ -17,6 +17,7 @@ use std::mem::MaybeUninit;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::SocketFlag;
+use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_corebase::sys::Text;
@@ -156,7 +157,8 @@ pub fn socket_ssl_peer_chain_pem(socket: Socket<'_>) -> Vec<Vec<u8>> {
     };
     let mut pem = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
     ssl.each_peer_cert(|cert| {
-        if let Some(bytes) = read_x509(cert, &mut pem).filter(|&n| n > 0) {
+        let read = lend_spare(pem.as_mut_slice(), |spare| read_x509(cert, spare)).0;
+        if let Some(bytes) = read.filter(|&n| n > 0) {
             chain.extend(pem.get(..bytes).map(<[u8]>::to_vec));
         }
     });
@@ -660,13 +662,18 @@ pub fn socket_ssl_peer_certificate_pem(
     socket: Socket<'_>,
     buffer: &mut [impl ReadSlot],
 ) -> Option<usize> {
-    ssl_get_peer_certificate(socket).and_then(|cert| read_x509(cert.get(), buffer))
+    lend_spare(buffer, |spare| peer_certificate_pem(socket, spare)).0
 }
 
-/// `_ssl_read_x509_file` without consuming: the certificate as PEM into `buffer`,
-/// warning as upstream does when a step before the read fails.
-fn read_x509(cert: CertRef<'_>, buffer: &mut [impl ReadSlot]) -> Option<usize> {
-    let step = match cert.pem(buffer) {
+/// [`socket_ssl_peer_certificate_pem`] into `spare`'s room.
+fn peer_certificate_pem(socket: Socket<'_>, spare: &mut Spare<'_>) -> Option<usize> {
+    ssl_get_peer_certificate(socket).and_then(|cert| read_x509(cert.get(), spare))
+}
+
+/// `_ssl_read_x509_file` without consuming: the certificate as PEM into `spare`'s
+/// room, warning as upstream does when a step before the read fails.
+fn read_x509(cert: CertRef<'_>, spare: &mut Spare<'_>) -> Option<usize> {
+    let step = match cert.pem_into(spare) {
         Ok(written) => return Some(written),
         Err(crate::PemError::Read) => return None,
         Err(crate::PemError::Bio) => "BIO_new",
@@ -683,15 +690,9 @@ fn read_x509(cert: CertRef<'_>, buffer: &mut [impl ReadSlot]) -> Option<usize> {
 /// PEM as `buffer`'s content, written from the start of its allocation; false, with
 /// the content's length as it was, without one.
 pub fn socket_ssl_peer_certificate_string(socket: Socket<'_>, buffer: &mut CppString) -> bool {
-    let (at, size) = (buffer.as_mut_ptr(), buffer.size());
-    // SAFETY: the String's allocation of `size` bytes, borrowed with it.
-    let mut bytes = unsafe { Fill::from_raw(at.cast(), size) };
-    let Some(n) = socket_ssl_peer_certificate_pem(socket, bytes.slots()) else {
-        return false;
-    };
-    // SAFETY: the PEM is the allocation's first `n` bytes, written just above.
-    unsafe { buffer.set_len(n) };
-    true
+    buffer
+        .refill(|spare| peer_certificate_pem(socket, spare))
+        .is_some()
 }
 
 /// `Socket::ssl_sendfile` over a descriptor.
