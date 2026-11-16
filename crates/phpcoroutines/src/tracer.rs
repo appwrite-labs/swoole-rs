@@ -11,7 +11,7 @@ use crate::{context, host::now_us, put_back, runtime};
 use std::{
     cell::Cell,
     collections::{BTreeMap, HashMap, hash_map::DefaultHasher},
-    ffi::{CStr, c_long, c_void},
+    ffi::{c_long, c_void},
     hash::BuildHasherDefault,
     io::Write,
     mem::{self, ManuallyDrop},
@@ -29,7 +29,8 @@ use swoole_rs_zend::{
 unsafe extern "C" {
     /// The executing file's NUL-terminated name, which Zend keeps while that
     /// file's code runs, or the static "[no active file]".
-    safe fn zend_get_executed_filename() -> *const std::ffi::c_char;
+    /// Private: only [`file_and_line`] calls it, and copies the name at once.
+    safe fn zend_get_executed_filename<'a>() -> swoole_rs_corebase::sys::Text<'a>;
     /// The line of the innermost user frame, 0 without one.
     safe fn swr_zend_tracer_lineno() -> u32;
     /// `ZEND_WRITE` of the lent bytes (an `IoSlice` is an iovec) inside
@@ -164,9 +165,9 @@ fn coroutine_id() -> c_long {
 /// `tracer_get_file_and_line`: `file:line` of the running user code, or
 /// `None` outside any file.
 fn file_and_line() -> Option<Vec<u8>> {
-    // SAFETY: Zend's NUL-terminated file name ("[no active file]" when idle),
-    // copied below before any PHP code runs.
-    let file = unsafe { CStr::from_ptr(zend_get_executed_filename()) }.to_bytes();
+    // Zend's file name ("[no active file]" when idle), copied below before any
+    // PHP code runs.
+    let file = zend_get_executed_filename().get().to_bytes();
     let line = swr_zend_tracer_lineno();
     if line == 0 && file == b"[no active file]" {
         return None;

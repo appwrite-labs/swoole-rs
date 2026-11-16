@@ -13,6 +13,10 @@ zend_object *swr_zend_object_new(size_t size, size_t offset, zend_class_entry *c
     return std;
 }
 
+bool swr_zend_object_destructor_called(const zend_object *object) {
+    return GC_FLAGS(object) & IS_OBJ_DESTRUCTOR_CALLED;
+}
+
 zend_class_entry *swr_zend_register_class(const char *name, const zend_function_entry *functions,
                                           zend_class_entry *parent) {
     zend_class_entry ce;

@@ -387,14 +387,6 @@ impl Co {
         result
     }
 
-    /// The protocol's address, for the native length callbacks.
-    #[must_use]
-    pub fn protocol_ptr(self) -> *const Protocol {
-        self.0
-            .wrapping_byte_add(offset_of!(CoSocket, protocol))
-            .cast()
-    }
-
     /// `is_closed`.
     #[must_use]
     pub fn is_closed(self) -> bool {

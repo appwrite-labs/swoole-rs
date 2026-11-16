@@ -447,7 +447,7 @@ fn task_worker_on_task(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
         "string(task->data, task->info.len) == packet",
     );
     // SAFETY: the created server's task pool.
-    unsafe { (*serv.task_pool()).running = false };
+    unsafe { (*serv.task_pool()).running.set(false) };
     serv.view()
         .counters()
         .task_count
@@ -473,7 +473,7 @@ fn task_worker() {
         let pool = serv.task_pool();
         // SAFETY: the created server's task pool, its first worker and its main loop.
         unsafe {
-            (*pool).running = true;
+            (*pool).running.set(true);
             PoolRef::new(pool)
                 .call_main_loop(Worker::new((*pool).workers()))
                 .unwrap();
@@ -1101,7 +1101,7 @@ fn primary_port_connection_num(serv: Server) -> usize {
 fn event_pool_read_message(serv: Server) -> bool {
     let pool = serv.task_pool().wrapping_add(1);
     // SAFETY: the running server's event pool, in its shared counters.
-    unsafe { ptr::read_volatile(&raw const (*pool).read_message) }
+    unsafe { ptr::read_volatile((&raw const (*pool).read_message).cast::<bool>()) }
 }
 
 /// Polls `done` every millisecond for up to 3 s, where upstream sleeps a fixed time for

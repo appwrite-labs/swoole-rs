@@ -569,9 +569,7 @@ fn body(n: &mut impl Connection, upload: bool) -> Step {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use core::ffi::{CStr, c_void};
-    use swoole_rs_buffer::string::{delete_string, new_sized_string, new_string};
-    use swoole_rs_http_ffi::NativeOp;
+    use core::ffi::CStr;
 
     /// The effects a [`Fake`] records.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -611,44 +609,6 @@ pub(crate) mod tests {
         sent: Vec<Reply>,
     }
 
-    /// The request's native effects (`swoole_rs_http`'s `HttpNative` ops): Rust's
-    /// `swoole::String`s and libc's files.
-    unsafe extern "C" fn request_native(
-        op: NativeOp,
-        a: *mut c_void,
-        b: *const u8,
-        n: u64,
-        _: u64,
-    ) -> u64 {
-        let length = usize::try_from(n).unwrap();
-        let file = a.cast::<libc::FILE>();
-        match op {
-            // `new String(n)` or `new String(b, n)`.
-            NativeOp::StringNew if b.is_null() => new_sized_string(length, None) as u64,
-            NativeOp::StringNew => {
-                new_string(unsafe { core::slice::from_raw_parts(b, length) }) as u64
-            }
-            NativeOp::StringFree => {
-                unsafe { delete_string(a.cast()) };
-                0
-            }
-            NativeOp::StringAppend => {
-                let data = unsafe { core::slice::from_raw_parts(b, length) };
-                unsafe { &mut *a.cast::<Buffer>() }.append(data);
-                0
-            }
-            NativeOp::Tmpfile => i64::from(unsafe { libc::mkstemp(a.cast()) }).cast_unsigned(),
-            NativeOp::Fdopen => unsafe {
-                libc::fdopen(c_int::try_from(n).unwrap(), c"wb+".as_ptr()) as u64
-            },
-            NativeOp::Fwrite => unsafe { libc::fwrite(b.cast(), 1, length, file) as u64 },
-            NativeOp::Fflush => u64::from(unsafe { libc::fflush(file) } == 0),
-            NativeOp::Fclose => u64::from(unsafe { libc::fclose(file) } == 0),
-            NativeOp::Unlink => u64::from(unsafe { libc::unlink(a.cast()) } == 0),
-            NativeOp::NumberErrors => 0,
-        }
-    }
-
     fn fake(chunks: &[&[u8]]) -> Fake {
         Fake {
             current: core::ptr::null_mut(),
@@ -659,7 +619,7 @@ pub(crate) mod tests {
                 buf.alloc(64, None);
                 buf
             },
-            req: Request::new(Some(request_native)),
+            req: Request::default(),
             incoming: chunks.iter().rev().map(|c| c.to_vec()).collect(),
             request: false,
             max: 1024,
@@ -786,14 +746,14 @@ pub(crate) mod tests {
         fn init_request(&mut self) {
             self.request = true;
             if self.req.buffer.is_null() {
-                self.req.buffer = (&raw mut self.buf).cast();
+                self.req.buffer = &raw mut self.buf;
             }
             self.point();
-            self.current = self.req.buffer.cast();
+            self.current = self.req.buffer;
         }
         fn destroy_request(&mut self) {
             self.request = false;
-            self.req = Request::new(Some(request_native));
+            self.req = Request::default();
             self.point();
         }
         fn request(&mut self) -> &mut Request {
@@ -803,7 +763,7 @@ pub(crate) mod tests {
         fn init_multipart(&mut self) -> bool {
             let upload_max = usize::try_from(self.uploads).unwrap();
             let ok = self.req.init_multipart_parser(b"/tmp", upload_max);
-            self.current = self.req.buffer.cast();
+            self.current = self.req.buffer;
             ok
         }
         fn parse_multipart(&mut self) -> bool {
@@ -811,7 +771,7 @@ pub(crate) mod tests {
         }
         fn finish_multipart(&mut self) {
             self.req.destroy_multipart_parser();
-            self.current = self.req.buffer.cast();
+            self.current = self.req.buffer;
         }
         fn client(&mut self) -> (i64, String, i64) {
             (7, "127.0.0.1".to_owned(), 9501)

@@ -130,8 +130,8 @@ calls PHP code directly where it could bail out:
   `zend_try` that lives in the C shim, and returns `Err(Bailout)` if it bailed.
   It (and `call_method`) calls nothing once a bailout is pending: upstream
   never ran a callback past the first bailout.
-- `zend::bailout::trap(body, arg)` does the same for any `body`: C or C++, or
-  a Rust `unsafe extern "C" fn` whose frame owns nothing that needs a drop, so
+- `zend::contain_with(body)` does the same for a Rust closure that needs no
+  drop, whose frames (and those of what it calls) own nothing that needs one, so
   the bailout's jump to the shim's `setjmp` skips no destructor (crates/phpserver
   runs `Server::start` and `addProcess`'s worker this way).
 - `Bailout` is `#[must_use]`: finish the Rust work (release what you hold),

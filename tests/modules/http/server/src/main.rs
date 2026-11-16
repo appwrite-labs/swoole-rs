@@ -181,7 +181,7 @@ unsafe fn http_get_package_length(
     // SAFETY: per the caller.
     unsafe {
         http::get_package_length(
-            protocol.cast(),
+            &*protocol.cast(),
             Socket::from_ptr(socket.cast()),
             &mut *pl.cast(),
         )

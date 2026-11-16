@@ -20,6 +20,9 @@ unsafe extern "C" {
     /// the lent bytes (an `IoSlice` is an iovec), which it writes the two numbers
     /// from; errors are off, so it raises nothing.
     safe fn swr_bytes_numeric(text: IoSlice<'_>, lval: &mut i64, dval: &mut f64) -> u8;
+    /// `php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE | REPORT_ERRORS)`:
+    /// it reads the string and keeps none of it.
+    safe fn swr_zend_mkdir_recursive(path: CText<'_>) -> bool;
 }
 
 mod sealed {
@@ -68,6 +71,13 @@ pub fn module_loaded(name: &CStr) -> bool {
 #[must_use]
 pub fn is_main_thread() -> bool {
     swr_zend_tsrm_is_main_thread()
+}
+
+/// `php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE | REPORT_ERRORS)`:
+/// whether `path` was made, with its parents; a failure is reported as a warning.
+#[must_use]
+pub fn mkdir_recursive(path: &CStr) -> bool {
+    swr_zend_mkdir_recursive(CText::from(path))
 }
 
 /// `php_time`: PHP's clock, in seconds.

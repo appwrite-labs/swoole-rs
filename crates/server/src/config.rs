@@ -13,7 +13,7 @@ use swoole_rs_memory::members::Shm;
 
 const _: () = assert!(
     size_of::<libc::time_t>() == size_of::<AtomicI64>(),
-    "`warning_time` mirrors C++'s `time_t`"
+    "`warning_time` holds a `time_t`"
 );
 
 /// A value a [`Setting`] holds, and the atomic of its layout that holds it.

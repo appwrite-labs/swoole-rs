@@ -528,6 +528,7 @@ mod tests {
 
     #[test]
     fn a_task_buffer_counts_the_payload_it_packs() {
+        let _turn = methods::TASK_ID.lock();
         let mut buf = TaskBuffer::default();
         assert_eq!(
             buf.bytes().len(),
@@ -659,7 +660,7 @@ mod tests {
         use super::super::*;
 
         /// `task_pack` draws from the process-wide task id, so its tests take turns.
-        static TASK_ID: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        pub(super) static TASK_ID: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
         /// An `EventData`-sized, 8-aligned buffer.
         fn event() -> Vec<u64> {

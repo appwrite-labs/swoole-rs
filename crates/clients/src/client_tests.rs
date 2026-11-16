@@ -412,8 +412,8 @@ fn construction_makes_a_cloexec_socket_nonblocking_when_async() {
 
 #[test]
 fn a_call_measures_with_the_protocol_and_frees_the_client() {
-    unsafe extern "C" fn twice(
-        _: *const Protocol,
+    fn twice(
+        _: &Protocol,
         _: Option<swoole_rs_reactor::Socket<'_>>,
         packet: &mut PacketLength,
     ) -> isize {
