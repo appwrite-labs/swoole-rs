@@ -24,23 +24,20 @@ struct SessionData {
 pub struct Session(*mut LIBSSH2_SESSION);
 
 // libssh2's declaration, typed for the live session: it returns the address of the
-// session's abstract slot and reads nothing else. ext/ssh2 stores its session data's
-// address there (the type's invariant), and the slot and the data live with the
-// session, so the borrow lasts as long as the value is used.
+// session's abstract slot and reads nothing else.
 unsafe extern "C" {
     #[link_name = "libssh2_session_abstract"]
-    #[expect(
-        improper_ctypes,
-        reason = "the slot is a pointer to the repr(C) SessionData; the lint follows Co into \
-                  its record, which libssh2 never reads"
-    )]
-    safe fn session_abstract<'a>(session: Session) -> &'a &'a SessionData;
+    safe fn session_abstract(session: Session) -> *mut *mut c_void;
 }
 
 impl Session {
     /// `ssh2_get_socket`: the session's coroutine socket.
     fn socket(self) -> Co {
-        session_abstract(self).socket
+        // SAFETY: ext/ssh2 stores its session data's address in a live session's
+        // abstract (the type's invariant).
+        let data = unsafe { *session_abstract(self) }.cast::<SessionData>();
+        // SAFETY: live session data, whose socket is the session's coroutine socket.
+        unsafe { (*data).socket }
     }
 }
 
