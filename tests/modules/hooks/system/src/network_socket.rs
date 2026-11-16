@@ -190,13 +190,6 @@ unsafe extern "C-unwind" {
     fn socket_catch_write_error(socket: *mut Record, error: c_int) -> c_int;
     #[link_name = "_ZN6swoole7network6Socket22catch_write_pipe_errorEi"]
     fn socket_catch_write_pipe_error(socket: *mut Record, error: c_int) -> c_int;
-    fn swr_v1_socket_buffer_size(fd: c_int, recv: bool, send: bool, size: u32) -> bool;
-    fn swr_v1_socket_type(domain: c_int, kind: c_int) -> c_int;
-    fn swr_v1_socket_domain_and_type(
-        kind: c_int,
-        domain: *mut c_int,
-        sock_type: *mut c_int,
-    ) -> bool;
 }
 
 #[link(name = "crypto")]
@@ -272,8 +265,7 @@ fn is_inet6(kind: c_int) -> bool {
 }
 
 fn convert_to_type(domain: c_int, kind: c_int) -> c_int {
-    // SAFETY: no preconditions.
-    unsafe { swr_v1_socket_type(domain, kind) }
+    swoole_rs_reactor::socket_type(domain, kind).raw()
 }
 
 /// `Socket::convert_to_type(std::string &host)`: erases the scheme from `host`.
@@ -284,12 +276,11 @@ fn convert_host_to_type(host: &mut String) -> c_int {
 }
 
 fn get_domain_and_type(kind: c_int, domain: &mut c_int, sock_type: &mut c_int) -> c_int {
-    // SAFETY: two writable ints.
-    if unsafe { swr_v1_socket_domain_and_type(kind, domain, sock_type) } {
-        SW_OK
-    } else {
-        SW_ERR
-    }
+    let Some(pair) = swoole_rs_reactor::socket_domain_and_type(kind) else {
+        return SW_ERR;
+    };
+    (*domain, *sock_type) = pair;
+    SW_OK
 }
 
 pub(super) fn make_socket(kind: c_int, fd_type: c_int, flags: c_int) -> Option<Socket> {
@@ -629,12 +620,9 @@ fn fail() {
     assert_eq!(sock.listen(1), -1);
 
     let fd = sock.get_fd();
-    // SAFETY: no preconditions.
-    unsafe {
-        assert!(!swr_v1_socket_buffer_size(fd, true, true, 1));
-        assert!(!swr_v1_socket_buffer_size(fd, true, false, 1));
-        assert!(!swr_v1_socket_buffer_size(fd, false, true, 1));
-    }
+    assert!(swoole_rs_reactor::set_socket_buffer_size(fd, true, true, 1).is_err());
+    assert!(swoole_rs_reactor::set_socket_buffer_size(fd, true, false, 1).is_err());
+    assert!(swoole_rs_reactor::set_socket_buffer_size(fd, false, true, 1).is_err());
 
     // SAFETY: a live socket.
     unsafe {
