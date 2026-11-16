@@ -640,14 +640,8 @@ fn websocket_connection(state: &State) -> bool {
 
 fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> Step {
     let length = value_.len();
-    let compression = CAPABILITIES.load(Relaxed) & COMPRESSION != 0 && state.enable_compression;
-    let (action, known) = request_header(
-        name,
-        value_,
-        state.parser.method,
-        state.parse_cookie,
-        compression,
-    );
+    let (action, known) =
+        request_header(name, value_, state.parser.method, state.parse_cookie, true);
     match action {
         RequestHeader::Cookie => {
             parse_cookie(property(&mut state.request, Property::Cookie), value_);
@@ -688,7 +682,11 @@ fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> Step {
                 return Step::Fail;
             }
         }
-        RequestHeader::Compression => compression_method(state, value_),
+        RequestHeader::Compression => {
+            if state.enable_compression && CAPABILITIES.load(Relaxed) & COMPRESSION != 0 {
+                compression_method(state, value_);
+            }
+        }
         RequestHeader::Append => {}
     }
     let value_ = stringl(value_);
