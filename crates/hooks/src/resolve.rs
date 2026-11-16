@@ -44,16 +44,16 @@ pub static COROUTINE_ASYNC: AsyncOps = AsyncOps {
 /// `async::handler_gethostbyname`: the request's address, on a pool thread.
 extern "C" fn handler_gethostbyname(event: &mut AsyncEvent) {
     // Only `run` dispatches it, with a request.
-    if let Some(result) = event.record().map(resolver::host) {
-        (event.retval, event.error) = result;
+    if let Some((retval, error)) = event.record().map(resolver::host) {
+        event.set_result(retval, error);
     }
 }
 
 /// `async::handler_getaddrinfo`: the request's addresses, on a pool thread.
 extern "C" fn handler_getaddrinfo(event: &mut AsyncEvent) {
     // As `handler_gethostbyname`.
-    if let Some(result) = event.record().map(resolver::lookup) {
-        (event.retval, event.error) = result;
+    if let Some((retval, error)) = event.record().map(resolver::lookup) {
+        event.set_result(retval, error);
     }
 }
 
@@ -68,9 +68,10 @@ fn run(
 ) -> Option<c_int> {
     let mut event = AsyncEvent::empty();
     event.data = request.as_ptr();
-    event.retval = retval;
+    event.set_result(retval, 0);
     swr_v1_hook_async(&mut event, handler, timeout, &COROUTINE_ASYNC);
-    request.failed(event.retval, event.error, request_error)
+    let (retval, error) = event.result();
+    request.failed(retval, error, request_error)
 }
 
 /// `gethostbyname_impl_with_async`: the address, or empty with the last error set.
