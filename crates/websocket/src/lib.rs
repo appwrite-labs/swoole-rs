@@ -151,10 +151,12 @@ pub fn frame_length(bytes: &[u8]) -> Result<FrameLength, LengthError> {
 
 /// A wire header without a mask key or payload, and its length.
 #[must_use]
-pub fn header(payload_length: u64, opcode: u8, flags: u8) -> ([u8; 10], usize) {
+pub fn header(payload_length: u64, opcode: Opcode, flags: FrameFlags) -> ([u8; 10], usize) {
     let mut header = [0u8; 10];
-    header[0] = (opcode & 0xf) | (u8::from(flags & 1 != 0) << 7) | (u8::from(flags & 4 != 0) << 6);
-    header[1] = u8::from(flags & 32 != 0) << 7;
+    header[0] = (opcode.code() & 0xf)
+        | (u8::from(flags.is_final()) << 7)
+        | (u8::from(flags.is_compressed()) << 6);
+    header[1] = u8::from(flags.is_masked()) << 7;
     let size = if let Ok(short) = u8::try_from(payload_length)
         && short < 126
     {

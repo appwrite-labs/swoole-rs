@@ -47,14 +47,14 @@ impl WriteEffects for Write<'_> {
             .edit(|record| socket_set_fd_option(record, 1, -1));
     }
 
-    fn send(&self) -> isize {
+    fn send(&self) -> Option<usize> {
         match self.payload {
             // `socket->send(buf, n, 0)`.
-            WritePayload::Bytes(data) => {
-                send_drain(self.socket, data, 0).map_or(-1, usize::cast_signed)
-            }
+            WritePayload::Bytes(data) => send_drain(self.socket, data, 0),
             // `socket->writev(iov, iovcnt)`.
-            WritePayload::Vectors(vectors) => writev(self.socket.fd(), vectors),
+            WritePayload::Vectors(vectors) => {
+                usize::try_from(writev(self.socket.fd(), vectors)).ok()
+            }
         }
     }
 
@@ -93,7 +93,7 @@ fn write(reactor: Running<'_>, socket: Socket<'static>, payload: WritePayload<'_
     let result = swoole_rs_reactor::swr_v1_reactor_write(socket, default_size, payload, &ops);
     let origin = c"Reactor::write_func";
     match result {
-        Ok(value) => return value,
+        Ok(value) => return value.cast_signed(),
         Err(WriteError::TooLarge) => log::error_log(
             log::LogLevel::SW_LOG_WARNING,
             SW_ERROR_PACKAGE_LENGTH_TOO_LARGE,

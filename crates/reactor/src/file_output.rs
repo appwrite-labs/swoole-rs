@@ -101,7 +101,7 @@ impl SocketFileRequest {
     pub fn sent(
         &mut self,
         hooks: &impl OutputEffects,
-        sent: isize,
+        sent: Option<usize>,
         requested: usize,
     ) -> OutputResult {
         let SocketFileFields { begin, end, .. } = self.fields;

@@ -92,7 +92,8 @@ pub enum SslSendfileWarning {
 /// writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SslSendfileResult {
-    pub value: isize,
+    /// How many bytes `send` sent, or None (errno set) when the read or send failed.
+    pub value: Option<usize>,
     pub warn: Option<SslSendfileWarning>,
 }
 
@@ -103,7 +104,7 @@ pub fn ssl_sendfile(
     file_fd: c_int,
     offset: &mut libc::off_t,
     size: usize,
-    send: impl FnOnce(&[u8]) -> isize,
+    send: impl FnOnce(&[u8]) -> Option<usize>,
     kernel_nobufs: &mut bool,
 ) -> SslSendfileResult {
     const CHUNK: usize = 65536;
@@ -112,23 +113,22 @@ pub fn ssl_sendfile(
     let n = swoole_rs_corebase::sys::pread(file_fd, &mut buffer, at);
     if n <= 0 {
         return SslSendfileResult {
-            value: -1,
+            value: None,
             warn: Some(SslSendfileWarning::Pread),
         };
     }
     // pread(2) fills at most the buffer; a longer answer sends the buffer.
-    let sent = send(buffer.get(..n.cast_unsigned()).unwrap_or(&buffer));
-    if sent < 0 {
+    let Some(sent) = send(buffer.get(..n.cast_unsigned()).unwrap_or(&buffer)) else {
         let error = Error::last_os_error().raw_os_error().unwrap_or(0);
         let failed = catch_error(error, kernel_nobufs) == Caught::Error;
         return SslSendfileResult {
-            value: sent,
+            value: None,
             warn: failed.then_some(SslSendfileWarning::Write),
         };
-    }
+    };
     *offset = at + libc::off_t::try_from(sent).unwrap_or(libc::off_t::MAX);
     SslSendfileResult {
-        value: sent,
+        value: Some(sent),
         warn: None,
     }
 }
@@ -185,8 +185,8 @@ mod tests {
     }
 
     /// No TLS calls, for a vector over a plain descriptor.
-    type Read = fn(crate::Fill<'_>) -> isize;
-    type Write = fn(crate::Drain<'_>) -> isize;
+    type Read = fn(crate::Fill<'_>) -> Option<usize>;
+    type Write = fn(crate::Drain<'_>) -> Option<usize>;
     const NO_TLS: Option<&(Read, Write)> = None;
 
     #[test]
@@ -280,7 +280,7 @@ mod tests {
         let mut owner = ReactorIov::writing(&iov).unwrap();
         let sent = swr_v1_socket_iov_owned(a, &mut owner, NO_TLS);
         let state = swr_v1_reactor_iov_view(&owner);
-        assert_eq!((sent, state.remain_count), (7, 0));
+        assert_eq!((sent, state.remain_count), (Some(7), 0));
 
         let mut into = [0_u8; 5];
         let mut tail = [0_u8; 5];
@@ -289,7 +289,7 @@ mod tests {
         let read = swr_v1_socket_iov_owned(b, &mut owner, NO_TLS);
         let state = swr_v1_reactor_iov_view(&owner);
         drop(owner);
-        assert_eq!(read, 7);
+        assert_eq!(read, Some(7));
         assert_eq!((&into, &tail[..2]), (b"abcde", &b"fg"[..]));
         assert_eq!(
             (state.remain_count, state.index, state.offset_bytes),
@@ -311,14 +311,15 @@ mod tests {
                 Some(&(
                     |mut fill: crate::Fill<'_>| {
                         let slots = fill.slots();
-                        tls_in_pieces(counter, slots.as_mut_ptr().cast(), slots.len())
+                        let n = tls_in_pieces(counter, slots.as_mut_ptr().cast(), slots.len());
+                        usize::try_from(n).ok()
                     },
                     |_: crate::Drain<'_>| unreachable!("a read"),
                 )),
             )
         };
         let state = swr_v1_reactor_iov_view(&owner);
-        assert_eq!((read, left), (7, 0));
+        assert_eq!((read, left), (Some(7), 0));
         assert_eq!((&into, &tail[..3]), (b"xxxx", &b"xxx"[..]));
         // update_iterator keeps the first iovec's offset when that iovec ends exactly.
         assert_eq!(
@@ -332,8 +333,12 @@ mod tests {
         }
     }
 
-    fn sends_three(data: &[u8]) -> isize {
-        data.len().min(3).cast_signed()
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "a TLS send, whose type returns None on error"
+    )]
+    fn sends_three(data: &[u8]) -> Option<usize> {
+        Some(data.len().min(3))
     }
 
     #[test]
@@ -348,7 +353,7 @@ mod tests {
             (result, offset),
             (
                 SslSendfileResult {
-                    value: 3,
+                    value: Some(3),
                     warn: None
                 },
                 7
@@ -360,7 +365,7 @@ mod tests {
         assert_eq!(
             result,
             SslSendfileResult {
-                value: -1,
+                value: None,
                 warn: Some(SslSendfileWarning::Pread)
             }
         );
