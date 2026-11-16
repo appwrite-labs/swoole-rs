@@ -48,7 +48,7 @@ pub(crate) static HOST: Host = Host {
     current: crate::wait_event::native::current,
     instance,
     suspend,
-    resume: swoole_rs_coroutine::resume,
+    resume: swoole_rs_coroutine::Waker::wake,
     event_running: swoole_event_is_running,
     submit_failed,
     timeout_full,
@@ -71,8 +71,9 @@ fn instance() -> Option<Rc<Uring>> {
 
 /// `co->yield(&cancel_fn)` of the running coroutine `co`, where cancelling cancels
 /// `event`'s request.
-fn suspend(co: *mut c_void, event: *mut c_void) {
-    swoole_rs_coroutine::yield_with_cancel(co, move |_| uring::cancel(&HOST, event));
+fn suspend(co: *mut c_void, event: *mut c_void, waker: &Cell<Option<swoole_rs_coroutine::Waker>>) {
+    let cancel = move |_| uring::cancel(&HOST, event);
+    swoole_rs_coroutine::yield_with_cancel_armed(co, cancel, |park| waker.set(Some(park)));
 }
 
 fn submit_failed() {
@@ -161,7 +162,7 @@ fn create() -> Iouring {
 }
 
 /// The exit condition: requests in flight or waiting keep the loop running.
-extern "C-unwind" fn idle(event_num: &mut usize) -> bool {
+fn idle(event_num: &mut usize) -> bool {
     if with_instance(|instance| instance.is_some())
         && with_engine(|engine| engine.task_num() == 0 && engine.waiting_num() == 0).unwrap_or(true)
     {
@@ -176,7 +177,7 @@ extern "C-unwind" fn submit() {
 }
 
 /// The reactor's destroy callback: `delete SwooleTG.iouring`.
-extern "C-unwind" fn destroyed(_data: *mut c_void) {
+fn destroyed() {
     let Some(iouring) = INSTANCE.take() else {
         return;
     };
@@ -189,9 +190,8 @@ extern "C-unwind" fn destroyed(_data: *mut c_void) {
 
 /// `Iouring::callback`: the ring fd is readable. The thread's instance owns the ring
 /// fd's record, so the event's object isn't needed.
-pub(crate) fn ready() -> c_int {
-    let woken = current().is_some_and(|engine| uring::wakeup(&engine));
-    if woken { 0 } else { -1 }
+pub(crate) fn ready() -> bool {
+    current().is_some_and(|engine| uring::wakeup(&engine))
 }
 
 /// The engine's operations crates/reactor calls; it sits below this crate, so

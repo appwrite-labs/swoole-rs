@@ -23,6 +23,10 @@ int swr_lent_class_alias(struct iovec alias, zend_class_entry *ce, bool *registe
     return bailed;
 }
 
+zval *swr_lent_hash_find(const HashTable *table, struct iovec key) {
+    return zend_hash_str_find(table, key.iov_base, key.iov_len);
+}
+
 zval *swr_lent_property_slot(zend_object *object, struct iovec name) {
     zend_property_info *info = zend_hash_str_find_ptr(&object->ce->properties_info, name.iov_base, name.iov_len);
     if (UNEXPECTED(info == NULL || (info->flags & ZEND_ACC_STATIC))) {

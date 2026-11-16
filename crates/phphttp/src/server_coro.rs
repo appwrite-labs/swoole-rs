@@ -4,7 +4,7 @@
 //! request loop (`onAccept`), HTTP/2 on a connection and its request
 //! dispatch, over the coroutine sockets through `phpruntime::co`.
 use crate::{
-    context::{self, CompressionTypes, Ctx},
+    context::{self, CompressionTypes, Ctx, Hold},
     host,
     parse::{Key, add_protocol, add_server, parse_request},
     server::{Callable, NO_THEN, call_handler},
@@ -13,12 +13,11 @@ use crate::{
 use std::{
     cell::{Cell, OnceCell},
     ffi::{CString, c_int},
-    ptr,
     rc::Rc,
     sync::atomic::Ordering::Relaxed,
 };
 use swoole_rs_buffer::string::CppString as Buffer;
-use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
+use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::CCast;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet};
 use swoole_rs_httpbindings::Setting;
@@ -28,8 +27,8 @@ use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_phpswoole::SocketSettings;
 use swoole_rs_reactor::Events;
 use swoole_rs_zend::{
-    Array, ArrayMut, Call, Custom, CustomClass, Key as ArrayKey, Minit, Owned, OwnedArray, Props,
-    Value, ZString, bailout, handlers, method_table, string,
+    Array, ArrayMut, Call, CallFrame, Custom, CustomClass, Key as ArrayKey, Minit, Owned,
+    OwnedArray, Props, Value, ZString, bailout, handlers, method_table,
     sys::{self as z, ZEND_ACC_FINAL, ZEND_ACC_PUBLIC, zend_long, zval},
 };
 
@@ -184,8 +183,9 @@ impl HttpServer {
     }
 
     /// `create_context`: the settings, the socket and the parser.
-    fn context(&self, socket: Co, zconn: &Value) -> Ctx {
-        let mut context = context::context_new(i64::from(socket.sock_fd()));
+    fn context(&self, socket: Co, zconn: &Value) -> Hold {
+        let hold = context::context_new(i64::from(socket.sock_fd()));
+        let mut context = hold.ctx();
         crate::parse::init_request_parser(context);
         if let Some(response) = context.state().response.zobject.props() {
             response.value(c"socket", zconn);
@@ -207,7 +207,7 @@ impl HttpServer {
             state.compression_level = self.compression_level.get();
             state.compression_min_length = self.compression_min_length.get();
         }
-        context
+        hold
     }
 }
 
@@ -281,7 +281,7 @@ fn address(socket: Co) -> (ZString, c_int) {
         network.read(|record| {
             let info = &record.info;
             let host = with_host(info, |host| ZString::new(host.to_bytes()));
-            (host, swr_v1_clients_address_port(info))
+            (host, address_port(info).into())
         })
     });
     address.unwrap_or_else(|| (ZString::new(b""), 0))
@@ -294,12 +294,9 @@ const HTTP2_FRAME_HEADER_SIZE: u8 = 9;
 /// the request's `length` bytes, in a zend string the buffer allocated,
 /// become `zdata`; the buffer starts a new allocation.
 fn request_data(mut context: Ctx, buffer: &mut Buffer, length: usize) {
-    let data = buffer.pop(BUFFER_SIZE_BIG);
-    let string = string::from_val(data);
-    // SAFETY: the zend string allocator's unshared string, holding `length`
-    // bytes and room for the NUL; its one reference moves into `zdata`.
-    let string = unsafe { string::ZBuf::from_raw(string, length) };
-    context.state().request.zdata = Owned::string(string.into_zstring());
+    if let Some(data) = swoole_rs_phpclients::pop_string(buffer, BUFFER_SIZE_BIG, length) {
+        context.state().request.zdata = Owned::string(data);
+    }
 }
 
 /// HTTP/2 on the connection: the server's SETTINGS frame, then frames by
@@ -412,7 +409,8 @@ fn construct(call: &Call) {
             return None;
         }
         let kind = swoole_rs_reactor::host_type(host);
-        let Ok(listener) = swoole_rs_phpclients::new_socket(-1, 0, kind.socket_type, 0, false)
+        let Ok(listener) =
+            swoole_rs_phpclients::new_socket(-1, 0, kind.socket_type.raw(), 0, false)
         else {
             bailout::Bailout.defer();
             return None;
@@ -475,6 +473,19 @@ struct Accept {
     cache: z::zend_fcall_info_cache,
 }
 
+unsafe extern "C" {
+    /// `zend_is_callable_at_frame(name, $this, frame, 0, cache, NULL)` inside
+    /// `zend_try` (nonzero for a bailout): it reads the name and the call's
+    /// frame, and fills the cache and whether the name is callable there.
+    #[link_name = "swr_zend_try_facade_callable_frame"]
+    safe fn callable_at_frame(
+        name: &Owned,
+        frame: CallFrame<'_>,
+        cache: &mut z::zend_fcall_info_cache,
+        callable: &mut bool,
+    ) -> c_int;
+}
+
 /// `sw_zend_is_callable_at_frame("onAccept")` on `$this` at `start`'s frame;
 /// an `E_CORE_ERROR` when it is not.
 fn accept_callable(call: &Call) -> Result<Option<Box<Accept>>, bailout::Bailout> {
@@ -483,19 +494,12 @@ fn accept_callable(call: &Call) -> Result<Option<Box<Accept>>, bailout::Bailout>
         cache: swoole_rs_zend::zeroed(),
     });
     let mut callable = false;
-    // SAFETY: the name, `$this`, this method's frame and local outputs; the
-    // shim traps what Zend raises.
-    bailout::trapped(unsafe {
-        z::swr_zend_try_facade_callable_frame(
-            accept.callback.as_ptr(),
-            call.this(),
-            call.frame(),
-            0,
-            &raw mut accept.cache,
-            ptr::null_mut(),
-            &raw mut callable,
-        )
-    })?;
+    bailout::trapped(callable_at_frame(
+        &accept.callback,
+        call.call_frame(),
+        &mut accept.cache,
+        &mut callable,
+    ))?;
     if callable {
         return Ok(Some(accept));
     }
@@ -676,7 +680,7 @@ impl swoole_rs_httpbindings::AcceptHost for Start<'_> {
         // SAFETY: the resolved cache, the connection object and the callable's
         // name; the shim traps what the new coroutine raises.
         self.bailed = bailout::trapped(unsafe {
-            z::swr_zend_try_facade_coroutine(
+            swoole_rs_zend::host::swr_zend_try_facade_coroutine(
                 Some(swoole_rs_phpcoroutines::create_coroutine),
                 &raw mut self.accept.cache,
                 1,
@@ -915,7 +919,7 @@ fn add_peer(mut context: Ctx, peer: &Peer) {
 
 /// The request loop: parse each request on the connection and run its handler.
 fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
-    let mut current: Option<Ctx> = None;
+    let mut current: Option<Hold> = None;
     let mut header_completed = false;
     let mut crlf_offset = 0;
     let mut total = 0;
@@ -933,8 +937,9 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             unsafe { buffer.set_len(length + received) };
         }
         step = Step::Recv;
-        let mut context =
-            *current.get_or_insert_with(|| conn.server.context(conn.socket, conn.zconn));
+        let mut context = current
+            .get_or_insert_with(|| conn.server.context(conn.socket, conn.zconn))
+            .ctx();
         let max = conn.package_max_length();
         if !header_completed {
             let length = conn.buffer().len();
@@ -1049,7 +1054,7 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             step = Step::Parse;
         }
     }
-    current.map_or(Ok(()), context::release_objects)
+    current.map_or(Ok(()), |hold| context::release_objects(hold.ctx()))
 }
 
 /// `swoole_strnpos(.., "\r\n\r\n")`.
@@ -1062,14 +1067,13 @@ fn http2(conn: &mut Connection, mut context: Ctx) -> Result<(), bailout::Bailout
     let fd = context.state().fd;
     let max_body_size = conn.package_max_length().c_cast::<u32>();
     if let Some(server) = crate::http2::server() {
-        // The context outlives the session, freed below; the session's
-        // handler holds the server object.
+        // The session holds the context, and its handler the server object.
         let this = conn.this.copy();
         (server.session_new)(
             fd,
-            context,
+            context.hold(),
             max_body_size,
-            Box::new(move |ctx, http1| {
+            Box::new(move |ctx: Ctx<'_>, http1: Ctx<'_>| {
                 let Some(server) = this.custom::<Data>().and_then(|data| data.0.get()) else {
                     return Ok(());
                 };

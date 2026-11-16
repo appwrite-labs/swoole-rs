@@ -13,10 +13,10 @@ use openssl_sys::{
 use std::ffi::CStr;
 use std::os::raw::{c_int, c_long, c_ulong};
 use swoole_rs_corebase::constants::ReturnCode;
+use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_error::ErrorCode;
-use swoole_rs_reactor::SocketFields;
 
 /// `SW_SSL_SERVER` and `SW_SSL_CLIENT`.
 const SERVER: c_int = 1;
@@ -46,7 +46,6 @@ pub fn swr_v1_socket_ssl_clear(tls: &mut SocketTls) {
 
 /// A TLS read or write: what `ssl_recv`/`ssl_send` return, the errno to set when
 /// nonzero, and whether to log a protocol error first.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SslIoResult {
     pub value: isize,
@@ -102,8 +101,14 @@ pub fn swr_v1_socket_ssl_recv(
     ssl: Ssl,
     buffer: &mut [impl ReadSlot],
 ) -> SslIoResult {
+    lend_spare(buffer, |spare| ssl_recv_into(tls, ssl, spare)).0
+}
+
+/// [`swr_v1_socket_ssl_recv`] into `spare`'s room.
+#[inline]
+pub fn ssl_recv_into(tls: &mut SocketTls, ssl: Ssl, spare: &mut Spare<'_>) -> SslIoResult {
     clear_errors();
-    classify(tls, ssl.read(buffer), false)
+    classify(tls, ssl.read_into(spare), false)
 }
 
 /// `Socket::ssl_send`: `SSL_write` of `data` (native code applies the DTLS chunk
@@ -291,11 +296,18 @@ impl ShutdownCalls for OpenSsl {
     }
 }
 
-/// `Socket::ssl_shutdown`'s results: false, true, or false after native code warns
-/// with `ssl_get_error_reason`.
-const SHUTDOWN_FALSE: c_int = 0;
-const SHUTDOWN_TRUE: c_int = 1;
-const SHUTDOWN_WARN: c_int = 2;
+/// The queued OpenSSL error captured when shutdown needs a warning.
+/// The code may be zero when OpenSSL supplied no queued reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShutdownError(c_ulong);
+
+impl ShutdownError {
+    /// The captured reason and its optional diagnostic, without reading the error queue.
+    #[must_use]
+    pub fn reason(self) -> (c_int, Option<&'static CStr>) {
+        (error_reason(self.0), reason_string(self.0))
+    }
+}
 
 fn shutdown(
     tls: &mut SocketTls,
@@ -304,9 +316,9 @@ fn shutdown(
     quiet: bool,
     repaired: bool,
     calls: &mut impl ShutdownCalls,
-) -> c_int {
+) -> Result<bool, ShutdownError> {
     if *closed || ssl.in_init() {
-        return SHUTDOWN_FALSE;
+        return Ok(false);
     }
     // If the peer closed first, shut down quietly: sending data then makes the peer
     // reply with an RST segment.
@@ -338,26 +350,29 @@ fn shutdown(
         (n, error)
     };
     match result {
-        (1, _) | (_, 0 | SSL_ERROR_ZERO_RETURN) => SHUTDOWN_TRUE,
-        _ => SHUTDOWN_WARN,
+        (1, _) | (_, 0 | SSL_ERROR_ZERO_RETURN) => Ok(true),
+        _ => Err(ShutdownError(pop_error())),
     }
 }
 
 /// `Socket::ssl_shutdown`: one `SSL_shutdown` once the handshake is done, quiet when
-/// `quiet` is set. Returns 1 for true, 0 for false and 2 for false after native code
-/// warns with `ssl_get_error_reason`.
+/// `quiet` is set. Returns false when already closed or still handshaking.
+///
+/// # Errors
+/// A shutdown requiring a warning, with the oldest queued OpenSSL error captured
+/// exactly once. The caller reports its reason after publishing the closed state.
 ///
 /// Upstream marks the shutdown sent and received first, so no `close_notify` is
 /// written, and closes the socket (`closed`, its `ssl_closed_`) whatever the result.
 /// `repaired` (`--fix-halfclose`, M15) writes the alert: a pending read or write
 /// leaves the socket open with its want flag set, to retry, and anything else closes it.
-pub fn swr_v1_socket_ssl_shutdown(
+pub fn ssl_shutdown(
     tls: &mut SocketTls,
     ssl: Ssl,
     closed: &mut bool,
     quiet: bool,
     repaired: bool,
-) -> c_int {
+) -> Result<bool, ShutdownError> {
     shutdown(tls, ssl, closed, quiet, repaired, &mut OpenSsl)
 }
 
@@ -407,8 +422,9 @@ pub fn socket_ssl_new(
     socket_ssl_new_over(socket, context, flags, None)
 }
 
-/// [`socket_ssl_new`] whose SSL reads and writes through `bio`, when given, in place
-/// of the descriptor (`bio` goes with the SSL, or here when `SSL_new` fails).
+/// [`socket_ssl_new`] whose SSL reads through the first of `bios` and writes through
+/// the second (else the first), when given, in place of the descriptor (they go with
+/// the SSL, or here when `SSL_new` fails).
 ///
 /// # Errors
 /// As [`socket_ssl_new`].
@@ -416,19 +432,19 @@ pub(crate) fn socket_ssl_new_over(
     socket: swoole_rs_reactor::Socket<'_>,
     context: Option<&crate::SslCtx>,
     flags: c_int,
-    bio: Option<crate::OwnedBio>,
+    bios: Option<(crate::OwnedBio, Option<crate::OwnedBio>)>,
 ) -> Result<(), SslNewError> {
     socket.edit(|record| want(&mut record.tls, false, false));
     clear_errors();
     let Some(mut made) = crate::handle::SSL_new(context) else {
         // The record's SSL becomes the null `SSL_new` returned, as upstream's.
-        socket.edit(SocketFields::take_ssl);
+        socket.edit(|record| record.set_ssl(None));
         return Err(SslNewError::New);
     };
     made.get().set_mode(SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
-    let attached = match bio {
-        Some(bio) => {
-            made.set_bio(bio);
+    let attached = match bios {
+        Some((read, write)) => {
+            made.set_bio(read, write);
             true
         }
         None => made.set_fd(socket.fd()),
@@ -448,12 +464,10 @@ pub(crate) fn socket_ssl_new_over(
     } else {
         Err(SslNewError::SetFd(peek_error()))
     };
-    let made = made.into_raw();
+    let made = made.into_socket_ssl();
     socket.edit(|record| {
-        // SAFETY: the new SSL, which nothing else holds and whose connection ex data
-        // is null or this record: the record owns it from now on and frees it only in
-        // `ssl_close`.
-        unsafe { record.set_ssl(made.cast()) };
+        // The new SSL, whose connection ex data is null or this record.
+        record.set_ssl(Some(made));
         if made_up.is_ok() {
             record.tls.state = SslState::SW_SSL_STATE_HANDSHAKE;
         }
@@ -704,18 +718,41 @@ mod tests {
                 SocketTls::default(),
                 "a fresh SSL clears the state group"
             );
-            let made = record.take_ssl().cast::<SSL>();
+            let owner = record.take_ssl().unwrap();
+            let made = owner.as_non_null().as_ptr();
             assert_eq!(SSL_is_server(made), 0, "connect state");
             assert_eq!(SSL_get_ex_data(made, index), (&raw mut record).cast());
-            SSL_free(made);
+            drop(owner);
             let socket = swoole_rs_reactor::Socket::from_ptr(&raw mut record).unwrap();
             assert_eq!(
                 socket_ssl_new(socket, context.cast::<crate::SslCtx>().as_ref(), SERVER),
                 Ok(())
             );
-            let ssl = record.take_ssl();
-            assert_eq!(SSL_is_server(ssl.cast()), 1, "accept state");
-            SSL_free(ssl.cast());
+            let ssl = record.take_ssl().unwrap();
+            assert_eq!(SSL_is_server(ssl.as_non_null().as_ptr()), 1, "accept state");
+            drop(ssl);
+            // A memory pair: the SSL reads through the first and writes through the
+            // second.
+            let (read, write) = (
+                crate::OwnedBio::memory().unwrap(),
+                crate::OwnedBio::memory(),
+            );
+            let bios = (read.bio().as_ptr(), write.as_ref().unwrap().bio().as_ptr());
+            let socket = swoole_rs_reactor::Socket::from_ptr(&raw mut record).unwrap();
+            let shared = context.cast::<crate::SslCtx>().as_ref();
+            let made = socket_ssl_new_over(socket, shared, SERVER, Some((read, write)));
+            assert_eq!(made, Ok(()));
+            let owner = record.take_ssl().unwrap();
+            let ssl = owner.as_non_null().as_ptr();
+            assert_eq!(
+                (
+                    openssl_sys::SSL_get_rbio(ssl),
+                    openssl_sys::SSL_get_wbio(ssl)
+                ),
+                bios
+            );
+            assert_eq!(SSL_is_server(ssl), 1, "accept state");
+            drop(owner);
             SSL_CTX_free(context);
 
             assert_eq!(swr_v1_socket_ssl_peek_reason(), 0, "empty queue");
@@ -849,15 +886,15 @@ mod shutdown_tests {
                 self.repaired,
                 &mut self.calls,
             );
-            if result == SHUTDOWN_WARN {
-                let (_, reason_string) = swr_v1_socket_ssl_error_reason();
+            if let Err(error) = result {
+                let (_, reason_string) = error.reason();
                 let message = reason_string
                     .unwrap_or(c"no OpenSSL reason available")
                     .as_ptr();
                 self.warnings += 1;
                 self.null_warnings += usize::from(message.is_null());
             }
-            result == SHUTDOWN_TRUE
+            matches!(result, Ok(true))
         }
 
         fn ssl_close(&mut self) {
@@ -929,7 +966,10 @@ mod shutdown_tests {
                     let made =
                         socket_ssl_new(socket, server_ctx.cast::<crate::SslCtx>().as_ref(), SERVER);
                     assert_eq!(made, Ok(()));
-                    record.take_ssl().cast()
+                    // Freed below, by hand.
+                    std::mem::ManuallyDrop::new(record.take_ssl().unwrap())
+                        .as_non_null()
+                        .as_ptr()
                 } else {
                     let server = SSL_new(server_ctx);
                     let (mut left, mut right) = (ptr::null_mut(), ptr::null_mut());
@@ -1305,6 +1345,32 @@ mod shutdown_tests {
             "all terminal and injected diagnostics have a non-null message"
         );
     }
+    #[test]
+    fn shutdown_warning_retains_the_captured_reason() {
+        let pair = Pair::new(false);
+        let mut socket = Socket::new(pair.server);
+        socket.calls.injected = SSL_ERROR_SSL;
+        clear_errors();
+        assert!(crate::OwnedBio::open(c"/nonexistent/shutdown-reason").is_none());
+        let queued = peek_error();
+        assert_ne!(queued, 0);
+        let error = shutdown(
+            &mut socket.tls,
+            unsafe { Ssl::new(pair.server) }.unwrap(),
+            &mut socket.closed,
+            false,
+            false,
+            &mut socket.calls,
+        )
+        .unwrap_err();
+        assert!(socket.closed);
+        assert_eq!(error.0, queued);
+        let reason = error.reason();
+        clear_errors();
+        assert_eq!(error.reason(), reason);
+        assert_ne!(reason.0, 0);
+    }
+
     /// Upstream's shutdown (no `--fix-halfclose`): both directions are marked shut
     /// first, so no alert is written, and the socket closes whatever OpenSSL returns.
     #[test]

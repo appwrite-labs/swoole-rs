@@ -12,14 +12,16 @@ use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 
+use crate::lent::{self, Drain, Fill};
+
 /// A NUL-terminated string that stays live and unchanged for `'a`, as thin as the
 /// `const char *` it is, so a C function's string parameter can be declared as one on
 /// either side of the boundary.
 ///
 /// Invariant: it points at a NUL-terminated string live for `'a`. Rust makes one only
-/// from a `&'a CStr`. The other source is a parameter (or declared static) of this type
-/// on the C boundary, where the C caller's `const char *` contract stands for the
-/// constructor, as it does for a `&T` parameter there.
+/// from a `&'a CStr`. The other source is a parameter, declared static or declared
+/// return value of this type on the C boundary, where the C side's `const char *`
+/// contract stands for the constructor, as it does for a `&T` there.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct Text<'a>(NonNull<libc::c_char>, PhantomData<&'a CStr>);
@@ -203,6 +205,9 @@ mod c {
         /// `epoll_create(2)`.
         #[cfg(any(target_os = "linux", target_os = "android"))]
         pub safe fn epoll_create(size: c_int) -> c_int;
+        /// `epoll_create1(2)`: the call Miri implements.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        pub safe fn epoll_create1(flags: c_int) -> c_int;
         /// `epoll_ctl(2)`: `event` is the interest and token to keep, none for
         /// `EPOLL_CTL_DEL`.
         #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -249,20 +254,36 @@ pub use c::kqueue;
 pub use c::malloc_trim;
 pub use c::{calloc, malloc};
 #[cfg(any(target_os = "linux", target_os = "android"))]
-pub use c::{epoll_create, epoll_ctl, signalfd};
+pub use c::{epoll_create, epoll_create1, epoll_ctl, signalfd};
 pub(crate) use c::{fork, getrlimit, srandom, uname};
 pub use c::{
     pthread_sigmask, sigaddset, sigdelset, sigemptyset, sigfillset, sigismember, sigprocmask,
 };
 
+/// A receive buffer crossing a callback boundary, retaining whether its bytes
+/// must stay initialized. Neither variant permits uninitializing a `u8` buffer.
+pub enum ReadBuffer<'a> {
+    /// Bytes that remain initialized after the receive.
+    Initialized(&'a mut [u8]),
+    /// Spare capacity that the receive may initialize.
+    Spare(&'a mut [MaybeUninit<u8>]),
+}
+
 /// A byte a read may overwrite with any value: `u8`, or one not yet written
 /// (`CppString::spare`). Readers only write their buffer, so they take either.
 pub trait ReadSlot: sealed::Sealed + Sized {
+    /// Lend `slots` to a callback without erasing its initialization guarantee.
+    fn buffer(slots: &mut [Self]) -> ReadBuffer<'_>;
     /// Copy what fits of `bytes` to the start of `slots`: the count copied.
     fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize;
 }
 
 impl ReadSlot for u8 {
+    #[inline]
+    fn buffer(slots: &mut [Self]) -> ReadBuffer<'_> {
+        ReadBuffer::Initialized(slots)
+    }
+
     #[inline]
     fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize {
         let n = slots.len().min(bytes.len());
@@ -274,6 +295,11 @@ impl ReadSlot for u8 {
 }
 
 impl ReadSlot for MaybeUninit<u8> {
+    #[inline]
+    fn buffer(slots: &mut [Self]) -> ReadBuffer<'_> {
+        ReadBuffer::Spare(slots)
+    }
+
     #[inline]
     fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize {
         let n = slots.len().min(bytes.len());
@@ -338,7 +364,6 @@ plain!(
     libc::group_req,
     libc::group_source_req,
     libc::hostent,
-    libc::ifreq,
     libc::in_addr,
     libc::in6_addr,
     libc::in6_pktinfo,
@@ -369,6 +394,8 @@ plain!(
     libc::ifconf,
     #[cfg(any(target_os = "linux", target_os = "android"))]
     libc::signalfd_siginfo,
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    libc::epoll_event,
     #[cfg(any(target_os = "linux", target_os = "android"))]
     libc::statx,
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -433,35 +460,29 @@ pub fn set_h_errno(value: c_int) {
 pub fn strerror(code: c_int) -> String {
     let mut text = std::io::Error::from_raw_os_error(code).to_string();
     // std appends the code; strip that, leaving libc's message.
-    let message = text
-        .strip_suffix(&format!(" (os error {code})"))
-        .map_or(text.len(), str::len);
+    let message = text.trim_suffix(&format!(" (os error {code})")).len();
     text.truncate(message);
     text
 }
 
 /// `read(2)` into `buf`: the bytes read, or `None` with errno set.
 pub fn read(fd: c_int, buf: &mut [impl ReadSlot]) -> Option<usize> {
-    // SAFETY: `buf` is writable for its length.
-    usize::try_from(unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) }).ok()
+    Fill::new(buf).read(fd)
 }
 
 /// `write(2)` of `buf`: the bytes written, or `None` with errno set.
 pub fn write(fd: c_int, buf: &[u8]) -> Option<usize> {
-    // SAFETY: `buf` is readable for its length.
-    usize::try_from(unsafe { libc::write(fd, buf.as_ptr().cast(), buf.len()) }).ok()
+    Drain::new(buf).write(fd)
 }
 
 /// `pread(2)` into `buf` at `offset`.
 pub fn pread(fd: c_int, buf: &mut [impl ReadSlot], offset: off_t) -> Option<usize> {
-    // SAFETY: `buf` is writable for its length.
-    usize::try_from(unsafe { libc::pread(fd, buf.as_mut_ptr().cast(), buf.len(), offset) }).ok()
+    Fill::new(buf).pread(fd, offset)
 }
 
 /// `pwrite(2)` of `buf` at `offset`.
 pub fn pwrite(fd: c_int, buf: &[u8], offset: off_t) -> Option<usize> {
-    // SAFETY: `buf` is readable for its length.
-    usize::try_from(unsafe { libc::pwrite(fd, buf.as_ptr().cast(), buf.len(), offset) }).ok()
+    Drain::new(buf).pwrite(fd, offset)
 }
 
 /// `close(2)`.
@@ -476,9 +497,20 @@ pub fn close(fd: c_int) -> std::io::Result<()> {
 #[must_use]
 #[inline]
 pub fn writev(fd: c_int, vectors: &[std::io::IoSlice<'_>]) -> Option<usize> {
-    let count = c_int::try_from(vectors.len()).unwrap_or(c_int::MAX);
-    // SAFETY: an `IoSlice` is ABI-compatible with an iovec, of readable bytes.
-    usize::try_from(unsafe { libc::writev(fd, vectors.as_ptr().cast(), count) }).ok()
+    usize::try_from(lent::lend_vectors(vectors, |iov, count| {
+        lent::writev(fd, iov, count)
+    }))
+    .ok()
+}
+
+/// `readv(2)` into `vectors`' buffers, in order.
+#[must_use]
+#[inline]
+pub fn readv(fd: c_int, vectors: &mut [lent::ReadVec<'_>]) -> Option<usize> {
+    usize::try_from(lent::lend_out(vectors, |iov, count| {
+        lent::readv(fd, iov, count)
+    }))
+    .ok()
 }
 
 /// `listen(2)`.
@@ -514,10 +546,9 @@ pub fn getsockopt<T: Pod>(
     name: c_int,
     value: &mut T,
 ) -> std::io::Result<libc::socklen_t> {
-    let mut length = socklen::<T>();
-    // SAFETY: `value` holds the `length` writable bytes given, and any bytes are a `T`.
-    let status =
-        unsafe { libc::getsockopt(fd, level, name, (&raw mut *value).cast(), &raw mut length) };
+    let (status, length) = lent::lend_value_out(value, |at, length| {
+        lent::getsockopt(fd, level, name, at, length)
+    });
     status_result(status)?;
     Ok(length)
 }
@@ -527,9 +558,9 @@ pub fn getsockopt<T: Pod>(
 /// # Errors
 /// The syscall's errno.
 pub fn setsockopt<T: Pod>(fd: c_int, level: c_int, name: c_int, value: &T) -> std::io::Result<()> {
-    // SAFETY: `value` holds the readable bytes whose count is given.
-    let status =
-        unsafe { libc::setsockopt(fd, level, name, (&raw const *value).cast(), socklen::<T>()) };
+    let status = lent::lend_value(value, |at, length| {
+        lent::setsockopt(fd, level, name, at, length)
+    });
     status_result(status)
 }
 
@@ -538,9 +569,9 @@ pub fn setsockopt<T: Pod>(fd: c_int, level: c_int, name: c_int, value: &T) -> st
 /// # Errors
 /// The syscall's errno.
 pub fn setsockopt_bytes(fd: c_int, level: c_int, name: c_int, value: &[u8]) -> std::io::Result<()> {
-    let length = libc::socklen_t::try_from(value.len()).unwrap_or(libc::socklen_t::MAX);
-    // SAFETY: `value` is readable for its length, which `length` does not exceed.
-    let status = unsafe { libc::setsockopt(fd, level, name, value.as_ptr().cast(), length) };
+    let status = lent::lend_in(value, |at, length| {
+        lent::setsockopt(fd, level, name, at.bytes(), length)
+    });
     status_result(status)
 }
 
@@ -571,14 +602,12 @@ pub fn socketpair(domain: c_int, kind: c_int, protocol: c_int) -> Option<[c_int;
 
 /// `recv(2)` into `buf`.
 pub fn recv(fd: c_int, buf: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
-    // SAFETY: `buf` is writable for its length.
-    usize::try_from(unsafe { libc::recv(fd, buf.as_mut_ptr().cast(), buf.len(), flags) }).ok()
+    Fill::new(buf).recv(fd, flags)
 }
 
 /// `send(2)` of `buf`.
 pub fn send(fd: c_int, buf: &[u8], flags: c_int) -> Option<usize> {
-    // SAFETY: `buf` is readable for its length.
-    usize::try_from(unsafe { libc::send(fd, buf.as_ptr().cast(), buf.len(), flags) }).ok()
+    Drain::new(buf).send(fd, flags)
 }
 
 /// `dup(2)`.
@@ -595,14 +624,48 @@ pub fn dup2(from: c_int, to: c_int) -> std::io::Result<c_int> {
     nonnegative_result(c::dup2(from, to))
 }
 
+/// Commands whose argument is an integer or absent: the only ones [`fcntl`] passes on.
+#[cfg(not(target_os = "linux"))]
+const INTEGER_COMMANDS: [c_int; 6] = [
+    libc::F_GETFL,
+    libc::F_SETFL,
+    libc::F_GETFD,
+    libc::F_SETFD,
+    libc::F_DUPFD,
+    libc::F_DUPFD_CLOEXEC,
+];
+#[cfg(target_os = "linux")]
+const INTEGER_COMMANDS: [c_int; 8] = [
+    libc::F_GETFL,
+    libc::F_SETFL,
+    libc::F_GETFD,
+    libc::F_SETFD,
+    libc::F_DUPFD,
+    libc::F_DUPFD_CLOEXEC,
+    libc::F_GETPIPE_SZ,
+    libc::F_SETPIPE_SZ,
+];
+
 /// `fcntl(2)` with an integer argument (`F_GETFL`, `F_SETFL`, `F_GETFD`,
-/// `F_SETFD`, `F_DUPFD`, ...); commands that take no argument ignore it.
+/// `F_SETFD`, `F_DUPFD`, ...); commands that take no argument ignore it. Any other
+/// command (one whose argument is a pointer, such as `F_GETLK`) fails with `EINVAL`
+/// without calling libc.
 /// # Errors
-/// The syscall's captured errno.
+/// The syscall's captured errno, or `EINVAL` for a command outside the integer list.
 pub fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> std::io::Result<c_int> {
-    // SAFETY: an integer argument has no memory preconditions.
-    let result = unsafe { libc::fcntl(fd, cmd, arg) };
-    nonnegative_result(result)
+    /// A command from `INTEGER_COMMANDS`, made only after the check below.
+    #[repr(transparent)]
+    struct IntegerCommand(c_int);
+    // An integer command reads its argument as an int, or not at all, and
+    // dereferences nothing.
+    unsafe extern "C" {
+        #[link_name = "fcntl"]
+        safe fn integer_fcntl(fd: c_int, cmd: IntegerCommand, ...) -> c_int;
+    }
+    if !INTEGER_COMMANDS.contains(&cmd) {
+        return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    nonnegative_result(integer_fcntl(fd, IntegerCommand(cmd), arg))
 }
 
 /// `flock(2)`.
@@ -617,10 +680,25 @@ pub fn flock(fd: c_int, operation: c_int) -> std::io::Result<()> {
 /// # Errors
 /// The syscall's captured errno.
 pub fn poll(fds: &mut [libc::pollfd], timeout: c_int) -> std::io::Result<c_int> {
-    let count = libc::nfds_t::try_from(fds.len()).unwrap_or(libc::nfds_t::MAX);
-    // SAFETY: `fds` holds `count` writable pollfds.
-    let result = unsafe { libc::poll(fds.as_mut_ptr(), count, timeout) };
-    nonnegative_result(result)
+    nonnegative_result(lent::lend_out(fds, |fds, count| {
+        lent::poll(fds, count, timeout)
+    }))
+}
+
+/// `epoll_wait(2)` into `events`, at most all of them: the number ready, or zero on
+/// timeout.
+/// # Errors
+/// The syscall's captured errno (`EINVAL` for no room).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[inline]
+pub fn epoll_wait(
+    epfd: c_int,
+    events: &mut [libc::epoll_event],
+    timeout: c_int,
+) -> std::io::Result<c_int> {
+    nonnegative_result(lent::lend_out(events, |events, count| {
+        lent::epoll_wait(epfd, events, count, timeout)
+    }))
 }
 
 /// `pipe(2)`: the read and write ends, or `None` with errno set.
@@ -746,10 +824,22 @@ mod anonymous {
     }
 }
 
-/// `open(2)` of `path`; `mode` applies when `flags` has `O_CREAT`.
-pub fn open(path: &CStr, flags: c_int, mode: libc::mode_t) -> c_int {
-    // SAFETY: `path` is NUL-terminated; the mode is promoted as C does.
-    unsafe { libc::open(path.as_ptr(), flags, libc::c_uint::from(mode)) }
+/// `open(2)` of `path`: the new descriptor. `mode` applies when `flags` has `O_CREAT`.
+///
+/// # Errors
+/// The syscall's errno.
+pub fn open(path: &CStr, flags: c_int, mode: libc::mode_t) -> std::io::Result<c_int> {
+    // `open(2)` reads only the path, and its one optional argument as a mode.
+    #[expect(
+        suspicious_runtime_symbol_definitions,
+        reason = "`Text` is a transparent `const char *` that is never null"
+    )]
+    unsafe extern "C" {
+        #[link_name = "open"]
+        safe fn libc_open(path: Text<'_>, flags: c_int, ...) -> c_int;
+    }
+    // The mode is promoted as C does.
+    nonnegative_result(libc_open(path.into(), flags, libc::c_uint::from(mode)))
 }
 
 /// `execv(3)`: runs `path` in place of this process, with `argv` as its arguments,
@@ -773,53 +863,66 @@ pub fn unlink(path: &CStr) -> std::io::Result<()> {
 /// `bytes` to C's `stdout`, which native code's own `printf` shares, so the two
 /// keep their order.
 pub fn print(bytes: &[u8]) {
+    let stdout = crate::Stream::stdout();
     for chunk in bytes.chunks(c_int::MAX.unsigned_abs() as usize) {
-        let length = c_int::try_from(chunk.len()).unwrap_or(c_int::MAX);
-        // SAFETY: "%.*s" reads at most `length` bytes of `chunk`.
-        unsafe { libc::printf(c"%.*s".as_ptr(), length, chunk.as_ptr()) };
+        // What `printf("%.*s", length, chunk)` writes: the chunk up to its first NUL.
+        stdout.write(chunk.split(|&byte| byte == 0).next().unwrap_or_default());
     }
 }
 
-/// One change to the kqueue `kq`, no events out: `kevent(2)`'s result.
+/// One change to the kqueue `kq`, no events out.
+///
+/// # Errors
+/// `kevent(2)`'s errno.
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
-#[must_use]
-pub fn kevent_change(kq: c_int, change: &libc::kevent) -> c_int {
-    kevent::kevent(
-        kq,
-        change,
-        kevent::Count::One,
-        None,
-        kevent::Count::Zero,
-        None,
-    )
+pub fn kevent_change(kq: c_int, change: &libc::kevent) -> std::io::Result<()> {
+    nonnegative_result(lent::lend_out(&mut [], |events, count| {
+        kevent::kevent(kq, change, kevent::Changes::One, events, count, None)
+    }))
+    .map(drop)
 }
 
-/// `kevent(2)` declared for one change and no events out.
+/// No change to the kqueue `kq`, and its ready events into `events`, at most all of
+/// them, waiting up to `timeout` (`None`: until one comes): the number ready.
+///
+/// # Errors
+/// `kevent(2)`'s errno.
+#[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+#[inline]
+pub fn kevent_wait(
+    kq: c_int,
+    events: &mut [libc::kevent],
+    timeout: Option<&libc::timespec>,
+) -> std::io::Result<c_int> {
+    nonnegative_result(lent::lend_out(events, |events, count| {
+        kevent::kevent(kq, &zeroed(), kevent::Changes::Zero, events, count, timeout)
+    }))
+}
+
+/// `kevent(2)` declared for at most one change.
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
 mod kevent {
+    use crate::lent::{Count, Out};
     use libc::c_int;
 
-    /// A count of `kevent` records: each value is the length of the one record, or
-    /// of none, that its parameter is given.
+    /// How many `kevent` records the change parameter is given: none, or the one.
     #[repr(i32)]
-    pub(super) enum Count {
+    pub(super) enum Changes {
         Zero = 0,
         One = 1,
     }
 
-    /// No value: a null-only event list.
-    pub(super) enum Nothing {}
-
-    // libc's. It reads the `changes` count of records at `change`, which is one, and
-    // writes at most the `count` given for `events`, which is none; a null timeout
-    // returns at once. It keeps nothing, so it is declared `safe`.
+    // libc's. It reads the `changes` count of records at `change`, and writes at most
+    // the lending's `count` events into `events`; with no room it returns once the
+    // change is made, else it waits up to `timeout` (null: until an event comes). It
+    // keeps nothing, so it is declared `safe`.
     unsafe extern "C" {
-        pub(super) safe fn kevent(
+        pub(super) safe fn kevent<'id>(
             kq: c_int,
             change: &libc::kevent,
-            changes: Count,
-            events: Option<&'static mut Nothing>,
-            count: Count,
+            changes: Changes,
+            events: Out<'id, libc::kevent>,
+            count: Count<'id, c_int>,
             timeout: Option<&libc::timespec>,
         ) -> c_int;
     }
@@ -848,8 +951,79 @@ pub enum InterfaceRequest {
     Name,
 }
 
-/// `ioctl(fd, request, value)`: -1 with errno set on failure.
-pub fn interface_ioctl(fd: c_int, request: InterfaceRequest, value: &mut libc::ifreq) -> c_int {
+/// A `struct ifreq` as its bytes, which the kernel copies in and out whole:
+/// the interface's name, then the `ifr_ifru` union a request reads or fills,
+/// whose fields are read from the bytes rather than through the union.
+#[derive(Clone, Copy)]
+pub struct Ifreq([u8; size_of::<libc::ifreq>()]);
+
+impl Default for Ifreq {
+    fn default() -> Self {
+        Self([0; size_of::<libc::ifreq>()])
+    }
+}
+
+impl Ifreq {
+    /// A request on the interface `name`: its first `IFNAMSIZ - 1` bytes,
+    /// NUL-terminated.
+    #[must_use]
+    pub fn named(name: &[u8]) -> Self {
+        let mut request = Self::default();
+        for (slot, &byte) in request.0.iter_mut().zip(name).take(libc::IFNAMSIZ - 1) {
+            *slot = byte;
+        }
+        request
+    }
+
+    /// `ifr_name`, up to its NUL within `IFNAMSIZ`.
+    #[must_use]
+    pub fn name(&self) -> &CStr {
+        let name = self.0.get(..libc::IFNAMSIZ).unwrap_or_default();
+        CStr::from_bytes_until_nul(name).unwrap_or_default()
+    }
+
+    /// `ifr_ifru`'s bytes.
+    fn value(&self) -> &[u8] {
+        self.0.get(libc::IFNAMSIZ..).unwrap_or_default()
+    }
+
+    /// Sets `ifru_ifindex`, the interface `SIOCGIFNAME` names.
+    pub fn set_index(&mut self, index: c_int) {
+        let value = self.0.get_mut(libc::IFNAMSIZ..).unwrap_or_default();
+        if let Some(slot) = value.first_chunk_mut() {
+            *slot = index.to_ne_bytes();
+        }
+    }
+
+    /// `((struct sockaddr_in *) &ifru_addr)->sin_addr`, as `SIOCGIFADDR`
+    /// fills it: the four bytes after the family and port on every platform.
+    #[must_use]
+    pub fn ipv4(&self) -> libc::in_addr {
+        let s_addr = match *self.value() {
+            [_, _, _, _, a, b, c, d, ..] => u32::from_ne_bytes([a, b, c, d]),
+            _ => 0,
+        };
+        libc::in_addr { s_addr }
+    }
+
+    /// `ifru_hwaddr.sa_data`, as `SIOCGIFHWADDR` fills it: the fourteen bytes
+    /// after the two of the family.
+    #[must_use]
+    pub fn sa_data(&self) -> [u8; 14] {
+        let data = self.value().get(2..).unwrap_or_default();
+        data.first_chunk().copied().unwrap_or_default()
+    }
+}
+
+/// `ioctl(fd, request, value)`.
+///
+/// # Errors
+/// The syscall's errno.
+pub fn interface_ioctl(
+    fd: c_int,
+    request: InterfaceRequest,
+    value: &mut Ifreq,
+) -> std::io::Result<()> {
     // The request numbers as `ioctl` takes them (an int on musl).
     #[cfg(target_os = "linux")]
     let request: libc::Ioctl = match request {
@@ -862,8 +1036,9 @@ pub fn interface_ioctl(fd: c_int, request: InterfaceRequest, value: &mut libc::i
     let request = match request {
         InterfaceRequest::Address => libc::SIOCGIFADDR,
     };
-    // SAFETY: each request reads and writes only the one live ifreq.
-    unsafe { libc::ioctl(fd, request, std::ptr::from_mut(value)) }
+    // SAFETY: each request copies in and out only the one ifreq's bytes,
+    // which `value` holds, at any alignment.
+    nonnegative_result(unsafe { libc::ioctl(fd, request, value.0.as_mut_ptr()) }).map(drop)
 }
 
 /// The head of a list `getifaddrs` stored, not yet freed. Only `getifaddrs` makes one
@@ -1015,17 +1190,9 @@ pub fn chroot(path: &CStr) -> std::io::Result<()> {
 pub fn group_id(name: &CStr) -> Option<libc::gid_t> {
     let mut entry: libc::group = zeroed();
     lookup_id(|strings, found| {
-        // SAFETY: a terminated name, an entry and `strings.len()` writable bytes for
-        // its strings, and the slot for the result, all live for the call.
-        unsafe {
-            libc::getgrnam_r(
-                name.as_ptr(),
-                &raw mut entry,
-                strings.as_mut_ptr(),
-                strings.len(),
-                found,
-            )
-        }
+        lent::lend_out(strings, |at, size| {
+            lent::getgrnam_r(name.into(), &mut entry, at, size, found)
+        })
     })
     .then_some(entry.gr_gid)
 }
@@ -1035,16 +1202,9 @@ pub fn group_id(name: &CStr) -> Option<libc::gid_t> {
 pub fn user_id(name: &CStr) -> Option<libc::uid_t> {
     let mut entry: libc::passwd = zeroed();
     lookup_id(|strings, found| {
-        // SAFETY: as `group_id`'s.
-        unsafe {
-            libc::getpwnam_r(
-                name.as_ptr(),
-                &raw mut entry,
-                strings.as_mut_ptr(),
-                strings.len(),
-                found,
-            )
-        }
+        lent::lend_out(strings, |at, size| {
+            lent::getpwnam_r(name.into(), &mut entry, at, size, found)
+        })
     })
     .then_some(entry.pw_uid)
 }
@@ -1153,8 +1313,9 @@ pub fn localtime_r(time: libc::time_t) -> Option<libc::tm> {
 
 /// `strftime(3)` of `tm` into `out`: the bytes written, 0 when they don't fit.
 pub fn strftime(out: &mut [u8], format: &CStr, tm: &libc::tm) -> usize {
-    // SAFETY: `out` is writable for its length, `format` is NUL-terminated and `tm` is live.
-    unsafe { libc::strftime(out.as_mut_ptr().cast(), out.len(), format.as_ptr(), tm) }
+    lent::lend_out(out, |at, max| {
+        lent::strftime(at.chars(), max, format.into(), tm)
+    })
 }
 
 /// `waitpid(2)`, storing the status in `status` when given. `None` means
@@ -1298,7 +1459,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no fcntl for these flags")]
     fn fcntl_errors_keep_errno_and_success_keeps_flags() {
         let error = fcntl(-1, libc::F_GETFL, 0).unwrap_err();
         set_errno(libc::EINTR);
@@ -1332,7 +1492,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no poll")]
     fn poll_distinguishes_timeout_readiness_and_invalid_descriptors() {
         let [reader, writer] = pipe().unwrap();
         let mut event = libc::pollfd {
@@ -1384,6 +1543,10 @@ mod tests {
         assert_ne!(
             fcntl(copy, libc::F_GETFL, 0).unwrap_or(-1) & libc::O_NONBLOCK,
             0
+        );
+        assert_eq!(
+            fcntl(copy, libc::F_GETLK, 0).map_err(|e| e.raw_os_error()),
+            Err(Some(libc::EINVAL))
         );
         let mut buf = [0; 8];
         assert_eq!(read(copy, &mut buf), Some(3));

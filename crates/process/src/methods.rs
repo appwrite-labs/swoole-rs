@@ -1,6 +1,6 @@
 //! The `ProcessPool` and `Worker` methods (once `src/os/process_pool.cc`) that are
-//! whole Rust operations. Each runs over crates/server's [`PoolNative`] side as its
-//! C++ forward did.
+//! whole Rust operations. Each receives its [`PoolNative`] effects from the
+//! caller: crates/server's implementation in production, a supplied host in tests.
 
 use crate::process_pool::Protocol;
 use crate::task_file::Packed;
@@ -21,27 +21,9 @@ use crate::process_pool::{
     swr_v1_worker_symbol, with,
 };
 use crate::reload_task::KillWarning;
-use crate::worker_globals::{
-    swr_v1_worker_global_get, swr_v1_worker_global_set, worker_global_max_requests,
-};
+use crate::worker_globals::{with_globals, worker_global_max_requests};
 use crate::worker_record::WorkerRecord;
-
-/// crates/server's side, which every method below lends its export
-/// (`crates/server/src/pool_native.rs`); tests drive the exports with their own
-/// hosts and never reach it.
-fn native() -> &'static dyn PoolNative {
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
-    {
-        // crates/server's, in the same archive; declared, since crates/server
-        // depends on this crate.
-        unsafe extern "Rust" {
-            safe fn swr_v1_process_pool_native() -> &'static dyn PoolNative;
-        }
-        swr_v1_process_pool_native()
-    }
-    #[cfg(not(all(feature = "upstream-symbols", not(test))))]
-    swoole_rs_corebase::fatal("no native process pool without upstream-symbols")
-}
+use std::sync::atomic::Ordering::Relaxed;
 
 /// A method's result; a callback's bailout is raised once the method's frames are
 /// gone. This frame holds nothing, so the `longjmp` may cross it.
@@ -57,8 +39,8 @@ pub fn raised<T: Default>(result: Result<T, Bailed>) -> T {
 macro_rules! pool_methods {
     ($(fn $name:ident($($p:ident: $t:ty),*) -> $r:ty = $($raised:ident)? |$pool:ident| $call:expr;)*) => {$(
         #[doc = concat!("`ProcessPool::", stringify!($name), "`.")]
-        pub fn $name(pool: PoolRef<'_>, $($p: $t),*) -> $r {
-            $($raised)?(with(native(), pool, |$pool| $call))
+        pub fn $name(native: &dyn PoolNative, pool: PoolRef<'_>, $($p: $t),*) -> $r {
+            $($raised)?(with(native, pool, |$pool| $call))
         }
     )*};
 }
@@ -78,7 +60,7 @@ pool_methods! {
     fn set_type(kind: WorkerType) -> () = |p| p.set_type(kind);
     fn set_start_id(id: c_int) -> () = |p| p.number_from(id.c_cast::<u16>());
     fn detach() -> bool = |p| p.detach();
-    fn wait() -> c_int = raised |p| p.wait().map(CCast::c_cast::<c_int>);
+    fn wait() -> () = raised |p| p.wait();
     fn destroy() -> () = |p| p.destroy();
     fn free_message_box() -> () = |p| p.free_message_box();
 }
@@ -87,60 +69,77 @@ pool_methods! {
 /// `data`'s) and `data`; false when the pool has no message box, `data` does not
 /// fit, or the push fails.
 #[must_use]
-pub fn push_event(pool: PoolRef<'_>, head: &swoole_rs_corebase::DataHead, data: &[u8]) -> bool {
-    swr_v1_process_pool_push_event(native(), pool, head, data)
+pub fn push_event(
+    native: &dyn PoolNative,
+    pool: PoolRef<'_>,
+    head: &swoole_rs_corebase::DataHead,
+    data: &[u8],
+) -> bool {
+    swr_v1_process_pool_push_event(native, pool, head, data)
 }
 
 /// `ProcessPool::stop(worker)`; nothing when `worker` is none of the pool's.
-pub fn stop(pool: PoolRef<'_>, worker: *mut WorkerRecord) {
+pub fn stop(native: &dyn PoolNative, pool: PoolRef<'_>, worker: *mut WorkerRecord) {
     if let Some(worker) = pool.worker_of(worker) {
-        with(native(), pool, |p| p.stop(worker.raw()));
+        with(native, pool, |p| p.stop(worker.raw()));
     }
 }
 
 /// `ProcessPool::signal(signo, worker)`, in `worker` or (null, or none of the
 /// pool's) the master.
-pub fn signal(pool: PoolRef<'_>, signo: c_int, worker: *mut WorkerRecord) {
+pub fn signal(native: &dyn PoolNative, pool: PoolRef<'_>, signo: c_int, worker: *mut WorkerRecord) {
     let worker = pool.worker_of(worker).map_or(ptr::null_mut(), Worker::raw);
-    raised(with(native(), pool, |p| p.signal(signo, worker)));
+    raised(with(native, pool, |p| p.signal(signo, worker)));
 }
 
 /// `ProcessPool::spawn(worker)`, whose pid every caller ignores; nothing when `worker`
 /// is none of the pool's.
-pub fn spawn(pool: PoolRef<'_>, worker: *mut WorkerRecord) {
+pub fn spawn(native: &dyn PoolNative, pool: PoolRef<'_>, worker: *mut WorkerRecord) {
     if let Some(worker) = pool.worker_of(worker) {
-        raised(with(native(), pool, |p| p.spawn(worker.raw())));
+        raised(with(native, pool, |p| p.spawn(worker.raw())));
     }
 }
 
 /// `ProcessPool::create(worker_num, msgqueue_key, ipc_mode)`.
 #[must_use]
-pub fn create(pool: PoolRef<'_>, worker_num: u32, key: c_int, mode: c_int) -> bool {
+pub fn create(
+    native: &dyn PoolNative,
+    pool: PoolRef<'_>,
+    worker_num: u32,
+    key: c_int,
+    mode: c_int,
+) -> bool {
     let mode = u8::try_from(mode.cast_unsigned() & 0xff).unwrap_or_default();
-    swr_v1_process_pool_create(native(), pool, worker_num, key, mode)
+    swr_v1_process_pool_create(native, pool, worker_num, key, mode)
 }
 
 /// `ProcessPool::push_message(type, data, length)`.
 #[must_use]
-pub fn push_message(pool: PoolRef<'_>, kind: u8, data: &[u8]) -> bool {
-    swr_v1_process_pool_push(native(), pool, kind, data)
+pub fn push_message(native: &dyn PoolNative, pool: PoolRef<'_>, kind: u8, data: &[u8]) -> bool {
+    swr_v1_process_pool_push(native, pool, kind, data)
 }
 
 /// `push_message(SW_WORKER_MESSAGE_STOP, WorkerStopMessage { pid, worker_id })`:
 /// the C layout's 4-byte pid, 2-byte id and 2 bytes of padding.
 #[must_use]
-pub fn push_stop(pool: PoolRef<'_>, pid: c_int, worker_id: u16) -> bool {
+pub fn push_stop(native: &dyn PoolNative, pool: PoolRef<'_>, pid: c_int, worker_id: u16) -> bool {
     /// `SW_WORKER_MESSAGE_STOP`.
     const WORKER_MESSAGE_STOP: u8 = 1;
     let ([a, b, c, d], [e, f]) = (pid.to_ne_bytes(), worker_id.to_ne_bytes());
-    push_message(pool, WORKER_MESSAGE_STOP, &[a, b, c, d, e, f, 0, 0])
+    push_message(native, pool, WORKER_MESSAGE_STOP, &[a, b, c, d, e, f, 0, 0])
 }
 
 /// `ProcessPool::dispatch(data, dst_worker_id)`, or `dispatch_sync` when
 /// `blocking`, of `task` to `worker`, else one the pool schedules.
 #[must_use]
-pub fn dispatch(pool: PoolRef<'_>, task: Packed<'_>, worker: Option<u32>, blocking: bool) -> bool {
-    swr_v1_process_pool_dispatch_event(native(), pool, task.bytes(), worker, blocking)
+pub fn dispatch(
+    native: &dyn PoolNative,
+    pool: PoolRef<'_>,
+    task: Packed<'_>,
+    worker: Option<u32>,
+    blocking: bool,
+) -> bool {
+    swr_v1_process_pool_dispatch_event(native, pool, task.bytes(), worker, blocking)
 }
 
 /// `ProcessPool::add_worker(worker)`: keeps an existing entry for the pid; nothing
@@ -166,14 +165,19 @@ pub fn get_worker_by_pid(pool: &PoolRecord, pid: c_int) -> *mut WorkerRecord {
 /// `ProcessPool::is_worker_running(worker)`.
 #[must_use]
 pub fn is_worker_running(pool: PoolRef<'_>, worker: Worker<'_>) -> bool {
-    pool.running() && swr_v1_worker_global_get(4) == 0 && !worker.exceeded_max_request()
+    pool.running() && !worker_is_shutdown() && !worker.exceeded_max_request()
 }
 
 /// `Worker::send_pipe_message(buf, n, flags)` of `data`: through its pool's queue or
 /// the pipe end `flags` names. None for a worker no pool holds, which upstream
 /// doesn't send through.
 #[must_use]
-pub fn send_pipe_message(worker: Worker<'_>, data: &[u8], flags: c_int) -> Option<usize> {
+pub fn send_pipe_message(
+    native: &dyn PoolNative,
+    worker: Worker<'_>,
+    data: &[u8],
+    flags: c_int,
+) -> Option<usize> {
     /// `SW_PIPE_MASTER`.
     const PIPE_MASTER: c_int = 1;
     let pool = worker.pool_ref()?;
@@ -184,22 +188,19 @@ pub fn send_pipe_message(worker: Worker<'_>, data: &[u8], flags: c_int) -> Optio
         worker.pipe_worker()
     };
     let queue = pool.use_msgqueue();
-    swr_v1_process_worker_send(native(), pool, pipe, queue, id, data, flags)
+    swr_v1_process_worker_send(native, pool, pipe, queue, id, data, flags)
 }
 
+/// Creates a listener owned by the process pool; supplied by crates/tls at startup.
 #[cfg(feature = "upstream-symbols")]
-// crates/tls defines it under its upstream symbol, as a safe Rust fn taking
-// plain values and a `Text`; declared, since
-// crates/tls (through crates/reactor) depends on this crate. It returns a native
-// socket the caller owns, or null.
-unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole18make_server_socketE12swSocketTypePKcii"]
-    safe fn make_server_socket(
-        kind: c_int,
-        host: swoole_rs_corebase::sys::Text<'_>,
-        port: c_int,
-        backlog: c_int,
-    ) -> *mut c_void;
+pub type Listener = fn(c_int, &CStr, c_int, c_int) -> *mut c_void;
+#[cfg(feature = "upstream-symbols")]
+static LISTENER: std::sync::OnceLock<Listener> = std::sync::OnceLock::new();
+
+/// Registers the listener factory once, before any pool listens.
+#[cfg(feature = "upstream-symbols")]
+pub fn set_listener(listener: Listener) {
+    LISTENER.get_or_init(|| listener);
 }
 
 /// `ProcessPool::listen(socket_file, backlog)`: a unix stream listener.
@@ -223,7 +224,11 @@ pub fn listen_socket(
     backlog: c_int,
 ) -> bool {
     listen(pool.record(), host, port, || {
-        make_server_socket(kind, host.into(), port, backlog)
+        LISTENER
+            .get()
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("pool listener is not registered"))(
+            kind, host, port, backlog,
+        )
     })
 }
 
@@ -232,7 +237,7 @@ pub fn listen_socket(
 /// listener, which it records with its address.
 #[cfg(any(feature = "upstream-symbols", test))]
 fn listen(pool: &PoolRecord, host: &CStr, port: c_int, make: impl FnOnce() -> *mut c_void) -> bool {
-    if pool.ipc_mode != crate::process_pool::IpcMode::Socket {
+    if pool.ipc_mode.get() != crate::process_pool::IpcMode::Socket {
         swoole_rs_corebase::log::error_log(
             swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
             swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int,
@@ -277,12 +282,17 @@ pub fn response(pool: PoolRef<'_>, data: &[u8]) -> bool {
 /// False for a `worker_id` the pool has no worker for, or a pool without pipes.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
-pub fn send_message(pool: PoolRef<'_>, worker_id: u32, message: &[u8]) -> bool {
+pub fn send_message(
+    native: &dyn PoolNative,
+    pool: PoolRef<'_>,
+    worker_id: u32,
+    message: &[u8],
+) -> bool {
     use swoole_rs_corebase::DataHead;
     let handle = pool;
     let pool = pool.record();
     // `get_worker`: the pool's record for `worker_id`.
-    let index = worker_id.wrapping_sub(u32::from(pool.start_id)) as usize;
+    let index = worker_id.wrapping_sub(u32::from(pool.start_id.get())) as usize;
     // `pipes` owns the workers' pipes: `create` makes one per worker or none, and
     // `destroy` frees them and clears it.
     let Some(worker) = pool.worker(index).filter(|_| pool.has_pipes()) else {
@@ -295,7 +305,7 @@ pub fn send_message(pool: PoolRef<'_>, worker_id: u32, message: &[u8]) -> bool {
         // loop while one is available. Upstream returns its ssize_t as the bool, so a
         // failure is true too.
         let (id, flags) = (worker.id(), crate::pool::PIPE_NONBLOCK);
-        let sent = swr_v1_process_worker_send(native(), handle, pipe, false, id, message, flags);
+        let sent = swr_v1_process_worker_send(native, handle, pipe, false, id, message, flags);
         return sent != Some(0);
     }
     let mut head = DataHead {
@@ -304,7 +314,7 @@ pub fn send_message(pool: PoolRef<'_>, worker_id: u32, message: &[u8]) -> bool {
         ..DataHead::default()
     };
     // The pool's bus (not null, checked above) and the worker's master pipe.
-    native().bus_write(handle, worker, &mut head, message)
+    native.bus_write(handle, worker, &mut head, message)
 }
 
 /// `ProcessPool::pop_message(data, size)`: the next message in the master's box,
@@ -324,7 +334,6 @@ pub fn worker_set_max_request(max_request: u32, grace: u32) {
 }
 
 /// `swoole::ExitStatus`: a child's pid and `waitpid` status.
-#[repr(C)]
 pub struct ExitStatus {
     pid: c_int,
     status: c_int,
@@ -391,25 +400,25 @@ pub fn reload_warn(kind: KillWarning, pid: c_int, worker_id: u32) {
 /// `Worker::is_shutdown()`: the current worker's.
 #[must_use]
 pub fn worker_is_shutdown() -> bool {
-    swr_v1_worker_global_get(4) != 0
+    with_globals(|globals| globals.shutdown.load(Relaxed))
 }
 
 /// `Worker::is_running()`.
 #[must_use]
 pub fn worker_is_running() -> bool {
-    swr_v1_worker_global_get(3) != 0
+    with_globals(|globals| globals.running.load(Relaxed))
 }
 
 /// `swoole_get_worker_id()`.
 #[must_use]
 pub fn swoole_get_worker_id() -> u32 {
-    u32::try_from(swr_v1_worker_global_get(0)).unwrap_or_default()
+    with_globals(|globals| globals.id.load(Relaxed))
 }
 
 /// `swoole_get_worker_pid()`.
 #[must_use]
 pub fn swoole_get_worker_pid() -> c_int {
-    c_int::try_from(swr_v1_worker_global_get(1)).unwrap_or_default()
+    with_globals(|globals| globals.pid.load(Relaxed))
 }
 
 /// `swoole_get_worker_type()`: upstream's core-tests (`log.cpp`'s `log_level`) call it.
@@ -419,37 +428,38 @@ pub fn swoole_get_worker_pid() -> c_int {
 )]
 #[must_use]
 pub extern "C" fn swoole_get_worker_type() -> c_int {
-    c_int::try_from(swr_v1_worker_global_get(2)).unwrap_or_default()
+    c_int::from(with_globals(|globals| globals.kind.load(Relaxed)))
 }
 
 /// `swoole_get_worker_type()`, `None` before the process has a type.
 #[must_use]
 pub fn worker_type() -> Option<WorkerType> {
-    WorkerType::from_code(swr_v1_worker_global_get(2))
+    WorkerType::from_code(swoole_get_worker_type().into())
 }
 
 /// `swoole_set_worker_type(type)`.
 pub fn set_worker_type(kind: WorkerType) {
-    swr_v1_worker_global_set(2, kind.code().into());
+    with_globals(|globals| globals.kind.store(kind.code(), Relaxed));
 }
 
 /// `swoole_set_worker_id(worker_id)`.
 pub fn swoole_set_worker_id(id: u32) {
-    swr_v1_worker_global_set(0, i64::from(id));
+    with_globals(|globals| globals.id.store(id, Relaxed));
 }
 
 /// `swoole_set_worker_pid(pid)`.
 pub fn swoole_set_worker_pid(pid: c_int) {
-    swr_v1_worker_global_set(1, i64::from(pid));
+    with_globals(|globals| globals.pid.store(pid, Relaxed));
 }
 
-/// `swoole_set_worker_type(type)`.
+/// `swoole_set_worker_type(type)`, narrowed to the record's `uint8_t`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_Z22swoole_set_worker_typei")
 )]
 pub extern "C" fn swoole_set_worker_type(kind: c_int) {
-    swr_v1_worker_global_set(2, i64::from(kind));
+    let kind = u8::try_from(kind & 0xFF).unwrap_or_default();
+    with_globals(|globals| globals.kind.store(kind, Relaxed));
 }
 
 /// `swoole_get_worker_symbol()`: the log's mark for the current worker's type.
@@ -462,18 +472,15 @@ pub extern "C" fn swoole_get_worker_symbol() -> std::ffi::c_char {
     swr_v1_worker_symbol(swoole_get_worker_type())
 }
 
-/// The logger's native effects, the table `swoole::Logger` hands
-/// `swr_v1_logger_new` (once `src/core/log.cc`).
+/// The process logger's native effects.
 #[cfg(feature = "upstream-symbols")]
-#[unsafe(no_mangle)]
-pub static swr_logger_host: swoole_rs_utilities::LoggerHost = swoole_rs_utilities::LoggerHost {
+const LOGGER_HOST: swoole_rs_utilities::LoggerHost = swoole_rs_utilities::LoggerHost {
     redirect: swoole_rs_corebase::swoole_redirect_stdout,
-    backtrace: swoole_rs_corebase::swoole_print_backtrace,
     identity: logger_identity,
 };
 
 #[cfg(feature = "upstream-symbols")]
-extern "C" fn logger_identity() -> swoole_rs_utilities::LoggerIdentity {
+fn logger_identity() -> swoole_rs_utilities::LoggerIdentity {
     swoole_rs_utilities::LoggerIdentity {
         worker_id: swoole_get_worker_id().cast_signed(),
         worker_pid: swoole_get_worker_pid(),
@@ -507,7 +514,7 @@ pub fn logger_op(op: swoole_rs_corebase::native::LoggerOp) {
     match op {
         LoggerOp::New => {
             let stdout = swoole_rs_corebase::swr_v1_core_stdout();
-            let logger = std::sync::Arc::new(Logger::new(stdout, swr_logger_host));
+            let logger = std::sync::Arc::new(Logger::new(stdout, LOGGER_HOST));
             LOGGER.store(std::sync::Arc::as_ptr(&logger).cast_mut(), Relaxed);
             // A logger `new` replaces is leaked, as upstream's pointer overwrite does.
             _ = owner().replace(logger).map(std::sync::Arc::into_raw);
@@ -560,18 +567,13 @@ pub(crate) mod tests {
 
     /// What `origin` logged on this thread: (kind, level, code, message).
     pub(crate) fn logged(origin: &str) -> Vec<(c_int, c_int, c_int, String)> {
-        LOGGED
-            .lock()
-            .map(|logged| {
-                logged
-                    .iter()
-                    .filter(|entry| entry.3 == origin && entry.5 == thread::current().id())
-                    .map(|(kind, level, code, _, message, _)| {
-                        (*kind, *level, *code, message.clone())
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        LOGGED.lock().map_or_default(|logged| {
+            logged
+                .iter()
+                .filter(|entry| entry.3 == origin && entry.5 == thread::current().id())
+                .map(|(kind, level, code, _, message, _)| (*kind, *level, *code, message.clone()))
+                .collect()
+        })
     }
 
     /// Route this binary's logs to [`record`].
@@ -595,9 +597,9 @@ pub(crate) mod tests {
     fn listen_needs_a_socket_pool_and_keeps_its_listener() {
         install();
         // SAFETY: a zeroed record is a pool before `create`.
-        let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
-        pool.ipc = pool_ipc_new(true);
-        pool.ipc_mode = crate::process_pool::IpcMode::UnixSock;
+        let pool: PoolRecord = unsafe { std::mem::zeroed() };
+        pool.ipc.set(pool_ipc_new(true));
+        pool.ipc_mode.set(crate::process_pool::IpcMode::UnixSock);
         let refused = listen(&pool, c"127.0.0.1", 9501, || make(1, 9501));
         assert!(!refused, "an SW_IPC_UNIXSOCK pool has no stream listener");
         assert_eq!(
@@ -610,28 +612,28 @@ pub(crate) mod tests {
             )],
             "the upstream warning"
         );
-        pool.ipc_mode = crate::process_pool::IpcMode::Socket;
+        pool.ipc_mode.set(crate::process_pool::IpcMode::Socket);
         let failed = listen(&pool, c"127.0.0.1", 9502, || make(1, 9502));
         assert!(!failed, "no socket, no listener");
         // SAFETY: the pool's IPC state.
         assert!(
-            swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc }).is_null(),
+            swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc.get() }).is_null(),
             "none kept"
         );
         let listened = listen(&pool, c"127.0.0.1", 9501, || make(1, 9501));
         assert!(listened, "listening");
         // SAFETY: the pool's IPC state.
-        let listener = swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc });
+        let listener = swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc.get() });
         assert_eq!(
             listener.cast_const(),
             (&raw const LISTENER).cast(),
             "the socket is kept"
         );
         // SAFETY: the pool's IPC state.
-        let address = pool_ipc_address(unsafe { &*pool.ipc });
+        let address = pool_ipc_address(unsafe { &*pool.ipc.get() });
         assert_eq!(address, Some((c"127.0.0.1", 9501)), "and its address");
         // SAFETY: the pool's IPC state, not used again.
-        pool_ipc_free(*unsafe { Box::from_raw(pool.ipc) }, keep);
+        pool_ipc_free(*unsafe { Box::from_raw(pool.ipc.get()) }, keep);
     }
 
     #[test]
@@ -665,7 +667,7 @@ pub(crate) mod tests {
     fn a_response_needs_a_connection() {
         // SAFETY: a zeroed record is a pool before `create`.
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
-        pool.ipc = pool_ipc_new(true);
+        pool.ipc.set(pool_ipc_new(true));
         assert!(!response(PoolRef::from(&mut pool), b"ok"), "no connection");
         assert_eq!(
             swoole_rs_corebase::log::last_error(),
@@ -673,7 +675,7 @@ pub(crate) mod tests {
             "SW_ERROR_INVALID_PARAMS"
         );
         // SAFETY: the pool's IPC state, not used again.
-        pool_ipc_free(*unsafe { Box::from_raw(pool.ipc) }, keep);
+        pool_ipc_free(*unsafe { Box::from_raw(pool.ipc.get()) }, keep);
     }
 
     #[test]

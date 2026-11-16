@@ -2,7 +2,7 @@
 //! `context::alloc` allocates and Request and Response point at.
 use std::{
     collections::HashSet,
-    ffi::{CString, c_char, c_int, c_void},
+    ffi::{CString, c_int, c_void},
     rc::Rc,
 };
 use swoole_rs_zend::{Declared, Kept, Owned, Props, UNDEF, Value, sys::zval};
@@ -63,7 +63,6 @@ impl Slot {
 }
 
 /// `swoole::http::Request`.
-#[repr(C)]
 pub(crate) struct Request {
     pub(crate) version: c_int,
     /// The path up to its query: `on_url`'s, or the HTTP/2 `:path`'s.
@@ -71,7 +70,8 @@ pub(crate) struct Request {
     pub(crate) post_form_urlencoded: bool,
     /// The request's bytes, a string once any arrive.
     pub(crate) zdata: Owned,
-    pub(crate) body_at: *const c_char,
+    /// Where the body (unless chunked) starts in the input that holds it.
+    pub(crate) body_at: usize,
     pub(crate) body_length: usize,
     /// An HTTP/2 request's body, as its DATA frames arrive.
     #[expect(
@@ -91,7 +91,6 @@ pub(crate) struct Request {
 
 /// The parser's own bookkeeping (`ContextState::parse_`). All zeroes is the
 /// initial state, which `context::alloc` writes.
-#[repr(C)]
 pub(crate) struct Parse {
     pub(crate) header_value_len: usize,
     /// `Request::parse()`: spans llhttp flushed at the end of an input buffer.
@@ -117,7 +116,6 @@ pub(crate) struct Parse {
 }
 
 /// `swoole::http::ContextState`.
-#[repr(C)]
 pub(crate) struct State {
     pub(crate) fd: i64,
     pub(crate) request: Request,
@@ -132,7 +130,7 @@ pub(crate) struct State {
     pub(crate) parse_files: bool,
     pub(crate) enable_compression: bool,
     pub(crate) accept_compression: bool,
-    pub(crate) compression_method: i8,
+    pub(crate) compression_method: swoole_rs_httpbindings::Compression,
     pub(crate) parse: Parse,
     pub(crate) response: Response,
     pub(crate) compression_min_length: u32,
@@ -193,10 +191,7 @@ pub(crate) struct State {
 }
 
 /// `swoole::http::Response`.
-#[repr(C)]
 pub(crate) struct Response {
-    method: c_int,
-    version: c_int,
     pub(crate) status: c_int,
     /// `status()`'s reason, as `%s` prints it: up to its first NUL.
     pub(crate) reason: Option<Box<CString>>,

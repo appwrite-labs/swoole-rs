@@ -24,10 +24,17 @@ pub(crate) fn create_pool(serv: view::Server<'_>) -> bool {
     // The server's event pool, reset as `*pool = {}` did.
     pool_ref.reset();
     let ipc = IpcMode::UnixSock.code().into();
-    if !swoole_rs_process::methods::create(pool_ref, config.worker_num.get(), 0, ipc) {
+    if !swoole_rs_process::methods::create(
+        crate::process_pool_native(),
+        pool_ref,
+        config.worker_num.get(),
+        0,
+        ipc,
+    ) {
         return false;
     }
     swoole_rs_process::methods::set_max_request(
+        crate::process_pool_native(),
         pool_ref,
         config.max_request.get(),
         config.max_request_grace.get(),
@@ -48,7 +55,7 @@ pub(crate) fn create_pool(serv: view::Server<'_>) -> bool {
 }
 
 /// `pool->main_loop`: `Server::reactor_process_main_loop` over the pool's worker.
-extern "C-unwind" fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
+fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
     let Some(serv) = crate::shared::pool_server(pool) else {
         return -1;
     };
@@ -61,7 +68,7 @@ extern "C-unwind" fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
 
 /// `pool->onWorkerNotFound`: restart the event worker that exited. The pool lends
 /// itself and the exit status for the call.
-extern "C-unwind" fn worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) {
+fn worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) {
     if let Some(serv) = crate::shared::pool_server(pool) {
         crate::manager::native::restart_worker_process(serv, status);
     }
@@ -73,7 +80,7 @@ pub(crate) fn set_pipe_handler() {
 }
 
 /// `ReactorProcess_onPipeRead`: a message from another worker or a task worker.
-extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     let reactor = Reactor::running(reactor);
     let Some(serv) = reactor.server() else {
         return -1;

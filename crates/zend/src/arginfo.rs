@@ -7,8 +7,7 @@
 use crate::sys::{
     _IS_BOOL, _ZEND_IS_VARIADIC_BIT, _ZEND_SEND_MODE_SHIFT, _ZEND_TYPE_ITERABLE_BIT,
     _ZEND_TYPE_KIND_MASK, _ZEND_TYPE_LITERAL_NAME_BIT, _ZEND_TYPE_NULLABLE_BIT, IS_ITERABLE,
-    IS_MIXED, MAY_BE_ANY, MAY_BE_BOOL, zend_execute_data, zend_function_entry,
-    zend_internal_arg_info, zend_type, zval,
+    IS_MIXED, MAY_BE_ANY, MAY_BE_BOOL, zend_function_entry, zend_internal_arg_info, zend_type,
 };
 use std::{
     ffi::{CStr, c_char, c_void},
@@ -157,8 +156,9 @@ fn name(row: &zend_function_entry) -> Option<&'static CStr> {
 #[derive(Clone, Copy)]
 pub struct Entry(zend_function_entry);
 
-/// A Zend handler (`zif_handler`).
-pub type Handler = unsafe extern "C" fn(*mut zend_execute_data, *mut zval);
+/// A Zend handler (`zif_handler`), over the frame and return slot only Zend's
+/// call of it makes.
+pub type Handler = extern "C" fn(crate::Entered<'_>, crate::Returned<'_>);
 
 /// `PHP_ME`/`ZEND_FE`/`ZEND_RAW_FENTRY`: `name`, run by `handler`, with `arginfo`.
 #[must_use]
@@ -169,8 +169,20 @@ pub const fn entry<const N: usize>(
     flags: u32,
 ) -> Entry {
     let mut entry = definition(name, arginfo, flags);
-    entry.handler = Some(handler);
+    entry.handler = raw(handler);
     Entry(entry)
+}
+
+/// `handler` as Zend's function entries store it (`zif_handler`), which Zend
+/// calls only as an internal function's handler.
+#[must_use]
+pub const fn raw(handler: Handler) -> crate::sys::zif_handler {
+    // SAFETY: `Entered` and `Returned` are transparent pointers, so the two
+    // function pointer types share one ABI (and a function pointer is never
+    // null); calling the result is unsafe, and Zend calls it only as an internal
+    // function's handler, with its call's live frame and return slot, which
+    // those two stand for.
+    unsafe { std::mem::transmute::<Handler, crate::sys::zif_handler>(handler) }
 }
 
 /// A function's immutable metadata before its native handler is lent at module load.

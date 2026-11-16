@@ -2,37 +2,66 @@
 use crate::request::case_equal;
 use core::ffi::CStr;
 
-/// Native compiled capabilities: bit0 compression options, bit1 zlib options.
-/// Returns 0 for an unknown key, 1..7 for the original native option assignments.
+/// A negotiated HTTP content coding. Zero is a valid no-coding value because
+/// the PHP HTTP context initializes its storage with zeroes.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Compression {
+    #[default]
+    None = 0,
+    Gzip = 1,
+    Deflate = 2,
+    Brotli = 3,
+    Zstd = 4,
+}
+
+/// A `Request::create` option.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestOption {
+    ParseCookie,
+    ParseBody,
+    ParseFiles,
+    EnableCompression,
+    CompressionLevel,
+    WebsocketCompression,
+    UploadTmpDir,
+}
+
+/// The option `key` names (case-insensitively), `None` for an unknown key or one the
+/// build lacks. Native compiled capabilities: bit0 compression options, bit1 zlib
+/// options.
 #[must_use]
-pub fn request_option(key: &[u8], capabilities: u32) -> i32 {
-    const OPTIONS: [(&[u8], u32); 7] = [
-        (b"parse_cookie", 0),
-        (b"parse_body", 0),
-        (b"parse_files", 0),
-        (b"enable_compression", 1),
-        (b"compression_level", 1),
-        (b"websocket_compression", 2),
-        (b"upload_tmp_dir", 0),
+pub fn request_option(key: &[u8], capabilities: u32) -> Option<RequestOption> {
+    const OPTIONS: [(&[u8], u32, RequestOption); 7] = [
+        (b"parse_cookie", 0, RequestOption::ParseCookie),
+        (b"parse_body", 0, RequestOption::ParseBody),
+        (b"parse_files", 0, RequestOption::ParseFiles),
+        (b"enable_compression", 1, RequestOption::EnableCompression),
+        (b"compression_level", 1, RequestOption::CompressionLevel),
+        (
+            b"websocket_compression",
+            2,
+            RequestOption::WebsocketCompression,
+        ),
+        (b"upload_tmp_dir", 0, RequestOption::UploadTmpDir),
     ];
     OPTIONS
         .iter()
-        .position(|&(name, required)| capabilities & required == required && case_equal(key, name))
-        .and_then(|index| i32::try_from(index + 1).ok())
-        .unwrap_or(0)
+        .find(|&&(name, required, _)| capabilities & required == required && case_equal(key, name))
+        .map(|&(_, _, option)| option)
 }
 
 /// Exact case-sensitive native substring preference, including matches inside
 /// tokens and q=0. Caller truncates the input length to native `uint32_t` first.
-/// Capabilities: bit0 zlib, bit1 Brotli, bit2 Zstd. Return native method 0..4.
+/// Capabilities: bit0 zlib, bit1 Brotli, bit2 Zstd.
 #[must_use]
-pub fn compression(encoding: &[u8], capabilities: u32) -> i32 {
+pub fn compression(encoding: &[u8], capabilities: u32) -> Compression {
     // (found bit, capability, native method, token), in order of preference.
-    const METHODS: [(u32, u32, i32, &[u8]); 4] = [
-        (1, 2, 3, b"br"),
-        (2, 1, 1, b"gzip"),
-        (4, 1, 2, b"deflate"),
-        (8, 4, 4, b"zstd"),
+    const METHODS: [(u32, u32, Compression, &[u8]); 4] = [
+        (1, 2, Compression::Brotli, b"br"),
+        (2, 1, Compression::Gzip, b"gzip"),
+        (4, 1, Compression::Deflate, b"deflate"),
+        (8, 4, Compression::Zstd, b"zstd"),
     ];
     // One pass: a token can only start at its first byte, which no other token shares.
     let mut found = 0;
@@ -54,34 +83,43 @@ pub fn compression(encoding: &[u8], capabilities: u32) -> i32 {
     METHODS
         .iter()
         .find(|&&(bit, capability, _, _)| found & bit != 0 && capabilities & capability != 0)
-        .map_or(0, |&(_, _, method, _)| method)
+        .map_or(Compression::None, |&(_, _, method, _)| method)
 }
 
-/// The encoding label, or `None` for unknown/uncompiled methods.
+/// The encoding label, or `None` for no coding or an uncompiled method.
 #[must_use]
-pub fn encoding(method: i32, capabilities: u32) -> Option<&'static CStr> {
+pub fn encoding(method: Compression, capabilities: u32) -> Option<&'static CStr> {
     let (required, text) = match method {
-        1 => (1, c"gzip"),
-        2 => (1, c"deflate"),
-        3 => (2, c"br"),
-        4 => (4, c"zstd"),
-        _ => return None,
+        Compression::Gzip => (1, c"gzip"),
+        Compression::Deflate => (1, c"deflate"),
+        Compression::Brotli => (2, c"br"),
+        Compression::Zstd => (4, c"zstd"),
+        Compression::None => return None,
     };
     (capabilities & required != 0).then_some(text)
 }
 
-/// Which native form parser effect follows completion. Flags are chunked buffer,
+/// The body a completed urlencoded form is parsed from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormSource {
+    /// The chunked body the parser buffered.
+    Chunked,
+    /// The request's own body span.
+    Body,
+}
+
+/// Which body, if any, a completed request parses as a form. Flags are chunked buffer,
 /// parse-body, form-urlencoded, receive-chunked and body pointer, respectively.
 #[must_use]
-pub fn swr_v1_httpbindings_form_source(flags: u32) -> i32 {
+pub const fn form_source(flags: u32) -> Option<FormSource> {
     if flags & 6 != 6 {
-        0
+        None
     } else if flags & 1 != 0 {
-        1
+        Some(FormSource::Chunked)
     } else if flags & 24 == 16 {
-        2
+        Some(FormSource::Body)
     } else {
-        0
+        None
     }
 }
 
@@ -141,7 +179,7 @@ mod tests {
         for header in headers {
             for capabilities in 0..8 {
                 assert_eq!(
-                    compression(header, capabilities),
+                    compression(header, capabilities) as i32,
                     by_substring(header, capabilities),
                     "{:?} with {capabilities}",
                     String::from_utf8_lossy(header)

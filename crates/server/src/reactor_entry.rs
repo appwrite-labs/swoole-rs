@@ -58,7 +58,7 @@ impl DgramPacket {
             let ip = self.socket_addr.addr.v4().sin_addr.s_addr;
             return c_long::from(ip.cast_signed());
         }
-        let host = swoole_rs_clients::address::swr_v1_clients_address_host(&self.socket_addr);
+        let host = swoole_rs_clients::address::host_in_scratch(&self.socket_addr);
         let length = self.socket_addr.len as usize;
         if host.is_null() || length == 0 {
             return 0;
@@ -69,79 +69,63 @@ impl DgramPacket {
     }
 }
 
-/// `reactor->ptr`, a server reactor's server, unchecked: the per-event handlers' read,
-/// where [`Reactor::server`]'s check would cost every request.
-///
-/// # Safety
-/// `reactor` holds a live server ([`Reactor::hold_server`]) for `'a`.
-pub(crate) unsafe fn server<'a>(reactor: Reactor) -> view::Server<'a> {
-    // SAFETY: per the caller.
-    unsafe { view::Server::from_raw(reactor.handle().object()) }
-}
-
-/// `f` over a handler's server (`reactor->ptr`) and reactor.
+/// `f` over a handler's server (`reactor->ptr`) and reactor, as upstream's `SW_OK`/`SW_ERR`;
+/// `SW_ERR` on a reactor that holds none, where no handler below is registered.
 #[inline]
-fn handler(reactor: Running<'_>, f: impl FnOnce(view::Server<'_>, Reactor) -> c_int) -> c_int {
+fn handler(reactor: Running<'_>, f: impl FnOnce(view::Server<'_>, Reactor) -> bool) -> c_int {
     let reactor = Reactor::running(reactor);
-    // SAFETY: the handlers below are registered only on reactors that hold a server.
-    f(unsafe { server(reactor) }, reactor)
+    crate::conn_io::status(reactor.server().is_some_and(|serv| f(serv, reactor)))
 }
 
 // The handlers below are registered only on reactors that hold a server.
 
 /// `ReactorThread_onPacketReceived`: a UDP port's datagram.
-pub extern "C" fn on_packet_received(reactor: Running<'_>, event: &mut Event) -> c_int {
+pub fn on_packet_received(reactor: Running<'_>, event: &mut Event) -> c_int {
     handler(reactor, |serv, reactor| {
-        crate::conn_io::status(crate::reactor_thread::packet_received(serv, reactor, event))
+        crate::reactor_thread::packet_received(serv, reactor, event)
     })
 }
 
 /// `ReactorThread_onClose`: the peer closed.
-pub extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
+pub fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
     handler(reactor, |serv, reactor| {
-        crate::conn_io::status(crate::conn_io::peer_close(serv, reactor, event))
+        crate::conn_io::peer_close(serv, reactor, event)
     })
 }
 
 /// `ReactorThread_onPipeWrite`: a worker pipe can be written.
-pub extern "C" fn on_pipe_write(reactor: Running<'_>, event: &mut Event) -> c_int {
+pub fn on_pipe_write(reactor: Running<'_>, event: &mut Event) -> c_int {
     handler(reactor, |serv, reactor| {
-        crate::conn_io::status(crate::reactor_io::pipe_write(serv, reactor, event))
+        crate::reactor_io::pipe_write(serv, reactor, event)
     })
 }
 
 /// `ReactorThread_onRead`: a connection is readable.
-pub extern "C" fn on_read(reactor: Running<'_>, event: &mut Event) -> c_int {
+pub fn on_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     handler(reactor, |serv, reactor| {
         crate::conn_io::read(serv, reactor, event)
     })
 }
 
 /// `ReactorThread_onWrite`: a connection is writable.
-pub extern "C" fn on_write(reactor: Running<'_>, event: &mut Event) -> c_int {
+pub fn on_write(reactor: Running<'_>, event: &mut Event) -> c_int {
     handler(reactor, |serv, reactor| {
-        crate::conn_io::status(crate::conn_io::write(serv, reactor, event))
+        crate::conn_io::write(serv, reactor, event)
     })
 }
 
-/// `static int Server::close_connection(Reactor *, Socket *)`.
-///
-/// # Safety
-/// `reactor` holds a live server and `socket` is a session socket of it, which nothing
-/// uses afterwards.
+/// `static int Server::close_connection(Reactor *, Socket *)`: the reactor's close of
+/// one of its server's session sockets.
 #[must_use]
-pub unsafe extern "C-unwind" fn close_connection(
+pub extern "C-unwind" fn close_connection(
     reactor: Running<'_>,
-    socket: swoole_rs_reactor::Socket<'_>,
+    socket: swoole_rs_reactor::OwnedSocket,
 ) -> c_int {
-    let reactor = Reactor::running(reactor);
-    // SAFETY: per the caller.
-    let serv = unsafe { server(reactor) };
-    crate::conn_io::status(crate::conn_io::close_connection(
-        serv,
-        reactor,
-        Some(socket),
-    ))
+    // Back to the connection, whose close frees it.
+    let socket = socket.leak();
+    handler(reactor, |serv, reactor| {
+        crate::conn_io::close_connection(serv, reactor, Some(socket))
+    })
 }
 
 /// `void ReactorThread::shutdown(Reactor *)`, over `serv`'s reactor thread `id` and
@@ -153,61 +137,39 @@ pub(crate) fn thread_shutdown(serv: view::Server<'_>, reactor: Reactor, id: usiz
     crate::thread_ops::shutdown(&ctx);
 }
 
-/// `static int Server::dispatch_task(const Protocol *, Socket *, const RecvData *)`:
-/// a data frame to the workers. A port protocol's `onPackage`.
-///
-/// # Safety
-/// `proto` is a live server port's protocol (its `private_data_2` the server) and
-/// `socket` a live session socket of that port.
+/// `static int Server::dispatch_task(const Protocol *, Socket *, const RecvData *)` over
+/// the port's server and the session's connection: `data` to the workers, with the
+/// caller's `len`, `ext_flags` and (in base mode) `flags`. Whether it was dispatched.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
-pub unsafe extern "C-unwind" fn dispatch_task(
-    proto: *const swoole_rs_clients::protocol::Protocol,
-    socket: swoole_rs_reactor::Socket<'_>,
-    rdata: &swoole_rs_corebase::net_types::RecvData,
-) -> c_int {
+pub fn dispatch_data(
+    server: view::Server<'_>,
+    conn: crate::Connection<'_>,
+    data: SendData<'_>,
+) -> bool {
     use core::sync::atomic::Ordering::SeqCst;
-    // SAFETY: per the caller; a port's protocol keeps its server.
-    let serv = unsafe { (*proto).private_data_2 };
-    // SAFETY: per the caller, a live server's.
-    let server = unsafe { view::Server::from_raw(serv) };
     let state = server.state();
-    // A session socket's object is its live connection.
-    let conn = socket
-        .read(|s| s.object)
-        .cast::<crate::records::ConnectionRecord>();
-    let len = rdata.info.len;
+    let head = *data.info();
+    let len = head.len;
     // The slot is read only before the dispatch, as upstream does: base and thread mode
     // run the callback inline, and a close there hands the slot to the accept that reuses
     // the fd (`close_connection`'s Release of `closed`), which no later read is ordered before.
     // Only the atomic count of queued bytes, which is shared by reference, is kept past it.
-    let (port, reactor_id, mut task, queued) = {
-        // SAFETY: the live connection slot, which lives as long as the server; its
-        // plain fields are borrowed only for this block.
-        let c = unsafe { &*conn };
-        if len > 0 {
-            c.recv_queued_bytes.fetch_add(len, SeqCst);
-        }
-        let info = swoole_rs_corebase::DataHead {
-            server_fd: crate::base_factory::low16(c.server_fd),
-            reactor_id: c.reactor_id.into(),
-            ext_flags: rdata.info.ext_flags,
-            kind: swoole_rs_corebase::ServerEvent::RecvData.code(),
-            time: c.last_recv_time,
-            fd: c.fd.into(),
-            len,
-            ..swoole_rs_corebase::DataHead::default()
-        };
-        // SAFETY: the caller's `RecvData`, whose `len` bytes at `data` (or null) stay
-        // readable and unwritten until the dispatch returns.
-        let task = unsafe { SendData::from_raw(info, rdata.data.cast()) };
-        (
-            server.port_of_fd(c.fd),
-            c.reactor_id,
-            task,
-            &c.recv_queued_bytes,
-        )
-    };
+    let queued = conn.recv_queued_bytes();
+    if len > 0 {
+        queued.fetch_add(len, SeqCst);
+    }
+    let (fd, reactor_id) = (conn.fd(), conn.reactor_id());
+    let mut task = data.rehead(swoole_rs_corebase::DataHead {
+        server_fd: crate::base_factory::low16(conn.server_fd()),
+        reactor_id: reactor_id.into(),
+        ext_flags: head.ext_flags,
+        kind: swoole_rs_corebase::ServerEvent::RecvData.code(),
+        time: conn.last_recv_time(),
+        fd: fd.into(),
+        ..swoole_rs_corebase::DataHead::default()
+    });
+    let port = server.port_of_fd(fd);
     let mode = state.config_ref().mode_;
     let dispatched = if mode == crate::Mode::Process {
         crate::factory::dispatch(server, &mut task)
@@ -215,7 +177,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
         if mode == crate::Mode::Base {
             // The reader's word that the payload is its whole receive buffer, which
             // only a worker in the reader's own thread may act on.
-            task.set_flags(rdata.info.flags & crate::base_factory::POP_PTR);
+            task.set_flags(head.flags & crate::base_factory::POP_PTR);
         }
         crate::base_factory::dispatch(server, &mut task, mode == crate::Mode::Base)
     };
@@ -223,17 +185,12 @@ pub unsafe extern "C-unwind" fn dispatch_task(
         if len > 0 {
             queued.fetch_sub(len, SeqCst);
         }
-        return -1;
+        return false;
     }
-    if mode == crate::Mode::Process {
-        // `serv->get_thread(id)`, unchecked.
-        let threads = state.tables_ref().reactor_threads_ptr();
-        let thread = threads
-            .cast::<crate::reactor_ops::ThreadRecord>()
-            .wrapping_add(usize::from(reactor_id));
-        // SAFETY: the connection's live reactor thread.
-        let count = unsafe { &(*thread).dispatch_count };
-        count.set(count.get() + 1);
+    if mode == crate::Mode::Process
+        && let Some(thread) = state.tables_ref().reactor_thread(usize::from(reactor_id))
+    {
+        thread.dispatch_count.set(thread.dispatch_count.get() + 1);
     }
     if let Some(gs) = crate::shared::server_counters(state) {
         gs.dispatch_count.fetch_add(1, SeqCst);
@@ -241,5 +198,5 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     if let Some(gs) = port.and_then(|port| port.counters()) {
         gs.dispatch_count.fetch_add(1, SeqCst);
     }
-    0
+    true
 }

@@ -16,59 +16,57 @@ fn take() -> Vec<String> {
     LOG.with(|log| std::mem::take(&mut *log.borrow_mut()))
 }
 
-/// The fake host the multi calls instead of `host.rs`'s.
-pub(crate) mod host {
+/// Recording effects on the same owned socket records used by the native host.
+mod recording {
     use super::{Events, LOOP, Multi, log};
-    use std::ffi::{c_int, c_long, c_void};
+    use std::ffi::{c_long, c_void};
     use std::{cell::Cell, ptr};
+    use swoole_rs_tls::event_socket::EventSocket;
 
-    /// A fake reactor socket: its events and whether it is out of the reactor.
-    #[derive(Clone, Copy)]
-    pub(crate) struct ReactorSocket(*mut [i32; 2]);
-
-    impl ReactorSocket {
-        pub(crate) fn new(fd: c_int) -> Self {
+    pub(super) static OPS: crate::host::Ops = crate::host::Ops {
+        event_available,
+        install_handlers: || (),
+        socket_new: |fd| {
             log(format!("new {fd}"));
-            Self(Box::into_raw(Box::new([0, 1])))
-        }
-        #[expect(
-            clippy::unused_self,
-            reason = "the fake reports events without an object"
-        )]
-        pub(crate) fn set_object(self, _object: *mut c_void) {}
-        pub(crate) fn events(self) -> Events {
-            Events::from_bits(unsafe { (*self.0)[0] })
-        }
-        pub(crate) fn removed(self) -> bool {
-            unsafe { (*self.0)[1] != 0 }
-        }
-        pub(crate) fn add(self, events: Events) -> bool {
+            (crate::host::NATIVE.socket_new)(fd)
+        },
+        socket_add: |socket, events| {
             log(format!("add {events}"));
-            unsafe { *self.0 = [events.bits(), 0] };
+            socket.socket().edit(|record| {
+                record.events = events;
+                record.removed = false;
+            });
             true
-        }
-        pub(crate) fn set(self, events: Events) -> bool {
+        },
+        socket_set: |socket, events| {
             log(format!("set {events}"));
-            unsafe { (*self.0)[0] = events.bits() };
+            socket.socket().edit(|record| record.events = events);
             true
-        }
-        pub(crate) fn del(self) -> bool {
+        },
+        socket_del: |socket| {
             log("del".into());
-            unsafe { *self.0 = [0, 1] };
+            socket.socket().edit(|record| {
+                record.events = Events::NONE;
+                record.removed = true;
+            });
             true
-        }
-        pub(crate) fn free(self) {
+        },
+        socket_release: |socket: EventSocket| {
             log("free".into());
-            drop(unsafe { Box::from_raw(self.0) });
-        }
-    }
+            socket.release();
+        },
+        timer_available: || true,
+        timer_add,
+        timer_del,
+        current,
+        current_cid,
+        yield_,
+        wake,
+        defer,
+    };
 
     pub(crate) fn event_available() -> bool {
         LOOP.with(Cell::get)
-    }
-    pub(crate) fn install_handlers() {}
-    pub(crate) fn timer_available() -> bool {
-        true
     }
     #[expect(clippy::unnecessary_wraps, reason = "the host's signature")]
     pub(crate) fn timer_add(ms: c_long, _multi: &Multi) -> Option<swoole_rs_timer::Held> {
@@ -84,10 +82,14 @@ pub(crate) mod host {
     pub(crate) fn current_cid() -> c_long {
         -1
     }
-    pub(crate) fn yield_(_co: *mut c_void, _timeout: f64) -> bool {
+    pub(crate) fn yield_(
+        _co: *mut c_void,
+        _timeout: f64,
+        _arm: &mut dyn FnMut(swoole_rs_coroutine::Waker),
+    ) -> bool {
         false
     }
-    pub(crate) unsafe fn resume(_co: *mut c_void) {}
+    pub(crate) fn wake(_waker: swoole_rs_coroutine::Waker) {}
     /// Holds a reference for the wake-up, as the real one does; the test's
     /// `free` plays the wake-up's release of it.
     pub(crate) fn defer(multi: &Multi) {
@@ -118,7 +120,7 @@ fn close(cp: *mut CURL) {
 }
 
 fn new_multi() -> &'static Multi {
-    unsafe { &*Rc::into_raw(Multi::create()) }
+    unsafe { &*Rc::into_raw(Multi::with_host(&recording::OPS)) }
 }
 
 fn free(multi: &Multi) {
@@ -272,7 +274,7 @@ fn a_waiterless_socket_event_leaves_the_reactor() {
     assert_eq!(take().len(), 1, "back in before waiting");
     multi
         .co
-        .set(Waiter::running(ptr::dangling_mut::<u8>().cast()));
+        .set(Waiter::running(ptr::dangling_mut::<u8>().cast(), -1));
     assert_eq!(
         multi.co.get().map(|waiter| waiter.cid),
         Some(-1),
@@ -300,7 +302,7 @@ fn a_multi_freed_with_a_queued_wake_up_is_freed_by_the_wake_up() {
     assert_eq!(multi.on_timeout(0), 0, "a timer");
     multi
         .co
-        .set(Waiter::running(ptr::dangling_mut::<u8>().cast()));
+        .set(Waiter::running(ptr::dangling_mut::<u8>().cast(), -1));
     multi.callback(None);
     multi.co.set(None);
     assert_eq!(take(), ["timer 1", "defer"], "a queued wake-up");
@@ -340,4 +342,16 @@ fn timeouts_without_an_event_loop_fail() {
         "-1 without a timer polls in a second"
     );
     free(multi);
+}
+
+#[test]
+fn freeing_a_native_watch_preserves_the_curl_owned_descriptor() {
+    use std::os::fd::AsRawFd;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let socket = host::ReactorSocket::new(listener.as_raw_fd(), &host::NATIVE);
+    assert!(socket.removed());
+    assert!(socket.events().is_empty());
+    socket.free();
+    socket.free();
+    assert!(listener.local_addr().is_ok(), "curl still owns the fd");
 }

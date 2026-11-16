@@ -8,7 +8,7 @@ use crate::socket_timeouts::SocketTimeouts;
 use std::ffi::{c_int, c_void};
 use std::mem::{offset_of, size_of};
 use std::ops::{Deref, DerefMut};
-use std::ptr;
+use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::constants::{
@@ -27,6 +27,34 @@ pub struct SocketTlsState {
 }
 
 pub use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
+
+/// An `SSL` whose one reference a socket record owns, freed when dropped: only an
+/// `SSL_new` declaration (tls's) makes one, and only the unsafe
+/// [`SocketFields::take_ssl`] hands one back out of a record.
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct SocketSsl(NonNull<openssl_sys::SSL>);
+
+impl SocketSsl {
+    /// The `SSL`, for calls over it while this owner holds it.
+    #[must_use]
+    pub fn as_non_null(&self) -> NonNull<openssl_sys::SSL> {
+        self.0
+    }
+}
+
+impl Drop for SocketSsl {
+    fn drop(&mut self) {
+        /// The reference a dropped `SocketSsl` held: only this drop makes one, once
+        /// per owner, so `SSL_free` releases each `SSL` once.
+        #[repr(transparent)]
+        struct Released(NonNull<openssl_sys::SSL>);
+        unsafe extern "C" {
+            safe fn SSL_free(ssl: Released);
+        }
+        SSL_free(Released(self.0));
+    }
+}
 
 /// `network::Socket`: its fields, then the borrow count [`crate::Socket`]'s `read`
 /// and `edit` hold while a closure has the fields. The count sits outside them, so
@@ -52,7 +80,7 @@ impl DerefMut for SocketRecord {
 }
 
 /// `network::Socket`'s fields. Pointers to native objects (`Buffer`, `TimerNode`,
-/// `String`, `SSL`, the owner) are opaque here.
+/// `String`, the owner) are opaque here; the `SSL` is a [`SocketSsl`].
 #[repr(C)]
 pub struct SocketFields {
     pub fd: c_int,
@@ -84,15 +112,18 @@ pub struct SocketFields {
     pub chunk_size: u32,
     pub output: SocketOutput,
     pub object: *mut c_void,
-    /// Null or a live `SSL` the record owns: only [`Self::set_ssl`] sets it.
-    ssl: *mut c_void,
+    /// The `SSL` the record owns, freed with it: pointer-sized, null without one.
+    ssl: Option<SocketSsl>,
     pub tls: SocketTlsState,
     pub timeouts: SocketTimeouts,
     pub last_received_time: f64,
     pub last_sent_time: f64,
     /// `Buffer *in_buffer`: owned as `output.out_buffer` is.
     pub in_buffer: Option<Box<swoole_rs_buffer::cpp::CppBuffer>>,
-    pub recv_buffer: *mut c_void,
+    /// `String *recv_buffer`: the server session's receive buffer, which the socket
+    /// owns. Its address is read through `Box::as_mut_ptr`, which a reader holding it
+    /// across a callback and a worker taking the buffer's bytes share.
+    pub recv_buffer: Option<Box<swoole_rs_buffer::string::CppString>>,
     /// `TimerNode *recv_timer`, held by id.
     pub recv_timer: Option<swoole_rs_corebase::timer_key::Held>,
     pub total_recv_bytes: usize,
@@ -161,12 +192,6 @@ pub static SOCKET_DEFAULTS: SocketDefaults = SocketDefaults {
     write: DefaultTimeout::new(SW_SOCKET_DEFAULT_WRITE_TIMEOUT as f64),
     buffer_size: AtomicU32::new(SW_SOCKET_BUFFER_SIZE),
 };
-
-/// The default timeouts, for native `Socket`'s constructor.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_default_timeouts() -> SocketTimeouts {
-    SOCKET_DEFAULTS.timeouts()
-}
 
 /// Field offsets native code asserts too (`swoole_rs_socket.h`).
 #[cfg(target_pointer_width = "64")]
@@ -264,13 +289,13 @@ impl SocketRecord {
                     send_wait: false,
                 },
                 object: ptr::null_mut(),
-                ssl: ptr::null_mut(),
+                ssl: None,
                 tls: SocketTlsState::default(),
                 timeouts: SOCKET_DEFAULTS.timeouts(),
                 last_received_time: 0.0,
                 last_sent_time: 0.0,
                 in_buffer: None,
-                recv_buffer: ptr::null_mut(),
+                recv_buffer: None,
                 recv_timer: None,
                 total_recv_bytes: 0,
                 total_send_bytes: 0,
@@ -290,29 +315,17 @@ impl SocketRecord {
         socket
     }
 
-    /// The record moved to the heap, as `new Socket()`; freed with [`Self::free`].
+    /// The record moved to the heap, as `new Socket()`; freed by its [`crate::OwnedSocket`].
     #[must_use]
     pub fn into_raw(self) -> *mut Self {
         Box::into_raw(Box::new(self))
     }
 
-    /// A new heap record as the socket its maker holds: live until an unsafe free
-    /// ([`Self::free`], `Socket::free`), whose caller answers for the handles left.
+    /// A new heap record as the socket its maker holds: live until an owner taken
+    /// back with the unsafe [`crate::OwnedSocket::from_socket`] frees it.
     #[must_use]
     pub fn into_socket(self: Box<Self>) -> crate::Socket<'static> {
         crate::Socket::new(Box::leak(self))
-    }
-
-    /// `Socket::operator delete`.
-    ///
-    /// # Safety
-    /// `socket` is null or came from [`Self::into_raw`] (or a call here that returns
-    /// a record) and is not used again.
-    pub unsafe fn free(socket: *mut Self) {
-        if !socket.is_null() {
-            // SAFETY: as the caller promises.
-            drop(unsafe { Box::from_raw(socket) });
-        }
     }
 
     /// base.cc's `socket_free_defer`: [`SocketFields::release`], warning when close(2)
@@ -354,10 +367,7 @@ impl SocketRecord {
         protocol: c_int,
         flags: c_int,
     ) -> Option<Box<Self>> {
-        let fd = crate::swr_v1_socket_open(domain, kind, protocol, flags);
-        if fd < 0 {
-            return None;
-        }
+        let fd = crate::swr_v1_socket_open(domain, kind, protocol, flags).ok()?;
         let mut socket = Self::with_fd(fd, fd_type);
         socket.output.nonblock = flags & crate::socket_types::NONBLOCK != 0;
         socket.cloexec = flags & crate::socket_types::CLOEXEC != 0;
@@ -385,12 +395,11 @@ impl SocketRecord {
         flags: c_int,
         unknown: &mut bool,
     ) -> Option<Box<Self>> {
-        let (mut domain, mut kind) = (0, 0);
-        if !crate::swr_v1_socket_domain_and_type(socket_type, &mut domain, &mut kind) {
+        let Some((domain, kind)) = crate::socket_domain_and_type(socket_type) else {
             *unknown = true;
             crate::socket_sync::set_errno(libc::ESOCKTNOSUPPORT);
             return None;
-        }
+        };
         Self::opened(socket_type, fd_type, domain, kind, 0, flags)
     }
 }
@@ -400,19 +409,26 @@ impl SocketFields {
     #[must_use]
     pub fn ssl(&self) -> *mut c_void {
         self.ssl
+            .as_ref()
+            .map_or(ptr::null_mut(), |ssl| ssl.as_non_null().as_ptr().cast())
     }
 
-    /// Sets the record's `SSL`.
+    /// Gives the record `ssl`, or clears it with none. An `SSL` it held already is left
+    /// unfreed, as upstream's assignment leaves it: a handle to it may still be in use.
+    #[expect(
+        clippy::mem_forget,
+        reason = "freeing the replaced SSL is what a live handle to it forbids"
+    )]
+    pub fn set_ssl(&mut self, ssl: Option<SocketSsl>) {
+        std::mem::forget(std::mem::replace(&mut self.ssl, ssl));
+    }
+
+    /// The record's `SSL` out of it, or none: freed when the owner drops.
     /// # Safety
-    /// `ssl` is null or a live `SSL` the record owns from now on: nothing frees it
-    /// before [`Self::take_ssl`] hands it back.
-    pub unsafe fn set_ssl(&mut self, ssl: *mut c_void) {
-        self.ssl = ssl;
-    }
-
-    /// Clears the record's `SSL`, handing it (or null) back to the caller.
-    pub fn take_ssl(&mut self) -> *mut c_void {
-        std::mem::replace(&mut self.ssl, ptr::null_mut())
+    /// No handle to the `SSL` or its BIOs is used once the owner drops, and no other
+    /// record takes the owner (the `SSL`'s ex data may name this one).
+    pub unsafe fn take_ssl(&mut self) -> Option<SocketSsl> {
+        self.ssl.take()
     }
 
     /// The socket's type, `None` for a code no `SW_SOCK_*` names.
@@ -472,9 +488,9 @@ impl SocketFields {
         self.fd == -1 || sys::close(self.fd).is_ok()
     }
 
-    /// `Socket::dup`: a copy of every field but the buffers, which stay this record's
-    /// own, owning `dup(fd)`, not borrowed. It shares this record's SSL, as upstream's
-    /// copy does.
+    /// `Socket::dup`: a copy of every field but the buffers and the SSL, which stay this
+    /// record's own, owning `dup(fd)`, not borrowed. Upstream's copy shares the `SSL`
+    /// pointer; only the core-tests port calls this, on sockets without one.
     #[must_use]
     pub fn dup(&self) -> *mut SocketRecord {
         let output = SocketOutput {
@@ -484,7 +500,9 @@ impl SocketFields {
         let mut copy = SocketRecord {
             fields: Self {
                 output,
+                ssl: None,
                 in_buffer: None,
+                recv_buffer: None,
                 ..*self
             },
             borrows: AtomicU32::new(0),
@@ -533,8 +551,16 @@ impl Default for SocketRecord {
 mod tests {
     use super::*;
 
+    impl SocketSsl {
+        /// A dangling owner for a test that only asks whether a record holds an `SSL`;
+        /// it leaves the record through `set_ssl(None)`, which never frees it.
+        pub(crate) fn stub() -> Self {
+            Self(NonNull::dangling())
+        }
+    }
+
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no network sockets")]
+    #[cfg_attr(miri, ignore = "Miri has no Unix sockets")]
     fn release_unlinks_a_bound_unix_socket_and_closes() {
         let path = std::env::temp_dir().join(format!("swr-release-{}", std::process::id()));
         std::fs::remove_file(&path).unwrap_or_default();
@@ -584,7 +610,7 @@ mod tests {
         let record = unsafe { &*socket };
         assert_eq!((record.fd, record.fd_type, record.removed), (7, 3, true));
         // SAFETY: as above, not used again.
-        unsafe { SocketRecord::free(socket) };
+        unsafe { drop(Box::from_raw(socket)) };
     }
 
     #[test]
@@ -613,7 +639,7 @@ mod tests {
         // SAFETY: the socket's own fd.
         unsafe { libc::close(record.fd) };
         // SAFETY: not used again.
-        unsafe { SocketRecord::free(socket) };
+        unsafe { drop(Box::from_raw(socket)) };
     }
 
     #[test]
@@ -633,11 +659,11 @@ mod tests {
             unsafe { libc::close(fd) };
         }
         // SAFETY: not used again.
-        unsafe { SocketRecord::free(copy) };
+        unsafe { drop(Box::from_raw(copy)) };
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no network sockets")]
+    #[cfg_attr(miri, ignore = "Miri has no Unix sockets")]
     fn accept_fills_a_new_record_from_the_listener() {
         let (mut unknown, flags) = (false, 0b1100);
         let listener = SocketRecord::open_typed(5, 1, flags, &mut unknown);
@@ -649,6 +675,6 @@ mod tests {
         // SAFETY: the listener's own fd.
         unsafe { libc::close(record.fd) };
         // SAFETY: not used again.
-        unsafe { SocketRecord::free(listener) };
+        unsafe { drop(Box::from_raw(listener)) };
     }
 }

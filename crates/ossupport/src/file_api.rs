@@ -46,13 +46,15 @@ pub fn fd_write_all(fd: c_int, append: bool, data: &[u8]) -> usize {
     io.done
 }
 
-/// `file_get_size(int)`: a regular file's size, or -1 with the last error set.
-fn size_of_fd(fd: c_int) -> isize {
-    let size = file_size(fd);
-    if size.error != 0 {
-        log::set_last_error(size.error);
+/// `file_get_size(int)`: a regular file's size, or `None` with the last error set.
+fn size_of_fd(fd: c_int) -> Option<usize> {
+    match file_size(fd) {
+        Ok(size) => usize::try_from(size).ok(),
+        Err(error) => {
+            log::set_last_error(error.raw_os_error().unwrap_or_default());
+            None
+        }
     }
-    isize::try_from(size.size).unwrap_or(-1)
 }
 
 /// `swoole_tmpfile`: creates the file named by the `XXXXXX` template in `template`
@@ -71,17 +73,15 @@ pub fn create_tmpfile(template: &mut [u8]) -> Option<OwnedFd> {
 /// `file_get_contents`: true with the file's bytes, NUL-terminated, in `content`
 /// (a default-constructed String); false after upstream's log.
 pub fn file_get_contents(path: &CStr, content: &mut CppString) -> bool {
-    let fd = sys::open(path, libc::O_RDONLY, 0);
     let name = path.to_string_lossy();
-    if fd < 0 {
+    let Ok(fd) = sys::open(path, libc::O_RDONLY, 0) else {
         log::sys_warning(c"file_get_contents", format_args!("open('{name}') failed"));
         return false;
-    }
+    };
     let record = FileRecord::adopt(fd, libc::O_RDONLY);
-    let size = size_of_fd(fd);
-    if size < 0 {
+    let Some(size) = size_of_fd(fd) else {
         return false;
-    }
+    };
     if size == 0 {
         log::error_log(
             LOG_TRACE,
@@ -91,7 +91,7 @@ pub fn file_get_contents(path: &CStr, content: &mut CppString) -> bool {
         );
         return false;
     }
-    if size.unsigned_abs() > swoole_rs_corebase::swr_v1_core_max_file_content() as usize {
+    if size > swoole_rs_corebase::swr_v1_core_max_file_content() as usize {
         log::error_log(
             LOG_WARNING,
             FILE_TOO_LARGE,
@@ -100,7 +100,6 @@ pub fn file_get_contents(path: &CStr, content: &mut CppString) -> bool {
         );
         return false;
     }
-    let size = size.unsigned_abs();
     content.alloc(size + 1, None);
     content.read_zeroed(size, |buf| {
         let io = record.read_all(buf);
@@ -143,12 +142,11 @@ pub fn file_put_contents(path: &CStr, data: &[u8]) -> bool {
         return false;
     }
     let flags = libc::O_WRONLY | libc::O_TRUNC | libc::O_CREAT;
-    let fd = file_open(-1, path, flags, 0o666);
-    if fd < 0 {
+    let Ok(fd) = file_open(-1, path, flags, 0o666) else {
         let name = path.to_string_lossy();
         log::sys_warning(c"file_put_contents", format_args!("open('{name}') failed"));
         return false;
-    }
+    };
     let record = FileRecord::adopt(fd, flags);
     let io = record.write_all(data);
     warn_io(

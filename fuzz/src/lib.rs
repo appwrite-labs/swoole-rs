@@ -20,8 +20,8 @@ mod protocols_native;
 
 mod network;
 pub use network::{
-    dns_reply, http_chunked, http_inflate, http_rewrite, http2_frame, http2_hpack, multipart,
-    resp_server, ws_inflate,
+    dns_reply, http_chunked, http_decompress, http_inflate, http_rewrite, http2_frame, http2_hpack,
+    multipart, resp_server, ws_inflate,
 };
 use swoole_rs_websocket::{decode_in_place, frame_length, mask};
 
@@ -37,39 +37,37 @@ const CANDIDATE: Engine = Engine {
 };
 
 mod request {
-    use std::cell::Cell;
-    use std::ffi::{CStr, c_char, c_void};
-    use swoole_rs_http_ffi::{HttpRequest as Request, HttpString, NativeOp};
+    use std::ffi::{CStr, c_char};
+    use swoole_rs_buffer::string::boxed_string;
+    use swoole_rs_corebase::{set_errno, sys::errno};
     use swoole_rs_http::ChunkState;
+    use swoole_rs_http_ffi::HttpRequest as Request;
 
-    thread_local! {
-        /// The errno native code would leave after `strtoull`.
-        static ERRNO: Cell<u32> = const { Cell::new(0) };
-    }
-
-    /// The request's effects (crates/http's `effects`), for the one framing has.
-    unsafe extern "C" fn native(op: NativeOp, _: *mut c_void, _: *const u8, n: u64, _: u64) -> u64 {
-        // glibc's strtoull leaves errno alone without digits; Darwin's sets EINVAL.
-        const NO_DIGITS: u32 = if cfg!(target_os = "macos") { 22 } else { 0 };
-        if op == NativeOp::NumberErrors {
-            if n & 1 != 0 {
-                ERRNO.set(34);
-            }
-            if n & 2 != 0 && NO_DIGITS != 0 {
-                ERRNO.set(NO_DIGITS);
-            }
-        }
-        0
-    }
-
-    /// A received `swoole::String` over `length` bytes and their spare NUL.
-    fn on(data: *mut c_char, length: usize, offset: usize) -> HttpString {
-        HttpString {
-            length,
-            size: length + 1,
-            offset: offset as i64,
-            str: data.cast(),
-        }
+    /// `parse` over a request whose buffer is a received `swoole::String`: a copy of
+    /// the `length` bytes at `data`, with the spare NUL after them, at `offset`. What
+    /// `parse` returned, and the buffer's offset after.
+    fn on<T>(
+        data: *mut c_char,
+        length: usize,
+        offset: usize,
+        parse: impl FnOnce(&mut Request) -> T,
+    ) -> (T, usize) {
+        let bytes = if data.is_null() {
+            &[]
+        } else {
+            // SAFETY: the caller's `length` bytes.
+            unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) }
+        };
+        let mut buffer = boxed_string(bytes);
+        buffer.set_offset(offset as i64);
+        let mut r = Request {
+            buffer: &raw mut *buffer,
+            ..Request::default()
+        };
+        let parsed = parse(&mut r);
+        let offset = buffer.offset() as usize;
+        buffer.dispose();
+        (parsed, offset)
     }
 
     pub unsafe extern "C" fn frame(
@@ -80,45 +78,46 @@ mod request {
     ) -> i32 {
         // SAFETY: the caller's state.
         let s = unsafe { &mut *state };
-        let mut r = Request::new(Some(native));
-        let mut buffer = on(data, length, s.offset);
-        (r.method, r.version) = (s.method as u8, s.version as u8);
-        (r.excepted, r.known_length) = (s.excepted != 0, s.known_length != 0);
-        (r.url_offset, r.url_length) = (s.url_offset, s.url_length);
-        (r.request_line_length, r.header_length) = (s.line_length, s.header_length);
-        r.content_length = s.content_length;
-        (r.max_length, r.too_large) = (s.max_length, s.too_large != 0);
-        r.chunk_state = match s.chunk_state {
-            1 => ChunkState::Data,
-            2 => ChunkState::Trailer,
-            _ => ChunkState::Size,
-        };
-        (r.chunk_length, r.chunk_offset, r.chunk_scan_offset) =
-            (s.chunk_length, s.chunk_offset, s.chunk_scan_offset);
-        r.buffer = &raw mut buffer;
-        let done = match operation {
-            0 => r.get_protocol(),
-            1 => r.get_header_length(),
-            _ => r.get_chunked_body_length(),
-        };
-        *s = http_frame::State {
-            offset: buffer.offset as usize,
-            content_length: r.content_length,
-            method: r.method.into(),
-            version: r.version.into(),
-            excepted: r.excepted.into(),
-            known_length: r.known_length.into(),
-            url_offset: r.url_offset,
-            url_length: r.url_length,
-            line_length: r.request_line_length,
-            header_length: r.header_length,
-            max_length: r.max_length,
-            too_large: r.too_large.into(),
-            chunk_state: r.chunk_state as u32,
-            chunk_length: r.chunk_length,
-            chunk_offset: r.chunk_offset,
-            chunk_scan_offset: r.chunk_scan_offset,
-        };
+        let (done, offset) = on(data, length, s.offset, |r| {
+            (r.method, r.version) = (s.method as u8, s.version as u8);
+            (r.excepted, r.known_length) = (s.excepted != 0, s.known_length != 0);
+            (r.url_offset, r.url_length) = (s.url_offset, s.url_length);
+            (r.request_line_length, r.header_length) = (s.line_length, s.header_length);
+            r.content_length = s.content_length;
+            (r.max_length, r.too_large) = (s.max_length, s.too_large != 0);
+            r.chunk_state = match s.chunk_state {
+                1 => ChunkState::Data,
+                2 => ChunkState::Trailer,
+                _ => ChunkState::Size,
+            };
+            (r.chunk_length, r.chunk_offset, r.chunk_scan_offset) =
+                (s.chunk_length, s.chunk_offset, s.chunk_scan_offset);
+            let done = match operation {
+                0 => r.get_protocol(),
+                1 => r.get_header_length(),
+                _ => r.get_chunked_body_length(),
+            };
+            *s = http_frame::State {
+                offset: s.offset,
+                content_length: r.content_length,
+                method: r.method.into(),
+                version: r.version.into(),
+                excepted: r.excepted.into(),
+                known_length: r.known_length.into(),
+                url_offset: r.url_offset,
+                url_length: r.url_length,
+                line_length: r.request_line_length,
+                header_length: r.header_length,
+                max_length: r.max_length,
+                too_large: r.too_large.into(),
+                chunk_state: r.chunk_state as u32,
+                chunk_length: r.chunk_length,
+                chunk_offset: r.chunk_offset,
+                chunk_scan_offset: r.chunk_scan_offset,
+            };
+            done
+        });
+        s.offset = offset;
         // `SW_OK` or `SW_ERR`, as the oracle returns.
         if done { 0 } else { -1 }
     }
@@ -130,38 +129,32 @@ mod request {
         header_length: u32,
         out: *mut http_frame::HeaderInfo,
     ) {
-        let mut r = Request::new(Some(native));
-        let mut buffer = on(data, length, 0);
-        (r.request_line_length, r.header_length) = (line_length, header_length);
-        r.buffer = &raw mut buffer;
-        ERRNO.set(0);
-        r.parse_header_info();
-        let (offset, boundary) = r.form.as_deref().map_or((-1, 0), |form| {
-            let boundary = form.boundary();
-            (boundary.offset as i64, boundary.length as i64)
-        });
-        // SAFETY: the caller's output.
-        unsafe {
-            *out = http_frame::HeaderInfo {
+        let (info, _) = on(data, length, 0, |r| {
+            (r.request_line_length, r.header_length) = (line_length, header_length);
+            set_errno(0);
+            r.parse_header_info();
+            let (offset, boundary) = r.form.as_deref().map_or((-1, 0), |form| {
+                let boundary = form.boundary();
+                (boundary.offset as i64, boundary.length as i64)
+            });
+            http_frame::HeaderInfo {
                 content_length: r.content_length,
                 flags: u32::from(r.known_length)
                     | u32::from(r.keep_alive) << 1
                     | u32::from(r.chunked) << 2
                     | u32::from(r.header_parsed) << 4
                     | u32::from(r.excepted) << 5,
-                error: ERRNO.get(),
+                error: errno().cast_unsigned(),
                 boundary_offset: offset,
                 boundary_length: boundary,
             }
-        };
-        r.form = None;
+        });
+        // SAFETY: the caller's output.
+        unsafe { *out = info };
     }
 
     pub unsafe extern "C" fn expect(data: *mut c_char, length: usize) -> bool {
-        let mut r = Request::new(Some(native));
-        let mut buffer = on(data, length, 0);
-        r.buffer = &raw mut buffer;
-        r.has_expect_header()
+        on(data, length, 0, |r| r.has_expect_header()).0
     }
 
     pub unsafe extern "C" fn header(
@@ -173,13 +166,13 @@ mod request {
         name: *const c_char,
         output: *mut c_char,
     ) -> usize {
-        let mut r = Request::new(Some(native));
-        let mut buffer = on(data, length, 0);
-        (r.url_offset, r.url_length, r.header_length) = (url_offset, url_length, header_length);
-        r.buffer = &raw mut buffer;
         // SAFETY: a NUL-terminated name.
         let name = unsafe { CStr::from_ptr(name) }.to_bytes();
-        let Some(value) = r.get_header(name) else {
+        let (value, _) = on(data, length, 0, |r| {
+            (r.url_offset, r.url_length, r.header_length) = (url_offset, url_length, header_length);
+            r.get_header(name)
+        });
+        let Some(value) = value else {
             return 0;
         };
         // SAFETY: the value is inside the buffer; output holds `length` bytes.

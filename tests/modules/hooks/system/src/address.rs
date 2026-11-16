@@ -1,9 +1,9 @@
 //! Upstream's `core-tests/src/network/address.cpp`, one Rust function per TEST with the
 //! same inputs and expected values. `Address` here is the same record over crates/clients'
-//! `address::assign`, `set_port`, `is_empty`, `type_name`, `url` and `address_string` and
-//! the `swr_v1_clients_address_*` exports.
+//! `address::assign`, `set_port`, `is_empty`, `type_name`, `url`, `address_string`,
+//! `address_port`, `is_loopback` and `host_in_scratch`, and the `swr_v1_clients_address_verify` export.
 
-use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::ffi::{CStr, CString, c_char, c_int};
 use swoole_rs_clients::{URL_PORT_RANGE, address};
 use swoole_rs_corebase::net_types::AddressStorage;
 
@@ -34,14 +34,8 @@ const TEST_HOST: &str = "127.0.0.1";
 const TEST_LOG_FILE: &str = "/tmp/swoole.log";
 
 unsafe extern "C-unwind" {
-    fn swr_v1_clients_address_loopback(address: *const Address) -> bool;
     fn swr_v1_clients_address_verify(family: c_int, host: *const c_char) -> bool;
     fn swr_v1_core_set_last_error(code: c_int);
-}
-
-unsafe extern "C" {
-    fn swr_v1_clients_address_port(address: *const c_void) -> c_int;
-    fn swr_v1_clients_address_host(address: *const c_void) -> *const c_char;
 }
 
 unsafe extern "C" {
@@ -101,9 +95,14 @@ impl Address {
         self.assign(kind.raw(), &url[host], port, true)
     }
 
+    /// The record as crates/corebase's `SocketAddress`, which it is.
+    fn record(&self) -> &swoole_rs_corebase::net_types::SocketAddress {
+        // SAFETY: the record is crates/corebase's `SocketAddress`.
+        unsafe { &*std::ptr::from_ref(self).cast() }
+    }
+
     pub(super) fn get_port(&self) -> c_int {
-        // SAFETY: a live record.
-        unsafe { swr_v1_clients_address_port(std::ptr::from_ref(self).cast()) }
+        address::address_port(self.record()).into()
     }
 
     fn set_port(&mut self, port: c_int) {
@@ -112,13 +111,11 @@ impl Address {
     }
 
     fn is_loopback_addr(&self) -> bool {
-        // SAFETY: a live record.
-        unsafe { swr_v1_clients_address_loopback(self) }
+        address::is_loopback(self.record())
     }
 
     pub(super) fn get_addr(&self) -> *const c_char {
-        // SAFETY: a live record.
-        unsafe { swr_v1_clients_address_host(std::ptr::from_ref(self).cast()) }
+        address::host_in_scratch(self.record())
     }
 
     /// `addr.un.sun_path`, after the two-byte `sun_family`.
@@ -312,7 +309,7 @@ fn record() {
     assert_eq!(local.get_addr(), local.sun_path().cast_const());
     let mut copy = local.clone();
     // SAFETY: byte 1 of sun_path is inside the union.
-    unsafe { *local.sun_path().add(1) = b'X' as c_char };
+    unsafe { *local.sun_path().add(1) = c_char::from_ne_bytes(*b"X") };
     assert_eq!(text(copy.get_addr()), c"/tmp/address-record");
     assert!(v4.is_loopback_addr() && v6.is_loopback_addr());
     assert!(v4.assign(SW_SOCK_TCP, "127.0.0.2", 0, false));

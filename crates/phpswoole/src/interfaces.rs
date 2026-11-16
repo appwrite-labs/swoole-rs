@@ -85,7 +85,7 @@ fn add_address(array: &mut OwnedArray, name: &[u8], address: &[u8]) {
 
 #[cfg(target_os = "linux")]
 fn local_mac(call: &Call) {
-    use swoole_rs_corebase::sys::{InterfaceRequest, interface_ioctl, zeroed};
+    use swoole_rs_corebase::sys::{Ifreq, InterfaceRequest, interface_ioctl};
 
     let Ok(sock) = swoole_rs_corebase::sys::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) else {
         sys_warning(b"socket creation failed");
@@ -108,19 +108,9 @@ fn local_mac(call: &Call) {
         if !entry.address().is_some_and(inet) || entry.flags() & loopback != 0 {
             continue;
         }
-        let mut request: libc::ifreq = zeroed();
-        let name = request.ifr_name.iter_mut().zip(entry.name().to_bytes());
-        for (slot, &byte) in name.take(libc::IFNAMSIZ - 1) {
-            *slot = libc::c_char::from_ne_bytes([byte]);
-        }
-        if interface_ioctl(sock, InterfaceRequest::HardwareAddress, &mut request) == 0 {
-            // SAFETY: SIOCGIFHWADDR filled the hardware address.
-            let data = unsafe { request.ifr_ifru.ifru_hwaddr.sa_data };
-            let bytes = data.map(|byte| byte.to_ne_bytes()[0]);
-            // NUL-terminated within IFNAMSIZ: the copy above left the last byte zero.
-            let name = request.ifr_name.map(|byte| byte.to_ne_bytes()[0]);
-            let name = std::ffi::CStr::from_bytes_until_nul(&name).unwrap_or_default();
-            add_address(&mut array, name.to_bytes(), &bytes);
+        let mut request = Ifreq::named(entry.name().to_bytes());
+        if interface_ioctl(sock, InterfaceRequest::HardwareAddress, &mut request).is_ok() {
+            add_address(&mut array, request.name().to_bytes(), &request.sa_data());
         }
     }
     _ = swoole_rs_corebase::sys::close(sock);

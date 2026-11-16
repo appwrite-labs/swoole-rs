@@ -1,6 +1,6 @@
 //! Reactor threads: the datagram path and dispatch to workers, the worker pipe
 //! protocol, heartbeats and the threads' lifecycle.
-use core::ffi::{c_int, c_long, c_void};
+use core::ffi::{c_int, c_long};
 #[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_reactor::Events;
@@ -37,18 +37,35 @@ pub(crate) const HEARTBEAT: u64 = u64::MAX;
 pub(crate) fn packet_received(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> bool {
     let (buffer, size) =
         swoole_rs_buffer::string::with_thread_buffer(|b| (b.as_mut_ptr().cast(), b.size()));
-    receive_packets(serv, reactor, event.fd(), buffer, size)
+    // SAFETY: this thread's packet buffer, live through dispatch; the next packet
+    // does not overwrite it until the current dispatch returns.
+    let buffer = unsafe { swoole_rs_reactor::Fill::from_raw(buffer, size) };
+    receive_packets(serv, reactor, event.fd(), buffer)
 }
 
-/// [`packet_received`] from `fd` into the `size` bytes at `buffer`, which are aligned
-/// for a [`DgramPacket`] and live, and which nothing else borrows, for the call.
+/// [`packet_received`] from `fd` into the lent buffer. Its packet head must fit and
+/// be aligned; the payload occupies the remaining room.
 fn receive_packets(
     serv: view::Server<'_>,
     reactor: Reactor,
     fd: c_int,
-    buffer: *mut c_void,
-    size: usize,
+    mut buffer: swoole_rs_reactor::Fill<'_>,
 ) -> bool {
+    let buffer = buffer.slots();
+    let head = size_of::<DgramPacket>();
+    if !buffer
+        .as_ptr()
+        .addr()
+        .is_multiple_of(align_of::<DgramPacket>())
+    {
+        return false;
+    }
+    let data = buffer.as_mut_ptr().cast();
+    let Some(header) = buffer.get_mut(..head) else {
+        return false;
+    };
+    // The complete native head, including its padding, precedes each datagram.
+    header.fill(std::mem::MaybeUninit::new(0));
     let state = serv.state();
     // The event's fd is a listening socket's, whose slot holds its port.
     let Some(conn) = state.connection(fd.into(), Lookup::ByFd) else {
@@ -59,7 +76,6 @@ fn receive_packets(
         return false;
     };
     let dtls = port.config().ssl && port.config().is_dtls();
-    let head = size_of::<DgramPacket>();
     let info = DataHead {
         server_fd: crate::base_factory::low16(fd),
         reactor_id: swoole_rs_corebase::thread_id().cast_signed(),
@@ -67,21 +83,31 @@ fn receive_packets(
         time: microtime(),
         ..DataHead::default()
     };
-    // SAFETY: no payload yet (`len` 0); each packet's length is set below.
-    let mut task = unsafe { SendData::from_raw(info, buffer.cast_const().cast()) };
     let base = state.config_ref().mode_ == Mode::Base;
     loop {
-        // SAFETY: the caller's buffer, which holds a packet head and its datagram.
-        let pkt = unsafe { &mut *buffer.cast::<DgramPacket>() };
+        let (header, payload) = buffer.split_at_mut(head);
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "alignment and head size checked above"
+        )]
+        // SAFETY: the checked, aligned head is initialized; every field is plain data.
+        let pkt = unsafe { &mut *header.as_mut_ptr().cast::<DgramPacket>() };
         pkt.socket_type = kind;
         let address = &mut pkt.socket_addr;
         address.kind = kind;
         address.len = libc::socklen_t::try_from(size_of::<AddressStorage>()).unwrap_or(0);
-        let data = buffer.wrapping_byte_add(head);
-        // SAFETY: the buffer's room after the packet head, which nothing else reaches
-        // during the call.
-        let n = unsafe { swoole_rs_reactor::Fill::from_raw(data, size - head) }
-            .recvfrom(fd, 0, address);
+        let mut room = swoole_rs_reactor::Fill::new(payload);
+        // A DTLS datagram goes to the handshake, as the bytes it received.
+        let received = room.spare(|spare| match spare.recvfrom(fd, 0, &mut pkt.socket_addr) {
+            Some(1..) if dtls => {
+                Err(hybrid().dtls_accept(serv, reactor, port, &pkt.socket_addr, spare.written()))
+            }
+            n => Ok(n),
+        });
+        let n = match received {
+            Ok(n) => n,
+            Err(accepted) => return accepted,
+        };
         let Some(length @ 1..) = n.and_then(|n| u32::try_from(n).ok()) else {
             if std::io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN) {
                 return true;
@@ -92,18 +118,15 @@ fn receive_packets(
             );
             return false;
         };
-        if dtls {
-            let datagram = data.cast::<u8>();
-            // SAFETY: the `length` bytes just received into the buffer's room after the
-            // packet head, which nothing writes during the call.
-            let datagram = unsafe { core::slice::from_raw_parts(datagram, length as usize) };
-            return hybrid().dtls_accept(serv, reactor, port, &pkt.socket_addr, datagram);
-        }
         pkt.length = length;
-        task.set_fd(pkt.sender());
+        let info = DataHead {
+            fd: pkt.sender(),
+            len: u32::try_from(head).unwrap_or(0).saturating_add(length),
+            ..info
+        };
         // SAFETY: the packet head and the `length` bytes just received behind it, in the
         // caller's buffer, which nothing writes until the dispatch returns.
-        unsafe { task.set_len(u32::try_from(head).unwrap_or(0).saturating_add(length)) };
+        let mut task = unsafe { SendData::from_raw(info, data) };
         let dispatched = if base {
             // Base mode hands it to this process's worker as it does a connection's data.
             crate::base_factory::dispatch(serv, &mut task, true)
@@ -215,11 +238,7 @@ pub(crate) fn join_reactor_threads(serv: view::Server<'_>) {
         };
         // Only the field is read: the thread itself holds its record meanwhile.
         if let Some(thread) = state.tables_ref().reactor_thread(usize::from(id)) {
-            let notify = thread.notify_pipe.get();
-            // SAFETY: null or the thread's notify pipe, which it keeps until the server
-            // joins it, after this notice.
-            let pipe = unsafe { Socket::from_ptr(notify) };
-            send_event(pipe, 0, ServerEvent::Shutdown);
+            send_event(thread.notify_pipe.get(), 0, ServerEvent::Shutdown);
         }
         joining.join().unwrap_or_default();
     }
@@ -235,7 +254,7 @@ pub(crate) fn send_event(sock: Option<Socket<'_>>, fd: c_long, kind: ServerEvent
     };
     if let Some(sock) = sock {
         let data = swoole_rs_process::process_pool::head_view(&head);
-        let data = swoole_rs_reactor::Drain::new(data);
+        let data = swoole_rs_reactor::Drain::new(&data);
         _ = swoole_rs_tls::upstream::send_sync_drain(sock, data, 0);
     }
 }
@@ -259,7 +278,39 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
+    #[cfg_attr(miri, ignore = "Miri has no datagram sockets")]
+    fn datagram_buffer_rejects_short_or_misaligned_head() {
+        let live = crate::fixture::LiveServer::new();
+        let (serv, reactor) = (live.server(), live.reactor());
+        let (server, _client) = udp_port(&live);
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&server);
+        let mut short = [std::mem::MaybeUninit::new(0); 1];
+        assert!(!receive_packets(
+            serv,
+            reactor,
+            fd,
+            swoole_rs_reactor::Fill::new(&mut short)
+        ));
+
+        let mut bytes =
+            [std::mem::MaybeUninit::new(0); size_of::<DgramPacket>() + align_of::<DgramPacket>()];
+        let offset = usize::from(
+            bytes
+                .as_ptr()
+                .addr()
+                .is_multiple_of(align_of::<DgramPacket>()),
+        );
+        let misaligned = bytes.get_mut(offset..).unwrap();
+        assert!(!receive_packets(
+            serv,
+            reactor,
+            fd,
+            swoole_rs_reactor::Fill::new(misaligned)
+        ));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no datagram sockets")]
     fn datagrams_until_eagain() {
         use crate::hybrid::tests::{Call, calls};
         let live = crate::fixture::LiveServer::new();
@@ -272,7 +323,12 @@ mod tests {
         let received = |count: usize| {
             let mut heard = Vec::new();
             for _ in 0..1000 {
-                assert!(receive_packets(serv, reactor, fd, at, size), "drained");
+                assert!(
+                    receive_packets(serv, reactor, fd, unsafe {
+                        swoole_rs_reactor::Fill::from_raw(at, size)
+                    }),
+                    "drained"
+                );
                 heard.extend(calls());
                 if heard.len() >= count {
                     break;
@@ -314,7 +370,9 @@ mod tests {
             )]
         );
 
-        let no_port = receive_packets(serv, reactor, -1, at, size);
+        let no_port = receive_packets(serv, reactor, -1, unsafe {
+            swoole_rs_reactor::Fill::from_raw(at, size)
+        });
         assert!(!no_port, "no port");
         assert_eq!(calls(), []);
     }
@@ -324,10 +382,7 @@ mod tests {
     fn accepted() -> (crate::fixture::LiveServer, std::net::TcpStream) {
         let live = crate::fixture::LiveServer::new();
         let client = live.connect();
-        // SAFETY: the fixture's listener, live for the event.
-        let event = unsafe {
-            swoole_rs_reactor::Event::new(live.listener_fd, 0, 1, live.listener().cast())
-        };
+        let event = live.accept_event();
         crate::connection::accept(live.server(), live.reactor(), &event);
         live.reactor().set_error_handler(record_error);
         drop(handled());
@@ -344,7 +399,7 @@ mod tests {
         HANDLED.with_borrow_mut(core::mem::take)
     }
 
-    extern "C" fn record_error(
+    fn record_error(
         _: swoole_rs_reactor::Running<'_>,
         event: &mut swoole_rs_reactor::Event,
     ) -> c_int {
@@ -357,7 +412,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn close_tells_the_worker_unless_nobody_is_told() {
         let (live, _client) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
@@ -379,7 +433,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn heartbeat_closes_only_this_reactors_stale_sessions() {
         let (live, _client) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
@@ -398,7 +451,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn init_reactor_sets_the_session_handlers() {
         use swoole_rs_reactor::reactor_upstream::isset_handler as isset;
         let live = crate::fixture::LiveServer::new();
@@ -421,7 +473,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn join_waits_for_each_reactor_thread_and_the_heartbeat() {
         let live = crate::fixture::LiveServer::new();
         let (serv, state) = (live.server(), live.state());

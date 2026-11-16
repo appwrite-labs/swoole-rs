@@ -33,6 +33,12 @@ signal waits return typed `Result`s; local adapters retain the original test
 assertions and expected integer/optional outcomes. `file_io` also checks that
 pool refusal is distinct from an I/O error carried back from the worker thread.
 
+Hooked `read`, `write` and the pool close adapter return a captured I/O error or
+`PoolRefused`; the C read/write/close exports keep their original integer ABI.
+`stdio::tests::close_errors_cross_the_pool_and_refusal_keeps_errno` checks that
+an error from the worker thread survives independently of caller errno and that
+refusing the job preserves errno without running close.
+
 Event waits and descriptor polls return typed `Result`s too. `WaitError` preserves
 whether validation/immediate polling sets Swoole's last error or a suspended wait
 sets errno. Poll failures distinguish an I/O error, no registered descriptor and
@@ -61,6 +67,20 @@ removes the `/tmp/123.txt` that `ftruncate` leaves behind with mode 0.
 `sendmsg_and_recvmsg` stays excluded (below). `core-tests/src/coroutine/accept.cpp`'s one
 TEST, `coroutine_hook.accept`, is `hook.rs`'s `accept`, in the same suite and phase.
 
+The Rust-only hooked `send`, `recv`, `sendmsg`, `recvmsg`, `connect` and `accept`
+return `io::Result`, retaining the OS error as well as errno. The original hook
+cases convert those results back to their original integer expectations at the
+assertion boundary; descriptor ownership, transfer flags and coroutine routing
+are unchanged.
+
+The original `coroutine_hook.getaddrinfo` calls `stdio::resolve_addrinfo` by path.
+Its `Result` separates resolver codes, `EAI_SYSTEM` with the executing thread's
+errno, and pool refusal; the test adapter retains the original 0/`EAI_NONAME`
+assertions. The stdio sleep effect reports completion as a boolean: flock preserves its
+cancellation behavior, while the exported sleep hooks discard it. Flock keeps
+invalid operations, captured I/O errors and cancellation distinct until its C
+export maps them to the original statuses. Duration conversions are unchanged.
+
 `core-tests/src/coroutine/gethostbyname.cpp` is `system/src/gethostbyname.rs`
 (`coroutine_gethostbyname.<name>`, upstream's names, inputs and expected values):
 `System::gethostbyname` is `resolve::system_gethostbyname` and the DNS cache calls
@@ -75,11 +95,11 @@ ipv6.sjtu.edu.cn, www.gov.cn), so `hooks-system-rust` excludes them as it does `
 `core-tests/src/coroutine/socket.cpp` is Rust: `system/src/socket.rs` holds its 54
 TESTs, one function each (`coroutine_socket.<name>`, upstream's names, inputs, ports
 and expected values), run by `hooks-system-rust`. A `Socket` is the hooks crate's
-`Co`, whose methods the cases call: made by `co_socket::make` and deleted by
-`swr_v1_hook_co_socket_free`, the vectored members over an `IOVector` owner
+`Co`, whose methods the cases call: made by `co_socket::make_quiet` and deleted
+by dropping its `OwnedCo`, the vectored members over an `IOVector` owner
 `swoole_rs_reactor::ReactorIov::new` makes, and its fields
 through the record layout (`swoole_rs_co_socket.h`). `enable_ssl_encrypt` and the
-`set_ssl_*` setters write the `SSLContext` owner (`swr_v1_tls_owner_new`,
+`set_ssl_*` setters write the `SSLContext` owner (`owner_new`,
 `_set_path` and its string slots and fields); `TimeoutSetter` and
 `TimeoutController` are the crate's `TimeoutScope` and its `timed_out` (the `rust_socket_scopes.selected_timeout_restore_and_copy`
 witness, whose `TimeoutSetter` left the hybrid header, is a Rust case there too); `pop_read_buffer`/`pop_write_buffer`
@@ -278,7 +298,7 @@ node's data; `SwooleTG.timer` is crates/corebase's `thread_timer`. Upstream's sh
 counters become `Cell`s (the callbacks run in the case's process), and its
 `uint64_t` elapsed-time subtractions wrap as they do in C++. The ssl cases call
 `swoole_ssl_*` and `SSLContext::create` under their upstream symbols and build the
-context through `swr_v1_tls_owner_new` and its string slots' `set_shared`;
+context through `owner_new` and its string slots' `set_shared`;
 `ERR_put_error` is network_socket.rs's.
 
 | Upstream TEST | Rust case |
@@ -383,7 +403,7 @@ accept with), `coroutine_system.getaddrinfo`, and `coroutine_base.create`.
 `swoole_coroutine_waitpid`, `swoole_coroutine_wait` and `System::waitpid_safe`; their
 children `_exit(0)` where upstream's `exit(0)`, so a forked child skips the parent's
 exit handlers. The async cases call `async::dispatch` and read `sw_async_threads()`'s
-counts through `swr_v1_async_threads_stats`. They set `SwooleG`'s `aio_*` fields through
+counts through `async_threads::stats`. They set `SwooleG`'s `aio_*` fields through
 crates/corebase's setters, by path. `async.misc`'s `sw_async_threads()->notify_one()` has
 no exported counterpart. It wakes a worker with nothing queued, so nothing in the TEST
 observes it, and the case leaves it out. `os.daemon` discards its child's status, as
@@ -444,3 +464,16 @@ ambient-errno `ETIME` rule even when ring creation fails. Sendfile retains the
 first failure, completed output on a later error/EOF, short-output stopping and
 explicit offset advancement. Scripted splice tests cover those branches without
 a ring; original runtime tests still require successful io_uring setup.
+
+The ring socket accept helper keeps `io::Result` through socket error publication
+and descriptor adoption. TLS sendfile reports an optional `TlsWarning` alongside
+completed bytes; the original scripted cases retain read/write warnings, retry,
+EOF, zero-send and partial-progress expectations. Ring sendfile completion compares
+unsigned byte counts without a negative error sentinel.
+
+The cURL multi-engine tests in `curl.rs` inject recording host operations into
+`Multi`. Both builds compile the native reactor/coroutine and PHP adapters and
+share the owned reactor socket implementation. Existing cases cover libcurl's
+socket registration, event coalescing, waiterless removal, queued wake-up release,
+handle reset and timer cancellation. A native socket ownership case also verifies
+that freeing a watch twice leaves the libcurl-owned descriptor open.

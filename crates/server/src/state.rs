@@ -268,7 +268,10 @@ impl ServerState {
     }
 
     /// A state that owns `config` and `tables`, so neither pointer is ever null.
-    fn with(config: crate::config::ServerConfig, tables: crate::records::ServerTables) -> Self {
+    pub(crate) fn with(
+        config: crate::config::ServerConfig,
+        tables: crate::records::ServerTables,
+    ) -> Self {
         Self {
             round: AtomicU32::new(0),
             next_command: AtomicI32::new(1),
@@ -608,7 +611,8 @@ pub(crate) mod tests {
     /// views borrow it, and its writes take it whole.
     pub(crate) struct TestServer {
         head: Box<crate::view::Fields>,
-        state: Box<ServerState>,
+        // Not a `Box`: moving one asserts it unique, which would leave `head` stale.
+        state: std::rc::Rc<ServerState>,
     }
 
     impl TestServer {
@@ -624,6 +628,7 @@ pub(crate) mod tests {
         }
 
         fn of(state: Box<ServerState>) -> Self {
+            let state = std::rc::Rc::from(state);
             let head = Box::new(crate::view::Fields::of(&state));
             Self { head, state }
         }
@@ -638,11 +643,15 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn config_mut(&mut self) -> &mut crate::config::ServerConfig {
-            self.state.config_mut()
+            self.state_mut().config_mut()
         }
 
         pub(crate) fn tables_mut(&mut self) -> &mut crate::records::ServerTables {
-            self.state.tables_mut()
+            self.state_mut().tables_mut()
+        }
+
+        fn state_mut(&mut self) -> &mut ServerState {
+            std::rc::Rc::get_mut(&mut self.state).expect("a test's own state")
         }
     }
 

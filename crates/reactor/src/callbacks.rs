@@ -15,7 +15,7 @@ use std::ffi::c_int;
 pub type EndFn = extern "C-unwind" fn();
 /// An exit condition a caller sets: whether the loop may exit, given the event count it
 /// may change for the conditions after it.
-pub type ExitFn = extern "C-unwind" fn(&mut usize) -> bool;
+pub type ExitFn = fn(&mut usize) -> bool;
 
 /// `Reactor::EndCallback` (`PRIORITY_*`): the order the end callbacks run in, the
 /// `io_uring` submit last because the others may queue entries for it.
@@ -152,7 +152,7 @@ pub(crate) fn execute_end(reactor: Running<'_>, timed_out: bool) {
         match end {
             End::Call(call) => call(),
             End::Defer => crate::deferred::run_defer(reactor),
-            End::Idle => run_task(reactor.with(|state| state.fields.idle_task)),
+            End::Idle => run_idle(reactor),
             End::Signal => swoole_rs_process::signal::swoole_signal_dispatch(),
             End::TryExit => {
                 if reactor.with(|state| state.fields.wait_exit) && if_exit(reactor) {
@@ -167,11 +167,16 @@ pub(crate) fn execute_end(reactor: Running<'_>, timed_out: bool) {
     }
 }
 
-/// `Swoole\Event::cycle`'s idle or future task, when set.
-fn run_task(task: crate::ReactorTask) {
-    if let Some(callback) = task.callback {
-        // SAFETY: the task's callback and the data it was set with.
-        unsafe { callback(task.data) };
+// Keep the Rc clone out of the end-callback walk so LLVM can unroll its eight slots.
+#[inline(never)]
+fn run_idle(reactor: Running<'_>) {
+    run_task(reactor.with(|state| state.fields.idle_task.clone()));
+}
+
+/// `Swoole\Event::cycle`'s idle or future task, when set, given a reference of its own.
+fn run_task(task: Option<std::rc::Rc<dyn crate::event_api::CycleTask>>) {
+    if let Some(task) = task {
+        task.run();
     }
 }
 
@@ -191,7 +196,7 @@ fn malloc_trim(last: &mut libc::time_t) {
 /// `Reactor::if_exit()`: each exit condition in key order over the registered socket
 /// count, until one refuses. A condition may change the reactor, as [`execute_end`]'s.
 pub(crate) fn if_exit(reactor: Running<'_>) -> bool {
-    let mut event_num = reactor.registry().count();
+    let mut event_num = reactor.registry(crate::Registry::count);
     for slot in 0..EXIT_SLOTS {
         // As above: the copy is read before the condition runs.
         let Some(exit) = reactor.with(|state| state.callbacks.exit.get(slot).copied().flatten())
@@ -211,12 +216,7 @@ pub(crate) fn if_exit(reactor: Running<'_>) -> bool {
 }
 
 /// `Reactor::set_end_callback(id, callback)`, or `erase_end_callback(id)` without one.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_set_end(
-    owner: &mut ReactorState,
-    id: c_int,
-    callback: Option<EndFn>,
-) {
+pub fn swr_v1_reactor_set_end(owner: &mut ReactorState, id: c_int, callback: Option<EndFn>) {
     let priority = Priority::from_code(id);
     debug_assert!(priority.is_some(), "end callback {id}");
     if let Some(priority) = priority {
@@ -287,7 +287,7 @@ pub extern "C-unwind" fn reactor_wait(reactor: Running<'_>) -> c_int {
 #[must_use]
 pub(crate) fn wait(reactor: Running<'_>) -> bool {
     fn begin(reactor: Running<'_>) {
-        run_task(reactor.with(|state| state.fields.future_task));
+        run_task(reactor.with(|state| state.fields.future_task.clone()));
     }
     let ops = crate::WaitOps {
         reactor,
@@ -302,7 +302,6 @@ mod tests {
     use super::*;
     use crate::reactor_state::tests::running;
     use std::cell::{Cell, RefCell};
-    use std::ffi::c_void;
 
     thread_local! {
         static TRACE: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
@@ -419,27 +418,27 @@ mod tests {
         });
     }
 
-    extern "C-unwind" fn exit1(n: &mut usize) -> bool {
+    fn exit1(n: &mut usize) -> bool {
         push(1);
         assert_eq!(*n, 0);
         *n += 7;
         true
     }
-    extern "C-unwind" fn exit2(n: &mut usize) -> bool {
+    fn exit2(n: &mut usize) -> bool {
         push(2);
         assert_eq!(*n, 7);
         false
     }
-    extern "C-unwind" fn exit3(n: &mut usize) -> bool {
+    fn exit3(n: &mut usize) -> bool {
         push(3);
         assert_eq!(*n, 7);
         true
     }
-    extern "C-unwind" fn refuse(_: &mut usize) -> bool {
+    fn refuse(_: &mut usize) -> bool {
         push(3);
         false
     }
-    extern "C-unwind" fn exit_mutating(n: &mut usize) -> bool {
+    fn exit_mutating(n: &mut usize) -> bool {
         push(1);
         set_exit(2, exit3);
         callbacks().set_exit(condition(3), None);
@@ -472,27 +471,29 @@ mod tests {
         });
     }
 
+    /// An idle task that pushes its number.
+    struct Pushes(i32);
+
+    impl crate::event_api::CycleTask for Pushes {
+        fn run(self: std::rc::Rc<Self>) {
+            push(self.0);
+        }
+
+        fn retire(self: std::rc::Rc<Self>) {}
+    }
+
     /// The built-ins: the deferred queue runs at the end and holds the loop open; the
     /// default condition refuses while sockets are registered; try-exit stops the loop
     /// only under `wait_exit` once every condition agrees.
     #[test]
     fn builtins_defer_idle_and_exit() {
-        unsafe extern "C-unwind" fn record(data: *mut c_void) {
-            push(data as i32);
-        }
         with_state(|owner| unsafe {
             install_builtins(callbacks());
             let fields = &raw mut (*owner).fields;
             assert!(if_exit(running(owner)));
-            crate::deferred::tests::defer(
-                fields,
-                record,
-                std::ptr::without_provenance_mut(4),
-                None,
-            );
+            crate::deferred::tests::defer(fields, crate::deferred::tests::task(4).then(|| push(4)));
             assert!(!if_exit(running(owner)));
-            (*fields).idle_task.callback = Some(record);
-            (*fields).idle_task.data = std::ptr::without_provenance_mut(6);
+            (*fields).idle_task = Some(std::rc::Rc::new(Pushes(6)));
             (*fields).running = true;
             execute_end(running(owner), false);
             assert_eq!(take(), [4, 6]);

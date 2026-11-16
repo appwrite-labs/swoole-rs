@@ -19,6 +19,7 @@ use std::{
 };
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::constants::TaskFlag;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_locks::SharedMutex;
@@ -41,11 +42,11 @@ use swoole_rs_zend::{
 };
 
 /// `SW_TASK_*` flags.
-const SERIALIZE: u32 = 1 << 1;
-const NONBLOCK: u32 = 1 << 2;
-const CALLBACK: u32 = 1 << 3;
-const COROUTINE: u32 = 1 << 5;
-const NOREPLY: u32 = 1 << 7;
+const SERIALIZE: TaskFlag = TaskFlag::SW_TASK_SERIALIZE;
+const NONBLOCK: TaskFlag = TaskFlag::SW_TASK_NONBLOCK;
+const CALLBACK: TaskFlag = TaskFlag::SW_TASK_CALLBACK;
+const COROUTINE: TaskFlag = TaskFlag::SW_TASK_COROUTINE;
+const NOREPLY: TaskFlag = TaskFlag::SW_TASK_NOREPLY;
 /// `SW_MAX_CONCURRENT_TASK`, `SW_TASKWAIT_TIMEOUT`.
 const MAX_CONCURRENT_TASK: u32 = 1024;
 const TASKWAIT_TIMEOUT: f64 = 0.5;
@@ -87,7 +88,13 @@ struct Host<'a> {
 
 impl TaskHost for Host<'_> {
     fn dispatch(&mut self, task: Packed<'_>, worker: Option<u32>, blocking: bool) -> bool {
-        methods::dispatch(self.pool, task, worker, blocking)
+        methods::dispatch(
+            swoole_rs_server::process_pool_native(),
+            self.pool,
+            task,
+            worker,
+            blocking,
+        )
     }
 
     fn pipe_clean(&mut self) {
@@ -308,7 +315,7 @@ fn decode_into(task: Packed<'_>, buffer: &mut CppString) -> Result<Option<(Owned
     let Some((data, flags)) = task.unpack(buffer) else {
         return Ok(None);
     };
-    if u32::from(flags) & SERIALIZE == 0 {
+    if !TaskFlag::from_bits(flags).contains(SERIALIZE) {
         return Ok(Some((Owned::string(ZString::new(data)), true)));
     }
     let (value, done, bailed) = unserialize_from(c"php_swoole_server_task_unpack", data);
@@ -347,7 +354,7 @@ pub(crate) fn finish_task(
 ) -> Result<bool, Bailout> {
     let finished = encoded(data, |payload, serialized| {
         let flags = if serialized {
-            SERIALIZE.cast_signed()
+            i32::from(SERIALIZE.bits())
         } else {
             0
         };
@@ -366,9 +373,8 @@ pub(crate) fn pack(data: &Value, buf: &mut TaskBuffer) -> Option<i64> {
 }
 
 /// `buf->info.ext_flags |= flags`.
-fn flag(buf: &mut TaskBuffer, flags: u32) {
-    let flags = flags.c_cast::<u16>();
-    buf.add_flags(flags);
+fn flag(buf: &mut TaskBuffer, flags: TaskFlag) {
+    buf.add_flags(flags.bits());
 }
 
 /// `serv->task(buf, dst_worker_id)`: to `dst`, else a worker the pool schedules.
@@ -752,21 +758,20 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<bool
 pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<bool, Bailout> {
     let info = info(task);
     let id = info.id;
+    let flags = TaskFlag::from_bits(task.head().ext_flags);
     let Some(data) = unpack(task)? else {
         return Ok(false);
     };
-    let mut flags = info.flags.c_cast::<u32>();
-    if flags & COROUTINE != 0 {
+    if flags.contains(COROUTINE) {
         return resume(server, id, data).map(|()| true);
     }
-    let cb = if flags & CALLBACK != 0 {
+    let mut callback = flags.contains(CALLBACK);
+    let cb = if callback {
         // Its own reference: the callback may replace the pending entry.
         let cb = pending(server, |p| {
             p.callbacks.get(&id).map(|cb| Callable::clone(cb))
         });
-        if cb.is_none() {
-            flags &= !CALLBACK;
-        }
+        callback = cb.is_some();
         cb
     } else {
         crate::lifecycle::callback(crate::lifecycle::ServerCallback::Finish)
@@ -795,7 +800,7 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<bo
         Ok(false) => handler_error("onFinish"),
         called => called.map(drop),
     };
-    if flags & CALLBACK != 0 {
+    if callback {
         // Freed once the table is no longer borrowed.
         drop(pending(server, |p| p.callbacks.remove(&id)).map(ManuallyDrop::into_inner));
     }

@@ -10,7 +10,7 @@ use swoole_rs_error::ErrorCode as E;
 use swoole_rs_reactor::{Event, Socket};
 
 use crate::reactor_handle::Reactor;
-use crate::records::{ConnectionRecord, Lookup};
+use crate::records::Lookup;
 use crate::{Connection, Mode, view};
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 
@@ -33,11 +33,10 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
         return;
     };
     for _ in 0..ACCEPT_MAX_COUNT {
-        let accepted = listener.edit(swoole_rs_reactor::SocketFields::accept);
-        // SAFETY: null, or the socket `accept` just made, which nothing else holds
-        // until a connection takes it or `abort` frees it: a heap record live until
-        // that free, whose caller answers for the handles left.
-        let Some(sock) = (unsafe { Socket::<'static>::from_ptr(accepted) }) else {
+        // The record `accepted` just made, leaked to the connection that takes it or
+        // `abort`, which frees it (an unsafe free whose caller answers for the handles left).
+        let accepted = listener.edit(swoole_rs_reactor::SocketFields::accepted);
+        let Some(sock) = accepted.map(|record| Socket::new(Box::leak(record))) else {
             if accept_failed(serv, errno()) {
                 continue;
             }
@@ -61,9 +60,7 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
                 return;
             }
         } else {
-            sock.edit(|s| {
-                s.take_ssl();
-            });
+            sock.edit(|s| s.set_ssl(None));
         }
         let Some(conn) = add(serv, port, sock, server_fd) else {
             abort(serv, reactor, Some(port), sock);
@@ -136,10 +133,8 @@ pub fn add<'a>(
     conn.closed().load(Acquire);
     // Upstream zeroes the slot up to `closed`; other reactor threads read `active`.
     conn.active().store(0, Relaxed);
-    let start = core::mem::offset_of!(ConnectionRecord, socket_type);
-    let bytes = conn.as_ptr().cast::<u8>().wrapping_add(start);
-    // SAFETY: the same slot, from after `active` up to `closed`.
-    unsafe { bytes.write_bytes(0, core::mem::offset_of!(ConnectionRecord, closed) - start) };
+    state.tables_ref().reset_connection(fd);
+    let conn = state.tables_ref().connection_at(fd)?;
 
     // `sw_spinlock`, with `SW_SPINLOCK_LOOP_N`.
     let cpus = u32::from(swoole_rs_corebase::swr_v1_core_cpu_num());
@@ -268,7 +263,7 @@ fn init(
         conn.set_info(sock.info);
         sock.get_name();
         let info = &sock.info;
-        let port = swoole_rs_clients::address::swr_v1_clients_address_port(info);
+        let port = swoole_rs_clients::address::address_port(info);
         let v6 = info.kind != SocketType::SW_SOCK_TCP.raw();
         // The family's address bytes, as they are stored.
         let (inet_v6, inet_v4) = (
@@ -286,15 +281,17 @@ fn init(
     let now = swoole_rs_corebase::microtime();
     conn.set_last_recv_time(now);
     conn.set_connect_time(now);
-    conn.active().store(1, Relaxed);
     conn.closed().store(0, Relaxed);
     conn.set_worker_id(-1);
     conn.set_socket_type(ls.r#type);
     conn.set_socket(Some(sock));
     conn.set_ssl(ssl);
     conn.info().kind = conn.socket_type();
-    conn.set_local_port(u16::try_from(local_port).unwrap_or_default());
+    conn.set_local_port(local_port);
     conn.set_local_addr_index(local_addr_index);
+    // Last: a reactor thread that sees the slot active (`is_active`) reads the fields
+    // above, which this publishes.
+    conn.active().store(1, Release);
 }
 
 /// `Server::abort_connection(reactor, port, sock)`: counted, then closed through the
@@ -303,7 +300,7 @@ pub(crate) fn abort(
     serv: view::Server<'_>,
     reactor: Reactor,
     port: Option<view::Port<'_>>,
-    sock: Socket<'_>,
+    sock: Socket<'static>,
 ) {
     serv.counters().abort_count.fetch_add(1, SeqCst);
     if let Some(gs) = port.and_then(|port| port.config().counters()) {
@@ -312,8 +309,10 @@ pub(crate) fn abort(
     if sock.read(|s| !s.object.is_null()) {
         reactor.close(sock);
     } else {
-        // SAFETY: an accepted socket no connection took, which nothing uses afterwards.
-        unsafe { swoole_rs_tls::upstream::socket_free(sock.as_ptr()) };
+        // SAFETY: an accepted heap record no connection took, which nothing uses
+        // afterwards.
+        let sock = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(sock) };
+        swoole_rs_tls::upstream::socket_free(Some(sock));
     }
 }
 
@@ -383,8 +382,7 @@ pub(crate) fn idle_timeout(serv: view::Server<'_>, reactor: Reactor, conn: Conne
     let now = swoole_rs_reactor::steady_ms();
     let (received, sent) = conn
         .socket()
-        .map(|s| s.read(|s| (s.last_received_time, s.last_sent_time)))
-        .unwrap_or_default();
+        .map_or_default(|s| s.read(|s| (s.last_received_time, s.last_sent_time)));
     if now - received < idle && now - sent < idle {
         return;
     }
@@ -438,7 +436,7 @@ fn for_stream_ports(serv: view::Server<'_>, change: impl Fn(Reactor, Socket<'_>)
 /// and `SwooleG.max_sockets`.
 pub fn set_max_connection(serv: view::Server<'_>, requested: u32) {
     let tables = serv.state().tables_ref();
-    if !tables.connection_list.is_null() {
+    if tables.connections_mapped() {
         let m = format_args!("max_connection must be set before server create");
         log::warning(c"Server::set_max_connection", m);
         return;
@@ -473,14 +471,12 @@ mod tests {
 
     /// The read handler's status, which upstream's accept always returns `SW_OK`.
     fn accept_on(live: &LiveServer) -> c_int {
-        // SAFETY: the listener, live for the event's life.
-        let event = unsafe { Event::new(live.listener_fd, 0, 1, live.listener().cast()) };
+        let event = live.accept_event();
         accept(live.server(), live.reactor(), &event);
         OK
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn eagain_ends_an_empty_batch() {
         let live = LiveServer::new();
         assert_eq!(accept_on(&live), OK, "nothing to accept");
@@ -488,7 +484,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn too_many_connections_aborts_and_disables_accept() {
         let live = LiveServer::new();
         set_tables_max(&live, 1);
@@ -510,7 +505,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn a_full_session_list_aborts() {
         let live = LiveServer::new();
         // Every session `max_connection` tries after the round is taken.
@@ -528,7 +522,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn session_ids_continue_from_the_round_and_skip_taken_slots() {
         let live = LiveServer::new();
         live.counters().session_round.store(41, Relaxed);
@@ -562,7 +555,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn single_thread_reads_inline_and_counts_the_fd_range() {
         let live = LiveServer::new();
         live.server().config().single_thread.set(true);
@@ -585,7 +577,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn abort_closes_a_connection_through_the_reactor() {
         let live = LiveServer::new();
         live.server().config().single_thread.set(true);
@@ -611,7 +602,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn delayed_receive_waits_for_the_resume() {
         let live = LiveServer::new();
         live.server().config().single_thread.set(true);
@@ -630,10 +620,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn idle_timeout_closes_only_idle_connections() {
         let live = LiveServer::new();
-        live.port().max_idle_time.set(5.0);
+        // `idle_timeout` compares it with milliseconds; a second outlasts Miri's slowdown.
+        live.port().max_idle_time.set(1000.0);
         let _client = live.connect();
         live.server().config().single_thread.set(true);
         accept_on(&live);
@@ -663,7 +653,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn accept_retry_reenables_stream_ports() {
         let live = LiveServer::new();
         let listener = live.port_socket();
@@ -678,7 +667,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn eintr_retries_and_running_out_of_descriptors_disables_accept() {
         let live = LiveServer::new();
         let listener = live.port_socket();
@@ -704,7 +692,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn max_connection_bounds() {
         let live = LiveServer::new();
         let before = live.server().max_connection();
@@ -713,7 +700,7 @@ mod tests {
 
         // SAFETY: the fixture's tables, which no other thread reads.
         let tables = unsafe { &mut *live.state().tables() };
-        let list = core::mem::take(&mut tables.connection_list);
+        let list = core::mem::take(tables.connection_list_mut());
         let run = |requested| {
             set_max_connection(live.server(), requested);
             live.server().max_connection()
@@ -734,7 +721,7 @@ mod tests {
             "session list bound"
         );
         // SAFETY: as above.
-        unsafe { &mut *live.state().tables() }.connection_list = list;
+        *unsafe { &mut *live.state().tables() }.connection_list_mut() = list;
     }
 
     /// Whether the reactor reads `sock`.

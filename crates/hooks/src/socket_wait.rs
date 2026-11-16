@@ -173,15 +173,6 @@ pub(crate) fn wait(socket: Co, event: Events, buffer: Option<WriteSlot<'_>>) -> 
     !co.is_null() && Wait(socket).wait(co, event, buffer)
 }
 
-/// Clears the barrier [`wait_barrier`] installed, also when the wait unwinds.
-struct Installed(Wait, Events);
-
-impl Drop for Installed {
-    fn drop(&mut self) {
-        self.0.set_barrier(self.1, None);
-    }
-}
-
 /// [`wait_for`] with `barrier` retrying the transfer while it is installed: the
 /// ready callback calls it, and holds the coroutine while it returns true.
 pub(crate) fn wait_barrier(socket: Co, event: Events, barrier: &mut dyn FnMut() -> bool) -> bool {
@@ -194,13 +185,14 @@ pub(crate) fn wait_barrier(socket: Co, event: Events, barrier: &mut dyn FnMut() 
         clippy::transmute_ptr_to_ptr,
         reason = "a raw pointer cast cannot extend a trait object's lifetime"
     )]
-    // SAFETY: only the lifetime changes. `Installed` uninstalls the barrier before
+    // SAFETY: only the lifetime changes. The guard uninstalls the barrier before
     // this returns, while the borrow is still live, and only `ready` calls it meanwhile.
     let barrier =
         unsafe { core::mem::transmute::<*mut (dyn FnMut() -> bool + '_), Barrier>(barrier) };
-    let installed = Installed(Wait(socket), event);
-    installed.0.set_barrier(event, Some(barrier));
-    installed.0.wait(co, event, None)
+    let wait = Wait(socket);
+    let _installed = core::mem::DropGuard::new((), |()| wait.set_barrier(event, None));
+    wait.set_barrier(event, Some(barrier));
+    wait.wait(co, event, None)
 }
 
 /// [`wait`] with no barrier and no buffer.
@@ -294,7 +286,7 @@ mod tests {
         record.output.close_wait = status & CLOSE_WAIT != 0;
         record.kernel_nobufs = status & NOBUFS != 0;
         if status & (WANT_READ | WANT_WRITE) != 0 {
-            unsafe { record.set_ssl(core::ptr::NonNull::<u8>::dangling().as_ptr().cast()) };
+            record.set_ssl(Some(crate::co_socket::stub_ssl()));
         }
         record.tls.want_read = status & WANT_READ != 0;
         record.tls.want_write = status & WANT_WRITE != 0;
@@ -397,7 +389,7 @@ mod tests {
     #[test]
     fn wants_count_only_with_a_tls_session() {
         let mut s = socket(WANT_WRITE);
-        unsafe { s.0.record() }.take_ssl();
+        unsafe { s.0.record() }.set_ssl(None);
         assert!(wait_on(&mut s, Events::READ, None));
         assert_eq!(effects(), ["set:512", "yield:512", "remove:512"]);
     }

@@ -2,11 +2,11 @@
 //! function per TEST with the same inputs and expected values.
 //!
 //! The `Server` is a `SharedServer` (crates/server/src/server_object.rs) held in `SHARES`
-//! until `delete` drops it, and
-//! its configuration, callback slots, tables and static-handler sets are the Rust records
+//! until `delete` drops it. Its callback slots are set with `view::Server::set_callback`, and
+//! its configuration, tables and static-handler sets are the Rust records
 //! whose pointers head the object (crates/server/src/state.rs), as the
-//! `swr_v1_port_config` is a `ListenPort`. Each new server
-//! checks this file's copies of those layouts with `server_record_layout`. The methods the
+//! port's settings are a `ListenPort`, which the cases read and write through those
+//! records' own types. The methods the
 //! cases call are crates/server's `server_methods`. The fixtures read the request line
 //! and headers where upstream's ran llhttp; the client is core-tests' httplib
 //! (client.rs). An assertion in a server callback cannot unwind through the server's
@@ -17,17 +17,21 @@
 //! records.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
-use std::mem::offset_of;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
-use swoole_rs_corebase::ServerEvent;
-use swoole_rs_server::callbacks::CallbackKind as Slot;
+use swoole_rs_corebase::log::last_error;
+use swoole_rs_corebase::net_types::SocketAddress as Address;
+use swoole_rs_corebase::{DataHead, ServerEvent};
+use swoole_rs_process::task_file::Packed;
+use swoole_rs_process::worker_record::Worker;
+use swoole_rs_server::callbacks::{Callback, CallbackKind as Slot};
+use swoole_rs_server::reactor_entry::RecvData;
 use swoole_rs_server::{
-    ConnectionRecord, ServerText, SharedServer, StaticCollection, server_methods, view,
+    Connection, ServerConfig, ServerText, SharedServer, StaticCollection, server_methods, view,
 };
 
 use crate::client::{Client, USER_AGENT};
@@ -42,6 +46,8 @@ pub(super) mod server_config;
 pub(super) mod server_conn;
 pub(super) mod server_ssl;
 pub(super) mod task;
+/// timeline.rs: the worker-replacement cases' cross-process event log.
+mod timeline;
 
 const TEST_HOST: &str = "127.0.0.1";
 const MODE_BASE: c_int = 1;
@@ -75,184 +81,8 @@ const LOCATIONS: StaticCollection = StaticCollection::Locations;
 const INDEX_FILES: StaticCollection = StaticCollection::IndexFiles;
 const COMPRESSION_TYPES: StaticCollection = StaticCollection::CompressionTypes;
 
-// `get_connection_by_session_id`'s lookup kind.
-const BY_SESSION: u32 = 1;
-
 // The SWR_SERVER_NATIVE pointer members, opaque here.
 type Native = *mut c_void;
-
-/// Server's configuration, as crates/server lays it out.
-#[repr(C)]
-struct ServerConfig {
-    reactor_num: u16,
-    worker_num: u32,
-    dgram_port_num: u8,
-    dispatch_mode: u8,
-    scheduler_warning: bool,
-    max_request: u32,
-    max_request_grace: u32,
-    udp_socket_ipv4: Native,
-    udp_socket_ipv6: Native,
-    dgram_socket: Native,
-    max_wait_time: u32,
-    worker_max_concurrency: u32,
-    daemonize: bool,
-    have_dgram_sock: bool,
-    have_stream_sock: bool,
-    open_cpu_affinity: bool,
-    disable_notify: bool,
-    discard_timeout_request: bool,
-    http_parse_cookie: bool,
-    http_parse_post: bool,
-    http_parse_files: bool,
-    http_compression: bool,
-    websocket_compression: bool,
-    enable_static_handler: bool,
-    http_autoindex: bool,
-    enable_unsafe_event: bool,
-    enable_delay_receive: bool,
-    enable_reuse_port: bool,
-    reload_async: bool,
-    event_object: bool,
-    task_object: bool,
-    task_enable_coroutine: bool,
-    send_yield: bool,
-    enable_coroutine: bool,
-    single_thread: bool,
-    running: bool,
-    cpu_affinity_available: Native,
-    pipe_command: [Native; 2],
-    send_timeout: f64,
-    heartbeat_check_interval: u16,
-    warning_time: i64,
-    timezone_: c_long,
-    master_timer: Native,
-    heartbeat_timer: Native,
-    output_buffer_size: u32,
-    input_buffer_size: u32,
-    max_queued_bytes: u32,
-    ipc_max_size: u32,
-    private_data_1: Native,
-    private_data_2: Native,
-    private_data_3: Native,
-    private_data_4: Native,
-    factory_: Native,
-    manager_: Native,
-    task_worker_num: u32,
-    task_ipc_mode: u8,
-    task_max_request: u32,
-    task_max_request_grace: u32,
-    task_results: Native,
-    worker_registry: Native,
-    user_workers: Native,
-    workers: Native,
-    gs: Native,
-    upload_max_filesize: usize,
-    http_compression_level: u8,
-    compression_min_length: u32,
-    recv_buffer_allocator: Native,
-    recv_buffer_size: usize,
-    message_queue_key: u64,
-    mode_: u8,
-}
-
-/// The offsets `detail::check_server_layouts` checks for record 0, in its order.
-const CONFIG_OFFSETS: &[usize] = &[
-    offset_of!(ServerConfig, reactor_num),
-    offset_of!(ServerConfig, worker_num),
-    offset_of!(ServerConfig, dgram_port_num),
-    offset_of!(ServerConfig, dispatch_mode),
-    offset_of!(ServerConfig, scheduler_warning),
-    offset_of!(ServerConfig, max_request),
-    offset_of!(ServerConfig, max_request_grace),
-    offset_of!(ServerConfig, udp_socket_ipv4),
-    offset_of!(ServerConfig, udp_socket_ipv6),
-    offset_of!(ServerConfig, dgram_socket),
-    offset_of!(ServerConfig, max_wait_time),
-    offset_of!(ServerConfig, worker_max_concurrency),
-    offset_of!(ServerConfig, daemonize),
-    offset_of!(ServerConfig, have_dgram_sock),
-    offset_of!(ServerConfig, have_stream_sock),
-    offset_of!(ServerConfig, open_cpu_affinity),
-    offset_of!(ServerConfig, disable_notify),
-    offset_of!(ServerConfig, discard_timeout_request),
-    offset_of!(ServerConfig, http_parse_cookie),
-    offset_of!(ServerConfig, http_parse_post),
-    offset_of!(ServerConfig, http_parse_files),
-    offset_of!(ServerConfig, http_compression),
-    offset_of!(ServerConfig, websocket_compression),
-    offset_of!(ServerConfig, enable_static_handler),
-    offset_of!(ServerConfig, http_autoindex),
-    offset_of!(ServerConfig, enable_unsafe_event),
-    offset_of!(ServerConfig, enable_delay_receive),
-    offset_of!(ServerConfig, enable_reuse_port),
-    offset_of!(ServerConfig, reload_async),
-    offset_of!(ServerConfig, event_object),
-    offset_of!(ServerConfig, task_object),
-    offset_of!(ServerConfig, task_enable_coroutine),
-    offset_of!(ServerConfig, send_yield),
-    offset_of!(ServerConfig, enable_coroutine),
-    offset_of!(ServerConfig, single_thread),
-    offset_of!(ServerConfig, running),
-    offset_of!(ServerConfig, cpu_affinity_available),
-    offset_of!(ServerConfig, pipe_command),
-    offset_of!(ServerConfig, send_timeout),
-    offset_of!(ServerConfig, heartbeat_check_interval),
-    offset_of!(ServerConfig, warning_time),
-    offset_of!(ServerConfig, timezone_),
-    offset_of!(ServerConfig, master_timer),
-    offset_of!(ServerConfig, heartbeat_timer),
-    offset_of!(ServerConfig, output_buffer_size),
-    offset_of!(ServerConfig, input_buffer_size),
-    offset_of!(ServerConfig, max_queued_bytes),
-    offset_of!(ServerConfig, ipc_max_size),
-    offset_of!(ServerConfig, private_data_1),
-    offset_of!(ServerConfig, private_data_2),
-    offset_of!(ServerConfig, private_data_3),
-    offset_of!(ServerConfig, private_data_4),
-    offset_of!(ServerConfig, factory_),
-    offset_of!(ServerConfig, manager_),
-    offset_of!(ServerConfig, task_worker_num),
-    offset_of!(ServerConfig, task_ipc_mode),
-    offset_of!(ServerConfig, task_max_request),
-    offset_of!(ServerConfig, task_max_request_grace),
-    offset_of!(ServerConfig, task_results),
-    offset_of!(ServerConfig, worker_registry),
-    offset_of!(ServerConfig, user_workers),
-    offset_of!(ServerConfig, workers),
-    offset_of!(ServerConfig, gs),
-    offset_of!(ServerConfig, upload_max_filesize),
-    offset_of!(ServerConfig, http_compression_level),
-    offset_of!(ServerConfig, compression_min_length),
-    offset_of!(ServerConfig, recv_buffer_allocator),
-    offset_of!(ServerConfig, recv_buffer_size),
-    offset_of!(ServerConfig, message_queue_key),
-    offset_of!(ServerConfig, mode_),
-];
-
-/// Server's tables, as crates/server lays them out.
-#[repr(C)]
-struct ServerTables {
-    connection_list: Native,
-    session_list: Native,
-    port_gs_list: Native,
-    max_connection: u32,
-    enable_accept_timer: Native,
-    reactor_pipe_num: u16,
-    reactor_threads: Native,
-    message_bus: Native,
-}
-
-const TABLES_OFFSETS: &[usize] = &[
-    offset_of!(ServerTables, connection_list),
-    offset_of!(ServerTables, session_list),
-    offset_of!(ServerTables, port_gs_list),
-    offset_of!(ServerTables, max_connection),
-    offset_of!(ServerTables, enable_accept_timer),
-    offset_of!(ServerTables, reactor_pipe_num),
-    offset_of!(ServerTables, reactor_threads),
-    offset_of!(ServerTables, message_bus),
-];
 
 /// `Protocol` (native/framing/swoole_protocol.h).
 #[repr(C)]
@@ -272,256 +102,12 @@ pub(super) struct Protocol {
     pub(super) get_package_length_size: Native,
 }
 
-/// `swr_v1_port_config`.
-#[repr(C)]
-struct PortConfig {
-    object_id: u16,
-    backlog: u16,
-    listening: bool,
-    tcp_defer_accept: c_int,
-    tcp_fastopen: c_int,
-    tcp_keepidle: c_int,
-    tcp_keepinterval: c_int,
-    tcp_keepcount: c_int,
-    tcp_user_timeout: c_int,
-    max_idle_time: f64,
-    socket_buffer_size: c_int,
-    buffer_high_watermark: u32,
-    buffer_low_watermark: u32,
-    type_: c_int,
-    ssl: u8,
-    port: c_int,
-    socket: Native,
-    thread_id: u64,
-    heartbeat_idle_time: u16,
-    open_eof_check: bool,
-    open_http_protocol: bool,
-    open_http2_protocol: bool,
-    open_websocket_protocol: bool,
-    open_length_check: bool,
-    open_mqtt_protocol: bool,
-    open_redis_protocol: bool,
-    open_tcp_nodelay: bool,
-    open_tcp_nopush: bool,
-    open_tcp_keepalive: bool,
-    kernel_socket_recv_buffer_size: c_int,
-    kernel_socket_send_buffer_size: c_int,
-    gs: Native,
-    ptr: Native,
-    websocket_frames: u8,
-    websocket_protocol: Native,
-    host_slot: Native,
-    protocol: Protocol,
-    on_read: Native,
-    ssl_context: Native,
-    tls: Native,
-    length_owner: Native,
-}
-
-/// The offsets `detail::check_server_layouts` checks for record 4, in its order.
-const PORT_OFFSETS: &[usize] = &[
-    offset_of!(PortConfig, object_id),
-    offset_of!(PortConfig, backlog),
-    offset_of!(PortConfig, listening),
-    offset_of!(PortConfig, tcp_defer_accept),
-    offset_of!(PortConfig, tcp_fastopen),
-    offset_of!(PortConfig, tcp_keepidle),
-    offset_of!(PortConfig, tcp_keepinterval),
-    offset_of!(PortConfig, tcp_keepcount),
-    offset_of!(PortConfig, tcp_user_timeout),
-    offset_of!(PortConfig, max_idle_time),
-    offset_of!(PortConfig, socket_buffer_size),
-    offset_of!(PortConfig, buffer_high_watermark),
-    offset_of!(PortConfig, buffer_low_watermark),
-    offset_of!(PortConfig, type_),
-    offset_of!(PortConfig, ssl),
-    offset_of!(PortConfig, port),
-    offset_of!(PortConfig, socket),
-    offset_of!(PortConfig, thread_id),
-    offset_of!(PortConfig, heartbeat_idle_time),
-    offset_of!(PortConfig, open_eof_check),
-    offset_of!(PortConfig, open_http_protocol),
-    offset_of!(PortConfig, open_http2_protocol),
-    offset_of!(PortConfig, open_websocket_protocol),
-    offset_of!(PortConfig, open_length_check),
-    offset_of!(PortConfig, open_mqtt_protocol),
-    offset_of!(PortConfig, open_redis_protocol),
-    offset_of!(PortConfig, open_tcp_nodelay),
-    offset_of!(PortConfig, open_tcp_nopush),
-    offset_of!(PortConfig, open_tcp_keepalive),
-    offset_of!(PortConfig, kernel_socket_recv_buffer_size),
-    offset_of!(PortConfig, kernel_socket_send_buffer_size),
-    offset_of!(PortConfig, gs),
-    offset_of!(PortConfig, ptr),
-    offset_of!(PortConfig, websocket_frames),
-    offset_of!(PortConfig, websocket_protocol),
-    offset_of!(PortConfig, host_slot),
-    offset_of!(PortConfig, protocol),
-    offset_of!(PortConfig, on_read),
-    offset_of!(PortConfig, ssl_context),
-    offset_of!(PortConfig, tls),
-    offset_of!(PortConfig, length_owner),
-];
-
-/// `swr_v1_server_callback`.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Callback {
-    invoke: *const c_void,
-    ctx: *mut c_void,
-    drop: Option<unsafe extern "C" fn(*mut c_void)>,
-}
-
-/// `DataHead`.
-#[repr(C)]
-struct DataHead {
-    fd: c_long,
-    msg_id: u64,
-    len: u32,
-    reactor_id: i16,
-    type_: u8,
-    flags: u8,
-    server_fd: u16,
-    ext_flags: u16,
-    reserved: u32,
-    time: f64,
-}
-
-/// `RecvData`.
-#[repr(C)]
-struct RecvData {
-    info: DataHead,
-    data: *const c_char,
-}
-
-/// `SendData`: its head, then the payload.
-#[repr(C)]
-struct SendData {
-    info: DataHead,
-    data: *const c_char,
-}
-
-/// `network::Address` (Linux): the storage, its length and its `swSocketType`.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Address {
-    addr: [u32; 28],
-    len: u32,
-    kind: c_int,
-}
-
-/// `Connection`.
-#[repr(C)]
-struct Connection {
-    active: u8,
-    socket_type: c_int,
-    fd: c_int,
-    worker_id: c_int,
-    session_id: c_long,
-    ssl: u8,
-    ssl_ready: u8,
-    overflow: u8,
-    high_watermark: u8,
-    http_upgrade: u8,
-    http2_stream: u8,
-    websocket_compression: u8,
-    close_actively: u8,
-    close_queued: u8,
-    closing: u8,
-    close_reset: u8,
-    peer_closed: u8,
-    protect: u8,
-    close_notify: u8,
-    close_force: u8,
-    reactor_id: u8,
-    close_errno: u16,
-    recv_queued_bytes: u32,
-    send_queued_bytes: u32,
-    waiting_time: u16,
-    local_port: u16,
-    local_addr_index: u16,
-    timer: Native,
-    info: Address,
-    object: Native,
-    socket: Native,
-    connect_time: f64,
-    last_recv_time: f64,
-    last_send_time: f64,
-    last_dispatch_time: f64,
-    uid: u32,
-    websocket_status: u8,
-    websocket_buffer: Native,
-    ssl_client_cert: Native,
-    ssl_client_cert_pid: c_int,
-    lock: u32,
-    closed: u32,
-    server_fd: c_int,
-}
-
-/// The offsets `detail::check_server_layouts` checks for record 3, in its order.
-const CONNECTION_OFFSETS: &[usize] = &[
-    offset_of!(Connection, active),
-    offset_of!(Connection, socket_type),
-    offset_of!(Connection, fd),
-    offset_of!(Connection, worker_id),
-    offset_of!(Connection, session_id),
-    offset_of!(Connection, ssl),
-    offset_of!(Connection, ssl_ready),
-    offset_of!(Connection, overflow),
-    offset_of!(Connection, high_watermark),
-    offset_of!(Connection, http_upgrade),
-    offset_of!(Connection, http2_stream),
-    offset_of!(Connection, websocket_compression),
-    offset_of!(Connection, close_actively),
-    offset_of!(Connection, close_queued),
-    offset_of!(Connection, closing),
-    offset_of!(Connection, close_reset),
-    offset_of!(Connection, peer_closed),
-    offset_of!(Connection, protect),
-    offset_of!(Connection, close_notify),
-    offset_of!(Connection, close_force),
-    offset_of!(Connection, reactor_id),
-    offset_of!(Connection, close_errno),
-    offset_of!(Connection, recv_queued_bytes),
-    offset_of!(Connection, send_queued_bytes),
-    offset_of!(Connection, waiting_time),
-    offset_of!(Connection, local_port),
-    offset_of!(Connection, local_addr_index),
-    offset_of!(Connection, timer),
-    offset_of!(Connection, info),
-    offset_of!(Connection, object),
-    offset_of!(Connection, socket),
-    offset_of!(Connection, connect_time),
-    offset_of!(Connection, last_recv_time),
-    offset_of!(Connection, last_send_time),
-    offset_of!(Connection, last_dispatch_time),
-    offset_of!(Connection, uid),
-    offset_of!(Connection, websocket_status),
-    offset_of!(Connection, websocket_buffer),
-    offset_of!(Connection, ssl_client_cert),
-    offset_of!(Connection, ssl_client_cert_pid),
-    offset_of!(Connection, lock),
-    offset_of!(Connection, closed),
-    offset_of!(Connection, server_fd),
-];
-
-/// The pointers that head a `Server` (crates/server/src/view.rs).
-#[repr(C)]
-struct Head {
-    state: *mut c_void,
-    config: *mut ServerConfig,
-    tables: *mut ServerTables,
-    callbacks: *mut Callback,
-}
-
 unsafe extern "C-unwind" {
     #[link_name = "_Z20swoole_set_log_leveli"]
     pub(super) fn swoole_set_log_level(level: c_int);
     #[link_name = "_Z23swoole_signal_block_allv"]
     fn swoole_signal_block_all();
-    fn swr_v1_core_last_error() -> c_int;
 
-    fn swr_v1_server_connection(state: *const c_void, key: c_long, kind: u32) -> *mut Connection;
 }
 
 unsafe extern "C" {
@@ -557,17 +143,25 @@ unsafe impl Sync for Server {}
 struct Port(*mut c_void);
 
 impl Port {
-    fn config(self) -> &'static mut PortConfig {
-        // SAFETY: a ListenPort is its live `swr_v1_port_config`.
-        unsafe { &mut *self.0.cast::<PortConfig>() }
+    /// The port's settings.
+    fn config(self) -> &'static swoole_rs_server::port_config::PortConfig {
+        // SAFETY: a ListenPort is its live settings.
+        unsafe { &*self.0.cast::<swoole_rs_server::port_config::PortConfig>() }
     }
 
     fn port(self) -> u16 {
-        u16::try_from(self.config().port).unwrap()
+        u16::try_from(self.config().port.get()).unwrap()
+    }
+
+    /// `get_fd()`.
+    fn get_fd(self) -> c_int {
+        view::Port::from(self.config()).fd()
     }
 
     fn set_package_max_length(self, max_length: u32) {
-        self.config().protocol.package_max_length = max_length;
+        self.config()
+            .protocol
+            .update(|protocol| protocol.package_max_length = max_length);
     }
 
     /// The crates' view of this port's settings.
@@ -577,37 +171,8 @@ impl Port {
     }
 }
 
-fn check_layout(kind: u32, size: usize, alignment: usize, offsets: &[usize]) {
-    let matches = swoole_rs_server::server_record_layout(kind, size, alignment, offsets);
-    assert!(matches, "record {kind}'s layout differs from the hybrid's");
-}
-
 impl Server {
     fn new(mode: c_int) -> Self {
-        check_layout(
-            0,
-            size_of::<ServerConfig>(),
-            align_of::<ServerConfig>(),
-            CONFIG_OFFSETS,
-        );
-        check_layout(
-            1,
-            size_of::<ServerTables>(),
-            align_of::<ServerTables>(),
-            TABLES_OFFSETS,
-        );
-        check_layout(
-            3,
-            size_of::<Connection>(),
-            align_of::<Connection>(),
-            CONNECTION_OFFSETS,
-        );
-        check_layout(
-            4,
-            size_of::<PortConfig>(),
-            align_of::<PortConfig>(),
-            PORT_OFFSETS,
-        );
         let share = SharedServer::new(mode);
         let serv = Self(share.view().raw());
         SHARES.lock().unwrap().push(share);
@@ -624,42 +189,18 @@ impl Server {
         drop(share);
     }
 
-    fn head(self) -> &'static Head {
-        // SAFETY: a live `Server`, which these pointers head.
-        unsafe { &*self.0.cast::<Head>() }
+    fn config(self) -> &'static ServerConfig {
+        self.view().config()
     }
 
-    fn state(self) -> *mut c_void {
-        self.head().state
-    }
-
-    fn config(self) -> &'static mut ServerConfig {
-        // SAFETY: the state's configuration lives as long as the server.
-        unsafe { &mut *self.head().config }
-    }
-
-    fn slot(self, slot: Slot) -> &'static mut Callback {
-        // SAFETY: the server's slots, one per `Slot`.
-        unsafe { &mut *self.head().callbacks.add(slot as usize) }
-    }
-
-    /// `serv.onX = fn`, for a slot that holds no closure to drop.
-    fn set_callback(self, slot: Slot, invoke: *const c_void) {
-        self.set_closure(slot, invoke, std::ptr::null_mut());
-    }
-
-    /// `serv.onX = [ctx](...) {...}`: `invoke(ctx, ...)`, with nothing to drop.
-    fn set_closure(self, slot: Slot, invoke: *const c_void, ctx: *mut c_void) {
-        *self.slot(slot) = Callback {
-            invoke,
-            ctx,
-            drop: None,
-        };
+    /// `serv.onX = fn`.
+    fn set_callback(self, callback: Callback) {
+        self.view().set_callback(callback);
     }
 
     /// `serv.onX == nullptr`.
     fn callback_is_empty(self, slot: Slot) -> bool {
-        self.slot(slot).invoke.is_null()
+        !self.view().has_callback(slot)
     }
 
     fn insert(self, collection: StaticCollection, value: &str) {
@@ -688,10 +229,9 @@ impl Server {
         Port(self.view().port_at(0).unwrap().raw())
     }
 
-    /// `gs->master_pid`: `ServerGS` begins with the counters, `master_pid` first.
+    /// `gs->master_pid`.
     fn get_master_pid(self) -> c_int {
-        // SAFETY: the created server's shared counters.
-        unsafe { *self.config().gs.cast::<c_int>() }
+        self.view().counters().master_pid.load(Ordering::SeqCst)
     }
 
     fn create(self) -> c_int {
@@ -719,32 +259,20 @@ impl Server {
         server_methods::sendfile(self.view(), session, file.as_bytes(), 0, 0)
     }
 
-    fn get_connection_by_session_id(self, session: c_long) -> &'static mut Connection {
-        // SAFETY: a live session's connection.
-        unsafe { &mut *swr_v1_server_connection(self.state(), session, BY_SESSION) }
+    fn get_connection_by_session_id(self, session: c_long) -> Connection<'static> {
+        self.view().by_session(session).expect("a live session")
     }
 
     fn get_idle_worker_num(self) -> u32 {
         server_methods::get_idle_worker_num(self.view())
     }
 
-    fn is_healthy_connection(self, now: f64, conn: &Connection) -> bool {
-        // SAFETY: the crate's record, whose layout `check_layout` matched this one's.
-        let conn = unsafe {
-            swoole_rs_server::Connection::from_ptr(ptr::from_ref(conn).cast_mut().cast())
-        };
-        self.view().healthy(
-            now,
-            conn.unwrap_or_else(|| {
-                swoole_rs_corebase::fatal("a live connection with a null record")
-            }),
-        )
+    fn is_healthy_connection(self, now: f64, conn: Connection<'_>) -> bool {
+        self.view().healthy(now, conn)
     }
 
-    fn feedback(self, conn: &mut Connection, event: ServerEvent) -> bool {
-        // SAFETY: as above.
-        let record = unsafe { &mut *ptr::from_mut(conn).cast::<ConnectionRecord>() };
-        server_methods::feedback(self.view(), record.into(), event)
+    fn feedback(self, conn: Connection<'_>, event: ServerEvent) -> bool {
+        server_methods::feedback(self.view(), conn, event)
     }
 
     /// The crates' view of this server.
@@ -752,11 +280,6 @@ impl Server {
         // SAFETY: the cases' Servers live until the case ends.
         unsafe { view::Server::from_raw(self.0) }
     }
-}
-
-fn last_error() -> c_int {
-    // SAFETY: reads this thread's last error.
-    unsafe { swr_v1_core_last_error() }
 }
 
 /// `test::get_root_path()`: the directory the runner starts each case in, the tree's
@@ -897,23 +420,14 @@ fn respond(serv: Server, session: c_long, body: &str) {
 }
 
 /// The request a callback receives, and its bytes.
-fn request<'a>(req: *mut RecvData) -> (c_long, &'a [u8]) {
-    // SAFETY: the server passes a live request of `len` bytes.
-    unsafe {
-        let req = &*req;
-        (
-            req.info.fd,
-            std::slice::from_raw_parts(req.data.cast::<u8>(), req.info.len as usize),
-        )
-    }
+fn request<'a>(req: &RecvData<'a>) -> (c_long, &'a [u8]) {
+    (req.info().fd, req.payload())
 }
 
 /// `onClose` in both fixtures: an active close has no reactor.
-unsafe extern "C" fn on_close(_: *mut c_void, serv: *mut c_void, info: *mut DataHead) {
-    // SAFETY: the server passes a live event head.
-    let info = unsafe { &*info };
-    let conn = Server(serv).get_connection_by_session_id(info.fd);
-    if conn.close_actively != 0 {
+fn on_close(serv: view::Server<'_>, info: &DataHead) {
+    let conn = Server(serv.raw()).get_connection_by_session_id(info.fd);
+    if conn.close_actively() {
         expect(info.reactor_id == -1, "info->reactor_id == -1");
     } else {
         expect(info.reactor_id >= 0, "info->reactor_id >= 0");
@@ -922,12 +436,8 @@ unsafe extern "C" fn on_close(_: *mut c_void, serv: *mut c_void, info: *mut Data
 
 /// `test_base_server`'s `onReceive`. The WebSocket frames its `websocket_*` TESTs send
 /// are #1842's.
-unsafe extern "C" fn base_on_receive(
-    _: *mut c_void,
-    serv: *mut c_void,
-    req: *mut RecvData,
-) -> c_int {
-    let serv = Server(serv);
+fn base_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+    let serv = Server(serv.raw());
     let (session, data) = request(req);
     COUNTER.fetch_add(1, Ordering::SeqCst);
     let Some((url, headers)) = parse_request(data) else {
@@ -974,9 +484,9 @@ fn join_client() {
 }
 
 /// `test_base_server`'s `onWorkerStart`: the case's client runs in its own thread.
-unsafe extern "C" fn base_on_worker_start(_: *mut c_void, serv: *mut c_void, _: *mut c_void) {
+fn base_on_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
     let test = TEST.lock().unwrap().expect("a case");
-    let serv = Server(serv);
+    let serv = Server(serv.raw());
     // SAFETY: getpid(2).
     client_thread(|| unsafe { getpid() }, move || test(serv));
 }
@@ -985,14 +495,14 @@ unsafe extern "C" fn base_on_worker_start(_: *mut c_void, serv: *mut c_void, _: 
 /// static handler on `/examples`, which runs `fn` in a thread once its worker starts.
 fn test_base_server(test: fn(Server)) {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
-    serv.config().enable_reuse_port = true;
-    serv.config().heartbeat_check_interval = 1;
+    serv.config().worker_num.set(1);
+    serv.config().enable_reuse_port.set(true);
+    serv.config().heartbeat_check_interval.set(1);
     *TEST.lock().unwrap() = Some(test);
 
     COUNTER.store(0, Ordering::SeqCst);
 
-    serv.config().enable_static_handler = true;
+    serv.config().enable_static_handler.set(true);
     assert!(serv.set_document_root(root_path().as_bytes()));
 
     serv.insert(LOCATIONS, "/examples");
@@ -1004,36 +514,42 @@ fn test_base_server(test: fn(Server)) {
         eprintln!("listen failed, [error={}]", last_error());
         std::process::exit(2);
     };
-    port.config().open_http_protocol = true;
-    port.config().open_websocket_protocol = true;
+    port.config().open_http_protocol.set(true);
+    port.config().open_websocket_protocol.set(true);
 
     serv.create();
 
-    serv.set_callback(Slot::WorkerStart, base_on_worker_start as *const c_void);
-    serv.set_callback(Slot::Close, on_close as *const c_void);
-    serv.set_callback(Slot::Receive, base_on_receive as *const c_void);
+    serv.set_callback(Callback::WorkerStart(base_on_worker_start));
+    serv.set_callback(Callback::Close(on_close));
+    serv.set_callback(Callback::Receive(base_on_receive));
 
     serv.start();
     join_client();
     serv.delete();
 }
 
-unsafe extern "C" fn ignore_server(_: *mut c_void, _: *mut c_void) {}
+fn ignore_server(_: view::Server<'_>) {}
 
-unsafe extern "C" fn ignore_event(_: *mut c_void, _: *mut c_void, _: *mut DataHead) {}
+fn ignore_event(_: view::Server<'_>, _: &DataHead) {}
+
+/// `serv.onReceive = [](Server *, RecvData *) -> int { return SW_OK; }`.
+fn receive_ok(_: view::Server<'_>, _: &RecvData) -> c_int {
+    SW_OK
+}
+
+/// `serv.onTask = [](Server *, EventData *) -> int { return SW_OK; }`.
+fn task_ok(_: view::Server<'_>, _: Packed<'_>) -> c_int {
+    SW_OK
+}
 
 /// `test_http_server`'s `onReceive`.
-unsafe extern "C" fn http_on_receive(
-    _: *mut c_void,
-    serv: *mut c_void,
-    req: *mut RecvData,
-) -> c_int {
-    let serv = Server(serv);
+fn http_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+    let serv = Server(serv.raw());
     let (session, data) = request(req);
     let conn = serv.get_connection_by_session_id(session);
 
     expect(
-        serv.get_idle_worker_num() <= serv.config().worker_num,
+        serv.get_idle_worker_num() <= serv.config().worker_num.get(),
         "get_idle_worker_num() <= worker_num",
     );
     // SAFETY: the clock.
@@ -1049,7 +565,7 @@ unsafe extern "C" fn http_on_receive(
     };
 
     if url == "/overflow" {
-        conn.overflow = 1;
+        conn.set_overflow(true);
     }
 
     if url == "/pause" {
@@ -1069,29 +585,29 @@ fn test_http_server(dispatch_mode: u8, worker_num: u32, mode: c_int) -> Server {
     server.set_text(TEXT_USER, "root");
     server.set_text(TEXT_GROUP, "root");
     server.set_text(TEXT_CHROOT, "/");
-    server.config().worker_num = worker_num;
-    server.config().dispatch_mode = dispatch_mode;
-    server.config().open_cpu_affinity = true;
+    server.config().worker_num.set(worker_num);
+    server.config().dispatch_mode.set(dispatch_mode);
+    server.config().open_cpu_affinity.set(true);
     set_log_warning();
 
     let port = server.add_port(SW_SOCK_TCP, TEST_HOST, 0).unwrap();
 
-    port.config().open_http_protocol = true;
-    port.config().open_websocket_protocol = true;
-    port.config().open_tcp_keepalive = true;
-    port.config().tcp_fastopen = 1;
-    port.config().tcp_defer_accept = 1;
+    port.config().open_http_protocol.set(true);
+    port.config().open_websocket_protocol.set(true);
+    port.config().open_tcp_keepalive.set(true);
+    port.config().tcp_fastopen.set(1);
+    port.config().tcp_defer_accept.set(1);
 
-    server.config().enable_static_handler = true;
+    server.config().enable_static_handler.set(true);
     server.set_document_root(root_path().as_bytes());
     server.insert(LOCATIONS, "/examples");
 
     server.create();
 
-    server.set_callback(Slot::Start, ignore_server as *const c_void);
-    server.set_callback(Slot::Close, on_close as *const c_void);
-    server.set_callback(Slot::Connect, ignore_event as *const c_void);
-    server.set_callback(Slot::Receive, http_on_receive as *const c_void);
+    server.set_callback(Callback::Start(ignore_server));
+    server.set_callback(Callback::Close(on_close));
+    server.set_callback(Callback::Connect(ignore_event));
+    server.set_callback(Callback::Receive(http_on_receive));
 
     server
 }
@@ -1102,15 +618,11 @@ fn default_http_server() -> Server {
 }
 
 /// `test_proxy_server`'s `onReceive`.
-unsafe extern "C" fn proxy_on_receive(
-    _: *mut c_void,
-    serv: *mut c_void,
-    req: *mut RecvData,
-) -> c_int {
-    let server = Server(serv);
+fn proxy_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+    let server = Server(serv.raw());
     let (session, data) = request(req);
 
-    swoole_rs_process::methods::swoole_set_worker_id(server.config().worker_num);
+    swoole_rs_process::methods::swoole_set_worker_id(server.config().worker_num.get());
 
     let Some((url, headers)) = parse_request(data) else {
         eprintln!("Parse error");
@@ -1134,27 +646,27 @@ unsafe extern "C" fn proxy_on_receive(
 /// `/examples` and a 64 KiB package limit.
 fn test_proxy_server() -> Server {
     let server = Server::new(MODE_BASE);
-    server.config().worker_num = 1;
+    server.config().worker_num.set(1);
 
     let Some(port) = server.add_port(SW_SOCK_TCP, TEST_HOST, 0) else {
         eprintln!("listen failed, [error={}]", last_error());
         std::process::exit(2);
     };
-    port.config().kernel_socket_send_buffer_size = c_int::MAX;
-    port.config().kernel_socket_recv_buffer_size = c_int::MAX;
-    port.config().open_tcp_nodelay = true;
+    port.config().kernel_socket_send_buffer_size.set(c_int::MAX);
+    port.config().kernel_socket_recv_buffer_size.set(c_int::MAX);
+    port.config().open_tcp_nodelay.set(true);
 
-    server.config().enable_static_handler = true;
+    server.config().enable_static_handler.set(true);
     server.set_document_root(root_path().as_bytes());
     server.insert(LOCATIONS, "/examples");
 
     server.get_primary_port().set_package_max_length(64 * 1024);
-    port.config().open_http_protocol = true;
-    port.config().open_websocket_protocol = true;
+    port.config().open_http_protocol.set(true);
+    port.config().open_websocket_protocol.set(true);
 
     server.create();
 
-    server.set_callback(Slot::Receive, proxy_on_receive as *const c_void);
+    server.set_callback(Callback::Receive(proxy_on_receive));
 
     server
 }
@@ -1212,7 +724,7 @@ fn idle_time() {
     test_base_server(|serv| {
         block_all_signals();
         let port = serv.get_primary_port();
-        port.config().max_idle_time = 1.0;
+        port.config().max_idle_time.set(1.0);
 
         let mut cli = Client::new(TEST_HOST, port.port());
         cli.set_keep_alive(true);
@@ -1264,7 +776,7 @@ fn static_get() {
 
 fn static_files() {
     test_base_server(|serv| {
-        serv.config().http_autoindex = true;
+        serv.config().http_autoindex.set(true);
         serv.insert(LOCATIONS, "");
 
         block_all_signals();
@@ -1329,7 +841,7 @@ fn request_with_header(date_format: &CStr, cli: &mut Client) {
 
 fn not_modify() {
     test_base_server(|serv| {
-        serv.config().http_autoindex = true;
+        serv.config().http_autoindex.set(true);
         serv.insert(LOCATIONS, "");
 
         block_all_signals();
@@ -1384,10 +896,10 @@ fn proxy_response() {
 
 fn heartbeat() {
     let server = default_http_server();
-    server.config().heartbeat_check_interval = 0;
+    server.config().heartbeat_check_interval.set(0);
     let port = server.get_primary_port();
     port.set_package_max_length(1024);
-    port.config().heartbeat_idle_time = 2;
+    port.config().heartbeat_idle_time.set(2);
 
     fork_with(|| {
         server.start();
@@ -1468,9 +980,7 @@ fn process1() {
     assert_eq!(resp.status, 200);
 }
 
-unsafe extern "C" fn return_zero(_: *mut c_void, _: *mut c_void, _: *mut DataHead) -> c_int {
-    0
-}
+fn return_zero(_: view::Server<'_>, _: &DataHead) {}
 
 fn redundant_callback() {
     let server = test_http_server(DISPATCH_IDLE_WORKER, 2, MODE_PROCESS);
@@ -1480,7 +990,12 @@ fn redundant_callback() {
         Slot::BufferFull,
         Slot::BufferEmpty,
     ] {
-        server.set_callback(slot, return_zero as *const c_void);
+        server.set_callback(match slot {
+            Slot::Connect => Callback::Connect(return_zero),
+            Slot::Close => Callback::Close(return_zero),
+            Slot::BufferFull => Callback::BufferFull(return_zero),
+            _ => Callback::BufferEmpty(return_zero),
+        });
     }
 
     fork_with(|| {
@@ -1549,7 +1064,7 @@ fn chunked_upload_command(port: u16) -> String {
 
 static CHUNKED_SERVER: Mutex<Option<Server>> = Mutex::new(None);
 
-unsafe extern "C" fn chunked_on_start(_: *mut c_void, _: *mut c_void) {
+fn chunked_on_start(_: view::Server<'_>) {
     let server = CHUNKED_SERVER.lock().unwrap().expect("the case's server");
     client_thread(
         move || server.get_master_pid(),
@@ -1572,7 +1087,7 @@ fn chunked() {
     let server = test_http_server(DISPATCH_FDMOD, 1, MODE_BASE);
     *CHUNKED_SERVER.lock().unwrap() = Some(server);
 
-    server.set_callback(Slot::Start, chunked_on_start as *const c_void);
+    server.set_callback(Callback::Start(chunked_on_start));
 
     server.start();
     join_client();
@@ -1588,7 +1103,7 @@ fn wait_all_child_processes() {
 
 fn max_queued_bytes() {
     let server = default_http_server();
-    server.config().max_queued_bytes = 100;
+    server.config().max_queued_bytes.set(100);
 
     fork_with(|| {
         server.start();
@@ -1610,14 +1125,12 @@ fn max_queued_bytes() {
     wait_all_child_processes();
 }
 
-unsafe extern "C" fn dispatch_error(
-    _: *mut c_void,
-    _: *mut c_void,
-    _: *mut c_void,
-    data: *mut SendData,
+fn dispatch_error(
+    _: view::Server<'_>,
+    _: Option<swoole_rs_server::Connection<'_>>,
+    data: Option<&RecvData>,
 ) -> c_int {
-    // SAFETY: the server passes the packet it dispatches.
-    let fd = unsafe { (*data).info.fd };
+    let fd = data.expect("the packet it dispatches").info().fd;
     if fd % 2 == 0 {
         DISPATCH_RESULT_DISCARD_PACKET
     } else {
@@ -1627,7 +1140,7 @@ unsafe extern "C" fn dispatch_error(
 
 fn dispatch_func_return_error_worker_id() {
     let server = default_http_server();
-    server.set_callback(Slot::DispatchFunc, dispatch_error as *const c_void);
+    server.set_callback(Callback::DispatchFunc(dispatch_error));
     fork_with(|| {
         server.start();
     });
@@ -1671,7 +1184,7 @@ fn request_with_if_range_header(date_format: &CStr, port: u16) -> bool {
 
 fn http_range() {
     let server = default_http_server();
-    server.config().http_autoindex = true;
+    server.config().http_autoindex.set(true);
     server.insert(LOCATIONS, "/docs");
 
     fork_with(|| {
@@ -1724,7 +1237,7 @@ fn http_range2() {
 
 fn fail() {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
 
     let bad_path = vec![0u8; PATH_MAX + 4];
     assert!(!serv.set_document_root(&bad_path));
@@ -1736,7 +1249,7 @@ fn fail() {
 }
 
 /// `http_server.<name>`, in upstream's order.
-pub const CASES: &[(&str, fn())] = &[
+pub(crate) const CASES: &[(&str, fn())] = &[
     ("get", get),
     ("reset_connection", reset_connection),
     ("heartbeat_check_interval", heartbeat_check_interval),

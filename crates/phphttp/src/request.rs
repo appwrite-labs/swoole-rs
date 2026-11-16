@@ -1,18 +1,16 @@
 //! `Swoole\Http\Request`.
 use crate::{
-    context::{self, Ctx, Holder},
+    context::{self, Ctx, Hold, Holder},
     host::{self, COMPLETED, HTTP_CONTEXT_UNAVAILABLE, HTTP2},
     parse::{self, CAPABILITIES, Property, body, method_name},
     state::State,
 };
 use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::CCast;
-use swoole_rs_httpbindings::request_option;
+use swoole_rs_httpbindings::{RequestOption, request_option};
 use swoole_rs_phpstubs::http_request;
 use swoole_rs_phpswoole::MinitArgs;
-use swoole_rs_zend::{
-    Call, Custom, CustomClass, Key, Object, Value, handlers, sys::ZEND_ACC_PUBLIC,
-};
+use swoole_rs_zend::{Call, Custom, CustomClass, Key, Value, handlers, sys::ZEND_ACC_PUBLIC};
 use swoole_rs_zend::{method_table, sys as z};
 
 pub(crate) static REQUEST: CustomClass<Data> = CustomClass::new();
@@ -26,31 +24,32 @@ impl Custom for Data {
     }
 
     fn new() -> Self {
-        Self(Holder::new(None))
+        Self(Holder::new())
+    }
+
+    /// The object goes: the uploads it received are removed.
+    fn free(&self, this: &Value) {
+        if let Some(mut ctx) = self.0.get().map(Hold::ctx)
+            && ctx.state().request.ztmpfiles.get().is_some()
+        {
+            parse::release_uploads(this);
+        }
     }
 }
 
-/// The object goes: its uploads are removed and the context, unless the
-/// response still holds it, freed.
+/// Then the object lets go of its context, which goes unless the response
+/// or a stream still holds it.
 impl Drop for Data {
     fn drop(&mut self) {
-        let Some(mut ctx) = self.0.get() else { return };
-        let state = ctx.state();
-        if state.request.ztmpfiles.get().is_some() {
-            let std = Object::std(std::ptr::from_mut(self).cast::<Object<Self>>());
-            // SAFETY: the request object, its properties still live, and the
-            // declared `tmpfiles` slot's offset.
-            unsafe { z::swr_zend_http_uploads_release(std, parse::tmpfiles_offset()) };
+        if let Some(hold) = self.0.take() {
+            hold.ctx().state().request.zobject.clear();
         }
-        state.request.zobject.clear();
-        // SAFETY: the context the object held.
-        unsafe { context::free(ctx) };
     }
 }
 
 /// The method's `$this` context.
-fn this(call: &Call) -> Option<Ctx> {
-    call.custom::<Data>().and_then(|data| data.0.get())
+fn this(call: &Call) -> Option<Ctx<'_>> {
+    call.custom::<Data>()?.0.get().map(Hold::ctx)
 }
 
 method_table! {
@@ -86,7 +85,7 @@ pub fn request_minit(args: &MinitArgs) {
 }
 
 /// `http_request_get_and_check_context`.
-fn checked(call: &Call) -> Option<Ctx> {
+fn checked(call: &Call) -> Option<Ctx<'_>> {
     let ctx = this(call);
     if ctx.is_none() {
         host::set_last_error(HTTP_CONTEXT_UNAVAILABLE);
@@ -129,15 +128,12 @@ fn create_request(call: &Call) {
     let Ok(options) = options else {
         return call.set_bool(false);
     };
-    let mut ctx = context::alloc();
+    let hold = context::alloc();
+    let mut ctx = hold.ctx();
     parse::init_request_parser(ctx);
-    let held = ctx;
     let state = ctx.state();
     let slot = &mut state.request.zobject;
-    let _made = context::new_object(slot, context::Kind::Request, held);
-    // SAFETY: the object just made. The return slot takes the reference; the
-    // context borrows it, as upstream's does.
-    unsafe { call.set_value(slot.copy_value()) };
+    context::lend_object(call, slot, context::Kind::Request, hold.clone());
     state.parse_cookie = true;
     state.parse_body = true;
     state.parse_files = true;
@@ -164,17 +160,19 @@ fn option(state: &mut State, name: &[u8], value: &Value) {
     let option = request_option(name, wanted);
     let truth = || value.truthy();
     match option {
-        1 => state.parse_cookie = truth(),
-        2 => state.parse_body = truth(),
-        3 => state.parse_files = truth(),
-        4 => state.enable_compression = truth(),
-        5 => {
+        Some(RequestOption::ParseCookie) => state.parse_cookie = truth(),
+        Some(RequestOption::ParseBody) => state.parse_body = truth(),
+        Some(RequestOption::ParseFiles) => state.parse_files = truth(),
+        Some(RequestOption::EnableCompression) => state.enable_compression = truth(),
+        Some(RequestOption::CompressionLevel) => {
             let level = value.long().c_cast::<i8>();
             state.compression_level = level;
         }
-        6 => state.websocket_compression = truth(),
-        7 => state.upload_tmp_dir = Some(crate::context::directory(value.string().bytes())),
-        _ => {}
+        Some(RequestOption::WebsocketCompression) => state.websocket_compression = truth(),
+        Some(RequestOption::UploadTmpDir) => {
+            state.upload_tmp_dir = Some(crate::context::directory(value.string().bytes()));
+        }
+        None => {}
     }
 }
 

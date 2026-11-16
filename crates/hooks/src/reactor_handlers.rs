@@ -16,7 +16,7 @@ fn fired(event: &Event) -> (*mut c_void, c_int) {
     (object, event.fd())
 }
 
-extern "C" fn poll_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
+fn poll_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
     let (task, fd) = fired(event);
     // SAFETY: a `SW_FD_CO_POLL` socket, whose object is its parked poll task.
     let task = unsafe { &*task.cast::<crate::poll::Task<'_>>() };
@@ -24,7 +24,7 @@ extern "C" fn poll_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> 
     0
 }
 
-extern "C" fn waiter_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
+fn waiter_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
     let (waiter, _) = fired(event);
     // SAFETY: a `SW_FD_CO_EVENT` socket, whose object is its parked waiter.
     let waiter = unsafe { &*waiter.cast::<crate::wait_event::Waiter>() };
@@ -88,8 +88,8 @@ pub extern "C" fn system_init_reactor(reactor: Running<'_>) {
 
 /// `Iouring::callback`.
 #[cfg(all(feature = "upstream-symbols", feature = "iouring"))]
-extern "C" fn iouring_ready(_: Running<'_>, _: &mut Event) -> c_int {
-    crate::iouring::ready()
+fn iouring_ready(_: Running<'_>, _: &mut Event) -> c_int {
+    if crate::iouring::ready() { 0 } else { -1 }
 }
 
 /// `sw_reactor()->defer([co] { co->resume(); })`, or the unit tests' recorder.
@@ -134,7 +134,7 @@ mod tests {
         reason = "the native wake's signature, which defers it"
     )]
     fn wake(co: Parked) {
-        assert_eq!(co.co(), CO);
+        assert_eq!(co.waker(), swoole_rs_coroutine::Waker::NONE);
         WOKEN.set(WOKEN.get() + 1);
     }
     fn handler(fd_type: FdType, events: Events) -> Handler {
@@ -155,7 +155,7 @@ mod tests {
 
     impl Drop for Socket {
         fn drop(&mut self) {
-            unsafe { SocketRecord::free(self.0) };
+            drop(unsafe { Box::from_raw(self.0) });
         }
     }
 
@@ -166,9 +166,16 @@ mod tests {
         Ok(Socket(socket))
     }
     /// The reactor fires write, then read, on the waiter's socket.
-    fn park(_: f64) -> Result<(), i32> {
-        let mut event =
-            unsafe { Event::new(7, 0, FdType::SW_FD_CO_EVENT as c_int, SOCKET.get().cast()) };
+    fn park(_: f64, waker: &crate::resolve::WakerSlot) -> Result<(), i32> {
+        waker.set(Some(swoole_rs_coroutine::Waker::NONE));
+        let mut event = unsafe {
+            Event::of(
+                7,
+                0,
+                FdType::SW_FD_CO_EVENT as c_int,
+                swoole_rs_reactor::Socket::from_ptr(SOCKET.get()),
+            )
+        };
         for events in [Events::WRITE, Events::READ] {
             let ready = handler(FdType::SW_FD_CO_EVENT, events);
             assert_eq!(

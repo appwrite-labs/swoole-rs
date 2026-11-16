@@ -23,24 +23,14 @@ use swoole_rs_zend::{
 
 use swoole_rs_reactor::signal_upstream::{self, Handler};
 
-// crates/phpevents' functions: declared, since crates/phpevents depends on this crate.
-// Safe as crates/phpcoroutines declares them: each takes nothing or a live value
-// and is called from a PHP call.
-unsafe extern "C" {
-    safe fn php_swoole_reactor_init() -> c_int;
-    safe fn swr_v1_phpevents_wait();
-    safe fn php_swoole_convert_to_fd(value: Option<&Value>) -> c_int;
-}
-
 /// `SW_ERROR_WRONG_OPERATION`.
 const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 
-/// `f` over the process's server (`sw_server()`), or `None` while it has none.
-/// Each `f` here reads the server's config and worker records and returns; none
-/// drops the server's last share, and the view can't outlive the call.
+/// `f` over the process's server (`sw_server()`), or `None` while it has none,
+/// through a share that keeps it live while `f` runs. Every caller is a setup
+/// path (a Process's construction, a loop's or a signal's first use).
 fn with_server<R>(f: impl FnOnce(view::Server<'_>) -> R) -> Option<R> {
-    // SAFETY: nothing deletes the server while `f`, a read, runs.
-    unsafe { view::Server::current() }.map(f)
+    swoole_rs_server::SharedServer::current().map(|share| f(share.view()))
 }
 
 /// Why this process may not construct a Process.
@@ -123,15 +113,7 @@ pub(crate) fn worker_base() -> u32 {
     .unwrap_or(1)
 }
 
-/// `php_swoole_reactor_init()`: whether the reactor is ready.
-pub(crate) fn reactor_init() -> bool {
-    php_swoole_reactor_init() >= 0
-}
-
-/// `php_swoole_event_wait()`.
-pub(crate) fn event_wait() {
-    swr_v1_phpevents_wait();
-}
+pub(crate) use swoole_rs_phpswoole::{event_wait, reactor_init};
 
 /// `php_swoole_dup_socket(fd, SW_SOCK_UNIX_STREAM or _DGRAM)`.
 pub(crate) fn dup_socket(fd: c_int, stream: bool) -> Option<Owned> {
@@ -145,7 +127,7 @@ pub(crate) fn dup_socket(fd: c_int, stream: bool) -> Option<Owned> {
 
 /// `php_swoole_convert_to_fd(value)`: the fd, or `None` for a value that names none.
 pub(crate) fn convert_to_fd(value: &Value) -> Option<c_int> {
-    Some(php_swoole_convert_to_fd(Some(value))).filter(|&fd| fd >= 0)
+    swoole_rs_phpswoole::convert_to_fd(Some(value))
 }
 
 /// The value, or `None` with the bailout deferred: the caller stops on
@@ -335,7 +317,7 @@ pub fn timer_uses_reactor() -> bool {
     })
 }
 
-extern "C-unwind" fn listening(_event_num: &mut usize) -> bool {
+fn listening(_event_num: &mut usize) -> bool {
     swr_v1_core_signal_listener_num() == 0 || !swoole_rs_corebase::swr_v1_core_wait_signal()
 }
 

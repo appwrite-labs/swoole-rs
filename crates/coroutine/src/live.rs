@@ -85,6 +85,11 @@ impl Scheduler {
         self.live().map_or(0, |live| live.count)
     }
 
+    /// Live coroutine `cid`.
+    pub(crate) fn live_co(&self, cid: c_long) -> Option<Co> {
+        self.live()?.get(cid)
+    }
+
     /// The state of live coroutine `cid`, `None` once it ended.
     #[must_use]
     pub fn state(&self, cid: c_long) -> Option<State> {

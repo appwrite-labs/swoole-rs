@@ -1,6 +1,5 @@
 //! Bounded equivalents of Swoole's permissive first-party HTTP framing.
 use super::{HttpSpan, maps::METHODS};
-#[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct HttpFrame {
     pub offset: usize,

@@ -173,8 +173,8 @@ pub extern "C" fn swr_v1_clients_address_verify(family: c_int, host: Text<'_>) -
 /// `Address::get_addr`: IP text in shared scratch, Unix path in the record, or
 /// the original static fallback for an unknown socket type. The Unix path
 /// remains valid only while the record does; IP text lives until reused.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_address_host(address: &SocketAddress) -> *const c_char {
+#[must_use]
+pub fn host_in_scratch(address: &SocketAddress) -> *const c_char {
     if inet4(address.kind) {
         let ip = address.addr.v4().sin_addr.s_addr;
         address_string(libc::AF_INET, &ip.to_ne_bytes())
@@ -226,9 +226,9 @@ pub fn with_host<R>(address: &SocketAddress, f: impl FnOnce(&CStr) -> R) -> R {
     }
 }
 
-/// `Address::get_port`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_address_port(address: &SocketAddress) -> c_int {
+/// `Address::get_port`: 0 for an address that is not IP.
+#[must_use]
+pub fn address_port(address: &SocketAddress) -> u16 {
     let port = if inet4(address.kind) {
         address.addr.v4().sin_port
     } else if inet6(address.kind) {
@@ -236,7 +236,7 @@ pub extern "C" fn swr_v1_clients_address_port(address: &SocketAddress) -> c_int 
     } else {
         return 0;
     };
-    c_int::from(u16::from_be(port))
+    u16::from_be(port)
 }
 
 /// `Address::set_port`, including the original int-to-uint16_t wrapping.
@@ -270,8 +270,8 @@ pub fn type_name(kind: c_int) -> &'static CStr {
 }
 
 /// `Address::is_loopback_addr`, preserving exact IPv4 localhost semantics.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_address_loopback(address: &SocketAddress) -> bool {
+#[must_use]
+pub fn is_loopback(address: &SocketAddress) -> bool {
     let loopback = crate::ip::swr_v1_clients_loopback;
     if inet4(address.kind) {
         let ip = address.addr.v4().sin_addr.s_addr;
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no inet_pton or inet_ntop")]
-    fn with_host_formats_as_the_export_does() {
+    fn with_host_formats_as_the_scratch_does() {
         for (kind, host) in [
             (TCP, c"10.1.2.3"),
             (UDP, c"127.0.0.1"),
@@ -414,9 +414,9 @@ mod tests {
         ] {
             let address = socket_address(kind, host);
             assert_eq!(with_host(&address, CStr::to_owned).as_c_str(), host);
-            // SAFETY: the export's text, read before this thread formats another.
-            let export = unsafe { CStr::from_ptr(swr_v1_clients_address_host(&address)) };
-            assert_eq!(export, host, "the export agrees");
+            // SAFETY: the scratch text, read before this thread formats another.
+            let scratch = unsafe { CStr::from_ptr(host_in_scratch(&address)) };
+            assert_eq!(scratch, host, "the scratch agrees");
         }
         let unknown = SocketAddress {
             kind: 9,
@@ -431,9 +431,11 @@ mod tests {
             kind: UNIX_STREAM,
             ..SocketAddress::default()
         };
-        let path = &mut address.addr.unix_mut().sun_path;
-        path.fill(c_char::from_ne_bytes(*b"x"));
-        let full = vec![b'x'; path.len()];
+        let len = address.addr.edit_unix(|un| {
+            un.sun_path.fill(c_char::from_ne_bytes(*b"x"));
+            un.sun_path.len()
+        });
+        let full = vec![b'x'; len];
         assert!(with_host(&address, |host| host.to_bytes() == full));
     }
 
@@ -443,9 +445,9 @@ mod tests {
         let v4 = socket_address(TCP, c"10.1.2.3");
         let v6 = socket_address(TCP6, c"fe80::1");
         with_host(&v4, |outer| {
-            // Neither another lend nor the export's shared scratch touches `outer`.
+            // Neither another lend nor the shared scratch touches `outer`.
             assert_eq!(with_host(&v6, CStr::to_owned).as_c_str(), c"fe80::1");
-            assert!(!swr_v1_clients_address_host(&v6).is_null());
+            assert!(!host_in_scratch(&v6).is_null());
             assert_eq!(outer, c"10.1.2.3");
         });
     }

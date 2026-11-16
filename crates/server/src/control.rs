@@ -255,7 +255,7 @@ fn exit_after_max_wait_time(serv: Server<'_>) {
 }
 
 /// The forced-termination exit condition: past `max_wait_time`, stop the loop.
-extern "C-unwind" fn forced_exit(_: &mut usize) -> bool {
+fn forced_exit(_: &mut usize) -> bool {
     if swoole_rs_corebase::time_now() > FORCED_EXIT_DEADLINE.load(Relaxed) {
         let m = format_args!("graceful shutdown failed, forced termination");
         warn(
@@ -404,7 +404,7 @@ mod tests {
     const NO_PROCESS: libc::pid_t = libc::pid_t::MAX;
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn shutdown_by_mode() {
         let live = LiveServer::new();
         let serv = live.server();
@@ -479,7 +479,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn signal_shutdown_by_mode() {
         let live = LiveServer::new();
         let serv = live.server();
@@ -512,7 +511,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn stop_master_thread_by_mode() {
         let live = LiveServer::new();
         let serv = live.server();
@@ -543,7 +541,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn master_timer_warns_once_per_second_and_stops() {
         let live = LiveServer::new();
         let serv = live.server();
@@ -571,7 +568,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn signals_dispatch() {
         let live = LiveServer::new();
         let serv = live.server();
@@ -596,7 +592,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn signals_need_a_running_server() {
         let live = LiveServer::new();
         // The thread's event pool outlives a test: clear what one before it left.
@@ -606,7 +601,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn signal_set() {
         use crate::hybrid::Step::{Handle, Ignore};
         let live = LiveServer::new();

@@ -27,8 +27,8 @@ mod typed;
 
 use swoole_rs_zend::{
     Value,
-    opcode::{CONTINUE, DISPATCH, Frame, handler},
-    sys::{IS_CONST, IS_CV, IS_UNUSED, IS_VAR, user_opcode_handler_t, zend_op, znode_op},
+    opcode::{Frame, Next},
+    sys::{IS_CONST, IS_CV, IS_UNUSED, IS_VAR, zend_op, znode_op},
 };
 
 const _: () = assert!(
@@ -39,35 +39,11 @@ const _: () = assert!(
 /// Install the complete Rust-owned opcode handlers, then stdext's function overrides:
 /// a MINIT step, which the token shows runs before any PHP code executes.
 pub fn stdext_minit(minit: &swoole_rs_zend::Minit) {
-    let handlers: [(u32, user_opcode_handler_t); 5] = [
-        (
-            swoole_rs_zend::sys::ZEND_INIT_METHOD_CALL,
-            Some(handler::<invoke::MethodCall>),
-        ),
-        (
-            swoole_rs_zend::sys::ZEND_ASSIGN_DIM,
-            Some(handler::<assignment::Assign>),
-        ),
-        (
-            swoole_rs_zend::sys::ZEND_ASSIGN_DIM_OP,
-            Some(handler::<assignment::AssignOp>),
-        ),
-        (
-            swoole_rs_zend::sys::ZEND_UNSET_DIM,
-            Some(handler::<typed::Unset>),
-        ),
-        (
-            swoole_rs_zend::sys::ZEND_FE_RESET_RW,
-            Some(handler::<typed::ForeachBegin>),
-        ),
-    ];
-    for (opcode, handler) in handlers {
-        // Zend's opcode constants fit its opcode byte.
-        let opcode = u8::try_from(opcode).unwrap_or_default();
-        // SAFETY: MINIT; each handler is installed for the one opcode its body
-        // is written for, and lives for the process.
-        unsafe { swoole_rs_zend::sys::zend_set_user_opcode_handler(opcode, handler) };
-    }
+    minit.opcode_handler::<invoke::MethodCall>();
+    minit.opcode_handler::<assignment::Assign>();
+    minit.opcode_handler::<assignment::AssignOp>();
+    minit.opcode_handler::<typed::Unset>();
+    minit.opcode_handler::<typed::ForeachBegin>();
     // Function lookups, then overrides, in the original order.
     invoke::install(minit);
     typed::install(minit);

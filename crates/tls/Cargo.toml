@@ -21,11 +21,16 @@ swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"
-openssl-sys = "=0.9.117"
+openssl-sys = "=0.9.118"
 
 [lib]
 name = "swoole_rs_tls"
 crate-type = ["rlib"]
+
+# The identifiers no C header exports, for tests/modules/corebase/constants.py.
+[[example]]
+name = "constants"
+path = "../../tests/modules/corebase/tls_enums.rs"
 
 [lints]
 workspace = true

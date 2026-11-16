@@ -37,7 +37,6 @@ fn number(input: &[u8]) -> (u64, u32) {
         None => (u64::MAX, 1),
     }
 }
-#[repr(C)]
 #[derive(Default)]
 pub struct HttpHeaderInfo {
     pub cursor: usize,
@@ -49,22 +48,28 @@ pub struct HttpHeaderInfo {
     /// reproduces libc errno policy after return, before native allocation.
     pub number_errors: u32,
 }
+/// A request head `header_info` refuses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MalformedHead;
+
 /// `parse_header_info` over the header block ending at `end`, from `state.cursor`:
-/// negative when malformed, 0 once done, 1 with a multipart boundary in `multipart`.
+/// `None` once done, or a multipart boundary's span, after which a call resumes the
+/// scan.
+///
+/// # Errors
+/// The head is malformed.
 pub fn header_info(
     input: &[u8],
     end: usize,
     state: &mut HttpHeaderInfo,
-    multipart: &mut HttpSpan,
-) -> i32 {
+) -> Result<Option<HttpSpan>, MalformedHead> {
     let length = input.len();
-    *multipart = HttpSpan::default();
     state.number_errors = 0;
     let Some(head) = input.get(..end) else {
-        return INVALID;
+        return Err(MalformedHead);
     };
     if state.cursor > length || (state.cursor < 2 && state.cursor < end) {
-        return INVALID;
+        return Err(MalformedHead);
     }
     let mut at = state.cursor;
     while at < end {
@@ -139,17 +144,16 @@ pub fn header_info(
                             let Some(count) =
                                 tail(input, at).iter().position(|&b| matches!(b, b'\r' | 0))
                             else {
-                                return INVALID;
+                                return Err(MalformedHead);
                             };
                             if input.get(at + count) == Some(&0) {
-                                return INVALID;
+                                return Err(MalformedHead);
                             }
                             let begin = at + 19;
-                            *multipart = HttpSpan {
+                            return Ok(Some(HttpSpan {
                                 offset: begin,
                                 length: at + count - begin,
-                            };
-                            return 1;
+                            }));
                         }
                     }
                     _ => unreachable!(),
@@ -163,12 +167,12 @@ pub fn header_info(
     if state.flags & 8 != 0 {
         if state.flags & 96 != 32 {
             state.flags |= 16;
-            return INVALID;
+            return Err(MalformedHead);
         }
         state.flags |= 4;
     }
     state.flags |= 16;
-    0
+    Ok(None)
 }
 /// Byte ranges in the mutated cookie buffer; `None` means no '=' was present.
 #[derive(Default)]
@@ -248,20 +252,15 @@ mod tests {
             cursor: 16,
             ..Default::default()
         };
-        let mut span = HttpSpan::default();
-        assert_eq!(
-            header_info(input, input.len() - 4, &mut state, &mut span),
-            1
-        );
+        let span = header_info(input, input.len() - 4, &mut state)
+            .unwrap()
+            .unwrap();
         assert_eq!((state.flags, state.content_length), (1, 0));
         assert_eq!(
             &input[span.offset..span.offset + span.length],
             b"; boundary=a"
         );
-        assert_eq!(
-            header_info(input, input.len() - 4, &mut state, &mut span),
-            0
-        );
+        assert_eq!(header_info(input, input.len() - 4, &mut state), Ok(None));
         assert_eq!(state.flags, 61);
     }
     #[test]
@@ -271,8 +270,7 @@ mod tests {
                 cursor,
                 ..Default::default()
             };
-            let mut span = HttpSpan::default();
-            assert_eq!(header_info(input, end, &mut state, &mut span), 0);
+            assert_eq!(header_info(input, end, &mut state), Ok(None));
             (state.cursor, state.flags, state.content_length)
         };
         let input = b"GET / HTTP/1.1\nContent-Length: 5\r\nX: a\rContent-Length: 7\r\nConnection: keep-alive\r\n\r\n";

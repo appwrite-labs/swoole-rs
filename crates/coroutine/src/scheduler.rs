@@ -185,11 +185,19 @@ pub fn current_native() -> *mut c_void {
 ///
 /// # Safety
 /// `task` is the kind of object this thread's swap callbacks take, and stays live
-/// until the close callback of the running coroutine has run; no other coroutine
-/// has it as its task.
+/// until the running coroutine's task is cleared ([`clear_current_task`]) or its
+/// close callback has run; no other coroutine has it as its task.
 pub unsafe fn set_current_task(task: NonNull<c_void>) {
     if let Some(co) = Co::current(Sched::this()) {
         co.with(|co| co.task = Some(CoroutineTask(task)));
+    }
+}
+
+/// The running coroutine's swap callbacks get no task from here on; nothing
+/// outside one.
+pub fn clear_current_task() {
+    if let Some(co) = Co::current(Sched::this()) {
+        co.with(|co| co.task = None);
     }
 }
 
@@ -264,8 +272,15 @@ unsafe fn run_canceler<F: FnOnce(*mut c_void) -> bool + Copy>(
 /// leaked, as by a thread that never wakes, and never freed under them. Freeing a
 /// suspended coroutine anywhere (at shutdown, say) would make this `unsafe` again.
 pub fn suspend(co: *mut c_void) {
+    park(co, |_| ());
+}
+
+/// [`suspend`], handing `arm` the [`Waker`](crate::Waker) that ends this park before
+/// `co` switches out.
+#[inline]
+pub fn park(co: *mut c_void, arm: impl FnOnce(crate::Waker)) {
     let s = Sched::this();
-    ops::yield_(s, Co::running(s, co.cast()));
+    ops::yield_armed(s, Co::running(s, co.cast()), arm);
 }
 
 /// `co->yield(&cancel_fn)` of `co`, the running coroutine (aborting
@@ -275,6 +290,17 @@ pub fn suspend(co: *mut c_void) {
 /// this frame, which stays in place while the coroutine is parked, and the
 /// coroutine's cancel function is cleared before this returns.
 pub fn yield_with_cancel<F: FnOnce(*mut c_void) -> bool + Copy>(co: *mut c_void, cancel: F) {
+    yield_with_cancel_armed(co, cancel, |_| ());
+}
+
+/// [`yield_with_cancel`], handing `arm` the [`Waker`](crate::Waker) that ends this
+/// park before `co` switches out.
+#[inline]
+pub fn yield_with_cancel_armed<F: FnOnce(*mut c_void) -> bool + Copy>(
+    co: *mut c_void,
+    cancel: F,
+    arm: impl FnOnce(crate::Waker),
+) {
     let s = Sched::this();
     let co = Co::running(s, co.cast());
     let canceler = Canceler {
@@ -282,7 +308,7 @@ pub fn yield_with_cancel<F: FnOnce(*mut c_void) -> bool + Copy>(co: *mut c_void,
         data: (&raw const cancel).cast(),
     };
     // The canceler outlives the yield.
-    ops::yield_cancelable(s, co, (&raw const canceler).cast_mut().cast());
+    ops::yield_cancelable(s, co, (&raw const canceler).cast_mut().cast(), arm);
 }
 
 /// `static void Coroutine::bailout(callback)`: inside a coroutine the
@@ -292,11 +318,7 @@ pub fn yield_with_cancel<F: FnOnce(*mut c_void) -> bool + Copy>(co: *mut c_void,
 ///
 /// # Safety
 /// `callback` takes `data`; the caller's frames own nothing with a destructor.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_coroutine_bail(
-    callback: Option<Routine>,
-    data: *mut c_void,
-) {
+pub unsafe fn swr_v1_coroutine_bail(callback: Option<Routine>, data: *mut c_void) {
     let inside = !current().is_null();
     if inside && callback.is_none() {
         log::error(

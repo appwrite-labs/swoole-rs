@@ -17,7 +17,6 @@ use swoole_rs_buffer::cpp::{
     new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_typed_close,
     swr_cpp_buffer_typed_front,
 };
-use swoole_rs_buffer::string::delete_string;
 use swoole_rs_buffer::string::with_thread_buffer;
 use swoole_rs_corebase::constants::{SW_SEND_BUFFER_SIZE, SocketType};
 use swoole_rs_corebase::{CCast, DataHead, microtime};
@@ -48,43 +47,38 @@ enum Handshake {
 const MAX_WAITING_TIME: u16 = 1024;
 
 /// `ReactorThread_onRead`: finish a pending TLS (or DTLS) handshake, then let the
-/// port read, and pause reading while the workers hold too many of its bytes.
-pub(crate) fn read(serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> c_int {
+/// port read, and pause reading while the workers hold too many of its bytes; false
+/// where upstream returns `SW_ERR`.
+pub(crate) fn read(serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> bool {
     read_as(BUILT_PREQUEUE, serv, reactor, event)
 }
 
 /// [`read`], as a build with `prequeue` (the `halfclose` feature) or without.
-fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> c_int {
+fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> bool {
     let state = serv.state();
     let fd = event.fd();
     let conn = state.connection(c_long::from(fd), Lookup::ByFd);
     // The server closed the connection (and the fd may be reused) before the event.
     let Some(conn) = conn.filter(|conn| conn.server_fd() != 0) else {
-        return OK;
+        return true;
     };
     if prequeue {
         let Some((notified, want_read)) = event
             .socket()
             .map(|s| s.read(|s| (s.close_notified, !s.ssl().is_null() && s.tls.want_read)))
         else {
-            return OK;
+            return true;
         };
         if notified {
-            return OK;
+            return true;
         }
         // Once a close is queued, a read only drives a TLS shutdown that wants one.
         if conn.close_queued() {
-            return if want_read {
-                status(write(serv, reactor, event))
-            } else {
-                OK
-            };
+            return !want_read || write(serv, reactor, event);
         }
     }
-    // The port reads the event through its pointer while the socket is borrowed.
-    let raw = core::ptr::from_mut(event);
     let Some(sock) = event.socket() else {
-        return OK;
+        return true;
     };
     let port = serv.port_by_fd(fd);
     if let Some(config) = port.map(view::Port::config)
@@ -92,29 +86,27 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
         && hybrid().dtls_read(config, sock, fd)
     {
         crate::connection::abort(serv, reactor, port, sock);
-        return OK;
+        return true;
     }
     match verify_ssl(serv, reactor, port, sock) {
         Handshake::Error => {
             crate::connection::abort(serv, reactor, port, sock);
-            return OK;
+            return true;
         }
-        Handshake::Ready if sock.read(|s| s.dtls) => return OK,
-        Handshake::Wait => return OK,
+        Handshake::Ready if sock.read(|s| s.dtls) => return true,
+        Handshake::Wait => return true,
         Handshake::Ready | Handshake::Continue => {}
     }
     let Some(port) = port else {
-        return ERR;
+        return false;
     };
     conn.set_last_recv_time(microtime());
     let last_recv_bytes = sock.read(|s| s.total_recv_bytes);
     let Some(on_read) = port.config().on_read.get() else {
-        return ERR;
+        return false;
     };
-    // SAFETY: the reactor's event, which no reference is used through during the read.
-    let event = unsafe { &mut *raw };
     // A readable event on the live connection of `fd`, of this server's port `port`.
-    let retval = on_read(reactor.handle(), port, ReadEvent::new(serv, event));
+    let retval = on_read(reactor.handle(), port, ReadEvent::new(serv, event, conn));
     // Upstream reads the socket after the read too.
     let (total_recv_bytes, notified) = sock.read(|s| (s.total_recv_bytes, s.close_notified));
     let received = total_recv_bytes.wrapping_sub(last_recv_bytes);
@@ -169,8 +161,7 @@ fn verify_ssl(
     let config = port.map(view::Port::config);
     let (verify_peer, allow_self_signed) = config
         .and_then(|config| config.tls.settings.get())
-        .map(|settings| (settings.verify_peer(), settings.allow_self_signed()))
-        .unwrap_or_default();
+        .map_or_default(|settings| (settings.verify_peer(), settings.allow_self_signed()));
     let peer =
         || with_thread_buffer(|buffer| tls::socket_ssl_peer_certificate_string(sock, buffer));
     let verified = || tls::socket_ssl_verify(sock, allow_self_signed);
@@ -178,20 +169,16 @@ fn verify_ssl(
     match certificate(wanted, verify_peer, peer, verified) {
         Certificate::Rejected => return Handshake::Error,
         Certificate::Dispatched => {
-            // The peer's certificate filled this thread's buffer.
-            let (len, data) = with_thread_buffer(|buffer| (buffer.len(), buffer.as_ptr()));
+            // The peer's certificate filled this thread's buffer: a copy, which the
+            // dispatch reads while the buffer is free to lend again.
+            let cert = with_thread_buffer(|buffer| buffer.view().to_vec());
             let info = DataHead {
                 fd: sock.fd().into(),
                 kind: ServerEvent::Connect.code(),
                 reactor_id: reactor.handle().id().cast_signed(),
-                len: u32::try_from(len).unwrap_or(u32::MAX),
                 ..DataHead::default()
             };
-            // SAFETY: the thread's buffer, which lives as long as the thread and holds
-            // the certificate's `len` bytes; the dispatch reads them before anything on
-            // this thread fills the buffer again.
-            let mut task = unsafe { SendData::from_raw(info, data.cast()) };
-            hybrid().factory_dispatch(serv, &mut task);
+            hybrid().factory_dispatch(serv, &mut SendData::new(info, &cert));
         }
         Certificate::None => {
             let on_connect = state.callbacks.slot(CallbackKind::Connect);
@@ -349,7 +336,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         Some(swr_cpp_buffer_typed_front(buffer).kind)
     }) {
         let sent = match kind {
-            EntryKind::Close => return reactor.close(sock) >= 0,
+            EntryKind::Close => return reactor.close(sock),
             EntryKind::Sendfile => tls::socket_handle_sendfile(sock),
             EntryKind::Data => {
                 let sent = tls::socket_handle_send(sock);
@@ -364,30 +351,36 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
             if close_wait {
                 let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
                 conn.set_close_errno(errno.c_cast::<u16>());
-                return reactor.trigger_close(event) >= 0;
+                return reactor.trigger_close(event);
             } else if send_wait {
                 break;
             }
         }
     }
-    if conn.overflow() && output(sock).0 < sock.read(|s| s.output.buffer_size) {
+    let queued = output(sock).0;
+    if conn.overflow() && queued < sock.read(|s| s.output.buffer_size) {
         conn.set_overflow(false);
     }
     let buffer_empty = state.callbacks.slot(CallbackKind::BufferEmpty).is_set();
     let low_watermark = port.map_or(0, |port| port.buffer_low_watermark.get());
-    if buffer_empty && conn.high_watermark() && output(sock).0 <= low_watermark {
+    if buffer_empty && conn.high_watermark() && queued <= low_watermark {
         conn.set_high_watermark(false);
         crate::server_methods::notify(serv, conn, ServerEvent::BufferEmpty);
     }
-    if let Some(timer) = sock.read(|s| s.output.send_timer) {
-        if output(sock).1 {
+    // Read after the notification, which may queue more.
+    let (timer, removed, empty) = sock.read(|s| {
+        let empty = out_buffer(s).is_none_or(swr_cpp_buffer_empty);
+        (s.output.send_timer, s.removed, empty)
+    });
+    if let Some(timer) = timer {
+        if empty {
             del_id(timer);
             sock.edit(|s| s.output.send_timer = None);
         } else if let Some(port) = port {
             delay_held(timer, port.max_idle_time.get().c_cast::<c_long>());
         }
     }
-    if !conn.peer_closed() && !sock.read(|s| s.removed) && output(sock).1 {
+    if !conn.peer_closed() && !removed && empty {
         // A notified close no longer reads: it only drains.
         if BUILT_PREQUEUE {
             reactor.interest(sock, swoole_rs_reactor::Interest::RemoveWrite);
@@ -453,7 +446,7 @@ fn fin_ends(prequeue: bool, state: &crate::ServerState, conn: Connection<'_>) ->
 pub(crate) fn close_connection(
     serv: view::Server<'_>,
     reactor: Reactor,
-    sock: Option<Socket<'_>>,
+    sock: Option<Socket<'static>>,
 ) -> bool {
     let state = serv.state();
     let Some(sock) = sock else {
@@ -485,39 +478,28 @@ pub(crate) fn close_connection(
             return true;
         }
     }
-    let websocket = conn.websocket_buffer();
-    if !websocket.is_null() {
-        // SAFETY: the connection's `new String`, not used again.
-        unsafe { delete_string(websocket.cast()) };
-        conn.set_websocket_buffer(core::ptr::null_mut());
+    if let Some(mut websocket) = conn.take_websocket_buffer() {
+        websocket.dispose();
     }
     if !removed && !reactor.del(sock) {
         return false;
     }
     count_close(state, port, reactor);
-    let (ssl, recv_buffer) = sock.read(|s| (!s.ssl().is_null(), s.recv_buffer));
+    let ssl = sock.read(|s| !s.ssl().is_null());
     if ssl {
         sock.edit(|s| s.ssl_quiet_shutdown = conn.peer_closed());
         // SAFETY: handles to a session live only for the operation that took them,
         // and native code closes it between operations.
         unsafe { tls::socket_ssl_close(sock) };
     }
-    if !recv_buffer.is_null() {
-        // SAFETY: the socket's `new String`, not used again.
-        unsafe { delete_string(recv_buffer.cast()) };
-        sock.edit(|s| s.recv_buffer = core::ptr::null_mut());
+    if let Some(mut recv_buffer) = sock.edit(|s| s.recv_buffer.take()) {
+        recv_buffer.dispose();
     }
-    if let Some(port) = port {
-        if port.open_http_protocol.get() && conn.http_request().is_some() {
-            (crate::port_config::methods().destroy_http_request)(conn);
-        }
-        if port.open_redis_protocol.get()
-            && let Some(request) = conn.take_resp_request()
-        {
-            // SAFETY: the box the session's reactor, this one, gave the connection; the
-            // slot no longer names it.
-            drop(unsafe { Box::from_raw(request) });
-        }
+    if let Some(port) = port
+        && port.open_http_protocol.get()
+        && conn.http_request().is_some()
+    {
+        (crate::port_config::methods().destroy_http_request)(conn);
     }
     if let Some(session) = state.session(conn.session_id()) {
         session.set_fd(0);
@@ -529,8 +511,10 @@ pub(crate) fn close_connection(
     // The slot's last write before close(fd): an accept that gets the fd back
     // acquires it (OP_CONN_RESET) before reusing the slot.
     conn.closed().store(1, Release);
-    // SAFETY: the closing socket, which nothing uses afterwards.
-    _ = unsafe { swoole_rs_tls::reactor_write::reactor_close(reactor.handle(), sock) };
+    // SAFETY: the closing socket, the accepted heap record the slot no longer names,
+    // which nothing uses afterwards.
+    let sock = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(sock) };
+    _ = swoole_rs_tls::reactor_write::reactor_close(reactor.handle(), sock);
     true
 }
 
@@ -609,8 +593,7 @@ pub(crate) mod tests {
         let live = LiveServer::new();
         let clients = [(); 2].map(|()| {
             let client = live.connect();
-            // SAFETY: the fixture's listener, live for the event.
-            let event = unsafe { Event::new(live.listener_fd, 0, 1, live.listener().cast()) };
+            let event = live.accept_event();
             crate::connection::accept(live.server(), live.reactor(), &event);
             client
         });
@@ -636,7 +619,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn close_releases_counts_and_moves_the_max_fd() {
         let (live, _clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
@@ -673,7 +655,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn peer_close_notifies_once() {
         let (live, _clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
@@ -696,7 +677,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn peer_close_closes_when_nobody_is_told() {
         let (live, _clients) = accepted();
         live.server().config().disable_notify.set(true);
@@ -708,7 +688,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn prequeue_keeps_a_synchronous_process_response() {
         let (mut live, _clients) = accepted();
         let (state, conn) = (live.state(), session(&live, 1));
@@ -748,7 +727,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn write_flushes_the_output_then_reads_again() {
         use std::io::Read;
         let (live, [mut client, _]) = accepted();
@@ -775,7 +753,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn write_notifies_or_closes_a_pending_close() {
         let (live, _clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
@@ -804,13 +781,13 @@ pub(crate) mod tests {
         static READS: core::cell::RefCell<Vec<c_int>> = const { core::cell::RefCell::new(Vec::new()) };
     }
 
-    /// The port's `onRead`: receives 5 bytes and returns 42.
-    fn on_read(_: swoole_rs_reactor::Running<'_>, _: view::Port<'_>, read: ReadEvent<'_>) -> c_int {
-        let (_, event) = read.into_parts();
+    /// The port's `onRead`: receives 5 bytes and fails, so its result is told apart.
+    fn on_read(_: swoole_rs_reactor::Running<'_>, _: view::Port<'_>, read: ReadEvent<'_>) -> bool {
+        let (_, event, _) = read.into_parts();
         READS.with_borrow_mut(|reads| reads.push(event.fd()));
         let sock = event.socket().unwrap();
         sock.edit(|s| s.total_recv_bytes += 5);
-        42
+        false
     }
 
     /// The fds the port read since the last call.
@@ -827,46 +804,46 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn read_lets_the_port_read() {
         let (live, _clients) = reading();
         let (serv, reactor) = (live.server(), live.reactor());
         let conn = session(&live, 1);
-        assert_eq!(read(serv, reactor, &mut conn.event(0, 0)), 42);
+        assert!(
+            !read(serv, reactor, &mut conn.event(0, 0)),
+            "the port's result"
+        );
         assert_eq!(reads(), [conn.fd()]);
         assert!(conn.last_recv_time() > 0.0, "stamped");
         assert_eq!(live.counters().total_recv_bytes.load(SeqCst), 5);
         assert_eq!(live.port_counters().total_recv_bytes.load(SeqCst), 5);
         assert_eq!(conn.waiting_time(), 0, "no queue limit");
         conn.set_server_fd(0);
-        assert_eq!(read(serv, reactor, &mut conn.event(0, 0)), OK);
+        assert!(read(serv, reactor, &mut conn.event(0, 0)));
         assert_eq!(reads(), [], "a stale event");
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn read_fails_on_a_port_without_on_read() {
         let (live, _clients) = reading();
         live.port().on_read.set(None);
         let conn = session(&live, 1);
-        assert_eq!(
-            read(live.server(), live.reactor(), &mut conn.event(0, 0)),
-            ERR
-        );
+        assert!(!read(live.server(), live.reactor(), &mut conn.event(0, 0)));
         assert_eq!(reads(), [], "nothing read");
         assert_eq!(live.counters().total_recv_bytes.load(SeqCst), 0);
         assert_eq!(live.port_counters().total_recv_bytes.load(SeqCst), 0);
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn read_pauses_a_process_connection_over_its_queue() {
         let (mut live, _clients) = reading();
         let (serv, reactor) = (live.server(), live.reactor());
         live.state().config_ref().max_queued_bytes.set(8);
         let conn = session(&live, 1);
         conn.recv_queued_bytes().store(9, SeqCst);
-        assert_eq!(read(serv, reactor, &mut conn.event(0, 0)), 42);
+        assert!(
+            !read(serv, reactor, &mut conn.event(0, 0)),
+            "the port's result"
+        );
         assert_eq!(conn.waiting_time(), 1);
         assert!(conn.timer().is_some(), "resumes on a timer");
         let events = conn.socket().unwrap().read(|s| s.events);
@@ -885,14 +862,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn read_aborts_a_failed_dtls_handshake() {
         let (live, _clients) = reading();
         let conn = session(&live, 1);
         let fd = conn.fd();
         conn.socket().unwrap().edit(|s| s.socket_type = 2);
         let event = &mut conn.event(0, 0);
-        assert_eq!(read(live.server(), live.reactor(), event), OK);
+        assert!(read(live.server(), live.reactor(), event));
         assert_eq!(calls(), [Call::DtlsRead(fd)]);
         assert_eq!(reads(), [], "not read");
         assert_eq!(live.counters().abort_count.load(SeqCst), 1);
@@ -901,21 +877,26 @@ pub(crate) mod tests {
 
     // tests/modules/halfclose: a read event cached across a queued close.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn prequeue_reads_stop_at_a_queued_or_notified_close() {
         let (live, _clients) = reading();
         let (serv, reactor) = (live.server(), live.reactor());
         let conn = session(&live, 1);
         conn.set_close_queued(true);
-        assert_eq!(read_as(false, serv, reactor, &mut conn.event(0, 0)), 42);
+        assert!(
+            !read_as(false, serv, reactor, &mut conn.event(0, 0)),
+            "the port's result"
+        );
         assert_eq!(reads(), [conn.fd()], "upstream reads");
-        assert_eq!(read_as(true, serv, reactor, &mut conn.event(0, 0)), OK);
+        assert!(read_as(true, serv, reactor, &mut conn.event(0, 0)));
         assert_eq!(reads(), [], "a queued plain close is not read");
         conn.set_close_queued(false);
         conn.socket().unwrap().edit(|s| s.close_notified = true);
-        assert_eq!(read_as(true, serv, reactor, &mut conn.event(0, 0)), OK);
+        assert!(read_as(true, serv, reactor, &mut conn.event(0, 0)));
         assert_eq!(reads(), [], "notified is terminal");
-        assert_eq!(read_as(false, serv, reactor, &mut conn.event(0, 0)), 42);
+        assert!(
+            !read_as(false, serv, reactor, &mut conn.event(0, 0)),
+            "the port's result"
+        );
     }
 
     #[test]
@@ -956,7 +937,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_plain_connection_needs_no_handshake() {
         let (live, _clients) = accepted();
         let sock = session(&live, 1).socket().unwrap();

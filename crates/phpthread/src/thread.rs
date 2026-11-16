@@ -163,28 +163,6 @@ fn sched_param() -> libc::sched_param {
     swoole_rs_corebase::sys::zeroed()
 }
 
-// libc's, over a live thread (`CurrentThread`'s invariant) and the one object each
-// reference names; a policy or priority the thread can't take is an error they return.
-unsafe extern "C" {
-    /// Stores the thread's policy and parameters: 0 or an error number.
-    safe fn pthread_getschedparam(
-        thread: CurrentThread,
-        policy: &mut c_int,
-        param: &mut libc::sched_param,
-    ) -> c_int;
-    /// Sets the thread's policy and parameters: 0 or an error number.
-    safe fn pthread_setschedparam(
-        thread: CurrentThread,
-        policy: c_int,
-        param: &libc::sched_param,
-    ) -> c_int;
-}
-
-/// `pthread_getschedparam` of the calling thread.
-fn get_sched(policy: &mut c_int, param: &mut libc::sched_param) -> c_int {
-    pthread_getschedparam(CurrentThread::get(), policy, param)
-}
-
 /// `body` on `$this`, which the instance methods run on.
 fn with_this(call: &Call, body: impl FnOnce(&PhpThread)) {
     if let Some(thread) = call.custom::<PhpThread>() {
@@ -307,12 +285,12 @@ fn set_priority(call: &Call) {
     let mut sched_policy = policy.c_cast::<c_int>();
     let me = CurrentThread::get();
     if policy == -1 {
-        get_sched(&mut sched_policy, &mut param);
+        _ = me.get_sched(&mut sched_policy, &mut param);
     }
     {
         param.sched_priority = priority.c_cast::<c_int>();
     }
-    if pthread_setschedparam(me, sched_policy, &param) == 0 {
+    if me.set_sched(sched_policy, &param) {
         call.set_bool(true);
     } else {
         bailout::defer(host::sys_error(
@@ -326,7 +304,7 @@ fn set_priority(call: &Call) {
 fn get_priority(call: &Call) {
     let mut param = sched_param();
     let mut policy: c_int = 0;
-    if get_sched(&mut policy, &mut param) != 0 {
+    if !CurrentThread::get().get_sched(&mut policy, &mut param) {
         warn(&message!("pthread_getschedparam() failed"));
         call.set_bool(false);
         return;

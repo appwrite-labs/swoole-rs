@@ -82,6 +82,9 @@ pub struct Coroutine {
     pub init_msec: c_long,
     pub switch_usec: c_long,
     pub execute_usec: c_long,
+    /// Counts each yield and each return from one, so it is odd only while parked,
+    /// and each park has its own value: the one a [`Waker`] names.
+    pub parks: u64,
 }
 
 impl Coroutine {
@@ -100,6 +103,7 @@ impl Coroutine {
         init_msec: 0,
         switch_usec: 0,
         execute_usec: 0,
+        parks: 0,
     };
 
     /// Its execution time in microseconds up to `now`.
@@ -125,7 +129,6 @@ impl Coroutine {
 /// ([`Coroutine::mark_canceled`]), `call(co, data)` copies the yield's closure
 /// out of `data` and runs the copy, which wakes it and returns whether it did.
 /// The copy keeps the call off the yield's frame, which the wake may end.
-#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Canceler {
     pub call: unsafe fn(*mut c_void, *const c_void) -> bool,
@@ -454,7 +457,17 @@ fn switch_in(s: Sched, co: Co) {
 
 /// `co` (current, or the outermost while bailing out) yields to its origin.
 pub(crate) fn yield_(s: Sched, co: Co) {
+    yield_armed(s, co, |_| ());
+}
+
+/// [`yield_`], handing `arm` the [`Waker`] of this park before `co` switches out.
+pub(crate) fn yield_armed(s: Sched, co: Co, arm: impl FnOnce(Waker)) {
     let (hooks, [on_yield, _, _]) = effects(s);
+    let waker = co.with(|co| {
+        co.parks = co.parks.wrapping_add(1);
+        Waker::new(co.cid, co.parks)
+    });
+    arm(waker);
     co.with(|co| {
         co.state = State::Waiting;
         co.resume_code = Resume::Ok;
@@ -471,6 +484,67 @@ pub(crate) fn yield_(s: Sched, co: Co) {
     charge(&hooks, Some(co), origin);
     // The switch returns when `co` is resumed.
     (hooks.swap_out)(co);
+}
+
+/// One park of a coroutine, which [`Waker::wake`] ends. The yield makes it, so it
+/// names that yield alone: once the coroutine runs again (whoever resumed it), or
+/// parks elsewhere, or ends, waking is nothing. It stays on its thread, whose
+/// scheduler numbers the coroutines.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Waker {
+    cid: c_long,
+    park: u64,
+    thread: core::marker::PhantomData<*const ()>,
+}
+
+impl Waker {
+    const fn new(cid: c_long, park: u64) -> Self {
+        Self {
+            cid,
+            park,
+            thread: core::marker::PhantomData,
+        }
+    }
+
+    /// A waker of no park, for a stand-in runtime: waking it does nothing.
+    pub const NONE: Self = Self::new(0, 0);
+
+    /// The parked coroutine's id.
+    #[must_use]
+    pub const fn cid(self) -> c_long {
+        self.cid
+    }
+
+    /// The coroutine's id and the park this names, as plain data that can wait on
+    /// another thread's list; [`Waker::of_parts`] gives the waker back.
+    #[must_use]
+    pub const fn parts(self) -> (c_long, u64) {
+        (self.cid, self.park)
+    }
+
+    /// The waker [`Waker::parts`] took apart. Any pair is one: waking a pair that
+    /// names no live park of a coroutine of this thread's scheduler does nothing.
+    #[must_use]
+    pub const fn of_parts((cid, park): (c_long, u64)) -> Self {
+        Self::new(cid, park)
+    }
+
+    /// `co->resume()` of the coroutine while it is still parked in the yield that
+    /// made this; nothing otherwise.
+    #[inline]
+    pub fn wake(self) {
+        self.wake_in(Sched::this());
+    }
+
+    #[inline]
+    fn wake_in(self, s: Sched) {
+        let Some(co) = s.with(|s| s.live_co(self.cid)) else {
+            return;
+        };
+        if co.with(|co| co.state == State::Waiting && co.parks == self.park) {
+            resume(s, co);
+        }
+    }
 }
 
 /// Run and resume: the current coroutine becomes `co`'s origin, its slice is
@@ -501,16 +575,20 @@ pub(crate) fn resume(s: Sched, co: Co) {
     let Some(on_resume) = on_resume else {
         return;
     };
-    co.with(|co| co.state = State::Running);
+    co.with(|co| {
+        co.state = State::Running;
+        // Every waker of the park it leaves is stale from here.
+        co.parks = co.parks.wrapping_add(1);
+    });
     notify(on_resume, co);
     start(s, co, true);
 }
 
 /// `Coroutine::yield(CancelFunc *)`: as [`yield_`] with a cancel function (a
 /// [`Canceler`]) set until it is resumed.
-pub(crate) fn yield_cancelable(s: Sched, co: Co, cancel_fn: *mut c_void) {
+pub(crate) fn yield_cancelable(s: Sched, co: Co, cancel_fn: *mut c_void, arm: impl FnOnce(Waker)) {
     co.with(|co| co.cancel_fn = cancel_fn);
-    yield_(s, co);
+    yield_armed(s, co, arm);
     // Live again once resumed.
     co.with(|co| co.cancel_fn = ptr::null_mut());
 }
@@ -560,7 +638,14 @@ pub(crate) mod tests {
         co: *mut Coroutine,
         cancel_fn: *mut c_void,
     ) {
-        unsafe { yield_cancelable(Sched::of(s).unwrap(), Co::of(co).unwrap(), cancel_fn) }
+        unsafe {
+            yield_cancelable(
+                Sched::of(s).unwrap(),
+                Co::of(co).unwrap(),
+                cancel_fn,
+                |_| (),
+            );
+        }
     }
     unsafe fn swr_v1_coroutine_bailout(s: *mut Scheduler) {
         unsafe { super::bailout(Sched::of(s).unwrap()) }
@@ -648,7 +733,7 @@ pub(crate) mod tests {
     #[cfg(target_pointer_width = "64")]
     fn layout_matches_the_header() {
         // swoole_coroutine.h static_asserts the same sizes on the C++ side.
-        assert_eq!(size_of::<Coroutine>(), 96);
+        assert_eq!(size_of::<Coroutine>(), 104);
         assert_eq!(core::mem::offset_of!(Coroutine, origin), 40);
         assert_eq!(size_of::<Scheduler>(), 136);
         assert_eq!(core::mem::offset_of!(Scheduler, hooks), 64);
@@ -764,6 +849,43 @@ pub(crate) mod tests {
             link(co(z), None);
             assert_eq!(((*p).first_child, (*x).prev_sibling), (x, ptr::null_mut()));
         }
+    }
+
+    #[test]
+    fn a_waker_resumes_only_the_park_that_made_it() {
+        take_events();
+        let mut s = scheduler();
+        let sp = &raw mut s;
+        let mut a = blank();
+        let a = &raw mut a;
+        // SAFETY: the scheduler and coroutine live on this frame; the hooks only
+        // record events.
+        unsafe {
+            (*sp).register(Co::of(a).unwrap(), 10 as *mut c_void, 0, 0);
+            swr_v1_coroutine_run(sp, a);
+            let (s, co) = (Sched::of(sp).unwrap(), Co::of(a).unwrap());
+            let mut first = None;
+            yield_armed(s, co, |waker| first = Some(waker));
+            let first = first.unwrap();
+            assert_eq!(first.cid(), 1);
+            // A waker of no park, or of a coroutine that is not live, does nothing.
+            Waker::NONE.wake_in(s);
+            assert_eq!((*a).state, State::Waiting);
+            // Resumed by something else, it parks again: the first waker is stale.
+            resume(s, co);
+            let mut second = None;
+            yield_armed(s, co, |waker| second = Some(waker));
+            first.wake_in(s);
+            assert_eq!((*a).state, State::Waiting);
+            second.unwrap().wake_in(s);
+            assert_eq!((*a).state, State::Running);
+            // Once running, its park's waker does nothing.
+            second.unwrap().wake_in(s);
+        }
+        assert_eq!(
+            take_events(),
+            ["in 10", "out 10", "in 10", "out 10", "in 10"]
+        );
     }
 
     #[test]

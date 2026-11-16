@@ -2,30 +2,29 @@
 //! the server: the records Rust lays out for the reactor's event and server, the
 //! connection, its socket and receive buffer, the port's protocol and the server's
 //! settings. Logs name the upstream function that wrote them.
-use core::ffi::{CStr, c_int};
+use core::ffi::CStr;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use std::cell::{Cell, UnsafeCell};
-use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
+use std::cell::Cell;
+use swoole_rs_buffer::string::{CppString, boxed_sized_string};
 use swoole_rs_corebase::constants::{
-    EventDataFlag::SW_EVENT_DATA_POP_PTR, SW_BUFFER_SIZE_BIG, SW_HTTP_100_CONTINUE_PACKET,
-    SW_HTTP_BAD_REQUEST_PACKET, SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET,
-    SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
+    EventDataFlag, SW_BUFFER_SIZE_BIG, SW_HTTP_100_CONTINUE_PACKET, SW_HTTP_BAD_REQUEST_PACKET,
+    SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET, SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
-use swoole_rs_corebase::net_types::RecvData;
-use swoole_rs_corebase::{DataHead, TrustedAllocator, WebSocketStatus, log};
+use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_framing::recv::{Mode, Status};
-use swoole_rs_http_ffi::{HttpRequest, HttpString};
+use swoole_rs_http_ffi::HttpRequest;
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
-use swoole_rs_reactor::{Caught, Event, Fill, Running, Socket};
+use swoole_rs_reactor::{Caught, Event, Running, Socket};
 use swoole_rs_server::port_config::{PortConfig, ReadEvent};
 use swoole_rs_server::static_select::static_select;
-use swoole_rs_server::{Connection as Slot, ConnectionRecord, ServerConfig, view};
-use swoole_rs_tls::upstream::{recv_fill, send};
+use swoole_rs_server::{Connection as Slot, ServerConfig, view};
+use swoole_rs_tls::upstream::{recv_append, send};
 
-use crate::framing_recv::{self, Callbacks, Packages};
-use crate::http_routes::exports::{Frames, dispatch_task};
+use crate::framing_recv::{self, Lent, Packages, Proto};
+use crate::http_routes::Session;
+use crate::http_routes::exports::{Frames, Port, Route, Tasks};
 use crate::read::{Connection, Dispatch, Framing, Readable, Reply, Upgrade, readable};
 
 /// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
@@ -53,7 +52,8 @@ struct Read<'a> {
 }
 
 /// `ListenPort::readable_callback_*` of `kind` on the event `read` lends: a readable
-/// one on a live connection of its server, which only this reactor thread touches.
+/// one on a live connection of its server, which only this reactor thread touches;
+/// false where upstream returns `SW_ERR`.
 // Always inlined, down to the framing loop: each callback's `kind` is a constant, so one
 // frame reads, measures and dispatches where five did (#3335).
 #[inline(always)]
@@ -62,19 +62,12 @@ pub(crate) fn on_read(
     port: view::Port<'_>,
     read: ReadEvent<'_>,
     kind: Readable,
-) -> c_int {
-    let (server, event) = read.into_parts();
+) -> bool {
+    let (server, event, conn) = read.into_parts();
     let lent = Cell::new(*event);
     let Some(socket) = event.socket() else {
-        return -1;
+        return false;
     };
-    // A connection socket's object is its connection: the event as `read` lent it.
-    let conn = socket
-        .read(|s| s.object)
-        .cast::<UnsafeCell<ConnectionRecord>>();
-    // SAFETY: the event's live connection slot, shared through the slot's field-wise
-    // handle; `UnsafeCell` has the record's layout.
-    let conn = Slot::from(unsafe { &*conn });
     let port = port.config();
     let mut read = Read {
         buffer: ptr::null_mut(),
@@ -94,17 +87,19 @@ pub(crate) fn on_read(
     }
     let ok = readable(kind, &mut read);
     *event = read.event.get();
-    if ok { 0 } else { -1 }
+    ok
 }
 
 use swoole_rs_corebase::sys::errno;
 
-impl Read<'_> {
-    /// The current buffer, borrowed until the next call on `self`.
-    fn string(&mut self) -> &mut CppString {
-        // SAFETY: the current buffer is live once a receive buffer or request made it
-        // current; only calls on `self`, which the borrow excludes, touch it.
-        unsafe { &mut *self.buffer }
+impl<'a> Read<'a> {
+    /// The session this read is on.
+    fn session(&self) -> Session<'a> {
+        Session {
+            server: self.server,
+            conn: self.conn,
+            socket: self.socket,
+        }
     }
 
     /// Whether a payload of `length` bytes is all the socket's receive buffer holds and
@@ -112,11 +107,13 @@ impl Read<'_> {
     /// buffer for the payload and not copy it (`SW_EVENT_DATA_POP_PTR`). A smaller
     /// payload is cheaper to copy than to keep a whole buffer alive for.
     fn whole_buffer(&mut self, length: u64) -> bool {
-        let string = self.string();
+        let string = self.buffer();
         let (len, size) = (string.len() as u64, string.size() as u64);
         length >= size / 2
             && length == len
-            && ptr::eq(self.buffer, self.socket.read(|s| s.recv_buffer).cast())
+            && self.socket.read(|s| {
+                (s.recv_buffer.as_ref()).is_some_and(|held| ptr::eq(Box::as_ptr(held), self.buffer))
+            })
     }
 
     /// `socket->removed`: out of the reactor, as a close leaves it.
@@ -130,34 +127,29 @@ impl Read<'_> {
 
     /// `serv->get_recv_buffer(socket)`.
     fn recv_buffer(&self) -> *mut CppString {
-        let held = self.socket.read(|s| s.recv_buffer);
-        if !held.is_null() {
-            return held.cast();
+        let held = self
+            .socket
+            .edit(|s| s.recv_buffer.as_mut().map(Box::as_mut_ptr));
+        if let Some(held) = held {
+            return held;
         }
-        let allocator = self.config().recv_buffer_allocator.load(Ordering::Relaxed);
-        // SAFETY: the server's allocator, null or a `swoole::Allocator` that lives for
-        // the process and keeps the allocator contract (Zend strings'); a
-        // `TrustedAllocator` is such a pointer, so the option is the nullable one.
-        let allocator = unsafe {
-            std::mem::transmute::<*mut core::ffi::c_void, Option<TrustedAllocator>>(allocator)
-        };
-        let made = new_sized_string(SW_BUFFER_SIZE_BIG as usize, allocator);
-        self.socket.edit(|s| s.recv_buffer = made.cast());
-        made
+        let allocator = self.config().recv_buffer_allocator.get();
+        let made = boxed_sized_string(SW_BUFFER_SIZE_BIG as usize, allocator);
+        self.socket
+            .edit(|s| Box::as_mut_ptr(s.recv_buffer.insert(made)))
     }
 
     fn send_bytes(&self, packet: &[u8]) {
         _ = send(self.socket, packet, 0);
     }
 
-    /// One receive of `mode` through the port's protocol, its packages handled by `K`.
+    /// One receive of `mode` through the port's protocol, its packages handled by
+    /// `packages`.
     #[inline(always)]
-    fn framed<K: Packages>(&self, mode: Mode) -> bool {
-        let protocol = self.port.protocol.as_ptr().cast_const();
-        // SAFETY: the port's protocol and the current buffer.
-        let status =
-            unsafe { framing_recv::receive::<K>(protocol, self.socket, self.buffer, mode) };
-        status != Status::Err
+    fn framed(&mut self, mode: Mode, packages: impl Packages) -> bool {
+        let (protocol, socket) = (Proto::from(&self.port.protocol), self.socket);
+        let buffer = Lent::new(self.buffer());
+        framing_recv::receive(protocol, socket, buffer, mode, packages) != Status::Err
     }
 }
 
@@ -165,11 +157,11 @@ impl Connection for Read<'_> {
     #[inline]
     fn recv(&mut self, whole: bool) -> Option<usize> {
         if whole {
-            // The receive replaces the content, which the caller sets afresh.
-            self.buffer().length = 0;
+            // The receive replaces the content.
+            self.buffer().truncate(0);
         }
         let socket = self.socket;
-        recv_fill(socket, Fill::new(self.string().spare()), 0)
+        recv_append(socket, self.buffer())
     }
 
     fn catch_error(&mut self) -> Caught {
@@ -214,30 +206,44 @@ impl Connection for Read<'_> {
 
     #[inline]
     fn release(&mut self, if_empty: bool) -> bool {
-        let held = self.socket.read(|s| s.recv_buffer).cast::<CppString>();
-        let release = !held.is_null() && {
-            // SAFETY: the socket's receive buffer, when set, is live.
-            let held = unsafe { &*held };
-            (!if_empty || held.is_empty()) && held.size() > SW_BUFFER_SIZE_BIG as usize * 2
-        };
-        if release {
-            // SAFETY: `new String`'s, which nothing uses after.
-            unsafe { delete_string(held) };
-            self.socket.edit(|s| s.recv_buffer = ptr::null_mut());
-        }
-        release
+        let released = self.socket.edit(|s| {
+            s.recv_buffer.take_if(|held| {
+                (!if_empty || held.is_empty()) && held.size() > SW_BUFFER_SIZE_BIG as usize * 2
+            })
+        });
+        released.map(|mut held| held.dispose()).is_some()
     }
 
     #[inline(always)]
     fn receive(&mut self, framing: Framing) -> bool {
         match framing {
-            Framing::Length if self.frames => self.framed::<Frames>(Mode::Length),
-            Framing::Length => self.framed::<Callbacks>(Mode::Length),
-            Framing::Eof => self.framed::<Callbacks>(Mode::Eof),
+            Framing::Length if self.frames => self.framed(Mode::Length, Frames(self.session())),
+            // An HTTP/2 stream's frames, through the port's own callbacks.
+            Framing::Length if self.kind == Readable::Http => {
+                let port = self.port;
+                let route = Route::of(
+                    port.open_http2_protocol.get(),
+                    port.open_websocket_protocol.get(),
+                );
+                self.framed(Mode::Length, Port(self.session(), route))
+            }
+            // A length or EOF port's packages, whose `onPackage` is `dispatch_task`.
+            Framing::Length => self.framed(Mode::Length, Tasks(self.session())),
+            Framing::Eof => self.framed(Mode::Eof, Tasks(self.session())),
             Framing::Redis => {
-                let (port, socket, buffer, conn) = (self.port, self.socket, self.buffer, self.conn);
-                // SAFETY: the current buffer; the connection's object is its request.
-                unsafe { crate::resp_recv::recv_packet(&port.protocol.get(), conn, socket, buffer) }
+                let session = self.session();
+                let max_length = self.port.protocol.get().package_max_length;
+                let buffer = Lent::new(self.buffer());
+                // A redis port's `onPackage` is `dispatch_task`.
+                let dispatch =
+                    |data: swoole_rs_server::reactor_entry::RecvData<'_>| session.task(data);
+                crate::resp_recv::recv_packet(
+                    max_length,
+                    session.conn,
+                    session.socket,
+                    buffer,
+                    dispatch,
+                )
             }
         }
     }
@@ -248,24 +254,19 @@ impl Connection for Read<'_> {
     /// callgrind `socket` workload about 40 instructions a request (#3908).
     #[inline(always)]
     fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> bool {
-        let data = RecvData {
-            info: DataHead {
-                len: u32::try_from(length).unwrap_or(u32::MAX),
-                flags: if self.whole_buffer(length) {
-                    SW_EVENT_DATA_POP_PTR as u8
-                } else {
-                    0
-                },
-                ext_flags: if dispatch == Dispatch::Upload {
-                    UPLOAD_PREPROCESSED
-                } else {
-                    0
-                },
-                ..DataHead::default()
+        let head = DataHead {
+            flags: if self.whole_buffer(length) {
+                EventDataFlag::SW_EVENT_DATA_POP_PTR.bits()
+            } else {
+                0
             },
-            data: self.string().as_mut_ptr(),
+            ext_flags: if dispatch == Dispatch::Upload {
+                UPLOAD_PREPROCESSED
+            } else {
+                0
+            },
+            ..DataHead::default()
         };
-        let proto = self.port.protocol.as_ptr().cast_const();
         // A request waits its turn under `max_concurrency`; a task never does.
         let busy = dispatch != Dispatch::Task && {
             let counters = self.server.counters();
@@ -276,8 +277,11 @@ impl Connection for Read<'_> {
             self.send(Reply::Unavailable);
             false
         } else {
-            // SAFETY: the port's protocol, the live socket and its data.
-            unsafe { dispatch_task(proto, self.socket, &data) >= 0 }
+            let session = self.session();
+            let bytes = self.buffer().view();
+            let length = usize::try_from(length).unwrap_or(usize::MAX);
+            let data = bytes.get(..length).unwrap_or(bytes);
+            session.task(swoole_rs_server::reactor_entry::RecvData::new(head, data))
         };
         if dispatch == Dispatch::Task {
             return dispatched;
@@ -358,24 +362,23 @@ impl Connection for Read<'_> {
     }
 
     #[inline]
-    fn buffer(&mut self) -> &mut HttpString {
+    fn buffer(&mut self) -> &mut CppString {
         // SAFETY: the current buffer is live once a receive buffer or request made it
-        // current, and starts with `swoole::String`'s head; only calls on `self`, which
-        // the borrow excludes, touch it.
-        unsafe { &mut *self.buffer.cast::<HttpString>() }
+        // current; only calls on `self`, which the borrow excludes, touch it.
+        unsafe { &mut *self.buffer }
     }
 
     fn reduce(&mut self, offset: u64) {
-        self.string().reduce(offset.cast_signed());
+        self.buffer().reduce(offset.cast_signed());
     }
 
     fn extend(&mut self, size: u64) {
-        self.string()
+        self.buffer()
             .extend(usize::try_from(size).unwrap_or(usize::MAX));
     }
 
     fn header_end(&mut self) -> bool {
-        let bytes = self.string().view();
+        let bytes = self.buffer().view();
         bytes.windows(4).any(|w| w == b"\r\n\r\n")
     }
 

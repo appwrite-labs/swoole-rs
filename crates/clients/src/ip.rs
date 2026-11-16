@@ -1,8 +1,7 @@
 //! Numeric address grammar over borrowed initialized bytes. Native sockaddr
 //! layouts, publication and resolver/errno effects stay outside Rust.
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::Ipv6Addr;
 use swoole_rs_corebase::net_address::{ipv4, ipv6};
-#[repr(C)]
 pub struct ClientsIp {
     pub bytes: [u8; 16],
     pub length: u32,
@@ -54,7 +53,6 @@ pub fn swr_v1_clients_loopback(version: u8, address: &[u8]) -> u8 {
     })
 }
 
-#[repr(C)]
 pub struct ClientsIpText {
     pub bytes: [u8; 40],
     pub length: u32,
@@ -67,31 +65,47 @@ pub fn swr_v1_clients_ip_text(version: u8, address: &[u8]) -> ClientsIpText {
         bytes: [0; 40],
         length: 0,
     };
-    let mut text = [0u8; 40];
-    let written = match version {
-        4 => {
-            let Some(&v4) = address.first_chunk::<4>() else {
-                return output;
-            };
-            crate::format_into(&mut text, format_args!("{}", Ipv4Addr::from(v4)))
-        }
-        6 => {
-            let Some(&v6) = address.first_chunk::<16>() else {
-                return output;
-            };
+    output.length = match version {
+        4 => address
+            .first_chunk::<4>()
+            .map_or(0, |&v4| dotted(v4, &mut output.bytes)),
+        6 => address.first_chunk::<16>().map_or(0, |&v6| {
             let [a, b, c, d, e, f, g, h] = Ipv6Addr::from(v6).segments();
-            crate::format_into(
-                &mut text,
+            let written = crate::format_into(
+                &mut output.bytes,
                 format_args!("{a:04x}:{b:04x}:{c:04x}:{d:04x}:{e:04x}:{f:04x}:{g:04x}:{h:04x}"),
-            )
-        }
-        _ => None,
+            );
+            u32::try_from(written.unwrap_or_default().len()).unwrap_or(u32::MAX)
+        }),
+        _ => 0,
     };
-    let written = written.unwrap_or_default();
-    let length = u32::try_from(written.len()).unwrap_or(u32::MAX);
-    output.length = length;
-    output.bytes = text;
     output
+}
+
+/// `octets` in dotted decimal at the start of `text`, written digit by digit: each
+/// lookup's answer goes through here, and `core::fmt` costs it a thousand
+/// instructions. The length written.
+fn dotted(octets: [u8; 4], text: &mut [u8; 40]) -> u32 {
+    let mut length = 0;
+    let mut push = |byte| {
+        if let Some(slot) = text.get_mut(length) {
+            *slot = byte;
+            length += 1;
+        }
+    };
+    for (index, octet) in octets.into_iter().enumerate() {
+        if index > 0 {
+            push(b'.');
+        }
+        if octet >= 100 {
+            push(b'0' + octet / 100);
+        }
+        if octet >= 10 {
+            push(b'0' + octet / 10 % 10);
+        }
+        push(b'0' + octet % 10);
+    }
+    u32::try_from(length).unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]

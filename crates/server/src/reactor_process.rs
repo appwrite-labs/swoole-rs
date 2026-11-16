@@ -186,7 +186,7 @@ fn add_pipes(reactor: Reactor, worker: Worker<'_>) -> bool {
 }
 
 /// `ReactorProcess_onClose`: the reactor's default error handler.
-extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
     let reactor = Reactor::running(reactor);
     let closed = reactor
         .server()
@@ -281,7 +281,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn start_listens_then_the_manager_runs_the_workers() {
         let mut live = LiveServer::new();
         live.config_mut().mode_ = crate::Mode::Base;
@@ -329,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
+    #[cfg_attr(miri, ignore = "Miri has no gethostbyname2_r")]
     fn main_loop_order_and_cleanup() {
         let live = LiveServer::new();
         // SAFETY: a plain record, for which zero is valid.
@@ -384,7 +383,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn close_notifies_the_worker_unless_the_close_is_queued() {
         let (live, _clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
@@ -406,7 +404,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn close_closes_a_socket_already_out_of_the_reactor() {
         let (live, _clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
@@ -418,7 +415,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn heartbeat_closes_or_notifies_idle_connections() {
         let (live, _clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());

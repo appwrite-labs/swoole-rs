@@ -95,15 +95,13 @@ thread_local! {
     static DOOMED: Cell<Vec<OwnedCo>> = const { Cell::new(Vec::new()) };
 }
 
-/// `swoole_coroutine_close(fd)` for a coroutine socket: 0 once `close(socket)`
-/// succeeds and the socket leaves the map, -1 when it fails, 1 (errno `ENOTSOCK`)
-/// when `fd` has no socket. Each removed socket is deleted after the outermost
+/// `swoole_coroutine_close(fd)` for a coroutine socket: its close outcome, or
+/// `None` (errno `ENOTSOCK`) when `fd` has no socket. A successful close removes
+/// the socket from the map. Each removed socket is deleted after the outermost
 /// close on this thread returns, so no close still running uses a freed one:
 /// `close` gets the socket while the map holds it.
-pub(crate) fn close(fd: c_int, close: impl FnOnce(Co) -> bool) -> c_int {
-    let Some(socket) = get(fd) else {
-        return 1;
-    };
+pub(crate) fn close(fd: c_int, close: impl FnOnce(Co) -> bool) -> Option<bool> {
+    let socket = get(fd)?;
     CLOSING.set(CLOSING.get() + 1);
     let closed = close(socket);
     let removed = if closed { remove(fd) } else { None };
@@ -117,7 +115,7 @@ pub(crate) fn close(fd: c_int, close: impl FnOnce(Co) -> bool) -> c_int {
         doomed = Vec::new();
     }
     drop(doomed);
-    if closed { 0 } else { -1 }
+    Some(closed)
 }
 
 #[cfg(test)]
@@ -188,7 +186,7 @@ mod tests {
     /// fails with close-wait while still holding the socket.
     fn outer_close(_: Co) -> bool {
         log("outer close");
-        assert_eq!(close(NESTED, inner_close), 0);
+        assert_eq!(close(NESTED, inner_close), Some(true));
         assert!(!exists(NESTED));
         log("outer returns");
         false
@@ -197,7 +195,7 @@ mod tests {
     #[test]
     fn nested_close_defers_the_delete() {
         assert!(insert(NESTED, named("nested"), true).is_none());
-        assert_eq!(close(NESTED, outer_close), -1);
+        assert_eq!(close(NESTED, outer_close), Some(false));
         assert_eq!(
             LOG.take(),
             [
@@ -207,7 +205,7 @@ mod tests {
                 "delete nested"
             ]
         );
-        assert_eq!(close(NESTED, outer_close), 1);
+        assert_eq!(close(NESTED, outer_close), None);
         assert_eq!(errno(), libc::ENOTSOCK);
     }
 }

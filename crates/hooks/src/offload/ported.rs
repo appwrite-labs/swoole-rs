@@ -136,19 +136,21 @@ extern "C" fn dispatch(event: &AsyncEvent) -> *mut AsyncEvent {
     QUEUED.set(true);
     copy
 }
-fn park() {
+fn park(waker: &WakerSlot) {
     record("yield".into());
+    waker.set(Some(Waker::NONE));
     complete_worker();
 }
-fn park_for(seconds: f64) -> bool {
+fn park_for(seconds: f64, waker: &WakerSlot) -> bool {
     record(format!("yield-ex:{}", seconds.to_bits()));
+    waker.set(Some(Waker::NONE));
     let ok = knobs().yield_ok;
     if ok {
         complete_worker();
     }
     ok
 }
-unsafe extern "C-unwind" fn resume(_: *mut c_void) {
+fn resume(_: Waker) {
     record("resume".into());
 }
 extern "C" fn last_error() -> c_int {
@@ -223,7 +225,7 @@ fn async_event(
 fn sleep(seconds: f64) -> c_int {
     current();
     let seconds = sleep_timeout(seconds, 0.001);
-    park_for(seconds);
+    park_for(seconds, &WakerSlot::new(None));
     if is_canceled() { -1 } else { 0 }
 }
 

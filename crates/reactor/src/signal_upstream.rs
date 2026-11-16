@@ -6,12 +6,8 @@
 //! exit condition and destroy callback, and the warnings. The process patch deletes
 //! `src/os/signal.cc`.
 use crate::ReactorPrepared;
-#[cfg(target_os = "linux")]
-use crate::SocketRecord;
 use crate::socket_sync::set_errno;
 use std::ffi::c_int;
-#[cfg(target_os = "linux")]
-use std::ffi::c_void;
 use swoole_rs_corebase::log;
 pub use swoole_rs_process::signal::Handler;
 use swoole_rs_process::signal::signal_name;
@@ -24,14 +20,6 @@ const UNREGISTERED_SIGNAL: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_UNREGISTERED_SIGNAL as c_int;
 
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
-
-// crates/tls's `Socket::free`, the same archive; declared, since crates/tls
-// depends on this crate.
-#[cfg(target_os = "linux")]
-unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole7network6Socket4freeEv"]
-    fn socket_free(socket: *mut SocketRecord);
-}
 
 /// The fields of the thread's event loop, available or not (`sw_reactor()`).
 fn current() -> Option<ReactorPrepared> {
@@ -122,7 +110,7 @@ fn report(report: Report) {
 
 #[cfg(target_os = "linux")]
 mod descriptor {
-    use super::{FD_SIGNAL, OPS, c_int, c_void, socket_free};
+    use super::{FD_SIGNAL, OPS, c_int};
     use crate::event_api::{
         FdHandler, event_add, event_del, isset_handler, swoole_event_set_fd_handler,
     };
@@ -155,8 +143,9 @@ mod descriptor {
         };
         SOCKET.store(ptr::null_mut(), Relaxed);
         socket.edit(|record| record.fd = -1);
-        // SAFETY: SOCKET's wrapper, which nothing uses once taken out of it.
-        unsafe { socket_free(socket.as_ptr()) };
+        // SAFETY: SOCKET's wrapper, `make`'s heap record, which nothing uses once taken
+        // out of it.
+        (crate::host::get().socket_free)(unsafe { crate::OwnedSocket::from_socket(socket) });
     }
 
     pub(super) fn events() -> i32 {
@@ -181,17 +170,18 @@ mod descriptor {
     struct Read;
 
     impl FdHandler for Read {
-        fn handle(fd: c_int) -> c_int {
-            swoole_rs_process::signal_loop::read(fd, &OPS)
+        fn handle(fd: c_int) -> bool {
+            swoole_rs_process::signal_loop::read(fd, &OPS);
+            true
         }
     }
 
-    extern "C-unwind" fn destroyed(_data: *mut c_void) {
+    fn destroyed() {
         swoole_rs_process::signal_loop::destroyed(&OPS);
     }
 
     /// The signalfd's exit condition, which the reactor calls with its event count.
-    extern "C-unwind" fn exit_condition(event_num: &mut usize) -> bool {
+    fn exit_condition(event_num: &mut usize) -> bool {
         swoole_rs_process::signal_loop::exit_condition(event_num)
     }
 
@@ -258,7 +248,8 @@ pub extern "C" fn swoole_signal_set(signo: c_int, handler: Handler, safety: bool
 }
 
 /// `void swoole_signal_callback(int signo)`: runs the handler registered for `signo`,
-/// which [`Handler::from_raw`] made sound to call with any signal number.
+/// which [`Handler::new`] or C++'s `SignalHandler` made sound to call with any
+/// signal number.
 #[unsafe(export_name = "_Z22swoole_signal_callbacki")]
 pub extern "C" fn swoole_signal_callback(signo: c_int) {
     signal_loop::callback(signo, &OPS);

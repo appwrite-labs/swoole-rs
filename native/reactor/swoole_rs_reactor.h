@@ -8,28 +8,19 @@
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #endif
-struct iovec;
 #ifdef __cplusplus
 namespace swoole { class Reactor; namespace network { struct Socket; } }
-typedef ssize_t (*swr_v1_reactor_write_fn)(swoole::Reactor *, swoole::network::Socket *, const void *, size_t);
-typedef ssize_t (*swr_v1_reactor_writev_fn)(swoole::Reactor *, swoole::network::Socket *, const struct iovec *, size_t);
 typedef int (*swr_v1_reactor_close_fn)(swoole::Reactor *, swoole::network::Socket *);
 extern "C" {
 
 #endif
 #ifndef __cplusplus
-typedef ssize_t (*swr_v1_reactor_write_fn)(void *, void *, const void *, size_t);
-typedef ssize_t (*swr_v1_reactor_writev_fn)(void *, void *, const struct iovec *, size_t);
 typedef int (*swr_v1_reactor_close_fn)(void *, void *);
 #endif
 
 struct pollfd;
 struct epoll_event;
 struct kevent;
-
-typedef struct swr_v1_reactor_deferred swr_v1_reactor_deferred;
-/* Reactor::defer_tasks and destroy_callbacks: FIFO (call, data) queues Rust creates on
- * first push. */
 
 /* network::Socket's write-path fields, embedded in Socket in this order and with these
  * types (Socket static_asserts it). */
@@ -44,12 +35,10 @@ typedef struct {
     bool send_wait;
 } swr_v1_socket_output;
 /* Reactor handler tables (read/write/error per fd type, write and error defaults), which
- * only Rust reads. Handlers are ReactorHandler: int (*)(Reactor *, Event *). */
+ * only Rust reads, of Rust handlers. */
 typedef struct swr_v1_reactor_handlers swr_v1_reactor_handlers;
-/* The fd -> socket registry (Reactor::sockets_); null reads as empty. */
+/* The fd -> socket registry (Reactor::sockets_), which only Rust reads. */
 typedef struct swr_v1_reactor_registry swr_v1_reactor_registry;
-void *swr_v1_reactor_registry_get(const swr_v1_reactor_registry *, int fd);
-size_t swr_v1_reactor_registry_count(const swr_v1_reactor_registry *);
 /* network::Socket's timeout group (dns_timeout, connect_timeout, read_timeout,
  * write_timeout), embedded in this order (Socket static_asserts it). */
 typedef struct { double dns, connect, read, write; } swr_v1_socket_timeouts;
@@ -66,31 +55,23 @@ typedef struct {
  * a Reactor is that state. swoole_event_init/free and the Reactor's constructor and destructor
  * are Rust's; nothing in C or C++ allocates one. */
 typedef struct swr_v1_reactor_state swr_v1_reactor_state;
-/* Reactor's idle and future tasks (Swoole\Event::cycle): null until set. */
-typedef struct { void (*callback)(void *); void *data; } swr_v1_reactor_task;
 /* The state's own views of itself; fields points at the head's type_. */
 typedef struct {
     swr_v1_reactor_state *owner; void *fields;
     swr_v1_reactor_registry *registry; swr_v1_reactor_handlers *handlers;
 } swr_v1_reactor_prepared;
-/* Rust's ReactorPrepared then ReactorFields, laid out as one struct (asserted on both sides). */
+/* Rust's ReactorPrepared then the native prefix of ReactorFields (asserted on both sides). */
 typedef struct {
     swr_v1_reactor_prepared state_;
     int type_; void *ptr; int native_handle; uint32_t max_event_num;
     bool ready_, running, start, once, wait_exit, destroyed, bailout, timed_out;
     int32_t timeout_msec; uint16_t id; uint32_t max_socket; time_t last_malloc_trim_time;
-    swr_v1_reactor_write_fn write;
-    swr_v1_reactor_writev_fn writev;
     swr_v1_reactor_close_fn close;
-    swr_v1_reactor_deferred *defer_tasks, *destroy_callbacks;
-    swr_v1_reactor_task idle_task, future_task;
 } swr_v1_reactor_head;
-/* Reactor's end callbacks (set_end_callback, or erase_end_callback without fn). */
-void swr_v1_reactor_set_end(swr_v1_reactor_state *, int id, void (*callback)(void));
 #ifdef __cplusplus
 }
 static_assert(offsetof(swr_v1_reactor_head, type_) == sizeof(swr_v1_reactor_prepared) &&
-                  (sizeof(void *) != 8 || (sizeof(swr_v1_reactor_prepared) == 32 && sizeof(swr_v1_reactor_head) == 160)),
+                  (sizeof(void *) != 8 || (sizeof(swr_v1_reactor_prepared) == 32 && sizeof(swr_v1_reactor_head) == 96)),
               "crates/reactor's ReactorState layout");
 #endif
 #endif

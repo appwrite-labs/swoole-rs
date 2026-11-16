@@ -6,12 +6,13 @@
 #include "php.h"
 #include <sys/uio.h>
 
-/* Swoole's copy_arginfo: a persistent copy of a function's arginfo (and the
- * return slot before it) with its class-name types duplicated. */
+/* Swoole's copy_arginfo: a persistent copy, `function`'s rows of `from`'s
+ * arginfo (and the return slot before it), with its class-name types duplicated
+ * and a zeroed row after them; NULL when `from` has no arginfo or fewer rows. */
 zend_internal_arg_info *swr_zend_runtime_copy_arginfo(const zend_internal_function *function,
-                                                      zend_internal_arg_info *arg_info);
-/* Swoole's free_arg_info of such a copy. */
-void swr_zend_runtime_free_arginfo(const zend_internal_function *function, zend_internal_arg_info *copy);
+                                                      const zend_internal_function *from);
+/* Swoole's free_arg_info of such a copy, up to its zeroed row. */
+void swr_zend_runtime_free_arginfo(zend_internal_arg_info *copy);
 /* The running request's internal function name (EG(function_table)), or NULL
  * for none or a user function. */
 zend_internal_function *swr_zend_runtime_internal_function(struct iovec name);
@@ -42,8 +43,8 @@ int swr_zend_runtime_select_args(zend_execute_data *execute_data,
 /* The stream transport factory registered as name, or NULL. */
 void *swr_zend_runtime_transport(struct iovec name);
 /* php_stream_xport_register(name, factory), or php_stream_xport_unregister(name)
- * (remove): SUCCESS or FAILURE. */
-int swr_zend_runtime_set_transport(const char *name, void *factory, bool remove);
+ * (no factory): SUCCESS or FAILURE. */
+int swr_zend_runtime_set_transport(const char *name, void *factory);
 /* tsrm_env_lock (lock) or tsrm_env_unlock; nothing without ZTS. */
 void swr_zend_runtime_env_lock(bool lock);
 #endif

@@ -5,7 +5,6 @@ use swoole_rs_reactor::Events;
 const BIG: usize = 65536;
 
 /// A view of the native read String, refreshed after every resize.
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ReadBuffer {
     pub length: usize,
@@ -19,10 +18,33 @@ pub struct ReadBuffer {
 pub enum Failure {
     /// The protocol could not read a length from the header.
     LengthNotFound,
-    /// The header's length exceeds `package_max_length`.
-    TooLarge,
+    /// The header's length, which exceeds `package_max_length`.
+    TooLarge(usize),
     /// The buffer filled to `package_max_length` with no EOF.
     NoEof,
+}
+
+/// What a protocol's length function made of the buffered bytes: its `ssize_t`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Length {
+    /// Negative: no length in them.
+    NotFound,
+    /// Zero: read more first.
+    More,
+    /// The whole packet's length.
+    Packet(usize),
+}
+
+impl Length {
+    /// The length function's `ssize_t`.
+    #[must_use]
+    pub fn of(length: isize) -> Self {
+        match usize::try_from(length) {
+            Err(_) => Self::NotFound,
+            Ok(0) => Self::More,
+            Ok(length) => Self::Packet(length),
+        }
+    }
 }
 
 /// What a sync of the read String does before it refreshes the view: nothing, or it
@@ -76,9 +98,9 @@ impl Packet {
     fn recv(&mut self, at: usize, length: usize) -> Option<usize> {
         self.receive(at, length, false)
     }
-    fn fail(&mut self, kind: Failure, length: isize) {
+    fn fail(&mut self, kind: Failure) {
         self.sync(BufferSync::Store);
-        (crate::co_io::host().packet_fail)(self.socket, kind, length);
+        (crate::co_io::host().packet_fail)(self.socket, kind);
     }
     fn timed_out(&self) -> bool {
         self.socket.err_code() == libc::ETIMEDOUT
@@ -113,27 +135,28 @@ impl Packet {
             let buffer = self.buffer();
             let mut header = 0;
             // It reads the initialized prefix and writes the header length.
-            let packet = (crate::co_io::host().package_length)(
+            let wanted = match (crate::co_io::host().package_length)(
                 self.socket,
                 buffer.length.c_cast::<u32>(),
                 &mut header,
-            );
-            if packet < 0 {
-                self.fail(Failure::LengthNotFound, packet);
-                return Some(0);
-            }
-            if packet == 0 {
-                if header != 0 {
-                    header_len = header;
+            ) {
+                Length::NotFound => {
+                    self.fail(Failure::LengthNotFound);
+                    return Some(0);
                 }
-                continue;
-            }
-            if packet.unsigned_abs() > protocol.package_max_length as usize {
+                Length::More => {
+                    if header != 0 {
+                        header_len = header;
+                    }
+                    continue;
+                }
+                Length::Packet(wanted) => wanted,
+            };
+            if wanted > protocol.package_max_length as usize {
                 self.clear();
-                self.fail(Failure::TooLarge, packet);
+                self.fail(Failure::TooLarge(wanted));
                 return None;
             }
-            let wanted = packet.unsigned_abs();
             if wanted <= buffer.length {
                 self.set_offset(wanted);
                 return Some(wanted);
@@ -191,7 +214,7 @@ impl Packet {
             }
             if buffer.length == maximum {
                 self.clear();
-                self.fail(Failure::NoEof, 0);
+                self.fail(Failure::NoEof);
                 return None;
             }
             if buffer.length == buffer.size && buffer.size < maximum {
@@ -289,6 +312,15 @@ pub(crate) mod tests {
         receives: usize,
     }
 
+    thread_local! {
+        /// The running test's fake, which the test host's members reach.
+        static FAKE: core::cell::Cell<*mut c_void> = const { core::cell::Cell::new(core::ptr::null_mut()) };
+    }
+
+    fn context() -> *mut c_void {
+        FAKE.get()
+    }
+
     unsafe fn fake<'a>(context: *mut c_void) -> &'a mut Fake {
         unsafe { &mut *context.cast::<Fake>() }
     }
@@ -344,10 +376,7 @@ pub(crate) mod tests {
     ) -> crate::co_socket::TestSocket {
         crate::co_io::test_host::install();
         let mut socket = crate::co_socket::TestSocket::new();
-        socket
-            .0
-            .resolve_context
-            .set(core::ptr::from_mut(fake).cast());
+        FAKE.set(core::ptr::from_mut(fake).cast());
         socket.0.open_length_check.set(length_check);
         socket.0.open_eof_check.set(!eof.is_empty());
         socket
@@ -366,12 +395,12 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn read_buffer(
-        socket: crate::co_socket::Co,
+        _: crate::co_socket::Co,
         view: &mut ReadBuffer,
         sync: super::BufferSync,
     ) {
         use super::BufferSync;
-        let ctx = socket.resolve_context();
+        let ctx = context();
         let fake = unsafe { fake(ctx) };
         match sync {
             BufferSync::Get => fake.gets += 1,
@@ -393,11 +422,11 @@ pub(crate) mod tests {
         *view = fake.buffer;
     }
     pub(crate) fn receive(
-        socket: crate::co_socket::Co,
+        _: crate::co_socket::Co,
         buf: &mut [core::mem::MaybeUninit<u8>],
         all: bool,
     ) -> Option<usize> {
-        let ctx = socket.resolve_context();
+        let ctx = context();
         let (at, size) = (buf.as_mut_ptr().cast::<u8>(), buf.len());
         usize::try_from(if all {
             unsafe { recv_all(ctx, at, size) }
@@ -406,13 +435,17 @@ pub(crate) mod tests {
         })
         .ok()
     }
-    pub(crate) fn get_length(socket: crate::co_socket::Co, size: u32, header: &mut u32) -> isize {
-        let ctx = socket.resolve_context();
+    pub(crate) fn get_length(
+        _: crate::co_socket::Co,
+        size: u32,
+        header: &mut u32,
+    ) -> super::Length {
+        let ctx = context();
         let at = unsafe { fake(ctx) }.buffer.str;
-        unsafe { package_length(ctx, at, size, header) }
+        super::Length::of(unsafe { package_length(ctx, at, size, header) })
     }
-    pub(crate) fn failure(socket: crate::co_socket::Co, kind: super::Failure, _: isize) {
-        let ctx = socket.resolve_context();
+    pub(crate) fn failure(_: crate::co_socket::Co, kind: super::Failure) {
+        let ctx = context();
         unsafe { fail(ctx, kind) };
     }
 
@@ -464,7 +497,7 @@ pub(crate) mod tests {
         let wire = [&b"ab"[..], &[0, 0, 4, 0]].concat();
         let (results, fake) = run(&[&wire], 64, true, b"", 1024);
         assert_eq!(results, [None]);
-        assert_eq!(fake.failures, [super::Failure::TooLarge]);
+        assert_eq!(fake.failures, [super::Failure::TooLarge(1030)]);
         assert_eq!(fake.buffer.length, 0);
     }
 

@@ -13,14 +13,34 @@ native-TU gates.
 
 ## Registered gates
 
-- `constants.py --source PINNED --output R` (`corebase-constants`): compares 326
-  core/error identifiers and defaults against the clean pin, including C++ types,
-  sizes, signedness and string bytes in Apple and non-Apple configuration branches.
+- `constants.py --source PINNED --output R` (`corebase-constants`): compares 327
+  core/error identifiers and defaults against the clean pin in Apple and non-Apple
+  configuration branches. Those the C headers export compare by C++ type, size,
+  signedness and string bytes; the enums no header exports (and `SW_PIPE_READ`/`WRITE`)
+  compare by the values `cargo run -p swoole-rs-corebase --example constants`
+  (`corebase_enums.rs`) prints. `tls-constants` (`--include-tls`) adds the pinned
+  `swoole_ssl.h` and the TLS crate's example (`tls_enums.rs`).
 
 - `mkdir_startup.py --engine native=... --engine cargo=... --build-manifest M --output R`
   (`corebase-startup`): PHP startup through `sys_temp_dir` (create, repeated
   slashes, file parent), comparing warnings and `swoole_last_error`. The Cargo
   engine must be the one `tools/build_ext.py` recorded in `M` (`tools/ext_identity.py`).
+## The record views record
+
+`record_views.py` (`corebase-record-views`) compiled a C++ probe against `swoole.h` and
+read `SwooleG` and `SwooleTG` through their C++ views. No compiled C++ reads either, so the
+`SwooleTG` macro and `swoole::Global`'s `running`, `enable_coroutine` and `pagesize` views
+left the header, and its checks are Rust tests (`cargo test -p swoole-rs-corebase`, in
+`corebase-unit`):
+
+| Probe check | Rust test or reason |
+| --- | --- |
+| init's libc allocator (callable), `max_sockets > 0`; clean nulls the allocator and zeroes `max_sockets` | `config_state::tests::storage_init_task_directory_and_reset` |
+| `dns_cache_refresh_time` written in place, zeroed by clean | the same test: 2.5's bits stored, 0 after the reset |
+| `running`, `enable_coroutine` and `pagesize > 0` after init, `running` false after clean | `global::tests::record_lifecycle` |
+| `SwooleTG.main_thread`, and each thread's own record: zero on a new thread, set there without touching the main thread's `id` 19 and `type` 3 | `lifecycle::tests::thread_records_are_per_thread` |
+| `SwooleG.max_sockets = 91` written and read back in place, and `SwooleG`'s and `SwooleTG`'s addresses stable across clean | none: no compiled C++ reads `SwooleG`, whose `swoole::Global` layout both sides assert, and `SwooleTG` is Rust's alone |
+
 ## The number helpers record
 
 `numbers.rs` (`cargo test -p swoole-rs-corebase --test numbers`, in `corebase-unit`) holds
@@ -154,3 +174,15 @@ zero timeout counts remain distinct from errors. Unit tests cover descriptor
 flag/duplication behavior, failed flag operations, pipe readiness, ignored negative
 descriptors and `POLLNVAL` as a successful readiness result. Native poll adapters
 retain their integer ABI, and caller EINTR retries use the captured error.
+
+The socket, event-data, task and TLS protocol flags are integer-backed Rust types.
+The constants probes print every named flag's bits and compare them with the
+pinned headers, alongside the exhaustive enum tables. Socket options, task-file
+flags, event payload selection and TLS protocol options retain their existing
+runtime tests; conversion to integers happens at the native fields and calls.
+
+`lent.rs` checks that capped output counts preserve zero, never exceed the lent
+allocation, and saturate oversized limits without wrapping signed syscall counts.
+
+`spare.rs` verifies scalar receive appends, zero/error results, datagram truncation,
+and a real short `readv` spanning an empty room without exposing unwritten bytes.

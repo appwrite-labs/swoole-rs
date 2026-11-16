@@ -5,6 +5,7 @@ use crate::Mode;
 use core::cell::Cell;
 use core::ffi::c_int;
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_corebase::constants::TaskFlag;
 use swoole_rs_corebase::{CCast, DataHead, log};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_locks::SharedMutex;
@@ -32,9 +33,6 @@ use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_WARNING};
 
 const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
-/// `swoole::TaskFlag` bits.
-const TASK_NONBLOCK: u16 = 1 << 2;
-const TASK_WAITALL: u16 = 1 << 4;
 /// `SW_PIPE_MASTER`, `SW_FD_PIPE` and `SW_EVENT_WRITE`.
 const PIPE_MASTER: c_int = 1;
 const FD_PIPE: c_int = 3;
@@ -50,7 +48,7 @@ const SEND_TO_WORKER_TIMEOUT: c_int = 9014;
 const EVENT_DATA_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 
 /// `swoole::EventData`, aligned for its head, to read a task into.
-#[repr(C, align(8))]
+#[repr(align(8))]
 struct EventData([u8; EVENT_DATA_SIZE]);
 
 thread_local! {
@@ -91,7 +89,7 @@ pub(crate) fn init(serv: view::Server<'_>) -> bool {
 }
 
 /// `TaskWorker_onTask`: the pool's task callback.
-extern "C-unwind" fn on_task(pool: PoolRef<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_int {
+fn on_task(pool: PoolRef<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_int {
     crate::shared::pool_server(pool).map_or(ERR, |serv| run_task(serv, worker, task))
 }
 
@@ -155,7 +153,7 @@ fn command(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> bool
 }
 
 /// `TaskWorker_onStart`.
-extern "C-unwind" fn on_start(pool: PoolRef<'_>, worker: Worker<'_>) {
+fn on_start(pool: PoolRef<'_>, worker: Worker<'_>) {
     let Some(serv) = crate::shared::pool_server(pool) else {
         return;
     };
@@ -191,7 +189,7 @@ fn signal_init(serv: view::Server<'_>) {
 }
 
 /// `TaskWorker_onStop`.
-extern "C-unwind" fn on_stop(pool: PoolRef<'_>, worker: Worker<'_>) {
+fn on_stop(pool: PoolRef<'_>, worker: Worker<'_>) {
     swoole_rs_reactor::swoole_event_free();
     if let Some(serv) = crate::shared::pool_server(pool) {
         call_worker_stop_callback(serv, worker);
@@ -199,7 +197,7 @@ extern "C-unwind" fn on_stop(pool: PoolRef<'_>, worker: Worker<'_>) {
 }
 
 /// `TaskWorker_loop_async`: the coroutine task worker's event loop over its pipe.
-extern "C-unwind" fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
+fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
     let Some(serv) = crate::shared::pool_server(pool) else {
         return ERR;
     };
@@ -225,7 +223,7 @@ extern "C-unwind" fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int 
 }
 
 /// `TaskWorker_onPipeReceive`: a task from a worker, in the coroutine loop.
-extern "C" fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
     let Some(serv) = Reactor::running(reactor).server() else {
         return ERR;
     };
@@ -282,7 +280,7 @@ pub fn finish(
         buf.set_fd(task.fd);
     };
     let mut buf = TaskBuffer::default();
-    let sent = if task.ext_flags & TASK_NONBLOCK != 0 {
+    let sent = if TaskFlag::from_bits(task.ext_flags).contains(TaskFlag::SW_TASK_NONBLOCK) {
         if !buf.pack(data) {
             log::warning(c"Server::finish", format_args!("large task pack failed()"));
             return false;
@@ -290,7 +288,12 @@ pub fn finish(
         reply(&mut buf, super::nonblocking_flags(flags, task.ext_flags));
         match stream_connection(worker) {
             Some(socket) => send_stream(socket, data),
-            None => send_pipe_message(worker, buf.bytes(), PIPE_MASTER),
+            None => send_pipe_message(
+                crate::process_pool_native(),
+                worker,
+                buf.bytes(),
+                PIPE_MASTER,
+            ),
         }
     } else {
         let Some(slot) = super::result_slot(serv, source) else {
@@ -302,7 +305,7 @@ pub fn finish(
         };
         let lock = worker.lock();
         _ = lock.map(SharedMutex::lock);
-        let stored = if task.ext_flags & TASK_WAITALL != 0 {
+        let stored = if TaskFlag::from_bits(task.ext_flags).contains(TaskFlag::SW_TASK_WAITALL) {
             write_waitall(slot, &mut buf, data, |buf| reply(buf, flags));
             true
         } else if buf.pack(data) {
@@ -362,10 +365,10 @@ fn write_waitall(
     reply: impl Fn(&mut TaskBuffer),
 ) {
     let path = slot.result_path();
-    let file = swoole_rs_ossupport::file_open(-1, &path, libc::O_APPEND | libc::O_WRONLY, 0);
-    if file == -1 {
+    let Ok(file) = swoole_rs_ossupport::file_open(-1, &path, libc::O_APPEND | libc::O_WRONLY, 0)
+    else {
         return;
-    }
+    };
     // A failed pack leaves the result empty.
     if !buf.pack(data) {
         log::warning(c"Server::finish", format_args!("large task pack failed()"));
@@ -390,8 +393,7 @@ fn stream_connection(worker: Worker<'_>) -> Option<Socket<'_>> {
     if !pool.use_socket() {
         return None;
     }
-    // SAFETY: null, or the stream pool's live connection for this task.
-    unsafe { Socket::from_ptr(pool.ipc_connection().cast()) }
+    pool.ipc_connection().map(Socket::lent)
 }
 
 /// The result over a stream: its length, big-endian, then its bytes.

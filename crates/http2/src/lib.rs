@@ -7,7 +7,6 @@ pub use files::*;
 use std::ffi::CStr;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-#[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Http2Settings {
     pub header_table_size: u32,
@@ -36,7 +35,6 @@ pub struct Http2SettingPlan {
     pub change_deflater: bool,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Http2ChunkPlan {
     pub length: usize,
@@ -103,7 +101,6 @@ fn header(kind: u8, length: u32, flags: u8, stream_id: u32) -> [u8; 9] {
     [high, middle, low, kind, flags, id[0], id[1], id[2], id[3]]
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Http2WindowPlan {
     pub value: u32,

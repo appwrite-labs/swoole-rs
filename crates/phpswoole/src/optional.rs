@@ -18,10 +18,26 @@ unsafe extern "C" {
 #[cfg(feature = "sockets")]
 // ext/sockets' class and import, which PHP exports when it has the extension.
 unsafe extern "C" {
-    /// Written once, by ext/sockets' MINIT, before any request reads it.
-    safe static socket_ce: *mut swoole_rs_zend::sys::zend_class_entry;
-    fn socket_import_file_descriptor(fd: c_int, socket: *mut std::ffi::c_void) -> bool;
+    /// `Socket`, an internal class: written once, by ext/sockets' MINIT, before
+    /// any request reads it, and live for the process.
+    safe static socket_ce: Option<swoole_rs_zend::ClassEntry<'static>>;
+    /// `object_init_ex(target, class)`: `target` holds a new object of the
+    /// class in place of what it held, which is not released. `Socket` has no
+    /// constant expressions to evaluate, so no frame is read.
+    safe fn object_init_ex(target: &Owned, class: swoole_rs_zend::ClassEntry<'static>) -> c_int;
+    /// Imports `fd` into the new `Socket`, which takes it.
+    safe fn socket_import_file_descriptor(fd: c_int, socket: PhpSocket<'_>) -> bool;
 }
+
+/// `Z_SOCKET_P` of a `Socket` [`socket_create`] just made: ext/sockets'
+/// `php_socket` (`int bsd_socket, type, error, blocking; zval zstream;
+/// zend_object std`) ends with the object. Only `socket_create` makes one.
+#[cfg(feature = "sockets")]
+#[repr(transparent)]
+struct PhpSocket<'a>(
+    std::ptr::NonNull<std::ffi::c_void>,
+    std::marker::PhantomData<&'a Owned>,
+);
 
 /// MINIT, after the HTTP/2 client: ssh2's.
 pub(crate) fn client_minit() -> Vec<Step> {
@@ -96,14 +112,6 @@ pub fn socket_cast(value: &Value) -> c_int {
     }
 }
 
-/// `Z_SOCKET_P`: ext/sockets' `php_socket` (`int bsd_socket, type, error,
-/// blocking; zval zstream; zend_object std`) ends with the object.
-#[cfg(feature = "sockets")]
-fn php_socket(object: *mut swoole_rs_zend::sys::zend_object) -> *mut std::ffi::c_void {
-    const STD: usize = 4 * size_of::<c_int>() + size_of::<swoole_rs_zend::sys::zval>();
-    object.cast::<u8>().wrapping_sub(STD).cast()
-}
-
 /// An ext/sockets `Socket` over `fd`, which it takes, and whether it imported
 /// `fd`: false, with the value undefined, when the build lacks ext/sockets.
 #[must_use]
@@ -111,14 +119,20 @@ pub fn socket_create(fd: c_int) -> (Owned, bool) {
     let out = Owned::default();
     #[cfg(feature = "sockets")]
     {
-        // SAFETY: ext/sockets' class, set at its MINIT, into a slot this owns;
-        // it only fails for an abstract class or an interface, leaving no object.
-        let _ = unsafe { swoole_rs_zend::sys::object_init_ex(out.as_ptr(), socket_ce) };
-        let Some(object) = out.object() else {
+        const STD: usize = 4 * size_of::<c_int>() + size_of::<swoole_rs_zend::sys::zval>();
+        // Only an abstract class or an interface fails, leaving no object.
+        if let Some(class) = socket_ce {
+            let _ = object_init_ex(&out, class);
+        }
+        // The new `Socket`, whose `php_socket` precedes its object.
+        let socket = out
+            .object()
+            .and_then(|object| std::ptr::NonNull::new(object.cast::<u8>().wrapping_sub(STD)));
+        let Some(socket) = socket else {
             return (out, false);
         };
-        // SAFETY: the new `Socket`, whose `php_socket` precedes its object.
-        let imported = unsafe { socket_import_file_descriptor(fd, php_socket(object)) };
+        let imported =
+            socket_import_file_descriptor(fd, PhpSocket(socket.cast(), std::marker::PhantomData));
         (out, imported)
     }
     #[cfg(not(feature = "sockets"))]
@@ -170,7 +184,7 @@ pub(crate) fn rinit(families: &Families) -> Vec<Step> {
         #[cfg(feature = "oci")]
         Step::Hook(swoole_rs_oci::php_swoole_oracle_rinit),
     ]);
-    let switched = [(Switch::Thread, Step::Hook(families.thread_rinit))];
+    let switched = [(Switch::Thread, Step::Request(families.thread_rinit))];
     drivers.into_iter().chain(built(switched)).collect()
 }
 

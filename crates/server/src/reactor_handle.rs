@@ -11,7 +11,7 @@ use core::ffi::{c_int, c_void};
 use swoole_rs_reactor::reactor_upstream::{
     change as reactor_change, interest as reactor_interest, set_handler,
 };
-use swoole_rs_reactor::{ChangeOp, Events, Handler, Interest, Running, Socket};
+use swoole_rs_reactor::{ChangeOp, Events, Handler, Interest, OwnedSocket, Running, Socket};
 
 /// The key a reactor holds its server under: private, so only [`Reactor::hold_server`]
 /// stores an object under it.
@@ -93,15 +93,17 @@ impl Reactor {
     pub(crate) fn unread(self, sock: Socket<'_>) {
         let _ = self.interest(sock, Interest::RemoveRead);
     }
-    /// The reactor's own `close` of `sock`, when it has one.
-    pub(crate) fn close(self, sock: Socket<'_>) -> c_int {
-        self.handle().close().map_or(0, |close| {
-            // SAFETY: the reactor's close on one of its live sockets.
-            unsafe { close(self.handle(), sock) }
+    /// The reactor's own `close` of `sock`, when it has one: whether it succeeded.
+    pub(crate) fn close(self, sock: Socket<'static>) -> bool {
+        self.handle().close().is_none_or(|close| {
+            // SAFETY: the reactor's close on one of its live heap sockets, which
+            // nothing uses after it.
+            close(self.handle(), unsafe { OwnedSocket::from_socket(sock) }) >= 0
         })
     }
-    /// `reactor->trigger_close_event(event)`: the default error handler, or `-1` with none.
-    pub(crate) fn trigger_close(self, event: &mut swoole_rs_reactor::Event) -> c_int {
+    /// `reactor->trigger_close_event(event)`: the default error handler, whether it
+    /// succeeded; false with none.
+    pub(crate) fn trigger_close(self, event: &mut swoole_rs_reactor::Event) -> bool {
         swoole_rs_reactor::reactor_upstream::trigger_close_event(self.handle(), event)
     }
     pub(crate) fn set_handler(self, fd_type: c_int, event: Events, handler: Handler) {
@@ -113,10 +115,11 @@ impl Reactor {
     }
 }
 
-/// `sock` as the reactor holds it while registered: the server registers only its own
-/// sockets (sessions, listeners and pipes), each freed only after its removal (an unsafe
-/// free whose caller answers for the reactor), so it stays live while registered.
-fn registered(sock: Socket<'_>) -> Option<Socket<'static>> {
-    // SAFETY: a live socket, which stays live while it is registered.
+/// `sock` as a record live until an unsafe free whose caller answers for the handles
+/// left, as the reactor holds it while registered: the server's sockets (sessions,
+/// listeners, pipes and its pool's connections) are heap records freed only by such a
+/// free, after their removal from any reactor.
+pub(crate) fn registered(sock: Socket<'_>) -> Option<Socket<'static>> {
+    // SAFETY: a live socket, which stays live until its unsafe free.
     unsafe { Socket::from_ptr(sock.as_ptr()) }
 }

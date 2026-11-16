@@ -7,7 +7,6 @@ use core::sync::atomic::{
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::process_pool::{PoolObjectKey, PoolRef};
 #[derive(Default)]
-#[repr(C)]
 pub struct PortCounters {
     pub connection_num: AtomicU32,
     /// An `AtomicU32` per worker.
@@ -59,7 +58,6 @@ impl ServerCounters {
 }
 
 #[derive(Default)]
-#[repr(C)]
 pub struct ServerCounters {
     /// `pid_t`s, set by the master and the manager and read by every process.
     pub master_pid: AtomicI32,
@@ -95,9 +93,7 @@ pub struct ServerCounters {
 }
 
 /// `ServerGS`, the record a server maps shared (`serv->gs`): the counters, the
-/// task and event worker pools, and the manager's barrier. `layout.rs` checks
-/// native's against it (record 8).
-#[repr(C)]
+/// task and event worker pools, and the manager's barrier.
 pub(crate) struct ServerShared {
     pub(crate) counters: ServerCounters,
     /// The task pool, then the event pool: records every process writes in place,
@@ -108,10 +104,20 @@ pub(crate) struct ServerShared {
 
 impl ServerShared {
     /// The live server's record, which `swr_v1_server_new` maps for its life.
+    #[inline]
     pub(crate) fn of(serv: crate::view::Server<'_>) -> &Self {
-        let gs = serv.config().gs.as_ptr().cast::<Self>();
-        // SAFETY: as above; its writers keep to the server's own synchronization.
-        unsafe { &*gs }
+        Self::of_state(serv.state())
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a server without its shared record"))
+    }
+
+    /// The record `state`'s server maps (`serv->gs`), once it has one.
+    #[inline]
+    fn of_state(state: &crate::ServerState) -> Option<&Self> {
+        let gs = state.config_ref().gs.as_ptr().cast::<Self>();
+        // SAFETY: a non-null `gs` is the record `swr_v1_server_new` (or a test's fixture)
+        // mapped whole for the server's life; its writers keep to the server's own
+        // synchronization.
+        unsafe { gs.as_ref() }
     }
     /// `serv->get_task_worker_pool()`.
     pub(crate) fn task_pool(&self) -> PoolRef<'_> {
@@ -178,9 +184,7 @@ pub(crate) fn pool_server(pool: PoolRef<'_>) -> Option<crate::view::Server<'_>> 
 
 /// The server's shared counters (`serv->gs`), once configured.
 pub(crate) fn server_counters(state: &crate::ServerState) -> Option<&ServerCounters> {
-    let gs = state.config_ref().gs.as_ptr().cast::<ServerCounters>();
-    // SAFETY: a non-null `gs` is the server's shared counters, which stay mapped.
-    unsafe { gs.as_ref() }
+    ServerShared::of_state(state).map(|shared| &shared.counters)
 }
 
 /// The counters of the port a session arrived on (`get_port_by_session_id(id)->gs`).
@@ -205,21 +209,14 @@ pub(crate) fn count_send(state: &crate::ServerState, session_id: i64, len: u32) 
     swoole_rs_process::worker_globals::with_current(|worker| worker.add_response_count());
 }
 
-/// Initializes a new shared allocation's server counter prefix, and returns it.
-#[must_use]
-pub fn swr_v1_server_shared_init(
-    counters: &'static mut core::mem::MaybeUninit<ServerCounters>,
-) -> &'static ServerCounters {
-    let value = ServerCounters::default();
-    value
+/// Initializes a new shared allocation's zeroed server counters, and returns them.
+pub fn swr_v1_server_shared_init(counters: &ServerCounters) -> &ServerCounters {
+    counters
         .pipe_packet_msg_id
         .store(1, core::sync::atomic::Ordering::Relaxed);
     // The limit is configuration, initialized before publication to any worker.
-    let value = ServerCounters {
-        max_concurrency: AtomicU32::new(u32::MAX),
-        ..value
-    };
-    counters.write(value)
+    counters.max_concurrency.store(u32::MAX, Relaxed);
+    counters
 }
 
 #[cfg(test)]
@@ -230,12 +227,12 @@ mod tests {
     use swoole_rs_memory::members::Shm;
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn a_send_counts_on_the_server_and_its_sessions_port() {
         use crate::records::{ConnectionRecord, SessionRecord};
-        let mut gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerCounters>());
-        let counters = gs.as_ptr().cast::<ServerCounters>();
-        // SAFETY: a fresh mapping of a whole `ServerCounters`.
+        let mut gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerShared>());
+        // SAFETY: a fresh mapping of a whole `ServerShared`.
+        let counters = unsafe { &raw mut (*gs.as_ptr().cast::<ServerShared>()).counters };
+        // SAFETY: as above.
         unsafe { counters.write(ServerCounters::default()) };
         // SAFETY: as above; the mapping outlives every use below.
         let counted = unsafe { &*counters };
@@ -246,20 +243,20 @@ mod tests {
         // SAFETY: a connection record is plain data; zero is a closed one.
         let mut connections: Vec<ConnectionRecord> =
             (0..3).map(|_| unsafe { core::mem::zeroed() }).collect();
-        connections[2].server_fd = 1;
+        connections[2].server_fd.set(1);
         let mut sessions: Vec<SessionRecord> = (0..3)
             .map(|id| SessionRecord {
-                id,
-                fd: 0,
-                reactor_bits: 0,
+                id: core::cell::Cell::new(id),
+                fd: core::cell::Cell::new(0),
+                reactor_bits: core::cell::Cell::new(0),
             })
             .collect();
-        sessions[1].fd = 2;
+        sessions[1].fd.set(2);
         let mut server = TestServer::new();
         server.config_mut().gs = core::mem::replace(&mut gs, Shm::empty());
         let tables = server.tables_mut();
-        tables.connection_list = crate::records::tests::naming(&mut connections);
-        tables.session_list = crate::records::tests::naming(&mut sessions);
+        *tables.connection_list_mut() = crate::records::tests::naming(&mut connections);
+        *tables.session_list_mut() = crate::records::tests::naming(&mut sessions);
         let state = server.state();
         // SAFETY: the tables just named hold 3 records.
         unsafe { state.tables_ref().set_max_connection_unchecked(3) };
@@ -285,10 +282,10 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn shared_counter_updates_survive_a_worker_fork() {
         unsafe {
-            let gs = swoole_rs_memory::members::Shm::calloc(1, 4096);
-            let mapping = gs.as_ptr();
+            let gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerShared>());
+            let mapping = gs.as_ptr().cast::<ServerShared>();
             assert!(!mapping.is_null());
-            let counters = swr_v1_server_shared_init(&mut *mapping.cast());
+            let counters = swr_v1_server_shared_init(&(*mapping).counters);
             assert_eq!(counters.max_concurrency.load(Relaxed), u32::MAX);
             assert_eq!(counters.pipe_packet_msg_id.load(Ordering::Relaxed), 1);
             counters.concurrency.store(7, Ordering::Relaxed);

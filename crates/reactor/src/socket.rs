@@ -175,8 +175,7 @@ impl<'a> Socket<'a> {
     /// # Safety
     /// A non-null `record` is a live `network::Socket` for the handle's lifetime, which
     /// nothing frees or reaches through a Rust reference to its fields meanwhile (native
-    /// code and raw pointers may, between this handle's calls). Its `ssl` is null or a
-    /// live `SSL` it owns, as [`SocketFields::set_ssl`] requires.
+    /// code and raw pointers may, between this handle's calls).
     #[must_use]
     pub unsafe fn from_ptr(record: *mut SocketRecord) -> Option<Self> {
         Some(Self {
@@ -185,9 +184,19 @@ impl<'a> Socket<'a> {
         })
     }
 
+    /// The native socket crates/process lends for `'a`, whose writers vouched for it
+    /// (a pipe end, a hook's socket, or a stream listener or connection): a live
+    /// record of this crate's.
+    #[must_use]
+    pub fn lent(native: swoole_rs_process::worker_record::NativeSocket<'a>) -> Self {
+        Self {
+            record: native.as_non_null().cast(),
+            _live: PhantomData,
+        }
+    }
+
     /// The socket of a record this side holds alone for `'a` (one on the caller's
-    /// frame, say). Its `ssl` is null or owned, which only the unsafe
-    /// [`SocketFields::set_ssl`] can change.
+    /// frame, say).
     #[must_use]
     pub fn new(record: &'a mut SocketRecord) -> Self {
         Self {
@@ -276,6 +285,61 @@ impl<'a> Socket<'a> {
     pub fn wait_event(self, timeout_ms: c_int, events: crate::Events) -> bool {
         let (fd, dont_restart) = self.read(|record| (record.fd, record.dont_restart));
         crate::socket_upstream::wait_event(fd, dont_restart, timeout_ms, events)
+    }
+}
+
+/// A heap record and the one right to free it (`delete socket`): neither `Copy` nor
+/// `Clone`, so a record is freed once, and it lends [`Socket`] only for a borrow of
+/// itself. Transparent over the record's address, so a C++ `Socket *` whose owner
+/// gives it up (`Socket::free`, `Reactor::close`) passes as one. Dropping one leaks the
+/// record, as a C++ pointer never deleted does.
+#[repr(transparent)]
+pub struct OwnedSocket(Socket<'static>);
+
+impl OwnedSocket {
+    /// `record`, which this owns from here.
+    #[must_use]
+    pub fn new(record: Box<SocketRecord>) -> Self {
+        Self(record.into_socket())
+    }
+
+    /// The owner of `socket`'s record, which its handles give up.
+    /// # Safety
+    /// `socket` is a heap record ([`SocketRecord::into_raw`], [`SocketRecord::into_socket`]
+    /// or a call that returns one) that no other owner holds, and no handle to it is used
+    /// once this owner frees it.
+    #[must_use]
+    pub unsafe fn from_socket(socket: Socket<'_>) -> Self {
+        Self(Socket {
+            record: socket.record,
+            _live: PhantomData,
+        })
+    }
+
+    /// The record, for as long as this is borrowed.
+    #[must_use]
+    pub const fn socket(&self) -> Socket<'_> {
+        self.0
+    }
+
+    /// The record, which nothing frees from here but an owner taken back with
+    /// [`Self::from_socket`].
+    #[must_use]
+    pub const fn leak(self) -> Socket<'static> {
+        self.0
+    }
+
+    /// The record's box.
+    #[must_use]
+    pub fn into_box(self) -> Box<SocketRecord> {
+        // SAFETY: the box `new` leaked, or the heap record `from_socket` took back; this
+        // owner is its only one and goes here.
+        unsafe { Box::from_raw(self.0.as_ptr()) }
+    }
+
+    /// `Socket::operator delete`: the record goes, its descriptor stays open.
+    pub fn free(self) {
+        drop(self.into_box());
     }
 }
 

@@ -5,7 +5,7 @@
 //! handlers and port callbacks run through `swoole_rs_zend::host::function_call`,
 //! which traps a bailout before it reaches a Rust frame.
 use crate::{
-    context::{self, Ctx},
+    context::{self, Ctx, Hold},
     host,
     parse::{Key, add_protocol, add_server, key, parse_request, request_times},
     state::State,
@@ -116,16 +116,14 @@ struct Receive {
 }
 
 // The connection's addresses and its peer's port and loopback check.
-use swoole_rs_clients::address::{
-    swr_v1_clients_address_loopback, swr_v1_clients_address_port, with_host,
-};
+use swoole_rs_clients::address::{address_port, is_loopback, with_host};
 
 /// A keep-alive session's server and remote address, until it closes, by its
 /// connection's fd. The session check drops a reused fd's entry. RSHUTDOWN
 /// releases them; a thread's exit, after the request heap is gone, must not.
 type Addresses = ManuallyDrop<Table<(i64, [ZString; 2])>>;
 /// Requests waiting for the worker's concurrency to drop, oldest first.
-type Queue = VecDeque<Ctx>;
+type Queue = VecDeque<Hold>;
 
 php_local! {
     /// Taken out and put back around each lookup, which runs no PHP code; an
@@ -144,12 +142,12 @@ fn take_addresses() -> Addresses {
 /// Queue `ctx` behind the waiting requests.
 fn enqueue(ctx: Ctx) {
     let mut queued = QUEUED.take();
-    queued.push_back(ctx);
+    queued.push_back(ctx.hold());
     QUEUED.set(queued);
 }
 
 /// The oldest waiting request, out of the queue before the caller acts on it.
-fn dequeue() -> Option<Ctx> {
+fn dequeue() -> Option<Hold> {
     let mut queued = QUEUED.take();
     let ctx = queued.pop_front();
     QUEUED.set(queued);
@@ -287,8 +285,8 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> Route {
     if route != Route::Request {
         return route;
     }
-    facts.remote_port = i64::from(swr_v1_clients_address_port(&conn.info()));
-    if swr_v1_clients_address_loopback(&conn.info()) {
+    facts.remote_port = i64::from(address_port(&conn.info()));
+    if is_loopback(&conn.info()) {
         facts.loopback =
             if conn.info().kind == swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP6.raw() {
                 6
@@ -300,7 +298,8 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> Route {
         .then(|| usize::try_from(conn.fd()).ok())
         .flatten();
     facts.coroutine = enable_coroutine(server);
-    let mut ctx = context::context_new(session);
+    let hold = context::context_new(session);
+    let mut ctx = hold.ctx();
     context::init(ctx.state(), server);
     let state = ctx.state();
     state.before_request = true;
@@ -416,13 +415,12 @@ fn call(mut ctx: Ctx, coroutine: bool) -> Result<(), bailout::Bailout> {
 }
 
 /// A queued request's turn (`swoole_event_defer`): run its handler, then
-/// release its objects. The context is a queued server request's, alive until
-/// its deferred request ends.
-struct Turn(Ctx);
+/// release its objects. The context is a queued server request's.
+struct Turn(Hold);
 
 impl swoole_rs_reactor::event_api::Deferred for Turn {
     fn run(self) {
-        let mut ctx = self.0;
+        let mut ctx = self.0.ctx();
         bailout::raise(call(ctx, enable_coroutine(context::server(ctx.state()))));
     }
     fn dispose(self) {}
@@ -542,8 +540,8 @@ fn http2_connection(
     fd: i64,
 ) -> Option<(Connection<'_>, Http2Connection)> {
     let conn = server.by_session(fd)?;
-    let remote_port = i64::from(swr_v1_clients_address_port(&conn.info()));
-    let loopback = if swr_v1_clients_address_loopback(&conn.info()) {
+    let remote_port = i64::from(address_port(&conn.info()));
+    let loopback = if is_loopback(&conn.info()) {
         if conn.info().kind == swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP6.raw() {
             6
         } else {
@@ -664,18 +662,16 @@ pub fn http_server_on_close(server: view::Server<'_>, info: &DataHead) {
 /// The counters of the worker serving requests, for one admission or release.
 /// `sw_worker()->concurrency`, which the master resets as it retires the
 /// worker, goes through [`with_current`].
-struct Worker {
+struct Worker<'a> {
     /// `ServerGS::concurrency`, shared by every worker.
-    server_concurrency: &'static AtomicU32,
+    server_concurrency: &'a AtomicU32,
     max_concurrency: u32,
     shutdown: bool,
 }
 
-/// `sw_server()` and `sw_worker()`'s counters; none when this process is no
-/// server worker.
-fn worker() -> Option<Worker> {
-    // SAFETY: a worker's server, which outlives the worker's requests.
-    let server = unsafe { view::Server::<'static>::current() }?;
+/// The counters of `server` (the request's, `sw_server()` upstream) and
+/// `sw_worker()`; none when this process is no server worker.
+fn worker(server: view::Server<'_>) -> Option<Worker<'_>> {
     with_current(|_| ())?;
     Some(Worker {
         server_concurrency: &server.counters().concurrency,
@@ -693,9 +689,10 @@ fn abandon(mut ctx: Ctx) {
 }
 
 /// `swoole_http_server_onBeforeRequest` after it swaps the hooks: count the
-/// request, or queue it past `worker_max_concurrency` (false: not now).
-pub(crate) fn admit(ctx: Ctx) -> bool {
-    let Some(worker) = worker().filter(|worker| !worker.shutdown) else {
+/// request to `server`, the one its context is bound to, or queue it past
+/// `worker_max_concurrency` (false: not now).
+pub(crate) fn admit(server: view::Server<'_>, ctx: Ctx) -> bool {
+    let Some(worker) = worker(server).filter(|worker| !worker.shutdown) else {
         return false;
     };
     worker.server_concurrency.fetch_add(1, SeqCst);
@@ -709,14 +706,15 @@ pub(crate) fn admit(ctx: Ctx) -> bool {
 }
 
 /// `swoole_http_server_onAfterResponse` after it clears the hook: uncount the
-/// request and start the next queued one, or answer every queued one with
-/// 503 once the worker is shutting down.
-pub(crate) fn release_request() {
-    let Some(worker) = worker() else {
+/// request to `server` and start the next queued one, or answer every queued
+/// one with 503 once the worker is shutting down.
+pub(crate) fn release_request(server: view::Server<'_>) {
+    let Some(worker) = worker(server) else {
         return;
     };
     if worker.shutdown {
-        while let Some(ctx) = dequeue() {
+        while let Some(hold) = dequeue() {
+            let ctx = hold.ctx();
             context::send(ctx, SERVICE_UNAVAILABLE);
             context::close(ctx);
             abandon(ctx);
@@ -725,9 +723,9 @@ pub(crate) fn release_request() {
     }
     worker.server_concurrency.fetch_sub(1, SeqCst);
     with_current(|current| current.sub_concurrency());
-    if let Some(ctx) = dequeue() {
+    if let Some(hold) = dequeue() {
         // Upstream dereferences `sw_reactor()` here unchecked.
-        if swoole_rs_reactor::event_api::swoole_event_defer_value(Turn(ctx)).is_err() {
+        if swoole_rs_reactor::event_api::swoole_event_defer_value(Turn(hold)).is_err() {
             swoole_rs_corebase::fatal("no reactor to defer the queued request to");
         }
     }
@@ -745,8 +743,8 @@ pub extern "C" fn server_rinit() {
 pub extern "C" fn server_rshutdown() {
     swr_zend_http_uploads_rshutdown();
     drop(ManuallyDrop::into_inner(take_addresses()));
-    while let Some(ctx) = dequeue() {
-        abandon(ctx);
+    while let Some(hold) = dequeue() {
+        abandon(hold.ctx());
     }
     bailout::finish();
 }

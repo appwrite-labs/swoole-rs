@@ -9,13 +9,14 @@
 //! The build's switches are `swoole_rs_corebase::built_with`'s (`build`).
 use crate::context::{Context, Native, Unmade};
 use crate::coroutine::{self, Co, Sched, run};
-use crate::scheduler::{bailed_out, current, with_scheduler, yield_with_cancel};
+use crate::scheduler::{bailed_out, current, with_scheduler, yield_with_cancel_armed};
 use crate::thread::{Entry, THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init};
 use crate::{Canceler, Coroutine, Resume, Routine, STACK_MARK, STACK_PROTECT, Scheduler};
 use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 use std::ffi::{CStr, CString};
 use std::io;
+use std::sync::OnceLock;
 use swoole_rs_corebase::{
     Switch, built_with, fatal_error,
     log::{self, set_last_error},
@@ -31,39 +32,37 @@ const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
 /// [`build`]'s `SW_CORO_TIME` bit, beside the context's flags.
 const CORO_TIME: u32 = 8;
 
-// crates/timer's, crates/hooks' and crates/reactor's upstream
-// functions; those marked safe have no preconditions.
-// Declarations, since each of those crates depends on this one.
-unsafe extern "C-unwind" {
-    /// `f(co)` when the timer fires: its data is a coroutine's handle, which the
-    /// timer hands back as it got it. The timer's id, or 0.
-    fn swr_v1_timer_add_plain_sec(
-        timeout: f64,
-        persistent: bool,
-        f: extern "C" fn(Co),
-        co: Co,
-    ) -> c_long;
-    /// `f(data)` when the timer fires: `f` is a safe function, sound for any
-    /// `data`. The node, or null; nothing here reads it.
-    safe fn swr_v1_timer_add_plain(
-        ms: c_long,
-        persistent: bool,
-        f: extern "C" fn(*mut c_void),
-        data: *mut c_void,
-    ) -> *mut c_void;
-    #[link_name = "_Z25swoole_timer_is_availablev"]
-    safe fn swoole_timer_is_available() -> bool;
-    /// Removes the timer `timer_id` names, if it is pending: a timer never reuses an
-    /// id, so any id is sound.
-    #[link_name = "_Z18swoole_timer_clearl"]
-    safe fn swoole_timer_clear(timer_id: c_long) -> bool;
-    safe fn swr_v1_async_threads_ensure() -> *mut c_void;
-    #[link_name = "_Z17swoole_event_initi"]
-    safe fn swoole_event_init(flags: c_int) -> c_int;
-    #[link_name = "_Z17swoole_event_waitv"]
-    safe fn swoole_event_wait() -> c_int;
-    #[link_name = "_Z25swoole_event_is_availablev"]
-    safe fn swoole_event_is_available() -> bool;
+/// The operations of crates/timer, hooks and reactor a coroutine runs. Each of
+/// those crates depends on this one, so `swoole_init` (crates/ffi) registers them
+/// with [`set_host`] before any coroutine starts.
+#[derive(Clone, Copy)]
+pub struct Host {
+    /// `swoole_timer_add(timeout, false, ...)`, in seconds, of `f(arg)`: the
+    /// timer's id, which it never reuses, or 0.
+    pub timer_after: fn(f64, fn(c_long), c_long) -> c_long,
+    /// `swoole_timer_is_available()`.
+    pub timer_is_available: fn() -> bool,
+    /// `swoole_timer_clear(id)`: removes the pending timer `id` names.
+    pub timer_clear: fn(c_long),
+    /// The thread's async threads, created first when it has none.
+    pub async_threads_ensure: fn(),
+    /// `swoole_event_init(flags)`, `swoole_event_wait()` and
+    /// `swoole_event_is_available()`.
+    pub event_init: fn(c_int) -> c_int,
+    pub event_wait: fn() -> c_int,
+    pub event_is_available: fn() -> bool,
+}
+
+static HOST: OnceLock<Host> = OnceLock::new();
+
+/// Registers the host; later registrations are ignored.
+pub fn set_host(host: Host) {
+    HOST.get_or_init(|| host);
+}
+
+fn host() -> &'static Host {
+    HOST.get()
+        .unwrap_or_else(|| swoole_rs_corebase::fatal("coroutine host is not registered"))
 }
 
 /// The build's coroutine switches: the context's flags
@@ -101,11 +100,7 @@ extern "C" fn clock() -> c_long {
 ///
 /// # Safety
 /// `routine` takes `arg`; the caller's frames own nothing with a destructor.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_coroutine_create(
-    routine: Routine,
-    arg: *mut c_void,
-) -> c_long {
+pub unsafe fn swr_v1_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long {
     let flags = build() & (THREAD | STACK_PROTECT | STACK_MARK);
     let stack_size = with_scheduler(|s| s.stack_size);
     // SAFETY: `routine` takes `arg`, as the caller promises.
@@ -140,18 +135,19 @@ pub unsafe extern "C-unwind" fn swr_v1_coroutine_create(
     run(Sched::this(), co)
 }
 
-extern "C" fn keep_alive(_: *mut c_void) {}
+fn keep_alive(_: c_long) {}
 
 /// `static void Coroutine::activate()`.
 #[unsafe(export_name = "_ZN6swoole9Coroutine8activateEv")]
 pub extern "C-unwind" fn activate() {
     if build() & THREAD != 0 {
         // Coroutine threads share this thread's timer and async threads.
-        if !swoole_timer_is_available() {
-            // A timer whose callback does nothing.
-            swr_v1_timer_add_plain(1, false, keep_alive, ptr::null_mut());
+        let host = host();
+        if !(host.timer_is_available)() {
+            // A 1 ms timer whose callback does nothing.
+            (host.timer_after)(0.001, keep_alive, 0);
         }
-        swr_v1_async_threads_ensure();
+        (host.async_threads_ensure)();
         swr_v1_thread_context_init();
     }
     with_scheduler(|s| {
@@ -203,11 +199,15 @@ pub unsafe extern "C-unwind" fn cancel(co: *mut Coroutine) -> bool {
     unsafe { call(co.ptr().cast(), data) }
 }
 
-/// `yield_ex`'s timer: the wait of `co`, which waits there until this resumes it,
-/// timed out.
-extern "C" fn timed_out(co: Co) {
+/// `yield_ex`'s timer: the wait of coroutine `cid`, which waits there until this
+/// resumes it, timed out.
+fn timed_out(cid: c_long) {
+    let s = Sched::this();
+    let Some(co) = s.with(|s| s.live_co(cid)) else {
+        return;
+    };
     co.with(Coroutine::mark_timed_out);
-    coroutine::resume(Sched::this(), co);
+    coroutine::resume(s, co);
 }
 
 /// `bool Coroutine::yield_ex(double timeout)` of `co`, the running coroutine
@@ -234,11 +234,17 @@ pub fn yield_resumed(code: Resume) -> bool {
 /// (this aborts otherwise); as [`suspend`](crate::suspend), it asks nothing more.
 #[must_use]
 pub fn yield_timed(co: *mut c_void, timeout: f64) -> Resume {
+    yield_timed_armed(co, timeout, |_| ())
+}
+
+/// [`yield_timed`], handing `arm` the [`Waker`](crate::Waker) that ends this park
+/// before `co` switches out.
+#[must_use]
+pub fn yield_timed_armed(co: *mut c_void, timeout: f64, arm: impl FnOnce(crate::Waker)) -> Resume {
     let running = Co::running(Sched::this(), co.cast());
     let timer = if timeout > 0.0 {
-        // SAFETY: the timer fires only while `co` waits below, or is deleted first,
-        // and hands `timed_out` the live handle it is given here.
-        unsafe { swr_v1_timer_add_plain_sec(timeout, false, timed_out, running) }
+        // It fires only while `co` waits below, or is cleared first.
+        (host().timer_after)(timeout, timed_out, running.with(|co| co.cid))
     } else {
         0
     };
@@ -247,11 +253,11 @@ pub fn yield_timed(co: *mut c_void, timeout: f64) -> Resume {
         coroutine::resume(Sched::this(), running);
         true
     };
-    yield_with_cancel(co, resume_canceled);
+    yield_with_cancel_armed(co, resume_canceled, arm);
     // `co` runs again.
     let code = running.with(|co| co.resume_code);
     if code != Resume::TimedOut && timer != 0 {
-        swoole_timer_clear(timer);
+        (host().timer_clear)(timer);
     }
     code
 }
@@ -279,6 +285,27 @@ pub unsafe fn print_socket_bound_error(fd: c_int, event: &CStr, bound_cid: c_lon
     unsafe { fatal_error(SW_ERROR_CO_HAS_BEEN_BOUND, &message) };
 }
 
+/// [`swr_v1_coroutine_create`] of `entry`, which the new coroutine moves off this
+/// frame before anything else and runs; its id, or -1. `entry` is `Copy`, so this
+/// frame owns nothing with a destructor. As every creation, a fatal error or the
+/// coroutine's bailout may longjmp over the caller's frames, leaking what they own.
+/// Under thread contexts `entry` moves to the coroutine's thread while this one
+/// waits for the baton, so the two never run at once.
+#[must_use]
+pub fn spawn<F: FnOnce() + Copy + 'static>(entry: F) -> c_long {
+    /// # Safety
+    /// `slot` is a live `F`.
+    unsafe extern "C" fn take<F: FnOnce() + Copy>(slot: *mut c_void) {
+        // SAFETY: per the caller; a `Copy` value is read out before the entry runs.
+        let entry = unsafe { slot.cast::<F>().read() };
+        entry();
+    }
+    // SAFETY: `take::<F>` copies the `F` at its data, `entry` on this frame, which
+    // lives until the coroutine first switches back: creation runs it until then,
+    // and it copies the entry first.
+    unsafe { swr_v1_coroutine_create(take::<F>, (&raw const entry).cast_mut().cast()) }
+}
+
 /// `long swoole_coroutine_create(void (*)(void *), void *)`: in the running
 /// event loop, or (`coroutine::run`) in a fresh one that runs until it exits;
 /// the coroutine's id, or -1 if the loop could not start.
@@ -287,9 +314,10 @@ pub unsafe fn print_socket_bound_error(fd: c_int, event: &CStr, bound_cid: c_lon
 /// `routine` takes `arg`.
 #[unsafe(no_mangle)]
 unsafe extern "C-unwind" fn swoole_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long {
-    let fresh = !swoole_event_is_available();
+    let host = host();
+    let fresh = !(host.event_is_available)();
     if fresh {
-        if swoole_event_init(SW_EVENTLOOP_WAIT_EXIT) < 0 {
+        if (host.event_init)(SW_EVENTLOOP_WAIT_EXIT) < 0 {
             return -1;
         }
         activate();
@@ -297,7 +325,7 @@ unsafe extern "C-unwind" fn swoole_coroutine_create(routine: Routine, arg: *mut 
     // SAFETY: as the caller promises.
     let cid = unsafe { swr_v1_coroutine_create(routine, arg) };
     if fresh {
-        swoole_event_wait();
+        (host.event_wait)();
         deactivate();
     }
     cid

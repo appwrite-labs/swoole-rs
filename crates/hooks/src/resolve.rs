@@ -8,7 +8,6 @@
 use crate::offload::{AsyncEvent, AsyncOps, Handler, swr_v1_hook_async};
 use crate::wait_event::native::current;
 use core::ffi::{CStr, c_int};
-use std::ffi::CString;
 use swoole_rs_clients::dns::{DnsSocket, RecvError, received};
 use swoole_rs_clients::resolver::{self, Request};
 use swoole_rs_corebase::{
@@ -16,14 +15,19 @@ use swoole_rs_corebase::{
     swr_v1_core_name_resolver_resolve,
 };
 
-/// `co->yield()` of the current coroutine (fatal outside one).
-pub(crate) fn park() {
-    swoole_rs_coroutine::suspend(current().cast());
+/// Where a park stores its waker before it switches out.
+pub(crate) type WakerSlot = core::cell::Cell<Option<swoole_rs_coroutine::Waker>>;
+
+/// `co->yield()` of the current coroutine (fatal outside one), its waker in `waker`.
+pub(crate) fn park(waker: &WakerSlot) {
+    swoole_rs_coroutine::park(current().cast(), |park| waker.set(Some(park)));
 }
 
-/// `co->yield_ex(timeout)` of the current coroutine (fatal outside one).
-pub(crate) fn park_for(timeout: f64) -> bool {
-    let code = swoole_rs_coroutine::yield_timed(current().cast(), timeout);
+/// `co->yield_ex(timeout)` of the current coroutine (fatal outside one), its waker
+/// in `waker`.
+pub(crate) fn park_for_armed(timeout: f64, waker: &WakerSlot) -> bool {
+    let arm = |park| waker.set(Some(park));
+    let code = swoole_rs_coroutine::yield_timed_armed(current().cast(), timeout, arm);
     swoole_rs_coroutine::yield_resumed(code)
 }
 
@@ -36,8 +40,8 @@ pub static COROUTINE_ASYNC: AsyncOps = AsyncOps {
     current,
     dispatch: crate::async_threads::dispatch,
     park,
-    park_for,
-    resume: swoole_rs_coroutine::resume,
+    park_for: park_for_armed,
+    resume: swoole_rs_coroutine::Waker::wake,
     last_error,
 };
 
@@ -47,6 +51,28 @@ extern "C" fn handler_gethostbyname(event: &mut AsyncEvent) {
     if let Some((retval, error)) = event.record().map(resolver::host) {
         event.set_result(retval, error);
     }
+}
+
+/// Dispatches a client's DNS lookup, retaining the request in the pool's copy.
+pub fn dispatch_client(client: swoole_rs_clients::client::Handle, request: &Request) -> bool {
+    let mut event = AsyncEvent::new(
+        client.as_ptr().cast(),
+        Some(handler_gethostbyname),
+        Some(client_completed),
+        std::ptr::null_mut(),
+    );
+    event.data = request.as_ptr();
+    !crate::async_threads::dispatch(&event).is_null()
+}
+
+extern "C" fn client_completed(event: &AsyncEvent) {
+    let Some(request) = event.record() else {
+        return;
+    };
+    // SAFETY: only dispatch_client installs this completion with the client awaiting
+    // this DNS result; the pool calls it on that client's reactor thread.
+    let client = unsafe { swoole_rs_clients::client::Handle::new(event.object().cast()) };
+    swoole_rs_clients::client::resolve_completed(client, request, event.result().1);
 }
 
 /// `async::handler_getaddrinfo`: the request's addresses, on a pool thread.
@@ -188,7 +214,7 @@ impl DnsSocket for DnsUdp {
 /// `domain` (up to its first NUL, as C reads it), up to its own first NUL; none on a
 /// failure, which is the last error.
 #[must_use]
-pub fn dns_lookup(domain: &[u8], family: c_int, timeout: f64) -> Vec<CString> {
+pub fn dns_lookup(domain: &[u8], family: c_int, timeout: f64) -> Vec<Vec<u8>> {
     // Only IPv4 and IPv6.
     let family = if family == libc::AF_INET6 {
         libc::AF_INET6
@@ -196,10 +222,11 @@ pub fn dns_lookup(domain: &[u8], family: c_int, timeout: f64) -> Vec<CString> {
         libc::AF_INET
     };
     let name = resolver::c_name(domain);
-    let addresses = swoole_rs_clients::cares_lookup(&name, family, timeout)
+    let mut addresses = swoole_rs_clients::cares_lookup(&name, family, timeout)
         .unwrap_or_else(|| swoole_rs_clients::dns::lookup(&name, family, || DnsUdp::open(timeout)));
+    for address in &mut addresses {
+        let end = address.iter().position(|&byte| byte == 0);
+        address.truncate(end.unwrap_or(address.len()));
+    }
     addresses
-        .iter()
-        .map(|address| resolver::c_name(address))
-        .collect()
 }

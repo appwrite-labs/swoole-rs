@@ -1,7 +1,7 @@
 //! The objects `ProcessPool` runs over (once `src/os/process_pool.cc`): its worker pipes, message bus,
 //! timers, event loop and callbacks. crates/process decides every step
 //! (`process_pool.rs`, `pool.rs`) and asks for each effect through the
-//! [`PoolNative`] side [`swr_v1_process_pool_native`] returns. It lives here because these objects are
+//! [`PoolNative`] side [`process_pool_native`] returns. It lives here because these objects are
 //! crates/reactor's, crates/tls's and crates/memory's, which crates/process can't
 //! depend on.
 //!
@@ -16,7 +16,7 @@ use swoole_rs_process::worker_record::WorkerType;
 use swoole_rs_reactor::Events;
 
 use crate::objects::{Reactor, worker_pipe};
-pub(crate) use crate::reactor_ops::{PoolBus, STD_ALLOCATOR};
+pub(crate) use crate::reactor_ops::PoolBus;
 use core::sync::atomic::AtomicU64;
 use swoole_rs_bus::MessageBus;
 use swoole_rs_corebase::DataHead;
@@ -36,7 +36,7 @@ use swoole_rs_process::process_pool::{
 };
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
-use swoole_rs_reactor::event_api::{set_handler, swoole_event_is_available, swoole_event_write};
+use swoole_rs_reactor::event_api::{event_write, set_handler, swoole_event_is_available};
 use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_timer::{
     swoole_timer_create, swoole_timer_free, swoole_timer_get_next_msec, swoole_timer_is_available,
@@ -153,15 +153,43 @@ fn max_wait_ms(pool: Pool<'_>) -> c_long {
     c_long::from(pool.max_wait_time()) * 1000
 }
 
-/// A one-shot timer of the pool's `max_wait_time` that runs `f`, owned: dropping it
-/// deletes the timer unless it has fired.
-fn armed(pool: Pool<'_>, f: impl Fn() + Copy + 'static) -> Option<ArmedTimer> {
-    let held = swoole_rs_timer::add_fn(max_wait_ms(pool), false, f)?;
-    Some(ArmedTimer::new(
-        u64::from(held.generation()),
-        held.id(),
-        swoole_rs_timer::cancel_issued,
-    ))
+/// The pool's timers that kill its workers once they outstay `max_wait_time`.
+#[derive(Clone, Copy)]
+enum PoolTimer {
+    /// The reload task's: its workers that haven't exited yet.
+    Reload,
+    /// `kill_timer`: all of them.
+    Kill,
+}
+
+/// Arms the one-shot timer `which` of the pool's `max_wait_time` and gives it to the
+/// pool, whose reload task's drop (`Reload`), or `wait`, `destroy` or free (`Kill`),
+/// deletes it unless it has fired.
+fn arm(pool: Pool<'_>, which: PoolTimer) {
+    let raw = pool.raw();
+    let fire = move || {
+        // SAFETY: the pool holds the timer and deletes it before it is freed, so the
+        // pool is live whenever the timer fires.
+        let pool = unsafe { PoolRef::new(raw) };
+        match which {
+            PoolTimer::Reload => {
+                pool.with_reload_task(|task| task.kill_all(libc::SIGKILL, reload_warn));
+            }
+            PoolTimer::Kill => kill_all_workers(crate::process_pool_native(), pool, libc::SIGKILL),
+        }
+    };
+    let armed = || {
+        let held = swoole_rs_timer::add_fn(max_wait_ms(pool), false, fire)?;
+        Some(ArmedTimer::new(
+            u64::from(held.generation()),
+            held.id(),
+            swoole_rs_timer::cancel_issued,
+        ))
+    };
+    match which {
+        PoolTimer::Reload => pool.arm_reload_timer(armed),
+        PoolTimer::Kill => pool.set_kill_timer(armed()),
+    }
 }
 
 thread_local! {
@@ -187,7 +215,7 @@ extern "C-unwind" fn worker_exit() {
 }
 
 /// `ProcessPool::recv_packet`: the event loop's pipe handler under the stream protocol.
-extern "C" fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
+fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
     let Some(pool) = LOOP_POOL.get() else {
         return 0;
     };
@@ -217,7 +245,7 @@ extern "C" fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
 }
 
 /// `ProcessPool::recv_message`: the event loop's pipe handler under the message protocol.
-extern "C" fn recv_message(_: Running<'_>, event: &mut Event) -> c_int {
+fn recv_message(_: Running<'_>, event: &mut Event) -> c_int {
     if let Some(pool) = LOOP_POOL.get()
         && bus_read(pool, event.socket()) > Some(0)
     {
@@ -229,9 +257,9 @@ extern "C" fn recv_message(_: Running<'_>, event: &mut Event) -> c_int {
 /// `ProcessPool::run_with_*_protocol` and `run_async`: the worker loop.
 macro_rules! main_loops {
     ($($name:ident = $protocol:expr;)*) => {$(
-        extern "C-unwind" fn $name(pool: PoolRef<'_>, worker: Record<'_>) -> c_int {
+        fn $name(pool: PoolRef<'_>, worker: Record<'_>) -> c_int {
             // A callback's bailout is raised once the export's frames are gone.
-            raised(pool_run_main(&NATIVE, pool, worker, $protocol)).c_cast::<c_int>()
+            raised(pool_run_main(&NATIVE, pool, worker, $protocol).map(crate::conn_io::status))
         }
     )*};
 }
@@ -349,17 +377,7 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) {
                 .into_iter()
                 .for_each(swoole_rs_utilities::Logger::reopen);
         }
-        Op::ReloadTimer => {
-            let raw = pool.raw();
-            pool.arm_reload_timer(|| {
-                armed(pool, move || {
-                    // SAFETY: the pool whose reload task owns the timer and deletes
-                    // it on drop, so it is live while the timer can fire.
-                    let pool = unsafe { PoolRef::new(raw) };
-                    pool.with_reload_task(|task| task.kill_all(libc::SIGKILL, reload_warn));
-                })
-            });
-        }
+        Op::ReloadTimer => arm(pool, PoolTimer::Reload),
         Op::TimerInit => {
             if swoole_timer_is_available() {
                 swoole_rs_timer::thread_timer_reinit(true);
@@ -374,15 +392,7 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) {
         Op::OnAfterReload => {
             pool.call_on_after_reload();
         }
-        Op::KillTimer => {
-            // The pool owns the timer in `kill_timer`, so `wait`, `destroy` or
-            // freeing the pool deletes it.
-            let raw = pool.raw();
-            pool.set_kill_timer(armed(pool, move || {
-                // SAFETY: the pool that owns the timer, so it is live while it can fire.
-                kill_all_workers(unsafe { PoolRef::new(raw) }, libc::SIGKILL);
-            }));
-        }
+        Op::KillTimer => arm(pool, PoolTimer::Kill),
         _ => {}
     }
 }
@@ -392,12 +402,10 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) {
 /// hook, as every `PoolCall` crates/process makes holds.
 #[inline]
 fn lent_socket<'c>(c: &'c PoolCall<'_>) -> Option<Socket<'c>> {
-    // SAFETY: a call's socket is null or a live native socket lent for the hook,
-    // so for this borrow of the call.
-    unsafe { Socket::from_ptr(c.socket().cast()) }
+    c.lent_socket().map(Socket::lent)
 }
 
-fn io(c: &mut PoolCall, io: impl FnOnce(&PoolCall) -> isize) {
+fn io(c: &mut PoolCall, io: impl FnOnce(&mut PoolCall) -> isize) {
     let result = io(c);
     c.set_result(result);
     c.set_error(errno());
@@ -459,8 +467,8 @@ impl PoolNative for Native {
         swoole_event_is_available()
     }
 
-    fn event_wait(&self) -> c_int {
-        swoole_rs_reactor::event_api::swoole_event_wait()
+    fn event_wait(&self) -> bool {
+        swoole_rs_reactor::event_api::swoole_event_wait() >= 0
     }
 
     fn waitpid(&self, pid: c_int) -> bool {
@@ -507,7 +515,7 @@ impl PoolNative for Native {
         let Some(worker) = call.worker() else {
             return Ok(());
         };
-        push_stop(call.pool(), worker.pid(), worker.id().c_cast::<u16>())
+        push_stop(self, call.pool(), worker.pid(), worker.id().c_cast::<u16>())
             .then_some(())
             .ok_or(PipeError::StopMessage)
     }
@@ -555,11 +563,10 @@ impl PoolNative for Native {
 
     fn recv(&self, c: &mut PoolCall) {
         io(c, |c| {
-            let (socket, data, length, flags) = (lent_socket(c), c.data(), c.length(), c.flags());
-            // SAFETY: the call's buffer.
-            let buffer = unsafe { swoole_rs_reactor::Fill::from_raw(data, length) };
+            let flags = c.flags();
+            let (socket, buffer) = c.socket_fill();
             socket
-                .and_then(|socket| recv_sync_fill(socket, buffer, flags))
+                .and_then(|socket| recv_sync_fill(Socket::lent(socket), buffer, flags))
                 .map_or(-1, usize::cast_signed)
         });
     }
@@ -573,8 +580,12 @@ impl PoolNative for Native {
     }
 
     fn close(&self, c: &PoolCall) {
-        // SAFETY: a connection the loop is done with.
-        unsafe { socket_free(c.socket().cast()) };
+        let socket = c.lent_socket().map(|socket| {
+            // SAFETY: the connection `accept` gave the call, a heap record the loop is
+            // done with.
+            unsafe { swoole_rs_reactor::OwnedSocket::from_socket(Socket::lent(socket)) }
+        });
+        socket_free(socket);
     }
 
     fn pipe_read(&self, c: &mut PoolCall) {
@@ -588,9 +599,7 @@ impl PoolNative for Native {
                 pipe.timeouts
                     .set(timeout, swoole_rs_reactor::TimeoutKind::READ);
             });
-            // SAFETY: the call's buffer.
-            let buffer = unsafe { swoole_rs_reactor::Fill::from_raw(c.data(), c.length()) };
-            read_sync_fill(pipe, buffer).map_or(-1, usize::cast_signed)
+            read_sync_fill(pipe, c.socket_fill().1).map_or(-1, usize::cast_signed)
         });
     }
 
@@ -657,8 +666,11 @@ impl PoolNative for Native {
     fn pipe_write(&self, c: &mut PoolCall) {
         if c.flags() != 0 && swoole_event_is_available() {
             io(c, |c| {
-                // SAFETY: the worker's pipe, in this thread's loop.
-                unsafe { swoole_event_write(c.socket().cast(), c.data(), c.length()) }
+                // The worker's pipe, in this thread's loop.
+                let pipe = c.lent_socket().map(Socket::lent);
+                pipe.and_then(crate::reactor_handle::registered)
+                    .and_then(|pipe| event_write(pipe, c.bytes()))
+                    .map_or(-1, usize::cast_signed)
             });
         } else {
             self.send(c);
@@ -714,13 +726,8 @@ impl PoolNative for Native {
     }
 }
 
-/// What every `ProcessPool` method crates/process defines runs over, which it
-/// declares and links by name since this crate depends on it.
-#[unsafe(no_mangle)]
-#[expect(
-    clippy::no_mangle_with_rust_abi,
-    reason = "crates/process declares it `extern \"Rust\"`: both sides are Rust, and the result is a trait object"
-)]
-pub(crate) fn swr_v1_process_pool_native() -> &'static dyn PoolNative {
+/// The server's process-pool effects, passed to the methods in crates/process.
+#[must_use]
+pub fn process_pool_native() -> &'static dyn PoolNative {
     &NATIVE
 }

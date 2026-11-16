@@ -13,11 +13,11 @@
 //! drop, and no lock is held across such a call. Calls that run PHP code
 //! (autoloaders, the library's replacements, original handlers) are trapped,
 //! and the handler or export Zend or C++ called re-raises the bailout last.
+#![cfg(feature = "php")]
 #![expect(
     clippy::disallowed_types,
     reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
 )]
-#![cfg(feature = "php")]
 #![cfg_attr(
     not(test),
     deny(
@@ -40,7 +40,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::HookType;
 
 use std::{
-    ffi::{CStr, c_int, c_void},
+    ffi::{CStr, c_int},
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_corebase::{Switch, built_with, sys::Text};
@@ -49,7 +49,7 @@ use swoole_rs_zend::{
     Call, Class, E_WARNING, Message, Minit,
     bailout::{self, Bailout},
     message,
-    sys::{swr_zend_stream_factory, zif_handler},
+    sys::zif_handler,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -148,12 +148,6 @@ method_table! {
     ];
 }
 
-/// The coroutine transport factory zend-sys registers for PHP, over
-/// [`stream::transport_factory_body`].
-fn factory() -> *mut c_void {
-    swr_zend_stream_factory as *mut c_void
-}
-
 /// MINIT's process-wide registrations, each taking the [`Minit`] that proves Zend
 /// runs this module's MINIT on this thread, before any PHP thread starts. The
 /// declarations are private to this module, so only these calls reach them.
@@ -234,7 +228,7 @@ pub fn php_swoole_runtime_minit(minit: &Minit) {
         minit.long_constant(name, i64::from(value));
     }
     registration::transport_factory(minit);
-    transport::register_async(factory());
+    transport::register_async();
     #[cfg(feature = "curl")]
     registration::curl(minit);
     registration::proc_open(minit);
@@ -370,7 +364,7 @@ fn transports(host: &mut impl Host, mut requested: u32, installed: u32) -> u32 {
         let bit = flags::TCP << index;
         match transition(requested, installed, bit) {
             Some(true) => {
-                if host.register(index, true) != 0 {
+                if !host.register(index, true) {
                     requested ^= bit;
                     let name = name.to_string_lossy();
                     let message = message!("failed to register `{name}` stream transport factory");
@@ -453,7 +447,7 @@ fn throw(message: &Message, code: i64) {
 /// (unit tests link no PHP).
 trait Host {
     /// Register (or restore) the transport at `index` of [`transport::NAMES`].
-    fn register(&mut self, index: usize, hook: bool) -> i32;
+    fn register(&mut self, index: usize, hook: bool) -> bool;
     /// [`throw`]: unit tests link no Zend.
     fn throw(&mut self, message: &Message, code: i64);
     /// Swap the plain-files wrapper (0) or the stdio ops (1).
@@ -467,8 +461,8 @@ trait Host {
 struct Php;
 
 impl Host for Php {
-    fn register(&mut self, index: usize, hook: bool) -> i32 {
-        transport::register(index, hook, factory())
+    fn register(&mut self, index: usize, hook: bool) -> bool {
+        transport::register(index, hook)
     }
 
     fn throw(&mut self, message: &Message, code: i64) {
@@ -614,9 +608,9 @@ mod tests {
 
     /// The calls a hook change makes, with two PDO drivers built in.
     impl Host for Vec<String> {
-        fn register(&mut self, index: usize, hook: bool) -> i32 {
+        fn register(&mut self, index: usize, hook: bool) -> bool {
             self.push(format!("transport:{index}:{}", u8::from(hook)));
-            0
+            true
         }
 
         fn throw(&mut self, message: &Message, code: i64) {

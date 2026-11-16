@@ -24,6 +24,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::set_errno;
 use swoole_rs_corebase::sys::{self as os, ReadSlot};
+use swoole_rs_coroutine::Waker;
 
 /// `SW_IOURING_QUEUE_SIZE`: default ring size and completion batch.
 const QUEUE_SIZE: u32 = 8192;
@@ -43,10 +44,11 @@ pub struct Host {
     pub current: extern "C" fn() -> *mut c_void,
     /// The thread's engine, created on first use (none if it failed).
     pub instance: fn() -> Option<Rc<Uring>>,
-    /// Suspend `coroutine`, the running one, until [`wakeup`] resumes it;
-    /// cancelling it calls [`cancel`] with `event`.
-    pub suspend: fn(coroutine: *mut c_void, event: *mut c_void),
-    pub resume: unsafe extern "C-unwind" fn(coroutine: *mut c_void),
+    /// Suspend `coroutine`, the running one, until [`wakeup`] wakes it, storing the
+    /// park's waker in `waker` first; cancelling it calls [`cancel`] with `event`.
+    pub suspend: fn(coroutine: *mut c_void, event: *mut c_void, waker: &Cell<Option<Waker>>),
+    /// `co->resume()` of a parked request's coroutine.
+    pub resume: fn(Waker),
     /// `swoole_event_is_running()`.
     pub event_running: fn() -> bool,
     /// Logs "`io_uring_submit()` failed" with errno.
@@ -56,7 +58,6 @@ pub struct Host {
 }
 
 /// `SwooleG.iouring_*` and the opcode probes this build requires.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Config {
     pub entries: u32,
@@ -81,10 +82,14 @@ pub struct Opened {
     pub status: Result<(), OpenError>,
 }
 
+/// A request, in its operation's frame while that suspends: the ring and the wait
+/// queue reach it by address, shared, so its effects sit in cells.
 struct Event {
     coroutine: *mut c_void,
     data: squeue::Entry,
-    result: io::Result<isize>,
+    /// The suspended operation's waker, which the completion wakes.
+    waker: Cell<Option<Waker>>,
+    result: Cell<io::Result<isize>>,
     /// The linked timeout, when the operation has one.
     timeout: Option<Timespec>,
 }
@@ -101,9 +106,9 @@ pub struct Uring {
     host: &'static Host,
     task_num: Cell<u32>,
     /// Requests waiting for room in the ring.
-    waiting: Cell<VecDeque<*mut Event>>,
+    waiting: Cell<VecDeque<*const Event>>,
     /// Completed events and their results.
-    ready: Cell<Vec<(*mut Event, isize)>>,
+    ready: Cell<Vec<(*const Event, isize)>>,
 }
 
 use swoole_rs_corebase::sys::errno;
@@ -208,7 +213,8 @@ impl Event {
         Self {
             coroutine: (host.current)(),
             data,
-            result: Ok(0),
+            waker: Cell::new(None),
+            result: Cell::new(Ok(0)),
             timeout: None,
         }
     }
@@ -221,18 +227,22 @@ impl Event {
     }
 
     /// Submit and suspend until the completion; the result as upstream's `execute`.
-    fn execute(mut self, host: &Host) -> io::Result<isize> {
+    fn execute(self, host: &Host) -> io::Result<isize> {
         let Some(engine) = (host.instance)() else {
             return Err(io::Error::last_os_error());
         };
-        engine.dispatch(&mut self);
+        engine.dispatch(&self);
         engine.task_num.set(engine.task_num.get() + 1);
         // The thread keeps the engine; this frame holds nothing across the switch.
         drop(engine);
         // The wakeup handler resumes this coroutine; the event stays in this frame
         // until then.
-        (host.suspend)(self.coroutine, ptr::from_mut(&mut self).cast());
-        self.result
+        (host.suspend)(
+            self.coroutine,
+            ptr::from_ref(&self).cast_mut().cast(),
+            &self.waker,
+        );
+        self.result.into_inner()
     }
 }
 
@@ -280,7 +290,7 @@ impl Uring {
     /// Queue `event` in the ring, or in the wait queue when the ring is full. Both
     /// keep its address: it stays suspended in its operation until its completion,
     /// so every request the ring holds is an event suspended in its operation.
-    fn dispatch(&self, event: &mut Event) {
+    fn dispatch(&self, event: &Event) {
         let space = self.sq_space_left();
         if space == 0 {
             let mut waiting = self.waiting.take();
@@ -292,7 +302,7 @@ impl Uring {
             (self.host.timeout_full)(self.fd());
         }
         // User data identifies the event on completion.
-        let entry = event.data.clone().user_data(ptr::from_mut(event) as u64);
+        let entry = event.data.clone().user_data(ptr::from_ref(event) as u64);
         match &event.timeout {
             Some(timeout) if space >= 2 => self.push(&[
                 entry.flags(squeue::Flags::IO_LINK),
@@ -311,7 +321,7 @@ impl Uring {
 trait Submitter {
     fn event_running(&mut self) -> bool;
     fn sq_used(&mut self) -> usize;
-    fn submit(&mut self) -> c_int;
+    fn submit(&mut self) -> io::Result<()>;
     fn sleep(&mut self);
     fn failed(&mut self);
 }
@@ -325,21 +335,18 @@ impl Submitter for &Uring {
         self.sq().0
     }
 
-    fn submit(&mut self) -> c_int {
+    fn submit(&mut self) -> io::Result<()> {
         self.with_ring(|ring| {
             let queue = ring.submission();
             // As liburing's io_uring_submit: nothing to submit or flush, no system call.
             let idle = queue.is_empty() && !queue.cq_overflow();
             drop(queue);
             if idle {
-                return 0;
+                return Ok(());
             }
-            match ring.submit() {
-                Ok(submitted) => c_int::try_from(submitted).unwrap_or(c_int::MAX),
-                Err(error) => -error.raw_os_error().unwrap_or(0),
-            }
+            ring.submit().map(|_| ())
         })
-        .unwrap_or(0)
+        .unwrap_or(Ok(()))
     }
 
     fn sleep(&mut self) {
@@ -357,15 +364,14 @@ fn submit(ring: &mut impl Submitter, immediately: bool) {
         return;
     }
     loop {
-        let ret = ring.submit();
-        if ret >= 0 {
+        let Err(error) = ring.submit() else {
             return;
-        }
-        match -ret {
+        };
+        match error.raw_os_error() {
             // Retried on the next submit.
-            libc::EAGAIN => return,
-            libc::EBUSY => ring.sleep(),
-            libc::EINTR => {}
+            Some(libc::EAGAIN) => return,
+            Some(libc::EBUSY) => ring.sleep(),
+            Some(libc::EINTR) => {}
             _ => {
                 ring.failed();
                 return;
@@ -485,7 +491,7 @@ pub fn wakeup(engine: &Uring) -> bool {
             for cqe in ring.completion().take(QUEUE_SIZE as usize) {
                 harvested = true;
                 if cqe.user_data() != TIMEOUT_EVENT {
-                    ready.push((cqe.user_data() as *mut Event, cqe.result() as isize));
+                    ready.push((cqe.user_data() as *const Event, cqe.result() as isize));
                 }
             }
             harvested
@@ -506,20 +512,22 @@ pub fn wakeup(engine: &Uring) -> bool {
             };
             // SAFETY: a queued event is suspended in its operation, and nothing
             // else borrows it.
-            engine.dispatch(unsafe { &mut *waiting });
+            engine.dispatch(unsafe { &*waiting });
         }
         for &(event, result) in &ready {
-            let coroutine = {
-                // SAFETY: user data is an event suspended in its operation, and
-                // nothing else borrows it until its coroutine resumes.
-                let event = unsafe { &mut *event };
-                event.result = complete(result);
-                event.coroutine
+            let waker = {
+                // SAFETY: user data is an event suspended in its operation, which
+                // only shares it until its coroutine resumes.
+                let event = unsafe { &*event };
+                event.result.set(complete(result));
+                event.waker.get()
             };
             engine.task_num.set(engine.task_num.get() - 1);
-            // SAFETY: the coroutine suspended in that event's operation, which may
-            // re-enter the engine.
-            unsafe { (engine.host.resume)(coroutine) };
+            // The coroutine suspended in that event's operation, which may re-enter
+            // the engine.
+            if let Some(waker) = waker {
+                (engine.host.resume)(waker);
+            }
         }
         ready.clear();
         engine.ready.set(ready);
@@ -553,7 +561,7 @@ fn file_status(result: io::Result<isize>) -> io::Result<()> {
 }
 
 /// One request per operation, whose entries carry no pointer but their borrowed
-/// arguments'.
+/// arguments' (an [`IoVector`]'s include its buffers, in its direction).
 macro_rules! safe_operations {
     ($(
         $(#[$doc:meta])*
@@ -642,31 +650,34 @@ safe_operations! {
         timeout -1.0, opcode::Fsync::new(Fd(fd)).flags(FsyncFlags::DATASYNC), file_status;
     pub fn ftruncate(fd: c_int, length: libc::off_t) -> io::Result<()>,
         timeout -1.0, opcode::Ftruncate::new(Fd(fd), length.cast_unsigned()), file_status;
+    /// `IORING_OP_READV` into `vector`'s remaining buffers, or `IORING_OP_WRITEV` from
+    /// them, as the vector was made for.
+    pub fn vector(fd: c_int, vector: &IoVector<'_>, timeout: f64) -> io::Result<usize>,
+        timeout timeout, Vectored::new(fd, vector), byte_count;
 }
 
-/// `IORING_OP_READV` into `vector`'s remaining buffers, or `IORING_OP_WRITEV` from
-/// them, as the vector was made for.
-/// # Errors
-/// The completion's captured errno, including linked timeouts.
-#[must_use = "check the transfer result"]
-pub fn vector(host: &Host, fd: c_int, vector: &IoVector<'_>, timeout: f64) -> io::Result<usize> {
-    let iovecs = vector.iovecs();
-    let count = c_int::try_from(iovecs.len()).unwrap_or(0).cast_unsigned();
-    let iov = iovecs.as_ptr();
-    let entry = if vector.write() {
-        opcode::Writev::new(Fd(fd), iov, count)
-            .offset(u64::MAX)
-            .build()
-    } else {
-        opcode::Readv::new(Fd(fd), iov, count)
-            .offset(u64::MAX)
-            .build()
-    };
-    // SAFETY: the entry's pointers are the borrowed vector's iovecs, which only its
-    // `&mut` methods move, and their buffers, valid in its direction while it lives
-    // (the type's invariant); the request completes before `request` returns.
-    let result = unsafe { request(host, timeout, entry) };
-    byte_count(result)
+/// The `IORING_OP_READV` or `IORING_OP_WRITEV` entry over a vector's remaining
+/// iovecs, which only its `&mut` methods move, in the direction it was made for.
+struct Vectored(squeue::Entry);
+
+impl Vectored {
+    fn new(fd: c_int, vector: &IoVector<'_>) -> Self {
+        let (iov, count) = vector.iovecs();
+        let count = c_int::try_from(count).unwrap_or(0).cast_unsigned();
+        Self(if vector.write() {
+            opcode::Writev::new(Fd(fd), iov, count)
+                .offset(u64::MAX)
+                .build()
+        } else {
+            opcode::Readv::new(Fd(fd), iov, count)
+                .offset(u64::MAX)
+                .build()
+        })
+    }
+
+    fn build(self) -> squeue::Entry {
+        self.0
+    }
 }
 
 /// Sleep `seconds` in the ring's timer.
@@ -905,7 +916,7 @@ pub(crate) mod testing {
     fn instance() -> Option<Rc<Uring>> {
         ENGINE.with_borrow(Clone::clone)
     }
-    fn suspend(_coroutine: *mut c_void, _event: *mut c_void) {
+    fn suspend(_coroutine: *mut c_void, _event: *mut c_void, _waker: &Cell<Option<Waker>>) {
         let engine = instance().expect("a test engine");
         engine.submit_queued();
         while engine.task_num() > 0 {
@@ -913,7 +924,7 @@ pub(crate) mod testing {
             wakeup(&engine);
         }
     }
-    unsafe extern "C-unwind" fn resume(_coroutine: *mut c_void) {}
+    fn resume(_waker: Waker) {}
     fn event_running() -> bool {
         false
     }
@@ -964,9 +975,14 @@ mod tests {
             self.trace.push("sq:used".into());
             self.used
         }
-        fn submit(&mut self) -> c_int {
+        fn submit(&mut self) -> io::Result<()> {
             self.trace.push("submit".into());
-            self.results.remove(0)
+            let result = self.results.remove(0);
+            if result < 0 {
+                Err(io::Error::from_raw_os_error(-result))
+            } else {
+                Ok(())
+            }
         }
         fn sleep(&mut self) {
             self.trace.push("usleep:10000".into());

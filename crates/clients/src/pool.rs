@@ -9,23 +9,17 @@ std::thread_local! {
     static ALLOCATION_BUDGET: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
+/// Whether a fallible allocation site may allocate: always, unless a test set a budget.
 #[inline]
 fn allocation_allowed() -> bool {
     #[cfg(test)]
-    {
-        ALLOCATION_BUDGET.with(|budget| match budget.get() {
-            None => true,
-            Some(0) => false,
-            Some(left) => {
-                budget.set(Some(left - 1));
-                true
-            }
-        })
+    if let Some(left) = ALLOCATION_BUDGET.get() {
+        let Some(rest) = left.checked_sub(1) else {
+            return false;
+        };
+        ALLOCATION_BUDGET.set(Some(rest));
     }
-    #[cfg(not(test))]
-    {
-        true
-    }
+    true
 }
 
 #[cfg(test)]

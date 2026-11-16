@@ -2,11 +2,11 @@
 //! and the datagram and read steps over them. crates/tls owns each session's queue
 //! and handshake, in its connection's SSL.
 use core::ffi::{CStr, c_int};
-use core::ptr;
 use std::ffi::CString;
 use swoole_rs_corebase::ServerEvent;
-
-use swoole_rs_corebase::constants::{SW_BUFFER_SIZE_UDP, SW_SSL_BUFFER_SIZE, SocketType};
+use swoole_rs_corebase::constants::{
+    SW_BUFFER_SIZE_UDP, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
+};
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_reactor::Socket;
@@ -16,12 +16,9 @@ use swoole_rs_tls::{
 };
 
 use crate::reactor_entry::DgramPacket;
-use crate::records::ConnectionRecord;
 
-/// `SW_FD_SESSION`, `SW_SOCK_NONBLOCK` and `SW_SOCK_CLOEXEC`.
+/// `SW_FD_SESSION`.
 const FD_SESSION: c_int = 0;
-const SOCK_NONBLOCK: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_NONBLOCK as c_int;
-const SOCK_CLOEXEC: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_CLOEXEC as c_int;
 
 /// `setsockopt(fd, level, option, value)` for an int option.
 fn set_option(fd: c_int, level: c_int, option: c_int, value: c_int) {
@@ -57,11 +54,11 @@ fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
 /// `None`, with everything it made undone, when a step fails.
 ///
 /// `listen` is one of `serv`'s DTLS ports.
-fn accept<'s>(
-    serv: crate::view::Server<'s>,
+fn accept(
+    serv: crate::view::Server<'_>,
     listen: crate::view::Port<'_>,
     sa: &SocketAddress,
-) -> Option<Socket<'s>> {
+) -> Option<Socket<'static>> {
     let (kind, number, host) = {
         let config = listen.config();
         // NUL-terminated: the address parser reads the host as a C string.
@@ -69,7 +66,12 @@ fn accept<'s>(
         (config.r#type, config.port.get(), host)
     };
     let server_fd = listen.fd();
-    let socket = make_typed(kind, FD_SESSION, SOCK_CLOEXEC | SOCK_NONBLOCK)?.into_socket();
+    let socket = make_typed(
+        kind,
+        FD_SESSION,
+        (SocketFlag::SW_SOCK_CLOEXEC | SocketFlag::SW_SOCK_NONBLOCK).bits(),
+    )?
+    .into_socket();
     let fd = socket.fd();
     set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, 1);
     if cfg!(any(
@@ -86,7 +88,7 @@ fn accept<'s>(
         swoole_rs_corebase::fatal("OpenSSL internal error: assertion failed: 0");
     }
     let origin = c"Server::accept_dtls_connection";
-    let mut conn: *mut ConnectionRecord = ptr::null_mut();
+    let mut added = false;
     'setup: {
         if !bind(socket, kind, &host, number) {
             log::sys_warning(origin, format_args!("bind() failed"));
@@ -104,9 +106,8 @@ fn accept<'s>(
             socket.info = *sa;
             socket.chunk_size = SW_SSL_BUFFER_SIZE;
         });
-        conn = crate::connection::add(serv, listen, socket, server_fd)
-            .map_or(ptr::null_mut(), crate::Connection::as_ptr);
-        if conn.is_null() {
+        added = crate::connection::add(serv, listen, socket, server_fd).is_some();
+        if !added {
             break 'setup;
         }
         // `ListenPort::create_dtls_session(sock)`, over the port's context.
@@ -115,12 +116,12 @@ fn accept<'s>(
             return Some(socket);
         }
     }
-    if !conn.is_null() {
-        // SAFETY: the connection added above, which nothing else uses yet.
-        unsafe { ptr::write_bytes(conn, 0, 1) };
+    if added {
+        serv.state().tables_ref().clear_connection(fd);
     }
-    // SAFETY: the socket just made, which nothing uses afterwards.
-    unsafe { swoole_rs_tls::upstream::socket_free(socket.as_ptr()) };
+    // SAFETY: the heap record made above, which nothing uses afterwards.
+    let socket = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(socket) };
+    swoole_rs_tls::upstream::socket_free(Some(socket));
     None
 }
 

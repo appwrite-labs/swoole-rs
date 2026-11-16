@@ -13,3 +13,4 @@ workspace = true
 
 [dependencies]
 swoole-rs-base64 = { path = "../base64" }
+swoole-rs-corebase = { path = "../corebase" }

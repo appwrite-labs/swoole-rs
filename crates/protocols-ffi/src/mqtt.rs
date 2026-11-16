@@ -1,5 +1,5 @@
-//! `swoole::mqtt`'s entries under their upstream symbols, over [`mqtt_frame_length`].
-use swoole_rs_clients::protocol::Protocol;
+//! `swoole::mqtt`'s entries, over [`mqtt_frame_length`].
+use swoole_rs_clients::protocol::{Protocol, Socket};
 use swoole_rs_corebase::net_types::PacketLength;
 use swoole_rs_protocols::mqtt_frame_length;
 
@@ -15,15 +15,10 @@ pub extern "C" fn set_protocol(protocol: &mut Protocol) {
     protocol.get_package_length = Some(get_package_length);
 }
 
-/// `swoole::mqtt::get_package_length(protocol, socket, pl)`: 0 until the remaining
-/// length is buffered, then the whole packet's length; -1, with a warning, past four
-/// length bytes.
-#[unsafe(export_name = "_ZN6swoole4mqtt18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE")]
-pub extern "C" fn get_package_length(
-    _protocol: *const Protocol,
-    _socket: *mut core::ffi::c_void,
-    pl: &mut PacketLength,
-) -> isize {
+/// `swoole::mqtt::get_package_length(protocol, socket, pl)`, the protocol's length
+/// callback: 0 until the remaining length is buffered, then the whole packet's length;
+/// -1, with a warning, past four length bytes. It reads only `pl`.
+pub fn get_package_length(_: &Protocol, _: Option<Socket<'_>>, pl: &mut PacketLength) -> isize {
     if let Ok(length) = mqtt_frame_length(pl.bytes()) {
         length.map_or(0, |length| isize::try_from(length).unwrap_or(-1))
     } else {
@@ -61,8 +56,7 @@ mod tests {
         let measure = |bytes: &[u8]| {
             let mut pl = PacketLength::new(bytes);
             pl.header_len = 99;
-            // SAFETY: MQTT's measure reads only `pl`.
-            let length = unsafe { stored(core::ptr::null(), core::ptr::null_mut(), &mut pl) };
+            let length = stored(&Protocol::EMPTY, None, &mut pl);
             assert_eq!(pl.header_len, 99);
             length
         };

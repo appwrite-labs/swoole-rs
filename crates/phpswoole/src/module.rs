@@ -15,14 +15,10 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_corebase::{log::set_last_error, set_fatal_error, swr_v1_core_set_print_backtrace};
 use swoole_rs_zend::{
-    Call, Class, E_WARNING,
+    Call, Class, E_WARNING, Request, Shutdown,
     bailout::{self, Bailout},
     contain_with, report,
-    sys::{
-        HashTable, swr_zend_after_fork, swr_zend_fatal_error, swr_zend_leak_check,
-        swr_zend_print_stack_trace, swr_zend_runtime_call_handler, swr_zend_try_hook,
-        zend_class_entry,
-    },
+    sys::{HashTable, swr_zend_after_fork, swr_zend_fatal_error, zend_class_entry},
 };
 
 unsafe extern "C" {
@@ -150,8 +146,9 @@ pub fn enable_library() -> bool {
 
 /// A family's MINIT step, which runs inside `zend_try`; the phase raises the bailout it returns.
 pub type Minit = fn(&swoole_rs_zend::Minit) -> Result<(), Bailout>;
-/// Any other phase hook, likewise.
-pub type Hook = unsafe extern "C" fn();
+/// Any other phase hook, likewise: Zend may run each at its phase, inside
+/// `zend_try`.
+pub type Hook = extern "C" fn();
 /// An HTTP MINIT step, called once at MINIT with what it reads of Swoole's.
 pub type HttpMinit = fn(&MinitArgs<'_>);
 
@@ -184,6 +181,8 @@ pub enum SocketSettings {
 /// them, read too. crates/ffi, which links them all, registers them with
 /// [`crate::module_entry`] when Zend asks for the module entry, before any phase.
 pub struct Families {
+    /// Core startup, registered before Zend runs MINIT.
+    pub core_startup: fn(),
     /// `php_swoole_coroutine_minit`, `_system_minit` and `_scheduler_minit`.
     pub coroutine_minit: [Minit; 3],
     /// `php_swoole_server_minit`.
@@ -210,7 +209,7 @@ pub struct Families {
     pub thread_classes_minit: [fn(&swoole_rs_zend::Minit); 4],
     /// RINIT's coroutine, thread and tracer steps.
     pub coroutine_rinit: Hook,
-    pub thread_rinit: Hook,
+    pub thread_rinit: fn(Request<'_>),
     pub tracer_rinit: Hook,
     /// RSHUTDOWN's server, coroutine and scheduler, thread and tracer steps.
     pub server_rshutdown: Hook,
@@ -262,6 +261,20 @@ pub struct Families {
     /// crates/phpprocess's and phpruntime's, which depend on this crate.
     pub process: ProcessSteps,
     pub runtime: RuntimeSteps,
+    /// crates/phpevents', which crates/phpcoroutines, phpprocess and phpruntime
+    /// read through this crate's [`crate::reactor_init`] and the rest.
+    pub events: EventSteps,
+}
+
+/// crates/phpevents' event loop steps. Each raises a bailout it contained once its
+/// effect is complete, so it is its caller's last step.
+pub struct EventSteps {
+    /// `php_swoole_reactor_init()`: whether the event loop is ready.
+    pub reactor_init: fn() -> bool,
+    /// `php_swoole_convert_to_fd(value)`: an fd, or -1 after a warning.
+    pub convert_to_fd: fn(Option<&swoole_rs_zend::Value>) -> i32,
+    /// `Swoole\Event::wait()`'s native lifecycle effect.
+    pub wait: fn(),
 }
 
 /// crates/phpprocess's phase steps: `php_swoole_process_minit`, `_pool_minit` and
@@ -312,9 +325,15 @@ pub fn families() -> Option<&'static Families> {
     FAMILIES.get().copied()
 }
 
+// Phase bodies, private so only the phase lists below hold them: each runs at
+// its phase, inside `zend_try`.
 unsafe extern "C" {
-    /// `thirdparty/php/streams/plain_wrapper.c`'s RINIT, a `zend_try` body.
-    fn php_swoole_runtime_rinit();
+    /// `thirdparty/php/streams/plain_wrapper.c`'s RINIT: the plain wrapper's
+    /// and stdio's original operations, saved.
+    safe fn php_swoole_runtime_rinit();
+    /// MSHUTDOWN's leak check: `LeakSanitizer`'s recoverable check, when it is
+    /// loaded, in the process that loaded the module.
+    safe fn swr_zend_leak_check();
 }
 
 /// A `zend_try` shim's result.
@@ -342,6 +361,7 @@ pub(crate) enum Step {
         )
     )]
     Shutdown(fn(&swoole_rs_zend::Mshutdown)),
+    Request(fn(Request<'_>)),
     Hook(Hook),
 }
 
@@ -350,7 +370,7 @@ pub(crate) enum Step {
 enum Phase<'a> {
     Minit(&'a swoole_rs_zend::Minit),
     Mshutdown(&'a swoole_rs_zend::Mshutdown),
-    Request,
+    Request(Request<'a>),
 }
 
 /// Run `steps` in order, each inside `zend_try`, stopping at a bailout. It
@@ -366,10 +386,10 @@ fn run(steps: Vec<Step>, phase: Phase<'_>) -> Result<(), Bailout> {
             }
             (Step::Typed(step), Phase::Minit(minit)) => contain_with(|| step(minit)),
             (Step::Shutdown(step), Phase::Mshutdown(mshutdown)) => contain_with(|| step(mshutdown)),
-            // SAFETY: a C or C++ hook that Zend may run at this phase; the shim's
-            // setjmp sits between this frame and the hook.
-            (Step::Hook(hook), _) => flag(unsafe { swr_zend_try_hook(Some(hook)) }),
-            (Step::Minit(_) | Step::Typed(_) | Step::Shutdown(_), _) => Ok(()),
+            (Step::Request(step), Phase::Request(request)) => contain_with(|| step(request)),
+            // The shim's setjmp sits between this frame and the hook.
+            (Step::Hook(hook), _) => flag(try_body(hook)),
+            (Step::Minit(_) | Step::Typed(_) | Step::Shutdown(_) | Step::Request(_), _) => Ok(()),
         }?;
     }
     Ok(())
@@ -480,16 +500,16 @@ extern "C" fn php_hooks() {
 
 /// PHP's stack trace, for `SwooleG.print_backtrace`.
 extern "C" fn print_stack_trace() {
-    // SAFETY: installed at MINIT's end, so it runs in a PHP process whose engine
-    // has started; the shim fetches and frees its own backtrace.
-    unsafe { swr_zend_print_stack_trace() };
+    unsafe extern "C" {
+        /// PHP's backtrace, fetched, printed and freed. Only this hook calls
+        /// it, which MINIT's end installs, so the engine has started.
+        safe fn swr_zend_print_stack_trace();
+    }
+    swr_zend_print_stack_trace();
 }
 
-// Declared: crates/ffi depends on this crate, and the rest is C.
+// Native PHP helpers and Zend shims.
 unsafe extern "C" {
-    /// `void swoole_init()`, crates/ffi's.
-    #[link_name = "_Z11swoole_initv"]
-    safe fn swoole_init();
     /// native/phphelpers/host.c.
     safe fn swr_phpswoole_pcre_jit_off();
     /// `SWOOLE_G`'s storage (native/phphelpers/host.c): this thread's
@@ -516,7 +536,9 @@ extern "C" fn load_library_body() {
 /// MINIT's first step: Swoole's core, its after-fork hook, and the bug
 /// report's PHP version.
 extern "C" fn core_startup() {
-    swoole_init();
+    (families()
+        .unwrap_or_else(|| swoole_rs_corebase::fatal("module families not registered before MINIT"))
+        .core_startup)();
     swoole_rs_corebase::swoole_add_hook(
         swoole_rs_corebase::HookType::AFTER_FORK,
         swr_zend_after_fork,
@@ -585,37 +607,25 @@ extern "C" fn event_free() {
 }
 
 /// `PHP_MSHUTDOWN_FUNCTION(swoole)`.
-/// # Safety
-/// Zend's MSHUTDOWN.
-pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, _module_number: c_int) -> c_int {
+pub(crate) extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, shutdown: Shutdown<'_>) -> c_int {
     let mut steps = vec![Step::Hook(swoole_rs_zend::host::known_free)];
     steps.extend(families().map(|families| Step::Hook(families.runtime.mshutdown)));
     steps.extend(optional::mshutdown());
     steps.extend(optional::client_mshutdown());
     steps.extend(families().map(|families| Step::Hook(families.server_mshutdown)));
-    steps.extend([
-        // The tables' process-private parts, which upstream leaves to the exit.
-        Step::Hook(swoole_rs_memory::table::release),
-        Step::Hook(clean),
-        Step::Hook(swr_zend_leak_check),
-    ]);
-    // SAFETY: Zend's MSHUTDOWN of this module, per the caller; the token goes
-    // before it returns.
-    let mshutdown = unsafe { swoole_rs_zend::Mshutdown::new() };
-    bailout::raise(run(steps, Phase::Mshutdown(&mshutdown)));
+    steps.extend([Step::Hook(clean), Step::Hook(swr_zend_leak_check)]);
+    bailout::raise(shutdown.with(|mshutdown| run(steps, Phase::Mshutdown(mshutdown))));
     SUCCESS
 }
 
 /// `PHP_RINIT_FUNCTION(swoole)`.
-/// # Safety
-/// Zend's RINIT.
-pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, _module_number: c_int) -> c_int {
+pub(crate) extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, request: Request<'_>) -> c_int {
     /// The `zend_execute_ex` hook the reset below replaced, which only it makes.
     #[repr(transparent)]
     struct Replaced(*mut c_void);
     unsafe extern "C" {
         /// `zend_execute_ex = execute_ex`, returning the hook it replaced: in
-        /// RINIT, which this function's contract is, before any PHP code runs.
+        /// RINIT, which this function's `Request` stands for, before any PHP code runs.
         safe fn swr_zend_execute_ex_reset() -> Replaced;
         /// `zend_execute_ex = hook`, the one the reset replaced.
         safe fn swr_zend_execute_ex_restore(hook: Replaced);
@@ -650,7 +660,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, _module_number: c_
     ];
     steps.extend(optional::rinit(families));
     steps.push(Step::Hook(families.tracer_rinit));
-    if let Err(bailed) = run(steps, Phase::Request) {
+    if let Err(bailed) = run(steps, Phase::Request(request)) {
         bailout::raise(Err(bailed));
         return SUCCESS;
     }
@@ -659,9 +669,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, _module_number: c_
 }
 
 /// `PHP_RSHUTDOWN_FUNCTION(swoole)`.
-/// # Safety
-/// Zend's RSHUTDOWN.
-pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, _module_number: c_int) -> c_int {
+pub(crate) extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, request: Request<'_>) -> c_int {
     let globals = globals();
     if !globals.cli.get() {
         return SUCCESS;
@@ -687,7 +695,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, _module_number
         Step::Hook(families.tracer_rshutdown),
         Step::Hook(event_free),
     ]);
-    if let Err(bailed) = run(steps, Phase::Request) {
+    if let Err(bailed) = run(steps, Phase::Request(request)) {
         bailout::raise(Err(bailed));
         return SUCCESS;
     }
@@ -718,12 +726,7 @@ swoole_rs_zend::handlers! {
 fn set_process_name(call: &Call) {
     // The CLI SAPI's; a function PHP code gave the name has no handler to call.
     if let Some(handler) = call.php().internal_handler(b"cli_set_process_title") {
-        // SAFETY: its handler, with this call's frame and return slot; the
-        // shim traps a bailout.
-        if unsafe { swr_zend_runtime_call_handler(handler, call.frame(), call.return_value()) } != 0
-        {
-            Bailout.defer();
-        }
+        bailout::defer(call.forward(handler));
     } else {
         set_last_error(PHP_FATAL_ERROR);
         bailout::defer(report(

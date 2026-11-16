@@ -105,17 +105,6 @@ unsafe extern "C" {
     fn free(pointer: *mut c_void);
 }
 
-/// `swoole::Event`.
-#[repr(C)]
-struct Event {
-    fd: c_int,
-    reactor_id: i16,
-    fd_type: c_int,
-    socket: *mut Record,
-}
-
-type Handler = unsafe extern "C" fn(*mut c_void, *mut Event) -> c_int;
-
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole11make_socketE12swSocketType8swFdTypei"]
     fn make_socket3(kind: c_int, fd_type: c_int, flags: c_int) -> *mut Record;
@@ -149,8 +138,6 @@ unsafe extern "C-unwind" {
     fn socket_cork(socket: *mut Record) -> bool;
     #[link_name = "_ZN6swoole7network6Socket6uncorkEv"]
     fn socket_uncork(socket: *mut Record) -> bool;
-    #[link_name = "_ZN6swoole7network6Socket10send_asyncEPKvm"]
-    fn socket_send_async(socket: *mut Record, data: *const c_void, n: usize) -> isize;
     #[link_name = "_ZN6swoole7network6Socket13sendfile_syncEPKclm"]
     fn socket_sendfile_sync(
         socket: *mut Record,
@@ -166,8 +153,6 @@ unsafe extern "C-unwind" {
     fn socket_ssl_get_error_reason(reason: *mut c_int) -> *const c_char;
     #[link_name = "_Z15swoole_ssl_initv"]
     fn swoole_ssl_init();
-    #[link_name = "_Z24swoole_event_set_handleriiPFiPN6swoole7ReactorEPNS_5EventEE"]
-    fn swoole_event_set_handler(fd_type: c_int, event: c_int, handler: Handler);
     #[link_name = "_ZN6swoole7network6Socket8get_nameEv"]
     fn socket_get_name(socket: *mut Record) -> c_int;
     #[link_name = "_ZN6swoole7network6Socket13get_peer_nameEPNS0_7AddressE"]
@@ -190,13 +175,6 @@ unsafe extern "C-unwind" {
     fn socket_catch_write_error(socket: *mut Record, error: c_int) -> c_int;
     #[link_name = "_ZN6swoole7network6Socket22catch_write_pipe_errorEi"]
     fn socket_catch_write_pipe_error(socket: *mut Record, error: c_int) -> c_int;
-    fn swr_v1_socket_buffer_size(fd: c_int, recv: bool, send: bool, size: u32) -> bool;
-    fn swr_v1_socket_type(domain: c_int, kind: c_int) -> c_int;
-    fn swr_v1_socket_domain_and_type(
-        kind: c_int,
-        domain: *mut c_int,
-        sock_type: *mut c_int,
-    ) -> bool;
 }
 
 #[link(name = "crypto")]
@@ -272,24 +250,22 @@ fn is_inet6(kind: c_int) -> bool {
 }
 
 fn convert_to_type(domain: c_int, kind: c_int) -> c_int {
-    // SAFETY: no preconditions.
-    unsafe { swr_v1_socket_type(domain, kind) }
+    swoole_rs_reactor::socket_type(domain, kind).raw()
 }
 
 /// `Socket::convert_to_type(std::string &host)`: erases the scheme from `host`.
 fn convert_host_to_type(host: &mut String) -> c_int {
     let plan = swoole_rs_reactor::host_type(host.as_bytes());
     host.drain(..plan.erase);
-    plan.socket_type
+    plan.socket_type.raw()
 }
 
 fn get_domain_and_type(kind: c_int, domain: &mut c_int, sock_type: &mut c_int) -> c_int {
-    // SAFETY: two writable ints.
-    if unsafe { swr_v1_socket_domain_and_type(kind, domain, sock_type) } {
-        SW_OK
-    } else {
-        SW_ERR
-    }
+    let Some(pair) = swoole_rs_reactor::socket_domain_and_type(kind) else {
+        return SW_ERR;
+    };
+    (*domain, *sock_type) = pair;
+    SW_OK
 }
 
 pub(super) fn make_socket(kind: c_int, fd_type: c_int, flags: c_int) -> Option<Socket> {
@@ -438,8 +414,9 @@ impl Socket {
     }
 
     fn send_async(&self, buf: &[u8]) -> isize {
-        // SAFETY: `buf` is readable for its length.
-        unsafe { socket_send_async(self.0, buf.as_ptr().cast(), buf.len()) }
+        // SAFETY: a live record, which the case frees only once its loop is done.
+        let socket = unsafe { swoole_rs_reactor::Socket::from_ptr(self.0.cast()) }.unwrap();
+        swoole_rs_tls::upstream::send_async(socket, buf).map_or(-1, usize::cast_signed)
     }
 
     fn read_sync(&self, buf: &mut [u8]) -> isize {
@@ -629,12 +606,9 @@ fn fail() {
     assert_eq!(sock.listen(1), -1);
 
     let fd = sock.get_fd();
-    // SAFETY: no preconditions.
-    unsafe {
-        assert!(!swr_v1_socket_buffer_size(fd, true, true, 1));
-        assert!(!swr_v1_socket_buffer_size(fd, true, false, 1));
-        assert!(!swr_v1_socket_buffer_size(fd, false, true, 1));
-    }
+    assert!(swoole_rs_reactor::set_socket_buffer_size(fd, true, true, 1).is_err());
+    assert!(swoole_rs_reactor::set_socket_buffer_size(fd, true, false, 1).is_err());
+    assert!(swoole_rs_reactor::set_socket_buffer_size(fd, false, true, 1).is_err());
 
     // SAFETY: a live socket.
     unsafe {
@@ -878,9 +852,14 @@ fn send_async_1() {
     sock.free();
 }
 
-unsafe extern "C" fn send_async_2_read(_: *mut c_void, event: *mut Event) -> c_int {
-    // SAFETY: the reactor's event and its socket.
-    let socket = Socket(unsafe { (*event).socket });
+fn send_async_2_read(_: swoole_rs_ffi::Running<'_>, event: &mut swoole_rs_ffi::Event) -> c_int {
+    let socket = Socket(
+        event
+            .socket()
+            .expect("the read event's socket")
+            .as_ptr()
+            .cast(),
+    );
     let mut buf = vec![0_u8; SW_STACK_BUFFER_SIZE];
     let n = socket.recv_sync(&mut buf, 0);
     assert!(n > 0);
@@ -901,7 +880,11 @@ fn send_async_2() {
 
     // SAFETY: the live loop; the handler reads the socket once.
     unsafe {
-        swoole_event_set_handler(SW_FD_STREAM_CLIENT, SW_EVENT_READ, send_async_2_read);
+        swoole_rs_ffi::event_api::set_handler(
+            SW_FD_STREAM_CLIENT,
+            swoole_rs_ffi::Events::READ,
+            Some(send_async_2_read),
+        );
         let socket = swoole_rs_ffi::Socket::from_ptr(sock.0.cast()).unwrap();
         let _ = swoole_rs_ffi::event_api::event_add(
             socket,

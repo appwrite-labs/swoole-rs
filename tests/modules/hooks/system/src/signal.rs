@@ -30,7 +30,7 @@ const SW_ERROR_UNREGISTERED_SIGNAL: c_int = 721;
 #[cfg(target_os = "linux")]
 type SigSet = [u64; 16];
 
-type SignalHandler = unsafe extern "C" fn(c_int);
+type SignalHandler = extern "C" fn(c_int);
 
 unsafe extern "C" {
     fn sysv_signal(signo: c_int, handler: usize) -> usize;
@@ -55,9 +55,7 @@ fn set(signo: c_int, handler: Option<SignalHandler>) -> usize {
 
 /// `swoole_signal_set(signo, func, safety)`.
 fn set_safe(signo: c_int, handler: Option<SignalHandler>, safety: bool) -> usize {
-    let handler = handler.map_or(0, |handler| handler as usize);
-    // SAFETY: null or one of this binary's handlers.
-    let handler = unsafe { Handler::from_raw(handler) };
+    let handler = handler.map_or(Handler::NONE, Handler::new);
     swoole_signal_set(signo, handler, safety).raw()
 }
 
@@ -86,13 +84,13 @@ fn exit_code(status: c_int) -> c_int {
     (status >> 8) & 0xff
 }
 
-unsafe extern "C" fn exit_255(_signo: c_int) {
+extern "C" fn exit_255(_signo: c_int) {
     // SAFETY: ends the process, as upstream's handlers do.
     unsafe { exit(255) };
 }
 
 #[cfg(target_os = "linux")]
-unsafe extern "C" fn sig_usr1(_signo: c_int) {}
+extern "C" fn sig_usr1(_signo: c_int) {}
 
 /// Whether `signo` is in this thread's blocked set.
 #[cfg(target_os = "linux")]
@@ -182,7 +180,7 @@ fn set_() {
 
 static TRIGGER_SIGNAL: AtomicI32 = AtomicI32::new(0);
 
-unsafe extern "C" fn record(signo: c_int) {
+extern "C" fn record(signo: c_int) {
     TRIGGER_SIGNAL.store(signo, Ordering::SeqCst);
 }
 
@@ -209,7 +207,7 @@ fn dispatch() {
     clear();
 }
 
-unsafe extern "C" fn raise_usr2(_signo: c_int) {
+extern "C" fn raise_usr2(_signo: c_int) {
     // SAFETY: raise(3); SIGUSR2's handler only records it.
     unsafe { raise(SIGUSR2) };
 }

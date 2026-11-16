@@ -1,8 +1,7 @@
 //! What the HTTP/2 server (crates/phphttp2) reads and does to its streams'
 //! contexts.
 use crate::{
-    context::{self, free},
-    header,
+    context, header,
     parse::{self, CAPABILITIES},
 };
 use std::{
@@ -19,9 +18,9 @@ use swoole_rs_zend::{
 };
 
 /// The HTTP/2 server's contexts: a connection's settings context
-/// ([`Ctx::server_context`]) or a stream's ([`Ctx::stream_context`]), live
-/// until a `release_*` ends them.
-pub use crate::context::Ctx;
+/// ([`Ctx::server_context`]) or a stream's ([`Ctx::stream_context`]), and the
+/// holds that keep them.
+pub use crate::context::{Ctx, Hold};
 
 /// What the HTTP/2 server reads and writes of a context.
 #[derive(Clone, Copy)]
@@ -83,9 +82,8 @@ pub struct Server {
     /// `RST_STREAM` with the stream id and error code.
     pub reset: fn(Ctx, u32, u32),
     /// A coroutine server connection's session (fd, default context, max
-    /// body size, and the handler of each finished request). The context
-    /// outlives the session.
-    pub session_new: fn(i64, Ctx, u32, Handler),
+    /// body size, and the handler of each finished request).
+    pub session_new: fn(i64, Hold, u32, Handler),
     /// One whole frame, at the start of the bytes, for the session of an fd;
     /// false on failure.
     pub session_receive: fn(i64, &[u8]) -> bool,
@@ -109,39 +107,20 @@ pub(crate) fn server() -> Option<&'static Server> {
     SERVER.get().copied()
 }
 
-/// A server connection's settings context ([`Ctx::server_context`]), which no
-/// object or stream holds: it goes when this drops (`delete default_ctx`),
-/// with its session, and no copy of [`ServerCtx::ctx`] is used after.
-pub struct ServerCtx(Ctx);
-
-impl ServerCtx {
-    #[must_use]
-    pub const fn ctx(&self) -> Ctx {
-        self.0
-    }
-}
-
-impl Drop for ServerCtx {
-    fn drop(&mut self) {
-        // SAFETY: `server_context`'s, live until this one release.
-        unsafe { free(self.0) };
-    }
-}
-
 /// An HTTP/2 stream's hold on its context ([`Ctx::stream_context`]), let go
 /// when this drops (`~Stream`): the context is complete by then, and goes once
 /// its request and response objects have. A request that never reached its
 /// handler (reset, or its connection closed, first) also releases those
 /// objects, which only the context holds; a bailout in a destructor is deferred.
 pub struct StreamCtx {
-    ctx: Ctx,
+    hold: Hold,
     dispatched: Cell<bool>,
 }
 
 impl StreamCtx {
     #[must_use]
-    pub const fn ctx(&self) -> Ctx {
-        self.ctx
+    pub fn ctx(&self) -> Ctx<'_> {
+        self.hold.ctx()
     }
 
     /// The request goes to its handler, which releases its objects.
@@ -152,15 +131,13 @@ impl StreamCtx {
 
 impl Drop for StreamCtx {
     fn drop(&mut self) {
-        let mut ctx = self.ctx;
+        let mut ctx = self.hold.ctx();
         // Ended first, so the response's release answers nothing.
         ctx.state().end = true;
         if !self.dispatched.get() {
             bailout::defer(context::release_objects(ctx));
         }
         ctx.state().stream_id = 0;
-        // SAFETY: `stream_context`'s, live until the stream's one release.
-        unsafe { free(ctx) };
     }
 }
 
@@ -177,7 +154,7 @@ fn compression() -> bool {
     CAPABILITIES.load(Relaxed) & 8 != 0
 }
 
-impl Ctx {
+impl Ctx<'_> {
     /// `Context::set_header(key, value, false)` of a string value.
     pub fn set_header(self, key: &[u8], value: &[u8]) {
         crate::response::set_header_bytes(self, key, value);
@@ -385,24 +362,26 @@ impl Ctx {
     }
 
     /// A server connection's settings context (`default_ctx`): the server's
-    /// settings, for session `fd`, kept alive and counted by the request hooks.
+    /// settings, for session `fd`, counted by the request hooks.
     #[must_use]
-    pub fn server_context(server: view::Server<'_>, fd: i64) -> ServerCtx {
-        let mut ctx = context::alloc();
+    pub fn server_context(server: view::Server<'_>, fd: i64) -> Hold {
+        let hold = context::alloc();
+        let mut ctx = hold.ctx();
         context::init(ctx.state(), server);
         let state = ctx.state();
         state.fd = fd;
         state.http2 = true;
         state.keepalive = true;
         state.before_request = true;
-        ServerCtx(ctx)
+        hold
     }
 
     /// A stream's context: a copy of this settings context's, with its request
     /// and response objects and the request's `streamId`.
     #[must_use]
     pub fn stream_context(mut self, fd: i64, stream_id: u32) -> StreamCtx {
-        let mut ctx = context::context_new(fd);
+        let hold = context::context_new(fd);
+        let mut ctx = hold.ctx();
         context::copy_settings(ctx.state(), self.state());
         let state = ctx.state();
         state.http2 = true;
@@ -412,7 +391,7 @@ impl Ctx {
             request.long(c"streamId", i64::from(stream_id));
         }
         StreamCtx {
-            ctx,
+            hold,
             dispatched: Cell::new(false),
         }
     }

@@ -39,16 +39,6 @@ pub(crate) struct Commands {
     next_request: i64,
 }
 
-#[expect(
-    clippy::non_send_fields_in_send_ty,
-    reason = "the closures run on the thread their owner gives them from, as upstream's \
-              std::functions, and the lock keeps the tables apart"
-)]
-// SAFETY: the tables only hold the closures, as upstream's `std::function`s: each
-// runs on the thread its owner gives it to the server from or answers commands on,
-// and the lock keeps the tables themselves apart.
-unsafe impl Send for Commands {}
-
 impl Commands {
     pub(crate) const fn new() -> Self {
         Self {
@@ -190,7 +180,12 @@ pub(crate) fn send(
         };
         head(&mut info);
         let pool = serv.event_pool_ref();
-        return swoole_rs_process::methods::push_event(pool, &info, data);
+        return swoole_rs_process::methods::push_event(
+            crate::process_pool_native(),
+            pool,
+            &info,
+            data,
+        );
     }
     if route.target == Target::TaskWorker {
         let mut buf = swoole_rs_process::task_file::TaskBuffer::default();
@@ -204,6 +199,7 @@ pub(crate) fn send(
         let (gs, pool) = (serv.counters(), serv.task_pool_ref());
         let dispatch = || {
             Ok(swoole_rs_process::methods::dispatch(
+                crate::process_pool_native(),
                 pool,
                 task,
                 Some(process_id.into()),
@@ -461,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "Miri's socketpair is stream-only")]
     fn commands_need_a_pipe_outside_base_mode() {
         let base = live(Mode::Base);
         assert!(add(&base, b"a", 2));
@@ -496,7 +492,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn commands_keep_binary_names_for_the_listing() {
         let live = live(Mode::Base);
         let name = b"admin\0command";
@@ -533,7 +528,6 @@ mod tests {
     use swoole_rs_process::command::{EVENT_WORKER, MASTER};
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_base_master_answers_its_own_commands_at_once() {
         let live = live(Mode::Base);
         assert!(add(&live, b"hi", MASTER | EVENT_WORKER));
@@ -551,7 +545,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_failed_send_forgets_its_callback_and_unknown_names_take_no_request() {
         let live = live(Mode::Base);
         assert!(add(&live, b"hi", EVENT_WORKER));

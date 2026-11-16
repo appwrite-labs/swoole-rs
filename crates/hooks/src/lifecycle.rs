@@ -16,13 +16,13 @@ use swoole_rs_reactor::Events;
 /// `getsockopt(SO_ERROR)` into the int it is given. Tests script them.
 #[derive(Clone, Copy)]
 struct Sys {
-    shutdown: fn(c_int, c_int) -> c_int,
+    shutdown: fn(c_int, c_int) -> std::io::Result<()>,
     connect: fn(c_int, &SocketAddress) -> bool,
     option: fn(c_int, &mut c_int) -> std::io::Result<()>,
 }
 
 const SYS: Sys = Sys {
-    shutdown: crate::shutdown::sys_shutdown,
+    shutdown: swoole_rs_corebase::sys::shutdown,
     connect: sys_connect,
     option: so_error,
 };
@@ -100,7 +100,7 @@ fn shutdown(socket: Co, how: c_int, sys: Sys) -> bool {
     let ssl_shutdown = || (ops().ssl_shutdown)(socket);
     let ssl_shutdown: Option<&dyn Fn()> = tls.then_some(&ssl_shutdown);
     let fd = socket.sock_fd();
-    let error = socket.with_state(|state| {
+    let result = socket.with_state(|state| {
         crate::shutdown::shutdown(
             sys.shutdown,
             fd,
@@ -110,10 +110,13 @@ fn shutdown(socket: Co, how: c_int, sys: Sys) -> bool {
             ssl_shutdown,
         )
     });
-    if error != 0 {
-        set_err(socket, error);
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            set_err(socket, error.raw_os_error().unwrap_or(0));
+            false
+        }
     }
-    error == 0
 }
 
 fn close(socket: Co, sys: Sys) -> bool {
@@ -235,7 +238,7 @@ mod tests {
             if !unsafe { (*s.socket()).fields.ssl().is_null() } {
                 (ops().ssl_shutdown)(s);
             }
-            if (sys.shutdown)(s.sock_fd(), how) < 0 {
+            if (sys.shutdown)(s.sock_fd(), how).map_or(-1, |()| 0) < 0 {
                 error = errno();
             }
             if error == 0 || error == libc::ENOTCONN {
@@ -362,13 +365,17 @@ mod tests {
         static OPTION: Cell<u32> = const { Cell::new(0) };
     }
 
-    fn fake_shutdown(fd: c_int, how: c_int) -> c_int {
+    fn fake_shutdown(fd: c_int, how: c_int) -> std::io::Result<()> {
         log(format!("shutdown:{fd}:{how}"));
         let (result, error) = SHUTDOWN.get();
         if error >= 0 {
             set_errno(error);
         }
-        result
+        if result < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
     fn fake_connect(fd: c_int, _: &SocketAddress) -> bool {
         log(format!("connect:{fd}"));
@@ -503,10 +510,7 @@ mod tests {
                 set_flags(s, (k / 4) % 2 == 1, (k / 16) % 2 == 1, (k / 32) % 2 == 1);
                 s.0.sock_fd.set(if (k / 8) % 2 == 1 { -1 } else { 77 });
                 if (k / 64) % 2 == 1 {
-                    unsafe {
-                        s.0.record()
-                            .set_ssl(core::ptr::NonNull::<u8>::dangling().as_ptr().cast());
-                    }
+                    unsafe { s.0.record() }.set_ssl(Some(crate::co_socket::stub_ssl()));
                 }
             };
             let hooks = move || {

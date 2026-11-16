@@ -10,7 +10,7 @@ use crate::{
     net::{self, warn_sys},
     socket::open,
 };
-use libc::{c_char, c_int, c_void};
+use libc::{c_char, c_int};
 use std::{
     ffi::{CStr, CString},
     ptr,
@@ -34,9 +34,9 @@ const OPERATION_NOT_SUPPORT: i64 =
 
 /// `open_fastcgi_protocol`'s length: the record's content and padding lengths
 /// plus its 8-byte header, or -1 past 65535.
-extern "C" fn fastcgi_length(
-    _protocol: *const Protocol,
-    _socket: *mut c_void,
+fn fastcgi_length(
+    _protocol: &Protocol,
+    _socket: Option<swoole_rs_reactor::Socket<'_>>,
     pl: &mut PacketLength,
 ) -> isize {
     pl.bytes()
@@ -734,7 +734,7 @@ fn socketpair(call: &Call) {
         return call.set_bool(false);
     };
     swoole_rs_phpruntime::check_reactor();
-    let kind = swoole_rs_reactor::swr_v1_socket_type(domain, kind);
+    let kind = swoole_rs_reactor::socket_type(domain, kind).raw();
     let mut sockets = OwnedArray::default();
     for fd in pair {
         // The new descriptor, which the object takes over.
@@ -786,7 +786,7 @@ fn import(call: &Call) {
         warn_sys("getsockopt(SOL_SOCKET, SO_TYPE) failed", errno());
         return call.set_bool(false);
     }
-    let kind = swoole_rs_reactor::swr_v1_socket_type(domain, kind);
+    let kind = swoole_rs_reactor::socket_type(domain, kind).raw();
     let flags = match swoole_rs_corebase::sys::fcntl(fd, libc::F_GETFL, 0) {
         Ok(flags) => flags,
         Err(error) => {

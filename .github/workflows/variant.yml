@@ -23,7 +23,7 @@ jobs:
     env:
       VARIANT: ${{ inputs.variant }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - id: install
         uses: ./.github/actions/install
         with:
@@ -62,7 +62,7 @@ jobs:
       # ZTS: main's release build has the dependencies; zend-sys and the crates above it rebuild
       # against this PHP. Build trees must start clean.
       - if: inputs.variant == 'zts'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: release
           save-if: false
@@ -70,7 +70,7 @@ jobs:
         if: inputs.variant == 'zts'
         run: rm -rf target/ext target/upstream target/thirdparty target/native-core
       - if: inputs.variant == 'zts'
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: target/php-zts
           key: php-zts-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh') }}-${{ github.workspace }}
@@ -91,6 +91,7 @@ jobs:
           cargo test --locked -p swoole-rs-clients --features cares completion_
       # The control is the pinned reference itself, unpatched.
       - name: Build cargo engine
+        id: engine
         run: |
           python3 tools/build_ext.py $BUILD
           mkdir -p "target/phpt/$VARIANT"
@@ -171,14 +172,28 @@ jobs:
             --engine cargo=target/phpt/cargo.so --engine upstream=target/phpt/upstream.so \
             --profiles target/callgrind/profiles \
             --output "target/phpt/$VARIANT/callgrind.json" | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v7
+      # Fixed samples expose allocator-path variation before the merge queue.
+      - name: Repeat io_uring instruction count
+        if: always() && inputs.callgrind && inputs.variant == 'iouring' && steps.engine.outcome == 'success'
+        run: |
+          read -r -a run_args <<< "$RUN"
+          failed=0
+          for sample in 2 3; do
+            python3 benchmarks/callgrind.py --limits benchmarks/callgrind_limits \
+              --workload uring-file --requests 1000 "${run_args[@]}" \
+              --engine cargo=target/phpt/cargo.so --engine upstream=target/phpt/upstream.so \
+              --profiles "target/callgrind/profiles/sample-$sample" \
+              --output "target/phpt/$VARIANT/callgrind-$sample.json" || failed=1
+          done
+          exit "$failed"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always() && inputs.callgrind && (inputs.variant == 'iouring' || inputs.variant == 'zts')
         with:
           retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: profiles-${{ inputs.variant }}-callgrind
           path: target/callgrind/profiles/
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}

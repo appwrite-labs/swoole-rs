@@ -8,13 +8,13 @@
 //! `SyncClient` and `AsyncClient` are the `created`/`connected` bookkeeping their
 //! header gives `Client`. The `Server` fixtures are forked std servers bound before
 //! the fork: the cases assert only on the client. [`timer_after`] schedules a
-//! Rust closure through crates/timer's `swr_v1_timer_add_plain`.
+//! Rust closure through crates/timer's `add_fn`.
 
 use super::socket::{
     EADDRNOTAVAIL, ECONNREFUSED, IoVec, SHUT_RD, SHUT_RDWR, SHUT_WR, SIGTERM, SW_SOCK_TCP,
     SW_SOCK_TCP6, SW_SOCK_UDP, SW_SOCK_UDP6, SW_SOCK_UNIX_DGRAM, TEST_HOST, TEST_HTTP_EXPECT,
     TEST_HTTPS_EXPECT, TEST_PORT, TEST_REQUEST_BAIDU, TLS_HOST_NAME, TlsPrepared, contains,
-    get_random_port, http_get_request, is_github_ci, string_set, swr_v1_tls_owner_new,
+    get_random_port, http_get_request, is_github_ci, string_set, tls_owner_new,
 };
 use super::{
     _exit, AF_INET, CppString, EINVAL, ENOENT, ETIMEDOUT, SW_ERR, TEST_HTTP_DOMAIN, TEST_STR,
@@ -65,56 +65,13 @@ const EINPROGRESS: c_int = 115;
 const SIGIO: c_int = 29;
 const SIGPIPE: c_int = 13;
 
-/// crates/clients' `ClientRecord`, the head of `network::Client`, with Linux's
-/// 120-byte `network::Address`.
-#[repr(C)]
-struct Record {
-    http2: bool,
-    open_length_check: bool,
-    open_eof_check: bool,
-    protocol: [u64; 8],
-    server_addr: [u8; 120],
-    remote_addr: [u8; 120],
-    socket: *mut c_void,
-    object: *mut c_void,
-    buffer: *mut c_void,
-}
-
-const _: () = assert!(
-    std::mem::offset_of!(Record, socket) == 312 && size_of::<Record>() == 336,
-    "ClientRecord's layout moved"
-);
-
-/// crates/corebase's `ProxyFields`.
-#[repr(C)]
-struct ProxyFields {
-    state: u8,
-    dont_handshake: u8,
-    version: u8,
-    method: u8,
-    dns_tunnel: u8,
-    port: i32,
-    target_port: i32,
-    socket_type: i32,
-}
-
 unsafe extern "C" {
-    fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut c_void;
-    fn swr_v1_clients_address_host(address: *const c_void) -> *const c_char;
-    fn swr_v1_clients_address_port(address: *const c_void) -> c_int;
-
     #[link_name = "_ZNK6swoole7network6Socket12has_timedoutEv"]
     fn socket_has_timedout(socket: *const c_void) -> bool;
     #[link_name = "_Z17swoole_event_initi"]
     fn swoole_event_init(flags: c_int) -> c_int;
     #[link_name = "_Z17swoole_event_waitv"]
     fn swoole_event_wait() -> c_int;
-    fn swr_v1_timer_add_plain(
-        ms: c_long,
-        persistent: bool,
-        callback: unsafe extern "C" fn(*mut c_void),
-        data: *mut c_void,
-    ) -> *mut c_void;
     #[link_name = "_Z17swoole_signal_setiPFviEii"]
     fn swoole_signal_set(
         signo: c_int,
@@ -148,7 +105,7 @@ fn event_wait() {
     unsafe { swoole_event_wait() };
 }
 
-unsafe extern "C" fn closure_invoker<F: FnMut()>(data: *mut c_void) {
+unsafe fn closure_invoker<F: FnMut()>(data: *mut c_void) {
     // SAFETY: `timer_after` leaked an `F` as the timer's data.
     let body = unsafe { &mut *data.cast::<F>() };
     body();
@@ -156,9 +113,11 @@ unsafe extern "C" fn closure_invoker<F: FnMut()>(data: *mut c_void) {
 
 /// `swoole_timer_after(ms, fn)` of the leaked closure.
 fn timer_after<F: FnMut()>(ms: c_long, body: F) {
-    let data = Box::into_raw(Box::new(body)).cast();
-    // SAFETY: the invoker takes the closure leaked as `data`.
-    assert!(!unsafe { swr_v1_timer_add_plain(ms, false, closure_invoker::<F>, data) }.is_null());
+    let data: *mut c_void = Box::into_raw(Box::new(body)).cast();
+    let invoke: unsafe fn(*mut c_void) = closure_invoker::<F>;
+    // SAFETY: the invoker takes the closure leaked as `data`, which lives for good.
+    let fire = move || unsafe { invoke(data) };
+    assert!(swoole_rs_timer::add_fn(ms, false, fire).is_some());
 }
 
 /// A boxed callback slot, called reentrantly with the others.
@@ -206,8 +165,8 @@ unsafe extern "C" fn listener(
 impl<'a> Client<'a> {
     /// `Client cli(type, async)`; None when it has no socket (`!cli.ready()`).
     pub(super) fn new(kind: c_int, is_async: bool) -> Option<Box<Self>> {
-        // SAFETY: no preconditions.
-        let state = unsafe { swr_v1_clients_new(kind, is_async) };
+        let state: *mut c_void = native::create(kind, is_async)
+            .map_or(std::ptr::null_mut(), |client| client.as_ptr().cast());
         if state.is_null() {
             return None;
         }
@@ -232,13 +191,10 @@ impl<'a> Client<'a> {
         cli
     }
 
-    fn record(&self) -> &Record {
-        // SAFETY: the live client, whose head is the record.
-        unsafe { &*self.state.cast::<Record>() }
-    }
-
     pub(super) fn socket(&self) -> *mut c_void {
-        self.record().socket
+        self.client()
+            .socket()
+            .map_or(std::ptr::null_mut(), |socket| socket.as_ptr().cast())
     }
 
     /// Installs the callbacks set so far, as assigning `onConnect` and the rest does.
@@ -388,12 +344,11 @@ impl<'a> Client<'a> {
         } else {
             SW_ERR
         };
-        let address = (&raw const address).cast();
-        // SAFETY: the address Rust filled.
-        let host = unsafe { CStr::from_ptr(swr_v1_clients_address_host(address)) };
-        // SAFETY: as above.
-        let port = unsafe { swr_v1_clients_address_port(address) };
-        (result, host.to_str().unwrap().to_owned(), port)
+        let host = swoole_rs_clients::address::with_host(&address, |host| {
+            host.to_str().unwrap().to_owned()
+        });
+        let port = swoole_rs_clients::address::address_port(&address).into();
+        (result, host, port)
     }
 
     pub(super) fn enable_ssl_encrypt(&self) -> c_int {
@@ -415,12 +370,12 @@ impl<'a> Client<'a> {
     /// `set_tls_host_name(name)`: a fresh `SSLContext`'s view with the name set, assigned
     /// to the client's (whose other values are still a fresh one's).
     fn set_tls_host_name(&self, name: &str) {
-        let prepared: TlsPrepared = swr_v1_tls_owner_new();
+        let prepared: TlsPrepared = tls_owner_new();
         // SAFETY: the fresh owner's live fields and slot, then the client's live owner.
         unsafe {
             (*prepared.fields).disable_tls_host_name = u8::from(name.is_empty());
             assert_eq!(
-                string_set(prepared.strings[TLS_HOST_NAME], name.as_bytes()),
+                string_set(prepared.owner, TLS_HOST_NAME, name.as_bytes()),
                 0
             );
             let owner = |context: *const c_void| {
@@ -430,7 +385,7 @@ impl<'a> Client<'a> {
                 &mut owner(self.ssl_context()),
                 &mut owner(prepared.owner),
             );
-            assert_eq!(copied.status, 0);
+            assert_eq!(copied, Ok(()));
             drop(std::rc::Rc::<swoole_rs_tls::OwnedTlsContext>::from_raw(
                 prepared.owner.cast(),
             ));
@@ -460,7 +415,7 @@ impl<'a> Client<'a> {
 
     /// `client.socks5_proxy`'s `dns_tunnel`, or None without one.
     fn socks5_dns_tunnel(&self) -> Option<&mut u8> {
-        let fields = self.handle().proxy_fields(false).cast::<ProxyFields>();
+        let fields = self.handle().proxy_fields(false);
         // SAFETY: the client's live proxy's fields.
         (!fields.is_null()).then(|| unsafe { &mut (*fields).dns_tunnel })
     }

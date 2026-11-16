@@ -2,27 +2,26 @@
 //! and flagged [`TYPED`]. Writes check keys and values against the definition:
 //! `swoole_typed_array`, the `array_push`/`array_unshift`/`array_splice`
 //! overrides, and the `ASSIGN_DIM`/`UNSET_DIM`/`FE_RESET_RW` opcode handlers.
-use crate::{CONTINUE, DISPATCH, Frame, Op};
+use crate::{Frame, Next, Op};
 use std::{
     cell::Cell,
     ffi::{CStr, CString, c_int},
+    io::IoSlice,
     marker::PhantomData,
-    mem::{MaybeUninit, offset_of},
-    ptr, slice,
+    mem::offset_of,
+    slice,
     sync::OnceLock,
 };
 use swoole_rs_zend::{
-    Call, ClassEntry, Owned, UNDEF, Value, ZString,
+    Call, ClassEntry, Owned, Php, Value, ZString,
     bailout::Bailout,
     handlers,
     opcode::Handler,
     sys::{
-        _zend_hash_init, _zval_struct__bindgen_ty_2, HashTable, IS_ARRAY, IS_ARRAY_EX, IS_DOUBLE,
-        IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF,
-        swr_zend_efree, zend_class_entry, zend_internal_function, zend_long, zend_value,
-        zif_handler, zval_ptr_dtor,
+        HashTable, IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE,
+        IS_STRING, IS_TRUE, IS_UNDEF, zend_long, zif_handler,
     },
-    throw_error, type_error, value,
+    throw_error, type_error,
 };
 
 /// `HASH_FLAG_TYPED_ARRAY`, a `HashTable` flag bit Zend leaves unused.
@@ -48,14 +47,21 @@ struct TypeValue {
 }
 
 /// Upstream's `ArrayTypeInfo`, followed by `len` bytes of definition and a NUL.
+/// Its `ce` is the class of an object value type, which outlives the request's
+/// arrays: borrowed for `'a`, as long as the array it describes.
 #[repr(C)]
-struct TypeInfo {
+struct TypeInfo<'a> {
     this: TypeValue,
     element: TypeValue,
-    ce: *mut zend_class_entry,
+    ce: Option<ClassEntry<'a>>,
     len: u16,
     text: [u8; 0],
 }
+
+const _: () = assert!(
+    size_of::<TypeInfo<'static>>() == 32 && offset_of!(TypeInfo, text) == 26,
+    "stdext.c's swr_type_info"
+);
 
 /// Why a definition did not parse.
 enum Failure {
@@ -81,13 +87,13 @@ const _: () = assert!(
 );
 
 /// `get_type_info`: the definition behind a typed array's table.
-fn info_of(ht: *mut HashTable) -> *mut TypeInfo {
+fn info_of<'a>(ht: *mut HashTable) -> *mut TypeInfo<'a> {
     ht.wrapping_byte_add(size_of::<HashTable>()).cast()
 }
 
 /// Bytes a `TypeInfo` with `len` bytes of text takes.
 fn info_size(len: usize) -> usize {
-    size_of::<TypeInfo>() + len + 1
+    size_of::<TypeInfo<'static>>() + len + 1
 }
 
 /// The value part of a definition's text.
@@ -144,8 +150,9 @@ impl<'a> Typed<'a> {
         flags.set(flags.get() | TYPED);
     }
 
-    fn header(self) -> &'a TypeInfo {
-        // SAFETY: a typed table carries a parsed definition right after it.
+    fn header(self) -> &'a TypeInfo<'a> {
+        // SAFETY: a typed table carries a parsed definition right after it,
+        // whose class (one `Php::lookup_class` found) outlives the table.
         unsafe { &*info_of(self.ht) }
     }
 
@@ -153,11 +160,21 @@ impl<'a> Typed<'a> {
         self.header().this
     }
 
+    /// The definition behind the table: its header, text and NUL.
+    fn info(self) -> &'a [u8] {
+        let length = info_size(usize::from(self.header().len));
+        // SAFETY: a parsed definition, `info_size` of its text's length,
+        // follows the table, which Zend never writes.
+        unsafe { slice::from_raw_parts(info_of(self.ht).cast::<u8>(), length) }
+    }
+
     /// The definition's text.
     fn text(self) -> &'a [u8] {
-        let start = info_of(self.ht).wrapping_byte_add(offset_of!(TypeInfo, text));
-        // SAFETY: a parsed definition's `len` bytes of text follow its header.
-        unsafe { slice::from_raw_parts(start.cast::<u8>(), usize::from(self.header().len)) }
+        let start = offset_of!(TypeInfo, text);
+        let text = self
+            .info()
+            .get(start..start + usize::from(self.header().len));
+        text.unwrap_or_default()
     }
 
     /// `get_value_type_str()` with its length.
@@ -193,15 +210,15 @@ impl<'a> Typed<'a> {
 
 /// A definition parsed from a `swoole_typed_array` or `swoole_array_is_typed`
 /// argument.
-struct Parsed {
+struct Parsed<'a> {
     this: TypeValue,
     element: TypeValue,
-    ce: *mut zend_class_entry,
+    ce: Option<ClassEntry<'a>>,
     /// Lowercase, without spaces, then a NUL.
     text: Vec<u8>,
 }
 
-impl Parsed {
+impl Parsed<'_> {
     /// The text without its NUL.
     fn text(&self) -> &[u8] {
         self.text.split_last().map_or(&[], |(_, text)| text)
@@ -213,36 +230,16 @@ impl Parsed {
         self.this.key == other.key && self.this.value == other.value && self.text() == typed.text()
     }
 
-    /// Write the definition into `room`, the bytes behind a table.
-    ///
-    /// # Panics
-    /// If `room` is misaligned for a `TypeInfo` or shorter than the
-    /// definition.
-    fn write(&self, room: &mut [MaybeUninit<u8>]) {
-        #[expect(
-            clippy::cast_ptr_alignment,
-            reason = "the assert below checks the alignment before any write"
-        )]
-        let info = room.as_mut_ptr().cast::<TypeInfo>();
-        assert!(
-            info.is_aligned() && room.len() >= info_size(self.text().len()),
-            "room for the definition"
-        );
-        let header = TypeInfo {
+    /// The header behind a table: what [`typed_new`] copies there, then the text.
+    fn header(&self) -> TypeInfo<'_> {
+        TypeInfo {
             this: self.this,
             element: self.element,
             ce: self.ce,
             // Shorter than 65535 bytes: `parse` checked.
             len: u16::try_from(self.text().len()).unwrap_or(u16::MAX),
             text: [],
-        };
-        // SAFETY: `room`, aligned and long enough (checked), holds the header.
-        unsafe { info.write(header) };
-        let text = info
-            .wrapping_byte_add(offset_of!(TypeInfo, text))
-            .cast::<u8>();
-        // SAFETY: `room` holds the text and its NUL after the header (checked).
-        unsafe { ptr::copy_nonoverlapping(self.text.as_ptr(), text, self.text.len()) };
+        }
     }
 }
 
@@ -250,10 +247,21 @@ unsafe extern "C" {
     /// libc's `isspace`, as upstream's `remove_all_spaces` classifies bytes.
     safe fn isspace(c: c_int) -> c_int;
     /// `SEPARATE_ARRAY` of an array zval (anything else is left alone): a
-    /// shared table is copied for the slot, and its count only drops, so it
-    /// stays live for whoever else holds it.
-    #[link_name = "swr_zend_separate_array"]
-    safe fn separate_array(array: &Value);
+    /// shared table is copied for the slot, with the lent bytes (an `IoSlice`
+    /// is an iovec) behind the copy, and its count only drops, so it stays
+    /// live for whoever else holds it.
+    #[link_name = "swr_phpstdext_separate"]
+    safe fn separate_array(array: &Value, info: IoSlice<'_>);
+    /// `ZVAL_ARR(made, ...)` of a new table of `size` elements with a copy of
+    /// `header` behind it, then `header.len` bytes of the lent `text` (zeros past
+    /// its end) and a NUL: the table. What `made` held is not released.
+    #[link_name = "swr_phpstdext_typed_new"]
+    safe fn typed_new(
+        made: &Owned,
+        size: u32,
+        header: &TypeInfo<'_>,
+        text: IoSlice<'_>,
+    ) -> *mut HashTable;
 }
 
 /// `get_type`.
@@ -327,7 +335,7 @@ fn split_value(text: &[u8], start: usize, len: usize) -> Result<TypeValue, usize
 }
 
 /// `ArrayTypeInfo::parse`.
-fn parse(source: &[u8]) -> Result<Parsed, Failure> {
+fn parse<'a>(php: Php<'a>, source: &[u8]) -> Result<Parsed<'a>, Failure> {
     if u16::try_from(source.len()).is_err() || source.len() == usize::from(u16::MAX) {
         throw_error(c"The type definition string is too long (must be less than 65535 characters)");
         return Err(Failure::Thrown);
@@ -348,23 +356,18 @@ fn parse(source: &[u8]) -> Result<Parsed, Failure> {
     let mut parsed = Parsed {
         this,
         element: TypeValue::default(),
-        ce: ptr::null_mut(),
+        ce: None,
         text,
     };
     if u32::from(this.value) == IS_OBJECT {
-        parsed.ce = lookup_class(&ZString::new(value_part(parsed.text(), this)))?;
+        let name = ZString::new(value_part(parsed.text(), this));
+        let Some(ce) = php.lookup_class(&name).map_err(Failure::Bailout)? else {
+            throw_error(&message(&[b"Class '", name.bytes(), b"' not found"]));
+            return Err(Failure::Thrown);
+        };
+        parsed.ce = Some(ce);
     }
     Ok(parsed)
-}
-
-/// `zend_lookup_class(name)`, throwing "Class '%s' not found".
-fn lookup_class(name: &ZString) -> Result<*mut zend_class_entry, Failure> {
-    let ce = swoole_rs_zend::lookup_class(name).map_err(Failure::Bailout)?;
-    if ce.is_null() {
-        throw_error(&message(&[b"Class '", name.bytes(), b"' not found"]));
-        return Err(Failure::Thrown);
-    }
-    Ok(ce)
 }
 
 /// The parts in a row, each as printf's `%s` (or `%.*s`) prints it: up to its
@@ -471,9 +474,8 @@ fn check_key(typed: Typed, this: TypeValue, key: KeyType) -> bool {
 /// Whether `value`, an object of class `actual`, is of the class `typed`'s
 /// values have.
 fn check_object(typed: Typed, value: &Value, actual: ClassEntry<'_>) -> bool {
-    // SAFETY: the class the definition's parse looked up for its object values,
-    // and so never null; classes outlive the request's arrays.
-    let expected = unsafe { ClassEntry::from_ptr(typed.header().ce) };
+    // The class the definition's parse looked up for its object values.
+    let expected = typed.header().ce;
     if expected.is_some_and(|expected| actual.instance_of(expected)) {
         return true;
     }
@@ -514,42 +516,27 @@ fn check_array(typed: Typed, element: Option<Typed>) -> bool {
     false
 }
 
-/// `SEPARATE_ARRAY(container)`, then `copy_array_type_info`: a copy the
-/// separation made gets `source`'s definition, in a fresh allocation that has
-/// room for it behind the table. The typed table `container` holds afterwards.
-/// # Safety
-/// `container` holds `source`, which nothing uses afterwards.
-pub(crate) unsafe fn separate<'a>(value: &'a Value, source: Typed<'a>) -> Typed<'a> {
-    let container = value.as_ptr();
-    separate_array(value);
-    // Separation leaves the container holding an array: `source`'s, or its copy.
-    let Some(ht) = value.array_ptr() else {
-        return source;
-    };
+/// `SEPARATE_ARRAY(container)`, then `copy_array_type_info`: the typed array
+/// `value` holds, unshared. A copy the separation made gets the definition, in
+/// a fresh allocation that has room for it behind the table; the shared
+/// original stays with its other holders. None unless `value` holds a typed
+/// array.
+pub(crate) fn separate(value: &Value) -> Option<Typed<'_>> {
+    let source = Typed::of(value)?;
+    separate_array(value, IoSlice::new(source.info()));
+    // Separation leaves the container holding an array: `source`'s, or its
+    // copy with the definition behind it.
+    let ht = value.array_ptr()?;
     if source.ht == ht {
-        return source;
+        return Some(source);
     }
-    // `source` remains shared or immutable; `ht` is the fresh unshared copy.
-    let source_info = info_of(source.ht);
-    let extra = info_size(usize::from(source.header().len));
-    // The real table header and trailing type metadata.
-    let copy = value::emalloc(size_of::<HashTable>() + extra).cast::<HashTable>();
-    // SAFETY: both hold a table.
-    unsafe { ptr::copy_nonoverlapping(ht, copy, 1) };
-    // SAFETY: the source holds `extra` bytes of definition; the copy has room.
-    unsafe { ptr::copy_nonoverlapping(source_info.cast::<u8>(), info_of(copy).cast(), extra) };
-    // The table just made, with the definition copied behind it, which
-    // `container` holds for `'a` in place of `ht`.
+    // The fresh unshared copy, which `value` holds for `'a`.
     let own = Typed {
-        ht: copy,
+        ht,
         live: PhantomData,
     };
     own.mark();
-    // SAFETY: an array zval, which now holds the copy.
-    unsafe { (*container).value = zend_value { arr: copy } };
-    // SAFETY: the old allocation, which nothing references now.
-    unsafe { swr_zend_efree(ht.cast()) };
-    own
+    Some(own)
 }
 
 /// The `ASSIGN_DIM_OP` restriction: concatenation needs string values,
@@ -574,17 +561,18 @@ pub(crate) fn operation(typed: Typed, concat: bool) -> bool {
 pub(crate) struct Unset;
 
 impl Handler for Unset {
-    fn run(frame: Frame<'_>) -> c_int {
+    const OPCODE: u32 = swoole_rs_zend::sys::ZEND_UNSET_DIM;
+    fn run(frame: Frame<'_>) -> Next {
         // `get_array_on_opline`: op1's slot.
         let Some(array) = Op::current(frame).op1_container() else {
-            return DISPATCH;
+            return Next::Dispatch;
         };
         match Typed::of(array) {
             Some(typed) if typed.this().key == 0 => {
                 throw_error(c"The typed array list do not support random deletion of elements");
-                CONTINUE
+                Next::Continue
             }
-            _ => DISPATCH,
+            _ => Next::Dispatch,
         }
     }
 }
@@ -594,23 +582,20 @@ impl Handler for Unset {
 pub(crate) struct ForeachBegin;
 
 impl Handler for ForeachBegin {
-    fn run(frame: Frame<'_>) -> c_int {
+    const OPCODE: u32 = swoole_rs_zend::sys::ZEND_FE_RESET_RW;
+    fn run(frame: Frame<'_>) -> Next {
         let op = Op::current(frame);
         if op.op1_container().and_then(Typed::of).is_none() {
-            return DISPATCH;
+            return Next::Dispatch;
         }
         throw_error(
             c"The type array do not support using references for element value during iteration",
         );
+        // The instruction's failure: an undefined result, if it is used.
         if let Some(result) = op.result() {
-            let mut undefined = UNDEF;
-            undefined.u2 = _zval_struct__bindgen_ty_2 {
-                fe_iter_idx: u32::MAX,
-            };
-            // SAFETY: the result slot: `ZVAL_UNDEF`, then `Z_FE_ITER_P(result) = -1`.
-            unsafe { result.as_ptr().write(undefined) };
+            result.undef_iteration();
         }
-        CONTINUE
+        Next::Continue
     }
 }
 
@@ -632,7 +617,7 @@ fn typed_array(call: &Call) {
         return;
     };
     let init = call.value(2);
-    let outcome = parse(definition.bytes()).and_then(|parsed| match init {
+    let outcome = parse(call.php(), definition.bytes()).and_then(|parsed| match init {
         Some(init) => from_array(call, &parsed, init),
         None => fill(call, &parsed, None),
     });
@@ -658,15 +643,6 @@ fn from_array(call: &Call, parsed: &Parsed, init: &Value) -> Result<(), Failure>
     Ok(())
 }
 
-/// `make_typed_array`: a table with room for `len` bytes of definition.
-fn make_typed_array(size: u32, len: usize) -> *mut HashTable {
-    // Zend's request allocator.
-    let ht = value::emalloc(size_of::<HashTable>() + info_size(len)).cast();
-    // SAFETY: room for a table.
-    unsafe { _zend_hash_init(ht, size, Some(zval_ptr_dtor), false) };
-    ht
-}
-
 /// A new typed array of `parsed`'s definition, holding `init`'s entries.
 fn fill(call: &Call, parsed: &Parsed, init: Option<&Value>) -> Result<(), Failure> {
     let init = init.and_then(Value::array);
@@ -682,26 +658,21 @@ fn fill(call: &Call, parsed: &Parsed, init: Option<&Value>) -> Result<(), Failur
         definition.element =
             parse_value(&parsed.text, start, usize::from(this.len)).ok_or(Failure::Thrown)?;
     }
-    let len = parsed.text().len();
-    let array = make_typed_array(init.map_or(0, swoole_rs_zend::Array::count), len);
-    // SAFETY: the table just made has `info_size(len)` bytes behind it, which
-    // nothing else references yet.
-    let room = unsafe { slice::from_raw_parts_mut(info_of(array).cast(), info_size(len)) };
-    definition.write(room);
-    // The table just made, with its definition, which `made` holds below and
-    // this frame keeps until it returns it.
+    // `made` takes the new table's reference.
+    let mut made = Owned::default();
+    let array = typed_new(
+        &made,
+        init.map_or(0, swoole_rs_zend::Array::count),
+        &definition.header(),
+        IoSlice::new(definition.text()),
+    );
+    // The table just made, with its definition, which `made` holds and this
+    // frame keeps until it returns it.
     let typed = Typed {
         ht: array,
         live: PhantomData,
     };
     typed.mark();
-    let mut made = Owned::default();
-    let mut zval = UNDEF;
-    zval.value = zend_value { arr: array };
-    zval.u1.type_info = IS_ARRAY_EX;
-    // SAFETY: `ZVAL_ARR(made, array)`: `made`, undefined, takes the new
-    // table's reference.
-    unsafe { made.as_ptr().write(zval) };
     if let Some(init) = init
         && let Some(target) = made.array_mut()
     {
@@ -746,7 +717,7 @@ fn array_is_typed(call: &Call) {
         call.set_bool(true);
         return;
     };
-    match parse(definition.bytes()) {
+    match parse(call.php(), definition.bytes()) {
         Ok(parsed) => call.set_bool(parsed.equals(typed)),
         Err(failure) => {
             call.set_bool(false);
@@ -774,15 +745,8 @@ pub(crate) fn install(minit: &swoole_rs_zend::Minit) {
         (c"array_unshift", zif_swoole_array_unshift),
         (c"array_splice", zif_swoole_array_splice),
     ];
-    let [push, unshift, splice] = handlers.map(|(name, handler)| {
-        // `internal_function` starts the `zend_function` union.
-        let slot = minit
-            .compiled_function(name)
-            .wrapping_byte_add(offset_of!(zend_internal_function, handler))
-            .cast::<zif_handler>();
-        // SAFETY: a core internal function's handler slot, at MINIT.
-        unsafe { ptr::replace(slot, Some(handler)) }
-    });
+    let [push, unshift, splice] =
+        handlers.map(|(name, handler)| minit.replace_handler(name, handler));
     let originals = Originals {
         push,
         unshift,
@@ -809,8 +773,8 @@ fn check_appended(typed: Typed, call: &Call) -> bool {
 
 /// An override: unless the first argument names a typed array that `allowed`
 /// refuses (Zend has thrown), run the `original` handler, then, with `remark`,
-/// flag the table it rebuilt in place typed again. The original may bail out
-/// through this frame and its handler's, which own nothing to drop.
+/// flag the table it rebuilt in place typed again. A bailout in the original
+/// is trapped and deferred to the handler's end, with no table flagged.
 fn guarded(
     call: &Call,
     original: fn(&Originals) -> zif_handler,
@@ -823,19 +787,21 @@ fn guarded(
     {
         return;
     }
-    if let Some(handler) = ORIGINALS.get().and_then(original) {
-        // SAFETY: a core function's handler, whose whole contract is a live
-        // handler frame and return slot: `call`'s. It parses its own arguments.
-        unsafe { handler(call.frame(), call.return_value()) };
+    if let Some(handler) = ORIGINALS.get().map(original)
+        && handler.is_some()
+        && let Err(bailout) = call.forward(handler)
+    {
+        bailout.defer();
+        return;
     }
     if remark && let Some(typed) = target {
         typed.mark();
     }
 }
 
-// Upstream's `PHP_FUNCTION` names; `install` puts them in the core functions' slots.
+// Upstream's `PHP_FUNCTION` names; `install` puts them in the core functions'
+// slots. Each ends by raising the bailout `guarded` deferred.
 swoole_rs_zend::handlers! {
-    leaf:
     zif_swoole_array_push => push;
     zif_swoole_array_unshift => unshift;
     zif_swoole_array_splice => splice;
@@ -877,10 +843,10 @@ mod tests {
     #[test]
     fn layout_matches_upstream() {
         assert_eq!(size_of::<TypeValue>(), 6);
-        assert_eq!(offset_of!(TypeInfo, ce), 16);
-        assert_eq!(offset_of!(TypeInfo, len), 24);
-        assert_eq!(offset_of!(TypeInfo, text), 26);
-        assert_eq!(size_of::<TypeInfo>(), 32);
+        assert_eq!(offset_of!(TypeInfo<'static>, ce), 16);
+        assert_eq!(offset_of!(TypeInfo<'static>, len), 24);
+        assert_eq!(offset_of!(TypeInfo<'static>, text), 26);
+        assert_eq!(size_of::<TypeInfo<'static>>(), 32);
     }
 
     #[test]
@@ -920,27 +886,6 @@ mod tests {
         assert_eq!((empty.value, empty.len), (code(IS_OBJECT), 0));
         let nul = parsed(b"<int\0,string>");
         assert_eq!(nul.key, 0, "strchr stops at a NUL");
-    }
-
-    #[test]
-    fn the_text_follows_the_header_intact() {
-        let parsed = Parsed {
-            this: TypeValue::default(),
-            element: TypeValue::default(),
-            ce: ptr::null_mut(),
-            text: b"<string,int>\0".to_vec(),
-        };
-        let mut buffer = vec![u64::MAX; info_size(12).div_ceil(8)];
-        let info = buffer.as_mut_ptr().cast::<TypeInfo>();
-        parsed.write(unsafe { slice::from_raw_parts_mut(info.cast(), info_size(12)) });
-        let text = info
-            .wrapping_byte_add(offset_of!(TypeInfo, text))
-            .cast::<u8>();
-        assert_eq!(
-            unsafe { slice::from_raw_parts(text, 13) },
-            b"<string,int>\0"
-        );
-        assert_eq!(unsafe { (*info).len }, 12);
     }
 
     #[test]

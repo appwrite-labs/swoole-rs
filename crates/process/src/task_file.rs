@@ -20,8 +20,8 @@ use swoole_rs_corebase::{
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_ossupport::fd_write_all;
 
+use crate::methods::swoole_get_worker_id;
 use crate::process_pool::SW_IPC_MAX_SIZE;
-use crate::worker_globals::swr_v1_worker_global_get;
 
 /// Why reading a task's temporary file failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,7 +73,6 @@ pub(crate) const TASK_TMP_PATH_SIZE: usize = 256;
 
 /// The payload descriptor written into `EventData::data` when a task spills to a
 /// temp file (upstream's `swoole::PacketTask`).
-#[repr(C)]
 struct PacketTask {
     length: usize,
     tmpfile: [u8; TASK_TMP_PATH_SIZE],
@@ -222,7 +221,7 @@ pub struct TaskBuffer {
 
 const _: () = assert!(
     size_of::<DataHead>() == 40,
-    "`TaskBuffer::bytes` reads the head as bytes, so it has no padding"
+    "`Packed::bytes` reads the head as bytes, so it has no padding"
 );
 
 impl Default for TaskBuffer {
@@ -279,10 +278,7 @@ impl TaskBuffer {
     /// `EventData::size()` bytes: the head, then the payload it counts.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
-        let size = size_of::<DataHead>() + self.head.len as usize;
-        // SAFETY: the head has no padding, and `pack`, the one writer of `len`,
-        // wrote the `len` payload bytes after it, within the buffer.
-        unsafe { std::slice::from_raw_parts(std::ptr::from_ref(self).cast::<u8>(), size) }
+        self.packed().bytes()
     }
 
     /// `Server::task_pack`: a task header from this worker, with `data` inline or
@@ -290,7 +286,7 @@ impl TaskBuffer {
     pub fn pack(&mut self, data: &[u8]) -> bool {
         let id = swr_v1_core_current_task_id();
         swr_v1_core_set_current_task_id(id.wrapping_add(1));
-        let reactor_id = swr_v1_worker_global_get(0).c_cast::<i16>();
+        let reactor_id = swoole_get_worker_id().c_cast::<i16>();
         self.head = DataHead {
             fd: id,
             msg_id: 0,
@@ -310,14 +306,11 @@ impl TaskBuffer {
         let len = packed.info_len.c_cast::<u32>();
         self.head.len = len;
         if packed.tmpfile {
-            self.head.ext_flags |= TMPFILE;
+            self.head.ext_flags |= TaskFlag::SW_TASK_TMPFILE.bits();
         }
         true
     }
 }
-
-const TMPFILE: u16 = TaskFlag::SW_TASK_TMPFILE as u16;
-const PEEK: u16 = TaskFlag::SW_TASK_PEEK as u16;
 
 impl EventData {
     /// `Server::task_dump`: the header, and the temporary file's name if it has one.
@@ -326,7 +319,7 @@ impl EventData {
         datahead_dump(&self.head, &mut buf);
         let text = CStr::from_bytes_until_nul(&buf).unwrap_or_default();
         swoole_rs_corebase::sys::print(text.to_bytes());
-        if self.head.ext_flags & TMPFILE != 0 {
+        if TaskFlag::from_bits(self.head.ext_flags).contains(TaskFlag::SW_TASK_TMPFILE) {
             let pkg = PacketTask::read(&self.data);
             // Upstream prints the payload's length in bytes of the file's name; a
             // negative `(int)` precision prints all of it.
@@ -342,10 +335,8 @@ impl EventData {
 
 /// A packed task lent for `'a`: its `DataHead`, at any alignment, then the `len`
 /// bytes it counts (the payload, or a temporary file's `PacketTask`).
-/// [`Packed::from_raw`] is the one unsafe step. It is laid out as the pointer, so a
-/// server slot fn takes one where native code passes its `EventData *`.
+/// [`Packed::from_raw`] is the one unsafe step.
 #[derive(Clone, Copy)]
-#[repr(transparent)]
 pub struct Packed<'a> {
     raw: *const u8,
     life: PhantomData<&'a [u8]>,
@@ -416,7 +407,7 @@ impl<'a> Packed<'a> {
         'a: 'b,
     {
         let (payload, flags) = (self.payload(), self.head().ext_flags);
-        if flags & TMPFILE == 0 {
+        if !TaskFlag::from_bits(flags).contains(TaskFlag::SW_TASK_TMPFILE) {
             return Some((payload, flags));
         }
         let pkg = PacketTask::read(payload);
@@ -430,7 +421,11 @@ impl<'a> Packed<'a> {
         let kept = buffer.len();
         let mut read = Ok(());
         buffer.read_zeroed(pkg.length, |target| {
-            read = read_file(pkg.path(), target, flags & PEEK != 0);
+            read = read_file(
+                pkg.path(),
+                target,
+                TaskFlag::from_bits(flags).contains(TaskFlag::SW_TASK_PEEK),
+            );
             if read.is_ok() { target.len() } else { kept }
         });
         match read {
@@ -533,6 +528,7 @@ mod tests {
 
     #[test]
     fn a_task_buffer_counts_the_payload_it_packs() {
+        let _turn = methods::TASK_ID.lock();
         let mut buf = TaskBuffer::default();
         assert_eq!(
             buf.bytes().len(),
@@ -664,7 +660,7 @@ mod tests {
         use super::super::*;
 
         /// `task_pack` draws from the process-wide task id, so its tests take turns.
-        static TASK_ID: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        pub(super) static TASK_ID: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
         /// An `EventData`-sized, 8-aligned buffer.
         fn event() -> Vec<u64> {
@@ -712,7 +708,7 @@ mod tests {
             let head = unsafe { &*task };
             assert_eq!(
                 (head.len as usize, head.ext_flags),
-                (size_of::<PacketTask>(), TMPFILE)
+                (size_of::<PacketTask>(), TaskFlag::SW_TASK_TMPFILE.bits())
             );
             let pkg = PacketTask::read(unsafe { &(*event).data });
             let path = pkg.path().to_str().unwrap().to_owned();

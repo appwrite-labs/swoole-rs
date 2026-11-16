@@ -17,8 +17,13 @@
 #endif
 
 /* zend_object_alloc: emalloc the object and its property slots and zero the
- * bytes before the embedded zend_object. */
-void *swr_zend_object_alloc(size_t size, zend_class_entry *ce);
+ * bytes before the zend_object it embeds `offset` bytes in; then
+ * zend_object_std_init, object_properties_init and the handlers. */
+zend_object *swr_zend_object_new(size_t size, size_t offset, zend_class_entry *ce,
+                                 const zend_object_handlers *handlers);
+
+/* GC_FLAGS(object) & IS_OBJ_DESTRUCTOR_CALLED of a live object. */
+bool swr_zend_object_destructor_called(const zend_object *object);
 
 /* INIT_CLASS_ENTRY_EX of the NUL-terminated name, then
  * zend_register_internal_class_ex. */
@@ -45,8 +50,10 @@ void swr_zval_str(zval *value, zend_string *string);
  * never longjmp over a Rust frame. Rust reports the bailout to its C/C++ caller,
  * which re-raises it with zend_bailout() once the Rust frames have returned. */
 int swr_zend_try(void (*body)(void *), void *arg);
-/* zend_call_function(fci, fcc) inside zend_try: *result is 1 on SUCCESS. */
-int swr_zend_try_call(zend_fcall_info *fci, zend_fcall_info_cache *fcc, int *result);
+/* zend_call_function inside zend_try over `fcc` (a callable's resolved cache,
+ * or an empty one, which resolves `name` when it is given), `args` and `retval`:
+ * *result is 1 on SUCCESS. */
+int swr_zend_try_call(zend_fcall_info_cache *fcc, swr_zvals args, zval *name, zval *retval, int *result);
 
 /* Z_PARAM_FUNC of argument `number` (not nullable): 1, or 0 after raising
  * Zend's own parameter error. */

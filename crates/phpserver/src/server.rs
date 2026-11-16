@@ -4,9 +4,9 @@ use std::{
     cell::{Cell, OnceCell},
     ffi::{CStr, c_int, c_long, c_void},
     ptr,
-    sync::atomic::{AtomicPtr, AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
 };
-use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
+use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{DataHead, ServerEvent};
 use swoole_rs_phpstubs::server;
@@ -98,46 +98,6 @@ static ITERATOR: CustomClass<Iterator> = CustomClass::new();
 
 /// `SW_THREAD`, as MINIT was told.
 pub(crate) use swoole_rs_server::THREAD_SUPPORTED as THREAD;
-
-thread_local! {
-    /// Each thread's `ServerPortProperty` per port `object_id` (`SW_THREAD`):
-    /// every worker thread has its own port objects for the shared ports.
-    /// Taken out and put back around each access, which runs no PHP code.
-    static PORT_PROPERTIES: Cell<Vec<*mut c_void>> = const { Cell::new(Vec::new()) };
-}
-
-/// `php_swoole_server_{get,set}_port_property`: the port's `ServerPortProperty`,
-/// kept per thread in thread mode and in the port's own `slot` (`port->ptr`)
-/// otherwise. `set` stores `property` first; a get returns null for a port this
-/// thread has none for.
-pub(crate) fn port_property(
-    object_id: u16,
-    slot: &AtomicPtr<c_void>,
-    property: *mut c_void,
-    set: bool,
-) -> *mut c_void {
-    if !THREAD.load(Ordering::Relaxed) {
-        if set {
-            slot.store(property, Ordering::Relaxed);
-        }
-        return slot.load(Ordering::Relaxed);
-    }
-    let index = usize::from(object_id);
-    PORT_PROPERTIES.with(|cell| {
-        let mut properties = cell.take();
-        if set {
-            if properties.len() <= index {
-                properties.resize(index + 1, ptr::null_mut());
-            }
-            if let Some(entry) = properties.get_mut(index) {
-                *entry = property;
-            }
-        }
-        let found = properties.get(index).copied().unwrap_or(ptr::null_mut());
-        cell.set(properties);
-        found
-    })
-}
 
 /// `ConnectionIterator`: a `Connection\Iterator`'s position over its server's
 /// connections, of one port or (null) all of them.
@@ -580,6 +540,12 @@ pub(crate) fn running(call: &Call) -> Option<view::Server<'_>> {
     if serv.is_started() {
         return Some(serv);
     }
+    not_running(call)
+}
+
+/// [`running`]'s warning and `false`, off its fast path.
+#[cold]
+fn not_running(call: &Call) -> Option<view::Server<'_>> {
     fatal(E_WARNING, c"server is not running");
     call.set_bool(false);
     None
@@ -825,13 +791,13 @@ fn get_client_info(call: &Call) {
     }
     conn.with_client_cert(|cert| call.add_assoc_stringl(c"ssl_client_cert", cert));
     if let Some(server_socket) = serv.at(conn.server_fd()) {
-        let port = swr_v1_clients_address_port(&server_socket.info());
+        let port = address_port(&server_socket.info());
         call.add_assoc_long(c"server_port", i64::from(port));
     }
     call.add_assoc_long(c"server_fd", i64::from(conn.server_fd()));
     call.add_assoc_long(c"socket_fd", i64::from(conn.fd()));
     call.add_assoc_long(c"socket_type", i64::from(conn.socket_type()));
-    let remote_port = swr_v1_clients_address_port(&conn.info());
+    let remote_port = address_port(&conn.info());
     call.add_assoc_long(c"remote_port", i64::from(remote_port));
     with_host(&conn.info(), |ip| {
         call.add_assoc_stringl(c"remote_ip", ip.to_bytes());

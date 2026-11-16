@@ -3,16 +3,12 @@
 //! hooks, the event loop and the server.
 use crate::context::Ctx;
 use std::{
-    cell::Cell,
     ffi::{CStr, c_int, c_long, c_void},
     ptr::NonNull,
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_coroutine::Resume;
-use swoole_rs_zend::{
-    E_ERROR, bailout,
-    sys::{swr_zend_callable, zend_execute_data, zval},
-};
+use swoole_rs_zend::{E_ERROR, Zvals, bailout};
 
 /// `Co::stats()`'s native counts.
 #[derive(Default)]
@@ -71,11 +67,21 @@ impl Co {
 
 use swoole_rs_hooks::sleep::system_sleep;
 
-// Declared, since crates/phpevents (its `php_swoole_reactor_init` and
-// `swr_v1_phpevents_wait`) depends on this crate.
 unsafe extern "C" {
-    safe fn php_swoole_reactor_init() -> i32;
-    safe fn swr_v1_phpevents_wait();
+    /// A coroutine's body (`main_func`) inside `zend_first_try`: Zend calls the
+    /// callable `enter(context)` returns (none: nothing), reports an uncaught
+    /// exception as `E_ERROR`, then runs `defers(context)`; a bailout's exception
+    /// is reported too. 1 if an exception or bailout ended it. Bailouts after
+    /// it, outside a coroutine's first frame, end the process.
+    #[expect(
+        improper_ctypes,
+        reason = "C takes the context as an opaque pointer and only hands it back"
+    )]
+    safe fn swr_zend_coroutine_run(
+        enter: extern "C" fn(Ctx) -> Option<crate::context::Call>,
+        defers: extern "C" fn(Ctx),
+        context: Ctx,
+    ) -> c_int;
 }
 
 /// The globals, server state and build switches [`flag`] reads.
@@ -189,7 +195,7 @@ pub(crate) fn current_safe() -> Co {
 /// outside a coroutine, where upstream's raises a fatal error.
 #[must_use]
 pub fn sleep(seconds: f64) -> bool {
-    in_coroutine() && system_sleep(seconds) == 0
+    in_coroutine() && system_sleep(seconds)
 }
 
 pub(crate) fn current_task() -> Option<Ctx> {
@@ -245,11 +251,12 @@ pub(crate) fn stats(stats: &mut Stats) {
     }
     #[cfg(feature = "iouring")]
     iouring_stats(stats);
-    swoole_rs_hooks::async_threads::swr_v1_async_threads_stats(
-        &mut stats.aio_task_num,
-        &mut stats.aio_worker_num,
-        &mut stats.aio_queue_size,
-    );
+    if let Some((tasks, workers, queued)) = swoole_rs_hooks::async_threads::stats() {
+        let count = |n| i64::try_from(n).unwrap_or(i64::MAX);
+        stats.aio_task_num = count(tasks);
+        stats.aio_worker_num = count(workers);
+        stats.aio_queue_size = count(queued);
+    }
     // crates/reactor counts this thread's listeners.
     stats.signal_listener_num =
         i64::from(swoole_rs_reactor::signal_upstream::swoole_signal_get_listener_num());
@@ -273,17 +280,9 @@ fn iouring_stats(stats: &mut Stats) {
     stats.iouring_waiting_task_num = i64::try_from(waiting).unwrap_or(i64::MAX);
 }
 
-per_thread! {
-    /// `swoole_test_kernel_coroutine`'s arguments, from its call to the start of
-    /// the coroutine it creates, which takes them before its first switch.
-    static KERNEL_ARGS: Cell<(c_long, f64)> = Cell::new((0, 0.0));
-}
-
 /// `swoole_test_kernel_coroutine`'s coroutine: sleeps `count` times.
 pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
-    /// The coroutine's body: [`KERNEL_ARGS`]'s `(count, sleep)`.
-    extern "C" fn sleeper(_: *mut c_void) {
-        let (count, sleep) = KERNEL_ARGS.with(Cell::get);
+    let _cid = swoole_rs_coroutine::spawn(move || {
         for _ in 0..count {
             #[expect(
                 clippy::let_underscore_must_use,
@@ -291,18 +290,7 @@ pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
             )]
             let _ = super::sleep(sleep);
         }
-    }
-    KERNEL_ARGS.with(|args| args.set((count, sleep)));
-    spawn(sleeper);
-}
-
-/// `Coroutine::create(entry, nullptr)`: a coroutine running `entry`, which
-/// reads no argument (its own per-thread slot hands it what it needs), until it
-/// first yields or ends; its id. As for [`resume`], the caller's frames own
-/// nothing that needs a drop.
-fn spawn(entry: extern "C" fn(*mut c_void)) -> c_long {
-    // SAFETY: a safe entry takes any argument, null too.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(entry, std::ptr::null_mut()) }
+    });
 }
 
 /// The context of `co`'s origin, none for the main context (or no coroutine).
@@ -486,28 +474,24 @@ pub(crate) fn is_end(co: Co) -> bool {
 }
 
 /// `PHPCoroutine::create`'s `Coroutine::create(main_func, args)`.
-pub(crate) fn create(args: *mut c_void) -> c_long {
-    // SAFETY: the coroutine's entry, with the creator's live arguments.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(main, args) }
+pub(crate) fn create(args: crate::context::Args) -> c_long {
+    swoole_rs_coroutine::spawn(move || main(args))
 }
 
 /// `main_func`: the coroutine's function and defer tasks run inside
 /// `zend_first_try`; a coroutine that ended in an exception or a bailout
 /// bails the whole process out. Its frame owns nothing to drop.
-unsafe extern "C" fn main(args: *mut c_void) {
-    // SAFETY: on the new coroutine, with its creator's arguments.
-    let Some(ctx) = (unsafe { crate::context::open(args) }) else {
-        return;
-    };
-    let context = ctx.ptr().cast();
-    // SAFETY: Rust's entry and defer loop, over this coroutine's context.
-    let caught =
-        unsafe { swoole_rs_zend::sys::swr_zend_coroutine_run(Some(enter), Some(defers), context) };
-    crate::context::close(ctx);
-    if caught != 0 {
+fn main(args: crate::context::Args) {
+    if crate::context::run(args) {
         // SAFETY: the main context runs `bail_out`; this frame owns nothing.
         unsafe { swoole_rs_coroutine::swr_v1_coroutine_bail(Some(bail_out), std::ptr::null_mut()) };
     }
+}
+
+/// The running coroutine's function, then its defer tasks, inside
+/// `zend_first_try`: whether an exception or a bailout ended it.
+pub(crate) fn run(ctx: Ctx) -> bool {
+    swr_zend_coroutine_run(crate::context::enter, defers, ctx) != 0
 }
 
 /// The bailout of a coroutine that ended in an exception or a bailout, in the
@@ -517,32 +501,21 @@ extern "C" fn bail_out(_: *mut c_void) {
     bailout::raise(Err(bailout::Bailout));
 }
 
-/// The running coroutine's entry, whose `context` `main` passes.
-extern "C" fn enter(_context: *mut c_void) -> *mut swr_zend_callable {
-    current_task().map_or(std::ptr::null_mut(), crate::context::enter)
-}
-
-/// The defer tasks, last in first out; an exception bails out to the trap.
-extern "C" fn defers(_context: *mut c_void) {
-    let Some(ctx) = current_task() else {
-        return;
-    };
+/// The defer tasks of `ctx`, the running coroutine's context, last in first
+/// out; an exception bails out to the trap.
+extern "C" fn defers(ctx: Ctx) {
     while let Some((task, returned)) = crate::context::defer_next(ctx) {
-        let (fcc, mut argc, mut argv, _) = task.parts();
-        if let Some(returned) = returned {
-            (argc, argv) = (1, returned);
+        let (callee, mut args) = task.call_parts();
+        if let Some(returned) = &returned {
+            args = Zvals::one(returned);
         }
         // The call's own frame: the task keeps its arguments, which its release
         // drops, and its result goes to a temporary destroyed after the call.
         let temporary = swoole_rs_zend::Owned::default();
-        let mut fci = swoole_rs_zend::EMPTY_FCI;
-        fci.size = size_of::<swoole_rs_zend::sys::zend_fcall_info>();
-        fci.retval = temporary.as_ptr();
-        fci.param_count = argc;
-        fci.params = argv;
-        // SAFETY: a kept callable's resolved cache, over its kept arguments or the
-        // context's live return value, and a return slot live through the call.
-        let called = unsafe { bailout::call(&raw mut fci, fcc) };
+        let called = bailout::call(callee, args, None, &temporary);
+        // The context still holds the return value, so no destructor runs here,
+        // before anything below can bail out past this frame.
+        drop(returned);
         let failed = !matches!(called, Ok(true));
         bailout::defer(called.map(drop));
         if bailout::pending() {
@@ -575,7 +548,6 @@ pub(crate) fn check_reactor() {
 pub(crate) fn attach(
     on_yield: extern "C" fn(swoole_rs_coroutine::CoroutineTask),
     on_resume: extern "C" fn(swoole_rs_coroutine::CoroutineTask),
-    on_close: extern "C" fn(swoole_rs_coroutine::CoroutineTask),
 ) {
     // Upstream dereferences `sw_reactor()` here unchecked.
     if swoole_rs_reactor::event_api::current_prepared().is_none() {
@@ -584,7 +556,7 @@ pub(crate) fn attach(
     swoole_rs_reactor::event_api::on_destroy(deactivate_on_free);
     // The core's activation, on a running loop.
     swoole_rs_coroutine::activate();
-    set_callbacks([Some(on_yield), Some(on_resume), Some(on_close)]);
+    set_callbacks([Some(on_yield), Some(on_resume), None]);
 }
 
 pub(crate) fn detach() {
@@ -603,7 +575,7 @@ fn set_callbacks(callbacks: [swoole_rs_coroutine::SwapCallback; 3]) {
 }
 
 /// The reactor's destroy callback.
-extern "C-unwind" fn deactivate_on_free(_: *mut c_void) {
+fn deactivate_on_free() {
     bailout::raise(crate::runtime::deactivate());
 }
 
@@ -667,13 +639,13 @@ pub(crate) fn defer(value: impl swoole_rs_reactor::event_api::Deferred) {
     }
 }
 
-/// PHP 8.4+ `exit()`: the original handler, false if there is none.
-pub(crate) fn exit_original(execute_data: *mut zend_execute_data, return_value: *mut zval) -> bool {
+/// PHP 8.4+ `exit()`: the original handler over `call`, its bailout deferred
+/// to the handler's end; false if there is none.
+pub(crate) fn exit_original(call: &swoole_rs_zend::Call) -> bool {
     let Some(handler) = swoole_rs_phpruntime::original(b"exit") else {
         return false;
     };
-    // SAFETY: the handler's own frame and result.
-    unsafe { handler(execute_data, return_value) };
+    bailout::defer(call.forward(Some(handler)));
     true
 }
 
@@ -686,14 +658,7 @@ pub(crate) fn exit_fallback(message: Option<&[u8]>, status: c_long) {
     swoole_rs_phpswoole::sw_php_exit(status.c_cast::<c_int>());
 }
 
-/// `php_swoole_reactor_init()`: whether the event loop is ready.
-pub(crate) fn reactor_init() -> bool {
-    php_swoole_reactor_init() >= 0
-}
-
-pub(crate) fn event_wait() {
-    swr_v1_phpevents_wait();
-}
+pub(crate) use swoole_rs_phpswoole::{event_wait, reactor_init};
 
 /// `Coroutine::set_stack_size(php_swoole_parse_to_size(size))`.
 pub(crate) fn set_stack_size(size: &swoole_rs_zend::Value) {

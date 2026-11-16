@@ -4,7 +4,7 @@
 //! patch deletes) under its upstream symbols: this thread's `SwooleTG.timer`, its
 //! lazy creation, unit conversion and warnings, over the Rust-owned timer
 //! (`owner.rs`).
-use crate::owner::{Callback, Closure, Owner as Timer, Plain, TimerNode};
+use crate::owner::{Callback, Closure, Owner as Timer, TimerNode};
 use std::ffi::{CStr, c_long, c_void};
 use swoole_rs_corebase::CCast;
 pub use swoole_rs_corebase::timer_key::Held;
@@ -134,39 +134,6 @@ extern "C-unwind" fn swoole_timer_add(
     data: *mut c_void,
 ) -> *mut TimerNode {
     node(add(ms, persistent, TimerNode::new(callback, data)))
-}
-
-/// `swoole_timer_add(ms, persistent, ...)` of a callback of `data` alone: the
-/// node, or null.
-///
-/// # Safety
-/// Each time the timer fires, `callback(data)` meets `callback`'s contract:
-/// `data` stays valid for it until the timer has fired its last time or been
-/// deleted.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_timer_add_plain(
-    ms: c_long,
-    persistent: bool,
-    callback: Plain,
-    data: *mut c_void,
-) -> *mut c_void {
-    node(add(ms, persistent, TimerNode::plain(callback, data))).cast()
-}
-
-/// `swoole_timer_add(timeout, persistent, ...)`, in seconds, of a callback of
-/// `data` alone: the timer's id, which its timer never reuses, or 0.
-///
-/// # Safety
-/// As `swr_v1_timer_add_plain`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_timer_add_plain_sec(
-    timeout: f64,
-    persistent: bool,
-    callback: Plain,
-    data: *mut c_void,
-) -> c_long {
-    let node = TimerNode::plain(callback, data);
-    add(sec2msec(timeout), persistent, node).map_or(0, |(_, id)| id)
 }
 
 /// `swoole_timer_add(ms, persistent, ...)` of `f`, held by id, or none.
@@ -314,7 +281,8 @@ extern "C" fn swoole_timer_exists(timer_id: c_long) -> bool {
 
 /// `bool swoole_timer_clear(long timer_id)`: `Timer::remove(id)`.
 #[unsafe(export_name = "_Z18swoole_timer_clearl")]
-pub(crate) extern "C-unwind" fn swoole_timer_clear(timer_id: c_long) -> bool {
+#[must_use]
+pub extern "C-unwind" fn swoole_timer_clear(timer_id: c_long) -> bool {
     available(c"swoole_timer_clear").is_some_and(|timer| timer.remove(timer_id))
 }
 
@@ -350,9 +318,8 @@ pub extern "C-unwind" fn swoole_timer_select() {
 
 /// What `Swoole\Timer` (crates/phptimer) needs: PHP timers on this thread's timer.
 pub mod php {
-    use super::{Timer, TimerNode, add, current};
-    pub use crate::owner::{Bailout, Info, Plain};
-    use std::ffi::c_void;
+    use super::{Timer, TimerNode, current};
+    pub use crate::owner::{Bailout, Info};
 
     /// `swoole_timer_is_available()`.
     #[must_use]
@@ -360,16 +327,28 @@ pub mod php {
         current().is_some()
     }
 
-    /// `swoole_timer_add(ms, persistent, ...)` of a PHP timer that runs
-    /// `callback(data)` and, once removed, `destructor(data)`: its id, or none.
-    pub fn add_php(
+    /// Add a PHP timer, taking ownership of its parsed callable on success.
+    /// `H` runs and releases that same callable; a tick receives its id first.
+    ///
+    /// # Errors
+    /// Returns the unkept callable when the timer could not be added.
+    ///
+    /// Raw callback/data pairs cannot be passed through this safe API:
+    /// ```compile_fail
+    /// use swoole_rs_timer::php::add_php;
+    /// unsafe extern "C-unwind" fn callback(_: *mut std::ffi::c_void) {}
+    /// add_php(1, false, callback, callback, std::ptr::null_mut());
+    /// ```
+    #[cfg(feature = "php")]
+    pub fn add_php<H: swoole_rs_zend::Holder>(
         ms: i64,
         persistent: bool,
-        callback: Plain,
-        destructor: Plain,
-        data: *mut c_void,
-    ) -> Option<i64> {
-        add(ms, persistent, TimerNode::php(callback, destructor, data)).map(|(_, id)| id)
+        callable: swoole_rs_zend::Parsed,
+    ) -> Result<i64, swoole_rs_zend::Parsed> {
+        match super::created() {
+            Some(timer) => timer.add_php::<H>(ms, persistent, callable),
+            None => Err(callable),
+        }
     }
 
     /// `swoole_timer_get(id)`'s fields, and whether it is a PHP timer.
@@ -387,7 +366,7 @@ pub mod php {
     /// `Timer::get_ids()`: every timer's id, empty without a timer.
     #[must_use]
     pub fn ids() -> Vec<i64> {
-        current().map(Timer::ids).unwrap_or_default()
+        current().map_or_default(Timer::ids)
     }
 
     /// `swoole_timer_clear`'s lookup and removal of a PHP timer: whether the

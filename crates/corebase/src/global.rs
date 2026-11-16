@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Process-wide core state: upstream's `SwooleG` scalars, held by Rust. Native
-//! code reaches each through its accessor pair; `swoole::Global`'s members of
-//! those names are `swoole::RustField` views over them, so upstream's
-//! `SwooleG.field` reads and writes compile unchanged. Native object pointers
-//! (the memory pool, the stdout stream, the logger, the server, the AIO pipe
-//! socket, the fatal-error and backtrace hooks) are opaque: native code
-//! allocates and frees them, Rust only holds the pointer.
+//! Process-wide core state: upstream's `SwooleG` scalars, held by Rust, each
+//! behind its accessor pair. Native object pointers (the memory pool, the stdout
+//! stream, the logger, the server, the AIO pipe socket, the fatal-error and
+//! backtrace hooks) are opaque: native code allocates and frees them, Rust only
+//! holds the pointer.
 use crate::CCast;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_void};
 use std::ptr;
@@ -60,12 +58,11 @@ macro_rules! record {
 }
 
 record! {
-    running: AtomicBool, bool = false,
-        #[unsafe(no_mangle)] swr_v1_core_running, #[unsafe(no_mangle)] swr_v1_core_set_running;
+    running: AtomicBool, bool = false, swr_v1_core_running, swr_v1_core_set_running;
     enable_signalfd: AtomicBool, bool = false, swr_v1_core_enable_signalfd, swr_v1_core_set_enable_signalfd;
     enable_kqueue: AtomicBool, bool = false, swr_v1_core_enable_kqueue, swr_v1_core_set_enable_kqueue;
     enable_coroutine: AtomicBool, bool = false,
-        #[unsafe(no_mangle)] swr_v1_core_enable_coroutine, #[unsafe(no_mangle)] swr_v1_core_set_enable_coroutine;
+        swr_v1_core_enable_coroutine, swr_v1_core_set_enable_coroutine;
     print_backtrace_on_error: AtomicBool, bool = false,
         swr_v1_core_print_backtrace_on_error, swr_v1_core_set_print_backtrace_on_error;
     wait_signal: AtomicBool, bool = false, swr_v1_core_wait_signal, swr_v1_core_set_wait_signal;
@@ -74,14 +71,13 @@ record! {
     current_task_id: AtomicI64, c_long = 0, swr_v1_core_current_task_id, swr_v1_core_set_current_task_id;
     signal_fd: AtomicI32, c_int = 0, swr_v1_core_signal_fd, swr_v1_core_set_signal_fd;
     signal_alarm: AtomicBool, bool = false,
-        #[unsafe(no_mangle)] swr_v1_core_signal_alarm, swr_v1_core_set_signal_alarm;
+        swr_v1_core_signal_alarm, swr_v1_core_set_signal_alarm;
     signal_listener_num: AtomicU32, u32 = 0,
-        swr_v1_core_signal_listener_num, #[unsafe(no_mangle)] swr_v1_core_set_signal_listener_num;
+        swr_v1_core_signal_listener_num, swr_v1_core_set_signal_listener_num;
     signal_async_listener_num: AtomicU32, u32 = 0,
         swr_v1_core_signal_async_listener_num, swr_v1_core_set_signal_async_listener_num;
-    trace_flags: AtomicI64, c_long = 0, #[unsafe(no_mangle)] swr_v1_core_trace_flags, swr_v1_core_set_trace_flags;
-    pagesize: AtomicU32, u32 = 0,
-        #[unsafe(no_mangle)] swr_v1_core_pagesize, #[unsafe(no_mangle)] swr_v1_core_set_pagesize;
+    trace_flags: AtomicI64, c_long = 0, swr_v1_core_trace_flags, swr_v1_core_set_trace_flags;
+    pagesize: AtomicU32, u32 = 0, swr_v1_core_pagesize, swr_v1_core_set_pagesize;
     max_file_content: AtomicU32, u32 = 0, swr_v1_core_max_file_content, swr_v1_core_set_max_file_content;
     aio_core_worker_num: AtomicU32, u32 = 0,
         swr_v1_core_aio_core_worker_num, swr_v1_core_set_aio_core_worker_num;
@@ -161,16 +157,6 @@ impl Stream {
         C_STDOUT
     }
 
-    /// The stream at `raw`, none for null.
-    ///
-    /// # Safety
-    /// `raw` is null or an open stream that nothing closes while this, or a copy of
-    /// it, is in use.
-    #[must_use]
-    pub unsafe fn new(raw: *mut libc::FILE) -> Option<Self> {
-        ptr::NonNull::new(raw).map(Self)
-    }
-
     #[must_use]
     pub const fn as_ptr(self) -> *mut libc::FILE {
         self.0.as_ptr()
@@ -178,15 +164,15 @@ impl Stream {
 
     /// `fwrite` of `bytes`, buffered as the stream is.
     pub fn write(self, bytes: &[u8]) {
-        // SAFETY: an open stream (the type's invariant); fwrite reads `bytes.len()`
-        // bytes of `bytes`.
-        unsafe { libc::fwrite(bytes.as_ptr().cast(), 1, bytes.len(), self.as_ptr()) };
+        use crate::lent::{OneByte, fwrite, lend_in};
+        lend_in(bytes, |at, count| {
+            fwrite(at.bytes(), OneByte::SIZE, count, self)
+        });
     }
 
     /// `fflush`.
     pub fn flush(self) {
-        // SAFETY: an open stream (the type's invariant).
-        unsafe { libc::fflush(self.as_ptr()) };
+        crate::lent::fflush(self);
     }
 }
 
@@ -324,8 +310,8 @@ pub fn swr_v1_core_initialized() -> bool {
     RECORD.init.load(Ordering::Relaxed)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_cpu_num() -> u16 {
+#[must_use]
+pub fn swr_v1_core_cpu_num() -> u16 {
     RECORD.cpu_num.load(Ordering::Relaxed)
 }
 

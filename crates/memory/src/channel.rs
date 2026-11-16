@@ -1,5 +1,5 @@
 use crate::members::Shm;
-use std::cell::UnsafeCell;
+use std::cell::Cell;
 use std::ffi::c_int;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys;
@@ -11,7 +11,6 @@ use swoole_rs_locks::SharedMutex;
 /// starting at any cursor below `size` stays inside it. `valid` checks every cursor
 /// and bound this relies on. Only [`SharedChannel::make`] (and this module's
 /// tests, over their own buffers) make one.
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Channel {
     head: i64,
@@ -20,7 +19,6 @@ pub struct Channel {
     head_tag: u8,
     tail_tag: u8,
     num: i32,
-    max_num: i32,
     bytes: usize,
     flags: i32,
     maxlen: i32,
@@ -204,9 +202,8 @@ const NOTIFY: i32 = 4;
 /// pipe (read end first), which a [`SharedChannel`] holds in its mapping, the queue
 /// storage following the record. Not `Sync`: threads (and processes) that share one serialize the queue
 /// with its `SW_CHAN_LOCK` mutex, which [`Record::push`] and [`Record::pop`] take.
-#[repr(C)]
 pub struct Record {
-    queue: UnsafeCell<Channel>,
+    queue: Cell<Channel>,
     /// Initialized when `flags` has `SW_CHAN_LOCK`.
     lock: SharedMutex,
     notify: [c_int; 2],
@@ -289,14 +286,13 @@ impl SharedChannel {
             head_tag: 0,
             tail_tag: 0,
             num: 0,
-            max_num: 0,
             bytes: 0,
             flags,
             maxlen: length,
             mem: address.wrapping_add(1).cast(),
         };
         let fresh = Record {
-            queue: UnsafeCell::new(queue),
+            queue: Cell::new(queue),
             lock: SharedMutex::new(),
             notify: [-1, -1],
             flags,
@@ -394,12 +390,14 @@ impl Record {
         Held(Some(self))
     }
 
-    /// `f` over the queue, under the record's mutex.
+    /// `f` over a copy of the queue, stored back, under the record's mutex (or,
+    /// without `SW_CHAN_LOCK`, on the one thread a `Record` is confined to).
     fn queue<R>(&self, f: impl FnOnce(&mut Channel) -> R) -> R {
         let _held = self.hold();
-        // SAFETY: the mutex (or, without `SW_CHAN_LOCK`, the one thread a `Record` is
-        // confined to) serializes the queue; the borrow ends with `f`.
-        f(unsafe { &mut *self.queue.get() })
+        let mut queue = self.queue.get();
+        let result = f(&mut queue);
+        self.queue.set(queue);
+        result
     }
 
     /// `Channel::push(data, length)`: false when it doesn't fit.
@@ -458,8 +456,7 @@ impl Record {
     }
 }
 
-/// Only the initialized scalar fields read by public `Channel::full` cross ABI.
-#[repr(C)]
+/// The initialized scalar fields public `Channel::full` reads.
 pub struct CapacityState {
     head: i64,
     tail: i64,
@@ -470,16 +467,11 @@ pub struct CapacityState {
     tail_tag: u8,
 }
 #[must_use]
-pub fn swr_v1_memory_channel_full(state: Option<&CapacityState>) -> i32 {
-    let Some(state) = state else {
-        return -1;
-    };
+pub fn swr_v1_memory_channel_full(state: &CapacityState) -> bool {
     let occupied = state
         .bytes
         .wrapping_add(state.num.c_cast::<usize>().wrapping_mul(4));
-    i32::from(
-        state.head == state.tail && state.tail_tag != state.head_tag || occupied == state.size,
-    )
+    state.head == state.tail && state.tail_tag != state.head_tag || occupied == state.size
 }
 
 #[cfg(test)]

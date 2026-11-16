@@ -9,8 +9,9 @@ use std::{
     ptr,
     rc::Rc,
 };
+use swoole_rs_buffer::string::CppString;
 use swoole_rs_clients::{
-    address::{swr_v1_clients_address_port, with_host},
+    address::{address_port, with_host},
     client::{self, Client},
 };
 use swoole_rs_corebase::CCast;
@@ -72,29 +73,25 @@ pub fn make(
     protocol: c_int,
     family: bool,
 ) -> Result<NewSocket, Bailout> {
-    // The new socket, which nothing else holds.
-    Ok(NewSocket(Co::from(co::make(
-        fd, domain, kind, protocol, family,
-    )?)))
+    Ok(NewSocket(co::make(fd, domain, kind, protocol, family)?))
 }
 
 /// A coroutine socket that nothing else holds: its holder frees it or gives it
 /// to an object. Dropped, it leaks.
 #[must_use]
-pub struct NewSocket(Co);
+pub struct NewSocket(co::Fresh);
 
 impl NewSocket {
     #[must_use]
     pub fn co(&self) -> Co {
-        self.0
+        Co(self.0.co())
     }
 
     /// `delete socket`.
     /// # Errors
     /// A close hook bailed out.
     pub fn free(self) -> Result<(), Bailout> {
-        // SAFETY: an owned socket, which nothing else holds; gone after the call.
-        unsafe { co::free(self.0.as_ptr()) }
+        self.0.free()
     }
 }
 
@@ -103,6 +100,27 @@ impl NewSocket {
 /// Starting the reactor bailed out.
 pub(crate) fn check_reactor() -> Result<(), Bailout> {
     swoole_rs_zend::contain(swoole_rs_phpruntime::check_reactor)
+}
+
+/// `zend::assign_zend_string_by_val(buffer->pop(init_size), length)`: the
+/// buffer's first `length` bytes as the zend string whose value they are, the
+/// buffer starting a new allocation. None, the buffer untouched, unless the
+/// Zend string allocator made it and it holds `length` bytes; none too when the
+/// new allocation fails.
+pub fn pop_string(buffer: &mut CppString, init_size: usize, length: usize) -> Option<ZString> {
+    let zend = swoole_rs_phpswoole::zend_string_allocator().get();
+    let ours = buffer
+        .allocator()
+        .is_some_and(|with| ptr::eq(with.get(), zend));
+    if !ours || buffer.view().len() < length {
+        return None;
+    }
+    let value = buffer.pop(init_size);
+    // SAFETY: a value the Zend string allocator made (checked), so of an
+    // unshared zend string with room for the `length` bytes it holds
+    // (checked), whose one reference the pop handed over.
+    (!value.is_null())
+        .then(|| unsafe { ZBuf::from_raw(string::from_val(value), length) }.into_zstring())
 }
 
 /// A live coroutine socket (`SocketImpl *`) over crates/hooks' record handle.
@@ -239,7 +257,7 @@ impl Co {
     /// it leaves the listener's.
     #[must_use]
     pub fn accept(self, timeout: f64) -> Option<NewSocket> {
-        let conn = NewSocket(Self(self.0.accept(timeout)?));
+        let conn = NewSocket(co::accept(self.0, timeout)?);
         if let Some(owner) = socket_extra::length_owner(self.handle()) {
             // A new socket, which has none to drop.
             drop(socket_extra::replace_length_owner(
@@ -306,24 +324,19 @@ impl Co {
     /// or None after `set_err(ENOMEM)`.
     pub(crate) fn pop_packet(self, length: usize) -> Option<ZString> {
         let init_size = self.0.buffer_init_size();
-        let packet = if self.0.read_buffer().is_null() {
-            ptr::null_mut()
-        } else {
-            self.0.with_buffer(false, |buffer| {
-                if buffer.offset() == 0 {
-                    ptr::null_mut()
-                } else {
-                    buffer.pop(init_size)
-                }
+        let packet = (!self.0.read_buffer().is_null())
+            .then(|| {
+                self.0.with_buffer(false, |buffer| {
+                    (buffer.offset() != 0)
+                        .then(|| pop_string(buffer, init_size, length))
+                        .flatten()
+                })
             })
-        };
-        if packet.is_null() {
+            .flatten();
+        if packet.is_none() {
             self.set_err(libc::ENOMEM);
-            return None;
         }
-        // SAFETY: `zend::assign_zend_string_by_val`: the packet is the value of
-        // an unshared zend string holding its `length` bytes, now ours.
-        Some(unsafe { ZBuf::from_raw(string::from_val(packet), length) }.into_zstring())
+        packet
     }
 
     /// `readv`/`writev` over `vectors` (with `all`, `readv_all`/`writev_all`)
@@ -341,6 +354,17 @@ impl Co {
         };
         let _timeout = self.timeout(timeout, kind);
         co::vector(self.0, vectors, all)
+    }
+
+    /// Read into the strings' lent rooms under `timeout`, counting their content.
+    pub(crate) fn read_vector(
+        self,
+        buffers: &mut [ZBuf],
+        all: bool,
+        timeout: f64,
+    ) -> Option<(usize, c_int, usize)> {
+        let _timeout = self.timeout(timeout, TimeoutKind::READ);
+        ZBuf::fill_vectored(buffers, |out| self.0.recv_spare_vectors(out, all))
     }
 
     /// `sendfile(file, offset, length)` of the file named up to the first NUL,
@@ -369,22 +393,16 @@ impl Co {
     /// One receiving [`Transfer`] (`recvfrom` for none) into `buffer`'s room,
     /// counting what it wrote there.
     fn fill(self, op: Option<Transfer>, buffer: &mut ZBuf) -> Option<usize> {
-        let out = buffer.spare_capacity_mut();
-        let received = match op {
-            None => self.0.recvfrom_peer(out),
-            Some(Transfer::Peek) => self.0.peek(out),
-            Some(Transfer::RecvAll) => self.0.recv_all(out),
-            Some(Transfer::RecvLine) => self.0.recv_line(out),
-            Some(Transfer::RecvWithBuffer) => self.0.recv_with_buffer(out),
-            Some(_) => self.0.recv(out),
+        use swoole_rs_hooks::socket_members::Receive;
+        let op = match op {
+            None => Receive::Peer,
+            Some(Transfer::Peek) => Receive::Peek,
+            Some(Transfer::RecvAll) => Receive::All,
+            Some(Transfer::RecvLine) => Receive::Line,
+            Some(Transfer::RecvWithBuffer) => Receive::Buffered,
+            Some(_) => Receive::Recv,
         };
-        if let Some(count) = received {
-            let len = buffer.capacity().min(buffer.len() + count);
-            // SAFETY: each of these receives returns the count of the room's first
-            // slots it wrote, and the room ends at the capacity.
-            unsafe { buffer.set_len(len) };
-        }
-        received
+        buffer.fill(|out| self.0.recv_spare(op, out))
     }
 
     /// `get_addr()` and `get_port()`.
@@ -646,7 +664,7 @@ pub(crate) fn net_address(socket: Net<'_>) -> (CString, c_int) {
 /// The address and port of `address`: `get_addr()` and `get_port()`.
 pub(crate) fn address(address: &SocketAddress) -> (CString, c_int) {
     let host = with_host(address, CStr::to_owned);
-    (host, swr_v1_clients_address_port(address))
+    (host, address_port(address).into())
 }
 
 /// `swoole_error_log(SW_LOG_WARNING, SW_ERROR_PACKAGE_LENGTH_TOO_LARGE, ...)`

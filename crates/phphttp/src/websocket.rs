@@ -12,11 +12,10 @@ use std::{
     borrow::Cow,
     cell::Cell,
     ffi::{CStr, c_int},
-    mem::MaybeUninit,
-    ptr,
     sync::Arc,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
+use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING};
 use swoole_rs_corebase::{CCast, WebSocketStatus};
 use swoole_rs_phpruntime::co;
@@ -27,8 +26,7 @@ use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_websocket::{
     DecodeErrorKind, DecodedFrame, Delivery, EncodeError, FrameFlags, FrameMetadata, Opcode,
-    control_invalid, encode_close_into, encode_into, encoded_size, header, message_policy,
-    pack_policy,
+    control_invalid, encode_close, encode_frame, encoded_size, header, message_policy, pack_policy,
 };
 use swoole_rs_zend::{
     Array, Call, Class, Declared, Minit, Owned, Value, ZStr, ZString, bailout, handlers,
@@ -463,17 +461,14 @@ const INLINE: usize = 128;
 
 /// An encoded frame, on the stack when it fits.
 pub(crate) enum Frame {
-    Inline([MaybeUninit<u8>; INLINE], usize),
+    Inline([u8; INLINE], usize),
     Heap(ZString),
 }
 
 impl Frame {
     pub(crate) fn bytes(&self) -> &[u8] {
         match self {
-            Self::Inline(buffer, size) => buffer.get(..*size).map_or(&[], |bytes| {
-                // SAFETY: `encoded` keeps an inline frame only once `size` bytes are written.
-                unsafe { bytes.assume_init_ref() }
-            }),
+            Self::Inline(buffer, size) => buffer.get(..*size).unwrap_or_default(),
             Self::Heap(string) => string.bytes(),
         }
     }
@@ -491,21 +486,16 @@ impl Frame {
 /// `size`.
 fn encoded(
     size: usize,
-    write: impl FnOnce(&mut [MaybeUninit<u8>]) -> Result<usize, EncodeError>,
+    write: impl FnOnce(&mut Spare<'_>) -> Result<usize, EncodeError>,
 ) -> Option<Frame> {
     if size <= INLINE {
-        let mut buffer = [MaybeUninit::uninit(); INLINE];
-        return (write(&mut buffer).ok()? == size).then_some(Frame::Inline(buffer, size));
+        let mut buffer = [0; INLINE];
+        let written = lend_spare(&mut buffer, write).0;
+        return (written.ok()? == size).then_some(Frame::Inline(buffer, size));
     }
     let mut out = string::ZBuf::with_capacity(size);
-    // The fresh string's `size` unwritten bytes.
-    if write(out.spare_capacity_mut()).ok()? != size {
-        // Dropped: the string is freed.
-        return None;
-    }
-    // SAFETY: `write` filled all `size` bytes of the capacity.
-    unsafe { out.set_len(size) };
-    Some(Frame::Heap(out.into_zstring()))
+    // The fresh string's `size` unwritten bytes; dropped, the string is freed.
+    (out.fill(write).ok()? == size).then(|| Frame::Heap(out.into_zstring()))
 }
 
 /// Upstream's encoders fail a masked header-only frame after writing it.
@@ -530,7 +520,9 @@ pub(crate) fn encode(data: &[u8], opcode: u8, flags: u8) -> Option<Frame> {
         return None;
     }
     let size = encoded_size(data.len(), flags).ok()?;
-    let frame = encoded(size, |out| encode_into(data, opcode, flags, out))?;
+    let frame = encoded(size, |out| {
+        encode_frame(data.len(), data, opcode, flags, out)
+    })?;
     (!header_only_mask(flags)).then_some(frame)
 }
 
@@ -557,7 +549,7 @@ fn close_frame(code: i32, reason: &[u8], flags: u8) -> Option<Frame> {
         return None;
     }
     let size = encoded_size(reason.len() + 2, flags.with_final()).ok()?;
-    let frame = encoded(size, |out| encode_close_into(code, reason, flags, out))?;
+    let frame = encoded(size, |out| encode_close(code, reason, flags, out))?;
     (!header_only_mask(flags)).then_some(frame)
 }
 
@@ -1282,18 +1274,6 @@ pub(crate) const SETTING_COMPRESSION: u8 = 1 << 4;
 /// `SW_WEBSOCKET_DEFAULT_BUFFER`.
 const DEFAULT_BUFFER: usize = 4096;
 
-/// `sock->recv_packet(timeout)` on a coroutine socket, with the packet: its
-/// read buffer's bytes.
-fn sock_recv(socket: co::Co, timeout: f64) -> (Option<usize>, *mut u8, usize) {
-    let received = co::recv_packet(socket, timeout);
-    if received <= Some(0) {
-        return (received, ptr::null_mut(), 0);
-    }
-    // A packet read leaves it in the socket's read buffer.
-    let (data, len) = socket.with_buffer(false, |buffer| (buffer.as_mut_ptr(), buffer.len()));
-    (received, data, len)
-}
-
 /// A message being assembled from fragments: its payload so far, and the
 /// first frame's opcode and flags.
 pub(crate) struct Message {
@@ -1345,103 +1325,117 @@ fn payload_string(payload: &[u8], compressed: bool) -> Option<Owned> {
 /// `false` when the socket read failed, `""` when it closed, `null` on any
 /// other error.
 pub(crate) fn recv(settings: u8, slot: &mut Assembly, socket: co::Co, timeout: f64) -> Owned {
-    let func = c"websocket::recv_frame";
     loop {
-        let (received, data, length) = sock_recv(socket, timeout);
+        let received = co::recv_packet(socket, timeout);
         if received.is_none() {
             return Owned::bool(false);
         }
         if received == Some(0) {
             return Owned::string(ZString::empty());
         }
-        if length < 2 {
-            return protocol_error();
+        // A packet read leaves it in the socket's read buffer, which a send may not
+        // use while it is lent: a reply waits for the loan to end.
+        let next = socket.with_buffer(false, |buffer| {
+            receive(settings, slot, socket, buffer.view_mut())
+        });
+        match next {
+            Next::Done(frame) => return frame,
+            Next::Reply(opcode, payload) => reply(settings, socket, opcode.code(), &payload),
+            Next::Recv => {}
         }
-        // SAFETY: the socket's read buffer, `length` bytes, unmasked in place.
-        let buffer = unsafe { std::slice::from_raw_parts_mut(data, length) };
-        let Some(frame) = decode(buffer) else {
-            return protocol_error();
-        };
-        // `decode` accepted the frame, so the buffer holds its whole payload.
-        let payload = buffer
-            .get(frame.header_length..)
-            .and_then(|rest| rest.get(..frame.payload_length))
-            .unwrap_or_default();
-        let opcode = frame.opcode;
-        let respond = match opcode {
-            Opcode::Ping if settings & OPEN_PING_FRAME == 0 => {
-                reply(settings, socket, Opcode::Pong.code(), payload);
-                continue;
-            }
-            Opcode::Pong if settings & OPEN_PONG_FRAME == 0 => continue,
-            Opcode::Close if settings & OPEN_CLOSE_FRAME == 0 => {
-                reply(settings, socket, Opcode::Close.code(), payload);
-                continue;
-            }
-            opcode => opcode.is_control(),
-        };
-        if respond {
-            let payload = Owned::string(ZString::new(payload));
-            return deliver(socket, opcode.code(), &payload, FLAG_FIN);
+    }
+}
+
+/// What [`recv`] does after one packet.
+enum Next {
+    Done(Owned),
+    /// Answer a control frame with its payload, then read the next packet.
+    Reply(Opcode, Vec<u8>),
+    Recv,
+}
+
+/// One packet of [`recv`], `packet`, unmasked in place.
+fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8]) -> Next {
+    let func = c"websocket::recv_frame";
+    if packet.len() < 2 {
+        return Next::Done(protocol_error());
+    }
+    let Some(frame) = decode(packet) else {
+        return Next::Done(protocol_error());
+    };
+    // `decode` accepted the frame, so the packet holds its whole payload.
+    let payload = packet
+        .get(frame.header_length..)
+        .and_then(|rest| rest.get(..frame.payload_length))
+        .unwrap_or_default();
+    let opcode = frame.opcode;
+    let respond = match opcode {
+        Opcode::Ping if settings & OPEN_PING_FRAME == 0 => {
+            return Next::Reply(Opcode::Pong, payload.to_vec());
         }
-        if opcode == Opcode::Continuation {
-            let Some(message) = slot.as_mut() else {
-                warning(
-                    func,
-                    "A continuation frame cannot stand alone and MUST be preceded by an initial frame whose \
-                     opcode indicates either text or binary data.",
-                );
-                return Owned::null();
-            };
-            message.data.extend_from_slice(payload);
-            if !frame.flags.is_final() {
-                continue;
-            }
-            // The whole message is assembled: release its memory once delivered.
-            let Some(message) = slot.take() else {
-                return Owned::null();
-            };
-            let complete = message.metadata;
-            let Some(payload) = payload_string(&message.data, complete.flags.is_compressed())
-            else {
-                return protocol_error();
-            };
-            return deliver(
-                socket,
-                complete.opcode.code(),
-                &payload,
-                complete.flags.with_final().bits(),
-            );
+        Opcode::Pong if settings & OPEN_PONG_FRAME == 0 => return Next::Recv,
+        Opcode::Close if settings & OPEN_CLOSE_FRAME == 0 => {
+            return Next::Reply(Opcode::Close, payload.to_vec());
         }
-        if slot.is_some() {
+        opcode => opcode.is_control(),
+    };
+    if respond {
+        let payload = Owned::string(ZString::new(payload));
+        return Next::Done(deliver(socket, opcode.code(), &payload, FLAG_FIN));
+    }
+    if opcode == Opcode::Continuation {
+        let Some(message) = slot.as_mut() else {
             warning(
                 func,
-                "All fragments of a message, except for the initial frame, must use the continuation \
-                 frame opcode(0).",
+                "A continuation frame cannot stand alone and MUST be preceded by an initial frame whose \
+                 opcode indicates either text or binary data.",
             );
-            return Owned::null();
-        }
-        if frame.flags.is_final() {
-            let Some(payload) = payload_string(payload, frame.flags.is_compressed()) else {
-                return protocol_error();
-            };
-            return deliver(socket, opcode.code(), &payload, frame.flags.bits());
-        }
-        let size = if payload.is_empty() {
-            DEFAULT_BUFFER
-        } else {
-            payload.len()
+            return Next::Done(Owned::null());
         };
-        let mut data = Vec::with_capacity(size);
-        data.extend_from_slice(payload);
-        *slot = Some(Box::new(Message {
-            data,
-            metadata: FrameMetadata {
-                opcode,
-                flags: frame.flags,
-            },
-        }));
+        message.data.extend_from_slice(payload);
+        if !frame.flags.is_final() {
+            return Next::Recv;
+        }
+        // The whole message is assembled: release its memory once delivered.
+        let Some(message) = slot.take() else {
+            return Next::Done(Owned::null());
+        };
+        let complete = message.metadata;
+        let Some(payload) = payload_string(&message.data, complete.flags.is_compressed()) else {
+            return Next::Done(protocol_error());
+        };
+        let flags = complete.flags.with_final().bits();
+        return Next::Done(deliver(socket, complete.opcode.code(), &payload, flags));
     }
+    if slot.is_some() {
+        warning(
+            func,
+            "All fragments of a message, except for the initial frame, must use the continuation \
+             frame opcode(0).",
+        );
+        return Next::Done(Owned::null());
+    }
+    if frame.flags.is_final() {
+        let Some(payload) = payload_string(payload, frame.flags.is_compressed()) else {
+            return Next::Done(protocol_error());
+        };
+        return Next::Done(deliver(socket, opcode.code(), &payload, frame.flags.bits()));
+    }
+    let size = if payload.is_empty() {
+        DEFAULT_BUFFER
+    } else {
+        payload.len()
+    };
+    let mut data = Vec::with_capacity(size);
+    data.extend_from_slice(payload);
+    *slot = Some(Box::new(Message {
+        data,
+        metadata: FrameMetadata {
+            opcode,
+            flags: frame.flags,
+        },
+    }));
+    Next::Recv
 }
 
 #[cfg(test)]

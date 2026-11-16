@@ -11,6 +11,7 @@
 use std::ffi::{CStr, c_char, c_int};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
+use swoole_rs_corebase::lent::{Count, Out, lend_out};
 
 pub use libc::tm as Tm;
 
@@ -36,6 +37,14 @@ unsafe extern "C" {
     #[link_name = "mktime"]
     safe fn libc_mktime(tm: &mut Tm) -> i64;
     safe fn gmtime_r(time: &i64, tm: &mut Tm) -> *mut Tm;
+    /// Writes at most the lent count of bytes.
+    #[link_name = "strftime"]
+    safe fn libc_strftime(
+        output: Out<'_, u8>,
+        count: Count<'_>,
+        format: Text<'_>,
+        tm: &Tm,
+    ) -> usize;
 }
 
 // `tolower` reads only the current locale's table, and glibc and musl bound the
@@ -85,15 +94,9 @@ pub fn now() -> i64 {
 }
 /// `strftime(output, format, tm)`: the bytes written, 0 when they do not fit.
 pub fn strftime(output: &mut [u8], format: &CStr, tm: &Tm) -> usize {
-    // SAFETY: `output.len()` writable bytes, a C string and a live tm.
-    unsafe {
-        libc::strftime(
-            output.as_mut_ptr().cast(),
-            output.len(),
-            format.as_ptr(),
-            tm,
-        )
-    }
+    lend_out(output, |output, count| {
+        libc_strftime(output, count, format.into(), tm)
+    })
 }
 /// `tolower(left) == tolower(right)` in the current locale. Every locale lowers
 /// ASCII as `to_ascii_lowercase` does except Turkish `I` (to `ı`), so only `I` and

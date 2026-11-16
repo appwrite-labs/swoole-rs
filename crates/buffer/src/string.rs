@@ -12,6 +12,7 @@
 use std::ffi::{c_int, c_void};
 use std::mem::{MaybeUninit, offset_of};
 use std::ptr;
+use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::{CCast, TrustedAllocator};
 
 /// `swoole::String` (`string.cc` asserts the same layout).
@@ -150,6 +151,48 @@ impl CppString {
         self.length = length;
     }
 
+    /// Appends what `fill` writes into the room past the content: what it returned.
+    #[inline]
+    pub fn fill<R>(&mut self, fill: impl for<'s> FnOnce(&mut Spare<'s>) -> R) -> R {
+        self.fill_within(usize::MAX, fill)
+    }
+
+    /// [`fill`](Self::fill) of at most `limit` bytes.
+    #[inline]
+    pub fn fill_within<R>(
+        &mut self,
+        limit: usize,
+        fill: impl for<'s> FnOnce(&mut Spare<'s>) -> R,
+    ) -> R {
+        let spare = self.spare();
+        let room = limit.min(spare.len());
+        let (result, filled) = lend_spare(spare.get_mut(..room).unwrap_or_default(), fill);
+        self.length += filled;
+        result
+    }
+
+    /// Counts no more than the first `length` bytes as the content.
+    #[inline]
+    pub const fn truncate(&mut self, length: usize) {
+        if length < self.length {
+            self.length = length;
+        }
+    }
+
+    /// Replaces the content with what `fill` writes from the start of the allocation,
+    /// when it returns `Some`; otherwise the content keeps its length (its bytes may be
+    /// overwritten).
+    pub fn refill<T>(
+        &mut self,
+        fill: impl for<'s> FnOnce(&mut Spare<'s>) -> Option<T>,
+    ) -> Option<T> {
+        let (result, filled) = lend_spare(self.allocation(), fill);
+        if result.is_some() {
+            self.length = filled;
+        }
+        result
+    }
+
     /// `String::alloc`: a fresh buffer, from the standard allocator when `with` is `None`.
     pub fn alloc(&mut self, size: usize, with: Option<TrustedAllocator>) {
         let with = with.unwrap_or(TrustedAllocator::STD);
@@ -196,6 +239,12 @@ impl CppString {
         source.offset = 0;
     }
 
+    /// The allocator that made the buffer, none before one did.
+    #[must_use]
+    pub const fn allocator(&self) -> Option<TrustedAllocator> {
+        self.allocator
+    }
+
     /// The `length` bytes at `str`.
     #[must_use]
     pub fn view(&self) -> &[u8] {
@@ -204,6 +253,15 @@ impl CppString {
         }
         // SAFETY: `str` holds `length` bytes.
         unsafe { std::slice::from_raw_parts(self.str, self.length) }
+    }
+
+    /// [`view`](Self::view), writable in place.
+    #[must_use]
+    pub fn view_mut(&mut self) -> &mut [u8] {
+        let length = self.length;
+        let content = self.allocation().get_mut(..length).unwrap_or_default();
+        // SAFETY: the first `length` bytes are the content, which is initialized.
+        unsafe { content.assume_init_mut() }
     }
 
     /// `String::reserve`, never below the content's length.
@@ -278,22 +336,35 @@ impl CppString {
     }
 
     /// `String::split`: each `delimiter`-terminated chunk from `offset` to `handler`,
-    /// as its start in the buffer and its length, until `handler` returns false. An
-    /// empty `delimiter` matches everywhere, so only `handler` ends that loop.
+    /// as its start in the buffer and its length, until `handler` returns false
+    /// (`None`); otherwise where the unsplit tail starts. An empty `delimiter`
+    /// matches everywhere, so only `handler` ends that loop.
     pub fn split(
         &mut self,
         delimiter: &[u8],
         mut handler: impl FnMut(*const u8, usize) -> bool,
-    ) -> isize {
+    ) -> Option<usize> {
+        self.split_with(delimiter, |s, start, length| {
+            handler(s.str.wrapping_add(start), length)
+        })
+    }
+
+    /// [`split`](Self::split), each chunk to `handler` as the string, lent back, with
+    /// the chunk's start in it and its length: `None` once `handler` returned false.
+    pub fn split_with(
+        &mut self,
+        delimiter: &[u8],
+        mut handler: impl FnMut(&mut Self, usize, usize) -> bool,
+    ) -> Option<usize> {
         let delimiter_length = delimiter.len();
         let mut start = unsigned(self.offset);
         let mut first = self.offset;
         let mut found = self.find(start, delimiter);
         while let Some(position) = found {
             let length = position + delimiter_length;
-            let chunk = self.str.wrapping_add(start.wrapping_sub(unsigned(first)));
-            if !handler(chunk, length.wrapping_add(unsigned(first))) {
-                return -1;
+            let chunk = start.wrapping_sub(unsigned(first));
+            if !handler(self, chunk, length.wrapping_add(unsigned(first))) {
+                return None;
             }
             self.offset = self.offset.wrapping_add(signed(length));
             start = unsigned(self.offset);
@@ -304,7 +375,7 @@ impl CppString {
         if first == self.offset {
             self.offset = signed(self.length.wrapping_sub(delimiter_length));
         }
-        start.wrapping_sub(unsigned(first)).cast_signed()
+        Some(start.wrapping_sub(unsigned(first)))
     }
 
     /// The whole allocation, its first `length` bytes the content. Only the content is
@@ -317,23 +388,17 @@ impl CppString {
         unsafe { std::slice::from_raw_parts_mut(self.str.cast(), self.size) }
     }
 
-    /// The allocation's first `length` bytes, zeroed, for a read to fill before
-    /// `set_len`; `None` when the allocation is shorter. Content among them is zeroed
-    /// too, so every byte lent is initialized and stays so whatever is written.
-    pub fn zeroed(&mut self, length: usize) -> Option<&mut [u8]> {
-        let bytes = self.allocation().get_mut(..length)?;
-        bytes.fill(MaybeUninit::new(0));
-        // SAFETY: every byte was just written.
-        Some(unsafe { bytes.assume_init_mut() })
-    }
-
     /// Replaces the content with what `read` writes into the allocation's first
-    /// `length` bytes, [`zeroed`](Self::zeroed) first (none when the allocation is
-    /// shorter): as many as it returns, at most `length`.
+    /// `length` bytes, zeroed first (none when the allocation is shorter): as many as
+    /// it returns, at most `length`.
     pub fn read_zeroed(&mut self, length: usize, read: impl FnOnce(&mut [u8]) -> usize) {
-        let bytes = self.zeroed(length).unwrap_or_default();
-        let room = bytes.len();
-        self.length = read(bytes).min(room);
+        let room = self.allocation().get_mut(..length).map_or(0, |bytes| {
+            bytes.fill(MaybeUninit::new(0));
+            bytes.len()
+        });
+        // The zeroed bytes are content while `read` writes them.
+        self.length = room;
+        self.length = read(self.view_mut()).min(room);
     }
 
     /// The allocated bytes after the content, for a read to fill before `grow`. They are
@@ -579,8 +644,22 @@ upstream! {
 
 /// `String(data.data(), data.size())` in `this`: a NUL-terminated copy.
 fn from_bytes<'a>(this: &'a mut MaybeUninit<CppString>, data: &[u8]) -> &'a mut CppString {
+    fill(this.write(CppString::EMPTY), data)
+}
+
+/// `new String(data.data(), data.size())`, owned: [`CppString::dispose`] frees its bytes.
+#[must_use]
+pub fn boxed_string(data: &[u8]) -> Box<CppString> {
+    // `EMPTY` is all zeros, and LLVM turns a fresh allocation stored with zeros into
+    // `calloc`, which costs more per string than `malloc`; opaque, it stays `malloc`.
+    let mut string = Box::new(core::hint::black_box(CppString::EMPTY));
+    fill(&mut string, data);
+    string
+}
+
+/// An empty `string`'s NUL-terminated copy of `data`.
+fn fill<'a>(string: &'a mut CppString, data: &[u8]) -> &'a mut CppString {
     let length = data.len();
-    let string = this.write(CppString::EMPTY);
     string.alloc(length.wrapping_add(1), None);
     // The allocation holds `length + 1` bytes.
     if let Some((end, to)) = string
@@ -601,6 +680,16 @@ pub fn new_string(data: &[u8]) -> *mut CppString {
     from_bytes(Box::leak(Box::new_uninit()), data)
 }
 
+/// `new String(size, with)`, owned: [`CppString::dispose`] frees its bytes.
+#[must_use]
+pub fn boxed_sized_string(size: usize, with: Option<TrustedAllocator>) -> Box<CppString> {
+    // `EMPTY` is all zeros, and LLVM turns a fresh allocation stored with zeros into
+    // `calloc`, which costs more per string than `malloc`; opaque, it stays `malloc`.
+    let mut string = Box::new(core::hint::black_box(CppString::EMPTY));
+    string.alloc(size, with);
+    string
+}
+
 /// `new String(size, with)`, in boxed storage [`delete_string`] frees.
 #[must_use]
 pub fn new_sized_string(size: usize, with: Option<TrustedAllocator>) -> *mut CppString {
@@ -616,12 +705,26 @@ pub unsafe fn delete_string(string: *mut CppString) {
     unsafe { Box::from_raw(string) }.dispose();
 }
 
-/// `f` over this thread's String (`sw_tg_buffer()`), lent to `f` alone.
+/// `f` over this thread's String (`sw_tg_buffer()`), lent to `f` alone. A thread
+/// `swoole_thread_init` didn't set up has none, which aborts.
+#[inline]
 pub fn with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
+    try_with_thread_buffer(f)
+        .unwrap_or_else(|| swoole_rs_corebase::fatal("a thread without its buffer"))
+}
+
+/// [`with_thread_buffer`], or `None` on a thread without a buffer.
+#[inline]
+pub fn try_with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> Option<R> {
     swoole_rs_corebase::lend_thread_buffer(|| {
-        // SAFETY: the calling thread's live buffer, which `swoole_thread_init` set
-        // up, lent to `f` alone.
-        f(unsafe { &mut *swoole_rs_corebase::thread_buffer().cast::<CppString>() })
+        // SAFETY: null, or the calling thread's live buffer, which
+        // `swoole_thread_init` set up, lent to `f` alone.
+        unsafe {
+            swoole_rs_corebase::thread_buffer()
+                .cast::<CppString>()
+                .as_mut()
+        }
+        .map(f)
     })
 }
 
@@ -661,9 +764,9 @@ mod tests {
             true
         });
         assert_eq!(chunks, [b"a\r\n".to_vec(), b"bc\r\n".to_vec()]);
-        assert_eq!((ret, s.offset), (7, 7));
+        assert_eq!((ret, s.offset), (Some(7), 7));
         // No delimiter after the offset: it moves to the last place one could start.
-        assert_eq!(s.split(b"\r\n", |_, _| false), 0);
+        assert_eq!(s.split(b"\r\n", |_, _| false), Some(0));
         assert_eq!(s.offset, 7);
         s.dispose();
     }
@@ -724,8 +827,24 @@ mod tests {
         assert_eq!(unsafe { ((*s).length, (*s).size) }, (0, 16));
         unsafe { delete_string(s) };
     }
+
+    #[test]
+    fn view_mut_writes_the_content_alone() {
+        let mut empty = CppString::EMPTY;
+        assert_eq!(empty.view_mut(), b"");
+        let mut s = boxed_string(b"abc");
+        s.view_mut().make_ascii_uppercase();
+        assert_eq!(s.view(), b"ABC");
+        s.truncate(1);
+        assert_eq!(s.view_mut(), b"A");
+        s.dispose();
+    }
 }
 
 #[cfg(test)]
 #[path = "../../../tests/modules/buffer/string/originals.rs"]
 mod originals;
+
+#[cfg(test)]
+#[path = "../../../tests/modules/buffer/thread_buffer.rs"]
+mod thread_buffer;

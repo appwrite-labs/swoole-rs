@@ -2,7 +2,7 @@
 //! names: an `Rc`'s value, whose reference a [`Named`] owner beside the slot
 //! keeps.
 use std::{ffi::c_void, mem::ManuallyDrop, rc::Rc};
-use swoole_rs_clients::protocol::Protocol;
+use swoole_rs_clients::protocol::{Protocol, Socket};
 use swoole_rs_corebase::net_types::PacketLength;
 use swoole_rs_zend::{bailout, host::callable::Callable};
 
@@ -40,17 +40,15 @@ pub trait PackageLength {
 }
 
 /// `php_swoole_length_func`: `L`'s length for the packet so far. A bailout is
-/// re-raised as the last step.
-/// # Safety
-/// C++ calls it with a live protocol whose `private_data_1` is the value of an
-/// `Rc` whose reference its [`Named`] owner keeps, and a live packet.
-pub unsafe extern "C" fn length<L: PackageLength>(
-    protocol: *const Protocol,
-    _socket: *mut c_void,
+/// re-raised as the last step. Only a protocol whose `private_data_1` is the value
+/// of an `Rc` whose reference its [`Named`] owner keeps holds it, which a caller
+/// passes (a copy of).
+pub fn length<L: PackageLength>(
+    protocol: &Protocol,
+    _socket: Option<Socket<'_>>,
     packet: &mut PacketLength,
 ) -> isize {
-    // SAFETY: per the caller.
-    let raw = unsafe { (*protocol).private_data_1 };
+    let raw = protocol.private_data_1;
     // SAFETY: `Named::as_ptr`, which is `Rc::into_raw`'s pointer, of a
     // reference the owner keeps; borrowed, never dropped here.
     let slot = ManuallyDrop::new(unsafe { Rc::from_raw(raw.cast_const().cast::<Callable>()) });

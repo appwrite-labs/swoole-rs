@@ -15,6 +15,47 @@ name codec, the DNS address text and the socket DNS lookup
 `network/dns.cpp` and `address.cpp` are Rust cases in `hooks-system-rust` (see
 [the hooks README](../hooks/README.md)).
 
+## Native socket-control unit coverage
+
+`socket_ops.rs` runs the production client's socket-control table in the Rust
+unit-test binary: descriptor flags, successful and failed address assignment,
+both kernel timeouts, raw/synchronous/nonblocking TCP connects, `SO_ERROR`, and
+an event with no reactor. A real OpenSSL session on a loopback connection also
+checks that a pending handshake requests input and reuses its original session
+and frozen hostname after the mutable context changes. It releases the native
+session through production client close before its owner frees the client. The
+recording cases receive their table at construction and retain their original
+inputs and expected traces. The socket
+record operations, safe TLS operations, reactor enqueue/drain callbacks and the
+one-shot connect-timer closure compile in both builds. Recording clients receive
+explicit callbacks for the unchanged send and watermark traces, and explicitly
+supply timer creation/cancellation effects, retaining their cancellation-before-free
+and timeout traces. Original async client cases exercise the real callbacks and
+timeout delivery; the native-table test verifies real timer creation and idempotent
+cancellation with a manually driven thread timer. Synchronous sends, sync/async
+sendfile and socket/TLS release also use the supplied table; recording cases retain their original send and cleanup traces. The native
+TLS test closes a pending session through the production client and checks that a
+second close does nothing.
+The client host registers the DNS pool dispatcher alongside framed receives.
+Unit fixtures register their recording dispatcher and retain the original DNS
+success/error traces. The hooks crate constructs its own pool event and retains
+its resolver request until completion; clients no longer mirrors the event layout.
+SOCKS5 admit, negotiation and handshake operations use the same registered host,
+with typed proxy references and reply slices. The input buffer lives in a `Cell`
+in the client, whose address the public record exposes to framing code; Miri runs
+`the_framed_receive_buffer_stays_usable_across_input_edits` over that pointer.
+Receive, append, synchronous receive and datagram receive use the same operation
+table in production and tests. `ReadBuffer` retains initialized bytes versus spare
+capacity across the callback boundary. Real TCP and async UDP tests check binary
+payloads, initialized tails, EOF and sender addresses for both buffer types.
+No `cfg(not(test))` stand-ins remain in this crate.
+
+Proxy handshakes receive the scratch-buffer loan through the same table. The
+native entry uses the real thread buffer; recording tests keep their 64-byte
+fixture and original traces. The synchronous receive loops stay inside the loan,
+and async HTTP requests are still copied before a send can invoke callbacks.
+The SOCKS5 handshake is handed the bytes the read wrote.
+
 ## network/client.cpp in Rust
 
 `core-tests/src/network/client.cpp` no longer builds. `client.rs` holds its 43
@@ -23,7 +64,7 @@ TEST `client.<name>` is the case `client.<name>` (function `<name>`). The case
 binary is the hooks one (`tests/modules/hooks/system`, which includes this file),
 so `hooks-system-rust` builds and runs it over
 the crates and system.py's static libswoole.a (the pin's thirdparty and native/'s Zend-free sources). A
-`Client` is crates/clients' state: made by `swr_v1_clients_new` and given its
+`Client` is crates/clients' state: made by `client::create` and given its
 callbacks by `client::listen`; its methods, `enable_ssl_encrypt`, `ssl_verify`
 and its deletion among them, are `client::Handle` calls or other
 `swr_v1_clients_*` exports, and the `Socket` TLS reads are called under their
@@ -32,7 +73,7 @@ crates/tls' `CertRef::pem`).
 `set_tls_host_name` assigns a fresh `SSLContext` with the name set.
 `SyncClient` and `AsyncClient` are `Client`'s `created`/`connected` bookkeeping.
 `swoole_timer_after` takes the Rust closure through crates/timer's
-`swr_v1_timer_add_plain`. The `Server` fixtures are std servers forked after
+`swoole_rs_timer::add_fn`. The `Server` fixtures are std servers forked after
 binding (an echo, the 403 proxy reply, a slow reader): the cases assert only on
 the client. Excluded as before: `bind` (EACCES, not EINVAL, off a root container),
 `async_tcp_socks5_proxy_handshake_fail` (www.baidu.com:80 timing out a SOCKS5
@@ -134,5 +175,11 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 - Async gate locale coverage is the C locale only.
 - The pinned `SHUT_RDWR` branch sets only `shutdown_read`; this is preserved.
 - `network::Client` itself (crates/clients/src/client.rs) is covered by its Rust
-  unit tests against recording doubles of the C++ half and of the socket, reactor
-  and framing symbols it calls, and by the PHPTs.
+  unit tests with explicit socket, reactor, framing, DNS and SOCKS5 operations,
+  the original client cases and the PHPTs.
+
+The HTTP connection fixture also splits response headers across writes, receives a
+128 KiB body across multiple reads, and reuses the same connection for a second
+response. Existing callback-close and callback-throw cases cover response-buffer
+ownership while the parser invokes PHP. A local WebSocket handshake includes its
+first frame in the same write, checking that upgrade retains the received tail.

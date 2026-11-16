@@ -35,7 +35,8 @@ use swoole_rs_zend::{
 use swoole_rs_zend::{method_table, sys as z};
 
 /// `SW_EVENT_DATA_OBJ_PTR`.
-const EVENT_DATA_OBJ_PTR: u8 = 1 << 5;
+const EVENT_DATA_OBJ_PTR: u8 =
+    swoole_rs_corebase::constants::EventDataFlag::SW_EVENT_DATA_OBJ_PTR.bits();
 
 static POOL: CustomClass<PoolObject> = CustomClass::new();
 /// `current_pool` and `current_worker`.
@@ -75,7 +76,13 @@ impl Pool {
             record: UnsafeCell::new(PoolRecord::empty()),
             created: Cell::new(false),
         });
-        if !methods::create(pool.handle(), worker_num, key, ipc) {
+        if !methods::create(
+            swoole_rs_server::process_pool_native(),
+            pool.handle(),
+            worker_num,
+            key,
+            ipc,
+        ) {
             return None;
         }
         pool.created.set(true);
@@ -97,7 +104,7 @@ impl Drop for Pool {
         // hands out.
         _ = CURRENT.compare_exchange(self.record.get(), GONE, Ordering::AcqRel, Ordering::Acquire);
         if self.created.get() {
-            methods::destroy(self.handle());
+            methods::destroy(swoole_rs_server::process_pool_native(), self.handle());
         }
     }
 }
@@ -340,7 +347,12 @@ extern "C" fn on_signal(signo: c_int) {
 
 /// `ProcessPool::signal` in this process's worker (or null).
 fn signal(pool: PoolRef<'_>, signo: c_int) {
-    methods::signal(pool, signo, CURRENT_WORKER.load(Ordering::Acquire).cast());
+    methods::signal(
+        swoole_rs_server::process_pool_native(),
+        pool,
+        signo,
+        CURRENT_WORKER.load(Ordering::Acquire).cast(),
+    );
 }
 
 /// The object a pool callback belongs to ([`OWNER`], copied into `slot`), and
@@ -351,7 +363,7 @@ fn owner(slot: &mut zval) -> Option<(&Value, &PoolObject)> {
     Some((object, object.custom()?))
 }
 
-extern "C-unwind" fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
+fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
     let mut slot = swoole_rs_zend::UNDEF;
     let Some((object, this)) = owner(&mut slot) else {
         return;
@@ -398,7 +410,7 @@ fn worker_signals(term: bool) {
     }
 }
 
-extern "C-unwind" fn on_message(pool: PoolRef<'_>, message: &RecvData<'_>) {
+fn on_message(pool: PoolRef<'_>, message: &RecvData<'_>) {
     let mut slot = swoole_rs_zend::UNDEF;
     let Some((object, this)) = owner(&mut slot) else {
         return;
@@ -441,17 +453,17 @@ fn worker_stopped(worker: Worker<'_>, exit: bool) {
     }
 }
 
-extern "C-unwind" fn on_worker_stop(_: PoolRef<'_>, worker: Worker<'_>) {
+fn on_worker_stop(_: PoolRef<'_>, worker: Worker<'_>) {
     worker_stopped(worker, false);
     swoole_rs_zend::bailout::finish();
 }
 
-extern "C-unwind" fn on_worker_exit(_: PoolRef<'_>, worker: Worker<'_>) {
+fn on_worker_exit(_: PoolRef<'_>, worker: Worker<'_>) {
     worker_stopped(worker, true);
     swoole_rs_zend::bailout::finish();
 }
 
-extern "C-unwind" fn on_start(_: PoolRef<'_>) {
+fn on_start(_: PoolRef<'_>) {
     let mut slot = swoole_rs_zend::UNDEF;
     if let Some((object, this)) = owner(&mut slot) {
         update_long(object, c"master_pid", getpid());
@@ -465,7 +477,7 @@ extern "C-unwind" fn on_start(_: PoolRef<'_>) {
     swoole_rs_zend::bailout::finish();
 }
 
-extern "C-unwind" fn on_shutdown(_: PoolRef<'_>) {
+fn on_shutdown(_: PoolRef<'_>) {
     let mut slot = swoole_rs_zend::UNDEF;
     if let Some((object, this)) = owner(&mut slot) {
         update_bool(object, c"running", false);
@@ -766,7 +778,12 @@ fn send_message(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let sent = methods::send_message(view, worker.c_cast::<u32>(), data);
+    let sent = methods::send_message(
+        swoole_rs_server::process_pool_native(),
+        view,
+        worker.c_cast::<u32>(),
+        data,
+    );
     call.set_bool(sent);
 }
 
@@ -853,9 +870,9 @@ fn start(call: &Call) {
         call.this_value()
             .map_or(swoole_rs_zend::UNDEF, Value::copy_value),
     );
-    let started = methods::start(view);
+    let started = methods::start(swoole_rs_server::process_pool_native(), view);
     if started {
-        methods::wait(view);
+        methods::wait(swoole_rs_server::process_pool_native(), view);
     }
     OWNER.set(swoole_rs_zend::UNDEF);
     if !started {
@@ -875,20 +892,33 @@ fn start(call: &Call) {
 /// a stream.
 fn protocol(pool: PoolRef<'_>, message_bus: bool) -> bool {
     if !message_bus {
-        methods::set_protocol(pool, Protocol::Stream);
+        methods::set_protocol(
+            swoole_rs_server::process_pool_native(),
+            pool,
+            Protocol::Stream,
+        );
         return true;
     }
-    if !pool.has_message_bus() && !methods::create_message_bus(pool) {
+    if !pool.has_message_bus()
+        && !methods::create_message_bus(swoole_rs_server::process_pool_native(), pool)
+    {
         return false;
     }
     // The pool's message bus, whose allocator its next buffer uses.
     swoole_rs_server::pool_bus_set_allocator(pool, swoole_rs_phpswoole::zend_string_allocator());
-    methods::set_protocol(pool, Protocol::Message);
+    methods::set_protocol(
+        swoole_rs_server::process_pool_native(),
+        pool,
+        Protocol::Message,
+    );
     true
 }
 
 fn detach(call: &Call) {
-    call.set_bool(current().is_some_and(methods::detach));
+    call.set_bool(
+        current()
+            .is_some_and(|pool| methods::detach(swoole_rs_server::process_pool_native(), pool)),
+    );
 }
 
 fn get_process(call: &Call) {
@@ -933,7 +963,7 @@ fn get_process(call: &Call) {
                     props.long(c"id", current_id);
                     props.long(c"pid", i64::from(copy.pid()));
                     if view.ipc_mode() == IpcMode::UnixSock {
-                        props.long(c"pipe", i64::from(pipe));
+                        props.long(c"pipe", pipe.map_or(-1, i64::from));
                     }
                 }
                 // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe
@@ -980,7 +1010,10 @@ fn shutdown(call: &Call) {
         call.set_bool(false);
         return;
     };
-    call.set_bool(methods::shutdown(pool));
+    call.set_bool(methods::shutdown(
+        swoole_rs_server::process_pool_native(),
+        pool,
+    ));
 }
 
 handlers! {

@@ -51,37 +51,30 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
     let list = Shm::calloc(max as usize, size_of::<ConnectionRecord>());
     let pipes = config.worker_num.get() / u32::from(config.reactor_num.get());
     let tables = state.tables_ref();
-    tables.install_reactor_threads(threads);
     if list.is_null() {
         let size = size_of::<ConnectionRecord>();
         let m = format_args!("sw_shm_calloc({max}, {size}) for connection_list failed");
         log::sys_warning(c"Server::create_process_factory", m);
         return core::ptr::null_mut();
     }
-    tables.connection_list.replace(list);
+    tables.install_reactor_threads(threads);
+    tables.map_connections(list);
     (tables.reactor_pipe_num).set(u16::try_from(pipes & 0xffff).unwrap_or_default());
     barriers(serv, true);
     crate::factory::new()
 }
 
-/// Either factory's destroy of what its create mapped: the connection list and the
-/// reactor threads.
-pub(crate) fn free_tables(serv: view::Server<'_>) {
-    // SAFETY: a factory's destroy runs once its workers and reactor threads are gone,
-    // and nothing reads the tables while this lives.
-    let tables = unsafe { &mut *serv.state().tables() };
-    tables.connection_list.free();
-    drop(tables.take_reactor_threads());
-}
-
-/// `Server::destroy_process_factory`.
+/// `Server::destroy_process_factory`, but for the connection list and the reactor
+/// threads, which the server's teardown frees with its other tables.
 pub(crate) fn destroy(serv: view::Server<'_>) {
-    free_tables(serv);
     barriers(serv, false);
     let pool = crate::shared::ServerShared::of(serv).event_pool();
     if !pool.message_box().is_null() {
         // The event pool's box, which the pool forgets as it frees it.
-        swoole_rs_process::methods::free_message_box(serv.event_pool_ref());
+        swoole_rs_process::methods::free_message_box(
+            crate::process_pool_native(),
+            serv.event_pool_ref(),
+        );
     }
 }
 
@@ -128,7 +121,11 @@ pub(crate) fn kill_task_workers(serv: view::Server<'_>) {
     if count == 0 {
         return;
     }
-    kill_all_workers(serv.task_pool_ref(), libc::SIGTERM);
+    kill_all_workers(
+        crate::process_pool_native(),
+        serv.task_pool_ref(),
+        libc::SIGTERM,
+    );
     let pool = crate::shared::ServerShared::of(serv).task_pool();
     for index in 0..count as usize {
         let pid = pool.worker(index).map_or(0, Worker::pid);
@@ -228,13 +225,11 @@ pub(crate) fn send(serv: view::Server<'_>, to: Pipe, send: &mut SendData) -> boo
                 return false;
             };
             // This reactor thread's bus, and its copy of the worker's pipe.
-            let thread = state
-                .tables_ref()
-                .reactor_threads_ptr()
-                .cast::<ThreadRecord>()
-                .wrapping_add(usize::from(swoole_rs_corebase::thread_id()));
-            // SAFETY: this reactor thread's live record.
-            let bus = unsafe { &*thread }.message_bus();
+            let thread_id = usize::from(swoole_rs_corebase::thread_id());
+            let Some(thread) = state.tables_ref().reactor_thread(thread_id) else {
+                return false;
+            };
+            let bus = thread.message_bus();
             let Some(pipe) = PipeSocket::of_bus(bus.rust(), pipe) else {
                 return false;
             };
@@ -255,7 +250,12 @@ pub(crate) fn send(serv: view::Server<'_>, to: Pipe, send: &mut SendData) -> boo
                 return false;
             };
             let head = swoole_rs_process::process_pool::head_view(send.info());
-            let sent = swoole_rs_process::methods::send_pipe_message(target, head, PIPE_MASTER);
+            let sent = swoole_rs_process::methods::send_pipe_message(
+                crate::process_pool_native(),
+                target,
+                &head,
+                PIPE_MASTER,
+            );
             sent.is_some_and(|sent| sent > 0)
         }
     }

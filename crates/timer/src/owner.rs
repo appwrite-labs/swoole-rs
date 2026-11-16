@@ -13,7 +13,6 @@ use std::ffi::{CStr, c_int, c_long, c_void};
 use std::marker::PhantomData;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{log, swr_v1_core_set_signal_alarm, thread_reactor};
-use swoole_rs_reactor::ReactorPrepared;
 use swoole_rs_reactor::{
     event_api, swr_v1_event_set_end_callback, swr_v1_event_set_exit_condition,
 };
@@ -49,8 +48,8 @@ impl Lent<'_> {
         self.0.as_ptr()
     }
 }
-/// A callback of the node's data alone, for `swr_v1_timer_add_plain`'s callers.
-pub type Plain = swoole_rs_reactor::DeferCall;
+/// A callback of the node's data alone.
+type Plain = unsafe extern "C-unwind" fn(*mut c_void);
 /// `abandon_selection`'s pending Zend bailout, raised once the node is gone.
 pub type Bailout = extern "C-unwind" fn();
 
@@ -70,7 +69,7 @@ pub struct Info {
 #[repr(C)]
 pub struct TimerNode {
     pub(crate) id: c_long,
-    /// Upstream's `type == TYPE_PHP`: a [`TimerNode::php`] node.
+    /// Upstream's `type == TYPE_PHP`: a PHP callable node.
     php: bool,
     pub(crate) exec_msec: i64,
     interval: i64,
@@ -81,7 +80,7 @@ pub struct TimerNode {
     data: *mut c_void,
     destructor: Option<Destructor>,
     plain: Option<Plain>,
-    /// A `TimerNode::php` node's destructor of its data.
+    /// A PHP callable node's destructor of its data.
     plain_drop: Option<Plain>,
     /// A [`TimerNode::closure`] node's callback.
     closure: Option<Closure>,
@@ -184,22 +183,6 @@ impl TimerNode {
         node
     }
 
-    /// A node whose callback is `plain(data)`, which `Owner::select` calls directly.
-    pub(crate) fn plain(plain: Plain, data: *mut c_void) -> Self {
-        let mut node = Self::new(None, data);
-        node.plain = Some(plain);
-        node
-    }
-
-    /// A PHP node: `callback(data)` on each run, `destructor(data)` once
-    /// it is removed.
-    pub(crate) fn php(callback: Plain, destructor: Plain, data: *mut c_void) -> Self {
-        let mut node = Self::plain(callback, data);
-        node.php = true;
-        node.plain_drop = Some(destructor);
-        node
-    }
-
     pub(crate) fn is_php(&self) -> bool {
         self.php
     }
@@ -241,11 +224,22 @@ extern "C" fn alarm(_signo: c_int) {
 #[derive(Clone, Copy)]
 struct Calls {
     closure: Option<Closure>,
-    plain: Option<Plain>,
+    plain: Option<PlainCall>,
     callback: Option<Callback>,
-    data: *mut c_void,
     destructor: Option<Destructor>,
-    plain_drop: Option<Plain>,
+    plain_drop: Option<PlainCall>,
+}
+
+/// A node's [`Plain`] function with the node's own data, what it was made to be called
+/// with: only [`applied`] pairs them, from one node.
+#[derive(Clone, Copy)]
+struct PlainCall(Plain, *mut c_void);
+
+impl PlainCall {
+    fn run(self) {
+        // SAFETY: the node's function of its own data, the pair it was made with.
+        unsafe { (self.0)(self.1) };
+    }
 }
 
 /// Copies a view Rust hands back into its node, so the node is current: the node,
@@ -261,13 +255,13 @@ fn applied(view: &TimerView) -> (*mut TimerNode, Calls) {
     node_ref.exec_count = view.exec_count;
     node_ref.round = view.birth_round;
     node_ref.removed = view.removed;
+    let data = node_ref.data;
     let calls = Calls {
         closure: node_ref.closure,
-        plain: node_ref.plain,
+        plain: node_ref.plain.map(|f| PlainCall(f, data)),
         callback: node_ref.callback,
-        data: node_ref.data,
         destructor: node_ref.destructor,
-        plain_drop: node_ref.plain_drop,
+        plain_drop: node_ref.plain_drop.map(|f| PlainCall(f, data)),
     };
     (node, calls)
 }
@@ -391,15 +385,12 @@ impl Owner {
     fn set(&self, msec: i64) {
         match self.backend.get() {
             MANUAL => {}
-            REACTOR => {
-                // The live reactor the backend attached to.
-                let fields = ReactorPrepared::of(self.reactor.get()).fields;
-                let msec = msec.c_cast::<i32>();
-                // SAFETY: its live fields.
-                unsafe { (*fields).timeout_msec = msec };
-            }
+            // The thread's reactor is the one the backend attached to: its destroy
+            // callback frees this timer before the thread's reactor is cleared.
+            REACTOR => event_api::swoole_event_set_timeout_msec(msec.c_cast::<i32>()),
             _ => {
-                swr_v1_timer_system_set(msec);
+                // Upstream's set() callers ignore its status too.
+                _ = swr_v1_timer_system_set(msec);
             }
         }
     }
@@ -418,8 +409,7 @@ impl Owner {
             // The detached node, live until its box is dropped below.
             destructor(node);
         } else if let Some(plain_drop) = calls.plain_drop {
-            // SAFETY: the node's destructor of its own data.
-            unsafe { plain_drop(calls.data) };
+            plain_drop.run();
         }
         // SAFETY: `add` boxed it; the queue no longer holds it.
         drop(unsafe { Box::from_raw(node) });
@@ -466,6 +456,32 @@ impl Owner {
             self.next_msec.set(next);
         }
         Some((node, view.id))
+    }
+
+    /// Own a parsed PHP callable: only the matching Zend callbacks can reach it.
+    /// A rejected add returns it unkept; success keeps it before any selection.
+    #[cfg(feature = "php")]
+    pub(crate) fn add_php<H: swoole_rs_zend::Holder>(
+        &self,
+        ms: i64,
+        persistent: bool,
+        callable: swoole_rs_zend::Parsed,
+    ) -> Result<i64, swoole_rs_zend::Parsed> {
+        let (run, free) = swoole_rs_zend::Callable::callbacks::<H>();
+        let mut node = TimerNode::new(None, std::ptr::null_mut());
+        node.php = true;
+        node.plain = Some(run);
+        node.plain_drop = Some(free);
+        let Some((node, id)) = self.add(ms, persistent, node) else {
+            return Err(callable);
+        };
+        // No user callback runs between adding the node and retaining its callable.
+        // The node now owns it; its matching destructor releases it exactly once.
+        let owned = callable.keep(persistent.then_some(id)).into_raw();
+        // SAFETY: the node was just added; no callback runs before its data is
+        // installed, and the pointer is obtained after Rust relinquishes the box.
+        unsafe { (*node).data = owned };
+        Ok(id)
     }
 
     /// Whether `id` was removed.
@@ -567,8 +583,7 @@ impl Owner {
                 if let Some(closure) = calls.closure {
                     closure.run();
                 } else if let Some(plain) = calls.plain {
-                    // SAFETY: the node's function of its own data.
-                    unsafe { plain(calls.data) };
+                    plain.run();
                 } else if let Some((callback, node)) = calls.callback.zip(Lent::of(node)) {
                     // The selected node, which the queue holds until `complete`.
                     callback(self, node);
@@ -660,14 +675,14 @@ fn attach() {
 }
 
 /// The exit condition: no timer is pending.
-extern "C-unwind" fn idle(_event_num: &mut usize) -> bool {
+fn idle(_event_num: &mut usize) -> bool {
     crate::wrapper::current().is_none_or(|timer| timer.count() == 0)
 }
 
 /// The reactor's destroy callback: frees this thread's timer, closing a
 /// selection a bailout left. `swoole_event_free` destroys the thread's reactor
 /// before it clears it, so the thread's reactor is the one being destroyed.
-extern "C-unwind" fn destroyed(_data: *mut c_void) {
+fn destroyed() {
     let Some(timer) = crate::wrapper::current() else {
         return;
     };

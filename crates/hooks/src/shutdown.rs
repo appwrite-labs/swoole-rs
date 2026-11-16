@@ -4,10 +4,10 @@
 //! the TLS session.
 use crate::vector::Barrier;
 use core::ffi::{CStr, c_void};
+use std::io;
 use swoole_rs_reactor::Events;
 
 /// Whether the socket is connected and which directions are shut.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SocketFlags {
     pub connected: bool,
@@ -112,45 +112,36 @@ impl SocketState {
     }
 }
 
-/// `shutdown(2)`, which reports failure through errno.
-pub(crate) fn sys_shutdown(fd: i32, how: i32) -> i32 {
-    swoole_rs_corebase::sys::shutdown(fd, how).map_or(-1, |()| 0)
-}
-
-/// `Socket::shutdown(how)` after `set_err(0)`: 0 on success, otherwise the error
-/// to set. `closed` is `is_closed()`; `ssl_shutdown`, when the socket has TLS,
-/// closes the session first. `syscall` is [`sys_shutdown`], which sets errno.
+/// `Socket::shutdown(how)` after `set_err(0)`. `closed` is `is_closed()`;
+/// `ssl_shutdown`, when the socket has TLS, closes the session before the syscall.
+///
+/// # Errors
+/// A disconnected or already shut direction, or the syscall's captured OS error.
 pub(crate) fn shutdown(
-    syscall: fn(i32, i32) -> i32,
+    syscall: fn(i32, i32) -> io::Result<()>,
     fd: i32,
     how: i32,
     closed: bool,
     flags: &mut SocketFlags,
     ssl_shutdown: Option<&dyn Fn()>,
-) -> i32 {
+) -> io::Result<()> {
     if !flags.connected
         || closed
         || how == libc::SHUT_RD && flags.read
         || how == libc::SHUT_WR && flags.write
     {
-        return libc::ENOTCONN;
+        return Err(io::Error::from_raw_os_error(libc::ENOTCONN));
     }
     if let Some(ssl_shutdown) = ssl_shutdown {
         ssl_shutdown();
     }
-    let error = if syscall(fd, how) < 0 {
-        std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-    } else {
-        0
-    };
-    if error != 0 && error != libc::ENOTCONN {
-        return error;
-    }
-    // A connection reset by the peer shuts both directions.
-    let how = if error == libc::ENOTCONN {
-        libc::SHUT_RDWR
-    } else {
-        how
+    let how = match syscall(fd, how) {
+        Ok(()) => how,
+        // A connection reset by the peer shuts both directions.
+        Err(error) if error.raw_os_error() == Some(libc::ENOTCONN) => libc::SHUT_RDWR,
+        // Preserve the callback's legacy failure-without-errno behavior.
+        Err(error) if error.raw_os_error() == Some(0) => how,
+        Err(error) => return Err(error),
     };
     match how {
         libc::SHUT_RD => flags.read = true,
@@ -163,12 +154,13 @@ pub(crate) fn shutdown(
     if flags.read && flags.write {
         flags.connected = false;
     }
-    0
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use swoole_rs_corebase::sys::shutdown as sys_shutdown;
 
     fn pair() -> [i32; 2] {
         let mut fds = [0; 2];
@@ -188,6 +180,7 @@ mod tests {
 
     fn down(fd: i32, how: i32, closed: bool, flags: &mut SocketFlags) -> i32 {
         shutdown(sys_shutdown, fd, how, closed, flags, None)
+            .map_or_else(|error| error.raw_os_error().unwrap_or(0), |()| 0)
     }
 
     #[test]
@@ -252,7 +245,8 @@ mod tests {
             false,
             &mut flags,
             Some(&mark),
-        );
+        )
+        .map_or_else(|error| error.raw_os_error().unwrap_or(0), |()| 0);
         assert_eq!((error, closed.get(), flags.connected), (0, true, false));
         unsafe { libc::close(fds[0]) };
         unsafe { libc::close(fds[1]) };

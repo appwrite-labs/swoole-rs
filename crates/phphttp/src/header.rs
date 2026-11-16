@@ -7,19 +7,17 @@ use crate::state::{Slot, State};
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::ffi::{CStr, c_int};
-use std::ptr;
 use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_deflate::{DEFLATE, Failure, GZIP, bound, compress as deflate};
 use swoole_rs_httpbindings::{
-    CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, DATE, SERVER, TRANSFER_ENCODING,
-    encoding, response_header, swr_v1_httpbindings_codec, swr_v1_httpbindings_codec_level,
+    CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, Compression, DATE, SERVER,
+    TRANSFER_ENCODING, codec, codec_level, encoding, response_header,
 };
 use swoole_rs_inflate::brotli::{self, MAX_QUALITY, MIN_QUALITY};
 use swoole_rs_inflate::zstd;
-use swoole_rs_zend::sys::zval;
 use swoole_rs_zend::{
-    Array, Class, Declared, HeldArray, Key, Value, ZStr, ZString, bailout, string,
+    Array, Class, Declared, HeldArray, Key, Separated, Value, ZStr, ZString, bailout,
 };
 
 /// llhttp's `HTTP_HEAD`.
@@ -29,10 +27,6 @@ const CONFLICT_HEADER: c_int = swoole_rs_error::ErrorCode::SW_ERROR_HTTP_CONFLIC
 /// MINIT's codec bits (`parse.rs`): zlib, Brotli and zstd, and any codec built.
 const CODECS: u32 = 7;
 const COMPRESSION: u32 = 8;
-/// `HTTP_COMPRESS_GZIP`, `HTTP_COMPRESS_BR` and `HTTP_COMPRESS_ZSTD`.
-const METHOD_GZIP: i32 = 1;
-const METHOD_BR: i32 = 3;
-const METHOD_ZSTD: i32 = 4;
 /// `sw_tg_buffer()`'s size, which bounds one trailer line.
 const TRAILER_LINE: usize = 65536;
 
@@ -66,8 +60,9 @@ pub(crate) fn minit(class: &Class) {
 }
 
 /// `swoole_http_init_and_read_property`: the response's `header`, `cookie`
-/// or `trailer` array, made on first use.
-pub(crate) fn response_property(state: &mut State, which: Property) -> *mut zval {
+/// or `trailer` array, made on first use, to write in place as upstream does;
+/// none without a response object.
+pub(crate) fn response_property(state: &mut State, which: Property) -> Option<Separated<'_>> {
     let response = &mut state.response;
     let [header, cookie, trailer] = &PROPERTIES;
     let (slot, property) = match which {
@@ -75,8 +70,11 @@ pub(crate) fn response_property(state: &mut State, which: Property) -> *mut zval
         Property::Cookie => (&mut response.zcookie, cookie),
         Property::Trailer => (&mut response.ztrailer, trailer),
     };
-    slot.init_array(&response.zobject, property, 8)
-        .map_or(ptr::null_mut(), Value::as_ptr)
+    let array = slot.init_array(&response.zobject, property, 8)?;
+    // SAFETY: the array `init_array` made for the response's property, a table
+    // of its own, which the object holds and the slot keeps uncounted; the
+    // borrow of the state ends the write before anything reaches it again.
+    Some(unsafe { Separated::in_place(array.as_ptr()) })
 }
 
 /// `sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, name)`, when it
@@ -198,11 +196,9 @@ fn add_custom_header(
         .rposition(|byte| !byte.is_ascii_whitespace_c())
         .map_or(0, |last| last + 1);
     if trimmed != length {
-        let val = string::val(text.as_ptr());
-        // SAFETY: the string holds `length` bytes; `swoole::rtrim` zeroes the trimmed ones.
-        unsafe { ptr::write_bytes(val.wrapping_add(trimmed), 0, length - trimmed) };
-        // SAFETY: as above: `ZSTR_LEN(str) = swoole::rtrim(...)`.
-        unsafe { (*text.as_ptr()).len = trimmed };
+        // SAFETY: the live string, which no borrow reads across the write
+        // (`bytes` is read again below); `swoole::rtrim` writes it in place.
+        unsafe { swoole_rs_zend::sys::swr_zend_http_rtrim(text.as_ptr(), trimmed) };
     }
     let bytes = text.bytes();
     if !has_crlf(bytes) {
@@ -396,7 +392,7 @@ fn build(
         if compression && compress(state, body) {
             length = compressed(state).len();
             let codecs = CAPABILITIES.load(Relaxed) & CODECS;
-            let label = encoding(i32::from(state.compression_method), codecs);
+            let label = encoding(state.compression_method, codecs);
             out.extend_from_slice(b"Content-Encoding: ");
             out.extend_from_slice(label.map_or(b"".as_slice(), CStr::to_bytes));
             out.extend_from_slice(b"\r\n");
@@ -478,37 +474,35 @@ fn compress_warning(message: &str) {
 /// `Context::compress`.
 fn compress(state: &mut State, input: &[u8]) -> bool {
     let capabilities = CAPABILITIES.load(Relaxed);
-    let method = swr_v1_httpbindings_codec(
-        i32::from(state.compression_method),
+    let method = match codec(
+        state.compression_method,
         capabilities & CODECS,
-        u32::from(state.accept_compression),
+        state.accept_compression,
         input.len(),
         state.compression_min_length,
-    );
-    if method == 0 {
-        return false;
-    }
-    if method < 0 {
-        compress_warning("Unknown compression method");
-        return false;
-    }
+    ) {
+        Ok(Some(method)) => method,
+        Ok(None) => return false,
+        Err(_) => {
+            compress_warning("Unknown compression method");
+            return false;
+        }
+    };
     let level = i32::from(state.compression_level);
     let compressed = match method {
-        METHOD_BR => {
-            let quality = swr_v1_httpbindings_codec_level(method, level, MIN_QUALITY, MAX_QUALITY);
+        Compression::Brotli => {
+            let quality = codec_level(method, level, MIN_QUALITY, MAX_QUALITY);
             // The Brotli quality is stored back, as upstream's clamp does; it fits int8_t.
             state.compression_level = i8::try_from(quality).unwrap_or(0);
             brotli::compress(input, quality)
                 .ok_or_else(|| "BrotliEncoderCompress() failed".to_owned())
         }
-        METHOD_ZSTD => {
+        Compression::Zstd => {
             let (minimum, maximum) = zstd::levels();
-            zstd::compress(
-                input,
-                swr_v1_httpbindings_codec_level(method, level, minimum, maximum),
-            )
+            zstd::compress(input, codec_level(method, level, minimum, maximum))
         }
-        _ => zlib(state, input, method, level),
+        Compression::Gzip | Compression::Deflate => zlib(state, input, method, level),
+        Compression::None => return false,
     };
     match compressed {
         Ok(out) => {
@@ -525,9 +519,18 @@ fn compress(state: &mut State, input: &[u8]) -> bool {
 
 /// `Context::compress`'s gzip and deflate: one `deflate(Z_FINISH)` into a
 /// buffer of `bound(length)`, at the clamped level stored back.
-fn zlib(state: &mut State, input: &[u8], method: i32, level: i32) -> Result<Vec<u8>, String> {
-    let window_bits = if method == METHOD_GZIP { GZIP } else { DEFLATE };
-    let level = swr_v1_httpbindings_codec_level(method, level, 0, 0);
+fn zlib(
+    state: &mut State,
+    input: &[u8],
+    method: Compression,
+    level: i32,
+) -> Result<Vec<u8>, String> {
+    let window_bits = if method == Compression::Gzip {
+        GZIP
+    } else {
+        DEFLATE
+    };
+    let level = codec_level(method, level, 0, 0);
     // zlib's clamp lands in -1..=9, which fits int8_t.
     state.compression_level = i8::try_from(level).unwrap_or(-1);
     match deflate(input, bound(input.len()), window_bits, level) {
@@ -552,7 +555,7 @@ pub(crate) fn compress_body<'a>(
         return None;
     }
     let codecs = CAPABILITIES.load(Relaxed) & CODECS;
-    let label = encoding(i32::from(state.compression_method), codecs).unwrap_or_default();
+    let label = encoding(state.compression_method, codecs).unwrap_or_default();
     Some((label, compressed(state)))
 }
 

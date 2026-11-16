@@ -93,7 +93,7 @@ Tooling tests: `tests/dev/run.sh` (parallel; prints only failing files), or `pyt
 ### One command: `dev.py docker`
 
 ```sh
-python3 tools/dev.py docker -- integrate --module utilities --phase utilities-logger-originals
+python3 tools/dev.py docker -- integrate --module utilities --phase utilities-hash-originals
 ```
 
 Runs any `dev.py` command in the dev image for this host's architecture, with no
@@ -122,6 +122,11 @@ It warns when the disk has less than 20 GB free. `dev.py prune` also removes
 `target/worktrees/*` older than its window. It keeps Docker images shared with
 other worktrees.
 
+To reproduce an x86 CI failure on an ARM host, add `--platform linux/amd64`
+before `--`. `linux/arm64` is also supported. The selected architecture has its
+own image, toolchain volumes and `target/docker/<arch>/` output. Docker must
+support running that architecture; emulated timing is not native CI timing.
+
 #### io_uring: `dev.py docker --iouring`
 
 Docker's default seccomp profile answers `io_uring_setup` with EPERM, so in a default
@@ -133,11 +138,16 @@ of an unsupported run. To run them against a real ring, opt in:
 python3 tools/dev.py docker --iouring -- cargo test --locked -p swoole-rs-hooks --features iouring,upstream-symbols uring
 ```
 
-`--iouring` adds exactly `--security-opt seccomp=tools/docker-seccomp-iouring.json` to
-`docker run`: Docker's default profile (moby/profiles `seccomp/default.json`) plus one
-rule allowing `io_uring_setup`, `io_uring_enter` and `io_uring_register`. Capabilities,
-AppArmor, devices and ulimits stay Docker's defaults; it is not `--privileged` and not
-`seccomp=unconfined`. Ring memory is charged to the container's memory cgroup, so no
+`--iouring` adds exactly `--security-opt seccomp=tools/docker-seccomp-iouring.json` and
+`--cap-add SYS_RESOURCE` to `docker run`. The profile is Docker's default (moby/profiles
+`seccomp/default.json`) plus one rule allowing `io_uring_setup`, `io_uring_enter` and
+`io_uring_register`. `CAP_SYS_RESOURCE` lets the ring's sendfile grow its pipe to 1 MiB
+as upstream does. A container's root shares the host VM's per-user pipe quota
+(`fs.pipe-user-pages-soft`), and on a busy host (self-hosted runners, dind) that quota
+runs out. Pipes then shrink to two pages and the resize fails with EPERM, so a spliced
+file no longer fits a socketpair and the sendfile tests block (#4230). AppArmor, devices,
+ulimits and the other capabilities stay Docker's defaults; it is not `--privileged` and
+not `seccomp=unconfined`. Ring memory is charged to the container's memory cgroup, so no
 `memlock` ulimit is needed. The flag applies to whatever command the run executes.
 
 The host must still allow io_uring: a Linux kernel built with `CONFIG_IO_URING` and
@@ -146,6 +156,15 @@ disables it for everyone), and a VM whose kernel refuses it (#4167 saw EPERM on 
 OrbStack aarch64 kernel without this flag; check `--iouring` there) is no better. On such
 a host the tests still fail at ring creation with `--iouring`, visibly; native CI's
 iouring variant remains the qualifying run.
+
+#### Timing on a VM
+
+On a Docker VM with idle vCPUs (OrbStack's aarch64 kernel, #4261), a sleep wakes late:
+plain PHP's `usleep` of 10 to 100 ms overshot by 6.5 ms on average, with 184 of 300 calls
+outside 10%. Under full CPU load the overshoot was 0.1 ms. Tests that check a sleep with
+`time_approximate` (`tests/swoole_runtime/sleep.phpt` failed 11 of 20 idle runs on
+upstream and 12 on Cargo, and none under load) then fail on both engines. Native CI
+runners don't do this, and they are the qualifying run.
 
 Any other image a tool or README builds gets one fixed name per purpose (for
 example `swoole-protocols-core`), never a hash or `:local` tag, so a rebuild

@@ -25,12 +25,41 @@ pub fn store_listen_socket(serv: view::Server<'_>) {
     crate::startup::store_listen_socket(serv);
 }
 
+/// Which process's signal handler runs: each is one of [`on_signal`]'s bodies.
+#[derive(Clone, Copy)]
+pub(crate) enum SignalBody {
+    /// `Server::master_signal_handler`.
+    Master,
+    /// `Manager_signal_handler`.
+    #[cfg(feature = "upstream-symbols")]
+    Manager,
+    /// `Server::worker_signal_handler`.
+    #[cfg(feature = "upstream-symbols")]
+    Worker,
+}
+
+/// The server's signal handlers: `body` over `SwooleG.server`, when there is one.
+pub(crate) fn on_signal(body: SignalBody, signo: c_int) {
+    let serv = swoole_rs_corebase::swr_v1_core_server();
+    if serv.is_null() {
+        return;
+    }
+    // SAFETY: the process's server (only `SharedServer::new` sets it), which its last
+    // share's drop stops naming before the server is freed. The view lives for the
+    // body below, which runs the server's own reaction to the signal and ends no share.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    match body {
+        SignalBody::Master => crate::control::signal(serv, signo),
+        #[cfg(feature = "upstream-symbols")]
+        SignalBody::Manager => crate::manager::native::signal(serv, signo),
+        #[cfg(feature = "upstream-symbols")]
+        SignalBody::Worker => crate::event_worker::native::signal(serv, signo),
+    }
+}
+
 /// `Server::master_signal_handler(signo)`: the signal over `SwooleG.server`.
 pub extern "C" fn master_signal_handler(signo: c_int) {
-    // SAFETY: the master's signal runs while its server lives; the view ends with it.
-    if let Some(serv) = unsafe { view::Server::current() } {
-        crate::control::signal(serv, signo);
-    }
+    on_signal(SignalBody::Master, signo);
 }
 
 pub use crate::control::shutdown;
@@ -127,7 +156,7 @@ pub(crate) fn connection_incoming(
 ///
 /// Registered only on a server's reactor (its `ptr` is the live `Server`) for its
 /// listening sockets.
-pub(crate) extern "C" fn accept_connection(
+pub(crate) fn accept_connection(
     reactor: swoole_rs_reactor::Running<'_>,
     event: &mut swoole_rs_reactor::Event,
 ) -> c_int {
@@ -143,7 +172,7 @@ pub(crate) extern "C" fn accept_connection(
 #[must_use]
 pub fn get_startup_error_message() -> CString {
     let message = swoole_rs_error::last_error_message();
-    crate::state::startup_error(message, log::swr_v1_core_last_error())
+    crate::state::startup_error(message, log::last_error())
 }
 
 pub use crate::connection::{add as add_connection, set_max_connection};
@@ -377,9 +406,9 @@ mod tests {
 
         // SAFETY: a zeroed record is a valid connection.
         let mut conn: ConnectionRecord = unsafe { core::mem::zeroed() };
-        conn.fd = 22;
-        conn.reactor_id = 3;
-        conn.server_fd = 0x1_0005;
+        conn.fd.set(22);
+        conn.reactor_id.set(3);
+        conn.server_fd.set(0x1_0005);
         assert!(
             notify(serv, (&mut conn).into(), ServerEvent::Close),
             "notify result"
@@ -401,7 +430,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn kernel_nobufs_takes_the_sockets_flag_or_in_process_mode_the_reactor_pipes() {
         use crate::records::ConnectionRecord;
         use crate::records::tests::naming;
@@ -416,8 +444,10 @@ mod tests {
         // SAFETY: as above.
         let mut connections: [ConnectionRecord; 4] = unsafe { core::mem::zeroed() };
         // SAFETY: the record above, which outlives the connections that point to it.
-        connections[3].socket = unsafe { swoole_rs_reactor::Socket::from_ptr(&raw mut sock) };
-        connections[3].reactor_id = 1;
+        connections[3]
+            .socket
+            .set(unsafe { swoole_rs_reactor::Socket::from_ptr(&raw mut sock) });
+        connections[3].reactor_id.set(1);
         // SAFETY: as above.
         let mut workers: [WorkerRecord; 4] = unsafe { core::mem::zeroed() };
         // Session 3 on reactor 1 of 2, over 2 pipes: worker 1 + (3 % 2) * 2.
@@ -440,7 +470,7 @@ mod tests {
         config.reactor_num.set(2);
         config.mode_ = Mode::Base;
         let tables = server.tables_mut();
-        tables.connection_list = naming(&mut connections);
+        *tables.connection_list_mut() = naming(&mut connections);
         tables.reactor_pipe_num.set(2);
         // SAFETY: the table just named holds 4 records.
         unsafe { tables.set_max_connection_unchecked(4) };
@@ -463,7 +493,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn pipe_fds_map_to_the_pipe_and_raise_the_highest_fd() {
         use core::sync::atomic::Ordering::Relaxed;
         use swoole_rs_process::worker_record::{Worker, WorkerRecord};

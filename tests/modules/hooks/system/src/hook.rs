@@ -6,8 +6,9 @@
 //! crates/hooks' `hooked::connect`, `accept`, `poll_fake`, `sendmsg` and `recvmsg`: they take
 //! the address as crates/corebase's `SocketAddress` (`Address::assign` is crates/clients'
 //! `address::assign`), the pollfds as a slice and the message as its borrowed buffers.
-//! `swoole_coroutine_send` and `_recv` are `hooked`'s, over byte slices.
-//! `swoole_coroutine_getaddrinfo` and `_gethostbyname` are `stdio`'s, over `&CStr` names.
+//! The Rust socket operations return `io::Result`; local conversions below keep
+//! the original integer assertions. `hooked::send` and `recv` take byte slices.
+//! `resolve_addrinfo` and `swoole_coroutine_gethostbyname` are `stdio`'s, over `&CStr` names.
 
 use super::socket::SW_SOCK_TCP;
 use super::{
@@ -24,7 +25,7 @@ use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_hooks::hooked::{
     self, swoole_coroutine_get_socket_object, swoole_coroutine_get_socket_object_ex,
 };
-use swoole_rs_hooks::stdio::{swoole_coroutine_getaddrinfo, swoole_coroutine_gethostbyname};
+use swoole_rs_hooks::stdio::{AddrInfoError, resolve_addrinfo, swoole_coroutine_gethostbyname};
 
 // glibc's values (the core-tests build is Linux).
 const O_RDWR: c_int = 2;
@@ -40,6 +41,7 @@ const POLLIN: i16 = 1;
 const POLLOUT: i16 = 4;
 const AI_PASSIVE: c_int = 1;
 const EAI_NONAME: c_int = -2;
+const EAI_SYSTEM: c_int = -11;
 const HOST_NOT_FOUND: c_int = 1;
 const ENOTSOCK: c_int = 88;
 const EWOULDBLOCK: c_int = 11;
@@ -388,6 +390,17 @@ fn gethostbyname() {
     });
 }
 
+fn addrinfo_status(result: Result<(), AddrInfoError>) -> c_int {
+    result.map_or_else(
+        |error| match error {
+            AddrInfoError::Resolver(code) => code,
+            AddrInfoError::System(_) => EAI_SYSTEM,
+            AddrInfoError::PoolRefused => -1,
+        },
+        |()| 0,
+    )
+}
+
 fn getaddrinfo() {
     run(|| {
         let hints = AddrInfo {
@@ -405,7 +418,12 @@ fn getaddrinfo() {
         // SAFETY: the hints and the result slot as glibc's `addrinfo`, which `AddrInfo` is.
         let (hints, slot) =
             unsafe { (&*(&raw const hints).cast(), &mut *(&raw mut result).cast()) };
-        let result1 = swoole_coroutine_getaddrinfo(Some(HOST_1), Some(c"http"), Some(hints), slot);
+        let result1 = addrinfo_status(resolve_addrinfo(
+            Some(HOST_1),
+            Some(c"http"),
+            Some(hints),
+            slot,
+        ));
         assert_eq!(result1, 0);
 
         let mut curr = result;
@@ -423,7 +441,7 @@ fn getaddrinfo() {
         result = std::ptr::null_mut();
         // SAFETY: as above.
         let slot = unsafe { &mut *(&raw mut result).cast() };
-        let result2 = swoole_coroutine_getaddrinfo(Some(HOST_2), None, Some(hints), slot);
+        let result2 = addrinfo_status(resolve_addrinfo(Some(HOST_2), None, Some(hints), slot));
         assert_eq!(result2, EAI_NONAME);
         assert!(result.is_null());
         // SAFETY: freeaddrinfo(NULL), as upstream.
@@ -513,7 +531,7 @@ fn test_hook_socket() {
         80,
         true,
     );
-    assert_eq!(hooked::connect(sock, &sa), 0);
+    assert_eq!(hooked::connect(sock, &sa).map_or(-1, |()| 0), 0);
     // SAFETY: waits on `sock`.
     assert_eq!(
         unsafe { swoole_coroutine_socket_wait_event(sock, SW_EVENT_WRITE, 5.0) },
@@ -522,7 +540,7 @@ fn test_hook_socket() {
 
     let req: &[u8] =
         b"GET / HTTP/1.1\r\nHost: www.baidu.com\r\nConnection: close\r\nKeepAlive: off\r\n\r\n";
-    let sent = hooked::swoole_coroutine_send(sock, req, 0);
+    let sent = hooked::send(sock, req, 0).map_or(-1, usize::cast_signed);
     assert_eq!(sent, isize::try_from(req.len()).unwrap());
 
     // swoole::String resp(1024)
@@ -530,7 +548,7 @@ fn test_hook_socket() {
     let mut length = 0;
     loop {
         let spare = &mut resp[length..];
-        let n = hooked::swoole_coroutine_recv(sock, spare, 0);
+        let n = hooked::recv(sock, spare, 0).map_or(-1, usize::cast_signed);
         if n <= 0 {
             break;
         }
@@ -845,7 +863,7 @@ fn sendmsg_and_recvmsg() {
             let ivec = [std::io::IoSlice::new(text)];
             let msg = hooked::SendMessage::new(&ivec);
 
-            let ret = hooked::sendmsg(pairs[0], &msg, 0);
+            let ret = hooked::sendmsg(pairs[0], &msg, 0).map_or(-1, usize::cast_signed);
             assert_eq!(co_close(pairs[0]), 0);
             assert_eq!(ret, isize::try_from(length).unwrap());
         });
@@ -854,7 +872,7 @@ fn sendmsg_and_recvmsg() {
         let mut ivec = [std::io::IoSliceMut::new(&mut buf[..length])];
         let mut msg = hooked::RecvMessage::new(&mut ivec);
 
-        let ret = hooked::recvmsg(pairs[1], &mut msg, 0);
+        let ret = hooked::recvmsg(pairs[1], &mut msg, 0).map_or(-1, usize::cast_signed);
         buf[usize::try_from(ret).unwrap()] = 0;
         assert_eq!(co_close(pairs[1]), 0);
         assert_eq!(super::c_str(&buf), text);
@@ -1034,7 +1052,7 @@ fn poll_fake() {
             events: POLLIN,
             revents: 0,
         };
-        assert_eq!(hooked::poll_fake(&mut fds[..1], 1000), 1);
+        assert_eq!(hooked::poll_fake(&mut fds[..1], 1000).unwrap_or(-1), 1);
         assert!(fds[0].revents & POLLIN != 0);
 
         assert!(read_fd(fd1, &mut buf) > 1024);
@@ -1045,7 +1063,7 @@ fn poll_fake() {
             events: 0,
             revents: 0,
         };
-        assert_eq!(hooked::poll_fake(&mut fds, 1000), -1);
+        assert_eq!(hooked::poll_fake(&mut fds, 1000).unwrap_or(-1), -1);
         assert_eq!(last_error(), SW_ERROR_INVALID_PARAMS);
 
         co_sleep(0.02);
@@ -1055,7 +1073,7 @@ fn poll_fake() {
             events: POLLIN | POLLOUT,
             revents: 0,
         };
-        assert_eq!(hooked::poll_fake(&mut fds[..1], 1000), 1);
+        assert_eq!(hooked::poll_fake(&mut fds[..1], 1000).unwrap_or(-1), 1);
         assert!(fds[0].revents & POLLIN != 0);
         assert!(fds[0].revents & POLLOUT != 0);
     });
@@ -1183,7 +1201,7 @@ fn create_socket_fail() {
 /// Fixtures the core-tests run prepares, before a case: `TEST_TMP_FILE` as
 /// base.file_put_contents writes it (65535 random alphanumerics and a NUL), and no
 /// `/tmp/123.txt`, which `ftruncate` creates with mode 0 and leaves behind.
-pub fn prepare() {
+pub(crate) fn prepare() {
     const ALNUM: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let mut content = vec![0u8; 65535];
     assert_eq!(random_bytes(&mut content), content.len());
@@ -1223,22 +1241,27 @@ fn accept() {
                 // getsockname(server_sock, &actual_server_addr, &addr_len)
                 let mut actual_server_addr = SocketAddress::default();
                 assert!(actual_server_addr.local_name(server_sock).is_ok());
-                assert_eq!(hooked::connect(client_sock, &actual_server_addr), 0);
+                assert_eq!(
+                    hooked::connect(client_sock, &actual_server_addr).map_or(-1, |()| 0),
+                    0
+                );
 
                 let test_message = b"test_data";
-                let sent_bytes = hooked::swoole_coroutine_send(client_sock, test_message, 0);
+                let sent_bytes =
+                    hooked::send(client_sock, test_message, 0).map_or(-1, usize::cast_signed);
                 assert_eq!(sent_bytes, 9);
 
                 swoole_coroutine_close(client_sock);
             });
 
             let mut client_addr = SocketAddress::default();
-            let client_sock = hooked::accept(server_sock, &mut client_addr);
+            let client_sock = hooked::accept(server_sock, &mut client_addr).unwrap_or(-1);
             assert!(client_sock > 0);
 
             let mut buffer = [0u8; 256];
             let len = buffer.len() - 1;
-            let received_bytes = hooked::swoole_coroutine_recv(client_sock, &mut buffer[..len], 0);
+            let received_bytes =
+                hooked::recv(client_sock, &mut buffer[..len], 0).map_or(-1, usize::cast_signed);
             assert!(received_bytes > 0);
             assert_eq!(CStr::from_bytes_until_nul(&buffer).unwrap(), c"test_data");
 
@@ -1248,7 +1271,7 @@ fn accept() {
     });
 }
 
-pub const CASES: super::Cases = &[
+pub(crate) const CASES: super::Cases = &[
     ("file", file),
     ("gethostbyname", gethostbyname),
     ("getaddrinfo", getaddrinfo),

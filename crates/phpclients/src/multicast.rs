@@ -8,20 +8,18 @@ use crate::{
     native::Co,
     socket_options::{Stop, checked, errno, fd, long, string, text},
 };
-use libc::{c_int, c_uint, in_addr, in6_addr, sockaddr_in, sockaddr_in6, socklen_t};
+use libc::{c_int, c_uint, in_addr, in6_addr, sockaddr_in, sockaddr_in6};
+#[cfg(not(target_vendor = "apple"))]
+use std::ptr;
 use std::{
     ffi::CStr,
-    mem::size_of,
     net::{Ipv4Addr, Ipv6Addr},
-    ptr,
     str::FromStr,
 };
 use swoole_rs_corebase::net_types::AddressStorage;
-use swoole_rs_corebase::sys::{InterfaceRequest, Text, interface_ioctl, setsockopt, zeroed};
-use swoole_rs_zend::{
-    Array, Call, E_WARNING, Value, bailout, report,
-    sys::{IS_LONG, swr_zend_convert_to_array},
-};
+use swoole_rs_corebase::resolve_addresses;
+use swoole_rs_corebase::sys::{Ifreq, InterfaceRequest, Text, interface_ioctl, setsockopt, zeroed};
+use swoole_rs_zend::{Array, Call, E_WARNING, Value, bailout, report, sys::IS_LONG};
 
 /// An option's result: `None` leaves it to the caller, else whether it succeeded.
 pub(crate) type Handled = Result<Option<bool>, Stop>;
@@ -45,56 +43,10 @@ const MEMBERSHIP: &[(c_int, bool)] = &[
     (libc::IP_DROP_MEMBERSHIP, false),
 ];
 
-/// `getaddrinfo`'s hints: an `addrinfo` whose pointers are null, as POSIX requires
-/// of every hint but the family, socket type, protocol and flags. Only
-/// [`Hints::v6`] makes one.
-#[repr(transparent)]
-struct Hints(libc::addrinfo);
-
-impl Hints {
-    /// `AF_INET6`, with `AI_V4MAPPED | AI_ADDRCONFIG`.
-    fn v6() -> Self {
-        let mut hints: libc::addrinfo = zeroed();
-        hints.ai_family = libc::AF_INET6;
-        hints.ai_flags = libc::AI_V4MAPPED | libc::AI_ADDRCONFIG;
-        Self(hints)
-    }
-}
-
-/// The head of a list `getaddrinfo` stored, not yet freed. Only `getaddrinfo`
-/// makes one (nothing here constructs it) and only `freeaddrinfo` takes it, by
-/// value, so each list is freed at most once.
-#[repr(transparent)]
-struct AddressList(ptr::NonNull<libc::addrinfo>);
-
-impl AddressList {
-    /// The list's first entry.
-    fn first(&self) -> &libc::addrinfo {
-        // SAFETY: a list getaddrinfo stored, freed only by `freeaddrinfo`, which
-        // takes the handle this borrows.
-        unsafe { self.0.as_ref() }
-    }
-}
-
 unsafe extern "C" {
     /// `php_network_gethostbyname(host)`: 0 with the first address of an
     /// `AF_INET` entry written, 1 for an entry of another family, -1 for none.
     safe fn swr_zend_gethostbyname4(host: Text<'_>, address: &mut in_addr) -> c_int;
-}
-
-// libc's. Each reads its `Text`s and hints, writes only the one object a reference
-// names and reads or writes no other caller memory, so they are declared `safe`.
-unsafe extern "C" {
-    /// Resolves `host` with no service under `hints`, storing a new list (none
-    /// for an empty one) when it returns 0.
-    safe fn getaddrinfo(
-        host: Text<'_>,
-        service: Option<Text<'_>>,
-        hints: &Hints,
-        list: &mut Option<AddressList>,
-    ) -> c_int;
-    /// Frees a list `getaddrinfo` stored, which the handle's move hands over.
-    safe fn freeaddrinfo(list: AddressList);
 }
 
 /// The socket a helper works on.
@@ -143,10 +95,6 @@ fn socket_error(socket: Co, message: &str, error: c_int) -> Result<(), Stop> {
 /// `h_errno`, as `-10000 - h_errno` reports a host lookup failure.
 fn host_error() -> c_int {
     -10000 - swoole_rs_corebase::sys::h_errno()
-}
-
-fn socklen<T>() -> socklen_t {
-    socklen_t::try_from(size_of::<T>()).unwrap_or(0)
 }
 
 /// `dosockopt:`: set it, or report the socket error.
@@ -258,18 +206,21 @@ fn inet6(s: Sock, host: &[u8]) -> Result<Option<sockaddr_in6>, Stop> {
 
 /// `getaddrinfo(host, AF_INET6, AI_V4MAPPED | AI_ADDRCONFIG)`'s first address.
 fn resolve6(s: Sock, host: &CStr) -> Result<Option<in6_addr>, Stop> {
-    let mut list = None;
-    let found = getaddrinfo(host.into(), None, &Hints::v6(), &mut list) == 0;
-    let Some(list) = list.filter(|_| found) else {
+    let mut first: [sockaddr_in6; 1] = zeroed();
+    let hints = (
+        libc::AF_INET6,
+        0,
+        0,
+        libc::AI_V4MAPPED | libc::AI_ADDRCONFIG,
+    );
+    let found = resolve_addresses(host, None, hints, &mut first, |_| true);
+    if found.error != 0 || found.count == 0 {
         socket_error(s.socket, "Host lookup failed", host_error())?;
         return Ok(None);
-    };
-    let first = list.first();
-    let address = (first.ai_family == libc::PF_INET6
-        && first.ai_addrlen == socklen::<sockaddr_in6>())
-    // SAFETY: an AF_INET6 entry's address is a sockaddr_in6.
-    .then(|| unsafe { first.ai_addr.cast::<sockaddr_in6>().read_unaligned() }.sin6_addr);
-    freeaddrinfo(list);
+    }
+    // Another family's entry keeps its family, or the slot's zero.
+    let [first] = first;
+    let address = (c_int::from(first.sin6_family) == libc::AF_INET6).then_some(first.sin6_addr);
     if address.is_none() {
         warn(b"Host lookup failed: Non AF_INET6 domain returned on AF_INET6 socket")?;
     }
@@ -333,10 +284,12 @@ fn address(s: Sock, table: &Array, key: &CStr) -> Result<Option<AddressStorage>,
 
 /// `php_do_mcast_opt`: a membership change named by `name`.
 fn membership(s: Sock, level: c_int, name: c_int, source: bool, value: &Value) -> Handled {
-    // SAFETY: the live argument, converted in place as upstream does; nothing
-    // borrows what it held before.
-    unsafe { swr_zend_convert_to_array(value.as_ptr()) };
-    // The argument's array now, live for the call.
+    // Upstream converts the argument in place; a copy of it converts the same.
+    let mut value = value.copy();
+    value.convert_to_array().map_err(|bailed| {
+        bailed.defer();
+        Stop
+    })?;
     let Some(table) = value.array() else {
         return Ok(Some(false));
     };
@@ -452,25 +405,25 @@ fn change(
     }
 }
 
-/// `SIOCGIFNAME`: the interface's name into `request`.
+/// `SIOCGIFNAME`: a request on the interface.
 #[cfg(target_os = "linux")]
-fn interface_name(fd: c_int, index: c_uint, request: &mut libc::ifreq) -> bool {
-    request.ifr_ifru.ifru_ifindex = c_int::try_from(index).unwrap_or(-1);
-    interface_ioctl(fd, InterfaceRequest::Name, request) != -1
+fn interface_name(fd: c_int, index: c_uint) -> Option<Ifreq> {
+    let mut request = Ifreq::default();
+    request.set_index(c_int::try_from(index).unwrap_or(-1));
+    interface_ioctl(fd, InterfaceRequest::Name, &mut request).ok()?;
+    Some(request)
 }
 
-/// `if_indextoname`: the interface's name into `request`.
+/// `if_indextoname`: a request on the interface.
 #[cfg(not(target_os = "linux"))]
-fn interface_name(_fd: c_int, index: c_uint, request: &mut libc::ifreq) -> bool {
+fn interface_name(_fd: c_int, index: c_uint) -> Option<Ifreq> {
     // libc's own declaration: it writes at most `IF_NAMESIZE` bytes, the
     // name's size, and returns the name or null.
     unsafe extern "C" {
-        safe fn if_indextoname(
-            index: c_uint,
-            name: &mut [libc::c_char; libc::IF_NAMESIZE],
-        ) -> *mut libc::c_char;
+        safe fn if_indextoname(index: c_uint, name: &mut [u8; libc::IF_NAMESIZE]) -> *mut u8;
     }
-    !if_indextoname(index, &mut request.ifr_name).is_null()
+    let mut name = [0; libc::IF_NAMESIZE];
+    (!if_indextoname(index, &mut name).is_null()).then(|| Ifreq::named(&name))
 }
 
 /// `php_if_index_to_addr4`: the interface's IPv4 address (any for 0).
@@ -480,20 +433,16 @@ fn interface_address(s: Sock, index: c_uint) -> Result<Option<in_addr>, Stop> {
             s_addr: libc::INADDR_ANY,
         }));
     }
-    let mut request: libc::ifreq = zeroed();
-    let named = interface_name(s.fd, index, &mut request);
-    if !named || interface_ioctl(s.fd, InterfaceRequest::Address, &mut request) == -1 {
+    let request = interface_name(s.fd, index).and_then(|mut request| {
+        interface_ioctl(s.fd, InterfaceRequest::Address, &mut request).ok()?;
+        Some(request)
+    });
+    let Some(request) = request else {
         let error = errno();
         warn(format!("Failed obtaining address for interface {index}: error {error}").as_bytes())?;
         return Ok(None);
-    }
-    // SAFETY: SIOCGIFADDR wrote an AF_INET sockaddr.
-    let address = unsafe {
-        (&raw const request.ifr_ifru.ifru_addr)
-            .cast::<sockaddr_in>()
-            .read_unaligned()
     };
-    Ok(Some(address.sin_addr))
+    Ok(Some(request.ipv4()))
 }
 
 /// `php_add4_to_if_index`: the index of the interface holding `address` (0
@@ -714,6 +663,8 @@ pub(crate) fn get_ipv6(_call: &Call, _socket: Co, _level: c_int, _name: c_int) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_vendor = "apple"))]
+    use libc::socklen_t;
 
     #[test]
     fn membership_names_its_source_options() {

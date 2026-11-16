@@ -1,8 +1,7 @@
 //! The timer's backend choice and clock arithmetic, and the system timer
 //! (`setitimer`, upstream `src/os/timer.cc`).
-use libc::c_int;
 
-#[repr(C)]
+/// `timeval`'s seconds and microseconds, before the platform's field types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NativeTime {
     pub seconds: i64,
@@ -37,12 +36,11 @@ fn system_interval(milliseconds: i64) -> NativeTime {
 }
 
 /// Upstream `SystemTimer_set`: `ITIMER_REAL` fires every `milliseconds` (zero or
-/// less disarms it). `SW_OK`, or `SW_ERR` with errno from `setitimer`.
-#[expect(
-    clippy::must_use_candidate,
-    reason = "Timer::set ignores the status, as upstream's set() callers do"
-)]
-pub fn swr_v1_timer_system_set(milliseconds: i64) -> c_int {
+/// less disarms it).
+///
+/// # Errors
+/// `setitimer`'s errno.
+pub fn swr_v1_timer_system_set(milliseconds: i64) -> std::io::Result<()> {
     let interval = system_interval(milliseconds);
     let every = libc::timeval {
         tv_sec: interval.seconds,
@@ -54,11 +52,7 @@ pub fn swr_v1_timer_system_set(milliseconds: i64) -> c_int {
         it_value: every,
     };
     // The old value is not wanted.
-    if swoole_rs_corebase::sys::setitimer(libc::ITIMER_REAL, &value).is_err() {
-        -1
-    } else {
-        0
-    }
+    swoole_rs_corebase::sys::setitimer(libc::ITIMER_REAL, &value)
 }
 
 /// Upstream `swoole::realtime_add(timespec *, int64_t)`: adds milliseconds to a
@@ -223,7 +217,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no setitimer")]
     fn system_timer_arms_and_disarms() {
-        assert_eq!(swr_v1_timer_system_set(-1), 0);
+        assert!(swr_v1_timer_system_set(-1).is_ok());
         let mut current = libc::itimerval {
             it_interval: libc::timeval {
                 tv_sec: 1,

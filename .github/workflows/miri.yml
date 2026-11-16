@@ -73,22 +73,23 @@ jobs:
           - name: timer
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: -p swoole-rs-timer --features upstream-symbols
-          # The clients tests' fake ops never free a closed socket (tests read it
-          # after close), so its leaks are ignored.
           - name: clients
-            flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations -Zmiri-ignore-leaks
+            flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: -p swoole-rs-clients
           - name: hooks
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: -p swoole-rs-hooks
+          # The live-server fixture drops its tables without closing what a test accepted:
+          # a test may already have freed a socket its slot still names, so the fixture
+          # can't tell what is left. Its leaks are ignored, not its UB.
           - name: server
-            flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
+            flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations -Zmiri-ignore-leaks
             packages: -p swoole-rs-server
     env:
       TOOLCHAIN: nightly-2026-10-24
       MIRIFLAGS: ${{ matrix.flags }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: ./.github/actions/rustup
       - name: Install Miri toolchain
         run: rustup toolchain install $TOOLCHAIN --profile minimal --component miri,rust-src

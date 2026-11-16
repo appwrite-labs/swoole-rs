@@ -10,9 +10,7 @@ use swoole_rs_hooks::exec::exec as exec_into;
 use swoole_rs_phpstubs::coroutine_system;
 use swoole_rs_reactor::Events;
 use swoole_rs_reactor::wait_upstream::{system_wait, system_waitpid};
-use swoole_rs_zend::{
-    Call, Class, E_WARNING, Minit, Owned, OwnedArray, Value, ZString, bailout::Bailout,
-};
+use swoole_rs_zend::{Call, Class, E_WARNING, Minit, Owned, OwnedArray, ZString, bailout::Bailout};
 use swoole_rs_zend::{method_table, sys as z};
 
 use swoole_rs_hooks::resolve::{system_getaddrinfo, system_gethostbyname};
@@ -22,8 +20,6 @@ use swoole_rs_hooks::sleep::system_sleep;
 pub(crate) use swoole_rs_phpswoole::zif_swoole_async_dns_lookup_coro;
 
 unsafe extern "C" {
-    // crates/phpevents': declared, since crates/phpevents depends on this crate.
-    safe fn php_swoole_convert_to_fd(value: Option<&Value>) -> c_int;
     /// crates/hooks' hooked `statvfs`: inside a coroutine it runs on the thread
     /// pool. It reads a NUL-terminated path and writes the struct, and keeps neither.
     safe fn swoole_coroutine_statvfs(
@@ -116,7 +112,7 @@ fn sleep(call: &Call) {
         call.set_bool(false);
         return;
     }
-    call.set_bool(system_sleep(seconds) == 0);
+    call.set_bool(system_sleep(seconds));
 }
 
 /// `zend_value_error(message)`, then false.
@@ -448,12 +444,11 @@ fn wait_event(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let fd = php_swoole_convert_to_fd(call.value(1));
-    if fd < 0 {
+    let Some(fd) = swoole_rs_phpswoole::convert_to_fd(call.value(1)) else {
         host::fatal_error(E_WARNING, c"unknown fd type");
         call.set_bool(false);
         return;
-    }
+    };
     match swoole_rs_hooks::wait_event::wait_event(fd, Events::from_bits(int(events)), timeout) {
         Ok(fired) => call.set_long(fired.bits().into()),
         Err(_) => call.set_bool(false),

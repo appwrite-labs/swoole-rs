@@ -142,8 +142,7 @@ mod tests {
         fn new(messages: &[Vec<u8>]) -> Self {
             let live = LiveServer::new();
             let client = live.connect();
-            // SAFETY: the fixture's listener, live for the event.
-            let event = unsafe { Event::new(live.listener_fd, 0, 1, live.listener().cast()) };
+            let event = live.accept_event();
             crate::connection::accept(live.server(), live.reactor(), &event);
             let (ours, theirs) = UnixDatagram::pair().unwrap();
             ours.set_nonblocking(true).unwrap();
@@ -164,9 +163,7 @@ mod tests {
         }
         /// The handler's status, as upstream returns it.
         fn write(&self) -> c_int {
-            // SAFETY: the pipe's live record.
-            let event =
-                unsafe { Event::new(self.ours.as_raw_fd(), 0, FD_PIPE, self.sock.as_ptr().cast()) };
+            let event = Event::of(self.ours.as_raw_fd(), 0, FD_PIPE, Some(self.sock));
             if pipe_write(self.live.server(), self.live.reactor(), &event) {
                 SW_OK
             } else {
@@ -192,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "Miri's socketpair is stream-only")]
     fn pipe_write_sends_every_queued_message() {
         let messages = [
             message(SendData, 1, b"live"),
@@ -210,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "Miri's socketpair is stream-only")]
     fn pipe_write_drops_closed_and_timed_out_sessions() {
         let messages = [
             message(SendData, 1, b"closed"),
@@ -230,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "Miri's socketpair is stream-only")]
     fn a_full_pipe_waits_and_a_closed_one_fails() {
         let p = Pipe::new(&[message(SendData, 9, b"later")]);
         while p.ours.send(b"fill").is_ok() {}

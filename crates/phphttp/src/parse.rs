@@ -5,18 +5,20 @@
 //! itself owns goes through `host`.
 use crate::host;
 use crate::state::{Request, Slot, State};
-use std::ffi::{c_char, c_int};
+use std::ffi::{CStr, c_char, c_int};
 use std::fs::File;
 use std::io::{BufWriter, IoSlice, Write};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::{mem::ManuallyDrop, ptr};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::lent::{Count, In, lend_in};
+use swoole_rs_corebase::sys::Text;
 use swoole_rs_corebase::{WebSocketStatus, log};
 use swoole_rs_http::llhttp::{self, Callbacks, Flow as Step, Parser};
 use swoole_rs_http::multipart_parser::{Flow, MultipartParser};
 use swoole_rs_httpbindings::{
-    RequestHeader, body_prefix, compression, request_header, request_key, request_url,
-    swr_v1_httpbindings_form_source, token_list_contains, token_list_fast, trim_quotes,
+    FormSource, RequestHeader, body_prefix, compression, form_source, request_header, request_key,
+    request_url, token_list_contains, token_list_fast, trim_quotes,
 };
 use swoole_rs_zend::sys::zval;
 use swoole_rs_zend::{Declared, Interned, Minit, Owned, OwnedArray, Value, ZStr, ZString};
@@ -41,11 +43,14 @@ struct Parts<'a, 'i> {
 }
 
 unsafe extern "C" {
-    fn php_register_variable_safe(
-        var: *const c_char,
-        val: *const c_char,
-        len: usize,
-        track: *mut zval,
+    /// `$track[var] = (string) val`, by PHP's rules for request variable
+    /// names: it copies the name and the lent bytes, and registers nothing
+    /// without an array.
+    safe fn php_register_variable_safe(
+        var: Text<'_>,
+        val: In<'_, u8>,
+        len: Count<'_>,
+        track: Option<&Value>,
     );
     fn php_register_variable_ex(var: *const c_char, val: *mut zval, track: *mut zval);
 }
@@ -81,11 +86,13 @@ const CODECS: u32 = 7;
 const COMPRESSION: u32 = 8;
 
 /// The server's llhttp callbacks, over a context's state, with the current
-/// header's name, a span of the call's input.
-struct Server<'a, 'i>(&'a mut State, &'i [u8]);
+/// header's name, a span of the call's input, and the input, which holds the
+/// whole body.
+struct Server<'a, 'i>(&'a mut State, &'i [u8], &'i [u8]);
 
-/// `Request::parse()`'s: input arrives in pieces appended to `request.zdata`.
-struct Pieces<'a>(&'a mut State);
+/// `Request::parse()`'s: input arrives in pieces appended to `request.zdata`,
+/// whose bytes so far hold the whole body.
+struct Pieces<'a, 'b>(&'a mut State, &'b [u8]);
 
 impl<'i> Callbacks<'i> for Server<'_, 'i> {
     fn parser(&mut self) -> &mut Parser {
@@ -118,15 +125,15 @@ impl<'i> Callbacks<'i> for Server<'_, 'i> {
     }
 
     fn on_body(&mut self, data: &[u8]) -> Step {
-        on_body(self.0, data)
+        on_body(self.0, data, self.2)
     }
 
     fn on_message_complete(&mut self) -> Step {
-        on_message_complete(self.0)
+        on_message_complete(self.0, self.2)
     }
 }
 
-impl Callbacks<'_> for Pieces<'_> {
+impl Callbacks<'_> for Pieces<'_, '_> {
     fn parser(&mut self) -> &mut Parser {
         &mut self.0.parser
     }
@@ -148,11 +155,11 @@ impl Callbacks<'_> for Pieces<'_> {
     }
 
     fn on_body(&mut self, data: &[u8]) -> Step {
-        on_body(self.0, data)
+        on_body(self.0, data, self.1)
     }
 
     fn on_message_complete(&mut self) -> Step {
-        on_message_complete(self.0)
+        on_message_complete(self.0, self.1)
     }
 }
 
@@ -303,11 +310,13 @@ pub(crate) fn minit(minit: &Minit, codecs: u32) {
     REQUEST_FD.resolve(&crate::request::REQUEST, c"fd");
 }
 
-/// `Swoole\Http\Request`'s declared `tmpfiles` slot.
-pub(crate) fn tmpfiles_offset() -> u32 {
-    PROPERTIES
-        .get(Property::TmpFiles as usize)
-        .map_or(0, Declared::offset)
+/// Unlink the uploads `request`'s `tmpfiles` property lists now (user code may
+/// have replaced the array), and forget them in `SG(rfc1867_uploaded_files)`.
+pub(crate) fn release_uploads(request: &Value) {
+    let tmpfiles = PROPERTIES.get(Property::TmpFiles as usize);
+    if let Some(tmpfiles) = tmpfiles.and_then(|property| property.get(request)) {
+        swr_zend_http_uploads_release(tmpfiles);
+    }
 }
 
 /// `swoole_http_init_and_read_property`: the array behind a property slot,
@@ -416,6 +425,10 @@ unsafe extern "C" {
     /// `$request->tmpfiles[] = path` into the array the zval holds, which it does
     /// not replace, and the upload `is_uploaded_file` knows; it copies the bytes.
     safe fn swr_zend_http_upload(tmpfiles: &Value, path: IoSlice<'_>);
+    /// Unlink each string the array the zval holds (or references) lists, and
+    /// forget it in `SG(rfc1867_uploaded_files)`; nothing for anything else.
+    /// No PHP code runs.
+    safe fn swr_zend_http_uploads_release(tmpfiles: &Value);
 }
 
 /// `$request->tmpfiles[] = path`, and the upload `is_uploaded_file` knows;
@@ -438,12 +451,12 @@ pub(crate) fn parse_cookie(array: Option<&Value>, bytes: &[u8]) {
     }
 }
 
-/// `swoole_llhttp_parser_execute`.
-fn execute(state: &mut State, pieces: bool, input: &[u8]) -> usize {
-    let result = if pieces {
-        llhttp::execute(&mut Pieces(state), input)
-    } else {
-        llhttp::execute(&mut Server(state, &[]), input)
+/// `swoole_llhttp_parser_execute` of `input`, the end of `pieces` for
+/// `Request::parse()`.
+fn execute(state: &mut State, pieces: Option<&[u8]>, input: &[u8]) -> usize {
+    let result = match pieces {
+        Some(bytes) => llhttp::execute(&mut Pieces(state, bytes), input),
+        None => llhttp::execute(&mut Server(state, &[], input), input),
     };
     let Err(error) = result else {
         return input.len();
@@ -459,7 +472,7 @@ fn execute(state: &mut State, pieces: bool, input: &[u8]) -> usize {
 
 /// `Context::parse`: the bytes parsed, by the context's initialised parser.
 pub(crate) fn parse_request(state: &mut State, data: &[u8]) -> usize {
-    execute(state, false, data)
+    execute(state, None, data)
 }
 
 /// `Request::parse()`: append to `request.zdata` and parse what was appended.
@@ -472,7 +485,7 @@ pub(crate) fn parse_piece(state: &mut State, data: &[u8]) -> usize {
     let held = zdata.copy();
     let bytes = held.bytes().unwrap_or_default();
     let appended = bytes.get(bytes.len() - data.len()..).unwrap_or_default();
-    execute(state, true, appended)
+    execute(state, Some(bytes), appended)
 }
 
 /// The `length` bytes of `zdata` that end where the piece at `at` does: a span's
@@ -705,8 +718,9 @@ pub(crate) fn add_protocol(state: &mut State, protocol: Key) {
     }
 }
 
-fn on_body(state: &mut State, span: &[u8]) -> Step {
-    let (at, length) = (span.as_ptr(), span.len());
+/// A span of the body, which `input` holds.
+fn on_body(state: &mut State, span: &[u8], input: &[u8]) -> Step {
+    let length = span.len();
     if length == 0 {
         return Step::Go;
     }
@@ -723,7 +737,8 @@ fn on_body(state: &mut State, span: &[u8]) -> Step {
             .get_or_insert_with(|| Box::new(Vec::with_capacity(BUFFER_SIZE_STD)))
             .extend_from_slice(span);
     } else {
-        state.request.body_at = at.wrapping_sub(state.request.body_length).cast();
+        let at = span.as_ptr().addr().wrapping_sub(input.as_ptr().addr());
+        state.request.body_at = at.wrapping_sub(state.request.body_length);
         state.request.body_length += length;
     }
     if state.mt_parser.is_some() && !state.recv_chunked {
@@ -739,7 +754,8 @@ fn on_body(state: &mut State, span: &[u8]) -> Step {
     }
 }
 
-fn on_message_complete(state: &mut State) -> Step {
+/// The message is complete: `input` holds its body, unless it was chunked.
+fn on_message_complete(state: &mut State, input: &[u8]) -> Step {
     let chunked = state.parse.chunked_body.is_some();
     if chunked && state.mt_parser.is_some() {
         // The bundled multipart parser rejects calls that end inside a part header. llhttp body spans can end at
@@ -754,15 +770,15 @@ fn on_message_complete(state: &mut State) -> Step {
             return Step::Fail;
         }
     }
-    let form_source = swr_v1_httpbindings_form_source(
+    let source = form_source(
         u32::from(chunked)
             | (u32::from(state.parse_body) << 1)
             | (u32::from(state.request.post_form_urlencoded) << 2)
             | (u32::from(state.recv_chunked) << 3)
-            | (u32::from(!state.request.body_at.is_null()) << 4),
+            | (u32::from(state.request.body_length > 0) << 4),
     );
-    match (form_source, chunked) {
-        (1, true) => {
+    match source {
+        Some(FormSource::Chunked) => {
             let body = state.parse.chunked_body.as_deref();
             let text = Copied::of(body.map_or(&[], Vec::as_slice));
             treat_data(
@@ -771,18 +787,17 @@ fn on_message_complete(state: &mut State) -> Step {
                 property(&mut state.request, Property::Post),
             );
         }
-        (2, _) => {
-            let body = state.request.body_at.cast();
-            // SAFETY: the body's span of the input, which is live until the request completes.
-            let body = unsafe { std::slice::from_raw_parts(body, state.request.body_length) };
-            let text = Copied::of(body);
+        Some(FormSource::Body) => {
+            let (at, length) = (state.request.body_at, state.request.body_length);
+            let body = input.get(at..at.saturating_add(length));
+            let text = Copied::of(body.unwrap_or_default());
             treat_data(
                 PARSE_STRING,
                 text,
                 property(&mut state.request, Property::Post),
             );
         }
-        _ => {}
+        None => {}
     }
     multipart_free(state);
     state.parse.form_data = None;
@@ -793,15 +808,6 @@ fn on_message_complete(state: &mut State) -> Step {
 
 fn multipart_free(state: &mut State) {
     state.mt_parser = None;
-}
-
-/// `Context::free`'s share: what the parser still holds.
-pub(crate) fn parse_free(state: &mut State) {
-    multipart_free(state);
-    state.parse.form_data = None;
-    state.parse.chunked_body = None;
-    state.parse.form_data_name = None;
-    state.parse.input_name = None;
 }
 
 /// `Context::get_multipart_boundary` of a `multipart/form-data` content
@@ -869,9 +875,8 @@ pub(crate) fn compression_method(state: &mut State, value: &[u8]) {
     let length = value.len().c_cast::<u32>() as usize;
     let codecs = CAPABILITIES.load(Relaxed) & CODECS;
     let method = compression(value.get(..length).unwrap_or(value), codecs);
-    state.accept_compression = method > 0;
-    if method > 0 {
-        let method = i8::try_from(method).unwrap_or(i8::MAX);
+    state.accept_compression = method != swoole_rs_httpbindings::Compression::None;
+    if state.accept_compression {
         state.compression_method = method;
     }
 }
@@ -890,11 +895,7 @@ fn trimmed(text: &[u8], length: usize) -> Box<[u8]> {
     for (slot, byte) in buffer.iter_mut().zip(text).take(FORM_KEYLEN - 1) {
         *slot = *byte;
     }
-    buffer
-        .get(..length)
-        .map(trim_quotes)
-        .unwrap_or_default()
-        .into()
+    buffer.get(..length).map_or_default(trim_quotes).into()
 }
 
 /// A NUL-terminated copy (`estrndup`).
@@ -1105,17 +1106,13 @@ fn part_headers_complete(state: &mut State, upload: &mut Option<Upload>) {
 
 fn part_data_end(state: &mut State, upload: &mut Option<Upload>) {
     if let Some(name) = state.parse.form_data_name.take() {
-        let post = raw_property(state, Property::Post);
+        let post = property(&mut state.request, Property::Post);
         let data = state.parse.form_data.get_or_insert_with(Default::default);
-        // SAFETY: a NUL-terminated name, the field's bytes and the request's `post` array.
-        unsafe {
-            php_register_variable_safe(
-                name.as_ptr().cast(),
-                data.as_ptr().cast(),
-                data.len(),
-                post,
-            );
-        };
+        // `c_copy`'s name holds its NUL.
+        let name = CStr::from_bytes_until_nul(&name).unwrap_or_default();
+        lend_in(data, |at, count| {
+            php_register_variable_safe(name.into(), at, count, post);
+        });
         data.clear();
         return;
     }

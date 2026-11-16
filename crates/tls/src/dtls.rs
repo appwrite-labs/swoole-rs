@@ -3,16 +3,17 @@
 //! session goes when OpenSSL destroys it, so a session is reached through its socket.
 use crate::handle::{BioMethod, SslFailure};
 use core::cell::Cell;
-use core::ffi::{c_char, c_int, c_long, c_void};
+use core::ffi::{c_int, c_long, c_void};
 use core::marker::{PhantomData, PhantomPinned};
 use core::mem::MaybeUninit;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Mutex, PoisonError};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::lent::{Count, In, Out};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::Text;
-use swoole_rs_reactor::{AddressStorage, Fill, Socket};
+use swoole_rs_reactor::{AddressStorage, Socket};
 
 /// One queued datagram, upstream's `dtls::Buffer`: the bytes it was received or copied
 /// into, and the `uint16_t` length its header counts of them as the payload.
@@ -131,33 +132,22 @@ pub fn swr_v1_tls_dtls_append(owner: &DtlsSession, data: &[u8]) -> bool {
     })
 }
 
-/// The front datagram's length, as much of it as `requested` bytes hold, copied into
-/// `buffer` and popped unless peeking; `None`, a retry, when the queue is empty.
-/// `requested` is the length the BIO was asked for, which `buffer` holds when it is
-/// not negative; a negative one is returned as it is, copying nothing.
-pub fn swr_v1_tls_dtls_read(
-    owner: &DtlsSession,
-    buffer: &mut [MaybeUninit<u8>],
-    requested: c_int,
-) -> Option<c_int> {
+/// The front datagram's length, as much of it as `buffer` holds, copied into `buffer`
+/// and popped unless peeking; `None`, a retry, when the queue is empty.
+pub fn swr_v1_tls_dtls_read(owner: &DtlsSession, buffer: &mut [MaybeUninit<u8>]) -> Option<c_int> {
     let peek = owner.peek.get();
     owner.with_queue(|queue| {
         let front = queue.front()?;
         // No more than `buffer` holds, so a datagram is never popped uncopied.
-        let length = c_int::from(front.length())
-            .min(requested)
-            .min(c_int::try_from(buffer.len()).unwrap_or(c_int::MAX));
-        if let Ok(copied) = usize::try_from(length) {
-            if let (Some(out), Some(source)) =
-                (buffer.get_mut(..copied), front.payload().get(..copied))
-            {
-                out.copy_from_slice(source);
-            }
-            if !peek {
-                queue.pop_front();
-            }
+        let copied = usize::from(front.length()).min(buffer.len());
+        if let (Some(out), Some(source)) = (buffer.get_mut(..copied), front.payload().get(..copied))
+        {
+            out.copy_from_slice(source);
         }
-        Some(length)
+        if !peek {
+            queue.pop_front();
+        }
+        Some(copied.c_cast::<c_int>())
     })
 }
 
@@ -211,12 +201,26 @@ struct DtlsBio {
     _not_send: PhantomData<(*mut u8, PhantomPinned)>,
 }
 
-type Write = unsafe extern "C" fn(&DtlsBio, *const c_char, c_int) -> c_int;
-type Read = unsafe extern "C" fn(&DtlsBio, *mut c_char, c_int) -> c_int;
-type Control = unsafe extern "C" fn(&DtlsBio, c_int, c_long, *mut c_void) -> c_long;
-/// OpenSSL calls the create hook with a BIO it is making and the destroy hook with one
-/// it is freeing, which nothing else uses meanwhile: the only `&mut DtlsBio`s there are.
+/// OpenSSL calls the write and read hooks with the bytes it lends and their count.
+type Write = for<'id> extern "C" fn(&DtlsBio, In<'id, u8>, Count<'id, c_int>) -> c_int;
+type Read = for<'id> extern "C" fn(&DtlsBio, Out<'id, MaybeUninit<u8>>, Count<'id, c_int>) -> c_int;
+/// OpenSSL calls the control hook with the command, its value and its argument.
+type Control = extern "C" fn(&DtlsBio, c_int, c_long, Argument) -> c_long;
+/// OpenSSL calls the create hook with a BIO it is making, which nothing else uses
+/// meanwhile: the only `&mut DtlsBio` there is.
 type Hook = extern "C" fn(&mut DtlsBio) -> c_int;
+/// OpenSSL calls the destroy hook once per BIO, as it frees it.
+type Destroy = extern "C" fn(Freeing) -> c_int;
+
+/// The pointer argument OpenSSL lends a control command: for `DGRAM_GET_PEER`, null or
+/// a destination writable for the native address union. Only OpenSSL makes one.
+#[repr(transparent)]
+struct Argument(*mut c_void);
+
+/// The BIO OpenSSL hands the destroy hook as it frees it, once per BIO: only OpenSSL
+/// makes one, and [`BIO_take_data`] consumes it.
+#[repr(transparent)]
+struct Freeing(core::ptr::NonNull<DtlsBio>);
 
 /// The type of the table's BIOs, unique to it in the process: made only from
 /// [`SESSION_TYPE`].
@@ -224,13 +228,10 @@ type Hook = extern "C" fn(&mut DtlsBio) -> c_int;
 #[repr(transparent)]
 struct SessionType(c_int);
 
-/// A pointer type that is always null.
-enum Never {}
-
 // libcrypto's declarations, typed so that a live BIO of the table is a reference: the
 // `safe` ones read or write only the BIO's own flags, init and shutdown fields, or its
 // data, which is null or the session the BIO owns (set only by `dtls_open`, on a fresh
-// BIO; freed only by the destroy hook, which holds the BIO exclusively; and each method
+// BIO; taken only by the destroy hook, once, as OpenSSL frees the BIO; and each method
 // takes a BIO without a session). `BIO_find_type` answers a BIO of the table's type
 // from the chain it is given. `BIO_meth_new` copies the name and returns a table
 // nothing else holds (null on failure), which this side never frees, and the `safe`
@@ -248,7 +249,7 @@ unsafe extern "C" {
     safe fn BIO_get_new_index() -> c_int;
     safe fn BIO_meth_new(kind: c_int, name: Text<'_>) -> Option<&'static mut BioMethod>;
     safe fn BIO_meth_set_create(table: &mut BioMethod, create: Option<Hook>) -> c_int;
-    safe fn BIO_meth_set_destroy(table: &mut BioMethod, destroy: Option<Hook>) -> c_int;
+    safe fn BIO_meth_set_destroy(table: &mut BioMethod, destroy: Option<Destroy>) -> c_int;
     safe fn BIO_meth_set_write(table: &mut BioMethod, write: Option<Write>) -> c_int;
     safe fn BIO_meth_set_read(table: &mut BioMethod, read: Option<Read>) -> c_int;
     safe fn BIO_meth_set_ctrl(table: &mut BioMethod, control: Option<Control>) -> c_int;
@@ -257,10 +258,10 @@ unsafe extern "C" {
     safe fn BIO_set_flags(bio: &DtlsBio, flags: c_int);
     safe fn BIO_clear_flags(bio: &DtlsBio, flags: c_int);
     safe fn BIO_get_data(bio: &DtlsBio) -> Option<&DtlsSession>;
+    /// The session the BIO owns, out of it: OpenSSL reads its data no more once it
+    /// has called the destroy hook.
     #[link_name = "BIO_get_data"]
-    safe fn BIO_take_data(bio: &mut DtlsBio) -> *mut DtlsSession;
-    #[link_name = "BIO_set_data"]
-    safe fn BIO_clear_data(bio: &mut DtlsBio, data: Option<&'static Never>);
+    safe fn BIO_take_data(bio: Freeing) -> Option<Box<DtlsSession>>;
     safe fn BIO_set_init(bio: &DtlsBio, init: c_int);
     safe fn BIO_find_type<'a>(bio: crate::Bio<'a>, kind: SessionType) -> Option<&'a DtlsBio>;
     safe fn BIO_set_data(bio: FreshBio<'_>, data: Box<DtlsSession>);
@@ -326,38 +327,32 @@ impl Command {
 }
 
 /// `dtls::BIO_write`: `Socket::write`, a write(2) on the session's socket.
-unsafe extern "C" fn bio_write(bio: &DtlsBio, data: *const c_char, length: c_int) -> c_int {
+extern "C" fn bio_write<'id>(bio: &DtlsBio, data: In<'id, u8>, length: Count<'id, c_int>) -> c_int {
     let Some(session) = BIO_get_data(bio) else {
         return -1;
     };
-    let fd = session.fd;
-    // SAFETY: OpenSSL lends `length` readable bytes.
-    let written = unsafe { libc::write(fd, data.cast(), usize::try_from(length).unwrap_or(0)) };
-    c_int::try_from(written).unwrap_or(-1)
+    let written = data.drain(length).write(session.fd);
+    written.map_or(-1, |written| c_int::try_from(written).unwrap_or(-1))
 }
 
 /// `dtls::BIO_read`: the next queued datagram, or a read retry when there is none.
-unsafe extern "C" fn bio_read(bio: &DtlsBio, data: *mut c_char, length: c_int) -> c_int {
+extern "C" fn bio_read<'id>(
+    bio: &DtlsBio,
+    data: Out<'id, MaybeUninit<u8>>,
+    length: Count<'id, c_int>,
+) -> c_int {
     BIO_clear_flags(bio, BIO_FLAGS_RWS | BIO_FLAGS_SHOULD_RETRY);
     let Some(session) = BIO_get_data(bio) else {
         return -1;
     };
-    // SAFETY: OpenSSL lends `length` writable bytes.
-    let mut buffer = unsafe { Fill::from_raw(data.cast(), usize::try_from(length).unwrap_or(0)) };
-    let buffer = buffer.slots();
-    swr_v1_tls_dtls_read(session, buffer, length).unwrap_or_else(|| {
+    swr_v1_tls_dtls_read(session, data.fill(length).slots()).unwrap_or_else(|| {
         BIO_set_flags(bio, BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY);
         -1
     })
 }
 
 /// `dtls::BIO_ctrl`.
-unsafe extern "C" fn bio_ctrl(
-    bio: &DtlsBio,
-    command: c_int,
-    value: c_long,
-    pointer: *mut c_void,
-) -> c_long {
+extern "C" fn bio_ctrl(bio: &DtlsBio, command: c_int, value: c_long, pointer: Argument) -> c_long {
     let Some(session) = BIO_get_data(bio) else {
         return 0;
     };
@@ -368,8 +363,8 @@ unsafe extern "C" fn bio_ctrl(
     if known == Command::SetClose {
         BIO_set_shutdown(bio, value.c_cast::<c_int>());
     }
-    if known == Command::GetPeer && !pointer.is_null() {
-        let out = pointer.cast::<AddressStorage>();
+    if known == Command::GetPeer && !pointer.0.is_null() {
+        let out = pointer.0.cast::<AddressStorage>();
         // SAFETY: OpenSSL lends the peer command a destination writable for the native
         // address union.
         unsafe { out.write_unaligned(session.peer) };
@@ -385,14 +380,8 @@ extern "C" fn bio_create(bio: &mut DtlsBio) -> c_int {
 }
 
 /// Frees the BIO's session, if it has one.
-extern "C" fn bio_destroy(bio: &mut DtlsBio) -> c_int {
-    let session = BIO_take_data(bio);
-    BIO_clear_data(bio, None);
-    if !session.is_null() {
-        // SAFETY: the box `dtls_open` gave the BIO, now out of it; with the BIO held
-        // exclusively, no borrow of it is live.
-        drop(unsafe { Box::from_raw(session) });
-    }
+extern "C" fn bio_destroy(bio: Freeing) -> c_int {
+    drop(BIO_take_data(bio));
     1
 }
 
@@ -444,7 +433,7 @@ pub fn dtls_open(socket: Socket<'_>, context: &std::sync::Arc<crate::TlsSettings
         return false;
     }
     let size = swoole_rs_reactor::SOCKET_DEFAULTS.buffer_size();
-    swoole_rs_reactor::swr_v1_socket_buffer_size(socket.fd(), true, true, size);
+    _ = swoole_rs_reactor::set_socket_buffer_size(socket.fd(), true, true, size);
     socket.edit(|record| record.dtls = true);
     true
 }
@@ -510,7 +499,7 @@ mod tests {
         fn read(&self, count: usize) -> (Option<c_int>, Vec<u8>) {
             let mut bytes = vec![0x55; count];
             let lent = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr().cast(), count) };
-            let result = swr_v1_tls_dtls_read(self.session(), lent, count.try_into().unwrap());
+            let result = swr_v1_tls_dtls_read(self.session(), lent);
             (result, bytes)
         }
         fn length(&self) -> usize {
@@ -628,9 +617,9 @@ mod tests {
         crate::swr_v1_tls_init().unwrap();
         let context = crate::TlsContext::new();
         let mut lent = context.borrow_configuration();
-        lent.set_value(crate::Value::Protocols(
-            crate::SslVersion::SW_SSL_DTLS as i64,
-        ));
+        lent.set_value(crate::Value::Protocols(i64::from(
+            crate::SslVersion::SW_SSL_DTLS.bits(),
+        )));
         let context = std::sync::Arc::new(lent.freeze(None).unwrap());
         let (_peer, stream) = std::os::unix::net::UnixDatagram::pair().unwrap();
         let raw = swoole_rs_reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
@@ -643,6 +632,6 @@ mod tests {
         assert_eq!(swr_v1_tls_dtls_length(DtlsSession::of(socket).unwrap()), 3);
         unsafe { crate::upstream::socket_ssl_close(socket) };
         assert!(DtlsSession::of(socket).is_none());
-        unsafe { swoole_rs_reactor::SocketRecord::free(raw) };
+        drop(unsafe { Box::from_raw(raw) });
     }
 }

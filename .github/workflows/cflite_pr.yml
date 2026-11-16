@@ -53,12 +53,12 @@ jobs:
       # API calls a target at 55k artifacts, which spent the hourly limit every CI job shares
       # (#3081, #3257). The corpus comes over git from the cflite branch (cflite_batch.yml).
       - id: build
-        uses: google/clusterfuzzlite/actions/build_fuzzers@v1
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           language: rust
           sanitizer: address
       - id: run
-        uses: google/clusterfuzzlite/actions/run_fuzzers@v1
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           storage-repo: ${{ github.server_url }}/${{ github.repository }}.git
           storage-repo-branch: cflite
@@ -67,7 +67,7 @@ jobs:
           sanitizer: address
           minimize-crashes: true
       - if: failure() && steps.build.outcome == 'success'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
           name: cflite-crashes

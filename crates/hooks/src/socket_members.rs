@@ -20,6 +20,7 @@ use crate::uring_socket as ring;
 use crate::vector::{IoVector, RecvMessage, SendMessage, vector_all};
 use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::constants::{SW_STACK_BUFFER_SIZE, SocketType};
+use swoole_rs_corebase::lent::{Spare, SpareVectors};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::{self, ReadSlot, strerror};
 use swoole_rs_reactor::Events;
@@ -31,6 +32,17 @@ use swoole_rs_tls::upstream::{
     socket_ssl_peer_certificate_pem,
 };
 
+/// Which socket receive fills a lent buffer.
+#[derive(Clone, Copy)]
+pub enum Receive {
+    Recv,
+    All,
+    Line,
+    Buffered,
+    Peek,
+    Peer,
+}
+
 /// The coroutine socket a reactor event came from, and its `network::Socket`.
 fn event_socket(event: &Event) -> Option<(Co, Socket<'_>)> {
     let source = event.socket()?;
@@ -41,32 +53,33 @@ fn event_socket(event: &Event) -> Option<(Co, Socket<'_>)> {
 
 /// `Socket::readable_event_callback` and `writable_event_callback`: Rust picks the
 /// coroutine to wake, a TLS wait's other direction, or none while a barrier waits.
-fn on_ready(event: &Event, kind: Events) -> c_int {
+fn on_ready(event: &Event, kind: Events) {
     let Some((socket, source)) = event_socket(event) else {
-        return 0;
+        return;
     };
     set_err(socket, 0);
     let hup = source.read(|record| record.event_hup);
     if let Some(event) = ready(socket, kind, hup) {
         (ops().resume)(socket, event);
     }
-    0
 }
 
 /// `Socket::readable_event_callback(reactor, event)`, registered for
 /// `SW_FD_CO_SOCKET` by `swr_v1_hook_init_reactor`.
-pub extern "C" fn readable_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
-    on_ready(event, Events::READ)
+pub fn readable_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
+    on_ready(event, Events::READ);
+    0
 }
 
 /// `Socket::writable_event_callback(reactor, event)`.
-pub extern "C" fn writable_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
-    on_ready(event, Events::WRITE)
+pub fn writable_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
+    on_ready(event, Events::WRITE);
+    0
 }
 
 /// `Socket::error_event_callback(reactor, event)`: wakes the writer, then the
 /// reader unless the writer closed the socket; the `network::Socket` outlives the wake-ups.
-pub extern "C" fn error_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
+pub fn error_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
     if let Some((socket, source)) = event_socket(event) {
         error_event(socket, source);
     }
@@ -83,11 +96,7 @@ struct Accepting {
 
 impl Setup for Accepting {
     fn fail(&mut self, error: c_int) {
-        if error < 0 {
-            default_err(self.socket, log::last_error());
-        } else {
-            set_err(self.socket, error);
-        }
+        set_err(self.socket, error);
     }
 
     fn wait(&mut self, event: Events) -> bool {
@@ -97,10 +106,13 @@ impl Setup for Accepting {
         ready
     }
 
-    fn call(&mut self, _: c_int) -> c_int {
+    fn accept(&mut self) -> std::io::Result<()> {
         // The new heap record, which nothing else holds.
         self.conn = self.socket.net(SocketFields::accepted).flatten();
-        if self.conn.is_none() { -1 } else { 0 }
+        self.conn
+            .as_ref()
+            .map(|_| ())
+            .ok_or_else(std::io::Error::last_os_error)
     }
 }
 
@@ -144,9 +156,7 @@ struct OpenFile(c_int);
 
 impl Drop for OpenFile {
     fn drop(&mut self) {
-        if self.0 != -1 {
-            _ = sys::close(self.0);
-        }
+        _ = sys::close(self.0);
     }
 }
 
@@ -164,11 +174,13 @@ impl Co {
 
     /// `Socket::getpeername(sa)`.
     pub fn getpeername(self, address: &mut SocketAddress) -> bool {
-        let error = peer_name(self, address);
-        if error != 0 {
-            set_err(self, error);
+        match peer_name(self, address) {
+            Ok(()) => true,
+            Err(error) => {
+                set_err(self, error.raw_os_error().unwrap_or(0));
+                false
+            }
         }
-        error == 0
     }
 
     /// `Socket::recv_with_buffer(buf, n)` into `out`, which is outside the socket's
@@ -223,17 +235,12 @@ impl Co {
         true
     }
 
-    /// `Socket::accept(timeout)`: a connection as a new native socket (the accepting
-    /// constructor, which shares the TLS context), or `None`. A zero timeout waits
-    /// for the socket's read timeout; a TLS context is made before the first accept.
-    /// In a coroutine.
+    /// `Socket::accept(timeout)`: a connection as a new native socket, which only the
+    /// result holds (the accepting constructor, which shares the TLS context), or
+    /// `None`. A zero timeout waits for the socket's read timeout; a TLS context is
+    /// made before the first accept. In a coroutine.
     #[must_use]
-    pub fn accept(self, timeout: f64) -> Option<Self> {
-        self.accept_owned(timeout).map(OwnedCo::into_co)
-    }
-
-    /// [`Self::accept`]'s connection, which only the result holds.
-    pub(crate) fn accept_owned(self, timeout: f64) -> Option<OwnedCo> {
+    pub fn accept(self, timeout: f64) -> Option<OwnedCo> {
         if !available(self, Events::READ) {
             return None;
         }
@@ -408,6 +415,23 @@ impl Co {
         Vec::new()
     }
 
+    /// Receive into `out`, counting the bytes the selected operation initialized.
+    #[inline]
+    pub fn recv_spare(self, op: Receive, out: &mut Spare<'_>) -> Option<usize> {
+        // SAFETY: each socket receive initializes the reported prefix of its room;
+        // recvfrom may report the full datagram length, which Spare clamps to the room.
+        unsafe {
+            out.read(|room| match op {
+                Receive::Recv => self.recv(room),
+                Receive::All => self.recv_all(room),
+                Receive::Line => self.recv_line(room),
+                Receive::Buffered => self.recv_with_buffer(room),
+                Receive::Peek => self.peek(room),
+                Receive::Peer => self.recvfrom_peer(room),
+            })
+        }
+    }
+
     /// `Socket::recv(buf, n)`: the count of `buf`'s first slots it wrote, or -1.
     pub fn recv(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
         #[cfg(feature = "iouring")]
@@ -471,6 +495,29 @@ impl Co {
         self.transfer(0, Buffer::write(buf), call)
     }
 
+    /// A vectored receive into lent rooms, with the cursor where it stopped.
+    pub fn recv_spare_vectors(
+        self,
+        out: &mut SpareVectors<'_>,
+        all: bool,
+    ) -> Option<(usize, c_int, usize)> {
+        // SAFETY: vector's read paths initialize their successful byte count in
+        // descriptor order, including a partial read before an error. The cursor
+        // advances a private descriptor copy, leaving the original rooms intact.
+        unsafe {
+            out.read(|rooms| {
+                if c_int::try_from(rooms.len()).is_err() {
+                    swoole_rs_corebase::fatal("too many I/O vectors for an int");
+                }
+                let mut vector = IoVector::new(crate::vector::Vectors::Read(rooms))
+                    .unwrap_or_else(|| swoole_rs_corebase::fatal("the I/O vectors can't be built"));
+                let received = self.vector(&mut vector, all);
+                let (index, offset) = vector.stopped();
+                (received.map(|count| (count, index, offset)), received)
+            })
+        }
+    }
+
     /// `Socket::readv(io_vector)` or `writev`, in the direction the vector was made
     /// for, or with `all` `readv_all` or `writev_all`.
     #[must_use]
@@ -510,13 +557,13 @@ impl Co {
         if !available(self, Events::WRITE) {
             return false;
         }
-        let file = OpenFile(sys::open(filename, libc::O_RDONLY, 0));
         let name = filename.to_string_lossy();
-        if file.0 == -1 {
+        let Ok(fd) = sys::open(filename, libc::O_RDONLY, 0) else {
             let error = errno();
             self.set_err_text(error, &format!("open({name}) failed, {}", strerror(error)));
             return false;
-        }
+        };
+        let file = OpenFile(fd);
         let end = if length == 0 {
             let Some(stat) = sys::fstat(file.0) else {
                 let error = errno();
@@ -540,11 +587,9 @@ impl Co {
         let send = |offset: &mut libc::off_t, length| {
             self.with_network(|socket| socket_sendfile_fd(socket, file.0, offset, length))
                 .flatten()
-                .map_or(-1, usize::cast_signed)
         };
         let ready = || timer.start() && wait_for(self, Events::WRITE);
         let outcome = send_range(&mut offset, end, send, ready);
-        let error = errno();
         timer.stop();
         match outcome {
             Ok(()) => return true,
@@ -553,7 +598,7 @@ impl Co {
                 SYSTEM_CALL_FAIL,
                 Message::Static(c"sendfile return zero"),
             ),
-            Err(SendFailure::Failed) => {
+            Err(SendFailure::Failed(error)) => {
                 let fd = self.sock_fd();
                 self.set_err_text(
                     error,
@@ -706,7 +751,9 @@ mod tests {
             unsafe { Co::new(self.0.cast()) }
         }
         fn event(&mut self) -> Event {
-            unsafe { Event::new(-1, 0, 6, self.record().socket_ptr().cast()) }
+            Event::of(-1, 0, 6, unsafe {
+                Socket::from_ptr(self.record().socket_ptr())
+            })
         }
         fn bind(&mut self, event: Events, co: *mut c_long) {
             self.co().with_state(|state| state.bind(event, co.cast()));
@@ -716,7 +763,9 @@ mod tests {
     impl Drop for Object {
         fn drop(&mut self) {
             unsafe {
-                SocketRecord::free(self.record().socket_ptr());
+                if let Some(s) = Socket::from_ptr(self.record().socket_ptr()) {
+                    swoole_rs_reactor::OwnedSocket::from_socket(s).free();
+                }
                 (*self.0).record.fini();
                 drop(Box::from_raw(self.0));
             }

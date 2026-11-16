@@ -3,16 +3,38 @@
 //! coroutine `socket_create` and unhooking puts back, and which that factory
 //! falls back to outside a coroutine.
 use std::{
-    ffi::{CStr, c_void},
+    ffi::{CStr, c_int, c_void},
     io::IoSlice,
+    ptr::NonNull,
     sync::atomic::{AtomicPtr, Ordering},
 };
-use swoole_rs_zend::sys::swr_zend_runtime_set_transport;
+use swoole_rs_corebase::sys::Text;
+
+/// A `php_stream_transport_factory`: one PHP's transport table held, or
+/// zend-sys's coroutine one ([`Factory::coroutine`]). Only those make one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(transparent)]
+pub(crate) struct Factory(NonNull<c_void>);
+
+impl Factory {
+    /// zend-sys's coroutine transport factory (a function's address, never null).
+    pub(crate) fn coroutine() -> Option<Self> {
+        NonNull::new(swoole_rs_zend::sys::swr_zend_stream_factory as *mut c_void).map(Self)
+    }
+
+    /// The factory, as the zend-sys shim that calls it takes it.
+    pub(crate) fn as_ptr(self) -> *mut c_void {
+        self.0.as_ptr()
+    }
+}
 
 unsafe extern "C" {
     /// The stream transport factory registered as `name`, read from the lent
-    /// bytes (an `IoSlice` is an iovec), or null: a lookup in PHP's table.
-    safe fn swr_zend_runtime_transport(name: IoSlice<'_>) -> *mut c_void;
+    /// bytes (an `IoSlice` is an iovec), or none: a lookup in PHP's table.
+    safe fn swr_zend_runtime_transport(name: IoSlice<'_>) -> Option<Factory>;
+    /// `php_stream_xport_register(name, factory)`, or with none
+    /// `php_stream_xport_unregister(name)`: 0 for `SUCCESS`.
+    safe fn swr_zend_runtime_set_transport(name: Text<'_>, factory: Option<Factory>) -> c_int;
 }
 
 /// The transports, in `HOOK_TCP` .. `HOOK_TLS` order.
@@ -30,54 +52,59 @@ const ASYNC: [&CStr; 6] = [
 
 static ORIGINAL: [AtomicPtr<c_void>; 6] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 6];
 
-/// MINIT: register `coroutine` as `async.tcp` .. `async.tls`.
-pub(crate) fn register_async(coroutine: *mut c_void) {
+/// MINIT: register the coroutine factory as `async.tcp` .. `async.tls`.
+pub(crate) fn register_async() {
     for name in ASYNC {
-        set(name, coroutine, false);
+        set(name, Factory::coroutine());
     }
 }
 
-/// Register `factory` as transport `name`, or with `remove` unregister it.
-/// `SUCCESS` or `FAILURE`.
-fn set(name: &CStr, factory: *mut c_void, remove: bool) -> i32 {
-    // SAFETY: a NUL-terminated name and a factory (or null) of PHP's or the
-    // coroutine one.
-    unsafe { swr_zend_runtime_set_transport(name.as_ptr(), factory, remove) }
+/// Register `factory` as transport `name`, or with none unregister it: whether
+/// PHP reported `SUCCESS`.
+fn set(name: &CStr, factory: Option<Factory>) -> bool {
+    swr_zend_runtime_set_transport(name.into(), factory) == 0
+}
+
+/// The factory a slot of [`ORIGINAL`] holds: only [`remember`] stores one.
+fn load(slot: &AtomicPtr<c_void>) -> Option<Factory> {
+    NonNull::new(slot.load(Ordering::Relaxed)).map(Factory)
 }
 
 /// RINIT, on the main thread: remember what PHP registered.
 pub(crate) fn remember() {
     for (slot, name) in ORIGINAL.iter().zip(NAMES) {
         let factory = swr_zend_runtime_transport(IoSlice::new(name.to_bytes()));
-        slot.store(factory, Ordering::Relaxed);
+        slot.store(
+            factory.map_or(std::ptr::null_mut(), Factory::as_ptr),
+            Ordering::Relaxed,
+        );
     }
 }
 
-/// Register `coroutine` (`hook`) or the original factory for transport `index`;
-/// an ssl or tls transport PHP never had is unregistered. `SUCCESS` or `FAILURE`.
-pub(crate) fn register(index: usize, hook: bool, coroutine: *mut c_void) -> i32 {
+/// Register the coroutine factory (`hook`) or the original one for transport
+/// `index`; one PHP never had is unregistered. Whether PHP took it.
+pub(crate) fn register(index: usize, hook: bool) -> bool {
     let (Some(slot), Some(name)) = (ORIGINAL.get(index), NAMES.get(index)) else {
-        return -1;
+        return false;
     };
-    let original = slot.load(Ordering::Relaxed);
-    let (factory, remove) = if hook {
-        (coroutine, false)
-    } else {
-        (original, index >= 4 && original.is_null())
-    };
-    set(name, factory, remove)
+    set(
+        name,
+        if hook {
+            Factory::coroutine()
+        } else {
+            load(slot)
+        },
+    )
 }
 
 /// The original, process-lived PHP factory for an exact borrowed protocol name,
-/// or null: `socket_create` outside a coroutine.
-pub(crate) fn original(proto: &[u8]) -> *mut c_void {
+/// or none: `socket_create` outside a coroutine.
+pub(crate) fn original(proto: &[u8]) -> Option<Factory> {
     NAMES
         .iter()
         .zip(&ORIGINAL)
         .find(|(name, _)| name.to_bytes() == proto)
-        .map_or(std::ptr::null_mut(), |(_, slot)| {
-            slot.load(Ordering::Relaxed)
-        })
+        .and_then(|(_, slot)| load(slot))
 }
 
 #[cfg(test)]
@@ -89,10 +116,13 @@ mod tests {
         let mut marker = 0u8;
         ORIGINAL[4].store((&raw mut marker).cast(), Ordering::Relaxed);
         let find = original;
-        assert_eq!(find(b"ssl"), (&raw mut marker).cast());
-        assert!(find(b"ss").is_null());
-        assert!(find(b"sslv3").is_null());
-        assert!(find(b"tcp").is_null());
+        assert_eq!(
+            find(b"ssl").map(Factory::as_ptr),
+            Some((&raw mut marker).cast())
+        );
+        assert!(find(b"ss").is_none());
+        assert!(find(b"sslv3").is_none());
+        assert!(find(b"tcp").is_none());
         ORIGINAL[4].store(std::ptr::null_mut(), Ordering::Relaxed);
     }
 }

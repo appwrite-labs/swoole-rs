@@ -117,23 +117,25 @@ pub fn create_user_workers(serv: view::Server<'_>) -> bool {
     let size = size_of::<WorkerRecord>();
     let count = serv.registry().pending().len();
     let workers = swoole_rs_memory::members::Shm::calloc(count, size);
-    let copies = workers.as_ptr().cast::<WorkerRecord>();
-    if copies.is_null() {
+    let mapped = !workers.is_null();
+    // A zeroed record is an empty worker, so the array is `count` records from now on.
+    serv.config().user_workers.replace(workers);
+    if !mapped {
         let m = format_args!("sw_shm_calloc({count}, {size}) for user_workers failed");
         log::sys_warning(c"Server::create_user_workers", m);
-        serv.config().user_workers.replace(workers);
         return false;
     }
+    let copies = serv.workers();
     for index in 0..count {
         let Some(worker) = serv.pending_worker(index) else {
             continue;
         };
-        // SAFETY: its slot in the fresh shared array of `count` records.
-        unsafe { copies.wrapping_add(index).write(worker.get()) };
+        if let Some(copy) = copies.user(index) {
+            copy.put(worker.get());
+        }
         create_worker(serv, worker);
         worker.set_kind(WorkerType::User);
     }
-    serv.config().user_workers.replace(workers);
     true
 }
 
@@ -186,24 +188,24 @@ mod tests {
         // reactor_bits: the reactor id in the low byte, the reserved bits above it.
         let mut sessions: Vec<_> = (0..size)
             .map(|index| SessionRecord {
-                id: i64::try_from(index + 41).unwrap(),
-                fd: 23,
-                reactor_bits: 0x5a12_3400 | 2,
+                id: core::cell::Cell::new(i64::try_from(index + 41).unwrap()),
+                fd: core::cell::Cell::new(23),
+                reactor_bits: core::cell::Cell::new(0x5a12_3400 | 2),
             })
             .collect();
-        sessions[0].reactor_bits = 0x5a12_3400 | 1;
-        sessions[last].reactor_bits = 0x5a12_3400 | 1;
-        server.tables_mut().session_list = crate::records::tests::naming(&mut sessions);
+        sessions[0].reactor_bits.set(0x5a12_3400 | 1);
+        sessions[last].reactor_bits.set(0x5a12_3400 | 1);
+        *server.tables_mut().session_list_mut() = crate::records::tests::naming(&mut sessions);
         let serv = server.serv();
         abort_worker(serv, worker);
         assert_eq!(worker.counters(), [0, 0, 0, 0]);
         assert_eq!(serv.counters().concurrency.load(SeqCst), 4);
         for (index, slot) in sessions.iter().enumerate() {
             let edge = index == 0 || index == last;
-            assert_eq!(slot.id, i64::try_from(index + 41).unwrap());
-            assert_eq!(slot.reactor_bits >> 8, 0x5a_1234);
-            assert_eq!(slot.reactor_bits & 0xff, if edge { 1 } else { 2 });
-            assert_eq!(slot.fd, if edge { 0 } else { 23 });
+            assert_eq!(slot.id.get(), i64::try_from(index + 41).unwrap());
+            assert_eq!(slot.reactor_bits.get() >> 8, 0x5a_1234);
+            assert_eq!(slot.reactor_bits.get() & 0xff, if edge { 1 } else { 2 });
+            assert_eq!(slot.fd.get(), if edge { 0 } else { 23 });
         }
         unsafe { &(*worker.raw()).concurrency }.store(9, SeqCst);
         serv.counters().concurrency.store(3, SeqCst);
@@ -211,7 +213,7 @@ mod tests {
         assert_eq!(worker.counters()[3], 0);
         assert_eq!(serv.counters().concurrency.load(SeqCst), 0);
 
-        server.tables_mut().session_list = swoole_rs_memory::members::Shm::empty();
+        *server.tables_mut().session_list_mut() = swoole_rs_memory::members::Shm::empty();
         server.config_mut().workers.free();
         server.config_mut().gs.free();
     }

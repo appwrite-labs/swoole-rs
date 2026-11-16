@@ -1,10 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* The core declarations native/ and the test fixtures compile against: macros, forward
- * declarations, the IPC records and the views of SwooleG and SwooleTG, which Rust holds (crates/corebase),
- * keeping only what a C++ file uses. Was include/swoole.h. */
+ * declarations, the IPC records and SwooleG's layout, which Rust holds (crates/corebase), keeping
+ * only what a C++ file uses. Was include/swoole.h. */
 #pragma once
-
-#include "swoole_rs_utilities.h"
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -92,9 +90,6 @@ typedef unsigned long ulong_t;
 #define SW_THREAD_LOCAL
 #endif
 
-/*-----------------------------------Memory------------------------------------*/
-void sw_free(void *ptr);
-
 /*-------------------------------Declare Struct--------------------------------*/
 namespace swoole {
 class Reactor;
@@ -113,7 +108,6 @@ class AsyncThreads;
 struct Protocol;
 struct EventData;
 struct DataHead;
-typedef int (*ReactorHandler)(Reactor *reactor, Event *event);
 typedef std::function<void(void *)> Callback;
 }  // namespace swoole
 
@@ -136,7 +130,7 @@ typedef unsigned char uchar;
 extern "C" char *swr_v1_error_buffer(void);
 #define sw_error (swr_v1_error_buffer())
 
-// tests/modules/utilities/storage.py declares these from here for the pinned hash tests.
+// tests/modules/utilities/hash_originals.py declares these from here for the pinned hash tests.
 uint64_t swoole_random_int();
 size_t swoole_random_bytes(char *buf, size_t size);
 
@@ -198,72 +192,24 @@ struct EventData {
 #include "swoole_rs_corebase_state.h"
 
 namespace swoole {
-// A SwooleG member whose value Rust holds (crates/corebase/src/global.rs): reads
-// and writes go through its accessor pair, so `SwooleG.field` code compiles as
-// before. It is never copied, so it can't be passed through `...` by mistake.
-template <typename T, typename R, R (*get)(), void (*set)(R)>
-struct RustField {
-    RustField() = default;
-    RustField(const RustField &) = delete;
-    // `SwooleG = {}` leaves the record to swr_v1_core_reset.
-    RustField &operator=(const RustField &) {
-        return *this;
-    }
-    RustField &operator=(T value) {
-        set((R) value);
-        return *this;
-    }
-    operator T() const {
-        return (T) get();
-    }
-    T operator->() const {
-        return (T) get();
-    }
-    RustField &operator+=(T delta) {
-        return *this = (T) (*this + delta);
-    }
-    T operator++(int) {
-        T old = *this;
-        *this = (T) (old + 1);
-        return old;
-    }
-    T operator--(int) {
-        T old = *this;
-        *this = (T) (old - 1);
-        return old;
-    }
-};
-
-#define SW_RUST_FIELD(type, name)                                                                                     \
-    RustField<type, decltype(swr_v1_core_##name()), swr_v1_core_##name, swr_v1_core_set_##name> name
-
 // SwooleG's layout: Rust defines the symbol (crates/corebase/src/config_state.rs, which
-// asserts the same layout). The fields come first; the empty accessor members follow.
+// asserts the same layout).
 struct Global {
     Global() = delete;
     Global(const Global &) = delete;
     uint32_t max_sockets;
     double dns_cache_refresh_time;
     Allocator std_allocator;
-
-    SW_RUST_FIELD(bool, running);
-    SW_RUST_FIELD(bool, enable_coroutine);
-    SW_RUST_FIELD(uint32_t, pagesize);
 };
 static_assert(offsetof(Global, dns_cache_refresh_time) == 8 && offsetof(Global, std_allocator) == 16 &&
-                  sizeof(Global) == 56,
+                  sizeof(Global) == 48,
               "crates/corebase/src/config_state.rs's Global");
 }  // namespace swoole
 
-extern swoole::Global SwooleG;                      // Local Global Variable
-#define SwooleTG (*swr_v1_core_thread_global())     // Thread Global Variable, Rust's
+extern swoole::Global SwooleG;  // Local Global Variable
 
 static inline void swoole_set_last_error(int error) {
     swr_v1_core_set_last_error(error);
-}
-
-static inline int swoole_get_last_error() {
-    return swr_v1_core_last_error();
 }
 
 static inline void swoole_clear_last_error() {
@@ -272,11 +218,3 @@ static inline void swoole_clear_last_error() {
 
 void swoole_clear_last_error_msg();
 const char *swoole_get_last_error_msg();
-
-static sw_inline swoole::String *sw_tg_buffer() {
-    return SwooleTG.buffer_stack;
-}
-
-static sw_inline swoole::Reactor *sw_reactor() {
-    return SwooleTG.reactor;
-}

@@ -24,6 +24,10 @@
   statuses integer-returning bodies (`i32`, `c_int`, `i64`, `isize`), including extern
            wrappers; foreign declarations and callback types have no body to migrate
   reprs    `#[repr(C)]` layouts, including C combined with other representation hints
+  derefs   safe fns, safe `extern "C"` callbacks included, with a raw-pointer parameter an
+           `unsafe` block in the body names: safe code can pass any pointer. Clippy's
+           `not_unsafe_ptr_arg_deref` checks only exported fns (#4275). Make the fn
+           `unsafe` with the pointer's contract in `# Safety`, or take a reference
   unforbidden  1 unless the crate's lib.rs has `#![forbid(unsafe_code)]`, so a crate
                the compiler verifies safe stays that way
 
@@ -50,6 +54,44 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+SAFE_FN = re.compile(r'(\bunsafe\s+)?(?:extern\s+"[^"]*"\s+)?\bfn\s+\w+\s*(?:<[^{;()]*?>)?\s*\(')
+RAW_PARAM = re.compile(r'(?:mut\s+)?(\w+)\s*:\s*(?:Option<\s*)?\*\s*(?:const|mut)\b')
+UNSAFE_BLOCK = re.compile(r'\bunsafe\s*\{')
+
+
+def closing(code, i, open_, close):
+    """The index after the `close` that balances an `open_` just before `i`."""
+    depth = 1
+    while i < len(code) and depth:
+        depth += (code[i] == open_) - (code[i] == close)
+        i += 1
+    return i
+
+
+def derefs(code):
+    """The safe fns in `code` whose `unsafe` blocks name one of their raw-pointer parameters."""
+    found = []
+    for fn in SAFE_FN.finditer(code):
+        end = closing(code, fn.end(), '(', ')')
+        # Split at top-level commas: a callback type's `*mut` is not a pointer the fn takes.
+        params, depth = [''], 0
+        for ch in code[fn.end():end - 1].replace('->', '-'):
+            depth += (ch in '(<[') - (ch in ')>]')
+            if ch == ',' and depth == 0:
+                params.append('')
+            else:
+                params[-1] += ch
+        names = [m.group(1) for p in params if (m := RAW_PARAM.match(p.strip()))]
+        start = re.compile(r'[{;]').search(code, end)
+        if fn.group(1) or not names or not start or start.group() == ';':
+            continue
+        body = code[start.end():closing(code, start.end(), '{', '}')]
+        blocks = ''.join(body[b.end():closing(body, b.end(), '{', '}')] for b in UNSAFE_BLOCK.finditer(body))
+        if any(re.search(rf'\b{name}\b', blocks) for name in names):
+            found.append(fn.group())
+    return found
+
+
 KINDS = {
     'unsafe': re.compile(r'\bunsafe\s*(?:\{|(?:extern\s+"[^"]*"\s+)?fn\b|impl\b)'),
     'maps': re.compile(r'\b(?:HashMap|HashSet|BTreeMap|BTreeSet)\b'),
@@ -67,8 +109,9 @@ KINDS = {
     'cells': re.compile(r'\bRefCell\s*<'),
     'statuses': re.compile(r'\)\s*->\s*(?:i32|c_int|i64|isize)\s*(?:where\b[^;{]*)?\{'),
     'reprs': re.compile(r'#\s*\[\s*repr\s*\([^\]]*\bC\b[^\]]*\)\s*\]'),
+    'derefs': derefs,
 }
-MULTILINE = ('statuses', 'reprs')
+MULTILINE = ('statuses', 'reprs', 'derefs')
 # What `forbid(unsafe_code)` rejects and KINDS['unsafe'] doesn't count.
 UNCOUNTED = re.compile(r'\bunsafe\s+extern\b|#\[unsafe\(')
 FORBID = re.compile(r'^#!\[forbid\([^)]*\bunsafe_code\b', re.M)
@@ -115,7 +158,8 @@ def count_file(path, test_files):
                 count[kind] += len(pattern.findall(code))
     code = '\n'.join(source)
     for kind in MULTILINE:
-        count[kind] = len(KINDS[kind].findall(code))
+        find = KINDS[kind]
+        count[kind] = len(find(code) if callable(find) else find.findall(code))
     return count
 
 

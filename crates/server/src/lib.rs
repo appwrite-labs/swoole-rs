@@ -42,7 +42,6 @@ use {swoole_rs_hooks as _, swoole_rs_protocols_ffi as _};
 mod hybrid;
 #[cfg(any(test, feature = "upstream-symbols"))]
 mod json;
-mod layout;
 pub mod local_addr;
 pub mod manager;
 mod master_ops;
@@ -50,6 +49,8 @@ mod master_ops;
 mod objects;
 #[cfg(feature = "upstream-symbols")]
 mod pool_native;
+#[cfg(feature = "upstream-symbols")]
+pub use pool_native::process_pool_native;
 pub mod port_config;
 mod process_factory;
 pub mod reactor_entry;
@@ -78,15 +79,11 @@ pub mod view;
 pub mod worker_methods;
 pub use static_config::Collection as StaticCollection;
 
-pub use records::{
-    Connection, ConnectionRecord, ServerTables, Session, SessionRecord, Slot,
-    swr_v1_server_connection, swr_v1_server_session,
-};
+pub use records::{Connection, ConnectionRecord, ServerTables, Session, SessionRecord, Slot};
 
 pub use shared::{PortCounters, ServerCounters, swr_v1_server_shared_init};
 
-pub use config::{DispatchMode, Mode, ServerConfig, TaskIpcMode};
-pub use layout::server_record_layout;
+pub use config::{DispatchMode, Mode, ServerConfig, Shared, TaskIpcMode};
 
 /// `SW_THREAD`: whether this build has thread mode, as the extension's MINIT says. Outside
 /// `thread_mode::native`, which needs `upstream-symbols`, since crates/phpserver sets and reads it.

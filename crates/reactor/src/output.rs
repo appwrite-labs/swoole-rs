@@ -199,7 +199,10 @@ pub fn handle_send_owned(
             return output;
         }
     }
-    socket.edit(|record| output.result.publish(&mut record.output));
+    // A complete send sets neither flag, and then the record needs no edit.
+    if output.result.close_wait || output.result.send_wait {
+        socket.edit(|record| output.result.publish(&mut record.output));
+    }
     if output.result.pop {
         // Detach transfers custody to the caller without invoking a disposer.
         match queue.pop() {
@@ -329,7 +332,7 @@ mod tests {
     fn owned_queue_commits_offsets_wait_flags_and_detaches_after_effects() {
         unsafe {
             let socket = crate::SocketRecord::with_fd(-1, 6).into_raw();
-            let mut queue = swoole_rs_buffer::Buffer::create(64).unwrap();
+            let mut queue = swoole_rs_buffer::Buffer::new(64);
             assert_eq!(queue.append(b"hello"), Ok(()));
             // Raw from the record's pointer, so `Socket::edit` borrowing the record leaves it valid.
             let hooks = hooks(socket.cast(), &raw mut (*socket).fields.kernel_nobufs);
@@ -358,8 +361,8 @@ mod tests {
             assert_eq!((completed.status, completed.result.pop), (Ok(()), true));
             assert!(completed.detached.token().is_null());
             assert_eq!(queue.front().err(), Some(swoole_rs_buffer::Error::Empty));
-            assert!(queue.release().is_ok());
-            crate::SocketRecord::free(socket);
+            assert!(!queue.holds_token());
+            drop(Box::from_raw(socket));
         }
     }
     #[test]

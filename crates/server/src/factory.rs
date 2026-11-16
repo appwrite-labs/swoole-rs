@@ -22,12 +22,9 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
     let state = serv.state();
     match step {
         Step::Daemon => {
-            use swoole_rs_utilities::{
-                process_logger, swr_v1_logger_is_opened, swr_v1_logger_redirect,
-            };
-            match process_logger() {
-                Some(logger) if swr_v1_logger_is_opened(logger) => {
-                    swr_v1_logger_redirect(logger, true);
+            match swoole_rs_utilities::process_logger() {
+                Some(logger) if logger.is_opened() => {
+                    logger.redirect_stdout_and_stderr(true);
                 }
                 _ => swoole_rs_corebase::swoole_redirect_stdout_file(c"/dev/null"),
             }
@@ -78,7 +75,9 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
         }
         Step::ClearSignals => signal_upstream::clear(),
         Step::DestroyProcessFactory => crate::process_factory::native::destroy(serv),
-        Step::DestroyTaskPool => swoole_rs_process::methods::destroy(serv.task_pool_ref()),
+        Step::DestroyTaskPool => {
+            swoole_rs_process::methods::destroy(crate::process_pool_native(), serv.task_pool_ref());
+        }
         Step::DeleteFactory => delete(state),
         Step::Listen(index) | Step::ClosePortSocket(index) | Step::CreatePortSocket(index) => {
             let Some(port) = state.ports.get(index) else {
@@ -97,7 +96,12 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
             };
         }
         Step::CreateEventPool => return crate::reactor_process::native::create_pool(serv),
-        Step::DestroyEventPool => swoole_rs_process::methods::destroy(serv.event_pool_ref()),
+        Step::DestroyEventPool => {
+            swoole_rs_process::methods::destroy(
+                crate::process_pool_native(),
+                serv.event_pool_ref(),
+            );
+        }
         Step::CreatePipeBuffers => return crate::master_ops::create_pipe_buffers(serv),
         Step::StartManager => return crate::manager::native::start_manager_process(serv),
         Step::EventInit => return swoole_rs_reactor::swoole_event_init(0) >= 0,
@@ -138,7 +142,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
 ///
 /// Registered only on the master's reactor, whose `ptr` is the live server, for its
 /// command pipe.
-extern "C" fn accept_command_result(
+fn accept_command_result(
     reactor: swoole_rs_reactor::Running<'_>,
     event: &mut swoole_rs_reactor::Event,
 ) -> c_int {
@@ -317,16 +321,26 @@ impl crate::hybrid::Hybrid for Linked {
         };
         let pool_ref = serv.task_pool_ref();
         let ipc = c_int::from(ipc.code());
-        if !pool::create(pool_ref, config.task_worker_num.get(), key, ipc) {
+        if !pool::create(
+            crate::process_pool_native(),
+            pool_ref,
+            config.task_worker_num.get(),
+            key,
+            ipc,
+        ) {
             return false;
         }
         let (max, grace) = (
             config.task_max_request.get(),
             config.task_max_request_grace.get(),
         );
-        pool::set_max_request(pool_ref, max, grace);
-        pool::set_start_id(pool_ref, config.worker_num.get().cast_signed());
-        pool::set_type(pool_ref, WorkerType::Task);
+        pool::set_max_request(crate::process_pool_native(), pool_ref, max, grace);
+        pool::set_start_id(
+            crate::process_pool_native(),
+            pool_ref,
+            config.worker_num.get().cast_signed(),
+        );
+        pool::set_type(crate::process_pool_native(), pool_ref, WorkerType::Task);
         socket.is_none_or(|file| pool::listen_unix(pool_ref, file, 2048))
     }
 
@@ -371,6 +385,7 @@ impl crate::hybrid::Hybrid for Linked {
             return false;
         };
         let sent = swoole_rs_process::methods::send_pipe_message(
+            crate::process_pool_native(),
             worker,
             message.bytes(),
             PIPE_MASTER_NONBLOCK,
@@ -380,10 +395,6 @@ impl crate::hybrid::Hybrid for Linked {
 
     fn create_thread_factory(&self, serv: crate::view::Server<'_>) -> *mut c_void {
         crate::thread_mode::native::create_factory(serv)
-    }
-
-    fn destroy_thread_factory(&self, serv: crate::view::Server<'_>) {
-        crate::thread_mode::native::destroy_factory(serv);
     }
 
     fn start_worker_threads(&self, serv: crate::view::Server<'_>) -> bool {
@@ -401,21 +412,24 @@ impl crate::hybrid::Hybrid for Linked {
     }
 
     fn send_shutdown(&self, serv: crate::view::Server<'_>) -> bool {
+        const _: () = assert!(
+            size_of::<SendData>() == size_of::<DataHead>() + size_of::<usize>(),
+            "a SendData is its head and a payload pointer"
+        );
         // A worker may run as a user that cannot signal the master.
-        let send = SendData::empty(DataHead {
+        let head = DataHead {
             kind: ServerEvent::ShutdownSignal.code(),
             ..DataHead::default()
-        });
+        };
         // `serv->get_reactor_pipe_socket(0, 0)`.
-        let Some(pipe) = serv.worker_pipe(0, false) else {
+        let pipe = serv.worker_pipe(0, false);
+        let Some(pipe) = pipe.and_then(crate::reactor_handle::registered) else {
             return false;
         };
-        let data = (&raw const send).cast();
-        // SAFETY: the worker's live pipe socket and the send's bytes.
-        let sent = unsafe {
-            swoole_rs_tls::upstream::socket_send_async(pipe, data, size_of::<SendData>())
-        };
-        sent > 0
+        // The `SendData` upstream sends: the head, then a null payload pointer.
+        let mut send = swoole_rs_process::process_pool::head_view(&head).to_vec();
+        send.resize(size_of::<SendData>(), 0);
+        swoole_rs_tls::upstream::send_async(pipe, &send).is_some_and(|sent| sent > 0)
     }
 
     fn thread0_shutdown(&self, serv: crate::view::Server<'_>) {

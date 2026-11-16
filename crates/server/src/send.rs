@@ -24,8 +24,8 @@ use swoole_rs_corebase::log::LogLevel::{
 };
 use swoole_rs_corebase::{CCast, DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{ChangeOp, Drain, Interest, Socket, record_send, record_write, steady_ms};
+use swoole_rs_reactor::{Events, SocketFields};
 
 fn error(level: swoole_rs_corebase::log::LogLevel, code: E, message: core::fmt::Arguments<'_>) {
     log::error_log(level, code as c_int, c"Server::send_to_connection", message);
@@ -263,21 +263,21 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         };
     }
     let (mut data, file) = (data, kind == Some(ServerEvent::SendFile));
-    let out_empty = sock.read(|s| out_buffer(s).is_none_or(swr_cpp_buffer_empty));
+    let (out_empty, unbuffered, direct) = sock.read(output_state);
     if out_empty {
         if close {
             reactor.close(sock);
             return true;
         }
-        if !file && sock.read(|s| s.direct_send) && direct_send(conn, sock, &mut data, first) {
+        if !file && direct && direct_send(conn, sock, &mut data, first) {
             return true;
         }
-        if sock.read(|s| s.output.out_buffer.is_none()) {
+        if unbuffered {
             let buffer = Some(new_buffer(SW_SEND_BUFFER_SIZE));
             sock.edit(|s| s.output.out_buffer = buffer);
         }
     }
-    let queued = || sock.read(|s| out_buffer(s).map_or(0, swr_cpp_buffer_length));
+    let port = serv.port_by_server_fd(conn.server_fd());
     if close {
         sock.read(|s| out_buffer(s).map(swr_cpp_buffer_typed_close));
         conn.set_close_queued(true);
@@ -296,7 +296,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         }
         let callback = |index| state.callbacks.slot(index).is_set();
         let (on_full, on_empty) = (callback(BufferFull), callback(BufferEmpty));
-        if queued() >= sock.read(|s| s.output.buffer_size) {
+        if sock.read(|s| queued(s) >= s.output.buffer_size) {
             if send_yield {
                 yield_error();
             } else {
@@ -310,16 +310,14 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         }
         // `Buffer::append`'s `uint32_t` size.
         let size = data.len().c_cast::<u32>() as usize;
-        sock.read(|s| out_buffer(s).map(|b| b.append(data.get(..size).unwrap_or(data))));
-        conn.set_send_queued_bytes(queued());
-        let port = serv.port_by_server_fd(conn.server_fd());
+        let bytes = sock.read(|s| append(s, data.get(..size).unwrap_or(data)));
+        conn.set_send_queued_bytes(bytes);
         let high = port.map_or(u32::MAX, |port| port.config().buffer_high_watermark.get());
-        if on_full && !conn.high_watermark() && queued() >= high {
+        if on_full && !conn.high_watermark() && bytes >= high {
             crate::server_methods::notify(serv, conn, ServerEvent::BufferFull);
             conn.set_high_watermark(true);
         }
     }
-    let port = serv.port_by_server_fd(conn.server_fd());
     let idle = port.map_or(0.0, |port| port.config().max_idle_time.get());
     if idle > 0.0 && sock.read(|s| s.output.send_timer.is_none()) {
         idle_timer(conn, sock, idle);
@@ -328,6 +326,27 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         reactor.interest(sock, Interest::AddWrite);
     }
     true
+}
+
+/// Whether the socket's output buffer is missing or empty, whether it is missing, and
+/// whether the socket sends directly.
+fn output_state(s: &SocketFields) -> (bool, bool, bool) {
+    let buffer = out_buffer(s);
+    let empty = buffer.is_none_or(swr_cpp_buffer_empty);
+    (empty, buffer.is_none(), s.direct_send)
+}
+
+/// The bytes queued in the socket's output buffer.
+fn queued(s: &SocketFields) -> u32 {
+    out_buffer(s).map_or(0, swr_cpp_buffer_length)
+}
+
+/// Queues `data` in the socket's output buffer, if it has one: the bytes queued after.
+fn append(s: &SocketFields, data: &[u8]) -> u32 {
+    if let Some(buffer) = out_buffer(s) {
+        buffer.append(data);
+    }
+    queued(s)
 }
 
 /// Writes the bytes straight to the socket: true when all of them went, else the rest
@@ -413,10 +432,7 @@ mod tests {
         fn new() -> Self {
             let live = LiveServer::new();
             let client = live.connect();
-            // SAFETY: the fixture's listener, live for the event.
-            let event = unsafe {
-                swoole_rs_reactor::Event::new(live.listener_fd, 0, 1, live.listener().cast())
-            };
+            let event = live.accept_event();
             crate::connection::accept(live.server(), live.reactor(), &event);
             client
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -463,11 +479,11 @@ mod tests {
         CLOSED.with_borrow_mut(core::mem::take)
     }
 
-    unsafe extern "C-unwind" fn record_close(
+    extern "C-unwind" fn record_close(
         _: swoole_rs_reactor::Running<'_>,
-        socket: Socket<'_>,
+        socket: swoole_rs_reactor::OwnedSocket,
     ) -> c_int {
-        CLOSED.with_borrow_mut(|closed| closed.push(socket.fd()));
+        CLOSED.with_borrow_mut(|closed| closed.push(socket.socket().fd()));
         0
     }
 
@@ -481,7 +497,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_missing_session_fails() {
         let a = Accepted::new();
         assert_eq!(a.send(ServerEvent::SendData, 9, b"data"), SW_ERR);
@@ -489,7 +504,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn overflow_outside_process_mode_refuses() {
         let mut a = Accepted::new();
         a.conn().set_overflow(true);
@@ -510,7 +524,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn pause_and_resume_move_the_read_event() {
         let a = Accepted::new();
         let events = || {
@@ -535,7 +548,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_direct_send_reaches_the_peer() {
         let mut a = Accepted::new();
         assert_eq!(a.send(ServerEvent::SendData, 1, b"hello"), SW_OK);
@@ -545,7 +557,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn parts_go_out_in_one_write_where_the_worker_writes_to_the_socket() {
         let mut a = Accepted::new();
         assert_eq!(
@@ -565,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "building a 16 MiB body takes Miri over half an hour")]
     fn parts_the_socket_does_not_take_are_queued_in_order() {
         let mut a = Accepted::new();
         a.live.config_mut().mode_ = Mode::Base;
@@ -588,7 +599,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn without_direct_send_the_data_is_buffered_for_the_write_event() {
         let a = Accepted::new();
         a.sock().edit(|s| s.direct_send = false);
@@ -609,7 +619,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_send_made_first_is_not_repeated() {
         let mut a = Accepted::new();
         let data = b"0123456789";
@@ -631,9 +640,8 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_full_buffer_overflows_and_the_watermark_notifies() {
-        extern "C" fn full(_: crate::callbacks::Ctx, _: Server<'_>, _: &DataHead) {}
+        fn full(_: Server<'_>, _: &DataHead) {}
         let a = Accepted::new();
         a.sock().edit(|s| {
             s.direct_send = false;
@@ -669,7 +677,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn close_closes_now_or_queues_behind_the_output() {
         let a = Accepted::new();
         a.closes();
@@ -686,7 +693,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_forced_close_skips_the_output() {
         let a = Accepted::new();
         a.closes();
@@ -698,7 +704,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn files_are_queued_never_sent_directly() {
         let task = |name: &[u8]| {
             let mut task = 0i64.to_ne_bytes().to_vec();
@@ -718,7 +723,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn send_goes_through_the_factory_in_process_mode_and_here_otherwise() {
         let mut a = Accepted::new();
         let counters = |a: &Accepted| {

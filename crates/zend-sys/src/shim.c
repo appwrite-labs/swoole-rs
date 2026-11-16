@@ -4,8 +4,17 @@
  * signature) and budget (Z_TRY_ADDREF_P, ZVAL_STR). */
 #include "shim.h"
 
-void *swr_zend_object_alloc(size_t size, zend_class_entry *ce) {
-    return zend_object_alloc(size, ce);
+zend_object *swr_zend_object_new(size_t size, size_t offset, zend_class_entry *ce,
+                                 const zend_object_handlers *handlers) {
+    zend_object *std = (zend_object *) ((char *) zend_object_alloc(size, ce) + offset);
+    zend_object_std_init(std, ce);
+    object_properties_init(std, ce);
+    std->handlers = handlers;
+    return std;
+}
+
+bool swr_zend_object_destructor_called(const zend_object *object) {
+    return GC_FLAGS(object) & IS_OBJ_DESTRUCTOR_CALLED;
 }
 
 zend_class_entry *swr_zend_register_class(const char *name, const zend_function_entry *functions,
@@ -55,11 +64,15 @@ int swr_zend_try(void (*body)(void *), void *arg) {
     return bailed ? (SWR_ZEND_EXIT_PENDING() ? SWR_ZEND_THREAD_EXIT : SWR_ZEND_BAILOUT) : SWR_ZEND_RETURN;
 }
 
-int swr_zend_try_call(zend_fcall_info *fci, zend_fcall_info_cache *fcc, int *result) {
+int swr_zend_try_call(zend_fcall_info_cache *fcc, swr_zvals args, zval *name, zval *retval, int *result) {
+    zend_fcall_info fci = {.size = sizeof(fci), .retval = retval, .params = args.argv, .param_count = args.argc};
+    if (name) {
+        ZVAL_COPY_VALUE(&fci.function_name, name);
+    }
     volatile int bailed = 0;
     *result = 0;
     SWR_ZEND_TRY {
-        *result = zend_call_function(fci, fcc) == SUCCESS;
+        *result = zend_call_function(&fci, fcc) == SUCCESS;
     }
     SWR_ZEND_CATCH {
         bailed = 1;

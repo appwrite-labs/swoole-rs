@@ -12,10 +12,10 @@ not, and an earlier key it sets waits for the next walk. `if_exit` starts from t
 registered socket count, shares it across the conditions and stops at the first
 refusal.
 
-The C++ members (`set_end_callback`, `erase_end_callback`, `set_exit_condition`,
-`remove_exit_condition`, `isset_exit_condition`) are inline calls to
-`swr_v1_reactor_set_end`, `_set_exit` and `_isset_exit`; Rust callers use the
-`swr_v1_event_*` forms over the thread's reactor, by path (they have no symbol).
+No C++ sets an end callback or exit condition, so the class declares none of
+upstream's members for them. Rust callers use `swr_v1_reactor_set_end` on a
+reactor, or the `swr_v1_event_*` forms over the thread's reactor, by path (they have
+no symbol).
 `Reactor::if_exit` and `Reactor::wait` are Rust under their upstream symbols.
 
 The constructor's built-ins, set after the create hook
@@ -26,19 +26,22 @@ condition, the idle task, signal dispatch (main thread), try-exit, `malloc_trim`
 ## Handlers
 
 `set_handler`, `isset_handler`, `get_handler` and `get_error_handler` are Rust
-tables (`crates/reactor/src/handlers.rs`). `get_handler` and `default_write_handler`
-have no C++ caller, so the class no longer has them: Rust reads them as
-`reactor_upstream::reactor_get_handler` and `reactor_default_write_handler`.
+tables (`crates/reactor/src/handlers.rs`) of Rust `fn`s. No C++ sets, reads or calls a
+handler, so the class declares only `isset_handler` and nothing exports `set_handler`: Rust
+registers through `reactor_upstream::set_handler` and `event_api::set_handler`, and
+reads through `reactor_get_handler` and `reactor_default_write_handler`.
 
 ## Deferred queues
 
 `defer_tasks` and `destroy_callbacks` are fields of the Rust reactor state:
-FIFO queues of C `(call, data, dispose)` entries (`crates/reactor/src/deferred.rs`),
-created on first push. Only Rust pushes to them (`deferred::defer` and
-`swoole_event_defer_value`); no C or C++ caller is left.
+FIFO queues of Rust values (`crates/reactor/src/deferred.rs`).
+The first task lives inline; only additional tasks allocate queue storage. The
+queues follow the native head and are absent from its C++ declaration. Only Rust pushes to them
+(`swoole_event_defer_value` and the socket and destroy-callback helpers beside it); no C or C++
+caller is left.
 
 - The `PRIORITY_DEFER_TASK` end callback detaches `defer_tasks`, runs it and
-  frees it, so a task that defers again lands on the next end pass. A non-null
+  frees it, so a task that defers again lands on the next end pass. A present
   `defer_tasks` makes the kernel wait non-blocking.
 - The Reactor destructor runs `destroy_callbacks` until empty (callbacks it
   adds run too); the state frees the queue.

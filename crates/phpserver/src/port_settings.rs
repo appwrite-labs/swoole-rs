@@ -506,9 +506,9 @@ mod tests {
     use swoole_rs_server::port_config::swr_v1_port_config_new;
 
     /// The mock settings' `package_length_func` callback.
-    unsafe extern "C" fn length_func(
-        _: *const Protocol,
-        _: *mut c_void,
+    fn length_func(
+        _: &Protocol,
+        _: Option<swoole_rs_clients::protocol::Socket<'_>>,
         _: &mut PacketLength,
     ) -> isize {
         11
@@ -1041,13 +1041,8 @@ mod tests {
         assert!(fields.verify_peer && fields.allow_self_signed);
         assert_eq!(fields.verify_depth, 255);
         assert!(fields.prefer_server_ciphers);
-        let view = |index: usize| {
-            // SAFETY: a slot of the live owner.
-            let view =
-                unsafe { swoole_rs_corebase::swr_v1_core_string_view(&*prepared.strings[index]) };
-            // SAFETY: as above.
-            unsafe { std::slice::from_raw_parts(view.data.cast::<u8>(), view.length) }.to_vec()
-        };
+        // SAFETY: the owner made above, freed at the end.
+        let view = |index: usize| unsafe { &*owner }.string(index);
         assert_eq!(view(0), b"HIGH");
         assert_eq!(view(1), b"auto");
         assert_eq!(view(3), b"dh");

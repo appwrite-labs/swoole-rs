@@ -4,7 +4,7 @@
 //! ([`WebSocket`]); the name resolver's context is still C++.
 use crate::{native::Co, socket::Sock};
 use libc::c_int;
-use std::{ffi::CStr, mem::MaybeUninit, sync::OnceLock};
+use std::{ffi::CStr, sync::OnceLock};
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{ProxyState, log, sys::Text};
 use swoole_rs_hooks::hooked::{swoole_coroutine_close, write};
@@ -88,19 +88,28 @@ pub(crate) fn swoole_http_client_coro_create_socket(kind: i64) -> Result<Owned, 
     }
 }
 
-/// The write buffer a closed socket left (`tmp_write_buffer`): a `new String`
-/// this owns alone, or none.
+/// An owned HTTP buffer: a response's input or the write buffer a closed socket left.
 #[derive(Default)]
-pub(crate) struct Written(Option<Box<CppString>>);
+pub(crate) struct HttpBuffer(Option<Box<CppString>>);
 
-impl Written {
+impl HttpBuffer {
+    /// The response's own buffer, separate from TLS's socket read buffer.
+    pub(crate) fn input(&mut self) -> &mut CppString {
+        self.0.get_or_insert_with(|| {
+            swoole_rs_buffer::string::boxed_sized_string(
+                swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as usize,
+                Some(swoole_rs_phpswoole::zend_string_allocator()),
+            )
+        })
+    }
+
     /// The bytes the socket had written, if it left a buffer.
     pub(crate) fn buffer(&self) -> Option<&CppString> {
         self.0.as_deref()
     }
 }
 
-impl Drop for Written {
+impl Drop for HttpBuffer {
     /// `delete string`.
     fn drop(&mut self) {
         if let Some(mut string) = self.0.take() {
@@ -189,8 +198,8 @@ impl Co {
     }
 
     /// The socket gives up its write buffer, as before its first write.
-    pub(crate) fn take_write_buffer(self) -> Written {
-        Written(self.handle().take_write_buffer())
+    pub(crate) fn take_write_buffer(self) -> HttpBuffer {
+        HttpBuffer(self.handle().take_write_buffer())
     }
 
     /// `f` over `get_write_buffer()`, made on first use.
@@ -203,21 +212,12 @@ impl Co {
         self.handle().with_buffer(false, f)
     }
 
-    /// `recv` into the read buffer's room past its length. The receive isn't lent
-    /// the buffer: under `io_uring`, TLS stages its own reads in it.
-    pub(crate) fn recv_input(self) -> Option<usize> {
-        let (at, room) = self.with_input(|input| {
-            let length = input.len();
-            (
-                input.as_mut_ptr().wrapping_add(length),
-                input.size() - length,
-            )
-        });
-        // SAFETY: the room past the read buffer's length, which the socket keeps
-        // allocated while it is open; no other reference to it outlives a
-        // `with_buffer` call, so the receive's is the only one.
-        let room = unsafe { std::slice::from_raw_parts_mut(at.cast::<MaybeUninit<u8>>(), room) };
-        self.handle().recv(room)
+    /// Receive into the response's own buffer, leaving the socket's buffer to TLS.
+    pub(crate) fn recv_input(self, input: &mut CppString) -> Option<usize> {
+        input.fill(|out| {
+            self.handle()
+                .recv_spare(swoole_rs_hooks::socket_members::Receive::Recv, out)
+        })
     }
 
     /// A read `TimeoutController` (0: the default read timeout).
@@ -278,7 +278,7 @@ pub(crate) fn swoole_http_client_coro_file_open(name: &CStr, offset: i64) -> Opt
 
 /// `AsyncFile::write()`: whether all of `data` was written.
 pub(crate) fn swoole_http_client_coro_file_write(fd: c_int, data: &[u8]) -> bool {
-    write(fd, data).cast_unsigned() == data.len()
+    write(fd, data).is_ok_and(|written| written == data.len())
 }
 
 /// `AsyncFile::close()`. It can yield, so a caller lets go of the descriptor

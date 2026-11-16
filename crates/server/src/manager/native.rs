@@ -35,7 +35,7 @@ const WORKER_MESSAGE_STOP: u8 = 1;
 const EVENT_DATA_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize;
 
 /// `swoole::EventData`, aligned for its head, to pop a message into.
-#[repr(C, align(8))]
+#[repr(align(8))]
 struct EventData([u8; EVENT_DATA_SIZE]);
 
 impl EventData {
@@ -55,11 +55,9 @@ unsafe extern "C" {
     safe fn alarm(seconds: libc::c_uint) -> libc::c_uint;
 }
 
-/// `Server::manager_`, while the manager runs in this process.
+/// `Server::manager`, while the manager runs in this process.
 fn manager(serv: view::Server<'_>) -> Option<&Manager> {
-    // SAFETY: a non-null `Server::manager_` is the `Manager` that `wait` keeps alive
-    // on its stack while the manager runs; only shared references exist.
-    unsafe { serv.config().manager_.get().cast::<Manager>().as_ref() }
+    serv.config().manager.live()
 }
 
 /// Whether this process is the server's manager.
@@ -89,7 +87,9 @@ pub(crate) fn start_manager_process(serv: view::Server<'_>) -> bool {
         return false;
     }
     let pool = serv.event_pool_ref();
-    if pool.message_box().is_null() && !methods::create_message_box(pool, MESSAGE_BOX_SIZE) {
+    if pool.message_box().is_null()
+        && !methods::create_message_box(crate::process_pool_native(), pool, MESSAGE_BOX_SIZE)
+    {
         return false;
     }
     if serv.workers().user_count() > 0 && !worker_methods::create_user_workers(serv) {
@@ -119,7 +119,9 @@ fn main(serv: view::Server<'_>) {
     if config.mode_ == Mode::Process && swoole_rs_corebase::swr_v1_core_enable_signalfd() {
         crate::control::ShutdownMask::unblock_manager();
     }
-    if config.task_worker_num.get() > 0 && !methods::start(serv.task_pool_ref()) {
+    if config.task_worker_num.get() > 0
+        && !methods::start(crate::process_pool_native(), serv.task_pool_ref())
+    {
         log::sys_error(ORIGIN, format_args!("failed to start task worker"));
         return;
     }
@@ -157,8 +159,8 @@ fn spawn<'a>(
 /// `Manager::wait`: the manager's life after forking.
 fn wait(serv: view::Server<'_>) {
     let (state, config) = (serv.state(), serv.config());
-    let manager = Manager::default();
-    init(serv, &manager);
+    let manager = &config.manager;
+    init(serv, manager);
     swoole_rs_reactor::swoole_event_free();
     set_signal(libc::SIGHUP, SignalHandler::None);
     for signo in [
@@ -187,12 +189,9 @@ fn wait(serv: view::Server<'_>) {
     }
     state.callbacks.call_server(ServerSlot::ManagerStart, serv);
 
-    reaper::run(&mut Reaping {
-        serv,
-        manager: &manager,
-    });
+    reaper::run(&mut Reaping { serv, manager });
 
-    methods::drop_reload_task(serv.event_pool_ref());
+    methods::drop_reload_task(crate::process_pool_native(), serv.event_pool_ref());
     if swoole_rs_timer::swoole_timer_is_available() {
         swoole_rs_timer::swoole_timer_free();
         // The timer overrode SIGALRM's handler: the manager needs it back.
@@ -223,10 +222,11 @@ fn wait(serv: view::Server<'_>) {
         alarm(0);
     }
     state.callbacks.call_server(ServerSlot::ManagerStop, serv);
+    manager.leave();
 }
 
 /// The manager's start: its pid, the event pool's message hook and its master pid,
-/// and `Server::manager_`.
+/// and `Server::manager`.
 fn init(serv: view::Server<'_>, manager: &Manager) {
     let config = serv.config();
     let pid = std::process::id().cast_signed();
@@ -240,8 +240,7 @@ fn init(serv: view::Server<'_>, manager: &Manager) {
     event_pool.set_max_wait_time(config.max_wait_time.get());
     event_pool.set_master_pid(pid);
     serv.task_pool_ref().set_master_pid(pid);
-    let manager = core::ptr::from_ref(manager).cast_mut().cast();
-    config.manager_.set(manager);
+    manager.enter();
 }
 
 /// The reap loop's host over the manager's server.
@@ -324,7 +323,7 @@ impl Reap for Reaping<'_> {
                 let worker = worker_at(serv, id.into());
                 if u32::from(id) >= serv.config().worker_num.get() {
                     let worker = worker.map_or(core::ptr::null_mut(), Worker::raw);
-                    methods::spawn(serv.task_pool_ref(), worker);
+                    methods::spawn(crate::process_pool_native(), serv.task_pool_ref(), worker);
                 } else {
                     _ = spawn(serv, spawn_event_worker, worker);
                 }
@@ -381,7 +380,7 @@ impl Reap for Reaping<'_> {
 
     fn finish_reload(&mut self) {
         let serv = self.serv;
-        methods::drop_reload_task(serv.event_pool_ref());
+        methods::drop_reload_task(crate::process_pool_native(), serv.event_pool_ref());
         serv.state()
             .callbacks
             .call_server(ServerSlot::AfterReload, serv);
@@ -396,10 +395,11 @@ impl Reap for Reaping<'_> {
 /// inherits these handlers; it must not act as the manager (reopening the log
 /// would send SIGWINCH back to itself forever).
 extern "C" fn signal_handler(signo: c_int) {
-    // SAFETY: the manager's signal runs while its server lives; the view ends with it.
-    let Some(serv) = (unsafe { view::Server::current() }) else {
-        return;
-    };
+    crate::server_methods::on_signal(crate::server_methods::SignalBody::Manager, signo);
+}
+
+/// [`signal_handler`]'s body over the server.
+pub(crate) fn signal(serv: view::Server<'_>, signo: c_int) {
     if signo == libc::SIGTERM {
         // Before `wait` sets up the manager too: `main` takes it while forking.
         if is_manager(serv) {
@@ -455,7 +455,7 @@ fn head_field<const N: usize>(msg: &[u8; EVENT_DATA_SIZE], offset: usize) -> [u8
 
 /// `pool->onWorkerMessage`: `Server::read_worker_message` over the pool's server
 /// and the message it popped: a command request from a worker.
-extern "C-unwind" fn read_worker_message(pool: PoolRef<'_>, msg: &[u8; EVENT_DATA_SIZE]) {
+fn read_worker_message(pool: PoolRef<'_>, msg: &[u8; EVENT_DATA_SIZE]) {
     use core::mem::offset_of;
     let Some(serv) = crate::shared::pool_server(pool) else {
         return;
@@ -493,8 +493,7 @@ pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) {
     const ORIGIN: &core::ffi::CStr = c"Server::restart_worker_process";
     let pid = status.pid();
     let worker = worker_methods::get_worker_by_pid(serv, pid);
-    // SAFETY: null or one of the server's live workers, kept for its life.
-    let Some(worker) = (unsafe { Worker::from_raw(worker) }) else {
+    let Some(worker) = serv.own_worker(worker) else {
         // A child that is not a worker: a detached worker finishing, or unknown.
         if !serv.registry().reap_detached(pid) {
             let m = format_args!("Unknown type child process [{pid}] exited");
@@ -507,7 +506,11 @@ pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) {
     check_exit_status(serv, Some(worker), status);
     match worker.kind() {
         Some(WorkerType::Event) => _ = spawn_event_worker(serv, worker),
-        Some(WorkerType::Task) => methods::spawn(serv.task_pool_ref(), worker.raw()),
+        Some(WorkerType::Task) => methods::spawn(
+            crate::process_pool_native(),
+            serv.task_pool_ref(),
+            worker.raw(),
+        ),
         Some(WorkerType::User) => _ = spawn_user_worker(serv, worker),
         _ => log::warning(
             ORIGIN,
@@ -541,7 +544,7 @@ pub fn reload(serv: view::Server<'_>, reload_all_workers: bool) -> bool {
         };
         return kill(manager_pid, signo).is_ok();
     }
-    if !methods::reload(serv.event_pool_ref()) {
+    if !methods::reload(crate::process_pool_native(), serv.event_pool_ref()) {
         return false;
     }
     if let Some(manager) = manager(serv) {

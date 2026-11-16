@@ -4,10 +4,11 @@
 //! and the HTTP request are read and written in place, as upstream's reader did; the
 //! request's own operations are `swoole_rs_http`'s.
 use core::ffi::c_int;
+use swoole_rs_buffer::string::CppString as Buffer;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_TRACE as TRACE, SW_LOG_WARNING as WARNING};
 use swoole_rs_error::ErrorCode;
-use swoole_rs_http_ffi::{HttpRequest as Request, HttpString as Buffer};
+use swoole_rs_http_ffi::HttpRequest as Request;
 use swoole_rs_reactor::Caught;
 
 /// Which readable callback runs.
@@ -61,8 +62,8 @@ pub struct Upgrade {
 /// The connection a readable event is on: each fact and effect a reader needs, and
 /// its current receive buffer and HTTP request, borrowed until the next call.
 pub(crate) trait Connection {
-    /// `recv` into the buffer, after its contents or (`whole`) over them: the bytes
-    /// read, or `None` when it failed.
+    /// `recv` into the buffer, after its contents or (`whole`) over them, which then
+    /// count what it wrote: the bytes read, or `None` when it failed.
     fn recv(&mut self, whole: bool) -> Option<usize>;
     /// `catch_read_error(errno)`.
     fn catch_error(&mut self) -> Caught;
@@ -149,13 +150,12 @@ const BUFFER_SIZE_BIG: u64 = 65536;
 
 /// `buffer->clear()`.
 fn clear(n: &mut impl Connection) {
-    let buffer = n.buffer();
-    (buffer.length, buffer.offset) = (0, 0);
+    n.buffer().clear();
 }
 
 /// `buffer->offset = value`.
 fn set_offset(n: &mut impl Connection, value: u64) {
-    n.buffer().offset = value.cast_signed();
+    n.buffer().set_offset(value.cast_signed());
 }
 
 /// `ListenPort::readable_callback_*`: false when an EOF port has no buffer or a raw
@@ -205,7 +205,6 @@ fn raw(n: &mut impl Connection) -> bool {
     }
     let length = received as u64;
     set_offset(n, length);
-    n.buffer().length = received;
     n.dispatch(Dispatch::Task, length)
 }
 
@@ -289,7 +288,6 @@ fn receive(n: &mut impl Connection) -> Step {
     if received == 0 {
         return Step::Close;
     }
-    n.buffer().length += received;
     Step::Parse
 }
 
@@ -319,7 +317,7 @@ fn log(n: &mut impl Connection, which: Log) {
             "Bad Request: protocol error when parse chunked length".to_owned(),
         ),
         Log::ChunkedTooLarge => {
-            let (length, max) = (n.buffer().length, n.max_length());
+            let (length, max) = (n.buffer().len(), n.max_length());
             (
                 WARNING,
                 format!(
@@ -370,7 +368,7 @@ fn parse(n: &mut impl Connection) -> Step {
 /// The request line, an HTTP/2 preface, the header block and form setup.
 fn head(n: &mut impl Connection) -> Option<Step> {
     if n.request().method == 0 && !n.request().get_protocol() {
-        if !n.request().excepted && (n.buffer().length as u64) < HEADER_MAX_SIZE {
+        if !n.request().excepted && (n.buffer().len() as u64) < HEADER_MAX_SIZE {
             return Some(Step::Done);
         }
         return Some(bad(n, Log::UnknownProtocol));
@@ -384,7 +382,7 @@ fn head(n: &mut impl Connection) -> Option<Step> {
     }
     if n.request().header_length == 0 && !n.request().get_header_length() {
         let buffer = n.buffer();
-        if buffer.size == buffer.length {
+        if buffer.size() == buffer.len() {
             return Some(bad(n, Log::HeaderTooLarge));
         }
         return Some(Step::Receive);
@@ -426,12 +424,12 @@ fn preface(n: &mut impl Connection) -> Step {
         return bad(n, Log::NoHttp2);
     }
     n.start_http2();
-    if n.buffer().length as u64 == HTTP2_PREFACE {
+    if n.buffer().len() as u64 == HTTP2_PREFACE {
         n.destroy_request();
         clear(n);
         return Step::Done;
     }
-    let offset = n.buffer().offset.cast_unsigned();
+    let offset = n.buffer().offset().cast_unsigned();
     n.reduce(offset);
     n.destroy_request();
     n.skip_recv();
@@ -480,7 +478,7 @@ fn bodyless(n: &mut impl Connection) -> Option<Step> {
         return Some(Step::Done);
     }
     let header_length = u64::from(n.request().header_length);
-    if n.buffer().length as u64 > header_length {
+    if n.buffer().len() as u64 > header_length {
         n.reduce(header_length);
         n.request().clean();
         return Some(Step::Parse);
@@ -492,7 +490,7 @@ fn bodyless(n: &mut impl Connection) -> Option<Step> {
 
 /// Whether the client waits for `100 Continue`: it sent only the head, asking for one.
 fn continues(n: &mut impl Connection) -> bool {
-    n.buffer().length as u64 == u64::from(n.request().header_length)
+    n.buffer().len() as u64 == u64::from(n.request().header_length)
         && n.request().has_expect_header()
 }
 
@@ -509,7 +507,7 @@ fn body(n: &mut impl Connection, upload: bool) -> Step {
             if n.request().excepted {
                 return bad(n, Log::ChunkedError);
             }
-            if n.buffer().length as u64 >= max {
+            if n.buffer().len() as u64 >= max {
                 log(n, Log::ChunkedTooLarge);
                 return Step::Reply(Reply::TooLarge);
             }
@@ -517,9 +515,9 @@ fn body(n: &mut impl Connection, upload: bool) -> Step {
                 n.send(Reply::Continue);
             }
             let buffer = n.buffer();
-            if buffer.length == buffer.size {
+            if buffer.len() == buffer.size() {
                 // The limit check above makes the new size larger.
-                let size = (buffer.size as u64 + BUFFER_SIZE_BIG).min(max);
+                let size = (buffer.size() as u64 + BUFFER_SIZE_BIG).min(max);
                 n.extend(size);
             }
             return Step::Receive;
@@ -535,10 +533,10 @@ fn body(n: &mut impl Connection, upload: bool) -> Step {
             return Step::Reply(Reply::TooLarge);
         }
         request_length = header_length + content_length;
-        if request_length > n.buffer().size as u64 {
+        if request_length > n.buffer().size() as u64 {
             n.extend(request_length);
         }
-        if (n.buffer().length as u64) < request_length {
+        if (n.buffer().len() as u64) < request_length {
             if continues(n) {
                 n.send(Reply::Continue);
             }
@@ -555,7 +553,7 @@ fn body(n: &mut impl Connection, upload: bool) -> Step {
         return Step::Close;
     }
     if n.active() {
-        if n.buffer().length as u64 > request_length {
+        if n.buffer().len() as u64 > request_length {
             n.reduce(request_length);
             n.request().clean();
             return Step::Parse;
@@ -571,8 +569,7 @@ fn body(n: &mut impl Connection, upload: bool) -> Step {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use core::ffi::{CStr, c_void};
-    use swoole_rs_http_ffi::NativeOp;
+    use core::ffi::CStr;
 
     /// The effects a [`Fake`] records.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -600,7 +597,6 @@ pub(crate) mod tests {
         req: Request,
         /// The chunks still to receive, the next one last.
         incoming: Vec<Vec<u8>>,
-        bytes: Vec<u8>,
         request: bool,
         max: u64,
         /// `upload_max_filesize`.
@@ -613,103 +609,18 @@ pub(crate) mod tests {
         sent: Vec<Reply>,
     }
 
-    /// The request's native effects (`swoole_rs_http`'s `HttpNative` ops): heap
-    /// strings and libc's files.
-    unsafe extern "C" fn request_native(
-        op: NativeOp,
-        a: *mut c_void,
-        b: *const u8,
-        n: u64,
-        _: u64,
-    ) -> u64 {
-        let length = usize::try_from(n).unwrap();
-        let file = a.cast::<libc::FILE>();
-        match op {
-            // `new String(n)` or `new String(b, n)`, which has room for a NUL after the copy.
-            NativeOp::StringNew => {
-                let mut bytes = Vec::with_capacity(length + usize::from(!b.is_null()));
-                if !b.is_null() {
-                    bytes.extend_from_slice(unsafe { core::slice::from_raw_parts(b, length) });
-                }
-                let mut text = Box::new(Text {
-                    head: Buffer {
-                        length: bytes.len(),
-                        size: 0,
-                        offset: 0,
-                        str: core::ptr::null_mut(),
-                    },
-                    bytes,
-                });
-                text.sync();
-                let text = Box::into_raw(text);
-                TEXTS.with_borrow_mut(|texts| texts.push(text));
-                text as u64
-            }
-            NativeOp::StringFree => {
-                TEXTS.with_borrow_mut(|texts| texts.retain(|&t| t != a.cast()));
-                drop(unsafe { Box::from_raw(a.cast::<Text>()) });
-                0
-            }
-            // `a->append(b, n)`: a string made here, or a fake's receive buffer, which has room.
-            NativeOp::StringAppend => {
-                let data = unsafe { core::slice::from_raw_parts(b, length) };
-                if TEXTS.with_borrow(|texts| texts.contains(&a.cast())) {
-                    let text = unsafe { &mut *a.cast::<Text>() };
-                    text.bytes.truncate(text.head.length);
-                    text.bytes.extend_from_slice(data);
-                    text.head.length = text.bytes.len();
-                    text.sync();
-                } else {
-                    let buffer = unsafe { &mut *a.cast::<Buffer>() };
-                    assert!(buffer.length + length <= buffer.size, "receive buffer room");
-                    unsafe { buffer.str.add(buffer.length).copy_from(b, length) };
-                    buffer.length += length;
-                }
-                0
-            }
-            NativeOp::Tmpfile => i64::from(unsafe { libc::mkstemp(a.cast()) }).cast_unsigned(),
-            NativeOp::Fdopen => unsafe {
-                libc::fdopen(c_int::try_from(n).unwrap(), c"wb+".as_ptr()) as u64
-            },
-            NativeOp::Fwrite => unsafe { libc::fwrite(b.cast(), 1, length, file) as u64 },
-            NativeOp::Fflush => u64::from(unsafe { libc::fflush(file) } == 0),
-            NativeOp::Fclose => u64::from(unsafe { libc::fclose(file) } == 0),
-            NativeOp::Unlink => u64::from(unsafe { libc::unlink(a.cast()) } == 0),
-            NativeOp::NumberErrors => 0,
-        }
-    }
-
-    /// A `swoole::String` the request made.
-    #[repr(C)]
-    struct Text {
-        head: Buffer,
-        bytes: Vec<u8>,
-    }
-
-    impl Text {
-        fn sync(&mut self) {
-            (self.head.str, self.head.size) = (self.bytes.as_mut_ptr(), self.bytes.capacity());
-        }
-    }
-
-    std::thread_local! {
-        static TEXTS: std::cell::RefCell<Vec<*mut Text>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
-
     fn fake(chunks: &[&[u8]]) -> Fake {
         Fake {
             current: core::ptr::null_mut(),
             upgrade: Upgrade::default(),
             static_handler: true,
-            buf: Buffer {
-                length: 0,
-                size: 64,
-                offset: 0,
-                str: core::ptr::null_mut(),
+            buf: {
+                let mut buf = Buffer::EMPTY;
+                buf.alloc(64, None);
+                buf
             },
-            req: Request::new(Some(request_native)),
+            req: Request::default(),
             incoming: chunks.iter().rev().map(|c| c.to_vec()).collect(),
-            bytes: vec![0; 64],
             request: false,
             max: 1024,
             uploads: 0,
@@ -725,8 +636,13 @@ pub(crate) mod tests {
         /// Points the current buffer at this fake's own, as native code does when
         /// its effects change it.
         fn point(&mut self) {
-            (self.buf.str, self.buf.size) = (self.bytes.as_mut_ptr(), self.bytes.len());
             self.current = &raw mut self.buf;
+        }
+    }
+
+    impl Drop for Fake {
+        fn drop(&mut self) {
+            self.buf.dispose();
         }
     }
 
@@ -735,9 +651,11 @@ pub(crate) mod tests {
         fn recv(&mut self, whole: bool) -> Option<usize> {
             let mut chunk = self.incoming.pop()?;
             let buffer = unsafe { &mut *self.current };
-            let start = if whole { 0 } else { buffer.length };
-            let n = chunk.len().min(buffer.size - start);
-            unsafe { buffer.str.add(start).copy_from(chunk.as_ptr(), n) };
+            if whole {
+                buffer.truncate(0);
+            }
+            let n = chunk.len().min(buffer.size() - buffer.len());
+            buffer.append(&chunk[..n]);
             if n < chunk.len() {
                 self.incoming.push(chunk.split_off(n));
             }
@@ -774,10 +692,11 @@ pub(crate) mod tests {
                 self.effects.push(Effect::Upload);
             }
             let at = usize::try_from(length).unwrap();
-            self.dispatched.push(self.bytes[..at].to_vec());
+            let bytes = self.buf.view();
+            self.dispatched.push(bytes[..at].to_vec());
             let url = self.req.url_offset as usize;
             self.urls
-                .push(self.bytes[url..url + self.req.url_length as usize].to_vec());
+                .push(bytes[url..url + self.req.url_length as usize].to_vec());
             true
         }
         fn active(&mut self) -> bool {
@@ -815,19 +734,14 @@ pub(crate) mod tests {
             unsafe { &mut *self.current }
         }
         fn reduce(&mut self, offset: u64) {
-            let n = usize::try_from(offset).unwrap();
-            self.bytes.copy_within(n..self.buf.length, 0);
-            self.buf.length -= n;
-            self.buf.offset = 0;
+            self.buf.reduce(offset.cast_signed());
         }
         fn extend(&mut self, size: u64) {
-            self.bytes.resize(usize::try_from(size).unwrap(), 0);
+            self.buf.extend(usize::try_from(size).unwrap());
             self.point();
         }
         fn header_end(&mut self) -> bool {
-            let buffer = unsafe { &*self.current };
-            let bytes = unsafe { core::slice::from_raw_parts(buffer.str, buffer.length) };
-            bytes.windows(4).any(|w| w == b"\r\n\r\n")
+            self.buffer().view().windows(4).any(|w| w == b"\r\n\r\n")
         }
         fn init_request(&mut self) {
             self.request = true;
@@ -839,7 +753,7 @@ pub(crate) mod tests {
         }
         fn destroy_request(&mut self) {
             self.request = false;
-            self.req = Request::new(Some(request_native));
+            self.req = Request::default();
             self.point();
         }
         fn request(&mut self) -> &mut Request {
@@ -918,7 +832,7 @@ pub(crate) mod tests {
         assert_eq!(run(Readable::Http, &mut f), SW_OK, "status");
         assert_eq!(f.dispatched, [GET.to_vec()], "one dispatch of the header");
         assert!(
-            !f.request && f.buf.length == 0,
+            !f.request && f.buf.is_empty(),
             "request destroyed, buffer cleared"
         );
         assert!(
@@ -979,7 +893,8 @@ pub(crate) mod tests {
         };
         let upload = |body: &[u8]| {
             let mut f = fake(&[&[&head[..], body].concat()]);
-            (f.bytes, f.max, f.uploads) = (vec![0; 512], 200, 1024);
+            f.buf.extend(512);
+            (f.max, f.uploads) = (200, 1024);
             run(Readable::Http, &mut f);
             f
         };
@@ -1008,8 +923,7 @@ pub(crate) mod tests {
         run(Readable::Http, &mut f);
         assert_eq!(f.dispatched, [post.to_vec(), GET.to_vec()], "both, whole");
         let mut f = fake(&[&[&chunked[..], GET].concat()]);
-        f.buf.size = 128;
-        f.bytes.resize(128, 0);
+        f.buf.extend(128);
         run(Readable::Http, &mut f);
         assert_eq!(
             f.dispatched,
@@ -1022,8 +936,7 @@ pub(crate) mod tests {
     fn continue_is_sent_once_before_the_body() {
         let head = b"POST / HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 4\r\n\r\n";
         let mut f = fake(&[head, b"ab", b"cd"]);
-        f.buf.size = 128;
-        f.bytes.resize(128, 0);
+        f.buf.extend(128);
         for _ in 0..3 {
             run(Readable::Http, &mut f);
         }
@@ -1036,8 +949,7 @@ pub(crate) mod tests {
 
         let head = b"POST / HTTP/1.1\r\nExpect: 100-continue\r\nTransfer-Encoding: chunked\r\n\r\n";
         let mut f = fake(&[head, b"1\r\na\r\n", b"0\r\n\r\n"]);
-        f.buf.size = 128;
-        f.bytes.resize(128, 0);
+        f.buf.extend(128);
         for _ in 0..3 {
             run(Readable::Http, &mut f);
         }
@@ -1149,7 +1061,7 @@ pub(crate) mod tests {
         f.http2 = true;
         run(Readable::Http, &mut f);
         assert!(
-            f.effects.contains(&Effect::StartHttp2) && f.buf.length == 0,
+            f.effects.contains(&Effect::StartHttp2) && f.buf.is_empty(),
             "preface consumed"
         );
         let mut f = fake(&[&[&preface[..], b"frame"].concat()]);
@@ -1194,7 +1106,7 @@ pub(crate) mod tests {
         let mut f = fake(&[b"ping"]);
         assert_eq!(run(Readable::Raw, &mut f), 0, "dispatch_task's status");
         assert_eq!(
-            (f.dispatched.len(), f.buf.length, f.buf.offset),
+            (f.dispatched.len(), f.buf.len(), f.buf.offset()),
             (1, 4, 4),
             "whole read dispatched"
         );

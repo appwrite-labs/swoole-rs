@@ -1,7 +1,6 @@
 //! Rust-owned `ListenPort` settings and native socket/statistic loans.
 use crate::config::{Published, Setting, Shared};
 use core::ffi::{CStr, c_int, c_void};
-use core::sync::atomic::AtomicPtr;
 use std::sync::{OnceLock, RwLock};
 
 use swoole_rs_clients::protocol::Protocol;
@@ -18,29 +17,41 @@ use crate::view::Port;
 pub struct ReadEvent<'a> {
     server: crate::view::Server<'a>,
     event: &'a mut swoole_rs_reactor::Event,
+    connection: crate::Connection<'a>,
 }
 
 impl<'a> ReadEvent<'a> {
-    /// The read's server and its event, which is the connection's as lent: the reader
-    /// reads the connection off it before anything changes it.
+    /// The read's server, its event and the connection of the event's socket (the
+    /// slot its `object` holds).
     pub(crate) fn new(
         server: crate::view::Server<'a>,
         event: &'a mut swoole_rs_reactor::Event,
+        connection: crate::Connection<'a>,
     ) -> Self {
-        Self { server, event }
+        Self {
+            server,
+            event,
+            connection,
+        }
     }
 
-    /// The server and the event.
+    /// The server, the event and the connection.
     #[must_use]
-    pub fn into_parts(self) -> (crate::view::Server<'a>, &'a mut swoole_rs_reactor::Event) {
-        (self.server, self.event)
+    pub fn into_parts(
+        self,
+    ) -> (
+        crate::view::Server<'a>,
+        &'a mut swoole_rs_reactor::Event,
+        crate::Connection<'a>,
+    ) {
+        (self.server, self.event, self.connection)
     }
 }
 
 /// `int (*onRead)(Reactor *, ListenPort *, Event *)`: a port's readable callback, which
 /// the server's connection read calls under the running reactor, with the
-/// connection's port.
-pub type Reader = fn(swoole_rs_reactor::Running<'_>, Port<'_>, ReadEvent<'_>) -> c_int;
+/// connection's port; false where upstream's returns `SW_ERR`.
+pub type Reader = fn(swoole_rs_reactor::Running<'_>, Port<'_>, ReadEvent<'_>) -> bool;
 
 /// `ListenPort::onRead`'s slot: null, or a [`Reader`].
 #[repr(transparent)]
@@ -111,7 +122,8 @@ pub(crate) fn methods() -> &'static PortMethods {
         .get()
         .unwrap_or_else(|| swoole_rs_corebase::fatal("port methods are not registered"))
 }
-#[repr(C)]
+
+/// A `ListenPort`'s settings: a `ListenPort *` is the box of them.
 pub struct PortConfig {
     pub object_id: u16,
     pub backlog: Setting<u16>,
@@ -149,28 +161,27 @@ pub struct PortConfig {
     pub kernel_socket_recv_buffer_size: Setting<c_int>,
     pub kernel_socket_send_buffer_size: Setting<c_int>,
     pub gs: Shared<*mut c_void>,
-    /// The Port object's property, which phpserver links and reads through `&`.
-    pub ptr: AtomicPtr<c_void>,
+    /// The non-threaded PHP Port object's property, installed once at bind/listen.
+    /// Shared callback storage only: it must not own the server. The PHP object
+    /// clears its callbacks on release, including when the object is freed first.
+    pub property: std::cell::OnceCell<std::rc::Rc<dyn core::any::Any>>,
     /// `open_websocket_{close,ping,pong}_frame` as bits 0, 1 and 2.
     pub websocket_frames: Setting<u8>,
     /// `websocket_subprotocol`, the handshake's `Sec-WebSocket-Protocol`.
     pub websocket_protocol: Published<Vec<u8>>,
     /// `ListenPort::host`.
     pub host: Box<StringSlot>,
-    /// `ListenPort::protocol`, which native code reads and writes by reference.
+    /// `ListenPort::protocol`, which native framing reads and writes by reference.
     pub protocol: Shared<Protocol>,
     /// `ListenPort::onRead`, the readable callback `init_protocol` picks.
     pub on_read: ReaderSlot,
     /// The port's TLS context, published so a reader keeps it alive across close.
-    /// A thin box, opaque to the native layout mirror.
     pub ssl_context: Published<TlsContext>,
     /// The SNI contexts crates/ports keeps; `ListenPort`'s
-    /// destructor releases them with the context. A thin box, as native code's
-    /// mirror holds a `void *` here.
+    /// destructor releases them with the context.
     pub tls: Box<TlsState>,
     /// The owner of the callable `protocol.private_data_1` names, when the port
-    /// has a `package_length_func`. A thin box: native code's mirror holds a
-    /// `void *` here.
+    /// has a `package_length_func`.
     pub length_owner: Shared<Option<LengthOwner>>,
 }
 
@@ -206,10 +217,12 @@ impl PortConfig {
     #[must_use]
     pub fn is_dtls(&self) -> bool {
         if let Some(settings) = self.tls.settings.get() {
-            return settings.protocols() & SslVersion::SW_SSL_DTLS as u32 != 0;
+            return SslVersion::from_bits(settings.protocols()).contains(SslVersion::SW_SSL_DTLS);
         }
-        self.with_ssl_fields(|_, fields| fields.protocols & SslVersion::SW_SSL_DTLS as u32 != 0)
-            .unwrap_or(false)
+        self.with_ssl_fields(|_, fields| {
+            SslVersion::from_bits(fields.protocols).contains(SslVersion::SW_SSL_DTLS)
+        })
+        .unwrap_or(false)
     }
 
     /// `verify_peer` with no client certificate file, cafile or capath.
@@ -272,16 +285,20 @@ impl PortConfig {
             .map_or(core::ptr::null_mut(), |socket| socket.as_ptr().cast())
     }
 
-    /// Make `socket` the port's listening socket, which the port frees as it closes.
-    pub fn set_listening_socket(&self, socket: Socket<'static>) {
-        self.socket.set(Some(socket));
+    /// Make `socket` the port's listening socket, which the port owns until
+    /// [`Self::take_socket`] gives it back.
+    pub fn set_listening_socket(&self, socket: swoole_rs_reactor::OwnedSocket) {
+        self.socket.set(Some(socket.leak()));
     }
 
-    /// The listening socket's record, or null, taken from the port so nothing finds it
+    /// The listening socket's owner, taken from the port so nothing finds the record
     /// once the caller frees it.
     #[must_use]
-    pub fn take_socket_ptr(&self) -> *mut swoole_rs_reactor::SocketRecord {
-        (self.socket.replace(None)).map_or(core::ptr::null_mut(), Socket::as_ptr)
+    pub fn take_socket(&self) -> Option<swoole_rs_reactor::OwnedSocket> {
+        let socket = self.socket.replace(None)?;
+        // SAFETY: only `set_listening_socket` stores a socket, an owner it leaked, and
+        // the port no longer names it: this is its only owner.
+        Some(unsafe { swoole_rs_reactor::OwnedSocket::from_socket(socket) })
     }
 
     /// The port's listening socket, or `None` before it has one or after it closes
@@ -327,7 +344,7 @@ impl PortConfig {
             kernel_socket_recv_buffer_size: Setting::new(0),
             kernel_socket_send_buffer_size: Setting::new(0),
             gs: Shared::new(core::ptr::null_mut()),
-            ptr: AtomicPtr::new(core::ptr::null_mut()),
+            property: std::cell::OnceCell::new(),
             websocket_frames: Setting::new(0),
             websocket_protocol: Published::default(),
             host: Box::default(),
@@ -362,8 +379,10 @@ impl PortConfig {
             reason = "a port kept past this owns the callable to the exit"
         )]
         std::mem::forget(self.length_owner.replace(None));
-        // SAFETY: the record of a port `destroy` never closed (a server never started),
-        // which nothing else holds. Its descriptor stays open to the exit, as upstream's.
-        unsafe { swoole_rs_reactor::SocketRecord::free(self.take_socket_ptr()) };
+        // The record of a port `destroy` never closed (a server never started). Its
+        // descriptor stays open to the exit, as upstream's.
+        if let Some(socket) = self.take_socket() {
+            socket.free();
+        }
     }
 }

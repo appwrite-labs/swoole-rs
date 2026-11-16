@@ -5,17 +5,23 @@
 #include "shim_runtime.h"
 #include "shim.h"
 
+/* The rows of `function`'s arginfo: the return row, one per argument and the
+ * variadic one. */
+static uint32_t swr_arginfo_rows(const zend_internal_function *function) {
+    return function->num_args + 1 + ((function->fn_flags & ZEND_ACC_VARIADIC) ? 1 : 0);
+}
+
 zend_internal_arg_info *swr_zend_runtime_copy_arginfo(const zend_internal_function *function,
-                                                      zend_internal_arg_info *arg_info_) {
-    uint32_t num_args = function->num_args + 1;
-    zend_internal_arg_info *arg_info = arg_info_ - 1;
-
-    zend_internal_arg_info *new_arg_info = pemalloc(sizeof(zend_internal_arg_info) * num_args, 1);
-    memcpy(new_arg_info, arg_info, sizeof(zend_internal_arg_info) * num_args);
-
-    if (function->fn_flags & ZEND_ACC_VARIADIC) {
-        num_args++;
+                                                      const zend_internal_function *from) {
+    uint32_t num_args = swr_arginfo_rows(function);
+    if (!from->arg_info || swr_arginfo_rows(from) < num_args) {
+        return NULL;
     }
+    zend_internal_arg_info *arg_info = from->arg_info - 1;
+
+    /* One more row, zeroed: its NULL name ends the copy for the free. */
+    zend_internal_arg_info *new_arg_info = pecalloc(num_args + 1, sizeof(zend_internal_arg_info), 1);
+    memcpy(new_arg_info, arg_info, sizeof(zend_internal_arg_info) * num_args);
 
     for (uint32_t i = 0; i < num_args; i++) {
         if (ZEND_TYPE_HAS_LIST(arg_info[i].type)) {
@@ -45,14 +51,11 @@ zend_internal_arg_info *swr_zend_runtime_copy_arginfo(const zend_internal_functi
     return new_arg_info + 1;
 }
 
-void swr_zend_runtime_free_arginfo(const zend_internal_function *function, zend_internal_arg_info *copy) {
+void swr_zend_runtime_free_arginfo(zend_internal_arg_info *copy) {
     zend_internal_arg_info *arg_info = copy - 1;
-    uint32_t num_args = function->num_args + 1;
-    if (function->fn_flags & ZEND_ACC_VARIADIC) {
-        num_args++;
-    }
-    for (uint32_t i = 0; i < num_args; i++) {
-        zend_type_release(arg_info[i].type, 1);
+    zend_type_release(arg_info->type, 1);
+    for (zend_internal_arg_info *row = copy; row->name; row++) {
+        zend_type_release(row->type, 1);
     }
     pefree(arg_info, 1);
 }
@@ -146,8 +149,8 @@ void *swr_zend_runtime_transport(struct iovec name) {
     return zend_hash_str_find_ptr(php_stream_xport_get_hash(), name.iov_base, name.iov_len);
 }
 
-int swr_zend_runtime_set_transport(const char *name, void *factory, bool remove) {
-    if (remove) {
+int swr_zend_runtime_set_transport(const char *name, void *factory) {
+    if (!factory) {
         return php_stream_xport_unregister(name);
     }
     return php_stream_xport_register(name, (php_stream_transport_factory) factory);

@@ -23,7 +23,7 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=build
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: ./.github/actions/install
         with:
           packages: clang libclang-rt-dev llvm
@@ -32,16 +32,16 @@ jobs:
       - name: Lower mmap randomization
         run: sudo sysctl vm.mmap_rnd_bits=28
       # Restored only: the pinned reference is rebuilt instrumented below, never saved.
-      - uses: actions/cache/restore@v6
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: target/tsan/php
           key: php-tsan-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', 'tools/tsan.py') }}-${{ github.workspace }}
       # Sanitized objects never hit the shared ccache (other flags), so this run keeps its own.
-      - uses: actions/cache/restore@v6
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: .ccache
           key: ccache-tsan-${{ runner.os }}-${{ github.sha }}
@@ -51,11 +51,11 @@ jobs:
       - name: Run TSan lanes
         run: python3 tools/tsan.py
       - if: always() && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: .ccache
           key: ccache-tsan-${{ runner.os }}-${{ github.sha }}
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}

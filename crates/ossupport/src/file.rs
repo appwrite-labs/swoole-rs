@@ -3,6 +3,7 @@
 //! function returns right after the failing call with its errno intact.
 use libc::{c_char, c_int, off_t};
 use std::ffi::CStr;
+use std::io;
 use std::marker::PhantomData;
 use std::os::fd::OwnedFd;
 use std::ptr::NonNull;
@@ -11,7 +12,6 @@ use swoole_rs_corebase::sys::{self, ReadSlot, errno};
 
 /// Bytes moved by a `File::read_all`/`write_all` loop, and whether it stopped on
 /// an error native must warn about (errno is still the failing call's).
-#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileIo {
     pub done: usize,
@@ -42,8 +42,10 @@ fn to_off(done: usize) -> off_t {
 }
 
 /// `File::open`: closes the open descriptor first; created files default to 0644.
-#[must_use]
-pub fn file_open(fd: c_int, path: &CStr, flags: c_int, mode: c_int) -> c_int {
+///
+/// # Errors
+/// `open(2)`'s, with errno set.
+pub fn file_open(fd: c_int, path: &CStr, flags: c_int, mode: c_int) -> io::Result<c_int> {
     if fd != -1 {
         // The caller's previous descriptor, released here as upstream does.
         _ = sys::close(fd);
@@ -124,32 +126,17 @@ pub fn read_all(fd: c_int, buf: &mut [impl ReadSlot]) -> FileIo {
     })
 }
 
-/// `file_get_size(fd)`: the size of a regular file, or the error to publish.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FileSize {
-    pub size: i64,
-    pub error: c_int,
-}
-
-#[must_use]
-pub fn file_size(fd: c_int) -> FileSize {
-    let Some(stat) = swoole_rs_corebase::sys::fstat(fd) else {
-        return FileSize {
-            size: -1,
-            error: errno(),
-        };
-    };
+/// `file_get_size(fd)`: the size of a regular file; `fstat`'s error, or `EISDIR` for
+/// anything else.
+///
+/// # Errors
+/// `fstat`'s errno, or `EISDIR` when `fd` is not a regular file.
+pub fn file_size(fd: c_int) -> std::io::Result<u64> {
+    let stat = swoole_rs_corebase::sys::fstat(fd).ok_or_else(std::io::Error::last_os_error)?;
     if stat.st_mode & libc::S_IFMT != libc::S_IFREG {
-        return FileSize {
-            size: -1,
-            error: libc::EISDIR,
-        };
+        return Err(std::io::Error::from_raw_os_error(libc::EISDIR));
     }
-    FileSize {
-        size: stat.st_size,
-        error: 0,
-    }
+    u64::try_from(stat.st_size).map_err(|_| std::io::Error::from_raw_os_error(libc::EOVERFLOW))
 }
 
 /// A platform sendfile result and whether the caller should log `sendfile failed`.
@@ -335,11 +322,7 @@ mod tests {
             (11, &b"HELLO world"[..]),
             "pwrite starts at zero"
         );
-        assert_eq!(
-            file_size(fd),
-            FileSize { size: 11, error: 0 },
-            "regular size"
-        );
+        assert_eq!(file_size(fd).ok(), Some(11), "regular size");
         let io = write_all(-1, true, b"x");
         assert_eq!(
             io,
@@ -359,20 +342,14 @@ mod tests {
     #[test]
     fn size_rejects_failures_and_non_regular_files() {
         assert_eq!(
-            file_size(-1),
-            FileSize {
-                size: -1,
-                error: libc::EBADF
-            },
+            file_size(-1).map_err(|e| e.raw_os_error()),
+            Err(Some(libc::EBADF)),
             "fstat errno"
         );
         let dir = std::fs::File::open(std::env::temp_dir()).unwrap_or_else(|e| unreachable!("{e}"));
         assert_eq!(
-            file_size(dir.as_raw_fd()),
-            FileSize {
-                size: -1,
-                error: libc::EISDIR
-            },
+            file_size(dir.as_raw_fd()).map_err(|e| e.raw_os_error()),
+            Err(Some(libc::EISDIR)),
             "non-regular files are EISDIR"
         );
     }
@@ -405,13 +382,13 @@ mod tests {
         let fd = tmpfile(&mut template).map_or(-1, std::os::fd::IntoRawFd::into_raw_fd);
         assert!(fd >= 0, "a temporary file");
         let path = std::ffi::CStr::from_bytes_until_nul(&template).unwrap_or_default();
-        let reopened = file_open(fd, path, libc::O_RDONLY, 0);
+        let reopened = file_open(fd, path, libc::O_RDONLY, 0).unwrap_or(-1);
         assert!(reopened >= 0, "reopened after closing the old descriptor");
         assert!(file_close(reopened), "closed");
         assert!(!file_close(-1), "nothing to close");
         let created =
             std::ffi::CString::new(format!("{}.new", path.to_string_lossy())).unwrap_or_default();
-        let fd = file_open(-1, &created, libc::O_WRONLY | libc::O_CREAT, 0);
+        let fd = file_open(-1, &created, libc::O_WRONLY | libc::O_CREAT, 0).unwrap_or(-1);
         let mode =
             std::fs::metadata(created.to_string_lossy().as_ref()).map(|m| m.permissions().mode());
         let reference = format!("{}.ref", path.to_string_lossy());

@@ -25,7 +25,7 @@ what configure finds on the target.
 | `swr_v1_locks_size(99) == 0`, `swr_v1_locks_init(nullptr, 3, 0) == EINVAL` | `unknown_kinds_and_missing_storage_are_refused` | `Kind::from_code(99)` is no kind, so no lock of it can be asked for; `Lock::shared` with no storage makes no lock |
 | `shared_barrier<swoole::Barrier>()`, and the pinned one where it is the word barrier | `shared_barrier` | unchanged (`barrier_init`, `barrier_wait`, `barrier_destroy`) |
 | `atomics()`: 20,000 rounds against the `__sync` builtins, four threads' 80,000 increments, a null word | `atomics` | unchanged (`swr_v1_locks_atomic32`, `swr_v1_locks_atomic64`) |
-| `wait_wake()`: the pinned futex wait and Rust's on Linux, the pinned registry elsewhere | `wait_and_wake` | unchanged (`swr_v1_locks_wait`, `swr_v1_locks_wakeup`) |
+| `wait_wake()`: the pinned futex wait and Rust's on Linux, the pinned registry elsewhere | `wait_and_wake` | `swr_v1_locks_wait`/`_wakeup` → `wait` (whether it took the token) and `wakeup` (the waiters woken, none on failure), mapped back to 0/-1 and the count |
 | `coroutine_policy()`: acquire, reentry, busy, wait, release twice, reentry over a zeroed word, the backoff sequence | `coroutine_policy` | `swr_v1_locks_coroutine_try`/`_release` → `CoroutineLock::acquire`/`unlock` over a host whose sleep is cancelled; acquired and reentrant are code 0, busy `EBUSY`, wait one sleep |
 
 Checks of the exports' own argument validation that have no safe form, because the

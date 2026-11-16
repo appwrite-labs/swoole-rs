@@ -38,7 +38,7 @@ const HEAD_LEN: usize = 16;
 const HEAD_SERVER_FD: usize = 24;
 const HEAD_EXT_FLAGS: usize = 26;
 /// `SW_TASK_TMPFILE`: the task's data is a `PacketTask` naming a temporary file.
-const TASK_TMPFILE: u16 = 1;
+const TASK_TMPFILE: u16 = swoole_rs_corebase::constants::TaskFlag::SW_TASK_TMPFILE.bits();
 /// `sizeof(PacketTask)`: its `size_t` length and `SW_TASK_TMP_PATH_SIZE` path.
 const PACKET_TASK: u32 = 8 + 256;
 /// `sizeof(long)`, `QueueNode::mtype`.
@@ -77,7 +77,7 @@ fn head_bytes<const N: usize>(out: &[u64], at: usize) -> [u8; N] {
 /// (null or a live native socket) and `data`, which holds `length` bytes.
 pub struct PoolCall<'a> {
     pub(crate) pool: crate::process_pool::PoolRef<'a>,
-    pub(crate) worker: *mut c_void,
+    pub(crate) worker: Option<Record<'a>>,
     pub(crate) socket: *mut c_void,
     pub(crate) data: *mut c_void,
     pub(crate) length: usize,
@@ -89,7 +89,7 @@ pub struct PoolCall<'a> {
 }
 
 impl<'a> PoolCall<'a> {
-    pub(crate) fn new(pool: crate::process_pool::PoolRef<'a>, worker: *mut c_void) -> Self {
+    pub(crate) fn new(pool: crate::process_pool::PoolRef<'a>, worker: Option<Record<'a>>) -> Self {
         Self {
             pool,
             worker,
@@ -110,16 +110,20 @@ impl<'a> PoolCall<'a> {
 
     /// The live worker, if the call has one.
     #[must_use]
-    pub fn worker(&self) -> Option<Record<'_>> {
-        // SAFETY: only this crate makes a call, over null or one of its pool's live
-        // workers, whose owner orders the writes made through the handle.
-        unsafe { Record::from_raw(self.worker.cast()) }
+    pub fn worker(&self) -> Option<Record<'a>> {
+        self.worker
     }
 
     /// The live native socket the hook works on, or null.
     #[must_use]
     pub fn socket(&self) -> *mut c_void {
         self.socket
+    }
+
+    /// [`PoolCall::socket`], lent for this borrow of the call; `None` without one.
+    #[must_use]
+    pub fn lent_socket(&self) -> Option<crate::worker_record::NativeSocket<'_>> {
+        crate::worker_record::NativeSocket::lend(self.socket)
     }
 
     /// The buffer of [`PoolCall::length`] bytes the hook reads or fills.
@@ -145,6 +149,21 @@ impl<'a> PoolCall<'a> {
         // least `length` initialized bytes (a zeroed receive buffer, or the bytes a
         // send lends) that outlives the hook, and so this borrow of its call.
         unsafe { std::slice::from_raw_parts(self.data.cast(), self.length) }
+    }
+
+    /// [`PoolCall::lent_socket`] and the [`PoolCall::length`] bytes at
+    /// [`PoolCall::data`], lent to a read that fills them, for this borrow of the call.
+    pub fn socket_fill(
+        &mut self,
+    ) -> (
+        Option<crate::worker_record::NativeSocket<'_>>,
+        swoole_rs_corebase::lent::Fill<'_>,
+    ) {
+        // SAFETY: only this crate makes a call: `data` is null or a buffer of at least
+        // `length` writable bytes that outlives the hook, which nothing else reaches
+        // while this borrow of its call lasts.
+        let fill = unsafe { swoole_rs_corebase::lent::Fill::from_raw(self.data, self.length) };
+        (crate::worker_record::NativeSocket::lend(self.socket), fill)
     }
 
     #[must_use]
@@ -231,23 +250,19 @@ pub(crate) fn trapped<R, F: FnOnce() -> R>(body: F) -> Result<R, Bailed> {
 /// One worker's loop over its pool.
 struct Worker<'a> {
     native: &'a dyn PoolNative,
-    /// Borrowed per use: the worker's callbacks reach the same handle, as
-    /// `swr_v1_process_pool_ipc_respond` does.
-    ipc: *mut PoolIpc,
     pool: crate::process_pool::PoolRef<'a>,
-    worker: *mut c_void,
+    worker: Record<'a>,
 }
 
 impl<'a> Worker<'a> {
-    const fn ipc(&mut self) -> &mut PoolIpc {
-        // SAFETY: `pool_run` found its live pool's IPC state there, not null: the
-        // field is crate-private, written by `create` and cleared by `destroy`, which
-        // no loop reaches. Borrowed until the next callback at most.
-        unsafe { &mut *self.ipc }
+    /// `f` over the pool's IPC state, borrowed per use: the worker's callbacks reach
+    /// it too, as `swr_v1_process_pool_ipc_respond` does. `None` without one.
+    fn with_ipc<R>(&self, f: impl FnOnce(&mut PoolIpc) -> R) -> Option<R> {
+        self.pool.record().with_ipc(f)
     }
 
     fn call(&self) -> PoolCall<'a> {
-        PoolCall::new(self.pool, self.worker)
+        PoolCall::new(self.pool, Some(self.worker))
     }
 
     fn running(&self) -> bool {
@@ -342,22 +357,49 @@ impl<'a> Worker<'a> {
         Ok(if n == size.cast_signed() { n } else { -1 })
     }
 
-    fn connection(&mut self) -> Option<&mut Stream> {
-        self.ipc()
-            .stream
-            .as_mut()
-            .filter(|stream| !stream.connection.is_null())
+    /// Whether a stream connection is being served.
+    fn connected(&self) -> bool {
+        self.with_ipc(|ipc| !pool_ipc_connection(ipc).is_null()) == Some(true)
     }
 
-    fn set_connection(&mut self, socket: *mut c_void) {
-        if let Some(stream) = self.ipc().stream.as_mut() {
-            stream.connection = socket;
-        }
+    fn set_connection(&self, socket: *mut c_void) {
+        self.with_ipc(|ipc| {
+            if let Some(stream) = ipc.stream.as_mut() {
+                stream.connection = socket;
+            }
+        });
+    }
+
+    /// The connection being served, which the stream forgets; `None` without one.
+    fn take_connection(&self) -> Option<*mut c_void> {
+        self.with_ipc(|ipc| {
+            let stream = ipc.stream.as_mut()?;
+            let socket = std::mem::replace(&mut stream.connection, ptr::null_mut());
+            (!socket.is_null()).then_some(socket)
+        })?
+    }
+
+    /// The reply written to the connection, taken.
+    fn take_response(&self) -> Vec<u8> {
+        self.with_ipc(|ipc| ipc.stream.as_mut()?.response.as_mut().map(std::mem::take))
+            .flatten()
+            .unwrap_or_default()
+    }
+
+    /// Give the reply's buffer back, emptied but keeping its capacity, as
+    /// `String::clear` does.
+    fn restore_response(&self, mut response: Vec<u8>) {
+        response.clear();
+        self.with_ipc(|ipc| {
+            if let Some(stream) = ipc.stream.as_mut() {
+                stream.response = Some(response);
+            }
+        });
     }
 
     /// `SW_PROTOCOL_TASK`: one `EventData` per message.
     fn run_task(
-        &mut self,
+        &self,
         mode: Mode,
         event_size: usize,
         by_sysvmsg: bool,
@@ -435,7 +477,7 @@ impl<'a> Worker<'a> {
                 let size = HEAD as u64 + u64::from(length);
                 let tmpfile =
                     u16::from_ne_bytes(head_bytes(&out, HEAD_EXT_FLAGS)) & TASK_TMPFILE != 0;
-                let alone = self.connection().is_none();
+                let alone = !self.connected();
                 if n.c_cast::<u64>() != size || (tmpfile && length != PACKET_TASK) {
                     // No task runs; a connection is still answered.
                     self.warn(
@@ -465,8 +507,7 @@ impl<'a> Worker<'a> {
                         continue;
                     }
                 }
-                if let Some(stream) = self.connection() {
-                    let socket = std::mem::replace(&mut stream.connection, ptr::null_mut());
+                if let Some(socket) = self.take_connection() {
                     self.send(socket, &0i32.to_ne_bytes())?;
                     self.close(socket);
                 }
@@ -477,26 +518,33 @@ impl<'a> Worker<'a> {
     }
 
     /// `SW_PROTOCOL_STREAM`: raw messages, length-prefixed over the stream socket.
-    fn run_stream(&mut self, mode: Mode, max_packet_size: u32) -> Result<(), Bailed> {
+    fn run_stream(&self, mode: Mode, max_packet_size: u32) -> Result<(), Bailed> {
         // A zeroed buffer: the `QueueNode` mtype is 0.
-        let packet = self.ipc().prepare(max_packet_size);
+        let Some(packet) = self.with_ipc(|ipc| ipc.prepare(max_packet_size)) else {
+            return Ok(());
+        };
 
         while self.running() {
             let (data, n) = match mode {
                 Mode::Queue => {
                     let call = self.call();
-                    let node = &mut self.ipc().packet;
-                    let (n, error) = trapped(|| call.pool().queue_pop(node, MSGMAX))?;
+                    let popped = self
+                        .with_ipc(|ipc| trapped(|| call.pool().queue_pop(&mut ipc.packet, MSGMAX)));
+                    let Some((n, error)) = popped.transpose()? else {
+                        break;
+                    };
                     if n < 0 && fatal(error) {
                         self.warn(Warning::Msgrcv, error);
                         break;
                     }
-                    let node = &mut self.ipc().packet;
-                    if let Some(mtype) = node.first_mut() {
-                        *mtype = 0;
-                    }
-                    // The receive borrowed the packet: its payload's address again.
-                    (node.as_mut_ptr().cast::<u8>().wrapping_add(MTYPE), n)
+                    let payload = self.with_ipc(|ipc| {
+                        if let Some(mtype) = ipc.packet.first_mut() {
+                            *mtype = 0;
+                        }
+                        // The receive borrowed the packet: its payload's address again.
+                        ipc.packet.as_mut_ptr().cast::<u8>().wrapping_add(MTYPE)
+                    });
+                    (payload.unwrap_or(packet), n)
                 }
                 Mode::Socket => {
                     let socket = match self.accept()? {
@@ -549,24 +597,14 @@ impl<'a> Worker<'a> {
                     length,
                     0,
                 )?;
-                if let Some(stream) = self.connection() {
-                    let socket = std::mem::replace(&mut stream.connection, ptr::null_mut());
-                    let response = stream
-                        .response
-                        .as_mut()
-                        .map(std::mem::take)
-                        .unwrap_or_default();
+                if let Some(socket) = self.take_connection() {
+                    let response = self.take_response();
                     if !response.is_empty() {
                         let head = response.len().c_cast::<u32>().to_be_bytes();
                         self.send(socket, &head)?;
                         self.send(socket, &response)?;
                     }
-                    if let Some(stream) = self.ipc().stream.as_mut() {
-                        // Keep the buffer's capacity, as `String::clear` does.
-                        let mut response = response;
-                        response.clear();
-                        stream.response = Some(response);
-                    }
+                    self.restore_response(response);
                     self.close(socket);
                 }
             }
@@ -576,7 +614,7 @@ impl<'a> Worker<'a> {
     }
 
     /// `SW_PROTOCOL_MESSAGE`: the message bus over the worker's pipe.
-    fn run_message(&mut self) -> Result<(), Bailed> {
+    fn run_message(&self) -> Result<(), Bailed> {
         while self.running() {
             match self.receive_message()? {
                 Received::Continue | Received::Ready => self.end()?,
@@ -778,8 +816,8 @@ pub(crate) fn swr_v1_process_pool_ipc_set_listener(ipc: &mut PoolIpc, socket: *m
 }
 
 /// The stream listener, or null.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_process_pool_ipc_listener(ipc: &PoolIpc) -> *mut c_void {
+#[must_use]
+pub fn swr_v1_process_pool_ipc_listener(ipc: &PoolIpc) -> *mut c_void {
     ipc.stream
         .as_ref()
         .map_or(ptr::null_mut(), |stream| stream.socket)
@@ -863,15 +901,13 @@ pub fn pool_run(
     pool_loop: &PoolLoop<'_>,
     protocol: Protocol,
 ) -> Result<(), Bailed> {
-    let ipc = pool_loop.pool.record().ipc;
-    if ipc.is_null() {
+    if pool_loop.pool.ipc().is_null() {
         return Ok(());
     }
-    let mut worker = Worker {
+    let worker = Worker {
         native,
-        ipc,
         pool: pool_loop.pool,
-        worker: pool_loop.worker.raw().cast(),
+        worker: pool_loop.worker,
     };
     let mode = mode(pool_loop.ipc_mode);
     match protocol {
@@ -918,7 +954,7 @@ pub(crate) fn swr_v1_process_worker_send(
     flags: c_int,
 ) -> Option<usize> {
     let length = data.len();
-    let mut call = PoolCall::new(pool, ptr::null_mut());
+    let mut call = PoolCall::new(pool, None);
     if queue {
         // `mtype`, then `data` in native-endian words, zero-padded.
         let message: Vec<u64> = std::iter::once(u64::from(worker_id) + 1)
@@ -969,7 +1005,7 @@ pub(crate) fn pool_dispatch<'a>(
     // The worker's id, as upstream's `*dst_worker_id += start_id` leaves it.
     let target = i64::from(index) + i64::from(start_id);
     let Some(worker) = workers(index as usize) else {
-        let call = PoolCall::new(pool, ptr::null_mut());
+        let call = PoolCall::new(pool, None);
         native.warn(
             &call,
             Warning::Send {
@@ -982,7 +1018,7 @@ pub(crate) fn pool_dispatch<'a>(
     let (id, pipe) = (worker.id(), worker.pipe_master());
     let flags = PIPE_MASTER | if blocking { 0 } else { PIPE_NONBLOCK };
     if swr_v1_process_worker_send(native, pool, pipe, queue, id, event, flags).is_none() {
-        let call = PoolCall::new(pool, ptr::null_mut());
+        let call = PoolCall::new(pool, None);
         native.warn(
             &call,
             Warning::Send {
@@ -1089,6 +1125,7 @@ mod tests {
     #[derive(Default)]
     struct Script {
         rounds: u32,
+        ops: Vec<(crate::process_pool::Op, u64)>,
         accepts: Vec<usize>,
         recvs: Vec<Vec<u8>>,
         reads: Vec<(Vec<u8>, c_int)>,
@@ -1132,17 +1169,23 @@ mod tests {
     }
 
     /// The scripted hooks, over the thread's [`Script`].
-    struct Scripted;
+    pub(super) struct Scripted;
+
+    pub(super) fn take_ops() -> Vec<(crate::process_pool::Op, u64)> {
+        with(|script| std::mem::take(&mut script.ops))
+    }
 
     impl PoolNative for Scripted {
-        fn call(&self, _: &PoolCall, _: crate::process_pool::Op, _: u64) {}
+        fn call(&self, _: &PoolCall, op: crate::process_pool::Op, arg: u64) {
+            with(|script| script.ops.push((op, arg)));
+        }
         fn event_init(&self, _: &PoolCall) -> bool {
             unreachable!("loop-only fixture")
         }
         fn event_available(&self) -> bool {
             unreachable!("loop-only fixture")
         }
-        fn event_wait(&self) -> c_int {
+        fn event_wait(&self) -> bool {
             unreachable!("loop-only fixture")
         }
         fn waitpid(&self, _: c_int) -> bool {
@@ -1261,8 +1304,8 @@ mod tests {
             *s = script;
             s.ipc = ipc as usize;
         });
-        let mut pool = crate::process_pool::PoolRecord::empty();
-        pool.ipc = ipc;
+        let pool = crate::process_pool::PoolRecord::empty();
+        pool.ipc.set(ipc);
         let pool = std::cell::UnsafeCell::new(pool);
         let mut worker = crate::worker_record::WorkerRecord::empty();
         let pool_loop = PoolLoop {
@@ -1415,3 +1458,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/modules/process/native_methods.rs"]
+mod native_methods_tests;

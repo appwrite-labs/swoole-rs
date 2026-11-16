@@ -6,11 +6,11 @@ use crate::reactor_ops::ThreadRecord;
 use crate::records::{ConnectionRecord, ServerTables, SessionRecord};
 use crate::{Mode, ServerConfig};
 use crate::{ServerState, view};
-use core::ffi::{c_int, c_void};
+use core::ffi::c_int;
 use core::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
+use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_process::worker_record::WorkerRecord;
@@ -61,7 +61,7 @@ fn address(info: &SocketAddress) -> String {
 
 /// `Address::get_port()`.
 fn port(info: &SocketAddress) -> i64 {
-    swr_v1_clients_address_port(info).into()
+    address_port(info).into()
 }
 
 /// `Socket::get_out_buffer_length()`.
@@ -85,18 +85,10 @@ fn socket(s: &SocketFields) -> Socket {
 }
 
 /// The collected item `index`; `run` asks only below the count it was given.
-fn nth<T>(items: &[*mut T], index: u64) -> *mut T {
+fn nth<T: Copy>(items: &[T], index: u64) -> T {
     let item = usize::try_from(index).ok().and_then(|i| items.get(i));
     item.copied()
         .unwrap_or_else(|| swoole_rs_corebase::fatal("an admin command index past its items"))
-}
-
-/// A live socket of the server's.
-fn live<'a>(socket: *mut c_void) -> Handle<'a> {
-    // SAFETY: sockets the server, its pools and its reactor hold are live while
-    // a command runs.
-    unsafe { Handle::from_ptr(socket.cast()) }
-        .unwrap_or_else(|| swoole_rs_corebase::fatal("an admin command on a dead socket"))
 }
 
 struct Live<'a> {
@@ -104,7 +96,7 @@ struct Live<'a> {
     state: &'a ServerState,
     config: &'a ServerConfig,
     tables: &'a ServerTables,
-    sockets: Vec<*mut c_void>,
+    sockets: Vec<Handle<'static>>,
     connections: Vec<crate::Connection<'a>>,
 }
 
@@ -171,11 +163,11 @@ impl Facts for Live<'_> {
     }
 
     fn socket(&mut self, index: u64) -> Socket {
-        live(nth(&self.sockets, index)).read(socket)
+        nth(&self.sockets, index).read(socket)
     }
 
     fn socket_name(&mut self, index: u64) {
-        live(nth(&self.sockets, index)).edit(SocketFields::get_name);
+        nth(&self.sockets, index).edit(SocketFields::get_name);
     }
 
     fn commands(&mut self) -> Vec<Command> {
@@ -292,16 +284,10 @@ impl Facts for Live<'_> {
         let workers = u64::from(config.worker_num.get()) + u64::from(config.task_worker_num.get());
         let workers = workers + user_workers as u64;
         let global = swoole_rs_memory::members::pool::memory_size();
-        let buffer = swoole_rs_corebase::thread_buffer();
-        let buffer = buffer.cast::<swoole_rs_buffer::string::CppString>();
-        // SAFETY: null, or this thread's live buffer.
         let thread_buffer =
-            unsafe { buffer.as_ref() }.map_or(0, swoole_rs_buffer::string::CppString::size);
+            swoole_rs_buffer::string::try_with_thread_buffer(|buffer| buffer.size()).unwrap_or(0);
         let sockets = swoole_rs_reactor::event_api::swoole_event_sockets();
-        let out_buffers = sockets
-            .iter()
-            .map(|&s| live(s).read(out_buffer_length))
-            .sum();
+        let out_buffers = sockets.iter().map(|s| s.read(out_buffer_length)).sum();
         let php = PHP_MEMORY.get().map_or(0, |usage| usage());
         // The server's own records stand for upstream's `sizeof(Server)`.
         let server =

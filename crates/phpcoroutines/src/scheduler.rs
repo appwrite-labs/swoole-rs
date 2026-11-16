@@ -191,7 +191,7 @@ fn start(call: &Call) {
     while let Some(task) = next() {
         for _ in 0..task.count {
             let (fcc, argc, argv, name) = task.callable.parts();
-            if runtime::create(call.php(), fcc, argc, argv, name).is_err() {
+            if runtime::create(call.php(), Some(fcc), argc, argv, name).is_err() {
                 runtime::raise();
                 return;
             }
@@ -353,7 +353,7 @@ pub fn install_exit_condition() {
 
 /// The reactor's user exit condition: whether it may exit. A bailout is raised
 /// from here, as upstream's lambda raised it.
-pub(crate) extern "C-unwind" fn reactor_can_exit(_event_num: &mut usize) -> bool {
+pub(crate) fn reactor_can_exit(_event_num: &mut usize) -> bool {
     match can_exit() {
         Ok(exit) => exit,
         Err(error) => {

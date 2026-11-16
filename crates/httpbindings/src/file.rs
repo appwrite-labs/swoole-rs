@@ -1,40 +1,43 @@
 //! File response range validation.
-/// Preserve all defined signed native range comparisons. Rejected subtraction
-/// overflow has no defined native reference result; never perform it in Rust.
-#[must_use]
-pub fn swr_v1_httpbindings_file_range(
-    size: i64,
-    offset: i64,
-    length: i64,
-    resolved: Option<&mut i64>,
-) -> i32 {
-    let Some(resolved) = resolved else {
-        return -1;
-    };
+/// Why a file response's range is refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RangeError {
+    /// The offset is past the file's end.
+    OffsetPastEnd,
+    /// The offset is so far below zero that the bytes after it overflow.
+    OffsetOverflow,
+    /// More bytes are asked for than follow the offset.
+    LengthPastEnd,
+}
+
+/// The bytes a file response of `length` at `offset` sends from a file of `size`: all
+/// that follow the offset when `length` is zero. Preserves every defined signed native
+/// range comparison; the subtraction never overflows.
+///
+/// # Errors
+/// The range does not fit the file.
+pub fn file_range(size: i64, offset: i64, length: i64) -> Result<i64, RangeError> {
     if size < offset {
-        return 1;
+        return Err(RangeError::OffsetPastEnd);
     }
-    let Some(remaining) = size.checked_sub(offset) else {
-        return 3;
-    };
+    let remaining = size.checked_sub(offset).ok_or(RangeError::OffsetOverflow)?;
     if length > remaining {
-        return 2;
+        return Err(RangeError::LengthPastEnd);
     }
-    *resolved = if length == 0 { remaining } else { length };
-    0
+    Ok(if length == 0 { remaining } else { length })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn invalid_ranges_and_cursors_do_not_publish_a_result() {
-        let mut value = 91;
+    fn invalid_ranges_are_refused() {
         assert_eq!(
-            swr_v1_httpbindings_file_range(i64::MAX, i64::MIN, 0, Some(&mut value)),
-            3
+            file_range(i64::MAX, i64::MIN, 0),
+            Err(RangeError::OffsetOverflow)
         );
-        assert_eq!(value, 91);
-        assert_eq!(swr_v1_httpbindings_file_range(0, 0, 0, None), -1);
+        assert_eq!(file_range(1, 2, 0), Err(RangeError::OffsetPastEnd));
+        assert_eq!(file_range(4, 1, 4), Err(RangeError::LengthPastEnd));
+        assert_eq!(file_range(4, 1, 0), Ok(3));
     }
 }

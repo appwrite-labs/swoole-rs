@@ -327,15 +327,19 @@ struct Server(Box<Head>);
 
 impl Server {
     fn new(config: &Config) -> Self {
-        let state = Box::into_raw(Box::new(ServerState::new()));
         let server_config = ServerConfig {
             http_autoindex: crate::config::Setting::new(config.autoindex),
             timezone_: config.timezone,
             ..ServerConfig::default()
         };
+        let state = Box::into_raw(Box::new(ServerState::with(
+            server_config,
+            crate::records::ServerTables::default(),
+        )));
         let server = Self(Box::new(Head {
             state,
-            config: Box::into_raw(Box::new(server_config)),
+            // SAFETY: the state boxed above, live with the server.
+            config: unsafe { &*state }.config(),
         }));
         // SAFETY: the state boxed above, live with the server.
         unsafe { &*state }.set_text(crate::ServerText::DocumentRoot, b"/root");
@@ -384,10 +388,8 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        // SAFETY: each allocated in `new`, freed once.
+        // SAFETY: allocated in `new`, freed once; it owns the config too.
         unsafe { drop(Box::from_raw(self.0.state)) };
-        // SAFETY: as above.
-        unsafe { drop(Box::from_raw(self.0.config)) };
     }
 }
 

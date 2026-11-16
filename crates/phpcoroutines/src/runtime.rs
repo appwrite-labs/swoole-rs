@@ -16,14 +16,11 @@ use std::{
     time::Duration,
 };
 use swoole_rs_zend::{
-    E_ERROR, E_WARNING, Php, Zvals,
+    E_ERROR, E_WARNING, Fcc, Function, Php, Zvals,
     bailout::{self, Bailout},
-    host::{Creator, NO_THEN, function_call},
+    host::{Creator, NO_THEN, Trap, function_call},
     message,
-    sys::{
-        swr_zend_interrupt_handler, zend_atomic_bool, zend_execute_data, zend_fcall_info_cache,
-        zval,
-    },
+    sys::{zend_atomic_bool, zend_execute_data, zval},
 };
 
 /// `SW_DEFAULT_MAX_CORO_NUM`.
@@ -61,21 +58,31 @@ per_thread! {
     static INTERRUPT: Cell<Option<Interrupt>> = Cell::new(None);
 }
 
+/// The frame Zend passes its interrupt function (`zend_interrupt_function`).
+/// Rust never makes one: it is the handlers' parameter, which Zend's call
+/// stands for, and it only passes it on.
+#[repr(transparent)]
+struct Interrupted(*mut zend_execute_data);
+
+/// `zend_interrupt_function`: [`interrupt_function`] or the one Zend ran before
+/// it, each taking the frame Zend passes.
+type Handler = Option<extern "C" fn(Interrupted)>;
+
 /// How many threads' runtimes are active, and the interrupt function Zend ran
 /// before the first of them. `zend_interrupt_function` is process-global: the
 /// first activation installs ours and the last deactivation restores Zend's,
 /// so no thread saves another's hook as the original or removes it under one
 /// still running.
-static INTERRUPT_HOOK: Mutex<(usize, swr_zend_interrupt_handler)> = Mutex::new((0, None));
+static INTERRUPT_HOOK: Mutex<(usize, Handler)> = Mutex::new((0, None));
 
-fn interrupt_hook() -> std::sync::MutexGuard<'static, (usize, swr_zend_interrupt_handler)> {
+fn interrupt_hook() -> std::sync::MutexGuard<'static, (usize, Handler)> {
     INTERRUPT_HOOK
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The interrupt function Zend ran before activation.
-fn original_interrupt() -> swr_zend_interrupt_handler {
+fn original_interrupt() -> Handler {
     interrupt_hook().1
 }
 
@@ -85,14 +92,12 @@ fn hold_interrupt(hold: bool) {
     unsafe extern "C" {
         /// `zend_interrupt_function = handler`, returning the one before: only
         /// [`interrupt_function`] or the handler Zend ran before it are passed.
-        safe fn swr_zend_coroutine_set_interrupt(
-            handler: swr_zend_interrupt_handler,
-        ) -> swr_zend_interrupt_handler;
+        safe fn swr_zend_coroutine_set_interrupt(handler: Handler) -> Handler;
     }
     let mut hook = interrupt_hook();
     let (count, original) = &mut *hook;
     if *count <= usize::from(!hold) {
-        let ours: swr_zend_interrupt_handler = Some(interrupt_function);
+        let ours: Handler = Some(interrupt_function);
         // Zend's interrupt function becomes ours, or again the one it ran before,
         // which only this keeps.
         let previous = swr_zend_coroutine_set_interrupt(if hold { ours } else { *original });
@@ -127,7 +132,7 @@ pub fn get_cid() -> c_long {
 /// owns nothing to drop.
 pub(crate) fn create(
     php: Php<'_>,
-    fcc: *mut zend_fcall_info_cache,
+    fcc: Option<Fcc<'_>>,
     argc: u32,
     argv: *mut zval,
     callable: *mut zval,
@@ -140,30 +145,27 @@ pub(crate) fn create(
         );
         return Ok(ERR_LIMIT);
     }
-    // SAFETY: null or a resolved callable.
-    let Some(fcc) = (unsafe { fcc.as_ref() }).filter(|fcc| !fcc.function_handler.is_null()) else {
+    let Some((fcc, function)) = fcc.and_then(|fcc| Some((fcc, fcc.function()?))) else {
         host::fatal_error(E_ERROR, c"invalid function call info cache");
         return Ok(ERR_INVALID);
     };
-    let handler = fcc.function_handler;
-    // SAFETY: a resolved callable's handler; every zend_function starts with
-    // its type, a byte.
-    let kind = unsafe { handler.cast::<u8>().read() };
-    if kind != context::USER_FUNCTION && kind != context::INTERNAL_FUNCTION {
+    let kind = function.kind();
+    if kind != Function::USER && kind != Function::INTERNAL {
         host::fatal_error(E_ERROR, message!("invalid function type {kind}").as_cstr());
         return Ok(ERR_INVALID);
     }
     if !activated() {
         activate(php)?;
     }
-    let mut args = Args {
-        fcc,
+    let args = Args {
+        fcc: *fcc.get(),
+        // A user function's first instruction, for a fiber's switch notification.
+        opcodes: function.opcodes().filter(|_| kind == Function::USER),
         argv,
         argc,
         callable,
     };
-    context::save_current();
-    let cid = host::create((&raw mut args).cast());
+    let cid = host::create(args);
     bailout::trapped(0)?;
     Ok(cid)
 }
@@ -182,7 +184,7 @@ fn activate(php: Php<'_>) -> Result<(), Bailout> {
         let flags = CONFIG.with(|c| c.hook_flags.get());
         host::hook(flags);
     }
-    host::attach(context::on_yield, context::on_resume, context::on_close);
+    host::attach(context::on_yield, context::on_resume);
     ACTIVATED.with(|a| a.set(true));
     Ok(())
 }
@@ -238,7 +240,7 @@ pub(crate) fn shutdown() -> bool {
 
 /// `coro_interrupt_function`: yield a coroutine that ran past its slice,
 /// then run the interrupt function Zend had.
-unsafe extern "C" fn interrupt_function(execute_data: *mut zend_execute_data) {
+extern "C" fn interrupt_function(frame: Interrupted) {
     let task = context::current();
     let (co, enabled, last) = (task.co(), task.enable_scheduler(), task.last_msec());
     if let Some(co) = co
@@ -250,10 +252,8 @@ unsafe extern "C" fn interrupt_function(execute_data: *mut zend_execute_data) {
         host::yield_(co);
     }
     if let Some(original) = original_interrupt() {
-        let body = || {
-            // SAFETY: Zend's previous interrupt function, over the frame Zend passed.
-            unsafe { original(execute_data) };
-        };
+        // Zend's previous interrupt function, over the frame Zend passed.
+        let body = || original(frame);
         // The closure owns nothing; a bailout in it is re-raised below.
         if swoole_rs_zend::contain_with(body).is_err() {
             raise();
@@ -350,28 +350,23 @@ pub(crate) fn set_preemptive(enable: bool) {
 }
 
 /// `PHPCoroutine::create`, the coroutine leaf the callers of
-/// `swoole_rs_zend::host::function_call` and the zend-sys shims pass (C ABI).
-/// # Safety
-/// As `zend_call_function`'s callable, on the thread that runs PHP; `bailout`
-/// is writable.
-pub unsafe extern "C" fn create_coroutine(
-    fcc: *mut zend_fcall_info_cache,
+/// `swoole_rs_zend::host::function_call` and the zend-sys shims pass (C ABI):
+/// only a shim makes its [`Trap`], so only a shim calls it, with the call's
+/// cache and arguments.
+pub extern "C" fn create_coroutine(
+    fcc: Option<Fcc<'_>>,
     argc: u32,
     argv: *mut zval,
     callable: *mut zval,
-    bailout: *mut u8,
+    mut trap: Trap<'_>,
 ) -> c_long {
-    // SAFETY: per the caller, for this call.
-    let php = unsafe { Php::assume() };
-    let created = create(php, fcc, argc, argv, callable);
-    // SAFETY: per the caller.
-    unsafe { bailout.write(u8::from(created.is_err())) };
+    let created = create(trap.php(), fcc, argc, argv, callable);
+    trap.set(created.is_err());
     created.unwrap_or(ERR_INVALID)
 }
 
 /// [`create_coroutine`], the leaf of every coroutine call.
-// SAFETY: `create_coroutine` is that leaf: it writes only its last argument.
-pub const CREATOR: Creator = unsafe { Creator::new(create_coroutine) };
+pub const CREATOR: Creator = Creator::new(create_coroutine);
 
 /// `zend::function::call(&fcc, argc, argv, nullptr, coroutine)` of a kept
 /// callable with its bound arguments: whether it ran, warning as

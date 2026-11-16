@@ -74,3 +74,8 @@ TLS, thread and custom dispatch are outside the synchronous prequeue fix. Mac's
 original `bad_client` warning discrepancy and the expired-client `verify_02`
 FAILED/WARNED result are unresolved; the latter is a terminal EPIPE alert write.
 See [expired-peer.md](../../../native/halfclose/expired-peer.md).
+
+TLS shutdown policy returns `Result<bool, ShutdownError>` to its Rust caller.
+A warning captures the oldest queued OpenSSL error once; formatting uses that
+captured reason after publishing the closed state. The socket shutdown tests cover
+both legacy and repaired modes, and retain the reason after the queue is cleared.

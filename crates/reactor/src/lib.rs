@@ -46,7 +46,7 @@ mod deferred;
 pub use deferred::*;
 
 mod socket;
-pub use socket::Socket;
+pub use socket::{OwnedSocket, Socket};
 
 mod callbacks;
 pub use callbacks::*;
@@ -77,7 +77,7 @@ pub use socket_io::*;
 #[cfg(unix)]
 mod lent;
 #[cfg(unix)]
-pub use lent::{Drain, Fill};
+pub use swoole_rs_corebase::lent::{Drain, Fill};
 #[cfg(unix)]
 mod socket_rw;
 #[cfg(unix)]
@@ -108,6 +108,9 @@ pub mod signal_upstream;
 pub mod socket_upstream;
 #[cfg(all(unix, feature = "upstream-symbols"))]
 pub mod wait_upstream;
+
+#[cfg(all(unix, feature = "upstream-symbols"))]
+pub mod host;
 
 mod iov_progress;
 pub use iov_progress::*;

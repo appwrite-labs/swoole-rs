@@ -67,7 +67,7 @@ trait Raw {
     unsafe fn set_value(&self, row: *mut Row, column: &Column, value: *const u8, length: usize);
 }
 
-impl Raw for Table {
+impl Raw for Handle {
     unsafe fn clear_row(&self, row: *mut Row) {
         for column in self.columns() {
             clear(unsafe { data(row, column) }, column);
@@ -91,7 +91,7 @@ impl Raw for Table {
             column,
             value,
             Live(row),
-            self.warning,
+            self.table.warning,
         );
     }
 }
@@ -111,6 +111,7 @@ fn collide(_: &[u8], _: usize) -> u64 {
 /// same) and whose arena is a mapping.
 struct Owned {
     table: *mut Table,
+    handle: Handle,
     arena: *mut std::ffi::c_void,
     arena_len: usize,
 }
@@ -133,17 +134,18 @@ impl Owned {
         );
         Owned {
             table,
+            handle: Handle::new(unsafe { &mut *table }),
             arena: ptr::null_mut(),
             arena_len: 0,
         }
     }
 
-    fn get(&self) -> &Table {
-        unsafe { &*self.table }
+    fn get(&self) -> &Handle {
+        &self.handle
     }
 
-    fn get_mut(&mut self) -> &mut Table {
-        unsafe { &mut *self.table }
+    fn get_mut(&mut self) -> &mut Handle {
+        &mut self.handle
     }
 
     fn create(&mut self) -> bool {
@@ -153,7 +155,7 @@ impl Owned {
         }
         let mut arena = crate::members::Shm::malloc(size);
         let payload = arena.as_ptr();
-        let created = unsafe { (*self.table).create(&mut arena) };
+        let created = self.handle.create(&mut arena);
         if created {
             self.arena = payload;
             self.arena_len = size;
@@ -166,14 +168,12 @@ impl Owned {
 impl Drop for Owned {
     fn drop(&mut self) {
         let created = self.get().ready();
-        let arena = unsafe { (*self.table).destroy() };
+        let mut arena = self.handle.destroy();
         assert_eq!(!arena.is_null(), created);
-        assert!(arena.is_null() || arena == self.arena.cast());
+        assert!(arena.is_null() || arena.as_ptr() == self.arena);
         // Other processes sharing the header see the table destroyed.
         assert!(!self.get().ready());
-        if !arena.is_null() {
-            unsafe { crate::members::sw_shm_free(arena.cast()) };
-        }
+        arena.free();
         unsafe { dealloc(self.table.cast(), Alloc::new::<Table>()) };
     }
 }
@@ -187,7 +187,7 @@ fn three_columns(rows: u32, conflict: f32) -> Owned {
     table
 }
 
-fn put(table: &Table, key: &[u8], id: i64) -> i32 {
+fn put(table: &Handle, key: &[u8], id: i64) -> i32 {
     let (mut lock, mut flags) = (ptr::null_mut(), -1);
     let row = table.set(key, &mut lock, Some(&mut flags));
     assert!(!row.is_null() && !lock.is_null());
@@ -199,7 +199,7 @@ fn put(table: &Table, key: &[u8], id: i64) -> i32 {
     flags
 }
 
-fn read(table: &Table, key: &[u8]) -> Option<i64> {
+fn read(table: &Handle, key: &[u8]) -> Option<i64> {
     let mut lock = ptr::null_mut();
     let row = table.get(key, &mut lock);
     let value = (!row.is_null())
@@ -470,11 +470,11 @@ fn a_lock_held_too_long_is_taken_over() {
 fn threads_update_one_row_under_its_lock() {
     let table = three_columns(64, 0.2);
     put(table.get(), b"shared", 0);
-    let address = table.table as usize;
+    let address = ptr::from_ref(table.get()).addr();
     let workers: Vec<_> = (0..4)
         .map(|_| {
             std::thread::spawn(move || {
-                let t = unsafe { &*(address as *const Table) };
+                let t = unsafe { &*(address as *const Handle) };
                 let id = t.column(b"id").unwrap();
                 for _ in 0..1000 {
                     let mut lock = ptr::null_mut();
@@ -543,33 +543,39 @@ fn make(rows: u32, conflict: f32) -> *mut Table {
     table
 }
 
-/// `Table::destroy()`.
-fn destroy(table: *mut Table) {
-    let arena = unsafe { (*table).destroy() };
-    if !arena.is_null() {
-        unsafe { crate::members::sw_shm_free(arena.cast()) };
-    }
-    unsafe { crate::members::sw_shm_free(table.cast()) };
+/// The handle of a table [`make`] made.
+fn handle(table: *mut Table) -> Handle {
+    Handle::new(unsafe { &mut *table })
 }
 
-struct Upstream(*mut Table);
+/// `Table::destroy()`.
+fn destroy(table: *mut Table, mut handle: Handle) {
+    handle.destroy().free();
+    // The mapping `make` made for the table, given up here.
+    let mut mapping =
+        unsafe { std::mem::transmute::<*mut std::ffi::c_void, crate::members::Shm>(table.cast()) };
+    mapping.free();
+}
+
+struct Upstream(*mut Table, Option<Handle>);
 
 impl Upstream {
     fn new(rows: u32) -> Self {
         let table = make(rows, 0.2);
-        let this = unsafe { &mut *table };
+        let mut this = handle(table);
         assert!(this.add_column(b"id", TYPE_INT, 0));
         assert!(this.add_column(b"name", TYPE_STRING, 32));
         assert!(this.add_column(b"score", TYPE_FLOAT, 0));
-        assert!(
-            unsafe { crate::members::swr_table_create(&mut *table) },
-            "create failed"
-        );
-        Upstream(table)
+        assert!(crate::members::swr_table_create(&mut this), "create failed");
+        Upstream(table, Some(this))
     }
 
-    fn ptr(&self) -> &Table {
-        unsafe { &*self.0 }
+    fn ptr(&self) -> &Handle {
+        self.1.as_ref().unwrap()
+    }
+
+    fn ptr_mut(&mut self) -> &mut Handle {
+        self.1.as_mut().unwrap()
     }
 
     fn set(&self, key: &str, value: &Entry) -> bool {
@@ -624,15 +630,15 @@ impl Upstream {
 
     /// A table filled by `create_table`.
     fn colliding(rows: u32) -> Self {
-        let table = Upstream::new(rows);
+        let mut table = Upstream::new(rows);
         table.create_table();
         table
     }
 
     /// `create_table`: five rows that all hash to 1.
-    fn create_table(&self) {
-        let table = self;
-        unsafe { &mut *table.0 }.set_hash(one);
+    fn create_table(&mut self) {
+        self.ptr_mut().set_hash(one);
+        let table = &*self;
         assert!(table.set("php", &row(b"php", 1, 1.245)));
         assert!(table.set("java", &row(b"java", 2, JAVA_SCORE)));
         assert!(table.set("c++", &row(b"c++", 3, 4.888)));
@@ -647,7 +653,7 @@ impl Upstream {
 
 impl Drop for Upstream {
     fn drop(&mut self) {
-        destroy(self.0);
+        destroy(self.0, self.1.take().unwrap());
     }
 }
 
@@ -664,8 +670,8 @@ const TEST_JPG_MD5SUM: &str = "64a42b4c0f3c65a14c23b60d3880a917";
 #[test]
 #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_create() {
-    let table = Upstream::new(1024);
-    assert!(!unsafe { crate::members::swr_table_create(&mut *table.0) }); // create again should fail
+    let mut table = Upstream::new(1024);
+    assert!(!crate::members::swr_table_create(table.ptr_mut())); // create again should fail
     let ptr = table.ptr();
     assert!(ptr.memory_size() > ptr.size() * ptr.column_size());
     assert!(table.set("php", &row(b"php", 1, 1.245)));
@@ -688,7 +694,7 @@ fn table_create() {
 }
 
 /// `start_iterator`: every row the iterator yields exists, and it yields `count()`.
-fn start_iterator(ptr: &Table) {
+fn start_iterator(ptr: &Handle) {
     ptr.rewind();
     let mut count = 0;
     loop {
@@ -719,8 +725,8 @@ fn table_iterator() {
 #[test]
 #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_iterator_2() {
-    let table = Upstream::new(1024);
-    unsafe { &mut *table.0 }.set_hash(one);
+    let mut table = Upstream::new(1024);
+    table.ptr_mut().set_hash(one);
     table.set("php", &row(b"php", 1, 1.245));
     table.set("java", &row(b"java", 2, JAVA_SCORE));
     table.set("c++", &row(b"c++", 3, 4.888));
@@ -731,7 +737,7 @@ fn table_iterator_2() {
 #[test]
 #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_conflict1() {
-    let table = Upstream::new(TEST_TABLE_SIZE);
+    let mut table = Upstream::new(TEST_TABLE_SIZE);
     assert!(!table.exists("swift"));
     table.create_table();
     assert!(!table.exists("kotlin"));
@@ -827,13 +833,13 @@ fn table_get_value() {
 #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_lock() {
     let table = Upstream::colliding(TEST_TABLE_SIZE);
-    let address = table.0.expose_provenance();
+    let address = ptr::from_ref(table.ptr()).expose_provenance();
     let mut lock = 0;
     for _ in 0..=3 {
         lock = std::thread::scope(|scope| {
             scope
                 .spawn(|| {
-                    let ptr = unsafe { &*ptr::with_exposed_provenance::<Table>(address) };
+                    let ptr = unsafe { &*ptr::with_exposed_provenance::<Handle>(address) };
                     let mut lock = ptr::null_mut();
                     let row = ptr.get(b"php", &mut lock);
                     let value = unsafe { get_string(row, ptr.column(b"name").unwrap()) };
@@ -855,14 +861,16 @@ fn table_lock() {
 #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_size_limit() {
     let t1 = make(0x9000_0000, 1.2);
-    assert_eq!(unsafe { &*t1 }.size(), 0x8000_0000);
-    assert_eq!(unsafe { &*t1 }.conflict_proportion(), 1.0);
-    assert!(!unsafe { &mut *t1 }.add_column(b"bad_field", 8, 0));
+    let mut h1 = handle(t1);
+    assert_eq!(h1.size(), 0x8000_0000);
+    assert_eq!(h1.conflict_proportion(), 1.0);
+    assert!(!h1.add_column(b"bad_field", 8, 0));
     let t2 = make(1024, 0.1);
-    assert_eq!(unsafe { &*t2 }.size(), 1024);
-    assert_eq!(unsafe { &*t2 }.conflict_proportion(), 0.2f32);
-    destroy(t1);
-    destroy(t2);
+    let h2 = handle(t2);
+    assert_eq!(h2.size(), 1024);
+    assert_eq!(h2.conflict_proportion(), 0.2f32);
+    destroy(t1, h1);
+    destroy(t2, h2);
     warnings();
 }
 
@@ -936,7 +944,7 @@ fn guards_read_and_write_locked_rows() {
     assert!(!row.is_new());
     assert_eq!((row.number(id), row.bytes(name)), (7, &b"seven"[..]));
     assert_eq!(f64::from_bits(row.number(score)), 1.5);
-    row.clear_row();
+    row.clear_row(t.columns());
     assert_eq!((row.number(id), row.bytes(name)), (0, &b""[..]));
     drop(row);
     assert!(!t.lock_get(b"none").unwrap().found());

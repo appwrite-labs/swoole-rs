@@ -5,15 +5,15 @@
 //! operations read these records directly, without per-field native callbacks.
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{
-    AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicU64,
-    AtomicUsize, Ordering::Relaxed,
+    AtomicBool, AtomicI32, AtomicI64, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize,
+    Ordering::Relaxed,
 };
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
 use swoole_rs_memory::members::Shm;
 
 const _: () = assert!(
     size_of::<libc::time_t>() == size_of::<AtomicI64>(),
-    "`warning_time` mirrors C++'s `time_t`"
+    "`warning_time` holds a `time_t`"
 );
 
 /// A value a [`Setting`] holds, and the atomic of its layout that holds it.
@@ -67,7 +67,7 @@ impl Plain for f64 {
 
 /// A server setting: written through `&` while the server is configured and
 /// read by every thread once it runs, so an atomic, read and written relaxed.
-/// It is laid out as the value it holds, which C++'s view of the record reads.
+/// It is laid out as the value it holds.
 #[repr(transparent)]
 pub struct Setting<T: Plain>(T::Atomic);
 
@@ -178,7 +178,6 @@ impl<T> Published<T> {
 }
 
 /// The independently configurable server fields and borrowed native handles.
-#[repr(C)]
 pub struct ServerConfig {
     pub reactor_num: Setting<u16>,
     pub worker_num: Setting<u32>,
@@ -188,11 +187,6 @@ pub struct ServerConfig {
     pub scheduler_warning: AtomicBool,
     pub max_request: Setting<u32>,
     pub max_request_grace: Setting<u32>,
-    /// Upstream's last UDP, UDP6 and unix datagram listeners, kept null for the
-    /// record's layout: [`crate::view::Server::dgram_socket`] finds them among the ports.
-    pub udp_socket_ipv4: *mut c_void,
-    pub udp_socket_ipv6: *mut c_void,
-    pub dgram_socket: *mut c_void,
     pub max_wait_time: Setting<u32>,
     pub worker_max_concurrency: Setting<u32>,
     pub daemonize: Setting<bool>,
@@ -245,7 +239,9 @@ pub struct ServerConfig {
     pub private_data_3: Published<Box<dyn core::any::Any>>,
     pub private_data_4: *mut c_void,
     pub factory_: Shared<*mut c_void>,
-    pub manager_: Shared<*mut c_void>,
+    /// The manager's state, live while it runs in this process.
+    #[cfg(any(test, feature = "upstream-symbols"))]
+    pub(crate) manager: crate::manager::Manager,
     pub task_worker_num: Setting<u32>,
     pub task_ipc_mode: Setting<u8>,
     pub task_max_request: Setting<u32>,
@@ -261,7 +257,8 @@ pub struct ServerConfig {
     pub upload_max_filesize: Setting<usize>,
     pub http_compression_level: Setting<u8>,
     pub compression_min_length: Setting<u32>,
-    pub recv_buffer_allocator: AtomicPtr<c_void>,
+    /// The allocator of the sessions' receive buffers, `None` for the default.
+    pub recv_buffer_allocator: Shared<Option<swoole_rs_corebase::TrustedAllocator>>,
     pub recv_buffer_size: usize,
     pub message_queue_key: Setting<u64>,
     /// `Server::Mode`, fixed by the constructor.
@@ -386,9 +383,6 @@ impl Default for ServerConfig {
             scheduler_warning: AtomicBool::new(false),
             max_request: Setting::new(0),
             max_request_grace: Setting::new(0),
-            udp_socket_ipv4: core::ptr::null_mut(),
-            udp_socket_ipv6: core::ptr::null_mut(),
-            dgram_socket: core::ptr::null_mut(),
             max_wait_time: Setting::new(3),
             worker_max_concurrency: Setting::new(u32::MAX),
             daemonize: Setting::new(false),
@@ -436,7 +430,8 @@ impl Default for ServerConfig {
             private_data_3: Published::default(),
             private_data_4: core::ptr::null_mut(),
             factory_: Shared::new(core::ptr::null_mut()),
-            manager_: Shared::new(core::ptr::null_mut()),
+            #[cfg(any(test, feature = "upstream-symbols"))]
+            manager: crate::manager::Manager::default(),
             task_worker_num: Setting::new(0),
             task_ipc_mode: Setting::new(TaskIpcMode::UnixSock as u8),
             task_max_request: Setting::new(0),
@@ -449,7 +444,7 @@ impl Default for ServerConfig {
             upload_max_filesize: Setting::new(0),
             http_compression_level: Setting::new(0),
             compression_min_length: Setting::new(20),
-            recv_buffer_allocator: AtomicPtr::default(),
+            recv_buffer_allocator: Shared::new(None),
             recv_buffer_size: 65_536,
             message_queue_key: Setting::new(0),
             mode_: Mode::Base,
@@ -507,7 +502,7 @@ impl ServerConfig {
         &mut self,
         cpu_num: u32,
         timezone: libc::c_long,
-        allocator: *const c_void,
+        allocator: Option<swoole_rs_corebase::TrustedAllocator>,
     ) {
         self.reactor_num
             .set(u16::try_from(cpu_num.min(8)).unwrap_or(8));
@@ -516,8 +511,7 @@ impl ServerConfig {
         self.http_compression.set(true);
         self.http_compression_level.set(1);
         self.compression_min_length.set(20);
-        self.recv_buffer_allocator
-            .store(allocator.cast_mut(), Relaxed);
+        self.recv_buffer_allocator.set(allocator);
     }
 }
 
@@ -529,7 +523,7 @@ mod tests {
     fn runtime_defaults() {
         let mut server = TestServer::new();
         let config = server.config_mut();
-        config.init_defaults(16, 3600, core::ptr::null());
+        config.init_defaults(16, 3600, None);
         assert_eq!(config.worker_num.get(), 16);
         assert_eq!(config.reactor_num.get(), 8);
         assert_eq!(config.timezone_, 3600);
