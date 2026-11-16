@@ -808,10 +808,16 @@ mod tests {
     }
 
     /// The native effects a test saw, the strings it made and what it wrote to files.
+    /// It owns the strings: a box keeps the address the code under test holds, and
+    /// `StringFree` or the thread's end drops it.
     #[derive(Default)]
     struct Host {
         effects: Vec<NativeOp>,
-        strings: Vec<*mut Text>,
+        #[expect(
+            clippy::vec_box,
+            reason = "the code under test holds each string's address"
+        )]
+        strings: Vec<Box<Text>>,
         written: Vec<u8>,
     }
 
@@ -838,7 +844,7 @@ mod tests {
                     };
                     bytes.push(0);
                     bytes.truncate(length);
-                    let text = Box::into_raw(Box::new(Text {
+                    let mut text = Box::new(Text {
                         head: HttpString {
                             length,
                             size: 0,
@@ -846,15 +852,19 @@ mod tests {
                             str: ptr::null_mut(),
                         },
                         bytes,
-                    }));
-                    unsafe { (*text).sync() };
+                    });
+                    text.sync();
+                    let at = &raw mut *text;
                     host.strings.push(text);
-                    text as u64
+                    at as u64
                 }
                 NativeOp::StringAppend => {
                     let data = unsafe { core::slice::from_raw_parts(b, size(n)) };
-                    if host.strings.contains(&a.cast()) {
-                        let text = unsafe { &mut *a.cast::<Text>() };
+                    if let Some(text) = host
+                        .strings
+                        .iter_mut()
+                        .find(|t| ptr::eq(&raw const ***t, a.cast()))
+                    {
                         text.bytes.truncate(text.head.length);
                         text.bytes.extend_from_slice(data);
                         text.head.length = text.bytes.len();
@@ -871,6 +881,10 @@ mod tests {
                         }
                         buffer.length += data.len();
                     }
+                    0
+                }
+                NativeOp::StringFree => {
+                    host.strings.retain(|t| !ptr::eq(&raw const **t, a.cast()));
                     0
                 }
                 NativeOp::Fwrite => {
