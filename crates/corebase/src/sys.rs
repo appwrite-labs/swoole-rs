@@ -627,26 +627,72 @@ pub fn nanosleep(request: &libc::timespec, remaining: &mut libc::timespec) -> c_
 /// at an address the kernel picks aliases nothing; unmapping it is the caller's.
 #[must_use]
 pub fn map_anonymous(len: usize, shared: bool, stack: bool) -> *mut libc::c_void {
-    let sharing = if shared {
-        libc::MAP_SHARED
-    } else {
-        libc::MAP_PRIVATE
-    };
+    use anonymous::Flags;
     #[cfg(target_os = "openbsd")]
-    let stack = if stack { libc::MAP_STACK } else { 0 };
-    #[cfg(not(target_os = "openbsd"))]
-    let stack = {
-        _ = stack;
-        0
+    let flags = match (shared, stack) {
+        (true, false) => Flags::Shared,
+        (false, false) => Flags::Private,
+        (true, true) => Flags::SharedStack,
+        (false, true) => Flags::PrivateStack,
     };
-    let flags = sharing | libc::MAP_ANON | stack;
-    let protection = libc::PROT_READ | libc::PROT_WRITE;
-    // SAFETY: no address is given (nor MAP_FIXED), so the mapping replaces nothing.
-    let mapped = unsafe { libc::mmap(std::ptr::null_mut(), len, protection, flags, -1, 0) };
+    #[cfg(not(target_os = "openbsd"))]
+    let flags = {
+        _ = stack;
+        if shared {
+            Flags::Shared
+        } else {
+            Flags::Private
+        }
+    };
+    let protection = anonymous::Protection::ReadWrite;
+    let mapped = anonymous::mmap(None, len, protection, flags, anonymous::NoFile::Fd, 0);
     if mapped == libc::MAP_FAILED {
         std::ptr::null_mut()
     } else {
         mapped
+    }
+}
+
+/// `mmap(2)` declared for fresh anonymous mappings only.
+mod anonymous {
+    /// No value: a null-only address hint.
+    pub(super) enum Nothing {}
+
+    /// `PROT_READ | PROT_WRITE`.
+    #[repr(i32)]
+    pub(super) enum Protection {
+        ReadWrite = libc::PROT_READ | libc::PROT_WRITE,
+    }
+
+    /// An anonymous mapping's flags, never `MAP_FIXED`.
+    #[repr(i32)]
+    pub(super) enum Flags {
+        Private = libc::MAP_PRIVATE | libc::MAP_ANON,
+        Shared = libc::MAP_SHARED | libc::MAP_ANON,
+        #[cfg(target_os = "openbsd")]
+        PrivateStack = libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_STACK,
+        #[cfg(target_os = "openbsd")]
+        SharedStack = libc::MAP_SHARED | libc::MAP_ANON | libc::MAP_STACK,
+    }
+
+    /// The descriptor an anonymous mapping takes: none.
+    #[repr(i32)]
+    pub(super) enum NoFile {
+        Fd = -1,
+    }
+
+    // libc's. With no address and no `MAP_FIXED` the kernel places the mapping where
+    // nothing is mapped, so it replaces no memory; it reads none of the caller's and
+    // keeps nothing. So it is declared `safe`.
+    unsafe extern "C" {
+        pub(super) safe fn mmap(
+            address: Option<&'static Nothing>,
+            len: usize,
+            protection: Protection,
+            flags: Flags,
+            fd: NoFile,
+            offset: libc::off_t,
+        ) -> *mut libc::c_void;
     }
 }
 
