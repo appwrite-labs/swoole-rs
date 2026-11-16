@@ -33,3 +33,9 @@ shift
 python3 tools/build_ext.py --profile release-lto "$@"
 mkdir -p dist
 cp target/ext/swoole.so "dist/swoole-rs-$version-php$(php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')-$threads-linux-$libc-$(uname -m).so"
+readelf -d dist/*.so | grep NEEDED
+# DEBUG: what the binary takes from libgcc_s
+if [ -e /usr/lib/libgcc_s.so.1 ]; then
+    nm -D --defined-only /usr/lib/libgcc_s.so.1 | awk '{print $3}' | sed 's/@.*//' | sort -u > /tmp/gcc_s
+    nm -D --undefined-only dist/*.so | awk '{print $2}' | sed 's/@.*//' | sort -u | comm -12 - /tmp/gcc_s
+fi
