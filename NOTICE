@@ -1,0 +1,16 @@
+swoole-rs
+Copyright 2026 The swoole-rs authors
+
+This product is a Rust rewrite of Swoole (https://github.com/swoole/swoole-src),
+by Tianfeng Han and the Swoole team, licensed under the Apache License 2.0. Its PHP API,
+its behaviour and parts of its C headers and tests derive from Swoole v6.2.5.
+
+native/swoole-src/thirdparty holds code Swoole bundles from PHP (https://www.php.net/)
+and PECL ssh2, Copyright (c) The PHP Group, under the PHP License 3.01
+(native/swoole-src/thirdparty/LICENSE; LICENSE-PHP in a release): the PDO drivers
+(pdo_oci, pdo_sqlite, php*/pdo_firebird, php*/pdo_odbc, php*/pdo_pgsql), the cURL
+extension (php/curl, php84/curl), ssh2 (php/ssh2), proc_open (php/standard) and the
+plain files stream wrapper (php/streams). php/zend/zend_execute.c is from the Zend
+Engine, Copyright (c) Zend Technologies Ltd., under the Zend License 2.00.
+
+This product includes PHP software, freely available from <http://www.php.net/software/>.
