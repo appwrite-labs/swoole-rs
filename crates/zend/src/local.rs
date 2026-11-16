@@ -32,6 +32,10 @@ unsafe extern "C" {
     /// reference of its own, in place of what it held, which is not released
     /// (false, with `out` untouched, once the object's free has begun).
     safe fn swr_zend_objects_copy(handle: u32, out: Option<&crate::Owned>) -> bool;
+    /// `tsrm_env_lock()` for `true`, `tsrm_env_unlock()` for `false`: TSRM made
+    /// the mutex for a thread running PHP. Only [`Php::env_lock`] locks it, and
+    /// only the guard that returns unlocks it, once, on the same thread.
+    safe fn swr_zend_runtime_env_lock(lock: bool);
 }
 
 /// This thread runs PHP for `'a`: it executes only while it is the one thread
@@ -150,9 +154,7 @@ impl<'a> Php<'a> {
     /// second guard on the same thread waits for the first forever.
     #[must_use]
     pub fn env_lock(self) -> EnvLock<'a> {
-        // SAFETY: this thread runs PHP, so TSRM has made its environment mutex;
-        // the guard unlocks it once, on this thread.
-        unsafe { sys::swr_zend_runtime_env_lock(true) };
+        swr_zend_runtime_env_lock(true);
         EnvLock(PhantomData)
     }
 }
@@ -163,9 +165,8 @@ pub struct EnvLock<'a>(PhantomData<&'a *const ()>);
 
 impl Drop for EnvLock<'_> {
     fn drop(&mut self) {
-        // SAFETY: `env_lock` locked the mutex on this thread, and only this
-        // drop unlocks it.
-        unsafe { sys::swr_zend_runtime_env_lock(false) };
+        // `env_lock` locked the mutex on this thread.
+        swr_zend_runtime_env_lock(false);
     }
 }
 

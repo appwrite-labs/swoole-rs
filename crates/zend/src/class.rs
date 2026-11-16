@@ -5,7 +5,7 @@ use crate::{
     helpers::CText,
     sys::{
         ZEND_ACC_RESOLVED_PARENT, zend_class_entry, zend_long, zend_object, zend_object_handlers,
-        zend_string, zend_throw_exception, zval,
+        zend_result, zend_string, zval,
     },
 };
 use std::{
@@ -46,6 +46,22 @@ unsafe extern "C" {
     /// `zend_lookup_class(name)` inside `zend_try` (nonzero for a bailout): it
     /// reads the name, may run an autoloader, and writes the class or null.
     safe fn swr_zend_try_lookup_class(name: &ZStr, class: &mut *mut zend_class_entry) -> c_int;
+    /// `object_init_ex(target, class)`: `target` holds a new object of the
+    /// live class (none, with an `Error` thrown, for one Zend cannot
+    /// instantiate) in place of what it held, which is not released. It
+    /// evaluates the class's constants, which reads the executing frame: only
+    /// [`Class::create_object`] calls it, from a handler or a callback Zend
+    /// runs under one.
+    safe fn object_init_ex(target: &crate::Owned, class: ClassEntry<'_>) -> zend_result;
+    /// `zend_throw_exception(class, message, code)`: an exception of the live
+    /// class (Zend's `Exception` for one that is no `Throwable`). Zend copies
+    /// the message. With no frame executing it reports the exception at once,
+    /// so only [`Class::throw`] calls it, from a handler.
+    safe fn zend_throw_exception(
+        class: ClassEntry<'_>,
+        message: CText<'_>,
+        code: zend_long,
+    ) -> *mut zend_object;
 }
 
 /// A live class entry, borrowed for `'a`: an object's class, which outlives it,
@@ -260,12 +276,12 @@ impl Class {
     /// The class is not registered.
     #[must_use]
     pub fn create_object(&self) -> crate::Owned {
-        let entry = self.entry();
-        assert!(!entry.is_null(), "create an object of a registered class");
+        let entry = self.class_entry();
+        assert!(entry.is_some(), "create an object of a registered class");
         let object = crate::Owned::default();
-        // SAFETY: a slot this owns and a registered class; Zend refuses one it
-        // cannot instantiate, leaving no object.
-        let _ = unsafe { crate::sys::object_init_ex(object.as_ptr(), entry) };
+        let Some(entry) = entry else { return object };
+        // Zend refuses a class it cannot instantiate, leaving no object.
+        let _ = object_init_ex(&object, entry);
         object
     }
 
@@ -273,10 +289,10 @@ impl Class {
     /// # Panics
     /// The class is not registered.
     pub fn throw(&self, message: &CStr, code: zend_long) {
-        let entry = self.entry();
-        assert!(!entry.is_null(), "throw a registered class");
-        // SAFETY: a registered exception class; Zend copies the message.
-        unsafe { zend_throw_exception(entry, message.as_ptr(), code) };
+        let entry = self.class_entry();
+        assert!(entry.is_some(), "throw a registered class");
+        let Some(entry) = entry else { return };
+        zend_throw_exception(entry, message.into(), code);
     }
 
     /// The registered class as a handle: it lives for the process. None
