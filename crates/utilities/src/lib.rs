@@ -138,8 +138,7 @@ pub fn swoole_hash(bytes: &[u8], algorithm: u32, signed_char: bool) -> u64 {
 }
 
 /// Native-compatible process-shared spinlock. Unlock remains the native release store.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_utils_spinlock(lock: Option<&AtomicU32>, cpus: u32, backoff_limit: u32) {
+pub fn swr_v1_utils_spinlock(lock: Option<&AtomicU32>, cpus: u32, backoff_limit: u32) {
     let Some(lock) = lock else {
         return;
     };
@@ -168,27 +167,6 @@ pub extern "C" fn swr_v1_utils_spinlock(lock: Option<&AtomicU32>, cpus: u32, bac
         }
         std::thread::yield_now();
     }
-}
-
-/// Futex wait on the native atomic utility's word (`HAVE_FUTEX` builds only).
-#[cfg(target_os = "linux")]
-#[must_use]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_utils_wait(word: Option<&AtomicU32>, timeout: f64) -> i32 {
-    if word.is_some_and(|word| swoole_rs_locks::wait(word, timeout)) {
-        0
-    } else {
-        -1
-    }
-}
-
-/// Futex wake for the native atomic utility's waiters.
-#[cfg(target_os = "linux")]
-#[must_use]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_utils_wakeup(word: Option<&AtomicU32>, n: i32) -> i32 {
-    word.and_then(|word| swoole_rs_locks::wakeup(word, n))
-        .map_or(-1, |woken| i32::try_from(woken).unwrap_or(i32::MAX))
 }
 
 /// Clamp the configured native logging threshold to its defined enum range.

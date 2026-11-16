@@ -4,8 +4,6 @@
  * keeping only what a C++ file uses. Was include/swoole.h. */
 #pragma once
 
-#include "swoole_rs_utilities.h"
-
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #elif defined(ENABLE_PHP_SWOOLE)
