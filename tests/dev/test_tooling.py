@@ -415,21 +415,17 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('core_check', ' '.join(commands['error-native']))
         # An -ffi crate's tests run with its module's (#2996 moved error's there).
         self.assertIn('swoole-rs-error-ffi', commands['error-unit'])
-        for family in ['logger', 'hash']:
-            command = commands['utilities-' + family + '-originals']
-            self.assertIn('--' + family + '-originals', command)
-            self.assertIn('cargo=' + str(ROOT / 'target/ext/swoole.so'), command)
-            self.assertTrue(command[command.index('--build-manifest') + 1].endswith('target/ext/build-manifest.json'))
-            self.assertEqual(command.count('--engine'), 2)
+        command = commands['utilities-hash-originals']
+        self.assertIn('--archive', command)
+        self.assertIn('cargo=' + str(ROOT / 'target/ext/swoole.so'), command)
+        self.assertTrue(command[command.index('--build-manifest') + 1].endswith('target/ext/build-manifest.json'))
+        self.assertEqual(command.count('--engine'), 2)
         self.assertIn('--require-same-api', commands['api-surface'])
         self.assertEqual(commands['api-surface'].count('--engine'), 2)
         self.assertLess(list(commands).index('cargo-build'), list(commands).index('api-surface'))
         self.assertIn('tests/modules/buffer/string/test_gate.py', commands['string-originals'])
         self.assertIn('column-bytes', commands['phpcollections-column-bytes'])
         self.assertEqual(commands['phpcollections-column-bytes'].count('--engine'), 2)
-        self.assertIn('--build-manifest', commands['utilities-public-storage'])
-        self.assertIn('--archive', commands['utilities-public-storage'])
-        self.assertEqual(commands['utilities-public-storage'].count('--engine'), 2)
         self.assertIn('utilities-php-logger',commands)
         # Attested gates check the Cargo build's manifest, not the hybrid's (#2199).
         for name in ['utilities-php-logger', 'phpcollections-runtime', 'ports-configuration', 'clients-php-http']:

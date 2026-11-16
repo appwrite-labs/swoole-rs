@@ -91,7 +91,7 @@ pub(crate) fn init(serv: view::Server<'_>) -> bool {
 }
 
 /// `TaskWorker_onTask`: the pool's task callback.
-extern "C-unwind" fn on_task(pool: PoolRef<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_int {
+fn on_task(pool: PoolRef<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_int {
     crate::shared::pool_server(pool).map_or(ERR, |serv| run_task(serv, worker, task))
 }
 
@@ -155,7 +155,7 @@ fn command(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> bool
 }
 
 /// `TaskWorker_onStart`.
-extern "C-unwind" fn on_start(pool: PoolRef<'_>, worker: Worker<'_>) {
+fn on_start(pool: PoolRef<'_>, worker: Worker<'_>) {
     let Some(serv) = crate::shared::pool_server(pool) else {
         return;
     };
@@ -191,7 +191,7 @@ fn signal_init(serv: view::Server<'_>) {
 }
 
 /// `TaskWorker_onStop`.
-extern "C-unwind" fn on_stop(pool: PoolRef<'_>, worker: Worker<'_>) {
+fn on_stop(pool: PoolRef<'_>, worker: Worker<'_>) {
     swoole_rs_reactor::swoole_event_free();
     if let Some(serv) = crate::shared::pool_server(pool) {
         call_worker_stop_callback(serv, worker);
@@ -199,7 +199,7 @@ extern "C-unwind" fn on_stop(pool: PoolRef<'_>, worker: Worker<'_>) {
 }
 
 /// `TaskWorker_loop_async`: the coroutine task worker's event loop over its pipe.
-extern "C-unwind" fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
+fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
     let Some(serv) = crate::shared::pool_server(pool) else {
         return ERR;
     };

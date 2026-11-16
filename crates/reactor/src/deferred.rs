@@ -167,6 +167,14 @@ pub(crate) fn defer_destroy_call(fields: &mut ReactorFields, call: fn()) {
 /// runs, the reactor's `running_defer` holds it: a task that bails out of the loop jumps
 /// over this frame, and the reactor's drop frees the queue instead.
 pub(crate) fn run_defer(reactor: Running<'_>) {
+    if reactor.with(|state| state.fields.defer_tasks.is_some()) {
+        run_queue(reactor);
+    }
+}
+
+// Keep the queue's stack frame off empty passes through the end callback.
+#[inline(never)]
+fn run_queue(reactor: Running<'_>) {
     let index = reactor.with(|state| {
         let queue = state.fields.defer_tasks.take()?;
         let index = state.running_defer.len();

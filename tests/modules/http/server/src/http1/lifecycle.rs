@@ -227,10 +227,10 @@ fn delete_worker(worker: *mut WorkerRecord) {
 /// `TEST(server, create_task_worker_fail)`.
 fn create_task_worker_fail() {
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 2;
-    serv.config().task_enable_coroutine = true;
-    serv.config().task_ipc_mode = TASK_IPC_MSGQUEUE;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(2);
+    serv.config().task_enable_coroutine.set(true);
+    serv.config().task_ipc_mode.set(TASK_IPC_MSGQUEUE);
     set_log_warning();
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
@@ -263,7 +263,7 @@ fn reload_single_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
 /// `TEST(server, reload_single_process)`.
 fn reload_single_process() {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
     counter_init();
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
@@ -298,7 +298,7 @@ fn reload_no_task_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
 /// `TEST(server, reload_no_task_worker)`.
 fn reload_no_task_worker() {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
     counter_init();
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
@@ -374,10 +374,12 @@ fn reload_all_workers2_start(serv: view::Server<'_>, worker: Worker<'_>) {
 /// workers, created.
 fn reload_server(task_enable_coroutine: bool) -> Server {
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 2;
-    serv.config().max_wait_time = 1;
-    serv.config().task_enable_coroutine = task_enable_coroutine;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(2);
+    serv.config().max_wait_time.set(1);
+    serv.config()
+        .task_enable_coroutine
+        .set(task_enable_coroutine);
     counter_init();
     set_log_warning();
 
@@ -436,9 +438,9 @@ fn kill_user_workers_start(serv: view::Server<'_>, worker: Worker<'_>) {
 fn kill_user_workers() {
     counters();
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 2;
-    serv.config().max_wait_time = 1;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(2);
+    serv.config().max_wait_time.set(1);
     set_log_warning();
 
     let worker1 = add_user_worker(serv);
@@ -480,9 +482,9 @@ fn force_kill_manager_start(serv: view::Server<'_>) {
 fn force_kill_all_workers() {
     counters();
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 3;
-    serv.config().max_wait_time = 1;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(3);
+    serv.config().max_wait_time.set(1);
     set_log_warning();
 
     let worker1 = add_user_worker(serv);
@@ -527,9 +529,9 @@ fn kill_user_workers1_start(serv: view::Server<'_>, worker: Worker<'_>) {
 fn kill_user_workers1() {
     counters();
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 2;
-    serv.config().max_wait_time = 1;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(2);
+    serv.config().max_wait_time.set(1);
     set_log_warning();
 
     add_user_worker(serv);
@@ -604,7 +606,7 @@ fn reload_thread_2_user_start(_: view::Server<'_>, _: Worker<'_>) {
 /// manager's 500 ms reload; `create` comes after `prepare`.
 fn reload_thread_server(prepare: impl FnOnce(Server)) -> Server {
     let serv = Server::new(MODE_THREAD);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
     counter_init();
     case::log_level(case::SW_LOG_INFO);
 
@@ -624,7 +626,7 @@ fn reload_thread_server(prepare: impl FnOnce(Server)) -> Server {
 fn reload_thread_2() {
     let mut user_worker = ptr::null_mut();
     let serv = reload_thread_server(|serv| {
-        serv.config().task_worker_num = 2;
+        serv.config().task_worker_num.set(2);
         user_worker = add_user_worker(serv);
     });
     serv.set_callback(Callback::Task(task_ok));
@@ -648,9 +650,9 @@ fn reload_thread_2() {
 /// `reload_thread`'s `onUserWorkerStart`: until the server stops.
 fn reload_thread_user_start(serv: view::Server<'_>, _: Worker<'_>) {
     let config = Server(serv.raw()).config();
-    // SAFETY: the running server's flag, which shutdown clears from another thread; read
-    // anew each time, as upstream's loop reads `serv->running`.
-    while unsafe { ptr::read_volatile(&raw const config.running) } {
+    // The running server's flag, which shutdown clears from another thread; read anew
+    // each time, as upstream's loop reads `serv->running`.
+    while config.running.load(Ordering::SeqCst) {
         sleep(0.1);
     }
 }
@@ -665,7 +667,7 @@ fn unlock_on_manager_start(_: view::Server<'_>) {
 fn reload_thread() {
     let mut user_worker = ptr::null_mut();
     let serv = reload_thread_server(|serv| {
-        serv.config().task_worker_num = 2;
+        serv.config().task_worker_num.set(2);
         user_worker = add_user_worker(serv);
     });
     client_thread(
@@ -733,8 +735,8 @@ fn reload_thread_3() {
 /// `TEST(server, restart_worker_process)`.
 fn restart_worker_process() {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 2;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(2);
     counter_init();
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
@@ -749,7 +751,7 @@ fn restart_worker_process() {
     // SAFETY: the created server's event pool, which follows its task pool, and its
     // event workers; then the task worker, and the task pool it joins.
     unsafe {
-        (*pool.add(1)).set_workers(serv.config().workers.cast());
+        (*pool.add(1)).set_workers(serv.config().workers.as_ptr().cast());
         Worker::new(worker).set_pid(pid());
         swoole_rs_process::methods::add_worker(&*pool, Worker::new(worker));
     }
@@ -784,7 +786,7 @@ unsafe extern "C" fn reload_watchdog_tick(_: *mut c_void, tnode: *mut TimerNode)
             counter_get(25)
         );
         let config = serv.config();
-        for i in 0..config.worker_num + config.task_worker_num {
+        for i in 0..config.worker_num.get() + config.task_worker_num.get() {
             let worker = serv.view().worker(u16::try_from(i).unwrap());
             // SAFETY: one of the server's workers.
             let worker_pid = unsafe { Worker::new(worker) }.pid();
@@ -857,10 +859,10 @@ fn worker_error_start_server(serv: view::Server<'_>) {
 fn test_reload_from_worker_error(task_only: bool) {
     TASK_ONLY.store(task_only, Ordering::SeqCst);
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 1;
-    serv.config().reload_async = false;
-    serv.config().max_wait_time = 1;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(1);
+    serv.config().reload_async.set(false);
+    serv.config().max_wait_time.set(1);
     counter_init();
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
     assert_eq!(serv.create(), SW_OK);
@@ -1078,8 +1080,8 @@ fn kill_client(serv: Server, port: u16, victim: fn() -> c_int) -> JoinHandle<()>
 fn test_kill_worker(mode: c_int, options: Options) {
     *KILL_OPTIONS.lock().unwrap() = options;
     let serv = Server::new(mode);
-    serv.config().worker_num = 2;
-    serv.config().reload_async = options.reload_async;
+    serv.config().worker_num.set(2);
+    serv.config().reload_async.set(options.reload_async);
 
     counter_init();
 
@@ -1215,7 +1217,7 @@ fn shutdown_event() {
 /// `test_kill_self(mode)`: its counters are `sw_mem_pool()` memory, as `test::counter_*`'s.
 fn test_kill_self(mode: c_int) {
     let serv = Server::new(mode);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
 
     counters();
 
@@ -1291,9 +1293,6 @@ fn base_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let (session, data) = request(req);
     expect(data == PACKET, "string(req->data, req->info.len) == packet");
     let conn = serv.get_connection_by_session_id(session);
-    // SAFETY: the running server's live connection, laid out as the crate's record.
-    let conn = unsafe { &*ptr::from_ref(conn).cast::<swoole_rs_server::ConnectionRecord>() };
-    let conn = swoole_rs_server::Connection::from(conn);
     let addr = swoole_rs_server::local_addr::get_local_addr(serv.view(), conn);
     expect(addr != c"unknown", "serv->get_local_addr(conn) != unknown");
 
@@ -1368,7 +1367,7 @@ fn base_on_start(_: view::Server<'_>) {
 /// left the build with `Server::add_hook` (#1535).
 fn test_base() {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
     serv.set_text(swoole_rs_server::ServerText::PidFile, PID_FILE);
 
     counter_init();
@@ -1503,9 +1502,9 @@ fn on_shutdown(_: view::Server<'_>) {
 /// of `Server::command`, which looks the command up before it can be reached.
 fn test_process(single_thread: bool) {
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 1;
-    serv.config().single_thread = single_thread;
-    serv.config().task_worker_num = 3;
+    serv.config().worker_num.set(1);
+    serv.config().single_thread.set(single_thread);
+    serv.config().task_worker_num.set(3);
     set_log_warning();
 
     counter_init();
@@ -1653,7 +1652,7 @@ fn ignore_worker(_: view::Server<'_>, _: Worker<'_>) {}
 /// `test_clean_worker(mode)`.
 fn test_clean_worker(mode: c_int) {
     let serv = Server::new(mode);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
 
     counter_init();
 

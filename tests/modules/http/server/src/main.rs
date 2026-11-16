@@ -34,6 +34,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
+use swoole_rs_corebase::WebSocketStatus;
 use swoole_rs_ffi::frame_api::Frame;
 // The crates, once: the C++ in libswoole.a and the cases call them by symbol.
 use swoole_rs_ffi as _;
@@ -54,7 +55,6 @@ const SW_ERR: c_int = -1;
 const MODE_BASE: c_int = 1;
 const MODE_PROCESS: c_int = 2;
 const DISPATCH_FDMOD: c_int = 2;
-const STATUS_ACTIVE: u8 = 3;
 const OPCODE_TEXT: u8 = 1;
 const OPCODE_CLOSE: u8 = 8;
 const OPCODE_PING: u8 = 9;
@@ -344,9 +344,9 @@ static COUNTER: AtomicI32 = AtomicI32::new(0);
 extern "C" fn base_receive(serv: *mut Server, req: *const c_void) -> c_int {
     let (session_id, data, ext_flags) = request(req);
     COUNTER.fetch_add(1, Ordering::Relaxed);
-    // SAFETY: the receiving connection's field.
-    let status = unsafe { &mut *swr_case_websocket_status(serv, session_id) };
-    if *status == STATUS_ACTIVE {
+    // SAFETY: the receiving server.
+    let conn = unsafe { swr_case_connection(serv, session_id) };
+    if conn.websocket_status() == WebSocketStatus::Active {
         let opcode = (ext_flags >> 8) as u8;
         if opcode == OPCODE_PING {
             encode_and_send(serv, session_id, data, OPCODE_PONG);
@@ -376,7 +376,7 @@ extern "C" fn base_receive(serv: *mut Server, req: *const c_void) -> c_int {
             ("Content-Length", "0".to_owned()),
         ];
         respond(serv, session_id, "101 Switching Protocols", &headers, "");
-        *status = STATUS_ACTIVE;
+        conn.set_websocket_status(WebSocketStatus::Active);
         if request.url == "/ws/close" {
             // SAFETY: the server's own session.
             unsafe { swr_case_close_after(serv, session_id, 200) };
