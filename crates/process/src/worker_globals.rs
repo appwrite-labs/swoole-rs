@@ -112,39 +112,6 @@ pub unsafe fn set_current_worker(worker: *mut WorkerRecord) {
     with_globals(|globals| globals.worker.store(worker, Relaxed));
 }
 
-/// Fields: 0 id, 1 pid, 2 type, 3 running, 4 shutdown, 5 max requests.
-#[must_use]
-pub extern "C" fn swr_v1_worker_global_get(field: u32) -> i64 {
-    with_globals(|globals| match field {
-        0 => i64::from(globals.id.load(Relaxed)),
-        1 => i64::from(globals.pid.load(Relaxed)),
-        2 => i64::from(globals.kind.load(Relaxed)),
-        3 => i64::from(globals.running.load(Relaxed)),
-        4 => i64::from(globals.shutdown.load(Relaxed)),
-        5 => i64::from(globals.max_request.load(Relaxed)),
-        _ => 0,
-    })
-}
-
-/// Updates the current worker's identity, preserving native integer narrowing.
-pub extern "C" fn swr_v1_worker_global_set(field: u32, value: i64) {
-    let low = u32::try_from(value.cast_unsigned() & u64::from(u32::MAX)).unwrap_or_default();
-    with_globals(|globals| match field {
-        0 => globals.id.store(low, Relaxed),
-        1 => globals
-            .pid
-            .store(c_int::from_ne_bytes(low.to_ne_bytes()), Relaxed),
-        2 => globals.kind.store(
-            u8::try_from(low & u32::from(u8::MAX)).unwrap_or_default(),
-            Relaxed,
-        ),
-        3 => globals.running.store(value != 0, Relaxed),
-        4 => globals.shutdown.store(value != 0, Relaxed),
-        5 => globals.max_request.store(low, Relaxed),
-        _ => {}
-    });
-}
-
 /// Grace randomization calls the existing native wrapper so its assertion and
 /// warning/errno behavior stay identical; all request-limit decisions and storage are Rust's.
 /// `random` is `swoole_system_random(int,int)` or a stand-in.
@@ -158,7 +125,7 @@ pub fn worker_global_max_requests(
         let extra = random(1, c_int::from_ne_bytes(grace.to_ne_bytes()));
         limit = limit.wrapping_add(extra.cast_unsigned());
     }
-    swr_v1_worker_global_set(5, i64::from(limit));
+    with_globals(|globals| globals.max_request.store(limit, Relaxed));
 }
 
 /// Separates this thread's current worker from its pool, as upstream's copy into
@@ -183,8 +150,16 @@ pub fn worker_global_stopped() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::methods::{
+        swoole_get_worker_id, swoole_get_worker_pid, swoole_get_worker_type, swoole_set_worker_id,
+        swoole_set_worker_type, worker_is_running, worker_is_shutdown,
+    };
     use crate::worker_record::{Worker, swr_v1_worker_init, swr_v1_worker_shutdown};
     use std::sync::atomic::AtomicUsize;
+
+    fn max_request() -> u32 {
+        with_globals(|globals| globals.max_request.load(Relaxed))
+    }
 
     static RANDOM_CALLS: AtomicUsize = AtomicUsize::new(0);
     extern "C" fn maximum(_: c_int, max: c_int) -> c_int {
@@ -194,20 +169,20 @@ mod tests {
 
     #[test]
     fn native_views_and_worker_identity_are_thread_local() {
-        swr_v1_worker_global_set(0, 7);
-        swr_v1_worker_global_set(2, -1);
-        assert_eq!(swr_v1_worker_global_get(2), 255);
+        swoole_set_worker_id(7);
+        swoole_set_worker_type(-1);
+        assert_eq!(swoole_get_worker_type(), 255);
         let native_view = thread_globals();
         unsafe { (*native_view).pid.store(123, Relaxed) };
-        assert_eq!(swr_v1_worker_global_get(1), 123);
+        assert_eq!(swoole_get_worker_pid(), 123);
         std::thread::spawn(|| {
-            assert_eq!(swr_v1_worker_global_get(0), 0);
-            swr_v1_worker_global_set(0, 22);
-            assert_eq!(swr_v1_worker_global_get(0), 22);
+            assert_eq!(swoole_get_worker_id(), 0);
+            swoole_set_worker_id(22);
+            assert_eq!(swoole_get_worker_id(), 22);
         })
         .join()
         .unwrap();
-        assert_eq!(swr_v1_worker_global_get(0), 7);
+        assert_eq!(swoole_get_worker_id(), 7);
         assert_eq!(core::mem::size_of::<WorkerGlobalRecord>(), 48);
         assert_eq!(core::mem::offset_of!(WorkerGlobalRecord, max_request), 16);
         assert_eq!(core::mem::offset_of!(WorkerGlobalRecord, worker), 24);
@@ -222,8 +197,8 @@ mod tests {
             Worker::new(&raw mut worker).set_pid(1234);
             swr_v1_worker_init(Worker::new(&raw mut worker));
             assert!(Worker::new(&raw const worker).is_idle());
-            assert_eq!(swr_v1_worker_global_get(3), 1);
-            assert_eq!(swr_v1_worker_global_get(4), 0);
+            assert!(worker_is_running());
+            assert!(!worker_is_shutdown());
             worker_global_max_requests(2, 0, maximum);
             Worker::new(&raw mut worker).add_request_count();
             assert!(!Worker::new(&raw const worker).exceeded_max_request());
@@ -239,9 +214,9 @@ mod tests {
                 Worker::new(&raw const worker).status(),
                 Some(crate::worker_record::WorkerStatus::Exit)
             );
-            assert_eq!(swr_v1_worker_global_get(4), 1);
+            assert!(worker_is_shutdown());
             worker_global_stopped();
-            assert_eq!(swr_v1_worker_global_get(3), 0);
+            assert!(!worker_is_running());
             assert!(!(*thread_globals()).detached.load(Relaxed));
             assert!((*thread_globals()).worker.load(Relaxed).is_null());
         }
@@ -266,12 +241,12 @@ mod tests {
     fn request_grace_keeps_native_unsigned_wrap_and_zero_short_circuit() {
         RANDOM_CALLS.store(0, Relaxed);
         worker_global_max_requests(0, 10, maximum);
-        assert_eq!(swr_v1_worker_global_get(5), 0);
+        assert_eq!(max_request(), 0);
         worker_global_max_requests(10, 0, maximum);
-        assert_eq!(swr_v1_worker_global_get(5), 10);
+        assert_eq!(max_request(), 10);
         assert_eq!(RANDOM_CALLS.load(Relaxed), 0);
         worker_global_max_requests(u32::MAX - 2, 10, maximum);
-        assert_eq!(swr_v1_worker_global_get(5), 7);
+        assert_eq!(max_request(), 7);
         assert_eq!(RANDOM_CALLS.load(Relaxed), 1);
     }
 }
