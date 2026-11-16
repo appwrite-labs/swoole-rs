@@ -249,13 +249,10 @@ pub fn ws_decode(bytes: &[u8]) {
     let mut want = upstream_ws::Frame::default();
     // SAFETY: upstream owns its copy of the frame and its output.
     let ok = unsafe { upstream_ws::decode(theirs.as_mut_ptr(), theirs.len(), &mut want) };
-    let (total, got) = decode_in_place(&mut ours);
-    assert_eq!(
-        ok,
-        total > 0 && bytes.len() as i64 >= total,
-        "verdict ({total}) for {bytes:?}"
-    );
+    let result = decode_in_place(&mut ours);
+    assert_eq!(ok, result.is_ok(), "verdict ({result:?}) for {bytes:?}");
     if ok {
+        let got = result.expect("the verdict comparison succeeded");
         let got = upstream_ws::Frame {
             payload_length: got.payload_length as u64,
             header_length: got.header_length as u16,
