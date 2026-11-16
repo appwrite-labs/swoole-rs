@@ -7,13 +7,13 @@ use crate::handlers::Handler;
 use crate::socket_upstream::swr_v1_reactor_log;
 use std::ffi::c_int;
 
-/// `int Reactor::trigger_close_event(Event *)`: the default error handler, or `-1`
-/// when none is set.
-pub fn trigger_close_event(reactor: crate::Running<'_>, event: &mut crate::Event) -> c_int {
-    let Some(handler) = reactor.handlers().fallback(1) else {
-        return -1;
-    };
-    handler(reactor, event)
+/// `int Reactor::trigger_close_event(Event *)`: the default error handler, whether
+/// it succeeded; false when none is set.
+pub fn trigger_close_event(reactor: crate::Running<'_>, event: &mut crate::Event) -> bool {
+    reactor
+        .handlers()
+        .fallback(1)
+        .is_some_and(|handler| handler(reactor, event) >= 0)
 }
 
 /// `Reactor::add` or `set` of a socket that is never freed while registered: whether

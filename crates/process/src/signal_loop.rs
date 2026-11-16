@@ -205,8 +205,7 @@ pub fn clear(ops: &Ops) {
 }
 /// The signalfd's read event: runs the handler for the signal read from `fd`.
 #[cfg(target_os = "linux")]
-#[must_use]
-pub fn read(fd: i32, ops: &Ops) -> i32 {
+pub fn read(fd: i32, ops: &Ops) {
     use crate::signalfd::Received;
     match crate::signalfd::signalfd_receive(fd) {
         Received::ReadFailed(error) => (ops.report)(Report::ReadFailed(error)),
@@ -215,7 +214,6 @@ pub fn read(fd: i32, ops: &Ops) -> i32 {
         Received::Handler { signo, handler } => handler.call(signo.cast_signed()),
         Received::Nothing => {}
     }
-    0
 }
 /// The reactor is destroyed: this process removes its signalfd wrapper from it.
 #[cfg(target_os = "linux")]

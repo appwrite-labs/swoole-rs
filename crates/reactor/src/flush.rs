@@ -2,11 +2,8 @@
 //! `drain_write_buffer`) over the socket's write-path block and its output queue.
 //! `crates/tls`'s `reactor_write.rs` supplies the effects.
 use crate::Socket;
-use std::ffi::c_int;
 use swoole_rs_buffer::EntryKind;
 use swoole_rs_buffer::cpp::{swr_cpp_buffer_count, swr_cpp_buffer_typed_front};
-
-const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 
 /// The flush's effects (`crates/tls`'s `reactor_write.rs`).
 pub trait FlushEffects {
@@ -14,9 +11,10 @@ pub trait FlushEffects {
     fn handle_send(&self) -> bool;
     /// Sends the front sendfile entry: false when the send could not proceed.
     fn handle_sendfile(&self) -> bool;
-    /// `reactor->close(reactor, socket)` and `reactor->trigger_close_event(event)`.
-    fn close(&self) -> c_int;
-    fn trigger_close(&self) -> c_int;
+    /// `reactor->close(reactor, socket)` and `reactor->trigger_close_event(event)`:
+    /// whether each succeeded.
+    fn close(&self) -> bool;
+    fn trigger_close(&self) -> bool;
     /// `swoole_timer_del(socket->send_timer)` of the socket's `timer`.
     fn delete_timer(&self, timer: swoole_rs_corebase::timer_key::Held);
     fn remove_write_event(&self);
@@ -25,8 +23,9 @@ pub trait FlushEffects {
 }
 
 /// `Reactor::_writable_callback`: send queued entries until the queue empties or a send
-/// can't proceed, then drop the send timer and, once empty, write interest.
-pub fn swr_v1_reactor_flush(socket: Socket<'_>, ops: &impl FlushEffects) -> c_int {
+/// can't proceed, then drop the send timer and, once empty, write interest: false when
+/// the close it ran failed.
+pub fn swr_v1_reactor_flush(socket: Socket<'_>, ops: &impl FlushEffects) -> bool {
     // One read per pass: the front entry's kind (`typed_front().kind`), or the timer
     // once the queue is empty.
     let timer = loop {
@@ -53,7 +52,7 @@ pub fn swr_v1_reactor_flush(socket: Socket<'_>, ops: &impl FlushEffects) -> c_in
                 return ops.trigger_close();
             }
             if send_wait {
-                return SW_OK;
+                return true;
             }
         }
     };
@@ -69,7 +68,7 @@ pub fn swr_v1_reactor_flush(socket: Socket<'_>, ops: &impl FlushEffects) -> c_in
     if empty {
         ops.remove_write_event();
     }
-    SW_OK
+    true
 }
 
 /// `Reactor::drain_write_buffer`: wait for writability and flush until the queue empties,
@@ -91,6 +90,7 @@ mod tests {
     use super::*;
     use crate::{SocketOutput, SocketRecord};
     use std::cell::RefCell;
+    use std::ffi::c_int;
     use swoole_rs_buffer::cpp::{
         CppBuffer, new_buffer, swr_cpp_buffer_pop, swr_cpp_buffer_typed_close,
     };
@@ -151,13 +151,13 @@ mod tests {
             record("sendfile");
             false
         }
-        fn close(&self) -> c_int {
+        fn close(&self) -> bool {
             record("close");
-            7
+            true
         }
-        fn trigger_close(&self) -> c_int {
+        fn trigger_close(&self) -> bool {
             record("trigger_close");
-            8
+            false
         }
         fn delete_timer(&self, _: swoole_rs_corebase::timer_key::Held) {
             record("delete_timer");
@@ -187,7 +187,7 @@ mod tests {
         kinds: &[EntryKind],
         sends: Vec<c_int>,
         close_wait: bool,
-    ) -> (c_int, Vec<&'static str>) {
+    ) -> (bool, Vec<&'static str>) {
         let buffer = new_buffer(1);
         queue(&buffer, kinds);
         let mut record = SocketRecord::new();
@@ -218,19 +218,19 @@ mod tests {
         assert_eq!(
             (r, trace),
             (
-                0,
+                true,
                 vec!["send", "send", "delete_timer", "remove_write_event"]
             )
         );
         // A queued close closes at once.
         assert_eq!(
             run(&mut block(true), &[EntryKind::Close], vec![], false),
-            (7, vec!["close"])
+            (true, vec!["close"])
         );
         // A failed send while closing triggers the close event.
         assert_eq!(
             run(&mut block(false), &[EntryKind::Data], vec![-1], true),
-            (8, vec!["send", "trigger_close"])
+            (false, vec!["send", "trigger_close"])
         );
         // A failed send while send_wait stops there, timer and interest untouched.
         let mut waiting = SocketOutput {
@@ -239,12 +239,12 @@ mod tests {
         };
         assert_eq!(
             run(&mut waiting, &[EntryKind::Data], vec![-1], false),
-            (0, vec!["send"])
+            (true, vec!["send"])
         );
         // An empty queue only drops interest; a sendfile entry goes to handle_sendfile.
         assert_eq!(
             run(&mut block(false), &[], vec![], false),
-            (0, vec!["remove_write_event"])
+            (true, vec!["remove_write_event"])
         );
         let mut waiting = SocketOutput {
             send_wait: true,
@@ -252,7 +252,7 @@ mod tests {
         };
         assert_eq!(
             run(&mut waiting, &[EntryKind::Sendfile], vec![], false),
-            (0, vec!["sendfile"])
+            (true, vec!["sendfile"])
         );
     }
 
@@ -295,7 +295,7 @@ mod tests {
                 pop();
                 true
             }
-            fn close(&self) -> c_int {
+            fn close(&self) -> bool {
                 effect("close");
                 let record = FACADE.with_borrow(|f| f.record) as *mut SocketRecord;
                 let socket = unsafe { Socket::from_ptr(record) }.unwrap();
@@ -303,11 +303,11 @@ mod tests {
                 while !FACADE.with_borrow(|f| f.kinds.is_empty()) {
                     pop();
                 }
-                SW_OK
+                true
             }
-            fn trigger_close(&self) -> c_int {
+            fn trigger_close(&self) -> bool {
                 effect("trigger-close");
-                SW_OK
+                true
             }
             fn delete_timer(&self, _: swoole_rs_corebase::timer_key::Held) {
                 effect("timer");
@@ -345,7 +345,7 @@ mod tests {
             if drain {
                 swr_v1_reactor_drain(socket, &Ops);
             } else {
-                assert_eq!(swr_v1_reactor_flush(socket, &Ops), SW_OK);
+                assert!(swr_v1_reactor_flush(socket, &Ops));
             }
             let send_timer = record.output.send_timer;
             let removed = u8::from(record.removed);

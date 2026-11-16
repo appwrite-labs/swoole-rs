@@ -349,7 +349,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         Some(swr_cpp_buffer_typed_front(buffer).kind)
     }) {
         let sent = match kind {
-            EntryKind::Close => return reactor.close(sock) >= 0,
+            EntryKind::Close => return reactor.close(sock),
             EntryKind::Sendfile => tls::socket_handle_sendfile(sock),
             EntryKind::Data => {
                 let sent = tls::socket_handle_send(sock);
@@ -364,7 +364,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
             if close_wait {
                 let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
                 conn.set_close_errno(errno.c_cast::<u16>());
-                return reactor.trigger_close(event) >= 0;
+                return reactor.trigger_close(event);
             } else if send_wait {
                 break;
             }

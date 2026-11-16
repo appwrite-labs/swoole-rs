@@ -81,7 +81,7 @@ pub(crate) unsafe fn server<'a>(reactor: Reactor) -> view::Server<'a> {
 
 /// `f` over a handler's server (`reactor->ptr`) and reactor.
 #[inline]
-fn handler(reactor: Running<'_>, f: impl FnOnce(view::Server<'_>, Reactor) -> c_int) -> c_int {
+fn handler<T>(reactor: Running<'_>, f: impl FnOnce(view::Server<'_>, Reactor) -> T) -> T {
     let reactor = Reactor::running(reactor);
     // SAFETY: the handlers below are registered only on reactors that hold a server.
     f(unsafe { server(reactor) }, reactor)

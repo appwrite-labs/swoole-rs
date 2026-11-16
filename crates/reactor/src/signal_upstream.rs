@@ -181,8 +181,9 @@ mod descriptor {
     struct Read;
 
     impl FdHandler for Read {
-        fn handle(fd: c_int) -> c_int {
-            swoole_rs_process::signal_loop::read(fd, &OPS)
+        fn handle(fd: c_int) -> bool {
+            swoole_rs_process::signal_loop::read(fd, &OPS);
+            true
         }
     }
 

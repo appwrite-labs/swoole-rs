@@ -201,16 +201,16 @@ impl FlushEffects for Flush<'_> {
         socket_handle_sendfile(self.socket)
     }
 
-    fn close(&self) -> c_int {
+    fn close(&self) -> bool {
         // `reactor->close`, set at construction.
         let Some(close) = self.reactor.close() else {
-            return -1;
+            return false;
         };
         // SAFETY: `reactor->close(reactor, socket)`.
-        unsafe { close(self.reactor, self.socket) }
+        unsafe { close(self.reactor, self.socket) >= 0 }
     }
 
-    fn trigger_close(&self) -> c_int {
+    fn trigger_close(&self) -> bool {
         let mut event = self.event.get();
         let result = trigger_close_event(self.reactor, &mut event);
         self.event.set(event);
@@ -254,9 +254,9 @@ pub extern "C-unwind" fn reactor_writable_callback(
         socket,
         event: &lent,
     };
-    let result = swoole_rs_reactor::swr_v1_reactor_flush(socket, &flush);
+    let flushed = swoole_rs_reactor::swr_v1_reactor_flush(socket, &flush);
     *event = lent.get();
-    result
+    if flushed { 0 } else { -1 }
 }
 
 /// `void Reactor::drain_write_buffer(Socket *socket)`.

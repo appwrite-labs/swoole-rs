@@ -304,11 +304,12 @@ pub fn swoole_event_run() -> bool {
 
 /// A reactor handler over the fd of the event it is called with.
 pub trait FdHandler {
-    fn handle(fd: c_int) -> c_int;
+    /// Whether handling `fd`'s event succeeded.
+    fn handle(fd: c_int) -> bool;
 }
 
 extern "C" fn fd_handler<H: FdHandler>(_: crate::Running<'_>, event: &mut crate::Event) -> c_int {
-    H::handle(event.fd())
+    if H::handle(event.fd()) { 0 } else { -1 }
 }
 
 /// `swoole_event_set_handler(fd_type, event, H)`, when there is a reactor.
