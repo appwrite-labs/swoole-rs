@@ -18,7 +18,7 @@ pub use libc::pollfd;
 use libc::{c_int, c_void, nfds_t, size_t, ssize_t};
 use std::io;
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::lent::{Count, In, Out};
+use swoole_rs_corebase::lent::{Count, In, InOut, Out};
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{log, sys};
 use swoole_rs_reactor::{Socket, SocketRecord};
@@ -216,24 +216,18 @@ pub fn poll_fake(fds: &mut [pollfd], timeout: c_int) -> Result<c_int, FakePollEr
     }
 }
 
-/// Hooked `poll(2)`: inside a coroutine with a timeout, the coroutine waits on the reactor.
-///
-/// # Safety
-/// As for `poll`.
+/// Hooked `poll(2)` of the `nfds` pollfds C lends at `fds`: inside a coroutine with a
+/// timeout, the coroutine waits on the reactor. `EFAULT` for a null `fds` with
+/// descriptors to poll.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_coroutine_poll(
-    fds: *mut pollfd,
-    nfds: nfds_t,
+pub extern "C" fn swoole_coroutine_poll<'id>(
+    fds: InOut<'id, pollfd>,
+    nfds: Count<'id, nfds_t>,
     timeout: c_int,
 ) -> c_int {
-    let fds: &mut [pollfd] = if nfds == 0 {
-        &mut []
-    } else if fds.is_null() {
+    let Some(fds) = fds.items(nfds) else {
         set_errno(libc::EFAULT);
         return -1;
-    } else {
-        // SAFETY: `nfds` pollfds, as the caller promises.
-        unsafe { core::slice::from_raw_parts_mut(fds, usize::try_from(nfds).unwrap_or(0)) }
     };
     if timeout == 0 || coroutine().is_none() {
         return sys::poll(fds, timeout).unwrap_or(-1);
@@ -462,8 +456,21 @@ pub fn swoole_coroutine_get_socket_object_ex(fd: c_int) -> *mut c_void {
 pub(crate) mod tests {
     use super::*;
     use crate::stdio::tests::{LAST_ERROR, Mode, with};
+    use c::swoole_coroutine_poll;
     use std::cell::RefCell;
     use swoole_rs_corebase::lent::{lend_in, lend_out};
+
+    /// The export as C declares it, so the tests lend what C lends.
+    mod c {
+        use libc::{c_int, nfds_t, pollfd};
+        unsafe extern "C" {
+            pub(super) fn swoole_coroutine_poll(
+                fds: *mut pollfd,
+                nfds: nfds_t,
+                timeout: c_int,
+            ) -> c_int;
+        }
+    }
 
     /// The hooked `write` of `data`, lent as C lends it.
     fn write_c(fd: c_int, data: &[u8]) -> ssize_t {
