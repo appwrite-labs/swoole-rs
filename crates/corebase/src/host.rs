@@ -704,7 +704,12 @@ mod tests {
                 assert_eq!(first, if formatted < 0 { 0 } else { 0x55 });
             }
         }
-        // libc ends truncated output at `size - 1` itself.
+    }
+
+    /// libc ends truncated output at `size - 1` itself, so the bound writes nothing.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no snprintf")]
+    fn formatting_result_keeps_libc_truncation() {
         let mut bytes = [c_char::from_ne_bytes([0x55]); 8];
         let formatted =
             unsafe { libc::snprintf(bytes.as_mut_ptr(), 4, c"%s".as_ptr(), c"abcdef".as_ptr()) };
