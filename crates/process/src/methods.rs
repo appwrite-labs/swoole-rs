@@ -191,9 +191,10 @@ pub fn send_pipe_message(
     swr_v1_process_worker_send(native, pool, pipe, queue, id, data, flags)
 }
 
-/// Creates a listener owned by the process pool; supplied by crates/tls at startup.
+/// Creates a listener owned by the process pool, which the pool's `close` hook
+/// frees; supplied by crates/ffi at startup.
 #[cfg(feature = "upstream-symbols")]
-pub type Listener = fn(c_int, &CStr, c_int, c_int) -> *mut c_void;
+pub type Listener = fn(c_int, &CStr, c_int, c_int) -> Option<crate::pool::Connection>;
 #[cfg(feature = "upstream-symbols")]
 static LISTENER: std::sync::OnceLock<Listener> = std::sync::OnceLock::new();
 
@@ -232,11 +233,16 @@ pub fn listen_socket(
     })
 }
 
-/// Both `listen`s, over `make`, which makes the listener (a native socket the pool
-/// then owns and frees, or null): only an `SW_IPC_SOCKET` pool has a stream
-/// listener, which it records with its address.
+/// Both `listen`s, over `make`, which makes the listener (which the pool then owns
+/// and frees, or `None`): only an `SW_IPC_SOCKET` pool has a stream listener, which
+/// it records with its address.
 #[cfg(any(feature = "upstream-symbols", test))]
-fn listen(pool: &PoolRecord, host: &CStr, port: c_int, make: impl FnOnce() -> *mut c_void) -> bool {
+fn listen(
+    pool: &PoolRecord,
+    host: &CStr,
+    port: c_int,
+    make: impl FnOnce() -> Option<crate::pool::Connection>,
+) -> bool {
     if pool.ipc_mode.get() != crate::process_pool::IpcMode::Socket {
         swoole_rs_corebase::log::error_log(
             swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
@@ -252,12 +258,10 @@ fn listen(pool: &PoolRecord, host: &CStr, port: c_int, make: impl FnOnce() -> *m
     {
         return false;
     }
-    let socket = make();
-    if socket.is_null() {
+    let Some(listener) = make() else {
         return false;
-    }
-    // The pool now owns the listener.
-    pool.with_ipc(|ipc| swr_v1_process_pool_ipc_set_listener(ipc, socket));
+    };
+    pool.with_ipc(|ipc| swr_v1_process_pool_ipc_set_listener(ipc, listener));
     true
 }
 
@@ -581,17 +585,11 @@ pub(crate) mod tests {
         swoole_rs_corebase::log::swr_v1_core_set_log_host(record);
     }
 
-    static LISTENER: u8 = 0;
-
-    fn make(kind: c_int, port: c_int) -> *mut c_void {
-        if kind == 1 && port == 9501 {
-            (&raw const LISTENER).cast_mut().cast()
-        } else {
-            ptr::null_mut()
-        }
+    fn make(kind: c_int, port: c_int) -> Option<crate::pool::Connection> {
+        (kind == 1 && port == 9501).then(|| -> crate::pool::Connection { std::rc::Rc::new(port) })
     }
 
-    fn keep(_: *mut c_void) {}
+    fn keep(_: crate::pool::Connection) {}
 
     #[test]
     fn listen_needs_a_socket_pool_and_keeps_its_listener() {
@@ -617,7 +615,7 @@ pub(crate) mod tests {
         assert!(!failed, "no socket, no listener");
         // SAFETY: the pool's IPC state.
         assert!(
-            swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc.get() }).is_null(),
+            swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc.get() }).is_none(),
             "none kept"
         );
         let listened = listen(&pool, c"127.0.0.1", 9501, || make(1, 9501));
@@ -625,8 +623,8 @@ pub(crate) mod tests {
         // SAFETY: the pool's IPC state.
         let listener = swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc.get() });
         assert_eq!(
-            listener.cast_const(),
-            (&raw const LISTENER).cast(),
+            listener.and_then(|listener| listener.downcast_ref::<c_int>()),
+            Some(&9501),
             "the socket is kept"
         );
         // SAFETY: the pool's IPC state.
