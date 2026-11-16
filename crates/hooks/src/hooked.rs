@@ -1,7 +1,7 @@
 //! The hooked socket functions of upstream's `src/coroutine/hook.cc`
 //! (`swoole_coroutine_socket`, `poll`, `close`, `read`, `write`, …),
 //! exported under their upstream names for the C that calls them, and those only
-//! Rust calls ([`swoole_coroutine_send`], [`swoole_coroutine_recv`], [`connect`],
+//! Rust calls ([`send`], [`recv`], [`connect`],
 //! [`accept`], [`poll_fake`], [`sendmsg`], [`recvmsg`]). Inside a
 //! coroutine an fd the socket map holds goes to its native socket through
 //! its Rust members; any other call goes to libc, the async pool or `io_uring`, as
@@ -16,6 +16,7 @@ use core::mem::MaybeUninit;
 /// `struct pollfd`, as [`poll_fake`] takes it.
 pub use libc::pollfd;
 use libc::{c_int, c_void, nfds_t, size_t, ssize_t};
+use std::io;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{log, sys};
@@ -99,73 +100,90 @@ pub extern "C" fn swoole_coroutine_socket(domain: c_int, kind: c_int, protocol: 
 }
 
 /// Hooked `send(2)` of `buf`.
-#[must_use]
-pub fn swoole_coroutine_send(fd: c_int, buf: &[u8], flags: c_int) -> ssize_t {
+///
+/// # Errors
+/// Returns the socket or syscall error, also left in errno.
+pub fn send(fd: c_int, buf: &[u8], flags: c_int) -> io::Result<usize> {
     match hooked(fd) {
-        Some((_, socket)) => socket.send(buf).map_or(-1, usize::cast_signed),
-        None => sys::send(fd, buf, flags).map_or(-1, usize::cast_signed),
+        Some((_, socket)) => socket.send(buf).ok_or_else(io::Error::last_os_error),
+        None => sys::send(fd, buf, flags).ok_or_else(io::Error::last_os_error),
     }
 }
 
 /// Hooked `sendmsg(2)` of `msg`.
-#[must_use]
-pub fn sendmsg(fd: c_int, msg: &SendMessage<'_>, flags: c_int) -> ssize_t {
+///
+/// # Errors
+/// Returns the socket or syscall error, also left in errno.
+pub fn sendmsg(fd: c_int, msg: &SendMessage<'_>, flags: c_int) -> io::Result<usize> {
     match hooked(fd) {
-        Some((_, socket)) => socket.sendmsg(msg, flags).map_or(-1, usize::cast_signed),
-        None => msg.send(fd, flags).map_or(-1, usize::cast_signed),
+        Some((_, socket)) => socket.sendmsg(msg, flags),
+        None => msg.send(fd, flags),
     }
+    .ok_or_else(io::Error::last_os_error)
 }
 
 /// Hooked `recvmsg(2)` into `msg`.
-pub fn recvmsg(fd: c_int, msg: &mut RecvMessage<'_>, flags: c_int) -> ssize_t {
+///
+/// # Errors
+/// Returns the socket or syscall error, also left in errno.
+pub fn recvmsg(fd: c_int, msg: &mut RecvMessage<'_>, flags: c_int) -> io::Result<usize> {
     match hooked(fd) {
-        Some((_, socket)) => socket.recvmsg(msg, flags).map_or(-1, usize::cast_signed),
-        None => msg.recv(fd, flags).map_or(-1, usize::cast_signed),
+        Some((_, socket)) => socket.recvmsg(msg, flags),
+        None => msg.recv(fd, flags),
     }
+    .ok_or_else(io::Error::last_os_error)
 }
 
 /// Hooked `recv(2)` into `buf`; `MSG_PEEK` peeks, other flags are the socket's.
-pub fn swoole_coroutine_recv(fd: c_int, buf: &mut [u8], flags: c_int) -> ssize_t {
+///
+/// # Errors
+/// Returns the socket or syscall error, also left in errno.
+pub fn recv(fd: c_int, buf: &mut [u8], flags: c_int) -> io::Result<usize> {
     let Some((_, socket)) = hooked(fd) else {
-        return sys::recv(fd, buf, flags).map_or(-1, usize::cast_signed);
+        return sys::recv(fd, buf, flags).ok_or_else(io::Error::last_os_error);
     };
     if flags & libc::MSG_PEEK != 0 {
         socket.peek(buf)
     } else {
         socket.recv(buf)
     }
-    .map_or(-1, usize::cast_signed)
+    .ok_or_else(io::Error::last_os_error)
 }
 
 /// Hooked `connect(2)` of `fd` to `address`.
-#[must_use]
-pub fn connect(fd: c_int, address: &SocketAddress) -> c_int {
+///
+/// # Errors
+/// Returns the socket or syscall error, also left in errno.
+pub fn connect(fd: c_int, address: &SocketAddress) -> io::Result<()> {
     let connected = match hooked(fd) {
         Some((_, socket)) => socket.connect_addr(address),
         None => address.connect(fd),
     };
-    if connected { 0 } else { -1 }
+    connected.then_some(()).ok_or_else(io::Error::last_os_error)
 }
 
 /// Hooked `accept(2)`, the peer's address into `peer`: the accepted socket joins the
 /// map unless its fd has one.
-#[must_use]
-pub fn accept(fd: c_int, peer: &mut SocketAddress) -> c_int {
+///
+/// # Errors
+/// Returns the socket or syscall error, also left in errno.
+pub fn accept(fd: c_int, peer: &mut SocketAddress) -> io::Result<c_int> {
     let Some((_, socket)) = hooked(fd) else {
         return peer
             .accept(fd)
-            .map_or(-1, std::os::fd::IntoRawFd::into_raw_fd);
+            .map(std::os::fd::IntoRawFd::into_raw_fd)
+            .ok_or_else(io::Error::last_os_error);
     };
-    let Some(conn) = socket.accept_owned(0.0) else {
-        return -1;
-    };
+    let conn = socket
+        .accept_owned(0.0)
+        .ok_or_else(io::Error::last_os_error)?;
     conn.co().net(|accepted| {
         peer.addr = accepted.info.addr;
         peer.len = accepted.info.len;
     });
     let conn_fd = conn.co().sock_fd();
     keep(conn_fd, conn, false);
-    conn_fd
+    Ok(conn_fd)
 }
 
 /// Hooked `poll(2)` of one fd that only reports it ready, after making `timeout`
@@ -515,23 +533,32 @@ pub(crate) mod tests {
     fn a_coroutine_transfers_on_mapped_fds_through_the_rust_members() {
         wrapped(|fd, peer| unsafe {
             let mut buf = [0u8; 16];
-            assert_eq!(swoole_coroutine_send(fd, b"send", 0), 4);
+            assert_eq!(send(fd, b"send", 0).map_or(-1, usize::cast_signed), 4);
             assert_eq!(swoole_coroutine_write(fd, b"write".as_ptr().cast(), 5), 5);
             let iov = [std::io::IoSlice::new(b"msg")];
-            assert_eq!(sendmsg(fd, &SendMessage::new(&iov), 0), 3);
+            assert_eq!(
+                sendmsg(fd, &SendMessage::new(&iov), 0).map_or(-1, usize::cast_signed),
+                3
+            );
             assert_eq!(libc::read(peer, buf.as_mut_ptr().cast(), 16), 12);
             assert_eq!(&buf[..12], b"sendwritemsg");
 
             assert_eq!(libc::write(peer, b"abcdefgh".as_ptr().cast(), 8), 8);
             let mut got = [0u8; 2];
-            assert_eq!(swoole_coroutine_recv(fd, &mut got, libc::MSG_PEEK), 2);
+            assert_eq!(
+                recv(fd, &mut got, libc::MSG_PEEK).map_or(-1, usize::cast_signed),
+                2
+            );
             assert_eq!(&got, b"ab");
-            assert_eq!(swoole_coroutine_recv(fd, &mut got, 0), 2);
+            assert_eq!(recv(fd, &mut got, 0).map_or(-1, usize::cast_signed), 2);
             assert_eq!(&got, b"ab");
             assert_eq!(swoole_coroutine_read(fd, got.as_mut_ptr().cast(), 2), 2);
             assert_eq!(&got, b"cd");
             let mut into = [std::io::IoSliceMut::new(&mut buf[..4])];
-            assert_eq!(recvmsg(fd, &mut RecvMessage::new(&mut into), 0), 4);
+            assert_eq!(
+                recvmsg(fd, &mut RecvMessage::new(&mut into), 0).map_or(-1, usize::cast_signed),
+                4
+            );
             assert_eq!(&buf[..4], b"efgh");
         });
     }
@@ -545,9 +572,9 @@ pub(crate) mod tests {
             let mut addr = SocketAddress::default();
             addr.addr.unix_mut().sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).unwrap();
             addr.len = libc::socklen_t::try_from(size_of::<libc::sa_family_t>()).unwrap();
-            assert_eq!(connect(fd, &addr), -1);
+            assert_eq!(connect(fd, &addr).map_or(-1, |()| 0), -1);
             assert_ne!(err_code(fd), 0);
-            assert_eq!(accept(fd, &mut addr), -1);
+            assert_eq!(accept(fd, &mut addr).unwrap_or(-1), -1);
             assert_eq!(err_code(fd), libc::EINVAL);
 
             // wait_event polls with the timeout in every direction, then restores it.
@@ -611,10 +638,10 @@ pub(crate) mod tests {
                     libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, pair.as_mut_ptr()),
                     0
                 );
-                assert_eq!(swoole_coroutine_send(pair[0], b"hi", 0), 2);
+                assert_eq!(send(pair[0], b"hi", 0).map_or(-1, usize::cast_signed), 2);
                 assert_eq!(swoole_coroutine_socket_wait_event(pair[1], 1 << 9, 1.0), 0);
                 let mut buf = [0u8; 2];
-                assert_eq!(swoole_coroutine_recv(pair[1], &mut buf, 0), 2);
+                assert_eq!(recv(pair[1], &mut buf, 0).map_or(-1, usize::cast_signed), 2);
                 assert_eq!(
                     swoole_coroutine_socket_wait_event(pair[1], 1 << 9, 0.01),
                     -1

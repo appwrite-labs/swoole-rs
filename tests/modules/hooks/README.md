@@ -61,6 +61,12 @@ removes the `/tmp/123.txt` that `ftruncate` leaves behind with mode 0.
 `sendmsg_and_recvmsg` stays excluded (below). `core-tests/src/coroutine/accept.cpp`'s one
 TEST, `coroutine_hook.accept`, is `hook.rs`'s `accept`, in the same suite and phase.
 
+The Rust-only hooked `send`, `recv`, `sendmsg`, `recvmsg`, `connect` and `accept`
+return `io::Result`, retaining the OS error as well as errno. The original hook
+cases convert those results back to their original integer expectations at the
+assertion boundary; descriptor ownership, transfer flags and coroutine routing
+are unchanged.
+
 `core-tests/src/coroutine/gethostbyname.cpp` is `system/src/gethostbyname.rs`
 (`coroutine_gethostbyname.<name>`, upstream's names, inputs and expected values):
 `System::gethostbyname` is `resolve::system_gethostbyname` and the DNS cache calls
