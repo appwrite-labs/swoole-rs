@@ -79,6 +79,11 @@ error position, reason, field and callback to match (`CASES` and `SEED` widen it
 | `http_parser.cpp` | `http_parser.rs` | `get_request`, `version`, `incomplete`, `method`, `websocket`, `http2`, `header_field_and_value`, `query_string`, `chunk`, `response`, `request_error_case` (54 protocols and reasons), `response_error_case` (22), `request_success_case` (72), `response_success_case` (45) |
 | `multipart_parser.cpp` | `multipart_parser.rs` | `error_message`, `header_field`, `header_error`, `data` (random part data from upstream's `base64_encode`, as `append_random_bytes(n, true)`) |
 
+Multipart execution returns `Result<usize, ParseError>`: pauses retain their exact
+consumed offsets, syntax failures carry `MultipartError`, and callback failures
+leave stored parser diagnostics unchanged. The original multipart TESTs convert
+results to integer counts only at their assertion boundary.
+
 `swoole_llhttp_parser_execute` is reproduced in `http_parser.rs` (`Http::execute`).
 
 Four `http_server` TESTs drove a request through the `http_server::listen` SDK

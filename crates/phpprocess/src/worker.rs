@@ -164,7 +164,7 @@ pub(crate) fn pipe_read(worker: Worker<'_>, buffer: &mut [u8], blocking: bool) -
     if blocking {
         read_sync(socket, buffer)
     } else {
-        usize::try_from(swoole_rs_corebase::sys::read(socket.fd(), buffer)).ok()
+        swoole_rs_corebase::sys::read(socket.fd(), buffer)
     }
 }
 

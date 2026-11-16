@@ -289,7 +289,7 @@ fn http_get(socket_calls: bool) {
             len: socklen::<libc::sockaddr_in>(),
             kind: 0,
         };
-        let _connected = uring::connect(&HOST, fd, &peer, -1.0);
+        let _connected = uring::connect(&HOST, fd, &peer, -1.0).map_or(-1, |()| 0);
 
         let req = http_get_request(TEST_HTTP_DOMAIN, "/");
         let rv = if socket_calls {
@@ -399,7 +399,7 @@ fn accept() {
                     len: actual_server_addr_len,
                     kind: 0,
                 };
-                let retval = uring::connect(&HOST, client_sock, &peer, -1.0);
+                let retval = uring::connect(&HOST, client_sock, &peer, -1.0).map_or(-1, |()| 0);
                 assert_eq!(retval, 0, "connect");
 
                 let test_message = b"test_data";
@@ -411,7 +411,8 @@ fn accept() {
             });
         });
 
-        let client_sock = uring::accept(&HOST, server_sock, &mut client_addr, 0, -1.0);
+        let client_sock =
+            uring::accept(&HOST, server_sock, &mut client_addr, 0, -1.0).unwrap_or(-1);
         assert!(client_sock > 0, "accept");
 
         let mut buffer = [0_u8; 256];
@@ -623,7 +624,7 @@ fn accept_timeout() {
             ..SocketAddress::default()
         };
 
-        let client_sock = uring::accept(&HOST, server_sock, &mut client_addr, 0, 0.1);
+        let client_sock = uring::accept(&HOST, server_sock, &mut client_addr, 0, 0.1).unwrap_or(-1);
         assert_eq!(client_sock, -1, "timed out");
 
         let _closed = status(uring::close_fd(&HOST, server_sock));

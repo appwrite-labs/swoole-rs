@@ -544,7 +544,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
             Io::SendTo(address, data) => data.sendto(fd, flags, address),
             Io::RecvFrom(address, buffer) => buffer.recvfrom(fd, flags, address),
             Io::Sendfile(request, _) => send_chunk(socket, request).0,
-            Io::Writev(vectors) => count(writev(fd, vectors)),
+            Io::Writev(vectors) => writev(fd, vectors),
         }
     }
 

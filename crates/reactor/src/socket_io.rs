@@ -80,7 +80,7 @@ pub fn fd_wait(
 /// `Socket::clean`: discard everything already received, without blocking.
 pub fn fd_clean(fd: c_int) {
     let mut buffer = [0_u8; 2048];
-    while swoole_rs_corebase::sys::recv(fd, &mut buffer, libc::MSG_DONTWAIT) > 0 {}
+    while swoole_rs_corebase::sys::recv(fd, &mut buffer, libc::MSG_DONTWAIT) > Some(0) {}
 }
 
 /// `Socket::accept`'s syscall into `address` (its whole storage lent, which holds

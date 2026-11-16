@@ -26,6 +26,14 @@ pub enum MultipartError {
     HeaderValueIncomplete,
 }
 
+/// Why execution stopped with an error. Callback failures leave the parser's
+/// stored diagnostic unchanged, while syntax errors also update it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParseError {
+    Parser(MultipartError),
+    Callback,
+}
+
 const CR: u8 = b'\r';
 const LF: u8 = b'\n';
 
@@ -97,7 +105,7 @@ pub struct MultipartParser {
 /// What one step of [`MultipartParser::execute`] did with its byte.
 enum Step {
     Next,
-    Return(isize),
+    Return(Result<usize, ParseError>),
 }
 
 impl MultipartParser {
@@ -185,7 +193,7 @@ impl MultipartParser {
         self.error_unexpected = found;
         self.error_i = at;
         self.error_reason = Some(reason);
-        Step::Return(-1)
+        Step::Return(Err(ParseError::Parser(reason)))
     }
 
     fn expect(&mut self, reason: MultipartError, expected: u8, at: usize, found: u8) -> Step {
@@ -193,9 +201,16 @@ impl MultipartParser {
         self.fail(reason, at, found)
     }
 
-    /// `multipart_parser_execute`: how many bytes were consumed, or -1 on an error.
+    /// `multipart_parser_execute`: how many bytes were consumed, including a pause.
+    /// # Errors
+    /// A syntax error or a failed callback. A callback failure preserves the
+    /// stored diagnostic, matching the original parser.
     /// Header fields and values must each arrive whole within one call.
-    pub fn execute<'i>(&mut self, parts: &mut impl Parts<'i>, buf: &'i [u8]) -> isize {
+    pub fn execute<'i>(
+        &mut self,
+        parts: &mut impl Parts<'i>,
+        buf: &'i [u8],
+    ) -> Result<usize, ParseError> {
         let mut mark = 0;
         let mut i = 0;
         while let Some(&c) = buf.get(i) {
@@ -212,7 +227,7 @@ impl MultipartParser {
                     .unwrap_or_else(|| rest.len().saturating_sub(1));
             }
         }
-        isize::try_from(buf.len()).unwrap_or(isize::MAX)
+        Ok(buf.len())
     }
 
     /// One byte's work, with upstream's fallthroughs as loops over the state.
@@ -229,12 +244,11 @@ impl MultipartParser {
         mark: &mut usize,
     ) -> Step {
         let is_last = i + 1 == buf.len();
-        let at = |i: usize| isize::try_from(i).unwrap_or(isize::MAX);
-        // NOTIFY_CB / EMIT_DATA_CB: a pause returns `r`, other failures -1.
+        // NOTIFY_CB / EMIT_DATA_CB: a pause returns the consumed offset.
         let done = |result: Flow, r: usize| match result {
             Flow::Go => None,
-            Flow::Pause => Some(Step::Return(at(r))),
-            Flow::Fail => Some(Step::Return(-1)),
+            Flow::Pause => Some(Step::Return(Ok(r))),
+            Flow::Fail => Some(Step::Return(Err(ParseError::Callback))),
         };
         let span = |from: usize, to: usize| buf.get(from..to).unwrap_or_default();
         loop {
@@ -502,7 +516,9 @@ mod tests {
             ..Recorder::default()
         };
         assert_eq!(
-            parser.execute(&mut parts, BODY),
+            parser
+                .execute(&mut parts, BODY)
+                .map_or(-1, usize::cast_signed),
             len(&BODY[..consumed]),
             "paused"
         );
@@ -511,7 +527,13 @@ mod tests {
         assert_eq!(parser.error_reason, None, "a pause is not an error");
         parts.pause = None;
         let rest = &BODY[consumed..];
-        assert_eq!(parser.execute(&mut parts, rest), len(rest), "resumed");
+        assert_eq!(
+            parser
+                .execute(&mut parts, rest)
+                .map_or(-1, usize::cast_signed),
+            len(rest),
+            "resumed"
+        );
         assert_eq!(parts.events, whole(), "the parts in full");
         assert_eq!(parser.state, State::End, "body ended");
     }
@@ -520,7 +542,13 @@ mod tests {
     fn unpaused() {
         let mut parser = MultipartParser::new(b"AB");
         let mut parts = Recorder::default();
-        assert_eq!(parser.execute(&mut parts, BODY), len(BODY), "all parsed");
+        assert_eq!(
+            parser
+                .execute(&mut parts, BODY)
+                .map_or(-1, usize::cast_signed),
+            len(BODY),
+            "all parsed"
+        );
         assert_eq!(parts.events, whole(), "the parts in full");
     }
 
@@ -558,7 +586,13 @@ mod tests {
         };
         let split = find(b"hello") + 3;
         let (head, rest) = BODY.split_at(split);
-        assert_eq!(parser.execute(&mut parts, head), len(head), "paused");
+        assert_eq!(
+            parser
+                .execute(&mut parts, head)
+                .map_or(-1, usize::cast_signed),
+            len(head),
+            "paused"
+        );
         assert_eq!(
             parts.events.last().map(String::as_str),
             Some("data hel"),
@@ -566,9 +600,63 @@ mod tests {
         );
         assert_eq!(parser.state, State::PartData, "state after the pause");
         parts.pause = None;
-        assert_eq!(parser.execute(&mut parts, rest), len(rest), "resumed");
+        assert_eq!(
+            parser
+                .execute(&mut parts, rest)
+                .map_or(-1, usize::cast_signed),
+            len(rest),
+            "resumed"
+        );
         let mut expected = whole();
         expected.splice(4..5, ["data hel".to_owned(), "data lo".to_owned()]);
         assert_eq!(parts.events, expected, "the parts in full");
+    }
+
+    #[test]
+    fn callback_failure_keeps_the_stored_diagnostic() {
+        struct Failing;
+        impl Parts<'_> for Failing {
+            fn on_part_data_begin(&mut self, _: &[u8]) -> Flow {
+                Flow::Fail
+            }
+        }
+        for prior in [None, Some(MultipartError::BadStartBoundary)] {
+            let mut parser = MultipartParser::new(b"AB");
+            parser.error_reason = prior;
+            parser.error_i = 7;
+            parser.error_expected = b'x';
+            parser.error_unexpected = b'y';
+            let message = parser.error_message();
+            assert_eq!(
+                parser.execute(&mut Failing, BODY),
+                Err(ParseError::Callback)
+            );
+            assert_eq!(parser.state, State::HeaderFieldStart);
+            assert_eq!(parser.error_reason, prior);
+            assert_eq!(parser.error_i, 7);
+            assert_eq!(parser.error_expected, b'x');
+            assert_eq!(parser.error_unexpected, b'y');
+            assert_eq!(parser.error_message(), message);
+            // The failed begin callback consumed the boundary, as before.
+            let mut parts = Recorder::default();
+            assert_eq!(parser.execute(&mut parts, &BODY[6..]), Ok(BODY.len() - 6));
+            assert_eq!(parts.events, whole()[1..]);
+        }
+    }
+
+    #[test]
+    fn syntax_failure_carries_its_reason_and_empty_input_consumes_zero() {
+        let mut parser = MultipartParser::new(b"AB");
+        let mut parts = Recorder::default();
+        assert_eq!(parser.execute(&mut parts, b""), Ok(0));
+        assert_eq!(
+            parser.execute(&mut parts, b"--AX"),
+            Err(ParseError::Parser(MultipartError::BadStartBoundary))
+        );
+        assert_eq!(parser.error_reason, Some(MultipartError::BadStartBoundary));
+        assert_eq!(parser.error_i, 3);
+        assert_eq!(parser.error_expected, b'B');
+        assert_eq!(parser.error_unexpected, b'X');
+        assert_eq!(parts.events, Vec::<String>::new());
     }
 }

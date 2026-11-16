@@ -86,16 +86,16 @@ impl<S: TlsSocket> Tls<'_, S> {
                 let rest =
                     unsafe { core::slice::from_raw_parts(rest.cast::<u8>(), nread - written) };
                 match uring::send(self.uring, self.fd, rest, 0, self.write_timeout) {
-                    Some(0) => {
+                    Ok(0) => {
                         set_errno(SSL_RESET);
                         return false;
                     }
-                    Some(n) => written += n,
-                    None if errno() != libc::EINTR => {
-                        self.socket.set_err(errno());
+                    Ok(n) => written += n,
+                    Err(error) if error.raw_os_error() == Some(libc::EINTR) => {}
+                    Err(error) => {
+                        self.socket.set_err(error.raw_os_error().unwrap_or(0));
                         return false;
                     }
-                    None => {}
                 }
             }
         }
@@ -109,21 +109,25 @@ impl<S: TlsSocket> Tls<'_, S> {
             // SAFETY: `buf` holds `size` writable bytes, which the receive may only write.
             let slots =
                 unsafe { core::slice::from_raw_parts_mut(buf.cast::<MaybeUninit<u8>>(), size) };
-            let rv = uring::recv(self.uring, self.fd, slots, 0, self.read_timeout);
-            if let Some(length @ 1..) = rv {
-                // SAFETY: the first `length` bytes of `buf` were received.
-                let received = unsafe { core::slice::from_raw_parts(buf.cast::<u8>(), length) };
-                if self.rbio.and_then(|rbio| rbio.write(received)) != Some(length) {
-                    self.socket.set_err(SSL_BAD_PROTOCOL);
+            match uring::recv(self.uring, self.fd, slots, 0, self.read_timeout) {
+                Ok(0) => {
+                    self.socket.set_err(SSL_RESET);
                     return false;
                 }
-                return true;
-            } else if rv == Some(0) {
-                self.socket.set_err(SSL_RESET);
-                return false;
-            } else if errno() != libc::EINTR {
-                self.socket.set_err(errno());
-                return false;
+                Ok(length) => {
+                    // SAFETY: the first `length` bytes of `buf` were received.
+                    let received = unsafe { core::slice::from_raw_parts(buf.cast::<u8>(), length) };
+                    if self.rbio.and_then(|rbio| rbio.write(received)) != Some(length) {
+                        self.socket.set_err(SSL_BAD_PROTOCOL);
+                        return false;
+                    }
+                    return true;
+                }
+                Err(error) if error.raw_os_error() == Some(libc::EINTR) => {}
+                Err(error) => {
+                    self.socket.set_err(error.raw_os_error().unwrap_or(0));
+                    return false;
+                }
             }
         }
     }

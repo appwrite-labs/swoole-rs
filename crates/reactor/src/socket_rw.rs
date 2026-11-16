@@ -110,15 +110,14 @@ pub fn ssl_sendfile(
     const CHUNK: usize = 65536;
     let mut buffer = vec![0_u8; size.min(CHUNK)];
     let at = *offset;
-    let n = swoole_rs_corebase::sys::pread(file_fd, &mut buffer, at);
-    if n <= 0 {
+    let Some(n @ 1..) = swoole_rs_corebase::sys::pread(file_fd, &mut buffer, at) else {
         return SslSendfileResult {
             value: None,
             warn: Some(SslSendfileWarning::Pread),
         };
-    }
+    };
     // pread(2) fills at most the buffer; a longer answer sends the buffer.
-    let Some(sent) = send(buffer.get(..n.cast_unsigned()).unwrap_or(&buffer)) else {
+    let Some(sent) = send(buffer.get(..n).unwrap_or(&buffer)) else {
         let error = Error::last_os_error().raw_os_error().unwrap_or(0);
         let failed = catch_error(error, kernel_nobufs) == Caught::Error;
         return SslSendfileResult {

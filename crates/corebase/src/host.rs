@@ -537,8 +537,7 @@ pub extern "C" fn swoole_system_random(min: c_int, max: c_int) -> c_int {
         }
     }
     let mut value = [0u8; 4];
-    let read = crate::sys::read(fd, &mut value);
-    if read < 4 {
+    if crate::sys::read(fd, &mut value) != Some(4) {
         crate::log::sys_warning(
             c"swoole_system_random",
             format_args!("read() from /dev/urandom failed"),

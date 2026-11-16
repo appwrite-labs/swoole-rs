@@ -426,16 +426,16 @@ impl Record {
             } else {
                 sys::read(read, &mut value)
             };
-            if done < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+            if done.is_none()
+                && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
             {
                 continue;
             }
-            let complete = if notify {
-                done.cast_unsigned() == length
+            return if notify {
+                done == Some(length)
             } else {
-                done > 0
+                done > Some(0)
             };
-            return complete;
         }
     }
 

@@ -213,7 +213,7 @@ use swoole_rs_tls::upstream::writev_sync;
 /// `Socket::writev_sync` outside the hybrid: one writev(2).
 #[cfg(not(feature = "upstream-symbols"))]
 fn writev_sync(socket: Socket<'_>, vectors: &[std::io::IoSlice<'_>]) -> Option<usize> {
-    usize::try_from(swoole_rs_corebase::sys::writev(socket.fd(), vectors)).ok()
+    swoole_rs_corebase::sys::writev(socket.fd(), vectors)
 }
 
 /// `f` over the packets or pipe records `cell` boxes, taken out and put back; `None`,
@@ -324,10 +324,10 @@ impl Bus {
     fn fill(
         &self,
         length: usize,
-        fill: impl FnOnce(&mut [MaybeUninit<u8>]) -> isize,
+        fill: impl FnOnce(&mut [MaybeUninit<u8>]) -> Option<usize>,
     ) -> Option<usize> {
         let buffer = self.buffer.get();
-        let n = if buffer.is_null() {
+        if buffer.is_null() {
             fill(&mut [])
         } else {
             let length = length.min(self.buffer_size.get());
@@ -335,8 +335,7 @@ impl Bus {
             // live until `free_buffer`; `fill` doesn't touch the bus, so nothing else
             // reaches them meanwhile.
             fill(unsafe { std::slice::from_raw_parts_mut(buffer.cast(), length) })
-        };
-        usize::try_from(n).ok()
+        }
     }
 
     #[must_use]
@@ -798,7 +797,7 @@ impl Bus {
             if let Some(front) = front.get_mut(..BUFFER_MIN) {
                 front.write_copy_of_slice(&[0; BUFFER_MIN]);
             }
-            0
+            Some(0)
         });
         self.buffer_size.set(size);
         !buffer.is_null()

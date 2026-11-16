@@ -26,12 +26,12 @@ const IPC_BUFFER_SIZE: u16 = 8192;
 pub(crate) struct Length;
 
 impl swoole_rs_phpswoole::length::PackageLength for Length {
-    fn length(callable: &Callable, bytes: &[u8]) -> isize {
+    fn length(callable: &Callable, bytes: &[u8]) -> Option<usize> {
         package_length(callable, bytes)
     }
 }
 
-fn package_length(callable: &Callable, bytes: &[u8]) -> isize {
+fn package_length(callable: &Callable, bytes: &[u8]) -> Option<usize> {
     // The call borrows the string, released when `data` drops.
     let data = Owned::string(ZString::new(bytes));
     // Released only once the call returned a result, as upstream releases it.
@@ -40,17 +40,17 @@ fn package_length(callable: &Callable, bytes: &[u8]) -> isize {
     match called {
         Err(bailout) => {
             bailout.defer();
-            -1
+            None
         }
         Ok(false) => {
             warn(ErrorKind::Fatal, "length function handler error");
-            -1
+            None
         }
         Ok(true) => {
             let length = retval.long();
             // Our reference to the result: a destructor's bailout is deferred.
             drop(ManuallyDrop::into_inner(retval));
-            isize::try_from(length).unwrap_or(-1)
+            usize::try_from(length).ok()
         }
     }
 }

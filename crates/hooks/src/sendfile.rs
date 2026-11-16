@@ -61,14 +61,14 @@ pub const TLS_WARN_WRITE: c_int = 2;
 pub fn tls_sendfile(
     size: usize,
     offset: &mut libc::off_t,
-    mut pread: impl FnMut(&mut [u8], libc::off_t) -> isize,
+    mut pread: impl FnMut(&mut [u8], libc::off_t) -> Option<usize>,
     mut send: impl FnMut(&[u8]) -> Option<usize>,
     mut catch: impl FnMut() -> Option<Caught>,
 ) -> (usize, c_int) {
     let mut buf = vec![0_u8; size.min(TLS_CHUNK)];
     let mut total = 0;
     while total < size {
-        let Ok(n @ 1..) = usize::try_from(pread(&mut buf, *offset)) else {
+        let Some(n @ 1..) = pread(&mut buf, *offset) else {
             return (total, TLS_WARN_PREAD);
         };
         match send(buf.get(..n).unwrap_or(&buf)) {
@@ -176,7 +176,7 @@ mod tests {
                 let at = usize::try_from(at).unwrap();
                 let n = buf.len().min(file.len().saturating_sub(at));
                 buf[..n].copy_from_slice(&file[at..at + n]);
-                n.cast_signed()
+                Some(n)
             },
             |data| {
                 let sent = script
