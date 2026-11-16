@@ -35,11 +35,10 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
         return;
     };
     for _ in 0..ACCEPT_MAX_COUNT {
-        let accepted = listener.edit(swoole_rs_reactor::SocketFields::accept);
-        // SAFETY: null, or the socket `accept` just made, which nothing else holds
-        // until a connection takes it or `abort` frees it: a heap record live until
-        // that free, whose caller answers for the handles left.
-        let Some(sock) = (unsafe { Socket::<'static>::from_ptr(accepted) }) else {
+        // The record `accepted` just made, leaked to the connection that takes it or
+        // `abort`, which frees it (an unsafe free whose caller answers for the handles left).
+        let accepted = listener.edit(swoole_rs_reactor::SocketFields::accepted);
+        let Some(sock) = accepted.map(|record| Socket::new(Box::leak(record))) else {
             if accept_failed(serv, errno()) {
                 continue;
             }
