@@ -14,7 +14,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_reactor::{
-    SOCKET_DEFAULTS, Socket, SocketRecord, TimeoutKind, swr_v1_socket_buffer_size,
+    SOCKET_DEFAULTS, Socket, SocketRecord, TimeoutKind, set_socket_buffer_size,
 };
 
 /// `SW_FD_PIPE`.
@@ -168,7 +168,7 @@ impl SocketPair {
 pub extern "C" fn unix_socket_set_buffer_size(this: &SocketPair, size: usize) -> bool {
     let size = size.c_cast::<u32>();
     ends(this).into_iter().all(|socket| {
-        socket.is_some_and(|socket| swr_v1_socket_buffer_size(socket.fd(), true, true, size))
+        socket.is_some_and(|socket| set_socket_buffer_size(socket.fd(), true, true, size).is_ok())
     })
 }
 

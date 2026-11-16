@@ -1148,7 +1148,7 @@ mod tests {
         fn event_available(&self) -> bool {
             unreachable!("loop-only fixture")
         }
-        fn event_wait(&self) -> c_int {
+        fn event_wait(&self) -> bool {
             unreachable!("loop-only fixture")
         }
         fn waitpid(&self, _: c_int) -> bool {

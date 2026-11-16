@@ -88,16 +88,14 @@ fn get_contents_() {
 
 /// `file_get_size(const std::string &)` left the build with its callers, so its
 /// ENOENT check has no subject; `file_get_size(int)` is `file::file_size`, whose
-/// error the caller publishes.
+/// error the caller publishes: upstream's `-1` and errno are an `Err` with that errno.
 fn get_size() {
     let size = file_size(9999);
-    assert_eq!(size.size, -1);
-    assert_eq!(size.error, EBADF);
+    assert_eq!(size.map_err(|e| e.raw_os_error()), Err(Some(EBADF)));
 
     let fd = std::fs::File::open("/tmp").expect("open /tmp");
     let size = file_size(std::os::fd::AsRawFd::as_raw_fd(&fd));
-    assert_eq!(size.size, -1);
-    assert_eq!(size.error, EISDIR);
+    assert_eq!(size.map_err(|e| e.raw_os_error()), Err(Some(EISDIR)));
 }
 
 /// `File::read_all` is `FileRecord::read_all`, whose callers warn (and so set the last
@@ -123,7 +121,10 @@ fn error() {
         close(fds[1]);
     }
 
-    assert_eq!(file_size(fp.descriptor()).error, EBADF);
+    assert_eq!(
+        file_size(fp.descriptor()).map_err(|e| e.raw_os_error()),
+        Err(Some(EBADF))
+    );
 
     let mut fp = fp;
     assert_eq!(fp.take_descriptor(), fds[0]);

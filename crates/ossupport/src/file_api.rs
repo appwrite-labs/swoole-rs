@@ -48,11 +48,13 @@ pub fn fd_write_all(fd: c_int, append: bool, data: &[u8]) -> usize {
 
 /// `file_get_size(int)`: a regular file's size, or `None` with the last error set.
 fn size_of_fd(fd: c_int) -> Option<usize> {
-    let size = file_size(fd);
-    if size.error != 0 {
-        log::set_last_error(size.error);
+    match file_size(fd) {
+        Ok(size) => usize::try_from(size).ok(),
+        Err(error) => {
+            log::set_last_error(error.raw_os_error().unwrap_or_default());
+            None
+        }
     }
-    usize::try_from(size.size).ok()
 }
 
 /// `swoole_tmpfile`: creates the file named by the `XXXXXX` template in `template`

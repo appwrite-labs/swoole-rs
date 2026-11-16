@@ -2,7 +2,7 @@
 //! the server: the records Rust lays out for the reactor's event and server, the
 //! connection, its socket and receive buffer, the port's protocol and the server's
 //! settings. Logs name the upstream function that wrote them.
-use core::ffi::{CStr, c_int};
+use core::ffi::CStr;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
@@ -53,7 +53,8 @@ struct Read<'a> {
 }
 
 /// `ListenPort::readable_callback_*` of `kind` on the event `read` lends: a readable
-/// one on a live connection of its server, which only this reactor thread touches.
+/// one on a live connection of its server, which only this reactor thread touches;
+/// false where upstream returns `SW_ERR`.
 // Always inlined, down to the framing loop: each callback's `kind` is a constant, so one
 // frame reads, measures and dispatches where five did (#3335).
 #[inline(always)]
@@ -62,11 +63,11 @@ pub(crate) fn on_read(
     port: view::Port<'_>,
     read: ReadEvent<'_>,
     kind: Readable,
-) -> c_int {
+) -> bool {
     let (server, event, conn) = read.into_parts();
     let lent = Cell::new(*event);
     let Some(socket) = event.socket() else {
-        return -1;
+        return false;
     };
     let port = port.config();
     let mut read = Read {
@@ -87,7 +88,7 @@ pub(crate) fn on_read(
     }
     let ok = readable(kind, &mut read);
     *event = read.event.get();
-    if ok { 0 } else { -1 }
+    ok
 }
 
 use swoole_rs_corebase::sys::errno;
