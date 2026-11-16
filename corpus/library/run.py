@@ -9,6 +9,10 @@ built: swoole.enable_library on, the backing services of its docker-compose.yml 
 localhost, counit for the concurrent suite and PHPUnit for the serial one, but one
 process per file.
 
+--services starts those services and waits until the slow ones answer. When one stops
+or they don't answer in time, it keeps every container's state and log under
+<output>/services/ and exits 1.
+
 The first engine is the control. A test that passes on it and doesn't on another
 engine is a regression and exits 1; tests failing on every engine are listed.
 """
@@ -20,6 +24,8 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+import urllib.request
 import xml.etree.ElementTree as ET
 
 HERE = Path(__file__).resolve().parent
@@ -30,6 +36,8 @@ REPOSITORY = 'https://github.com/swoole/library.git'
 # Our copy of composer-embedded.json with PHP pinned to the runners' release, so the
 # lock resolves the same everywhere.
 COMPOSER = 'composer-swoole-rs.json'
+SERVICES = ('consul', 'httpbin', 'mongodb', 'mysql', 'nacos', 'oracle', 'pgsql', 'php-fpm', 'redis')
+COMPOSE = ('docker', 'compose', '-f', 'docker-compose.yml', '-f', 'docker-compose.host.yml')
 
 
 def embedded_commit():
@@ -152,9 +160,68 @@ def summary(results, regressions, everywhere, commit):
             print(f'- `{test}`')
 
 
+def compose(*args):
+    return subprocess.run([*COMPOSE, *args], cwd=SOURCE, capture_output=True, text=True)
+
+
+def answers(url):
+    try:
+        with urllib.request.urlopen(url, timeout=5):
+            return True
+    except OSError:
+        return False
+
+
+def ready():
+    """Whether the slow services answer: Oracle's log says so, MySQL pings and Nacos serves."""
+    return ('DATABASE IS READY TO USE' in compose('logs', 'oracle').stdout
+            and compose('exec', '-T', 'mysql', 'mysqladmin', 'ping', '-uusername', '-ppassword',
+                        '--silent').returncode == 0
+            and answers('http://127.0.0.1:8848/nacos/'))
+
+
+def stopped():
+    """The services whose container exited or died: none of them comes back."""
+    return compose('ps', '-a', '--status', 'exited', '--status', 'dead', '--format', '{{.Service}}').stdout.split()
+
+
+def keep_evidence(directory):
+    directory.mkdir(parents=True, exist_ok=True)
+    listing = compose('ps', '-a').stdout
+    ids = compose('ps', '-a', '-q').stdout.split()
+    states = subprocess.run(
+        ['docker', 'inspect', '--format', '{{.Name}} status={{.State.Status}} exit={{.State.ExitCode}} '
+         'oom={{.State.OOMKilled}} error={{.State.Error}} started={{.State.StartedAt}} '
+         'finished={{.State.FinishedAt}}', *ids],
+        capture_output=True, text=True).stdout if ids else ''
+    (directory / 'ps.txt').write_text(listing)
+    (directory / 'state.txt').write_text(states)
+    print(listing + states, end='')
+    for service in SERVICES:
+        logs = compose('logs', '--no-color', '--timestamps', service)
+        (directory / f'{service}.log').write_text(logs.stdout + logs.stderr)
+    print(f'Service logs: {directory}')
+
+
+def start_services(evidence, attempts=120, interval=5):
+    subprocess.run([*COMPOSE, 'up', '-d', *SERVICES], cwd=SOURCE, check=True)
+    for _ in range(attempts):
+        if ready():
+            return True
+        if gone := stopped():
+            print(f'Stopped before the services were ready: {", ".join(gone)}')
+            break
+        time.sleep(interval)
+    else:
+        print(f'The services were not ready after {attempts * interval}s')
+    keep_evidence(evidence)
+    return False
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--prepare', action='store_true')
+    parser.add_argument('--services', action='store_true')
     parser.add_argument('--composer', default='composer')
     parser.add_argument('--engine', action='append', default=[], metavar='NAME=PATH',
                         help='first one is the control')
@@ -164,6 +231,8 @@ def main():
     args = parser.parse_args()
     if args.prepare:
         prepare(args.composer)
+    if args.services and not start_services(args.output / 'services'):
+        sys.exit(1)
     if not args.engine:
         return
     if not (SOURCE / 'vendor/bin/counit').exists():
