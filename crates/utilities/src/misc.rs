@@ -6,6 +6,7 @@ use crate::{swoole_hash, swr_v1_utils_spinlock};
 use std::ffi::{c_char, c_int};
 use std::sync::atomic::AtomicU32;
 use swoole_rs_corebase::constants::SW_SPINLOCK_LOOP_N;
+use swoole_rs_corebase::lent::{Count, In};
 use swoole_rs_corebase::swr_v1_core_cpu_num;
 
 /// `void sw_spinlock(sw_atomic_t *lock)`.
@@ -88,19 +89,12 @@ const SIGNED_CHAR: bool = c_char::MIN != 0;
 
 macro_rules! hashes {
     ($($symbol:literal => $name:ident -> $ret:ty = |$key:ident| $hash:expr;)*) => {$(
-        #[doc = concat!("`", stringify!($name), "(const char *key, size_t len)`.")]
-        ///
-        /// # Safety
-        /// `key` is readable for `len` bytes.
+        #[doc = concat!("`", stringify!($name), "(const char *key, size_t len)`: the `len`")]
+        /// bytes C lends at `key` (none for null).
         #[must_use]
         #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
-        pub unsafe extern "C" fn $name(key: *const c_char, len: usize) -> $ret {
-            let $key: &[u8] = if key.is_null() || len == 0 {
-                &[]
-            } else {
-                // SAFETY: `key` is readable for `len` bytes, as the caller promises.
-                unsafe { std::slice::from_raw_parts(key.cast(), len) }
-            };
+        pub extern "C" fn $name<'id>(key: In<'id, u8>, len: Count<'id>) -> $ret {
+            let $key = key.drain(len).bytes();
             $hash
         }
     )*};
@@ -122,14 +116,14 @@ mod tests {
     #[test]
     fn the_hashes_are_the_utility_hashes() {
         let key = b"swoole";
-        let hashes: [(_, unsafe extern "C" fn(*const c_char, usize) -> u64); 3] = [
+        let hashes: [(_, for<'id> extern "C" fn(In<'id, u8>, Count<'id>) -> u64); 3] = [
             (0, swoole_hash_php),
             (1, swoole_hash_jenkins),
             (2, swoole_hash_austin),
         ];
         for (algorithm, hash) in hashes {
             assert_eq!(
-                unsafe { hash(key.as_ptr().cast(), key.len()) },
+                swoole_rs_corebase::lent::lend_in(key, |at, n: Count<'_>| hash(at, n)),
                 swoole_hash(key, algorithm, SIGNED_CHAR)
             );
         }

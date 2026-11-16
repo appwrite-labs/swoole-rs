@@ -199,24 +199,10 @@ impl TimerNode {
         node
     }
 
-    pub(crate) fn is_php(&self) -> bool {
-        self.php
-    }
-
     /// The timer's id, which its timer never reuses.
     #[must_use]
     pub fn id(&self) -> c_long {
         self.id
-    }
-
-    pub(crate) fn info(&self) -> Info {
-        Info {
-            exec_msec: self.exec_msec,
-            exec_count: self.exec_count,
-            interval: self.interval,
-            round: self.round,
-            removed: self.removed,
-        }
     }
 }
 
@@ -239,12 +225,25 @@ extern "C" fn alarm(_signo: c_int) {
 /// What a node calls, copied out of it so that no borrow of it spans a call.
 #[derive(Clone, Copy)]
 struct Calls {
+    /// Upstream's `type == TYPE_PHP`.
+    php: bool,
     closure: Option<Closure>,
-    plain: Option<Plain>,
+    plain: Option<PlainCall>,
     callback: Option<Callback>,
-    data: *mut c_void,
     destructor: Option<Destructor>,
-    plain_drop: Option<Plain>,
+    plain_drop: Option<PlainCall>,
+}
+
+/// A node's [`Plain`] function with the node's own data, what it was made to be called
+/// with: only [`applied`] pairs them, from one node.
+#[derive(Clone, Copy)]
+struct PlainCall(Plain, *mut c_void);
+
+impl PlainCall {
+    fn run(self) {
+        // SAFETY: the node's function of its own data, the pair it was made with.
+        unsafe { (self.0)(self.1) };
+    }
 }
 
 /// Copies a view Rust hands back into its node, so the node is current: the node,
@@ -260,13 +259,14 @@ fn applied(view: &TimerView) -> (*mut TimerNode, Calls) {
     node_ref.exec_count = view.exec_count;
     node_ref.round = view.birth_round;
     node_ref.removed = view.removed;
+    let data = node_ref.data;
     let calls = Calls {
+        php: node_ref.php,
         closure: node_ref.closure,
-        plain: node_ref.plain,
+        plain: node_ref.plain.map(|f| PlainCall(f, data)),
         callback: node_ref.callback,
-        data: node_ref.data,
         destructor: node_ref.destructor,
-        plain_drop: node_ref.plain_drop,
+        plain_drop: node_ref.plain_drop.map(|f| PlainCall(f, data)),
     };
     (node, calls)
 }
@@ -364,10 +364,19 @@ impl Owner {
         self.lend(|queue| queue.token(id)).cast()
     }
 
-    /// `Timer::get(id)`, borrowed.
-    pub(crate) fn get(&self, id: c_long) -> Option<&TimerNode> {
-        // SAFETY: null or a live TimerNode that `add` made.
-        unsafe { self.token(id).as_ref() }
+    /// `Timer::get(id)`'s fields, as its node holds them, and whether it is a PHP
+    /// timer.
+    pub(crate) fn get(&self, id: c_long) -> Option<(Info, bool)> {
+        let view = self.lend(|queue| queue.get(id)).ok()?;
+        let (_, calls) = applied(&view);
+        let info = Info {
+            exec_msec: view.deadline,
+            exec_count: view.exec_count,
+            interval: view.interval,
+            round: view.birth_round,
+            removed: view.removed,
+        };
+        Some((info, calls.php))
     }
 
     /// Picks the manual, reactor or system backend. Another backend keeps a
@@ -414,8 +423,7 @@ impl Owner {
             // The detached node, live until its box is dropped below.
             destructor(node);
         } else if let Some(plain_drop) = calls.plain_drop {
-            // SAFETY: the node's destructor of its own data.
-            unsafe { plain_drop(calls.data) };
+            plain_drop.run();
         }
         // SAFETY: `add` boxed it; the queue no longer holds it.
         drop(unsafe { Box::from_raw(node) });
@@ -563,8 +571,7 @@ impl Owner {
                 if let Some(closure) = calls.closure {
                     closure.run();
                 } else if let Some(plain) = calls.plain {
-                    // SAFETY: the node's function of its own data.
-                    unsafe { plain(calls.data) };
+                    plain.run();
                 } else if let Some((callback, node)) = calls.callback.zip(Lent::of(node)) {
                     // The selected node, which the queue holds until `complete`.
                     callback(self, node);

@@ -24,8 +24,6 @@ use swoole_rs_corebase::sys;
 
 const INVALID: i32 = -1;
 const NO_MEMORY: i32 = -2;
-/// `SW_ERROR_MALLOC_FAIL`.
-const MALLOC_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as c_int;
 /// `SW_MIN_PAGE_SIZE`.
 const MIN_PAGE_SIZE: u32 = 4096;
 
@@ -401,12 +399,11 @@ upstream! {
         count.checked_mul(size).map_or(ptr::null_mut(), |size| sw_shm_malloc(size))
     }
     "_Z11sw_shm_freePv", "_Z11sw_shm_freePv" =>
-    /// `void sw_shm_free(void *ptr)`, for native code: Rust holds a mapping as [`Shm`].
-    ///
-    /// # Safety
-    /// `payload` is null or a live `sw_shm_malloc` payload, freed once.
-    pub unsafe extern "C" fn sw_shm_free(payload: *mut c_void) {
-        Shm(Cell::new(payload)).free();
+    /// `void sw_shm_free(void *ptr)`, for native code, whose payload pointer is the
+    /// [`Shm`] it gives up, as the C caller's contract (null or a live `sw_shm_malloc`
+    /// payload, freed once) makes it.
+    pub extern "C" fn sw_shm_free(mut payload: Shm) {
+        payload.free();
     }
 }
 
@@ -455,9 +452,7 @@ pub mod pool {
         let adopted = words::<AtomicU64>(count)
             .is_some_and(swoole_rs_utilities::swr_v1_utils_wait_registry_init);
         if !adopted {
-            let message = c"failed to allocate atomic wait registry";
-            // SAFETY: `swoole_init`'s hook exits; no frame here owns anything.
-            unsafe { swoole_rs_corebase::fatal_error(super::MALLOC_FAIL, message) };
+            swoole_rs_corebase::fatal("failed to allocate atomic wait registry");
         }
     }
 
