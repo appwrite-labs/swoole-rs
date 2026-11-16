@@ -34,6 +34,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
+use swoole_rs_ffi::frame_api::Frame;
 // The crates, once: the C++ in libswoole.a and the cases call them by symbol.
 use swoole_rs_ffi as _;
 use swoole_rs_ports::http_routes::exports as http;
@@ -81,16 +82,6 @@ struct CppString {
     offset: i64,
     str: *mut c_char,
     allocator: *const c_void,
-}
-
-/// `swoole::websocket::Frame`.
-#[repr(C)]
-struct Frame {
-    header: [u8; 2],
-    mask_key: [u8; 4],
-    header_length: u16,
-    payload_length: usize,
-    payload: *mut c_char,
 }
 
 /// `swoole::PacketLength`.
@@ -142,8 +133,7 @@ unsafe fn ws_encode(buffer: *mut CppString, data: &[u8], opcode: u8, flags: u8) 
 
 /// `websocket::decode`.
 fn ws_decode(frame: &mut Frame, data: &mut [u8]) -> bool {
-    // SAFETY: `Frame` is laid out as the crates'.
-    swoole_rs_ffi::frame_api::decode(unsafe { &mut *std::ptr::from_mut(frame).cast() }, data)
+    swoole_rs_ffi::frame_api::decode(frame, data)
 }
 
 /// `http_server::get_package_length`, over the cases' records.

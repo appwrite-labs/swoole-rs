@@ -181,15 +181,6 @@ pub fn swoole_event_writev(
 /// `void swoole_event_set_handler(int fd_type, int event, ReactorHandler handler)`;
 /// nothing without a reactor. A `Handler` is a safe function, sound with the live
 /// reactor and event the loop calls it with.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z24swoole_event_set_handleriiPFiPN6swoole7ReactorEPNS_5EventEE")
-)]
-pub extern "C" fn swoole_event_set_handler(fd_type: c_int, event: c_int, handler: Option<Handler>) {
-    set_handler(fd_type, Events::from_bits(event), handler);
-}
-
-/// [`swoole_event_set_handler`] for typed `event`.
 pub fn set_handler(fd_type: c_int, event: Events, handler: Option<Handler>) {
     if let Some(reactor) = running() {
         crate::reactor_upstream::set_handler(reactor, fd_type, event, handler);
@@ -259,10 +250,10 @@ pub(crate) fn field_mut<T>(write: impl FnOnce(&mut ReactorFields) -> T) -> Optio
     Some(running()?.with(|state| write(&mut state.fields)))
 }
 
-/// Runs `call` (with null data) when the thread's `Reactor` is destroyed;
-/// nothing without one, and the process ends if it can't allocate.
-pub fn on_destroy(call: extern "C-unwind" fn(*mut c_void)) {
-    field_mut(|fields| crate::deferred::defer_destroy_any(fields, call));
+/// Runs `call` when the thread's `Reactor` is destroyed; nothing without one, and
+/// the process ends if it can't allocate.
+pub fn on_destroy(call: fn()) {
+    field_mut(|fields| crate::deferred::defer_destroy_call(fields, call));
 }
 
 /// `sw_reactor()->running = running`, when there is a reactor.
@@ -309,7 +300,7 @@ pub trait FdHandler {
     fn handle(fd: c_int) -> bool;
 }
 
-extern "C" fn fd_handler<H: FdHandler>(_: crate::Running<'_>, event: &mut crate::Event) -> c_int {
+fn fd_handler<H: FdHandler>(_: crate::Running<'_>, event: &mut crate::Event) -> c_int {
     if H::handle(event.fd()) { 0 } else { -1 }
 }
 
@@ -588,7 +579,7 @@ mod tests {
         assert_eq!(take(), ["idle"]);
     }
 
-    extern "C-unwind" fn noop(_: *mut c_void) {}
+    fn noop() {}
 
     /// A second `&mut` to the fields while the first is live is refused before it
     /// is made; Miri reports the nested borrow without the check (#3248).

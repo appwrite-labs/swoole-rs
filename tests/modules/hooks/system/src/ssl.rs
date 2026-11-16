@@ -1,12 +1,12 @@
 //! Upstream's `core-tests/src/protocol/ssl.cpp`, one function per TEST with the same
 //! inputs and expected values, over crates/tls: `swoole_ssl_*` under their upstream
 //! symbols, `SSLContext::create` as crates/tls's `ssl_context_create` by path, and [`SslContext`]
-//! holding an owner from `swr_v1_tls_owner_new` and setting it with `string_set`.
+//! holding an owner from `tls_owner_new` and setting it with `string_set`.
 
 use std::ffi::{CStr, c_char, c_int, c_ulong, c_void};
 
 use super::network_socket::err_put_error;
-use super::socket::{TlsPrepared, get_ssl_dir, string_set, swr_v1_tls_owner_new};
+use super::socket::{TlsPrepared, get_ssl_dir, string_set, tls_owner_new};
 
 // OpenSSL's codes (the SSL_F_* function codes are 0 in OpenSSL 3).
 const ERR_LIB_SSL: c_int = 20;
@@ -42,7 +42,7 @@ struct SslContext(TlsPrepared);
 
 impl SslContext {
     fn new() -> Self {
-        let prepared = swr_v1_tls_owner_new();
+        let prepared = tls_owner_new();
         assert!(!prepared.owner.is_null());
         Self(prepared)
     }

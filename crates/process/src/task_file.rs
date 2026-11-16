@@ -73,7 +73,6 @@ pub(crate) const TASK_TMP_PATH_SIZE: usize = 256;
 
 /// The payload descriptor written into `EventData::data` when a task spills to a
 /// temp file (upstream's `swoole::PacketTask`).
-#[repr(C)]
 struct PacketTask {
     length: usize,
     tmpfile: [u8; TASK_TMP_PATH_SIZE],

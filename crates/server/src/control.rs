@@ -255,7 +255,7 @@ fn exit_after_max_wait_time(serv: Server<'_>) {
 }
 
 /// The forced-termination exit condition: past `max_wait_time`, stop the loop.
-extern "C-unwind" fn forced_exit(_: &mut usize) -> bool {
+fn forced_exit(_: &mut usize) -> bool {
     if swoole_rs_corebase::time_now() > FORCED_EXIT_DEADLINE.load(Relaxed) {
         let m = format_args!("graceful shutdown failed, forced termination");
         warn(

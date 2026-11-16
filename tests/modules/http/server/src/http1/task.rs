@@ -12,7 +12,6 @@
 
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicU32};
-use std::time::Instant;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{swoole_random_string, swr_v1_core_set_current_task_id};
 use swoole_rs_locks::SharedMutex;
@@ -106,7 +105,13 @@ impl TaskHost for TaskPool {
     fn dispatch(&mut self, task: Packed<'_>, worker: Option<u32>, blocking: bool) -> bool {
         // SAFETY: the live task pool.
         let pool = unsafe { swoole_rs_process::process_pool::PoolRef::new(self.pool) };
-        pool::dispatch(pool, task, worker, blocking)
+        pool::dispatch(
+            swoole_rs_server::process_pool_native(),
+            pool,
+            task,
+            worker,
+            blocking,
+        )
     }
 
     fn pipe_clean(&mut self) {
@@ -339,6 +344,7 @@ impl TaskServer for Server {
         // SAFETY: the created server's task pool and a packed EventData.
         let sent = unsafe {
             pool::dispatch(
+                swoole_rs_server::process_pool_native(),
                 swoole_rs_process::process_pool::PoolRef::new(self.task_pool()),
                 swoole_rs_process::task_file::Packed::from_raw(buf.head().cast()),
                 u32::try_from(*dst_worker_id).ok(),
@@ -396,7 +402,12 @@ impl TaskServer for Server {
                 std::slice::from_raw_parts(ptr::from_ref(ev).cast::<u8>(), ev.size()),
             )
         };
-        pool::send_pipe_message(worker, bytes, flags)
+        pool::send_pipe_message(
+            swoole_rs_server::process_pool_native(),
+            worker,
+            bytes,
+            flags,
+        )
     }
 
     fn send_pipe_message(self, worker_id: u32, data: &[u8]) -> bool {
@@ -502,7 +513,10 @@ fn task_worker() {
 
     t1.join().unwrap();
     // The task pool, whose worker loop has ended.
-    pool::destroy(serv.view().task_pool_ref());
+    pool::destroy(
+        swoole_rs_server::process_pool_native(),
+        serv.view().task_pool_ref(),
+    );
 
     assert_eq!(serv.task_count(), 2);
     assert_no_failure();
@@ -521,28 +535,16 @@ unsafe extern "C" fn task_worker2_on_pipe_message(
     counter_incr(7);
 }
 
-/// Microseconds since the parent initialized this clock before forking. Store
-/// only in shared counters; printing in a worker would perturb its scheduling.
-fn task_worker2_mark(index: usize) {
-    static START: OnceLock<Instant> = OnceLock::new();
-    let elapsed = START.get_or_init(Instant::now).elapsed().as_micros() + 1;
-    counter_set(index, i32::try_from(elapsed).unwrap_or(i32::MAX));
-}
-
 unsafe extern "C" fn task_worker2_on_worker_start(
     _: *mut c_void,
     serv: *mut c_void,
     worker: *mut c_void,
 ) {
     let serv = Server(serv);
-    let id = worker_id(worker) as usize;
-    if counter_get(2 + id) == 0 {
-        task_worker2_mark(12 + id);
-    }
-    task_worker2_mark(15 + id);
+    super::timeline::mark(["start 0", "start 1", "start 2"][worker_id(worker) as usize]);
     if worker_id(worker) == 0 {
         after(50, move || {
-            task_worker2_mark(9);
+            super::timeline::mark("stop timer");
             let mut ev = EventData::new();
             ev.info.type_ = SW_SERVER_EVENT_SHUTDOWN;
             ev.info.len = 0;
@@ -551,7 +553,7 @@ unsafe extern "C" fn task_worker2_on_worker_start(
                     .is_some_and(|sent| sent > 0),
                 "serv->send_to_worker_from_worker(1, &ev, ..) > 0",
             );
-            task_worker2_mark(10);
+            super::timeline::mark("stop sent");
         });
 
         after(60, move || {
@@ -573,7 +575,7 @@ unsafe extern "C" fn task_worker2_on_worker_start(
         });
 
         after(100, move || {
-            task_worker2_mark(11);
+            super::timeline::mark("shutdown timer");
             serv.shutdown();
         });
     }
@@ -602,18 +604,17 @@ fn task_worker2() {
     serv.set_callback(Slot::Receive, receive_ok as *const c_void);
 
     assert_eq!(serv.create(), SW_OK);
-    task_worker2_mark(8);
+    super::timeline::arm();
     assert_eq!(serv.start(), SW_OK);
 
     assert_eq!(
         counter_get(1),
         4,
-        "onWorkerStart counts for workers 0/1/2: {:?}; pipe messages: {}; callback failure: {}; \
-         microseconds [start, stop timer, stop sent, shutdown timer, first starts 0/1/2, last starts 0/1/2]: {:?}",
+        "onWorkerStart counts for workers 0/1/2: {:?}; pipe messages: {}; callback failure: {}; {}",
         [counter_get(2), counter_get(3), counter_get(4)],
         counter_get(7),
         shared().failed.load(Ordering::SeqCst),
-        (8..18).map(counter_get).collect::<Vec<_>>(),
+        super::timeline::render(),
     );
     assert_eq!(counter_get(7), 1); // onPipeMessage
     assert_no_failure();
