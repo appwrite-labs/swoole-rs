@@ -210,7 +210,7 @@ pub struct Families {
     pub thread_classes_minit: [fn(&swoole_rs_zend::Minit); 4],
     /// RINIT's coroutine, thread and tracer steps.
     pub coroutine_rinit: Hook,
-    pub thread_rinit: Hook,
+    pub thread_rinit: fn(Request<'_>),
     pub tracer_rinit: Hook,
     /// RSHUTDOWN's server, coroutine and scheduler, thread and tracer steps.
     pub server_rshutdown: Hook,
@@ -342,6 +342,7 @@ pub(crate) enum Step {
         )
     )]
     Shutdown(fn(&swoole_rs_zend::Mshutdown)),
+    Request(fn(Request<'_>)),
     Hook(Hook),
 }
 
@@ -350,7 +351,7 @@ pub(crate) enum Step {
 enum Phase<'a> {
     Minit(&'a swoole_rs_zend::Minit),
     Mshutdown(&'a swoole_rs_zend::Mshutdown),
-    Request,
+    Request(Request<'a>),
 }
 
 /// Run `steps` in order, each inside `zend_try`, stopping at a bailout. It
@@ -366,10 +367,11 @@ fn run(steps: Vec<Step>, phase: Phase<'_>) -> Result<(), Bailout> {
             }
             (Step::Typed(step), Phase::Minit(minit)) => contain_with(|| step(minit)),
             (Step::Shutdown(step), Phase::Mshutdown(mshutdown)) => contain_with(|| step(mshutdown)),
+            (Step::Request(step), Phase::Request(request)) => contain_with(|| step(request)),
             // SAFETY: a C or C++ hook that Zend may run at this phase; the shim's
             // setjmp sits between this frame and the hook.
             (Step::Hook(hook), _) => flag(unsafe { swr_zend_try_hook(Some(hook)) }),
-            (Step::Minit(_) | Step::Typed(_) | Step::Shutdown(_), _) => Ok(()),
+            (Step::Minit(_) | Step::Typed(_) | Step::Shutdown(_) | Step::Request(_), _) => Ok(()),
         }?;
     }
     Ok(())
@@ -602,7 +604,7 @@ pub(crate) extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, shutdown: Shut
 }
 
 /// `PHP_RINIT_FUNCTION(swoole)`.
-pub(crate) extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, _request: Request<'_>) -> c_int {
+pub(crate) extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, request: Request<'_>) -> c_int {
     /// The `zend_execute_ex` hook the reset below replaced, which only it makes.
     #[repr(transparent)]
     struct Replaced(*mut c_void);
@@ -643,7 +645,7 @@ pub(crate) extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, _request: Request<
     ];
     steps.extend(optional::rinit(families));
     steps.push(Step::Hook(families.tracer_rinit));
-    if let Err(bailed) = run(steps, Phase::Request) {
+    if let Err(bailed) = run(steps, Phase::Request(request)) {
         bailout::raise(Err(bailed));
         return SUCCESS;
     }
@@ -652,7 +654,7 @@ pub(crate) extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, _request: Request<
 }
 
 /// `PHP_RSHUTDOWN_FUNCTION(swoole)`.
-pub(crate) extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, _request: Request<'_>) -> c_int {
+pub(crate) extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, request: Request<'_>) -> c_int {
     let globals = globals();
     if !globals.cli.get() {
         return SUCCESS;
@@ -678,7 +680,7 @@ pub(crate) extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, _request: Requ
         Step::Hook(families.tracer_rshutdown),
         Step::Hook(event_free),
     ]);
-    if let Err(bailed) = run(steps, Phase::Request) {
+    if let Err(bailed) = run(steps, Phase::Request(request)) {
         bailout::raise(Err(bailed));
         return SUCCESS;
     }

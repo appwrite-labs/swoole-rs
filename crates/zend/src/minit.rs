@@ -128,6 +128,7 @@ pub struct Mshutdown {
 macro_rules! phase {
     ($($(#[$doc:meta])* $name:ident;)*) => {$(
         $(#[$doc])*
+        #[derive(Clone, Copy)]
         #[repr(transparent)]
         pub struct $name<'a>(c_int, PhantomData<&'a *mut ()>);
 
