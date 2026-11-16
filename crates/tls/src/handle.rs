@@ -11,18 +11,18 @@ use crate::context::SslCtx;
 use openssl_sys::{
     BIO, BIO_read, BIO_write, OPENSSL_STACK, SSL, SSL_CIPHER, SSL_CTRL_MODE,
     SSL_CTRL_SET_TLSEXT_HOSTNAME, SSL_CTX, SSL_peek, SSL_read, SSL_set_bio, SSL_write,
-    TLSEXT_NAMETYPE_host_name, X509, X509_check_host, stack_st_X509,
+    TLSEXT_NAMETYPE_host_name, X509, stack_st_X509,
 };
-use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
+use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong, c_void};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
-use swoole_rs_corebase::sys::ReadSlot;
+use swoole_rs_corebase::sys::{ReadSlot, Text};
 use swoole_rs_reactor::{Socket, SocketFields};
 
 // libssl's and libcrypto's own declarations, with each pointer typed as the
 // handle it is: `Ssl`, `Bio` and `CertRef` are live for their lifetime, `CipherRef` is
 // an entry of OpenSSL's static cipher table, `Cert` and `OwnedBio` take the reference
-// OpenSSL returns, a `CText<'static>` is one of OpenSSL's static strings, and an
+// OpenSSL returns, a `Text<'static>` is one of OpenSSL's static strings, and an
 // `SslCtx` reference is a live context.
 // The `safe` ones take only such handles and plain values, read or change only the
 // object behind the handle or this thread's error queue, and return raw pointers the
@@ -31,17 +31,26 @@ unsafe extern "C" {
     safe fn ERR_clear_error();
     safe fn ERR_peek_error() -> c_ulong;
     safe fn ERR_get_error() -> c_ulong;
-    safe fn ERR_reason_error_string(error: c_ulong) -> Option<CText<'static>>;
+    safe fn ERR_reason_error_string(error: c_ulong) -> Option<Text<'static>>;
     /// Writes at most `length` bytes, NUL-terminated, into `buffer`: the length is the
     /// buffer's own, the one value [`ErrorLength`] has.
     safe fn ERR_error_string_n(error: c_ulong, buffer: &mut [u8; 512], length: ErrorLength);
+    /// Whether the certificate matches the host `name`, which OpenSSL measures up to
+    /// its NUL (the length [`Measured`] gives), storing the matched name where told to.
+    safe fn X509_check_host(
+        cert: CertRef<'_>,
+        name: Text<'_>,
+        length: Measured,
+        flags: c_uint,
+        peername: Option<&mut *mut c_char>,
+    ) -> c_int;
     safe fn BIO_s_mem() -> &'static BioMethod;
     /// A new BIO of `method`, its one reference the caller's; null on failure. The
     /// table lives for the process: OpenSSL's own, or `dtls.rs`'s, never freed once made,
     /// whose methods take a BIO without data as none of its session's.
     pub(crate) safe fn BIO_new(method: &'static BioMethod) -> Option<OwnedBio>;
     /// `fopen`s `filename` with `mode`; null on failure.
-    safe fn BIO_new_file(filename: CText<'_>, mode: CText<'_>) -> Option<OwnedBio>;
+    safe fn BIO_new_file(filename: Text<'_>, mode: Text<'_>) -> Option<OwnedBio>;
     /// `BIO_pending` as a function: the bytes queued to read.
     safe fn BIO_ctrl_pending(bio: Bio<'_>) -> usize;
     safe fn BIO_method_type(bio: Bio<'_>) -> c_int;
@@ -69,23 +78,24 @@ unsafe extern "C" {
     safe fn SSL_get_wbio<'a>(ssl: Ssl<'a>) -> Option<Bio<'a>>;
     safe fn SSL_get_ex_data(ssl: Ssl<'_>, index: c_int) -> *mut c_void;
     /// OpenSSL keeps `data` as opaque ex data: the indices this side makes register
-    /// no callbacks that would read it.
-    pub(crate) safe fn SSL_set_ex_data(ssl: Ssl<'_>, index: c_int, data: *mut c_void) -> c_int;
+    /// no callbacks that would read it. Only [`Ssl::set_ex_data`] calls it, which
+    /// refuses the connection's index.
+    safe fn SSL_set_ex_data(ssl: Ssl<'_>, index: c_int, data: *mut c_void) -> c_int;
     /// The host name the client sent, null without one: the SSL's own copy.
-    safe fn SSL_get_servername<'a>(ssl: Ssl<'a>, kind: c_int) -> Option<CText<'a>>;
+    safe fn SSL_get_servername<'a>(ssl: Ssl<'a>, kind: c_int) -> Option<Text<'a>>;
     /// Null before the handshake, else an entry of OpenSSL's static cipher table.
     safe fn SSL_get_current_cipher(ssl: Ssl<'_>) -> Option<CipherRef>;
     /// Null names the `(NONE)` cipher, whose bits are 0.
     safe fn SSL_CIPHER_get_bits(cipher: Option<CipherRef>, algorithm: Option<&mut c_int>) -> c_int;
-    safe fn SSL_CIPHER_get_name(cipher: Option<CipherRef>) -> Option<CText<'static>>;
-    safe fn SSL_CIPHER_get_version(cipher: Option<CipherRef>) -> Option<CText<'static>>;
+    safe fn SSL_CIPHER_get_name(cipher: Option<CipherRef>) -> Option<Text<'static>>;
+    safe fn SSL_CIPHER_get_version(cipher: Option<CipherRef>) -> Option<Text<'static>>;
     /// `SslCtrl`'s commands: `Mode` reads no pointer, and `HostName` copies `text`
     /// (null clears the name).
     safe fn SSL_ctrl(
         ssl: Ssl<'_>,
         command: SslCtrl,
         value: c_long,
-        text: Option<CText<'_>>,
+        text: Option<Text<'_>>,
     ) -> c_long;
     /// The SSL takes its own reference to `context` (null: its session's context)
     /// and releases the one it held.
@@ -95,6 +105,10 @@ unsafe extern "C" {
     /// Gives the fresh SSL socket BIOs over `fd`, freeing the ones it had, which only
     /// a borrow of the [`OwnedSsl`] the exclusive `Fresh` was taken from could reach.
     safe fn SSL_set_fd(ssl: Fresh<'_>, fd: c_int) -> c_int;
+    /// Gives the fresh SSL `bio` for both directions, taking the one reference
+    /// [`Given`] carries, and frees the BIOs it had, as `SSL_set_fd` does.
+    #[link_name = "SSL_set_bio"]
+    safe fn set_bios(ssl: Fresh<'_>, read: Given, write: Given);
     /// A new SSL of `ctx`, which it references; null on failure, or without a context.
     pub(crate) safe fn SSL_new(ctx: Option<&SslCtx>) -> Option<OwnedSsl>;
     /// `SSL_get_peer_certificate`, a macro over `SSL_get1_peer_certificate` since
@@ -110,6 +124,33 @@ unsafe extern "C" {
         large: c_long,
         integer: c_int,
     ) -> c_long;
+}
+
+/// The SSL `ex_data` index of its socket record, `swr_v1_tls_connection_index`: only
+/// [`ConnectionIndex::get`] makes one. Ex data at it is null or the record that owns
+/// the SSL: only [`OwnedSsl::set_connection`] stores there, before the record takes
+/// the SSL ([`Ssl::set_ex_data`] refuses the index), and a record frees its SSL
+/// before itself.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct ConnectionIndex(c_int);
+
+impl ConnectionIndex {
+    fn get() -> Self {
+        Self(crate::swr_v1_tls_connection_index())
+    }
+}
+
+// libssl's ex data calls at the connection's index, typed as what it holds.
+#[expect(
+    clashing_extern_declarations,
+    reason = "the ex data calls, typed for the connection's index"
+)]
+unsafe extern "C" {
+    #[link_name = "SSL_get_ex_data"]
+    safe fn connection<'a>(ssl: Ssl<'a>, index: ConnectionIndex) -> Option<Socket<'a>>;
+    #[link_name = "SSL_set_ex_data"]
+    safe fn set_connection(ssl: Fresh<'_>, index: ConnectionIndex, socket: Socket<'_>) -> c_int;
 }
 
 /// A `BIO_METHOD` table. It is zero-sized, so a reference to it claims none of the
@@ -147,26 +188,6 @@ enum SslCtrl {
     HostName = SSL_CTRL_SET_TLSEXT_HOSTNAME,
 }
 
-/// A NUL-terminated string that stays live and unchanged for `'a`, as thin as the
-/// `const char *` it is: what a declaration takes or returns in place of the raw pointer.
-/// Safe code makes one only from a `&CStr`.
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct CText<'a>(NonNull<c_char>, PhantomData<&'a CStr>);
-
-impl<'a> From<&'a CStr> for CText<'a> {
-    fn from(text: &'a CStr) -> Self {
-        Self(NonNull::from(text).cast(), PhantomData)
-    }
-}
-
-impl<'a> CText<'a> {
-    pub(crate) fn get(self) -> &'a CStr {
-        // SAFETY: the type's invariant: a NUL-terminated string live for `'a`.
-        unsafe { CStr::from_ptr(self.0.as_ptr()) }
-    }
-}
-
 /// The int OpenSSL's I/O calls take for a buffer's length: at most `INT_MAX`, where
 /// upstream's `(int)` cast would wrap a buffer over 2 GiB.
 fn int(length: usize) -> c_int {
@@ -201,13 +222,19 @@ pub fn pop_error() -> c_ulong {
 /// OpenSSL's reason string for `error`, None for an unknown code.
 #[must_use]
 pub fn reason_string(error: c_ulong) -> Option<&'static CStr> {
-    ERR_reason_error_string(error).map(CText::get)
+    ERR_reason_error_string(error).map(Text::get)
 }
 
 /// `ERR_error_string_n`'s length: that of its 512-byte buffer, as a `size_t`.
 #[repr(usize)]
 enum ErrorLength {
     Buffer = 512,
+}
+
+/// `X509_check_host`'s zero length: OpenSSL measures the name itself.
+#[repr(usize)]
+enum Measured {
+    UpToNul = 0,
 }
 
 /// `ERR_error_string_n` of `error` into a 512-byte buffer, as upstream's logs print it.
@@ -427,8 +454,8 @@ impl<'a> Ssl<'a> {
         Cipher {
             bits: SSL_CIPHER_get_bits(cipher, None),
             // The table's name and version; OpenSSL itself answers `(NONE)` without a cipher.
-            name: name.map_or(c"(NONE)", CText::get),
-            version: version.map_or(c"(NONE)", CText::get),
+            name: name.map_or(c"(NONE)", Text::get),
+            version: version.map_or(c"(NONE)", Text::get),
         }
     }
 
@@ -478,6 +505,12 @@ impl<'a> Ssl<'a> {
     #[must_use]
     pub fn ex_data(self, index: c_int) -> *mut c_void {
         SSL_get_ex_data(self, index)
+    }
+
+    /// The socket record that owns the SSL, None while none has taken it.
+    #[must_use]
+    pub fn socket(self) -> Option<Socket<'a>> {
+        connection(self, ConnectionIndex::get())
     }
 
     /// `SSL_set_ex_data` at `index`: false when OpenSSL fails. Also false, setting
@@ -630,11 +663,8 @@ impl CertRef<'_> {
     /// `Socket::ssl_check_host`'s test: whether the certificate matches the host
     /// `name` under `X509_check_host`.
     #[must_use]
-    pub fn matches_host(self, name: &[u8]) -> bool {
-        let (at, length, none) = (name.as_ptr().cast(), name.len(), std::ptr::null_mut());
-        // SAFETY: the live certificate and the name's bytes.
-        let matched = unsafe { X509_check_host(self.as_ptr(), at, length, 0, none) };
-        matched == 1
+    pub fn matches_host(self, name: &CStr) -> bool {
+        X509_check_host(self, name.into(), Measured::UpToNul, 0, None) == 1
     }
 
     /// `_ssl_read_x509_file`: the certificate as PEM into at most `buffer`'s length.
@@ -703,6 +733,13 @@ impl Drop for Cert {
 #[derive(Debug)]
 pub(crate) struct OwnedSsl(NonNull<SSL>);
 
+/// The one reference to a BIO an [`OwnedBio`] gave up, passed as both of
+/// `SSL_set_bio`'s BIOs, which then takes that one reference: only
+/// [`OwnedSsl::set_bio`] makes one.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Given(NonNull<BIO>);
+
 /// An [`OwnedSsl`], lent exclusively for a call that may replace its BIOs.
 #[repr(transparent)]
 struct Fresh<'a>(NonNull<SSL>, PhantomData<&'a mut OwnedSsl>);
@@ -717,6 +754,19 @@ impl OwnedSsl {
     /// through borrows of `self`, which `&mut` excludes.
     pub(crate) fn set_fd(&mut self, fd: c_int) -> bool {
         SSL_set_fd(Fresh(self.0, PhantomData), fd) != 0
+    }
+
+    /// `SSL_set_bio(ssl, bio, bio)`: the SSL takes `bio` for both directions and frees
+    /// it with itself. The BIOs it frees are reachable only through borrows of `self`.
+    pub(crate) fn set_bio(&mut self, bio: OwnedBio) {
+        let bio = Given(bio.into_raw());
+        set_bios(Fresh(self.0, PhantomData), bio, bio);
+    }
+
+    /// Records `socket`, which takes the SSL next, as its connection's ex data, which
+    /// [`Ssl::socket`] reads: false when OpenSSL fails.
+    pub(crate) fn set_connection(&mut self, socket: Socket<'_>) -> bool {
+        set_connection(Fresh(self.0, PhantomData), ConnectionIndex::get(), socket) != 0
     }
 
     /// The SSL, whose reference the caller hands on.

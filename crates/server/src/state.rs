@@ -18,8 +18,10 @@ pub struct ServerState {
     round: AtomicU32,
     /// `command_current_id`: the id the next command gets, from 1.
     pub(crate) next_command: AtomicI32,
-    config: Heap<crate::config::ServerConfig>,
-    tables: Heap<crate::records::ServerTables>,
+    /// Each kept in its own allocation, whose address native code and the writers
+    /// under the server's own synchronization hold: an `Rc`, never cloned, is never retagged unique.
+    config: std::rc::Rc<crate::config::ServerConfig>,
+    tables: std::rc::Rc<crate::records::ServerTables>,
     pub(crate) static_config: crate::static_config::Configs,
     pub(crate) commands: std::sync::Mutex<crate::commands::Commands>,
     /// `Server::ports`, which the state deletes as it drops, as `~Server` did.
@@ -270,8 +272,8 @@ impl ServerState {
         Self {
             round: AtomicU32::new(0),
             next_command: AtomicI32::new(1),
-            config: Heap::new(config),
-            tables: Heap::new(tables),
+            config: std::rc::Rc::new(config),
+            tables: std::rc::Rc::new(tables),
             static_config: std::sync::OnceLock::new(),
             commands: std::sync::Mutex::new(crate::commands::Commands::new()),
             ports: Ports::default(),
@@ -458,11 +460,11 @@ impl ServerState {
     }
 
     pub(crate) fn config(&self) -> *mut crate::config::ServerConfig {
-        self.config.as_ptr()
+        std::rc::Rc::as_ptr(&self.config).cast_mut()
     }
 
     pub(crate) fn tables(&self) -> *mut crate::records::ServerTables {
-        self.tables.as_ptr()
+        std::rc::Rc::as_ptr(&self.tables).cast_mut()
     }
 
     /// The configuration, which native code writes only before the server
@@ -568,52 +570,11 @@ impl Drop for ServerState {
         // record, so the tables go first.
         drop(core::mem::replace(
             &mut self.tables,
-            Heap::new(crate::records::ServerTables::default()),
+            std::rc::Rc::new(crate::records::ServerTables::default()),
         ));
         self.config
             .gs
             .replace(swoole_rs_memory::members::Shm::empty());
-    }
-}
-
-/// A record kept on the heap from its construction to its drop: lent as `&T`, and,
-/// to the code that writes it under the server's own synchronization, as the address
-/// it was boxed at, which no reference this lends retags.
-pub(crate) struct Heap<T: ?Sized>(core::ptr::NonNull<T>);
-
-impl<T> Heap<T> {
-    pub(crate) fn new(value: T) -> Self {
-        Self::from(Box::new(value))
-    }
-}
-
-impl<T: ?Sized> From<Box<T>> for Heap<T> {
-    fn from(value: Box<T>) -> Self {
-        Self(core::ptr::NonNull::from(Box::leak(value)))
-    }
-}
-
-impl<T: ?Sized> Heap<T> {
-    /// The record's address.
-    pub(crate) fn as_ptr(&self) -> *mut T {
-        self.0.as_ptr()
-    }
-}
-
-impl<T: ?Sized> core::ops::Deref for Heap<T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        // SAFETY: the box `from` leaked, which only `drop` frees; a writer through
-        // `as_ptr` keeps to the server's synchronization, as it would through `&T`.
-        unsafe { self.0.as_ref() }
-    }
-}
-
-impl<T: ?Sized> Drop for Heap<T> {
-    fn drop(&mut self) {
-        // SAFETY: the box `from` leaked, freed once, here.
-        drop(unsafe { Box::from_raw(self.0.as_ptr()) });
     }
 }
 
@@ -634,14 +595,12 @@ pub(crate) mod tests {
         /// The configuration, to write: borrowing the state whole, so no reference
         /// this state lent is live.
         fn config_mut(&mut self) -> &mut crate::config::ServerConfig {
-            // SAFETY: the box this state owns until it drops, borrowed through `&mut self`.
-            unsafe { &mut *self.config.as_ptr() }
+            std::rc::Rc::get_mut(&mut self.config).expect("a state's own configuration")
         }
 
         /// The table view, to write, as [`Self::config_mut`].
         fn tables_mut(&mut self) -> &mut crate::records::ServerTables {
-            // SAFETY: the box this state owns until it drops, borrowed through `&mut self`.
-            unsafe { &mut *self.tables.as_ptr() }
+            std::rc::Rc::get_mut(&mut self.tables).expect("a state's own tables")
         }
     }
 

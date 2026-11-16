@@ -627,7 +627,7 @@ pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) ->
         unsafe { write(pipe.as_ptr().cast(), info.as_ptr().cast(), info.len()) }
     } else {
         let event = swoole_rs_reactor::Drain::new(info);
-        swoole_rs_tls::upstream::send_sync_drain(pipe, event, 0)
+        swoole_rs_tls::upstream::send_sync_drain(pipe, event, 0).map_or(-1, usize::cast_signed)
     }
 }
 

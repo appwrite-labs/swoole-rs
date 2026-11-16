@@ -293,9 +293,9 @@ impl Co {
 
     /// `recv_packet(timeout)`; with `clear_empty`, an empty packet clears the
     /// read buffer.
-    pub(crate) fn recv_packet(self, timeout: f64, clear_empty: bool) -> ssize_t {
+    pub(crate) fn recv_packet(self, timeout: f64, clear_empty: bool) -> Option<usize> {
         let retval = swoole_rs_hooks::packet::recv_packet(self.0, timeout);
-        if retval == 0 && clear_empty && !self.0.read_buffer().is_null() {
+        if retval == Some(0) && clear_empty && !self.0.read_buffer().is_null() {
             self.0
                 .with_buffer(false, swoole_rs_buffer::string::CppString::clear);
         }

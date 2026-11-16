@@ -402,30 +402,27 @@ pub mod framing_stream {
         pub chunk_count: usize,
     }
 
-    /// Runs one engine's receive loop over the stream until it fails or the
-    /// chunks are drained, writing each call's result (`R<n>;`), each packet
-    /// (`P<len>:` and its bytes) and the final buffer length and offset to `out`.
-    /// Returns the log's full length. `upstream` is the pinned base.cc,
-    /// `candidate` the one with the framing overlay patch, which calls the Rust
-    /// exports (the caller's binary must link them).
-    pub type Run =
-        unsafe extern "C" fn(stream: *const Stream, out: *mut u8, capacity: usize) -> usize;
-
     unsafe extern "C" {
-        fn swr_oracle_framing_stream_upstream(
+        pub fn swr_oracle_framing_stream_upstream(
             stream: *const Stream,
             out: *mut u8,
             capacity: usize,
         ) -> usize;
-        fn swr_oracle_framing_stream_candidate(
+        pub fn swr_oracle_framing_stream_candidate(
             stream: *const Stream,
             out: *mut u8,
             capacity: usize,
         ) -> usize;
     }
 
-    pub const UPSTREAM: Run = swr_oracle_framing_stream_upstream;
-    pub const CANDIDATE: Run = swr_oracle_framing_stream_candidate;
+    pub use self::swr_oracle_framing_stream_candidate as CANDIDATE;
+    /// Runs one engine's receive loop over the stream until it fails or the
+    /// chunks are drained, writing each call's result (`R<n>;`), each packet
+    /// (`P<len>:` and its bytes) and the final buffer length and offset to `out`.
+    /// Returns the log's full length. `upstream` is the pinned base.cc,
+    /// `candidate` the one with the framing overlay patch, which calls the Rust
+    /// exports (the caller's binary must link them).
+    pub use self::swr_oracle_framing_stream_upstream as UPSTREAM;
 }
 
 pub mod resp_stream {
@@ -444,32 +441,29 @@ pub mod resp_stream {
         pub close_at_end: u8,
     }
 
-    /// Runs one engine's `recv_packet` over the stream until it fails or the
-    /// chunks are drained, writing each call's result and request state, each
-    /// package and the final buffer length and offset to `out`. Returns the log's
-    /// full length. `upstream` is the pinned redis.cc.
-    pub type Run =
-        unsafe extern "C" fn(stream: *const Stream, out: *mut u8, capacity: usize) -> usize;
-
     unsafe extern "C" {
-        fn swr_oracle_resp_stream_upstream(
+        pub fn swr_oracle_resp_stream_upstream(
             stream: *const Stream,
             out: *mut u8,
             capacity: usize,
         ) -> usize;
-        fn swr_oracle_resp_trace_upstream(
+        pub fn swr_oracle_resp_trace_upstream(
             stream: *const Stream,
             out: *mut u8,
             capacity: usize,
         ) -> usize;
     }
 
-    pub const UPSTREAM: Run = swr_oracle_resp_stream_upstream;
+    /// Runs one engine's `recv_packet` over the stream until it fails or the
+    /// chunks are drained, writing each call's result and request state, each
+    /// package and the final buffer length and offset to `out`. Returns the log's
+    /// full length. `upstream` is the pinned redis.cc.
+    pub use self::swr_oracle_resp_stream_upstream as UPSTREAM;
     /// [`UPSTREAM`] with errno in the log: each call starts with it at `EDOM`, and the
     /// log gains `E<errno>` after each package and each call's result, `L<length>O<offset>`
     /// of the buffer after each call, and the request state (with its offset last)
     /// after a failed call too.
-    pub const UPSTREAM_TRACE: Run = swr_oracle_resp_trace_upstream;
+    pub use self::swr_oracle_resp_trace_upstream as UPSTREAM_TRACE;
 }
 
 pub mod socks5 {
@@ -493,17 +487,19 @@ pub mod socks5 {
         pub reply_count: usize,
     }
 
+    unsafe extern "C" {
+        pub fn swr_oracle_socks5_upstream(
+            case: *const Case,
+            out: *mut u8,
+            capacity: usize,
+        ) -> usize;
+    }
+
     /// Runs one engine's `Socks5Proxy` from `create` through the replies, writing
     /// every byte sent, each handshake result, state and method, and each reply
     /// code's `strerror` to `out`. Returns the log's full length. `upstream` is the
     /// pinned socks5.cc.
-    pub type Run = unsafe extern "C" fn(case: *const Case, out: *mut u8, capacity: usize) -> usize;
-
-    unsafe extern "C" {
-        fn swr_oracle_socks5_upstream(case: *const Case, out: *mut u8, capacity: usize) -> usize;
-    }
-
-    pub const UPSTREAM: Run = swr_oracle_socks5_upstream;
+    pub use self::swr_oracle_socks5_upstream as UPSTREAM;
 
     /// One pinned `Socks5Proxy`'s fields, each string as its bytes and length,
     /// copied into a proxy before each call below and out of it after.
@@ -622,24 +618,8 @@ pub mod http_range {
         }
     }
 
-    /// `StaticHandler::parse_range(range, if_range ? "" : nullptr)` compiled from the
-    /// pinned `static_handler.cc`, on a file of `filesize` bytes with this MIME type
-    /// and boundary, `is_modified_range` answering `modified`. Up to `capacity`
-    /// tasks go to `tasks` ([`TASK_SIZE`] bytes each).
-    pub type ParseRange = unsafe extern "C" fn(
-        range: *const c_char,
-        filesize: u64,
-        mime: *const c_char,
-        boundary: *const c_char,
-        if_range: i32,
-        modified: i32,
-        out: *mut Outcome,
-        tasks: *mut u8,
-        capacity: usize,
-    );
-
     unsafe extern "C" {
-        fn swr_oracle_http_range_upstream(
+        pub fn swr_oracle_http_range_upstream(
             range: *const c_char,
             filesize: u64,
             mime: *const c_char,
@@ -652,7 +632,11 @@ pub mod http_range {
         );
     }
 
-    pub const UPSTREAM: ParseRange = swr_oracle_http_range_upstream;
+    /// `StaticHandler::parse_range(range, if_range ? "" : nullptr)` compiled from the
+    /// pinned `static_handler.cc`, on a file of `filesize` bytes with this MIME type
+    /// and boundary, `is_modified_range` answering `modified`. Up to `capacity`
+    /// tasks go to `tasks` ([`TASK_SIZE`] bytes each).
+    pub use self::swr_oracle_http_range_upstream as UPSTREAM;
 }
 
 pub mod http_static_select {

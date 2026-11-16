@@ -10,6 +10,7 @@ use crate::{
 };
 use std::cell::Cell;
 use std::ffi::{CStr, c_int, c_long, c_void};
+use std::marker::PhantomData;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{log, swr_v1_core_set_signal_alarm, thread_reactor};
 use swoole_rs_reactor::ReactorPrepared;
@@ -23,10 +24,31 @@ const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAM
 const MANUAL: u32 = 0;
 const REACTOR: u32 = 1;
 
-/// `swoole::TimerCallback`: `void (*)(Timer *, TimerNode *)`.
-pub(crate) type Callback = unsafe extern "C-unwind" fn(timer: *mut c_void, node: *mut TimerNode);
-/// `swoole::TimerDestructor`: `void (*)(TimerNode *)`.
-type Destructor = unsafe extern "C-unwind" fn(node: *mut TimerNode);
+/// `swoole::TimerCallback`: `void (*)(Timer *, TimerNode *)`. Only [`Owner::select`]
+/// calls one, with its timer and the node it selected: what the callback is for.
+pub(crate) type Callback = extern "C-unwind" fn(timer: &Owner, node: Lent<'_>);
+/// `swoole::TimerDestructor`: `void (*)(TimerNode *)`. Only [`Owner::release`] calls
+/// one, once, with the node it detached and frees next.
+type Destructor = extern "C-unwind" fn(node: Lent<'_>);
+
+/// A `TimerNode *` lent to the node's own callback or destructor: live for the call.
+/// Its field is private, so only this module makes one, for those two calls.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub(crate) struct Lent<'a>(std::ptr::NonNull<TimerNode>, PhantomData<&'a TimerNode>);
+
+impl Lent<'_> {
+    /// A live node, for its callback or destructor; none for null, which no live node is.
+    fn of(node: *mut TimerNode) -> Option<Self> {
+        std::ptr::NonNull::new(node).map(|node| Self(node, PhantomData))
+    }
+
+    /// The node, for a callback that reads or writes its fields in place.
+    #[cfg(test)]
+    fn as_ptr(self) -> *mut TimerNode {
+        self.0.as_ptr()
+    }
+}
 /// A callback of the node's data alone, for `swr_v1_timer_add_plain`'s callers.
 pub type Plain = swoole_rs_reactor::DeferCall;
 /// `abandon_selection`'s pending Zend bailout, raised once the node is gone.
@@ -392,9 +414,9 @@ impl Owner {
     /// ([`applied`]'s result), and deletes it, then raises a pending bailout. The
     /// destructor may longjmp over these frames, which hold nothing to drop.
     fn release(&self, (node, calls): (*mut TimerNode, Calls)) {
-        if let Some(destructor) = calls.destructor {
-            // SAFETY: the node's own destructor.
-            unsafe { destructor(node) };
+        if let Some((destructor, node)) = calls.destructor.zip(Lent::of(node)) {
+            // The detached node, live until its box is dropped below.
+            destructor(node);
         } else if let Some(plain_drop) = calls.plain_drop {
             // SAFETY: the node's destructor of its own data.
             unsafe { plain_drop(calls.data) };
@@ -547,9 +569,9 @@ impl Owner {
                 } else if let Some(plain) = calls.plain {
                     // SAFETY: the node's function of its own data.
                     unsafe { plain(calls.data) };
-                } else if let Some(callback) = calls.callback {
-                    // SAFETY: the node's own callback, of this timer and the node.
-                    unsafe { callback(std::ptr::from_ref(self).cast_mut().cast(), node) };
+                } else if let Some((callback, node)) = calls.callback.zip(Lent::of(node)) {
+                    // The selected node, which the queue holds until `complete`.
+                    callback(self, node);
                 }
             }
             self.complete(view.id);
@@ -707,13 +729,14 @@ mod tests {
         destructor: Box<dyn FnMut()>,
     }
 
-    unsafe extern "C-unwind" fn call(timer: *mut c_void, node: *mut TimerNode) {
+    extern "C-unwind" fn call(timer: &Owner, node: Lent<'_>) {
+        let node = node.as_ptr();
         let hooks = unsafe { (*node).data.cast::<Hooks>() };
-        unsafe { ((*hooks).call)(&*timer.cast::<Owner>(), node) };
+        unsafe { ((*hooks).call)(timer, node) };
     }
 
-    unsafe extern "C-unwind" fn destruct(node: *mut TimerNode) {
-        let mut hooks = unsafe { Box::from_raw((*node).data.cast::<Hooks>()) };
+    extern "C-unwind" fn destruct(node: Lent<'_>) {
+        let mut hooks = unsafe { Box::from_raw((*node.as_ptr()).data.cast::<Hooks>()) };
         (hooks.destructor)();
     }
 

@@ -85,45 +85,33 @@ fn add_address(array: &mut OwnedArray, name: &[u8], address: &[u8]) {
 
 #[cfg(target_os = "linux")]
 fn local_mac(call: &Call) {
-    use std::mem::{size_of, size_of_val};
     use swoole_rs_corebase::sys::{InterfaceRequest, interface_ioctl, zeroed};
-    // The request as `ioctl` takes it (an int on musl).
-    const SIOCGIFCONF: libc::Ioctl = 0x8912;
-    // Upstream's 4096-byte buffer, as whole requests.
-    const REQUESTS: usize = 4096 / size_of::<libc::ifreq>();
 
     let Ok(sock) = swoole_rs_corebase::sys::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) else {
         sys_warning(b"socket creation failed");
         call.set_bool(false);
         return;
     };
-    let mut buffer: [libc::ifreq; REQUESTS] = zeroed();
-    let mut conf: libc::ifconf = zeroed();
-    let length = c_int::try_from(size_of_val(&buffer)).unwrap_or(c_int::MAX);
-    conf.ifc_len = length;
-    conf.ifc_ifcu.ifcu_req = buffer.as_mut_ptr();
-    // SAFETY: a socket and an ifconf over a live buffer.
-    if unsafe { libc::ioctl(sock, SIOCGIFCONF, &raw mut conf) } < 0 {
+    // Upstream's `SIOCGIFCONF` list: an entry for each IPv4 address, named by the
+    // label its address carries, which `getifaddrs` lists the same way.
+    let Some(interfaces) = Interfaces::new() else {
         sys_warning(b"ioctl SIOCGIFCONF failed");
         _ = swoole_rs_corebase::sys::close(sock);
         call.set_bool(false);
         return;
-    }
+    };
     let mut array = OwnedArray::default();
-    let count = usize::try_from(conf.ifc_len).unwrap_or(0) / size_of::<libc::ifreq>();
-    for entry in buffer.iter().take(count) {
+    let loopback = libc::IFF_LOOPBACK.unsigned_abs();
+    let inet = |address: &libc::sockaddr| c_int::from(address.sa_family) == libc::AF_INET;
+    for entry in interfaces.iter() {
+        // `SIOCGIFFLAGS`' flags are the entry's.
+        if !entry.address().is_some_and(inet) || entry.flags() & loopback != 0 {
+            continue;
+        }
         let mut request: libc::ifreq = zeroed();
-        let name = request.ifr_name.iter_mut().zip(&entry.ifr_name);
-        for (slot, byte) in name.take(libc::IFNAMSIZ - 1) {
-            *slot = *byte;
-        }
-        if interface_ioctl(sock, InterfaceRequest::Flags, &mut request) < 0 {
-            continue;
-        }
-        // SAFETY: SIOCGIFFLAGS filled the flags.
-        let flags = c_int::from(unsafe { request.ifr_ifru.ifru_flags });
-        if flags & libc::IFF_LOOPBACK != 0 {
-            continue;
+        let name = request.ifr_name.iter_mut().zip(entry.name().to_bytes());
+        for (slot, &byte) in name.take(libc::IFNAMSIZ - 1) {
+            *slot = libc::c_char::from_ne_bytes([byte]);
         }
         if interface_ioctl(sock, InterfaceRequest::HardwareAddress, &mut request) == 0 {
             // SAFETY: SIOCGIFHWADDR filled the hardware address.
@@ -155,14 +143,21 @@ fn local_mac(call: &Call) {
         if c_int::from(address.sa_family) != libc::AF_LINK {
             continue;
         }
-        // SAFETY: an AF_LINK address is a sockaddr_dl.
-        let link = unsafe { &*std::ptr::from_ref(address).cast::<libc::sockaddr_dl>() };
-        if link.sdl_alen == 6 {
-            // LLADDR: the address follows the name in sdl_data.
-            let start = usize::from(link.sdl_nlen);
-            let base = (&raw const link.sdl_data).cast::<u8>();
-            // SAFETY: sdl_data holds the name then sdl_alen address bytes.
-            let address = unsafe { std::slice::from_raw_parts(base.wrapping_add(start), 6) };
+        // SAFETY: a BSD address is its `sa_len` bytes, which the list lends with it.
+        let link = unsafe {
+            std::slice::from_raw_parts(
+                std::ptr::from_ref(address).cast::<u8>(),
+                usize::from(address.sa_len),
+            )
+        };
+        // A sockaddr_dl's lengths, then LLADDR: the address follows the name in sdl_data.
+        let byte = |offset| link.get(offset).copied().map_or(0, usize::from);
+        let alen = byte(std::mem::offset_of!(libc::sockaddr_dl, sdl_alen));
+        let start = std::mem::offset_of!(libc::sockaddr_dl, sdl_data)
+            + byte(std::mem::offset_of!(libc::sockaddr_dl, sdl_nlen));
+        if alen == 6
+            && let Some(address) = link.get(start..start + 6)
+        {
             add_address(&mut array, entry.name().to_bytes(), address);
         }
     }

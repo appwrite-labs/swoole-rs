@@ -864,22 +864,48 @@ pub fn interface_ioctl(fd: c_int, request: InterfaceRequest, value: &mut libc::i
 /// (nothing here constructs it) and only `freeifaddrs` takes it, by value, so each list
 /// is freed at most once.
 #[repr(transparent)]
-struct InterfaceList(NonNull<libc::ifaddrs>);
+struct InterfaceList(NonNull<Entry<'static>>);
 
 impl InterfaceList {
     /// The list's first entry, borrowed while the list is held.
-    fn head(&self) -> &libc::ifaddrs {
+    fn head(&self) -> &Entry<'_> {
         // SAFETY: an unfreed list's head (the type's invariant), live while it is held.
         unsafe { self.0.as_ref() }
     }
 }
+
+/// `struct ifaddrs`'s leading fields, as glibc, musl and the BSDs (Apple's) lay them
+/// out: an entry of a list `getifaddrs` stored, whose fields are live while the list is.
+#[repr(C)]
+struct Entry<'a> {
+    /// `ifa_next`: the list's next entry, none at its end.
+    next: Option<&'a Entry<'a>>,
+    /// `ifa_name`.
+    name: Text<'a>,
+    /// `ifa_flags`.
+    flags: libc::c_uint,
+    /// `ifa_addr`: null, or an address as long as its family says.
+    addr: *mut libc::sockaddr,
+}
+
+const _: () = {
+    use std::mem::offset_of;
+    assert!(
+        offset_of!(Entry<'_>, next) == offset_of!(libc::ifaddrs, ifa_next)
+            && offset_of!(Entry<'_>, name) == offset_of!(libc::ifaddrs, ifa_name)
+            && offset_of!(Entry<'_>, flags) == offset_of!(libc::ifaddrs, ifa_flags)
+            && offset_of!(Entry<'_>, addr) == offset_of!(libc::ifaddrs, ifa_addr)
+            && size_of::<Entry<'_>>() <= size_of::<libc::ifaddrs>(),
+        "`Entry` is `struct ifaddrs`'s prefix"
+    );
+};
 
 /// The host's interface addresses (`getifaddrs(3)`), freed on drop.
 pub struct Interfaces(Option<InterfaceList>);
 
 /// One entry of an `Interfaces` list.
 #[derive(Clone, Copy)]
-pub struct Interface<'a>(&'a libc::ifaddrs);
+pub struct Interface<'a>(&'a Entry<'a>);
 
 impl Interfaces {
     /// The list, or `None` with errno set.
@@ -891,11 +917,8 @@ impl Interfaces {
 
     /// The entries, in the list's order.
     pub fn iter(&self) -> impl Iterator<Item = Interface<'_>> {
-        std::iter::successors(self.0.as_ref().map(InterfaceList::head), |entry| {
-            // SAFETY: null or the list's next entry, which lives as long as `self`.
-            unsafe { entry.ifa_next.as_ref() }
-        })
-        .map(Interface)
+        std::iter::successors(self.0.as_ref().map(InterfaceList::head), |entry| entry.next)
+            .map(Interface)
     }
 }
 
@@ -911,14 +934,13 @@ impl<'a> Interface<'a> {
     /// `ifa_name`.
     #[must_use]
     pub fn name(self) -> &'a CStr {
-        // SAFETY: interface names are NUL-terminated and live as long as the list.
-        unsafe { CStr::from_ptr(self.0.ifa_name) }
+        self.0.name.get()
     }
 
     /// `ifa_flags` (`IFF_*`).
     #[must_use]
     pub fn flags(self) -> libc::c_uint {
-        self.0.ifa_flags
+        self.0.flags
     }
 
     /// `ifa_addr`'s header, when the interface has an address: its family says
@@ -926,7 +948,7 @@ impl<'a> Interface<'a> {
     #[must_use]
     pub fn address(self) -> Option<&'a libc::sockaddr> {
         // SAFETY: null or an address that lives as long as the list.
-        unsafe { self.0.ifa_addr.as_ref() }
+        unsafe { self.0.addr.as_ref() }
     }
 
     /// The address, when it is an `AF_INET` or `AF_INET6` one.
@@ -945,7 +967,7 @@ impl<'a> Interface<'a> {
                 )
             }
             libc::AF_INET6 => {
-                let whole = self.0.ifa_addr.cast::<libc::sockaddr_in6>();
+                let whole = self.0.addr.cast::<libc::sockaddr_in6>();
                 // SAFETY: an AF_INET6 address is a sockaddr_in6, longer than the header
                 // `address` borrows, so it is read through the list's own pointer.
                 let inet6 = unsafe { whole.read_unaligned() };

@@ -548,7 +548,9 @@ impl PoolNative for Native {
             let (socket, data, length, flags) = (lent_socket(c), c.data(), c.length(), c.flags());
             // SAFETY: the call's buffer.
             let buffer = unsafe { swoole_rs_reactor::Fill::from_raw(data, length) };
-            socket.map_or(-1, |socket| recv_sync_fill(socket, buffer, flags))
+            socket
+                .and_then(|socket| recv_sync_fill(socket, buffer, flags))
+                .map_or(-1, usize::cast_signed)
         });
     }
 
@@ -578,7 +580,7 @@ impl PoolNative for Native {
             });
             // SAFETY: the call's buffer.
             let buffer = unsafe { swoole_rs_reactor::Fill::from_raw(c.data(), c.length()) };
-            read_sync_fill(pipe, buffer)
+            read_sync_fill(pipe, buffer).map_or(-1, usize::cast_signed)
         });
     }
 

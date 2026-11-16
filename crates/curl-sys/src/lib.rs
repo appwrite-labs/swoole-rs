@@ -114,8 +114,6 @@ unsafe extern "C" {
     pub safe fn curl_multi_init() -> Option<MultiHandle>;
     pub fn curl_multi_cleanup(multi: *mut CURLM) -> CURLMcode;
     pub fn curl_multi_setopt(multi: *mut CURLM, option: CURLMoption, ...) -> CURLMcode;
-    pub fn curl_multi_add_handle(multi: *mut CURLM, easy: *mut CURL) -> CURLMcode;
-    pub fn curl_multi_remove_handle(multi: *mut CURLM, easy: *mut CURL) -> CURLMcode;
     pub fn curl_multi_assign(
         multi: *mut CURLM,
         sockfd: curl_socket_t,
@@ -126,12 +124,6 @@ unsafe extern "C" {
     pub safe fn curl_multi_timeout(
         multi: Option<LiveMulti<'_>>,
         milliseconds: &mut c_long,
-    ) -> CURLMcode;
-    pub fn curl_multi_socket_action(
-        multi: *mut CURLM,
-        s: curl_socket_t,
-        ev_bitmask: c_int,
-        running_handles: *mut c_int,
     ) -> CURLMcode;
     /// The next message of the handle's queue, which libcurl keeps until the handle's
     /// next call, or null (as without a handle): it pops the queue and runs no callback.

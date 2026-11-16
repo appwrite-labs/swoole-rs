@@ -181,7 +181,11 @@ pub mod exports {
         if let Some(fragment) = buffered.as_deref() {
             context.fragment_length = fragment.len();
             let flags = fragment.offset().c_cast::<u16>();
-            context.fragment_flags = flags;
+            let [opcode, flags] = flags.to_be_bytes();
+            context.fragment = swoole_rs_websocket::FrameMetadata {
+                opcode: swoole_rs_websocket::Opcode::from_code(opcode),
+                flags: swoole_rs_websocket::FrameFlags::from_bits(flags),
+            };
             if frame.opcode == swoole_rs_websocket::Opcode::Continuation {
                 // SAFETY: the port's live server, as the caller guarantees.
                 let serv = unsafe { view::Server::from_raw(serv) };
@@ -195,10 +199,14 @@ pub mod exports {
         if decision.error != PolicyError::None {
             policy_warning(conn, decision.error, frame.opcode.code());
         }
+        let ext_flags = u16::from_be_bytes([
+            decision.metadata.opcode.code(),
+            decision.metadata.flags.bits(),
+        ]);
         let mut dispatch = RecvData {
             info: DataHead {
                 len: decision.length.c_cast::<u32>(),
-                ext_flags: decision.ext_flags,
+                ext_flags,
                 ..DataHead::default()
             },
             data: bytes.as_ptr().wrapping_add(decision.offset),
@@ -215,7 +223,7 @@ pub mod exports {
             Action::Start => {
                 let buffer = new_string(payload.unwrap_or_default());
                 // SAFETY: just constructed.
-                unsafe { (*buffer).set_offset(decision.ext_flags.into()) };
+                unsafe { (*buffer).set_offset(ext_flags.into()) };
                 conn.set_websocket_buffer(buffer.cast());
             }
             Action::Append | Action::Finish => {

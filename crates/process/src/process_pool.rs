@@ -425,11 +425,18 @@ impl<'a> PoolRef<'a> {
     }
 
     /// Resets the pool to [`PoolRecord::empty`], as C's `*pool = {}`: what it held
-    /// before is forgotten, not freed.
+    /// before is forgotten, not freed. An empty pool's fields are valid values for
+    /// every handle that reads them.
     pub fn reset(self) {
-        // SAFETY: `new`'s contract: a live pool for `'a`. The write drops nothing, and
-        // an empty pool's fields are valid values for every handle that reads them.
-        unsafe { self.raw.write(PoolRecord::empty()) };
+        _ = core::mem::ManuallyDrop::new(self.replace(|record| record, PoolRecord::empty()));
+    }
+
+    /// Puts `value` in the place `field` projects from the record, and returns what
+    /// was there. `field` is a plain fn, which cannot reach the pool to borrow it again.
+    fn replace<T>(self, field: fn(&mut PoolRecord) -> &mut T, value: T) -> T {
+        // SAFETY: `new`'s contract: a live pool for `'a`, borrowed only for the
+        // projection and the swap.
+        core::mem::replace(field(unsafe { &mut *self.raw }), value)
     }
 }
 
@@ -442,8 +449,7 @@ impl<'a> PoolRef<'a> {
 
     /// Takes the pool's message box out, leaving none.
     pub(crate) fn take_message_box(self) -> SharedChannel {
-        // SAFETY: a live pool (the handle's contract); only the field is replaced.
-        unsafe { core::mem::take(&mut (*self.raw).message_box) }
+        self.replace(|record| &mut record.message_box, SharedChannel::default())
     }
 
     /// The record, for this crate's operations, which read it in place.
@@ -1284,8 +1290,7 @@ macro_rules! setters {
     (@set $vis:vis $field:ident / $set:ident: $ty:ty) => {
         #[doc = concat!("Sets the record's `", stringify!($field), "`.")]
         $vis fn $set(self, value: $ty) {
-            // SAFETY: a live pool (the handle's contract); only the field is written.
-            unsafe { (*self.raw).$field = value };
+            _ = self.replace(|record| &mut record.$field, value);
         }
     };
     (

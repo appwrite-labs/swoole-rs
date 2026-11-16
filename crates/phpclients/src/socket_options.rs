@@ -21,7 +21,7 @@ use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
 use swoole_rs_phpswoole::{SocketSettings as Settings, Switch, built_with};
 use swoole_rs_tls::{self as tls, Text};
 use swoole_rs_zend::{
-    Array, Call, OwnedArray, Value, bailout, report,
+    Array, Call, HeldArray, OwnedArray, Value, bailout, report,
     sys::{E_ERROR, E_WARNING, php_stream},
 };
 
@@ -558,11 +558,9 @@ fn get_option(call: &Call) {
 
 /// The array (or object properties) of a `setOption` value, or `None` after
 /// the type error upstream throws.
-fn option_table<'a>(call: &Call, value: &'a Value, name: &str) -> Option<&'a Array> {
-    // SAFETY: the caller hands the table to `option_pair`, which copies what it
-    // finds before any PHP code runs.
-    let table = value.array().or_else(|| unsafe { value.properties() });
-    if table.is_none() {
+fn option_table(call: &Call, value: &Value, name: &str) -> Option<HeldArray> {
+    let table = value.hold().or_else(|| value.properties());
+    if table.is_none() && !bailout::pending() {
         let message = format!(
             "must be of type array|object when argument $opt_name is {name}, {} given",
             value.value_name().to_string_lossy()
@@ -574,7 +572,8 @@ fn option_table<'a>(call: &Call, value: &'a Value, name: &str) -> Option<&'a Arr
 
 /// The two longs a `setOption` array holds under `keys`; `None` after the
 /// missing-key warning.
-fn option_pair(table: &Array, keys: [&CStr; 2]) -> Result<Option<[i64; 2]>, Stop> {
+fn option_pair(table: &HeldArray, keys: [&CStr; 2]) -> Result<Option<[i64; 2]>, Stop> {
+    let table = table.array().ok_or(Stop)?;
     let mut found = [None, None];
     for (slot, key) in found.iter_mut().zip(keys) {
         *slot = table.find(key.to_bytes()).map(Value::copy);
@@ -621,7 +620,7 @@ fn set_option(call: &Call) {
         let Some(table) = option_table(call, value, "SO_LINGER") else {
             return;
         };
-        let [on, wait] = match option_pair(table, [c"l_onoff", c"l_linger"]) {
+        let [on, wait] = match option_pair(&table, [c"l_onoff", c"l_linger"]) {
             Ok(Some(pair)) => pair,
             Ok(None) => return call.set_bool(false),
             Err(Stop) => return,
@@ -646,7 +645,7 @@ fn set_option(call: &Call) {
         let Some(table) = option_table(call, value, label) else {
             return;
         };
-        let [sec, usec] = match option_pair(table, [c"sec", c"usec"]) {
+        let [sec, usec] = match option_pair(&table, [c"sec", c"usec"]) {
             Ok(Some(pair)) => pair,
             Ok(None) => return call.set_bool(false),
             Err(Stop) => return,
@@ -710,7 +709,10 @@ fn domain(fd: c_int) -> Option<c_int> {
         }
     }
     let mut address = SocketAddress::default();
-    (address.local_name(fd) == 0).then(|| c_int::from(address.addr.family()))
+    address
+        .local_name(fd)
+        .is_ok()
+        .then(|| c_int::from(address.addr.family()))
 }
 
 /// `swoole_coroutine_socketpair(int $domain, int $type, int $protocol): array|false`.

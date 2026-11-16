@@ -4,7 +4,6 @@
 //! error, errno and logs included. With `upstream-symbols` (the hybrid's reactor
 //! build) they are defined under their upstream (Itanium) symbols and
 //! `socket.cc` no longer defines them.
-use crate::handle::CText;
 use crate::{
     Accept, Cert, CertRef, HandshakeLog, SocketTls, Ssl, SslIoResult, swr_v1_socket_ssl_accept,
     swr_v1_socket_ssl_clear, swr_v1_socket_ssl_connect, swr_v1_socket_ssl_error_reason,
@@ -20,6 +19,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::SocketFlag;
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
 use swoole_rs_corebase::sys::ReadSlot;
+use swoole_rs_corebase::sys::Text;
 use swoole_rs_corebase::{log, set_errno};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::socket_upstream::{
@@ -35,7 +35,7 @@ use swoole_rs_reactor::{
 // libcrypto's own declaration: it reads only the code, and answers one of its
 // static strings.
 unsafe extern "C" {
-    safe fn X509_verify_cert_error_string(error: c_long) -> Option<CText<'static>>;
+    safe fn X509_verify_cert_error_string(error: c_long) -> Option<Text<'static>>;
 }
 
 /// `SW_LOG_NOTICE`, `SW_LOG_WARNING`, `SW_ERROR_FILE_EMPTY` and `SW_ERROR_INVALID_PARAMS`.
@@ -246,25 +246,23 @@ fn count(n: isize) -> Option<usize> {
     usize::try_from(n).ok()
 }
 
-/// `ssl_io`: the protocol error's log, then errno; -1 without an SSL.
+/// `ssl_io`: the protocol error's log, then errno; None on error or without an SSL.
 #[inline(always)]
-fn ssl_io(socket: Socket<'_>, result: Option<SslIoResult>) -> isize {
-    let Some(result) = result else {
-        return -1;
-    };
+fn ssl_io(socket: Socket<'_>, result: Option<SslIoResult>) -> Option<usize> {
+    let result = result?;
     if result.protocol_error {
         ssl_catch_error(socket);
     }
     if result.error != 0 {
         set_errno(result.error);
     }
-    result.value
+    count(result.value)
 }
 
-/// `Socket::ssl_recv`: the record's TLS read into the bytes `buffer` lends; -1 without
-/// an SSL.
+/// `Socket::ssl_recv`: the record's TLS read into the bytes `buffer` lends; None on
+/// error or without an SSL.
 #[must_use]
-pub fn ssl_recv_fill<S: ReadSlot>(socket: Socket<'_>, mut buffer: Fill<'_, S>) -> isize {
+pub fn ssl_recv_fill<S: ReadSlot>(socket: Socket<'_>, mut buffer: Fill<'_, S>) -> Option<usize> {
     let buffer = buffer.slots();
     let result = with_tls(
         socket,
@@ -275,9 +273,9 @@ pub fn ssl_recv_fill<S: ReadSlot>(socket: Socket<'_>, mut buffer: Fill<'_, S>) -
 }
 
 /// `Socket::ssl_send`: the record's TLS write of the bytes `data` lends, of which a
-/// DTLS socket sends at most `chunk_size`; -1 without an SSL.
+/// DTLS socket sends at most `chunk_size`; None on error or without an SSL.
 #[must_use]
-pub fn ssl_send_drain(socket: Socket<'_>, data: Drain<'_>) -> isize {
+pub fn ssl_send_drain(socket: Socket<'_>, data: Drain<'_>) -> Option<usize> {
     let result = with_tls(
         socket,
         |record| {
@@ -295,13 +293,13 @@ pub fn ssl_send_drain(socket: Socket<'_>, data: Drain<'_>) -> isize {
 
 /// `ssize_t Socket::ssl_recv(void *buf, size_t n)` into `buffer`.
 pub fn ssl_recv(socket: Socket<'_>, buffer: &mut [impl ReadSlot]) -> Option<usize> {
-    count(ssl_recv_fill(socket, Fill::new(buffer)))
+    ssl_recv_fill(socket, Fill::new(buffer))
 }
 
 /// `ssize_t Socket::ssl_send(const void *buf, size_t n)` of `data`.
 #[must_use]
 pub fn ssl_send(socket: Socket<'_>, data: &[u8]) -> Option<usize> {
-    count(ssl_send_drain(socket, Drain::new(data)))
+    ssl_send_drain(socket, Drain::new(data))
 }
 
 fn handshake(last_error: c_int) {
@@ -365,39 +363,30 @@ pub fn socket_ssl_connect(socket: Socket<'_>) -> bool {
     result.code
 }
 
-/// `SSL_peek` on the record into `buffer`; -1 without an SSL.
-fn tls_peek<S: ReadSlot>(socket: Socket<'_>, mut buffer: Fill<'_, S>) -> isize {
-    let Some(ssl) = Ssl::of(socket) else {
-        return -1;
-    };
-    match ssl.peek(buffer.slots()) {
-        Ok(count) => isize::try_from(count).unwrap_or(isize::MAX),
-        Err(failure) => failure.returned as isize,
+/// `SSL_peek` on the record into `buffer`; None on error or without an SSL.
+fn tls_peek<S: ReadSlot>(socket: Socket<'_>, mut buffer: Fill<'_, S>) -> Option<usize> {
+    match Ssl::of(socket)?.peek(buffer.slots()) {
+        Ok(count) => Some(count),
+        Err(failure) => usize::try_from(failure.returned).ok(),
     }
 }
 
 /// `ssize_t Socket::recv(void *, size_t, int)` into the bytes `buffer` lends: a slice's
 /// ([`recv`]), or the address and length C handed its holder.
-pub fn recv_fill(socket: Socket<'_>, buffer: Fill<'_>, flags: c_int) -> isize {
+pub fn recv_fill(socket: Socket<'_>, buffer: Fill<'_>, flags: c_int) -> Option<usize> {
     record_recv(socket, buffer, flags, ssl_recv_fill, steady_ms)
 }
 
 /// `ssize_t Socket::send(const void *, size_t, int)` of the bytes `data` lends, as
 /// [`recv_fill`] receives.
 #[must_use]
-pub fn send_drain(socket: Socket<'_>, data: Drain<'_>, flags: c_int) -> isize {
+pub fn send_drain(socket: Socket<'_>, data: Drain<'_>, flags: c_int) -> Option<usize> {
     record_send(socket, data, flags, ssl_send_drain, steady_ms)
 }
 
 /// [`recv_fill`] into `buffer`.
 pub fn recv(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
-    count(record_recv(
-        socket,
-        Fill::new(buffer),
-        flags,
-        ssl_recv_fill,
-        steady_ms,
-    ))
+    record_recv(socket, Fill::new(buffer), flags, ssl_recv_fill, steady_ms)
 }
 
 /// One [`recv`] into `buffer`'s room past its content, which then counts what it
@@ -416,35 +405,29 @@ pub fn recv_append(socket: Socket<'_>, buffer: &mut CppString) -> Option<usize> 
 /// [`send_drain`] of `data`.
 #[must_use]
 pub fn send(socket: Socket<'_>, data: &[u8], flags: c_int) -> Option<usize> {
-    count(record_send(
-        socket,
-        Drain::new(data),
-        flags,
-        ssl_send_drain,
-        steady_ms,
-    ))
+    record_send(socket, Drain::new(data), flags, ssl_send_drain, steady_ms)
 }
 
 /// [`recv_sync_fill`] into `buffer`.
 pub fn recv_sync(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
-    count(sync(socket, Io::Recv(Fill::new(buffer)), flags))
+    sync(socket, Io::Recv(Fill::new(buffer)), flags)
 }
 
 /// [`send_sync_drain`] of `data`.
 #[must_use]
 pub fn send_sync(socket: Socket<'_>, data: &[u8], flags: c_int) -> Option<usize> {
-    count(sync_out(socket, Io::Send(Drain::new(data)), flags))
+    sync_out(socket, Io::Send(Drain::new(data)), flags)
 }
 
 /// [`read_sync_fill`] into `buffer`.
 pub fn read_sync(socket: Socket<'_>, buffer: &mut [impl ReadSlot]) -> Option<usize> {
-    count(sync(socket, Io::Read(Fill::new(buffer)), 0))
+    sync(socket, Io::Read(Fill::new(buffer)), 0)
 }
 
 /// `ssize_t Socket::write_sync(const void *, size_t)` of `data`.
 #[must_use]
 pub fn write_sync(socket: Socket<'_>, data: &[u8]) -> Option<usize> {
-    count(sync_out(socket, Io::Write(Drain::new(data)), 0))
+    sync_out(socket, Io::Write(Drain::new(data)), 0)
 }
 
 /// `ssize_t Socket::sendto_sync(const Address &, const void *, size_t, int)` of `data`.
@@ -456,7 +439,7 @@ pub fn sendto_sync(
     flags: c_int,
 ) -> Option<usize> {
     let io = Io::SendTo(address, Drain::new(data));
-    count(sync_out(socket, io, flags))
+    sync_out(socket, io, flags)
 }
 
 /// `ssize_t Socket::recvfrom_sync(char *, size_t, int, Address *)` into `buffer`, and
@@ -468,12 +451,12 @@ pub fn recvfrom_sync(
     address: &mut SocketAddress,
 ) -> Option<usize> {
     let io = Io::RecvFrom(address, Fill::new(buffer));
-    count(sync(socket, io, flags))
+    sync(socket, io, flags)
 }
 
 /// `ssize_t Socket::peek(void *, size_t, int) const` into `buffer`.
 pub fn peek(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
-    count(record_peek(socket, Fill::new(buffer), flags, tls_peek))
+    record_peek(socket, Fill::new(buffer), flags, tls_peek)
 }
 
 /// `bool Socket::check_liveness()`.
@@ -547,7 +530,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
         swr_v1_reactor_poll_events_to(self.socket.read(|record| what_event_want(record, event)))
     }
 
-    fn io(&mut self, flags: c_int) -> isize {
+    fn io(&mut self, flags: c_int) -> Option<usize> {
         let socket = self.socket;
         // Read on each call: a signal handler the wait dispatches may have changed it.
         let fd = socket.fd();
@@ -560,8 +543,8 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
             Io::Write(data) => data.write(fd),
             Io::SendTo(address, data) => data.sendto(fd, flags, address),
             Io::RecvFrom(address, buffer) => buffer.recvfrom(fd, flags, address),
-            Io::Sendfile(request, _) => send_chunk(socket, request).0,
-            Io::Writev(vectors) => writev(fd, vectors),
+            Io::Sendfile(request, _) => count(send_chunk(socket, request).0),
+            Io::Writev(vectors) => count(writev(fd, vectors)),
         }
     }
 
@@ -592,7 +575,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
 
 /// `Socket::wait_for`'s loop (`crates/reactor/src/socket_sync.rs`) around `io`,
 /// waiting for writability (else readability) up to the socket's timeout.
-fn sync<S: ReadSlot>(socket: Socket<'_>, io: Io<'_, S>, flags: c_int) -> isize {
+fn sync<S: ReadSlot>(socket: Socket<'_>, io: Io<'_, S>, flags: c_int) -> Option<usize> {
     let (mode, event) = match &io {
         Io::Send(_) => (SyncMode::Send, Events::WRITE),
         Io::Recv(_) => (SyncMode::Recv, Events::READ),
@@ -619,13 +602,13 @@ fn sync<S: ReadSlot>(socket: Socket<'_>, io: Io<'_, S>, flags: c_int) -> isize {
 }
 
 /// [`sync`] of an I/O that fills nothing, waiting for writability.
-fn sync_out(socket: Socket<'_>, io: Io<'_>, flags: c_int) -> isize {
+fn sync_out(socket: Socket<'_>, io: Io<'_>, flags: c_int) -> Option<usize> {
     sync(socket, io, flags)
 }
 
 /// `ssize_t Socket::send_sync(const void *, size_t, int)` of the bytes `data` lends.
 #[must_use]
-pub fn send_sync_drain(socket: Socket<'_>, data: Drain<'_>, flags: c_int) -> isize {
+pub fn send_sync_drain(socket: Socket<'_>, data: Drain<'_>, flags: c_int) -> Option<usize> {
     sync_out(socket, Io::Send(data), flags)
 }
 
@@ -633,19 +616,19 @@ pub fn send_sync_drain(socket: Socket<'_>, data: Drain<'_>, flags: c_int) -> isi
 /// `MSG_WAITALL` is cleared for each call, since under nonblocking I/O it would spin on
 /// EAGAIN.
 #[must_use]
-pub fn recv_sync_fill(socket: Socket<'_>, buffer: Fill<'_>, flags: c_int) -> isize {
+pub fn recv_sync_fill(socket: Socket<'_>, buffer: Fill<'_>, flags: c_int) -> Option<usize> {
     sync(socket, Io::Recv(buffer), flags)
 }
 
 /// `ssize_t Socket::read_sync(void *, size_t)` into the bytes `buffer` lends.
 #[must_use]
-pub fn read_sync_fill(socket: Socket<'_>, buffer: Fill<'_>) -> isize {
+pub fn read_sync_fill(socket: Socket<'_>, buffer: Fill<'_>) -> Option<usize> {
     sync(socket, Io::Read(buffer), 0)
 }
 
 /// `ssize_t Socket::writev_sync(const iovec *, size_t)` of `vectors`.
 #[must_use]
-pub fn writev_sync(socket: Socket<'_>, vectors: &[IoSlice<'_>]) -> isize {
+pub fn writev_sync(socket: Socket<'_>, vectors: &[IoSlice<'_>]) -> Option<usize> {
     sync_out(socket, Io::Writev(vectors), 0)
 }
 
@@ -661,7 +644,7 @@ pub fn socket_ssl_check_host(socket: Socket<'_>, name: &CStr) -> bool {
     let Some(cert) = ssl_get_peer_certificate(socket) else {
         return false;
     };
-    if cert.get().matches_host(name.to_bytes()) {
+    if cert.get().matches_host(name) {
         return true;
     }
     log::warning(
@@ -714,7 +697,8 @@ pub fn socket_ssl_peer_certificate_string(socket: Socket<'_>, buffer: &mut CppSt
 /// `Socket::ssl_sendfile` over a descriptor.
 fn ssl_sendfile(socket: Socket<'_>, fd: c_int, offset: &mut libc::off_t, size: usize) -> isize {
     let mut nobufs = false;
-    let send = |data: &[u8]| ssl_send_drain(socket, Drain::new(data));
+    let send =
+        |data: &[u8]| ssl_send_drain(socket, Drain::new(data)).map_or(-1, usize::cast_signed);
     let result = ssl_sendfile_fd(fd, offset, size, send, &mut nobufs);
     if nobufs {
         socket.edit(|record| record.kernel_nobufs = true);
@@ -809,7 +793,7 @@ fn file_request(
 #[must_use]
 pub extern "C" fn socket_sendfile_sync(
     socket: Socket<'_>,
-    filename: CText<'_>,
+    filename: Text<'_>,
     offset: libc::off_t,
     length: usize,
 ) -> c_int {
@@ -838,7 +822,7 @@ pub fn sendfile_sync(
     if corked {
         socket.edit(|record| socket_uncork(record));
     }
-    rv >= 0
+    rv.is_some()
 }
 
 /// A failed Rust queue status. Native `Buffer` raises it as a C++ exception that
@@ -1019,7 +1003,7 @@ pub unsafe extern "C-unwind" fn socket_send_async(
     if swoole_rs_reactor::socket_upstream::event_reactor().is_none() {
         // SAFETY: as the caller promises.
         let data = unsafe { Drain::from_raw(data, length) };
-        return send_sync_drain(socket, data, 0);
+        return send_sync_drain(socket, data, 0).map_or(-1, usize::cast_signed);
     }
     // SAFETY: as the caller promises, on the thread's available reactor.
     unsafe { swoole_rs_reactor::event_api::swoole_event_write(socket.as_ptr(), data, length) }
@@ -1170,11 +1154,8 @@ fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> bool {
         // the platform's, which reads the NUL-terminated source and writes at
         // most an IPv6 address's 16 bytes (nothing for a family it doesn't know).
         unsafe extern "C" {
-            safe fn inet_pton(
-                family: c_int,
-                source: CText<'_>,
-                destination: &mut [u8; 16],
-            ) -> c_int;
+            safe fn inet_pton(family: c_int, source: Text<'_>, destination: &mut [u8; 16])
+            -> c_int;
         }
         let mut bytes = [0; 16];
         let parsed =
@@ -1202,7 +1183,7 @@ fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> bool {
 )]
 pub extern "C-unwind" fn make_server_socket(
     kind: c_int,
-    address: CText<'_>,
+    address: Text<'_>,
     port: c_int,
     backlog: c_int,
 ) -> *mut SocketRecord {

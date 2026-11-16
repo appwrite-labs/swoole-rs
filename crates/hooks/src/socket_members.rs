@@ -174,14 +174,14 @@ impl Co {
     /// `Socket::recv_with_buffer(buf, n)` into `out`, which is outside the socket's
     /// read buffer: the count of `out`'s first slots it wrote, or -1.
     pub fn recv_with_buffer(self, out: &mut [impl ReadSlot]) -> Option<usize> {
-        count(recv_buffered(self, out))
+        recv_buffered(self, out)
     }
 
     /// `Socket::recv_line(buf, maxlen)` of at most `out.len()` bytes, one buffered
     /// byte at a time, into `out`, which is outside the socket's read buffer: the
     /// count of `out`'s first slots it wrote, or -1.
     pub fn recv_line(self, out: &mut [impl ReadSlot]) -> Option<usize> {
-        count(recv_line(out, |at| recv_buffered(self, at)))
+        recv_line(out, |at| recv_buffered(self, at))
     }
 
     /// `Socket::set_option(level, optname, optval, optlen)`: `setsockopt`, warning on
@@ -414,7 +414,8 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::recv(ops, buf)) {
             return count(n);
         }
-        let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0));
+        let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0)
+            .map_or(-1, usize::cast_signed));
         count(self.transfer(0, Buffer::read(buf), call))
     }
 
@@ -425,7 +426,10 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::send(ops, ring::SEND, buf)) {
             return count(n);
         }
-        let call = call!(|s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0));
+        let call = call!(
+            |s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0)
+                .map_or(-1, usize::cast_signed)
+        );
         count(self.transfer(0, Buffer::write(buf), call))
     }
 
@@ -435,7 +439,8 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::recv_all(ops, buf)) {
             return count(n);
         }
-        let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0));
+        let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0)
+            .map_or(-1, usize::cast_signed));
         count(self.transfer(ALL, Buffer::read(buf), call))
     }
 
@@ -446,7 +451,10 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::send_all(ops, buf)) {
             return count(n);
         }
-        let call = call!(|s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0));
+        let call = call!(
+            |s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0)
+                .map_or(-1, usize::cast_signed)
+        );
         count(self.transfer(ALL, Buffer::write(buf), call))
     }
 

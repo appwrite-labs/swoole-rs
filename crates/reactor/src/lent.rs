@@ -9,6 +9,11 @@ use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use swoole_rs_corebase::sys::ReadSlot;
 
+/// A syscall's byte count, or None for its -1.
+fn count(n: isize) -> Option<usize> {
+    usize::try_from(n).ok()
+}
+
 /// `len` bytes at `at` that a read may overwrite, lent for `'a`: null, or writable
 /// and reached through nothing else meanwhile.
 pub struct Fill<'a, S: ReadSlot = MaybeUninit<u8>> {
@@ -77,25 +82,30 @@ impl<'a, S: ReadSlot> Fill<'a, S> {
         unsafe { std::slice::from_raw_parts_mut(self.at, self.len) }
     }
 
-    /// recv(2) into the bytes.
+    /// recv(2) into the bytes: how many it wrote, or None with errno set.
     #[inline]
-    pub fn recv(&mut self, fd: c_int, flags: c_int) -> isize {
+    pub fn recv(&mut self, fd: c_int, flags: c_int) -> Option<usize> {
         // SAFETY: the type's invariant: null, which the kernel refuses, or `len`
         // writable bytes.
-        unsafe { libc::recv(fd, self.at.cast(), self.len, flags) }
+        count(unsafe { libc::recv(fd, self.at.cast(), self.len, flags) })
     }
 
-    /// read(2) into the bytes.
+    /// read(2) into the bytes, as [`Fill::recv`].
     #[inline]
-    pub fn read(&mut self, fd: c_int) -> isize {
+    pub fn read(&mut self, fd: c_int) -> Option<usize> {
         // SAFETY: as in `recv`.
-        unsafe { libc::read(fd, self.at.cast(), self.len) }
+        count(unsafe { libc::read(fd, self.at.cast(), self.len) })
     }
 
     /// `Socket::recvfrom`: recvfrom(2) into the bytes, and the peer into `address` and
     /// its length, retried on `EINTR` up to `SW_SOCKET_RETRY_COUNT` times.
     #[inline]
-    pub fn recvfrom(&mut self, fd: c_int, flags: c_int, address: &mut SocketAddress) -> isize {
+    pub fn recvfrom(
+        &mut self,
+        fd: c_int,
+        flags: c_int,
+        address: &mut SocketAddress,
+    ) -> Option<usize> {
         let (storage, size) = (&raw mut address.addr, &raw mut address.len);
         let mut received = 0;
         for _ in 0..swoole_rs_corebase::constants::SW_SOCKET_RETRY_COUNT {
@@ -107,7 +117,7 @@ impl<'a, S: ReadSlot> Fill<'a, S> {
                 break;
             }
         }
-        received
+        count(received)
     }
 }
 
@@ -218,30 +228,30 @@ impl<'a> Drain<'a> {
         unsafe { std::slice::from_raw_parts(self.at, self.len) }
     }
 
-    /// send(2) of the bytes.
+    /// send(2) of the bytes: how many it sent, or None with errno set.
     #[inline]
     #[must_use]
-    pub fn send(self, fd: c_int, flags: c_int) -> isize {
+    pub fn send(self, fd: c_int, flags: c_int) -> Option<usize> {
         // SAFETY: the type's invariant: null, which the kernel refuses, or `len`
         // readable bytes.
-        unsafe { libc::send(fd, self.at.cast(), self.len, flags) }
+        count(unsafe { libc::send(fd, self.at.cast(), self.len, flags) })
     }
 
-    /// write(2) of the bytes.
+    /// write(2) of the bytes, as [`Drain::send`].
     #[inline]
     #[must_use]
-    pub fn write(self, fd: c_int) -> isize {
+    pub fn write(self, fd: c_int) -> Option<usize> {
         // SAFETY: as in `send`.
-        unsafe { libc::write(fd, self.at.cast(), self.len) }
+        count(unsafe { libc::write(fd, self.at.cast(), self.len) })
     }
 
-    /// sendto(2) of the bytes to `address`.
+    /// sendto(2) of the bytes to `address`, as [`Drain::send`].
     #[inline]
     #[must_use]
-    pub fn sendto(self, fd: c_int, flags: c_int, address: &SocketAddress) -> isize {
+    pub fn sendto(self, fd: c_int, flags: c_int, address: &SocketAddress) -> Option<usize> {
         let to = (&raw const address.addr).cast();
         // SAFETY: as in `send`; the address's storage, `len` bytes of which are its own.
-        unsafe { libc::sendto(fd, self.at.cast(), self.len, flags, to, address.len) }
+        count(unsafe { libc::sendto(fd, self.at.cast(), self.len, flags, to, address.len) })
     }
 }
 
@@ -265,23 +275,25 @@ pub(crate) mod raw {
         now: SteadyMs,
     ) -> isize {
         let data = unsafe { Drain::from_raw(buffer, length) };
-        let tls = |socket: Socket<'_>, data: Drain<'_>| unsafe {
-            tls(socket.as_ptr().cast(), data.as_ptr().cast_mut(), data.len())
+        let tls = |socket: Socket<'_>, data: Drain<'_>| {
+            super::count(unsafe {
+                tls(socket.as_ptr().cast(), data.as_ptr().cast_mut(), data.len())
+            })
         };
-        record_send(socket, data, flags, tls, now)
+        record_send(socket, data, flags, tls, now).map_or(-1, usize::cast_signed)
     }
 
     /// `tls` over a typed buffer.
-    pub(crate) fn fills(tls: TlsIo) -> impl Fn(Socket<'_>, Fill<'_>) -> isize {
+    pub(crate) fn fills(tls: TlsIo) -> impl Fn(Socket<'_>, Fill<'_>) -> Option<usize> {
         move |socket, mut fill| {
             let slots = fill.slots();
-            unsafe {
+            super::count(unsafe {
                 tls(
                     socket.as_ptr().cast(),
                     slots.as_mut_ptr().cast(),
                     slots.len(),
                 )
-            }
+            })
         }
     }
 
@@ -294,7 +306,7 @@ pub(crate) mod raw {
         now: SteadyMs,
     ) -> isize {
         let buffer = unsafe { Fill::from_raw(buffer, length) };
-        record_recv(socket, buffer, flags, fills(tls), now)
+        record_recv(socket, buffer, flags, fills(tls), now).map_or(-1, usize::cast_signed)
     }
 
     pub(crate) unsafe fn socket_record_peek(
@@ -305,6 +317,6 @@ pub(crate) mod raw {
         tls: TlsIo,
     ) -> isize {
         let buffer = unsafe { Fill::from_raw(buffer, length) };
-        record_peek(socket, buffer, flags, fills(tls))
+        record_peek(socket, buffer, flags, fills(tls)).map_or(-1, usize::cast_signed)
     }
 }

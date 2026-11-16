@@ -127,14 +127,11 @@ extern "C" fn execute(token: usize) {
     // reads nothing the worker writes.
     let mut job = event.event().clone();
     match job.handler {
-        None => (job.error, job.retval) = (AIO_BAD_REQUEST, -1),
-        Some(_) if job.canceled.load(Relaxed) != 0 => (job.error, job.retval) = (AIO_CANCELED, -1),
+        None => job.set_result(-1, AIO_BAD_REQUEST),
+        Some(_) if job.canceled.load(Relaxed) != 0 => job.set_result(-1, AIO_CANCELED),
         Some(handler) => handler(&mut job),
     }
-    // SAFETY: as above.
-    unsafe { (*event.0).error = job.error };
-    // SAFETY: as above.
-    unsafe { (*event.0).retval = job.retval };
+    event.event().publish(job.result());
     event.send();
 }
 

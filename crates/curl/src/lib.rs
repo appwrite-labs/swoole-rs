@@ -35,8 +35,7 @@ use swoole_rs_curl_sys::{
     CURLE_FAILED_INIT, CURLE_OK, CURLINFO_PRIVATE, CURLM, CURLM_INTERNAL_ERROR, CURLM_OK,
     CURLMOPT_SOCKETDATA, CURLMOPT_SOCKETFUNCTION, CURLMOPT_TIMERDATA, CURLMOPT_TIMERFUNCTION,
     CURLMSG_DONE, CURLMcode, CURLOPT_PRIVATE, CURLcode, LiveMulti, MultiHandle, curl_easy_getinfo,
-    curl_easy_setopt, curl_multi_add_handle, curl_multi_cleanup, curl_multi_info_read,
-    curl_multi_init, curl_multi_remove_handle, curl_multi_setopt, curl_multi_socket_action,
+    curl_easy_setopt, curl_multi_cleanup, curl_multi_info_read, curl_multi_init, curl_multi_setopt,
     curl_multi_timeout, curl_socket_t,
 };
 use swoole_rs_reactor::Events;
@@ -101,6 +100,32 @@ const _: () = assert!(
     size_of::<Cell<Option<Rc<Multi>>>>() == size_of::<*mut Multi>(),
     "C's `struct swr_v1_curl_multi *easy_multi`"
 );
+
+impl Handle {
+    /// The easy handle it was made for, which outlives it: ext/curl destroys the
+    /// handle before it cleans the easy handle up.
+    fn easy(&self) -> Easy<'_> {
+        Easy(self.cp, PhantomData)
+    }
+}
+
+// libcurl's declarations, with the handles typed as live. Each adds or removes the
+// easy handle, or drives the transfers of those added, and may run callbacks
+// meanwhile: the multi's socket and timer callbacks, which take the multi by shared
+// reference, and the easy handles' own, which ext/curl set under the contract `Easy`
+// carries. `curl_multi_socket_action` writes the running count into its cell, which
+// those callbacks only read through the multi. Without a multi handle libcurl
+// answers `CURLM_BAD_HANDLE`.
+unsafe extern "C" {
+    safe fn curl_multi_add_handle(multi: Option<LiveMulti<'_>>, easy: Easy<'_>) -> CURLMcode;
+    safe fn curl_multi_remove_handle(multi: Option<LiveMulti<'_>>, easy: Easy<'_>) -> CURLMcode;
+    safe fn curl_multi_socket_action(
+        multi: Option<LiveMulti<'_>>,
+        s: curl_socket_t,
+        ev_bitmask: c_int,
+        running_handles: &Cell<c_int>,
+    ) -> CURLMcode;
+}
 
 /// `swoole::curl::Socket`: one socket curl asked to watch. The multi's map
 /// owns it, and the selector's copies keep one it removes while curl runs;
@@ -233,19 +258,22 @@ impl Multi {
             active: Cell::default(),
         });
         let data = Rc::as_ptr(&multi).cast_mut().cast::<c_void>();
-        for option in [CURLMOPT_SOCKETDATA, CURLMOPT_TIMERDATA] {
-            // SAFETY: the handle just made (curl refuses a null one), and the multi,
-            // which outlives it: only `Multi::close` cleans the handle up, before the
-            // last reference to the multi goes.
-            unsafe { curl_multi_setopt(handle, option, data) };
-        }
         let on_socket: OnSocket = handle_socket;
         let on_timer: OnTimer = handle_timeout;
-        // SAFETY: as above. Curl calls the callback with its own arguments and the
-        // socket data set above, the live multi, which is what `OnSocket` takes.
-        unsafe { curl_multi_setopt(handle, CURLMOPT_SOCKETFUNCTION, on_socket) };
-        // SAFETY: as above, with the timer data, for `OnTimer`.
-        unsafe { curl_multi_setopt(handle, CURLMOPT_TIMERFUNCTION, on_timer) };
+        for (option, value) in [
+            (CURLMOPT_SOCKETDATA, data),
+            (CURLMOPT_TIMERDATA, data),
+            (CURLMOPT_SOCKETFUNCTION, on_socket as *mut c_void),
+            (CURLMOPT_TIMERFUNCTION, on_timer as *mut c_void),
+        ] {
+            // SAFETY: the handle just made (curl refuses a null one), and for each
+            // option the one pointer it reads: the multi, which outlives the handle
+            // (only `Multi::close` cleans the handle up, before the last reference to
+            // the multi goes), or the callback, which curl calls with its own
+            // arguments and that multi as its data, what `OnSocket` and `OnTimer`
+            // take. A function pointer passes as a data pointer does (POSIX).
+            unsafe { curl_multi_setopt(handle, option, value) };
+        }
         multi
     }
 
@@ -363,8 +391,7 @@ impl Multi {
     }
 
     fn add_handle(&self, handle: &Handle) -> CURLMcode {
-        // SAFETY: this multi's handle and the handle's live easy handle.
-        let result = unsafe { curl_multi_add_handle(self.raw(), handle.cp) };
+        let result = curl_multi_add_handle(self.live(), handle.easy());
         if result == CURLM_OK {
             handle.multi.set(ptr::from_ref(self).cast_mut());
         }
@@ -372,8 +399,7 @@ impl Multi {
     }
 
     fn remove_handle(&self, handle: &Handle) -> CURLMcode {
-        // SAFETY: this multi's handle and the handle's live easy handle.
-        let result = unsafe { curl_multi_remove_handle(self.raw(), handle.cp) };
+        let result = curl_multi_remove_handle(self.live(), handle.easy());
         handle.multi.set(ptr::null_mut());
         if result == CURLM_OK {
             // Refresh the running count even if no socket event follows.
@@ -508,8 +534,7 @@ impl Multi {
     }
 
     fn socket_action(&self, sockfd: curl_socket_t, bitmask: c_int) -> CURLMcode {
-        // SAFETY: this multi's handle; curl writes the running count.
-        unsafe { curl_multi_socket_action(self.raw(), sockfd, bitmask, self.running.as_ptr()) }
+        curl_multi_socket_action(self.live(), sockfd, bitmask, &self.running)
     }
 
     /// `Multi::selector_finish`: report the timeout and the sockets' events.

@@ -187,7 +187,7 @@ pub fn decode(frame: &mut Frame, data: &mut [u8]) -> bool {
         Ok(decoded) => (decoded, true, true),
         Err((decoded, filled)) => (decoded, false, filled),
     };
-    let flags = decoded.flags;
+    let flags = decoded.flags.bits();
     // Header's bitfields: FIN 1 -> bit 7, RSV1 4 -> 6, RSV2 8 -> 5, RSV3 16 -> 4.
     frame.header[0] = (decoded.opcode.code() & 15)
         | (flags & 16)
@@ -352,11 +352,13 @@ mod tests {
         let fp = unsafe { libc::fopen(path.as_ptr(), c"a+".as_ptr()) };
         assert!(!fp.is_null());
         let ori_fp = swoole_rs_corebase::swoole_get_stdout_stream();
-        swoole_rs_corebase::swoole_set_stdout_stream(fp.cast());
+        swoole_rs_corebase::swoole_set_stdout_stream(unsafe {
+            swoole_rs_corebase::Stream::new(fp)
+        });
         let payload = &wire[usize::from(ws.header_length)..][..ws.payload_length];
         print_frame(ws.header, payload);
-        unsafe { libc::fclose(fp) };
         swoole_rs_corebase::swoole_set_stdout_stream(ori_fp);
+        unsafe { libc::fclose(fp) };
 
         let rs = std::fs::read_to_string(&log).unwrap();
         assert!(rs.contains("FIN: 1,"), "{rs}");

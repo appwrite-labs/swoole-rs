@@ -4,12 +4,16 @@ use crate::{
     Call, Invalid,
     bailout::{self, Bailout},
     sys::{
-        IS_LONG, swr_zend_callable, swr_zend_callable_release, swr_zend_callable_release_quiet,
-        zend_fcall_info_cache, zend_value, zval,
+        IS_LONG, swr_zend_callable, swr_zend_callable_release, zend_fcall_info_cache, zend_value,
+        zval,
     },
     value::emalloc,
 };
-use std::{ffi::c_void, mem::MaybeUninit, ptr};
+use std::{
+    ffi::{c_int, c_void},
+    mem::MaybeUninit,
+    ptr,
+};
 
 // What takes one of this module's handles whole. Each handle is its record's
 // pointer (`repr(transparent)`), made only here, so C receives a live record in
@@ -19,6 +23,12 @@ unsafe extern "C" {
     /// closure of the function `parse` resolved. The handle is spent: `keep`
     /// makes the [`Callable`] of the same record.
     safe fn swr_zend_callable_hold(parsed: Parsed);
+    /// `sw_zend_fci_params_discard` and `sw_zend_fci_cache_discard` when no
+    /// release can run PHP code (no arguments, and neither the object nor the
+    /// closure loses its last reference), then nonzero; otherwise zero, and
+    /// the record keeps everything. The handle is spent either way: `release`
+    /// finishes with the record, as `keep` does with a `Parsed` one.
+    safe fn swr_zend_callable_release_quiet(callable: Callable) -> c_int;
     /// `efree` of the record of a callable that holds nothing.
     #[link_name = "swr_zend_efree"]
     safe fn discard(parsed: Parsed);
@@ -118,15 +128,15 @@ impl Callable {
     /// # Errors
     /// A destructor bailed out; the callable is freed anyway.
     pub fn release(self) -> Result<(), Bailout> {
-        // SAFETY: a kept callable; the quiet release runs no PHP code.
-        let released = if unsafe { swr_zend_callable_release_quiet(self.0) } != 0 {
+        let record = self.0;
+        let released = if swr_zend_callable_release_quiet(self) != 0 {
             Ok(())
         } else {
-            // SAFETY: the release body is C; the callable was kept.
-            unsafe { bailout::trap(swr_zend_callable_release, self.0.cast()) }
+            // SAFETY: the release body is C; the callable is still kept.
+            unsafe { bailout::trap(swr_zend_callable_release, record.cast()) }
         };
         // Emalloc'd by `parse`, and released above.
-        free_released(self);
+        free_released(Callable(record));
         released
     }
 }

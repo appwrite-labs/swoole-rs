@@ -40,7 +40,7 @@ pub(crate) struct ServerObject {
     tables: *mut crate::ServerTables,
     callbacks: *mut c_void,
     /// The state `head` names, freed with the object.
-    state: crate::state::Heap<ServerState>,
+    state: Arc<ServerState>,
 }
 
 #[cfg_attr(
@@ -51,14 +51,14 @@ impl ServerObject {
     /// The object over `state`, which it owns from now on.
     pub(crate) fn new(state: Box<ServerState>) -> Self {
         let (config, tables) = (state.config(), state.tables());
-        let state = crate::state::Heap::from(state);
+        let state = Arc::<ServerState>::from(state);
         Self {
             head: Fields {
-                state: state.as_ptr(),
+                state: Arc::as_ptr(&state),
                 config,
             },
             tables,
-            callbacks: ServerState::callbacks_ptr(state.as_ptr()),
+            callbacks: ServerState::callbacks_ptr(Arc::as_ptr(&state).cast_mut()),
             state,
         }
     }

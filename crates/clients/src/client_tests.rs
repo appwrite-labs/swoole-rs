@@ -227,9 +227,8 @@ pub(super) fn del_id(_: swoole_rs_timer::Held) {
     log("timer del");
 }
 /// crates/hooks' `async::dispatch`: logs the request; nothing completes it.
-pub(super) extern "C" fn async_dispatch(event: &AsyncEvent) -> *mut c_void {
-    // SAFETY: a complete event over a live request.
-    let view = swoole_rs_corebase::swr_v1_core_resolver_view(unsafe { &*event.data });
+pub(super) extern "C" fn async_dispatch(event: &AsyncEvent<'_>) -> *mut c_void {
+    let view = swoole_rs_corebase::swr_v1_core_resolver_view(event.request().unwrap());
     // SAFETY: the request's name, live with it.
     let name = unsafe { &*view.name }.bytes();
     // SAFETY: the request's fields, live with it.
@@ -510,9 +509,10 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
         .unwrap();
     assert_eq!(target, b"example.test");
     assert_eq!(target_port, 80);
+    let host = Handle(client).get().server_host.take();
     assert_eq!(
-        Handle(client).get().server_host.borrow().to_bytes(),
-        b"proxy.test"
+        host.as_deref().map(CStr::to_bytes),
+        Some(&b"proxy.test"[..])
     );
     free(client);
 }

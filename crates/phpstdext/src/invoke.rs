@@ -83,19 +83,13 @@ impl Handler for MethodCall {
             IS_RESOURCE => Receiver::Stream,
             _ => return DISPATCH,
         };
-        // Zend's request allocator, freed by the method call.
-        let info = value::emalloc(size_of::<CallInfo>()).cast::<CallInfo>();
-        // A plain copy of the literal, as upstream's.
-        let func = name.copy_value();
-        let this = object.copy_value();
-        // SAFETY: a fresh allocation of a `CallInfo`.
-        unsafe {
-            info.write(CallInfo {
-                func,
-                this,
-                op1_type: op.op1_type,
-            });
-        }
+        // Zend's request allocator, freed by the method call. The literal is
+        // a plain copy, as upstream's.
+        let info = value::enew(CallInfo {
+            func: name.copy_value(),
+            this: object.copy_value(),
+            op1_type: op.op1_type,
+        });
         let method = match receiver {
             Receiver::Array => &METHODS[0],
             Receiver::String => &METHODS[1],
@@ -127,14 +121,13 @@ fn arguments(prefix: &[zval], frame: &Call) -> Vec<zval> {
 }
 
 /// Upstream's `call_method`: call the function `receiver`'s method names with
-/// `$this` first.
-/// # Safety
-/// A frame the `INIT_METHOD_CALL` handler pushed.
-unsafe fn call_method(receiver: Receiver, frame: *mut zend_execute_data, value: *mut zval) {
-    // SAFETY: the handler stored its `CallInfo` here.
-    let allocation = unsafe { (*frame).run_time_cache }.cast::<CallInfo>();
-    // SAFETY: the handler's initialized allocation, which only this frame's
-    // `run_time_cache` points to until it is freed below.
+/// `$this` first, in the dispatcher's frame, which the `INIT_METHOD_CALL`
+/// handler pushed with its `CallInfo`.
+fn call_method(receiver: Receiver, frame: &Call) {
+    let allocation = frame.take_run_time_cache().cast::<CallInfo>();
+    // SAFETY: the handler's initialized allocation, which the frame's
+    // `run_time_cache` alone pointed to, until the take above, and which is
+    // freed below.
     let info = unsafe { &mut *allocation };
     // op2 of INIT_METHOD_CALL is the method name, a string literal.
     let name = Value::of(&mut info.func).str();
@@ -152,16 +145,10 @@ unsafe fn call_method(receiver: Receiver, frame: *mut zend_execute_data, value: 
             ]));
             Ok(())
         }
-        Some(alias) => {
-            // SAFETY: per the caller, the dispatcher's own frame and return slot.
-            let frame = unsafe { Call::new(frame, value) };
-            call_alias(alias, info, &frame)
-        }
+        Some(alias) => call_alias(alias, info, frame),
     };
     // SAFETY: the handler's allocation; nothing else holds it.
     unsafe { swr_zend_efree(allocation.cast()) };
-    // SAFETY: a live frame.
-    unsafe { (*frame).run_time_cache = ptr::null_mut() };
     swoole_rs_zend::bailout::raise(outcome);
 }
 
@@ -256,23 +243,24 @@ wrappers! {
     zif_swoole_str_ireplace => c"str_ireplace", 2;
 }
 
-macro_rules! dispatchers {
-    ($($handler:ident => $receiver:expr;)*) => {$(
-        /// A method dispatcher the `INIT_METHOD_CALL` handler pushes.
-        /// # Safety
-        /// Zend's handler contract, in a frame that handler pushed.
-        #[unsafe(no_mangle)]
-        pub(crate) unsafe extern "C" fn $handler(frame: *mut zend_execute_data, value: *mut zval) {
-            // SAFETY: per the caller.
-            unsafe { call_method($receiver, frame, value) };
-        }
-    )*};
+/// The method dispatchers the `INIT_METHOD_CALL` handler pushes.
+fn array_method(frame: &Call) {
+    call_method(Receiver::Array, frame);
 }
 
-dispatchers! {
-    zif_swoole_call_array_method => Receiver::Array;
-    zif_swoole_call_string_method => Receiver::String;
-    zif_swoole_call_stream_method => Receiver::Stream;
+fn string_method(frame: &Call) {
+    call_method(Receiver::String, frame);
+}
+
+fn stream_method(frame: &Call) {
+    call_method(Receiver::Stream, frame);
+}
+
+swoole_rs_zend::handlers! {
+    leaf:
+    zif_swoole_call_array_method => array_method;
+    zif_swoole_call_string_method => string_method;
+    zif_swoole_call_stream_method => stream_method;
 }
 
 #[cfg(test)]

@@ -106,42 +106,56 @@ impl SocketAddress {
         bind(fd, &self.addr, self.stored()) == 0
     }
 
-    /// `sendto(2)` of `data` to this address.
+    /// `sendto(2)` of `data` to this address: how many bytes it sent, or `None` with
+    /// errno set.
     #[must_use]
-    pub fn sendto(&self, fd: c_int, data: &[u8], flags: c_int) -> isize {
+    pub fn sendto(&self, fd: c_int, data: &[u8], flags: c_int) -> Option<usize> {
         let (storage, length) = self.storage();
         // SAFETY: `data` is readable for its length, the storage for `length` bytes.
-        unsafe { libc::sendto(fd, data.as_ptr().cast(), data.len(), flags, storage, length) }
+        let sent =
+            unsafe { libc::sendto(fd, data.as_ptr().cast(), data.len(), flags, storage, length) };
+        usize::try_from(sent).ok()
     }
 
-    /// `recvfrom(2)` into `buffer`, the sender's address and its length into this one.
+    /// `recvfrom(2)` into `buffer`, the sender's address and its length into this one:
+    /// how many bytes it received, or `None` with errno set.
     pub fn recvfrom(
         &mut self,
         fd: c_int,
         buffer: &mut [impl crate::sys::ReadSlot],
         flags: c_int,
-    ) -> isize {
+    ) -> Option<usize> {
         self.len = Self::CAPACITY;
         let (data, size) = (buffer.as_mut_ptr().cast(), buffer.len());
         let storage = (&raw mut self.addr).cast();
         // SAFETY: `buffer` is writable for its length, the storage for the `len` given.
-        unsafe { libc::recvfrom(fd, data, size, flags, storage, &raw mut self.len) }
+        let received = unsafe { libc::recvfrom(fd, data, size, flags, storage, &raw mut self.len) };
+        usize::try_from(received).ok()
     }
 
     /// `getsockname(2)` of `fd` into this address and its length.
-    pub fn local_name(&mut self, fd: c_int) -> c_int {
+    ///
+    /// # Errors
+    /// The syscall's errno.
+    pub fn local_name(&mut self, fd: c_int) -> std::io::Result<()> {
         self.named(fd, getsockname)
     }
 
     /// `getpeername(2)` of `fd` into this address and its length.
-    pub fn peer_name(&mut self, fd: c_int) -> c_int {
+    ///
+    /// # Errors
+    /// The syscall's errno.
+    pub fn peer_name(&mut self, fd: c_int) -> std::io::Result<()> {
         self.named(fd, getpeername)
     }
 
     /// `accept(2)` on `fd`, the peer's address and its length into this one: the new
-    /// fd, or -1 with errno set.
-    pub fn accept(&mut self, fd: c_int) -> c_int {
-        self.named(fd, accept)
+    /// descriptor, or `None` with errno set.
+    pub fn accept(&mut self, fd: c_int) -> Option<std::os::fd::OwnedFd> {
+        let mut room = Room::FULL;
+        let result = accept(fd, &mut self.addr, &mut room);
+        self.len = room.0;
+        result
     }
 
     /// `accept4(2)` on `fd` with `flags`, as [`Self::accept`]: the accepted
@@ -155,11 +169,12 @@ impl SocketAddress {
     }
 
     /// `name(fd, ...)` into the whole storage, its length going to `len`.
-    fn named(&mut self, fd: c_int, name: NameCall) -> c_int {
+    fn named(&mut self, fd: c_int, name: NameCall) -> std::io::Result<()> {
         let mut room = Room::FULL;
         let result = name(fd, &mut self.addr, &mut room);
+        let error = std::io::Error::last_os_error();
         self.len = room.0;
-        result
+        if result == 0 { Ok(()) } else { Err(error) }
     }
 }
 
@@ -186,13 +201,17 @@ impl Room {
     const FULL: Self = Self(SocketAddress::CAPACITY);
 }
 
-/// `getsockname`, `getpeername` or `accept`.
+/// `getsockname` or `getpeername`.
 type NameCall = extern "C" fn(c_int, &mut AddressStorage, &mut Room) -> c_int;
 
 // libc's. Each writes at most the room's incoming size (the whole storage) of
 // `address`, and the address's length into the room, and keeps nothing.
 unsafe extern "C" {
-    safe fn accept(fd: c_int, address: &mut AddressStorage, room: &mut Room) -> c_int;
+    safe fn accept(
+        fd: c_int,
+        address: &mut AddressStorage,
+        room: &mut Room,
+    ) -> Option<std::os::fd::OwnedFd>;
     safe fn getsockname(fd: c_int, address: &mut AddressStorage, room: &mut Room) -> c_int;
     safe fn getpeername(fd: c_int, address: &mut AddressStorage, room: &mut Room) -> c_int;
     #[cfg(target_os = "linux")]

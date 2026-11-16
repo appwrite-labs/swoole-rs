@@ -167,15 +167,18 @@ fn listen(call: &Call) {
 
 /// `network::Socket::sendto(host, port, data, length)` on `socket`, its fd and
 /// type: the bytes sent, or -1. `host` ends with a NUL, and C reads it up to its first.
-fn socket_sendto(socket: Option<(c_int, c_int)>, host: &[u8], port: i64, data: &[u8]) -> isize {
-    let Some((fd, kind)) = socket else {
-        return -1;
-    };
+fn socket_sendto(
+    socket: Option<(c_int, c_int)>,
+    host: &[u8],
+    port: i64,
+    data: &[u8],
+) -> Option<usize> {
+    let (fd, kind) = socket?;
     let mut address = SocketAddress::default();
     let port = port.c_cast::<c_int>();
     if let Err(error) = assign(&mut address.addr, &mut address.len, kind, host, port, true) {
         swoole_rs_corebase::log::set_last_error(error);
-        return -1;
+        return None;
     }
     address.sendto(fd, data, 0)
 }
@@ -205,7 +208,7 @@ fn send(call: &Call) {
             } else {
                 serv.server_socket(server_socket)
             };
-            let sent = socket_sendto(socket, path.bytes_with_nul(), 0, payload) > 0;
+            let sent = socket_sendto(socket, path.bytes_with_nul(), 0, payload) > Some(0);
             return call.set_bool(sent);
         }
     }
@@ -254,7 +257,7 @@ fn sendto(call: &Call) {
     } else {
         serv.server_socket(server_socket)
     };
-    call.set_bool(socket_sendto(socket, host, port, data) >= 0);
+    call.set_bool(socket_sendto(socket, host, port, data).is_some());
 }
 
 fn sendfile(call: &Call) {

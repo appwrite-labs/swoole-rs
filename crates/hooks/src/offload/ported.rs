@@ -128,8 +128,7 @@ extern "C" fn dispatch(event: &AsyncEvent) -> *mut AsyncEvent {
             event.pipe_socket,
         );
         (*copy).canceled = AtomicU8::new(flag(k.worker_canceled));
-        (*copy).error = k.worker_error;
-        (*copy).retval = k.worker_result;
+        (*copy).set_result(k.worker_result, k.worker_error);
     }
     // The copy shares the caller's request, releasing the one it replaced.
     let shared = CALLER_REQUEST.with_borrow(Clone::clone);
@@ -179,8 +178,7 @@ const OPS: AsyncOps = AsyncOps {
 extern "C" fn typed_handler(event: &mut AsyncEvent) {
     record("handler:typed".into());
     let k = knobs();
-    event.error = k.worker_error;
-    event.retval = k.worker_result;
+    event.set_result(k.worker_result, k.worker_error);
 }
 extern "C" fn handler_gethostbyname(event: &mut AsyncEvent) {
     record("handler:host".into());
@@ -190,8 +188,7 @@ extern "C" fn handler_gethostbyname(event: &mut AsyncEvent) {
         }
     });
     let k = knobs();
-    event.retval = k.worker_result;
-    event.error = k.worker_error;
+    event.set_result(k.worker_result, k.worker_error);
 }
 extern "C" fn handler_getaddrinfo(event: &mut AsyncEvent) {
     record("handler:addr".into());
@@ -202,8 +199,7 @@ extern "C" fn handler_getaddrinfo(event: &mut AsyncEvent) {
             request.error.set(k.request_error);
         }
     });
-    event.retval = k.worker_result;
-    event.error = k.worker_error;
+    event.set_result(k.worker_result, k.worker_error);
 }
 fn lambda() {
     record("lambda:execute".into());
@@ -236,11 +232,11 @@ fn gethostbyname(name: &str, domain: c_int, timeout: f64) -> String {
     let mut event = empty();
     record(format!("host-request:{name}:{domain}"));
     let request = Rc::new(Request::default());
-    event.retval = 1;
+    event.set_result(1, 0);
     async_event(handler_gethostbyname, &mut event, Some(&request), timeout);
     let completion = ResolverCompletion::after_await(
-        event.retval,
-        event.error,
+        event.result().0,
+        event.result().1,
         || 0,
         AIO_TIMEOUT,
         RESOLVE_TIMEOUT,
@@ -273,8 +269,8 @@ fn getaddrinfo(
     let mut values = Vec::new();
     let error = request.error.get();
     let completion = ResolverCompletion::after_await(
-        event.retval,
-        event.error,
+        event.result().0,
+        event.result().1,
         || error,
         AIO_TIMEOUT,
         RESOLVE_TIMEOUT,
@@ -320,8 +316,8 @@ fn run(scenario: i32) -> Vec<String> {
         let result = async_event(typed_handler, &mut event, None, 0.25);
         record(format!("result:{}", flag(result)));
         record(format!("caller-canceled:{}", event.canceled.load(Relaxed)));
-        record(format!("caller-retval:{}", event.retval));
-        record(format!("caller-error:{}", event.error));
+        record(format!("caller-retval:{}", event.result().0));
+        record(format!("caller-error:{}", event.result().1));
         // SAFETY: the worker slot, read between callbacks.
         let canceled = unsafe { (*worker()).canceled.load(Relaxed) };
         record(format!("worker-canceled:{canceled}"));

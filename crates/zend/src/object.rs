@@ -150,28 +150,6 @@ impl<T> Object<T> {
     /// Where `std` sits: the handlers' `offset`.
     pub const OFFSET: usize = offset_of!(Self, std);
 
-    /// The body of a `create_object` handler: allocate, initialise the
-    /// standard object and its properties, install `class`'s handlers, and
-    /// write `data` before the object is shared.
-    /// # Safety
-    /// `ce` is `class`'s entry or a subclass of it, and `class` is registered
-    /// with handlers laid out for `T`.
-    #[must_use]
-    pub unsafe fn create(class: &Class, ce: *mut zend_class_entry, data: T) -> *mut zend_object {
-        // SAFETY: Zend's allocator; it zeroes everything before `std`.
-        let this = unsafe { swr_zend_object_alloc(size_of::<Self>(), ce) }.cast::<Self>();
-        let std = Self::std(this);
-        // SAFETY: `std` is freshly allocated storage for an object of class `ce`.
-        unsafe { zend_object_std_init(std, ce) };
-        // SAFETY: as above; the property slots follow `std`.
-        unsafe { object_properties_init(std, ce) };
-        // SAFETY: `std` is initialised and not yet shared.
-        unsafe { (*std).handlers = class.handlers() };
-        // SAFETY: the object's data, allocated above and unused.
-        unsafe { Self::data_ptr(std).write(data) };
-        std
-    }
-
     /// Where the data of the object around `std` sits, for callers that keep
     /// no reference to it across PHP code (cells, or raw field access).
     #[must_use]
@@ -184,6 +162,34 @@ impl<T> Object<T> {
     #[must_use]
     pub fn std(this: *mut Self) -> *mut zend_object {
         this.wrapping_byte_add(Self::OFFSET).cast()
+    }
+}
+
+/// `T`'s registered class, or a subclass of it that inherited its create
+/// handler: an entry whose objects are `Object<T>`s with `T`'s handlers. Made
+/// only by [`new_object`], from `T`'s own registered entry, and by [`create`],
+/// from the entry Zend passes `T`'s create handler.
+struct LaidOut<T>(*mut zend_class_entry, PhantomData<fn() -> T>);
+
+impl<T: Custom> LaidOut<T> {
+    /// The body of a `create_object` handler: allocate, initialise the
+    /// standard object and its properties, install `T`'s class's handlers,
+    /// and write `data` before the object is shared.
+    #[must_use]
+    fn create(self, data: T) -> *mut zend_object {
+        let Self(ce, _) = self;
+        // SAFETY: Zend's allocator; it zeroes everything before `std`.
+        let this = unsafe { swr_zend_object_alloc(size_of::<Object<T>>(), ce) }.cast::<Object<T>>();
+        let std = Object::std(this);
+        // SAFETY: `std` is freshly allocated storage for an object of class `ce`.
+        unsafe { zend_object_std_init(std, ce) };
+        // SAFETY: as above; the property slots follow `std`.
+        unsafe { object_properties_init(std, ce) };
+        // SAFETY: `std` is initialised and not yet shared.
+        unsafe { (*std).handlers = T::class().handlers() };
+        // SAFETY: the object's data, allocated above and unused.
+        unsafe { Object::<T>::data_ptr(std).write(data) };
+        std
     }
 }
 
@@ -275,8 +281,8 @@ pub fn new_object<T: Custom>(data: T) -> Owned {
     const { assert!(align_of::<T>() <= 8, "emalloc aligns to 8 bytes") };
     let class = T::class();
     assert!(!class.entry().is_null(), "a registered class");
-    // SAFETY: the registered class's own entry, laid out for `T`.
-    let std = unsafe { Object::<T>::create(class, class.entry(), data) };
+    // The registered class's own entry, laid out for `T`.
+    let std = LaidOut::<T>(class.entry(), PhantomData).create(data);
     // SAFETY: the new object, whose one reference this takes.
     unsafe { Owned::object(std) }
 }
@@ -287,8 +293,8 @@ pub fn new_object<T: Custom>(data: T) -> Owned {
 /// Zend calls it with `T`'s class or a subclass of it, which inherits it.
 unsafe extern "C" fn create<T: Custom>(ce: *mut zend_class_entry) -> *mut zend_object {
     const { assert!(align_of::<T>() <= 8, "emalloc aligns to 8 bytes") };
-    // SAFETY: per Zend; `register_object` gave `T`'s class `T`'s handlers.
-    unsafe { Object::<T>::create(T::class(), ce, T::new()) }
+    // Per Zend; `register_object` gave `T`'s class `T`'s handlers.
+    LaidOut::<T>(ce, PhantomData).create(T::new())
 }
 
 /// `T`'s `free_obj` handler: drop the data, then free the standard object.

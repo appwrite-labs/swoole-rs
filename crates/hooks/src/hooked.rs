@@ -152,7 +152,9 @@ pub fn connect(fd: c_int, address: &SocketAddress) -> c_int {
 #[must_use]
 pub fn accept(fd: c_int, peer: &mut SocketAddress) -> c_int {
     let Some((_, socket)) = hooked(fd) else {
-        return peer.accept(fd);
+        return peer
+            .accept(fd)
+            .map_or(-1, std::os::fd::IntoRawFd::into_raw_fd);
     };
     let Some(conn) = socket.accept_owned(0.0) else {
         return -1;
@@ -213,7 +215,7 @@ pub unsafe extern "C" fn swoole_coroutine_poll(
     if let Some(ring) = crate::stdio::host().and_then(ring)
         && let [fd] = fds
     {
-        return crate::uring::poll(ring, fd, timeout);
+        return crate::uring::poll(ring, fd, timeout).unwrap_or(-1);
     }
     crate::poll::poll(fds, timeout, &crate::poll::NATIVE).map_or(-1, CCast::c_cast::<c_int>)
 }

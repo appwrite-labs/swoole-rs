@@ -24,6 +24,8 @@ pub struct Buffer<'a> {
     at: *mut u8,
     length: usize,
     event: Events,
+    /// A write's bytes (`at` and `length`), none for a read.
+    written: &'a [u8],
     borrow: PhantomData<&'a mut [u8]>,
 }
 
@@ -31,32 +33,33 @@ impl<'a> Buffer<'a> {
     /// The caller's one-byte slots, any value valid, which a read fills.
     pub fn read(buf: &'a mut [impl ReadSlot]) -> Self {
         let (at, length) = (buf.as_mut_ptr().cast(), buf.len());
-        Self::new(at, length, Events::READ)
+        Self::new(at, length, Events::READ, &[])
     }
 
     /// The caller's bytes, which a write only reads (its wait may move them to the
     /// write buffer, a copy).
     #[must_use]
     pub fn write(buf: &'a [u8]) -> Self {
-        Self::new(buf.as_ptr().cast_mut(), buf.len(), Events::WRITE)
+        Self::new(buf.as_ptr().cast_mut(), buf.len(), Events::WRITE, buf)
     }
 
     /// No buffer, in `event`'s direction.
     #[must_use]
     pub const fn none(event: Events) -> Self {
-        Self::new(core::ptr::null_mut(), 0, event)
+        Self::new(core::ptr::null_mut(), 0, event, &[])
     }
 
     /// The buffer's start, length and direction; its borrow outlives the transfer.
-    const fn into_parts(self) -> (*mut u8, usize, Events) {
-        (self.at, self.length, self.event)
+    const fn into_parts(self) -> (*mut u8, usize, Events, &'a [u8]) {
+        (self.at, self.length, self.event, self.written)
     }
 
-    const fn new(at: *mut u8, length: usize, event: Events) -> Self {
+    const fn new(at: *mut u8, length: usize, event: Events, written: &'a [u8]) -> Self {
         Self {
             at,
             length,
             event,
+            written,
             borrow: PhantomData,
         }
     }
@@ -130,6 +133,7 @@ fn one(
     flags: u32,
     buffer: *mut u8,
     length: usize,
+    written: &[u8],
 ) -> isize {
     let mut buffer = buffer;
     let moves = event == Events::WRITE && !buffer.is_null();
@@ -142,9 +146,7 @@ fn one(
         if !op.would_block() || !timer.start() {
             break;
         }
-        // SAFETY: a write's `buffer`, whose `length` bytes its caller keeps live
-        // across the transfer.
-        let slot = moves.then(|| unsafe { WriteSlot::new(&mut buffer, length) });
+        let slot = moves.then(|| WriteSlot::new(&mut buffer, written));
         if !wait(op.socket, event, slot) {
             break;
         }
@@ -159,7 +161,7 @@ fn one(
 /// gets the buffer, or the write buffer a write's wait moved it to. -1 when the
 /// socket is not available.
 pub(crate) fn transfer(socket: Co, flags: u32, buffer: Buffer<'_>, call: Call<'_>) -> isize {
-    let (buffer, length, event) = buffer.into_parts();
+    let (buffer, length, event, written) = buffer.into_parts();
     if flags & CHECKED == 0 && !available(socket, event) {
         return -1;
     }
@@ -173,7 +175,7 @@ pub(crate) fn transfer(socket: Co, flags: u32, buffer: Buffer<'_>, call: Call<'_
     let result = if flags & ALL != 0 {
         all(op, &mut timer, event, buffer, length)
     } else {
-        one(op, &mut timer, event, flags, buffer, length)
+        one(op, &mut timer, event, flags, buffer, length, written)
     };
     timer.stop();
     result
@@ -301,7 +303,18 @@ mod tests {
         } else {
             core::ptr::null_mut()
         };
-        let result = transfer(socket.co(), flags, Buffer::new(at, 8, event), &mut call);
+        let written = if buffered && event == Events::WRITE {
+            // SAFETY: the 8 bytes of `buffer` at `at`, which the write only reads.
+            unsafe { core::slice::from_raw_parts(at, 8) }
+        } else {
+            &[]
+        };
+        let result = transfer(
+            socket.co(),
+            flags,
+            Buffer::new(at, 8, event, written),
+            &mut call,
+        );
         let error = socket.0.err_code.get();
         socket.0.sock_fd.set(100);
         let events = take()
@@ -501,7 +514,7 @@ mod tests {
         let mut socket = TestSocket::new();
         unsafe { socket.0.record() }.timeouts.read = 0.0;
         RESULTS.set([EAGAIN].into_iter().collect());
-        let buffer = Buffer::new(core::ptr::null_mut(), 8, Events::READ);
+        let buffer = Buffer::new(core::ptr::null_mut(), 8, Events::READ, &[]);
         let result = transfer(socket.co(), CHECKED, buffer, &mut call);
         assert_eq!(result, -1);
         // A zero timeout starts no timer.

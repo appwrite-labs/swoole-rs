@@ -4,10 +4,11 @@
 #ifndef SWOOLE_RS_ZEND_SHIM_HTTP_CLIENT_H
 #define SWOOLE_RS_ZEND_SHIM_HTTP_CLIENT_H
 #include "shim.h"
+#include <sys/uio.h>
 
 /* Swoole's zend::array_add_or_merge: add `element` (taking it over) under `key`,
  * or turn an existing value into a list and append to it. */
-void swr_zend_array_add_or_merge(zval *array, const char *key, size_t length, zval *element);
+void swr_lent_array_add_or_merge(zval *array, struct iovec key, zval *element);
 
 /* zend_is_true, whose fast path is inline. */
 bool swr_zval_is_true(const zval *value);

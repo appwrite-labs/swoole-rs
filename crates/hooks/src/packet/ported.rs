@@ -95,7 +95,7 @@ fn read_buffer(_: Co, view: &mut ReadBuffer, sync: BufferSync) {
     });
 }
 
-fn recv(_: Co, buf: &mut [core::mem::MaybeUninit<u8>], all: bool) -> isize {
+fn recv(_: Co, buf: &mut [core::mem::MaybeUninit<u8>], all: bool) -> Option<usize> {
     let n = buf.len();
     with(|s| {
         let Script {
@@ -113,11 +113,7 @@ fn recv(_: Co, buf: &mut [core::mem::MaybeUninit<u8>], all: bool) -> isize {
             *read = (*read + 1).min(reads.len());
             if requested < 0 {
                 set_errno((-requested).try_into().unwrap());
-                return if total > 0 {
-                    total.try_into().unwrap()
-                } else {
-                    -1
-                };
+                return (total > 0).then_some(total);
             }
             let count = requested
                 .unsigned_abs()
@@ -133,7 +129,7 @@ fn recv(_: Co, buf: &mut [core::mem::MaybeUninit<u8>], all: bool) -> isize {
                 break;
             }
         }
-        total.try_into().unwrap()
+        Some(total)
     })
 }
 
@@ -320,7 +316,7 @@ fn run(scenario: usize) -> String {
     let (result, error) = if available {
         with(|s| s.trace.push("timer:new:0x1p+0".into()));
         let previous = HOST.replace(Some(&SCRIPTED));
-        let result = recv_packet(socket.co(), 0.0);
+        let result = recv_packet(socket.co(), 0.0).map_or(-1, usize::cast_signed);
         let error = errno();
         HOST.set(previous);
         with(|s| s.trace.push("timer:destroy".into()));

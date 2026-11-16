@@ -11,7 +11,7 @@
 //! and borrow the state only between effects. A PHP bailout in a callback
 //! longjmps out, so nothing that needs dropping is held across one.
 use crate::protocol::Protocol;
-use core::cell::{Cell, OnceCell, RefCell};
+use core::cell::{Cell, OnceCell};
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
 use std::ffi::{CStr, CString};
@@ -230,19 +230,21 @@ struct Tail {
 
 /// `async::Handler`: runs on a pool thread over its own copy of the event, of which
 /// the pool keeps `error` and `retval`.
-type AsyncHandler = extern "C" fn(&mut AsyncEvent);
+type AsyncHandler = extern "C" fn(&mut AsyncEvent<'_>);
 
 /// The completion, on the dispatching thread.
-type AsyncCallback = extern "C" fn(&AsyncEvent);
+type AsyncCallback = extern "C" fn(&AsyncEvent<'_>);
 
 /// Upstream's `AsyncEvent` as crates/hooks' pool takes it, its request a counted
-/// DNS record.
+/// DNS record: the event [`dns_lookup`] builds borrows its request, and each copy the
+/// pool makes holds a reference of its own, so the record outlives every borrow of
+/// an event.
 #[repr(C)]
-struct AsyncEvent {
+struct AsyncEvent<'a> {
     task_id: usize,
     canceled: u8,
     error: c_int,
-    data: *mut ResolverRequest,
+    data: Option<&'a ResolverRequest>,
     retval: isize,
     pipe_socket: *mut c_void,
     timestamp: f64,
@@ -251,12 +253,10 @@ struct AsyncEvent {
     callback: Option<AsyncCallback>,
 }
 
-impl AsyncEvent {
+impl AsyncEvent<'_> {
     /// The event's request; none on an event built without one.
     fn request(&self) -> Option<&ResolverRequest> {
-        // SAFETY: only this module builds an event, whose request is null or a
-        // record the event (and each copy the pool makes of it) keeps live.
-        unsafe { self.data.as_ref() }
+        self.data
     }
 }
 
@@ -280,7 +280,7 @@ unsafe extern "C" {
         improper_ctypes,
         reason = "the request record is opaque behind its pointer; Rust defines both sides"
     )]
-    safe fn async_dispatch(event: &AsyncEvent) -> *mut c_void;
+    safe fn async_dispatch(event: &AsyncEvent<'_>) -> *mut c_void;
 }
 
 /// The public, trivially copyable fields of `network::Client`. C++ keeps typed
@@ -321,7 +321,8 @@ pub struct Client {
     flags: Cell<u32>,
     domain: c_int,
     sock_flags: Cell<c_int>,
-    server_host: RefCell<CString>,
+    /// Set once, by the first `inet_addr`; read by taking it out and putting it back.
+    server_host: Cell<Option<CString>>,
     server_port: Cell<c_int>,
     /// The id of the pending connect timer.
     timer: Cell<Option<swoole_rs_timer::Held>>,
@@ -504,7 +505,7 @@ impl Handle {
     /// `Socket::sendto(server_addr, data, length)`: one sendto(2).
     fn sendto(self, data: &[u8]) -> Option<usize> {
         let fd = self.socket().fd();
-        usize::try_from(self.record().server_addr.sendto(fd, data, 0)).ok()
+        self.record().server_addr.sendto(fd, data, 0)
     }
 
     /// `Socket::recvfrom(data, length, flags, &remote_addr)`: recvfrom(2),
@@ -513,9 +514,9 @@ impl Handle {
         let fd = self.socket().fd();
         self.get().edit_record(|record| {
             for _ in 0..SOCKET_RETRY_COUNT {
-                let n = usize::try_from(record.remote_addr.recvfrom(fd, &mut *buffer, flags));
-                if n.is_ok() || errno() != libc::EINTR {
-                    return n.ok();
+                let n = record.remote_addr.recvfrom(fd, &mut *buffer, flags);
+                if n.is_some() || errno() != libc::EINTR {
+                    return n;
                 }
             }
             None
@@ -835,7 +836,7 @@ pub fn create(kind: c_int, is_async: bool) -> Option<Handle> {
         flags: Cell::new(0),
         domain: 0,
         sock_flags: Cell::new(0),
-        server_host: RefCell::new(CString::default()),
+        server_host: Cell::new(None),
         server_port: Cell::new(0),
         timer: Cell::new(None),
         high_watermark: Cell::new(0),
@@ -1246,7 +1247,7 @@ fn inet_addr(this: Handle, host: &CStr, port: c_int) -> bool {
             proxy_host.push(0);
             host = CStr::from_bytes_until_nul(&proxy_host).unwrap_or_default();
         }
-        host.clone_into(&mut this.get().server_host.borrow_mut());
+        this.get().server_host.set(Some(host.to_owned()));
         this.get().server_port.set(port);
         this.set(Flag::HostPreset, true);
     }
@@ -1265,15 +1266,16 @@ fn inet_addr(this: Handle, host: &CStr, port: c_int) -> bool {
 /// completing in [`resolved`].
 /// Whether the pool took the lookup.
 fn dns_lookup(this: Handle) -> bool {
-    let request = {
-        let host = this.get().server_host.borrow();
-        crate::resolver::Request::new(this.get().domain, 0, 0, host.to_bytes(), b"")
-    };
+    // The request copies the host's bytes, so nothing points into it once it is back.
+    let host = this.get().server_host.take();
+    let name = host.as_deref().map_or(&b""[..], CStr::to_bytes);
+    let request = crate::resolver::Request::new(this.get().domain, 0, 0, name, b"");
+    this.get().server_host.set(host);
     let event = AsyncEvent {
         task_id: 0,
         canceled: 0,
         error: 0,
-        data: request.as_ptr(),
+        data: Some(request.get()),
         retval: 0,
         pipe_socket: core::ptr::null_mut(),
         timestamp: 0.0,
@@ -1287,7 +1289,7 @@ fn dns_lookup(this: Handle) -> bool {
 
 /// `async::handler_gethostbyname`, on a pool thread, over a copy of the event
 /// [`dns_lookup`] dispatched.
-extern "C" fn resolve(event: &mut AsyncEvent) {
+extern "C" fn resolve(event: &mut AsyncEvent<'_>) {
     // Its request record, held by the copy.
     if let Some(request) = event.request() {
         (event.retval, event.error) = crate::resolver::host(request);
@@ -1296,7 +1298,7 @@ extern "C" fn resolve(event: &mut AsyncEvent) {
 
 /// `Client_onResolveCompleted`, on the client's thread, over the completed copy
 /// of the event [`dns_lookup`] dispatched.
-extern "C" fn resolve_completed(event: &AsyncEvent) {
+extern "C" fn resolve_completed(event: &AsyncEvent<'_>) {
     // Its request record, held by the copy.
     let Some(request) = event.request() else {
         return;
@@ -1656,7 +1658,7 @@ pub fn sendto(this: Handle, host: &CStr, port: c_int, data: &[u8]) -> bool {
         return false;
     };
     let fd = this.socket().fd();
-    if address.sendto(fd, data, 0) < 0 {
+    if address.sendto(fd, data, 0).is_none() {
         log::set_last_error(errno());
         return false;
     }

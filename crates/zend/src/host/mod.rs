@@ -8,6 +8,7 @@ mod private;
 mod utilities;
 
 pub use common::{known_free, known_init, sw_zend_known_strings};
+pub(crate) use private::user_call;
 pub use private::{
     Callee, Create, Creator, NO_THEN, Then, exception, exception_owned, function_call, named_call,
     named_call_into, uncaught_exception,

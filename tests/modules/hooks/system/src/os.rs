@@ -270,8 +270,8 @@ fn schedule() {
 }
 
 extern "C" fn bad_request_callback(event: &AsyncEvent) {
-    assert_eq!(event.retval, -1);
-    assert_eq!(event.error, SW_ERROR_AIO_BAD_REQUEST);
+    assert_eq!(event.result().0, -1);
+    assert_eq!(event.result().1, SW_ERROR_AIO_BAD_REQUEST);
     CALLBACK_COUNT.fetch_add(1, Ordering::SeqCst);
 }
 

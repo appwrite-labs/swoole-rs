@@ -92,9 +92,9 @@ pub fn send_parts(
     }
     let (conn, socket) = writes_now(state, session_id)?;
     let parts = [IoSlice::new(head), IoSlice::new(body)];
-    let write = |fd| swoole_rs_tls::upstream::writev(fd, &parts);
+    let write = |fd| usize::try_from(swoole_rs_tls::upstream::writev(fd, &parts)).ok();
     // A failed write sent nothing: all of it is queued, where the reactor meets the error.
-    let sent = usize::try_from(record_write(socket, write, steady_ms)).unwrap_or(0);
+    let sent = record_write(socket, write, steady_ms).unwrap_or(0);
     let total = head.len() + body.len();
     let done = if sent == total {
         conn.set_last_send_time(microtime());
@@ -145,15 +145,15 @@ fn writes_now(
 fn send_now(state: &ServerState, session_id: core::ffi::c_long, data: &[u8]) -> Option<i64> {
     let (conn, socket) = writes_now(state, session_id)?;
     let sent = loop {
-        let sent = record_send(socket, Drain::new(data), 0, |_, _| -1, steady_ms);
-        if sent >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+        let sent = record_send(socket, Drain::new(data), 0, |_, _| None, steady_ms);
+        if sent.is_some() || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
             break sent;
         }
     };
-    if sent.cast_unsigned() == data.len() {
+    if sent == Some(data.len()) {
         conn.set_last_send_time(microtime());
     }
-    Some(i64::try_from(sent).unwrap_or(-1))
+    Some(sent.map_or(-1, |sent| i64::try_from(sent).unwrap_or(-1)))
 }
 
 /// `Server::send_to_connection(send)`: false for `SW_ERR`. Where a send fails after
