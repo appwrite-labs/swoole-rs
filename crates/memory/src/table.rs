@@ -303,7 +303,6 @@ pub unsafe extern "C" fn release() {
 }
 
 /// The counters `Swoole\Table::stats()` reports.
-#[repr(C)]
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct Stats {
     pub conflict_count: usize,

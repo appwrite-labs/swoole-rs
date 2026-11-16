@@ -1,7 +1,10 @@
 //! Server connections, sessions and lookup tables owned and operated by Rust.
 use core::cell::Cell;
 use core::ffi::{c_int, c_void};
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering::Relaxed};
+use core::sync::atomic::{
+    AtomicU8, AtomicU32,
+    Ordering::{Acquire, Relaxed},
+};
 use swoole_rs_corebase::WebSocketStatus;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_memory::members::Shm;
@@ -76,10 +79,10 @@ pub struct ConnectionRecord {
 }
 
 impl ConnectionRecord {
-    /// Whether the slot holds a connection (`active`).
+    /// Whether the slot holds a connection (`active`), whose fields `add` published.
     #[must_use]
     pub fn is_active(&self) -> bool {
-        self.active.load(Relaxed) != 0
+        self.active.load(Acquire) != 0
     }
 }
 
@@ -361,10 +364,10 @@ impl<'a> Connection<'a> {
     field!(atomic lock: AtomicU32);
     field!(atomic closed: AtomicU32);
 
-    /// Whether the slot holds a connection (`active`).
+    /// Whether the slot holds a connection (`active`), whose fields `add` published.
     #[must_use]
     pub fn is_active(self) -> bool {
-        self.active().load(Relaxed) != 0
+        self.active().load(Acquire) != 0
     }
 
     /// A reactor event over the connection's socket, as the reactor would deliver it.
@@ -579,15 +582,6 @@ impl crate::ServerState {
         self.lookup(key, kind)
     }
 
-    /// The connection slot `kind` finds for `key`, or null.
-    /// The pointer is the table's own, not one taken from a reference, so a
-    /// later lookup of the slot (onClose's `exist()` during the close holding
-    /// this one) leaves it valid.
-    pub(crate) fn connection_ptr(&self, key: libc::c_long, kind: Lookup) -> *mut ConnectionRecord {
-        self.lookup(key, kind)
-            .map_or(core::ptr::null_mut(), Connection::as_ptr)
-    }
-
     fn lookup(&self, key: libc::c_long, kind: Lookup) -> Option<Connection<'_>> {
         let tables = self.tables_ref();
         let mut session_id = 0;
@@ -633,38 +627,6 @@ impl crate::ServerState {
             }
         }
     }
-}
-
-/// [`ServerState::session`] for the C++ test fixtures.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_server_session(
-    state: &crate::ServerState,
-    id: libc::c_long,
-) -> *mut SessionRecord {
-    state
-        .session(id)
-        .map_or(core::ptr::null_mut(), Session::as_ptr)
-}
-
-/// [`ServerState::connection_ptr`] for the C++ test fixtures, whose `kind` is the
-/// [`Lookup`] in declaration order (0 to 4); null for any other.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_server_connection(
-    state: &crate::ServerState,
-    key: libc::c_long,
-    kind: u32,
-) -> *mut ConnectionRecord {
-    let kinds = [
-        Lookup::ByFd,
-        Lookup::BySession,
-        Lookup::Verified,
-        Lookup::VerifiedTls,
-        Lookup::Iterated,
-    ];
-    let kind = usize::try_from(kind).ok().and_then(|kind| kinds.get(kind));
-    kind.map_or(core::ptr::null_mut(), |kind| {
-        state.connection_ptr(key, *kind)
-    })
 }
 
 #[cfg(test)]
@@ -753,30 +715,95 @@ pub(crate) mod tests {
         let state = server.state();
         unsafe {
             state.tables_ref().set_max_connection_unchecked(3);
-            assert_eq!(swr_v1_server_session(state, 1), session_at.add(1));
+            assert_eq!(
+                state
+                    .session(1)
+                    .map_or(core::ptr::null_mut(), Session::as_ptr),
+                session_at.add(1)
+            );
             let expected = connection_at.add(2);
-            assert_eq!(swr_v1_server_connection(state, 1, 2), expected);
-            assert!(swr_v1_server_connection(state, 1_048_577, 2).is_null());
-            assert!(swr_v1_server_connection(state, -1, 0).is_null());
-            assert!(swr_v1_server_connection(state, -1, 1).is_null());
-            assert!(swr_v1_server_connection(state, -1, 2).is_null());
+            assert_eq!(
+                state
+                    .connection(1, Lookup::Verified)
+                    .map_or(core::ptr::null_mut(), Connection::as_ptr),
+                expected
+            );
+            assert!(
+                state
+                    .connection(1_048_577, Lookup::Verified)
+                    .map_or(core::ptr::null_mut(), Connection::as_ptr)
+                    .is_null()
+            );
+            assert!(
+                state
+                    .connection(-1, Lookup::ByFd)
+                    .map_or(core::ptr::null_mut(), Connection::as_ptr)
+                    .is_null()
+            );
+            assert!(
+                state
+                    .connection(-1, Lookup::BySession)
+                    .map_or(core::ptr::null_mut(), Connection::as_ptr)
+                    .is_null()
+            );
+            assert!(
+                state
+                    .connection(-1, Lookup::Verified)
+                    .map_or(core::ptr::null_mut(), Connection::as_ptr)
+                    .is_null()
+            );
             // fd == max_connection is one past the table.
-            assert!(swr_v1_server_connection(state, 3, 0).is_null());
+            assert!(
+                state
+                    .connection(3, Lookup::ByFd)
+                    .map_or(core::ptr::null_mut(), Connection::as_ptr)
+                    .is_null()
+            );
             (*expected).ssl.set(true);
-            assert!(swr_v1_server_connection(state, 1, 3).is_null());
-            assert_eq!(swr_v1_server_connection(state, 1, 2), expected);
+            assert!(
+                state
+                    .connection(1, Lookup::VerifiedTls)
+                    .map_or(core::ptr::null_mut(), Connection::as_ptr)
+                    .is_null()
+            );
+            assert_eq!(
+                state
+                    .connection(1, Lookup::Verified)
+                    .map_or(core::ptr::null_mut(), Connection::as_ptr),
+                expected
+            );
             (*expected).ssl_ready.set(true);
-            assert_eq!(swr_v1_server_connection(state, 1, 3), expected);
+            assert_eq!(
+                state
+                    .connection(1, Lookup::VerifiedTls)
+                    .map_or(core::ptr::null_mut(), Connection::as_ptr),
+                expected
+            );
             (*expected)
                 .closed
                 .store(1, core::sync::atomic::Ordering::Relaxed);
-            assert!(swr_v1_server_connection(state, 2, 4).is_null());
+            assert!(
+                state
+                    .connection(2, Lookup::Iterated)
+                    .map_or(core::ptr::null_mut(), Connection::as_ptr)
+                    .is_null()
+            );
             (*expected)
                 .closed
                 .store(0, core::sync::atomic::Ordering::Relaxed);
-            assert_eq!(swr_v1_server_connection(state, 2, 4), expected);
+            assert_eq!(
+                state
+                    .connection(2, Lookup::Iterated)
+                    .map_or(core::ptr::null_mut(), Connection::as_ptr),
+                expected
+            );
             (*expected).active.store(0, Relaxed);
-            assert!(swr_v1_server_connection(state, 1, 2).is_null());
+            assert!(
+                state
+                    .connection(1, Lookup::Verified)
+                    .map_or(core::ptr::null_mut(), Connection::as_ptr)
+                    .is_null()
+            );
         }
     }
 }

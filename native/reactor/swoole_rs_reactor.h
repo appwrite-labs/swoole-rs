@@ -8,18 +8,13 @@
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #endif
-struct iovec;
 #ifdef __cplusplus
 namespace swoole { class Reactor; namespace network { struct Socket; } }
-typedef ssize_t (*swr_v1_reactor_write_fn)(swoole::Reactor *, swoole::network::Socket *, const void *, size_t);
-typedef ssize_t (*swr_v1_reactor_writev_fn)(swoole::Reactor *, swoole::network::Socket *, const struct iovec *, size_t);
 typedef int (*swr_v1_reactor_close_fn)(swoole::Reactor *, swoole::network::Socket *);
 extern "C" {
 
 #endif
 #ifndef __cplusplus
-typedef ssize_t (*swr_v1_reactor_write_fn)(void *, void *, const void *, size_t);
-typedef ssize_t (*swr_v1_reactor_writev_fn)(void *, void *, const struct iovec *, size_t);
 typedef int (*swr_v1_reactor_close_fn)(void *, void *);
 #endif
 
@@ -44,7 +39,7 @@ typedef struct {
     bool send_wait;
 } swr_v1_socket_output;
 /* Reactor handler tables (read/write/error per fd type, write and error defaults), which
- * only Rust reads. Handlers are ReactorHandler: int (*)(Reactor *, Event *). */
+ * only Rust reads, of Rust handlers. */
 typedef struct swr_v1_reactor_handlers swr_v1_reactor_handlers;
 /* The fd -> socket registry (Reactor::sockets_); null reads as empty. */
 typedef struct swr_v1_reactor_registry swr_v1_reactor_registry;
@@ -79,8 +74,6 @@ typedef struct {
     int type_; void *ptr; int native_handle; uint32_t max_event_num;
     bool ready_, running, start, once, wait_exit, destroyed, bailout, timed_out;
     int32_t timeout_msec; uint16_t id; uint32_t max_socket; time_t last_malloc_trim_time;
-    swr_v1_reactor_write_fn write;
-    swr_v1_reactor_writev_fn writev;
     swr_v1_reactor_close_fn close;
     swr_v1_reactor_deferred *defer_tasks, *destroy_callbacks;
     swr_v1_reactor_task idle_task, future_task;
@@ -90,7 +83,7 @@ void swr_v1_reactor_set_end(swr_v1_reactor_state *, int id, void (*callback)(voi
 #ifdef __cplusplus
 }
 static_assert(offsetof(swr_v1_reactor_head, type_) == sizeof(swr_v1_reactor_prepared) &&
-                  (sizeof(void *) != 8 || (sizeof(swr_v1_reactor_prepared) == 32 && sizeof(swr_v1_reactor_head) == 160)),
+                  (sizeof(void *) != 8 || (sizeof(swr_v1_reactor_prepared) == 32 && sizeof(swr_v1_reactor_head) == 144)),
               "crates/reactor's ReactorState layout");
 #endif
 #endif

@@ -244,8 +244,6 @@ unsafe extern "C" {
     #[link_name = "_Z18swoole_timer_clearl"]
     fn swoole_timer_clear(timer_id: c_long) -> bool;
 
-    // The stream listener (crates/process).
-    fn swr_v1_process_pool_ipc_listener(ipc: *const c_void) -> *mut c_void;
     #[link_name = "_Z22swoole_set_worker_typei"]
     fn swoole_set_worker_type(kind: c_int);
     #[link_name = "_Z24swoole_get_worker_symbolv"]
@@ -879,7 +877,9 @@ fn tcp_raw() {
             if dispatch_result != SW_OK {
                 // On Linux, shutting the listener down makes the blocked accept() return so the
                 // receive loop can exit.
-                let listener = swr_v1_process_pool_ipc_listener(ipc as *const c_void);
+                let listener = swoole_rs_process::pool::swr_v1_process_pool_ipc_listener(
+                    &*(ipc as *const swoole_rs_process::pool::PoolIpc),
+                );
                 shutdown(*listener.cast::<c_int>(), SHUT_RDWR);
             }
             swoole_thread_clean(false);
@@ -1693,7 +1693,9 @@ fn task_protocol_rejects_malformed_socket_packet() {
         if valid_packet_sent != SW_OK {
             // SAFETY: the pool's stream listener, which outlives the join.
             unsafe {
-                let listener = swr_v1_process_pool_ipc_listener((*pool).ipc);
+                let listener = swoole_rs_process::pool::swr_v1_process_pool_ipc_listener(
+                    &*(*pool).ipc.cast::<swoole_rs_process::pool::PoolIpc>(),
+                );
                 shutdown(*listener.cast::<c_int>(), SHUT_RDWR);
             }
         }

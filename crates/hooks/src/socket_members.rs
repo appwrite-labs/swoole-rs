@@ -54,20 +54,20 @@ fn on_ready(event: &Event, kind: Events) {
 
 /// `Socket::readable_event_callback(reactor, event)`, registered for
 /// `SW_FD_CO_SOCKET` by `swr_v1_hook_init_reactor`.
-pub extern "C" fn readable_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
+pub fn readable_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
     on_ready(event, Events::READ);
     0
 }
 
 /// `Socket::writable_event_callback(reactor, event)`.
-pub extern "C" fn writable_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
+pub fn writable_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
     on_ready(event, Events::WRITE);
     0
 }
 
 /// `Socket::error_event_callback(reactor, event)`: wakes the writer, then the
 /// reader unless the writer closed the socket; the `network::Socket` outlives the wake-ups.
-pub extern "C" fn error_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
+pub fn error_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
     if let Some((socket, source)) = event_socket(event) {
         error_event(socket, source);
     }

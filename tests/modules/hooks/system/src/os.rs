@@ -10,7 +10,6 @@ use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 pub(super) use swoole_rs_hooks::async_threads::dispatch;
-use swoole_rs_hooks::async_threads::swr_v1_async_threads_stats;
 pub(super) use swoole_rs_hooks::offload::AsyncEvent;
 use swoole_rs_hooks::offload::{Callback, Handler};
 
@@ -164,9 +163,9 @@ extern "C" fn sleep_and_count_handle(event: &mut AsyncEvent) {
 
 /// `(get_worker_num(), get_queue_size(), get_task_num())`.
 fn stats() -> (i64, i64, i64) {
-    let (mut task_num, mut worker_num, mut queue_size) = (0, 0, 0);
-    swr_v1_async_threads_stats(&mut task_num, &mut worker_num, &mut queue_size);
-    (worker_num, queue_size, task_num)
+    let count = |n| i64::try_from(n).unwrap_or(i64::MAX);
+    let (tasks, workers, queued) = swoole_rs_hooks::async_threads::stats().unwrap_or_default();
+    (count(workers), count(queued), count(tasks))
 }
 
 pub(super) fn event_init() {

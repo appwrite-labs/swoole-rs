@@ -16,7 +16,7 @@ release shuts the pool down and joins every worker, as upstream's `use_count() =
 Event tokens are `AsyncEvent` pointers the pool never dereferences. Its hooks
 (`PoolHooks`) are `crates/hooks/src/async_threads.rs`, which is also `AsyncThreads`
 and `async::dispatch` (under its upstream symbol; `Co::stats()` reads the counts
-through `swr_v1_async_threads_stats`): `execute` runs the handler
+through `async_threads::stats`): `execute` runs the handler
 over a copy (missing handler wins over canceled; the dispatcher may set `canceled`,
 atomically, meanwhile), keeps its `error` and `retval`, and writes the event to its pipe; `retire`
 sends the idle worker's key to the default pipe, whose callback joins it with

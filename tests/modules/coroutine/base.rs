@@ -9,8 +9,8 @@
 //! operations crates/coroutine's `suspend` and `resume`, the `swr_v1_coroutine_*`
 //! exports and upstream symbols.
 //! `Coroutine::create`, `coroutine::run` and `Coroutine::bailout` take a function and
-//! its data here (`swr_v1_coroutine_create`, `swoole_coroutine_create`,
-//! `swr_v1_coroutine_bail`).
+//! its data here (crates/coroutine's `swr_v1_coroutine_create` and
+//! `swr_v1_coroutine_bail`, and `swoole_coroutine_create`).
 
 use super::hook::{
     ST_SIZE, Stat, swoole_coroutine_fstat, swoole_coroutine_fsync, swoole_coroutine_ftruncate,
@@ -45,8 +45,6 @@ const SEEK_CUR: c_int = 1;
 const FACADE_END: usize = 96 + 64;
 
 type SwapCallback = swoole_rs_coroutine::SwapCallback;
-type Routine = unsafe extern "C-unwind" fn(*mut c_void);
-type Callback = Option<unsafe extern "C" fn(*mut c_void)>;
 
 /// `swr_v1_coroutine`.
 #[repr(C)]
@@ -77,8 +75,6 @@ struct Scheduler {
 
 unsafe extern "C-unwind" {
     fn swr_v1_coroutine_scheduler_get() -> *mut Scheduler;
-    fn swr_v1_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long;
-    fn swr_v1_coroutine_bail(fn_: Callback, data: *mut c_void);
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
     fn yield_ex(co: *mut Co, timeout: f64) -> bool;
     #[link_name = "_ZN6swoole9Coroutine10print_listEv"]
@@ -114,7 +110,13 @@ fn create<'a>(body: impl FnOnce() + 'a) -> c_long {
     let arg = Box::into_raw(Box::new(body)).cast::<c_void>();
     // SAFETY: `trampoline` takes the box `arg` owns; the borrows outlive the
     // coroutine, as the C++ lambdas' captures do.
-    unsafe { swr_v1_coroutine_create(trampoline, arg) }
+    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(routine, arg) }
+}
+
+/// [`trampoline`] as crates/coroutine's `Routine`, which it catches any unwind for.
+unsafe extern "C" fn routine(arg: *mut c_void) {
+    // SAFETY: as `trampoline`'s caller promises.
+    unsafe { trampoline(arg) }
 }
 
 /// `swoole::coroutine::run(fn)`: outside a loop, `swoole_coroutine_create` runs a
@@ -251,10 +253,13 @@ fn bailout(body: Option<&dyn Fn()>) {
     match body {
         // SAFETY: `body` outlives the call, or the process ends first.
         Some(body) => unsafe {
-            swr_v1_coroutine_bail(Some(call), (&raw const body).cast_mut().cast())
+            swoole_rs_coroutine::swr_v1_coroutine_bail(
+                Some(call),
+                (&raw const body).cast_mut().cast(),
+            )
         },
         // SAFETY: no callback.
-        None => unsafe { swr_v1_coroutine_bail(None, std::ptr::null_mut()) },
+        None => unsafe { swoole_rs_coroutine::swr_v1_coroutine_bail(None, std::ptr::null_mut()) },
     }
 }
 

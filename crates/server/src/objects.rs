@@ -168,8 +168,7 @@ impl<'a> Bus<'a> {
         let Some(sock) = crate::reactor_handle::registered(sock) else {
             return false;
         };
-        // SAFETY: `data` covers `head.len` bytes (at most its length).
-        unsafe { self.rust().send_raw(sock, head, data.as_ptr()) }
+        self.rust().send(sock, head, Some(data))
     }
     /// `MessageBus::set_always_chunked_transfer()`.
     pub(crate) fn set_always_chunked(self) {
