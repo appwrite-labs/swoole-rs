@@ -178,7 +178,7 @@ mod tests {
 
         unsafe { (*worker).set_id(1) };
         unsafe { &(*worker).concurrency }.store(3, SeqCst);
-        let worker = unsafe { Worker::new(worker) };
+        let worker = unsafe { Worker::from(&*worker) };
         worker.set_request_count(7);
         worker.set_response_count(8);
         worker.set_dispatch_count(9);

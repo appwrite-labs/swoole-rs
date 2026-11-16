@@ -20,8 +20,8 @@ struct AsyncEvent {
     size_t task_id;
     uint8_t canceled;
     int error;
-    // The request's resolver record. A stack event borrows its request's; each pool
-    // copy holds its own reference, so a request may go before the pool finishes.
+    // The request's resolver record: each event, and each pool copy, holds its own
+    // reference, so a request may go before the pool finishes.
     swr_v1_core_resolver *data;
     ssize_t retval;
     network::Socket *pipe_socket;

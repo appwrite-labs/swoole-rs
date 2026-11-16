@@ -3,6 +3,7 @@ name = "swoole-rs-corebase"
 version = "0.1.0"
 edition = "2024"
 publish = false
+license.workspace = true
 
 [features]
 # Define base.cc's helpers under their C++ symbols. Only crates/ffi, whose builds apply

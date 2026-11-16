@@ -24,6 +24,7 @@ use swoole_rs_process::{
     signal::swoole_signal_isset,
     worker_record,
 };
+use swoole_rs_reactor::Socket;
 use swoole_rs_reactor::signal_upstream::Handler as SignalHandler;
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_zend::{
@@ -963,7 +964,10 @@ fn get_process(call: &Call) {
                     props.long(c"id", current_id);
                     props.long(c"pid", i64::from(copy.pid()));
                     if view.ipc_mode() == IpcMode::UnixSock {
-                        props.long(c"pipe", pipe.map_or(-1, i64::from));
+                        props.long(
+                            c"pipe",
+                            pipe.map_or(-1, |pipe| i64::from(Socket::lent(pipe).fd())),
+                        );
                     }
                 }
                 // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe

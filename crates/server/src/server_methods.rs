@@ -452,7 +452,7 @@ mod tests {
         // Session 3 on reactor 1 of 2, over 2 pipes: worker 1 + (3 % 2) * 2.
         // SAFETY: a live record, and a pipe socket that outlives every send below.
         unsafe {
-            swoole_rs_process::worker_record::Worker::new(&raw mut workers[3]).set_pipes(
+            swoole_rs_process::worker_record::Worker::from(&workers[3]).set_pipes(
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
                 (&raw mut pipe).cast(),
@@ -499,12 +499,11 @@ mod tests {
         let live = crate::fixture::LiveServer::new();
         live.counters().max_fd.store(7, Relaxed);
         // SAFETY: plain records, for which zero is valid.
-        let (mut master, mut end, mut record): (SocketRecord, SocketRecord, WorkerRecord) =
+        let (mut master, mut end, record): (SocketRecord, SocketRecord, WorkerRecord) =
             unsafe { core::mem::zeroed() };
         master.fd = 5;
         end.fd = 9;
-        // SAFETY: a zeroed worker record, live for the test.
-        let worker = unsafe { Worker::new(&raw mut record) };
+        let worker = Worker::from(&record);
         store_pipe_fd(live.server(), worker);
         assert_eq!(
             live.counters().max_fd.load(Relaxed),
