@@ -111,18 +111,18 @@ pub(crate) trait Connection {
     fn extend(&mut self, size: u64);
     /// The buffer holds `\r\n\r\n`.
     fn header_end(&mut self) -> bool;
-    /// Creates the request when missing, gives it the receive buffer when it has
-    /// none, and makes it and its buffer current.
+    /// Creates the request when missing and makes it current, and with it the buffer
+    /// it receives into: its multipart body's, if any, else the receive buffer.
     fn init_request(&mut self);
     /// `port->destroy_http_request(conn)`; no request is current after it.
     fn destroy_request(&mut self);
     /// The current request, after [`Connection::init_request`].
     fn request(&mut self) -> &mut Request;
-    /// `init_multipart_parser(serv)`, then its buffer becomes current. Whether it succeeded.
+    /// `parse` over the current request and the receive buffer it is read into.
+    fn parse<R>(&mut self, parse: impl FnOnce(&mut Request, &mut Buffer) -> R) -> R;
+    /// `init_multipart_parser(serv)`, then its body buffer becomes current. Whether it succeeded.
     fn init_multipart(&mut self) -> bool;
-    /// `parse_multipart_data(buffer)` over the request's buffer: false rejects the request.
-    fn parse_multipart(&mut self) -> bool;
-    /// `destroy_multipart_parser()`, then the request's buffer becomes current.
+    /// `destroy_multipart_parser()`, then the receive buffer becomes current.
     fn finish_multipart(&mut self);
     /// The client a log names: `conn->session_id`, `port->host`, `port->port`.
     fn client(&mut self) -> (i64, String, i64);
@@ -367,7 +367,7 @@ fn parse(n: &mut impl Connection) -> Step {
 
 /// The request line, an HTTP/2 preface, the header block and form setup.
 fn head(n: &mut impl Connection) -> Option<Step> {
-    if n.request().method == 0 && !n.request().get_protocol() {
+    if n.request().method == 0 && !n.parse(Request::get_protocol) {
         if !n.request().excepted && (n.buffer().len() as u64) < HEADER_MAX_SIZE {
             return Some(Step::Done);
         }
@@ -380,7 +380,7 @@ fn head(n: &mut impl Connection) -> Option<Step> {
     if method == HTTP_PRI {
         return Some(preface(n));
     }
-    if n.request().header_length == 0 && !n.request().get_header_length() {
+    if n.request().header_length == 0 && !n.parse(Request::get_header_length) {
         let buffer = n.buffer();
         if buffer.size() == buffer.len() {
             return Some(bad(n, Log::HeaderTooLarge));
@@ -388,7 +388,7 @@ fn head(n: &mut impl Connection) -> Option<Step> {
         return Some(Step::Receive);
     }
     if !n.request().header_parsed {
-        n.request().parse_header_info();
+        n.parse(|r, b| r.parse_header_info(b.view()));
         if n.request().excepted {
             return Some(bad(n, Log::TransferEncoding));
         }
@@ -441,7 +441,7 @@ fn form(n: &mut impl Connection) -> Option<Step> {
     if !n.request().multipart_header_parsed && !n.header_end() {
         return Some(Step::Done);
     }
-    if !n.parse_multipart() {
+    if !n.parse(Request::parse_multipart_data) {
         return Some(Step::Reply(Reply::BadRequest));
     }
     let request = n.request();
@@ -491,7 +491,7 @@ fn bodyless(n: &mut impl Connection) -> Option<Step> {
 /// Whether the client waits for `100 Continue`: it sent only the head, asking for one.
 fn continues(n: &mut impl Connection) -> bool {
     n.buffer().len() as u64 == u64::from(n.request().header_length)
-        && n.request().has_expect_header()
+        && n.parse(|r, b| r.has_expect_header(b.view()))
 }
 
 /// A request with a body: wait for all of it, then dispatch (an `upload` the
@@ -500,7 +500,7 @@ fn body(n: &mut impl Connection, upload: bool) -> Step {
     let max = n.max_length();
     let request_length;
     if n.request().chunked {
-        if !n.request().get_chunked_body_length() {
+        if !n.parse(|r, b| r.get_chunked_body_length(b.view())) {
             if n.request().too_large {
                 return Step::Reply(Reply::TooLarge);
             }
@@ -633,10 +633,13 @@ pub(crate) mod tests {
     }
 
     impl Fake {
-        /// Points the current buffer at this fake's own, as native code does when
-        /// its effects change it.
+        /// Points the current buffer at the request's body buffer, if any, else at
+        /// this fake's own, as native code does when its effects change it.
         fn point(&mut self) {
-            self.current = &raw mut self.buf;
+            self.current = self
+                .req
+                .body()
+                .map_or(&raw mut self.buf, core::ptr::from_mut);
         }
     }
 
@@ -745,11 +748,7 @@ pub(crate) mod tests {
         }
         fn init_request(&mut self) {
             self.request = true;
-            if self.req.buffer.is_null() {
-                self.req.buffer = &raw mut self.buf;
-            }
             self.point();
-            self.current = self.req.buffer;
         }
         fn destroy_request(&mut self) {
             self.request = false;
@@ -760,18 +759,19 @@ pub(crate) mod tests {
             assert!(self.request, "a current request");
             &mut self.req
         }
+        fn parse<R>(&mut self, parse: impl FnOnce(&mut Request, &mut Buffer) -> R) -> R {
+            assert!(self.request, "a current request");
+            parse(&mut self.req, &mut self.buf)
+        }
         fn init_multipart(&mut self) -> bool {
             let upload_max = usize::try_from(self.uploads).unwrap();
-            let ok = self.req.init_multipart_parser(b"/tmp", upload_max);
-            self.current = self.req.buffer;
+            let ok = (self.req).init_multipart_parser(&mut self.buf, b"/tmp", upload_max);
+            self.point();
             ok
-        }
-        fn parse_multipart(&mut self) -> bool {
-            self.req.parse_multipart_data()
         }
         fn finish_multipart(&mut self) {
             self.req.destroy_multipart_parser();
-            self.current = self.req.buffer;
+            self.point();
         }
         fn client(&mut self) -> (i64, String, i64) {
             (7, "127.0.0.1".to_owned(), 9501)
