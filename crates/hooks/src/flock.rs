@@ -18,10 +18,10 @@ fn coroutine_flock(
     coroutine_sleep: Option<fn(f64) -> i32>,
 ) -> Result<i32, ()> {
     let Some(sleep) = coroutine_sleep.filter(|_| operation & libc::LOCK_NB == 0) else {
-        return Ok(flock(fd, operation));
+        return Ok(flock(fd, operation).map_or(-1, |()| 0));
     };
     if operation == libc::LOCK_UN {
-        return Ok(flock(fd, libc::LOCK_UN));
+        return Ok(flock(fd, libc::LOCK_UN).map_or(-1, |()| 0));
     }
     if operation != libc::LOCK_EX && operation != libc::LOCK_SH {
         return Err(());
@@ -29,9 +29,9 @@ fn coroutine_flock(
     let mut delay = SW_FILE_LOCK_DEFAULT_SECOND;
     loop {
         match flock(fd, operation | libc::LOCK_NB) {
-            0 => return Ok(0),
-            -1 if std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK) => {}
-            _ => return Ok(-1),
+            Ok(()) => return Ok(0),
+            Err(error) if error.raw_os_error() == Some(libc::EWOULDBLOCK) => {}
+            Err(_) => return Ok(-1),
         }
         if sleep(delay) != 0 {
             return Ok(-1);

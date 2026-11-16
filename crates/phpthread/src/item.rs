@@ -78,7 +78,7 @@ impl Drop for Item {
     fn drop(&mut self) {
         if let Value::Socket { fd, .. } = self.value {
             // The item owns the duplicated descriptor.
-            swoole_rs_corebase::sys::close(fd);
+            _ = swoole_rs_corebase::sys::close(fd);
         }
     }
 }

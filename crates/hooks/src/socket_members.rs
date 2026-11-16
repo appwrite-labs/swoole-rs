@@ -145,7 +145,7 @@ struct OpenFile(c_int);
 impl Drop for OpenFile {
     fn drop(&mut self) {
         if self.0 != -1 {
-            sys::close(self.0);
+            _ = sys::close(self.0);
         }
     }
 }

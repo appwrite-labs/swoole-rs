@@ -643,7 +643,7 @@ impl ReactorState {
 
     pub(crate) fn close_backend(&mut self) {
         if self.backend_fd >= 0 {
-            swoole_rs_corebase::sys::close(self.backend_fd);
+            _ = swoole_rs_corebase::sys::close(self.backend_fd);
             self.backend_fd = -1;
         }
         // The wait loop no longer holds pointers to the arrays.

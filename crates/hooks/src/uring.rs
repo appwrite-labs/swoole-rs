@@ -342,7 +342,7 @@ impl Submitter for &Uring {
     }
 
     fn sleep(&mut self) {
-        os::usleep(10_000);
+        _ = os::usleep(10_000);
     }
 
     fn failed(&mut self) {
@@ -706,8 +706,8 @@ pub fn sendfile(
     let pipe_size = os::fcntl(read_end, libc::F_GETPIPE_SZ, 0);
     let pipe_size = usize::try_from(pipe_size).unwrap_or(65536);
     let close_pipe = || {
-        os::close(read_end);
-        os::close(write_end);
+        _ = os::close(read_end);
+        _ = os::close(write_end);
     };
     let start = offset.as_deref().copied();
     let mut total_sent = 0_usize;
