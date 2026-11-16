@@ -10,7 +10,7 @@ use swoole_rs_error::ErrorCode as E;
 use swoole_rs_reactor::{Event, Socket};
 
 use crate::reactor_handle::Reactor;
-use crate::records::{ConnectionRecord, Lookup};
+use crate::records::Lookup;
 use crate::{Connection, Mode, view};
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 
@@ -135,10 +135,7 @@ pub fn add<'a>(
     conn.closed().load(Acquire);
     // Upstream zeroes the slot up to `closed`; other reactor threads read `active`.
     conn.active().store(0, Relaxed);
-    let start = core::mem::offset_of!(ConnectionRecord, socket_type);
-    let bytes = conn.as_ptr().cast::<u8>().wrapping_add(start);
-    // SAFETY: the same slot, from after `active` up to `closed`.
-    unsafe { bytes.write_bytes(0, core::mem::offset_of!(ConnectionRecord, closed) - start) };
+    conn.zero(crate::records::Zeroed::Reused);
 
     // `sw_spinlock`, with `SW_SPINLOCK_LOOP_N`.
     let cpus = u32::from(swoole_rs_corebase::swr_v1_core_cpu_num());

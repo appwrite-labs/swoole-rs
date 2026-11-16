@@ -90,14 +90,6 @@ impl Handler {
         Self(address(handler))
     }
 
-    /// # Safety
-    /// `handler` is 0, `SIG_IGN`, or a `SignalHandler` that is sound to call with
-    /// any signal number and that nothing unloads.
-    #[must_use]
-    pub const unsafe fn from_raw(handler: usize) -> Self {
-        Self(handler)
-    }
-
     #[must_use]
     pub const fn raw(self) -> usize {
         self.0
@@ -109,8 +101,9 @@ impl Handler {
             return;
         }
         let pointer = std::ptr::with_exposed_provenance::<()>(self.0);
-        // SAFETY: any other handler came from `new` or as `from_raw` requires: a
-        // `SignalHandler` sound to call with any signal number.
+        // SAFETY: any other handler came from `new` (a safe `extern "C" fn(c_int)`) or
+        // from C++ through `swoole_signal_set`'s `SignalHandler`, which upstream's
+        // contract makes sound to call with any signal number.
         let handler = unsafe { std::mem::transmute::<*const (), extern "C" fn(c_int)>(pointer) };
         handler(signo);
     }
@@ -378,8 +371,11 @@ impl SignalName {
 /// allocate.
 #[must_use]
 pub fn signal_name(signo: c_int) -> SignalName {
-    // SAFETY: strsignal accepts any number.
-    let name = unsafe { libc::strsignal(signo) };
+    // libc's `strsignal(3)`, which takes any number and reads no caller memory.
+    unsafe extern "C" {
+        safe fn strsignal(signo: c_int) -> *const core::ffi::c_char;
+    }
+    let name = strsignal(signo);
     // SAFETY: strsignal returns a C string.
     let text = unsafe { CStr::from_ptr(name) };
     let mut buf = [0; 64];
