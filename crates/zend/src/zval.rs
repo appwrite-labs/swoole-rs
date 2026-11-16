@@ -157,8 +157,9 @@ unsafe extern "C" {
 /// A call's arguments lent to C (`swr_zvals`): `argc` zvals from `argv`, which
 /// the callee reads and copies, keeping no pointer to them. Made only from a
 /// borrowed slice, whose length bounds `argc`.
+#[derive(Clone, Copy)]
 #[repr(C)]
-pub(crate) struct Zvals<'a> {
+pub struct Zvals<'a> {
     argv: *mut zval,
     argc: u32,
     lent: std::marker::PhantomData<&'a [zval]>,
@@ -166,14 +167,35 @@ pub(crate) struct Zvals<'a> {
 
 impl<'a> Zvals<'a> {
     /// Zvals this code holds, as [`Value::of`] borrows one.
-    pub(crate) fn of(args: &'a mut [zval]) -> Self {
+    #[must_use]
+    #[inline]
+    pub fn of(args: &'a mut [zval]) -> Self {
         Self::lend(args.as_mut_ptr(), args.len())
     }
 
     /// Values this code owns (`Owned` is a transparent zval), which the callee
     /// only reads.
-    pub(crate) fn owned(args: &'a [Owned]) -> Self {
+    #[must_use]
+    #[inline]
+    pub fn owned(args: &'a [Owned]) -> Self {
         Self::lend(args.as_ptr().cast_mut().cast(), args.len())
+    }
+
+    pub(crate) fn argv(&self) -> *mut zval {
+        self.argv
+    }
+
+    pub(crate) fn argc(&self) -> u32 {
+        self.argc
+    }
+
+    /// `argc` zvals from `argv`, which a kept callable's record holds for `'a`.
+    pub(crate) fn counted(argv: *mut zval, argc: u32) -> Self {
+        Self {
+            argv,
+            argc,
+            lent: std::marker::PhantomData,
+        }
     }
 
     /// `len` zvals from `argv`, or the first `u32::MAX` of more.
