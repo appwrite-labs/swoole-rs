@@ -645,12 +645,19 @@ const INTEGER_COMMANDS: [c_int; 8] = [
 /// # Errors
 /// The syscall's captured errno, or `EINVAL` for a command outside the integer list.
 pub fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> std::io::Result<c_int> {
+    /// A command from `INTEGER_COMMANDS`, made only after the check below.
+    #[repr(transparent)]
+    struct IntegerCommand(c_int);
+    // An integer command reads its argument as an int, or not at all, and
+    // dereferences nothing.
+    unsafe extern "C" {
+        #[link_name = "fcntl"]
+        safe fn integer_fcntl(fd: c_int, cmd: IntegerCommand, ...) -> c_int;
+    }
     if !INTEGER_COMMANDS.contains(&cmd) {
         return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
     }
-    // SAFETY: `cmd` takes an integer argument or none, so nothing is dereferenced.
-    let result = unsafe { libc::fcntl(fd, cmd, arg) };
-    nonnegative_result(result)
+    nonnegative_result(integer_fcntl(fd, IntegerCommand(cmd), arg))
 }
 
 /// `flock(2)`.

@@ -1177,14 +1177,6 @@ impl ZStr {
         unsafe { std::slice::from_raw_parts(crate::string::val(self.as_ptr()), length) }
     }
 
-    /// `ZSTR_LEN(string) = len` when that shortens it: the bytes it keeps stay
-    /// inside the string. [`crate::string::ZBuf`] ends its string so.
-    #[inline]
-    pub(crate) fn shorten(&self, len: usize) {
-        let length = &self.head().len;
-        length.set(length.get().min(len));
-    }
-
     /// `ZSTR_VAL` as C's `%s` reads it: up to the first NUL.
     #[must_use]
     #[inline]

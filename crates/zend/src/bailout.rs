@@ -2,8 +2,8 @@
 //! code Rust calls. A bailout must never jump over a Rust frame, so Rust traps
 //! it in C, returns normally, and hands a [`Bailout`] back to the C or C++ that
 //! called it, which re-raises it with `zend_bailout()`. See docs/zend.md.
-use crate::{Value, Zvals, host::Callee, sys::swr_zend_guard_resume};
-use std::ffi::c_int;
+use crate::{Value, Zvals, host::Callee, sys::swr_zend_guard_resume, sys::swr_zend_try};
+use std::ffi::{c_int, c_void};
 
 unsafe extern "C" {
     /// The shim's whole-thread exit mark: a C thread-local of its own, not
@@ -159,6 +159,22 @@ pub fn trapped(bailed: c_int) -> Result<(), Bailout> {
     } else {
         Ok(())
     }
+}
+
+/// Run `body(arg)` inside `zend_try`.
+/// # Errors
+/// `body` bailed out; Zend's state is as `zend_catch` leaves it.
+/// # Safety
+/// `body` may be called with `arg`. A bailout inside it jumps over its frame
+/// and those it calls, so a Rust `body` (and any Rust it calls before the
+/// bailout) holds nothing that needs dropping.
+pub unsafe fn trap(
+    body: unsafe extern "C" fn(*mut c_void),
+    arg: *mut c_void,
+) -> Result<(), Bailout> {
+    // SAFETY: per the caller; the shim's setjmp sits in C, between this frame
+    // and `body`.
+    trapped(unsafe { swr_zend_try(Some(body), arg) })
 }
 
 /// `zend_call_function` of `cache`'s callable (an empty cache resolves `name`,

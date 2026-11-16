@@ -218,40 +218,23 @@ pub fn contain<T: Copy>(body: fn() -> T) -> Result<T, Bailout> {
 /// # Errors
 /// `body` bailed out.
 pub fn contain_with<F: FnOnce()>(body: F) -> Result<(), Bailout> {
+    /// Takes and runs the closure: a bailout leaves the slot empty, so nothing
+    /// is dropped twice.
+    unsafe extern "C" fn run<F: FnOnce()>(slot: *mut c_void) {
+        // SAFETY: `contain_with`'s live slot, which it lends for this call only.
+        let body = unsafe { &mut *slot.cast::<Option<F>>() }.take();
+        if let Some(body) = body {
+            body();
+        }
+    }
     const {
         assert!(
             !std::mem::needs_drop::<F>(),
             "a bailout skips the drop of what the trap holds"
         );
     };
-    // Taken by its one run: a bailout leaves the slot empty, so nothing is
-    // dropped twice.
     let mut slot = Some(body);
-    let mut once = || {
-        if let Some(body) = slot.take() {
-            body();
-        }
-    };
-    let mut body: Body<'_> = &mut once;
-    bailout::trapped(swr_zend_try_body(run, &mut body))
-}
-
-/// A closure [`contain_with`] lends its trap, which C passes on untouched.
-type Body<'a> = &'a mut dyn FnMut();
-
-/// Runs the closure the trap was lent.
-extern "C" fn run(body: &mut Body<'_>) {
-    body();
-}
-
-unsafe extern "C" {
-    /// `body(arg)` inside `zend_try` (nonzero for a bailout): C only passes
-    /// `arg` on, so the closure `body` runs is the one lent with it, and a
-    /// bailout jumps over `run` and what it calls to the shim's `setjmp`.
-    #[link_name = "swr_zend_try"]
-    #[expect(
-        improper_ctypes,
-        reason = "C passes the closure's address on to `run` without reading it"
-    )]
-    safe fn swr_zend_try_body(body: extern "C" fn(&mut Body<'_>), arg: &mut Body<'_>) -> c_int;
+    // SAFETY: `run::<F>` takes the slot of an `F`; `body` needs no drop
+    // (asserted above), and its frames are its caller's (above).
+    unsafe { bailout::trap(run::<F>, (&raw mut slot).cast()) }
 }
