@@ -18,7 +18,7 @@ use std::{
     sync::atomic::Ordering::Relaxed,
 };
 use swoole_rs_buffer::string::CppString as Buffer;
-use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
+use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::CCast;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet};
 use swoole_rs_httpbindings::Setting;
@@ -281,7 +281,7 @@ fn address(socket: Co) -> (ZString, c_int) {
         network.read(|record| {
             let info = &record.info;
             let host = with_host(info, |host| ZString::new(host.to_bytes()));
-            (host, swr_v1_clients_address_port(info))
+            (host, address_port(info).into())
         })
     });
     address.unwrap_or_else(|| (ZString::new(b""), 0))

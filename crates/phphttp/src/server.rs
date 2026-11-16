@@ -116,9 +116,7 @@ struct Receive {
 }
 
 // The connection's addresses and its peer's port and loopback check.
-use swoole_rs_clients::address::{
-    swr_v1_clients_address_loopback, swr_v1_clients_address_port, with_host,
-};
+use swoole_rs_clients::address::{address_port, is_loopback, with_host};
 
 /// A keep-alive session's server and remote address, until it closes, by its
 /// connection's fd. The session check drops a reused fd's entry. RSHUTDOWN
@@ -287,8 +285,8 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> Route {
     if route != Route::Request {
         return route;
     }
-    facts.remote_port = i64::from(swr_v1_clients_address_port(&conn.info()));
-    if swr_v1_clients_address_loopback(&conn.info()) {
+    facts.remote_port = i64::from(address_port(&conn.info()));
+    if is_loopback(&conn.info()) {
         facts.loopback =
             if conn.info().kind == swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP6.raw() {
                 6
@@ -542,8 +540,8 @@ fn http2_connection(
     fd: i64,
 ) -> Option<(Connection<'_>, Http2Connection)> {
     let conn = server.by_session(fd)?;
-    let remote_port = i64::from(swr_v1_clients_address_port(&conn.info()));
-    let loopback = if swr_v1_clients_address_loopback(&conn.info()) {
+    let remote_port = i64::from(address_port(&conn.info()));
+    let loopback = if is_loopback(&conn.info()) {
         if conn.info().kind == swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP6.raw() {
             6
         } else {
