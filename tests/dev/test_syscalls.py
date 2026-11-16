@@ -87,6 +87,19 @@ class Signatures(unittest.TestCase):
         with self.assertRaises(ValueError):
             signature('strace: Process 4242 attached')
 
+    def test_epoll_create_alias_preserves_flags_errors_and_invalid_sizes(self):
+        self.assertIn('epoll_create', syscalls.SYSCALLS)
+        for size in [1, 512, 4096]:
+            self.assertEqual(signature(f'epoll_create({size}) = 4'),
+                             signature('epoll_create1(0) = 4'))
+        self.assertEqual(signature('epoll_create(512) = -1 EMFILE (Too many open files)'),
+                         'epoll_create1(0) = EMFILE')
+        self.assertNotEqual(signature('epoll_create1(EPOLL_CLOEXEC) = 4'),
+                            signature('epoll_create(512) = 4'))
+        for size in [0, -1]:
+            self.assertEqual(signature(f'epoll_create({size}) = -1 EINVAL (Invalid argument)'),
+                             f'epoll_create({size}) = EINVAL')
+
     def test_epoll_events_survive_their_data(self):
         self.assertEqual(signature('epoll_ctl(4, EPOLL_CTL_MOD, 5, {events=EPOLLIN|EPOLLOUT|EPOLLRDHUP, '
                                    'data={u32=5, u64=5}}) = 0'),
