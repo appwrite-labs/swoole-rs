@@ -52,9 +52,7 @@ impl WriteEffects for Write<'_> {
             // `socket->send(buf, n, 0)`.
             WritePayload::Bytes(data) => send_drain(self.socket, data, 0),
             // `socket->writev(iov, iovcnt)`.
-            WritePayload::Vectors(vectors) => {
-                writev(self.socket.fd(), vectors)
-            }
+            WritePayload::Vectors(vectors) => writev(self.socket.fd(), vectors),
         }
     }
 
