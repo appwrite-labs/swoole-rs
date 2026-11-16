@@ -152,35 +152,36 @@ unsafe extern "C" {
 
 /// `__sanitizer_{start,finish}_switch_fiber`, when `AddressSanitizer` is loaded.
 fn asan() -> Option<(StartSwitch, FinishSwitch)> {
-    #[repr(C)]
-    struct Fibers(StartSwitch, FinishSwitch);
     /// `RTLD_DEFAULT`, the only handle this passes.
     #[repr(transparent)]
     struct Loaded(*mut c_void);
-    /// A NUL-terminated name that outlives the call.
+    /// `"__sanitizer_start_switch_fiber"`, the one name of its type.
     #[repr(transparent)]
-    struct Name(*const core::ffi::c_char);
+    struct Start(*const core::ffi::c_char);
+    /// `"__sanitizer_finish_switch_fiber"`, the one name of its type.
+    #[repr(transparent)]
+    struct Finish(*const core::ffi::c_char);
+    // dlsym(3), once per sanitizer function: it reads the name up to its NUL and
+    // returns that function's address, which the sanitizer interface declares with
+    // the signature returned (a nullable `T *` is an `Option<&mut T>`, and a
+    // `FakeStack` a `void *`), or null.
     unsafe extern "C" {
-        /// Reads `name` up to its NUL and returns an address, or null; `RTLD_DEFAULT`
-        /// is a handle dlsym always takes.
-        safe fn dlsym(handle: Loaded, name: Name) -> *mut c_void;
-    }
-    fn symbol(name: &'static std::ffi::CStr) -> *mut c_void {
-        dlsym(Loaded(libc::RTLD_DEFAULT), Name(name.as_ptr()))
+        #[link_name = "dlsym"]
+        safe fn start_switch(handle: Loaded, name: Start) -> Option<StartSwitch>;
+        #[link_name = "dlsym"]
+        #[expect(
+            clashing_extern_declarations,
+            reason = "dlsym, ABI-identical: each declaration takes the one name whose \
+                      function has the signature it returns"
+        )]
+        safe fn finish_switch(handle: Loaded, name: Finish) -> Option<FinishSwitch>;
     }
     static FIBERS: OnceLock<Option<(StartSwitch, FinishSwitch)>> = OnceLock::new();
     *FIBERS.get_or_init(|| {
-        let start = symbol(c"__sanitizer_start_switch_fiber");
-        let finish = symbol(c"__sanitizer_finish_switch_fiber");
-        if start.is_null() || finish.is_null() {
-            return None;
-        }
-        // SAFETY: two non-null addresses of functions the sanitizer interface declares
-        // with these signatures (a nullable `T *` is an `Option<&mut T>`, and a
-        // `FakeStack` a `void *`), in the order of `Fibers`' fields.
-        let Fibers(start, finish) =
-            unsafe { std::mem::transmute::<[*mut c_void; 2], Fibers>([start, finish]) };
-        Some((start, finish))
+        let start = Start(c"__sanitizer_start_switch_fiber".as_ptr());
+        let finish = Finish(c"__sanitizer_finish_switch_fiber".as_ptr());
+        start_switch(Loaded(libc::RTLD_DEFAULT), start)
+            .zip(finish_switch(Loaded(libc::RTLD_DEFAULT), finish))
     })
 }
 
