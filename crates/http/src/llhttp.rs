@@ -56,7 +56,7 @@ pub const CONNECT: u8 = 5;
 pub const PRI: u8 = 34;
 
 /// `llhttp_method_t`'s names, by number.
-const METHODS: [&str; 47] = [
+pub const METHODS: [&str; 47] = [
     "DELETE",
     "GET",
     "HEAD",
