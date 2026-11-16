@@ -109,7 +109,7 @@ fn easy(url: &str) -> *mut CURL {
 }
 
 fn close(cp: *mut CURL) {
-    unsafe { swr_v1_curl_destroy_handle(Easy(cp, PhantomData)) };
+    swr_v1_curl_destroy_handle(Retired(Easy(cp, PhantomData)));
     assert!(
         swr_v1_curl_get_handle(Easy(cp, PhantomData)).is_null(),
         "destroyed"
@@ -122,7 +122,7 @@ fn new_multi() -> &'static Multi {
 }
 
 fn free(multi: &Multi) {
-    unsafe { swr_v1_curl_multi_free(ptr::from_ref(multi).cast_mut()) };
+    swr_v1_curl_multi_free(Some(Released(ptr::NonNull::from(multi))));
 }
 
 fn raw(multi: &Multi) -> *mut Multi {
@@ -157,7 +157,7 @@ fn a_handle_survives_reset_and_is_destroyed() {
     let cp = easy("http://127.0.0.1/");
     let handle = swr_v1_curl_get_handle(Easy(cp, PhantomData));
     assert!(!handle.is_null(), "created");
-    unsafe { swoole_curl_easy_reset(Easy(cp, PhantomData)) };
+    swoole_curl_easy_reset(Idle(Easy(cp, PhantomData)));
     assert_eq!(
         swr_v1_curl_get_handle(Easy(cp, PhantomData)),
         handle,

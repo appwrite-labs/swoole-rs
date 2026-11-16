@@ -4,7 +4,7 @@
 //! thread's timer (crates/timer) and coroutine scheduler (crates/coroutine),
 //! and the C entry points the bundled `ext/curl` calls besides the multi's own.
 //! The tests swap in a fake with the same functions.
-use crate::{EXEC_NEEDS_COROUTINE, Easy, Multi};
+use crate::{EXEC_NEEDS_COROUTINE, Idle, Multi};
 use std::cell::Cell;
 use std::ffi::{CStr, c_int, c_long, c_void};
 use std::io::Write;
@@ -236,12 +236,11 @@ pub unsafe extern "C" fn swoole_curl_check_bound_co(multi: &Multi) -> *mut c_voi
     co
 }
 
-/// `swoole_curl_easy_perform`: `curl_easy_perform` in the handle's own multi.
-/// # Safety
-/// `cp` has a Swoole handle, which nothing else uses meanwhile.
+/// `swoole_curl_easy_perform`: `curl_easy_perform` in the handle's own multi;
+/// `CURLE_FAILED_INIT` without a Swoole handle.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_curl_easy_perform(cp: Easy<'_>) -> CURLcode {
-    let Some(handle) = cp.handle() else {
+pub extern "C" fn swoole_curl_easy_perform(cp: Idle<'_>) -> CURLcode {
+    let Some(handle) = cp.0.handle() else {
         return CURLE_FAILED_INIT;
     };
     // The handle's own multi, held while it runs the handle.
