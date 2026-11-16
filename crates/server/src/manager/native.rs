@@ -35,7 +35,7 @@ const WORKER_MESSAGE_STOP: u8 = 1;
 const EVENT_DATA_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize;
 
 /// `swoole::EventData`, aligned for its head, to pop a message into.
-#[repr(C, align(8))]
+#[repr(align(8))]
 struct EventData([u8; EVENT_DATA_SIZE]);
 
 impl EventData {

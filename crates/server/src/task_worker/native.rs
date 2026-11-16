@@ -50,7 +50,7 @@ const SEND_TO_WORKER_TIMEOUT: c_int = 9014;
 const EVENT_DATA_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 
 /// `swoole::EventData`, aligned for its head, to read a task into.
-#[repr(C, align(8))]
+#[repr(align(8))]
 struct EventData([u8; EVENT_DATA_SIZE]);
 
 thread_local! {

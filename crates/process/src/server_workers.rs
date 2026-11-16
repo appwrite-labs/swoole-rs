@@ -9,7 +9,6 @@ use core::ffi::c_void;
 /// Loans of the existing canonical arrays. Event/task records belong to their
 /// shared pools; user records belong to the Server's shared allocation. Only
 /// [`ServerWorkers::new`] fills the fields, so its contract holds for every view.
-#[repr(C)]
 pub struct ServerWorkers<'a> {
     event_pool: PoolRef<'a>,
     task_pool: PoolRef<'a>,
