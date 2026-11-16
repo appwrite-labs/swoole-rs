@@ -202,7 +202,7 @@ pub fn read_into(this: &SocketPair, buffer: &mut [MaybeUninit<u8>]) -> Option<us
     if this.blocking {
         read_sync(socket, buffer)
     } else {
-        usize::try_from(swoole_rs_corebase::sys::read(socket.fd(), buffer)).ok()
+        swoole_rs_corebase::sys::read(socket.fd(), buffer)
     }
 }
 
@@ -216,7 +216,7 @@ pub fn write_from(this: &SocketPair, data: &[u8]) -> Option<usize> {
     if this.blocking {
         write_sync(socket, data)
     } else {
-        usize::try_from(swoole_rs_corebase::sys::write(socket.fd(), data)).ok()
+        swoole_rs_corebase::sys::write(socket.fd(), data)
     }
 }
 
@@ -227,7 +227,7 @@ pub fn clean(this: &SocketPair) {
     };
     let mut buffer = [0_u8; 1024];
     while socket.wait_event(0, swoole_rs_reactor::Events::READ) {
-        if swoole_rs_corebase::sys::read(socket.fd(), &mut buffer) <= 0 {
+        if swoole_rs_corebase::sys::read(socket.fd(), &mut buffer) <= Some(0) {
             break;
         }
     }

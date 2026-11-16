@@ -14,17 +14,16 @@ use swoole_rs_corebase::net_types::PacketLength;
 
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_websocket::{
-    DecodeErrorKind, DecodedFrame, EncodeError, Opcode, control_invalid, decode_in_place,
-    encode_close_into, encode_parts, encoded_size, frame_length,
+    DecodeErrorKind, DecodedFrame, EncodeError, FrameFlags, Opcode, control_invalid,
+    decode_in_place, encode_close_into, encode_parts, encoded_size, frame_length,
 };
 
 /// `SW_ERROR_WEBSOCKET_INCOMPLETE_PACKET`.
 const INCOMPLETE_PACKET: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_INCOMPLETE_PACKET as c_int;
-/// `FLAG_FIN`, `FLAG_MASK`, `FLAG_ENCODE_HEADER_ONLY`.
+/// `FLAG_FIN` and `FLAG_MASK`.
 const FIN: u8 = 1;
 const MASK: u8 = 32;
-const HEADER_ONLY: u8 = 64;
 /// `SW_WEBSOCKET_CLOSE_CODE_LEN`, `SW_WEBSOCKET_CLOSE_REASON_MAX_LEN`.
 const CLOSE_CODE_LEN: usize = 2;
 const CLOSE_REASON_MAX_LEN: usize = 125;
@@ -46,8 +45,8 @@ const _: () = assert!(
 );
 
 /// Upstream encoders fail a masked header-only frame after appending it.
-fn header_only_mask(flags: u8) -> bool {
-    flags & MASK != 0 && flags & HEADER_ONLY != 0
+fn header_only_mask(flags: FrameFlags) -> bool {
+    flags.is_masked() && flags.is_header_only()
 }
 
 /// `encode`/`pack_close_frame`'s tail: reserve `size` bytes past the buffer's
@@ -161,11 +160,13 @@ pub fn package_length(pl: &mut PacketLength) -> isize {
 /// over the payload's bytes. A header-only frame takes their count and writes none.
 pub fn encode(buffer: &mut CppString, data: &[u8], opcode: u8, flags: u8) -> bool {
     let length = data.len();
+    let opcode = Opcode::from_code(opcode);
+    let flags = FrameFlags::from_bits(flags);
     if control_invalid(opcode, flags, length) {
         control_warning(
             c"websocket::encode",
-            opcode,
-            u8::from(flags & FIN != 0),
+            opcode.code(),
+            u8::from(flags.is_final()),
             length,
         );
         return false;
@@ -173,7 +174,7 @@ pub fn encode(buffer: &mut CppString, data: &[u8], opcode: u8, flags: u8) -> boo
     let Ok(size) = encoded_size(length, flags) else {
         return false;
     };
-    let data = if flags & HEADER_ONLY != 0 { &[] } else { data };
+    let data = if flags.is_header_only() { &[] } else { data };
     append_frame(buffer, size, |out| {
         encode_parts(length, data, opcode, flags, out)
     }) && !header_only_mask(flags)
@@ -216,6 +217,7 @@ pub fn decode(frame: &mut Frame, data: &mut [u8]) -> bool {
 /// `bool pack_close_frame(String *buffer, int code, const char *reason, size_t length, uint8_t flags)`.
 pub fn pack_close_frame(buffer: &mut CppString, code: c_int, reason: &[u8], flags: u8) -> bool {
     let origin = c"websocket::pack_close_frame";
+    let flags = FrameFlags::from_bits(flags);
     let length = reason.len();
     if length > CLOSE_REASON_MAX_LEN {
         log::warning(
@@ -224,11 +226,15 @@ pub fn pack_close_frame(buffer: &mut CppString, code: c_int, reason: &[u8], flag
         );
         return false;
     }
-    if control_invalid(Opcode::Close.code(), FIN, CLOSE_CODE_LEN + length) {
+    if control_invalid(
+        Opcode::Close,
+        FrameFlags::from_bits(FIN),
+        CLOSE_CODE_LEN + length,
+    ) {
         control_warning(origin, Opcode::Close.code(), 1, CLOSE_CODE_LEN + length);
         return false;
     }
-    let Ok(size) = encoded_size(length + CLOSE_CODE_LEN, flags | FIN) else {
+    let Ok(size) = encoded_size(length + CLOSE_CODE_LEN, flags.with_final()) else {
         return false;
     };
     append_frame(buffer, size, |out| {
@@ -292,6 +298,7 @@ mod tests {
     /// A header-only masked frame is appended and then reported as a failure.
     #[test]
     fn masked_header_only_appends_but_fails() {
+        const HEADER_ONLY: u8 = 64;
         let mut buffer = string();
         assert!(!encode(&mut buffer, &[0; 10], 2, FIN | MASK | HEADER_ONLY));
         assert_eq!(buffer.len(), 6);

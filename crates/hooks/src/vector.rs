@@ -215,11 +215,11 @@ impl<'a> IoVector<'a> {
     pub fn transfer(&mut self, socket: Socket<'_>) -> isize {
         let (fd, ssl) = socket.read(|record| (record.fd, record.ssl()));
         let calls = (
-            |buffer: Fill<'_>| ssl_recv_fill(socket, buffer).map_or(-1, usize::cast_signed),
-            |data: Drain<'_>| ssl_send_drain(socket, data).map_or(-1, usize::cast_signed),
+            |buffer: Fill<'_>| ssl_recv_fill(socket, buffer),
+            |data: Drain<'_>| ssl_send_drain(socket, data),
         );
         let tls = (!ssl.is_null()).then_some(&calls);
-        swr_v1_socket_iov_owned(fd, &mut self.owner, tls)
+        swr_v1_socket_iov_owned(fd, &mut self.owner, tls).map_or(-1, usize::cast_signed)
     }
 }
 

@@ -39,6 +39,11 @@ impl FrameFlags {
         self.0 & MASK != 0
     }
 
+    #[must_use]
+    pub const fn is_header_only(self) -> bool {
+        self.0 & HEADER_ONLY != 0
+    }
+
     /// Finish a fragmented message without changing its other flags.
     #[must_use]
     pub const fn with_final(self) -> Self {
@@ -148,8 +153,8 @@ pub fn decode_in_place(data: &mut [u8]) -> Result<DecodedFrame, DecodeError> {
 
 /// Close, ping and pong frames must be final and carry at most 125 bytes.
 #[must_use]
-pub fn control_invalid(opcode: u8, flags: u8, length: usize) -> bool {
-    Opcode::from_code(opcode).is_control() && (flags & FIN == 0 || length > 125)
+pub fn control_invalid(opcode: Opcode, flags: FrameFlags, length: usize) -> bool {
+    opcode.is_control() && (!flags.is_final() || length > 125)
 }
 
 /// Why a frame could not be encoded. Rejected inputs leave the output untouched.
@@ -165,7 +170,7 @@ pub enum EncodeError {
 ///
 /// # Errors
 /// The encoded length cannot fit in a slice.
-pub fn encoded_size(length: usize, flags: u8) -> Result<usize, EncodeError> {
+pub fn encoded_size(length: usize, flags: FrameFlags) -> Result<usize, EncodeError> {
     let header: usize = if length < 126 {
         2
     } else if length <= 65535 {
@@ -173,9 +178,9 @@ pub fn encoded_size(length: usize, flags: u8) -> Result<usize, EncodeError> {
     } else {
         10
     };
-    let payload = if flags & HEADER_ONLY != 0 { 0 } else { length };
+    let payload = if flags.is_header_only() { 0 } else { length };
     header
-        .checked_add(if flags & MASK != 0 { 4 } else { 0 })
+        .checked_add(if flags.is_masked() { 4 } else { 0 })
         .and_then(|size| size.checked_add(payload))
         .filter(|size| isize::try_from(*size).is_ok())
         .ok_or(EncodeError::LengthOverflow)
@@ -190,15 +195,15 @@ pub fn encoded_size(length: usize, flags: u8) -> Result<usize, EncodeError> {
 pub fn encode_parts(
     length: usize,
     data: &[u8],
-    opcode: u8,
-    flags: u8,
+    opcode: Opcode,
+    flags: FrameFlags,
     out: &mut [MaybeUninit<u8>],
 ) -> Result<usize, EncodeError> {
     let size = encoded_size(length, flags)?;
     if control_invalid(opcode, flags, length) {
         return Err(EncodeError::InvalidControl);
     }
-    if flags & HEADER_ONLY == 0 && length != data.len() {
+    if !flags.is_header_only() && length != data.len() {
         return Err(EncodeError::PayloadLength);
     }
     let (header, header_length) = header(length as u64, opcode, flags);
@@ -208,16 +213,16 @@ pub fn encode_parts(
         .ok_or(EncodeError::OutputTooSmall)?;
     head.write_copy_of_slice(header.get(..header_length).unwrap_or_default());
     let payload = match rest.split_first_chunk_mut::<4>() {
-        Some((key, payload)) if flags & MASK != 0 => {
+        Some((key, payload)) if flags.is_masked() => {
             key.write_copy_of_slice(&MASK_KEY);
             payload
         }
         _ => rest,
     };
     // Not header-only: `size` left exactly the payload's bytes.
-    if flags & HEADER_ONLY == 0 {
+    if !flags.is_header_only() {
         let payload = payload.write_copy_of_slice(data);
-        if flags & MASK != 0 {
+        if flags.is_masked() {
             mask(payload, MASK_KEY);
         }
     }
@@ -230,8 +235,8 @@ pub fn encode_parts(
 /// As for [`encode_parts`].
 pub fn encode_into(
     data: &[u8],
-    opcode: u8,
-    flags: u8,
+    opcode: Opcode,
+    flags: FrameFlags,
     out: &mut [MaybeUninit<u8>],
 ) -> Result<usize, EncodeError> {
     encode_parts(data.len(), data, opcode, flags, out)
@@ -246,7 +251,7 @@ pub fn encode_into(
 pub fn encode_close_into(
     code: i32,
     reason: &[u8],
-    flags: u8,
+    flags: FrameFlags,
     out: &mut [MaybeUninit<u8>],
 ) -> Result<usize, EncodeError> {
     let mut payload = [0u8; 127];
@@ -265,7 +270,7 @@ pub fn encode_close_into(
     *code_bytes = code.to_be_bytes();
     reason_bytes.copy_from_slice(reason);
     let payload = payload.get(..reason.len() + 2).unwrap_or_default();
-    encode_into(payload, 8, flags | FIN, out)
+    encode_into(payload, Opcode::Close, flags.with_final(), out)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -394,16 +399,16 @@ pub fn decide_frame(frame: &DecodedFrame, wire: usize, context: &Context) -> Opt
 /// and whether to compress with native zlib. The caller still owns zlib, its
 /// buffer, warnings and PHP conversions.
 #[must_use]
-pub fn pack_policy(opcode: u8, flags: u8, length: usize) -> (u8, bool) {
+pub fn pack_policy(opcode: Opcode, flags: FrameFlags, length: usize) -> (FrameFlags, bool) {
     const COMPRESS: u8 = 2;
-    match Opcode::from_code(opcode) {
+    match opcode {
         // The pinned sw_unset_bit macro lacks parentheses: its compound
         // COMPRESS | RSV1 argument clears only COMPRESS. Preserve RSV1.
-        opcode if opcode.is_control() => ((flags & !COMPRESS) | FIN, false),
+        opcode if opcode.is_control() => (FrameFlags((flags.bits() & !COMPRESS) | FIN), false),
         Opcode::Continuation => (flags, false),
         _ => (
             flags,
-            flags & (COMPRESS | FIN) == (COMPRESS | FIN) && length != 0,
+            flags.bits() & (COMPRESS | FIN) == (COMPRESS | FIN) && length != 0,
         ),
     }
 }
@@ -421,8 +426,8 @@ pub enum Delivery {
 /// Choose native delivery for an incoming PHP message. Settings bits 0, 1 and 2
 /// enable close, ping and pong callbacks respectively. No state is retained.
 #[must_use]
-pub fn message_policy(opcode: u8, settings: u8) -> Delivery {
-    match Opcode::from_code(opcode) {
+pub fn message_policy(opcode: Opcode, settings: u8) -> Delivery {
+    match opcode {
         Opcode::Close if settings & 1 == 0 => Delivery::Discard,
         Opcode::Ping if settings & 2 == 0 => Delivery::Pong,
         Opcode::Pong if settings & 4 == 0 => Delivery::Discard,

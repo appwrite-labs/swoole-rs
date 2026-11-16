@@ -9,8 +9,9 @@ use swoole_rs_corebase::CCast;
 
 /// What queued output needs from its `Socket` (`crates/tls`'s `upstream.rs`).
 pub trait OutputEffects {
-    /// `Socket::send(data, length, 0)`, leaving the kernel's errno.
-    fn send(&self, data: &[u8]) -> isize;
+    /// `Socket::send(data, length, 0)`: how many bytes it sent, or None leaving the
+    /// kernel's errno.
+    fn send(&self, data: &[u8]) -> Option<usize>;
     fn cork(&self) -> bool;
     fn uncork(&self);
     /// Records the send time when the socket has a send timer.
@@ -64,8 +65,7 @@ pub fn handle_send(hooks: &impl OutputEffects, data: &[u8], offset: u32) -> Outp
         result.pop = true;
         return result;
     }
-    let sent = hooks.send(rest);
-    if sent < 0 {
+    let Some(sent) = hooks.send(rest) else {
         match classify(hooks) {
             Caught::Error => result.warn = true,
             Caught::Close => (result.close_wait, result.failed) = (true, true),
@@ -73,8 +73,7 @@ pub fn handle_send(hooks: &impl OutputEffects, data: &[u8], offset: u32) -> Outp
             Caught::Invalid | Caught::ReduceSize => {}
         }
         return result;
-    }
-    let sent = sent.cast_unsigned();
+    };
     if sent == rest.len() {
         result.pop = true;
         return result;
@@ -111,14 +110,14 @@ pub fn sendfile_cork(
 #[must_use]
 pub fn sendfile_sent(
     hooks: &impl OutputEffects,
-    sent: isize,
+    sent: Option<usize>,
     requested: usize,
     corked: &mut i8,
     begin: libc::off_t,
     end: libc::off_t,
 ) -> OutputResult {
     let result = OutputResult::default();
-    if sent <= 0 {
+    if sent <= Some(0) {
         match classify(hooks) {
             Caught::Error => {
                 return OutputResult {
@@ -286,8 +285,9 @@ mod tests {
     }
 
     impl OutputEffects for OutputHooks {
-        fn send(&self, data: &[u8]) -> isize {
-            unsafe { (self.send)(self.socket, data.as_ptr().cast(), data.len()) }
+        fn send(&self, data: &[u8]) -> Option<usize> {
+            usize::try_from(unsafe { (self.send)(self.socket, data.as_ptr().cast(), data.len()) })
+                .ok()
         }
         fn cork(&self) -> bool {
             unsafe { (self.cork)(self.socket) }
@@ -432,9 +432,9 @@ mod tests {
         // 100,000 bytes from 0 corks once; a partial send keeps the request.
         sendfile_cork(&hooks, &mut corked, 0, 100_000, 65_536);
         sendfile_cork(&hooks, &mut corked, 65_536, 100_000, 65_536);
-        let partial = sendfile_sent(&hooks, 65_536, 65_536, &mut corked, 65_536, 100_000);
+        let partial = sendfile_sent(&hooks, Some(65_536), 65_536, &mut corked, 65_536, 100_000);
         assert_eq!((partial, corked), (OutputResult::default(), 1));
-        let done = sendfile_sent(&hooks, 34_464, 34_464, &mut corked, 100_000, 100_000);
+        let done = sendfile_sent(&hooks, Some(34_464), 34_464, &mut corked, 100_000, 100_000);
         assert_eq!(
             (done, corked),
             (
@@ -456,7 +456,7 @@ mod tests {
         sendfile_cork(&hooks, &mut corked, 0, 10, 65_536);
         assert_eq!(corked, -1);
         set_errno(libc::EAGAIN);
-        let waited = sendfile_sent(&hooks, -1, 10, &mut corked, 0, 10);
+        let waited = sendfile_sent(&hooks, None, 10, &mut corked, 0, 10);
         assert_eq!(
             waited,
             OutputResult {
@@ -466,7 +466,7 @@ mod tests {
             }
         );
         set_errno(libc::EINVAL);
-        let failed = sendfile_sent(&hooks, -1, 10, &mut corked, 0, 10);
+        let failed = sendfile_sent(&hooks, None, 10, &mut corked, 0, 10);
         assert_eq!(
             failed,
             OutputResult {
@@ -609,7 +609,7 @@ mod tests {
                             remaining -= sent;
                             let result = sendfile_sent(
                                 &file_hooks,
-                                isize::try_from(sent).unwrap(),
+                                Some(sent),
                                 requested,
                                 &mut corked,
                                 request.begin,
