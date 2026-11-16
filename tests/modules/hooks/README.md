@@ -300,8 +300,8 @@ holds. The call returns, and the other variable keeps its elements.
 - `hooks-system-rust`: 18 of system.cpp's 20 cases pass; the two `getaddrinfo`
   network cases are excluded. socket.cpp: 49 of 54 pass (Linux aarch64, docker).
   `coroutine_hook.sendmsg_and_recvmsg` is excluded:
-  it segfaulted in ~15% of GoogleTest runs on both engines (its child reads the
-  finished parent's stack). hook.cpp's other 25 cases pass (Linux aarch64,
+  it failed in ~15% of GoogleTest runs on both engines, depending on which close
+  completes first. hook.cpp's other 25 cases pass (Linux aarch64,
   docker); `gethostbyname`, `getaddrinfo` and `socket` need external DNS and
   network.
 

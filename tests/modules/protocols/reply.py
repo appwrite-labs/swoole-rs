@@ -22,7 +22,7 @@ def main():
     script = Path(__file__).with_suffix('.php')
     oom_script = script.with_name('reply_oom.php')
     report = {'created_utc': datetime.now(timezone.utc).isoformat(),
-              'scope': 'Actual Zend Redis formatting, nested lists/maps, binary/empty replies, scalar conversions, exception and callback order. Invalid non-array SET/MAP is excluded because original dereferences after throwing.',
+              'scope': 'Actual Zend Redis formatting, nested lists/maps, binary/empty replies, scalar conversions, exception and callback order. Invalid non-array SET/MAP is excluded.',
               'engines': [], 'results': []}
     reference = None
     for engine in parse_engines(args.engine, args.php, args.php_extension):

@@ -87,7 +87,7 @@ www.baidu.com:80 has a 1 s timeout the round trip sometimes exceeds), the nine p
 `sync_ssl_sendfile`: each `recv` lands at the buffer's start, and www.baidu.com's
 ~730 KB page fills the 64 KB buffer with reads no larger than a TLS record, so
 the bytes the assertion finds "baidu.com" in are overwritten and the rest were
-never written (uninitialised upstream, zeroed here).
+never written.
 `connect_timeout` and `async_connect_timeout` connect to a local listener whose
 accept queue is full, not to the address upstream assumes drops the SYN
 (19.168.0.99, 192.168.1.199): a network that rejects the route answers
@@ -169,8 +169,7 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
   Rust ASan runs on Linux only.
 - `domain_decode_matches_upstream`'s case count differs by platform because plain
   `char` is signed on macOS and unsigned on Linux.
-- Some inputs are outside the compared domain and are not compared; Rust stops at
-  bounds on them.
+- Some inputs are outside the compared domain and are not compared.
 - The Rust pool frees its container buffers at teardown; the original leaks
   residual queues. Neither closes the opaque Client tokens.
 - Removing temporary hosts-parser containers and IP-text string appends changes

@@ -692,8 +692,7 @@ fn unpack(call: &Call) {
         return;
     };
     let length = string.bytes().len();
-    // SAFETY: the argument's string holds `length` bytes at its value; upstream
-    // decodes (unmasks) it in place.
+    // SAFETY: the argument's string holds `length` bytes at its value.
     let data = unsafe { std::slice::from_raw_parts_mut(string::val(string.as_ptr()), length) };
     if data.len() < 2 {
         host::set_last_error(PROTOCOL_ERROR);
