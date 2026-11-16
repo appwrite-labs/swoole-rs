@@ -1638,12 +1638,13 @@ fn test_sendto_recvfrom(sock_type: c_int) {
         let mut data_from_server = [0_u8; 128];
         // The sender's address goes to storage of the caller's, as upstream's
         // `serveraddr` took it.
-        let mut serveraddr = swoole_rs_corebase::sys::zeroed();
+        let mut serveraddr = swoole_rs_corebase::net_types::SocketAddress::default();
 
         // receive data from server
-        let (result, _) = sock_client
+        let result = sock_client
             .co()
-            .recvfrom_into(&mut data_from_server[..server_length], &mut serveraddr);
+            .recvfrom_into(&mut data_from_server[..server_length], &mut serveraddr)
+            .map_or(-1, usize::cast_signed);
         assert_eq!(
             result,
             server_length.cast_signed(),
