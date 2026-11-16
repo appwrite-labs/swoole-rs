@@ -245,7 +245,8 @@ def check(sources, headers, flags):
         tmp.write(headers + PREAMBLE + source + '\n')
         tmp.flush()
         result = subprocess.run([*compiler, '-fsyntax-only', '-fmax-errors=0', tmp.name], text=True, capture_output=True)
-    errors = re.findall(r'error: static assertion failed: (.*)', result.stderr)
+    # Clang (g++ on macOS) quotes the failed expression first: "failed due to requirement '...': ".
+    errors = re.findall(r"error: static assertion failed(?: due to requirement '[^']*')?: (.*)", result.stderr)
     problems += errors or ([result.stderr] if result.returncode else [])
     return problems, [f'{d[0]}: {d[1]}' for d in decls if d[1] not in declared]
 
