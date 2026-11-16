@@ -128,7 +128,9 @@ struct Conn {
     socket: Cell<Option<Co>>,
     zsocket: Cell<Owned>,
     /// The write buffer the closed socket left (`tmp_write_buffer`).
-    written: Cell<native::Written>,
+    written: Cell<native::HttpBuffer>,
+    /// Moved out while receiving: PHP callbacks cannot reach the parser's bytes.
+    input: Cell<native::HttpBuffer>,
 }
 
 /// Upstream's `swoole::coroutine::http::Client`. Every method takes `&self`:
@@ -333,6 +335,7 @@ fn socket_closed(conn: &Conn, socket: Co) {
     // The buffer the conn took from its last socket goes.
     drop(conn.written.replace(socket.take_write_buffer()));
     conn.socket.set(None);
+    drop(conn.input.take());
     // Nothing to say once the object is gone, or while it is freed.
     if let Some(this) = conn.this()
         && let Some(props) = this.props(Some(&CLIENT))
@@ -418,6 +421,7 @@ impl Client {
             socket: Cell::new(None),
             zsocket: Cell::default(),
             written: Cell::default(),
+            input: Cell::default(),
         });
         let mut host = host.to_vec();
         Self {
@@ -982,9 +986,24 @@ impl Client {
     }
 
     fn recv_response(&self, parser: &mut Parser, timeout: f64) -> bool {
-        if !self.wait_response.get() {
+        if !self.wait_response.get() || self.co().is_none() {
             return false;
         }
+        let mut input = self.conn.input.take();
+        let result = self.recv_response_into(parser, timeout, input.input());
+        if self.co().is_some() {
+            self.conn.input.set(input);
+        }
+        result
+    }
+
+    fn recv_response_into(
+        &self,
+        parser: &mut Parser,
+        timeout: f64,
+        input: &mut swoole_rs_buffer::string::CppString,
+    ) -> bool {
+        input.clear();
         let Some(socket) = self.co() else {
             return false;
         };
@@ -1008,9 +1027,8 @@ impl Client {
             if controller.timed_out(swoole_rs_reactor::TimeoutKind::READ) {
                 break;
             }
-            let received = socket.recv_input();
-            let (buffer, mut length, size) =
-                socket.with_input(|input| (input.as_mut_ptr(), input.len(), input.size()));
+            let received = socket.recv_input(input);
+            let (length, size) = (input.len(), input.size());
             let Some(mut count) = received.filter(|&n| n > 0) else {
                 if received == Some(0) {
                     socket.set_err(libc::ECONNRESET);
@@ -1022,14 +1040,8 @@ impl Client {
                 break;
             };
             if !header_completed {
-                length += count;
-                let ended = socket.with_input(|input| {
-                    // SAFETY: the receive just wrote `count` bytes after the content.
-                    unsafe { input.set_len(length) };
-                    input.set_offset(0);
-                    let unparsed = input.view().get(header_offset..).unwrap_or_default();
-                    request::header_end(unparsed).is_some()
-                });
+                let unparsed = input.view().get(header_offset..).unwrap_or_default();
+                let ended = request::header_end(unparsed).is_some();
                 if !ended {
                     if length == size {
                         socket.set_err(INVALID_PROTOCOL);
@@ -1041,12 +1053,9 @@ impl Client {
                 header_completed = true;
                 header_offset = 0;
                 count = length;
-                socket.with_input(swoole_rs_buffer::string::CppString::clear);
             }
             total += count;
-            // SAFETY: the buffer's first `count` bytes are this response's data.
-            let data = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), count) };
-            let parsed = hooks.parse(data);
+            let parsed = hooks.parse(input.view());
             self.status.set(hooks.parser.status_code);
             if self.bailout.get() {
                 return false;
@@ -1068,16 +1077,16 @@ impl Client {
                 if hooks.parser.upgrade && count > parsed + WEBSOCKET_HEADER {
                     // Keep the bytes past the handshake (`reduce`).
                     let parsed = i64::try_from(parsed).unwrap_or(i64::MAX);
-                    socket.with_input(|input| {
-                        // SAFETY: the buffer's first `count` bytes are this response's data.
-                        unsafe { input.set_len(count) };
-                        input.set_offset(parsed);
-                        input.reduce(parsed);
+                    input.reduce(parsed);
+                    socket.with_input(|buffer| {
+                        buffer.clear();
+                        buffer.append(input.view());
                     });
                 }
                 success = true;
                 break;
             }
+            input.clear();
         }
         drop(controller);
         if !success {

@@ -5,11 +5,11 @@
 //! and `SwooleG.fatal_error`, and the module globals. native/phphelpers/host.c
 //! keeps what only C can say (see its contract.md); Swoole's core, error and
 //! logger state are the Rust crates'.
+#![cfg(feature = "php")]
 #![expect(
     clippy::disallowed_types,
     reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
 )]
-#![cfg(feature = "php")]
 #![cfg_attr(
     not(test),
     deny(

@@ -13,7 +13,7 @@ use swoole_rs_http2::{
     hpack::{Decoder, Encoder, Field},
     sw_rs_http2_default_settings,
 };
-use swoole_rs_phphttp::http2::{Ctx, Handler, ServerCtx, StreamCtx};
+use swoole_rs_phphttp::http2::{Ctx, Handler, Hold, StreamCtx};
 use swoole_rs_zend::bailout;
 
 pub(crate) type Session = Rc<SessionState>;
@@ -78,17 +78,16 @@ pub(crate) struct SessionState {
     pub(crate) header_end_stream: Cell<bool>,
     pub(crate) shutting_down: Cell<bool>,
     /// The connection's context: frames that belong to no stream go out on it.
-    pub(crate) default_ctx: Ctx,
+    default_ctx: Hold,
     /// An async server's settings context, made for this session alone (a
     /// coroutine server's is its connection's).
-    own: Option<ServerCtx>,
+    own: bool,
     handle: Handler,
 }
 
 /// `http2::Stream`.
 pub(crate) struct StreamState {
-    pub(crate) ctx: Ctx,
-    /// The stream's hold on `ctx`, let go with the stream.
+    /// The stream's hold on its context, let go with the stream.
     hold: StreamCtx,
     pub(crate) id: u32,
     pub(crate) remote_window_size: Cell<u32>,
@@ -137,13 +136,7 @@ fn defaults() -> [u32; 6] {
 const INIT_WINDOW_SIZE: usize = 3;
 
 impl SessionState {
-    fn new(
-        fd: i64,
-        default_ctx: Ctx,
-        own: Option<ServerCtx>,
-        max_body_size: u32,
-        handle: Handler,
-    ) -> Self {
+    fn new(fd: i64, default_ctx: Hold, own: bool, max_body_size: u32, handle: Handler) -> Self {
         // The peer need not send every setting: start from the defaults.
         let local = defaults();
         Self {
@@ -190,6 +183,11 @@ impl SessionState {
         result
     }
 
+    /// The connection's context: frames that belong to no stream go out on it.
+    pub(crate) fn default_ctx(&self) -> Ctx<'_> {
+        self.default_ctx.ctx()
+    }
+
     /// The session a stream's context belongs to.
     pub(crate) fn of(ctx: Ctx) -> Option<Session> {
         Self::find(ctx.fd())
@@ -197,7 +195,7 @@ impl SessionState {
 
     /// A coroutine server's session.
     pub(crate) fn is_coro(&self) -> bool {
-        self.own.is_none()
+        !self.own
     }
 
     pub(crate) fn local(&self, field: usize) -> u32 {
@@ -209,9 +207,8 @@ impl SessionState {
         if !create {
             return self.with_streams(|streams| streams.get(&id).cloned());
         }
-        let hold = self.default_ctx.stream_context(self.fd, id);
+        let hold = self.default_ctx().stream_context(self.fd, id);
         let stream = Rc::new(StreamState {
-            ctx: hold.ctx(),
             hold,
             id,
             remote_window_size: Cell::new(self.remote[INIT_WINDOW_SIZE].get()),
@@ -241,11 +238,15 @@ impl SessionState {
     /// `handle(session, stream)`: onRequest; a bailout waits for `finish`.
     pub(crate) fn handle(&self, stream: &StreamState) {
         stream.hold.dispatch();
-        bailout::defer((self.handle)(stream.ctx, self.default_ctx));
+        bailout::defer((self.handle)(stream.ctx(), self.default_ctx()));
     }
 }
 
 impl StreamState {
+    pub(crate) fn ctx(&self) -> Ctx<'_> {
+        self.hold.ctx()
+    }
+
     /// Suspend the current coroutine until `wake`.
     pub(crate) fn wait(&self) {
         self.waiting.wait();
@@ -263,21 +264,21 @@ impl StreamState {
 
 /// A coroutine server's session for connection `fd`
 /// (`swoole_http2_server_session_new`), unless it has one. `handle` gets each
-/// finished request; `default_ctx` outlives the session.
-pub(crate) fn session_new(fd: i64, default_ctx: Ctx, max_body_size: u32, handle: Handler) {
-    insert(fd, default_ctx, None, max_body_size, handle);
+/// finished request; the session holds `default_ctx`.
+pub(crate) fn session_new(fd: i64, default_ctx: Hold, max_body_size: u32, handle: Handler) {
+    insert(fd, default_ctx, false, max_body_size, handle);
 }
 
 /// An async server's session for connection `fd`, unless it has one: the
 /// settings context goes with the session.
-pub(crate) fn session_own(fd: i64, own: ServerCtx, max_body_size: u32, handle: Handler) {
-    insert(fd, own.ctx(), Some(own), max_body_size, handle);
+pub(crate) fn session_own(fd: i64, own: Hold, max_body_size: u32, handle: Handler) {
+    insert(fd, own, true, max_body_size, handle);
 }
 
-fn insert(fd: i64, default_ctx: Ctx, own: Option<ServerCtx>, max_body_size: u32, handle: Handler) {
+fn insert(fd: i64, default_ctx: Hold, own: bool, max_body_size: u32, handle: Handler) {
     if with_sessions(|sessions| sessions.contains_key(&fd)) {
-        // The unused settings context is released here, outside the sessions.
-        drop(own);
+        // The unused context is released here, outside the sessions.
+        drop(default_ctx);
         return;
     }
     let session = Rc::new(SessionState::new(

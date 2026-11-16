@@ -270,11 +270,6 @@ unsafe extern "C" {
     /// `ZVAL_ARR(made, ...)` of a new table of `size` elements with `extra`
     /// uninitialised bytes behind it, which it returns; what `made` held is
     /// not released.
-    /// `FE_RESET_RW`'s failure at `frame`'s instruction: `ZVAL_UNDEF` of its
-    /// result, then `Z_FE_ITER_P(result) = -1`; nothing for any other
-    /// instruction or an unused result.
-    #[link_name = "swr_phpstdext_foreach_undef"]
-    safe fn foreach_undef(frame: Frame<'_>);
     #[link_name = "swr_phpstdext_typed_new"]
     safe fn typed_new(made: &Owned, size: u32, extra: usize) -> *mut HashTable;
 }
@@ -606,7 +601,10 @@ impl Handler for ForeachBegin {
         throw_error(
             c"The type array do not support using references for element value during iteration",
         );
-        foreach_undef(frame);
+        // The instruction's failure: an undefined result, if it is used.
+        if let Some(result) = op.result() {
+            result.undef_iteration();
+        }
         Next::Continue
     }
 }

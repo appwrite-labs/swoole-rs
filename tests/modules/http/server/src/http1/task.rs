@@ -275,7 +275,8 @@ unsafe extern "C" fn fire(_: *mut c_void, node: *mut TimerNode) {
 
 /// `swoole_timer_after(ms, fn)`.
 fn after(ms: c_long, deferred: impl FnOnce() + 'static) {
-    let data = Box::into_raw(Box::new(Box::new(deferred) as Deferred));
+    let deferred: Deferred = Box::new(deferred);
+    let data = Box::into_raw(Box::new(deferred));
     // SAFETY: a callback of the timer's signature, which takes `data` back once.
     unsafe { swoole_timer_after(ms, fire, data.cast()) };
 }
@@ -1409,7 +1410,7 @@ fn no_idle_task_worker() {
     serv.delete();
 }
 
-pub const CASES: &[(&str, fn())] = &[
+pub(crate) const CASES: &[(&str, fn())] = &[
     ("task_worker", task_worker),
     ("task_worker2", task_worker2),
     ("task_worker_3", task_worker_3),
