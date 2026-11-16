@@ -98,7 +98,6 @@ pub fn strftime(output: &mut [u8], format: &CStr, tm: &Tm) -> usize {
 /// `tolower(byte)` in the current locale. Every locale lowers ASCII as
 /// `to_ascii_lowercase` does except Turkish `I` (to `ı`), so only `I` and
 /// non-ASCII bytes ask libc.
-#[inline]
 fn lower(byte: u8) -> c_int {
     if byte.is_ascii() && byte != b'I' {
         c_int::from(byte.to_ascii_lowercase())
@@ -106,14 +105,11 @@ fn lower(byte: u8) -> c_int {
         tolower(c_int::from(byte))
     }
 }
-/// `strncasecmp(left, right, length) == 0` in the current locale, over at most the
-/// shorter slice; a matching NUL ends the comparison as it does in libc. Compared
-/// byte by byte as glibc's portable `strncasecmp` does, not through its vectorised
-/// variant, whose instruction count depends on where the operands sit.
-#[inline]
-#[must_use]
-pub fn strncasecmp_equal(left: &[u8], right: &[u8], length: usize) -> bool {
-    for (&left, &right) in left.iter().zip(right).take(length) {
+/// glibc's portable `strncasecmp` loop, for operands [`alike`] does not settle.
+#[cold]
+#[inline(never)]
+fn bytewise(left: &[u8], right: &[u8]) -> bool {
+    for (&left, &right) in left.iter().zip(right) {
         if left != right && lower(left) != lower(right) {
             return false;
         }
@@ -122,6 +118,70 @@ pub fn strncasecmp_equal(left: &[u8], right: &[u8], length: usize) -> bool {
         }
     }
     true
+}
+const ONES: u64 = u64::from_ne_bytes([1; 8]);
+const HIGHS: u64 = ONES << 7;
+/// The first eight bytes, or, under eight, every byte: twice when there are four
+/// or more, else beside `a`s, which compare equal on both sides.
+fn word(bytes: &[u8]) -> u64 {
+    if let Some(&word) = bytes.first_chunk() {
+        return u64::from_ne_bytes(word);
+    }
+    match (bytes.first_chunk(), bytes.last_chunk()) {
+        (Some(&first), Some(&last)) => {
+            u64::from(u32::from_ne_bytes(first)) | (u64::from(u32::from_ne_bytes(last)) << 32)
+        }
+        _ => bytes.iter().fold(ONES * u64::from(b'a'), |word, &byte| {
+            (word << 8) | u64::from(byte)
+        }),
+    }
+}
+/// The last eight bytes, of eight or more.
+fn last_word(bytes: &[u8]) -> u64 {
+    bytes
+        .last_chunk()
+        .map_or(0, |&word| u64::from_ne_bytes(word))
+}
+/// True when each byte pair of two words is equal, or is an ASCII letter other
+/// than `i` in both cases, which every locale lowers alike: such words compare
+/// equal in libc. The letters are read from `y`, usually a constant's word, so
+/// that, inlined, they fold away.
+fn alike(x: u64, y: u64) -> bool {
+    let case = x ^ y;
+    let lowered = y | (HIGHS >> 2);
+    let ascii = lowered & !HIGHS;
+    // a..=h and j..=z, each flagged in its byte's high bit.
+    let letter = ((ascii + ONES * 0x1f) & !(ascii + ONES * 0x17))
+        | ((ascii + ONES * 0x16) & !(ascii + ONES * 0x05));
+    (case & !(HIGHS >> 2)) | ((case << 2) & !(letter & !lowered)) == 0
+}
+/// `strncasecmp(left, right, length) == 0` in the current locale, over at most the
+/// shorter slice; a matching NUL ends the comparison as it does in libc. Compared
+/// here a word at a time, the second of two overlapping the first, rather than by
+/// glibc's vectorised variant, whose instruction count depends on where the
+/// operands sit. When every word is [`alike`], every byte pair compares equal,
+/// wherever a NUL falls; otherwise libc's loop decides.
+#[inline]
+#[must_use]
+pub fn strncasecmp_equal(left: &[u8], right: &[u8], length: usize) -> bool {
+    let length = length.min(left.len()).min(right.len());
+    let (left, right) = (left.split_at(length).0, right.split_at(length).0);
+    match length {
+        0..=8 => alike(word(left), word(right)) || bytewise(left, right),
+        9..=16 => {
+            alike(word(left), word(right)) & alike(last_word(left), last_word(right))
+                || bytewise(left, right)
+        }
+        _ => longer(left, right),
+    }
+}
+/// [`strncasecmp_equal`] over more than sixteen bytes.
+#[inline(never)]
+fn longer(left: &[u8], right: &[u8]) -> bool {
+    left.chunks(8)
+        .zip(right.chunks(8))
+        .all(|(left, right)| alike(word(left), word(right)))
+        || bytewise(left, right)
 }
 /// `isspace(byte)` in the current locale, the byte passed as a native `char`, as the
 /// pinned C passes it.
@@ -177,25 +237,39 @@ mod tests {
                             "{left:#x} {right:#x} in {locale:?}"
                         );
                     }
-                    // Alone, then followed by a NUL, an equal or a differing byte on
-                    // either side, so that a matching NUL's end is checked too.
-                    for (next_left, next_right, length) in [
-                        (0, 0, 1),
-                        (0, b'x', 2),
-                        (b'x', 0, 2),
-                        (b'a', b'A', 2),
-                        (b'a', b'b', 2),
-                    ] {
-                        let (left, right) = ([left, next_left], [right, next_right]);
-                        // SAFETY: two readable bytes each.
-                        let libc = unsafe {
-                            libc::strncasecmp(left.as_ptr().cast(), right.as_ptr().cast(), length)
-                        } == 0;
-                        assert_eq!(
-                            strncasecmp_equal(&left, &right, length),
-                            libc,
-                            "{left:x?} {right:x?} {length} in {locale:?}"
-                        );
+                    // At places in names that fold alike, compared over under four,
+                    // four to eight, nine to sixteen and more bytes, followed by a
+                    // NUL, an equal or a differing byte on either side, so that a
+                    // matching NUL's end is checked too.
+                    for at in [0, 1, 3, 5, 7, 8, 11, 15, 16, 19] {
+                        for (next_left, next_right) in
+                            [(0, 0), (0, b'x'), (b'x', 0), (b'a', b'A'), (b'a', b'b')]
+                        {
+                            let (mut input, mut expected) =
+                                (*b"Accept-Content-Type!", *b"aCCEPT-cONTENT-tYPE!");
+                            input[at] = left;
+                            expected[at] = right;
+                            if let (Some(input), Some(expected)) =
+                                (input.get_mut(at + 1), expected.get_mut(at + 1))
+                            {
+                                (*input, *expected) = (next_left, next_right);
+                            }
+                            for length in [at + 1, at + 2, 20] {
+                                // SAFETY: twenty readable bytes each, `length` at most 20.
+                                let libc = unsafe {
+                                    libc::strncasecmp(
+                                        input.as_ptr().cast(),
+                                        expected.as_ptr().cast(),
+                                        length.min(20),
+                                    )
+                                } == 0;
+                                assert_eq!(
+                                    strncasecmp_equal(&input, &expected, length),
+                                    libc,
+                                    "{input:x?} {expected:x?} {length} in {locale:?}"
+                                );
+                            }
+                        }
                     }
                 }
             }
