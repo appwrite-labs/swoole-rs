@@ -1,5 +1,5 @@
 //! Exercise the production Allocator with a checked request-heap shim.
-use swoole_rs_zend as _;
+
 #[path = "../../../crates/zend/src/allocator.rs"]
 mod allocator;
 pub use allocator::Emalloc;

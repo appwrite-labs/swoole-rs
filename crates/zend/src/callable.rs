@@ -163,27 +163,13 @@ impl Parsed {
     /// tick's timer id), and hold its object and closure
     /// (`sw_zend_fci_cache_persist`).
     #[must_use]
+    #[inline]
     pub fn keep(mut self, first: Option<i64>) -> Callable {
         let callable = self.record();
         let count = callable.fci.param_count as usize;
         let lead = usize::from(first.is_some());
         if count + lead > 0 {
-            // Zend's allocator, for the arguments.
-            let mut params = Vec::with_capacity_in(count + lead, Emalloc::default());
-            if let Some(value) = first {
-                params.push(long(value));
-            }
-            for index in 0..count {
-                let source = callable.fci.params.wrapping_add(index);
-                // SAFETY: a live argument, which the frame holds for this call.
-                let value = unsafe { &*source.cast::<crate::Value>() };
-                params.push(value.copy().into_zval());
-            }
-            callable.fci.params = Box::into_raw_with_allocator(params.into_boxed_slice())
-                .0
-                .cast();
-            let total = u32::try_from(count + lead).unwrap_or(u32::MAX);
-            callable.fci.param_count = total;
+            keep_params(callable, first, count, lead);
         }
         swr_zend_callable_hold(&mut self.0);
         Callable(Box::into_raw_with_allocator(self.0).0)
@@ -217,6 +203,26 @@ unsafe extern "C-unwind" fn run<H: Holder>(data: *mut c_void) {
 /// `data` is a callable's [`Callable::as_raw`], not used again.
 unsafe extern "C-unwind" fn free<H: Holder>(data: *mut c_void) {
     H::free(Callable(data.cast()));
+}
+
+/// Copy bound arguments only when there are any; keep the empty-callable path small.
+fn keep_params(callable: &mut swr_zend_callable, first: Option<i64>, count: usize, lead: usize) {
+    // Zend's allocator, for the arguments.
+    let mut params = Vec::with_capacity_in(count + lead, Emalloc::default());
+    if let Some(value) = first {
+        params.push(long(value));
+    }
+    for index in 0..count {
+        let source = callable.fci.params.wrapping_add(index);
+        // SAFETY: a live argument, which the frame holds for this call.
+        let value = unsafe { &*source.cast::<crate::Value>() };
+        params.push(value.copy().into_zval());
+    }
+    callable.fci.params = Box::into_raw_with_allocator(params.into_boxed_slice())
+        .0
+        .cast();
+    let total = u32::try_from(count + lead).unwrap_or(u32::MAX);
+    callable.fci.param_count = total;
 }
 
 /// `ZVAL_LONG`.
