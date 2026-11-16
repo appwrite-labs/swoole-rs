@@ -180,9 +180,9 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-/// `pthread_getschedparam` of the calling thread.
-fn get_sched(policy: &mut c_int, param: &mut libc::sched_param) -> c_int {
-    pthread_getschedparam(CurrentThread::get(), policy, param)
+/// `pthread_getschedparam` of the calling thread: whether it filled `policy` and `param`.
+fn get_sched(policy: &mut c_int, param: &mut libc::sched_param) -> bool {
+    pthread_getschedparam(CurrentThread::get(), policy, param) == 0
 }
 
 /// `body` on `$this`, which the instance methods run on.
@@ -326,7 +326,7 @@ fn set_priority(call: &Call) {
 fn get_priority(call: &Call) {
     let mut param = sched_param();
     let mut policy: c_int = 0;
-    if get_sched(&mut policy, &mut param) != 0 {
+    if !get_sched(&mut policy, &mut param) {
         warn(&message!("pthread_getschedparam() failed"));
         call.set_bool(false);
         return;

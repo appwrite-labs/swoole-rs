@@ -370,7 +370,7 @@ fn transports(host: &mut impl Host, mut requested: u32, installed: u32) -> u32 {
         let bit = flags::TCP << index;
         match transition(requested, installed, bit) {
             Some(true) => {
-                if host.register(index, true) != 0 {
+                if !host.register(index, true) {
                     requested ^= bit;
                     let name = name.to_string_lossy();
                     let message = message!("failed to register `{name}` stream transport factory");
@@ -453,7 +453,7 @@ fn throw(message: &Message, code: i64) {
 /// (unit tests link no PHP).
 trait Host {
     /// Register (or restore) the transport at `index` of [`transport::NAMES`].
-    fn register(&mut self, index: usize, hook: bool) -> i32;
+    fn register(&mut self, index: usize, hook: bool) -> bool;
     /// [`throw`]: unit tests link no Zend.
     fn throw(&mut self, message: &Message, code: i64);
     /// Swap the plain-files wrapper (0) or the stdio ops (1).
@@ -467,7 +467,7 @@ trait Host {
 struct Php;
 
 impl Host for Php {
-    fn register(&mut self, index: usize, hook: bool) -> i32 {
+    fn register(&mut self, index: usize, hook: bool) -> bool {
         transport::register(index, hook, factory())
     }
 
@@ -614,9 +614,9 @@ mod tests {
 
     /// The calls a hook change makes, with two PDO drivers built in.
     impl Host for Vec<String> {
-        fn register(&mut self, index: usize, hook: bool) -> i32 {
+        fn register(&mut self, index: usize, hook: bool) -> bool {
             self.push(format!("transport:{index}:{}", u8::from(hook)));
-            0
+            true
         }
 
         fn throw(&mut self, message: &Message, code: i64) {
