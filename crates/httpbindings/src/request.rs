@@ -16,33 +16,35 @@ pub enum RequestHeader {
     Compression,
 }
 
-/// The header's action. Method is the pinned llhttp method number.
+/// The header's action and known key index. Method is the pinned llhttp method
+/// number. Classify the name once for both the action and the array insertion.
 #[must_use]
+#[inline(always)]
 pub fn request_header(
     name: &[u8],
     value: &[u8],
     method: u8,
     cookie: bool,
     compression: bool,
-) -> RequestHeader {
-    if cookie && case_equal(name, b"cookie") {
-        return RequestHeader::Cookie;
-    }
-    if case_equal(name, b"upgrade") {
-        return RequestHeader::Upgrade;
-    }
-    // DELETE, POST, PUT, PATCH and QUERY (llhttp 46, upstream cf66ff7e8) carry form bodies.
-    if matches!(method, 0 | 3 | 4 | 28 | 46) && case_equal(name, b"content-type") {
-        if case_prefix(value, b"application/x-www-form-urlencoded") {
-            return RequestHeader::Form;
+) -> (RequestHeader, Option<usize>) {
+    let key = request_key(name);
+    let action = match key {
+        // DELETE, POST, PUT, PATCH and QUERY carry form bodies.
+        Some(3) if matches!(method, 0 | 3 | 4 | 28 | 46) => {
+            if case_prefix(value, b"application/x-www-form-urlencoded") {
+                RequestHeader::Form
+            } else if case_prefix(value, b"multipart/form-data") {
+                RequestHeader::Multipart
+            } else {
+                RequestHeader::Append
+            }
         }
-        if case_prefix(value, b"multipart/form-data") {
-            return RequestHeader::Multipart;
-        }
-    } else if compression && case_equal(name, b"accept-encoding") {
-        return RequestHeader::Compression;
-    }
-    RequestHeader::Append
+        Some(7) if compression => RequestHeader::Compression,
+        None if cookie && case_equal(name, b"cookie") => RequestHeader::Cookie,
+        None if case_equal(name, b"upgrade") => RequestHeader::Upgrade,
+        _ => RequestHeader::Append,
+    };
+    (action, key)
 }
 
 /// The known header keys, in the order `request_key` numbers them.
@@ -59,8 +61,24 @@ pub const REQUEST_KEYS: [&[u8]; 8] = [
 
 /// The name's index in `REQUEST_KEYS`, or `None` for the unknown-name merge path.
 #[must_use]
+#[inline(always)]
 pub fn request_key(name: &[u8]) -> Option<usize> {
-    REQUEST_KEYS.iter().position(|key| case_equal(name, key))
+    let index = match name.len() {
+        4 => 0,
+        6 => 2,
+        10 => {
+            if case_equal(name, REQUEST_KEYS.get(1)?) {
+                return Some(1);
+            }
+            6
+        }
+        12 => 3,
+        13 => 5,
+        14 => 4,
+        15 => 7,
+        _ => return None,
+    };
+    case_equal(name, REQUEST_KEYS.get(index)?).then_some(index)
 }
 
 /// `swoole_http_token_list_contains_value`'s fast path: `SW_STRCASEEQ` with
@@ -147,6 +165,47 @@ pub fn canonical_case(name: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg_attr(miri, ignore = "libc's strncasecmp is a foreign call")]
+    fn request_key_dispatch_matches_the_ordered_locale_comparisons() {
+        let reference = |name: &[u8]| REQUEST_KEYS.iter().position(|key| case_equal(name, key));
+        for (index, key) in REQUEST_KEYS.iter().enumerate() {
+            assert_eq!(request_key(key), Some(index));
+            assert_eq!(request_key(&key.to_ascii_uppercase()), Some(index));
+            for length in 0..=key.len() {
+                let prefix = &key[..length];
+                assert_eq!(request_key(prefix), reference(prefix));
+            }
+            for at in 0..key.len() {
+                for byte in 0..=u8::MAX {
+                    let mut name = key.to_vec();
+                    name[at] = byte;
+                    assert_eq!(request_key(&name), reference(&name), "{name:?}");
+                }
+            }
+        }
+        assert_eq!(
+            request_header(b"Cookie", b"a=b", 1, true, false).0,
+            RequestHeader::Cookie
+        );
+        assert_eq!(
+            request_header(b"Cookie", b"a=b", 1, false, false).0,
+            RequestHeader::Append
+        );
+        assert_eq!(
+            request_header(b"Upgrade", b"websocket", 1, false, false).0,
+            RequestHeader::Upgrade
+        );
+        assert_eq!(
+            request_header(b"Accept-Encoding", b"gzip", 1, false, true),
+            (RequestHeader::Compression, Some(7))
+        );
+        assert_eq!(
+            request_header(b"Accept-Encoding", b"gzip", 1, false, false),
+            (RequestHeader::Append, Some(7))
+        );
+    }
 
     #[test]
     #[cfg_attr(miri, ignore = "libc's strncasecmp and isspace are foreign calls")]

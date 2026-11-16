@@ -165,7 +165,7 @@ fn address(server: view::Server<'_>, conn: Connection<'_>, local: bool) -> ZStri
 }
 
 /// `swoole_http_server_populate_ip_and_port`: `$request->server`'s ports and
-/// addresses. `loopback` is 4 or 6 for a loopback peer, otherwise 0. With
+/// addresses, then optionally `master_time`. `loopback` is 4 or 6 for a loopback peer, otherwise 0. With
 /// `cache`, the connection's fd, a session's addresses are made once and kept
 /// until the session closes. `server` and `conn` are the live server and the
 /// request's connection; `state` the request's context.
@@ -179,6 +179,7 @@ fn addresses(
     remote_port: i64,
     loopback: c_int,
     cache: Option<usize>,
+    master_time: Option<zend_long>,
 ) {
     let names = if loopback != 0 {
         let name = if loopback == 6 {
@@ -200,6 +201,9 @@ fn addresses(
         if let Some([local, remote]) = names {
             add_field(server, Key::ServerAddr, Owned::string(local));
             add_field(server, Key::RemoteAddr, Owned::string(remote));
+        }
+        if let Some(time) = master_time {
+            add_field(server, Key::MasterTime, Owned::long(time));
         }
     });
 }
@@ -481,6 +485,7 @@ fn handle(
     }
     let state = ctx.state();
     let cache = facts.cache.filter(|_| state.keepalive);
+    let master_time = facts.last_recv_time.c_cast::<zend_long>();
     if let Some(conn) = server.by_session(session) {
         addresses(
             server,
@@ -491,10 +496,11 @@ fn handle(
             facts.remote_port,
             facts.loopback,
             cache,
+            Some(master_time),
         );
+    } else {
+        add_server(state, Key::MasterTime, Owned::long(master_time));
     }
-    let master_time = Owned::long(facts.last_recv_time.c_cast::<zend_long>());
-    add_server(state, Key::MasterTime, master_time);
     // The hooks may reach the context: no borrow of it is held across them.
     if swoole_isset_hook(HookType::BEFORE_REQUEST) {
         ctx.call_hook(context::Hook::BeforeRequest);
@@ -606,6 +612,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         facts.remote_port,
         facts.loopback,
         cache,
+        None,
     );
     request_times(state);
     let master_time = Owned::long(facts.last_recv_time.c_cast::<zend_long>());

@@ -17,8 +17,8 @@ use swoole_rs_corebase::{WebSocketStatus, log};
 use swoole_rs_http::llhttp::{self, Callbacks, Flow as Step, Parser};
 use swoole_rs_http::multipart_parser::{Flow, MultipartParser};
 use swoole_rs_httpbindings::{
-    FormSource, RequestHeader, body_prefix, compression, form_source, request_header, request_key,
-    request_url, token_list_contains, token_list_fast, trim_quotes,
+    FormSource, RequestHeader, body_prefix, compression, form_source, request_header, request_url,
+    token_list_contains, token_list_fast, trim_quotes,
 };
 use swoole_rs_zend::sys::zval;
 use swoole_rs_zend::{
@@ -630,7 +630,7 @@ fn websocket_connection(state: &State) -> bool {
 fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> Step {
     let length = value_.len();
     let compression = CAPABILITIES.load(Relaxed) & COMPRESSION != 0 && state.enable_compression;
-    let action = request_header(
+    let (action, known) = request_header(
         name,
         value_,
         state.parser.method,
@@ -681,7 +681,7 @@ fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> Step {
         RequestHeader::Append => {}
     }
     let value_ = stringl(value_);
-    let known = request_key(name).and_then(|index| HEADER_KEYS.get(index));
+    let known = known.and_then(|index| HEADER_KEYS.get(index));
     // The request's `header` array, created with the request.
     edit(&mut state.request, Property::Header, |header| {
         match known.and_then(|&known| key(known)) {
@@ -1244,7 +1244,7 @@ mod tests {
     fn form_bodies_follow_upstreams_methods() {
         // request_header takes llhttp's method numbers.
         for method in 0..=u8::MAX {
-            let action = request_header(
+            let (action, _) = request_header(
                 b"Content-Type",
                 b"multipart/form-data",
                 method,
