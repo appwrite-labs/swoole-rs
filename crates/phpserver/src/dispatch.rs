@@ -1061,13 +1061,13 @@ impl swoole_rs_phpswoole::length::PackageLength for Length {
         crate::lifecycle::owns_shared()
     }
 
-    fn length(callable: &callable::Callable, bytes: &[u8]) -> isize {
+    fn length(callable: &callable::Callable, bytes: &[u8]) -> Option<usize> {
         let data = Owned::string(ZString::new(bytes));
         let retval = Owned::default();
-        let mut result = -1;
+        let mut result = None;
         match call_unlimited(callable, &mut [data.copy_value()], &retval) {
             Ok(false) => crate::server::fatal(E_WARNING, c"length function handler error"),
-            Ok(true) => result = isize::try_from(retval.long()).unwrap_or(-1),
+            Ok(true) => result = usize::try_from(retval.long()).ok(),
             Err(_) => Bailout.defer(),
         }
         drop(retval);

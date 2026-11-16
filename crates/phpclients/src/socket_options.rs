@@ -41,12 +41,13 @@ extern "C" fn fastcgi_length(
 ) -> isize {
     pl.bytes()
         .first_chunk::<8>()
-        .map_or(0, |&p| fastcgi_record_length(p))
+        .map_or(Some(0), |&p| fastcgi_record_length(p))
+        .map_or(-1, usize::cast_signed)
 }
 
-fn fastcgi_record_length(p: [u8; 8]) -> isize {
-    let length = ((isize::from(p[4]) << 8) | isize::from(p[5])) + isize::from(p[6]);
-    if length > 0xffff { -1 } else { length + 8 }
+fn fastcgi_record_length(p: [u8; 8]) -> Option<usize> {
+    let length = ((usize::from(p[4]) << 8) | usize::from(p[5])) + usize::from(p[6]);
+    (length <= 0xffff).then_some(length + 8)
 }
 
 /// `swoole_type_size`: the byte width of a `pack()` length type, or 0.
@@ -832,12 +833,12 @@ mod tests {
     #[test]
     fn fastcgi_lengths() {
         // content 0x0102, padding 3: 258 + 3 + header 8.
-        assert_eq!(fastcgi_record_length([1, 6, 0, 1, 1, 2, 3, 0]), 269);
+        assert_eq!(fastcgi_record_length([1, 6, 0, 1, 1, 2, 3, 0]), Some(269));
         assert_eq!(
             fastcgi_record_length([1, 6, 0, 1, 0xff, 0xff, 0, 0]),
-            0xffff + 8
+            Some(0xffff + 8)
         );
-        assert_eq!(fastcgi_record_length([1, 6, 0, 1, 0xff, 0xff, 1, 0]), -1);
+        assert_eq!(fastcgi_record_length([1, 6, 0, 1, 0xff, 0xff, 1, 0]), None);
     }
 
     #[test]
