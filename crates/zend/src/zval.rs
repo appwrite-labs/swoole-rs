@@ -525,6 +525,16 @@ impl Value {
         self.0.set(value);
     }
 
+    /// `ZVAL_UNDEF` then `Z_FE_ITER_P(value) = -1`: a failed `FE_RESET_*`'s
+    /// result, with no iterator. What the slot held is not released: for a
+    /// result slot holding nothing that needs it, else a leak.
+    #[inline]
+    pub fn undef_iteration(&self) {
+        let mut value = UNDEF;
+        value.u2.fe_iter_idx = u32::MAX;
+        self.0.set(value);
+    }
+
     /// Lend what the zval holds to `edit`, with null in its place meanwhile,
     /// then put it back and release whatever `edit` left there. The caller
     /// holds nothing borrowed from the zval.
