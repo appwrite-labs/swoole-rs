@@ -300,8 +300,8 @@ trait TaskServer: Copy {
     fn finish(self, data: &[u8], task: *mut c_void) -> bool;
     /// `get_task_worker_pool()->dispatch(&buf, &dst_worker_id)`.
     fn dispatch(self, buf: &mut EventData, dst_worker_id: &mut c_int) -> c_int;
-    fn get_tasking_num(self) -> c_int;
-    fn get_idle_task_worker_num(self) -> c_int;
+    fn get_tasking_num(self) -> u32;
+    fn get_idle_task_worker_num(self) -> u32;
     fn tasking_num(self) -> &'static AtomicU32;
     fn task_count(self) -> u64;
     fn shutdown(self) -> bool;
@@ -348,11 +348,11 @@ impl TaskServer for Server {
         if sent { SW_OK } else { SW_ERR }
     }
 
-    fn get_tasking_num(self) -> c_int {
+    fn get_tasking_num(self) -> u32 {
         server_methods::get_tasking_num(self.view())
     }
 
-    fn get_idle_task_worker_num(self) -> c_int {
+    fn get_idle_task_worker_num(self) -> u32 {
         server_methods::get_idle_task_worker_num(self.view())
     }
 
@@ -486,7 +486,7 @@ fn task_worker() {
         serv.tasking_num().fetch_sub(1, Ordering::SeqCst);
         check(serv.get_tasking_num() == 0, "serv.get_tasking_num() == 0");
         check(
-            serv.get_idle_task_worker_num() == serv.config().task_worker_num as c_int,
+            serv.get_idle_task_worker_num() == serv.config().task_worker_num,
             "serv.get_idle_task_worker_num() == serv.task_worker_num",
         );
     });
