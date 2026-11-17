@@ -26,8 +26,8 @@ pub struct Context {
     swap_fctx: Cell<*mut c_void>,
     /// The stack it runs on and its flags: none under [`THREAD`].
     stack: Stack,
-    /// What the first switch in runs: none under [`THREAD`], or once it started.
-    entry: Cell<Option<Entry>>,
+    /// What the first switch in runs, in place: empty under [`THREAD`].
+    entry: Entry,
     /// The stack that last switched in, which `swap_out` returns to (`AddressSanitizer` only).
     asan_bottom: Cell<*const c_void>,
     asan_size: Cell<usize>,
@@ -58,18 +58,20 @@ impl Context {
         (self.stack.base(), self.stack.size())
     }
 
-    /// Allocates the stack and makes the context that runs `entry` on it. A
-    /// [`THREAD`] context starts its thread instead.
-    ///
-    /// # Errors
-    /// No stack (out of memory), or the errno of a [`THREAD`] context whose
-    /// thread failed to start.
-    pub fn new(stack_size: usize, flags: u32, entry: Entry) -> Result<Self, Unmade> {
-        let mut context = Self {
-            fctx: Cell::new(ptr::null_mut()),
+    /// Whether its entry returned (upstream's `Coroutine::is_end`).
+    #[must_use]
+    pub fn ended(&self) -> bool {
+        self.end.get()
+    }
+
+    /// A context on `stack` (switched into at `fctx`) or `thread`, with no entry yet.
+    #[inline]
+    fn made(stack: Stack, fctx: *mut c_void, thread: Option<Box<Started>>) -> Self {
+        Self {
+            fctx: Cell::new(fctx),
             swap_fctx: Cell::new(ptr::null_mut()),
-            stack: Stack::none(flags),
-            entry: Cell::new(None),
+            stack,
+            entry: Entry::empty(),
             asan_bottom: Cell::new(ptr::null()),
             asan_size: Cell::new(0),
             #[cfg(tsan)]
@@ -77,27 +79,43 @@ impl Context {
             #[cfg(tsan)]
             tsan_caller: Cell::new(None),
             end: Cell::new(false),
-            thread: None,
-        };
+            thread,
+        }
+    }
+}
+
+impl Native {
+    /// A record whose context runs `entry` on a stack it allocates: the entry is
+    /// moved once, into the boxed record, where it runs. A [`THREAD`] context starts its
+    /// thread with `entry` instead.
+    ///
+    /// # Errors
+    /// No stack (out of memory), or the errno of a [`THREAD`] context whose
+    /// thread failed to start.
+    pub fn new(stack_size: usize, flags: u32, entry: Entry) -> Result<Box<Self>, Unmade> {
         if flags & THREAD != 0 {
-            context.thread = Some(thread::start(entry).map_err(Unmade::Thread)?);
-            return Ok(context);
+            let thread = thread::start(entry).map_err(Unmade::Thread)?;
+            return Ok(Box::new(Self {
+                co: Coroutine::idle(),
+                ctx: Context::made(Stack::none(flags), ptr::null_mut(), Some(thread)),
+            }));
         }
         let stack_size = stack_size.c_cast::<u32>();
         let size = stack_size as usize;
         let stack = Stack::alloc(stack_size, flags).ok_or(Unmade::NoStack)?;
         let top = stack.base().wrapping_add(size);
         // SAFETY: a fresh `size`-byte stack, which boost builds the context down from.
-        context
-            .fctx
-            .set(unsafe { make_fcontext(top.cast(), size, first_frame) });
-        context.stack = stack;
-        context.entry.set(Some(entry));
-        Ok(context)
+        let fctx = unsafe { make_fcontext(top.cast(), size, first_frame) };
+        let mut native = Box::new(Self {
+            co: Coroutine::idle(),
+            ctx: Context::made(stack, fctx, None),
+        });
+        native.ctx.entry = entry;
+        Ok(native)
     }
 }
 
-/// Why [`Context::new`] made no context.
+/// Why [`Native::new`] made no record.
 #[derive(Debug)]
 pub enum Unmade {
     /// The stack's allocation failed.
@@ -354,13 +372,10 @@ fn switched_in(
 /// `swap_in` jumped here with its coroutine, which now runs.
 extern "C" fn first_frame(transfer: Transfer) {
     let co = transfer.data;
-    let entry = co.read_context(|record| {
+    co.read_context(|record| {
         switched_in(record, transfer.fctx, asan(), FakeStack::NONE);
-        record.entry.take()
+        record.entry.run_held();
     });
-    if let Some(entry) = entry {
-        entry.run();
-    }
     co.read_context(|ctx| ctx.end.set(true));
     // The running coroutine; an ended one is never switched back in.
     swap_out(co);
@@ -380,8 +395,7 @@ mod tests {
         unsafe { (*log).co }.unwrap()
     }
 
-    unsafe extern "C" fn entry(data: *mut c_void) {
-        let log = data.cast::<Log>();
+    fn entry(log: *mut Log) {
         // SAFETY: the test's log, which only the running stack touches.
         unsafe {
             (*log).steps.push("entry");
@@ -400,11 +414,8 @@ mod tests {
         let log = &raw mut log;
         // SAFETY: the record lives until freed below, and each switch is the stack's turn.
         unsafe {
-            let ctx = Context::new(64 * 1024, 0, Entry::new(entry, log.cast())).unwrap();
-            (*log).co = Some(Co::leak(Box::new(Native {
-                co: Coroutine::idle(),
-                ctx,
-            })));
+            let native = Native::new(64 * 1024, 0, Entry::of(move || entry(log))).unwrap();
+            (*log).co = Some(Co::leak(native));
             assert!(!swap_in(co(log)));
             (*log).steps.push("main");
             assert!(swap_in(co(log)));

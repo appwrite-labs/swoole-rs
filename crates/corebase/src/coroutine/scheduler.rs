@@ -6,7 +6,7 @@
 //! build without `upstream-symbols`; facade.rs builds the rest on them.
 use crate::coroutine::context::{self, Native};
 use crate::coroutine::state::{self as ops, Co, Sched};
-use crate::coroutine::{Coroutine, CoroutineTask, Hooks, Routine, Scheduler};
+use crate::coroutine::{Bailout, Coroutine, CoroutineTask, Hooks, Scheduler};
 use crate::log;
 use crate::small_fn::Small;
 use core::cell::UnsafeCell;
@@ -142,7 +142,7 @@ pub(crate) fn with_scheduler<R>(f: impl FnOnce(&mut Scheduler) -> R) -> R {
 fn destroy(co: Co) {
     let native = co.with(|co| co.native);
     // SAFETY: the scheduler passes an ended, released coroutine whose record
-    // facade.rs's `swr_v1_coroutine_create` boxed; it is freed once, here.
+    // facade.rs's `spawn` boxed; it is freed once, here.
     drop(unsafe { Box::from_raw(native.cast::<Native>()) });
 }
 
@@ -239,18 +239,20 @@ pub fn counters() -> Counters {
     })
 }
 
-/// `co->resume()`, a reactor deferred call.
+/// `co->resume()` of live coroutine `cid`; nothing when none lives. As every
+/// resume, a bailout in the coroutine
+/// may longjmp over the caller's frames, leaking what they own: abandoned coroutine
+/// stacks stay allocated, but the main stack can be reused.
 ///
 /// # Safety
-/// `co` is a live, suspended coroutine.
-/// If its bailout callback can longjmp, every main-stack frame between this
-/// call and the callback's trap must own nothing that needs dropping. Abandoned
-/// coroutine stacks stay allocated, but the main stack can be reused.
-pub unsafe extern "C-unwind" fn resume(co: *mut c_void) {
-    // SAFETY: as the caller promises.
-    if let Some(co) = unsafe { Co::of(co.cast()) } {
-        ops::resume(Sched::this(), co);
-    }
+/// The coroutine is parked (waiting, and switched out), and the caller owns that
+/// park, as its
+/// [`Waker`](crate::coroutine::Waker), timeout or canceler does: it queued the
+/// coroutine as a waiter it now hands off to, or the site that parked it lets
+/// anything end the park early (a user yield). A park site may lend its frame's
+/// memory until its own wake, so ending another's park early is unsound.
+pub unsafe fn resume(cid: c_long) {
+    ops::resume_live(Sched::this(), cid);
 }
 
 /// `co->yield()` of `co`, the running coroutine (aborting otherwise), until it
@@ -313,8 +315,8 @@ pub fn yield_with_cancel_armed<F: Fn() -> bool + Copy + 'static>(
 /// later resumes are refused.
 ///
 /// # Safety
-/// `callback` takes `data`; the caller's frames own nothing with a destructor.
-pub unsafe fn swr_v1_coroutine_bail(callback: Option<Routine>, data: *mut c_void) {
+/// The caller's frames own nothing with a destructor.
+pub unsafe fn swr_v1_coroutine_bail(callback: Option<Bailout>, data: *mut c_void) {
     let inside = !current().is_null();
     if inside && callback.is_none() {
         log::error(
@@ -326,7 +328,7 @@ pub unsafe fn swr_v1_coroutine_bail(callback: Option<Routine>, data: *mut c_void
         (s.hooks.bailout, s.hooks.bailout_data) = if inside {
             (callback, data)
         } else {
-            (Some::<Routine>(bailed_out), ptr::null_mut())
+            (Some::<Bailout>(bailed_out), ptr::null_mut())
         };
     });
     ops::bailout(Sched::this());

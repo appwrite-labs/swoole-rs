@@ -8,9 +8,9 @@
 //! `swr_v1_context`; swoole_rs_corebase::coroutine.h): its getters are field reads here, its
 //! operations crates/corebase/src/coroutine's `suspend` and `resume`, the `swr_v1_coroutine_*`
 //! exports and upstream symbols.
-//! `Coroutine::create`, `coroutine::run` and `Coroutine::bailout` take a function and
-//! its data here (crates/corebase/src/coroutine's `swr_v1_coroutine_create` and
-//! `swr_v1_coroutine_bail`, and `swoole_coroutine_create`).
+//! `Coroutine::create` is crates/corebase/src/coroutine's `spawn` of a closure over
+//! the case's boxed body; `coroutine::run` and `Coroutine::bailout` take a function and
+//! its data here (`swoole_coroutine_create` and `swr_v1_coroutine_bail`).
 
 use super::hook::{
     ST_SIZE, Stat, swoole_coroutine_fstat, swoole_coroutine_fsync, swoole_coroutine_ftruncate,
@@ -45,9 +45,6 @@ const O_RDWR: c_int = 2;
 const O_CREAT: c_int = 0o100;
 const SEEK_SET: c_int = 0;
 const SEEK_CUR: c_int = 1;
-/// The offset of the context's `end` in a coroutine's record: the
-/// `swr_v1_coroutine` (120 bytes), then the `swr_v1_context` fields before `end` (56).
-const FACADE_END: usize = 120 + 56;
 
 type SwapCallback = swoole_rs_corebase::coroutine::SwapCallback;
 
@@ -103,13 +100,7 @@ fn create<'a>(body: impl FnOnce() + 'a) -> c_long {
     let arg = Box::into_raw(Box::new(body)).cast::<c_void>();
     // SAFETY: `trampoline` takes the box `arg` owns; the borrows outlive the
     // coroutine, as the C++ lambdas' captures do.
-    unsafe { swoole_rs_corebase::coroutine::swr_v1_coroutine_create(routine, arg) }
-}
-
-/// [`trampoline`] as crates/corebase/src/coroutine's `Routine`, which it catches any unwind for.
-unsafe extern "C" fn routine(arg: *mut c_void) {
-    // SAFETY: as `trampoline`'s caller promises.
-    unsafe { trampoline(arg) }
+    swoole_rs_corebase::coroutine::spawn(move || unsafe { trampoline(arg) })
 }
 
 /// `swoole::coroutine::run(fn)`: outside a loop, `swoole_coroutine_create` runs a
@@ -199,8 +190,14 @@ impl View {
         unsafe { self.co().origin.as_ref() }.map_or(-1, |co| co.cid)
     }
     fn is_end(&self) -> bool {
-        // SAFETY: the facade's Context end flag (see FACADE_END).
-        unsafe { self.0.cast::<u8>().add(FACADE_END).cast::<bool>().read() }
+        // SAFETY: the coroutine's record, a `Native`, is live while the case holds its view.
+        unsafe {
+            &*self
+                .0
+                .cast::<swoole_rs_corebase::coroutine::context::Native>()
+        }
+        .ctx
+        .ended()
     }
     fn is_canceled(&self) -> bool {
         self.co().resume_code == RC_CANCELED
@@ -218,8 +215,8 @@ impl View {
         ))
     }
     fn resume(&self) {
-        // SAFETY: a suspended coroutine.
-        unsafe { swoole_rs_corebase::coroutine::resume(self.0.cast()) };
+        // SAFETY: the case's own yield (a user yield), which any resume may end.
+        unsafe { swoole_rs_corebase::coroutine::resume(self.get_cid()) };
     }
     fn cancel(&self) -> bool {
         coroutine_cancel(self.0.cast())
@@ -231,15 +228,16 @@ struct DeferredCall(*mut c_void);
 
 impl swoole_rs_ffi::event_api::Deferred for DeferredCall {
     fn run(self) {
-        // SAFETY: the deferrer's closure, live until the loop runs this.
-        unsafe { call(self.0) }
+        // The deferrer's closure, live until the loop runs this.
+        call(self.0);
     }
 
     fn dispose(self) {}
 }
 
-/// Calls the `&dyn Fn()` at `data`.
-unsafe extern "C" fn call(data: *mut c_void) {
+/// Calls the `&dyn Fn()` at `data`, which [`bailout`] passes: the one data its
+/// callback is given.
+extern "C" fn call(data: *mut c_void) {
     // SAFETY: the caller's closure, live for the call.
     let body = unsafe { &*data.cast::<&dyn Fn()>() };
     if catch_unwind(AssertUnwindSafe(body)).is_err() {

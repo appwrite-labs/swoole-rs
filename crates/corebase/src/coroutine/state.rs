@@ -40,9 +40,14 @@ const STACK_MIN: usize = 64 * 1024;
 const STACK_MAX: usize = 16 * 1024 * 1024;
 const STACK_ALIGNMENT: usize = 4 * 1024;
 
-/// A C function over its data, `void (*)(void *)`: a coroutine's entry, a
-/// swap callback, a timer's callback or the bailout callback.
+/// A C function over its data, `void (*)(void *)`: the entry
+/// `swoole_coroutine_create` runs.
 pub type Routine = unsafe extern "C" fn(*mut c_void);
+
+/// The bailout callback (upstream's `on_bailout`), over the data set with it. It is
+/// safe to call with any data; the main context runs it, and it may longjmp out of
+/// the scheduler's frames, which own nothing.
+pub type Bailout = extern "C" fn(*mut c_void);
 
 /// A coroutine's task, which only [`set_current_task`](crate::coroutine::set_current_task) sets:
 /// the one kind of object every swap callback takes (in the extension,
@@ -143,7 +148,7 @@ pub struct Hooks {
     pub(crate) destroy: fn(Co),
     /// The bailout callback (upstream's `on_bailout`), which PHP's longjmps out
     /// of, and its data; set while the scheduler bails out.
-    pub bailout: Option<Routine>,
+    pub bailout: Option<Bailout>,
     pub bailout_data: *mut c_void,
     /// `SW_CORO_TIME`'s clock in microseconds; null without it.
     pub clock: Option<extern "C" fn() -> c_long>,
@@ -178,7 +183,8 @@ pub const ON_RESUME: u32 = 1;
 pub const ON_CLOSE: u32 = 2;
 
 impl Scheduler {
-    /// Takes the next id, seeds `co` (which `native` embeds) and makes it live.
+    /// Takes the next id, seeds `co` (a fresh, idle record that `native` embeds) and
+    /// makes it live.
     /// Returns whether the scheduler needs activating.
     #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn register(
@@ -190,14 +196,12 @@ impl Scheduler {
     ) -> bool {
         self.last_cid = self.last_cid.wrapping_add(1);
         let cid = self.last_cid;
+        // A fresh record is idle already: only its own fields change.
         co.with(|co| {
-            *co = Coroutine {
-                native,
-                cid,
-                init_msec,
-                switch_usec: now,
-                ..Coroutine::idle()
-            };
+            co.native = native;
+            co.cid = cid;
+            co.init_msec = init_msec;
+            co.switch_usec = now;
         });
         self.insert(cid, co);
         let count = self.count() as u64;
@@ -243,12 +247,6 @@ impl Scheduler {
 pub(crate) struct Co(NonNull<Coroutine>);
 
 impl Co {
-    /// # Safety
-    /// `co` is null or a live coroutine, which stays live while the handle is used.
-    pub(crate) unsafe fn of(co: *mut Coroutine) -> Option<Self> {
-        NonNull::new(co).map(Self)
-    }
-
     /// The coroutine a record handed over for good starts with: live until the
     /// scheduler's `destroy` frees the record, once it registered and ended.
     #[cfg(any(test, feature = "upstream-symbols"))]
@@ -443,8 +441,8 @@ fn switch_in(s: Sched, co: Co) {
             .map(|f| (f, s.hooks.bailout_data))
     });
     if let Some((bailout, data)) = bailout {
-        // SAFETY: the callback longjmps over this frame, which owns nothing.
-        unsafe { bailout(data) };
+        // It may longjmp over this frame, which owns nothing.
+        bailout(data);
     }
 }
 
@@ -534,9 +532,29 @@ impl Waker {
         let Some(co) = s.with(|s| s.live_co(self.cid)) else {
             return;
         };
-        if co.with(|co| co.state == State::Waiting && co.parks == self.park) {
-            resume(s, co);
+        if co.with(|co| co.parks == self.park) {
+            resume_parked(s, co);
         }
+    }
+}
+
+/// `co->resume()` of live coroutine `cid`; nothing when none lives. The caller
+/// knows it parked: it owns the park.
+#[inline]
+pub(crate) fn resume_live(s: Sched, cid: c_long) {
+    if let Some(co) = s.with(|s| s.live_co(cid)) {
+        resume(s, co);
+    }
+}
+
+/// [`resume`] of `co` if it is parked: waiting, and switched out. A yield marks its
+/// coroutine waiting before its yield callback runs, while it is still the running
+/// one, and nothing may switch into it until it switched out.
+#[inline]
+pub(crate) fn resume_parked(s: Sched, co: Co) {
+    let running = s.with(|s| s.current) == co.ptr();
+    if !running && co.with(|co| co.state == State::Waiting) {
+        resume(s, co);
     }
 }
 
@@ -622,6 +640,14 @@ pub(crate) mod tests {
         }
     }
 
+    impl Co {
+        /// # Safety
+        /// `co` is null or a live coroutine, which stays live while the handle is used.
+        pub(crate) unsafe fn of(co: *mut Coroutine) -> Option<Self> {
+            NonNull::new(co).map(Self)
+        }
+    }
+
     // The operations over raw pointers, as the cases drive them.
     unsafe fn swr_v1_coroutine_resume(s: *mut Scheduler, co: *mut Coroutine) {
         unsafe { resume(Sched::of(s).unwrap(), Co::of(co).unwrap()) }
@@ -687,7 +713,7 @@ pub(crate) mod tests {
     fn destroy(co: Co) {
         event(format!("destroy {}", co.with(|co| co.native) as usize));
     }
-    unsafe extern "C" fn bailout(_: *mut c_void) {
+    extern "C" fn bailout(_: *mut c_void) {
         event("bailout".into());
     }
     extern "C" fn clock() -> c_long {
@@ -893,6 +919,41 @@ pub(crate) mod tests {
             take_events(),
             ["in 10", "out 10", "in 10", "out 10", "in 10"]
         );
+    }
+
+    #[test]
+    fn a_wake_by_id_switches_only_into_a_parked_coroutine() {
+        take_events();
+        let mut s = scheduler();
+        let sp = &raw mut s;
+        let mut a = blank();
+        let a = &raw mut a;
+        // SAFETY: the scheduler and coroutine live on this frame; the hooks only
+        // record events.
+        unsafe {
+            (*sp).register(Co::of(a).unwrap(), 10 as *mut c_void, 0, 0);
+            swr_v1_coroutine_run(sp, a);
+            let (s, co) = (Sched::of(sp).unwrap(), Co::of(a).unwrap());
+            let resume_cid = |cid| {
+                if let Some(co) = s.with(|s| s.live_co(cid)) {
+                    resume_parked(s, co);
+                }
+            };
+            // Running, or no coroutine of that id: nothing.
+            resume_cid(1);
+            resume_cid(2);
+            // Marked waiting by its yield, but still running (its yield callback's
+            // window): nothing.
+            (*a).state = State::Waiting;
+            resume_cid(1);
+            (*a).state = State::Running;
+            yield_(s, co);
+            resume_cid(1);
+            assert_eq!(((*sp).current, (*a).state), (a, State::Running));
+        }
+        assert_eq!(take_events(), ["in 10", "out 10", "in 10"]);
+        s.remove(1);
+        s.set_active(false);
     }
 
     #[test]

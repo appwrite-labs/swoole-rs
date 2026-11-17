@@ -4,11 +4,13 @@
 //! hands a baton from one thread to the next, so exactly one runs at a time.
 //! Upstream hands off with `std::mutex`es unlocked by threads that didn't lock
 //! them; a baton is a binary semaphore, which any thread may post.
-use crate::coroutine::Routine;
+#[cfg(any(test, feature = "upstream-symbols"))]
+use crate::small_fn::Small;
+use crate::small_fn::SmallFn;
 use crate::{SharedThread, adopt_shared_thread, shared_thread};
 use core::cell::Cell;
-use core::ffi::{c_int, c_void};
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use core::ffi::c_int;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
@@ -102,25 +104,69 @@ pub(crate) struct Started {
 /// `SWR_CTX_THREAD` (`SW_USE_THREAD_CONTEXT`): the context is a thread, not a stack.
 pub const THREAD: u32 = 4;
 
-/// A coroutine's entry over the creator's data, which only [`Entry::new`] makes:
-/// the context it is handed to runs it once, on its own stack or thread. The data's
-/// address goes with it to that thread, which uses it only while it holds the baton.
-pub struct Entry(Routine, AtomicPtr<c_void>);
+/// A coroutine's entry, which only [`Entry::of`] makes (in this crate): a `Copy`
+/// closure the context it is handed to runs once, on its own stack or thread. It is
+/// held inline: the largest closure a coroutine starts with, `phpcoroutines`'
+/// (a call's callable, arguments and their count), fits.
+pub struct Entry(SmallFn<(), ENTRY_WORDS>);
+
+/// The words an [`Entry`] holds.
+const ENTRY_WORDS: usize = 10;
+
+/// An entry's closure, run in place (through a reference, so its captures are
+/// read where they lie) or consumed.
+#[cfg(any(test, feature = "upstream-symbols"))]
+struct Once<F>(F);
+
+#[cfg(any(test, feature = "upstream-symbols"))]
+impl<F: Fn() + Copy + 'static> Small<()> for Once<F> {
+    fn run(&self) {
+        (self.0)();
+    }
+    fn consume(self) {
+        (self.0)();
+    }
+}
+
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the slot holds a closure that may not be `Send`; the baton, not the type, \
+              keeps its two threads apart, as the SAFETY comment says"
+)]
+// SAFETY: only this crate makes an entry, and only to hand it to the context of a new
+// coroutine, which runs it once, on the thread that runs the coroutine, while that
+// thread holds the baton and every other one waits for its own: its closure's
+// captures are never reached from two threads at once, and each handoff orders the
+// accesses on either side of it. They are `Copy`, so none has a destructor to run on
+// the other thread.
+unsafe impl Send for Entry {}
 
 impl Entry {
-    /// # Safety
-    /// `routine` takes `data`: calling it once with it is sound, on whichever thread
-    /// runs the coroutine while no other runs.
-    pub const unsafe fn new(routine: Routine, data: *mut c_void) -> Self {
-        Self(routine, AtomicPtr::new(data))
+    /// No entry: a [`THREAD`] context's, whose thread holds it.
+    pub(crate) const fn empty() -> Self {
+        Self(SmallFn::empty())
+    }
+
+    /// The entry that runs `entry`.
+    #[cfg(any(test, feature = "upstream-symbols"))]
+    pub(crate) fn of<F: Fn() + Copy + 'static>(entry: F) -> Self {
+        let slot = SmallFn::empty();
+        slot.put(Once(entry));
+        Self(slot)
+    }
+
+    /// Runs the held entry in place, where it stays: a stack context's, whose
+    /// record never moves and whose first frame alone runs it.
+    pub(crate) fn run_held(&self) {
+        _ = self.0.run();
     }
 
     /// Runs the entry; this takes it, so it runs once.
     pub(crate) fn run(self) {
-        let Self(routine, data) = self;
-        let data = data.into_inner();
-        // SAFETY: the routine and data `new`'s caller paired, called once.
-        unsafe { routine(data) };
+        let Self(mut slot) = self;
+        if let Some(entry) = slot.take() {
+            entry.consume();
+        }
     }
 }
 
@@ -240,8 +286,7 @@ mod tests {
         steps: Vec<&'static str>,
     }
 
-    unsafe extern "C" fn entry(data: *mut c_void) {
-        let log = data.cast::<Log>();
+    fn entry(log: *mut Log) {
         // SAFETY: the test's log; this thread holds the baton.
         unsafe {
             (*log).steps.push("entry");
@@ -262,7 +307,7 @@ mod tests {
         assert!(thread_context_active());
         // The thread backend's own entry points, which context.rs's dispatch on THREAD reaches.
         unsafe {
-            (*log).thread = Some(start(Entry::new(entry, log.cast())).unwrap());
+            (*log).thread = Some(start(Entry::of(move || entry(log))).unwrap());
             let thread: *const Started = (*log).thread.as_deref().unwrap();
             assert!(!(*thread).swap_in());
             (*log).steps.push("main");
