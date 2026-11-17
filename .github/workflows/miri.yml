@@ -24,6 +24,7 @@ on:
       - crates/httpbindings/**
       - crates/server/**
       - tests/modules/buffer/recycling.rs
+      - tests/modules/clients/socket_ops.rs
       - tests/modules/coroutine/channel.rs
       - tests/modules/memory/**
 concurrency:
