@@ -153,7 +153,12 @@ mod descriptor {
     }
 
     pub(super) fn add(events: i32) -> bool {
-        socket().is_some_and(|socket| event_add(socket, crate::Events::from_bits(events)))
+        socket().is_some_and(|socket| {
+            event_add(
+                crate::Heap::from_static(socket),
+                crate::Events::from_bits(events),
+            )
+        })
     }
 
     pub(super) fn del() {

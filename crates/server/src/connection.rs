@@ -7,7 +7,7 @@ use swoole_rs_reactor::Events;
 use swoole_rs_corebase::constants::{SW_ACCEPT_RETRY_TIME, SW_SEND_BUFFER_SIZE, SocketType};
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{Event, Socket};
+use swoole_rs_reactor::{Event, Heap};
 
 use crate::reactor_handle::Reactor;
 use crate::records::Lookup;
@@ -36,7 +36,7 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
         // The record `accepted` just made, leaked to the connection that takes it or
         // `abort`, which frees it (an unsafe free whose caller answers for the handles left).
         let accepted = listener.edit(swoole_rs_reactor::SocketFields::accepted);
-        let Some(sock) = accepted.map(|record| Socket::new(Box::leak(record))) else {
+        let Some(sock) = accepted.map(swoole_rs_reactor::SocketRecord::into_socket) else {
             if accept_failed(serv, errno()) {
                 continue;
             }
@@ -55,7 +55,7 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
             return;
         }
         if port.config().ssl {
-            if !(crate::port_config::methods().ssl_create)(port.config(), Some(sock)) {
+            if !(crate::port_config::methods().ssl_create)(port.config(), Some(*sock)) {
                 abort(serv, reactor, Some(port), sock);
                 return;
             }
@@ -110,10 +110,11 @@ fn to_reactor_thread(serv: view::Server<'_>, conn: Connection<'_>) -> Option<usi
 /// `Server::add_connection(port, sock, server_fd)`: the next free session slot after
 /// `session_round` takes `sock`, and its fd's connection slot is set up; `None` when
 /// every slot is taken.
+#[must_use]
 pub fn add<'a>(
     serv: view::Server<'a>,
     port: view::Port<'_>,
-    sock: Socket<'static>,
+    sock: Heap<'static>,
     server_fd: c_int,
 ) -> Option<Connection<'a>> {
     let state = serv.state();
@@ -188,7 +189,7 @@ pub fn add<'a>(
         sock.edit(|s| s.enable_tcp_nodelay = true);
     }
     // Upstream sets the buffer sizes on the listening socket.
-    let listen_fd = listener.map_or(-1, Socket::fd);
+    let listen_fd = listener.map_or(-1, |listener| listener.fd());
     for (name, label, size) in [
         (
             libc::SO_RCVBUF,
@@ -254,7 +255,7 @@ fn init(
     serv: view::Server<'_>,
     conn: Connection<'_>,
     ls: &crate::port_config::PortConfig,
-    sock: Socket<'static>,
+    sock: Heap<'static>,
     server_fd: c_int,
     reactor_id: u8,
 ) {
@@ -300,7 +301,7 @@ pub(crate) fn abort(
     serv: view::Server<'_>,
     reactor: Reactor,
     port: Option<view::Port<'_>>,
-    sock: Socket<'static>,
+    sock: Heap<'static>,
 ) {
     serv.counters().abort_count.fetch_add(1, SeqCst);
     if let Some(gs) = port.and_then(|port| port.config().counters()) {
@@ -311,7 +312,7 @@ pub(crate) fn abort(
     } else {
         // SAFETY: an accepted heap record no connection took, which nothing uses
         // afterwards.
-        let sock = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(sock) };
+        let sock = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(*sock) };
         swoole_rs_tls::upstream::socket_free(Some(sock));
     }
 }
@@ -412,7 +413,7 @@ pub(crate) fn disable_accept(serv: view::Server<'_>) {
     if timer.is_none() {
         return;
     }
-    for_stream_ports(serv, Reactor::del);
+    for_stream_ports(serv, |reactor, sock| reactor.del(*sock));
 }
 
 /// The accept retry timer: accept on stream ports again.
@@ -423,7 +424,7 @@ pub(crate) fn enable_accept(serv: view::Server<'_>) {
 }
 
 /// `swoole_event_add`/`_del` on each stream port's listening socket.
-fn for_stream_ports(serv: view::Server<'_>, change: impl Fn(Reactor, Socket<'_>) -> bool) {
+fn for_stream_ports(serv: view::Server<'_>, change: impl Fn(Reactor, Heap<'_>) -> bool) {
     let reactor = Reactor::thread();
     for port in serv.ports() {
         if !SocketType::from_raw(port.config().r#type).is_some_and(SocketType::is_dgram) {
@@ -573,7 +574,7 @@ mod tests {
             "maxfd grows to the highest fd"
         );
         let conn = live.state().tables_ref().connection_at(second).unwrap();
-        assert!(reading(conn.socket().unwrap()), "reading");
+        assert!(reading(*conn.socket().unwrap()), "reading");
     }
 
     #[test]
@@ -616,7 +617,7 @@ mod tests {
             .unwrap()
             .socket()
             .unwrap();
-        assert!(!reading(sock), "not read yet");
+        assert!(!reading(*sock), "not read yet");
     }
 
     #[test]
@@ -660,10 +661,10 @@ mod tests {
         disable_accept(live.server());
         let tables = live.state().tables_ref();
         assert!(tables.enable_accept_timer.is_some(), "armed");
-        assert!(!reading(listener), "no longer reading");
+        assert!(!reading(*listener), "no longer reading");
         enable_accept(live.server());
         assert!(!tables.enable_accept_timer.is_some(), "cleared");
-        assert!(reading(listener), "reading again");
+        assert!(reading(*listener), "reading again");
     }
 
     #[test]
@@ -680,13 +681,13 @@ mod tests {
             "others end"
         );
         assert!(
-            !armed() && reading(listener),
+            !armed() && reading(*listener),
             "none of them disables accept"
         );
         for errno in [libc::EMFILE, libc::ENFILE] {
             assert!(!accept_failed(live.server(), errno), "{errno} ends");
             assert!(armed(), "{errno} arms the retry timer");
-            assert!(!reading(listener), "{errno} stops reading");
+            assert!(!reading(*listener), "{errno} stops reading");
             enable_accept(live.server());
         }
     }
@@ -725,7 +726,7 @@ mod tests {
     }
 
     /// Whether the reactor reads `sock`.
-    fn reading(sock: Socket<'_>) -> bool {
+    fn reading(sock: swoole_rs_reactor::Socket<'_>) -> bool {
         sock.read(|s| !s.removed && s.events.intersects(Events::READ))
     }
 

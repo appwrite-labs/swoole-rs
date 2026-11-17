@@ -361,6 +361,11 @@ impl Handle<'_> {
         self.get().socket.socket()
     }
 
+    /// The client's socket as its owner lends it to the reactor.
+    fn heap(self) -> swoole_rs_reactor::Heap<'static> {
+        self.get().socket.heap()
+    }
+
     fn socket_type(self) -> c_int {
         self.socket().read(|socket| socket.socket_type)
     }
@@ -1540,7 +1545,7 @@ struct SocketOps {
     sendfile_async: fn(Socket<'_>, &CStr, i64, usize) -> bool,
     free_socket: fn(Option<OwnedSocket>),
     close_tls: fn(Socket<'_>),
-    write: fn(Socket<'static>, &[u8]) -> Option<usize>,
+    write: fn(swoole_rs_reactor::Heap<'_>, &[u8]) -> Option<usize>,
     writable: extern "C-unwind" fn(Running<'_>, &mut Event) -> c_int,
     make_socket: fn(c_int, c_int, c_int) -> Option<OwnedSocket>,
     kernel_timeout: fn(Handle<'_>, f64),
@@ -1664,11 +1669,11 @@ mod ops {
     /// reactor. The client's socket stays live while it is registered: `close` deletes
     /// it from the reactor before the record is freed.
     pub(super) fn event(this: Handle<'_>, op: EventOp, events: swoole_rs_reactor::Events) -> bool {
-        let socket = this.socket();
+        let socket = this.heap();
         match op {
             EventOp::Add => event_api::event_add(socket, events),
             EventOp::Set => event_api::event_set(socket, events),
-            EventOp::Del => event_api::event_del(socket),
+            EventOp::Del => event_api::event_del(*socket),
             EventOp::AddOrUpdate => event_api::add_or_update(socket, events),
         }
     }
@@ -1739,7 +1744,7 @@ pub fn send(this: Handle<'_>, data: &[u8], flags: c_int) -> Option<usize> {
 fn send_async(this: Handle<'_>, data: &[u8]) -> Option<usize> {
     let mut n = Some(data.len());
     // The live client's socket, deleted from the reactor before its record is freed.
-    if (this.get().socket_ops.write)(this.socket(), data).is_none() {
+    if (this.get().socket_ops.write)(this.heap(), data).is_none() {
         if log::last_error() != ERROR_OUTPUT_BUFFER_OVERFLOW {
             return None;
         }

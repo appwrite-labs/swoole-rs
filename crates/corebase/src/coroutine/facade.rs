@@ -44,8 +44,6 @@ pub struct Host {
     /// `swoole_timer_add(timeout, false, ...)`, in seconds, of `f(arg)`: the
     /// timer's id, which it never reuses, or 0.
     pub timer_after: fn(f64, fn(c_long), c_long) -> c_long,
-    /// `swoole_timer_is_available()`.
-    pub timer_is_available: fn() -> bool,
     /// `swoole_timer_clear(id)`: removes the pending timer `id` names.
     pub timer_clear: fn(c_long),
     /// The thread's async threads, created first when it has none.
@@ -145,7 +143,7 @@ pub extern "C-unwind" fn activate() {
     if build() & THREAD != 0 {
         // Coroutine threads share this thread's timer and async threads.
         let host = host();
-        if !(host.timer_is_available)() {
+        if crate::thread_timer().is_null() {
             // A 1 ms timer whose callback does nothing.
             (host.timer_after)(0.001, keep_alive, 0);
         }

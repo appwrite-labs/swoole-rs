@@ -184,18 +184,8 @@ impl<'a> Socket<'a> {
         })
     }
 
-    /// The native socket crates/process lends for `'a`, a worker's pipe end whose
-    /// writer vouched for it: a live record of this crate's.
-    #[must_use]
-    pub fn lent(native: swoole_rs_process::worker_record::NativeSocket<'a>) -> Self {
-        Self {
-            record: native.as_non_null().cast(),
-            _live: PhantomData,
-        }
-    }
-
     /// The socket of a record this side holds alone for `'a` (one on the caller's
-    /// frame, say).
+    /// frame, say). It has no [`Heap`], so no reactor registers it.
     #[must_use]
     pub fn new(record: &'a mut SocketRecord) -> Self {
         Self {
@@ -297,13 +287,64 @@ impl<'a> Socket<'a> {
     }
 }
 
+/// A [`Socket`] a reactor may register: a heap record whose one free is
+/// [`OwnedSocket`]'s, which first deletes it from the reactor that registered it, or a
+/// record never freed. So a registry may name it past `'a`: no entry outlives its
+/// record. Only an owner ([`OwnedSocket::heap`], [`SocketRecord::into_socket`]), a
+/// worker's pipe ([`Heap::lent`]), the registry and C++, whose records `delete` frees
+/// through an owner, make one; a record on a frame ([`Socket::new`]) has none.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct Heap<'a>(Socket<'a>);
+
+impl<'a> Heap<'a> {
+    /// The pipe end crates/process lends for `'a`, a worker's pipe whose writer vouched
+    /// for it: a live heap record of this crate's, which its owner frees.
+    #[must_use]
+    pub fn lent(native: swoole_rs_process::worker_record::NativeSocket<'a>) -> Self {
+        Self(Socket {
+            record: native.as_non_null().cast(),
+            _live: PhantomData,
+        })
+    }
+
+    /// The boundary for holders that still keep a `Socket<'static>` alias rather than
+    /// their owner (#4577): a record that stays live until an unsafe free, which goes
+    /// through [`OwnedSocket::from_socket`] and so deregisters it, as `'static` states.
+    #[must_use]
+    pub const fn from_static(socket: Socket<'static>) -> Heap<'static> {
+        Heap(socket)
+    }
+
+    /// The socket, for `'a`.
+    #[must_use]
+    pub const fn socket(self) -> Socket<'a> {
+        self.0
+    }
+
+    /// The registry's copy, which stays valid past `'a` by the type's invariant.
+    pub(crate) const fn named(self) -> Heap<'static> {
+        Heap(Socket {
+            record: self.0.record,
+            _live: PhantomData,
+        })
+    }
+}
+
+impl<'a> std::ops::Deref for Heap<'a> {
+    type Target = Socket<'a>;
+    fn deref(&self) -> &Socket<'a> {
+        &self.0
+    }
+}
+
 /// A heap record and the one right to free it (`delete socket`): neither `Copy` nor
 /// `Clone`, so a record is freed once, and it lends [`Socket`] only for a borrow of
 /// itself. Transparent over the record's address, so a C++ `Socket *` whose owner
 /// gives it up (`Socket::free`, `Reactor::close`) passes as one. Dropping one leaks the
 /// record, as a C++ pointer never deleted does.
 #[repr(transparent)]
-pub struct OwnedSocket(Socket<'static>);
+pub struct OwnedSocket(Heap<'static>);
 
 impl OwnedSocket {
     /// `record`, which this owns from here.
@@ -319,22 +360,29 @@ impl OwnedSocket {
     /// once this owner frees it.
     #[must_use]
     pub unsafe fn from_socket(socket: Socket<'_>) -> Self {
-        Self(Socket {
+        Self(Heap(Socket {
             record: socket.record,
             _live: PhantomData,
-        })
+        }))
     }
 
     /// The record, for as long as this is borrowed.
     #[must_use]
     pub const fn socket(&self) -> Socket<'_> {
+        self.0.0
+    }
+
+    /// The record for as long as this is borrowed, which a reactor may register: this
+    /// owner's free deletes it from the reactor first.
+    #[must_use]
+    pub const fn heap(&self) -> Heap<'_> {
         self.0
     }
 
     /// The record, which nothing frees from here but an owner taken back with
     /// [`Self::from_socket`].
     #[must_use]
-    pub const fn leak(self) -> Socket<'static> {
+    pub const fn leak(self) -> Heap<'static> {
         self.0
     }
 
@@ -343,9 +391,10 @@ impl OwnedSocket {
     /// while a reactor it can't reach still names it ends the process.
     #[must_use]
     pub fn into_box(self) -> Box<SocketRecord> {
-        let mark = self.0.mark().load(Ordering::Relaxed);
+        let socket = self.socket();
+        let mark = socket.mark().load(Ordering::Relaxed);
         if mark != 0 {
-            deregister(self.0, mark);
+            deregister(socket, mark);
         }
         // SAFETY: the box `new` leaked, or the heap record `from_socket` took back; this
         // owner is its only one and goes here.

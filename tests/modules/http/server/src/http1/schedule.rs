@@ -71,6 +71,7 @@ fn add_connection(serv: Server, port: Port, sock: *mut c_void) -> Connection<'st
         .unwrap();
     // SAFETY: a live socket.
     let sock = unsafe { swoole_rs_ffi::Socket::from_ptr(sock.cast()) }.unwrap();
+    let sock = swoole_rs_ffi::Heap::from_static(sock);
     server_methods::add_connection(serv_view, listen, sock, port.get_fd()).unwrap()
 }
 

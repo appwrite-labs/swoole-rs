@@ -204,7 +204,7 @@ pub(super) fn socket_sendfile_async(_: Socket<'_>, _: &CStr, _: i64, _: usize) -
     true
 }
 /// crates/reactor's, which reads the thread's reactor.
-pub(super) fn event_write(_: swoole_rs_reactor::Socket<'static>, data: &[u8]) -> Option<usize> {
+pub(super) fn event_write(_: swoole_rs_reactor::Heap<'_>, data: &[u8]) -> Option<usize> {
     let length = data.len();
     log(format!("write {length}"));
     (log::last_error() != ERROR_OUTPUT_BUFFER_OVERFLOW).then_some(length)

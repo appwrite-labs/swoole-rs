@@ -24,7 +24,7 @@ use swoole_rs_process::{
     signal::swoole_signal_isset,
     worker_record,
 };
-use swoole_rs_reactor::Socket;
+use swoole_rs_reactor::Heap;
 use swoole_rs_reactor::signal_upstream::Handler as SignalHandler;
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_zend::{
@@ -960,7 +960,7 @@ fn get_process(call: &Call) {
                     if view.ipc_mode() == IpcMode::UnixSock {
                         props.long(
                             c"pipe",
-                            pipe.map_or(-1, |pipe| i64::from(Socket::lent(pipe).fd())),
+                            pipe.map_or(-1, |pipe| i64::from(Heap::lent(pipe).fd())),
                         );
                     }
                 }

@@ -95,7 +95,7 @@ impl LiveServer {
         // The listening fd's slot holds its port, as `Server::store_listen_socket` leaves it.
         let slot = state.hold_port(0, fd).unwrap();
         slot.set_fd(fd);
-        slot.set_socket(Some(socket));
+        slot.set_socket(Some(swoole_rs_reactor::Heap::from_static(socket)));
         slot.set_socket_type(SOCK_TCP);
 
         // The thread's reactor, without `swoole_event_init`'s coroutine and client handlers,
@@ -158,7 +158,8 @@ impl LiveServer {
     /// The read event of the port's listening socket, as the reactor hands `accept` it.
     pub(crate) fn accept_event(&self) -> swoole_rs_reactor::Event {
         // SAFETY: the fixture's listener, live until the fixture drops.
-        let listener = unsafe { swoole_rs_reactor::Socket::from_ptr(self.listener) };
+        let listener = unsafe { swoole_rs_reactor::Socket::from_ptr(self.listener) }
+            .map(swoole_rs_reactor::Heap::from_static);
         swoole_rs_reactor::Event::of(self.listener_fd, 0, FD_STREAM_SERVER, listener)
     }
 
@@ -184,9 +185,11 @@ impl LiveServer {
     }
 
     /// The listening socket's handle.
-    pub(crate) fn port_socket(&self) -> swoole_rs_reactor::Socket<'_> {
-        // SAFETY: the listener this fixture owns for the borrow.
-        unsafe { swoole_rs_reactor::Socket::from_ptr(self.listener) }.unwrap()
+    pub(crate) fn port_socket(&self) -> swoole_rs_reactor::Heap<'static> {
+        // SAFETY: the listener this fixture owns, which the port frees through its owner.
+        swoole_rs_reactor::Heap::from_static(
+            unsafe { swoole_rs_reactor::Socket::from_ptr(self.listener) }.unwrap(),
+        )
     }
 
     /// The port's settings.

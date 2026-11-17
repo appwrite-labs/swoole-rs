@@ -88,7 +88,7 @@ fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     let bus = serv.state().message_bus();
     if event
         .socket()
-        .is_some_and(|socket| bus.read(socket) > Some(0))
+        .is_some_and(|socket| bus.read(*socket) > Some(0))
         && dispatch(serv, reactor, bus)
     {
         bus.pop();

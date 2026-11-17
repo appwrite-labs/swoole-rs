@@ -2,13 +2,13 @@
 //! native `Socket` and the events it was registered with. Native keeps writing the
 //! `Socket`'s own `events` and `removed` fields, which other modules read. Fds are
 //! small and dense, so the registry is a flat table indexed by fd.
-use crate::Socket;
+use crate::Heap;
 use std::ffi::{c_int, c_void};
 use swoole_rs_memory::flat::Table;
 
-/// Only an add puts a socket here, and freeing its record deletes it first
-/// (`OwnedSocket::into_box`), so every entry is live.
-type Sockets = Table<(Socket<'static>, crate::Events)>;
+/// Only an add of a [`Heap`] socket puts one here, and freeing its record deletes it
+/// first (`OwnedSocket::into_box`), so every entry is live.
+type Sockets = Table<(Heap<'static>, crate::Events)>;
 
 pub struct Registry {
     sockets: Sockets,
@@ -31,13 +31,13 @@ impl Registry {
 
     /// The registered sockets, in fd order (`Reactor::foreach_socket`'s copy).
     #[must_use]
-    pub fn sockets(&self) -> Vec<Socket<'static>> {
+    pub fn sockets(&self) -> Vec<Heap<'static>> {
         self.sockets.iter().map(|(_, entry)| entry.0).collect()
     }
 
     /// `Reactor::get_socket`: the socket registered for `fd`, if any.
     #[must_use]
-    pub fn get(&self, fd: c_int) -> Option<Socket<'static>> {
+    pub fn get(&self, fd: c_int) -> Option<Heap<'static>> {
         slot(fd)
             .and_then(|fd| self.sockets.get(fd))
             .map(|entry| entry.0)
@@ -45,13 +45,8 @@ impl Registry {
 
     /// `Reactor::_add`/`_set`: maps `fd` to `socket` registered for `events`; false, leaving
     /// the registry unchanged, if allocation fails or `fd` is negative.
-    pub(crate) fn put(
-        &mut self,
-        fd: c_int,
-        socket: Socket<'static>,
-        events: crate::Events,
-    ) -> bool {
-        slot(fd).is_some_and(|fd| self.sockets.insert(fd, (socket, events)).is_ok())
+    pub(crate) fn put(&mut self, fd: c_int, socket: Heap<'_>, events: crate::Events) -> bool {
+        slot(fd).is_some_and(|fd| self.sockets.insert(fd, (socket.named(), events)).is_ok())
     }
 
     /// `Reactor::_set`: the events `fd` is registered for, if it is.
@@ -69,9 +64,7 @@ impl Registry {
     }
 
     /// Each registered fd, its socket and its events, in fd order.
-    pub(crate) fn registered(
-        &self,
-    ) -> impl Iterator<Item = (c_int, Socket<'static>, crate::Events)> {
+    pub(crate) fn registered(&self) -> impl Iterator<Item = (c_int, Heap<'static>, crate::Events)> {
         self.sockets
             .iter()
             .filter_map(|(fd, &(socket, events))| Some((c_int::try_from(fd).ok()?, socket, events)))
@@ -105,15 +98,17 @@ pub(crate) mod tests {
     const SW_EVENT_WRITE: crate::Events = crate::Events::WRITE;
 
     /// A handle at address `n`, which the registry stores and never reads through.
-    pub(crate) fn fake(n: usize) -> Socket<'static> {
-        unsafe { Socket::from_ptr(n as *mut crate::SocketRecord) }.unwrap()
+    pub(crate) fn fake(n: usize) -> Heap<'static> {
+        Heap::from_static(
+            unsafe { crate::Socket::from_ptr(n as *mut crate::SocketRecord) }.unwrap(),
+        )
     }
 
     #[test]
     fn registers_and_snapshots() {
         let mut registry = Registry::default();
         let socket = fake;
-        let at = |socket: Option<Socket<'static>>| socket.map(Socket::as_ptr);
+        let at = |socket: Option<Heap<'static>>| socket.map(|socket| socket.as_ptr());
         assert_eq!(swr_v1_reactor_registry_count(None), 0);
         assert!(swr_v1_reactor_registry_get(None, 3).is_null());
         assert!(registry.put(3, socket(30), SW_EVENT_READ));
@@ -126,7 +121,11 @@ pub(crate) mod tests {
         assert_eq!(registry.count(), 2);
         assert_eq!(at(registry.get(4)), at(Some(socket(40))));
         assert!(registry.get(5).is_none());
-        let sockets: Vec<_> = registry.sockets().into_iter().map(Socket::as_ptr).collect();
+        let sockets: Vec<_> = registry
+            .sockets()
+            .iter()
+            .map(|socket| socket.as_ptr())
+            .collect();
         assert_eq!(sockets, [socket(30).as_ptr(), socket(40).as_ptr()]);
         registry.set(3, SW_EVENT_WRITE);
         let registered: Vec<_> = registry

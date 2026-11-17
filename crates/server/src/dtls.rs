@@ -9,8 +9,8 @@ use swoole_rs_corebase::constants::{
 };
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{DataHead, log};
-use swoole_rs_reactor::Socket;
 use swoole_rs_reactor::socket_upstream::make_typed;
+use swoole_rs_reactor::{Heap, Socket};
 use swoole_rs_tls::{
     DtlsSession, dtls_open, dtls_session_listen, dtls_session_receive, swr_v1_tls_dtls_append,
 };
@@ -58,7 +58,7 @@ fn accept(
     serv: crate::view::Server<'_>,
     listen: crate::view::Port<'_>,
     sa: &SocketAddress,
-) -> Option<Socket<'static>> {
+) -> Option<Heap<'static>> {
     let (kind, number, host) = {
         let config = listen.config();
         // NUL-terminated: the address parser reads the host as a C string.
@@ -90,7 +90,7 @@ fn accept(
     let origin = c"Server::accept_dtls_connection";
     let mut added = false;
     'setup: {
-        if !bind(socket, kind, &host, number) {
+        if !bind(*socket, kind, &host, number) {
             log::sys_warning(origin, format_args!("bind() failed"));
             break 'setup;
         }
@@ -112,7 +112,7 @@ fn accept(
         }
         // `ListenPort::create_dtls_session(sock)`, over the port's context.
         let context = listen.config().tls.settings.get();
-        if context.is_some_and(|context| dtls_open(socket, &context)) {
+        if context.is_some_and(|context| dtls_open(*socket, &context)) {
             return Some(socket);
         }
     }
@@ -120,7 +120,7 @@ fn accept(
         serv.state().tables_ref().clear_connection(fd);
     }
     // SAFETY: the heap record made above, which nothing uses afterwards.
-    let socket = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(socket) };
+    let socket = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(*socket) };
     swoole_rs_tls::upstream::socket_free(Some(socket));
     None
 }
@@ -147,12 +147,12 @@ pub(crate) fn on_packet(
     let Some(record) = accept(serv, port, peer) else {
         return false;
     };
-    if let Some(held) = swoole_rs_tls::Ssl::of(record)
+    if let Some(held) = swoole_rs_tls::Ssl::of(*record)
         && let Some(session) = DtlsSession::of(held.get())
     {
         appended(swr_v1_tls_dtls_append(session, data));
     }
-    if !dtls_session_listen(record) {
+    if !dtls_session_listen(*record) {
         return crate::conn_io::close_connection(serv, reactor, Some(record));
     }
     // A session socket's connection is its fd's slot.

@@ -204,7 +204,7 @@ fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
     let (state, config) = (serv.state(), serv.config());
     worker.set_status(WorkerStatus::busy(false));
     in_worker_bus(state, config, worker_pipe(worker, false), |pipe| {
-        set_nonblock(pipe);
+        set_nonblock(*pipe);
         let reactor = Reactor::thread();
         reactor.hold_server(serv);
         reactor.add(pipe, Events::READ);
@@ -231,7 +231,7 @@ fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
     let Some(worker) = serv.worker_record(id) else {
         return ERR;
     };
-    let fd = event.socket().map_or(-1, Socket::fd);
+    let fd = event.socket().map_or(-1, |socket| socket.fd());
     let mut buf = EventData([0; EVENT_DATA_SIZE]);
     let task = swoole_rs_corebase::sys::read(fd, &mut buf.0)
         .filter(|&read| read > 0)

@@ -10,7 +10,7 @@ use swoole_rs_corebase::{DataHead, log, microtime};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::Event;
 #[cfg(any(test, feature = "upstream-symbols"))]
-use swoole_rs_reactor::Socket;
+use swoole_rs_reactor::Heap;
 
 use crate::base_factory::SendData;
 use crate::hybrid::hybrid;
@@ -246,7 +246,7 @@ pub(crate) fn join_reactor_threads(serv: view::Server<'_>) {
 
 /// `socket->send_sync(&head, sizeof(head))` of a bare event.
 #[cfg(any(test, feature = "upstream-symbols"))]
-pub(crate) fn send_event(sock: Option<Socket<'_>>, fd: c_long, kind: ServerEvent) {
+pub(crate) fn send_event(sock: Option<Heap<'_>>, fd: c_long, kind: ServerEvent) {
     let head = DataHead {
         fd,
         kind: kind.code(),
@@ -255,7 +255,7 @@ pub(crate) fn send_event(sock: Option<Socket<'_>>, fd: c_long, kind: ServerEvent
     if let Some(sock) = sock {
         let data = swoole_rs_process::process_pool::head_view(&head);
         let data = swoole_rs_reactor::Drain::new(&data);
-        _ = swoole_rs_tls::upstream::send_sync_drain(sock, data, 0);
+        _ = swoole_rs_tls::upstream::send_sync_drain(*sock, data, 0);
     }
 }
 

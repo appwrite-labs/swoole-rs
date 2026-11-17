@@ -78,7 +78,7 @@ pub(crate) fn on_read(
         recv: ptr::null_mut(),
         reactor,
         event: lent,
-        socket,
+        socket: *socket,
         conn,
         server,
         port,

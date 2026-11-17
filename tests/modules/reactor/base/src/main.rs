@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering::Relaxed};
 use std::time::{SystemTime, UNIX_EPOCH};
 use swoole_rs_ffi::socket_pair::{self, SocketPair};
 use swoole_rs_ffi::{
-    ChangeOp, ErrorCode, Event, Events, Handler, OwnedSocket, ReactorFields, ReactorPrepared,
+    ChangeOp, ErrorCode, Event, Events, Handler, Heap, OwnedSocket, ReactorFields, ReactorPrepared,
     ReactorState, Running, Socket, SocketRecord, event_api, reactor_upstream,
 };
 
@@ -205,10 +205,10 @@ unsafe fn event_num(reactor: Running<'_>) -> usize {
     swoole_rs_ffi::swr_v1_reactor_registry_count(Some(registry))
 }
 
-/// The live socket `socket` points to.
-unsafe fn handle(socket: Sock) -> Socket<'static> {
+/// The live heap socket `socket` points to.
+unsafe fn handle(socket: Sock) -> Heap<'static> {
     // SAFETY: as the caller guarantees: live while the case uses or registers it.
-    unsafe { Socket::from_ptr(socket) }.unwrap()
+    Heap::from_static(unsafe { Socket::from_ptr(socket) }.unwrap())
 }
 
 /// SW_OK or SW_ERR for `ok`.
@@ -244,7 +244,7 @@ unsafe fn del(reactor: Running<'_>, socket: Sock) -> c_int {
 }
 
 fn ev_socket(event: &Event) -> Sock {
-    event.socket().map_or(null_mut(), Socket::as_ptr)
+    event.socket().map_or(null_mut(), |socket| socket.as_ptr())
 }
 
 unsafe fn sock_read(socket: Sock, buf: &mut [u8]) -> isize {
@@ -471,7 +471,7 @@ unsafe fn get_missing_socket() {
         expect_eq!(event_num(tg()), 0);
         expect_eq!(event_api::event_add(handle(socket), Events::READ), true);
         expect_eq!(event_api::swoole_event_get_socket(fd), socket.cast());
-        expect_eq!(event_api::event_del(handle(socket)), true);
+        expect_eq!(event_api::event_del(*handle(socket)), true);
         expect_eq!(swoole_rs_ffi::swoole_event_free(), true);
         pair_delete(p);
     }
@@ -676,7 +676,7 @@ unsafe fn bad_fd() {
         let _ = swoole_rs_ffi::swoole_event_free();
         // `socket->move_fd()`.
         (*socket).fields.fd = -1;
-        swoole_rs_ffi::upstream::socket_free(Some(OwnedSocket::from_socket(handle(socket))));
+        swoole_rs_ffi::upstream::socket_free(Some(OwnedSocket::from_socket(*handle(socket))));
     }
 }
 
@@ -874,7 +874,7 @@ unsafe fn poll_readiness_after_fd_reuse() {
         // A local Reactor does not defer Socket::free(), so release sockets after the batch.
         assert_eq!(del(reactor, (*state).dispatched_socket), SW_OK);
         assert_eq!(del(reactor, (*state).replacement_socket), SW_OK);
-        swoole_rs_ffi::upstream::socket_free(Some(OwnedSocket::from_socket(handle(
+        swoole_rs_ffi::upstream::socket_free(Some(OwnedSocket::from_socket(*handle(
             (*state).replacement_socket,
         ))));
         assert_eq!(close(pipe_fds[0]), 0);

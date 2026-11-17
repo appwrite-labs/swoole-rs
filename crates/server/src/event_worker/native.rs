@@ -16,7 +16,7 @@ use swoole_rs_process::worker_globals::{
     current_worker, with_current, with_globals, worker_global_detach, worker_global_stopped,
 };
 use swoole_rs_process::worker_record::{Worker, WorkerStatus, WorkerType, swr_v1_worker_shutdown};
-use swoole_rs_reactor::{Event, Running, Socket};
+use swoole_rs_reactor::{Event, Heap, Running};
 
 use super::{SignalHandler, Wait};
 use crate::callbacks::{CallbackKind, EventSlot, ReceiveSlot, ServerSlot, TaskSlot, WorkerSlot};
@@ -54,7 +54,7 @@ fn all_core_workers(config: &crate::ServerConfig) -> u32 {
 }
 
 /// `reactor->remove_read_event(pipe)` when `pipe` is still in the loop.
-fn unread(reactor: Reactor, pipe: Option<Socket<'_>>) {
+fn unread(reactor: Reactor, pipe: Option<Heap<'_>>) {
     if let Some(sock) = pipe.filter(|s| s.read(|s| !s.removed)) {
         reactor.unread(sock);
     }
@@ -62,8 +62,8 @@ fn unread(reactor: Reactor, pipe: Option<Socket<'_>>) {
 
 /// [`unread`] of `serv->get_worker_pipe_*_in_message_bus(worker)`: in thread mode, the
 /// thread bus's own end of `pipe`.
-fn unread_in_bus(serv: view::Server<'_>, reactor: Reactor, pipe: Option<Socket<'_>>) {
-    let unread = |pipe: Socket<'_>| unread(reactor, Some(pipe));
+fn unread_in_bus(serv: view::Server<'_>, reactor: Reactor, pipe: Option<Heap<'_>>) {
+    let unread = |pipe: Heap<'_>| unread(reactor, Some(pipe));
     crate::objects::in_worker_bus(serv.state(), serv.config(), pipe, unread);
 }
 
@@ -213,7 +213,7 @@ pub(crate) fn worker_start_callback(serv: view::Server<'_>, worker: Worker<'_>) 
         if worker_type() == Some(WorkerType::Event)
             && let Some(pipe) = other(serv, id).and_then(|w| worker_pipe(w, true))
         {
-            set_nonblock(pipe);
+            set_nonblock(*pipe);
         }
     }
     worker.set_status(WorkerStatus::Idle);
@@ -341,7 +341,7 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
             }
             unread(reactor, worker_pipe(worker, true));
             for port in serv.ports() {
-                _ = port.with_socket(|sock| reactor.del(sock));
+                _ = port.with_socket(|sock| reactor.del(*sock));
             }
             crate::reactor_thread::each_connection(serv.state(), |conn| {
                 if readable(conn)
@@ -449,7 +449,7 @@ fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
     let bus = bus(serv);
     if event
         .socket()
-        .is_some_and(|socket| bus.read(socket) > Some(0))
+        .is_some_and(|socket| bus.read(*socket) > Some(0))
     {
         // SAFETY: the head of the whole event the bus just read, which only this
         // thread's next read replaces. Lent, not copied: every request passes here.
@@ -523,7 +523,7 @@ pub fn drain_worker_pipe(serv: view::Server<'_>) {
         };
         for master in [false, true] {
             if let Some(pipe) = worker_pipe(worker, master) {
-                Reactor::thread().drain(pipe);
+                Reactor::thread().drain(*pipe);
             }
         }
     }
@@ -575,7 +575,7 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
     }
     let reactor = Reactor::thread();
     if let Some(pipe) = worker_pipe(worker, false) {
-        set_nonblock(pipe);
+        set_nonblock(*pipe);
         reactor.hold_server(serv);
         reactor.add(pipe, Events::READ);
         reactor.set_handler(FD_PIPE, Events::READ, on_pipe_receive);
@@ -613,11 +613,10 @@ pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) ->
     let pipe = pipe?;
     let info = swoole_rs_process::process_pool::head_view(head);
     if swoole_rs_reactor::event_api::swoole_event_is_available() {
-        crate::reactor_handle::registered(pipe)
-            .and_then(|pipe| swoole_rs_reactor::event_api::event_write(pipe, &info))
+        swoole_rs_reactor::event_api::event_write(pipe, &info)
     } else {
         let event = swoole_rs_reactor::Drain::new(&info);
-        swoole_rs_tls::upstream::send_sync_drain(pipe, event, 0)
+        swoole_rs_tls::upstream::send_sync_drain(*pipe, event, 0)
     }
 }
 

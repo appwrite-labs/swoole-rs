@@ -194,7 +194,7 @@ fn destroyed() {
     set_thread_async_threads(ptr::null_mut());
     // Its read end, registered on the closing reactor.
     if let Some(read) = threads.pipe.worker_end() {
-        _ = event_del(read);
+        _ = event_del(*read);
     }
     // The last reference this thread holds.
     if let Some(pool) = threads.pool {
