@@ -38,6 +38,7 @@ const _: () = assert!(
 pub mod native;
 pub mod net_address;
 pub mod net_types;
+pub mod ossupport;
 mod random;
 mod signal_mask;
 pub mod sys;

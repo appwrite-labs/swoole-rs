@@ -549,7 +549,7 @@ fn workers(s: &Settings) -> Step {
 /// The CPUs `swoole_get_cpu_affinity` allows this process, or its errno.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn affinity() -> Result<Vec<c_int>, c_int> {
-    let mut set = swoole_rs_ossupport::CpuSet::empty();
+    let mut set = swoole_rs_corebase::ossupport::CpuSet::empty();
     if !set.get_process(swoole_rs_corebase::sys::getpid()) {
         return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
     }

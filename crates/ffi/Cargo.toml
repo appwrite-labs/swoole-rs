@@ -52,7 +52,6 @@ swoole-rs-reactor = { path = "../reactor", features = ["upstream-symbols"] }
 swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
 swoole-rs-hooks = { path = "../hooks", features = ["upstream-symbols"] }
 swoole-rs-phpruntime = { path = "../phpruntime", features = ["upstream-symbols"] }
-swoole-rs-ossupport = { path = "../ossupport", features = ["upstream-symbols"] }
 swoole-rs-tls = { path = "../tls", features = ["upstream-symbols"] }
 swoole-rs-process = { path = "../process", features = ["upstream-symbols"] }
 swoole-rs-phpprocess = { path = "../phpprocess", optional = true }

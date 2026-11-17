@@ -2,9 +2,9 @@
 //! open, blocking flag, push, pop, stat, capacity and removal over a `SysV` message
 //! queue, with upstream's warnings. Rust allocates and frees the queue; native code
 //! holds only its pointer.
+use crate::lent::{Count, HeadedIn, HeadedOut, lend_headed_in, lend_headed_out};
+use crate::{log, sys::Pod};
 use libc::{IPC_CREAT, IPC_NOWAIT, c_int, c_long};
-use swoole_rs_corebase::lent::{Count, HeadedIn, HeadedOut, lend_headed_in, lend_headed_out};
-use swoole_rs_corebase::{log, sys::Pod};
 
 // the XSI message queue calls, declared here because libc omits them on
 // Darwin, with their C signatures; `msgget` takes no pointer. `msgctl` takes none or
@@ -33,7 +33,7 @@ unsafe extern "C" {
     safe fn msgctl(id: c_int, cmd: c_int, stat: Option<&mut MsqidDs>) -> c_int;
 }
 
-use swoole_rs_corebase::sys::errno;
+use crate::sys::errno;
 
 /// `swoole_sys_warning`, which sets the last error to errno first.
 fn sys_warning(origin: &std::ffi::CStr, message: std::fmt::Arguments<'_>) {
@@ -269,7 +269,7 @@ impl QueueRecord {
 /// A node shorter than a `long`: `EINVAL` in errno and the last error, as a failed
 /// call leaves them.
 fn invalid() {
-    swoole_rs_corebase::sys::set_errno(libc::EINVAL);
+    crate::sys::set_errno(libc::EINVAL);
     log::set_last_error(libc::EINVAL);
 }
 
@@ -314,10 +314,10 @@ const _: () = assert!(size_of::<MsqidDs>() == 116, "Darwin's packed msqid_ds");
 /// `msgctl(id, IPC_STAT)`.
 fn queue_stat(id: c_int) -> Option<MsqidDs> {
     #[cfg(target_os = "linux")]
-    let mut stat: MsqidDs = swoole_rs_corebase::sys::zeroed();
+    let mut stat: MsqidDs = crate::sys::zeroed();
     #[cfg(target_os = "macos")]
     let mut stat = MsqidDs {
-        msg_perm: swoole_rs_corebase::sys::zeroed(),
+        msg_perm: crate::sys::zeroed(),
         msg_first: 0,
         msg_last: 0,
         __msg_cbytes: 0,
@@ -451,7 +451,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no msgget")]
     fn a_node_shorter_than_its_type_is_einval_in_errno_and_the_last_error() {
-        use swoole_rs_corebase::sys;
+        use crate::sys;
         let queue = QueueRecord::new(libc::IPC_PRIVATE, false, 0);
         let mut short = [0u8; size_of::<c_long>() - 1];
         let einval = || {

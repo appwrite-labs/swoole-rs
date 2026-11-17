@@ -13,7 +13,6 @@ upstream-symbols = ["swoole-rs-corebase/upstream-symbols"]
 [dependencies]
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-error = { path = "../error" }
-swoole-rs-ossupport = { path = "../ossupport" }
 swoole-rs-process = { path = "../process" }
 swoole-rs-memory = { path = "../memory" }
 

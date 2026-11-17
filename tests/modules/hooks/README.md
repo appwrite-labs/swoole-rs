@@ -426,7 +426,7 @@ no exported counterpart. It wakes a worker with nothing queued, so nothing in th
 observes it, and the case leaves it out. `os.daemon` discards its child's status, as
 upstream's does, so the child's assertions don't decide the case: its
 `isatty(STDIN_FILENO)` needs a terminal on stdin. `async.thread_starts_with_signals_blocked`
-is crates/ossupport's `pool::tests::thread_starts_with_signals_blocked`. It uses a new
+is crates/corebase/src/ossupport's `ossupport::pool::tests::thread_starts_with_signals_blocked`. It uses a new
 thread per case rather than a forked child and a pool of its own. Its `thread_init` hook
 observes the worker's mask before `swoole_thread_init` blocks signals itself, as
 upstream's `std_allocator.malloc` hook did (the Rust pool doesn't allocate through
@@ -442,7 +442,7 @@ upstream's `std_allocator.malloc` hook did (the Rust pool doesn't allocate throu
 | `async.dispatch` | `async.dispatch` |
 | `async.schedule` | `async.schedule` |
 | `async.misc` | `async.misc` |
-| `async.thread_starts_with_signals_blocked` | `pool::tests::thread_starts_with_signals_blocked` (crates/ossupport) |
+| `async.thread_starts_with_signals_blocked` | `ossupport::pool::tests::thread_starts_with_signals_blocked` (crates/corebase/src/ossupport) |
 | `os.daemon` | `os.daemon` |
 
 `core-tests/src/os/signal.cpp` is Rust in `system/src/signal.rs`, run by

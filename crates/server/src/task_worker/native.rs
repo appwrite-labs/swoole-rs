@@ -366,7 +366,8 @@ fn write_waitall(
     reply: impl Fn(&mut TaskBuffer),
 ) {
     let path = slot.result_path();
-    let Ok(file) = swoole_rs_ossupport::file_open(-1, &path, libc::O_APPEND | libc::O_WRONLY, 0)
+    let Ok(file) =
+        swoole_rs_corebase::ossupport::file_open(-1, &path, libc::O_APPEND | libc::O_WRONLY, 0)
     else {
         return;
     };
@@ -376,7 +377,7 @@ fn write_waitall(
     }
     reply(buf);
     let bytes = buf.bytes();
-    if swoole_rs_ossupport::fd_write_all(file, true, bytes) != bytes.len() {
+    if swoole_rs_corebase::ossupport::fd_write_all(file, true, bytes) != bytes.len() {
         let (path, len) = (path.to_string_lossy(), bytes.len());
         log::sys_warning(
             c"Server::finish",
@@ -384,7 +385,7 @@ fn write_waitall(
         );
     }
     slot.add_finished();
-    swoole_rs_ossupport::file_close(file);
+    swoole_rs_corebase::ossupport::file_close(file);
 }
 
 /// The stream pool's connection for the task `worker` runs: none in an event

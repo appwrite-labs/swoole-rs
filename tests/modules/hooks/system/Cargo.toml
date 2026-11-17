@@ -21,7 +21,6 @@ swoole-rs-corebase = { path = "../../../../crates/corebase", features = ["upstre
 swoole-rs-ffi = { path = "../../../../crates/ffi" }
 swoole-rs-hooks = { path = "../../../../crates/hooks" }
 swoole-rs-memory = { path = "../../../../crates/memory" }
-swoole-rs-ossupport = { path = "../../../../crates/ossupport", features = ["upstream-symbols"] }
 swoole-rs-process = { path = "../../../../crates/process" }
 swoole-rs-reactor = { path = "../../../../crates/reactor" }
 # The original pool cases now pass the real server effects explicitly.
