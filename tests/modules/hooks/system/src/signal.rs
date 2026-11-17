@@ -9,14 +9,15 @@
 
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicI32, Ordering};
+use swoole_rs_corebase::signal_block_all as swoole_signal_block_all;
 
 use swoole_rs_corebase::process::signal::{
-    signal_name, swoole_signal_block_all, swoole_signal_dispatch, swoole_signal_isset,
-    swoole_signal_set_action, swoole_signal_unblock_all,
+    signal_name, swoole_signal_dispatch, swoole_signal_isset, swoole_signal_set_action,
+    swoole_signal_unblock_all,
 };
 use swoole_rs_corebase::reactor::signal_upstream::{
-    Handler, swoole_signal_callback, swoole_signal_clear, swoole_signal_get_handler,
-    swoole_signal_get_listener_num, swoole_signal_set,
+    Handler, set as swoole_signal_set, swoole_signal_callback, swoole_signal_clear,
+    swoole_signal_get_handler, swoole_signal_get_listener_num,
 };
 
 use super::{SIGUSR1, SIGUSR2, SW_SIGNO_MAX, getpid, kill, last_error, spawn_exec};

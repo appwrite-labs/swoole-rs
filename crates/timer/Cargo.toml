@@ -23,9 +23,5 @@ swoole-rs-corebase = { path = "../corebase" }
 
 swoole-rs-zend = { path = "../zend", optional = true }
 
-[dev-dependencies]
-# The owner tests link the reactor's `swoole_signal_set`, which `Owner::init` declares.
-swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
-
 [lints]
 workspace = true

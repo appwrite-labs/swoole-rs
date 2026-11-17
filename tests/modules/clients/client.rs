@@ -69,16 +69,6 @@ const SIGIO: c_int = 29;
 const SIGPIPE: c_int = 13;
 
 unsafe extern "C" {
-    #[link_name = "_Z17swoole_signal_setiPFviEii"]
-    fn swoole_signal_set(
-        signo: c_int,
-        handler: extern "C" fn(c_int),
-        restart: c_int,
-        mask: c_int,
-    ) -> *const c_void;
-}
-
-unsafe extern "C" {
     fn signal(signo: c_int, handler: usize) -> usize;
     fn getpid() -> c_int;
     fn usleep(usec: u32) -> c_int;
@@ -1456,8 +1446,12 @@ fn test_recv_timeout(c: &Client<'_>) {
         }
     });
 
-    // SAFETY: a plain handler, not restarting, masked while it runs.
-    unsafe { swoole_signal_set(SIGIO, count_signal, 0, 1) };
+    _ = swoole_rs_corebase::process::signal::swoole_signal_set_action(
+        SIGIO,
+        swoole_rs_corebase::process::signal::Handler::new(count_signal).raw(),
+        0,
+        1,
+    );
 
     let mut buf = vec![0_u8; SW_BUFFER_SIZE_BIG];
     loop {

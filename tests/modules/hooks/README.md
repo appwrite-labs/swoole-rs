@@ -450,10 +450,11 @@ upstream's `std_allocator.malloc` hook did (the Rust pool doesn't allocate throu
 | `os.daemon` | `os.daemon` |
 
 `core-tests/src/os/signal.cpp` is Rust in `system/src/signal.rs`, run by
-`hooks-system-rust`. The cases call `corebase::reactor`'s `signal_upstream` (`swoole_signal_set`,
+`hooks-system-rust`. The cases call `corebase::reactor`'s `signal_upstream` (`set`,
 `_callback`, `_get_handler`, `_get_listener_num`, `_clear`) and corebase::process's `signal`
-(the sigaction form of `swoole_signal_set`, `_dispatch`, `_isset`, `_block_all`,
-`_unblock_all`, `_to_str`) and `signalfd::swoole_signalfd_init` by path. Each case runs in
+(the sigaction form of `swoole_signal_set`, `_dispatch`, `_isset`,
+`_unblock_all`, `_to_str`), corebase's `signal_block_all` and
+`signalfd::swoole_signalfd_init` by path. Each case runs in
 its own process, as the rest of the package does, so no handler outlives its case.
 `block` and `unblock` fork through `spawn_exec`, whose child `_exit(0)`s where upstream's
 `exit(0)`s; the SIGIO handler still `exit(255)`s. `signalfd` is `#ifdef HAVE_SIGNALFD`

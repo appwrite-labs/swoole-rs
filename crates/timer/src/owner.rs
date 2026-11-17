@@ -789,24 +789,6 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    /// `Owner::init` declares the reactor's `swoole_signal_set` by symbol: naming it
-    /// links its object into the test binary on every linker.
-    #[used]
-    static SIGNAL_SET: extern "C" fn(
-        c_int,
-        swoole_rs_corebase::reactor::signal_upstream::Handler,
-        bool,
-    ) -> swoole_rs_corebase::reactor::signal_upstream::Handler =
-        swoole_rs_corebase::reactor::signal_upstream::swoole_signal_set;
-
-    /// The reactor's signal code calls `Socket::free`, which crates/tls defines and
-    /// a manual timer never reaches; crates/tls depends on this one, so the test
-    /// binary links it from here.
-    #[unsafe(export_name = "_ZN6swoole7network6Socket4freeEv")]
-    extern "C" fn socket_free() {
-        unreachable!("a manual timer frees no socket");
-    }
-
     /// `delete timer`, as `swoole_timer_free` does of the thread's: these timers are
     /// never published.
     unsafe fn free(timer: *mut Owner) {
