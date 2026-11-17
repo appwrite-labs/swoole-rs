@@ -191,7 +191,7 @@ impl Custom for Data {
     }
     /// Only shutdown frees an object a connection still holds: the hold goes
     /// as the release would have given it up, without releasing the object.
-    fn free(&self, _this: &Value) {
+    fn free(&self, _properties: swoole_rs_zend::FreeProperties<'_>) {
         if let Some(held) = self.held.take() {
             held.delref();
         }

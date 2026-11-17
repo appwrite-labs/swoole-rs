@@ -1,7 +1,7 @@
 //! Objects that embed their `zend_object` after Rust data, as Swoole's C++
 //! structs do (`struct { T data; zend_object std; }`).
 use crate::{
-    ArrayMut, Class, ClassEntry, Owned, OwnedArray, Value, ZString, bailout,
+    ArrayMut, Class, ClassEntry, Declared, Owned, OwnedArray, Value, ZString, bailout,
     sys::{
         IS_OBJECT, zend_class_entry, zend_long, zend_object, zend_object_handlers,
         zend_objects_destroy_object, zend_update_property,
@@ -59,6 +59,9 @@ unsafe extern "C" {
         handle: u32,
         handlers: *const zend_object_handlers,
     ) -> *mut zend_object;
+    /// Unlink string entries in the array the slot holds (or references) and
+    /// remove them from `SG(rfc1867_uploaded_files)`. No PHP code runs.
+    safe fn swr_zend_http_uploads_release(tmpfiles: &Value);
 }
 
 /// A live object, borrowed for `'a`: one a zval or frame holds, or one Zend
@@ -229,14 +232,35 @@ pub trait Custom: Sized + 'static {
     /// went, so Zend frees it next unless this step gives it a new one; at
     /// shutdown an object something still holds is destructed with `last` false.
     fn destruct(&self, _last: bool) {}
-    /// The object's `free_obj` step before its data drops: `this` names the
-    /// object, whose properties are still live, without a reference of its
-    /// own. Zend frees the object next, so it must not run PHP code.
-    fn free(&self, _this: &Value) {}
+    /// The object's `free_obj` step before its data drops. Access to the dying
+    /// object's properties is limited to cleanup that cannot run PHP code.
+    fn free(&self, _properties: FreeProperties<'_>) {}
     /// Whether PHP may serialize the objects, asked once, when the class registers.
     #[must_use]
     fn serializable() -> bool {
         false
+    }
+}
+
+/// Restricted access to an object's properties during `free_obj`. The object
+/// cannot be borrowed as a [`Value`], called, or given another reference here.
+///
+/// ```compile_fail
+/// use swoole_rs_zend::FreeProperties;
+/// fn resurrect(properties: FreeProperties<'_>) {
+///     properties.call_method(None, b"save", &[]);
+/// }
+/// ```
+pub struct FreeProperties<'a>(&'a Value);
+
+impl FreeProperties<'_> {
+    /// Unlink uploaded files named by the property's current array, including
+    /// one PHP replaced, and forget them in the SAPI upload registry. Non-string
+    /// entries and non-array properties are ignored; no PHP code runs.
+    pub fn release_uploads(self, property: &Declared) {
+        if let Some(files) = property.get(self.0) {
+            swr_zend_http_uploads_release(files);
+        }
     }
 }
 
@@ -370,7 +394,7 @@ extern "C" fn free<T: Custom>(freed: Freed) {
         let object = ObjectRef(std, PhantomData);
         if let Some(data) = object.custom::<T>() {
             let mut this = object.copy_value();
-            data.free(Value::of(&mut this));
+            data.free(FreeProperties(Value::of(&mut this)));
         }
         // SAFETY: per Zend; nothing borrows the data any more.
         unsafe { Object::<T>::data_ptr(std).drop_in_place() };

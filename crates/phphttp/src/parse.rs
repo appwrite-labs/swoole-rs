@@ -318,10 +318,9 @@ pub(crate) fn minit(minit: &Minit, codecs: u32) {
 
 /// Unlink the uploads `request`'s `tmpfiles` property lists now (user code may
 /// have replaced the array), and forget them in `SG(rfc1867_uploaded_files)`.
-pub(crate) fn release_uploads(request: &Value) {
-    let tmpfiles = PROPERTIES.get(Property::TmpFiles as usize);
-    if let Some(tmpfiles) = tmpfiles.and_then(|property| property.get(request)) {
-        swr_zend_http_uploads_release(tmpfiles);
+pub(crate) fn release_uploads(properties: swoole_rs_zend::FreeProperties<'_>) {
+    if let Some(tmpfiles) = PROPERTIES.get(Property::TmpFiles as usize) {
+        properties.release_uploads(tmpfiles);
     }
 }
 
@@ -474,10 +473,6 @@ unsafe extern "C" {
     /// `$request->tmpfiles[] = path` into the array the zval holds, which it does
     /// not replace, and the upload `is_uploaded_file` knows; it copies the bytes.
     safe fn swr_zend_http_upload(tmpfiles: &Value, path: IoSlice<'_>);
-    /// Unlink each string the array the zval holds (or references) lists, and
-    /// forget it in `SG(rfc1867_uploaded_files)`; nothing for anything else.
-    /// No PHP code runs.
-    safe fn swr_zend_http_uploads_release(tmpfiles: &Value);
 }
 
 /// `$request->tmpfiles[] = path`, and the upload `is_uploaded_file` knows;
