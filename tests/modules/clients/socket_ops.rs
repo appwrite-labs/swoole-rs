@@ -1,7 +1,6 @@
 use super::*;
 
 #[test]
-#[cfg_attr(miri, ignore = "requires TCP sockets")]
 fn native_receive_preserves_initialized_tails_and_fills_spare_capacity() {
     use std::io::Write;
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -63,7 +62,7 @@ fn native_async_datagram_receive_records_the_sender_for_both_buffer_kinds() {
 /// constructors, address writes, timeout options and connect modes run against
 /// loopback sockets; the scripted tests above still exercise failure ordering.
 #[test]
-#[cfg_attr(miri, ignore = "requires TCP sockets and kernel timeout options")]
+#[cfg_attr(miri, ignore = "Miri has no blocking connect with SO_SNDTIMEO set")]
 fn native_socket_control_connects_and_keeps_failed_assignment_atomic() {
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     let port = c_int::from(listener.local_addr().unwrap().port());
@@ -126,7 +125,6 @@ fn native_socket_control_connects_and_keeps_failed_assignment_atomic() {
 /// A manually driven thread timer keeps this test independent of signals and
 /// wall-clock timing while exercising the native create/cancel effects.
 #[test]
-#[cfg_attr(miri, ignore = "requires a native socket and thread timer")]
 fn native_connect_timer_is_cancelled_before_client_release() {
     struct Timer;
     impl Drop for Timer {
