@@ -10,8 +10,7 @@ unsafe extern "C" {
 }
 
 /// `void swoole_init()`.
-#[unsafe(export_name = "_Z11swoole_initv")]
-pub(crate) extern "C-unwind" fn swoole_init() {
+pub fn swoole_init() {
     swoole_rs_corebase::reactor::readiness::set_init_reactor(
         swoole_rs_hooks::reactor_handlers::SOCKET,
         swoole_rs_hooks::reactor_handlers::IOURING,

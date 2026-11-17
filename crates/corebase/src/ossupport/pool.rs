@@ -419,7 +419,8 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no sigfillset")]
     fn grows_to_the_cap_retires_idle_workers_and_restarts() {
         // One core worker, at most four; idle 0.5s truncates to an immediate retirement.
-        let pool = Pool::acquire(HOOKS, 2, 1, 4, 0.0, 0.5);
+        // Exercise backlog growth independently of the first task's age.
+        let pool = Pool::acquire(HOOKS, 2, 1, 4, -1.0, 0.5);
         assert_eq!(pool.worker_num(), 1, "core workers start eagerly");
         assert_eq!(pool.task_id(), 0, "task ids start at zero");
         pool.dispatch(0);
