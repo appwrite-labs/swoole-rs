@@ -16,11 +16,13 @@ unsafe extern "C" {
     /// `INIT_CLASS_ENTRY_EX` then `zend_register_internal_class_ex`: the new
     /// entry, registered under `name` with `methods`, extending `parent`.
     /// Private, so only [`Class::register_child`] calls it, with the MINIT token.
+    /// Zend never returns null here (a failed registration is fatal), and the
+    /// class lives for the process; nothing else uses it until this returns.
     safe fn swr_zend_register_class(
         name: CText<'_>,
         methods: Rows,
         parent: Parent,
-    ) -> *mut zend_class_entry;
+    ) -> &'static mut zend_class_entry;
     /// Zend's standard object handlers: a C `const`, initialised statically and
     /// never written.
     safe static std_object_handlers: zend_object_handlers;
@@ -195,11 +197,9 @@ impl Class {
             ),
             Some(layout) => assert!(ptr::eq(self, layout.0), "a CustomClass's own layout"),
         }
-        let entry =
+        let registered =
             swr_zend_register_class(name.into(), methods.rows(), parent.unwrap_or(Parent::NONE));
         let mut handlers = std_object_handlers;
-        // SAFETY: Zend returned the registered entry, which nothing else uses yet.
-        let registered = unsafe { &mut *entry };
         configure(registered, &mut handlers);
         if let Some(Layout(_, install)) = layout {
             install(registered, &mut handlers);
@@ -208,7 +208,8 @@ impl Class {
             self.handlers
                 .store(Box::leak(Box::new(handlers)), Ordering::Release);
         }
-        self.entry.store(entry, Ordering::Release);
+        self.entry
+            .store(ptr::from_mut(registered), Ordering::Release);
     }
 
     /// The registered class entry (null before MINIT).

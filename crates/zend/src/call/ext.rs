@@ -94,16 +94,8 @@ impl Call {
     /// function it calls, left null in its place: a pointer, not followed.
     #[must_use]
     pub fn take_run_time_cache(&self) -> *mut std::ffi::c_void {
-        let slot = self
-            .frame
-            .wrapping_byte_add(std::mem::offset_of!(
-                crate::sys::zend_execute_data,
-                run_time_cache
-            ))
-            .cast::<*mut std::ffi::c_void>();
-        // SAFETY: a field of the live frame Zend passed this handler (`Call::new`),
-        // which nothing borrows.
-        unsafe { slot.replace(ptr::null_mut()) }
+        // The handler's live frame (`Call::new`).
+        crate::opcode::Executing(self.frame, std::marker::PhantomData).take_run_time_cache()
     }
 
     /// `Z_PARAM_STR_OR_LONG` of argument `n`: `Ok(None)` when not passed,

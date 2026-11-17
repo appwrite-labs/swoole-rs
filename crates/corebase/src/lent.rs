@@ -611,23 +611,6 @@ impl<'a, S: ReadSlot> Fill<'a, S> {
     }
 }
 
-impl Fill<'_> {
-    /// The `len` bytes at `at`.
-    ///
-    /// # Safety
-    /// `at` is null, or denotes `len` writable bytes that nothing else reads or writes
-    /// for `'a`.
-    #[inline]
-    #[must_use]
-    pub unsafe fn from_raw(at: *mut c_void, len: usize) -> Self {
-        Self {
-            at: at.cast(),
-            len,
-            lent: PhantomData,
-        }
-    }
-}
-
 /// What a call declared `safe` returns when it writes into an [`Out`]: how many of
 /// that lending's first `N`s it wrote, or a negative failure. Only an extern block's
 /// declaration gives a call this result, so the declaration is the promise.
@@ -816,20 +799,6 @@ impl<'a> Drain<'a> {
         Self {
             at: data.as_ptr(),
             len: data.len(),
-            lent: PhantomData,
-        }
-    }
-
-    /// The `len` bytes at `at`.
-    ///
-    /// # Safety
-    /// `at` is null, or denotes `len` readable bytes that nothing writes for `'a`.
-    #[inline]
-    #[must_use]
-    pub unsafe fn from_raw(at: *const c_void, len: usize) -> Self {
-        Self {
-            at: at.cast(),
-            len,
             lent: PhantomData,
         }
     }

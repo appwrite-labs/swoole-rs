@@ -4,6 +4,7 @@ use crate::{
     sys::{self, zend_fcall_info_cache},
 };
 use std::{
+    cell::Cell,
     ffi::{CStr, CString, c_int, c_long},
     marker::PhantomData,
     ptr,
@@ -74,7 +75,10 @@ impl<'a> FrameCallable<'a> {
         creator: super::Creator,
     ) -> Result<c_long, bailout::Bailout> {
         // Zend only reads the resolved cache.
-        let cache = super::Callee(ptr::from_ref(&self.cache).cast_mut(), PhantomData);
+        let cache = super::Callee {
+            cache: super::CalleePtr(ptr::from_ref(&self.cache).cast_mut(), PhantomData),
+            resolved: !self.cache.function_handler.is_null(),
+        };
         let mut ran = false;
         let (trapped, result) = super::private::coroutine_call(
             cache,
@@ -94,7 +98,8 @@ impl<'a> FrameCallable<'a> {
 pub struct Callable {
     /// Undefined until a candidate resolves.
     value: Owned,
-    cache: zend_fcall_info_cache,
+    /// A cell: Zend clears a trampoline's function when it calls one.
+    cache: Cell<zend_fcall_info_cache>,
     name: Option<ZString>,
 }
 
@@ -139,7 +144,7 @@ impl Callable {
     /// The function the cache resolved, which this callable's value keeps live;
     /// None for none.
     fn function(&self) -> Option<Function<'_>> {
-        let function = self.cache.function_handler;
+        let function = self.cache.get().function_handler;
         // The function the cache resolved, which this callable's value keeps
         // live while it is borrowed.
         (!function.is_null()).then_some(Function(function, std::marker::PhantomData))
@@ -149,14 +154,17 @@ impl Callable {
     /// resolves into a local cache), so a shared owner may lend it.
     #[must_use]
     pub fn cache_ptr(&self) -> *mut zend_fcall_info_cache {
-        ptr::from_ref(&self.cache).cast_mut()
+        self.cache.as_ptr()
     }
 
     /// The cache, lent for [`super::function_call`].
     #[must_use]
     #[inline]
     pub fn cache(&self) -> super::Callee<'_> {
-        super::Callee(self.cache_ptr(), std::marker::PhantomData)
+        super::Callee {
+            cache: super::CalleePtr(self.cache_ptr(), PhantomData),
+            resolved: self.function().is_some(),
+        }
     }
 
     /// `callable->call(args.len(), args, retval)` inside `zend_try`, or with
@@ -223,6 +231,7 @@ impl Callable {
         // An unresolved cache resolves the borrowed function name.
         let name = self
             .cache
+            .get()
             .function_handler
             .is_null()
             .then_some(&*self.value);
@@ -259,7 +268,7 @@ fn create(value: &Value) -> Result<Box<Callable>, bailout::Bailout> {
     let warn = super::private::callable_warning;
     let mut state = Box::new(Callable {
         value: Owned::default(),
-        cache: crate::EMPTY_FCC,
+        cache: Cell::new(crate::EMPTY_FCC),
         name: None,
     });
     let mut truth = false;
@@ -271,7 +280,7 @@ fn create(value: &Value) -> Result<Box<Callable>, bailout::Bailout> {
         let mut valid = false;
         let failed = deferred(swr_zend_try_facade_callable(
             value,
-            &mut state.cache,
+            state.cache.get_mut(),
             &mut valid,
         ));
         if !failed {

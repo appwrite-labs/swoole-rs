@@ -51,9 +51,11 @@ impl<const N: usize> ArgInfo<N> {
 pub struct Slot(zend_internal_arg_info);
 
 /// A `PHP_FE_END`-terminated `zend_function_entry[N]`, built only from
-/// [`Entry`] rows, so each name before the end is a static C string.
-#[repr(transparent)]
-pub struct Methods<const N: usize>([zend_function_entry; N]);
+/// [`Entry`] rows, beside each row's name (None for the end).
+pub struct Methods<const N: usize> {
+    rows: [zend_function_entry; N],
+    names: [Option<&'static CStr>; N],
+}
 
 // SAFETY: immutable static data; its pointers are to static strings, arginfo and
 // handlers.
@@ -65,34 +67,51 @@ impl<const N: usize> Methods<N> {
     /// The last row isn't [`END`] (at compile time, for a static).
     #[must_use]
     pub const fn new(rows: [Entry; N]) -> Self {
-        let mut table = [END.0; N];
-        let (mut from, mut to): (&[Entry], &mut [zend_function_entry]) = (&rows, &mut table);
-        while let (Some((row, rest)), Some((slot, slots))) =
-            (from.split_first(), to.split_first_mut())
-        {
+        let mut table = Self {
+            rows: [END.0; N],
+            names: [END.1; N],
+        };
+        let (mut from, mut to, mut named): (
+            &[Entry],
+            &mut [zend_function_entry],
+            &mut [Option<&'static CStr>],
+        ) = (&rows, &mut table.rows, &mut table.names);
+        while let (Some((row, rest)), Some((slot, slots)), Some((name, names))) = (
+            from.split_first(),
+            to.split_first_mut(),
+            named.split_first_mut(),
+        ) {
             *slot = row.0;
-            (from, to) = (rest, slots);
+            *name = row.1;
+            (from, to, named) = (rest, slots, names);
         }
         assert!(
-            matches!(table.last(), Some(end) if end.fname.is_null()),
+            matches!(table.rows.last(), Some(end) if end.fname.is_null()),
             "a method table ends with PHP_FE_END"
         );
-        Self(table)
+        table
     }
 
     /// The table, for registration.
     #[must_use]
     pub const fn table(&'static self) -> Table {
-        Table(&self.0)
+        Table {
+            rows: &self.rows,
+            names: &self.names,
+        }
     }
 
     /// The table without the rows named in `skip`, leaked for the process: for
     /// an upstream `#ifdef` only C++ can test, decided once at MINIT.
     #[must_use]
     pub fn without(&'static self, skip: &[&CStr]) -> Table {
-        let keep = |row: &&zend_function_entry| name(row).is_none_or(|name| !skip.contains(&name));
-        let rows: Vec<zend_function_entry> = self.0.iter().filter(keep).copied().collect();
-        Table(Box::leak(rows.into_boxed_slice()))
+        let (rows, names) = self
+            .rows
+            .iter()
+            .zip(self.names)
+            .filter(|(_, name)| name.is_none_or(|name| !skip.contains(&name)))
+            .unzip();
+        Table::leak(rows, names)
     }
 }
 
@@ -102,34 +121,51 @@ impl<const N: usize> Methods<N> {
 pub(crate) struct Rows(*const zend_function_entry);
 
 /// A method table as Zend registers it: a [`Methods`]' rows (or some of them,
-/// or several joined), `PHP_FE_END` last, or none.
+/// or several joined), `PHP_FE_END` last, or none, beside each row's name.
 #[derive(Clone, Copy)]
-pub struct Table(&'static [zend_function_entry]);
+pub struct Table {
+    rows: &'static [zend_function_entry],
+    names: &'static [Option<&'static CStr>],
+}
 
 impl Table {
     /// No methods.
-    pub const NONE: Self = Self(&[]);
+    pub const NONE: Self = Self {
+        rows: &[],
+        names: &[],
+    };
+
+    /// `rows` and their `names`, leaked for the process.
+    fn leak(rows: Vec<zend_function_entry>, names: Vec<Option<&'static CStr>>) -> Self {
+        Self {
+            rows: Box::leak(rows.into_boxed_slice()),
+            names: Box::leak(names.into_boxed_slice()),
+        }
+    }
 
     /// Each table's rows in turn, then one `PHP_FE_END`, leaked for the process.
     #[must_use]
     pub fn join(tables: &[Self]) -> Self {
-        let mut rows: Vec<zend_function_entry> = tables
+        let (mut rows, mut names): (Vec<_>, Vec<_>) = tables
             .iter()
-            .flat_map(|table| table.0.split_last().map_or(&[][..], |(_, rows)| rows))
-            .copied()
-            .collect();
+            .flat_map(|table| {
+                let ends = table.rows.len().saturating_sub(1);
+                table.rows.iter().zip(table.names).take(ends)
+            })
+            .unzip();
         rows.push(END.0);
-        Self(Box::leak(rows.into_boxed_slice()))
+        names.push(END.1);
+        Self::leak(rows, names)
     }
 
     /// The table, as `INIT_CLASS_ENTRY` and `zend_register_functions` take it:
     /// null for none.
     #[must_use]
     pub const fn as_ptr(self) -> *const zend_function_entry {
-        if self.0.is_empty() {
+        if self.rows.is_empty() {
             ptr::null()
         } else {
-            self.0.as_ptr()
+            self.rows.as_ptr()
         }
     }
 
@@ -140,21 +176,14 @@ impl Table {
 
     /// The row named `method`, with its arginfo.
     pub(crate) fn find(self, method: &CStr) -> Option<&'static zend_function_entry> {
-        self.0.iter().find(|row| name(row) == Some(method))
+        let at = self.names.iter().position(|name| *name == Some(method))?;
+        self.rows.get(at)
     }
 }
 
-/// A row's name: None for `END`. Rows are built here only, from [`entry`] and
-/// [`definition`]'s static C strings or `END`'s null, and a [`Methods`] or a
-/// [`Table`] holds no other.
-fn name(row: &zend_function_entry) -> Option<&'static CStr> {
-    // SAFETY: null, or a static C string, per the above.
-    (!row.fname.is_null()).then(|| unsafe { CStr::from_ptr(row.fname) })
-}
-
-/// A row of [`Methods`]: an [`entry`], or [`END`].
+/// A row of [`Methods`]: an [`entry`] and its name, or [`END`].
 #[derive(Clone, Copy)]
-pub struct Entry(zend_function_entry);
+pub struct Entry(zend_function_entry, Option<&'static CStr>);
 
 /// A Zend handler (`zif_handler`), over the frame and return slot only Zend's
 /// call of it makes.
@@ -170,7 +199,7 @@ pub const fn entry<const N: usize>(
 ) -> Entry {
     let mut entry = definition(name, arginfo, flags);
     entry.handler = raw(handler);
-    Entry(entry)
+    Entry(entry, Some(name))
 }
 
 /// `handler` as Zend's function entries store it (`zif_handler`), which Zend
@@ -207,7 +236,7 @@ pub const fn definition<const N: usize>(
 }
 
 /// `PHP_FE_END`.
-pub const END: Entry = Entry(crate::zeroed());
+pub const END: Entry = Entry(crate::zeroed(), None);
 
 /// `_ZEND_ARG_INFO_FLAGS(send, variadic, 0)`.
 const fn flags(send: u32, variadic: bool) -> u32 {

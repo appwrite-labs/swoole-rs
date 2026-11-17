@@ -9,9 +9,9 @@ use crate::{
     helpers::CText,
     registration::{SUCCESS, leaf},
     sys::{
-        HashTable, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_try_facade_register_functions,
-        zend_class_entry, zend_function, zend_function_entry, zend_internal_arg_info, zend_long,
-        zend_module_entry, zend_object_handlers, zend_string, zif_handler,
+        IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, zend_class_entry, zend_function, zend_function_entry,
+        zend_internal_arg_info, zend_long, zend_module_entry, zend_object_handlers, zend_string,
+        zif_handler,
     },
 };
 use std::{
@@ -106,7 +106,18 @@ unsafe extern "C" {
     safe static zend_ce_arrayaccess: *mut zend_class_entry;
     safe static zend_ce_countable: *mut zend_class_entry;
     /// `CG(function_table)`: one pointer of the compiler's globals is read.
-    safe fn swr_zend_facade_compiler_functions() -> *mut HashTable;
+    /// The table lives from before MINIT to after MSHUTDOWN; only
+    /// [`Minit::compiler_functions`] calls this, for the MINIT it borrows.
+    safe fn swr_zend_facade_compiler_functions<'a>() -> &'a crate::Array;
+    /// `zend_register_functions(NULL, entries, table, kind)` inside `zend_try`
+    /// (nonzero for a bailout), `result` its result: Zend copies the alias's
+    /// row, its name and arginfo into the live table.
+    safe fn swr_zend_try_facade_register_functions(
+        entries: &Alias<'_>,
+        table: &crate::Array,
+        kind: c_int,
+        result: &mut c_int,
+    ) -> c_int;
     /// Zend runs `handler` for each instruction of `opcode` from now on. Only
     /// [`Minit::opcode_handler`] calls it, before any PHP code runs, with a
     /// handler written for that opcode.
@@ -317,7 +328,7 @@ impl Minit {
     /// The compiler's function table (`CG(function_table)`), where MINIT
     /// registers global functions.
     #[must_use]
-    pub fn compiler_functions(&self) -> *mut HashTable {
+    pub fn compiler_functions(&self) -> &crate::Array {
         swr_zend_facade_compiler_functions()
     }
 
@@ -380,34 +391,16 @@ impl Minit {
         alias: &CStr,
         info: Info,
     ) -> Result<bool, Bailout> {
-        let Some(function) = function else {
+        let Some((entries, kind)) = Alias::new(function, alias, info) else {
             return Ok(false);
         };
-        let (kind, args) = (function.kind(), function.num_args());
-        let Some(handler) = function.internal_handler() else {
-            return Ok(false);
-        };
-        // Zend reads the return row and the `args` rows after it.
-        if !info.start.is_null() && info.rows <= args as usize {
-            return Ok(false);
-        }
-        let mut entries = crate::zeroed::<[zend_function_entry; 2]>();
-        entries[0].fname = alias.as_ptr();
-        entries[0].handler = handler;
-        entries[0].arg_info = info.start;
-        entries[0].num_args = args;
         let mut result = -1;
-        // SAFETY: Zend borrows this complete terminated table, its NUL-terminated
-        // name and `info`'s static rows while it copies the registered metadata,
-        // inside the contained leaf, into the compiler's live table (MINIT).
-        leaf(unsafe {
-            swr_zend_try_facade_register_functions(
-                entries.as_ptr(),
-                self.compiler_functions(),
-                c_int::from(kind),
-                &raw mut result,
-            )
-        })?;
+        leaf(swr_zend_try_facade_register_functions(
+            &entries,
+            self.compiler_functions(),
+            c_int::from(kind),
+            &mut result,
+        ))?;
         Ok(result == SUCCESS)
     }
 
@@ -712,6 +705,32 @@ impl Info {
             start: entry.arg_info,
             rows: entry.num_args as usize + 1,
         }
+    }
+}
+
+/// An alias's table: one row named `alias`, run by a live internal function's
+/// handler with that function's argument count and arginfo ([`Info`]) holding a
+/// row for each, then `PHP_FE_END`. Only [`Alias::new`] makes one.
+#[repr(transparent)]
+struct Alias<'a>([zend_function_entry; 2], PhantomData<&'a CStr>);
+
+impl<'a> Alias<'a> {
+    /// `alias` of the internal `function`, with its kind: None without an
+    /// internal function, or when `info` misses one of its parameters.
+    fn new(function: Option<Function<'_>>, alias: &'a CStr, info: Info) -> Option<(Self, u8)> {
+        let function = function?;
+        let (kind, args) = (function.kind(), function.num_args());
+        let handler = function.internal_handler()?;
+        // Zend reads the return row and the `args` rows after it.
+        if !info.start.is_null() && info.rows <= args as usize {
+            return None;
+        }
+        let mut entries = crate::zeroed::<[zend_function_entry; 2]>();
+        entries[0].fname = alias.as_ptr();
+        entries[0].handler = handler;
+        entries[0].arg_info = info.start;
+        entries[0].num_args = args;
+        Some((Self(entries, PhantomData), kind))
     }
 }
 

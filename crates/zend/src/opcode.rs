@@ -30,18 +30,25 @@ pub(crate) struct Executing<'a>(
     pub(crate) PhantomData<&'a zend_execute_data>,
 );
 
-/// A frame's first words, each a `Cell`: `opline`, `call`, `return_value`, `func`.
-type Head = [Cell<*mut c_void>; 4];
+/// A frame's first words, each a `Cell`: `opline`, `call`, `return_value`, `func`,
+/// `This` (two words), `prev_execute_data`, `symbol_table`, `run_time_cache`.
+type Head = [Cell<*mut c_void>; 9];
 /// `EX(opline)`'s word in a [`Head`].
 const OPLINE: usize = offset_of!(zend_execute_data, opline) / size_of::<*mut c_void>();
 /// `EX(func)`'s word in a [`Head`].
 const FUNC: usize = offset_of!(zend_execute_data, func) / size_of::<*mut c_void>();
+/// `EX(run_time_cache)`'s word in a [`Head`].
+const RUN_TIME_CACHE: usize =
+    offset_of!(zend_execute_data, run_time_cache) / size_of::<*mut c_void>();
 
 const _: () = assert!(
     offset_of!(zend_execute_data, opline) == OPLINE * size_of::<*mut c_void>()
         && offset_of!(zend_execute_data, func) == FUNC * size_of::<*mut c_void>()
-        && OPLINE < 4
-        && FUNC < 4
+        && offset_of!(zend_execute_data, run_time_cache)
+            == RUN_TIME_CACHE * size_of::<*mut c_void>()
+        && OPLINE < 9
+        && FUNC < 9
+        && RUN_TIME_CACHE < 9
         && size_of::<zend_execute_data>() >= size_of::<Head>()
         && align_of::<zend_execute_data>() >= align_of::<Head>(),
     "a Head is the pointer words a zend_execute_data starts with"
@@ -69,6 +76,11 @@ impl<'a> Executing<'a> {
     /// `EX(opline) = at`.
     fn set_opline(self, at: *const zend_op) {
         self.head()[OPLINE].set(at.cast_mut().cast());
+    }
+
+    /// `EX(run_time_cache)`, left null in its place.
+    pub(crate) fn take_run_time_cache(self) -> *mut c_void {
+        self.head()[RUN_TIME_CACHE].replace(std::ptr::null_mut())
     }
 }
 
