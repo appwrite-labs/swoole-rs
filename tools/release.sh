@@ -36,6 +36,10 @@ else
 fi
 version=$1
 shift
+if [ "$libc" = gnu ] && [ "$(uname -m)" = aarch64 ]; then
+    rustup component add llvm-tools-preview
+    set -- "$@" --pgo
+fi
 python3 tools/build_ext.py --profile release-lto "$@"
 mkdir -p dist
 cp target/ext/swoole.so "dist/swoole-rs-$version-php$(php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')-$threads-linux-$libc-$(uname -m).so"
