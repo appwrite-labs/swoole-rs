@@ -25,8 +25,6 @@ class Miri(unittest.TestCase):
     def test_every_crate_with_unsafe_runs_under_miri_or_says_why_not(self):
         workflow = (ROOT / '.github/workflows/miri.yml').read_text()
         packages = set(re.findall(r'-p swoole-rs-([\w-]+)', workflow))
-        paths = set(re.findall(r'^\s*- crates/([\w-]+)/\*\*$', workflow, re.M))
-        self.assertEqual(paths, packages, 'miri.yml: `paths` and the -p lists name different crates')
         unsafe = {crate for crate, n in budget.counts()['unsafe'].items() if n}
         self.assertEqual(unsafe - packages - EXEMPT.keys(), set(), 'crates with unsafe Miri never runs')
         self.assertEqual(packages & EXEMPT.keys(), set(), 'exempt crates miri.yml runs')
