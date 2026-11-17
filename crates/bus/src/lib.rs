@@ -32,6 +32,7 @@ use swoole_rs_corebase::buffer::string::OwnedString;
 use swoole_rs_corebase::lent::ReadVec;
 use swoole_rs_corebase::reactor::{Caught, Heap, OwnedSocket, Socket, SocketRecord};
 use swoole_rs_corebase::sys::{self, errno};
+use swoole_rs_corebase::tls::upstream::{socket_free as free_socket, writev_sync};
 use swoole_rs_corebase::{DataHead as BusHead, TrustedAllocator, log};
 
 pub use Bus as MessageBus;
@@ -152,10 +153,6 @@ pub struct Bus {
 impl Drop for Bus {
     /// `~MessageBus`: the pipe records go, their descriptors stay open.
     fn drop(&mut self) {
-        // Outside the hybrid a record has no timers, buffers or loop: `Socket::free`
-        // is the record's deallocation.
-        #[cfg(not(feature = "upstream-symbols"))]
-        let free_socket = |socket: Option<OwnedSocket>| socket.map(OwnedSocket::free);
         // By descriptor, as `init_pipe_sockets` recorded them.
         let records = self.pipe_sockets.take().unwrap_or_default();
         for record in records.into_iter().flatten() {
@@ -163,17 +160,6 @@ impl Drop for Bus {
             free_socket(Some(record));
         }
     }
-}
-
-#[cfg(feature = "upstream-symbols")]
-use swoole_rs_corebase::tls::upstream::socket_free as free_socket;
-#[cfg(feature = "upstream-symbols")]
-use swoole_rs_corebase::tls::upstream::writev_sync;
-
-/// `Socket::writev_sync` outside the hybrid: one writev(2).
-#[cfg(not(feature = "upstream-symbols"))]
-fn writev_sync(socket: Socket<'_>, vectors: &[IoSlice<'_>]) -> Option<usize> {
-    swoole_rs_corebase::sys::writev(socket.fd(), vectors)
 }
 
 /// `f` over the packets or pipe records `cell` boxes, taken out and put back; `None`,
