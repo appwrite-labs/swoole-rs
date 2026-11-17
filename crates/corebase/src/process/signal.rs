@@ -262,6 +262,9 @@ fn dispatch_pending() {
             // Upstream calls dispatch from a safe context, never a signal frame; the
             // callback may run PHP, and no value with a destructor is live across it.
             callback(signo);
+            if crate::process::pool::bailout_pending() {
+                return;
+            }
             triggered.store(false, Relaxed);
         }
     }

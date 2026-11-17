@@ -58,8 +58,6 @@ zval *swr_zend_thread_main_request(const char **path, int *argc);
 bool swr_zend_tsrm_is_main_thread(void);
 bool swr_zend_tsrm_is_shutdown(void);
 const char *swr_zend_tsrm_api_name(void);
-/* Whether this thread's script runs: its script scope is live. */
-bool swr_zend_thread_script_running(void);
 /* zend_bailout() to the thread's script scope while it is live, else to Zend's current one. */
 void swr_zend_thread_script_bailout(void);
 #endif

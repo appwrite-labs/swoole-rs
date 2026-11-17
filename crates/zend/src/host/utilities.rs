@@ -1,7 +1,8 @@
 //! Class-alias registration for the native SDK.
-use crate::{bailout, sys as z};
+use crate::sys as z;
 use std::{ffi::c_int, io::IoSlice};
 
+crate::exports! {
 /// Register the native SDK's lowercase persistent class alias, in MINIT on its
 /// thread. `name` is a `struct iovec` on the C side, the caller's bytes live for
 /// the call; `entry` is a registered persistent class.
@@ -22,8 +23,8 @@ pub(crate) extern "C" fn swr_v1_phphelpers_class_alias(
         Ok(false) => -1,
         Err(error) => {
             error.defer();
-            bailout::finish();
             -1
         }
     }
+}
 }

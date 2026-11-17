@@ -167,6 +167,9 @@ pub(crate) fn spawn_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
     } else {
         _ = crate::event_worker::native::start_event_worker(serv, worker);
     }
+    if swoole_rs_corebase::process::pool::bailout_pending() {
+        return None;
+    }
     // exit(3), as upstream.
     std::process::exit(0)
 }
@@ -187,6 +190,9 @@ pub(crate) fn spawn_user_worker(serv: view::Server<'_>, worker: Worker<'_>) -> O
     if pid == 0 {
         enter_child(serv, worker, WorkerType::User);
         serv.state().callbacks.user_worker_start(serv, worker);
+        if swoole_rs_corebase::process::pool::bailout_pending() {
+            return None;
+        }
         std::process::exit(0)
     }
     // The worker is local memory, the server's copy shared memory: set both.

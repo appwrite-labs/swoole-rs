@@ -110,7 +110,6 @@ pub fn redis_minit(minit: &Minit) -> Result<(), bailout::Bailout> {
 pub extern "C" fn redis_rshutdown() {
     // Out of the cell first: a destructor may set a handler. Its bailout stays pending.
     drop(HANDLERS.take());
-    bailout::finish();
 }
 
 /// `redis_handler_key`: `_handler_` and the command, lowercased.

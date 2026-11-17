@@ -158,7 +158,7 @@ pub struct Entry(zend_function_entry);
 
 /// A Zend handler (`zif_handler`), over the frame and return slot only Zend's
 /// call of it makes.
-pub type Handler = extern "C" fn(crate::Entered<'_>, crate::Returned<'_>);
+pub type Handler = unsafe extern "C" fn(crate::Entered<'_>, crate::Returned<'_>);
 
 /// `PHP_ME`/`ZEND_FE`/`ZEND_RAW_FENTRY`: `name`, run by `handler`, with `arginfo`.
 #[must_use]

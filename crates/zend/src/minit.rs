@@ -198,13 +198,22 @@ impl Minfo<'_> {
     }
 }
 
+/// A native module phase, called by Zend inside its bailout scope.
+type StartupHook = unsafe extern "C" fn(c_int, Startup<'_>) -> c_int;
+/// A native module phase, called by Zend inside its bailout scope.
+type ShutdownHook = unsafe extern "C" fn(c_int, Shutdown<'_>) -> c_int;
+/// A native module phase, called by Zend inside its bailout scope.
+type RequestHook = unsafe extern "C" fn(c_int, Request<'_>) -> c_int;
+/// A native module phase, called by Zend inside its bailout scope.
+type InfoHook = unsafe extern "C" fn(Minfo<'_>);
+
 /// A module's phase functions, each taking the token of Zend's call of it.
 pub struct Lifecycle {
-    pub startup: extern "C" fn(c_int, Startup<'_>) -> c_int,
-    pub shutdown: extern "C" fn(c_int, Shutdown<'_>) -> c_int,
-    pub request_startup: extern "C" fn(c_int, Request<'_>) -> c_int,
-    pub request_shutdown: extern "C" fn(c_int, Request<'_>) -> c_int,
-    pub info: extern "C" fn(Minfo<'_>),
+    pub startup: StartupHook,
+    pub shutdown: ShutdownHook,
+    pub request_startup: RequestHook,
+    pub request_shutdown: RequestHook,
+    pub info: InfoHook,
 }
 
 unsafe extern "C" {
@@ -214,11 +223,11 @@ unsafe extern "C" {
     /// with the live entry, which a [`Minfo`] is (a transparent non-null pointer).
     safe fn swr_slot_module(
         entry: &mut zend_module_entry,
-        startup: extern "C" fn(c_int, Startup<'_>) -> c_int,
-        shutdown: extern "C" fn(c_int, Shutdown<'_>) -> c_int,
-        request_startup: extern "C" fn(c_int, Request<'_>) -> c_int,
-        request_shutdown: extern "C" fn(c_int, Request<'_>) -> c_int,
-        info: extern "C" fn(Minfo<'_>),
+        startup: StartupHook,
+        shutdown: ShutdownHook,
+        request_startup: RequestHook,
+        request_shutdown: RequestHook,
+        info: InfoHook,
     );
 }
 

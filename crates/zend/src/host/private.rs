@@ -217,17 +217,6 @@ pub struct Callee<'a>(
     pub(crate) std::marker::PhantomData<&'a zend_fcall_info_cache>,
 );
 
-impl Callee<'_> {
-    /// The cache at `cache`, lent for a call.
-    /// # Safety
-    /// `cache` is null, or the resolved (or empty) cache of a callable whose
-    /// owner keeps it for the borrow, as [`super::Callable::cache_ptr`] lends one.
-    #[must_use]
-    pub unsafe fn from_raw(cache: *mut zend_fcall_info_cache) -> Self {
-        Self(cache, std::marker::PhantomData)
-    }
-}
-
 /// Invoke directly or create a coroutine, preserving the immediate fatal-exception check;
 /// in a coroutine, then `then`. The call writes its result into `retval`, in place of
 /// what it held (a coroutine call writes null), which is not released.

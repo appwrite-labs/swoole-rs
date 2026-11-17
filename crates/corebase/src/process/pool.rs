@@ -11,8 +11,8 @@
 //! waits, the Zend allocator under the message bus) runs inside the trap the
 //! extension installs with [`set_bailout`]. When PHP bails out
 //! (`exit()`, a fatal error), the loop returns [`Bailed`] at once and its native
-//! caller raises the bailout again with [`raise_bailout`], so the
-//! `longjmp` never crosses a Rust frame.
+//! caller defers the bailout with [`defer_bailout`]. The outer native boundary
+//! raises it after Rust cleanup has finished.
 use crate::CCast;
 use crate::process::process_pool::{IpcMode, Protocol};
 use crate::process::worker_record::Worker as Record;
@@ -227,15 +227,17 @@ struct Stream {
     response: Option<Vec<u8>>,
 }
 
-/// The extension's bailout trap and raise, which [`set_bailout`] installs.
+/// The extension's bailout trap and deferred state, installed by [`set_bailout`].
 pub trait Bailouts: Sync {
     /// Runs `body` inside `zend_try`: whether it bailed out.
     fn contain(&self, body: &mut dyn FnMut()) -> bool;
-    /// Zend's bailout: it leaves its caller's frame.
-    fn raise(&self);
+    /// Remember a bailout for the outer native boundary.
+    fn defer(&self);
+    /// Whether a callback has requested an escape.
+    fn pending(&self) -> bool;
 }
 
-/// The trap and raise [`set_bailout`] installed.
+/// The bailout hooks [`set_bailout`] installed.
 static BAILOUT: OnceLock<&'static dyn Bailouts> = OnceLock::new();
 
 /// The hook bailed out.
@@ -713,17 +715,22 @@ impl PoolIpc {
     }
 }
 
-/// Install the extension's bailout trap and raise: the first installed stays.
+/// Install the extension's bailout hooks: the first installed stays.
 pub fn set_bailout(bailouts: &'static dyn Bailouts) {
     _ = BAILOUT.set(bailouts);
 }
 
-/// Raise the bailout a loop returned [`BAILED`] for. Holds nothing: the
-/// `longjmp` crosses only this frame.
-pub fn raise_bailout() {
+/// Defer the bailout a loop returned [`BAILED`] for until its native boundary.
+pub fn defer_bailout() {
     if let Some(bailouts) = BAILOUT.get() {
-        bailouts.raise();
+        bailouts.defer();
     }
+}
+
+/// Whether a PHP callback requested that its enclosing operation stop.
+#[must_use]
+pub fn bailout_pending() -> bool {
+    BAILOUT.get().is_some_and(|bailouts| bailouts.pending())
 }
 
 /// A pool's IPC state. `listener`: the pool uses a stream socket (`SW_IPC_SOCKET`).

@@ -193,6 +193,7 @@ impl Call {
     }
 }
 
+crate::exports! {
 /// Swoole's `sw_zend_create_object_deny`: the `create_object` of a class that
 /// cannot be instantiated. It throws and returns the bare object Zend expects
 /// (declared properties undefined), which Zend then releases. Installed as
@@ -203,8 +204,9 @@ extern "C" fn create_object_deny(class: ClassEntry<'_>) -> *mut zend_object {
     if bailed {
         crate::bailout::Bailout.defer();
     }
-    crate::bailout::finish();
     object
+}
+
 }
 
 /// `SW_SET_CLASS_CREATE(.., sw_zend_create_object_deny)`.

@@ -324,7 +324,8 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> Route {
         }
         call(ctx, facts.coroutine)
     });
-    bailout::raise(result);
+    bailout::defer(result);
+    host::stop_if_bailed();
     Route::Done
 }
 
@@ -431,7 +432,8 @@ struct Turn(Hold);
 impl swoole_rs_corebase::reactor::event_api::Deferred for Turn {
     fn run(self) {
         let mut ctx = self.0.ctx();
-        bailout::raise(call(ctx, enable_coroutine(context::server(ctx.state()))));
+        bailout::defer(call(ctx, enable_coroutine(context::server(ctx.state()))));
+        host::stop_if_bailed();
     }
     fn dispose(self) {}
 }
@@ -762,7 +764,6 @@ pub extern "C" fn server_rshutdown() {
     while let Some(hold) = dequeue() {
         abandon(hold.ctx());
     }
-    bailout::finish();
 }
 
 #[cfg(test)]

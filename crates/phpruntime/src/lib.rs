@@ -294,7 +294,7 @@ fn set_hook_flags(call: &Call, min: u32) -> Result<(), Bailout> {
 pub extern "C" fn php_coroutine_enable_hook(flags: u32) -> bool {
     let enabled = enable_hook(flags);
     let applied = matches!(enabled, Ok(true));
-    swoole_rs_zend::bailout::raise(enabled.map(|_| ()));
+    swoole_rs_zend::bailout::defer(enabled.map(|_| ()));
     applied
 }
 
@@ -552,7 +552,7 @@ pub extern "C" fn rshutdown() {
     }
     let disabled = enable_hook(0);
     functions::finish();
-    swoole_rs_zend::bailout::raise(disabled.map(|_| ()));
+    swoole_rs_zend::bailout::defer(disabled.map(|_| ()));
 }
 
 /// `php_swoole_get_original_handler`: the handler `name` had before the first

@@ -41,7 +41,7 @@ pub(crate) fn invalid(name: &CStr) {
         report(swoole_rs_zend::E_ERROR, text.as_cstr())
     };
     // The bailout jumps past this frame and the caller's, which own nothing.
-    swoole_rs_zend::bailout::raise(reported);
+    swoole_rs_zend::bailout::defer(reported);
 }
 
 /// `$this`'s class name, for [`invalid`].
@@ -162,17 +162,16 @@ impl Custom for TaskData {
 }
 
 /// `$this`, a `Server\Task`; an `E_ERROR`, which does not return, otherwise.
-fn task(call: &Call) -> &TaskData {
-    call.custom::<TaskData>().unwrap_or_else(|| {
+fn task(call: &Call) -> Option<&TaskData> {
+    call.custom::<TaskData>().or_else(|| {
         invalid(this_class(call));
-        // The `E_ERROR` bailed out of this frame.
-        swoole_rs_corebase::fatal("E_ERROR returned")
+        None
     })
 }
 
 /// A `Server\Task`'s `info`, the head of the task it answers.
-pub(crate) fn task_info(call: &Call) -> DataHead {
-    task(call).info.get()
+pub(crate) fn task_info(call: &Call) -> Option<DataHead> {
+    Some(task(call)?.info.get())
 }
 
 /// Bind a new `Server\Task` to the running server and the head of the task it carries.
@@ -189,15 +188,11 @@ pub(crate) fn task_bind(task: &Value, info: &DataHead) {
 }
 
 /// A `Server\Task`'s server; an `E_ERROR`, which does not return, when it has none.
-pub(crate) fn task_server(call: &Call) -> view::Server<'_> {
-    task(call).serv.get().map_or_else(
-        || {
-            invalid(this_class(call));
-            // The `E_ERROR` bailed out of this frame.
-            swoole_rs_corebase::fatal("E_ERROR returned")
-        },
-        SharedServer::view,
-    )
+pub(crate) fn task_server(call: &Call) -> Option<view::Server<'_>> {
+    task(call)?.serv.get().map(SharedServer::view).or_else(|| {
+        invalid(this_class(call));
+        None
+    })
 }
 
 /// A declared property: public unless `Private`.
@@ -515,11 +510,10 @@ pub(crate) fn fatal(level: i32, message: &CStr) {
 
 /// `php_swoole_server_get_and_check_server(ZEND_THIS)`: an `E_ERROR`, which
 /// does not return, for a Server never constructed. The frames own nothing.
-pub(crate) fn server(call: &Call) -> view::Server<'_> {
-    crate::lifecycle::ServerObject::this_server(call).unwrap_or_else(|| {
+pub(crate) fn server(call: &Call) -> Option<view::Server<'_>> {
+    crate::lifecycle::ServerObject::this_server(call).or_else(|| {
         invalid(this_class(call));
-        // The `E_ERROR` bailed out of this frame.
-        swoole_rs_corebase::fatal("E_ERROR returned")
+        None
     })
 }
 
@@ -536,7 +530,7 @@ pub(crate) fn new_iterator(serv: SharedServer, port: *mut c_void) -> swoole_rs_z
 /// server is not running.
 #[inline]
 pub(crate) fn running(call: &Call) -> Option<view::Server<'_>> {
-    let serv = server(call);
+    let serv = server(call)?;
     if serv.is_started() {
         return Some(serv);
     }
@@ -751,7 +745,7 @@ fn bind(call: &Call) {
 }
 
 fn get_socket(call: &Call) {
-    let serv = server(call);
+    let Some(serv) = server(call) else { return };
     let Ok(port) = call.arity(0, 1).and_then(|()| call.long(1, 0)) else {
         return call.set_bool(false);
     };
@@ -910,7 +904,7 @@ fn protect(call: &Call) {
 }
 
 fn get_worker_id(call: &Call) {
-    server(call);
+    let Some(_) = server(call) else { return };
     if in_worker() {
         call.set_long(worker_id());
     } else {
@@ -945,14 +939,14 @@ fn get_worker_status(call: &Call) {
 }
 
 fn get_worker_pid(call: &Call) {
-    let serv = server(call);
+    let Some(serv) = server(call) else { return };
     if let Some(worker) = worker(call, serv) {
         call.set_long(i64::from(worker.pid()));
     }
 }
 
 fn get_manager_pid(call: &Call) {
-    let serv = server(call);
+    let Some(serv) = server(call) else { return };
     call.set_long(i64::from(
         serv.counters()
             .manager_pid
@@ -961,7 +955,7 @@ fn get_manager_pid(call: &Call) {
 }
 
 fn get_master_pid(call: &Call) {
-    let serv = server(call);
+    let Some(serv) = server(call) else { return };
     call.set_long(i64::from(
         serv.counters()
             .master_pid
@@ -970,7 +964,7 @@ fn get_master_pid(call: &Call) {
 }
 
 fn shutdown(call: &Call) {
-    let serv = server(call);
+    let Some(serv) = server(call) else { return };
     call.set_bool(server_methods::shutdown(serv));
 }
 
@@ -986,13 +980,12 @@ fn stop(call: &Call) {
 }
 
 /// `php_swoole_connection_iterator_get_and_check_ptr(ZEND_THIS)`.
-fn iterator(call: &Call) -> (&Iterator, view::Server<'_>) {
+fn iterator(call: &Call) -> Option<(&Iterator, view::Server<'_>)> {
     let bound = call.custom::<Iterator>();
     let bound = bound.and_then(|iterator| Some((iterator, iterator.serv.get()?.view())));
-    bound.unwrap_or_else(|| {
-        // An `E_ERROR`, which does not return; the frames own nothing.
+    bound.or_else(|| {
         invalid(this_class(call));
-        swoole_rs_corebase::fatal("E_ERROR returned")
+        None
     })
 }
 
@@ -1001,13 +994,17 @@ fn iterator_construct(call: &Call) {
 }
 
 fn rewind(call: &Call) {
-    let (iterator, server) = iterator(call);
+    let Some((iterator, server)) = iterator(call) else {
+        return;
+    };
     iterator.index.set(0);
     iterator.current_fd.set(server.counters().min_fd());
 }
 
 fn valid(call: &Call) {
-    let (iterator, server) = iterator(call);
+    let Some((iterator, server)) = iterator(call) else {
+        return;
+    };
     let max_fd = server.counters().max_fd();
     let port = iterator.port();
     for fd in iterator.current_fd.get()..=max_fd {
@@ -1033,20 +1030,31 @@ fn valid(call: &Call) {
 }
 
 fn current(call: &Call) {
-    call.set_long(iterator(call).0.session_id.get());
+    let Some((iterator, _)) = iterator(call) else {
+        return;
+    };
+    call.set_long(iterator.session_id.get());
 }
 
 fn next(call: &Call) {
-    let fd = &iterator(call).0.current_fd;
+    let Some((iterator, _)) = iterator(call) else {
+        return;
+    };
+    let fd = &iterator.current_fd;
     fd.set(fd.get() + 1);
 }
 
 fn key(call: &Call) {
-    call.set_long(i64::from(iterator(call).0.index.get()));
+    let Some((iterator, _)) = iterator(call) else {
+        return;
+    };
+    call.set_long(i64::from(iterator.index.get()));
 }
 
 fn count(call: &Call) {
-    let (iterator, server) = iterator(call);
+    let Some((iterator, server)) = iterator(call) else {
+        return;
+    };
     let num = match iterator.port() {
         None => server.connection_num(),
         Some(port) => server.port_connection_num(port),
@@ -1057,7 +1065,7 @@ fn count(call: &Call) {
 /// `offsetExists`/`offsetGet`: `Swoole\Server`'s own method, called on the
 /// server object as PHP would.
 fn delegate(call: &Call, method: &[u8]) {
-    iterator(call);
+    let Some(_) = iterator(call) else { return };
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
@@ -1071,7 +1079,7 @@ fn delegate(call: &Call, method: &[u8]) {
     let retval = match called {
         Ok(retval) => retval,
         // Nothing left here to release: the bailout jumps over this frame.
-        Err(bailout) => return swoole_rs_zend::bailout::raise(Err(bailout)),
+        Err(bailout) => return swoole_rs_zend::bailout::defer(Err(bailout)),
     };
     if method == b"exists" {
         // RETVAL_BOOL(Z_BVAL_P(&retval)): only `true` is true.

@@ -246,11 +246,11 @@ pub extern "C" fn php_swoole_coroutine_rinit() {
     context::init_main();
 }
 
-/// `php_swoole_coroutine_rshutdown`: a bailout in deactivation is raised.
+/// `php_swoole_coroutine_rshutdown`: defer any bailout from deactivation.
 pub extern "C" fn php_swoole_coroutine_rshutdown() {
     drop(AUTOLOADING.with(Cell::take));
     if runtime::shutdown() {
-        runtime::raise();
+        Bailout.defer();
     }
 }
 
@@ -433,7 +433,7 @@ fn load(name: &ZStr, lc_name: &ZStr) -> Result<*mut zend_class_entry, ()> {
 extern "C" fn autoload(name: &ZStr, lc_name: &ZStr) -> *mut zend_class_entry {
     let Some(current) = host::current() else {
         let Ok(ce) = load(name, lc_name) else {
-            runtime::raise();
+            Bailout.defer();
             return ptr::null_mut();
         };
         return ce;
@@ -478,7 +478,7 @@ extern "C" fn autoload(name: &ZStr, lc_name: &ZStr) -> *mut zend_class_entry {
     drop(key);
     let Ok(ce) = loaded else {
         drop(loading);
-        runtime::raise();
+        Bailout.defer();
         return ptr::null_mut();
     };
     if let Some(loading) = loading {

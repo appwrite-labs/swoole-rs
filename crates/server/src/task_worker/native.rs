@@ -114,11 +114,17 @@ fn run_task(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_i
         Some(ServerEvent::CommandRequest) => crate::conn_io::status(command(serv, worker, task)),
         _ => {
             let ret = callbacks.task(TaskSlot::Task, serv, task);
+            if swoole_rs_corebase::process::pool::bailout_pending() {
+                return ret;
+            }
             // Only server tasks count as requests, not pipe messages or commands.
             worker.add_request_count();
             ret
         }
     };
+    if swoole_rs_corebase::process::pool::bailout_pending() {
+        return ret;
+    }
     worker.set_status(WorkerStatus::busy(false));
     ret
 }

@@ -20,7 +20,7 @@ use crate::objects::{Reactor, worker_pipe};
 pub(crate) use crate::reactor_ops::PoolBus;
 use core::sync::atomic::AtomicU64;
 use process::armed_timer::ArmedTimer;
-use process::methods::raised;
+use process::methods::deferred;
 use process::methods::{
     ExitStatus, is_worker_running, kill_all_workers, push_stop, reload_warn, swoole_set_worker_id,
     swoole_set_worker_pid, worker_report_error,
@@ -94,7 +94,9 @@ fn bus_deliver(pool: Pool<'_>) {
         unsafe { core::slice::from_raw_parts(packet.data.cast::<u8>(), packet.length) }
     };
     pool.call_on_message(&RecvData::new(info, data));
-    PoolBus::with_pool(pool, |bus| bus.parts().0.pop());
+    if !process::pool::bailout_pending() {
+        PoolBus::with_pool(pool, |bus| bus.parts().0.pop());
+    }
 }
 
 /// The pool's new bus, owned, or None when its counter can't be allocated.
@@ -202,6 +204,9 @@ fn worker_exit() {
         && let Some(worker) = EXITING.get().and_then(|index| pool.worker(index))
     {
         pool.call_on_worker_exit(worker);
+        if process::pool::bailout_pending() {
+            return;
+        }
     }
     // The loop running this end callback.
     let reactor = crate::objects::Reactor::thread();
@@ -255,7 +260,7 @@ macro_rules! main_loops {
     ($($name:ident = $protocol:expr;)*) => {$(
         fn $name(pool: PoolRef<'_>, worker: Record<'_>) -> c_int {
             // A callback's bailout is raised once the export's frames are gone.
-            raised(pool_run_main(&NATIVE, pool, worker, $protocol).map(crate::conn_io::status))
+            deferred(pool_run_main(&NATIVE, pool, worker, $protocol).map(crate::conn_io::status))
         }
     )*};
 }

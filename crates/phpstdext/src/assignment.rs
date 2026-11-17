@@ -6,7 +6,7 @@ use crate::{
 use std::{borrow::Cow, ffi::c_int};
 use swoole_rs_zend::{
     Owned, Value,
-    bailout::{self, Bailout},
+    bailout::Bailout,
     opcode::Handler,
     sys::{self as z, zval},
 };
@@ -299,13 +299,11 @@ impl Handler for AssignOp {
 }
 
 fn finish(result: Result<Next, Bailout>) -> Next {
-    let code = match result {
+    match result {
         Ok(code) => code,
         Err(error) => {
             error.defer();
             Next::Continue
         }
-    };
-    bailout::finish();
-    code
+    }
 }

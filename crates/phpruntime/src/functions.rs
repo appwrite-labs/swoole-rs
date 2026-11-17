@@ -22,7 +22,7 @@ use swoole_rs_zend::{
     Call, E_WARNING, Owned, ZStr, ZString,
     arginfo::raw,
     bailout,
-    host::{Callee, callable::Callable},
+    host::callable::Callable,
     sys::{
         PHP_VERSION_ID, ZEND_ACC_FAKE_CLOSURE, swr_zend_runtime_disabled,
         swr_zend_runtime_unsupported, zend_class_entry, zend_execute_data, zend_internal_arg_info,
@@ -416,18 +416,17 @@ pub(crate) fn user_func(call: &Call) -> Result<(), Bailout> {
         }
         return call.forward(original);
     }
-    let fcc = table()
+    let callable = table()
         .hooked
         .as_ref()
-        .and_then(|hooked| hooked.get(name)?.callable.as_deref())
-        .map(Callable::cache_ptr);
-    let Some(fcc) = fcc else {
+        .and_then(|hooked| hooked.get(name)?.callable.clone());
+    let Some(callable) = callable else {
         let message = message!("{} func not exists", String::from_utf8_lossy(name));
         throw(&message, SW_ERROR_UNDEFINED_BEHAVIOR);
         return Ok(());
     };
-    // SAFETY: the cache of a resolved callable its record keeps until RSHUTDOWN.
-    let callee = unsafe { Callee::from_raw(fcc) };
+    // Keep the callable alive if PHP changes the hook while it runs.
+    let callee = callable.cache();
     // The frame's arguments and return slot, handed on.
     let result = Owned::default();
     bailout::call(callee, call.args(), None, &result)?;

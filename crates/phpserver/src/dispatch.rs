@@ -255,22 +255,6 @@ fn receive_args(
     }
 }
 
-/// After the call: the warning and close of a failed call, and the
-/// argument's release. True on a bailout.
-fn receive_done(server: view::Server<'_>, succeeded: bool, fd: i64, owned: [Owned; 4]) -> bool {
-    if !succeeded {
-        if failed("onReceive") == Called::Bailout {
-            return leak(owned);
-        }
-        server_methods::close(server, fd, false);
-    }
-    // Server::start still holds the server; only the request arguments need
-    // normal destruction. Balance the event's temporary object reference.
-    let [object, ..] = owned;
-    object.delref();
-    false
-}
-
 /// `php_swoole_server_onConnect`/`onClose`'s call, with the chosen callback.
 fn on_connection(
     server: view::Server<'_>,
@@ -362,13 +346,10 @@ fn on_packet(server: view::Server<'_>, packet: &Packet<'_>, server_fd: c_int, ti
         coroutine,
         "onPipeMessage",
     );
-    if called == Called::Bailout {
-        return leak(argv);
-    }
     // The Server::start frame keeps the server through every event callback.
-    let [server, ..] = argv;
+    let [server, args @ ..] = argv;
     server.delref();
-    false
+    called == Called::Bailout && leak(args)
 }
 
 /// `php_swoole_server_onPipeMessage`'s call with the unpacked `data`.
@@ -513,7 +494,14 @@ fn on_worker_error(
 /// Raise a bailout the event trapped, from this outermost Rust frame.
 fn relay(bailed: bool) {
     if bailed {
-        bailout::raise(Err(Bailout));
+        Bailout.defer();
+    }
+    stop_if_bailed();
+}
+
+pub(crate) fn stop_if_bailed() {
+    if bailout::pending() {
+        swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
     }
 }
 
@@ -609,7 +597,7 @@ fn task_result(outcome: Result<bool, Bailout>) -> c_int {
         true
     });
     // A callable's release can leave one pending behind an `Ok`.
-    bailout::finish();
+    stop_if_bailed();
     code(ok)
 }
 
@@ -645,11 +633,15 @@ pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &RecvData
     let config = server.config();
     let (owned, argc) = receive_args(server, request, config.event_object.get());
     let argv = Zvals::owned(&owned).take(argc);
-    let called = invoke_argv(&cb, argv, None, config.enable_coroutine.get());
-    relay(match called {
-        Ok(succeeded) => receive_done(server, succeeded, info.fd, owned),
-        Err(Bailout) => leak(owned),
-    });
+    let called = call_argv(&cb, argv, config.enable_coroutine.get(), "onReceive");
+    if called == Called::Failed {
+        server_methods::close(server, info.fd, false);
+    }
+    // Server::start keeps the server alive even when the callback bails out.
+    let [object, args @ ..] = owned;
+    object.delref();
+    let bailed = called == Called::Bailout && leak(args);
+    relay(bailed);
 }
 
 fn on_receive(server: view::Server<'_>, request: &RecvData) -> c_int {
@@ -775,7 +767,8 @@ fn send_wake(session_id: i64, cancel: bool) {
     }
     drop(waiters);
     // A woken coroutine's bailout, raised once this frame owns nothing.
-    bailout::raise(woken);
+    bailout::defer(woken);
+    stop_if_bailed();
 }
 
 /// `php_swoole_server_onClose` (crates/phphttp's fallback).
@@ -790,6 +783,9 @@ fn close(server: view::Server<'_>, info: &DataHead) {
     let config = server.config();
     if config.enable_coroutine.get() && config.send_yield.get() {
         send_wake(session_id, true);
+        if bailout::pending() {
+            return;
+        }
     }
     let mut cb = port_callback(server, info.server_fd, PortCallback::Close);
     let Some(conn) = server.by_session(session_id) else {
@@ -813,6 +809,9 @@ fn close(server: view::Server<'_>, info: &DataHead) {
         relay(on_connection(
             server, &cb, true, session_id, reactor_id, info.time,
         ));
+    }
+    if bailout::pending() {
+        return;
     }
     // The callback may have changed it.
     if conn.http2_stream()
@@ -1052,7 +1051,7 @@ fn on_dispatch(
     drop(retval);
     drop(args);
     drop(owner);
-    bailout::finish();
+    stop_if_bailed();
     c_int::try_from(worker_id).unwrap_or(-1)
 }
 

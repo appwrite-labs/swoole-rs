@@ -1,6 +1,6 @@
 //! PHP `Swoole\Event`: registration, descriptor conversion, callback custody,
 //! fd registry and loop admission, dispatch and shutdown policy over the
-//! thread's reactor. Its reactor handlers and deferred tasks raise a contained
+//! thread's reactor. Its reactor handlers and deferred tasks propagate a contained
 //! Zend bailout only after Rust cleanup has completed.
 #![cfg(feature = "php")]
 #![forbid(unsafe_code)]
@@ -182,11 +182,10 @@ fn callable(value: Option<&Value>, name: Option<&CStr>, allow_null: bool) -> Opt
 struct Later<T>(T);
 
 impl<T: 'static> Deferred for Later<T> {
-    /// Drop it, then raise a destructor's bailout from this frame, which owns
-    /// nothing by then.
+    /// Drop it, then stop this reactor pass if a destructor deferred a bailout.
     fn run(self) {
         drop(self);
-        bailout::finish();
+        stop_if_bailed();
     }
 
     /// The reactor was freed first: drop it now, and leave a bailout to the
@@ -444,7 +443,8 @@ impl Deferred for Run {
             }
         });
         drop(self);
-        bailout::raise(result);
+        bailout::defer(result);
+        stop_if_bailed();
     }
 
     /// The reactor was freed first: release it, leaving a bailout deferred.
@@ -489,14 +489,14 @@ impl CycleTask for Cycle {
             }
         });
         drop(self);
-        bailout::raise(result);
+        bailout::defer(result);
+        stop_if_bailed();
     }
 
-    /// Release the callable, then raise a destructor's bailout from this
-    /// frame, which owns nothing by then.
+    /// Release the callable, then stop the pass if its destructor bailed out.
     fn retire(self: Rc<Self>) {
         drop(self);
-        bailout::finish();
+        stop_if_bailed();
     }
 }
 
@@ -581,11 +581,18 @@ fn invoke(callable: &Callable, arg: Option<&Owned>) -> Result<bool, Bailout> {
     )
 }
 
-/// A reactor handler's result: a bailout is raised from its frame, which owns
-/// nothing by then, after the Rust work completed.
+/// Stop dispatching once a callback or its cleanup requests an escape.
+fn stop_if_bailed() {
+    if bailout::pending() {
+        event_api::swoole_event_bail_out();
+    }
+}
+
+/// Defer a handler's bailout and stop the pass before another callback runs.
 fn handled(result: Result<bool, Bailout>) -> bool {
     result.unwrap_or_else(|error| {
-        bailout::raise(Err(error));
+        error.defer();
+        stop_if_bailed();
         false
     })
 }
@@ -757,28 +764,24 @@ fn dispatch(call: &Call) {
     }
 }
 
-/// `php_swoole_reactor_init()`: whether the event loop is ready. Raises a
-/// bailout, so it is its caller's last step (`swoole_rs_phpswoole::EventSteps`).
+/// `php_swoole_reactor_init()`: whether the event loop is ready. Defers a
+/// bailout for the caller's native boundary and returns false on failure.
 #[must_use]
 pub fn reactor_init() -> bool {
-    let result = loop_driver::init().unwrap_or_else(|error| {
+    loop_driver::init().unwrap_or_else(|error| {
         error.defer();
         false
-    });
-    bailout::finish();
-    result
+    })
 }
 
-/// `php_swoole_convert_to_fd(value)`, raising a bailout as [`reactor_init`].
+/// `php_swoole_convert_to_fd(value)`, deferring a bailout as [`reactor_init`].
 #[must_use]
 pub fn convert_to_fd(value: Option<&Value>) -> i32 {
-    let result = fd(value);
-    bailout::finish();
-    result
+    fd(value)
 }
 
-/// `Swoole\Event::wait()`'s native lifecycle effect, completed before raising
-/// a contained bailout, as [`reactor_init`].
+/// `Swoole\Event::wait()`'s native lifecycle effect, deferring a contained
+/// bailout for its caller's native boundary.
 pub fn wait_and_raise() {
-    bailout::raise(loop_driver::wait());
+    bailout::defer(loop_driver::wait());
 }

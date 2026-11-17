@@ -58,7 +58,6 @@ family crate's `php`. `crates/ext` builds `swoole.so` with `php` on (fat LTO und
 
 ```rust
 handlers! {
-    leaf:                                        // hot: no bailout check after the body
     zim_swoole_atomic_add => word::add::<Atomic>; // Zend name => body
 }
 
@@ -146,23 +145,23 @@ calls PHP code directly where it could bail out:
   `zend_try` that lives in the C shim, and returns `Err(Bailout)` if it bailed.
   It (and `call_method`) calls nothing once a bailout is pending: upstream
   never ran a callback past the first bailout.
-- `zend::contain_with(body)` does the same for a Rust closure that needs no
-  drop, whose frames (and those of what it calls) own nothing that needs one, so
-  the bailout's jump to the shim's `setjmp` skips no destructor (crates/phpserver
-  runs `Server::start` and `addProcess`'s worker this way).
-- `Bailout` is `#[must_use]`: finish the Rust work (release what you hold),
-  return it to the C/C++ caller as a flag, and let that caller call
-  `zend_bailout()` once the Rust frames are gone. Callbacks driven by a C++
-  loop keep a C++ trampoline that does exactly this. A Rust fn the C++ loop
-  calls directly (the Server's on* slots) does the same with `bailout::raise`
-  as its last step, from a frame that owns nothing that needs a drop:
-
-```rust
-// crates/phpevents: a task the reactor's defer queue runs.
-unsafe extern "C-unwind" fn deferred_free_object(object: *mut c_void) {
-    bailout::raise(unsafe { free_object(object.cast()) }); // Err if it trapped a bailout
-}
-```
+- `zend::contain_with(body)` traps a native callback's bailout and reports a
+  deferred Rust bailout after the closure returns. The closure may capture
+  borrows and plain values; captures requiring Drop are rejected. Safe Rust
+  helpers return or defer outcomes so their local owners are cleaned up normally.
+- `Bailout` is `#[must_use]`. A safe callback defers it and returns to its owner;
+  the reactor, timer, process or server stops before invoking another callback.
+  The owner propagates the pending outcome to the surrounding native boundary.
+- `zend::handlers!` and `zend::exports!` generate unsafe native entry points
+  around ordinary safe Rust bodies. The body consumes its arguments and returns
+  a `Copy` result before the entry point resumes the native bailout. Rust
+  cannot invoke that entry point without acknowledging its native bailout scope
+  and the absence of intervening Rust owners. Destructor entry points preserve
+  an already-pending bailout for its original boundary.
+- A C/C++ trampoline can instead receive the outcome with `relay_to_c` and
+  resume it after Rust returns. The native `free_obj` handler drops its Rust
+  data before calling Zend's standard property destructor. Both property
+  destruction and the final bailout run under the native caller's scope.
 
 `zend::bailout::parse_func` is `Z_PARAM_FUNC` (Zend's own callback errors).
 
@@ -185,15 +184,11 @@ reactor or timer callback), bails out. So every error Rust raises goes through
   `ArrayMut`'s `insert*` and `update` over a key already there: `__destruct`,
   or the cycle collector a possible root starts).
 
-Each returns (or, for the converters, defers) a `Bailout`. The one exception
-is an `E_ERROR` its caller relies on not returning (crates/phpserver's
-"Invalid instance of"): it calls `php_error_docref` directly, from frames that
-own nothing. The usual owner is
-`bailout::defer`: the bailout waits in a thread-local, nothing more is
-reported, and the handler's last step, `bailout::finish()`, raises it
-(`zend::handlers!` does this; so must every export C/C++ calls that can raise
-an error, or it returns the bailout as a flag to its C++ trampoline). Never
-call `php_error_docref`, `zend_error` or a C++ reporter directly from Rust.
+Each returns (or, for the converters, defers) a `Bailout`. Invalid-instance
+errors also defer and return an absent binding, so callers stop before using it.
+`bailout::defer` records the pending outcome; generated native boundaries resume
+it after Rust cleanup. Never call `php_error_docref`, `zend_error` or a C++
+reporter directly from safe Rust.
 
 `tests/modules/zend/run.py` (`error_handler_bailout.php`) checks this per family against
 upstream: an error handler that `exit()`s, and one that raises a fatal error,

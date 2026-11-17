@@ -13,8 +13,7 @@ fn cpu_num() -> usize {
 #[must_use]
 pub fn cpu_set_from_array(array: &Array) -> Option<CpuSet> {
     let set = convert(array);
-    bailout::finish();
-    set
+    set.filter(|_| !bailout::pending())
 }
 
 fn convert(array: &Array) -> Option<CpuSet> {

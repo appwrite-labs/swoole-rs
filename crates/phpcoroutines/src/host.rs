@@ -78,8 +78,8 @@ unsafe extern "C" {
         reason = "C takes the context as an opaque pointer and only hands it back"
     )]
     safe fn swr_zend_coroutine_run(
-        enter: extern "C" fn(Ctx) -> Option<crate::context::Call>,
-        defers: extern "C" fn(Ctx),
+        enter: unsafe extern "C" fn(Ctx) -> Option<crate::context::Call>,
+        defers: unsafe extern "C" fn(Ctx),
         context: Ctx,
     ) -> c_int;
 }
@@ -138,10 +138,10 @@ pub(crate) fn flag(bit: u32) -> bool {
 
 pub(crate) use swoole_rs_corebase::log::set_last_error;
 
-/// `php_swoole_fatal_error(level, "%s", message)`. With `E_ERROR` Zend
-/// longjmps out: the caller's frames must own nothing that needs a drop.
+/// `php_swoole_fatal_error(level, "%s", message)`, with its bailout deferred
+/// until the caller returns to a native boundary.
 pub(crate) fn fatal_error(level: c_int, message: &CStr) {
-    bailout::raise(try_fatal_error(level, message));
+    bailout::defer(try_fatal_error(level, message));
 }
 
 /// [`fatal_error`], returning its bailout.
@@ -168,27 +168,17 @@ pub(crate) fn current() -> Option<Co> {
     Co::of(swoole_rs_corebase::coroutine::current_native())
 }
 
-/// `Coroutine::get_current_safe()`'s check: outside a coroutine it raises a
-/// fatal error, which does not return while Swoole's hook is set, so the
-/// caller's frames must own nothing that needs a drop.
+/// `Coroutine::get_current_safe()`'s check: outside a coroutine it defers
+/// the fatal error and returns None so its caller stops.
 pub(crate) fn require_coroutine() -> Option<Co> {
     let co = current();
     if co.is_none() {
-        // The hook's bailout, trapped then raised from here: the frames own nothing.
-        bailout::raise(swoole_rs_phpswoole::swoole_fatal_error(
+        bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
             SW_ERROR_CO_OUT_OF_COROUTINE,
             c"API must be called in the coroutine",
         ));
     }
     co
-}
-
-/// `Coroutine::get_current_safe()`: as [`require_coroutine`], and where no
-/// fatal error hook ends the call, the process aborts (upstream dereferenced
-/// the null coroutine).
-pub(crate) fn current_safe() -> Co {
-    require_coroutine()
-        .unwrap_or_else(|| swoole_rs_corebase::fatal("API must be called in the coroutine"))
 }
 
 /// `System::sleep(seconds)` of the running coroutine: false once canceled, and
@@ -339,9 +329,8 @@ pub fn counts() -> (usize, u64) {
     (count(), swoole_rs_corebase::coroutine::counters().peak_num)
 }
 
-/// Switch to `co`, which callers pass parked. The caller's frames must own nothing
-/// that needs a drop: a bailout in the coroutine may longjmp across them on the
-/// main stack.
+/// Switch to `co`, which callers pass parked. A failed coroutine defers its
+/// bailout to the native boundary after the suspended caller resumes.
 pub(crate) fn resume(co: Co) {
     // SAFETY: callers own the park they end: a waiter they took off a queue it
     // parked itself on (channels, joins, autoloads), the canceler or the user
@@ -501,13 +490,14 @@ pub(crate) fn run(ctx: Ctx) -> bool {
     swr_zend_coroutine_run(crate::context::enter, defers, ctx) != 0
 }
 
-/// The bailout of a coroutine that ended in an exception or a bailout, in the
-/// main context: the loop stops, then PHP bails out.
-extern "C" fn bail_out(_: *mut c_void) {
+/// A failed coroutine has switched back to the main context. Stop its owner
+/// and leave the escape for the surrounding native boundary.
+extern "C" fn bail_out(_data: *mut c_void) {
     swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
-    bailout::raise(Err(bailout::Bailout));
+    bailout::Bailout.defer();
 }
 
+swoole_rs_zend::exports! {
 /// The defer tasks of `ctx`, the running coroutine's context, last in first
 /// out; an exception bails out to the trap.
 extern "C" fn defers(ctx: Ctx) {
@@ -534,15 +524,18 @@ extern "C" fn defers(ctx: Ctx) {
         } else {
             drop(temporary);
         }
-        bailout::finish();
+        if bailout::pending() { return; }
         if failed {
             fatal_error(swoole_rs_zend::E_WARNING, c"defer callback handler error");
+            if bailout::pending() { return; }
         }
         if !swoole_rs_zend::host::exception().is_null() {
-            bailout::raise(Err(bailout::Bailout));
+            bailout::Bailout.defer();
+            return;
         }
-        bailout::raise(task.release());
+        if let Err(error) = task.release() { error.defer(); return; }
     }
+}
 }
 
 /// `php_swoole_check_reactor()`.
@@ -583,7 +576,7 @@ fn set_callbacks(callbacks: [swoole_rs_corebase::coroutine::SwapCallback; 3]) {
 
 /// The reactor's destroy callback.
 fn deactivate_on_free() {
-    bailout::raise(crate::runtime::deactivate());
+    bailout::defer(crate::runtime::deactivate());
 }
 
 pub(crate) fn deactivate() {
@@ -611,17 +604,20 @@ pub(crate) fn deadlock_check() -> Result<(), bailout::Bailout> {
 
 /// The `SW_GLOBAL_HOOK_ON_CORO_START` (`stop`: `_STOP`) hook of the coroutine whose
 /// context is `ctx`, when set.
-pub(crate) fn coro_hook(stop: bool, ctx: Ctx) {
+pub(crate) fn coro_hook(stop: bool, ctx: Ctx) -> Result<(), bailout::Bailout> {
     use swoole_rs_corebase::HookType;
     let kind = if stop {
         HookType::ON_CORO_STOP
     } else {
         HookType::ON_CORO_START
     };
-    if swoole_rs_corebase::swoole_isset_hook(kind) {
-        // SAFETY: the hook's argument is the coroutine's context.
-        unsafe { swoole_rs_corebase::swoole_call_hook(kind, ctx.ptr().cast()) };
+    for hook in swoole_rs_corebase::hook::callbacks(kind) {
+        swoole_rs_zend::contain_with(|| {
+            // SAFETY: each start or stop hook accepts this live coroutine context.
+            unsafe { hook(ctx.ptr().cast()) };
+        })?;
     }
+    Ok(())
 }
 
 /// `swoole::time<std::chrono::microseconds>(true)`: the steady clock.
@@ -659,18 +655,23 @@ pub(crate) fn exit_original(call: &swoole_rs_zend::Call) -> bool {
 
 /// `exit()` without the original handler: print `message`, then exit.
 pub(crate) fn exit_fallback(message: Option<&[u8]>, status: c_long) {
-    if let Some(message) = message {
-        bailout::raise(crate::tracer::write(message));
+    if let Some(message) = message
+        && let Err(error) = crate::tracer::write(message)
+    {
+        error.defer();
+        return;
     }
     // Swoole's exit, which does not return here.
-    swoole_rs_phpswoole::sw_php_exit(status.c_cast::<c_int>());
+    swoole_rs_phpswoole::exit_status(status.c_cast::<c_int>());
 }
 
 pub(crate) use swoole_rs_phpswoole::{event_wait, reactor_init};
 
 /// `Coroutine::set_stack_size(php_swoole_parse_to_size(size))`.
 pub(crate) fn set_stack_size(size: &swoole_rs_zend::Value) {
-    let size = swoole_rs_phpswoole::php_swoole_parse_to_size(size);
+    let Some(size) = swoole_rs_phpswoole::php_swoole_parse_to_size(size) else {
+        return;
+    };
     let size = usize::try_from(size.cast_unsigned()).unwrap_or(usize::MAX);
     swoole_rs_corebase::coroutine::set_stack_size(size);
 }

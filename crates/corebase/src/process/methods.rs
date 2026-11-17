@@ -13,7 +13,7 @@ use std::ptr;
 
 use crate::process::pool::Bailed;
 use crate::process::pool::{
-    raise_bailout, swr_v1_process_pool_ipc_respond, swr_v1_process_worker_send,
+    defer_bailout, swr_v1_process_pool_ipc_respond, swr_v1_process_worker_send,
 };
 #[cfg(any(feature = "upstream-symbols", test))]
 use crate::process::pool::{swr_v1_process_pool_ipc_address, swr_v1_process_pool_ipc_set_listener};
@@ -27,22 +27,21 @@ use crate::process::worker_globals::{with_globals, worker_global_max_requests};
 use crate::process::worker_record::WorkerRecord;
 use std::sync::atomic::Ordering::Relaxed;
 
-/// A method's result; a callback's bailout is raised once the method's frames are
-/// gone. This frame holds nothing, so the `longjmp` may cross it.
-pub fn raised<T: Default>(result: Result<T, Bailed>) -> T {
+/// A method's result, leaving any callback bailout pending for its caller.
+pub fn deferred<T: Default>(result: Result<T, Bailed>) -> T {
     result.unwrap_or_else(|Bailed| {
-        raise_bailout();
+        defer_bailout();
         T::default()
     })
 }
 
 /// Each `ProcessPool` method that runs on the pool alone: its name, parameters,
-/// return type, and the call, [`raised`] for one whose callbacks may bail out.
+/// return type, and the call, [`deferred`] for one whose callbacks may bail out.
 macro_rules! pool_methods {
-    ($(fn $name:ident($($p:ident: $t:ty),*) -> $r:ty = $($raised:ident)? |$pool:ident| $call:expr;)*) => {$(
+    ($(fn $name:ident($($p:ident: $t:ty),*) -> $r:ty = $($deferred:ident)? |$pool:ident| $call:expr;)*) => {$(
         #[doc = concat!("`ProcessPool::", stringify!($name), "`.")]
         pub fn $name(native: &dyn PoolNative, pool: PoolRef<'_>, $($p: $t),*) -> $r {
-            $($raised)?(with(native, pool, |$pool| $call))
+            $($deferred)?(with(native, pool, |$pool| $call))
         }
     )*};
 }
@@ -52,9 +51,9 @@ pool_methods! {
     fn create_message_bus() -> bool = |p| p.create_message_bus();
     fn set_protocol(protocol: Protocol) -> () = |p| p.set_protocol(protocol);
     fn start_check() -> bool = |p| p.start_check();
-    fn start() -> bool = raised |p| p.start();
+    fn start() -> bool = deferred |p| p.start();
     fn drop_reload_task() -> () = |p| p.drop_reload_task();
-    fn reload() -> bool = raised |p| p.reload();
+    fn reload() -> bool = deferred |p| p.reload();
     fn reopen_logger() -> () = |p| p.reopen_logger();
     fn kill_all_workers(signo: c_int) -> () = |p| p.kill_all_workers(signo);
     fn shutdown() -> bool = |p| p.shutdown();
@@ -62,7 +61,7 @@ pool_methods! {
     fn set_type(kind: WorkerType) -> () = |p| p.set_type(kind);
     fn set_start_id(id: c_int) -> () = |p| p.number_from(id.c_cast::<u16>());
     fn detach() -> bool = |p| p.detach();
-    fn wait() -> () = raised |p| p.wait();
+    fn wait() -> () = deferred |p| p.wait();
     fn destroy() -> () = |p| p.destroy();
     fn free_message_box() -> () = |p| p.free_message_box();
 }
@@ -91,14 +90,14 @@ pub fn stop(native: &dyn PoolNative, pool: PoolRef<'_>, worker: *mut WorkerRecor
 /// pool's) the master.
 pub fn signal(native: &dyn PoolNative, pool: PoolRef<'_>, signo: c_int, worker: *mut WorkerRecord) {
     let worker = pool.worker_of(worker).map_or(ptr::null_mut(), Worker::raw);
-    raised(with(native, pool, |p| p.signal(signo, worker)));
+    deferred(with(native, pool, |p| p.signal(signo, worker)));
 }
 
 /// `ProcessPool::spawn(worker)`, whose pid every caller ignores; nothing when `worker`
 /// is none of the pool's.
 pub fn spawn(native: &dyn PoolNative, pool: PoolRef<'_>, worker: *mut WorkerRecord) {
     if let Some(worker) = pool.worker_of(worker) {
-        raised(with(native, pool, |p| p.spawn(worker.raw())));
+        deferred(with(native, pool, |p| p.spawn(worker.raw())));
     }
 }
 

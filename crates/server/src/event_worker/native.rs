@@ -136,6 +136,9 @@ fn accept(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead) {
             format_args!("[Worker] error event[type={}]", info.kind),
         ),
     }
+    if swoole_rs_corebase::process::pool::bailout_pending() {
+        return;
+    }
     worker.set_status(WorkerStatus::Idle);
     // The maximum number of requests: the worker exits.
     if worker.exceeded_max_request() {
@@ -178,7 +181,11 @@ fn run_task(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead, slot: R
         let data = unsafe { core::slice::from_raw_parts(packet.data.cast(), packet.length) };
         crate::base_factory::SendData::new(head, data)
     };
-    if serv.state().callbacks.receive(slot, serv, &recv) == 0 {
+    let result = serv.state().callbacks.receive(slot, serv, &recv);
+    if swoole_rs_corebase::process::pool::bailout_pending() {
+        return;
+    }
+    if result == 0 {
         worker.add_request_count();
         serv.counters().request_count.fetch_add(1, Relaxed);
     }
@@ -239,6 +246,9 @@ pub(crate) fn call_worker_stop_callback(serv: view::Server<'_>, worker: Worker<'
     serv.state()
         .callbacks
         .worker(WorkerSlot::Stop, serv, worker);
+    if swoole_rs_corebase::process::pool::bailout_pending() {
+        return;
+    }
     let bus = bus(serv);
     if !bus.is_empty() {
         log::error_log(
@@ -580,7 +590,13 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
         );
     }
     worker_start_callback(serv, worker);
+    if swoole_rs_corebase::process::pool::bailout_pending() {
+        return false;
+    }
     let rv = reactor.wait();
+    if swoole_rs_corebase::process::pool::bailout_pending() {
+        return false;
+    }
     drain_worker_pipe(serv);
     swoole_rs_corebase::reactor::swoole_event_free();
     call_worker_stop_callback(serv, worker);

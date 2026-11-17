@@ -242,7 +242,7 @@ pub fn swoole_timer_select() {
 /// What `Swoole\Timer` (crates/phptimer) needs: PHP timers on this thread's timer.
 pub mod php {
     use super::{Timer, current};
-    pub use crate::timer::owner::{Bailout, Info};
+    pub use crate::timer::owner::Info;
 
     /// `swoole_timer_is_available()`.
     #[must_use]
@@ -348,11 +348,11 @@ pub mod php {
         current().is_some_and(|timer| timer.remove_php(id))
     }
 
-    /// `Timer::abandon_selection(bailout)` of this thread's timer: after a
+    /// `Timer::abandon_selection()` of this thread's timer: after a
     /// caught Zend bailout whose selection will never resume.
-    pub fn abandon(bailout: Option<Bailout>) {
+    pub fn abandon() {
         if let Some(timer) = current() {
-            timer.abandon(bailout);
+            timer.abandon();
         }
     }
 }

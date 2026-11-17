@@ -98,7 +98,6 @@ pub(crate) fn sub<H: Holder>(call: &Call) {
 #[cold]
 fn failed(call: &Call) {
     call.set_bool(false);
-    swoole_rs_zend::bailout::finish();
 }
 
 fn fetch<H: Holder>(call: &Call, op: fn(&H::Word, i64) -> i64) {

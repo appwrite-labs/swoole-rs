@@ -144,6 +144,9 @@ pub(crate) fn install_builtins(callbacks: &mut Callbacks) {
 pub(crate) fn execute_end(reactor: Running<'_>, timed_out: bool) {
     reactor.with(|state| state.fields.timed_out = timed_out);
     for slot in 0..END_SLOTS {
+        if reactor.with(|state| state.fields.bailout) {
+            return;
+        }
         // Each borrow ends, its copy read, before a callback runs.
         let Some(end) = reactor.with(|state| state.callbacks.end.get(slot).copied().flatten())
         else {
@@ -208,6 +211,9 @@ pub(crate) fn if_exit(reactor: Running<'_>) -> bool {
             Exit::Defer => !reactor.has_deferred(),
             Exit::Default => event_num == 0,
         };
+        if reactor.with(|state| state.fields.bailout) {
+            return true;
+        }
         if !accepted {
             return false;
         }

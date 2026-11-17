@@ -342,7 +342,6 @@ pub fn server_coro_minit(args: &MinitArgs) {
     let minit = args.minit;
     if let Err(error) = register(minit, args.shortname, args.compression) {
         error.defer();
-        swoole_rs_zend::bailout::finish();
     }
 }
 

@@ -36,7 +36,9 @@ macro_rules! guard_exports {
             #[cfg(feature = "php")]
             #[unsafe(naked)]
             #[unsafe(no_mangle)]
-            pub extern "C" fn $export() {
+            // Called through the native header, with the target's arguments and
+            // bailout scope. The tail jump forwards the argument registers untouched.
+            unsafe extern "C" fn $export() {
                 #[cfg(target_arch = "x86_64")]
                 core::arch::naked_asm!("jmp {}@PLT", sym $definition);
                 #[cfg(target_arch = "aarch64")]

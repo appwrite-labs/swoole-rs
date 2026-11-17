@@ -281,8 +281,7 @@ fn configure(process: &Process, enable_coroutine: bool, stream_pipe: bool) {
 }
 
 /// `php_swoole_process_start`: in the child, run the callback, then bail out
-/// as `exit` would. It returns only when the callback or the event loop cannot
-/// start; a bailout pending on the way is raised here, as the closing one is.
+/// as `exit` would. Escapes stay pending for the outer native boundary.
 /// `worker` is the Process object `this`'s.
 pub fn start_worker(worker: Worker<'_>, this: &Value) {
     start_child(worker, this);
@@ -302,7 +301,6 @@ fn start_child(worker: Worker<'_>, this: &Value) {
         }
     };
     let Some(callable) = callable else {
-        swoole_rs_zend::bailout::finish();
         return;
     };
     worker::child_enter(worker);
@@ -318,6 +316,9 @@ fn start_child(worker: Worker<'_>, this: &Value) {
         }
     }
     crate::signal::clean();
+    if swoole_rs_zend::bailout::pending() {
+        return;
+    }
     if let Some(props) = this.props(Some(&PROCESS)) {
         props.long(c"pid", i64::from(worker.pid));
         if let Some(pipe) = worker.pipe {
@@ -329,7 +330,6 @@ fn start_child(worker: Worker<'_>, this: &Value) {
         .is_some_and(|process| process.enable_coroutine.get());
     if swoole_rs_zend::bailout::pending() || (coroutine && !host::reactor_init()) {
         drop(callable);
-        swoole_rs_zend::bailout::finish();
         return;
     }
     // `$this` is the callable's one argument.
@@ -348,9 +348,8 @@ fn start_child(worker: Worker<'_>, this: &Value) {
         host::event_wait();
     }
     drop(callable);
-    // Equivalent to exit: Zend unwinds to its bailout point; this frame owns
-    // nothing that needs a drop.
-    swoole_rs_zend::bailout::raise(Err(swoole_rs_zend::bailout::Bailout));
+    // Equivalent to exit once the enclosing Rust frames have returned.
+    swoole_rs_zend::bailout::Bailout.defer();
 }
 
 fn construct(call: &Call) {

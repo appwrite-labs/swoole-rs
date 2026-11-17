@@ -161,8 +161,8 @@ pub(crate) fn defer_destroy_call(fields: &mut ReactorFields, call: fn()) {
 
 /// The `PRIORITY_DEFER_TASK` end callback over `Reactor::defer_tasks`: the queue is
 /// detached first, so tasks it defers run on the next pass, then run and freed. While it
-/// runs, the reactor's `running_defer` holds it: a task that bails out of the loop jumps
-/// over this frame, and the reactor's drop frees the queue instead.
+/// runs, the reactor's `running_defer` holds it. A callback escape stops the pass,
+/// leaving the rest of the queue for the reactor's drop.
 pub(crate) fn run_defer(reactor: Running<'_>) {
     if reactor.with(|state| state.fields.defer_tasks.is_some()) {
         run_queue(reactor);
@@ -184,6 +184,9 @@ fn run_queue(reactor: Running<'_>) {
     // Reborrow after each call: a nested pass can move the vector's storage.
     while let Some(task) = reactor.with(|state| state.running_defer.get_mut(index)?.pop()) {
         task.run();
+        if reactor.with(|state| state.fields.bailout) {
+            return;
+        }
     }
     // Keep any queues abandoned by a nested bailout for the reactor's drop.
     let mut queue = Some(reactor.with(|state| state.running_defer.remove(index)));
@@ -298,6 +301,23 @@ pub(crate) mod tests {
             run_defer(running(state.owner));
             assert_eq!(take(), []);
             crate::reactor::reactor_state::tests::free(state.owner);
+        }
+    }
+
+    #[test]
+    fn escaped_defer_keeps_the_remaining_queue_until_destroy() {
+        let state = crate::reactor::reactor_state::tests::state(3, 1);
+        FIELDS.set(state.fields);
+        unsafe {
+            defer(
+                state.fields,
+                task(1).then(|| (*FIELDS.get()).bailout = true),
+            );
+            defer(state.fields, task(2).disposed());
+            run_defer(running(state.owner));
+            assert_eq!(take(), [1]);
+            crate::reactor::reactor_state::tests::free(state.owner);
+            assert_eq!(take(), [1002]);
         }
     }
 

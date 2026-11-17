@@ -49,7 +49,14 @@ pub(crate) fn raise(bailed: bool) {
     if bailed {
         bailout::Bailout.defer();
     }
-    bailout::finish();
+    stop_if_bailed();
+}
+
+/// Stop event dispatch while the outer native boundary owns a deferred escape.
+pub(crate) fn stop_if_bailed() {
+    if bailout::pending() {
+        swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
+    }
 }
 
 pub(crate) use swoole_rs_corebase::log::set_last_error;

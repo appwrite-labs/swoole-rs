@@ -19,6 +19,13 @@ unsafe extern "C" {
         retval: &crate::Value,
         args: Zvals<'_>,
     ) -> std::ffi::c_int;
+    /// Forward the live frame and its return slot inside Zend's native trap.
+    safe fn swr_zend_runtime_call_handler(
+        handler: crate::sys::zif_handler,
+        frame: crate::CallFrame<'_>,
+        value: &crate::Value,
+    ) -> std::ffi::c_int;
+
 }
 
 impl Call {
@@ -40,10 +47,7 @@ impl Call {
     /// # Errors
     /// The handler bailed out.
     pub fn forward(&self, handler: crate::sys::zif_handler) -> Result<(), Bailout> {
-        // SAFETY: a zif handler takes a live frame and its return slot, which
-        // this call holds for as long as it runs; the shim traps a bailout.
-        let bailed =
-            unsafe { crate::sys::swr_zend_runtime_call_handler(handler, self.frame, self.value) };
+        let bailed = swr_zend_runtime_call_handler(handler, self.call_frame(), self.ret_slot());
         if bailed != 0 { Err(Bailout) } else { Ok(()) }
     }
 

@@ -192,7 +192,7 @@ fn start(call: &Call) {
         for _ in 0..task.count {
             let (fcc, argc, argv, name) = task.callable.parts();
             if runtime::create(call.php(), Some(fcc), argc, argv, name).is_err() {
-                runtime::raise();
+                Bailout.defer();
                 return;
             }
         }
@@ -303,7 +303,9 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     };
-    swoole_rs_phpswoole::php_swoole_set_global_option(array);
+    if !swoole_rs_phpswoole::set_global(array) {
+        return;
+    }
     set_coroutine_option(array);
     if bailout::pending() {
         return;
@@ -321,7 +323,7 @@ fn set(call: &Call) {
         host::set_dns_cache_capacity(capacity);
     }
     if let Some(condition) = array.find(b"exit_condition") {
-        bailout::raise(set_exit_condition(condition));
+        bailout::defer(set_exit_condition(condition));
     }
 }
 
@@ -351,14 +353,15 @@ pub fn install_exit_condition() {
     }
 }
 
-/// The reactor's user exit condition: whether it may exit. A bailout is raised
-/// from here, as upstream's lambda raised it.
+/// The reactor's user exit condition: whether it may exit. A bailout stops
+/// the reactor and stays pending for its native boundary.
 pub(crate) fn reactor_can_exit(_event_num: &mut usize) -> bool {
     match can_exit() {
         Ok(exit) => exit,
         Err(error) => {
-            bailout::raise(Err(error));
-            false
+            error.defer();
+            swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
+            true
         }
     }
 }
@@ -383,7 +386,7 @@ fn can_exit() -> Result<bool, Bailout> {
 
 /// RSHUTDOWN: drop the PHP name resolvers and the exit condition.
 pub extern "C" fn php_swoole_coroutine_scheduler_rshutdown() {
-    bailout::raise(rshutdown());
+    bailout::defer(rshutdown());
 }
 
 fn rshutdown() -> Result<(), Bailout> {

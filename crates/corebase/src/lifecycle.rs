@@ -283,16 +283,19 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
 }
 
 /// `swoole_fork_exec`: the child runs `child` and exits 0; the parent gets the
-/// pid, and 0 when fork fails (upstream returns `false`).
-pub fn fork_exec(child: impl FnOnce()) -> libc::pid_t {
+/// pid, and 0 when fork fails (upstream returns `false`). A child error returns
+/// to its caller so a deferred native escape reaches its boundary.
+/// # Errors
+/// The child callback stopped with an error.
+pub fn fork_exec<E>(child: impl FnOnce() -> Result<(), E>) -> Result<libc::pid_t, E> {
     match crate::sys::fork() {
-        pid if pid < 0 => 0,
+        pid if pid < 0 => Ok(0),
         0 => {
-            child();
+            child()?;
             // The child ends here, as upstream's exit(0).
             std::process::exit(0)
         }
-        pid => pid,
+        pid => Ok(pid),
     }
 }
 
@@ -356,6 +359,24 @@ mod tests {
     use super::*;
 
     extern "C" fn ignore(_signo: c_int) {}
+
+    #[test]
+    fn fork_exec_returns_child_error_before_success_exit() {
+        let _children = crate::process::wait::tests::CHILDREN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match fork_exec(|| Err(())) {
+            Err(()) => std::process::exit(17),
+            Ok(pid) if pid > 0 => {
+                let mut status = 0;
+                // SAFETY: a live status slot and this test's own child.
+                assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
+                assert!(libc::WIFEXITED(status));
+                assert_eq!(libc::WEXITSTATUS(status), 17);
+            }
+            Ok(_) => panic!("fork failed"),
+        }
+    }
 
     fn blocked(signo: c_int) -> bool {
         let mut now = unsafe { std::mem::zeroed() };

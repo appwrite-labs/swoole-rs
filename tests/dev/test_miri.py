@@ -13,6 +13,7 @@ FOREIGN = 'its tests call a C library Miri can\'t run'
 EXEMPT = {
     **dict.fromkeys(['zlib', 'cares-sys', 'curl-sys',
                      'curl', 'firebird', 'oci', 'odbc', 'pgsql', 'sqlite', 'ssh2'], FOREIGN),
+    'ext': 'PHP loads this cdylib; its native guard entries tail-jump to C using assembly',
     'ports': 'datagram sockets: Miri opens SOCK_STREAM only',
     **dict.fromkeys(['zend', 'phpclients', 'phpcoroutines', 'phphttp', 'phpprocess', 'phpruntime',
                      'phpstdext', 'phpswoole'],

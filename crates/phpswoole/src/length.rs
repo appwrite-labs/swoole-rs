@@ -38,9 +38,10 @@ pub fn length<L: PackageLength>(
         return -1;
     };
     let length = L::length(&named.0, packet.bytes());
-    // Released first: `finish` may jump over this frame, and a `set()` the callable
-    // ran may have left this the last reference, whose destructor can bail out.
+    // A callback may replace its own last stored reference.
     drop(named);
-    bailout::finish();
+    if bailout::pending() {
+        return -1;
+    }
     length.map_or(-1, usize::cast_signed)
 }

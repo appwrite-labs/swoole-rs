@@ -203,7 +203,7 @@ pub fn with_unlimited_stack<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// `body()` inside `zend_try`. A bailout jumps over `body` and what it calls,
-/// as over any frame below one that raises it ([`bailout::finish`]), so those
+/// as over any frame below one that raises it ([`crate::exports`]), so those
 /// frames own nothing that needs a drop when PHP may bail out.
 /// # Errors
 /// `body` bailed out.
@@ -218,14 +218,20 @@ pub fn contain<T: Copy>(body: fn() -> T) -> Result<T, Bailout> {
 /// # Errors
 /// `body` bailed out.
 pub fn contain_with<F: FnOnce()>(body: F) -> Result<(), Bailout> {
-    /// Takes and runs the closure: a bailout leaves the slot empty, so nothing
-    /// is dropped twice.
-    unsafe extern "C" fn run<F: FnOnce()>(slot: *mut c_void) {
-        // SAFETY: `contain_with`'s live slot, which it lends for this call only.
-        let body = unsafe { &mut *slot.cast::<Option<F>>() }.take();
-        if let Some(body) = body {
-            body();
-        }
+    /// A borrowed stack closure behind the shim's one opaque pointer.
+    struct Context<'a>(&'a mut dyn FnMut());
+    extern "C" fn run(context: &mut Context<'_>) {
+        (context.0)();
+    }
+    #[expect(
+        improper_ctypes,
+        reason = "C passes the context pointer back to run and never reads its Rust fields"
+    )]
+    unsafe extern "C" {
+        /// The native trap keeps both borrows live and calls `run` with this
+        /// same context, synchronously, without retaining either argument.
+        #[link_name = "swr_zend_try"]
+        safe fn try_body(run: extern "C" fn(&mut Context<'_>), context: &mut Context<'_>) -> c_int;
     }
     const {
         assert!(
@@ -234,8 +240,13 @@ pub fn contain_with<F: FnOnce()>(body: F) -> Result<(), Bailout> {
         );
     };
     let mut slot = Some(body);
-    // SAFETY: `run::<F>` takes the slot of an `F`; `body` needs no drop
-    // (asserted above), and its frames are its caller's (above). The shim's
-    // setjmp sits in C, between this frame and `run`.
-    bailout::trapped(unsafe { crate::sys::swr_zend_try(Some(run::<F>), (&raw mut slot).cast()) })
+    let mut once = || {
+        if let Some(body) = slot.take() {
+            body();
+        }
+    };
+    bailout::trapped(try_body(run, &mut Context(&mut once)))?;
+    // A Rust body returns normally after deferring an escape. Report it to
+    // the owner without jumping back through the body's cleanup.
+    bailout::outcome(())
 }

@@ -1,6 +1,7 @@
 /* The native scope registry. Stays C (docs/zend.md, What stays C): bailout (the
  * guard macros around zend_try call it) and globals (ZEND_TLS, EG(bailout)). */
 #include "shim.h"
+#include "shim_thread.h"
 
 /* Registration is published once in MINIT, before starting any PHP threads. */
 static void *(*current_context)(void);
@@ -49,19 +50,19 @@ void *swr_zend_guard_target(void) {
     return NULL;
 }
 
-void swr_zend_guard_bailout(void) {
-    void *target = swr_zend_guard_target();
-    if (target) {
-        EG(bailout) = (JMP_BUF *) target;
-        zend_bailout();
-    }
-}
-
 int swr_zend_guard_pending(void) { return thread_exit; }
 void swr_zend_guard_mark(void) { thread_exit = 2; }
 void swr_zend_guard_clear(void) { thread_exit = 0; }
 
 void swr_zend_guard_resume(void) {
-    if (thread_exit && resume_exit) resume_exit();
+    if (thread_exit && resume_exit) {
+        void *target = swr_zend_guard_target();
+        if (target) {
+            EG(bailout) = (JMP_BUF *) target;
+            zend_bailout();
+        }
+        resume_exit();
+        swr_zend_thread_script_bailout();
+    }
     zend_bailout();
 }

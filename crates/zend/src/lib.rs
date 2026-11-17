@@ -69,23 +69,97 @@ pub use zval::{
 /// methods, `zif_<function>` for functions) so upstream's tables name them
 /// unchanged; each runs `body(&mut Call)` (or `body(&Call)`), then raises a
 /// bailout it deferred
-/// ([`bailout::finish`]).
+/// at its native boundary.
 #[macro_export]
 macro_rules! handlers {
-    // Hot handlers whose bodies raise (`bailout::finish`) any bailout they defer.
-    (leaf: $($name:ident => $body:path;)*) => {
+    ($($name:ident => $body:path;)*) => {
         $crate::handlers!(@then {} $($name => $body;)*);
     };
-    ($($name:ident => $body:path;)*) => {
-        $crate::handlers!(@then { $crate::bailout::finish(); } $($name => $body;)*);
+    (@then $after:block $($name:ident => $body:path;)*) => {
+        $crate::exports! {$(
+            /// A Zend handler.
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $name(frame: $crate::Entered<'_>, value: $crate::Returned<'_>) {
+                $crate::Call::run(frame, value, |call| $body(call));
+                $after
+            }
+        )*}
     };
-    // Each handler, ending with `$then`.
-    (@then $then:block $($name:ident => $body:path;)*) => {$(
-        /// A Zend handler.
-        #[unsafe(no_mangle)]
-        pub extern "C" fn $name(frame: $crate::Entered<'_>, value: $crate::Returned<'_>) {
-            $crate::Call::run(frame, value, |call| $body(call));
-            $then
+}
+
+/// Native bailout boundaries. Each body is an ordinary Rust function, which
+/// consumes its arguments and finishes cleanup before the boundary raises a
+/// deferred bailout. A return value must be `Copy`, so it needs no cleanup.
+/// The generated entry point is unsafe to call from Rust: its native caller
+/// must provide the bailout scope and leave no intervening Rust owners.
+/// `preserve_pending:` is for destructor callbacks, which must leave an already
+/// pending bailout to its original boundary.
+///
+/// Jump helpers are not part of the Rust API:
+/// ```compile_fail
+/// use swoole_rs_zend::bailout::{self, Bailout};
+/// let owner = std::pin::pin!(String::from("live until dropped"));
+/// Bailout.defer();
+/// bailout::finish();
+/// drop(owner);
+/// ```
+/// ```compile_fail
+/// swoole_rs_zend::thread::exit(|| {});
+/// ```
+///
+/// Generated entries cannot be invoked by safe Rust:
+/// ```compile_fail
+/// #![forbid(unsafe_code)]
+/// swoole_rs_zend::exports! { pub extern "C" fn boundary() {} }
+/// boundary();
+/// ```
+/// The body is checked as safe Rust even inside the unsafe entry point:
+/// ```compile_fail
+/// swoole_rs_zend::exports! {
+///     pub extern "C" fn boundary() { let _ = core::ptr::read(&42_u32); }
+/// }
+/// ```
+/// Nor may a boundary keep an owned result across a possible jump:
+/// ```compile_fail
+/// #![forbid(unsafe_code)]
+/// swoole_rs_zend::exports! {
+///     pub extern "C" fn boundary() -> String { String::from("owned") }
+/// }
+/// ```
+#[macro_export]
+macro_rules! exports {
+    (preserve_pending: $($item:tt)*) => {
+        $crate::exports!(@entry true; $($item)*);
+    };
+    (@entry $preserve:expr; $(
+        $(#[$attr:meta])* $vis:vis extern $abi:literal fn $name:ident
+        $(<$($lifetime:lifetime),+>)?
+        $(<$($generic:ident: $bound:path),+>)?
+        ($($arg:ident: $ty:ty),* $(,)?) $(-> $ret:ty)? $body:block
+    )*) => {$(
+        $(#[$attr])*
+        /// # Safety
+        /// Enter from a native bailout scope with no intervening Rust owners
+        /// whose cleanup a jump would skip.
+        $vis unsafe extern $abi fn $name $(<$($lifetime),+>)? $(<$($generic: $bound),+>)?
+        ($($arg: $ty),*) $(-> $ret)? {
+            fn plain<T: Copy>(value: T) -> T { value }
+            fn body $(<$($lifetime),+>)? $(<$($generic: $bound),+>)?
+            ($($arg: $ty),*) $(-> $ret)? $body
+            let pending = $preserve && $crate::bailout::pending();
+            let result = plain(body $(::<$($generic),+>)? ($($arg),*));
+            if !pending && $crate::bailout::relay_to_c(Ok(())) {
+                // SAFETY: the native-entry contract; the body has returned,
+                // and the remaining result is Copy.
+                unsafe { $crate::sys::swr_zend_guard_resume() };
+            }
+            result
         }
     )*};
+    (@entry $($invalid:tt)*) => {
+        compile_error!("invalid native bailout boundary declaration");
+    };
+    ($($item:tt)*) => {
+        $crate::exports!(@entry false; $($item)*);
+    };
 }

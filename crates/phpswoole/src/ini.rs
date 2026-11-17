@@ -133,5 +133,4 @@ pub(crate) fn register(minit: &Minit, kind: c_int) {
     // update-handler bailouts below this frame.
     let bailed = swr_zend_try_module_ini(&entries, minit.module(), kind);
     bailout::defer(if bailed == 0 { Ok(()) } else { Err(Bailout) });
-    bailout::finish();
 }

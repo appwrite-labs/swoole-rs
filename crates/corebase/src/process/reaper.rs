@@ -31,6 +31,10 @@ pub trait Reap {
     /// (pid 0); `ProcessPool::wait` hands it to `reap` like any other pid.
     fn skip_no_child(&self) -> bool;
     fn running(&mut self) -> bool;
+    /// A callback requested an escape; stop without running shutdown callbacks.
+    fn bailed(&self) -> bool {
+        crate::process::pool::bailout_pending()
+    }
     /// Whether a reload was requested and not yet started (`ProcessPool::reload_init`).
     fn reload_requested(&mut self) -> bool;
     /// One operation on the reload in progress, ending before callbacks run.
@@ -68,13 +72,21 @@ pub fn wait_child(nonblock: bool) -> Waited {
     Waited { pid, status }
 }
 
-/// Run a manager's reap loop until it stops running.
-pub fn run(host: &mut impl Reap) {
+/// Run a manager's reap loop until it stops or a callback requests an escape.
+/// # Errors
+/// A callback bailed out; the caller must return to its native boundary.
+pub fn run(host: &mut impl Reap) -> Result<(), crate::process::pool::Bailed> {
     let warn = host.warn();
     while host.running() {
+        if host.bailed() {
+            return Err(crate::process::pool::Bailed);
+        }
         let nonblock = host.reload_requested();
         let Waited { pid, status } = host.wait(nonblock);
         host.service();
+        if host.bailed() {
+            return Err(crate::process::pool::Bailed);
+        }
 
         if let Err(error) = &pid {
             if host.leave_when_stopped() && !host.running() {
@@ -91,7 +103,11 @@ pub fn run(host: &mut impl Reap) {
 
         let mut kill_next = false;
         if host.running() {
-            match host.start_reload() {
+            let reload = host.start_reload();
+            if host.bailed() {
+                return Err(crate::process::pool::Bailed);
+            }
+            match reload {
                 ReloadStart::KillOne => kill_next = true,
                 ReloadStart::Skip => continue,
                 ReloadStart::None | ReloadStart::Signalled => {}
@@ -104,7 +120,11 @@ pub fn run(host: &mut impl Reap) {
                     continue;
                 }
                 let pid = child.unwrap_or(0);
-                if !host.reap(pid, status) {
+                let reaped = host.reap(pid, status);
+                if host.bailed() {
+                    return Err(crate::process::pool::Bailed);
+                }
+                if !reaped {
                     continue;
                 }
                 host.with_reload(|task| task.remove(pid));
@@ -125,6 +145,11 @@ pub fn run(host: &mut impl Reap) {
                 host.finish_reload();
             }
         }
+    }
+    if host.bailed() {
+        Err(crate::process::pool::Bailed)
+    } else {
+        Ok(())
     }
 }
 
@@ -147,9 +172,14 @@ mod tests {
         log: Vec<String>,
         leave_when_stopped: bool,
         skip_no_child: bool,
+        escape_at: Option<&'static str>,
+        bailed: bool,
     }
 
     impl Reap for Script {
+        fn bailed(&self) -> bool {
+            self.bailed
+        }
         fn leave_when_stopped(&self) -> bool {
             self.leave_when_stopped
         }
@@ -185,6 +215,7 @@ mod tests {
         }
         fn service(&mut self) {
             self.log.push("service".into());
+            self.bailed |= self.escape_at == Some("service");
         }
         fn wait_failed(&mut self) {
             self.log.push("wait failed".into());
@@ -199,6 +230,7 @@ mod tests {
         }
         fn reap(&mut self, pid: c_int, status: c_int) -> bool {
             self.log.push(format!("reap {pid} {status}"));
+            self.bailed |= self.escape_at == Some("reap");
             pid != 13
         }
         fn finish_reload(&mut self) {
@@ -221,7 +253,29 @@ mod tests {
         s.running = true;
         s.leave_when_stopped = leave_when_stopped;
         s.skip_no_child = skip_no_child;
-        super::run(s);
+        assert!(super::run(s).is_ok());
+    }
+
+    #[test]
+    fn callback_escape_stops_before_the_next_wait_or_reload_cleanup() {
+        for step in ["service", "reap"] {
+            let mut script = Script {
+                waits: VecDeque::from([(10, 0), (11, 0)]),
+                running: true,
+                task: Some(Box::new(task())),
+                escape_at: Some(step),
+                ..Script::default()
+            };
+            assert!(super::run(&mut script).is_err());
+            assert!(script.task.is_some());
+            assert_eq!(script.waits.len(), 1);
+            let expected = if step == "service" {
+                vec!["wait nonblock=false", "service"]
+            } else {
+                vec!["wait nonblock=false", "service", "reap 10 9"]
+            };
+            assert_eq!(script.log, expected);
+        }
     }
 
     #[test]

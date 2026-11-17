@@ -265,7 +265,13 @@ fn run_main(serv: view::Server<'_>, slot: u16, kind: WorkerType) {
     let Some(worker) = worker.flatten() else {
         let callbacks = &serv.state().callbacks;
         callbacks.call_server(ServerSlot::ManagerStart, serv);
+        if swoole_rs_corebase::process::pool::bailout_pending() {
+            return;
+        }
         wait(serv, &manager(serv));
+        if swoole_rs_corebase::process::pool::bailout_pending() {
+            return;
+        }
         callbacks.call_server(ServerSlot::ManagerStop, serv);
         return;
     };
@@ -277,7 +283,13 @@ fn run_main(serv: view::Server<'_>, slot: u16, kind: WorkerType) {
         Some(WorkerType::Event) => crate::thread_ops::main_loop(serv, slot),
         Some(WorkerType::Task) => {
             pool.call_on_worker_start(worker);
+            if swoole_rs_corebase::process::pool::bailout_pending() {
+                return;
+            }
             _ = pool.call_main_loop(worker);
+            if swoole_rs_corebase::process::pool::bailout_pending() {
+                return;
+            }
             pool.call_on_worker_stop(worker);
         }
         _ => serv.state().callbacks.user_worker_start(serv, worker),
@@ -298,6 +310,9 @@ fn wait(serv: view::Server<'_>, manager: &ThreadManager) {
         }
         if swoole_rs_corebase::timer::swoole_timer_is_available() {
             swoole_rs_corebase::timer::swoole_timer_select();
+        }
+        if swoole_rs_corebase::process::pool::bailout_pending() {
+            return;
         }
         if serv.state().running() && manager.reloading() {
             reload_next(serv, manager);

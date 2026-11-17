@@ -66,7 +66,7 @@ struct Interrupted(*mut zend_execute_data);
 
 /// `zend_interrupt_function`: [`interrupt_function`] or the one Zend ran before
 /// it, each taking the frame Zend passes.
-type Handler = Option<extern "C" fn(Interrupted)>;
+type Handler = Option<unsafe extern "C" fn(Interrupted)>;
 
 /// How many threads' runtimes are active, and the interrupt function Zend ran
 /// before the first of them. `zend_interrupt_function` is process-global: the
@@ -127,9 +127,8 @@ pub fn get_cid() -> c_long {
     if activated() { host::current_cid() } else { -1 }
 }
 
-/// `PHPCoroutine::create`: the new coroutine's id or `ERR_*`. Zend fatal
-/// errors and the coroutine's own bailouts longjmp across this frame, which
-/// owns nothing to drop.
+/// `PHPCoroutine::create`: the new coroutine's id or `ERR_*`, or a contained
+/// bailout for the caller to propagate after cleanup.
 pub(crate) fn create(
     php: Php<'_>,
     fcc: Option<Fcc<'_>>,
@@ -166,7 +165,7 @@ pub(crate) fn create(
         callable,
     };
     let cid = host::create(args);
-    bailout::trapped(0)?;
+    bailout::outcome(())?;
     Ok(cid)
 }
 
@@ -238,6 +237,7 @@ pub(crate) fn shutdown() -> bool {
     bailed
 }
 
+swoole_rs_zend::exports! {
 /// `coro_interrupt_function`: yield a coroutine that ran past its slice,
 /// then run the interrupt function Zend had.
 extern "C" fn interrupt_function(frame: Interrupted) {
@@ -253,12 +253,16 @@ extern "C" fn interrupt_function(frame: Interrupted) {
     }
     if let Some(original) = original_interrupt() {
         // Zend's previous interrupt function, over the frame Zend passed.
-        let body = || original(frame);
+        // SAFETY: Zend's previous handler, called with its live frame inside
+        // the native trap established by contain_with.
+        let body = || unsafe { original(frame) };
         // The closure owns nothing; a bailout in it is re-raised below.
         if swoole_rs_zend::contain_with(body).is_err() {
-            raise();
+            Bailout.defer();
         }
     }
+}
+
 }
 
 /// `coro_interrupt_resume`: the loop resumes the coroutine the interrupt yielded.
@@ -272,13 +276,6 @@ impl swoole_rs_corebase::reactor::event_api::Deferred for InterruptResume {
         }
     }
     fn dispose(self) {}
-}
-
-/// Re-raise a trapped bailout from a handler's outermost Rust frame, which
-/// owns nothing to drop (docs/zend.md).
-pub(crate) fn raise() {
-    Bailout.defer();
-    bailout::finish();
 }
 
 unsafe extern "C" {

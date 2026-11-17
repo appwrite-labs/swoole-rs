@@ -380,6 +380,11 @@ pub fn swoole_event_wait() -> c_int {
     // `if_exit` runs only under wait_exit, as upstream's `or`.
     let wait_exit = field(|fields| fields.wait_exit).unwrap_or(false);
     let ran = (wait_exit && swoole_event_if_exit()) || swoole_event_run();
+    // A deferred escape leaves the reactor for request teardown, just as a
+    // native bailout did. Server shutdown still needs its live connections.
+    if field(|fields| fields.bailout).unwrap_or(false) {
+        return -1;
+    }
     // The thread's reactor, which nothing here borrows any more.
     crate::reactor::swoole_event_free();
     if ran { 0 } else { -1 }
@@ -448,6 +453,27 @@ mod tests {
         assert!(unsafe { (*state.fields).idle_task.is_none() });
         crate::reactor::deferred::run_defer(running(state.owner));
         assert_eq!(take(), ["retired"]);
+        crate::set_thread_reactor(std::ptr::null_mut());
+        unsafe { crate::reactor::reactor_state::tests::free(state.owner) };
+    }
+
+    struct Stops;
+
+    impl CycleTask for Stops {
+        fn run(self: Rc<Self>) {
+            swoole_event_bail_out();
+        }
+        fn retire(self: Rc<Self>) {}
+    }
+
+    #[test]
+    fn wait_keeps_a_bailed_reactor_for_request_teardown() {
+        let state = crate::reactor::reactor_state::tests::state(3, 1);
+        crate::set_thread_reactor(state.owner.cast());
+        swoole_event_cycle(true, Some(Rc::new(Stops)));
+        assert_eq!(swoole_event_wait(), -1);
+        assert_eq!(crate::thread_reactor(), state.owner.cast());
+        assert!(unsafe { (*state.fields).bailout });
         crate::set_thread_reactor(std::ptr::null_mut());
         unsafe { crate::reactor::reactor_state::tests::free(state.owner) };
     }

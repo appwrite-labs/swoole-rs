@@ -102,7 +102,6 @@ fn construct_long(call: &Call) {
 }
 
 swoole_rs_zend::handlers! {
-    leaf:
     zim_swoole_atomic___construct => construct;
     zim_swoole_atomic_add => word::add::<Atomic>;
     zim_swoole_atomic_sub => word::sub::<Atomic>;

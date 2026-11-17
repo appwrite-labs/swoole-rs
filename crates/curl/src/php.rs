@@ -9,6 +9,7 @@ use swoole_rs_zend::{E_WARNING, bailout};
 /// `SW_ERROR_PHP_FATAL_ERROR`.
 const PHP_FATAL_ERROR: i32 = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as i32;
 
+swoole_rs_zend::exports! {
 /// Whether the current coroutine may use the `php_curl` whose easy handle is
 /// `cp`: false after the warning of a missing coroutine handle or the fatal
 /// error of a multi another coroutine waits on.
@@ -22,7 +23,7 @@ pub extern "C" fn swr_v1_curl_check_handle(cp: Easy<'_>, exclusive: bool, requir
     let Some(handle) = cp.handle() else {
         if required {
             swoole_rs_corebase::log::set_last_error(PHP_FATAL_ERROR);
-            bailout::raise(swoole_rs_zend::report(
+            bailout::defer(swoole_rs_zend::report(
                 E_WARNING,
                 c"The given handle is not initialized in coroutine",
             ));
@@ -43,4 +44,5 @@ pub extern "C" fn swr_v1_curl_check_handle(cp: Easy<'_>, exclusive: bool, requir
     // nothing that needs a drop: the multi's reference is dropped above.
     unsafe { swoole_rs_corebase::fatal_error(code, message) };
     false
+}
 }

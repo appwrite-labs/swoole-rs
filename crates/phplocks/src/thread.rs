@@ -284,9 +284,8 @@ fn lock(call: &Call) {
 
 /// `unlock(): bool`.
 fn unlock(call: &Call) {
-    match constructed(call) {
-        Some(lock) => checked(call, lock.unlock()),
-        None => bailout::finish(),
+    if let Some(lock) = constructed(call) {
+        checked(call, lock.unlock());
     }
 }
 
@@ -297,7 +296,6 @@ swoole_rs_zend::handlers! {
 }
 
 swoole_rs_zend::handlers! {
-    leaf:
     zim_swoole_thread_lock_lock => lock;
     zim_swoole_thread_lock_unlock => unlock;
     zim_swoole_thread_atomic_add => word::add::<ThreadAtomic>;

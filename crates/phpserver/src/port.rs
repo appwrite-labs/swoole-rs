@@ -237,13 +237,12 @@ pub(crate) fn new_object(serv: SharedServer, port: view::Port<'_>) -> Owned {
 
 /// The `ListenPort` of the Port object `object` holds; an `E_ERROR`, which does
 /// not return, when it is none or unbound. The caller owns nothing to drop.
-pub(crate) fn bound_port(object: &Value) -> view::Port<'_> {
+pub(crate) fn bound_port(object: &Value) -> Option<view::Port<'_>> {
     let data = object.custom::<PortData>();
-    data.and_then(PortData::port).unwrap_or_else(|| {
+    data.and_then(PortData::port).or_else(|| {
         // Only this class's `create_object` makes the Server's Port objects.
         crate::server::invalid(c"Swoole\\Server\\Port");
-        // The `E_ERROR` above bailed out.
-        swoole_rs_corebase::fatal("E_ERROR returned")
+        None
     })
 }
 
@@ -291,11 +290,10 @@ pub(crate) fn minit(minit: &Minit, sockets: bool) {
 }
 
 /// `$this`'s data: the class's methods are non-static, so `$this` is one of ours.
-fn data(call: &Call) -> &PortData {
-    call.custom().unwrap_or_else(|| {
+fn data(call: &Call) -> Option<&PortData> {
+    call.custom().or_else(|| {
         invalid(call);
-        // The `E_ERROR` above bailed out.
-        swoole_rs_corebase::fatal("E_ERROR returned")
+        None
     })
 }
 
@@ -307,11 +305,10 @@ fn invalid(call: &Call) {
 }
 
 /// The port's bound server; an `E_ERROR`, which does not return, when unbound.
-fn bound_server(call: &Call) -> view::Server<'_> {
-    data(call).server().unwrap_or_else(|| {
+fn bound_server(call: &Call) -> Option<view::Server<'_>> {
+    data(call)?.server().or_else(|| {
         invalid(call);
-        // The `E_ERROR` above bailed out.
-        swoole_rs_corebase::fatal("E_ERROR returned")
+        None
     })
 }
 
@@ -323,8 +320,11 @@ fn construct(call: &Call) {
 fn destruct(_: &Call) {}
 
 fn on(call: &Call) {
-    let slots = &data(call).property.callbacks;
-    let serv = bound_server(call);
+    let Some(data) = data(call) else { return };
+    let slots = &data.property.callbacks;
+    let Some(serv) = bound_server(call) else {
+        return;
+    };
     if crate::io::closed(serv) {
         crate::server::fatal(
             E_WARNING,
@@ -388,7 +388,8 @@ fn get_callback(call: &Call) {
 }
 
 fn get_socket(call: &Call) {
-    let Some(port) = data(call).port() else {
+    let Some(data) = data(call) else { return };
+    let Some(port) = data.port() else {
         return invalid(call);
     };
     socket(port, call);
@@ -410,16 +411,17 @@ fn set(call: &Call) {
     let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
         return call.set_bool(false);
     };
-    let port = data(call).port().unwrap_or_else(|| {
-        invalid(call);
-        // The `E_ERROR` above bailed out.
-        swoole_rs_corebase::fatal("E_ERROR returned")
-    });
-    let serv = bound_server(call);
+    let Some(data) = data(call) else { return };
+    let Some(port) = data.port() else {
+        return invalid(call);
+    };
+    let Some(serv) = bound_server(call) else {
+        return;
+    };
     if apply_settings(port, serv, settings).is_err() {
         return call.set_bool(false);
     }
-    bailout::raise(finish(call, settings));
+    bailout::defer(finish(call, settings));
 }
 
 /// The `ListenPort` and TLS options of `set()`.

@@ -74,7 +74,7 @@ pub fn minit(minit: &Minit) {
         let Some((on, mode)) = pooling(value) else {
             let message = c"Error in pdo_odbc.connection_pooling configuration. Value must be one of \"strict\", \"relaxed\", or \"off\"";
             // MINIT; E_CORE_ERROR bails out, raised from this outermost Rust frame.
-            swoole_rs_zend::bailout::raise(swoole_rs_zend::report(
+            swoole_rs_zend::bailout::defer(swoole_rs_zend::report(
                 E_CORE_ERROR.cast_signed(),
                 message,
             ));
@@ -101,7 +101,7 @@ pub fn minit(minit: &Minit) {
     pdo.unregister(&swoole_pdo_odbc_driver);
     // A bailout (`E_ERROR` for a driver built against another PDO API) is raised
     // from this outermost Rust frame.
-    swoole_rs_zend::bailout::raise(pdo.register(&swoole_pdo_odbc_driver));
+    swoole_rs_zend::bailout::defer(pdo.register(&swoole_pdo_odbc_driver));
 }
 
 #[cfg(test)]

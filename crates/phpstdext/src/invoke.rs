@@ -171,7 +171,7 @@ fn call_method(receiver: Receiver, frame: &Call) {
         Some(alias) => call_alias(alias, &mut info, frame),
     };
     drop(info);
-    swoole_rs_zend::bailout::raise(outcome);
+    swoole_rs_zend::bailout::defer(outcome);
 }
 
 /// Call `alias` in `frame`, the dispatcher's, with `info`'s receiver first.
@@ -228,7 +228,7 @@ impl Wrapper {
         move_first(&mut argv, self.position);
         let outcome = frame.call_known(target, Zvals::owned(&argv));
         drop(argv);
-        swoole_rs_zend::bailout::raise(outcome);
+        swoole_rs_zend::bailout::defer(outcome);
     }
 }
 
@@ -248,7 +248,7 @@ macro_rules! wrappers {
             )*
         }
         swoole_rs_zend::handlers! {
-            leaf: $($handler => wrapped::$handler;)*
+            $($handler => wrapped::$handler;)*
         }
     };
 }
@@ -281,7 +281,6 @@ fn stream_method(frame: &Call) {
 }
 
 swoole_rs_zend::handlers! {
-    leaf:
     zif_swoole_call_array_method => array_method;
     zif_swoole_call_string_method => string_method;
     zif_swoole_call_stream_method => stream_method;

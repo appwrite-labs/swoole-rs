@@ -148,17 +148,26 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> bool {
             callbacks.call_server(ServerSlot::Start, serv);
         }
     }
+    if swoole_rs_corebase::process::pool::bailout_pending() {
+        return false;
+    }
     if !hybrid().step(serv, Step::MasterTimer) {
         hybrid().step(serv, Step::EventFree);
         return false;
     }
     hybrid().step(serv, Step::WorkerStart(id));
+    if swoole_rs_corebase::process::pool::bailout_pending() {
+        return false;
+    }
     // The heartbeat check.
     if config.heartbeat_check_interval.get() > 0 && !hybrid().step(serv, Step::HeartbeatTimer) {
         hybrid().step(serv, Step::EventFree);
         return false;
     }
     let waited = hybrid().step(serv, Step::ReactorWait);
+    if swoole_rs_corebase::process::pool::bailout_pending() {
+        return false;
+    }
     // Close every connection.
     crate::reactor_thread::each_connection(serv.state(), |conn| {
         crate::server_methods::close(serv, conn.session_id(), true);

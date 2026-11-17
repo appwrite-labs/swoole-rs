@@ -146,7 +146,6 @@ pub(crate) fn checked(call: &Call, result: Result<(), i32>) {
 #[cold]
 fn refused(call: &Call, code: i32) {
     check(call, Err(code));
-    bailout::finish();
 }
 
 /// `ZEND_PARSE_PARAMETERS_END_EX(RETURN_FALSE)` in a leaf handler: raise a bailout
@@ -154,7 +153,6 @@ fn refused(call: &Call, code: i32) {
 #[cold]
 fn failed(call: &Call) {
     call.set_bool(false);
-    bailout::finish();
 }
 
 /// `swoole::sec2msec(double)`, narrowed to the `int` `Lock::lock` takes.
@@ -171,16 +169,15 @@ pub(crate) fn lock_with(call: &Call, lock: impl FnOnce(&Call) -> Option<&Lock>) 
     let Ok((operation, timeout)) = parsed else {
         return failed(call);
     };
-    match lock(call) {
-        Some(lock) => checked(
+    if let Some(lock) = lock(call) {
+        checked(
             call,
             lock.lock(
                 operation.c_cast::<i32>(),
                 milliseconds(timeout),
                 CAPABILITIES,
             ),
-        ),
-        None => bailout::finish(),
+        );
     }
 }
 
@@ -190,9 +187,8 @@ fn lock(call: &Call) {
 
 /// `unlock(): bool`.
 fn unlock(call: &Call) {
-    match constructed(call) {
-        Some(lock) => checked(call, lock.unlock()),
-        None => bailout::finish(),
+    if let Some(lock) = constructed(call) {
+        checked(call, lock.unlock());
     }
 }
 
@@ -202,7 +198,6 @@ swoole_rs_zend::handlers! {
 
 // Each raises the bailout its failures can leave; the hot path has none.
 swoole_rs_zend::handlers! {
-    leaf:
     zim_swoole_lock_lock => lock;
     zim_swoole_lock_unlock => unlock;
 }

@@ -26,7 +26,7 @@ use swoole_rs_zend::{
     Owned, Value, ZString,
     bailout::{self, Bailout},
     host::callable::Callable,
-    string::{self, ZBuf},
+    string::ZBuf,
 };
 
 /// A `SocketImpl *`.
@@ -115,12 +115,9 @@ pub fn pop_string(buffer: &mut CppString, init_size: usize, length: usize) -> Op
     if !ours || buffer.view().len() < length {
         return None;
     }
-    let value = buffer.pop(init_size);
-    // SAFETY: a value the Zend string allocator made (checked), so of an
-    // unshared zend string with room for the `length` bytes it holds
-    // (checked), whose one reference the pop handed over.
-    (!value.is_null())
-        .then(|| unsafe { ZBuf::from_raw(string::from_val(value), length) }.into_zstring())
+    let mut value = buffer.pop_owned(init_size)?;
+    value.truncate(length);
+    Some(swoole_rs_phpswoole::received_string(value))
 }
 
 /// A live coroutine socket (`SocketImpl *`) over crates/hooks' record handle.

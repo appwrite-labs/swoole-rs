@@ -1,6 +1,5 @@
-//! `Swoole\Coroutine`'s static methods, `go()` and `defer()`. Handlers that
-//! switch coroutines hold nothing that needs a drop at the switch: a bailout
-//! in another coroutine may longjmp across them on the main stack.
+//! `Swoole\Coroutine`'s static methods, `go()` and `defer()`. A failed
+//! coroutine defers its bailout until the handler has completed Rust cleanup.
 use crate::{
     classes,
     classes::ExceptionClass,
@@ -76,7 +75,7 @@ fn create(call: &Call) {
     ) {
         Ok(cid) if cid > 0 => call.set_long(cid),
         Ok(_) => call.set_bool(false),
-        Err(Bailout) => runtime::raise(),
+        Err(Bailout) => Bailout.defer(),
     }
 }
 
@@ -141,7 +140,9 @@ fn set_yielded(cid: c_long, yielded: bool) -> bool {
 
 /// `Co::yield()`/`Co::suspend()`.
 fn yield_(call: &Call) {
-    let co = host::current_safe();
+    let Some(co) = host::require_coroutine() else {
+        return;
+    };
     set_yielded(host::cid(co), true);
     swoole_rs_corebase::coroutine::yield_with_cancel(co.raw(), move || cancel_yield(co));
     if host::is_canceled(co) {
@@ -234,7 +235,9 @@ impl swoole_rs_corebase::reactor::event_api::Deferred for JoinResume {
 
 /// `Co::join(array $cid_array, float $timeout = -1)`.
 fn join(call: &Call) {
-    let co = host::current_safe();
+    let Some(co) = host::require_coroutine() else {
+        return;
+    };
     let parsed = call
         .arity(1, 2)
         .and_then(|()| Ok((call.array_ref(1)?, call.double(2, -1.0)?)));
@@ -385,7 +388,9 @@ fn time_limit(cid: c_long) {
 
 /// `Co::isCanceled()`.
 fn is_canceled(call: &Call) {
-    let co = host::current_safe();
+    let Some(co) = host::require_coroutine() else {
+        return;
+    };
     call.set_bool(host::is_canceled(co));
 }
 
@@ -574,7 +579,7 @@ fn print_back_trace(call: &Call) {
         return;
     };
     if print_backtrace(call.php(), cid, options, limit, Some(call)).is_err() {
-        runtime::raise();
+        Bailout.defer();
     }
 }
 

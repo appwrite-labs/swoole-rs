@@ -10,10 +10,7 @@ use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_corebase::reactor::{SocketAddress, SocketFields, TimeoutKind};
 use swoole_rs_corebase::tls::upstream::{recv_sync, send_sync, socket_ssl_close};
 use swoole_rs_hooks::co_socket::{Co, OwnedCo};
-use swoole_rs_zend::{
-    E_ERROR, Owned, Value, ZString,
-    bailout::{self, Bailout},
-};
+use swoole_rs_zend::{E_ERROR, Owned, Value, ZString, bailout::Bailout};
 
 /// `new SocketImpl(...)` inside `zend_try`, since the constructor's warnings can
 /// run a PHP error handler: the socket is in `made`, which owns it before a
@@ -349,7 +346,6 @@ pub(crate) fn x509_read(pem: &[u8]) -> Result<Owned, Bailout> {
     let read = || {
         let arguments = std::slice::from_ref(&string);
         swoole_rs_zend::host::named_call_into(b"openssl_x509_read", arguments, &certificate);
-        bailout::finish();
     };
     // The body borrows `string` and `certificate`, which live outside it.
     swoole_rs_zend::contain_with(read)?;

@@ -160,6 +160,9 @@ pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> bool {
     };
     while reactor.with(|state| state.fields.running) {
         (ops.begin)(reactor);
+        if reactor.with(|state| state.fields.bailout) {
+            return true;
+        }
         let mut entries = 0;
         // Deferred work waits without blocking.
         match kernel_wait(reactor, reactor.has_deferred(), &mut entries) {
@@ -193,8 +196,14 @@ pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> bool {
                 run.ready.set(count);
                 for index in 0..run.ready.get() {
                     entry(&run, index);
+                    if reactor.with(|state| state.fields.bailout) {
+                        return true;
+                    }
                 }
             }
+        }
+        if reactor.with(|state| state.fields.bailout) {
+            return true;
         }
         (ops.end)(reactor, false);
         if once() {
@@ -268,8 +277,14 @@ fn ready(ops: &Loop<'_>, socket: crate::reactor::Heap<'static>, fd: c_int, mask:
     let fd_type = prepare(ops, socket, fd, mask & HANGUP != 0);
     let live = || registered(*socket);
     for (kind, bit) in [(Table::Read, READ), (Table::Write, WRITE)] {
-        if mask & bit != 0 && live() && !handle(ops, kind, fd_type) {
-            handler_failed(ops, kind);
+        if mask & bit != 0 && live() {
+            let handled = handle(ops, kind, fd_type);
+            if ops.reactor.with(|state| state.fields.bailout) {
+                return;
+            }
+            if !handled {
+                handler_failed(ops, kind);
+            }
         }
     }
     if mask & HANGUP != 0 && live() {
@@ -277,7 +292,11 @@ fn ready(ops: &Loop<'_>, socket: crate::reactor::Heap<'static>, fd: c_int, mask:
         if mask & (READ | WRITE) != 0 {
             return;
         }
-        if !handle(ops, Table::Error, fd_type) {
+        let handled = handle(ops, Table::Error, fd_type);
+        if ops.reactor.with(|state| state.fields.bailout) {
+            return;
+        }
+        if !handled {
             handler_failed(ops, Table::Error);
         }
     }
@@ -309,7 +328,11 @@ fn kqueue(ops: &Loop<'_>, event: &libc::kevent) {
         } else {
             Table::Write
         };
-        if !handle(ops, kind, fd_type) {
+        let handled = handle(ops, kind, fd_type);
+        if ops.reactor.with(|state| state.fields.bailout) {
+            return;
+        }
+        if !handled {
             handler_failed(ops, kind);
         }
         oneshot(ops, *socket, live);

@@ -47,15 +47,6 @@ const OPCODE: usize = 2;
 const FLAGS: usize = 3;
 const FINISH: usize = 4;
 
-/// Store `value` in the `which` declared property of a Frame just created, as
-/// `zend_update_property` does once it has found the slot by name: Frame has
-/// no write handler, and the default it replaces needs no release.
-fn set(frame: &Value, which: usize, value: Owned) {
-    if let Some(slot) = SLOTS.get(which) {
-        slot.init(frame, value);
-    }
-}
-
 /// `SW_HAVE_ZLIB`.
 pub(crate) static ZLIB: AtomicBool = AtomicBool::new(false);
 
@@ -586,7 +577,7 @@ fn uncompress(data: &[u8]) -> Option<Owned> {
 
 /// `websocket::construct_frame`: a new `Frame`, or a `CloseFrame` with the
 /// close payload's code and reason.
-fn construct(opcode: zend_long, payload: &Value, mut flags: u8) -> Owned {
+fn construct(opcode: zend_long, payload: Owned, mut flags: u8) -> Owned {
     let close = opcode == zend_long::from(Opcode::Close.code());
     let class = if close { &CLOSE_FRAME } else { &FRAME };
     let frame = class.create_object();
@@ -606,15 +597,14 @@ fn construct(opcode: zend_long, payload: &Value, mut flags: u8) -> Owned {
             }
         }
     } else {
-        // The Frame takes its own reference.
-        set(&frame, DATA, payload.copy());
+        SLOTS[DATA].init(&frame, payload);
     }
     if flags & FLAG_RSV1 != 0 {
         flags |= FLAG_COMPRESS;
     }
-    set(&frame, OPCODE, Owned::long(opcode));
-    set(&frame, FLAGS, Owned::long(i64::from(flags)));
-    set(&frame, FINISH, Owned::bool(flags & FLAG_FIN != 0));
+    SLOTS[OPCODE].init(&frame, Owned::long(opcode));
+    SLOTS[FLAGS].init(&frame, Owned::long(i64::from(flags)));
+    SLOTS[FINISH].init(&frame, Owned::bool(flags & FLAG_FIN != 0));
     frame
 }
 
@@ -714,10 +704,9 @@ fn unpack(call: &Call) {
     } else {
         Owned::string(ZString::new(payload))
     };
-    // The Frame takes its own reference to the payload.
     call.set_owned(construct(
         i64::from(frame.opcode.code()),
-        &zpayload,
+        zpayload,
         frame.flags.bits(),
     ));
 }
@@ -902,7 +891,8 @@ fn dispatch(
 pub(crate) fn on_message(server: view::Server<'_>, request: &RecvData) -> bool {
     let result = message(server, request);
     let ok = *result.as_ref().unwrap_or(&true);
-    bailout::raise(result.map(|_| ()));
+    bailout::defer(result.map(|_| ()));
+    host::stop_if_bailed();
     ok
 }
 
@@ -935,8 +925,8 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<bool, bailout::
         };
         data = plain;
     }
-    let frame = construct(zend_long::from(opcode), &data, flags);
-    set(&frame, FD, Owned::long(fd));
+    let frame = construct(zend_long::from(opcode), data, flags);
+    SLOTS[FD].init(&frame, Owned::long(fd));
     // The handler borrows the Frame, whose drop releases it.
     let server_object = zserv();
     let called = swoole_rs_zend::Zvals::with([&server_object, &frame], |args| {
@@ -947,7 +937,7 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<bool, bailout::
     server_object.delref();
     if let Err(bailout) = called {
         // As upstream, whose bailout jumps past the releases.
-        let _kept = (data.into_zval(), frame.into_zval());
+        let _kept = frame.into_zval();
         return Err(bailout);
     }
     Ok(true)
@@ -1313,10 +1303,9 @@ fn reply(settings: u8, socket: co::Co, opcode: u8, payload: &[u8]) {
 }
 
 /// A frame object for `payload`, with the socket's fd.
-fn deliver(socket: co::Co, opcode: u8, payload: &Value, flags: u8) -> Owned {
-    // The frame takes its own reference to the payload.
+fn deliver(socket: co::Co, opcode: u8, payload: Owned, flags: u8) -> Owned {
     let frame = construct(zend_long::from(opcode), payload, flags);
-    set(&frame, FD, Owned::long(zend_long::from(socket.sock_fd())));
+    SLOTS[FD].init(&frame, Owned::long(zend_long::from(socket.sock_fd())));
     frame
 }
 
@@ -1395,7 +1384,7 @@ fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8])
     };
     if respond {
         let payload = Owned::string(ZString::new(payload));
-        return Next::Done(deliver(socket, opcode.code(), &payload, FLAG_FIN));
+        return Next::Done(deliver(socket, opcode.code(), payload, FLAG_FIN));
     }
     if opcode == Opcode::Continuation {
         let Some(message) = slot.as_mut() else {
@@ -1419,7 +1408,7 @@ fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8])
             return Next::Done(protocol_error());
         };
         let flags = complete.flags.with_final().bits();
-        return Next::Done(deliver(socket, complete.opcode.code(), &payload, flags));
+        return Next::Done(deliver(socket, complete.opcode.code(), payload, flags));
     }
     if slot.is_some() {
         warning(
@@ -1433,7 +1422,7 @@ fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8])
         let Some(payload) = payload_string(payload, frame.flags.is_compressed()) else {
             return Next::Done(protocol_error());
         };
-        return Next::Done(deliver(socket, opcode.code(), &payload, frame.flags.bits()));
+        return Next::Done(deliver(socket, opcode.code(), payload, frame.flags.bits()));
     }
     let size = if payload.is_empty() {
         DEFAULT_BUFFER

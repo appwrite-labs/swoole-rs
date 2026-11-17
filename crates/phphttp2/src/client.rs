@@ -484,6 +484,9 @@ impl Client {
         {
             apply(socket, &setting);
         }
+        if swoole_rs_zend::bailout::pending() {
+            return false;
+        }
         let host = self.with_host(|host| host.clone());
         if !socket.connect_host(&host, c_int::try_from(self.port).unwrap_or(-1)) {
             return self.connect_failed(socket);
@@ -1330,7 +1333,6 @@ pub fn client_minit(args: &swoole_rs_phpswoole::MinitArgs) {
     let minit = args.minit;
     if let Err(error) = register(minit, args.shortname) {
         error.defer();
-        swoole_rs_zend::bailout::finish();
     }
 }
 
