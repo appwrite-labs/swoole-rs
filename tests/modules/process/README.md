@@ -28,3 +28,10 @@ and the async loop's deliberately ignored pipe-registration failure.
 pipe-controlled child to check pending/exit/status behavior and error capture.
 The original process/reaper assertions retain their integer observations only at
 the test or C boundary; manager service/reload ordering and timeout policy stay intact.
+
+`worker_owner.rs` (server crate unit tests) checks that the user-worker registry
+retains a Process's record, pipe and private queue until server teardown. It also
+checks that a thread's record copy retains those native resources, explicit close
+does not close a reused descriptor at drop, and a plain record copy does not adopt
+borrowed allocations. The existing PHP Process queue tests retain their inputs
+and assertions through the shared native owner.

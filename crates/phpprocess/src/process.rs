@@ -5,13 +5,11 @@ use crate::{
     host::{self, Callable},
     report::{INVALID_PARAMS, cli, errno, fatal, notice, set_errno, set_last_error, sys},
     signal::signal,
-    worker::{self, WorkerView},
+    worker::{self, Slot as WorkerSlot, WorkerView},
 };
 use std::{
     cell::{Cell, OnceCell},
     ffi::{CStr, c_int, c_long},
-    ptr,
-    rc::Rc,
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_corebase::CCast;
@@ -268,6 +266,13 @@ pub fn checked_worker(object: &Value) -> Option<Worker<'_>> {
     checked(object.custom())
 }
 
+/// Retain a constructed Process's native worker, pipe and queue for a server.
+pub fn retained_worker(object: &Value) -> Option<swoole_rs_server::process_worker::ProcessWorker> {
+    let process = object.custom::<Process>();
+    checked(process)?;
+    process?.worker.retain()
+}
+
 /// `php_swoole_process_set_worker`'s flags, once the object has its worker.
 fn configure(process: &Process, enable_coroutine: bool, stream_pipe: bool) {
     process.stream_pipe.set(stream_pipe);
@@ -393,7 +398,7 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if !worker::share(worker) {
+    if !worker::share(&process.worker, worker) {
         if redirect {
             worker::redirect(worker);
             pipe_type = PIPE_TYPE_STREAM;
@@ -410,7 +415,7 @@ fn construct(call: &Call) {
             } else {
                 libc::SOCK_DGRAM
             };
-            let Some(fd) = worker::open_pipe(worker, socket_type) else {
+            let Some(fd) = process.worker.open_pipe(socket_type) else {
                 call.throw(
                     swoole_rs_phpswoole::exception(),
                     c"failed to create unix soccket",
@@ -505,7 +510,7 @@ fn use_queue(call: &Call) {
     }
     let id = queue.id();
     if let Some(process) = process {
-        process.worker.queue.own(worker, queue);
+        process.worker.own_queue(queue);
     }
     let mode = mode.c_cast::<u8>();
     worker.set_msgqueue_mode(mode);
@@ -537,66 +542,10 @@ fn stat_queue(call: &Call) {
 
 fn free_queue(call: &Call) {
     let process = this(call);
-    let Some(worker) = checked(process) else {
+    if checked(process).is_none() {
         return;
-    };
-    call.set_bool(process.is_some_and(|process| process.worker.queue.free(worker)));
-}
-
-/// The worker a Process owns (none before its constructor ran) and the queue it
-/// owns, freed together when the slot drops, the worker first; a queue the worker
-/// borrows (the pool's) is never freed here.
-#[derive(Default)]
-struct WorkerSlot {
-    worker: worker::Slot,
-    queue: QueueSlot,
-}
-
-impl WorkerSlot {
-    fn get(&self) -> Option<Worker<'_>> {
-        self.worker.get()
     }
-
-    fn set(&self, worker: WorkerRecord) -> bool {
-        self.worker.set(worker)
-    }
-}
-
-/// The queue a Process owns, if any. A worker's queue pointer is set from here
-/// or borrowed from a pool; only the queue held here is ever freed, by dropping
-/// it. It is taken out only to destroy it, and its `Rc` is never cloned. The
-/// worker's pointer is the `Rc`'s own, which moving the `Rc` in and out of the
-/// cell leaves valid, where moving a box would not.
-#[derive(Default)]
-struct QueueSlot(Cell<Option<Rc<QueueRecord>>>);
-
-impl QueueSlot {
-    /// Takes `queue` and points `worker` at it; a queue it owned before is dropped.
-    fn own(&self, worker: Worker<'_>, queue: QueueRecord) {
-        let queue = Rc::new(queue);
-        worker.set_queue(Rc::as_ptr(&queue).cast_mut().cast());
-        drop(self.0.replace(Some(queue)));
-    }
-
-    /// `freeQueue` on `worker`: destroys and drops a queue this slot owns, and only
-    /// detaches one the worker borrows (the pool's).
-    fn free(&self, worker: Worker<'_>) -> bool {
-        if queue_of(worker).is_null() {
-            return false;
-        }
-        let mut owned = self.0.take();
-        if owned
-            .as_mut()
-            .and_then(Rc::get_mut)
-            .is_some_and(|queue| !queue.destroy())
-        {
-            self.0.set(owned);
-            return false;
-        }
-        worker.set_queue(ptr::null_mut());
-        drop(owned);
-        true
-    }
+    call.set_bool(process.is_some_and(|process| process.worker.free_queue()));
 }
 
 fn kill(call: &Call) {
@@ -950,7 +899,7 @@ fn close(call: &Call) {
         call.set_bool(false);
         return;
     }
-    if !worker::pipe_close(worker, which) {
+    if !this(call).is_some_and(|process| worker::pipe_close(&process.worker, worker, which)) {
         sys(E_WARNING, &message!("close() failed"));
         call.set_bool(false);
         return;
@@ -1106,6 +1055,7 @@ handlers! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ptr;
 
     // These drop a `WorkerSlot`, the part of a Process that owns its worker and
     // queue: the Process's own drop also releases its socket through PHP, which
@@ -1137,9 +1087,9 @@ mod tests {
         let mut queue = QueueRecord::new(libc::IPC_PRIVATE, true, 0);
         let slot = borrowing(&mut queue);
         let worker = worker(&slot);
-        assert!(slot.queue.free(worker), "detached");
+        assert!(slot.free_queue(), "detached");
         assert!(queue_of(worker).is_null(), "the worker no longer has it");
-        assert!(!slot.queue.free(worker), "nothing left to free");
+        assert!(!slot.free_queue(), "nothing left to free");
         drop(slot);
         assert!(queue.stat().is_some(), "the owner's queue still exists");
     }
@@ -1151,13 +1101,13 @@ mod tests {
         let worker = worker(&slot);
         let queue = QueueRecord::new(libc::IPC_PRIVATE, true, 0);
         let id = queue.id();
-        slot.queue.own(worker, queue);
+        slot.own_queue(queue);
         assert_eq!(
             with_queue(worker, QueueRecord::id),
             Some(id),
             "the worker points at it"
         );
-        assert!(slot.queue.free(worker), "destroyed");
+        assert!(slot.free_queue(), "destroyed");
         assert!(queue_of(worker).is_null(), "and detached");
     }
 

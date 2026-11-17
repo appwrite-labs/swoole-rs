@@ -715,6 +715,27 @@ class ChangedModules(unittest.TestCase):
                 self.assertEqual(dev.changed_modules('origin/main', consumers=False), sorted(dev.MODULES), path)
                 self.assertNotEqual(dev.changed_modules('origin/main'), sorted(dev.MODULES), path)
 
+    def test_nested_ownership_selects_the_most_specific_module(self):
+        # PHP's host API already lives below a crate owned by integration.
+        with patch.object(dev, 'dependents', return_value={}):
+            self.assertEqual(self.changed('crates/zend/src/host/mod.rs'), ['phphelpers'])
+            self.assertEqual(self.changed('crates/zend/src/lib.rs'), [])
+
+    def test_a_module_moved_into_another_crate_keeps_its_phpt_family(self):
+        manifest = json.loads((dev.ROOT / 'migration/modules.json').read_text())
+        coroutine = next(module for module in manifest['modules'] if module['id'] == dev.MODULES['coroutine'][0])
+        coroutine['owned_paths'].append('crates/corebase/src/coroutine/')
+        # Put the enclosing crate first, as it will be after a manifest reorder.
+        manifest['modules'].sort(key=lambda module: module['id'] != dev.MODULES['corebase'][0])
+        with patch.object(dev.json, 'loads', return_value=manifest), \
+             patch.object(dev.subprocess, 'check_output', return_value='crates/corebase/src/coroutine/scheduler.rs'):
+            self.assertEqual(dev.changed_modules('origin/main', consumers=False), ['coroutine'])
+        # Whole-package consumers remain selected until finer dependencies are known.
+        with patch.object(dev.json, 'loads', return_value=manifest), \
+             patch.object(dev, 'dependents', return_value={'crates/corebase/': {'crates/hooks/'}}):
+            self.assertEqual(self.changed('crates/corebase/src/coroutine/scheduler.rs'), ['coroutine', 'hooks'])
+            self.assertEqual(self.changed('crates/corebase/src/lifecycle.rs'), ['corebase', 'hooks'])
+
     def test_every_crate_has_an_owner(self):
         owned = [path for module in json.loads((dev.ROOT / 'migration/modules.json').read_text())['modules']
                  for path in module['owned_paths']]

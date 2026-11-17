@@ -189,9 +189,9 @@ pub fn swr_v1_process_server_worker(view: &ServerWorkers<'_>, id: u16) -> *mut W
 /// and direct record writes retain their original lookup behavior. Lookup is
 /// serialized with registry mutation by the registries' own locks.
 #[must_use]
-pub fn swr_v1_process_server_worker_by_pid(
+pub fn swr_v1_process_server_worker_by_pid<T>(
     view: &ServerWorkers<'_>,
-    registry: Option<&crate::worker_registry::WorkerRegistry>,
+    registry: Option<&crate::worker_registry::WorkerRegistry<T>>,
     pid: core::ffi::c_int,
 ) -> *mut WorkerRecord {
     // The canonical ordered event records: the first with this pid, in array order,
