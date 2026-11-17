@@ -234,6 +234,8 @@ struct AddressList(std::ptr::NonNull<libc::addrinfo>);
 // libc's. Each reads its integers and `Text`s, writes the one object a reference names
 // and reads or writes no other caller memory, so they are declared `safe`.
 unsafe extern "C" {
+    /// Reads a NUL-terminated address and writes at most one IPv6 address.
+    safe fn inet_pton(family: c_int, source: Text<'_>, destination: &mut [u8; 16]) -> c_int;
     /// Writes the text of `source`'s address (4 bytes for `AF_INET`, 16 for
     /// `AF_INET6`; another family reads nothing and fails) into at most `capacity`
     /// bytes of `output`, which `TextRoom` fixes at its length: `output`, or null.
@@ -253,6 +255,12 @@ unsafe extern "C" {
     ) -> c_int;
     /// Frees a list `getaddrinfo` stored, which the handle's move hands over.
     safe fn freeaddrinfo(list: AddressList);
+}
+
+/// Parses a platform address literal into the first four or sixteen destination bytes.
+#[must_use]
+pub fn pton(family: c_int, host: &CStr, destination: &mut [u8; 16]) -> bool {
+    inet_pton(family, host.into(), destination) == 1
 }
 
 /// `inet_ntop(family, binary)`'s text, or none for another family or a failure.
