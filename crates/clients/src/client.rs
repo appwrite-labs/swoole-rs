@@ -704,19 +704,14 @@ fn is_dgram(kind: c_int) -> bool {
     SocketType::from_raw(kind).is_some_and(SocketType::is_dgram)
 }
 
-/// `new Client(type, async)`: a handle on the new client, live until [`Handle::free`];
-/// None with errno set when the socket could not be made (logged as upstream's
-/// constructor does).
+/// `new Client(type, async)`: the new client's owner; None with errno set when the
+/// socket could not be made (logged as upstream's constructor does).
 #[must_use]
-pub fn create(kind: c_int, is_async: bool) -> Option<Handle<'static>> {
+pub fn create(kind: c_int, is_async: bool) -> Option<Owner> {
     create_with(kind, is_async, &SocketOps::NATIVE)
 }
 
-fn create_with(
-    kind: c_int,
-    is_async: bool,
-    socket_ops: &'static SocketOps,
-) -> Option<Handle<'static>> {
+fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> Option<Owner> {
     let fd_type = if is_stream(kind) {
         FD_STREAM_CLIENT
     } else {
@@ -779,16 +774,87 @@ fn create_with(
     if let Some((domain, _)) = socket_domain_and_type(kind) {
         client.domain = domain;
     }
-    let client = Handle::raw(Box::into_raw(client));
-    client
+    let client = Box::into_raw(client);
+    Handle::raw(client)
         .socket()
-        .edit(|record| record.object = client.0.cast());
-    Some(client)
+        .edit(|record| record.object = client.cast());
+    Some(Owner {
+        client,
+        kept: Cell::new(false),
+    })
 }
 
-impl Handle<'_> {
+/// The client [`create`] made, which it lends [`Handle`]s on. Dropping it is
+/// `delete client`, which may raise `onClose`, unless [`Owner::keep`] kept the
+/// client.
+pub struct Owner {
+    client: *mut Client,
+    kept: Cell<bool>,
+}
+
+impl Owner {
+    /// A handle on the client, which can't outlive this owner.
+    #[must_use]
+    pub const fn handle(&self) -> Handle<'_> {
+        Handle::raw(self.client)
+    }
+
+    /// Never free the client: dropping this owner leaves it, as upstream leaves a
+    /// client nothing deletes.
+    pub fn keep(&self) {
+        self.kept.set(true);
+    }
+}
+
+impl Drop for Owner {
+    /// `delete client`, which may raise `onClose`. Only [`create`] makes an owner,
+    /// and only this frees its client.
+    fn drop(&mut self) {
+        if self.kept.get() {
+            return;
+        }
+        let client = self.client;
+        let this = Handle::raw(client);
+        if !this.flag(Flag::Closed) {
+            close(this);
+        }
+        this.input_free();
+        // A pending connect timer would fire on a freed client.
+        this.timer_clear();
+        if this.flag(Flag::WaitDns) {
+            // A lookup still in the pool finds no client when it completes.
+            with_awaiting(|awaiting| awaiting.retain(|&(_, waiting)| waiting.0 != client));
+        }
+        let is_async = this.flag(Flag::Async);
+        if is_async {
+            // A cleared object tells a close in progress that the client is gone.
+            this.socket()
+                .edit(|socket| socket.object = core::ptr::null_mut());
+        }
+        // SAFETY: the Box `create` made, released once: by its owner's drop.
+        let client = unsafe { Box::from_raw(client) };
+        let Client {
+            socket,
+            socket_ops,
+            socks5,
+            http_proxy,
+            ..
+        } = *client;
+        if is_async {
+            (socket_ops.free_socket)(Some(socket));
+        } else {
+            // `delete socket`.
+            socket.free();
+        }
+        // The proxies first, then the rest of the state.
+        drop(socks5);
+        drop(http_proxy);
+    }
+}
+
+impl<'a> Handle<'a> {
     /// `f` over the protocol, socket and input buffer a framed receive acts on, live
-    /// while the client is (until [`Handle::free`]): the record's protocol in place, as
+    /// while the client is (until its owner frees it): the record's protocol in place, as
     /// its callbacks take it by address, and the input buffer an async connect made.
     pub fn with_framed<R>(
         self,
@@ -797,9 +863,9 @@ impl Handle<'_> {
         f(self.protocol(), self.socket(), self.input())
     }
 
-    /// The client, borrowed while this handle is: live until [`Handle::free`].
+    /// The client, live while its owner is.
     #[must_use]
-    pub fn client(&self) -> &Client {
+    pub fn client(self) -> &'a Client {
         self.get()
     }
 
@@ -825,47 +891,6 @@ impl Handle<'_> {
             .tls
             .get()
             .and_then(|tls| NonNull::new(tls.as_ptr().cast_mut()))
-    }
-
-    /// `delete client`, which may raise `onClose`.
-    ///
-    /// # Safety
-    /// Neither this handle nor a copy of it is used afterwards.
-    pub unsafe fn free(self) {
-        if !self.flag(Flag::Closed) {
-            close(self);
-        }
-        self.input_free();
-        // A pending connect timer would fire on a freed client.
-        self.timer_clear();
-        if self.flag(Flag::WaitDns) {
-            // A lookup still in the pool finds no client when it completes.
-            with_awaiting(|awaiting| awaiting.retain(|&(_, client)| client.0 != self.0));
-        }
-        let is_async = self.flag(Flag::Async);
-        if is_async {
-            // A cleared object tells a close in progress that the client is gone.
-            self.socket()
-                .edit(|socket| socket.object = core::ptr::null_mut());
-        }
-        // SAFETY: a Box from `create`, released once (per the caller).
-        let client = unsafe { Box::from_raw(self.0) };
-        let Client {
-            socket,
-            socket_ops,
-            socks5,
-            http_proxy,
-            ..
-        } = *client;
-        if is_async {
-            (socket_ops.free_socket)(Some(socket));
-        } else {
-            // `delete socket`.
-            socket.free();
-        }
-        // The proxies first, then the rest of the state.
-        drop(socks5);
-        drop(http_proxy);
     }
 
     /// `Client::get_peer_name`: datagram peers are value snapshots of the last
@@ -1223,7 +1248,7 @@ thread_local! {
     /// The last lookup's id on this thread.
     static LAST_LOOKUP: Cell<usize> = const { Cell::new(0) };
     /// The clients awaiting a lookup on this thread, each with its lookup's id;
-    /// [`Handle::free`] drops a client's entry.
+    /// freeing a client drops its entry.
     static AWAITING: Cell<Vec<(usize, Handle<'static>)>> = const { Cell::new(Vec::new()) };
 }
 

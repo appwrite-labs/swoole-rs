@@ -16,7 +16,7 @@ use super::case::{
 use super::*;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use swoole_rs_clients::client::{self as native, Flag, Handle};
+use swoole_rs_clients::client::{self as native, Flag, Handle, Owner};
 
 const PACKET: &[u8] = b"hello world\n";
 const TEST_HOST6: &str = "::1";
@@ -144,7 +144,7 @@ impl Server {
 
 /// `network::SyncClient`, closed and deleted on drop.
 struct SyncClient {
-    state: Handle<'static>,
+    state: Owner,
     dgram: bool,
     connected: bool,
     created: bool,
@@ -162,8 +162,8 @@ impl SyncClient {
     }
 
     /// crates/clients' handle on the client.
-    fn handle(&self) -> Handle<'static> {
-        self.state
+    fn handle(&self) -> Handle<'_> {
+        self.state.handle()
     }
 
     fn connect(&mut self, host: &str, port: c_int) -> bool {
@@ -205,7 +205,7 @@ impl SyncClient {
     }
 
     fn close(&mut self) -> bool {
-        let client = self.state.client();
+        let client = self.handle().client();
         if !self.created || client.flag(Flag::Closed) {
             return false;
         }
@@ -220,8 +220,7 @@ impl Drop for SyncClient {
         if self.created {
             self.close();
         }
-        // SAFETY: the client `new` made, deleted once.
-        unsafe { self.handle().free() };
+        // Dropping `state` deletes the client.
     }
 }
 

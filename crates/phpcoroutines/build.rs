@@ -4,7 +4,7 @@
 //! `build` key points here), under their `php` or `upstream-symbols` feature.
 //! A crate's `thread` feature is upstream's `SW_THREAD` build without PHP.
 
-fn main() {
+pub(crate) fn main() {
     println!("cargo::rustc-check-cfg=cfg(zts)");
     if std::env::var_os("CARGO_FEATURE_THREAD").is_some() {
         println!("cargo::rustc-cfg=zts");

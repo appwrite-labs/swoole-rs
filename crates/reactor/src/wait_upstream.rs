@@ -57,7 +57,7 @@ mod registry {
         if SIGNAL_READY.load(Ordering::Relaxed) {
             return;
         }
-        if swoole_rs_coroutine::thread_context_active() {
+        if swoole_rs_corebase::coroutine::thread_context_active() {
             // Coroutine threads block every signal: register SIGCHLD on the loop's
             // thread, then reap the children that exited before it ran. A coroutine
             // runs, so the thread has a live loop.
@@ -75,28 +75,30 @@ mod registry {
         if crate::event_api::swr_v1_event_current().is_null() {
             return ptr::null_mut();
         }
-        swoole_rs_coroutine::current().cast()
+        swoole_rs_corebase::coroutine::current().cast()
     }
 
     fn yield_for(timeout: f64, arm: &dyn Fn(Wake)) {
-        let co = swoole_rs_coroutine::current();
+        let co = swoole_rs_corebase::coroutine::current();
         if !co.is_null() {
             // `co->yield_ex(timeout)` of the running coroutine, its waker armed first.
-            let code = swoole_rs_coroutine::yield_timed_armed(co.cast(), timeout, |waker| {
-                let (cid, park) = waker.parts();
-                arm(Wake { cid, park });
-            });
-            _ = swoole_rs_coroutine::yield_resumed(code);
+            let code =
+                swoole_rs_corebase::coroutine::yield_timed_armed(co.cast(), timeout, |waker| {
+                    let (cid, park) = waker.parts();
+                    arm(Wake { cid, park });
+                });
+            _ = swoole_rs_corebase::coroutine::yield_resumed(code);
         }
     }
 
     fn timed_out() -> bool {
-        swoole_rs_coroutine::current_resume_code() == Some(swoole_rs_coroutine::Resume::TimedOut)
+        swoole_rs_corebase::coroutine::current_resume_code()
+            == Some(swoole_rs_corebase::coroutine::Resume::TimedOut)
     }
 
     /// `co->resume()` on the loop's thread, where the signal dispatch reaps.
     fn wake(wake: Wake) {
-        swoole_rs_coroutine::Waker::of_parts((wake.cid, wake.park)).wake();
+        swoole_rs_corebase::coroutine::Waker::of_parts((wake.cid, wake.park)).wake();
     }
 
     pub(super) static COROUTINES: Coroutines = Coroutines {
@@ -164,7 +166,7 @@ pub extern "C" fn system_waitpid_safe(
     const LOCK_MAX_SECOND: f64 = 0.1;
     let mut status = status;
     let outside = crate::event_api::swr_v1_event_current().is_null()
-        || swoole_rs_coroutine::current().is_null();
+        || swoole_rs_corebase::coroutine::current().is_null();
     if outside || options & libc::WNOHANG != 0 {
         return sys::waitpid(pid, status, options).map_or(-1, |pid| pid.unwrap_or(0));
     }

@@ -1,10 +1,10 @@
 //! Coroutine stacks: allocation (heap, or a mapping with a guard page), the
 //! usage markers and their exponential sampling. context.rs switches onto it.
 
+use crate::sys;
 use core::ffi::{c_int, c_void};
 use core::mem::MaybeUninit;
 use std::ptr::{self, NonNull};
-use swoole_rs_corebase::sys;
 
 const START: usize = 64 * 1024;
 const MAGIC: &[u8] = b"swoole_coroutine#5652a7fb2b38be";

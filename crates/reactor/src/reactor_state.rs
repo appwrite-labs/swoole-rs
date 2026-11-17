@@ -8,6 +8,7 @@ use crate::wait_loop::BackendKind;
 use crate::{PollSnapshot, handlers::Handlers, registry::Registry};
 use libc::{c_int, c_void};
 use std::ptr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use swoole_rs_corebase::HookType;
 
 /// `Reactor::close`: frees `socket`, one of the reactor's.
@@ -59,6 +60,8 @@ pub struct ReactorState {
     /// The `defer_tasks` queues the defer end callback detached and is running, innermost
     /// last: one a task bailed out of stays here for the drop to free.
     pub(crate) running_defer: Vec<crate::ReactorDeferred>,
+    /// Process-unique and nonzero: the mark a socket this registry names carries.
+    pub(crate) serial: u32,
 }
 // swoole_rs_reactor.h asserts the same layout for swr_v1_reactor_head.
 const _: () = assert!(
@@ -90,6 +93,35 @@ pub(crate) enum Backend {
 impl Drop for ReactorState {
     fn drop(&mut self) {
         self.close_backend();
+    }
+}
+
+/// Clears `socket`'s mark if it names the reactor of `serial`: one another reactor has
+/// since registered stays that reactor's.
+fn unmark(socket: crate::Socket<'_>, serial: u32) {
+    _ = socket
+        .mark()
+        .compare_exchange(serial, 0, Ordering::Relaxed, Ordering::Relaxed);
+}
+
+/// The next reactor's serial.
+static SERIALS: AtomicU32 = AtomicU32::new(1);
+
+/// A serial no other reactor of the process has, and never 0, which marks a socket no
+/// registry names.
+fn next_serial() -> u32 {
+    loop {
+        let serial = SERIALS.fetch_add(1, Ordering::Relaxed);
+        if serial != 0 {
+            return serial;
+        }
+    }
+}
+
+impl crate::Running<'_> {
+    /// The reactor's serial ([`ReactorState::serial`]).
+    pub(crate) fn serial(self) -> u32 {
+        self.with(|state| state.serial)
     }
 }
 
@@ -206,6 +238,7 @@ impl ReactorState {
             callbacks: crate::callbacks::Callbacks::default(),
             object_key: None,
             running_defer: Vec::new(),
+            serial: next_serial(),
         });
         if !owner.open_backend(opened, count) {
             let (origin, call) = if opened == BackendKind::Epoll {
@@ -349,7 +382,13 @@ pub fn swr_v1_reactor_delete(OwnedReactor(handle): OwnedReactor) {
     // Dropping a task may run its owner's code, which may reach the reactor.
     drop(cycle_tasks);
     crate::deferred::run_destroy(handle);
-    handle.with(ReactorState::close_backend);
+    // The destroy callbacks were the last to delete sockets from the reactor; with its
+    // backend gone nothing can, so the sockets it still names are let go, and freeing
+    // one from here (a queued free, say) is no longer the reactor's business.
+    handle.with(|state| {
+        state.release_sockets();
+        state.close_backend();
+    });
     reactor_hook(HookType::ON_REACTOR_DESTROY, handle);
     // A disposer can defer again through the reactor's head (a PHP destructor calling
     // `Event::defer`), so the queues are detached and freed until they stay empty, and
@@ -580,12 +619,19 @@ impl ReactorState {
     ) -> bool {
         use crate::change::Request;
         let (Request::Add(socket) | Request::Set(socket) | Request::Del(socket)) = request;
+        let serial = self.serial;
         socket.edit(|record| {
             match request {
                 Request::Add(added) => {
+                    let replaced = self.registry.get(record.fd);
                     if !self.registry.put(record.fd, added, events) {
                         return false;
                     }
+                    // A socket whose fd closed unremoved is no longer this registry's.
+                    if let Some(replaced) = replaced.filter(|old| old.as_ptr() != added.as_ptr()) {
+                        unmark(replaced, serial);
+                    }
+                    added.mark().store(serial, Ordering::Relaxed);
                     record.events = events;
                     record.removed = false;
                 }
@@ -593,14 +639,41 @@ impl ReactorState {
                     record.events = events;
                     self.registry.set(record.fd, events);
                 }
-                Request::Del(_) => {
+                Request::Del(deleted) => {
                     record.events = crate::Events::NONE;
                     record.removed = true;
                     self.registry.remove(record.fd);
+                    unmark(deleted, serial);
                 }
             }
             true
         })
+    }
+
+    /// Forgets `socket` wherever the registry names it, the kernel left alone: for a
+    /// socket being freed whose registration `Reactor::del` could not find by its fd.
+    pub(crate) fn forget(&mut self, socket: crate::Socket<'_>) {
+        let named: Vec<c_int> = self
+            .registry
+            .registered()
+            .filter(|&(_, entry, _)| entry.as_ptr() == socket.as_ptr())
+            .map(|(fd, ..)| fd)
+            .collect();
+        for fd in named {
+            self.registry.remove(fd);
+        }
+        socket.edit(|record| {
+            record.events = crate::Events::NONE;
+            record.removed = true;
+        });
+        unmark(socket, self.serial);
+    }
+
+    /// Lets every socket the registry names go: freeing one no longer deletes it here.
+    fn release_sockets(&self) {
+        for (_, socket, _) in self.registry.registered() {
+            unmark(socket, self.serial);
+        }
     }
 
     pub(crate) fn close_backend(&mut self) {
@@ -691,6 +764,90 @@ pub(crate) mod tests {
             free(state.owner);
         }
     }
+
+    /// A heap record over a pipe's read end, added to the reactor for reading, and the
+    /// pipe's write end.
+    fn registered(reactor: crate::Running<'_>) -> (crate::OwnedSocket, c_int) {
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let owned = crate::OwnedSocket::new(Box::new(SocketRecord::with_fd(fds[0], 0)));
+        let socket = unsafe { crate::Socket::from_ptr(owned.socket().as_ptr()) }.unwrap();
+        assert!(crate::reactor_upstream::change(
+            reactor,
+            socket,
+            crate::ChangeOp::Add,
+            crate::Events::READ
+        ));
+        (owned, fds[1])
+    }
+
+    /// The mark at the record's byte 300, where native code's layout has room for it.
+    fn mark_at_300(socket: crate::Socket<'_>) -> u32 {
+        unsafe { socket.as_ptr().byte_add(300).cast::<u32>().read() }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no kqueue")]
+    fn freeing_a_registered_socket_deletes_it_from_the_reactor() {
+        #[cfg(target_os = "linux")]
+        let native_kind = 1;
+        #[cfg(not(target_os = "linux"))]
+        let native_kind = 2;
+        for kind in [3, native_kind] {
+            let state = state(kind, 4);
+            let reactor = running(state.owner);
+            swoole_rs_corebase::set_thread_reactor(state.owner.cast());
+            let (owned, writer) = registered(reactor);
+            assert_eq!(mark_at_300(owned.socket()), reactor.serial());
+            assert_eq!(reactor.registry(Registry::count), 1);
+            let record = Box::leak(owned.into_box());
+            assert_eq!(reactor.registry(Registry::count), 0, "the free deleted it");
+            assert!(record.removed && record.events == crate::Events::NONE);
+            let fd = record.fd;
+            let record = crate::Socket::new(record);
+            assert_eq!(mark_at_300(record), 0);
+            // Its descriptor is the kernel's no more: a write wakes nothing.
+            assert_eq!(unsafe { libc::write(writer, b"a".as_ptr().cast(), 1) }, 1);
+            unsafe { (*state.fields).timeout_msec = 0 };
+            let mut entries = 0;
+            if kind != 3 {
+                assert_eq!(kernel_wait(reactor, true, &mut entries).ok(), Some(0));
+            }
+            swoole_rs_corebase::set_thread_reactor(ptr::null_mut());
+            unsafe { free(state.owner) };
+            drop(unsafe { Box::from_raw(record.as_ptr()) });
+            unsafe { libc::close(fd) };
+            unsafe { libc::close(writer) };
+        }
+    }
+
+    #[test]
+    fn a_socket_outliving_its_reactor_frees_without_it() {
+        let state = state(3, 4);
+        let reactor = running(state.owner);
+        let (owned, writer) = registered(reactor);
+        assert_eq!(mark_at_300(owned.socket()), reactor.serial());
+        unsafe { free(state.owner) };
+        assert_eq!(
+            mark_at_300(owned.socket()),
+            0,
+            "the reactor's delete let it go"
+        );
+        // No reactor runs on this thread, and none names the record: the free goes on.
+        let record = owned.into_box();
+        unsafe { libc::close(record.fd) };
+        unsafe { libc::close(writer) };
+    }
+
+    #[test]
+    fn reactors_have_distinct_nonzero_serials() {
+        let (a, b) = (state(3, 1), state(3, 1));
+        let (a_serial, b_serial) = (running(a.owner).serial(), running(b.owner).serial());
+        assert!(a_serial != 0 && b_serial != 0 && a_serial != b_serial);
+        unsafe { free(a.owner) };
+        unsafe { free(b.owner) };
+    }
+
     #[test]
     #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn actual_backend_waits_read_pipe_and_close_ownership_before_destroy_hook() {

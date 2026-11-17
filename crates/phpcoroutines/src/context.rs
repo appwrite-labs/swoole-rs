@@ -21,7 +21,7 @@ use std::{
     ptr::{self, NonNull},
     rc::Rc,
 };
-use swoole_rs_coroutine::{CoroutineTask, State};
+use swoole_rs_corebase::coroutine::{CoroutineTask, State};
 use swoole_rs_timer::Held;
 use swoole_rs_zend::sys::{
     IS_NULL, IS_STRING, IS_UNDEF, swr_zend_callable, swr_zend_callable_hold,
@@ -584,7 +584,7 @@ pub(crate) fn run(args: Args) -> bool {
     let caught = host::run(ctx);
     close(ctx);
     // The context goes with this frame.
-    swoole_rs_coroutine::clear_current_task();
+    swoole_rs_corebase::coroutine::clear_current_task();
     caught
 }
 
@@ -599,7 +599,7 @@ fn open(args: Args, context: &mut Context) -> Option<Ctx> {
     this.set_enable_scheduler(true);
     // SAFETY: a new PHP context, the kind `on_yield` and `on_resume` take,
     // which lives until `run` clears the task.
-    unsafe { swoole_rs_coroutine::set_current_task(this.0.cast()) };
+    unsafe { swoole_rs_corebase::coroutine::set_current_task(this.0.cast()) };
     if host::flag(host::FIBER_MOCK) {
         fiber_init(this);
     }

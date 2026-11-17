@@ -244,7 +244,7 @@ fn destruct(call: &Call) {
     let Some(conn) = net::this(call).conn() else {
         return;
     };
-    if !conn.flag(state::Flag::Closed) && bailed(conn.cli.run(state::close)).is_none() {
+    if !conn.flag(state::Flag::Closed) && bailed(conn.cli().run(state::close)).is_none() {
         return;
     }
     // A close callback may have freed it already.
@@ -274,7 +274,7 @@ fn connection(object: Obj, port: i64) -> Option<Rc<Conn>> {
     object.props().long(c"sock", i64::from(conn.fd()));
     // `SW_SOCK_SSL`.
     if kind & (1 << 9) != 0 {
-        let _context = conn.cli.handle().enable_ssl();
+        let _context = conn.cli().handle().enable_ssl();
     }
     Some(Rc::new(conn))
 }
@@ -313,7 +313,7 @@ fn connect(call: &Call) {
         return call.set_bool(false);
     };
     if let Some(zset) = net::settings(object)
-        && crate::settings::apply(fresh.cli, zset).is_none()
+        && crate::settings::apply(fresh.cli(), zset).is_none()
     {
         return call.set_bool(false);
     }
@@ -367,13 +367,13 @@ fn connect(call: &Call) {
         let object = Obj::new(unsafe { ObjectRef::from_ptr(zobject) });
         bailout::raise(event(object, kind, data, length));
     };
-    state::listen(fresh.cli.get(), events, Rc::new(listener));
+    state::listen(fresh.cli().get(), events, Rc::new(listener));
     net::this(call).set_conn(Some(fresh.clone()));
     hold(object);
 
     let host_text = native::c_text(host);
     let connect = |h| state::connect(h, &host_text, net::int(port), timeout, net::int(flags));
-    let Some(connected) = bailed(fresh.cli.run(connect)) else {
+    let Some(connected) = bailed(fresh.cli().run(connect)) else {
         return call.set_bool(false);
     };
     // Only the object holds the connection now, so a release below destroys it.
@@ -414,7 +414,7 @@ fn close(call: &Call) {
         warn(ErrorKind::Fatal, "client is not connected to the server");
         return call.set_bool(false);
     };
-    call.set_bool(bailed(conn.cli.run(state::close)) == Some(true));
+    call.set_bool(bailed(conn.cli().run(state::close)) == Some(true));
 }
 
 /// `on(string $host, callable $callback): bool`.
@@ -484,7 +484,7 @@ fn pause(call: &Call, op: fn(Handle<'_>) -> bool) {
     let Some(conn) = net::connected(call) else {
         return call.set_bool(false);
     };
-    call.set_bool(bailed(conn.cli.run(op)) == Some(true));
+    call.set_bool(bailed(conn.cli().run(op)) == Some(true));
 }
 
 fn sleep(call: &Call) {
@@ -514,7 +514,7 @@ fn enable_ssl(call: &Call) {
     if !net::enable_ssl(call, &conn) {
         return call.set_bool(false);
     }
-    if bailed(conn.cli.run(state::ssl_wait)) != Some(true) {
+    if bailed(conn.cli().run(state::ssl_wait)) != Some(true) {
         return call.set_bool(false);
     }
     let object = Obj::this(call);
@@ -533,7 +533,7 @@ fn enable_ssl(call: &Call) {
     set_property(call, 1, Slot::SslReady.name());
     replace(object, Slot::SslReady, callable);
     conn.ssl_wait.set(true);
-    if let Some(socket) = conn.cli.net() {
+    if let Some(socket) = conn.cli().net() {
         socket.edit(|record| record.tls.state = SSL_STATE_WAIT_STREAM);
     }
     call.set_bool(true);

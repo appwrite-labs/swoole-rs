@@ -548,7 +548,7 @@ pub fn clean_worker_connections(serv: view::Server<'_>, worker: Worker<'_>) {
 /// `worker->coroutine_num = Coroutine::count()`, after each round of the loop, of the
 /// worker `start_event_worker` runs: the process's current one (`enter_child`).
 extern "C-unwind" fn count_coroutines() {
-    let count = swoole_rs_coroutine::coroutine_count();
+    let count = swoole_rs_corebase::coroutine::coroutine_count();
     _ = with_current(|worker| worker.write_coroutine_num(count));
 }
 

@@ -60,18 +60,18 @@ unsafe extern "C" {
 /// The coroutine a query parks.
 mod co {
     use std::ffi::c_long;
-    use swoole_rs_coroutine::State;
+    use swoole_rs_corebase::coroutine::State;
 
-    pub(super) use swoole_rs_coroutine::{
+    pub(super) use swoole_rs_corebase::coroutine::{
         Resume, Waker, current_cid, yield_resumed, yield_timed_armed,
     };
 
     /// `Coroutine::get_current_safe()`.
-    pub(super) use swoole_rs_coroutine::current_safe as current;
+    pub(super) use swoole_rs_corebase::coroutine::current_safe as current;
 
     /// `co->is_suspending()` of coroutine `cid`: false once it ended.
     pub(super) fn suspending(cid: c_long) -> bool {
-        swoole_rs_coroutine::coroutine_state(cid) == Some(State::Waiting)
+        swoole_rs_corebase::coroutine::coroutine_state(cid) == Some(State::Waiting)
     }
 }
 const ORIGIN: &std::ffi::CStr = c"coroutine::dns_lookup_impl_with_cares";

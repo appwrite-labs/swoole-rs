@@ -513,6 +513,13 @@ mod tests {
             execute_end(running(owner), false);
             assert!((*fields).running);
             assert_eq!(take(), [6, 6]);
+            // The registry lets go of the frame's record before the frame does.
+            assert!(crate::reactor_state::tests::record(
+                owner,
+                &raw mut socket,
+                crate::ChangeOp::Del,
+                crate::Events::NONE
+            ));
         });
     }
 }

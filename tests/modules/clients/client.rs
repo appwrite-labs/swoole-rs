@@ -23,7 +23,7 @@ use super::{
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::io::{Read, Write};
-use swoole_rs_clients::client::{self as native, ClientEvent, Flag, Handle};
+use swoole_rs_clients::client::{self as native, ClientEvent, Flag, Handle, Owner};
 use swoole_rs_corebase::net_types::SocketAddress;
 
 const GREETER: &[u8] = b"Hello Swoole\0";
@@ -126,7 +126,7 @@ type ReceiveSlot<'a> = RefCell<Option<Box<dyn FnMut(&Client<'a>, &[u8]) + 'a>>>;
 
 /// `network::Client`, deleted on drop; `created`/`connected` are `SyncClient`'s.
 pub(super) struct Client<'a> {
-    state: Handle<'static>,
+    state: Owner,
     created: Cell<bool>,
     connected: Cell<bool>,
     sync: bool,
@@ -252,7 +252,7 @@ impl<'a> Client<'a> {
     /// crates/clients' handle on the client.
     /// The crates' client `state` is.
     fn client(&self) -> &swoole_rs_clients::client::Client {
-        self.state.client()
+        self.handle().client()
     }
 
     /// The client's `SSLContext` owner, null while TLS is off.
@@ -263,8 +263,8 @@ impl<'a> Client<'a> {
         })
     }
 
-    fn handle(&self) -> Handle<'static> {
-        self.state
+    fn handle(&self) -> Handle<'_> {
+        self.state.handle()
     }
 
     pub(super) fn connect(&self, host: &str, port: c_int, timeout: f64, flags: c_int) -> c_int {
@@ -469,8 +469,7 @@ impl Drop for Client<'_> {
         if self.sync && self.created.get() {
             self.sync_close();
         }
-        // SAFETY: the client `new` made, deleted once.
-        unsafe { self.handle().free() };
+        // `state`, the first field, drops next: `delete cli`.
     }
 }
 

@@ -229,7 +229,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
             unsafe { crate::fatal_error(OPERATION_NOT_SUPPORT, message) };
         };
         // `SwooleG.fatal_error` may return, so each check runs.
-        if (host.coroutine_is_in)() {
+        if !crate::coroutine::current().is_null() {
             refuse(c"must be forked outside the coroutine");
         }
         if with(|thread| !thread.async_threads.get().is_null()) {
@@ -384,7 +384,6 @@ mod tests {
             timer_free: || {},
             event_available: || false,
             event_free: || {},
-            coroutine_is_in: || false,
         });
     }
 

@@ -142,7 +142,6 @@ dependencies = [
  "libc",
  "swoole-rs-base64",
  "swoole-rs-corebase",
- "swoole-rs-coroutine",
  "swoole-rs-error",
  "swoole-rs-http-ffi",
  "swoole-rs-protocols",
@@ -156,20 +155,13 @@ dependencies = [
 name = "swoole-rs-corebase"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "itoa",
  "libc",
  "memchr",
  "swoole-rs-base64",
  "swoole-rs-error",
  "swoole-rs-framing",
-]
-
-[[package]]
-name = "swoole-rs-coroutine"
-version = "0.1.0"
-dependencies = [
- "libc",
- "swoole-rs-corebase",
 ]
 
 [[package]]
@@ -321,7 +313,6 @@ dependencies = [
  "libc",
  "openssl-sys",
  "swoole-rs-corebase",
- "swoole-rs-coroutine",
  "swoole-rs-error",
  "swoole-rs-memory",
  "swoole-rs-ossupport",

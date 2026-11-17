@@ -1662,9 +1662,11 @@ fn test_clean_worker(mode: c_int) {
 
     counter_init();
 
-    let client =
-        native::create(SW_SOCK_TCP, true).expect("AsyncClient ac(SW_SOCK_TCP) has a socket");
-    *CLEAN_CLIENT.lock().unwrap() = Some(CleanClient(client));
+    // Leaked so the server's threads can share its handle; freed below.
+    let client: &'static native::Owner = Box::leak(Box::new(
+        native::create(SW_SOCK_TCP, true).expect("AsyncClient ac(SW_SOCK_TCP) has a socket"),
+    ));
+    *CLEAN_CLIENT.lock().unwrap() = Some(CleanClient(client.handle()));
 
     let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
     assert!(port.is_some());
@@ -1684,8 +1686,9 @@ fn test_clean_worker(mode: c_int) {
     assert_eq!(counter_get(2), 0); // Server on_close
     assert_eq!(counter_get(3), 0); // Client on_receive
     assert_no_failure();
-    // SAFETY: the client this test made, deleted once.
-    unsafe { clean_client().free() };
+    CLEAN_CLIENT.lock().unwrap().take();
+    // SAFETY: the box leaked above, whose handles the stopped server no longer uses.
+    drop(unsafe { Box::from_raw(core::ptr::from_ref(client).cast_mut()) });
     serv.delete();
 }
 

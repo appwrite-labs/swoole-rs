@@ -103,7 +103,7 @@ pub fn module_entry(families: &'static module::Families) -> *mut zend_module_ent
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_phpswoole_fatal_exit(error: Fatal<'_>) {
     if error.is(CO_HAS_BEEN_BOUND) {
-        let cid = swoole_rs_coroutine::socket_bound_cid();
+        let cid = swoole_rs_corebase::coroutine::socket_bound_cid();
         let rule = "-------------------------------------------------------------------";
         // Upstream's fprintf: nothing to do when stderr fails.
         write!(

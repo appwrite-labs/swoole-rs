@@ -15,7 +15,6 @@ on:
       - crates/bus/**
       - crates/clients/**
       - crates/corebase/**
-      - crates/coroutine/**
       - crates/crc32/**
       - crates/error-ffi/**
       - crates/error/**
@@ -59,7 +58,7 @@ jobs:
           - name: core
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: >-
-              -p swoole-rs-bus -p swoole-rs-corebase -p swoole-rs-coroutine
+              -p swoole-rs-bus -p swoole-rs-corebase
               -p swoole-rs-locks -p swoole-rs-process -p swoole-rs-reactor -p swoole-rs-utilities
           - name: memory
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations

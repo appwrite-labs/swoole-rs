@@ -133,7 +133,7 @@ mod tests {
         reason = "the native wake's signature, which defers it"
     )]
     fn wake(co: Parked) {
-        assert_eq!(co.waker(), swoole_rs_coroutine::Waker::NONE);
+        assert_eq!(co.waker(), swoole_rs_corebase::coroutine::Waker::NONE);
         WOKEN.set(WOKEN.get() + 1);
     }
     fn handler(fd_type: FdType, events: Events) -> Handler {
@@ -166,7 +166,7 @@ mod tests {
     }
     /// The reactor fires write, then read, on the waiter's socket.
     fn park(_: f64, waker: &crate::resolve::WakerSlot) -> Result<(), i32> {
-        waker.set(Some(swoole_rs_coroutine::Waker::NONE));
+        waker.set(Some(swoole_rs_corebase::coroutine::Waker::NONE));
         let mut event = unsafe {
             Event::of(
                 7,

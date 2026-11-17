@@ -4,16 +4,16 @@
 //! `ThreadSanitizer` through its own, in tools/tsan.py's build (`cfg(tsan)`). With
 //! [`THREAD`] in its flags the context is a thread instead (`thread.rs`).
 
-use crate::Coroutine;
-use crate::coroutine::Co;
-use crate::fcontext::{Transfer, jump_fcontext, make_fcontext};
-use crate::stack::Stack;
-use crate::thread::{self, Entry, Started, THREAD};
+use crate::CCast;
+use crate::coroutine::Coroutine;
+use crate::coroutine::fcontext::{Transfer, jump_fcontext, make_fcontext};
+use crate::coroutine::stack::Stack;
+use crate::coroutine::state::Co;
+use crate::coroutine::thread::{self, Entry, Started, THREAD};
 use core::cell::Cell;
 use core::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::OnceLock;
-use swoole_rs_corebase::CCast;
 
 /// A coroutine's context record, which follows its state in its [`Native`]
 /// record and never moves once switched in, so the switch hands its stack the

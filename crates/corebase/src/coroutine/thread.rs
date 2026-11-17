@@ -4,13 +4,13 @@
 //! hands a baton from one thread to the next, so exactly one runs at a time.
 //! Upstream hands off with `std::mutex`es unlocked by threads that didn't lock
 //! them; a baton is a binary semaphore, which any thread may post.
-use crate::Routine;
+use crate::coroutine::Routine;
+use crate::{SharedThread, adopt_shared_thread, shared_thread};
 use core::cell::Cell;
 use core::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
-use swoole_rs_corebase::{SharedThread, adopt_shared_thread, shared_thread};
 
 /// glibc's default thread stack under the usual 8 MiB `RLIMIT_STACK`, which
 /// upstream's `std::thread` gets; Rust's default is 2 MiB.
@@ -152,7 +152,7 @@ pub(crate) fn start(entry: Entry) -> Result<Box<Started>, c_int> {
         .stack_size(THREAD_STACK)
         .spawn(move || {
             let entry = entry;
-            swoole_rs_corebase::signal_block_all();
+            crate::signal_block_all();
             run(&own, entry);
         })
         .map_err(|error| error.raw_os_error().unwrap_or(libc::EAGAIN))?;
@@ -193,7 +193,7 @@ impl Drop for Started {
     fn drop(&mut self) {
         // A panic can't cross the entry's extern "C" frame, so join never errs.
         if let Some(Err(_)) = self.handle.take().map(JoinHandle::join) {
-            swoole_rs_corebase::fatal("a coroutine thread's join failed");
+            crate::fatal("a coroutine thread's join failed");
         }
     }
 }

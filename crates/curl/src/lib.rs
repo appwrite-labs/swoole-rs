@@ -657,7 +657,7 @@ impl Multi {
 #[derive(Clone, Copy)]
 struct Waiter {
     cid: c_long,
-    waker: Option<swoole_rs_coroutine::Waker>,
+    waker: Option<swoole_rs_corebase::coroutine::Waker>,
 }
 
 impl Waiter {
@@ -667,7 +667,7 @@ impl Waiter {
     }
 
     /// The waiter, parked: `waker` wakes it.
-    const fn parked(self, waker: swoole_rs_coroutine::Waker) -> Self {
+    const fn parked(self, waker: swoole_rs_corebase::coroutine::Waker) -> Self {
         Self {
             waker: Some(waker),
             ..self

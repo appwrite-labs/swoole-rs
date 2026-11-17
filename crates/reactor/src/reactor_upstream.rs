@@ -19,8 +19,8 @@ pub fn trigger_close_event(reactor: crate::Running<'_>, event: &mut crate::Event
 /// `Reactor::add` or `set` of a socket that is never freed while registered: whether
 /// it worked.
 /// A registered record's address stays in the registry and with the kernel until its
-/// removal, which a `'static` record outlives: it is live until an unsafe free, whose
-/// caller answers for every user left, the reactor among them, or its `del`.
+/// removal: its owner's free deletes it first (`OwnedSocket::into_box`), and a record
+/// no owner frees outlives it, as `'static` states.
 #[must_use]
 pub fn change(
     reactor: crate::Running<'_>,

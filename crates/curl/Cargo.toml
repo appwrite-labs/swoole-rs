@@ -14,8 +14,7 @@ php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpswoole", "s
 [dependencies]
 swoole-rs-error = { path = "../error" }
 libc = "=0.2.191"
-swoole-rs-corebase = { path = "../corebase" }
-swoole-rs-coroutine = { path = "../coroutine", features = ["upstream-symbols"] }
+swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
 swoole-rs-curl-sys = { path = "../curl-sys" }
 swoole-rs-reactor = { path = "../reactor" }
 swoole-rs-tls = { path = "../tls", features = ["upstream-symbols"] }
