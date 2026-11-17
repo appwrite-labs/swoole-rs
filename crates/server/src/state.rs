@@ -74,7 +74,7 @@ pub struct ServerState {
         not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid's reactor threads wait on it")
     )]
-    pub(crate) reactor_thread_barrier: swoole_rs_locks::Barrier,
+    pub(crate) reactor_thread_barrier: swoole_rs_corebase::locks::Barrier,
 }
 
 /// A port's place in [`Ports`], set once.
@@ -285,7 +285,7 @@ impl ServerState {
             worker_pipes: std::sync::Mutex::new(Vec::new()),
             stopping: AtomicBool::new(false),
             thread_manager: std::sync::Mutex::new(None),
-            reactor_thread_barrier: swoole_rs_locks::Barrier::new(),
+            reactor_thread_barrier: swoole_rs_corebase::locks::Barrier::new(),
         }
     }
 

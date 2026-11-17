@@ -278,7 +278,7 @@ pub use crate::dispatch::sendfile;
 /// `serv->reactor_thread_barrier.wait()`.
 #[cfg(feature = "upstream-symbols")]
 pub(crate) fn reactor_barrier(serv: view::Server<'_>) {
-    swoole_rs_locks::barrier_wait(crate::server_object::barrier(serv, false));
+    swoole_rs_corebase::locks::barrier_wait(crate::server_object::barrier(serv, false));
 }
 
 /// `Server::get_package_max_length(conn)`, over the fd of one of `serv`'s connections.

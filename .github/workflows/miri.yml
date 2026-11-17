@@ -22,7 +22,6 @@ on:
       - crates/hooks/**
       - crates/http2/**
       - crates/httpbindings/**
-      - crates/locks/**
       - crates/memory/**
       - crates/process/**
       - crates/reactor/**
@@ -58,7 +57,7 @@ jobs:
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: >-
               -p swoole-rs-bus -p swoole-rs-corebase
-              -p swoole-rs-locks -p swoole-rs-process -p swoole-rs-reactor -p swoole-rs-utilities
+              -p swoole-rs-process -p swoole-rs-reactor -p swoole-rs-utilities
           - name: memory
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: -p swoole-rs-memory

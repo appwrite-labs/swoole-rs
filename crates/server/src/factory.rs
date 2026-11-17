@@ -63,7 +63,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
         Step::EventWait => return swoole_rs_reactor::event_api::swoole_event_wait() >= 0,
         Step::ReactorBarrier | Step::ManagerBarrier => {
             let manager = step == Step::ManagerBarrier;
-            swoole_rs_locks::barrier_wait(crate::server_object::barrier(serv, manager));
+            swoole_rs_corebase::locks::barrier_wait(crate::server_object::barrier(serv, manager));
         }
         Step::JoinReactorThreads => crate::reactor_thread::join_reactor_threads(serv),
         Step::FactoryShutdown => _ = shutdown(serv),

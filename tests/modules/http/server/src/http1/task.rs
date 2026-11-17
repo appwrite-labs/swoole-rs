@@ -13,8 +13,8 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::locks::SharedMutex;
 use swoole_rs_corebase::{swoole_random_string, swr_v1_core_set_current_task_id};
-use swoole_rs_locks::SharedMutex;
 use swoole_rs_process::methods as pool;
 use swoole_rs_process::process_pool::{PoolRecord, PoolRef, SW_IPC_MAX_SIZE};
 use swoole_rs_process::task_file::{self, EventHead, Packed, TaskBuffer};

@@ -8,8 +8,8 @@ ownership, timeout, ordering, fork, coroutine and platform contracts.
 
 ## Rust gates
 
-`gate.rs` and `constructor.rs` (the `gate` and `constructor` tests of `swoole-rs-locks`,
-so they run in the PR tier's `rust` job and `locks-unit`) are the former `gate.cc` and
+`gate.rs` and `constructor.rs` (the `locks_gate` and `locks_constructor` tests of `swoole-rs-corebase`,
+so they run in the PR tier's `rust` job and `corebase-unit`) are the former `gate.cc` and
 `constructor.cc`, check for check. Nothing in C or C++ called the lock ABI they drove
 (`swr_v1_locks_size`, `_align`, `_init`, `_lock`, `_unlock`, `_destroy`,
 `_coroutine_try`, `_coroutine_release`), so those exports are gone and each check runs
@@ -30,7 +30,7 @@ what configure finds on the target.
 
 Checks of the exports' own argument validation that have no safe form, because the
 type system now refuses the argument: a null or misaligned storage pointer
-(`swr_v1_locks_init(nullptr, ..)`, and crates/locks' former
+(`swr_v1_locks_init(nullptr, ..)`, and `corebase::locks`' former
 `lock_and_unlock_refuse_null_misaligned_and_unknown_storage`), and a coroutine distinguished
 by its cookie under the same id (`swr_v1_locks_coroutine_try(&word, 42, 7, 43, 7, 1) == 3`):
 `CoroutineLock` knows a coroutine by its id alone, so the test waits as another id. The
@@ -56,9 +56,9 @@ gate did, and passes through to libc unless the calling thread is watching.
 ## Ported GoogleTests
 
 `core-tests/src/lock/lock.cpp` no longer builds: the `Mutex`, `RWLock`, `SpinLock` and
-`CoroutineLock` classes left the build (Swoole\Lock and Coroutine\Lock are crates/locks'
-`Lock` and `CoroutineLock`). Its 14 TESTs are Rust tests in `crates/locks`
-(`cargo test -p swoole-rs-locks`), with the same inputs and expected values, so they
+`CoroutineLock` classes left the build (Swoole\Lock and Coroutine\Lock are `corebase::locks`'
+`Lock` and `CoroutineLock`). Its 14 TESTs are Rust tests in `crates/corebase/src/locks`
+(`cargo test -p swoole-rs-corebase`), with the same inputs and expected values, so they
 run in the PR tier's `rust` job:
 
 | Upstream TEST | Rust test |

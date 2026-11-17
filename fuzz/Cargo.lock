@@ -253,22 +253,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "swoole-rs-locks"
-version = "0.1.0"
-dependencies = [
- "libc",
- "swoole-rs-corebase",
- "swoole-rs-error",
-]
-
-[[package]]
 name = "swoole-rs-memory"
 version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-locks",
  "swoole-rs-utilities",
 ]
 
@@ -286,7 +276,6 @@ dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-locks",
  "swoole-rs-memory",
  "swoole-rs-utilities",
 ]
@@ -339,7 +328,6 @@ dependencies = [
  "swoole-rs-crc32",
  "swoole-rs-error",
  "swoole-rs-error-ffi",
- "swoole-rs-locks",
 ]
 
 [[package]]

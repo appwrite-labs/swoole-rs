@@ -179,7 +179,7 @@ fn wait(serv: view::Server<'_>) {
     }
     if config.mode_ == Mode::Process {
         swoole_rs_corebase::ossupport::swr_v1_os_set_process_death_signal(libc::SIGTERM);
-        swoole_rs_locks::barrier_wait(crate::server_object::barrier(serv, true));
+        swoole_rs_corebase::locks::barrier_wait(crate::server_object::barrier(serv, true));
         if config.reload_async.get()
             && swoole_rs_corebase::ossupport::swr_v1_os_is_root_user()
             && !state.text(crate::ServerText::User).is_empty()

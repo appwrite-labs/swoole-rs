@@ -36,9 +36,9 @@ fn barriers(serv: view::Server<'_>, init: bool) {
     for (manager, count) in [(false, reactors), (true, 2)] {
         let barrier = crate::server_object::barrier(serv, manager);
         if init {
-            swoole_rs_locks::barrier_init(barrier, manager, count);
+            swoole_rs_corebase::locks::barrier_init(barrier, manager, count);
         } else {
-            swoole_rs_locks::barrier_destroy(barrier);
+            swoole_rs_corebase::locks::barrier_destroy(barrier);
         }
     }
 }

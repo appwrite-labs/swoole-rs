@@ -936,3 +936,18 @@ class ScheduledFailures(unittest.TestCase):
                      for path in workflows.glob('*.yml') if re.search(r'^\s+schedule:', path.read_text(), re.M)}
         watched = re.search(r'workflows: \[(.*?)\]', (workflows / 'scheduled-failures.yml').read_text(), re.S).group(1)
         self.assertEqual({name.strip() for name in watched.split(',')}, scheduled - {'Merge'})
+
+
+class RuntimeVariantOwnership(unittest.TestCase):
+    def test_nested_runtime_modules_keep_their_build_variants(self):
+        workflow = (ROOT / '.github/workflows/pr.yml').read_text()
+        table = workflow.split("done > variants <<'EOF'\n", 1)[1].split('          EOF', 1)[0]
+        patterns = dict(line.strip().split(maxsplit=1) for line in table.splitlines() if line.strip())
+        for path, expected in [
+            ('crates/corebase/src/coroutine/facade.rs', {'cares', 'threadcontext'}),
+            ('crates/corebase/src/coroutine/thread.rs', {'cares', 'zts', 'threadcontext'}),
+            ('crates/corebase/src/locks/mod.rs', {'cares', 'zts'}),
+            ('crates/corebase/src/sys.rs', {'cares'}),
+        ]:
+            with self.subTest(path=path):
+                self.assertEqual({name for name, pattern in patterns.items() if re.match(pattern, path)}, expected)

@@ -1,6 +1,6 @@
 //! The former `constructor.cc` and `constructor.py`, row for row: a lock of every kind
 //! made with a fault injected at the pthread attribute, pshared or init call it reaches.
-//! This binary defines those pthread symbols, so crates/locks' calls bind to the fakes
+//! This binary defines those pthread symbols, so `corebase::locks`' calls bind to the fakes
 //! below, which pass through to libc unless this thread is watching. The lock ABI's
 //! `swr_v1_locks_init` is replaced by the safe constructors that were its callers'
 //! (README.md maps the checks).
@@ -10,8 +10,8 @@ use std::ffi::{CStr, c_int, c_void};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use libc::{EAGAIN, EBUSY, EINVAL, ENOMEM, ENOSPC, ENOTSUP};
+use swoole_rs_corebase::locks::{Kind, Lock, SharedMutex};
 use swoole_rs_corebase::sys::{errno, set_errno};
-use swoole_rs_locks::{Kind, Lock, SharedMutex};
 
 /// The fault and what the faked calls counted, while this thread watches.
 #[derive(Clone, Copy)]
@@ -287,14 +287,18 @@ fn direct(kind: i32, shared: bool, stage: i32) {
         unreachable!("a lock of kind {kind}");
     };
     let row = if shared {
-        let storage: &'static mut [AtomicU64] = Box::leak(
+        let storage = Box::into_raw(
             (0..Lock::words(lock))
                 .map(|_| AtomicU64::new(0))
                 .collect::<Box<[_]>>(),
         );
-        faulted(kind, stage, || {
-            (Lock::shared(lock, storage).is_some(), None)
-        })
+        let row = faulted(kind, stage, || {
+            // SAFETY: this allocation outlives the temporary lock, which is dropped here.
+            (Lock::shared(lock, unsafe { &mut *storage }).is_some(), None)
+        });
+        // SAFETY: the constructor retained no reference and the temporary lock is gone.
+        drop(unsafe { Box::from_raw(storage) });
+        row
     } else {
         faulted(kind, stage, || (Lock::private(lock).is_some(), None))
     };

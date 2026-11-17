@@ -135,7 +135,7 @@ jobs:
           done > variants <<'EOF'
           iouring native/(hooks|reactor)/|crates/(hooks|reactor|phpcoroutines|phplocks)/|\.devcontainer/install\.sh$
           cares crates/(clients|corebase|cares-sys)/
-          zts crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|crates/(corebase|process|server|phpserver)/src/([^/]+/)*thread[^/]*\.rs$|native/(locks|phpthread)/|\.devcontainer/(install|php)\.sh$
+          zts crates/corebase/src/locks/|crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|crates/(corebase|process|server|phpserver)/src/([^/]+/)*thread[^/]*\.rs$|native/(locks|phpthread)/|\.devcontainer/(install|php)\.sh$
           threadcontext crates/corebase/src/coroutine/|native/(coroutine|phpcoroutines)/|crates/(phpcoroutines|phpcollections|phpevents|phpprocess|process|zend)/|crates/ext/build\.rs$|crates/hooks/src/wait_signal\.rs$|crates/reactor/src/wait_upstream\.rs$
           EOF
           echo "variants=$(jq -Rnc '[inputs]' variants)" >> "$GITHUB_OUTPUT"

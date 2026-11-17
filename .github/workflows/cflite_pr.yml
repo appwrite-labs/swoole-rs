@@ -18,7 +18,6 @@ on:
       - 'crates/http2/**'
       - 'crates/inflate/**'
       - 'crates/locale/**'
-      - 'crates/locks/**'
       - 'crates/memory/**'
       - 'crates/oracle/**'
       - 'crates/process/**'
