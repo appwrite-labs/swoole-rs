@@ -143,6 +143,9 @@ pub struct SocketFields {
     /// What the record serves, by type, for Rust's readiness handlers to get back
     /// ([`Self::owner`]); dropped with the record. Native code only keeps its place.
     owner: Option<Box<dyn core::any::Any>>,
+    /// An owner kept elsewhere, by weak handle ([`Self::shared_owner`]), which costs
+    /// no allocation of its own. Zero bytes are `None` here too.
+    shared_owner: Option<std::rc::Weak<dyn core::any::Any>>,
 }
 
 /// A process-wide `f64` setting, its bits in an `AtomicU64`.
@@ -208,7 +211,7 @@ pub static SOCKET_DEFAULTS: SocketDefaults = SocketDefaults {
 
 /// Field offsets native code asserts too (`swoole_rs_socket.h`).
 #[cfg(target_pointer_width = "64")]
-const OFFSETS: [(usize, usize); 16] = [
+const OFFSETS: [(usize, usize); 17] = [
     (offset_of!(SocketFields, events), 12),
     (offset_of!(SocketFields, enable_tcp_nodelay), 16),
     (offset_of!(SocketFields, removed), 18),
@@ -225,6 +228,7 @@ const OFFSETS: [(usize, usize); 16] = [
     (offset_of!(SocketFields, total_send_bytes), 168),
     (offset_of!(SocketFields, info), 176),
     (offset_of!(SocketFields, owner), 296),
+    (offset_of!(SocketFields, shared_owner), 312),
 ];
 
 #[cfg(target_pointer_width = "64")]
@@ -252,12 +256,12 @@ const _: () = {
         "network::Address's size moved"
     );
     assert!(
-        size_of::<SocketFields>() == 312,
+        size_of::<SocketFields>() == 328,
         "network::Socket's size moved"
     );
     assert!(
-        offset_of!(SocketRecord, marks) == 312 && size_of::<SocketRecord>() == 320,
-        "network::Socket's borrow count (byte 312) or reactor mark (byte 316) moved"
+        offset_of!(SocketRecord, marks) == 328 && size_of::<SocketRecord>() == 336,
+        "network::Socket's borrow count (byte 328) or reactor mark (byte 332) moved"
     );
 };
 
@@ -315,6 +319,7 @@ impl SocketRecord {
                 total_send_bytes: 0,
                 info: sys::zeroed(),
                 owner: None,
+                shared_owner: None,
             },
             marks: [AtomicU32::new(0), AtomicU32::new(0)],
         }
@@ -455,9 +460,21 @@ impl SocketFields {
         self.owner.as_deref()?.downcast_ref::<T>().cloned()
     }
 
+    /// The live owner [`Self::set_shared_owner`] attached, when it is a `T`.
+    #[inline]
+    #[must_use]
+    pub fn shared_owner<T: core::any::Any>(&self) -> Option<std::rc::Rc<T>> {
+        self.shared_owner.as_ref()?.upgrade()?.downcast::<T>().ok()
+    }
+
     /// Attaches `owner` in place of what was attached, which drops; none detaches.
     pub fn set_owner<T: core::any::Any>(&mut self, owner: Option<T>) {
         self.owner = owner.map(|owner| -> Box<dyn core::any::Any> { Box::new(owner) });
+    }
+
+    /// Attaches a weak handle to `owner` in place of the shared owner attached.
+    pub fn set_shared_owner<T: core::any::Any>(&mut self, owner: std::rc::Weak<T>) {
+        self.shared_owner = Some(owner);
     }
 
     /// The socket's type, `None` for a code no `SW_SOCK_*` names.
@@ -533,6 +550,7 @@ impl SocketFields {
                 in_buffer: None,
                 recv_buffer: None,
                 owner: None,
+                shared_owner: None,
                 ..*self
             },
             marks: [AtomicU32::new(0), AtomicU32::new(0)],
@@ -614,6 +632,25 @@ mod tests {
         assert_eq!(socket.timeouts.read, 60.0);
         assert_eq!(socket.fd, 0);
         assert!(socket.object.is_null() && socket.output.out_buffer.is_none());
+    }
+
+    #[test]
+    fn owners_come_back_only_as_their_own_type_and_kind() {
+        let mut socket = SocketRecord::new();
+        socket.set_owner(Some(7_u32));
+        assert_eq!(socket.owner::<u32>(), Some(7));
+        assert_eq!(socket.owner::<u64>(), None);
+        assert!(socket.shared_owner::<u32>().is_none());
+        let shared = std::rc::Rc::new(9_u32);
+        socket.set_shared_owner(std::rc::Rc::downgrade(&shared));
+        assert_eq!(socket.shared_owner::<u32>().as_deref(), Some(&9));
+        assert!(socket.shared_owner::<u64>().is_none());
+        assert_eq!(socket.owner::<u32>(), Some(7), "each kind keeps its own");
+        drop(shared);
+        assert!(
+            socket.shared_owner::<u32>().is_none(),
+            "a dropped owner is gone"
+        );
     }
 
     #[test]
