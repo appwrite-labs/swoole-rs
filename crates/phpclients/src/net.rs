@@ -17,10 +17,10 @@ use swoole_rs_clients::{
     pool::Pool,
     valid_port,
 };
-use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::reactor::{Socket as Net, SocketFields};
+use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_phpruntime::Report;
 use swoole_rs_phpstubs::client;
 use swoole_rs_phpswoole::{Switch, built_with, display_errors};
@@ -201,16 +201,11 @@ impl Custom for Data {
 impl Data {
     /// The object's connection, if it holds one.
     pub(crate) fn conn(&self) -> Option<Rc<Conn>> {
-        let held = self.conn.take();
-        self.conn.set(held.clone());
-        held
+        self.conn.with_taken(|held| held.clone())
     }
 
     pub(crate) fn has_conn(&self) -> bool {
-        let held = self.conn.take();
-        let has = held.is_some();
-        self.conn.set(held);
-        has
+        self.conn.with_taken(|held| held.is_some())
     }
 
     pub(crate) fn set_conn(&self, conn: Option<Rc<Conn>>) {
@@ -219,10 +214,8 @@ impl Data {
 
     /// A new reference to `getSocket()`'s socket, if it has one.
     fn zsocket(&self) -> Option<Owned> {
-        let held = self.zsocket.take();
-        let copy = (held.kind() != IS_UNDEF).then(|| held.copy());
-        self.zsocket.set(held);
-        copy
+        self.zsocket
+            .with_taken(|held| (held.kind() != IS_UNDEF).then(|| held.copy()))
     }
 }
 
@@ -290,12 +283,7 @@ thread_local! {
 /// `f` with this thread's pool, which is taken out meanwhile (`f` only
 /// pushes, takes or removes).
 fn long_connections<R>(f: impl FnOnce(&mut Option<Pool<Box<Conn>>>) -> R) -> R {
-    POOL.with(|cell| {
-        let mut pool = cell.take();
-        let result = f(&mut pool);
-        cell.set(pool);
-        result
-    })
+    POOL.with(|cell| cell.with_taken(f))
 }
 
 method_table! {
