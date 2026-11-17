@@ -1142,7 +1142,7 @@ fn part_headers_complete(state: &mut State, upload: &mut Option<Upload>) {
     path.extend_from_slice(b"/swoole.upfile.XXXXXX");
     path.truncate(UPLOAD_TMPDIR_SIZE - 1);
     path.push(0);
-    let fd = swoole_rs_ossupport::create_tmpfile(&mut path);
+    let fd = swoole_rs_corebase::ossupport::create_tmpfile(&mut path);
     path.pop();
     let Some(fd) = fd else {
         upload_long(state, b"error", UPLOAD_NO_TMP_DIR);

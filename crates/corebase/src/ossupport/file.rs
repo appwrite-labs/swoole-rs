@@ -1,14 +1,14 @@
 //! `swoole::File` IO loops, `file_get_size` and the sendfile variants (upstream `src/os/{file,sendfile,base}.cc`). Rust runs the
 //! syscalls; native code keeps the descriptors and logs warnings, so every
 //! function returns right after the failing call with its errno intact.
+use crate::CCast;
+use crate::sys::{self, ReadSlot, errno};
 use libc::{c_char, c_int, off_t};
 use std::ffi::CStr;
 use std::io;
 use std::marker::PhantomData;
 use std::os::fd::OwnedFd;
 use std::ptr::NonNull;
-use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::sys::{self, ReadSlot, errno};
 
 /// Bytes moved by a `File::read_all`/`write_all` loop, and whether it stopped on
 /// an error native must warn about (errno is still the failing call's).
@@ -132,7 +132,7 @@ pub fn read_all(fd: c_int, buf: &mut [impl ReadSlot]) -> FileIo {
 /// # Errors
 /// `fstat`'s errno, or `EISDIR` when `fd` is not a regular file.
 pub fn file_size(fd: c_int) -> std::io::Result<u64> {
-    let stat = swoole_rs_corebase::sys::fstat(fd).ok_or_else(std::io::Error::last_os_error)?;
+    let stat = crate::sys::fstat(fd).ok_or_else(std::io::Error::last_os_error)?;
     if stat.st_mode & libc::S_IFMT != libc::S_IFREG {
         return Err(std::io::Error::from_raw_os_error(libc::EISDIR));
     }

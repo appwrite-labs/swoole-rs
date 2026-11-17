@@ -21,7 +21,6 @@ on:
       - 'crates/locks/**'
       - 'crates/memory/**'
       - 'crates/oracle/**'
-      - 'crates/ossupport/**'
       - 'crates/process/**'
       - 'crates/protocols/**'
       - 'crates/reactor/**'

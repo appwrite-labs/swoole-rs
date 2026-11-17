@@ -404,7 +404,7 @@ impl ServerState {
         let text = |kind| CString::new(&*self.text(kind)).unwrap_or_default();
         let root = text(ServerText::Chroot);
         let (user, group) = (text(ServerText::User), text(ServerText::Group));
-        swoole_rs_ossupport::set_isolation(&group, &user, &root);
+        swoole_rs_corebase::ossupport::set_isolation(&group, &user, &root);
     }
 
     /// Starts a thread of `serv`, whose state this is, running `body`, which owns
@@ -494,7 +494,7 @@ impl ServerState {
         let file = self.text(ServerText::PidFile);
         if !file.is_empty() {
             let pid = std::process::id().cast_signed().to_string();
-            swoole_rs_ossupport::file_put_contents(&c_path(&file), pid.as_bytes());
+            swoole_rs_corebase::ossupport::file_put_contents(&c_path(&file), pid.as_bytes());
         }
     }
 

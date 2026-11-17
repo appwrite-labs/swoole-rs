@@ -830,7 +830,7 @@ mod tests {
         let mut copy: WorkerRecord = unsafe { core::mem::zeroed() };
         // Without onMessage, a message-queue pool's process balances over the pool's queue.
         pool.ipc_mode.set(IpcMode::MsgQueue);
-        pool.queue = Some(Box::new(swoole_rs_ossupport::QueueRecord::new(
+        pool.queue = Some(Box::new(swoole_rs_corebase::ossupport::QueueRecord::new(
             libc::IPC_PRIVATE,
             false,
             0,
