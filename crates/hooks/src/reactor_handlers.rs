@@ -4,28 +4,31 @@
 //! through [`wake`], deferred on the thread's reactor.
 use crate::socket_members;
 use crate::wait_event::{Parked, event_ready};
-use core::ffi::c_int;
+use core::ffi::{c_int, c_void};
 use swoole_rs_corebase::constants::FdType;
-use swoole_rs_corebase::reactor::{Event, Events, Handler, Running, SocketFields};
+use swoole_rs_corebase::reactor::{Event, Events, Handler, Running};
 
-/// The fired socket's owner, when it is a `T`.
-fn fired<T: core::any::Any + Clone>(event: &Event) -> Option<T> {
-    event.socket()?.read(SocketFields::owner::<T>)
+/// The fired socket's object and fd.
+fn fired(event: &Event) -> (*mut c_void, c_int) {
+    let object = event.socket().map_or(core::ptr::null_mut(), |socket| {
+        socket.read(|record| record.object)
+    });
+    (object, event.fd())
 }
 
 fn poll_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
-    // A `SW_FD_CO_POLL` socket's owner is its poll's task, while the poll waits.
-    let task = fired::<crate::poll::Registered>(event).and_then(|task| task.task());
-    if let Some(task) = task {
-        crate::poll::ready(&task, event.fd(), Events::from_bits(KIND));
-    }
+    let (task, fd) = fired(event);
+    // SAFETY: a `SW_FD_CO_POLL` socket, whose object is its parked poll task.
+    let task = unsafe { &*task.cast::<crate::poll::Task<'_>>() };
+    crate::poll::ready(task, fd, Events::from_bits(KIND));
     0
 }
 
 fn waiter_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
-    // A `SW_FD_CO_EVENT` socket's owner is its waiter, while the wait is parked.
-    let waiter = fired::<crate::wait_event::Registered>(event).and_then(|waiter| waiter.waiter());
-    if let Some(co) = waiter.and_then(|waiter| event_ready(&waiter, Events::from_bits(KIND))) {
+    let (waiter, _) = fired(event);
+    // SAFETY: a `SW_FD_CO_EVENT` socket, whose object is its parked waiter.
+    let waiter = unsafe { &*waiter.cast::<crate::wait_event::Waiter>() };
+    if let Some(co) = event_ready(waiter, Events::from_bits(KIND)) {
         wake(co);
     }
     0
@@ -114,7 +117,6 @@ fn wake(co: Parked) {
 mod tests {
     use super::*;
     use crate::wait_event::{EventWaitOps, Registered, wait_with};
-    use core::ffi::c_void;
     use std::cell::{Cell, RefCell};
     use swoole_rs_corebase::reactor::SocketRecord;
 
@@ -163,7 +165,7 @@ mod tests {
 
     fn add(fd: i32, _: Events, waiter: Registered) -> Result<Socket, i32> {
         let socket = SocketRecord::with_fd(fd, FdType::SW_FD_CO_EVENT as c_int).into_raw();
-        unsafe { (*socket).fields.set_owner(Some(waiter)) };
+        unsafe { (*socket).fields.object = waiter.as_ptr() };
         SOCKET.set(socket);
         Ok(Socket(socket))
     }
