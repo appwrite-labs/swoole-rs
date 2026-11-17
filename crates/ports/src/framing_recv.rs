@@ -113,7 +113,8 @@ pub(crate) trait Packages {
         // A copy: the callback may run PHP that rewrites the protocol.
         let protocol = *r.protocol();
         let get = protocol.get_package_length?;
-        let length = get(&protocol, Some(r.socket), &mut pl);
+        // A port keeps its length owner in its config, not beside the protocol (#4535).
+        let length = get(&protocol, Some(r.socket), None, &mut pl);
         usize::try_from(length).ok()
     }
     /// `onPackage` over a whole package; whether it succeeded. No reference to the
@@ -476,6 +477,7 @@ pub const FRAMING: Framing = Framing::new(client_recv::<true>, client_recv::<fal
 pub fn default_length_func(
     p: &Protocol,
     socket: Option<Socket<'_>>,
+    _owner: Option<&dyn core::any::Any>,
     pl: &mut PacketLength,
 ) -> isize {
     let size = match (p.get_package_length_size, socket) {

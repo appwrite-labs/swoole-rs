@@ -17,8 +17,10 @@ pub type OnPackage = fn(*const Protocol, Socket<'_>, Package<'_>) -> c_int;
 /// passes a copy of the protocol the socket reads with, taken before the call, so
 /// PHP code the callback runs may `set()` the protocol meanwhile; the callback may
 /// rely on the private data stored beside it there. The socket is `None` where a
-/// measure has none. Only Rust calls it.
-pub type GetPackageLength = fn(&Protocol, Option<Socket<'_>>, &mut PacketLength) -> isize;
+/// measure has none. The owner is the length owner the caller keeps beside the
+/// protocol, held for the call, or `None` where it keeps none. Only Rust calls it.
+pub type GetPackageLength =
+    fn(&Protocol, Option<Socket<'_>>, Option<&dyn core::any::Any>, &mut PacketLength) -> isize;
 
 /// `Protocol::get_package_length_size`: a socket's length-header size. As for
 /// [`OnPackage`], the socket's kind, which the protocol was set up for, is what

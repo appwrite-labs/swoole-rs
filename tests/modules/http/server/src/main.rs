@@ -149,7 +149,7 @@ unsafe fn ws_encode(buffer: *mut CppString, data: &[u8], opcode: u8, flags: u8) 
 fn ws_get_package_length(bytes: &[u8]) -> (isize, u32) {
     let mut pl = swoole_rs_corebase::net_types::PacketLength::new(bytes);
     let protocol = swoole_rs_clients::protocol::Protocol::EMPTY;
-    let length = swoole_rs_ports::http_routes::websocket_length(&protocol, None, &mut pl);
+    let length = swoole_rs_ports::http_routes::websocket_length(&protocol, None, None, &mut pl);
     (length, pl.header_len)
 }
 
@@ -173,6 +173,7 @@ unsafe fn http_get_package_length(
         http::get_package_length(
             &*protocol.cast(),
             Socket::from_ptr(socket.cast()),
+            None,
             &mut *pl.cast(),
         )
     }

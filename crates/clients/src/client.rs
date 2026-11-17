@@ -227,8 +227,8 @@ pub struct Client {
     /// The proxy states owned by the client.
     socks5: Cell<Option<Box<ProxyState>>>,
     http_proxy: Cell<Option<Box<ProxyState>>>,
-    /// The owner of the callable `protocol.private_data_1` names, when the
-    /// client has a `package_length_func`.
+    /// The owner of the client's `package_length_func`, which a measure passes
+    /// its length callback.
     length_owner: Cell<Option<Rc<dyn std::any::Any>>>,
 }
 
@@ -933,8 +933,16 @@ pub fn package_length(this: Handle<'_>, data: &[u8]) -> isize {
     let Some(get) = record.protocol.get_package_length else {
         return -1;
     };
+    // A copy, held for the call: the callable may `set()` another or close the client.
+    let owner = this.get().length_owner.take();
+    this.get().length_owner.set(owner.clone());
     let mut packet = PacketLength::new(data);
-    get(&record.protocol, Some(this.socket()), &mut packet)
+    get(
+        &record.protocol,
+        Some(this.socket()),
+        owner.as_deref(),
+        &mut packet,
+    )
 }
 
 /// `Client::close()`: false when already closed or when `close(2)` fails; true when

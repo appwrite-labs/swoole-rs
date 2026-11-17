@@ -514,6 +514,7 @@ mod tests {
     pub(super) fn length<const N: u8>(
         _: &Protocol,
         _: Option<swoole_rs_corebase::reactor::Socket<'_>>,
+        _: Option<&dyn core::any::Any>,
         _: &mut PacketLength,
     ) -> isize {
         N.into()

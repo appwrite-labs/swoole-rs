@@ -418,6 +418,7 @@ fn a_call_measures_with_the_protocol_and_frees_the_client() {
     fn twice(
         _: &Protocol,
         _: Option<swoole_rs_corebase::reactor::Socket<'_>>,
+        _: Option<&dyn std::any::Any>,
         packet: &mut PacketLength,
     ) -> isize {
         2 * isize::try_from(packet.bytes().len()).unwrap()

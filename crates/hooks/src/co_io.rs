@@ -248,8 +248,10 @@ mod native {
         let taken = socket.own_read_buffer();
         let view = taken.view();
         let mut packet = PacketLength::new(view.get(..size as usize).unwrap_or(view));
+        // Held for the call: the callable may `set()` another.
+        let owner = crate::socket_extra::length_owner(socket);
         let mut measure = |net: Option<swoole_rs_corebase::reactor::Socket<'_>>| {
-            call(&protocol, net, &mut packet)
+            call(&protocol, net, owner.as_deref(), &mut packet)
         };
         let length = socket
             .with_network(|net| measure(Some(net)))
@@ -1162,6 +1164,7 @@ mod tests {
     fn record_length(
         _: &crate::co_socket::Protocol,
         _: Option<swoole_rs_corebase::reactor::Socket<'_>>,
+        _: Option<&dyn std::any::Any>,
         packet: &mut swoole_rs_corebase::net_types::PacketLength,
     ) -> isize {
         MEASURED.set(packet.bytes().to_vec());
