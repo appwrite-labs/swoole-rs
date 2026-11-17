@@ -2,7 +2,7 @@
 //! the pinned upstream C++ in `swoole-rs-oracle`; return values and every output
 //! byte, red zones included, must match.
 
-use std::ffi::{CStr, c_char};
+use std::ffi::{CStr, c_char, c_int};
 use swoole_rs_clients::{cookie, domain_decode};
 use swoole_rs_corebase::log;
 use swoole_rs_framing::{DefaultLength, default_length, unpack, width};
@@ -23,8 +23,9 @@ mod protocols_native;
 mod network;
 pub use network::{
     dns_reply, http_chunked, http_decompress, http_inflate, http_rewrite, http_static_path,
-    http2_frame, http2_hpack, multipart, resp_server, ws_inflate,
+    http2_frame, http2_hpack, multipart, ws_inflate,
 };
+use swoole_rs_protocols::{RespKind, RespPhpState, resp_php_next};
 use swoole_rs_websocket::{decode_in_place, frame_length, mask};
 
 const RED_ZONE: usize = 17;
@@ -545,10 +546,10 @@ pub fn mqtt_length(bytes: &[u8]) {
     assert_eq!(got, want, "mqtt length for {bytes:?}");
 }
 
-/// Walks upstream `redis::parse` over `data` (and the NUL after it) without
-/// reading it: false for inputs outside the compared domain, including input
-/// `recv_packet` never passes it. Those inputs are not compared.
-fn resp_parse_in_bounds(data: &[u8]) -> bool {
+/// Models the pinned reply parser or PHP request loop without calling either
+/// parser. PHP falls through unrecognized prefixes to a string of the retained
+/// length; its compared domain also requires both string trailer bytes.
+fn resp_in_bounds(data: &[u8], php: bool) -> bool {
     let at = |index: usize| data.get(index).copied().unwrap_or(0);
     // get_number: strtol after the type byte, then CRLF; Some((ret, next)).
     let number = |p: usize| {
@@ -602,12 +603,15 @@ fn resp_parse_in_bounds(data: &[u8]) -> bool {
                     return false;
                 };
                 p = next;
+            } else if php {
+                case = 2;
             } else {
                 return false;
             }
         }
         if case == 2 {
-            if length < 0 || p + length as usize > data.len() {
+            let trailer = if php { 2 } else { 0 };
+            if length < 0 || p + length as usize + trailer > data.len() {
                 return false;
             }
             (p, state) = (p + length as usize + 2, 1);
@@ -618,19 +622,23 @@ fn resp_parse_in_bounds(data: &[u8]) -> bool {
     }
 }
 
-/// Upstream's strings (each after its u32 length) and, on glibc, whether errno is
-/// ERANGE. macOS strtol also sets EINVAL when it converts nothing, which can overwrite
-/// an earlier ERANGE; glibc leaves errno alone there, and callers only test ERANGE.
-fn resp_parse_upstream(data: &[u8]) -> (Vec<u8>, bool) {
+type RespOracle =
+    unsafe extern "C" fn(*const c_char, usize, c_int, *mut usize, *mut c_int) -> *mut c_char;
+
+/// Upstream's packed items and, on glibc, whether errno is ERANGE. macOS strtol
+/// also sets EINVAL when it converts nothing, which can overwrite an earlier
+/// ERANGE; glibc leaves errno alone there, and callers only test ERANGE.
+fn resp_upstream(data: &[u8], parse: RespOracle) -> (Vec<u8>, bool) {
     let buffer = terminated(data);
     let (mut size, mut error) = (0, 0);
-    // SAFETY: the buffer holds data.len() bytes and a NUL; the result is malloc'd.
-    unsafe {
-        let output = protocols::resp_parse(buffer.as_ptr(), data.len(), 0, &mut size, &mut error);
-        let items = std::slice::from_raw_parts(output as *const u8, size).to_vec();
-        protocols::free(output);
-        (items, cfg!(target_os = "linux") && error == 34)
-    }
+    // SAFETY: the caller's bounds model admits this loop; the wire has a NUL
+    // terminator and both output pointers name writable locals.
+    let output = unsafe { parse(buffer.as_ptr(), data.len(), 0, &mut size, &mut error) };
+    // SAFETY: the oracle returns a malloc'd buffer of `size` initialized bytes.
+    let items = unsafe { std::slice::from_raw_parts(output.cast::<u8>(), size) }.to_vec();
+    // SAFETY: the oracle allocated `output`, and its bytes have been copied.
+    unsafe { protocols::free(output) };
+    (items, cfg!(target_os = "linux") && error == libc::ERANGE)
 }
 
 /// Upstream `redis::parse` and `redis::parse` over Rust's spans, over the same bytes:
@@ -638,11 +646,81 @@ fn resp_parse_upstream(data: &[u8]) -> (Vec<u8>, bool) {
 pub fn resp_parse(bytes: &[u8]) {
     let (items, range) = protocols_native::resp_parse(bytes);
     let got = (items, cfg!(target_os = "linux") && range);
-    if !resp_parse_in_bounds(bytes) {
+    if !resp_in_bounds(bytes, false) {
         return;
     }
-    assert_eq!(got, resp_parse_upstream(bytes), "resp parse for {bytes:?}");
+    assert_eq!(
+        got,
+        resp_upstream(bytes, protocols::resp_parse),
+        "resp parse for {bytes:?}"
+    );
 }
+
+fn resp_item(out: &mut Vec<u8>, kind: u32, bytes: &[u8]) {
+    out.extend_from_slice(&kind.to_ne_bytes());
+    out.extend_from_slice(&(bytes.len() as u32).to_ne_bytes());
+    out.extend_from_slice(bytes);
+}
+
+/// Candidate PHP request, packed like the oracle: command first, then typed
+/// parameters. Every input still checks progress, span bounds and one command.
+fn resp_request(bytes: &[u8]) -> Option<(Vec<u8>, bool)> {
+    let mut state = RespPhpState::default();
+    let (mut command, mut parameters, mut range) = (None, Vec::new(), false);
+    for _ in 0..=bytes.len() {
+        let before = state.cursor.position;
+        let Some(span) = resp_php_next(bytes, &mut state, &mut range).ok()? else {
+            let mut out = Vec::new();
+            resp_item(
+                &mut out,
+                u32::from(command.is_some()),
+                command.unwrap_or_default(),
+            );
+            out.extend(parameters);
+            return Some((out, cfg!(target_os = "linux") && range));
+        };
+        assert!(state.cursor.position > before, "stalled on {bytes:?}");
+        assert!(
+            matches!(span.kind, RespKind::Integer | RespKind::Null)
+                || span
+                    .offset
+                    .checked_add(span.length)
+                    .is_some_and(|end| end <= bytes.len()),
+            "span {span:?} outside {bytes:?}"
+        );
+        match span.kind {
+            RespKind::Command => {
+                assert!(command.is_none(), "second command in {bytes:?}");
+                command = Some(&bytes[span.offset..span.offset + span.length]);
+            }
+            RespKind::String => resp_item(
+                &mut parameters,
+                0,
+                &bytes[span.offset..span.offset + span.length],
+            ),
+            RespKind::Integer => resp_item(&mut parameters, 1, span.integer.to_string().as_bytes()),
+            RespKind::Null => resp_item(&mut parameters, 2, &[]),
+        }
+    }
+    panic!("no end for {bytes:?}");
+}
+
+/// The PHP request loop's command, parameter kinds/values and Linux ERANGE must
+/// match the pinned loop on every input admitted by its independent bounds model.
+pub fn resp_server(bytes: &[u8]) {
+    let got = resp_request(bytes);
+    if resp_in_bounds(bytes, true) {
+        assert_eq!(
+            got,
+            Some(resp_upstream(bytes, protocols::resp_php_request)),
+            "resp request for {bytes:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/modules/protocols/fuzz_request.rs"]
+mod fuzz_request_tests;
 
 /// Longest URL compared: libstdc++'s std::regex recurses once per character.
 const URL_LIMIT: usize = 256;
