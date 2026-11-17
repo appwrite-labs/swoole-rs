@@ -29,6 +29,7 @@ use std::{
     ptr,
     rc::{Rc, Weak},
 };
+use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::log::{self, set_last_error};
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_curl_sys::{
@@ -215,7 +216,7 @@ pub struct Multi {
     /// set, in arrival order).
     timer_callback: Cell<bool>,
     /// The sockets curl watches, by fd: what `curl_multi_assign` would carry.
-    /// It and `active` are taken out and put back ([`with`]) around plain map and
+    /// It and `active` are taken out and put back around plain map and
     /// vector work only, never around a libcurl call, which runs the socket and
     /// timer callbacks.
     sockets: Cell<SocketMap>,
@@ -261,25 +262,10 @@ fn select_bits(revents: i16) -> c_int {
     bitmask
 }
 
-/// `f` on `cell`'s value, taken out and put back: `f` runs no libcurl call, no
-/// reactor or coroutine operation and no PHP, and what it removes it returns, so
-/// it drops once the value is back.
-fn with<T: Default, R>(cell: &Cell<T>, f: impl FnOnce(&mut T) -> R) -> R {
-    let mut value = cell.take();
-    let result = f(&mut value);
-    // `f` can't reach the cell, which still holds the empty default `take` left.
-    #[expect(
-        clippy::mem_forget,
-        reason = "an empty map or vector owns no allocation: dropping it frees nothing"
-    )]
-    std::mem::forget(cell.replace(value));
-    result
-}
-
 impl Multi {
     /// Adds `socket` to the active sockets, a set.
     fn activate(&self, socket: &Rc<Socket>) {
-        with(&self.active, |active| {
+        self.active.with_taken(|active| {
             if !active.iter().any(|member| Rc::ptr_eq(member, socket)) {
                 active.push(Rc::clone(socket));
             }
@@ -287,7 +273,7 @@ impl Multi {
     }
 
     fn has_active(&self) -> bool {
-        with(&self.active, |active| !active.is_empty())
+        self.active.with_taken(|active| !active.is_empty())
     }
 
     /// `Multi::Multi`: a multi handle whose socket and timer callbacks reach
@@ -344,7 +330,7 @@ impl Multi {
     }
 
     fn wait_event(&self) -> bool {
-        self.timer.get().is_some() || !with(&self.sockets, |sockets| sockets.is_empty())
+        self.timer.get().is_some() || !self.sockets.with_taken(|sockets| sockets.is_empty())
     }
 
     fn add_timer(&self, timeout_ms: c_long) {
@@ -396,7 +382,9 @@ impl Multi {
             return false;
         }
         (self.host.install_handlers)();
-        let known = with(&self.sockets, |sockets| sockets.get(&sockfd).cloned());
+        let known = self
+            .sockets
+            .with_taken(|sockets| sockets.get(&sockfd).cloned());
         let socket = known.unwrap_or_else(|| {
             let socket = Rc::new(Socket {
                 multi: self.this.clone(),
@@ -408,9 +396,9 @@ impl Multi {
             });
             // The reactor socket reports to the socket while it lives.
             socket.socket.set_owner(Rc::downgrade(&socket));
-            let replaced = with(&self.sockets, |sockets| {
-                sockets.insert(sockfd, Rc::clone(&socket))
-            });
+            let replaced = self
+                .sockets
+                .with_taken(|sockets| sockets.insert(sockfd, Rc::clone(&socket)));
             drop(replaced);
             socket
         });
@@ -426,11 +414,11 @@ impl Multi {
 
     /// `Multi::del_event`: whether curl's socket was known.
     fn del_event(&self, sockfd: curl_socket_t) -> bool {
-        let Some(socket) = with(&self.sockets, |sockets| sockets.remove(&sockfd)) else {
+        let Some(socket) = self.sockets.with_taken(|sockets| sockets.remove(&sockfd)) else {
             return false;
         };
         // A set: at most one copy, dropped once the vector is back.
-        let copy = with(&self.active, |active| {
+        let copy = self.active.with_taken(|active| {
             let index = active
                 .iter()
                 .position(|active| Rc::ptr_eq(active, &socket))?;
@@ -464,8 +452,9 @@ impl Multi {
     /// `Multi::selector_prepare`: put back in the reactor the sockets a
     /// waiter-less event took out of it.
     fn selector_prepare(&self) {
-        let sockets: Vec<Rc<Socket>> =
-            with(&self.sockets, |sockets| sockets.values().cloned().collect());
+        let sockets: Vec<Rc<Socket>> = self
+            .sockets
+            .with_taken(|sockets| sockets.values().cloned().collect());
         for socket in sockets {
             if socket.socket.removed() {
                 socket.socket.add(events(socket.action.get()));
@@ -533,7 +522,7 @@ impl Multi {
     /// `Multi::selector_poll`: what the sockets have ready now, without
     /// waiting, for callers that don't `curl_multi_select`.
     fn selector_poll(&self) -> CURLMcode {
-        let mut fds: Vec<libc::pollfd> = with(&self.sockets, |sockets| {
+        let mut fds: Vec<libc::pollfd> = self.sockets.with_taken(|sockets| {
             sockets
                 .iter()
                 .map(|(&fd, socket)| libc::pollfd {
@@ -554,7 +543,10 @@ impl Multi {
             };
         }
         for fd in fds.iter().filter(|fd| fd.revents != 0) {
-            let Some(socket) = with(&self.sockets, |sockets| sockets.get(&fd.fd).cloned()) else {
+            let Some(socket) = self
+                .sockets
+                .with_taken(|sockets| sockets.get(&fd.fd).cloned())
+            else {
                 continue;
             };
             socket
@@ -649,7 +641,7 @@ impl Multi {
 
     /// How many sockets have events.
     fn ready(&self) -> c_long {
-        let ready = with(&self.active, |active| active.len());
+        let ready = self.active.with_taken(|active| active.len());
         c_long::try_from(ready).unwrap_or(c_long::MAX)
     }
 
@@ -672,7 +664,10 @@ impl Multi {
         }
         // The map's copy: the reactor reports only the sockets in it.
         let sockfd = socket.map(|socket| socket.sockfd.get());
-        if let Some(socket) = with(&self.sockets, |sockets| sockets.get(&sockfd?).cloned()) {
+        if let Some(socket) = self
+            .sockets
+            .with_taken(|sockets| sockets.get(&sockfd?).cloned())
+        {
             self.activate(&socket);
         }
         (self.host.defer)(self);
