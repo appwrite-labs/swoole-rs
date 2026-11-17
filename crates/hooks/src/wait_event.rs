@@ -290,8 +290,6 @@ pub(crate) fn wait_with<S>(
 mod tests {
     use super::*;
 
-    use std::cell::Cell;
-
     // Adapt the typed result to the former gate record, preserving every assertion.
     #[derive(Debug, Default, PartialEq, Eq)]
     struct WaitEvent {

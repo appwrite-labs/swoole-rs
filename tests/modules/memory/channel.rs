@@ -1,5 +1,4 @@
 use super::*;
-use crate::CCast;
 use std::collections::VecDeque;
 use std::ptr;
 #[test]

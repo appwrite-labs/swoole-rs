@@ -231,7 +231,6 @@ mod tests {
     use super::*;
     use crate::co_io::set_errno;
     use crate::co_io::test_host::{MOVES, ON_SUSPEND, REACTOR_OK, TIMER_OK, install, log, take};
-    use crate::co_socket::Co;
     use crate::co_socket::TestSocket;
     use crate::socket_wait::ready;
     use std::cell::RefCell;

@@ -209,7 +209,6 @@ mod tests {
     use super::*;
     use crate::TestServer;
     use core::sync::atomic::Ordering;
-    use swoole_rs_corebase::memory::members::Shm;
 
     #[test]
     fn a_send_counts_on_the_server_and_its_sessions_port() {

@@ -813,7 +813,7 @@ mod tests {
 mod shutdown_tests {
     use super::*;
     use openssl_sys::*;
-    use std::os::raw::{c_int, c_long};
+    use std::os::raw::c_int;
     use std::ptr;
 
     // libssl/libcrypto's own declarations; openssl-sys binds none of them.

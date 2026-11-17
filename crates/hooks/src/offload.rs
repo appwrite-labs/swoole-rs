@@ -3,7 +3,7 @@
 //! `async::dispatch` and the coroutine operations.
 use crate::resolve::WakerSlot;
 use core::ffi::{c_int, c_void};
-use core::mem::{offset_of, size_of};
+use core::mem::offset_of;
 use core::sync::atomic::{AtomicI32, AtomicIsize, AtomicU8, Ordering::Relaxed};
 use swoole_rs_corebase::coroutine::Waker;
 use swoole_rs_corebase::set_errno;
