@@ -17,7 +17,7 @@ use swoole_rs_corebase::reactor::{Caught, Event, Running, Socket};
 use swoole_rs_corebase::tls::upstream::{recv_append, send};
 use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_framing::recv::{Mode, Status};
-use swoole_rs_http_ffi::{HttpRequest, request_free};
+use swoole_rs_http::{HttpRequest, request_free};
 use swoole_rs_server::port_config::{PortConfig, ReadEvent};
 use swoole_rs_server::static_select::static_select;
 use swoole_rs_server::{Connection as Slot, ServerConfig, view};
@@ -408,7 +408,7 @@ impl Connection for Read<'_> {
     fn init_request(&mut self) {
         if self.request.is_none() {
             let held = self.conn.take_http_request();
-            self.request = Some(held.unwrap_or_else(swoole_rs_http_ffi::request_new));
+            self.request = Some(held.unwrap_or_else(swoole_rs_http::request_new));
         }
         self.recv = self.recv_buffer();
         self.use_request_buffer();
@@ -426,8 +426,7 @@ impl Connection for Read<'_> {
     #[inline]
     fn request(&mut self) -> &mut HttpRequest {
         // Made current by `init_request` before any use.
-        self.request
-            .get_or_insert_with(swoole_rs_http_ffi::request_new)
+        self.request.get_or_insert_with(swoole_rs_http::request_new)
     }
 
     #[inline]

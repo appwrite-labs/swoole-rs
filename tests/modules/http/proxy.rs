@@ -1,13 +1,13 @@
 //! The cases of the former `tests/modules/http/proxy_gate.cc` and `dispatch_gate.cc`,
 //! against the pinned `HttpProxy` in swoole-rs-oracle. The candidate is corebase's
-//! proxy owner and crates/http-ffi's `HttpProxy` functions, which replaced its bodies.
+//! proxy owner and crates/http's `HttpProxy` functions, which replaced its bodies.
 #![expect(
     clippy::indexing_slicing,
     reason = "test helpers outside #[test] fns; a panic fails the case"
 )]
 use swoole_rs_corebase::sys::errno;
 use swoole_rs_corebase::{ProxyState, log, set_errno};
-use swoole_rs_http_ffi::{authorization, http_proxy, proxy_accept, proxy_connect};
+use swoole_rs_http::{authorization, http_proxy, proxy_accept, proxy_connect};
 use swoole_rs_oracle::http_proxy as oracle;
 
 /// An `HttpProxy`: its Rust owner.

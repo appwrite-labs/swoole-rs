@@ -49,7 +49,7 @@ mod request {
     use swoole_rs_corebase::buffer::string::{CppString, boxed_string};
     use swoole_rs_corebase::{set_errno, sys::errno};
     use swoole_rs_http::ChunkState;
-    use swoole_rs_http_ffi::HttpRequest as Request;
+    use swoole_rs_http::HttpRequest as Request;
 
     /// `parse` over a request and its received `swoole::String`: a copy of the
     /// `length` bytes at `data`, with the spare NUL after them, at `offset`. What
@@ -790,7 +790,7 @@ pub fn http_proxy(bytes: &[u8]) {
     // SAFETY: reads `bytes`; `error` is a local.
     let accepted = unsafe { upstream_proxy::handshake(bytes.as_ptr(), bytes.len(), &mut error) };
     log::set_last_error(0);
-    let got = (swoole_rs_http_ffi::proxy_accept(bytes), log::last_error());
+    let got = (swoole_rs_http::proxy_accept(bytes), log::last_error());
     assert_eq!(got, (accepted, error), "proxy handshake {bytes:?}");
 }
 

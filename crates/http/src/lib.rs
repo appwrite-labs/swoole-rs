@@ -1,4 +1,4 @@
-//! HTTP policy and private directory storage. Native effects run after Rust returns.
+//! HTTP parsing, policy, request and proxy state, and private directory storage.
 #![cfg_attr(
     test,
     expect(
@@ -28,6 +28,10 @@ mod multipart;
 pub use multipart::{MultipartError, multipart_disposition, multipart_filename, multipart_result};
 pub mod llhttp;
 pub mod multipart_parser;
+mod owned_proxy;
+pub use owned_proxy::*;
+mod request;
+pub use request::{HttpForm, HttpRequest, request_free, request_new};
 mod proxy;
 pub use proxy::{
     Handshake, HttpProxyRequest, proxy_authorization, proxy_credentials, proxy_handshake,

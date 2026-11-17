@@ -390,7 +390,7 @@ dependencies = [
  "swoole-rs-cares-sys",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-http-ffi",
+ "swoole-rs-http",
  "swoole-rs-oracle",
  "swoole-rs-protocols",
  "swoole-rs-websocket",
@@ -479,7 +479,6 @@ dependencies = [
  "swoole-rs-firebird",
  "swoole-rs-hooks",
  "swoole-rs-http",
- "swoole-rs-http-ffi",
  "swoole-rs-http2",
  "swoole-rs-httpbindings",
  "swoole-rs-oci",
@@ -535,7 +534,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-error-ffi",
- "swoole-rs-http-ffi",
+ "swoole-rs-http",
  "swoole-rs-oracle",
  "swoole-rs-ssh2-sys",
 ]
@@ -559,19 +558,9 @@ dependencies = [
  "libc",
  "memchr",
  "swoole-rs-base64",
- "swoole-rs-locale",
- "swoole-rs-oracle",
-]
-
-[[package]]
-name = "swoole-rs-http-ffi"
-version = "0.1.0"
-dependencies = [
- "libc",
- "swoole-rs-base64",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-http",
+ "swoole-rs-locale",
  "swoole-rs-oracle",
 ]
 
@@ -672,7 +661,6 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-hooks",
  "swoole-rs-http",
- "swoole-rs-http-ffi",
  "swoole-rs-inflate",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phpruntime",
@@ -928,7 +916,7 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-framing",
  "swoole-rs-hooks",
- "swoole-rs-http-ffi",
+ "swoole-rs-http",
  "swoole-rs-http2",
  "swoole-rs-locale",
  "swoole-rs-oracle",
@@ -960,7 +948,6 @@ dependencies = [
  "swoole-rs-framing",
  "swoole-rs-hooks",
  "swoole-rs-http",
- "swoole-rs-http-ffi",
  "swoole-rs-oracle",
 ]
 

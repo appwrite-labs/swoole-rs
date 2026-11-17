@@ -5,15 +5,15 @@ The HTTP module is `crates/http`; its exports' contracts are their doc comments.
 Rust unit tests:
 
 ```sh
-cargo test --locked -p swoole-rs-http -p swoole-rs-http-ffi
+cargo test --locked -p swoole-rs-http
 cargo clippy --locked -p swoole-rs-http --all-targets -- -D warnings
 ```
 
 ## Differential tests against the pinned bodies
 
-`proxy.rs` (the `proxy` test of `swoole-rs-http-ffi`) runs the former `proxy_gate.cc`
+`proxy.rs` (the `proxy` test of `swoole-rs-http`) runs the former `proxy_gate.cc`
 and `dispatch_gate.cc` cases against the pinned `HttpProxy` (`http_proxy` in crates/oracle).
-`locale.rs` and `rewrite.rs` (the `locale` and `rewrite` tests of `swoole-rs-http-ffi`,
+`locale.rs` and `rewrite.rs` (the `locale` and `rewrite` tests of `swoole-rs-http`,
 in the `http-unit` phase) are the former native gates `locale_gate.cc` and
 `rewrite_gate.cc`: the same inputs against the same pinned (v6.2.5) bodies, which
 `crates/oracle` compiles unchanged (`http_locale`, `http_rewrite`). One Rust test per
@@ -119,15 +119,15 @@ callbacks skip fields under `F_TRAILING`) is checked by the pinned PHPTs
 The 11 TESTs that start no server call the helpers, the request-line reader and the
 WebSocket codec directly. Their ports have the same inputs and expected values, the
 helpers' in `helpers.rs` and the others beside the Rust each one calls:
-`cargo test -p swoole-rs-http --test helpers` and `cargo test -p swoole-rs-http-ffi -p swoole-rs-ports --lib`.
+`cargo test -p swoole-rs-http --test helpers` and `cargo test -p swoole-rs-http -p swoole-rs-ports --lib`.
 
 | Upstream TEST | Rust test |
 | --- | --- |
 | `EncodeDecodeBasic`, `EncodeDecodeWithSpecialChars` | `helpers.rs`: `encode_decode_basic`, `encode_decode_with_special_chars` |
 | `get_method`, `get_method_str`, `get_status_message`, `parse_multipart_boundary` | `helpers.rs`: `get_method_cases`, `get_method_str`, `get_status_message_cases`, `parse_multipart_boundary_cases` |
-| `has_expect_header`, `get_protocol`, `all_method` | `crates/http-ffi/src/request.rs`: same names |
+| `has_expect_header`, `get_protocol`, `all_method` | `crates/http/src/request.rs`: same names |
 | `websocket_encode`, `websocket_compressed_control_frame` | `crates/ports/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
-| `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http-ffi/src/request.rs`: same names, over the multipart parser (#1938) |
+| `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http/src/request.rs`: same names, over the multipart parser (#1938) |
 
 The TESTs that start a server run in `server/` (the merge tier's `http-server-rust`
 phase): a Rust case binary over the crates and system.py's static libswoole.a (the pin's thirdparty and native/'s Zend-free sources), built and run by

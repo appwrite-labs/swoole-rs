@@ -29,7 +29,6 @@ swoole-rs-crc32 = { path = "../crc32" }
 swoole-rs-error = { path = "../error" }
 swoole-rs-framing = { path = "../framing" }
 swoole-rs-http = { path = "../http" }
-swoole-rs-http-ffi = { path = "../http-ffi" }
 swoole-rs-bus = { path = "../bus" }
 
 [dev-dependencies]

@@ -13,7 +13,6 @@ on:
       - 'crates/error/**'
       - 'crates/error-ffi/**'
       - 'crates/framing/**'
-      - 'crates/http-ffi/**'
       - 'crates/http/**'
       - 'crates/http2/**'
       - 'crates/inflate/**'
