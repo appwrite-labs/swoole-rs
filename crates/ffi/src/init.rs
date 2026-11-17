@@ -24,9 +24,3 @@ pub(crate) extern "C-unwind" fn swoole_init() {
     swoole_rs_hooks::stdio::swr_v1_hook_install();
     swoole_rs_corebase::swr_v1_core_swoole_init(Some(swr_v1_ffi_fatal_error));
 }
-
-/// fatal.c's `swoole_exit`.
-#[unsafe(no_mangle)]
-extern "C" fn swr_v1_ffi_exit(status: c_int) -> ! {
-    swoole_rs_corebase::swoole_exit(status)
-}
