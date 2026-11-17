@@ -421,7 +421,8 @@ accept with), `coroutine_system.getaddrinfo`, and `coroutine_base.create`.
 
 `core-tests/src/os/wait.cpp`, `os/async.cpp` and `os/os.cpp`'s `os.daemon` are Rust in
 `system/src/os.rs`, run by `hooks-system-rust`. The wait cases call
-`swoole_coroutine_waitpid`, `swoole_coroutine_wait` and `System::waitpid_safe`; their
+Rust `system_waitpid` and `system_wait` with the original infinite timeout, and
+`System::waitpid_safe` through its live native export; their
 children `_exit(0)` where upstream's `exit(0)`, so a forked child skips the parent's
 exit handlers. The async cases call `async::dispatch` and read `sw_async_threads()`'s
 counts through `async_threads::stats`. They set `SwooleG`'s `aio_*` fields through

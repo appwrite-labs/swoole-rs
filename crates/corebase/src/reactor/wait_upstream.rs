@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.5 src/os/wait.cc (Swoole contributors).
-//! Coroutine `waitpid` (`System::wait`, `waitpid`, `waitpid_safe` and their C API) and
-//! `swoole_waitpid`, under their upstream (Itanium) symbols, over `corebase::process`'s wait
+//! Coroutine `waitpid` (`System::wait`, `waitpid`, `waitpid_safe`) and
+//! `swoole_waitpid` over `corebase::process`'s wait
 //! registry, or the `io_uring` engine when one is registered. The process patch deletes
-//! `src/os/wait.cc`.
+//! `src/os/wait.cc`. Only `System::waitpid` and `waitpid_safe` retain native exports
+//! for bundled `proc_open`, selected by its `SW_THREAD` build configuration.
 use crate::process::signal::swoole_signal_dispatch;
 use crate::process::wait::wait_count;
 use crate::{log, sys};
@@ -188,38 +189,10 @@ pub extern "C" fn system_waitpid_safe(
     }
 }
 
-/// `size_t swoole_coroutine_wait_count()`: coroutines waiting for a child.
-#[must_use]
-#[unsafe(no_mangle)]
-pub extern "C" fn swoole_coroutine_wait_count() -> usize {
-    wait_count()
-}
-
-/// `pid_t swoole_coroutine_wait(int *)`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swoole_coroutine_wait(status: &mut c_int) -> libc::pid_t {
-    system_wait(status, -1.0)
-}
-
-/// `pid_t swoole_coroutine_waitpid(pid_t, int *, int)`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swoole_coroutine_waitpid(
-    pid: libc::pid_t,
-    status: &mut c_int,
-    options: c_int,
-) -> libc::pid_t {
-    system_waitpid(pid, status, options, -1.0)
-}
-
 /// `pid_t swoole_waitpid(pid_t, int *, int)`: `waitpid`, dispatching signals and
 /// running due timers whenever a signal interrupts it. `status` may be null.
-#[unsafe(export_name = "_Z14swoole_waitpidiPii")]
 #[must_use]
-pub extern "C" fn swoole_waitpid(
-    pid: libc::pid_t,
-    status: Option<&mut c_int>,
-    options: c_int,
-) -> libc::pid_t {
+pub fn swoole_waitpid(pid: libc::pid_t, status: Option<&mut c_int>, options: c_int) -> libc::pid_t {
     let mut status = status;
     loop {
         match sys::waitpid(pid, status.as_deref_mut(), options) {
