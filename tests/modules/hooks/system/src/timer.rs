@@ -6,6 +6,8 @@ use std::cell::{Cell, RefCell};
 use std::ffi::{c_int, c_long, c_void};
 use std::rc::{Rc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
+use swoole_rs_ffi::event_api::swoole_event_wait;
+use swoole_rs_ffi::swoole_event_init;
 
 use super::{SW_ERR, last_error, sleep};
 use swoole_rs_timer::{
@@ -16,13 +18,6 @@ use swoole_rs_timer::{
 const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
 const SW_ERROR_INVALID_PARAMS: c_int = 505;
 const SW_NUM_MILLION: i64 = 1_000_000;
-
-unsafe extern "C" {
-    #[link_name = "_Z17swoole_event_initi"]
-    fn swoole_event_init(flags: c_int) -> c_int;
-    #[link_name = "_Z17swoole_event_waitv"]
-    fn swoole_event_wait() -> c_int;
-}
 
 unsafe extern "C-unwind" {
     fn swr_v1_core_set_last_error(code: c_int);
@@ -109,13 +104,11 @@ fn incr(cell: &Cell<i32>) -> i32 {
 }
 
 fn event_init() {
-    // SAFETY: this thread's reactor.
-    unsafe { swoole_event_init(SW_EVENTLOOP_WAIT_EXIT) };
+    _ = swoole_event_init(SW_EVENTLOOP_WAIT_EXIT);
 }
 
 fn event_wait() {
-    // SAFETY: after `event_init`.
-    unsafe { swoole_event_wait() };
+    _ = swoole_event_wait();
 }
 
 fn sys() {

@@ -412,12 +412,8 @@ pub fn swr_v1_reactor_delete(OwnedReactor(handle): OwnedReactor) {
 /// `int swoole_event_init(int flags)`: the thread's `Reactor` with
 /// `SW_REACTOR_MAXEVENTS` events, waiting to exit under `SW_EVENTLOOP_WAIT_EXIT`, and the
 /// coroutine system's and client's handlers set; `SW_ERR` when no backend opens.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z17swoole_event_initi")
-)]
 #[must_use]
-pub extern "C-unwind" fn swoole_event_init(flags: c_int) -> c_int {
+pub fn swoole_event_init(flags: c_int) -> c_int {
     const SW_REACTOR_MAXEVENTS: c_int = 4096;
     const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
     let reactor = swr_v1_reactor_new(SW_REACTOR_MAXEVENTS, 0);
