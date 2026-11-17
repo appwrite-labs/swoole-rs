@@ -174,7 +174,7 @@ fn status(ok: bool) -> c_int {
 }
 
 pub(super) fn make_socket(kind: c_int, fd_type: c_int, flags: c_int) -> Option<Socket> {
-    Socket::from(socket_upstream::make_socket_typed(kind, fd_type, flags))
+    socket_upstream::make_typed(kind, fd_type, flags).map(|socket| Socket(Box::into_raw(socket)))
 }
 
 fn make_server_socket(kind: c_int, address: &str, port: c_int, backlog: c_int) -> Option<Socket> {

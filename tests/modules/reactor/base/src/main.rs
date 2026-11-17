@@ -676,7 +676,7 @@ unsafe fn write_2m() {
 unsafe fn bad_fd() {
     unsafe {
         let _ = swoole_rs_ffi::swoole_event_init(SW_EVENTLOOP_WAIT_EXIT);
-        let socket = swoole_rs_ffi::socket_upstream::make_socket_fd(999999, SW_FD_STREAM_CLIENT);
+        let socket = SocketRecord::with_fd(999999, SW_FD_STREAM_CLIENT).into_raw();
         (*socket).fields.output.nonblock = true;
         let n = event_api::event_write(handle(socket), b"hello world");
         assert_eq!(n, None);
@@ -816,7 +816,7 @@ fn reuse_read(reactor: Running<'_>, event: &mut Event) -> c_int {
         let fd = std::mem::replace(&mut (*other_socket).fields.fd, -1);
         expect_eq!(dup2(state.source_fd, fd), fd);
 
-        state.replacement_socket = swoole_rs_ffi::socket_upstream::make_socket_fd(fd, SW_FD_USER);
+        state.replacement_socket = SocketRecord::with_fd(fd, SW_FD_USER).into_raw();
         (*state.replacement_socket).fields.object = (&raw mut state.replacement_count).cast();
         expect_eq!(add(reactor, state.replacement_socket, SW_EVENT_READ), SW_OK);
     }
