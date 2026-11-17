@@ -26,7 +26,7 @@ def main():
         else:
             if not a.build_manifest:raise ValueError('Selected resolver proof requires --build-manifest')
             report['attestation']=attest(a.build_manifest,identities)
-        outcomes={mode:[] for mode in ['string','cycle','mutate-port','missing-port','lookup-throw','count-throw','pop-throw','bailout']}
+        outcomes={mode:[] for mode in ['string','nested','cycle','mutate-port','missing-port','lookup-throw','count-throw','pop-throw','bailout']}
         for engine,identity in zip(engines,identities):
             for mode in outcomes:
                 result=run_isolated(engine.command(fixture,mode),timeout=35)

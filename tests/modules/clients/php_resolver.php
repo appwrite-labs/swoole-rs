@@ -23,6 +23,14 @@ final class WitnessResolver extends Swoole\NameResolver {
     public function lookup(string $name) {
         WitnessState::$events[]='lookup:'.bin2hex($name);++$this->calls;
         if($this->mode==='lookup-throw')throw new RuntimeException('lookup-stop');
+        if ($this->mode === 'nested') {
+            if ($name === 'inner') {
+                return new WitnessCluster('inner', [['host'=>'inner-node', 'port'=>4711]], $this->mode);
+            }
+            $inner = swoole_name_resolver_lookup('inner', WitnessState::$context->get());
+            check($inner === 'inner-node:4711', 'inner lookup used context port option');
+            return 'outer-node';
+        }
         if($this->mode==='string')return "final\0node";
         $nodes=match($this->mode){
             'cycle'=>$this->calls===1?[['host'=>"one\0node",'port'=>-19],['host'=>'two','port'=>'00042']]:[['host'=>'three','port'=>0]],
@@ -42,7 +50,7 @@ try {
 if(str_ends_with($mode,'-throw'))check($exception===str_replace('-throw','-stop',$mode),'exception preserved');
 else {
     check($exception===null,'unexpected exception:'.$exception);
-    $expected=match($mode){'string'=>["final\0node"],'cycle'=>["one\0node:-19",'two:42','three:0'],'mutate-port'=>["raw\0node"],'missing-port'=>['127.0.0.1'],default=>["raw\0node:-19"]};
+    $expected=match($mode){'nested'=>['outer-node'],'string'=>["final\0node"],'cycle'=>["one\0node:-19",'two:42','three:0'],'mutate-port'=>["raw\0node"],'missing-port'=>['127.0.0.1'],default=>["raw\0node:-19"]};
     check($results===array_map('bin2hex',$expected),'exact results:'.json_encode($results));
 }
 $ctx=null;gc_collect_cycles();check($weak->get()===null,'context collected');
