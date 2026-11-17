@@ -603,6 +603,17 @@ impl<'a> RecvData<'a> {
         }
     }
 
+    /// A message of `info` as it is, over at most its `len` bytes of `data`.
+    #[must_use]
+    #[inline]
+    pub fn within(info: DataHead, data: &'a [u8]) -> Self {
+        let data = data.get(..info.len as usize).unwrap_or(data);
+        Self {
+            info,
+            payload: Payload::Lent(data),
+        }
+    }
+
     /// A message of `packet`, which the callback owns, its head's `len` the packet's
     /// length (at most `u32::MAX`).
     #[must_use]
@@ -633,6 +644,12 @@ impl<'a> RecvData<'a> {
                 bytes.get(..self.info.len as usize).unwrap_or(bytes)
             }
         }
+    }
+
+    /// The head's `flags`.
+    #[inline]
+    pub fn set_flags(&mut self, flags: u8) {
+        self.info.flags = flags;
     }
 
     /// `move_packet()`: the packet this message owns, now the caller's, or `None`

@@ -325,13 +325,11 @@ fn receive_as(serv: view::Server<'_>, task: &SendData, dgram: bool, worker: Work
         }
         c.set_last_dispatch_time(task.info.time);
     }
-    let flags = if task.info.len > 0 {
-        DATA_PTR | (task.info.flags & POP_PTR)
-    } else {
-        task.info.flags
-    };
-    let head = DataHead { flags, ..task.info };
-    let mut recv = crate::reactor_entry::RecvData::new(head, task.payload());
+    // The head as it is, a block copy: the payload is already `len` bytes.
+    let mut recv = crate::reactor_entry::RecvData::within(task.info, task.payload());
+    if task.info.len > 0 {
+        recv.set_flags(DATA_PTR | (task.info.flags & POP_PTR));
+    }
     let slot = if dgram {
         ReceiveSlot::Packet
     } else {

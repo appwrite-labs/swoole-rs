@@ -225,16 +225,17 @@ fn cached(
 /// bailout (a handshake's `onOpen`, the handler's `exit()`) is raised last.
 #[must_use]
 pub fn http_server_on_receive(server: view::Server<'_>, request: &mut RecvData<'_>) -> bool {
-    match receive(server, request) {
+    // One read of the session for every lookup below.
+    let session = request.info().fd;
+    match receive(server, session, request) {
         Route::Closed => false,
         Route::Tcp => {
             php_swoole_server_on_receive(server, request);
             true
         }
-        Route::WebSocket => websocket::on_message(server, request),
+        Route::WebSocket => websocket::on_message(server, session, request),
         Route::Http2 => {
             // `receive` verified the session.
-            let session = request.info().fd;
             let (Some(conn), Some(http2)) = (server.verified(session), crate::http2::server())
             else {
                 return false;
@@ -245,9 +246,13 @@ pub fn http_server_on_receive(server: view::Server<'_>, request: &mut RecvData<'
     }
 }
 
-fn receive(server: view::Server<'_>, request: &mut RecvData<'_>) -> Route {
+fn receive(
+    server: view::Server<'_>,
+    session: core::ffi::c_long,
+    request: &mut RecvData<'_>,
+) -> Route {
     let info = request.info();
-    let (session, server_fd, ext_flags) = (info.fd, c_int::from(info.server_fd), info.ext_flags);
+    let (server_fd, ext_flags) = (c_int::from(info.server_fd), info.ext_flags);
     let Some(conn) = server.verified(session) else {
         host::log(
             LOG_TRACE,
