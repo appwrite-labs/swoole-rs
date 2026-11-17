@@ -1,10 +1,6 @@
 //! `swoole_get_local_ip()` and `swoole_get_local_mac()`: the host's non-loopback
 //! interface addresses, keyed by interface name.
-use std::{
-    ffi::{CString, c_int},
-    io,
-    net::IpAddr,
-};
+use std::{ffi::CString, io, net::IpAddr};
 use swoole_rs_zend::{Call, E_WARNING, OwnedArray, handlers, report};
 
 handlers! {
@@ -102,7 +98,7 @@ fn local_mac(call: &Call) {
     };
     let mut array = OwnedArray::default();
     let loopback = libc::IFF_LOOPBACK.unsigned_abs();
-    let inet = |address: &libc::sockaddr| c_int::from(address.sa_family) == libc::AF_INET;
+    let inet = |address: &libc::sockaddr| i32::from(address.sa_family) == libc::AF_INET;
     for entry in interfaces.iter() {
         // `SIOCGIFFLAGS`' flags are the entry's.
         if !entry.address().is_some_and(inet) || entry.flags() & loopback != 0 {
@@ -127,26 +123,8 @@ fn local_mac(call: &Call) {
     let mut array = OwnedArray::default();
     let loopback = libc::IFF_LOOPBACK.unsigned_abs();
     for entry in interfaces.iter() {
-        let Some(address) = entry.address().filter(|_| entry.flags() & loopback == 0) else {
-            continue;
-        };
-        if c_int::from(address.sa_family) != libc::AF_LINK {
-            continue;
-        }
-        // SAFETY: a BSD address is its `sa_len` bytes, which the list lends with it.
-        let link = unsafe {
-            std::slice::from_raw_parts(
-                std::ptr::from_ref(address).cast::<u8>(),
-                usize::from(address.sa_len),
-            )
-        };
-        // A sockaddr_dl's lengths, then LLADDR: the address follows the name in sdl_data.
-        let byte = |offset| link.get(offset).copied().map_or(0, usize::from);
-        let alen = byte(std::mem::offset_of!(libc::sockaddr_dl, sdl_alen));
-        let start = std::mem::offset_of!(libc::sockaddr_dl, sdl_data)
-            + byte(std::mem::offset_of!(libc::sockaddr_dl, sdl_nlen));
-        if alen == 6
-            && let Some(address) = link.get(start..start + 6)
+        if entry.flags() & loopback == 0
+            && let Some(address) = entry.mac()
         {
             add_address(&mut array, entry.name().to_bytes(), address);
         }
