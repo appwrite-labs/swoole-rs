@@ -14,7 +14,7 @@ use swoole_rs_process::methods::{
     ExitStatus, set_worker_type, start_check, swoole_set_worker_id, swoole_set_worker_pid,
     worker_type,
 };
-use swoole_rs_process::worker_record::{Worker, WorkerStatus, WorkerType};
+use swoole_rs_process::worker_record::{WorkerStatus, WorkerType};
 
 use super::{ThreadManager, Wake, worker_thread_start};
 use crate::callbacks::ServerSlot;
@@ -22,7 +22,7 @@ use crate::objects::{Bus, Reactor};
 use crate::reactor_ops::PoolBus;
 use crate::records::ConnectionRecord;
 use crate::worker_methods::{create_event_workers, create_user_workers};
-use crate::{factory, pool_native, server_methods, view};
+use crate::{SharedServer, factory, pool_native, server_methods, view};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as ERROR, SW_LOG_WARNING as WARNING};
 
 /// `SW_EVENT_READ` and `Server::THREAD_WORKER`.
@@ -163,13 +163,8 @@ fn join(manager: &ThreadManager, id: u32) {
 
 /// `ThreadFactory::spawn_*`: start slot `id`'s thread as a worker of `kind`.
 fn spawn(serv: view::Server<'_>, id: u32, kind: WorkerType) {
-    let address = serv.raw().expose_provenance();
-    let body = move |fresh| {
-        let serv = core::ptr::with_exposed_provenance_mut(address);
-        // SAFETY: the live server, which outlives the factory's threads: whatever this
-        // thread keeps of it, its thread-locals included, goes before the join returns.
-        body(unsafe { view::Server::from_raw(serv) }, id, kind, fresh);
-    };
+    let share = SharedServer::of(serv);
+    let body = move |fresh| body(&share, id, kind, fresh);
     // An uncaught `std::system_error` upstream: the process ends.
     if manager(serv).thread(id as usize).start(body).is_err() {
         swoole_rs_corebase::fatal("a worker thread can't start");
@@ -178,8 +173,10 @@ fn spawn(serv: view::Server<'_>, id: u32, kind: WorkerType) {
 
 /// A thread's body: enter the thread as its worker (or the manager), run its main
 /// inside the server's `worker_thread_start`, then leave, telling the manager
-/// thread when a worker exited.
-fn body(serv: view::Server<'static>, id: u32, kind: WorkerType, fresh: swoole_rs_corebase::Fresh) {
+/// thread when a worker exited. The thread's shares drop as it ends, so before
+/// the join of it returns.
+fn body(share: &SharedServer, id: u32, kind: WorkerType, fresh: swoole_rs_corebase::Fresh) {
+    let serv = share.view();
     let slot = u16::try_from(id).unwrap_or(u16::MAX);
     swoole_rs_corebase::swoole_thread_init(false);
     swoole_rs_corebase::set_thread(THREAD_WORKER, slot);
@@ -215,8 +212,15 @@ fn body(serv: view::Server<'static>, id: u32, kind: WorkerType, fresh: swoole_rs
     // `serv->worker_thread_start(thread, fn)`: the registered starter runs the
     // thread's main.
     match worker_thread_start() {
-        Some(start) => start(fresh, thread, Rc::new(move || run_main(serv, slot, worker))),
-        None => run_main(serv, slot, worker),
+        Some(start) => {
+            let share = share.clone();
+            start(
+                fresh,
+                thread,
+                Rc::new(move || run_main(share.view(), slot, kind)),
+            );
+        }
+        None => run_main(serv, slot, kind),
     }
     if bus.is_some() {
         swoole_rs_corebase::set_thread_message_bus(core::ptr::null_mut());
@@ -255,10 +259,11 @@ fn init_bus(serv: view::Server<'_>, bus: &PoolBus) {
     server_methods::init_pipe_sockets(serv, handle);
 }
 
-/// A thread's main inside `worker_thread_start`: its server, slot and worker
-/// (`None` for the manager).
-fn run_main(serv: view::Server<'_>, slot: u16, worker: Option<Worker<'_>>) {
-    let Some(worker) = worker else {
+/// A thread's main inside `worker_thread_start`: its server, slot and kind; the
+/// manager has no worker.
+fn run_main(serv: view::Server<'_>, slot: u16, kind: WorkerType) {
+    let worker = (kind != WorkerType::Manager).then(|| serv.worker_record(slot));
+    let Some(worker) = worker.flatten() else {
         let callbacks = &serv.state().callbacks;
         callbacks.call_server(ServerSlot::ManagerStart, serv);
         wait(serv, &manager(serv));
