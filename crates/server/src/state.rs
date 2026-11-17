@@ -85,8 +85,10 @@ type Slot = OnceLock<Box<PortConfig>>;
 /// valid while more ports are added, as upstream's `ListenPort *`s did.
 #[derive(Default)]
 pub struct Ports {
+    /// The primary port needs no chunk lookup on each request.
+    first: Slot,
     /// Chunk `k` holds ports `2^k - 1` to `2^(k+1) - 2`: sixteen hold 65,535, more than
-    /// `add_port` allows.
+    /// `add_port` allows; chunk zero is held inline in `first`.
     chunks: [OnceLock<Box<[Slot]>>; 16],
     /// How many are pushed: every port below it is set before the count is published.
     len: AtomicUsize,
@@ -121,8 +123,12 @@ impl Ports {
         if index >= self.len() {
             return None;
         }
-        let (chunk, at) = Self::slot(index);
-        let port = self.chunks.get(chunk)?.get()?.get(at)?.get()?;
+        let port = if index == 0 {
+            self.first.get()?
+        } else {
+            let (chunk, at) = Self::slot(index);
+            self.chunks.get(chunk)?.get()?.get(at)?.get()?
+        };
         Some(Port::from(&**port))
     }
 
@@ -147,12 +153,19 @@ impl Ports {
         let push = lock(&self.push);
         let index = self.len.load(Ordering::Relaxed);
         port.object_id = u16::try_from(index + 1).unwrap_or(u16::MAX);
-        let (chunk, at) = Self::slot(index);
-        let Some(slots) = self.chunks.get(chunk) else {
-            swoole_rs_corebase::fatal("more ports than the list holds");
+        let slot = if index == 0 {
+            &self.first
+        } else {
+            let (chunk, at) = Self::slot(index);
+            let Some(slots) = self.chunks.get(chunk) else {
+                swoole_rs_corebase::fatal("more ports than the list holds");
+            };
+            let slots = slots.get_or_init(|| (0..1 << chunk).map(|_| OnceLock::new()).collect());
+            slots
+                .get(at)
+                .unwrap_or_else(|| swoole_rs_corebase::fatal("a port is outside its chunk"))
         };
-        let slots = slots.get_or_init(|| (0..1 << chunk).map(|_| OnceLock::new()).collect());
-        if slots.get(at).is_none_or(|slot| slot.set(port).is_err()) {
+        if slot.set(port).is_err() {
             swoole_rs_corebase::fatal("a port slot is taken");
         }
         self.len.store(index + 1, Ordering::Release);
@@ -164,10 +177,12 @@ impl Ports {
     /// The ports, which the list no longer holds.
     fn drain(&mut self) -> impl Iterator<Item = Box<PortConfig>> {
         *self.len.get_mut() = 0;
-        self.chunks
-            .iter_mut()
-            .filter_map(OnceLock::take)
-            .flat_map(|slots| slots.into_iter().filter_map(OnceLock::into_inner))
+        self.first.take().into_iter().chain(
+            self.chunks
+                .iter_mut()
+                .filter_map(OnceLock::take)
+                .flat_map(|slots| slots.into_iter().filter_map(OnceLock::into_inner)),
+        )
     }
 }
 
@@ -595,6 +610,26 @@ pub(crate) fn startup_error(message: CString, code: c_int) -> CString {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn ports_keep_primary_and_chunk_loans_until_drained() {
+        let mut ports = Ports::default();
+        assert!(ports.get(0).is_none());
+        let first = ports.push(PortConfig::boxed(0));
+        for _ in 1..33 {
+            ports.push(PortConfig::boxed(0));
+        }
+        assert_eq!(first.raw(), ports.get(0).unwrap().raw());
+        for (index, port) in ports.iter().enumerate() {
+            assert_eq!(usize::from(port.config().object_id), index + 1);
+        }
+        assert!(ports.get(33).is_none());
+        let owned: Vec<_> = ports.drain().collect();
+        assert_eq!(owned.len(), 33);
+        assert!(ports.is_empty());
+        assert!(ports.get(0).is_none());
+        assert_eq!(ports.push(PortConfig::boxed(0)).config().object_id, 1);
+    }
 
     impl ServerState {
         /// The configuration, to write: borrowing the state whole, so no reference
