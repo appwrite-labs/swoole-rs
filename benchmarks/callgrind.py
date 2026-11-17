@@ -439,6 +439,8 @@ def main():
     parser.add_argument('--profiles', type=Path, nargs='?', const=run / 'profiles',
                         help='Keep the callgrind profiles in DIR/<workload>/<engine>/ (default under target/callgrind/)')
     parser.add_argument('--max-ratio', type=float, help='Fail if first/second exceeds this for any workload')
+    parser.add_argument('--warn-headroom', action='store_true',
+                        help='Warn when a passing ratio has at most 0.5%% headroom before its limit')
     parser.add_argument('--limits', type=Path, help='DIR of files named by workload, each its recorded first/second ratio; '
                         'fail if one is exceeded by more than noise (overrides --max-ratio per workload)')
     parser.add_argument('--ratchet', type=Path, nargs='+', metavar='RESULT',
@@ -473,6 +475,9 @@ def main():
             failed |= over
             if over:
                 annotate('error', f'callgrind {workload}', f'ratio {a / b:.4f} over limit {limit:.4f}')
+            elif args.warn_headroom and limit and a / b >= limit / 1.005:
+                annotate('warning', f'callgrind {workload}',
+                         f'ratio {a / b:.4f} has {(limit / (a / b) - 1) * 100:.2f}% headroom before limit {limit:.4f}')
             print(f'ratio {first}/{second} {workload}: {a / b:.4f}' + (f' exceeds {limit:.4f}' if over else '')
                   + (f'; below the recorded {recorded[workload]}, lowest record {lowest(a / b):.2f}' if stale else ''))
     args.output.parent.mkdir(parents=True, exist_ok=True)

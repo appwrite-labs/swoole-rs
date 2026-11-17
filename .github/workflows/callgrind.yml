@@ -108,6 +108,7 @@ jobs:
       - name: Run callgrind workloads
         run: >
           python3 benchmarks/callgrind.py --requests 1000 --limits benchmarks/callgrind_limits
+          ${{ github.ref == 'refs/heads/main' && '--warn-headroom' || '' }}
           ${{ matrix.workloads }}
           ${{ matrix.extensions || '--php-extension pdo --php-extension pdo_sqlite --php-extension mysqlnd --php-extension pdo_mysql' }}
           --engine cargo=target/ext/swoole.so
@@ -121,6 +122,7 @@ jobs:
           failed=0
           for sample in 2 3; do
             python3 benchmarks/callgrind.py --requests 1000 --limits benchmarks/callgrind_limits \
+              ${{ github.ref == 'refs/heads/main' && '--warn-headroom' || '' }} \
               --workload connect --php-extension pdo --php-extension pdo_sqlite \
               --php-extension mysqlnd --php-extension pdo_mysql \
               --engine cargo=target/ext/swoole.so --engine upstream=target/upstream/src/modules/swoole.so \

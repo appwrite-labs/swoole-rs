@@ -80,6 +80,32 @@ class Ratchet(unittest.TestCase):
         gated = {w for w in callgrind.WORKLOADS if f'--workload {w} ' in workflow or f'--workload {w}\n' in workflow}
         self.assertEqual(gated, set(limits))
 
+    def test_headroom_warning_is_opt_in_and_does_not_change_the_gate(self):
+        from unittest import mock
+        import tempfile
+        for ratio, enabled, limited, level, status in [
+            (0.996, True, True, 'warning', 0),
+            (1.0, True, True, 'warning', 0),
+            (0.994, True, True, None, 0),
+            (0.996, False, True, None, 0),
+            (0.996, True, False, None, 0),
+            (1.001, True, True, 'error', 1),
+        ]:
+            with self.subTest(ratio=ratio, enabled=enabled, limited=limited), \
+                    tempfile.TemporaryDirectory() as temp, \
+                    mock.patch.object(callgrind, 'instructions',
+                                      side_effect=lambda engine, *_: ratio if engine.name == 'cargo' else 1), \
+                    mock.patch.object(callgrind, 'annotate') as annotate:
+                args = ['callgrind.py', '--engine', 'cargo=/x', '--engine', 'upstream=/y',
+                        '--output', f'{temp}/r.json']
+                if enabled:
+                    args.append('--warn-headroom')
+                if limited:
+                    args += ['--max-ratio', '1']
+                with mock.patch('sys.argv', args):
+                    self.assertEqual(callgrind.main(), status)
+                self.assertEqual([call.args[0] for call in annotate.call_args_list], [level] if level else [])
+
 
 if __name__ == '__main__':
     unittest.main()
