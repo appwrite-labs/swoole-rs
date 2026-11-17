@@ -716,7 +716,7 @@ pub fn raise_bailout() {
 
 /// A pool's IPC state. `listener`: the pool uses a stream socket (`SW_IPC_SOCKET`).
 #[must_use]
-pub fn pool_ipc_new(listener: bool) -> PoolIpc {
+pub fn pool_ipc_new(listener: bool) -> *mut PoolIpc {
     let stream = listener.then_some(Stream {
         listener: None,
         file: None,
@@ -724,13 +724,14 @@ pub fn pool_ipc_new(listener: bool) -> PoolIpc {
         connection: None,
         response: None,
     });
-    PoolIpc {
+    Box::into_raw(Box::new(PoolIpc {
         stream,
         packet: Vec::new(),
-    }
+    }))
 }
 
-/// Free the state; `close` frees the listener. A listener's address is a socket file,
+/// Free the state, which the caller takes back from the handle [`pool_ipc_new`]
+/// leaked; `close` frees the listener. A listener's address is a socket file,
 /// unlinked as upstream does (a TCP host is unlinked too, harmlessly).
 pub fn pool_ipc_free(ipc: PoolIpc, close: impl FnOnce(Connection)) {
     if let Some(stream) = ipc.stream
@@ -905,7 +906,7 @@ pub fn pool_run(
     pool_loop: &PoolLoop<'_>,
     protocol: Protocol,
 ) -> Result<(), Bailed> {
-    if !pool_loop.pool.record().has_ipc() {
+    if pool_loop.pool.ipc().is_null() {
         return Ok(());
     }
     let worker = Worker {
@@ -1042,28 +1043,34 @@ mod tests {
 
     #[test]
     fn respond_needs_a_connection_and_a_buffer() {
-        let mut ipc = pool_ipc_new(true);
-        assert!(!swr_v1_process_pool_ipc_respond(&mut ipc, b"x"));
-        pool_ipc_prepare(&mut ipc, 16);
-        assert!(!swr_v1_process_pool_ipc_respond(&mut ipc, b"x"));
-        ipc.stream.as_mut().unwrap().connection = Some(Rc::new(()));
-        assert!(!swr_v1_process_pool_ipc_respond(&mut ipc, b""));
-        assert!(swr_v1_process_pool_ipc_respond(&mut ipc, b"ab"));
-        assert_eq!(
-            ipc.stream.as_ref().unwrap().response.as_deref(),
-            Some(&b"ab"[..])
-        );
-        ipc.stream.as_mut().unwrap().connection = None;
-        pool_ipc_free(ipc, |_| {});
+        let ipc = pool_ipc_new(true);
+        // SAFETY: a live handle.
+        unsafe {
+            assert!(!swr_v1_process_pool_ipc_respond(&mut *ipc, b"x"));
+            pool_ipc_prepare(&mut *ipc, 16);
+            assert!(!swr_v1_process_pool_ipc_respond(&mut *ipc, b"x"));
+            (*ipc).stream.as_mut().unwrap().connection = Some(Rc::new(()));
+            assert!(!swr_v1_process_pool_ipc_respond(&mut *ipc, b""));
+            assert!(swr_v1_process_pool_ipc_respond(&mut *ipc, b"ab"));
+            assert_eq!(
+                (*ipc).stream.as_ref().unwrap().response.as_deref(),
+                Some(&b"ab"[..])
+            );
+            (*ipc).stream.as_mut().unwrap().connection = None;
+            pool_ipc_free(*Box::from_raw(ipc), |_| {});
+        }
     }
 
     #[test]
     fn a_pool_without_a_listener_has_no_address() {
-        let mut ipc = pool_ipc_new(false);
-        assert!(!swr_v1_process_pool_ipc_address(&mut ipc, c"/tmp/x", 1));
-        assert!(pool_ipc_address(&ipc).is_none());
-        assert!(swr_v1_process_pool_ipc_listener(&ipc).is_none());
-        pool_ipc_free(ipc, |_| {});
+        let ipc = pool_ipc_new(false);
+        // SAFETY: a live handle.
+        unsafe {
+            assert!(!swr_v1_process_pool_ipc_address(&mut *ipc, c"/tmp/x", 1));
+            assert!(pool_ipc_address(&*ipc).is_none());
+            assert!(swr_v1_process_pool_ipc_listener(&*ipc).is_none());
+            pool_ipc_free(*Box::from_raw(ipc), |_| {});
+        }
     }
 
     #[test]
@@ -1128,6 +1135,7 @@ mod tests {
         shutdowns: usize,
         warnings: Vec<Warning>,
         respond: Vec<u8>,
+        ipc: usize,
     }
 
     thread_local! {
@@ -1267,16 +1275,14 @@ mod tests {
         }
         fn message(&self, c: &mut PoolCall) {
             let bytes = bytes_of(c);
-            let respond = with(|s| {
+            let (ipc, respond) = with(|s| {
                 s.messages.push(bytes);
-                std::mem::take(&mut s.respond)
+                (s.ipc as *mut PoolIpc, std::mem::take(&mut s.respond))
             });
             if !respond.is_empty() {
-                let responded = c
-                    .pool()
-                    .record()
-                    .with_ipc(|ipc| swr_v1_process_pool_ipc_respond(ipc, &respond));
-                assert_eq!(responded, Some(true));
+                // SAFETY: the test's handle.
+                let responded = swr_v1_process_pool_ipc_respond(unsafe { &mut *ipc }, &respond);
+                assert!(responded);
             }
         }
         fn shutdown(&self, _: &PoolCall) {
@@ -1289,9 +1295,13 @@ mod tests {
     }
 
     fn run_loop(script: Script, listener: bool, ipc_mode: IpcMode, protocol: Protocol) -> Script {
-        with(|s| *s = script);
-        let mut pool = crate::process::process_pool::PoolRecord::empty();
-        pool.ipc = Some(Box::new(std::cell::Cell::new(pool_ipc_new(listener))));
+        let ipc = pool_ipc_new(listener);
+        with(|s| {
+            *s = script;
+            s.ipc = ipc as usize;
+        });
+        let pool = crate::process::process_pool::PoolRecord::empty();
+        pool.ipc.set(ipc);
         let pool = std::cell::UnsafeCell::new(pool);
         let mut worker = crate::process::worker_record::WorkerRecord::empty();
         let pool_loop = PoolLoop {
@@ -1304,8 +1314,8 @@ mod tests {
             event_size: 128,
         };
         assert!(pool_run(&Scripted, &pool_loop, protocol).is_ok());
-        let ipc = pool.into_inner().ipc.take().unwrap();
-        pool_ipc_free(ipc.into_inner(), |_| {});
+        // SAFETY: as above.
+        pool_ipc_free(*unsafe { Box::from_raw(ipc) }, |_| {});
         with(std::mem::take)
     }
 

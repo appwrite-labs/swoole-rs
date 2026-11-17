@@ -40,8 +40,8 @@ type Owner<T> = core::cell::Cell<Option<Box<T>>>;
 
 /// `swoole::ProcessPool`'s fields, in order. Rust owns this layout; the C++ view
 /// takes its fields from here (`SWR_POOL_RECORD_FIELDS`, `tools/process_records.py`).
-/// Every field but the four owners the record lends in place (`registry`, `queue`,
-/// `ipc` and `message_box`) is a cell or an atomic, so a handle writes it through
+/// Every field but the three owners the record lends in place (`registry`, `queue`
+/// and `message_box`) is a cell or an atomic, so a handle writes it through
 /// `&PoolRecord` while other loans of the record are live.
 #[repr(C)]
 pub struct PoolRecord {
@@ -92,10 +92,7 @@ pub struct PoolRecord {
     pub(crate) registry: Option<Box<WorkerRegistry>>,
     /// A message-queue pool's queue, which goes as the registry does.
     pub(crate) queue: Option<Box<crate::ossupport::QueueRecord>>,
-    /// The IPC state `create` made, which `destroy` frees. The box stays in place
-    /// while lent ([`PoolRecord::with_ipc`]), so another process sharing the record
-    /// still finds its own copy.
-    pub(crate) ipc: Option<Box<Cell<PoolIpc>>>,
+    pub(crate) ipc: Cell<*mut PoolIpc>,
     pub(crate) message_box: SharedChannel,
     message_bus: Owner<Box<dyn std::any::Any>>,
     reload_task: Owner<ReloadTask>,
@@ -185,7 +182,7 @@ impl PoolRecord {
             pipes: Owner::new(None),
             registry: None,
             queue: None,
-            ipc: None,
+            ipc: Cell::new(ptr::null_mut()),
             message_box: SharedChannel::none(),
             message_bus: Owner::new(None),
             reload_task: Owner::new(None),
@@ -215,10 +212,10 @@ impl PoolRecord {
         })
     }
 
-    /// Whether the pool has its IPC state: after `create`, until `destroy`.
+    /// The pool's IPC state, or null before `create`.
     #[must_use]
-    pub fn has_ipc(&self) -> bool {
-        self.ipc.is_some()
+    pub fn ipc(&self) -> *mut PoolIpc {
+        self.ipc.get()
     }
 
     /// The pool's message box (a shared-memory channel), or null.
@@ -259,14 +256,12 @@ impl PoolRecord {
         (own && offset % size_of::<WorkerRecord>() == 0).then_some(index)
     }
 
-    /// `f` over the pool's IPC state, taken out of its box meanwhile (a call inside
-    /// `f` finds it empty); `None` before `create`.
+    /// `f` over the pool's IPC state; `None` before `create`.
     pub(crate) fn with_ipc<R>(&self, f: impl FnOnce(&mut PoolIpc) -> R) -> Option<R> {
-        let held = self.ipc.as_deref()?;
-        let mut ipc = held.take();
-        let result = f(&mut ipc);
-        held.set(ipc);
-        Some(result)
+        // SAFETY: `ipc` is crate-private: null, or the state `create` made until
+        // `destroy` frees it. Only these calls borrow it, none across a callback, so
+        // nothing else borrows it while `f` runs.
+        unsafe { self.ipc.get().as_mut() }.map(f)
     }
 
     /// The pool's stream listener, if any.
@@ -445,9 +440,9 @@ impl<'a> PoolRef<'a> {
             msgqueue_key, worker_num, max_request, max_request_grace, scheduler_warning,
             warning_time, on_start, on_shutdown, on_before_reload, on_after_reload, on_task,
             on_worker_start, on_message, on_worker_exit, on_worker_stop, on_worker_error,
-            on_worker_message, on_worker_not_found, main_loop, workers, pipes,
+            on_worker_message, on_worker_not_found, main_loop, workers, pipes, ipc,
             message_bus, reload_task, ptr, kill_timer, ptr_key;
-            registry, queue, ipc, message_box
+            registry, queue, message_box
         );
     }
 
@@ -466,15 +461,6 @@ impl<'a> PoolRef<'a> {
     /// Sets the pool's registry.
     pub(crate) fn set_registry(self, registry: Option<Box<WorkerRegistry>>) {
         drop(self.replace(|record| &mut record.registry, registry));
-    }
-
-    /// Sets the pool's IPC state, returning what it held.
-    pub(crate) fn set_ipc(self, ipc: Option<PoolIpc>) -> Option<PoolIpc> {
-        let old = self.replace(
-            |record| &mut record.ipc,
-            ipc.map(|ipc| Box::new(Cell::new(ipc))),
-        );
-        old.map(|ipc| ipc.into_inner())
     }
 
     /// Sets the pool's message queue.
@@ -525,7 +511,9 @@ impl<'a> PoolRef<'a> {
     /// is no queue.
     pub(crate) fn queue_pop(self, node: &mut [u8], size: usize) -> (isize, c_int) {
         let node = node.get_mut(..size_of::<c_long>().saturating_add(size));
-        let result = self.with_queue(|queue| queue.pop(node?)).flatten();
+        let result = self
+            .with_queue(|queue| queue.pop(node?))
+            .flatten();
         let length = result.map_or(-1, CCast::c_cast::<isize>);
         (length, crate::sys::errno())
     }
@@ -1590,6 +1578,7 @@ getters!(
     pub(crate) main_loop: Option<MainLoopFn>,
     pub(crate) on_message: Option<MessageFn>,
     pub workers: *mut WorkerRecord,
+    pub ipc: *mut PoolIpc,
     ;
     ptr: *mut c_void,
     ptr_key: *const PoolObjectKey,
@@ -1627,6 +1616,7 @@ setters!(
     pub max_request_grace / set_max_request_grace: u32,
     pub scheduler_warning / set_scheduler_warning: bool,
     pub(crate) workers / set_workers: *mut WorkerRecord,
+    pub(crate) ipc / set_ipc: *mut PoolIpc,
     pub kill_timer / set_kill_timer: Option<ArmedTimer>
     ;
     pub is_async / set_is_async: bool,
@@ -1740,7 +1730,7 @@ impl<H: PoolHost> Pool<'_, H> {
             IpcMode::None => {}
         }
         self.p.set_registry(Some(Box::default()));
-        drop(self.p.set_ipc(Some(pool_ipc_new(mode == IpcMode::Socket))));
+        self.set_ipc(pool_ipc_new(mode == IpcMode::Socket));
         self.set_ipc_mode(mode);
         self.set_protocol(Protocol::Task);
         self.set_max_packet_size(packet_limit(self.use_msgqueue(), SW_INPUT_BUFFER_SIZE));
@@ -2029,7 +2019,7 @@ impl<H: PoolHost> Pool<'_, H> {
                 return Ok(false);
             }
         }
-        if !self.record().has_ipc() {
+        if self.ipc().is_null() {
             // A pool `create` never made.
             return Ok(false);
         }
@@ -2263,10 +2253,15 @@ impl<H: PoolHost> Pool<'_, H> {
         self.set_kill_timer(None);
         self.p.set_pipes(None);
         self.p.set_queue(None);
-        if let Some(ipc) = self.p.set_ipc(None) {
+        let ipc = self.ipc();
+        if !ipc.is_null() {
+            // SAFETY: the pool's IPC state, the box `pool_ipc_new` leaked (the field is
+            // crate-private), taken back once: the field is cleared next.
+            let ipc = unsafe { Box::from_raw(ipc) };
             // The native close frees its listener.
-            pool_ipc_free(ipc, |listener| self.h.close(listener));
+            pool_ipc_free(*ipc, |listener| self.h.close(listener));
         }
+        self.set_ipc(ptr::null_mut());
         self.p.set_registry(None);
         self.h.free_box();
         self.p.set_message_bus(None);
@@ -2790,7 +2785,7 @@ mod tests {
         assert_eq!(dropped.get(), 3, "the pool drops each pipe owner once");
         assert!(!pool.p.keep_pipe(Box::new(PipeOwner(dropped.clone()))));
         assert_eq!(dropped.get(), 4, "a closed pool retains no new owner");
-        assert!(pool.p.registry().is_null() && !pool.record().has_ipc());
+        assert!(pool.p.registry().is_null() && pool.ipc().is_null());
     }
 
     #[test]
@@ -2843,7 +2838,7 @@ mod tests {
         let mut fixture = Fixture::new(1);
         let mut pool = fixture.pool(Script::default());
         pool.set_ipc_mode(IpcMode::Socket);
-        _ = pool.p.set_ipc(Some(pool_ipc_new(true)));
+        pool.set_ipc(pool_ipc_new(true));
         assert!(!pool.start_check());
         assert_eq!(ops(&pool), [Op::Log(Log::MustListen)]);
         pool.destroy();
@@ -3042,9 +3037,10 @@ mod tests {
         let mut fixture = Fixture::new(0);
         let mut pool = fixture.pool(Script::default());
         record(&mut pool).use_socket.set(true);
-        let mut ipc = pool_ipc_new(true);
-        crate::process::pool::swr_v1_process_pool_ipc_address(&mut ipc, &file, 0);
-        _ = pool.p.set_ipc(Some(ipc));
+        let ipc = pool_ipc_new(true);
+        // SAFETY: a live handle.
+        crate::process::pool::swr_v1_process_pool_ipc_address(unsafe { &mut *ipc }, &file, 0);
+        record(&mut pool).ipc.set(ipc);
         let mut event = [0u8; 64];
         event[EVENT_LEN] = 3;
         event[HEAD_SIZE as usize..][..3].copy_from_slice(b"abc");
@@ -3063,16 +3059,20 @@ mod tests {
         }
         assert_eq!(ops(&pool), Vec::<Op>::new());
         std::fs::remove_file(&path).unwrap();
-        // The state made above; it has no listener to close.
-        pool_ipc_free(pool.p.set_ipc(None).unwrap(), close);
+        record(&mut pool).ipc.set(ptr::null_mut());
+        // SAFETY: the handle made above; it has no listener to close.
+        pool_ipc_free(*unsafe { Box::from_raw(ipc) }, close);
         // A pool whose listener is gone fails.
-        let mut ipc = pool_ipc_new(true);
-        crate::process::pool::swr_v1_process_pool_ipc_address(&mut ipc, &file, 0);
-        _ = pool.p.set_ipc(Some(ipc));
+        let ipc = pool_ipc_new(true);
+        // SAFETY: as above.
+        crate::process::pool::swr_v1_process_pool_ipc_address(unsafe { &mut *ipc }, &file, 0);
+        record(&mut pool).ipc.set(ipc);
         for blocking in [true, false] {
             assert!(!pool.dispatch(&event, None, blocking));
         }
-        pool_ipc_free(pool.p.set_ipc(None).unwrap(), close);
+        record(&mut pool).ipc.set(ptr::null_mut());
+        // SAFETY: as above.
+        pool_ipc_free(*unsafe { Box::from_raw(ipc) }, close);
     }
 
     #[test]
