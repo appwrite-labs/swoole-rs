@@ -7,9 +7,8 @@
 
 use super::http1::{SW_LOG_WARNING, swoole_set_log_level};
 use super::{
-    BODY, CHILD, CppString, SW_OK, Server, base_worker_start, primary_port, request, send,
-    signal_block_all, string, string_append_random_bytes, swr_case_protocol_server,
-    swr_case_shutdown, swr_case_start, value,
+    BODY, CHILD, SW_OK, Server, base_worker_start, primary_port, request, send, signal_block_all,
+    string, swr_case_protocol_server, swr_case_shutdown, swr_case_start, value,
 };
 use std::ffi::c_int;
 use std::io::{Read, Write};
@@ -29,8 +28,6 @@ const LENGTH_L4: c_int = 1;
 const EOF_CRLF: c_int = 2;
 
 unsafe extern "C" {
-    #[link_name = "_ZN6swoole6StringD1Ev"]
-    fn string_drop(this: *mut CppString);
     #[link_name = "_Z11swoole_randii"]
     fn swoole_rand(min: c_int, max: c_int) -> c_int;
     #[link_name = "_Z17swoole_random_intv"]
@@ -48,12 +45,8 @@ fn rand(min: c_int, max: c_int) -> usize {
 /// `String::append_random_bytes(length, base64)` on an empty String.
 pub(super) fn random_bytes(length: usize, base64: bool) -> Vec<u8> {
     let mut str = string(64);
-    // SAFETY: the live String; then its destructor, once.
-    unsafe { string_append_random_bytes(&mut str, length, base64) };
-    let bytes = value(&str).to_vec();
-    // SAFETY: as above.
-    unsafe { string_drop(&mut str) };
-    bytes
+    str.append_random_bytes(length, base64);
+    value(&str).to_vec()
 }
 
 /// A length-framed package: the body's length as a network-order int, then the body.

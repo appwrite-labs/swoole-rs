@@ -642,15 +642,19 @@ fn close_timeout(serv: Server, session_id: c_long) {
     // SAFETY: this thread's buffer; the reason is readable for its length.
     unsafe {
         let buffer = swr_case_tg_buffer();
-        (*buffer).length = 0;
-        (*buffer).offset = 0;
+        (*buffer).clear();
         swoole_rs_ports::frame_api::pack_close_frame(
-            &mut *buffer.cast(),
+            &mut *buffer,
             CLOSE_POLICY_ERROR,
             reason.as_bytes(),
             0,
         );
-        swr_case_send(serv.0, session_id, (*buffer).str, (*buffer).length as u32);
+        swr_case_send(
+            serv.0,
+            session_id,
+            (*buffer).as_ptr().cast(),
+            (*buffer).len() as u32,
+        );
     }
 }
 

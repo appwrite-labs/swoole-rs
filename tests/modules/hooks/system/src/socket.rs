@@ -19,6 +19,7 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::io::{Read, Write};
 use std::mem::ManuallyDrop;
 use std::ptr;
+use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_hooks::co_socket::{self, Co, OwnedCo};
 use swoole_rs_hooks::vector::{IoVector, RecvMessage, SendMessage, Vectors};
 use swoole_rs_hooks::{TimeoutScope, co_io, packet};
@@ -138,16 +139,6 @@ struct NetHead {
     event_hup: u8,
 }
 
-/// `swoole::String`.
-#[repr(C)]
-struct CppString {
-    length: usize,
-    size: usize,
-    offset: i64,
-    str: *mut u8,
-    allocator: *const c_void,
-}
-
 /// `RustStringView::operator=`: copies `value` into a TLS owner's string slot `index`.
 ///
 /// # Safety
@@ -219,8 +210,6 @@ unsafe extern "C" {
         port: c_int,
     ) -> bool;
 
-    #[link_name = "_ZN6swoole6String3popEm"]
-    fn string_pop(this: *mut CppString, init_size: usize) -> *mut u8;
     #[link_name = "_Z16swoole_type_sizec"]
     fn swoole_type_size(kind: c_char) -> c_int;
     #[link_name = "_Z11swoole_randii"]
@@ -408,11 +397,11 @@ impl Sock {
 
     fn read_buffer(&self) -> &mut CppString {
         // SAFETY: the live socket's read buffer, which it keeps.
-        unsafe { &mut *self.co().buffer(false).cast() }
+        unsafe { &mut *self.co().buffer(false) }
     }
 
     fn write_buffer(&self) -> *mut CppString {
-        self.co().buffer(true).cast()
+        self.co().buffer(true)
     }
 
     /// `pop_packet()`: the packet's buffer, which the caller now owns, or null.
@@ -420,11 +409,10 @@ impl Sock {
         let record = self.record();
         // SAFETY: the record's read buffer, set once a packet was received.
         let buffer = unsafe { &mut *record.read_buffer };
-        if buffer.offset == 0 {
+        if buffer.offset() == 0 {
             return ptr::null_mut();
         }
-        // SAFETY: the live buffer and the socket's initial buffer size.
-        unsafe { string_pop(buffer, record.buffer_init_size) }
+        buffer.pop(record.buffer_init_size)
     }
 
     fn shutdown(&self, how: c_int) -> bool {
@@ -660,7 +648,7 @@ fn delete(conn: ManuallyDrop<Sock>) {
 /// `delete string`.
 fn delete_string(string: *mut CppString) {
     // SAFETY: a String the caller owns, made by `new_sized_string`.
-    unsafe { swoole_rs_corebase::buffer::string::delete_string(string.cast()) };
+    unsafe { swoole_rs_corebase::buffer::string::delete_string(string) };
 }
 
 fn socket_pair() -> [c_int; 2] {
@@ -994,11 +982,11 @@ fn eof_1() {
         assert_eq!(size(l), eof_packet_len);
         // SAFETY: the buffer holds the packet.
         assert_eq!(
-            unsafe { std::slice::from_raw_parts(buf.str, size(l)) },
+            unsafe { std::slice::from_raw_parts(buf.as_mut_ptr(), size(l)) },
             EOF_PACKET
         );
-        assert_eq!(buf.length, eof_packet_len);
-        assert_eq!(buf.offset, i64::try_from(eof_packet_len).unwrap());
+        assert_eq!(buf.len(), eof_packet_len);
+        assert_eq!(buf.offset(), i64::try_from(eof_packet_len).unwrap());
     });
 }
 
@@ -1021,11 +1009,11 @@ fn eof_2() {
             assert_eq!(size(l), eof_packet_len);
             // SAFETY: the buffer holds the packet.
             assert_eq!(
-                unsafe { std::slice::from_raw_parts(buf.str, size(l)) },
+                unsafe { std::slice::from_raw_parts(buf.as_mut_ptr(), size(l)) },
                 EOF_PACKET
             );
-            assert_eq!(buf.length, EOF_PACKET.len() + EOF_PACKET_2.len());
-            assert_eq!(buf.offset, i64::try_from(eof_packet_len).unwrap());
+            assert_eq!(buf.len(), EOF_PACKET.len() + EOF_PACKET_2.len());
+            assert_eq!(buf.offset(), i64::try_from(eof_packet_len).unwrap());
         }
         // packet 2
         {
@@ -1036,11 +1024,11 @@ fn eof_2() {
             assert_eq!(size(l), eof_packet_len);
             // SAFETY: the buffer holds the packet.
             assert_eq!(
-                unsafe { std::slice::from_raw_parts(buf.str, size(l)) },
+                unsafe { std::slice::from_raw_parts(buf.as_mut_ptr(), size(l)) },
                 EOF_PACKET_2
             );
-            assert_eq!(buf.length, EOF_PACKET_2.len());
-            assert_eq!(buf.offset, i64::try_from(eof_packet_len).unwrap());
+            assert_eq!(buf.len(), EOF_PACKET_2.len());
+            assert_eq!(buf.offset(), i64::try_from(eof_packet_len).unwrap());
         }
     });
 }
@@ -1077,7 +1065,7 @@ fn eof_4() {
         let buf = sock.read_buffer();
         // SAFETY: the buffer holds the partial packet.
         assert_eq!(
-            unsafe { std::slice::from_raw_parts(buf.str, 10) },
+            unsafe { std::slice::from_raw_parts(buf.as_mut_ptr(), 10) },
             &EOF_PACKET[..10]
         );
     });
@@ -1160,8 +1148,8 @@ fn length_1() {
         let buf = sock.read_buffer();
 
         assert_eq!(l, 1024);
-        assert_eq!(buf.length, size(l));
-        assert_eq!(buf.offset, i64::try_from(l).unwrap());
+        assert_eq!(buf.len(), size(l));
+        assert_eq!(buf.offset(), i64::try_from(l).unwrap());
     });
 }
 
@@ -1182,8 +1170,8 @@ fn length_2() {
         let buf = sock.read_buffer();
 
         assert_eq!(l, 2);
-        assert_eq!(buf.length, 2);
-        assert_eq!(buf.offset, 2);
+        assert_eq!(buf.len(), 2);
+        assert_eq!(buf.offset(), 2);
     });
 }
 
@@ -1241,15 +1229,15 @@ fn length_4() {
             bytes += size(l);
             let buf = sock.read_buffer();
             // SAFETY: the buffer holds the packet.
-            let data = unsafe { std::slice::from_raw_parts(buf.str, buf.length) };
+            let data = unsafe { std::slice::from_raw_parts(buf.as_mut_ptr(), buf.len()) };
             let unpack_len = u32::from_be_bytes(data[..4].try_into().unwrap());
 
             let expected = pkt.take();
             assert_eq!(expected, data);
 
             assert_eq!(unpack_len as usize, size(l) - 4);
-            assert_eq!(buf.length, size(l));
-            assert_eq!(buf.offset, i64::try_from(l).unwrap());
+            assert_eq!(buf.len(), size(l));
+            assert_eq!(buf.offset(), i64::try_from(l).unwrap());
         }
         assert!(bytes >= 65536 * 2);
     });
@@ -1304,8 +1292,8 @@ fn length_7() {
         let buf = sock.read_buffer();
 
         assert_eq!(l, 4);
-        assert_eq!(buf.length, 4);
-        assert_eq!(buf.offset, 4);
+        assert_eq!(buf.len(), 4);
+        assert_eq!(buf.offset(), 4);
     });
 }
 
@@ -1324,7 +1312,7 @@ fn event_hup() {
 
         let sock = connected(port);
         let buf = sock.read_buffer();
-        let (at, n) = (buf.str, buf.size);
+        let (at, n) = (buf.as_mut_ptr(), buf.size());
         let shared = &sock;
         go(move || {
             co_sleep(0.01);
@@ -1352,7 +1340,7 @@ fn recv_line() {
         });
 
         let sock = connected(port);
-        let at = sock.read_buffer().str;
+        let at = sock.read_buffer().as_mut_ptr();
         // SAFETY: the read buffer, at least 128 bytes.
         let line = |n: isize| unsafe { std::slice::from_raw_parts(at, size(n)) };
 
@@ -2057,7 +2045,7 @@ fn recv_packet() {
         assert!(n > 0);
         let buf = sock.read_buffer();
         // SAFETY: the buffer's received bytes.
-        let data = unsafe { std::slice::from_raw_parts(buf.str, buf.length) };
+        let data = unsafe { std::slice::from_raw_parts(buf.as_mut_ptr(), buf.len()) };
         assert!(contains(data, TEST_HTTP_EXPECT));
     });
 }

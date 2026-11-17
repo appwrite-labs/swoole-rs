@@ -17,13 +17,14 @@ use super::socket::{
     get_random_port, http_get_request, is_github_ci, string_set, tls_owner_new,
 };
 use super::{
-    _exit, AF_INET, CppString, EINVAL, ENOENT, ETIMEDOUT, SW_ERR, TEST_HTTP_DOMAIN, TEST_STR,
-    c_str, errno, fork, kill, last_error, random_bytes, string_new,
+    _exit, AF_INET, EINVAL, ENOENT, ETIMEDOUT, SW_ERR, TEST_HTTP_DOMAIN, TEST_STR, c_str, errno,
+    fork, kill, last_error, random_bytes,
 };
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::io::{Read, Write};
 use swoole_rs_clients::client::{self as native, ClientEvent, Flag, Handle, Owner};
+use swoole_rs_corebase::buffer::string::OwnedString;
 use swoole_rs_corebase::net_types::SocketAddress;
 
 const GREETER: &[u8] = b"Hello Swoole\0";
@@ -1337,13 +1338,10 @@ fn http_get_sync_with_socks5_proxy() {
 }
 
 /// A `swoole::String` of `size` bytes, as `sw_tg_buffer()` is.
-fn cpp_string(size: usize) -> CppString {
-    let mut string = std::mem::MaybeUninit::<CppString>::uninit();
-    // SAFETY: constructs into the local storage with the default allocator.
-    unsafe {
-        string_new(string.as_mut_ptr(), size, std::ptr::null());
-        string.assume_init()
-    }
+fn cpp_string(size: usize) -> OwnedString {
+    let mut string = OwnedString::default();
+    string.alloc(size, None);
+    string
 }
 
 /// `ssl_readv` or `ssl_writev` (when `write`) on `sock` over `IOVector(iov, count)`,
@@ -1393,12 +1391,11 @@ fn ssl() {
 
     let sock = client.socket();
     let mut certificate = cpp_string(SW_BUFFER_SIZE_BIG);
-    // SAFETY: a live `swoole::String`, which is crates/corebase/src/buffer's.
-    let string = unsafe { &mut *(&raw mut certificate).cast() };
     // SAFETY: the connected socket.
     let handle = unsafe { swoole_rs_reactor::Socket::from_ptr(sock.cast()) }.unwrap();
     assert!(swoole_rs_tls::upstream::socket_ssl_peer_certificate_string(
-        handle, string
+        handle,
+        &mut certificate
     ));
     let ls = peer_cert_chain(handle, 10);
     assert!(!ls.is_empty());

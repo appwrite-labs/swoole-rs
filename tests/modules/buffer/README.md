@@ -68,13 +68,12 @@ The project-written `compatibility.cc` consumer is ported there too:
 `swoole_thread_init` never set up gets `None` from `try_with_thread_buffer`, not a
 null String.
 
-The header declares only what C++ still calls or a fixture links: the sized constructor,
-copy and move construction, the destructor, `substr`, `extend`, `reserve`,
-`release`, `append` (bytes and `int`), `append_random_bytes` (the http server fixture
-links it), `write(String)`, `print`, `pop` and `reduce`. Assignment is
-deleted; the byte-pointer constructor, `set_null_terminated`, `grow`, `repeat`, `contains`, `starts_with`,
-`ends_with`, `equals`, `append(String)`, `write(bytes)` and `split` have no C++ caller and
-no symbol: Rust uses `CppString`'s methods and its `view()`.
+The hooks, client, HTTP and framing Rust case fixtures use the real `CppString`
+for borrowed runtime buffers and `OwnedString` for allocations they own. They no
+longer copy the record layout or call the sized constructor, destructor,
+`append_random_bytes` or `pop` through Itanium symbols; those four exports are gone.
+The original test inputs and assertions are unchanged. Other String exports and
+the native layout remain pending the compiled-reader audit.
 
 Run as `python3 tests/modules/buffer/<script>`; `S` is the pinned upstream
 checkout (`target/upstream/src`).
