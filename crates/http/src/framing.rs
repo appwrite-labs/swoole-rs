@@ -49,8 +49,11 @@ fn request_line(input: &[u8], frame: &mut HttpFrame) -> bool {
         .iter()
         .take(pri)
         .enumerate()
-        .find(|(_, m)| input.starts_with(m.to_bytes()))
-    {
+        // The first byte rules most out before a comparison call.
+        .find(|(_, m)| {
+            let m = m.to_bytes();
+            m.first() == input.first() && input.starts_with(m)
+        }) {
         frame.method = u32::try_from(index + 1).unwrap_or(0);
         method.to_bytes().len()
     } else if input.starts_with(b"PRI") {

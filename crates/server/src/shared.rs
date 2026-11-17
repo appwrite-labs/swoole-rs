@@ -182,12 +182,17 @@ fn session_port_counters(state: &crate::ServerState, session_id: i64) -> Option<
 /// `Server::send`'s counts: the server's and the session's port's responses and bytes,
 /// and the current worker's responses.
 pub(crate) fn count_send(state: &crate::ServerState, session_id: i64, len: u32) {
+    count_sent(state, session_port_counters(state, session_id), len);
+}
+
+/// [`count_send`] with the session's port's counters, `port`, already found.
+pub(crate) fn count_sent(state: &crate::ServerState, port: Option<&PortCounters>, len: u32) {
     use core::sync::atomic::Ordering::SeqCst;
     if let Some(gs) = server_counters(state) {
         gs.response_count.fetch_add(1, SeqCst);
         gs.total_send_bytes.fetch_add(len.into(), SeqCst);
     }
-    if let Some(gs) = session_port_counters(state, session_id) {
+    if let Some(gs) = port {
         gs.response_count.fetch_add(1, SeqCst);
         gs.total_send_bytes.fetch_add(len.into(), SeqCst);
     }
