@@ -70,7 +70,6 @@ struct Socket : swr_v1_socket {
         return sock_fd;
     }
 
-    int wait_event(int timeout_ms, int _events) const;
     void free();
 };
 

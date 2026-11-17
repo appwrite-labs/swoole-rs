@@ -66,8 +66,6 @@ const SIGIO: c_int = 29;
 const SIGPIPE: c_int = 13;
 
 unsafe extern "C" {
-    #[link_name = "_ZNK6swoole7network6Socket12has_timedoutEv"]
-    fn socket_has_timedout(socket: *const c_void) -> bool;
     #[link_name = "_Z17swoole_event_initi"]
     fn swoole_event_init(flags: c_int) -> c_int;
     #[link_name = "_Z17swoole_event_waitv"]
@@ -417,11 +415,6 @@ impl<'a> Client<'a> {
 
     fn async_connect(&self) -> bool {
         self.client().flag(Flag::AsyncConnect)
-    }
-
-    fn has_timedout(&self) -> bool {
-        // SAFETY: the client's live socket.
-        unsafe { socket_has_timedout(self.socket()) }
     }
 
     fn is_dgram(&self) -> bool {
@@ -1477,7 +1470,7 @@ fn test_recv_timeout(c: &Client<'_>) {
     loop {
         let rv = c.recv(&mut buf, 0);
         eprintln!("rv: {rv}, error={}", errno());
-        if c.has_timedout() {
+        if swoole_rs_reactor::socket_upstream::socket_has_timedout() {
             break;
         }
     }

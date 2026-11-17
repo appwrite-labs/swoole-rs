@@ -96,9 +96,14 @@ impl Address {
     }
 
     /// The record as crates/corebase's `SocketAddress`, which it is.
-    fn record(&self) -> &swoole_rs_corebase::net_types::SocketAddress {
+    pub(super) fn record(&self) -> &swoole_rs_corebase::net_types::SocketAddress {
         // SAFETY: the record is crates/corebase's `SocketAddress`.
         unsafe { &*std::ptr::from_ref(self).cast() }
+    }
+
+    pub(super) fn record_mut(&mut self) -> &mut swoole_rs_corebase::net_types::SocketAddress {
+        // SAFETY: the record is crates/corebase's SocketAddress.
+        unsafe { &mut *std::ptr::from_mut(self).cast() }
     }
 
     pub(super) fn get_port(&self) -> c_int {
