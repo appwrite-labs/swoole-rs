@@ -186,6 +186,23 @@ call `php_error_docref`, `zend_error` or a C++ reporter directly from Rust.
 upstream: an error handler that `exit()`s, and one that raises a fatal error,
 on a Rust-raised warning.
 
+### Imports outside the Zend crates
+
+`python3 tools/zend_imports.py` runs in pre-commit and the required PR tooling
+job. Every hand-written PHP/Zend foreign function or static outside
+`crates/zend*` needs an exact `path:symbol` entry in `tools/zend_imports.json`.
+The reason names the enclosing C trap or Rust `contain_with` call, or explains
+why this use cannot execute PHP. Allocation-only entries rely on the supported
+PHP allocator contract below. Moving or removing a declaration requires updating
+its entry; empty and stale entries fail too.
+
+The inventory scans every `cfg` branch and foreign ABI (including the default), using
+`link_name` rather than a Rust alias (all alternatives for `cfg_attr`). It recognizes
+PHP/Zend namespaces, the unprefixed entry points listed in the tool, and legacy
+`swr_*` shims found in zend-sys C sources/headers. Add an unprefixed PHP API to
+`PHP_NAMES` when introducing one. This is a review gate for declarations, not a
+proof that callers still use the documented trap; call-site changes need review.
+
 ### memory_limit
 
 Zend's request allocator (`emalloc`, `zend_string_alloc`, `array_init`, a
