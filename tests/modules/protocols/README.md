@@ -47,7 +47,9 @@ callback that can bail out runs beneath a Rust frame.
   allocation address across transfer and that the bus cannot free the new owner's
   payload. Allocation and resizing run outside the packet-table borrow.
   The receive allocation is also an `OwnedString`, freed by its own allocator on
-  replacement, allocation failure or drop. It is zeroed once at allocation, so
+  replacement, allocation failure or drop. Server and pool receive buffers use
+  libc because their bus can survive PHP request shutdown; transferable packets
+  retain their configured allocator. It is zeroed once at allocation, so
   reads borrow initialized bytes without per-read initialization bookkeeping.
   Reads decode header bytes into typed state once; subsequent flag/pass writes
   keep both forms in sync;
