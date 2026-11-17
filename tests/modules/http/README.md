@@ -11,6 +11,8 @@ cargo clippy --locked -p swoole-rs-http --all-targets -- -D warnings
 
 ## Differential tests against the pinned bodies
 
+`proxy.rs` (the `proxy` test of `swoole-rs-http-ffi`) runs the former `proxy_gate.cc`
+and `dispatch_gate.cc` cases against the pinned `HttpProxy` (`http_proxy` in crates/oracle).
 `locale.rs` and `rewrite.rs` (the `locale` and `rewrite` tests of `swoole-rs-http-ffi`,
 in the `http-unit` phase) are the former native gates `locale_gate.cc` and
 `rewrite_gate.cc`: the same inputs against the same pinned (v6.2.5) bodies, which
@@ -46,18 +48,22 @@ through the server's two rewrite exports, which only passed their arguments to
 `RewriteRules::add` and `HttpStaticContext::rewrite` and went with it; the tests call those. The gate ran
 its C++ under ASan/UBSan; the tests don't.
 
-The status, method, URL and boundary helpers are Rust, so crates/http-ffi's
-`pin_helpers` tests compare them with the pin's bodies (unchanged since v6.2.4) instead.
-`get_method`, `url_encode` and `parse_multipart_boundary` had facades under their C++
-symbols that no C or C++ linked; the tests call crates/http's `method`, `url_encode` and
-`boundary`, which were their bodies. `boundary_outputs_untouched_on_a_miss` checked the
-facade's two out-pointers and went with it.
+The status, method, URL and boundary helpers are Rust, so `helpers.rs` (the `helpers`
+test of `swoole-rs-http`) compares them with the pin's bodies (unchanged since v6.2.4)
+instead. `get_method`, `get_method_string`, `get_status_message`, `url_encode`,
+`parse_multipart_boundary` and the `list_of_status_code` array had facades under their
+C++ symbols that no C or C++ linked; the tests call crates/http's `method`,
+`method_string`, `status_message`, `url_encode`, `boundary` and `STATUS_CODES`, which
+were their bodies. `boundary_outputs_untouched_on_a_miss` checked the facade's two
+out-pointers, and three tests checked `get_status_message`'s C string backing (the
+per-thread buffer unknown codes shared, and the writable array): they went with the
+facades.
 `url_decode`'s facade (`char *` and a length) had only the tests and the `http_url_decode`
 fuzz target as callers; they call crates/http's `url_decode` over a slice. The facade
 added the terminator upstream writes after the decoded bytes: `encode_decode_*` and
 `url_decode_decodes_in_place` write it themselves to keep upstream's `ASSERT_STREQ`, the
 fuzz target writes it before comparing whole buffers with upstream's, and
-`pin_helpers`' `decode` no longer asserts it.
+`helpers.rs`' `decode` no longer asserts it.
 
 ### Ported GoogleTests
 
@@ -111,13 +117,14 @@ callbacks skip fields under `F_TRAILING`) is checked by the pinned PHPTs
 `swoole_http_server/request_trailer.phpt` and `create_request_trailer.phpt`.
 
 The 11 TESTs that start no server call the helpers, the request-line reader and the
-WebSocket codec directly. Their ports sit beside the Rust each one calls, with the
-same inputs and expected values: `cargo test -p swoole-rs-http -p swoole-rs-http-ffi -p swoole-rs-ports --lib`.
+WebSocket codec directly. Their ports have the same inputs and expected values, the
+helpers' in `helpers.rs` and the others beside the Rust each one calls:
+`cargo test -p swoole-rs-http --test helpers` and `cargo test -p swoole-rs-http-ffi -p swoole-rs-ports --lib`.
 
 | Upstream TEST | Rust test |
 | --- | --- |
-| `EncodeDecodeBasic`, `EncodeDecodeWithSpecialChars` | `crates/http-ffi/src/http_server.rs`: `encode_decode_basic`, `encode_decode_with_special_chars` |
-| `get_method`, `get_method_str`, `get_status_message`, `parse_multipart_boundary` | `crates/http-ffi/src/http_server.rs`: `get_method_cases`, `get_method_str`, `get_status_message_cases`, `parse_multipart_boundary_cases` |
+| `EncodeDecodeBasic`, `EncodeDecodeWithSpecialChars` | `helpers.rs`: `encode_decode_basic`, `encode_decode_with_special_chars` |
+| `get_method`, `get_method_str`, `get_status_message`, `parse_multipart_boundary` | `helpers.rs`: `get_method_cases`, `get_method_str`, `get_status_message_cases`, `parse_multipart_boundary_cases` |
 | `has_expect_header`, `get_protocol`, `all_method` | `crates/http-ffi/src/request.rs`: same names |
 | `websocket_encode`, `websocket_compressed_control_frame` | `crates/ports/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
 | `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http-ffi/src/request.rs`: same names, over the multipart parser (#1938) |

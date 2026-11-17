@@ -12,11 +12,6 @@ crate-type = ["rlib"]
 [lints]
 workspace = true
 
-[features]
-# Define http.cc's helpers under their C++ symbols (src/http_server.rs). Only
-# crates/ffi, whose builds no longer compile them from http.cc, turns it on.
-upstream-symbols = []
-
 [dependencies]
 swoole-rs-error = { path = "../error" }
 libc = "=0.2.191"
@@ -35,3 +30,7 @@ path = "../../tests/modules/http/locale.rs"
 [[test]]
 name = "rewrite"
 path = "../../tests/modules/http/rewrite.rs"
+
+[[test]]
+name = "proxy"
+path = "../../tests/modules/http/proxy.rs"

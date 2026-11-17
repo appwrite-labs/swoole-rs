@@ -32,3 +32,7 @@ path = "../../tests/modules/http/http_parser.rs"
 [[test]]
 name = "llhttp_differential"
 path = "../../tests/modules/http/llhttp_differential.rs"
+
+[[test]]
+name = "helpers"
+path = "../../tests/modules/http/helpers.rs"
