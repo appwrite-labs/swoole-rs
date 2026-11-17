@@ -4,7 +4,7 @@ use core::cell::Cell;
 use core::ffi::{c_int, c_long};
 use swoole_rs_clients::resp_recv::{Dispatched, ORIGIN, Received, RespConnection, RespRequest};
 use swoole_rs_corebase::reactor::{Caught, Socket};
-use swoole_rs_corebase::{DataHead, log};
+use swoole_rs_corebase::{CellExt, DataHead, log};
 use swoole_rs_server::reactor_entry::RecvData;
 
 use crate::framing_recv::Lent;
@@ -18,12 +18,7 @@ thread_local! {
 
 /// `f` over this thread's request states, taken out of the cell for `f` only.
 fn requests<R>(f: impl FnOnce(&mut Vec<(c_long, RespRequest)>) -> R) -> R {
-    REQUESTS.with(|cell| {
-        let mut requests = cell.take();
-        let result = f(&mut requests);
-        cell.set(requests);
-        result
-    })
+    REQUESTS.with(|cell| cell.with_taken(f))
 }
 
 /// The connection's socket, receive buffer and request state, and where a whole
