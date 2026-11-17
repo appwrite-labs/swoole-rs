@@ -27,8 +27,10 @@ use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_phpswoole::SocketSettings;
 use swoole_rs_zend::{
-    Array, ArrayMut, Call, CallFrame, Custom, CustomClass, Key as ArrayKey, Minit, Owned,
-    OwnedArray, Props, Value, ZString, bailout, handlers, method_table,
+    Array, ArrayMut, Call, Custom, CustomClass, Key as ArrayKey, Minit, Owned, OwnedArray, Props,
+    Value, ZString, Zvals, bailout, handlers,
+    host::callable::FrameCallable,
+    method_table,
     sys::{self as z, ZEND_ACC_FINAL, ZEND_ACC_PUBLIC, zend_long, zval},
 };
 
@@ -466,41 +468,11 @@ pub const SSL_BAD_CLIENT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SSL_BAD_C
 /// `SW_ACCEPT_RETRY_TIME`.
 const ACCEPT_RETRY_TIME: c_int = 1;
 
-/// `start`'s `onAccept`: the callable and its cache, which outlive the
-/// accept loop.
-struct Accept {
-    callback: Owned,
-    cache: z::zend_fcall_info_cache,
-}
-
-unsafe extern "C" {
-    /// `zend_is_callable_at_frame(name, $this, frame, 0, cache, NULL)` inside
-    /// `zend_try` (nonzero for a bailout): it reads the name and the call's
-    /// frame, and fills the cache and whether the name is callable there.
-    #[link_name = "swr_zend_try_facade_callable_frame"]
-    safe fn callable_at_frame(
-        name: &Owned,
-        frame: CallFrame<'_>,
-        cache: &mut z::zend_fcall_info_cache,
-        callable: &mut bool,
-    ) -> c_int;
-}
-
 /// `sw_zend_is_callable_at_frame("onAccept")` on `$this` at `start`'s frame;
 /// an `E_CORE_ERROR` when it is not.
-fn accept_callable(call: &Call) -> Result<Option<Box<Accept>>, bailout::Bailout> {
-    let mut accept = Box::new(Accept {
-        callback: Owned::string(ZString::new(b"onAccept")),
-        cache: swoole_rs_zend::zeroed(),
-    });
-    let mut callable = false;
-    bailout::trapped(callable_at_frame(
-        &accept.callback,
-        call.call_frame(),
-        &mut accept.cache,
-        &mut callable,
-    ))?;
-    if callable {
+fn accept_callable(call: &Call) -> Result<Option<FrameCallable<'_>>, bailout::Bailout> {
+    let name = Owned::string(ZString::new(b"onAccept"));
+    if let Some(accept) = FrameCallable::resolve(name, call.call_frame())? {
         return Ok(Some(accept));
     }
     // `zend_get_callable_name_ex` of a method name on `$this`: `Class::onAccept`.
@@ -528,7 +500,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         return Ok(None);
     };
     let socket = server.socket;
-    let Some(mut accept) = accept_callable(call)? else {
+    let Some(accept) = accept_callable(call)? else {
         return Ok(None);
     };
     // A reference of its own: reading a setting (`__toString`) can run PHP code.
@@ -570,7 +542,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         props,
         server,
         socket,
-        accept: &mut accept,
+        accept: &accept,
         bailed: false,
     };
     let accepted = accept_loop(&mut start, &errors);
@@ -653,7 +625,7 @@ struct Start<'a> {
     props: Props<'a>,
     server: &'a HttpServer,
     socket: Co,
-    accept: &'a mut Accept,
+    accept: &'a FrameCallable<'a>,
     /// Creating an `onAccept` coroutine bailed out (#913): the loop stops and
     /// `start` re-raises it once the Rust frames are done.
     bailed: bool,
@@ -675,30 +647,17 @@ impl swoole_rs_httpbindings::AcceptHost for Start<'_> {
             self.bailed = true;
             return Some(0);
         };
-        let mut cid = 0;
         // A warning's error handler can exit(): start() re-raises it (#913).
-        // SAFETY: the resolved cache, the connection object and the callable's
-        // name; the shim traps what the new coroutine raises.
-        self.bailed = bailout::trapped(unsafe {
-            swoole_rs_zend::host::swr_zend_try_facade_coroutine(
-                Some(swoole_rs_phpcoroutines::create_coroutine),
-                &raw mut self.accept.cache,
-                1,
-                zsocket.as_ptr(),
-                self.accept.callback.as_ptr(),
-                &raw mut cid,
-                None,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
-        })
-        .is_err();
-        if self.bailed {
+        let created = self
+            .accept
+            .create_coroutine(Zvals::one(&zsocket), swoole_rs_phpcoroutines::CREATOR);
+        let Ok(cid) = created else {
+            self.bailed = true;
             // As upstream, whose bailout jumps past the release: start() raises
             // it and the request's shutdown frees the object.
             let _kept = zsocket.into_zval();
             return Some(0);
-        }
+        };
         Some(cid)
     }
 
