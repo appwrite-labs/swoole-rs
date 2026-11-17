@@ -145,7 +145,7 @@ fn length_check(cli: Cli, on: bool, mqtt: bool) {
         if !mqtt {
             record.protocol.get_package_length = Some(default_length_func);
         } else if on {
-            swoole_rs_protocols_ffi::set_protocol(&mut record.protocol);
+            swoole_rs_clients::mqtt::set_protocol(&mut record.protocol);
         }
     });
 }

@@ -77,10 +77,6 @@ pub struct ServerState {
     pub(crate) reactor_thread_barrier: swoole_rs_locks::Barrier,
 }
 
-/// A native thread entry: `void (*)(void *serv, uint64_t arg)`.
-#[cfg(any(test, feature = "upstream-symbols"))]
-pub(crate) type ThreadEntry = fn(crate::view::Server<'_>, u64);
-
 /// A port's place in [`Ports`], set once.
 type Slot = OnceLock<Box<PortConfig>>;
 
@@ -411,20 +407,16 @@ impl ServerState {
         swoole_rs_ossupport::set_isolation(&group, &user, &root);
     }
 
-    /// Starts a thread of `serv`, whose state this is, running `entry(serv, arg)`;
-    /// `take_thread(arg)` hands it back. A thread that can't start aborts, as
-    /// `std::thread`'s uncaught `system_error` does.
+    /// Starts a thread of `serv`, whose state this is, running `body`, which owns
+    /// what it reads of the server (a share); `take_thread(arg)` hands it back. A
+    /// thread that can't start aborts, as `std::thread`'s uncaught `system_error` does.
     #[cfg(any(test, feature = "upstream-symbols"))]
-    pub(crate) fn start_thread(serv: crate::view::Server<'_>, entry: ThreadEntry, arg: u64) {
-        let raw = serv.raw().expose_provenance();
-        let thread = std::thread::Builder::new().spawn(move || {
-            // SAFETY: the live server that started this thread, which outlives it: a
-            // server joins the threads its state holds before it goes.
-            let serv = unsafe {
-                crate::view::Server::from_raw(core::ptr::with_exposed_provenance_mut(raw))
-            };
-            entry(serv, arg);
-        });
+    pub(crate) fn start_thread(
+        serv: crate::view::Server<'_>,
+        arg: u64,
+        body: impl FnOnce() + Send + 'static,
+    ) {
+        let thread = std::thread::Builder::new().spawn(body);
         let Ok(thread) = thread else {
             swoole_rs_corebase::fatal("a server thread can't start");
         };

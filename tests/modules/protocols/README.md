@@ -2,8 +2,9 @@
 
 `crates/protocols` implements MQTT framing, SOCKS5 wire/state/configuration
 policy and RESP command/receive/reply policy over borrowed slices, and forbids
-`unsafe`. `crates/protocols-ffi` is the C contract over it: the upstream-symbol
-`mqtt` and `Socks5Proxy` entries, and `redis::recv_packet`'s loop. `crates/bus` is MessageBus chunking/fairness/membership.
+`unsafe`. Its callers over the client's records are `crates/clients`' `mqtt`
+(`set_protocol` and the length callback), `owned_proxy` (the `Socks5Proxy` entries)
+and `resp_recv` (`redis::recv_packet`'s loop). `crates/bus` is MessageBus chunking/fairness/membership.
 
 ## Boundaries and compatibility
 
@@ -53,11 +54,11 @@ helper. Invalid non-array PHP SET/MAP is excluded.
 ## Rust and native differential
 
 ```sh
-cargo test -p swoole-rs-protocols -p swoole-rs-protocols-ffi -p swoole-rs-bus
-cargo clippy -p swoole-rs-protocols -p swoole-rs-protocols-ffi -p swoole-rs-bus --all-targets -- -D warnings
+cargo test -p swoole-rs-protocols -p swoole-rs-clients -p swoole-rs-bus
+cargo clippy -p swoole-rs-protocols -p swoole-rs-clients -p swoole-rs-bus --all-targets -- -D warnings
 ```
 
-`native.rs` (the `native` test of `swoole-rs-protocols-ffi`) compares the Rust with
+`native.rs` (the `native` test of `swoole-rs-clients`) compares the Rust with
 the pinned bodies `crates/oracle` compiles unchanged. The C++ gate it replaces
 (`native.py`, `native.cc`, `adapter.inc`) compiled the same pinned MQTT and SOCKS5
 bodies beside the hybrid `Socks5Proxy` header; that header is gone, and its parts are
@@ -72,7 +73,7 @@ one Rust test each, with the same inputs and expected values:
 | `create` over seven user and password lengths around 250 bytes (with an embedded NUL), three proxy host lengths and three socket types (441) | `socks5_create` | `socks5::create` |
 
 The gate's RESP parts had Rust subjects that nothing but the gate called. They are
-`native.rs` (the `native` test of `swoole-rs-protocols-ffi`), one Rust test per part,
+`native.rs` (the `native` test of `swoole-rs-clients`), one Rust test per part,
 each C export replaced by the safe function that was its body:
 
 | `native.cc` part | Rust test | Export → function |
@@ -170,6 +171,6 @@ redis and mqtt Servers. That phase excludes `redis.get`, which needs a Redis ser
 
 MQTT length parsing returns `Result<Option<usize>, RemainingLengthTooLong>`:
 a missing length header is incomplete, and a fourth continuation bit is malformed.
-The protocols-ffi callback retains the warning and 0/-1/count convention. Original
+`crates/clients`' MQTT length callback retains the warning and 0/-1/count convention. Original
 unit/oracle/fuzz expectations convert only at their test boundary; packet-type
 bytes and nonminimal remaining lengths remain accepted.

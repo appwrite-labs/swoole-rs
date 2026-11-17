@@ -1,9 +1,9 @@
-//! `swoole::redis::recv_packet`, the redis port's read: protocols-ffi's
+//! `swoole::redis::recv_packet`, the redis port's read: crates/clients'
 //! [`recv_packet`] loop over the connection's own records.
 use core::cell::Cell;
 use core::ffi::{c_int, c_long};
+use swoole_rs_clients::resp_recv::{Dispatched, ORIGIN, Received, RespConnection, RespRequest};
 use swoole_rs_corebase::{DataHead, log};
-use swoole_rs_protocols_ffi::{Dispatched, ORIGIN, Received, RespConnection, RespRequest};
 use swoole_rs_reactor::{Caught, Socket};
 use swoole_rs_server::reactor_entry::RecvData;
 
@@ -111,7 +111,7 @@ pub(crate) fn recv_packet<'a>(
         dispatch,
     };
     let page = swoole_rs_corebase::swr_v1_core_pagesize() as usize;
-    let open = swoole_rs_protocols_ffi::recv_packet(&mut connection, max_length, page);
+    let open = swoole_rs_clients::resp_recv::recv_packet(&mut connection, max_length, page);
     // Stored afterwards, not held across `onPackage`, which may read another session.
     if let Some(slot) = slot {
         requests(|all| {

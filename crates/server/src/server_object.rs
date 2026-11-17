@@ -112,9 +112,21 @@ impl SharedServer {
     /// is one a share still names.
     #[must_use]
     pub fn current() -> Option<Self> {
+        Self::latest(swoole_rs_corebase::swr_v1_core_server())
+    }
+
+    /// A share in `serv`, or fatal when no share names it: a server thread's, which
+    /// outlives the borrow it starts under. A share's server is always the latest.
+    pub(crate) fn of(serv: view::Server<'_>) -> Self {
+        Self::latest(serv.raw())
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a server thread of an unshared server"))
+    }
+
+    /// The latest server's share, when it is the server at `raw`.
+    fn latest(raw: *mut core::ffi::c_void) -> Option<Self> {
         let latest = LATEST.lock().unwrap_or_else(PoisonError::into_inner);
         let owner = latest.upgrade()?;
-        (owner.view().raw() == swoole_rs_corebase::swr_v1_core_server()).then_some(Self(owner))
+        (owner.view().raw() == raw).then_some(Self(owner))
     }
 
     /// The server, for as long as this share is borrowed.

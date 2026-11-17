@@ -10,6 +10,7 @@ use std::{
     rc::Rc,
 };
 use swoole_rs_buffer::string::CppString;
+use swoole_rs_clients::mqtt::set_protocol as mqtt_set_protocol;
 use swoole_rs_clients::{
     address::{address_port, with_host},
     client::{self, Client},
@@ -20,7 +21,6 @@ use swoole_rs_hooks::{co_socket::Co as Handle, socket_extra};
 use swoole_rs_phpruntime::{Report, co, report};
 use swoole_rs_phpswoole::length::Named;
 use swoole_rs_phpswoole::{Switch, built_with};
-use swoole_rs_protocols_ffi::set_protocol as mqtt_set_protocol;
 use swoole_rs_reactor::Socket as Net;
 use swoole_rs_zend::{
     Owned, Value, ZString,
@@ -457,7 +457,7 @@ impl Co {
 
     /// `mqtt::set_protocol`.
     pub(crate) fn mqtt_protocol(self) {
-        self.0.edit_protocol(|protocol| mqtt_set_protocol(protocol));
+        self.0.edit_protocol(mqtt_set_protocol);
     }
 
     /// `Protocol::default_length_func`.

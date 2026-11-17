@@ -18,9 +18,12 @@ pub mod client;
 pub mod dns;
 pub mod http_format;
 pub mod ip;
+pub mod mqtt;
+pub mod owned_proxy;
 pub mod pool;
 pub mod protocol;
 pub mod resolver;
+pub mod resp_recv;
 pub mod ws;
 
 use std::ffi::c_int;

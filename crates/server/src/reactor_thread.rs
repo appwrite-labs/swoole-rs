@@ -465,8 +465,8 @@ mod tests {
 
     static JOINED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
 
-    fn joined(_: view::Server<'_>, arg: u64) {
-        JOINED.lock().unwrap().push(arg);
+    fn joined(arg: u64) -> impl FnOnce() + Send + 'static {
+        move || JOINED.lock().unwrap().push(arg)
     }
 
     #[test]
@@ -475,9 +475,9 @@ mod tests {
         let (serv, state) = (live.server(), live.state());
         let config = state.config_ref();
         for id in 0..u64::from(config.reactor_num.get()) {
-            ServerState::start_thread(serv, joined, id);
+            ServerState::start_thread(serv, id, joined(id));
         }
-        ServerState::start_thread(serv, joined, HEARTBEAT);
+        ServerState::start_thread(serv, HEARTBEAT, joined(HEARTBEAT));
         config.heartbeat_check_interval.set(1);
         join_reactor_threads(serv);
         let mut ran = JOINED.lock().unwrap().clone();

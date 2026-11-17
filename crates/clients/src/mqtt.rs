@@ -1,5 +1,5 @@
 //! `swoole::mqtt`'s entries, over [`mqtt_frame_length`].
-use swoole_rs_clients::protocol::{Protocol, Socket};
+use crate::protocol::{Protocol, Socket};
 use swoole_rs_corebase::net_types::PacketLength;
 use swoole_rs_protocols::mqtt_frame_length;
 
@@ -7,7 +7,7 @@ use swoole_rs_protocols::mqtt_frame_length;
 const MAX_LENGTH_SIZE: u8 = 4;
 
 /// `swoole::mqtt::set_protocol(protocol)`.
-pub extern "C" fn set_protocol(protocol: &mut Protocol) {
+pub fn set_protocol(protocol: &mut Protocol) {
     protocol.package_length_size = MAX_LENGTH_SIZE;
     protocol.package_length_offset = 1;
     protocol.package_body_offset = 0;
