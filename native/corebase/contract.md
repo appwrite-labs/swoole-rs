@@ -127,15 +127,16 @@ banner, `uname`, compiler and TLS lines, from what C++ compiled (`swr_cpp_bug_re
 `swr_v1_core_max_sockets` is the `RLIMIT_NOFILE` soft limit as `uint32_t`,
 capped at `SW_SESSION_LIST_SIZE`, or -1 with errno kept.
 
-Upstream's own C++ symbols defined in Rust (`export_name`): `swoole_common_divisor`/`_multiple`, `swoole_dec2hex`,
-`swoole_version_compare`, `swoole::microtime`,
+Upstream's own C++ symbols defined in Rust (`export_name`): `swoole::microtime`,
 `swoole_set_trace_flags`, `swoole_set_print_backtrace_on_error`, `sw_logger`,
 `swoole_set_stdout_stream`/`swoole_get_stdout_stream` (`FILE` mangles as its libc's
-struct tag), `swoole_hex2dec` (in the target's plain-char mode), `swoole_random_int`, and
+struct tag), `swoole_random_int`, and
 `swoole_version`/`swoole_version_id`/`swoole_api_version_id` (C names). No compiled
 code calls `sw_malloc`, `sw_free` or `sw_calloc`, so Rust doesn't define them.
 `tests/modules/corebase/numbers.rs` compares the number helpers with the pinned
-`base.cc`; `swoole_itoa`, which no C++ called, is a Rust function over a slice.
+`base.cc`. The numeric helpers have no C++ callers: their exports and native
+declarations are gone. Their `extern "C"` functions retain abort-on-panic behavior;
+`swoole_itoa` is a Rust function over a slice.
 Both `swoole_rand` overloads and `swoole_type_size` are plain Rust functions;
 their native declarations and exports are gone. Rust fixtures call those and
 `swoole_random_int` directly, preserving ranges and draw timing. The hash-originals

@@ -8,10 +8,6 @@ extern "C" {
 #endif
 /* Rust also defines swoole_init, swoole_fork and swoole_clean.
  * Thread initialization, cleanup and main-thread queries use Rust paths. */
-/* Rust defines these upstream functions under their C++ symbols, so swoole.h
- * keeps their declarations: swoole_common_divisor/_multiple, swoole_version_compare,
- * swoole_dec2hex, swoole_random_int and swoole::DataHead::dump. swoole::microtime is Rust's too;
- * no C++ calls it. */
 /* Also Rust's, from base.cc: swoole_shell_exec, swoole_system_random, both
  * swoole_redirect_stdout overloads, swoole_print_backtrace(_on_error),
  * swoole_exit, swoole_set/get_stdout_stream and sw_printf
