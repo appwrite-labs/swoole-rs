@@ -13,7 +13,7 @@ use std::{
 };
 use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_clients::{
-    client::{self as state, Handle},
+    client::{self as state, Handle, Owner},
     pool::Pool,
     valid_port,
 };
@@ -56,11 +56,12 @@ pub(crate) const INVALID_PARAMS: c_int =
 ///
 /// The object shares it (`Rc`, cells), so PHP code a method runs can re-enter
 /// the object and [`release`] the connection while the method still holds it:
-/// the native client then lives until the last holder drops it. `close()` never
-/// pools a connection a method holds, so the pool's copy is never in use.
+/// the client's owner lives in it, so handles a method borrows outlive any such
+/// release, and the last holder's drop destroys the client. `close()` pools a
+/// connection only when no method holds it.
 pub(crate) struct Conn {
-    pub(crate) cli: Cli,
-    /// [`release`] ran while a method held it: the last drop destroys `cli`.
+    owner: Owner,
+    /// [`release`] ran: the last holder's drop destroys the client.
     released: Cell<bool>,
     key: Vec<u8>,
     keep: bool,
@@ -78,9 +79,9 @@ struct Frame {
 }
 
 impl Conn {
-    pub(crate) fn new(cli: Cli) -> Self {
+    pub(crate) fn new(owner: Owner) -> Self {
         Self {
-            cli,
+            owner,
             released: Cell::new(false),
             key: Vec::new(),
             keep: false,
@@ -90,18 +91,9 @@ impl Conn {
         }
     }
 
-    /// The connection for the pool: the same client and state, apart from any
-    /// handle a re-entered method still holds (upstream pools the pointer).
-    fn detach(&self) -> Self {
-        Self {
-            cli: self.cli,
-            released: Cell::new(false),
-            key: self.key.clone(),
-            keep: self.keep,
-            reuse_count: self.reuse_count,
-            frame: Cell::new(self.frame.take()),
-            ssl_wait: Cell::new(self.ssl_wait.get()),
-        }
+    /// The client, lent while the connection lives.
+    pub(crate) const fn cli(&self) -> Cli<'_> {
+        Cli::of(&self.owner)
     }
 
     /// PHP code a call reached released the connection: errCode says it is
@@ -115,30 +107,30 @@ impl Conn {
     }
 
     pub(crate) fn flag(&self, name: state::Flag) -> bool {
-        self.cli.get().flag(name)
+        self.cli().get().flag(name)
     }
 
     pub(crate) fn set_flag(&self, name: state::Flag, value: bool) {
-        self.cli.get().set(name, value);
+        self.cli().get().set(name, value);
     }
 
     pub(crate) fn has_socket(&self) -> bool {
-        self.cli.net().is_some()
+        self.cli().net().is_some()
     }
 
     /// `cli->socket->check_liveness()` of a client that has a socket.
     fn alive(&self) -> bool {
-        self.cli
+        self.cli()
             .net()
             .is_some_and(swoole_rs_tls::upstream::check_liveness)
     }
 
     pub(crate) fn fd(&self) -> c_int {
-        self.cli.net().map_or(-1, Net::fd)
+        self.cli().net().map_or(-1, Net::fd)
     }
 
     fn socket_type(&self) -> Option<SocketType> {
-        let net = self.cli.net()?;
+        let net = self.cli().net()?;
         SocketType::from_raw(net.read(|record| record.socket_type))
     }
 
@@ -147,7 +139,7 @@ impl Conn {
     }
 
     pub(crate) fn has_ssl(&self) -> bool {
-        self.cli
+        self.cli()
             .net()
             .is_some_and(|net| net.read(|record| !record.ssl().is_null()))
     }
@@ -155,10 +147,17 @@ impl Conn {
 
 impl Drop for Conn {
     /// A released connection's last holder destroys the client; the handler
-    /// or event that dropped it raises a bailout as its last step.
+    /// or event that dropped it raises a bailout as its last step. A connection
+    /// dropped unreleased (its object freed without `close()`, or pooled at thread
+    /// exit) keeps its client, as upstream deletes neither; so does a destroy that
+    /// bailed out.
     fn drop(&mut self) {
-        if self.released.get() {
-            bailout::defer(native::destroy(self.cli));
+        if !self.released.get() {
+            return self.owner.keep();
+        }
+        if let Err(bailout) = native::destroy(self.cli()) {
+            self.owner.keep();
+            bailout.defer();
         }
     }
 }
@@ -474,12 +473,12 @@ pub(crate) fn release(object: Obj, conn: Rc<Conn>) -> Result<(), Bailout> {
     }
     let data = object.data();
     data.set_conn(None);
-    let destroyed = match Rc::try_unwrap(conn) {
-        Ok(conn) => native::destroy(conn.cli),
-        Err(held) => {
-            held.released.set(true);
-            Ok(())
-        }
+    conn.released.set(true);
+    let destroyed = if Rc::strong_count(&conn) == 1 {
+        drop(conn);
+        bailout::outcome(())
+    } else {
+        Ok(())
     };
     // The reference the object took in getSocket().
     drop(data.zsocket.take());
@@ -584,7 +583,7 @@ fn connection(object: Obj, host: &[u8], port: i64) -> Option<Rc<Conn>> {
                     .long(c"reuseCount", i64::from(pooled.reuse_count));
                 conn = Some(pooled);
             } else {
-                bailed(pooled.cli.run(state::close))?;
+                bailed(pooled.cli().run(state::close))?;
                 bailed(release(object, Rc::new(*pooled)))?;
             }
         }
@@ -609,7 +608,7 @@ fn connection(object: Obj, host: &[u8], port: i64) -> Option<Rc<Conn>> {
         connection.keep = true;
     }
     if kind & SOCK_SSL != 0 {
-        let _context = connection.cli.handle().enable_ssl();
+        let _context = connection.cli().handle().enable_ssl();
     }
     Some(Rc::new(connection))
 }
@@ -725,7 +724,7 @@ fn connect(call: &Call) {
     }
     if let Some(zset) = settings(object) {
         set_last_error(0);
-        let Some(applied) = crate::settings::apply(conn.cli, zset) else {
+        let Some(applied) = crate::settings::apply(conn.cli(), zset) else {
             return call.set_bool(false);
         };
         if !applied {
@@ -735,7 +734,7 @@ fn connect(call: &Call) {
     }
     let host_text = native::c_text(host);
     let connect = |h| state::connect(h, &host_text, int(port), timeout, int(flags));
-    let Some(connected) = bailed(conn.cli.run(connect)) else {
+    let Some(connected) = bailed(conn.cli().run(connect)) else {
         return call.set_bool(false);
     };
     if conn.released(object) {
@@ -777,7 +776,7 @@ fn send(call: &Call) {
         return call.set_bool(false);
     };
     set_last_error(0);
-    let Some(sent) = bailed(io(conn.cli, |h| state::send(h, data, int(flags)))) else {
+    let Some(sent) = bailed(io(conn.cli(), |h| state::send(h, data, int(flags)))) else {
         return call.set_bool(false);
     };
     let Some(sent) = sent else {
@@ -814,7 +813,7 @@ fn sendto(call: &Call) {
         return call.set_bool(false);
     };
     let host = native::c_text(host);
-    let Some(sent) = bailed(io(conn.cli, |h| state::sendto(h, &host, int(port), data))) else {
+    let Some(sent) = bailed(io(conn.cli(), |h| state::sendto(h, &host, int(port), data))) else {
         return call.set_bool(false);
     };
     if !sent {
@@ -845,7 +844,7 @@ fn sendfile(call: &Call) {
     set_last_error(0);
     let file = native::c_text(file);
     let send = |h| state::sendfile(h, &file, offset, length.c_cast::<usize>());
-    let Some(sent) = bailed(io(conn.cli, send)) else {
+    let Some(sent) = bailed(io(conn.cli(), send)) else {
         return call.set_bool(false);
     };
     if !sent {
@@ -861,7 +860,7 @@ fn sendfile(call: &Call) {
 
 /// Run an IO `op`: a sync client raises no callbacks, so only an async one
 /// needs the `zend_try` frame.
-fn io<T: Default>(cli: Cli, op: impl FnOnce(Handle<'static>) -> T) -> Result<T, Bailout> {
+fn io<'a, T: Default>(cli: Cli<'a>, op: impl FnOnce(Handle<'a>) -> T) -> Result<T, Bailout> {
     if cli.get().flag(state::Flag::Async) {
         cli.run(op)
     } else {
@@ -870,7 +869,7 @@ fn io<T: Default>(cli: Cli, op: impl FnOnce(Handle<'static>) -> T) -> Result<T, 
 }
 
 /// `cli->recv(buffer, length, flags)`: the count read, or -1 (`SW_ERR`).
-fn receive(cli: Cli, buffer: &mut [u8], flags: i64) -> Result<i64, Bailout> {
+fn receive(cli: Cli<'_>, buffer: &mut [u8], flags: i64) -> Result<i64, Bailout> {
     io(cli, |h| {
         state::recv(h, buffer, int(flags)).map_or(-1, |n| i64::try_from(n).unwrap_or(i64::MAX))
     })
@@ -885,7 +884,7 @@ pub(crate) fn int(value: i64) -> c_int {
 /// wrote there.
 fn receive_into(conn: &Conn, buffer: &mut ZBuf, length: usize, flags: i64) -> Result<i64, Bailout> {
     buffer.fill_within(length, |out| {
-        io(conn.cli, |h| {
+        io(conn.cli(), |h| {
             state::recv_spare(h, out, int(flags))
                 .map_or(-1, |n| i64::try_from(n).unwrap_or(i64::MAX))
         })
@@ -918,7 +917,7 @@ fn recv_eof(call: &Call, conn: &Conn, frame: &mut Frame, framing: &Protocol) {
             let room = (frame.size - length.min(frame.size)).min(BUFFER_SIZE_BIG);
             frame.buffer.resize(length + room, 0);
             let target = frame.buffer.get_mut(length..).unwrap_or_default();
-            let read = receive(conn.cli, target, 0);
+            let read = receive(conn.cli(), target, 0);
             let Some(read) = bailed(read) else {
                 frame.buffer.truncate(length);
                 return call.set_bool(false);
@@ -991,7 +990,7 @@ fn recv_length(
         let want = header.saturating_sub(have);
         frame.buffer.resize(have + want, 0);
         let target = frame.buffer.get_mut(have..).unwrap_or_default();
-        let read = receive(conn.cli, target, 0);
+        let read = receive(conn.cli(), target, 0);
         let Some(read) = bailed(read) else {
             call.set_bool(false);
             return None;
@@ -1004,7 +1003,7 @@ fn recv_length(
             .buffer
             .truncate(have + usize::try_from(read).unwrap_or(0));
         let Some(measured) = bailed(
-            conn.cli
+            conn.cli()
                 .run(|h| state::package_length(h, &frame.buffer) as i64),
         ) else {
             call.set_bool(false);
@@ -1078,7 +1077,7 @@ fn recv(call: &Call) {
         return call.set_bool(false);
     };
     let (eof_check, length_check, framing) = {
-        let record = conn.cli.get().record();
+        let record = conn.cli().get().record();
         (
             record.open_eof_check,
             record.open_length_check,
@@ -1136,7 +1135,7 @@ fn getsockname(call: &Call) {
     let Some(conn) = connected(call) else {
         return call.set_bool(false);
     };
-    let Some(socket) = conn.cli.net() else {
+    let Some(socket) = conn.cli().net() else {
         return call.set_bool(false);
     };
     if !socket.edit(SocketFields::get_name) {
@@ -1163,7 +1162,7 @@ fn getpeername(call: &Call) {
         return call.set_bool(false);
     };
     let mut address = SocketAddress::default();
-    if !conn.cli.handle().peer_name(&mut address) {
+    if !conn.cli().handle().peer_name(&mut address) {
         let error = errno();
         warn_sys("getpeername() failed", error);
         set_err_code(Obj::this(call), error);
@@ -1189,7 +1188,7 @@ fn get_socket(call: &Call) {
         );
         return call.set_bool(false);
     }
-    let Some(socket) = native::export_socket(conn.cli) else {
+    let Some(socket) = native::export_socket(conn.cli()) else {
         return call.set_bool(false);
     };
     // The object keeps a second reference, as upstream's dup does.
@@ -1220,24 +1219,26 @@ fn close(call: &Call) {
         || conn.flag(state::Flag::ShutdownWrite)
         || !conn.alive()
     {
-        let Some(closed) = bailed(conn.cli.run(state::close)) else {
+        let Some(closed) = bailed(conn.cli().run(state::close)) else {
             return call.set_bool(false);
         };
         bailed(release(object, conn));
         return call.set_bool(closed);
     }
-    let pushed = long_connections(|pool| {
-        if pool.is_none() {
-            *pool = Pool::create();
-        }
-        pool.as_mut()
-            .map(|pool| pool.push(&conn.key, Box::new(conn.detach())))
+    // The pool takes the connection from the object, its only other holder.
+    this(call).set_conn(None);
+    let pushed = Rc::try_unwrap(conn).ok().and_then(|conn| {
+        let key = conn.key.clone();
+        long_connections(|pool| {
+            if pool.is_none() {
+                *pool = Pool::create();
+            }
+            pool.as_mut().map(|pool| pool.push(&key, Box::new(conn)))
+        })
     });
-
     if !matches!(pushed, Some(Ok(()))) {
         swoole_rs_corebase::fatal("the connection pool refused a connection");
     }
-    this(call).set_conn(None);
     call.set_bool(true);
 }
 
@@ -1252,11 +1253,11 @@ pub(crate) fn enable_ssl(call: &Call, conn: &Conn) -> bool {
         warn(ErrorKind::Fatal, "SSL has been enabled");
         return false;
     }
-    if conn.cli.handle().enable_ssl().is_none() {
+    if conn.cli().handle().enable_ssl().is_none() {
         return false;
     }
     // A reference of this call's own to the new context.
-    let owner = conn.cli.get().tls_context().cloned();
+    let owner = conn.cli().get().tls_context().cloned();
     if let (Some(owner), Some(zset)) = (owner, settings(Obj::this(call))) {
         crate::settings::apply_ssl(&owner, zset);
     }
@@ -1282,7 +1283,7 @@ fn enable_ssl_method(call: &Call) {
     if !enable_ssl(call, &conn) {
         return call.set_bool(false);
     }
-    call.set_bool(bailed(conn.cli.run(state::ssl_handshake)) == Some(true));
+    call.set_bool(bailed(conn.cli().run(state::ssl_handshake)) == Some(true));
 }
 
 /// `getPeerCert(): string|false`.
@@ -1294,7 +1295,7 @@ fn get_peer_cert(call: &Call) {
         warn(ErrorKind::Fatal, "SSL is not ready");
         return call.set_bool(false);
     }
-    match conn.cli.net().and_then(native::peer_cert) {
+    match conn.cli().net().and_then(native::peer_cert) {
         Some(cert) => call.set_zstring(cert),
         None => call.set_bool(false),
     }
@@ -1312,7 +1313,7 @@ fn verify_peer_cert(call: &Call) {
     let Ok(allow) = call.arity(0, 1).and_then(|()| call.bool(1, false)) else {
         return call.set_bool(false);
     };
-    let verify = conn.cli.run(|h| state::ssl_verify(h, allow));
+    let verify = conn.cli().run(|h| state::ssl_verify(h, allow));
     call.set_bool(bailed(verify) == Some(true));
 }
 
@@ -1324,7 +1325,7 @@ fn shutdown(call: &Call) {
     let Ok(how) = call.arity(1, 1).and_then(|()| call.long(1, 0)) else {
         return call.set_bool(false);
     };
-    let shutdown = conn.cli.run(|h| state::shutdown(h, int(how)));
+    let shutdown = conn.cli().run(|h| state::shutdown(h, int(how)));
     call.set_bool(bailed(shutdown) == Some(true));
 }
 

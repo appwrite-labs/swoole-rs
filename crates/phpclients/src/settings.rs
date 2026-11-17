@@ -110,13 +110,13 @@ fn clamp(value: i64, low: i64, high: i64) -> i64 {
 }
 
 /// Edit the client's public record, between its operations.
-fn edit<R>(cli: Cli, edit: impl FnOnce(&mut ClientRecord) -> R) -> R {
+fn edit<R>(cli: Cli<'_>, edit: impl FnOnce(&mut ClientRecord) -> R) -> R {
     cli.get().edit_record(edit)
 }
 
 /// `socket_buffer_size` (`socket->set_buffer_size(size)`, then
 /// `socket->buffer_size = size`) and the output buffer's watermarks.
-fn buffers(cli: Cli, options: &Options) {
+fn buffers(cli: Cli<'_>, options: &Options) {
     if let Some(size) = options.size("socket_buffer_size") {
         let size = u32::try_from(clamp(size, 1, i32::MAX.into())).unwrap_or(1);
         if let Some(socket) = cli.net() {
@@ -139,7 +139,7 @@ fn buffers(cli: Cli, options: &Options) {
 
 /// `open_length_check = on`, with MQTT's framing when `mqtt` and on, else
 /// the default length function.
-fn length_check(cli: Cli, on: bool, mqtt: bool) {
+fn length_check(cli: Cli<'_>, on: bool, mqtt: bool) {
     edit(cli, |record| {
         record.open_length_check = on;
         if !mqtt {
@@ -151,14 +151,14 @@ fn length_check(cli: Cli, on: bool, mqtt: bool) {
 }
 
 /// `bind(address, port)`, which logs a failed `SO_REUSEADDR` itself.
-fn bind(cli: Cli, address: &[u8], port: i64) -> bool {
+fn bind(cli: Cli<'_>, address: &[u8], port: i64) -> bool {
     let port = c_int::try_from(port).unwrap_or_default();
     cli.handle().bind(&crate::native::c_text(address), port)
 }
 
 /// `php_swoole_client_check_setting(cli, settings)`: false on an invalid
 /// option, None after a bailout.
-pub(crate) fn apply(cli: Cli, settings: &Array) -> Option<bool> {
+pub(crate) fn apply(cli: Cli<'_>, settings: &Array) -> Option<bool> {
     let options = Options(settings);
     if let Some(on) = options.truthy("open_eof_check") {
         edit(cli, |record| record.open_eof_check = on);
@@ -278,7 +278,7 @@ pub(crate) fn apply(cli: Cli, settings: &Array) -> Option<bool> {
 }
 
 /// The SOCKS5 or HTTP proxy options: false when the port is missing.
-fn proxies(cli: Cli, options: &Options) -> bool {
+fn proxies(cli: Cli<'_>, options: &Options) -> bool {
     if let Some(host) = options.string("socks5_host") {
         let Some(port) = options.long("socks5_port") else {
             warn(ErrorKind::Fatal, "socks5_port should not be null");
@@ -302,7 +302,7 @@ fn proxies(cli: Cli, options: &Options) -> bool {
 }
 
 /// Point the client's length function at `callable`, which the client then owns.
-fn length_option(cli: Cli, named: &Named) {
+fn length_option(cli: Cli<'_>, named: &Named) {
     edit(cli, |record| {
         let protocol = &mut record.protocol;
         protocol.get_package_length = Some(swoole_rs_phpswoole::length::length::<Length>);
@@ -314,7 +314,7 @@ fn length_option(cli: Cli, named: &Named) {
 }
 
 fn proxy(
-    cli: Cli,
+    cli: Cli<'_>,
     http: bool,
     host: &ZString,
     port: i64,

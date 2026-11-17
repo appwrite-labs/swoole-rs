@@ -69,9 +69,9 @@ TEST `client.<name>` is the case `client.<name>` (function `<name>`). The case
 binary is the hooks one (`tests/modules/hooks/system`, which includes this file),
 so `hooks-system-rust` builds and runs it over
 the crates and system.py's static libswoole.a (the pin's thirdparty and native/'s Zend-free sources). A
-`Client` is crates/clients' state: made by `client::create` and given its
-callbacks by `client::listen`; its methods, `enable_ssl_encrypt`, `ssl_verify`
-and its deletion among them, are `client::Handle` calls or other
+`Client` is crates/clients' state: made by `client::create`, whose `Owner` the
+test keeps and whose drop deletes it, and given its callbacks by `client::listen`;
+its methods, `enable_ssl_encrypt` and `ssl_verify` among them, are `client::Handle` calls or other
 `swr_v1_clients_*` exports, and the `Socket` TLS reads are called under their
 upstream symbols (`ssl_get_peer_cert_chain(limit)`'s PEM of each certificate is
 crates/tls' `CertRef::pem`).
