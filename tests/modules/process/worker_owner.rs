@@ -64,7 +64,8 @@ fn server_retains_record_pipe_and_queue_after_the_process_drops() {
 fn a_thread_copy_retains_the_native_resources_and_leaves_the_pair_to_its_owner() {
     let (owner, fd, queue) = resources();
     let file = file_of(fd);
-    let copy = ProcessWorker::new(owner.get().get());
+    let copy = ProcessWorker::new(WorkerRecord::empty());
+    copy.get().copy_from(owner.get());
     copy.get().set_shared(true);
     assert!(copy.share_resources(owner.clone()));
     assert!(file.is_some() && file_of(fd) == file);
@@ -91,7 +92,9 @@ fn a_thread_copy_retains_the_native_resources_and_leaves_the_pair_to_its_owner()
 fn copying_a_record_does_not_adopt_its_borrowed_resources() {
     let (owner, fd, queue) = resources();
     let file = file_of(fd);
-    drop(ProcessWorker::new(owner.get().get()));
+    let copy = ProcessWorker::new(WorkerRecord::empty());
+    copy.get().copy_from(owner.get());
+    drop(copy);
     assert!(file.is_some() && file_of(fd) == file);
     assert!(queue_exists(queue));
     drop(owner);

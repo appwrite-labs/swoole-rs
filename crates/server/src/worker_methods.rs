@@ -136,7 +136,7 @@ pub fn create_user_workers(serv: view::Server<'_>) -> bool {
             continue;
         };
         if let Some(copy) = copies.user(index) {
-            copy.put(worker.get());
+            copy.copy_from(worker);
         }
         create_worker(serv, worker);
         worker.set_kind(WorkerType::User);

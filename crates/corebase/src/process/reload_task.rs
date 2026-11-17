@@ -8,7 +8,7 @@ use std::collections::{HashMap, VecDeque};
 use std::ffi::c_int;
 
 use crate::process::armed_timer::ArmedTimer;
-use crate::process::worker_record::WorkerRecord;
+use crate::process::worker_record::Worker;
 
 /// `warn(kind, pid, worker_id)`, called with `errno` still set by a failed `kill`.
 pub type Warn = fn(kind: KillWarning, pid: c_int, worker_id: u32);
@@ -70,7 +70,7 @@ impl ReloadTask {
     }
 
     /// Snapshot `workers` and queue them to restart.
-    pub fn add_workers(&mut self, workers: &[WorkerRecord]) {
+    pub fn add_workers(&mut self, workers: &[Worker<'_>]) {
         for worker in workers {
             self.add(worker.pid(), worker.id());
         }
@@ -226,13 +226,16 @@ pub(crate) mod tests {
 
     #[test]
     fn snapshot_remove_complete_and_timer() {
-        let mut records = [*WorkerRecord::boxed(), *WorkerRecord::boxed()];
+        let mut records = [
+            crate::process::worker_record::WorkerRecord::empty(),
+            crate::process::worker_record::WorkerRecord::empty(),
+        ];
         for (index, record) in records.iter_mut().enumerate() {
             record.set_pid(100 + c_int::try_from(index).unwrap());
             record.set_id(u32::try_from(index).unwrap());
         }
         let mut task = ReloadTask::default();
-        task.add_workers(&records);
+        task.add_workers(&records.each_ref().map(Worker::from));
         assert!(!task.completed());
         assert!(task.remove(100));
         assert!(!task.remove(100));
