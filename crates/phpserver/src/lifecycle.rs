@@ -260,10 +260,12 @@ impl Default for Property {
     fn default() -> Self {
         Self {
             send_waiters: SendWaiters::default(),
+            // Before the constants: its maps' hashers may unwind, and nothing whose
+            // drop reaches Zend is built yet.
+            tasks: crate::task::Pending::default(),
             ports: const { Vec::new() },
             commands: const { Vec::new() },
             user_processes: const { Vec::new() },
-            tasks: crate::task::Pending::default(),
         }
     }
 }
