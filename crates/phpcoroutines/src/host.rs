@@ -606,8 +606,9 @@ pub(crate) fn deadlock_check() -> Result<(), bailout::Bailout> {
     swoole_rs_zend::host::named_call(b"\\Swoole\\Coroutine\\deadlock_check", &[])
 }
 
-/// The `SW_GLOBAL_HOOK_ON_CORO_START` (`stop`: `_STOP`) hook, when set.
-pub(crate) fn coro_hook(stop: bool, task: *mut c_void) {
+/// The `SW_GLOBAL_HOOK_ON_CORO_START` (`stop`: `_STOP`) hook of the coroutine whose
+/// context is `ctx`, when set.
+pub(crate) fn coro_hook(stop: bool, ctx: Ctx) {
     use swoole_rs_corebase::HookType;
     let kind = if stop {
         HookType::ON_CORO_STOP
@@ -616,7 +617,7 @@ pub(crate) fn coro_hook(stop: bool, task: *mut c_void) {
     };
     if swoole_rs_corebase::swoole_isset_hook(kind) {
         // SAFETY: the hook's argument is the coroutine's context.
-        unsafe { swoole_rs_corebase::swoole_call_hook(kind, task) };
+        unsafe { swoole_rs_corebase::swoole_call_hook(kind, ctx.ptr().cast()) };
     }
 }
 
