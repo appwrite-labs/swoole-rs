@@ -14,13 +14,17 @@ FIXTURE = Path(__file__).parents[1] / 'http' / 'header_reentry.php'
 HEADERS = {'x-a': 'a', 'x-b': 'b', 'x-list': 'l2'}
 
 
-def test_responses_keep_the_headers_set_before_sending(engine):
+def run_client(engine, script):
     with server(engine, FIXTURE) as (port, _):
-        php = subprocess.run(engine.command(Path(__file__).with_name('header_reentry_client.php')),
+        php = subprocess.run(engine.command(Path(__file__).with_name(script)),
                              env={**os.environ, 'TEST_PORT': str(port)},
                              capture_output=True, text=True, timeout=30)
     assert php.returncode == 0, php.stdout + php.stderr
-    assert [json.loads(line) for line in php.stdout.splitlines()] == [
+    return [json.loads(line) for line in php.stdout.splitlines()]
+
+
+def test_responses_keep_the_headers_set_before_sending(engine):
+    assert run_client(engine, 'header_reentry_client.php') == [
         ['/replace-empty', 200, HEADERS, 'ok'],
         ['/replace-new', 200, HEADERS, 'ok'],
         ['/nested', 200, HEADERS, 'ok'],
@@ -28,4 +32,10 @@ def test_responses_keep_the_headers_set_before_sending(engine):
         ['/', 200, [], 'ok'],
         ['/echo', 200, [], json.dumps({'header': {'x-q': 'q', 'x-r': 'r', 'x-s': 's'},
                                        'cookie': {'c1': 'r', 'c2': 'two'}}, separators=(',', ':'))],
-    ], php.stdout + php.stderr
+    ]
+
+
+def test_nested_send_during_request_header_conversion(engine):
+    assert run_client(engine, 'nested_send_client.php') == [
+        [[1, 3], {'1': {'x-inner': 'inner'}, '3': {'x-outer': 'outer'}}],
+    ]
