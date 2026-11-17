@@ -344,7 +344,9 @@ pub(crate) unsafe fn swr_case_http_server(
         .set(u32::try_from(worker_num).unwrap());
     serv.config()
         .dispatch_mode
-        .set(u8::try_from(dispatch_mode).unwrap());
+        .set(swoole_rs_server::DispatchMode(
+            u8::try_from(dispatch_mode).unwrap(),
+        ));
     serv.config().open_cpu_affinity.set(true);
     log_level(SW_LOG_WARNING);
     let port = serv.listen_port(

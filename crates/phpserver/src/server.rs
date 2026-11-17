@@ -773,12 +773,12 @@ fn get_client_info(call: &Call) {
     let Some(conn) = serv.verified(fd) else {
         return call.set_bool(false);
     };
-    let dispatch_mode = serv.config().dispatch();
+    let dispatch_mode = serv.config().dispatch_mode.get();
     call.set_array();
-    if conn.uid() > 0 || dispatch_mode == Some(DispatchMode::UidMod) {
+    if conn.uid() > 0 || dispatch_mode == DispatchMode::UID_MOD {
         call.add_assoc_long(c"uid", i64::from(conn.uid()));
     }
-    if conn.worker_id() > 0 || dispatch_mode == Some(DispatchMode::CoConnLb) {
+    if conn.worker_id() > 0 || dispatch_mode == DispatchMode::CO_CONN_LB {
         call.add_assoc_long(c"worker_id", i64::from(conn.worker_id()));
     }
     if serv
@@ -797,7 +797,7 @@ fn get_client_info(call: &Call) {
     }
     call.add_assoc_long(c"server_fd", i64::from(conn.server_fd()));
     call.add_assoc_long(c"socket_fd", i64::from(conn.fd()));
-    call.add_assoc_long(c"socket_type", i64::from(conn.socket_type()));
+    call.add_assoc_long(c"socket_type", i64::from(conn.socket_type().0));
     let remote_port = address_port(&conn.info());
     call.add_assoc_long(c"remote_port", i64::from(remote_port));
     with_host(&conn.info(), |ip| {

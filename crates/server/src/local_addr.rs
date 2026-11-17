@@ -119,7 +119,7 @@ fn text(state: &ServerState, v6: bool, index: u16) -> &CStr {
 /// its port's host; empty without one.
 #[must_use]
 pub fn get_local_addr<'a>(serv: view::Server<'a>, conn: Connection<'_>) -> &'a CStr {
-    if let Some(kind) = SocketType::from_raw(conn.socket_type()).filter(|kind| kind.is_tcp()) {
+    if let Some(kind) = conn.socket_type().known().filter(|kind| kind.is_tcp()) {
         let v6 = kind == SocketType::SW_SOCK_TCP6;
         return text(serv.state(), v6, conn.local_addr_index());
     }

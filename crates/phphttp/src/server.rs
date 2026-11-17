@@ -335,7 +335,7 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> Route {
 pub fn can_cache_session_addr(server: view::Server<'_>) -> bool {
     let config = server.config();
     config.mode_ == Mode::Base
-        || (config.mode_ == Mode::Process && config.dispatch() == Some(DispatchMode::FdMod))
+        || (config.mode_ == Mode::Process && config.dispatch_mode.get() == DispatchMode::FD_MOD)
 }
 
 /// `Server::is_enable_coroutine`.

@@ -150,7 +150,7 @@ pub(crate) fn finish(serv: view::Server<'_>, send: &SendData) -> bool {
     if conn.overflow() && matches!(event, Some(ServerEvent::SendData | ServerEvent::SendFile)) {
         // `process_is_supported_send_yield`: the worker that owns the connection waits.
         let owner = || scheduled(serv, conn.fd()) == current_worker();
-        if config.send_yield.get() && config.hash_dispatch() && owner() {
+        if config.send_yield.get() && config.dispatch_mode.get().is_hash() && owner() {
             log::set_last_error(OUTPUT_SEND_YIELD);
         } else {
             let m = format_args!("send failed, session={session} output buffer overflow");
@@ -192,7 +192,7 @@ pub(crate) fn end(serv: view::Server<'_>, session: c_long, flags: c_int) -> bool
     }
     // Only an active close may be in another worker's binding: forward it there.
     if conn.close_actively() {
-        let hash = config.hash_dispatch();
+        let hash = config.dispatch_mode.get().is_hash();
         let worker = if hash {
             scheduled(serv, conn.fd())
         } else {

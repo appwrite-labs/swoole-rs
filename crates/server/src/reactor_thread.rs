@@ -3,6 +3,8 @@
 use core::ffi::{c_int, c_long};
 #[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_corebase::ServerEvent;
+#[cfg(test)]
+use swoole_rs_corebase::constants::SocketTypeCode;
 use swoole_rs_corebase::reactor::Events;
 
 use swoole_rs_corebase::reactor::Event;
@@ -79,7 +81,7 @@ fn receive_packets(serv: view::Server<'_>, reactor: Reactor, fd: c_int, buffer: 
     loop {
         let (header, payload) = buffer.split_at_mut(HEAD);
         pkt.socket_type = kind;
-        pkt.socket_addr.kind = kind;
+        pkt.socket_addr.kind = kind.0;
         let mut room = swoole_rs_corebase::reactor::Fill::new(payload);
         // A DTLS datagram goes to the handshake, as the bytes it received.
         let received = room.spare(|spare| match spare.recvfrom(fd, 0, &mut pkt.socket_addr) {
@@ -259,10 +261,19 @@ mod tests {
         let fd = std::os::fd::AsRawFd::as_raw_fd(&server);
         let slot = live.state().hold_port(0, fd).unwrap();
         slot.set_fd(fd);
-        slot.set_socket_type(2); // SW_SOCK_UDP
+        slot.set_socket_type(SocketTypeCode(2)); // SW_SOCK_UDP
         let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         client.connect(server.local_addr().unwrap()).unwrap();
         (server, client)
+    }
+
+    #[test]
+    fn datagram_headers_preserve_unknown_socket_codes() {
+        let mut head = [0; crate::reactor_entry::DGRAM_HEAD];
+        head[..size_of::<c_int>()].copy_from_slice(&(-1_i32).to_ne_bytes());
+        let packet = DgramPacket::from_bytes(&head);
+        assert_eq!(packet.socket_type.known(), None);
+        assert_eq!(packet.to_bytes(), head);
     }
 
     #[test]

@@ -374,18 +374,8 @@ fn system() {
 
 /// `TEST(server, udp_packet)`'s `onPacket`: the datagram, echoed with `sendto`.
 fn udp_on_packet(_: view::Server<'_>, req: &RecvData) -> c_int {
-    // SAFETY: a datagram's RecvData points at its `DgramPacket`: `socket_type`, the
-    // 120-byte `Address` (its length at 112), `length`, then the data.
-    let (packet, fd) = (req.data().cast::<u8>(), c_int::from(req.info().server_fd));
-    // SAFETY: as above.
-    let (addr, addr_len, data) = unsafe {
-        let length = packet.add(124).cast::<u32>().read_unaligned();
-        (
-            packet.add(4),
-            packet.add(116).cast::<u32>().read_unaligned(),
-            std::slice::from_raw_parts(packet.add(128), length as usize),
-        )
-    };
+    let (_, peer, data) = req.datagram().expect("complete UDP packet");
+    let fd = c_int::from(req.info().server_fd);
     check(
         data == PACKET,
         "string(recv_data->data, recv_data->length) == packet",
@@ -399,8 +389,8 @@ fn udp_on_packet(_: view::Server<'_>, req: &RecvData) -> c_int {
             PACKET.as_ptr().cast(),
             PACKET.len(),
             0,
-            addr.cast(),
-            addr_len,
+            (&raw const peer.addr).cast(),
+            peer.len,
         )
     };
     SW_OK
@@ -743,7 +733,7 @@ fn slow_receive(_: view::Server<'_>, _: &RecvData) -> c_int {
 fn no_idle_worker() {
     let serv = new_server(MODE_PROCESS);
     serv.config().worker_num.set(4);
-    serv.config().dispatch_mode.set(DISPATCH_IDLE_WORKER);
+    serv.config().dispatch_mode.set(DispatchMode::IDLE_WORKER);
 
     set_log_file(TEST_LOG_FILE);
     set_log_warning();
@@ -957,7 +947,7 @@ fn discard_data_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
 fn discard_data() {
     let serv = new_server(MODE_PROCESS);
     serv.config().worker_num.set(2);
-    serv.config().dispatch_mode.set(DISPATCH_IDLE_WORKER);
+    serv.config().dispatch_mode.set(DispatchMode::IDLE_WORKER);
     serv.config().discard_timeout_request.set(true);
     serv.config().disable_notify.set(true);
 

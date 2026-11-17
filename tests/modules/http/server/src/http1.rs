@@ -32,7 +32,8 @@ use swoole_rs_corebase::{DataHead, ServerEvent, microtime};
 use swoole_rs_server::callbacks::{Callback, CallbackKind as Slot};
 use swoole_rs_server::reactor_entry::RecvData;
 use swoole_rs_server::{
-    Connection, ServerConfig, ServerText, SharedServer, StaticCollection, server_methods, view,
+    Connection, DispatchMode, ServerConfig, ServerText, SharedServer, StaticCollection,
+    server_methods, view,
 };
 
 use crate::client::{Client, USER_AGENT};
@@ -54,8 +55,6 @@ const TEST_HOST: &str = "127.0.0.1";
 const MODE_BASE: c_int = 1;
 const MODE_PROCESS: c_int = 2;
 const MODE_THREAD: c_int = 3;
-const DISPATCH_FDMOD: u8 = 2;
-const DISPATCH_IDLE_WORKER: u8 = 3;
 const DISPATCH_RESULT_DISCARD_PACKET: c_int = -1;
 const DISPATCH_RESULT_CLOSE_CONNECTION: c_int = -2;
 const SW_SERVER_EVENT_PAUSE_RECV: ServerEvent = ServerEvent::PauseRecv;
@@ -565,7 +564,7 @@ fn http_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
 /// `test_http_server(dispatch_mode, false, worker_num, mode)`: an HTTP and WebSocket
 /// server with the static handler on `/examples`; its workers run as root in `/`.
 /// The TLS variant is #1842's.
-fn test_http_server(dispatch_mode: u8, worker_num: u32, mode: c_int) -> Server {
+fn test_http_server(dispatch_mode: DispatchMode, worker_num: u32, mode: c_int) -> Server {
     let server = Server::new(mode);
     server.set_text(TEXT_USER, "root");
     server.set_text(TEXT_GROUP, "root");
@@ -599,7 +598,7 @@ fn test_http_server(dispatch_mode: u8, worker_num: u32, mode: c_int) -> Server {
 
 /// `test_http_server()`'s defaults.
 fn default_http_server() -> Server {
-    test_http_server(DISPATCH_FDMOD, 2, MODE_PROCESS)
+    test_http_server(DispatchMode::FD_MOD, 2, MODE_PROCESS)
 }
 
 /// `test_proxy_server`'s `onReceive`.
@@ -968,7 +967,7 @@ fn process1() {
 fn return_zero(_: view::Server<'_>, _: &DataHead) {}
 
 fn redundant_callback() {
-    let server = test_http_server(DISPATCH_IDLE_WORKER, 2, MODE_PROCESS);
+    let server = test_http_server(DispatchMode::IDLE_WORKER, 2, MODE_PROCESS);
     for slot in [
         Slot::Connect,
         Slot::Close,
@@ -1069,7 +1068,7 @@ fn chunked_on_start(_: view::Server<'_>) {
 }
 
 fn chunked() {
-    let server = test_http_server(DISPATCH_FDMOD, 1, MODE_BASE);
+    let server = test_http_server(DispatchMode::FD_MOD, 1, MODE_BASE);
     *CHUNKED_SERVER.lock().unwrap() = Some(server);
 
     server.set_callback(Callback::Start(chunked_on_start));

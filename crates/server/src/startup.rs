@@ -11,6 +11,7 @@ use core::ffi::c_int;
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use swoole_rs_clients::address::assign;
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
+use swoole_rs_corebase::constants::SocketTypeCode;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_WARNING};
 use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::process::process_pool::IpcMode;
@@ -307,8 +308,8 @@ pub(crate) fn start_check(serv: view::Server<'_>) -> bool {
     let callbacks = &state.callbacks;
     let has = |id| callbacks.slot(id).is_set();
     if config.mode_ == Mode::Process {
-        let (mode, hashed) = (config.dispatch_mode.get(), config.hash_dispatch());
-        if !hashed && !config.enable_unsafe_event.get() {
+        let mode = config.dispatch_mode.get();
+        if !mode.is_hash() && !config.enable_unsafe_event.get() {
             for (id, event) in [
                 (CallbackKind::Connect, "onConnect"),
                 (CallbackKind::Close, "onClose"),
@@ -316,15 +317,17 @@ pub(crate) fn start_check(serv: view::Server<'_>) -> bool {
                 (CallbackKind::BufferEmpty, "onBufferEmpty"),
             ] {
                 if let Some(slot) = Some(callbacks.slot(id)).filter(|slot| slot.is_set()) {
-                    let m =
-                        format_args!("cannot set '{event}' event when using dispatch_mode={mode}");
+                    let m = format_args!(
+                        "cannot set '{event}' event when using dispatch_mode={}",
+                        mode.0
+                    );
                     invalid_callback(m);
                     slot.clear();
                 }
             }
             config.disable_notify.set(true);
         }
-        if !hashed {
+        if !mode.is_hash() {
             config.send_yield.set(false);
         }
     } else {
@@ -465,7 +468,7 @@ pub(crate) fn store_listen_socket(serv: view::Server<'_>) {
             continue;
         };
         conn.set_fd(fd);
-        conn.set_socket_type(port.r#type);
+        conn.set_socket_type(SocketTypeCode(port.r#type));
         let mut info = conn.info();
         info.kind = port.r#type;
         let host = port.host.bytes_with_nul();
@@ -836,7 +839,7 @@ mod tests {
             config(&live).send_yield.set(true);
             config(&live).disable_notify.set(false);
         };
-        arm(1);
+        arm(crate::DispatchMode::ROUND);
         assert!(start_check(live.server()), "round robin");
         assert!(
             UNSAFE.iter().all(|&id| !is_on(&live, id)),
@@ -846,7 +849,7 @@ mod tests {
         assert!(config(&live).disable_notify.get(), "notify off");
         assert!(!config(&live).send_yield.get(), "round robin cannot yield");
 
-        arm(2);
+        arm(crate::DispatchMode::FD_MOD);
         assert!(start_check(live.server()), "fd hash");
         assert!(
             UNSAFE.iter().all(|&id| is_on(&live, id)),
@@ -855,7 +858,7 @@ mod tests {
         assert!(!config(&live).disable_notify.get(), "notify on");
         assert!(config(&live).send_yield.get(), "may yield");
 
-        arm(1);
+        arm(crate::DispatchMode::ROUND);
         config(&live).enable_unsafe_event.set(true);
         assert!(start_check(live.server()), "unsafe events");
         assert!(UNSAFE.iter().all(|&id| is_on(&live, id)), "kept on request");
@@ -925,13 +928,13 @@ mod tests {
         let conn = live.state().tables_ref().connection_at(fd).unwrap();
         conn.set_fd(0);
         conn.clear_object();
-        conn.set_socket_type(0);
+        conn.set_socket_type(SocketTypeCode(0));
         store_listen_socket(live.server());
         let port = (&raw const *live.port()).addr();
         assert_eq!(conn.fd(), fd, "the slot's fd");
         let held = conn.port().map_or(0, |held| held.raw().addr());
         assert_eq!(held, port, "the slot holds its port");
-        assert_eq!(conn.socket_type(), 1, "TCP");
+        assert_eq!(conn.socket_type().0, 1, "TCP");
         assert_eq!(conn.info().kind, 1, "its address");
         assert_eq!(
             live.port_socket().read(|s| s.object).addr(),

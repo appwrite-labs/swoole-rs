@@ -1359,7 +1359,7 @@ fn no_idle_task_worker() {
     let serv = Server::new(MODE_PROCESS);
     serv.config().worker_num.set(1);
     serv.config().task_worker_num.set(4);
-    serv.config().dispatch_mode.set(DISPATCH_IDLE_WORKER);
+    serv.config().dispatch_mode.set(DispatchMode::IDLE_WORKER);
 
     let log_file = CString::new(TEST_LOG_FILE).unwrap();
     set_log_file(&log_file);
