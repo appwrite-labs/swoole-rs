@@ -30,8 +30,7 @@ use swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_phpstubs::process_pool;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, handlers,
-    message,
-    sys::{ZEND_ACC_PUBLIC, zval},
+    message, sys::ZEND_ACC_PUBLIC,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -57,7 +56,7 @@ thread_local! {
     /// (upstream's `sw_zval_dup` into `pool->ptr`): the call keeps it alive, and
     /// every pool hook runs beneath it on its thread, a worker's in the child it
     /// forked. Undefined otherwise.
-    static OWNER: Cell<zval> = const { Cell::new(swoole_rs_zend::UNDEF) };
+    static OWNER: Cell<Option<swoole_rs_zend::Weak<PoolObject>>> = const { Cell::new(None) };
 }
 
 /// The pool a Pool object owns, reached in place: the pool's workers keep the
@@ -351,19 +350,20 @@ fn signal(pool: PoolRef<'_>, signo: c_int) {
 
 /// The object a pool callback belongs to ([`OWNER`], copied into `slot`), and
 /// its data.
-fn owner(slot: &mut zval) -> Option<(&Value, &PoolObject)> {
-    *slot = OWNER.get();
-    let object = Value::of(slot);
+fn owner(slot: &mut Owned) -> Option<(&Value, &PoolObject)> {
+    *slot = OWNER.get()?.get()?;
+    let object = &**slot;
     Some((object, object.custom()?))
 }
 
 fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
-    let mut slot = swoole_rs_zend::UNDEF;
+    let mut slot = Owned::default();
     let Some((object, this)) = owner(&mut slot) else {
         return;
     };
     clean();
     if swoole_rs_zend::bailout::pending() {
+        slot.delref();
         swoole_rs_zend::bailout::finish();
         return;
     }
@@ -381,11 +381,13 @@ fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
         dispatch(&callable, object, Some(id), coroutine, "onWorkerStart");
     }
     if swoole_rs_zend::bailout::pending() {
+        slot.delref();
         swoole_rs_zend::bailout::finish();
         return;
     }
     let term = this.on_message.is_set() || this.enable_coroutine.get();
     worker_signals(term);
+    slot.delref();
     swoole_rs_zend::bailout::finish();
 }
 
@@ -405,7 +407,7 @@ fn worker_signals(term: bool) {
 }
 
 fn on_message(pool: PoolRef<'_>, message: &RecvData<'_>) {
-    let mut slot = swoole_rs_zend::UNDEF;
+    let mut slot = Owned::default();
     let Some((object, this)) = owner(&mut slot) else {
         return;
     };
@@ -426,11 +428,12 @@ fn on_message(pool: PoolRef<'_>, message: &RecvData<'_>) {
         worker_busy(false);
     }
     drop(data);
+    slot.delref();
     swoole_rs_zend::bailout::finish();
 }
 
 fn worker_stopped(worker: Worker<'_>, exit: bool) {
-    let mut slot = swoole_rs_zend::UNDEF;
+    let mut slot = Owned::default();
     let Some((object, this)) = owner(&mut slot) else {
         return;
     };
@@ -458,7 +461,7 @@ fn on_worker_exit(_: PoolRef<'_>, worker: Worker<'_>) {
 }
 
 fn on_start(_: PoolRef<'_>) {
-    let mut slot = swoole_rs_zend::UNDEF;
+    let mut slot = Owned::default();
     if let Some((object, this)) = owner(&mut slot) {
         update_long(object, c"master_pid", getpid());
         update_bool(object, c"running", true);
@@ -468,11 +471,12 @@ fn on_start(_: PoolRef<'_>) {
             dispatch(&callable, object, None, false, "onStart");
         }
     }
+    slot.delref();
     swoole_rs_zend::bailout::finish();
 }
 
 fn on_shutdown(_: PoolRef<'_>) {
-    let mut slot = swoole_rs_zend::UNDEF;
+    let mut slot = Owned::default();
     if let Some((object, this)) = owner(&mut slot) {
         update_bool(object, c"running", false);
         update_bool(object, c"workerRunning", false);
@@ -480,6 +484,7 @@ fn on_shutdown(_: PoolRef<'_>) {
             dispatch(&callable, object, None, false, "onShutdown");
         }
     }
+    slot.delref();
     swoole_rs_zend::bailout::finish();
 }
 
@@ -862,15 +867,12 @@ fn start(call: &Call) {
         ..Hooks::default()
     };
     view.install(&hooks);
-    OWNER.set(
-        call.this_value()
-            .map_or(swoole_rs_zend::UNDEF, Value::copy_value),
-    );
+    OWNER.set(call.this_value().and_then(swoole_rs_zend::Weak::of));
     let started = methods::start(swoole_rs_server::process_pool_native(), view);
     if started {
         methods::wait(swoole_rs_server::process_pool_native(), view);
     }
-    OWNER.set(swoole_rs_zend::UNDEF);
+    OWNER.set(None);
     if !started {
         call.set_bool(false);
         return;

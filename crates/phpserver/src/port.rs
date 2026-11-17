@@ -175,15 +175,10 @@ impl PortData {
             }
             self.bound.set(false);
         }
-        if let Some(port) = self.port()
-            && crate::lifecycle::owns_shared()
-        {
-            let config = port.config();
-            config
-                .protocol
-                .update(|protocol| protocol.private_data_1 = ptr::null_mut());
-            // Out of the port first: a destructor this runs may reach it again.
-            drop(config.length_owner.replace(None));
+        if let Some(port) = self.port() {
+            // This thread's owner, out of its registry first: a destructor this runs
+            // may reach the port again.
+            drop(port.config().replace_length_owner(None));
         }
         self.port.set(ptr::null_mut());
     }

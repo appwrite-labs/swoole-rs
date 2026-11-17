@@ -75,8 +75,7 @@ fn on_event<const BITMASK: c_int>(
     let Some(socket) = event.socket() else {
         return -1;
     };
-    let owner = socket.read(SocketFields::owner::<Weak<crate::Socket>>);
-    if let Some(owner) = owner.as_ref().and_then(Weak::upgrade) {
+    if let Some(owner) = socket.read(SocketFields::shared_owner::<crate::Socket>) {
         crate::socket_event(&owner, BITMASK);
     }
     0
@@ -128,7 +127,11 @@ impl ReactorSocket {
 
     /// Owned by `owner`, which the reactor handlers report while it lives.
     pub(crate) fn set_owner(&self, owner: Weak<crate::Socket>) {
-        self.with(|socket| socket.socket().edit(|socket| socket.set_owner(Some(owner))));
+        self.with(|socket| {
+            socket
+                .socket()
+                .edit(|socket| socket.set_shared_owner(owner));
+        });
     }
 
     /// The events it is registered for.

@@ -240,7 +240,20 @@ pub struct Insertions<'a>(&'a Array);
 
 /// A call's arguments lent to C (`swr_zvals`): `argc` zvals from `argv`, which
 /// the callee reads and copies, keeping no pointer to them. Made only from a
-/// borrowed slice, whose length bounds `argc`.
+/// borrowed slice, whose length bounds `argc`. Raw bindgen bits are not values:
+///
+/// ```compile_fail
+/// use swoole_rs_zend::{Zvals, UNDEF};
+/// let _args = Zvals::of(&mut [UNDEF]);
+/// ```
+///
+/// Temporary argument slots cannot escape the call:
+///
+/// ```compile_fail
+/// use swoole_rs_zend::{Owned, Zvals};
+/// let value = Owned::long(1);
+/// let escaped = Zvals::with([&value], |args| args);
+/// ```
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Zvals<'a> {
@@ -253,8 +266,24 @@ impl<'a> Zvals<'a> {
     /// Zvals this code holds, as [`Value::of`] borrows one.
     #[must_use]
     #[inline]
-    pub fn of(args: &'a mut [zval]) -> Self {
+    pub(crate) fn of(args: &'a mut [zval]) -> Self {
         Self::lend(args.as_mut_ptr(), args.len())
+    }
+
+    /// Lend stack copies of validated values for one call. The originals stay
+    /// borrowed until the call returns; the temporary argument slots cannot escape.
+    #[inline]
+    pub fn with<const N: usize, R>(args: [&Value; N], call: impl FnOnce(Zvals<'_>) -> R) -> R {
+        let mut slots = args.map(Value::copy_value);
+        call(Zvals::of(&mut slots))
+    }
+
+    /// Keep at most the first `count` arguments.
+    #[must_use]
+    #[inline]
+    pub fn take(mut self, count: usize) -> Self {
+        self.argc = self.argc.min(u32::try_from(count).unwrap_or(u32::MAX));
+        self
     }
 
     /// Values this code owns (`Owned` is a transparent zval), which the callee
@@ -301,6 +330,13 @@ impl<'a> Zvals<'a> {
 
 /// A borrowed zval. Zend may change it and what it points to (refcounts, a
 /// conversion's cache) through pointers on this thread, hence the cell.
+/// Arbitrary bindgen records cannot be turned into values through a safe API:
+///
+/// ```compile_fail
+/// use swoole_rs_zend::{Value, UNDEF};
+/// let mut bits = UNDEF;
+/// let _value = Value::of(&mut bits);
+/// ```
 ///
 /// Contents cannot be lent out or edited through a shared Value. Mutate an
 /// owned array through [`Owned::array_mut`], or a property/argument through its
@@ -354,10 +390,10 @@ impl Value {
         unsafe { value.cast::<Self>().as_ref() }
     }
 
-    /// Borrow a zval this code holds exclusively, such as a local return slot.
+    /// Borrow a valid zval made inside Zend; raw public bindgen bits are not sufficient.
     #[must_use]
     #[inline]
-    pub fn of(value: &mut zval) -> &Self {
+    pub(crate) fn of(value: &mut zval) -> &Self {
         // SAFETY: `Value` is a transparent zval, and the exclusive borrow keeps
         // anything else from freeing or overwriting it while borrowed.
         unsafe { &*ptr::from_mut(value).cast::<Self>() }
@@ -1392,6 +1428,13 @@ impl Kept {
     #[inline]
     pub fn get(&self) -> Option<&Value> {
         (self.0.kind() != IS_UNDEF).then_some(&self.0)
+    }
+
+    /// The held slot, including its undefined value while empty.
+    #[must_use]
+    #[inline]
+    pub fn value(&self) -> &Value {
+        &self.0
     }
 
     /// The array it holds, to add to; None for anything else.

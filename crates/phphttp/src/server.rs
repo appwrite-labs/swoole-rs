@@ -30,7 +30,7 @@ use swoole_rs_phpserver::{
 };
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_server::{Connection, DispatchMode, Mode, view};
-use swoole_rs_zend::sys::{ZEND_ACC_NOT_SERIALIZABLE, zend_long, zval};
+use swoole_rs_zend::sys::{ZEND_ACC_NOT_SERIALIZABLE, zend_long};
 use swoole_rs_zend::{Class, Owned, ZStr, ZString, bailout};
 
 unsafe extern "C" {
@@ -358,13 +358,13 @@ pub(crate) use swoole_rs_zend::host::{NO_THEN, Then, callable::Callable};
 /// It bailed out.
 pub(crate) fn call_handler(
     callable: &Callable,
-    args: &mut [zval],
+    args: swoole_rs_zend::Zvals<'_>,
     coroutine: bool,
     then: Then,
 ) -> Result<bool, bailout::Bailout> {
     let called = swoole_rs_zend::host::function_call(
         callable.cache(),
-        swoole_rs_zend::Zvals::of(args),
+        args,
         None,
         coroutine,
         swoole_rs_phpcoroutines::CREATOR,
@@ -384,7 +384,7 @@ pub(crate) fn call_port(
     server: view::Server<'_>,
     server_fd: c_int,
     kind: PortCallback,
-    args: &mut [zval],
+    args: swoole_rs_zend::Zvals<'_>,
 ) -> Result<Option<bool>, bailout::Bailout> {
     let Some(callback) = php_swoole_server_get_callback(server, server_fd, kind) else {
         return Ok(None);
@@ -399,13 +399,16 @@ fn call(mut ctx: Ctx, coroutine: bool) -> Result<(), bailout::Bailout> {
     let state = ctx.state();
     // Its own reference: the handler may replace the server's.
     let callback = state.callback.clone();
-    let mut args = [
-        state.request.zobject.copy_value(),
-        state.response.zobject.copy_value(),
-    ];
     let mut release = context::Release::new(ctx);
+    let state = ctx.state();
     let called = callback.map_or(Ok(false), |callback| {
-        call_handler(&callback, &mut args, coroutine, release.then())
+        swoole_rs_zend::Zvals::with(
+            [
+                state.request.zobject.value(),
+                state.response.zobject.value(),
+            ],
+            |args| call_handler(&callback, args, coroutine, release.then()),
+        )
     });
     match called {
         // The objects stay held, as upstream's jump skipped their release.
@@ -629,13 +632,16 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
     }
     let state = ctx.state();
     let callback = state.callback.clone();
-    let mut args = [
-        state.request.zobject.copy_value(),
-        state.response.zobject.copy_value(),
-    ];
     let mut release = context::Release::new(ctx);
+    let state = ctx.state();
     let called = callback.map_or(Ok(false), |callback| {
-        call_handler(&callback, &mut args, facts.coroutine, release.then())
+        swoole_rs_zend::Zvals::with(
+            [
+                state.request.zobject.value(),
+                state.response.zobject.value(),
+            ],
+            |args| call_handler(&callback, args, facts.coroutine, release.then()),
+        )
     });
     match called {
         // As in `call`.
