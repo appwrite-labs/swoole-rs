@@ -110,35 +110,27 @@ impl<'a> Frame<'a> {
         self.executing().opline()
     }
 
-    /// `EX(opline)`'s instruction, which the handler was called for. Zend never
-    /// leaves `EX(opline)` outside its function's instructions; if it did, this
-    /// reads as a `NOP` with unused operands, which every handler leaves to Zend.
+    /// `EX(opline)`'s instruction, which the handler was called for: part of
+    /// the function's op array, which Zend leaves unwritten while it runs (the
+    /// JIT, which rewrites handlers, turns itself off under user opcode handlers).
     #[must_use]
     #[inline]
     pub fn instruction(self) -> &'a zend_op {
-        self.ahead(0).unwrap_or(&NOP)
+        // SAFETY: a frame at a user opcode handler is at a live instruction.
+        unsafe { &*self.opline() }
     }
 
     /// `OP_DATA`: the instruction after this one, if the function has one.
     #[must_use]
-    #[inline]
     pub fn next_instruction(self) -> Option<&'a zend_op> {
-        self.ahead(1)
-    }
-
-    /// The instruction `count` after `EX(opline)`, if it is one of the function's:
-    /// part of its op array, which Zend leaves unwritten while it runs (the JIT,
-    /// which rewrites handlers, turns itself off under user opcode handlers).
-    #[inline]
-    fn ahead(self, count: usize) -> Option<&'a zend_op> {
         let (first, last) = self.function().instructions()?;
-        let at = self.opline().wrapping_add(count);
-        let index = at.addr().wrapping_sub(first.addr()) / size_of::<zend_op>();
+        let next = self.opline().wrapping_add(1);
+        let index = next.addr().wrapping_sub(first.addr()) / size_of::<zend_op>();
         if index >= usize::try_from(last).unwrap_or(0) {
             return None;
         }
-        // SAFETY: an instruction of the frame's function, inside its op array.
-        Some(unsafe { &*at })
+        // SAFETY: an instruction of the frame's function, as for `instruction`.
+        Some(unsafe { &*next })
     }
 
     /// `EX(opline) += count`, as a handler that consumed `count` instructions
@@ -160,20 +152,6 @@ impl<'a> Frame<'a> {
         self.executing().set_opline(at.wrapping_add(count));
     }
 }
-
-/// What [`Frame::instruction`] reads outside the function's instructions.
-const NOP: zend_op = zend_op {
-    handler: std::ptr::null(),
-    op1: 0,
-    op2: 0,
-    result: 0,
-    extended_value: 0,
-    lineno: 0,
-    opcode: 0,
-    op1_type: 0,
-    op2_type: 0,
-    result_type: 0,
-};
 
 /// A user opcode handler's body: what Zend does next with the instruction
 /// `frame` is at, whose opcode is `OPCODE` ([`crate::Minit::opcode_handler`]

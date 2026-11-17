@@ -201,30 +201,6 @@ extern "C" fn alarm(_signo: c_int) {
     swr_v1_core_set_signal_alarm(true);
 }
 
-/// The live node's disjoint callback storage, issued only by [`retained`]. Selection
-/// keeps it live through run; the node's drop releases it.
-#[derive(Clone, Copy)]
-struct RetainedCall(*const SmallFn<()>);
-
-impl RetainedCall {
-    fn get(&self) -> &SmallFn<()> {
-        // SAFETY: retained issued this live node's slot, used before node deletion.
-        unsafe { &*self.0 }
-    }
-}
-
-/// What the node the queue hands back in `view` calls: its callback storage, which
-/// an active callback may borrow during reentry. No borrow of the node is made.
-#[inline]
-fn retained(view: &TimerView) -> RetainedCall {
-    let retained = view
-        .token
-        .cast::<TimerNode>()
-        .wrapping_byte_add(std::mem::offset_of!(TimerNode, retained))
-        .cast::<SmallFn<()>>();
-    RetainedCall(retained)
-}
-
 /// `swoole::Timer`. Callbacks re-enter it, so every mutable field is a `Cell`, and the
 /// queue a boxed one that [`Owner::lend`] takes out only for a queue operation, never
 /// across a callback or destructor.
@@ -312,11 +288,6 @@ impl Owner {
         self.lend(|queue| queue.heap.iter().map(|view| view.id).collect())
     }
 
-    /// `Timer::get(id)`: the node, or null.
-    pub(crate) fn token(&self, id: c_long) -> *mut TimerNode {
-        self.lend(|queue| queue.token(id)).cast()
-    }
-
     /// Node `id`'s fields, for `Swoole\Timer::info()`, and whether it is a PHP
     /// callable's; none for a node not queued.
     pub(crate) fn info(&self, id: c_long) -> Option<(Info, bool)> {
@@ -333,8 +304,29 @@ impl Owner {
 
     /// `Timer::get(id)`, borrowed.
     pub(crate) fn get(&self, id: c_long) -> Option<&TimerNode> {
-        // SAFETY: null or a live TimerNode that `add` made.
-        unsafe { self.token(id).as_ref() }
+        self.node(Some(id)).2
+    }
+
+    /// The queue's node `id`, or for `None` the next due node of the selection
+    /// ([`Queue::select_next`], which makes it the active one): the queue's status
+    /// and view, and the node when the status is `Ok`.
+    #[inline]
+    fn node(&self, id: Option<c_long>) -> (Status, TimerView, Option<&TimerNode>) {
+        let (status, view) = self.lend(|queue| match id {
+            Some(id) => queue.get(id).map_or_else(
+                |status| (status, TimerView::default()),
+                |view| (Status::Ok, view),
+            ),
+            None => queue.select_next(),
+        });
+        if status != Status::Ok {
+            return (status, view, None);
+        }
+        // SAFETY: a token the queue holds, which it just returned: a live node `add`
+        // boxed, which only `release` frees once the queue has let it go. Nothing
+        // borrows a node mutably.
+        let node = unsafe { view.token.cast::<TimerNode>().as_ref() };
+        (status, view, node)
     }
 
     /// Picks the manual, reactor or system backend. Another backend keeps a
@@ -513,14 +505,16 @@ impl Owner {
         }
         loop {
             // The queue is back before the node's callback runs.
-            let (status, view) = self.lend(Queue::select_next);
+            let (status, view, node) = self.node(None);
             if status == Status::Empty || status == Status::Closing {
                 break;
             }
             check(status);
             // The node the queue just selected, held until complete.
-            if !view.removed {
-                retained(&view).get().run();
+            if !view.removed
+                && let Some(node) = node
+            {
+                node.retained.run();
             }
             self.complete(view.id);
         }
