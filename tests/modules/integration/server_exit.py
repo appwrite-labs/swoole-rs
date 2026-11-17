@@ -101,6 +101,10 @@ def main():
         report['passed'] = True
     except Exception as error:
         report['error'] = str(error)
+    if report['passed']:
+        # The pin's clone (~20 MB) and sandbox are kept only to inspect a failure.
+        shutil.rmtree(work)
+        del report['work']
     write_report(output, report)
     print(json.dumps({key: report.get(key) for key in ['passed', 'executed', 'error', 'work']}))
     return int(not report['passed'])
