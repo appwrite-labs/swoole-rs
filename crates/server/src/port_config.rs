@@ -5,7 +5,7 @@ use std::sync::{OnceLock, RwLock};
 
 use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
-use swoole_rs_corebase::reactor::{Heap, Socket};
+use swoole_rs_corebase::reactor::Heap;
 use swoole_rs_corebase::tls::{SslVersion, TlsContext};
 use swoole_rs_corebase::{CellExt, StringSlot};
 
@@ -85,10 +85,6 @@ impl ReaderSlot {
 /// ([`Setting`], [`Shared`], [`Published`], the socket's atomic), so they need no
 /// exclusive borrow of a port other threads read.
 pub struct PortMethods {
-    /// On a port being made, before the server keeps it.
-    pub ssl_context_init: fn(&mut PortConfig) -> bool,
-    /// `ssl_create(sock)`, of a socket the port accepted.
-    pub ssl_create: fn(&PortConfig, sock: Option<Socket<'_>>) -> bool,
     /// `import(fd)`, of an inherited descriptor, on a port being made.
     pub import: fn(&mut PortConfig, fd: c_int) -> bool,
     pub close: fn(&PortConfig),
@@ -102,8 +98,6 @@ pub struct PortMethods {
     /// `destroy_http_request(conn)`, of a live connection of an HTTP port: frees its
     /// request, if any.
     pub destroy_http_request: fn(conn: crate::Connection<'_>),
-    /// Releases the port's context and its TLS state, as `ListenPort`'s destructor.
-    pub tls_free: fn(&mut PortConfig),
 }
 
 static METHODS: OnceLock<PortMethods> = OnceLock::new();
@@ -459,10 +453,7 @@ impl PortConfig {
     pub(crate) fn delete(mut self: Box<Self>) {
         self.connection_nums.free();
         self.gs.free();
-        // Without methods, nothing made the port's TLS state.
-        if let Some(methods) = METHODS.get() {
-            (methods.tls_free)(&mut self);
-        }
+        crate::port_tls::tls_free(&mut self);
         // Upstream's `~ListenPort` leaves the length callable to the port's deref
         // (`php_swoole_server_port_deref`): one a port kept past it stays to the exit.
         #[expect(

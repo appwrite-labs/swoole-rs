@@ -38,8 +38,6 @@ pub fn register_methods() {
 }
 
 const METHODS: PortMethods = PortMethods {
-    ssl_context_init: lifecycle::ssl_context_init,
-    ssl_create: lifecycle::ssl_create,
     import: lifecycle::import,
     close: lifecycle::close,
     listen: methods::listen,
@@ -48,7 +46,6 @@ const METHODS: PortMethods = PortMethods {
     get_protocols: methods::get_protocols,
     init_protocol: methods::init_protocol,
     destroy_http_request: methods::destroy_http_request,
-    tls_free: lifecycle::tls_free,
 };
 
 /// A port's callbacks (`php_swoole_server_port_callback_type`), in [`EVENTS`] order.

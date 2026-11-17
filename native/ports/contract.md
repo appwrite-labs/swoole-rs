@@ -55,10 +55,9 @@ for both native and Rust, so `import` refuses every descriptor there.
 
 ## TLS, SNI, import and close
 
-`crates/ports/src/lifecycle.rs` is `ssl_context_init`, `ssl_context_create`,
-`ssl_init`, `ssl_create`, `ssl_add_sni_cert`, the SNI callback, `import` and
-`close`, over the port's Rust-owned settings, its contexts' Rust TLS owners, the
-socket record and OpenSSL. The port's `ssl_context` publishes its Rust owner;
+The server owns TLS setup, accepted-socket TLS creation, SNI selection and teardown in
+`crates/server/src/port_tls.rs`. Socket import and close live in `crates/ports/src/lifecycle.rs`.
+The port's `ssl_context` publishes its Rust owner;
 readers take a reference that survives closing the port. The SNI contexts, each with its
 reference, live in the Rust TLS state (`PortConfig::tls`). `swr_v1_server_delete` releases
 both. A DTLS session lives in its connection's SSL (corebase::tls), which the server opens over
