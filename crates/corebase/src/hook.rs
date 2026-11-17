@@ -37,6 +37,19 @@ impl HookType {
     pub const AFTER_RESPONSE: Self = Self(27);
 }
 
+/// Runtime hooks whose callbacks can edit the enabled flags.
+pub struct EnableHook(HookType);
+
+impl EnableHook {
+    pub const BEFORE: Self = Self(HookType::BEFORE_ENABLE_HOOK);
+    pub const AFTER: Self = Self(HookType::AFTER_ENABLE_HOOK);
+
+    pub fn call(self, flags: &mut u32) {
+        // SAFETY: both enable-hook kinds take the live, mutable flags word.
+        unsafe { swoole_call_hook(self.0, std::ptr::from_mut(flags).cast()) };
+    }
+}
+
 type List = &'static [HookFn];
 
 /// Every list any hook type has had, oldest first: each change writes a new
@@ -131,13 +144,13 @@ mod tests {
     use super::*;
 
     unsafe extern "C" fn set_9999(data: *mut c_void) {
-        // SAFETY: the test passes an i32.
-        unsafe { *data.cast::<i32>() = 9999 };
+        // SAFETY: the test passes a 32-bit word.
+        unsafe { *data.cast::<u32>() = 9999 };
     }
 
     unsafe extern "C" fn double(data: *mut c_void) {
-        // SAFETY: the test passes an i32.
-        unsafe { *data.cast::<i32>() *= 2 };
+        // SAFETY: the test passes a 32-bit word.
+        unsafe { *data.cast::<u32>() *= 2 };
     }
 
     // core-tests base.hook, over SW_GLOBAL_HOOK_END (31), then the call order
@@ -145,10 +158,10 @@ mod tests {
     #[test]
     fn hook() {
         const END: HookType = HookType(31);
-        let mut count = 0_i32;
+        let mut count = 0_u32;
         swoole_add_hook(END, set_9999, 1);
         assert!(swoole_isset_hook(END));
-        // SAFETY: the callback takes an i32.
+        // SAFETY: the callback takes a u32.
         unsafe { swoole_call_hook(END, (&raw mut count).cast()) };
         assert_eq!(count, 9999);
 
@@ -157,6 +170,16 @@ mod tests {
         // SAFETY: as above.
         unsafe { swoole_call_hook(END, (&raw mut count).cast()) };
         assert_eq!(count, 9999, "the front callback runs first");
+
+        let mut flags = 1_u32;
+        EnableHook::BEFORE.call(&mut flags);
+        assert_eq!(flags, 1);
+        swoole_add_hook(HookType::BEFORE_ENABLE_HOOK, set_9999, 1);
+        swoole_add_hook(HookType::AFTER_ENABLE_HOOK, double, 1);
+        EnableHook::BEFORE.call(&mut flags);
+        assert_eq!(flags, 9999);
+        EnableHook::AFTER.call(&mut flags);
+        assert_eq!(flags, 19998);
 
         clear();
         assert!(!swoole_isset_hook(END));
