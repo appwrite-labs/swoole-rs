@@ -235,6 +235,7 @@ pub fn contain_with<F: FnOnce()>(body: F) -> Result<(), Bailout> {
     };
     let mut slot = Some(body);
     // SAFETY: `run::<F>` takes the slot of an `F`; `body` needs no drop
-    // (asserted above), and its frames are its caller's (above).
-    unsafe { bailout::trap(run::<F>, (&raw mut slot).cast()) }
+    // (asserted above), and its frames are its caller's (above). The shim's
+    // setjmp sits in C, between this frame and `run`.
+    bailout::trapped(unsafe { crate::sys::swr_zend_try(Some(run::<F>), (&raw mut slot).cast()) })
 }

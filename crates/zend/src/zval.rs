@@ -390,12 +390,7 @@ impl Value {
     /// borrowed.
     #[inline]
     fn counted(&self) -> Option<&Counted> {
-        // `Z_TYPE_FLAGS_P`: the byte above the type.
-        let refcounted = (self.tagged().type_info >> 8) & crate::sys::IS_TYPE_REFCOUNTED != 0;
-        // SAFETY: a counted value begins with its `zend_refcounted_h`, live while the
-        // zval that holds it is borrowed; its two `u32`s are `Cell`s, which allow
-        // the writes Zend makes meanwhile on this thread.
-        refcounted.then(|| unsafe { &*self.payload::<Counted>() })
+        self.held()
     }
 
     /// [`Value::word`] as bits.
@@ -482,17 +477,21 @@ impl Value {
         self.held()
     }
 
-    /// The counted value a zval of `T`'s kind holds, borrowed: what
-    /// `Z_STR_P` and `Z_ARRVAL_P` read.
+    /// The counted value a zval of a type `T` accepts holds, borrowed: what
+    /// `Z_COUNTED_P`, `Z_STR_P` and `Z_ARRVAL_P` read.
     #[inline]
     fn held<T: Held>(&self) -> Option<&T> {
-        if self.kind() != T::KIND {
+        let Tagged {
+            word, type_info, ..
+        } = self.tagged();
+        if !T::held_by(type_info) {
             return None;
         }
-        // SAFETY: a zval of `T`'s kind holds a pointer to a live `T` (`str`, a
-        // string, or `arr`, a table: never null), which it keeps while
-        // borrowed; `T` is that type, transparent.
-        Some(unsafe { &*self.payload::<T>() })
+        // SAFETY: a zval of a type `T` accepts holds a pointer (never null)
+        // to a live counted value that begins with `T`'s fields at their
+        // offsets (`Held`), which it keeps while borrowed; they are `Cell`s or
+        // in an `UnsafeCell`, which allow the writes Zend makes meanwhile.
+        Some(unsafe { &*word.cast::<T>() })
     }
 
     /// `Z_OBJ_P` of an object.
@@ -939,23 +938,48 @@ impl Value {
     }
 }
 
-/// A transparent view of what a zval of kind `KIND` points to: only
-/// [`ZStr`] (`IS_STRING`) and [`Array`] (`IS_ARRAY`), for [`Value::held`].
+/// A view of the counted value a zval points to, for [`Value::held`]: the
+/// leading fields, at their offsets, of whatever a zval whose `type_info`
+/// passes `held_by` points to. Only the three below.
 trait Held {
-    const KIND: u32;
+    fn held_by(type_info: u32) -> bool;
+}
+
+/// `Z_REFCOUNTED_P`: the type flags, the byte above the type, say counted.
+impl Held for Counted {
+    #[inline]
+    fn held_by(type_info: u32) -> bool {
+        (type_info >> 8) & crate::sys::IS_TYPE_REFCOUNTED != 0
+    }
 }
 
 impl Held for ZStr {
-    const KIND: u32 = IS_STRING;
+    #[inline]
+    fn held_by(type_info: u32) -> bool {
+        type_info & 0xff == IS_STRING
+    }
 }
 
 impl Held for Array {
-    const KIND: u32 = IS_ARRAY;
+    #[inline]
+    fn held_by(type_info: u32) -> bool {
+        type_info & 0xff == IS_ARRAY
+    }
 }
 
-/// A borrowed hash table (`zend_array`).
+/// A borrowed hash table (`zend_array`), word by word, each a `Cell`, which
+/// allows the writes Zend makes through pointers on this thread. Its first
+/// two words are its counted header ([`REFCOUNT`], [`TYPE_INFO`]); this crate
+/// reads and writes no others.
 #[repr(transparent)]
-pub struct Array(UnsafeCell<HashTable>);
+pub struct Array([Cell<u32>; size_of::<HashTable>() / 4]);
+
+const _: () = assert!(
+    size_of::<HashTable>().is_multiple_of(4)
+        && align_of::<HashTable>() >= align_of::<Array>()
+        && std::mem::offset_of!(HashTable, gc) == 0,
+    "Array is a HashTable, its counted header first"
+);
 
 /// The `zend_refcounted_h` a counted value begins with: its refcount
 /// ([`REFCOUNT`]), then `type_info` ([`TYPE_INFO`]), which Zend reads and
@@ -963,32 +987,6 @@ pub struct Array(UnsafeCell<HashTable>);
 type Counted = [Cell<u32>; 2];
 const REFCOUNT: usize = 0;
 const TYPE_INFO: usize = 1;
-
-/// The header of a `HashTable`, which begins with one, for as long as the
-/// table is borrowed.
-#[inline]
-fn header(table: &Array) -> &Counted {
-    // SAFETY: the borrow keeps the table live, its first eight bytes are the
-    // header's two `u32`s, and `Cell` is a transparent `u32` that, like the
-    // `UnsafeCell` it sits in, allows the writes Zend makes meanwhile.
-    unsafe { &*table.0.get().cast::<Counted>() }
-}
-
-/// A `zend_string` up to its bytes: the counted header, the cached hash and
-/// the length, which Zend reads and writes through pointers on this thread.
-#[repr(C)]
-struct StrHead {
-    counted: Counted,
-    hash: Cell<zend_ulong>,
-    len: Cell<usize>,
-}
-
-const _: () = assert!(
-    std::mem::offset_of!(StrHead, hash) == std::mem::offset_of!(zend_string, h)
-        && std::mem::offset_of!(StrHead, len) == std::mem::offset_of!(zend_string, len)
-        && size_of::<StrHead>() <= size_of::<zend_string>(),
-    "StrHead is a zend_string's header, hash and length"
-);
 
 /// An array key: `ZEND_HASH_FOREACH_KEY`'s string or integer.
 #[derive(Clone, Copy)]
@@ -1001,7 +999,7 @@ impl Array {
     #[must_use]
     #[inline]
     pub fn as_ptr(&self) -> *mut HashTable {
-        self.0.get()
+        ptr::from_ref(self).cast_mut().cast()
     }
 
     /// `zend_array_count`.
@@ -1102,7 +1100,7 @@ impl Drop for HeldArray {
     #[inline]
     fn drop(&mut self) {
         let Some(array) = self.0.array() else { return };
-        let header = header(array);
+        let header = &array.0;
         let refcount = header[REFCOUNT].get();
         let immutable = header[TYPE_INFO].get() & crate::sys::IS_ARRAY_IMMUTABLE != 0;
         if !immutable && refcount == 1 {
@@ -1159,9 +1157,25 @@ impl<'a> Iterator for Entries<'a> {
     }
 }
 
-/// A borrowed `zend_string`.
-#[repr(transparent)]
-pub struct ZStr(UnsafeCell<zend_string>);
+/// A borrowed `zend_string`: the counted header, the cached hash and the
+/// length, which Zend reads and writes through pointers on this thread, then
+/// the bytes and the NUL after them, which run on past the struct.
+#[repr(C)]
+pub struct ZStr {
+    counted: Counted,
+    hash: Cell<zend_ulong>,
+    len: Cell<usize>,
+    val: UnsafeCell<[u8; size_of::<zend_string>() - std::mem::offset_of!(zend_string, val)]>,
+}
+
+const _: () = assert!(
+    std::mem::offset_of!(ZStr, hash) == std::mem::offset_of!(zend_string, h)
+        && std::mem::offset_of!(ZStr, len) == std::mem::offset_of!(zend_string, len)
+        && std::mem::offset_of!(ZStr, val) == std::mem::offset_of!(zend_string, val)
+        && size_of::<ZStr>() == size_of::<zend_string>()
+        && align_of::<ZStr>() == align_of::<zend_string>(),
+    "ZStr is a zend_string"
+);
 
 impl ZStr {
     /// Borrow the string at `string`, or None for null.
@@ -1177,16 +1191,7 @@ impl ZStr {
     #[must_use]
     #[inline]
     pub fn as_ptr(&self) -> *mut zend_string {
-        self.0.get()
-    }
-
-    /// The header before the bytes, for as long as the string is borrowed.
-    #[inline]
-    fn head(&self) -> &StrHead {
-        // SAFETY: the borrow keeps the string live, and it begins with
-        // `StrHead`'s fields at their offsets; `Cell`s, like the `UnsafeCell`
-        // they sit in, allow the writes Zend makes meanwhile.
-        unsafe { &*self.0.get().cast::<StrHead>() }
+        ptr::from_ref(self).cast_mut().cast()
     }
 
     /// `ZSTR_VAL`/`ZSTR_LEN`: the bytes, without the NUL that follows them.
@@ -1206,7 +1211,7 @@ impl ZStr {
     /// `ZSTR_VAL` for `ZSTR_LEN` bytes, and the NUL after them when `NUL`.
     #[inline]
     fn val<const NUL: bool>(&self) -> &[u8] {
-        let length = self.head().len.get() + usize::from(NUL);
+        let length = self.len.get() + usize::from(NUL);
         // SAFETY: a live string holds `len` bytes at `val` and a NUL after
         // them, which it keeps while borrowed.
         unsafe { std::slice::from_raw_parts(crate::string::val(self.as_ptr()), length) }
@@ -1226,7 +1231,7 @@ impl ZStr {
     pub fn to_owned(&self) -> ZString {
         if !self.interned() {
             // A live, counted string; the new reference is the `ZString`'s.
-            let refcount = &self.head().counted[REFCOUNT];
+            let refcount = &self.counted[REFCOUNT];
             refcount.set(refcount.get() + 1);
         }
         ZString(self.as_ptr())
@@ -1236,7 +1241,7 @@ impl ZStr {
     #[must_use]
     #[inline]
     pub fn interned(&self) -> bool {
-        self.head().counted[TYPE_INFO].get() & IS_STR_INTERNED != 0
+        self.counted[TYPE_INFO].get() & IS_STR_INTERNED != 0
     }
 
     /// `zendi_smart_strcmp`: PHP's `==` order of two strings, numeric when
@@ -1612,15 +1617,6 @@ impl Default for OwnedArray {
 pub struct ArrayMut(Owned);
 
 impl ArrayMut {
-    /// # Safety
-    /// `value` is a live array zval that nothing else borrows or frees for `'a`.
-    #[must_use]
-    #[inline]
-    pub unsafe fn from_ptr<'a>(value: *mut zval) -> &'a mut Self {
-        // SAFETY: per the caller; `ArrayMut` is a transparent zval.
-        unsafe { &mut *value.cast::<Self>() }
-    }
-
     /// `SEPARATE_ARRAY`: the zval, holding an array of its own, to write, or
     /// None once a bailout is pending (nothing is written then, because
     /// upstream never ran past it) or when PHP code has since put something
@@ -1633,7 +1629,7 @@ impl ArrayMut {
         }
         // `GC_REFCOUNT(arr) > 1` is the only case SEPARATE_ARRAY acts on (an
         // immutable array counts 2), so an unshared one skips the call.
-        if header(self.0.array()?)[REFCOUNT].get() > 1 {
+        if self.0.array()?.0[REFCOUNT].get() > 1 {
             swr_zend_separate_array(self);
         }
         Some(Separated(self))

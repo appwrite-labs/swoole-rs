@@ -129,15 +129,6 @@ impl<'a> ObjectRef<'a> {
         }
     }
 
-    /// The object at `std`, or None for null.
-    /// # Safety
-    /// `std` is null or a live object that outlives `'a`.
-    #[must_use]
-    #[inline]
-    pub unsafe fn from_ptr(std: *mut zend_object) -> Option<Self> {
-        (!std.is_null()).then_some(Self(std, PhantomData))
-    }
-
     /// `T`'s data in the object, when it is one of `T`'s objects: made by
     /// [`create`] or [`new_object`], whose handlers are `T`'s class's.
     #[must_use]

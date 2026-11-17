@@ -2,14 +2,14 @@
 //! fds are polled by `System::socket_poll`, which yields; streams with
 //! buffered reads answer at once, as PHP's own `stream_select` does.
 use crate::socket::{Report, convert_to_fd, coroutine_check, report};
-use std::{collections::HashMap, ptr};
+use std::collections::HashMap;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_hooks::poll::socket_poll_rows as poll;
 use swoole_rs_zend::{
     ArrayMut, Call, CallFrame, E_WARNING, Owned, Value, ZStr, ZString,
     bailout::Bailout,
-    sys::{zend_long, zend_ulong, zval},
+    sys::{zend_long, zend_ulong},
 };
 
 unsafe extern "C" {
@@ -20,13 +20,14 @@ unsafe extern "C" {
     safe fn swr_zend_stream_zval_buffered(value: &Value) -> bool;
     /// `stream_select`'s `ZEND_PARSE_PARAMETERS` block over the call's frame
     /// (Zend reports a failure): 1 if the arguments parsed, each output then
-    /// written, the arrays as null or a by-reference argument's array zval. A
-    /// coercion's deprecation runs the error handler, which may bail out.
-    safe fn swr_zend_runtime_select_args(
-        frame: CallFrame<'_>,
-        read: &mut *mut zval,
-        write: &mut *mut zval,
-        except: &mut *mut zval,
+    /// written, the arrays as null (`None`) or the array zval a by-reference
+    /// argument refers to, separated, which the frame's reference keeps for the
+    /// call. A coercion's deprecation runs the error handler, which may bail out.
+    safe fn swr_zend_runtime_select_args<'a>(
+        frame: CallFrame<'a>,
+        read: &mut Option<&'a Value>,
+        write: &mut Option<&'a Value>,
+        except: &mut Option<&'a Value>,
         seconds: &mut zend_long,
         seconds_null: &mut bool,
         micros: &mut zend_long,
@@ -63,17 +64,16 @@ impl Entry {
     }
 }
 
-/// `$read`, `$write` and `$except` as parsing left them: null, or an array
-/// zval of the frame, dereferenced and separated. One is borrowed at a time,
-/// as the same array may be passed twice by reference.
-struct Arrays([*mut zval; 3]);
+/// `$read`, `$write` and `$except` as parsing left them: none, or the zval a
+/// by-reference argument refers to. Each array is edited lent out of its zval
+/// ([`Value::edit_array`]), as the same array may be passed twice by reference.
+struct Arrays<'a>([Option<&'a Value>; 3]);
 
-impl Arrays {
-    fn get(&mut self, which: usize) -> Option<&mut ArrayMut> {
-        let array = *self.0.get(which)?;
-        // SAFETY: a live array zval of the frame, which outlives the call;
-        // `&mut self` keeps this the only borrow of it.
-        (!array.is_null()).then(|| unsafe { ArrayMut::from_ptr(array) })
+impl Arrays<'_> {
+    /// `edit` of array `which`; None when none was passed or its variable no
+    /// longer holds an array.
+    fn edit<R>(&self, which: usize, edit: impl FnOnce(&mut ArrayMut) -> R) -> Option<R> {
+        self.0.get(which).copied().flatten()?.edit_array(edit)
     }
 }
 
@@ -141,7 +141,7 @@ fn stream_select(call: &Call) {
 
 fn select(call: &Call) -> Result<(), Bailout> {
     coroutine_check()?;
-    let (mut read, mut write, mut except) = (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
+    let (mut read, mut write, mut except) = (None, None, None);
     let (mut seconds, mut micros): (zend_long, zend_long) = (0, 0);
     let (mut seconds_null, mut micros_null) = (false, true);
     let mut parsed = 0;
@@ -184,11 +184,11 @@ fn select(call: &Call) -> Result<(), Bailout> {
         }
     }
 
-    let mut arrays = Arrays([read, write, except]);
+    let arrays = Arrays([read, write, except]);
     let mut rows = Vec::new();
     let mut found = HashMap::new();
     for (which, event) in EVENTS.into_iter().enumerate() {
-        if let Some(array) = arrays.get(which).map(|array| array.copy()) {
+        if let Some(array) = arrays.edit(which, |array| array.copy()) {
             to_fd_set(&array, event, &mut rows, &mut found)?;
         }
     }
@@ -200,12 +200,14 @@ fn select(call: &Call) -> Result<(), Bailout> {
 
     // slight hack to support buffered data: if streams in the read array
     // have buffered reads, answer with only those
-    let ready = arrays.get(0).map_or(0, emulate_read);
+    let ready = arrays.edit(0, emulate_read).unwrap_or(0);
     // `$read` holds only its ready streams then; the others are emptied.
     for which in usize::from(ready > 0)..EVENTS.len() {
-        if let Some(array) = arrays.get(which).and_then(ArrayMut::separate) {
-            array.clear();
-        }
+        arrays.edit(which, |array| {
+            if let Some(array) = array.separate() {
+                array.clear();
+            }
+        });
     }
     if ready > 0 {
         call.set_long(zend_long::try_from(ready).unwrap_or(zend_long::MAX));
@@ -226,10 +228,8 @@ fn select(call: &Call) -> Result<(), Bailout> {
             continue;
         };
         for (which, event) in EVENTS.into_iter().enumerate() {
-            if revents.intersects(event)
-                && let Some(array) = arrays.get(which)
-            {
-                entry.add_to(array);
+            if revents.intersects(event) {
+                arrays.edit(which, |array| entry.add_to(array));
             }
         }
         ready += 1;

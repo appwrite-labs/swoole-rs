@@ -63,8 +63,8 @@ pub use crate::sys::swr_zend_string_free as free;
 pub use crate::sys::swr_zend_string_realloc as realloc;
 
 /// A new, unshared `zend_string` (`zend_string_alloc`) being filled, like a
-/// `Vec<u8>`: something writes at `as_mut_ptr() + len()`, `set_len` counts
-/// what it wrote, and `into_zstring` ends the string there. Dropped first, it
+/// `Vec<u8>`: `fill` writes past `len()` and counts what it wrote, and
+/// `into_zstring` ends the string there. Dropped first, it
 /// is freed. It is no `ZStr`: the bytes past `len` are uninitialised.
 pub struct ZBuf {
     string: *mut zend_string,
@@ -124,25 +124,17 @@ impl ZBuf {
     }
 
     /// The room past the written bytes, as `Vec::spare_capacity_mut`: what a
-    /// reader fills before [`ZBuf::set_len`] counts it.
+    /// reader fills before [`ZBuf::fill`] counts it.
     #[must_use]
     #[inline]
     pub fn spare_capacity_mut(&mut self) -> &mut [std::mem::MaybeUninit<u8>] {
         let (len, room) = (self.len, self.capacity - self.len);
         let at = self.as_mut_ptr().wrapping_add(len).cast();
         // SAFETY: the string's own allocation holds `capacity` bytes from its
-        // first, `len <= capacity` of them written (`set_len`'s contract), so
-        // `room` bytes follow `at`; the exclusive borrow is the only way to
-        // them, and unwritten bytes are valid `MaybeUninit`s.
+        // first, `len <= capacity` of them written (every count is of room
+        // written), so `room` bytes follow `at`; the exclusive borrow is the
+        // only way to them, and unwritten bytes are valid `MaybeUninit`s.
         unsafe { std::slice::from_raw_parts_mut(at, room) }
-    }
-
-    /// Count the first `len` bytes as written.
-    /// # Safety
-    /// `len <= capacity()` and the first `len` bytes are written.
-    #[inline]
-    pub unsafe fn set_len(&mut self, len: usize) {
-        self.len = len;
     }
 
     /// Appends what `fill` writes into the room past the written bytes: what it
