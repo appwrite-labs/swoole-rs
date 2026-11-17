@@ -104,14 +104,13 @@ impl DgramPacket {
             let ip = self.socket_addr.addr.v4().sin_addr.s_addr;
             return c_long::from(ip.cast_signed());
         }
-        let host = swoole_rs_clients::address::host_in_scratch(&self.socket_addr);
+        // Upstream hashes as many bytes of the text as the address is long.
         let length = self.socket_addr.len as usize;
-        if host.is_null() || length == 0 {
-            return 0;
+        let text = swoole_rs_clients::address::host_bytes(&self.socket_addr, length);
+        match text.as_ref().and_then(|text| text.get(..length)) {
+            Some(text) if length > 0 => c_long::from(swoole_rs_crc32::crc32(text)),
+            _ => 0,
         }
-        // SAFETY: upstream hashes as many bytes of the text as the address is long.
-        let text = unsafe { std::slice::from_raw_parts(host.cast::<u8>(), length) };
-        c_long::from(swoole_rs_crc32::crc32(text))
     }
 }
 
