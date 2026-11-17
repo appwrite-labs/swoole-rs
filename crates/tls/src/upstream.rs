@@ -376,7 +376,11 @@ fn tls_peek<S: ReadSlot>(socket: Socket<'_>, mut buffer: Fill<'_, S>) -> Option<
 /// `ssize_t Socket::recv(void *, size_t, int)` into the bytes `buffer` lends: a slice's
 /// ([`recv`]), or the address and length C handed its holder.
 #[must_use]
-pub fn recv_fill(socket: Socket<'_>, mut buffer: Fill<'_>, flags: c_int) -> Option<usize> {
+pub fn recv_fill<S: ReadSlot>(
+    socket: Socket<'_>,
+    mut buffer: Fill<'_, S>,
+    flags: c_int,
+) -> Option<usize> {
     buffer.spare(|spare| recv_spare(socket, spare, flags))
 }
 

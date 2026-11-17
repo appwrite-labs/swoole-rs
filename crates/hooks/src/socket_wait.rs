@@ -132,22 +132,22 @@ impl Wait {
     }
 }
 
-/// A write's buffer slot: the caller's bytes, and where the write sends them from. A
-/// wait may move them to the socket's write buffer and point the slot there.
+/// A write's buffer slot: the caller's bytes, and whether the write sends them from
+/// the socket's write buffer instead, where a wait may move them.
 pub(crate) struct WriteSlot<'a> {
-    at: &'a mut *mut u8,
+    moved: &'a mut bool,
     written: &'a [u8],
 }
 
 impl<'a> WriteSlot<'a> {
-    /// The write of `written`, which `*at` sends from until a wait moves them.
-    pub(crate) fn new(at: &'a mut *mut u8, written: &'a [u8]) -> Self {
-        Self { at, written }
+    /// The write of `written`, sent from the write buffer once `*moved`.
+    pub(crate) fn new(moved: &'a mut bool, written: &'a [u8]) -> Self {
+        Self { moved, written }
     }
 
-    /// Where the bytes are now.
-    pub(crate) fn bytes(&self) -> *mut u8 {
-        *self.at
+    /// Whether the bytes are in the write buffer already.
+    pub(crate) fn moved(&self) -> bool {
+        *self.moved
     }
 
     /// The caller's bytes, which a move copies.
@@ -159,9 +159,9 @@ impl<'a> WriteSlot<'a> {
         self.written.len()
     }
 
-    /// The bytes moved to `bytes`, still `length` of them and live as long.
-    pub(crate) fn moved_to(&mut self, bytes: *mut u8) {
-        *self.at = bytes;
+    /// The bytes copied to the write buffer, all `length` of them.
+    pub(crate) fn moved_to_write_buffer(&mut self) {
+        *self.moved = true;
     }
 }
 
@@ -319,9 +319,13 @@ mod tests {
         if let Some(barrier) = barrier {
             return wait_barrier(socket.co(), event, barrier);
         }
-        let mut slot = core::ptr::null_mut();
+        let mut moved = false;
         // The test host's `buffer` only logs the length.
-        wait(socket.co(), event, Some(WriteSlot::new(&mut slot, &[0; 4])))
+        wait(
+            socket.co(),
+            event,
+            Some(WriteSlot::new(&mut moved, &[0; 4])),
+        )
     }
 
     fn effects() -> Vec<String> {

@@ -176,10 +176,11 @@ mod native {
             return;
         }
         socket.with_buffer(true, |string| {
-            if slot.bytes() != string.as_mut_ptr() {
+            // Bytes already in the write buffer, the caller's or moved, stay there.
+            if !slot.moved() && slot.written().as_ptr() != string.as_ptr() {
                 string.clear();
                 string.append(slot.written());
-                slot.moved_to(string.as_mut_ptr());
+                slot.moved_to_write_buffer();
             }
         });
     }
