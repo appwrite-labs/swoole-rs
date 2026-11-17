@@ -206,45 +206,14 @@ impl TaskCo {
     }
 }
 
-/// One server's pending tasks.
+/// One server's pending tasks, held on its object beside its `Property`, as
+/// upstream's `ServerProperty` holds them.
 #[derive(Default)]
-struct Pending {
+pub(crate) struct Pending {
     /// Never freed with the table: a thread exits after Zend shut down.
     callbacks: HashMap<i64, ManuallyDrop<Callable>>,
     /// The waiting call owns each.
     coroutines: HashMap<i64, Weak<TaskCo>>,
-}
-
-thread_local! {
-    /// Per Server (by address), as upstream's `ServerProperty` is per object.
-    /// Boxed, so a take moves a pointer and leaves `None`; taken out and put
-    /// back around each access, which runs no PHP code.
-    static PENDING: Cell<Option<Box<Servers>>> = const { Cell::new(None) };
-}
-
-/// Each server's pending tasks, by its address.
-type Servers<P = Pending> = HashMap<usize, P>;
-
-fn pending<R>(server: view::Server<'_>, f: impl FnOnce(&mut Pending) -> R) -> R {
-    pending_at(server.raw() as usize, f)
-}
-
-/// The pending table of the server at `key` (its address).
-fn pending_at<R>(key: usize, f: impl FnOnce(&mut Pending) -> R) -> R {
-    PENDING.with(|cell| pending_in(cell, key, f))
-}
-
-fn pending_in<P: Default, R>(
-    cell: &Cell<Option<Box<Servers<P>>>>,
-    key: usize,
-    f: impl FnOnce(&mut P) -> R,
-) -> R {
-    let mut all = cell.take().unwrap_or_default();
-    let result = f(all.entry(key).or_default());
-    if let Some(nested) = cell.replace(Some(all)) {
-        drop(nested);
-    }
-    result
 }
 
 fn facts(server: view::Server<'_>) -> Facts {
@@ -458,7 +427,7 @@ fn task(call: &Call) {
             return call.set_bool(false);
         };
         // A replaced callable is freed once the table is no longer borrowed.
-        let old = pending(serv, |p| p.callbacks.insert(id, ManuallyDrop::new(cb)));
+        let old = crate::lifecycle::with_tasks(|p| p.callbacks.insert(id, ManuallyDrop::new(cb)));
         drop(old.map(ManuallyDrop::into_inner));
     }
     flag(&mut buf, NONBLOCK);
@@ -519,10 +488,10 @@ fn taskwait(call: &Call) {
     if !dispatch(serv, &mut buf, dst) {
         return call.set_bool(false);
     }
-    pending(serv, |p| p.coroutines.insert(id, Rc::downgrade(&task_co)));
+    crate::lifecycle::with_tasks(|p| p.coroutines.insert(id, Rc::downgrade(&task_co)));
     // onFinish resumes it.
     let done = task_co.waiter.wait_for(timeout);
-    pending(serv, |p| p.coroutines.remove(&id));
+    crate::lifecycle::with_tasks(|p| p.coroutines.remove(&id));
     if done {
         call.set_owned(task_co.result.take());
     } else {
@@ -621,7 +590,7 @@ fn task_co(call: &Call, fill_false: bool) {
             None
         };
         if let Some(id) = id {
-            pending(serv, |p| p.coroutines.insert(id, Rc::downgrade(&task_co)));
+            crate::lifecycle::with_tasks(|p| p.coroutines.insert(id, Rc::downgrade(&task_co)));
         } else {
             task_co.with_result(|result| {
                 if let Some(array) = result.array_mut() {
@@ -650,7 +619,7 @@ fn task_co(call: &Call, fill_false: bool) {
                         array.update_index(j as u64, Owned::bool(false));
                     }
                     if let Some(&Some(id)) = list.get(j) {
-                        pending(serv, |p| p.coroutines.remove(&id));
+                        crate::lifecycle::with_tasks(|p| p.coroutines.remove(&id));
                     }
                 }
             }
@@ -767,14 +736,13 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<bo
         return Ok(false);
     };
     if flags.contains(COROUTINE) {
-        return resume(server, id, data).map(|()| true);
+        return resume(id, data).map(|()| true);
     }
     let mut callback = flags.contains(CALLBACK);
     let cb = if callback {
         // Its own reference: the callback may replace the pending entry.
-        let cb = pending(server, |p| {
-            p.callbacks.get(&id).map(|cb| Callable::clone(cb))
-        });
+        let cb =
+            crate::lifecycle::with_tasks(|p| p.callbacks.get(&id).map(|cb| Callable::clone(cb)));
         callback = cb.is_some();
         cb
     } else {
@@ -806,7 +774,9 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<bo
     };
     if callback {
         // Freed once the table is no longer borrowed.
-        drop(pending(server, |p| p.callbacks.remove(&id)).map(ManuallyDrop::into_inner));
+        drop(
+            crate::lifecycle::with_tasks(|p| p.callbacks.remove(&id)).map(ManuallyDrop::into_inner),
+        );
     }
     drop(args);
     outcome.map(|()| true)
@@ -814,8 +784,10 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<bo
 
 /// A coroutine task's result: into `taskwait`'s return value, or at its index
 /// in `taskCo`'s array; the waiting coroutine resumes once all arrived.
-fn resume(server: view::Server<'_>, id: i64, data: Owned) -> Result<(), Bailout> {
-    let Some(task_co) = pending(server, |p| p.coroutines.get(&id).and_then(Weak::upgrade)) else {
+fn resume(id: i64, data: Owned) -> Result<(), Bailout> {
+    let Some(task_co) =
+        crate::lifecycle::with_tasks(|p| p.coroutines.get(&id).and_then(Weak::upgrade))
+    else {
         log::error_log(
             SW_LOG_WARNING,
             SW_ERROR_TASK_TIMEOUT,
@@ -844,38 +816,10 @@ fn resume(server: view::Server<'_>, id: i64, data: Owned) -> Result<(), Bailout>
             None => (0, Some(data)),
         });
         drop(unplaced);
-        pending(server, |p| p.coroutines.remove(&id));
+        crate::lifecycle::with_tasks(|p| p.coroutines.remove(&id));
         if arrived != task_co.count.get() {
             return Ok(());
         }
     }
     task_co.waiter.wake()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pending_tasks_are_per_server() {
-        #[derive(Default)]
-        struct TestPending {
-            callbacks: HashMap<i64, ManuallyDrop<std::rc::Rc<()>>>,
-        }
-        let (a, b) = (0x1000, 0x2000);
-        let cell: Cell<Option<Box<Servers<TestPending>>>> = Cell::new(None);
-        let callable = std::rc::Rc::new(());
-        let callable = ManuallyDrop::new(callable);
-        let raw = std::rc::Rc::as_ptr(&callable);
-        pending_in(&cell, a, |p| p.callbacks.insert(7, callable));
-        assert_eq!(
-            pending_in(&cell, b, |p| p
-                .callbacks
-                .get(&7)
-                .map(|c| std::rc::Rc::as_ptr(c))),
-            None
-        );
-        let removed = pending_in(&cell, a, |p| p.callbacks.remove(&7));
-        assert_eq!(removed.map(|c| std::rc::Rc::as_ptr(&c)), Some(raw));
-    }
 }

@@ -249,6 +249,8 @@ pub(crate) struct Property {
     /// the workers it adds in order and refuses every add once it is created,
     /// so a failed add's copy comes after all of theirs.
     user_processes: Vec<Owned>,
+    /// Pending tasks' callbacks and waiting coroutines.
+    tasks: crate::task::Pending,
 }
 
 impl Default for Property {
@@ -261,6 +263,7 @@ impl Default for Property {
             ports: const { Vec::new() },
             commands: const { Vec::new() },
             user_processes: const { Vec::new() },
+            tasks: crate::task::Pending::default(),
         }
     }
 }
@@ -1443,6 +1446,21 @@ pub fn php_swoole_server_send_yield(
         }
         return Ok(sent);
     }
+}
+
+/// `f` over the running server's pending tasks, which runs no PHP code; over an
+/// empty table when no Server object runs, where none can be pending.
+pub(crate) fn with_tasks<R>(f: impl FnOnce(&mut crate::task::Pending) -> R) -> R {
+    let Some(object) = ServerObject::running() else {
+        return f(&mut crate::task::Pending::default());
+    };
+    let result = match ServerObject::of(&object) {
+        Some(server) => server.property(|p| f(&mut p.tasks)),
+        None => f(&mut crate::task::Pending::default()),
+    };
+    // `f` only updates Rust data: no PHP code dropped the reference the lookup took.
+    object.delref();
+    result
 }
 
 /// Take the session's waiting coroutines out of the running server to wake
