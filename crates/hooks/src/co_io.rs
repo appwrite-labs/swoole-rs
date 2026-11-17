@@ -449,7 +449,7 @@ impl Co {
     /// `is_connected()`.
     #[must_use]
     pub fn is_connected(self) -> bool {
-        !self.is_closed() && self.with_state(|state| state.flags.connected)
+        !self.is_closed() && self.with_state(|state| state.flags.get().connected)
     }
 }
 
@@ -509,14 +509,14 @@ impl Timer {
         let write = self.write;
         self.socket.with_state(|state| {
             let [read, written] = &state.timers;
-            *if write { written } else { read }
+            if write { written } else { read }.get()
         })
     }
 
     fn set_slot(&self, timer: WaitTimer) {
         self.socket.with_state(|state| {
-            let [read, write] = &mut state.timers;
-            *if self.write { write } else { read } = timer;
+            let [read, write] = &state.timers;
+            if self.write { write } else { read }.set(timer);
         });
     }
 
@@ -556,12 +556,11 @@ impl Timer {
 pub(crate) fn timer_fired(socket: Co, event: Events) {
     set_err(socket, libc::ETIMEDOUT);
     socket.with_state(|state| {
-        let [read, write] = &mut state.timers;
+        let [read, write] = &state.timers;
         let slot = if event == Events::READ { read } else { write };
-        if *slot == WaitTimer::None {
+        if slot.replace(WaitTimer::None) == WaitTimer::None {
             swoole_rs_corebase::fatal("a timeout fired with no timer armed");
         }
-        *slot = WaitTimer::None;
     });
     resume_bound(socket, event);
 }
@@ -761,7 +760,7 @@ mod tests {
     use swoole_rs_corebase::CCast;
 
     fn slot_state(socket: &TestSocket) -> usize {
-        match socket.with_state(|state| state.timers[0]) {
+        match socket.with_state(|state| state.timers[0].get()) {
             WaitTimer::None => 0,
             WaitTimer::Armed(_) => 1,
             WaitTimer::Unbounded => 2,
@@ -785,7 +784,7 @@ mod tests {
                 WaitTimer::Armed(Held::detached(2)),
                 WaitTimer::Unbounded,
             ][start_state];
-            socket.with_state(|state| state.timers[0] = preset);
+            socket.with_state(|state| state.timers[0].set(preset));
             TIMER_OK.set(timer_ok);
             take();
             // Upstream: start() adds only into an empty slot for a nonzero timeout.
@@ -821,7 +820,7 @@ mod tests {
             timer.stop();
             assert_eq!(take(), expected, "scenario {}", k + 931);
             assert_eq!(slot_state(&socket), node, "scenario {}", k + 931);
-            socket.with_state(|state| state.timers[0] = WaitTimer::None);
+            socket.with_state(|state| state.timers[0].set(WaitTimer::None));
         }
     }
 
@@ -835,10 +834,10 @@ mod tests {
         bind(&socket, 3, &mut ids);
         let node = WaitTimer::Armed(Held::detached(1));
         for (slot, event, cid) in [(1, Events::WRITE, 4), (0, Events::READ, 3)] {
-            socket.with_state(|state| state.timers[slot] = node);
+            socket.with_state(|state| state.timers[slot].set(node));
             timer_fired(socket.co(), event);
             assert_eq!(
-                socket.with_state(|state| state.timers[slot]),
+                socket.with_state(|state| state.timers[slot].get()),
                 WaitTimer::None
             );
             assert_eq!(socket.co().err_code(), libc::ETIMEDOUT);

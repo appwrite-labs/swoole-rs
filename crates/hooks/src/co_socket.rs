@@ -146,7 +146,7 @@ pub struct Co(*mut CoSocket);
 /// What a record's `state` points to: the bound state, which [`Co::with_state`] takes
 /// out while it runs, and which parts a [`Co`] `with_*` call has lent out.
 pub struct Bound {
-    state: Cell<Option<Box<SocketState>>>,
+    state: SocketState,
     lent: Cell<u8>,
     #[cfg(any(test, feature = "iouring"))]
     tls_buffers: [Cell<Option<TlsBuffer>>; 2],
@@ -156,7 +156,7 @@ impl Bound {
     /// A new record's: nothing bound, nothing lent. `fini` frees it.
     fn new() -> Self {
         Self {
-            state: Cell::new(Some(Box::new(SocketState::new()))),
+            state: SocketState::new(),
             lent: Cell::new(0),
             #[cfg(any(test, feature = "iouring"))]
             tls_buffers: [const { Cell::new(None) }; 2],
@@ -549,23 +549,11 @@ impl Co {
         Some(result)
     }
 
-    /// The bound coroutines, retries and timers, which the record gives up while `f`
-    /// runs and takes back after.
-    /// # Panics
-    /// Inside another `with_state` over the same record.
+    /// The bound coroutines, retries and timers: cells, which `f` reads and sets.
     #[inline]
     #[track_caller]
-    pub fn with_state<T>(self, f: impl FnOnce(&mut SocketState) -> T) -> T {
-        // Only a loan empties the slot, so an empty one is an overlapping loan.
-        let mut taken = Taken::new(&self.record().bound().state);
-        assert!(
-            taken.0.is_some(),
-            "a coroutine socket's borrow overlaps another of the same part"
-        );
-        let Some(state) = taken.0.as_mut() else {
-            swoole_rs_corebase::fatal("a coroutine socket without its state")
-        };
-        f(state)
+    pub fn with_state<T>(self, f: impl FnOnce(&SocketState) -> T) -> T {
+        f(&self.record().bound().state)
     }
 
     /// `errno` classified by the open socket, as `catch_read_error`/`catch_write_error`
@@ -1080,7 +1068,7 @@ pub(crate) fn accepted(server: Co, mut conn: Box<SocketRecord>) -> OwnedCo {
     socket.protocol.set(server.protocol());
     socket.ssl_is_server.set(server.ssl_is_server());
     swr_v1_hook_co_socket_created(owner, result);
-    owner.with_state(|state| state.flags.connected = true);
+    owner.with_state(|state| state.update_flags(|flags| flags.connected = true));
     owned
 }
 
@@ -1214,7 +1202,7 @@ mod test_support {
         }
 
         /// [`Co::with_state`] of the record.
-        pub(crate) fn with_state<T>(&self, f: impl FnOnce(&mut SocketState) -> T) -> T {
+        pub(crate) fn with_state<T>(&self, f: impl FnOnce(&SocketState) -> T) -> T {
             unsafe { Co::new((&raw const *self.0).cast_mut()) }.with_state(f)
         }
     }
@@ -1506,7 +1494,7 @@ mod tests {
         assert_eq!((record.fd_type, record.socket_type), (6, 1));
         assert!((record.timeouts.read - 1.5).abs() < f64::EPSILON);
         let co = unsafe { Co::new((&raw const *socket).cast_mut()) };
-        assert!(co.with_state(|state| state.flags.connected));
+        assert!(co.with_state(|state| state.flags.get().connected));
         release(socket);
         release(server);
     }
@@ -1539,15 +1527,19 @@ mod tests {
         assert_eq!(swoole_rs_corebase::log::last_error(), 0);
     }
 
-    /// `Co` is `Copy`, so safe code can nest two borrows of one part of a record; the
-    /// inner one panics instead of aliasing the outer `&mut` (#3178).
+    /// `Co` is `Copy`, so safe code can nest two borrows of the state (#3178): both are
+    /// shared borrows of its cells, so the outer one sees what the inner one set.
     #[test]
-    #[should_panic(expected = "overlaps")]
-    fn nested_state_borrow_panics() {
+    fn nested_state_borrows_share_cells() {
         let mut socket = TestSocket::new();
         let co = socket.co();
         co.with_state(|outer| {
-            co.with_state(|inner| inner.want = Events::from_bits(outer.want.bits() + 1));
+            co.with_state(|inner| {
+                inner
+                    .want
+                    .set(Events::from_bits(outer.want.get().bits() + 1));
+            });
+            assert_eq!(outer.want.get(), Events::from_bits(1));
         });
     }
 
@@ -1661,8 +1653,11 @@ mod tests {
                 co.with_buffer(true, |write| read.size() + write.size())
             });
             co.with_extra(|extra| extra.proxies.each_ref().map(Option::is_some));
-            state.want = Events::from_bits(1);
+            state.want.set(Events::from_bits(1));
         });
-        assert_eq!(co.with_state(|state| state.want), Events::from_bits(1));
+        assert_eq!(
+            co.with_state(|state| state.want.get()),
+            Events::from_bits(1)
+        );
     }
 }

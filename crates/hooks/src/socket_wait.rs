@@ -60,11 +60,11 @@ impl Wait {
     }
 
     fn want(&self) -> Events {
-        self.0.with_state(|state| state.want)
+        self.0.with_state(|state| state.want.get())
     }
 
     fn set_want(&self, event: Events) {
-        self.0.with_state(|state| state.want = event);
+        self.0.with_state(|state| state.want.set(event));
     }
 
     /// Sets the direction's retry, returning the one it replaces.
@@ -72,8 +72,8 @@ impl Wait {
         self.0.with_state(|state| {
             state
                 .retries
-                .get_mut(slot(event))
-                .map_or(Retry::None, |slot| core::mem::replace(slot, retry))
+                .get(slot(event))
+                .map_or(Retry::None, |slot| slot.replace(retry))
         })
     }
 
@@ -231,11 +231,14 @@ pub(crate) fn ready(socket: Co, event: Events, hup: bool) -> Option<Events> {
         Events::READ
     };
     socket.with_state(|state| {
-        if !state.want.is_empty() {
-            return (state.want == event).then_some(other);
+        let want = state.want.get();
+        if !want.is_empty() {
+            return (want == event).then_some(other);
         }
-        if let Some(retry @ Retry::Waiting) = state.retries.get_mut(slot(event)) {
-            *retry = Retry::Ready { hup };
+        if let Some(retry) = state.retries.get(slot(event))
+            && retry.get() == Retry::Waiting
+        {
+            retry.set(Retry::Ready { hup });
         }
         Some(event)
     })
@@ -413,7 +416,7 @@ mod tests {
             effects(),
             ["set:1024", "yield:512", "woken:false", "remove:1024"]
         );
-        assert_eq!(s.with_state(|state| state.want), Events::NONE);
+        assert_eq!(s.with_state(|state| state.want.get()), Events::NONE);
     }
 
     #[test]
@@ -463,7 +466,7 @@ mod tests {
             expected.extend(want);
             expected.push("remove:512");
             assert_eq!(effects(), expected, "{wake:?}");
-            assert_eq!(s.with_state(|state| state.retries[0]), Retry::None);
+            assert_eq!(s.with_state(|state| state.retries[0].get()), Retry::None);
             s.0.err_code.set(0);
         }
     }
