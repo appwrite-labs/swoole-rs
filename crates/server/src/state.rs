@@ -448,6 +448,8 @@ impl ServerState {
         self.config_ref().running.store(running, Ordering::Release);
     }
 
+    /// The configuration's address, which tests write through.
+    #[cfg(test)]
     pub(crate) fn config(&self) -> *mut crate::config::ServerConfig {
         std::rc::Rc::as_ptr(&self.config).cast_mut()
     }
