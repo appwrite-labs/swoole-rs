@@ -195,45 +195,33 @@ extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, writable: 
     } else {
         Events::NONE
     };
-    // Taken out and put back on every path below; while out, only the reactor's
-    // registration calls run, which neither yield nor reach c-ares.
-    let mut sockets = query.sockets.take();
-    if let Some(index) = sockets.iter().position(|&(watched, _)| watched == fd) {
-        if events.is_empty() {
-            // Out of the registry, then out of the reactor and freed keeping the
-            // descriptor, which c-ares keeps: `Socket::free` defers the record to the
-            // next pass while a reactor runs, as the event being handled may hold it.
-            let (_, wrapper) = sockets.remove(index);
-            query.sockets.set(sockets);
+    if events.is_empty() {
+        let removed = query.sockets.with_taken(|sockets| {
+            let index = sockets.iter().position(|&(watched, _)| watched == fd)?;
+            Some(sockets.remove(index).1)
+        });
+        if let Some(wrapper) = removed {
+            // Release the wrapper after removal. c-ares still owns the descriptor.
             wrapper.free(true);
-            return;
+        } else {
+            log::warning(ORIGIN, format_args!("error events, fd={fd}"));
         }
-        if let Some((_, wrapper)) = sockets.get(index) {
-            // Update this registered wrapper, which lives until it is freed above.
+        return;
+    }
+    query.sockets.with_taken(|sockets| {
+        if let Some((_, wrapper)) = sockets.iter().find(|(watched, _)| *watched == fd) {
             _ = if wrapper.events().is_empty() {
                 wrapper.add(events)
             } else {
                 wrapper.set(events)
             };
+        } else {
+            let wrapper = EventSocket::adopt(Box::new(SocketRecord::with_fd(fd, FD)));
+            wrapper.socket().edit(|wrapper| wrapper.object = data);
+            _ = wrapper.add(events);
+            sockets.push((fd, wrapper));
         }
-        query.sockets.set(sockets);
-        return;
-    }
-    query.sockets.set(sockets);
-    if events.is_empty() {
-        log::warning(ORIGIN, format_args!("error events, fd={fd}"));
-        return;
-    }
-    // c-ares lends fd; the query's id becomes the wrapper's object.
-    // `make_socket(fd, SW_FD_CARES)`: the fresh record, owned by the registry until
-    // this function takes it out and frees it.
-    let wrapper = EventSocket::adopt(Box::new(SocketRecord::with_fd(fd, FD)));
-    wrapper.socket().edit(|wrapper| wrapper.object = data);
-    // Register this fresh wrapper.
-    _ = wrapper.add(events);
-    query
-        .sockets
-        .with_taken(|sockets| sockets.push((fd, wrapper)));
+    });
 }
 extern "C" fn host(data: *mut c_void, status: i32, timeouts: i32, entry: Option<Hostent<'_>>) {
     let Some(query) = registered(data) else {
