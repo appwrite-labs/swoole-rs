@@ -1082,14 +1082,14 @@ fn recv(call: &Call) {
         )
     };
     let (package, read) = if eof_check {
-        let mut frame = conn.frame.take();
-        recv_eof(call, &conn, &mut frame, &framing);
-        return conn.frame.set(frame);
+        return conn
+            .frame
+            .with_taken(|frame| recv_eof(call, &conn, frame, &framing));
     } else if length_check {
-        let mut frame = conn.frame.take();
-        let received = recv_length(call, &conn, &mut frame, &framing, length);
-        conn.frame.set(frame);
-        let Some(received) = received else {
+        let Some(received) = conn
+            .frame
+            .with_taken(|frame| recv_length(call, &conn, frame, &framing, length))
+        else {
             return;
         };
         received
