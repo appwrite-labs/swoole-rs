@@ -72,8 +72,15 @@ def prepare(composer):
     require_equal(git('rev-parse', 'HEAD').decode().strip(), MANIFEST['commit'])
     require_equal(git('diff', '--binary', 'HEAD'), b'')
     shutil.copy2(HERE / 'composer.lock', SOURCE / 'composer.lock')
-    subprocess.run([composer, 'install', '--no-dev', '--no-scripts', '--no-plugins',
-                    '--prefer-dist', '--no-interaction'], cwd=SOURCE, check=True)
+    # GitHub's zipball endpoint answers the odd 5xx, which composer doesn't retry; a rerun
+    # resumes from composer's cache. The lock pins every package, so a retry installs the same.
+    for attempt in range(3):
+        if subprocess.run([composer, 'install', '--no-dev', '--no-scripts', '--no-plugins',
+                           '--prefer-dist', '--no-interaction'], cwd=SOURCE).returncode == 0:
+            break
+        if attempt == 2:
+            raise SystemExit('composer install failed 3 times')
+        time.sleep(10 * (attempt + 1))
     archive()
 
 
