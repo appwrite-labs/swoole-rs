@@ -131,7 +131,7 @@ pub fn add<'a>(
     };
     // C++'s ReactorId (uint8_t).
     let reactor_id = if config.mode_ == Mode::Base {
-        swoole_rs_process::methods::swoole_get_worker_id().c_cast::<u8>()
+        swoole_rs_corebase::process::methods::swoole_get_worker_id().c_cast::<u8>()
     } else {
         (fd % c_int::from(config.reactor_num.get())).c_cast::<u8>()
     };

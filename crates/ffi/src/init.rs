@@ -5,7 +5,7 @@
 //! runs (`swoole_rs_corebase::native`). src/fatal.c holds what stays C.
 use std::ffi::{c_char, c_int};
 use swoole_rs_corebase::memory::members::pool;
-use swoole_rs_corebase::native::{self, LoggerOp, NativeHost};
+use swoole_rs_corebase::native::{self, NativeHost};
 use swoole_rs_corebase::{Switch, built_with};
 
 // src/fatal.c.
@@ -18,7 +18,6 @@ unsafe extern "C" {
 pub(crate) extern "C-unwind" fn swoole_init() {
     native::set_native_host(NativeHost {
         init,
-        logger: swoole_rs_process::methods::logger_op,
         signal_clear: swoole_rs_reactor::signal_upstream::swoole_signal_clear,
         timer_free: || swoole_rs_timer::swoole_timer_free(),
         event_available: || swoole_rs_reactor::event_api::swoole_event_is_available(),
@@ -45,7 +44,7 @@ pub(crate) extern "C-unwind" fn swoole_init() {
         timer_select: || swoole_rs_timer::swoole_timer_select(),
         socket_free: |socket| swoole_rs_tls::upstream::socket_free(Some(socket)),
     });
-    swoole_rs_process::methods::set_listener(|kind, host, port, backlog| {
+    swoole_rs_corebase::process::methods::set_listener(|kind, host, port, backlog| {
         let listener = swoole_rs_tls::upstream::server_socket(kind, host, port, backlog)?;
         Some(std::rc::Rc::new(listener))
     });
@@ -63,7 +62,7 @@ fn init() {
     swoole_rs_error::swoole_clear_last_error_msg();
     swoole_rs_corebase::swr_v1_core_set_stdout(Some(swoole_rs_corebase::Stream::stdout()));
     swoole_rs_corebase::set_fatal_error(Some(swr_v1_ffi_fatal_error));
-    swoole_rs_process::methods::logger_op(LoggerOp::New);
+    swoole_rs_corebase::process::methods::logger_new();
     if built_with(Switch::Debug) {
         swoole_rs_corebase::utilities::swoole_set_log_level(0);
         swoole_rs_corebase::swr_v1_core_set_trace_flags(0x7fff_ffff);
@@ -74,7 +73,7 @@ fn init() {
     }
     #[cfg(target_os = "linux")]
     if built_with(Switch::Signalfd) {
-        swoole_rs_process::signalfd::swoole_signalfd_init();
+        swoole_rs_corebase::process::signalfd::swoole_signalfd_init();
         swoole_rs_corebase::swr_v1_core_set_enable_signalfd(true);
     }
     swoole_rs_corebase::bug_report_init();

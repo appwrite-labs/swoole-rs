@@ -7,7 +7,7 @@
 
 use std::ffi::c_int;
 
-use crate::reload_task::{ReloadTask, Warn};
+use crate::process::reload_task::{ReloadTask, Warn};
 
 /// What [`Reap::start_reload`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +64,7 @@ pub fn wait_child(nonblock: bool) -> Waited {
     let mut status = 0;
     // `wait(&status)` is `waitpid(-1, &status, 0)`.
     let options = if nonblock { libc::WNOHANG } else { 0 };
-    let pid = swoole_rs_corebase::sys::waitpid(-1, Some(&mut status), options);
+    let pid = crate::sys::waitpid(-1, Some(&mut status), options);
     Waited { pid, status }
 }
 
@@ -131,7 +131,7 @@ pub fn run(host: &mut impl Reap) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reload_task::tests::{GONE, task};
+    use crate::process::reload_task::tests::{GONE, task};
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -213,7 +213,7 @@ mod tests {
     thread_local! {
         static WARNED: RefCell<Vec<c_int>> = const { RefCell::new(Vec::new()) };
     }
-    fn warn(_kind: crate::reload_task::KillWarning, pid: c_int, _id: u32) {
+    fn warn(_kind: crate::process::reload_task::KillWarning, pid: c_int, _id: u32) {
         WARNED.with(|w| w.borrow_mut().push(pid));
     }
 

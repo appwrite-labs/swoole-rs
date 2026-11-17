@@ -6,15 +6,16 @@ use crate::hybrid::hybrid;
 use crate::view::Server;
 use crate::{Mode, ServerState};
 use core::ffi::{CStr, c_int};
+use process::command::{CommandInput, ProcessTypes, Rejected, Rejection, Target, route};
 use std::collections::BTreeMap;
 use std::mem::ManuallyDrop;
 use std::sync::{Arc, MutexGuard, PoisonError};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_NOTICE};
+use swoole_rs_corebase::process;
 #[cfg(feature = "upstream-symbols")]
 use swoole_rs_corebase::{CCast, DataHead, ServerEvent};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_process::command::{CommandInput, ProcessTypes, Rejected, Rejection, Target, route};
 
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 
@@ -157,7 +158,7 @@ pub(crate) fn reply_socket<'a>(
 /// or reactor thread's pipe. Whether it went.
 pub(crate) fn send(
     serv: Server<'_>,
-    route: swoole_rs_process::command::CommandRoute,
+    route: process::command::CommandRoute,
     command_id: i32,
     request_id: i64,
     message: &[u8],
@@ -177,15 +178,10 @@ pub(crate) fn send(
         };
         head(&mut info);
         let pool = serv.event_pool_ref();
-        return swoole_rs_process::methods::push_event(
-            crate::process_pool_native(),
-            pool,
-            &info,
-            data,
-        );
+        return process::methods::push_event(crate::process_pool_native(), pool, &info, data);
     }
     if route.target == Target::TaskWorker {
-        let mut buf = swoole_rs_process::task_file::TaskBuffer::default();
+        let mut buf = process::task_file::TaskBuffer::default();
         if !buf.pack(message) {
             return false;
         }
@@ -195,7 +191,7 @@ pub(crate) fn send(
         let task = buf.packed();
         let (gs, pool) = (serv.counters(), serv.task_pool_ref());
         let dispatch = || {
-            Ok(swoole_rs_process::methods::dispatch(
+            Ok(process::methods::dispatch(
                 crate::process_pool_native(),
                 pool,
                 task,
@@ -203,7 +199,7 @@ pub(crate) fn send(
                 false,
             ))
         };
-        return swoole_rs_process::task_sync::count_task(&gs.tasking_num, &gs.task_count, dispatch)
+        return process::task_sync::count_task(&gs.tasking_num, &gs.task_count, dispatch)
             .unwrap_or(false);
     }
     let mut info = DataHead {
@@ -292,14 +288,13 @@ pub(crate) fn command(send: &SendCommand<'_>) -> bool {
         .named
         .get(send.name)
         .map(|c| (c.id, c.accepted_types));
-    let worker_id = swoole_rs_process::worker_globals::with_current(|worker| worker.id());
+    let worker_id = process::worker_globals::with_current(|worker| worker.id());
     let input = CommandInput {
         started: serv.is_started(),
         found: found.is_some(),
         process_mode: mode == Mode::Process,
         base_mode: mode == Mode::Base,
-        master: swoole_rs_process::methods::worker_type()
-            == Some(swoole_rs_process::worker_record::WorkerType::Master),
+        master: process::methods::worker_type() == Some(process::worker_record::WorkerType::Master),
         accepted_types: found.map_or(ProcessTypes(0), |(_, types)| types),
         worker_id: worker_id.filter(|_| mode == Mode::Base).unwrap_or(0),
         process_id: send.process_id,
@@ -522,7 +517,7 @@ mod tests {
         }
     }
 
-    use swoole_rs_process::command::{EVENT_WORKER, MASTER};
+    use process::command::{EVENT_WORKER, MASTER};
 
     #[test]
     fn a_base_master_answers_its_own_commands_at_once() {

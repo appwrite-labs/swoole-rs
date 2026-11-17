@@ -55,9 +55,9 @@ The logger is Rust's (`crates/corebase/src/utilities/logger.rs`); no C++ handle 
 Every operation is under one lock (the level is an atomic, so `level` takes no lock).
 Diagnostics go through corebase's `log` under upstream's method names; worker
 identity and `swoole_redirect_stdout` call the process's `LoggerHost` (in
-`crates/process`). Both run after the lock is released, so a diagnostic can log
-through the same logger. The process logger (`SwooleG.logger`) is `crates/process`'s
-(`logger_op`'s `LOGGER`, which corebase's `swr_v1_core_logger` points at), and a log
+`crates/corebase/src/process`). Both run after the lock is released, so a diagnostic can log
+through the same logger. The process logger (`SwooleG.logger`) is `crates/corebase/src/process`'s
+(`process::methods::LOGGER`, which corebase's `swr_v1_core_logger` points at), and a log
 Rust emits runs the macros' semantics in `swr_v1_utils_log`: the last error, the level
 check, the line in `sw_error`, the put and, for `swoole_error`/`swoole_sys_error`, the
 exit. A failed open warns as upstream's `Logger::open` did; a failed open during

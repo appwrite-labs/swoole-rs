@@ -5,7 +5,7 @@ use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering::Relaxed,
 };
 use swoole_rs_corebase::memory::members::Shm;
-use swoole_rs_process::process_pool::{PoolObjectKey, PoolRef};
+use swoole_rs_corebase::process::process_pool::{PoolObjectKey, PoolRef};
 #[derive(Default)]
 pub struct PortCounters {
     pub connection_num: AtomicU32,
@@ -82,7 +82,8 @@ pub(crate) struct ServerShared {
     pub(crate) counters: ServerCounters,
     /// The task pool, then the event pool: records every process writes in place,
     /// through [`PoolRef`] handles, a field at a time.
-    pub(crate) pools: [core::cell::UnsafeCell<swoole_rs_process::process_pool::PoolRecord>; 2],
+    pub(crate) pools:
+        [core::cell::UnsafeCell<swoole_rs_corebase::process::process_pool::PoolRecord>; 2],
     pub(crate) manager_barrier: swoole_rs_corebase::locks::Barrier,
 }
 
@@ -140,7 +141,7 @@ pub(crate) fn hold_server(serv: crate::view::Server<'_>) {
 pub(crate) fn workers_start(serv: crate::view::Server<'_>) {
     let users = (0..).map_while(|index| serv.pending_worker(index));
     // `serv.workers()` lends `serv`'s own event pool.
-    swoole_rs_process::server_workers::swr_v1_process_server_workers_start(
+    swoole_rs_corebase::process::server_workers::swr_v1_process_server_workers_start(
         &serv.workers(),
         (&SERVER, serv.raw()),
         users,
@@ -190,7 +191,7 @@ pub(crate) fn count_send(state: &crate::ServerState, session_id: i64, len: u32) 
         gs.response_count.fetch_add(1, SeqCst);
         gs.total_send_bytes.fetch_add(len.into(), SeqCst);
     }
-    swoole_rs_process::worker_globals::with_current(|worker| worker.add_response_count());
+    swoole_rs_corebase::process::worker_globals::with_current(|worker| worker.add_response_count());
 }
 
 /// Initializes a new shared allocation's zeroed server counters, and returns them.

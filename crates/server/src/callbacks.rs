@@ -7,9 +7,9 @@ use core::marker::PhantomData;
 use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::DataHead;
-use swoole_rs_process::methods::ExitStatus;
-use swoole_rs_process::task_file::Packed;
-use swoole_rs_process::worker_record::Worker;
+use swoole_rs_corebase::process::methods::ExitStatus;
+use swoole_rs_corebase::process::task_file::Packed;
+use swoole_rs_corebase::process::worker_record::Worker;
 
 /// A server's slots. The first seven are also `OP_CALLBACK`'s
 /// argument and the callback its logs name.

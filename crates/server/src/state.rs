@@ -294,7 +294,7 @@ impl ServerState {
     #[cfg(feature = "upstream-symbols")]
     pub(crate) fn push_worker_pipe(
         &self,
-        worker: swoole_rs_process::worker_record::Worker<'_>,
+        worker: swoole_rs_corebase::process::worker_record::Worker<'_>,
     ) -> bool {
         let mut pair = Box::new(swoole_rs_tls::socket_pair::unix_socket(
             true,

@@ -184,7 +184,7 @@ pub use crate::dispatch::{feedback, sendwait};
 /// map to the pipe, and the highest fd grows to cover them.
 pub(crate) fn store_pipe_fd(
     serv: view::Server<'_>,
-    worker: swoole_rs_process::worker_record::Worker<'_>,
+    worker: swoole_rs_corebase::process::worker_record::Worker<'_>,
 ) {
     let pipe = worker.pipe_object();
     if pipe.is_null() {
@@ -325,7 +325,7 @@ pub fn notify(serv: view::Server<'_>, conn: crate::Connection<'_>, event: Server
 pub fn send_pipe_message(
     serv: view::Server<'_>,
     worker_id: u32,
-    msg: &mut swoole_rs_process::task_file::TaskBuffer,
+    msg: &mut swoole_rs_corebase::process::task_file::TaskBuffer,
 ) -> bool {
     msg.set_kind(ServerEvent::PipeMessage.code());
     hybrid().pipe_to_worker(serv, worker_id, msg)
@@ -420,7 +420,7 @@ mod tests {
             "notify head keeps the low bits"
         );
 
-        let mut message = swoole_rs_process::task_file::TaskBuffer::default();
+        let mut message = swoole_rs_corebase::process::task_file::TaskBuffer::default();
         assert!(message.pack(b"abc"), "packs inline");
         assert!(send_pipe_message(serv, 2, &mut message), "pipe result");
         assert_eq!(
@@ -434,7 +434,7 @@ mod tests {
     fn kernel_nobufs_takes_the_sockets_flag_or_in_process_mode_the_reactor_pipes() {
         use crate::records::ConnectionRecord;
         use crate::records::tests::naming;
-        use swoole_rs_process::worker_record::WorkerRecord;
+        use swoole_rs_corebase::process::worker_record::WorkerRecord;
         use swoole_rs_reactor::SocketRecord;
         fn session(serv: view::Server<'_>) -> swoole_rs_reactor::Socket<'_> {
             let conn = serv.state().connection(3, Lookup::ByFd).unwrap();
@@ -456,7 +456,7 @@ mod tests {
         // Session 3 on reactor 1 of 2, over 2 pipes: worker 1 + (3 % 2) * 2.
         // SAFETY: a live record, and a pipe socket that outlives every send below.
         unsafe {
-            swoole_rs_process::worker_record::Worker::from(&workers[3]).set_pipes(
+            swoole_rs_corebase::process::worker_record::Worker::from(&workers[3]).set_pipes(
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
                 (&raw mut pipe).cast(),
@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn pipe_fds_map_to_the_pipe_and_raise_the_highest_fd() {
         use core::sync::atomic::Ordering::Relaxed;
-        use swoole_rs_process::worker_record::{Worker, WorkerRecord};
+        use swoole_rs_corebase::process::worker_record::{Worker, WorkerRecord};
         use swoole_rs_reactor::SocketRecord;
         let live = crate::fixture::LiveServer::new();
         live.counters().max_fd.store(7, Relaxed);

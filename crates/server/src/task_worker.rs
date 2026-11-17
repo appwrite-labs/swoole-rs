@@ -11,7 +11,7 @@ use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::constants::TaskFlag;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING;
-use swoole_rs_process::task_sync::ResultSlot;
+use swoole_rs_corebase::process::task_sync::ResultSlot;
 
 #[cfg(feature = "upstream-symbols")]
 pub mod native;

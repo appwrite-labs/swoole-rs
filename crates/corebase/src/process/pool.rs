@@ -13,8 +13,10 @@
 //! (`exit()`, a fatal error), the loop returns [`Bailed`] at once and its native
 //! caller raises the bailout again with [`raise_bailout`], so the
 //! `longjmp` never crosses a Rust frame.
-use crate::process_pool::{IpcMode, Protocol};
-use crate::worker_record::Worker as Record;
+use crate::CCast;
+use crate::process::process_pool::{IpcMode, Protocol};
+use crate::process::worker_record::Worker as Record;
+use crate::sys::set_errno;
 use std::any::Any;
 #[cfg(any(feature = "upstream-symbols", test))]
 use std::ffi::CStr;
@@ -23,10 +25,8 @@ use std::ptr;
 use std::rc::Rc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
-use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::sys::set_errno;
 
-use crate::process_pool::PoolNative;
+use crate::process::process_pool::PoolNative;
 
 /// `SW_MSGMAX`: the most a queue receive asks for under the stream protocol.
 const MSGMAX: usize = 65536;
@@ -40,7 +40,7 @@ const HEAD_LEN: usize = 16;
 const HEAD_SERVER_FD: usize = 24;
 const HEAD_EXT_FLAGS: usize = 26;
 /// `SW_TASK_TMPFILE`: the task's data is a `PacketTask` naming a temporary file.
-const TASK_TMPFILE: u16 = swoole_rs_corebase::constants::TaskFlag::SW_TASK_TMPFILE.bits();
+const TASK_TMPFILE: u16 = crate::constants::TaskFlag::SW_TASK_TMPFILE.bits();
 /// `sizeof(PacketTask)`: its `size_t` length and `SW_TASK_TMP_PATH_SIZE` path.
 const PACKET_TASK: u32 = 8 + 256;
 /// `sizeof(long)`, `QueueNode::mtype`.
@@ -84,7 +84,7 @@ pub type Connection = Rc<dyn Any>;
 /// (null or a live native socket: a worker's pipe end), the stream connection it
 /// serves (or the listener `close` frees), and `data`, which holds `length` bytes.
 pub struct PoolCall<'a> {
-    pub(crate) pool: crate::process_pool::PoolRef<'a>,
+    pub(crate) pool: crate::process::process_pool::PoolRef<'a>,
     pub(crate) worker: Option<Record<'a>>,
     pub(crate) socket: *mut c_void,
     pub(crate) connection: Option<Connection>,
@@ -98,7 +98,10 @@ pub struct PoolCall<'a> {
 }
 
 impl<'a> PoolCall<'a> {
-    pub(crate) fn new(pool: crate::process_pool::PoolRef<'a>, worker: Option<Record<'a>>) -> Self {
+    pub(crate) fn new(
+        pool: crate::process::process_pool::PoolRef<'a>,
+        worker: Option<Record<'a>>,
+    ) -> Self {
         Self {
             pool,
             worker,
@@ -114,7 +117,7 @@ impl<'a> PoolCall<'a> {
 
     /// The live pool.
     #[must_use]
-    pub fn pool(&self) -> crate::process_pool::PoolRef<'a> {
+    pub fn pool(&self) -> crate::process::process_pool::PoolRef<'a> {
         self.pool
     }
 
@@ -127,8 +130,8 @@ impl<'a> PoolCall<'a> {
     /// The worker's pipe end the hook works on, lent for this borrow of the call;
     /// `None` without one.
     #[must_use]
-    pub fn lent_socket(&self) -> Option<crate::worker_record::NativeSocket<'_>> {
-        crate::worker_record::NativeSocket::lend(self.socket)
+    pub fn lent_socket(&self) -> Option<crate::process::worker_record::NativeSocket<'_>> {
+        crate::process::worker_record::NativeSocket::lend(self.socket)
     }
 
     /// The buffer of [`PoolCall::length`] bytes the hook reads or fills.
@@ -164,11 +167,11 @@ impl<'a> PoolCall<'a> {
 
     /// [`PoolCall::connection`] and the [`PoolCall::length`] bytes at
     /// [`PoolCall::data`], lent to a read that fills them, for this borrow of the call.
-    pub fn connection_fill(&mut self) -> (Option<&dyn Any>, swoole_rs_corebase::lent::Fill<'_>) {
+    pub fn connection_fill(&mut self) -> (Option<&dyn Any>, crate::lent::Fill<'_>) {
         // SAFETY: only this crate makes a call: `data` is null or a buffer of at least
         // `length` writable bytes that outlives the hook, which nothing else reaches
         // while this borrow of its call lasts.
-        let fill = unsafe { swoole_rs_corebase::lent::Fill::from_raw(self.data, self.length) };
+        let fill = unsafe { crate::lent::Fill::from_raw(self.data, self.length) };
         (self.connection.as_deref(), fill)
     }
 
@@ -258,7 +261,7 @@ pub(crate) fn trapped<R, F: FnOnce() -> R>(body: F) -> Result<R, Bailed> {
 /// One worker's loop over its pool.
 struct Worker<'a> {
     native: &'a dyn PoolNative,
-    pool: crate::process_pool::PoolRef<'a>,
+    pool: crate::process::process_pool::PoolRef<'a>,
     worker: Record<'a>,
 }
 
@@ -725,7 +728,7 @@ pub fn pool_ipc_free(ipc: PoolIpc, close: impl FnOnce(Connection)) {
         && let Some(listener) = stream.listener
     {
         if let Some(file) = &stream.file {
-            _ = swoole_rs_corebase::sys::unlink(file);
+            _ = crate::sys::unlink(file);
         }
         close(listener);
     }
@@ -747,7 +750,7 @@ pub(crate) fn swr_v1_process_pool_ipc_address(ipc: &mut PoolIpc, host: &CStr, po
 /// `data` length-prefixed (big-endian) and close; false on any failure. A unix
 /// listener records port 0, which a TCP one can't be reached on.
 ///
-/// `ProcessPool::dispatch(data)`: the same over a [`crate::stream::Stream`], which, as upstream's,
+/// `ProcessPool::dispatch(data)`: the same over a [`crate::process::stream::Stream`], which, as upstream's,
 /// connects a Unix socket whatever the listener's port, and fails only when that connect does.
 ///
 pub(crate) fn swr_v1_process_pool_ipc_send(
@@ -768,9 +771,9 @@ pub(crate) fn swr_v1_process_pool_ipc_send(
         return false;
     };
     if !blocking {
-        let Some(mut stream) =
-            crate::stream::Stream::create(&crate::stream::Peer::Unix(file.as_bytes()))
-        else {
+        let Some(mut stream) = crate::process::stream::Stream::create(
+            &crate::process::stream::Peer::Unix(file.as_bytes()),
+        ) else {
             return false;
         };
         stream.send(data);
@@ -867,7 +870,7 @@ fn mode(ipc_mode: IpcMode) -> Mode {
 /// What a worker loop needs to know about its pool, which holds the loop's IPC
 /// state, and its worker.
 pub struct PoolLoop<'a> {
-    pub pool: crate::process_pool::PoolRef<'a>,
+    pub pool: crate::process::process_pool::PoolRef<'a>,
     pub worker: Record<'a>,
     pub worker_id: u32,
     /// `use_msgqueue`/`use_socket` as an IPC mode.
@@ -935,7 +938,7 @@ pub(crate) fn idle(worker: Record<'_>) -> bool {
 /// worker `worker_id`'s pipe ([`Record::pipe_master`], [`Record::pipe_worker`]).
 pub(crate) fn swr_v1_process_worker_send(
     native: &dyn PoolNative,
-    pool: crate::process_pool::PoolRef<'_>,
+    pool: crate::process::process_pool::PoolRef<'_>,
     pipe: *mut c_void,
     queue: bool,
     worker_id: u32,
@@ -982,7 +985,7 @@ pub(crate) fn swr_v1_process_worker_send(
 )]
 pub(crate) fn pool_dispatch<'a>(
     native: &dyn PoolNative,
-    pool: crate::process_pool::PoolRef<'_>,
+    pool: crate::process::process_pool::PoolRef<'_>,
     workers: impl Fn(usize) -> Option<Record<'a>>,
     start_id: u16,
     queue: bool,
@@ -1074,18 +1077,18 @@ mod tests {
         assert!(ipc.packet.len() * 8 >= 4 << 20);
     }
 
-    fn records(busy: &[bool]) -> Vec<crate::worker_record::WorkerRecord> {
+    fn records(busy: &[bool]) -> Vec<crate::process::worker_record::WorkerRecord> {
         busy.iter()
             .map(|&busy| {
-                let mut record = *crate::worker_record::WorkerRecord::boxed();
-                record.set_status(crate::worker_record::WorkerStatus::busy(busy));
+                let mut record = *crate::process::worker_record::WorkerRecord::boxed();
+                record.set_status(crate::process::worker_record::WorkerStatus::busy(busy));
                 record
             })
             .collect()
     }
 
     fn schedule(
-        workers: &mut [crate::worker_record::WorkerRecord],
+        workers: &mut [crate::process::worker_record::WorkerRecord],
         round: &AtomicU32,
     ) -> (u32, bool) {
         let count = u32::try_from(workers.len()).unwrap();
@@ -1114,7 +1117,7 @@ mod tests {
     #[derive(Default)]
     struct Script {
         rounds: u32,
-        ops: Vec<(crate::process_pool::Op, u64)>,
+        ops: Vec<(crate::process::process_pool::Op, u64)>,
         accepts: Vec<usize>,
         recvs: Vec<Vec<u8>>,
         reads: Vec<(Vec<u8>, c_int)>,
@@ -1160,12 +1163,12 @@ mod tests {
     /// The scripted hooks, over the thread's [`Script`].
     pub(super) struct Scripted;
 
-    pub(super) fn take_ops() -> Vec<(crate::process_pool::Op, u64)> {
+    pub(super) fn take_ops() -> Vec<(crate::process::process_pool::Op, u64)> {
         with(|script| std::mem::take(&mut script.ops))
     }
 
     impl PoolNative for Scripted {
-        fn call(&self, _: &PoolCall, op: crate::process_pool::Op, arg: u64) {
+        fn call(&self, _: &PoolCall, op: crate::process::process_pool::Op, arg: u64) {
             with(|script| script.ops.push((op, arg)));
         }
         fn event_init(&self, _: &PoolCall) -> bool {
@@ -1180,28 +1183,32 @@ mod tests {
         fn waitpid(&self, _: c_int) -> bool {
             unreachable!("loop-only fixture")
         }
-        fn new_pipe(&self, _: &PoolCall) -> Result<(), crate::process_pool::PipeError> {
+        fn new_pipe(&self, _: &PoolCall) -> Result<(), crate::process::process_pool::PipeError> {
             unreachable!("loop-only fixture")
         }
-        fn add_pipe(&self, _: &PoolCall) -> Result<(), crate::process_pool::PipeError> {
+        fn add_pipe(&self, _: &PoolCall) -> Result<(), crate::process::process_pool::PipeError> {
             unreachable!("loop-only fixture")
         }
-        fn push_stop(&self, _: &PoolCall) -> Result<(), crate::process_pool::PipeError> {
+        fn push_stop(&self, _: &PoolCall) -> Result<(), crate::process::process_pool::PipeError> {
             unreachable!("loop-only fixture")
         }
         fn send_buffer_size(&self, _: &PoolCall) -> std::io::Result<c_int> {
             unreachable!("loop-only fixture")
         }
-        fn bus_buffer(&self, _: &PoolCall, _: usize) -> Result<(), crate::process_pool::PipeError> {
+        fn bus_buffer(
+            &self,
+            _: &PoolCall,
+            _: usize,
+        ) -> Result<(), crate::process::process_pool::PipeError> {
             unreachable!("loop-only fixture")
         }
-        fn alloc_workers(&self, _: u32) -> *mut crate::worker_record::WorkerRecord {
+        fn alloc_workers(&self, _: u32) -> *mut crate::process::worker_record::WorkerRecord {
             core::ptr::null_mut()
         }
         fn new_message_bus(&self) -> Option<Box<dyn std::any::Any>> {
             None
         }
-        fn callback(&self, _: &mut PoolCall, _: crate::process_pool::Callback) {}
+        fn callback(&self, _: &mut PoolCall, _: crate::process::process_pool::Callback) {}
         fn event_size(&self) -> usize {
             128
         }
@@ -1250,9 +1257,9 @@ mod tests {
         }
         fn bus_write(
             &self,
-            _: crate::process_pool::PoolRef<'_>,
+            _: crate::process::process_pool::PoolRef<'_>,
             _: Record<'_>,
-            _: &mut swoole_rs_corebase::DataHead,
+            _: &mut crate::DataHead,
             _: &[u8],
         ) -> bool {
             false
@@ -1298,10 +1305,10 @@ mod tests {
             *s = script;
             s.ipc = ipc as usize;
         });
-        let pool = crate::process_pool::PoolRecord::empty();
+        let pool = crate::process::process_pool::PoolRecord::empty();
         pool.ipc.set(ipc);
         let pool = std::cell::UnsafeCell::new(pool);
-        let mut worker = crate::worker_record::WorkerRecord::empty();
+        let mut worker = crate::process::worker_record::WorkerRecord::empty();
         let pool_loop = PoolLoop {
             pool: (&pool).into(),
             worker: (&mut worker).into(),
@@ -1434,7 +1441,7 @@ mod tests {
         let mut workers = records(&[true, true]);
         let workers: Vec<_> = workers.iter_mut().map(Record::from).collect();
         let event = [0u8; 4];
-        let mut pool = crate::process_pool::PoolRecord::empty();
+        let mut pool = crate::process::process_pool::PoolRecord::empty();
         let sent = pool_dispatch(
             &Scripted,
             (&mut pool).into(),
@@ -1454,5 +1461,5 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/modules/process/native_methods.rs"]
+#[path = "../../../../tests/modules/process/native_methods.rs"]
 mod native_methods_tests;

@@ -7,10 +7,10 @@ use super::*;
 use std::collections::BTreeSet;
 use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::net_types::AddressStorage;
-use swoole_rs_corebase::swoole_rand;
-use swoole_rs_process::worker_record::WorkerStatus::{
+use swoole_rs_corebase::process::worker_record::WorkerStatus::{
     Busy as SW_WORKER_BUSY, Idle as SW_WORKER_IDLE,
 };
+use swoole_rs_corebase::swoole_rand;
 
 const SW_SOCK_UDP: c_int = 2;
 const SW_SOCK_TCP6: c_int = 3;
@@ -81,7 +81,7 @@ fn schedule_worker(serv: Server, fd: c_int, data: Option<&swoole_rs_server::Send
     usize::try_from(worker_id).unwrap()
 }
 
-type Worker = swoole_rs_process::worker_record::Worker<'static>;
+type Worker = swoole_rs_corebase::process::worker_record::Worker<'static>;
 
 /// `serv.workers[i]`: the event worker array.
 fn worker(serv: Server, id: usize) -> Worker {

@@ -108,7 +108,7 @@ their assertions run now:
 
 | Upstream TEST | Rust test or reason |
 | --- | --- |
-| `base.clamp` | `crates/process` `process_pool.rs` `base_clamp`, over `max_package_size`'s clamp (the one `swoole::clamp` caller) |
+| `base.clamp` | `crates/corebase/src/process` `process_pool.rs` `base_clamp`, over `max_package_size`'s clamp (the one `swoole::clamp` caller) |
 | `base.datahead_dump` | `host.rs` `base_datahead_dump` (same input and assertion; `print` is gone) |
 | `base.mkdir_recursive` | `lib.rs` `base_mkdir_recursive`, over `mkdir_recursive` (test adapter preserves the original status assertion) |
 | `base.hook`, `base.snprintf` | `hook.rs` and `host.rs` tests |

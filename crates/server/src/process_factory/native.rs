@@ -6,11 +6,11 @@ use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::memory::members::Shm;
-use swoole_rs_process::methods::{
+use swoole_rs_corebase::process::methods::{
     ExitStatus, kill_all_workers, set_worker_type, swoole_set_worker_id, swoole_set_worker_pid,
     worker_report_error,
 };
-use swoole_rs_process::worker_record::{Worker, WorkerType};
+use swoole_rs_corebase::process::worker_record::{Worker, WorkerType};
 use swoole_rs_reactor::wait_upstream::swoole_waitpid;
 
 use super::{Pipe, worker_id};
@@ -71,7 +71,7 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
     let pool = crate::shared::ServerShared::of(serv).event_pool();
     if !pool.message_box().is_null() {
         // The event pool's box, which the pool forgets as it frees it.
-        swoole_rs_process::methods::free_message_box(
+        swoole_rs_corebase::process::methods::free_message_box(
             crate::process_pool_native(),
             serv.event_pool_ref(),
         );
@@ -100,7 +100,7 @@ pub(crate) fn start(serv: view::Server<'_>) -> bool {
 /// upstream returns `SW_OK` from this bool function.
 pub(crate) fn shutdown(serv: view::Server<'_>) -> bool {
     let pid = serv.counters().manager_pid.load(Relaxed);
-    if swoole_rs_process::os::kill(pid, libc::SIGTERM).is_err() {
+    if swoole_rs_corebase::process::os::kill(pid, libc::SIGTERM).is_err() {
         log::sys_warning(
             c"ProcessFactory::shutdown",
             format_args!("kill({pid}) failed"),
@@ -247,8 +247,8 @@ pub(crate) fn send(serv: view::Server<'_>, to: Pipe, send: &mut SendData) -> boo
             let Some(target) = serv.worker_record(id) else {
                 return false;
             };
-            let head = swoole_rs_process::process_pool::head_view(send.info());
-            let sent = swoole_rs_process::methods::send_pipe_message(
+            let head = swoole_rs_corebase::process::process_pool::head_view(send.info());
+            let sent = swoole_rs_corebase::process::methods::send_pipe_message(
                 crate::process_pool_native(),
                 target,
                 &head,

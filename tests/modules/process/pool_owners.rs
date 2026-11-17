@@ -4,7 +4,7 @@ use std::rc::Rc;
 #[test]
 #[cfg_attr(miri, ignore = "Miri has no shared mappings or fork")]
 fn borrowing_ipc_in_one_process_keeps_it_available_to_another() {
-    let _children = crate::wait::tests::CHILDREN
+    let _children = crate::process::wait::tests::CHILDREN
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let size = size_of::<PoolRecord>();

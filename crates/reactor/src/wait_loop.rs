@@ -347,18 +347,24 @@ mod kqueue_signal {
     /// `ReactorKqueue::wait`'s signal entry for `signo`: its registration is read before
     /// its handler, which may register another, runs.
     pub(super) fn dispatch_signal(signo: c_int) {
-        dispatch(signo, swoole_rs_process::signal::signal_activated(signo));
+        dispatch(
+            signo,
+            swoole_rs_corebase::process::signal::signal_activated(signo),
+        );
     }
 
     /// An activated signal (`Some` handler) runs its handler unless that is `SIG_IGN`,
     /// and warns when it has none.
-    pub(super) fn dispatch(signo: c_int, activated: Option<swoole_rs_process::signal::Handler>) {
+    pub(super) fn dispatch(
+        signo: c_int,
+        activated: Option<swoole_rs_corebase::process::signal::Handler>,
+    ) {
         let Some(handler) = activated else {
             return;
         };
         match handler {
-            swoole_rs_process::signal::Handler::NONE => {
-                let name = swoole_rs_process::signal::signal_name(signo);
+            swoole_rs_corebase::process::signal::Handler::NONE => {
+                let name = swoole_rs_corebase::process::signal::signal_name(signo);
                 let name = name.as_cstr();
                 log::error_log(
                     LOG_WARNING,
@@ -669,7 +675,7 @@ mod tests {
         target_os = "dragonfly"
     ))]
     fn signal_entries_run_their_handler_as_upstreams_kqueue_wait() {
-        use swoole_rs_process::signal::Handler;
+        use swoole_rs_corebase::process::signal::Handler;
         static SEEN: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
         extern "C" fn handler(signo: c_int) {
             SEEN.store(signo, std::sync::atomic::Ordering::SeqCst);

@@ -156,12 +156,12 @@ pub(crate) fn install(
     restart: bool,
     mask: bool,
 ) -> Option<libc::sigaction> {
-    let mut action: libc::sigaction = swoole_rs_corebase::sys::zeroed();
+    let mut action: libc::sigaction = crate::sys::zeroed();
     action.sa_sigaction = func;
     if mask {
-        swoole_rs_corebase::sys::sigfillset(&mut action.sa_mask);
+        crate::sys::sigfillset(&mut action.sa_mask);
     } else {
-        swoole_rs_corebase::sys::sigemptyset(&mut action.sa_mask);
+        crate::sys::sigemptyset(&mut action.sa_mask);
     }
     action.sa_flags = if restart { libc::SA_RESTART } else { 0 };
     // `func` is a handler or SIG_IGN/SIG_DFL.
@@ -170,7 +170,7 @@ pub(crate) fn install(
 
 /// `sigaction(2)`: the previous action, or none if it failed.
 fn sigaction(signo: c_int, action: &libc::sigaction) -> Option<libc::sigaction> {
-    let mut previous: libc::sigaction = swoole_rs_corebase::sys::zeroed();
+    let mut previous: libc::sigaction = crate::sys::zeroed();
     // SAFETY: both actions are valid for the call.
     let installed = unsafe { libc::sigaction(signo, action, &raw mut previous) };
     (installed == 0).then_some(previous)
@@ -343,16 +343,16 @@ pub fn signal_clear() {
     signal_reset();
 }
 
-/// `bool swoole_signal_block_all()`: [`swoole_rs_corebase::signal_block_all`].
+/// `bool swoole_signal_block_all()`: [`crate::signal_block_all`].
 #[must_use]
 #[unsafe(export_name = "_Z23swoole_signal_block_allv")]
 pub extern "C" fn swoole_signal_block_all() -> bool {
-    swoole_rs_corebase::signal_block_all()
+    crate::signal_block_all()
 }
 
-/// `void swoole_signal_unblock_all()`: [`swoole_rs_corebase::signal_unblock_all`].
+/// `void swoole_signal_unblock_all()`: [`crate::signal_unblock_all`].
 pub fn swoole_signal_unblock_all() {
-    swoole_rs_corebase::signal_unblock_all();
+    crate::signal_unblock_all();
 }
 
 /// `swoole_signal_to_str`'s text, in a buffer of its own.
@@ -373,9 +373,9 @@ pub fn signal_name(signo: c_int) -> SignalName {
     // libc's `strsignal(3)`, which takes any number, reads no caller memory and
     // returns a C string that stays put (glibc, musl and Apple's never null).
     unsafe extern "C" {
-        safe fn strsignal(signo: c_int) -> Option<swoole_rs_corebase::sys::Text<'static>>;
+        safe fn strsignal(signo: c_int) -> Option<crate::sys::Text<'static>>;
     }
-    let text = strsignal(signo).map_or(c"", swoole_rs_corebase::sys::Text::get);
+    let text = strsignal(signo).map_or(c"", crate::sys::Text::get);
     let mut buf = [0; 64];
     signal_text(text.to_bytes(), signo, &mut buf);
     SignalName(buf)
@@ -438,7 +438,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no sigfillset")]
     fn registers_dispatches_and_clears() {
-        let _state = crate::signal_state_lock();
+        let _state = crate::process::signal_state_lock();
         let handler = record as *const () as usize;
         signal_set(libc::SIGUSR1, Handler(handler), false, record, no_reactor);
         assert!(swoole_signal_isset(libc::SIGUSR1));

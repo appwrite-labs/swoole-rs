@@ -7,8 +7,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_int;
 
-use crate::armed_timer::ArmedTimer;
-use crate::worker_record::WorkerRecord;
+use crate::process::armed_timer::ArmedTimer;
+use crate::process::worker_record::WorkerRecord;
 
 /// `warn(kind, pid, worker_id)`, called with `errno` still set by a failed `kill`.
 pub type Warn = fn(kind: KillWarning, pid: c_int, worker_id: u32);
@@ -50,7 +50,7 @@ fn already_gone(error: c_int) -> bool {
 
 /// `kill(pid, signo)`: `Ok` or the `errno` it failed with.
 fn kill(pid: c_int, signo: c_int) -> Result<(), c_int> {
-    crate::os::kill(pid, signo).map_err(|error| error.raw_os_error().unwrap_or(0))
+    crate::process::os::kill(pid, signo).map_err(|error| error.raw_os_error().unwrap_or(0))
 }
 
 impl ReloadTask {
@@ -219,7 +219,7 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no kill")]
     fn the_real_kill_reports_errno() {
-        let me = crate::os::getpid();
+        let me = crate::process::os::getpid();
         assert_eq!(kill(me, 0), Ok(()));
         assert_eq!(kill(c_int::MAX, 0), Err(libc::ESRCH));
     }
@@ -241,9 +241,9 @@ pub(crate) mod tests {
         task.set_timer(Some(ArmedTimer::new(
             1,
             9,
-            crate::armed_timer::tests::record,
+            crate::process::armed_timer::tests::record,
         )));
         drop(task);
-        assert_eq!(crate::armed_timer::tests::cancelled(), [9]);
+        assert_eq!(crate::process::armed_timer::tests::cancelled(), [9]);
     }
 }

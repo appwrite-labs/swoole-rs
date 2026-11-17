@@ -253,7 +253,7 @@ pub(crate) fn send_event(sock: Option<Heap<'_>>, fd: c_long, kind: ServerEvent) 
         ..DataHead::default()
     };
     if let Some(sock) = sock {
-        let data = swoole_rs_process::process_pool::head_view(&head);
+        let data = swoole_rs_corebase::process::process_pool::head_view(&head);
         let data = swoole_rs_reactor::Drain::new(&data);
         _ = swoole_rs_tls::upstream::send_sync_drain(*sock, data, 0);
     }

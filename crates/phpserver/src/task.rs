@@ -3,7 +3,7 @@
 //! events. Rust owns the callbacks of pending tasks and the coroutines that
 //! wait for results (upstream's `ServerProperty::task_callbacks` and
 //! `task_coroutine_map`), and the task encoding (a string, or PHP's serialize
-//! with `SW_TASK_SERIALIZE`), packed, sent and waited for by crates/process's
+//! with `SW_TASK_SERIALIZE`), packed, sent and waited for by `corebase::process`'s
 //! `Server` methods over this worker's task pool, notify pipe and lock ([`Host`]).
 use crate::callable::Callable;
 use crate::dispatch::{handler_error, invoke, set_last_error, used};
@@ -22,15 +22,15 @@ use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::constants::TaskFlag;
 use swoole_rs_corebase::locks::SharedMutex;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING;
-use swoole_rs_corebase::{DataHead, log};
-use swoole_rs_phpcoroutines::{Coroutine, Waiter};
-use swoole_rs_phpswoole::unserialize_from;
-use swoole_rs_process::{
+use swoole_rs_corebase::process::{
     methods::{self, swoole_get_worker_id},
     process_pool::PoolRef,
     task_file::{Packed, TaskBuffer},
     task_sync::{Bailed, MultiTask, TaskHost, Tasks, Waiting},
 };
+use swoole_rs_corebase::{DataHead, log};
+use swoole_rs_phpcoroutines::{Coroutine, Waiter};
+use swoole_rs_phpswoole::unserialize_from;
 use swoole_rs_server::{
     task_worker::{native::finish, result_slot},
     view,
@@ -144,7 +144,7 @@ fn wait_state(serv: view::Server<'_>) -> Option<Waiting<'_, Host<'_>>> {
     tasks.host.pipe = serv.task_notify_pipe(id);
     tasks.host.lock = serv
         .worker_record(id)
-        .and_then(swoole_rs_process::worker_record::Worker::lock);
+        .and_then(swoole_rs_corebase::process::worker_record::Worker::lock);
     let slot = result_slot(serv, id)?;
     Some(tasks.waiting(slot))
 }

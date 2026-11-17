@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Swoole's include/swoole_coroutine_system.h, owned here: the System members C++ still
  * calls. sleep and the waitpids are Rust under upstream's symbols
- * (crates/hooks, crates/process). */
+ * (crates/hooks, corebase::process). */
 #pragma once
 
 #include "swoole_coroutine.h"

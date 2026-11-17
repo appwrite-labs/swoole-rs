@@ -22,10 +22,10 @@ use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::buffer::cpp::{swr_cpp_buffer_empty, swr_cpp_buffer_typed_close};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRACE as LOG_TRACE};
 use swoole_rs_corebase::memory::members::Shm;
+use swoole_rs_corebase::process::methods::swoole_get_worker_id;
+use swoole_rs_corebase::process::worker_globals::{with_current, with_globals};
+use swoole_rs_corebase::process::worker_record::{Worker, WorkerStatus};
 use swoole_rs_corebase::{CCast, log};
-use swoole_rs_process::methods::swoole_get_worker_id;
-use swoole_rs_process::worker_globals::{with_current, with_globals};
-use swoole_rs_process::worker_record::{Worker, WorkerStatus};
 
 /// `swoole::SendData`, and the `swoole::RecvData` a receive callback reads (the same
 /// two fields): an event's head and the payload it lends for `'a`.
@@ -524,7 +524,7 @@ mod tests {
     use crate::hybrid::tests::{Call, calls};
     use crate::reactor_entry::RecvData;
     use std::cell::RefCell;
-    use swoole_rs_process::worker_globals::set_current_worker;
+    use swoole_rs_corebase::process::worker_globals::set_current_worker;
 
     /// An event a callback heard: kind (0 receive, 1 packet, 4 close), fd, reactor,
     /// flags and length.
@@ -597,7 +597,7 @@ mod tests {
 
     #[test]
     fn base_mode_receives_without_the_bus() {
-        use swoole_rs_process::worker_record::WorkerRecord;
+        use swoole_rs_corebase::process::worker_record::WorkerRecord;
         let (live, _clients) = accepted();
         let (serv, state, conn) = (live.server(), live.state(), session(&live, 1));
         state.callbacks.set(Callback::Receive(on_receive));

@@ -1,15 +1,4 @@
-//! Copied worker/process transitions. Native alone executes callbacks and owns stores.
-#![expect(
-    clippy::disallowed_types,
-    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
-)]
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
+//! Worker, signal and process-pool state owned by the core runtime.
 pub mod affinity;
 pub mod armed_timer;
 pub mod command;
@@ -38,8 +27,8 @@ pub mod task_sync;
 pub mod wait;
 pub mod worker_globals;
 pub mod worker_record;
+pub use crate::worker_registry;
 use std::ffi::c_int;
-pub use swoole_rs_corebase::worker_registry;
 /// SIGRTMIN is a runtime value on Linux and undefined elsewhere (upstream guards
 /// it with `#ifdef SIGRTMIN`).
 #[cfg(target_os = "linux")]

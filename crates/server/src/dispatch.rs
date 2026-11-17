@@ -151,7 +151,7 @@ fn idle_worker(serv: Server<'_>) -> u32 {
 
 fn is_idle(serv: Server<'_>, id: u32) -> bool {
     let worker = u16::try_from(id).ok().and_then(|id| serv.worker_record(id));
-    worker.is_some_and(swoole_rs_process::worker_record::Worker::is_idle)
+    worker.is_some_and(swoole_rs_corebase::process::worker_record::Worker::is_idle)
 }
 
 /// `Server::get_idle_worker_num` (event workers) and `get_idle_task_worker_num`.
@@ -264,8 +264,8 @@ pub fn sendfile(
         sendfile_error(SW_LOG_WARNING, E::SW_ERROR_SESSION_INVALID_ID, m);
         return false;
     }
-    let master = swoole_rs_process::worker_record::WorkerType::Master;
-    if swoole_rs_process::methods::worker_type() == Some(master) {
+    let master = swoole_rs_corebase::process::worker_record::WorkerType::Master;
+    if swoole_rs_corebase::process::methods::worker_type() == Some(master) {
         let m = format_args!("can't send data to the connections in master process");
         sendfile_error(SW_LOG_ERROR, E::SW_ERROR_SERVER_SEND_IN_MASTER, m);
         return false;
@@ -457,7 +457,7 @@ mod tests {
     use super::*;
 
     use crate::fixture::LiveServer;
-    use swoole_rs_process::worker_record::{WorkerRecord, WorkerStatus};
+    use swoole_rs_corebase::process::worker_record::{WorkerRecord, WorkerStatus};
 
     const SOCK_UDP: c_int = SocketType::SW_SOCK_UDP.raw();
     const SOCK_UNIX_STREAM: c_int = SocketType::SW_SOCK_UNIX_STREAM.raw();

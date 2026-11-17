@@ -2,9 +2,9 @@
 //! reads from the server's message bus.
 use core::ffi::c_int;
 use swoole_rs_corebase::ServerEvent;
-use swoole_rs_process::methods::ExitStatus;
-use swoole_rs_process::process_pool::{Hooks, IpcMode, PoolRef};
-use swoole_rs_process::worker_record::Worker;
+use swoole_rs_corebase::process::methods::ExitStatus;
+use swoole_rs_corebase::process::process_pool::{Hooks, IpcMode, PoolRef};
+use swoole_rs_corebase::process::worker_record::Worker;
 use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{Event, Running};
 
@@ -24,7 +24,7 @@ pub(crate) fn create_pool(serv: view::Server<'_>) -> bool {
     // The server's event pool, reset as `*pool = {}` did.
     pool_ref.reset();
     let ipc = IpcMode::UnixSock.code().into();
-    if !swoole_rs_process::methods::create(
+    if !swoole_rs_corebase::process::methods::create(
         crate::process_pool_native(),
         pool_ref,
         config.worker_num.get(),
@@ -33,7 +33,7 @@ pub(crate) fn create_pool(serv: view::Server<'_>) -> bool {
     ) {
         return false;
     }
-    swoole_rs_process::methods::set_max_request(
+    swoole_rs_corebase::process::methods::set_max_request(
         crate::process_pool_native(),
         pool_ref,
         config.max_request.get(),
@@ -137,7 +137,7 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus<'_>) -> bool {
         }
         Some(ServerEvent::CommandRequest) => {
             // The worker this process runs.
-            let me = swoole_rs_process::worker_globals::with_current(|me| me.id());
+            let me = swoole_rs_corebase::process::worker_globals::with_current(|me| me.id());
             let pipe = serv.worker_pipe(0, true);
             if let Some(me) = me {
                 let id = u16::try_from(me).unwrap_or(0);

@@ -2,27 +2,29 @@
 //! whole Rust operations. Each receives its [`PoolNative`] effects from the
 //! caller: crates/server's implementation in production, a supplied host in tests.
 
-use crate::process_pool::Protocol;
-use crate::task_file::Packed;
-use crate::worker_record::{Worker, WorkerType};
+use crate::CCast;
+use crate::process::process_pool::Protocol;
+use crate::process::task_file::Packed;
+use crate::process::worker_record::{Worker, WorkerType};
 #[cfg(any(feature = "upstream-symbols", test))]
 use std::ffi::CStr;
 use std::ffi::{c_int, c_void};
 use std::ptr;
-use swoole_rs_corebase::CCast;
 
-use crate::pool::Bailed;
-use crate::pool::{raise_bailout, swr_v1_process_pool_ipc_respond, swr_v1_process_worker_send};
+use crate::process::pool::Bailed;
+use crate::process::pool::{
+    raise_bailout, swr_v1_process_pool_ipc_respond, swr_v1_process_worker_send,
+};
 #[cfg(any(feature = "upstream-symbols", test))]
-use crate::pool::{swr_v1_process_pool_ipc_address, swr_v1_process_pool_ipc_set_listener};
-use crate::process_pool::{
+use crate::process::pool::{swr_v1_process_pool_ipc_address, swr_v1_process_pool_ipc_set_listener};
+use crate::process::process_pool::{
     PoolNative, PoolRecord, PoolRef, swr_v1_process_pool_create,
     swr_v1_process_pool_dispatch_event, swr_v1_process_pool_push, swr_v1_process_pool_push_event,
     swr_v1_worker_symbol, with,
 };
-use crate::reload_task::KillWarning;
-use crate::worker_globals::{with_globals, worker_global_max_requests};
-use crate::worker_record::WorkerRecord;
+use crate::process::reload_task::KillWarning;
+use crate::process::worker_globals::{with_globals, worker_global_max_requests};
+use crate::process::worker_record::WorkerRecord;
 use std::sync::atomic::Ordering::Relaxed;
 
 /// A method's result; a callback's bailout is raised once the method's frames are
@@ -72,7 +74,7 @@ pool_methods! {
 pub fn push_event(
     native: &dyn PoolNative,
     pool: PoolRef<'_>,
-    head: &swoole_rs_corebase::DataHead,
+    head: &crate::DataHead,
     data: &[u8],
 ) -> bool {
     swr_v1_process_pool_push_event(native, pool, head, data)
@@ -194,7 +196,7 @@ pub fn send_pipe_message(
 /// Creates a listener owned by the process pool, which the pool's `close` hook
 /// frees; supplied by crates/ffi at startup.
 #[cfg(feature = "upstream-symbols")]
-pub type Listener = fn(c_int, &CStr, c_int, c_int) -> Option<crate::pool::Connection>;
+pub type Listener = fn(c_int, &CStr, c_int, c_int) -> Option<crate::process::pool::Connection>;
 #[cfg(feature = "upstream-symbols")]
 static LISTENER: std::sync::OnceLock<Listener> = std::sync::OnceLock::new();
 
@@ -227,7 +229,7 @@ pub fn listen_socket(
     listen(pool.record(), host, port, || {
         LISTENER
             .get()
-            .unwrap_or_else(|| swoole_rs_corebase::fatal("pool listener is not registered"))(
+            .unwrap_or_else(|| crate::fatal("pool listener is not registered"))(
             kind, host, port, backlog,
         )
     })
@@ -241,11 +243,11 @@ fn listen(
     pool: &PoolRecord,
     host: &CStr,
     port: c_int,
-    make: impl FnOnce() -> Option<crate::pool::Connection>,
+    make: impl FnOnce() -> Option<crate::process::pool::Connection>,
 ) -> bool {
-    if pool.ipc_mode.get() != crate::process_pool::IpcMode::Socket {
-        swoole_rs_corebase::log::error_log(
-            swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+    if pool.ipc_mode.get() != crate::process::process_pool::IpcMode::Socket {
+        crate::log::error_log(
+            crate::log::LogLevel::SW_LOG_WARNING,
             swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int,
             c"ProcessPool::listen",
             format_args!("not support, ipc_mode must be SW_IPC_SOCKET"),
@@ -275,7 +277,7 @@ pub fn response(pool: PoolRef<'_>, data: &[u8]) -> bool {
         .unwrap_or(false);
     if !written {
         // SW_ERROR_INVALID_PARAMS.
-        swoole_rs_corebase::log::set_last_error(505);
+        crate::log::set_last_error(505);
     }
     written
 }
@@ -292,7 +294,7 @@ pub fn send_message(
     worker_id: u32,
     message: &[u8],
 ) -> bool {
-    use swoole_rs_corebase::DataHead;
+    use crate::DataHead;
     let handle = pool;
     let pool = pool.record();
     // `get_worker`: the pool's record for `worker_id`.
@@ -308,7 +310,7 @@ pub fn send_message(
         // `pipe_master->send_async(message)`: the pipe's write, through the event
         // loop while one is available. Upstream returns its ssize_t as the bool, so a
         // failure is true too.
-        let (id, flags) = (worker.id(), crate::pool::PIPE_NONBLOCK);
+        let (id, flags) = (worker.id(), crate::process::pool::PIPE_NONBLOCK);
         let sent = swr_v1_process_worker_send(native, handle, pipe, false, id, message, flags);
         return sent != Some(0);
     }
@@ -334,7 +336,7 @@ pub fn pop_message(pool: PoolRef<'_>, data: &mut [u8]) -> Option<usize> {
 
 /// `Worker::set_max_request(max_request, grace)`: this process's request limit.
 pub fn worker_set_max_request(max_request: u32, grace: u32) {
-    worker_global_max_requests(max_request, grace, swoole_rs_corebase::swoole_system_random);
+    worker_global_max_requests(max_request, grace, crate::swoole_system_random);
 }
 
 /// `swoole::ExitStatus`: a child's pid and `waitpid` status.
@@ -368,11 +370,11 @@ pub fn worker_report_error(worker: Worker<'_>, exit_status: &ExitStatus) {
     let ExitStatus { pid, status } = exit_status;
     let signal = libc::WTERMSIG(*status);
     let report = if signal == libc::SIGSEGV {
-        swoole_rs_corebase::bug_report_message()
+        crate::bug_report_message()
     } else {
         String::new()
     };
-    swoole_rs_corebase::log::warning(
+    crate::log::warning(
         c"Worker::report_error",
         format_args!(
             "worker(pid={pid}, id={id}) abnormal exit, status={}, signal={signal}{report}",
@@ -384,7 +386,7 @@ pub fn worker_report_error(worker: Worker<'_>, exit_status: &ExitStatus) {
 /// `swoole::reload_warn`: a reload's failed or forced kill, under the
 /// `ReloadTask` method upstream logged it from; `errno` is the failed kill's.
 pub fn reload_warn(kind: KillWarning, pid: c_int, worker_id: u32) {
-    use swoole_rs_corebase::log::{sys_warning, warning};
+    use crate::log::{sys_warning, warning};
     match kind {
         KillWarning::KillOneFailed => sys_warning(
             c"ReloadTask::kill_one",
@@ -465,16 +467,13 @@ pub fn swoole_get_worker_symbol() -> std::ffi::c_char {
 }
 
 /// The process logger's native effects.
-#[cfg(feature = "upstream-symbols")]
-const LOGGER_HOST: swoole_rs_corebase::utilities::LoggerHost =
-    swoole_rs_corebase::utilities::LoggerHost {
-        redirect: swoole_rs_corebase::swoole_redirect_stdout,
-        identity: logger_identity,
-    };
+const LOGGER_HOST: crate::utilities::LoggerHost = crate::utilities::LoggerHost {
+    redirect: crate::swoole_redirect_stdout,
+    identity: logger_identity,
+};
 
-#[cfg(feature = "upstream-symbols")]
-fn logger_identity() -> swoole_rs_corebase::utilities::LoggerIdentity {
-    swoole_rs_corebase::utilities::LoggerIdentity {
+fn logger_identity() -> crate::utilities::LoggerIdentity {
+    crate::utilities::LoggerIdentity {
         worker_id: swoole_get_worker_id().cast_signed(),
         worker_pid: swoole_get_worker_pid(),
         worker_symbol: swoole_get_worker_symbol(),
@@ -483,53 +482,47 @@ fn logger_identity() -> swoole_rs_corebase::utilities::LoggerIdentity {
 
 /// The process logger. `SwooleG.logger` points here, as at a `swoole::Logger`,
 /// whose only member is its logger.
-#[cfg(feature = "upstream-symbols")]
-static LOGGER: std::sync::atomic::AtomicPtr<swoole_rs_corebase::utilities::Logger> =
+static LOGGER: std::sync::atomic::AtomicPtr<crate::utilities::Logger> =
     std::sync::atomic::AtomicPtr::new(ptr::null_mut());
 
 /// The logger [`LOGGER`] points at, which this owns from `new` until `delete`.
-#[cfg(feature = "upstream-symbols")]
-static OWNER: std::sync::Mutex<Option<std::sync::Arc<swoole_rs_corebase::utilities::Logger>>> =
+static OWNER: std::sync::Mutex<Option<std::sync::Arc<crate::utilities::Logger>>> =
     std::sync::Mutex::new(None);
 
-/// The process logger's `new Logger()` on `SwooleG.stdout`, `->reopen()`, `->close()`
-/// and `delete`, which `swoole_init` registers for corebase's lifecycles.
-#[cfg(feature = "upstream-symbols")]
-pub fn logger_op(op: swoole_rs_corebase::native::LoggerOp) {
-    use std::sync::atomic::Ordering::Relaxed;
-    use swoole_rs_corebase::native::LoggerOp;
-    use swoole_rs_corebase::utilities::{Logger, process_logger};
-    let owner = || {
+/// Create the process logger on `SwooleG.stdout`.
+pub fn logger_new() {
+    use crate::utilities::Logger;
+    let stdout = crate::swr_v1_core_stdout();
+    let logger = std::sync::Arc::new(Logger::new(stdout, LOGGER_HOST));
+    LOGGER.store(std::sync::Arc::as_ptr(&logger).cast_mut(), Relaxed);
+    // A logger `new` replaces is leaked, as upstream's pointer overwrite does.
+    _ = OWNER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .replace(logger)
+        .map(std::sync::Arc::into_raw);
+    crate::swr_v1_core_set_logger(LOGGER.as_ptr().cast());
+}
+
+/// Drop the process logger after its final close.
+pub(crate) fn logger_delete() {
+    crate::swr_v1_core_set_logger(ptr::null_mut());
+    LOGGER.store(ptr::null_mut(), Relaxed);
+    drop(
         OWNER
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-    };
-    match op {
-        LoggerOp::New => {
-            let stdout = swoole_rs_corebase::swr_v1_core_stdout();
-            let logger = std::sync::Arc::new(Logger::new(stdout, LOGGER_HOST));
-            LOGGER.store(std::sync::Arc::as_ptr(&logger).cast_mut(), Relaxed);
-            // A logger `new` replaces is leaked, as upstream's pointer overwrite does.
-            _ = owner().replace(logger).map(std::sync::Arc::into_raw);
-            swoole_rs_corebase::swr_v1_core_set_logger(LOGGER.as_ptr().cast());
-        }
-        LoggerOp::Reopen => process_logger().into_iter().for_each(Logger::reopen),
-        LoggerOp::Close => process_logger().into_iter().for_each(Logger::close),
-        LoggerOp::Delete => {
-            swoole_rs_corebase::swr_v1_core_set_logger(ptr::null_mut());
-            LOGGER.store(ptr::null_mut(), Relaxed);
-            drop(owner().take());
-        }
-    }
+            .take(),
+    );
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::pool::{
+    use crate::log::capture;
+    use crate::process::pool::{
         pool_ipc_address, pool_ipc_free, pool_ipc_new, swr_v1_process_pool_ipc_listener,
     };
-    use swoole_rs_corebase::log::capture;
 
     thread_local! {
         /// This thread's logs, kept so each origin reads its own.
@@ -557,11 +550,12 @@ pub(crate) mod tests {
         capture::install();
     }
 
-    fn make(kind: c_int, port: c_int) -> Option<crate::pool::Connection> {
-        (kind == 1 && port == 9501).then(|| -> crate::pool::Connection { std::rc::Rc::new(port) })
+    fn make(kind: c_int, port: c_int) -> Option<crate::process::pool::Connection> {
+        (kind == 1 && port == 9501)
+            .then(|| -> crate::process::pool::Connection { std::rc::Rc::new(port) })
     }
 
-    fn keep(_: crate::pool::Connection) {}
+    fn keep(_: crate::process::pool::Connection) {}
 
     #[test]
     fn listen_needs_a_socket_pool_and_keeps_its_listener() {
@@ -569,7 +563,8 @@ pub(crate) mod tests {
         // SAFETY: a zeroed record is a pool before `create`.
         let pool: PoolRecord = unsafe { std::mem::zeroed() };
         pool.ipc.set(pool_ipc_new(true));
-        pool.ipc_mode.set(crate::process_pool::IpcMode::UnixSock);
+        pool.ipc_mode
+            .set(crate::process::process_pool::IpcMode::UnixSock);
         let refused = listen(&pool, c"127.0.0.1", 9501, || make(1, 9501));
         assert!(!refused, "an SW_IPC_UNIXSOCK pool has no stream listener");
         assert_eq!(
@@ -582,7 +577,8 @@ pub(crate) mod tests {
             )],
             "the upstream warning"
         );
-        pool.ipc_mode.set(crate::process_pool::IpcMode::Socket);
+        pool.ipc_mode
+            .set(crate::process::process_pool::IpcMode::Socket);
         let failed = listen(&pool, c"127.0.0.1", 9502, || make(1, 9502));
         assert!(!failed, "no socket, no listener");
         // SAFETY: the pool's IPC state.
@@ -615,7 +611,7 @@ pub(crate) mod tests {
         let none = pop_message(PoolRef::from(&mut pool), &mut out);
         assert_eq!(none, None, "no box");
         // 2 is SW_CHAN_LOCK.
-        let channel = swoole_rs_corebase::memory::SharedChannel::make(256, 16, 2);
+        let channel = crate::memory::SharedChannel::make(256, 16, 2);
         pool.message_box = channel.expect("a box");
         for message in [&b"first"[..], b"second"] {
             let pushed = pool
@@ -639,11 +635,7 @@ pub(crate) mod tests {
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
         pool.ipc.set(pool_ipc_new(true));
         assert!(!response(PoolRef::from(&mut pool), b"ok"), "no connection");
-        assert_eq!(
-            swoole_rs_corebase::log::last_error(),
-            505,
-            "SW_ERROR_INVALID_PARAMS"
-        );
+        assert_eq!(crate::log::last_error(), 505, "SW_ERROR_INVALID_PARAMS");
         // SAFETY: the pool's IPC state, not used again.
         pool_ipc_free(*unsafe { Box::from_raw(pool.ipc.get()) }, keep);
     }

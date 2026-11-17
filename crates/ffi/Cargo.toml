@@ -51,7 +51,6 @@ swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
 swoole-rs-hooks = { path = "../hooks", features = ["upstream-symbols"] }
 swoole-rs-phpruntime = { path = "../phpruntime", features = ["upstream-symbols"] }
 swoole-rs-tls = { path = "../tls", features = ["upstream-symbols"] }
-swoole-rs-process = { path = "../process", features = ["upstream-symbols"] }
 swoole-rs-phpprocess = { path = "../phpprocess", optional = true }
 swoole-rs-phpthread = { path = "../phpthread", optional = true }
 swoole-rs-clients = { path = "../clients" }

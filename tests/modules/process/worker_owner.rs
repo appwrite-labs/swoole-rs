@@ -54,7 +54,7 @@ fn server_retains_record_pipe_and_queue_after_the_process_drops() {
     assert_eq!(worker.id(), 0);
     assert_eq!(
         worker.kind(),
-        Some(swoole_rs_process::worker_record::WorkerType::User)
+        Some(swoole_rs_corebase::process::worker_record::WorkerType::User)
     );
     assert!(file.is_some() && file_of(fd) == file);
     assert!(queue_exists(queue));

@@ -311,7 +311,7 @@ fn send_message(call: &Call) {
         );
         return call.set_bool(false);
     }
-    let mut buf = swoole_rs_process::task_file::TaskBuffer::default();
+    let mut buf = swoole_rs_corebase::process::task_file::TaskBuffer::default();
     if call
         .value(1)
         .is_none_or(|data| crate::task::pack(data, &mut buf).is_none())

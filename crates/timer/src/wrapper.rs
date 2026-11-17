@@ -147,7 +147,7 @@ pub fn cancel_held(held: Held) {
     }
 }
 
-/// [`cancel_held`] of a held timer kept as its generation and id (crates/process's
+/// [`cancel_held`] of a held timer kept as its generation and id (`corebase::process`'s
 /// `ArmedTimer`): parts no timer issued name none, or at worst another timer of this
 /// thread, as any id does.
 pub extern "C-unwind" fn cancel_issued(generation: u64, id: c_long) {

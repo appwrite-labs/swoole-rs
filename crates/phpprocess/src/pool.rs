@@ -1,10 +1,19 @@
 //! `Swoole\Process\Pool`: registration, objects, methods and the pool's event
-//! callbacks, over crates/process's `ProcessPool` (`PoolRecord`).
+//! callbacks, over `corebase::process`'s `ProcessPool` (`PoolRecord`).
 use crate::{
     host::{self, Callable},
     process::set_worker_of,
     report::{INVALID_PARAMS, OPERATION_NOT_SUPPORT, cli, fatal, notice, set_last_error},
     signal::clean,
+};
+use process::process_pool::IpcMode;
+use process::process_pool::{Hooks, MessageFn, PoolRef, RecvData, WorkerFn};
+use process::worker_record::{Worker, WorkerRecord, WorkerStatus, WorkerType};
+use process::{
+    methods,
+    process_pool::{PoolRecord, Protocol, max_package_size, packet_limit},
+    signal::swoole_signal_isset,
+    worker_record,
 };
 use std::{
     cell::{Cell, OnceCell, UnsafeCell},
@@ -14,16 +23,8 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::process;
 use swoole_rs_phpstubs::process_pool;
-use swoole_rs_process::process_pool::IpcMode;
-use swoole_rs_process::process_pool::{Hooks, MessageFn, PoolRef, RecvData, WorkerFn};
-use swoole_rs_process::worker_record::{Worker, WorkerRecord, WorkerStatus, WorkerType};
-use swoole_rs_process::{
-    methods,
-    process_pool::{PoolRecord, Protocol, max_package_size, packet_limit},
-    signal::swoole_signal_isset,
-    worker_record,
-};
 use swoole_rs_reactor::Heap;
 use swoole_rs_reactor::signal_upstream::Handler as SignalHandler;
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
@@ -111,7 +112,7 @@ impl Drop for Pool {
 
 /// `SwooleWG.worker`'s status, and its request count once idle again.
 fn worker_busy(busy: bool) {
-    swoole_rs_process::worker_globals::with_current(|worker| {
+    process::worker_globals::with_current(|worker| {
         if busy {
             worker.set_status(WorkerStatus::Busy);
         } else {
@@ -251,7 +252,7 @@ method_table! {
 /// inside the trap and leave it before re-raising.
 struct Bailouts;
 
-impl swoole_rs_process::pool::Bailouts for Bailouts {
+impl process::pool::Bailouts for Bailouts {
     fn contain(&self, body: &mut dyn FnMut()) -> bool {
         swoole_rs_zend::contain_with(body).is_err()
     }
@@ -265,7 +266,7 @@ impl swoole_rs_process::pool::Bailouts for Bailouts {
 /// `php_swoole_process_pool_minit`: register `Swoole\Process\Pool`.
 /// Runs after the Process MINIT.
 pub fn php_swoole_process_pool_minit(minit: &Minit) {
-    swoole_rs_process::pool::set_bailout(&Bailouts);
+    process::pool::set_bailout(&Bailouts);
     minit.register_object::<PoolObject>(c"Swoole\\Process\\Pool", METHODS.table(), 0);
     for name in [c"master_pid", c"workerPid", c"workerId"] {
         minit.property_long(&POOL, name, -1, ZEND_ACC_PUBLIC);
@@ -296,7 +297,7 @@ fn update_long(object: &Value, name: &std::ffi::CStr, value: i64) {
 }
 
 fn getpid() -> i64 {
-    i64::from(swoole_rs_process::os::getpid())
+    i64::from(process::os::getpid())
 }
 
 /// Call a pool callback with `$pool` (and the worker id), as upstream's

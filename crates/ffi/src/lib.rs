@@ -60,7 +60,7 @@ pub use swoole_rs_corebase::ossupport::*;
 // Reactor's Socket patch calls the TLS reads and writes in crates/tls.
 pub use swoole_rs_tls::*;
 
-pub use swoole_rs_process::*;
+pub use swoole_rs_corebase::process::*;
 
 #[cfg(feature = "php")]
 pub use swoole_rs_phpprocess::*;

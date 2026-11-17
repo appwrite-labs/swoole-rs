@@ -4,8 +4,8 @@
 //! the unit tests' recorder, or, in a build that links none of it, the defaults below.
 use core::ffi::{c_int, c_long};
 use swoole_rs_corebase::DataHead;
-use swoole_rs_process::command::CommandRoute;
-use swoole_rs_process::task_file::TaskBuffer;
+use swoole_rs_corebase::process::command::CommandRoute;
+use swoole_rs_corebase::process::task_file::TaskBuffer;
 
 use swoole_rs_reactor::Socket;
 
@@ -231,7 +231,7 @@ pub(crate) trait Hybrid: Sync {
     fn task_pool(
         &self,
         _serv: Server<'_>,
-        _ipc: swoole_rs_process::process_pool::IpcMode,
+        _ipc: swoole_rs_corebase::process::process_pool::IpcMode,
         _socket: Option<&core::ffi::CStr>,
     ) -> bool {
         missing()
@@ -308,7 +308,13 @@ pub(crate) mod tests {
         BeforeShutdown,
         Reload(bool),
         /// The target, process, command, request and message length.
-        CommandSend(swoole_rs_process::command::Target, u32, i32, i64, usize),
+        CommandSend(
+            swoole_rs_corebase::process::command::Target,
+            u32,
+            i32,
+            i64,
+            usize,
+        ),
         /// The head's session, reactor and kind.
         ToReactorThread(c_long, i16, u8),
         /// The send's session, kind and length, and its task's offset, length and the
@@ -469,7 +475,7 @@ pub(crate) mod tests {
         fn task_pool(
             &self,
             _: Server<'_>,
-            ipc: swoole_rs_process::process_pool::IpcMode,
+            ipc: swoole_rs_corebase::process::process_pool::IpcMode,
             socket: Option<&core::ffi::CStr>,
         ) -> bool {
             hear(Call::TaskPool(ipc.code(), socket.is_some()))

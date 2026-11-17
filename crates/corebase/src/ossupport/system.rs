@@ -442,7 +442,7 @@ mod tests {
     }
 
     /// Upstream's `os.cpu_affinity`. `swoole_set_cpu_affinity` and `swoole_get_cpu_affinity`
-    /// left the build (Rust pins workers in crates/process `affinity.rs`), so the set and
+    /// left the build (Rust pins workers in `corebase::process` `affinity.rs`), so the set and
     /// the gets are their bodies, `sched_setaffinity(getpid())` and
     /// `sched_getaffinity(getpid())`, as `CpuSet` makes them.
     #[cfg(target_os = "linux")]
