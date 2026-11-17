@@ -1,12 +1,12 @@
 # Unsafe code by crate
 
-`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `b4bad31`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
+`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `2bc55b1`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
 
 | crate | unsafe | forbids |
 | --- | ---: | :---: |
 | `corebase` | 148 |  |
 | `zend` | 73 |  |
-| `server` | 49 |  |
+| `server` | 47 |  |
 | `hooks` | 29 |  |
 | `curl` | 14 |  |
 | `phpcoroutines` | 13 |  |
@@ -17,14 +17,13 @@
 | `oracle` | 8 |  |
 | `ports` | 7 |  |
 | `bus` | 6 |  |
-| `clients` | 6 |  |
 | `phpclients` | 6 |  |
+| `clients` | 5 |  |
 | `phpprocess` | 5 |  |
 | `tls` | 5 |  |
 | `zlib` | 4 |  |
 | `brotli` | 3 |  |
 | `firebird` | 3 |  |
-| `pgsql` | 3 |  |
 | `cares-sys` | 2 |  |
 | `sqlite` | 2 |  |
 | `ssh2` | 2 |  |
@@ -34,6 +33,7 @@
 | `locale` | 1 |  |
 | `oci` | 1 |  |
 | `odbc` | 1 |  |
+| `pgsql` | 1 |  |
 | `base64` | 0 | ✅ |
 | `crc32` | 0 | ✅ |
 | `deflate` | 0 | ✅ |
@@ -61,4 +61,4 @@
 | `websocket` | 0 | ✅ |
 | `zend-sys` | 0 |  |
 
-Total 440. Goal: the hardened runtime ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893), [#1902](https://github.com/appwrite-labs/swoole-rs/issues/1902)).
+Total 435. Goal: the hardened runtime ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893), [#1902](https://github.com/appwrite-labs/swoole-rs/issues/1902)).
