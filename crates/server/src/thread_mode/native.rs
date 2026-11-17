@@ -5,7 +5,7 @@ use crate::Mode;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering;
 use std::rc::Rc;
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 
 use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::process::methods::{
@@ -115,7 +115,7 @@ pub(crate) fn start_worker_threads(serv: view::Server<'_>) -> bool {
         spawn(serv, tasks + workers + id, WorkerType::User);
     }
     spawn(serv, manager_thread_id(serv), WorkerType::Manager);
-    if swoole_rs_reactor::swoole_event_init(0) < 0 {
+    if swoole_rs_corebase::reactor::swoole_event_init(0) < 0 {
         return false;
     }
     let reactor = Reactor::thread();
@@ -127,7 +127,7 @@ pub(crate) fn start_worker_threads(serv: view::Server<'_>) -> bool {
             continue;
         }
         if !(crate::port_config::methods().listen)(port.config()) {
-            swoole_rs_reactor::swoole_event_free();
+            swoole_rs_corebase::reactor::swoole_event_free();
             return false;
         }
         if let Some(socket) = serv.port_socket_at(at) {

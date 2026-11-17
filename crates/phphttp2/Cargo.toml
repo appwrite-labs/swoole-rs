@@ -23,7 +23,6 @@ php = [
     "swoole-rs-phpclients/php",
     "dep:swoole-rs-phpruntime",
     "swoole-rs-phpruntime/php",
-    "dep:swoole-rs-reactor",
     "dep:swoole-rs-corebase",
     "dep:swoole-rs-error",
     "dep:swoole-rs-framing",
@@ -47,7 +46,6 @@ swoole-rs-zend = { path = "../zend", optional = true }
 swoole-rs-phpstubs = { path = "../phpstubs", optional = true }
 swoole-rs-phphttp = { path = "../phphttp", optional = true }
 swoole-rs-phpruntime = { path = "../phpruntime", optional = true }
-swoole-rs-reactor = { path = "../reactor", optional = true }
 swoole-rs-corebase = { path = "../corebase", optional = true }
 swoole-rs-error = { path = "../error", optional = true }
 swoole-rs-framing = { path = "../framing", optional = true }

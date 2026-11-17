@@ -16,10 +16,10 @@ use std::{
 use swoole_rs_cares_sys::{self as sdk, swrs_cares_metadata as metadata};
 use swoole_rs_corebase::constants::{FdType, SW_DNS_SERVER_PORT};
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::reactor::{Event, Events, Running, SocketRecord, event_api};
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_corebase::{CCast, Hostent};
 use swoole_rs_error::ErrorCode;
-use swoole_rs_reactor::{Event, Events, Running, SocketRecord, event_api};
 use swoole_rs_tls::event_socket::EventSocket;
 
 /// A channel's socket-state callback: `(query id, fd, readable, writable)`.
@@ -179,7 +179,7 @@ fn cleanup() {
 }
 /// The first query of a reactor's lifetime: its handlers and library cleanup.
 fn install() {
-    let readable: swoole_rs_reactor::Handler = readable;
+    let readable: swoole_rs_corebase::reactor::Handler = readable;
     for (event, handler) in [(Events::READ, readable), (Events::WRITE, writable)] {
         event_api::set_handler(FD, event, Some(handler));
     }
@@ -400,7 +400,7 @@ fn millis(timeout: f64) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use swoole_rs_reactor::event_api::Deferred;
+    use swoole_rs_corebase::reactor::event_api::Deferred;
     thread_local! {
         static RESUMED: Cell<usize> = const { Cell::new(0) };
     }

@@ -12,11 +12,7 @@ pub struct NativeHost {
     /// stream and the fatal-error hook, the logger, the debug log level, the memory
     /// pool, the futex-less wait registry, signalfd and the bug report.
     pub init: fn(),
-    /// `swoole_signal_clear()`, which C++ calls too.
-    pub signal_clear: extern "C" fn(),
     pub timer_free: fn(),
-    pub event_available: fn() -> bool,
-    pub event_free: fn(),
 }
 
 static HOST: OnceLock<NativeHost> = OnceLock::new();

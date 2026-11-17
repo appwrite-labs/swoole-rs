@@ -31,7 +31,6 @@ swoole-rs-framing = { path = "../framing" }
 swoole-rs-http = { path = "../http" }
 swoole-rs-http-ffi = { path = "../http-ffi" }
 swoole-rs-bus = { path = "../bus" }
-swoole-rs-reactor = { path = "../reactor" }
 swoole-rs-tls = { path = "../tls" }
 swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 
@@ -39,6 +38,6 @@ swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 # The reactor's write handler, which `swr_v1_reactor_new` names, for tests that run one.
 swoole-rs-tls = { path = "../tls", features = ["upstream-symbols"] }
 swoole-rs-oracle = { path = "../oracle" }
-# The upstream symbols crates/clients and crates/reactor call, which the hybrid's
+# The upstream symbols crates/clients and `corebase::reactor` call, which the hybrid's
 # modules reach: System::init_reactor.
 swoole-rs-hooks = { path = "../hooks", features = ["upstream-symbols"] }

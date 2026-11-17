@@ -4,7 +4,7 @@ use core::ffi::{c_int, c_void};
 use core::marker::PhantomData;
 use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::net_types::PacketLength;
-pub use swoole_rs_reactor::Socket;
+pub use swoole_rs_corebase::reactor::Socket;
 
 /// `Protocol::onPackage`: hands on one whole package read from the socket. A caller
 /// passes the protocol the socket reads with, which the callback may ignore. The

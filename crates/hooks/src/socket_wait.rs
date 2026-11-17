@@ -7,7 +7,7 @@
 use crate::co_io::{CLOSE_WAIT_ERROR, Timer, available, ops, set_err};
 use crate::co_socket::Co;
 use core::ffi::c_void;
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 
 /// The state read before a wait, after consuming the open socket's backoff flag.
 struct WaitState {
@@ -263,7 +263,7 @@ pub(crate) fn poll(socket: Co, event: Events, timeout: f64) -> bool {
 /// object over `socket`, or left the reactor).
 ///
 /// A resumed coroutine may free the record but not `event_socket`.
-pub(crate) fn error_event(socket: Co, event_socket: swoole_rs_reactor::Socket<'_>) {
+pub(crate) fn error_event(socket: Co, event_socket: swoole_rs_corebase::reactor::Socket<'_>) {
     for event in [Events::WRITE, Events::READ] {
         let (object, removed) = event_socket.read(|record| (record.object, record.removed));
         if event == Events::READ && (object != socket.this() || removed) {
@@ -545,7 +545,7 @@ mod tests {
             s.0.err_code.set(9);
             error_event(
                 s.co(),
-                unsafe { swoole_rs_reactor::Socket::from_ptr(event_socket) }.unwrap(),
+                unsafe { swoole_rs_corebase::reactor::Socket::from_ptr(event_socket) }.unwrap(),
             );
             let mut want = vec!["resume:8".to_string()];
             if object_matches && !removed && !close_in_writer {

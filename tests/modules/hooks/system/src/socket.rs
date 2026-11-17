@@ -20,11 +20,11 @@ use std::io::{Read, Write};
 use std::mem::ManuallyDrop;
 use std::ptr;
 use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::reactor::{Events, TimeoutKind};
 use swoole_rs_corebase::{swoole_rand, swoole_random_int, swoole_type_size};
 use swoole_rs_hooks::co_socket::{self, Co, OwnedCo};
 use swoole_rs_hooks::vector::{IoVector, RecvMessage, SendMessage, Vectors};
 use swoole_rs_hooks::{TimeoutScope, co_io, packet};
-use swoole_rs_reactor::{Events, TimeoutKind};
 
 // glibc's values (the core-tests build is Linux).
 pub(super) const ECONNREFUSED: c_int = 111;
@@ -129,7 +129,7 @@ const _: () = assert!(
     "swr_v1_co_socket's layout moved"
 );
 
-/// The head of `network::Socket` (crates/reactor's `SocketRecord`) up to `event_hup`.
+/// The head of `network::Socket` (`corebase::reactor`'s `SocketRecord`) up to `event_hup`.
 #[repr(C)]
 struct NetHead {
     fd: c_int,
@@ -507,7 +507,8 @@ impl Sock {
     fn ssl_get_peer_cert(&self) -> Vec<u8> {
         let mut pem = vec![0_u8; SW_STACK_BUFFER_SIZE];
         // SAFETY: the open socket's network::Socket.
-        let socket = unsafe { swoole_rs_reactor::Socket::from_ptr(self.record().socket.cast()) };
+        let socket =
+            unsafe { swoole_rs_corebase::reactor::Socket::from_ptr(self.record().socket.cast()) };
         let length =
             swoole_rs_tls::upstream::socket_ssl_peer_certificate_pem(socket.unwrap(), &mut pem);
         pem.truncate(length.unwrap_or(0));

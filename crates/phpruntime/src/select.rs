@@ -4,8 +4,8 @@
 use crate::socket::{Report, convert_to_fd, coroutine_check, report};
 use std::{collections::HashMap, ptr};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::reactor::Events;
 use swoole_rs_hooks::poll::socket_poll_rows as poll;
-use swoole_rs_reactor::Events;
 use swoole_rs_zend::{
     ArrayMut, Call, CallFrame, E_WARNING, Owned, Value, ZStr, ZString,
     bailout::Bailout,

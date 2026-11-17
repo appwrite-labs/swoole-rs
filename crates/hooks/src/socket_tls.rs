@@ -8,7 +8,7 @@ use crate::socket_wait::wait_for;
 use core::ffi::{CStr, c_int};
 use std::sync::Arc;
 use swoole_rs_corebase::log;
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 use swoole_rs_tls::SslCreateFlag::{SW_SSL_CLIENT as CLIENT, SW_SSL_SERVER as SERVER};
 use swoole_rs_tls::upstream::{
     socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,

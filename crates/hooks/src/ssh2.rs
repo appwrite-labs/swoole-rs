@@ -4,7 +4,7 @@
 use crate::co_socket::Co;
 use core::ffi::{c_int, c_void};
 use core::marker::PhantomData;
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 use swoole_rs_ssh2_sys::LIBSSH2_SESSION;
 
 /// `php_ssh2_session_data`: four userspace callbacks, then the `SocketImpl *`, the
@@ -57,7 +57,7 @@ static OPS: Ops = Ops { wait };
 extern "C" fn wait(session: Session<'_>, event: c_int) -> bool {
     session
         .socket()
-        .poll(swoole_rs_reactor::Events::from_bits(event), 0.0)
+        .poll(swoole_rs_corebase::reactor::Events::from_bits(event), 0.0)
 }
 
 /// `ssh2_bound`: the wait, once no other coroutine is bound to the session's socket.
@@ -74,6 +74,6 @@ pub extern "C" fn swr_v1_ssh2_bound(session: Session<'_>) -> *const Ops {
 pub extern "C" fn swr_v1_ssh2_set_socket_timeout(session: Session<'_>, timeout_ms: c_int) {
     session.socket().set_timeout(
         f64::from(timeout_ms / 1000),
-        swoole_rs_reactor::TimeoutKind::ALL,
+        swoole_rs_corebase::reactor::TimeoutKind::ALL,
     );
 }

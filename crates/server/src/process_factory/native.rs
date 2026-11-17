@@ -11,7 +11,7 @@ use swoole_rs_corebase::process::methods::{
     worker_report_error,
 };
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerType};
-use swoole_rs_reactor::wait_upstream::swoole_waitpid;
+use swoole_rs_corebase::reactor::wait_upstream::swoole_waitpid;
 
 use super::{Pipe, worker_id};
 use crate::ConnectionRecord;

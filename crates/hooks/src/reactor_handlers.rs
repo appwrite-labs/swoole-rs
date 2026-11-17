@@ -6,7 +6,7 @@ use crate::socket_members;
 use crate::wait_event::{Parked, event_ready};
 use core::ffi::{c_int, c_void};
 use swoole_rs_corebase::constants::FdType;
-use swoole_rs_reactor::{Event, Events, Handler, Running};
+use swoole_rs_corebase::reactor::{Event, Events, Handler, Running};
 
 /// The fired socket's object and fd.
 fn fired(event: &Event) -> (*mut c_void, c_int) {
@@ -73,7 +73,12 @@ pub fn swr_v1_hook_init_reactor(mut set: impl FnMut(c_int, Events, Handler)) {
 #[cfg(feature = "upstream-symbols")]
 pub extern "C" fn system_init_reactor(reactor: Running<'_>) {
     let mut set = |fd_type, events: Events, handler| {
-        swoole_rs_reactor::reactor_upstream::set_handler(reactor, fd_type, events, Some(handler));
+        swoole_rs_corebase::reactor::reactor_upstream::set_handler(
+            reactor,
+            fd_type,
+            events,
+            Some(handler),
+        );
     };
     swr_v1_hook_init_reactor(&mut set);
     set(
@@ -98,7 +103,7 @@ fn wake(co: Parked) {
         return wake(co);
     }
     // Upstream dereferences the thread's null reactor; abort instead.
-    if swoole_rs_reactor::event_api::swoole_event_defer_value(co).is_err() {
+    if swoole_rs_corebase::reactor::event_api::swoole_event_defer_value(co).is_err() {
         swoole_rs_corebase::fatal("no reactor to defer the resume to");
     }
 }
@@ -113,7 +118,7 @@ mod tests {
     use super::*;
     use crate::wait_event::{EventWaitOps, Registered, wait_with};
     use std::cell::{Cell, RefCell};
-    use swoole_rs_reactor::SocketRecord;
+    use swoole_rs_corebase::reactor::SocketRecord;
 
     const CO: *mut c_void = 0x10 as *mut c_void;
 
@@ -172,8 +177,8 @@ mod tests {
                 7,
                 0,
                 FdType::SW_FD_CO_EVENT as c_int,
-                swoole_rs_reactor::Socket::from_ptr(SOCKET.get())
-                    .map(swoole_rs_reactor::Heap::from_static),
+                swoole_rs_corebase::reactor::Socket::from_ptr(SOCKET.get())
+                    .map(swoole_rs_corebase::reactor::Heap::from_static),
             )
         };
         for events in [Events::WRITE, Events::READ] {

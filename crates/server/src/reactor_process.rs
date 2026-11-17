@@ -5,8 +5,8 @@ use core::ffi::c_int;
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerType};
-use swoole_rs_reactor::Events;
-use swoole_rs_reactor::{Event, Running};
+use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::{Event, Running};
 
 use crate::callbacks::{CallbackKind, ServerSlot};
 use crate::hybrid::{Step, hybrid};

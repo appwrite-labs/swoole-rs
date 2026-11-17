@@ -8,14 +8,15 @@
 )]
 use core::ffi::{c_int, c_void};
 
-use swoole_rs_reactor::reactor_upstream::{
+use swoole_rs_corebase::reactor::reactor_upstream::{
     change as reactor_change, interest as reactor_interest, reactor_del, set_handler,
 };
-use swoole_rs_reactor::{ChangeOp, Events, Handler, Heap, Interest, Running, Socket};
+use swoole_rs_corebase::reactor::{ChangeOp, Events, Handler, Heap, Interest, Running, Socket};
 
 /// The key a reactor holds its server under: private, so only [`Reactor::hold_server`]
 /// stores an object under it.
-static SERVER: swoole_rs_reactor::ReactorObjectKey = swoole_rs_reactor::ReactorObjectKey::new();
+static SERVER: swoole_rs_corebase::reactor::ReactorObjectKey =
+    swoole_rs_corebase::reactor::ReactorObjectKey::new();
 
 /// The server's teardown: this thread's reactor, if it still holds `serv`, holds
 /// nothing from now on.
@@ -94,15 +95,18 @@ impl Reactor {
     }
     /// `reactor->trigger_close_event(event)`: the default error handler, whether it
     /// succeeded; false with none.
-    pub(crate) fn trigger_close(self, event: &mut swoole_rs_reactor::Event) -> bool {
-        swoole_rs_reactor::reactor_upstream::trigger_close_event(self.handle(), event)
+    pub(crate) fn trigger_close(self, event: &mut swoole_rs_corebase::reactor::Event) -> bool {
+        swoole_rs_corebase::reactor::reactor_upstream::trigger_close_event(self.handle(), event)
     }
     pub(crate) fn set_handler(self, fd_type: c_int, event: Events, handler: Handler) {
         set_handler(self.handle(), fd_type, event, Some(handler));
     }
     /// `reactor->set_default_error_handler(handler)`.
     pub(crate) fn set_error_handler(self, handler: Handler) {
-        swoole_rs_reactor::reactor_upstream::set_default_error_handler(self.handle(), handler);
+        swoole_rs_corebase::reactor::reactor_upstream::set_default_error_handler(
+            self.handle(),
+            handler,
+        );
     }
 }
 

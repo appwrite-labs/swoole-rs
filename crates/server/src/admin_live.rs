@@ -14,7 +14,7 @@ use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::process::worker_record::WorkerRecord;
-use swoole_rs_reactor::{SocketFields, SocketRecord};
+use swoole_rs_corebase::reactor::{SocketFields, SocketRecord};
 
 /// `zend_memory_usage(true)`, from the PHP binding.
 static PHP_MEMORY: OnceLock<extern "C" fn() -> usize> = OnceLock::new();
@@ -96,7 +96,7 @@ struct Live<'a> {
     state: &'a ServerState,
     config: &'a ServerConfig,
     tables: &'a ServerTables,
-    sockets: Vec<swoole_rs_reactor::Heap<'static>>,
+    sockets: Vec<swoole_rs_corebase::reactor::Heap<'static>>,
     connections: Vec<crate::Connection<'a>>,
 }
 
@@ -158,7 +158,7 @@ impl Facts for Live<'_> {
     }
 
     fn sockets(&mut self) -> u64 {
-        self.sockets = swoole_rs_reactor::event_api::swoole_event_sockets();
+        self.sockets = swoole_rs_corebase::reactor::event_api::swoole_event_sockets();
         self.sockets.len() as u64
     }
 
@@ -259,7 +259,8 @@ impl Facts for Live<'_> {
         Thread {
             id: thread.id.get().into(),
             dispatch_count: thread.dispatch_count.get(),
-            event_num: swoole_rs_reactor::event_api::swoole_event_num().unwrap_or(0) as u64,
+            event_num: swoole_rs_corebase::reactor::event_api::swoole_event_num().unwrap_or(0)
+                as u64,
             timer_num: swoole_rs_timer::thread_timer_count() as u64,
         }
     }
@@ -288,7 +289,7 @@ impl Facts for Live<'_> {
         let thread_buffer =
             swoole_rs_corebase::buffer::string::try_with_thread_buffer(|buffer| buffer.size())
                 .unwrap_or(0);
-        let sockets = swoole_rs_reactor::event_api::swoole_event_sockets();
+        let sockets = swoole_rs_corebase::reactor::event_api::swoole_event_sockets();
         let out_buffers = sockets.iter().map(|s| s.read(out_buffer_length)).sum();
         let php = PHP_MEMORY.get().map_or(0, |usage| usage());
         // The server's own records stand for upstream's `sizeof(Server)`.

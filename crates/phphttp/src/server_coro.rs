@@ -19,13 +19,13 @@ use std::{
 use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::buffer::string::CppString as Buffer;
+use swoole_rs_corebase::reactor::Events;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_members::Receive};
 use swoole_rs_httpbindings::Setting;
 use swoole_rs_phpclients::{NewSocket, get_socket, is_socket_closed, socket_settings};
 use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_phpswoole::SocketSettings;
-use swoole_rs_reactor::Events;
 use swoole_rs_zend::{
     Array, ArrayMut, Call, CallFrame, Custom, CustomClass, Key as ArrayKey, Minit, Owned,
     OwnedArray, Props, Value, ZString, bailout, handlers, method_table,
@@ -408,7 +408,7 @@ fn construct(call: &Call) {
             exception(call, EINVAL, "host is empty");
             return None;
         }
-        let kind = swoole_rs_reactor::host_type(host);
+        let kind = swoole_rs_corebase::reactor::host_type(host);
         let Ok(listener) =
             swoole_rs_phpclients::new_socket(-1, 0, kind.socket_type.raw(), 0, false)
         else {

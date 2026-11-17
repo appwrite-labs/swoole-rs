@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, Ordering::Relaxed};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::coroutine::Waker;
-use swoole_rs_reactor::signal_upstream::Handler;
+use swoole_rs_corebase::reactor::signal_upstream::Handler;
 
 /// `SW_SIGNO_MAX`.
 const SIGNO_MAX: i32 = 128;
@@ -251,8 +251,8 @@ mod native {
         swr_v1_core_signal_listener_num,
     };
 
-    use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
-    use swoole_rs_reactor::signal_upstream::{self, Handler};
+    use swoole_rs_corebase::reactor::event_api::{Deferred, swoole_event_defer_value};
+    use swoole_rs_corebase::reactor::signal_upstream::{self, Handler};
 
     /// A non-coroutine signal listener exists.
     pub(super) fn busy() -> bool {
@@ -324,8 +324,8 @@ mod native {
             swr_v1_core_set_signal_async_listener_num(count.wrapping_sub(1));
             return;
         }
-        swoole_rs_reactor::swr_v1_event_set_exit_condition(
-            swoole_rs_reactor::ExitCondition::CoSignalListener,
+        swoole_rs_corebase::reactor::swr_v1_event_set_exit_condition(
+            swoole_rs_corebase::reactor::ExitCondition::CoSignalListener,
             listeners_done,
         );
         swr_v1_core_set_signal_async_listener_num(count + 1);

@@ -5,7 +5,7 @@
 use crate::socket_wait::Retry;
 use core::ffi::{CStr, c_void};
 use std::io;
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 
 /// Whether the socket is connected and which directions are shut.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

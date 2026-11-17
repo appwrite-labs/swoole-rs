@@ -191,7 +191,7 @@ impl DnsUdp {
             socket
                 .0
                 .co()
-                .set_timeout(timeout, swoole_rs_reactor::TimeoutKind::ALL);
+                .set_timeout(timeout, swoole_rs_corebase::reactor::TimeoutKind::ALL);
         }
         socket
     }

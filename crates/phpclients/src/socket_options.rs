@@ -25,7 +25,7 @@ use swoole_rs_zend::{
     sys::{E_ERROR, E_WARNING, php_stream},
 };
 
-use swoole_rs_reactor::TimeoutKind;
+use swoole_rs_corebase::reactor::TimeoutKind;
 /// `SW_DATA_EOF_MAXLEN`.
 const EOF_MAXLEN: usize = 8;
 /// `SW_ERROR_OPERATION_NOT_SUPPORT`.
@@ -36,7 +36,7 @@ const OPERATION_NOT_SUPPORT: i64 =
 /// plus its 8-byte header, or -1 past 65535.
 fn fastcgi_length(
     _protocol: &Protocol,
-    _socket: Option<swoole_rs_reactor::Socket<'_>>,
+    _socket: Option<swoole_rs_corebase::reactor::Socket<'_>>,
     pl: &mut PacketLength,
 ) -> isize {
     pl.bytes()
@@ -311,7 +311,7 @@ fn set(s: &Array, socket: Co) -> Result<bool, Stop> {
         let on = v.truthy();
         let nodelay = c_int::from(on);
         socket.with_net(|net| {
-            if swoole_rs_reactor::swr_v1_socket_tcp_nodelay(net.fd(), nodelay) {
+            if swoole_rs_corebase::reactor::swr_v1_socket_tcp_nodelay(net.fd(), nodelay) {
                 net.edit(|record| record.tcp_nodelay = on);
             }
         });
@@ -734,7 +734,7 @@ fn socketpair(call: &Call) {
         return call.set_bool(false);
     };
     swoole_rs_phpruntime::check_reactor();
-    let kind = swoole_rs_reactor::socket_type(domain, kind).raw();
+    let kind = swoole_rs_corebase::reactor::socket_type(domain, kind).raw();
     let mut sockets = OwnedArray::default();
     for fd in pair {
         // The new descriptor, which the object takes over.
@@ -786,7 +786,7 @@ fn import(call: &Call) {
         warn_sys("getsockopt(SOL_SOCKET, SO_TYPE) failed", errno());
         return call.set_bool(false);
     }
-    let kind = swoole_rs_reactor::socket_type(domain, kind).raw();
+    let kind = swoole_rs_corebase::reactor::socket_type(domain, kind).raw();
     let flags = match swoole_rs_corebase::sys::fcntl(fd, libc::F_GETFL, 0) {
         Ok(flags) => flags,
         Err(error) => {

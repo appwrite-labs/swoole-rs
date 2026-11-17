@@ -70,7 +70,7 @@ pub(crate) fn websocket() -> Option<Box<dyn WebSocket>> {
 }
 
 use swoole_rs_corebase::CCast;
-use swoole_rs_reactor::{Events, TimeoutKind};
+use swoole_rs_corebase::reactor::{Events, TimeoutKind};
 /// `SW_WEBSOCKET_HEADER_LEN`.
 const WEBSOCKET_HEADER_LEN: u8 = 2;
 
@@ -164,7 +164,7 @@ impl Co {
     /// allocator.
     pub(crate) fn configure_http(self, timeout: f64, hook: CloseHook) {
         let timeout = if timeout == 0.0 {
-            swoole_rs_reactor::SOCKET_DEFAULTS.connect.get()
+            swoole_rs_corebase::reactor::SOCKET_DEFAULTS.connect.get()
         } else {
             timeout
         };
@@ -223,7 +223,7 @@ impl Co {
     /// A read `TimeoutController` (0: the default read timeout).
     pub(crate) fn read_timeout(self, timeout: f64) -> co::Timeout {
         let timeout = if timeout == 0.0 {
-            swoole_rs_reactor::SOCKET_DEFAULTS.read.get()
+            swoole_rs_corebase::reactor::SOCKET_DEFAULTS.read.get()
         } else {
             timeout
         };

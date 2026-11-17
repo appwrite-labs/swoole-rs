@@ -7,7 +7,7 @@ use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
 use swoole_rs_corebase::memory::members::Shm;
-use swoole_rs_reactor::{Heap, Socket};
+use swoole_rs_corebase::reactor::{Heap, Socket};
 use swoole_rs_tls::{SslVersion, TlsContext};
 
 use crate::view::Port;
@@ -17,7 +17,7 @@ use crate::view::Port;
 /// touches the connection meanwhile. Only that read makes one.
 pub struct ReadEvent<'a> {
     server: crate::view::Server<'a>,
-    event: &'a mut swoole_rs_reactor::Event,
+    event: &'a mut swoole_rs_corebase::reactor::Event,
     connection: crate::Connection<'a>,
 }
 
@@ -26,7 +26,7 @@ impl<'a> ReadEvent<'a> {
     /// slot its `object` holds).
     pub(crate) fn new(
         server: crate::view::Server<'a>,
-        event: &'a mut swoole_rs_reactor::Event,
+        event: &'a mut swoole_rs_corebase::reactor::Event,
         connection: crate::Connection<'a>,
     ) -> Self {
         Self {
@@ -42,7 +42,7 @@ impl<'a> ReadEvent<'a> {
         self,
     ) -> (
         crate::view::Server<'a>,
-        &'a mut swoole_rs_reactor::Event,
+        &'a mut swoole_rs_corebase::reactor::Event,
         crate::Connection<'a>,
     ) {
         (self.server, self.event, self.connection)
@@ -52,7 +52,7 @@ impl<'a> ReadEvent<'a> {
 /// `int (*onRead)(Reactor *, ListenPort *, Event *)`: a port's readable callback, which
 /// the server's connection read calls under the running reactor, with the
 /// connection's port; false where upstream's returns `SW_ERR`.
-pub type Reader = fn(swoole_rs_reactor::Running<'_>, Port<'_>, ReadEvent<'_>) -> bool;
+pub type Reader = fn(swoole_rs_corebase::reactor::Running<'_>, Port<'_>, ReadEvent<'_>) -> bool;
 
 /// `ListenPort::onRead`'s slot: null, or a [`Reader`].
 #[repr(transparent)]
@@ -298,18 +298,18 @@ impl PortConfig {
 
     /// Make `socket` the port's listening socket, which the port owns until
     /// [`Self::take_socket`] gives it back.
-    pub fn set_listening_socket(&self, socket: swoole_rs_reactor::OwnedSocket) {
+    pub fn set_listening_socket(&self, socket: swoole_rs_corebase::reactor::OwnedSocket) {
         self.socket.set(Some(socket.leak()));
     }
 
     /// The listening socket's owner, taken from the port so nothing finds the record
     /// once the caller frees it.
     #[must_use]
-    pub fn take_socket(&self) -> Option<swoole_rs_reactor::OwnedSocket> {
+    pub fn take_socket(&self) -> Option<swoole_rs_corebase::reactor::OwnedSocket> {
         let socket = self.socket.replace(None)?;
         // SAFETY: only `set_listening_socket` stores a socket, an owner it leaked, and
         // the port no longer names it: this is its only owner.
-        Some(unsafe { swoole_rs_reactor::OwnedSocket::from_socket(*socket) })
+        Some(unsafe { swoole_rs_corebase::reactor::OwnedSocket::from_socket(*socket) })
     }
 
     /// The port's listening socket, or `None` before it has one or after it closes
@@ -372,7 +372,7 @@ impl PortConfig {
     /// `new ListenPort(serv)`: a port of `serv` with the default settings, whose box
     /// becomes the `ListenPort *`.
     pub(crate) fn new_port(serv: *mut c_void) -> Box<Self> {
-        let buffer_size = swoole_rs_reactor::SOCKET_DEFAULTS.buffer_size();
+        let buffer_size = swoole_rs_corebase::reactor::SOCKET_DEFAULTS.buffer_size();
         let mut config = Self::boxed(c_int::try_from(buffer_size).unwrap_or(c_int::MAX));
         config.protocol.get_mut().private_data_2 = serv;
         config
