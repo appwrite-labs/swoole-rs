@@ -1,6 +1,6 @@
 # CRC32
 
-ABI: `docs/core-abi-v1.md`. The overlay deletes `src/core/crc32.cc`; `crates/utilities`
+ABI: `docs/core-abi-v1.md`. The overlay deletes `src/core/crc32.cc`; `crates/corebase/src/utilities`
 defines `swoole_crc32` under its upstream symbol over the crate's safe `crc32`.
 
 The Rust crate implements reflected IEEE CRC32 without allocation, mutable

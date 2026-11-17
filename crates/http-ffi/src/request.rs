@@ -1,7 +1,7 @@
 //! `http_server::Request`, the HTTP/1 request a `ListenPort` parses (#931), and every
 //! operation over it. Its `FormData` is a Rust [`HttpForm`]. Its effects
 //! (`swoole::String` allocation, the upload's file and `swoole_tmpfile`) are direct
-//! calls, which tests run too. Its logs go to corebase's log host. Trace logs are
+//! calls, which tests run too. Its logs go through corebase's `log`. Trace logs are
 //! compiled out, as in upstream's builds without `--enable-trace-log`.
 use core::ffi::c_int;
 use core::ptr;

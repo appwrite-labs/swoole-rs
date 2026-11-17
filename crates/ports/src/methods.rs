@@ -1134,7 +1134,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn server_port_import() {
-        log::swr_v1_core_set_log_host(crate::read::tests::record);
+        log::capture::install();
         let mut port = Fresh::new();
         assert!(!crate::lifecycle::import(port.config(), libc::STDIN_FILENO));
         assert_eq!(log::last_error(), libc::ENOTSOCK);
@@ -1150,7 +1150,7 @@ mod tests {
     /// string, without the setter's file check.
     #[test]
     fn server_port_create() {
-        log::swr_v1_core_set_log_host(crate::read::tests::record);
+        log::capture::install();
         let port = unbound_port(1, "127.0.0.1", 0, true);
         let at = port.cast::<c_void>();
         assert_eq!(create_socket(at), 0, "add_port");

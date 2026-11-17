@@ -221,7 +221,7 @@ pub(crate) fn atomic(word: Option<&AtomicU32>) -> Result<&AtomicU32, c_int> {
 #[cfg(not(target_os = "linux"))]
 fn failed(code: c_int) -> c_int {
     if code != 0 {
-        swoole_rs_corebase::log::set_last_error(code);
+        crate::log::set_last_error(code);
     }
     -1
 }

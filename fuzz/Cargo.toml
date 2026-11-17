@@ -22,7 +22,6 @@ swoole-rs-inflate = { path = "../crates/inflate" }
 libc = "=0.2.191"
 swoole-rs-oracle = { path = "../crates/oracle" }
 swoole-rs-protocols = { path = "../crates/protocols" }
-swoole-rs-utilities = { path = "../crates/utilities" }
 swoole-rs-websocket = { path = "../crates/websocket" }
 
 [[bin]]

@@ -170,7 +170,7 @@ fn worker_id() -> u32 {
 
 fn set_log_file(file: &str) {
     let file = CString::new(file).unwrap();
-    swoole_rs_utilities::set_log_file(&file);
+    swoole_rs_corebase::utilities::set_log_file(&file);
 }
 
 fn set_log_level(level: c_int) {

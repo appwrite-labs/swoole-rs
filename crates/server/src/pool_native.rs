@@ -368,9 +368,9 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> bool {
 fn master_ops(pool: Pool<'_>, op: Op, arg: u64) {
     match op {
         Op::ReopenLogger => {
-            swoole_rs_utilities::process_logger()
+            swoole_rs_corebase::utilities::process_logger()
                 .into_iter()
-                .for_each(swoole_rs_utilities::Logger::reopen);
+                .for_each(swoole_rs_corebase::utilities::Logger::reopen);
         }
         Op::ReloadTimer => arm(pool, PoolTimer::Reload),
         Op::TimerInit => {

@@ -2,12 +2,12 @@
 // Compatibility derived from Swoole v6.2.4 src/core/misc.cc (Swoole contributors).
 //! misc.cc's spinlock, futex wait/wake and hashes (and crc32.cc's), defined under their upstream
 //! (Itanium) symbols with `upstream-symbols`; the corebase patch deletes the C++.
-use crate::{swoole_hash, swr_v1_utils_spinlock};
+use crate::constants::SW_SPINLOCK_LOOP_N;
+use crate::lent::{Count, In};
+use crate::swr_v1_core_cpu_num;
+use crate::utilities::{swoole_hash, swr_v1_utils_spinlock};
 use std::ffi::{c_char, c_int};
 use std::sync::atomic::AtomicU32;
-use swoole_rs_corebase::constants::SW_SPINLOCK_LOOP_N;
-use swoole_rs_corebase::lent::{Count, In};
-use swoole_rs_corebase::swr_v1_core_cpu_num;
 
 /// `void sw_spinlock(sw_atomic_t *lock)`.
 #[cfg_attr(
@@ -54,7 +54,7 @@ fn word(atomic: Option<&AtomicU32>) -> Result<&AtomicU32, c_int> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        crate::wait_registry::atomic(atomic)
+        crate::utilities::wait_registry::atomic(atomic)
     }
 }
 
@@ -63,11 +63,11 @@ fn word(atomic: Option<&AtomicU32>) -> Result<&AtomicU32, c_int> {
 pub fn futex_wait(word: &AtomicU32, timeout: f64) -> bool {
     #[cfg(target_os = "linux")]
     {
-        swoole_rs_corebase::locks::wait(word, timeout)
+        crate::locks::wait(word, timeout)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        crate::wait_registry::registry_wait(word, timeout)
+        crate::utilities::wait_registry::registry_wait(word, timeout)
     }
 }
 
@@ -76,11 +76,11 @@ pub fn futex_wait(word: &AtomicU32, timeout: f64) -> bool {
 pub fn futex_wakeup(word: &AtomicU32, n: c_int) -> Option<u32> {
     #[cfg(target_os = "linux")]
     {
-        swoole_rs_corebase::locks::wakeup(word, n)
+        crate::locks::wakeup(word, n)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        crate::wait_registry::registry_wakeup(word, n)
+        crate::utilities::wait_registry::registry_wakeup(word, n)
     }
 }
 
@@ -123,7 +123,7 @@ mod tests {
         ];
         for (algorithm, hash) in hashes {
             assert_eq!(
-                swoole_rs_corebase::lent::lend_in(key, |at, n: Count<'_>| hash(at, n)),
+                crate::lent::lend_in(key, |at, n: Count<'_>| hash(at, n)),
                 swoole_hash(key, algorithm, SIGNED_CHAR)
             );
         }

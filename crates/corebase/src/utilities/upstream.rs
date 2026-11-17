@@ -170,7 +170,9 @@ fn microsecond_suffixes() {
 /// mapping; every increment under it lands.
 #[test]
 fn spinlock_across_threads_and_a_fork() {
-    if crate::isolated_process::run_in_child("upstream::spinlock_across_threads_and_a_fork") {
+    if crate::utilities::isolated_process::run_in_child(
+        "utilities::upstream::spinlock_across_threads_and_a_fork",
+    ) {
         return;
     }
     let page = unsafe {
@@ -218,7 +220,7 @@ fn spinlock_across_threads_and_a_fork() {
 #[cfg(target_os = "linux")]
 #[test]
 fn futex_wait_and_wake_match_the_pin() {
-    use crate::misc::{sw_atomic_futex_wait, sw_atomic_futex_wakeup};
+    use crate::utilities::misc::{sw_atomic_futex_wait, sw_atomic_futex_wakeup};
     use swoole_rs_oracle::locks as pinned;
     let call = |word: u32, f: &dyn Fn(&AtomicU32) -> i32| {
         let word = AtomicU32::new(word);
@@ -251,9 +253,11 @@ fn futex_wait_and_wake_match_the_pin() {
 #[cfg(target_os = "linux")]
 #[test]
 fn futex_wakes_a_shared_waiter() {
-    use crate::misc::{sw_atomic_futex_wait, sw_atomic_futex_wakeup};
+    use crate::utilities::misc::{sw_atomic_futex_wait, sw_atomic_futex_wakeup};
     use swoole_rs_oracle::locks as pinned;
-    if crate::isolated_process::run_in_child("upstream::futex_wakes_a_shared_waiter") {
+    if crate::utilities::isolated_process::run_in_child(
+        "utilities::upstream::futex_wakes_a_shared_waiter",
+    ) {
         return;
     }
     shared_waiter(

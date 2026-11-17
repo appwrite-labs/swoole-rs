@@ -19,7 +19,7 @@ fn swr_v1_server_new(mode: c_int) -> ServerObject {
     let (mut config, mut tables) = crate::state::fresh_records();
     config.init_defaults(
         u32::from(swoole_rs_corebase::swr_v1_core_cpu_num()),
-        swoole_rs_utilities::timezone(),
+        swoole_rs_corebase::utilities::timezone(),
         Some(crate::reactor_ops::STD),
     );
     tables.set_max_connection(swoole_rs_corebase::max_sockets().min(100_000));

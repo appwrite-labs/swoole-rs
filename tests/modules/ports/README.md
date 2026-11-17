@@ -17,8 +17,7 @@ inputs and expected values (`cargo test -p swoole-rs-ports --all-features server
 
 The `Server` is the tests' head over a `ServerConfig` with `enable_reuse_port`, and
 `add_port` is the `create_socket` it calls. `swoole_get_last_error()` is set by the log
-host (crates/utilities' in production), so the tests install `read.rs`'s test host, which
-sets it the same way. `cert_file` is written into its slot, as upstream assigns the string,
+macros, which the tests turn on with `log::capture`, as `swoole_init` does. `cert_file` is written into its slot, as upstream assigns the string,
 without the setter's file check.
 
 `core-tests/src/server/server.cpp`'s `server.ssl_matches_wildcard_name` starts no server, so

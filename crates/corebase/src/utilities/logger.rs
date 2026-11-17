@@ -1,22 +1,22 @@
 //! `swoole::Logger` (upstream `src/core/log.cc`): level, date format, log file,
 //! rotation, stdout redirection and `put`, behind one lock. Diagnostics go out
-//! through corebase's log host; worker identity and `swoole_redirect_stdout` go
+//! through corebase's `log`; worker identity and `swoole_redirect_stdout` go
 //! through `LoggerHost` (crates/process's). Both run after the lock is released, so a
 //! diagnostic can log through this logger again. The log macros a Rust log runs
 //! (`swr_v1_utils_log`) are here too.
-use crate::{log_level, log_line, log_micros, log_rotation};
+use crate::lent::{Count, In};
+use crate::log;
+use crate::sys::{self, errno};
+use crate::utilities::{log_level, log_line, log_micros, log_rotation};
+use crate::{CCast, Stream};
 use libc::{c_char, c_int};
 use std::ffi::{CStr, CString};
 use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
-use swoole_rs_corebase::lent::{Count, In};
-use swoole_rs_corebase::log;
-use swoole_rs_corebase::sys::{self, errno};
-use swoole_rs_corebase::{CCast, Stream};
 
 const SW_LOG_INFO: c_int = 2;
-const SW_LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
+const SW_LOG_NOTICE: c_int = crate::log::LogLevel::SW_LOG_NOTICE as c_int;
 const SW_LOG_ERROR: c_int = 5;
 const SW_LOG_DATE_STRLEN: usize = 128;
 const SW_LOG_BUFFER_SIZE: usize = 16384 + 256;
@@ -93,7 +93,11 @@ fn now() -> (libc::time_t, i64) {
 
 /// `std::strftime(out, format, std::localtime(&time))`, through the reentrant
 /// `localtime_r`: the same calendar, without libc's shared record.
+/// Under Miri, which can't call strftime(3), it renders nothing: lines go out undated.
 fn strftime(out: &mut [u8], format: &CStr, time: libc::time_t) -> usize {
+    if cfg!(miri) {
+        return 0;
+    }
     sys::localtime_r(time).map_or(0, |tm| sys::strftime(out, format, &tm))
 }
 
@@ -412,7 +416,7 @@ impl Logger {
         }
         let mut identity = (self.host.identity)();
         if identity.worker_pid == 0 {
-            identity.worker_pid = swoole_rs_corebase::sys::getpid();
+            identity.worker_pid = crate::sys::getpid();
         }
         self.with(|state, effects| state.write(level, content, &identity, effects));
     }
@@ -440,7 +444,7 @@ pub extern "C" fn swr_v1_logger_put<'id>(
 /// this crate's `Logger`, or null before `swoole_init`.
 #[must_use]
 pub fn process_logger() -> Option<&'static Logger> {
-    let cpp = swoole_rs_corebase::swr_v1_core_logger().cast::<&'static Logger>();
+    let cpp = crate::swr_v1_core_logger().cast::<&'static Logger>();
     // SAFETY: null, or a live `swoole::Logger` whose only member is a non-null pointer
     // to a live Logger (crates/process's `LOGGER`, freed only with the object).
     unsafe { cpp.as_ref() }.copied()
@@ -478,7 +482,7 @@ pub fn set_log_file(file: &CStr) {
 /// The log macros (`swoole_log.h`) for a log Rust emits on behalf of `origin`, of
 /// corebase's `LogKind` (crates/corebase/src/log.rs): the last error, the level
 /// check, the line formatted into `sw_error`, the put and, for the errors, the exit.
-/// `swoole_init` registers it as corebase's log host.
+/// corebase's `log` calls it once `swoole_init` has run.
 pub fn swr_v1_utils_log(
     kind: log::LogKind,
     level: c_int,
@@ -490,13 +494,13 @@ pub fn swr_v1_utils_log(
     let message = message.to_bytes();
     let threshold = swoole_get_log_level();
     let failed = || {
-        let reason = swoole_rs_error::strerror_text(code, swoole_rs_corebase::sys::strerror);
+        let reason = swoole_rs_error::strerror_text(code, crate::sys::strerror);
         let code = code.to_string();
         let tail = [b", Error: ", reason.to_bytes(), b"[", code.as_bytes(), b"]"];
         [origin, b"(): ", message, &tail.concat()].concat()
     };
     if matches!(kind, log::LogKind::SysWarning | log::LogKind::SysError) {
-        swoole_rs_corebase::set_errno(code);
+        crate::set_errno(code);
     }
     if matches!(kind, log::LogKind::SysWarning | log::LogKind::Error) {
         log::set_last_error(code);
@@ -526,7 +530,7 @@ pub fn swr_v1_utils_log(
         logger.put(level, line.get(..length).unwrap_or(&line));
     }
     if matches!(kind, log::LogKind::SysError | log::LogKind::Fatal) {
-        swoole_rs_corebase::swoole_exit(1);
+        crate::swoole_exit(1);
     }
 }
 
@@ -536,21 +540,7 @@ mod ported;
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use swoole_rs_corebase::lent::lend_in;
-
-    /// A corebase log call: kind, level, code, origin and message.
-    type Logged = (log::LogKind, c_int, c_int, String, String);
-
-    thread_local! {
-        static HOST: RefCell<Vec<Logged>> = const { RefCell::new(Vec::new()) };
-    }
-
-    fn logged(kind: log::LogKind, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
-        let text = |s: &CStr| s.to_string_lossy().into_owned();
-        let entry = (kind, level, code, text(origin), text(message));
-        HOST.with(|host| host.borrow_mut().push(entry));
-    }
+    use crate::lent::lend_in;
 
     extern "C" fn redirect(_: c_int) {}
 
@@ -564,9 +554,10 @@ pub(crate) mod tests {
 
     const HOST_FAKE: LoggerHost = LoggerHost { redirect, identity };
 
-    fn host() -> Vec<Logged> {
-        swoole_rs_corebase::log::swr_v1_core_set_log_host(logged);
-        HOST.with(RefCell::take)
+    /// The corebase log calls this thread made since the last call. The cases that read
+    /// them run in a child, so the process logger stays out of the tests that reset the record.
+    fn host() -> Vec<log::capture::Logged> {
+        log::capture::logged()
     }
 
     fn path(name: &str) -> (CString, std::path::PathBuf) {
@@ -585,6 +576,11 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no fdopen")]
     fn put_writes_the_upstream_line_to_the_log_file_at_or_above_the_level() {
+        let case = "utilities::logger::tests::put_writes_the_upstream_line_to_the_log_file_at_or_above_the_level";
+        if crate::utilities::isolated_process::run_in_child(case) {
+            return;
+        }
+        host();
         let logger = &Logger::new(None, HOST_FAKE);
         let (name, file_path) = path("put");
         assert!(logger.open(&name), "opened");
@@ -618,8 +614,12 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no strerror")]
     fn failures_are_logged_after_the_state_changes() {
-        let logger = &Logger::new(None, HOST_FAKE);
+        let case = "utilities::logger::tests::failures_are_logged_after_the_state_changes";
+        if crate::utilities::isolated_process::run_in_child(case) {
+            return;
+        }
         host();
+        let logger = &Logger::new(None, HOST_FAKE);
         unsafe {
             assert!(!logger.open(c"/nonexistent/dir/log"), "open fails");
             assert_eq!(
@@ -687,6 +687,11 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no localtime")]
     fn rotation_names_the_real_file_by_date_and_reset_restores_defaults() {
+        let case = "utilities::logger::tests::rotation_names_the_real_file_by_date_and_reset_restores_defaults";
+        if crate::utilities::isolated_process::run_in_child(case) {
+            return;
+        }
+        host();
         let logger = &Logger::new(None, HOST_FAKE);
         let (name, _) = path("rotate");
         logger.set_rotation(2);

@@ -55,12 +55,12 @@ fn identity() -> LoggerIdentity {
 }
 
 /// `sw_logger()`, with the process's `swoole_redirect_stdout`.
-fn sw_logger() -> &'static Logger {
+fn sw_logger() -> Logger {
     let host = LoggerHost {
-        redirect: swoole_rs_corebase::swoole_redirect_stdout,
+        redirect: crate::swoole_redirect_stdout,
         identity,
     };
-    Box::leak(Box::new(Logger::new(None, host)))
+    Logger::new(None, host)
 }
 
 fn put(logger: &Logger, level: c_int, text: &str) {
@@ -112,7 +112,7 @@ fn printf(text: &str) {
 #[cfg_attr(miri, ignore = "Miri has no fdopen")]
 fn level() {
     let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
-    let logger = sw_logger();
+    let logger = &sw_logger();
     // SW_MASTER, SW_MANAGER, SW_WORKER and SW_TASK_WORKER.
     for symbol in *b"#$*^" {
         SYMBOL.set(symbol);
@@ -160,7 +160,7 @@ fn level() {
 #[test]
 #[cfg_attr(miri, ignore = "Miri has no localtime")]
 fn date_format_long_string() {
-    let logger = sw_logger();
+    let logger = &sw_logger();
     logger.reset();
     logger.set_level(SW_LOG_ERROR);
     let format = "x".repeat(120) + "day %d of %B in the year %Y. Time: %I:%S %p";
@@ -204,7 +204,7 @@ fn microsecond_line(content: &str) -> bool {
 #[cfg_attr(miri, ignore = "Miri has no fdopen")]
 fn date_with_microseconds() {
     let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
-    let logger = sw_logger();
+    let logger = &sw_logger();
     logger.reset();
     logger.set_date_with_microseconds(true);
     open(logger, file());
@@ -222,7 +222,7 @@ fn date_with_microseconds() {
 #[cfg_attr(miri, ignore = "Miri has no fdopen")]
 fn rotation() {
     let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
-    let logger = sw_logger();
+    let logger = &sw_logger();
     let types = [
         SW_LOG_ROTATION_DAILY,
         SW_LOG_ROTATION_EVERY_MINUTE,
@@ -258,10 +258,10 @@ fn redirect_1() {
     // test binary rather than a fork of this threaded one (whose other threads may hold
     // libc locks), and fails the test unless it exits 0, where upstream's helper exited 0
     // anyway.
-    if crate::isolated_process::run_in_child("logger::ported::redirect_1") {
+    if crate::utilities::isolated_process::run_in_child("utilities::logger::ported::redirect_1") {
         return;
     }
-    let logger = sw_logger();
+    let logger = &sw_logger();
     logger.reset();
     assert!(!logger.redirect_stdout_and_stderr(true)); // no log file opened
     assert!(!logger.redirect_stdout_and_stderr(false)); // no redirected
@@ -289,13 +289,13 @@ fn redirect_2() {
     // test binary rather than a fork of this threaded one (whose other threads may hold
     // libc locks), and fails the test unless it exits 0, where upstream's helper exited 0
     // anyway.
-    if crate::isolated_process::run_in_child("logger::ported::redirect_2") {
+    if crate::utilities::isolated_process::run_in_child("utilities::logger::ported::redirect_2") {
         return;
     }
     let file = test_log_file();
     let str = "hello world, hello swoole\n";
 
-    let logger = sw_logger();
+    let logger = &sw_logger();
     logger.reset();
     open(logger, file);
     logger.redirect_stdout_and_stderr(true);
@@ -322,12 +322,12 @@ fn ignore_error() {
     // test binary rather than a fork of this threaded one (whose other threads may hold
     // libc locks), and fails the test unless it exits 0, where upstream's helper exited 0
     // anyway.
-    if crate::isolated_process::run_in_child("logger::ported::ignore_error") {
+    if crate::utilities::isolated_process::run_in_child("utilities::logger::ported::ignore_error") {
         return;
     }
-    let logger = sw_logger();
+    let logger: &'static Logger = Box::leak(Box::new(sw_logger()));
     let cpp: &'static &'static Logger = Box::leak(Box::new(logger));
-    swoole_rs_corebase::swr_v1_core_set_logger(std::ptr::from_ref(cpp).cast_mut().cast());
+    crate::swr_v1_core_set_logger(std::ptr::from_ref(cpp).cast_mut().cast());
     logger.reset();
     logger.set_level(SW_LOG_NOTICE);
     open(logger, file());
@@ -367,7 +367,7 @@ fn set_stream() {
         fn open_memstream(buffer: *mut *mut c_char, size: *mut usize) -> Option<Stream>;
     }
     let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
-    let logger = sw_logger();
+    let logger = &sw_logger();
     logger.reset();
     let mut buffer: *mut c_char = std::ptr::null_mut();
     let mut size = 0;

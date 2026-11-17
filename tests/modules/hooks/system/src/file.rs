@@ -1,7 +1,7 @@
 //! Upstream's `core-tests/src/os/file.cpp`, one function per TEST with the same inputs
 //! and expected values, over crates/corebase/src/ossupport's `file_api` and `file` (the bodies of
-//! `src/os/file.cc`). `ASSERT_ERREQ` reads the last error, which the log host
-//! `swoole_init` installs sets, so they run here. tests/modules/ossupport/README.md maps
+//! `src/os/file.cc`). `ASSERT_ERREQ` reads the last error, which the log macros
+//! set once `swoole_init` has run, so they run here. tests/modules/ossupport/README.md maps
 //! each TEST, including the ones with no subject left.
 
 use std::ffi::{CStr, c_int};

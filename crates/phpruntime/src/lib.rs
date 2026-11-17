@@ -511,7 +511,7 @@ fn features() -> u32 {
 /// `sw_logger()->put(SW_LOG_WARNING, message)`, which the level filters.
 fn log_warning(message: &CStr) {
     const SW_LOG_WARNING: i32 = 4;
-    if let Some(logger) = swoole_rs_utilities::process_logger() {
+    if let Some(logger) = swoole_rs_corebase::utilities::process_logger() {
         logger.put(SW_LOG_WARNING, message.to_bytes());
     }
 }

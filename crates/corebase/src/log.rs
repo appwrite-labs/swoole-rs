@@ -2,14 +2,13 @@
 // Compatibility derived from Swoole v6.2.4 include/swoole.h and include/swoole_log.h
 // (Swoole contributors).
 //! The thread's last error (`swoole_get_last_error`) and the logs Rust emits on
-//! behalf of an upstream function. crates/ffi's `swoole_init` registers the log
-//! macros once (`swr_v1_core_set_log_host`, crates/utilities'), so Rust names the
-//! function upstream's `__SW_FUNC__` did and corebase links without utilities.
+//! behalf of an upstream function, naming the function upstream's `__SW_FUNC__` did.
+//! Once `swoole_init` has run, they run the log macros (`utilities::swr_v1_utils_log`).
 
 use std::cell::Cell;
 use std::ffi::{CStr, CString, c_int};
 use std::fmt;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 thread_local! {
     static LAST_ERROR: Cell<c_int> = const { Cell::new(0) };
@@ -64,24 +63,25 @@ pub enum LogKind {
     Fatal,
 }
 
-/// The logging operation, its level and code, and text after `__SW_FUNC__`'s part.
-pub type LogHost = fn(kind: LogKind, level: c_int, code: c_int, origin: &CStr, message: &CStr);
+/// Whether `swoole_init` has run; Rust logs before it are dropped. `swoole_clean`
+/// leaves it set.
+static MACROS: AtomicBool = AtomicBool::new(false);
 
-static HOST: OnceLock<LogHost> = OnceLock::new();
-
-/// Registers native's log macros; later registrations are ignored.
-pub fn swr_v1_core_set_log_host(host: LogHost) {
-    HOST.get_or_init(|| host);
+/// `swoole_init`'s first step: Rust logs run the log macros from here on.
+pub(crate) fn init() {
+    MACROS.store(true, Ordering::Relaxed);
 }
 
 use crate::sys::errno;
 
 fn emit(kind: LogKind, level: c_int, code: c_int, origin: &CStr, message: fmt::Arguments<'_>) {
-    let Some(host) = HOST.get() else { return };
+    if !MACROS.load(Ordering::Relaxed) {
+        return;
+    }
     // printf's %s stops at the first NUL, so the message does too.
     let mut text = message.to_string();
     text.truncate(text.find('\0').unwrap_or(text.len()));
-    host(
+    crate::utilities::swr_v1_utils_log(
         kind,
         level,
         code,
@@ -140,7 +140,7 @@ pub fn error_log(level: LogLevel, code: c_int, origin: &CStr, message: fmt::Argu
 pub fn fatal(reason: &str) -> ! {
     const LEVEL: c_int = LogLevel::SW_LOG_ERROR as c_int;
     let at = std::panic::Location::caller();
-    if HOST.get().is_some() {
+    if MACROS.load(Ordering::Relaxed) {
         emit(
             LogKind::Error,
             LEVEL,
@@ -159,13 +159,118 @@ pub fn fatal(reason: &str) -> ! {
     std::process::abort()
 }
 
+/// What tests see of Rust logs: [`install`] runs `swoole_init`'s first step and gives
+/// the process a logger at `SW_LOG_DEBUG` whose worker id tags the logging thread, so
+/// [`logged`] reads this thread's lines back into the calls that wrote them.
+#[cfg(any(test, feature = "log-capture"))]
+pub mod capture {
+    use super::LogKind;
+    use crate::utilities::{Logger, LoggerHost, LoggerIdentity};
+    use std::cell::Cell;
+    use std::ffi::{CString, c_char, c_int};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::PathBuf;
+    use std::sync::LazyLock;
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    /// A log call: kind, level (0 but for `Error`), code (0 but for errors), origin
+    /// and message.
+    pub type Logged = (LogKind, c_int, c_int, String, String);
+
+    static NEXT: AtomicI32 = AtomicI32::new(1);
+
+    thread_local! {
+        static TAG: c_int = NEXT.fetch_add(1, Ordering::Relaxed);
+        static READ: Cell<usize> = const { Cell::new(0) };
+    }
+
+    extern "C" fn redirect(_: c_int) {}
+
+    fn identity() -> LoggerIdentity {
+        LoggerIdentity {
+            worker_id: TAG.with(|tag| *tag),
+            worker_pid: 1,
+            worker_symbol: c_char::from_ne_bytes(*b"#"),
+        }
+    }
+
+    static FILE: LazyLock<PathBuf> = LazyLock::new(|| {
+        let path = std::env::temp_dir().join(format!("swr-logs-{}", std::process::id()));
+        let logger = Box::leak(Box::new(Logger::new(
+            None,
+            LoggerHost { redirect, identity },
+        )));
+        logger.set_level(0);
+        logger.open(&CString::new(path.as_os_str().as_bytes()).unwrap_or_default());
+        // `SwooleG.logger` is a `swoole::Logger`, whose only member points at the Logger.
+        let cpp: &mut &'static Logger = Box::leak(Box::new(&*logger));
+        crate::swr_v1_core_set_logger(std::ptr::from_mut(cpp).cast());
+        super::init();
+        path
+    });
+
+    /// Run Rust logs through the log macros into the tagged logger, once per process.
+    pub fn install() {
+        LazyLock::force(&FILE);
+    }
+
+    const LABELS: [&str; 6] = ["DEBUG", "TRACE", "INFO", "NOTICE", "WARNING", "ERROR"];
+
+    /// A logged line (after the tag) as the call that wrote it.
+    fn parse(line: &str) -> Option<Logged> {
+        use LogKind::{Error, Fatal, Info, Notice, SysError, SysWarning, Warning};
+        let (label, content) = line.split_once('\t')?;
+        let level = c_int::try_from(LABELS.iter().position(|known| *known == label)?).ok()?;
+        let (sys, plain) = if label == "ERROR" {
+            (SysError, Fatal)
+        } else {
+            (SysWarning, Warning)
+        };
+        let (kind, level, code, origin, message) =
+            if let Some((origin, rest)) = content.split_once("() (ERRNO ") {
+                let (code, message) = rest.split_once("): ")?;
+                (Error, level, code, origin, message)
+            } else if let Some((origin, message)) = content.split_once("(): ") {
+                let failed = message
+                    .rsplit_once(", Error: ")
+                    .and_then(|(message, reason)| {
+                        Some((message, reason.strip_suffix(']')?.rsplit_once('[')?.1))
+                    });
+                failed.map_or((plain, 0, "0", origin, message), |(message, code)| {
+                    (sys, 0, code, origin, message)
+                })
+            } else {
+                let kind = if label == "NOTICE" { Notice } else { Info };
+                (kind, 0, "0", "", content)
+            };
+        Some((
+            kind,
+            level,
+            code.parse().ok()?,
+            origin.into(),
+            message.into(),
+        ))
+    }
+
+    /// This thread's logs since the last call.
+    #[must_use]
+    pub fn logged() -> Vec<Logged> {
+        install();
+        let tag = format!(".{}]\t", TAG.with(|tag| *tag));
+        let lines = std::fs::read_to_string(&*FILE).unwrap_or_default();
+        let mine: Vec<Logged> = lines
+            .lines()
+            .filter_map(|line| parse(line.split_once(&tag)?.1))
+            .collect();
+        let new = mine.get(READ.get()..).unwrap_or_default().to_vec();
+        READ.set(mine.len());
+        new
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    type Seen = (c_int, c_int, c_int, String, String);
-    static SEEN: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
 
     #[test]
     fn levels_are_the_native_ones() {
@@ -184,13 +289,6 @@ mod tests {
         }
     }
 
-    fn record(kind: LogKind, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
-        let text = |s: &CStr| s.to_string_lossy().into_owned();
-        SEEN.lock()
-            .unwrap()
-            .push((kind as c_int, level, code, text(origin), text(message)));
-    }
-
     #[test]
     fn last_error_is_per_thread() {
         set_last_error(1005);
@@ -204,8 +302,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn logs_reach_the_host_with_origin_and_errno() {
-        swr_v1_core_set_log_host(record);
+        // A child, so the process logger stays out of the tests that reset the record.
+        let case = "log::tests::logs_reach_the_host_with_origin_and_errno";
+        if crate::utilities::isolated_process::run_in_child(case) {
+            return;
+        }
+        capture::install();
         // SAFETY: test-only errno write on this thread.
         unsafe { *libc_errno() = 13 };
         sys_warning(
@@ -218,18 +322,23 @@ mod tests {
             c"Socket::ssl_verify",
             format_args!("x"),
         );
-        let seen = SEEN.lock().unwrap();
         assert_eq!(
-            seen[..],
+            capture::logged(),
             [
                 (
-                    0,
+                    LogKind::SysWarning,
                     0,
                     13,
                     "Socket::connect_sync".into(),
                     "bind(3) failed".into()
                 ),
-                (3, 4, 1015, "Socket::ssl_verify".into(), "x".into()),
+                (
+                    LogKind::Error,
+                    4,
+                    1015,
+                    "Socket::ssl_verify".into(),
+                    "x".into()
+                ),
             ]
         );
     }

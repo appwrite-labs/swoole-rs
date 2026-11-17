@@ -68,8 +68,9 @@ Rust defines `swoole_thread_init`, `swoole_is_main_thread`, `swoole_clean` and
 corebase (the stack buffer's and memory pool's `new`/`delete`, `swoole_init`'s
 native leaves, the timer, event, signal and coroutine leaves, the process logger's
 lifecycle) is a function of the host (`native::NativeHost`) it registers before it
-runs the body, with the log macros Rust's logs run (`swr_v1_utils_log`) as the log
-host. Before that the sequences skip those leaves and `swoole_fork` returns -1.
+runs the body, whose first step lets Rust's logs run the log macros
+(`swr_v1_utils_log`), which drop them before it. Before that the sequences skip those
+leaves and `swoole_fork` returns -1.
 
 - Init: the record's defaults (`swr_v1_core_init`, below), `SwooleG = {}`, libc's
   allocator, the native leaves in upstream's order (`sw_error`, stdout, the

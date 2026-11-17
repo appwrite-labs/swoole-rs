@@ -450,9 +450,9 @@ pub mod pool {
     /// Without futex, waiters register in a Rust registry in shared memory, from the
     /// pool `swoole_init` just made: a fatal error when it can't be had.
     pub fn wait_registry_init() {
-        let count = swoole_rs_utilities::swr_v1_utils_wait_registry_size().div_ceil(8);
+        let count = swoole_rs_corebase::utilities::swr_v1_utils_wait_registry_size().div_ceil(8);
         let adopted = words::<AtomicU64>(count)
-            .is_some_and(swoole_rs_utilities::swr_v1_utils_wait_registry_init);
+            .is_some_and(swoole_rs_corebase::utilities::swr_v1_utils_wait_registry_init);
         if !adopted {
             swoole_rs_corebase::fatal("failed to allocate atomic wait registry");
         }
@@ -536,7 +536,7 @@ fn table_warning(message: &[u8]) {
 fn php_hash(key: &[u8], compared: usize) -> u64 {
     let key = key.get(..compared).unwrap_or(key);
     // `char`'s signedness, which the hash promotes, as `swoole_hash_php` passes it.
-    swoole_rs_utilities::swoole_hash(key, 0, std::ffi::c_char::MIN != 0)
+    swoole_rs_corebase::utilities::swoole_hash(key, 0, std::ffi::c_char::MIN != 0)
 }
 
 /// `Table::create()`: lays the table out in a fresh shared arena.

@@ -23,7 +23,7 @@ void swr_v1_ffi_fatal_error(int code, const char *format, ...) {
     va_start(args, format);
     length += sw_vsnprintf(error + length, ERROR_MSG_SIZE - length, format, args);
     va_end(args);
-    /* SwooleG.logger, a swoole::Logger, whose one member is crates/utilities' Logger. */
+    /* SwooleG.logger, a swoole::Logger, whose one member is crates/corebase/src/utilities' Logger. */
     void *const *logger = swr_v1_core_logger();
     if (logger) {
         swr_v1_logger_put(*logger, LOG_ERROR, error, length);

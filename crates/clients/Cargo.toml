@@ -26,6 +26,7 @@ swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 libc = "=0.2.191"
 
 [dev-dependencies]
+swoole-rs-corebase = { path = "../corebase", features = ["log-capture"] }
 # The real timer pulls in reactor signal cleanup through this existing TLS export.
 swoole-rs-tls = { path = "../tls", features = ["upstream-symbols"] }
 swoole-rs-oracle = { path = "../oracle" }

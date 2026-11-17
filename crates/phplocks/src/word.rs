@@ -3,7 +3,7 @@
 //! word and sets the return value.
 use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 use swoole_rs_corebase::CCast;
-use swoole_rs_utilities::misc::{futex_wait, futex_wakeup};
+use swoole_rs_corebase::utilities::misc::{futex_wait, futex_wakeup};
 use swoole_rs_zend::{Call, Custom};
 
 /// A shared word: `sw_atomic_t` (u32) or `sw_atomic_long_t` (i64), with PHP

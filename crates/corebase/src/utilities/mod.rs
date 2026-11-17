@@ -1,12 +1,5 @@
 //! Pinned utility arithmetic and logging byte policy; no native callbacks.
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
-use swoole_rs_corebase::CCast;
+use crate::CCast;
 mod helpers;
 pub use helpers::timezone;
 mod logger;
@@ -292,7 +285,7 @@ mod upstream;
     dead_code,
     reason = "utilities runs whole tests in a child; replacement_survives is ossupport's"
 )]
-mod isolated_process {
+pub(crate) mod isolated_process {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../tests/support/isolated_process.rs"

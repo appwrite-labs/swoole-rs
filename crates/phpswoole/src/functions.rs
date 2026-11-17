@@ -186,7 +186,7 @@ fn error_log_ex(call: &Call) {
     if let Some((level, error, message)) = or_false(call, parsed) {
         let (level, error) = (int(level), int(error));
         set_last_error(error);
-        if level >= swoole_rs_utilities::swoole_get_log_level()
+        if level >= swoole_rs_corebase::utilities::swoole_get_log_level()
             && !swoole_rs_error_ffi::swoole_is_ignored_error(error)
         {
             log_put(level, &error_log_message(error, message));

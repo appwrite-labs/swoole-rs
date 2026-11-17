@@ -10,12 +10,12 @@ use std::{
     sync::atomic::Ordering,
 };
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::utilities::{process_logger, set_log_file, swoole_set_log_level};
 use swoole_rs_corebase::{
     Switch, built_with, log::set_last_error, swr_v1_core_set_enable_kqueue,
     swr_v1_core_set_enable_signalfd, swr_v1_core_set_print_backtrace_on_error,
     swr_v1_core_set_trace_flags,
 };
-use swoole_rs_utilities::{process_logger, set_log_file, swoole_set_log_level};
 use swoole_rs_zend::{
     Array, E_ERROR, Value, ZStr, ZString, bailout, report, sys::ZEND_ACC_NOT_SERIALIZABLE,
 };

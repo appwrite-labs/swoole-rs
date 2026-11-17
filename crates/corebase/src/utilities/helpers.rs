@@ -7,8 +7,8 @@ use std::ffi::c_long;
 /// `swoole::get_timezone`: the local zone's offset from UTC now, in seconds.
 #[must_use]
 pub fn timezone() -> c_long {
-    let now = swoole_rs_corebase::time_now();
-    swoole_rs_corebase::sys::localtime_r(now).map_or(0, |local| local.tm_gmtoff)
+    let now = crate::time_now();
+    crate::sys::localtime_r(now).map_or(0, |local| local.tm_gmtoff)
 }
 
 #[cfg(test)]

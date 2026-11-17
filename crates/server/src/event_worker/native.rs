@@ -505,7 +505,7 @@ pub(crate) fn signal(serv: view::Server<'_>, signo: c_int) {
                 swr_v1_worker_shutdown(worker);
             }
         } else if (signo == libc::SIGWINCH || super::sigrtmin() == Some(signo))
-            && let Some(logger) = swoole_rs_utilities::process_logger()
+            && let Some(logger) = swoole_rs_corebase::utilities::process_logger()
         {
             logger.reopen();
         }
