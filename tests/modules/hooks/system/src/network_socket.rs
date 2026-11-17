@@ -179,12 +179,8 @@ pub(super) fn make_socket(kind: c_int, fd_type: c_int, flags: c_int) -> Option<S
 
 fn make_server_socket(kind: c_int, address: &str, port: c_int, backlog: c_int) -> Option<Socket> {
     let address = std::ffi::CString::new(address).unwrap();
-    Socket::from(swoole_rs_corebase::tls::upstream::make_server_socket(
-        kind,
-        address.as_c_str().into(),
-        port,
-        backlog,
-    ))
+    swoole_rs_corebase::tls::upstream::server_socket(kind, &address, port, backlog)
+        .map(|socket| Socket(socket.leak().as_ptr()))
 }
 
 fn unlink_path(path: &CStr) {
