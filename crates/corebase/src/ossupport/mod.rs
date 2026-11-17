@@ -1,16 +1,5 @@
 //! OS support: the async thread pool, file IO, sendfile, entropy, process and
 //! thread identity, and the `SysV` message queue.
-#![expect(
-    clippy::disallowed_types,
-    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
-)]
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
 #[cfg(any(target_os = "linux", target_os = "android"))]
 mod cpu_set;
 #[cfg(any(target_os = "linux", target_os = "android"))]

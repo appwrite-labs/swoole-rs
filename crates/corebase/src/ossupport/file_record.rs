@@ -1,8 +1,8 @@
 //! File descriptor, flags and path ownership: upstream's `File`.
-use crate::file::{FileIo, file_close, file_open, read_all, write_all};
+use crate::ossupport::file::{FileIo, file_close, file_open, read_all, write_all};
+use crate::sys;
 use libc::c_int;
 use std::ffi::CStr;
-use swoole_rs_corebase::sys;
 
 pub struct FileRecord {
     fd: c_int,
@@ -86,7 +86,7 @@ impl FileRecord {
 
     /// `File::read_all` from offset zero.
     #[must_use]
-    pub fn read_all(&self, buf: &mut [impl swoole_rs_corebase::sys::ReadSlot]) -> FileIo {
+    pub fn read_all(&self, buf: &mut [impl crate::sys::ReadSlot]) -> FileIo {
         read_all(self.fd, buf)
     }
 }
@@ -135,8 +135,8 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn owner_drop_preserves_a_reopened_file_descriptor_number() {
-        if crate::isolated_process::run_in_child(
-            "file_record::tests::owner_drop_preserves_a_reopened_file_descriptor_number",
+        if crate::ossupport::isolated_process::run_in_child(
+            "ossupport::file_record::tests::owner_drop_preserves_a_reopened_file_descriptor_number",
         ) {
             return;
         }
@@ -147,6 +147,6 @@ mod tests {
         assert!(owner.close());
         assert_eq!(owner.descriptor(), -1);
         // SAFETY: `fd` is closed and this isolated child owns no other descriptor numbers.
-        unsafe { crate::isolated_process::replacement_survives(fd, || drop(owner)) };
+        unsafe { crate::ossupport::isolated_process::replacement_survives(fd, || drop(owner)) };
     }
 }

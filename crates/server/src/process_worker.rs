@@ -5,7 +5,7 @@ use std::{
     rc::Rc,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
-use swoole_rs_ossupport::QueueRecord;
+use swoole_rs_corebase::ossupport::QueueRecord;
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_tls::socket_pair::{self, SocketPair};
 

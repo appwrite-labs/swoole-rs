@@ -491,7 +491,6 @@ dependencies = [
  "swoole-rs-memory",
  "swoole-rs-oci",
  "swoole-rs-odbc",
- "swoole-rs-ossupport",
  "swoole-rs-pgsql",
  "swoole-rs-phpclients",
  "swoole-rs-phpcollections",
@@ -550,7 +549,6 @@ dependencies = [
  "swoole-rs-error-ffi",
  "swoole-rs-http-ffi",
  "swoole-rs-oracle",
- "swoole-rs-ossupport",
  "swoole-rs-reactor",
  "swoole-rs-ssh2-sys",
  "swoole-rs-timer",
@@ -567,7 +565,6 @@ dependencies = [
  "swoole-rs-ffi",
  "swoole-rs-hooks",
  "swoole-rs-memory",
- "swoole-rs-ossupport",
  "swoole-rs-process",
  "swoole-rs-reactor",
  "swoole-rs-server",
@@ -596,7 +593,6 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-http",
  "swoole-rs-oracle",
- "swoole-rs-ossupport",
 ]
 
 [[package]]
@@ -700,15 +696,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "swoole-rs-ossupport"
-version = "0.1.0"
-dependencies = [
- "libc",
- "swoole-rs-corebase",
- "swoole-rs-error",
-]
-
-[[package]]
 name = "swoole-rs-pgsql"
 version = "0.1.0"
 dependencies = [
@@ -808,7 +795,6 @@ dependencies = [
  "swoole-rs-httpbindings",
  "swoole-rs-inflate",
  "swoole-rs-memory",
- "swoole-rs-ossupport",
  "swoole-rs-phpclients",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phpruntime",
@@ -871,7 +857,6 @@ dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-ossupport",
  "swoole-rs-phpclients",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phpstubs",
@@ -926,7 +911,6 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-hooks",
  "swoole-rs-locks",
- "swoole-rs-ossupport",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phpprocess",
  "swoole-rs-phpruntime",
@@ -989,7 +973,6 @@ dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-ossupport",
  "swoole-rs-phpclients",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phplocks",
@@ -1044,7 +1027,6 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-locks",
  "swoole-rs-memory",
- "swoole-rs-ossupport",
  "swoole-rs-utilities",
 ]
 
@@ -1061,7 +1043,6 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-memory",
- "swoole-rs-ossupport",
  "swoole-rs-process",
 ]
 
@@ -1089,7 +1070,6 @@ dependencies = [
  "swoole-rs-locks",
  "swoole-rs-memory",
  "swoole-rs-oracle",
- "swoole-rs-ossupport",
  "swoole-rs-process",
  "swoole-rs-reactor",
  "swoole-rs-timer",
@@ -1141,7 +1121,6 @@ dependencies = [
  "openssl-sys",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-ossupport",
  "swoole-rs-reactor",
  "swoole-rs-timer",
 ]

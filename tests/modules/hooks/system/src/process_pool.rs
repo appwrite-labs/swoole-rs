@@ -5,7 +5,7 @@
 //! crates/process's hook types, as upstream's are captureless lambdas, set with
 //! `PoolRef::install`; a failed assertion inside one aborts the process it runs in (the
 //! build's panics abort). `SwooleWG` is crates/process's `worker_globals`;
-//! `swoole_set_isolation` is crates/ossupport's `set_isolation`. core-tests' shared counters are `sw_mem_pool()` memory
+//! `swoole_set_isolation` is crates/corebase/src/ossupport's `set_isolation`. core-tests' shared counters are `sw_mem_pool()` memory
 //! (crates/memory's `members::pool::alloc`), so workers' increments reach the master, as
 //! upstream's do.
 
@@ -934,7 +934,7 @@ fn msgqueue_2() {
     let pid = spawn_exec(|| {
         let pool = new_pool();
         // swoole_set_isolation("", "nobody", "").
-        swoole_rs_ossupport::set_isolation(c"", c"nobody", c"");
+        swoole_rs_corebase::ossupport::set_isolation(c"", c"nobody", c"");
         assert_eq!(create(pool, 1, key, SW_IPC_MSGQUEUE), SW_ERR);
         assert_eq!(last_error(), EACCES);
     });
@@ -1897,7 +1897,11 @@ fn stream_protocol_msgqueue_ignores_package_size() {
             message[..size_of::<c_long>()].copy_from_slice(&mtype.to_ne_bytes());
             message[size_of::<c_long>()..][..data.len()].copy_from_slice(data);
             // SAFETY: the pool's queue, which `create` opened.
-            let queue = unsafe { &*(*pool).queue.cast::<swoole_rs_ossupport::QueueRecord>() };
+            let queue = unsafe {
+                &*(*pool)
+                    .queue
+                    .cast::<swoole_rs_corebase::ossupport::QueueRecord>()
+            };
             let pushed = queue.push(&message[..size_of::<c_long>() + data.len()]);
             assert!(pushed, "limit {limit}");
         }
