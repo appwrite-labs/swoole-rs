@@ -619,6 +619,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no strftime, which the logger calls")]
     fn a_failed_write_warns_pwrite_then_the_task() {
         install();
         let fd = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY) };
