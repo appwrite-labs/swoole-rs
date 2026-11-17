@@ -27,6 +27,10 @@ rise by what others fall, and a fold or a new crate moves what it holds.
            `unsafe` block in the body names: safe code can pass any pointer. Clippy's
            `not_unsafe_ptr_arg_deref` checks only exported fns (#4275). Make the fn
            `unsafe` with the pointer's contract in `# Safety`, or take a reference
+  externs  foreign fns declared `safe fn` in an `unsafe extern` block with a raw-pointer
+           parameter: safe code can call them with any pointer, so declaring a callee
+           safe can't trade `unsafe` away (#4761). Take a reference or a typed handle, or
+           leave the declaration unsafe
   clines   lines of C (`.c`, `.h`) under the crate's src/, which crates/oracle/upstream
            isn't in. A shim that fits no reason in docs/zend.md's "What stays C" is a port
            waiting to happen, so a rise passes only when the PR body has a line
@@ -62,6 +66,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SAFE_FN = re.compile(r'(\bunsafe\s+)?(?:extern\s+"[^"]*"\s+)?\bfn\s+\w+\s*(?:<[^{;()]*?>)?\s*\(')
 RAW_PARAM = re.compile(r'(?:mut\s+)?(\w+)\s*:\s*(?:Option<\s*)?\*\s*(?:const|mut)\b')
 UNSAFE_BLOCK = re.compile(r'\bunsafe\s*\{')
+UNSAFE_EXTERN = re.compile(r'\bunsafe\s+extern\s*(?:"[^"]*"\s*)?\{')
+SAFE_EXTERN_FN = re.compile(r'\bsafe\s+fn\s+\w+\s*(?:<[^{;()]*?>)?\s*\(')
 
 
 def closing(code, i, open_, close):
@@ -73,20 +79,27 @@ def closing(code, i, open_, close):
     return i
 
 
+def params(code, i):
+    """The parameters of the parenthesis that opens just before `i`, split at top-level
+    commas (a callback type's `*mut` is not a pointer the fn takes), and the index past
+    its close."""
+    end = closing(code, i, '(', ')')
+    split, depth = [''], 0
+    for ch in code[i:end - 1].replace('->', '-'):
+        depth += (ch in '(<[') - (ch in ')>]')
+        if ch == ',' and depth == 0:
+            split.append('')
+        else:
+            split[-1] += ch
+    return [p.strip() for p in split], end
+
+
 def derefs(code):
     """The safe fns in `code` whose `unsafe` blocks name one of their raw-pointer parameters."""
     found = []
     for fn in SAFE_FN.finditer(code):
-        end = closing(code, fn.end(), '(', ')')
-        # Split at top-level commas: a callback type's `*mut` is not a pointer the fn takes.
-        params, depth = [''], 0
-        for ch in code[fn.end():end - 1].replace('->', '-'):
-            depth += (ch in '(<[') - (ch in ')>]')
-            if ch == ',' and depth == 0:
-                params.append('')
-            else:
-                params[-1] += ch
-        names = [m.group(1) for p in params if (m := RAW_PARAM.match(p.strip()))]
+        split, end = params(code, fn.end())
+        names = [m.group(1) for p in split if (m := RAW_PARAM.match(p))]
         start = re.compile(r'[{;]').search(code, end)
         if fn.group(1) or not names or not start or start.group() == ';':
             continue
@@ -94,6 +107,18 @@ def derefs(code):
         blocks = ''.join(body[b.end():closing(body, b.end(), '{', '}')] for b in UNSAFE_BLOCK.finditer(body))
         if any(re.search(rf'\b{name}\b', blocks) for name in names):
             found.append(fn.group())
+    return found
+
+
+def externs(code):
+    """The foreign fns `code` declares `safe` in an `unsafe extern` block with a raw-pointer
+    parameter: safe code can call them with any pointer (#4761)."""
+    found = []
+    for block in UNSAFE_EXTERN.finditer(code):
+        body = code[block.end():closing(code, block.end(), '{', '}')]
+        for fn in SAFE_EXTERN_FN.finditer(body):
+            if any(RAW_PARAM.match(p) for p in params(body, fn.end())[0]):
+                found.append(fn.group())
     return found
 
 
@@ -115,8 +140,9 @@ KINDS = {
     'statuses': re.compile(r'\)\s*->\s*(?:i32|c_int|i64|isize)\s*(?:where\b[^;{]*)?\{'),
     'reprs': re.compile(r'#\s*\[\s*repr\s*\([^\]]*\bC\b[^\]]*\)\s*\]'),
     'derefs': derefs,
+    'externs': externs,
 }
-MULTILINE = ('statuses', 'reprs', 'derefs')
+MULTILINE = ('statuses', 'reprs', 'derefs', 'externs')
 # What `forbid(unsafe_code)` rejects and KINDS['unsafe'] doesn't count.
 UNCOUNTED = re.compile(r'\bunsafe\s+extern\b|#\[unsafe\(')
 FORBID = re.compile(r'^#!\[forbid\([^)]*\bunsafe_code\b', re.M)
