@@ -12,7 +12,7 @@ use std::{
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_clients::{
     address::{address_port, with_host},
-    client::{self, Client},
+    client::{self, Client, Owner},
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::net_types::SocketAddress;
@@ -555,23 +555,27 @@ pub(crate) fn length_callable(socket: Co, value: &Value) {
     });
 }
 
-/// A live `network::Client` (crates/clients' state), from [`create`] until
-/// [`destroy`]: crates/clients' handle, made once by `create`.
+/// A live `network::Client` (crates/clients' state): a handle its [`Owner`] lends
+/// for `'a`.
 #[derive(Clone, Copy)]
-pub(crate) struct Cli(client::Handle<'static>);
+pub(crate) struct Cli<'a>(client::Handle<'a>);
 
-impl Cli {
-    pub(crate) fn get(&self) -> &Client {
+impl<'a> Cli<'a> {
+    pub(crate) const fn of(owner: &'a Owner) -> Self {
+        Self(owner.handle())
+    }
+
+    pub(crate) fn get(self) -> &'a Client {
         self.0.client()
     }
 
     /// `cli->socket`, while the client has one.
-    pub(crate) fn net(&self) -> Option<Net<'_>> {
+    pub(crate) fn net(self) -> Option<Net<'a>> {
         self.get().socket()
     }
 
     /// crates/clients' handle on the client.
-    pub(crate) fn handle(self) -> client::Handle<'static> {
+    pub(crate) const fn handle(self) -> client::Handle<'a> {
         self.0
     }
 
@@ -580,7 +584,7 @@ impl Cli {
     /// PHP code it ran bailed out.
     pub(crate) fn run<T: Default>(
         self,
-        op: impl FnOnce(client::Handle<'static>) -> T,
+        op: impl FnOnce(client::Handle<'a>) -> T,
     ) -> Result<T, Bailout> {
         let (handle, mut result) = (self.handle(), T::default());
         // crates/clients' operations own nothing a bailout would skip dropping.
@@ -595,28 +599,22 @@ pub(crate) fn c_text(bytes: &[u8]) -> CString {
     CString::new(text).unwrap_or_default()
 }
 
-/// `new Client(type, async)`: the client, or the errno of its failed socket.
-pub(crate) fn create(kind: c_int, is_async: bool) -> Result<Cli, c_int> {
-    // Live until `destroy` frees it as its last operation.
+/// `new Client(type, async)`: the client's owner, or the errno of its failed socket.
+pub(crate) fn create(kind: c_int, is_async: bool) -> Result<Owner, c_int> {
     client::create(kind, is_async)
-        .map(Cli)
         .ok_or_else(|| std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
 }
 
-/// `delete cli`, after the length callable of `package_length_func`.
+/// `delete cli`'s steps that can run PHP: the length callable of
+/// `package_length_func`, then the close, which may raise `onClose`. Dropping the
+/// owner then frees the rest.
 /// # Errors
 /// Freeing the callable or closing the client ran PHP code that bailed out.
-pub(crate) fn destroy(cli: Cli) -> Result<(), Bailout> {
+pub(crate) fn destroy(cli: Cli<'_>) -> Result<(), Bailout> {
     cli.get()
         .edit_record(|record| record.protocol.private_data_1 = ptr::null_mut());
     free_owner(cli.get().replace_length_owner(None))?;
-    let handle = cli.handle();
-    let free = || {
-        // SAFETY: `destroy` is the client's last operation.
-        unsafe { handle.free() };
-    };
-    // As in `Cli::run`.
-    swoole_rs_zend::contain_with(free)
+    cli.run(client::close).map(drop)
 }
 
 /// Drop a `package_length_func` owner, out of its socket or client.
@@ -640,7 +638,7 @@ pub(crate) fn owned_callable(value: &Value) -> Result<Option<Rc<Callable>>, Bail
 
 /// A `Socket` over a dup of the client's fd: `php_swoole_convert_to_socket`, which
 /// makes one whatever the import's result. `None` without ext/sockets.
-pub(crate) fn export_socket(cli: Cli) -> Option<Owned> {
+pub(crate) fn export_socket(cli: Cli<'_>) -> Option<Owned> {
     if !built_with(Switch::Sockets) {
         return None;
     }
