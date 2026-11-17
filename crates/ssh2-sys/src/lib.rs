@@ -3,6 +3,13 @@
 //! declare them (libssh2 1.2 and later, which `config.m4` requires). The
 //! extension links the system libssh2 itself (`--with-swoole-ssh2`); nothing
 //! here links it, so the workspace builds and tests on machines without it.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::undocumented_unsafe_blocks,
+        clippy::multiple_unsafe_ops_per_block
+    )
+)]
 
 use std::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void};
 

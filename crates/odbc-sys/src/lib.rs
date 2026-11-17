@@ -3,6 +3,13 @@
 //!
 //! Without the `unixodbc` feature the crate is empty.
 #![cfg(feature = "unixodbc")]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::undocumented_unsafe_blocks,
+        clippy::multiple_unsafe_ops_per_block
+    )
+)]
 
 // bindgen's output, and so which lints fire on it, differs per unixODBC version,
 // so an expectation would go unfulfilled on some: zend-sys's exception, for the

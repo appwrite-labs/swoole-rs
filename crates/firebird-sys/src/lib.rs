@@ -12,6 +12,13 @@
     non_camel_case_types,
     reason = "the C type names, as ibase.h spells them"
 )]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::undocumented_unsafe_blocks,
+        clippy::multiple_unsafe_ops_per_block
+    )
+)]
 
 use std::ffi::{c_char, c_int, c_short, c_uint, c_ushort, c_void};
 
