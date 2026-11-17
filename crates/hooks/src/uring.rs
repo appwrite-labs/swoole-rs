@@ -570,7 +570,10 @@ pub fn wakeup(engine: &Uring) -> bool {
             if engine.sq_space_left() == 0 {
                 break;
             }
-            let Some(waiting) = engine.waiting.with_taken(|queue| queue.pop_front()) else {
+            let mut queue = engine.waiting.take();
+            let waiting = queue.pop_front();
+            engine.waiting.set(queue);
+            let Some(waiting) = waiting else {
                 break;
             };
             engine.dispatch(waiting);
