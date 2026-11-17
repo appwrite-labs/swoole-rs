@@ -1305,11 +1305,8 @@ impl Client {
         if input.is_empty() {
             return false;
         }
-        // Out of the client for the decode, and back after it.
-        let mut decoder = self.decoder.take();
-        let decoded = self.decode(&mut decoder, input);
-        self.decoder.set(decoder);
-        decoded
+        self.decoder
+            .with_taken(|decoder| self.decode(decoder, input))
     }
 
     /// [`decompress`](Self::decompress) with the decoder, made here if none is.
@@ -1512,9 +1509,7 @@ fn on_body(client: &Client, data: &[u8]) -> Flow {
     let decompress = client.body_decompression.get()
         && !client.compression_error.get()
         && client.compress.get() != Compress::None;
-    let write_func = client.write_func.take();
-    client.write_func.set(write_func.clone());
-    if let Some(callable) = write_func {
+    if let Some(callable) = client.write_func.with_taken(|callable| callable.clone()) {
         // The decoded chunk leaves the client for the call, which can reenter it.
         let decoded = if !decompress {
             None
@@ -1558,10 +1553,7 @@ fn on_body(client: &Client, data: &[u8]) -> Flow {
     } else {
         client.body.with_taken(|body| body.extend_from_slice(data));
     }
-    let name = client.download_name.take();
-    let downloading = name.is_some();
-    client.download_name.set(name);
-    if !downloading {
+    if client.download_name.with_taken(|name| name.is_none()) {
         return Flow::Go;
     }
     // Out of the client while the file calls yield to other coroutines.
@@ -1578,9 +1570,9 @@ fn on_body(client: &Client, data: &[u8]) -> Flow {
 /// Append a body chunk to the download, opening its file first: whether it was written.
 fn write_download(client: &Client, body: &[u8]) -> bool {
     if client.download_file.get().is_none() {
-        let name = client.download_name.take();
-        let path = c_bytes(name.as_ref().map_or(&[][..], ZString::bytes));
-        client.download_name.set(name);
+        let path = client
+            .download_name
+            .with_taken(|name| c_bytes(name.as_ref().map_or(&[][..], ZString::bytes)));
         let offset = client.download_offset.get();
         client
             .download_file
