@@ -57,11 +57,7 @@ unsafe extern "C" {
 }
 
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z19swoole_is_root_userv")
-)]
-pub extern "C" fn swr_v1_os_is_root_user() -> bool {
+pub fn swr_v1_os_is_root_user() -> bool {
     geteuid() == 0
 }
 
@@ -209,11 +205,7 @@ pub fn set_isolation(group: &CStr, user: &CStr, root: &CStr) {
 
 /// `swoole_set_process_death_signal`: Linux `PR_SET_PDEATHSIG`, FreeBSD
 /// `PROC_PDEATHSIG_CTL`, a no-op elsewhere.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z31swoole_set_process_death_signali")
-)]
-pub extern "C" fn swr_v1_os_set_process_death_signal(signal: c_int) {
+pub fn swr_v1_os_set_process_death_signal(signal: c_int) {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         /// `PR_SET_PDEATHSIG`, the only option this `prctl` takes.
@@ -260,11 +252,7 @@ pub extern "C" fn swr_v1_os_set_process_death_signal(signal: c_int) {
 
 /// `swoole_thread_get_native_id`: the kernel's id for the calling thread.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z27swoole_thread_get_native_idv")
-)]
-pub extern "C" fn swr_v1_os_thread_native_id() -> c_long {
+pub fn swr_v1_os_thread_native_id() -> c_long {
     #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
     {
         crate::sys::gettid()
@@ -401,7 +389,7 @@ mod tests {
             "euid zero"
         );
         assert!(swr_v1_os_thread_native_id() > 0, "a kernel thread id");
-        let other = std::thread::spawn(|| swr_v1_os_thread_native_id())
+        let other = std::thread::spawn(swr_v1_os_thread_native_id)
             .join()
             .unwrap_or_default();
         assert_ne!(other, swr_v1_os_thread_native_id(), "per thread");
