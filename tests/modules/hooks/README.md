@@ -505,3 +505,8 @@ Rust operations through typed fields and socket handles. Its C++ status adapters
 keep the original integer assertions. Twenty member exports used only by Rust
 fixtures are removed, including the eleven-method export block; native socket
 factory/free and TLS exports with other callers remain.
+
+The original `timer.get` and `timer.delay` use the issued timer ID returned
+by `swoole_timer_get`, and `delay_held` moves its deadline. Their ID, elapsed-time
+and missing-timer expectations are unchanged; `None` represents the original
+null node. The test-only `swoole_timer_delay` C++ export is removed.

@@ -52,7 +52,7 @@ impl<'a> Hostent<'a> {
 /// `network::gethostbyname(flags, name)`: the first address of `name` for the
 /// flags' family (`h_length` bytes, zero if it has none) and its length, or none if
 /// it does not resolve.
-fn lookup(flags: c_int, name: &CStr) -> Option<([c_char; 46], usize)> {
+fn lookup(flags: c_int, name: &CStr) -> Result<([c_char; 46], usize), c_int> {
     let family = flags & !LOOKUP_RANDOM;
     // The entry's lists live in `buffer`, which outlives the reads below.
     #[cfg(target_os = "linux")]
@@ -79,7 +79,7 @@ fn lookup(flags: c_int, name: &CStr) -> Option<([c_char; 46], usize)> {
                 continue;
             }
             if rc != 0 || result.is_null() {
-                return None;
+                return Err(error);
             }
             break;
         }
@@ -95,7 +95,7 @@ fn lookup(flags: c_int, name: &CStr) -> Option<([c_char; 46], usize)> {
         // SAFETY: a terminated name; the lock serializes gethostbyname2's shared result.
         let entry = unsafe { gethostbyname2(name.as_ptr(), family) };
         // SAFETY: a non-null result is the resolver's entry, read under the lock.
-        *unsafe { entry.as_ref() }?
+        *unsafe { entry.as_ref() }.ok_or_else(crate::sys::h_errno)?
     };
     let length = usize::try_from(entry.h_length).unwrap_or(0).min(46);
     let mut bytes: [c_char; 46] = [0; 46];
@@ -105,7 +105,7 @@ fn lookup(flags: c_int, name: &CStr) -> Option<([c_char; 46], usize)> {
             *byte = c_char::from_ne_bytes([address]);
         }
     }
-    Some((bytes, length))
+    Ok((bytes, length))
 }
 
 /// What `getaddrinfo` found.
@@ -185,6 +185,15 @@ pub fn resolve_addresses(
 /// flags' family, in room for any family's address; none if it does not resolve.
 #[must_use]
 pub fn gethostbyname(flags: c_int, name: &CStr) -> Option<[c_char; 46]> {
+    gethostbyname_result(flags, name).ok()
+}
+
+/// The owned first address, or libc's resolver error (`h_errno`).
+/// The resolver's temporary storage never crosses the calling thread boundary.
+///
+/// # Errors
+/// Returns libc's resolver error when the name cannot be resolved.
+pub fn gethostbyname_result(flags: c_int, name: &CStr) -> Result<[c_char; 46], c_int> {
     lookup(flags, name).map(|(binary, _)| binary)
 }
 

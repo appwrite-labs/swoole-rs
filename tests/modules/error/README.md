@@ -16,8 +16,12 @@ Rust behaviour:
 - `src/core/error.cc` is not built: `swoole_strerror` and
   `swoole_is_ignored_error` are Rust under their upstream symbols. `crates/error` is
   safe Rust; `crates/error-ffi` exports it to C.
-- Codes below 500 go to the OS `strerror`; known codes return
-  immutable pointers; other codes are formatted without allocation.
+- Codes below 500 use libc's reentrant `strerror_r` with a paired buffer and
+  capacity. Exact known system-message bytes are retained for callers that keep
+  their pointers; unknown system messages are per-thread (a stable 2048-byte
+  buffer on Apple, a replaceable owned message on GNU). Formatting occurs on each
+  call to preserve locale changes. Swoole's known codes return immutable pointers;
+  its unknown codes are formatted without allocation.
 - Unknown messages use each thread's 32-byte buffer. Apple colon spelling, NUL,
   trailing bytes and pointer reuse within a thread match native; known lookups
   are thread-safe.
@@ -96,3 +100,9 @@ hit/miss/duplicate at 8 and 4096 entries, fresh insertion at 4096 and 65536
 entries, and four-thread read-only hit/miss at 4096 entries; each sample forks
 from the same empty parent. `--latency` reports p50/p95/p99 of batch-mean
 nanoseconds per operation (about 128 batches), not per-call tail latency.
+
+The system-message unit tests compare libc bytes and errno for known and unknown
+codes, then retain messages across other-thread lookups and later known errors.
+The Rust-only `swoole_coroutine_gethostbyname` wrapper copies its first IPv4
+address through the existing resolver provider before leaving the pool worker;
+the original hook test retains its success, failure and `h_errno` assertions.
