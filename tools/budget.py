@@ -27,6 +27,10 @@ rise by what others fall, and a fold or a new crate moves what it holds.
            `unsafe` block in the body names: safe code can pass any pointer. Clippy's
            `not_unsafe_ptr_arg_deref` checks only exported fns (#4275). Make the fn
            `unsafe` with the pointer's contract in `# Safety`, or take a reference
+  externs  foreign fns declared `safe fn` in an `unsafe extern` block with a raw-pointer
+           parameter: safe code can call them with any pointer, so declaring a callee
+           safe can't trade `unsafe` away (#4761). Take a reference or a typed handle, or
+           leave the declaration unsafe
   clines   lines of C (`.c`, `.h`) under the crate's src/, which crates/oracle/upstream
            isn't in. A shim that fits no reason in docs/zend.md's "What stays C" is a port
            waiting to happen, so a rise passes only when the PR body has a line
@@ -104,6 +108,7 @@ UNSAFE = {'has': {'kind': 'function_modifiers', 'regex': r'\bunsafe\b'}}
 MUT_REF = {'kind': 'reference_type', 'has': {'kind': 'mutable_specifier'}}
 STATUS = '(?:i32|i64|isize|c_int)'
 C_LAYOUT = {'kind': 'token_tree', 'has': {'kind': 'identifier', 'regex': '^C$'}}
+SAFE = {'kind': 'ERROR', 'regex': '^safe$'}
 RAW_PARAM = {'kind': 'parameter', 'has': {'field': 'type', **option({'kind': 'pointer_type'})}}
 
 
@@ -148,6 +153,12 @@ KINDS = {
                          tokens('->', STATUS, BRACES)]},
     'reprs': {'any': [attribute('repr', has=C_LAYOUT), tokens('repr', C_LAYOUT)]},
     'derefs': derefs,
+    # The grammar predates `safe`, and leaves it as an error in or before the signature.
+    'externs': {'kind': 'function_signature_item', 'all': [
+        {'inside': {'stopBy': 'end', 'kind': 'foreign_mod_item', 'regex': r'^unsafe\b'}},
+        {'any': [{'has': SAFE}, {'follows': SAFE}]},
+        {'has': {'kind': 'parameters', 'has': RAW_PARAM}},
+    ]},
 }
 # What `forbid(unsafe_code)` rejects and KINDS['unsafe'] doesn't count.
 UNCOUNTED = {'any': [{'kind': 'foreign_mod_item', 'regex': r'^unsafe\b'}, attribute('unsafe')]}

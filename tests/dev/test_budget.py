@@ -92,6 +92,7 @@ class Budget(unittest.TestCase):
                 # STATE and queue; the import and the constructors name no type.
                 'cells': {'one': 2},
                 'statuses': {'one': 0}, 'reprs': {'one': 0}, 'derefs': {'one': 0},
+                'externs': {'one': 0},
                 # shim.c's three and shim.h's one; tests/ isn't src/.
                 'clines': {'one': 4},
             })
@@ -112,6 +113,15 @@ fn compared(slot: &AtomicPtr<u8>, ours: *mut u8) -> bool { let t = slot.swap(our
 fn stored(&mut self, p: *mut u8) { self.p = p; }
 fn callback_type(cb: extern "C" fn(*mut u8), n: usize) { unsafe { cb(n) } }
 fn declared(p: *mut u8);
+unsafe extern "C" {
+    safe fn raw_arg(p: *mut u8, n: usize) -> i32;
+    pub(crate) safe fn maybe(
+        at: Option<*const Record>,
+    );
+    safe fn by_ref(out: &mut *mut c_char) -> i32;
+    safe fn with_callback(cb: extern "C" fn(*mut u8));
+    fn unsafe_one(p: *mut u8);
+}
 #[cfg(test)]
 mod tests {
     fn helper(p: *mut u8) -> u8 { unsafe { *p } }
@@ -122,7 +132,11 @@ mod tests {
             path.write_text(source)
             # read, callback and split; the unsafe fns state a contract, compared's and
             # stored's blocks don't use the pointer, and callback_type's is a parameter type.
-            self.assertEqual(budget.count_file(path, set())['derefs'], 3)
+            counted = budget.count_file(path, set())
+            self.assertEqual(counted['derefs'], 3)
+            # raw_arg and maybe: by_ref takes a reference, with_callback's pointer is in a
+            # parameter type, and unsafe_one's callers write `unsafe`.
+            self.assertEqual(counted['externs'], 2)
 
     def test_status_bodies_and_c_layouts_exclude_test_modules(self):
         source = '''\
