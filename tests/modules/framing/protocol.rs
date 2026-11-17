@@ -119,7 +119,7 @@ fn length() {
     *PKGS.lock().unwrap() = (0..PKG_N)
         .map(|_| length_package(rand(MIN_SIZE, MAX_SIZE)))
         .collect();
-    unsafe { swoole_set_log_level(SW_LOG_WARNING) };
+    swoole_set_log_level(SW_LOG_WARNING);
     test_protocol(STREAM);
 }
 
@@ -191,7 +191,7 @@ fn eof() {
             package
         })
         .collect();
-    unsafe { swoole_set_log_level(SW_LOG_WARNING) };
+    swoole_set_log_level(SW_LOG_WARNING);
     test_protocol(EOF_CRLF);
 }
 

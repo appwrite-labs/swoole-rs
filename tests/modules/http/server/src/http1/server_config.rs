@@ -4,6 +4,7 @@
 //! `methods::tests::server_protocols`.
 
 use super::*;
+use swoole_rs_corebase::utilities::swoole_get_log_level;
 
 const SW_MAX_CONNECTION: u32 = 100_000;
 const SW_SESSION_LIST_SIZE: u32 = 1 << 20;
@@ -17,8 +18,6 @@ unsafe extern "C-unwind" {
     /// `SwooleG`, whose first member is `max_sockets`.
     #[link_name = "SwooleG"]
     static mut SWOOLE_G_MAX_SOCKETS: u32;
-    #[link_name = "_Z20swoole_get_log_levelv"]
-    fn swoole_get_log_level() -> c_int;
 }
 
 fn max_sockets() -> u32 {
@@ -208,18 +207,15 @@ fn startup_error() {
             .contains("require 'onReceive' callback")
     );
 
-    // SAFETY: reads the global log level.
-    let ori_log_level = unsafe { swoole_get_log_level() };
-    // SAFETY: sets it.
-    unsafe { swoole_set_log_level(SW_LOG_NONE) };
+    let ori_log_level = swoole_get_log_level();
+    swoole_set_log_level(SW_LOG_NONE);
 
     assert_eq!(server.start(), -1);
     let startup_error2 = server.get_startup_error_message();
     assert_eq!(startup_error2, SW_ERROR_SERVER_INVALID_CALLBACK.to_string());
     assert_eq!(last_error(), SW_ERROR_SERVER_INVALID_CALLBACK);
 
-    // SAFETY: restores it.
-    unsafe { swoole_set_log_level(ori_log_level) };
+    swoole_set_log_level(ori_log_level);
 
     server.set_callback(Callback::Receive(receive_ok));
 
