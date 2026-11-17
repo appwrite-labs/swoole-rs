@@ -19,7 +19,6 @@ on:
       - 'crates/inflate/**'
       - 'crates/locale/**'
       - 'crates/oracle/**'
-      - 'crates/process/**'
       - 'crates/protocols/**'
       - 'crates/reactor/**'
       - 'crates/timer/**'

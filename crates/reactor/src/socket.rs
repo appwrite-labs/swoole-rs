@@ -299,10 +299,10 @@ impl<'a> Socket<'a> {
 pub struct Heap<'a>(Socket<'a>);
 
 impl<'a> Heap<'a> {
-    /// The pipe end crates/process lends for `'a`, a worker's pipe whose writer vouched
+    /// The pipe end `corebase::process` lends for `'a`, a worker's pipe whose writer vouched
     /// for it: a live heap record of this crate's, which its owner frees.
     #[must_use]
-    pub fn lent(native: swoole_rs_process::worker_record::NativeSocket<'a>) -> Self {
+    pub fn lent(native: swoole_rs_corebase::process::worker_record::NativeSocket<'a>) -> Self {
         Self(Socket {
             record: native.as_non_null().cast(),
             _live: PhantomData,

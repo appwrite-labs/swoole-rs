@@ -1,41 +1,42 @@
 //! The objects `ProcessPool` runs over (once `src/os/process_pool.cc`): its worker pipes, message bus,
-//! timers, event loop and callbacks. crates/process decides every step
+//! timers, event loop and callbacks. `corebase::process` decides every step
 //! (`process_pool.rs`, `pool.rs`) and asks for each effect through the
 //! [`PoolNative`] side [`process_pool_native`] returns. It lives here because these objects are
-//! crates/reactor's, crates/tls's and `corebase::memory`'s, which crates/process can't
+//! crates/reactor's, crates/tls's and `corebase::memory`'s, which `corebase::process` can't
 //! depend on.
 //!
-//! Each hook that can reach PHP runs inside the bailout trap crates/process sets
+//! Each hook that can reach PHP runs inside the bailout trap `corebase::process` sets
 //! up; the frames here hold nothing to drop, so the `longjmp` may cross them.
 use core::cell::Cell;
 use core::ffi::{CStr, c_int, c_long};
+use process::worker_record::Worker as Record;
+use process::worker_record::WorkerType;
 use std::rc::Rc;
 use swoole_rs_corebase::CCast;
-use swoole_rs_process::worker_record::Worker as Record;
-use swoole_rs_process::worker_record::WorkerType;
+use swoole_rs_corebase::process;
 use swoole_rs_reactor::Events;
 
 use crate::objects::{Reactor, worker_pipe};
 pub(crate) use crate::reactor_ops::PoolBus;
 use core::sync::atomic::AtomicU64;
+use process::armed_timer::ArmedTimer;
+use process::methods::raised;
+use process::methods::{
+    ExitStatus, is_worker_running, kill_all_workers, push_stop, reload_warn, swoole_set_worker_id,
+    swoole_set_worker_pid, worker_report_error,
+};
+use process::pool::{PoolCall, Warning};
+use process::process_pool::{
+    Callback, Hooks, MainLoopFn, Op, PipeError, PoolNative, PoolRef, Protocol, RecvData,
+    pool_run_main,
+};
+use process::task_file::Packed;
+use process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
 use swoole_rs_bus::MessageBus;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::memory::members::pool as mem_pool;
-use swoole_rs_process::armed_timer::ArmedTimer;
-use swoole_rs_process::methods::raised;
-use swoole_rs_process::methods::{
-    ExitStatus, is_worker_running, kill_all_workers, push_stop, reload_warn, swoole_set_worker_id,
-    swoole_set_worker_pid, worker_report_error,
-};
-use swoole_rs_process::pool::{PoolCall, Warning};
-use swoole_rs_process::process_pool::{
-    Callback, Hooks, MainLoopFn, Op, PipeError, PoolNative, PoolRef, Protocol, RecvData,
-    pool_run_main,
-};
-use swoole_rs_process::task_file::Packed;
-use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
 use swoole_rs_reactor::event_api::{event_write, set_handler, swoole_event_is_available};
 use swoole_rs_reactor::{Event, Heap, Running, Socket};
 use swoole_rs_timer::{
@@ -53,7 +54,7 @@ const EVENTLOOP_WAIT_EXIT: c_int = 1;
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 
 /// The pool every hook here runs over. Each entry point makes it once: from the
-/// [`PoolCall`] crates/process hands it, or, in a callback C holds, from the pool
+/// [`PoolCall`] `corebase::process` hands it, or, in a callback C holds, from the pool
 /// the callback was registered with.
 type Pool<'a> = PoolRef<'a>;
 
@@ -323,12 +324,14 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> bool {
         Op::WorkerInit => {
             swr_v1_worker_init(worker);
             worker.set_pid(std::process::id().c_cast::<c_int>());
-            swoole_rs_process::methods::set_worker_type(WorkerType::Event);
+            process::methods::set_worker_type(WorkerType::Event);
             swoole_set_worker_id(worker.id());
             swoole_set_worker_pid(worker.pid());
             // SAFETY: the pool's worker this process now runs, which the pool keeps
             // until the worker loop ends.
-            unsafe { swoole_rs_process::worker_globals::set_current_worker(worker.raw()) };
+            unsafe {
+                process::worker_globals::set_current_worker(worker.raw());
+            };
         }
         Op::WorkerShutdown => {
             swr_v1_worker_shutdown(worker);
@@ -424,7 +427,7 @@ fn loop_origin(pool: Pool<'_>) -> &'static CStr {
     }
 }
 
-/// The objects and callbacks every `ProcessPool` method crates/process defines runs over.
+/// The objects and callbacks every `ProcessPool` method `corebase::process` defines runs over.
 struct Native;
 
 static NATIVE: Native = Native;
@@ -553,7 +556,7 @@ impl PoolNative for Native {
 
     fn end(&self) {
         swoole_timer_select();
-        swoole_rs_process::signal::swoole_signal_dispatch();
+        process::signal::swoole_signal_dispatch();
     }
 
     fn accept(&self, c: &mut PoolCall) {
@@ -732,7 +735,7 @@ impl PoolNative for Native {
     }
 }
 
-/// The server's process-pool effects, passed to the methods in crates/process.
+/// The server's process-pool effects, passed to the methods in `corebase::process`.
 #[must_use]
 pub fn process_pool_native() -> &'static dyn PoolNative {
     &NATIVE

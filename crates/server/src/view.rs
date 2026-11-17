@@ -12,10 +12,10 @@ use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
 use std::ffi::CString;
 use std::sync::Arc;
+use swoole_rs_corebase::process::process_pool::{PoolRecord, PoolRef};
+use swoole_rs_corebase::process::server_workers::{ServerWorkers, swr_v1_process_server_worker};
+use swoole_rs_corebase::process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
-use swoole_rs_process::process_pool::{PoolRecord, PoolRef};
-use swoole_rs_process::server_workers::{ServerWorkers, swr_v1_process_server_worker};
-use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_reactor::{Heap, Socket};
 use swoole_rs_tls::socket_pair::SocketPair;
 
@@ -554,7 +554,7 @@ impl<'a> Server<'a> {
         // SAFETY: null, or one of the server's records: its arrays stay mapped, and an
         // added user worker live, until the server frees its workers, which it does
         // only after the loops of the workers it runs have ended.
-        unsafe { swoole_rs_process::worker_globals::set_current_worker(raw) };
+        unsafe { swoole_rs_corebase::process::worker_globals::set_current_worker(raw) };
         true
     }
 
@@ -759,7 +759,7 @@ impl<'a> Port<'a> {
     }
 }
 
-pub use swoole_rs_process::worker_record::PipeEnd;
+pub use swoole_rs_corebase::process::worker_record::PipeEnd;
 
 /// The `end` of `worker`'s pipe, or `None` while it has none. A pipe end's owner, its
 /// pair, frees it, so a reactor may register it and a write that queues may too.

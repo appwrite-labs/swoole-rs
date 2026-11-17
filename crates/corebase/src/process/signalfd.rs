@@ -2,10 +2,10 @@
 //! blocked mask, the descriptor and the process that created it, registration and
 //! reading one `signalfd_siginfo`. Native code keeps the reactor `Socket` wrapping the
 //! descriptor, its event handler and callbacks, and the warnings.
-use crate::signal::{Handler, SIGNALS, Slot, signal_reset};
+use crate::process::signal::{Handler, SIGNALS, Slot, signal_reset};
+use crate::sys;
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering::Relaxed};
-use swoole_rs_corebase::sys;
 
 const _: () = assert!(
     std::mem::offset_of!(libc::signalfd_siginfo, ssi_signo) == 0,
@@ -62,7 +62,7 @@ fn clear_mask() {
     }
 }
 
-use swoole_rs_corebase::sys::errno;
+use crate::sys::errno;
 
 fn slot(signo: c_int) -> Option<&'static Slot> {
     SIGNALS.get(usize::try_from(signo).ok()?)
@@ -82,7 +82,7 @@ pub fn signalfd_fd() -> c_int {
 /// Whether this process created the descriptor (a forked child must not remove it
 /// from the parent's reactor).
 pub fn signalfd_owned() -> bool {
-    PID.load(Relaxed) == crate::os::getpid()
+    PID.load(Relaxed) == crate::process::os::getpid()
 }
 
 /// `swoole_signalfd_set` before the reactor setup: a null `handler` unregisters an
@@ -144,7 +144,7 @@ pub fn signalfd_create() -> Result<c_int, CreateError> {
         return Err(CreateError::Mask(error));
     }
     FD.store(fd, Relaxed);
-    PID.store(crate::os::getpid(), Relaxed);
+    PID.store(crate::process::os::getpid(), Relaxed);
     Ok(fd)
 }
 
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no sigemptyset")]
     fn registers_reads_and_clears() {
-        let _state = crate::signal_state_lock();
+        let _state = crate::process::signal_state_lock();
         let handler = handler as *const () as usize;
         swoole_signalfd_init();
         assert_eq!(signalfd_set(libc::SIGURG, Handler(handler)), Handler::NONE);

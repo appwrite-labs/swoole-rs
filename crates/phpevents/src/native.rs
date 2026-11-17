@@ -31,8 +31,8 @@ pub(crate) fn server_refusal() -> Option<&'static CStr> {
         return None;
     }
     Some(
-        if swoole_rs_process::methods::worker_type()
-            == Some(swoole_rs_process::worker_record::WorkerType::Manager)
+        if swoole_rs_corebase::process::methods::worker_type()
+            == Some(swoole_rs_corebase::process::worker_record::WorkerType::Manager)
         {
             c"Unable to use async-io in manager process"
         } else {

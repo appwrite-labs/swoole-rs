@@ -1069,7 +1069,7 @@ fn main() {
     unsafe { setrlimit(RLIMIT_NOFILE, &[20000, 20000]) };
     // SAFETY: once per process, before any other Swoole call.
     unsafe { swoole_init() };
-    // core-tests build with `enable_thread` (SW_THREAD), as this binary does (crates/process's
+    // core-tests build with `enable_thread` (SW_THREAD), as this binary does (`corebase::process`'s
     // `thread` feature); the extension's MINIT says so under ZTS, and this binary has none.
     swoole_rs_server::THREAD_SUPPORTED.store(true, std::sync::atomic::Ordering::Relaxed);
     body();

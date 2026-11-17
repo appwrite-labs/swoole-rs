@@ -1,6 +1,6 @@
 # Worker, task and reload transitions v1
 
-Feature bit 524288 (`process`). crates/process runs the event worker, task worker,
+Feature bit 524288 (`process`). corebase::process runs the event worker, task worker,
 reactor process, manager and factory operations, and crates/server builds each
 operation's context and answers its ops. Decisions it keeps from upstream:
 
@@ -33,7 +33,7 @@ operation's context and answers its ops. Decisions it keeps from upstream:
   Native sizes the buffer first (upstream did so after a successful open), then
   logs the open/pread warnings and builds the packet.
 - The signal table (upstream `src/os/signal.cc`; facades in
-  `crates/reactor/src/signal_upstream.rs`) is `SIGNALS` (`crates/process/src/signal.rs`),
+  `crates/reactor/src/signal_upstream.rs`) is `SIGNALS` (`crates/corebase/src/process/signal.rs`),
   which the kqueue path shares (a slot is the kqueue event's udata);
   `native/process/swoole_signal.h` keeps the signal functions C++ still calls. Rust registers handlers through sigaction, runs the deferred and
   immediate async handlers (atomic stores; the immediate one calls
@@ -47,7 +47,7 @@ operation's context and answers its ops. Decisions it keeps from upstream:
   the reactor `Socket` around the descriptor, its handler, exit condition and
   destroy callback, `SwooleG.signal_fd`, the warnings and the handler call.
 - Coroutine waitpid (upstream `src/os/wait.cc`; facades in
-  `crates/reactor/src/wait_upstream.rs`, registry in `crates/process/src/wait.rs`) is Rust: the children
+  `crates/reactor/src/wait_upstream.rs`, registry in `crates/corebase/src/process/wait.rs`) is Rust: the children
   reaped before anyone waited, the any-child FIFO and the per-PID waiters, the
   last WNOHANG try after SIGCHLD registration, the yield, and the SIGCHLD reaper
   that hands each child out and resumes its coroutine. The caller passes the
@@ -55,7 +55,7 @@ operation's context and answers its ops. Decisions it keeps from upstream:
   coroutine's Rust frame stays on its stack across the yield; no value with a
   destructor is live there, and no RefCell borrow spans a yield or resume.
 
-`cargo test -p swoole-rs-process` checks each worker, task, reload, exit-budget
+`cargo test -p swoole-rs-corebase process::` checks each worker, task, reload, exit-budget
 and result-flag decision against the upstream expression it replaces, and the
 C layout of the exit records.
 

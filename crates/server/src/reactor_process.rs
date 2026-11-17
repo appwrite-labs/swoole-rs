@@ -4,7 +4,7 @@
 use core::ffi::c_int;
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::ServerEvent;
-use swoole_rs_process::worker_record::{Worker, WorkerType};
+use swoole_rs_corebase::process::worker_record::{Worker, WorkerType};
 use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{Event, Running};
 
@@ -74,7 +74,7 @@ pub(crate) fn start_reactor_processes(serv: view::Server<'_>) -> bool {
 /// `Server::reactor_process_main_loop`: one base-mode worker, on this thread's
 /// reactor, until it stops.
 pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> bool {
-    use swoole_rs_process::methods as process;
+    use swoole_rs_corebase::process::methods as process;
     let id = worker.id();
     process::set_worker_type(WorkerType::Event);
     process::swoole_set_worker_id(id);
@@ -266,7 +266,7 @@ mod tests {
     use crate::hybrid::tests::{Call, calls, fail};
     use Step::*;
     use core::ffi::c_long;
-    use swoole_rs_process::worker_record::WorkerRecord;
+    use swoole_rs_corebase::process::worker_record::WorkerRecord;
 
     fn steps(steps: &[Step]) -> Vec<Call> {
         steps.iter().map(|&step| Call::Step(step)).collect()
@@ -355,7 +355,7 @@ mod tests {
             "worker 0 is the master"
         );
         assert_eq!(
-            swoole_rs_process::methods::worker_type(),
+            swoole_rs_corebase::process::methods::worker_type(),
             Some(WorkerType::Event)
         );
         let fd = live.listener_fd;

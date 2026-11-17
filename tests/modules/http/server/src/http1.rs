@@ -25,9 +25,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use swoole_rs_corebase::log::last_error;
 use swoole_rs_corebase::net_types::SocketAddress as Address;
+use swoole_rs_corebase::process::task_file::Packed;
+use swoole_rs_corebase::process::worker_record::Worker;
 use swoole_rs_corebase::{DataHead, ServerEvent};
-use swoole_rs_process::task_file::Packed;
-use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::callbacks::{Callback, CallbackKind as Slot};
 use swoole_rs_server::reactor_entry::RecvData;
 use swoole_rs_server::{
@@ -622,7 +622,7 @@ fn proxy_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let server = Server(serv.raw());
     let (session, data) = request(req);
 
-    swoole_rs_process::methods::swoole_set_worker_id(server.config().worker_num.get());
+    swoole_rs_corebase::process::methods::swoole_set_worker_id(server.config().worker_num.get());
 
     let Some((url, headers)) = parse_request(data) else {
         eprintln!("Parse error");

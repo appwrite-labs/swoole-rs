@@ -5,20 +5,20 @@
 //! notify pipe and lock through [`TaskHost`], and `taskWaitMulti` its tasks through
 //! [`MultiTask`]. The dispatch and the pipe's waits can reach PHP (a blocking
 //! write or wait dispatches signals), so they run inside the bailout trap
-//! ([`crate::pool`]); a bailout returns [`Bailed`] for the caller to re-raise.
+//! ([`crate::process::pool`]); a bailout returns [`Bailed`] for the caller to re-raise.
 use std::ffi::{CStr, c_int};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use swoole_rs_corebase::buffer::string::CppString;
-use swoole_rs_corebase::log::{self, set_last_error};
-use swoole_rs_corebase::ossupport::file_get_contents;
-use swoole_rs_corebase::task_tmpfile;
+use crate::buffer::string::CppString;
+use crate::log::{self, set_last_error};
+use crate::ossupport::file_get_contents;
+use crate::task_tmpfile;
 
-pub use crate::pool::Bailed;
-use crate::pool::trapped;
-use crate::process_pool::SW_IPC_MAX_SIZE;
-use crate::task_file::{Packed, TASK_TMP_PATH_SIZE, TaskBuffer, errno, make_tmpfile};
+pub use crate::process::pool::Bailed;
+use crate::process::pool::trapped;
+use crate::process::process_pool::SW_IPC_MAX_SIZE;
+use crate::process::task_file::{Packed, TASK_TMP_PATH_SIZE, TaskBuffer, errno, make_tmpfile};
 
 /// `swoole::DataHead`: `fd` (the task id) at 0, `len` at 16.
 const HEAD: usize = 40;
@@ -30,7 +30,7 @@ const HEAD_LEN: usize = 16;
 )]
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 /// `SW_TASK_WAITALL`.
-const TASK_WAITALL: u16 = swoole_rs_corebase::constants::TaskFlag::SW_TASK_WAITALL.bits();
+const TASK_WAITALL: u16 = crate::constants::TaskFlag::SW_TASK_WAITALL.bits();
 /// `SW_ERROR_TASK_DISPATCH_FAIL`.
 const ERROR_TASK_DISPATCH_FAIL: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_TASK_DISPATCH_FAIL as c_int;
@@ -410,7 +410,7 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
         if !read {
             return Ok(Some(false));
         }
-        _ = swoole_rs_corebase::sys::unlink(path);
+        _ = crate::sys::unlink(path);
         Ok(Some(true))
     }
 }
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn many_tasks_unpack_each_result_by_id() {
-        swoole_rs_corebase::swr_v1_core_set_max_file_content(1 << 20);
+        crate::swr_v1_core_set_max_file_content(1 << 20);
         let mut file = record(11, b"ab");
         file.extend(record(99, b""));
         file.extend(record(12, b"c"));

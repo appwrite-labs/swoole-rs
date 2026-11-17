@@ -5,6 +5,7 @@
 use core::ffi::{c_int, c_long, c_void};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_corebase::process;
 use swoole_rs_reactor::Events;
 
 use crate::base_factory::SendData;
@@ -76,7 +77,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
         Step::ClearSignals => signal_upstream::clear(),
         Step::DestroyProcessFactory => crate::process_factory::native::destroy(serv),
         Step::DestroyTaskPool => {
-            swoole_rs_process::methods::destroy(crate::process_pool_native(), serv.task_pool_ref());
+            process::methods::destroy(crate::process_pool_native(), serv.task_pool_ref());
         }
         Step::DeleteFactory => delete(state),
         Step::Listen(index) | Step::ClosePortSocket(index) | Step::CreatePortSocket(index) => {
@@ -97,10 +98,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
         }
         Step::CreateEventPool => return crate::reactor_process::native::create_pool(serv),
         Step::DestroyEventPool => {
-            swoole_rs_process::methods::destroy(
-                crate::process_pool_native(),
-                serv.event_pool_ref(),
-            );
+            process::methods::destroy(crate::process_pool_native(), serv.event_pool_ref());
         }
         Step::CreatePipeBuffers => return crate::master_ops::create_pipe_buffers(serv),
         Step::StartManager => return crate::manager::native::start_manager_process(serv),
@@ -305,12 +303,12 @@ impl crate::hybrid::Hybrid for Linked {
     fn task_pool(
         &self,
         serv: crate::view::Server<'_>,
-        ipc: swoole_rs_process::process_pool::IpcMode,
+        ipc: process::process_pool::IpcMode,
         socket: Option<&core::ffi::CStr>,
     ) -> bool {
-        use swoole_rs_process::methods as pool;
-        use swoole_rs_process::process_pool::IpcMode;
-        use swoole_rs_process::worker_record::WorkerType;
+        use process::methods as pool;
+        use process::process_pool::IpcMode;
+        use process::worker_record::WorkerType;
         let config = serv.state().config_ref();
         // The server's task pool, reset to `{}` (no member has an initializer).
         serv.task_pool_ref().reset();
@@ -377,14 +375,14 @@ impl crate::hybrid::Hybrid for Linked {
         &self,
         serv: crate::view::Server<'_>,
         worker_id: u32,
-        message: &swoole_rs_process::task_file::TaskBuffer,
+        message: &process::task_file::TaskBuffer,
     ) -> bool {
         /// `SW_PIPE_MASTER | SW_PIPE_NONBLOCK`.
         const PIPE_MASTER_NONBLOCK: c_int = 1 | 2;
         let Some(worker) = serv.worker_record(u16::try_from(worker_id).unwrap_or(u16::MAX)) else {
             return false;
         };
-        let sent = swoole_rs_process::methods::send_pipe_message(
+        let sent = process::methods::send_pipe_message(
             crate::process_pool_native(),
             worker,
             message.bytes(),
@@ -406,7 +404,7 @@ impl crate::hybrid::Hybrid for Linked {
     }
 
     fn stop_single_worker(&self, serv: crate::view::Server<'_>) {
-        swoole_rs_process::worker_globals::with_current(|worker| {
+        process::worker_globals::with_current(|worker| {
             crate::event_worker::native::stop_async_worker(serv, *worker);
         });
     }
@@ -426,7 +424,7 @@ impl crate::hybrid::Hybrid for Linked {
             return false;
         };
         // The `SendData` upstream sends: the head, then a null payload pointer.
-        let mut send = swoole_rs_process::process_pool::head_view(&head).to_vec();
+        let mut send = process::process_pool::head_view(&head).to_vec();
         send.resize(size_of::<SendData>(), 0);
         swoole_rs_tls::upstream::send_async(pipe, &send).is_some_and(|sent| sent > 0)
     }
@@ -449,7 +447,7 @@ impl crate::hybrid::Hybrid for Linked {
     fn command_send(
         &self,
         serv: crate::view::Server<'_>,
-        route: swoole_rs_process::command::CommandRoute,
+        route: process::command::CommandRoute,
         command_id: i32,
         request_id: i64,
         message: &[u8],

@@ -7,18 +7,18 @@ use core::ffi::c_int;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::constants::TaskFlag;
 use swoole_rs_corebase::locks::SharedMutex;
-use swoole_rs_corebase::{CCast, DataHead, log};
-use swoole_rs_error::ErrorCode as E;
-use swoole_rs_process::methods::{
+use swoole_rs_corebase::process::methods::{
     send_pipe_message, set_worker_type, swoole_get_worker_id, swoole_set_worker_id,
     worker_set_max_request,
 };
-use swoole_rs_process::process_pool::{Hooks, PoolRef, SW_IPC_MAX_SIZE};
-use swoole_rs_process::task_file::{Packed, TaskBuffer};
-use swoole_rs_process::task_sync::ResultSlot;
-use swoole_rs_process::worker_record::{
+use swoole_rs_corebase::process::process_pool::{Hooks, PoolRef, SW_IPC_MAX_SIZE};
+use swoole_rs_corebase::process::task_file::{Packed, TaskBuffer};
+use swoole_rs_corebase::process::task_sync::ResultSlot;
+use swoole_rs_corebase::process::worker_record::{
     Worker, WorkerStatus, WorkerType, swr_v1_worker_init, swr_v1_worker_shutdown,
 };
+use swoole_rs_corebase::{CCast, DataHead, log};
+use swoole_rs_error::ErrorCode as E;
 use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{Event, Running, Socket};
 

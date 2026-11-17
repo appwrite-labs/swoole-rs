@@ -1,7 +1,7 @@
 //! `swoole::Logger` (upstream `src/core/log.cc`): level, date format, log file,
 //! rotation, stdout redirection and `put`, behind one lock. Diagnostics go out
 //! through corebase's `log`; worker identity and `swoole_redirect_stdout` go
-//! through `LoggerHost` (crates/process's). Both run after the lock is released, so a
+//! through `LoggerHost` (`corebase::process`'s). Both run after the lock is released, so a
 //! diagnostic can log through this logger again. The log macros a Rust log runs
 //! (`swr_v1_utils_log`) are here too.
 use crate::lent::{Count, In};
@@ -446,7 +446,7 @@ pub extern "C" fn swr_v1_logger_put<'id>(
 pub fn process_logger() -> Option<&'static Logger> {
     let cpp = crate::swr_v1_core_logger().cast::<&'static Logger>();
     // SAFETY: null, or a live `swoole::Logger` whose only member is a non-null pointer
-    // to a live Logger (crates/process's `LOGGER`, freed only with the object).
+    // to a live Logger (`corebase::process`'s `LOGGER`, freed only with the object).
     unsafe { cpp.as_ref() }.copied()
 }
 
@@ -761,7 +761,15 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "Miri can't spawn the private process this global logger test needs"
+    )]
     fn rust_logs_run_the_macros_last_error_and_sw_error() {
+        let case = "utilities::logger::tests::rust_logs_run_the_macros_last_error_and_sw_error";
+        if crate::utilities::isolated_process::run_in_child(case) {
+            return;
+        }
         let last = || unsafe { CStr::from_ptr(swoole_rs_error::swoole_get_last_error_msg()) };
         // No logger: the level is SW_LOG_NONE, which only a level-6 error_log reaches.
         let run = |kind, level, code, origin: &CStr| {

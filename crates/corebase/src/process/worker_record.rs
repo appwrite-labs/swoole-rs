@@ -5,7 +5,8 @@
 //! `native/process/swoole_rs_process_views.h`, and `tools/headers.sh --check`
 //! fails when that header is stale. See #629.
 
-use crate::process_pool::IpcMode;
+use crate::locks::SharedMutex;
+use crate::process::process_pool::IpcMode;
 use core::cell::Cell;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
@@ -13,7 +14,6 @@ use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, Ordering,
 };
 use std::ffi::{c_int, c_void};
-use swoole_rs_corebase::locks::SharedMutex;
 
 /// `swWorkerStatus`. A new record's status byte is 0, which is none of them.
 #[repr(u8)]
@@ -44,7 +44,7 @@ impl WorkerStatus {
 }
 
 /// `swWorkerType`: what the current process or thread is
-/// ([`crate::methods::worker_type`]); a worker record's kind holds its code.
+/// ([`crate::process::methods::worker_type`]); a worker record's kind holds its code.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkerType {
@@ -509,20 +509,22 @@ impl<'a> Worker<'a> {
 
     /// The worker's live pool, or `None` for a record no pool holds.
     #[must_use]
-    pub fn pool_ref(self) -> Option<crate::process_pool::PoolRef<'a>> {
-        let pool = self.pool().cast::<crate::process_pool::PoolRecord>();
+    pub fn pool_ref(self) -> Option<crate::process::process_pool::PoolRef<'a>> {
+        let pool = self
+            .pool()
+            .cast::<crate::process::process_pool::PoolRecord>();
         if pool.is_null() {
             return None;
         }
         // SAFETY: the record's invariant: a pool only `join` writes,
         // live for as long as the record is sent through, so for the handle's `'a`.
-        Some(unsafe { crate::process_pool::PoolRef::new(pool) })
+        Some(unsafe { crate::process::process_pool::PoolRef::new(pool) })
     }
 
     /// Makes the record one of `pool`'s workers, for this crate's pool operations, over the pool that
     /// owns the record's array or was lent it for as long as itself: `create`,
     /// `start_check` and the server's startup.
-    pub(crate) fn join(self, pool: crate::process_pool::PoolRef<'_>) {
+    pub(crate) fn join(self, pool: crate::process::process_pool::PoolRef<'_>) {
         self.write_pool(pool.raw().cast());
     }
 
@@ -660,10 +662,10 @@ impl<'a> Worker<'a> {
     /// `Worker::init()`: starts the current worker's clock, request count and
     /// running state.
     pub fn init(self) {
-        self.set_start_time(swoole_rs_corebase::time_now());
+        self.set_start_time(crate::time_now());
         self.set_request_count(0);
         self.set_status(WorkerStatus::Idle);
-        crate::worker_globals::with_globals(|globals| {
+        crate::process::worker_globals::with_globals(|globals| {
             globals.running.store(true, Ordering::Relaxed);
             globals.shutdown.store(false, Ordering::Relaxed);
         });
@@ -672,7 +674,7 @@ impl<'a> Worker<'a> {
     /// `Worker::shutdown()`: marks the current worker exited.
     pub fn shutdown(self) {
         self.set_status(WorkerStatus::Exit);
-        crate::worker_globals::with_globals(|globals| {
+        crate::process::worker_globals::with_globals(|globals| {
             globals.shutdown.store(true, Ordering::Relaxed);
         });
     }
@@ -680,7 +682,7 @@ impl<'a> Worker<'a> {
     /// `has_exceeded_max_request()`: this thread's request limit against the count.
     #[must_use]
     pub fn exceeded_max_request(self) -> bool {
-        let limit = crate::worker_globals::with_globals(|globals| {
+        let limit = crate::process::worker_globals::with_globals(|globals| {
             u64::from(globals.max_request.load(Ordering::Relaxed))
         });
         limit != 0 && self.request_count().cast_unsigned() >= limit
@@ -720,7 +722,7 @@ impl<'a> Worker<'a> {
 /// queue. Returns the copy's pipe end, whose fd the process shows, when the pool
 /// talks over unix sockets and has a worker `id`.
 pub fn copy_for_process<'a>(
-    pool: crate::process_pool::PoolRef<'a>,
+    pool: crate::process::process_pool::PoolRef<'a>,
     id: usize,
     copy: &mut WorkerRecord,
 ) -> Option<NativeSocket<'a>> {
@@ -731,7 +733,7 @@ pub fn copy_for_process<'a>(
     let null = core::ptr::null_mut();
     let mut pipe = None;
     if pool.ipc_mode.get() == IpcMode::UnixSock {
-        let current = if worker.id() == crate::methods::swoole_get_worker_id() {
+        let current = if worker.id() == crate::process::methods::swoole_get_worker_id() {
             worker.pipe_worker.get()
         } else {
             worker.pipe_master.get()
@@ -786,20 +788,30 @@ mod tests {
         workers[1].pipe_master.set((&raw mut fds[0]).cast());
         workers[1].pipe_worker.set((&raw mut fds[1]).cast());
         workers[1].pipe_object.set(core::ptr::dangling_mut());
-        let mut pool: crate::process_pool::PoolRecord = unsafe { core::mem::zeroed() };
+        let mut pool: crate::process::process_pool::PoolRecord = unsafe { core::mem::zeroed() };
         pool.workers.set(workers.as_mut_ptr());
         pool.worker_num.set(2);
         pool.ipc_mode.set(IpcMode::UnixSock);
         let mut copy: WorkerRecord = unsafe { core::mem::zeroed() };
         // A worker the pool doesn't have: no copy.
         assert_eq!(
-            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 2, &mut copy).map(fd),
+            copy_for_process(
+                crate::process::process_pool::PoolRef::from(&mut pool),
+                2,
+                &mut copy
+            )
+            .map(fd),
             None
         );
         assert_eq!(*copy.pid.get_mut(), 0);
         // Another process's worker: the master's end of its pipe.
         assert_eq!(
-            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy).map(fd),
+            copy_for_process(
+                crate::process::process_pool::PoolRef::from(&mut pool),
+                1,
+                &mut copy
+            )
+            .map(fd),
             Some(7)
         );
         assert_eq!(
@@ -811,9 +823,14 @@ mod tests {
             (41, workers[1].pipe_master.get(), core::ptr::null_mut())
         );
         // The message bus owns the pipe.
-        crate::process_pool::PoolRef::from(&mut pool).set_message_bus(Some(Box::new(())));
+        crate::process::process_pool::PoolRef::from(&mut pool).set_message_bus(Some(Box::new(())));
         assert_eq!(
-            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy).map(fd),
+            copy_for_process(
+                crate::process::process_pool::PoolRef::from(&mut pool),
+                1,
+                &mut copy
+            )
+            .map(fd),
             Some(7)
         );
         assert!(copy.pipe_current.get_mut().is_null());
@@ -822,21 +839,30 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no msgget")]
     fn a_queue_pools_process_balances_over_the_pools_queue() {
-        fn on_message(_: crate::process_pool::PoolRef<'_>, _: &crate::process_pool::RecvData<'_>) {}
+        fn on_message(
+            _: crate::process::process_pool::PoolRef<'_>,
+            _: &crate::process::process_pool::RecvData<'_>,
+        ) {
+        }
         let mut workers: [WorkerRecord; 2] = unsafe { core::mem::zeroed() };
-        let mut pool: crate::process_pool::PoolRecord = unsafe { core::mem::zeroed() };
+        let mut pool: crate::process::process_pool::PoolRecord = unsafe { core::mem::zeroed() };
         pool.workers.set(workers.as_mut_ptr());
         pool.worker_num.set(2);
         let mut copy: WorkerRecord = unsafe { core::mem::zeroed() };
         // Without onMessage, a message-queue pool's process balances over the pool's queue.
         pool.ipc_mode.set(IpcMode::MsgQueue);
-        pool.queue = Some(Box::new(swoole_rs_corebase::ossupport::QueueRecord::new(
+        pool.queue = Some(Box::new(crate::ossupport::QueueRecord::new(
             libc::IPC_PRIVATE,
             false,
             0,
         )));
         assert_eq!(
-            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy).map(fd),
+            copy_for_process(
+                crate::process::process_pool::PoolRef::from(&mut pool),
+                1,
+                &mut copy
+            )
+            .map(fd),
             None
         );
         assert_eq!(
@@ -848,7 +874,12 @@ mod tests {
         }
         pool.on_message.set(Some(on_message));
         assert_eq!(
-            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy).map(fd),
+            copy_for_process(
+                crate::process::process_pool::PoolRef::from(&mut pool),
+                1,
+                &mut copy
+            )
+            .map(fd),
             None
         );
         assert!(copy.queue.get().is_null());
@@ -987,7 +1018,7 @@ mod public_pid_array_tests {
         count: u32,
         pid: c_int,
     ) -> *mut WorkerRecord {
-        use crate::process_pool::{PoolRecord, PoolRef};
+        use crate::process::process_pool::{PoolRecord, PoolRef};
         let mut pools = [PoolRecord::empty(), PoolRecord::empty()];
         let [event_pool, task_pool] = pools.each_mut().map(|pool| unsafe { PoolRef::new(pool) });
         let events = if workers.is_null() {
@@ -995,12 +1026,12 @@ mod public_pid_array_tests {
         } else {
             unsafe { core::slice::from_raw_parts(workers, count as usize) }
         };
-        let view = crate::server_workers::ServerWorkers::new(
+        let view = crate::process::server_workers::ServerWorkers::new(
             (event_pool, events, count),
             (task_pool, 0),
             (&[], 0),
         );
-        crate::server_workers::swr_v1_process_server_worker_by_pid::<()>(&view, None, pid)
+        crate::process::server_workers::swr_v1_process_server_worker_by_pid::<()>(&view, None, pid)
     }
 
     #[test]

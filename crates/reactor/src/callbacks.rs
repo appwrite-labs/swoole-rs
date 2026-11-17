@@ -153,7 +153,7 @@ pub(crate) fn execute_end(reactor: Running<'_>, timed_out: bool) {
             End::Call(call) => call(),
             End::Defer => crate::deferred::run_defer(reactor),
             End::Idle => run_idle(reactor),
-            End::Signal => swoole_rs_process::signal::swoole_signal_dispatch(),
+            End::Signal => swoole_rs_corebase::process::signal::swoole_signal_dispatch(),
             End::TryExit => {
                 if reactor.with(|state| state.fields.wait_exit) && if_exit(reactor) {
                     reactor.with(|state| state.fields.running = false);

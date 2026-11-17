@@ -125,7 +125,7 @@ impl PoolBus {
 
     /// One operation over the pool's typed bus, without lending it beyond the call.
     pub(crate) fn with_pool<R>(
-        pool: swoole_rs_process::process_pool::PoolRef<'_>,
+        pool: swoole_rs_corebase::process::process_pool::PoolRef<'_>,
         f: impl FnOnce(&Self) -> R,
     ) -> Option<R> {
         pool.with_message_bus(|bus| bus.downcast_ref::<Self>().map(f))?
@@ -136,7 +136,7 @@ impl PoolBus {
 /// caller's; none for a pool without a bus or a packet.
 #[must_use]
 pub fn pool_bus_move_packet(
-    pool: swoole_rs_process::process_pool::PoolRef<'_>,
+    pool: swoole_rs_corebase::process::process_pool::PoolRef<'_>,
 ) -> Option<swoole_rs_corebase::buffer::string::OwnedString> {
     PoolBus::with_pool(pool, |bus| bus.bus.move_packet()).flatten()
 }
@@ -144,7 +144,7 @@ pub fn pool_bus_move_packet(
 /// `pool->message_bus->set_allocator(allocator)`, when the pool has a bus: its
 /// buffer and packets come from `allocator` from now on.
 pub fn pool_bus_set_allocator(
-    pool: swoole_rs_process::process_pool::PoolRef<'_>,
+    pool: swoole_rs_corebase::process::process_pool::PoolRef<'_>,
     allocator: TrustedAllocator,
 ) {
     PoolBus::with_pool(pool, |bus| bus.set_allocator(allocator));

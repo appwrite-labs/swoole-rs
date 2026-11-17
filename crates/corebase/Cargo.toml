@@ -12,6 +12,8 @@ license.workspace = true
 upstream-symbols = ["dep:cc"]
 # `log::capture`, which other crates' tests read Rust logs through.
 log-capture = []
+# Worker globals are per thread for SW_THREAD builds without thread-safe PHP.
+thread = []
 
 [dependencies]
 memchr = "2.8.3"

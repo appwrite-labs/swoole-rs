@@ -129,10 +129,11 @@ impl<'a> Bus<'a> {
     )]
     pub(crate) fn with_event<R>(
         self,
-        f: impl FnOnce(swoole_rs_process::task_file::Packed<'_>) -> R,
+        f: impl FnOnce(swoole_rs_corebase::process::task_file::Packed<'_>) -> R,
     ) -> Option<R> {
-        self.rust()
-            .with_whole(|event| swoole_rs_process::task_file::Packed::from_bytes(event).map(f))?
+        self.rust().with_whole(|event| {
+            swoole_rs_corebase::process::task_file::Packed::from_bytes(event).map(f)
+        })?
     }
     pub(crate) fn pop(self) {
         self.rust().pop();

@@ -14,7 +14,7 @@ use super::*;
 use crate::{TEST_LOG_FILE, TEST_STR};
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use swoole_rs_process::task_file::TaskBuffer;
+use swoole_rs_corebase::process::task_file::TaskBuffer;
 
 const PACKET: &[u8] = b"hello world\n";
 const SW_SOCK_UDP: c_int = 2;
@@ -165,7 +165,7 @@ fn micro_sleep(usec: u32) {
 // The crates' functions these cases call by path: under LTO, a symbol that only an `extern`
 // block names, and no C++ uses, can be dropped from the binary.
 fn worker_id() -> u32 {
-    swoole_rs_process::methods::swoole_get_worker_id()
+    swoole_rs_corebase::process::methods::swoole_get_worker_id()
 }
 
 fn set_log_file(file: &str) {
@@ -1578,7 +1578,7 @@ fn abnormal_send(serv: Server, flags: u8, msg_id: u64) {
     // SAFETY: `server->get_worker_pipe_master(0)`: worker 0's pipe to the master, whose
     // first member is its fd.
     let fd = unsafe {
-        *swoole_rs_process::worker_record::Worker::from(&*(serv.view().worker(0)))
+        *swoole_rs_corebase::process::worker_record::Worker::from(&*(serv.view().worker(0)))
             .pipe_master()
             .cast::<c_int>()
     };
@@ -1644,7 +1644,7 @@ fn shutdown_after_manager_start(serv: view::Server<'_>) {
 }
 
 /// `TEST(server, base_event_worker_pool_cleanup)`. The pool's `map_` (pid to worker) is
-/// its `registry` in crates/process.
+/// its `registry` in `corebase::process`.
 fn base_event_worker_pool_cleanup() {
     let server = new_server(MODE_BASE);
     server.config().worker_num.set(2);

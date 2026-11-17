@@ -1,8 +1,8 @@
 //! Upstream's `core-tests/src/os/signal.cpp`, one function per TEST with the same inputs
 //! and expected values: `swoole_signal_set`, `_callback`, `_get_handler`,
-//! `_get_listener_num` and `_clear` are crates/reactor's `signal_upstream` over crates/process's
+//! `_get_listener_num` and `_clear` are crates/reactor's `signal_upstream` over `corebase::process`'s
 //! signal loop, and the sigaction form of `swoole_signal_set`, `_dispatch`, `_isset`,
-//! `_block_all`, `_unblock_all` and `_to_str` are crates/process's `signal`. Each case runs in
+//! `_block_all`, `_unblock_all` and `_to_str` are `corebase::process`'s `signal`. Each case runs in
 //! its own process, so the handlers one case installs never reach another.
 //! `os_signal.restore_previous_mask` is crates/corebase's
 //! `signal_mask::tests::restore_previous_mask`.
@@ -10,7 +10,7 @@
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use swoole_rs_process::signal::{
+use swoole_rs_corebase::process::signal::{
     signal_name, swoole_signal_block_all, swoole_signal_dispatch, swoole_signal_isset,
     swoole_signal_set_action, swoole_signal_unblock_all,
 };
@@ -111,7 +111,7 @@ fn signalfd() {
 
     assert_eq!(blocked(SIGUSR1), 0);
 
-    swoole_rs_process::signalfd::swoole_signalfd_init();
+    swoole_rs_corebase::process::signalfd::swoole_signalfd_init();
     set(SIGUSR1, Some(sig_usr1));
 
     assert_eq!(blocked(SIGUSR1), 1);

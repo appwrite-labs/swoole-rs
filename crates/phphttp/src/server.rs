@@ -19,6 +19,8 @@ use std::{
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
 use swoole_rs_corebase::memory::flat::Table;
+use swoole_rs_corebase::process::worker_globals::with_current;
+use swoole_rs_corebase::process::worker_record::WorkerType;
 use swoole_rs_corebase::{CCast, HookType, swoole_isset_hook};
 use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_phpserver::PortCallback;
@@ -27,8 +29,6 @@ use swoole_rs_phpserver::{
     php_swoole_server_isset_callback, php_swoole_server_on_close, php_swoole_server_on_receive,
 };
 use swoole_rs_phpswoole::MinitArgs;
-use swoole_rs_process::worker_globals::with_current;
-use swoole_rs_process::worker_record::WorkerType;
 use swoole_rs_server::{Connection, DispatchMode, Mode, view};
 use swoole_rs_zend::sys::{ZEND_ACC_NOT_SERIALIZABLE, zend_long, zval};
 use swoole_rs_zend::{Class, Owned, ZStr, ZString, bailout};
@@ -341,7 +341,7 @@ pub fn can_cache_session_addr(server: view::Server<'_>) -> bool {
 /// `Server::is_enable_coroutine`.
 fn enable_coroutine(server: view::Server<'_>) -> bool {
     let config = server.config();
-    match swoole_rs_process::methods::worker_type() {
+    match swoole_rs_corebase::process::methods::worker_type() {
         Some(WorkerType::Task) => config.task_enable_coroutine.get(),
         Some(WorkerType::Manager) => false,
         _ => config.enable_coroutine.get(),
@@ -686,7 +686,7 @@ fn worker(server: view::Server<'_>) -> Option<Worker<'_>> {
     Some(Worker {
         server_concurrency: &server.counters().concurrency,
         max_concurrency: server.config().worker_max_concurrency.get(),
-        shutdown: swoole_rs_process::methods::worker_is_shutdown(),
+        shutdown: swoole_rs_corebase::process::methods::worker_is_shutdown(),
     })
 }
 

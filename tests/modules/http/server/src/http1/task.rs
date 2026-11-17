@@ -1,6 +1,6 @@
 //! Upstream's `core-tests/src/server/server.cpp` task-worker TESTs, one Rust function per
 //! TEST with the same inputs and expected values, over the crates. `Server::task` and
-//! `task_sync` are crates/process's `Tasks` over the server's task pool and this worker's
+//! `task_sync` are `corebase::process`'s `Tasks` over the server's task pool and this worker's
 //! notify pipe, lock and result slot ([`tasks`], as crates/phpserver's `task_state`
 //! lends them to `Swoole\Server`'s task methods); `finish`, `task_pack`, `task_unpack`,
 //! `task_dump`, `send_to_worker_from_worker`, `kill_worker` and the pool's `dispatch`,
@@ -14,13 +14,15 @@ use super::*;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::locks::SharedMutex;
+use swoole_rs_corebase::process::methods as pool;
+use swoole_rs_corebase::process::process_pool::{PoolRecord, PoolRef, SW_IPC_MAX_SIZE};
+use swoole_rs_corebase::process::task_file::{self, EventHead, Packed, TaskBuffer};
+use swoole_rs_corebase::process::task_sync::{
+    Bailed, MultiTask, ResultSlot, TaskHost, Tasks, Waiting,
+};
+use swoole_rs_corebase::process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_corebase::utilities::set_log_file;
 use swoole_rs_corebase::{swoole_random_string, swr_v1_core_set_current_task_id};
-use swoole_rs_process::methods as pool;
-use swoole_rs_process::process_pool::{PoolRecord, PoolRef, SW_IPC_MAX_SIZE};
-use swoole_rs_process::task_file::{self, EventHead, Packed, TaskBuffer};
-use swoole_rs_process::task_sync::{Bailed, MultiTask, ResultSlot, TaskHost, Tasks, Waiting};
-use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_tls::socket_pair::{self, SocketPair};
 
 use case::after_once as after;
@@ -110,7 +112,7 @@ struct TaskPool {
 impl TaskHost for TaskPool {
     fn dispatch(&mut self, task: Packed<'_>, worker: Option<u32>, blocking: bool) -> bool {
         // SAFETY: the live task pool.
-        let pool = unsafe { swoole_rs_process::process_pool::PoolRef::new(self.pool) };
+        let pool = unsafe { swoole_rs_corebase::process::process_pool::PoolRef::new(self.pool) };
         pool::dispatch(
             swoole_rs_server::process_pool_native(),
             pool,
@@ -319,7 +321,7 @@ impl TaskServer for Server {
         let sent = unsafe {
             pool::dispatch(
                 swoole_rs_server::process_pool_native(),
-                swoole_rs_process::process_pool::PoolRef::new(self.task_pool()),
+                swoole_rs_corebase::process::process_pool::PoolRef::new(self.task_pool()),
                 packed(buf),
                 u32::try_from(*dst_worker_id).ok(),
                 false,
@@ -385,7 +387,7 @@ impl TaskServer for Server {
     }
 
     fn send_pipe_message(self, worker_id: u32, data: &[u8]) -> bool {
-        let mut buf = swoole_rs_process::task_file::TaskBuffer::default();
+        let mut buf = swoole_rs_corebase::process::task_file::TaskBuffer::default();
         buf.pack(data) && server_methods::send_pipe_message(self.view(), worker_id, &mut buf)
     }
 

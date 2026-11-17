@@ -323,7 +323,7 @@ impl<'a> Connection<'a> {
     /// only this worker reads and frees.
     pub fn store_client_cert(self, cert: swoole_rs_corebase::buffer::string::CppString) {
         self.set_ssl_client_cert(Box::into_raw(Box::new(cert)).cast());
-        self.set_ssl_client_cert_pid(swoole_rs_process::methods::swoole_get_worker_pid());
+        self.set_ssl_client_cert_pid(swoole_rs_corebase::process::methods::swoole_get_worker_pid());
     }
 
     /// `OP_FREE_CLIENT_CERT`: the certificate this worker stored, taken from the
@@ -334,7 +334,8 @@ impl<'a> Connection<'a> {
             .ssl_client_cert()
             .cast::<swoole_rs_corebase::buffer::string::CppString>();
         if cert.is_null()
-            || self.ssl_client_cert_pid() != swoole_rs_process::methods::swoole_get_worker_pid()
+            || self.ssl_client_cert_pid()
+                != swoole_rs_corebase::process::methods::swoole_get_worker_pid()
         {
             return None;
         }
@@ -436,7 +437,9 @@ impl<'a> Connection<'a> {
     /// `f` over the client certificate this worker stored for the connection
     /// (`OP_STORE_CLIENT_CERT`), or `None` when this worker stored none.
     pub fn with_client_cert<R>(self, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
-        if self.ssl_client_cert_pid() != swoole_rs_process::methods::swoole_get_worker_pid() {
+        if self.ssl_client_cert_pid()
+            != swoole_rs_corebase::process::methods::swoole_get_worker_pid()
+        {
             return None;
         }
         let cert = self

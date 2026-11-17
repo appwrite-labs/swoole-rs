@@ -5,17 +5,18 @@ use crate::{DispatchMode, Mode};
 use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_corebase::process;
 use swoole_rs_reactor::Events;
 
-use swoole_rs_corebase::buffer::string::CppString;
-use swoole_rs_corebase::{DataHead, log};
-use swoole_rs_process::methods::{
+use process::methods::{
     ExitStatus, push_stop, set_worker_type, swoole_get_worker_id, swoole_set_worker_id, worker_type,
 };
-use swoole_rs_process::worker_globals::{
+use process::worker_globals::{
     current_worker, with_current, with_globals, worker_global_detach, worker_global_stopped,
 };
-use swoole_rs_process::worker_record::{Worker, WorkerStatus, WorkerType, swr_v1_worker_shutdown};
+use process::worker_record::{Worker, WorkerStatus, WorkerType, swr_v1_worker_shutdown};
+use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_reactor::{Event, Heap, Running};
 
 use super::{SignalHandler, Wait};
@@ -298,14 +299,9 @@ pub fn kill_worker(serv: view::Server<'_>, worker_id: c_int) -> bool {
         kind: ServerEvent::Shutdown.code(),
         ..DataHead::default()
     };
-    let data = swoole_rs_process::process_pool::head_view(&head);
-    swoole_rs_process::methods::send_pipe_message(
-        crate::process_pool_native(),
-        worker,
-        &data,
-        PIPE_MASTER,
-    )
-    .is_some()
+    let data = process::process_pool::head_view(&head);
+    process::methods::send_pipe_message(crate::process_pool_native(), worker, &data, PIPE_MASTER)
+        .is_some()
 }
 
 /// `Server::stop_async_worker(worker)`: stop reading, leave the pool and wait for the
@@ -611,7 +607,7 @@ pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) ->
         .worker_record(u16::try_from(id).unwrap_or(u16::MAX))
         .and_then(|worker| worker_pipe(worker, false));
     let pipe = pipe?;
-    let info = swoole_rs_process::process_pool::head_view(head);
+    let info = process::process_pool::head_view(head);
     if swoole_rs_reactor::event_api::swoole_event_is_available() {
         swoole_rs_reactor::event_api::event_write(pipe, &info)
     } else {
@@ -623,15 +619,12 @@ pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) ->
 /// `Worker_set_cpu_affinity`.
 #[cfg(target_os = "linux")]
 fn set_cpu_affinity(config: &crate::ServerConfig, worker_id: u32) {
-    use swoole_rs_process::affinity::AffinityError;
+    use process::affinity::AffinityError;
     const ORIGIN: &core::ffi::CStr = c"Worker_set_cpu_affinity";
     let available = config.cpu_affinity_available.get();
     let available = available.as_deref().map(Vec::as_slice);
-    let outcome = swoole_rs_process::affinity::worker_affinity(
-        worker_id,
-        available,
-        config.mode_ == Mode::Thread,
-    );
+    let outcome =
+        process::affinity::worker_affinity(worker_id, available, config.mode_ == Mode::Thread);
     match outcome {
         Err(AffinityError::Get(error)) => log::sys_warning_errno(
             error,

@@ -9,10 +9,10 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::process::worker_record::WorkerType;
+use swoole_rs_corebase::process::{methods, worker_record::Worker};
 use swoole_rs_corebase::{swr_v1_core_signal_listener_num, thread_async_threads};
 use swoole_rs_phpswoole::{Switch, built_with};
-use swoole_rs_process::worker_record::WorkerType;
-use swoole_rs_process::{methods, worker_record::Worker};
 use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
 use swoole_rs_server::view;
 use swoole_rs_zend::host::callable;

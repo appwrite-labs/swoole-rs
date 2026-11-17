@@ -1,9 +1,9 @@
 //! A Process object's `Worker` and its pipe (were the host table's worker and
-//! pipe entries in ext-src/swoole_server.cc): the record crates/process lays
+//! pipe entries in ext-src/swoole_server.cc): the record `corebase::process` lays
 //! out, the `UnixSocket` crates/tls defines, and the pipe's `network::Socket`.
 use std::{cell::OnceCell, ffi::c_int};
 use swoole_rs_corebase::CCast;
-use swoole_rs_process::{
+use swoole_rs_corebase::process::{
     methods::{swoole_set_worker_id, swoole_set_worker_pid},
     worker_record::{Worker, WorkerRecord},
 };
@@ -145,7 +145,7 @@ pub(crate) fn fork(worker: Worker<'_>) -> c_int {
 
 /// In the child: the worker end becomes the pipe and the worker this process's.
 pub(crate) fn child_enter(worker: Worker<'_>) {
-    let pid = swoole_rs_process::os::getpid();
+    let pid = swoole_rs_corebase::process::os::getpid();
     worker.use_pipe(false);
     worker.set_pid(pid);
     let id = worker.id();
@@ -153,7 +153,7 @@ pub(crate) fn child_enter(worker: Worker<'_>) {
     swoole_set_worker_pid(pid);
     // SAFETY: the pool's worker this process now runs, which the pool keeps until
     // the worker loop ends.
-    unsafe { swoole_rs_process::worker_globals::set_current_worker(worker.raw()) };
+    unsafe { swoole_rs_corebase::process::worker_globals::set_current_worker(worker.raw()) };
 }
 
 /// Read up to `buffer`'s length from the pipe: the length read, or `None`.

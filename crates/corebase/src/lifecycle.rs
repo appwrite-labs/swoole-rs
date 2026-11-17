@@ -200,8 +200,10 @@ pub extern "C-unwind" fn swoole_clean() {
     if let Some(host) = native::host() {
         (host.signal_clear)();
         swoole_thread_clean(true);
-        (host.logger)(native::LoggerOp::Close);
-        (host.logger)(native::LoggerOp::Delete);
+        crate::utilities::process_logger()
+            .into_iter()
+            .for_each(crate::utilities::Logger::close);
+        crate::process::methods::logger_delete();
         crate::memory::members::pool::delete();
     }
     crate::config_state::reset();
@@ -259,12 +261,16 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     }
     if flags & FORK_EXEC == 0 {
         // The pool starts its own pages at its first use here (memory::global's `current`).
-        (host.logger)(native::LoggerOp::Reopen);
+        crate::utilities::process_logger()
+            .into_iter()
+            .for_each(crate::utilities::Logger::reopen);
         if (host.event_available)() {
             (host.event_free)();
         }
     } else {
-        (host.logger)(native::LoggerOp::Close);
+        crate::utilities::process_logger()
+            .into_iter()
+            .for_each(crate::utilities::Logger::close);
     }
     (host.signal_clear)();
     crate::signal_mask::restore_after_fork(previous, true);
@@ -371,18 +377,16 @@ mod tests {
         change(libc::SIG_UNBLOCK, libc::SIGUSR1);
     }
 
-    /// The child takes a while to reopen the logger, as on a busy machine.
+    /// Delay the child before signal reset, as a busy reactor cleanup would.
     fn host() {
         native::set_native_host(native::NativeHost {
             init: || {},
-            logger: |op| {
-                if op == native::LoggerOp::Reopen {
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                }
-            },
             signal_clear,
             timer_free: || {},
-            event_available: || false,
+            event_available: || {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                false
+            },
             event_free: || {},
         });
     }
@@ -399,6 +403,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no signal")]
     fn fork_holds_signals_until_the_child_resets_handlers() {
+        let _state = crate::process::signal_state_lock();
         host();
         std::thread::spawn(|| {
             signal(libc::SIGTERM, ignore as *const () as libc::sighandler_t);
@@ -423,6 +428,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no sigaddset")]
     fn fork_child_keeps_the_mask_its_reset_leaves() {
+        let _state = crate::process::signal_state_lock();
         host();
         std::thread::spawn(|| {
             change(libc::SIG_BLOCK, libc::SIGUSR1);

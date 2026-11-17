@@ -1,6 +1,16 @@
 # Process tests
 
-`process-unit` runs `crates/process`'s tests and `process-signals` runs `signals.py`.
+`corebase-unit` runs `crates/corebase/src/process`'s tests and `process-signals` runs `signals.py`.
+The process state and operations now belong to corebase; the standalone crate and
+internal logger host dispatch are gone. Reactor signal cleanup and TLS listener
+callbacks retain their external owners. Corebase's `thread` feature preserves the
+worker globals used by the original SW_THREAD server cases, and its shared PHP
+configuration detector preserves ZTS builds.
+
+Fork and signal tests share the process signal-state lock in the combined binary.
+The logger test that requires no process logger runs in a private child, retaining
+its original assertions; Miri cannot spawn that child and reports it ignored.
+This keeps the process tests' capture logger from changing its log threshold.
 `core-tests/src/os/process_pool.cpp` and `os/pipe.cpp` are Rust cases in
 `hooks-system-rust` (tests/modules/hooks/README.md), and the Server worker-retirement
 witness is crates/server's `worker_methods::tests::abort_and_reset`.

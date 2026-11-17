@@ -14,8 +14,8 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::ossupport::QueueRecord;
+use swoole_rs_corebase::process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_phpstubs::process;
-use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, bailout,
     handlers, message,
@@ -557,7 +557,7 @@ fn kill(call: &Call) {
         return;
     };
     let (pid, sig) = (pid.c_cast::<c_int>(), sig.c_cast::<c_int>());
-    if let Err(error) = swoole_rs_process::os::kill(pid, sig) {
+    if let Err(error) = swoole_rs_corebase::process::os::kill(pid, sig) {
         if !(sig == 0 && error.raw_os_error() == Some(libc::ESRCH)) {
             sys(E_WARNING, &message!("kill({pid}, {sig}) failed"));
         }
@@ -619,7 +619,7 @@ fn start(call: &Call) {
         return;
     };
     let pid = view(worker).pid;
-    if pid != 0 && swoole_rs_process::os::kill(pid, 0).is_ok() {
+    if pid != 0 && swoole_rs_corebase::process::os::kill(pid, 0).is_ok() {
         fatal(E_WARNING, &message!("process has already been started"));
         call.set_bool(false);
         return;
@@ -860,7 +860,7 @@ fn exit(call: &Call) {
     let Some(worker) = checked(this(call)) else {
         return;
     };
-    if swoole_rs_process::os::getpid() != view(worker).pid {
+    if swoole_rs_corebase::process::os::getpid() != view(worker).pid {
         fatal(E_WARNING, &message!("not current process"));
         call.set_bool(false);
         return;

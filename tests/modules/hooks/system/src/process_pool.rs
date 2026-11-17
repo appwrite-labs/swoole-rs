@@ -1,10 +1,10 @@
 //! Upstream's `core-tests/src/os/process_pool.cpp`, one function per TEST with the same inputs
-//! and expected values, over the Rust ProcessPool and Worker (crates/process) under their
+//! and expected values, over the Rust ProcessPool and Worker (`corebase::process`) under their
 //! upstream symbols. `ProcessPool pool{}` and `Worker worker{}` are zeroed mirrors of the
 //! records Rust owns, checked against the fixture's sizes. The callbacks are fns of
-//! crates/process's hook types, as upstream's are captureless lambdas, set with
+//! `corebase::process`'s hook types, as upstream's are captureless lambdas, set with
 //! `PoolRef::install`; a failed assertion inside one aborts the process it runs in (the
-//! build's panics abort). `SwooleWG` is crates/process's `worker_globals`;
+//! build's panics abort). `SwooleWG` is `corebase::process`'s `worker_globals`;
 //! `swoole_set_isolation` is crates/corebase/src/ossupport's `set_isolation`. core-tests' shared counters are `sw_mem_pool()` memory
 //! (`corebase::memory`'s `members::pool::alloc`), so workers' increments reach the master, as
 //! upstream's do.
@@ -18,17 +18,19 @@ use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering::SeqCst};
 use std::time::{SystemTime, UNIX_EPOCH};
 use swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
 use swoole_rs_corebase::memory::members::pool as mem_pool;
-use swoole_rs_corebase::swoole_thread_clean;
-use swoole_rs_process::methods as pm;
-use swoole_rs_process::methods::{ExitStatus, swoole_get_worker_symbol, swoole_set_worker_type};
-use swoole_rs_process::process_pool::{
+use swoole_rs_corebase::process::methods as pm;
+use swoole_rs_corebase::process::methods::{
+    ExitStatus, swoole_get_worker_symbol, swoole_set_worker_type,
+};
+use swoole_rs_corebase::process::process_pool::{
     ErrorFn, EventFn, Hooks, MainLoopFn, MessageFn, NotFoundFn, PoolFn, PoolRef, Protocol,
     RecvData, TaskFn, WorkerFn,
 };
-use swoole_rs_process::task_file::Packed;
-use swoole_rs_process::worker_record::{
+use swoole_rs_corebase::process::task_file::Packed;
+use swoole_rs_corebase::process::worker_record::{
     Worker as WorkerHandle, swr_v1_worker_init, swr_v1_worker_shutdown,
 };
+use swoole_rs_corebase::swoole_thread_clean;
 
 use super::timer::{after, tick};
 use super::{SIGKILL, TEST_STR, last_error, random_bytes};
@@ -143,7 +145,7 @@ fn payload(task: Packed<'_>) -> &[u8] {
 type Message = [u8; SW_IPC_MAX_SIZE as usize];
 type Handler = extern "C" fn(c_int);
 
-/// `swoole::ProcessPool`'s fields (crates/process's PoolRecord).
+/// `swoole::ProcessPool`'s fields (`corebase::process`'s PoolRecord).
 #[repr(C)]
 struct Pool {
     running: bool,
@@ -198,7 +200,7 @@ struct Pool {
     ptr_key: *const c_void,
 }
 
-/// `swoole::Worker`'s fields (crates/process's WorkerRecord).
+/// `swoole::Worker`'s fields (`corebase::process`'s WorkerRecord).
 #[repr(C)]
 struct Worker {
     pid: c_int,
@@ -256,14 +258,14 @@ unsafe extern "C" {
     fn __libc_current_sigrtmin() -> c_int;
 }
 
-// The `ProcessPool` and `Worker` methods: crates/process's Rust functions over the mirrors,
+// The `ProcessPool` and `Worker` methods: `corebase::process`'s Rust functions over the mirrors,
 // whose layout the fixture checks against the records'.
 unsafe fn pool_create(pool: *mut Pool, worker_num: c_uint, key: c_int, ipc_mode: c_int) -> c_int {
     // SAFETY: as the caller guarantees.
     let created = unsafe {
         pm::create(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
             worker_num,
             key,
             ipc_mode,
@@ -281,7 +283,7 @@ unsafe fn pool_listen_host(
     // SAFETY: as the caller guarantees; 1 is SW_SOCK_TCP.
     let listened = unsafe {
         pm::listen_socket(
-            swoole_rs_process::process_pool::PoolRef::new(pool.cast_mut().cast()),
+            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast_mut().cast()),
             1,
             std::ffi::CStr::from_ptr(host),
             port,
@@ -295,7 +297,7 @@ unsafe fn pool_listen_file(pool: *const Pool, file: *const c_char, backlog: c_in
     // SAFETY: as the caller guarantees.
     let listened = unsafe {
         pm::listen_unix(
-            swoole_rs_process::process_pool::PoolRef::new(pool.cast_mut().cast()),
+            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast_mut().cast()),
             std::ffi::CStr::from_ptr(file),
             backlog,
         )
@@ -308,7 +310,7 @@ unsafe fn pool_set_protocol(pool: *mut Pool, protocol: Protocol) {
     unsafe {
         pm::set_protocol(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
             protocol,
         )
     }
@@ -321,14 +323,14 @@ unsafe fn pool_dispatch_sync(
 ) -> c_int {
     // SAFETY: as the caller guarantees: `data` is a whole `EventData`.
     let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size_of::<EventData>()) };
-    let Some(task) = swoole_rs_process::task_file::Packed::from_bytes(bytes) else {
+    let Some(task) = swoole_rs_corebase::process::task_file::Packed::from_bytes(bytes) else {
         return SW_ERR;
     };
     // SAFETY: as the caller guarantees.
     let sent = unsafe {
         pm::dispatch(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
             task,
             u32::try_from(*worker_id).ok(),
             true,
@@ -342,7 +344,7 @@ unsafe fn pool_start(pool: *mut Pool) -> c_int {
     let started = unsafe {
         pm::start(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
         )
     };
     if started { SW_OK } else { SW_ERR }
@@ -353,7 +355,7 @@ unsafe fn pool_wait(pool: *mut Pool) -> c_int {
     unsafe {
         pm::wait(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
         )
     };
     SW_OK
@@ -364,7 +366,7 @@ unsafe fn pool_destroy(pool: *mut Pool) {
     unsafe {
         pm::destroy(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
         )
     }
 }
@@ -374,7 +376,7 @@ unsafe fn pool_shutdown(pool: *mut Pool) -> bool {
     unsafe {
         pm::shutdown(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
         )
     }
 }
@@ -384,7 +386,7 @@ unsafe fn pool_reload(pool: *mut Pool) -> bool {
     unsafe {
         pm::reload(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
         )
     }
 }
@@ -394,7 +396,7 @@ unsafe fn pool_detach(pool: *mut Pool) -> bool {
     unsafe {
         pm::detach(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
         )
     }
 }
@@ -404,7 +406,7 @@ unsafe fn pool_reopen_logger(pool: *mut Pool) {
     unsafe {
         pm::reopen_logger(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
         )
     }
 }
@@ -414,7 +416,7 @@ unsafe fn pool_stop(pool: *mut Pool, worker: *mut Worker) {
     unsafe {
         pm::stop(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
             worker.cast(),
         )
     }
@@ -425,7 +427,7 @@ unsafe fn pool_create_message_bus(pool: *mut Pool) -> c_int {
     let created = unsafe {
         pm::create_message_bus(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
         )
     };
     if created { SW_OK } else { SW_ERR }
@@ -441,7 +443,7 @@ unsafe fn pool_push_message(
     let pushed = unsafe {
         pm::push_message(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_process::process_pool::PoolRef::new(pool.cast_mut().cast()),
+            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast_mut().cast()),
             kind,
             std::slice::from_raw_parts(data.cast(), length),
         )
@@ -459,7 +461,7 @@ unsafe fn pool_send_message(
     unsafe {
         pm::send_message(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_process::process_pool::PoolRef::new(pool.cast_mut().cast()),
+            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast_mut().cast()),
             worker_id,
             std::slice::from_raw_parts(message.cast(), len),
         )
@@ -475,7 +477,7 @@ unsafe fn pool_response(pool: *const Pool, data: *const c_char, length: u32) -> 
     };
     // SAFETY: as the caller guarantees.
     let written = pm::response(
-        unsafe { swoole_rs_process::process_pool::PoolRef::new(pool.cast_mut().cast()) },
+        unsafe { swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast_mut().cast()) },
         data,
     );
     if written { SW_OK } else { SW_ERR }
@@ -531,7 +533,7 @@ static CURRENT_WORKER: AtomicPtr<Worker> = AtomicPtr::new(null_mut());
 static COUNTERS: AtomicPtr<AtomicI32> = AtomicPtr::new(null_mut());
 
 /// The fd of a pool's stream listener, or -1 without one.
-fn listener_fd(listener: Option<&swoole_rs_process::pool::Connection>) -> c_int {
+fn listener_fd(listener: Option<&swoole_rs_corebase::process::pool::Connection>) -> c_int {
     listener
         .and_then(|listener| listener.downcast_ref::<swoole_rs_reactor::OwnedSocket>())
         .map_or(-1, |listener| listener.socket().fd())
@@ -885,19 +887,20 @@ fn tcp_raw() {
         // SAFETY: a thread of this process; the pool's IPC and `data` outlive the join.
         unsafe {
             swoole_thread_init(false);
-            let dispatch_result = if swoole_rs_process::pool::swr_v1_process_pool_ipc_send_sync(
-                (ipc as *const swoole_rs_process::pool::PoolIpc).as_ref(),
-                std::slice::from_raw_parts(bytes as *const u8, length as usize),
-            ) {
-                SW_OK
-            } else {
-                SW_ERR
-            };
+            let dispatch_result =
+                if swoole_rs_corebase::process::pool::swr_v1_process_pool_ipc_send_sync(
+                    (ipc as *const swoole_rs_corebase::process::pool::PoolIpc).as_ref(),
+                    std::slice::from_raw_parts(bytes as *const u8, length as usize),
+                ) {
+                    SW_OK
+                } else {
+                    SW_ERR
+                };
             if dispatch_result != SW_OK {
                 // On Linux, shutting the listener down makes the blocked accept() return so the
                 // receive loop can exit.
-                let listener = swoole_rs_process::pool::swr_v1_process_pool_ipc_listener(
-                    &*(ipc as *const swoole_rs_process::pool::PoolIpc),
+                let listener = swoole_rs_corebase::process::pool::swr_v1_process_pool_ipc_listener(
+                    &*(ipc as *const swoole_rs_corebase::process::pool::PoolIpc),
                 );
                 shutdown(listener_fd(listener), SHUT_RDWR);
             }
@@ -1780,8 +1783,10 @@ fn task_protocol_rejects_malformed_socket_packet() {
         if valid_packet_sent != SW_OK {
             // SAFETY: the pool's stream listener, which outlives the join.
             unsafe {
-                let listener = swoole_rs_process::pool::swr_v1_process_pool_ipc_listener(
-                    &*(*pool).ipc.cast::<swoole_rs_process::pool::PoolIpc>(),
+                let listener = swoole_rs_corebase::process::pool::swr_v1_process_pool_ipc_listener(
+                    &*(*pool)
+                        .ipc
+                        .cast::<swoole_rs_corebase::process::pool::PoolIpc>(),
                 );
                 shutdown(listener_fd(listener), SHUT_RDWR);
             }
@@ -1987,7 +1992,7 @@ fn worker() {
     assert!(worker.start_time > 0);
     pm::worker_set_max_request(1000, 200);
 
-    let max_request = swoole_rs_process::worker_globals::with_globals(|globals| {
+    let max_request = swoole_rs_corebase::process::worker_globals::with_globals(|globals| {
         globals
             .max_request
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -2141,7 +2146,7 @@ fn reload_from_child_exit_callback() {
 
 /// `SwooleWG.worker`, as the mirror.
 fn current_worker() -> *mut Worker {
-    swoole_rs_process::worker_globals::current_worker().cast()
+    swoole_rs_corebase::process::worker_globals::current_worker().cast()
 }
 
 /// The mirrors' layout, checked against the fixture before any case runs.

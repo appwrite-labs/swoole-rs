@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/os/signal.cc (Swoole contributors).
 //! `swoole_signal_set`, `_callback`, `_get_handler`, `_get_listener_num` and `_clear`
-//! under their upstream (Itanium) symbols, over crates/process's signal loop, and the
+//! under their upstream (Itanium) symbols, over `corebase::process`'s signal loop, and the
 //! event-loop effects that loop asks for: the signalfd socket, its reactor handler,
 //! exit condition and destroy callback, and the warnings. The process patch deletes
 //! `src/os/signal.cc`.
@@ -9,9 +9,9 @@ use crate::ReactorPrepared;
 use crate::socket_sync::set_errno;
 use std::ffi::c_int;
 use swoole_rs_corebase::log;
-pub use swoole_rs_process::signal::Handler;
-use swoole_rs_process::signal::signal_name;
-use swoole_rs_process::signal_loop::{self, Ops, Report};
+pub use swoole_rs_corebase::process::signal::Handler;
+use swoole_rs_corebase::process::signal::signal_name;
+use swoole_rs_corebase::process::signal_loop::{self, Ops, Report};
 
 /// `SW_FD_SIGNAL` and `SW_ERROR_UNREGISTERED_SIGNAL`.
 #[cfg(target_os = "linux")]
@@ -116,7 +116,7 @@ mod descriptor {
     };
     use crate::{OwnedSocket, SocketRecord};
     use core::cell::Cell;
-    use swoole_rs_process::signal_loop::DescriptorOps;
+    use swoole_rs_corebase::process::signal_loop::DescriptorOps;
 
     std::thread_local! {
         /// The signalfd's socket wrapper, on the signal thread: none, or the one
@@ -168,13 +168,13 @@ mod descriptor {
 
     impl FdHandler for Read {
         fn handle(fd: c_int) -> bool {
-            swoole_rs_process::signal_loop::read(fd, &OPS);
+            swoole_rs_corebase::process::signal_loop::read(fd, &OPS);
             true
         }
     }
 
     fn destroyed() {
-        swoole_rs_process::signal_loop::destroyed(&OPS);
+        swoole_rs_corebase::process::signal_loop::destroyed(&OPS);
     }
 
     /// The signalfd's exit condition, which the reactor calls with its event count: it
@@ -182,7 +182,8 @@ mod descriptor {
     /// (`OwnedSocket::into_box`), where upstream's stayed counted, so it no longer
     /// needs discounting.
     fn exit_condition(event_num: &mut usize) -> bool {
-        with(|_| ()).is_none() || swoole_rs_process::signal_loop::exit_condition(event_num)
+        with(|_| ()).is_none()
+            || swoole_rs_corebase::process::signal_loop::exit_condition(event_num)
     }
 
     /// The read handler, the exit condition and the destroy callback.

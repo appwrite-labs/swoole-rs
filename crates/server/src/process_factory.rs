@@ -9,9 +9,9 @@
 use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_corebase::process::methods::{swoole_get_worker_id, worker_type};
+use swoole_rs_corebase::process::worker_record::WorkerType;
 use swoole_rs_corebase::{DataHead, log};
-use swoole_rs_process::methods::{swoole_get_worker_id, worker_type};
-use swoole_rs_process::worker_record::WorkerType;
 
 use crate::base_factory::{SendData, low16};
 use crate::callbacks::{CallbackKind, EventSlot};
