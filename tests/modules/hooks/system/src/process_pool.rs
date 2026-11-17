@@ -30,7 +30,7 @@ use swoole_rs_process::worker_record::{
     Worker as WorkerHandle, swr_v1_worker_init, swr_v1_worker_shutdown,
 };
 
-use super::timer::{TimerNode, after, swoole_timer_del, tick};
+use super::timer::{after, tick};
 use super::{SIGKILL, TEST_STR, last_error, random_bytes};
 use swoole_rs_reactor::signal_upstream::swoole_signal_clear;
 use swoole_rs_timer::{swoole_timer_clear, swoole_timer_free, swoole_timer_is_available};
@@ -2097,13 +2097,11 @@ fn reload_from_child_exit_callback() {
         // SAFETY: the case's pool.
         unsafe { (*pool).running = false };
     });
-    let completion = tick(10, move |tnode: *mut TimerNode| {
+    let completion = tick(10, move |tnode| {
         if counter_get(25) == 1 && counter_get(0) == 2 && counter_get(1) == 2 {
-            // SAFETY: the running node; the case's pool.
-            unsafe {
-                swoole_timer_del(tnode);
-                (*pool).running = false;
-            }
+            swoole_rs_timer::del_id(tnode);
+            // SAFETY: the case's pool.
+            unsafe { (*pool).running = false };
         }
     });
     assert_eq!(start(pool), SW_OK);

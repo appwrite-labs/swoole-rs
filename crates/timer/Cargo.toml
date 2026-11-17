@@ -10,8 +10,7 @@ name = "swoole_rs_timer"
 crate-type = ["rlib", "staticlib"]
 
 [features]
-# Define src/wrapper/timer.cc's swoole_timer_* API under its C++ symbols. Only crates/ffi,
-# whose builds apply the timer patch that deletes that file, turns it on.
+# Thread-local timer ownership and reactor integration, replacing src/wrapper/timer.cc.
 upstream-symbols = ["dep:swoole-rs-reactor", "swoole-rs-reactor/upstream-symbols"]
 
 # The typed PHP timer boundary consumes a Zend callable, never a raw callback/data pair.

@@ -504,3 +504,11 @@ The original `timer.get` and `timer.delay` use the issued timer ID returned
 by `swoole_timer_get`, and `delay_held` moves its deadline. Their ID, elapsed-time
 and missing-timer expectations are unchanged; `None` represents the original
 null node. The test-only `swoole_timer_delay` C++ export is removed.
+
+The remaining timer cases and their process-pool, async and OS consumers schedule
+owned Rust captures and cancel issued `Held` IDs. The timer destructor case runs
+when the final callback owner drops; fixture handles retain only a weak reference.
+The original inputs, counters, timing bounds, error 505, zero-interval failures,
+null operations and reinitialization assertions are unchanged. With the HTTP
+fixtures migrated too, the raw add/after/tick/delete exports and copied node layout
+are gone; `TimerNode` is private to the timer crate.

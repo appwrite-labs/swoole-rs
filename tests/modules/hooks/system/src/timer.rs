@@ -2,47 +2,22 @@
 //! and expected values, over the Rust timer (crates/timer).
 //! `SwooleTG.timer` is crates/corebase's `thread_timer`.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{c_int, c_long, c_void};
+use std::rc::{Rc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{SW_ERR, last_error, sleep};
 use swoole_rs_timer::{
-    del_id, delay_held, realtime_add, swoole_timer_clear, swoole_timer_exists, swoole_timer_free,
-    swoole_timer_get, swoole_timer_select,
+    Held, del_id, delay_held, delete_held, realtime_add, swoole_timer_clear, swoole_timer_exists,
+    swoole_timer_free, swoole_timer_get, swoole_timer_select,
 };
 
 const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
 const SW_ERROR_INVALID_PARAMS: c_int = 505;
 const SW_NUM_MILLION: i64 = 1_000_000;
 
-/// `swoole::TimerNode` (crates/timer/src/owner.rs): `id`, the members up to
-/// `callback`, `data` and `destructor`.
-#[repr(C)]
-pub(super) struct TimerNode {
-    id: c_long,
-    _members: [u64; 7],
-    data: *mut c_void,
-    destructor: Option<unsafe extern "C" fn(*mut TimerNode)>,
-}
-
-/// `swoole::TimerCallback`.
-type Callback = unsafe extern "C" fn(*mut c_void, *mut TimerNode);
-
 unsafe extern "C" {
-    #[link_name = "_Z16swoole_timer_addlbPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
-    fn swoole_timer_add(
-        ms: c_long,
-        persistent: bool,
-        callback: Callback,
-        data: *mut c_void,
-    ) -> *mut TimerNode;
-    #[link_name = "_Z18swoole_timer_afterlPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
-    fn swoole_timer_after(ms: c_long, callback: Callback, data: *mut c_void) -> c_long;
-    #[link_name = "_Z17swoole_timer_ticklPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
-    fn swoole_timer_tick(ms: c_long, callback: Callback, data: *mut c_void) -> c_long;
-    #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-    pub(super) fn swoole_timer_del(tnode: *mut TimerNode) -> bool;
     #[link_name = "_Z17swoole_event_initi"]
     fn swoole_event_init(flags: c_int) -> c_int;
     #[link_name = "_Z17swoole_event_waitv"]
@@ -53,61 +28,61 @@ unsafe extern "C-unwind" {
     fn swr_v1_core_set_last_error(code: c_int);
 }
 
-/// A node's closures, its data: the C++ lambdas' captures.
-struct Hooks<'a> {
-    call: Box<dyn FnMut(*mut TimerNode) + 'a>,
-    destructor: Option<Box<dyn FnMut() + 'a>>,
+/// Owned callback captures; the timer's last callback hold runs the destructor.
+struct Hooks {
+    call: RefCell<Box<dyn FnMut(Held)>>,
+    destructor: Cell<Option<Box<dyn FnOnce()>>>,
 }
 
-unsafe extern "C" fn call(_timer: *mut c_void, tnode: *mut TimerNode) {
-    // SAFETY: `hooks` leaked the node's closures into its data for the timer's lifetime.
-    let hooks = unsafe { &mut *(*tnode).data.cast::<Hooks<'_>>() };
-    (hooks.call)(tnode);
-}
-
-unsafe extern "C" fn destruct(tnode: *mut TimerNode) {
-    // SAFETY: as in `call`.
-    let hooks = unsafe { &mut *(*tnode).data.cast::<Hooks<'_>>() };
-    if let Some(destructor) = hooks.destructor.as_mut() {
-        destructor();
+impl Drop for Hooks {
+    fn drop(&mut self) {
+        if let Some(destructor) = self.destructor.take() {
+            destructor();
+        }
     }
 }
 
-/// A closure as a node's data. Leaked, as the C++ lambdas' captures outlive
-/// nothing they borrow while the timer can still fire.
-fn hooks<'a>(f: impl FnMut(*mut TimerNode) + 'a) -> *mut c_void {
-    let hooks = Hooks {
-        call: Box::new(f),
-        destructor: None,
+/// The test may configure a live timer without extending its captures' lifetime.
+struct Node {
+    held: Held,
+    hooks: Weak<Hooks>,
+}
+
+fn add(ms: c_long, persistent: bool, checked: bool, f: impl FnMut(Held) + 'static) -> Option<Node> {
+    let hooks = Rc::new(Hooks {
+        call: RefCell::new(Box::new(f)),
+        destructor: Cell::new(None),
+    });
+    let weak = Rc::downgrade(&hooks);
+    let issued = Rc::new(Cell::new(None));
+    let slot = Rc::clone(&issued);
+    let call = move || {
+        (hooks.call.borrow_mut())(slot.get().expect("timer ID installed before selection"));
     };
-    Box::into_raw(Box::new(hooks)).cast()
+    let held = if checked {
+        swoole_rs_timer::schedule_owned(ms, persistent, call)
+    } else {
+        swoole_rs_timer::add_owned(ms, persistent, call)
+    }?;
+    issued.set(Some(held));
+    Some(Node { held, hooks: weak })
 }
 
-fn add<'a>(ms: c_long, persistent: bool, f: impl FnMut(*mut TimerNode) + 'a) -> *mut TimerNode {
-    // SAFETY: `call` takes the closures `hooks` leaked.
-    unsafe { swoole_timer_add(ms, persistent, call, hooks(f)) }
+pub(super) fn after(ms: c_long, f: impl FnMut(Held) + 'static) -> c_long {
+    add(ms, false, true, f).map_or(c_long::from(SW_ERR), |node| node.held.id())
 }
 
-pub(super) fn after<'a>(ms: c_long, f: impl FnMut(*mut TimerNode) + 'a) -> c_long {
-    // SAFETY: as in `add`.
-    unsafe { swoole_timer_after(ms, call, hooks(f)) }
+pub(super) fn tick(ms: c_long, f: impl FnMut(Held) + 'static) -> c_long {
+    add(ms, true, true, f).map_or(c_long::from(SW_ERR), |node| node.held.id())
 }
 
-pub(super) fn tick<'a>(ms: c_long, f: impl FnMut(*mut TimerNode) + 'a) -> c_long {
-    // SAFETY: as in `add`.
-    unsafe { swoole_timer_tick(ms, call, hooks(f)) }
-}
-
-/// `tnode->destructor = f`.
-///
-/// # Safety
-/// `tnode` is a live node `add` made.
-unsafe fn set_destructor<'a>(tnode: *mut TimerNode, f: impl FnMut() + 'a) {
-    // SAFETY: as the caller promises; its data is the closures `hooks` leaked.
-    unsafe {
-        (*(*tnode).data.cast::<Hooks<'a>>()).destructor = Some(Box::new(f));
-        (*tnode).destructor = Some(destruct);
-    }
+/// The original `tnode->destructor = f`, configured while the node is live.
+fn set_destructor(node: &Node, f: impl FnOnce() + 'static) {
+    node.hooks
+        .upgrade()
+        .unwrap()
+        .destructor
+        .set(Some(Box::new(f)));
 }
 
 /// `swoole::time<std::chrono::milliseconds>()`: the system clock.
@@ -144,31 +119,33 @@ fn event_wait() {
 }
 
 fn sys() {
-    let counter = [const { Cell::new(0) }; 4];
+    let counter = Rc::new([const { Cell::new(0) }; 4]);
     let ms1 = now_ms();
 
-    assert!(!add(20, false, |_| _ = incr(&counter[0])).is_null());
+    let first = Rc::clone(&counter);
+    assert!(add(20, false, false, move |_| _ = incr(&first[0])).is_some());
 
     // SAFETY: this thread's last error.
     unsafe { swr_v1_core_set_last_error(0) };
-    assert!(add(-1, false, |_| {}).is_null());
+    assert!(add(-1, false, false, |_| {}).is_none());
     assert_eq!(last_error(), SW_ERROR_INVALID_PARAMS);
 
     // SAFETY: as above.
     unsafe { swr_v1_core_set_last_error(0) };
-    assert!(add(0, false, |_| {}).is_null());
+    assert!(add(0, false, false, |_| {}).is_none());
     assert_eq!(last_error(), SW_ERROR_INVALID_PARAMS);
 
     // dtor test
-    let timer = add(20, false, |_| _ = incr(&counter[2]));
-    assert!(!timer.is_null());
-    // SAFETY: a live node `add` made.
-    unsafe { set_destructor(timer, || counter[3].set(9999)) };
+    let fired = Rc::clone(&counter);
+    let timer = add(20, false, false, move |_| _ = incr(&fired[2]));
+    assert!(timer.is_some());
+    let destroyed = Rc::clone(&counter);
+    set_destructor(timer.as_ref().unwrap(), move || destroyed[3].set(9999));
 
-    add(100, true, |tnode| {
-        if incr(&counter[1]) == 5 {
-            // SAFETY: the running node.
-            unsafe { swoole_timer_del(tnode) };
+    let repeated = Rc::clone(&counter);
+    _ = add(100, true, false, move |tnode| {
+        if incr(&repeated[1]) == 5 {
+            del_id(tnode);
         }
     });
 
@@ -194,18 +171,19 @@ fn sys() {
 }
 
 fn async_() {
-    let timer1_count = Cell::new(0);
-    let timer2_count = Cell::new(0);
+    let timer1_count = Rc::new(Cell::new(0));
+    let timer2_count = Rc::new(Cell::new(0));
 
     event_init();
 
     let ms1 = now_ms();
-    after(20, |_| _ = incr(&timer1_count));
+    let first = Rc::clone(&timer1_count);
+    after(20, move |_| _ = incr(&first));
 
-    tick(100, |tnode| {
-        if incr(&timer2_count) == 5 {
-            // SAFETY: the running node.
-            unsafe { swoole_timer_del(tnode) };
+    let second = Rc::clone(&timer2_count);
+    tick(100, move |tnode| {
+        if incr(&second) == 5 {
+            del_id(tnode);
         }
     });
 
@@ -240,8 +218,9 @@ fn get() {
 fn delay() {
     event_init();
     let ms1 = now_ms();
-    let ms2 = Cell::new(0);
-    let timer_id = after(100, |_| ms2.set(now_ms()));
+    let ms2 = Rc::new(Cell::new(0));
+    let fired = Rc::clone(&ms2);
+    let timer_id = after(100, move |_| fired.set(now_ms()));
 
     let timer_node = swoole_timer_get(timer_id).unwrap();
     delay_held(Some(timer_node), 100);
@@ -252,35 +231,33 @@ fn delay() {
 }
 
 fn error() {
-    // SAFETY: SwooleTG.timer is unset for the calls below and restored after.
-    unsafe {
-        let tmp = timer_exchange(std::ptr::null_mut());
+    let tmp = timer_exchange(std::ptr::null_mut());
 
-        swoole_timer_free();
-        swoole_timer_select(); // no effect
-        assert!(swoole_timer_get(1).is_none());
-        assert!(!swoole_timer_clear(1));
-        assert!(!swoole_timer_exists(1));
+    swoole_timer_free();
+    swoole_timer_select(); // no effect
+    assert!(swoole_timer_get(1).is_none());
+    assert!(!swoole_timer_clear(1));
+    assert!(!swoole_timer_exists(1));
 
-        let timer_id = tick(0, |_| {});
-        assert_eq!(timer_id, c_long::from(SW_ERR));
+    let timer_id = tick(0, |_| {});
+    assert_eq!(timer_id, c_long::from(SW_ERR));
 
-        let timer_id = after(0, |_| {});
-        assert_eq!(timer_id, c_long::from(SW_ERR));
+    let timer_id = after(0, |_| {});
+    assert_eq!(timer_id, c_long::from(SW_ERR));
 
-        delay_held(None, 100);
-        assert!(!swoole_timer_del(std::ptr::null_mut()));
-        timer_exchange(tmp);
+    delay_held(None, 100);
+    assert!(!delete_held(None));
+    timer_exchange(tmp);
 
-        swoole_timer_free();
-    }
+    swoole_timer_free();
 }
 
 fn reinit() {
-    let timer1_count = Cell::new(0);
-    let timer2_count = Cell::new(0);
+    let timer1_count = Rc::new(Cell::new(0));
+    let timer2_count = Rc::new(Cell::new(0));
 
-    after(20, |_| _ = incr(&timer1_count));
+    let first = Rc::clone(&timer1_count);
+    after(20, move |_| _ = incr(&first));
 
     event_init();
 
@@ -292,10 +269,10 @@ fn reinit() {
 
     let ms1 = now_ms();
 
-    tick(100, |tnode| {
-        if incr(&timer2_count) == 5 {
-            // SAFETY: the running node.
-            unsafe { swoole_timer_del(tnode) };
+    let second = Rc::clone(&timer2_count);
+    tick(100, move |tnode| {
+        if incr(&second) == 5 {
+            del_id(tnode);
         }
     });
 
