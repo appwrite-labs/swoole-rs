@@ -95,6 +95,15 @@ unsafe extern "C" {
     /// lent key, which Zend copies, or appends it to what is there, made a list
     /// first unless it is one. No PHP code runs: it releases nothing.
     safe fn swr_lent_array_add_or_merge(array: Separated<'_>, key: IoSlice<'_>, value: Given<'_>);
+    /// `php_register_variable_ex`: the array takes `value` under the request
+    /// variable `name`, by PHP's rules for its `a[b]` nesting, or releases it
+    /// (an empty name, or one nested past `max_input_nesting_level`, which
+    /// warns: a user error handler runs PHP code).
+    safe fn php_register_variable_ex(
+        name: crate::helpers::CText<'_>,
+        value: Given<'_>,
+        array: Separated<'_>,
+    );
     /// `zend_zval_value_name`: it reads the zval, and returns a static type
     /// name or the name of the object's class, which outlives its objects.
     /// `mixed` for a slot that holds no PHP value.
@@ -1614,6 +1623,18 @@ impl ArrayMut {
         if let Some(array) = self.separate() {
             swr_lent_push_bytes(array, IoSlice::new(data));
         }
+    }
+
+    /// `php_register_variable_ex(name, value, array)`: the array takes `value`
+    /// under the request variable `name` (`a[b][]` nests), or releases it.
+    /// # Errors
+    /// A warning's user error handler bailed out.
+    pub fn register_variable(&mut self, name: &CStr, value: Owned) -> Result<(), bailout::Bailout> {
+        let Some(array) = self.separate() else {
+            return Ok(());
+        };
+        let mut value = value.into_zval();
+        crate::contain_with(|| php_register_variable_ex(name.into(), Given(&mut value), array))
     }
 
     /// `add_next_index_long`.

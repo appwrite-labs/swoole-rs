@@ -5,11 +5,10 @@
 //! itself owns goes through `host`.
 use crate::host;
 use crate::state::{Request, State};
-use std::ffi::{CStr, c_char, c_int};
+use std::ffi::{CStr, CString, c_char, c_int};
 use std::fs::File;
 use std::io::{BufWriter, IoSlice, Write};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
-use std::{mem::ManuallyDrop, ptr};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::lent::{Count, In, lend_in};
 use swoole_rs_corebase::sys::Text;
@@ -20,7 +19,6 @@ use swoole_rs_httpbindings::{
     FormSource, RequestHeader, body_prefix, compression, form_source, request_header, request_url,
     token_list_contains, token_list_fast, trim_quotes,
 };
-use swoole_rs_zend::sys::zval;
 use swoole_rs_zend::{
     ArrayMut, Declared, Insertions, Interned, Minit, Owned, OwnedArray, Separated, Value, ZStr,
     ZString,
@@ -55,7 +53,6 @@ unsafe extern "C" {
         len: Count<'_>,
         track: Option<&Value>,
     );
-    fn php_register_variable_ex(var: *const c_char, val: *mut zval, track: *mut zval);
 }
 
 use llhttp::{
@@ -360,11 +357,6 @@ pub(crate) fn edit<R>(
     edit: impl FnOnce(&mut ArrayMut) -> R,
 ) -> Option<R> {
     property(request, which)?.edit_array(edit)
-}
-
-/// [`property`]'s array zval, for a C writer; null without one.
-fn raw_property(state: &mut State, which: Property) -> *mut zval {
-    property(&mut state.request, which).map_or(ptr::null_mut(), Value::as_ptr)
 }
 
 /// New server keys share one separation as well as the property loan.
@@ -1178,37 +1170,37 @@ fn part_data_end(state: &mut State, upload: &mut Option<Upload>) {
     if code == UPLOAD_FILE_READY {
         upload_long(state, b"error", UPLOAD_OK);
     }
-    let files = raw_property(state, Property::Files);
-    // The array moves into `$request->files`; like upstream, only the holder
-    // goes, not the array it registered.
-    let header = ManuallyDrop::new(std::mem::take(&mut state.parse.multipart_header));
+    let header = std::mem::take(&mut state.parse.multipart_header);
     // `input_name` holds its NUL; C sees it up to the first one.
     let text = input_name
         .split(|&byte| byte == 0)
         .next()
         .unwrap_or_default();
     let bracket = text.iter().position(|&byte| byte == b'[');
-    match bracket.and_then(|at| text.split_at_checked(at)) {
-        Some((name, input_path)) if state.parse_files && !name.is_empty() => {
-            const META: usize = FORM_KEYLEN + b"[tmp_name]".len() - 1;
-            for field in ["name", "type", "tmp_name", "error", "size"] {
-                let mut meta = name.get(..META - 1).unwrap_or(name).to_vec();
-                meta.extend_from_slice(format!("[{field}]").as_bytes());
-                meta.extend_from_slice(input_path);
-                meta.truncate(META - 1);
-                meta.push(0);
-                let entry = header
-                    .array()
-                    .and_then(|header| header.find(field.as_bytes()));
-                let entry = entry.map_or(ptr::null_mut(), Value::as_ptr);
-                // SAFETY: a NUL-terminated name, a value from the upload's array and `$request->files`.
-                unsafe { php_register_variable_ex(meta.as_ptr().cast(), entry, files) };
+    let parse_files = state.parse_files;
+    let registered = edit(&mut state.request, Property::Files, |files| {
+        match bracket.and_then(|at| text.split_at_checked(at)) {
+            Some((name, input_path)) if parse_files && !name.is_empty() => {
+                const META: usize = FORM_KEYLEN + b"[tmp_name]".len() - 1;
+                for field in ["name", "type", "tmp_name", "error", "size"] {
+                    let mut meta = name.get(..META - 1).unwrap_or(name).to_vec();
+                    meta.extend_from_slice(format!("[{field}]").as_bytes());
+                    meta.extend_from_slice(input_path);
+                    meta.truncate(META - 1);
+                    let meta = CString::new(meta).unwrap_or_default();
+                    // The header declared each field when the part began.
+                    let entry = header
+                        .array()
+                        .and_then(|header| header.find(field.as_bytes()));
+                    files.register_variable(&meta, entry.map_or_else(Owned::null, Value::copy))?;
+                }
+                Ok(())
             }
+            _ => files.register_variable(&CString::new(text).unwrap_or_default(), header),
         }
-        _ => {
-            // SAFETY: a NUL-terminated name, the upload's array and `$request->files`.
-            unsafe { php_register_variable_ex(input_name.as_ptr().cast(), header.as_ptr(), files) };
-        }
+    });
+    if let Some(Err(bailed)) = registered {
+        bailed.defer();
     }
 }
 
