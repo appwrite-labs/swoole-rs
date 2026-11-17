@@ -137,20 +137,26 @@ fn main(serv: view::Server<'_>) {
     if config.task_worker_num.get() > 0
         && !methods::start(crate::process_pool_native(), serv.task_pool_ref())
     {
-        log::sys_error(ORIGIN, format_args!("failed to start task worker"));
+        if !process::pool::bailout_pending() {
+            log::sys_error(ORIGIN, format_args!("failed to start task worker"));
+        }
         return;
     }
     // After the task pool starts, which sets the process type to SW_MASTER.
     methods::set_worker_type(WorkerType::Manager);
     for id in worker_ids(true, config.worker_num.get(), 0) {
         if spawn(serv, spawn_event_worker, worker_at(serv, id)).is_none() {
-            log::sys_error(ORIGIN, format_args!("failed to fork event worker"));
+            if !process::pool::bailout_pending() {
+                log::sys_error(ORIGIN, format_args!("failed to fork event worker"));
+            }
             return;
         }
     }
     for at in 0..serv.user_worker_num() {
         if spawn(serv, spawn_user_worker, serv.pending_worker(at)).is_none() {
-            log::sys_error(ORIGIN, format_args!("failed to fork user worker"));
+            if !process::pool::bailout_pending() {
+                log::sys_error(ORIGIN, format_args!("failed to fork user worker"));
+            }
             return;
         }
     }
