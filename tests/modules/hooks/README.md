@@ -80,6 +80,11 @@ slice of pollfds and a `SendMessage` or `RecvMessage` of borrowed buffers (as
 libc (`File`, `String`, `create_socket_pair`, `file_get_contents`,
 `Address::assign`), `System::gethostbyname` is `resolve::system_gethostbyname`,
 and `exists` reads the socket's `sock_fd` through the hybrid's record layout.
+`coroutine_hook.socket` resolves `localhost` and connects to an ephemeral loopback
+HTTP peer instead of public `www.baidu.com:80`. Its request bytes, hook operations,
+assertions and coroutine/non-coroutine runs are unchanged. The peer checks the
+whole request and returns a response larger than the initial receive buffer,
+including the original `baidu.com` marker; accept/read/write have bounded waits.
 Before each case the binary writes `TEST_TMP_FILE` as core-tests' run did and
 removes the `/tmp/123.txt` that `ftruncate` leaves behind with mode 0.
 `statvfs` reads `/proc` where upstream reads `/tmp`: the free counts of the filesystem

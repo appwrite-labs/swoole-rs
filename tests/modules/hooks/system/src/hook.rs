@@ -518,12 +518,51 @@ pub(super) fn lookup(host: &CStr, domain: c_int, timeout: f64) -> String {
 }
 
 fn test_hook_socket() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    let req: &[u8] =
+        b"GET / HTTP/1.1\r\nHost: www.baidu.com\r\nConnection: close\r\nKeepAlive: off\r\n\r\n";
+    // Bind before starting the client, without a fixed port or an external HTTP peer.
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    let peer = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "HTTP fixture accept timed out");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("HTTP fixture accept: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut received = vec![0; req.len()];
+        stream.read_exact(&mut received).unwrap();
+        assert_eq!(received, req);
+        // More than one receive buffer, with the original response marker.
+        let body = "baidu.com".repeat(128);
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+    });
     // SAFETY: socket(2).
     let sock = unsafe { swoole_coroutine_socket(AF_INET, SOCK_STREAM, 0) };
     assert!(sock > 0);
-    // System::gethostbyname("www.baidu.com", AF_INET, 10)
-    let ip = lookup(c"www.baidu.com", AF_INET, 10.0);
-    // sa.assign(SW_SOCK_TCP, ip, 80)
+    // Keep the hostname lookup, using the local hosts entry rather than public DNS.
+    let ip = lookup(c"localhost", AF_INET, 10.0);
     let mut sa = SocketAddress::default();
     let host = std::ffi::CString::new(ip).unwrap();
     let _ = address::assign(
@@ -531,7 +570,7 @@ fn test_hook_socket() {
         &mut sa.len,
         SW_SOCK_TCP,
         host.as_bytes_with_nul(),
-        80,
+        port.into(),
         true,
     );
     assert_eq!(hooked::connect(sock, &sa).map_or(-1, |()| 0), 0);
@@ -541,8 +580,6 @@ fn test_hook_socket() {
         SW_OK
     );
 
-    let req: &[u8] =
-        b"GET / HTTP/1.1\r\nHost: www.baidu.com\r\nConnection: close\r\nKeepAlive: off\r\n\r\n";
     let sent = hooked::send(sock, req, 0).map_or(-1, usize::cast_signed);
     assert_eq!(sent, isize::try_from(req.len()).unwrap());
 
@@ -564,6 +601,7 @@ fn test_hook_socket() {
     assert!(length > 100);
     assert!(contains(&resp[..length], b"baidu.com"));
     co_close(sock);
+    peer.join().unwrap();
 }
 
 fn socket() {
