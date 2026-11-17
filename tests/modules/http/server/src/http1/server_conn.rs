@@ -174,8 +174,7 @@ fn set_log_file(file: &str) {
 }
 
 fn set_log_level(level: c_int) {
-    // SAFETY: sets the global log level.
-    unsafe { swoole_set_log_level(level) };
+    swoole_set_log_level(level);
 }
 
 /// `String::append_random_bytes(length)`.

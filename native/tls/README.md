@@ -34,8 +34,9 @@ rejected. Ports publish independent immutable `TlsSettings` for concurrent TCP,
 SNI and DTLS handshakes. Clients and coroutine sockets freeze configuration before
 creating a session; accepted sockets retain their listener's snapshot. Handshake
 retries and verification read the snapshot, so later builder edits cannot change
-an active session. Rebuilding a context creates a fresh snapshot. Original-test adapters edit configuration through scoped loans; no raw field
-view survives a returned loan. The password callback reads the
+an active session. Rebuilding a context creates a fresh snapshot. Original-test
+adapters edit configuration through scoped loans; no raw field view survives a
+returned loan. The password callback reads the
 configuration's passphrase only while `create` loads the certificate and key files,
 then goes: upstream leaves it installed, but nothing reads a key through the context
 afterwards. `owner_assign` copies configuration and takes a context reference.

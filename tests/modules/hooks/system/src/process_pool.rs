@@ -33,7 +33,7 @@ use swoole_rs_corebase::process::worker_record::{
 use swoole_rs_corebase::reactor::signal_upstream::{self as signal, Handler as SignalHandler};
 use swoole_rs_corebase::signal_block_all;
 use swoole_rs_corebase::swoole_random_int;
-use swoole_rs_corebase::swoole_thread_clean;
+use swoole_rs_corebase::{swoole_thread_clean, swoole_thread_init};
 
 use super::timer::{after, tick};
 use super::{SIGKILL, TEST_STR, last_error, random_bytes};
@@ -237,8 +237,6 @@ unsafe extern "C" {
 
     #[link_name = "_Z20swoole_system_randomii"]
     fn swoole_system_random(min: c_int, max: c_int) -> c_int;
-    #[link_name = "_Z18swoole_thread_initb"]
-    fn swoole_thread_init(main_thread: bool);
 
     fn fork() -> c_int;
     fn kill(pid: c_int, sig: c_int) -> c_int;
@@ -1743,8 +1741,7 @@ fn task_protocol_rejects_malformed_socket_packet() {
     let address = pool as usize;
     let sender = std::thread::spawn(move || {
         let pool = address as *mut Pool;
-        // SAFETY: a thread of this process.
-        unsafe { swoole_thread_init(false) };
+        swoole_thread_init(false);
         let mut acknowledgment_received = SW_ERR as isize;
         let mut acknowledgment = -1;
         let client = UnixStream::connect(SOCKET_FILE.to_str().unwrap());

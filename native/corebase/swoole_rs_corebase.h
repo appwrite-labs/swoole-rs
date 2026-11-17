@@ -6,15 +6,15 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* Rust also defines swoole_init, swoole_fork, swoole_waitpid, swoole_clean,
- * swoole_thread_init/_clean and swoole_is_main_thread. */
+/* Rust also defines swoole_init, swoole_fork and swoole_clean.
+ * Thread initialization, cleanup and main-thread queries use Rust paths. */
 /* Rust defines these upstream functions under their C++ symbols, so swoole.h
  * keeps their declarations: swoole_common_divisor/_multiple, swoole_version_compare,
  * swoole_dec2hex, swoole_random_int and swoole::DataHead::dump. swoole::microtime is Rust's too;
  * no C++ calls it. */
 /* Also Rust's, from base.cc: swoole_shell_exec, swoole_system_random, both
  * swoole_redirect_stdout overloads, swoole_print_backtrace(_on_error),
- * swoole_exit, swoole_set_log_level, swoole_set/get_stdout_stream and sw_printf
+ * swoole_exit, swoole_set/get_stdout_stream and sw_printf
  * (crates/corebase/src/format.c). No compiled C++ calls them. */
 /* SwooleG.fatal_error, a native object Rust only holds: null until a host sets it. */
 typedef void (*SwrFatalError)(int code, const char *format, ...);
@@ -34,8 +34,6 @@ const char *swoole_strerror(int code);
 void swoole_throw_error(int code);
 void swoole_ignore_error(int code);
 bool swoole_is_ignored_error(int code);
-bool swoole_is_main_thread();
-int swoole_get_log_level();
 void swoole_set_trace_flags(long flags);
 void swoole_set_print_backtrace_on_error(bool enable = true);
 #endif

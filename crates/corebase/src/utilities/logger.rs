@@ -451,11 +451,7 @@ pub fn process_logger() -> Option<&'static Logger> {
 }
 
 /// `void swoole_set_log_level(int level)` (upstream `src/core/base.cc`).
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z20swoole_set_log_leveli")
-)]
-pub extern "C" fn swoole_set_log_level(level: c_int) {
+pub fn swoole_set_log_level(level: c_int) {
     if let Some(logger) = process_logger() {
         logger.set_level(level);
     }
@@ -463,11 +459,7 @@ pub extern "C" fn swoole_set_log_level(level: c_int) {
 
 /// `int swoole_get_log_level()`: `SW_LOG_NONE` without a logger.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z20swoole_get_log_levelv")
-)]
-pub extern "C" fn swoole_get_log_level() -> c_int {
+pub fn swoole_get_log_level() -> c_int {
     const SW_LOG_NONE: c_int = 6;
     process_logger().map_or(SW_LOG_NONE, Logger::level)
 }

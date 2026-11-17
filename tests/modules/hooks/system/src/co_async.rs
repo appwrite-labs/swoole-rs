@@ -101,7 +101,7 @@ fn cancel() {
         let co = current();
         timer::after(50, move |_| {
             // SAFETY: the case's coroutine, parked in async.
-            unsafe { coroutine_cancel(co) };
+            unsafe { coroutine_cancel(co.cast()) };
         });
 
         let retval = co_async(sleep_200ms, &mut ev, -1.0);

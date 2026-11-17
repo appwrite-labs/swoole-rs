@@ -1,6 +1,6 @@
 //! The coroutine scheduler and per-coroutine state, Channel, each coroutine's
 //! context (its stack and the switch onto it) and `swoole::Coroutine`'s
-//! operations. C++ runs the effects: swap callbacks, timers and destructors.
+//! operations. Rust invokes swap callbacks, timers and destructors.
 pub mod chan;
 pub mod context;
 mod fcontext;
@@ -11,7 +11,7 @@ mod facade;
 #[cfg(feature = "upstream-symbols")]
 pub use facade::{
     Host, activate, cancel, cancel_cid, deactivate, print_socket_bound_error, set_host, spawn,
-    swr_v1_coroutine_create, yield_ex, yield_resumed, yield_timed, yield_timed_armed,
+    swr_v1_coroutine_create, yield_resumed, yield_timed, yield_timed_armed,
 };
 #[cfg(feature = "upstream-symbols")]
 pub use facade::{print_list, swoole_coroutine_iterator_each, swoole_coroutine_iterator_reset};

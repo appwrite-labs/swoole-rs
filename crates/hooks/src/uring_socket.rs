@@ -66,8 +66,8 @@ impl TlsSocket for Co {
 }
 
 /// `f` over the ring's view of `socket` when it is a `UringSocket`, else none. The
-/// view lives for the call: it borrows the record's TLS session, which the unsafe
-/// `socket_ssl_close` frees only between the socket's operations.
+/// view lives for the call: it borrows a retained reference to the record's TLS
+/// session, which outlives a `socket_ssl_close` during the call.
 pub(crate) fn with<T>(socket: Co, f: impl FnOnce(&UringSocketOps<'_>) -> T) -> Option<T> {
     let uring = socket.with_extra(|extra| extra.uring)??;
     socket.with_network(|network| {

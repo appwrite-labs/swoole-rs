@@ -80,8 +80,6 @@ struct Scheduler {
 
 unsafe extern "C-unwind" {
     fn swr_v1_coroutine_scheduler_get() -> *mut Scheduler;
-    #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
-    fn yield_ex(co: *mut Co, timeout: f64) -> bool;
     #[link_name = "_Z11swoole_forki"]
     fn swoole_fork(flags: c_int) -> c_int;
 
@@ -214,8 +212,10 @@ impl View {
         swoole_rs_corebase::coroutine::suspend(self.0.cast());
     }
     fn yield_ex(&self, timeout: f64) -> bool {
-        // SAFETY: as above.
-        unsafe { yield_ex(self.0, timeout) }
+        swoole_rs_corebase::coroutine::yield_resumed(swoole_rs_corebase::coroutine::yield_timed(
+            self.0.cast(),
+            timeout,
+        ))
     }
     fn resume(&self) {
         // SAFETY: a suspended coroutine.

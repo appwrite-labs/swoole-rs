@@ -271,6 +271,39 @@ fn encode_responses() {
     }
 }
 
+/// Static name groups keep their exact indexes and never match another name's value.
+#[test]
+fn encode_static_name_groups() {
+    for (name, value, index) in [
+        (":method", "GET", 2),
+        (":method", "POST", 3),
+        (":path", "/index.html", 5),
+        (":scheme", "https", 7),
+        (":status", "200", 8),
+        (":status", "500", 14),
+        ("accept-encoding", "gzip, deflate", 16),
+        ("www-authenticate", "", 61),
+    ] {
+        assert_eq!(
+            encode(&mut Encoder::new(4096), &list(&[(name, value)])),
+            vec![0x80 | index],
+            "{name}: {value}"
+        );
+    }
+    for (name, value) in [
+        (":method", "/"),
+        (":status", "gzip, deflate"),
+        ("accept-charset", "gzip, deflate"),
+        ("www-authenticate", "challenge"),
+        ("x-unknown", "GET"),
+    ] {
+        let headers = list(&[(name, value)]);
+        let block = encode(&mut Encoder::new(4096), &headers);
+        assert_eq!(block[0] & 0x80, 0, "{name}: {value} is a literal");
+        assert_eq!(decode(&Decoder::default(), &block, 1), Ok(headers));
+    }
+}
+
 /// Credentials and short cookies are never indexed; fields too big for three
 /// quarters of the table are not indexed.
 #[test]

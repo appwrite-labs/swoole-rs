@@ -17,7 +17,8 @@ case binary with the crates and system.py's static libswoole.a (the pin's thirdp
 | `coroutine_async_file.async_file` | `coroutine_async_file.async_file`: `AsyncFile` left the build (nothing called it), so the case makes the hooked call each member made, with the TEST's inputs and expected values |
 
 The facade's getters are field reads over crates/corebase/src/coroutine's record, its operations
-crates/corebase/src/coroutine's `suspend` and `resume`, the `swr_v1_coroutine_*` exports and upstream symbols. `coroutine::run` and
+crates/corebase/src/coroutine's `suspend`, `resume`, `cancel` and
+`yield_resumed(yield_timed(...))` by Rust path, plus the retained native scheduler and C API exports. `coroutine::run` and
 `Coroutine::bailout` take a function and its data (`swoole_coroutine_create`,
 `swr_v1_coroutine_bail`). The repo-owned
 `rust_coroutine_lifetime.cancellation_copy_failure_preserves_wait` witness checked

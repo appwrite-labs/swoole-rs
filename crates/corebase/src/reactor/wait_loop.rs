@@ -486,12 +486,12 @@ fn prepare(
     fd_type
 }
 
-/// Whether `socket` is still registered (`!socket->removed`).
 /// The socket the reactor's registry holds for `fd`, the kernel entry's token.
 fn registered_at(ops: &Loop<'_>, fd: c_int) -> Option<crate::reactor::Heap<'static>> {
     ops.reactor.with(|state| state.registry.get(fd))
 }
 
+/// Whether `socket` is still registered (`!socket->removed`).
 fn registered(socket: Socket<'_>) -> bool {
     socket.read(|record| !record.removed)
 }
