@@ -248,10 +248,66 @@ fn deadline(millis: i32) -> timespec {
     now.tv_nsec %= 1_000_000_000;
     now
 }
+/// A thread-private mutex in one futex word (Linux): 0 unlocked, 1 locked, 2 locked
+/// with waiters. Like glibc's default mutex it has no owner, so any thread may unlock
+/// it, as `Thread\Lock` lets one thread unlock what another locked; for a pthread
+/// mutex that is undefined.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct Word(AtomicU32);
+
+#[cfg(target_os = "linux")]
+impl Word {
+    fn try_lock(&self) -> Result<(), i32> {
+        self.0
+            .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
+            .map(drop)
+            .map_err(|_| EBUSY)
+    }
+
+    /// Blocks until it holds the word, or `millis` (when positive) pass: `ETIMEDOUT`.
+    fn lock(&self, millis: i32) -> Result<(), i32> {
+        if self.try_lock().is_ok() {
+            return Ok(());
+        }
+        let deadline = (millis > 0).then(|| {
+            std::time::Instant::now()
+                + std::time::Duration::from_millis(millis.unsigned_abs().into())
+        });
+        while self.0.swap(2, Ordering::Acquire) != 0 {
+            let left = match deadline {
+                None => None,
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(std::time::Instant::now());
+                    if left.is_zero() {
+                        return Err(ETIMEDOUT);
+                    }
+                    Some(timespec {
+                        tv_sec: left.as_secs().c_cast::<time_t>(),
+                        tv_nsec: c_long::from(left.subsec_nanos().c_cast::<i32>()),
+                    })
+                }
+            };
+            // Parks while the word still says locked with waiters; a wake, a change or
+            // the timeout returns, and the swap above decides.
+            futex(&self.0, Futex::Wait, 2, left.as_ref());
+        }
+        Ok(())
+    }
+
+    fn unlock(&self) {
+        if self.0.swap(0, Ordering::Release) == 2 {
+            futex(&self.0, Futex::Wake, 1, None);
+        }
+    }
+}
+
 /// A made lock of one kind, live for `'a`.
 #[derive(Clone, Copy)]
 enum Live<'a> {
     Mutex(MutexRef<'a>),
+    #[cfg(target_os = "linux")]
+    Word(&'a Word),
     RwLock(RwLockRef<'a>),
     #[cfg(target_os = "linux")]
     Spin(SpinRef<'a>),
@@ -277,6 +333,14 @@ impl Live<'_> {
                     return poll(timeout, try_lock);
                 }
                 pthread_result(pthread_mutex_lock(lock))
+            }
+            #[cfg(target_os = "linux")]
+            Self::Word(word) => {
+                if operation & LOCK_NB != 0 {
+                    word.try_lock()
+                } else {
+                    word.lock(timeout)
+                }
             }
             Self::RwLock(lock) => {
                 let read = operation & LOCK_SH != 0;
@@ -325,6 +389,11 @@ impl Live<'_> {
     fn unlock(self) -> Result<(), i32> {
         match self {
             Self::Mutex(lock) => pthread_result(pthread_mutex_unlock(lock)),
+            #[cfg(target_os = "linux")]
+            Self::Word(word) => {
+                word.unlock();
+                Ok(())
+            }
             Self::RwLock(lock) => pthread_result(pthread_rwlock_unlock(lock)),
             #[cfg(target_os = "linux")]
             Self::Spin(lock) => pthread_result(pthread_spin_unlock(lock)),
@@ -373,7 +442,8 @@ impl Kind {
 
 /// An initialized lock of one [`Kind`], in heap storage it owns or in process-shared storage it keeps for the
 /// program's life. pthread reports misuse (unlocking a lock this thread doesn't
-/// hold, destroying a held one) as an error code, as upstream's locks see it.
+/// hold, destroying a held one) as an error code, as upstream's locks see it, except
+/// for [`Lock::unowned_mutex`]'s.
 #[derive(Debug)]
 pub struct Lock(Held);
 
@@ -382,6 +452,8 @@ pub struct Lock(Held);
 #[derive(Debug)]
 enum Held {
     Mutex(Box<SharedMutex>),
+    #[cfg(target_os = "linux")]
+    Word(Box<Word>),
     SharedMutex(&'static Words<MUTEX_LOCK>),
     RwLock(Box<RwLock>),
     SharedRwLock(&'static Words<RW_LOCK>),
@@ -433,6 +505,18 @@ impl Lock {
         }
     }
 
+    /// `Thread\Lock`'s mutex: thread-private, and any thread may unlock it, as
+    /// upstream's tests have one thread unlock what another locked. On Linux that is a
+    /// [`Word`]; elsewhere a [`private`](Self::private) pthread mutex, for which an
+    /// unlock by another thread is undefined.
+    #[must_use]
+    pub fn unowned_mutex() -> Option<Self> {
+        #[cfg(target_os = "linux")]
+        return Some(Self(Held::Word(Box::new(Word(AtomicU32::new(0))))));
+        #[cfg(not(target_os = "linux"))]
+        Self::private(Kind::Mutex)
+    }
+
     /// A process-shared lock (`new Mutex(true)`) in `storage`, which it keeps:
     /// None when `storage` is too small for `kind`, or the lock can't be made.
     /// The storage is exclusive, so no other lock re-initializes it while held.
@@ -465,6 +549,8 @@ impl Lock {
     fn live(&self) -> Live<'_> {
         match &self.0 {
             Held::Mutex(mutex) => Live::Mutex(MutexRef(&mutex.lock)),
+            #[cfg(target_os = "linux")]
+            Held::Word(word) => Live::Word(word),
             Held::SharedMutex(lock) => Live::Mutex(MutexRef(lock)),
             Held::RwLock(rwlock) => Live::RwLock(rwlock.live()),
             Held::SharedRwLock(lock) => Live::RwLock(RwLockRef(lock)),
@@ -840,6 +926,32 @@ mod tests {
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
+
+    /// `swoole_thread/lock.phpt`'s order: a thread locks the mutex and blocks locking
+    /// it again until another thread unlocks it, and the unlocking thread's writes are
+    /// visible to it once it holds the lock.
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore = "Miri has no futex syscall")]
+    fn another_thread_unlocks_a_private_mutex() {
+        let lock = super::Lock::unowned_mutex().expect("a mutex");
+        let written = AtomicU32::new(0);
+        assert_eq!(lock.lock(LOCK_EX, -1, 0), Ok(()));
+        assert_eq!(lock.lock(LOCK_NB, -1, 0), Err(EBUSY), "held");
+        assert_eq!(lock.lock(LOCK_EX, 5, 0), Err(ETIMEDOUT), "still held");
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                thread::sleep(Duration::from_millis(20));
+                written.store(1, Ordering::Relaxed);
+                assert_eq!(lock.unlock(), Ok(()));
+            });
+            assert_eq!(lock.lock(LOCK_EX, -1, 0), Ok(()), "woken by the unlock");
+            assert_eq!(written.load(Ordering::Relaxed), 1);
+        });
+        assert_eq!(lock.unlock(), Ok(()));
+        assert_eq!(lock.lock(LOCK_NB, -1, 0), Ok(()), "free again");
+        assert_eq!(lock.unlock(), Ok(()));
+    }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no pthread_barrier_init")]

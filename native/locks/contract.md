@@ -39,6 +39,11 @@ Deliberate fixes relative to upstream:
   that was never made. Upstream leaked the attribute and allocation.
 - Attribute init and shared-attribute setup return their first error instead of
   continuing into lock init. Failed setup releases the initialized attribute.
+- `Thread\Lock`'s mutex (`Lock::unowned_mutex`) is one futex word on Linux, not a
+  pthread mutex: it has no owner, so a thread may unlock what another locked, as the
+  thread lock tests do, and that unlock orders the threads for ThreadSanitizer. Lock,
+  try-lock (`EBUSY`), timed lock (`ETIMEDOUT`) and unlock results are a default
+  pthread mutex's. Other platforms keep the private pthread mutex.
 
 ## Barrier
 

@@ -127,7 +127,7 @@ fn accept<'a>(
     }
     conn.active()
         .store(false, core::sync::atomic::Ordering::Relaxed);
-    conn.free_socket();
+    conn.free_socket(|| ());
     serv.state().tables_ref().clear_connection(fd);
     None
 }

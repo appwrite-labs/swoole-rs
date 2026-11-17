@@ -287,8 +287,10 @@ impl<'a> Connection<'a> {
     /// `delete conn->socket`: the connection's socket, which it no longer holds, freed.
     /// The one free of a connection's socket: [`crate::conn_io::close_connection`], on
     /// the thread whose reactor runs the connection, and the DTLS accept that failed
-    /// before the connection reached a reactor.
-    pub(crate) fn free_socket(self) {
+    /// before the connection reached a reactor. `emptied` runs once the slot names no
+    /// socket and before its fd is closed, which may hand the fd, and so the slot, to
+    /// another thread's accept.
+    pub(crate) fn free_socket(self, emptied: impl FnOnce()) {
         // SAFETY: what still holds a handle the slot lent, and why none is used after:
         // - the slot: from here it names nothing, so `socket()` lends no more;
         // - the reactor's registry: the free deletes the record from it first
@@ -303,6 +305,7 @@ impl<'a> Connection<'a> {
         //   socket after checking `is_active`, which the close clears first; this is
         //   upstream's unsynchronized `conn->socket` read, which the types don't cover.
         let socket = unsafe { self.record.socket.take() };
+        emptied();
         swoole_rs_corebase::tls::upstream::socket_free(socket);
     }
 
