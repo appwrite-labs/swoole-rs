@@ -25,16 +25,16 @@ use swoole_rs_corebase::constants::{
     SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
 };
 use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
-use swoole_rs_corebase::sys::{ReadBuffer, ReadSlot};
-use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
-use swoole_rs_error::ErrorCode;
-use swoole_rs_reactor::reactor_upstream::set_handler;
-use swoole_rs_reactor::socket_upstream::Connect;
-use swoole_rs_reactor::{
+use swoole_rs_corebase::reactor::reactor_upstream::set_handler;
+use swoole_rs_corebase::reactor::socket_upstream::Connect;
+use swoole_rs_corebase::reactor::{
     Caught, OwnedSocket, SOCKET_DEFAULTS, Socket, fd_clean, set_socket_buffer_size,
     socket_domain_and_type,
 };
-use swoole_rs_reactor::{Event, Events, Running};
+use swoole_rs_corebase::reactor::{Event, Events, Running};
+use swoole_rs_corebase::sys::{ReadBuffer, ReadSlot};
+use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
+use swoole_rs_error::ErrorCode;
 use swoole_rs_tls::{
     OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslState, SslVersion, TlsContext, TlsSettings,
 };
@@ -349,7 +349,7 @@ impl Handle<'_> {
     }
 
     /// The client's socket as its owner lends it to the reactor.
-    fn heap(self) -> swoole_rs_reactor::Heap<'static> {
+    fn heap(self) -> swoole_rs_corebase::reactor::Heap<'static> {
         self.get().socket.heap()
     }
 
@@ -598,7 +598,7 @@ impl Handle<'_> {
         self.socket().edit(|socket| {
             socket
                 .timeouts
-                .set(timeout, swoole_rs_reactor::TimeoutKind::ALL);
+                .set(timeout, swoole_rs_corebase::reactor::TimeoutKind::ALL);
         });
     }
 
@@ -666,7 +666,7 @@ fn on_failure(reactor: Running<'_>, event: &mut Event) -> c_int {
 
 /// `Client::init_reactor`: the client sockets' handlers.
 pub fn init_reactor(reactor: Running<'_>) {
-    let handlers: [(c_int, Events, swoole_rs_reactor::Handler); 4] = [
+    let handlers: [(c_int, Events, swoole_rs_corebase::reactor::Handler); 4] = [
         (FD_STREAM_CLIENT, Events::READ, on_stream_read),
         (FD_DGRAM_CLIENT, Events::READ, on_dgram_read),
         (FD_STREAM_CLIENT, Events::WRITE, on_writable),
@@ -1536,7 +1536,7 @@ struct SocketOps {
     sendfile_async: fn(Socket<'_>, &CStr, i64, usize) -> bool,
     free_socket: fn(Option<OwnedSocket>),
     close_tls: fn(Socket<'_>),
-    write: fn(swoole_rs_reactor::Heap<'_>, &[u8]) -> Option<usize>,
+    write: fn(swoole_rs_corebase::reactor::Heap<'_>, &[u8]) -> Option<usize>,
     writable: extern "C-unwind" fn(Running<'_>, &mut Event) -> c_int,
     make_socket: fn(c_int, c_int, c_int) -> Option<OwnedSocket>,
     kernel_timeout: fn(Handle<'_>, f64),
@@ -1579,7 +1579,7 @@ impl SocketOps {
         sendfile_async: swoole_rs_tls::upstream::socket_sendfile_async,
         free_socket: |socket| swoole_rs_tls::upstream::socket_free(socket),
         close_tls: swoole_rs_tls::upstream::socket_ssl_close,
-        write: swoole_rs_reactor::event_api::event_write,
+        write: swoole_rs_corebase::reactor::event_api::event_write,
         writable: swoole_rs_tls::reactor_write::reactor_writable_callback,
         make_socket: ops::make_socket,
         kernel_timeout: ops::kernel_timeout,
@@ -1607,15 +1607,16 @@ impl SocketOps {
 mod ops {
     use super::{Connect, ConnectMode, EventOp, Handle, address_of};
     use core::ffi::{CStr, c_int};
-    use swoole_rs_reactor::{event_api, socket_upstream};
+    use swoole_rs_corebase::reactor::{event_api, socket_upstream};
 
     /// `make_socket(type, fd_type, flags)`: the new record, or none.
     pub(super) fn make_socket(
         kind: c_int,
         fd_type: c_int,
         flags: c_int,
-    ) -> Option<swoole_rs_reactor::OwnedSocket> {
-        socket_upstream::make_typed(kind, fd_type, flags).map(swoole_rs_reactor::OwnedSocket::new)
+    ) -> Option<swoole_rs_corebase::reactor::OwnedSocket> {
+        socket_upstream::make_typed(kind, fd_type, flags)
+            .map(swoole_rs_corebase::reactor::OwnedSocket::new)
     }
 
     /// `socket->set_kernel_timeout(timeout)`, the write timeout only once the
@@ -1659,7 +1660,11 @@ mod ops {
     /// The reactor's `swoole_event_*` on the socket: whether it worked, false without a
     /// reactor. The client's socket stays live while it is registered: `close` deletes
     /// it from the reactor before the record is freed.
-    pub(super) fn event(this: Handle<'_>, op: EventOp, events: swoole_rs_reactor::Events) -> bool {
+    pub(super) fn event(
+        this: Handle<'_>,
+        op: EventOp,
+        events: swoole_rs_corebase::reactor::Events,
+    ) -> bool {
         let socket = this.heap();
         match op {
             EventOp::Add => event_api::event_add(socket, events),

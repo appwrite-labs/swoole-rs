@@ -1,6 +1,6 @@
 //! Upstream's `core-tests/src/os/wait.cpp`, `os/async.cpp` and `os/os.cpp`'s `os.daemon`,
 //! one function per TEST with the same inputs and expected values: the coroutine waits
-//! (`corebase::process`'s registry, crates/reactor's Rust operations), the async thread pool
+//! (`corebase::process`'s registry, `corebase::reactor`'s Rust operations), the async thread pool
 //! (crates/hooks over crates/corebase/src/ossupport), under their upstream symbols, and
 //! `swoole_daemon` (crates/corebase/src/ossupport) by path. `async.thread_starts_with_signals_blocked` is crates/corebase/src/ossupport's
 //! `pool::tests::thread_starts_with_signals_blocked`.
@@ -8,8 +8,8 @@
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
+use swoole_rs_corebase::reactor::wait_upstream::{swoole_waitpid, system_wait, system_waitpid};
 use swoole_rs_corebase::swoole_rand;
-use swoole_rs_reactor::wait_upstream::{swoole_waitpid, system_wait, system_waitpid};
 
 pub(super) use swoole_rs_hooks::async_threads::dispatch;
 pub(super) use swoole_rs_hooks::offload::AsyncEvent;

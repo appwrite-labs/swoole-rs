@@ -171,7 +171,7 @@ pub fn swoole_thread_clean(_main_thread: bool) {
         (host.timer_free)();
     }
     if with(|thread| !thread.reactor.get().is_null()) {
-        (host.event_free)();
+        crate::reactor::swoole_event_free();
     }
     if with(|thread| !thread.buffer_stack.get().is_null()) {
         BUFFER.with(|buffer| buffer.replace(CppString::EMPTY).dispose());
@@ -197,8 +197,8 @@ pub extern "C" fn swoole_is_main_thread() -> bool {
 )]
 pub extern "C-unwind" fn swoole_clean() {
     crate::hook::clear();
-    if let Some(host) = native::host() {
-        (host.signal_clear)();
+    if native::host().is_some() {
+        crate::reactor::signal_upstream::clear();
         swoole_thread_clean(true);
         crate::utilities::process_logger()
             .into_iter()
@@ -264,15 +264,15 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
         crate::utilities::process_logger()
             .into_iter()
             .for_each(crate::utilities::Logger::reopen);
-        if (host.event_available)() {
-            (host.event_free)();
+        if crate::reactor::event_api::swoole_event_is_available() {
+            crate::reactor::swoole_event_free();
         }
     } else {
         crate::utilities::process_logger()
             .into_iter()
             .for_each(crate::utilities::Logger::close);
     }
-    (host.signal_clear)();
+    crate::reactor::signal_upstream::clear();
     crate::signal_mask::restore_after_fork(previous, true);
     if crate::swoole_isset_hook(crate::HookType::AFTER_FORK) {
         crate::hook::call_after_fork();
@@ -355,10 +355,6 @@ mod tests {
 
     extern "C" fn ignore(_signo: c_int) {}
 
-    fn signal(signo: c_int, handler: libc::sighandler_t) {
-        unsafe { libc::signal(signo, handler) };
-    }
-
     fn blocked(signo: c_int) -> bool {
         let mut now = unsafe { std::mem::zeroed() };
         unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, ptr::null(), &raw mut now) };
@@ -371,23 +367,20 @@ mod tests {
         unsafe { libc::pthread_sigmask(how, &raw const set, ptr::null_mut()) };
     }
 
-    /// The reset unblocks SIGUSR1, as signalfd's does.
-    extern "C" fn signal_clear() {
-        signal(libc::SIGTERM, libc::SIG_DFL);
-        change(libc::SIG_UNBLOCK, libc::SIGUSR1);
-    }
-
-    /// Delay the child before signal reset, as a busy reactor cleanup would.
+    /// Real reactor cleanup delays the fork child and changes its mask, as
+    /// signalfd cleanup does; the lifecycle must preserve that change on restore.
     fn host() {
         native::set_native_host(native::NativeHost {
             init: || {},
-            signal_clear,
             timer_free: || {},
-            event_available: || {
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                false
-            },
-            event_free: || {},
+        });
+    }
+
+    fn reactor() {
+        assert_eq!(crate::reactor::swoole_event_init(0), 0);
+        crate::reactor::event_api::on_destroy(|| {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            change(libc::SIG_UNBLOCK, libc::SIGUSR1);
         });
     }
 
@@ -403,17 +396,28 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no signal")]
     fn fork_holds_signals_until_the_child_resets_handlers() {
+        if crate::utilities::isolated_process::run_in_child(
+            "lifecycle::tests::fork_holds_signals_until_the_child_resets_handlers",
+        ) {
+            return;
+        }
         let _state = crate::process::signal_state_lock();
         host();
         std::thread::spawn(|| {
-            signal(libc::SIGTERM, ignore as *const () as libc::sighandler_t);
+            reactor();
+            _ = crate::reactor::signal_upstream::set(
+                libc::SIGTERM,
+                crate::process::signal::Handler::new(ignore),
+                true,
+            );
             let pid = swoole_fork(0);
             if pid == 0 {
                 unsafe { libc::_exit(0) };
             }
             assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
             let status = wait(pid);
-            signal(libc::SIGTERM, libc::SIG_DFL);
+            crate::reactor::signal_upstream::clear();
+            crate::reactor::swoole_event_free();
             assert!(
                 libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGTERM,
                 "the child outlived SIGTERM: status {status:#x}"
@@ -428,9 +432,15 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no sigaddset")]
     fn fork_child_keeps_the_mask_its_reset_leaves() {
+        if crate::utilities::isolated_process::run_in_child(
+            "lifecycle::tests::fork_child_keeps_the_mask_its_reset_leaves",
+        ) {
+            return;
+        }
         let _state = crate::process::signal_state_lock();
         host();
         std::thread::spawn(|| {
+            reactor();
             change(libc::SIG_BLOCK, libc::SIGUSR1);
             change(libc::SIG_BLOCK, libc::SIGUSR2);
             let pid = swoole_fork(0);
@@ -448,6 +458,7 @@ mod tests {
                 "the parent's"
             );
             assert!(!blocked(libc::SIGTERM));
+            crate::reactor::swoole_event_free();
         })
         .join()
         .unwrap();

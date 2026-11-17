@@ -3,7 +3,7 @@
 //! call as a [`Setup`].
 use core::ffi::c_int;
 use std::io;
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 
 /// Connection setup's native effects.
 pub trait Setup {

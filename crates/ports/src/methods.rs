@@ -9,8 +9,8 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::{SW_DATA_EOF_MAXLEN, SocketFlag};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
-use swoole_rs_reactor::socket_upstream::make_typed;
-use swoole_rs_reactor::{OwnedSocket, Running, SocketRecord};
+use swoole_rs_corebase::reactor::socket_upstream::make_typed;
+use swoole_rs_corebase::reactor::{OwnedSocket, Running, SocketRecord};
 pub(crate) use swoole_rs_tls::upstream::socket_free;
 
 /// `SW_FD_STREAM_SERVER` and `SW_FD_DGRAM_SERVER`.
@@ -513,7 +513,7 @@ mod tests {
     /// A stub length function, each `N` a distinct body and address.
     pub(super) fn length<const N: u8>(
         _: &Protocol,
-        _: Option<swoole_rs_reactor::Socket<'_>>,
+        _: Option<swoole_rs_corebase::reactor::Socket<'_>>,
         _: &mut PacketLength,
     ) -> isize {
         N.into()
@@ -622,8 +622,9 @@ mod tests {
                     "bind(2)"
                 );
             }
-            (*config)
-                .set_listening_socket(swoole_rs_reactor::OwnedSocket::new(Box::from_raw(socket)));
+            (*config).set_listening_socket(swoole_rs_corebase::reactor::OwnedSocket::new(
+                Box::from_raw(socket),
+            ));
         }
         config
     }
@@ -750,7 +751,7 @@ mod tests {
         config
     }
 
-    fn record<'a>(config: &PortConfig) -> &'a swoole_rs_reactor::SocketFields {
+    fn record<'a>(config: &PortConfig) -> &'a swoole_rs_corebase::reactor::SocketFields {
         unsafe { &*config.socket_ptr().cast::<SocketRecord>() }
     }
 

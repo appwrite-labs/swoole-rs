@@ -6,7 +6,7 @@ use core::ffi::{c_int, c_long, c_void};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::process;
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 
 use crate::base_factory::SendData;
 use crate::thread_mode::ThreadManager;
@@ -17,7 +17,7 @@ use crate::state::ServerState;
 /// [`crate::hybrid::Step`] over `serv`, in the master.
 fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> bool {
     use crate::hybrid::Step;
-    use swoole_rs_reactor::signal_upstream::{self, Handler};
+    use swoole_rs_corebase::reactor::signal_upstream::{self, Handler};
     /// `SW_FD_PIPE` and `SW_EVENT_READ`.
     const SW_FD_PIPE: c_int = 3;
     let state = serv.state();
@@ -52,7 +52,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
             _ = signal_upstream::set(signo, handler, false);
         }
         Step::CommandHandler => {
-            let handler: swoole_rs_reactor::Handler = accept_command_result;
+            let handler: swoole_rs_corebase::reactor::Handler = accept_command_result;
             crate::reactor_handle::Reactor::thread().set_handler(SW_FD_PIPE, Events::READ, handler);
         }
         Step::MasterTimer => {
@@ -60,8 +60,8 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
             state.config_ref().master_timer.store(timer);
             return timer.is_some();
         }
-        Step::EventFree => _ = swoole_rs_reactor::swoole_event_free(),
-        Step::EventWait => return swoole_rs_reactor::event_api::swoole_event_wait() >= 0,
+        Step::EventFree => _ = swoole_rs_corebase::reactor::swoole_event_free(),
+        Step::EventWait => return swoole_rs_corebase::reactor::event_api::swoole_event_wait() >= 0,
         Step::ReactorBarrier | Step::ManagerBarrier => {
             let manager = step == Step::ManagerBarrier;
             swoole_rs_corebase::locks::barrier_wait(crate::server_object::barrier(serv, manager));
@@ -102,7 +102,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
         }
         Step::CreatePipeBuffers => return crate::master_ops::create_pipe_buffers(serv),
         Step::StartManager => return crate::manager::native::start_manager_process(serv),
-        Step::EventInit => return swoole_rs_reactor::swoole_event_init(0) >= 0,
+        Step::EventInit => return swoole_rs_corebase::reactor::swoole_event_init(0) >= 0,
         Step::WorkerSignalInit => crate::event_worker::native::worker_signal_init(serv),
         Step::PipeHandler => crate::reactor_process::native::set_pipe_handler(),
         Step::WorkerStart(id) | Step::WorkerStop(id) => {
@@ -141,8 +141,8 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
 /// Registered only on the master's reactor, whose `ptr` is the live server, for its
 /// command pipe.
 fn accept_command_result(
-    reactor: swoole_rs_reactor::Running<'_>,
-    event: &mut swoole_rs_reactor::Event,
+    reactor: swoole_rs_corebase::reactor::Running<'_>,
+    event: &mut swoole_rs_corebase::reactor::Event,
 ) -> c_int {
     let Some(serv) = crate::reactor_handle::Reactor::running(reactor).server() else {
         return 0;
@@ -365,7 +365,7 @@ impl crate::hybrid::Hybrid for Linked {
     fn dtls_read(
         &self,
         _port: &crate::port_config::PortConfig,
-        sock: swoole_rs_reactor::Socket<'_>,
+        sock: swoole_rs_corebase::reactor::Socket<'_>,
         _fd: c_int,
     ) -> bool {
         crate::dtls::on_read(sock)

@@ -12,8 +12,8 @@ use std::sync::{Mutex, PoisonError};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::lent::{Count, In, Out};
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::reactor::{AddressStorage, Socket};
 use swoole_rs_corebase::sys::Text;
-use swoole_rs_reactor::{AddressStorage, Socket};
 
 /// One queued datagram, upstream's `dtls::Buffer`: the bytes it was received or copied
 /// into, and the `uint16_t` length its header counts of them as the payload.
@@ -418,7 +418,10 @@ fn methods() -> Option<&'static BioMethod> {
 /// allocation failure tells the two orders apart.
 #[must_use]
 pub fn dtls_open(socket: Socket<'_>, context: &std::sync::Arc<crate::TlsSettings>) -> bool {
-    if !socket.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
+    if !socket
+        .read(swoole_rs_corebase::reactor::SocketFields::ssl)
+        .is_null()
+    {
         return false;
     }
     let Some(bio) = methods().and_then(|table| crate::handle::BIO_new(table)) else {
@@ -432,8 +435,8 @@ pub fn dtls_open(socket: Socket<'_>, context: &std::sync::Arc<crate::TlsSettings
         log::set_last_error(SSL_CREATE_SESSION_FAILED);
         return false;
     }
-    let size = swoole_rs_reactor::SOCKET_DEFAULTS.buffer_size();
-    _ = swoole_rs_reactor::set_socket_buffer_size(socket.fd(), true, true, size);
+    let size = swoole_rs_corebase::reactor::SOCKET_DEFAULTS.buffer_size();
+    _ = swoole_rs_corebase::reactor::set_socket_buffer_size(socket.fd(), true, true, size);
     socket.edit(|record| record.dtls = true);
     true
 }
@@ -479,7 +482,7 @@ mod tests {
     struct Owner(*mut DtlsSession, Cell<bool>);
     impl Owner {
         fn new() -> Self {
-            let peer = swoole_rs_reactor::SocketAddress::default().addr;
+            let peer = swoole_rs_corebase::reactor::SocketAddress::default().addr;
             let session = Box::new(DtlsSession::new(-1, peer, None));
             Self(Box::into_raw(session), Cell::new(false))
         }
@@ -623,7 +626,8 @@ mod tests {
         )));
         let context = std::sync::Arc::new(lent.freeze(None).unwrap());
         let (_peer, stream) = std::os::unix::net::UnixDatagram::pair().unwrap();
-        let raw = swoole_rs_reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
+        let raw =
+            swoole_rs_corebase::reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
         let socket = unsafe { Socket::from_ptr(raw) }.unwrap();
         assert!(crate::Ssl::of(socket).is_none());
         assert!(dtls_open(socket, &context));

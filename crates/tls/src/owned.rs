@@ -104,7 +104,7 @@ impl TlsSettings {
     }
     /// Creates an independent server session on `socket`.
     #[must_use]
-    pub fn create_session(&self, socket: swoole_rs_reactor::Socket<'_>) -> bool {
+    pub fn create_session(&self, socket: swoole_rs_corebase::reactor::Socket<'_>) -> bool {
         crate::upstream::socket_ssl_create(
             socket,
             self.fields.context.as_deref(),
@@ -116,7 +116,7 @@ impl TlsSettings {
     #[must_use]
     pub(crate) fn create_dtls_session(
         &self,
-        socket: swoole_rs_reactor::Socket<'_>,
+        socket: swoole_rs_corebase::reactor::Socket<'_>,
         bio: crate::OwnedBio,
     ) -> bool {
         let context = self.fields.context.as_deref();
@@ -127,7 +127,7 @@ impl TlsSettings {
     }
     /// Creates an independent client session on `socket`.
     #[must_use]
-    pub fn create_client_session(&self, socket: swoole_rs_reactor::Socket<'_>) -> bool {
+    pub fn create_client_session(&self, socket: swoole_rs_corebase::reactor::Socket<'_>) -> bool {
         crate::upstream::socket_ssl_create(
             socket,
             self.fields.context.as_deref(),
@@ -467,11 +467,11 @@ pub enum SocketContextError {
 /// [`SocketContextError`].
 pub fn freeze_socket_context(
     owner: &mut Lent<'_>,
-    socket: swoole_rs_reactor::Socket<'_>,
+    socket: swoole_rs_corebase::reactor::Socket<'_>,
     http2: bool,
     dtls_supported: bool,
 ) -> Result<TlsSettings, SocketContextError> {
-    let kind = socket.read(swoole_rs_reactor::SocketFields::kind);
+    let kind = socket.read(swoole_rs_corebase::reactor::SocketFields::kind);
     let dtls = kind.is_some_and(swoole_rs_corebase::constants::SocketType::is_dgram);
     if dtls && !dtls_supported {
         return Err(SocketContextError::UnsupportedDtls);
@@ -506,11 +506,14 @@ pub fn freeze_socket_context(
 /// when OpenSSL can't make them).
 pub fn socket_session(
     owner: Option<&TlsSettings>,
-    record: swoole_rs_reactor::Socket<'_>,
+    record: swoole_rs_corebase::reactor::Socket<'_>,
     hostname: Option<&CStr>,
     ring: Option<c_int>,
 ) -> Result<(), crate::SslNewError> {
-    if !record.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
+    if !record
+        .read(swoole_rs_corebase::reactor::SocketFields::ssl)
+        .is_null()
+    {
         return Ok(());
     }
     // No context to make one over: `SSL_new` of none.
@@ -809,8 +812,9 @@ mod tests {
                 let mut hostname = StringSlot::new();
                 assert!(hostname.set(automatic.as_bytes()));
                 let socket =
-                    swoole_rs_reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
-                let handle = swoole_rs_reactor::Socket::from_ptr(socket).unwrap();
+                    swoole_rs_corebase::reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6)
+                        .into_raw();
+                let handle = swoole_rs_corebase::reactor::Socket::from_ptr(socket).unwrap();
                 let settings =
                     freeze_socket_context(&mut owner(&prepared), handle, true, true).unwrap();
                 assert!((*socket).fields.output.ssl_send);

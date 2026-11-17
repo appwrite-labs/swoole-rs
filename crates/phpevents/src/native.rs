@@ -1,9 +1,9 @@
 //! What `Swoole\Event` drives outside the crate (once native/phpevents/event.cc's
-//! table): the thread's reactor (crates/reactor, with crates/reactor's `Reactor`
+//! table): the thread's reactor (`corebase::reactor`, with `corebase::reactor`'s `Reactor`
 //! lifetime, wait and exit check), the server's role, timers, and Swoole's PHP
 //! error reports.
 use std::ffi::{CStr, c_int};
-use swoole_rs_reactor::event_api;
+use swoole_rs_corebase::reactor::event_api;
 use swoole_rs_zend::{E_ERROR, E_WARNING, Message, Value, bailout::Bailout, contain, report};
 
 /// `SW_ERROR_PHP_FATAL_ERROR` and `SW_ERROR_PHP_RUNTIME_NOTICE`.
@@ -49,7 +49,7 @@ pub(crate) fn bailed() -> bool {
 /// waits and `Co::set`'s exit condition: whether it made the reactor.
 pub(crate) fn create() -> bool {
     let flags = swoole_rs_corebase::constants::EventInitFlag::SW_EVENTLOOP_WAIT_EXIT as c_int;
-    if swoole_rs_reactor::swoole_event_init(flags) < 0 {
+    if swoole_rs_corebase::reactor::swoole_event_init(flags) < 0 {
         return false;
     }
     swoole_rs_phpswoole::php_swoole_register_shutdown_function(c"swoole_event_rshutdown");
@@ -69,7 +69,7 @@ pub(crate) fn wait() -> Result<bool, Bailout> {
 /// `swoole_event_free()`, under a trap.
 pub(crate) fn free() -> Result<(), Bailout> {
     contain(|| {
-        swoole_rs_reactor::swoole_event_free();
+        swoole_rs_corebase::reactor::swoole_event_free();
     })
 }
 

@@ -18,12 +18,12 @@ use std::{
     ptr::{self, NonNull},
     rc::Rc,
 };
+use swoole_rs_corebase::reactor::{Caught, TimeoutKind};
 use swoole_rs_corebase::{
     CCast,
     net_types::{AddressStorage, SocketAddress},
     sys::{Text, errno},
 };
-use swoole_rs_reactor::{Caught, TimeoutKind};
 use swoole_rs_zend::{
     ArrayMut, Call, E_WARNING, Message, Owned, OwnedArray, StreamContext, Value,
     bailout::Bailout,

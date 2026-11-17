@@ -36,7 +36,7 @@ const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
 /// [`build`]'s `SW_CORO_TIME` bit, beside the context's flags.
 const CORO_TIME: u32 = 8;
 
-/// The operations of crates/timer, hooks and reactor a coroutine runs. Each of
+/// The operations of crates/timer and hooks a coroutine runs. Each of
 /// those crates depends on this one, so `swoole_init` (crates/ffi) registers them
 /// with [`set_host`] before any coroutine starts.
 #[derive(Clone, Copy)]
@@ -48,11 +48,6 @@ pub struct Host {
     pub timer_clear: fn(c_long),
     /// The thread's async threads, created first when it has none.
     pub async_threads_ensure: fn(),
-    /// `swoole_event_init(flags)`, `swoole_event_wait()` and
-    /// `swoole_event_is_available()`.
-    pub event_init: fn(c_int) -> c_int,
-    pub event_wait: fn() -> c_int,
-    pub event_is_available: fn() -> bool,
 }
 
 static HOST: OnceLock<Host> = OnceLock::new();
@@ -334,10 +329,9 @@ pub fn spawn<F: FnOnce() + Copy + 'static>(entry: F) -> c_long {
 /// `routine` takes `arg`.
 #[unsafe(no_mangle)]
 unsafe extern "C-unwind" fn swoole_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long {
-    let host = host();
-    let fresh = !(host.event_is_available)();
+    let fresh = !crate::reactor::event_api::swoole_event_is_available();
     if fresh {
-        if (host.event_init)(SW_EVENTLOOP_WAIT_EXIT) < 0 {
+        if crate::reactor::swoole_event_init(SW_EVENTLOOP_WAIT_EXIT) < 0 {
             return -1;
         }
         activate();
@@ -345,7 +339,7 @@ unsafe extern "C-unwind" fn swoole_coroutine_create(routine: Routine, arg: *mut 
     // SAFETY: as the caller promises.
     let cid = unsafe { swr_v1_coroutine_create(routine, arg) };
     if fresh {
-        (host.event_wait)();
+        _ = crate::reactor::event_api::swoole_event_wait();
         deactivate();
     }
     cid

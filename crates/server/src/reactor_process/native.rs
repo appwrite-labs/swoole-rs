@@ -5,8 +5,8 @@ use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::process::methods::ExitStatus;
 use swoole_rs_corebase::process::process_pool::{Hooks, IpcMode, PoolRef};
 use swoole_rs_corebase::process::worker_record::Worker;
-use swoole_rs_reactor::Events;
-use swoole_rs_reactor::{Event, Running};
+use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::{Event, Running};
 
 use crate::callbacks::TaskSlot;
 use crate::objects::Bus;

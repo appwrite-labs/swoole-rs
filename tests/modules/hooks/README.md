@@ -117,7 +117,7 @@ TESTs, one function each (`coroutine_socket.<name>`, upstream's names, inputs, p
 and expected values), run by `hooks-system-rust`. A `Socket` is the hooks crate's
 `Co`, whose methods the cases call: made by `co_socket::make_quiet` and deleted
 by dropping its `OwnedCo`, the vectored members over an `IOVector` owner
-`swoole_rs_reactor::ReactorIov::new` makes, and its fields
+`swoole_rs_corebase::reactor::ReactorIov::new` makes, and its fields
 through the record layout (`swoole_rs_co_socket.h`). `enable_ssl_encrypt` and the
 `set_ssl_*` setters write the `SSLContext` owner (`owner_new`,
 `_set_path` and its string slots and fields); `TimeoutSetter` and
@@ -451,7 +451,7 @@ upstream's `std_allocator.malloc` hook did (the Rust pool doesn't allocate throu
 | `os.daemon` | `os.daemon` |
 
 `core-tests/src/os/signal.cpp` is Rust in `system/src/signal.rs`, run by
-`hooks-system-rust`. The cases call crates/reactor's `signal_upstream` (`swoole_signal_set`,
+`hooks-system-rust`. The cases call `corebase::reactor`'s `signal_upstream` (`swoole_signal_set`,
 `_callback`, `_get_handler`, `_get_listener_num`, `_clear`) and corebase::process's `signal`
 (the sigaction form of `swoole_signal_set`, `_dispatch`, `_isset`, `_block_all`,
 `_unblock_all`, `_to_str`) and `signalfd::swoole_signalfd_init` by path. Each case runs in

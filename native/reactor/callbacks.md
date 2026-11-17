@@ -3,7 +3,7 @@
 ## End callbacks and exit conditions
 
 Upstream's `end_callbacks` and `exit_conditions` maps are fixed slot arrays in the
-Rust reactor state (`crates/reactor/src/callbacks.rs`), keyed by `EndCallback`
+Rust reactor state (`crates/corebase/src/reactor/callbacks.rs`), keyed by `EndCallback`
 (0 to 7) and `ExitCondition` (0 to 9, 999, 1000) and walked in key order. A slot
 holds a plain function (`void (*)(void)`, `bool (*)(size_t *event_num)`) or a
 built-in; no C++ caller captures state, so neither takes data. A walk re-reads each
@@ -26,7 +26,7 @@ condition, the idle task, signal dispatch (main thread), try-exit, `malloc_trim`
 ## Handlers
 
 `set_handler`, `isset_handler`, `get_handler` and `get_error_handler` are Rust
-tables (`crates/reactor/src/handlers.rs`) of Rust `fn`s. No C++ sets, reads or calls a
+tables (`crates/corebase/src/reactor/handlers.rs`) of Rust `fn`s. No C++ sets, reads or calls a
 handler, so the class declares only `isset_handler` and nothing exports `set_handler`: Rust
 registers through `reactor_upstream::set_handler` and `event_api::set_handler`, and
 reads through `reactor_get_handler` and `reactor_default_write_handler`.
@@ -34,7 +34,7 @@ reads through `reactor_get_handler` and `reactor_default_write_handler`.
 ## Deferred queues
 
 `defer_tasks` and `destroy_callbacks` are fields of the Rust reactor state:
-FIFO queues of Rust values (`crates/reactor/src/deferred.rs`).
+FIFO queues of Rust values (`crates/corebase/src/reactor/deferred.rs`).
 The first task lives inline; only additional tasks allocate queue storage. The
 queues follow the native head and are absent from its C++ declaration. Only Rust pushes to them
 (`swoole_event_defer_value` and the socket and destroy-callback helpers beside it); no C or C++

@@ -1,6 +1,6 @@
 //! Upstream's `core-tests/src/os/signal.cpp`, one function per TEST with the same inputs
 //! and expected values: `swoole_signal_set`, `_callback`, `_get_handler`,
-//! `_get_listener_num` and `_clear` are crates/reactor's `signal_upstream` over `corebase::process`'s
+//! `_get_listener_num` and `_clear` are `corebase::reactor`'s `signal_upstream` over `corebase::process`'s
 //! signal loop, and the sigaction form of `swoole_signal_set`, `_dispatch`, `_isset`,
 //! `_block_all`, `_unblock_all` and `_to_str` are `corebase::process`'s `signal`. Each case runs in
 //! its own process, so the handlers one case installs never reach another.
@@ -14,7 +14,7 @@ use swoole_rs_corebase::process::signal::{
     signal_name, swoole_signal_block_all, swoole_signal_dispatch, swoole_signal_isset,
     swoole_signal_set_action, swoole_signal_unblock_all,
 };
-use swoole_rs_reactor::signal_upstream::{
+use swoole_rs_corebase::reactor::signal_upstream::{
     Handler, swoole_signal_callback, swoole_signal_clear, swoole_signal_get_handler,
     swoole_signal_get_listener_num, swoole_signal_set,
 };

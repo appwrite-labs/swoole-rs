@@ -3,7 +3,7 @@
 //! pipe, as upstream does, then reap the child.
 use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::constants::SocketType;
-use swoole_rs_reactor::wait_upstream::system_waitpid_safe;
+use swoole_rs_corebase::reactor::wait_upstream::system_waitpid_safe;
 
 /// The most one read takes from the pipe: a Linux pipe's default capacity.
 const CHUNK: usize = 1 << 16;

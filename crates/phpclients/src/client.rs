@@ -12,8 +12,8 @@ use libc::c_int;
 use std::{borrow::Cow, cell::Cell, ffi::CStr};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::SocketType;
+use swoole_rs_corebase::reactor::SocketFields;
 use swoole_rs_phpstubs::client_coro;
-use swoole_rs_reactor::SocketFields;
 use swoole_rs_zend::{
     Array, Call, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, Weak, ZString,
     bailout::Bailout,
@@ -373,7 +373,7 @@ fn connect(call: &Call) {
         socket.close();
         return call.set_bool(false);
     }
-    socket.set_timeout(timeout, swoole_rs_reactor::TimeoutKind::RDWR);
+    socket.set_timeout(timeout, swoole_rs_corebase::reactor::TimeoutKind::RDWR);
     if let Some(props) = props(call) {
         props.bool(c"connected", true);
     }

@@ -22,11 +22,11 @@ use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::constants::{SW_STACK_BUFFER_SIZE, SocketType};
 use swoole_rs_corebase::lent::{Spare, SpareVectors};
 use swoole_rs_corebase::log;
-use swoole_rs_corebase::sys::{self, ReadSlot, strerror};
-use swoole_rs_reactor::Events;
-use swoole_rs_reactor::{
+use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::{
     Drain, Event, Fill, Running, Socket, SocketAddress, SocketFields, SocketRecord,
 };
+use swoole_rs_corebase::sys::{self, ReadSlot, strerror};
 use swoole_rs_tls::upstream::{
     peek, recv, recv_fill, send, send_drain, sendfile as socket_sendfile_fd,
     socket_ssl_peer_certificate_pem,
@@ -765,7 +765,7 @@ mod tests {
         fn event(&mut self) -> Event {
             Event::of(-1, 0, 6, unsafe {
                 Socket::from_ptr(self.record().socket_ptr())
-                    .map(swoole_rs_reactor::Heap::from_static)
+                    .map(swoole_rs_corebase::reactor::Heap::from_static)
             })
         }
         fn bind(&mut self, event: Events, co: *mut c_long) {
@@ -777,7 +777,7 @@ mod tests {
         fn drop(&mut self) {
             unsafe {
                 if let Some(s) = Socket::from_ptr(self.record().socket_ptr()) {
-                    swoole_rs_reactor::OwnedSocket::from_socket(s).free();
+                    swoole_rs_corebase::reactor::OwnedSocket::from_socket(s).free();
                 }
                 (*self.0).record.fini();
                 drop(Box::from_raw(self.0));
@@ -879,7 +879,7 @@ mod tests {
     #[test]
     fn timeouts_are_the_network_sockets() {
         let mut object = Object::new();
-        let read = swoole_rs_reactor::TimeoutKind::READ;
+        let read = swoole_rs_corebase::reactor::TimeoutKind::READ;
         object.co().set_timeout(2.5, read);
         assert_eq!(object.co().timeout(read), 2.5);
     }

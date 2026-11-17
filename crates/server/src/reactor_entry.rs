@@ -6,7 +6,7 @@ use core::ffi::{c_int, c_long};
 
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::net_types::SocketAddress;
-use swoole_rs_reactor::{Event, Running};
+use swoole_rs_corebase::reactor::{Event, Running};
 
 use crate::base_factory::SendData;
 use crate::reactor_handle::Reactor;
@@ -119,7 +119,7 @@ pub fn on_write(reactor: Running<'_>, event: &mut Event) -> c_int {
 #[must_use]
 pub extern "C-unwind" fn close_connection(
     reactor: Running<'_>,
-    socket: swoole_rs_reactor::OwnedSocket,
+    socket: swoole_rs_corebase::reactor::OwnedSocket,
 ) -> c_int {
     // Back to the connection, whose close frees it.
     let socket = socket.leak();

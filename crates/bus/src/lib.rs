@@ -31,9 +31,9 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use swoole_rs_corebase::buffer::string::OwnedString;
 use swoole_rs_corebase::lent::ReadVec;
+use swoole_rs_corebase::reactor::{Caught, Heap, OwnedSocket, Socket, SocketRecord};
 use swoole_rs_corebase::sys::{self, errno};
 use swoole_rs_corebase::{DataHead as BusHead, TrustedAllocator, log};
-use swoole_rs_reactor::{Caught, Heap, OwnedSocket, Socket, SocketRecord};
 
 pub use Bus as MessageBus;
 
@@ -219,7 +219,7 @@ fn release<T>(value: T) {
 
 /// `Socket::catch_read_error(errno) == SW_WAIT`.
 fn waits(nobufs: &mut bool) -> bool {
-    swoole_rs_reactor::catch_error(errno(), nobufs) == Caught::Wait
+    swoole_rs_corebase::reactor::catch_error(errno(), nobufs) == Caught::Wait
 }
 
 impl Bus {
@@ -858,7 +858,7 @@ impl Bus {
     /// cannot send at once it queues, and watches `socket` until it drains: a [`Heap`]
     /// socket may be.)
     pub fn send(&self, socket: Heap<'_>, head: &mut BusHead, data: Option<&[u8]>) -> bool {
-        use swoole_rs_reactor::event_api;
+        use swoole_rs_corebase::reactor::event_api;
         let send = |vectors: &[IoSlice<'_>]| {
             if event_api::swoole_event_is_available() {
                 event_api::swoole_event_writev(socket, vectors)
@@ -885,7 +885,11 @@ impl Bus {
             let mut socket = SocketRecord::with_fd(fd, /* SW_FD_PIPE */ 3);
             socket.output.buffer_size = u32::MAX;
             if !socket.output.nonblock {
-                swoole_rs_reactor::socket_upstream::socket_set_fd_option(&mut socket, 1, -1);
+                swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option(
+                    &mut socket,
+                    1,
+                    -1,
+                );
             }
             socket
         };
@@ -1257,7 +1261,7 @@ mod tests {
     /// `swr_v1_bus_write`'s classifier: `catch_pipe_error(errno) == SW_REDUCE_SIZE`.
     fn pipe_reduce() -> bool {
         let mut nobufs = false;
-        let code = swoole_rs_reactor::catch_pipe_error(errno(), &mut nobufs);
+        let code = swoole_rs_corebase::reactor::catch_pipe_error(errno(), &mut nobufs);
         code == Caught::ReduceSize
     }
 

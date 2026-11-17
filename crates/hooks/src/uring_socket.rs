@@ -16,8 +16,8 @@ use core::ffi::{CStr, c_int, c_ulong};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
+use swoole_rs_corebase::reactor::{Events, SocketFields, SocketRecord};
 use swoole_rs_corebase::sys::ReadSlot;
-use swoole_rs_reactor::{Events, SocketFields, SocketRecord};
 use swoole_rs_tls::Ssl;
 
 /// The socket's view and effects.
@@ -361,7 +361,8 @@ pub(crate) fn swr_v1_hook_uring_connect(ops: &UringSocketOps<'_>, peer: &SocketA
     }
     ops.socket.with_state(|state| state.flags.connected = true);
     // A failure is ignored, as upstream does.
-    ops.socket.net(swoole_rs_reactor::SocketFields::get_name);
+    ops.socket
+        .net(swoole_rs_corebase::reactor::SocketFields::get_name);
     (ops.set_err)(ops.socket, 0);
     true
 }

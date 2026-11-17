@@ -248,8 +248,8 @@ static FORCED_EXIT_DEADLINE: AtomicI64 = AtomicI64::new(0);
 fn exit_after_max_wait_time(serv: Server<'_>) {
     let wait = libc::time_t::from(serv.config().max_wait_time.get());
     FORCED_EXIT_DEADLINE.store(swoole_rs_corebase::time_now() + wait, Relaxed);
-    swoole_rs_reactor::swr_v1_event_set_exit_condition(
-        swoole_rs_reactor::ExitCondition::ForcedTermination,
+    swoole_rs_corebase::reactor::swr_v1_event_set_exit_condition(
+        swoole_rs_corebase::reactor::ExitCondition::ForcedTermination,
         forced_exit,
     );
 }
@@ -520,8 +520,10 @@ mod tests {
             (*live.state().config()).single_thread.set(true);
             (*live.state().config()).max_wait_time.set(3);
         }
-        live.reactor()
-            .add(live.port_socket(), swoole_rs_reactor::Events::from_bits(1));
+        live.reactor().add(
+            live.port_socket(),
+            swoole_rs_corebase::reactor::Events::from_bits(1),
+        );
         stop_master_thread(serv);
         assert!(live.reactor().handle().wait_exit(), "draining");
         assert!(

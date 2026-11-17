@@ -7,7 +7,7 @@ use swoole_rs_corebase::process::{
     methods::{swoole_set_worker_id, swoole_set_worker_pid},
     worker_record::{Worker, WorkerRecord},
 };
-use swoole_rs_reactor::{
+use swoole_rs_corebase::reactor::{
     event_api,
     socket_upstream::{
         socket_set_fd_option, socket_set_kernel_read_timeout, socket_set_kernel_write_timeout,
@@ -115,7 +115,7 @@ pub(crate) fn set_id(worker: Worker<'_>, id: u32) {
 }
 
 /// The worker's current pipe end, while it has one.
-fn pipe(worker: Worker<'_>) -> Option<swoole_rs_reactor::Heap<'_>> {
+fn pipe(worker: Worker<'_>) -> Option<swoole_rs_corebase::reactor::Heap<'_>> {
     view::worker_pipe_end(worker, view::PipeEnd::Current)
 }
 
@@ -196,7 +196,7 @@ pub(crate) fn pipe_timeout(worker: Worker<'_>, seconds: f64) -> bool {
         socket.edit(|record| {
             record
                 .timeouts
-                .set(seconds, swoole_rs_reactor::TimeoutKind::ALL);
+                .set(seconds, swoole_rs_corebase::reactor::TimeoutKind::ALL);
             socket_set_kernel_read_timeout(record, seconds)
                 && socket_set_kernel_write_timeout(record, seconds)
         })

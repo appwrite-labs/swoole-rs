@@ -2,7 +2,7 @@
 
 The Swoole reactor (backends, wait loop, handlers, callbacks, deferred queues),
 `Socket` I/O and output queues. The header is `swoole_rs_reactor.h`. Rust sources are in
-`crates/reactor/src/`; `crates/tls/src/upstream.rs` and `reactor_write.rs` hold the
+`crates/corebase/src/reactor/`; `crates/tls/src/upstream.rs` and `reactor_write.rs` hold the
 `Socket` and write-path members that also touch TLS.
 
 This directory's `swoole_socket.h` and `swoole_reactor.h` replace upstream's headers
@@ -22,7 +22,7 @@ copied.
 
 ## Checks
 
-`cargo test -p swoole-rs-reactor` runs the Rust side; `callbacks.rs`'s tests cover
+`cargo test -p swoole-rs-corebase reactor::` runs the Rust side; `callbacks.rs`'s tests cover
 the end callbacks, exit conditions and built-ins. Upstream's
 `reactor/base.cpp` GoogleTests are Rust cases over the hybrid
 (`tests/modules/reactor/base`, `reactor-base-rust`).

@@ -5,7 +5,7 @@ use core::ffi::c_int;
 
 use swoole_rs_corebase::TrustedAllocator;
 use swoole_rs_corebase::buffer::cpp::CppBuffer;
-use swoole_rs_reactor::{SocketFields, SocketRecord};
+use swoole_rs_corebase::reactor::{SocketFields, SocketRecord};
 
 use crate::reactor_handle::Reactor;
 use crate::records::Connection;
@@ -74,7 +74,7 @@ pub(crate) fn valid(conn: Option<Connection<'_>>) -> bool {
 /// shared reference.
 pub(crate) struct ThreadRecord {
     pub(crate) id: Cell<c_int>,
-    pub(crate) notify_pipe: Cell<Option<swoole_rs_reactor::Heap<'static>>>,
+    pub(crate) notify_pipe: Cell<Option<swoole_rs_corebase::reactor::Heap<'static>>>,
     pub(crate) dispatch_count: Cell<u64>,
     pub(crate) pipe_command: Cell<*mut SocketRecord>,
     pub(crate) heartbeat_timer: Cell<Option<swoole_rs_corebase::timer_key::Held>>,
