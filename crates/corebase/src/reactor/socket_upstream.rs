@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/network/socket.cc (Swoole contributors).
-//! The `network::Socket` methods and `make_socket` overloads of `socket.cc` that
-//! are whole Rust operations, last error and warnings included. With
-//! `upstream-symbols`, the socket factories retain their upstream symbols. Socket
-//! member operations are called directly by Rust.
+//! Rust socket methods and constructors from `socket.cc`, including their last-error
+//! and warning behavior.
 use crate::CCast;
 use crate::constants::ResultCode;
 use crate::log;
