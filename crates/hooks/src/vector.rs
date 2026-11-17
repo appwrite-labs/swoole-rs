@@ -9,10 +9,10 @@ use crate::socket_wait::wait_retry;
 use core::ffi::c_int;
 use core::marker::PhantomData;
 use std::io::{IoSlice, IoSliceMut};
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 #[cfg(feature = "iouring")]
-pub(crate) use swoole_rs_reactor::IovBuffer;
-use swoole_rs_reactor::{
+pub(crate) use swoole_rs_corebase::reactor::IovBuffer;
+use swoole_rs_corebase::reactor::{
     Drain, Fill, ReactorIov, Socket, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned,
 };
 use swoole_rs_tls::upstream::{ssl_recv_fill, ssl_send_drain};
@@ -114,7 +114,7 @@ pub enum Vectors<'a, 'b> {
     Write(&'a [IoSlice<'b>]),
 }
 
-pub use swoole_rs_reactor::ReadVec;
+pub use swoole_rs_corebase::reactor::ReadVec;
 
 /// A `network::IOVector` over a copy of the caller's iovecs, destroyed on drop. The
 /// buffers the iovecs name are borrowed for `'a` as [`Vectors`] lent them: writable

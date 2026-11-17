@@ -7,8 +7,8 @@ use std::{
     mem::MaybeUninit,
 };
 use swoole_rs_corebase::log::set_last_error;
+use swoole_rs_corebase::reactor::{SocketAddress, SocketFields, TimeoutKind};
 use swoole_rs_hooks::co_socket::{Co, OwnedCo};
-use swoole_rs_reactor::{SocketAddress, SocketFields, TimeoutKind};
 use swoole_rs_tls::upstream::{recv_sync, send_sync, socket_ssl_close};
 use swoole_rs_zend::{
     E_ERROR, Owned, Value, ZString,
@@ -207,7 +207,7 @@ impl Socket {
 
     /// `catch_write_error`/`catch_read_error` of `code`, which are one rule; `None`
     /// without a socket.
-    pub(crate) fn catch_error(&self, code: i32) -> Option<swoole_rs_reactor::Caught> {
+    pub(crate) fn catch_error(&self, code: i32) -> Option<swoole_rs_corebase::reactor::Caught> {
         self.co().net(|record| record.catch_error(code))
     }
 
@@ -233,7 +233,7 @@ impl Socket {
             let _logged = self.co().set_int_option(level, name, value);
         } else {
             self.with_record(false, |record| {
-                swoole_rs_reactor::swr_v1_socket_set_int(record.fd, level, name, value)
+                swoole_rs_corebase::reactor::swr_v1_socket_set_int(record.fd, level, name, value)
             });
         }
     }
@@ -419,12 +419,12 @@ pub fn convert_to_fd(value: &Value) -> Result<i32, Bailout> {
 pub mod co {
     use core::mem::ManuallyDrop;
     use libc::{c_int, c_void};
+    use swoole_rs_corebase::reactor::TimeoutKind;
     use swoole_rs_hooks::TimeoutScope;
     use swoole_rs_hooks::co_socket::OwnedCo;
     pub use swoole_rs_hooks::co_socket::{Co, CoSocket};
     pub use swoole_rs_hooks::packet::recv_packet;
     use swoole_rs_hooks::vector::IoVector;
-    use swoole_rs_reactor::TimeoutKind;
     use swoole_rs_zend::bailout::Bailout;
 
     /// `new SocketImpl(...)`: by `domain`, `kind` and `protocol` with `family`,

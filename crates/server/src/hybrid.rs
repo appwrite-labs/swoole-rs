@@ -7,7 +7,7 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::process::command::CommandRoute;
 use swoole_rs_corebase::process::task_file::TaskBuffer;
 
-use swoole_rs_reactor::Socket;
+use swoole_rs_corebase::reactor::Socket;
 
 use crate::port_config::PortConfig;
 use crate::view::Server;

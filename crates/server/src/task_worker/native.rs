@@ -17,10 +17,10 @@ use swoole_rs_corebase::process::task_sync::ResultSlot;
 use swoole_rs_corebase::process::worker_record::{
     Worker, WorkerStatus, WorkerType, swr_v1_worker_init, swr_v1_worker_shutdown,
 };
+use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::{Event, Running, Socket};
 use swoole_rs_corebase::{CCast, DataHead, log};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::Events;
-use swoole_rs_reactor::{Event, Running, Socket};
 
 use crate::callbacks::TaskSlot;
 use crate::event_worker::native::{
@@ -106,7 +106,7 @@ fn run_task(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_i
         }
         Some(ServerEvent::Shutdown) => {
             swr_v1_worker_shutdown(worker);
-            if swoole_rs_reactor::event_api::swoole_event_is_available() {
+            if swoole_rs_corebase::reactor::event_api::swoole_event_is_available() {
                 stop_async_worker(serv, worker);
             }
             return OK;
@@ -161,7 +161,7 @@ fn on_start(pool: PoolRef<'_>, worker: Worker<'_>) {
     set_worker_type(WorkerType::Task);
     // Make the task worker support asynchronous.
     let coroutine = serv.config().task_enable_coroutine.get();
-    if coroutine && swoole_rs_reactor::swoole_event_init(0) < 0 {
+    if coroutine && swoole_rs_corebase::reactor::swoole_event_init(0) < 0 {
         let m = format_args!("[TaskWorker] create reactor failed");
         log::error(c"TaskWorker_onStart", m);
         return;
@@ -190,7 +190,7 @@ fn signal_init(serv: view::Server<'_>) {
 
 /// `TaskWorker_onStop`.
 fn on_stop(pool: PoolRef<'_>, worker: Worker<'_>) {
-    swoole_rs_reactor::swoole_event_free();
+    swoole_rs_corebase::reactor::swoole_event_free();
     if let Some(serv) = crate::shared::pool_server(pool) {
         call_worker_stop_callback(serv, worker);
     }
@@ -219,7 +219,7 @@ fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
             });
         }
     }
-    swoole_rs_reactor::event_api::swoole_event_wait()
+    swoole_rs_corebase::reactor::event_api::swoole_event_wait()
 }
 
 /// `TaskWorker_onPipeReceive`: a task from a worker, in the coroutine loop.
@@ -330,7 +330,7 @@ pub fn finish(
             || {
                 let error = errno();
                 pipe.master_end().is_some_and(|socket| {
-                    socket.catch_error(error) == swoole_rs_reactor::Caught::Wait
+                    socket.catch_error(error) == swoole_rs_corebase::reactor::Caught::Wait
                 })
             },
             || {
@@ -390,7 +390,9 @@ fn write_waitall(
 
 /// The stream pool's connection for the task `worker` runs: none in an event
 /// worker's pool, which has no IPC state.
-fn stream_connection(worker: Worker<'_>) -> Option<std::rc::Rc<swoole_rs_reactor::OwnedSocket>> {
+fn stream_connection(
+    worker: Worker<'_>,
+) -> Option<std::rc::Rc<swoole_rs_corebase::reactor::OwnedSocket>> {
     let pool = worker.pool_ref()?;
     if !pool.use_socket() {
         return None;

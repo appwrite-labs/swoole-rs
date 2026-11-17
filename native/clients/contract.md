@@ -110,7 +110,7 @@ event mask (`listen`); a PHP bailout in one longjmps out, so no C++
 exception crosses Rust. The socket's `object` is the Rust state, which the handlers and
 `onPackage` read. Warnings log under upstream's function names so the lines match.
 The socket IO, sendfile, reactor writes, framed reads and the socket's release call
-crates/tls's, crates/reactor's and crates/ports' definitions by their upstream symbols
+crates/tls's, `corebase::reactor`'s and crates/ports' definitions by their upstream symbols
 (those crates sit above this one), and the input buffer is a Rust-owned `String`.
 The TLS context is crates/tls's owner and the proxies are corebase's `ProxyState`s,
 held by the state. The TLS session calls and `SSLContext::create` are called by their

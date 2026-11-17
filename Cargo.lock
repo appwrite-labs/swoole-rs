@@ -371,7 +371,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
- "swoole-rs-reactor",
  "swoole-rs-tls",
 ]
 
@@ -395,7 +394,6 @@ dependencies = [
  "swoole-rs-http-ffi",
  "swoole-rs-oracle",
  "swoole-rs-protocols",
- "swoole-rs-reactor",
  "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-websocket",
@@ -409,6 +407,7 @@ dependencies = [
  "itoa",
  "libc",
  "memchr",
+ "openssl-sys",
  "swoole-rs-base64",
  "swoole-rs-crc32",
  "swoole-rs-error",
@@ -434,7 +433,6 @@ dependencies = [
  "swoole-rs-curl-sys",
  "swoole-rs-error",
  "swoole-rs-phpswoole",
- "swoole-rs-reactor",
  "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-zend",
@@ -508,7 +506,6 @@ dependencies = [
  "swoole-rs-phpthread",
  "swoole-rs-phptimer",
  "swoole-rs-ports",
- "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-sqlite",
  "swoole-rs-ssh2",
@@ -547,7 +544,6 @@ dependencies = [
  "swoole-rs-error-ffi",
  "swoole-rs-http-ffi",
  "swoole-rs-oracle",
- "swoole-rs-reactor",
  "swoole-rs-ssh2-sys",
  "swoole-rs-timer",
  "swoole-rs-tls",
@@ -562,7 +558,6 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-ffi",
  "swoole-rs-hooks",
- "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-timer",
  "swoole-rs-tls",
@@ -697,7 +692,6 @@ dependencies = [
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-ports",
- "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-tls",
  "swoole-rs-websocket",
@@ -727,7 +721,6 @@ dependencies = [
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
- "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-timer",
  "swoole-rs-zend",
@@ -744,7 +737,6 @@ dependencies = [
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-phptimer",
- "swoole-rs-reactor",
  "swoole-rs-tls",
  "swoole-rs-zend",
 ]
@@ -770,7 +762,6 @@ dependencies = [
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-ports",
- "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-tls",
  "swoole-rs-websocket",
@@ -796,7 +787,6 @@ dependencies = [
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-ports",
- "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-zend",
 ]
@@ -825,7 +815,6 @@ dependencies = [
  "swoole-rs-phpcoroutines",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
- "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-timer",
  "swoole-rs-tls",
@@ -858,7 +847,6 @@ dependencies = [
  "swoole-rs-hooks",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
- "swoole-rs-reactor",
  "swoole-rs-tls",
  "swoole-rs-zend",
 ]
@@ -918,7 +906,6 @@ dependencies = [
  "swoole-rs-pgsql",
  "swoole-rs-phpstdext",
  "swoole-rs-phpstubs",
- "swoole-rs-reactor",
  "swoole-rs-sqlite",
  "swoole-rs-timer",
  "swoole-rs-zend",
@@ -937,7 +924,6 @@ dependencies = [
  "swoole-rs-phpprocess",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
- "swoole-rs-reactor",
  "swoole-rs-zend",
 ]
 
@@ -969,7 +955,6 @@ dependencies = [
  "swoole-rs-http2",
  "swoole-rs-locale",
  "swoole-rs-oracle",
- "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-tls",
  "swoole-rs-websocket",
@@ -978,16 +963,6 @@ dependencies = [
 [[package]]
 name = "swoole-rs-protocols"
 version = "0.1.0"
-
-[[package]]
-name = "swoole-rs-reactor"
-version = "0.1.0"
-dependencies = [
- "libc",
- "openssl-sys",
- "swoole-rs-corebase",
- "swoole-rs-error",
-]
 
 [[package]]
 name = "swoole-rs-reactor-base-tests"
@@ -1011,7 +986,6 @@ dependencies = [
  "swoole-rs-http",
  "swoole-rs-http-ffi",
  "swoole-rs-oracle",
- "swoole-rs-reactor",
  "swoole-rs-timer",
  "swoole-rs-tls",
 ]
@@ -1048,7 +1022,6 @@ dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-reactor",
  "swoole-rs-zend",
 ]
 
@@ -1060,7 +1033,6 @@ dependencies = [
  "openssl-sys",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-reactor",
  "swoole-rs-timer",
 ]
 

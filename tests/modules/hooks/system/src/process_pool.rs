@@ -30,14 +30,14 @@ use swoole_rs_corebase::process::task_file::Packed;
 use swoole_rs_corebase::process::worker_record::{
     Worker as WorkerHandle, swr_v1_worker_init, swr_v1_worker_shutdown,
 };
+use swoole_rs_corebase::reactor::signal_upstream::{self as signal, Handler as SignalHandler};
 use swoole_rs_corebase::signal_block_all;
 use swoole_rs_corebase::swoole_random_int;
 use swoole_rs_corebase::swoole_thread_clean;
-use swoole_rs_reactor::signal_upstream::{self as signal, Handler as SignalHandler};
 
 use super::timer::{after, tick};
 use super::{SIGKILL, TEST_STR, last_error, random_bytes};
-use swoole_rs_reactor::signal_upstream::swoole_signal_clear;
+use swoole_rs_corebase::reactor::signal_upstream::swoole_signal_clear;
 use swoole_rs_timer::{swoole_timer_clear, swoole_timer_free, swoole_timer_is_available};
 
 const SW_OK: c_int = 0;
@@ -532,7 +532,7 @@ static COUNTERS: AtomicPtr<AtomicI32> = AtomicPtr::new(null_mut());
 /// The fd of a pool's stream listener, or -1 without one.
 fn listener_fd(listener: Option<&swoole_rs_corebase::process::pool::Connection>) -> c_int {
     listener
-        .and_then(|listener| listener.downcast_ref::<swoole_rs_reactor::OwnedSocket>())
+        .and_then(|listener| listener.downcast_ref::<swoole_rs_corebase::reactor::OwnedSocket>())
         .map_or(-1, |listener| listener.socket().fd())
 }
 

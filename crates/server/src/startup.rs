@@ -16,10 +16,10 @@ use swoole_rs_corebase::process::process_pool::IpcMode;
 use swoole_rs_corebase::process::worker_record::WorkerRecord;
 #[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_corebase::process::worker_record::WorkerType;
+#[cfg(any(test, feature = "upstream-symbols"))]
+use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode;
-#[cfg(any(test, feature = "upstream-symbols"))]
-use swoole_rs_reactor::Events;
 
 /// `SW_MAX_THREAD_NCPU`, `SW_MAX_WORKER_NCPU`, `SW_TIMER_MIN_SEC`, `SW_BUFFER_MIN_SIZE`;
 /// native asserts each.
@@ -409,14 +409,18 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> b
         );
     }
     reactor.hold_server(serv);
-    let accept: swoole_rs_reactor::Handler = crate::server_methods::accept_connection;
+    let accept: swoole_rs_corebase::reactor::Handler = crate::server_methods::accept_connection;
     reactor.set_handler(FD_STREAM_SERVER, Events::READ, accept);
     if let Some(pipe) = config.command_pipe() {
         if !single {
             hybrid().step(serv, Step::CommandHandler);
         }
         if let Some(master) = pipe.master_end() {
-            reactor.change(master, swoole_rs_reactor::ChangeOp::Add, Events::READ);
+            reactor.change(
+                master,
+                swoole_rs_corebase::reactor::ChangeOp::Add,
+                Events::READ,
+            );
         }
     }
     if !hybrid().step(serv, Step::MasterTimer) {

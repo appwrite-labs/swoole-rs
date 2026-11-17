@@ -11,7 +11,6 @@ crate-type = ["rlib"]
 
 [dependencies]
 libc = "=0.2.191"
-swoole-rs-reactor = { path = "../reactor" }
 swoole-rs-server = { path = "../server", features = ["upstream-symbols"] }
 swoole-rs-http-ffi = { path = "../http-ffi" }
 swoole-rs-corebase = { path = "../corebase" }
@@ -26,7 +25,7 @@ swoole-rs-http2 = { path = "../http2" }
 [dev-dependencies]
 swoole-rs-corebase = { path = "../corebase", features = ["log-capture"] }
 swoole-rs-oracle = { path = "../oracle" }
-# System::init_reactor, which crates/reactor's swoole_event_init calls.
+# System::init_reactor, which `corebase::reactor`'s swoole_event_init calls.
 swoole-rs-hooks = { path = "../hooks", features = ["upstream-symbols"] }
 
 # The former native gates against the pinned catalog and getter (tests/modules/ports/README.md).

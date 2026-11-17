@@ -20,8 +20,8 @@ use std::io;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::lent::{Count, In, InOut, Out};
 use swoole_rs_corebase::net_types::SocketAddress;
+use swoole_rs_corebase::reactor::{Socket, SocketRecord};
 use swoole_rs_corebase::{log, sys};
-use swoole_rs_reactor::{Socket, SocketRecord};
 
 /// `SW_ERROR_INVALID_PARAMS`.
 const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
@@ -326,11 +326,11 @@ pub extern "C" fn swoole_coroutine_socket_wait_event(
         );
         return if matches!(ready, Ok(1)) { 0 } else { -1 };
     };
-    let event = swoole_rs_reactor::Events::from_bits(event);
+    let event = swoole_rs_corebase::reactor::Events::from_bits(event);
     let saved = fd_wait(socket, event, timeout);
     let ready = socket.poll(event, 0.0);
     // The socket is still live: the map holds it.
-    socket.set_timeout(saved, swoole_rs_reactor::TimeoutKind::ALL);
+    socket.set_timeout(saved, swoole_rs_corebase::reactor::TimeoutKind::ALL);
     if ready { 0 } else { -1 }
 }
 

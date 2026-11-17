@@ -191,7 +191,7 @@ fn dns_lookup(call: &Call) {
         bailout.defer();
         return;
     }
-    let default_timeout = swoole_rs_reactor::SOCKET_DEFAULTS.dns.get();
+    let default_timeout = swoole_rs_corebase::reactor::SOCKET_DEFAULTS.dns.get();
     let parsed = call.arity(1, 3).and_then(|()| {
         Ok((
             call.value(1),

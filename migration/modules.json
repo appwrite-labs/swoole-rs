@@ -115,7 +115,7 @@
         "M04"
       ],
       "owned_paths": [
-        "crates/reactor/",
+        "crates/corebase/src/reactor/",
         "native/reactor/",
         "tests/modules/reactor/"
       ],

@@ -122,7 +122,7 @@ impl Steps for Start {
     /// the thread-exit mark is cleared after.
     fn epilogue(&mut self, exited: bool) {
         if exited {
-            swoole_rs_reactor::event_api::swoole_event_bail_out();
+            swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
         }
     }
 }

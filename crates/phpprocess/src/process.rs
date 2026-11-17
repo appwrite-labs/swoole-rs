@@ -875,8 +875,8 @@ fn exit(call: &Call) {
         1
     };
     // The event loop's teardown.
-    if swoole_rs_reactor::event_api::swoole_event_is_available() {
-        swoole_rs_reactor::swoole_event_free();
+    if swoole_rs_corebase::reactor::event_api::swoole_event_is_available() {
+        swoole_rs_corebase::reactor::swoole_event_free();
     }
     std::process::exit(c_int::try_from(code).unwrap_or_default())
 }

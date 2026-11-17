@@ -2,7 +2,7 @@
 //! `SW_SENDFILE_CHUNK_SIZE` until the range is sent, waiting for the socket when a
 //! send would block. `Socket::sendfile` (`socket_members.rs`) opens and measures
 //! the file and writes the errors.
-use swoole_rs_reactor::Caught;
+use swoole_rs_corebase::reactor::Caught;
 
 const CHUNK: usize = swoole_rs_corebase::constants::SW_SENDFILE_CHUNK_SIZE as usize;
 /// Why [`send_range`] stopped short.

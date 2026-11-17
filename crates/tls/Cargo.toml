@@ -8,14 +8,13 @@ license.workspace = true
 [features]
 # Define Socket's TLS methods under their C++ symbols; only the reactor overlay, whose
 # patches delete the C++ definitions, turns it on (crates/ffi's reactor feature).
-upstream-symbols = ["swoole-rs-reactor/upstream-symbols"]
+upstream-symbols = ["swoole-rs-corebase/upstream-symbols"]
 # `--fix-halfclose` (M15, native/halfclose/tls.md): the close_notify and interrupted-sendfile repairs.
 halfclose = []
 
 [dependencies]
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-error = { path = "../error" }
-swoole-rs-reactor = { path = "../reactor" }
 swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 
 [target.'cfg(unix)'.dependencies]

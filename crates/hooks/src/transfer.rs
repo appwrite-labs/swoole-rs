@@ -7,7 +7,7 @@ use crate::co_io::{Timer, available, check, errno, set_err, would_block};
 use crate::co_socket::Co;
 use crate::socket_wait::{WriteSlot, wait, wait_retry};
 use swoole_rs_corebase::net_types::SocketAddress;
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 
 /// Where a transfer's call moves its bytes: `skip` bytes into the caller's buffer
 /// ([`At::Caller`]), or the socket's write buffer once a write's wait moved them
@@ -218,11 +218,11 @@ pub(crate) fn recvfrom_peer(socket: Co, call: impl FnOnce() -> Option<usize>) ->
 }
 
 /// `SW_TIMEOUT_READ` for a read, else `SW_TIMEOUT_WRITE`.
-pub(crate) fn timeout_kind(event: Events) -> swoole_rs_reactor::TimeoutKind {
+pub(crate) fn timeout_kind(event: Events) -> swoole_rs_corebase::reactor::TimeoutKind {
     if event == Events::READ {
-        swoole_rs_reactor::TimeoutKind::READ
+        swoole_rs_corebase::reactor::TimeoutKind::READ
     } else {
-        swoole_rs_reactor::TimeoutKind::WRITE
+        swoole_rs_corebase::reactor::TimeoutKind::WRITE
     }
 }
 

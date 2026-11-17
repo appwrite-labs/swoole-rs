@@ -10,7 +10,7 @@ use crate::Mode;
 use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
 use swoole_rs_corebase::ServerEvent;
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 
 use swoole_rs_corebase::buffer::EntryKind;
 use swoole_rs_corebase::buffer::cpp::{
@@ -19,8 +19,8 @@ use swoole_rs_corebase::buffer::cpp::{
 };
 use swoole_rs_corebase::buffer::string::with_thread_buffer;
 use swoole_rs_corebase::constants::{SW_SEND_BUFFER_SIZE, SocketType};
+use swoole_rs_corebase::reactor::{Event, Heap, Socket, what_event_want};
 use swoole_rs_corebase::{CCast, DataHead, microtime};
-use swoole_rs_reactor::{Event, Heap, Socket, what_event_want};
 use swoole_rs_timer::{del_id, delay_held};
 use swoole_rs_tls::Accept;
 use swoole_rs_tls::upstream as tls;
@@ -128,7 +128,7 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     if process && max != 0 && conn.recv_queued_bytes().load(SeqCst) > max {
         conn.set_waiting_time(1);
         if resume_timer(conn) {
-            reactor.interest(sock, swoole_rs_reactor::Interest::RemoveRead);
+            reactor.interest(sock, swoole_rs_corebase::reactor::Interest::RemoveRead);
         }
     }
     retval
@@ -267,7 +267,7 @@ fn resume_data_receiving(serv: view::Server<'_>, fd: c_long) {
         }
     }
     // The firing timer's reactor: this thread's.
-    Reactor::thread().interest(socket, swoole_rs_reactor::Interest::AddRead);
+    Reactor::thread().interest(socket, swoole_rs_corebase::reactor::Interest::AddRead);
     conn.set_timer(None);
 }
 
@@ -383,9 +383,13 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
     if !conn.peer_closed() && !removed && empty {
         // A notified close no longer reads: it only drains.
         if BUILT_PREQUEUE {
-            reactor.interest(sock, swoole_rs_reactor::Interest::RemoveWrite);
+            reactor.interest(sock, swoole_rs_corebase::reactor::Interest::RemoveWrite);
         } else {
-            reactor.change(sock, swoole_rs_reactor::ChangeOp::Set, Events::READ);
+            reactor.change(
+                sock,
+                swoole_rs_corebase::reactor::ChangeOp::Set,
+                Events::READ,
+            );
         }
     }
     true
@@ -477,9 +481,9 @@ pub(crate) fn close_connection(
         }
         let events = sock.read(|s| what_event_want(s, Events::WRITE));
         let op = if removed {
-            swoole_rs_reactor::ChangeOp::Add
+            swoole_rs_corebase::reactor::ChangeOp::Add
         } else {
-            swoole_rs_reactor::ChangeOp::Set
+            swoole_rs_corebase::reactor::ChangeOp::Set
         };
         if reactor.change(sock, op, events) {
             return true;
@@ -610,10 +614,11 @@ pub(crate) mod tests {
         let conn = live.state().connection(id, Lookup::Verified).unwrap();
         let sock = conn.socket().unwrap();
         if sock.read(|s| s.removed) {
-            assert!(
-                live.reactor()
-                    .change(sock, swoole_rs_reactor::ChangeOp::Add, Events::READ)
-            );
+            assert!(live.reactor().change(
+                sock,
+                swoole_rs_corebase::reactor::ChangeOp::Add,
+                Events::READ
+            ));
         }
         conn
     }
@@ -740,7 +745,7 @@ pub(crate) mod tests {
         let sock = conn.socket().unwrap();
         reactor.change(
             sock,
-            swoole_rs_reactor::ChangeOp::Set,
+            swoole_rs_corebase::reactor::ChangeOp::Set,
             Events::READ | Events::WRITE,
         );
         assert!(write(serv, reactor, &mut conn.event(0, 0)));
@@ -786,7 +791,11 @@ pub(crate) mod tests {
     }
 
     /// The port's `onRead`: receives 5 bytes and fails, so its result is told apart.
-    fn on_read(_: swoole_rs_reactor::Running<'_>, _: view::Port<'_>, read: ReadEvent<'_>) -> bool {
+    fn on_read(
+        _: swoole_rs_corebase::reactor::Running<'_>,
+        _: view::Port<'_>,
+        read: ReadEvent<'_>,
+    ) -> bool {
         let (_, event, _) = read.into_parts();
         READS.with_borrow_mut(|reads| reads.push(event.fd()));
         let sock = event.socket().unwrap();

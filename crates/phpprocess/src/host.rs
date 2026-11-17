@@ -11,9 +11,9 @@ use std::{
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::process::worker_record::WorkerType;
 use swoole_rs_corebase::process::{methods, worker_record::Worker};
+use swoole_rs_corebase::reactor::event_api::{Deferred, swoole_event_defer_value};
 use swoole_rs_corebase::{swr_v1_core_signal_listener_num, thread_async_threads};
 use swoole_rs_phpswoole::{Switch, built_with};
-use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
 use swoole_rs_server::view;
 use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
@@ -21,7 +21,7 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
 };
 
-use swoole_rs_reactor::signal_upstream::{self, Handler};
+use swoole_rs_corebase::reactor::signal_upstream::{self, Handler};
 
 /// `SW_ERROR_WRONG_OPERATION`.
 const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
@@ -338,8 +338,8 @@ fn listening(_event_num: &mut usize) -> bool {
 /// waits (setting it again replaces it with the same condition).
 pub(crate) fn signal_listen() {
     swoole_rs_phpswoole::check_reactor();
-    swoole_rs_reactor::swr_v1_event_set_exit_condition(
-        swoole_rs_reactor::ExitCondition::SignalListener,
+    swoole_rs_corebase::reactor::swr_v1_event_set_exit_condition(
+        swoole_rs_corebase::reactor::ExitCondition::SignalListener,
         listening,
     );
 }

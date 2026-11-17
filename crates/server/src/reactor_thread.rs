@@ -3,14 +3,14 @@
 use core::ffi::{c_int, c_long};
 #[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_corebase::ServerEvent;
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 
+use swoole_rs_corebase::reactor::Event;
+#[cfg(any(test, feature = "upstream-symbols"))]
+use swoole_rs_corebase::reactor::Heap;
 use swoole_rs_corebase::{DataHead, log, microtime};
 #[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_error::ErrorCode;
-use swoole_rs_reactor::Event;
-#[cfg(any(test, feature = "upstream-symbols"))]
-use swoole_rs_reactor::Heap;
 
 use crate::base_factory::SendData;
 use crate::hybrid::hybrid;
@@ -39,7 +39,7 @@ pub(crate) fn packet_received(serv: view::Server<'_>, reactor: Reactor, event: &
     });
     // SAFETY: this thread's packet buffer, live through dispatch; the next packet
     // does not overwrite it until the current dispatch returns.
-    let buffer = unsafe { swoole_rs_reactor::Fill::from_raw(buffer, size) };
+    let buffer = unsafe { swoole_rs_corebase::reactor::Fill::from_raw(buffer, size) };
     receive_packets(serv, reactor, event.fd(), buffer)
 }
 
@@ -49,7 +49,7 @@ fn receive_packets(
     serv: view::Server<'_>,
     reactor: Reactor,
     fd: c_int,
-    mut buffer: swoole_rs_reactor::Fill<'_>,
+    mut buffer: swoole_rs_corebase::reactor::Fill<'_>,
 ) -> bool {
     let buffer = buffer.slots();
     let head = size_of::<DgramPacket>();
@@ -94,7 +94,7 @@ fn receive_packets(
         let pkt = unsafe { &mut *header.as_mut_ptr().cast::<DgramPacket>() };
         pkt.socket_type = kind;
         pkt.socket_addr.kind = kind;
-        let mut room = swoole_rs_reactor::Fill::new(payload);
+        let mut room = swoole_rs_corebase::reactor::Fill::new(payload);
         // A DTLS datagram goes to the handshake, as the bytes it received.
         let received = room.spare(|spare| match spare.recvfrom(fd, 0, &mut pkt.socket_addr) {
             Some(1..) if dtls => {
@@ -254,7 +254,7 @@ pub(crate) fn send_event(sock: Option<Heap<'_>>, fd: c_long, kind: ServerEvent) 
     };
     if let Some(sock) = sock {
         let data = swoole_rs_corebase::process::process_pool::head_view(&head);
-        let data = swoole_rs_reactor::Drain::new(&data);
+        let data = swoole_rs_corebase::reactor::Drain::new(&data);
         _ = swoole_rs_tls::upstream::send_sync_drain(*sock, data, 0);
     }
 }
@@ -289,7 +289,7 @@ mod tests {
             serv,
             reactor,
             fd,
-            swoole_rs_reactor::Fill::new(&mut short)
+            swoole_rs_corebase::reactor::Fill::new(&mut short)
         ));
 
         let mut bytes =
@@ -305,7 +305,7 @@ mod tests {
             serv,
             reactor,
             fd,
-            swoole_rs_reactor::Fill::new(misaligned)
+            swoole_rs_corebase::reactor::Fill::new(misaligned)
         ));
     }
 
@@ -325,7 +325,7 @@ mod tests {
             for _ in 0..1000 {
                 assert!(
                     receive_packets(serv, reactor, fd, unsafe {
-                        swoole_rs_reactor::Fill::from_raw(at, size)
+                        swoole_rs_corebase::reactor::Fill::from_raw(at, size)
                     }),
                     "drained"
                 );
@@ -371,7 +371,7 @@ mod tests {
         );
 
         let no_port = receive_packets(serv, reactor, -1, unsafe {
-            swoole_rs_reactor::Fill::from_raw(at, size)
+            swoole_rs_corebase::reactor::Fill::from_raw(at, size)
         });
         assert!(!no_port, "no port");
         assert_eq!(calls(), []);
@@ -400,8 +400,8 @@ mod tests {
     }
 
     fn record_error(
-        _: swoole_rs_reactor::Running<'_>,
-        event: &mut swoole_rs_reactor::Event,
+        _: swoole_rs_corebase::reactor::Running<'_>,
+        event: &mut swoole_rs_corebase::reactor::Event,
     ) -> c_int {
         HANDLED.with_borrow_mut(|h| h.push(("told", event.fd())));
         0
@@ -424,7 +424,7 @@ mod tests {
         let conn = session(&live);
         live.reactor().change(
             conn.socket().unwrap(),
-            swoole_rs_reactor::ChangeOp::Add,
+            swoole_rs_corebase::reactor::ChangeOp::Add,
             Events::READ,
         );
         close(serv, reactor, 1);
@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn init_reactor_sets_the_session_handlers() {
-        use swoole_rs_reactor::reactor_upstream::isset_handler as isset;
+        use swoole_rs_corebase::reactor::reactor_upstream::isset_handler as isset;
         let live = crate::fixture::LiveServer::new();
         let running = live.reactor().handle();
         assert!(!isset(running, FD_SESSION, Events::READ));

@@ -51,7 +51,7 @@ typedef struct {
     bool want_write;
 } swr_v1_socket_tls;
 
-/* Rust's reactor state (crates/reactor's ReactorState), which begins with swr_v1_reactor_head:
+/* Rust's reactor state (`corebase::reactor`'s ReactorState), which begins with swr_v1_reactor_head:
  * a Reactor is that state. swoole_event_init/free and the Reactor's constructor and destructor
  * are Rust's; nothing in C or C++ allocates one. */
 typedef struct swr_v1_reactor_state swr_v1_reactor_state;
@@ -72,6 +72,6 @@ typedef struct {
 }
 static_assert(offsetof(swr_v1_reactor_head, type_) == sizeof(swr_v1_reactor_prepared) &&
                   (sizeof(void *) != 8 || (sizeof(swr_v1_reactor_prepared) == 32 && sizeof(swr_v1_reactor_head) == 96)),
-              "crates/reactor's ReactorState layout");
+              "`corebase::reactor`'s ReactorState layout");
 #endif
 #endif

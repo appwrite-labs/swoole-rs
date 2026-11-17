@@ -12,9 +12,9 @@ use process::process_pool::{Hooks, PoolRef};
 use process::reaper::{self, Reap, ReloadStart, Waited};
 use process::reload_task::{ReloadTask, Warn};
 use process::worker_record::{Worker, WorkerType};
+use swoole_rs_corebase::reactor::wait_upstream::swoole_waitpid;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::wait_upstream::swoole_waitpid;
 
 use super::{Manager, Reload, stop_message, worker_ids};
 use crate::callbacks::ServerSlot;
@@ -162,7 +162,7 @@ fn wait(serv: view::Server<'_>) {
     let (state, config) = (serv.state(), serv.config());
     let manager = &config.manager;
     init(serv, manager);
-    swoole_rs_reactor::swoole_event_free();
+    swoole_rs_corebase::reactor::swoole_event_free();
     set_signal(libc::SIGHUP, SignalHandler::None);
     for signo in [
         libc::SIGCHLD,

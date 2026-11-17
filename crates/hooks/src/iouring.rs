@@ -11,8 +11,8 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicU32;
 use swoole_rs_corebase::constants::FdType;
 use swoole_rs_corebase::log;
-use swoole_rs_reactor::event_api::{swoole_event_is_available, swoole_event_is_running};
-use swoole_rs_reactor::{Events, SocketRecord, UringOps};
+use swoole_rs_corebase::reactor::event_api::{swoole_event_is_available, swoole_event_is_running};
+use swoole_rs_corebase::reactor::{Events, SocketRecord, UringOps};
 use swoole_rs_tls::event_socket::EventSocket;
 
 /// The thread's `Iouring`: the engine (none if the ring could not be created) and
@@ -149,13 +149,13 @@ fn create() -> Iouring {
     };
     let record = SocketRecord::with_fd(engine.fd(), FdType::SW_FD_IOURING as c_int);
     let socket = iouring.socket.insert(EventSocket::adopt(Box::new(record)));
-    swoole_rs_reactor::swr_v1_event_set_exit_condition(
-        swoole_rs_reactor::ExitCondition::Iouring,
+    swoole_rs_corebase::reactor::swr_v1_event_set_exit_condition(
+        swoole_rs_corebase::reactor::ExitCondition::Iouring,
         idle,
     );
-    swoole_rs_reactor::event_api::on_destroy(destroyed);
-    swoole_rs_reactor::swr_v1_event_set_end_callback(
-        swoole_rs_reactor::Priority::IouringSubmit,
+    swoole_rs_corebase::reactor::event_api::on_destroy(destroyed);
+    swoole_rs_corebase::reactor::swr_v1_event_set_end_callback(
+        swoole_rs_corebase::reactor::Priority::IouringSubmit,
         submit,
     );
     if !socket.add(Events::READ) {
@@ -200,7 +200,7 @@ pub(crate) fn ready() -> bool {
     current().is_some_and(|engine| uring::wakeup(&engine))
 }
 
-/// The engine's operations crates/reactor calls; it sits below this crate, so
+/// The engine's operations `corebase::reactor` calls; it sits below this crate, so
 /// `swoole_init` registers them (`stdio::swr_v1_hook_install`).
 pub(crate) static REACTOR: UringOps = UringOps {
     interrupted,

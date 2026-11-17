@@ -243,9 +243,15 @@ extern "C" fn immediate(signo: c_int) {
 /// the deferred handler marked, in signal order, clearing each mark after its
 /// callback.
 pub fn swoole_signal_dispatch() {
-    if !PENDING.load(Relaxed) {
-        return;
+    if PENDING.load(Relaxed) {
+        dispatch_pending();
     }
+}
+
+// Keep the signal walk out of the hot reactor callback loop so its fixed slots
+// can be unrolled even when the process and reactor modules share a crate.
+#[inline(never)]
+fn dispatch_pending() {
     // Only the deferred handler marks a signal, and `signal_set` stores its
     // `Dispatch` before installing that handler.
     let Some(callback) = callback() else {

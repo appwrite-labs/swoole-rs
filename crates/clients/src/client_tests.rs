@@ -1,7 +1,7 @@
 //! The operations against a recording double of the C++ client.
 use super::*;
 use std::cell::RefCell;
-use swoole_rs_reactor::{Socket, SocketFields, SocketRecord};
+use swoole_rs_corebase::reactor::{Socket, SocketFields, SocketRecord};
 
 #[derive(Default)]
 struct Mock {
@@ -25,14 +25,14 @@ struct Mock {
 }
 
 #[derive(Default)]
-struct Freed(Vec<swoole_rs_reactor::OwnedSocket>);
+struct Freed(Vec<swoole_rs_corebase::reactor::OwnedSocket>);
 
 impl Drop for Freed {
     fn drop(&mut self) {
         // `make_socket`'s records, which the client released once.
         self.0
             .drain(..)
-            .for_each(swoole_rs_reactor::OwnedSocket::free);
+            .for_each(swoole_rs_corebase::reactor::OwnedSocket::free);
     }
 }
 
@@ -60,7 +60,7 @@ pub(super) mod ops {
         kind: c_int,
         fd_type: c_int,
         flags: c_int,
-    ) -> Option<swoole_rs_reactor::OwnedSocket> {
+    ) -> Option<swoole_rs_corebase::reactor::OwnedSocket> {
         log(format!("make {kind} {fd_type} {flags}"));
         if mock(|m| m.fail_socket) {
             set_errno(libc::EMFILE);
@@ -69,7 +69,7 @@ pub(super) mod ops {
         let mut record = SocketRecord::new();
         record.socket_type = kind;
         record.fd = -1;
-        let socket = swoole_rs_reactor::OwnedSocket::new(Box::new(record));
+        let socket = swoole_rs_corebase::reactor::OwnedSocket::new(Box::new(record));
         mock(|m| m.socket = core::ptr::NonNull::new(socket.socket().as_ptr()));
         Some(socket)
     }
@@ -101,7 +101,7 @@ pub(super) mod ops {
     pub(in super::super) fn event(
         _: Handle<'_>,
         op: EventOp,
-        events: swoole_rs_reactor::Events,
+        events: swoole_rs_corebase::reactor::Events,
     ) -> bool {
         log(format!("event {op:?} {events}"));
         true
@@ -138,7 +138,7 @@ pub(super) fn with_thread_buffer(f: &mut dyn FnMut(&mut CppString)) {
 }
 
 // crates/tls's socket operations.
-fn free_socket(socket: Option<swoole_rs_reactor::OwnedSocket>) {
+fn free_socket(socket: Option<swoole_rs_corebase::reactor::OwnedSocket>) {
     log("free");
     mock(|m| m.freed.0.extend(socket));
 }
@@ -150,8 +150,8 @@ pub(super) mod net {
         usize::try_from(n).ok()
     }
     use core::ffi::c_int;
+    use swoole_rs_corebase::reactor::Socket;
     use swoole_rs_corebase::sys::{ReadBuffer, ReadSlot};
-    use swoole_rs_reactor::Socket;
 
     pub(in super::super) fn recv(
         _: Socket<'_>,
@@ -219,8 +219,8 @@ pub(super) fn socket_sendfile_async(_: Socket<'_>, _: &CStr, _: i64, _: usize) -
     log("sendfile true");
     true
 }
-/// crates/reactor's, which reads the thread's reactor.
-pub(super) fn event_write(_: swoole_rs_reactor::Heap<'_>, data: &[u8]) -> Option<usize> {
+/// `corebase::reactor`'s, which reads the thread's reactor.
+pub(super) fn event_write(_: swoole_rs_corebase::reactor::Heap<'_>, data: &[u8]) -> Option<usize> {
     let length = data.len();
     mock(|m| m.sent.push(data.to_vec()));
     log(format!("write {length}"));
@@ -228,8 +228,8 @@ pub(super) fn event_write(_: swoole_rs_reactor::Heap<'_>, data: &[u8]) -> Option
 }
 /// crates/tls's `Reactor::_writable_callback`.
 pub(super) extern "C-unwind" fn writable_callback(
-    _: swoole_rs_reactor::Running<'_>,
-    _: &mut swoole_rs_reactor::Event,
+    _: swoole_rs_corebase::reactor::Running<'_>,
+    _: &mut swoole_rs_corebase::reactor::Event,
 ) -> c_int {
     log("writable");
     OK
@@ -378,7 +378,7 @@ fn free(client: *mut Client) {
 
 /// `Client_onWrite` with a reactor and event the mocks ignore.
 fn writable(client: *mut Client) -> bool {
-    let mut event = swoole_rs_reactor::Event::of(0, 0, 0, None);
+    let mut event = swoole_rs_corebase::reactor::Event::of(0, 0, 0, None);
     // SAFETY: the mocked effects never touch the reactor.
     let reactor = unsafe { Running::new(core::ptr::null_mut()) };
     on_write(Handle::raw(client), reactor, &mut event)
@@ -416,7 +416,7 @@ fn construction_makes_a_cloexec_socket_nonblocking_when_async() {
 fn a_call_measures_with_the_protocol_and_frees_the_client() {
     fn twice(
         _: &Protocol,
-        _: Option<swoole_rs_reactor::Socket<'_>>,
+        _: Option<swoole_rs_corebase::reactor::Socket<'_>>,
         packet: &mut PacketLength,
     ) -> isize {
         2 * isize::try_from(packet.bytes().len()).unwrap()

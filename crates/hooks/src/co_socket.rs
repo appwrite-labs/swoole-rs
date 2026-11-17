@@ -15,7 +15,7 @@ use swoole_rs_corebase::buffer::string::{CppString, new_sized_string};
 use swoole_rs_corebase::constants::{
     FdType, SW_BUFFER_SIZE_BIG, SW_INPUT_BUFFER_SIZE, SocketFlag, SocketType,
 };
-use swoole_rs_reactor::{Socket, SocketAddress, SocketFields, SocketRecord};
+use swoole_rs_corebase::reactor::{Socket, SocketAddress, SocketFields, SocketRecord};
 use swoole_rs_tls::upstream::{socket_free, socket_ssl_close};
 
 pub use swoole_rs_clients::protocol::Protocol;
@@ -40,7 +40,7 @@ pub struct CoSocket {
     /// The `network::Socket`, none before the socket opens: the record's own from
     /// `into_socket`, live until `~Socket()` frees it, when no handle reaches this
     /// record any more.
-    pub(crate) socket: Cell<Option<swoole_rs_reactor::Heap<'static>>>,
+    pub(crate) socket: Cell<Option<swoole_rs_corebase::reactor::Heap<'static>>>,
     pub sock_domain: Cell<c_int>,
     pub sock_type: Cell<c_int>,
     pub sock_protocol: Cell<c_int>,
@@ -535,8 +535,8 @@ impl Co {
     /// thread's reactor: false without a socket or a reactor. The record's own
     /// network socket, which `~Socket()` takes off the reactor as it frees it.
     #[must_use]
-    pub fn register(self, add: bool, events: swoole_rs_reactor::Events) -> bool {
-        use swoole_rs_reactor::event_api::{event_add, event_set};
+    pub fn register(self, add: bool, events: swoole_rs_corebase::reactor::Events) -> bool {
+        use swoole_rs_corebase::reactor::event_api::{event_add, event_set};
         let change = if add { event_add } else { event_set };
         self.record()
             .socket
@@ -548,12 +548,11 @@ impl Co {
     /// registered as [`Co::register`] registers it: whether the change worked, true when
     /// nothing changes, false without a socket or a reactor.
     #[must_use]
-    pub fn interest(self, kind: swoole_rs_reactor::Interest) -> bool {
-        let interest = swoole_rs_reactor::event_api::event_interest;
-        self.record()
-            .socket
-            .get()
-            .is_some_and(|network| interest(network, kind, swoole_rs_reactor::Events::NONE))
+    pub fn interest(self, kind: swoole_rs_corebase::reactor::Interest) -> bool {
+        let interest = swoole_rs_corebase::reactor::event_api::event_interest;
+        self.record().socket.get().is_some_and(|network| {
+            interest(network, kind, swoole_rs_corebase::reactor::Events::NONE)
+        })
     }
 
     /// `f` over the record's metadata, which the record gives up while `f` runs and
@@ -579,20 +578,20 @@ impl Co {
     /// `errno` classified by the open socket, as `catch_read_error`/`catch_write_error`
     /// say; `None` without one.
     #[must_use]
-    pub fn catch_error(self, error: c_int) -> Option<swoole_rs_reactor::Caught> {
+    pub fn catch_error(self, error: c_int) -> Option<swoole_rs_corebase::reactor::Caught> {
         self.net(|record| record.catch_error(error))
     }
 
     /// The socket's timeout of `kind`, or -1 when it has none.
     #[must_use]
-    pub fn timeout(self, kind: swoole_rs_reactor::TimeoutKind) -> f64 {
+    pub fn timeout(self, kind: swoole_rs_corebase::reactor::TimeoutKind) -> f64 {
         self.net(|record| record.timeouts.get(kind))
             .flatten()
             .unwrap_or(-1.0)
     }
 
     /// Sets the socket's timeouts selected by `kind`.
-    pub fn set_timeout(self, timeout: f64, kind: swoole_rs_reactor::TimeoutKind) {
+    pub fn set_timeout(self, timeout: f64, kind: swoole_rs_corebase::reactor::TimeoutKind) {
         self.net(|record| record.timeouts.set(timeout, kind));
     }
 }
@@ -732,8 +731,8 @@ impl CoSocket {
             }
         }
         if matches!(socket_type, 2 | 4) {
-            let size = swoole_rs_reactor::SOCKET_DEFAULTS.buffer_size();
-            _ = swoole_rs_reactor::set_socket_buffer_size(fd, true, true, size);
+            let size = swoole_rs_corebase::reactor::SOCKET_DEFAULTS.buffer_size();
+            _ = swoole_rs_corebase::reactor::set_socket_buffer_size(fd, true, true, size);
         }
         let protocol = self.protocol.get_mut();
         protocol.package_length_type = b'N';
@@ -747,7 +746,8 @@ impl CoSocket {
 
 /// `Socket::set_nonblock`: the `fd_option` warnings, shifted for the result.
 fn set_nonblock(network: Socket<'_>) -> u32 {
-    let result = swoole_rs_reactor::swr_v1_socket_fd_option(network.fd(), Some(true), None);
+    let result =
+        swoole_rs_corebase::reactor::swr_v1_socket_fd_option(network.fd(), Some(true), None);
     if result.ok {
         network.edit(|record| {
             record.output.nonblock = true;
@@ -762,7 +762,7 @@ use swoole_rs_corebase::sys::socklen;
 
 /// `domain` and `kind` for `socket_type`, left alone for a type with none.
 fn domain_and_type(socket_type: c_int, domain: &mut c_int, kind: &mut c_int) {
-    if let Some(pair) = swoole_rs_reactor::socket_domain_and_type(socket_type) {
+    if let Some(pair) = swoole_rs_corebase::reactor::socket_domain_and_type(socket_type) {
         (*domain, *kind) = pair;
     }
 }
@@ -882,7 +882,7 @@ impl CoSocket {
                 socket.sock_protocol.set(protocol);
                 socket
                     .kind
-                    .set(swoole_rs_reactor::socket_type(domain, kind).raw());
+                    .set(swoole_rs_corebase::reactor::socket_type(domain, kind).raw());
             }
             New::ByType | New::FdByType => {
                 socket.kind.set(socket_type);
@@ -928,7 +928,7 @@ impl Drop for Released {
         // SAFETY: the record's own heap socket, which it gave up and nothing uses
         // afterwards.
         socket_free(Some(unsafe {
-            swoole_rs_reactor::OwnedSocket::from_socket(self.0)
+            swoole_rs_corebase::reactor::OwnedSocket::from_socket(self.0)
         }));
     }
 }
@@ -1154,12 +1154,14 @@ mod test_support {
     /// The owner a record holds `ssl` by: a live `SSL` whose one reference the owner
     /// takes, or one the test never uses and takes back with `set_ssl(None)`, which
     /// leaves it unfreed (as [`TestSocket`]'s drop does).
-    pub(crate) unsafe fn record_ssl(ssl: *mut core::ffi::c_void) -> swoole_rs_reactor::SocketSsl {
+    pub(crate) unsafe fn record_ssl(
+        ssl: *mut core::ffi::c_void,
+    ) -> swoole_rs_corebase::reactor::SocketSsl {
         unsafe { core::mem::transmute(ptr::NonNull::new(ssl).unwrap()) }
     }
 
     /// A dangling owner for a test that only asks whether a record holds an `SSL`.
-    pub(crate) fn stub_ssl() -> swoole_rs_reactor::SocketSsl {
+    pub(crate) fn stub_ssl() -> swoole_rs_corebase::reactor::SocketSsl {
         unsafe { record_ssl(ptr::NonNull::<u8>::dangling().as_ptr().cast()) }
     }
 
@@ -1206,7 +1208,7 @@ mod test_support {
                 if let Some(s) = Socket::from_ptr(self.0.socket_ptr()) {
                     // A test's `SSL` is its own to free, or a stub.
                     s.edit(|record| record.set_ssl(None));
-                    swoole_rs_reactor::OwnedSocket::from_socket(s).free();
+                    swoole_rs_corebase::reactor::OwnedSocket::from_socket(s).free();
                 }
                 self.0.fini();
             }
@@ -1222,7 +1224,7 @@ pub(crate) use test_support::{TestSocket, init, over, stub_ssl, unopened};
 mod tests {
     use super::*;
     use core::mem::MaybeUninit;
-    use swoole_rs_reactor::Events;
+    use swoole_rs_corebase::reactor::Events;
 
     fn record() -> Box<CoSocket> {
         let mut storage = Box::new(MaybeUninit::<CoSocket>::uninit());
@@ -1239,7 +1241,7 @@ mod tests {
             unsafe {
                 libc::close((*socket.socket_ptr()).fields.fd);
                 if let Some(s) = Socket::from_ptr(socket.socket_ptr()) {
-                    swoole_rs_reactor::OwnedSocket::from_socket(s).free();
+                    swoole_rs_corebase::reactor::OwnedSocket::from_socket(s).free();
                 }
             }
         }

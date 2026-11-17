@@ -1,7 +1,7 @@
 # Reactor construction and backends
 
 Upstream's poll/epoll/kqueue backends are Rust over the reactor state
-(`crates/reactor/src/reactor_state.rs`, `wait_loop.rs`, `change.rs`). The
+(`crates/corebase/src/reactor/reactor_state.rs`, `wait_loop.rs`, `change.rs`). The
 `Reactor`'s constructor and destructor are Rust too (`swr_v1_reactor_new`,
 `swr_v1_reactor_delete`, behind `swoole_event_init` and `swoole_event_free`).
 

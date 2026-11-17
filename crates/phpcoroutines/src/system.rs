@@ -6,10 +6,10 @@ use crate::host;
 use std::ffi::{CStr, CString, c_int, c_long};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::last_error;
+use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::wait_upstream::{system_wait, system_waitpid};
 use swoole_rs_hooks::exec::exec as exec_into;
 use swoole_rs_phpstubs::coroutine_system;
-use swoole_rs_reactor::Events;
-use swoole_rs_reactor::wait_upstream::{system_wait, system_waitpid};
 use swoole_rs_zend::{Call, Class, E_WARNING, Minit, Owned, OwnedArray, ZString, bailout::Bailout};
 use swoole_rs_zend::{method_table, sys as z};
 

@@ -2,7 +2,7 @@
 //! timers, event loop and callbacks. `corebase::process` decides every step
 //! (`process_pool.rs`, `pool.rs`) and asks for each effect through the
 //! [`PoolNative`] side [`process_pool_native`] returns. It lives here because these objects are
-//! crates/reactor's, crates/tls's and `corebase::memory`'s, which `corebase::process` can't
+//! `corebase::reactor`'s, crates/tls's and `corebase::memory`'s, which `corebase::process` can't
 //! depend on.
 //!
 //! Each hook that can reach PHP runs inside the bailout trap `corebase::process` sets
@@ -14,7 +14,7 @@ use process::worker_record::WorkerType;
 use std::rc::Rc;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::process;
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 
 use crate::objects::{Reactor, worker_pipe};
 pub(crate) use crate::reactor_ops::PoolBus;
@@ -37,8 +37,8 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::memory::members::pool as mem_pool;
-use swoole_rs_reactor::event_api::{event_write, set_handler, swoole_event_is_available};
-use swoole_rs_reactor::{Event, Heap, Running, Socket};
+use swoole_rs_corebase::reactor::event_api::{event_write, set_handler, swoole_event_is_available};
+use swoole_rs_corebase::reactor::{Event, Heap, Running, Socket};
 use swoole_rs_timer::{
     swoole_timer_create, swoole_timer_free, swoole_timer_get_next_msec, swoole_timer_is_available,
     swoole_timer_select,
@@ -347,8 +347,8 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> bool {
         Op::ExitCallback => {
             // The worker of the loop this thread runs, as one of its pool's.
             EXITING.set(pool.index_of(worker));
-            swoole_rs_reactor::swr_v1_event_set_end_callback(
-                swoole_rs_reactor::Priority::TryExit,
+            swoole_rs_corebase::reactor::swr_v1_event_set_end_callback(
+                swoole_rs_corebase::reactor::Priority::TryExit,
                 worker_exit,
             );
         }
@@ -398,8 +398,8 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) {
 /// The socket of a stream connection `accept` gave the pool.
 fn connection_socket(connection: &dyn core::any::Any) -> Option<Socket<'_>> {
     connection
-        .downcast_ref::<swoole_rs_reactor::OwnedSocket>()
-        .map(swoole_rs_reactor::OwnedSocket::socket)
+        .downcast_ref::<swoole_rs_corebase::reactor::OwnedSocket>()
+        .map(swoole_rs_corebase::reactor::OwnedSocket::socket)
 }
 
 /// `socket->send_sync(data, length)` on the socket `pick` finds in `c`.
@@ -456,7 +456,7 @@ impl PoolNative for Native {
 
     fn event_init(&self, c: &PoolCall) -> bool {
         // This thread has no event loop yet.
-        if swoole_rs_reactor::swoole_event_init(EVENTLOOP_WAIT_EXIT) < 0 {
+        if swoole_rs_corebase::reactor::swoole_event_init(EVENTLOOP_WAIT_EXIT) < 0 {
             return false;
         }
         let pool = c.pool();
@@ -475,11 +475,11 @@ impl PoolNative for Native {
     }
 
     fn event_wait(&self) -> bool {
-        swoole_rs_reactor::event_api::swoole_event_wait() >= 0
+        swoole_rs_corebase::reactor::event_api::swoole_event_wait() >= 0
     }
 
     fn waitpid(&self, pid: c_int) -> bool {
-        swoole_rs_reactor::wait_upstream::swoole_waitpid(pid, Some(&mut 0), 0) >= 0
+        swoole_rs_corebase::reactor::wait_upstream::swoole_waitpid(pid, Some(&mut 0), 0) >= 0
     }
 
     fn new_pipe(&self, call: &PoolCall) -> Result<(), PipeError> {
@@ -563,11 +563,13 @@ impl PoolNative for Native {
         let accepted = crate::view::pool_ipc_listener(c.pool()).and_then(|listener| {
             listener
                 .socket()
-                .edit(swoole_rs_reactor::SocketFields::accepted)
+                .edit(swoole_rs_corebase::reactor::SocketFields::accepted)
         });
         c.set_error(errno());
         if let Some(record) = accepted {
-            c.set_connection(Rc::new(swoole_rs_reactor::OwnedSocket::new(record)));
+            c.set_connection(Rc::new(swoole_rs_corebase::reactor::OwnedSocket::new(
+                record,
+            )));
         }
     }
 
@@ -590,7 +592,11 @@ impl PoolNative for Native {
         // The pool's only hold on the connection or listener.
         let socket = c
             .take_connection()
-            .and_then(|socket| socket.downcast::<swoole_rs_reactor::OwnedSocket>().ok())
+            .and_then(|socket| {
+                socket
+                    .downcast::<swoole_rs_corebase::reactor::OwnedSocket>()
+                    .ok()
+            })
             .and_then(Rc::into_inner);
         socket_free(socket);
     }
@@ -604,7 +610,7 @@ impl PoolNative for Native {
             let timeout = next.c_cast::<f64>() / 1000.0;
             pipe.edit(|pipe| {
                 pipe.timeouts
-                    .set(timeout, swoole_rs_reactor::TimeoutKind::READ);
+                    .set(timeout, swoole_rs_corebase::reactor::TimeoutKind::READ);
             });
             read_sync_fill(*pipe, c.connection_fill().1).map_or(-1, usize::cast_signed)
         });
@@ -700,7 +706,7 @@ impl PoolNative for Native {
                 let listener = crate::view::pool_ipc_listener(pool);
                 let fd = fd(listener
                     .as_deref()
-                    .map(swoole_rs_reactor::OwnedSocket::heap));
+                    .map(swoole_rs_corebase::reactor::OwnedSocket::heap));
                 log::sys_warning(origin, format_args!("[Worker#{id}] accept({fd}) failed"));
             }
             Warning::Read => {

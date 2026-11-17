@@ -2,7 +2,7 @@
 //! when dropped. A scope borrows its socket and never owns or destroys it; the
 //! socket outlives the scope.
 use crate::co_socket::{Co, Protocol};
-use swoole_rs_reactor::TimeoutKind;
+use swoole_rs_corebase::reactor::TimeoutKind;
 
 /// `Socket::ProtocolSwitch`: the socket's EOF and length checks and protocol,
 /// restored when dropped.
