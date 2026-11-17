@@ -1,9 +1,9 @@
 //! Thread-local TLS configuration builders and immutable runtime snapshots.
 //! [`TlsContext`] retains a builder; sessions use independent [`TlsSettings`].
-use crate::CCast;
 use crate::StringSlot;
 use crate::tls::context::create_context;
 use crate::tls::{TlsConfig, Warn};
+use crate::{CCast, CellExt};
 use openssl_sys::SSL_CTX;
 use std::{
     cell::Cell,
@@ -255,11 +255,7 @@ impl OwnedTlsContext {
     /// `read` over the string slot `index`, none past the last. The slot is taken out
     /// and put back around it, so `read` must not reach this owner again.
     fn with_string<R>(&self, index: usize, read: impl FnOnce(&mut StringSlot) -> R) -> Option<R> {
-        let cell = self.strings.get(index)?;
-        let mut slot = cell.take();
-        let result = read(&mut slot);
-        cell.set(slot);
-        Some(result)
+        Some(self.strings.get(index)?.with_taken(read))
     }
 
     /// Whether the string at `index` is set.

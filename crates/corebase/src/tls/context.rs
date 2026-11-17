@@ -3,12 +3,12 @@
 //! callbacks (password, ALPN, verify, DTLS cookies). The configuration lives in the
 //! owner (`owned.rs`), the info callback in `info.rs`; warnings go through the
 //! configuration's `warn` callback. Requires OpenSSL 3.
-use crate::CCast;
 use crate::StringSlot;
 use crate::lent::{Count, In, Out};
 use crate::log;
 use crate::sys::Text;
 use crate::tls::handle::{Bio, Ssl};
+use crate::{CCast, CellExt};
 use openssl_sys::{
     EVP_PKEY, OPENSSL_NPN_NEGOTIATED, SSL, SSL_CTRL_MODE, SSL_CTRL_SET_GROUPS_LIST,
     SSL_CTRL_SET_READ_AHEAD, SSL_CTRL_SET_SESS_CACHE_MODE, SSL_CTRL_SET_TLSEXT_SERVERNAME_CB,
@@ -1016,10 +1016,7 @@ thread_local! {
 
 /// `edit` over the thread's error line, taken out and put back.
 fn with_error_text<R>(edit: impl FnOnce(&mut Vec<u8>) -> R) -> R {
-    let mut text = ERROR_TEXT.take();
-    let result = edit(&mut text);
-    ERROR_TEXT.set(text);
-    result
+    ERROR_TEXT.with(|cell| cell.with_taken(edit))
 }
 
 /// `ERR_print_errors_cb`'s callback: keeps `line` as the thread's error line. It returns
