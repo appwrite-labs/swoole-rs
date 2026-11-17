@@ -81,3 +81,14 @@ fn vectored_read_counts_short_reads_across_empty_rooms() {
     assert_eq!(unsafe { head.assume_init_ref() }, b"ab");
     assert_eq!(unsafe { tail[..3].assume_init_ref() }, b"cde");
 }
+
+#[test]
+fn read_vector_lends_only_the_remaining_stream_buffer() {
+    let mut bytes = *b"abc";
+    let mut room = ReadVec::new(&mut bytes);
+    room.advance(1);
+    room.fill().slots().write_copy_of_slice(b"de");
+    room.advance(2);
+    assert!(room.fill().slots().is_empty());
+    assert_eq!(&bytes, b"ade");
+}

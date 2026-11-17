@@ -462,6 +462,29 @@ pub struct Fill<'a, S: ReadSlot = MaybeUninit<u8>> {
     lent: PhantomData<&'a mut [S]>,
 }
 
+impl<'a> Fill<'a, u8> {
+    /// The initialized part of a string range. An empty range retains its source
+    /// address, including a null address for an unallocated string at offset zero.
+    #[inline]
+    pub fn string_range(
+        buffer: &'a mut crate::buffer::string::CppString,
+        start: usize,
+        len: usize,
+    ) -> Self {
+        Self {
+            at: buffer.as_mut_ptr().wrapping_add(start),
+            len: len.min(buffer.len().saturating_sub(start)),
+            lent: PhantomData,
+        }
+    }
+
+    /// The address handed to a callback, which may distinguish null from empty.
+    #[must_use]
+    pub const fn as_ptr(&self) -> *const u8 {
+        self.at
+    }
+}
+
 impl<'a, S: ReadSlot> Fill<'a, S> {
     /// `buffer`'s bytes.
     #[inline]
@@ -476,7 +499,7 @@ impl<'a, S: ReadSlot> Fill<'a, S> {
     /// How many bytes are left to fill.
     #[inline]
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.len
     }
 
@@ -742,6 +765,18 @@ impl Spare<'_> {
     pub fn read_fd(&mut self, fd: c_int) -> Option<usize> {
         let received = self.rest().read(fd);
         self.count(received)
+    }
+
+    /// Reads into `head` and then the remaining room. Returns the total byte count.
+    #[inline]
+    pub fn readv_after(&mut self, fd: c_int, head: &mut [u8]) -> Option<usize> {
+        let header = head.len();
+        let received = crate::sys::readv(
+            fd,
+            &mut [ReadVec::new(head), ReadVec::new(self.rest().slots())],
+        );
+        self.count(received.map(|total| total.saturating_sub(header)));
+        received
     }
 
     /// recv(2) into the room, as [`Fill::recv`].

@@ -167,7 +167,7 @@ aliases are never uninstalled.
   enabled-only destruction. Disabled destructors and zero-timeout starts do not
   dereference `timer_pp`. Positive allocation failure leaves enabled = true with
   a null pointer; existing non-null timers are not re-armed.
-- `System::sleep` is Rust (`crates/hooks/src/sleep.rs`, upstream symbol): the
+- `System::sleep` is Rust (`crates/hooks/src/sleep.rs`): the
   minimum keeps NaN/Inf/non-positive comparisons and the get-current/`yield_ex`/
   is-canceled order; canceled is `yield_ex` failing with `SW_ERROR_CO_CANCELED`.
 
