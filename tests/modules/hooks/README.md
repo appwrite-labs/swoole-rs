@@ -101,7 +101,7 @@ export maps them to the original statuses. Duration conversions are unchanged.
 (`coroutine_gethostbyname.<name>`, upstream's names, inputs and expected values):
 `System::gethostbyname` is `resolve::system_gethostbyname` and the DNS cache calls
 (`set_dns_cache_capacity`, `_expire`, `clear_dns_cache`, `get_dns_cache_hit_ratio`) are
-crates/hooks' `dns_cache.rs` under their upstream symbols. `resolve_cache`,
+crates/hooks' `dns_cache.rs` (`swr_v1_hook_dns_cache_*`). `resolve_cache`,
 `resolve_cache_inet4_and_inet6` and `dns_expire` look up public names (www.baidu.com,
 ipv6.sjtu.edu.cn, www.gov.cn), so `hooks-system-rust` excludes them as it does `dns.lookup1`
 (external DNS and network). `impl_async` has no case: `gethostbyname_impl_with_async` returns a
@@ -314,8 +314,8 @@ adds and the node-pointer `del` and `delay`, with each lambda's captures as the
 node's data; `SwooleTG.timer` is crates/corebase's `thread_timer`. Upstream's shared-memory
 counters become `Cell`s (the callbacks run in the case's process), and its
 `uint64_t` elapsed-time subtractions wrap as they do in C++. The ssl cases call
-`swoole_ssl_*` and `SSLContext::create` under their upstream symbols and build the
-context through `owner_new` and its string slots' `set_shared`;
+crates/tls's `swoole_ssl_init`, `swr_v1_tls_destroy`, `swr_v1_tls_error` and
+`ssl_context_create` (`SSLContext::create`) by path, and build the context through `owner_new` and its string slots' `set_shared`;
 `ERR_put_error` is network_socket.rs's.
 
 | Upstream TEST | Rust case |

@@ -249,8 +249,7 @@ extern "C" fn immediate(signo: c_int) {
 /// `void swoole_signal_dispatch()`: runs `swoole_signal_callback` for each signal
 /// the deferred handler marked, in signal order, clearing each mark after its
 /// callback.
-#[unsafe(export_name = "_Z22swoole_signal_dispatchv")]
-pub extern "C" fn swoole_signal_dispatch() {
+pub fn swoole_signal_dispatch() {
     if !PENDING.load(Relaxed) {
         return;
     }

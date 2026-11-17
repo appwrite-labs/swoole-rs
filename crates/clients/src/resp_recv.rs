@@ -1,6 +1,6 @@
 //! `swoole::redis::recv_packet`: reads a connection until a whole RESP command is
 //! buffered, then hands it to `onPackage`. [`recv_packet`] is the loop over a
-//! [`RespConnection`], which the ports crate runs over the server's own records.
+//! [`RespConnection`], which crates/ports runs over the server's own records.
 use swoole_rs_corebase::{log, set_errno};
 pub use swoole_rs_protocols::RespRequest;
 use swoole_rs_protocols::{RespAction, resp_extend_size, resp_receive_range};

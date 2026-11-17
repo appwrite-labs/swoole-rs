@@ -235,11 +235,8 @@ fn entry(ops: &Loop<'_>, index: usize) {
                 events & libc::EPOLLOUT as u32 != 0,
                 events & (libc::EPOLLRDHUP | libc::EPOLLERR | libc::EPOLLHUP) as u32 != 0,
             );
-            // The token is a pointer stored in a u64.
-            let token = event.u64.c_cast::<usize>() as *mut crate::SocketRecord;
-            // SAFETY: epoll's token is a registered socket: live until an unsafe free,
-            // which answers for the registration and the events it leaves.
-            let Some(socket) = (unsafe { Socket::from_ptr(token) }) else {
+            // The token is the registered descriptor.
+            let Some(socket) = registered_at(ops, event.u64.c_cast::<c_int>()) else {
                 return;
             };
             (socket, -1, mask)
@@ -293,17 +290,10 @@ fn ready(ops: &Loop<'_>, socket: Socket<'static>, fd: c_int, mask: u32) {
     target_os = "dragonfly"
 ))]
 fn kqueue(ops: &Loop<'_>, event: &libc::kevent) {
-    let (udata, filter) = (
-        event.udata.cast::<crate::SocketRecord>(),
-        c_int::from(event.filter),
-    );
-    if udata.is_null() {
-        return;
-    }
+    let filter = c_int::from(event.filter);
     if filter == c_int::from(libc::EVFILT_READ) || filter == c_int::from(libc::EVFILT_WRITE) {
-        // SAFETY: a read or write entry's udata is its registered socket: live until an
-        // unsafe free, which answers for the registration and the events it leaves.
-        let Some(socket) = (unsafe { Socket::from_ptr(udata) }) else {
+        // A read or write entry's ident is its registered descriptor.
+        let Some(socket) = registered_at(ops, c_int::try_from(event.ident).unwrap_or(-1)) else {
             return;
         };
         let fd_type = prepare(ops, socket, -1, false);
@@ -489,6 +479,11 @@ fn prepare(ops: &Loop<'_>, socket: Socket<'static>, fd: c_int, hangup: bool) -> 
 }
 
 /// Whether `socket` is still registered (`!socket->removed`).
+/// The socket the reactor's registry holds for `fd`, the kernel entry's token.
+fn registered_at(ops: &Loop<'_>, fd: c_int) -> Option<Socket<'static>> {
+    ops.reactor.with(|state| state.registry.get(fd))
+}
+
 fn registered(socket: Socket<'_>) -> bool {
     socket.read(|record| !record.removed)
 }
@@ -604,7 +599,6 @@ mod tests {
                 crate::Events::NONE
             };
         let mut socket = crate::SocketRecord::with_fd(fds[0], 5);
-        let token: *mut std::ffi::c_void = (&raw mut socket).cast();
         unsafe {
             assert!(crate::reactor_state::tests::record(
                 state.owner,
@@ -621,7 +615,6 @@ mod tests {
                         descriptor,
                         crate::ChangeOp::Add,
                         fds[0],
-                        token,
                         events
                     )
                     .ok(),
@@ -631,7 +624,7 @@ mod tests {
             #[cfg(not(target_os = "linux"))]
             if kind == 2 {
                 assert_eq!(
-                    crate::registration::kqueue_add(descriptor, fds[0], token, events),
+                    crate::registration::kqueue_add(descriptor, fds[0], events),
                     Ok(())
                 );
             }

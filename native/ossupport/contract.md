@@ -63,10 +63,10 @@ removed when freed. Warnings and the last error follow upstream's order. Upstrea
 
 ## Process and thread identity
 
-`system.rs` is upstream's `src/os/base.cc`. Under their
-upstream symbols: the root check, `swoole_daemon` (Darwin detaches, forks and
+`system.rs` is upstream's `src/os/base.cc`. `swoole_daemon` is a Rust function its
+callers call by path (Darwin detaches, forks and
 calls `setsid` itself; elsewhere `daemon(3)` and the after-fork hooks, through corebase's
-`swoole_fork` and `swoole_call_hook`), the parent-death
+`swoole_fork` and `swoole_call_hook`). Under their upstream symbols: the root check, the parent-death
 signal, the native thread id and thread names (`swoole_get_cpu_affinity` had no
 caller: Rust reads a process's CPUs with `CpuSet::get_process`). `swoole_set_isolation` is Rust's `set_isolation`, which the server's workers call;
 it logs each failed step as it happens, errno intact.

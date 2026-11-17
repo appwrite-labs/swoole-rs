@@ -293,7 +293,7 @@ pub(super) fn socket_ssl_set_host_name(_: Socket<'_>, _: &CStr) -> bool {
     log("ssl ctrl 55");
     true
 }
-// crates/protocols-ffi's, which the hybrid links.
+// owned_proxy's, which the hybrid registers.
 fn socks5_admit(user: usize, password: usize) -> c_int {
     if user != 0 && password != 0 { 2 } else { 1 }
 }

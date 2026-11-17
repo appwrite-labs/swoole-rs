@@ -23,7 +23,7 @@ use crate::event_worker::native::{
 };
 use crate::reactor_entry as entry;
 use crate::reactor_ops::ReactorContext;
-use crate::{ServerState, factory, server_methods as methods, view};
+use crate::{ServerState, SharedServer, factory, server_methods as methods, view};
 
 /// `SW_EVENT_READ`, `Server::THREAD_REACTOR`, `SW_EVENT_WRITE` and `SW_FD_PIPE`.
 const THREAD_REACTOR: u8 = 2;
@@ -153,18 +153,17 @@ impl swoole_rs_reactor::event_api::Deferred for CloseConnections {
     fn dispose(self) {}
 }
 
-/// What a reactor thread Rust starts runs: `ServerState::start_thread` calls it with
-/// the live server, on its new reactor thread.
-fn reactor_thread_entry(server: view::Server<'_>, id: u64) {
+/// What a reactor thread Rust starts runs, on its new reactor thread, through the
+/// share the thread holds: it drops as the thread ends, before the master's join returns.
+fn reactor_thread_entry(server: view::Server<'_>, id: u16) {
     swoole_rs_corebase::swoole_thread_init(false);
-    let id = c_int::try_from(id).unwrap_or_default();
-    main_loop(server, u16::try_from(id).unwrap_or_default());
+    main_loop(server, id);
     swoole_rs_corebase::swoole_thread_clean(false);
 }
 
-/// What the heartbeat thread Rust starts runs, its signals blocked. Called with the
-/// live server, as [`reactor_thread_entry`] is.
-fn heartbeat_main(server: view::Server<'_>, _: u64) {
+/// What the heartbeat thread Rust starts runs, its signals blocked, through its
+/// share as [`reactor_thread_entry`] does.
+fn heartbeat_main(server: view::Server<'_>) {
     // Else a process-directed signal (the shutdown's SIGTERM) can land here rather
     // than on the master's signalfd, and its default action kills the master.
     swoole_rs_corebase::signal_block_all();
@@ -212,7 +211,10 @@ pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> bool {
         reactor.handle().set_id(id);
         swoole_rs_corebase::set_thread(swoole_rs_corebase::thread_kind(), id);
         for id in 0..config.reactor_num.get() {
-            ServerState::start_thread(serv, reactor_thread_entry, u64::from(id));
+            let share = SharedServer::of(serv);
+            ServerState::start_thread(serv, id.into(), move || {
+                reactor_thread_entry(share.view(), id);
+            });
         }
     }
     if config.heartbeat_check_interval.get() >= 1 {
@@ -220,7 +222,8 @@ pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> bool {
             let timer = heartbeat_timer(state, reactor);
             config.heartbeat_timer.store(timer);
         } else {
-            ServerState::start_thread(serv, heartbeat_main, HEARTBEAT);
+            let share = SharedServer::of(serv);
+            ServerState::start_thread(serv, HEARTBEAT, move || heartbeat_main(share.view()));
         }
     }
     methods::start_master_thread(serv, reactor)

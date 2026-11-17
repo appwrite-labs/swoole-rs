@@ -38,7 +38,7 @@ pub mod factory;
 mod fixture;
 // Linked for the upstream symbols the hybrid's modules call (Cargo.toml).
 #[cfg(test)]
-use {swoole_rs_hooks as _, swoole_rs_protocols_ffi as _};
+use swoole_rs_hooks as _;
 mod hybrid;
 #[cfg(any(test, feature = "upstream-symbols"))]
 mod json;
@@ -49,6 +49,7 @@ mod master_ops;
 mod objects;
 #[cfg(feature = "upstream-symbols")]
 mod pool_native;
+pub mod process_worker;
 #[cfg(feature = "upstream-symbols")]
 pub use pool_native::process_pool_native;
 pub mod port_config;

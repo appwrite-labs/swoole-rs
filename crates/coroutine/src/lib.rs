@@ -23,9 +23,10 @@ mod facade;
 #[cfg(feature = "upstream-symbols")]
 pub use facade::{
     Host, activate, cancel, deactivate, print_socket_bound_error, set_host, spawn,
-    swoole_coroutine_count, swr_v1_coroutine_create, yield_ex, yield_resumed, yield_timed,
-    yield_timed_armed,
+    swr_v1_coroutine_create, yield_ex, yield_resumed, yield_timed, yield_timed_armed,
 };
+#[cfg(feature = "upstream-symbols")]
+pub use facade::{print_list, swoole_coroutine_iterator_each, swoole_coroutine_iterator_reset};
 mod live;
 pub use live::*;
 mod scheduler;

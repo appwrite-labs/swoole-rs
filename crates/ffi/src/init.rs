@@ -76,15 +76,16 @@ pub(crate) extern "C-unwind" fn swoole_init() {
         swoole_rs_ports::framing_recv::FRAMING,
         swoole_rs_hooks::resolve::dispatch_client,
         swoole_rs_clients::client::Socks5 {
-            admit: |user, password| swoole_rs_protocols_ffi::admit(user, password),
+            admit: |user, password| swoole_rs_clients::owned_proxy::admit(user, password),
             negotiate: |proxy| {
-                swoole_rs_protocols_ffi::pack_negotiate_request(
-                    &swoole_rs_protocols_ffi::Socks5Proxy::new(proxy),
+                swoole_rs_clients::owned_proxy::pack_negotiate_request(
+                    &swoole_rs_clients::owned_proxy::Socks5Proxy::new(proxy),
                 )
+                .map_or(-1, usize::cast_signed)
             },
             handshake: |proxy, reply| {
-                swoole_rs_protocols_ffi::socks5_step(
-                    &swoole_rs_protocols_ffi::Socks5Proxy::new(proxy),
+                swoole_rs_clients::owned_proxy::socks5_step(
+                    &swoole_rs_clients::owned_proxy::Socks5Proxy::new(proxy),
                     reply,
                 )
             },

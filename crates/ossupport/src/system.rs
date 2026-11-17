@@ -99,9 +99,8 @@ const FORK_PRECHECK: c_int = 8;
 /// `int swoole_daemon(int nochdir, int noclose)`. Darwin's `daemon(3)` is
 /// deprecated, so it detaches, forks and calls `setsid` itself.
 #[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
-#[unsafe(export_name = "_Z13swoole_daemonii")]
 #[must_use]
-pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
+pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
     if !daemon_detach(nochdir != 0, noclose != 0) {
         return -1;
     }
@@ -126,9 +125,8 @@ pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
 /// after-fork hooks, since the pid changed (PHP 8.5 refreshes its memory
 /// manager after a fork, and `daemon(3)` forks behind its back).
 #[cfg(all(feature = "upstream-symbols", not(target_vendor = "apple")))]
-#[unsafe(export_name = "_Z13swoole_daemonii")]
 #[must_use]
-pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
+pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
     // Upstream's fork precheck; it forks nothing (-1 before `swoole_init`).
     if swoole_rs_corebase::swoole_fork(FORK_PRECHECK) < 0 {
         return -1;

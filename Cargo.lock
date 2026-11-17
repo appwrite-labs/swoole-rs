@@ -408,6 +408,7 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-http-ffi",
  "swoole-rs-oracle",
+ "swoole-rs-protocols",
  "swoole-rs-reactor",
  "swoole-rs-timer",
  "swoole-rs-tls",
@@ -532,7 +533,6 @@ dependencies = [
  "swoole-rs-phptimer",
  "swoole-rs-ports",
  "swoole-rs-process",
- "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-sqlite",
@@ -576,7 +576,6 @@ dependencies = [
  "swoole-rs-http-ffi",
  "swoole-rs-oracle",
  "swoole-rs-ossupport",
- "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-ssh2-sys",
  "swoole-rs-timer",
@@ -771,7 +770,6 @@ dependencies = [
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-ports",
- "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-tls",
@@ -1068,7 +1066,6 @@ dependencies = [
  "swoole-rs-http2",
  "swoole-rs-locale",
  "swoole-rs-oracle",
- "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-tls",
@@ -1093,18 +1090,6 @@ dependencies = [
 [[package]]
 name = "swoole-rs-protocols"
 version = "0.1.0"
-
-[[package]]
-name = "swoole-rs-protocols-ffi"
-version = "0.1.0"
-dependencies = [
- "libc",
- "swoole-rs-clients",
- "swoole-rs-corebase",
- "swoole-rs-error",
- "swoole-rs-oracle",
- "swoole-rs-protocols",
-]
 
 [[package]]
 name = "swoole-rs-reactor"
@@ -1149,7 +1134,6 @@ dependencies = [
  "swoole-rs-oracle",
  "swoole-rs-ossupport",
  "swoole-rs-process",
- "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-timer",
  "swoole-rs-tls",

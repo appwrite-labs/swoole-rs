@@ -89,6 +89,7 @@ def changed_modules(base, consumers=True):
     names = {module_id: name for name, (module_id, _) in MODULES.items()}
     owners = [(path, names.get(module['id'])) for module in json.loads((ROOT / 'migration/modules.json').read_text())['modules']
               for path in module['owned_paths']]
+    owners.sort(key=lambda entry: len(entry[0]), reverse=True)
     owner = lambda path: next((name for owned, name in owners if name and (path == owned or path.startswith(owned))), None)
     users = dependents()
     selected = set()

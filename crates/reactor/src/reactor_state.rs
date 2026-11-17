@@ -723,7 +723,6 @@ pub(crate) mod tests {
                             descriptor,
                             crate::ChangeOp::Add,
                             fds[0],
-                            ptr::from_mut(&mut socket).cast(),
                             crate::Events::from_bits(512)
                         )
                         .ok(),
@@ -736,7 +735,6 @@ pub(crate) mod tests {
                         crate::registration::kqueue_add(
                             descriptor,
                             fds[0],
-                            ptr::from_mut(&mut socket).cast(),
                             crate::Events::from_bits(512)
                         ),
                         Ok(())

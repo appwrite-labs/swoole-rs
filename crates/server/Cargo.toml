@@ -48,6 +48,5 @@ swoole-rs-utilities = { path = "../utilities" }
 swoole-rs-tls = { path = "../tls", features = ["upstream-symbols"] }
 swoole-rs-oracle = { path = "../oracle" }
 # The upstream symbols crates/clients and crates/reactor call, which the hybrid's
-# modules reach: System::init_reactor and Socks5Proxy's packing.
+# modules reach: System::init_reactor.
 swoole-rs-hooks = { path = "../hooks", features = ["upstream-symbols"] }
-swoole-rs-protocols-ffi = { path = "../protocols-ffi" }

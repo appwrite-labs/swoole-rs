@@ -320,7 +320,8 @@ impl PortConfig {
         self.socket.get()
     }
     /// A new port's settings.
-    pub(crate) fn boxed(buffer_size: c_int) -> Box<Self> {
+    #[must_use]
+    pub fn boxed(buffer_size: c_int) -> Box<Self> {
         Box::new(Self {
             object_id: 0,
             backlog: Setting::new(512),

@@ -18,7 +18,6 @@ swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-error = { path = "../error" }
 swoole-rs-clients = { path = "../clients" }
 swoole-rs-tls = { path = "../tls" }
-swoole-rs-protocols-ffi = { path = "../protocols-ffi" }
 swoole-rs-websocket = { path = "../websocket" }
 swoole-rs-buffer = { path = "../buffer" }
 swoole-rs-utilities = { path = "../utilities" }

@@ -19,13 +19,17 @@ use super::hook::{
 use super::os::{AsyncEvent, count_handle, dispatch, new_event};
 use super::{
     _exit, coroutine_cancel, fork, last_error, swoole_coroutine_close, swoole_coroutine_create,
-    swoole_coroutine_get, swoole_coroutine_get_id, swoole_coroutine_open, swoole_coroutine_read,
-    swoole_coroutine_write, system_sleep, trampoline,
+    swoole_coroutine_get_id, swoole_coroutine_open, swoole_coroutine_read, swoole_coroutine_write,
+    system_sleep, trampoline,
 };
 use std::cell::Cell;
 use std::ffi::{c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::AtomicI32;
+use swoole_rs_coroutine::{
+    coroutine_count as swoole_coroutine_count, coroutine_get as swoole_coroutine_get, print_list,
+    swoole_coroutine_iterator_each, swoole_coroutine_iterator_reset,
+};
 
 const SW_ERROR_CO_CANNOT_CANCEL: c_int = 10015;
 const SW_FORK_PRECHECK: c_int = 8;
@@ -77,14 +81,6 @@ unsafe extern "C-unwind" {
     fn swr_v1_coroutine_scheduler_get() -> *mut Scheduler;
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
     fn yield_ex(co: *mut Co, timeout: f64) -> bool;
-    #[link_name = "_ZN6swoole9Coroutine10print_listEv"]
-    fn print_list();
-    #[link_name = "_Z22swoole_coroutine_countv"]
-    fn swoole_coroutine_count() -> usize;
-    #[link_name = "_Z31swoole_coroutine_iterator_resetv"]
-    fn swoole_coroutine_iterator_reset();
-    #[link_name = "_Z30swoole_coroutine_iterator_eachv"]
-    fn swoole_coroutine_iterator_each() -> *mut Co;
     #[link_name = "_Z11swoole_forki"]
     fn swoole_fork(flags: c_int) -> c_int;
 
@@ -566,20 +562,18 @@ fn gdb() {
     create(|| {
         let current = get_current();
         let cid = View(current).get_cid();
-        // SAFETY: the gdb helpers, in a coroutine.
-        unsafe {
-            assert_eq!(swoole_coroutine_count(), 1);
-            assert_eq!(swoole_coroutine_get(cid), current.cast());
-            assert!(swoole_coroutine_get(999_999).is_null());
+        // The gdb helpers, in a coroutine.
+        assert_eq!(swoole_coroutine_count(), 1);
+        assert_eq!(swoole_coroutine_get(cid), current.cast());
+        assert!(swoole_coroutine_get(999_999).is_null());
 
-            swoole_coroutine_iterator_reset();
-            assert_eq!(swoole_coroutine_iterator_each(), current);
-            assert!(swoole_coroutine_iterator_each().is_null());
+        swoole_coroutine_iterator_reset();
+        assert_eq!(swoole_coroutine_iterator_each(), current.cast());
+        assert!(swoole_coroutine_iterator_each().is_null());
 
-            swoole_coroutine_iterator_reset();
-            assert_eq!(swoole_coroutine_iterator_each(), current);
-            print_list();
-        }
+        swoole_coroutine_iterator_reset();
+        assert_eq!(swoole_coroutine_iterator_each(), current.cast());
+        print_list();
     });
 }
 

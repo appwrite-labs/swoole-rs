@@ -28,7 +28,6 @@ on:
       - crates/memory/**
       - crates/ossupport/**
       - crates/process/**
-      - crates/protocols-ffi/**
       - crates/reactor/**
       - crates/server/**
       - crates/timer/**
@@ -57,7 +56,7 @@ jobs:
           - name: leaf
             packages: >-
               -p swoole-rs-base64 -p swoole-rs-crc32 -p swoole-rs-error -p swoole-rs-error-ffi
-              -p swoole-rs-framing -p swoole-rs-http2 -p swoole-rs-httpbindings -p swoole-rs-protocols-ffi
+              -p swoole-rs-framing -p swoole-rs-http2 -p swoole-rs-httpbindings
           - name: core
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: >-

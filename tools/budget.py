@@ -45,7 +45,8 @@ There is no baseline file: every PR that removes an item would edit it, so
 parallel PRs conflicted on it. A crate new since REF counts from zero once the
 workspace total rises, so code may move into a new crate but not arrive with one; a
 new crate with no unsafe, counted or in an extern block or attribute, must forbid
-`unsafe_code`.
+`unsafe_code`. Likewise a crate may rise by what crates deleted since REF held, while
+the workspace total doesn't rise: a fold moves a crate's items into its callers (#4512).
 
 Test code is not counted: a `#[cfg(test)]` inline module, a file a `#[cfg(test)] mod`
 loads, and anything under a tests/ or benches/ directory.
@@ -219,6 +220,21 @@ def boundary_moves(rises, current, base):
     return {c: (n, was) for c, (n, was) in rises.items() if not covered(c, n, was)}
 
 
+def departures(rises, current, base):
+    """`rises` less what the crates deleted since the base held, while the workspace
+    total doesn't rise."""
+    gone = sum(n for c, n in base.items() if c not in current)
+    if not gone or sum(current.values()) > sum(base.values()):
+        return rises
+    left = {}
+    for crate, (n, was) in sorted(rises.items()):
+        if n - was <= gone:
+            gone -= n - was
+        else:
+            left[crate] = (n, was)
+    return left
+
+
 def arrivals(current, base):
     """{crate: (current, 0)} for crates new since the base, when the workspace total
     rose: what a new crate holds must have left the crates that were there."""
@@ -261,7 +277,7 @@ def main():
         if kind == 'unforbidden':
             rises |= must_forbid(current, base[kind])
         else:
-            rises |= arrivals(crates, base[kind])
+            rises = departures(rises, crates, base[kind]) | arrivals(crates, base[kind])
         if kind == 'clines' and rises and (reasons := stays_c(os.environ.get('PR_BODY', ''))):
             print(f'clines may rise: the PR says it stays C ({", ".join(reasons)})', file=sys.stderr)
             rises = {}

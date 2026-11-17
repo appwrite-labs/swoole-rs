@@ -21,11 +21,10 @@ struct Entry {
 /// pid -> (native `Worker*`, category). Read and written through `&`, each call
 /// under its own lock: the master writes it, and its reactor threads look workers
 /// up concurrently, so no caller holds `&mut` to it.
-#[derive(Default)]
-pub struct WorkerRegistry {
+pub struct WorkerRegistry<T = *mut c_void> {
     workers: RwLock<HashMap<c_int, Entry>>,
     detached: RwLock<HashSet<c_int>>,
-    pending_users: RwLock<Vec<*mut c_void>>,
+    pending_users: RwLock<Vec<T>>,
     /// How many `pending_users` holds, which every worker lookup reads.
     pending_count: AtomicUsize,
 }
@@ -40,7 +39,18 @@ fn write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
     lock.write().unwrap_or_else(PoisonError::into_inner)
 }
 
-impl WorkerRegistry {
+impl<T> Default for WorkerRegistry<T> {
+    fn default() -> Self {
+        Self {
+            workers: RwLock::default(),
+            detached: RwLock::default(),
+            pending_users: RwLock::default(),
+            pending_count: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl<T> WorkerRegistry<T> {
     #[must_use]
     pub fn pids(&self, category: c_int) -> Vec<c_int> {
         read(&self.workers)
@@ -98,7 +108,7 @@ impl WorkerRegistry {
 
     /// Append one pending user worker before Server creation, preserving insertion
     /// order. The returned index is its original pre-start worker ID.
-    pub fn pending_add(&self, worker: *mut c_void) -> usize {
+    pub fn pending_add(&self, worker: T) -> usize {
         let mut pending = write(&self.pending_users);
         pending.push(worker);
         self.pending_count.store(pending.len(), Ordering::Release);
@@ -113,7 +123,7 @@ impl WorkerRegistry {
     }
 
     /// The pending user workers, in the order they were added.
-    pub fn pending(&self) -> RwLockReadGuard<'_, Vec<*mut c_void>> {
+    pub fn pending(&self) -> RwLockReadGuard<'_, Vec<T>> {
         read(&self.pending_users)
     }
 
@@ -150,7 +160,7 @@ mod tests {
 
     #[test]
     fn registers_looks_up_and_unregisters() {
-        let reg = WorkerRegistry::default();
+        let reg: WorkerRegistry = WorkerRegistry::default();
         let mut worker_a = 0u8;
         let a = std::ptr::from_mut(&mut worker_a).cast::<c_void>();
         reg.register(100, a, CATEGORY_EVENT);
@@ -193,7 +203,7 @@ mod tests {
 
     #[test]
     fn terminate_hits_only_its_category_kill_all_then_wait_all() {
-        let reg = WorkerRegistry::default();
+        let reg: WorkerRegistry = WorkerRegistry::default();
         let mut w = 0u8;
         let p = std::ptr::from_mut(&mut w).cast::<c_void>();
         reg.register(10, p, CATEGORY_EVENT);
@@ -211,7 +221,7 @@ mod tests {
 
     #[test]
     fn terminate_warns_on_wait_failure() {
-        let reg = WorkerRegistry::default();
+        let reg: WorkerRegistry = WorkerRegistry::default();
         let mut w = 0u8;
         let p = std::ptr::from_mut(&mut w).cast::<c_void>();
         WARNED.with(|w| w.borrow_mut().clear());
@@ -228,7 +238,7 @@ mod tests {
 
     #[test]
     fn detached_workers_leave_the_lookup_and_are_reaped_once() {
-        let reg = WorkerRegistry::default();
+        let reg: WorkerRegistry = WorkerRegistry::default();
         let mut w = 0u8;
         let p = std::ptr::from_mut(&mut w).cast::<c_void>();
         reg.register(40, p, CATEGORY_EVENT);
@@ -241,7 +251,7 @@ mod tests {
 
     #[test]
     fn pending_workers_keep_their_order_and_indexes() {
-        let reg = WorkerRegistry::default();
+        let reg: WorkerRegistry = WorkerRegistry::default();
         let (a, b) = (
             core::ptr::without_provenance_mut(1),
             core::ptr::without_provenance_mut(2),
@@ -254,7 +264,7 @@ mod tests {
 
     #[test]
     fn user_lookup_cannot_return_an_event_worker_index_entry() {
-        let registry = WorkerRegistry::default();
+        let registry: WorkerRegistry = WorkerRegistry::default();
         registry.register(30, core::ptr::without_provenance_mut(11), 1);
         registry.register(40, core::ptr::without_provenance_mut(13), CATEGORY_USER);
         assert!(registry.lookup_category(30, CATEGORY_USER).is_null());
