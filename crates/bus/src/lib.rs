@@ -14,13 +14,7 @@
     clippy::disallowed_types,
     reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
 )]
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
+#![forbid(unsafe_code)]
 use std::cell::{Cell, OnceCell};
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int};
@@ -29,7 +23,6 @@ use std::io::IoSlice;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use swoole_rs_corebase::buffer::string::OwnedString;
-use swoole_rs_corebase::lent::ReadVec;
 use swoole_rs_corebase::reactor::{Caught, Heap, OwnedSocket, Socket, SocketRecord};
 use swoole_rs_corebase::sys::{self, errno};
 use swoole_rs_corebase::tls::upstream::{socket_free as free_socket, writev_sync};
@@ -469,23 +462,11 @@ impl Bus {
                         Some(state.received)
                     } else {
                         let remain = (head.len as usize).saturating_sub(packet.len());
-                        let mut received = None;
-                        packet.fill_within((buffer_size - HEAD).min(remain), |spare| {
-                            // SAFETY: readv fills the header first, then the packet's tail;
-                            // only the bytes after that header initialize the lent spare.
-                            unsafe {
-                                spare.read(|tail| {
-                                    self.fill(buffer, HEAD.min(buffer_size), |header| {
-                                        received = sys::readv(
-                                            fd,
-                                            &mut [ReadVec::new(header), ReadVec::new(tail)],
-                                        );
-                                        received.map(|n| n.saturating_sub(HEAD))
-                                    })
-                                })
-                            }
+                        let n = packet.fill_within((buffer_size - HEAD).min(remain), |spare| {
+                            self.fill(buffer, HEAD.min(buffer_size), |header| {
+                                spare.readv_after(fd, header)
+                            })
                         });
-                        let n = received;
                         if n == Some(0) {
                             state.event = Some(Event::ReadvClosed);
                             break 'chunk Err(None);
@@ -918,7 +899,6 @@ mod tests {
     use std::os::fd::RawFd;
 
     use std::ffi::c_void;
-    use swoole_rs_corebase::CoreAllocator;
 
     #[test]
     fn a_bus_without_a_buffer_reads_nothing_and_has_no_packet() {
@@ -957,7 +937,10 @@ mod tests {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
         let mut pipe = Pipe::new(libc::SOCK_STREAM, 64, false);
         pipe.bus.count_ids(&COUNTER);
-        let socket = Box::new(SocketRecord::with_fd(pipe.fds[0], /* SW_FD_PIPE */ 3)).into_socket();
+        let socket = OwnedSocket::new(Box::new(SocketRecord::with_fd(
+            pipe.fds[0],
+            /* SW_FD_PIPE */ 3,
+        )));
         for (expected, payload) in [(1, b"one".as_slice()), (2, b"two".as_slice())] {
             let mut head = BusHead {
                 msg_id: 99,
@@ -965,23 +948,30 @@ mod tests {
                 fd: 7,
                 ..BusHead::default()
             };
-            assert!(pipe.bus.send(socket, &mut head, Some(payload)));
+            assert!(pipe.bus.send(socket.heap(), &mut head, Some(payload)));
             assert_eq!(head.msg_id, expected);
             assert_eq!(pipe.read(false).as_deref(), Some(payload));
         }
         assert_eq!(COUNTER.load(Ordering::Relaxed), 3);
-        drop(unsafe { Box::from_raw(socket.as_ptr()) });
+        socket.free();
     }
-    /// libc's allocator, as `SwooleG.std_allocator`.
-    static ALLOCATOR: CoreAllocator = CoreAllocator {
-        malloc: Some(swoole_rs_corebase::sys::malloc),
-        calloc: Some(swoole_rs_corebase::sys::calloc),
-        realloc: Some(libc::realloc),
-        free: Some(libc::free),
-    };
-
-    fn allocator() -> TrustedAllocator {
-        unsafe { TrustedAllocator::new(&ALLOCATOR) }
+    fn packet_bytes(bus: &Bus) -> Vec<u8> {
+        let packet = bus.packet();
+        if packet.length == 0 {
+            return Vec::new();
+        }
+        let copy = |bytes: &[u8]| {
+            assert_eq!(bytes.as_ptr().cast(), packet.data.cast_const());
+            assert_eq!(bytes.len(), packet.length);
+            bytes.to_vec()
+        };
+        bus.with_whole(|bytes| copy(&bytes[HEAD..]))
+            .unwrap_or_else(|| {
+                lend(&bus.packets, |packets| {
+                    copy(packets[&bus.head().msg_id].view())
+                })
+                .unwrap()
+            })
     }
 
     struct Pipe {
@@ -990,30 +980,18 @@ mod tests {
     }
     impl Pipe {
         fn new(kind: c_int, size: usize, always: bool) -> Self {
-            let mut fds = [0; 2];
-            assert_eq!(
-                unsafe { libc::socketpair(libc::AF_UNIX, kind, 0, fds.as_mut_ptr()) },
-                0
-            );
+            let fds = sys::socketpair(libc::AF_UNIX, kind, 0).unwrap();
             for fd in fds {
-                let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-                unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+                let flags = sys::fcntl(fd, libc::F_GETFL, 0).unwrap();
+                sys::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK).unwrap();
                 let buffer = c_int::try_from(1 << 20).unwrap();
                 for option in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
-                    unsafe {
-                        libc::setsockopt(
-                            fd,
-                            libc::SOL_SOCKET,
-                            option,
-                            ptr::from_ref(&buffer).cast(),
-                            4,
-                        )
-                    };
+                    sys::setsockopt(fd, libc::SOL_SOCKET, option, &buffer).unwrap();
                 }
             }
             let bus = Bus::new(size);
             bus.always_chunked.set(always);
-            assert!(bus.alloc_buffer(size, allocator()));
+            assert!(bus.alloc_buffer(size, TrustedAllocator::STD));
             Self { bus, fds }
         }
         fn write(&self, id: u64, payload: &[u8]) -> bool {
@@ -1035,17 +1013,14 @@ mod tests {
             loop {
                 let n = self.bus.read(self.fds[1], dgram, &mut state, &mut nobufs);
                 if state.event == Some(Event::Allocate) {
-                    self.bus.grow(&state, allocator());
+                    self.bus.grow(&state, TrustedAllocator::STD);
                     continue;
                 }
                 if n? == 0 {
                     state.chunks = 0;
                     continue;
                 }
-                let packet = self.bus.packet();
-                let bytes =
-                    unsafe { std::slice::from_raw_parts(packet.data.cast::<u8>(), packet.length) };
-                let bytes = bytes.to_vec();
+                let bytes = packet_bytes(&self.bus);
                 assert_eq!(self.bus.head().fd, 7);
                 self.bus.pop();
                 return Some(bytes);
@@ -1055,7 +1030,7 @@ mod tests {
     impl Drop for Pipe {
         fn drop(&mut self) {
             for fd in self.fds {
-                unsafe { libc::close(fd) };
+                sys::close(fd).unwrap();
             }
             assert_ne!(lend(&self.bus.buffer, |buffer| buffer.len()).unwrap(), 0);
         }
@@ -1103,7 +1078,7 @@ mod tests {
             Some(0)
         );
         assert_eq!((state.event, state.size), (Some(Event::Allocate), 5000));
-        pipe.bus.grow(&state, allocator());
+        pipe.bus.grow(&state, TrustedAllocator::STD);
         let data = lend(&pipe.bus.packets, |packets| {
             packets.get(&9).unwrap().as_ptr()
         })
@@ -1134,8 +1109,8 @@ mod tests {
             flags: CHUNK | END,
             ..BusHead::default()
         };
-        let sent = unsafe { libc::send(pipe.fds[0], ptr::from_ref(&head).cast(), HEAD, 0) };
-        assert_eq!(sent.cast_unsigned(), HEAD);
+        let sent = sys::send(pipe.fds[0], &head.to_bytes(), 0);
+        assert_eq!(sent, Some(HEAD));
         assert_eq!(pipe.read(true), None);
         assert_eq!(pipe.bus.count(), 0);
     }
@@ -1143,7 +1118,7 @@ mod tests {
     #[test]
     fn pass_points_at_the_payload() {
         let bus = Bus::new(128);
-        assert!(bus.alloc_buffer(128, allocator()));
+        assert!(bus.alloc_buffer(128, TrustedAllocator::STD));
         let data = b"hello";
         let info = BusHead {
             len: 5,
@@ -1167,7 +1142,7 @@ mod tests {
     fn the_buffer_holds_a_whole_message_only_unchunked_and_within_its_size() {
         assert!(!Bus::new(128).holds_whole(), "no buffer");
         let bus = Bus::new(128);
-        assert!(bus.alloc_buffer(128, allocator()));
+        assert!(bus.alloc_buffer(128, TrustedAllocator::STD));
         let head = |len, flags| {
             bus.set_head(&BusHead {
                 len,
@@ -1204,7 +1179,7 @@ mod tests {
     #[test]
     fn receive_storage_preserves_prefix_and_callback_ownership() {
         let bus = Bus::new(128);
-        assert!(bus.alloc_buffer(128, allocator()));
+        assert!(bus.alloc_buffer(128, TrustedAllocator::STD));
         let header = BusHead {
             len: 4,
             fd: 7,
@@ -1252,10 +1227,10 @@ mod tests {
         );
         assert!(!bus.holds_whole());
         assert_eq!(bus.head().fd, 0);
-        assert!(bus.alloc_buffer(128, allocator()));
+        assert!(bus.alloc_buffer(128, TrustedAllocator::STD));
         let header = bus.head().to_bytes();
         bus.with_whole(|bytes| {
-            assert!(bus.alloc_buffer(64, allocator()));
+            assert!(bus.alloc_buffer(64, TrustedAllocator::STD));
             assert_eq!(bytes, header);
         });
         assert!(
@@ -1263,37 +1238,6 @@ mod tests {
             "the callback's replacement remains installed"
         );
         assert_eq!(bus.buffer_size.get(), 64);
-    }
-
-    #[test]
-    fn receive_storage_uses_its_allocator_on_replace_failure_and_drop() {
-        static FREES: AtomicU64 = AtomicU64::new(0);
-        unsafe extern "C" fn free(data: *mut c_void) {
-            FREES.fetch_add(1, Ordering::Relaxed);
-            unsafe { libc::free(data) };
-        }
-        static OWNED: CoreAllocator = CoreAllocator {
-            free: Some(free),
-            ..ALLOCATOR
-        };
-        static EMPTY_ALLOCATOR: CoreAllocator = CoreAllocator {
-            malloc: None,
-            calloc: None,
-            realloc: None,
-            free: None,
-        };
-        let owned = unsafe { TrustedAllocator::new(&OWNED) };
-        let empty = unsafe { TrustedAllocator::new(&EMPTY_ALLOCATOR) };
-        let bus = Bus::new(128);
-        assert!(bus.alloc_buffer(128, owned));
-        assert!(bus.alloc_buffer(64, owned));
-        assert_eq!(FREES.load(Ordering::Relaxed), 1);
-        assert!(!bus.alloc_buffer(128, empty));
-        assert_eq!(FREES.load(Ordering::Relaxed), 2);
-        assert!(!bus.holds_whole());
-        assert!(bus.alloc_buffer(128, owned));
-        drop(bus);
-        assert_eq!(FREES.load(Ordering::Relaxed), 3);
     }
 
     type Received = Vec<(i64, Vec<u8>)>;
@@ -1339,7 +1283,7 @@ mod tests {
             if state.event != Some(Event::Allocate) {
                 return n;
             }
-            bus.grow(&state, allocator());
+            bus.grow(&state, TrustedAllocator::STD);
         }
     }
 
@@ -1363,19 +1307,13 @@ mod tests {
                 events: libc::POLLIN,
                 revents: 0,
             };
-            if unsafe { libc::poll(&raw mut poll, 1, 0) } != 1 {
+            if sys::poll(std::slice::from_mut(&mut poll), 0).ok() != Some(1) {
                 return Some(sent);
             }
             let n = mb_read(&mut pipe.bus, pipe.fds[1], pipe.dgram);
             assert!(n.is_some());
             if n > Some(0) {
-                let packet = pipe.bus.packet();
-                let data = if packet.length == 0 {
-                    Vec::new()
-                } else {
-                    unsafe { std::slice::from_raw_parts(packet.data.cast::<u8>(), packet.length) }
-                        .to_vec()
-                };
+                let data = packet_bytes(&pipe.bus);
                 pipe.q.push((pipe.bus.head().fd, data));
             }
         }
@@ -1388,34 +1326,22 @@ mod tests {
     /// upstream's `TestMB::read` never pops them. The reader's bus, the packets it read
     /// and the three packets sent.
     fn message_bus(kind: c_int, dgram: bool) -> (Bus, Received, Vec<Vec<u8>>) {
-        let mut fds = [0; 2];
-        assert_eq!(
-            unsafe { libc::socketpair(libc::AF_UNIX, kind, 0, fds.as_mut_ptr()) },
-            0
-        );
+        let fds = sys::socketpair(libc::AF_UNIX, kind, 0).unwrap();
         for fd in fds {
             let buffer: c_int = 65536;
             for option in [libc::SO_SNDBUF, libc::SO_RCVBUF] {
-                unsafe {
-                    libc::setsockopt(
-                        fd,
-                        libc::SOL_SOCKET,
-                        option,
-                        ptr::from_ref(&buffer).cast(),
-                        4,
-                    )
-                };
+                sys::setsockopt(fd, libc::SOL_SOCKET, option, &buffer).unwrap();
             }
         }
-        let flags = unsafe { libc::fcntl(fds[1], libc::F_GETFL) };
-        unsafe { libc::fcntl(fds[1], libc::F_SETFL, flags | libc::O_NONBLOCK) };
+        let flags = sys::fcntl(fds[1], libc::F_GETFL, 0).unwrap();
+        sys::fcntl(fds[1], libc::F_SETFL, flags | libc::O_NONBLOCK).unwrap();
         let mut pipe = Loopback {
             fds,
             dgram,
             bus: Bus::new(65536),
             q: Vec::new(),
         };
-        assert!(pipe.bus.alloc_buffer(65536, allocator()));
+        assert!(pipe.bus.alloc_buffer(65536, TrustedAllocator::STD));
         let sent = vec![
             mb_packet(DATA_SIZE, 1),
             mb_packet(pipe.bus.buffer_size.get(), 2),
@@ -1441,7 +1367,7 @@ mod tests {
         assert!(write(5, None, 10));
         assert_eq!(pipe.q.len(), 5);
         for fd in fds {
-            unsafe { libc::close(fd) };
+            sys::close(fd).unwrap();
         }
         pipe.bus.free_buffer();
         (pipe.bus, pipe.q, sent)

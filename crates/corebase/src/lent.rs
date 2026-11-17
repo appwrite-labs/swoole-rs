@@ -744,6 +744,18 @@ impl Spare<'_> {
         self.count(received)
     }
 
+    /// Reads into `head` and then the remaining room. Returns the total byte count.
+    #[inline]
+    pub fn readv_after(&mut self, fd: c_int, head: &mut [u8]) -> Option<usize> {
+        let header = head.len();
+        let received = crate::sys::readv(
+            fd,
+            &mut [ReadVec::new(head), ReadVec::new(self.rest().slots())],
+        );
+        self.count(received.map(|total| total.saturating_sub(header)));
+        received
+    }
+
     /// recv(2) into the room, as [`Fill::recv`].
     #[inline]
     pub fn recv(&mut self, fd: c_int, flags: c_int) -> Option<usize> {
