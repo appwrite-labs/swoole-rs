@@ -117,7 +117,7 @@ held by the state. The TLS session calls and `SSLContext::create` are called by 
 upstream symbols too, and the SOCKS5 codec (`owned_proxy`) through the host crates/ffi
 registers; the HTTP proxy's are
 crates/http's, called directly. The DNS lookup dispatches a resolver request to
-crates/hooks' `async::dispatch` by its upstream symbol, with crates/clients'
+corebase's thread pool through `offload::threads::dispatch`, with crates/clients'
 resolver as the pool handler. No C++ remains. The last error is corebase's, which
 Rust sets directly.
 `bind` and `sendto` are whole Rust operations; `bind`'s caller passes a callback for

@@ -107,7 +107,7 @@ extern "C" fn current() -> *mut c_void {
     record("current".into());
     core::ptr::dangling_mut()
 }
-extern "C" fn dispatch(event: &AsyncEvent) -> *mut AsyncEvent {
+fn dispatch(event: &AsyncEvent) -> *mut AsyncEvent {
     record(format!(
         "dispatch:{}:{}",
         flag(event.handler.is_some()),
