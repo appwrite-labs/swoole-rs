@@ -557,17 +557,13 @@ impl<'a> Server<'a> {
     /// Retain the native resources of a user worker for its thread's Process copy.
     #[must_use]
     pub fn user_worker_owner(self, index: usize) -> Option<crate::process_worker::ProcessWorker> {
-        self.registry().pending().get(index).cloned()
+        self.registry().pending(index).cloned()
     }
 
     /// The `index`th user worker `worker_methods::add_worker` added, or `None` past the
     /// last.
     pub(crate) fn pending_worker(self, index: usize) -> Option<Worker<'a>> {
-        let pending = self.registry().pending();
-        let worker = pending.get(index)?.get().raw();
-        // SAFETY: the append-only registry owns a share of this worker and its
-        // resources until the server drops. Releasing the read lock cannot remove it.
-        Some(unsafe { Worker::from(&*worker) })
+        Some(self.registry().pending(index)?.get())
     }
 
     /// Worker `id`'s pipe socket, its master end or its worker end, or `None` while it has none.

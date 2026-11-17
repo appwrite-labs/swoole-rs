@@ -120,7 +120,7 @@ pub fn create_event_workers(serv: view::Server<'_>) -> bool {
 #[must_use]
 pub fn create_user_workers(serv: view::Server<'_>) -> bool {
     let size = size_of::<WorkerRecord>();
-    let count = serv.registry().pending().len();
+    let count = serv.registry().pending_count();
     let workers = crate::table::Table::<WorkerRecord>::calloc(count);
     let mapped = !workers.is_null();
     // A zeroed record is an empty worker, so the array is `count` records from now on.
