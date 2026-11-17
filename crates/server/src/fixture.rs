@@ -4,6 +4,7 @@
 use core::ffi::c_int;
 use std::net::{SocketAddr, TcpListener};
 use std::os::fd::IntoRawFd;
+use swoole_rs_corebase::constants::SocketTypeCode;
 
 use swoole_rs_corebase::reactor::{Socket, SocketRecord};
 
@@ -96,7 +97,7 @@ impl LiveServer {
         // The listening fd's slot holds its port, as `Server::store_listen_socket` leaves it.
         let slot = state.hold_port(0, fd).unwrap();
         slot.set_fd(fd);
-        slot.set_socket_type(SOCK_TCP);
+        slot.set_socket_type(SocketTypeCode(SOCK_TCP));
 
         // The thread's reactor, with corebase's socket I/O and without coroutine/client handlers.
         let reactor = swoole_rs_corebase::reactor::swr_v1_reactor_new(4096, 0);

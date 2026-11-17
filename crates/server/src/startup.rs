@@ -11,6 +11,7 @@ use core::ffi::c_int;
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use swoole_rs_clients::address::assign;
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
+use swoole_rs_corebase::constants::SocketTypeCode;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_WARNING};
 use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::process::process_pool::IpcMode;
@@ -467,7 +468,7 @@ pub(crate) fn store_listen_socket(serv: view::Server<'_>) {
             continue;
         };
         conn.set_fd(fd);
-        conn.set_socket_type(port.r#type);
+        conn.set_socket_type(SocketTypeCode(port.r#type));
         let mut info = conn.info();
         info.kind = port.r#type;
         let host = port.host.bytes_with_nul();
@@ -927,13 +928,13 @@ mod tests {
         let conn = live.state().tables_ref().connection_at(fd).unwrap();
         conn.set_fd(0);
         conn.clear_object();
-        conn.set_socket_type(0);
+        conn.set_socket_type(SocketTypeCode(0));
         store_listen_socket(live.server());
         let port = (&raw const *live.port()).addr();
         assert_eq!(conn.fd(), fd, "the slot's fd");
         let held = conn.port().map_or(0, |held| held.raw().addr());
         assert_eq!(held, port, "the slot holds its port");
-        assert_eq!(conn.socket_type(), 1, "TCP");
+        assert_eq!(conn.socket_type().0, 1, "TCP");
         assert_eq!(conn.info().kind, 1, "its address");
         assert_eq!(
             live.port_socket().read(|s| s.object).addr(),

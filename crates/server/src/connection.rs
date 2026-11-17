@@ -4,7 +4,9 @@ use core::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::reactor::Events;
 
-use swoole_rs_corebase::constants::{SW_ACCEPT_RETRY_TIME, SW_SEND_BUFFER_SIZE, SocketType};
+use swoole_rs_corebase::constants::{
+    SW_ACCEPT_RETRY_TIME, SW_SEND_BUFFER_SIZE, SocketType, SocketTypeCode,
+};
 use swoole_rs_corebase::reactor::{Event, Heap, OwnedSocket};
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode as E;
@@ -290,11 +292,11 @@ fn init(
     conn.set_connect_time(now);
     conn.closed().store(0, Relaxed);
     conn.set_worker_id(-1);
-    conn.set_socket_type(ls.r#type);
+    conn.set_socket_type(SocketTypeCode(ls.r#type));
     // The slot is empty: `reset_connection` cleared it, and each close takes its socket.
     conn.hold_socket(sock);
     conn.set_ssl(ssl);
-    conn.info().kind = conn.socket_type();
+    conn.info().kind = conn.socket_type().0;
     conn.set_local_port(local_port);
     conn.set_local_addr_index(local_addr_index);
     // Last: a reactor thread that sees the slot active (`is_active`) reads the fields

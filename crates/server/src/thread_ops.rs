@@ -9,6 +9,7 @@ use crate::records::{Connection, Lookup};
 use core::ffi::{c_int, c_long};
 use core::ptr;
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_corebase::constants::SocketTypeCode;
 use swoole_rs_corebase::reactor::Events;
 
 use crate::objects::worker_pipe;
@@ -85,7 +86,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             // The connection table's slot for the listening fd, holding its port.
             let serv_sock = state.hold_port(index, fd)?;
             serv_sock.set_fd(fd);
-            serv_sock.set_socket_type(port.config().r#type);
+            serv_sock.set_socket_type(SocketTypeCode(port.config().r#type));
             // The reactor thread that reads the datagram port.
             port.config()
                 .thread_id

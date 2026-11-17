@@ -797,7 +797,7 @@ fn get_client_info(call: &Call) {
     }
     call.add_assoc_long(c"server_fd", i64::from(conn.server_fd()));
     call.add_assoc_long(c"socket_fd", i64::from(conn.fd()));
-    call.add_assoc_long(c"socket_type", i64::from(conn.socket_type()));
+    call.add_assoc_long(c"socket_type", i64::from(conn.socket_type().0));
     let remote_port = address_port(&conn.info());
     call.add_assoc_long(c"remote_port", i64::from(remote_port));
     with_host(&conn.info(), |ip| {
