@@ -187,8 +187,7 @@ fn idle_timer(_: Server, _: Held) {}
 
 /// `microtime()`.
 fn now() -> f64 {
-    // SAFETY: reads the clock.
-    unsafe { microtime() }
+    microtime()
 }
 
 fn sleep_forever() -> ! {

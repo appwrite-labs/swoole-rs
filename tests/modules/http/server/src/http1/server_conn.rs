@@ -1042,11 +1042,9 @@ fn pause_and_resume() {
             TcpStream::connect((TEST_HOST, port)).expect("c.connect(TEST_HOST, port->port)");
         c.write_all(PACKET).unwrap();
         let mut buf = [0; 1024];
-        // SAFETY: the clock.
-        let t1 = unsafe { microtime() };
+        let t1 = microtime();
         assert_eq!(recv(&mut c, &mut buf), (PACKET.len() + 8) as isize);
-        // SAFETY: as above.
-        let t2 = unsafe { microtime() };
+        let t2 = microtime();
         assert!(t2 - t1 >= 0.048);
         let resp = reply();
         assert_eq!(&buf[..resp.len()], &resp[..]);
