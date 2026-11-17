@@ -12,5 +12,9 @@ int swr_zend_try_facade_name(zval *, zval *name);
 uint32_t swr_zval_facade_refcount(const zval *);
 
 int swr_zend_try_facade_throw(zend_class_entry *, const char *, zend_long);
+/* zend_throw_error(NULL, "%s", message) and object_init_ex(target, ce) inside
+ * zend_try: with no frame executing, the Error either throws is a fatal error. */
+int swr_zend_try_facade_throw_error(const char *message);
+int swr_zend_try_facade_object_init(zval *target, zend_class_entry *ce);
 
 #endif

@@ -1002,30 +1002,31 @@ mod tests {
     fn lock_lockwait() {
         const TIMEOUT_1: i32 = 2;
         const TIMEOUT_2: i32 = 10;
-        // Upstream unlocks after a fixed 10 ms sleep, which races the waiter's start and its
-        // second wait on a loaded runner. Main instead sleeps 1 ms after the first timeout
-        // before unlocking; report both intervals if scheduling still delays the unlock.
-        // How soon the waiter runs after the unlock is the scheduler's, and the gates run 40
-        // phases at once (#2939), so the bound holds if one of three attempts meets it.
+        // First verify the held mutex times out; then publish the unlock before
+        // the success check. A sleep cannot order the unlock before a 10 ms deadline
+        // on a loaded runner. Contended wakeups are covered by `test_func`.
+        // Keep upstream's timeout values and elapsed-time assertions.
         let attempt = || {
             let lock = Lock::new(MUTEX, false);
             lock.lock(LOCK_EX, -1);
             let timed_out = Barrier::new(2);
+            let unlocked = Barrier::new(2);
             thread::scope(|s| {
                 let waiter = s.spawn(|| {
                     let ms1 = millis();
                     assert_eq!(lock.lock(LOCK_EX, TIMEOUT_1), ETIMEDOUT);
                     timed_out.wait();
+                    unlocked.wait();
                     let ms2 = millis();
                     assert!(ms2 - ms1 >= TIMEOUT_1 as u128);
                     let result = lock.lock(LOCK_EX, TIMEOUT_2);
                     (result, ms2, millis())
                 });
                 timed_out.wait();
-                thread::sleep(Duration::from_millis(1));
                 let unlock_started = millis();
                 lock.unlock();
                 let unlock_finished = millis();
+                unlocked.wait();
                 let (result, started, finished) = waiter.join().unwrap();
                 assert_eq!(
                     result, 0,
