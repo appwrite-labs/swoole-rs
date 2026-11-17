@@ -16,16 +16,8 @@ unsafe extern "C" {
 /// `void swoole_init()`.
 #[unsafe(export_name = "_Z11swoole_initv")]
 pub(crate) extern "C-unwind" fn swoole_init() {
-    native::set_native_host(NativeHost {
-        init,
-        timer_free: || swoole_rs_timer::swoole_timer_free(),
-    });
+    native::set_native_host(NativeHost { init });
     swoole_rs_corebase::coroutine::set_host(swoole_rs_corebase::coroutine::Host {
-        timer_after: |timeout, f, arg| {
-            swoole_rs_timer::add_fn_sec(timeout, false, move || f(arg))
-                .map_or(0, swoole_rs_timer::Held::id)
-        },
-        timer_clear: |id| _ = swoole_rs_timer::swoole_timer_clear(id),
         async_threads_ensure: || _ = swoole_rs_hooks::async_threads::ensure(),
     });
     swoole_rs_corebase::reactor::event_api::set_writers(swoole_rs_tls::reactor_write::WRITERS);
@@ -35,7 +27,6 @@ pub(crate) extern "C-unwind" fn swoole_init() {
     ]);
     swoole_rs_corebase::reactor::host::set_host(swoole_rs_corebase::reactor::host::Host {
         sleep: swoole_rs_hooks::sleep::system_sleep,
-        timer_select: || swoole_rs_timer::swoole_timer_select(),
         socket_free: |socket| swoole_rs_tls::upstream::socket_free(Some(socket)),
     });
     swoole_rs_corebase::process::methods::set_listener(|kind, host, port, backlog| {

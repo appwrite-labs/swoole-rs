@@ -40,7 +40,7 @@ mod zval;
 
 pub use allocator::Emalloc;
 pub use call::{Call, CallFrame, Entered, Invalid, ReturnSlot, Returned};
-pub use callable::{Callable, Callback, Holder, Parsed};
+pub use callable::{Callable, Parsed};
 pub use class::{Class, ClassEntry, Declared, deny_unset, lookup_class};
 pub use descriptor::{
     FatalError, StreamContext, contain, contain_with, fatal_error, last_fatal_error, memory_usage,

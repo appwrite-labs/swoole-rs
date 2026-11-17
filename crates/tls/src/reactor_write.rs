@@ -183,8 +183,8 @@ impl FlushEffects for Flush<'_> {
         result
     }
 
-    fn delete_timer(&self, timer: swoole_rs_timer::Held) {
-        swoole_rs_timer::del_id(timer);
+    fn delete_timer(&self, timer: swoole_rs_corebase::timer::Held) {
+        swoole_rs_corebase::timer::del_id(timer);
     }
 
     fn remove_write_event(&self) {

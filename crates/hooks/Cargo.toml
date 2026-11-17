@@ -26,7 +26,6 @@ swoole-rs-error = { path = "../error" }
 swoole-rs-error-ffi = { path = "../error-ffi" }
 swoole-rs-http-ffi = { path = "../http-ffi" }
 swoole-rs-tls = { path = "../tls" }
-swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 openssl-sys = { version = "=0.9.118", optional = true }
 swoole-rs-ssh2-sys = { path = "../ssh2-sys", optional = true }
 

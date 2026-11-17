@@ -291,7 +291,6 @@ pub fn swr_v1_reactor_log(origin: &CStr, code: c_int, message: &str) {
 
 /// The thread's event loop while it is available (`SwooleTG.reactor`, unless null
 /// or destroyed), with the prepared state it begins with.
-#[cfg(feature = "upstream-symbols")]
 #[must_use]
 pub fn event_reactor() -> Option<(*mut std::ffi::c_void, crate::reactor::ReactorPrepared)> {
     let reactor = crate::reactor::event_api::swr_v1_event_reactor();

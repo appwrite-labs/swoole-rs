@@ -214,7 +214,7 @@ pub struct Client {
     server_host: Cell<Option<CString>>,
     server_port: Cell<c_int>,
     /// The id of the pending connect timer.
-    timer: Cell<Option<swoole_rs_timer::Held>>,
+    timer: Cell<Option<swoole_rs_corebase::timer::Held>>,
     high_watermark: Cell<u32>,
     low_watermark: Cell<u32>,
     listener: Cell<Option<Listener>>,
@@ -1545,8 +1545,8 @@ struct SocketOps {
     connect: fn(Handle<'_>, ConnectMode) -> bool,
     event: fn(Handle<'_>, EventOp, Events) -> bool,
     socket_error: fn(Handle<'_>, &mut c_int) -> bool,
-    timer_add: fn(f64, Handle<'_>) -> Option<swoole_rs_timer::Held>,
-    timer_delete: fn(swoole_rs_timer::Held),
+    timer_add: fn(f64, Handle<'_>) -> Option<swoole_rs_corebase::timer::Held>,
+    timer_delete: fn(swoole_rs_corebase::timer::Held),
     tls_freeze: fn(&TlsContext) -> Option<TlsSettings>,
     tls_session: fn(&TlsSettings, Socket<'_>) -> bool,
     tls_connect: fn(Socket<'_>) -> bool,
@@ -1591,9 +1591,9 @@ impl SocketOps {
         timer_add: |timeout, this| {
             // `free` deletes the timer with the client.
             let this = Handle::raw(this.0);
-            swoole_rs_timer::add_fn_sec(timeout, false, move || on_timeout(this))
+            swoole_rs_corebase::timer::add_fn_sec(timeout, false, move || on_timeout(this))
         },
-        timer_delete: swoole_rs_timer::del_id,
+        timer_delete: swoole_rs_corebase::timer::del_id,
         tls_freeze,
         tls_session: TlsSettings::create_client_session,
         tls_connect: swoole_rs_tls::upstream::socket_ssl_connect,

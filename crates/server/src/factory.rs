@@ -42,8 +42,8 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
         }
         Step::StartProcess => return crate::thread_ops::start_reactor_threads(serv),
         Step::TimerReinit => {
-            if swoole_rs_timer::thread_timer_detached() {
-                swoole_rs_timer::thread_timer_reinit(false);
+            if swoole_rs_corebase::timer::thread_timer_detached() {
+                swoole_rs_corebase::timer::thread_timer_reinit(false);
             }
         }
         Step::Ignore(signo) => _ = signal_upstream::set(signo, Handler::NONE, false),
@@ -121,7 +121,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
             // `ReactorProcess_onTimeout` on the reactor arming it, which outlives its
             // timers.
             let reactor = crate::reactor_handle::Reactor::thread();
-            let timer = swoole_rs_timer::add_fn(msec, true, move || {
+            let timer = swoole_rs_corebase::timer::add_fn(msec, true, move || {
                 if let Some(serv) = reactor.server() {
                     crate::reactor_process::heartbeat(serv, reactor);
                 }

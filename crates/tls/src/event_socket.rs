@@ -119,7 +119,7 @@ impl EventSocket {
                 )
             });
             for timer in timers.into_iter().flatten() {
-                swoole_rs_timer::del_id(timer);
+                swoole_rs_corebase::timer::del_id(timer);
             }
             // `delete in_buffer; delete out_buffer`.
             drop(buffers);

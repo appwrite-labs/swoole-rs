@@ -202,6 +202,6 @@ pub fn swoole_waitpid(pid: libc::pid_t, status: Option<&mut c_int>, options: c_i
         }
         swoole_signal_dispatch();
         // The thread's timer, if any.
-        (crate::reactor::host::get().timer_select)();
+        crate::timer::swoole_timer_select();
     }
 }

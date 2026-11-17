@@ -1,4 +1,4 @@
-//! Thread-local allocation failures for the original buffer and memory tests.
+//! Thread-local allocation failures for the original buffer, memory and timer tests.
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::ptr;

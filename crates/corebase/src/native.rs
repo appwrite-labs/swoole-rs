@@ -12,7 +12,6 @@ pub struct NativeHost {
     /// stream and the fatal-error hook, the logger, the debug log level, the memory
     /// pool, the futex-less wait registry, signalfd and the bug report.
     pub init: fn(),
-    pub timer_free: fn(),
 }
 
 static HOST: OnceLock<NativeHost> = OnceLock::new();

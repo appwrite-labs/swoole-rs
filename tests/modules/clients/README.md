@@ -77,8 +77,8 @@ upstream symbols (`ssl_get_peer_cert_chain(limit)`'s PEM of each certificate is
 crates/tls' `CertRef::pem`).
 `set_tls_host_name` assigns a fresh `SSLContext` with the name set.
 `SyncClient` and `AsyncClient` are `Client`'s `created`/`connected` bookkeeping.
-`swoole_timer_after` takes the Rust closure through crates/timer's
-`swoole_rs_timer::add_fn`. The `Server` fixtures are std servers forked after
+`swoole_timer_after` takes the Rust closure through `corebase::timer`'s
+`swoole_rs_corebase::timer::add_fn`. The `Server` fixtures are std servers forked after
 binding (an echo, the 403 proxy reply, a slow reader): the cases assert only on
 the client. Excluded as before: `bind` (EACCES, not EINVAL, off a root container),
 `async_tcp_socks5_proxy_handshake_fail` (www.baidu.com:80 timing out a SOCKS5

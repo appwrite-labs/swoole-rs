@@ -145,7 +145,6 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-http-ffi",
  "swoole-rs-protocols",
- "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-websocket",
 ]
@@ -154,7 +153,6 @@ dependencies = [
 name = "swoole-rs-corebase"
 version = "0.1.0"
 dependencies = [
- "cc",
  "itoa",
  "libc",
  "memchr",
@@ -266,15 +264,6 @@ name = "swoole-rs-protocols"
 version = "0.1.0"
 
 [[package]]
-name = "swoole-rs-timer"
-version = "0.1.0"
-dependencies = [
- "libc",
- "swoole-rs-corebase",
- "swoole-rs-error",
-]
-
-[[package]]
 name = "swoole-rs-tls"
 version = "0.1.0"
 dependencies = [
@@ -282,7 +271,6 @@ dependencies = [
  "openssl-sys",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-timer",
 ]
 
 [[package]]

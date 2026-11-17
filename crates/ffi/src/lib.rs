@@ -20,7 +20,7 @@ pub use swoole_rs_corebase::buffer::*;
 
 pub use swoole_rs_corebase::buffer::string::*;
 
-pub use swoole_rs_timer::*;
+pub use swoole_rs_corebase::timer::*;
 
 pub use swoole_rs_server::*;
 

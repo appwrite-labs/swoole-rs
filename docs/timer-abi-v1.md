@@ -1,28 +1,28 @@
 # Timer queue ABI v1
 
-The queue is `crates/timer`'s `Timer`, whose methods `swoole::Timer`
-(`crates/timer/src/owner.rs`, see [ownership.md](../native/timer/ownership.md))
+The queue is `corebase::timer`'s `Timer`, whose methods `swoole::Timer`
+(`crates/corebase/src/timer/owner.rs`, see [ownership.md](../native/timer/ownership.md))
 calls. Feature value 4. It exports no C symbols. The operations below are the methods, named as before:
-`next` is `select_next` and `stats` is `stats`. `crates/timer/src/kernel.rs` holds
+`next` is `select_next` and `stats` is `stats`. `crates/corebase/src/timer/kernel.rs` holds
 what the retired C++ harness (`kernel.cc`) checked, one test per topic.
 
 ## Ownership
 
 Rust owns one indexed min-heap with ID lookup, scheduling fields, next ID,
 selection round, captured time, active ID and closing state. `TimerNode`
-objects are `swoole::Timer`'s (`crates/timer/src/owner.rs`); their callbacks and
-destructors are plain C function pointers. The queue sees nodes only as tokens.
+objects belong to the runtime owner (`crates/corebase/src/timer/owner.rs`), which
+holds typed Rust callbacks inline. The queue sees nodes only as tokens.
 Time is injected as signed 64-bit relative monotonic milliseconds; Rust creates no
 clock, runtime or thread.
 
 - One owner thread per handle; no concurrent calls.
-- The opaque non-null token is never dereferenced or freed by Rust. A successful
-  add takes custody of one native node; only `Release` or `ReleaseOverflow`
+- The opaque non-null token is never dereferenced or freed by the queue. A successful
+  add takes custody of one owner node; only `Release` or `ReleaseOverflow`
   hands it back. Get/next views are copied metadata.
 - No operation invokes a callback, destructor, Zend function or exception.
   Allocation is fallible and arithmetic is checked.
 
-Native callbacks run only between `next` and `complete`. Native destructors run
+Callbacks run only between `next` and `complete`. Destructors run
 only after a Rust call has detached and returned the token; they may remove
 other IDs or add timers while the queue is open. IDs are never reused. The
 caller must not pass a token twice, delete it while retained, or delete the
@@ -36,13 +36,13 @@ dispose detached tokens and drain/release. The parent is unaffected.
 Zend bailout: the PHP callback marks the selection abandoned and
 propagates. Owner destruction then uses the same close/complete/end/drain/
 release sequence, keeping timer metadata visible to PHP shutdown until teardown.
-No callback, Zend jump or bailout continuation runs under a Rust frame
+No callback, Zend jump or bailout continuation runs while the queue is borrowed
 (`tests/modules/timer/test_bailout.py`).
 
 ## Operations
 
 `add`, `get`, `update`, `remove`, `begin`, `next`, `complete`, `end`, `ids` and
-`drain` return a [`Status`](../crates/timer/src/lib.rs). A failing operation
+`drain` return a [`Status`](../crates/corebase/src/timer/mod.rs). A failing operation
 returns the default (zeroed) view; only statuses that carry metadata return a
 filled one. Reserved fields are always zero. `end`'s delay defaults to -1. ID 0
 means no active node; real IDs start at 1.

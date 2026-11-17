@@ -72,7 +72,7 @@ impl Registered {
 
 /// A parked poll's pending timer: it fires once, or [`Wake`] deletes it. Only this
 /// module makes one.
-pub struct Timer(swoole_rs_timer::Held);
+pub struct Timer(swoole_rs_corebase::timer::Held);
 
 /// A wait's registered sockets: [`Sockets::clean`] unregisters each.
 trait Sockets {
@@ -340,7 +340,7 @@ pub(crate) mod native {
     use swoole_rs_corebase::coroutine::Waker;
     use swoole_rs_corebase::reactor::event_api::{Deferred, swoole_event_defer_value};
 
-    use swoole_rs_timer::{add_fn_sec, del_id};
+    use swoole_rs_corebase::timer::{add_fn_sec, del_id};
 
     pub(super) fn add(fd: i32, events: Events, task: Registered) -> Option<Watch> {
         Watch::add(fd, events, Object::Poll(task)).ok()
@@ -429,7 +429,8 @@ mod tests {
         Some(Socket(fd))
     }
     /// The fake timer's id.
-    const FAKE_TIMER: swoole_rs_timer::Held = swoole_rs_timer::Held::detached(7);
+    const FAKE_TIMER: swoole_rs_corebase::timer::Held =
+        swoole_rs_corebase::timer::Held::detached(7);
     #[expect(
         clippy::unnecessary_wraps,
         reason = "the fake has PollOps::timer_add's type"

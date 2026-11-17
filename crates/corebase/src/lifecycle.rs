@@ -166,9 +166,9 @@ pub extern "C-unwind" fn swoole_thread_init(main_thread: bool) {
 
 /// `void swoole_thread_clean(bool main_thread)`.
 pub fn swoole_thread_clean(_main_thread: bool) {
-    let Some(host) = native::host() else { return };
+    let Some(_) = native::host() else { return };
     if with(|thread| !thread.timer.get().is_null()) {
-        (host.timer_free)();
+        crate::timer::swoole_timer_free();
     }
     if with(|thread| !thread.reactor.get().is_null()) {
         crate::reactor::swoole_event_free();
@@ -223,7 +223,7 @@ pub extern "C-unwind" fn swoole_clean() {
 #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z11swoole_forki"))]
 #[must_use]
 pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
-    let Some(host) = native::host() else {
+    let Some(_) = native::host() else {
         return -1;
     };
     if flags & FORK_EXEC == 0 {
@@ -257,7 +257,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
         return pid;
     }
     if with(|thread| !thread.timer.get().is_null()) {
-        (host.timer_free)();
+        crate::timer::swoole_timer_free();
     }
     if flags & FORK_EXEC == 0 {
         // The pool starts its own pages at its first use here (memory::global's `current`).
@@ -370,10 +370,7 @@ mod tests {
     /// Real reactor cleanup delays the fork child and changes its mask, as
     /// signalfd cleanup does; the lifecycle must preserve that change on restore.
     fn host() {
-        native::set_native_host(native::NativeHost {
-            init: || {},
-            timer_free: || {},
-        });
+        native::set_native_host(native::NativeHost { init: || {} });
     }
 
     fn reactor() {

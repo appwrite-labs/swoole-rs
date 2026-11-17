@@ -261,7 +261,7 @@ impl Facts for Live<'_> {
             dispatch_count: thread.dispatch_count.get(),
             event_num: swoole_rs_corebase::reactor::event_api::swoole_event_num().unwrap_or(0)
                 as u64,
-            timer_num: swoole_rs_timer::thread_timer_count() as u64,
+            timer_num: swoole_rs_corebase::timer::thread_timer_count() as u64,
         }
     }
 

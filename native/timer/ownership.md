@@ -4,24 +4,35 @@ Frozen queue ABI: `docs/timer-abi-v1.md`.
 
 ## Queue and timer
 
-`crates/timer/src/lib.rs` is the only timer heap/index and scheduling state
-machine. Its `Timer` methods, and the frozen exports over them, own IDs, deadline ordering, update/repair,
+`crates/corebase/src/timer/mod.rs` is the only timer heap/index and scheduling state
+machine. Its Rust `Timer` methods own IDs, deadline ordering, update/repair,
 captured dispatch time, selection rounds, active-ID completion, missed-repeat
 coalescing, cancellation, closing/draining and allocation-failure rollback.
 
-`crates/timer/src/owner.rs` is `swoole::Timer`: a Rust-owned record (backend,
+`crates/corebase/src/timer/owner.rs` is `swoole::Timer`: a Rust-owned record (backend,
 reactor, clock base, armed wakeup, abandoned-selection marker) and its
 operations, `init`/`reinit`, `add`, `remove`, `update`, `delay`, `select` and the
-destructor's close/complete/end/drain. It holds the queue in a `RefCell` that no
-borrow holds across a callback or destructor, so a bailout never skips a release. It allocates and frees every
+destructor's close/complete/end/drain. It takes the boxed queue out of a `Cell` for each operation and returns it before
+a callback or destructor, so a bailout never skips a borrow release. It allocates and frees every
 `TimerNode`, which is internal to the crate. `add_fn` adds a small copyable Rust
 closure; `add_owned` retains owned captures until the last callback hold drops.
 Callers retain generation-tagged `Held` IDs for cancellation and delay. With a
 reactor it hooks `Reactor::timeout_msec`, the timer-priority end callback, the exit
 condition and a destroy callback that frees this thread's timer. No C++ reaches
 into the timer or calls the `swoole_timer_*` API.
-`crates/timer/src/wrapper.rs` provides these operations by Rust path over this
+`crates/corebase/src/timer/wrapper.rs` provides these operations by Rust path over this
 thread's timer slot; the raw callback and node-pointer exports are gone.
+Corebase calls timer teardown, selection and coroutine timeout operations directly.
+
+PHP reserves an empty node before retaining its Zend callable. A thread-confined
+reservation cancels the node when dropped, and commits only to the timer generation
+that issued it, using the full owner identity even when a packed `Held` generation
+wraps. The PHP layer owns the callable and implements the safe callback
+interface; its two-word inline storage and matching destruction remain private to
+corebase. Callback storage is disjoint from metadata changed during reentry.
+A removed reservation releases the retained callable without installing it, so no
+borrow of a timer crosses a retention operation. A detached node releases its
+callable before node deletion, and a deferred bailout runs after deletion.
 
 A Zend bailout longjmps out of a callback or destructor over `select`'s Rust
 frames, which hold nothing to drop. A C++ exception a callback or destructor
@@ -34,12 +45,12 @@ waits, not a second queue. Rust `end` computes the next delay.
 Zend bailout: a fatal longjmp from a PHP callback used to leave selection active
 and abort at shutdown. The PHP callback now marks the selection as abandoned
 before propagating bailout; the owner destructor then uses the normal exact-ID
-close/complete/end/drain path. Active self-deletion is still rejected. Tested by
+close/complete/end/drain path. Destroying an active, unabandoned selection is still rejected. Tested by
 `tests/modules/timer/test_bailout.py`.
 
 ## Clock and backend helpers
 
-Stateless helpers in `crates/timer/src/runtime.rs`, called from Rust only (`owner.rs`).
+Stateless helpers in `crates/corebase/src/timer/runtime.rs`, called from Rust only (`owner.rs`).
 
 | Function | Caller |
 | --- | --- |

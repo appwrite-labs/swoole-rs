@@ -238,9 +238,9 @@ pub fn set_document_root(serv: view::Server<'_>, path: &[u8]) -> bool {
 /// Arms the master timer on this thread, the master's: each second it runs
 /// `Server::timer_callback` over the server its reactor holds. The timer, or none.
 #[cfg(feature = "upstream-symbols")]
-pub(crate) fn master_timer() -> Option<swoole_rs_timer::Held> {
+pub(crate) fn master_timer() -> Option<swoole_rs_corebase::timer::Held> {
     use crate::reactor_handle::Reactor;
-    swoole_rs_timer::add_fn(1000, true, || {
+    swoole_rs_corebase::timer::add_fn(1000, true, || {
         if let Some(serv) = Reactor::current().and_then(Reactor::server) {
             crate::control::master_timer(serv);
         }

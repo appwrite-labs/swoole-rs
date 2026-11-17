@@ -38,7 +38,7 @@ use swoole_rs_corebase::swoole_thread_clean;
 use super::timer::{after, tick};
 use super::{SIGKILL, TEST_STR, last_error, random_bytes};
 use swoole_rs_corebase::reactor::signal_upstream::swoole_signal_clear;
-use swoole_rs_timer::{swoole_timer_clear, swoole_timer_free, swoole_timer_is_available};
+use swoole_rs_corebase::timer::{swoole_timer_clear, swoole_timer_free, swoole_timer_is_available};
 
 const SW_OK: c_int = 0;
 const SW_ERR: c_int = -1;
@@ -2095,7 +2095,7 @@ fn reload_from_child_exit_callback() {
     });
     let completion = tick(10, move |tnode| {
         if counter_get(25) == 1 && counter_get(0) == 2 && counter_get(1) == 2 {
-            swoole_rs_timer::del_id(tnode);
+            swoole_rs_corebase::timer::del_id(tnode);
             // SAFETY: the case's pool.
             unsafe { (*pool).running = false };
         }

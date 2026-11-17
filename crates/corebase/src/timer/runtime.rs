@@ -52,7 +52,7 @@ pub fn swr_v1_timer_system_set(milliseconds: i64) -> std::io::Result<()> {
         it_value: every,
     };
     // The old value is not wanted.
-    swoole_rs_corebase::sys::setitimer(libc::ITIMER_REAL, &value)
+    crate::sys::setitimer(libc::ITIMER_REAL, &value)
 }
 
 /// Upstream `swoole::realtime_add(timespec *, int64_t)`: adds milliseconds to a
@@ -73,7 +73,7 @@ pub fn absolute_msec() -> i64 {
     let clock = libc::CLOCK_UPTIME_RAW;
     #[cfg(not(target_vendor = "apple"))]
     let clock = libc::CLOCK_MONOTONIC;
-    let now = swoole_rs_corebase::sys::clock_time(clock);
+    let now = crate::sys::clock_time(clock);
     now.tv_sec * 1000 + now.tv_nsec / 1_000_000
 }
 

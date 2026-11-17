@@ -205,7 +205,7 @@ fn body(share: &SharedServer, id: u32, kind: WorkerType, fresh: swoole_rs_coreba
         worker
     });
     if worker.is_none() {
-        swoole_rs_timer::swoole_timer_create(true);
+        swoole_rs_corebase::timer::swoole_timer_create(true);
     }
     let factory = manager(serv);
     let thread = factory.thread(id as usize);
@@ -233,8 +233,8 @@ fn body(share: &SharedServer, id: u32, kind: WorkerType, fresh: swoole_rs_coreba
             let m = format_args!("Fatal Error: manager thread exits abnormally");
             log::warning(c"ThreadFactory::spawn_manager_thread", m);
         }
-        if swoole_rs_timer::swoole_timer_is_available() {
-            swoole_rs_timer::swoole_timer_free();
+        if swoole_rs_corebase::timer::swoole_timer_is_available() {
+            swoole_rs_corebase::timer::swoole_timer_free();
         }
     }
     swoole_rs_corebase::swoole_thread_clean(false);
@@ -288,7 +288,7 @@ fn run_main(serv: view::Server<'_>, slot: u16, kind: WorkerType) {
 /// `ThreadFactory::wait`: the manager thread's loop.
 fn wait(serv: view::Server<'_>, manager: &ThreadManager) {
     loop {
-        match manager.next(swoole_rs_timer::swoole_timer_get_next_msec()) {
+        match manager.next(swoole_rs_corebase::timer::swoole_timer_get_next_msec()) {
             Some(Wake::Reload) => {
                 reload_next(serv, manager);
                 continue;
@@ -297,8 +297,8 @@ fn wait(serv: view::Server<'_>, manager: &ThreadManager) {
             Some(Wake::Exited(slot)) => restart(serv, manager, slot),
             None => {}
         }
-        if swoole_rs_timer::swoole_timer_is_available() {
-            swoole_rs_timer::swoole_timer_select();
+        if swoole_rs_corebase::timer::swoole_timer_is_available() {
+            swoole_rs_corebase::timer::swoole_timer_select();
         }
         if serv.state().running() && manager.reloading() {
             reload_next(serv, manager);

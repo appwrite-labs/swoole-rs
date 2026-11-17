@@ -5,10 +5,7 @@ use crate::{
     bailout::{self, Bailout},
     sys::{IS_LONG, swr_zend_callable, zend_value, zval},
 };
-use std::{
-    ffi::{c_int, c_void},
-    ptr,
-};
+use std::{ffi::c_int, ptr};
 
 // Callable is a linear pointer handle made only here, so C receives a live
 // record in the state its type says. Parsed retains Rust ownership until keep.
@@ -83,18 +80,6 @@ impl Callable {
         Ok(this)
     }
 
-    /// The callable for C++ (`zend::Function *`).
-    #[must_use]
-    pub fn as_raw(&self) -> *mut c_void {
-        self.0.cast()
-    }
-
-    /// The callable as timer or event data, which owns it from now on.
-    #[must_use]
-    pub fn into_raw(self) -> *mut c_void {
-        self.0.cast()
-    }
-
     /// The kept callable's cache, bound arguments and callable zval, for a call:
     /// the record keeps them while borrowed, and nothing changes the cache.
     #[must_use]
@@ -126,13 +111,6 @@ impl Callable {
             crate::host::Callee(cache, std::marker::PhantomData),
             crate::Zvals::counted(argv, argc),
         )
-    }
-
-    /// The callback and destructor of a C owner, such as a timer, whose data is
-    /// this callable's [`Callable::as_raw`]: each runs `H`'s with the callable.
-    #[must_use]
-    pub fn callbacks<H: Holder>() -> (Callback, Callback) {
-        (run::<H>, free::<H>)
     }
 
     /// Drop the arguments, object and closure `keep` held, then free the
@@ -181,29 +159,6 @@ impl Parsed {
         // No argument references were taken from the frame.
         drop(self);
     }
-}
-
-/// A C owner's callback over the data it was given.
-pub type Callback = unsafe extern "C-unwind" fn(*mut c_void);
-
-/// What a C owner of a callable does with it ([`Callable::callbacks`]).
-pub trait Holder {
-    /// The owner's callback, with its callable.
-    fn run(callable: &Callable);
-    /// The owner's destructor, which takes the callable back to release it.
-    fn free(callable: Callable);
-}
-
-/// # Safety
-/// `data` is a live callable's [`Callable::as_raw`].
-unsafe extern "C-unwind" fn run<H: Holder>(data: *mut c_void) {
-    H::run(&Callable(data.cast()));
-}
-
-/// # Safety
-/// `data` is a callable's [`Callable::as_raw`], not used again.
-unsafe extern "C-unwind" fn free<H: Holder>(data: *mut c_void) {
-    H::free(Callable(data.cast()));
 }
 
 /// Copy bound arguments only when there are any; keep the empty-callable path small.

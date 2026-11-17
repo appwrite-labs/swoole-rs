@@ -131,22 +131,22 @@ fn native_connect_timer_is_cancelled_before_client_release() {
     struct Timer;
     impl Drop for Timer {
         fn drop(&mut self) {
-            swoole_rs_timer::swoole_timer_free();
+            swoole_rs_corebase::timer::swoole_timer_free();
         }
     }
-    assert!(!swoole_rs_timer::swoole_timer_is_available());
-    swoole_rs_timer::swoole_timer_create(true);
+    assert!(!swoole_rs_corebase::timer::swoole_timer_is_available());
+    swoole_rs_corebase::timer::swoole_timer_create(true);
     let _timer = Timer;
     let client = create(SocketType::SW_SOCK_TCP as c_int, true).unwrap();
     let this = client.handle();
     let held = (this.get().socket_ops.timer_add)(60.0, this).unwrap();
     this.get().timer.set(Some(held));
-    assert_eq!(swoole_rs_timer::thread_timer_count(), 1);
+    assert_eq!(swoole_rs_corebase::timer::thread_timer_count(), 1);
     this.timer_clear();
     assert!(this.get().timer.get().is_none());
-    assert_eq!(swoole_rs_timer::thread_timer_count(), 0);
+    assert_eq!(swoole_rs_corebase::timer::thread_timer_count(), 0);
     this.timer_clear();
-    assert_eq!(swoole_rs_timer::thread_timer_count(), 0);
+    assert_eq!(swoole_rs_corebase::timer::thread_timer_count(), 0);
 }
 
 #[test]

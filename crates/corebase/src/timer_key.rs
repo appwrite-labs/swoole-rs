@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
 const ID_BITS: u32 = 48;
 const ID_MASK: u64 = (1 << ID_BITS) - 1;
 
-/// A timer's id with the generation of the timer that issued it (crates/timer), packed in
+/// A timer's id with the generation of the timer that issued it (`corebase::timer`), packed in
 /// one word. A timer never reuses an id and checks the generation, so deleting a held
 /// timer that has fired, or whose timer is gone, does nothing. Any value is sound to
 /// delete: at worst it names another timer of this thread, as any id does.

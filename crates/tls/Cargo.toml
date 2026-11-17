@@ -15,7 +15,6 @@ halfclose = []
 [dependencies]
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-error = { path = "../error" }
-swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"

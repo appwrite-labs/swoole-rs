@@ -394,7 +394,6 @@ dependencies = [
  "swoole-rs-http-ffi",
  "swoole-rs-oracle",
  "swoole-rs-protocols",
- "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-websocket",
 ]
@@ -433,7 +432,6 @@ dependencies = [
  "swoole-rs-curl-sys",
  "swoole-rs-error",
  "swoole-rs-phpswoole",
- "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-zend",
 ]
@@ -509,7 +507,6 @@ dependencies = [
  "swoole-rs-server",
  "swoole-rs-sqlite",
  "swoole-rs-ssh2",
- "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-websocket",
 ]
@@ -545,7 +542,6 @@ dependencies = [
  "swoole-rs-http-ffi",
  "swoole-rs-oracle",
  "swoole-rs-ssh2-sys",
- "swoole-rs-timer",
  "swoole-rs-tls",
 ]
 
@@ -559,7 +555,6 @@ dependencies = [
  "swoole-rs-ffi",
  "swoole-rs-hooks",
  "swoole-rs-server",
- "swoole-rs-timer",
  "swoole-rs-tls",
 ]
 
@@ -595,7 +590,6 @@ dependencies = [
  "swoole-rs-ffi",
  "swoole-rs-ports",
  "swoole-rs-server",
- "swoole-rs-timer",
  "swoole-rs-tls",
 ]
 
@@ -722,7 +716,6 @@ dependencies = [
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-server",
- "swoole-rs-timer",
  "swoole-rs-zend",
 ]
 
@@ -816,7 +809,6 @@ dependencies = [
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-server",
- "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-zend",
 ]
@@ -907,7 +899,6 @@ dependencies = [
  "swoole-rs-phpstdext",
  "swoole-rs-phpstubs",
  "swoole-rs-sqlite",
- "swoole-rs-timer",
  "swoole-rs-zend",
 ]
 
@@ -937,7 +928,6 @@ dependencies = [
  "swoole-rs-phpprocess",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
- "swoole-rs-timer",
  "swoole-rs-zend",
 ]
 
@@ -986,7 +976,6 @@ dependencies = [
  "swoole-rs-http",
  "swoole-rs-http-ffi",
  "swoole-rs-oracle",
- "swoole-rs-timer",
  "swoole-rs-tls",
 ]
 
@@ -1016,16 +1005,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "swoole-rs-timer"
-version = "0.1.0"
-dependencies = [
- "libc",
- "swoole-rs-corebase",
- "swoole-rs-error",
- "swoole-rs-zend",
-]
-
-[[package]]
 name = "swoole-rs-tls"
 version = "0.1.0"
 dependencies = [
@@ -1033,7 +1012,6 @@ dependencies = [
  "openssl-sys",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-timer",
 ]
 
 [[package]]

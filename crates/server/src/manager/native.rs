@@ -193,8 +193,8 @@ fn wait(serv: view::Server<'_>) {
     reaper::run(&mut Reaping { serv, manager });
 
     methods::drop_reload_task(crate::process_pool_native(), serv.event_pool_ref());
-    if swoole_rs_timer::swoole_timer_is_available() {
-        swoole_rs_timer::swoole_timer_free();
+    if swoole_rs_corebase::timer::swoole_timer_is_available() {
+        swoole_rs_corebase::timer::swoole_timer_free();
         // The timer overrode SIGALRM's handler: the manager needs it back.
         set_signal(libc::SIGALRM, SignalHandler::Own);
     }
@@ -332,8 +332,8 @@ impl Reap for Reaping<'_> {
             }
             pool.set_read_message(false);
         }
-        if swoole_rs_timer::swoole_timer_is_available() {
-            swoole_rs_timer::swoole_timer_select();
+        if swoole_rs_corebase::timer::swoole_timer_is_available() {
+            swoole_rs_corebase::timer::swoole_timer_select();
         }
     }
 

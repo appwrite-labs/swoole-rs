@@ -281,7 +281,7 @@ pub(crate) unsafe fn swr_case_mqtt_server(
 /// Schedule a one-shot owned capture; dropping the timer also drops the capture.
 pub(super) fn after_once(ms: c_long, body: impl FnOnce() + 'static) {
     let body = std::cell::Cell::new(Some(body));
-    _ = swoole_rs_timer::add_owned(ms, false, move || {
+    _ = swoole_rs_corebase::timer::add_owned(ms, false, move || {
         if let Some(body) = body.take() {
             body();
         }
@@ -292,11 +292,11 @@ pub(super) fn after_once(ms: c_long, body: impl FnOnce() + 'static) {
 pub(super) fn schedule(
     ms: c_long,
     persistent: bool,
-    body: impl Fn(swoole_rs_timer::Held) + 'static,
-) -> Option<swoole_rs_timer::Held> {
+    body: impl Fn(swoole_rs_corebase::timer::Held) + 'static,
+) -> Option<swoole_rs_corebase::timer::Held> {
     let slot = std::rc::Rc::new(std::cell::Cell::new(None));
     let issued = std::rc::Rc::clone(&slot);
-    let held = swoole_rs_timer::add_owned(ms, persistent, move || {
+    let held = swoole_rs_corebase::timer::add_owned(ms, persistent, move || {
         body(
             issued
                 .get()
@@ -316,7 +316,7 @@ pub(crate) unsafe fn swr_case_tick(
 ) {
     _ = schedule(ms, true, move |held| {
         if !tick(serv, session_id) {
-            swoole_rs_timer::del_id(held);
+            swoole_rs_corebase::timer::del_id(held);
         }
     });
 }

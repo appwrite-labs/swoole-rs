@@ -46,9 +46,12 @@ fn worker(serv: view::Server<'_>, id: impl TryInto<u16>) -> Option<Worker<'_>> {
 
 /// `Server::heartbeat_check`'s timer, which `reactor` arms for itself and runs on
 /// its thread.
-fn heartbeat_timer(state: &ServerState, reactor: Reactor) -> Option<swoole_rs_timer::Held> {
+fn heartbeat_timer(
+    state: &ServerState,
+    reactor: Reactor,
+) -> Option<swoole_rs_corebase::timer::Held> {
     let msec = c_long::from(state.config_ref().heartbeat_check_interval.get()) * 1000;
-    swoole_rs_timer::add_fn(msec, true, move || {
+    swoole_rs_corebase::timer::add_fn(msec, true, move || {
         if let Some(serv) = reactor.server() {
             crate::reactor_thread::heartbeat_check(serv, reactor);
         }
@@ -414,7 +417,7 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
     }
     let thread = ctx.thread_record()?;
     if let Some(timer) = thread.heartbeat_timer.take() {
-        swoole_rs_timer::del_id(timer);
+        swoole_rs_corebase::timer::del_id(timer);
     }
     swoole_rs_corebase::reactor::defer_destroy_value(reactor.handle(), CloseConnections(reactor));
     if config.mode_ == Mode::Thread {

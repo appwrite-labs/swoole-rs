@@ -224,7 +224,7 @@ fn schedule() {
             count.set(count.get() - 1);
             let (worker_num, queue_size, task_num) = stats();
             if count.get() == 0 {
-                swoole_rs_timer::del_id(timer);
+                swoole_rs_corebase::timer::del_id(timer);
                 assert!(worker_num > 16);
                 assert!(queue_size > 100);
                 assert!(task_num > 100);
@@ -242,7 +242,7 @@ fn schedule() {
     // core-tests' DEBUG() lines, which print only in its debug builds, are left out.
     tick(2000, |timer| {
         if stats().0 < 16 {
-            swoole_rs_timer::del_id(timer);
+            swoole_rs_corebase::timer::del_id(timer);
         }
     });
 

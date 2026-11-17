@@ -3,7 +3,6 @@ use std::sync::OnceLock;
 
 pub struct Host {
     pub sleep: fn(f64) -> bool,
-    pub timer_select: fn(),
     pub socket_free: fn(crate::reactor::OwnedSocket),
 }
 

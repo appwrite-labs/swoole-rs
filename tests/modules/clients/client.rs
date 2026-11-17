@@ -8,7 +8,7 @@
 //! `SyncClient` and `AsyncClient` are the `created`/`connected` bookkeeping their
 //! header gives `Client`. The `Server` fixtures are forked std servers bound before
 //! the fork: the cases assert only on the client. [`timer_after`] schedules a
-//! Rust closure through crates/timer's `add_fn`.
+//! Rust closure through `corebase::timer`'s `add_fn`.
 
 use super::socket::{
     EADDRNOTAVAIL, ECONNREFUSED, IoVec, SHUT_RD, SHUT_RDWR, SHUT_WR, SIGTERM, SW_SOCK_TCP,
@@ -102,7 +102,7 @@ fn timer_after<F: FnMut()>(ms: c_long, body: F) {
     let invoke: unsafe fn(*mut c_void) = closure_invoker::<F>;
     // SAFETY: the invoker takes the closure leaked as `data`, which lives for good.
     let fire = move || unsafe { invoke(data) };
-    assert!(swoole_rs_timer::add_fn(ms, false, fire).is_some());
+    assert!(swoole_rs_corebase::timer::add_fn(ms, false, fire).is_some());
 }
 
 /// A boxed callback slot, called reentrantly with the others.

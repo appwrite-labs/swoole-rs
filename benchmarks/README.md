@@ -249,7 +249,7 @@ its storage is in the Rust storage microbenchmarks below.
 
 `storage.py --baseline PATH --output target/storage-results.json` builds the
 same release harness against an untouched baseline and this checkout. It covers
-buffer reuse and the timer queue (crates/timer's `Timer`), with
+buffer reuse and the timer queue (`corebase::timer::Timer`), with
 seven alternating trials calibrated toward at least 100 ms for the faster engine.
 Allocation probes run separately from timing; all timed checksums must match.
 Use `--prepare-only` to build without measuring. Stop builds and tests before
