@@ -51,6 +51,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 2
+      - name: Check Zend import justifications
+        run: python3 tools/zend_imports.py
       - name: Check migration ledger
         run: python3 tools/check_migration.py
       # No crate's unsafe or slow-layout count may rise above main's; C lines may when the

@@ -4,6 +4,7 @@ set -e
 # Git exports GIT_DIR and GIT_INDEX_FILE to hooks. A test that runs `git init`
 # with them set reinitialises this repository and sets core.bare = true.
 unset $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p')
+python3 tools/zend_imports.py
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -q -- -D warnings
 # That skips code behind features, which is every PHP crate. Where they build (Linux
