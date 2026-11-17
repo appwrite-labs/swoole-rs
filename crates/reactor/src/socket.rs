@@ -204,19 +204,21 @@ impl<'a> Socket<'a> {
         }
     }
 
-    /// The record's borrow count, which no closure's reference covers.
-    fn borrows(self) -> &'a AtomicU32 {
-        // SAFETY: live for 'a (from_ptr); the reference covers only the count, which
-        // `read` and `edit` never hand out, and an atomic may be shared.
-        unsafe { &(*self.record.as_ptr()).borrows }
+    /// The record's marks, which no closure's reference covers.
+    fn marks(self) -> &'a [AtomicU32; 2] {
+        // SAFETY: live for 'a (from_ptr); the reference covers only the marks, which
+        // `read` and `edit` never hand out, and atomics may be shared.
+        unsafe { &(*self.record.as_ptr()).marks }
     }
 
-    /// The serial of the reactor whose registry names the record, or 0. Like the
-    /// count, no closure's reference covers it.
+    /// The record's borrow count.
+    fn borrows(self) -> &'a AtomicU32 {
+        &self.marks()[crate::socket_record::BORROWS]
+    }
+
+    /// The serial of the reactor whose registry names the record, or 0.
     pub(crate) fn mark(self) -> &'a AtomicU32 {
-        // SAFETY: live for 'a (from_ptr); the reference covers only the mark, which
-        // `read` and `edit` never hand out, and an atomic may be shared.
-        unsafe { &(*self.record.as_ptr()).reactor }
+        &self.marks()[crate::socket_record::REACTOR]
     }
 
     /// The record's address, for native calls.
