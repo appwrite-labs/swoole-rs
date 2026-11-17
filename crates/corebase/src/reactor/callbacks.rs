@@ -12,7 +12,7 @@ use crate::reactor::reactor_state::ReactorState;
 use std::ffi::c_int;
 
 /// An end callback a caller sets (`Reactor::set_end_callback`).
-pub type EndFn = extern "C-unwind" fn();
+pub type EndFn = fn();
 /// An exit condition a caller sets: whether the loop may exit, given the event count it
 /// may change for the conditions after it.
 pub type ExitFn = fn(&mut usize) -> bool;
@@ -348,28 +348,28 @@ mod tests {
         take();
     }
 
-    extern "C-unwind" fn end0() {
+    fn end0() {
         push(0);
     }
-    extern "C-unwind" fn end1() {
+    fn end1() {
         push(1);
     }
-    extern "C-unwind" fn end2() {
+    fn end2() {
         push(2);
     }
-    extern "C-unwind" fn end3() {
+    fn end3() {
         push(3);
     }
-    extern "C-unwind" fn end5() {
+    fn end5() {
         // SAFETY: the test's live state.
         assert!(unsafe { (*OWNER.get()).fields.timed_out });
         push(5);
     }
-    extern "C-unwind" fn end99() {
+    fn end99() {
         push(99);
     }
     /// Sets a later and an earlier key, and erases a later one.
-    extern "C-unwind" fn end_mutating() {
+    fn end_mutating() {
         push(1);
         set_end(2, end2);
         set_end(0, end0);
