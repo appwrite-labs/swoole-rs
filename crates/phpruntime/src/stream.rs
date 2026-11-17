@@ -387,7 +387,8 @@ fn write(stream: Stream<'_>, data: &[u8]) -> Result<isize, Bailout> {
 swoole_rs_zend::exports! {
 /// The stream's `read` (`socket_read`): bytes read, or -1.
 #[unsafe(no_mangle)]
-extern "C" fn swr_v1_phpruntime_socket_read(stream: Stream<'_>, mut out: ReadVec<'_>) -> isize {
+extern "C" fn swr_v1_phpruntime_socket_read(stream: Stream<'_>, out: ReadVec<'_>) -> isize {
+    let mut out = out;
     raise(read(stream, out.fill().slots()), -1)
 }
 }
