@@ -2,7 +2,7 @@
 //! runs: each function takes a [`Php`], so only a thread that runs PHP reaches
 //! the shim behind it, and the declarations stay private to this module.
 use std::ffi::c_int;
-use swoole_rs_zend::{Php, bailout::Bailout};
+use swoole_rs_zend::{Owned, Php, bailout::Bailout};
 
 unsafe extern "C" {
     /// Whether the frame below the executor's current one runs a function named
@@ -13,12 +13,11 @@ unsafe extern "C" {
     /// `zend_is_true` reads it: the constant table and one value, with no PHP
     /// code run.
     safe fn swr_zend_coroutine_library_loaded() -> bool;
-    /// `sw_php_print_backtrace_impl(skip_last, options, limit)` inside
-    /// `zend_try`: the executor's frames, written through PHP's output layer,
-    /// whose handlers may run PHP code; nonzero if that bailed out. It takes
-    /// only integers, and the trap keeps a bailout from crossing Rust.
-    safe fn swr_zend_coroutine_print_trace(skip_last: c_int, options: c_int, limit: c_int)
-    -> c_int;
+    /// `sw_php_print_backtrace_impl`'s output inside `zend_try`: the fetched
+    /// trace array, written through PHP's output layer, whose handlers may run
+    /// PHP code; nonzero if that bailed out. The trap keeps a bailout from
+    /// crossing Rust.
+    safe fn swr_zend_coroutine_print_trace(trace: &Owned) -> c_int;
 }
 
 /// Whether the function that called the running internal function is named
@@ -32,18 +31,14 @@ pub(crate) fn library_loaded(_php: Php<'_>) -> bool {
     swr_zend_coroutine_library_loaded()
 }
 
-/// Print the frames from Zend's current one, less the last `skip_last`.
+/// Print `trace`, a fetched backtrace. Output handlers may run PHP code, and
+/// switch coroutines, so this runs in the caller's own frame.
 /// # Errors
 /// An output handler bailed out.
-pub(crate) fn print_trace(
-    _php: Php<'_>,
-    skip_last: c_int,
-    options: c_int,
-    limit: c_int,
-) -> Result<(), Bailout> {
+pub(crate) fn print_trace(_php: Php<'_>, trace: &Owned) -> Result<(), Bailout> {
     // On the PHP thread `_php` proves; a bailout from an output handler is
     // trapped and returned.
-    if swr_zend_coroutine_print_trace(skip_last, options, limit) == 0 {
+    if trace.array().is_none() || swr_zend_coroutine_print_trace(trace) == 0 {
         Ok(())
     } else {
         Err(Bailout)

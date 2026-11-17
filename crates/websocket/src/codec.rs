@@ -102,6 +102,24 @@ fn flags(first: u8, second: u8) -> FrameFlags {
 /// frame. Errors retain the decoded header and leave the payload untouched.
 #[inline]
 pub fn decode_in_place(data: &mut [u8]) -> Result<DecodedFrame, DecodeError> {
+    let frame = decode_header(data)?;
+    let at = frame.header_length;
+    if frame.payload_length != 0
+        && frame.flags.is_masked()
+        && let Some(payload) = data.get_mut(at..at + frame.payload_length)
+    {
+        mask(payload, frame.mask_key);
+    }
+    Ok(frame)
+}
+
+/// A whole frame's header, read from `data` without unmasking its payload: a
+/// masked frame's key is `mask_key`, for [`mask`] over a copy of the payload.
+///
+/// # Errors
+/// As for [`decode_in_place`].
+#[inline]
+pub fn decode_header(data: &[u8]) -> Result<DecodedFrame, DecodeError> {
     let length = data.len();
     let measured = frame_length(data);
     let header = measured.map_or_else(
@@ -144,10 +162,8 @@ pub fn decode_in_place(data: &mut [u8]) -> Result<DecodedFrame, DecodeError> {
         && frame.flags.is_masked()
         && let Some(key) = data.get(at.wrapping_sub(4)..at)
         && let Ok(key) = <[u8; 4]>::try_from(key)
-        && let Some(payload) = data.get_mut(at..size)
     {
         frame.mask_key = key;
-        mask(payload, key);
     }
     Ok(frame)
 }

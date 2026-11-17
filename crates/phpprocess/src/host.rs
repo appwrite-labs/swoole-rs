@@ -1,13 +1,7 @@
 //! What `Process` and `Process\Pool` reach outside the crate: Swoole's globals, the
 //! server, callables, the reactor and signals (was `ext-src/swoole_server.cc`'s
 //! `process_host` table).
-use std::{
-    cell::Cell,
-    ffi::c_int,
-    ptr,
-    rc::Rc,
-    sync::atomic::{AtomicPtr, Ordering},
-};
+use std::{cell::Cell, ffi::c_int, rc::Rc};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::process::worker_record::WorkerType;
 use swoole_rs_corebase::process::{methods, worker_record::Worker};
@@ -181,28 +175,26 @@ fn call(callable: &callable::Callable, args: &[&Value], coroutine: bool) -> bool
     deferred(called).unwrap_or(false)
 }
 
-/// A callable a static keeps (a signal's): null, or the `Rc` of a [`Callable`]
-/// that [`Slot::replace`], the only writer, gave up to it.
-pub(crate) struct Slot(AtomicPtr<callable::Callable>);
+/// A signal's callable, kept by the PHP thread that registered it.
+pub(crate) struct Slot(Cell<Option<Callable>>);
 
 impl Slot {
     /// A slot with no callable.
     pub(crate) const fn empty() -> Self {
-        Self(AtomicPtr::new(ptr::null_mut()))
+        Self(Cell::new(None))
     }
 
     /// Whether a callable is set.
     pub(crate) fn is_set(&self) -> bool {
-        !self.0.load(Ordering::Acquire).is_null()
+        let callable = self.0.take();
+        let set = callable.is_some();
+        self.0.set(callable);
+        set
     }
 
     /// Store `callable` (`None`: empty the slot), and take what was there.
     pub(crate) fn replace(&self, callable: Option<Callable>) -> Option<Callable> {
-        let new = callable.map_or(ptr::null(), |callable| Rc::into_raw(callable.0));
-        let old = self.0.swap(new.cast_mut(), Ordering::AcqRel);
-        // SAFETY: null or the `Rc` a `replace` gave up, which the swap took out of
-        // the slot, so it is taken back once.
-        (!old.is_null()).then(|| Callable(unsafe { Rc::from_raw(old) }))
+        self.0.replace(callable)
     }
 
     /// [`Callable::call`] of the slot's callable, which the slot keeps: `None`
@@ -210,9 +202,9 @@ impl Slot {
     pub(crate) fn call(&self, args: &[&Value], coroutine: bool) -> Option<bool> {
         // A reference of its own, so the callable outlives a handler that replaces
         // it; the slot gets its own back before the call.
-        let stored = self.replace(None)?;
+        let stored = self.0.take()?;
         let callable = Rc::clone(&stored.0);
-        drop(self.replace(Some(stored)));
+        self.0.set(Some(stored));
         Some(call(&callable, args, coroutine))
     }
 }

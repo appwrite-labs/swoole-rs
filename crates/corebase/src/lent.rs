@@ -737,6 +737,13 @@ impl Spare<'_> {
         self.count(received)
     }
 
+    /// read(2) into the room, as [`Fill::read`].
+    #[inline]
+    pub fn read_fd(&mut self, fd: c_int) -> Option<usize> {
+        let received = self.rest().read(fd);
+        self.count(received)
+    }
+
     /// recv(2) into the room, as [`Fill::recv`].
     #[inline]
     pub fn recv(&mut self, fd: c_int, flags: c_int) -> Option<usize> {

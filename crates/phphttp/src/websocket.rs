@@ -649,11 +649,11 @@ fn to_string(call: &Call) {
     pack_value(call, call.this_value(), 0, 0);
 }
 
-/// `websocket::decode` of a whole frame, warning as it does; the input is
-/// unmasked in place.
-fn decode(data: &mut [u8]) -> Option<DecodedFrame> {
+/// `websocket::decode` of a whole frame's header, warning as it does. The
+/// payload is left as it arrived: masked, when the frame is.
+fn decode(data: &[u8]) -> Option<DecodedFrame> {
     let func = c"websocket::decode";
-    let error = match swoole_rs_websocket::decode_in_place(data) {
+    let error = match swoole_rs_websocket::decode_header(data) {
         Ok(frame) => return Some(frame),
         Err(error) => error,
     };
@@ -690,9 +690,7 @@ fn unpack(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let length = string.bytes().len();
-    // SAFETY: the argument's string holds `length` bytes at its value.
-    let data = unsafe { std::slice::from_raw_parts_mut(string::val(string.as_ptr()), length) };
+    let data = string.bytes();
     if data.len() < 2 {
         host::set_last_error(PROTOCOL_ERROR);
         call.set_bool(false);
@@ -704,7 +702,12 @@ fn unpack(call: &Call) {
         return;
     };
     let payload = data.get(frame.header_length..frame.header_length + frame.payload_length);
-    let payload = payload.unwrap_or_default();
+    // The argument is the caller's string: a masked payload is unmasked in a copy.
+    let mut payload = Cow::Borrowed(payload.unwrap_or_default());
+    if frame.flags.is_masked() {
+        swoole_rs_websocket::mask(payload.to_mut(), frame.mask_key);
+    }
+    let payload = &*payload;
     let zpayload = if frame.flags.is_compressed() {
         let Some(plain) = uncompress(payload) else {
             host::set_last_error(PROTOCOL_ERROR);
@@ -1358,11 +1361,16 @@ fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8])
     let Some(frame) = decode(packet) else {
         return Next::Done(protocol_error());
     };
-    // `decode` accepted the frame, so the packet holds its whole payload.
+    // `decode` accepted the frame, so the packet holds its whole payload. The
+    // packet is the socket's own buffer, so a masked payload is unmasked there.
     let payload = packet
-        .get(frame.header_length..)
-        .and_then(|rest| rest.get(..frame.payload_length))
+        .get_mut(frame.header_length..)
+        .and_then(|rest| rest.get_mut(..frame.payload_length))
         .unwrap_or_default();
+    if frame.flags.is_masked() {
+        swoole_rs_websocket::mask(payload, frame.mask_key);
+    }
+    let payload = &*payload;
     let opcode = frame.opcode;
     let respond = match opcode {
         Opcode::Ping if settings & OPEN_PING_FRAME == 0 => {

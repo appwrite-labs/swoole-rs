@@ -126,9 +126,9 @@ bool swr_zend_coroutine_library_loaded(void);
  * swr_zend_callable_hold held. */
 void swr_zend_coroutine_fcc_discard(zend_fcall_info_cache *fcc);
 
-/* sw_php_print_backtrace_impl(skip_last, options, limit) inside zend_try
- * (output handlers may run): 1 if it bailed out. */
-int swr_zend_coroutine_print_trace(int skip_last, int options, int limit);
+/* sw_php_print_backtrace_impl's output: the fetched trace array as text, inside
+ * zend_try (output handlers may run): 1 if it bailed out. */
+int swr_zend_coroutine_print_trace(zval *backtrace);
 
 /* fiber->status = status, as the fiber observers read it. */
 void swr_zend_coroutine_fiber_status(zend_fiber_context *fiber, zend_fiber_status status);

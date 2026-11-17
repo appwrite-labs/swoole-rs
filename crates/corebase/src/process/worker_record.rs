@@ -561,6 +561,30 @@ impl<'a> Worker<'a> {
         self.write_pipe_current(null);
     }
 
+    /// Forgets one end of the worker's pipe (the master's, or the worker's), and
+    /// the current end when it was that one; false when the record had none.
+    #[must_use]
+    pub fn forget_pipe(self, master: bool) -> bool {
+        let end = if master {
+            self.pipe_master()
+        } else {
+            self.pipe_worker()
+        };
+        if end.is_null() {
+            return false;
+        }
+        let null = core::ptr::null_mut();
+        if self.pipe_current() == end {
+            self.write_pipe_current(null);
+        }
+        if master {
+            self.write_pipe_master(null);
+        } else {
+            self.write_pipe_worker(null);
+        }
+        true
+    }
+
     /// `pipe_current = pipe_master` (`master`) or `pipe_worker`: the end this
     /// process reads and writes.
     pub fn use_pipe(self, master: bool) {

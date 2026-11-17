@@ -372,8 +372,9 @@ impl Ctx {
 
     /// Run `f` with that frame as Zend's current one, as its backtraces and
     /// exception locations read it, then restore the running frame; `f` just
-    /// runs for the running context, whose saved frame is stale. `f` neither
-    /// switches coroutines nor bails out.
+    /// runs for the running context, whose saved frame is stale. `f` runs no PHP
+    /// code: it neither switches coroutines nor bails out. Output, whose
+    /// handlers may do both, belongs after it.
     pub(crate) fn in_frame<R>(self, f: impl FnOnce() -> R) -> R {
         let Some(suspended) = self.suspended() else {
             return f();

@@ -19,8 +19,8 @@ use std::ptr;
 /// `SW_FD_PIPE`.
 const FD_PIPE: c_int = 3;
 /// `SW_PIPE_CLOSE_MASTER` and `SW_PIPE_CLOSE_WORKER`.
-const CLOSE_MASTER: c_int = 1;
-const CLOSE_WORKER: c_int = 2;
+pub const CLOSE_MASTER: c_int = 1;
+pub const CLOSE_WORKER: c_int = 2;
 
 /// `swoole::SocketPair` (`SWR_SOCKET_PAIR_RECORD_FIELDS`); `Pipe` and `UnixSocket`
 /// add nothing to it.

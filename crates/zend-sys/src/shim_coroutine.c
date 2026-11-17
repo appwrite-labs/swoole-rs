@@ -337,16 +337,12 @@ void swr_zend_coroutine_fcc_discard(zend_fcall_info_cache *fcc) {
     }
 }
 
-int swr_zend_coroutine_print_trace(int skip_last, int options, int limit) {
+int swr_zend_coroutine_print_trace(zval *backtrace) {
     volatile int bailed = 0;
     SWR_ZEND_TRY {
-        zval backtrace;
-        zend_fetch_debug_backtrace(&backtrace, skip_last, options, limit);
-        ZEND_ASSERT(Z_TYPE(backtrace) == IS_ARRAY);
-        zend_string *str = zend_trace_to_string(Z_ARRVAL(backtrace), false);
+        zend_string *str = zend_trace_to_string(Z_ARRVAL_P(backtrace), false);
         ZEND_WRITE(ZSTR_VAL(str), ZSTR_LEN(str));
         zend_string_release(str);
-        zval_ptr_dtor(&backtrace);
     }
     SWR_ZEND_CATCH {
         bailed = 1;

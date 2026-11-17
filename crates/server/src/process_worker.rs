@@ -74,18 +74,28 @@ impl ProcessWorker {
         Some(fd)
     }
 
-    /// Close a retained pair's selected end. None means a borrowed native pair.
-    /// Keep the closed pair's allocation until its last owner goes as well.
+    /// Close the selected end of the worker's pipe (0: both). Only the pair's
+    /// owner frees an end; a thread's copy lends the owner's pair, so its close
+    /// only stops this record using the end, as closing a forked process's own
+    /// descriptor does. The record forgets each end it closed. None means a
+    /// borrowed native pair.
     #[must_use]
     pub fn close_pipe(&self, which: std::ffi::c_int) -> Option<bool> {
-        let pipe = self
-            .0
-            .pipe
-            .get()
-            .or_else(|| self.0.parent.get()?.0.pipe.get())?;
-        let closed = socket_pair::close(&mut lock(&pipe.0), which);
-        if closed && which == 0 {
-            self.get().clear_pipes();
+        let owned = self.0.pipe.get();
+        if owned.is_none() && self.0.parent.get().is_none() {
+            return None;
+        }
+        let worker = self.get();
+        let closed = match which {
+            socket_pair::CLOSE_MASTER => worker.forget_pipe(true),
+            socket_pair::CLOSE_WORKER => worker.forget_pipe(false),
+            _ => {
+                worker.clear_pipes();
+                true
+            }
+        };
+        if let Some(pipe) = owned {
+            socket_pair::close(&mut lock(&pipe.0), which);
         }
         Some(closed)
     }
