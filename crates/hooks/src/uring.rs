@@ -526,10 +526,7 @@ impl Uring {
     /// Requests waiting for room in the ring.
     #[must_use]
     pub fn waiting_num(&self) -> usize {
-        let waiting = self.waiting.take();
-        let len = waiting.len();
-        self.waiting.set(waiting);
-        len
+        self.waiting.with_taken(|waiting| waiting.len())
     }
 
     #[must_use]
@@ -548,50 +545,49 @@ impl Uring {
 /// The ring fd is readable: harvest completions, move waiting requests into the
 /// freed slots, then resume each completed request's coroutine.
 pub fn wakeup(engine: &Uring) -> bool {
-    loop {
-        // Resuming coroutines may re-enter the engine, so the ready list is taken
-        // out of it, and no cell of it is borrowed while they run.
-        let mut ready = engine.ready.take();
-        let harvested = engine.ring.with_box(|ring| {
-            let mut harvested = false;
-            for cqe in ring.completion().take(QUEUE_SIZE as usize) {
-                harvested = true;
-                if cqe.user_data() != TIMEOUT_EVENT {
-                    ready.push((cqe.user_data(), cqe.result() as isize));
-                }
-            }
-            harvested
-        });
-        if harvested != Some(true) {
-            engine.ready.set(ready);
-            return true;
-        }
-        for _ in 0..ready.len() {
-            if engine.sq_space_left() == 0 {
-                break;
-            }
-            let mut queue = engine.waiting.take();
-            let waiting = queue.pop_front();
-            engine.waiting.set(queue);
-            let Some(waiting) = waiting else {
-                break;
-            };
-            engine.dispatch(waiting);
-        }
-        for &(id, result) in &ready {
-            let waker = engine
-                .slots
-                .with_taken(|slots| slots.complete(id, complete(result)));
-            engine.task_num.set(engine.task_num.get() - 1);
-            // The coroutine suspended in that event's operation, which may re-enter
-            // the engine.
-            if let Some(waker) = waker {
-                (engine.host.resume)(waker);
+    // A resumed coroutine can re-enter wakeup and use its own completion list.
+    while engine.ready.with_taken(|ready| harvest(engine, ready)) {}
+    true
+}
+
+fn harvest(engine: &Uring, ready: &mut Vec<(u64, isize)>) -> bool {
+    let harvested = engine.ring.with_box(|ring| {
+        let mut harvested = false;
+        for cqe in ring.completion().take(QUEUE_SIZE as usize) {
+            harvested = true;
+            if cqe.user_data() != TIMEOUT_EVENT {
+                ready.push((cqe.user_data(), cqe.result() as isize));
             }
         }
-        ready.clear();
-        engine.ready.set(ready);
+        harvested
+    });
+    if harvested != Some(true) {
+        return false;
     }
+    for _ in 0..ready.len() {
+        let waiting = engine.waiting.with_taken(|queue| {
+            if queue.is_empty() || engine.sq_space_left() == 0 {
+                return None;
+            }
+            queue.pop_front()
+        });
+        let Some(waiting) = waiting else {
+            break;
+        };
+        engine.dispatch(waiting);
+    }
+    for (id, result) in ready.drain(..) {
+        let waker = engine
+            .slots
+            .with_taken(|slots| slots.complete(id, complete(result)));
+        engine.task_num.set(engine.task_num.get() - 1);
+        // The coroutine suspended in that event's operation, which may re-enter
+        // the engine.
+        if let Some(waker) = waker {
+            (engine.host.resume)(waker);
+        }
+    }
+    true
 }
 
 /// Cancel the request numbered `event`, as a coroutine cancelling a suspended one
