@@ -80,6 +80,17 @@ plus `php_sockets` for
 the helper’s socket calls; if these APIs exist but misbehave, tests
 run and fail normally.
 
+SysV IPC is isolated per runner group too, because originals such as the process-pool
+`msgqueue` pair use fixed key `0x70000001` and one engine's leftover message would reach the
+next (#4582). On Linux, where `unshare` can give it one (as root, or with unprivileged user
+namespaces, mapping the runner's own uid), each group runs in a private IPC namespace. Elsewhere
+(macOS, or Ubuntu's default AppArmor userns restriction) the runner snapshots the SysV queues,
+semaphores and shared memory the current user owns before a group and, in a `finally` that
+covers failures and timeouts after the group is killed, `ipcrm`s only the ones that are new.
+Pre-existing and other users' objects are never removed; a per-user lock in `/tmp` serializes
+these groups so concurrent runs don't remove each other's live objects. Each batch records its
+mode as `ipc_isolation` (`namespace` or `cleanup`).
+
 JSON defaults to `target/reports/upstream-phpt.json`. Adjacent `*-artifacts/`
 directories retain runner logs, its result ledger, and available expected/actual/
 diff/generated-PHP files per engine/test. Tests are never blessed or rewritten to
