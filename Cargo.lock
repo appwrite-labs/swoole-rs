@@ -366,22 +366,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "swoole-rs-buffer"
-version = "0.1.0"
-dependencies = [
- "itoa",
- "libc",
- "memchr",
- "swoole-rs-base64",
- "swoole-rs-corebase",
-]
-
-[[package]]
 name = "swoole-rs-bus"
 version = "0.1.0"
 dependencies = [
  "libc",
- "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-reactor",
  "swoole-rs-tls",
@@ -401,7 +389,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-base64",
- "swoole-rs-buffer",
  "swoole-rs-cares-sys",
  "swoole-rs-corebase",
  "swoole-rs-error",
@@ -421,6 +408,8 @@ dependencies = [
  "cc",
  "itoa",
  "libc",
+ "memchr",
+ "swoole-rs-base64",
  "swoole-rs-error",
  "swoole-rs-framing",
  "swoole-rs-oracle",
@@ -487,7 +476,6 @@ name = "swoole-rs-ffi"
 version = "0.1.0"
 dependencies = [
  "cc",
- "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-curl",
@@ -555,7 +543,6 @@ dependencies = [
  "io-uring",
  "libc",
  "openssl-sys",
- "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-error",
@@ -574,7 +561,6 @@ name = "swoole-rs-hooks-system-tests"
 version = "0.0.0"
 dependencies = [
  "libc",
- "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-ffi",
@@ -605,7 +591,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-base64",
- "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-http",
@@ -617,7 +602,6 @@ dependencies = [
 name = "swoole-rs-http-server-tests"
 version = "0.0.0"
 dependencies = [
- "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-ffi",
@@ -707,7 +691,6 @@ name = "swoole-rs-ossupport"
 version = "0.1.0"
 dependencies = [
  "libc",
- "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-error",
 ]
@@ -730,7 +713,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-base64",
- "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-error",
@@ -803,7 +785,6 @@ name = "swoole-rs-phphttp"
 version = "0.1.0"
 dependencies = [
  "libc",
- "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-deflate",
@@ -926,7 +907,6 @@ name = "swoole-rs-phpserver"
 version = "0.1.0"
 dependencies = [
  "libc",
- "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-error",
@@ -967,7 +947,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-brotli",
- "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-error",
@@ -1025,7 +1004,6 @@ name = "swoole-rs-ports"
 version = "0.1.0"
 dependencies = [
  "libc",
- "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-error",
@@ -1047,7 +1025,6 @@ name = "swoole-rs-process"
 version = "0.1.0"
 dependencies = [
  "libc",
- "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-memory",
@@ -1065,7 +1042,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "openssl-sys",
- "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-memory",
@@ -1085,7 +1061,6 @@ name = "swoole-rs-server"
 version = "0.1.0"
 dependencies = [
  "libc",
- "swoole-rs-buffer",
  "swoole-rs-bus",
  "swoole-rs-clients",
  "swoole-rs-corebase",
@@ -1147,7 +1122,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "openssl-sys",
- "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-ossupport",

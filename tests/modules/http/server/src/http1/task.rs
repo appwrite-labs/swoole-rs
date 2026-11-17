@@ -12,7 +12,7 @@
 
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicU32};
-use swoole_rs_buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::locks::SharedMutex;
 use swoole_rs_corebase::{swoole_random_string, swr_v1_core_set_current_task_id};
 use swoole_rs_process::methods as pool;

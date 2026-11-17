@@ -20,7 +20,6 @@ ssh2 = ["dep:swoole-rs-ssh2-sys"]
 [dependencies]
 io-uring = { version = "=0.7.16", optional = true }
 libc = "=0.2.191"
-swoole-rs-buffer = { path = "../buffer" }
 swoole-rs-clients = { path = "../clients" }
 swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
 swoole-rs-error = { path = "../error" }

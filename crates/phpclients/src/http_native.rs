@@ -5,7 +5,7 @@
 use crate::{native::Co, socket::Sock};
 use libc::c_int;
 use std::{ffi::CStr, sync::OnceLock};
-use swoole_rs_buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::{ProxyState, log, sys::Text};
 use swoole_rs_hooks::hooked::{swoole_coroutine_close, write};
 use swoole_rs_hooks::socket_extra::{CloseHook, set_close_hook};
@@ -96,7 +96,7 @@ impl HttpBuffer {
     /// The response's own buffer, separate from TLS's socket read buffer.
     pub(crate) fn input(&mut self) -> &mut CppString {
         self.0.get_or_insert_with(|| {
-            swoole_rs_buffer::string::boxed_sized_string(
+            swoole_rs_corebase::buffer::string::boxed_sized_string(
                 swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as usize,
                 Some(swoole_rs_phpswoole::zend_string_allocator()),
             )

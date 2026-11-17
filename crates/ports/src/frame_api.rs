@@ -6,7 +6,7 @@
 use std::ffi::{CStr, c_char, c_int};
 use swoole_rs_corebase::CCast;
 
-use swoole_rs_buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::lent::Spare;
 use swoole_rs_corebase::log;
 

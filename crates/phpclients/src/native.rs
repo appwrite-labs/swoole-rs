@@ -9,13 +9,13 @@ use std::{
     ptr,
     rc::Rc,
 };
-use swoole_rs_buffer::string::CppString;
 use swoole_rs_clients::mqtt::set_protocol as mqtt_set_protocol;
 use swoole_rs_clients::{
     address::{address_port, with_host},
     client::{self, Client, Owner},
 };
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_hooks::{co_socket::Co as Handle, socket_extra};
 use swoole_rs_phpruntime::{Report, co, report};
@@ -315,7 +315,7 @@ impl Co {
         let retval = swoole_rs_hooks::packet::recv_packet(self.0, timeout);
         if retval == Some(0) && clear_empty && !self.0.read_buffer().is_null() {
             self.0
-                .with_buffer(false, swoole_rs_buffer::string::CppString::clear);
+                .with_buffer(false, swoole_rs_corebase::buffer::string::CppString::clear);
         }
         retval
     }

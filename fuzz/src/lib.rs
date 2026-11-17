@@ -38,7 +38,7 @@ const CANDIDATE: Engine = Engine {
 
 mod request {
     use std::ffi::{CStr, c_char};
-    use swoole_rs_buffer::string::{CppString, boxed_string};
+    use swoole_rs_corebase::buffer::string::{CppString, boxed_string};
     use swoole_rs_corebase::{set_errno, sys::errno};
     use swoole_rs_http::ChunkState;
     use swoole_rs_http_ffi::HttpRequest as Request;

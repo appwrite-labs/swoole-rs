@@ -12,6 +12,8 @@ license.workspace = true
 upstream-symbols = ["dep:cc"]
 
 [dependencies]
+memchr = "2.8.3"
+swoole-rs-base64 = { path = "../base64" }
 swoole-rs-error = { path = "../error" }
 itoa = "1.0.18"
 libc = "=0.2.191"

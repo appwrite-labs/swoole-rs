@@ -230,7 +230,7 @@ pub(crate) fn timeout_kind(event: Events) -> swoole_rs_reactor::TimeoutKind {
 mod tests {
     use super::*;
     use crate::co_io::set_errno;
-    use crate::co_io::test_host::{ON_SUSPEND, REACTOR_OK, TIMER_OK, install, log, take};
+    use crate::co_io::test_host::{MOVES, ON_SUSPEND, REACTOR_OK, TIMER_OK, install, log, take};
     use crate::co_socket::Co;
     use crate::co_socket::TestSocket;
     use crate::socket_wait::ready;
@@ -244,14 +244,15 @@ mod tests {
     }
 
     /// The scripted call over the `length` bytes of a buffer `buffered` lends, or of
-    /// none, at `at`.
+    /// none, at `at`: it logs which source it moves, the caller's (`true`), none
+    /// (`false`), or the write buffer a wait moved them to.
     fn call(length: usize, buffered: bool, at: At) -> Option<usize> {
-        let length = match at {
-            At::Caller(skip) => length - skip,
-            At::WriteBuffer => length,
+        let (length, source) = match at {
+            At::Caller(skip) => (length - skip, buffered.to_string()),
+            At::WriteBuffer => (length, "write-buffer".to_owned()),
         };
         let result = RESULTS.with_borrow_mut(VecDeque::pop_front).unwrap_or(0);
-        log(format!("io:{length}:{buffered}"));
+        log(format!("io:{length}:{source}"));
         if result < 0 {
             set_errno(i32::try_from(-result).unwrap());
             return None;
@@ -266,15 +267,18 @@ mod tests {
     const ECONNRESET: isize = -(libc::ECONNRESET as isize);
 
     /// How a scenario fails besides its results: 1 the socket is closed, 2 the
-    /// timer can't be added, 3 the wait wakes with an error.
+    /// timer can't be added, 3 the wait wakes with an error. `moves`: a write's wait
+    /// moves its bytes to the write buffer.
     fn run(
         event: Events,
         flags: u32,
         buffered: bool,
+        moves: bool,
         results: &[isize],
         failure: u32,
     ) -> (isize, i32, Vec<String>) {
         install();
+        MOVES.set(moves);
         let mut socket = TestSocket::new();
         unsafe { socket.0.record() }.timeouts.read = 1.0;
         unsafe { socket.0.record() }.timeouts.write = 1.0;
@@ -316,11 +320,13 @@ mod tests {
 
     /// Upstream's one-call loop (`recv`, `send`, `read`, `write`, `readv`,
     /// `writev`, `recvmsg`, `sendmsg`, `recvfrom`, `sendto`), transcribed: the
-    /// result, the error it leaves and the native effects in order.
+    /// result, the error it leaves and the native effects in order. Once a write's
+    /// wait moves the bytes (`moves`), the retries send from the write buffer.
     fn upstream_one(
         event: Events,
         eintr: bool,
         buffered: bool,
+        moves: bool,
         results: &[isize],
         failure: u32,
     ) -> (isize, i32, Vec<String>) {
@@ -329,15 +335,20 @@ mod tests {
             return (-1, libc::EBADF, effects);
         }
         let mut results: VecDeque<isize> = results.iter().copied().collect();
-        let mut call = |effects: &mut Vec<String>| {
-            effects.push(format!("io:8:{buffered}"));
+        let mut call = |effects: &mut Vec<String>, moved: bool| {
+            let source = if moved {
+                "write-buffer".to_owned()
+            } else {
+                buffered.to_string()
+            };
+            effects.push(format!("io:8:{source}"));
             results.pop_front().unwrap_or(0)
         };
-        let (mut timer, mut error) = (false, 0);
-        let mut result = call(&mut effects);
+        let (mut timer, mut error, mut moved) = (false, 0, false);
+        let mut result = call(&mut effects, moved);
         while result < 0 {
             if eintr && result == EINTR {
-                result = call(&mut effects);
+                result = call(&mut effects, moved);
                 continue;
             }
             if result != EAGAIN {
@@ -353,6 +364,7 @@ mod tests {
             effects.push(format!("add:{event}"));
             if event == Events::WRITE && buffered {
                 effects.push("buffer:8".into());
+                moved = moves;
             }
             effects.push(format!("yield:{event}"));
             effects.push(format!("remove:{event}"));
@@ -360,7 +372,7 @@ mod tests {
                 error = libc::ETIMEDOUT;
                 break;
             }
-            result = call(&mut effects);
+            result = call(&mut effects, moved);
         }
         if result >= 0 {
             error = 0;
@@ -400,14 +412,14 @@ mod tests {
             (Events::READ, false),
             (Events::WRITE, false),
         ] {
-            for eintr in [false, true] {
+            for (eintr, moves) in [(false, false), (true, false), (false, true), (true, true)] {
                 for results in modes {
                     for failure in 0..4 {
                         let flags = if eintr { RETRY_INTERRUPTED } else { 0 };
                         assert_eq!(
-                            run(event, flags, buffered, results, failure),
-                            upstream_one(event, eintr, buffered, results, failure),
-                            "{event} {eintr} {buffered} {results:?} {failure}"
+                            run(event, flags, buffered, moves, results, failure),
+                            upstream_one(event, eintr, buffered, moves, results, failure),
+                            "{event} {eintr} {buffered} {moves} {results:?} {failure}"
                         );
                     }
                 }
@@ -488,7 +500,7 @@ mod tests {
             for results in cases {
                 for failure in 0..4 {
                     assert_eq!(
-                        run(event, ALL, true, results, failure),
+                        run(event, ALL, true, true, results, failure),
                         upstream_all(event, results, failure),
                         "{event} {results:?} {failure}"
                     );

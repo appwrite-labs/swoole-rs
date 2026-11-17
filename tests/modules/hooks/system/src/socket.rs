@@ -660,7 +660,7 @@ fn delete(conn: ManuallyDrop<Sock>) {
 /// `delete string`.
 fn delete_string(string: *mut CppString) {
     // SAFETY: a String the caller owns, made by `new_sized_string`.
-    unsafe { swoole_rs_buffer::string::delete_string(string.cast()) };
+    unsafe { swoole_rs_corebase::buffer::string::delete_string(string.cast()) };
 }
 
 fn socket_pair() -> [c_int; 2] {

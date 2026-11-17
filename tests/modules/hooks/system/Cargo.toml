@@ -16,7 +16,6 @@ test = false
 
 [dependencies]
 libc = "=0.2.191"
-swoole-rs-buffer = { path = "../../../../crates/buffer" }
 swoole-rs-clients = { path = "../../../../crates/clients" }
 swoole-rs-corebase = { path = "../../../../crates/corebase", features = ["upstream-symbols"] }
 swoole-rs-ffi = { path = "../../../../crates/ffi" }

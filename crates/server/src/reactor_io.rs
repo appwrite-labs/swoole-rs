@@ -3,7 +3,9 @@ use core::ffi::{c_int, c_long};
 use core::mem::offset_of;
 use core::sync::atomic::Ordering::SeqCst;
 
-use swoole_rs_buffer::cpp::{swr_cpp_buffer_empty, swr_cpp_buffer_pop, swr_cpp_buffer_typed_front};
+use swoole_rs_corebase::buffer::cpp::{
+    swr_cpp_buffer_empty, swr_cpp_buffer_pop, swr_cpp_buffer_typed_front,
+};
 use swoole_rs_corebase::{DataHead, ServerEvent, log, microtime};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_reactor::{Event, Socket};
@@ -97,7 +99,7 @@ mod tests {
     const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixDatagram;
-    use swoole_rs_buffer::cpp::swr_cpp_buffer_count;
+    use swoole_rs_corebase::buffer::cpp::swr_cpp_buffer_count;
     use swoole_rs_reactor::SocketRecord;
 
     use swoole_rs_corebase::ServerEvent::{RecvDgram, SendData};
@@ -148,7 +150,7 @@ mod tests {
             ours.set_nonblocking(true).unwrap();
             theirs.set_nonblocking(true).unwrap();
             let sock = Box::new(SocketRecord::with_fd(ours.as_raw_fd(), FD_PIPE)).into_socket();
-            let buffer = swoole_rs_buffer::cpp::new_buffer(0);
+            let buffer = swoole_rs_corebase::buffer::cpp::new_buffer(0);
             for m in messages {
                 buffer.append(m);
             }

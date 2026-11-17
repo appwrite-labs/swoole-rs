@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Swoole's include/swoole_string.h, owned here: swoole::String's layout, which
- * crates/buffer/src/string.rs mirrors and whose members it defines under their
+ * crates/corebase/src/buffer/string.rs mirrors and whose members it defines under their
  * upstream symbols. Upstream's file is deleted, so `#include "swoole_string.h"`
  * finds this copy on the Rust prefix's include path. */
 #pragma once
@@ -71,5 +71,5 @@ class String {
 
 static_assert(std::is_standard_layout<String>::value && sizeof(String) == 40 && offsetof(String, offset) == 16 &&
                   offsetof(String, str) == 24 && offsetof(String, allocator) == 32 && sizeof(off_t) == 8,
-              "swoole::String matches crates/buffer/src/string.rs");
+              "swoole::String matches crates/corebase/src/buffer/string.rs");
 }  // namespace swoole

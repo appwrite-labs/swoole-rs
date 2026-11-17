@@ -8,17 +8,17 @@
 //! `invalid_argument`, which no first-party code catches, so the process ended either way.
 //! Nothing here calls C++: entry disposers are the Rust sendfile request's, so no C++
 //! exception can unwind into these frames.
-use crate::typed::Front;
+use crate::buffer::typed::Front;
 
 /// `swoole::Buffer`: its only member is the queue. Only Rust reaches it, through the
 /// box [`new_buffer`] returns.
 pub struct CppBuffer {
-    queue: std::cell::UnsafeCell<crate::Buffer>,
+    queue: std::cell::UnsafeCell<crate::buffer::Buffer>,
 }
 
-fn check(status: Result<(), crate::Error>) {
+fn check(status: Result<(), crate::buffer::Error>) {
     if status.is_err() {
-        swoole_rs_corebase::fatal("a buffer queue operation failed");
+        crate::fatal("a buffer queue operation failed");
     }
 }
 
@@ -26,12 +26,12 @@ impl CppBuffer {
     /// The queue's address, for a caller that reaches it between the borrows of the
     /// record that owns this `Buffer` (crates/tls's send path).
     #[must_use]
-    pub const fn queue(&self) -> *mut crate::Buffer {
+    pub const fn queue(&self) -> *mut crate::buffer::Buffer {
         self.queue.get()
     }
 
     /// Runs `body` over the queue, which this holds by value.
-    fn with<R>(&self, body: impl FnOnce(&mut crate::Buffer) -> R) -> R {
+    fn with<R>(&self, body: impl FnOnce(&mut crate::buffer::Buffer) -> R) -> R {
         // SAFETY: the cell is not `Sync`, nothing in `body` reaches this queue another
         // way, and the borrow ends with it.
         body(unsafe { &mut *self.queue() })
@@ -39,8 +39,8 @@ impl CppBuffer {
 
     /// Pops the first entry and runs its disposer; false when the queue is empty.
     fn pop(&self) -> bool {
-        self.with(crate::Buffer::pop)
-            .map(crate::TypedDetached::dispose)
+        self.with(crate::buffer::Buffer::pop)
+            .map(crate::buffer::TypedDetached::dispose)
             .is_ok()
     }
 
@@ -65,7 +65,7 @@ impl Drop for CppBuffer {
     fn drop(&mut self) {
         while self.pop() {}
         if self.queue.get_mut().holds_token() {
-            swoole_rs_corebase::fatal("a buffer queue still in use when dropped");
+            crate::fatal("a buffer queue still in use when dropped");
         }
     }
 }
@@ -74,7 +74,7 @@ impl Drop for CppBuffer {
 #[must_use]
 pub fn swr_cpp_buffer_typed_front(this: &CppBuffer) -> Front {
     this.with(|queue| queue.front())
-        .unwrap_or_else(|_| swoole_rs_corebase::fatal("typed_front of an empty buffer"))
+        .unwrap_or_else(|_| crate::fatal("typed_front of an empty buffer"))
 }
 
 /// `typed_consume(front, count)`: commits `count` sent bytes of `front`'s entry.
@@ -84,7 +84,7 @@ pub fn swr_cpp_buffer_typed_consume(this: &CppBuffer, front: &Front, count: u32)
 
 /// `typed_close()`: queues a payload-free CLOSE marker.
 pub fn swr_cpp_buffer_typed_close(this: &CppBuffer) {
-    check(this.with(crate::Buffer::push_close));
+    check(this.with(crate::buffer::Buffer::push_close));
 }
 
 /// `pop()`: drops the first entry, if any.
@@ -114,14 +114,14 @@ pub fn swr_cpp_buffer_empty(this: &CppBuffer) -> bool {
 #[must_use]
 pub fn new_buffer(chunk_size: u32) -> Box<CppBuffer> {
     Box::new(CppBuffer {
-        queue: std::cell::UnsafeCell::new(crate::Buffer::new(chunk_size)),
+        queue: std::cell::UnsafeCell::new(crate::buffer::Buffer::new(chunk_size)),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::EntryKind;
+    use crate::buffer::EntryKind;
 
     /// Runs `body` over a constructed Buffer, then destroys it.
     fn with_buffer(chunk_size: u32, body: impl FnOnce(&CppBuffer)) {

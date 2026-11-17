@@ -14,10 +14,10 @@ use crate::view::Server;
 use crate::{Connection, Mode, ServerState};
 use core::ffi::{CStr, c_int};
 use std::io::IoSlice;
-use swoole_rs_buffer::cpp::{
+use swoole_rs_corebase::ServerEvent;
+use swoole_rs_corebase::buffer::cpp::{
     new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_typed_close,
 };
-use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::log::LogLevel::{
     SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING,

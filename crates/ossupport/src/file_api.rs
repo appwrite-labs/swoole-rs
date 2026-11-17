@@ -8,7 +8,7 @@ use crate::file_record::FileRecord;
 use libc::c_int;
 use std::ffi::CStr;
 use std::os::fd::OwnedFd;
-use swoole_rs_buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING};
 use swoole_rs_corebase::{log, sys};
 

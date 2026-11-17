@@ -138,7 +138,7 @@ fn command(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> bool
         return true;
     };
     // A copy: the handler may use the thread buffer the message unpacks into.
-    let message = swoole_rs_buffer::string::with_thread_buffer(|buffer| {
+    let message = swoole_rs_corebase::buffer::string::with_thread_buffer(|buffer| {
         task.unpack(buffer).map(|(data, _)| data.to_vec())
     });
     let Some(message) = message else {

@@ -17,8 +17,8 @@ use std::{
     rc::{Rc, Weak},
     sync::atomic::Ordering,
 };
-use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::constants::TaskFlag;
 use swoole_rs_corebase::locks::SharedMutex;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING;

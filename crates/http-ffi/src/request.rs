@@ -9,7 +9,7 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::os::unix::ffi::OsStrExt;
-use swoole_rs_buffer::string::{CppString, boxed_sized_string};
+use swoole_rs_corebase::buffer::string::{CppString, boxed_sized_string};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as NOTICE, SW_LOG_WARNING as WARNING};
 use swoole_rs_corebase::{log, set_errno};
 use swoole_rs_http::multipart_parser::{Flow, MultipartParser, Parts};

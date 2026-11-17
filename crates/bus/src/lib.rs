@@ -29,7 +29,7 @@ use std::io::IoSlice;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use swoole_rs_buffer::string::OwnedString;
+use swoole_rs_corebase::buffer::string::OwnedString;
 use swoole_rs_corebase::lent::ReadVec;
 use swoole_rs_corebase::sys::{self, errno};
 use swoole_rs_corebase::{DataHead as BusHead, TrustedAllocator, log};

@@ -10,7 +10,7 @@ use std::ffi::{CStr, c_int};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use swoole_rs_buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::log::{self, set_last_error};
 use swoole_rs_corebase::task_tmpfile;
 use swoole_rs_ossupport::file_get_contents;
