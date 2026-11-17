@@ -1,5 +1,5 @@
 //! `MessageBus`, the pipe protocol between reactors, workers and task workers.
-//! Rust owns the receive buffer's bookkeeping, the chunked packets being
+//! Rust owns the receive buffer, the chunked packets being
 //! reassembled, and the read and write loops over the pipe's file descriptor.
 //!
 //! It also owns the bus's own records of its pipes (`init_pipe_sockets`), and logs
@@ -26,7 +26,6 @@ use std::collections::HashMap;
 use std::ffi::{c_char, c_int};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::io::IoSlice;
-use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use swoole_rs_corebase::buffer::string::OwnedString;
@@ -49,7 +48,7 @@ const HEAD: usize = size_of::<BusHead>();
 /// `SW_IPC_MSG_MIN`.
 const IPC_MSG_MIN: u32 = 2048 - 40;
 const _: () = assert!(HEAD == 40, "sizeof(DataHead)");
-/// The least a buffer holds: a header and the `PacketPtr` `pass` stores after it.
+/// The legacy minimum allocation: a header and room for a `PacketPtr`.
 const BUFFER_MIN: usize = HEAD + size_of::<BusPacket>();
 
 /// `BusRead::event`: what the caller does after `Bus::receive` returns.
@@ -77,15 +76,6 @@ const EMPTY: BusPacket = BusPacket {
     length: 0,
     data: ptr::null_mut(),
 };
-
-/// A set buffer's first [`BUFFER_MIN`] bytes: the current message's head, then the
-/// packet [`Bus::pass`] points the message at.
-#[repr(C)]
-struct Front {
-    head: Cell<BusHead>,
-    packet: Cell<BusPacket>,
-}
-const _: () = assert!(size_of::<Front>() == BUFFER_MIN, "a header and a PacketPtr");
 
 /// One read's progress across the allocations it asks for.
 struct BusRead {
@@ -141,11 +131,14 @@ type PipeSockets = Box<[Option<OwnedSocket>]>;
 /// calls nothing back into the server or PHP. The pipe records are set once and
 /// freed only by the drop, so a borrow of the bus lends them.
 pub struct Bus {
-    /// Null, or the block [`Bus::alloc_buffer`] made: `buffer_size` bytes, and at
-    /// least [`BUFFER_MIN`], until [`Bus::free_buffer`].
-    buffer: Cell<*mut BusHead>,
-    /// The allocator `buffer` came from, while the bus has asked one for it.
-    buffer_owner: Cell<Option<TrustedAllocator>>,
+    /// Taken out around reads and callbacks, like the packet table.
+    buffer: Cell<Option<Box<OwnedString>>>,
+    /// Decoded once after a read; byte writes below keep the wire header in sync.
+    current: Cell<BusHead>,
+    /// A callback may replace or free the buffer while its old owner is lent.
+    buffer_generation: Cell<usize>,
+    /// `pass` lends an external packet without serializing its pointer into bytes.
+    passed: Cell<BusPacket>,
     buffer_size: Cell<usize>,
     always_chunked: Cell<bool>,
     packets: Cell<Option<Box<Packets>>>,
@@ -225,8 +218,10 @@ fn waits(nobufs: &mut bool) -> bool {
 impl Bus {
     fn new(buffer_size: usize) -> Self {
         Self {
-            buffer: Cell::new(ptr::null_mut()),
-            buffer_owner: Cell::new(None),
+            buffer: Cell::default(),
+            current: Cell::default(),
+            buffer_generation: Cell::new(0),
+            passed: Cell::new(EMPTY),
             buffer_size: Cell::new(buffer_size),
             always_chunked: Cell::new(false),
             packets: Cell::new(None),
@@ -235,25 +230,20 @@ impl Bus {
         }
     }
 
-    /// The set buffer's front, shared with the reads and writes that go through the
-    /// buffer's pointer; `None` while no buffer is set.
-    fn front(&self) -> Option<&Front> {
-        // SAFETY: null, or the buffer `alloc_buffer` made: an allocator's block (so
-        // aligned) of at least `BUFFER_MIN` bytes, which start with the `Front` it
-        // wrote. Reads write only bytes into it, and any bytes are a `Front`. It lives
-        // until `free_buffer`, which no caller of this reaches while it holds the front.
-        unsafe { self.buffer.get().cast::<Front>().as_ref() }
-    }
-
-    /// The set buffer's header; `None` while no buffer is set.
-    fn head_cell(&self) -> Option<&Cell<BusHead>> {
-        self.front().map(|front| &front.head)
-    }
-
-    /// The current message's head; an empty one while no buffer is set.
+    /// The current message's decoded head; empty before allocation or after freeing.
     #[must_use]
+    #[inline]
     pub fn head(&self) -> BusHead {
-        self.head_cell().map_or_else(BusHead::default, Cell::get)
+        self.current.get()
+    }
+
+    fn set_head(&self, head: &BusHead) {
+        lend(&self.buffer, |buffer| {
+            if let Some(to) = buffer.view_mut().get_mut(..HEAD) {
+                to.copy_from_slice(&head.to_bytes());
+                self.current.set(*head);
+            }
+        });
     }
 
     /// Whether the buffer holds the whole current message: its head and then the
@@ -261,62 +251,59 @@ impl Bus {
     /// passed by pointer), within the buffer's size.
     #[must_use]
     pub fn holds_whole(&self) -> bool {
-        let Some(head) = self.head_cell().map(Cell::get) else {
-            return false;
-        };
-        head.flags & (PTR | CHUNK | OBJ_PTR) == 0
-            && HEAD.saturating_add(head.len as usize) <= self.buffer_size.get()
+        self.with_whole(|_| ()).is_some()
     }
 
-    /// `f` over the whole current message as its sender packed it: the head and
-    /// the `len` bytes it counts. `None`, without calling `f`, unless the buffer
-    /// holds it whole ([`Self::holds_whole`]).
+    /// `f` over a whole, initialized message, owned locally through the callback.
+    /// The buffer is absent from the bus meanwhile. A callback's replacement/free
+    /// takes effect when it returns, without invalidating the bytes it was lent.
     pub fn with_whole<R>(&self, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
-        if !self.holds_whole() {
-            return None;
+        let buffer = self.buffer.take()?;
+        let generation = self.buffer_generation.get();
+        let result = (|| {
+            let head = self.head();
+            let length = HEAD.saturating_add(head.len as usize);
+            if head.flags & (PTR | CHUNK | OBJ_PTR) != 0 || length > self.buffer_size.get() {
+                return None;
+            }
+            buffer.view().get(..length).map(f)
+        })();
+        if self.buffer_generation.get() == generation {
+            put_back(&self.buffer, buffer);
         }
-        let length = HEAD + self.head().len as usize;
-        // SAFETY: `holds_whole` put the head and its `len` bytes within the set
-        // buffer's `buffer_size` bytes, live until `free_buffer`, and the read that
-        // set the head wrote them in the same piece. Only the bus's own reads and
-        // `free_buffer` write them, and the bus's owner runs neither on this thread
-        // while it handles the message `f` is given.
-        Some(f(unsafe {
-            std::slice::from_raw_parts(self.buffer.get().cast::<u8>(), length)
-        }))
+        result
     }
 
-    fn set_flags(&self, flags: u8) {
-        if let Some(head) = self.head_cell() {
-            head.set(BusHead {
+    fn set_flags(&self, buffer: &mut [u8], flags: u8) {
+        if let Some(to) = buffer.get_mut(std::mem::offset_of!(BusHead, flags)) {
+            *to = flags;
+            self.current.set(BusHead {
                 flags,
-                ..head.get()
+                ..self.current.get()
             });
         }
     }
 
     fn data(&self) -> *mut u8 {
-        self.buffer.get().cast::<u8>().wrapping_add(HEAD)
+        lend(&self.buffer, |buffer| buffer.as_ptr().cast_mut())
+            .unwrap_or(ptr::null_mut())
+            .wrapping_add(HEAD)
     }
 
-    /// `fill` over the first `length` bytes of the set buffer (at most all of it);
-    /// empty while no buffer is set. `fill` reads into them and leaves the bus alone.
-    /// The bytes it read, or `None` when it failed (returned less than 0).
+    /// Read into the buffer's prefix, retaining bytes beyond a short read.
     fn fill(
         &self,
+        buffer: &mut [u8],
         length: usize,
-        fill: impl FnOnce(&mut [MaybeUninit<u8>]) -> Option<usize>,
+        fill: impl FnOnce(&mut [u8]) -> Option<usize>,
     ) -> Option<usize> {
-        let buffer = self.buffer.get();
-        if buffer.is_null() {
-            fill(&mut [])
-        } else {
-            let length = length.min(self.buffer_size.get());
-            // SAFETY: `alloc_buffer` made a set buffer of `buffer_size` writable bytes,
-            // live until `free_buffer`; `fill` doesn't touch the bus, so nothing else
-            // reaches them meanwhile.
-            fill(unsafe { std::slice::from_raw_parts_mut(buffer.cast(), length) })
+        let received = fill(buffer.get_mut(..length).unwrap_or_default());
+        if received.is_some()
+            && let Some(bytes) = buffer.first_chunk()
+        {
+            self.current.set(BusHead::from_bytes(bytes));
         }
+        received
     }
 
     #[must_use]
@@ -335,7 +322,7 @@ impl Bus {
         let head = self.head();
         if head.flags & PTR != 0 {
             // `pass` stored it.
-            self.front().map_or(EMPTY, |front| front.packet.get())
+            self.passed.get()
         } else if head.flags & OBJ_PTR != 0 {
             lend(&self.packets, |packets| {
                 packets.get(&head.msg_id).map(|p| BusPacket {
@@ -356,9 +343,9 @@ impl Bus {
     /// `MessageBus::pass`: the buffer points at `data` instead of holding it; nothing
     /// while no buffer is set.
     pub fn pass(&self, info: &BusHead, data: *const c_char) {
-        let Some(current) = self.front() else {
+        if lend(&self.buffer, |_| ()).is_none() {
             return;
-        };
+        }
         let mut head = *info;
         if info.len > 0 {
             head.flags = PTR;
@@ -367,9 +354,9 @@ impl Bus {
                 length: info.len as usize,
                 data: data.cast_mut(),
             };
-            current.packet.set(packet);
+            self.passed.set(packet);
         }
-        current.head.set(head);
+        self.set_head(&head);
     }
 
     /// `MessageBus::move_packet`: take ownership of the current packet.
@@ -427,17 +414,31 @@ impl Bus {
         nobufs: &mut bool,
     ) -> Option<usize> {
         state.event = None;
-        if self.buffer.get().is_null() {
-            return None;
-        }
+        lend(&self.buffer, |buffer| {
+            self.read_buffer(buffer.view_mut(), fd, dgram, state, nobufs)
+        })
+        .flatten()
+    }
+
+    fn read_buffer(
+        &self,
+        buffer: &mut [u8],
+        fd: c_int,
+        dgram: bool,
+        state: &mut BusRead,
+        nobufs: &mut bool,
+    ) -> Option<usize> {
+        let buffer_size = self.buffer_size.get();
         loop {
             if state.resume {
                 state.resume = false;
             } else {
                 let n = if dgram {
-                    self.fill(usize::MAX, |slots| sys::read(fd, slots))
+                    self.fill(buffer, buffer_size, |slots| sys::read(fd, slots))
                 } else {
-                    self.fill(HEAD, |slots| sys::recv(fd, slots, libc::MSG_PEEK))
+                    self.fill(buffer, HEAD.min(buffer_size), |slots| {
+                        sys::recv(fd, slots, libc::MSG_PEEK)
+                    })
                 };
                 let Some(n) = n else {
                     return waits(nobufs).then_some(0);
@@ -455,12 +456,14 @@ impl Bus {
                     if dgram {
                         return Some(n);
                     }
-                    return self.fill(HEAD + head.len as usize, |slots| sys::read(fd, slots));
+                    return self.fill(
+                        buffer,
+                        (HEAD + head.len as usize).min(buffer_size),
+                        |slots| sys::read(fd, slots),
+                    );
                 }
             }
             let head = self.head();
-            let payload = self.data();
-            let buffer_size = self.buffer_size.get();
             // The packets stay out across the stream's readv: one syscall on a
             // nonblocking pipe, which neither yields nor calls back.
             let read = lend(&self.packets, |packets| {
@@ -473,9 +476,7 @@ impl Bus {
                             Self::allocate(state, length);
                             break 'chunk Err(Some(0));
                         }
-                        // SAFETY: the completed datagram wrote `count` payload bytes after
-                        // the header; the packet owns separate storage while they are copied.
-                        let bytes = unsafe { std::slice::from_raw_parts(payload, count) };
+                        let bytes = buffer.get(HEAD..HEAD + count).unwrap_or_default();
                         packet.fill(|spare| {
                             let _ = spare.put(bytes);
                         });
@@ -488,7 +489,7 @@ impl Bus {
                             // only the bytes after that header initialize the lent spare.
                             unsafe {
                                 spare.read(|tail| {
-                                    self.fill(HEAD, |header| {
+                                    self.fill(buffer, HEAD.min(buffer_size), |header| {
                                         received = sys::readv(
                                             fd,
                                             &mut [ReadVec::new(header), ReadVec::new(tail)],
@@ -524,14 +525,16 @@ impl Bus {
                         return None;
                     }
                     // Read the chunk's header from the pipe and discard it.
-                    _ = self.fill(HEAD, |slots| sys::recv(fd, slots, 0));
+                    _ = self.fill(buffer, HEAD.min(buffer_size), |slots| {
+                        sys::recv(fd, slots, 0)
+                    });
                     return Some(0);
                 }
             };
             state.chunks = state.chunks.wrapping_add(1);
             let flags = self.head().flags;
             if flags & END != 0 {
-                self.set_flags(flags | OBJ_PTR);
+                self.set_flags(buffer, flags | OBJ_PTR);
                 return n;
             }
             if state.chunks >= MAX_RECV_CHUNKS {
@@ -725,45 +728,29 @@ impl Bus {
         self.always_chunked.set(true);
     }
 
-    /// `MessageBus::alloc_buffer()`, after `set_buffer_size(size)`: the receive
-    /// buffer is `size` bytes from `allocator`, its header zeroed. False, with no
-    /// buffer set, when the allocator has none to give. The reads, packets and
-    /// passes below need one set. A buffer already set is forgotten, not freed.
+    /// `MessageBus::alloc_buffer()`: replace the receive buffer with `size` bytes
+    /// from `allocator`, initialized once for safe reads. False, leaving no buffer,
+    /// on failure.
     pub fn alloc_buffer(&self, size: usize, allocator: TrustedAllocator) -> bool {
-        self.buffer_size.set(size);
         let block = size.max(BUFFER_MIN);
-        let buffer = allocator.allocate(block).cast::<BusHead>();
-        self.buffer.set(buffer);
-        self.buffer_owner.set(Some(allocator));
-        // The front is zeroed, an empty head and packet (`BusHead::default()` and
-        // `EMPTY`), through `fill` over the whole block while `buffer_size` says so.
-        self.buffer_size.set(block);
-        self.fill(BUFFER_MIN, |front| {
-            if let Some(front) = front.get_mut(..BUFFER_MIN) {
-                front.write_copy_of_slice(&[0; BUFFER_MIN]);
-            }
-            Some(0)
-        });
+        let mut buffer = OwnedString::try_alloc_exact(block, allocator);
+        if let Some(buffer) = buffer.as_mut() {
+            buffer.read_zeroed(block, |bytes| bytes.len());
+        }
+        let allocated = buffer.is_some();
         self.buffer_size.set(size);
-        !buffer.is_null()
+        self.free_buffer();
+        self.buffer.set(buffer.map(Box::new));
+        allocated
     }
 
-    /// `MessageBus::free_buffer()`: the buffer goes back to the allocator
-    /// [`Bus::alloc_buffer`] took it from, and the bus has none.
+    /// Return the receive allocation to its own allocator, leaving no buffer.
     pub fn free_buffer(&self) {
-        let buffer = self.buffer.replace(ptr::null_mut());
-        let Some(free) = self.buffer_owner.take().and_then(|owner| owner.get().free) else {
-            return;
-        };
-        // SAFETY: null or the block `alloc_buffer` took from this allocator, which
-        // the bus no longer names.
-        unsafe { free(buffer.cast()) };
-    }
-
-    /// The receive buffer, which starts with the current message's head.
-    #[must_use]
-    pub fn buffer(&self) -> *mut BusHead {
-        self.buffer.get()
+        self.buffer_generation
+            .set(self.buffer_generation.get().wrapping_add(1));
+        self.passed.set(EMPTY);
+        self.current.set(BusHead::default());
+        drop(self.buffer.take());
     }
 
     /// Packets being reassembled.
@@ -1013,7 +1000,6 @@ mod tests {
 
     struct Pipe {
         bus: Bus,
-        buffer: Vec<u64>,
         fds: [RawFd; 2],
     }
     impl Pipe {
@@ -1041,9 +1027,8 @@ mod tests {
             }
             let bus = Bus::new(size);
             bus.always_chunked.set(always);
-            let mut buffer = vec![0u64; size / 8];
-            bus.buffer.set(buffer.as_mut_ptr().cast());
-            Self { bus, buffer, fds }
+            assert!(bus.alloc_buffer(size, allocator()));
+            Self { bus, fds }
         }
         fn write(&self, id: u64, payload: &[u8]) -> bool {
             let mut head = BusHead {
@@ -1086,7 +1071,7 @@ mod tests {
             for fd in self.fds {
                 unsafe { libc::close(fd) };
             }
-            assert_ne!(self.buffer.len(), 0);
+            assert_ne!(lend(&self.bus.buffer, |buffer| buffer.len()).unwrap(), 0);
         }
     }
 
@@ -1171,9 +1156,8 @@ mod tests {
 
     #[test]
     fn pass_points_at_the_payload() {
-        let mut buffer = [0u64; 16];
         let bus = Bus::new(128);
-        bus.buffer.set(buffer.as_mut_ptr().cast());
+        assert!(bus.alloc_buffer(128, allocator()));
         let data = b"hello";
         let info = BusHead {
             len: 5,
@@ -1196,11 +1180,10 @@ mod tests {
     #[test]
     fn the_buffer_holds_a_whole_message_only_unchunked_and_within_its_size() {
         assert!(!Bus::new(128).holds_whole(), "no buffer");
-        let mut buffer = [0u64; 16];
         let bus = Bus::new(128);
-        bus.buffer.set(buffer.as_mut_ptr().cast());
+        assert!(bus.alloc_buffer(128, allocator()));
         let head = |len, flags| {
-            bus.head_cell().unwrap().set(BusHead {
+            bus.set_head(&BusHead {
                 len,
                 flags,
                 ..BusHead::default()
@@ -1230,6 +1213,101 @@ mod tests {
         assert!(writer.complete(true, false));
         assert_eq!(writer.mode, Mode::Complete);
         assert_eq!(size_of::<BusHead>(), 40);
+    }
+
+    #[test]
+    fn receive_storage_preserves_prefix_and_callback_ownership() {
+        let bus = Bus::new(128);
+        assert!(bus.alloc_buffer(128, allocator()));
+        let header = BusHead {
+            len: 4,
+            fd: 7,
+            ..BusHead::default()
+        }
+        .to_bytes();
+        let mut message = header.to_vec();
+        message.extend_from_slice(b"data");
+        assert_eq!(
+            lend(&bus.buffer, |buffer| bus.fill(
+                buffer.view_mut(),
+                128,
+                |room| {
+                    room[..message.len()].copy_from_slice(&message);
+                    Some(message.len())
+                }
+            ))
+            .flatten(),
+            Some(message.len())
+        );
+        assert_eq!(bus.with_whole(<[u8]>::to_vec), Some(message.clone()));
+        // A short overwrite updates the decoded head and retains later bytes.
+        let mut changed = header;
+        changed[0] ^= 1;
+        message[0] = changed[0];
+        assert_eq!(
+            lend(&bus.buffer, |buffer| bus.fill(
+                buffer.view_mut(),
+                1,
+                |room| {
+                    room[0] = changed[0];
+                    Some(1)
+                }
+            ))
+            .flatten(),
+            Some(1)
+        );
+        assert_eq!(bus.head().fd, BusHead::from_bytes(&changed).fd);
+        assert_eq!(
+            bus.with_whole(|bytes| {
+                bus.free_buffer();
+                bytes.to_vec()
+            }),
+            Some(message)
+        );
+        assert!(!bus.holds_whole());
+        assert_eq!(bus.head().fd, 0);
+        assert!(bus.alloc_buffer(128, allocator()));
+        let header = bus.head().to_bytes();
+        bus.with_whole(|bytes| {
+            assert!(bus.alloc_buffer(64, allocator()));
+            assert_eq!(bytes, header);
+        });
+        assert!(
+            bus.holds_whole(),
+            "the callback's replacement remains installed"
+        );
+        assert_eq!(bus.buffer_size.get(), 64);
+    }
+
+    #[test]
+    fn receive_storage_uses_its_allocator_on_replace_failure_and_drop() {
+        static FREES: AtomicU64 = AtomicU64::new(0);
+        unsafe extern "C" fn free(data: *mut c_void) {
+            FREES.fetch_add(1, Ordering::Relaxed);
+            unsafe { libc::free(data) };
+        }
+        static OWNED: CoreAllocator = CoreAllocator {
+            free: Some(free),
+            ..ALLOCATOR
+        };
+        static EMPTY_ALLOCATOR: CoreAllocator = CoreAllocator {
+            malloc: None,
+            calloc: None,
+            realloc: None,
+            free: None,
+        };
+        let owned = unsafe { TrustedAllocator::new(&OWNED) };
+        let empty = unsafe { TrustedAllocator::new(&EMPTY_ALLOCATOR) };
+        let bus = Bus::new(128);
+        assert!(bus.alloc_buffer(128, owned));
+        assert!(bus.alloc_buffer(64, owned));
+        assert_eq!(FREES.load(Ordering::Relaxed), 1);
+        assert!(!bus.alloc_buffer(128, empty));
+        assert_eq!(FREES.load(Ordering::Relaxed), 2);
+        assert!(!bus.holds_whole());
+        assert!(bus.alloc_buffer(128, owned));
+        drop(bus);
+        assert_eq!(FREES.load(Ordering::Relaxed), 3);
     }
 
     type Received = Vec<(i64, Vec<u8>)>;
@@ -1351,8 +1429,7 @@ mod tests {
             bus: Bus::new(65536),
             q: Vec::new(),
         };
-        let mut buffer = vec![0u64; 65536 / 8];
-        pipe.bus.buffer.set(buffer.as_mut_ptr().cast());
+        assert!(pipe.bus.alloc_buffer(65536, allocator()));
         let sent = vec![
             mb_packet(DATA_SIZE, 1),
             mb_packet(pipe.bus.buffer_size.get(), 2),
@@ -1380,8 +1457,7 @@ mod tests {
         for fd in fds {
             unsafe { libc::close(fd) };
         }
-        pipe.bus.buffer.set(ptr::null_mut());
-        drop(buffer);
+        pipe.bus.free_buffer();
         (pipe.bus, pipe.q, sent)
     }
 

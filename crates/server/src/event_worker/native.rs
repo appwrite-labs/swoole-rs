@@ -437,9 +437,7 @@ fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
         .socket()
         .is_some_and(|socket| bus.read(*socket) > Some(0))
     {
-        // SAFETY: the head of the whole event the bus just read, which only this
-        // thread's next read replaces. Lent, not copied: every request passes here.
-        accept_event(serv, unsafe { &*bus.rust().buffer() });
+        accept_event(serv, &bus.rust().head());
         bus.pop();
     }
     0

@@ -167,10 +167,10 @@ impl<'a> Bus<'a> {
     pub(crate) fn init_pipe_sockets(self, fds: impl IntoIterator<Item = c_int>) {
         self.rust().init_pipe_sockets(fds);
     }
-    /// `MessageBus::alloc_buffer()`, after `set_buffer_size(size)`: whether the
-    /// allocator gave the bus its buffer.
+    /// The reusable receive buffer lives with the bus, including past a PHP
+    /// request's bailout. Only transferable packets use the request allocator.
     pub(crate) fn alloc_buffer(self, size: usize) -> bool {
-        self.rust().alloc_buffer(size, self.allocator)
+        self.rust().alloc_buffer(size, TrustedAllocator::STD)
     }
     /// `MessageBus::free_buffer()`.
     pub(crate) fn free_buffer(self) {

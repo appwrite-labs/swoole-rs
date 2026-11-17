@@ -78,7 +78,7 @@ pub(crate) struct ThreadRecord {
     pub(crate) dispatch_count: Cell<u64>,
     pub(crate) pipe_command: Cell<*mut SocketRecord>,
     pub(crate) heartbeat_timer: Cell<Option<swoole_rs_corebase::timer_key::Held>>,
-    /// `message_bus`: its Rust bus, then the allocator of its buffer and packets.
+    /// `message_bus`: its Rust bus, then the allocator of its packets.
     pub(crate) bus: PoolBus,
 }
 
@@ -89,7 +89,7 @@ pub(crate) struct ThreadRecord {
 )]
 pub(crate) const STD: TrustedAllocator = TrustedAllocator::STD;
 
-/// A `MessageBus` record: the Rust bus, then the allocator its packets and buffer
+/// A `MessageBus` record: the Rust bus, then the allocator its transferable packets
 /// come from. Only the constructors here fill one, with `SwooleG.std_allocator` or
 /// another record's allocator, and only [`PoolBus::set_allocator`] replaces it, with
 /// one a [`TrustedAllocator`] vouched for.
@@ -112,7 +112,7 @@ impl PoolBus {
         }
     }
 
-    /// The Rust bus and the allocator of its buffer and packets, as they are now.
+    /// The Rust bus and the allocator of its packets, as they are now.
     pub(crate) fn parts(&self) -> (&swoole_rs_bus::MessageBus, TrustedAllocator) {
         (&self.bus, self.allocator.get())
     }
@@ -142,7 +142,7 @@ pub fn pool_bus_move_packet(
 }
 
 /// `pool->message_bus->set_allocator(allocator)`, when the pool has a bus: its
-/// buffer and packets come from `allocator` from now on.
+/// packets come from `allocator` from now on.
 pub fn pool_bus_set_allocator(
     pool: swoole_rs_corebase::process::process_pool::PoolRef<'_>,
     allocator: TrustedAllocator,

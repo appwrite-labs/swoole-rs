@@ -4,9 +4,9 @@
 //! Rust string storage and operations. Native socket records retain opaque pointers;
 //! the allocation and its fields are accessed only by Rust.
 //!
-//! An allocation failure aborts: upstream throws `std::bad_alloc`, which no
-//! first-party code catches. Arithmetic wraps, as upstream's `size_t` does, and
-//! the casts are upstream's C casts.
+//! Allocation failure aborts, except for [`OwnedString::try_alloc_exact`]: upstream
+//! throws `std::bad_alloc`, which no first-party code catches. Arithmetic wraps,
+//! as upstream's `size_t` does, and the casts are upstream's C casts.
 use crate::lent::{Spare, lend_spare};
 use crate::{CCast, TrustedAllocator};
 use std::ffi::{c_int, c_void};
@@ -31,6 +31,22 @@ pub struct CppString {
 
 /// A Rust-owned string allocation, disposed when it leaves scope.
 pub struct OwnedString(CppString);
+
+impl OwnedString {
+    /// A fresh allocation of exactly `size` bytes, or `None` when `allocator` fails.
+    #[must_use]
+    pub fn try_alloc_exact(size: usize, allocator: TrustedAllocator) -> Option<Self> {
+        let data = allocator.allocate(size);
+        (!data.is_null()).then(|| {
+            Self(CppString {
+                str: data.cast(),
+                size,
+                allocator: Some(allocator),
+                ..CppString::EMPTY
+            })
+        })
+    }
+}
 
 impl Default for OwnedString {
     fn default() -> Self {

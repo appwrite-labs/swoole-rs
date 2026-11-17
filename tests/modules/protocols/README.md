@@ -32,7 +32,7 @@ callback that can bail out runs beneath a Rust frame.
   status/error differs from missing; PHP empty bulk emits `$0` while the primitive
   formatter writes nothing. Embedded-NUL status/key truncation, unsigned numeric
   map keys and 32-bit map-count wrapping remain.
-- MessageBus: Rust owns the receive buffer's bookkeeping, the packets being
+- MessageBus: Rust owns the receive buffer, the packets being
   reassembled and both read loops and the write loop. It keeps direct/chunk flags,
   retry after minimum-size reduction, legacy nonnegative chunk-write success and
   uint16 fairness wrapping (including buffered receive's double increment). End
@@ -46,6 +46,17 @@ callback that can bail out runs beneath a Rust frame.
   count. `moved_packets_are_not_freed_and_memory_counts_reassembly` checks the same
   allocation address across transfer and that the bus cannot free the new owner's
   payload. Allocation and resizing run outside the packet-table borrow.
+  The receive allocation is also an `OwnedString`, freed by its own allocator on
+  replacement, allocation failure or drop. Server and pool receive buffers use
+  libc because their bus can survive PHP request shutdown; transferable packets
+  retain their configured allocator. It is zeroed once at allocation, so
+  reads borrow initialized bytes without per-read initialization bookkeeping.
+  Reads decode header bytes into typed state once; subsequent flag/pass writes
+  keep both forms in sync;
+  passed payload pointers stay in a separate typed field. Whole-event callbacks
+  keep the owner outside the bus, so a callback can replace or free the buffer
+  without invalidating the bytes it was lent. Ownership tests cover short
+  overwrites, callback reentry, replacement and allocation failure.
 
 Rust's own bounds: empty MQTT asks for more, invalid/truncated RESP fails, and
 oversized SOCKS output is rejected. Numeric error cases compare the `get_number`
