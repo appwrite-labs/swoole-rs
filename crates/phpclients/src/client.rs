@@ -10,9 +10,9 @@ use crate::{
 };
 use libc::c_int;
 use std::{borrow::Cow, cell::Cell, ffi::CStr};
-use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::reactor::SocketFields;
+use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_phpstubs::client_coro;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Weak, ZString,
@@ -62,18 +62,14 @@ impl Drop for Data {
 impl Data {
     /// The client's socket, while it has one.
     fn co(&self) -> Option<Co> {
-        let held = self.zsocket.take();
-        let socket = Sock::of(&held).and_then(Sock::co);
-        self.zsocket.set(held);
-        socket
+        self.zsocket
+            .with_taken(|held| Sock::of(held).and_then(Sock::co))
     }
 
     /// A new reference to the `Coroutine\Socket` object, if the client has one.
     fn zsocket(&self) -> Option<Owned> {
-        let held = self.zsocket.take();
-        let copy = held.object().is_some().then(|| held.copy());
-        self.zsocket.set(held);
-        copy
+        self.zsocket
+            .with_taken(|held| held.object().is_some().then(|| held.copy()))
     }
 }
 

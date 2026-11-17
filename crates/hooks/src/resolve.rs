@@ -5,44 +5,13 @@
 //! and `getaddrinfo` over the async pool, `coroutine::dns_lookup` and the pool's DNS
 //! handlers. The query itself is crates/clients (dns.rs, cares.rs) and the request
 //! record crates/corebase.
-use crate::offload::{AsyncEvent, AsyncOps, Handler, swr_v1_hook_async};
-use crate::wait_event::native::current;
 use core::ffi::{CStr, c_int};
 use swoole_rs_clients::dns::{DnsSocket, RecvError, received};
 use swoole_rs_clients::resolver::{self, Request};
+use swoole_rs_corebase::offload::{AsyncEvent, COROUTINE_ASYNC, Handler, swr_v1_hook_async};
 use swoole_rs_corebase::{
     NameResolverContext, log, swoole_rand_any, swr_v1_core_dns_lookup_random,
     swr_v1_core_name_resolver_resolve,
-};
-
-/// Where a park stores its waker before it switches out.
-pub(crate) type WakerSlot = core::cell::Cell<Option<swoole_rs_corebase::coroutine::Waker>>;
-
-/// `co->yield()` of the current coroutine (fatal outside one), its waker in `waker`.
-pub(crate) fn park(waker: &WakerSlot) {
-    swoole_rs_corebase::coroutine::park(current().cast(), |park| waker.set(Some(park)));
-}
-
-/// `co->yield_ex(timeout)` of the current coroutine (fatal outside one), its waker
-/// in `waker`.
-pub(crate) fn park_for_armed(timeout: f64, waker: &WakerSlot) -> bool {
-    let arm = |park| waker.set(Some(park));
-    let code = swoole_rs_corebase::coroutine::yield_timed_armed(current().cast(), timeout, arm);
-    swoole_rs_corebase::coroutine::yield_resumed(code)
-}
-
-extern "C" fn last_error() -> c_int {
-    log::last_error()
-}
-
-/// `coroutine::async`'s coroutine and pool operations.
-pub static COROUTINE_ASYNC: AsyncOps = AsyncOps {
-    current,
-    dispatch: crate::async_threads::dispatch,
-    park,
-    park_for: park_for_armed,
-    resume: swoole_rs_corebase::coroutine::Waker::wake,
-    last_error,
 };
 
 /// `async::handler_gethostbyname`: the request's address, on a pool thread.
@@ -61,8 +30,8 @@ pub fn dispatch_client(lookup: swoole_rs_clients::client::Lookup, request: &Requ
         Some(client_completed),
         std::ptr::null_mut(),
     );
-    event.data = Some(request.reference());
-    !crate::async_threads::dispatch(&event).is_null()
+    event.set_record(request.reference());
+    !swoole_rs_corebase::offload::threads::dispatch(&event).is_null()
 }
 
 extern "C" fn client_completed(event: &AsyncEvent) {
@@ -92,7 +61,7 @@ fn run(
     request_error: bool,
 ) -> Option<c_int> {
     let mut event = AsyncEvent::empty();
-    event.data = Some(request.reference());
+    event.set_record(request.reference());
     event.set_result(retval, 0);
     swr_v1_hook_async(&mut event, handler, timeout, &COROUTINE_ASYNC);
     let (retval, error) = event.result();

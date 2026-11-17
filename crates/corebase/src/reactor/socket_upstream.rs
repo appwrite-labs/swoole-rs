@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/network/socket.cc (Swoole contributors).
-//! The `network::Socket` methods and `make_socket` overloads of `socket.cc` that
-//! are whole Rust operations, last error and warnings included. With
-//! `upstream-symbols`, the socket factories retain their upstream symbols. Socket
-//! member operations are called directly by Rust.
+//! Rust socket methods and constructors from `socket.cc`, including their last-error
+//! and warning behavior.
 use crate::CCast;
 use crate::constants::ResultCode;
 use crate::log;
@@ -209,22 +207,7 @@ pub fn socket_uncork(socket: &mut SocketFields) -> bool {
     cork_as(socket, false)
 }
 
-/// `Socket *make_socket(SocketType, FdType, int flags)`: null with the last error
-/// set when socket(2) failed, warning first for a type it has no arguments for.
-#[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole11make_socketE12swSocketType8swFdTypei")
-)]
-pub extern "C" fn make_socket_typed(
-    socket_type: c_int,
-    fd_type: c_int,
-    flags: c_int,
-) -> *mut SocketRecord {
-    make_typed(socket_type, fd_type, flags).map_or(std::ptr::null_mut(), Box::into_raw)
-}
-
-/// [`make_socket_typed`]'s record, still its maker's own; none where that is null.
+/// Opens a socket, recording the last error on failure and warning on unknown types.
 #[must_use]
 pub fn make_typed(socket_type: c_int, fd_type: c_int, flags: c_int) -> Option<Box<SocketRecord>> {
     let mut unknown = false;
@@ -244,11 +227,7 @@ pub fn make_typed(socket_type: c_int, fd_type: c_int, flags: c_int) -> Option<Bo
 
 /// `Socket *make_socket(SocketType, FdType, int domain, int type, int protocol, int flags)`.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole11make_socketE12swSocketType8swFdTypeiiii")
-)]
-pub extern "C" fn make_socket_open(
+pub fn make_socket_open(
     socket_type: c_int,
     fd_type: c_int,
     domain: c_int,
@@ -261,16 +240,6 @@ pub extern "C" fn make_socket_open(
         log::set_last_error(errno());
     }
     socket
-}
-
-/// `Socket *make_socket(int fd, FdType)`.
-#[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole11make_socketEi8swFdType")
-)]
-pub extern "C" fn make_socket_fd(fd: c_int, fd_type: c_int) -> *mut SocketRecord {
-    SocketRecord::with_fd(fd, fd_type).into_raw()
 }
 
 /// `Reactor::change`'s log: `code` 0 is `swoole_sys_warning`, else
@@ -328,7 +297,7 @@ mod tests {
 
     #[test]
     fn make_socket_with_an_unknown_type_sets_the_last_error() {
-        assert!(make_socket_typed(-1, 0, 0).is_null());
+        assert!(make_typed(-1, 0, 0).is_none());
         assert_eq!(log::last_error(), libc::ESOCKTNOSUPPORT);
     }
 }

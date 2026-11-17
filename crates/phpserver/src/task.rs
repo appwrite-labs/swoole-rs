@@ -18,6 +18,7 @@ use std::{
     sync::atomic::Ordering,
 };
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::constants::TaskFlag;
 use swoole_rs_corebase::locks::SharedMutex;
@@ -193,17 +194,6 @@ struct TaskCo {
     /// Set once every task is sent, as upstream; unset is `taskwait`'s empty list.
     list: OnceCell<Vec<Option<i64>>>,
     count: Cell<u32>,
-}
-
-impl TaskCo {
-    /// `f` over the result, taken out and put back: `f` only adds to it at
-    /// indexes that hold nothing yet, which releases nothing.
-    fn with_result<R>(&self, f: impl FnOnce(&mut Owned) -> R) -> R {
-        let mut result = self.result.take();
-        let out = f(&mut result);
-        self.result.set(result);
-        out
-    }
 }
 
 /// One server's pending tasks, held on its object beside its `Property`, as
@@ -592,7 +582,7 @@ fn task_co(call: &Call, fill_false: bool) {
         if let Some(id) = id {
             crate::lifecycle::with_tasks(|p| p.coroutines.insert(id, Rc::downgrade(&task_co)));
         } else {
-            task_co.with_result(|result| {
+            task_co.result.with_taken(|result| {
                 if let Some(array) = result.array_mut() {
                     array.update_index(index, Owned::bool(false));
                 }
@@ -609,7 +599,7 @@ fn task_co(call: &Call, fill_false: bool) {
     task_co.count.set(n_task);
     // onFinish resumes it.
     if !task_co.waiter.wait_for(timeout) {
-        task_co.with_result(|result| {
+        task_co.result.with_taken(|result| {
             let Some(array) = result.array_mut() else {
                 return;
             };
@@ -808,13 +798,15 @@ fn resume(id: i64, data: Owned) -> Result<(), Bailout> {
         };
         // Each id arrives once (its pending entry goes below), so its index
         // is empty; a result that has no array keeps `data` for the caller.
-        let (arrived, unplaced) = task_co.with_result(|result| match result.array_mut() {
-            Some(array) => {
-                array.update_index(index as u64, data);
-                (array.array().map_or(0, Array::count), None)
-            }
-            None => (0, Some(data)),
-        });
+        let (arrived, unplaced) = task_co
+            .result
+            .with_taken(|result| match result.array_mut() {
+                Some(array) => {
+                    array.update_index(index as u64, data);
+                    (array.array().map_or(0, Array::count), None)
+                }
+                None => (0, Some(data)),
+            });
         drop(unplaced);
         crate::lifecycle::with_tasks(|p| p.coroutines.remove(&id));
         if arrived != task_co.count.get() {

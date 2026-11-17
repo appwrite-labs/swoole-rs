@@ -12,6 +12,7 @@ use std::{
     rc::{Rc, Weak},
     sync::atomic::Ordering,
 };
+use swoole_rs_corebase::CellExt;
 use swoole_rs_phpstubs::server_port;
 use swoole_rs_ports::{PropertyDefault, class_properties};
 use swoole_rs_server::{SharedServer, view};
@@ -62,12 +63,7 @@ thread_local! {
 
 /// `f` over this thread's [`PROPERTIES`], taken out and put back.
 fn with_properties<R>(f: impl FnOnce(&mut Vec<Weak<PortProperty>>) -> R) -> R {
-    PROPERTIES.with(|cell| {
-        let mut properties = cell.take();
-        let result = f(&mut properties);
-        cell.set(properties);
-        result
-    })
+    PROPERTIES.with(|cell| cell.with_taken(f))
 }
 
 /// `php_swoole_server_get_port_property(port)->callbacks[kind]`: the callable,

@@ -33,6 +33,7 @@ use swoole_rs_corebase::lent::ReadVec;
 use swoole_rs_corebase::reactor::{Caught, Heap, OwnedSocket, Socket, SocketRecord};
 use swoole_rs_corebase::sys::{self, errno};
 use swoole_rs_corebase::tls::upstream::{socket_free as free_socket, writev_sync};
+use swoole_rs_corebase::{BoxCellExt, CellExt};
 use swoole_rs_corebase::{DataHead as BusHead, TrustedAllocator, log};
 
 pub use Bus as MessageBus;
@@ -162,40 +163,6 @@ impl Drop for Bus {
     }
 }
 
-/// `f` over the packets or pipe records `cell` boxes, taken out and put back; `None`,
-/// without calling `f`, while the bus has none yet. `f` asks no [`TrustedAllocator`]
-/// (which may bail out) and calls nothing back; what it removes it returns, to be
-/// freed once `cell` holds its value again.
-fn lend<T, R>(cell: &Cell<Option<Box<T>>>, f: impl FnOnce(&mut T) -> R) -> Option<R> {
-    let mut value = cell.take()?;
-    let out = f(&mut value);
-    put_back(cell, value);
-    Some(out)
-}
-
-/// [`lend`], which first makes an empty value while `cell` holds none.
-fn lend_or_default<T: Default, R>(cell: &Cell<Option<Box<T>>>, f: impl FnOnce(&mut T) -> R) -> R {
-    let mut value = cell.take().unwrap_or_default();
-    let out = f(&mut value);
-    put_back(cell, value);
-    out
-}
-
-fn put_back<T>(cell: &Cell<Option<Box<T>>>, value: Box<T>) {
-    // `set` would call the drop glue for the `None` it replaces, on every access.
-    if let Some(nested) = cell.replace(Some(value)) {
-        release(nested);
-    }
-}
-
-/// Drops what a nested [`lend`] put back, out of line: it never happens, and the
-/// table walk would grow every caller.
-#[cold]
-#[inline(never)]
-fn release<T>(value: T) {
-    drop(value);
-}
-
 /// `Socket::catch_read_error(errno) == SW_WAIT`.
 fn waits(nobufs: &mut bool) -> bool {
     swoole_rs_corebase::reactor::catch_error(errno(), nobufs) == Caught::Wait
@@ -224,7 +191,7 @@ impl Bus {
     }
 
     fn set_head(&self, head: &BusHead) {
-        lend(&self.buffer, |buffer| {
+        self.buffer.with_box(|buffer| {
             if let Some(to) = buffer.view_mut().get_mut(..HEAD) {
                 to.copy_from_slice(&head.to_bytes());
                 self.current.set(*head);
@@ -255,7 +222,7 @@ impl Bus {
             buffer.view().get(..length).map(f)
         })();
         if self.buffer_generation.get() == generation {
-            put_back(&self.buffer, buffer);
+            self.buffer.restore_box(buffer);
         }
         result
     }
@@ -271,7 +238,8 @@ impl Bus {
     }
 
     fn data(&self) -> *mut u8 {
-        lend(&self.buffer, |buffer| buffer.as_ptr().cast_mut())
+        self.buffer
+            .with_box(|buffer| buffer.as_ptr().cast_mut())
             .unwrap_or(ptr::null_mut())
             .wrapping_add(HEAD)
     }
@@ -295,10 +263,10 @@ impl Bus {
     #[must_use]
     pub fn memory_size(&self) -> usize {
         self.buffer_size.get()
-            + lend(&self.packets, |packets| {
-                packets.values().map(|p| p.size()).sum::<usize>()
-            })
-            .unwrap_or(0)
+            + self
+                .packets
+                .with_box(|packets| packets.values().map(|p| p.size()).sum::<usize>())
+                .unwrap_or(0)
     }
 
     /// `MessageBus::get_packet`.
@@ -310,14 +278,15 @@ impl Bus {
             // `pass` stored it.
             self.passed.get()
         } else if head.flags & OBJ_PTR != 0 {
-            lend(&self.packets, |packets| {
-                packets.get(&head.msg_id).map(|p| BusPacket {
-                    length: p.len(),
-                    data: p.as_ptr().cast_mut().cast(),
+            self.packets
+                .with_box(|packets| {
+                    packets.get(&head.msg_id).map(|p| BusPacket {
+                        length: p.len(),
+                        data: p.as_ptr().cast_mut().cast(),
+                    })
                 })
-            })
-            .flatten()
-            .unwrap_or(EMPTY)
+                .flatten()
+                .unwrap_or(EMPTY)
         } else {
             BusPacket {
                 length: head.len as usize,
@@ -329,7 +298,7 @@ impl Bus {
     /// `MessageBus::pass`: the buffer points at `data` instead of holding it; nothing
     /// while no buffer is set.
     pub fn pass(&self, info: &BusHead, data: *const c_char) {
-        if lend(&self.buffer, |_| ()).is_none() {
+        if self.buffer.with_box(|_| ()).is_none() {
             return;
         }
         let mut head = *info;
@@ -348,10 +317,9 @@ impl Bus {
     /// `MessageBus::move_packet`: take ownership of the current packet.
     pub fn move_packet(&self) -> Option<OwnedString> {
         let id = self.head().msg_id;
-        lend(&self.packets, |packets| {
-            packets.get_mut(&id).map(std::mem::take)
-        })
-        .flatten()
+        self.packets
+            .with_box(|packets| packets.get_mut(&id).map(std::mem::take))
+            .flatten()
     }
 
     /// `MessageBus::pop`: frees the current packet once its last chunk arrived.
@@ -367,7 +335,7 @@ impl Bus {
     /// check in [`Bus::pop`] stays cheap on every message.
     #[inline(never)]
     fn remove(&self, id: u64) {
-        drop(lend(&self.packets, |packets| packets.remove(&id)));
+        drop(self.packets.with_box(|packets| packets.remove(&id)));
     }
 
     /// Allocates the block `Event::Allocate` asked for and hands it to the current
@@ -375,7 +343,9 @@ impl Bus {
     /// allocator that made it.
     fn grow(&self, state: &BusRead, default: TrustedAllocator) {
         let id = self.head().msg_id;
-        let mut packet = lend(&self.packets, |packets| packets.remove(&id))
+        let mut packet = self
+            .packets
+            .with_box(|packets| packets.remove(&id))
             .flatten()
             .unwrap_or_default();
         if packet.as_ptr().is_null() {
@@ -383,9 +353,10 @@ impl Bus {
         } else {
             packet.reserve_exact(state.size);
         }
-        drop(lend_or_default(&self.packets, |packets| {
-            packets.insert(id, packet)
-        }));
+        drop(
+            self.packets
+                .with_taken(|slot| slot.get_or_insert_with(Box::default).insert(id, packet)),
+        );
     }
 
     /// `MessageBus::read` (stream pipes, `dgram == false`) and
@@ -400,10 +371,9 @@ impl Bus {
         nobufs: &mut bool,
     ) -> Option<usize> {
         state.event = None;
-        lend(&self.buffer, |buffer| {
-            self.read_buffer(buffer.view_mut(), fd, dgram, state, nobufs)
-        })
-        .flatten()
+        self.buffer
+            .with_box(|buffer| self.read_buffer(buffer.view_mut(), fd, dgram, state, nobufs))
+            .flatten()
     }
 
     fn read_buffer(
@@ -452,52 +422,54 @@ impl Bus {
             let head = self.head();
             // The packets stay out across the stream's readv: one syscall on a
             // nonblocking pipe, which neither yields nor calls back.
-            let read = lend(&self.packets, |packets| {
-                let packet = packets.get_mut(&head.msg_id)?;
-                Some('chunk: {
-                    Ok(if dgram {
-                        let count = state.received.saturating_sub(HEAD);
-                        let length = packet.len() + count;
-                        if length > packet.size() || packet.as_ptr().is_null() {
-                            Self::allocate(state, length);
-                            break 'chunk Err(Some(0));
-                        }
-                        let bytes = buffer.get(HEAD..HEAD + count).unwrap_or_default();
-                        packet.fill(|spare| {
-                            let _ = spare.put(bytes);
-                        });
-                        Some(state.received)
-                    } else {
-                        let remain = (head.len as usize).saturating_sub(packet.len());
-                        let mut received = None;
-                        packet.fill_within((buffer_size - HEAD).min(remain), |spare| {
-                            // SAFETY: readv fills the header first, then the packet's tail;
-                            // only the bytes after that header initialize the lent spare.
-                            unsafe {
-                                spare.read(|tail| {
-                                    self.fill(buffer, HEAD.min(buffer_size), |header| {
-                                        received = sys::readv(
-                                            fd,
-                                            &mut [ReadVec::new(header), ReadVec::new(tail)],
-                                        );
-                                        received.map(|n| n.saturating_sub(HEAD))
-                                    })
-                                })
+            let read = self
+                .packets
+                .with_box(|packets| {
+                    let packet = packets.get_mut(&head.msg_id)?;
+                    Some('chunk: {
+                        Ok(if dgram {
+                            let count = state.received.saturating_sub(HEAD);
+                            let length = packet.len() + count;
+                            if length > packet.size() || packet.as_ptr().is_null() {
+                                Self::allocate(state, length);
+                                break 'chunk Err(Some(0));
                             }
-                        });
-                        let n = received;
-                        if n == Some(0) {
-                            state.event = Some(Event::ReadvClosed);
-                            break 'chunk Err(None);
-                        }
-                        if n.is_none() && waits(nobufs) {
-                            break 'chunk Err(Some(0));
-                        }
-                        n
+                            let bytes = buffer.get(HEAD..HEAD + count).unwrap_or_default();
+                            packet.fill(|spare| {
+                                let _ = spare.put(bytes);
+                            });
+                            Some(state.received)
+                        } else {
+                            let remain = (head.len as usize).saturating_sub(packet.len());
+                            let mut received = None;
+                            packet.fill_within((buffer_size - HEAD).min(remain), |spare| {
+                                // SAFETY: readv fills the header first, then the packet's tail;
+                                // only the bytes after that header initialize the lent spare.
+                                unsafe {
+                                    spare.read(|tail| {
+                                        self.fill(buffer, HEAD.min(buffer_size), |header| {
+                                            received = sys::readv(
+                                                fd,
+                                                &mut [ReadVec::new(header), ReadVec::new(tail)],
+                                            );
+                                            received.map(|n| n.saturating_sub(HEAD))
+                                        })
+                                    })
+                                }
+                            });
+                            let n = received;
+                            if n == Some(0) {
+                                state.event = Some(Event::ReadvClosed);
+                                break 'chunk Err(None);
+                            }
+                            if n.is_none() && waits(nobufs) {
+                                break 'chunk Err(Some(0));
+                            }
+                            n
+                        })
                     })
                 })
-            })
-            .flatten();
+                .flatten();
             let n = match read {
                 Some(Ok(n)) => n,
                 Some(Err(n)) => return n,
@@ -742,12 +714,12 @@ impl Bus {
     /// Packets being reassembled.
     #[must_use]
     pub fn count(&self) -> usize {
-        lend(&self.packets, |packets| packets.len()).unwrap_or(0)
+        self.packets.with_box(|packets| packets.len()).unwrap_or(0)
     }
 
     /// Frees every packet, once the (empty) packets are back.
     pub fn clear(&self) {
-        drop(lend(&self.packets, std::mem::take));
+        drop(self.packets.with_box(std::mem::take));
     }
 
     /// `MessageBus::read(sock)` (`read_with_buffer` when `dgram`): allocates each
@@ -1057,7 +1029,7 @@ mod tests {
             for fd in self.fds {
                 unsafe { libc::close(fd) };
             }
-            assert_ne!(lend(&self.bus.buffer, |buffer| buffer.len()).unwrap(), 0);
+            assert_ne!(self.bus.buffer.with_box(|buffer| buffer.len()).unwrap(), 0);
         }
     }
 
@@ -1104,11 +1076,12 @@ mod tests {
         );
         assert_eq!((state.event, state.size), (Some(Event::Allocate), 5000));
         pipe.bus.grow(&state, allocator());
-        let data = lend(&pipe.bus.packets, |packets| {
-            packets.get(&9).unwrap().as_ptr()
-        })
-        .unwrap()
-        .cast::<c_void>();
+        let data = pipe
+            .bus
+            .packets
+            .with_box(|packets| packets.get(&9).unwrap().as_ptr())
+            .unwrap()
+            .cast::<c_void>();
         assert_eq!(pipe.bus.memory_size(), 4096 + 5000);
         assert!(pipe.bus.read(pipe.fds[1], false, &mut state, &mut nobufs) > Some(0));
         assert_eq!(pipe.bus.packet().length, 5000);
@@ -1214,15 +1187,12 @@ mod tests {
         let mut message = header.to_vec();
         message.extend_from_slice(b"data");
         assert_eq!(
-            lend(&bus.buffer, |buffer| bus.fill(
-                buffer.view_mut(),
-                128,
-                |room| {
+            bus.buffer
+                .with_box(|buffer| bus.fill(buffer.view_mut(), 128, |room| {
                     room[..message.len()].copy_from_slice(&message);
                     Some(message.len())
-                }
-            ))
-            .flatten(),
+                }))
+                .flatten(),
             Some(message.len())
         );
         assert_eq!(bus.with_whole(<[u8]>::to_vec), Some(message.clone()));
@@ -1231,15 +1201,12 @@ mod tests {
         changed[0] ^= 1;
         message[0] = changed[0];
         assert_eq!(
-            lend(&bus.buffer, |buffer| bus.fill(
-                buffer.view_mut(),
-                1,
-                |room| {
+            bus.buffer
+                .with_box(|buffer| bus.fill(buffer.view_mut(), 1, |room| {
                     room[0] = changed[0];
                     Some(1)
-                }
-            ))
-            .flatten(),
+                }))
+                .flatten(),
             Some(1)
         );
         assert_eq!(bus.head().fd, BusHead::from_bytes(&changed).fd);

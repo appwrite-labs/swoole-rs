@@ -14,8 +14,9 @@ reactor, clock base, armed wakeup, abandoned-selection marker) and its
 operations, `init`/`reinit`, `add`, `remove`, `update`, `delay`, `select` and the
 destructor's close/complete/end/drain. It takes the boxed queue out of a `Cell` for each operation and returns it before
 a callback or destructor, so a bailout never skips a borrow release. It allocates and frees every
-`TimerNode`, which is internal to the crate. `add_fn` adds a small copyable Rust
-closure; `add_owned` retains owned captures until the last callback hold drops.
+`TimerNode`, which is internal to the crate. `add_fn` holds a closure of at most two
+words in its node, owned captures and all, and drops it with the node; `add_owned`
+boxes a larger one.
 Callers retain generation-tagged `Held` IDs for cancellation and delay. With a
 reactor it hooks `Reactor::timeout_msec`, the timer-priority end callback, the exit
 condition and a destroy callback that frees this thread's timer. No C++ reaches

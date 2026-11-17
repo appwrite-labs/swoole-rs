@@ -6,45 +6,37 @@
 use super::*;
 use std::collections::BTreeSet;
 use std::sync::atomic::Ordering::Relaxed;
-use swoole_rs_corebase::net_types::AddressStorage;
 use swoole_rs_corebase::process::worker_record::WorkerStatus::{
     Busy as SW_WORKER_BUSY, Idle as SW_WORKER_IDLE,
 };
 use swoole_rs_corebase::swoole_rand;
+use swoole_rs_server::reactor_entry::DgramPacket;
 
 const SW_SOCK_UDP: c_int = 2;
 const SW_SOCK_TCP6: c_int = 3;
-const DISPATCH_ROUND: u8 = 1;
-const DISPATCH_IPMOD: u8 = 4;
-const DISPATCH_UIDMOD: u8 = 5;
-const DISPATCH_CO_CONN_LB: u8 = 8;
-const DISPATCH_CO_REQ_LB: u8 = 9;
-const DISPATCH_CONCURRENT_LB: u8 = 10;
-
-/// `DgramPacket` up to its address.
-#[repr(C)]
-struct DgramPacket {
-    socket_type: c_int,
-    socket_addr: Address,
-}
 
 /// `network::Address::assign(type, host, port, false)`, as swoole_socket.h's inline does.
 fn assign(address: &mut Address, kind: c_int, host: &str, port: c_int) {
     address.kind = kind;
     let host = CString::new(host).unwrap();
-    // SAFETY: the record's union, which is `AddressStorage`'s size and alignment.
-    let storage = unsafe { &mut *(&raw mut address.addr).cast::<AddressStorage>() };
     let host = host.as_bytes_with_nul();
-    let assigned =
-        swoole_rs_clients::address::assign(storage, &mut address.len, kind, host, port, false);
+    let assigned = swoole_rs_clients::address::assign(
+        &mut address.addr,
+        &mut address.len,
+        kind,
+        host,
+        port,
+        false,
+    );
     assert_eq!(assigned, Ok(()));
 }
 
 /// `network::Socket fake_sock{}; fake_sock.fd = fd`, its `info` assigned when `address`
 /// is given. It leaks, as the stack socket outlives every schedule.
 fn fake_sock(fd: c_int, address: Option<(c_int, &str, c_int)>) -> *mut c_void {
-    // SAFETY: a new socket record of `fd`.
-    let sock = unsafe { case::make_socket(fd, 0) }.cast::<c_void>();
+    let sock = swoole_rs_corebase::reactor::SocketRecord::with_fd(fd, 0)
+        .into_raw()
+        .cast::<c_void>();
     if let Some((kind, host, port)) = address {
         // SAFETY: the socket's `info` (case.rs's SOCKET_INFO), an `Address`.
         assign(
@@ -93,7 +85,11 @@ fn worker(serv: Server, id: usize) -> Worker {
 
 /// A process-mode Server of `worker_num` workers and `dispatch_mode`, listening on
 /// `TEST_HOST` (and `::` when `ipv6`), created.
-fn create(worker_num: u32, dispatch_mode: u8, ipv6: bool) -> (Server, Port, Option<Port>) {
+fn create(
+    worker_num: u32,
+    dispatch_mode: DispatchMode,
+    ipv6: bool,
+) -> (Server, Port, Option<Port>) {
     let serv = Server::new(MODE_PROCESS);
     serv.config().worker_num.set(worker_num);
     serv.config().dispatch_mode.set(dispatch_mode);
@@ -109,7 +105,7 @@ fn create(worker_num: u32, dispatch_mode: u8, ipv6: bool) -> (Server, Port, Opti
 
 /// `TEST(server, schedule)`.
 fn schedule() {
-    let (serv, _, _) = create(6, DISPATCH_IDLE_WORKER, false);
+    let (serv, _, _) = create(6, DispatchMode::IDLE_WORKER, false);
     let worker_num = serv.config().worker_num.get() as usize;
 
     for i in 0..worker_num {
@@ -138,7 +134,7 @@ fn schedule() {
 
 /// `TEST(server, schedule_1)`.
 fn schedule_1() {
-    let (serv, _, _) = create(8, DISPATCH_ROUND, false);
+    let (serv, _, _) = create(8, DispatchMode::ROUND, false);
     let worker_num = serv.config().worker_num.get() as usize;
 
     let schedule_count = 1024;
@@ -163,7 +159,11 @@ fn average_combined(v1: &[usize], v2: &[usize]) -> f64 {
 
 /// `test_worker_schedule<Worker, M, member>(dispatch_mode)`: `member` is the worker's
 /// field the mode balances, read by `get` and written by `set`.
-fn test_worker_schedule(dispatch_mode: u8, get: fn(Worker) -> usize, set: fn(Worker, usize)) {
+fn test_worker_schedule(
+    dispatch_mode: DispatchMode,
+    get: fn(Worker) -> usize,
+    set: fn(Worker, usize),
+) {
     let (serv, port, _) = create(8, dispatch_mode, false);
     let worker_num = serv.config().worker_num.get() as usize;
 
@@ -200,7 +200,7 @@ fn test_worker_schedule(dispatch_mode: u8, get: fn(Worker) -> usize, set: fn(Wor
 
 /// `TEST(server, schedule_4)`.
 fn schedule_4() {
-    let (serv, port, port6) = create(4, DISPATCH_IPMOD, true);
+    let (serv, port, port6) = create(4, DispatchMode::IP_MOD, true);
     let port6 = port6.unwrap();
     let worker_num = serv.config().worker_num.get() as usize;
 
@@ -219,24 +219,10 @@ fn schedule_4() {
         counter[schedule_worker(serv, 101, None)] += 1;
     }
 
-    // SAFETY: the thread's buffer, which holds a `DgramPacket`.
-    let pkt = unsafe { (*case::swr_case_tg_buffer()).as_mut_ptr() }.cast::<DgramPacket>();
-    // SAFETY: as above.
-    assign(
-        unsafe { &mut (*pkt).socket_addr },
-        SW_SOCK_UDP,
-        "192.168.1.103",
-        29321,
-    );
-    // Upstream leaves the head unset and reads none of it but the packet's address,
-    // which is all the length lends.
-    let info = swoole_rs_corebase::DataHead {
-        len: u32::try_from(size_of::<DgramPacket>()).unwrap(),
-        ..Default::default()
-    };
-    // SAFETY: the thread's buffer, which holds the `DgramPacket` and outlives the send.
-    let head = unsafe { core::slice::from_raw_parts(pkt.cast::<u8>(), info.len as usize) };
-    let sdata = swoole_rs_server::SendData::new(info, head);
+    let mut packet = DgramPacket::default();
+    assign(&mut packet.socket_addr, SW_SOCK_UDP, "192.168.1.103", 29321);
+    let head = packet.to_bytes();
+    let sdata = swoole_rs_server::SendData::new(DataHead::default(), &head);
     counter[schedule_worker(serv, 9999, Some(&sdata))] += 1;
 
     assert_eq!(counter[0], 0);
@@ -248,7 +234,7 @@ fn schedule_4() {
 
 /// `TEST(server, schedule_5)`.
 fn schedule_5() {
-    let (serv, port, port6) = create(4, DISPATCH_UIDMOD, true);
+    let (serv, port, port6) = create(4, DispatchMode::UID_MOD, true);
     let port6 = port6.unwrap();
     let worker_num = serv.config().worker_num.get() as usize;
 
@@ -276,7 +262,7 @@ fn schedule_5() {
 
 /// `TEST(server, schedule_8)`.
 fn schedule_8() {
-    let (serv, port, port6) = create(4, DISPATCH_CO_CONN_LB, true);
+    let (serv, port, port6) = create(4, DispatchMode::CO_CONN_LB, true);
     let port6 = port6.unwrap();
     let worker_num = serv.config().worker_num.get() as usize;
 
@@ -307,7 +293,7 @@ fn schedule_8() {
 /// `TEST(server, schedule_9)`: `Worker::coroutine_num`, a `size_t`.
 fn schedule_9() {
     test_worker_schedule(
-        DISPATCH_CO_REQ_LB,
+        DispatchMode::CO_REQ_LB,
         // SAFETY: the live record's field.
         |worker| unsafe { (*worker.raw()).coroutine_num.get() },
         // SAFETY: as above.
@@ -318,7 +304,7 @@ fn schedule_9() {
 /// `TEST(server, schedule_10)`: `Worker::concurrency`, a `uint32_t`.
 fn schedule_10() {
     test_worker_schedule(
-        DISPATCH_CONCURRENT_LB,
+        DispatchMode::CONCURRENT_LB,
         // SAFETY: the live record's field.
         |worker| unsafe { &(*worker.raw()).concurrency }.load(Relaxed) as usize,
         // SAFETY: as above.

@@ -94,17 +94,19 @@ fn created<'a>() -> Option<&'a Timer> {
     })
 }
 
-/// `swoole_timer_add(ms, persistent, ...)` of `f`, held by id, or none.
+/// `swoole_timer_add(ms, persistent, ...)` of `f`, held by id, or none. `f` may own
+/// what it captures, a `Weak` say, in at most two words: it is dropped once the timer
+/// fires for the last time, is deleted, or this thread's timer is freed.
 #[must_use]
-pub fn add_fn(ms: c_long, persistent: bool, f: impl Fn() + Copy + 'static) -> Option<Held> {
+pub fn add_fn(ms: c_long, persistent: bool, f: impl Fn() + 'static) -> Option<Held> {
     held(ms, persistent, TimerNode::closure(f))
 }
 
-/// [`add_fn`] of a callback that owns what it captures, a `Weak` say: it is dropped
-/// once the timer fires for the last time, is deleted, or this thread's timer is freed.
+/// [`add_fn`] of a callback of any size, boxed.
 #[must_use]
 pub fn add_owned(ms: c_long, persistent: bool, f: impl Fn() + 'static) -> Option<Held> {
-    held(ms, persistent, TimerNode::owning(std::rc::Rc::new(f)))
+    let boxed: Box<dyn Fn()> = Box::new(f);
+    add_fn(ms, persistent, boxed)
 }
 
 /// Adds `node` to this thread's timer, held by id, or none.
@@ -122,7 +124,7 @@ fn held(ms: c_long, persistent: bool, node: TimerNode) -> Option<Held> {
 
 /// [`add_fn`] of `timeout` seconds, at least `SW_TIMER_MIN_SEC`.
 #[must_use]
-pub fn add_fn_sec(timeout: f64, persistent: bool, f: impl Fn() + Copy + 'static) -> Option<Held> {
+pub fn add_fn_sec(timeout: f64, persistent: bool, f: impl Fn() + 'static) -> Option<Held> {
     add_fn(sec2msec(timeout), persistent, f)
 }
 

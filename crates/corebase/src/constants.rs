@@ -90,6 +90,19 @@ pub enum SocketType {
     SW_SOCK_RAW6 = 8,
 }
 
+/// Socket type stored in a zero-initialized connection slot or a native datagram header.
+/// All integer bit patterns must round-trip through these records.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SocketTypeCode(pub core::ffi::c_int);
+
+impl SocketTypeCode {
+    #[must_use]
+    pub const fn known(self) -> Option<SocketType> {
+        SocketType::from_raw(self.0)
+    }
+}
+
 impl SocketType {
     /// The type `raw` (an `SW_SOCK_*` without flags) names, if any.
     #[must_use]

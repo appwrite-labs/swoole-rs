@@ -14,7 +14,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 use swoole_rs_clients::address::{address_port, with_host};
-use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
+use swoole_rs_corebase::constants::{SW_IPC_BUFFER_SIZE, SocketType};
 use swoole_rs_corebase::process::methods::ExitStatus;
 use swoole_rs_corebase::process::task_file::Packed;
 use swoole_rs_corebase::process::worker_record::Worker;
@@ -508,10 +508,6 @@ pub(crate) fn stop_if_bailed() {
 /// `SW_OK` / `SW_ERR`.
 const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
-/// `SocketType`s of a datagram's sender.
-const UDP: c_int = 2;
-const UDP6: c_int = 4;
-const UNIX_DGRAM: c_int = 6;
 
 /// `RecvData`: the event's head, then its payload. Native code lends each
 /// receive slot its request for the call; its fields are private, so safe code
@@ -712,10 +708,11 @@ fn on_packet_slot(server: view::Server<'_>, request: &RecvData) -> c_int {
     let info = request.info();
     // The sender, of the packet's socket type: an IP address and port, or a path.
     let sender = SocketAddress {
-        kind: socket_type,
+        kind: socket_type.0,
         ..socket_addr
     };
-    let port = if matches!(socket_type, UDP | UDP6) {
+    let kind = socket_type.known();
+    let port = if kind.is_some_and(SocketType::is_udp) {
         i64::from(address_port(&sender))
     } else {
         -1
@@ -723,7 +720,7 @@ fn on_packet_slot(server: view::Server<'_>, request: &RecvData) -> c_int {
     with_host(&sender, |address| {
         let sender = Packet {
             data,
-            address: matches!(socket_type, UDP | UDP6 | UNIX_DGRAM).then_some(address),
+            address: kind.is_some_and(SocketType::is_dgram).then_some(address),
             port,
             server_port: server
                 .at(c_int::from(info.server_fd))

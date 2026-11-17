@@ -14,8 +14,8 @@ use libc::c_int;
 use std::{ffi::CStr, rc::Rc};
 use swoole_rs_clients::client::{self as state, ClientEvent, Handle, SSL_STATE_WAIT_STREAM};
 use swoole_rs_clients::valid_port;
-use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::SocketType;
+use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_phpstubs::client_async;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, Minit, Owned, Value, Weak, ZString,
@@ -121,9 +121,7 @@ pub fn php_swoole_client_async_minit(minit: &Minit) -> Result<(), Bailout> {
 /// if the call replaces it.
 fn callback(data: &net::Data, slot: Slot) -> Option<Rc<Callable>> {
     let cell = data.callbacks.get(slot as usize)?;
-    let callable = cell.take();
-    cell.set(callable.clone());
-    callable
+    cell.with_taken(|callable| callable.clone())
 }
 
 /// Call `callable` with `argv`: whether the call succeeded.

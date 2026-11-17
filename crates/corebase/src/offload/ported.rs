@@ -5,10 +5,9 @@
 //! `sleep_timeout`, `ResolverCompletion::after_await`), composed as system.cc's
 //! glue composes it, runs over the same facade, and every scenario's effects must match.
 use super::*;
-use crate::sleep_timeout;
+use crate::ResolverCompletion;
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::rc::Rc;
-use swoole_rs_corebase::ResolverCompletion;
 
 const AIO_TIMEOUT: c_int = 1779;
 const RESOLVE_TIMEOUT: c_int = 1780;
@@ -73,7 +72,7 @@ fn record(line: String) {
 fn knobs() -> Knobs {
     KNOBS.get()
 }
-use swoole_rs_corebase::sys::errno;
+use crate::sys::errno;
 fn flag(value: bool) -> u8 {
     u8::from(value)
 }
@@ -153,7 +152,7 @@ fn park_for(seconds: f64, waker: &WakerSlot) -> bool {
 fn resume(_: Waker) {
     record("resume".into());
 }
-extern "C" fn last_error() -> c_int {
+fn last_error() -> c_int {
     let value = LAST_ERROR.get();
     record(format!("last:get:{value}"));
     value

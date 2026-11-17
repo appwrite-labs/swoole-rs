@@ -98,7 +98,7 @@ fn fact(serv: view::Server<'_>, id: u32) -> i64 {
                 .load(core::sync::atomic::Ordering::Relaxed),
         ),
         f::ENABLE_COROUTINE => i64::from(config.enable_coroutine.get()),
-        f::DISPATCH_MODE => i64::from(config.dispatch_mode.get()),
+        f::DISPATCH_MODE => i64::from(config.dispatch_mode.get().0),
         f::TASK_IPC_MODE => i64::from(config.task_ipc_mode.get()),
         f::TASK_ENABLE_COROUTINE => i64::from(config.task_enable_coroutine.get()),
         f::CPU_NUM => i64::from(swoole_rs_corebase::swr_v1_core_cpu_num()),
@@ -138,7 +138,9 @@ fn apply(serv: view::Server<'_>, id: u32, v: i64) {
             .store(limit(v), core::sync::atomic::Ordering::Relaxed),
         f::WORKER_MAX_CONCURRENCY => c.worker_max_concurrency.set(limit(v)),
         f::ENABLE_COROUTINE => c.enable_coroutine.set(on),
-        f::DISPATCH_MODE => c.dispatch_mode.set(v.c_cast::<u8>()),
+        f::DISPATCH_MODE => c
+            .dispatch_mode
+            .set(swoole_rs_server::DispatchMode(v.c_cast::<u8>())),
         f::SEND_YIELD => c.send_yield.set(on),
         f::DISCARD_TIMEOUT_REQUEST => c.discard_timeout_request.set(on),
         f::ENABLE_UNSAFE_EVENT => c.enable_unsafe_event.set(on),

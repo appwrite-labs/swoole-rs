@@ -8,10 +8,11 @@ use crate::{
         self, SW_ERROR_CO_CANCELED, SW_ERROR_CO_NOT_EXISTS, SW_ERROR_INVALID_PARAMS,
         SW_ERROR_WRONG_OPERATION,
     },
-    leased, put_back, runtime, tracer,
+    leased, runtime, tracer,
 };
 use std::{cell::Cell, ffi::c_long, ptr, rc::Rc};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::CellExt;
 use swoole_rs_zend::{Call, Callable, E_ERROR, E_WARNING, OwnedArray, Php, bailout::Bailout};
 
 /// `DEBUG_BACKTRACE_PROVIDE_OBJECT`.
@@ -124,7 +125,7 @@ per_thread! {
 /// Adds `cid` to [`YIELDED`] or takes it out; whether it was there.
 fn set_yielded(cid: c_long, yielded: bool) -> bool {
     YIELDED.with(|ids| {
-        put_back(ids, |ids| match (ids.binary_search(&cid), yielded) {
+        ids.with_taken(|ids| match (ids.binary_search(&cid), yielded) {
             (Ok(at), false) => {
                 ids.remove(at);
                 true
@@ -192,7 +193,7 @@ impl Join {
     /// A joined coroutine closed: once none are left, resume the joiner from
     /// the event loop (unless it gave up first).
     pub(crate) fn closed(self: Rc<Self>, ctx: Ctx) {
-        let waiting = put_back(&self.pending, |pending| {
+        let waiting = self.pending.with_taken(|pending| {
             pending.retain(|&pending| pending != ctx);
             !pending.is_empty()
         });
@@ -281,7 +282,7 @@ fn join(call: &Call) {
         canceled: Cell::new(false),
     });
     // Each context was joined by none, so no join is replaced.
-    put_back(&join.pending, |pending| {
+    join.pending.with_taken(|pending| {
         for &ctx in pending.iter() {
             drop(ctx.replace_join(Some(Rc::clone(&join))));
         }

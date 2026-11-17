@@ -6,21 +6,21 @@
 //! back and runs its callback. Each pool copy of an event holds a reference to its
 //! request record. The ossupport patch deletes `src/os/async_thread.cc`.
 use crate::offload::AsyncEvent;
-use std::cell::Cell;
-use std::ffi::c_int;
-use std::ptr;
-use std::sync::atomic::Ordering::Relaxed;
-use swoole_rs_corebase::ossupport::{Pool, PoolHooks, pool_complete};
-use swoole_rs_corebase::reactor::event_api::{event_del, on_destroy, swr_v1_event_current};
-use swoole_rs_corebase::reactor::{Event, Running, Socket};
-use swoole_rs_corebase::tls::socket_pair::{SocketPair, close, drop, unix_socket};
-use swoole_rs_corebase::tls::upstream::write_sync;
-use swoole_rs_corebase::{
+use crate::ossupport::{Pool, PoolHooks, pool_complete};
+use crate::reactor::event_api::{event_del, on_destroy, swr_v1_event_current};
+use crate::reactor::{Event, Running, Socket};
+use crate::tls::socket_pair::{SocketPair, close, drop, unix_socket};
+use crate::tls::upstream::write_sync;
+use crate::{
     log, microtime, set_thread_async_threads, swoole_thread_clean, swoole_thread_init,
     swr_v1_core_aio_core_worker_num, swr_v1_core_aio_default_socket, swr_v1_core_aio_max_idle_time,
     swr_v1_core_aio_max_wait_time, swr_v1_core_aio_worker_num, swr_v1_core_cpu_num,
     swr_v1_core_set_aio_default_socket, thread_async_threads,
 };
+use std::cell::Cell;
+use std::ffi::c_int;
+use std::ptr;
+use std::sync::atomic::Ordering::Relaxed;
 
 /// `SW_FD_AIO`.
 const FD_AIO: c_int = 5;
@@ -171,7 +171,7 @@ extern "C" fn thread_clean() {
 extern "C" fn spawn_failed() {
     let error = std::io::Error::last_os_error();
     let code = error.raw_os_error().unwrap_or(0);
-    let text = swoole_rs_corebase::sys::strerror(code);
+    let text = crate::sys::strerror(code);
     log::set_last_error(code);
     log::notice(format_args!(
         "ThreadPool::create_thread(): create aio thread failed, please check your system configuration or adjust aio_worker_num, Error: {text}[{code}]"
@@ -240,11 +240,11 @@ fn create() -> *mut AsyncThreads {
     // The pipe owns its read end, which stays registered until `destroyed` frees the
     // pipe with the reactor.
     if let Some(read) = threads.pipe.worker_event() {
-        _ = read.add(swoole_rs_corebase::reactor::Events::READ);
+        _ = read.add(crate::reactor::Events::READ);
     }
     on_destroy(destroyed);
-    swoole_rs_corebase::reactor::swr_v1_event_set_exit_condition(
-        swoole_rs_corebase::reactor::ExitCondition::AioTask,
+    crate::reactor::swr_v1_event_set_exit_condition(
+        crate::reactor::ExitCondition::AioTask,
         pending,
     );
     threads.pool = Some(Pool::acquire(

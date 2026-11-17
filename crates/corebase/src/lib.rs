@@ -15,6 +15,8 @@
 mod c_cast;
 mod flags;
 pub use c_cast::{CCast, CastFrom};
+mod cell;
+pub use cell::{BoxCellExt, CellExt};
 pub mod buffer;
 pub mod constants;
 pub mod coroutine;
@@ -26,6 +28,7 @@ mod lifecycle;
 pub mod locks;
 pub mod log;
 pub mod memory;
+pub mod offload;
 pub mod process;
 pub mod reactor;
 pub mod timer;

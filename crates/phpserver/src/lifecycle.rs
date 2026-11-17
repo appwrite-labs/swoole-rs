@@ -16,6 +16,7 @@ use std::{
     sync::atomic::Ordering,
 };
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::CellExt;
 use swoole_rs_phpcoroutines::{Coroutine, Waiter};
 use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
@@ -217,15 +218,6 @@ type Queue = VecDeque<Rc<Waiter>>;
 /// out and put back with nothing in between that yields or runs PHP code.
 pub(crate) type Waiters = Rc<Cell<Queue>>;
 
-/// `f` over the waiters' queue, taken out and put back: `f` only moves
-/// waits, which neither yields nor runs PHP code.
-fn with_queue<R>(waiters: &Waiters, f: impl FnOnce(&mut Queue) -> R) -> R {
-    let mut queue = waiters.take();
-    let result = f(&mut queue);
-    waiters.set(queue);
-    result
-}
-
 /// `send_coroutine_map`: `send_yield`'s waiting coroutines by session.
 type SendWaiters = HashMap<i64, Waiters>;
 
@@ -282,8 +274,8 @@ fn fact(serv: view::Server<'_>, id: Fact) -> bool {
         Fact::EnableCoroutine => c.enable_coroutine.get(),
         Fact::SendYield => c.send_yield.get(),
         Fact::HasOnClose => serv.has_callback(swoole_rs_server::callbacks::CallbackKind::Close),
-        Fact::UnsafeEvents => c.hash_dispatch() || c.enable_unsafe_event.get(),
-        Fact::HashDispatch => c.hash_dispatch(),
+        Fact::UnsafeEvents => c.dispatch_mode.get().is_hash() || c.enable_unsafe_event.get(),
+        Fact::HashDispatch => c.dispatch_mode.get().is_hash(),
         Fact::Reactor => !swoole_rs_corebase::thread_reactor().is_null(),
         Fact::CacheSessionAddr => {
             crate::dispatch::http().is_some_and(|http| (http.can_cache_session_addr)(serv))
@@ -522,14 +514,8 @@ impl ServerData {
     /// `f` over the property, taken out and put back: `f` neither yields nor
     /// runs PHP code, and what it removes is released after it is put back.
     fn property<R>(&self, f: impl FnOnce(&mut Property) -> R) -> R {
-        // Never out here: `f` reaches nothing that takes it again.
-        let mut property = self.property.take().unwrap_or_default();
-        let result = f(&mut property);
-        // `set` would call the drop glue for the `None` it replaces, on every access.
-        if let Some(nested) = self.property.replace(Some(property)) {
-            drop(nested);
-        }
-        result
+        self.property
+            .with_taken(|slot| f(slot.get_or_insert_with(Box::default)))
     }
 
     /// `php_swoole_server_free_object`'s releases: the `dispatch_func` callable,
@@ -1434,11 +1420,11 @@ pub fn php_swoole_server_send_yield(
             return Ok(false);
         };
         let waiter = Rc::new(Waiter::default());
-        with_queue(&waiters, |queue| queue.push_back(Rc::clone(&waiter)));
+        waiters.with_taken(|queue| queue.push_back(Rc::clone(&waiter)));
         let timeout = server.config().send_timeout.get();
         // `onBufferEmpty` or `onClose` wakes it.
         if !waiter.wait_for(timeout) {
-            with_queue(&waiters, |queue| {
+            waiters.with_taken(|queue| {
                 queue.retain(|queued| !Rc::ptr_eq(queued, &waiter));
             });
             return Ok(false);
@@ -1484,7 +1470,7 @@ pub(crate) fn send_waiters(session_id: i64) -> Option<Waiters> {
 /// The next coroutine to wake: `pop` takes it off the queue (a resume), else
 /// it stays first until its `send_yield` leaves (a cancel).
 pub(crate) fn send_next(waiters: &Waiters, pop: bool) -> Option<Rc<Waiter>> {
-    with_queue(waiters, |queue| {
+    waiters.with_taken(|queue| {
         if pop {
             queue.pop_front()
         } else {

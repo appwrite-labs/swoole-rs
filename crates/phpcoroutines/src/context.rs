@@ -13,7 +13,7 @@
 //! every other keeps its own saved in its `vm`. The shims that move it take
 //! that as types: [`Running`] for the context whose state is the executor's,
 //! [`Suspended`] for one whose state is saved.
-use crate::{classes::ExceptionClass, host, methods::Join, put_back, runtime};
+use crate::{classes::ExceptionClass, host, methods::Join, runtime};
 use std::{
     cell::{Cell, UnsafeCell},
     ffi::{c_int, c_long, c_void},
@@ -21,6 +21,7 @@ use std::{
     ptr::{self, NonNull},
     rc::Rc,
 };
+use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::coroutine::{CoroutineTask, State};
 use swoole_rs_corebase::timer::Held;
 use swoole_rs_zend::sys::{
@@ -490,7 +491,7 @@ pub(crate) fn swap_time_limit(ctx: Ctx, cid: c_long, timer: Option<Held>) -> Opt
     let limited = ctx.time_limited();
     ctx.set_time_limited(timer.is_some());
     TIME_LIMITS.with(|limits| {
-        put_back(limits, |limits| {
+        limits.with_taken(|limits| {
             let old = limits
                 .iter()
                 .position(|&(owner, _)| limited && owner == cid)

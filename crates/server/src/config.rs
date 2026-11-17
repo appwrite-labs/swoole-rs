@@ -181,7 +181,7 @@ pub struct ServerConfig {
     pub reactor_num: Setting<u16>,
     pub worker_num: Setting<u32>,
     pub dgram_port_num: Setting<u8>,
-    pub dispatch_mode: Setting<u8>,
+    pub dispatch_mode: Setting<DispatchMode>,
     /// Set and cleared by whichever thread dispatches, so an atomic.
     pub scheduler_warning: AtomicBool,
     pub max_request: Setting<u32>,
@@ -283,45 +283,38 @@ impl Mode {
     }
 }
 
-/// `Server::DispatchMode`: how a connection's data picks its worker.
+/// Worker dispatch setting. PHP retains unknown codes and schedules them as idle-worker mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum DispatchMode {
-    Round = 1,
-    FdMod = 2,
-    IdleWorker = 3,
-    IpMod = 4,
-    UidMod = 5,
-    UserFunc = 6,
-    Stream = 7,
-    CoConnLb = 8,
-    CoReqLb = 9,
-    ConcurrentLb = 10,
-}
+pub struct DispatchMode(pub u8);
 
 impl DispatchMode {
-    /// The mode of a `dispatch_mode` setting.
-    #[must_use]
-    pub const fn from_code(code: u8) -> Option<Self> {
-        Some(match code {
-            1 => Self::Round,
-            2 => Self::FdMod,
-            3 => Self::IdleWorker,
-            4 => Self::IpMod,
-            5 => Self::UidMod,
-            6 => Self::UserFunc,
-            7 => Self::Stream,
-            8 => Self::CoConnLb,
-            9 => Self::CoReqLb,
-            10 => Self::ConcurrentLb,
-            _ => return None,
-        })
-    }
+    pub const ROUND: Self = Self(1);
+    pub const FD_MOD: Self = Self(2);
+    pub const IDLE_WORKER: Self = Self(3);
+    pub const IP_MOD: Self = Self(4);
+    pub const UID_MOD: Self = Self(5);
+    pub const USER_FUNC: Self = Self(6);
+    pub const STREAM: Self = Self(7);
+    pub const CO_CONN_LB: Self = Self(8);
+    pub const CO_REQ_LB: Self = Self(9);
+    pub const CONCURRENT_LB: Self = Self(10);
 
-    /// `Server::is_hash_dispatch_mode()`: the mode binds a connection to one worker.
     #[must_use]
     pub const fn is_hash(self) -> bool {
-        matches!(self, Self::FdMod | Self::IpMod | Self::CoConnLb)
+        matches!(self, Self::FD_MOD | Self::IP_MOD | Self::CO_CONN_LB)
+    }
+}
+
+impl Plain for DispatchMode {
+    type Atomic = AtomicU8;
+    fn atomic(self) -> AtomicU8 {
+        AtomicU8::new(self.0)
+    }
+    fn load(atomic: &AtomicU8) -> Self {
+        Self(atomic.load(Relaxed))
+    }
+    fn store(atomic: &AtomicU8, value: Self) {
+        atomic.store(value.0, Relaxed);
     }
 }
 
@@ -350,18 +343,6 @@ impl TaskIpcMode {
 }
 
 impl ServerConfig {
-    /// The `dispatch_mode` setting, `None` for a code no mode has.
-    #[must_use]
-    pub fn dispatch(&self) -> Option<DispatchMode> {
-        DispatchMode::from_code(self.dispatch_mode.get())
-    }
-
-    /// Whether the dispatch mode binds a connection to one worker.
-    #[must_use]
-    pub fn hash_dispatch(&self) -> bool {
-        self.dispatch().is_some_and(DispatchMode::is_hash)
-    }
-
     /// The `task_ipc_mode` setting, `None` for a code no mode has.
     #[must_use]
     pub fn task_ipc(&self) -> Option<TaskIpcMode> {
@@ -375,7 +356,7 @@ impl Default for ServerConfig {
             reactor_num: Setting::new(0),
             worker_num: Setting::new(0),
             dgram_port_num: Setting::new(0),
-            dispatch_mode: Setting::new(DispatchMode::FdMod as u8),
+            dispatch_mode: Setting::new(DispatchMode::FD_MOD),
             scheduler_warning: AtomicBool::new(false),
             max_request: Setting::new(0),
             max_request_grace: Setting::new(0),

@@ -3,10 +3,10 @@
 //! the reactor as an `EventWaiter`, whose reactor socket and coroutine `EventWaitOps`
 //! drive (the reactor's [`Watch`] and the coroutine's under `System::wait_event`, fakes
 //! in tests).
-use crate::resolve::WakerSlot;
 use core::cell::Cell;
 use core::ffi::c_void;
 use swoole_rs_corebase::coroutine::Waker;
+use swoole_rs_corebase::offload::WakerSlot;
 pub use swoole_rs_corebase::reactor::Events;
 
 pub use native::Watch;
@@ -234,7 +234,7 @@ pub(crate) mod native {
     }
 
     pub(super) fn park(timeout: f64, waker: &super::WakerSlot) -> Result<(), i32> {
-        if crate::resolve::park_for_armed(timeout, waker) {
+        if swoole_rs_corebase::offload::park_for_armed(timeout, waker) {
             Ok(())
         } else {
             Err(log::last_error())

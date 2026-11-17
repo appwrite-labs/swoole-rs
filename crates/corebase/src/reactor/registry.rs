@@ -10,16 +10,9 @@ use std::ffi::{c_int, c_void};
 /// first (`OwnedSocket::into_box`), so every entry is live.
 type Sockets = Table<(Heap<'static>, crate::reactor::Events)>;
 
+#[derive(Default)]
 pub struct Registry {
     sockets: Sockets,
-}
-
-impl Default for Registry {
-    fn default() -> Self {
-        Self {
-            sockets: Table::new(),
-        }
-    }
 }
 
 impl Registry {

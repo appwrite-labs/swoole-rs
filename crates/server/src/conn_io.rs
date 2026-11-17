@@ -437,7 +437,7 @@ fn fin_ends(prequeue: bool, state: &crate::ServerState, conn: Connection<'_>) ->
     let dispatch_func = state.callbacks.slot(CallbackKind::DispatchFunc).is_set();
     !prequeue
         || config.mode_ != Mode::Process
-        || !config.hash_dispatch()
+        || !config.dispatch_mode.get().is_hash()
         || dispatch_func
         || config.enable_coroutine.get()
         || conn.ssl()
@@ -700,16 +700,21 @@ pub(crate) mod tests {
     fn prequeue_keeps_a_synchronous_process_response() {
         let (mut live, _clients) = accepted();
         let (state, conn) = (live.state(), session(&live, 1));
-        assert_eq!(state.config_ref().dispatch_mode.get(), 2, "fixed by fd");
-        state.config_ref().enable_coroutine.set(false);
+        let config = state.config_ref();
+        assert_eq!(
+            config.dispatch_mode.get(),
+            crate::DispatchMode::FD_MOD,
+            "fixed by fd"
+        );
+        config.enable_coroutine.set(false);
         assert!(!fin_ends(true, state, conn), "owed its response");
         assert!(fin_ends(false, state, conn), "upstream");
-        state.config_ref().dispatch_mode.set(1);
+        config.dispatch_mode.set(crate::DispatchMode::ROUND);
         assert!(fin_ends(true, state, conn), "round robin");
-        state.config_ref().dispatch_mode.set(2);
-        state.config_ref().enable_coroutine.set(true);
+        config.dispatch_mode.set(crate::DispatchMode::FD_MOD);
+        config.enable_coroutine.set(true);
         assert!(fin_ends(true, state, conn), "a coroutine worker");
-        state.config_ref().enable_coroutine.set(false);
+        config.enable_coroutine.set(false);
         let terminal: [fn(Connection<'_>, bool); 4] = [
             |c, on| c.set_ssl(on),
             |c, on| c.set_close_errno(u16::from(on)),

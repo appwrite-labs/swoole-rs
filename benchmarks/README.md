@@ -214,6 +214,14 @@ the same pipeline size (recorded in the JSON); batching changes latency and serv
 per read. `client_cpu` records load-generator CPU seconds per wall second, so a client near
 one core (two for wrk) can bound the measured throughput even when server CPU is lower.
 
+### Instrumented release profiles
+
+Linux arm64 glibc releases train on the target PHP and rebuild with the resulting
+profile. To reproduce a build, install the pinned toolchain's `llvm-tools-preview`
+component and run `python3 tools/build_ext.py --profile release-lto --pgo`.
+Training sends 400 checked requests to each of ten benchmark workloads, including
+the timer workload. The final extension goes through the usual PHP load check.
+
 ### Branch sampling (sample PGO)
 
 Sample-based PGO (`-Cprofile-sample-use`, #4380) needs a `perf record -b` profile:

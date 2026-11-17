@@ -11,6 +11,7 @@ use std::{
     rc::Rc,
 };
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_close_hook};
 use swoole_rs_http2::{
@@ -361,43 +362,6 @@ impl Client {
         held
     }
 
-    /// `f` over the host, taken out and put back.
-    fn with_host<R>(&self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
-        let mut host = self.host.take();
-        let result = f(&mut host);
-        self.host.set(host);
-        result
-    }
-
-    /// `f` over the streams, taken out and put back: nothing in `f` yields or
-    /// runs PHP code.
-    fn with_streams<R>(&self, f: impl FnOnce(&mut Streams) -> R) -> R {
-        let mut streams = self.streams.take();
-        let result = f(&mut streams);
-        self.streams.set(streams);
-        result
-    }
-
-    /// `f` over the send queue, taken out and put back.
-    fn with_queue<R>(&self, f: impl FnOnce(&mut Queue) -> R) -> R {
-        let mut queue = self.queue.take();
-        let result = f(&mut queue);
-        self.queue.set(queue);
-        result
-    }
-
-    /// `f` over the HPACK codecs, taken out and put back: nothing in `f` yields
-    /// or runs PHP code.
-    fn with_hpack<R>(
-        &self,
-        f: impl FnOnce(&mut Option<(Decoder, hpack::Field, Encoder)>) -> R,
-    ) -> R {
-        let mut hpack = self.hpack.take();
-        let result = f(&mut hpack);
-        self.hpack.set(hpack);
-        result
-    }
-
     /// `socket_dtor`'s release of what hung off the closed socket.
     fn reap(&self) {
         if !self.conn.closed.replace(false) {
@@ -439,7 +403,7 @@ impl Client {
             return false;
         }
         // `php_swoole_create_socket(convert_to_type(host))`.
-        let kind = self.with_host(|host| {
+        let kind = self.host.with_taken(|host| {
             let kind = swoole_rs_corebase::reactor::host_type(host);
             let erase = kind.erase.min(host.len());
             host.drain(..erase);
@@ -487,7 +451,7 @@ impl Client {
         if swoole_rs_zend::bailout::pending() {
             return false;
         }
-        let host = self.with_host(|host| host.clone());
+        let host = self.host.with_taken(|host| host.clone());
         if !socket.connect_host(&host, c_int::try_from(self.port).unwrap_or(-1)) {
             return self.connect_failed(socket);
         }
@@ -542,7 +506,7 @@ impl Client {
         let bound = socket.has_bound(Events::WRITE);
         let (queued, limit) = if bound {
             (
-                self.with_queue(|queue| queue.len()),
+                self.queue.with_taken(|queue| queue.len()),
                 self.remote.get().max_concurrent_streams,
             )
         } else {
@@ -557,7 +521,8 @@ impl Client {
                 return false;
             }
             QueueAction::Append => {
-                self.with_queue(|queue| queue.push_back(data.to_vec()));
+                self.queue
+                    .with_taken(|queue| queue.push_back(data.to_vec()));
                 return true;
             }
         }
@@ -567,14 +532,14 @@ impl Client {
         }
         // Each frame is copied out: sending yields, and the queue is put back first.
         loop {
-            let next = self.with_queue(|queue| queue.front().cloned());
+            let next = self.queue.with_taken(|queue| queue.front().cloned());
             let Some(frame) = next else { break };
             if !Self::send_all(socket, &frame) {
                 self.io_error(socket);
                 EXCEPTION.throw(c"failed to send control frame", SEND_CONTROL_FRAME_FAILED);
                 return false;
             }
-            self.with_queue(Queue::pop_front);
+            self.queue.with_taken(Queue::pop_front);
         }
         true
     }
@@ -674,7 +639,7 @@ impl Client {
             }
         }
         if !host {
-            let authority = self.with_host(|host| {
+            let authority = self.host.with_taken(|host| {
                 if self.port == if self.ssl { 443 } else { 80 } {
                     host.clone()
                 } else {
@@ -693,7 +658,7 @@ impl Client {
             set.add(b"cookie", &[key, b"=", encoded.bytes()]);
         }
         let mut frame = vec![0_u8; FRAME_HEADER];
-        self.with_hpack(|hpack| {
+        self.hpack.with_taken(|hpack| {
             if let Some((_, _, encoder)) = hpack.as_mut() {
                 encoder.encode(set.list(), &mut frame);
             }
@@ -769,13 +734,17 @@ impl Client {
             remote_window: self.remote.get().init_window_size,
             local_window: self.local.init_window_size,
         };
-        let replaced = self.with_streams(|streams| streams.insert(id, stream));
+        let replaced = self
+            .streams
+            .with_taken(|streams| streams.insert(id, stream));
         drop(replaced);
     }
 
     /// `write_data`: more of a pipeline request's body.
     fn write_data(&self, id: u32, data: Option<&Value>, end: bool) -> bool {
-        let flags = self.with_streams(|streams| streams.get(&id).map(|stream| stream.flags));
+        let flags = self
+            .streams
+            .with_taken(|streams| streams.get(&id).map(|stream| stream.flags));
         if !sw_rs_http2_write_allowed(flags.is_some(), flags.unwrap_or(0)) {
             let message = format!("unable to found active pipeline stream#{id}");
             self.update_error(libc::EINVAL, message.as_bytes());
@@ -788,7 +757,7 @@ impl Client {
         if !self.send_data(id, body.bytes(), flag) {
             return false;
         }
-        self.with_streams(|streams| {
+        self.streams.with_taken(|streams| {
             if let Some(stream) = streams.get_mut(&id) {
                 stream.flags = sw_rs_http2_stream_update(stream.flags, end, false);
             }
@@ -832,7 +801,7 @@ impl Client {
         if facts.publish_last_id {
             self.last_stream_id.set(id);
         }
-        let known = || self.with_streams(|streams| streams.contains_key(&id));
+        let known = || self.streams.with_taken(|streams| streams.contains_key(&id));
         let read = match facts.action {
             FrameAction::Settings => {
                 for setting in payload.chunks(6) {
@@ -852,7 +821,7 @@ impl Client {
                     let plan = window(self.remote_window.get(), credit as usize, 0, true);
                     self.remote_window.set(plan.value);
                 } else {
-                    self.with_streams(|streams| {
+                    self.streams.with_taken(|streams| {
                         if let Some(stream) = streams.get_mut(&id) {
                             stream.remote_window =
                                 window(stream.remote_window, credit as usize, 0, true).value;
@@ -931,13 +900,13 @@ impl Client {
                 return Frame::Fail;
             }
             FrameAction::Reset => {
-                let reset = self.with_streams(|streams| streams.remove(&id));
+                let reset = self.streams.with_taken(|streams| streams.remove(&id));
                 drop(reset);
                 return Frame::Continue;
             }
             _ => {}
         }
-        if !self.with_streams(|streams| streams.contains_key(&id)) {
+        if !self.streams.with_taken(|streams| streams.contains_key(&id)) {
             // Upstream's "%d" of the unsigned stream id.
             let id = id.c_cast::<i32>();
             swoole_rs_corebase::log::notice(format_args!(
@@ -957,7 +926,7 @@ impl Client {
             }
             _ => {}
         }
-        let ready = self.with_streams(|streams| {
+        let ready = self.streams.with_taken(|streams| {
             let stream = streams.get_mut(&id)?;
             let plan = sw_rs_http2_response(facts.action, facts.flags, stream.flags, pipeline_read);
             if !plan.ready {
@@ -1020,7 +989,7 @@ impl Client {
             self.remote_window.set(number);
         }
         if plan.change_deflater {
-            self.with_hpack(|hpack| {
+            self.hpack.with_taken(|hpack| {
                 if let Some((_, _, encoder)) = hpack.as_mut() {
                     encoder.set_table_size(number);
                 }
@@ -1032,7 +1001,8 @@ impl Client {
     /// A DATA frame's payload onto its stream's body, and the stream's window
     /// after it.
     fn buffer_data(&self, id: u32, flags: u32, payload: &[u8]) -> Buffered {
-        self.with_streams(|streams| self.buffer_stream(streams, id, flags, payload))
+        self.streams
+            .with_taken(|streams| self.buffer_stream(streams, id, flags, payload))
     }
 
     /// `buffer_data` over the streams taken out.
@@ -1095,7 +1065,7 @@ impl Client {
             if !self.send_window_update(id, stream_window.increment) {
                 return Err(Frame::Fail);
             }
-            self.with_streams(|streams| {
+            self.streams.with_taken(|streams| {
                 if let Some(stream) = streams.get_mut(&id) {
                     stream.local_window = initial;
                 }
@@ -1111,8 +1081,9 @@ impl Client {
             input = input.get(5..).unwrap_or_default();
         }
         // The response, held apart from the streams.
-        let response =
-            self.with_streams(|streams| streams.get(&id).map(|stream| stream.response.zval.copy()));
+        let response = self
+            .streams
+            .with_taken(|streams| streams.get(&id).map(|stream| stream.response.zval.copy()));
         let props = response.as_ref()?.props(Some(&RESPONSE))?;
         // The three arrays the block fills, out of their properties meanwhile.
         props
@@ -1140,7 +1111,7 @@ impl Client {
     ) -> Option<Error> {
         // Nothing in the loop yields or runs user code: the response is this
         // client's alone until a receive returns it.
-        self.with_hpack(|hpack| {
+        self.hpack.with_taken(|hpack| {
             let (decoder, field, _) = hpack.as_mut()?;
             self.decode_block(
                 (decoder, field),
@@ -1174,7 +1145,7 @@ impl Client {
                 let kind = header_kind(HeaderRole::Response, name);
                 if name.first() == Some(&b':') {
                     if kind == HeaderKind::Status {
-                        self.with_streams(|streams| {
+                        self.streams.with_taken(|streams| {
                             if let Some(stream) = streams.get(&id)
                                 && let Some(props) = stream.response.props()
                             {
@@ -1184,7 +1155,7 @@ impl Client {
                     }
                 } else {
                     if kind == HeaderKind::ContentEncoding && media_kind(text) == Media::Gzip {
-                        self.with_streams(|streams| {
+                        self.streams.with_taken(|streams| {
                             if let Some(stream) = streams.get_mut(&id) {
                                 stream.gzip = Some(Inflate::gzip_only());
                             }
@@ -1642,8 +1613,11 @@ fn is_stream_exist(call: &Call) {
     if id == 0 {
         return call.set_bool(true);
     }
-    let exists =
-        u32::try_from(id).is_ok_and(|id| client.with_streams(|streams| streams.contains_key(&id)));
+    let exists = u32::try_from(id).is_ok_and(|id| {
+        client
+            .streams
+            .with_taken(|streams| streams.contains_key(&id))
+    });
     call.set_bool(exists);
 }
 
@@ -1667,7 +1641,8 @@ fn stats(call: &Call) {
     let Ok(key) = call.arity(0, 1).and_then(|()| call.string(1, b"")) else {
         return call.set_bool(false);
     };
-    let active = i64::try_from(client.with_streams(|streams| streams.len())).unwrap_or(i64::MAX);
+    let active =
+        i64::try_from(client.streams.with_taken(|streams| streams.len())).unwrap_or(i64::MAX);
     let (stream_id, last_stream_id) = (client.stream_id.get(), client.last_stream_id.get());
     let remote = client.remote.get();
     if !key.is_empty() {

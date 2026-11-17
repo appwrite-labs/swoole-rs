@@ -187,7 +187,12 @@ impl Job<'_> {
 /// # Errors
 /// The file cannot be opened or locked, or the pool refuses the job.
 pub fn read_file(file: &CStr, lock: bool) -> Result<Vec<u8>, FileError> {
-    read_with(file, lock, sys_warning, Some(crate::offload::async_job))
+    read_with(
+        file,
+        lock,
+        sys_warning,
+        Some(swoole_rs_corebase::offload::async_job),
+    )
 }
 
 /// `System::write_file`, in a coroutine: bytes written. `O_CREAT | O_WRONLY` are added.
@@ -202,7 +207,7 @@ pub fn write_file(file: &CStr, data: &[u8], lock: bool, flags: c_int) -> Result<
         lock,
         flags,
         sys_warning,
-        Some(crate::offload::async_job),
+        Some(swoole_rs_corebase::offload::async_job),
     )
 }
 

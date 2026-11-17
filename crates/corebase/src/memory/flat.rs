@@ -3,10 +3,15 @@
 
 /// Values keyed by a small dense integer, such as an fd: a flat array, no hashing.
 /// Iteration is in key order.
-#[derive(Default)]
 pub struct Table<T> {
     slots: Vec<Option<T>>,
     len: usize,
+}
+
+impl<T> Default for Table<T> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T> Table<T> {
