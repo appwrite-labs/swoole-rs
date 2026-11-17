@@ -1,23 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.5 src/os/wait.cc (Swoole contributors).
 //! Coroutine `waitpid` (`System::wait`, `waitpid`, `waitpid_safe` and their C API) and
-//! `swoole_waitpid`, under their upstream (Itanium) symbols, over crates/process's wait
+//! `swoole_waitpid`, under their upstream (Itanium) symbols, over `corebase::process`'s wait
 //! registry, or the `io_uring` engine when one is registered. The process patch deletes
 //! `src/os/wait.cc`.
 use std::ffi::{c_int, c_void};
+use swoole_rs_corebase::process::signal::swoole_signal_dispatch;
+use swoole_rs_corebase::process::wait::wait_count;
 use swoole_rs_corebase::{log, sys};
-use swoole_rs_process::signal::swoole_signal_dispatch;
-use swoole_rs_process::wait::wait_count;
 
 use swoole_rs_corebase::sys::errno;
 
-/// The SIGCHLD registry: the coroutine effects crates/process's wait loop asks for.
+/// The SIGCHLD registry: the coroutine effects `corebase::process`'s wait loop asks for.
 mod registry {
     use super::{c_int, c_void, wait_count};
     use crate::signal_upstream::{self, Handler};
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use swoole_rs_process::wait::{Coroutines, Wake, wait_reap};
+    use swoole_rs_corebase::process::wait::{Coroutines, Wake, wait_reap};
 
     /// SIGCHLD's handler, exit condition and destroy callback are installed.
     static SIGNAL_READY: AtomicBool = AtomicBool::new(false);
@@ -137,8 +137,13 @@ pub extern "C" fn system_waitpid(
     if let Some(uring) = crate::wait_loop::uring() {
         return iouring_waitpid(uring, pid, Some(status), options, timeout);
     }
-    let waited =
-        swoole_rs_process::wait::wait_pid(pid, status, options, timeout, &registry::COROUTINES);
+    let waited = swoole_rs_corebase::process::wait::wait_pid(
+        pid,
+        status,
+        options,
+        timeout,
+        &registry::COROUTINES,
+    );
     if waited.timed_out {
         crate::socket_sync::set_errno(libc::ETIMEDOUT);
         log::set_last_error(libc::ETIMEDOUT);

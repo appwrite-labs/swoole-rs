@@ -35,7 +35,7 @@ case at exit, as GoogleTest's nonfatal assertions do.
 | `swoole_add_hook`, `swoole_clear_last_error`, `swoole_set_print_backtrace_on_error`, `swoole_signal_set`, `swoole_signal_block_all`, `swoole_random_bytes`, `swoole_timer_add`, `sw_tg_buffer()` | `swoole_add_hook`, `log::set_last_error(0)`, `swoole_set_print_backtrace_on_error`, `signal::swoole_signal_set_action`, `signal_block_all`, `random_bytes`, `swoole_rs_timer::add_fn`, `thread_buffer` |
 
 `network/stream.cpp`'s TESTs are Rust tests of `network::Stream`, which is Rust
-(`crates/process/src/stream.rs`: `cargo test -p swoole-rs-process stream::`). A
+(`crates/corebase/src/process/stream.rs`: `cargo test stream::`). A
 socket pool's dispatch was its only production user; `src/network/stream.cc` and
 the TESTs left the build (#1674).
 

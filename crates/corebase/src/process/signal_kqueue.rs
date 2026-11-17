@@ -4,7 +4,7 @@
 use std::ffi::c_int;
 use std::sync::atomic::Ordering::Relaxed;
 
-use crate::signal::{Handler, SIGNALS};
+use crate::process::signal::{Handler, SIGNALS};
 
 /// `swoole_signal_kqueue_set`: `handler` (0 to clear) for `signo` on the kqueue
 /// `kq`; returns the previous handler. `*failed` is set when adding the event
@@ -19,23 +19,23 @@ pub fn signal_kqueue_set(kq: c_int, signo: c_int, handler: Handler, failed: &mut
         return Handler::NONE;
     };
     let mut origin = 0;
-    let mut event: libc::kevent = swoole_rs_corebase::sys::zeroed();
+    let mut event: libc::kevent = crate::sys::zeroed();
     event.ident = signo.cast_unsigned() as usize;
     event.filter = libc::EVFILT_SIGNAL;
     if handler == 0 {
         if slot.activated.load(Relaxed) {
-            crate::signal::restore_origin(signo);
+            crate::process::signal::restore_origin(signo);
         } else {
             // Restores the default disposition.
-            crate::signal::install(signo, libc::SIG_DFL, false, false);
+            crate::process::signal::install(signo, libc::SIG_DFL, false, false);
         }
         slot.reset();
         event.flags = libc::EV_DELETE;
     } else {
         // kqueue delivers the signal instead.
-        let previous = crate::signal::install(signo, libc::SIG_IGN, false, false);
+        let previous = crate::process::signal::install(signo, libc::SIG_IGN, false, false);
         if !slot.activated.load(Relaxed) {
-            crate::signal::save_origin(signo, previous);
+            crate::process::signal::save_origin(signo, previous);
         }
         origin = slot.handler.swap(handler, Relaxed);
         // A table index: below SW_SIGNO_MAX.
@@ -46,7 +46,7 @@ pub fn signal_kqueue_set(kq: c_int, signo: c_int, handler: Handler, failed: &mut
         // The table slot (`swoole::Signal *`), which the reactor dispatches.
         event.udata = std::ptr::from_ref(slot).cast_mut().cast();
     }
-    let changed = swoole_rs_corebase::sys::kevent_change(kq, &event);
+    let changed = crate::sys::kevent_change(kq, &event);
     *failed = changed.is_err() && handler != 0;
     Handler(origin)
 }
@@ -63,7 +63,7 @@ pub fn signal_kqueue_clear(kq: c_int, available: bool) {
             signal_kqueue_set(kq, signo, Handler::NONE, &mut failed);
         }
     }
-    crate::signal::signal_reset();
+    crate::process::signal::signal_reset();
 }
 
 #[cfg(test)]
@@ -72,7 +72,7 @@ mod tests {
 
     #[test]
     fn a_signal_is_registered_on_the_kqueue_and_cleared() {
-        let _state = crate::signal_state_lock();
+        let _state = crate::process::signal_state_lock();
         // SAFETY: a new kqueue.
         let kq = unsafe { libc::kqueue() };
         assert!(kq >= 0);

@@ -1,6 +1,6 @@
 //! `ProcessPool`'s lifecycle (once `src/os/process_pool.cc`): create, start, spawn,
 //! stop, detach, reload, the manager's wait and shutdown, destroy and the
-//! worker-side entry into the loops of [`crate::pool`]. Rust reads and writes
+//! worker-side entry into the loops of [`crate::process::pool`]. Rust reads and writes
 //! the pool's fields through [`PoolRecord`] (the C++ layout mirror follows it).
 //! The pool owns its registry, IPC, reload, pipes and message bus; the native
 //! owners are type-erased to avoid a dependency cycle. `crates/server/src/pool_native.rs`
@@ -10,26 +10,26 @@
 //! the bailout trap; when it bails out, the export returns [`Bailed`] and its
 //! native caller raises the bailout again once the Rust frames are gone.
 
-use crate::task_file::Packed;
-use crate::worker_record::{Worker, WorkerType};
+use crate::CCast;
+use crate::DataHead;
+use crate::memory::{ChannelInitError, SharedChannel};
+use crate::process::task_file::Packed;
+use crate::process::worker_record::{Worker, WorkerType};
 use core::cell::Cell;
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::AtomicU32;
-use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::DataHead;
-use swoole_rs_corebase::memory::{ChannelInitError, SharedChannel};
 
-use crate::armed_timer::ArmedTimer;
-use crate::os::{getpid, kill};
-use crate::pool::{
+use crate::process::armed_timer::ArmedTimer;
+use crate::process::os::{getpid, kill};
+use crate::process::pool::{
     Bailed, PoolCall, PoolIpc, PoolLoop, pool_ipc_free, pool_ipc_new, pool_ipc_prepare, pool_run,
     swr_v1_process_pool_ipc_listener,
 };
-use crate::reaper::{self, Reap, ReloadStart, Waited, wait_child};
-use crate::reload_task::{ReloadTask, Warn};
-use crate::worker_record::WorkerRecord;
-use crate::worker_registry::WorkerRegistry;
+use crate::process::reaper::{self, Reap, ReloadStart, Waited, wait_child};
+use crate::process::reload_task::{ReloadTask, Warn};
+use crate::process::worker_record::WorkerRecord;
+use crate::process::worker_registry::WorkerRegistry;
 
 /// The native pipe owners, kept alive at stable addresses until the pool closes.
 type Pipes = Vec<Box<dyn std::any::Any>>;
@@ -100,7 +100,7 @@ pub struct PoolRecord {
     /// The registry `create` made, which `destroy` (or dropping the record) frees.
     pub(crate) registry: Option<Box<WorkerRegistry>>,
     /// A message-queue pool's queue, which goes as the registry does.
-    pub(crate) queue: Option<Box<swoole_rs_corebase::ossupport::QueueRecord>>,
+    pub(crate) queue: Option<Box<crate::ossupport::QueueRecord>>,
     pub(crate) ipc: Cell<*mut PoolIpc>,
     pub(crate) message_box: SharedChannel,
     message_bus: Owner<Box<dyn std::any::Any>>,
@@ -234,9 +234,7 @@ impl PoolRecord {
     }
 
     /// The pool's message box, which the workers push to and the master pops from.
-    pub(crate) fn message_box_channel(
-        &self,
-    ) -> Option<&swoole_rs_corebase::memory::channel::Record> {
+    pub(crate) fn message_box_channel(&self) -> Option<&crate::memory::channel::Record> {
         self.message_box.get()
     }
 
@@ -277,15 +275,15 @@ impl PoolRecord {
 
     /// The pool's stream listener, if any.
     #[must_use]
-    pub fn ipc_listener(&self) -> Option<crate::pool::Connection> {
+    pub fn ipc_listener(&self) -> Option<crate::process::pool::Connection> {
         self.with_ipc(|ipc| swr_v1_process_pool_ipc_listener(ipc).cloned())
             .flatten()
     }
 
     /// The stream connection being served, if any.
     #[must_use]
-    pub fn ipc_connection(&self) -> Option<crate::pool::Connection> {
-        self.with_ipc(|ipc| crate::pool::pool_ipc_connection(ipc))
+    pub fn ipc_connection(&self) -> Option<crate::process::pool::Connection> {
+        self.with_ipc(|ipc| crate::process::pool::pool_ipc_connection(ipc))
             .flatten()
     }
 
@@ -470,7 +468,7 @@ impl<'a> PoolRef<'a> {
     }
 
     /// Sets the pool's message queue.
-    pub(crate) fn set_queue(self, queue: Option<Box<swoole_rs_corebase::ossupport::QueueRecord>>) {
+    pub(crate) fn set_queue(self, queue: Option<Box<crate::ossupport::QueueRecord>>) {
         drop(self.replace(|record| &mut record.queue, queue));
     }
 
@@ -502,13 +500,13 @@ impl<'a> PoolRef<'a> {
     /// or `None` for a pool without one or a failed stat.
     #[must_use]
     pub fn queue_stat(self) -> Option<(usize, usize)> {
-        self.with_queue(swoole_rs_corebase::ossupport::QueueRecord::stat)?
+        self.with_queue(crate::ossupport::QueueRecord::stat)?
     }
 
     /// The pool's message queue's id (`msgget`'s), 0 without one.
     #[must_use]
     pub fn queue_id(self) -> c_int {
-        self.with_queue(swoole_rs_corebase::ossupport::QueueRecord::id)
+        self.with_queue(crate::ossupport::QueueRecord::id)
             .unwrap_or(0)
     }
 
@@ -519,7 +517,7 @@ impl<'a> PoolRef<'a> {
             .with_queue(|queue| queue.pop_words(node, size))
             .flatten();
         let length = result.map_or(-1, CCast::c_cast::<isize>);
-        (length, swoole_rs_corebase::sys::errno())
+        (length, crate::sys::errno())
     }
 
     /// `queue->push(node, length)` of a `QueueNode` held in words; false without a
@@ -531,10 +529,7 @@ impl<'a> PoolRef<'a> {
 
     /// `f` over the pool's message queue; `None` without one. Only this type's queue
     /// reads borrow it, and none of them reaches `destroy`, which frees it.
-    fn with_queue<R>(
-        self,
-        f: impl FnOnce(&swoole_rs_corebase::ossupport::QueueRecord) -> R,
-    ) -> Option<R> {
+    fn with_queue<R>(self, f: impl FnOnce(&crate::ossupport::QueueRecord) -> R) -> Option<R> {
         self.record().queue.as_deref().map(f)
     }
 
@@ -559,14 +554,14 @@ impl<'a> PoolRef<'a> {
     /// The pool's stream listener, which its IPC owns until `destroy` frees it, or
     /// `None` without one.
     #[must_use]
-    pub fn ipc_listener(self) -> Option<crate::pool::Connection> {
+    pub fn ipc_listener(self) -> Option<crate::process::pool::Connection> {
         self.record().ipc_listener()
     }
 
     /// The stream connection being served, which the worker loop frees once it is
     /// answered, or `None` without one.
     #[must_use]
-    pub fn ipc_connection(self) -> Option<crate::pool::Connection> {
+    pub fn ipc_connection(self) -> Option<crate::process::pool::Connection> {
         self.record().ipc_connection()
     }
 
@@ -575,7 +570,7 @@ impl<'a> PoolRef<'a> {
     #[must_use]
     pub fn ipc_packet(self) -> (*mut c_char, usize) {
         self.record()
-            .with_ipc(crate::pool::pool_ipc_packet)
+            .with_ipc(crate::process::pool::pool_ipc_packet)
             .unwrap_or((ptr::null_mut(), 0))
     }
 }
@@ -626,11 +621,11 @@ pub type TaskFn = fn(PoolRef<'_>, Worker<'_>, Packed<'_>) -> c_int;
 /// `onMessage`: the message, lent for the call.
 pub type MessageFn = fn(PoolRef<'_>, &RecvData<'_>);
 /// `onWorkerMessage`: the `EventData` the master popped, as its bytes.
-pub type EventFn = fn(PoolRef<'_>, &[u8; swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize]);
+pub type EventFn = fn(PoolRef<'_>, &[u8; crate::constants::SW_IPC_MAX_SIZE as usize]);
 /// `onWorkerError`.
-pub type ErrorFn = fn(PoolRef<'_>, Worker<'_>, &crate::methods::ExitStatus);
+pub type ErrorFn = fn(PoolRef<'_>, Worker<'_>, &crate::process::methods::ExitStatus);
 /// `onWorkerNotFound`.
-pub type NotFoundFn = fn(PoolRef<'_>, &crate::methods::ExitStatus);
+pub type NotFoundFn = fn(PoolRef<'_>, &crate::process::methods::ExitStatus);
 
 /// What a pool's owner installs ([`PoolRef::install`]): its hooks. `None` leaves what
 /// the pool has.
@@ -799,7 +794,11 @@ impl PoolRef<'_> {
     }
 
     /// `onWorkerError(pool, worker, status)`; nothing without one.
-    pub fn call_on_worker_error(self, worker: Worker<'_>, status: &crate::methods::ExitStatus) {
+    pub fn call_on_worker_error(
+        self,
+        worker: Worker<'_>,
+        status: &crate::process::methods::ExitStatus,
+    ) {
         if let Some(hook) = self.on_worker_error() {
             hook(self, worker, status);
         }
@@ -812,7 +811,7 @@ impl PoolRef<'_> {
     )]
     pub fn call_on_worker_message(
         self,
-        message: &[u8; swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize],
+        message: &[u8; crate::constants::SW_IPC_MAX_SIZE as usize],
     ) -> bool {
         let Some(hook) = self.on_worker_message() else {
             return false;
@@ -822,7 +821,7 @@ impl PoolRef<'_> {
     }
 
     /// `onWorkerNotFound(pool, status)`; nothing without one.
-    pub fn call_on_worker_not_found(self, status: &crate::methods::ExitStatus) {
+    pub fn call_on_worker_not_found(self, status: &crate::process::methods::ExitStatus) {
         if let Some(hook) = self.on_worker_not_found() {
             hook(self, status);
         }
@@ -912,7 +911,7 @@ pub trait PoolNative: Sync {
         &self,
         pool: PoolRef<'_>,
         worker: Worker<'_>,
-        head: &mut swoole_rs_corebase::DataHead,
+        head: &mut crate::DataHead,
         message: &[u8],
     ) -> bool;
     /// `onTask(pool, worker, data)`.
@@ -925,7 +924,7 @@ pub trait PoolNative: Sync {
     /// available and `flags` asks for it, else `send_sync`.
     fn pipe_write(&self, call: &mut PoolCall);
     /// Report a worker loop's warning.
-    fn warn(&self, call: &PoolCall, warning: crate::pool::Warning);
+    fn warn(&self, call: &PoolCall, warning: crate::process::pool::Warning);
 }
 
 /// `swIPCMode`: how a pool's master reaches its workers.
@@ -1200,7 +1199,7 @@ pub(crate) trait PoolHost {
     fn warn(&self) -> Warn;
     fn event_size(&self) -> usize;
     /// The stream listener's free.
-    fn close(&self, listener: crate::pool::Connection);
+    fn close(&self, listener: crate::process::pool::Connection);
     /// `Channel::make(size, sizeof(EventData), SW_CHAN_LOCK | SW_CHAN_SHM)`: the
     /// pool's new message box, or null.
     fn new_box(&mut self, size: u64) -> SharedChannel;
@@ -1261,13 +1260,13 @@ impl PoolHost for Native<'_> {
 
     fn is_master(&mut self) -> bool {
         cfg!(feature = "upstream-symbols")
-            && crate::methods::worker_type() == Some(WorkerType::Master)
+            && crate::process::methods::worker_type() == Some(WorkerType::Master)
     }
 
     /// crates/corebase's fork, with its process bookkeeping.
     fn fork(&mut self, _: *mut WorkerRecord) -> Option<c_int> {
         #[cfg(feature = "upstream-symbols")]
-        let pid = swoole_rs_corebase::swoole_fork(0);
+        let pid = crate::swoole_fork(0);
         #[cfg(not(feature = "upstream-symbols"))]
         let pid = 0;
         (pid >= 0).then_some(pid)
@@ -1301,7 +1300,7 @@ impl PoolHost for Native<'_> {
 
     fn callback(&mut self, callback: Callback, worker: *mut c_void) -> Result<isize, Bailed> {
         let mut call = self.call(worker);
-        crate::pool::trapped(|| self.native.callback(&mut call, callback))?;
+        crate::process::pool::trapped(|| self.native.callback(&mut call, callback))?;
         Ok(call.result)
     }
 
@@ -1314,14 +1313,14 @@ impl PoolHost for Native<'_> {
     }
 
     fn warn(&self) -> Warn {
-        crate::methods::reload_warn
+        crate::process::methods::reload_warn
     }
 
     fn event_size(&self) -> usize {
         self.native.event_size()
     }
 
-    fn close(&self, listener: crate::pool::Connection) {
+    fn close(&self, listener: crate::process::pool::Connection) {
         let mut call = PoolCall::new(self.pool, None);
         call.connection = Some(listener);
         self.native.close(&mut call);
@@ -1352,14 +1351,14 @@ impl PoolHost for Native<'_> {
     }
 
     fn current_worker(&mut self) -> *mut WorkerRecord {
-        crate::worker_globals::current_worker()
+        crate::process::worker_globals::current_worker()
     }
 }
 
 /// `Channel::make(size, maxlen, SW_CHAN_LOCK | SW_CHAN_SHM)`: a channel in fresh
 /// shared memory, or none.
 fn new_message_box(size: usize, maxlen: usize) -> SharedChannel {
-    use swoole_rs_corebase::log;
+    use crate::log;
     /// `SW_CHAN_LOCK`.
     const LOCK: c_int = 2;
     match SharedChannel::make(size, maxlen, LOCK) {
@@ -1386,8 +1385,8 @@ fn new_message_box(size: usize, maxlen: usize) -> SharedChannel {
 #[cfg(feature = "upstream-symbols")]
 fn effect(op: Op, arg: u64) -> bool {
     match op {
-        Op::WorkerType => crate::methods::swoole_set_worker_type(arg.c_cast::<c_int>()),
-        Op::SignalDispatch => crate::signal::swoole_signal_dispatch(),
+        Op::WorkerType => crate::process::methods::swoole_set_worker_type(arg.c_cast::<c_int>()),
+        Op::SignalDispatch => crate::process::signal::swoole_signal_dispatch(),
         _ => return false,
     }
     true
@@ -1396,8 +1395,8 @@ fn effect(op: Op, arg: u64) -> bool {
 /// `LOG_*`'s warning, under the `ProcessPool` method upstream logged it from.
 fn log(kind: Log, arg: u64) {
     /// `SW_LOG_WARNING`, `SW_ERROR_OPERATION_NOT_SUPPORT`, `SW_ERROR_WRONG_OPERATION`.
-    use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as WARNING;
-    use swoole_rs_corebase::log::{error_log, sys_warning, warning};
+    use crate::log::LogLevel::SW_LOG_WARNING as WARNING;
+    use crate::log::{error_log, sys_warning, warning};
     const NOT_SUPPORT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
     const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
     let pid = arg.c_cast::<c_int>();
@@ -1670,7 +1669,7 @@ impl<H: PoolHost> Pool<'_, H> {
             IpcMode::MsgQueue => {
                 self.set_use_msgqueue(true);
                 self.set_msgqueue_key(key);
-                let Some(queue) = swoole_rs_corebase::ossupport::QueueRecord::open(key) else {
+                let Some(queue) = crate::ossupport::QueueRecord::open(key) else {
                     return false;
                 };
                 self.p.set_queue(Some(queue));
@@ -1748,7 +1747,7 @@ impl<H: PoolHost> Pool<'_, H> {
         self.h.bus_buffer(size.c_cast::<usize>()).is_ok()
     }
 
-    /// `ProcessPool::set_protocol`: how the workers receive (`crate::pool`'s loops).
+    /// `ProcessPool::set_protocol`: how the workers receive (`crate::process::pool`'s loops).
     ///
     /// - `SW_PROTOCOL_TASK`: each `EventData` arrives whole, in one message; a
     ///   payload larger than its data field travels in a temporary file whose path
@@ -1899,7 +1898,7 @@ impl<H: PoolHost> Pool<'_, H> {
             }
             libc::SIGIO => self.set_read_message(true),
             libc::SIGWINCH => self.reopen_logger(),
-            _ if crate::is_sigrtmin(signo) => self.reopen_logger(),
+            _ if crate::process::is_sigrtmin(signo) => self.reopen_logger(),
             _ => {}
         }
         Ok(())
@@ -1944,7 +1943,7 @@ impl<H: PoolHost> Pool<'_, H> {
         }
         self.set_reload_count(self.reload_count() + 1);
         self.set_reload_init(true);
-        self.set_reload_last_time(swoole_rs_corebase::time_now());
+        self.set_reload_last_time(crate::time_now());
         Ok(true)
     }
 
@@ -2036,8 +2035,10 @@ impl<H: PoolHost> Pool<'_, H> {
             return;
         }
         // An EventData's bytes, which each pop overwrites.
-        let mut event = [0; swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize];
-        while crate::methods::pop_message(self.p, &mut event).is_some_and(|length| length > 0) {
+        let mut event = [0; crate::constants::SW_IPC_MAX_SIZE as usize];
+        while crate::process::methods::pop_message(self.p, &mut event)
+            .is_some_and(|length| length > 0)
+        {
             if !self.running() {
                 continue;
             }
@@ -2055,7 +2056,7 @@ impl<H: PoolHost> Pool<'_, H> {
             }
             // A bailout in the new worker's callbacks leaves at once; these frames own nothing.
             if self.spawn(worker).is_err() {
-                crate::pool::raise_bailout();
+                crate::process::pool::raise_bailout();
             }
             self.with_registry(|registry| registry.detach(pid));
         }
@@ -2082,7 +2083,7 @@ impl<H: PoolHost> Pool<'_, H> {
         }
         // A bailout in the new worker's callbacks leaves at once; these frames own nothing.
         if self.spawn(worker).is_err() {
-            crate::pool::raise_bailout();
+            crate::process::pool::raise_bailout();
         }
         true
     }
@@ -2159,7 +2160,7 @@ impl<H: PoolHost> Pool<'_, H> {
         };
         if self.use_socket() {
             let send = |ipc: Option<&PoolIpc>| {
-                crate::pool::swr_v1_process_pool_ipc_send(ipc, event, blocking)
+                crate::process::pool::swr_v1_process_pool_ipc_send(ipc, event, blocking)
             };
             let sent = self
                 .with_ipc(|ipc| send(Some(ipc)))
@@ -2182,7 +2183,7 @@ impl<H: PoolHost> Pool<'_, H> {
                 .filter(|&index| index < self.worker_num())
                 .map(|index| self.worker_at(index))
         };
-        crate::pool::pool_dispatch(
+        crate::process::pool::pool_dispatch(
             native,
             self.p,
             workers,
@@ -2198,9 +2199,10 @@ impl<H: PoolHost> Pool<'_, H> {
     /// tried, with the scheduler warning set, when all are busy.
     fn schedule(&mut self) -> u32 {
         let round = &self.record().round_id;
-        let (target, warning) = crate::pool::pool_schedule(self.worker_num(), round, |target| {
-            crate::pool::idle(self.worker_at(target))
-        });
+        let (target, warning) =
+            crate::process::pool::pool_schedule(self.worker_num(), round, |target| {
+                crate::process::pool::idle(self.worker_at(target))
+            });
         if warning {
             self.set_scheduler_warning(true);
         }
@@ -2412,7 +2414,7 @@ impl<H: PoolHost> Pool<'_, H> {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/modules/process/pool_owners.rs"]
+#[path = "../../../../tests/modules/process/pool_owners.rs"]
 mod owner_tests;
 
 #[cfg(test)]
@@ -2478,7 +2480,8 @@ mod tests {
             if op == Op::KillTimer
                 && let Some(mut record) = self.record
             {
-                let timer = ArmedTimer::new(1, KILL_TIMER_ID, crate::armed_timer::tests::record);
+                let timer =
+                    ArmedTimer::new(1, KILL_TIMER_ID, crate::process::armed_timer::tests::record);
                 // SAFETY: the fixture's record, which outlives its pool.
                 unsafe { record.as_mut() }.kill_timer.set(Some(timer));
             }
@@ -2562,7 +2565,7 @@ mod tests {
         fn event_size(&self) -> usize {
             8192
         }
-        fn close(&self, _: crate::pool::Connection) {}
+        fn close(&self, _: crate::process::pool::Connection) {}
         fn new_box(&mut self, size: u64) -> SharedChannel {
             if self.ask(Op::NewMessageBox, size) == 0 {
                 return SharedChannel::none();
@@ -2594,9 +2597,9 @@ mod tests {
         }
     }
 
-    fn close(_: crate::pool::Connection) {}
+    fn close(_: crate::process::pool::Connection) {}
 
-    fn warn(_: crate::reload_task::KillWarning, _: c_int, _: u32) {}
+    fn warn(_: crate::process::reload_task::KillWarning, _: c_int, _: u32) {}
 
     struct Fixture {
         record: Box<PoolRecord>,
@@ -2651,7 +2654,7 @@ mod tests {
     fn the_kill_timer_stays_armed_for_workers_still_stopping_until_the_pool_goes() {
         // Two workers: `wait` SIGTERMs both and reaps only the first (the script's
         // `Op::Waitpid`), so the second may still be stopping when it returns.
-        let _children = crate::wait::tests::CHILDREN
+        let _children = crate::process::wait::tests::CHILDREN
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut children: Vec<_> = (0..2)
@@ -2674,21 +2677,27 @@ mod tests {
         }
         assert!(ops(&pool).contains(&Op::KillTimer));
         assert!(record(&mut pool).kill_timer.get_mut().is_some());
-        assert_eq!(crate::armed_timer::tests::cancelled(), []);
+        assert_eq!(crate::process::armed_timer::tests::cancelled(), []);
         drop(pool);
         drop(fixture);
-        assert_eq!(crate::armed_timer::tests::cancelled(), [KILL_TIMER_ID]);
+        assert_eq!(
+            crate::process::armed_timer::tests::cancelled(),
+            [KILL_TIMER_ID]
+        );
     }
 
     #[test]
     fn destroying_the_pool_deletes_an_armed_kill_timer() {
         let mut fixture = Fixture::new(0);
         let mut pool = fixture.pool(Script::default());
-        let timer = ArmedTimer::new(1, KILL_TIMER_ID, crate::armed_timer::tests::record);
+        let timer = ArmedTimer::new(1, KILL_TIMER_ID, crate::process::armed_timer::tests::record);
         record(&mut pool).kill_timer.set(Some(timer));
         pool.destroy();
         assert!(record(&mut pool).kill_timer.get_mut().is_none());
-        assert_eq!(crate::armed_timer::tests::cancelled(), [KILL_TIMER_ID]);
+        assert_eq!(
+            crate::process::armed_timer::tests::cancelled(),
+            [KILL_TIMER_ID]
+        );
     }
 
     #[test]
@@ -2991,7 +3000,7 @@ mod tests {
         record(&mut pool).use_socket.set(true);
         let ipc = pool_ipc_new(true);
         // SAFETY: a live handle.
-        crate::pool::swr_v1_process_pool_ipc_address(unsafe { &mut *ipc }, &file, 0);
+        crate::process::pool::swr_v1_process_pool_ipc_address(unsafe { &mut *ipc }, &file, 0);
         record(&mut pool).ipc.set(ipc);
         let mut event = [0u8; 64];
         event[EVENT_LEN] = 3;
@@ -3017,7 +3026,7 @@ mod tests {
         // A pool whose listener is gone fails.
         let ipc = pool_ipc_new(true);
         // SAFETY: as above.
-        crate::pool::swr_v1_process_pool_ipc_address(unsafe { &mut *ipc }, &file, 0);
+        crate::process::pool::swr_v1_process_pool_ipc_address(unsafe { &mut *ipc }, &file, 0);
         record(&mut pool).ipc.set(ipc);
         for blocking in [true, false] {
             assert!(!pool.dispatch(&event, None, blocking));

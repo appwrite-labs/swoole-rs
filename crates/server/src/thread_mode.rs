@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn worker_types_are_upstreams() {
-        use swoole_rs_process::worker_record::WorkerType;
+        use swoole_rs_corebase::process::worker_record::WorkerType;
         // Upstream's swoole_server.h: SW_EVENT_WORKER = 2, SW_TASK_WORKER = 4, SW_USER_WORKER = 5.
         let kinds = [WorkerType::Event, WorkerType::Task, WorkerType::User];
         assert_eq!(kinds.map(WorkerType::code), [2, 4, 5]);

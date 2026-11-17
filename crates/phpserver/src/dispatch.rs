@@ -15,11 +15,11 @@ use std::{
 };
 use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
+use swoole_rs_corebase::process::methods::ExitStatus;
+use swoole_rs_corebase::process::task_file::Packed;
+use swoole_rs_corebase::process::worker_record::Worker;
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
 use swoole_rs_corebase::{ServerEvent, WebSocketStatus};
-use swoole_rs_process::methods::ExitStatus;
-use swoole_rs_process::task_file::Packed;
-use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::Connection;
 use swoole_rs_server::callbacks::{Callback, CallbackKind};
 use swoole_rs_zend::host::callable;
@@ -554,7 +554,7 @@ fn on_worker_start(server: view::Server<'_>, worker: Worker<'_>) {
 }
 
 fn on_worker_stop(server: view::Server<'_>, worker: Worker<'_>) {
-    if swoole_rs_process::methods::worker_is_running() {
+    if swoole_rs_corebase::process::methods::worker_is_running() {
         relay(on_lifecycle(
             server,
             ServerCallback::WorkerStop,

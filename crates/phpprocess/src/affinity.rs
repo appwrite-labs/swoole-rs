@@ -59,7 +59,7 @@ fn set_affinity(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if !set.set_process(swoole_rs_process::os::getpid()) {
+    if !set.set_process(swoole_rs_corebase::process::os::getpid()) {
         sys(E_WARNING, &message!("sched_setaffinity() failed"));
         call.set_bool(false);
         return;
@@ -69,7 +69,7 @@ fn set_affinity(call: &Call) {
 
 fn get_affinity(call: &Call) {
     let mut set = CpuSet::empty();
-    if !set.get_process(swoole_rs_process::os::getpid()) {
+    if !set.get_process(swoole_rs_corebase::process::os::getpid()) {
         sys(E_WARNING, &message!("sched_getaffinity() failed"));
         call.set_bool(false);
         return;

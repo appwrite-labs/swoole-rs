@@ -1,5 +1,5 @@
 //! The current worker's per-thread/process record and lifecycle, owned by Rust.
-use crate::worker_record::WorkerRecord;
+use crate::process::worker_record::WorkerRecord;
 use core::ffi::c_int;
 use core::sync::atomic::Ordering::Relaxed;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32};
@@ -73,7 +73,9 @@ pub fn current_worker() -> *mut WorkerRecord {
 /// `f` over `SwooleWG.worker`, or `None` while this thread runs no worker. The
 /// handle lives only for the call: `f` can't keep it.
 #[inline(always)]
-pub fn with_current<R>(f: impl FnOnce(&crate::worker_record::Worker<'_>) -> R) -> Option<R> {
+pub fn with_current<R>(
+    f: impl FnOnce(&crate::process::worker_record::Worker<'_>) -> R,
+) -> Option<R> {
     let raw = current_worker();
     if raw.is_null() {
         return None;
@@ -83,7 +85,7 @@ pub fn with_current<R>(f: impl FnOnce(&crate::worker_record::Worker<'_>) -> R) -
     // its workers after the loop ends. `worker_global_stopped` frees only
     // the detached flag, so stopping during `f` leaves the
     // lent record live. The loop orders the field writes made through the handle.
-    let worker = unsafe { crate::worker_record::Worker::from(&*raw) };
+    let worker = unsafe { crate::process::worker_record::Worker::from(&*raw) };
     Some(f(&worker))
 }
 
@@ -117,7 +119,7 @@ pub fn worker_global_max_requests(
 /// `worker_copy` does; nothing reads that copy, so only the separation is kept.
 /// Upstream also sets `SwooleWG.worker = worker`, which the slot already holds: every
 /// caller stops the worker whose loop set it current.
-pub fn worker_global_detach(_worker: crate::worker_record::Worker<'_>) {
+pub fn worker_global_detach(_worker: crate::process::worker_record::Worker<'_>) {
     with_globals(|globals| globals.detached.store(true, Relaxed));
 }
 
@@ -135,11 +137,11 @@ pub fn worker_global_stopped() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::methods::{
+    use crate::process::methods::{
         swoole_get_worker_id, swoole_get_worker_pid, swoole_get_worker_type, swoole_set_worker_id,
         swoole_set_worker_type, worker_is_running, worker_is_shutdown,
     };
-    use crate::worker_record::{Worker, swr_v1_worker_init, swr_v1_worker_shutdown};
+    use crate::process::worker_record::{Worker, swr_v1_worker_init, swr_v1_worker_shutdown};
     use std::sync::atomic::AtomicUsize;
 
     fn max_request() -> u32 {
@@ -192,7 +194,7 @@ mod tests {
             swr_v1_worker_shutdown(Worker::from(&worker));
             assert_eq!(
                 Worker::from(&worker).status(),
-                Some(crate::worker_record::WorkerStatus::Exit)
+                Some(crate::process::worker_record::WorkerStatus::Exit)
             );
             assert!(worker_is_shutdown());
             worker_global_stopped();

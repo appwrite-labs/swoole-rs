@@ -1,7 +1,7 @@
 //! The reactor-thread ops over a thread's own state that were master.cc's: its
 //! entry and setup, its message bus and worker pipes, the messages workers send
 //! it, its timers and the server methods it calls. Each is a Rust call: the bus
-//! is crates/bus', the methods are this crate's and crates/process' and
+//! is crates/bus', the methods are this crate's and `corebase::process`' and
 //! crates/ports', reached under their upstream symbols.
 use crate::Mode;
 use crate::reactor_thread::{HEARTBEAT, each_connection, send_event};
@@ -14,7 +14,7 @@ use swoole_rs_reactor::Events;
 use crate::objects::worker_pipe;
 use crate::reactor_handle::Reactor;
 use crate::reactor_io::owns;
-use swoole_rs_process::worker_record::Worker;
+use swoole_rs_corebase::process::worker_record::Worker;
 use swoole_rs_reactor::{Event, Running};
 
 use crate::callbacks::TaskSlot;
@@ -356,7 +356,10 @@ fn pipe_read(ctx: &ReactorContext<'_>, event: &Event) -> Option<c_int> {
             }
             Some(ServerEvent::Shutdown) => shutdown(ctx)?,
             Some(ServerEvent::ShutdownSignal) => {
-                _ = swoole_rs_process::os::kill(std::process::id().cast_signed(), libc::SIGTERM);
+                _ = swoole_rs_corebase::process::os::kill(
+                    std::process::id().cast_signed(),
+                    libc::SIGTERM,
+                );
             }
             Some(ServerEvent::Finish) => {
                 _ = bus.with_event(|event| state.callbacks.task(TaskSlot::Finish, serv, event));

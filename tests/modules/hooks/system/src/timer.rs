@@ -153,7 +153,7 @@ fn sys() {
         // The signal-driven timer's select loop, as upstream's.
         // SAFETY: sleep(3).
         unsafe { sleep(10) };
-        swoole_rs_process::signal::swoole_signal_dispatch();
+        swoole_rs_corebase::process::signal::swoole_signal_dispatch();
         if swoole_rs_corebase::swr_v1_core_signal_alarm() {
             swoole_timer_select();
         }

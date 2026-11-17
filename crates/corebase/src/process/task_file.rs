@@ -3,24 +3,24 @@
 //! (`File::read_all`: pread from offset 0, retrying EINTR/EAGAIN, stopping at EOF or
 //! another error) and unlinks the file unless the task is only peeked;
 //! `Server::task_dump` prints it.
+use crate::{CCast, ServerEvent};
 use std::ffi::{CStr, c_int, c_void};
 use std::mem::{MaybeUninit, offset_of};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
-use swoole_rs_corebase::{CCast, ServerEvent};
 
-use swoole_rs_corebase::constants::TaskFlag;
-use swoole_rs_corebase::{
+use crate::constants::TaskFlag;
+use crate::{
     DataHead, datahead_dump, log, microtime, swr_v1_core_current_task_id,
     swr_v1_core_set_current_task_id, task_tmpfile,
 };
 
-use swoole_rs_corebase::buffer::string::CppString;
-use swoole_rs_corebase::ossupport::fd_write_all;
+use crate::buffer::string::CppString;
+use crate::ossupport::fd_write_all;
 
-use crate::methods::swoole_get_worker_id;
-use crate::process_pool::SW_IPC_MAX_SIZE;
+use crate::process::methods::swoole_get_worker_id;
+use crate::process::process_pool::SW_IPC_MAX_SIZE;
 
 /// Why reading a task's temporary file failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,7 +33,7 @@ pub enum TaskFileError {
     Pread { error: i32, fd: i32, read: usize },
 }
 
-pub(crate) use swoole_rs_corebase::sys::errno;
+pub(crate) use crate::sys::errno;
 
 /// Fills `buffer` from the start of the file at `path`, and unlinks the file once
 /// it is read whole, unless `peek`.
@@ -143,7 +143,7 @@ pub(crate) fn make_tmpfile(
     {
         *byte = pattern;
     }
-    swoole_rs_corebase::ossupport::create_tmpfile(path)
+    crate::ossupport::create_tmpfile(path)
 }
 
 /// Writes the payload to the temp file as `File::write_all` does (warning on an
@@ -194,7 +194,7 @@ fn pack_payload(dest: &mut [MaybeUninit<u8>], data: &[u8], template: &CStr) -> T
 }
 
 /// `swoole::EventData`'s header (`DataHead`), which native asserts is 40 bytes.
-pub use swoole_rs_corebase::DataHead as EventHead;
+pub use crate::DataHead as EventHead;
 
 #[expect(
     clippy::cast_possible_truncation,
@@ -319,7 +319,7 @@ impl EventData {
         let mut buf = [0_u8; 1024];
         datahead_dump(&self.head, &mut buf);
         let text = CStr::from_bytes_until_nul(&buf).unwrap_or_default();
-        swoole_rs_corebase::sys::print(text.to_bytes());
+        crate::sys::print(text.to_bytes());
         if TaskFlag::from_bits(self.head.ext_flags).contains(TaskFlag::SW_TASK_TMPFILE) {
             let pkg = PacketTask::read(&self.data);
             // Upstream prints the payload's length in bytes of the file's name; a
@@ -329,7 +329,7 @@ impl EventData {
             let shown = usize::try_from(precision).map_or(name.len(), |n| n.min(name.len()));
             let name = name.get(..shown).unwrap_or(name);
             let line = [b"Task[tmpfile]=", name, b"\n"].concat();
-            swoole_rs_corebase::sys::print(&line);
+            crate::sys::print(&line);
         }
     }
 }
@@ -414,13 +414,13 @@ impl<'a> Packed<'a> {
             Ok(()) => {}
             Err(TaskFileError::Short { .. }) => return None,
             Err(TaskFileError::Open(error)) => {
-                swoole_rs_corebase::sys::set_errno(error);
+                crate::sys::set_errno(error);
                 let name = pkg.path().to_string_lossy();
                 log::sys_warning(c"Server::task_unpack", format_args!("open({name}) failed"));
                 return None;
             }
             Err(TaskFileError::Pread { error, fd, read }) => {
-                swoole_rs_corebase::sys::set_errno(error);
+                crate::sys::set_errno(error);
                 log::sys_warning(
                     c"Server::task_unpack",
                     format_args!("pread({fd}, {str:p}, {}, {read}) failed", pkg.length - read),
@@ -438,7 +438,7 @@ mod tests {
         DataHead, PacketTask, ServerEvent, TaskBuffer, TaskFileError, TaskPack, pack_payload,
         read_file, spill,
     };
-    use crate::methods::tests::{install, logged};
+    use crate::process::methods::tests::{install, logged};
     use std::ffi::CString;
 
     fn read(path: &CString, length: usize, peek: bool) -> (Result<(), TaskFileError>, Vec<u8>) {
@@ -458,16 +458,16 @@ mod tests {
 
     #[test]
     fn packed_bytes_hold_their_head_and_the_payload_it_counts() {
-        let head = size_of::<swoole_rs_corebase::DataHead>();
+        let head = size_of::<crate::DataHead>();
         // One byte ahead, so the head is unaligned.
         let mut bytes = vec![0u8; 1 + head + 3];
         bytes[1..9].copy_from_slice(&7i64.to_ne_bytes());
-        let len = 1 + std::mem::offset_of!(swoole_rs_corebase::DataHead, len);
+        let len = 1 + std::mem::offset_of!(crate::DataHead, len);
         bytes[len..len + 4].copy_from_slice(&3u32.to_ne_bytes());
         bytes[1 + head..].copy_from_slice(b"abc");
         let task = super::Packed::from_bytes(&bytes[1..]).unwrap();
         assert_eq!((task.head().fd, task.head().len), (7, 3));
-        let mut string = swoole_rs_corebase::buffer::string::CppString::EMPTY;
+        let mut string = crate::buffer::string::CppString::EMPTY;
         let (payload, flags) = task.unpack(&mut string).unwrap();
         assert_eq!((payload, flags), (&b"abc"[..], 0));
         assert!(super::Packed::from_bytes(&bytes[1..bytes.len() - 1]).is_none());
@@ -503,7 +503,7 @@ mod tests {
         // Upstream's `sizeof(EventData)`: SW_IPC_MAX_SIZE (8192, 2048 on macOS).
         assert_eq!(
             size_of::<TaskBuffer>() as u64,
-            crate::process_pool::SW_IPC_MAX_SIZE
+            crate::process::process_pool::SW_IPC_MAX_SIZE
         );
         assert_eq!(align_of::<TaskBuffer>(), 8);
     }
@@ -656,10 +656,6 @@ mod tests {
             Packed::from_bytes(bytes).unwrap()
         }
 
-        fn empty_string() -> CppString {
-            CppString::EMPTY
-        }
-
         #[test]
         fn a_small_task_packs_inline_and_unpacks_in_place() {
             let _turn = TASK_ID.lock();
@@ -675,7 +671,7 @@ mod tests {
             );
             assert!(head.time > 0.0);
             assert_eq!(swr_v1_core_current_task_id(), 42);
-            let mut string = empty_string();
+            let mut string = crate::buffer::string::OwnedString::default();
             let (data, _) = packed(event).unpack(&mut string).unwrap();
             assert_eq!(data.len(), 5);
             assert_eq!(data.as_ptr(), unsafe { (*event).data.as_ptr() }.cast());
@@ -686,7 +682,7 @@ mod tests {
         #[cfg_attr(miri, ignore = "Miri has no access")]
         fn a_large_task_spills_to_a_file_that_unpacking_reads_and_removes() {
             let _turn = TASK_ID.lock();
-            assert!(swoole_rs_corebase::set_task_tmpdir(c"/tmp"));
+            assert!(crate::set_task_tmpdir(c"/tmp"));
             let data = vec![7u8; 9000];
             let mut buf = event();
             let task = buf.as_mut_ptr().cast::<EventHead>();
@@ -700,7 +696,7 @@ mod tests {
             let pkg = PacketTask::read(unsafe { &(*event).data });
             let path = pkg.path().to_str().unwrap().to_owned();
             assert!(path.starts_with("/tmp/swoole.task."));
-            let mut string = empty_string();
+            let mut string = crate::buffer::string::OwnedString::default();
             let (read, _) = packed(event).unpack(&mut string).unwrap();
             assert_eq!(read, data.as_slice());
             let read = read.as_ptr();

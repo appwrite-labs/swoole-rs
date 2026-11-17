@@ -68,7 +68,7 @@ pub fn send(serv: Server<'_>, session_id: core::ffi::c_long, data: &[u8]) -> boo
 /// Whether `BaseFactory::finish` would send to `session_id` from this worker: it owns
 /// the session, or there is none.
 fn sends_here(state: &ServerState, session_id: core::ffi::c_long) -> bool {
-    let worker = swoole_rs_process::methods::swoole_get_worker_id();
+    let worker = swoole_rs_corebase::process::methods::swoole_get_worker_id();
     !allocated(state)
         || state
             .session(session_id)

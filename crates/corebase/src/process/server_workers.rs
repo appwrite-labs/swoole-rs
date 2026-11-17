@@ -1,9 +1,9 @@
 //! Server startup's worker-array publication and ordered lookup. Native calls
 //! enter here between the daemon/fork and factory/user callbacks, so no Rust
 //! frame spans a fork hook, PHP bailout or whole-thread exit.
-use crate::process_pool::{PoolObjectKey, PoolRef};
-use crate::worker_record::Worker;
-use crate::worker_record::WorkerRecord;
+use crate::process::process_pool::{PoolObjectKey, PoolRef};
+use crate::process::worker_record::Worker;
+use crate::process::worker_record::WorkerRecord;
 use core::ffi::c_void;
 
 /// Loans of the existing canonical arrays. Event/task records belong to their
@@ -135,7 +135,7 @@ impl<'a> ServerWorkers<'a> {
             if let Some(worker) = pool.worker(index) {
                 worker.join(pool);
                 worker.set_id(id);
-                worker.set_kind(crate::worker_record::WorkerType::Event);
+                worker.set_kind(crate::process::worker_record::WorkerType::Event);
             }
         }
     }
@@ -166,7 +166,7 @@ pub fn swr_v1_process_server_workers_start<'w>(
         };
         worker.join(pool);
         worker.set_id(index);
-        worker.set_kind(crate::worker_record::WorkerType::Event);
+        worker.set_kind(crate::process::worker_record::WorkerType::Event);
     }
     let first_user = view.event_count.wrapping_add(view.task_count);
     for (index, worker) in users.into_iter().enumerate().take(view.user_count) {
@@ -191,7 +191,7 @@ pub fn swr_v1_process_server_worker(view: &ServerWorkers<'_>, id: u16) -> *mut W
 #[must_use]
 pub fn swr_v1_process_server_worker_by_pid<T>(
     view: &ServerWorkers<'_>,
-    registry: Option<&crate::worker_registry::WorkerRegistry<T>>,
+    registry: Option<&crate::process::worker_registry::WorkerRegistry<T>>,
     pid: core::ffi::c_int,
 ) -> *mut WorkerRecord {
     // The canonical ordered event records: the first with this pid, in array order,
@@ -214,7 +214,7 @@ pub fn swr_v1_process_server_worker_by_pid<T>(
     // The Server's registry, in which only the user category matches.
     registry
         .map_or(core::ptr::null_mut(), |registry| {
-            registry.lookup_category(pid, crate::worker_registry::CATEGORY_USER)
+            registry.lookup_category(pid, crate::process::worker_registry::CATEGORY_USER)
         })
         .cast()
 }
@@ -222,7 +222,7 @@ pub fn swr_v1_process_server_worker_by_pid<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::process_pool::PoolRecord;
+    use crate::process::process_pool::PoolRecord;
 
     fn worker() -> WorkerRecord {
         // Every WorkerRecord field is an integer, boolean or nullable raw pointer.
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn pid_lookup_preserves_event_order_and_task_then_user_precedence() {
-        use crate::worker_registry::*;
+        use crate::process::worker_registry::*;
         let mut events = [worker(), worker()];
         // Every view of `events` comes from this pointer: a borrow of the array would end it.
         let workers = events.as_mut_ptr();
@@ -370,7 +370,7 @@ mod tests {
             assert_eq!(Worker::from(event).id(), u32::try_from(id).unwrap());
             assert_eq!(
                 Worker::from(event).kind(),
-                Some(crate::worker_record::WorkerType::Event)
+                Some(crate::process::worker_record::WorkerType::Event)
             );
         }
     }

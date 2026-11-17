@@ -246,7 +246,7 @@ pub struct ServerConfig {
     pub task_ipc_mode: Setting<u8>,
     pub task_max_request: Setting<u32>,
     pub task_max_request_grace: Setting<u32>,
-    /// The server's worker registry, which crates/process and the manager reach
+    /// The server's worker registry, which `corebase::process` and the manager reach
     /// through `registry`'s pointer and write through `&`; native sees only a
     /// `void *` handle.
     pub worker_registry: Option<Box<WorkerRegistry<crate::process_worker::ProcessWorker>>>,

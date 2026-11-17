@@ -3,15 +3,15 @@
 //! to its stream listener. The connect is non-blocking, like upstream's async client's: a failure
 //! the kernel reports at once fails [`Stream::create`]; a later one (a refused TCP connect) is
 //! reported when the stream flushes.
+use crate::CCast;
+use crate::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
+use crate::net_types::{AddressStorage, SocketAddress};
+use crate::{log, sys};
 use std::ffi::c_int;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::SocketAddrV4;
 use std::os::fd::{AsRawFd, OwnedFd};
-use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
-use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
-use swoole_rs_corebase::{log, sys};
 
 /// `SW_INPUT_BUFFER_SIZE`: the client's default `package_max_length`.
 const MAX_LENGTH: u32 = 2 * 1024 * 1024;
@@ -35,7 +35,7 @@ pub struct Stream {
     pub err_code: c_int,
 }
 
-use swoole_rs_corebase::sys::errno;
+use crate::sys::errno;
 
 /// `Stream_onError`'s warning.
 fn connect_failed(code: c_int) {
@@ -78,7 +78,7 @@ fn connect(family: c_int, addr: AddressStorage, len: libc::socklen_t) -> io::Res
 fn open(peer: &Peer) -> io::Result<OwnedFd> {
     match peer {
         Peer::Unix(path) => {
-            let mut address: libc::sockaddr_un = swoole_rs_corebase::sys::zeroed();
+            let mut address: libc::sockaddr_un = crate::sys::zeroed();
             address.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).unwrap_or_default();
             if path.len() >= address.sun_path.len() {
                 return Err(io::ErrorKind::InvalidInput.into());
@@ -91,7 +91,7 @@ fn open(peer: &Peer) -> io::Result<OwnedFd> {
             connect(libc::AF_UNIX, addr, sys::socklen::<libc::sockaddr_un>())
         }
         Peer::Tcp(peer) => {
-            let mut address: libc::sockaddr_in = swoole_rs_corebase::sys::zeroed();
+            let mut address: libc::sockaddr_in = crate::sys::zeroed();
             address.sin_family = libc::sa_family_t::try_from(libc::AF_INET).unwrap_or_default();
             address.sin_port = peer.port().to_be();
             address.sin_addr.s_addr = u32::from(*peer.ip()).to_be();

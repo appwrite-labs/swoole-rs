@@ -1,5 +1,5 @@
 //! Upstream's `core-tests/src/os/pipe.cpp`, one function per TEST with the same inputs and
-//! expected values, over the Rust `SocketPair` (crates/process) under its upstream symbols.
+//! expected values, over the Rust `SocketPair` (`corebase::process`) under its upstream symbols.
 //! `SocketPair` mirrors the record those symbols construct (SWR_SOCKET_PAIR_RECORD_FIELDS).
 
 use std::ffi::{CStr, c_int, c_void};

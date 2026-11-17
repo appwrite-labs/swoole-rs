@@ -1,8 +1,8 @@
 //! PHP `Swoole\Process`: class registration, constants, objects and every
-//! method, over crates/process's `Worker` record and crates/tls's `UnixSocket`
+//! method, over `corebase::process`'s `Worker` record and crates/tls's `UnixSocket`
 //! pipe. What is still C++ (the server, callables, the reactor and signals) the
 //! methods reach through the [`Host`] table C++ passes at MINIT.
-//! `Swoole\Process\Pool` and its event callbacks run over crates/process's
+//! `Swoole\Process\Pool` and its event callbacks run over `corebase::process`'s
 //! `ProcessPool` directly.
 //! See docs/zend.md.
 //!

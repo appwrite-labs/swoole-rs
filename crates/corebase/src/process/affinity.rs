@@ -33,10 +33,10 @@ pub fn worker_affinity(
     available: Option<&[i32]>,
     thread: bool,
 ) -> Result<(), AffinityError> {
-    use swoole_rs_corebase::ossupport::CpuSet;
+    use crate::ossupport::CpuSet;
     let errno = || std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
     let mut current = CpuSet::empty();
-    let pid = crate::os::getpid();
+    let pid = crate::process::os::getpid();
     if !current.get_process(pid) {
         return Err(AffinityError::Get(errno()));
     }

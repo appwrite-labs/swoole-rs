@@ -1,7 +1,7 @@
 use super::tests::{Scripted, take_ops};
-use crate::methods;
-use crate::process_pool::{IpcMode, Op, PoolRecord, PoolRef, Protocol};
-use crate::worker_record::WorkerType;
+use crate::process::methods;
+use crate::process::process_pool::{IpcMode, Op, PoolRecord, PoolRef, Protocol};
+use crate::process::worker_record::WorkerType;
 
 #[test]
 fn methods_use_the_supplied_host_without_a_server_link_or_registration() {
@@ -26,7 +26,7 @@ fn methods_use_the_supplied_host_without_a_server_link_or_registration() {
     );
 
     // Allocation refusal comes from the supplied host, which allocates nothing.
-    swoole_rs_corebase::sys::set_errno(libc::ENOMEM);
+    crate::sys::set_errno(libc::ENOMEM);
     assert!(!methods::create(&Scripted, pool, 2, 0, 0));
     assert_eq!(take_ops(), []);
     assert_eq!(

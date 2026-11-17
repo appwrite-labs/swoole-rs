@@ -7,4 +7,4 @@ pub fn getpid() -> libc::pid_t {
     std::process::id().cast_signed()
 }
 
-pub use swoole_rs_corebase::sys::kill;
+pub use crate::sys::kill;

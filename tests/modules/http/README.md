@@ -203,7 +203,7 @@ slots, and what they captured is a static. `test::counter_*` is a shared anonymo
 made before the server forks, as core-tests' main makes it from `sw_mem_pool()`. One more
 slot in it counts failed expectations, so one in a forked worker fails the case too,
 where gtest's parent never saw it. Upstream's
-reload, kill and restart methods are crates/process's `workers::entry` functions, and `add_worker`
+reload, kill and restart methods are corebase::process's `workers::entry` functions, and `add_worker`
 is crates/server's.
 
 | Upstream TEST | What it drives |
@@ -244,7 +244,7 @@ runnable past that window. That happens in upstream's build as well as this one 
 same Servers, inputs and expected values: `task_worker`, `task_worker2`, `task_worker_3`,
 `task_base`, `task_process`, `task_ipc_stream`, `task_worker3`, `task_worker4`,
 `task_sync_multi_task`, `task_sync`, `task_ipc_queue_1` .. `task_ipc_queue_5`,
-`no_idle_task_worker`, and the `#ifdef SW_THREAD` `thread` and `task_thread`. `Server::task` and both `task_sync`s are crates/process's `Tasks`
+`no_idle_task_worker`, and the `#ifdef SW_THREAD` `thread` and `task_thread`. `Server::task` and both `task_sync`s are corebase::process's `Tasks`
 over the server's task pool and the worker's notify pipe, lock and result slot (`tasks`,
 as crates/phpserver's `task_state` lends them to `Swoole\Server`'s task methods); the other methods are the crates' functions under their
 upstream symbols, and the inline ones (`send_pipe_message(id, data, len)`,
@@ -299,7 +299,7 @@ crates/ports' `methods::tests::server_protocols` (tests/modules/ports/README.md)
 | `reopen_log2` | same name | `signal_handler_reopen_logger` has no entry of its own in the crates; `master_signal_handler(SIGWINCH)` runs its body |
 | `command_1`, `command_2` | same names | `add_command` and `command` are crates/server's `swr_v1_server_add_command` and `swr_v1_server_command` |
 | `abnormal_pipeline_data` | same name | `send_fn` writes its datagram to worker 0's `pipe_master` (from `view::Server::worker(0)`), retrying while the pipe is full, as `send_sync` does |
-| `base_event_worker_pool_cleanup` | same name | the pool's `map_` (pid to worker) is its `registry` in crates/process |
+| `base_event_worker_pool_cleanup` | same name | the pool's `map_` (pid to worker) is its `registry` in corebase::process |
 | `abort_worker`, `reactor_thread_pipe_writable`, `send_timeout` | same names | `get_session(i)` reads the shared session list; `move_packet()` is `view::Server::move_worker_packet`; `conn->socket->recv_timer` is the socket record's, at the offset swoole_rs_socket.h asserts, a timer held by id that `swoole_timer_del` becomes `del_id` of; `abort_worker`'s c2 waits (up to 10 s) for the third `onWorkerStart`, the replacement's, because the manager retires the dead worker's sessions only after reaping it, so upstream's c2 can reach `onReceive` first (arm64 timing, #2834) |
 | `heartbeat_check_1` .. `heartbeat_check_4`, `close_1` .. `close_8`, `eof_check` | same names | the `AsyncClient` is a blocking client in a thread of the process whose reactor upstream's ran in, with the same callbacks in order (`connected`, `on_connect` or `on_error`, `on_receive` per read, `on_close`); its `flags` are shared counters, since the server's callbacks may run in a worker |
 
@@ -313,7 +313,7 @@ A missing receive fails after a bounded wait instead of waiting indefinitely.
 The MODE_THREAD TESTs (`max_request_2`, `heartbeat_check_3`, `close_3`, `close_7`,
 `task_ipc_queue_5`, `thread`, `task_thread`, `reload_thread*`, `kill_worker_3`,
 `kill_worker_6`, `clean_worker_2`, `ssl_client_cert_3`) need upstream's `enable_thread` build (`SW_THREAD`),
-which core-tests always use. This binary is one too: it turns on crates/process's `thread`
+which core-tests always use. This binary is one too: it turns on corebase::process's `thread`
 feature, so each thread has its own `SwooleWG` (worker id, type and pid), as
 `SW_THREAD_LOCAL` gives upstream. Its `main` sets `swoole_rs_server::THREAD_SUPPORTED`, as
 the extension's MINIT does under ZTS. Without the feature, the master and worker threads

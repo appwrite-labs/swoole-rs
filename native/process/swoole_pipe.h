@@ -5,7 +5,7 @@
 #pragma once
 
 #include "swoole_socket.h"
-/* The Rust records the views below point at, opaque here (crates/corebase, crates/process, crates/corebase/src/ossupport). */
+/* The Rust records the views below point at, opaque here (crates/corebase, corebase::process, crates/corebase/src/ossupport). */
 typedef struct swr_v1_process_worker_registry swr_v1_process_worker_registry;
 typedef struct swr_v1_process_pool_ipc swr_v1_process_pool_ipc;
 typedef struct swr_v1_process_reload_task swr_v1_process_reload_task;

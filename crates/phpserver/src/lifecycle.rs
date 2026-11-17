@@ -193,7 +193,7 @@ fn add_worker(serv: view::Server<'_>, process: &Value) -> Result<i64, AddFailed>
         if crate::server::worker_type() != Some(crate::server::WorkerType::User) {
             return Err(AddFailed::UnrelatedThread);
         }
-        let id = swoole_rs_process::methods::swoole_get_worker_id();
+        let id = swoole_rs_corebase::process::methods::swoole_get_worker_id();
         if let Some(worker) = serv.worker_record(id.c_cast::<u16>()) {
             worker.set_redirect_stdin(false);
             worker.set_redirect_stdout(false);

@@ -7,8 +7,8 @@ use super::*;
 use crate::TEST_STR;
 use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU16, AtomicU64};
 use swoole_rs_clients::client::{self as native, ClientEvent, Handle, listen};
-use swoole_rs_process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
-use swoole_rs_process::worker_record::{Worker, WorkerRecord};
+use swoole_rs_corebase::process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
+use swoole_rs_corebase::process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_server::{event_worker, manager, task_worker, worker_methods};
 use swoole_rs_timer::Held;
 
@@ -733,7 +733,7 @@ fn restart_worker_process() {
     // SAFETY: the created server's task worker, and the task pool it joins.
     unsafe {
         Worker::from(&*worker).set_pid(pid());
-        swoole_rs_process::methods::add_worker(&*pool, Worker::from(&*worker));
+        swoole_rs_corebase::process::methods::add_worker(&*pool, Worker::from(&*worker));
     }
     manager::native::restart_worker_process(serv.view(), &fake_exit);
 
@@ -891,7 +891,7 @@ fn unlock() {
 
 /// `sw_worker()`: this thread's worker, or null.
 fn current_worker() -> *mut WorkerRecord {
-    swoole_rs_process::worker_globals::current_worker()
+    swoole_rs_corebase::process::worker_globals::current_worker()
 }
 
 fn kill_worker(serv: Server, worker_id: c_int) -> bool {
@@ -973,7 +973,7 @@ fn kill_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
         // SAFETY: worker 1 of the running server; the event's head.
         let (dst, head) = unsafe {
             (
-                swoole_rs_process::worker_record::Worker::from(&*dst),
+                swoole_rs_corebase::process::worker_record::Worker::from(&*dst),
                 std::slice::from_raw_parts((&raw const ev).cast::<u8>(), size_of::<DataHead>()),
             )
         };

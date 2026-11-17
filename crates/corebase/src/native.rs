@@ -12,26 +12,11 @@ pub struct NativeHost {
     /// stream and the fatal-error hook, the logger, the debug log level, the memory
     /// pool, the futex-less wait registry, signalfd and the bug report.
     pub init: fn(),
-    /// One operation on the process logger (crates/process).
-    pub logger: fn(op: LoggerOp),
     /// `swoole_signal_clear()`, which C++ calls too.
     pub signal_clear: extern "C" fn(),
     pub timer_free: fn(),
     pub event_available: fn() -> bool,
     pub event_free: fn(),
-}
-
-/// An operation on the process logger.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LoggerOp {
-    /// `new Logger()` on `SwooleG.stdout`, into `SwooleG.logger`.
-    New,
-    /// `SwooleG.logger->reopen()`.
-    Reopen,
-    /// `SwooleG.logger->close()`.
-    Close,
-    /// `delete SwooleG.logger`.
-    Delete,
 }
 
 static HOST: OnceLock<NativeHost> = OnceLock::new();

@@ -12,12 +12,12 @@ use swoole_rs_clients::address::assign;
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_WARNING};
 use swoole_rs_corebase::memory::members::Shm;
+use swoole_rs_corebase::process::process_pool::IpcMode;
+use swoole_rs_corebase::process::worker_record::WorkerRecord;
+#[cfg(any(test, feature = "upstream-symbols"))]
+use swoole_rs_corebase::process::worker_record::WorkerType;
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode;
-use swoole_rs_process::process_pool::IpcMode;
-use swoole_rs_process::worker_record::WorkerRecord;
-#[cfg(any(test, feature = "upstream-symbols"))]
-use swoole_rs_process::worker_record::WorkerType;
 #[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_reactor::Events;
 
@@ -399,12 +399,14 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> b
     hybrid().step(serv, Step::TimerReinit);
     crate::control::init_signals(serv);
     let mode = config.mode_;
-    swoole_rs_process::methods::set_worker_type(WorkerType::Master);
+    swoole_rs_corebase::process::methods::set_worker_type(WorkerType::Master);
     if mode == Mode::Thread {
         let tid = swoole_rs_corebase::ossupport::swr_v1_os_thread_native_id().c_cast::<c_int>();
-        swoole_rs_process::methods::swoole_set_worker_pid(tid);
+        swoole_rs_corebase::process::methods::swoole_set_worker_pid(tid);
     } else if mode == Mode::Process {
-        swoole_rs_process::methods::swoole_set_worker_pid(std::process::id().cast_signed());
+        swoole_rs_corebase::process::methods::swoole_set_worker_pid(
+            std::process::id().cast_signed(),
+        );
     }
     reactor.hold_server(serv);
     let accept: swoole_rs_reactor::Handler = crate::server_methods::accept_connection;
@@ -947,7 +949,7 @@ mod tests {
         );
         assert_eq!(swoole_rs_corebase::thread_id(), 4, "after the reactors");
         assert_eq!(
-            swoole_rs_process::methods::worker_type(),
+            swoole_rs_corebase::process::methods::worker_type(),
             Some(WorkerType::Master)
         );
         assert_ne!(live.counters().master_pid.load(Relaxed), 0, "master pid");

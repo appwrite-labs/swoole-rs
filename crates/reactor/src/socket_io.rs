@@ -70,7 +70,7 @@ pub fn fd_wait(
         if error != libc::EINTR || dont_restart {
             return Err(IoError::Failed(error));
         }
-        swoole_rs_process::signal::swoole_signal_dispatch();
+        swoole_rs_corebase::process::signal::swoole_signal_dispatch();
     }
 }
 

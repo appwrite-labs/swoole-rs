@@ -4,13 +4,13 @@
 use crate::Mode;
 use core::ffi::c_int;
 use swoole_rs_corebase::locks::SharedMutex;
-use swoole_rs_process::worker_record::Worker;
-use swoole_rs_process::worker_record::WorkerType;
+use swoole_rs_corebase::process::worker_record::Worker;
+use swoole_rs_corebase::process::worker_record::WorkerType;
 
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::process::server_workers::swr_v1_process_server_worker_by_pid;
+use swoole_rs_corebase::process::worker_record::{WorkerRecord, swr_v1_worker_init};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_process::server_workers::swr_v1_process_server_worker_by_pid;
-use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init};
 
 use crate::view;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR;
@@ -68,7 +68,7 @@ pub fn abort_worker(serv: view::Server<'_>, worker: Worker<'_>) {
 pub fn init_event_worker(serv: view::Server<'_>, worker: Worker<'_>) {
     swr_v1_worker_init(worker);
     let config = serv.config();
-    swoole_rs_process::methods::worker_set_max_request(
+    swoole_rs_corebase::process::methods::worker_set_max_request(
         config.max_request.get(),
         config.max_request_grace.get(),
     );

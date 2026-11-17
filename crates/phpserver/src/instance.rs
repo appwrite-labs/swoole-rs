@@ -11,9 +11,9 @@ use std::{
     rc::Rc,
 };
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_NOTICE as LOG_NOTICE};
+use swoole_rs_corebase::process::{methods::worker_is_running, worker_globals, worker_record};
 use swoole_rs_corebase::{constants::EventDataFlag, log};
 pub use swoole_rs_ports::PortCallback;
-use swoole_rs_process::{methods::worker_is_running, worker_globals, worker_record};
 use swoole_rs_server::{SharedServer, event_worker, server_methods, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{Owned, Value, ZString, bailout, sys::zval};

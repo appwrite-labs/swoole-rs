@@ -8,13 +8,13 @@ use std::rc::Rc;
 use swoole_rs_reactor::Events;
 
 use swoole_rs_corebase::memory::members::Shm;
-use swoole_rs_corebase::{CCast, log};
-use swoole_rs_error::ErrorCode as E;
-use swoole_rs_process::methods::{
+use swoole_rs_corebase::process::methods::{
     ExitStatus, set_worker_type, start_check, swoole_set_worker_id, swoole_set_worker_pid,
     worker_type,
 };
-use swoole_rs_process::worker_record::{WorkerStatus, WorkerType};
+use swoole_rs_corebase::process::worker_record::{WorkerStatus, WorkerType};
+use swoole_rs_corebase::{CCast, log};
+use swoole_rs_error::ErrorCode as E;
 
 use super::{ThreadManager, Wake, worker_thread_start};
 use crate::callbacks::ServerSlot;

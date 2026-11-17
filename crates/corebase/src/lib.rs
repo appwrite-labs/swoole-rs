@@ -26,6 +26,7 @@ mod lifecycle;
 pub mod locks;
 pub mod log;
 pub mod memory;
+pub mod process;
 
 #[cfg(test)]
 #[path = "../../../tests/modules/corebase/allocation.rs"]

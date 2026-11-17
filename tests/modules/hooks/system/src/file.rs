@@ -130,7 +130,7 @@ fn error() {
     assert_eq!(fp.take_descriptor(), fds[0]);
 }
 
-/// `make_tmpfile` with `task_tmpfile` there is crates/process's
+/// `make_tmpfile` with `task_tmpfile` there is `corebase::process`'s
 /// `task_file::tests::make_tmpfile_in_a_missing_directory`.
 fn tmp_file() {
     let mut buf = [0_u8; 128];

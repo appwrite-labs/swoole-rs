@@ -447,7 +447,7 @@ upstream's `std_allocator.malloc` hook did (the Rust pool doesn't allocate throu
 
 `core-tests/src/os/signal.cpp` is Rust in `system/src/signal.rs`, run by
 `hooks-system-rust`. The cases call crates/reactor's `signal_upstream` (`swoole_signal_set`,
-`_callback`, `_get_handler`, `_get_listener_num`, `_clear`) and crates/process's `signal`
+`_callback`, `_get_handler`, `_get_listener_num`, `_clear`) and corebase::process's `signal`
 (the sigaction form of `swoole_signal_set`, `_dispatch`, `_isset`, `_block_all`,
 `_unblock_all`, `_to_str`) and `signalfd::swoole_signalfd_init` by path. Each case runs in
 its own process, as the rest of the package does, so no handler outlives its case.

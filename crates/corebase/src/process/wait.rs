@@ -103,13 +103,13 @@ pub fn wait_pid(
     let co = (ops.current)();
     if co.is_null() || options & libc::WNOHANG != 0 {
         return Waited {
-            pid: swoole_rs_corebase::sys::waitpid(pid, Some(status), options),
+            pid: crate::sys::waitpid(pid, Some(status), options),
             timed_out: false,
         };
     }
     // SIGCHLD must be registered before this last try, or its signal may be lost.
     (ops.signal_init)();
-    let child = swoole_rs_corebase::sys::waitpid(pid, Some(status), options | libc::WNOHANG);
+    let child = crate::sys::waitpid(pid, Some(status), options | libc::WNOHANG);
     if !matches!(child, Ok(None)) {
         return Waited {
             pid: child,
@@ -167,8 +167,7 @@ pub fn wait_reap(signo: c_int, ops: &Coroutines) {
     }
     loop {
         let mut code = 0;
-        let Ok(Some(child)) = swoole_rs_corebase::sys::waitpid(-1, Some(&mut code), libc::WNOHANG)
-        else {
+        let Ok(Some(child)) = crate::sys::waitpid(-1, Some(&mut code), libc::WNOHANG) else {
             break;
         };
         let task = waits(|waits| {

@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::net_types::SocketAddress;
-use swoole_rs_process::worker_record::WorkerRecord;
+use swoole_rs_corebase::process::worker_record::WorkerRecord;
 use swoole_rs_reactor::{SocketFields, SocketRecord};
 
 /// `zend_memory_usage(true)`, from the PHP binding.
@@ -110,7 +110,7 @@ impl Live<'_> {
     }
 
     /// `serv->get_event_worker_pool()` or `get_task_worker_pool()`.
-    fn pool(&self, task: bool) -> swoole_rs_process::process_pool::PoolRef<'_> {
+    fn pool(&self, task: bool) -> swoole_rs_corebase::process::process_pool::PoolRef<'_> {
         let shared = crate::shared::ServerShared::of(self.serv);
         if task {
             shared.task_pool()
@@ -187,7 +187,8 @@ impl Facts for Live<'_> {
         let mode = self.config.mode_;
         let reactor_id = i64::from(swoole_rs_corebase::thread_id());
         // This process's worker's id, if it runs one.
-        let worker = swoole_rs_process::worker_globals::with_current(|worker| worker.id());
+        let worker =
+            swoole_rs_corebase::process::worker_globals::with_current(|worker| worker.id());
         // Server::foreach_connection: each valid connection, max_fd read afresh.
         let mut fd = gs.min_fd();
         while fd <= gs.max_fd() {

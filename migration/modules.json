@@ -204,7 +204,7 @@
         "M29"
       ],
       "owned_paths": [
-        "crates/process/",
+        "crates/corebase/src/process/",
         "crates/phpprocess/",
         "crates/phpthread/",
         "tests/modules/process/",

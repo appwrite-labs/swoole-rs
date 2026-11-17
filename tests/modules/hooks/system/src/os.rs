@@ -1,6 +1,6 @@
 //! Upstream's `core-tests/src/os/wait.cpp`, `os/async.cpp` and `os/os.cpp`'s `os.daemon`,
 //! one function per TEST with the same inputs and expected values: the coroutine waits
-//! (crates/process's registry, crates/reactor's symbols), the async thread pool
+//! (`corebase::process`'s registry, crates/reactor's symbols), the async thread pool
 //! (crates/hooks over crates/corebase/src/ossupport), under their upstream symbols, and
 //! `swoole_daemon` (crates/corebase/src/ossupport) by path. `async.thread_starts_with_signals_blocked` is crates/corebase/src/ossupport's
 //! `pool::tests::thread_starts_with_signals_blocked`.

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Swoole's include/swoole_signal.h, owned here: the signal functions C++ still calls.
- * They are Rust under their upstream symbols (crates/process/src/signal.rs). */
+ * They are Rust under their upstream symbols (crates/corebase/src/process/signal.rs). */
 #pragma once
 
 #include "swoole.h"

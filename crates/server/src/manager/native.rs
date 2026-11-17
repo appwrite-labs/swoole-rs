@@ -4,15 +4,16 @@ use crate::Mode;
 use core::ffi::c_int;
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_corebase::process;
 
+use process::methods::{self, ExitStatus};
+use process::os::kill;
+use process::process_pool::{Hooks, PoolRef};
+use process::reaper::{self, Reap, ReloadStart, Waited};
+use process::reload_task::{ReloadTask, Warn};
+use process::worker_record::{Worker, WorkerType};
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_process::methods::{self, ExitStatus};
-use swoole_rs_process::os::kill;
-use swoole_rs_process::process_pool::{Hooks, PoolRef};
-use swoole_rs_process::reaper::{self, Reap, ReloadStart, Waited};
-use swoole_rs_process::reload_task::{ReloadTask, Warn};
-use swoole_rs_process::worker_record::{Worker, WorkerType};
 use swoole_rs_reactor::wait_upstream::swoole_waitpid;
 
 use super::{Manager, Reload, stop_message, worker_ids};
@@ -308,7 +309,7 @@ impl Reap for Reaping<'_> {
     /// its replacement) and run the timers.
     fn service(&mut self) {
         let serv = self.serv;
-        swoole_rs_process::signal::swoole_signal_dispatch();
+        process::signal::swoole_signal_dispatch();
         let pool = serv.event_pool_ref();
         if pool.read_message() {
             let mut msg = EventData([0; EVENT_DATA_SIZE]);
@@ -536,7 +537,7 @@ pub fn reload(serv: view::Server<'_>, reload_all_workers: bool) -> bool {
         );
         return false;
     }
-    if swoole_rs_process::os::getpid() != manager_pid {
+    if process::os::getpid() != manager_pid {
         let signo = if reload_all_workers {
             libc::SIGUSR1
         } else {

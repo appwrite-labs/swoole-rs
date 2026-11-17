@@ -8,9 +8,9 @@ use std::{
 };
 use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::process::worker_record::Worker;
 use swoole_rs_corebase::{DataHead, ServerEvent};
 use swoole_rs_phpstubs::server;
-use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::{Connection, DispatchMode, SharedServer, TaskIpcMode, server_methods, view};
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_WARNING, Minit, Value, report,
@@ -480,11 +480,11 @@ const CONSTANTS: &[(&CStr, i64)] = &[
 pub(crate) use swoole_rs_corebase::log::set_last_error;
 pub(crate) use swoole_rs_phpswoole::display_errors;
 
-pub(crate) use swoole_rs_process::worker_record::WorkerType;
+pub(crate) use swoole_rs_corebase::process::worker_record::WorkerType;
 
 /// `swoole_get_worker_type()`.
 pub(crate) fn worker_type() -> Option<WorkerType> {
-    swoole_rs_process::methods::worker_type()
+    swoole_rs_corebase::process::methods::worker_type()
 }
 
 /// `Server::is_worker() || Server::is_task_worker()`.
@@ -494,7 +494,7 @@ pub(crate) fn in_worker() -> bool {
 
 /// `swoole_get_worker_id()`, as the `int` C++ reads.
 pub(crate) fn worker_id() -> i64 {
-    i64::from(swoole_rs_process::methods::swoole_get_worker_id().cast_signed())
+    i64::from(swoole_rs_corebase::process::methods::swoole_get_worker_id().cast_signed())
 }
 
 /// `php_swoole_error_ex(E_WARNING, SW_ERROR_NO_PAYLOAD, "the data sent must not be empty")`.
@@ -641,7 +641,8 @@ fn stats(call: &Call) {
     for (key, value) in STATS.into_iter().zip(values) {
         call.add_assoc_long(key, value);
     }
-    let counters = swoole_rs_process::worker_globals::with_current(|worker| worker.counters());
+    let counters =
+        swoole_rs_corebase::process::worker_globals::with_current(|worker| worker.counters());
     if let Some([request, response, dispatch, concurrency]) = counters {
         call.add_assoc_long(c"worker_request_count", request);
         call.add_assoc_long(c"worker_response_count", response);

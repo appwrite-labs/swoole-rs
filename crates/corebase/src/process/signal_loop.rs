@@ -2,8 +2,8 @@
 // Compatibility derived from Swoole v6.2.4 src/os/signal.cc (Swoole contributors).
 //! Signal backend routing and signalfd reactor-wrapper custody. The existing
 //! backends own handlers/masks/descriptors; SDK leaves lend reactor/socket effects.
-use crate::signal::{self, Handler};
-use swoole_rs_corebase as corebase;
+use crate as corebase;
+use crate::process::signal::{self, Handler};
 
 /// The event loop's side of the signal backends (crates/reactor).
 pub struct Ops {
@@ -70,7 +70,7 @@ pub struct DescriptorOps {
     target_os = "openbsd",
     target_os = "dragonfly"
 ))]
-use swoole_rs_corebase::sys::errno;
+use crate::sys::errno;
 
 /// `swoole_signal_set` over the configured backend: the previous handler.
 #[must_use]
@@ -79,7 +79,7 @@ pub fn set(signo: i32, handler: Handler, safety: bool, ops: &Ops) -> Handler {
     let available = (ops.available)();
     #[cfg(target_os = "linux")]
     if caps & 1 != 0 && corebase::swr_v1_core_enable_signalfd() && available {
-        let previous = crate::signalfd::signalfd_set(signo, handler);
+        let previous = crate::process::signalfd::signalfd_set(signo, handler);
         setup(ops);
         return previous;
     }
@@ -94,7 +94,8 @@ pub fn set(signo: i32, handler: Handler, safety: bool, ops: &Ops) -> Handler {
     {
         let mut failed = false;
         let kq = (ops.native_handle)();
-        let previous = crate::signal_kqueue::signal_kqueue_set(kq, signo, handler, &mut failed);
+        let previous =
+            crate::process::signal_kqueue::signal_kqueue_set(kq, signo, handler, &mut failed);
         if failed {
             (ops.report)(Report::KeventFailed {
                 signo,
@@ -134,9 +135,9 @@ fn setup(ops: &Ops) -> bool {
     let Some(descriptor) = ops.descriptor else {
         return false;
     };
-    if crate::signalfd::signalfd_fd() == -1 {
-        use crate::signalfd::CreateError;
-        match crate::signalfd::signalfd_create() {
+    if crate::process::signalfd::signalfd_fd() == -1 {
+        use crate::process::signalfd::CreateError;
+        match crate::process::signalfd::signalfd_create() {
             Ok(fd) => {
                 (descriptor.make)(fd);
                 corebase::swr_v1_core_set_signal_fd(fd);
@@ -167,11 +168,11 @@ fn close(ops: &Ops) {
     let Some(descriptor) = ops.descriptor else {
         return;
     };
-    if crate::signalfd::signalfd_fd() == -1 {
+    if crate::process::signalfd::signalfd_fd() == -1 {
         return;
     }
     (descriptor.free)();
-    crate::signalfd::signalfd_close();
+    crate::process::signalfd::signalfd_close();
 }
 /// `swoole_signal_clear`, on the thread that owns the handlers.
 pub fn clear(ops: &Ops) {
@@ -179,9 +180,9 @@ pub fn clear(ops: &Ops) {
     #[cfg(target_os = "linux")]
     if caps & 1 != 0
         && corebase::swr_v1_core_enable_signalfd()
-        && crate::signalfd::signalfd_fd() != -1
+        && crate::process::signalfd::signalfd_fd() != -1
     {
-        if !crate::signalfd::signalfd_clear() {
+        if !crate::process::signalfd::signalfd_clear() {
             (ops.report)(Report::UnblockFailed(errno()));
         }
         close(ops);
@@ -198,7 +199,7 @@ pub fn clear(ops: &Ops) {
         let available = (ops.available)();
         let kq = if available { (ops.native_handle)() } else { -1 };
         // The actual kqueue, or -1 when unavailable.
-        crate::signal_kqueue::signal_kqueue_clear(kq, available);
+        crate::process::signal_kqueue::signal_kqueue_clear(kq, available);
         return;
     }
     signal::signal_clear();
@@ -206,8 +207,8 @@ pub fn clear(ops: &Ops) {
 /// The signalfd's read event: runs the handler for the signal read from `fd`.
 #[cfg(target_os = "linux")]
 pub fn read(fd: i32, ops: &Ops) {
-    use crate::signalfd::Received;
-    match crate::signalfd::signalfd_receive(fd) {
+    use crate::process::signalfd::Received;
+    match crate::process::signalfd::signalfd_receive(fd) {
         Received::ReadFailed(error) => (ops.report)(Report::ReadFailed(error)),
         Received::OutOfRange(signo) => (ops.report)(Report::UnknownSignal(signo.cast_signed())),
         Received::NoHandler(signo) => (ops.report)(Report::ReadUnregistered(signo.cast_signed())),
@@ -218,7 +219,7 @@ pub fn read(fd: i32, ops: &Ops) {
 /// The reactor is destroyed: this process removes its signalfd wrapper from it.
 #[cfg(target_os = "linux")]
 pub fn destroyed(ops: &Ops) {
-    if crate::signalfd::signalfd_owned()
+    if crate::process::signalfd::signalfd_owned()
         && let Some(descriptor) = ops.descriptor
     {
         (descriptor.del)();
