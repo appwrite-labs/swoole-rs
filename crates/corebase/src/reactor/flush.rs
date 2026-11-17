@@ -102,8 +102,7 @@ mod tests {
             match kind {
                 EntryKind::Close => swr_cpp_buffer_typed_close(buffer),
                 EntryKind::Sendfile => {
-                    let handle = buffer.queue();
-                    let status = unsafe { (*handle).push_file(Box::new(())) };
+                    let status = buffer.with(|queue| queue.push_file(Box::new(())));
                     assert_eq!(status, Ok(()));
                 }
                 EntryKind::Data => buffer.append(b"x"),
