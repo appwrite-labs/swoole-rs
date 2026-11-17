@@ -30,16 +30,17 @@ pub extern "C" fn swr_v1_curl_check_handle(cp: Easy<'_>, exclusive: bool, requir
         }
         return true;
     };
-    // SAFETY: null or the handle's live multi.
-    let Some(multi) = (unsafe { handle.multi.get().as_ref() }) else {
+    let Some(multi) = handle.multi() else {
         return true;
     };
     let mut buffer = [0; 128];
-    let Err((code, message)) = host::bound_co(multi, &mut buffer) else {
+    let bound = host::bound_co(&multi, &mut buffer);
+    drop(multi);
+    let Err((code, message)) = bound else {
         return true;
     };
     // SAFETY: Swoole's fatal error hook; C++ calls this, and this frame owns
-    // nothing that needs a drop.
+    // nothing that needs a drop: the multi's reference is dropped above.
     unsafe { swoole_rs_corebase::fatal_error(code, message) };
     false
 }
