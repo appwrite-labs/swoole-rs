@@ -1,84 +1,73 @@
 # Coverage of crates/
 
-Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus apps and swoole/library's suite, measured on `f5de549` (`tools/coverage.py`, nightly `.github/workflows/coverage.yml`). A process that exits by a signal or `_exit` records nothing.
+Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus apps and swoole/library's suite, measured on `58ccfc7` (`tools/coverage.py`, nightly `.github/workflows/coverage.yml`). A process that exits by a signal or `_exit` records nothing.
 
 | crate | lines | covered | entry points not reached |
 | --- | ---: | ---: | ---: |
-| phpthread | 1,671 | 0.0% | 52 |
-| websocket-ffi | 155 | 11.0% | 0 |
-| utilities | 940 | 29.7% | 17 |
-| base64 | 99 | 33.3% | 0 |
-| error-ffi | 68 | 39.7% | 6 |
-| crc32 | 42 | 45.2% | 0 |
-| protocols-ffi | 219 | 50.2% | 0 |
-| phplocks | 447 | 60.9% | 17 |
-| error | 122 | 63.1% | 0 |
-| odbc | 178 | 66.9% | 0 |
-| protocols | 409 | 67.5% | 0 |
-| phpevents | 735 | 68.0% | 0 |
-| phpredis | 206 | 68.4% | 0 |
-| corebase | 2,523 | 68.5% | 4 |
-| buffer | 692 | 70.4% | 0 |
-| locks | 416 | 71.6% | 4 |
-| ossupport | 746 | 72.0% | 0 |
-| http-ffi | 577 | 72.8% | 0 |
-| server | 10,351 | 73.0% | 2 |
-| coroutine | 1,160 | 73.4% | 0 |
-| tls | 2,809 | 74.3% | 2 |
-| phpcoroutines | 2,862 | 74.9% | 2 |
-| http | 3,839 | 75.0% | 0 |
-| clients | 2,183 | 75.1% | 1 |
-| phpprocess | 2,019 | 76.0% | 2 |
-| phpruntime | 1,989 | 77.9% | 1 |
-| reactor | 3,692 | 78.6% | 4 |
-| ports | 1,721 | 79.1% | 0 |
-| process | 4,096 | 79.5% | 0 |
-| timer | 1,063 | 79.8% | 1 |
-| memory | 1,649 | 80.0% | 0 |
-| zend | 3,144 | 80.2% | 0 |
-| phpswoole | 1,652 | 80.3% | 0 |
-| firebird | 51 | 80.4% | 0 |
-| pgsql | 360 | 80.6% | 0 |
-| hooks | 4,845 | 81.7% | 1 |
-| ssh2 | 139 | 82.0% | 0 |
-| phpclients | 6,647 | 82.5% | 0 |
-| phptimer | 171 | 83.0% | 0 |
-| phpserver | 4,645 | 83.2% | 1 |
-| brotli | 64 | 84.4% | 0 |
+| phpthread | 1,646 | 0.0% | 52 |
+| base64 | 84 | 35.7% | 0 |
+| utilities | 724 | 37.0% | 1 |
+| error-ffi | 69 | 39.1% | 6 |
+| crc32 | 40 | 47.5% | 0 |
+| phplocks | 441 | 59.2% | 17 |
+| error | 120 | 62.5% | 0 |
+| odbc | 185 | 64.9% | 0 |
+| protocols | 399 | 67.4% | 0 |
+| phpredis | 200 | 67.5% | 0 |
+| phpevents | 729 | 67.8% | 0 |
+| corebase | 6,161 | 71.5% | 3 |
+| server | 10,409 | 72.4% | 0 |
+| ports | 1,989 | 72.6% | 0 |
+| phpprocess | 2,012 | 73.2% | 2 |
+| clients | 2,450 | 73.2% | 0 |
+| tls | 2,843 | 73.3% | 0 |
+| phpcoroutines | 2,849 | 74.8% | 2 |
+| http | 3,708 | 74.9% | 0 |
+| reactor | 3,633 | 76.0% | 0 |
+| process | 4,100 | 76.2% | 0 |
+| zend | 3,290 | 76.9% | 0 |
+| phpruntime | 1,892 | 77.8% | 1 |
+| memory | 1,563 | 78.5% | 0 |
+| phpswoole | 1,629 | 79.4% | 0 |
+| brotli | 73 | 79.5% | 0 |
+| hooks | 5,041 | 80.0% | 1 |
+| timer | 1,082 | 80.2% | 0 |
+| phpserver | 4,589 | 81.3% | 1 |
+| http-ffi | 459 | 81.7% | 0 |
+| phpclients | 6,567 | 81.8% | 0 |
+| bus | 544 | 84.2% | 0 |
+| phptimer | 160 | 84.4% | 0 |
+| pgsql | 318 | 84.9% | 0 |
 | sqlite | 80 | 85.0% | 0 |
-| phpcollections | 576 | 85.9% | 0 |
-| bus | 555 | 87.0% | 0 |
-| phphttp2 | 2,484 | 87.9% | 0 |
-| phphttp | 5,189 | 88.5% | 0 |
-| inflate | 98 | 88.8% | 0 |
-| zlib | 102 | 89.2% | 0 |
-| httpbindings | 250 | 90.0% | 0 |
-| framing | 375 | 90.1% | 0 |
-| ffi | 63 | 90.5% | 1 |
-| http2 | 715 | 91.3% | 0 |
-| curl | 631 | 91.4% | 1 |
-| deflate | 61 | 91.8% | 0 |
-| websocket | 366 | 91.8% | 0 |
-| oci | 126 | 95.2% | 0 |
-| locale | 119 | 99.2% | 0 |
+| phpcollections | 561 | 85.2% | 0 |
+| ffi | 68 | 85.3% | 1 |
+| websocket | 402 | 85.6% | 0 |
+| inflate | 96 | 86.5% | 0 |
+| phphttp | 5,085 | 87.0% | 0 |
+| phphttp2 | 2,439 | 87.0% | 0 |
+| framing | 349 | 88.5% | 0 |
+| httpbindings | 224 | 90.2% | 0 |
+| zlib | 99 | 90.9% | 0 |
+| http2 | 720 | 91.0% | 0 |
+| deflate | 58 | 91.4% | 0 |
+| curl | 680 | 92.6% | 1 |
+| ssh2 | 85 | 92.9% | 0 |
+| firebird | 30 | 93.3% | 0 |
+| oci | 125 | 94.4% | 0 |
+| locale | 114 | 99.1% | 0 |
 | curl-sys | 10 | 100.0% | 0 |
 | ext | 3 | 100.0% | 0 |
-| **crates/** | 83,199 | 76.4% | 119 |
+| **crates/** | 83,226 | 75.6% | 88 |
 
 # Entry points no run reached
 
 `zif_`/`zim_` handlers and `swr_v1_` exports whose counter stayed zero, per crate: candidates for targeted differential tests ([#2249](https://github.com/appwrite-labs/swoole-rs/issues/2249)).
 
-## clients
-
-- `swr_v1_clients_new`
-
 ## corebase
 
 - `swr_v1_core_format_result`
-- `swr_v1_core_last_error`
-- `swr_v1_core_signal_alarm`
-- `swr_v1_core_trace_flags`
+- `swr_v1_locks_atomic32`
+- `swr_v1_locks_atomic64`
 
 ## curl
 
@@ -100,13 +89,6 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 ## hooks
 
 - `swr_v1_hook_co_socket_uring`
-
-## locks
-
-- `swr_v1_locks_atomic32`
-- `swr_v1_locks_atomic64`
-- `swr_v1_locks_wait`
-- `swr_v1_locks_wakeup`
 
 ## phpcoroutines
 
@@ -201,43 +183,6 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 - `zim_swoole_thread_setPriority`
 - `zim_swoole_thread_yield`
 
-## reactor
-
-- `swr_v1_reactor_registry_count`
-- `swr_v1_reactor_registry_get`
-- `swr_v1_reactor_set_end`
-- `swr_v1_socket_default_timeouts`
-
-## server
-
-- `swr_v1_server_connection`
-- `swr_v1_server_session`
-
-## timer
-
-- `swr_v1_timer_add_plain`
-
-## tls
-
-- `swr_v1_tls_owner_new`
-- `swr_v1_tls_owner_view`
-
 ## utilities
 
-- `swr_v1_logger_close`
-- `swr_v1_logger_file`
-- `swr_v1_logger_free`
-- `swr_v1_logger_is_opened`
-- `swr_v1_logger_level`
-- `swr_v1_logger_new`
-- `swr_v1_logger_open`
 - `swr_v1_logger_put`
-- `swr_v1_logger_reopen`
-- `swr_v1_logger_rotation_date`
-- `swr_v1_logger_set`
-- `swr_v1_logger_set_date_format`
-- `swr_v1_logger_set_level`
-- `swr_v1_logger_set_stream`
-- `swr_v1_utils_pretty_range`
-- `swr_v1_utils_wait`
-- `swr_v1_utils_wakeup`
