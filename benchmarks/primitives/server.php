@@ -1,7 +1,9 @@
 <?php
 // Runtime primitives per request (#1909): Swoole\Table set/get, a Coroutine\Channel
 // between two coroutines, Swoole\Atomic adds and Swoole\Lock lock/unlock (#2654), and the
-// same server answering HTTP/2 with prior knowledge.
+// same server answering HTTP/2 with prior knowledge. /coroutine-lock and /sleep wait on the
+// timer: a Coroutine\Lock taken over from a coroutine that holds it for 1 ms, and a 2 ms
+// Coroutine::sleep. Their cost is latency, not instructions.
 require __DIR__ . '/../../corpus/bootstrap.php';
 
 const ROWS = 64;
@@ -46,6 +48,22 @@ $server->on('request', static function ($request, $response) use ($table, $atomi
                 $lock->unlock();
             }
             $sum = $atomic->get();
+            break;
+        case '/coroutine-lock':
+            // A contended lock waits by sleeping and retrying, as connection pools' locks do.
+            $coroutineLock = new Swoole\Coroutine\Lock();
+            go(static function () use ($coroutineLock): void {
+                $coroutineLock->lock();
+                Swoole\Coroutine::sleep(0.001);
+                $coroutineLock->unlock();
+            });
+            $coroutineLock->lock();
+            $coroutineLock->unlock();
+            $sum = ROWS;
+            break;
+        case '/sleep':
+            Swoole\Coroutine::sleep(0.002);
+            $sum = ROWS;
             break;
         default:
             $response->end("ok\n");

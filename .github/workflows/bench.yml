@@ -43,6 +43,7 @@ jobs:
         run: >
           python3 benchmarks/wall.py --max-ratio 1.25
           --workload plaintext --workload json --workload http2 --workload websocket
+          --workload coroutine-lock --workload sleep
           --engine cargo=target/ext/swoole.so
           --engine upstream=target/upstream/src/modules/swoole.so
           --output target/wall/wall.json | tee -a "$GITHUB_STEP_SUMMARY"
