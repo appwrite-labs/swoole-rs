@@ -409,11 +409,12 @@ impl OwnedSocket {
 }
 
 /// A cell owning at most one heap socket: it lends the record as a [`Heap`] for a
-/// borrow of itself, and [`Self::take`] gives the owner back. Its field is a cell, so a
-/// record that threads share under their own synchronization (a server's connection
-/// slot) may hold one. A handle it lent is, like a registry entry's, not used once the
-/// owner taken from it is freed. Dropping it leaks the record, as dropping an
-/// [`OwnedSocket`] does; all zero bytes are an empty cell.
+/// borrow of itself, and the unsafe [`Self::take`] gives the owner back. Its field is a
+/// cell, so a record that threads share under their own synchronization (a server's
+/// connection slot) may hold one. Lending and taking both go through `&self`, so the
+/// types can't tell when the last lent handle is gone: only `take`'s caller can.
+/// Dropping it, [`Self::forget`] or a second [`Self::put`] leaks the record, as dropping
+/// an [`OwnedSocket`] does; all zero bytes are an empty cell.
 #[derive(Default)]
 #[repr(transparent)]
 pub struct OwnerCell(Cell<Option<Heap<'static>>>);
@@ -426,14 +427,22 @@ impl OwnerCell {
         self.0.get()
     }
 
-    /// Owns `owner` from here; the owner it held before, if any, comes back.
-    pub fn put(&self, owner: OwnedSocket) -> Option<OwnedSocket> {
-        self.0.replace(Some(owner.leak())).map(OwnedSocket)
+    /// Owns `owner` from here. A record it held before leaks: handles it lent may live.
+    pub fn put(&self, owner: OwnedSocket) {
+        self.0.set(Some(owner.leak()));
+    }
+
+    /// Names no record from here; one it held leaks, as in [`Self::put`].
+    pub fn forget(&self) {
+        self.0.set(None);
     }
 
     /// The owner it held, which it no longer names.
+    /// # Safety
+    /// No [`Heap`] or [`Socket`] that [`Self::get`] lent (or a copy of one) is used
+    /// once the returned owner frees the record.
     #[must_use]
-    pub fn take(&self) -> Option<OwnedSocket> {
+    pub unsafe fn take(&self) -> Option<OwnedSocket> {
         self.0.take().map(OwnedSocket)
     }
 }

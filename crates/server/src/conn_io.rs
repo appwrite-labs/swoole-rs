@@ -510,14 +510,11 @@ pub(crate) fn close_connection(
     }
     lower_max_fd(state, fd);
     conn.active().store(false, Relaxed);
-    let owned = conn.take_socket();
     conn.clear_object();
     // The slot's last write before close(fd): an accept that gets the fd back
     // acquires it (OP_CONN_RESET) before reusing the slot.
     conn.closed().store(1, Release);
-    if let Some(owned) = owned {
-        _ = swoole_rs_tls::reactor_write::reactor_close(reactor.handle(), owned);
-    }
+    conn.free_socket();
     true
 }
 

@@ -292,7 +292,7 @@ fn init(
     conn.set_worker_id(-1);
     conn.set_socket_type(ls.r#type);
     // The slot is empty: `reset_connection` cleared it, and each close takes its socket.
-    _ = conn.hold_socket(sock);
+    conn.hold_socket(sock);
     conn.set_ssl(ssl);
     conn.info().kind = conn.socket_type();
     conn.set_local_port(local_port);

@@ -449,11 +449,7 @@ mod tests {
         // SAFETY: as above.
         let mut connections: [ConnectionRecord; 4] = unsafe { core::mem::zeroed() };
         let owned = swoole_rs_reactor::OwnedSocket::new(Box::new(sock));
-        assert!(
-            crate::Connection::from(&connections[3])
-                .hold_socket(owned)
-                .is_none()
-        );
+        crate::Connection::from(&connections[3]).hold_socket(owned);
         connections[3].reactor_id.set(1);
         // SAFETY: as above.
         let mut workers: [WorkerRecord; 4] = unsafe { core::mem::zeroed() };
@@ -499,7 +495,8 @@ mod tests {
             "process mode leaves the socket"
         );
         let conn = serv.state().connection(3, Lookup::ByFd).unwrap();
-        conn.take_socket().unwrap().free();
+        // The record leaks, as the fixture's sockets do: freeing it would touch fd 0.
+        conn.forget_socket();
 
         server.config_mut().gs.free();
     }

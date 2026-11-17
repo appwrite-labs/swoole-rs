@@ -712,10 +712,12 @@ mod tests {
         assert!(!end(serv, 1, 0), "closing");
         conn.set_closing(false);
         conn.closed().store(0, Ordering::Relaxed);
-        let sock = conn.take_socket().unwrap();
+        let sock = *conn.socket().unwrap();
+        conn.forget_socket();
         conn.set_close_force(true);
         assert!(!end(serv, 1, 0), "no socket");
-        assert!(conn.hold_socket(sock).is_none());
+        // SAFETY: the heap record the slot just forgot, which nothing else owns.
+        conn.hold_socket(unsafe { swoole_rs_reactor::OwnedSocket::from_socket(sock) });
         conn.active().store(false, Ordering::Relaxed);
         assert!(!end(serv, 1, 0), "no connection");
         conn.active().store(true, Ordering::Relaxed);

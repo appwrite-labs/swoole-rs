@@ -125,9 +125,10 @@ fn accept<'a>(
     if context.is_some_and(|context| dtls_open(*socket, &context)) {
         return Some(socket);
     }
-    let owned = conn.take_socket();
+    conn.active()
+        .store(false, core::sync::atomic::Ordering::Relaxed);
+    conn.free_socket();
     serv.state().tables_ref().clear_connection(fd);
-    swoole_rs_tls::upstream::socket_free(owned);
     None
 }
 

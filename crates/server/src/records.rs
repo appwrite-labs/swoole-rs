@@ -120,7 +120,7 @@ impl ConnectionRecord {
         self.timer.set(None);
         self.info.set(SocketAddress::default());
         self.object.set(core::ptr::null_mut());
-        _ = self.socket.take();
+        self.socket.forget();
         for time in [
             &self.connect_time,
             &self.last_recv_time,
@@ -270,18 +270,37 @@ impl<'a> Connection<'a> {
         self.record.socket.get()
     }
 
-    /// The connection owns `socket` from here (the socket it held, if any, comes back).
-    pub(crate) fn hold_socket(
-        self,
-        socket: swoole_rs_reactor::OwnedSocket,
-    ) -> Option<swoole_rs_reactor::OwnedSocket> {
-        self.record.socket.put(socket)
+    /// The connection owns `socket` from here (a socket it held leaks).
+    pub(crate) fn hold_socket(self, socket: swoole_rs_reactor::OwnedSocket) {
+        self.record.socket.put(socket);
     }
 
-    /// The connection's socket, which it no longer holds.
-    #[must_use]
-    pub(crate) fn take_socket(self) -> Option<swoole_rs_reactor::OwnedSocket> {
-        self.record.socket.take()
+    /// The connection forgets its socket, which leaks.
+    #[cfg(test)]
+    pub(crate) fn forget_socket(self) {
+        self.record.socket.forget();
+    }
+
+    /// `delete conn->socket`: the connection's socket, which it no longer holds, freed.
+    /// The one free of a connection's socket: [`crate::conn_io::close_connection`], on
+    /// the thread whose reactor runs the connection, and the DTLS accept that failed
+    /// before the connection reached a reactor.
+    pub(crate) fn free_socket(self) {
+        // SAFETY: what still holds a handle the slot lent, and why none is used after:
+        // - the slot: from here it names nothing, so `socket()` lends no more;
+        // - the reactor's registry: the free deletes the record from it first
+        //   (`OwnedSocket::into_box`), and ends the process if another reactor names it;
+        // - the handler running the close (its `Event::socket` and the handle it passed
+        //   to `close_connection`): every caller returns, or moves to another fd, once
+        //   the close returns, and the reactor's flush close is under its own contract;
+        // - timers: a connection's idle and resume timers keep its fd, not its socket,
+        //   and the close deletes the one the slot holds;
+        // - other threads: only the connection's reactor (or base worker) closes it.
+        //   Other reactor threads, the heartbeat thread and admin listings read a
+        //   socket after checking `is_active`, which the close clears first; this is
+        //   upstream's unsynchronized `conn->socket` read, which the types don't cover.
+        let socket = unsafe { self.record.socket.take() };
+        swoole_rs_tls::upstream::socket_free(socket);
     }
 
     /// The WebSocket message being reassembled, taken out of the connection.
