@@ -1,32 +1,14 @@
 name: Miri
 # The crates' unit tests, interpreted by Miri for undefined behaviour in their unsafe
 # code. Tests Miri can't run in reasonable time, or that call native code, carry
-# #[cfg_attr(miri, ignore = "...")]. Nightly, and on PRs that change a listed crate.
-# tests/dev/test_miri.py fails when a crate with unsafe code is missing from both the
-# `paths` and a `-p` below, unless it lists the crate with why Miri can't run it.
+# #[cfg_attr(miri, ignore = "...")]. Every four hours on main, not on PRs: there it
+# reported main's own state on each PR and gated nothing (#4704).
+# tests/dev/test_miri.py fails when a crate with unsafe code is missing from the `-p`
+# lists below, unless it lists the crate with why Miri can't run it.
 on:
   schedule:
-    - cron: '0 3 * * *'
+    - cron: '0 3/4 * * *'
   workflow_dispatch:
-  pull_request:
-    paths:
-      - .github/workflows/miri.yml
-      - crates/base64/**
-      - crates/bus/**
-      - crates/clients/**
-      - crates/corebase/**
-      - crates/crc32/**
-      - crates/error-ffi/**
-      - crates/error/**
-      - crates/framing/**
-      - crates/hooks/**
-      - crates/http2/**
-      - crates/httpbindings/**
-      - crates/server/**
-      - tests/modules/buffer/recycling.rs
-      - tests/modules/clients/socket_ops.rs
-      - tests/modules/coroutine/channel.rs
-      - tests/modules/memory/**
 concurrency:
   group: miri-${{ github.ref }}
   cancel-in-progress: true
