@@ -11,7 +11,7 @@ use core::ffi::{CStr, c_char, c_int, c_void};
 use core::mem::{MaybeUninit, offset_of, size_of};
 use core::ptr;
 use std::ffi::CString;
-use swoole_rs_buffer::string::{CppString, new_sized_string};
+use swoole_rs_corebase::buffer::string::{CppString, new_sized_string};
 use swoole_rs_corebase::constants::{
     FdType, SW_BUFFER_SIZE_BIG, SW_INPUT_BUFFER_SIZE, SocketFlag, SocketType,
 };
@@ -1198,7 +1198,7 @@ mod test_support {
             unsafe {
                 for buffer in [self.0.read_buffer.get(), self.0.write_buffer.get()] {
                     if !buffer.is_null() {
-                        swoole_rs_buffer::string::delete_string(buffer.cast());
+                        swoole_rs_corebase::buffer::string::delete_string(buffer.cast());
                     }
                 }
                 if let Some(s) = Socket::from_ptr(self.0.socket_ptr()) {

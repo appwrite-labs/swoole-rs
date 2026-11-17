@@ -3,8 +3,8 @@
 use core::cell::Cell;
 use core::ffi::c_int;
 
-use swoole_rs_buffer::cpp::CppBuffer;
 use swoole_rs_corebase::TrustedAllocator;
+use swoole_rs_corebase::buffer::cpp::CppBuffer;
 use swoole_rs_reactor::{SocketFields, SocketRecord};
 
 use crate::reactor_handle::Reactor;
@@ -137,7 +137,7 @@ impl PoolBus {
 #[must_use]
 pub fn pool_bus_move_packet(
     pool: swoole_rs_process::process_pool::PoolRef<'_>,
-) -> Option<swoole_rs_buffer::string::OwnedString> {
+) -> Option<swoole_rs_corebase::buffer::string::OwnedString> {
     PoolBus::with_pool(pool, |bus| bus.bus.move_packet()).flatten()
 }
 

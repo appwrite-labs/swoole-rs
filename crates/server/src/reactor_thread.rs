@@ -34,8 +34,9 @@ pub(crate) const HEARTBEAT: u64 = u64::MAX;
 /// UDP port's, until it would block. Each is read into this thread's buffer; false when
 /// one fails.
 pub(crate) fn packet_received(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> bool {
-    let (buffer, size) =
-        swoole_rs_buffer::string::with_thread_buffer(|b| (b.as_mut_ptr().cast(), b.size()));
+    let (buffer, size) = swoole_rs_corebase::buffer::string::with_thread_buffer(|b| {
+        (b.as_mut_ptr().cast(), b.size())
+    });
     // SAFETY: this thread's packet buffer, live through dispatch; the next packet
     // does not overwrite it until the current dispatch returns.
     let buffer = unsafe { swoole_rs_reactor::Fill::from_raw(buffer, size) };
@@ -208,7 +209,9 @@ pub(crate) fn init_reactor(serv: view::Server<'_>, reactor: Reactor) {
     use crate::reactor_entry::{on_packet_received, on_read, on_write};
     // 64K datagrams need the larger thread buffer.
     if serv.state().config_ref().have_dgram_sock.get() {
-        swoole_rs_buffer::string::with_thread_buffer(|b| b.extend(b.size().wrapping_mul(2)));
+        swoole_rs_corebase::buffer::string::with_thread_buffer(|b| {
+            b.extend(b.size().wrapping_mul(2));
+        });
     }
     reactor.set_handler(FD_DGRAM_SERVER, Events::READ, on_packet_received);
     reactor.set_handler(FD_SESSION, Events::WRITE, on_write);

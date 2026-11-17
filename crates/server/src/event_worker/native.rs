@@ -7,7 +7,7 @@ use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_reactor::Events;
 
-use swoole_rs_buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_process::methods::{
     ExitStatus, push_stop, set_worker_type, swoole_get_worker_id, swoole_set_worker_id, worker_type,

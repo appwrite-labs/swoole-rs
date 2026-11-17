@@ -66,7 +66,7 @@ fn port(info: &SocketAddress) -> i64 {
 
 /// `Socket::get_out_buffer_length()`.
 fn out_buffer_length(socket: &SocketFields) -> u64 {
-    let length = swoole_rs_buffer::cpp::swr_cpp_buffer_length;
+    let length = swoole_rs_corebase::buffer::cpp::swr_cpp_buffer_length;
     crate::reactor_ops::out_buffer(socket).map_or(0, |buffer| length(buffer).into())
 }
 
@@ -285,7 +285,8 @@ impl Facts for Live<'_> {
         let workers = workers + user_workers as u64;
         let global = swoole_rs_memory::members::pool::memory_size();
         let thread_buffer =
-            swoole_rs_buffer::string::try_with_thread_buffer(|buffer| buffer.size()).unwrap_or(0);
+            swoole_rs_corebase::buffer::string::try_with_thread_buffer(|buffer| buffer.size())
+                .unwrap_or(0);
         let sockets = swoole_rs_reactor::event_api::swoole_event_sockets();
         let out_buffers = sockets.iter().map(|s| s.read(out_buffer_length)).sum();
         let php = PHP_MEMORY.get().map_or(0, |usage| usage());

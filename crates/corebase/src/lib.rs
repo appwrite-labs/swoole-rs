@@ -15,6 +15,7 @@
 mod c_cast;
 mod flags;
 pub use c_cast::{CCast, CastFrom};
+pub mod buffer;
 pub mod constants;
 pub mod coroutine;
 mod global;

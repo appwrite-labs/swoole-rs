@@ -12,12 +12,12 @@ use core::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_reactor::Events;
 
-use swoole_rs_buffer::EntryKind;
-use swoole_rs_buffer::cpp::{
+use swoole_rs_corebase::buffer::EntryKind;
+use swoole_rs_corebase::buffer::cpp::{
     new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_typed_close,
     swr_cpp_buffer_typed_front,
 };
-use swoole_rs_buffer::string::with_thread_buffer;
+use swoole_rs_corebase::buffer::string::with_thread_buffer;
 use swoole_rs_corebase::constants::{SW_SEND_BUFFER_SIZE, SocketType};
 use swoole_rs_corebase::{CCast, DataHead, microtime};
 use swoole_rs_reactor::{Event, Socket, what_event_want};
@@ -720,7 +720,7 @@ pub(crate) mod tests {
 
     /// `bytes` queued on the connection's socket.
     pub(crate) fn queue(conn: Connection<'_>, bytes: &[u8]) {
-        let buffer = swoole_rs_buffer::cpp::new_buffer(0);
+        let buffer = swoole_rs_corebase::buffer::cpp::new_buffer(0);
         buffer.append(bytes);
         conn.socket()
             .unwrap()

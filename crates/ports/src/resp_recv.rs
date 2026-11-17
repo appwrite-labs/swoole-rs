@@ -129,8 +129,8 @@ pub(crate) fn recv_packet<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use swoole_rs_buffer::string::CppString;
     use swoole_rs_clients::protocol::Protocol;
+    use swoole_rs_corebase::buffer::string::CppString;
     use swoole_rs_reactor::SocketRecord;
     use swoole_rs_server::ConnectionRecord;
 

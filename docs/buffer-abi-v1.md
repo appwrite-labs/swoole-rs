@@ -5,7 +5,7 @@ Types: `native/include/swoole_rs_buffer.h`. Feature value 2 (graduated: always o
 Rust owns one queue and its data allocations. Entries are Rust data, sendfile
 tokens or CLOSE markers; the front cursor (offset and generation) is Rust's too. The socket
 record's `Buffer` (declared in `native/buffer/swoole_buffer.h`) holds only the Rust
-handle, and its methods are Rust (`crates/buffer/src/cpp.rs`), which only Rust calls.
+handle, and its methods are Rust (`crates/corebase/src/buffer/cpp.rs`), which only Rust calls.
 Callers read the first entry with `typed_front()`, commit sends with
 `typed_consume()`, queue a close with `typed_close()` and drop the entry with `pop()`.
 
@@ -44,7 +44,7 @@ that starts there.
 
 ## String
 
-`swoole::String` is defined in Rust (`crates/buffer/src/string.rs`): the C++ class
+`swoole::String` is defined in Rust (`crates/corebase/src/buffer/string.rs`): the C++ class
 (`native/buffer/swoole_string.h`) keeps its fields, which Rust mirrors with layout
 asserts on both sides, and Rust defines each method the header declares under its
 upstream symbol. What no C++ calls (`split`, the searches, assignment, the

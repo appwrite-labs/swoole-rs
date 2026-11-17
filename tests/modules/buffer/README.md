@@ -1,7 +1,7 @@
 # Buffer and String gates
 
-Gates for the Rust `swoole::Buffer` queue (`crates/buffer`) and `swoole::String`
-(`crates/buffer/src/string.rs`, gates in [string/](string/)).
+Gates for the Rust `swoole::Buffer` queue (`crates/corebase/src/buffer`) and `swoole::String`
+(`crates/corebase/src/buffer/string.rs`, gates in [string/](string/)).
 Native runners compile the upstream side from pinned upstream
 `76c657d88be39b7af6bf85e46bcbac0da7387760`, extracted into a disposable tree, and
 the Rust side from the headers and switches of the Cargo build whose SDK the supplied
@@ -16,7 +16,7 @@ shared options in `tests/conftest.py` and read sources from `target/upstream/src
 | --- | --- |
 | `baseline.py --sanitize` | Pinned upstream only: original `core-tests/src/memory/buffer.cpp` assertions (64 seeded runs) plus a scatter/gather matrix. |
 
-`swoole::Buffer`'s methods are Rust (`crates/buffer/src/cpp.rs`); no C++ calls them, so
+`swoole::Buffer`'s methods are Rust (`crates/corebase/src/buffer/cpp.rs`); no C++ calls them, so
 none has a symbol, and `src/core/buffer.cc` is not built. Upstream's
 `core-tests/src/memory/buffer.cpp` is ported there, one Rust test per `TEST`:
 
@@ -38,7 +38,7 @@ The project-written fixtures are ported there too, with the same inputs and chec
 | `string/test_gate.py --sanitize` (`string-originals`) | `core-tests/src/core/string.cpp` compiled unchanged under GoogleTest: all 23 TESTs, on the pin only. Seven (`ltrim`, `rtrim`, `strnpos`, `strnstr`, `substr_len`, `starts_with`, `ends_with`) test inline helpers that left the hybrid's headers (#2089); `format_1` and `format_2` test the `format` templates, which left `swoole_string.h` once no compiled C++ instantiated them (#4310) |
 
 `swoole::String`'s methods are Rust. The other fourteen TESTs are ported to
-`string/originals.rs` (`cargo test -p swoole-rs-buffer`), one Rust test per `TEST`, each C++
+`string/originals.rs` (`cargo test -p swoole-rs-corebase`), one Rust test per `TEST`, each C++
 call replaced by the Rust method that is its body:
 
 | Upstream `TEST` | Rust test |
@@ -64,7 +64,7 @@ The project-written `compatibility.cc` consumer is ported there too:
 | --- | --- |
 | `compatibility.cc` (44 checks of append, write, integer, repeat, copy, termination and reduce) | `string::originals::compatibility` |
 
-`thread_buffer.rs` (`cargo test -p swoole-rs-buffer`) checks that a thread
+`thread_buffer.rs` (`cargo test -p swoole-rs-corebase`) checks that a thread
 `swoole_thread_init` never set up gets `None` from `try_with_thread_buffer`, not a
 null String.
 

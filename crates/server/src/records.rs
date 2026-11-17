@@ -65,7 +65,7 @@ pub struct ConnectionRecord {
     pub websocket_status: Cell<WebSocketStatus>,
     /// The WebSocket message being reassembled: a box only the connection's reactor
     /// makes, takes and frees.
-    pub(crate) websocket_buffer: Cell<Option<Box<swoole_rs_buffer::string::CppString>>>,
+    pub(crate) websocket_buffer: Cell<Option<Box<swoole_rs_corebase::buffer::string::CppString>>>,
     /// Null, or the `CppString` box the worker `ssl_client_cert_pid` stored with
     /// [`Connection::store_client_cert`]. Private with the pid, so nothing else names a
     /// certificate here.
@@ -265,13 +265,15 @@ impl<'a> Connection<'a> {
 
     /// The WebSocket message being reassembled, taken out of the connection.
     #[must_use]
-    pub fn take_websocket_buffer(self) -> Option<Box<swoole_rs_buffer::string::CppString>> {
+    pub fn take_websocket_buffer(
+        self,
+    ) -> Option<Box<swoole_rs_corebase::buffer::string::CppString>> {
         self.record.websocket_buffer.take()
     }
 
     /// The connection reassembles `buffer`, which must hold none (one it held is
     /// freed).
-    pub fn set_websocket_buffer(self, buffer: Box<swoole_rs_buffer::string::CppString>) {
+    pub fn set_websocket_buffer(self, buffer: Box<swoole_rs_corebase::buffer::string::CppString>) {
         if let Some(mut held) = self.record.websocket_buffer.replace(Some(buffer)) {
             held.dispose();
         }
@@ -279,7 +281,7 @@ impl<'a> Connection<'a> {
 
     /// `OP_STORE_CLIENT_CERT`: `cert` is the connection's client certificate, which
     /// only this worker reads and frees.
-    pub fn store_client_cert(self, cert: swoole_rs_buffer::string::CppString) {
+    pub fn store_client_cert(self, cert: swoole_rs_corebase::buffer::string::CppString) {
         self.set_ssl_client_cert(Box::into_raw(Box::new(cert)).cast());
         self.set_ssl_client_cert_pid(swoole_rs_process::methods::swoole_get_worker_pid());
     }
@@ -287,10 +289,10 @@ impl<'a> Connection<'a> {
     /// `OP_FREE_CLIENT_CERT`: the certificate this worker stored, taken from the
     /// connection, or `None` when this worker stored none.
     #[must_use]
-    pub fn take_client_cert(self) -> Option<Box<swoole_rs_buffer::string::CppString>> {
+    pub fn take_client_cert(self) -> Option<Box<swoole_rs_corebase::buffer::string::CppString>> {
         let cert = self
             .ssl_client_cert()
-            .cast::<swoole_rs_buffer::string::CppString>();
+            .cast::<swoole_rs_corebase::buffer::string::CppString>();
         if cert.is_null()
             || self.ssl_client_cert_pid() != swoole_rs_process::methods::swoole_get_worker_pid()
         {
@@ -399,7 +401,7 @@ impl<'a> Connection<'a> {
         }
         let cert = self
             .ssl_client_cert()
-            .cast::<swoole_rs_buffer::string::CppString>();
+            .cast::<swoole_rs_corebase::buffer::string::CppString>();
         // SAFETY: null, or the certificate this worker made, which only this worker's
         // `OP_FREE_CLIENT_CERT` frees, and not during `f`, which gets a borrow.
         unsafe { cert.as_ref() }.map(|cert| f(cert.view()))

@@ -7,7 +7,7 @@
 use std::ffi::{CStr, c_int};
 use std::os::fd::IntoRawFd;
 
-use swoole_rs_buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::{swr_v1_core_max_file_content, swr_v1_core_set_max_file_content};
 use swoole_rs_ossupport::{

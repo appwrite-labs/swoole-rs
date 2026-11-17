@@ -16,9 +16,9 @@ use std::{
     rc::Rc,
     sync::atomic::Ordering::Relaxed,
 };
-use swoole_rs_buffer::string::CppString as Buffer;
 use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::buffer::string::CppString as Buffer;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_members::Receive};
 use swoole_rs_httpbindings::Setting;
 use swoole_rs_phpclients::{NewSocket, get_socket, is_socket_closed, socket_settings};

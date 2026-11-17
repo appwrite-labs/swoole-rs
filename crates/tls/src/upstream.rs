@@ -14,8 +14,8 @@ use openssl_sys::{X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK};
 use std::ffi::{CStr, c_char, c_int, c_long};
 use std::io::IoSlice;
 use std::mem::MaybeUninit;
-use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::constants::SocketFlag;
 use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
@@ -840,19 +840,19 @@ pub fn sendfile_sync(
 
 /// A failed Rust queue status. Native `Buffer` raises it as a C++ exception that
 /// nothing catches, so the process ends either way; here it aborts.
-pub(crate) fn buffer_check(status: Result<(), swoole_rs_buffer::Error>) {
+pub(crate) fn buffer_check(status: Result<(), swoole_rs_corebase::buffer::Error>) {
     if status.is_err() {
         swoole_rs_corebase::fatal("a send queue operation failed");
     }
 }
 
 /// A socket's `out_buffer` queue, null without one.
-pub(crate) fn out_queue(socket: Socket<'_>) -> *mut swoole_rs_buffer::Buffer {
+pub(crate) fn out_queue(socket: Socket<'_>) -> *mut swoole_rs_corebase::buffer::Buffer {
     socket.read(|record| {
         let buffer = record.output.buffer();
         buffer.map_or(
             std::ptr::null_mut(),
-            swoole_rs_buffer::cpp::CppBuffer::queue,
+            swoole_rs_corebase::buffer::cpp::CppBuffer::queue,
         )
     })
 }
@@ -860,7 +860,7 @@ pub(crate) fn out_queue(socket: Socket<'_>) -> *mut swoole_rs_buffer::Buffer {
 /// `f` over the socket's queue (None without one).
 pub(crate) fn with_queue<R>(
     socket: Socket<'_>,
-    f: impl FnOnce(Option<&mut swoole_rs_buffer::Buffer>) -> R,
+    f: impl FnOnce(Option<&mut swoole_rs_corebase::buffer::Buffer>) -> R,
 ) -> R {
     // SAFETY: null or the socket's live queue, borrowed for `f` alone.
     f(unsafe { out_queue(socket).as_mut() })
@@ -960,7 +960,7 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> bool {
         let detached = if result.pop {
             match queue.pop() {
                 Ok(detached) => Some(detached),
-                Err(swoole_rs_buffer::Error::Empty) => None,
+                Err(swoole_rs_corebase::buffer::Error::Empty) => None,
                 Err(_) => swoole_rs_corebase::fatal("popping the send queue failed"),
             }
         } else {
@@ -987,12 +987,12 @@ pub fn socket_sendfile_async(
         return false;
     };
     if socket.read(|record| record.output.out_buffer.is_none()) {
-        let buffer = swoole_rs_buffer::cpp::new_buffer(65536);
+        let buffer = swoole_rs_corebase::buffer::cpp::new_buffer(65536);
         socket.edit(|record| record.output.out_buffer = Some(buffer));
     }
     // A refused request is dropped with its file.
     let status = with_queue(socket, |queue| {
-        queue.map_or(Err(swoole_rs_buffer::Error::Invalid), |queue| {
+        queue.map_or(Err(swoole_rs_corebase::buffer::Error::Invalid), |queue| {
             queue.push_file(request)
         })
     });
@@ -1381,7 +1381,7 @@ mod tests {
     #[test]
     fn queued_file_and_data_drain_through_the_handlers() {
         let (mut left, right) = pair();
-        let native = swoole_rs_buffer::cpp::new_buffer(65536);
+        let native = swoole_rs_corebase::buffer::cpp::new_buffer(65536);
         let queue = native.queue();
         left.output.out_buffer = Some(native);
         let (path, name) = temp_file("swoole-sendfile-async", b"abcdef");

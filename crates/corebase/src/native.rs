@@ -3,7 +3,6 @@
 //! crates/ffi's `swoole_init` registers each before it runs the body, so corebase
 //! and its tests link without them.
 
-use std::ffi::c_void;
 use std::sync::OnceLock;
 
 /// One function per leaf, in the crate that owns it.
@@ -13,10 +12,6 @@ pub struct NativeHost {
     /// stream and the fatal-error hook, the logger, the debug log level, the memory
     /// pool, the futex-less wait registry, signalfd and the bug report.
     pub init: fn(),
-    /// `new String(SW_STACK_BUFFER_SIZE)` for this thread's `SwooleTG.buffer_stack`,
-    /// and its `delete`.
-    pub new_buffer: fn() -> *mut c_void,
-    pub delete_buffer: fn(),
     /// `delete SwooleG.memory_pool`.
     pub delete_pool: fn(),
     /// One operation on the process logger (crates/process).

@@ -10,7 +10,7 @@ fn popped_owner_keeps_the_prefix_and_frees_each_allocation_once() {
         FREES.set(FREES.get() + 1);
         unsafe { libc::free(data) };
     }
-    static ALLOCATOR: swoole_rs_corebase::CoreAllocator = swoole_rs_corebase::CoreAllocator {
+    static ALLOCATOR: crate::CoreAllocator = crate::CoreAllocator {
         malloc: Some(allocate),
         calloc: None,
         realloc: None,

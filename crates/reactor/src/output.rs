@@ -162,8 +162,8 @@ pub fn sendfile_sent(
 /// Completed queue mutation and an optional token for the caller to dispose.
 pub struct OwnedOutputResult {
     pub result: OutputResult,
-    pub status: Result<(), swoole_rs_buffer::Error>,
-    pub detached: swoole_rs_buffer::TypedDetached,
+    pub status: Result<(), swoole_rs_corebase::buffer::Error>,
+    pub detached: swoole_rs_corebase::buffer::TypedDetached,
 }
 
 /// `Socket::handle_send` over the socket's typed queue: send its front, then
@@ -171,13 +171,13 @@ pub struct OwnedOutputResult {
 /// The effects send from the queue's front chunk and never reach the queue itself.
 pub fn handle_send_owned(
     socket: crate::Socket<'_>,
-    queue: &mut swoole_rs_buffer::Buffer,
+    queue: &mut swoole_rs_corebase::buffer::Buffer,
     hooks: &impl OutputEffects,
 ) -> OwnedOutputResult {
     let mut output = OwnedOutputResult {
         result: OutputResult::default(),
         status: Ok(()),
-        detached: swoole_rs_buffer::TypedDetached::default(),
+        detached: swoole_rs_corebase::buffer::TypedDetached::default(),
     };
     let front = match queue.front() {
         Ok(front) => front,
@@ -332,7 +332,7 @@ mod tests {
     fn owned_queue_commits_offsets_wait_flags_and_detaches_after_effects() {
         unsafe {
             let socket = crate::SocketRecord::with_fd(-1, 6).into_raw();
-            let mut queue = swoole_rs_buffer::Buffer::new(64);
+            let mut queue = swoole_rs_corebase::buffer::Buffer::new(64);
             assert_eq!(queue.append(b"hello"), Ok(()));
             // Raw from the record's pointer, so `Socket::edit` borrowing the record leaves it valid.
             let hooks = hooks(socket.cast(), &raw mut (*socket).fields.kernel_nobufs);
@@ -360,7 +360,10 @@ mod tests {
             let completed = handle_send_owned(handle, &mut queue, &hooks);
             assert_eq!((completed.status, completed.result.pop), (Ok(()), true));
             assert!(completed.detached.token().is_null());
-            assert_eq!(queue.front().err(), Some(swoole_rs_buffer::Error::Empty));
+            assert_eq!(
+                queue.front().err(),
+                Some(swoole_rs_corebase::buffer::Error::Empty)
+            );
             assert!(!queue.holds_token());
             drop(Box::from_raw(socket));
         }

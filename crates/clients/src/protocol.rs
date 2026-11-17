@@ -2,7 +2,7 @@
 //! callbacks that measure and hand on each one. Upstream's layout, which C++ shares.
 use core::ffi::{c_int, c_void};
 use core::marker::PhantomData;
-use swoole_rs_buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::net_types::PacketLength;
 pub use swoole_rs_reactor::Socket;
 

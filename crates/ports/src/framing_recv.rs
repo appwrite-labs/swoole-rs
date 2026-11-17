@@ -7,9 +7,9 @@
 use core::ffi::{CStr, c_int};
 use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
-use swoole_rs_buffer::string::CppString;
 use swoole_rs_clients::client::{Framing, Handle};
 use swoole_rs_clients::protocol::{Package, Protocol};
+use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_WARNING as LOG_WARNING};
 use swoole_rs_corebase::net_types::PacketLength;
 use swoole_rs_corebase::{DataHead, log, swr_v1_core_pagesize};
