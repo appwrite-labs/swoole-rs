@@ -43,22 +43,6 @@ unsafe extern "C" {
         name: IoSlice<'_>,
         value: &Value,
     ) -> c_int;
-    /// The executor's live object at `handle` whose handlers are `handlers`
-    /// (compared, never read), if there is one: `found` then holds it, with a
-    /// reference of its own, in place of what it held, which is not released.
-    /// No PHP code runs.
-    safe fn swr_zend_objects_hold(
-        handle: u32,
-        handlers: *const zend_object_handlers,
-        found: &Owned,
-    ) -> bool;
-    /// The object the executor's store holds at `handle`, if its handlers are
-    /// `handlers` (compared, never read), or null. No reference is taken and no
-    /// PHP code runs.
-    safe fn swr_zend_objects_lookup(
-        handle: u32,
-        handlers: *const zend_object_handlers,
-    ) -> *mut zend_object;
     /// Unlink string entries in the array the slot holds (or references) and
     /// remove them from `SG(rfc1867_uploaded_files)`. No PHP code runs.
     safe fn swr_zend_http_uploads_release(tmpfiles: &Value);
@@ -328,11 +312,27 @@ impl<T: Custom> Weak<T> {
         Some(Self(value.object_ref()?.handle(), PhantomData))
     }
 
+    /// The `T` object at `handle`, as [`Weak::handle`] gave it: each use
+    /// finds it again, so any handle is one.
+    #[must_use]
+    #[inline]
+    pub const fn at(handle: u32) -> Self {
+        Self(handle, PhantomData)
+    }
+
+    /// The object's handle in the executor's store, never 0.
+    #[must_use]
+    #[inline]
+    pub const fn handle(self) -> u32 {
+        self.0
+    }
+
     /// The object, with a reference of its own.
     #[must_use]
+    #[inline]
     pub fn get(&self) -> Option<Owned> {
-        let found = Owned::default();
-        swr_zend_objects_hold(self.0, T::class().handlers(), &found).then_some(found)
+        let object = ObjectRef(find(self.0, T::class().handlers())?, PhantomData);
+        object.with_value(Value::copy_unfreed)
     }
 
     /// The object, borrowed as long as `part` is, when `part` lies in its data:
@@ -342,8 +342,8 @@ impl<T: Custom> Weak<T> {
     /// in no object.
     #[must_use]
     pub fn owner<'a, P>(&self, part: &'a P) -> Option<ObjectRef<'a>> {
-        let std = swr_zend_objects_lookup(self.0, T::class().handlers());
-        if std.is_null() || size_of::<P>() == 0 {
+        let std = find(self.0, T::class().handlers())?;
+        if size_of::<P>() == 0 {
             return None;
         }
         let data = Object::<T>::data_ptr(std).addr();
@@ -355,6 +355,22 @@ impl<T: Custom> Weak<T> {
         // outlives `'a`.
         inside.then_some(ObjectRef(std, PhantomData))
     }
+}
+
+unsafe extern "C" {
+    /// The object the executor's store holds at `handle` (`IS_OBJ_VALID`), or
+    /// null: only compared or tested here. No reference is taken and no PHP
+    /// code runs.
+    safe fn swr_zend_objects_live(handle: u32) -> *mut zend_object;
+}
+
+/// The live object the executor's store holds at `handle`, if its handlers
+/// are `handlers` (compared, never read). No reference is taken.
+#[inline]
+fn find(handle: u32, handlers: *const zend_object_handlers) -> Option<*mut zend_object> {
+    let object = swr_zend_objects_live(handle);
+    // A live object, which the store holds.
+    (!object.is_null() && ObjectRef(object, PhantomData).handlers() == handlers).then_some(object)
 }
 
 /// A new object of `T`'s class around `data`, as its `create_object` handler

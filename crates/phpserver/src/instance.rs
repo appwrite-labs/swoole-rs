@@ -6,9 +6,9 @@ use crate::RecvData;
 use crate::lifecycle::{ServerData, ServerObject};
 use std::os::unix::ffi::OsStrExt;
 use std::{
-    cell::Cell,
     ffi::{CString, c_int, c_long},
     rc::Rc,
+    sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed},
 };
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_NOTICE as LOG_NOTICE};
 use swoole_rs_corebase::process::{methods::worker_is_running, worker_globals, worker_record};
@@ -18,36 +18,70 @@ use swoole_rs_server::{SharedServer, event_worker, server_methods, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{Owned, Value, Weak, ZString, bailout};
 
+/// Upstream's `static SW_THREAD_LOCAL zval swoole_server_instance`: the running
+/// server's handle (0 for none: Zend's handles start at 1) and the mark
+/// [`set_server_object`] gave it. Empty before binding and while being freed.
+struct Instance {
+    handle: AtomicU32,
+    mark: AtomicU64,
+}
+
+// Per thread on a thread-safe PHP and in tests, one process value otherwise,
+// as `SW_THREAD_LOCAL` is: a non-thread-safe build reads it on every event
+// callback without a TLS lookup.
+#[cfg(any(zts, panic = "unwind"))]
 thread_local! {
-    /// Upstream's `static SW_THREAD_LOCAL zval swoole_server_instance`: the running
-    /// server's weak handle and the mark [`set_server_object`] gave it. Only
-    /// its PHP thread reads it. Empty before binding and while being freed.
-    static INSTANCE: Cell<(Option<Weak<ServerData>>, u64)> = const { Cell::new((None, 0)) };
+    static INSTANCE: Instance = const { Instance::new() };
+}
+#[cfg(not(any(zts, panic = "unwind")))]
+static INSTANCE: Instance = Instance::new();
+
+impl Instance {
+    const fn new() -> Self {
+        Self {
+            handle: AtomicU32::new(0),
+            mark: AtomicU64::new(0),
+        }
+    }
+
+    #[inline]
+    fn with<R>(f: impl FnOnce(&Self) -> R) -> R {
+        #[cfg(any(zts, panic = "unwind"))]
+        return INSTANCE.with(f);
+        #[cfg(not(any(zts, panic = "unwind")))]
+        f(&INSTANCE)
+    }
 }
 
 /// `php_swoole_server_zval_ptr()`: the running server's object, with a reference
 /// of its own; none before one is bound and once it is being freed.
 #[must_use]
+#[inline]
 pub(crate) fn server_object() -> Option<Owned> {
-    INSTANCE.get().0.and_then(|object| object.get())
+    let handle = Instance::with(|instance| instance.handle.load(Relaxed));
+    // Each lookup checks the executor's live object store.
+    Weak::<ServerData>::at(handle).get()
 }
 
 /// `*php_swoole_server_zval_ptr() = *zserv`: no reference is taken.
 pub(crate) fn set_server_object(object: ServerObject<'_>) {
-    let mark = INSTANCE.get().1 + 1;
-    object.set_mark(mark);
     // The weak handle takes no reference. `forget` clears it before Zend
-    // reuses the handle, and each lookup checks the executor's live object store.
-    let copy = Weak::of(object.value());
-    INSTANCE.set((copy, mark));
+    // reuses the handle.
+    let handle = Weak::<ServerData>::of(object.value()).map_or(0, Weak::handle);
+    let mark = Instance::with(|instance| {
+        instance.handle.store(handle, Relaxed);
+        instance.mark.fetch_add(1, Relaxed) + 1
+    });
+    object.set_mark(mark);
 }
 
 /// The object marked `mark` is being freed: it is no longer the running one.
 pub(crate) fn forget(mark: u64) {
-    let (_, running) = INSTANCE.get();
-    if running == mark {
-        INSTANCE.set((None, running));
-    }
+    Instance::with(|instance| {
+        if instance.mark.load(Relaxed) == mark {
+            instance.handle.store(0, Relaxed);
+        }
+    });
 }
 
 /// `php_swoole_server_get_ptr`: the `Server` of a Server object, which `value`
