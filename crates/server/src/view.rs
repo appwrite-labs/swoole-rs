@@ -483,7 +483,7 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn workers(self) -> ServerWorkers<'a> {
         let (config, tables) = (self.config(), self.state().tables_ref());
-        let array = |records: &swoole_rs_memory::members::Shm, count: usize| {
+        let array = |records: &swoole_rs_corebase::memory::members::Shm, count: usize| {
             let base = records.as_ptr().cast::<WorkerRecord>();
             if base.is_null() {
                 return &[][..];
@@ -851,8 +851,10 @@ mod tests {
     fn only_a_single_base_worker_that_ran_here_and_was_not_destroyed_counts() {
         let mut server = crate::TestServer::new();
         let config = server.config_mut();
-        config.gs =
-            swoole_rs_memory::members::Shm::calloc(1, size_of::<crate::shared::ServerShared>());
+        config.gs = swoole_rs_corebase::memory::members::Shm::calloc(
+            1,
+            size_of::<crate::shared::ServerShared>(),
+        );
         config.mode_ = Mode::Base;
         config.worker_num.set(1);
         let mut factory = 0u8;
@@ -900,7 +902,7 @@ mod tests {
         serv.config().worker_num.set(2);
         assert_eq!(serv.port_connections(&port), 99);
         port.connection_nums
-            .fill(swoole_rs_memory::members::Shm::calloc(2, 4));
+            .fill(swoole_rs_corebase::memory::members::Shm::calloc(2, 4));
         port.cells()[0].store(3, Ordering::Relaxed);
         port.cells()[1].store(5, Ordering::Relaxed);
         assert_eq!(serv.port_connections(&port), 8);

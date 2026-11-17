@@ -11,7 +11,7 @@ use std::{
     rc::Rc,
 };
 use swoole_rs_corebase::CCast;
-use swoole_rs_memory::{
+use swoole_rs_corebase::memory::{
     members::SharedTable,
     table::{Column, ColumnType, Current, Locked, TYPE_FLOAT, TYPE_INT, TYPE_STRING},
 };

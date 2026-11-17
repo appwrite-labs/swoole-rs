@@ -4,7 +4,7 @@
 //! small and dense, so the registry is a flat table indexed by fd.
 use crate::Heap;
 use std::ffi::{c_int, c_void};
-use swoole_rs_memory::flat::Table;
+use swoole_rs_corebase::memory::flat::Table;
 
 /// Only an add of a [`Heap`] socket puts one here, and freeing its record deletes it
 /// first (`OwnedSocket::into_box`), so every entry is live.

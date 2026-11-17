@@ -228,49 +228,8 @@ impl Buffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::cell::Cell;
+    pub(super) use crate::test_allocator::FAIL_AFTER;
     use std::{ptr, slice};
-
-    // Failure injection affects this test thread only, including actual Vec and
-    // VecDeque allocation paths. Production has no allocator wrapper or state.
-    thread_local! { pub(super) static FAIL_AFTER: Cell<Option<usize>> = const { Cell::new(None) }; }
-    struct FailAllocator;
-    fn fail_allocation() -> bool {
-        FAIL_AFTER
-            .try_with(|counter| match counter.get() {
-                None => false,
-                Some(0) => true,
-                Some(n) => {
-                    counter.set(Some(n - 1));
-                    false
-                }
-            })
-            .unwrap_or(false)
-    }
-    unsafe impl GlobalAlloc for FailAllocator {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            if fail_allocation() {
-                ptr::null_mut()
-            } else {
-                unsafe { System.alloc(layout) }
-            }
-        }
-        unsafe fn realloc(&self, data: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-            if fail_allocation() {
-                ptr::null_mut()
-            } else {
-                unsafe { System.realloc(data, layout, size) }
-            }
-        }
-        unsafe fn dealloc(&self, data: *mut u8, layout: Layout) {
-            unsafe {
-                System.dealloc(data, layout);
-            }
-        }
-    }
-    #[global_allocator]
-    static ALLOCATOR: FailAllocator = FailAllocator;
 
     pub(super) struct Owned(pub(super) *mut Buffer);
     impl Owned {

@@ -283,7 +283,7 @@ impl Facts for Live<'_> {
         let user_workers = self.serv.user_worker_num();
         let workers = u64::from(config.worker_num.get()) + u64::from(config.task_worker_num.get());
         let workers = workers + user_workers as u64;
-        let global = swoole_rs_memory::members::pool::memory_size();
+        let global = swoole_rs_corebase::memory::members::pool::memory_size();
         let thread_buffer =
             swoole_rs_corebase::buffer::string::try_with_thread_buffer(|buffer| buffer.size())
                 .unwrap_or(0);

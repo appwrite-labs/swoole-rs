@@ -5,7 +5,7 @@ use crate::Mode;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::log;
-use swoole_rs_memory::members::Shm;
+use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_process::methods::{
     ExitStatus, kill_all_workers, set_worker_type, swoole_set_worker_id, swoole_set_worker_pid,
     worker_report_error,

@@ -335,7 +335,7 @@ def plan(args, reports):
         script('utilities-php-logger', 'tests/modules/utilities/php_logger.py', *php, *engines,
                '--build-manifest', built, *report('utilities-php-logger'))
     if 'memory' in modules:
-        script('memory-rust-asan', 'tools/cargo_asan.py', '--package', 'swoole-rs-memory', '--report', reports / 'memory-rust-asan.json')
+        script('memory-rust-asan', 'tools/cargo_asan.py', '--package', 'swoole-rs-corebase', '--report', reports / 'memory-rust-asan.json')
     if 'memory' in modules and integrate:
         script('memory-table-witnesses', 'tests/modules/memory/witnesses.py', *php, *engines,
                '--require-memory-bridge', 'cargo', *report('memory-table-witnesses'))

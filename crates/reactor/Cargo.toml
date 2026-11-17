@@ -14,7 +14,6 @@ upstream-symbols = ["swoole-rs-corebase/upstream-symbols"]
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-error = { path = "../error" }
 swoole-rs-process = { path = "../process" }
-swoole-rs-memory = { path = "../memory" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"

@@ -126,9 +126,9 @@ impl LiveServer {
     pub(crate) fn forget_tables(&mut self, connections: bool) {
         // A `Shm` unmaps only when told to: overwriting one forgets it.
         let tables = self.server.tables_mut();
-        *tables.session_list_mut() = swoole_rs_memory::members::Shm::empty();
+        *tables.session_list_mut() = swoole_rs_corebase::memory::members::Shm::empty();
         if connections {
-            *tables.connection_list_mut() = swoole_rs_memory::members::Shm::empty();
+            *tables.connection_list_mut() = swoole_rs_corebase::memory::members::Shm::empty();
         }
     }
 
@@ -214,7 +214,7 @@ impl Drop for LiveServer {
         unsafe { libc::close(self.listener_fd) };
         // The configuration's `gs` names the fixture's own record, which the state's drop
         // must not unmap.
-        self.config_mut().gs = swoole_rs_memory::members::Shm::empty();
+        self.config_mut().gs = swoole_rs_corebase::memory::members::Shm::empty();
     }
 }
 

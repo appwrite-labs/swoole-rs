@@ -4,7 +4,7 @@ use core::ffi::c_int;
 use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering::Relaxed,
 };
-use swoole_rs_memory::members::Shm;
+use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_process::process_pool::{PoolObjectKey, PoolRef};
 #[derive(Default)]
 pub struct PortCounters {
@@ -208,12 +208,12 @@ mod tests {
     use super::*;
     use crate::TestServer;
     use core::sync::atomic::Ordering;
-    use swoole_rs_memory::members::Shm;
+    use swoole_rs_corebase::memory::members::Shm;
 
     #[test]
     fn a_send_counts_on_the_server_and_its_sessions_port() {
         use crate::records::{ConnectionRecord, SessionRecord};
-        let mut gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerShared>());
+        let mut gs = swoole_rs_corebase::memory::members::Shm::calloc(1, size_of::<ServerShared>());
         // SAFETY: a fresh mapping of a whole `ServerShared`.
         let counters = unsafe { &raw mut (*gs.as_ptr().cast::<ServerShared>()).counters };
         // SAFETY: as above.
@@ -285,7 +285,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn shared_counter_updates_survive_a_worker_fork() {
         unsafe {
-            let gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerShared>());
+            let gs = swoole_rs_corebase::memory::members::Shm::calloc(1, size_of::<ServerShared>());
             let mapping = gs.as_ptr().cast::<ServerShared>();
             assert!(!mapping.is_null());
             let counters = swr_v1_server_shared_init(&(*mapping).counters);

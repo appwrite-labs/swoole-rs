@@ -8,8 +8,8 @@ use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize,
     Ordering::Relaxed,
 };
+use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
-use swoole_rs_memory::members::Shm;
 
 const _: () = assert!(
     size_of::<libc::time_t>() == size_of::<AtomicI64>(),

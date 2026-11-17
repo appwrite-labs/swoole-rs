@@ -153,7 +153,7 @@ impl Owned {
         if size == 0 {
             return false;
         }
-        let mut arena = crate::members::Shm::malloc(size);
+        let mut arena = crate::memory::members::Shm::malloc(size);
         let payload = arena.as_ptr();
         let created = self.handle.create(&mut arena);
         if created {
@@ -527,7 +527,7 @@ fn row(name: &[u8], id: i64, score: f64) -> Entry {
 
 /// `Table::make(rows_size, conflict_proportion)`, its header in a shared mapping.
 fn make(rows: u32, conflict: f32) -> *mut Table {
-    let table = crate::members::sw_shm_malloc(size_of::<Table>()).cast::<Table>();
+    let table = crate::memory::members::sw_shm_malloc(size_of::<Table>()).cast::<Table>();
     assert!(!table.is_null());
     assert!(
         Table::init(
@@ -552,8 +552,9 @@ fn handle(table: *mut Table) -> Handle {
 fn destroy(table: *mut Table, mut handle: Handle) {
     handle.destroy().free();
     // The mapping `make` made for the table, given up here.
-    let mut mapping =
-        unsafe { std::mem::transmute::<*mut std::ffi::c_void, crate::members::Shm>(table.cast()) };
+    let mut mapping = unsafe {
+        std::mem::transmute::<*mut std::ffi::c_void, crate::memory::members::Shm>(table.cast())
+    };
     mapping.free();
 }
 
@@ -566,7 +567,10 @@ impl Upstream {
         assert!(this.add_column(b"id", TYPE_INT, 0));
         assert!(this.add_column(b"name", TYPE_STRING, 32));
         assert!(this.add_column(b"score", TYPE_FLOAT, 0));
-        assert!(crate::members::swr_table_create(&mut this), "create failed");
+        assert!(
+            crate::memory::members::swr_table_create(&mut this),
+            "create failed"
+        );
         Upstream(table, Some(this))
     }
 
@@ -671,7 +675,7 @@ const TEST_JPG_MD5SUM: &str = "64a42b4c0f3c65a14c23b60d3880a917";
 #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn table_create() {
     let mut table = Upstream::new(1024);
-    assert!(!crate::members::swr_table_create(table.ptr_mut())); // create again should fail
+    assert!(!crate::memory::members::swr_table_create(table.ptr_mut())); // create again should fail
     let ptr = table.ptr();
     assert!(ptr.memory_size() > ptr.size() * ptr.column_size());
     assert!(table.set("php", &row(b"php", 1, 1.245)));

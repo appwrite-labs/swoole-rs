@@ -223,5 +223,5 @@ pub(crate) fn free(pool: &Fixed, data: *mut c_void) -> bool {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/modules/memory/fixed.rs"]
+#[path = "../../../../tests/modules/memory/fixed.rs"]
 pub(crate) mod tests;

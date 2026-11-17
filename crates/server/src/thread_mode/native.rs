@@ -7,9 +7,9 @@ use core::sync::atomic::Ordering;
 use std::rc::Rc;
 use swoole_rs_reactor::Events;
 
+use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_memory::members::Shm;
 use swoole_rs_process::methods::{
     ExitStatus, set_worker_type, start_check, swoole_set_worker_id, swoole_set_worker_pid,
     worker_type,

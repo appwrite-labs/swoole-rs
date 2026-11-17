@@ -6,8 +6,8 @@ use core::sync::atomic::{
     Ordering::{Acquire, Relaxed},
 };
 use swoole_rs_corebase::WebSocketStatus;
+use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::net_types::SocketAddress;
-use swoole_rs_memory::members::Shm;
 
 use crate::reactor_ops::ThreadRecord;
 

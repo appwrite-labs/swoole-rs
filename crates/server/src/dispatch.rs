@@ -520,7 +520,7 @@ mod tests {
     impl Drop for Workers {
         fn drop(&mut self) {
             // The records drop after the server forgets them.
-            self.live.tables_mut().workers = swoole_rs_memory::members::Shm::default();
+            self.live.tables_mut().workers = swoole_rs_corebase::memory::members::Shm::default();
         }
     }
 

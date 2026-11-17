@@ -4,8 +4,9 @@ Checks for the Rust memory module (fixed and global pools, channel, shared
 mapping and table). ABI lifetimes and native contracts are in
 [native/memory/contract.md](../../../native/memory/contract.md).
 
-The `*.rs` files here are the crate's unit tests, included by
-`crates/memory/src/*.rs` via `#[path]`.
+The `*.rs` files here are the memory module's unit tests (paths below are relative
+to `corebase::memory`), included by
+`crates/corebase/src/memory/*.rs` via `#[path]`.
 
 ## Table witnesses
 
@@ -73,5 +74,12 @@ from `SwooleG`'s pool, which a unit test has no `swoole_init` for);
 fork tests wait for their own child rather than every child, and also check its exit
 status.
 
-`memory-unit` runs them; `memory-rust-asan` runs them under Rust ASan
-(`tools/cargo_asan.py --package swoole-rs-memory`).
+`corebase-unit` runs them; `memory-rust-asan` runs them under Rust ASan
+(`tools/cargo_asan.py --package swoole-rs-corebase`).
+
+The memory implementation lives in `crates/corebase/src/memory/`. Corebase owns
+pool teardown directly at the original lifecycle position; no memory host
+registration remains. The original buffer and memory allocation-failure tests
+share the test-only allocator in `tests/modules/corebase/allocation.rs`, retaining
+respectively persistent and one-shot failures. The memory ASan phase runs the
+corebase package, including these cases and the other folded runtime modules.

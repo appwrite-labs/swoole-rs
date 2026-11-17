@@ -12,8 +12,6 @@ pub struct NativeHost {
     /// stream and the fatal-error hook, the logger, the debug log level, the memory
     /// pool, the futex-less wait registry, signalfd and the bug report.
     pub init: fn(),
-    /// `delete SwooleG.memory_pool`.
-    pub delete_pool: fn(),
     /// One operation on the process logger (crates/process).
     pub logger: fn(op: LoggerOp),
     /// `swoole_signal_clear()`, which C++ calls too.

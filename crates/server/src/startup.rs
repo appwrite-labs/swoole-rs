@@ -11,9 +11,9 @@ use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use swoole_rs_clients::address::assign;
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_WARNING};
+use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode;
-use swoole_rs_memory::members::Shm;
 use swoole_rs_process::process_pool::IpcMode;
 use swoole_rs_process::worker_record::WorkerRecord;
 #[cfg(any(test, feature = "upstream-symbols"))]

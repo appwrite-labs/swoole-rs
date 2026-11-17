@@ -615,7 +615,7 @@ pub(crate) mod tests {
         let none = pop_message(PoolRef::from(&mut pool), &mut out);
         assert_eq!(none, None, "no box");
         // 2 is SW_CHAN_LOCK.
-        let channel = swoole_rs_memory::SharedChannel::make(256, 16, 2);
+        let channel = swoole_rs_corebase::memory::SharedChannel::make(256, 16, 2);
         pool.message_box = channel.expect("a box");
         for message in [&b"first"[..], b"second"] {
             let pushed = pool

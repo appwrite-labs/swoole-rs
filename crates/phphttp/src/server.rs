@@ -18,9 +18,9 @@ use std::{
     mem::ManuallyDrop,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
+use swoole_rs_corebase::memory::flat::Table;
 use swoole_rs_corebase::{CCast, HookType, swoole_isset_hook};
 use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
-use swoole_rs_memory::flat::Table;
 use swoole_rs_phpserver::PortCallback;
 use swoole_rs_phpserver::{
     RecvData, php_swoole_get_recv_data, php_swoole_server_get_callback,

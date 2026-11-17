@@ -255,15 +255,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "swoole-rs-memory"
-version = "0.1.0"
-dependencies = [
- "libc",
- "swoole-rs-corebase",
- "swoole-rs-error",
-]
-
-[[package]]
 name = "swoole-rs-oracle"
 version = "0.1.0"
 dependencies = [
@@ -277,7 +268,6 @@ dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-memory",
 ]
 
 [[package]]
@@ -292,7 +282,6 @@ dependencies = [
  "openssl-sys",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-memory",
  "swoole-rs-process",
 ]
 
