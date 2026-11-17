@@ -1,7 +1,10 @@
 //! Non-persistent `zend_string`s: allocated here, handed to Zend by a return
 //! value or an array, or freed.
 use crate::sys::{swr_zend_string_alloc, zend_string, zend_ulong};
-use std::{io::IoSlice, mem::offset_of};
+use std::{
+    io::IoSlice,
+    mem::{MaybeUninit, offset_of},
+};
 use swoole_rs_corebase::lent::{Spare, SpareVectors, lend_spare, lend_spare_vectors};
 
 unsafe extern "C" {
@@ -16,20 +19,23 @@ pub fn hash(key: &[u8], _compared: usize) -> u64 {
     swr_bytes_hash(IoSlice::new(key))
 }
 
+/// `ZSTR_LEN`'s offset in a string.
+const LEN: usize = offset_of!(zend_string, len);
+/// `ZSTR_VAL`'s offset in a string.
+const VAL: usize = offset_of!(zend_string, val);
+
 /// `ZSTR_VAL`: the first byte.
 #[must_use]
 #[inline]
 pub fn val(string: *mut zend_string) -> *mut u8 {
-    string
-        .wrapping_byte_add(offset_of!(zend_string, val))
-        .cast()
+    string.wrapping_byte_add(VAL).cast()
 }
 
 /// `zend::fetch_zend_string_by_val`: the string whose `ZSTR_VAL` is `val`.
 #[must_use]
 #[inline]
 pub fn from_val(val: *mut u8) -> *mut zend_string {
-    val.wrapping_byte_sub(offset_of!(zend_string, val)).cast()
+    val.wrapping_byte_sub(VAL).cast()
 }
 
 /// `zend_string_alloc(length, 0)`: room for `length` bytes and a NUL.
@@ -123,18 +129,26 @@ impl ZBuf {
         self.len == 0
     }
 
+    /// The string's allocation, byte by byte: its header, then room for
+    /// `capacity` bytes and the NUL after them.
+    #[inline]
+    fn allocation(&mut self) -> &mut [MaybeUninit<u8>] {
+        let size = VAL + self.capacity + 1;
+        // SAFETY: Zend allocated the header, `capacity` bytes and a NUL's byte
+        // (`zend_string_alloc` or `_realloc` of `capacity`, or `from_raw`'s
+        // string of `capacity` written bytes), so `size` bytes from `string`; it
+        // is unshared, and the exclusive borrow is the only way to it; any byte
+        // is a valid `MaybeUninit`.
+        unsafe { std::slice::from_raw_parts_mut(self.string.cast(), size) }
+    }
+
     /// The room past the written bytes, as `Vec::spare_capacity_mut`: what a
     /// reader fills before [`ZBuf::fill`] counts it.
     #[must_use]
     #[inline]
-    pub fn spare_capacity_mut(&mut self) -> &mut [std::mem::MaybeUninit<u8>] {
-        let (len, room) = (self.len, self.capacity - self.len);
-        let at = self.as_mut_ptr().wrapping_add(len).cast();
-        // SAFETY: the string's own allocation holds `capacity` bytes from its
-        // first, `len <= capacity` of them written (every count is of room
-        // written), so `room` bytes follow `at`; the exclusive borrow is the
-        // only way to them, and unwritten bytes are valid `MaybeUninit`s.
-        unsafe { std::slice::from_raw_parts_mut(at, room) }
+    pub fn spare_capacity_mut(&mut self) -> &mut [MaybeUninit<u8>] {
+        let (start, end) = (VAL + self.len, VAL + self.capacity);
+        self.allocation().get_mut(start..end).unwrap_or_default()
     }
 
     /// Appends what `fill` writes into the room past the written bytes: what it
@@ -200,15 +214,18 @@ impl ZBuf {
     /// End the string after the written bytes and hand over its reference.
     #[must_use]
     pub fn into_zstring(self) -> crate::ZString {
-        let this = std::mem::ManuallyDrop::new(self);
-        let (string, len) = (this.string, this.len);
+        let mut this = std::mem::ManuallyDrop::new(self);
+        let len = this.len;
+        let allocation = this.allocation();
         // `ZSTR_LEN(string) = len; ZSTR_VAL(string)[len] = '\0'`.
-        // SAFETY: a live, unshared string.
-        unsafe { (*string).len = len };
-        // SAFETY: an allocation of at least `len` bytes has room for the NUL.
-        unsafe { *val(string).wrapping_add(len) = 0 };
+        if let Some(field) = allocation.get_mut(LEN..LEN + size_of::<usize>()) {
+            field.write_copy_of_slice(&len.to_ne_bytes());
+        }
+        if let Some(nul) = allocation.get_mut(VAL + len) {
+            nul.write(0);
+        }
         // The string's only reference, which this gives up.
-        crate::ZString(string)
+        crate::ZString(this.string)
     }
 }
 

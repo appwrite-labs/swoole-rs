@@ -186,9 +186,8 @@ impl Call {
     /// `EX(This)`: its value is `$this` and its `u2` the argument count.
     #[inline]
     fn this_slot(&self) -> &Value {
-        // SAFETY: the handler's live frame (`new`) holds `This` for the call;
-        // `Value` is a transparent zval.
-        unsafe { &*self.this_zval().cast::<Value>() }
+        // The handler's live frame (`run`).
+        crate::opcode::Executing(self.frame, std::marker::PhantomData).this()
     }
 
     /// The return slot, live for the handler (`new`).
@@ -338,9 +337,10 @@ impl Call {
     /// Argument `n` was not passed (the caller's arity check allows it).
     #[inline]
     pub(crate) fn arg_value(&self, n: u32) -> &Value {
-        assert!(self.passed_arg(n), "argument {n} was not passed");
-        // SAFETY: a passed argument lives for the call.
-        unsafe { &*self.arg(n).cast::<Value>() }
+        match self.args().values().get(n.wrapping_sub(1) as usize) {
+            Some(value) => value,
+            None => unreachable!("argument {n} was not passed"),
+        }
     }
 
     /// `ZEND_PARSE_PARAMETERS_START(min, max)`'s count check.

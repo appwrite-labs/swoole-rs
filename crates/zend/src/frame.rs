@@ -2,7 +2,7 @@
 //! zval and string returns (crates/phpprocess).
 use crate::{
     Call, Invalid, Value,
-    sys::{zend_execute_data, zend_fcall_info, zend_fcall_info_cache, zend_long, zval},
+    sys::{zend_fcall_info, zend_fcall_info_cache, zend_long},
 };
 use std::{ffi::c_int, io::IoSlice};
 
@@ -73,15 +73,6 @@ impl Call {
     #[inline]
     pub fn zval_or_null(&self, n: u32) -> Option<&crate::Value> {
         self.value(n).filter(|value| !value.is_null())
-    }
-
-    /// `ZEND_THIS`: the zval holding `$this`, in a non-static method.
-    #[must_use]
-    #[inline]
-    pub fn this_zval(&self) -> *mut zval {
-        self.frame
-            .wrapping_byte_add(std::mem::offset_of!(zend_execute_data, This))
-            .cast()
     }
 
     /// Swoole's `zend::json_decode` of `text[window]` into the return value,
