@@ -8,8 +8,14 @@ use core::sync::atomic::{
 use swoole_rs_corebase::WebSocketStatus;
 use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::net_types::SocketAddress;
+use swoole_rs_corebase::process::worker_record::WorkerRecord;
 
 use crate::reactor_ops::ThreadRecord;
+use crate::table::Table;
+
+/// An event worker's task result slot: its whole `EventData`, as words.
+pub(crate) type ResultWords =
+    [AtomicU32; swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize / 4];
 
 /// A shared session-table slot; reactor bits preserve the native reserved bits.
 pub struct SessionRecord {
@@ -465,29 +471,26 @@ impl<'a> Connection<'a> {
 
 /// Server-private shared table loans and bounds. The arena owns the underlying shared mappings.
 ///
-/// Setup writes the tables through `&`: every field it writes is a cell (a [`Shm`] is
-/// one), written while the master is the server's only thread. Each [`Shm`] is mapped
+/// Setup writes the tables through `&`: every field it writes is a cell (a [`Table`] is
+/// one), written while the master is the server's only thread. Each [`Table`] is mapped
 /// once through `&`, and only [`Self::unmap`], through `&mut`, unmaps them, so nothing
-/// lent out of one outlives its mapping. The two lists are private, so that the tables
-/// bound the slots they lend.
+/// lent out of one outlives its mapping.
 pub struct ServerTables {
-    /// `ConnectionRecord`s, `max_connection` of them.
-    connection_list: Shm,
-    /// `SessionRecord`s, `SW_SESSION_LIST_SIZE` of them.
-    session_list: Shm,
+    /// `max_connection` of them.
+    connection_list: Table<ConnectionRecord>,
+    /// `SW_SESSION_LIST_SIZE` of them.
+    session_list: Table<SessionRecord>,
     pub port_gs_list: Shm,
-    /// `WorkerRecord`s, `worker_num` of them.
-    pub(crate) workers: Shm,
-    /// A `WorkerRecord` per added user worker.
-    pub(crate) user_workers: Shm,
+    /// `worker_num` of them.
+    pub(crate) workers: Table<WorkerRecord>,
+    /// One per added user worker.
+    pub(crate) user_workers: Table<WorkerRecord>,
     /// Each event worker's result slot, which its tasks' results fill.
-    pub(crate) task_results: Shm,
-    /// Base mode's server connection counts (`gs->connection_nums`): an `AtomicU32`
-    /// per worker.
-    pub(crate) connection_nums: Shm,
-    /// How many records `connection_list` maps. Private: [`Self::set_max_connection`]
-    /// changes it only while the list is unmapped, so [`Self::connections`] never
-    /// reaches past the mapping.
+    pub(crate) task_results: Table<ResultWords>,
+    /// Base mode's server connection counts (`gs->connection_nums`): one per worker.
+    pub(crate) connection_nums: Table<AtomicU32>,
+    /// How many connection slots the server has. Private: [`Self::set_max_connection`]
+    /// changes it only while the list is unmapped.
     max_connection: Cell<u32>,
     /// Armed when accepting runs out of fds and cleared by its callback, at runtime.
     pub enable_accept_timer: swoole_rs_corebase::timer_key::AtomicHeld,
@@ -530,13 +533,14 @@ impl ServerTables {
 
     /// `connection_list = list`: a factory's `max_connection` zeroed records. A list
     /// already mapped stays, as its slots may be lent, and `list` is unmapped.
-    pub(crate) fn map_connections(&self, list: Shm) {
+    pub(crate) fn map_connections(&self, mut list: Table<ConnectionRecord>) {
+        list.truncate(self.max_connection() as usize);
         self.connection_list.fill(list);
     }
 
     /// `session_list = list`: `SW_SESSION_LIST_SIZE` zeroed records, as
     /// [`Self::map_connections`].
-    pub(crate) fn map_sessions(&self, list: Shm) {
+    pub(crate) fn map_sessions(&self, list: Table<SessionRecord>) {
         self.session_list.fill(list);
     }
 
@@ -552,31 +556,20 @@ impl ServerTables {
     /// `sw_shm_free` of each table: exclusive access means nothing lent out of one is
     /// still borrowed.
     pub(crate) fn unmap(&mut self) {
-        for table in [
-            &mut self.connection_list,
-            &mut self.session_list,
-            &mut self.port_gs_list,
-            &mut self.workers,
-            &mut self.user_workers,
-            &mut self.task_results,
-            &mut self.connection_nums,
-        ] {
-            table.free();
-        }
+        self.connection_list.free();
+        self.session_list.free();
+        self.port_gs_list.free();
+        self.workers.free();
+        self.user_workers.free();
+        self.task_results.free();
+        self.connection_nums.free();
     }
 
-    /// The connection slots, exactly `max_connection` of them, or none before
-    /// they're mapped. Index it with `get`, so every fd lookup is bounded by the
-    /// table's own length.
+    /// The connection slots, `max_connection` of them (as many as every factory maps),
+    /// or none before they're mapped. Index it with `get`, so every fd lookup is
+    /// bounded by the table's own length.
     pub(crate) fn connections(&self) -> &[ConnectionRecord] {
-        let base = self.connection_list.as_ptr();
-        if base.is_null() {
-            return &[];
-        }
-        // SAFETY: every factory maps the table with `max_connection` zeroed records,
-        // and only `unmap`, through `&mut self`, unmaps it; the record's cells
-        // and atomics let slots be written under the server's own synchronization.
-        unsafe { core::slice::from_raw_parts(base.cast(), self.max_connection() as usize) }
+        self.connection_list.records()
     }
 
     /// The slot of `fd`, or `None` when `fd` is outside the table.
@@ -593,16 +586,9 @@ impl ServerTables {
     }
 
     /// Session slot `index` (below `SW_SESSION_LIST_SIZE`), or none before the table is
-    /// mapped. Only that slot is borrowed: a unit test maps a smaller table.
+    /// mapped (or past a unit test's smaller table).
     pub(crate) fn session_slot(&self, index: usize) -> Option<&SessionRecord> {
-        let base = self.session_list.as_ptr().cast::<SessionRecord>();
-        if base.is_null() {
-            return None;
-        }
-        // SAFETY: a factory maps the table with 1,048,576 zeroed records, which the
-        // modulo keeps `index` within, and only `unmap`, through `&mut self`,
-        // unmaps it; the record's fields are cells.
-        Some(unsafe { &*base.wrapping_add(index) })
+        self.session_list.records().get(index)
     }
 }
 
@@ -639,13 +625,13 @@ impl ServerTables {
 impl Default for ServerTables {
     fn default() -> Self {
         Self {
-            connection_list: Shm::empty(),
-            session_list: Shm::empty(),
+            connection_list: Table::empty(),
+            session_list: Table::empty(),
             port_gs_list: Shm::empty(),
-            workers: Shm::empty(),
-            user_workers: Shm::empty(),
-            task_results: Shm::empty(),
-            connection_nums: Shm::empty(),
+            workers: Table::empty(),
+            user_workers: Table::empty(),
+            task_results: Table::empty(),
+            connection_nums: Table::empty(),
             max_connection: Cell::new(0),
             enable_accept_timer: swoole_rs_corebase::timer_key::AtomicHeld::new(),
             reactor_pipe_num: Cell::new(0),
@@ -759,30 +745,17 @@ pub(crate) mod tests {
         }
 
         /// The connection list, to name a test's own records or forget them.
-        pub(crate) fn connection_list_mut(&mut self) -> &mut Shm {
+        pub(crate) fn connection_list_mut(&mut self) -> &mut Table<ConnectionRecord> {
             &mut self.connection_list
         }
 
         /// The session list, as [`Self::connection_list_mut`].
-        pub(crate) fn session_list_mut(&mut self) -> &mut Shm {
+        pub(crate) fn session_list_mut(&mut self) -> &mut Table<SessionRecord> {
             &mut self.session_list
         }
     }
 
-    /// A table field naming a test's own records, so several states can share them as
-    /// processes share a mapping. Nothing frees it: the test owns `items`.
-    pub(crate) fn naming<T>(items: &mut [T]) -> Shm {
-        naming_at(items.as_mut_ptr())
-    }
-
-    /// [`naming`] at `items`, for a test that goes on reaching the records itself: it
-    /// does so through `items` (or a `Vec::as_mut_ptr`, which takes no reference), since a
-    /// fresh reference to the whole table would end the state's pointer into it.
-    pub(crate) fn naming_at<T>(items: *mut T) -> Shm {
-        // SAFETY: `Shm` is `repr(transparent)` over its payload pointer, and no code under
-        // test frees these tables.
-        unsafe { core::mem::transmute::<*mut c_void, Shm>(items.cast()) }
-    }
+    pub(crate) use crate::table::tests::{naming, naming_at};
 
     #[test]
     fn clearing_a_slot_keeps_only_active_closed_and_server_fd() {
@@ -900,8 +873,8 @@ pub(crate) mod tests {
             (&raw mut connections).cast::<ConnectionRecord>(),
         );
         let tables = server.tables_mut();
-        *tables.session_list_mut() = naming_at(session_at);
-        *tables.connection_list_mut() = naming_at(connection_at);
+        *tables.session_list_mut() = unsafe { naming_at(session_at, 2) };
+        *tables.connection_list_mut() = unsafe { naming_at(connection_at, 3) };
         let state = server.state();
         unsafe {
             state.tables_ref().set_max_connection_unchecked(3);
@@ -1004,8 +977,8 @@ pub(crate) mod tests {
     fn a_lent_slot_outlives_a_second_mapping() {
         let mut tables = ServerTables::default();
         assert!(tables.set_max_connection(2));
-        let connections = || Shm::calloc_private(2, size_of::<ConnectionRecord>());
-        let sessions = || Shm::calloc_private(2, size_of::<SessionRecord>());
+        let connections = || Table::calloc_private(2);
+        let sessions = || Table::calloc_private(2);
         tables.map_connections(connections());
         tables.map_sessions(sessions());
         let (slot, session) = (&tables.connections()[1], tables.session_slot(1).unwrap());
@@ -1034,7 +1007,7 @@ pub(crate) mod tests {
         // SAFETY: a connection record is plain data; zero is a closed one.
         let mut connections: [ConnectionRecord; 3] = unsafe { core::mem::zeroed() };
         let at = (&raw mut connections).cast::<ConnectionRecord>();
-        *server.tables_mut().connection_list_mut() = naming_at(at);
+        *server.tables_mut().connection_list_mut() = unsafe { naming_at(at, 3) };
         let tables = server.state().tables_ref();
         // SAFETY: the table above holds 3 records.
         unsafe { tables.set_max_connection_unchecked(3) };

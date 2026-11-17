@@ -63,6 +63,12 @@ impl AddressStorage {
         self.member()
     }
 
+    /// The storage as its largest member's bytes, whichever family it holds.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; size_of::<libc::sockaddr_un>()] {
+        self.member()
+    }
+
     /// Runs `edit` on the storage as a Unix address and stores the result whole, so
     /// bytes `edit` leaves alone keep their value.
     pub fn edit_unix<R>(&mut self, edit: impl FnOnce(&mut libc::sockaddr_un) -> R) -> R {
@@ -79,6 +85,7 @@ impl Member for libc::sockaddr {}
 impl Member for libc::sockaddr_in {}
 impl Member for libc::sockaddr_in6 {}
 impl Member for libc::sockaddr_un {}
+impl Member for [u8; size_of::<libc::sockaddr_un>()] {}
 
 impl SocketAddress {
     /// The storage's size, the most a call reads or writes of it.
@@ -268,6 +275,9 @@ impl<'a> PacketLength<'a> {
 }
 
 /// `swoole::RecvData`: a received package's head and its `info.len` bytes at `data`.
+/// It stays `repr(C)`: a `Protocol`'s `onPackage` hands it to C++ as `const RecvData *`
+/// (`native/framing/swoole_protocol.h`), which the oracle's framing shim
+/// (`crates/oracle/shim/framing_stream.cc`) reads in place.
 #[repr(C)]
 pub struct RecvData {
     pub info: crate::DataHead,

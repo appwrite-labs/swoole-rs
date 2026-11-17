@@ -7,7 +7,6 @@ use core::sync::atomic::Ordering;
 use std::rc::Rc;
 use swoole_rs_corebase::reactor::Events;
 
-use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::process::methods::{
     ExitStatus, set_worker_type, start_check, swoole_set_worker_id, swoole_set_worker_pid,
     worker_type,
@@ -74,7 +73,7 @@ pub(crate) fn create_factory(serv: view::Server<'_>) -> *mut c_void {
         .set(config.worker_num.get().c_cast::<u16>());
     // Private, as `sw_calloc`'s memory was.
     let max = state.tables_ref().max_connection() as usize;
-    let list = Shm::calloc_private(max, size_of::<ConnectionRecord>());
+    let list = crate::table::Table::<ConnectionRecord>::calloc_private(max);
     if list.is_null() {
         let size = (max * size_of::<ConnectionRecord>()).c_cast::<c_int>();
         log::sys_warning(ORIGIN, format_args!("calloc[2]({size}) failed"));

@@ -168,11 +168,16 @@ fn run_task(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead, slot: R
     let packet = bus(serv).packet();
     let mut head = *info;
     head.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
-    // SAFETY: the bus's packet, `length` bytes (or null) it keeps until it pops or reads
-    // again, which this thread does after the callback returns. Built here rather than
-    // through `Bus::with_message`, whose closure costs every process-mode request about
-    // 20 instructions (it moves `run_task` out of line).
-    let recv = unsafe { crate::base_factory::SendData::from_raw(head, packet.data) };
+    // Built here rather than through `Bus::with_message`, whose closure costs every
+    // process-mode request about 20 instructions (it moves `run_task` out of line).
+    let recv = if packet.data.is_null() {
+        crate::base_factory::SendData::empty(head)
+    } else {
+        // SAFETY: the bus's packet, `length` bytes it keeps until it pops or reads
+        // again, which this thread does after the callback returns.
+        let data = unsafe { core::slice::from_raw_parts(packet.data.cast(), packet.length) };
+        crate::base_factory::SendData::new(head, data)
+    };
     if serv.state().callbacks.receive(slot, serv, &recv) == 0 {
         worker.add_request_count();
         serv.counters().request_count.fetch_add(1, Relaxed);
@@ -381,7 +386,7 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
 }
 
 /// `Worker_reactor_try_to_exit`: the loop's end callback while the worker exits.
-extern "C-unwind" fn try_to_exit() {
+fn try_to_exit() {
     let reactor = Reactor::thread();
     if let Some(serv) = reactor.server() {
         try_exit(serv, reactor);
@@ -531,7 +536,7 @@ pub fn clean_worker_connections(serv: view::Server<'_>, worker: Worker<'_>) {
 
 /// `worker->coroutine_num = Coroutine::count()`, after each round of the loop, of the
 /// worker `start_event_worker` runs: the process's current one (`enter_child`).
-extern "C-unwind" fn count_coroutines() {
+fn count_coroutines() {
     let count = swoole_rs_corebase::coroutine::coroutine_count();
     _ = with_current(|worker| worker.write_coroutine_num(count));
 }

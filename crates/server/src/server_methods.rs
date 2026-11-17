@@ -466,10 +466,7 @@ mod tests {
         let config = server.config_mut();
         // The whole `serv->gs`, as `ServerObject` maps it: the worker lookup reads its
         // zeroed event pool, past the counters.
-        config.gs = swoole_rs_corebase::memory::members::Shm::calloc(
-            1,
-            size_of::<crate::shared::ServerShared>(),
-        );
+        config.gs = crate::table::Table::calloc(1);
         config.worker_num.set(4);
         config.reactor_num.set(2);
         config.mode_ = Mode::Base;

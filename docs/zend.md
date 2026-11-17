@@ -96,6 +96,11 @@ class's objects as `T`. A type that sets `Custom::DESTRUCTS` also gets a
 channel frees its queued values there). `crates/phplocks` and
 `crates/phpcollections` use no `unsafe` at all.
 
+`Custom::free` receives `FreeProperties`, an opaque view of the dying object's
+properties. It can release uploaded files from a declared property, preserving
+PHP's replacement of that array, but cannot expose the object as a `Value` or run
+methods through it. General PHP callbacks belong in the earlier destruct step.
+
 Mirror upstream's ZPP block exactly: the same min/max, defaults and failure
 return value. Errors are Zend's own (`zend_wrong_parameters_count_error`,
 `zend_wrong_parameter_error`), so messages match.

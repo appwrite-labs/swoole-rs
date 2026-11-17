@@ -19,11 +19,10 @@ use swoole_rs_corebase::reactor::{Heap, Socket};
 use swoole_rs_corebase::tls::socket_pair::SocketPair;
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
 
-/// The head of every `Server`.
-#[repr(C)]
+/// The head of every `Server`: Rust alone reads it, through [`ServerObject`]'s first
+/// field, so only that object fixes its place, not its own layout.
 pub(crate) struct Fields {
     state: *const ServerState,
-    config: *mut ServerConfig,
 }
 
 /// A `Server *`: the head C++ and [`Server`] read.
@@ -48,12 +47,11 @@ pub(crate) struct ServerObject {
 impl ServerObject {
     /// The object over `state`, which it owns from now on.
     pub(crate) fn new(state: Box<ServerState>) -> Self {
-        let (config, tables) = (state.config(), state.tables());
+        let tables = state.tables();
         let state = Arc::<ServerState>::from(state);
         Self {
             head: Fields {
                 state: Arc::as_ptr(&state),
-                config,
             },
             tables,
             state,
@@ -68,7 +66,6 @@ impl Fields {
     pub(crate) fn of(state: &std::rc::Rc<ServerState>) -> Self {
         Self {
             state: std::rc::Rc::as_ptr(state),
-            config: state.config(),
         }
     }
 }
@@ -366,7 +363,7 @@ impl<'a> Server<'a> {
 
     /// The server's per-worker connection counts; none when it keeps one total.
     fn cells(self) -> &'a [AtomicU32] {
-        crate::shared::words(&self.state().tables_ref().connection_nums)
+        self.state().tables_ref().connection_nums.records()
     }
 
     /// Event worker `id`'s count of the server's connections (base mode's
@@ -483,16 +480,12 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn workers(self) -> ServerWorkers<'a> {
         let (config, tables) = (self.config(), self.state().tables_ref());
-        let array = |records: &swoole_rs_corebase::memory::members::Shm, count: usize| {
-            let base = records.as_ptr().cast::<WorkerRecord>();
-            if base.is_null() {
-                return &[][..];
-            }
-            // SAFETY: `create` maps `workers` with `worker_num` records, and the
-            // factory's start `user_workers` with one per added user worker
-            // (`add_worker` refuses once the factory exists); the counts stay, and only
-            // the tables' `unmap`, through `&mut`, unmaps either.
-            unsafe { core::slice::from_raw_parts::<'a, WorkerRecord>(base, count) }
+        // `create` maps `workers` with `worker_num` records, and the factory's start
+        // `user_workers` with one per added user worker (`add_worker` refuses once the
+        // factory exists).
+        let array = |table: &'a crate::table::Table<WorkerRecord>, count: usize| {
+            let records = table.records();
+            records.get(..count).unwrap_or(records)
         };
         let (events, users) = (config.worker_num.get(), self.user_worker_num());
         ServerWorkers::new(
@@ -561,17 +554,13 @@ impl<'a> Server<'a> {
     /// Retain the native resources of a user worker for its thread's Process copy.
     #[must_use]
     pub fn user_worker_owner(self, index: usize) -> Option<crate::process_worker::ProcessWorker> {
-        self.registry().pending().get(index).cloned()
+        self.registry().pending(index).cloned()
     }
 
     /// The `index`th user worker `worker_methods::add_worker` added, or `None` past the
     /// last.
     pub(crate) fn pending_worker(self, index: usize) -> Option<Worker<'a>> {
-        let pending = self.registry().pending();
-        let worker = pending.get(index)?.get().raw();
-        // SAFETY: the append-only registry owns a share of this worker and its
-        // resources until the server drops. Releasing the read lock cannot remove it.
-        Some(unsafe { Worker::from(&*worker) })
+        Some(self.registry().pending(index)?.get())
     }
 
     /// Worker `id`'s pipe socket, its master end or its worker end, or `None` while it has none.
@@ -853,10 +842,7 @@ mod tests {
     fn only_a_single_base_worker_that_ran_here_and_was_not_destroyed_counts() {
         let mut server = crate::TestServer::new();
         let config = server.config_mut();
-        config.gs = swoole_rs_corebase::memory::members::Shm::calloc(
-            1,
-            size_of::<crate::shared::ServerShared>(),
-        );
+        config.gs = crate::table::Table::calloc(1);
         config.mode_ = Mode::Base;
         config.worker_num.set(1);
         let mut factory = 0u8;
@@ -903,8 +889,7 @@ mod tests {
         port.gs.set((&raw mut counters).cast());
         serv.config().worker_num.set(2);
         assert_eq!(serv.port_connections(&port), 99);
-        port.connection_nums
-            .fill(swoole_rs_corebase::memory::members::Shm::calloc(2, 4));
+        port.connection_nums.fill(crate::table::Table::calloc(2));
         port.cells()[0].store(3, Ordering::Relaxed);
         port.cells()[1].store(5, Ordering::Relaxed);
         assert_eq!(serv.port_connections(&port), 8);

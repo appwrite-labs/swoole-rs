@@ -237,9 +237,9 @@ pub fn swoole_timer_free() {
     publish(std::ptr::null_mut());
 }
 
-/// `void swoole_timer_select()`: runs due timers, if there is a timer. A reactor end
-/// callback (`EndFn`), so it keeps the C-unwind ABI.
-pub extern "C-unwind" fn swoole_timer_select() {
+/// `void swoole_timer_select()`: runs due timers, if there is a timer; also the
+/// reactor's timer end callback (`EndFn`).
+pub fn swoole_timer_select() {
     if let Some(timer) = current() {
         timer.select();
     }

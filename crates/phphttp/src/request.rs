@@ -28,11 +28,11 @@ impl Custom for Data {
     }
 
     /// The object goes: the uploads it received are removed.
-    fn free(&self, this: &Value) {
+    fn free(&self, properties: swoole_rs_zend::FreeProperties<'_>) {
         if let Some(mut ctx) = self.0.get().map(Hold::ctx)
             && parse::made(&ctx.state().request, Property::TmpFiles).is_some()
         {
-            parse::release_uploads(this);
+            parse::release_uploads(properties);
         }
     }
 }

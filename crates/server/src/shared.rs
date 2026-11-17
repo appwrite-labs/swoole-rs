@@ -4,7 +4,6 @@ use core::ffi::c_int;
 use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering::Relaxed,
 };
-use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::process::process_pool::{PoolObjectKey, PoolRef};
 #[derive(Default)]
 pub struct PortCounters {
@@ -18,19 +17,6 @@ pub struct PortCounters {
     pub total_recv_bytes: AtomicU64,
     pub total_send_bytes: AtomicU64,
 }
-/// The words of a shared mapping the server made (`connection_nums`' cells, the
-/// `task_results` slots): none without one.
-pub(crate) fn words(nums: &Shm) -> &[AtomicU32] {
-    let base = nums.as_ptr().cast::<AtomicU32>();
-    if base.is_null() {
-        return &[];
-    }
-    // SAFETY: a zeroed mapping whose `payload_len` bytes follow `base`, 8-aligned, and
-    // only ever updated atomically. Only `Shm::free`, through `&mut`, unmaps it, so it
-    // stays mapped while `nums` is borrowed.
-    unsafe { core::slice::from_raw_parts(base, nums.payload_len() / size_of::<AtomicU32>()) }
-}
-
 impl ServerCounters {
     #[must_use]
     pub fn max_fd(&self) -> c_int {
@@ -98,11 +84,7 @@ impl ServerShared {
     /// The record `state`'s server maps (`serv->gs`), once it has one.
     #[inline]
     fn of_state(state: &crate::ServerState) -> Option<&Self> {
-        let gs = state.config_ref().gs.as_ptr().cast::<Self>();
-        // SAFETY: a non-null `gs` is the record `swr_v1_server_new` (or a test's fixture)
-        // mapped whole for the server's life; its writers keep to the server's own
-        // synchronization.
-        unsafe { gs.as_ref() }
+        state.config_ref().gs.records().first()
     }
     /// `serv->get_task_worker_pool()`.
     pub(crate) fn task_pool(&self) -> PoolRef<'_> {
@@ -218,13 +200,6 @@ mod tests {
     #[test]
     fn a_send_counts_on_the_server_and_its_sessions_port() {
         use crate::records::{ConnectionRecord, SessionRecord};
-        let mut gs = swoole_rs_corebase::memory::members::Shm::calloc(1, size_of::<ServerShared>());
-        // SAFETY: a fresh mapping of a whole `ServerShared`.
-        let counters = unsafe { &raw mut (*gs.as_ptr().cast::<ServerShared>()).counters };
-        // SAFETY: as above.
-        unsafe { counters.write(ServerCounters::default()) };
-        // SAFETY: as above; the mapping outlives every use below.
-        let counted = unsafe { &*counters };
         let mut port = PortCounters::default();
         // A `ListenPort` is its settings.
         let config = crate::port_config::PortConfig::boxed(0);
@@ -242,7 +217,7 @@ mod tests {
             .collect();
         sessions[1].fd.set(2);
         let mut server = TestServer::new();
-        server.config_mut().gs = core::mem::replace(&mut gs, Shm::empty());
+        server.config_mut().gs = crate::table::Table::calloc(1);
         let tables = server.tables_mut();
         *tables.connection_list_mut() = crate::records::tests::naming(&mut connections);
         *tables.session_list_mut() = crate::records::tests::naming(&mut sessions);
@@ -253,6 +228,7 @@ mod tests {
         state.hold_port(0, 1).unwrap();
         count_send(state, 1, 4);
         count_send(state, 0, 3);
+        let counted = &state.config_ref().gs.records()[0].counters;
         let totals =
             |r: &AtomicU64, b: &AtomicU64| (r.load(Ordering::Relaxed), b.load(Ordering::Relaxed));
         assert_eq!(
@@ -267,31 +243,12 @@ mod tests {
         drop(server);
     }
 
-    /// A mapping is filled once through `&` and unmapped only through `&mut`: a second
-    /// fill leaves the first, so words lent from it stay usable. Filling by replacing
-    /// unmapped it under the lent words, which then reached freed memory.
-    #[test]
-    fn a_lent_word_outlives_a_second_fill() {
-        let mut nums = Shm::calloc_private(2, 4);
-        let lent = words(&nums);
-        assert!(
-            !nums.fill(Shm::calloc_private(2, 4)),
-            "the field stays mapped"
-        );
-        lent[1].store(7, Relaxed);
-        assert_eq!(words(&nums)[1].load(Relaxed), 7, "the first mapping stays");
-        nums.free();
-        assert!(words(&nums).is_empty(), "unmapped");
-        assert!(nums.fill(Shm::calloc_private(1, 4)), "an empty field fills");
-        nums.free();
-    }
-
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn shared_counter_updates_survive_a_worker_fork() {
         unsafe {
-            let gs = swoole_rs_corebase::memory::members::Shm::calloc(1, size_of::<ServerShared>());
-            let mapping = gs.as_ptr().cast::<ServerShared>();
+            let gs = crate::table::Table::<ServerShared>::calloc(1);
+            let mapping = gs.as_ptr();
             assert!(!mapping.is_null());
             let counters = swr_v1_server_shared_init(&(*mapping).counters);
             assert_eq!(counters.max_concurrency.load(Relaxed), u32::MAX);

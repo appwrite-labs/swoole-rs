@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 // `category` is an opaque tag the registry only groups by: event workers (1) and
 // user workers (2); task workers live in the task pool and are not registered.
@@ -24,9 +24,23 @@ struct Entry {
 pub struct WorkerRegistry<T = *mut c_void> {
     workers: RwLock<HashMap<c_int, Entry>>,
     detached: RwLock<HashSet<c_int>>,
-    pending_users: RwLock<Vec<T>>,
+    /// Append-only, so an entry stays where it is while the registry is borrowed:
+    /// chunk `k` holds entries `2^k - 1 ..= 2^(k+1) - 2`, made with its first.
+    pending_users: [OnceLock<Box<[OnceLock<T>]>>; CHUNKS],
+    /// Held while one is added, which a lookup doesn't wait for.
+    pending_add: Mutex<()>,
     /// How many `pending_users` holds, which every worker lookup reads.
     pending_count: AtomicUsize,
+}
+
+/// How many chunks the pending users may fill: `2^32 - 1` entries.
+const CHUNKS: usize = 32;
+
+/// The chunk entry `index` is in, and its place there.
+fn chunk_of(index: usize) -> (usize, usize) {
+    let at = index + 1;
+    let chunk = at.ilog2() as usize;
+    (chunk, at - (1 << chunk))
 }
 
 /// A read of `lock`; a panic while it was held leaves the data whole.
@@ -44,7 +58,8 @@ impl<T> Default for WorkerRegistry<T> {
         Self {
             workers: RwLock::default(),
             detached: RwLock::default(),
-            pending_users: RwLock::default(),
+            pending_users: [const { OnceLock::new() }; CHUNKS],
+            pending_add: Mutex::new(()),
             pending_count: AtomicUsize::new(0),
         }
     }
@@ -109,10 +124,24 @@ impl<T> WorkerRegistry<T> {
     /// Append one pending user worker before Server creation, preserving insertion
     /// order. The returned index is its original pre-start worker ID.
     pub fn pending_add(&self, worker: T) -> usize {
-        let mut pending = write(&self.pending_users);
-        pending.push(worker);
-        self.pending_count.store(pending.len(), Ordering::Release);
-        pending.len() - 1
+        let _adding = self
+            .pending_add
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let index = self.pending_count.load(Ordering::Relaxed);
+        let (chunk, at) = chunk_of(index);
+        let Some(entries) = self.pending_users.get(chunk) else {
+            crate::fatal("more pending user workers than a registry holds");
+        };
+        let entries = entries.get_or_init(|| (0..1 << chunk).map(|_| OnceLock::new()).collect());
+        if entries
+            .get(at)
+            .is_none_or(|entry| entry.set(worker).is_err())
+        {
+            crate::fatal("a pending user worker's slot is taken");
+        }
+        self.pending_count.store(index + 1, Ordering::Release);
+        index
     }
 
     /// How many pending user workers were added, without the lock.
@@ -122,9 +151,12 @@ impl<T> WorkerRegistry<T> {
         self.pending_count.load(Ordering::Acquire)
     }
 
-    /// The pending user workers, in the order they were added.
-    pub fn pending(&self) -> RwLockReadGuard<'_, Vec<T>> {
-        read(&self.pending_users)
+    /// The `index`th pending user worker, in the order they were added, or `None` past
+    /// the last.
+    #[must_use]
+    pub fn pending(&self, index: usize) -> Option<&T> {
+        let (chunk, at) = chunk_of(index);
+        self.pending_users.get(chunk)?.get()?.get(at)?.get()
     }
 
     /// Terminate every worker of `category`: send `signo` to each, then wait for each.
@@ -258,8 +290,15 @@ mod tests {
         );
         assert_eq!(reg.pending_add(a), 0);
         assert_eq!(reg.pending_add(b), 1);
-        assert_eq!(*reg.pending(), [a, b]);
+        assert_eq!(reg.pending(0), Some(&a));
+        assert_eq!(reg.pending(1), Some(&b));
+        assert_eq!(reg.pending(2), None);
         assert_eq!(reg.pending_count(), 2);
+        for n in 2..100 {
+            assert_eq!(reg.pending_add(core::ptr::without_provenance_mut(n + 1)), n);
+        }
+        assert!((0..100).all(|n| reg.pending(n).map(|p| p.addr()) == Some(n + 1)));
+        assert_eq!(reg.pending(100), None);
     }
 
     #[test]

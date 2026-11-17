@@ -5,6 +5,7 @@ use crate::hybrid::{Step, hybrid};
 use crate::reactor_handle::Reactor;
 use crate::records::SessionRecord;
 use crate::shared::PortCounters;
+use crate::table::Table;
 use crate::{Mode, TaskIpcMode, view};
 use core::ffi::c_int;
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
@@ -113,7 +114,7 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
     if !crate::local_addr::init(state) {
         return false;
     }
-    let sessions = Shm::calloc(SW_SESSION_LIST_SIZE as usize, size_of::<SessionRecord>());
+    let sessions = Table::<SessionRecord>::calloc(SW_SESSION_LIST_SIZE as usize);
     if sessions.is_null() {
         let size = size_of::<SessionRecord>();
         let m = format_args!("sw_shm_calloc(1048576, {size}) for session_list failed");
@@ -149,7 +150,7 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
     }
     bound_workers(state.config_ref(), cpu);
     let worker_num = state.config_ref().worker_num.get();
-    let workers = Shm::calloc(worker_num as usize, size_of::<WorkerRecord>());
+    let workers = Table::<WorkerRecord>::calloc(worker_num as usize);
     if workers.is_null() {
         let size = size_of::<WorkerRecord>();
         let m = format_args!("sw_shm_calloc({worker_num}, {size}) for workers failed");
@@ -158,7 +159,7 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
     }
     tables.workers.fill(workers);
     // A retry retains the first mapping, which `workers()` reads `worker_num` records of.
-    if worker_num as usize > tables.workers.payload_len() / size_of::<WorkerRecord>() {
+    if worker_num as usize > tables.workers.records().len() {
         log::warning(
             c"Server::create",
             format_args!("cannot add workers to an existing worker mapping"),
@@ -263,7 +264,7 @@ fn bound_workers(config: &crate::ServerConfig, cpu: u32) {
 
 /// `Server::create_task_workers` up to `init_task_workers`: the task pool's memory, not
 /// its processes, and the task results it returns and notify pipes for `Server::task_sync()`.
-fn create_task_workers(serv: view::Server<'_>) -> Option<Shm> {
+fn create_task_workers(serv: view::Server<'_>) -> Option<Table<crate::records::ResultWords>> {
     let state = serv.state();
     let config = state.config_ref();
     let ipc = match config.task_ipc() {
@@ -284,7 +285,7 @@ fn create_task_workers(serv: view::Server<'_>) -> Option<Shm> {
     }
     let workers = config.worker_num.get();
     let size = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
-    let mut results = Shm::calloc(workers as usize, size as usize);
+    let mut results = Table::calloc(workers as usize);
     if results.is_null() {
         let m = format_args!("sw_shm_calloc({workers}, {size}) for task_result failed");
         log::warning(c"Server::create_task_workers", m);
@@ -782,9 +783,7 @@ mod tests {
         live.forget_tables(true);
         let state = live.state();
         let tables = state.tables_ref();
-        tables
-            .workers
-            .fill(Shm::calloc(1, size_of::<WorkerRecord>()));
+        tables.workers.fill(Table::calloc(1));
         config(&live).worker_num.set(4);
         calls();
         let created = create_on(live.server(), 4);
@@ -1021,7 +1020,7 @@ mod tests {
             if mode == Mode::Process {
                 // What the process factory's create maps, which the stand-in doesn't.
                 let max = live.server().max_connection() as usize;
-                let list = Shm::calloc(max, size_of::<crate::ConnectionRecord>());
+                let list = Table::calloc(max);
                 live.state().tables_ref().map_connections(list);
             }
             live.counters().start.store(true, SeqCst);

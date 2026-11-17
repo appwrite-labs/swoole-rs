@@ -57,7 +57,7 @@ pub use helpers::{
 };
 pub use local::{EnvLock, Fatal, Php};
 pub use minit::{Lifecycle, Minfo, Minit, Mshutdown, Parent, Request, Shutdown, Startup};
-pub use object::{Custom, CustomClass, Object, ObjectRef, Props, Weak, new_object};
+pub use object::{Custom, CustomClass, FreeProperties, Object, ObjectRef, Props, Weak, new_object};
 pub use swoole_rs_zend_sys as sys;
 pub use sys::add_next_index_long;
 pub use zval::{
