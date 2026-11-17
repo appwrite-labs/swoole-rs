@@ -87,7 +87,8 @@ Fast code is designed to be fast; it doesn't patch a slow design afterwards.
 `clippy.toml`'s `disallowed-types` rejects std's maps, sets, `LinkedList` and
 `VecDeque`. Crates that already use them carry one crate-level `expect` until
 their count reaches zero, and `tools/budget.py` (PR tier) counts them, arrays of
-bool and cache statics per crate, and fails a PR that raises one above `main`'s.
+bool and cache statics, and fails a PR that raises a workspace total above `main`'s:
+items that move between crates, or with a fold or a new crate, add nothing (#4733).
 A use that must stay (output order PHP can see, a cold path) keeps the `expect`.
 
 ## Roadmap

@@ -29,7 +29,8 @@ The one per-crate exception: each `lib.rs` denies `undocumented_unsafe_blocks` a
 unsafe block states its invariant in a `// SAFETY:` comment and does one operation;
 test code is exempt. A crate with no unsafe left adds `#![forbid(unsafe_code)]` to its
 `lib.rs` (Cargo's `[lints] workspace = true` takes no per-crate additions), and
-`tools/budget.py` fails a PR that removes it.
+`tools/budget.py` fails a PR that removes it: the one count it checks per crate. Its
+others fail only when their workspace total rises, so moving code between crates is free.
 
 Benchmarks use optimized builds and run without concurrent build or test load.
 Build, profile and benchmark output goes under the worktree's `target/` (a second

@@ -1,4 +1,4 @@
-"""tools/budget.py counts unsafe items and slow data layouts in non-test crate code; none may rise over the base commit."""
+"""tools/budget.py counts unsafe items and slow data layouts in non-test crate code; no workspace total may rise over the base commit."""
 from pathlib import Path
 import sys
 import tempfile
@@ -185,48 +185,23 @@ mod tests {
             self.assertEqual(budget.stays_c('', zend), [])
         self.assertTrue(budget.stays_c('Stays C: variadic'), "docs/zend.md's own list")
 
-    def test_only_a_rise_over_the_base_fails(self):
-        rises = budget.above({'a': 3, 'b': 1, 'c': 2, 'new': 1}, {'a': 2, 'b': 2, 'c': 2})
-        self.assertEqual(rises, {'a': (3, 2)}, 'a crate new since the base is not checked')
-
-    def test_an_ffi_crate_may_rise_by_what_its_crate_moved_to_it(self):
-        base = {'http': 10, 'http-ffi': 5, 'other': 1, 'orphan-ffi': 1}
-        current = {'http': 4, 'http-ffi': 11, 'other': 0, 'orphan-ffi': 2}  # the total holds at 17
-        rises = budget.above(current, base)
-        self.assertEqual(budget.boundary_moves(rises, current, base), {'orphan-ffi': (2, 1)},
-                         'http fell by 6, so http-ffi may rise by 6; orphan has no crate')
-        current['http-ffi'] = 12
-        self.assertEqual(budget.boundary_moves(budget.above(current, base), current, base),
-                         {'http-ffi': (12, 5), 'orphan-ffi': (2, 1)}, 'a rise past the fall fails')
-
-    def test_any_crate_may_rise_while_the_total_falls(self):
-        base = {'tls': 3, 'hooks': 5}
-        current = {'tls': 4, 'hooks': 3}  # tls gained an unsafe fn; hooks paid for it
-        self.assertEqual(budget.boundary_moves(budget.above(current, base), current, base), {})
-        current['hooks'] = 4  # the total holds, so tls's rise fails
-        self.assertEqual(budget.boundary_moves(budget.above(current, base), current, base), {'tls': (4, 3)})
-
-    def test_a_fall_into_a_new_crate_does_not_also_cover_an_ffi_rise(self):
-        # http's 6 moved to locale, which is new and so unchecked; http-ffi's 6 are new unsafe.
-        base = {'http': 10, 'http-ffi': 5}
-        current = {'http': 4, 'http-ffi': 11, 'locale': 6}
-        self.assertEqual(budget.boundary_moves(budget.above(current, base), current, base), {'http-ffi': (11, 5)})
-
-    def test_a_crate_may_rise_by_what_a_deleted_crate_held(self):
-        base = {'protocols': 0, 'protocols-ffi': 4, 'ports': 7, 'hooks': 5}
-        current = {'protocols': 2, 'ports': 9, 'hooks': 5}  # protocols-ffi's 4 moved
-        self.assertEqual(budget.departures(budget.above(current, base), current, base), {})
-        current = {'protocols': 2, 'ports': 12, 'hooks': 0}  # hooks' fall doesn't count
-        self.assertEqual(budget.departures(budget.above(current, base), current, base),
-                         {'ports': (12, 7)}, 'a rise past what the deleted crate held fails')
-        current = {'protocols': 2, 'ports': 10, 'hooks': 5}
-        self.assertEqual(budget.departures(budget.above(current, base), current, base),
-                         {'ports': (10, 7), 'protocols': (2, 0)}, 'not while the total rises')
-
-    def test_a_new_crate_counts_from_zero_once_the_total_rises(self):
-        base = {'http': 10}
-        self.assertEqual(budget.arrivals({'http': 10, 'brotli': 6, 'safe': 0}, base), {'brotli': (6, 0)})
-        self.assertEqual(budget.arrivals({'http': 4, 'locale': 6}, base), {}, 'http moved 6 to locale')
+    def test_only_a_rise_of_the_workspace_total_fails(self):
+        def kinds(unsafe, clines=None, unforbidden=None):
+            return {'unsafe': unsafe, 'clines': clines or {}, 'unforbidden': unforbidden or {}}
+        base = kinds({'hooks': 7, 'corebase': 153, 'gone': 4})
+        # A module moves between surviving crates, a fold deletes one, a new crate takes items:
+        # none adds to the workspace (#4733).
+        for moved in ({'hooks': 0, 'corebase': 160, 'gone': 4}, {'hooks': 7, 'corebase': 157},
+                      {'hooks': 3, 'corebase': 153, 'gone': 4, 'new': 4}, {'hooks': 9, 'corebase': 150, 'gone': 4}):
+            self.assertEqual(budget.failures(kinds(moved), base), {}, moved)
+        self.assertEqual(budget.failures(kinds({'hooks': 1, 'corebase': 160, 'gone': 4, 'new': 1}), base),
+                         {'unsafe': ['unsafe: 166 in the workspace, up from 164',
+                                     '  corebase: 160, up from 153', '  new: 1, up from 0']})
+        c_base = kinds({}, {'zend': 10})
+        self.assertIn('clines', budget.failures(kinds({}, {'zend': 11}), c_base))
+        self.assertEqual(budget.failures(kinds({}, {'zend': 11}), c_base, 'Stays C: variadic'), {})
+        self.assertEqual(budget.failures(kinds({}, unforbidden={'a': 1, 'b': 0}), kinds({}, unforbidden={'a': 0, 'b': 1})),
+                         {'unforbidden': ['a: 1 unforbidden, up from 0']}, 'a crate that stops forbidding fails alone')
 
     def test_a_new_crate_with_no_unsafe_must_forbid_it(self):
         sources = {'old': '', 'plain': '', 'comment': '// #[unsafe(no_mangle)], unsafe extern "C"\n',
