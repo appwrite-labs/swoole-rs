@@ -1,21 +1,13 @@
 # CRC32
 
-ABI: `docs/core-abi-v1.md`. The overlay deletes `src/core/crc32.cc`; `crates/corebase/src/utilities`
-defines `swoole_crc32` under its upstream symbol over the crate's safe `crc32`.
+The CRC32 crate computes reflected IEEE CRC32 with a compile-time slicing-by-eight
+table and explicit little-endian loads. The Rust server calls `crc32` directly
+from `DgramPacket::sender` in `crates/server/src/reactor_entry.rs`. For non-IPv4
+datagrams it hashes the sender's host text using the socket address length
+(28 bytes for IPv6) to select the worker.
 
-The Rust crate implements reflected IEEE CRC32 without allocation, mutable
-global state or `unsafe`: a compile-time slicing-by-eight table (8 KiB) with
-explicit little-endian loads. Unlike the pin's mutable table (whose
-`generated` flag is never set) there is no initialization race.
-
-Derived from Swoole v6.2.4 (`c7e514509451beafd4d70ce5b78943d51e76381c`),
-Apache-2.0; the native source keeps the original notice.
-
-The pin's only production caller is `src/server/reactor_thread.cc` (now
-`crates/server`'s `thread_ops.rs`), which
-hashes `Address::get_addr()` with the `sockaddr` length (28 bytes for IPv6) to
-pick the worker for non-IPv4 datagrams. PHP `crc32()` uses PHP's own
-implementation and does not exercise this code.
+The C++ hash-originals fixture imports the `swoole_crc32` wrapper from corebase.
+See the [utilities contract](../../../native/utilities/contract.md).
 
 ## Differential
 
