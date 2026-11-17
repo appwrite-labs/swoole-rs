@@ -131,13 +131,6 @@ pub fn swr_v1_hooks_sleep_until(
     DONE
 }
 
-/// `int System::sleep(double sec)` for upstream's C++: 0, or -1 when it was canceled.
-#[cfg(feature = "upstream-symbols")]
-#[unsafe(export_name = "_ZN6swoole9coroutine6System5sleepEd")]
-extern "C-unwind" fn system_sleep_export(sec: f64) -> i32 {
-    if system_sleep(sec) { 0 } else { -1 }
-}
-
 /// `System::sleep(sec)`: parks the current coroutine for `sec`, at least the
 /// timer's millisecond (in the ring's timer with `io_uring`); false when it was
 /// canceled. Outside a coroutine it raises upstream's fatal error, which does not

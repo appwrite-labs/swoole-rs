@@ -21,6 +21,7 @@ use std::{
 use swoole_rs_corebase::reactor::{Caught, TimeoutKind};
 use swoole_rs_corebase::{
     CCast,
+    lent::{Fill, ReadVec},
     net_types::{AddressStorage, SocketAddress},
     sys::{Text, errno},
 };
@@ -329,21 +330,6 @@ fn vm_active() -> bool {
     swr_zend_stream_vm_active()
 }
 
-/// The bytes a read fills, as the `iovec` zend-sys's operations lend: writable
-/// for the call, reached through nothing else meanwhile, maybe not written yet,
-/// and never null. Only C makes one.
-#[repr(transparent)]
-struct Lent<'a>(libc::iovec, PhantomData<&'a mut [MaybeUninit<u8>]>);
-
-impl Lent<'_> {
-    fn slots(&mut self) -> &mut [MaybeUninit<u8>] {
-        let Self(lent, _) = self;
-        // SAFETY: `iov_len` writable bytes at a non-null `iov_base`, lent to this
-        // one owner (see `Lent`), which the borrow keeps.
-        unsafe { std::slice::from_raw_parts_mut(lent.iov_base.cast(), lent.iov_len) }
-    }
-}
-
 swoole_rs_zend::exports! {
 /// The stream's `write` (`socket_write`): bytes written, or -1.
 #[unsafe(no_mangle)]
@@ -401,9 +387,8 @@ fn write(stream: Stream<'_>, data: &[u8]) -> Result<isize, Bailout> {
 swoole_rs_zend::exports! {
 /// The stream's `read` (`socket_read`): bytes read, or -1.
 #[unsafe(no_mangle)]
-extern "C" fn swr_v1_phpruntime_socket_read(stream: Stream<'_>, out: Lent<'_>) -> isize {
-    let mut out = out;
-    raise(read(stream, out.slots()), -1)
+extern "C" fn swr_v1_phpruntime_socket_read(stream: Stream<'_>, mut out: ReadVec<'_>) -> isize {
+    raise(read(stream, out.fill().slots()), -1)
 }
 }
 
@@ -524,7 +509,7 @@ struct Xport<'a> {
     /// `inputs.buf`'s `buflen` bytes, for `STREAM_XPORT_OP_SEND`.
     send: Option<&'a [u8]>,
     /// `inputs.buf`'s `buflen` bytes, for `STREAM_XPORT_OP_RECV`.
-    recv: Option<&'a mut Lent<'a>>,
+    recv: Option<&'a mut ReadVec<'a>>,
     /// `inputs.addr`'s `addrlen` bytes, if set.
     to: Option<&'a [u8]>,
 }
@@ -539,7 +524,7 @@ extern "C" fn swr_v1_phpruntime_socket_xport<'a>(
     timeout: Option<&'a timeval>,
     name: Option<&'a IoSlice<'a>>,
     send: Option<&'a IoSlice<'a>>,
-    recv: Option<&'a mut Lent<'a>>,
+    recv: Option<&'a mut ReadVec<'a>>,
     to: Option<&'a IoSlice<'a>>,
 ) -> bool {
     let xport = Xport {
@@ -707,8 +692,8 @@ fn xport_api(stream: Stream<'_>, socket: &Socket, xport: Xport<'_>) -> Result<()
             if p.inputs.flags & STREAM_OOB == STREAM_OOB {
                 return oob(p);
             }
-            let mut none = [];
-            let buffer = recv.map_or(&mut none[..], Lent::slots);
+            let mut room = recv.map(ReadVec::fill);
+            let buffer = room.as_mut().map_or(&mut [][..], Fill::slots);
             p.outputs.returncode = if p.inputs.flags & STREAM_PEEK == STREAM_PEEK {
                 returncode(
                     socket

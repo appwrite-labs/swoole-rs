@@ -835,6 +835,28 @@ fn a_failed_socket_makes_no_client_and_keeps_its_errno() {
 }
 
 #[test]
+fn framed_package_ranges_keep_the_address_and_clip_the_writable_bytes() {
+    use swoole_rs_corebase::buffer::string::{CppString, boxed_string};
+    let mut empty = CppString::EMPTY;
+    let mut package = Package::of(&mut empty, 0, 12);
+    assert!(package.as_ptr().is_null());
+    assert_eq!(package.bytes(), []);
+
+    let mut data = boxed_string(b"data");
+    let base = data.as_ptr();
+    for start in [4, 5] {
+        let mut package = Package::of(&mut data, start, usize::MAX);
+        assert_eq!(package.as_ptr(), base.wrapping_add(start));
+        assert_eq!(package.bytes(), []);
+    }
+    let mut tail = Package::of(&mut data, 2, usize::MAX);
+    assert_eq!(tail.as_ptr(), base.wrapping_add(2));
+    tail.bytes().copy_from_slice(b"te");
+    assert_eq!(data.view(), b"date");
+    data.dispose();
+}
+
+#[test]
 fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
     let client = client(1, true, true);
     let socket = Handle::raw(client).socket();

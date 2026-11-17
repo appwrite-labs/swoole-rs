@@ -17,6 +17,7 @@ use swoole_rs_corebase::constants::{
 };
 use swoole_rs_corebase::reactor::{Socket, SocketAddress, SocketFields, SocketRecord};
 use swoole_rs_corebase::tls::upstream::{socket_free, socket_ssl_close};
+use swoole_rs_corebase::{BoxCellExt, CellExt};
 
 pub use swoole_rs_clients::protocol::Protocol;
 
@@ -298,20 +299,16 @@ impl Co {
     /// The shared `NameResolver::Context`, if any.
     #[must_use]
     pub fn resolve_context(self) -> Option<SharedResolve> {
-        let slot = &self.record().resolve_context;
-        let context = slot.take();
-        slot.set(context.clone());
-        context
+        self.record()
+            .resolve_context
+            .with_taken(|context| context.clone())
     }
 
     /// Whether the record holds its read buffer: made, and not given up meanwhile.
     #[must_use]
     pub fn has_read_buffer(self) -> bool {
-        let slot = self.buffer_slot(false);
-        let buffer = slot.take();
-        let held = buffer.is_some();
-        slot.set(buffer);
-        held
+        self.buffer_slot(false)
+            .with_taken(|buffer| buffer.is_some())
     }
 
     /// The buffers' allocator: none for the default.
@@ -542,11 +539,7 @@ impl Co {
     /// takes back after: `None` once released, and inside another `with_extra` over
     /// the same record.
     pub fn with_extra<T>(self, f: impl FnOnce(&mut SocketExtra) -> T) -> Option<T> {
-        let slot = &self.record().extra;
-        let mut extra = slot.take()?;
-        let result = f(&mut extra);
-        slot.set(Some(extra));
-        Some(result)
+        self.record().extra.with_box(f)
     }
 
     /// The bound coroutines, retries and timers: cells, which `f` reads and sets.
