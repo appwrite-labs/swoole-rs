@@ -570,8 +570,8 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
         reactor.set_handler(FD_PIPE, Events::READ, on_pipe_receive);
     }
     if matches!(
-        config.dispatch(),
-        Some(DispatchMode::CoConnLb | DispatchMode::CoReqLb)
+        config.dispatch_mode.get(),
+        DispatchMode::CO_CONN_LB | DispatchMode::CO_REQ_LB
     ) {
         let count = count_coroutines;
         swoole_rs_corebase::reactor::swr_v1_event_set_end_callback(

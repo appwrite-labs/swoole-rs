@@ -773,12 +773,12 @@ fn get_client_info(call: &Call) {
     let Some(conn) = serv.verified(fd) else {
         return call.set_bool(false);
     };
-    let dispatch_mode = serv.config().dispatch();
+    let dispatch_mode = serv.config().dispatch_mode.get();
     call.set_array();
-    if conn.uid() > 0 || dispatch_mode == Some(DispatchMode::UidMod) {
+    if conn.uid() > 0 || dispatch_mode == DispatchMode::UID_MOD {
         call.add_assoc_long(c"uid", i64::from(conn.uid()));
     }
-    if conn.worker_id() > 0 || dispatch_mode == Some(DispatchMode::CoConnLb) {
+    if conn.worker_id() > 0 || dispatch_mode == DispatchMode::CO_CONN_LB {
         call.add_assoc_long(c"worker_id", i64::from(conn.worker_id()));
     }
     if serv

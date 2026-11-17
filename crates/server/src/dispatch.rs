@@ -42,15 +42,15 @@ pub fn schedule_worker(serv: Server<'_>, fd: c_int, send: Option<&SendData>) -> 
     let fd_key = fd.cast_unsigned();
     let workers = config.worker_num.get().max(1);
     let conn = || state.connection(key, Lookup::ByFd);
-    let key = match config.dispatch() {
-        Some(DispatchMode::Round) => state.next_round(),
-        Some(DispatchMode::FdMod) => fd_key,
-        Some(DispatchMode::IpMod) => ip_key(state, key, send),
-        Some(DispatchMode::UidMod) => match conn().map_or(0, crate::Connection::uid) {
+    let key = match config.dispatch_mode.get() {
+        DispatchMode::ROUND => state.next_round(),
+        DispatchMode::FD_MOD => fd_key,
+        DispatchMode::IP_MOD => ip_key(state, key, send),
+        DispatchMode::UID_MOD => match conn().map_or(0, crate::Connection::uid) {
             0 => fd_key,
             uid => uid,
         },
-        Some(DispatchMode::CoConnLb) => {
+        DispatchMode::CO_CONN_LB => {
             let Some(conn) = conn() else {
                 return Ok(fd_key % workers);
             };
@@ -61,8 +61,8 @@ pub fn schedule_worker(serv: Server<'_>, fd: c_int, send: Option<&SendData>) -> 
             conn.set_worker_id(lowest.cast_signed());
             return Ok(lowest);
         }
-        Some(DispatchMode::CoReqLb) => return Ok(lowest(serv, Load::Coroutines)),
-        Some(DispatchMode::ConcurrentLb) => return Ok(lowest(serv, Load::Concurrency)),
+        DispatchMode::CO_REQ_LB => return Ok(lowest(serv, Load::Coroutines)),
+        DispatchMode::CONCURRENT_LB => return Ok(lowest(serv, Load::Concurrency)),
         // Deliver to an idle worker.
         _ => return Ok(idle_worker(serv)),
     };
@@ -493,7 +493,7 @@ mod tests {
             let mut records: Vec<WorkerRecord> = (0..n).map(|_| *WorkerRecord::boxed()).collect();
             let config = live.config_mut();
             config.worker_num.set(n);
-            config.dispatch_mode.set(dispatch as u8);
+            config.dispatch_mode.set(dispatch);
             live.tables_mut().workers =
                 unsafe { crate::records::tests::naming_at(records.as_mut_ptr(), records.len()) };
             Self { live, records }
@@ -539,23 +539,23 @@ mod tests {
     #[test]
     fn schedule_by_mode() {
         assert_eq!(
-            Workers::new(4, DispatchMode::FdMod).schedule(10),
+            Workers::new(4, DispatchMode::FD_MOD).schedule(10),
             2,
             "fd mod"
         );
-        let round = Workers::new(4, DispatchMode::Round);
+        let round = Workers::new(4, DispatchMode::ROUND);
         assert_eq!(
             [round.schedule(10), round.schedule(10)],
             [0, 1],
             "round robin"
         );
-        let uid = Workers::new(4, DispatchMode::UidMod);
+        let uid = Workers::new(4, DispatchMode::UID_MOD);
         assert_eq!(uid.schedule(10), 2, "no uid: fd");
         assert_eq!(uid.schedule(UNLISTED), 0, "no connection: fd");
         connect(&uid, 10, 5, -1);
         assert_eq!(uid.schedule(10), 1, "uid");
 
-        let co = Workers::new(4, DispatchMode::CoConnLb);
+        let co = Workers::new(4, DispatchMode::CO_CONN_LB);
         assert_eq!(co.schedule(UNLISTED), 0, "no connection: fd");
         co.records[0].coroutine_num.set(5);
         connect(&co, 10, 0, -1);
@@ -565,16 +565,25 @@ mod tests {
         co.records[1].coroutine_num.set(9);
         assert_eq!(co.schedule(10), 1, "pinned");
 
-        let mut req = Workers::new(4, DispatchMode::CoReqLb);
+        let mut req = Workers::new(4, DispatchMode::CO_REQ_LB);
         for (record, load) in req.records.iter_mut().zip([5, 3, 3, 9]) {
             record.coroutine_num.set(load);
         }
         assert_eq!(req.schedule(10), 1, "the first lowest load");
-        let concurrent = Workers::new(3, DispatchMode::ConcurrentLb);
+        let concurrent = Workers::new(3, DispatchMode::CONCURRENT_LB);
         concurrent.records[0].concurrency.store(2, Relaxed);
         assert_eq!(concurrent.schedule(10), 1, "the lowest concurrency");
 
-        let idle = Workers::new(3, DispatchMode::IdleWorker);
+        let unknown = Workers::new(3, DispatchMode(255));
+        assert_eq!(unknown.serv().config().dispatch_mode.get().0, 255);
+        unknown.set(&[1], WorkerStatus::Idle);
+        assert_eq!(
+            unknown.schedule(10),
+            1,
+            "unknown codes use idle-worker dispatch"
+        );
+
+        let idle = Workers::new(3, DispatchMode::IDLE_WORKER);
         idle.set(&[1], WorkerStatus::Idle);
         assert_eq!(idle.schedule(10), 1, "the first idle worker round robin");
         assert!(!idle.warned());
@@ -602,7 +611,7 @@ mod tests {
 
     #[test]
     fn a_dispatch_function_comes_first_unless_it_falls_back() {
-        let w = Workers::new(4, DispatchMode::FdMod);
+        let w = Workers::new(4, DispatchMode::FD_MOD);
         let callbacks = &w.live.state().callbacks;
         callbacks.set(crate::callbacks::Callback::DispatchFunc(to_six));
         assert_eq!(w.schedule(10), 6, "user function");
@@ -612,7 +621,7 @@ mod tests {
 
     #[test]
     fn a_datagram_hashes_its_sender() {
-        let w = Workers::new(4, DispatchMode::IpMod);
+        let w = Workers::new(4, DispatchMode::IP_MOD);
         let mut packet = crate::reactor_entry::DgramPacket::default();
         packet.socket_addr.kind = 2;
         packet.socket_addr.addr.inet_v4.sin_addr.s_addr = 0x0a00_0001_u32.to_be();
@@ -645,7 +654,7 @@ mod tests {
 
     #[test]
     fn idle_and_tasking_counts() {
-        let w = Workers::new(3, DispatchMode::FdMod);
+        let w = Workers::new(3, DispatchMode::FD_MOD);
         w.set(&[0, 2], WorkerStatus::Idle);
         assert_eq!(idle_workers(w.serv(), false), 2, "idle event workers");
         assert_eq!(idle_workers(w.serv(), true), 0, "no task workers");

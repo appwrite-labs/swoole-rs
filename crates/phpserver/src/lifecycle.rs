@@ -282,8 +282,8 @@ fn fact(serv: view::Server<'_>, id: Fact) -> bool {
         Fact::EnableCoroutine => c.enable_coroutine.get(),
         Fact::SendYield => c.send_yield.get(),
         Fact::HasOnClose => serv.has_callback(swoole_rs_server::callbacks::CallbackKind::Close),
-        Fact::UnsafeEvents => c.hash_dispatch() || c.enable_unsafe_event.get(),
-        Fact::HashDispatch => c.hash_dispatch(),
+        Fact::UnsafeEvents => c.dispatch_mode.get().is_hash() || c.enable_unsafe_event.get(),
+        Fact::HashDispatch => c.dispatch_mode.get().is_hash(),
         Fact::Reactor => !swoole_rs_corebase::thread_reactor().is_null(),
         Fact::CacheSessionAddr => {
             crate::dispatch::http().is_some_and(|http| (http.can_cache_session_addr)(serv))

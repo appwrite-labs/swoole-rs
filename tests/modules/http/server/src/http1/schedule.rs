@@ -14,12 +14,6 @@ use swoole_rs_corebase::swoole_rand;
 
 const SW_SOCK_UDP: c_int = 2;
 const SW_SOCK_TCP6: c_int = 3;
-const DISPATCH_ROUND: u8 = 1;
-const DISPATCH_IPMOD: u8 = 4;
-const DISPATCH_UIDMOD: u8 = 5;
-const DISPATCH_CO_CONN_LB: u8 = 8;
-const DISPATCH_CO_REQ_LB: u8 = 9;
-const DISPATCH_CONCURRENT_LB: u8 = 10;
 
 /// `DgramPacket` up to its address.
 #[repr(C)]
@@ -93,7 +87,11 @@ fn worker(serv: Server, id: usize) -> Worker {
 
 /// A process-mode Server of `worker_num` workers and `dispatch_mode`, listening on
 /// `TEST_HOST` (and `::` when `ipv6`), created.
-fn create(worker_num: u32, dispatch_mode: u8, ipv6: bool) -> (Server, Port, Option<Port>) {
+fn create(
+    worker_num: u32,
+    dispatch_mode: DispatchMode,
+    ipv6: bool,
+) -> (Server, Port, Option<Port>) {
     let serv = Server::new(MODE_PROCESS);
     serv.config().worker_num.set(worker_num);
     serv.config().dispatch_mode.set(dispatch_mode);
@@ -109,7 +107,7 @@ fn create(worker_num: u32, dispatch_mode: u8, ipv6: bool) -> (Server, Port, Opti
 
 /// `TEST(server, schedule)`.
 fn schedule() {
-    let (serv, _, _) = create(6, DISPATCH_IDLE_WORKER, false);
+    let (serv, _, _) = create(6, DispatchMode::IDLE_WORKER, false);
     let worker_num = serv.config().worker_num.get() as usize;
 
     for i in 0..worker_num {
@@ -138,7 +136,7 @@ fn schedule() {
 
 /// `TEST(server, schedule_1)`.
 fn schedule_1() {
-    let (serv, _, _) = create(8, DISPATCH_ROUND, false);
+    let (serv, _, _) = create(8, DispatchMode::ROUND, false);
     let worker_num = serv.config().worker_num.get() as usize;
 
     let schedule_count = 1024;
@@ -163,7 +161,11 @@ fn average_combined(v1: &[usize], v2: &[usize]) -> f64 {
 
 /// `test_worker_schedule<Worker, M, member>(dispatch_mode)`: `member` is the worker's
 /// field the mode balances, read by `get` and written by `set`.
-fn test_worker_schedule(dispatch_mode: u8, get: fn(Worker) -> usize, set: fn(Worker, usize)) {
+fn test_worker_schedule(
+    dispatch_mode: DispatchMode,
+    get: fn(Worker) -> usize,
+    set: fn(Worker, usize),
+) {
     let (serv, port, _) = create(8, dispatch_mode, false);
     let worker_num = serv.config().worker_num.get() as usize;
 
@@ -200,7 +202,7 @@ fn test_worker_schedule(dispatch_mode: u8, get: fn(Worker) -> usize, set: fn(Wor
 
 /// `TEST(server, schedule_4)`.
 fn schedule_4() {
-    let (serv, port, port6) = create(4, DISPATCH_IPMOD, true);
+    let (serv, port, port6) = create(4, DispatchMode::IP_MOD, true);
     let port6 = port6.unwrap();
     let worker_num = serv.config().worker_num.get() as usize;
 
@@ -248,7 +250,7 @@ fn schedule_4() {
 
 /// `TEST(server, schedule_5)`.
 fn schedule_5() {
-    let (serv, port, port6) = create(4, DISPATCH_UIDMOD, true);
+    let (serv, port, port6) = create(4, DispatchMode::UID_MOD, true);
     let port6 = port6.unwrap();
     let worker_num = serv.config().worker_num.get() as usize;
 
@@ -276,7 +278,7 @@ fn schedule_5() {
 
 /// `TEST(server, schedule_8)`.
 fn schedule_8() {
-    let (serv, port, port6) = create(4, DISPATCH_CO_CONN_LB, true);
+    let (serv, port, port6) = create(4, DispatchMode::CO_CONN_LB, true);
     let port6 = port6.unwrap();
     let worker_num = serv.config().worker_num.get() as usize;
 
@@ -307,7 +309,7 @@ fn schedule_8() {
 /// `TEST(server, schedule_9)`: `Worker::coroutine_num`, a `size_t`.
 fn schedule_9() {
     test_worker_schedule(
-        DISPATCH_CO_REQ_LB,
+        DispatchMode::CO_REQ_LB,
         // SAFETY: the live record's field.
         |worker| unsafe { (*worker.raw()).coroutine_num.get() },
         // SAFETY: as above.
@@ -318,7 +320,7 @@ fn schedule_9() {
 /// `TEST(server, schedule_10)`: `Worker::concurrency`, a `uint32_t`.
 fn schedule_10() {
     test_worker_schedule(
-        DISPATCH_CONCURRENT_LB,
+        DispatchMode::CONCURRENT_LB,
         // SAFETY: the live record's field.
         |worker| unsafe { &(*worker.raw()).concurrency }.load(Relaxed) as usize,
         // SAFETY: as above.
