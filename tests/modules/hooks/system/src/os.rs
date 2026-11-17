@@ -1,6 +1,6 @@
 //! Upstream's `core-tests/src/os/wait.cpp`, `os/async.cpp` and `os/os.cpp`'s `os.daemon`,
 //! one function per TEST with the same inputs and expected values: the coroutine waits
-//! (`corebase::process`'s registry, crates/reactor's symbols), the async thread pool
+//! (`corebase::process`'s registry, crates/reactor's Rust operations), the async thread pool
 //! (crates/hooks over crates/corebase/src/ossupport), under their upstream symbols, and
 //! `swoole_daemon` (crates/corebase/src/ossupport) by path. `async.thread_starts_with_signals_blocked` is crates/corebase/src/ossupport's
 //! `pool::tests::thread_starts_with_signals_blocked`.
@@ -9,6 +9,7 @@ use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
 use swoole_rs_corebase::swoole_rand;
+use swoole_rs_reactor::wait_upstream::{swoole_waitpid, system_wait, system_waitpid};
 
 pub(super) use swoole_rs_hooks::async_threads::dispatch;
 pub(super) use swoole_rs_hooks::offload::AsyncEvent;
@@ -31,12 +32,8 @@ pub(super) fn new_event(
 }
 
 unsafe extern "C" {
-    fn swoole_coroutine_waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
-    fn swoole_coroutine_wait(status: *mut c_int) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System12waitpid_safeEiPii"]
     fn system_waitpid_safe(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
-    #[link_name = "_Z14swoole_waitpidiPii"]
-    fn swoole_waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
     #[link_name = "_Z17swoole_event_initi"]
     fn swoole_event_init(flags: c_int) -> c_int;
     #[link_name = "_Z17swoole_event_waitv"]
@@ -77,8 +74,7 @@ fn fork_child2() -> c_int {
 
 fn coroutine_waitpid(pid: c_int) -> (c_int, c_int) {
     let mut status = -1;
-    // SAFETY: a writable status, in a coroutine.
-    let pid2 = unsafe { swoole_coroutine_waitpid(pid, &raw mut status, 0) };
+    let pid2 = system_waitpid(pid, &mut status, 0, -1.0);
     (pid2, status)
 }
 
@@ -86,8 +82,7 @@ fn coroutine_waitpid(pid: c_int) -> (c_int, c_int) {
 fn coroutine_wait_for(pid: c_int) -> c_int {
     let mut status = -1;
     loop {
-        // SAFETY: a writable status, in a coroutine.
-        if unsafe { swoole_coroutine_wait(&raw mut status) } == pid {
+        if system_wait(&mut status, -1.0) == pid {
             return status;
         }
     }
@@ -313,8 +308,7 @@ fn daemon() {
         }
     });
     // As upstream, the child's status is discarded.
-    // SAFETY: our child, a writable status.
-    unsafe { swoole_waitpid(pid, &raw mut status, 0) };
+    _ = swoole_waitpid(pid, Some(&mut status), 0);
 }
 
 /// `os_wait.<name>`, in upstream's order.
