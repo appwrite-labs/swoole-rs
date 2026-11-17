@@ -355,6 +355,14 @@ mod tests {
             .held()
             .and_then(|held| held.with(|s| s.raw() == serv));
         assert_eq!(held, Some(true), "a request binds it held");
+        let other = crate::TestServer::new();
+        let other = other.serv().held().and_then(|held| held.with(|_| ()));
+        assert_eq!(other, None, "the reactor holds another server");
+        let unheld = std::thread::spawn(|| {
+            let server = crate::TestServer::new();
+            server.serv().held().and_then(|held| held.with(|_| ()))
+        });
+        assert_eq!(unheld.join().unwrap(), None, "no reactor holds it");
         assert_eq!(
             live.counters().master_pid.load(Relaxed),
             std::process::id().cast_signed(),
