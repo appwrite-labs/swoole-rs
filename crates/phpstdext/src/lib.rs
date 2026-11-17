@@ -28,7 +28,7 @@ mod typed;
 use swoole_rs_zend::{
     Value,
     opcode::{Frame, Next},
-    sys::{IS_CONST, IS_CV, IS_UNUSED, IS_VAR, zend_op, znode_op},
+    sys::{IS_CONST, IS_CV, IS_UNUSED, IS_VAR, zend_op},
 };
 
 const _: () = assert!(
@@ -49,26 +49,17 @@ pub fn stdext_minit(minit: &swoole_rs_zend::Minit) {
     typed::install(minit);
 }
 
-/// An operand's `var` or `constant`: a byte offset either way.
-fn offset(node: znode_op) -> u32 {
-    // SAFETY: every member of the union is a `u32`.
-    unsafe { node.var }
-}
-
-const _: () = assert!(
-    size_of::<znode_op>() == size_of::<u32>(),
-    "znode_op holds one u32 on 64-bit builds"
-);
-
 /// An instruction of a live frame's function: its fields, copied so no
 /// borrow of the script outlives a VM effect.
 #[derive(Clone, Copy)]
 struct Op<'a> {
     frame: Frame<'a>,
     at: *const zend_op,
-    op1: znode_op,
-    op2: znode_op,
-    result: znode_op,
+    /// Operands (`znode_op`): byte offsets, from the instruction to its
+    /// literal or from the frame to its slot.
+    op1: u32,
+    op2: u32,
+    result: u32,
     extended_value: u32,
     op1_type: u8,
     op2_type: u8,
@@ -97,20 +88,16 @@ impl<'a> Op<'a> {
     }
 
     /// An operand of type `kind`: its literal, its slot, or None if unused.
-    fn operand(self, kind: u8, node: znode_op) -> Option<&'a Value> {
+    fn operand(self, kind: u8, node: u32) -> Option<&'a Value> {
         let operand = match u32::from(kind) {
             IS_UNUSED => return None,
             // `RT_CONSTANT(opline, node)`.
             IS_CONST => self
                 .at
-                .wrapping_byte_offset(offset(node).cast_signed() as isize)
+                .wrapping_byte_offset(node.cast_signed() as isize)
                 .cast(),
             // `EX_VAR(node.var)`.
-            _ => self
-                .frame
-                .as_ptr()
-                .wrapping_byte_add(offset(node) as usize)
-                .cast(),
+            _ => self.frame.as_ptr().wrapping_byte_add(node as usize).cast(),
         };
         // SAFETY: a constant operand's offset leads from its instruction to
         // the literal the script holds, and a variable operand's to a live

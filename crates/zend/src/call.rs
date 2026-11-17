@@ -242,7 +242,7 @@ impl Call {
     pub fn function(&self) -> crate::Function<'_> {
         // The handler's live frame (`new`), which runs a function.
         let frame = crate::opcode::Executing(self.frame, std::marker::PhantomData);
-        crate::Function(frame.read(|frame| frame.func), std::marker::PhantomData)
+        crate::Function(frame.func(), std::marker::PhantomData)
     }
 
     /// `ZEND_NUM_ARGS()`.
