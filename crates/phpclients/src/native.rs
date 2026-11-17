@@ -242,13 +242,11 @@ impl Co {
     }
 
     /// `sw_callable_free(protocol.private_data_1)`, the `package_length_func` the socket
-    /// owns. It leaves the slot first, so the destructor, which may reach the
+    /// owns. It leaves the socket first, so the destructor, which may reach the
     /// socket, finds none.
     /// # Errors
     /// The callable's destructor bailed out; the bailout stays pending.
     pub fn free_length_callable(self) -> Result<(), Bailout> {
-        self.0
-            .edit_protocol(|protocol| protocol.private_data_1 = ptr::null_mut());
         free_owner(socket_extra::replace_length_owner(self.handle(), None))
     }
 
@@ -541,7 +539,6 @@ pub(crate) fn length_callable(socket: Co, value: &Value) {
     let named = Named::new(callable);
     socket.0.edit_protocol(|protocol| {
         protocol.get_package_length = Some(swoole_rs_phpswoole::length::length::<Length>);
-        protocol.private_data_1 = named.as_ptr();
     });
     // The destructor may reach the socket, so it runs between the edits.
     let old = socket_extra::replace_length_owner(socket.handle(), Some(Rc::new(named)));
@@ -611,8 +608,6 @@ pub(crate) fn create(kind: c_int, is_async: bool) -> Result<Owner, c_int> {
 /// # Errors
 /// Freeing the callable or closing the client ran PHP code that bailed out.
 pub(crate) fn destroy(cli: Cli<'_>) -> Result<(), Bailout> {
-    cli.get()
-        .edit_record(|record| record.protocol.private_data_1 = ptr::null_mut());
     free_owner(cli.get().replace_length_owner(None))?;
     cli.run(client::close).map(drop)
 }

@@ -168,7 +168,7 @@ fn or_false(call: &Call, done: Option<()>) {
 }
 
 #[inline]
-fn property<'a>(ctx: &'a mut Ctx, which: Property) -> Option<&'a Value> {
+fn property(ctx: &mut Ctx, which: Property) -> Option<()> {
     crate::header::response_property(ctx.state(), which)
 }
 
@@ -357,9 +357,9 @@ fn set_cookie(call: &Call, encode: bool) {
     let Some(mut ctx) = checked(call) else {
         return call.set_bool(false);
     };
-    if let Some(cookies) = property(&mut ctx, Property::Cookie) {
-        cookies.edit_array(|cookies| cookies.push(cookie.into()));
-    }
+    crate::header::edit_response_property(ctx.state(), Property::Cookie, |cookies| {
+        cookies.push(cookie.into());
+    });
     call.set_bool(true);
 }
 
@@ -434,11 +434,11 @@ fn trailer(call: &Call) {
             return None;
         }
         let key = key.to_ascii_lowercase();
-        if !bailout::pending()
-            && let Some(trailer) = property(&mut ctx, Property::Trailer)
-        {
+        if !bailout::pending() {
             let value = value.map_or_else(Owned::null, |value| ZString::new(value).into());
-            trailer.edit_array(|trailer| trailer.insert(&key, value));
+            crate::header::edit_response_property(ctx.state(), Property::Trailer, |trailer| {
+                trailer.insert(&key, value);
+            });
         }
         ctx.state().send_trailer = true;
         call.set_bool(true);
@@ -614,10 +614,9 @@ pub(crate) fn set_header(mut ctx: Ctx, key: &[u8], value: &Value, format: bool) 
         }
         _ => key,
     };
-    if let Some(header) = property(&mut ctx, Property::Header) {
-        // The array takes this copy's reference.
-        header.edit_array(|header| header.insert(name, value.copy()));
-    }
+    crate::header::edit_response_property(ctx.state(), Property::Header, |header| {
+        header.insert(name, value.copy());
+    });
     true
 }
 

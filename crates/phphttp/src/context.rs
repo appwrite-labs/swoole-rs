@@ -138,7 +138,7 @@ pub(crate) fn lend_object(call: &Call, slot: &mut Slot, kind: Kind, hold: Hold) 
     // SAFETY: the return value holds the object, and the object holds the
     // context and so the slot: the object's free handler clears the slot
     // before the object goes.
-    unsafe { slot.keep(call.ret()) };
+    unsafe { slot.keep(&call.ret()) };
 }
 
 impl Kind {
@@ -182,8 +182,8 @@ pub(crate) fn context_new(fd: i64) -> Hold {
         &RESPONSE_FD,
         fd,
     );
-    parse::property(&mut state.request, Property::Server);
-    parse::property(&mut state.request, Property::Header);
+    parse::init_property(&mut state.request, Property::Server);
+    parse::init_property(&mut state.request, Property::Header);
     state.fd = fd;
     hold
 }

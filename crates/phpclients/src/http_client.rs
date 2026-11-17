@@ -294,14 +294,14 @@ mod props {
 }
 
 /// The property `name`, which the client class declares.
-fn property<'a>(props: Props<'a>, name: &CStr) -> &'a Value {
+fn property(props: Props<'_>, name: &CStr) -> Owned {
     let slot = props.slot(name);
     slot.unwrap_or_else(|| swoole_rs_corebase::fatal("an undeclared client property"))
 }
 
 /// `sw_zend_read_property_not_null_ex`: the declared property `name` unless it
 /// is null (or undefined), read from its slot as [`property`] reads the others.
-fn not_null<'a>(props: Props<'a>, name: &CStr) -> Option<&'a Value> {
+fn not_null(props: Props<'_>, name: &CStr) -> Option<Owned> {
     props
         .slot(name)
         .filter(|value| !matches!(value.kind(), z::IS_NULL | z::IS_UNDEF))
@@ -388,7 +388,7 @@ impl Client {
     }
 
     /// The property `name`, which the client class declares.
-    fn property(&self, name: &CStr) -> &Value {
+    fn property(&self, name: &CStr) -> Owned {
         property(self.props(), name)
     }
 
@@ -610,7 +610,7 @@ impl Client {
             return false;
         }
         let settings = self.property(c"setting");
-        self.apply_setting(settings, false);
+        self.apply_setting(&settings, false);
         self.websocket.set(false);
         self.accept_websocket_compression.set(false);
         let conn = Rc::clone(&self.conn);
@@ -677,14 +677,16 @@ impl Client {
         self.with_body(Vec::clear);
 
         let method = not_null(props, c"requestMethod");
-        let headers = property(props, c"requestHeaders").array();
+        let headers_value = property(props, c"requestHeaders");
+        let headers = headers_value.array();
         // The body and files with references of their own: a multipart send yields
         // between its writes, and `setData()` or `addFile()` may replace or add to
         // them meanwhile (an add separates the shared array).
-        let body = not_null(props, c"requestBody").map(Value::copy);
-        let files = property(props, c"uploadFiles").copy();
+        let body = not_null(props, c"requestBody");
+        let files = property(props, c"uploadFiles");
         let body = body.as_deref();
-        let cookies = property(props, c"cookies").array();
+        let cookies_value = property(props, c"cookies");
+        let cookies = cookies_value.array();
         let download = not_null(props, c"downloadFile");
 
         let host_header = headers
@@ -697,7 +699,7 @@ impl Client {
         }
 
         let mut out = Vec::with_capacity(256);
-        let method = method.map(Value::string);
+        let method = method.as_deref().map(Value::string);
         let method_name: &[u8] = match &method {
             Some(method) => method.bytes(),
             None if body.is_some() => b"POST",
@@ -1125,8 +1127,10 @@ impl Client {
         fn text<'a>(array: &'a Array, key: &[u8]) -> Option<&'a [u8]> {
             array.find(key).and_then(Value::bytes)
         }
-        let request = self.property(c"requestHeaders").array();
-        let response = self.property(c"headers").array();
+        let request_value = self.property(c"requestHeaders");
+        let request = request_value.array();
+        let response_value = self.property(c"headers");
+        let response = response_value.array();
         let (Some(request), Some(response)) = (request, response) else {
             return false;
         };

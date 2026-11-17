@@ -169,7 +169,7 @@ impl<'a> Read<'a> {
     fn framed(&mut self, mode: Mode, packages: impl Packages) -> bool {
         let (protocol, socket) = (Proto::from(&self.port.protocol), self.socket);
         let buffer = Lent::new(self.buffer());
-        framing_recv::receive(protocol, socket, buffer, mode, packages) != Status::Err
+        framing_recv::receive(protocol, socket, None, buffer, mode, packages) != Status::Err
     }
 }
 

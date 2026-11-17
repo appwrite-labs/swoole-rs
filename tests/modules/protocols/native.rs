@@ -703,6 +703,7 @@ fn mqtt_candidate(packet: &[u8]) -> (isize, u32) {
     let length = swoole_rs_clients::mqtt::get_package_length(
         &swoole_rs_clients::protocol::Protocol::EMPTY,
         None,
+        None,
         &mut pl,
     );
     (length, pl.header_len)

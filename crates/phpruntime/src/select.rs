@@ -64,16 +64,22 @@ impl Entry {
     }
 }
 
-/// `$read`, `$write` and `$except` as parsing left them: none, or the zval a
-/// by-reference argument refers to. Each array is edited lent out of its zval
-/// ([`Value::edit_array`]), as the same array may be passed twice by reference.
-struct Arrays<'a>([Option<&'a Value>; 3]);
+/// The argument numbers for `$read`, `$write` and `$except` arrays. Edits
+/// re-read their by-reference slots through an exclusive Call borrow, since
+/// the same array may be passed twice by reference.
+struct Arrays([Option<u32>; 3]);
 
-impl Arrays<'_> {
+impl Arrays {
     /// `edit` of array `which`; None when none was passed or its variable no
     /// longer holds an array.
-    fn edit<R>(&self, which: usize, edit: impl FnOnce(&mut ArrayMut) -> R) -> Option<R> {
-        self.0.get(which).copied().flatten()?.edit_array(edit)
+    fn edit<R>(
+        &self,
+        call: &mut Call,
+        which: usize,
+        edit: impl FnOnce(&mut ArrayMut) -> R,
+    ) -> Option<R> {
+        let argument = self.0.get(which).copied().flatten()?;
+        call.edit_arg_array(argument, edit)
     }
 }
 
@@ -135,11 +141,11 @@ swoole_rs_zend::handlers! {
 
 /// `stream_select(?array &$read, ?array &$write, ?array &$except, ?int
 /// $seconds, ?int $microseconds = null): int|false`.
-fn stream_select(call: &Call) {
+fn stream_select(call: &mut Call) {
     swoole_rs_zend::bailout::defer(select(call));
 }
 
-fn select(call: &Call) -> Result<(), Bailout> {
+fn select(call: &mut Call) -> Result<(), Bailout> {
     coroutine_check()?;
     let (mut read, mut write, mut except) = (None, None, None);
     let (mut seconds, mut micros): (zend_long, zend_long) = (0, 0);
@@ -184,11 +190,11 @@ fn select(call: &Call) -> Result<(), Bailout> {
         }
     }
 
-    let arrays = Arrays([read, write, except]);
+    let arrays = Arrays([read.map(|_| 1), write.map(|_| 2), except.map(|_| 3)]);
     let mut rows = Vec::new();
     let mut found = HashMap::new();
     for (which, event) in EVENTS.into_iter().enumerate() {
-        if let Some(array) = arrays.edit(which, |array| array.copy()) {
+        if let Some(array) = arrays.edit(call, which, |array| array.copy()) {
             to_fd_set(&array, event, &mut rows, &mut found)?;
         }
     }
@@ -200,10 +206,10 @@ fn select(call: &Call) -> Result<(), Bailout> {
 
     // slight hack to support buffered data: if streams in the read array
     // have buffered reads, answer with only those
-    let ready = arrays.edit(0, emulate_read).unwrap_or(0);
+    let ready = arrays.edit(call, 0, emulate_read).unwrap_or(0);
     // `$read` holds only its ready streams then; the others are emptied.
     for which in usize::from(ready > 0)..EVENTS.len() {
-        arrays.edit(which, |array| {
+        arrays.edit(call, which, |array| {
             if let Some(array) = array.separate() {
                 array.clear();
             }
@@ -229,7 +235,7 @@ fn select(call: &Call) -> Result<(), Bailout> {
         };
         for (which, event) in EVENTS.into_iter().enumerate() {
             if revents.intersects(event) {
-                arrays.edit(which, |array| entry.add_to(array));
+                arrays.edit(call, which, |array| entry.add_to(array));
             }
         }
         ready += 1;

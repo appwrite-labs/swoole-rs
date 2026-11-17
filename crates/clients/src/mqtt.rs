@@ -17,7 +17,12 @@ pub fn set_protocol(protocol: &mut Protocol) {
 /// `swoole::mqtt::get_package_length(protocol, socket, pl)`, the protocol's length
 /// callback: 0 until the remaining length is buffered, then the whole packet's length;
 /// -1, with a warning, past four length bytes. It reads only `pl`.
-pub fn get_package_length(_: &Protocol, _: Option<Socket<'_>>, pl: &mut PacketLength) -> isize {
+pub fn get_package_length(
+    _: &Protocol,
+    _: Option<Socket<'_>>,
+    _: Option<std::rc::Rc<dyn core::any::Any>>,
+    pl: &mut PacketLength,
+) -> isize {
     if let Ok(length) = mqtt_frame_length(pl.bytes()) {
         length.map_or(0, |length| isize::try_from(length).unwrap_or(-1))
     } else {
@@ -55,7 +60,7 @@ mod tests {
         let measure = |bytes: &[u8]| {
             let mut pl = PacketLength::new(bytes);
             pl.header_len = 99;
-            let length = stored(&Protocol::EMPTY, None, &mut pl);
+            let length = stored(&Protocol::EMPTY, None, None, &mut pl);
             assert_eq!(pl.header_len, 99);
             length
         };
