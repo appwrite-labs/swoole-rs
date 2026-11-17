@@ -408,10 +408,10 @@ unsafe fn set_handler() {
                 Events::from_bits(event),
                 Some(fake_handler),
             );
-            assert!(reactor_upstream::reactor_isset_handler(
+            assert!(reactor_upstream::isset_handler(
                 reactor,
                 SW_FD_SESSION,
-                event
+                Events::from_bits(event)
             ));
             assert_eq!(get_handler(reactor, SW_FD_SESSION, event), fake);
         }

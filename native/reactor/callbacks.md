@@ -16,7 +16,7 @@ No C++ sets an end callback or exit condition, so the class declares none of
 upstream's members for them. Rust callers use `swr_v1_reactor_set_end` on a
 reactor, or the `swr_v1_event_*` forms over the thread's reactor, by path (they have
 no symbol).
-`Reactor::if_exit` and `Reactor::wait` are Rust under their upstream symbols.
+`Reactor::if_exit` and `Reactor::wait` are called directly in Rust.
 
 The constructor's built-ins, set after the create hook
 (`install_builtins`): the deferred queue's end callback and exit

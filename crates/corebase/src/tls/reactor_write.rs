@@ -192,10 +192,6 @@ impl FlushEffects for Flush<'_> {
 }
 
 /// `int Reactor::_writable_callback(Reactor *reactor, Event *ev)`: a reactor handler.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7Reactor18_writable_callbackEPS0_PNS_5EventE")
-)]
 pub extern "C-unwind" fn reactor_writable_callback(
     reactor: Running<'_>,
     event: &mut Event,
@@ -226,10 +222,6 @@ pub fn reactor_drain_write_buffer(reactor: Running<'_>, record: Heap<'static>) {
 }
 
 /// `int Reactor::_close(Reactor *reactor, Socket *socket)`: frees the socket.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE")
-)]
 #[must_use]
 pub extern "C-unwind" fn reactor_close(_reactor: Running<'_>, socket: OwnedSocket) -> c_int {
     socket_free(Some(socket));
