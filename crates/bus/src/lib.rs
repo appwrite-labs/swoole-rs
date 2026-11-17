@@ -877,30 +877,40 @@ impl Bus {
     }
 
     /// `MessageBus::init_pipe_socket` of each of `fds`: this bus's own nonblocking
-    /// records of the pipes, with no send-buffer limit. A bus sets its pipes once, as
-    /// its thread starts; a second call is fatal.
+    /// records of the pipes, with no send-buffer limit. A thread that starts again
+    /// over its bus (a reload) starts each record over, as upstream's new one would.
     pub fn init_pipe_sockets(&self, fds: impl IntoIterator<Item = c_int>) {
-        let mut sockets = Vec::new();
-        for fd in fds {
-            let Ok(index) = usize::try_from(fd) else {
-                continue;
-            };
-            // `make_socket`: a new record, which the bus frees on drop.
-            let mut socket = Box::new(SocketRecord::with_fd(fd, /* SW_FD_PIPE */ 3));
+        // `make_socket`: a new record, which the bus frees on drop.
+        let make = |fd| {
+            let mut socket = SocketRecord::with_fd(fd, /* SW_FD_PIPE */ 3);
             socket.output.buffer_size = u32::MAX;
             if !socket.output.nonblock {
                 swoole_rs_reactor::socket_upstream::socket_set_fd_option(&mut socket, 1, -1);
             }
+            socket
+        };
+        let fds = fds
+            .into_iter()
+            .filter_map(|fd| Some((usize::try_from(fd).ok()?, fd)));
+        if let Some(sockets) = self.pipe_sockets.get() {
+            for (index, fd) in fds {
+                let Some(socket) = sockets.get(index).and_then(Option::as_ref) else {
+                    swoole_rs_corebase::fatal("a message bus's pipes changed");
+                };
+                socket.socket().edit(|fields| *fields = make(fd).fields);
+            }
+            return;
+        }
+        let mut sockets = Vec::new();
+        for (index, fd) in fds {
             if index >= sockets.len() {
                 sockets.resize_with(index + 1, || None);
             }
             if let Some(slot) = sockets.get_mut(index) {
-                *slot = Some(OwnedSocket::new(socket));
+                *slot = Some(OwnedSocket::new(Box::new(make(fd))));
             }
         }
-        if self.pipe_sockets.set(sockets.into_boxed_slice()).is_err() {
-            swoole_rs_corebase::fatal("a message bus's pipes set twice");
-        }
+        _ = self.pipe_sockets.set(sockets.into_boxed_slice());
     }
 
     /// `MessageBus::get_pipe_socket`: the record `init_pipe_socket` made for `fd`.
