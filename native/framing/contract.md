@@ -1,10 +1,9 @@
 # Packet framing and MIME (M18)
 
-`src/protocol/base.cc`, `src/protocol/mime_type.cc` and `include/swoole_protocol.h`
-have left the build. `swoole_protocol.h` here keeps the SendData, RecvData,
-PacketLength and Protocol layouts and the functions C++ or the compiled core-tests call.
-`crates/framing` forbids `unsafe_code` and exports nothing to C; C and C++ reach
-it through crates/ports' upstream symbols below. Feature bit 4096; graduated.
+The native header defines the SendData, RecvData, PacketLength and Protocol records.
+The coroutine socket embeds Protocol and checks its size and offsets at compile time.
+The two length callbacks and the package callback are fields of that record.
+[Record definitions](swoole_protocol.h) · [Coroutine socket layout](../hooks/swoole_rs_co_socket.h)
 
 ## Packet framing
 
@@ -15,15 +14,12 @@ it through crates/ports' upstream symbols below. Feature bit 4096; graduated.
   effect. Each effect (receive and read-error handling, length and package callbacks,
   extend/reduce/clear/split, `SSL_pending`, logs) goes through its generic
   `Effects::effect`, which refreshes the socket's removed/recv_wait/ssl flags after it.
-- `crates/ports/src/framing_recv.rs` is those effects over the real socket, String and
-  callbacks. It defines `default_length_func`, `swoole_hton64`, `swoole_ntoh64`,
-  `Protocol::recv_with_length_protocol` and `recv_with_eof_protocol` as plain Rust: `swoole_init` registers them for
-  crates/clients (`FRAMING`), which ports depends on. Every protocol callback in swoole.so
-  is Rust or PHP, so no C++ exception reaches it.
-- `swr_v1_framing_recv` (`crates/oracle/shim/swoole_rs_framing.h`) is `recv` for the
-  oracle's native candidate (`crates/oracle/candidate/src/protocol/base.cc`), which the `framing_stream` fuzz
-  target runs; `fuzz/src/framing_native.rs` defines it. One `call(context, op, arg)`
-  per effect, and `THROWN` stops all further effects.
+- The production adapter supplies the socket, buffer and callbacks to the Rust receive
+  loop. During initialization, the extension registers the adapter’s length and EOF
+  readers with the client crate. [Socket adapter](../../crates/ports/src/framing_recv.rs) · [Registration](../../crates/ffi/src/init.rs)
+- The framing fuzz target exposes `swr_v1_framing_recv` to the oracle’s C++ candidate.
+  Its callback reports each effect, and `THROWN` stops further effects.
+  [Oracle header](../../crates/oracle/shim/swoole_rs_framing.h) · [Candidate caller](../../crates/oracle/candidate/src/protocol/base.cc) · [Fuzz adapter](../../fuzz/src/framing_native.rs)
 - Kept from upstream: callback removal/failure order, recursive entry, captured
   dynamic header size, partial packets, sticky EOF retry and always growing to the
   next page.
@@ -34,11 +30,11 @@ it through crates/ports' upstream symbols below. Feature bit 4096; graduated.
 
 ## MIME
 
-- The table (`crates/framing/src/mime.rs`) starts as the pinned 362-entry
-  catalog and is the one process-wide store PHP's `swoole_mime_type_*` functions
-  change. A `get` result stays valid until that suffix is set again or deleted,
-  as an `unordered_map` value does. `list` yields the types in suffix order
-  (upstream's is hash order).
+- The PHP MIME functions share a process-wide table initialized from the pinned
+  catalog. `get` copies the MIME type into an owned byte vector, so a later update
+  or deletion leaves the result valid. Unknown suffixes return
+  `application/octet-stream`. Enumeration visits the types in suffix order.
+  [MIME table](../../crates/framing/src/mime.rs)
 - Lookup is case-sensitive on mutation, uses the last dot, and handles no-dot,
   trailing-dot and embedded-NUL input. Case mapping is ASCII, as C `tolower` is in
   the "C" locale PHP starts in.
