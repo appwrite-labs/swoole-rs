@@ -44,8 +44,10 @@ that starts there.
 
 ## String
 
-`swoole::String` is defined in Rust (`crates/corebase/src/buffer/string.rs`): the C++ class
-(`native/buffer/swoole_string.h`) keeps its fields, which Rust mirrors with layout
-asserts on both sides, and Rust defines each method the header declares under its
-upstream symbol. What no C++ calls (`split`, the searches, assignment, the
-byte-pointer constructor) has no symbol: Rust uses `CppString`'s methods and its `view()`.
+`CppString` and its operations are Rust (`crates/corebase/src/buffer/string.rs`).
+It has Rust layout; no String member exports or shared field-layout contract remain.
+`native/buffer/swoole_string.h` declares an opaque `swoole::String` because native
+socket records retain pointers. They never inspect or mutate the pointed-to fields.
+Rust callers use the buffer's methods and `view()`; `OwnedString` disposes allocations
+owned by a scope. Oracle shims keep their separate local String records and pinned
+assertions (see `tests/modules/buffer/README.md`).

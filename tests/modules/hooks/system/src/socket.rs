@@ -204,12 +204,6 @@ pub(super) struct IoVec {
 }
 
 unsafe extern "C" {
-    fn swr_v1_hook_co_socket_connect_host(
-        socket: *mut Record,
-        host: std::io::IoSlice<'_>,
-        port: c_int,
-    ) -> bool;
-
     #[link_name = "_Z16swoole_type_sizec"]
     fn swoole_type_size(kind: c_char) -> c_int;
     #[link_name = "_Z11swoole_randii"]
@@ -334,14 +328,7 @@ impl Sock {
 
     fn connect(&self, host: &str, port: c_int, flags: c_int) -> bool {
         let _ = flags;
-        // SAFETY: the live socket and `host`'s bytes.
-        unsafe {
-            swr_v1_hook_co_socket_connect_host(
-                self.rec(),
-                std::io::IoSlice::new(host.as_bytes()),
-                port,
-            )
-        }
+        self.co().connect_host(host.as_bytes(), port)
     }
 
     fn bind(&self, address: &str, port: c_int) -> bool {
