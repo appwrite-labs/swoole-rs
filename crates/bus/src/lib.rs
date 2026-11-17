@@ -958,6 +958,24 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no socket options on a socketpair")]
+    fn a_second_init_starts_the_same_pipe_records_over() {
+        let pipe = Pipe::new(libc::SOCK_STREAM, 64, false);
+        let fd = pipe.fds[1];
+        pipe.bus.init_pipe_sockets([fd]);
+        let record = pipe.bus.pipe_socket(fd);
+        pipe.bus
+            .pipe(fd)
+            .unwrap()
+            .edit(|f| f.output.buffer_size = 1);
+        pipe.bus.init_pipe_sockets([fd]);
+        assert_eq!(pipe.bus.pipe_socket(fd), record, "the same record");
+        let size = pipe.bus.pipe(fd).unwrap().read(|f| f.output.buffer_size);
+        assert_eq!(size, u32::MAX, "started over");
+        assert!(pipe.bus.pipe(pipe.fds[0]).is_none());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no socket options on a socketpair")]
     fn send_numbers_each_message_from_the_shared_counter() {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
         let mut pipe = Pipe::new(libc::SOCK_STREAM, 64, false);
