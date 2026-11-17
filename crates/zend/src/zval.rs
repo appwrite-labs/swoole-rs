@@ -309,7 +309,18 @@ impl<'a> Zvals<'a> {
         self.argc
     }
 
-    /// `argc` zvals from `argv`, which a kept callable's record holds for `'a`.
+    /// The values, borrowed for `'a`.
+    pub(crate) fn values(self) -> &'a [Value] {
+        if self.argc == 0 {
+            return &[];
+        }
+        // SAFETY: each maker lends `argc` live zvals from `argv` for `'a` (a
+        // borrowed slice, or what a frame or a kept callable's record holds);
+        // `Value` is a transparent zval, whose cell allows the writes Zend makes.
+        unsafe { std::slice::from_raw_parts(self.argv.cast::<Value>(), self.argc as usize) }
+    }
+
+    /// `argc` zvals from `argv`, which a frame or a callable's record holds for `'a`.
     pub(crate) fn counted(argv: *mut zval, argc: u32) -> Self {
         Self {
             argv,
@@ -390,13 +401,28 @@ impl Value {
         unsafe { value.cast::<Self>().as_ref() }
     }
 
-    /// Borrow a valid zval made inside Zend; raw public bindgen bits are not sufficient.
+    /// The value a caller made by value (such as [`crate::ObjectRef::copy_value`]'s),
+    /// borrowed.
     #[must_use]
     #[inline]
-    pub(crate) fn of(value: &mut zval) -> &Self {
-        // SAFETY: `Value` is a transparent zval, and the exclusive borrow keeps
-        // anything else from freeing or overwriting it while borrowed.
-        unsafe { &*ptr::from_mut(value).cast::<Self>() }
+    pub(crate) fn of(value: &mut Self) -> &Self {
+        value
+    }
+
+    /// `ZVAL_OBJ`: a value naming `object` without a reference of its own, which
+    /// must not outlive the object's borrow ([`crate::ObjectRef::copy_value`]).
+    #[must_use]
+    #[inline]
+    pub(crate) fn naming(object: crate::ObjectRef<'_>) -> Self {
+        Self(Cell::new(zval {
+            value: zend_value {
+                obj: object.as_ptr(),
+            },
+            u1: _zval_struct__bindgen_ty_1 {
+                type_info: crate::sys::IS_OBJECT_EX,
+            },
+            u2: _zval_struct__bindgen_ty_2 { next: 0 },
+        }))
     }
 
     #[must_use]
@@ -482,9 +508,7 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn referred(&self) -> &Self {
-        // SAFETY: this zval, or the slot of the live reference it holds;
-        // `Value` is a transparent zval.
-        unsafe { &*self.referent().cast::<Self>() }
+        self.held::<Self>().unwrap_or(self)
     }
 
     /// `ZVAL_DEREF`'s slot: the zval a reference refers to, else this one. A
@@ -545,10 +569,10 @@ impl Value {
             return None;
         }
         // SAFETY: a zval of a type `T` accepts holds a pointer (never null)
-        // to a live counted value that begins with `T`'s fields at their
-        // offsets (`Held`), which it keeps while borrowed; they are `Cell`s or
+        // to a live counted value that holds `T`'s fields at their offsets from
+        // `T::AT` (`Held`), which it keeps while borrowed; they are `Cell`s or
         // in an `UnsafeCell`, which allow the writes Zend makes meanwhile.
-        Some(unsafe { &*word.cast::<T>() })
+        Some(unsafe { &*word.wrapping_byte_add(T::AT).cast::<T>() })
     }
 
     /// `Z_OBJ_P` of an object.
@@ -1000,9 +1024,11 @@ impl Value {
 }
 
 /// A view of the counted value a zval points to, for [`Value::held`]: the
-/// leading fields, at their offsets, of whatever a zval whose `type_info`
-/// passes `held_by` points to. Only the three below.
+/// fields, at their offsets from `AT` bytes in, of whatever a zval whose
+/// `type_info` passes `held_by` points to. Only the four below.
 trait Held {
+    /// Where the view starts in the counted value.
+    const AT: usize = 0;
     fn held_by(type_info: u32) -> bool;
 }
 
@@ -1025,6 +1051,17 @@ impl Held for Array {
     #[inline]
     fn held_by(type_info: u32) -> bool {
         type_info & 0xff == IS_ARRAY
+    }
+}
+
+/// A reference's slot: what the reference refers to, which PHP code assigning
+/// the reference rewrites (a `Value`, so a cell).
+impl Held for Value {
+    const AT: usize = std::mem::offset_of!(zend_reference, val);
+
+    #[inline]
+    fn held_by(type_info: u32) -> bool {
+        type_info & 0xff == IS_REFERENCE
     }
 }
 
