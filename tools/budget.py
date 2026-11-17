@@ -125,7 +125,7 @@ KINDS = {
                        tokens('unsafe', 'extern', {'kind': 'string_literal'}, 'fn')]},
     'maps': named('HashMap', 'HashSet', 'BTreeMap', 'BTreeSet'),
     'lists': named('LinkedList', 'VecDeque'),
-    'bools': {'any': [{'kind': 'generic_type', 'regex': r'^Vec\s*<\s*bool\s*>$'},
+    'bools': {'any': [{'kind': 'generic_type', 'regex': r'^(?:\w+\s*::\s*)*Vec\s*<\s*bool\s*>$'},
                       {'kind': 'array_type', 'has': {'field': 'element', 'regex': '^bool$'}},
                       tokens('Vec', '<', 'bool', '>'), {'kind': 'token_tree', 'regex': r'^\[\s*bool\s*;'}]},
     'caches': {'any': [{'any': [{'kind': f'{kind}_item'} for kind in ('static', 'struct', 'enum', 'type')],

@@ -89,7 +89,7 @@ ship: ast-grep's API, which `tools/budget.py` counts with. Install the version
 `pip install` (Homebrew's, Ubuntu's) still reads:
 
 ```sh
-uv pip install --python python3 --target "$(python3 -m site --user-site)" ast-grep-py==<version>
+python3 -m pip install --user --break-system-packages ast-grep-py==<version>
 ```
 
 CI jobs run on gcrunner, appwrite-labs' ephemeral GCE runners: each job names a

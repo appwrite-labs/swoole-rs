@@ -34,7 +34,7 @@ mod spanned {
 use std::collections::{HashMap, VecDeque};
 static DATE_CACHE: u8 = 0;
 pub(crate) struct Cached;
-fn flags(open: Vec<bool>, fixed: [bool; 4]) {}
+fn flags(open: Vec<bool>, fixed: [bool; 4], full: std::vec::Vec<bool>) {}
 pub fn fields(self) -> &'static mut Record {}
 pub(crate) fn slot(&self, index: usize) -> Option<&mut u8> {}
 fn edit(&mut self) -> &mut u8 {}
@@ -81,7 +81,7 @@ class Budget(unittest.TestCase):
             # a, its block, c, the impl, the cfg(test) helper's block, imp's block.
             self.assertEqual(budget.counts(root), {
                 'unsafe': {'one': 6}, 'maps': {'one': 1}, 'lists': {'one': 1},
-                'bools': {'one': 2}, 'caches': {'one': 2}, 'unforbidden': {'one': 1},
+                'bools': {'one': 3}, 'caches': {'one': 2}, 'unforbidden': {'one': 1},
                 # fields, slot, unit and paired; edit, pick and borrow lend a `&mut` they were
                 # given, and with's is a parameter type.
                 'mints': {'one': 4},
