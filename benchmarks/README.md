@@ -85,6 +85,16 @@ about 56 million instructions of it on both engines, so the ratio reads 1.0000
 whatever Swoole does, and the run takes minutes. `connect` covers the
 per-connection cost Swoole itself adds.
 
+`coroutine-lock` and `sleep` wait on the timer, against `benchmarks/primitives`: a request
+takes a `Coroutine\Lock` that another coroutine holds for 1 ms, and a request sleeps 2 ms in
+`Coroutine::sleep`. A contended coroutine lock waits by sleeping and retrying, which is how
+connection pools' locks wait, so how late a timer fires sets their latency. That shows in
+requests/s and p50 in `wall.py`, not in instruction counts, and the nightly runs both. On an
+arm64 Linux VM whose reactor wakes on ~3 ms ticks, at two connections, `sleep`'s p50 was
+5.93 ms for the Cargo build and 3.00 ms for upstream, and `coroutine-lock`'s p99 11.4 ms and
+6.7 ms. In Appwrite, the same late wake-ups doubled the time a session creation spent
+waiting on its connection pools' locks, from 58 ms to 115 ms.
+
 `atomic` (#2654) adds 64 values to a `Swoole\Atomic`, each under a `Swoole\Lock`
 mutex, against `benchmarks/primitives`, and `process-mode` is `plaintext` against
 `benchmarks/process`: `SWOOLE_PROCESS` with two workers, so the master's reactor

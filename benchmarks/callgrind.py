@@ -99,6 +99,10 @@ WORKLOADS = {
     'wss': ('benchmarks/tls', 'WSS', '/chat', b'ping', b'ping'),
     # Swoole\Atomic and Swoole\Lock, and plaintext dispatched through SWOOLE_PROCESS's master (#2654).
     'atomic': ('benchmarks/primitives', 'GET', '/atomic', None, b'2016\n'),
+    # Timer waits, measured by wall.py's latency rather than instruction counts: a Coroutine\Lock
+    # handed over after a 1 ms hold, and a 2 ms Coroutine::sleep.
+    'coroutine-lock': ('benchmarks/primitives', 'GET', '/coroutine-lock', None, b'64\n'),
+    'sleep': ('benchmarks/primitives', 'GET', '/sleep', None, b'64\n'),
     'process-mode': ('benchmarks/process', 'GET', '/', None, b'Hello, Swoole!\n'),
     # Larger and concurrent traffic (#2652), against benchmarks/traffic.
     'http2-concurrent': ('benchmarks/traffic', 'H2C', '/echo', H2BODY, H2BODY),
