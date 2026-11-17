@@ -511,9 +511,7 @@ impl<'a> PoolRef<'a> {
     /// is no queue.
     pub(crate) fn queue_pop(self, node: &mut [u8], size: usize) -> (isize, c_int) {
         let node = node.get_mut(..size_of::<c_long>().saturating_add(size));
-        let result = self
-            .with_queue(|queue| queue.pop(node?))
-            .flatten();
+        let result = self.with_queue(|queue| queue.pop(node?)).flatten();
         let length = result.map_or(-1, CCast::c_cast::<isize>);
         (length, crate::sys::errno())
     }
