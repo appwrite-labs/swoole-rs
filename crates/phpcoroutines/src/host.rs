@@ -339,11 +339,10 @@ pub fn counts() -> (usize, u64) {
     (count(), swoole_rs_corebase::coroutine::counters().peak_num)
 }
 
-/// Switch to `co`. The caller's frames must own nothing that needs a drop: a
-/// bailout in the coroutine may longjmp across them on the main stack.
+/// Switch to `co` if it is parked. The caller's frames must own nothing that needs
+/// a drop: a bailout in the coroutine may longjmp across them on the main stack.
 pub(crate) fn resume(co: Co) {
-    // SAFETY: a live coroutine, which callers pass suspended.
-    unsafe { swoole_rs_corebase::coroutine::resume(co.raw()) };
+    swoole_rs_corebase::coroutine::resume(cid(co));
 }
 
 /// A coroutine by id, the handle other crates hold. A coroutine's record is

@@ -58,6 +58,12 @@ impl Context {
         (self.stack.base(), self.stack.size())
     }
 
+    /// Whether its entry returned (upstream's `Coroutine::is_end`).
+    #[must_use]
+    pub fn ended(&self) -> bool {
+        self.end.get()
+    }
+
     /// Allocates the stack and makes the context that runs `entry` on it. A
     /// [`THREAD`] context starts its thread instead.
     ///
@@ -380,8 +386,7 @@ mod tests {
         unsafe { (*log).co }.unwrap()
     }
 
-    unsafe extern "C" fn entry(data: *mut c_void) {
-        let log = data.cast::<Log>();
+    fn entry(log: *mut Log) {
         // SAFETY: the test's log, which only the running stack touches.
         unsafe {
             (*log).steps.push("entry");
@@ -400,7 +405,7 @@ mod tests {
         let log = &raw mut log;
         // SAFETY: the record lives until freed below, and each switch is the stack's turn.
         unsafe {
-            let ctx = Context::new(64 * 1024, 0, Entry::new(entry, log.cast())).unwrap();
+            let ctx = Context::new(64 * 1024, 0, Entry::of(move || entry(log))).unwrap();
             (*log).co = Some(Co::leak(Box::new(Native {
                 co: Coroutine::idle(),
                 ctx,

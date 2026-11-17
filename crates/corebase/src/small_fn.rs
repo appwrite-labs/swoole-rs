@@ -1,10 +1,11 @@
-//! A callback of at most two words held inline, its type erased: a timer node's
-//! callback and a cancelable yield's canceler, with no allocation.
+//! A callback of at most `N` words (two by default) held inline, its type erased: a
+//! timer node's callback, a cancelable yield's canceler and a coroutine's entry, with
+//! no allocation.
 use core::cell::Cell;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 
-type Bytes = MaybeUninit<[usize; 2]>;
+type Bytes<const N: usize> = MaybeUninit<[usize; N]>;
 
 /// What a [`SmallFn`] holds: run in place while held, or taken out and consumed once.
 pub(crate) trait Small<R>: 'static {
@@ -12,31 +13,31 @@ pub(crate) trait Small<R>: 'static {
     fn consume(self) -> R;
 }
 
-struct Ops<R: 'static> {
-    run: fn(&SmallFn<R>) -> R,
-    consume: fn(Bytes) -> R,
+struct Ops<R: 'static, const N: usize> {
+    run: fn(&SmallFn<R, N>) -> R,
+    consume: fn(Bytes<N>) -> R,
 }
 
 /// An empty slot or one [`Small`] value. `ops` is set exactly while `value` holds the
 /// value [`put`](Self::put) wrote, of the type `ops` was made for. A run borrows it in
 /// place through `&self`, so nothing writes or moves it meanwhile: `put` refuses a full
 /// slot, and only [`take`](Self::take), through `&mut self`, moves it out.
-pub(crate) struct SmallFn<R: 'static> {
-    value: Cell<Bytes>,
-    ops: Cell<Option<&'static Ops<R>>>,
+pub(crate) struct SmallFn<R: 'static, const N: usize = 2> {
+    value: Cell<Bytes<N>>,
+    ops: Cell<Option<&'static Ops<R, N>>>,
     /// The value may be neither `Send` nor `Sync`.
     thread: PhantomData<*const ()>,
 }
 
 /// A value [`SmallFn::take`] moved out; dropping it unconsumed leaks it.
 #[must_use]
-pub(crate) struct Taken<R: 'static> {
-    value: Bytes,
-    consume: fn(Bytes) -> R,
+pub(crate) struct Taken<R: 'static, const N: usize = 2> {
+    value: Bytes<N>,
+    consume: fn(Bytes<N>) -> R,
     thread: PhantomData<*const ()>,
 }
 
-impl<R> SmallFn<R> {
+impl<R, const N: usize> SmallFn<R, N> {
     pub(crate) const fn empty() -> Self {
         Self {
             value: Cell::new(Bytes::uninit()),
@@ -51,13 +52,13 @@ impl<R> SmallFn<R> {
 
     /// Holds `value`; a full slot aborts.
     pub(crate) fn put<C: Small<R>>(&self, value: C) {
-        fn run<C: Small<R>, R>(slot: &SmallFn<R>) -> R {
+        fn run<C: Small<R>, R, const N: usize>(slot: &SmallFn<R, N>) -> R {
             // SAFETY: `slot`'s ops are `C`'s, so it holds the `C` `put` wrote, which
             // stays put while `slot` is borrowed (the type's invariant).
             let value = unsafe { &*slot.value.as_ptr().cast::<C>() };
             value.run()
         }
-        fn consume<C: Small<R>, R>(bytes: Bytes) -> R {
+        fn consume<C: Small<R>, R, const N: usize>(bytes: Bytes<N>) -> R {
             // SAFETY: only `take` makes a `Taken`, of the `C` `put` wrote and `take`
             // moved out with these ops; `Taken::consume` takes it, so it is read once.
             let value = unsafe { bytes.as_ptr().cast::<C>().read() };
@@ -65,8 +66,9 @@ impl<R> SmallFn<R> {
         }
         const {
             assert!(
-                size_of::<C>() <= size_of::<Bytes>() && align_of::<C>() <= align_of::<Bytes>(),
-                "a small fn holds at most two words, aligned no more than a word"
+                size_of::<C>() <= size_of::<Bytes<N>>()
+                    && align_of::<C>() <= align_of::<Bytes<N>>(),
+                "a small fn holds at most its N words, aligned no more than a word"
             );
         };
         if self.is_full() {
@@ -79,8 +81,8 @@ impl<R> SmallFn<R> {
         self.ops.set(Some(
             const {
                 &Ops {
-                    run: run::<C, R>,
-                    consume: consume::<C, R>,
+                    run: run::<C, R, N>,
+                    consume: consume::<C, R, N>,
                 }
             },
         ));
@@ -94,7 +96,7 @@ impl<R> SmallFn<R> {
     }
 
     /// Moves the value out, leaving the slot empty.
-    pub(crate) fn take(&mut self) -> Option<Taken<R>> {
+    pub(crate) fn take(&mut self) -> Option<Taken<R, N>> {
         let ops = self.ops.take()?;
         Some(Taken {
             value: self.value.get(),
@@ -104,13 +106,13 @@ impl<R> SmallFn<R> {
     }
 }
 
-impl<R> Taken<R> {
+impl<R, const N: usize> Taken<R, N> {
     pub(crate) fn consume(self) -> R {
         (self.consume)(self.value)
     }
 }
 
-impl<R> core::fmt::Debug for SmallFn<R> {
+impl<R, const N: usize> core::fmt::Debug for SmallFn<R, N> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SmallFn")
             .field("full", &self.is_full())
@@ -139,7 +141,7 @@ mod tests {
     #[test]
     fn runs_in_place_then_consumes_once() {
         let runs = Rc::new(Cell::new(0));
-        let mut slot = SmallFn::empty();
+        let mut slot: SmallFn<u32> = SmallFn::empty();
         assert!(slot.run().is_none());
         slot.put(Count(Rc::clone(&runs)));
         assert_eq!((slot.run(), slot.run()), (Some(1), Some(2)));
@@ -164,7 +166,7 @@ mod tests {
 
     #[test]
     fn an_emptied_slot_takes_a_new_value() {
-        let mut slot = SmallFn::empty();
+        let mut slot: SmallFn<u32> = SmallFn::empty();
         slot.put(Pair(3, 4));
         assert_eq!(slot.take().map(super::Taken::consume), Some(34));
         slot.put(Pair(4, 3));
