@@ -235,7 +235,8 @@ fn schedule_4() {
         ..Default::default()
     };
     // SAFETY: the thread's buffer, which holds the `DgramPacket` and outlives the send.
-    let sdata = unsafe { swoole_rs_server::SendData::from_raw(info, pkt.cast()) };
+    let head = unsafe { core::slice::from_raw_parts(pkt.cast::<u8>(), info.len as usize) };
+    let sdata = swoole_rs_server::SendData::new(info, head);
     counter[schedule_worker(serv, 9999, Some(&sdata))] += 1;
 
     assert_eq!(counter[0], 0);

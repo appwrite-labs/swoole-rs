@@ -23,7 +23,7 @@ fn swr_v1_server_new(mode: c_int) -> ServerObject {
         Some(crate::reactor_ops::STD),
     );
     tables.set_max_connection(swoole_rs_corebase::max_sockets().min(100_000));
-    config.gs = swoole_rs_corebase::memory::members::Shm::calloc(1, size_of::<ServerShared>());
+    config.gs = crate::table::Table::calloc(1);
     let gs = config.gs.as_ptr();
     if gs.is_null() {
         log::sys_warning(
@@ -35,7 +35,7 @@ fn swr_v1_server_new(mode: c_int) -> ServerObject {
     // SAFETY: a fresh, zeroed mapping of a whole `ServerGS` (all-zero is a valid one),
     // which nothing else reads yet, freed only by the last share's drop after the
     // message bus.
-    let shared: &'static ServerShared = unsafe { &*gs.cast() };
+    let shared: &'static ServerShared = unsafe { &*gs };
     let counters = crate::swr_v1_server_shared_init(&shared.counters);
     config.mode_ = Mode::from_code(mode.into())
         .unwrap_or_else(|| swoole_rs_corebase::fatal("an unknown server mode"));

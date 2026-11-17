@@ -581,11 +581,6 @@ pub(crate) unsafe fn swr_case_info(
     }
 }
 
-pub(crate) unsafe fn swr_case_data(req: *const c_void) -> *const c_char {
-    // SAFETY: a live request.
-    unsafe { (*req.cast::<RecvData<'_>>()).data() }
-}
-
 pub(crate) unsafe fn swr_case_connection(
     serv: *mut c_void,
     session_id: c_long,

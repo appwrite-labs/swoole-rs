@@ -168,11 +168,16 @@ fn run_task(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead, slot: R
     let packet = bus(serv).packet();
     let mut head = *info;
     head.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
-    // SAFETY: the bus's packet, `length` bytes (or null) it keeps until it pops or reads
-    // again, which this thread does after the callback returns. Built here rather than
-    // through `Bus::with_message`, whose closure costs every process-mode request about
-    // 20 instructions (it moves `run_task` out of line).
-    let recv = unsafe { crate::base_factory::SendData::from_raw(head, packet.data) };
+    // Built here rather than through `Bus::with_message`, whose closure costs every
+    // process-mode request about 20 instructions (it moves `run_task` out of line).
+    let recv = if packet.data.is_null() {
+        crate::base_factory::SendData::empty(head)
+    } else {
+        // SAFETY: the bus's packet, `length` bytes it keeps until it pops or reads
+        // again, which this thread does after the callback returns.
+        let data = unsafe { core::slice::from_raw_parts(packet.data.cast(), packet.length) };
+        crate::base_factory::SendData::new(head, data)
+    };
     if serv.state().callbacks.receive(slot, serv, &recv) == 0 {
         worker.add_request_count();
         serv.counters().request_count.fetch_add(1, Relaxed);

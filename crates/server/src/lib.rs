@@ -71,6 +71,7 @@ mod state;
 mod static_config;
 pub mod static_handler;
 pub mod static_select;
+mod table;
 pub mod task_worker;
 mod tcp_info;
 pub mod thread_mode;

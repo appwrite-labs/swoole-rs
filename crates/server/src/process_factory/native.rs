@@ -5,7 +5,6 @@ use crate::Mode;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::log;
-use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::process::methods::{
     ExitStatus, kill_all_workers, set_worker_type, swoole_set_worker_id, swoole_set_worker_pid,
     worker_report_error,
@@ -48,7 +47,7 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
     let (state, config) = (serv.state(), serv.config());
     let threads = new_reactor_threads(state, config.reactor_num.get());
     let max = state.tables_ref().max_connection();
-    let list = Shm::calloc(max as usize, size_of::<ConnectionRecord>());
+    let list = crate::table::Table::<ConnectionRecord>::calloc(max as usize);
     let pipes = config.worker_num.get() / u32::from(config.reactor_num.get());
     let tables = state.tables_ref();
     if list.is_null() {

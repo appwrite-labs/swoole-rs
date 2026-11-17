@@ -8,7 +8,6 @@ use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize,
     Ordering::Relaxed,
 };
-use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
 
 const _: () = assert!(
@@ -250,7 +249,7 @@ pub struct ServerConfig {
     /// through `registry`'s pointer and write through `&`; native sees only a
     /// `void *` handle.
     pub worker_registry: Option<Box<WorkerRegistry<crate::process_worker::ProcessWorker>>>,
-    pub gs: Shm,
+    pub(crate) gs: crate::table::Table<crate::shared::ServerShared>,
     pub upload_max_filesize: Setting<usize>,
     pub http_compression_level: Setting<u8>,
     pub compression_min_length: Setting<u32>,
@@ -434,7 +433,7 @@ impl Default for ServerConfig {
             task_max_request: Setting::new(0),
             task_max_request_grace: Setting::new(0),
             worker_registry: None,
-            gs: Shm::empty(),
+            gs: crate::table::Table::empty(),
             upload_max_filesize: Setting::new(0),
             http_compression_level: Setting::new(0),
             compression_min_length: Setting::new(20),

@@ -13,34 +13,33 @@ use crate::hybrid::hybrid;
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::out_buffer;
 use crate::records::Lookup;
+use crate::table::Table;
 use crate::view;
 use core::ffi::{c_char, c_int, c_long, c_void};
-use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::buffer::cpp::{swr_cpp_buffer_empty, swr_cpp_buffer_typed_close};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRACE as LOG_TRACE};
-use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::process::methods::swoole_get_worker_id;
 use swoole_rs_corebase::process::worker_globals::{with_current, with_globals};
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerStatus};
 use swoole_rs_corebase::{CCast, log};
 
 /// `swoole::SendData`, and the `swoole::RecvData` a receive callback reads (the same
-/// two fields): an event's head and the payload it lends for `'a`.
+/// two fields): an event's head and the payload it lends for `'a`, or none.
 ///
-/// The fields are private to this module so that the pair keeps one invariant, which
-/// the safe readers ([`SendData::payload`], [`crate::send::send_to_connection`]) rely
-/// on: `data` is null, or points at `info.len` bytes that are readable, and not written,
-/// for `'a`. Only the constructors set `data` and `info.len`; the setters change the
-/// rest of the head, and only the bus's writes ([`SendData::send`]) lower `len`.
+/// It starts as C's does, `{ info, data }`, which native callbacks read; the slice
+/// after them is what Rust reads. The fields are private to this module, so only the
+/// constructors set the payload, `data` (its start, or null) and `info.len`, which
+/// [`SendData::payload`] bounds by the payload; the setters change the rest of the
+/// head, and only the bus's writes ([`SendData::send`]) lower `len`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SendData<'a> {
     info: DataHead,
     data: *const c_char,
-    lent: PhantomData<&'a [u8]>,
+    payload: Option<&'a [u8]>,
 }
 
 impl<'a> SendData<'a> {
@@ -50,7 +49,7 @@ impl<'a> SendData<'a> {
         Self {
             info,
             data: core::ptr::null(),
-            lent: PhantomData,
+            payload: None,
         }
     }
 
@@ -62,21 +61,7 @@ impl<'a> SendData<'a> {
         Self {
             info,
             data: data.as_ptr().cast(),
-            lent: PhantomData,
-        }
-    }
-
-    /// `info` and the payload at `data`.
-    ///
-    /// # Safety
-    /// `data` is null, or points at `info.len` bytes that are readable, and not
-    /// written, for `'a`.
-    #[must_use]
-    pub const unsafe fn from_raw(info: DataHead, data: *const c_char) -> Self {
-        Self {
-            info,
-            data,
-            lent: PhantomData,
+            payload: Some(data),
         }
     }
 
@@ -92,15 +77,12 @@ impl<'a> SendData<'a> {
         self.data
     }
 
-    /// The payload's `info.len` bytes; none for a null `data`.
+    /// The payload's `info.len` bytes; none without a payload.
     #[must_use]
     pub fn payload(&self) -> &'a [u8] {
-        if self.data.is_null() {
-            return &[];
-        }
-        // SAFETY: the fields' invariant: `info.len` bytes at `data`, readable and
-        // unwritten for `'a`.
-        unsafe { core::slice::from_raw_parts(self.data.cast(), self.info.len as usize) }
+        self.payload.map_or(&[], |data| {
+            data.get(..self.info.len as usize).unwrap_or(data)
+        })
     }
 
     /// The head's session, and the listening fd it arrived on.
@@ -141,8 +123,7 @@ impl<'a> SendData<'a> {
         bus: &swoole_rs_bus::Bus,
         pipe: crate::view::PipeSocket<'_>,
     ) -> bool {
-        // The write only ever lowers `len`, so the payload stays within `data`'s bytes.
-        let data = (!self.data.is_null()).then(|| self.payload());
+        let data = self.payload.map(|_| self.payload());
         bus.send(pipe.socket(), &mut self.info, data)
     }
 }
@@ -219,7 +200,7 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
     let origin = c"Server::create_base_factory";
     // Private, as `sw_calloc`'s memory was: each base worker indexes its own fds.
     let max = state.tables_ref().max_connection() as usize;
-    let connections = Shm::calloc_private(max, size_of::<crate::ConnectionRecord>());
+    let connections = Table::<crate::ConnectionRecord>::calloc_private(max);
     if connections.is_null() {
         let size = max * size_of::<crate::ConnectionRecord>();
         log::sys_warning(origin, format_args!("calloc[2]({size}) failed"));
@@ -227,7 +208,7 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
     }
     state.tables_ref().map_connections(connections);
     let counts = |what: &str| {
-        let cells = Shm::calloc(workers as usize, ATOMIC_SIZE);
+        let cells = Table::calloc(workers as usize);
         if cells.is_null() {
             let size = workers as usize * ATOMIC_SIZE;
             let m = format_args!("sw_shm_calloc({size}) for {what}->connection_nums failed");

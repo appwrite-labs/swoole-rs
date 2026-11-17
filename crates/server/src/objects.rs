@@ -108,13 +108,17 @@ impl<'a> Bus<'a> {
         f: impl FnOnce(&crate::base_factory::SendData<'_>) -> R,
     ) -> R {
         let packet = self.packet();
-        let len = u32::try_from(packet.length).unwrap_or(u32::MAX);
-        // SAFETY: the bus's packet, `length` bytes (or null) it keeps until it pops or
-        // reads again, which this thread alone would do and not during `f`.
-        let message = unsafe {
-            crate::base_factory::SendData::from_raw(DataHead { len, ..*info }, packet.data)
+        let head = DataHead {
+            len: u32::try_from(packet.length).unwrap_or(u32::MAX),
+            ..*info
         };
-        f(&message)
+        if packet.data.is_null() {
+            return f(&crate::base_factory::SendData::empty(head));
+        }
+        // SAFETY: the bus's packet, `length` bytes it keeps until it pops or reads
+        // again, which this thread alone would do and not during `f`.
+        let data = unsafe { core::slice::from_raw_parts(packet.data.cast(), packet.length) };
+        f(&crate::base_factory::SendData::new(head, data))
     }
     /// `f` over the event the bus just read whole into its buffer, as its sender
     /// packed it: an `EventData`, its head and the payload the head counts. `None`,

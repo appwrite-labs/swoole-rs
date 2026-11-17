@@ -410,10 +410,6 @@ impl crate::hybrid::Hybrid for Linked {
     }
 
     fn send_shutdown(&self, serv: crate::view::Server<'_>) -> bool {
-        const _: () = assert!(
-            size_of::<SendData>() == size_of::<DataHead>() + size_of::<usize>(),
-            "a SendData is its head and a payload pointer"
-        );
         // A worker may run as a user that cannot signal the master.
         let head = DataHead {
             kind: ServerEvent::ShutdownSignal.code(),
@@ -425,7 +421,7 @@ impl crate::hybrid::Hybrid for Linked {
         };
         // The `SendData` upstream sends: the head, then a null payload pointer.
         let mut send = process::process_pool::head_view(&head).to_vec();
-        send.resize(size_of::<SendData>(), 0);
+        send.resize(size_of::<DataHead>() + size_of::<usize>(), 0);
         swoole_rs_corebase::tls::upstream::send_async(pipe, &send).is_some_and(|sent| sent > 0)
     }
 

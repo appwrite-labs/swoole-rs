@@ -562,7 +562,7 @@ fn count_close(state: &crate::ServerState, port: Option<&PortConfig>, reactor: R
     port.close_count.fetch_add(1, SeqCst);
     if state.config_ref().mode_ == Mode::Base {
         let id = usize::from(reactor.handle().id());
-        let server = crate::shared::words(&state.tables_ref().connection_nums);
+        let server = state.tables_ref().connection_nums.records();
         for cells in [server, config.cells()] {
             if let Some(cell) = cells.get(id) {
                 cell.fetch_sub(1, SeqCst);
