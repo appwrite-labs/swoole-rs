@@ -16,10 +16,10 @@
 //! Row locks are upstream's spin locks, with its recovery from a dead owner
 //! (`kill(pid, 0)` fails with `ESRCH`) and from an owner that holds a lock for
 //! more than two seconds.
-use crate::CCast;
 use crate::locks::SharedMutex;
 use crate::memory::fixed::{self, Fixed, HEADER, Layout, Slice};
 use crate::memory::members::Shm;
+use crate::{CCast, CellExt};
 use std::cell::Cell;
 use std::ffi::c_int;
 use std::mem::{MaybeUninit, offset_of};
@@ -960,13 +960,14 @@ impl Handle {
     /// table's row size: None before `create` or after `destroy`. The iterator is
     /// taken out while `step` runs, which calls nothing that comes back here.
     fn cursor<T>(&self, step: impl FnOnce(&mut Cursor, usize) -> T) -> Option<T> {
-        let mut cursor = self.cursor.take()?;
-        let table = &*self.table;
-        _ = table.iterator_mutex.lock();
-        let result = step(&mut cursor, ROW + table.item_size);
-        _ = table.iterator_mutex.unlock();
-        self.cursor.set(Some(cursor));
-        Some(result)
+        self.cursor.with_taken(|slot| {
+            let cursor = slot.as_mut()?;
+            let table = &*self.table;
+            _ = table.iterator_mutex.lock();
+            let result = step(cursor, ROW + table.item_size);
+            _ = table.iterator_mutex.unlock();
+            Some(result)
+        })
     }
 
     /// `Table::rewind`.
