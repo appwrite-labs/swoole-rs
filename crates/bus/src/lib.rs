@@ -1060,7 +1060,7 @@ mod tests {
             for fd in self.fds {
                 unsafe { libc::close(fd) };
             }
-            assert_ne!(lend(&self.bus.buffer, |buffer| buffer.len()), Some(0));
+            assert_ne!(lend(&self.bus.buffer, |buffer| buffer.len()).unwrap(), 0);
         }
     }
 
