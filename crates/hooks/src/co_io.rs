@@ -111,7 +111,7 @@ pub(crate) struct Ops {
 pub(crate) static NATIVE: Ops = Ops {
     set_last_error: swoole_rs_corebase::log::set_last_error,
     strerror: |error| swoole_rs_error_ffi::swoole_strerror(error),
-    current: || crate::wait_event::native::current(),
+    current: || swoole_rs_corebase::coroutine::current_safe(),
     cid: native::bound_cid,
     bound_error: native::bound_error,
     sleep: native::sleep,

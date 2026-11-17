@@ -3,11 +3,11 @@
 //! the reactor as an `EventWaiter`, whose reactor socket and coroutine `EventWaitOps`
 //! drive (the reactor's [`Watch`] and the coroutine's under `System::wait_event`, fakes
 //! in tests).
+use crate::coroutine::Waker;
+use crate::offload::WakerSlot;
+pub use crate::reactor::Events;
 use core::cell::Cell;
 use core::ffi::c_void;
-use swoole_rs_corebase::coroutine::Waker;
-use swoole_rs_corebase::offload::WakerSlot;
-pub use swoole_rs_corebase::reactor::Events;
 
 pub use native::Watch;
 
@@ -43,7 +43,7 @@ impl Parked {
     }
 }
 
-impl swoole_rs_corebase::reactor::event_api::Deferred for Parked {
+impl crate::reactor::event_api::Deferred for Parked {
     fn run(self) {
         self.0.wake();
     }
@@ -148,8 +148,8 @@ pub fn wait_event(fd: i32, events: Events, timeout: f64) -> Result<Events, WaitE
     };
     let waited = wait_with(fd, events, timeout, &ops);
     match waited {
-        Err(WaitError::Poll(code)) if code != 0 => swoole_rs_corebase::log::set_last_error(code),
-        Err(WaitError::Coroutine(code)) if code != 0 => crate::co_io::set_errno(code),
+        Err(WaitError::Poll(code)) if code != 0 => crate::log::set_last_error(code),
+        Err(WaitError::Coroutine(code)) if code != 0 => crate::set_errno(code),
         _ => {}
     }
     waited
@@ -158,26 +158,26 @@ pub fn wait_event(fd: i32, events: Events, timeout: f64) -> Result<Events, WaitE
 /// The event waiter's reactor socket and coroutine: upstream's `make_socket`,
 /// `swoole_event_add`/`del` and `Coroutine::yield_ex`.
 pub(crate) mod native {
+    use crate::constants::FdType;
+    use crate::log;
+    use crate::reactor::event_api::swoole_event_is_available;
+    use crate::reactor::{Events, SocketRecord};
+    use crate::tls::event_socket::EventSocket;
     use core::ffi::c_int;
-    use swoole_rs_corebase::constants::FdType;
-    use swoole_rs_corebase::log;
-    use swoole_rs_corebase::reactor::event_api::swoole_event_is_available;
-    use swoole_rs_corebase::reactor::{Events, SocketRecord};
-    use swoole_rs_corebase::tls::event_socket::EventSocket;
 
     /// `Coroutine::get_current_safe()`.
-    pub(crate) use swoole_rs_corebase::coroutine::current_safe as current;
+    pub(crate) use crate::coroutine::current_safe as current;
 
     /// `SW_ERROR_WRONG_OPERATION`: there is no event loop to register with.
     const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 
     /// What a watch's socket carries, with the fd type whose readiness handler
-    /// (`crate::reactor_handlers`) takes that object. Each is a parked wait's own
+    /// (`crate::reactor::readiness`) takes that object. Each is a parked wait's own
     /// registration, live until the wait drops its watches.
     #[derive(Clone, Copy)]
     pub(crate) enum Object {
         /// A hooked poll's task (`SW_FD_CO_POLL`).
-        Poll(crate::poll::Registered),
+        Poll(crate::reactor::socket_poll::Registered),
         /// A `wait_event` waiter (`SW_FD_CO_EVENT`).
         Waiter(super::Registered),
     }
@@ -234,7 +234,7 @@ pub(crate) mod native {
     }
 
     pub(super) fn park(timeout: f64, waker: &super::WakerSlot) -> Result<(), i32> {
-        if swoole_rs_corebase::offload::park_for_armed(timeout, waker) {
+        if crate::offload::park_for_armed(timeout, waker) {
             Ok(())
         } else {
             Err(log::last_error())
@@ -259,7 +259,7 @@ pub(crate) fn wait_with<S>(
             events: to_poll(events),
             revents: 0,
         };
-        let ready = swoole_rs_corebase::sys::poll(core::slice::from_mut(&mut pfd), 0);
+        let ready = crate::sys::poll(core::slice::from_mut(&mut pfd), 0);
         if matches!(ready, Ok(1)) {
             if pfd.revents & libc::POLLNVAL != 0 {
                 return Err(WaitError::Poll(libc::EBADF));
