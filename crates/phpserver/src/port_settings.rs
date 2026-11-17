@@ -3,7 +3,7 @@
 //! port's Rust-owned settings (crates/server's `PortConfig`), TLS owner and SNI
 //! contexts (crates/ports).
 use crate::settings::{Settings, Step, Stop, checked};
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::{CStr, c_char, c_int};
 use swoole_rs_clients::protocol::{GetPackageLength, Protocol};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::{SW_IPC_BUFFER_SIZE, SocketType};
@@ -33,7 +33,7 @@ pub(crate) trait Source {
     fn fatal(&self, level: c_int, message: &CStr) -> Stop;
     /// `sw_callable_create` of the setting, when it is callable: the pointer
     /// the protocol names, and its owner.
-    fn callable(&self, key: &CStr) -> Result<Option<(*mut c_void, LengthOwner)>, Stop>;
+    fn callable(&self, key: &CStr) -> Result<Option<LengthOwner>, Stop>;
     /// `sw_callable_free` of the owner a new one replaced.
     fn release(&self, owner: LengthOwner);
     /// `serv->single_thread = true`.
@@ -247,14 +247,12 @@ fn framing(s: &impl Source) -> Step {
         let error = c"'package_body_offset' value is too large";
         offset(s, v, |p| &mut p.package_body_offset, error)?;
     }
-    if let Some((callable, owner)) = s.callable(c"package_length_func")? {
+    if let Some(owner) = s.callable(c"package_length_func")? {
         let length_func = s.length_func();
         let previous = s.config(|c| {
-            c.protocol.update(|p| {
-                p.get_package_length = Some(length_func);
-                p.private_data_1 = callable;
-            });
-            c.length_owner.replace(Some(owner))
+            c.protocol
+                .update(|p| p.get_package_length = Some(length_func));
+            c.replace_length_owner(Some(owner))
         });
         if let Some(previous) = previous {
             s.release(previous);
@@ -409,7 +407,7 @@ impl Source for Zend<'_> {
         Stop
     }
 
-    fn callable(&self, key: &CStr) -> Result<Option<(*mut c_void, LengthOwner)>, Stop> {
+    fn callable(&self, key: &CStr) -> Result<Option<LengthOwner>, Stop> {
         let Some(value) = self.settings.get(key) else {
             return Ok(None);
         };
@@ -419,28 +417,18 @@ impl Source for Zend<'_> {
             drop(callable);
             return Err(Stop);
         }
-        // The port's owner now, which `release` (or the port's release) drops.
+        // This thread's owner for the port now, which `release` (or the port's
+        // release) drops.
         Ok(callable.map(|callable| {
-            let named = swoole_rs_phpswoole::length::Named::new(callable);
-            let pointer = named.as_ptr();
-            let owner: Box<dyn std::any::Any> = Box::new(named);
-            (pointer, Box::new(owner))
+            let owner: LengthOwner =
+                std::rc::Rc::new(swoole_rs_phpswoole::length::Named::new(callable));
+            owner
         }))
     }
 
     fn release(&self, owner: LengthOwner) {
-        // A thread-mode worker replaced the master's owner, whose callable other
-        // threads' reactors, or this thread's running length function, may still be
-        // calling: the master owns it, so it leaks, as the port's release does.
-        if crate::lifecycle::owns_shared() {
-            drop(owner);
-        } else {
-            #[expect(
-                clippy::mem_forget,
-                reason = "the master owns the callable other threads may still call"
-            )]
-            std::mem::forget(owner);
-        }
+        // This thread's own: a measure running its callable holds its own reference.
+        drop(owner);
     }
 
     fn single_thread(&self) {
@@ -601,11 +589,10 @@ mod tests {
                 .push(format!("fatal{level}:{}", message.to_str().unwrap()));
             Stop
         }
-        fn callable(&self, key: &CStr) -> Result<Option<(*mut c_void, LengthOwner)>, Stop> {
+        fn callable(&self, key: &CStr) -> Result<Option<LengthOwner>, Stop> {
             Ok(self.get(key, "callable").map(|v| {
-                let n = usize::try_from(v.number).unwrap();
-                let owner: Box<dyn std::any::Any> = Box::new(n);
-                (std::ptr::without_provenance_mut(n), Box::new(owner))
+                let owner: LengthOwner = std::rc::Rc::new(usize::try_from(v.number).unwrap());
+                owner
             }))
         }
         fn release(&self, owner: LengthOwner) {
@@ -941,11 +928,14 @@ mod tests {
     #[test]
     fn package_length_func_replaces_the_framing() {
         let mut c = port();
-        let previous: Box<dyn std::any::Any> = Box::new(7_usize);
-        c.length_owner.set(Some(Box::new(previous)));
+        assert!(
+            c.replace_length_owner(Some(std::rc::Rc::new(7_usize)))
+                .is_none()
+        );
         let table = Table::default().with("package_length_func", fixture(9));
         assert!(apply(&table, &c).is_ok());
-        assert_eq!(c.protocol.get_mut().private_data_1.addr(), 9);
+        let owner = c.length_owner().expect("this thread's owner");
+        assert_eq!(owner.downcast_ref::<usize>(), Some(&9));
         assert_eq!(c.protocol.get_mut().package_length_size, 0);
         assert_eq!(c.protocol.get_mut().package_length_type, 0);
         assert_eq!(

@@ -1049,11 +1049,6 @@ fn on_dispatch(
 pub(crate) struct Length;
 
 impl swoole_rs_phpswoole::length::PackageLength for Length {
-    /// A thread-mode worker reads the master's slot and leaves its count alone.
-    fn owns() -> bool {
-        crate::lifecycle::owns_shared()
-    }
-
     fn length(callable: &callable::Callable, bytes: &[u8]) -> Option<usize> {
         let data = Owned::string(ZString::new(bytes));
         let retval = Owned::default();
