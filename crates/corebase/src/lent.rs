@@ -717,8 +717,7 @@ impl Spare<'_> {
     /// # Safety
     /// On `Some(n)`, `read` must have initialized the first `min(n, room.len())`
     /// slots it was lent. A datagram read may report more than the room with
-    /// `MSG_TRUNC`; a failed read contributes no initialized bytes. Previously
-    /// initialized slots must remain initialized, including on failure.
+    /// `MSG_TRUNC`; a failed read contributes no initialized bytes.
     #[inline]
     pub unsafe fn read(
         &mut self,

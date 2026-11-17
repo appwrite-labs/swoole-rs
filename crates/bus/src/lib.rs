@@ -26,7 +26,6 @@ use std::collections::HashMap;
 use std::ffi::{c_char, c_int};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::io::IoSlice;
-use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use swoole_rs_corebase::buffer::string::OwnedString;
@@ -49,7 +48,7 @@ const HEAD: usize = size_of::<BusHead>();
 /// `SW_IPC_MSG_MIN`.
 const IPC_MSG_MIN: u32 = 2048 - 40;
 const _: () = assert!(HEAD == 40, "sizeof(DataHead)");
-/// Preserve the legacy zeroed prefix: a header and room for a `PacketPtr`.
+/// The legacy minimum allocation: a header and room for a `PacketPtr`.
 const BUFFER_MIN: usize = HEAD + size_of::<BusPacket>();
 
 /// `BusRead::event`: what the caller does after `Bus::receive` returns.
@@ -262,7 +261,7 @@ impl Bus {
         let buffer = self.buffer.take()?;
         let generation = self.buffer_generation.get();
         let result = (|| {
-            let head = BusHead::from_bytes(buffer.view().first_chunk()?);
+            let head = self.head();
             let length = HEAD.saturating_add(head.len as usize);
             if head.flags & (PTR | CHUNK | OBJ_PTR) != 0 || length > self.buffer_size.get() {
                 return None;
@@ -275,11 +274,8 @@ impl Bus {
         result
     }
 
-    fn set_flags(&self, buffer: &mut OwnedString, flags: u8) {
-        if let Some(to) = buffer
-            .view_mut()
-            .get_mut(std::mem::offset_of!(BusHead, flags))
-        {
+    fn set_flags(&self, buffer: &mut [u8], flags: u8) {
+        if let Some(to) = buffer.get_mut(std::mem::offset_of!(BusHead, flags)) {
             *to = flags;
             self.current.set(BusHead {
                 flags,
@@ -297,16 +293,13 @@ impl Bus {
     /// Read into the buffer's prefix, retaining bytes beyond a short read.
     fn fill(
         &self,
-        buffer: &mut OwnedString,
+        buffer: &mut [u8],
         length: usize,
-        fill: impl FnOnce(&mut [MaybeUninit<u8>]) -> Option<usize>,
+        fill: impl FnOnce(&mut [u8]) -> Option<usize>,
     ) -> Option<usize> {
-        // SAFETY: callers read through sys::read/recv/readv, initializing the
-        // reported prefix. Stream readv conservatively counts less of its
-        // already-initialized header when it reports its separate tail.
-        let received = buffer.overwrite(length, |spare| unsafe { spare.read(fill) });
+        let received = fill(buffer.get_mut(..length).unwrap_or_default());
         if received.is_some()
-            && let Some(bytes) = buffer.view().first_chunk()
+            && let Some(bytes) = buffer.first_chunk()
         {
             self.current.set(BusHead::from_bytes(bytes));
         }
@@ -422,14 +415,14 @@ impl Bus {
     ) -> Option<usize> {
         state.event = None;
         lend(&self.buffer, |buffer| {
-            self.read_buffer(buffer, fd, dgram, state, nobufs)
+            self.read_buffer(buffer.view_mut(), fd, dgram, state, nobufs)
         })
         .flatten()
     }
 
     fn read_buffer(
         &self,
-        buffer: &mut OwnedString,
+        buffer: &mut [u8],
         fd: c_int,
         dgram: bool,
         state: &mut BusRead,
@@ -483,7 +476,7 @@ impl Bus {
                             Self::allocate(state, length);
                             break 'chunk Err(Some(0));
                         }
-                        let bytes = buffer.view().get(HEAD..HEAD + count).unwrap_or_default();
+                        let bytes = buffer.get(HEAD..HEAD + count).unwrap_or_default();
                         packet.fill(|spare| {
                             let _ = spare.put(bytes);
                         });
@@ -736,13 +729,13 @@ impl Bus {
     }
 
     /// `MessageBus::alloc_buffer()`: replace the receive buffer with `size` bytes
-    /// from `allocator`, its header zeroed. False, leaving no buffer, on failure.
+    /// from `allocator`, initialized once for safe reads. False, leaving no buffer,
+    /// on failure.
     pub fn alloc_buffer(&self, size: usize, allocator: TrustedAllocator) -> bool {
-        let mut buffer = OwnedString::try_alloc_exact(size.max(BUFFER_MIN), allocator);
+        let block = size.max(BUFFER_MIN);
+        let mut buffer = OwnedString::try_alloc_exact(block, allocator);
         if let Some(buffer) = buffer.as_mut() {
-            buffer.fill(|spare| {
-                let _ = spare.put(&[0; BUFFER_MIN]);
-            });
+            buffer.read_zeroed(block, |bytes| bytes.len());
         }
         let allocated = buffer.is_some();
         self.buffer_size.set(size);
@@ -1035,9 +1028,6 @@ mod tests {
             let bus = Bus::new(size);
             bus.always_chunked.set(always);
             assert!(bus.alloc_buffer(size, allocator()));
-            lend(&bus.buffer, |buffer| {
-                buffer.read_zeroed(size, |bytes| bytes.len());
-            });
             Self { bus, fds }
         }
         fn write(&self, id: u64, payload: &[u8]) -> bool {
@@ -1168,9 +1158,6 @@ mod tests {
     fn pass_points_at_the_payload() {
         let bus = Bus::new(128);
         assert!(bus.alloc_buffer(128, allocator()));
-        lend(&bus.buffer, |buffer| {
-            buffer.read_zeroed(128, |bytes| bytes.len());
-        });
         let data = b"hello";
         let info = BusHead {
             len: 5,
@@ -1195,9 +1182,6 @@ mod tests {
         assert!(!Bus::new(128).holds_whole(), "no buffer");
         let bus = Bus::new(128);
         assert!(bus.alloc_buffer(128, allocator()));
-        lend(&bus.buffer, |buffer| {
-            buffer.read_zeroed(128, |bytes| bytes.len());
-        });
         let head = |len, flags| {
             bus.set_head(&BusHead {
                 len,
@@ -1244,10 +1228,14 @@ mod tests {
         let mut message = header.to_vec();
         message.extend_from_slice(b"data");
         assert_eq!(
-            lend(&bus.buffer, |buffer| bus.fill(buffer, 128, |room| {
-                room[..message.len()].write_copy_of_slice(&message);
-                Some(message.len())
-            }))
+            lend(&bus.buffer, |buffer| bus.fill(
+                buffer.view_mut(),
+                128,
+                |room| {
+                    room[..message.len()].copy_from_slice(&message);
+                    Some(message.len())
+                }
+            ))
             .flatten(),
             Some(message.len())
         );
@@ -1257,10 +1245,14 @@ mod tests {
         changed[0] ^= 1;
         message[0] = changed[0];
         assert_eq!(
-            lend(&bus.buffer, |buffer| bus.fill(buffer, 1, |room| {
-                room[0].write(changed[0]);
-                Some(1)
-            }))
+            lend(&bus.buffer, |buffer| bus.fill(
+                buffer.view_mut(),
+                1,
+                |room| {
+                    room[0] = changed[0];
+                    Some(1)
+                }
+            ))
             .flatten(),
             Some(1)
         );
@@ -1438,9 +1430,6 @@ mod tests {
             q: Vec::new(),
         };
         assert!(pipe.bus.alloc_buffer(65536, allocator()));
-        lend(&pipe.bus.buffer, |buffer| {
-            buffer.read_zeroed(65536, |bytes| bytes.len());
-        });
         let sent = vec![
             mb_packet(DATA_SIZE, 1),
             mb_packet(pipe.bus.buffer_size.get(), 2),

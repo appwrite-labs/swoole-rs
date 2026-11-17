@@ -47,8 +47,10 @@ callback that can bail out runs beneath a Rust frame.
   allocation address across transfer and that the bus cannot free the new owner's
   payload. Allocation and resizing run outside the packet-table borrow.
   The receive allocation is also an `OwnedString`, freed by its own allocator on
-  replacement, allocation failure or drop. Reads decode initialized header bytes
-  into typed state once; subsequent flag/pass writes keep both forms in sync;
+  replacement, allocation failure or drop. It is zeroed once at allocation, so
+  reads borrow initialized bytes without per-read initialization bookkeeping.
+  Reads decode header bytes into typed state once; subsequent flag/pass writes
+  keep both forms in sync;
   passed payload pointers stay in a separate typed field. Whole-event callbacks
   keep the owner outside the bus, so a callback can replace or free the buffer
   without invalidating the bytes it was lent. Ownership tests cover short

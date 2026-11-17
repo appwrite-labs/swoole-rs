@@ -202,21 +202,6 @@ impl CppString {
         result
     }
 
-    /// Overwrites the allocation's first `limit` bytes, retaining initialized bytes
-    /// past a short read. Unlike `fill`, this starts at the beginning of the buffer.
-    #[inline]
-    pub fn overwrite<R>(
-        &mut self,
-        limit: usize,
-        fill: impl for<'s> FnOnce(&mut Spare<'s>) -> R,
-    ) -> R {
-        let room = limit.min(self.size);
-        let (result, filled) =
-            lend_spare(self.allocation().get_mut(..room).unwrap_or_default(), fill);
-        self.length = self.length.max(filled);
-        result
-    }
-
     /// Counts no more than the first `length` bytes as the content.
     #[inline]
     pub const fn truncate(&mut self, length: usize) {
