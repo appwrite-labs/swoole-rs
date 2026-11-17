@@ -1,6 +1,6 @@
 //! `Swoole\\Coroutine\\Lock`: PHP object ownership over the Rust coroutine lock.
 use std::{cell::OnceCell, ffi::c_int};
-use swoole_rs_locks::coroutine::{CoroutineHost, CoroutineLock};
+use swoole_rs_corebase::locks::coroutine::{CoroutineHost, CoroutineLock};
 use swoole_rs_memory::members::pool;
 use swoole_rs_phpstubs::coroutine_lock;
 use swoole_rs_zend::{

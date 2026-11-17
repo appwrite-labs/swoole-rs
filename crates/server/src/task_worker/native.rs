@@ -6,9 +6,9 @@ use core::cell::Cell;
 use core::ffi::c_int;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::constants::TaskFlag;
+use swoole_rs_corebase::locks::SharedMutex;
 use swoole_rs_corebase::{CCast, DataHead, log};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_locks::SharedMutex;
 use swoole_rs_process::methods::{
     send_pipe_message, set_worker_type, swoole_get_worker_id, swoole_set_worker_id,
     worker_set_max_request,

@@ -137,7 +137,10 @@ impl SharedServer {
 }
 
 /// The reactor threads' barrier, or the manager's, which is shared.
-pub(crate) fn barrier(serv: view::Server<'_>, manager: bool) -> &swoole_rs_locks::Barrier {
+pub(crate) fn barrier(
+    serv: view::Server<'_>,
+    manager: bool,
+) -> &swoole_rs_corebase::locks::Barrier {
     if manager {
         &ServerShared::of(serv).manager_barrier
     } else {

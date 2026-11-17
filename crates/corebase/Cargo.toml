@@ -35,6 +35,15 @@ path = "../../tests/modules/corebase/resolver.rs"
 name = "numbers"
 path = "../../tests/modules/corebase/numbers.rs"
 
+# The original pthread and constructor-fault witnesses, kept with the locks module.
+[[test]]
+name = "locks_gate"
+path = "../../tests/modules/locks/gate.rs"
+
+[[test]]
+name = "locks_constructor"
+path = "../../tests/modules/locks/constructor.rs"
+
 [dev-dependencies]
 swoole-rs-oracle = { path = "../oracle" }
 

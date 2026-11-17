@@ -27,7 +27,7 @@ use std::sync::atomic::{
 use std::time::Instant;
 use std::{ptr, slice};
 use swoole_rs_corebase::CCast;
-use swoole_rs_locks::SharedMutex;
+use swoole_rs_corebase::locks::SharedMutex;
 
 /// `TableColumn::TYPE_INT`, `TYPE_FLOAT`, `TYPE_STRING`: [`ColumnType`]'s codes.
 pub const TYPE_INT: u32 = 1;

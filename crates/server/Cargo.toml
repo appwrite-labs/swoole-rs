@@ -33,7 +33,6 @@ swoole-rs-ossupport = { path = "../ossupport" }
 swoole-rs-process = { path = "../process" }
 swoole-rs-error = { path = "../error" }
 swoole-rs-framing = { path = "../framing" }
-swoole-rs-locks = { path = "../locks" }
 swoole-rs-memory = { path = "../memory" }
 swoole-rs-http = { path = "../http" }
 swoole-rs-http-ffi = { path = "../http-ffi" }

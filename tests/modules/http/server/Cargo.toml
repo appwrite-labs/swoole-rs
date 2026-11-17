@@ -19,7 +19,6 @@ swoole-rs-buffer = { path = "../../../../crates/buffer" }
 swoole-rs-clients = { path = "../../../../crates/clients" }
 swoole-rs-corebase = { path = "../../../../crates/corebase" }
 swoole-rs-ffi = { path = "../../../../crates/ffi" }
-swoole-rs-locks = { path = "../../../../crates/locks" }
 swoole-rs-ports = { path = "../../../../crates/ports" }
 # `thread`: core-tests run the server TESTs in upstream's SW_THREAD build, whose MODE_THREAD
 # workers are threads with their own `SwooleWG`.

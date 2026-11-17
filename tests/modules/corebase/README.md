@@ -115,7 +115,7 @@ their assertions run now:
 | `base.intersection` | `crates/http` `static_context/selection.rs` `base_intersection`, over the index-file loop that took its job |
 | `base.dirname`, `base.string_format` | none: nothing in the hybrid takes a dirname or formats into a fresh buffer, so there is no function to test |
 
-`sw_wait_for` has no upstream case; `crates/locks` `poll` keeps its backoff.
+`sw_wait_for` has no upstream case; `crates/corebase/src/locks` `poll` keeps its backoff.
 
 `dns-timeout-originals.json` holds the original
 `swoole_coroutine_system/gethostbyname_timeout.phpt`. On an ordinary resolver the

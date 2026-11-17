@@ -21,7 +21,6 @@ swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-crc32 = { path = "../crc32" }
 swoole-rs-error = { path = "../error" }
 swoole-rs-error-ffi = { path = "../error-ffi" }
-swoole-rs-locks = { path = "../locks" }
 
 [dev-dependencies]
 swoole-rs-oracle = { path = "../oracle" }

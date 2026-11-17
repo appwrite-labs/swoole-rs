@@ -63,7 +63,7 @@ fn word(atomic: Option<&AtomicU32>) -> Result<&AtomicU32, c_int> {
 pub fn futex_wait(word: &AtomicU32, timeout: f64) -> bool {
     #[cfg(target_os = "linux")]
     {
-        swoole_rs_locks::wait(word, timeout)
+        swoole_rs_corebase::locks::wait(word, timeout)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -76,7 +76,7 @@ pub fn futex_wait(word: &AtomicU32, timeout: f64) -> bool {
 pub fn futex_wakeup(word: &AtomicU32, n: c_int) -> Option<u32> {
     #[cfg(target_os = "linux")]
     {
-        swoole_rs_locks::wakeup(word, n)
+        swoole_rs_corebase::locks::wakeup(word, n)
     }
     #[cfg(not(target_os = "linux"))]
     {

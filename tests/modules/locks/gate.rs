@@ -1,4 +1,4 @@
-//! The former `gate.cc`, check for check: crates/locks' `Lock`, `Barrier`, atomics,
+//! The former `gate.cc`, check for check: `corebase::locks`' `Lock`, `Barrier`, atomics,
 //! futex wait and coroutine lock against the pinned pthread bodies and the driver that
 //! ran both sides (`swoole_rs_oracle::locks`). Each lock ABI export the gate called is
 //! replaced by the safe method that was its body (README.md maps them).
@@ -9,12 +9,12 @@ use std::thread;
 use std::time::Duration;
 
 use libc::{EBUSY, ETIMEDOUT, LOCK_EX, LOCK_NB, LOCK_SH};
-use swoole_rs_error::ErrorCode;
-use swoole_rs_locks::coroutine::{CoroutineHost, CoroutineLock};
-use swoole_rs_locks::{
+use swoole_rs_corebase::locks::coroutine::{CoroutineHost, CoroutineLock};
+use swoole_rs_corebase::locks::{
     Barrier, Kind, Lock, SharedMutex, barrier_destroy, barrier_init, barrier_wait,
     coroutine_backoff, swr_v1_locks_atomic32, swr_v1_locks_atomic64,
 };
+use swoole_rs_error::ErrorCode;
 use swoole_rs_oracle::locks as reference;
 
 const RW_LOCK: i32 = 1;
@@ -424,14 +424,14 @@ fn wait_and_wake() {
     #[cfg(target_os = "linux")]
     wait_wake(
         |word, timeout| {
-            if swoole_rs_locks::wait(word, timeout) {
+            if swoole_rs_corebase::locks::wait(word, timeout) {
                 0
             } else {
                 -1
             }
         },
         |word, count| {
-            swoole_rs_locks::wakeup(word, count)
+            swoole_rs_corebase::locks::wakeup(word, count)
                 .map_or(-1, |woken| i32::try_from(woken).unwrap_or(i32::MAX))
         },
     );

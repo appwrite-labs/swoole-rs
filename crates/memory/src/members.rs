@@ -479,14 +479,14 @@ pub mod pool {
     impl Word for AtomicU32 {}
     impl Word for AtomicI64 {}
     impl Word for AtomicU64 {}
-    impl Word for swoole_rs_locks::SharedMutex {}
+    impl Word for swoole_rs_corebase::locks::SharedMutex {}
     impl<T> Word for MaybeUninit<T> {}
     mod sealed {
         pub trait Sealed {}
         impl Sealed for std::sync::atomic::AtomicU32 {}
         impl Sealed for std::sync::atomic::AtomicI64 {}
         impl Sealed for std::sync::atomic::AtomicU64 {}
-        impl Sealed for swoole_rs_locks::SharedMutex {}
+        impl Sealed for swoole_rs_corebase::locks::SharedMutex {}
         impl<T> Sealed for std::mem::MaybeUninit<T> {}
     }
 

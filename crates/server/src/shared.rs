@@ -83,7 +83,7 @@ pub(crate) struct ServerShared {
     /// The task pool, then the event pool: records every process writes in place,
     /// through [`PoolRef`] handles, a field at a time.
     pub(crate) pools: [core::cell::UnsafeCell<swoole_rs_process::process_pool::PoolRecord>; 2],
-    pub(crate) manager_barrier: swoole_rs_locks::Barrier,
+    pub(crate) manager_barrier: swoole_rs_corebase::locks::Barrier,
 }
 
 impl ServerShared {

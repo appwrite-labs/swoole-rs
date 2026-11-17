@@ -20,9 +20,9 @@ use std::{
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::TaskFlag;
+use swoole_rs_corebase::locks::SharedMutex;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING;
 use swoole_rs_corebase::{DataHead, log};
-use swoole_rs_locks::SharedMutex;
 use swoole_rs_phpcoroutines::{Coroutine, Waiter};
 use swoole_rs_phpswoole::unserialize_from;
 use swoole_rs_process::{

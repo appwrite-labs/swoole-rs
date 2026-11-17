@@ -1,9 +1,9 @@
 //! Coroutine lock state and complete acquisition/release loops.
+use crate::constants::{SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND};
 use std::{
     cell::Cell,
     sync::atomic::{AtomicU32, Ordering},
 };
-use swoole_rs_corebase::constants::{SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND};
 use swoole_rs_error::ErrorCode;
 
 /// Immutable, process-lived effects supplied once when the lock is constructed.
@@ -44,7 +44,7 @@ fn outside(host: &CoroutineHost) -> Result<(), i32> {
     Err(ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as i32)
 }
 
-use swoole_rs_corebase::sys::errno as last_errno;
+use crate::sys::errno as last_errno;
 
 impl CoroutineLock {
     /// A new unlocked lock; aborts when the host is inconsistent or has no storage.
@@ -53,13 +53,11 @@ impl CoroutineLock {
         if host.wait.is_some() != host.wake.is_some()
             || (host.wait.is_none() && host.sleep.is_none())
         {
-            swoole_rs_corebase::fatal(
-                "a coroutine lock host needs wait and wake together, or sleep",
-            );
+            crate::fatal("a coroutine lock host needs wait and wake together, or sleep");
         }
         let word = if shared {
             let Some(word) = (host.alloc_shared)() else {
-                swoole_rs_corebase::fatal("no shared memory for a coroutine lock");
+                crate::fatal("no shared memory for a coroutine lock");
             };
             word.store(0, Ordering::Relaxed);
             Word::Shared(word)
@@ -111,7 +109,7 @@ impl CoroutineLock {
                 }
             } else {
                 let Some(sleep) = host.sleep else {
-                    swoole_rs_corebase::fatal("a coroutine lock host has neither wait nor sleep");
+                    crate::fatal("a coroutine lock host has neither wait nor sleep");
                 };
                 if !sleep(second) {
                     return Err(ErrorCode::SW_ERROR_CO_CANCELED as i32);
@@ -383,7 +381,7 @@ mod tests {
         let lock = CoroutineLock::new(false, &FUTEX);
         assert_eq!(lock.acquire(true), Ok(()));
         contender(&lock);
-        swoole_rs_corebase::sys::set_errno(libc::EINTR);
+        crate::sys::set_errno(libc::EINTR);
         STATE.with(|state| state.borrow_mut().result = -1);
         assert_eq!(lock.acquire(true), Err(libc::EINTR));
         STATE.with(|state| {
@@ -393,7 +391,7 @@ mod tests {
         });
         assert_eq!(lock.acquire(true), Ok(()));
         STATE.with(|state| state.borrow_mut().result = -1);
-        swoole_rs_corebase::sys::set_errno(libc::EPERM);
+        crate::sys::set_errno(libc::EPERM);
         assert_eq!(lock.unlock(), Err(libc::EPERM));
         assert_eq!(lock.cid.get(), 0);
         drop(lock);

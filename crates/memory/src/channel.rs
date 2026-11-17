@@ -2,8 +2,8 @@ use crate::members::Shm;
 use std::cell::Cell;
 use std::ffi::c_int;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::locks::SharedMutex;
 use swoole_rs_corebase::sys;
-use swoole_rs_locks::SharedMutex;
 
 /// Layout invariant: `mem` holds `size + maxlen + 4` bytes (see
 /// `swr_v1_memory_channel_bytes`) outside the header, which only the holder of the

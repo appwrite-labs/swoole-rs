@@ -31,7 +31,8 @@ pub use swoole_rs_http_ffi::*;
 
 pub use swoole_rs_utilities::*;
 
-pub use swoole_rs_locks::*;
+pub use swoole_rs_corebase::locks::coroutine;
+pub use swoole_rs_corebase::locks::*;
 
 #[cfg(feature = "php")]
 pub use swoole_rs_phplocks::*;
