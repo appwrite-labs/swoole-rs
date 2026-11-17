@@ -71,13 +71,6 @@ unsafe extern "C" {
     fn swoole_event_init(flags: c_int) -> c_int;
     #[link_name = "_Z17swoole_event_waitv"]
     fn swoole_event_wait() -> c_int;
-    #[link_name = "_Z17swoole_signal_setiPFviEii"]
-    fn swoole_signal_set(
-        signo: c_int,
-        handler: extern "C" fn(c_int),
-        restart: c_int,
-        mask: c_int,
-    ) -> *const c_void;
 }
 
 unsafe extern "C" {
@@ -1460,8 +1453,12 @@ fn test_recv_timeout(c: &Client<'_>) {
         }
     });
 
-    // SAFETY: a plain handler, not restarting, masked while it runs.
-    unsafe { swoole_signal_set(SIGIO, count_signal, 0, 1) };
+    _ = swoole_rs_corebase::process::signal::swoole_signal_set_action(
+        SIGIO,
+        swoole_rs_corebase::process::signal::Handler::new(count_signal).raw(),
+        0,
+        1,
+    );
 
     let mut buf = vec![0_u8; SW_BUFFER_SIZE_BIG];
     loop {

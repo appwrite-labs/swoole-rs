@@ -101,9 +101,8 @@ impl Handler {
             return;
         }
         let pointer = std::ptr::with_exposed_provenance::<()>(self.0);
-        // SAFETY: any other handler came from `new` (a safe `extern "C" fn(c_int)`) or
-        // from C++ through `swoole_signal_set`'s `SignalHandler`, which upstream's
-        // contract makes sound to call with any signal number.
+        // SAFETY: any other handler came from `new` (a safe `extern "C" fn(c_int)`)
+        // or the table holding a previously registered handler.
         let handler = unsafe { std::mem::transmute::<*const (), extern "C" fn(c_int)>(pointer) };
         handler(signo);
     }
@@ -120,13 +119,7 @@ fn slot(signo: c_int) -> Option<&'static Slot> {
 
 /// `SignalHandler swoole_signal_set(int signo, SignalHandler func, int restart, int mask)`.
 #[must_use]
-#[unsafe(export_name = "_Z17swoole_signal_setiPFviEii")]
-pub extern "C" fn swoole_signal_set_action(
-    signo: c_int,
-    func: usize,
-    restart: c_int,
-    mask: c_int,
-) -> usize {
+pub fn swoole_signal_set_action(signo: c_int, func: usize, restart: c_int, mask: c_int) -> usize {
     set_action(signo, func, restart != 0, mask != 0)
 }
 
@@ -341,13 +334,6 @@ pub fn signal_clear() {
         }
     }
     signal_reset();
-}
-
-/// `bool swoole_signal_block_all()`: [`crate::signal_block_all`].
-#[must_use]
-#[unsafe(export_name = "_Z23swoole_signal_block_allv")]
-pub extern "C" fn swoole_signal_block_all() -> bool {
-    crate::signal_block_all()
 }
 
 /// `void swoole_signal_unblock_all()`: [`crate::signal_unblock_all`].

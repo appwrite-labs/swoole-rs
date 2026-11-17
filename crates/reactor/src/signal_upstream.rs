@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/os/signal.cc (Swoole contributors).
 //! `swoole_signal_set`, `_callback`, `_get_handler`, `_get_listener_num` and `_clear`
-//! under their upstream (Itanium) symbols, over `corebase::process`'s signal loop, and the
+//! as Rust operations over `corebase::process`'s signal loop, and the
 //! event-loop effects that loop asks for: the signalfd socket, its reactor handler,
 //! exit condition and destroy callback, and the warnings. The process patch deletes
 //! `src/os/signal.cc`.
@@ -237,15 +237,6 @@ pub fn get(signo: c_int) -> Handler {
 /// `swoole_signal_clear()`.
 pub fn clear() {
     signal_loop::clear(&OPS);
-}
-
-/// `SignalHandler swoole_signal_set(int signo, SignalHandler handler, bool safety)`.
-/// A [`Handler`] is what C++ passes: 0, `SIG_IGN`, or a handler sound to call with any
-/// signal number.
-#[must_use]
-#[unsafe(export_name = "_Z17swoole_signal_setiPFviEb")]
-pub extern "C" fn swoole_signal_set(signo: c_int, handler: Handler, safety: bool) -> Handler {
-    set(signo, handler, safety)
 }
 
 /// `void swoole_signal_callback(int signo)`: runs the handler registered for `signo`,

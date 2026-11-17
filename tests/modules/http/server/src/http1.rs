@@ -105,8 +105,6 @@ pub(super) struct Protocol {
 unsafe extern "C-unwind" {
     #[link_name = "_Z20swoole_set_log_leveli"]
     pub(super) fn swoole_set_log_level(level: c_int);
-    #[link_name = "_Z23swoole_signal_block_allv"]
-    fn swoole_signal_block_all();
 
 }
 
@@ -311,8 +309,7 @@ fn kill_self() {
 }
 
 fn block_all_signals() {
-    // SAFETY: masks this thread's signals.
-    unsafe { swoole_signal_block_all() };
+    _ = swoole_rs_corebase::signal_block_all();
 }
 
 fn set_log_warning() {
