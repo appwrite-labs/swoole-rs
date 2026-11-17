@@ -13,9 +13,7 @@ use crate::coroutine::state::{self as coroutine, Co, Sched, run};
 use crate::coroutine::thread::{
     Entry, THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init,
 };
-use crate::coroutine::{
-    Canceler, Coroutine, Resume, Routine, STACK_MARK, STACK_PROTECT, Scheduler,
-};
+use crate::coroutine::{Coroutine, Resume, Routine, STACK_MARK, STACK_PROTECT, Scheduler};
 use crate::{
     Switch, built_with, fatal_error,
     log::{self, set_last_error},
@@ -116,7 +114,7 @@ pub unsafe fn swr_v1_coroutine_create(routine: Routine, arg: *mut c_void) -> c_l
         }
     };
     let co = Co::leak(Box::new(Native {
-        co: Coroutine::IDLE,
+        co: Coroutine::idle(),
         ctx,
     }));
     let now = steady_usec();
@@ -161,19 +159,15 @@ pub extern "C-unwind" fn deactivate() {
     });
 }
 
-/// `bool Coroutine::cancel()`: false, with the last error, when the
-/// coroutine's wait can't be canceled.
-///
-/// # Safety
-/// `co` is a live coroutine.
-/// Its canceler may resume it: as for [`crate::coroutine::resume`], a bailout must not
-/// skip pending drops on the main stack.
-pub unsafe fn cancel(co: *mut Coroutine) -> bool {
-    // SAFETY: as the caller promises.
-    let Some(co) = (unsafe { Co::of(co) }) else {
-        return false;
-    };
-    cancel_wait(co)
+/// `bool Coroutine::cancel()` of the live coroutine numbered `cid`: false, with the
+/// last error, when its wait can't be canceled; false when none lives.
+/// Its canceler may resume it: as for [`crate::coroutine::resume`], a bailout skips
+/// what the caller's frames own.
+#[must_use]
+pub fn cancel(cid: c_long) -> bool {
+    Sched::this()
+        .with(|s| s.live_co(cid))
+        .is_some_and(cancel_wait)
 }
 
 /// Cancels the current wait of the live coroutine numbered `cid`. A missing or
@@ -191,16 +185,19 @@ pub fn cancel_cid(cid: c_long) -> bool {
 }
 
 fn cancel_wait(co: Co) -> bool {
-    let canceler = co.with(|co| co.cancel_fn).cast::<Canceler>();
-    if canceler.is_null() {
+    let canceler = co.with(|co| {
+        let canceler = co.cancel.take();
+        if canceler.is_some() {
+            co.mark_canceled();
+        }
+        canceler
+    });
+    let Some(canceler) = canceler else {
         set_last_error(SW_ERROR_CO_CANNOT_CANCEL);
         return false;
-    }
-    // SAFETY: the waiting yield's canceler, on its live frame.
-    let Canceler { call, data } = unsafe { canceler.read() };
-    co.with(Coroutine::mark_canceled);
-    // SAFETY: that yield's cancel function and its closure.
-    unsafe { call(co.ptr().cast(), data) }
+    };
+    // Off the coroutine, which the wake may park in another cancelable yield.
+    canceler.consume()
 }
 
 /// `yield_ex`'s timer: the wait of coroutine `cid`, which waits there until this
@@ -251,7 +248,7 @@ pub fn yield_timed_armed(
         0
     };
     // The canceled coroutine is `running`, which waits below while its canceler is set.
-    let resume_canceled = move |_| {
+    let resume_canceled = move || {
         coroutine::resume(Sched::this(), running);
         true
     };

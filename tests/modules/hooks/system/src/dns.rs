@@ -164,8 +164,8 @@ fn cancel() {
         let co = current();
         go(move || {
             super::co_sleep(0.001);
-            // SAFETY: the outer coroutine is suspended in its lookup.
-            unsafe { coroutine_cancel(co.cast()) };
+            // The outer coroutine is suspended in its lookup.
+            coroutine_cancel(co);
         });
         let list1 = lookup(c"www.baidu-not-found-for-cancel.com", AF_INET, 2.0);
         assert_eq!(list1.len(), 0);

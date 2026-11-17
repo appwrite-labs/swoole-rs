@@ -402,7 +402,7 @@ mod tests {
         unsafe {
             let ctx = Context::new(64 * 1024, 0, Entry::new(entry, log.cast())).unwrap();
             (*log).co = Some(Co::leak(Box::new(Native {
-                co: Coroutine::IDLE,
+                co: Coroutine::idle(),
                 ctx,
             })));
             assert!(!swap_in(co(log)));

@@ -100,8 +100,8 @@ fn cancel() {
         let mut ev = empty();
         let co = current();
         timer::after(50, move |_| {
-            // SAFETY: the case's coroutine, parked in async.
-            unsafe { coroutine_cancel(co.cast()) };
+            // The case's coroutine, parked in async.
+            coroutine_cancel(co);
         });
 
         let retval = co_async(sleep_200ms, &mut ev, -1.0);

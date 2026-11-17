@@ -47,9 +47,9 @@ hook. `swr_v1_coroutine_bail(callback, data)` is `Coroutine::bailout`: inside a
 coroutine it sets the hook, jumps to the main context and exits with
 `SW_CORO_BAILOUT_EXIT_CODE` if that returns; outside one it marks the scheduler.
 
-A cancelable yield's `cancel_fn` points at a `Canceler` (crates/corebase/src/coroutine's: a Rust
-function and its data) on the yielder's stack. Rust's `cancel` refuses a coroutine
-that is not suspended with one, then calls it.
+A cancelable yield holds its canceler, a closure of at most two words, in the
+coroutine's `cancel` slot, which only Rust reads. Rust's `cancel` refuses a coroutine
+whose slot is empty; otherwise it takes the canceler out, then runs it.
 `yield_ex` adds its timeout timer through
 `corebase::timer::add_fn_sec` directly, capturing the coroutine's id and deletes it after a
 wake that was not the timeout.

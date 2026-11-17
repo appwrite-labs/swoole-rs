@@ -18,7 +18,8 @@ struct swr_v1_coroutine {
     void *native; /* the swoole::Coroutine record */
     long cid;
     int32_t state, resume_code;
-    void *task, *cancel_fn;
+    void *task;
+    void *cancel[3]; /* the waiting yield's canceler, which only Rust reads */
     swr_v1_coroutine *origin, *first_child, *prev_sibling, *next_sibling;
     long init_msec, switch_usec, execute_usec;
     uint64_t parks; /* odd while parked; each park's own value */
