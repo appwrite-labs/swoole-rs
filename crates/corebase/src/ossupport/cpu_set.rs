@@ -17,11 +17,15 @@ const _: () = assert!(
 pub struct CpuSet([c_ulong; WORDS]);
 
 /// The size the affinity calls take with a set: its one value is a [`CpuSet`]'s
-/// bytes, so the length they read or write is the set's they are lent.
-#[repr(usize)]
+/// bytes, so the length they read or write is the set's they are lent. A
+/// transparent `usize`, which a `size_t` parameter is ABI-compatible with; a
+/// `repr(usize)` enum is not guaranteed to be.
+#[repr(transparent)]
 #[derive(Clone, Copy)]
-enum SetBytes {
-    Set = size_of::<CpuSet>(),
+struct SetBytes(usize);
+
+impl SetBytes {
+    const SET: Self = Self(size_of::<CpuSet>());
 }
 
 // libc's affinity calls, typed as what they read or write: one whole set. A pid or
@@ -66,27 +70,27 @@ impl CpuSet {
     /// `sched_getaffinity(pid)` into this set; false with `errno` set.
     #[must_use]
     pub fn get_process(&mut self, pid: libc::pid_t) -> bool {
-        process_get(pid, SetBytes::Set, self) == 0
+        process_get(pid, SetBytes::SET, self) == 0
     }
 
     /// `sched_setaffinity(pid)`; false with `errno` set.
     #[must_use]
     pub fn set_process(&self, pid: libc::pid_t) -> bool {
-        process_set(pid, SetBytes::Set, self) == 0
+        process_set(pid, SetBytes::SET, self) == 0
     }
 
     /// `pthread_getaffinity_np(pthread_self())` into this set.
     /// # Errors
     /// The call's error number.
     pub fn get_thread(&mut self) -> Result<(), c_int> {
-        errno_result(thread_get(CurrentThread::get(), SetBytes::Set, self))
+        errno_result(thread_get(CurrentThread::get(), SetBytes::SET, self))
     }
 
     /// `pthread_setaffinity_np(pthread_self())`.
     /// # Errors
     /// The call's error number.
     pub fn set_thread(&self) -> Result<(), c_int> {
-        errno_result(thread_set(CurrentThread::get(), SetBytes::Set, self))
+        errno_result(thread_set(CurrentThread::get(), SetBytes::SET, self))
     }
 
     /// The set's CPUs, ascending.
@@ -115,8 +119,16 @@ mod tests {
         assert_eq!(set.cpus().collect::<Vec<_>>(), [1, CpuSet::SIZE - 1]);
     }
 
+    /// Miri runs `sched_getaffinity`, and checks the call's ABI against it.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no affinity calls")]
+    fn the_process_runs_on_some_cpu() {
+        let mut process = CpuSet::empty();
+        assert!(process.get_process(0));
+        assert!(process.cpus().count() > 0);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no pthread_getaffinity_np")]
     fn the_calling_thread_and_process() {
         let mut thread = CpuSet::empty();
         assert_eq!(thread.get_thread(), Ok(()));
