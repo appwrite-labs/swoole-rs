@@ -46,9 +46,8 @@
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use swoole_rs_corebase::log::last_error;
-// The crates, once: the C++ in libswoole.a and the cases call them by symbol.
 use swoole_rs_corebase::reactor::Events;
-use swoole_rs_ffi as _;
+use swoole_rs_ffi::swoole_init;
 use swoole_rs_hooks::poll::PollFd;
 
 mod address;
@@ -127,10 +126,6 @@ const GREETING: &[u8] = b"hello world, hello swoole";
 type Routine = unsafe extern "C-unwind" fn(*mut c_void);
 
 unsafe extern "C-unwind" {
-    #[link_name = "_Z11swoole_initv"]
-    fn swoole_init();
-    #[link_name = "_Z12swoole_cleanv"]
-    fn swoole_clean();
     #[link_name = "_Z19swoole_random_bytesPcm"]
     fn swoole_random_bytes(buf: *mut c_char, size: usize) -> usize;
 
@@ -886,8 +881,7 @@ fn main() {
     // takes it from the soft descriptor limit.
     // SAFETY: setrlimit(2) with a readable limit.
     unsafe { setrlimit(RLIMIT_NOFILE, &[20000, 20000]) };
-    // SAFETY: once per process, before any other Swoole call.
-    unsafe { swoole_init() };
+    swoole_init();
     if suite == "coroutine_hook" {
         hook::prepare();
     }
@@ -895,6 +889,5 @@ fn main() {
         process_pool::check_layout();
     }
     body();
-    // SAFETY: after the case, as core-tests' main.
-    unsafe { swoole_clean() };
+    swoole_rs_corebase::swoole_clean();
 }

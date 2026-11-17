@@ -13,7 +13,7 @@ fn reinitialize() {
         let report = core::bug_report_message();
         assert!(!logger.is_null() && !buffer.is_null() && !report.is_empty());
         core::set_fatal_error(None);
-        unsafe { super::swoole_init() };
+        swoole_rs_ffi::swoole_init();
         assert!(core::swr_v1_core_fatal_error().is_none());
         assert_eq!(core::swr_v1_core_logger(), logger);
         assert_eq!(core::thread_buffer(), buffer);
@@ -26,6 +26,6 @@ fn reinitialize() {
         assert!(core::bug_report_message().is_empty());
         assert_eq!(core::swoole_fork(8), -1);
         core::swoole_clean();
-        unsafe { super::swoole_init() };
+        swoole_rs_ffi::swoole_init();
     }
 }
