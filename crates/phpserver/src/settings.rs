@@ -338,7 +338,7 @@ fn set(call: &Call) {
     // Every early exit after an `E_ERROR` or a deferred bailout leaves the
     // handler, whose last step raises it.
     let this = ServerObject::this(call);
-    if let Ok(true) = options(&s, this) {
+    if matches!(options(&s, this), Ok(true)) {
         match finish(this, vht) {
             Ok(()) => call.set_bool(true),
             Err(bailed) => bailed.defer(),

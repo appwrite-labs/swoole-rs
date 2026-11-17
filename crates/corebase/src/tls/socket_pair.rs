@@ -216,7 +216,8 @@ pub fn clean(this: &SocketPair) {
     let [_, Some(socket)] = ends(this) else {
         return;
     };
-    let mut buffer = [0_u8; 1024];
+    // Discarded unread, so lent uninitialized: no 1 KiB fill per taskwait.
+    let mut buffer = [std::mem::MaybeUninit::<u8>::uninit(); 1024];
     while socket.wait_event(0, crate::reactor::Events::READ) {
         if crate::sys::read(socket.fd(), &mut buffer) <= Some(0) {
             break;

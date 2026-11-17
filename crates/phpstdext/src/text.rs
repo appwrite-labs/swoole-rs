@@ -7,7 +7,7 @@ use std::{
     ptr::NonNull,
 };
 use swoole_rs_zend::{
-    Call, OwnedArray, ReturnSlot, UNDEF, ZStr, handlers,
+    Call, OwnedArray, ReturnSlot, UNDEF, ZStr, bailout, contain_with, handlers,
     sys::{zend_long, zval},
 };
 
@@ -16,7 +16,9 @@ unsafe extern "C" {
     /// an emalloc'd NUL-terminated copy.
     safe fn swr_bytes_estrndup(bytes: IoSlice<'_>) -> Copied;
     /// The SAPI's `treat_data(PARSE_STRING, text, array)`: it parses the query
-    /// string into the array, then frees the copy, which it takes.
+    /// string into the array, then frees the copy, which it takes. Its
+    /// `max_input_vars` and nesting warnings run the error handler, which may
+    /// bail out.
     safe fn swr_zend_treat_string(text: Copied, array: &mut OwnedArray);
     /// `pcre_get_compiled_regex_cache` of a live string inside `zend_try`,
     /// retaining what it returns: nonzero for a bailout, else `result` holds the
@@ -114,7 +116,9 @@ fn parse_str(call: &Call) {
         return;
     };
     let mut array = OwnedArray::default();
-    swr_zend_treat_string(swr_bytes_estrndup(IoSlice::new(text)), &mut array);
+    bailout::defer(contain_with(|| {
+        swr_zend_treat_string(swr_bytes_estrndup(IoSlice::new(text)), &mut array);
+    }));
     call.set_owned(array.into_owned());
 }
 

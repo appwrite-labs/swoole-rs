@@ -7,6 +7,9 @@ use std::net::IpAddr;
 use swoole_rs_clients::dns::{DnsExchange, RecvError, query};
 use swoole_rs_http::llhttp::{self, Callbacks, Flow as Step, Parser};
 use swoole_rs_http::multipart_parser::{Flow, MultipartParser};
+use swoole_rs_http::{
+    BOUNDARY_SIZE, HttpStaticContext, HttpStaticObservation, StaticEffects, StaticFileKind,
+};
 use swoole_rs_http2::{
     frame_length, sw_rs_http2_decode_frame, sw_rs_http2_inflate_step, sw_rs_http2_unpack_setting,
 };
@@ -499,4 +502,138 @@ fn in_chunks<D>(
         stream = tail;
     }
     Some(out)
+}
+
+/// The document root `http_static_path` serves from, canonical as the server's is.
+const STATIC_ROOT: &[u8] = b"/srv/www";
+
+/// A tree in which every path exists but one whose last name starts with `x`: a
+/// symlink to its sibling with that `l` capitalized when the name starts with `l`, a
+/// directory when the name has no `.`, else a file. `realpath` resolves `.`, `..` and
+/// those links lexically, so a link never leaves its directory.
+struct StaticTree {
+    mime: bool,
+}
+
+/// `path`'s last name.
+fn last_name(path: &[u8]) -> &[u8] {
+    path.rsplit(|&b| b == b'/').next().unwrap_or_default()
+}
+
+/// `path` with `.` and `..` resolved from `/`, as `realpath` resolves them.
+fn lexical(path: &[u8]) -> Vec<u8> {
+    let mut names: Vec<&[u8]> = Vec::new();
+    for name in path.split(|&b| b == b'/') {
+        match name {
+            b"" | b"." => {}
+            b".." => _ = names.pop(),
+            name => names.push(name),
+        }
+    }
+    if names.is_empty() {
+        return b"/".to_vec();
+    }
+    names
+        .iter()
+        .flat_map(|name| [b"/", *name])
+        .flatten()
+        .copied()
+        .collect()
+}
+
+impl StaticEffects for StaticTree {
+    fn stat(&self, path: &[u8]) -> Option<HttpStaticObservation> {
+        let name = last_name(path);
+        let kind = match name.first() {
+            Some(b'x') => return None,
+            Some(b'l') => StaticFileKind::Symlink,
+            _ if name.contains(&b'.') => StaticFileKind::File,
+            _ => StaticFileKind::Directory,
+        };
+        Some(HttpStaticObservation {
+            filesize: path.len(),
+            kind,
+            ..HttpStaticObservation::default()
+        })
+    }
+    fn canonical(&self, path: &[u8]) -> Option<Vec<u8>> {
+        let mut path = lexical(path);
+        let start = path.len() - last_name(&path).len();
+        if let Some(first @ b'l') = path.get_mut(start) {
+            *first = b'L';
+        }
+        Some(path)
+    }
+    fn list(&self, path: &[u8]) -> Option<Vec<Vec<u8>>> {
+        Some(vec![
+            b".".to_vec(),
+            b"..".to_vec(),
+            b"index.html".to_vec(),
+            last_name(path).to_vec(),
+        ])
+    }
+    fn mime(&self, _: &[u8]) -> Vec<u8> {
+        b"text/html".to_vec()
+    }
+    fn mime_exists(&self, _: &[u8]) -> bool {
+        self.mime
+    }
+    fn random(&self, out: &mut [u8; BOUNDARY_SIZE], count: usize) {
+        let count = count.min(BOUNDARY_SIZE - 1);
+        out[..count].fill(b'r');
+        out[count] = 0;
+    }
+    fn modified_range(&self, _: &[u8], _: i64) -> bool {
+        false
+    }
+    fn overflow(&self) {}
+}
+
+/// A flags byte, then any bytes as a request URL, through the static handler's file
+/// selection (`try_serve`, `try_serve_index_file` and the index page) over
+/// [`StaticTree`] under [`STATIC_ROOT`], with a filename capacity the flags pick:
+/// nothing panics, and a file served (not the 404 page) for a URL starting with `/`
+/// lies inside the root.
+pub fn http_static_path(bytes: &[u8]) {
+    let Some((&flags, url)) = bytes.split_first() else {
+        return;
+    };
+    let (has_index, autoindex) = (flags & 1 != 0, flags & 2 != 0);
+    let locations: &[&[u8]] = if flags & 4 == 0 { &[] } else { &[b"/static"] };
+    let capacity = match flags >> 4 {
+        0 => libc::PATH_MAX as usize,
+        n => usize::from(n) * 3,
+    };
+    let Some(mut context) = HttpStaticContext::new(url, capacity) else {
+        return;
+    };
+    let tree = StaticTree {
+        mime: flags & 8 != 0,
+    };
+    let inside = |context: &HttpStaticContext| {
+        let path = lexical(context.filename());
+        assert!(
+            !url.starts_with(b"/")
+                || path
+                    .strip_prefix(STATIC_ROOT)
+                    .is_some_and(|rest| rest.first().is_none_or(|&b| b == b'/')),
+            "{url:?} served {:?}, outside the root",
+            context.filename()
+        );
+    };
+    // Under a matched location, a path that fails selection is answered with the 404
+    // page, not a file.
+    if !context.try_serve(STATIC_ROOT, locations, has_index, autoindex, &tree)
+        || context.observe().status == 404
+    {
+        return;
+    }
+    inside(&context);
+    let index: &[&[u8]] = if has_index { &[b"index.html"] } else { &[] };
+    if context.try_serve_index_file(index, autoindex, &tree) {
+        inside(&context);
+        if autoindex {
+            _ = context.index_page(b"", b"", &tree);
+        }
+    }
 }

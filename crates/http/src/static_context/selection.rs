@@ -192,7 +192,7 @@ mod tests {
             b"index.php",
         ];
         assert_eq!(intersection(vec1, vec2), b"index.php");
-        let vec3: &[&[u8]] = &["a".as_bytes(), "zh中".as_bytes(), "、r\n".as_bytes()];
+        let vec3: &[&[u8]] = &[b"a", "zh中".as_bytes(), "、r\n".as_bytes()];
         assert_eq!(intersection(vec1, vec3), b"");
     }
 

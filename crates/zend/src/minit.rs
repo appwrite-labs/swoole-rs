@@ -704,7 +704,6 @@ fn registered(class: &Class) -> ClassEntry<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ptr;
 
     #[test]
     fn a_plain_class_registers_through_register() {

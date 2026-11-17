@@ -703,7 +703,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no getifaddrs")]
     fn create_makes_the_mode_factory_and_its_tables() {
         let mut live = LiveServer::new();
         live.forget_tables(true);
@@ -747,7 +746,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no getifaddrs")]
     fn create_retry_rejects_more_ports_than_the_retained_mapping() {
         let mut live = LiveServer::new();
         live.forget_tables(true);
@@ -779,7 +777,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no getifaddrs")]
     fn create_retry_rejects_more_workers_than_the_retained_mapping() {
         let mut live = LiveServer::new();
         live.forget_tables(true);
@@ -1014,7 +1011,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no getifaddrs")]
     fn destroy_joins_the_reactors_before_the_factory_stops() {
         for mode in [Mode::Base, Mode::Process] {
             let mut live = LiveServer::new();
@@ -1066,7 +1062,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no getifaddrs")]
     fn an_abandoned_base_server_frees_its_tables_and_factory_only() {
         let mut live = LiveServer::new();
         live.forget_tables(true);

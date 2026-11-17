@@ -155,7 +155,7 @@ impl Drop for FixedPool {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
+#[cfg_attr(miri, ignore = "Miri has no PROT_NONE mappings")]
 fn shared_mappings_are_zeroed_protected_and_freed() {
     let memory = sw_shm_calloc(4, 25).cast::<u8>();
     assert!(!memory.is_null());
@@ -185,7 +185,6 @@ fn shared_mappings_are_zeroed_protected_and_freed() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn a_freed_shm_field_is_null_and_freeing_it_again_unmaps_nothing() {
     let mut field = Shm::calloc(2, 8);
     assert!(!field.is_null());
@@ -279,7 +278,10 @@ fn a_fixed_pool_refuses_a_pointer_inside_a_slice() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
+#[cfg_attr(
+    miri,
+    ignore = "Miri counts the pools kept for the process's life as leaks"
+)]
 fn words_stay_mapped_after_the_pool_is_deleted() {
     crate::swr_v1_core_set_pagesize(4096);
     // Twice: each kept pool stays reachable, so LeakSanitizer reports neither.
@@ -306,7 +308,6 @@ fn global_memory_bump_allocates_zeroed_blocks_within_a_page() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn a_forked_process_starts_its_own_shared_pool_and_keeps_the_inherited_one() {
     crate::swr_v1_core_set_pagesize(4096);
     for shared in [false, true] {
@@ -331,7 +332,6 @@ fn a_forked_process_starts_its_own_shared_pool_and_keeps_the_inherited_one() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn threads_racing_to_replace_a_forked_pool_all_get_the_one_published() {
     crate::swr_v1_core_set_pagesize(4096);
     for _ in 0..20 {

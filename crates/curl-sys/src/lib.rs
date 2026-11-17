@@ -5,6 +5,13 @@
     non_camel_case_types,
     reason = "the C type names, as curl.h spells them"
 )]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::undocumented_unsafe_blocks,
+        clippy::multiple_unsafe_ops_per_block
+    )
+)]
 
 use std::ffi::{c_int, c_long, c_void};
 use std::marker::PhantomData;

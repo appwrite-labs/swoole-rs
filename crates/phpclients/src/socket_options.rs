@@ -759,7 +759,8 @@ unsafe extern "C" {
         fd: &mut c_int,
     ) -> c_int;
     /// The stream `zstream` holds, if any, set unbuffered for reads; nothing
-    /// for any other value. Raises no error and runs no PHP code.
+    /// for any other value. A user stream wrapper's `stream_set_option` runs
+    /// PHP, which may bail out.
     safe fn swr_zend_stream_unbuffer(zstream: &Value);
 }
 
@@ -802,7 +803,9 @@ fn import(call: &Call) {
             Ok(None) => return call.set_bool(false),
             Err(error) => return error.defer(),
         };
-    swr_zend_stream_unbuffer(stream_value);
+    bailout::defer(swoole_rs_zend::contain_with(|| {
+        swr_zend_stream_unbuffer(stream_value);
+    }));
     call.set_owned(object);
 }
 

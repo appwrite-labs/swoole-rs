@@ -194,7 +194,7 @@ fn read_error(n: &mut impl Connection) -> Failure {
 fn raw(n: &mut impl Connection) -> bool {
     n.use_recv_buffer();
     let Some(received) = n.recv(true) else {
-        if let Failure::Close = read_error(n) {
+        if matches!(read_error(n), Failure::Close) {
             n.close();
         }
         return true;

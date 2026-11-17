@@ -587,7 +587,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
     fn pop_message_takes_the_oldest_message_from_the_box() {
         // SAFETY: a zeroed record is a pool before `create`.
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };

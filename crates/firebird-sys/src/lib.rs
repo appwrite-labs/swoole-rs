@@ -12,6 +12,13 @@
     non_camel_case_types,
     reason = "the C type names, as ibase.h spells them"
 )]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::undocumented_unsafe_blocks,
+        clippy::multiple_unsafe_ops_per_block
+    )
+)]
 
 use std::ffi::{c_char, c_int, c_short, c_uint, c_ushort, c_void};
 
@@ -21,16 +28,6 @@ pub type ISC_STATUS = isize;
 pub type FB_API_HANDLE = c_uint;
 /// `ISC_SCHAR`.
 pub type ISC_SCHAR = c_char;
-/// `XSQLDA`, only ever passed by pointer here.
-#[repr(C)]
-pub struct XSQLDA {
-    _opaque: [u8; 0],
-}
-/// `ISC_QUAD`, only ever passed by pointer here.
-#[repr(C)]
-pub struct ISC_QUAD {
-    _opaque: [u8; 0],
-}
 
 /// The caller's status vector (`ISC_STATUS_ARRAY`): writable for its 20 entries.
 #[repr(transparent)]
@@ -63,16 +60,16 @@ impl<T> Clone for Out<T> {
 
 impl<T> Copy for Out<T> {}
 
-/// A descriptor area: null where the call takes none, else allocated for its own
+/// An `XSQLDA *` descriptor area: null where the call takes none, else allocated for its own
 /// `sqln` entries, whose data and indicator buffers are live for the call.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub struct Sqlda(*mut XSQLDA);
+pub struct Sqlda(*mut c_void);
 
-/// A blob id, which the call reads (open) or writes (create).
+/// An `ISC_QUAD *` blob id, which the call reads (open) or writes (create).
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub struct Quad(*mut ISC_QUAD);
+pub struct Quad(*mut c_void);
 
 /// The caller's `ISC_VERSION_CALLBACK`, which takes the [`VersionArg`] passed beside
 /// it and each version line, and only touches what that argument lends it.
@@ -84,6 +81,26 @@ pub struct VersionCallback(*const c_void);
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct VersionArg(*mut c_void);
+
+/// One database's part of a transaction (`why.cpp`'s `TEB`, the vector
+/// `isc_start_multiple` reads): its handle, and its TPB with the TPB's length.
+#[repr(C)]
+pub struct Teb {
+    pub database: Handle,
+    pub tpb_length: c_int,
+    pub tpb: Bytes,
+}
+
+const _: () = assert!(
+    std::mem::offset_of!(Teb, tpb) == 2 * size_of::<*const u8>(),
+    "why.cpp's TEB: a pointer, an int, a pointer"
+);
+
+/// How many [`Teb`]s `isc_start_multiple` reads: the one it is given.
+#[repr(i16)]
+pub enum TebCount {
+    One = 1,
+}
 
 // None of these keeps an argument past the call or runs a callback but
 // `isc_version`'s, and each reports through its status vector.
@@ -125,13 +142,12 @@ unsafe extern "C" {
         stmt: Handle,
         option: c_ushort,
     ) -> ISC_STATUS;
-    /// Variadic: each database handle is followed by its TPB length (`usize`) and
-    /// TPB ([`Bytes`]).
-    pub safe fn isc_start_transaction(
+    /// What the variadic `isc_start_transaction` calls with the vector it builds.
+    pub safe fn isc_start_multiple(
         status: Status,
         tr: Handle,
-        count: c_short,
-        ...
+        count: TebCount,
+        tebs: &Teb,
     ) -> ISC_STATUS;
     pub safe fn isc_commit_retaining(status: Status, tr: Handle) -> ISC_STATUS;
     pub safe fn isc_commit_transaction(status: Status, tr: Handle) -> ISC_STATUS;

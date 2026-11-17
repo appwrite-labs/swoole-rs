@@ -167,6 +167,8 @@ ports and expected values), run by `hooks-system-rust`; with reactor/base.cpp al
 Rust's record (`swr_v1_socket`): its
 out-of-line members are called under their upstream symbols and its inline ones
 through the `swr_v1_socket_*` calls the header makes; `Address` is address.rs's.
+`ssl_get_error_reason` calls corebase's typed reason-code/static-string primitive;
+its null-reason, queue-order and text assertions remain the upstream assertions.
 `ERR_put_error` is OpenSSL 3's expansion (`ERR_new`, `ERR_set_debug`,
 `ERR_set_error`); `sw_tg_buffer()` reads become a 64 KiB buffer; upstream's mutex
 handoff between the two threads is a channel. Excluded as in the GoogleTest run:

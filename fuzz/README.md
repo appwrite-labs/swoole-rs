@@ -38,6 +38,10 @@ upstream's field types) with `swoole_rs_http::Request`. Inputs outside the compa
 domain are not compared; the candidate is still checked. Seeds include the requests
 `http.client` sends for the corpus applications.
 
+`http_proxy` hands any bytes, as an HTTP proxy's reply to the client's CONNECT, to
+`swoole_rs_http_ffi::proxy_accept` and to `HttpProxy::handshake` from the pinned http.cc:
+whether the tunnel is up and the last error they set must match.
+
 `http_header_info` runs `Request::parse_header_info` on both engines over any
 request head (up to its blank line): content length, keep-alive, chunked and
 excepted (a Transfer-Encoding not ending in chunked) flags, errno and the multipart boundary must match. `http_range`
@@ -110,6 +114,13 @@ to a URL (pattern, replacement and URL split at NUL): compiling and matching end
 pattern of letters, digits and `/` replaces each occurrence as literal text. ClusterFuzzLite
 links libc++, not the libstdc++ upstream's `std::regex` comes from, so the comparison with
 upstream is `tests/modules/http/rewrite.rs`'s, in `http-unit`.
+`http_static_path` runs a request URL through the static handler's file selection
+(`HttpStaticContext::try_serve`, `try_serve_index_file` and the index page), with the
+flags byte before it choosing the index, autoindex, MIME and location settings and the
+filename's capacity, over a tree in which `realpath` resolves `.`, `..` and links
+lexically: nothing panics, and a file it serves (rather than the 404 page a matched
+location answers with) for a URL starting with `/` lies inside the document root. The
+comparison with upstream's handler is `crates/server/src/static_handler/tests.rs`'s.
 `ws_inflate` hands any bytes to `swoole_rs_inflate::message` (permessage-deflate,
 RFC 7692), then deflates the rest with `swoole_rs_deflate::message` at the level the
 first byte picks: inflating that gives the rest back. `http_inflate` compresses a body
