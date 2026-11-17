@@ -200,15 +200,6 @@ impl<'a> Server<'a> {
         self.state().config_ref()
     }
 
-    /// Take ownership of the worker message bus's current packet.
-    #[cfg(feature = "upstream-symbols")]
-    #[must_use]
-    pub fn move_worker_packet(self) -> Option<swoole_rs_corebase::buffer::string::OwnedString> {
-        crate::master_ops::worker_message_bus(self.state())
-            .rust()
-            .move_packet()
-    }
-
     /// `set_allocator(allocator)` on the server's own `MessageBus`, or with
     /// `worker` on `get_worker_message_bus()`: the bus allocates its packets with
     /// `allocator` from now on.

@@ -99,7 +99,7 @@ pub(crate) struct Session<'a> {
 
 impl Session<'_> {
     /// `Server::dispatch_task` of `data` to the workers; whether it went.
-    pub(crate) fn task(self, data: swoole_rs_server::reactor_entry::RecvData<'_>) -> bool {
+    pub(crate) fn task(self, data: swoole_rs_server::SendData<'_>) -> bool {
         swoole_rs_server::reactor_entry::dispatch_data(self.server, self.conn, data)
     }
 }
@@ -223,10 +223,7 @@ pub mod exports {
             };
             buffer.append(payload.unwrap_or_default());
             if decision.action == Action::Finish {
-                s.task(swoole_rs_server::reactor_entry::RecvData::new(
-                    head,
-                    buffer.view(),
-                ));
+                s.task(swoole_rs_server::SendData::new(head, buffer.view()));
                 buffer.dispose();
             } else {
                 conn.set_websocket_buffer(buffer);
@@ -238,8 +235,8 @@ pub mod exports {
         }
         let task = |payload: Option<&[u8]>| {
             s.task(match payload {
-                Some(payload) => swoole_rs_server::reactor_entry::RecvData::new(head, payload),
-                None => swoole_rs_server::reactor_entry::RecvData::empty(head),
+                Some(payload) => swoole_rs_server::SendData::new(head, payload),
+                None => swoole_rs_server::SendData::empty(head),
             })
         };
         match decision.action {

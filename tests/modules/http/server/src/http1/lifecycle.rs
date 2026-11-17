@@ -922,7 +922,7 @@ fn kill_on_connect(_: view::Server<'_>, ev: &DataHead) {
     counter_set(5, worker_id(current_worker()).cast_signed());
 }
 
-fn kill_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn kill_on_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let (session, _) = request(req);
     Server(serv.raw()).send(session, b"OK");
     counter_incr(0, 1);
@@ -1263,7 +1263,7 @@ fn base_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     unlock();
 }
 
-fn base_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn base_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let serv = Server(serv.raw());
     let (session, data) = request(req);
     expect(data == PACKET, "string(req->data, req->info.len) == packet");
@@ -1286,7 +1286,7 @@ fn base_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
         "get_primary_port()->get_connection_num() == 1",
     );
 
-    let packet = serv.view().move_worker_packet();
+    let packet = req.take_packet();
     expect(
         packet
             .as_ref()
@@ -1400,7 +1400,7 @@ fn process_kill_timer(serv: Server, _: Held) {
     kill_worker(serv, id as c_int);
 }
 
-fn process_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn process_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let serv = Server(serv.raw());
     let (session, data) = request(req);
     expect(data == PACKET, "string(req->data, req->info.len) == packet");

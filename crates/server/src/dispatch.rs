@@ -593,19 +593,11 @@ mod tests {
         assert_eq!(idle.live.state().next_round(), 6, "four tries after two");
     }
 
-    fn to_six(
-        _: Server<'_>,
-        _: Option<crate::Connection<'_>>,
-        _: Option<&crate::reactor_entry::RecvData>,
-    ) -> c_int {
+    fn to_six(_: Server<'_>, _: Option<crate::Connection<'_>>, _: Option<&SendData>) -> c_int {
         6
     }
 
-    fn fall_back(
-        _: Server<'_>,
-        _: Option<crate::Connection<'_>>,
-        _: Option<&crate::reactor_entry::RecvData>,
-    ) -> c_int {
+    fn fall_back(_: Server<'_>, _: Option<crate::Connection<'_>>, _: Option<&SendData>) -> c_int {
         USERFUNC_FALLBACK
     }
 

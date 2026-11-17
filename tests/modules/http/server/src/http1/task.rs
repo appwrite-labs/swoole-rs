@@ -1111,7 +1111,7 @@ fn thread_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
     Server(serv.raw()).send_pipe_message(1 - worker.id(), TEST_STR);
 }
 
-fn thread_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn thread_on_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let serv = Server(serv.raw());
     let (session, data) = request(req);
     check(data == PACKET, "string(req->data, req->info.len) == packet");
@@ -1223,7 +1223,7 @@ fn task_thread_on_task(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
     0
 }
 
-fn task_thread_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn task_thread_on_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let (client_fd, data) = request(req);
     check(data == PACKET, "string(req->data, req->info.len) == packet");
 
@@ -1330,7 +1330,7 @@ fn no_idle_on_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     shared().unlocked.store(true, Ordering::SeqCst);
 }
 
-fn no_idle_on_receive(serv: view::Server<'_>, _: &RecvData) -> c_int {
+fn no_idle_on_receive(serv: view::Server<'_>, _: &mut RecvData<'_>) -> c_int {
     let serv = Server(serv.raw());
     for _ in 0..1024 {
         let mut dst_worker_id = -1;

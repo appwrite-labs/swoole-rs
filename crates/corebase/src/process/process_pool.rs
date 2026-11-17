@@ -571,10 +571,17 @@ impl<'a> PoolRef<'a> {
     }
 }
 
-/// `swoole::RecvData`: a message's head and its bytes, lent for one `onMessage`.
+/// `swoole::RecvData`: a message's head and its bytes, for one callback: lent by
+/// their holder, or a packet the callback owns and may take
+/// ([`RecvData::take_packet`]), freed with it otherwise.
 pub struct RecvData<'a> {
     info: DataHead,
-    data: &'a [u8],
+    payload: Payload<'a>,
+}
+
+enum Payload<'a> {
+    Lent(&'a [u8]),
+    Owned(crate::buffer::string::OwnedString),
 }
 
 impl<'a> RecvData<'a> {
@@ -585,7 +592,18 @@ impl<'a> RecvData<'a> {
         let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
         Self {
             info: DataHead { len, ..info },
-            data: data.get(..len as usize).unwrap_or(data),
+            payload: Payload::Lent(data.get(..len as usize).unwrap_or(data)),
+        }
+    }
+
+    /// A message of `packet`, which the callback owns, its head's `len` the packet's
+    /// length (at most `u32::MAX`).
+    #[must_use]
+    pub fn owned(info: DataHead, packet: crate::buffer::string::OwnedString) -> Self {
+        let len = u32::try_from(packet.len()).unwrap_or(u32::MAX);
+        Self {
+            info: DataHead { len, ..info },
+            payload: Payload::Owned(packet),
         }
     }
 
@@ -594,9 +612,27 @@ impl<'a> RecvData<'a> {
         &self.info
     }
 
+    /// The message's bytes, at most its head's `len`; none once
+    /// [`RecvData::take_packet`] took them.
     #[must_use]
-    pub fn data(&self) -> &'a [u8] {
-        self.data
+    pub fn payload(&self) -> &[u8] {
+        let bytes = match &self.payload {
+            Payload::Lent(data) => data,
+            Payload::Owned(packet) => packet.view(),
+        };
+        bytes.get(..self.info.len as usize).unwrap_or(bytes)
+    }
+
+    /// `move_packet()`: the packet this message owns, now the caller's, or `None`
+    /// when its bytes are lent.
+    pub fn take_packet(&mut self) -> Option<crate::buffer::string::OwnedString> {
+        match core::mem::replace(&mut self.payload, Payload::Lent(&[])) {
+            Payload::Owned(packet) => Some(packet),
+            lent @ Payload::Lent(_) => {
+                self.payload = lent;
+                None
+            }
+        }
     }
 }
 
@@ -615,7 +651,7 @@ pub type MainLoopFn = fn(PoolRef<'_>, Worker<'_>) -> c_int;
 /// `onTask`: the task the worker read.
 pub type TaskFn = fn(PoolRef<'_>, Worker<'_>, Packed<'_>) -> c_int;
 /// `onMessage`: the message, lent for the call.
-pub type MessageFn = fn(PoolRef<'_>, &RecvData<'_>);
+pub type MessageFn = fn(PoolRef<'_>, &mut RecvData<'_>);
 /// `onWorkerMessage`: the `EventData` the master popped, as its bytes.
 pub type EventFn = fn(PoolRef<'_>, &[u8; crate::constants::SW_IPC_MAX_SIZE as usize]);
 /// `onWorkerError`.
@@ -754,7 +790,7 @@ impl PoolRef<'_> {
     }
 
     /// `onMessage(pool, message)`; nothing without one.
-    pub fn call_on_message(self, message: &RecvData<'_>) {
+    pub fn call_on_message(self, message: &mut RecvData<'_>) {
         if let Some(hook) = self.on_message() {
             hook(self, message);
         }
@@ -2923,7 +2959,7 @@ mod tests {
 
     #[test]
     fn async_loop_still_waits_after_pipe_registration_failure() {
-        fn on_message(_: PoolRef<'_>, _: &RecvData<'_>) {}
+        fn on_message(_: PoolRef<'_>, _: &mut RecvData<'_>) {}
         let mut fixture = Fixture::new(1);
         let mut script = Script::default();
         script.answers.insert(Op::AddPipe, -1);

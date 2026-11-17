@@ -81,20 +81,19 @@ fn bus_read(pool: Pool<'_>, sock: Option<Heap<'_>>) -> Option<usize> {
     sock.and_then(|sock| with_bus(pool, |bus| bus.read(*sock)).flatten())
 }
 
-/// `onMessage` with the bus's packet, then `message_bus->pop()`.
+/// `onMessage` with the bus's packet, taken out of the bus meanwhile (`onMessage`
+/// may take it), then `message_bus->pop()`.
 fn bus_deliver(pool: Pool<'_>) {
-    let Some((info, packet)) = with_bus(pool, |bus| (bus.head(), bus.packet())) else {
+    let taken = with_bus(pool, |bus| (bus.head(), bus.rust().take_packet()));
+    let Some((info, mut packet)) = taken else {
         return;
     };
-    let data = if packet.data.is_null() {
-        &[][..]
-    } else {
-        // SAFETY: the bus's packet, `length` bytes it keeps until it pops or reads
-        // again, which only this worker's loop does, once `onMessage` returns.
-        unsafe { core::slice::from_raw_parts(packet.data.cast::<u8>(), packet.length) }
-    };
-    pool.call_on_message(&RecvData::new(info, data));
-    PoolBus::with_pool(pool, |bus| bus.parts().0.pop());
+    pool.call_on_message(&mut packet.receive(info));
+    PoolBus::with_pool(pool, |bus| {
+        let bus = bus.parts().0;
+        bus.restore(packet);
+        bus.pop();
+    });
 }
 
 /// The pool's new bus, owned, or None when its counter can't be allocated.
@@ -236,7 +235,7 @@ fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
     };
     // The bytes read: none when the read failed.
     let read = packet.get(..n.unwrap_or(0)).unwrap_or_default();
-    pool.call_on_message(&RecvData::new(info, read));
+    pool.call_on_message(&mut RecvData::new(info, read));
     0
 }
 
@@ -667,7 +666,8 @@ impl PoolNative for Native {
             reactor_id: -1,
             ..DataHead::default()
         };
-        c.pool().call_on_message(&RecvData::new(info, c.bytes()));
+        c.pool()
+            .call_on_message(&mut RecvData::new(info, c.bytes()));
     }
 
     fn shutdown(&self, c: &PoolCall) {

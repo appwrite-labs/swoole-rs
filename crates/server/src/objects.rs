@@ -7,7 +7,7 @@ use core::ffi::{c_int, c_void};
 use swoole_rs_corebase::reactor::{Heap, Socket};
 use swoole_rs_corebase::{DataHead, TrustedAllocator};
 
-use swoole_rs_bus::{BusPacket, MessageBus};
+use swoole_rs_bus::MessageBus;
 
 use crate::pool_native::PoolBus;
 use swoole_rs_corebase::reactor::{if_exit, reactor_wait};
@@ -90,35 +90,19 @@ impl<'a> Bus<'a> {
     pub(crate) fn head(self) -> DataHead {
         self.rust().head()
     }
-    /// The whole packet the bus holds.
-    #[inline]
-    pub(crate) fn packet(self) -> BusPacket {
-        self.rust().packet()
-    }
-    /// `f` over the bytes of the packet the bus holds, which stay put while it runs.
+    /// `f` over the bytes of the packet the bus holds, which it lends meanwhile.
     pub(crate) fn with_packet<R>(self, f: impl FnOnce(&[u8]) -> R) -> R {
-        self.with_message(&DataHead::default(), |message| f(message.payload()))
+        self.rust().with_packet(f)
     }
     /// `f` over the message the bus holds: a copy of `info`, its `len` the packet's,
-    /// and the packet's bytes, which stay put while it runs.
+    /// and the packet's bytes, which the bus lends meanwhile.
     #[inline]
     pub(crate) fn with_message<R>(
         self,
         info: &DataHead,
         f: impl FnOnce(&crate::base_factory::SendData<'_>) -> R,
     ) -> R {
-        let packet = self.packet();
-        let head = DataHead {
-            len: u32::try_from(packet.length).unwrap_or(u32::MAX),
-            ..*info
-        };
-        if packet.data.is_null() {
-            return f(&crate::base_factory::SendData::empty(head));
-        }
-        // SAFETY: the bus's packet, `length` bytes it keeps until it pops or reads
-        // again, which this thread alone would do and not during `f`.
-        let data = unsafe { core::slice::from_raw_parts(packet.data.cast(), packet.length) };
-        f(&crate::base_factory::SendData::new(head, data))
+        self.with_packet(|data| f(&crate::base_factory::SendData::lent(*info, data)))
     }
     /// `f` over the event the bus just read whole into its buffer, as its sender
     /// packed it: an `EventData`, its head and the payload the head counts. `None`,

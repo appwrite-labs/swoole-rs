@@ -103,4 +103,4 @@ pub use server_object::SharedServer;
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 pub use tcp_info::tcp_fields;
 
-pub use reactor_ops::{pool_bus_move_packet, pool_bus_set_allocator};
+pub use reactor_ops::pool_bus_set_allocator;

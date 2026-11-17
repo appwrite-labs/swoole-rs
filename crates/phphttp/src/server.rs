@@ -224,8 +224,8 @@ fn cached(
 /// `onReceive`, or parse it into a new context and run its handler. A
 /// bailout (a handshake's `onOpen`, the handler's `exit()`) is raised last.
 #[must_use]
-pub fn http_server_on_receive(server: view::Server<'_>, request: &RecvData) -> bool {
-    let info = request.info();
+pub fn http_server_on_receive(server: view::Server<'_>, request: &mut RecvData<'_>) -> bool {
+    let info = *request.info();
     match receive(server, request) {
         Route::Closed => false,
         Route::Tcp => {
@@ -245,8 +245,8 @@ pub fn http_server_on_receive(server: view::Server<'_>, request: &RecvData) -> b
     }
 }
 
-fn receive(server: view::Server<'_>, request: &RecvData) -> Route {
-    let info = request.info();
+fn receive(server: view::Server<'_>, request: &mut RecvData<'_>) -> Route {
+    let info = *request.info();
     let (session, server_fd) = (info.fd, c_int::from(info.server_fd));
     let Some(conn) = server.verified(session) else {
         host::log(

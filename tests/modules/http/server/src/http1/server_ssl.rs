@@ -225,14 +225,14 @@ impl Drop for SyncClient {
 }
 
 /// The `onReceive` of `ssl`, `dtls`, `dtls2` and `ssl_client_cert`: `Server: ` and the packet.
-fn reply(serv: Server, req: &RecvData) -> c_long {
+fn reply(serv: Server, req: &RecvData<'_>) -> c_long {
     let (session, data) = request(req);
     check(data == PACKET, "string(req->data, req->info.len) == packet");
     serv.send(session, &[b"Server: ", PACKET].concat());
     session
 }
 
-fn echo_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn echo_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     reply(Server(serv.raw()), req);
     SW_OK
 }
@@ -324,7 +324,7 @@ fn ssl_error_start(serv: view::Server<'_>) {
     });
 }
 
-fn ignore_receive(_: view::Server<'_>, _: &RecvData) -> c_int {
+fn ignore_receive(_: view::Server<'_>, _: &mut RecvData<'_>) -> c_int {
     SW_OK
 }
 
@@ -396,7 +396,7 @@ fn ssl_write_start(serv: view::Server<'_>) {
     });
 }
 
-fn ssl_write_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn ssl_write_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let (session, _) = request(req);
     check(
         Server(serv.raw()).send(session, wbuf()),
@@ -614,7 +614,7 @@ fn client_cert_start(serv: view::Server<'_>) {
     });
 }
 
-fn client_cert_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn client_cert_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let serv = Server(serv.raw());
     let session = reply(serv, req);
 

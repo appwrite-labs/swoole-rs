@@ -261,8 +261,7 @@ impl Connection for Read<'_> {
                 let max_length = self.port.protocol.get().package_max_length;
                 let buffer = Lent::new(self.buffer());
                 // A redis port's `onPackage` is `dispatch_task`.
-                let dispatch =
-                    |data: swoole_rs_server::reactor_entry::RecvData<'_>| session.task(data);
+                let dispatch = |data: swoole_rs_server::SendData<'_>| session.task(data);
                 crate::resp_recv::recv_packet(
                     max_length,
                     session.conn,
@@ -313,7 +312,7 @@ impl Connection for Read<'_> {
             let bytes = self.buffer().view();
             let length = usize::try_from(length).unwrap_or(usize::MAX);
             let data = bytes.get(..length).unwrap_or(bytes);
-            session.task(swoole_rs_server::reactor_entry::RecvData::new(head, data))
+            session.task(swoole_rs_server::SendData::new(head, data))
         };
         if dispatch == Dispatch::Task {
             return dispatched;
