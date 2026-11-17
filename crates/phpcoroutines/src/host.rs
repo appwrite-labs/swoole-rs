@@ -339,8 +339,9 @@ pub fn counts() -> (usize, u64) {
     (count(), swoole_rs_corebase::coroutine::counters().peak_num)
 }
 
-/// Switch to `co` if it is parked. The caller's frames must own nothing that needs
-/// a drop: a bailout in the coroutine may longjmp across them on the main stack.
+/// Switch to `co`, which callers pass parked. The caller's frames must own nothing
+/// that needs a drop: a bailout in the coroutine may longjmp across them on the
+/// main stack.
 pub(crate) fn resume(co: Co) {
     // SAFETY: callers own the park they end: a waiter they took off a queue it
     // parked itself on (channels, joins, autoloads), the canceler or the user

@@ -183,7 +183,8 @@ pub const ON_RESUME: u32 = 1;
 pub const ON_CLOSE: u32 = 2;
 
 impl Scheduler {
-    /// Takes the next id, seeds `co` (which `native` embeds) and makes it live.
+    /// Takes the next id, seeds `co` (a fresh, idle record that `native` embeds) and
+    /// makes it live.
     /// Returns whether the scheduler needs activating.
     #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn register(
@@ -195,14 +196,12 @@ impl Scheduler {
     ) -> bool {
         self.last_cid = self.last_cid.wrapping_add(1);
         let cid = self.last_cid;
+        // A fresh record is idle already: only its own fields change.
         co.with(|co| {
-            *co = Coroutine {
-                native,
-                cid,
-                init_msec,
-                switch_usec: now,
-                ..Coroutine::idle()
-            };
+            co.native = native;
+            co.cid = cid;
+            co.init_msec = init_msec;
+            co.switch_usec = now;
         });
         self.insert(cid, co);
         let count = self.count() as u64;
@@ -539,11 +538,12 @@ impl Waker {
     }
 }
 
-/// `co->resume()` of live coroutine `cid` while it is parked; nothing otherwise.
+/// `co->resume()` of live coroutine `cid`; nothing when none lives. The caller
+/// knows it parked: it owns the park.
 #[inline]
-pub(crate) fn resume_cid(s: Sched, cid: c_long) {
+pub(crate) fn resume_live(s: Sched, cid: c_long) {
     if let Some(co) = s.with(|s| s.live_co(cid)) {
-        resume_parked(s, co);
+        resume(s, co);
     }
 }
 
@@ -922,7 +922,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_resume_by_id_switches_only_into_a_parked_coroutine() {
+    fn a_wake_by_id_switches_only_into_a_parked_coroutine() {
         take_events();
         let mut s = scheduler();
         let sp = &raw mut s;
@@ -934,16 +934,21 @@ pub(crate) mod tests {
             (*sp).register(Co::of(a).unwrap(), 10 as *mut c_void, 0, 0);
             swr_v1_coroutine_run(sp, a);
             let (s, co) = (Sched::of(sp).unwrap(), Co::of(a).unwrap());
+            let resume_cid = |cid| {
+                if let Some(co) = s.with(|s| s.live_co(cid)) {
+                    resume_parked(s, co);
+                }
+            };
             // Running, or no coroutine of that id: nothing.
-            resume_cid(s, 1);
-            resume_cid(s, 2);
+            resume_cid(1);
+            resume_cid(2);
             // Marked waiting by its yield, but still running (its yield callback's
             // window): nothing.
             (*a).state = State::Waiting;
-            resume_cid(s, 1);
+            resume_cid(1);
             (*a).state = State::Running;
             yield_(s, co);
-            resume_cid(s, 1);
+            resume_cid(1);
             assert_eq!(((*sp).current, (*a).state), (a, State::Running));
         }
         assert_eq!(take_events(), ["in 10", "out 10", "in 10"]);

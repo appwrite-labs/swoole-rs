@@ -5,9 +5,8 @@ use crate::StringSlot;
 use crate::resolver::{DIAGNOSTIC_FAILED, gethostbyname, ntop, resolve_addresses};
 use core::cell::Cell;
 use core::ffi::{c_char, c_int};
-use core::sync::atomic::{AtomicUsize, Ordering};
 use std::ffi::CString;
-use std::ptr::NonNull;
+use std::sync::Arc;
 
 #[derive(Clone, Copy)]
 pub struct ResolverFields {
@@ -32,7 +31,6 @@ pub enum ResolveError {
 /// `lookup` the results whole, and readers take them out and put them back around a
 /// copy.
 pub struct ResolverRequest {
-    refs: AtomicUsize,
     fields: Cell<ResolverFields>,
     strings: [StringSlot; 2],
     address: Cell<StringSlot>,
@@ -77,9 +75,8 @@ fn copied(addresses: &[libc::sockaddr_in6]) -> Option<Vec<libc::sockaddr_in6>> {
 }
 
 impl ResolverRequest {
-    fn boxed(family: c_int, socktype: c_int, protocol: c_int) -> Box<Self> {
-        Box::new(Self {
-            refs: AtomicUsize::new(1),
+    fn new(family: c_int, socktype: c_int, protocol: c_int) -> Self {
+        Self {
             fields: Cell::new(ResolverFields {
                 family,
                 socktype,
@@ -90,7 +87,7 @@ impl ResolverRequest {
             strings: std::array::from_fn(|_| StringSlot::default()),
             address: Cell::default(),
             results: Cell::new(Vec::new()),
-        })
+        }
     }
 
     /// A record for `name` and `service`, held by the one reference returned;
@@ -103,12 +100,19 @@ impl ResolverRequest {
         name: &[u8],
         service: &[u8],
     ) -> Option<ResolverRef> {
-        let mut record = Self::boxed(family, socktype, protocol);
+        let mut record = Self::new(family, socktype, protocol);
         let [name_slot, service_slot] = &mut record.strings;
         if !name_slot.set(name) || !service_slot.set(service) {
             return None;
         }
-        Some(ResolverRef(NonNull::from(Box::leak(record))))
+        #[expect(
+            clippy::arc_with_non_send_sync,
+            reason = "each event and each pool copy of it holds a reference, counted \
+                      atomically as the hand-rolled count before it was; the pool thread \
+                      writes the record while its coroutine waits, which reads it only \
+                      after a completed await"
+        )]
+        Some(Arc::new(record))
     }
 
     /// The hints and results.
@@ -240,39 +244,9 @@ impl ResolverRequest {
     }
 }
 
-/// One reference to a record [`ResolverRequest::create`] leaked: it reads the
-/// record, which it keeps live, and gives the reference up when it drops. A clone
-/// takes another reference. Transparent over the record's address, which C carries
-/// as `AsyncEvent::data`.
-#[repr(transparent)]
-pub struct ResolverRef(NonNull<ResolverRequest>);
-
-impl Clone for ResolverRef {
-    fn clone(&self) -> Self {
-        self.refs.fetch_add(1, Ordering::Relaxed);
-        Self(self.0)
-    }
-}
-
-impl core::ops::Deref for ResolverRef {
-    type Target = ResolverRequest;
-
-    fn deref(&self) -> &ResolverRequest {
-        // SAFETY: the leaked record, which this reference keeps live.
-        unsafe { self.0.as_ref() }
-    }
-}
-
-impl Drop for ResolverRef {
-    /// Drops the reference; the last frees the record.
-    fn drop(&mut self) {
-        if self.refs.fetch_sub(1, Ordering::Release) == 1 {
-            core::sync::atomic::fence(Ordering::Acquire);
-            // SAFETY: that was the last reference to the leaked box.
-            drop(unsafe { Box::from_raw(self.0.as_ptr()) });
-        }
-    }
-}
+/// One reference to a record [`ResolverRequest::create`] made; the last frees it.
+/// C carries an event's as `AsyncEvent::data` and never reads it.
+pub type ResolverRef = Arc<ResolverRequest>;
 
 /// One address as text; `valid` false if it does not format.
 struct ResolverText {
@@ -326,7 +300,7 @@ mod completion_tests {
         let copy = request.clone();
         drop(request);
         // The pool copy's reference keeps the record after its request went.
-        assert_eq!(copy.refs.load(Ordering::Relaxed), 1);
+        assert_eq!(Arc::strong_count(&copy), 1);
         drop(copy);
     }
 }
