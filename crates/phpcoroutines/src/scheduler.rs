@@ -1,9 +1,10 @@
 //! `Swoole\Coroutine\Scheduler`, the coroutine options (`Co::set()`,
 //! `Co::getOptions()`, `php_swoole_set_coroutine_option`) and the reactor's
 //! user exit condition: what `swoole_coroutine_scheduler.cc` held.
-use crate::{host, put_back, runtime};
+use crate::{host, runtime};
 use std::{cell::Cell, collections::VecDeque, mem::ManuallyDrop, rc::Rc};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::CellExt;
 use swoole_rs_phpstubs::coroutine_scheduler;
 use swoole_rs_zend::host::callable as kept;
 use swoole_rs_zend::{
@@ -33,7 +34,7 @@ per_thread! {
 /// runs no PHP code, which could register or remove one; a reference it
 /// removes is returned, to release after.
 pub fn name_resolvers<R>(f: impl FnOnce(&mut Vec<Owned>) -> R) -> R {
-    NAME_RESOLVERS.with(|kept| put_back(kept, f))
+    NAME_RESOLVERS.with(|kept| kept.with_taken(f))
 }
 
 /// One `add()` or `parallel()`: its kept callable and how many coroutines run it.
@@ -134,7 +135,7 @@ fn refuse(call: &Call, state: &str, method: &str) {
 /// Queue a task with its callable kept past the call.
 fn queue(scheduler: &Scheduler, callable: Parsed, count: i64) {
     let callable = callable.keep(None);
-    put_back(&scheduler.list, |list| {
+    scheduler.list.with_taken(|list| {
         list.push_back(Task { callable, count });
     });
 }
@@ -180,14 +181,14 @@ fn start(call: &Call) {
         return;
     }
     scheduler.started.set(true);
-    if put_back(&scheduler.list, |list| list.is_empty()) {
+    if scheduler.list.with_taken(|list| list.is_empty()) {
         host::fatal_error(E_WARNING, c"no coroutine task");
         call.set_bool(false);
         return;
     }
     // Each step pops before creating, so no frame here owns a task while a
     // coroutine runs.
-    let next = || put_back(&scheduler.list, Tasks::pop_front);
+    let next = || scheduler.list.with_taken(Tasks::pop_front);
     while let Some(task) = next() {
         for _ in 0..task.count {
             let (fcc, argc, argv, name) = task.callable.parts();
@@ -346,7 +347,7 @@ fn release_exit_condition() -> Result<(), Bailout> {
 /// Install `Co::set`'s exit condition, if it gave one, on this thread's
 /// reactor, as `php_swoole_reactor_init` did for a new reactor.
 pub fn install_exit_condition() {
-    if EXIT_CONDITION.with(|c| put_back(c, |handle| handle.is_some())) {
+    if EXIT_CONDITION.with(|c| c.with_taken(|handle| handle.is_some())) {
         host::set_exit_condition(true);
     }
 }
@@ -366,7 +367,7 @@ pub(crate) fn reactor_can_exit(_event_num: &mut usize) -> bool {
 /// `php_swoole_coroutine_reactor_can_exit`: call the exit condition.
 fn can_exit() -> Result<bool, Bailout> {
     // Its own reference: the condition may replace itself (`Co::set`).
-    let Some(handle) = EXIT_CONDITION.with(|c| put_back(c, |handle| handle.clone())) else {
+    let Some(handle) = EXIT_CONDITION.with(|c| c.with_taken(|handle| handle.clone())) else {
         return Ok(true);
     };
     let retval = std::mem::ManuallyDrop::new(swoole_rs_zend::Owned::null());
@@ -404,7 +405,7 @@ fn get_options(call: &Call) {
     // RETURN_ARR(zend_array_dup(options)): a shared copy, which the next
     // edit separates from.
     let copy =
-        OPTIONS.with(|o| put_back(o, |options| options.as_ref().map(|options| options.copy())));
+        OPTIONS.with(|o| o.with_taken(|options| options.as_ref().map(|options| options.copy())));
     if let Some(copy) = copy {
         call.set_owned(copy);
     }

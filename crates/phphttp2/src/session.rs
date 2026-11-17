@@ -9,6 +9,7 @@ use std::{
     hash::{BuildHasherDefault, Hasher},
     rc::Rc,
 };
+use swoole_rs_corebase::CellExt;
 use swoole_rs_http2::{
     hpack::{Decoder, Encoder, Field},
     sw_rs_http2_default_settings,
@@ -112,12 +113,7 @@ thread_local! {
 /// `f` over the sessions, taken out and put back: nothing in `f` yields, runs
 /// PHP code or releases a session.
 fn with_sessions<R>(f: impl FnOnce(&mut Sessions) -> R) -> R {
-    SESSIONS.with(|cell| {
-        let mut sessions = cell.take();
-        let result = f(&mut sessions);
-        cell.set(sessions);
-        result
-    })
+    SESSIONS.with(|cell| cell.with_taken(f))
 }
 
 fn defaults() -> [u32; 6] {
@@ -165,22 +161,10 @@ impl SessionState {
         with_sessions(|sessions| sessions.get(&fd).cloned())
     }
 
-    /// `f` over the streams, taken out and put back: nothing in `f` yields,
-    /// runs PHP code or releases a stream.
-    fn with_streams<R>(&self, f: impl FnOnce(&mut Streams) -> R) -> R {
-        let mut streams = self.streams.take();
-        let result = f(&mut streams);
-        self.streams.set(streams);
-        result
-    }
-
     /// `f` over the HPACK encoder (`None` until made), taken out and put back:
     /// nothing in `f` yields or runs PHP code.
     pub(crate) fn with_deflater<R>(&self, f: impl FnOnce(&mut Option<Encoder>) -> R) -> R {
-        let mut deflater = self.deflater.take();
-        let result = f(&mut deflater);
-        self.deflater.set(deflater);
-        result
+        self.deflater.with_taken(f)
     }
 
     /// The connection's context: frames that belong to no stream go out on it.
@@ -205,7 +189,7 @@ impl SessionState {
     /// `get_stream`, or `create_stream` when `create`.
     pub(crate) fn stream(&self, id: u32, create: bool) -> Option<Stream> {
         if !create {
-            return self.with_streams(|streams| streams.get(&id).cloned());
+            return self.streams.with_taken(|streams| streams.get(&id).cloned());
         }
         let hold = self.default_ctx().stream_context(self.fd, id);
         let stream = Rc::new(StreamState {
@@ -219,7 +203,9 @@ impl SessionState {
             negotiates: Cell::new(false),
             waiting: swoole_rs_phpcoroutines::Waiter::default(),
         });
-        let replaced = self.with_streams(|streams| streams.insert(id, stream.clone()));
+        let replaced = self
+            .streams
+            .with_taken(|streams| streams.insert(id, stream.clone()));
         drop(replaced);
         Some(stream)
     }
@@ -227,12 +213,12 @@ impl SessionState {
     /// `remove_stream`: the stream is released once nothing holds it, and a
     /// response waiting on its window resumes to find it gone.
     pub(crate) fn remove(&self, id: u32) -> bool {
-        let removed = self.with_streams(|streams| streams.remove(&id));
+        let removed = self.streams.with_taken(|streams| streams.remove(&id));
         removed.is_none_or(|stream| stream.wake())
     }
 
     pub(crate) fn idle(&self) -> bool {
-        self.with_streams(|streams| streams.is_empty())
+        self.streams.with_taken(|streams| streams.is_empty())
     }
 
     /// `handle(session, stream)`: onRequest; a bailout waits for `finish`.
@@ -299,7 +285,9 @@ pub(crate) fn session_free(fd: i64) {
         return;
     };
     loop {
-        let next = session.with_streams(|streams| streams.keys().next().copied());
+        let next = session
+            .streams
+            .with_taken(|streams| streams.keys().next().copied());
         let Some(id) = next else { break };
         if !session.remove(id) {
             return;

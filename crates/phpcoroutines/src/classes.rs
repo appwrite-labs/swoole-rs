@@ -1,7 +1,7 @@
 //! MINIT: `Swoole\Coroutine` and its iterator, context and exception
 //! classes, the constants, `Swoole\ExitException`, the exit and `@` opcode
 //! handlers and the coroutine-aware autoloader.
-use crate::{context, host, put_back, runtime};
+use crate::{context, host, runtime};
 use std::{
     cell::Cell,
     collections::{HashMap, VecDeque},
@@ -11,11 +11,12 @@ use std::{
     rc::Rc,
     sync::OnceLock,
 };
+use swoole_rs_corebase::CellExt;
 use swoole_rs_phpstubs::{coroutine, coroutine_system};
 use swoole_rs_zend::{
     Call, Class, Minit, Owned, Value, ZStr,
     bailout::Bailout,
-    opcode::{Entry, Frame, Handler, Next, handler},
+    opcode::{Frame, Handler, Next, handler},
     sys::{ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, zend_class_entry},
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -221,9 +222,9 @@ fn hook_zend(_minit: &Minit) {
         /// `ZEND_BEGIN_SILENCE` and `ZEND_END_SILENCE`: Zend calls each with the
         /// live frame of its opcode.
         safe fn swr_zend_coroutine_opcodes(
-            exit: Option<Entry>,
-            begin_silence: Option<Entry>,
-            end_silence: Option<Entry>,
+            exit: Option<swoole_rs_zend::opcode::Entry>,
+            begin_silence: Option<swoole_rs_zend::opcode::Entry>,
+            end_silence: Option<swoole_rs_zend::opcode::Entry>,
         );
         /// `zend_autoload = handler`; returns the previous one, Zend's (SPL's
         /// `spl_perform_autoload` once registered), which takes two live names.
@@ -412,7 +413,7 @@ per_thread! {
 
 /// `f` on the classes being autoloaded, taken out meanwhile.
 fn autoloading<R>(f: impl FnOnce(&mut Loads) -> R) -> R {
-    AUTOLOADING.with(|loads| put_back(loads, f))
+    AUTOLOADING.with(|loads| loads.with_taken(f))
 }
 
 /// Run Zend's autoloader, trapping its bailouts.

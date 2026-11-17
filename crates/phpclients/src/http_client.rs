@@ -19,6 +19,7 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_http::llhttp::{self, Callbacks, Flow, Parser};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
@@ -2164,17 +2165,18 @@ fn get_header_out(call: &Call) {
         return;
     };
     // The buffer the socket's close left, which the conn keeps until the next close.
-    let written = client.conn.written.take();
     let respond = |data: &[u8]| match request::header_end(data) {
         Some(end) if end > 0 => call.set_bytes(data.get(..end).unwrap_or(data)),
         _ => call.set_bool(false),
     };
-    match (client.co(), written.buffer()) {
-        (Some(socket), _) => socket.with_write_buffer(|buffer| respond(buffer.view())),
-        (None, Some(buffer)) => respond(buffer.view()),
-        (None, None) => call.set_bool(false),
-    }
-    client.conn.written.set(written);
+    client
+        .conn
+        .written
+        .with_taken(|written| match (client.co(), written.buffer()) {
+            (Some(socket), _) => socket.with_write_buffer(|buffer| respond(buffer.view())),
+            (None, Some(buffer)) => respond(buffer.view()),
+            (None, None) => call.set_bool(false),
+        });
 }
 
 /// `getsockname(): array|false`.

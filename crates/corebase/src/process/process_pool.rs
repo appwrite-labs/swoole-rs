@@ -10,6 +10,7 @@
 //! the bailout trap; when it bails out, the export returns [`Bailed`] and its
 //! native caller raises the bailout again once the Rust frames are gone.
 
+use crate::BoxCellExt;
 use crate::CCast;
 use crate::DataHead;
 use crate::memory::{ChannelInitError, SharedChannel};
@@ -34,18 +35,8 @@ use crate::process::worker_registry::WorkerRegistry;
 /// The native pipe owners, kept alive at stable addresses until the pool closes.
 type Pipes = Vec<Box<dyn std::any::Any>>;
 /// A pool's boxed owner, one pointer wide in the record: replaced whole, and lent
-/// to one operation at a time by taking it out ([`lend`]).
+/// to one operation at a time by taking it out ([`BoxCellExt::with_box`]).
 type Owner<T> = core::cell::Cell<Option<Box<T>>>;
-
-/// `f` over what `owner` holds, taken out for the call so nothing reaches it
-/// meanwhile, then put back (dropping whatever `f` put there); `None` while it
-/// holds nothing.
-fn lend<T: ?Sized, R>(owner: &Owner<T>, f: impl FnOnce(&mut T) -> R) -> Option<R> {
-    let mut held = owner.take()?;
-    let result = f(&mut held);
-    drop(owner.replace(Some(held)));
-    Some(result)
-}
 
 /// `swoole::ProcessPool`'s fields, in order. Rust owns this layout; the C++ view
 /// takes its fields from here (`SWR_POOL_RECORD_FIELDS`, `tools/process_records.py`).
@@ -137,12 +128,12 @@ impl PoolObjectKey {
 impl PoolRecord {
     #[must_use]
     pub fn has_pipes(&self) -> bool {
-        lend(&self.pipes, |_| ()).is_some()
+        self.pipes.with_box(|_| ()).is_some()
     }
 
     #[must_use]
     pub fn has_message_bus(&self) -> bool {
-        lend(&self.message_bus, |_| ()).is_some()
+        self.message_bus.with_box(|_| ()).is_some()
     }
 
     /// A pool before `create`, as C's `ProcessPool pool = {}`: every field zero,
@@ -358,7 +349,10 @@ impl<'a> PoolRef<'a> {
     /// list is created; then `pipe` drops immediately.
     #[must_use]
     pub fn keep_pipe(self, pipe: Box<dyn std::any::Any>) -> bool {
-        lend(&self.record().pipes, |pipes| pipes.push(pipe)).is_some()
+        self.record()
+            .pipes
+            .with_box(|pipes| pipes.push(pipe))
+            .is_some()
     }
 
     fn set_pipes(self, pipes: Option<Box<Pipes>>) {
@@ -374,7 +368,7 @@ impl<'a> PoolRef<'a> {
     /// Lends the native bus to one operation, taken out of the pool meanwhile: no
     /// reference to it escapes, and the pool has no bus to drop until it returns.
     pub fn with_message_bus<R>(self, f: impl FnOnce(&dyn std::any::Any) -> R) -> Option<R> {
-        lend(&self.record().message_bus, |bus| f(bus.as_ref()))
+        self.record().message_bus.with_box(|bus| f(bus.as_ref()))
     }
 
     pub(crate) fn set_message_bus(self, bus: Option<Box<dyn std::any::Any>>) {
@@ -384,7 +378,7 @@ impl<'a> PoolRef<'a> {
     /// One operation on the reload in progress, with no borrow across callbacks:
     /// the task is out of the pool until `f` returns, so nothing else reaches it.
     pub fn with_reload_task<R>(self, f: impl FnOnce(&mut ReloadTask) -> R) -> Option<R> {
-        lend(&self.record().reload_task, f)
+        self.record().reload_task.with_box(f)
     }
 
     /// Arms the reload's timeout timer, then gives it to the task to cancel on
@@ -392,7 +386,9 @@ impl<'a> PoolRef<'a> {
     /// while `arm` runs. The timer keeps no pointer into the task: when it fires,
     /// it reaches the task through the pool ([`Self::with_reload_task`]).
     pub fn arm_reload_timer(self, arm: impl FnOnce() -> Option<ArmedTimer>) {
-        lend(&self.record().reload_task, |task| task.set_timer(arm()));
+        self.record()
+            .reload_task
+            .with_box(|task| task.set_timer(arm()));
     }
 
     fn set_reload_task(self, task: Option<Box<ReloadTask>>) {
