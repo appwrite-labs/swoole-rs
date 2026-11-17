@@ -5,7 +5,7 @@
 use crate as corebase;
 use crate::process::signal::{self, Handler};
 
-/// The event loop's side of the signal backends (crates/reactor).
+/// The event loop's side of the signal backends (`corebase::reactor`).
 pub struct Ops {
     /// Bit 0: signalfd; bit 1: kqueue.
     pub capabilities: fn() -> u8,

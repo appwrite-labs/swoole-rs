@@ -64,7 +64,7 @@ pub(super) fn wait() -> Result<(), Bailout> {
 pub(super) fn exit() -> Result<(), Bailout> {
     if has_reactor() {
         native::clear_timers()?;
-        swoole_rs_reactor::event_api::swoole_event_set_running(false);
+        swoole_rs_corebase::reactor::event_api::swoole_event_set_running(false);
     }
     Ok(())
 }
@@ -73,9 +73,9 @@ pub(super) fn dispatch() -> Result<bool, Bailout> {
     if !has_reactor() {
         return Ok(false);
     }
-    swoole_rs_reactor::event_api::swoole_event_set_once(true);
+    swoole_rs_corebase::reactor::event_api::swoole_event_set_once(true);
     wait_once()?;
-    swoole_rs_reactor::event_api::swoole_event_set_once(false);
+    swoole_rs_corebase::reactor::event_api::swoole_event_set_once(false);
     Ok(true)
 }
 

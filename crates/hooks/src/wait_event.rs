@@ -7,7 +7,7 @@ use crate::resolve::WakerSlot;
 use core::cell::Cell;
 use core::ffi::c_void;
 use swoole_rs_corebase::coroutine::Waker;
-pub use swoole_rs_reactor::Events;
+pub use swoole_rs_corebase::reactor::Events;
 
 pub use native::Watch;
 
@@ -43,7 +43,7 @@ impl Parked {
     }
 }
 
-impl swoole_rs_reactor::event_api::Deferred for Parked {
+impl swoole_rs_corebase::reactor::event_api::Deferred for Parked {
     fn run(self) {
         self.0.wake();
     }
@@ -161,8 +161,8 @@ pub(crate) mod native {
     use core::ffi::c_int;
     use swoole_rs_corebase::constants::FdType;
     use swoole_rs_corebase::log;
-    use swoole_rs_reactor::event_api::swoole_event_is_available;
-    use swoole_rs_reactor::{Events, SocketRecord};
+    use swoole_rs_corebase::reactor::event_api::swoole_event_is_available;
+    use swoole_rs_corebase::reactor::{Events, SocketRecord};
     use swoole_rs_tls::event_socket::EventSocket;
 
     /// `Coroutine::get_current_safe()`.

@@ -5,7 +5,7 @@ use core::ffi::c_int;
 use std::net::{SocketAddr, TcpListener};
 use std::os::fd::IntoRawFd;
 
-use swoole_rs_reactor::{Socket, SocketRecord};
+use swoole_rs_corebase::reactor::{Socket, SocketRecord};
 
 use crate::port_config::PortConfig;
 use crate::records::tests::naming_at;
@@ -33,7 +33,7 @@ pub(crate) struct LiveServer {
     port_counters: Rc<PortCounters>,
     listener: *mut SocketRecord,
     /// This thread's reactor, which the fixture made.
-    reactor: Option<swoole_rs_reactor::OwnedReactor>,
+    reactor: Option<swoole_rs_corebase::reactor::OwnedReactor>,
     /// The listening socket's fd.
     pub listener_fd: c_int,
     /// The port's address.
@@ -85,8 +85,9 @@ impl LiveServer {
         settings.r#type = SOCK_TCP;
         // SAFETY: the record just boxed, which the port frees with the state.
         let socket = unsafe { Socket::from_ptr(listener) }.unwrap();
-        settings
-            .set_listening_socket(unsafe { swoole_rs_reactor::OwnedSocket::from_socket(socket) });
+        settings.set_listening_socket(unsafe {
+            swoole_rs_corebase::reactor::OwnedSocket::from_socket(socket)
+        });
         settings
             .gs
             .set(Rc::as_ptr(&port_counters).cast_mut().cast());
@@ -99,8 +100,8 @@ impl LiveServer {
 
         // The thread's reactor, without `swoole_event_init`'s coroutine and client handlers,
         // over crates/tls's writes and close, which `swoole_init` registers.
-        swoole_rs_reactor::event_api::set_writers(swoole_rs_tls::reactor_write::WRITERS);
-        let reactor = swoole_rs_reactor::swr_v1_reactor_new(4096, 0);
+        swoole_rs_corebase::reactor::event_api::set_writers(swoole_rs_tls::reactor_write::WRITERS);
+        let reactor = swoole_rs_corebase::reactor::swr_v1_reactor_new(4096, 0);
         swoole_rs_corebase::set_thread_reactor(reactor.as_ptr());
         Self {
             server,
@@ -155,11 +156,11 @@ impl LiveServer {
     }
 
     /// The read event of the port's listening socket, as the reactor hands `accept` it.
-    pub(crate) fn accept_event(&self) -> swoole_rs_reactor::Event {
+    pub(crate) fn accept_event(&self) -> swoole_rs_corebase::reactor::Event {
         // SAFETY: the fixture's listener, live until the fixture drops.
-        let listener = unsafe { swoole_rs_reactor::Socket::from_ptr(self.listener) }
-            .map(swoole_rs_reactor::Heap::from_static);
-        swoole_rs_reactor::Event::of(self.listener_fd, 0, FD_STREAM_SERVER, listener)
+        let listener = unsafe { swoole_rs_corebase::reactor::Socket::from_ptr(self.listener) }
+            .map(swoole_rs_corebase::reactor::Heap::from_static);
+        swoole_rs_corebase::reactor::Event::of(self.listener_fd, 0, FD_STREAM_SERVER, listener)
     }
 
     /// A client connected to the port, once the listener can accept it. Readiness
@@ -184,10 +185,10 @@ impl LiveServer {
     }
 
     /// The listening socket's handle.
-    pub(crate) fn port_socket(&self) -> swoole_rs_reactor::Heap<'static> {
+    pub(crate) fn port_socket(&self) -> swoole_rs_corebase::reactor::Heap<'static> {
         // SAFETY: the listener this fixture owns, which the port frees through its owner.
-        swoole_rs_reactor::Heap::from_static(
-            unsafe { swoole_rs_reactor::Socket::from_ptr(self.listener) }.unwrap(),
+        swoole_rs_corebase::reactor::Heap::from_static(
+            unsafe { swoole_rs_corebase::reactor::Socket::from_ptr(self.listener) }.unwrap(),
         )
     }
 
@@ -208,7 +209,7 @@ impl Drop for LiveServer {
     fn drop(&mut self) {
         swoole_rs_corebase::set_thread_reactor(core::ptr::null_mut());
         if let Some(reactor) = self.reactor.take() {
-            swoole_rs_reactor::swr_v1_reactor_delete(reactor);
+            swoole_rs_corebase::reactor::swr_v1_reactor_delete(reactor);
         }
         // SAFETY: the listener this fixture opened; its record goes with its port.
         unsafe { libc::close(self.listener_fd) };

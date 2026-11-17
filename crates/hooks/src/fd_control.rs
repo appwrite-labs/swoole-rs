@@ -4,9 +4,9 @@
 use crate::co_io::set_errno;
 use crate::co_socket::Co;
 use libc::{c_int, pollfd};
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 
-use swoole_rs_reactor::TimeoutKind;
+use swoole_rs_corebase::reactor::TimeoutKind;
 
 /// Set the timeout on a looked-up socket; false with EINVAL for a missing fd or
 /// unknown option.
@@ -45,8 +45,8 @@ pub(crate) fn fd_poll_fake(fd: &mut pollfd, timeout: c_int, socket: Option<Co>) 
 pub extern "C" fn swr_v1_hook_fd_poll(fd: c_int, event: c_int) -> pollfd {
     pollfd {
         fd,
-        events: swoole_rs_reactor::swr_v1_reactor_poll_events_to(
-            swoole_rs_reactor::Events::from_bits(event),
+        events: swoole_rs_corebase::reactor::swr_v1_reactor_poll_events_to(
+            swoole_rs_corebase::reactor::Events::from_bits(event),
         ),
         revents: 0,
     }
@@ -64,7 +64,7 @@ pub(crate) fn fd_wait(socket: Co, event: Events, timeout: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::co_socket::CoSocket;
-    use swoole_rs_reactor::SocketRecord;
+    use swoole_rs_corebase::reactor::SocketRecord;
 
     /// A zeroed record over a fresh network socket. Tests reach the network socket
     /// through the record's pointer, as the code does, so no second owner aliases it.

@@ -138,7 +138,7 @@ pub fn swr_v1_hook_install() {
     });
     set_host(host, &NATIVE);
     #[cfg(all(feature = "iouring", feature = "upstream-symbols"))]
-    swoole_rs_reactor::register_uring(&crate::iouring::REACTOR);
+    swoole_rs_corebase::reactor::register_uring(&crate::iouring::REACTOR);
     crate::co_io::install_native();
 }
 

@@ -12,6 +12,7 @@ use swoole_rs_clients::protocol::{Package, Protocol};
 use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_WARNING as LOG_WARNING};
 use swoole_rs_corebase::net_types::PacketLength;
+use swoole_rs_corebase::reactor::{Caught, Socket, SocketFields, swr_v1_socket_reset_on_close};
 use swoole_rs_corebase::{DataHead, log, swr_v1_core_pagesize};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_framing::recv::{self, Buffer, Effects, Received, Status, recv};
@@ -19,7 +20,6 @@ use swoole_rs_framing::recv::{
     FLAG_DYNAMIC, FLAG_PAUSED, FLAG_REMOVED, FLAG_SKIP, FLAG_TLS, FLAG_WAIT, Mode, Op,
 };
 use swoole_rs_framing::{DefaultLength, default_length};
-use swoole_rs_reactor::{Caught, Socket, SocketFields, swr_v1_socket_reset_on_close};
 use swoole_rs_server::Shared;
 
 const SW_ERR: isize = swoole_rs_corebase::constants::ResultCode::SW_ERR as isize;
@@ -533,7 +533,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use swoole_rs_corebase::CCast;
-    use swoole_rs_reactor::SocketRecord;
+    use swoole_rs_corebase::reactor::SocketRecord;
 
     /// Upstream's `int64_t swoole_unpack(char, const void *)`: -1 for too few bytes or
     /// an unknown format.

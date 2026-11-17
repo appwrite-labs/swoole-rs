@@ -12,10 +12,10 @@ use std::cell::Cell;
 use std::ffi::{CStr, c_int, c_long, c_void};
 use std::marker::PhantomData;
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::{log, swr_v1_core_set_signal_alarm, thread_reactor};
-use swoole_rs_reactor::{
+use swoole_rs_corebase::reactor::{
     event_api, swr_v1_event_set_end_callback, swr_v1_event_set_exit_condition,
 };
+use swoole_rs_corebase::{log, swr_v1_core_set_signal_alarm, thread_reactor};
 
 /// `SW_LOG_WARNING` and `SW_ERROR_INVALID_PARAMS`.
 const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
@@ -454,8 +454,8 @@ impl Owner {
             self.reactor.set(reactor);
             attach();
         } else if backend != MANUAL {
-            let alarm = swoole_rs_reactor::signal_upstream::Handler::new(alarm);
-            _ = swoole_rs_reactor::signal_upstream::set(libc::SIGALRM, alarm, false);
+            let alarm = swoole_rs_corebase::reactor::signal_upstream::Handler::new(alarm);
+            _ = swoole_rs_corebase::reactor::signal_upstream::set(libc::SIGALRM, alarm, false);
         }
     }
 
@@ -745,10 +745,10 @@ fn next_generation() -> u16 {
 /// round, keep the loop while a timer is pending, and free the timer with it.
 fn attach() {
     swr_v1_event_set_end_callback(
-        swoole_rs_reactor::Priority::Timer,
+        swoole_rs_corebase::reactor::Priority::Timer,
         crate::wrapper::swoole_timer_select,
     );
-    swr_v1_event_set_exit_condition(swoole_rs_reactor::ExitCondition::Timer, idle);
+    swr_v1_event_set_exit_condition(swoole_rs_corebase::reactor::ExitCondition::Timer, idle);
     event_api::on_destroy(destroyed);
 }
 
@@ -794,10 +794,10 @@ mod tests {
     #[used]
     static SIGNAL_SET: extern "C" fn(
         c_int,
-        swoole_rs_reactor::signal_upstream::Handler,
+        swoole_rs_corebase::reactor::signal_upstream::Handler,
         bool,
-    ) -> swoole_rs_reactor::signal_upstream::Handler =
-        swoole_rs_reactor::signal_upstream::swoole_signal_set;
+    ) -> swoole_rs_corebase::reactor::signal_upstream::Handler =
+        swoole_rs_corebase::reactor::signal_upstream::swoole_signal_set;
 
     /// The reactor's signal code calls `Socket::free`, which crates/tls defines and
     /// a manual timer never reaches; crates/tls depends on this one, so the test

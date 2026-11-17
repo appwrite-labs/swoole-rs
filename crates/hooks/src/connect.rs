@@ -11,7 +11,7 @@ use crate::socket_scope::ProtocolScope;
 use core::ffi::c_int;
 use core::ptr::null_mut;
 use std::rc::Rc;
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 
 use swoole_rs_clients::owned_proxy::{Socks5Proxy, admit, pack_negotiate_request, socks5_step};
 use swoole_rs_corebase::constants::SocketType;

@@ -31,7 +31,7 @@ use swoole_rs_corebase::sys::errno;
 
 /// `network::Socket`'s TLS state group (`ssl_state`, `ssl_want_read`,
 /// `ssl_want_write`): the record's own field.
-pub use swoole_rs_reactor::SocketTlsState as SocketTls;
+pub use swoole_rs_corebase::reactor::SocketTlsState as SocketTls;
 
 fn want(tls: &mut SocketTls, read: bool, write: bool) {
     tls.want_read = read;
@@ -415,7 +415,7 @@ impl SslNewError {
 /// # Errors
 /// The step that failed; the caller warns.
 pub fn socket_ssl_new(
-    socket: swoole_rs_reactor::Socket<'_>,
+    socket: swoole_rs_corebase::reactor::Socket<'_>,
     context: Option<&crate::SslCtx>,
     flags: c_int,
 ) -> Result<(), SslNewError> {
@@ -429,7 +429,7 @@ pub fn socket_ssl_new(
 /// # Errors
 /// As [`socket_ssl_new`].
 pub(crate) fn socket_ssl_new_over(
-    socket: swoole_rs_reactor::Socket<'_>,
+    socket: swoole_rs_corebase::reactor::Socket<'_>,
     context: Option<&crate::SslCtx>,
     flags: c_int,
     bios: Option<(crate::OwnedBio, Option<crate::OwnedBio>)>,
@@ -704,13 +704,13 @@ mod tests {
             let context = SSL_CTX_new(TLS_method());
             crate::swr_v1_tls_init().unwrap();
             let index = crate::swr_v1_tls_connection_index();
-            let mut record = swoole_rs_reactor::SocketRecord::with_fd(3, 0);
+            let mut record = swoole_rs_corebase::reactor::SocketRecord::with_fd(3, 0);
             record.tls = SocketTls {
                 state: STATE_READY,
                 want_read: true,
                 want_write: true,
             };
-            let socket = swoole_rs_reactor::Socket::from_ptr(&raw mut record).unwrap();
+            let socket = swoole_rs_corebase::reactor::Socket::from_ptr(&raw mut record).unwrap();
             let made = socket_ssl_new(socket, context.cast::<crate::SslCtx>().as_ref(), CLIENT);
             assert_eq!(made, Ok(()));
             assert_eq!(
@@ -723,7 +723,7 @@ mod tests {
             assert_eq!(SSL_is_server(made), 0, "connect state");
             assert_eq!(SSL_get_ex_data(made, index), (&raw mut record).cast());
             drop(owner);
-            let socket = swoole_rs_reactor::Socket::from_ptr(&raw mut record).unwrap();
+            let socket = swoole_rs_corebase::reactor::Socket::from_ptr(&raw mut record).unwrap();
             assert_eq!(
                 socket_ssl_new(socket, context.cast::<crate::SslCtx>().as_ref(), SERVER),
                 Ok(())
@@ -738,7 +738,7 @@ mod tests {
                 crate::OwnedBio::memory(),
             );
             let bios = (read.bio().as_ptr(), write.as_ref().unwrap().bio().as_ptr());
-            let socket = swoole_rs_reactor::Socket::from_ptr(&raw mut record).unwrap();
+            let socket = swoole_rs_corebase::reactor::Socket::from_ptr(&raw mut record).unwrap();
             let shared = context.cast::<crate::SslCtx>().as_ref();
             let made = socket_ssl_new_over(socket, shared, SERVER, Some((read, write)));
             assert_eq!(made, Ok(()));
@@ -961,8 +961,9 @@ mod shutdown_tests {
                     let bio = BIO_new_socket(fds[1], 0);
                     SSL_set_bio(client, bio, bio);
                     // The server end as `Socket::ssl_create` makes it.
-                    let mut record = swoole_rs_reactor::SocketRecord::with_fd(fds[0], 0);
-                    let socket = swoole_rs_reactor::Socket::from_ptr(&raw mut record).unwrap();
+                    let mut record = swoole_rs_corebase::reactor::SocketRecord::with_fd(fds[0], 0);
+                    let socket =
+                        swoole_rs_corebase::reactor::Socket::from_ptr(&raw mut record).unwrap();
                     let made =
                         socket_ssl_new(socket, server_ctx.cast::<crate::SslCtx>().as_ref(), SERVER);
                     assert_eq!(made, Ok(()));

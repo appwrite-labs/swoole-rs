@@ -1,6 +1,6 @@
 //! Coroutine packet framing directly over the socket's record and installed host.
 use swoole_rs_corebase::CCast;
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 /// `SW_BUFFER_SIZE_BIG`: the most one EOF-protocol `recv` asks for.
 const BIG: usize = 65536;
 

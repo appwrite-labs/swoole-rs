@@ -12,11 +12,11 @@ use swoole_rs_corebase::constants::{
     EventDataFlag, SW_BUFFER_SIZE_BIG, SW_HTTP_100_CONTINUE_PACKET, SW_HTTP_BAD_REQUEST_PACKET,
     SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET, SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
+use swoole_rs_corebase::reactor::reactor_upstream::trigger_close_event;
+use swoole_rs_corebase::reactor::{Caught, Event, Running, Socket};
 use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_framing::recv::{Mode, Status};
 use swoole_rs_http_ffi::{HttpRequest, request_free};
-use swoole_rs_reactor::reactor_upstream::trigger_close_event;
-use swoole_rs_reactor::{Caught, Event, Running, Socket};
 use swoole_rs_server::port_config::{PortConfig, ReadEvent};
 use swoole_rs_server::static_select::static_select;
 use swoole_rs_server::{Connection as Slot, ServerConfig, view};

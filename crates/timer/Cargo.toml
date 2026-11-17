@@ -11,7 +11,7 @@ crate-type = ["rlib", "staticlib"]
 
 [features]
 # Thread-local timer ownership and reactor integration, replacing src/wrapper/timer.cc.
-upstream-symbols = ["dep:swoole-rs-reactor", "swoole-rs-reactor/upstream-symbols"]
+upstream-symbols = ["swoole-rs-corebase/upstream-symbols"]
 
 # The typed PHP timer boundary consumes a Zend callable, never a raw callback/data pair.
 php = ["upstream-symbols", "dep:swoole-rs-zend", "swoole-rs-zend/php"]
@@ -20,13 +20,12 @@ php = ["upstream-symbols", "dep:swoole-rs-zend", "swoole-rs-zend/php"]
 swoole-rs-error = { path = "../error" }
 libc = "=0.2.191"
 swoole-rs-corebase = { path = "../corebase" }
-swoole-rs-reactor = { path = "../reactor", optional = true }
 
 swoole-rs-zend = { path = "../zend", optional = true }
 
 [dev-dependencies]
 # The owner tests link the reactor's `swoole_signal_set`, which `Owner::init` declares.
-swoole-rs-reactor = { path = "../reactor", features = ["upstream-symbols"] }
+swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
 
 [lints]
 workspace = true

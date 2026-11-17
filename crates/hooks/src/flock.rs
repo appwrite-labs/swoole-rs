@@ -4,8 +4,8 @@
 //! unlocking, `LOCK_NB` and calls outside a coroutine go straight to flock.
 use crate::stdio::runtime;
 use swoole_rs_corebase::constants::{SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND};
+use swoole_rs_corebase::reactor::backoff;
 use swoole_rs_corebase::set_errno;
-use swoole_rs_reactor::backoff;
 
 use swoole_rs_corebase::sys::flock;
 

@@ -16,8 +16,8 @@ use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong, c_void};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 use swoole_rs_corebase::lent::{Count, In, Out, Spare, Wrote, lend_in, lend_out, lend_spare};
+use swoole_rs_corebase::reactor::{Socket, SocketFields, SocketSsl};
 use swoole_rs_corebase::sys::{ReadSlot, Text};
-use swoole_rs_reactor::{Socket, SocketFields, SocketSsl};
 
 // libssl's and libcrypto's own declarations, with each pointer typed as the
 // handle it is: `Ssl`, `Bio` and `CertRef` are live for their lifetime, `CipherRef` is
@@ -275,7 +275,7 @@ pub struct Ssl<'a>(NonNull<SSL>, PhantomData<&'a SSL>);
 /// lifetime. Its handles borrow this lease, so none can survive its release.
 ///
 /// ```compile_fail
-/// use swoole_rs_reactor::Socket;
+/// use swoole_rs_corebase::reactor::Socket;
 /// use swoole_rs_tls::Ssl;
 /// fn escape(socket: Socket<'_>) -> Option<Ssl<'_>> {
 ///     let held = Ssl::of(socket)?;

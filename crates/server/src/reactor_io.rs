@@ -6,9 +6,9 @@ use core::sync::atomic::Ordering::SeqCst;
 use swoole_rs_corebase::buffer::cpp::{
     swr_cpp_buffer_empty, swr_cpp_buffer_pop, swr_cpp_buffer_typed_front,
 };
+use swoole_rs_corebase::reactor::{Event, Socket};
 use swoole_rs_corebase::{DataHead, ServerEvent, log, microtime};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{Event, Socket};
 
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::out_buffer;
@@ -33,11 +33,11 @@ pub(crate) fn pipe_write(serv: view::Server<'_>, reactor: Reactor, event: &Event
             && swoole_rs_tls::upstream::send(*sock, message, 0).is_none()
         {
             let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            return sock.catch_error(errno) == swoole_rs_reactor::Caught::Wait;
+            return sock.catch_error(errno) == swoole_rs_corebase::reactor::Caught::Wait;
         }
         pop(*sock);
     }
-    if !reactor.interest(sock, swoole_rs_reactor::Interest::RemoveWrite) {
+    if !reactor.interest(sock, swoole_rs_corebase::reactor::Interest::RemoveWrite) {
         let m = format_args!("reactor->set({}) failed", event.fd());
         log::sys_warning(c"ReactorThread_onPipeWrite", m);
     }
@@ -100,7 +100,7 @@ mod tests {
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixDatagram;
     use swoole_rs_corebase::buffer::cpp::swr_cpp_buffer_count;
-    use swoole_rs_reactor::SocketRecord;
+    use swoole_rs_corebase::reactor::SocketRecord;
 
     use swoole_rs_corebase::ServerEvent::{RecvDgram, SendData};
     const FD_PIPE: c_int = 3;
@@ -137,7 +137,7 @@ mod tests {
         _client: std::net::TcpStream,
         ours: UnixDatagram,
         theirs: UnixDatagram,
-        sock: swoole_rs_reactor::Heap<'static>,
+        sock: swoole_rs_corebase::reactor::Heap<'static>,
     }
 
     impl Pipe {

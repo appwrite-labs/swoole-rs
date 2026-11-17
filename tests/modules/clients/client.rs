@@ -1353,7 +1353,7 @@ fn ssl_vector(sock: *mut c_void, iov: &[IoVec], write: bool) -> isize {
         Vectors::Read(unsafe { std::slice::from_raw_parts_mut(at.cast_mut().cast(), count) })
     };
     // SAFETY: the connected socket.
-    let sock = unsafe { swoole_rs_reactor::Socket::from_ptr(sock.cast()) }.unwrap();
+    let sock = unsafe { swoole_rs_corebase::reactor::Socket::from_ptr(sock.cast()) }.unwrap();
     let vector = IoVector::new(vectors);
     vector
         .expect("IOVector(iov, count)")
@@ -1363,7 +1363,7 @@ fn ssl_vector(sock: *mut c_void, iov: &[IoVec], write: bool) -> isize {
 
 /// `Socket::ssl_get_peer_cert_chain(limit)`, inline C++ upstream: the PEM of each of
 /// the first `limit` certificates that reads.
-fn peer_cert_chain(sock: swoole_rs_reactor::Socket<'_>, limit: usize) -> Vec<Vec<u8>> {
+fn peer_cert_chain(sock: swoole_rs_corebase::reactor::Socket<'_>, limit: usize) -> Vec<Vec<u8>> {
     let mut chain = Vec::new();
     let mut buffer = vec![0_u8; SW_BUFFER_SIZE_BIG];
     if let Some(ssl) = swoole_rs_tls::Ssl::of(sock) {
@@ -1388,7 +1388,7 @@ fn ssl() {
     let sock = client.socket();
     let mut certificate = cpp_string(SW_BUFFER_SIZE_BIG);
     // SAFETY: the connected socket.
-    let handle = unsafe { swoole_rs_reactor::Socket::from_ptr(sock.cast()) }.unwrap();
+    let handle = unsafe { swoole_rs_corebase::reactor::Socket::from_ptr(sock.cast()) }.unwrap();
     assert!(swoole_rs_tls::upstream::socket_ssl_peer_certificate_string(
         handle,
         &mut certificate
@@ -1463,7 +1463,7 @@ fn test_recv_timeout(c: &Client<'_>) {
     loop {
         let rv = c.recv(&mut buf, 0);
         eprintln!("rv: {rv}, error={}", errno());
-        if swoole_rs_reactor::socket_upstream::socket_has_timedout() {
+        if swoole_rs_corebase::reactor::socket_upstream::socket_has_timedout() {
             break;
         }
     }

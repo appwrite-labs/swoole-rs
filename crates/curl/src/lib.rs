@@ -30,6 +30,7 @@ use std::{
     rc::{Rc, Weak},
 };
 use swoole_rs_corebase::log::{self, set_last_error};
+use swoole_rs_corebase::reactor::Events;
 use swoole_rs_curl_sys::{
     CURL, CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURL_POLL_IN, CURL_POLL_INOUT,
     CURL_POLL_OUT, CURL_POLL_REMOVE, CURL_SOCKET_TIMEOUT, CURLE_ABORTED_BY_CALLBACK,
@@ -39,7 +40,6 @@ use swoole_rs_curl_sys::{
     curl_easy_setopt, curl_multi_cleanup, curl_multi_info_read, curl_multi_init, curl_multi_setopt,
     curl_multi_timeout, curl_socket_t,
 };
-use swoole_rs_reactor::Events;
 
 /// `SW_OK` and `SW_ERR`.
 const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;

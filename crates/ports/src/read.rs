@@ -7,9 +7,9 @@ use core::ffi::c_int;
 use swoole_rs_corebase::buffer::string::CppString as Buffer;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_TRACE as TRACE, SW_LOG_WARNING as WARNING};
+use swoole_rs_corebase::reactor::Caught;
 use swoole_rs_error::ErrorCode;
 use swoole_rs_http_ffi::HttpRequest as Request;
-use swoole_rs_reactor::Caught;
 
 /// Which readable callback runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

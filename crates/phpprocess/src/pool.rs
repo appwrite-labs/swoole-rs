@@ -24,10 +24,10 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::process;
+use swoole_rs_corebase::reactor::Heap;
+use swoole_rs_corebase::reactor::signal_upstream::Handler as SignalHandler;
+use swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_phpstubs::process_pool;
-use swoole_rs_reactor::Heap;
-use swoole_rs_reactor::signal_upstream::Handler as SignalHandler;
-use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, handlers,
     message,
@@ -812,7 +812,7 @@ fn start(call: &Call) {
         return;
     }
     // The reactor must be cleaned up before registering signals.
-    swoole_rs_reactor::swoole_event_free();
+    swoole_rs_corebase::reactor::swoole_event_free();
     let signals = pool_signals();
     let mut previous = [SignalHandler::NONE; 6];
     for (signo, old) in signals.iter().zip(previous.iter_mut()) {

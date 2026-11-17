@@ -264,7 +264,7 @@ extern "C" fn interrupt_function(frame: Interrupted) {
 /// `coro_interrupt_resume`: the loop resumes the coroutine the interrupt yielded.
 struct InterruptResume(host::Co);
 
-impl swoole_rs_reactor::event_api::Deferred for InterruptResume {
+impl swoole_rs_corebase::reactor::event_api::Deferred for InterruptResume {
     fn run(self) {
         let co = self.0;
         if !host::is_end(co) {

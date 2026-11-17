@@ -48,9 +48,9 @@ use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use swoole_rs_corebase::log::last_error;
 // The crates, once: the C++ in libswoole.a and the cases call them by symbol.
+use swoole_rs_corebase::reactor::Events;
 use swoole_rs_ffi as _;
 use swoole_rs_hooks::poll::PollFd;
-use swoole_rs_reactor::Events;
 
 mod address;
 // Upstream's core-tests/src/network/client.cpp: a clients test, built here to share this

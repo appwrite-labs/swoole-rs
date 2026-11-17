@@ -11,8 +11,8 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_TRACE, SW_LOG_WARNING};
+use swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_corebase::utilities::swoole_hash;
-use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 
 /// `DISPATCH_RESULT_USERFUNC_FALLBACK`.
 const USERFUNC_FALLBACK: c_int = -3;
@@ -390,7 +390,7 @@ fn keep_port(serv: Server<'_>, port: Box<PortConfig>) -> Port<'_> {
     if SocketType::from_raw(port.r#type).is_some_and(SocketType::is_dgram) {
         let fd = port.listening_socket().map_or(-1, |socket| socket.fd());
         let size = port.socket_buffer_size.get().cast_unsigned();
-        _ = swoole_rs_reactor::set_socket_buffer_size(fd, true, true, size);
+        _ = swoole_rs_corebase::reactor::set_socket_buffer_size(fd, true, true, size);
         config.have_dgram_sock.set(true);
         let ports = config.dgram_port_num.get();
         config.dgram_port_num.set(ports.wrapping_add(1));

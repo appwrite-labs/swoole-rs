@@ -10,14 +10,14 @@
 namespace swoole {
 
 // Methods over Rust's reactor state, which a Reactor pointer is: its fields are
-// swr_v1_reactor_head's. swoole_event_init/free (crates/reactor) make and free it.
+// swr_v1_reactor_head's. swoole_event_init/free (`corebase::reactor`) make and free it.
 class Reactor : public swr_v1_reactor_head {
   public:
     Reactor() = delete;
     ~Reactor() = delete;
     swr_v1_reactor_state *handle() const { return state_.owner; }
 
-    // wait and the end callbacks are Rust's (crates/reactor's callbacks.rs).
+    // wait and the end callbacks are Rust's (`corebase::reactor`'s callbacks.rs).
     int wait();
     bool isset_handler(int fd_type, int event) const;
 

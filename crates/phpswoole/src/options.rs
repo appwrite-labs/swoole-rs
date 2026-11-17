@@ -149,7 +149,7 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
     let size_of = size;
     let flag = |key, set: &dyn Fn(bool)| option(options, key, truthy, |on| set(on != 0));
     let number = |key, set: &dyn Fn(i64)| option(options, key, long, set);
-    let defaults = &swoole_rs_reactor::SOCKET_DEFAULTS;
+    let defaults = &swoole_rs_corebase::reactor::SOCKET_DEFAULTS;
 
     if crate::FLAGS.load(Ordering::Relaxed) & DEBUG != 0
         && get(options, c"debug_mode").is_some_and(|value| truthy(value) != 0)

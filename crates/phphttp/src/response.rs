@@ -72,7 +72,7 @@ fn release(mut ctx: Ctx) -> bool {
         && (state.send_chunked || !state.send_header)
         && !state.detached
         // SAFETY: reads a thread global.
-        && !swoole_rs_reactor::event_api::swr_v1_event_reactor().is_null()
+        && !swoole_rs_corebase::reactor::event_api::swr_v1_event_reactor().is_null()
     {
         if state.response.status == 0 {
             state.response.status = INTERNAL_SERVER_ERROR;

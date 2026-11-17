@@ -39,7 +39,7 @@ fn native_async_datagram_receive_records_the_sender_for_both_buffer_kinds() {
     assert!(this.bind(c"127.0.0.1", 0));
     assert!(
         this.socket()
-            .edit(swoole_rs_reactor::SocketFields::get_name)
+            .edit(swoole_rs_corebase::reactor::SocketFields::get_name)
     );
     let port = this
         .socket()
@@ -168,7 +168,7 @@ fn native_tls_effects_keep_the_session_and_settings_while_the_peer_is_pending() 
     assert!((effects.connect)(this, ConnectMode::Raw));
     let (_peer, _) = listener.accept().unwrap();
     assert!(this.socket().edit(|record| {
-        swoole_rs_reactor::socket_upstream::socket_set_fd_option(record, 1, -1)
+        swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option(record, 1, -1)
     }));
     assert!(enable_ssl(this).is_some());
     let context = this.get().tls_context().unwrap().clone();
@@ -178,7 +178,9 @@ fn native_tls_effects_keep_the_session_and_settings_while_the_peer_is_pending() 
             .set_text(swoole_rs_tls::Text::HostName, b"first.test")
     );
     assert!(ssl_handshake(this));
-    let session = this.socket().read(swoole_rs_reactor::SocketFields::ssl);
+    let session = this
+        .socket()
+        .read(swoole_rs_corebase::reactor::SocketFields::ssl);
     assert!(!session.is_null());
     assert_eq!(this.tls_state(), SSL_STATE_WAIT_STREAM);
     assert!(this.socket().read(|record| record.tls.want_read));
@@ -193,7 +195,8 @@ fn native_tls_effects_keep_the_session_and_settings_while_the_peer_is_pending() 
     );
     assert!(ssl_handshake(this));
     assert_eq!(
-        this.socket().read(swoole_rs_reactor::SocketFields::ssl),
+        this.socket()
+            .read(swoole_rs_corebase::reactor::SocketFields::ssl),
         session
     );
     assert_eq!(

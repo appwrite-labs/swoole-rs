@@ -10,7 +10,7 @@ use crate::co_socket::Co;
 use crate::socket_wait::wait_for;
 use core::ffi::c_int;
 use swoole_rs_corebase::net_types::SocketAddress;
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 
 /// The syscalls: `shutdown(2)`, `connect(2)` to an address and
 /// `getsockopt(SO_ERROR)` into the int it is given. Tests script them.
@@ -200,7 +200,7 @@ fn connect(socket: Co, peer: &SocketAddress, sys: Sys) -> bool {
     }
     socket.with_state(|state| state.flags.connected = true);
     // `get_name`'s failure is ignored.
-    socket.net(swoole_rs_reactor::SocketFields::get_name);
+    socket.net(swoole_rs_corebase::reactor::SocketFields::get_name);
     set_err(socket, 0);
     true
 }

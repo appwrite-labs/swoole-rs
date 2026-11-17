@@ -93,7 +93,7 @@ fn length_size(conn: Connection<'_>) -> u8 {
 pub(crate) struct Session<'a> {
     pub(crate) server: swoole_rs_server::view::Server<'a>,
     pub(crate) conn: Connection<'a>,
-    pub(crate) socket: swoole_rs_reactor::Socket<'a>,
+    pub(crate) socket: swoole_rs_corebase::reactor::Socket<'a>,
 }
 
 impl Session<'_> {
@@ -114,8 +114,8 @@ pub mod exports {
     use swoole_rs_corebase::buffer::string::boxed_string;
     use swoole_rs_corebase::lent::lend_spare;
     use swoole_rs_corebase::net_types::PacketLength;
+    use swoole_rs_corebase::reactor::Socket;
     use swoole_rs_corebase::{WebSocketStatus, log};
-    use swoole_rs_reactor::Socket;
     use swoole_rs_server::{Connection, view};
     use swoole_rs_websocket::{
         Action, Context, FrameFlags, Opcode, PolicyError, decide_frame, encode_frame,

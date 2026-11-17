@@ -17,11 +17,11 @@ use swoole_rs_clients::{
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::net_types::SocketAddress;
+use swoole_rs_corebase::reactor::Socket as Net;
 use swoole_rs_hooks::{co_socket::Co as Handle, socket_extra};
 use swoole_rs_phpruntime::{Report, co, report};
 use swoole_rs_phpswoole::length::Named;
 use swoole_rs_phpswoole::{Switch, built_with};
-use swoole_rs_reactor::Socket as Net;
 use swoole_rs_zend::{
     Owned, Value, ZString,
     bailout::{self, Bailout},
@@ -33,7 +33,7 @@ use swoole_rs_zend::{
 pub(crate) type Socket = *mut libc::c_void;
 
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
-use swoole_rs_reactor::{Events, TimeoutKind};
+use swoole_rs_corebase::reactor::{Events, TimeoutKind};
 /// `SW_SOCK_UDP6`.
 const SOCK_UDP6: c_int = 4;
 /// `SW_ERROR_WRONG_OPERATION`.

@@ -552,7 +552,7 @@ extern "C" fn core_startup() {
 /// strings.
 fn ready(minit: &swoole_rs_zend::Minit) {
     let size = globals().socket_buffer_size.get();
-    swoole_rs_reactor::SOCKET_DEFAULTS.set_buffer_size(size.c_cast::<u32>());
+    swoole_rs_corebase::reactor::SOCKET_DEFAULTS.set_buffer_size(size.c_cast::<u32>());
     swr_phpswoole_pcre_jit_off();
     swoole_rs_zend::host::known_init(minit);
 }
@@ -603,7 +603,7 @@ extern "C" fn clean() {
 /// RSHUTDOWN's `swoole_event_free()`: the request's end, on the thread that owns the
 /// event loop.
 extern "C" fn event_free() {
-    swoole_rs_reactor::swoole_event_free();
+    swoole_rs_corebase::reactor::swoole_event_free();
 }
 
 /// `PHP_MSHUTDOWN_FUNCTION(swoole)`.

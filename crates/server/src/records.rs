@@ -57,7 +57,7 @@ pub struct ConnectionRecord {
     /// The session socket, which the connection owns from `add` until its close takes
     /// it out and frees it: empty before and after, and on a listening slot. Only the
     /// process that accepted it (the master, or a base worker) reads or takes it.
-    socket: swoole_rs_reactor::OwnerCell,
+    socket: swoole_rs_corebase::reactor::OwnerCell,
     pub connect_time: Cell<f64>,
     pub last_recv_time: Cell<f64>,
     pub last_send_time: Cell<f64>,
@@ -266,12 +266,12 @@ impl<'a> Connection<'a> {
     /// The connection's socket, if it holds one.
     #[must_use]
     #[inline]
-    pub fn socket(self) -> Option<swoole_rs_reactor::Heap<'a>> {
+    pub fn socket(self) -> Option<swoole_rs_corebase::reactor::Heap<'a>> {
         self.record.socket.get()
     }
 
     /// The connection owns `socket` from here (a socket it held leaks).
-    pub(crate) fn hold_socket(self, socket: swoole_rs_reactor::OwnedSocket) {
+    pub(crate) fn hold_socket(self, socket: swoole_rs_corebase::reactor::OwnedSocket) {
         self.record.socket.put(socket);
     }
 
@@ -430,8 +430,8 @@ impl<'a> Connection<'a> {
 
     /// A reactor event over the connection's socket, as the reactor would deliver it.
     #[must_use]
-    pub fn event(self, reactor_id: i16, fd_type: c_int) -> swoole_rs_reactor::Event {
-        swoole_rs_reactor::Event::of(self.fd(), reactor_id, fd_type, self.socket())
+    pub fn event(self, reactor_id: i16, fd_type: c_int) -> swoole_rs_corebase::reactor::Event {
+        swoole_rs_corebase::reactor::Event::of(self.fd(), reactor_id, fd_type, self.socket())
     }
 
     /// `f` over the client certificate this worker stored for the connection

@@ -1380,8 +1380,8 @@ fn new_message_box(size: usize, maxlen: usize) -> SharedChannel {
 }
 
 /// The `OP_*` effects that are calls into the process-wide worker and signal state:
-/// `None` for the rest, which native code does (the timer, event loop and wait
-/// effects too, since crates/reactor and crates/timer depend on this crate).
+/// `None` for the remaining effects supplied by the pool's caller, including its
+/// timer, event-loop and wait operations.
 #[cfg(feature = "upstream-symbols")]
 fn effect(op: Op, arg: u64) -> bool {
     match op {

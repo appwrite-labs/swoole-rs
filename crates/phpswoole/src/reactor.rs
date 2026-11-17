@@ -1,7 +1,7 @@
 //! Reactor fd handlers that run PHP, under the [`Php`] lease of their call.
 use std::{ffi::c_int, marker::PhantomData};
-use swoole_rs_reactor::Events;
-use swoole_rs_reactor::event_api::{self, FdHandler};
+use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::event_api::{self, FdHandler};
 use swoole_rs_zend::Php;
 
 /// A reactor fd handler that runs PHP: whether it succeeded.

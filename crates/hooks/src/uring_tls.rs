@@ -238,7 +238,7 @@ impl<S: TlsSocket> Tls<'_, S> {
         file: c_int,
         offset: &mut libc::off_t,
         size: usize,
-        mut classify: impl FnMut(c_int) -> Option<swoole_rs_reactor::Caught>,
+        mut classify: impl FnMut(c_int) -> Option<swoole_rs_corebase::reactor::Caught>,
     ) -> (usize, Option<crate::sendfile::TlsWarning>) {
         crate::sendfile::tls_sendfile(
             size,
@@ -279,7 +279,7 @@ mod tests {
     use super::*;
     use crate::uring::testing::{HOST, with_engine};
     use std::cell::RefCell;
-    use swoole_rs_reactor::{Socket, SocketRecord};
+    use swoole_rs_corebase::reactor::{Socket, SocketRecord};
 
     thread_local! {
         static ERRORS: RefCell<Vec<c_int>> = const { RefCell::new(Vec::new()) };

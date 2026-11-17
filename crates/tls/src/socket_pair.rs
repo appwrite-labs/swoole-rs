@@ -13,8 +13,10 @@ use std::mem::MaybeUninit;
 use std::ptr;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
-use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
-use swoole_rs_reactor::{Heap, SOCKET_DEFAULTS, SocketRecord, TimeoutKind, set_socket_buffer_size};
+use swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option;
+use swoole_rs_corebase::reactor::{
+    Heap, SOCKET_DEFAULTS, SocketRecord, TimeoutKind, set_socket_buffer_size,
+};
 
 /// `SW_FD_PIPE`.
 const FD_PIPE: c_int = 3;
@@ -217,7 +219,7 @@ pub fn clean(this: &SocketPair) {
         return;
     };
     let mut buffer = [0_u8; 1024];
-    while socket.wait_event(0, swoole_rs_reactor::Events::READ) {
+    while socket.wait_event(0, swoole_rs_corebase::reactor::Events::READ) {
         if swoole_rs_corebase::sys::read(socket.fd(), &mut buffer) <= Some(0) {
             break;
         }

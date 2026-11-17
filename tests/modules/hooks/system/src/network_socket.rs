@@ -8,9 +8,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 use swoole_rs_corebase::constants::SocketType;
+use swoole_rs_corebase::reactor::{SocketFields, SocketRecord as Record, socket_upstream};
 use swoole_rs_ffi::event_api::swoole_event_wait;
 use swoole_rs_ffi::swoole_event_init;
-use swoole_rs_reactor::{SocketFields, SocketRecord as Record, socket_upstream};
 
 use super::address::Address;
 use super::client::Client;
@@ -149,18 +149,18 @@ fn is_inet6(kind: c_int) -> bool {
 }
 
 fn convert_to_type(domain: c_int, kind: c_int) -> c_int {
-    swoole_rs_reactor::socket_type(domain, kind).raw()
+    swoole_rs_corebase::reactor::socket_type(domain, kind).raw()
 }
 
 /// `Socket::convert_to_type(std::string &host)`: erases the scheme from `host`.
 fn convert_host_to_type(host: &mut String) -> c_int {
-    let plan = swoole_rs_reactor::host_type(host.as_bytes());
+    let plan = swoole_rs_corebase::reactor::host_type(host.as_bytes());
     host.drain(..plan.erase);
     plan.socket_type.raw()
 }
 
 fn get_domain_and_type(kind: c_int, domain: &mut c_int, sock_type: &mut c_int) -> c_int {
-    let Some(pair) = swoole_rs_reactor::socket_domain_and_type(kind) else {
+    let Some(pair) = swoole_rs_corebase::reactor::socket_domain_and_type(kind) else {
         return SW_ERR;
     };
     (*domain, *sock_type) = pair;
@@ -208,10 +208,10 @@ impl Socket {
         unsafe { &mut *self.0 }
     }
 
-    /// The record as crates/reactor's handle, for the members that are Rust functions.
-    fn handle(&self) -> swoole_rs_reactor::Socket<'_> {
+    /// The record as `corebase::reactor`'s handle, for the members that are Rust functions.
+    fn handle(&self) -> swoole_rs_corebase::reactor::Socket<'_> {
         // SAFETY: a live record.
-        unsafe { swoole_rs_reactor::Socket::from_ptr(self.0.cast()) }.unwrap()
+        unsafe { swoole_rs_corebase::reactor::Socket::from_ptr(self.0.cast()) }.unwrap()
     }
 
     pub(super) fn free(self) {
@@ -239,9 +239,10 @@ impl Socket {
 
     fn set_timeout(&self, timeout: f64, kind: c_int) {
         self.handle().edit(|record| {
-            record
-                .timeouts
-                .set(timeout, swoole_rs_reactor::TimeoutKind::from_bits(kind))
+            record.timeouts.set(
+                timeout,
+                swoole_rs_corebase::reactor::TimeoutKind::from_bits(kind),
+            )
         });
     }
 
@@ -321,8 +322,9 @@ impl Socket {
 
     fn send_async(&self, buf: &[u8]) -> isize {
         // SAFETY: a live record, which the case frees only once its loop is done.
-        let socket = unsafe { swoole_rs_reactor::Socket::from_ptr(self.0.cast()) }.unwrap();
-        let socket = swoole_rs_reactor::Heap::from_static(socket);
+        let socket =
+            unsafe { swoole_rs_corebase::reactor::Socket::from_ptr(self.0.cast()) }.unwrap();
+        let socket = swoole_rs_corebase::reactor::Heap::from_static(socket);
         swoole_rs_tls::upstream::send_async(socket, buf).map_or(-1, usize::cast_signed)
     }
 
@@ -499,9 +501,9 @@ fn fail() {
     assert_eq!(sock.listen(1), -1);
 
     let fd = sock.get_fd();
-    assert!(swoole_rs_reactor::set_socket_buffer_size(fd, true, true, 1).is_err());
-    assert!(swoole_rs_reactor::set_socket_buffer_size(fd, true, false, 1).is_err());
-    assert!(swoole_rs_reactor::set_socket_buffer_size(fd, false, true, 1).is_err());
+    assert!(swoole_rs_corebase::reactor::set_socket_buffer_size(fd, true, true, 1).is_err());
+    assert!(swoole_rs_corebase::reactor::set_socket_buffer_size(fd, true, false, 1).is_err());
+    assert!(swoole_rs_corebase::reactor::set_socket_buffer_size(fd, false, true, 1).is_err());
 
     assert!(!sock.handle().edit(|record| record.set_tcp_nodelay(1)));
     assert!(!sock.handle().edit(socket_upstream::socket_cork));
