@@ -212,7 +212,7 @@ def plan(args, reports):
                '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
     if 'coroutine' in modules:
         # tokens.py runs inside coroutine-channel-state, with and without sanitizers.
-        script('coroutine-rust-asan', 'tools/cargo_asan.py', '--package', 'swoole-rs-coroutine', '--report', reports / 'coroutine-rust-asan.json')
+        script('coroutine-rust-asan', 'tools/cargo_asan.py', '--package', 'swoole-rs-corebase', '--report', reports / 'coroutine-rust-asan.json')
     if 'clients' in modules:
         script('clients-php-reentrant-close', 'tests/modules/clients/php_reentrant_close.py', *php_for('curl', 'sockets'),
                '--engine', f'cargo={cargo}', *report('clients-php-reentrant-close'))

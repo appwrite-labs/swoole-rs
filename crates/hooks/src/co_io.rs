@@ -138,8 +138,8 @@ mod native {
     use crate::co_socket::Co;
     use crate::packet::ReadBuffer;
     use core::ffi::{CStr, c_int, c_long, c_void};
+    use swoole_rs_corebase::coroutine::print_socket_bound_error;
     use swoole_rs_corebase::net_types::PacketLength;
-    use swoole_rs_coroutine::print_socket_bound_error;
     use swoole_rs_reactor::Events;
 
     pub(super) static HOST: Host = Host {
@@ -167,7 +167,7 @@ mod native {
         } else {
             Events::WRITE
         };
-        swoole_rs_coroutine::yield_with_cancel(co, move |_| socket.cancel(event));
+        swoole_rs_corebase::coroutine::yield_with_cancel(co, move |_| socket.cancel(event));
     }
 
     /// `get_write_buffer()`, cleared and holding the write's bytes.
@@ -304,7 +304,7 @@ mod native {
         }
         // Looked up by address among the live coroutines: a bound one is live, as its
         // operation unbinds it before it returns (`SocketState::bind`).
-        swoole_rs_coroutine::coroutine_cid_of(co).unwrap_or(0)
+        swoole_rs_corebase::coroutine::coroutine_cid_of(co).unwrap_or(0)
     }
 
     /// [`super::Ops::resume`].
@@ -312,7 +312,7 @@ mod native {
         let co = socket.with_state(|state| state.co(event));
         // SAFETY: null, which resumes nothing, or the coroutine bound for `event`,
         // suspended in its operation on this socket until it unbinds itself.
-        unsafe { swoole_rs_coroutine::resume(co) };
+        unsafe { swoole_rs_corebase::coroutine::resume(co) };
     }
 
     pub(super) fn bound_error(fd: c_int, event: &CStr, cid: c_long) {

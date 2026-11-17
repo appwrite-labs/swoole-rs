@@ -50,7 +50,7 @@ pub use swoole_rs_reactor::*;
 
 pub use swoole_rs_corebase::*;
 
-pub use swoole_rs_coroutine::*;
+pub use swoole_rs_corebase::coroutine::*;
 
 pub use swoole_rs_hooks::*;
 pub use swoole_rs_phpruntime as phpruntime;

@@ -91,7 +91,8 @@ pub(crate) static NATIVE: Ops = Ops {
 
 mod native {
     pub(super) fn in_coroutine() -> bool {
-        !swoole_rs_corebase::thread_reactor().is_null() && !swoole_rs_coroutine::current().is_null()
+        !swoole_rs_corebase::thread_reactor().is_null()
+            && !swoole_rs_corebase::coroutine::current().is_null()
     }
 }
 

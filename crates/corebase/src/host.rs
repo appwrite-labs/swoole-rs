@@ -68,6 +68,10 @@ impl Drop for Symbols {
                       `Released`, the one malloc'd block a `Symbols` owned"
         )]
         unsafe extern "C" {
+            #[expect(
+                clashing_extern_declarations,
+                reason = "Symbols and Stack each restrict free to a private transparent pointer owner; both have the same C pointer ABI"
+            )]
             safe fn free(block: Released);
         }
         free(Released(self.0));

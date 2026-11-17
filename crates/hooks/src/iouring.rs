@@ -48,7 +48,7 @@ pub(crate) static HOST: Host = Host {
     current: crate::wait_event::native::current,
     instance,
     suspend,
-    resume: swoole_rs_coroutine::Waker::wake,
+    resume: swoole_rs_corebase::coroutine::Waker::wake,
     event_running: swoole_event_is_running,
     submit_failed,
     timeout_full,
@@ -71,9 +71,9 @@ fn instance() -> Option<Rc<Uring>> {
 
 /// `co->yield(&cancel_fn)` of the running coroutine `co`, where cancelling cancels
 /// `event`'s request.
-fn suspend(co: *mut c_void, event: u64, arm: &mut dyn FnMut(swoole_rs_coroutine::Waker)) {
+fn suspend(co: *mut c_void, event: u64, arm: &mut dyn FnMut(swoole_rs_corebase::coroutine::Waker)) {
     let cancel = move |_| uring::cancel(&HOST, event);
-    swoole_rs_coroutine::yield_with_cancel_armed(co, cancel, arm);
+    swoole_rs_corebase::coroutine::yield_with_cancel_armed(co, cancel, arm);
 }
 
 fn submit_failed() {

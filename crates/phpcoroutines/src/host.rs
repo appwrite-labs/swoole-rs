@@ -1,5 +1,5 @@
 //! What PHP coroutines ask of the rest of Swoole: the coroutine core's
-//! scheduler and records (crates/coroutine), the module host, the runtime
+//! scheduler and records (crates/corebase/src/coroutine), the module host, the runtime
 //! hooks, the event loop and the server.
 use crate::context::Ctx;
 use std::{
@@ -7,7 +7,7 @@ use std::{
     ptr::NonNull,
 };
 use swoole_rs_corebase::CCast;
-use swoole_rs_coroutine::Resume;
+use swoole_rs_corebase::coroutine::Resume;
 use swoole_rs_zend::{E_ERROR, Zvals, bailout};
 
 /// `Co::stats()`'s native counts.
@@ -34,7 +34,7 @@ pub(crate) struct Stats {
 /// unlinks it first). Holders keep one only while it lives: a context its own
 /// coroutine until `on_close`, a waiter a parked coroutine until it resumes it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct Co(NonNull<swoole_rs_coroutine::context::Native>);
+pub(crate) struct Co(NonNull<swoole_rs_corebase::coroutine::context::Native>);
 
 impl Co {
     /// The record at `native`, a registered coroutine's or null.
@@ -43,7 +43,7 @@ impl Co {
     }
 
     /// The record, borrowed for `f`, which neither switches nor writes it.
-    fn read<R>(self, f: impl FnOnce(&swoole_rs_coroutine::context::Native) -> R) -> R {
+    fn read<R>(self, f: impl FnOnce(&swoole_rs_corebase::coroutine::context::Native) -> R) -> R {
         // SAFETY: a live coroutine's record (the handle's invariant); the borrow
         // ends with `f`.
         f(unsafe { self.0.as_ref() })
@@ -130,7 +130,7 @@ pub(crate) fn flag(bit: u32) -> bool {
         // `sw_is_main_thread()`.
         MAIN_THREAD => !cfg!(zts) || swoole_rs_zend::is_main_thread(),
         // Only SW_CORO_TIME builds give the scheduler a clock.
-        CORO_TIME => swoole_rs_coroutine::counters().timed,
+        CORO_TIME => swoole_rs_corebase::coroutine::counters().timed,
         THREAD => swoole_rs_phpswoole::built_with(swoole_rs_phpswoole::Switch::Thread),
         _ => false,
     }
@@ -160,12 +160,12 @@ pub(crate) fn error_ex(level: c_int, code: c_int, message: &CStr) {
 }
 
 pub(crate) fn count() -> usize {
-    swoole_rs_coroutine::coroutine_count()
+    swoole_rs_corebase::coroutine::coroutine_count()
 }
 
 /// `Coroutine::get_current()`: none outside a coroutine.
 pub(crate) fn current() -> Option<Co> {
-    Co::of(swoole_rs_coroutine::current_native())
+    Co::of(swoole_rs_corebase::coroutine::current_native())
 }
 
 /// `Coroutine::get_current_safe()`'s check: outside a coroutine it raises a
@@ -207,7 +207,7 @@ pub(crate) fn current_cid() -> c_long {
 }
 
 pub(crate) fn by_cid(cid: c_long) -> Option<Co> {
-    Co::of(swoole_rs_coroutine::coroutine_get(cid))
+    Co::of(swoole_rs_corebase::coroutine::coroutine_get(cid))
 }
 
 pub(crate) fn task_by_cid(cid: c_long) -> Option<Ctx> {
@@ -235,7 +235,7 @@ pub(crate) fn execute_time(cid: c_long) -> c_long {
 pub(crate) fn list(cids: &mut [c_long]) -> usize {
     let mut before = c_long::MAX;
     for (n, slot) in cids.iter_mut().enumerate() {
-        let Some((cid, _)) = swoole_rs_coroutine::coroutine_older(before) else {
+        let Some((cid, _)) = swoole_rs_corebase::coroutine::coroutine_older(before) else {
             return n;
         };
         before = cid;
@@ -260,7 +260,7 @@ pub(crate) fn stats(stats: &mut Stats) {
     // crates/reactor counts this thread's listeners.
     stats.signal_listener_num =
         i64::from(swoole_rs_reactor::signal_upstream::swoole_signal_get_listener_num());
-    let s = swoole_rs_coroutine::counters();
+    let s = swoole_rs_corebase::coroutine::counters();
     stats.c_stack_size = i64::try_from(s.stack_size).unwrap_or(i64::MAX);
     stats.coroutine_num = i64::try_from(count()).unwrap_or(i64::MAX);
     stats.coroutine_peak_num = i64::try_from(s.peak_num).unwrap_or(i64::MAX);
@@ -282,7 +282,7 @@ fn iouring_stats(stats: &mut Stats) {
 
 /// `swoole_test_kernel_coroutine`'s coroutine: sleeps `count` times.
 pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
-    let _cid = swoole_rs_coroutine::spawn(move || {
+    let _cid = swoole_rs_corebase::coroutine::spawn(move || {
         for _ in 0..count {
             #[expect(
                 clippy::let_underscore_must_use,
@@ -307,7 +307,7 @@ pub(crate) fn origin_cid(co: Co) -> c_long {
     co.origin().map_or(-1, cid)
 }
 
-pub(crate) fn state_of(co: Co) -> swoole_rs_coroutine::State {
+pub(crate) fn state_of(co: Co) -> swoole_rs_corebase::coroutine::State {
     co.read(|native| native.co.state)
 }
 
@@ -320,30 +320,30 @@ pub(crate) fn stack(co: Co) -> (*mut c_void, usize) {
 /// Switch out of `co`, the running coroutine. What the caller's frames own is
 /// leaked if nothing resumes it (a bailout abandons every suspended coroutine).
 pub(crate) fn yield_(co: Co) {
-    swoole_rs_coroutine::suspend(co.raw());
+    swoole_rs_corebase::coroutine::suspend(co.raw());
 }
 
 /// `Coroutine::yield_ex(timeout)`: false when it timed out or was canceled.
 pub(crate) fn yield_ex(co: Co, timeout: f64) -> bool {
-    swoole_rs_coroutine::yield_resumed(wait(co, timeout))
+    swoole_rs_corebase::coroutine::yield_resumed(wait(co, timeout))
 }
 
 /// [`yield_ex`] without its last error: how the yield ended.
 pub(crate) fn wait(co: Co, timeout: f64) -> Resume {
-    swoole_rs_coroutine::yield_timed(co.raw(), timeout)
+    swoole_rs_corebase::coroutine::yield_timed(co.raw(), timeout)
 }
 
 /// `Coroutine::count()` and `Coroutine::get_peak_num()`.
 #[must_use]
 pub fn counts() -> (usize, u64) {
-    (count(), swoole_rs_coroutine::counters().peak_num)
+    (count(), swoole_rs_corebase::coroutine::counters().peak_num)
 }
 
 /// Switch to `co`. The caller's frames must own nothing that needs a drop: a
 /// bailout in the coroutine may longjmp across them on the main stack.
 pub(crate) fn resume(co: Co) {
     // SAFETY: a live coroutine, which callers pass suspended.
-    unsafe { swoole_rs_coroutine::resume(co.raw()) };
+    unsafe { swoole_rs_corebase::coroutine::resume(co.raw()) };
 }
 
 /// A coroutine by id, the handle other crates hold. A coroutine's record is
@@ -375,7 +375,7 @@ impl Coroutine {
     #[must_use]
     pub fn is_suspending(self) -> Option<bool> {
         self.live()
-            .map(|co| state_of(co) == swoole_rs_coroutine::State::Waiting)
+            .map(|co| state_of(co) == swoole_rs_corebase::coroutine::State::Waiting)
     }
 }
 
@@ -459,7 +459,7 @@ pub fn in_coroutine() -> bool {
 
 pub(crate) fn cancel(co: Co) -> bool {
     // SAFETY: a live coroutine (the handle's invariant).
-    unsafe { swoole_rs_coroutine::cancel(co.raw().cast()) }
+    unsafe { swoole_rs_corebase::coroutine::cancel(co.raw().cast()) }
 }
 
 /// `co->is_canceled()`.
@@ -470,12 +470,12 @@ pub(crate) fn is_canceled(co: Co) -> bool {
 /// `co->is_end()`: a context that ended is closed and freed before anything
 /// else runs, so a live coroutine has ended only while it closes.
 pub(crate) fn is_end(co: Co) -> bool {
-    state_of(co) == swoole_rs_coroutine::State::End
+    state_of(co) == swoole_rs_corebase::coroutine::State::End
 }
 
 /// `PHPCoroutine::create`'s `Coroutine::create(main_func, args)`.
 pub(crate) fn create(args: crate::context::Args) -> c_long {
-    swoole_rs_coroutine::spawn(move || main(args))
+    swoole_rs_corebase::coroutine::spawn(move || main(args))
 }
 
 /// `main_func`: the coroutine's function and defer tasks run inside
@@ -484,7 +484,12 @@ pub(crate) fn create(args: crate::context::Args) -> c_long {
 fn main(args: crate::context::Args) {
     if crate::context::run(args) {
         // SAFETY: the main context runs `bail_out`; this frame owns nothing.
-        unsafe { swoole_rs_coroutine::swr_v1_coroutine_bail(Some(bail_out), std::ptr::null_mut()) };
+        unsafe {
+            swoole_rs_corebase::coroutine::swr_v1_coroutine_bail(
+                Some(bail_out),
+                std::ptr::null_mut(),
+            );
+        };
     }
 }
 
@@ -546,8 +551,8 @@ pub(crate) fn check_reactor() {
 /// Activation: the reactor's destroy callback, `Coroutine::activate` and the
 /// switch callbacks.
 pub(crate) fn attach(
-    on_yield: extern "C" fn(swoole_rs_coroutine::CoroutineTask),
-    on_resume: extern "C" fn(swoole_rs_coroutine::CoroutineTask),
+    on_yield: extern "C" fn(swoole_rs_corebase::coroutine::CoroutineTask),
+    on_resume: extern "C" fn(swoole_rs_corebase::coroutine::CoroutineTask),
 ) {
     // Upstream dereferences `sw_reactor()` here unchecked.
     if swoole_rs_reactor::event_api::current_prepared().is_none() {
@@ -555,7 +560,7 @@ pub(crate) fn attach(
     }
     swoole_rs_reactor::event_api::on_destroy(deactivate_on_free);
     // The core's activation, on a running loop.
-    swoole_rs_coroutine::activate();
+    swoole_rs_corebase::coroutine::activate();
     set_callbacks([Some(on_yield), Some(on_resume), None]);
 }
 
@@ -563,14 +568,14 @@ pub(crate) fn detach() {
     set_callbacks([None; 3]);
 }
 
-fn set_callbacks(callbacks: [swoole_rs_coroutine::SwapCallback; 3]) {
+fn set_callbacks(callbacks: [swoole_rs_corebase::coroutine::SwapCallback; 3]) {
     let slots = [
-        swoole_rs_coroutine::ON_YIELD,
-        swoole_rs_coroutine::ON_RESUME,
-        swoole_rs_coroutine::ON_CLOSE,
+        swoole_rs_corebase::coroutine::ON_YIELD,
+        swoole_rs_corebase::coroutine::ON_RESUME,
+        swoole_rs_corebase::coroutine::ON_CLOSE,
     ];
     for (slot, callback) in slots.into_iter().zip(callbacks) {
-        swoole_rs_coroutine::set_callback(slot, callback);
+        swoole_rs_corebase::coroutine::set_callback(slot, callback);
     }
 }
 
@@ -581,7 +586,7 @@ fn deactivate_on_free() {
 
 pub(crate) fn deactivate() {
     // The core is active.
-    swoole_rs_coroutine::deactivate();
+    swoole_rs_corebase::coroutine::deactivate();
 }
 
 /// The runtime hooks (when `flags`) and the unsafe functions disabled.
@@ -664,7 +669,7 @@ pub(crate) use swoole_rs_phpswoole::{event_wait, reactor_init};
 pub(crate) fn set_stack_size(size: &swoole_rs_zend::Value) {
     let size = swoole_rs_phpswoole::php_swoole_parse_to_size(size);
     let size = usize::try_from(size.cast_unsigned()).unwrap_or(usize::MAX);
-    swoole_rs_coroutine::set_stack_size(size);
+    swoole_rs_corebase::coroutine::set_stack_size(size);
 }
 
 pub(crate) fn add_name_resolver(resolver: &swoole_rs_zend::Value) {

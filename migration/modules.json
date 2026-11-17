@@ -136,7 +136,7 @@
         "M05"
       ],
       "owned_paths": [
-        "crates/coroutine/",
+        "crates/corebase/src/coroutine/",
         "native/coroutine/",
         "tests/modules/coroutine/"
       ],

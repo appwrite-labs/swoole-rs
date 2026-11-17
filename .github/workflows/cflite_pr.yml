@@ -9,7 +9,6 @@ on:
       - 'crates/buffer/**'
       - 'crates/clients/**'
       - 'crates/corebase/**'
-      - 'crates/coroutine/**'
       - 'crates/crc32/**'
       - 'crates/deflate/**'
       - 'crates/error/**'

@@ -3,7 +3,7 @@
 //! coroutines by id, from creation until close, kept in the scheduler itself so
 //! no lookup goes through a thread-local. Lists run newest first, the order
 //! upstream's map iterates in while its buckets keep one coroutine each.
-use crate::coroutine::{Co, Coroutine, Scheduler, State};
+use crate::coroutine::state::{Co, Coroutine, Scheduler, State};
 use core::ffi::{c_long, c_void};
 use core::ptr;
 
@@ -185,7 +185,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coroutine::{Coroutine, tests::scheduler};
+    use crate::coroutine::state::{Coroutine, tests::scheduler};
 
     fn co(co: &mut Coroutine) -> Co {
         // SAFETY: the cases' coroutines outlive their registration.

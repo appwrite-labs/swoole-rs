@@ -45,7 +45,9 @@ def main():
             command = ['c++', '-std=c++14', '-O1', '-UNDEBUG', '-I' + str(work if name == 'upstream' else ROOT / 'native/hooks'),
                        str(ROOT / 'tests/modules/hooks/ssh2_aliases.cpp')]
             if name == 'hybrid':
-                command += ['-DSWR_HYBRID', str(a.archive.resolve()), '-lpthread']
+                # As in native_link, discard unrelated Rust sections from the archive.
+                command += ['-DSWR_HYBRID', str(a.archive.resolve()), '-lpthread',
+                            '-Wl,-dead_strip' if sys.platform == 'darwin' else '-Wl,--gc-sections']
                 if sys.platform.startswith('linux'):
                     command += ['-ldl', '-lm']
             command += [*flags, '-o', str(binary)]

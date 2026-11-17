@@ -85,11 +85,11 @@ mod recording {
     pub(crate) fn yield_(
         _co: *mut c_void,
         _timeout: f64,
-        _arm: &mut dyn FnMut(swoole_rs_coroutine::Waker),
+        _arm: &mut dyn FnMut(swoole_rs_corebase::coroutine::Waker),
     ) -> bool {
         false
     }
-    pub(crate) fn wake(_waker: swoole_rs_coroutine::Waker) {}
+    pub(crate) fn wake(_waker: swoole_rs_corebase::coroutine::Waker) {}
     /// Holds a reference for the wake-up, as the real one does; the test's
     /// `free` plays the wake-up's release of it.
     pub(crate) fn defer(multi: &Multi) {

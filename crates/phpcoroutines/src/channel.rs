@@ -8,8 +8,8 @@ use std::{
     mem,
     rc::Rc,
 };
-pub use swoole_rs_coroutine::chan::Stats;
-use swoole_rs_coroutine::{
+pub use swoole_rs_corebase::coroutine::chan::Stats;
+use swoole_rs_corebase::coroutine::{
     Resume,
     chan::{self, CANCELED, Effects, TIMEDOUT},
 };

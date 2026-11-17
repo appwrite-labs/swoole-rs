@@ -22,8 +22,7 @@ io-uring = { version = "=0.7.16", optional = true }
 libc = "=0.2.191"
 swoole-rs-buffer = { path = "../buffer" }
 swoole-rs-clients = { path = "../clients" }
-swoole-rs-corebase = { path = "../corebase" }
-swoole-rs-coroutine = { path = "../coroutine", features = ["upstream-symbols"] }
+swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
 swoole-rs-error = { path = "../error" }
 swoole-rs-error-ffi = { path = "../error-ffi" }
 swoole-rs-http-ffi = { path = "../http-ffi" }

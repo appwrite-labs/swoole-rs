@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Swoole's include/swoole_coroutine.h, owned here: what native/ and the vendored code
  * still call of swoole::Coroutine. Rust owns the scheduler and each coroutine's record
- * (crates/coroutine); the operations are its swr_v1_coroutine_* functions and upstream
+ * (crates/corebase/src/coroutine); the operations are its swr_v1_coroutine_* functions and upstream
  * symbols. Upstream's coroutine headers are deleted, so `#include "swoole_coroutine.h"`
  * finds this copy on the Rust prefix's include path. */
 #pragma once
@@ -14,10 +14,10 @@
 #include "swoole_rs_coroutine.h"
 
 static_assert(sizeof(void *) != 8 || (sizeof(swr_v1_coroutine) == 104 && sizeof(swr_v1_coroutine_scheduler) == 136),
-              "crates/coroutine layout");
+              "crates/corebase/src/coroutine layout");
 
 namespace swoole {
-// A coroutine's record (a swr_v1_coroutine, then crates/coroutine's Context), which C++
+// A coroutine's record (a swr_v1_coroutine, then crates/corebase/src/coroutine's Context), which C++
 // only points to.
 class Coroutine {
   public:

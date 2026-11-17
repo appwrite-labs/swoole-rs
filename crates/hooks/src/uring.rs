@@ -22,10 +22,10 @@ use std::ptr;
 use std::rc::Rc;
 use std::sync::atomic::AtomicU32;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::coroutine::Waker;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::set_errno;
 use swoole_rs_corebase::sys::{self as os, ReadSlot};
-use swoole_rs_coroutine::Waker;
 
 /// `SW_IOURING_QUEUE_SIZE`: default ring size and completion batch.
 const QUEUE_SIZE: u32 = 8192;
