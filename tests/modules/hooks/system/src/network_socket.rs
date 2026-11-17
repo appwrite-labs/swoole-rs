@@ -1,15 +1,14 @@
 //! Upstream's `core-tests/src/network/socket.cpp`, one function per TEST with the same
-//! inputs and expected values, over the hybrid's `network::Socket`: a Rust record
-//! (`swr_v1_socket`, native/reactor/swoole_rs_socket.h) whose out-of-line members are
-//! Rust exports under their upstream symbols and whose inline members call
-//! `swr_v1_socket_*`. [`Socket`] makes the same calls the header's inline members make.
+//! inputs and expected values, over the runtime's actual SocketRecord. Member
+//! operations use typed Rust fields and socket handles; native exports remain
+//! only where this fixture still calls their C ABI.
 
 use std::ffi::{CStr, c_char, c_int, c_ulong, c_void};
-use std::mem::{MaybeUninit, offset_of};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 use swoole_rs_corebase::constants::SocketType;
+use swoole_rs_reactor::{SocketFields, SocketRecord as Record, socket_upstream};
 
 use super::address::Address;
 use super::client::Client;
@@ -68,111 +67,15 @@ const SSL_R_SSLV3_ALERT_BAD_CERTIFICATE: c_int = 1042;
 const SSL_R_SSLV3_ALERT_CERTIFICATE_EXPIRED: c_int = 1045;
 const BIO_R_BROKEN_PIPE: c_int = 124;
 
-/// `swr_v1_socket`: `network::Socket`'s fields, Rust's `SocketRecord`.
-#[repr(C)]
-struct Record {
-    fd: c_int,
-    fd_type: c_int,
-    socket_type: c_int,
-    events: c_int,
-    enable_tcp_nodelay: bool,
-    kernel_nobufs: bool,
-    flags: [u8; 18],
-    chunk_size: u32,
-    out_buffer: *mut c_void,
-    send_timer: u64,
-    buffer_size: u32,
-    output_flags: [u8; 4],
-    object: *mut c_void,
-    ssl: *mut c_void,
-    tls: [u32; 2],
-    timeouts: [f64; 4],
-    last_times: [f64; 2],
-    buffers: [*mut c_void; 3],
-    totals: [usize; 2],
-    info: Address,
-}
-
-const _: () = assert!(
-    offset_of!(Record, out_buffer) == 40
-        && offset_of!(Record, timeouts) == 88
-        && offset_of!(Record, info) == 176
-        && size_of::<Record>() == 296,
-    "swr_v1_socket's layout moved"
-);
-
 unsafe extern "C" {
     fn free(pointer: *mut c_void);
 }
 
 unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole11make_socketE12swSocketType8swFdTypei"]
-    fn make_socket3(kind: c_int, fd_type: c_int, flags: c_int) -> *mut Record;
-    #[link_name = "_ZN6swoole11make_socketE12swSocketType8swFdTypeiiii"]
-    fn make_socket6(
-        kind: c_int,
-        fd_type: c_int,
-        domain: c_int,
-        sock_type: c_int,
-        protocol: c_int,
-        flags: c_int,
-    ) -> *mut Record;
-    #[link_name = "_ZN6swoole18make_server_socketE12swSocketTypePKcii"]
-    fn make_server_socket4(
-        kind: c_int,
-        address: *const c_char,
-        port: c_int,
-        backlog: c_int,
-    ) -> *mut Record;
     #[link_name = "_ZN6swoole7network6Socket4freeEv"]
-    fn socket_free(socket: *mut Record);
-    #[link_name = "_ZN6swoole7network6Socket12connect_syncERKNS0_7AddressE"]
-    fn socket_connect_sync(socket: *mut Record, address: *const Address) -> c_int;
-    #[link_name = "_ZN6swoole7network6Socket13set_fd_optionEii"]
-    fn socket_set_fd_option(socket: *mut Record, nonblock: c_int, cloexec: c_int) -> bool;
-    #[link_name = "_ZN6swoole7network6Socket23set_kernel_read_timeoutEd"]
-    fn socket_set_kernel_read_timeout(socket: *mut Record, timeout: f64) -> bool;
-    #[link_name = "_ZN6swoole7network6Socket24set_kernel_write_timeoutEd"]
-    fn socket_set_kernel_write_timeout(socket: *mut Record, timeout: f64) -> bool;
-    #[link_name = "_ZN6swoole7network6Socket4corkEv"]
-    fn socket_cork(socket: *mut Record) -> bool;
-    #[link_name = "_ZN6swoole7network6Socket6uncorkEv"]
-    fn socket_uncork(socket: *mut Record) -> bool;
-    #[link_name = "_ZN6swoole7network6Socket13sendfile_syncEPKclm"]
-    fn socket_sendfile_sync(
-        socket: *mut Record,
-        file: *const c_char,
-        offset: i64,
-        length: usize,
-    ) -> c_int;
-    #[link_name = "_ZNK6swoole7network6Socket5cleanEv"]
-    fn socket_clean(socket: *const Record);
-    #[link_name = "_ZN6swoole7network6Socket14check_livenessEv"]
-    fn socket_check_liveness(socket: *mut Record) -> bool;
+    fn socket_free(socket: *mut c_void);
     #[link_name = "_ZN6swoole7network6Socket20ssl_get_error_reasonEPi"]
     fn socket_ssl_get_error_reason(reason: *mut c_int) -> *const c_char;
-    #[link_name = "_ZN6swoole7network6Socket8get_nameEv"]
-    fn socket_get_name(socket: *mut Record) -> c_int;
-    #[link_name = "_ZN6swoole7network6Socket13get_peer_nameEPNS0_7AddressE"]
-    fn socket_get_peer_name(socket: *const Record, address: *mut Address) -> c_int;
-    #[link_name = "_ZN6swoole7network6Socket4bindERKNS0_7AddressE"]
-    fn socket_bind(socket: *mut Record, address: *const Address) -> c_int;
-    #[link_name = "_ZN6swoole7network6Socket6listenEi"]
-    fn socket_listen(socket: *mut Record, backlog: c_int) -> c_int;
-    #[link_name = "_ZN6swoole7network6Socket6acceptEv"]
-    fn socket_accept(socket: *mut Record) -> *mut Record;
-    #[link_name = "_ZNK6swoole7network6Socket3dupEv"]
-    fn socket_dup(socket: *const Record) -> *mut Record;
-    #[link_name = "_ZN6swoole7network6Socket14set_tcp_nopushEi"]
-    fn socket_set_tcp_nopush(socket: *mut Record, nopush: c_int) -> c_int;
-    #[link_name = "_ZN6swoole7network6Socket15set_tcp_nodelayEi"]
-    fn socket_set_tcp_nodelay(socket: *mut Record, nodelay: c_int) -> bool;
-    #[link_name = "_ZN6swoole7network6Socket11set_timeoutEdi"]
-    fn socket_set_timeout(socket: *mut Record, timeout: f64, kind: c_int);
-    #[link_name = "_ZN6swoole7network6Socket17catch_write_errorEi"]
-    fn socket_catch_write_error(socket: *mut Record, error: c_int) -> c_int;
-    #[link_name = "_ZN6swoole7network6Socket22catch_write_pipe_errorEi"]
-    fn socket_catch_write_pipe_error(socket: *mut Record, error: c_int) -> c_int;
 }
 
 #[link(name = "crypto")]
@@ -266,15 +169,23 @@ fn get_domain_and_type(kind: c_int, domain: &mut c_int, sock_type: &mut c_int) -
     SW_OK
 }
 
+/// Keep the original C++ success/failure assertions at the fixture boundary.
+fn status(ok: bool) -> c_int {
+    if ok { SW_OK } else { SW_ERR }
+}
+
 pub(super) fn make_socket(kind: c_int, fd_type: c_int, flags: c_int) -> Option<Socket> {
-    // SAFETY: no preconditions.
-    Socket::from(unsafe { make_socket3(kind, fd_type, flags) })
+    Socket::from(socket_upstream::make_socket_typed(kind, fd_type, flags))
 }
 
 fn make_server_socket(kind: c_int, address: &str, port: c_int, backlog: c_int) -> Option<Socket> {
     let address = std::ffi::CString::new(address).unwrap();
-    // SAFETY: a NUL-terminated address.
-    Socket::from(unsafe { make_server_socket4(kind, address.as_ptr(), port, backlog) })
+    Socket::from(swoole_rs_tls::upstream::make_server_socket(
+        kind,
+        address.as_c_str().into(),
+        port,
+        backlog,
+    ))
 }
 
 fn unlink_path(path: &CStr) {
@@ -307,7 +218,7 @@ impl Socket {
 
     pub(super) fn free(self) {
         // SAFETY: frees the live socket once.
-        unsafe { socket_free(self.0) };
+        unsafe { socket_free(self.0.cast()) };
     }
 
     /// `delete sock`: operator delete, without closing.
@@ -325,27 +236,29 @@ impl Socket {
     }
 
     fn get_port(&self) -> c_int {
-        self.record().info.get_port()
+        swoole_rs_clients::address::address_port(&self.record().info).into()
     }
 
     fn set_timeout(&self, timeout: f64, kind: c_int) {
-        // SAFETY: a live socket.
-        unsafe { socket_set_timeout(self.0, timeout, kind) };
+        self.handle().edit(|record| {
+            record
+                .timeouts
+                .set(timeout, swoole_rs_reactor::TimeoutKind::from_bits(kind))
+        });
     }
 
     fn set_block(&self) -> bool {
-        // SAFETY: a live socket.
-        unsafe { socket_set_fd_option(self.0, 0, -1) }
+        self.handle()
+            .edit(|record| socket_upstream::socket_set_fd_option(record, 0, -1))
     }
 
     fn set_nonblock(&self) -> bool {
-        // SAFETY: a live socket.
-        unsafe { socket_set_fd_option(self.0, 1, -1) }
+        self.handle()
+            .edit(|record| socket_upstream::socket_set_fd_option(record, 1, -1))
     }
 
     fn connect_sync(&self, address: &Address) -> c_int {
-        // SAFETY: a live socket and address.
-        unsafe { socket_connect_sync(self.0, address) }
+        socket_upstream::connect_sync(self.handle(), address.record())
     }
 
     pub(super) fn connect_address(&self, address: &Address) -> c_int {
@@ -361,13 +274,14 @@ impl Socket {
     }
 
     fn get_name(&self) -> c_int {
-        // SAFETY: a live socket.
-        unsafe { socket_get_name(self.0) }
+        status(self.handle().edit(SocketFields::get_name))
     }
 
     fn get_peer_name(&self, address: &mut Address) -> c_int {
-        // SAFETY: a live socket and a writable address.
-        unsafe { socket_get_peer_name(self.0, address) }
+        status(
+            self.handle()
+                .read(|record| record.get_peer_name(address.record_mut())),
+        )
     }
 
     /// `bind(host, port)`: assigns without resolving, then binds.
@@ -376,23 +290,19 @@ impl Socket {
         if !address.assign(self.record().socket_type, host, port, false) {
             return SW_ERR;
         }
-        // SAFETY: a live socket and the assigned address.
-        unsafe { socket_bind(self.0, &address) }
+        status(self.handle().edit(|record| record.bind(address.record())))
     }
 
     fn listen(&self, backlog: c_int) -> c_int {
-        // SAFETY: a live socket.
-        unsafe { socket_listen(self.0, backlog) }
+        status(self.handle().edit(|record| record.listen(backlog)))
     }
 
     fn accept(&self) -> Option<Self> {
-        // SAFETY: a live listener.
-        Self::from(unsafe { socket_accept(self.0) })
+        Self::from(self.handle().edit(SocketFields::accept))
     }
 
     fn dup(&self) -> Option<Self> {
-        // SAFETY: a live socket.
-        Self::from(unsafe { socket_dup(self.0) })
+        Self::from(self.handle().read(SocketFields::dup))
     }
 
     fn recv(&self, buf: &mut [u8], flags: c_int) -> isize {
@@ -489,18 +399,20 @@ impl Socket {
 
     fn sendfile_sync(&self, file: &str, offset: i64, length: usize) -> c_int {
         let file = std::ffi::CString::new(file).unwrap();
-        // SAFETY: a NUL-terminated path.
-        unsafe { socket_sendfile_sync(self.0, file.as_ptr(), offset, length) }
+        status(swoole_rs_tls::upstream::sendfile_sync(
+            self.handle(),
+            &file,
+            offset,
+            length,
+        ))
     }
 
     fn clean(&self) {
-        // SAFETY: a live socket.
-        unsafe { socket_clean(self.0) };
+        self.handle().read(socket_upstream::socket_clean);
     }
 
     fn check_liveness(&self) -> bool {
-        // SAFETY: a live socket.
-        unsafe { socket_check_liveness(self.0) }
+        swoole_rs_tls::upstream::check_liveness(self.handle())
     }
 
     fn shutdown(&self, how: c_int) -> c_int {
@@ -509,40 +421,22 @@ impl Socket {
     }
 
     fn get_out_buffer_length(&self) -> u32 {
-        let buffer = self.record().out_buffer;
-        if buffer.is_null() {
-            0
-        } else {
-            // SAFETY: a live output buffer.
-            swoole_rs_corebase::buffer::cpp::swr_cpp_buffer_length(unsafe { &*buffer.cast() })
-        }
+        self.handle().read(|record| {
+            record
+                .output
+                .out_buffer
+                .as_deref()
+                .map_or(0, swoole_rs_corebase::buffer::cpp::swr_cpp_buffer_length)
+        })
     }
 
     fn catch_write_error(&self, error: c_int) -> c_int {
-        // SAFETY: a live socket.
-        unsafe { socket_catch_write_error(self.0, error) }
+        self.handle().catch_error(error) as c_int
     }
 
     fn catch_write_pipe_error(&self, error: c_int) -> c_int {
-        // SAFETY: a live socket.
-        unsafe { socket_catch_write_pipe_error(self.0, error) }
+        self.handle().catch_pipe_error(error) as c_int
     }
-}
-
-/// `network::Socket sock{}`: a constructed record on the stack.
-fn stack_socket() -> Box<MaybeUninit<Record>> {
-    // Every field is an integer, float, bool or pointer, valid zeroed.
-    let mut record = Box::new(MaybeUninit::<Record>::zeroed());
-    let defaults = swoole_rs_reactor::SOCKET_DEFAULTS.timeouts();
-    let timeouts = [
-        defaults.dns,
-        defaults.connect,
-        defaults.read,
-        defaults.write,
-    ];
-    // SAFETY: the zeroed record.
-    unsafe { (*record.as_mut_ptr()).timeouts = timeouts };
-    record
 }
 
 fn connect_sync() {
@@ -600,8 +494,10 @@ fn fail() {
     assert_eq!(sock.get_peer_name(&mut peer), -1);
     assert_eq!(errno(), EBADF);
 
-    // SAFETY: a live socket.
-    assert_eq!(unsafe { socket_set_tcp_nopush(sock.0, 1) }, -1);
+    assert_eq!(
+        status(sock.handle().edit(|record| record.set_tcp_nopush(1))),
+        -1
+    );
     assert_eq!(sock.listen(1), -1);
 
     let fd = sock.get_fd();
@@ -609,15 +505,20 @@ fn fail() {
     assert!(swoole_rs_reactor::set_socket_buffer_size(fd, true, false, 1).is_err());
     assert!(swoole_rs_reactor::set_socket_buffer_size(fd, false, true, 1).is_err());
 
-    // SAFETY: a live socket.
-    unsafe {
-        assert!(!socket_set_tcp_nodelay(sock.0, 1));
-        assert!(!socket_cork(sock.0));
-        assert!(!socket_uncork(sock.0));
+    assert!(!sock.handle().edit(|record| record.set_tcp_nodelay(1)));
+    assert!(!sock.handle().edit(socket_upstream::socket_cork));
+    assert!(!sock.handle().edit(socket_upstream::socket_uncork));
 
-        assert!(!socket_set_kernel_read_timeout(sock.0, 0.1));
-        assert!(!socket_set_kernel_write_timeout(sock.0, 0.1));
-    }
+    assert!(
+        !sock
+            .handle()
+            .edit(|record| socket_upstream::socket_set_kernel_read_timeout(record, 0.1))
+    );
+    assert!(
+        !sock
+            .handle()
+            .edit(|record| socket_upstream::socket_set_kernel_write_timeout(record, 0.1))
+    );
 
     sock.move_fd();
     sock.free();
@@ -1203,7 +1104,8 @@ fn make_socket_case() {
     assert_eq!(last_error(), EPROTONOSUPPORT);
 
     // SAFETY: no preconditions.
-    let sock = unsafe { make_socket6(SW_SOCK_TCP, SW_FD_STREAM, AF_INET6, SOCK_RDM, 999, 0) };
+    let sock =
+        socket_upstream::make_socket_open(SW_SOCK_TCP, SW_FD_STREAM, AF_INET6, SOCK_RDM, 999, 0);
     assert!(sock.is_null());
     assert_eq!(errno(), EINVAL);
     assert_eq!(last_error(), EINVAL);
@@ -1374,8 +1276,8 @@ fn ssl_get_error_reason_case() {
 }
 
 fn catch_error() {
-    let mut fake = stack_socket();
-    let fake_sock = Socket(fake.as_mut_ptr());
+    let mut fake = Box::new(Record::new());
+    let fake_sock = Socket(std::ptr::from_mut(fake.as_mut()));
     assert_eq!(fake_sock.catch_write_pipe_error(ENOBUFS), SW_REDUCE_SIZE);
     assert_eq!(fake_sock.catch_write_pipe_error(EMSGSIZE), SW_REDUCE_SIZE);
     assert_eq!(fake_sock.catch_write_pipe_error(EAGAIN), SW_WAIT);
@@ -1424,25 +1326,23 @@ fn misc() {
     // SAFETY: two writable descriptors.
     assert_eq!(unsafe { pipe(fds.as_mut_ptr()) }, 0);
 
-    let mut sock1 = stack_socket();
-    // SAFETY: the constructed record.
-    unsafe { (*sock1.as_mut_ptr()).fd = fds[1] };
+    let mut sock1 = Box::new(Record::new());
+    sock1.fd = fds[1];
 
-    let mut sock2 = stack_socket();
-    // SAFETY: the constructed record.
-    unsafe { (*sock2.as_mut_ptr()).fd = fds[0] };
+    let mut sock2 = Box::new(Record::new());
+    sock2.fd = fds[0];
 
     let data = test_data();
     // SAFETY: `write` on the record's fd, readable `data`.
     assert_eq!(
-        unsafe { write((*sock1.as_ptr()).fd, data.as_ptr().cast(), data.len()) },
+        unsafe { write(sock1.fd, data.as_ptr().cast(), data.len()) },
         data.len() as isize
     );
 
     let mut rbuf = [0_u8; 128];
     // SAFETY: `read` on the record's fd into a writable buffer.
     assert_eq!(
-        unsafe { read((*sock2.as_ptr()).fd, rbuf.as_mut_ptr().cast(), rbuf.len()) },
+        unsafe { read(sock2.fd, rbuf.as_mut_ptr().cast(), rbuf.len()) },
         data.len() as isize
     );
     assert_eq!(data, &rbuf[..data.len()]);

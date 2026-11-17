@@ -829,11 +829,11 @@ pub fn sendfile_sync(
         return false;
     };
     let total = request.length();
-    let corked = total > CORK_MIN_SIZE && socket.edit(|record| socket_cork(record));
+    let corked = total > CORK_MIN_SIZE && socket.edit(socket_cork);
     let io = Io::Sendfile(&mut request, total);
     let rv = sync_out(socket, io, 0);
     if corked {
-        socket.edit(|record| socket_uncork(record));
+        socket.edit(socket_uncork);
     }
     rv.is_some()
 }
@@ -875,11 +875,11 @@ impl OutputEffects for Output<'_> {
     }
 
     fn cork(&self) -> bool {
-        self.0.edit(|record| socket_cork(record))
+        self.0.edit(socket_cork)
     }
 
     fn uncork(&self) {
-        self.0.edit(|record| socket_uncork(record));
+        self.0.edit(socket_uncork);
     }
 
     fn sent(&self) {

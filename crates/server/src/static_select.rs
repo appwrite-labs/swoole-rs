@@ -281,7 +281,7 @@ impl Exchange for Wire<'_> {
     }
     fn cork(&self) {
         // An `extern "C"` fn is no closure.
-        let cork = |fields: &mut _| swoole_rs_reactor::socket_upstream::socket_cork(fields);
+        let cork = swoole_rs_reactor::socket_upstream::socket_cork;
         self.socket.edit(cork);
     }
     fn send(&self, kind: ServerEvent, data: &[u8]) {

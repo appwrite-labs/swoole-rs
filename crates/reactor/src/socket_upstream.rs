@@ -2,8 +2,8 @@
 // Compatibility derived from Swoole v6.2.4 src/network/socket.cc (Swoole contributors).
 //! The `network::Socket` methods and `make_socket` overloads of `socket.cc` that
 //! are whole Rust operations, last error and warnings included. With
-//! `upstream-symbols` (the hybrid's reactor build) they are defined under their
-//! upstream (Itanium) symbols and `socket.cc` no longer defines them.
+//! `upstream-symbols`, the socket factories retain their upstream symbols. Socket
+//! member operations are called directly by Rust.
 use crate::socket_sync::set_errno;
 use crate::{SocketAddress, SocketFields, SocketRecord};
 use std::ffi::{CStr, c_int};
@@ -17,25 +17,13 @@ const ERR: c_int = ResultCode::SW_ERR as c_int;
 use swoole_rs_corebase::sys::errno;
 
 /// `void Socket::clean() const`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole7network6Socket5cleanEv")
-)]
-pub extern "C" fn socket_clean(socket: &SocketFields) {
+pub fn socket_clean(socket: &SocketFields) {
     crate::fd_clean(socket.fd);
 }
 
 /// `int Socket::wait_event(int timeout_ms, int events) const`.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole7network6Socket10wait_eventEii")
-)]
-pub extern "C" fn socket_wait_event(
-    socket: &SocketFields,
-    timeout_ms: c_int,
-    events: c_int,
-) -> c_int {
+pub fn socket_wait_event(socket: &SocketFields, timeout_ms: c_int, events: c_int) -> c_int {
     if wait_event(
         socket.fd,
         socket.dont_restart,
@@ -99,11 +87,7 @@ pub fn socket_connect_async(socket: &mut SocketFields, address: &SocketAddress) 
 /// `int Socket::connect_sync(const Address &sa)` of `this`, a live socket on this
 /// thread; it waits outside any borrow.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket12connect_syncERKNS0_7AddressE")
-)]
-pub extern "C" fn connect_sync(socket: crate::Socket<'_>, address: &SocketAddress) -> c_int {
+pub fn connect_sync(socket: crate::Socket<'_>, address: &SocketAddress) -> c_int {
     match socket.edit(|record| socket_connect_async(record, address)) {
         Connect::Wait => {}
         Connect::Ready => return OK,
@@ -130,11 +114,7 @@ pub extern "C" fn connect_sync(socket: crate::Socket<'_>, address: &SocketAddres
 
 /// `bool Socket::has_timedout() const`.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole7network6Socket12has_timedoutEv")
-)]
-pub extern "C" fn socket_has_timedout(_socket: *const SocketRecord) -> bool {
+pub fn socket_has_timedout() -> bool {
     let error = errno();
     error == libc::EAGAIN
         || error == libc::ETIMEDOUT
@@ -143,15 +123,7 @@ pub extern "C" fn socket_has_timedout(_socket: *const SocketRecord) -> bool {
 
 /// `bool Socket::set_fd_option(int nonblock, int cloexec)`, warning as
 /// `_fcntl_set_option`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket13set_fd_optionEii")
-)]
-pub extern "C" fn socket_set_fd_option(
-    socket: &mut SocketFields,
-    nonblock: c_int,
-    cloexec: c_int,
-) -> bool {
+pub fn socket_set_fd_option(socket: &mut SocketFields, nonblock: c_int, cloexec: c_int) -> bool {
     let result = socket.set_fd_option(nonblock, cloexec);
     let fd = socket.fd;
     for (bit, call) in [
@@ -184,20 +156,12 @@ fn set_kernel_timeout(socket: &mut SocketFields, send: bool, timeout: f64) -> bo
 }
 
 /// `bool Socket::set_kernel_read_timeout(double)`: upstream sets `SO_SNDTIMEO`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket23set_kernel_read_timeoutEd")
-)]
-pub extern "C" fn socket_set_kernel_read_timeout(socket: &mut SocketFields, timeout: f64) -> bool {
+pub fn socket_set_kernel_read_timeout(socket: &mut SocketFields, timeout: f64) -> bool {
     set_kernel_timeout(socket, true, timeout)
 }
 
 /// `bool Socket::set_kernel_write_timeout(double)`: upstream sets `SO_RCVTIMEO`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket24set_kernel_write_timeoutEd")
-)]
-pub extern "C" fn socket_set_kernel_write_timeout(socket: &mut SocketFields, timeout: f64) -> bool {
+pub fn socket_set_kernel_write_timeout(socket: &mut SocketFields, timeout: f64) -> bool {
     set_kernel_timeout(socket, false, timeout)
 }
 
@@ -236,20 +200,12 @@ fn cork_as(socket: &mut SocketFields, cork: bool) -> bool {
 }
 
 /// `bool Socket::cork()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket4corkEv")
-)]
-pub extern "C" fn socket_cork(socket: &mut SocketFields) -> bool {
+pub fn socket_cork(socket: &mut SocketFields) -> bool {
     cork_as(socket, true)
 }
 
 /// `bool Socket::uncork()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket6uncorkEv")
-)]
-pub extern "C" fn socket_uncork(socket: &mut SocketFields) -> bool {
+pub fn socket_uncork(socket: &mut SocketFields) -> bool {
     cork_as(socket, false)
 }
 
@@ -345,7 +301,6 @@ pub fn event_reactor() -> Option<(*mut std::ffi::c_void, crate::ReactorPrepared)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ptr;
 
     #[test]
     fn reactor_errors_log_at_warning_level() {
@@ -365,7 +320,7 @@ mod tests {
         let socket = SocketRecord::with_fd(fds[0], 0);
         assert_eq!(socket_wait_event(&socket, 0, 0), ERR);
         assert_eq!(log::last_error(), crate::socket_io::POLL_TIMEOUT);
-        assert!(socket_has_timedout(ptr::null()));
+        assert!(socket_has_timedout());
         unsafe {
             libc::close(fds[0]);
             libc::close(fds[1]);
@@ -376,50 +331,5 @@ mod tests {
     fn make_socket_with_an_unknown_type_sets_the_last_error() {
         assert!(make_socket_typed(-1, 0, 0).is_null());
         assert_eq!(log::last_error(), libc::ESOCKTNOSUPPORT);
-    }
-}
-
-/// Upstream's `network::Socket` members over the record, under their own symbols for
-/// the core-tests port (tests/modules/hooks/system), which links them.
-#[cfg(feature = "upstream-symbols")]
-mod members {
-    use crate::{SocketAddress, SocketFields, SocketRecord};
-    use std::ffi::c_int;
-
-    /// A Rust success as upstream's `SW_OK`/`SW_ERR`.
-    fn status(ok: bool) -> c_int {
-        if ok { super::OK } else { super::ERR }
-    }
-
-    /// Each member as `extern "C" fn(this, args...)`: C++ passes `this` and reference
-    /// arguments as non-null pointers to live objects, which Rust takes as references.
-    macro_rules! members {
-        ($($symbol:literal fn $name:ident($this:ident $(, $arg:ident: $ty:ty)*) -> $ret:ty $body:block)*) => {$(
-            #[unsafe(export_name = $symbol)]
-            extern "C" fn $name($this: &mut SocketFields $(, $arg: $ty)*) -> $ret $body
-        )*};
-    }
-
-    members! {
-        "_ZN6swoole7network6Socket8get_nameEv" fn get_name(this) -> c_int { status(this.get_name()) }
-        "_ZN6swoole7network6Socket13get_peer_nameEPNS0_7AddressE"
-        fn get_peer_name(this, address: &mut SocketAddress) -> c_int { status(this.get_peer_name(address)) }
-        "_ZN6swoole7network6Socket4bindERKNS0_7AddressE"
-        fn bind(this, address: &SocketAddress) -> c_int { status(this.bind(address)) }
-        "_ZN6swoole7network6Socket6listenEi" fn listen(this, backlog: c_int) -> c_int { status(this.listen(backlog)) }
-        "_ZN6swoole7network6Socket6acceptEv" fn accept(this) -> *mut SocketRecord { this.accept() }
-        "_ZNK6swoole7network6Socket3dupEv" fn dup(this) -> *mut SocketRecord { this.dup() }
-        "_ZN6swoole7network6Socket14set_tcp_nopushEi"
-        fn set_tcp_nopush(this, nopush: c_int) -> c_int { status(this.set_tcp_nopush(nopush)) }
-        "_ZN6swoole7network6Socket15set_tcp_nodelayEi"
-        fn set_tcp_nodelay(this, nodelay: c_int) -> bool { this.set_tcp_nodelay(nodelay) }
-        "_ZN6swoole7network6Socket11set_timeoutEdi"
-        fn set_timeout(this, timeout: f64, kind: c_int) -> () { this.timeouts.set(timeout, crate::TimeoutKind::from_bits(kind)) }
-        "_ZN6swoole7network6Socket17catch_write_errorEi"
-        fn catch_write_error(this, error: c_int) -> c_int { this.catch_error(error) as c_int }
-        "_ZN6swoole7network6Socket22catch_write_pipe_errorEi"
-        fn catch_write_pipe_error(this, error: c_int) -> c_int {
-            crate::catch_pipe_error(error, &mut this.kernel_nobufs) as c_int
-        }
     }
 }

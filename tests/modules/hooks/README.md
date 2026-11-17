@@ -500,6 +500,12 @@ UDP receive, from both a coroutine and (`reactor` argument) a non-coroutine time
 callback. The normal gates and io_uring, c-ares and thread-context variants run it; the latter must complete the
 canceled request before the operation releases its buffers.
 
+The network socket fixture constructs the actual `SocketRecord` and calls its
+Rust operations through typed fields and socket handles. Its C++ status adapters
+keep the original integer assertions. Twenty member exports used only by Rust
+fixtures are removed, including the eleven-method export block; native socket
+factory/free and TLS exports with other callers remain.
+
 The original `timer.get` and `timer.delay` use the issued timer ID returned
 by `swoole_timer_get`, and `delay_held` moves its deadline. Their ID, elapsed-time
 and missing-timer expectations are unchanged; `None` represents the original
