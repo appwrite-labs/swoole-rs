@@ -761,17 +761,6 @@ fn on_headers_complete(state: &mut State) -> Step {
     Step::Go
 }
 
-/// `$request->server`'s `request_time` (`time(nullptr)`) and `request_time_float`
-/// (`swoole::microtime()`).
-pub(crate) fn request_times(state: &mut State) {
-    let now = swoole_rs_corebase::time_now();
-    let float = swoole_rs_corebase::microtime();
-    edit_server(state, |server| {
-        add_field(server, Key::RequestTime, Owned::long(now));
-        add_field(server, Key::RequestTimeFloat, Owned::double(float));
-    });
-}
-
 /// `$request->server['server_protocol']`, an interned protocol name.
 pub(crate) fn add_protocol(state: &mut State, protocol: Key) {
     if let Some(protocol) = key(protocol) {
