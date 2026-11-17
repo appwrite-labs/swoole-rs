@@ -125,7 +125,7 @@ impl<'a> ServerWorkers<'a> {
         let (workers, count) = self.event_array(pool.worker_num().min(self.event_count));
         for index in 0..count as usize {
             if let Some((from, to)) = pool.worker(index).zip(self.event(index)) {
-                to.put(from.get());
+                to.copy_from(from);
             }
         }
         // The server's array, lent for as long as the pool, of at least `count` records.

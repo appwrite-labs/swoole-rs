@@ -105,7 +105,7 @@ fn share(serv: view::Server<'_>, slot: &crate::worker::Slot, process: Worker<'_>
     if !slot.share_resources(owner) {
         return false;
     }
-    process.put(source.get());
+    process.copy_from(source);
     process.use_pipe(!user);
     process.set_shared(true);
     true

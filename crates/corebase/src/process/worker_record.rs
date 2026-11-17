@@ -331,43 +331,11 @@ impl<'a> Worker<'a> {
         self.0
     }
 
-    /// A copy of the whole record, a field at a time: the status, which its worker
-    /// may be storing meanwhile, and the concurrency are loaded atomically.
-    #[must_use]
-    pub fn get(self) -> WorkerRecord {
-        let r = self.record();
-        WorkerRecord {
-            pid: AtomicI32::new(r.pid.load(Ordering::Relaxed)),
-            id: r.id.clone(),
-            pool: r.pool.clone(),
-            queue: r.queue.clone(),
-            shared: r.shared.clone(),
-            redirect_stdout: AtomicBool::new(r.redirect_stdout.load(Ordering::Relaxed)),
-            redirect_stdin: AtomicBool::new(r.redirect_stdin.load(Ordering::Relaxed)),
-            redirect_stderr: AtomicBool::new(r.redirect_stderr.load(Ordering::Relaxed)),
-            status: AtomicU8::new(r.status.load(Ordering::Relaxed)),
-            kind: r.kind.clone(),
-            msgqueue_mode: r.msgqueue_mode.clone(),
-            child_process: r.child_process.clone(),
-            concurrency: AtomicU32::new(r.concurrency.load(Ordering::Relaxed)),
-            start_time: r.start_time.clone(),
-            dispatch_count: AtomicI64::new(r.dispatch_count.load(Ordering::Relaxed)),
-            request_count: r.request_count.clone(),
-            response_count: r.response_count.clone(),
-            coroutine_num: r.coroutine_num.clone(),
-            lock: r.lock.clone(),
-            pipe_object: r.pipe_object.clone(),
-            pipe_master: r.pipe_master.clone(),
-            pipe_worker: r.pipe_worker.clone(),
-            pipe_current: AtomicPtr::new(r.pipe_current.load(Ordering::Relaxed)),
-            ptr: r.ptr.clone(),
-        }
-    }
-
-    /// `*worker = record`, a field at a time: the record becomes a copy of
-    /// another, whose pool and pipes (live while that one is sent through) it then
-    /// shares.
-    pub fn put(self, record: WorkerRecord) {
+    /// `*worker = *from`, a field at a time: the record becomes a copy of `from`,
+    /// whose pool and pipes (live while it is sent through) it then shares. The status,
+    /// which `from`'s worker may be storing meanwhile, and the concurrency are loaded
+    /// atomically. Every field is named, so a new one must be copied here too.
+    pub fn copy_from(self, from: Self) {
         let WorkerRecord {
             pid,
             id,
@@ -393,38 +361,39 @@ impl<'a> Worker<'a> {
             pipe_worker,
             pipe_current,
             ptr,
-        } = record;
+        } = from.record();
         let r = self.record();
-        r.pid.store(pid.into_inner(), Ordering::Relaxed);
-        r.id.set(id.into_inner());
-        r.pool.set(pool.into_inner());
-        r.queue.set(queue.into_inner());
-        r.shared.set(shared.into_inner());
+        r.pid.store(pid.load(Ordering::Relaxed), Ordering::Relaxed);
+        r.id.set(id.get());
+        r.pool.set(pool.get());
+        r.queue.set(queue.get());
+        r.shared.set(shared.get());
         r.redirect_stdout
-            .store(redirect_stdout.into_inner(), Ordering::Relaxed);
+            .store(redirect_stdout.load(Ordering::Relaxed), Ordering::Relaxed);
         r.redirect_stdin
-            .store(redirect_stdin.into_inner(), Ordering::Relaxed);
+            .store(redirect_stdin.load(Ordering::Relaxed), Ordering::Relaxed);
         r.redirect_stderr
-            .store(redirect_stderr.into_inner(), Ordering::Relaxed);
-        r.status.store(status.into_inner(), Ordering::Relaxed);
-        r.kind.set(kind.into_inner());
-        r.msgqueue_mode.set(msgqueue_mode.into_inner());
-        r.child_process.set(child_process.into_inner());
+            .store(redirect_stderr.load(Ordering::Relaxed), Ordering::Relaxed);
+        r.status
+            .store(status.load(Ordering::Relaxed), Ordering::Relaxed);
+        r.kind.set(kind.get());
+        r.msgqueue_mode.set(msgqueue_mode.get());
+        r.child_process.set(child_process.get());
         r.concurrency
-            .store(concurrency.into_inner(), Ordering::Relaxed);
-        r.start_time.set(start_time.into_inner());
+            .store(concurrency.load(Ordering::Relaxed), Ordering::Relaxed);
+        r.start_time.set(start_time.get());
         r.dispatch_count
-            .store(dispatch_count.into_inner(), Ordering::Relaxed);
-        r.request_count.set(request_count.into_inner());
-        r.response_count.set(response_count.into_inner());
-        r.coroutine_num.set(coroutine_num.into_inner());
-        r.lock.set(lock.into_inner());
-        r.pipe_object.set(pipe_object.into_inner());
-        r.pipe_master.set(pipe_master.into_inner());
-        r.pipe_worker.set(pipe_worker.into_inner());
+            .store(dispatch_count.load(Ordering::Relaxed), Ordering::Relaxed);
+        r.request_count.set(request_count.get());
+        r.response_count.set(response_count.get());
+        r.coroutine_num.set(coroutine_num.get());
+        r.lock.set(lock.get());
+        r.pipe_object.set(pipe_object.get());
+        r.pipe_master.set(pipe_master.get());
+        r.pipe_worker.set(pipe_worker.get());
         r.pipe_current
-            .store(pipe_current.into_inner(), Ordering::Relaxed);
-        r.ptr.set(ptr.into_inner());
+            .store(pipe_current.load(Ordering::Relaxed), Ordering::Relaxed);
+        r.ptr.set(ptr.get());
     }
 
     field!(
@@ -729,7 +698,9 @@ pub fn copy_for_process<'a>(
     const MSGQUEUE_BALANCE: u8 = 2;
     let pool = pool.record();
     // Copied by value, as upstream's `new Worker(...)` does.
-    let mut worker = pool.worker(id).map(Worker::get)?;
+    let from = pool.worker(id)?;
+    Worker::from(&*copy).copy_from(from);
+    let worker = copy;
     let null = core::ptr::null_mut();
     let mut pipe = None;
     if pool.ipc_mode.get() == IpcMode::UnixSock {
@@ -751,7 +722,6 @@ pub fn copy_for_process<'a>(
         worker.queue.set(pool.queue());
         worker.msgqueue_mode.set(MSGQUEUE_BALANCE);
     }
-    *copy = worker;
     pipe
 }
 
@@ -946,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn get_copies_every_field_around_the_status() {
+    fn copy_from_copies_every_field_around_the_status() {
         let mut record: WorkerRecord = unsafe { std::mem::zeroed() };
         *record.pid.get_mut() = 41;
         record.id.set(7);
@@ -955,12 +925,13 @@ mod tests {
         record.ptr.set(core::ptr::dangling_mut());
         let worker = Worker::from(&record);
         worker.set_status(WorkerStatus::Busy);
-        let copy = worker.get();
+        let mut copy: WorkerRecord = unsafe { std::mem::zeroed() };
+        Worker::from(&copy).copy_from(worker);
         assert_eq!(
             (
-                copy.pid(),
+                *copy.pid.get_mut(),
                 copy.id.get(),
-                copy.status.into_inner(),
+                *copy.status.get_mut(),
                 copy.kind.get(),
                 copy.msgqueue_mode.get(),
                 copy.ptr.get()

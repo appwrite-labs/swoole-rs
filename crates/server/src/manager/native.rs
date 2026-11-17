@@ -259,8 +259,8 @@ impl Reaping<'_> {
             let Some(worker) = worker_at(self.serv, id) else {
                 continue;
             };
-            // A copy of the record, whose pid and id the task snapshots.
-            self.with_reload(|task| task.add_workers(&[worker.get()]));
+            // The task snapshots its pid and id.
+            self.with_reload(|task| task.add_workers(&[worker]));
         }
     }
 
