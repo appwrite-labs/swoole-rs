@@ -65,6 +65,17 @@ impl<'a> SendData<'a> {
         }
     }
 
+    /// `info` over the lent `data`: [`SendData::new`], or [`SendData::empty`] (its
+    /// `len` 0) without bytes.
+    #[must_use]
+    pub fn lent(info: DataHead, data: &'a [u8]) -> Self {
+        if data.is_empty() {
+            Self::empty(DataHead { len: 0, ..info })
+        } else {
+            Self::new(info, data)
+        }
+    }
+
     /// The event's head.
     #[must_use]
     pub fn info(&self) -> &DataHead {

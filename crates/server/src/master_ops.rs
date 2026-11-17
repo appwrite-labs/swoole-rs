@@ -13,9 +13,14 @@ pub(crate) fn worker_message_bus(state: &ServerState) -> crate::objects::Bus<'_>
 /// Base mode's message bus takes `send`, then `worker_accept_event` of it.
 #[cfg(feature = "upstream-symbols")]
 pub(crate) fn base_pass(serv: crate::view::Server<'_>, send: &crate::base_factory::SendData) {
-    let bus = worker_message_bus(serv.state());
-    bus.rust().pass(send.info(), send.data());
-    crate::event_worker::native::accept_event(serv, &bus.head());
+    use crate::event_worker::native::{Payload, accept_event};
+    let head = worker_message_bus(serv.state()).rust().pass(send.info());
+    let payload = if send.info().len > 0 {
+        Payload::Passed(send.payload())
+    } else {
+        Payload::Bus
+    };
+    accept_event(serv, &head, payload);
 }
 
 /// The message bus writes `send` to the pipe of the worker that owns its session.

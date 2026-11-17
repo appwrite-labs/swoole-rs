@@ -81,20 +81,18 @@ fn bus_read(pool: Pool<'_>, sock: Option<Heap<'_>>) -> Option<usize> {
     sock.and_then(|sock| with_bus(pool, |bus| bus.read(*sock)).flatten())
 }
 
-/// `onMessage` with the bus's packet, then `message_bus->pop()`.
+/// `onMessage` with the bus's packet, taken out of the bus meanwhile (the pool lends
+/// its bus to one operation at a time, never across PHP), then `message_bus->pop()`.
 fn bus_deliver(pool: Pool<'_>) {
-    let Some((info, packet)) = with_bus(pool, |bus| (bus.head(), bus.packet())) else {
+    let Some((info, packet)) = with_bus(pool, |bus| (bus.head(), bus.rust().take_packet())) else {
         return;
     };
-    let data = if packet.data.is_null() {
-        &[][..]
-    } else {
-        // SAFETY: the bus's packet, `length` bytes it keeps until it pops or reads
-        // again, which only this worker's loop does, once `onMessage` returns.
-        unsafe { core::slice::from_raw_parts(packet.data.cast::<u8>(), packet.length) }
-    };
-    pool.call_on_message(&RecvData::new(info, data));
-    PoolBus::with_pool(pool, |bus| bus.parts().0.pop());
+    pool.call_on_message(&RecvData::new(info, packet.bytes()));
+    PoolBus::with_pool(pool, |bus| {
+        let bus = bus.parts().0;
+        bus.restore(packet);
+        bus.pop();
+    });
 }
 
 /// The pool's new bus, owned, or None when its counter can't be allocated.

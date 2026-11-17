@@ -23,10 +23,11 @@
 )]
 use std::cell::{Cell, OnceCell};
 use std::collections::HashMap;
-use std::ffi::{c_char, c_int};
+use std::ffi::c_int;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::io::IoSlice;
 use std::ptr;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use swoole_rs_corebase::buffer::string::OwnedString;
 use swoole_rs_corebase::lent::ReadVec;
@@ -48,8 +49,8 @@ const HEAD: usize = size_of::<BusHead>();
 /// `SW_IPC_MSG_MIN`.
 const IPC_MSG_MIN: u32 = 2048 - 40;
 const _: () = assert!(HEAD == 40, "sizeof(DataHead)");
-/// The legacy minimum allocation: a header and room for a `PacketPtr`.
-const BUFFER_MIN: usize = HEAD + size_of::<BusPacket>();
+/// The legacy minimum allocation: a header and room for a `PacketPtr` (16 bytes).
+const BUFFER_MIN: usize = HEAD + 16;
 
 /// `BusRead::event`: what the caller does after `Bus::receive` returns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,18 +65,38 @@ enum Event {
     ReadvClosed,
 }
 
-/// `swoole::PacketPtr`.
-#[derive(Clone, Copy, Debug)]
-pub struct BusPacket {
-    pub length: usize,
-    pub data: *mut c_char,
+/// A message's bytes, taken out of its bus ([`Bus::take_packet`]) until it is given
+/// back ([`Bus::restore`]); dropped instead, they are freed.
+pub struct Packet {
+    held: Held,
+    /// The head's length: of a whole message, how many of the buffer's bytes after
+    /// the head are its payload.
+    len: usize,
 }
 
-/// No packet.
-const EMPTY: BusPacket = BusPacket {
-    length: 0,
-    data: ptr::null_mut(),
-};
+enum Held {
+    Nothing,
+    /// The receive buffer, and the bus's buffer generation when it was taken.
+    Buffer(Box<OwnedString>, usize),
+    /// A reassembled packet, shared with the bus's table.
+    Chunked(Rc<OwnedString>),
+}
+
+impl Packet {
+    /// The message's payload: a whole one's `len` bytes after its head (at most the
+    /// buffer's), a chunked one's packet, or none.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        match &self.held {
+            Held::Nothing => &[],
+            Held::Buffer(buffer, _) => {
+                let payload = buffer.view().get(HEAD..).unwrap_or_default();
+                payload.get(..self.len).unwrap_or(payload)
+            }
+            Held::Chunked(packet) => packet.view(),
+        }
+    }
+}
 
 /// One read's progress across the allocations it asks for.
 struct BusRead {
@@ -119,8 +140,9 @@ impl Hasher for IdHasher {
     }
 }
 
-/// The packets being reassembled, by message id.
-type Packets = HashMap<u64, OwnedString, BuildHasherDefault<IdHasher>>;
+/// The packets being reassembled, by message id. A packet is shared with the
+/// [`Packet`] that lends it, which keeps its bytes until it is dropped.
+type Packets = HashMap<u64, Rc<OwnedString>, BuildHasherDefault<IdHasher>>;
 
 /// This bus's pipe records, by descriptor.
 type PipeSockets = Box<[Option<OwnedSocket>]>;
@@ -137,8 +159,6 @@ pub struct Bus {
     current: Cell<BusHead>,
     /// A callback may replace or free the buffer while its old owner is lent.
     buffer_generation: Cell<usize>,
-    /// `pass` lends an external packet without serializing its pointer into bytes.
-    passed: Cell<BusPacket>,
     buffer_size: Cell<usize>,
     always_chunked: Cell<bool>,
     packets: Cell<Option<Box<Packets>>>,
@@ -221,7 +241,6 @@ impl Bus {
             buffer: Cell::default(),
             current: Cell::default(),
             buffer_generation: Cell::new(0),
-            passed: Cell::new(EMPTY),
             buffer_size: Cell::new(buffer_size),
             always_chunked: Cell::new(false),
             packets: Cell::new(None),
@@ -284,12 +303,6 @@ impl Bus {
         }
     }
 
-    fn data(&self) -> *mut u8 {
-        lend(&self.buffer, |buffer| buffer.as_ptr().cast_mut())
-            .unwrap_or(ptr::null_mut())
-            .wrapping_add(HEAD)
-    }
-
     /// Read into the buffer's prefix, retaining bytes beyond a short read.
     fn fill(
         &self,
@@ -315,57 +328,93 @@ impl Bus {
             .unwrap_or(0)
     }
 
-    /// `MessageBus::get_packet`.
-    #[must_use]
+    /// `MessageBus::get_packet`, lent: `f` over the current message's bytes, which
+    /// [`Bus::take_packet`] takes out of the bus meanwhile.
     #[inline]
-    pub fn packet(&self) -> BusPacket {
+    pub fn with_packet<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
+        let packet = self.take_packet();
+        let result = f(packet.bytes());
+        self.restore(packet);
+        result
+    }
+
+    /// The current message's bytes, owned until [`Bus::restore`] gives them back: a
+    /// chunked message's packet, or the buffer that holds a whole one, which the bus
+    /// lacks meanwhile, so nothing can free or overwrite them while they are lent (a
+    /// read meanwhile finds no buffer). A message passed by pointer
+    /// (`SW_EVENT_DATA_PTR`), whose payload stays with its passer, holds none.
+    #[inline]
+    #[must_use]
+    pub fn take_packet(&self) -> Packet {
         let head = self.head();
-        if head.flags & PTR != 0 {
-            // `pass` stored it.
-            self.passed.get()
-        } else if head.flags & OBJ_PTR != 0 {
-            lend(&self.packets, |packets| {
-                packets.get(&head.msg_id).map(|p| BusPacket {
-                    length: p.len(),
-                    data: p.as_ptr().cast_mut().cast(),
-                })
-            })
-            .flatten()
-            .unwrap_or(EMPTY)
+        let held = if head.flags & OBJ_PTR != 0 {
+            self.take_chunked(head.msg_id)
+        } else if head.flags & PTR != 0 {
+            Held::Nothing
         } else {
-            BusPacket {
-                length: head.len as usize,
-                data: self.data().cast(),
+            self.buffer.take().map_or(Held::Nothing, |buffer| {
+                Held::Buffer(buffer, self.buffer_generation.get())
+            })
+        };
+        Packet {
+            held,
+            len: head.len as usize,
+        }
+    }
+
+    /// Gives back what [`Bus::take_packet`] took, unless the bus replaced it
+    /// meanwhile: a buffer freed or set anew, or a packet begun again under its id.
+    /// What the bus no longer holds is freed.
+    #[inline]
+    pub fn restore(&self, packet: Packet) {
+        match packet.held {
+            Held::Nothing => {}
+            Held::Buffer(buffer, generation) => {
+                if self.buffer_generation.get() == generation {
+                    put_back(&self.buffer, buffer);
+                }
             }
+            // The table keeps its own share, if the bus hasn't freed it.
+            Held::Chunked(_) => {}
         }
     }
 
-    /// `MessageBus::pass`: the buffer points at `data` instead of holding it; nothing
-    /// while no buffer is set.
-    pub fn pass(&self, info: &BusHead, data: *const c_char) {
-        if lend(&self.buffer, |_| ()).is_none() {
-            return;
-        }
-        let mut head = *info;
-        if info.len > 0 {
-            head.flags = PTR;
-            head.len = 16; // sizeof(PacketPtr)
-            let packet = BusPacket {
-                length: info.len as usize,
-                data: data.cast_mut(),
-            };
-            self.passed.set(packet);
-        }
-        self.set_head(&head);
+    /// A share of the reassembled packet `id`; out of line, as only chunked messages
+    /// need it.
+    #[inline(never)]
+    fn take_chunked(&self, id: u64) -> Held {
+        lend(&self.packets, |packets| packets.get(&id).cloned())
+            .flatten()
+            .map_or(Held::Nothing, Held::Chunked)
     }
 
-    /// `MessageBus::move_packet`: take ownership of the current packet.
+    /// `MessageBus::pass`'s head: the bus's head becomes `info`, marked as a pointer
+    /// to its payload (`SW_EVENT_DATA_PTR`, and the length of a `PacketPtr`) when it
+    /// has one, which stays with its caller; nothing while no buffer is set. The
+    /// bus's head after.
+    pub fn pass(&self, info: &BusHead) -> BusHead {
+        if lend(&self.buffer, |_| ()).is_some() {
+            let mut head = *info;
+            if info.len > 0 {
+                head.flags = PTR;
+                head.len = 16; // sizeof(PacketPtr)
+            }
+            self.set_head(&head);
+        }
+        self.head()
+    }
+
+    /// `MessageBus::move_packet`: the current packet, now the caller's. A packet
+    /// lent meanwhile stays with its borrower: the caller gets a copy, from the same
+    /// allocator.
     pub fn move_packet(&self) -> Option<OwnedString> {
         let id = self.head().msg_id;
-        lend(&self.packets, |packets| {
-            packets.get_mut(&id).map(std::mem::take)
-        })
-        .flatten()
+        let packet = lend(&self.packets, |packets| packets.remove(&id)).flatten()?;
+        Some(Rc::try_unwrap(packet).unwrap_or_else(|lent| {
+            let mut copy = OwnedString::default();
+            copy.copy_from(&lent);
+            copy
+        }))
     }
 
     /// `MessageBus::pop`: frees the current packet once its last chunk arrived.
@@ -389,8 +438,11 @@ impl Bus {
     /// allocator that made it.
     fn grow(&self, state: &BusRead, default: TrustedAllocator) {
         let id = self.head().msg_id;
+        // A packet lent meanwhile (never, as the bus reads after its message's
+        // callback) stays with its borrower, and reassembly starts over.
         let mut packet = lend(&self.packets, |packets| packets.remove(&id))
             .flatten()
+            .and_then(|packet| Rc::try_unwrap(packet).ok())
             .unwrap_or_default();
         if packet.as_ptr().is_null() {
             packet.alloc_exact(state.size, Some(default));
@@ -398,7 +450,7 @@ impl Bus {
             packet.reserve_exact(state.size);
         }
         drop(lend_or_default(&self.packets, |packets| {
-            packets.insert(id, packet)
+            packets.insert(id, Rc::new(packet))
         }));
     }
 
@@ -467,7 +519,8 @@ impl Bus {
             // The packets stay out across the stream's readv: one syscall on a
             // nonblocking pipe, which neither yields nor calls back.
             let read = lend(&self.packets, |packets| {
-                let packet = packets.get_mut(&head.msg_id)?;
+                // A packet lent meanwhile is not filled under its borrower.
+                let packet = Rc::get_mut(packets.get_mut(&head.msg_id)?)?;
                 Some('chunk: {
                     Ok(if dgram {
                         let count = state.received.saturating_sub(HEAD);
@@ -748,7 +801,6 @@ impl Bus {
     pub fn free_buffer(&self) {
         self.buffer_generation
             .set(self.buffer_generation.get().wrapping_add(1));
-        self.passed.set(EMPTY);
         self.current.set(BusHead::default());
         drop(self.buffer.take());
     }
@@ -941,9 +993,7 @@ mod tests {
         let mut nobufs = false;
         assert_eq!(bus.receive(-1, false, &mut nobufs, &mut state), None);
         assert_eq!(state.event, None, "no event");
-        bus.pass(&BusHead::default(), ptr::null());
-        assert_eq!(bus.packet().length, 0);
-        assert!(bus.move_packet().is_none());
+        assert_eq!(bus.with_packet(<[u8]>::len), 0);
         bus.pop();
     }
 
@@ -1056,10 +1106,7 @@ mod tests {
                     state.chunks = 0;
                     continue;
                 }
-                let packet = self.bus.packet();
-                let bytes =
-                    unsafe { std::slice::from_raw_parts(packet.data.cast::<u8>(), packet.length) };
-                let bytes = bytes.to_vec();
+                let bytes = self.bus.with_packet(<[u8]>::to_vec);
                 assert_eq!(self.bus.head().fd, 7);
                 self.bus.pop();
                 return Some(bytes);
@@ -1109,26 +1156,30 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no socket options on a socketpair")]
     fn moved_packets_are_not_freed_and_memory_counts_reassembly() {
         let pipe = Pipe::new(libc::SOCK_STREAM, 4096, true);
-        assert!(pipe.write(9, &payload(5000)));
-        let mut state = BusRead::new();
-        let mut nobufs = false;
-        assert_eq!(
-            pipe.bus.read(pipe.fds[1], false, &mut state, &mut nobufs),
-            Some(0)
-        );
-        assert_eq!((state.event, state.size), (Some(Event::Allocate), 5000));
-        pipe.bus.grow(&state, allocator());
-        let data = lend(&pipe.bus.packets, |packets| {
-            packets.get(&9).unwrap().as_ptr()
-        })
-        .unwrap()
-        .cast::<c_void>();
-        assert_eq!(pipe.bus.memory_size(), 4096 + 5000);
-        assert!(pipe.bus.read(pipe.fds[1], false, &mut state, &mut nobufs) > Some(0));
-        assert_eq!(pipe.bus.packet().length, 5000);
+        let reassemble = |id| {
+            assert!(pipe.write(id, &payload(5000)));
+            let mut state = BusRead::new();
+            let mut nobufs = false;
+            assert_eq!(
+                pipe.bus.read(pipe.fds[1], false, &mut state, &mut nobufs),
+                Some(0)
+            );
+            assert_eq!((state.event, state.size), (Some(Event::Allocate), 5000));
+            pipe.bus.grow(&state, allocator());
+            let data = lend(&pipe.bus.packets, |packets| {
+                packets.get(&id).unwrap().as_ptr()
+            })
+            .unwrap()
+            .cast::<c_void>();
+            assert_eq!(pipe.bus.memory_size(), 4096 + 5000);
+            assert!(pipe.bus.read(pipe.fds[1], false, &mut state, &mut nobufs) > Some(0));
+            data
+        };
+        let data = reassemble(9);
+        assert_eq!(pipe.bus.with_packet(<[u8]>::len), 5000);
         let moved = pipe.bus.move_packet().unwrap();
         assert_eq!(moved.as_ptr().cast::<c_void>(), data);
-        assert!(pipe.bus.packet().data.is_null());
+        assert_eq!(pipe.bus.with_packet(<[u8]>::len), 0);
         assert_eq!(
             pipe.bus.memory_size(),
             4096,
@@ -1136,6 +1187,18 @@ mod tests {
         );
         pipe.bus.pop();
         drop(moved);
+        // Moved while lent: the borrower keeps the packet, the mover gets a copy.
+        let data = reassemble(10);
+        pipe.bus.with_packet(|packet| {
+            assert_eq!(packet.as_ptr().cast::<c_void>(), data, "lent in place");
+            let moved = pipe.bus.move_packet().unwrap();
+            assert_ne!(moved.as_ptr().cast::<c_void>(), data, "a copy");
+            assert_eq!(moved.view(), packet);
+            drop(moved);
+            assert_eq!(packet.len(), 5000, "still lent");
+        });
+        assert_eq!(pipe.bus.memory_size(), 4096, "freed with the lend");
+        pipe.bus.pop();
     }
 
     #[test]
@@ -1155,26 +1218,69 @@ mod tests {
     }
 
     #[test]
-    fn pass_points_at_the_payload() {
+    fn the_buffer_lends_the_counted_bytes_and_a_pointer_head_none() {
         let bus = Bus::new(128);
         assert!(bus.alloc_buffer(128, allocator()));
-        let data = b"hello";
+        lend(&bus.buffer, |buffer| {
+            buffer.view_mut()[HEAD..HEAD + 5].copy_from_slice(b"hello");
+        });
+        let head = |len, flags| {
+            bus.set_head(&BusHead {
+                len,
+                flags,
+                ..BusHead::default()
+            });
+        };
+        head(5, 0);
+        bus.with_packet(|packet| {
+            assert_eq!(packet, b"hello");
+            assert!(!bus.holds_whole(), "the buffer is out while lent");
+        });
+        assert!(bus.holds_whole(), "and back after");
+        head(500, 0);
+        assert_eq!(
+            bus.with_packet(<[u8]>::len),
+            128 - HEAD,
+            "at most the buffer"
+        );
         let info = BusHead {
             len: 5,
             fd: 3,
             ..BusHead::default()
         };
-        bus.pass(&info, data.as_ptr().cast());
-        let packet = bus.packet();
+        let passed = bus.pass(&info);
+        assert_eq!((passed.flags, passed.len, passed.fd), (PTR, 16, 3));
         assert_eq!(
-            (packet.length, packet.data.cast_const()),
-            (5, data.as_ptr().cast())
+            (bus.head().flags, bus.head().len),
+            (PTR, 16),
+            "the bus's head"
         );
         assert_eq!(
-            (bus.head().flags, bus.head().len, bus.head().fd),
-            (PTR, 16, 3)
+            bus.with_packet(<[u8]>::len),
+            0,
+            "a passed payload stays its caller's"
         );
-        assert!(!bus.holds_whole(), "a passed payload is not in the buffer");
+        assert!(!bus.holds_whole(), "nor is it in the buffer");
+    }
+
+    #[test]
+    fn a_buffer_freed_while_lent_goes_once_the_lend_ends() {
+        let bus = Bus::new(128);
+        assert!(bus.alloc_buffer(128, allocator()));
+        bus.set_head(&BusHead {
+            len: 4,
+            ..BusHead::default()
+        });
+        bus.with_packet(|packet| {
+            bus.free_buffer();
+            assert!(bus.alloc_buffer(64, allocator()));
+            assert_eq!(packet.len(), 4, "the lent bytes stay");
+        });
+        assert_eq!(
+            lend(&bus.buffer, |buffer| buffer.len()),
+            Some(64),
+            "the new one stays"
+        );
     }
 
     #[test]
@@ -1383,13 +1489,7 @@ mod tests {
             let n = mb_read(&mut pipe.bus, pipe.fds[1], pipe.dgram);
             assert!(n.is_some());
             if n > Some(0) {
-                let packet = pipe.bus.packet();
-                let data = if packet.length == 0 {
-                    Vec::new()
-                } else {
-                    unsafe { std::slice::from_raw_parts(packet.data.cast::<u8>(), packet.length) }
-                        .to_vec()
-                };
+                let data = pipe.bus.with_packet(<[u8]>::to_vec);
                 pipe.q.push((pipe.bus.head().fd, data));
             }
         }

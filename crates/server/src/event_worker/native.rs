@@ -74,19 +74,38 @@ fn readable(conn: crate::Connection<'_>) -> bool {
     !conn.peer_closed() && !removed
 }
 
-/// `Server::worker_accept_event(info)`: the event whose head is `info` (its data, if
-/// any, in the worker message bus), in this thread's worker.
-pub(crate) fn accept_event(serv: view::Server<'_>, info: &DataHead) {
-    _ = with_current(|&worker| accept(serv, worker, info));
+/// Where an event's data is: in the worker message bus, which lends it, or passed
+/// with the event (base mode's `MessageBus::pass`).
+#[derive(Clone, Copy)]
+pub(crate) enum Payload<'a> {
+    Bus,
+    Passed(&'a [u8]),
 }
 
-fn accept(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead) {
+impl Payload<'_> {
+    /// `f` over the event's data.
+    #[inline(always)]
+    fn with<R>(self, serv: view::Server<'_>, f: impl FnOnce(&[u8]) -> R) -> R {
+        match self {
+            Self::Bus => bus(serv).with_packet(f),
+            Self::Passed(data) => f(data),
+        }
+    }
+}
+
+/// `Server::worker_accept_event(info)`: the event whose head is `info` (its data, if
+/// any, at `payload`), in this thread's worker.
+pub(crate) fn accept_event(serv: view::Server<'_>, info: &DataHead, payload: Payload<'_>) {
+    _ = with_current(|&worker| accept(serv, worker, info, payload));
+}
+
+fn accept(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead, payload: Payload<'_>) {
     let (state, config) = (serv.state(), serv.config());
     let callbacks = &state.callbacks;
     worker.set_status(WorkerStatus::Busy);
     match info.event() {
-        Some(ServerEvent::RecvData) => {
-            let closed = received(serv, info);
+        Some(ServerEvent::RecvData) => payload.with(serv, |data| {
+            let closed = received(serv, info, data.len());
             let (notify, timeout) = (
                 config.disable_notify.get(),
                 config.discard_timeout_request.get(),
@@ -100,17 +119,19 @@ fn accept(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead) {
                     format_args!("[2] ignore data[{len} bytes] received from session#{session}"),
                 );
             } else {
-                run_task(serv, worker, info, ReceiveSlot::Receive);
+                run_task(serv, worker, info, data, ReceiveSlot::Receive);
             }
-        }
-        Some(ServerEvent::RecvDgram) => run_task(serv, worker, info, ReceiveSlot::Packet),
+        }),
+        Some(ServerEvent::RecvDgram) => payload.with(serv, |data| {
+            run_task(serv, worker, info, data, ReceiveSlot::Packet);
+        }),
         Some(ServerEvent::Close) => {
             free_client_cert(serv, info);
             _ = crate::factory::end(serv, info.fd, 0);
         }
         Some(ServerEvent::Connect) => {
             if info.len > 0 {
-                store_client_cert(serv, info);
+                store_client_cert(serv, info, payload);
             }
             callbacks.event(EventSlot::Connect, serv, info);
         }
@@ -150,34 +171,29 @@ fn accept(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead) {
     }
 }
 
-/// The connection received data is for, its queued bytes and dispatch time updated:
-/// `None` without one, else whether the server closed it.
-fn received(serv: view::Server<'_>, info: &DataHead) -> Option<bool> {
+/// The connection received data is for, its queued bytes (less the `length` bytes
+/// received) and dispatch time updated: `None` without one, else whether the server
+/// closed it.
+fn received(serv: view::Server<'_>, info: &DataHead, length: usize) -> Option<bool> {
     let conn = serv.state().connection(info.fd, Lookup::VerifiedTls)?;
     if info.len > 0 {
-        let length = u32::try_from(bus(serv).packet().length).unwrap_or(u32::MAX);
+        let length = u32::try_from(length).unwrap_or(u32::MAX);
         conn.recv_queued_bytes().fetch_sub(length, Relaxed);
     }
     conn.set_last_dispatch_time(info.time);
     Some(conn.closed().load(Relaxed) != 0)
 }
 
-/// The receive or packet callback over the bus's packet; a request counted when it
+/// The receive or packet callback over the event's `data`; a request counted when it
 /// succeeds.
-fn run_task(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead, slot: ReceiveSlot) {
-    let packet = bus(serv).packet();
-    let mut head = *info;
-    head.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
-    // Built here rather than through `Bus::with_message`, whose closure costs every
-    // process-mode request about 20 instructions (it moves `run_task` out of line).
-    let recv = if packet.data.is_null() {
-        crate::base_factory::SendData::empty(head)
-    } else {
-        // SAFETY: the bus's packet, `length` bytes it keeps until it pops or reads
-        // again, which this thread does after the callback returns.
-        let data = unsafe { core::slice::from_raw_parts(packet.data.cast(), packet.length) };
-        crate::base_factory::SendData::new(head, data)
-    };
+fn run_task(
+    serv: view::Server<'_>,
+    worker: Worker<'_>,
+    info: &DataHead,
+    data: &[u8],
+    slot: ReceiveSlot,
+) {
+    let recv = crate::base_factory::SendData::lent(*info, data);
     if serv.state().callbacks.receive(slot, serv, &recv) == 0 {
         worker.add_request_count();
         serv.counters().request_count.fetch_add(1, Relaxed);
@@ -185,9 +201,9 @@ fn run_task(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead, slot: R
 }
 
 /// The session's client certificate, sent with its connect event.
-fn store_client_cert(serv: view::Server<'_>, info: &DataHead) {
+fn store_client_cert(serv: view::Server<'_>, info: &DataHead, payload: Payload<'_>) {
     if let Some(conn) = serv.state().connection(info.fd, Lookup::Verified) {
-        bus(serv).with_packet(|cert| conn.store_client_cert(cert));
+        payload.with(serv, |cert| conn.store_client_cert(cert));
     }
 }
 
@@ -442,7 +458,7 @@ fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
         .socket()
         .is_some_and(|socket| bus.read(*socket) > Some(0))
     {
-        accept_event(serv, &bus.rust().head());
+        accept_event(serv, &bus.rust().head(), Payload::Bus);
         bus.pop();
     }
     0
