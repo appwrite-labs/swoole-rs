@@ -127,26 +127,25 @@ banner, `uname`, compiler and TLS lines, from what C++ compiled (`swr_cpp_bug_re
 `swr_v1_core_max_sockets` is the `RLIMIT_NOFILE` soft limit as `uint32_t`,
 capped at `SW_SESSION_LIST_SIZE`, or -1 with errno kept.
 
-Upstream's own C++ symbols defined in Rust (`export_name`): `swoole_common_divisor`/`_multiple`, `swoole_dec2hex`,
-`swoole_version_compare`, `swoole::microtime`,
-`swoole_set_trace_flags`, `swoole_set_print_backtrace_on_error`, `sw_logger`,
-`swoole_set_stdout_stream`/`swoole_get_stdout_stream` (`FILE` mangles as its libc's
-struct tag), `swoole_hex2dec` (in the target's plain-char mode), `swoole_random_int`, and
+Rust exports `sw_logger` and `swoole_random_int` under their C++ names, and
 `swoole_version`/`swoole_version_id`/`swoole_api_version_id` (C names). No compiled
 code calls `sw_malloc`, `sw_free` or `sw_calloc`, so Rust doesn't define them.
 `tests/modules/corebase/numbers.rs` compares the number helpers with the pinned
-`base.cc`; `swoole_itoa`, which no C++ called, is a Rust function over a slice.
+`base.cc`. The numeric helpers have no C++ callers: their exports and native
+declarations are gone. Their `extern "C"` functions retain abort-on-panic behavior;
+`swoole_itoa` is a Rust function over a slice.
 Both `swoole_rand` overloads and `swoole_type_size` are plain Rust functions;
 their native declarations and exports are gone. Rust fixtures call those and
 `swoole_random_int` directly, preserving ranges and draw timing. The hash-originals
 PHP test extension still calls `swoole_random_int`, so its native declaration and
 export remain.
 
-Whole operations in Rust (`host.rs`), with native code keeping only their
-warnings: `swoole_shell_exec`, `swoole_dump_ascii`/`_hex`, `swoole_print_backtrace` without Boost,
+Whole operations in Rust (`host.rs`): `swoole_shell_exec`, `swoole_dump_ascii`/`_hex`, `swoole_print_backtrace` without Boost,
 `microtime`, `DataHead::dump`, `swoole_rand`/`swoole_random_int` (a per-thread
 xoshiro256** seeded by getentropy), `swoole_system_random` and
-`swoole_redirect_stdout(int)` (each dup2's errno is handed back for its warning).
+`swoole_redirect_stdout(int)` (each dup2's errno is preserved for its warning).
+The clock, system random, stdout stream setters/getters, redirect, backtrace and
+trace settings have only typed Rust callers; their C++ exports are gone.
 `swoole_shell_exec`, `swoole_dump_ascii`/`_hex`/`_bin` (`_bin` over crates/framing's
 unpack), `DataHead::dump` and `swoole_redirect_stdout(const char *)` have no native
 caller, so they are plain Rust over `&CStr` and slices, without their C++ symbols.

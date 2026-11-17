@@ -521,19 +521,11 @@ fn in_coroutine() -> bool {
 }
 
 /// `PHPCoroutine::disable_unsafe_function()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole12PHPCoroutine23disable_unsafe_functionEv")
-)]
 pub extern "C" fn disable_unsafe_function() {
     functions::unsafe_functions(true);
 }
 
 /// `PHPCoroutine::enable_unsafe_function()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole12PHPCoroutine22enable_unsafe_functionEv")
-)]
 pub extern "C" fn enable_unsafe_function() {
     functions::unsafe_functions(false);
 }

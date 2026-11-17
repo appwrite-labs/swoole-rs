@@ -19,7 +19,7 @@ if [ -n "$APT_CACHE" ]; then
 fi
 install() {
     if $build; then
-        set -- php-dev libclang-dev python3-pytest libpcre2-dev libssl-dev libc-ares-dev zlib1g-dev \
+        set -- php-dev libclang-dev python3-pytest python3-pip libpcre2-dev libssl-dev libc-ares-dev zlib1g-dev \
             pkg-config cmake g++ make autoconf libgtest-dev libnghttp2-dev libpq-dev libcurl4-openssl-dev \
             libssh2-1-dev libbrotli-dev libzstd-dev unixodbc-dev libsqlite3-dev libffi-dev "$@"
     else
@@ -42,6 +42,9 @@ else
     install "$@"
 fi
 [ -z "$APT_CACHE" ] || chmod -R a+rX "$APT_CACHE"
+# ast-grep's Python API, which tools/budget.py counts with. Ubuntu packages no ast-grep;
+# jobs that skip this script read the version from this line.
+if $build; then python3 -m pip install -q --break-system-packages ast-grep-py==0.51.3; fi
 # liburing for upstream's --enable-iouring build. Upstream needs >= 2.8
 # and Ubuntu 24.04 ships 2.5, so build the release upstream's own CI installs
 # (scripts/install-liburing.sh) into /usr/local, where pkg-config and ld find it.

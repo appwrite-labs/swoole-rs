@@ -222,10 +222,6 @@ pub fn swoole_type_size(kind: c_char) -> c_int {
 /// # Panics
 /// On a zero operand, which upstream asserts against (a panic here aborts).
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z21swoole_common_divisorjj")
-)]
 pub extern "C" fn swoole_common_divisor(left: u32, right: u32) -> u32 {
     assert!(left > 0 && right > 0, "swoole_common_divisor: zero operand");
     gcd(left, right)
@@ -236,10 +232,6 @@ pub extern "C" fn swoole_common_divisor(left: u32, right: u32) -> u32 {
 /// # Panics
 /// On a zero operand, which upstream asserts against (a panic here aborts).
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z22swoole_common_multiplejj")
-)]
 pub extern "C" fn swoole_common_multiple(left: u32, right: u32) -> u32 {
     assert!(
         left > 0 && right > 0,
@@ -260,10 +252,6 @@ fn gcd(mut left: u32, mut right: u32) -> u32 {
 /// # Panics
 /// On a base outside 2..=36, which upstream asserts against (a panic here aborts).
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z14swoole_dec2hexmi")
-)]
 pub extern "C" fn swoole_dec2hex(value: c_ulong, base: c_int) -> *mut c_char {
     assert!(base > 1 && base < 37, "swoole_dec2hex: base out of range");
     let mut buffer = [0_u8; c_ulong::BITS as usize + 1];
@@ -395,10 +383,6 @@ pub fn radix(mut value: c_ulong, radix: u32, output: &mut [u8]) -> usize {
 /// native prefix, locale, signed-char and `size_t` wrap semantics. A byte above 127
 /// goes to `toupper` as an `unsigned char`, where a signed `char` made upstream's call
 /// undefined.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z14swoole_hex2decPKcPm")
-)]
 pub extern "C" fn swoole_hex2dec(input: sys::Text<'_>, parsed: &mut usize) -> c_ulong {
     // The compiler's plain `char` signedness, as the C++ facade saw it.
     let native_char_signed = c_char::MIN != 0;
@@ -438,10 +422,6 @@ pub extern "C" fn swoole_hex2dec(input: sys::Text<'_>, parsed: &mut usize) -> c_
 
 /// Compare components using the same host libc parser and observable errno order.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z22swoole_version_comparePKcS0_")
-)]
 pub extern "C" fn swoole_version_compare(left: sys::Text<'_>, right: sys::Text<'_>) -> c_int {
     // What follows the byte a component ended on, which isn't the NUL.
     fn after(rest: &CStr) -> &CStr {

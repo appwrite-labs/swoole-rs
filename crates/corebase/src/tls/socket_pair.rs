@@ -2,9 +2,8 @@
 // Compatibility derived from Swoole v6.2.4 src/os/pipe.cc and src/os/unix_socket.cc
 // (Swoole contributors).
 //! `swoole::SocketPair`, `Pipe` and `UnixSocket`: two descriptors, each wrapped in a
-//! `network::Socket`, the master end writing and the worker end reading. With
-//! `upstream-symbols` each member is defined under its upstream (Itanium) symbol, and
-//! the process patch deletes `pipe.cc` and `unix_socket.cc`.
+//! socket, the master end writing and the worker end reading. All callers use the
+//! Rust record and operations; no native code reads its fields.
 use crate::CCast;
 use crate::log;
 use crate::reactor::socket_upstream::socket_set_fd_option;
@@ -22,11 +21,9 @@ const FD_PIPE: c_int = 3;
 pub const CLOSE_MASTER: c_int = 1;
 pub const CLOSE_WORKER: c_int = 2;
 
-/// `swoole::SocketPair` (`SWR_SOCKET_PAIR_RECORD_FIELDS`); `Pipe` and `UnixSocket`
-/// add nothing to it.
+/// The pipe or Unix socket pair.
 /// The two ends are private: each is `None` or a socket the pair made and frees only
 /// in its close, so a handle to one never outlives a borrow of the pair.
-#[repr(C)]
 pub struct SocketPair {
     pub blocking: bool,
     pub timeout: Cell<f64>,
@@ -34,11 +31,6 @@ pub struct SocketPair {
     master_socket: Option<EventSocket>,
     worker_socket: Option<EventSocket>,
 }
-
-const _: () = assert!(
-    size_of::<SocketPair>() == 40,
-    "SWR_SOCKET_PAIR_RECORD_FIELDS on LP64"
-);
 
 /// The constructors: the base's fields, then `pipe(2)` or an `AF_UNIX` `socketpair(2)`
 /// of `protocol`, then a socket for each end (`socks[1]` the master, which writes).
@@ -69,36 +61,14 @@ fn open(blocking: bool, unix: Option<c_int>, origin: &CStr) -> (SocketPair, bool
     (pair, true)
 }
 
-/// `Pipe(bool blocking)`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole4PipeC1Eb")
-)]
-pub extern "C" fn pipe_new(this: &mut MaybeUninit<SocketPair>, blocking: bool) -> *mut SocketPair {
-    this.write(pipe(blocking))
-}
-
 /// `Pipe(blocking)` by value: both ends null when it failed.
 #[must_use]
 pub fn pipe(blocking: bool) -> SocketPair {
     open(blocking, None, c"Pipe").0
 }
 
-/// `UnixSocket(bool blocking, int protocol)`: also sets both ends' kernel buffers to
-/// `Socket::default_buffer_size`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole10UnixSocketC1Ebi")
-)]
-pub extern "C" fn unix_socket_new(
-    this: &mut MaybeUninit<SocketPair>,
-    blocking: bool,
-    protocol: c_int,
-) -> *mut SocketPair {
-    this.write(unix_socket(blocking, protocol))
-}
-
 /// `UnixSocket(blocking, protocol)` by value: both ends null when it failed.
+/// Sets both ends' kernel buffers to `Socket::default_buffer_size`.
 #[must_use]
 pub fn unix_socket(blocking: bool, protocol: c_int) -> SocketPair {
     let (pair, opened) = open(blocking, Some(protocol), c"UnixSocket");
@@ -151,12 +121,8 @@ impl SocketPair {
 
 /// `bool UnixSocket::set_buffer_size(size_t) const`: the master's kernel buffers, then
 /// the worker's; false at the first that fails.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole10UnixSocket15set_buffer_sizeEm")
-)]
 #[must_use]
-pub extern "C" fn unix_socket_set_buffer_size(this: &SocketPair, size: usize) -> bool {
+pub fn unix_socket_set_buffer_size(this: &SocketPair, size: usize) -> bool {
     let size = size.c_cast::<u32>();
     ends(this).into_iter().all(|socket| {
         socket.is_some_and(|socket| set_socket_buffer_size(socket.fd(), true, true, size).is_ok())
@@ -172,11 +138,7 @@ pub fn set_timeout(this: &SocketPair, timeout: f64) {
 }
 
 /// `void SocketPair::set_blocking(bool)`: the worker end, then the master end.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole10SocketPair12set_blockingEb")
-)]
-pub extern "C" fn set_blocking(this: &mut SocketPair, blocking: bool) {
+pub fn set_blocking(this: &mut SocketPair, blocking: bool) {
     let [master, worker] = ends(this);
     for socket in [worker, master].into_iter().flatten() {
         socket.edit(|record| socket_set_fd_option(record, c_int::from(!blocking), -1));
@@ -232,11 +194,7 @@ fn close_end(slot: &mut Option<EventSocket>) -> bool {
 
 /// `bool SocketPair::close(int which)`: the master end, the worker end, or (any other
 /// value) both.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole10SocketPair5closeEi")
-)]
-pub extern "C-unwind" fn close(pair: &mut SocketPair, which: c_int) -> bool {
+pub fn close(pair: &mut SocketPair, which: c_int) -> bool {
     match which {
         CLOSE_MASTER => close_end(&mut pair.master_socket),
         CLOSE_WORKER => close_end(&mut pair.worker_socket),
@@ -249,25 +207,13 @@ pub extern "C-unwind" fn close(pair: &mut SocketPair, which: c_int) -> bool {
 }
 
 /// `~SocketPair()`: closes whichever ends are open.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole10SocketPairD1Ev")
-)]
-pub extern "C-unwind" fn drop(this: &mut SocketPair) -> *mut SocketPair {
+pub fn drop(this: &mut SocketPair) {
     close(this, 0);
-    this
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn pair(new: impl FnOnce(&mut MaybeUninit<SocketPair>)) -> SocketPair {
-        let mut storage = MaybeUninit::<SocketPair>::uninit();
-        new(&mut storage);
-        // SAFETY: the constructor initialised it.
-        unsafe { storage.assume_init() }
-    }
 
     /// [`read_into`] over initialised bytes.
     fn read(pair: &SocketPair, buffer: &mut [u8]) -> Option<usize> {
@@ -299,9 +245,7 @@ mod tests {
 
     #[test]
     fn a_pipe_writes_the_master_end_and_reads_the_worker_end() {
-        let pair = pair(|this| {
-            pipe_new(this, true);
-        });
+        let pair = pipe(true);
         assert!(pair.blocking);
         assert_eq!(pair.timeout.get(), SOCKET_DEFAULTS.read.get());
         round_trip(pair);
@@ -311,15 +255,11 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no socket options or datagram socketpair")]
     fn a_unix_socket_is_a_pair_of_the_protocol_asked() {
         for protocol in [libc::SOCK_STREAM, libc::SOCK_DGRAM] {
-            let pair = pair(|this| {
-                unix_socket_new(this, true, protocol);
-            });
+            let pair = unix_socket(true, protocol);
             assert!(unix_socket_set_buffer_size(&pair, 65536));
             round_trip(pair);
         }
-        let failed = pair(|this| {
-            unix_socket_new(this, false, -1);
-        });
+        let failed = unix_socket(false, -1);
         assert!(failed.master_socket.is_none() && failed.worker_socket.is_none());
     }
 }

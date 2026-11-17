@@ -32,6 +32,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: main
+      # ast-grep's Python API, which tools/budget.py counts with, at the version install.sh pins.
+      # The runner's Python has no pip, so uv puts it in the user's site directory.
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2
+        with:
+          tool: uv
+      - name: Install ast-grep
+        run: >
+          uv pip install -q --python python3 --target "$(python3 -m site --user-site)"
+          "$(grep -o 'ast-grep-py==[0-9.]*' .devcontainer/install.sh)"
       # From the newest completed merge-tier runs on main, newest first:
       # - gate/: the newest with a gate result (a gate missing a shard uploads no phpt.json)
       #   from every build variant too: a variant job that died before its gate would take its

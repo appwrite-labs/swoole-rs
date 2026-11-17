@@ -24,33 +24,12 @@ bool swr_zend_objects_copy(uint32_t handle, zval *out) {
     return true;
 }
 
-/* The live object of `handlers` at `handle`, or NULL; no reference is taken. */
-static zend_object *objects_find(uint32_t handle, const zend_object_handlers *handlers) {
+zend_object *swr_zend_objects_live(uint32_t handle) {
     if (handle >= EG(objects_store).top) {
         return NULL;
     }
     zend_object *obj = EG(objects_store).object_buckets[handle];
-    if (!obj || !IS_OBJ_VALID(obj) || obj->handlers != handlers || (OBJ_FLAGS(obj) & IS_OBJ_FREE_CALLED)) {
-        return NULL;
-    }
-    return obj;
-}
-
-zend_object *swr_zend_objects_lookup(uint32_t handle, const zend_object_handlers *handlers) {
-    if (handle >= EG(objects_store).top) {
-        return NULL;
-    }
-    zend_object *obj = EG(objects_store).object_buckets[handle];
-    return obj && IS_OBJ_VALID(obj) && obj->handlers == handlers ? obj : NULL;
-}
-
-bool swr_zend_objects_hold(uint32_t handle, const zend_object_handlers *handlers, zval *out) {
-    zend_object *obj = objects_find(handle, handlers);
-    if (!obj) {
-        return false;
-    }
-    ZVAL_OBJ_COPY(out, obj);
-    return true;
+    return IS_OBJ_VALID(obj) ? obj : NULL;
 }
 
 uint32_t swr_zend_resource_count(void) {

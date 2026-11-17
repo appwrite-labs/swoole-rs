@@ -365,10 +365,6 @@ fn bug_report_lines(banner: &CStr, compiler: &CStr, ssl: &CStr) {
 }
 
 /// `swoole_set_print_backtrace_on_error(bool enable = true)`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z35swoole_set_print_backtrace_on_errorb")
-)]
 pub extern "C" fn swoole_set_print_backtrace_on_error(enable: bool) {
     swr_v1_core_set_print_backtrace_on_error(enable);
 }
@@ -380,24 +376,12 @@ pub extern "C" fn sw_logger() -> *mut c_void {
     swr_v1_core_logger()
 }
 
-/// `swoole_set_stdout_stream(FILE *)`; `FILE` mangles as its libc's struct tag.
-#[cfg_attr(
-    all(feature = "upstream-symbols", target_vendor = "apple"),
-    unsafe(export_name = "_Z24swoole_set_stdout_streamP7__sFILE")
-)]
-#[cfg_attr(
-    all(feature = "upstream-symbols", not(target_vendor = "apple")),
-    unsafe(export_name = "_Z24swoole_set_stdout_streamP8_IO_FILE")
-)]
+/// Replace the stdout stream used by `sw_printf` and `sw_print`.
 pub extern "C" fn swoole_set_stdout_stream(stream: Option<Stream>) {
     swr_v1_core_set_stdout(stream);
 }
 
 /// `FILE *swoole_get_stdout_stream()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z24swoole_get_stdout_streamv")
-)]
 #[must_use]
 pub extern "C" fn swoole_get_stdout_stream() -> Option<Stream> {
     swr_v1_core_stdout()
@@ -412,10 +396,6 @@ pub fn sw_print(bytes: &[u8]) {
 }
 
 /// `swoole_set_trace_flags(long)`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z22swoole_set_trace_flagsl")
-)]
 pub extern "C" fn swoole_set_trace_flags(flags: c_long) {
     swr_v1_core_set_trace_flags(flags);
 }
