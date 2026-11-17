@@ -90,6 +90,8 @@ unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 indexing_slicing = "deny"
+# #3561: a lock guard in a match, if-let or for scrutinee lives through the body.
+significant_drop_in_scrutinee = "deny"
 # #3555: restriction and nursery lints with few or no hits.
 as_pointer_underscore = "deny"
 as_underscore = "deny"

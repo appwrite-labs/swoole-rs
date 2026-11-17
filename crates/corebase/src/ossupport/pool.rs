@@ -440,7 +440,8 @@ mod tests {
         until(|| EXECUTED.load(Ordering::SeqCst) == 40);
         // The main thread joins each worker whose retirement notice arrives.
         until(|| {
-            for key in std::mem::take(&mut *lock(&RETIRED)) {
+            let retired = std::mem::take(&mut *lock(&RETIRED));
+            for key in retired {
                 assert!(pool.join(key), "a retired worker is registered");
             }
             pool.worker_num() == 1
