@@ -1,66 +1,34 @@
 //! Upstream's `core-tests/src/os/pipe.cpp`, one function per TEST with the same inputs and
-//! expected values, over the Rust `SocketPair` (`corebase::process`) under its upstream symbols.
-//! `SocketPair` mirrors the record those symbols construct (SWR_SOCKET_PAIR_RECORD_FIELDS).
+//! expected values, over the real Rust `SocketPair` and its typed operations.
 
-use std::ffi::{CStr, c_int, c_void};
+use std::ffi::{CStr, c_int};
+use swoole_rs_corebase::tls::socket_pair;
 
 const SOCK_DGRAM: c_int = 2;
 
-/// `swoole::SocketPair`'s fields.
-#[repr(C)]
-struct SocketPair {
-    blocking: bool,
-    timeout: f64,
-    socks: [c_int; 2],
-    master_socket: *mut c_void,
-    worker_socket: *mut c_void,
-}
-
-unsafe extern "C" {
-    #[link_name = "_ZN6swoole10UnixSocketC1Ebi"]
-    fn unix_socket_new(this: *mut SocketPair, blocking: bool, protocol: c_int);
-    #[link_name = "_ZN6swoole4PipeC1Eb"]
-    fn pipe_new(this: *mut SocketPair, blocking: bool);
-    #[link_name = "_ZN6swoole10SocketPairD1Ev"]
-    fn socket_pair_drop(this: *mut SocketPair);
-}
+/// Close the pair at the same scope boundary as upstream's destructor.
+struct SocketPair(socket_pair::SocketPair);
 
 impl SocketPair {
-    fn new(construct: impl FnOnce(*mut SocketPair)) -> Box<Self> {
-        // SAFETY: integers, a bool and raw pointers, for which all-zero is valid.
-        let mut pair: Box<Self> = Box::new(unsafe { std::mem::zeroed() });
-        construct(&raw mut *pair);
-        pair
-    }
-
     fn ready(&self) -> bool {
-        !self.master_socket.is_null() && !self.worker_socket.is_null()
-    }
-
-    /// The record as corebase::tls's, whose layout this mirrors.
-    fn pair(&self) -> &swoole_rs_corebase::tls::socket_pair::SocketPair {
-        // SAFETY: a constructed pair, which is that record.
-        unsafe { &*std::ptr::from_ref(self).cast() }
+        self.0.master_end().is_some() && self.0.worker_end().is_some()
     }
 
     fn write(&self, data: &[u8]) -> isize {
-        swoole_rs_corebase::tls::socket_pair::write_from(self.pair(), data)
-            .map_or(-1, usize::cast_signed)
+        socket_pair::write_from(&self.0, data).map_or(-1, usize::cast_signed)
     }
 
     fn read(&self, buf: &mut [u8]) -> isize {
         let (at, length) = (buf.as_mut_ptr().cast(), buf.len());
         // SAFETY: `buf`'s own bytes, as ones a read may leave unwritten.
         let buf = unsafe { std::slice::from_raw_parts_mut(at, length) };
-        swoole_rs_corebase::tls::socket_pair::read_into(self.pair(), buf)
-            .map_or(-1, usize::cast_signed)
+        socket_pair::read_into(&self.0, buf).map_or(-1, usize::cast_signed)
     }
 }
 
 impl Drop for SocketPair {
     fn drop(&mut self) {
-        // SAFETY: a constructed pair, destroyed once.
-        unsafe { socket_pair_drop(self) };
+        socket_pair::drop(&mut self.0);
     }
 }
 
@@ -70,8 +38,7 @@ fn c_str_eq(expected: &CStr, buf: &[u8]) -> bool {
 }
 
 fn unixsock() {
-    // SAFETY: a zeroed record for the constructor.
-    let p = SocketPair::new(|this| unsafe { unix_socket_new(this, true, SOCK_DGRAM) });
+    let p = SocketPair(socket_pair::unix_socket(true, SOCK_DGRAM));
     assert!(p.ready());
 
     let mut buf = [0u8; 1024];
@@ -92,8 +59,7 @@ fn unixsock() {
 fn base() {
     let mut data = [0u8; 256];
 
-    // SAFETY: a zeroed record for the constructor.
-    let p = SocketPair::new(|this| unsafe { pipe_new(this, true) });
+    let p = SocketPair(socket_pair::pipe(true));
     assert!(p.ready());
 
     assert!(p.write(b"hello world\n") > 0);
