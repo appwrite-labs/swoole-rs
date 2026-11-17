@@ -307,8 +307,8 @@ pub(crate) fn start_check(serv: view::Server<'_>) -> bool {
     let callbacks = &state.callbacks;
     let has = |id| callbacks.slot(id).is_set();
     if config.mode_ == Mode::Process {
-        let (mode, hashed) = (config.dispatch_mode.get(), config.hash_dispatch());
-        if !hashed && !config.enable_unsafe_event.get() {
+        let mode = config.dispatch_mode.get();
+        if !mode.is_hash() && !config.enable_unsafe_event.get() {
             for (id, event) in [
                 (CallbackKind::Connect, "onConnect"),
                 (CallbackKind::Close, "onClose"),
@@ -316,15 +316,17 @@ pub(crate) fn start_check(serv: view::Server<'_>) -> bool {
                 (CallbackKind::BufferEmpty, "onBufferEmpty"),
             ] {
                 if let Some(slot) = Some(callbacks.slot(id)).filter(|slot| slot.is_set()) {
-                    let m =
-                        format_args!("cannot set '{event}' event when using dispatch_mode={mode}");
+                    let m = format_args!(
+                        "cannot set '{event}' event when using dispatch_mode={}",
+                        mode.0
+                    );
                     invalid_callback(m);
                     slot.clear();
                 }
             }
             config.disable_notify.set(true);
         }
-        if !hashed {
+        if !mode.is_hash() {
             config.send_yield.set(false);
         }
     } else {
@@ -836,7 +838,7 @@ mod tests {
             config(&live).send_yield.set(true);
             config(&live).disable_notify.set(false);
         };
-        arm(1);
+        arm(crate::DispatchMode::ROUND);
         assert!(start_check(live.server()), "round robin");
         assert!(
             UNSAFE.iter().all(|&id| !is_on(&live, id)),
@@ -846,7 +848,7 @@ mod tests {
         assert!(config(&live).disable_notify.get(), "notify off");
         assert!(!config(&live).send_yield.get(), "round robin cannot yield");
 
-        arm(2);
+        arm(crate::DispatchMode::FD_MOD);
         assert!(start_check(live.server()), "fd hash");
         assert!(
             UNSAFE.iter().all(|&id| is_on(&live, id)),
@@ -855,7 +857,7 @@ mod tests {
         assert!(!config(&live).disable_notify.get(), "notify on");
         assert!(config(&live).send_yield.get(), "may yield");
 
-        arm(1);
+        arm(crate::DispatchMode::ROUND);
         config(&live).enable_unsafe_event.set(true);
         assert!(start_check(live.server()), "unsafe events");
         assert!(UNSAFE.iter().all(|&id| is_on(&live, id)), "kept on request");
