@@ -109,7 +109,6 @@ fn printf(text: &str) {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri has no fdopen")]
 fn level() {
     let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
     let logger = &sw_logger();
@@ -158,7 +157,6 @@ fn level() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri has no localtime")]
 fn date_format_long_string() {
     let logger = &sw_logger();
     logger.reset();
