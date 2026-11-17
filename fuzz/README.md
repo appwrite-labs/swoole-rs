@@ -38,6 +38,10 @@ upstream's field types) with `swoole_rs_http::Request`. Inputs outside the compa
 domain are not compared; the candidate is still checked. Seeds include the requests
 `http.client` sends for the corpus applications.
 
+`http_proxy` hands any bytes, as an HTTP proxy's reply to the client's CONNECT, to
+`swoole_rs_http_ffi::proxy_accept` and to `HttpProxy::handshake` from the pinned http.cc:
+whether the tunnel is up and the last error they set must match.
+
 `http_header_info` runs `Request::parse_header_info` on both engines over any
 request head (up to its blank line): content length, keep-alive, chunked and
 excepted (a Transfer-Encoding not ending in chunked) flags, errno and the multipart boundary must match. `http_range`
