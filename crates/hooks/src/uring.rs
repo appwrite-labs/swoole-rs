@@ -565,10 +565,12 @@ fn harvest(engine: &Uring, ready: &mut Vec<(u64, isize)>) -> bool {
         return false;
     }
     for _ in 0..ready.len() {
-        if engine.sq_space_left() == 0 {
-            break;
-        }
-        let waiting = engine.waiting.with_taken(VecDeque::pop_front);
+        let waiting = engine.waiting.with_taken(|queue| {
+            if queue.is_empty() || engine.sq_space_left() == 0 {
+                return None;
+            }
+            queue.pop_front()
+        });
         let Some(waiting) = waiting else {
             break;
         };
