@@ -8,8 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{SW_ERR, last_error, sleep};
 use swoole_rs_timer::{
-    realtime_add, swoole_timer_clear, swoole_timer_exists, swoole_timer_free, swoole_timer_get,
-    swoole_timer_select,
+    del_id, delay_held, realtime_add, swoole_timer_clear, swoole_timer_exists, swoole_timer_free,
+    swoole_timer_get, swoole_timer_select,
 };
 
 const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
@@ -43,8 +43,6 @@ unsafe extern "C" {
     fn swoole_timer_tick(ms: c_long, callback: Callback, data: *mut c_void) -> c_long;
     #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
     pub(super) fn swoole_timer_del(tnode: *mut TimerNode) -> bool;
-    #[link_name = "_Z18swoole_timer_delayPN6swoole9TimerNodeEl"]
-    fn swoole_timer_delay(tnode: *mut TimerNode, delay_ms: c_long);
     #[link_name = "_Z17swoole_event_initi"]
     fn swoole_event_init(flags: c_int) -> c_int;
     #[link_name = "_Z17swoole_event_waitv"]
@@ -234,9 +232,8 @@ fn clear() {
 fn get() {
     let timer_id = tick(100, |_| {});
 
-    let timer_node = swoole_timer_get(timer_id).cast::<TimerNode>();
-    // SAFETY: a live timer's node.
-    assert_eq!(unsafe { (*timer_node).id }, timer_id);
+    let timer_node = swoole_timer_get(timer_id).unwrap();
+    assert_eq!(timer_node.id(), timer_id);
     swoole_timer_free();
 }
 
@@ -246,16 +243,12 @@ fn delay() {
     let ms2 = Cell::new(0);
     let timer_id = after(100, |_| ms2.set(now_ms()));
 
-    // SAFETY: a live timer's node, delayed, then the loop runs it; deleting it after
-    // it ran is upstream's sequence.
-    unsafe {
-        let timer_node = swoole_timer_get(timer_id).cast();
-        swoole_timer_delay(timer_node, 100);
-        event_wait();
-        assert!(ms2.get().wrapping_sub(ms1) >= 100);
-        swoole_timer_del(timer_node);
-        swoole_timer_free();
-    }
+    let timer_node = swoole_timer_get(timer_id).unwrap();
+    delay_held(Some(timer_node), 100);
+    event_wait();
+    assert!(ms2.get().wrapping_sub(ms1) >= 100);
+    del_id(timer_node);
+    swoole_timer_free();
 }
 
 fn error() {
@@ -265,7 +258,7 @@ fn error() {
 
         swoole_timer_free();
         swoole_timer_select(); // no effect
-        assert!(swoole_timer_get(1).is_null());
+        assert!(swoole_timer_get(1).is_none());
         assert!(!swoole_timer_clear(1));
         assert!(!swoole_timer_exists(1));
 
@@ -275,7 +268,7 @@ fn error() {
         let timer_id = after(0, |_| {});
         assert_eq!(timer_id, c_long::from(SW_ERR));
 
-        swoole_timer_delay(std::ptr::null_mut(), 100);
+        delay_held(None, 100);
         assert!(!swoole_timer_del(std::ptr::null_mut()));
         timer_exchange(tmp);
 

@@ -377,7 +377,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
             del_id(timer);
             sock.edit(|s| s.output.send_timer = None);
         } else if let Some(port) = port {
-            delay_held(timer, port.max_idle_time.get().c_cast::<c_long>());
+            delay_held(Some(timer), port.max_idle_time.get().c_cast::<c_long>());
         }
     }
     if !conn.peer_closed() && !removed && empty {

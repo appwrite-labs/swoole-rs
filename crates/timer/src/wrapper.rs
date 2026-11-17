@@ -3,7 +3,7 @@
 //! The `swoole_timer_*` API (upstream `src/wrapper/timer.cc`, which the timer
 //! patch deletes): this thread's `SwooleTG.timer`, its lazy creation, unit
 //! conversion and warnings, over the Rust-owned timer (`owner.rs`). Only the
-//! raw-callback adds and the node-pointer `del` and `delay` keep upstream symbols.
+//! raw-callback adds and the node-pointer `del` keep upstream symbols.
 use crate::owner::{Callback, Closure, Owner as Timer, TimerNode};
 use std::ffi::{CStr, c_long, c_void};
 use swoole_rs_corebase::CCast;
@@ -184,9 +184,11 @@ pub extern "C-unwind" fn cancel_issued(generation: u64, id: c_long) {
     }
 }
 
-/// [`swoole_timer_delay`] of a held timer, left alone as [`del_id`] leaves one.
-pub fn delay_held(held: Held, delay_ms: c_long) {
-    if let Some((timer, id)) = issuer(available(c"swoole_timer_delay"), held) {
+/// Move a held timer's deadline to `delay_ms` from now. None is a no-op;
+/// a missing thread timer reports the original `swoole_timer_delay` warning.
+pub fn delay_held(held: Option<Held>, delay_ms: c_long) {
+    let timer = available(c"swoole_timer_delay");
+    if let Some((timer, id)) = held.and_then(|held| issuer(timer, held)) {
         timer.delay(id, None, delay_ms);
     }
 }
@@ -234,12 +236,12 @@ extern "C-unwind" fn swoole_timer_tick(
 pub struct HeldNode(std::ptr::NonNull<TimerNode>);
 
 impl HeldNode {
-    /// The node's id and deadline, read on entry, before anything can free it.
-    fn fields(self) -> (c_long, i64) {
+    /// The node's id, read on entry, before anything can free it.
+    fn id(self) -> c_long {
         // SAFETY: the type's invariant: a live node, which no `&mut` borrows between
         // the queue's calls.
         let node = unsafe { self.0.as_ref() };
-        (node.id, node.exec_msec)
+        node.id
     }
 }
 
@@ -250,19 +252,7 @@ pub extern "C-unwind" fn swoole_timer_del(node: Option<HeldNode>) -> bool {
     let Some(timer) = available(c"swoole_timer_del") else {
         return false;
     };
-    node.is_some_and(|node| timer.remove(node.fields().0))
-}
-
-/// `void swoole_timer_delay(TimerNode *, long delay_ms)`: `Timer::delay`, which
-/// moves the deadline to `delay_ms` from now.
-#[unsafe(export_name = "_Z18swoole_timer_delayPN6swoole9TimerNodeEl")]
-pub extern "C-unwind" fn swoole_timer_delay(node: Option<HeldNode>, delay_ms: c_long) {
-    let Some(timer) = available(c"swoole_timer_delay") else {
-        return;
-    };
-    if let Some((id, exec_msec)) = node.map(HeldNode::fields) {
-        timer.delay(id, Some(exec_msec), delay_ms);
-    }
+    node.is_some_and(|node| timer.remove(node.id()))
 }
 
 /// `bool swoole_timer_exists(long timer_id)`: a node that isn't removed.
@@ -279,10 +269,13 @@ pub fn swoole_timer_clear(timer_id: c_long) -> bool {
     available(c"swoole_timer_clear").is_some_and(|timer| timer.remove(timer_id))
 }
 
-/// `TimerNode *swoole_timer_get(long timer_id)`.
+/// `swoole_timer_get(timer_id)` as the timer's issued id, or none. The handle
+/// remains usable after the node fires; operations then leave it alone.
 #[must_use]
-pub fn swoole_timer_get(timer_id: c_long) -> *mut TimerNode {
-    available(c"swoole_timer_get").map_or(std::ptr::null_mut(), |timer| timer.token(timer_id))
+pub fn swoole_timer_get(timer_id: c_long) -> Option<Held> {
+    let timer = available(c"swoole_timer_get")?;
+    timer.get(timer_id)?;
+    Held::new(timer.generation(), timer_id)
 }
 
 /// `void swoole_timer_free()`: `delete SwooleTG.timer`, then clear the slot.
