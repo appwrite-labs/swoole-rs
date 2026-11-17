@@ -145,8 +145,8 @@ pub(crate) struct State {
     /// The HTTP/2 stream, 0 once it is released.
     pub(crate) stream_id: u32,
     /// The `Server` a server's context answers through (`private_data`), when this
-    /// thread's reactor holds it.
-    pub(crate) server: Option<swoole_rs_server::view::Server<'static>>,
+    /// thread's reactor holds it: its identity, lent again through the reactor.
+    pub(crate) server: Option<swoole_rs_server::view::Held>,
     /// A share in that `Server` otherwise (`Response::create` off its reactor).
     pub(crate) shared: Option<swoole_rs_server::SharedServer>,
     /// The coroutine socket of `zsocket`'s object, while that is bound; the

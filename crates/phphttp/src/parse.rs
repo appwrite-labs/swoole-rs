@@ -630,18 +630,18 @@ fn websocket_connection(state: &State) -> bool {
     if crate::context::co_socket(state) {
         return true;
     }
-    let server = crate::context::server(state);
-    let server = server.view();
-    let Some(conn) = server.by_session(state.fd) else {
-        return false;
-    };
-    if server
-        .port_of_server_fd(conn.server_fd())
-        .is_some_and(|port| port.open_websocket_protocol.get())
-    {
-        conn.set_websocket_status(WebSocketStatus::Connection);
-    }
-    true
+    crate::context::server(state).with(|server| {
+        let Some(conn) = server.by_session(state.fd) else {
+            return false;
+        };
+        if server
+            .port_of_server_fd(conn.server_fd())
+            .is_some_and(|port| port.open_websocket_protocol.get())
+        {
+            conn.set_websocket_status(WebSocketStatus::Connection);
+        }
+        true
+    })
 }
 
 fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> Step {

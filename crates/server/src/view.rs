@@ -76,12 +76,28 @@ impl Fields {
 /// A live `Server`, borrowed for `'a`. [`Server::from_raw`] is the one unsafe
 /// step; the reads it then allows are safe, and only the methods that hand out
 /// `&mut` to state other threads share, or take another raw pointer, stay unsafe.
-/// Never null, so `Option<Server>` is all zeroes when `None`.
 #[derive(Clone, Copy)]
-#[repr(transparent)]
 pub struct Server<'a> {
-    raw: core::ptr::NonNull<c_void>,
+    raw: *mut c_void,
     live: PhantomData<&'a Fields>,
+}
+
+/// The identity of a server this thread's reactor held ([`Server::held`]): an
+/// address, never read through, so it may outlive the server; `Option<Held>` is
+/// all zeroes when `None`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct Held(core::ptr::NonNull<c_void>);
+
+impl Held {
+    /// `f` over the server, while this thread's reactor still holds it, as
+    /// [`Server::with_reactor`]; `None` once it holds another or none.
+    pub fn with<R>(self, f: impl FnOnce(Server<'_>) -> R) -> Option<R> {
+        crate::reactor_handle::Reactor::current()?
+            .server()
+            .filter(|held| held.raw == self.0.as_ptr())
+            .map(f)
+    }
 }
 
 /// The global hooks of a server: those whose callbacks take the server alone, and
@@ -116,9 +132,9 @@ impl<'a> Server<'a> {
         if !swoole_rs_corebase::swoole_isset_hook(kind) {
             return;
         }
-        let mut args: [*mut c_void; 2] = [self.raw(), core::ptr::null_mut()];
+        let mut args: [*mut c_void; 2] = [self.raw, core::ptr::null_mut()];
         let arg = match worker {
-            None => self.raw(),
+            None => self.raw,
             Some(id) => {
                 args[1] = core::ptr::without_provenance_mut(id as usize);
                 args.as_mut_ptr().cast()
@@ -138,8 +154,7 @@ impl<'a> Server<'a> {
     #[must_use]
     pub unsafe fn from_raw(serv: *mut c_void) -> Self {
         Self {
-            // A live server is never null.
-            raw: core::ptr::NonNull::new(serv).unwrap_or(core::ptr::NonNull::dangling()),
+            raw: serv,
             live: PhantomData,
         }
     }
@@ -150,16 +165,16 @@ impl<'a> Server<'a> {
         crate::reactor_handle::Reactor::current()?.server().map(f)
     }
 
-    /// This server unbounded, when this thread's reactor holds it: the worker's own
-    /// server, which serves every request the worker binds. Sound as the reactor's
-    /// `server()` is: a server is deleted only by its owner's drop, which first
-    /// releases it from the deleting thread's reactor and joins every other thread
-    /// whose reactor holds it.
+    /// This server's identity, when this thread's reactor holds it: the worker's own
+    /// server, which serves every request the worker binds. [`Held::with`] lends it
+    /// again while the reactor still does.
     #[must_use]
-    pub fn held(self) -> Option<Server<'static>> {
+    pub fn held(self) -> Option<Held> {
         crate::reactor_handle::Reactor::current()?
             .server()
             .filter(|held| held.raw == self.raw)
+            .and_then(|held| core::ptr::NonNull::new(held.raw))
+            .map(Held)
     }
 
     /// The server `object` is, live as long as the borrow.
@@ -169,20 +184,20 @@ impl<'a> Server<'a> {
     )]
     pub(crate) fn of_object(object: &'a ServerObject) -> Self {
         Self {
-            raw: core::ptr::NonNull::from(object).cast(),
+            raw: core::ptr::from_ref(object).cast_mut().cast(),
             live: PhantomData,
         }
     }
 
     fn fields(self) -> &'a Fields {
         // SAFETY: the head of a live Server, per the module comment and `from_raw`'s caller.
-        unsafe { self.raw.cast::<Fields>().as_ref() }
+        unsafe { &*self.raw.cast::<Fields>() }
     }
 
     /// `serv` itself, for the native-shaped calls that still take it.
     #[must_use]
     pub fn raw(self) -> *mut c_void {
-        self.raw.as_ptr()
+        self.raw
     }
 
     /// The server's Rust-owned state.

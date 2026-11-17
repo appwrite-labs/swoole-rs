@@ -951,15 +951,15 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<bool, bailout::
 
 /// `swoole_websocket_onHandshake`: the handshake, then `onOpen`, or a reset.
 pub(crate) fn handshake_open(mut context: Ctx) -> Result<(), bailout::Bailout> {
-    let server = context::server(context.state());
-    let server = server.view();
     let fd = context.fd();
-    if handshake(context)? {
-        on_open(server, context)
-    } else {
-        close(server, fd, true);
-        Ok(())
-    }
+    context::server(context.state()).with(|server| {
+        if handshake(context)? {
+            on_open(server, context)
+        } else {
+            close(server, fd, true);
+            Ok(())
+        }
+    })
 }
 
 /// A handshake `onHandshake` answers: the connection is upgrading.
@@ -1001,30 +1001,9 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
     let fd = context.fd();
     if context.flags() & CO_SOCKET == 0 {
         let server = context::server(context.state());
-        let server = server.view();
-        let Some(conn) = connection(server, fd, false) else {
-            closed(c"swoole_websocket_handshake", fd);
+        if !server.with(|server| handshake_server(server, context, fd))? {
             return Ok(false);
-        };
-        set_status(server, fd, WebSocketStatus::Active);
-        if let Some(protocol) = port_protocol(server, conn.server_fd)
-            && !protocol.is_empty()
-        {
-            set_header(context, b"Sec-WebSocket-Protocol", &protocol)?;
         }
-        let state = context.state();
-        let mut args = [
-            zserv(),
-            state.request.zobject.copy_value(),
-            state.response.zobject.copy_value(),
-        ];
-        dispatch(
-            server,
-            conn.server_fd,
-            PortCallback::BeforeHandshakeResponse,
-            &mut args,
-            fd,
-        )?;
     } else {
         swoole_rs_phpclients::websocket_protocol(&context.state().zsocket);
     }
@@ -1032,6 +1011,39 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
     state.response.status = 101;
     state.upgrade = true;
     send::end(context, None)
+}
+
+/// [`handshake`]'s server side: the connection is active, with its subprotocol
+/// and `onBeforeHandshakeResponse`. False when the session is gone.
+fn handshake_server(
+    server: view::Server<'_>,
+    mut context: Ctx,
+    fd: zend_long,
+) -> Result<bool, bailout::Bailout> {
+    let Some(conn) = connection(server, fd, false) else {
+        closed(c"swoole_websocket_handshake", fd);
+        return Ok(false);
+    };
+    set_status(server, fd, WebSocketStatus::Active);
+    if let Some(protocol) = port_protocol(server, conn.server_fd)
+        && !protocol.is_empty()
+    {
+        set_header(context, b"Sec-WebSocket-Protocol", &protocol)?;
+    }
+    let state = context.state();
+    let mut args = [
+        zserv(),
+        state.request.zobject.copy_value(),
+        state.response.zobject.copy_value(),
+    ];
+    dispatch(
+        server,
+        conn.server_fd,
+        PortCallback::BeforeHandshakeResponse,
+        &mut args,
+        fd,
+    )?;
+    Ok(true)
 }
 
 /// `swoole_error_log(SW_LOG_TRACE, SW_ERROR_SESSION_NOT_EXIST, ...)`.
@@ -1123,11 +1135,7 @@ pub(crate) fn accept(mut context: Ctx) {
     let offered = if context::co_socket(state) {
         state.websocket_settings & SETTING_COMPRESSION != 0
     } else {
-        crate::context::server(state)
-            .view()
-            .config()
-            .websocket_compression
-            .get()
+        crate::context::server(state).with(|server| server.config().websocket_compression.get())
     };
     let mut accepted = false;
     if offered && state.request.zobject.get().is_some() {
@@ -1148,10 +1156,12 @@ pub(crate) fn accept(mut context: Ctx) {
     }
     let state = context.state();
     state.websocket_compression = accepted;
-    if !crate::context::co_socket(state)
-        && let Some(conn) = crate::context::server(state).view().verified(state.fd)
-    {
-        conn.set_websocket_compression(accepted);
+    if !crate::context::co_socket(state) {
+        crate::context::server(state).with(|server| {
+            if let Some(conn) = server.verified(state.fd) {
+                conn.set_websocket_compression(accepted);
+            }
+        });
     }
 }
 
@@ -1160,7 +1170,11 @@ pub(crate) fn accept(mut context: Ctx) {
 pub(crate) fn handshaked(mut context: Ctx) {
     let state = context.state();
     let (server, fd) = (crate::context::server(state), state.fd);
-    let server = server.view();
+    server.with(|server| handshaked_on(server, context, fd));
+}
+
+/// [`handshaked`] on the context's server.
+fn handshaked_on(server: view::Server<'_>, mut context: Ctx, fd: zend_long) {
     let Some(conn) = connection(server, fd, true) else {
         return;
     };
