@@ -95,7 +95,7 @@ pub(crate) use closure::Closure;
 /// A `Copy` callback of at most two words, held in its node: no allocation, and
 /// nothing to free when the node goes.
 mod closure {
-    use std::mem::{MaybeUninit, align_of, size_of};
+    use std::mem::MaybeUninit;
 
     type Env = MaybeUninit<[usize; 2]>;
 

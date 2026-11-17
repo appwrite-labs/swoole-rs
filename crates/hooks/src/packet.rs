@@ -368,7 +368,6 @@ pub(crate) mod tests {
         view: &mut ReadBuffer,
         sync: super::BufferSync,
     ) {
-        use super::BufferSync;
         let ctx = context();
         let fake = unsafe { fake(ctx) };
         match sync {
@@ -473,7 +472,7 @@ pub(crate) mod tests {
     fn length_protocol_reassembles_split_and_coalesced_packets() {
         let first = [&b"ab"[..], &[0, 0, 0, 3], b"xyz"].concat();
         let second = [&b"cd"[..], &[0, 0, 0, 1], b"q"].concat();
-        let wire = [first.clone(), second.clone()].concat();
+        let wire = [first, second].concat();
         let (results, _) = run(&[&wire[..4], &wire[4..12], &wire[12..]], 8, true, b"", 1024);
         assert_eq!(results, [Some(9), Some(7), Some(0)]);
     }

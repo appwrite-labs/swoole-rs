@@ -76,7 +76,8 @@ pub fn fd_wait(
 
 /// `Socket::clean`: discard everything already received, without blocking.
 pub fn fd_clean(fd: c_int) {
-    let mut buffer = [0_u8; 2048];
+    // Discarded unread, so lent uninitialized.
+    let mut buffer = [std::mem::MaybeUninit::<u8>::uninit(); 2048];
     while crate::sys::recv(fd, &mut buffer, libc::MSG_DONTWAIT) > Some(0) {}
 }
 

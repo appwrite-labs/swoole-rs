@@ -184,7 +184,8 @@ mod rt {
             drop(state);
             f();
         }
-        if let Some(failure) = lock(&current().0).failure.take() {
+        let failure = lock(&current().0).failure.take();
+        if let Some(failure) = failure {
             panic!("{failure}");
         }
     }

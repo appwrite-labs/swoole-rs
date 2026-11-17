@@ -169,7 +169,7 @@ pub fn dispatch_data(
         fd: fd.into(),
         ..swoole_rs_corebase::DataHead::default()
     });
-    let port = server.port_of_fd(fd);
+    let port = server.port_of_server_fd(conn.server_fd());
     let mode = state.config_ref().mode_;
     let dispatched = if mode == crate::Mode::Process {
         crate::factory::dispatch(server, &mut task)

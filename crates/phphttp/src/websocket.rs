@@ -30,8 +30,7 @@ use swoole_rs_websocket::{
 };
 use swoole_rs_zend::{
     Array, Call, Class, Declared, Minit, Owned, Value, ZStr, ZString, bailout, handlers,
-    method_table,
-    string::{self},
+    method_table, string,
     sys::{IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, zend_long, zval},
 };
 

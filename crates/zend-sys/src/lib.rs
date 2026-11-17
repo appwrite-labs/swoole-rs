@@ -4,6 +4,13 @@
 //!
 //! Without the `php` feature the crate is empty.
 #![cfg(feature = "php")]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::undocumented_unsafe_blocks,
+        clippy::multiple_unsafe_ops_per_block
+    )
+)]
 
 // The repository's one `allow`: bindgen's output, and so which lints fire on
 // it, differs per PHP version, so an expectation would go unfulfilled on some.

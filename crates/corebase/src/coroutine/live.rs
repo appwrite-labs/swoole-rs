@@ -185,7 +185,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coroutine::state::{Coroutine, tests::scheduler};
+    use crate::coroutine::state::tests::scheduler;
 
     fn co(co: &mut Coroutine) -> Co {
         // SAFETY: the cases' coroutines outlive their registration.

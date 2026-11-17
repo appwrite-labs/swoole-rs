@@ -8,7 +8,7 @@ use crate::shutdown::SocketState;
 use crate::socket_extra::SocketExtra;
 use core::cell::{Cell, UnsafeCell};
 use core::ffi::{CStr, c_char, c_int, c_void};
-use core::mem::{MaybeUninit, offset_of, size_of};
+use core::mem::{MaybeUninit, offset_of};
 use core::ptr;
 use std::ffi::CString;
 use swoole_rs_corebase::buffer::string::{CppString, new_sized_string};
@@ -1223,7 +1223,6 @@ pub(crate) use test_support::{TestSocket, init, over, stub_ssl, unopened};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::mem::MaybeUninit;
     use swoole_rs_corebase::reactor::Events;
 
     fn record() -> Box<CoSocket> {

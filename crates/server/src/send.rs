@@ -53,10 +53,16 @@ pub fn send(serv: Server<'_>, session_id: core::ffi::c_long, data: &[u8]) -> boo
     let state = serv.state();
     let here = serv.config().mode_ != Mode::Process && sends_here(state, session_id);
     let sent = if here {
-        match send_now(state, session_id, data) {
-            Some(sent) if usize::try_from(sent) == Ok(data.len()) => true,
-            first => to_connection(serv, &info, data, first),
+        let first = send_now(state, session_id, data);
+        if let Some((sent, conn)) = first
+            && usize::try_from(sent) == Ok(data.len())
+        {
+            // The session's own slot, which its lookup by id would find again.
+            let port = state.port_by_server_fd(conn.server_fd());
+            crate::shared::count_sent(state, port.and_then(|port| port.config().counters()), len);
+            return true;
         }
+        to_connection(serv, &info, data, first.map(|(sent, _)| sent))
     } else {
         let mut send = SendData::new(info, data);
         crate::hybrid::hybrid().factory_finish(serv, &mut send)
@@ -143,8 +149,13 @@ fn writes_now(
 
 /// [`send`]'s direct write, made here when it needs nothing else ([`writes_now`]).
 /// `None` leaves the whole send to [`to_connection`]; otherwise `Socket::send`'s result
-/// after EINTR retries, and a complete send has set the connection's `last_send_time`.
-fn send_now(state: &ServerState, session_id: core::ffi::c_long, data: &[u8]) -> Option<i64> {
+/// after EINTR retries, and the session's connection, whose `last_send_time` a complete
+/// send has set.
+fn send_now<'a>(
+    state: &'a ServerState,
+    session_id: core::ffi::c_long,
+    data: &[u8],
+) -> Option<(i64, Connection<'a>)> {
     let (conn, socket) = writes_now(state, session_id)?;
     let sent = loop {
         let sent = record_send(socket, Drain::new(data), 0, |_, _| None, steady_ms);
@@ -155,7 +166,10 @@ fn send_now(state: &ServerState, session_id: core::ffi::c_long, data: &[u8]) -> 
     if sent == Some(data.len()) {
         conn.set_last_send_time(microtime());
     }
-    Some(sent.map_or(-1, |sent| i64::try_from(sent).unwrap_or(-1)))
+    Some((
+        sent.map_or(-1, |sent| i64::try_from(sent).unwrap_or(-1)),
+        conn,
+    ))
 }
 
 /// `Server::send_to_connection(send)`: false for `SW_ERR`. Where a send fails after
@@ -610,7 +624,7 @@ mod tests {
         let data = b"0123456789";
         let info = *event(ServerEvent::SendData, 1, data).info();
         assert_eq!(
-            send_now(a.live.state(), 1, data),
+            send_now(a.live.state(), 1, data).map(|(sent, _)| sent),
             Some(10),
             "all of it went"
         );

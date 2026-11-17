@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 ROOT = Path(__file__).resolve().parents[3]
@@ -125,6 +126,10 @@ def main():
         report['passed'] = report['native_cpp_cleanup']['passed'] and report['selected_contract_passed'] and len(baseline) == len(modes) and not report['native_passes_lost']
     except Exception as error:
         report['error'] = f'{type(error).__name__}: {error}'
+    if report['passed']:
+        # The compiled witnesses (~33 MB) are kept only to inspect a failure.
+        shutil.rmtree(work)
+        del report['work']
     write_report(output, report)
     print(json.dumps({key: report.get(key) for key in ['passed', 'error']}))
     return int(not report['passed'])

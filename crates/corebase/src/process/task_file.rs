@@ -160,10 +160,14 @@ fn spill(fd: c_int, data: &[u8]) -> bool {
 }
 
 /// `Server::task_pack`'s payload placement: inline into `dest` when it fits,
-/// otherwise a temp file created from `template` (an mkstemp pattern), whose
+/// otherwise a temp file created from `template()` (an mkstemp pattern), whose
 /// path and length are written into `dest` (at least `sizeof(PacketTask)` bytes)
-/// as a `PacketTask`.
-fn pack_payload(dest: &mut [MaybeUninit<u8>], data: &[u8], template: &CStr) -> TaskPack {
+/// as a `PacketTask`. Only a spill asks for the template, which a lock guards.
+fn pack_payload<T: AsRef<CStr>>(
+    dest: &mut [MaybeUninit<u8>],
+    data: &[u8],
+    template: impl FnOnce() -> T,
+) -> TaskPack {
     let fits = data.len() < dest.len();
     if let Some(inline) = dest.get_mut(..data.len()).filter(|_| fits) {
         inline.write_copy_of_slice(data);
@@ -177,7 +181,7 @@ fn pack_payload(dest: &mut [MaybeUninit<u8>], data: &[u8], template: &CStr) -> T
         length: data.len(),
         tmpfile: [0; TASK_TMP_PATH_SIZE],
     };
-    let Some(file) = make_tmpfile(template, &mut pkg.tmpfile) else {
+    let Some(file) = make_tmpfile(template().as_ref(), &mut pkg.tmpfile) else {
         return TaskPack::default();
     };
     let wrote = spill(file.as_raw_fd(), data);
@@ -300,7 +304,7 @@ impl TaskBuffer {
             reserved: 0,
             time: microtime(),
         };
-        let packed = pack_payload(&mut self.data, data, &task_tmpfile());
+        let packed = pack_payload(&mut self.data, data, task_tmpfile);
         if !packed.ok {
             return false;
         }
@@ -533,7 +537,7 @@ mod tests {
         let data = b"a small task payload";
         let mut dest = vec![std::mem::MaybeUninit::new(0u8); 300];
         let template = CString::new("/unused/XXXXXX").unwrap();
-        let out = pack_payload(&mut dest, data, &template);
+        let out = pack_payload(&mut dest, data, || &template);
         assert_eq!(
             out,
             TaskPack {
@@ -558,7 +562,7 @@ mod tests {
         .unwrap();
         let payload = vec![0xAB_u8; 500];
         let mut dest = vec![std::mem::MaybeUninit::new(0u8); 300]; // smaller than the payload, so it spills to a file
-        let out = pack_payload(&mut dest, &payload, &template);
+        let out = pack_payload(&mut dest, &payload, || &template);
         assert_eq!(
             out,
             TaskPack {
@@ -581,7 +585,7 @@ mod tests {
     fn pack_large(template: &CString) -> TaskPack {
         let payload = vec![0xAB_u8; 500];
         let mut dest = vec![std::mem::MaybeUninit::new(0u8); 300];
-        pack_payload(&mut dest, &payload, template)
+        pack_payload(&mut dest, &payload, || template)
     }
 
     #[test]

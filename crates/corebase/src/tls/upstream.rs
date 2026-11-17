@@ -121,32 +121,6 @@ fn with_tls<P, R>(
     Some(result)
 }
 
-/// `static const char *Socket::ssl_get_error_reason(int *reason)`: `reason` is null
-/// or writable.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket20ssl_get_error_reasonEPi")
-)]
-pub extern "C" fn socket_ssl_get_error_reason(reason: Option<&mut c_int>) -> *const c_char {
-    let (code, text) = swr_v1_socket_ssl_error_reason();
-    if let Some(reason) = reason {
-        *reason = code;
-    }
-    text.map_or(std::ptr::null(), CStr::as_ptr)
-}
-
-/// `STACK_OF(X509) *Socket::ssl_get_peer_cert_chain() const`, for upstream's core tests.
-#[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole7network6Socket23ssl_get_peer_cert_chainEv")
-)]
-pub extern "C" fn socket_ssl_get_peer_cert_chain(
-    socket: Socket<'_>,
-) -> *mut openssl_sys::stack_st_X509 {
-    Ssl::of(socket).map_or(std::ptr::null_mut(), |held| held.get().peer_cert_chain())
-}
-
 /// The peer's certificate chain, each certificate as PEM (at most
 /// `SW_STACK_BUFFER_SIZE` bytes), skipping one that fails.
 #[must_use]
@@ -464,13 +438,6 @@ pub fn recvfrom_sync(
 /// `ssize_t Socket::peek(void *, size_t, int) const` into `buffer`.
 pub fn peek(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
     record_peek(socket, Fill::new(buffer), flags, tls_peek)
-}
-
-/// `bool Socket::check_liveness()`.
-#[cfg(feature = "upstream-symbols")]
-#[unsafe(export_name = "_ZN6swoole7network6Socket14check_livenessEv")]
-extern "C" fn socket_check_liveness(socket: Socket<'_>) -> bool {
-    check_liveness(socket)
 }
 
 /// `bool Socket::check_liveness()`: a nonblocking one-byte peek that neither
@@ -1204,7 +1171,11 @@ mod tests {
     fn cert_chain_without_ssl_is_null() {
         let mut socket = SocketRecord::new();
         let handle = unsafe { Socket::from_ptr(&raw mut socket) }.unwrap();
-        assert!(socket_ssl_get_peer_cert_chain(handle).is_null());
+        assert!(
+            Ssl::of(handle)
+                .map_or(std::ptr::null_mut(), |held| held.get().peer_cert_chain())
+                .is_null()
+        );
     }
 
     #[test]
