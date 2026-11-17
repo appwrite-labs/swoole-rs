@@ -10,6 +10,7 @@ use std::ffi::{CStr, c_int, c_long, c_void};
 use std::io::Write;
 use std::ptr;
 use std::rc::{Rc, Weak};
+use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::coroutine::Resume;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::reactor::{SocketFields, SocketRecord, event_api};
@@ -119,10 +120,8 @@ impl ReactorSocket {
 
     /// `f` of the record while it is owned, else the default.
     fn with<R: Default>(&self, f: impl FnOnce(&EventSocket) -> R) -> R {
-        let socket = self.socket.take();
-        let result = socket.as_ref().map_or_else(R::default, f);
-        self.socket.set(socket);
-        result
+        self.socket
+            .with_taken(|socket| socket.as_ref().map_or_else(R::default, f))
     }
 
     /// Owned by `owner`, which the reactor handlers report while it lives.
@@ -309,8 +308,9 @@ pub extern "C" fn swoole_curl_easy_perform(cp: Idle<'_>) -> CURLcode {
         return CURLE_FAILED_INIT;
     };
     // The handle's own multi, held while it runs the handle.
-    let multi = handle.easy_multi.take().unwrap_or_else(Multi::create);
-    handle.easy_multi.set(Some(Rc::clone(&multi)));
+    let multi = handle
+        .easy_multi
+        .with_taken(|slot| Rc::clone(slot.get_or_insert_with(Multi::create)));
     let result = multi.exec(handle);
     let mut buffer = [0; 128];
     let unbound = if result == EXEC_NEEDS_COROUTINE {

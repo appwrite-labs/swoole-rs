@@ -139,17 +139,13 @@ impl Handle {
 
     /// The multi the easy handle is in, while that multi lives.
     fn multi(&self) -> Option<Rc<Multi>> {
-        let multi = self.multi.take();
-        let live = multi.as_ref().and_then(Weak::upgrade);
-        self.multi.set(multi);
-        live
+        self.multi
+            .with_taken(|multi| multi.as_ref().and_then(Weak::upgrade))
     }
 
     /// A reference to the multi the easy handle is in, for another handle.
     fn multi_ref(&self) -> Option<Weak<Multi>> {
-        let multi = self.multi.take();
-        self.multi.set(multi.clone());
-        multi
+        self.multi.with_taken(|multi| multi.clone())
     }
 
     /// The easy handle it was made for, which outlives it: ext/curl destroys the
