@@ -185,6 +185,16 @@ pub struct HeadedOut<'id, H>(*mut H, Brand<'id>);
 #[repr(transparent)]
 pub struct HeadedIn<'id, H>(*const H, Brand<'id>);
 
+impl<N: Copy> Count<'_, N> {
+    /// The count, as the call that took it by `&mut` left it: what it wrote, or what
+    /// is left of the lending past its moved address.
+    #[inline]
+    #[must_use]
+    pub fn get(&self) -> N {
+        self.0
+    }
+}
+
 impl<N: Narrow + Ord> Count<'_, N> {
     /// At most `limit` of the same lending's items.
     #[inline]
