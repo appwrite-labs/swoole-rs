@@ -20,6 +20,10 @@ The merge tier's `callgrind` job runs it for `plaintext`, `echo-1k`, `json` and
 rather than `echo-64k`: how a 64 KiB request is split across reads differs between
 runners, and that changes how much of it the Expect-header scan walks (#338).
 
+Main's callgrind job also passes `--warn-headroom`: a passing workload within
+0.5% of its limit gets a warning annotation, so instruction drift is visible before
+it blocks a PR. The warning does not change the verdict or create an issue.
+
 A new or reset record comes from the merge tier's x86_64 numbers (its `callgrind`
 artifact), set 5% above them; a local arm64 run doesn't predict them. Older records
 noted below as set from arm64 runs keep those values until the ratchet lowers them. On x86_64, glibc copies and fills
@@ -94,6 +98,13 @@ arm64 Linux VM whose reactor wakes on ~3 ms ticks, at two connections, `sleep`'s
 5.93 ms for the Cargo build and 3.00 ms for upstream, and `coroutine-lock`'s p99 11.4 ms and
 6.7 ms. In Appwrite, the same late wake-ups doubled the time a session creation spent
 waiting on its connection pools' locks, from 58 ms to 115 ms.
+
+`table-contended` (#4730) reads one `Swoole\Table` row 64 times per request from six worker
+processes per CPU, against `benchmarks/table`, as Appwrite checks one certified-domain row on
+every request. Its cost is the row lock's spin across processes, so the nightly runs it in
+`wall.py`. The Cargo build pauses with `isb` on aarch64, where upstream pauses with `yield`.
+On a 10-CPU arm64 Linux VM at 64 connections it served 86k requests/s at 0.108 ms of CPU each,
+against upstream's 63k at 0.138 ms. A build pausing with `yield` fell back to 65k at 0.132 ms.
 
 `atomic` (#2654) adds 64 values to a `Swoole\Atomic`, each under a `Swoole\Lock`
 mutex, against `benchmarks/primitives`, and `process-mode` is `plaintext` against

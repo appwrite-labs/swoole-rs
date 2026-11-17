@@ -103,6 +103,9 @@ WORKLOADS = {
     # handed over after a 1 ms hold, and a 2 ms Coroutine::sleep.
     'coroutine-lock': ('benchmarks/primitives', 'GET', '/coroutine-lock', None, b'64\n'),
     'sleep': ('benchmarks/primitives', 'GET', '/sleep', None, b'64\n'),
+    # One hot Swoole\Table row read by six worker processes per CPU (#4730); wall.py only, since
+    # its cost is spinning on the row lock across processes.
+    'table-contended': ('benchmarks/table', 'GET', '/', None, b'64\n'),
     'process-mode': ('benchmarks/process', 'GET', '/', None, b'Hello, Swoole!\n'),
     # Larger and concurrent traffic (#2652), against benchmarks/traffic.
     'http2-concurrent': ('benchmarks/traffic', 'H2C', '/echo', H2BODY, H2BODY),
@@ -436,6 +439,8 @@ def main():
     parser.add_argument('--profiles', type=Path, nargs='?', const=run / 'profiles',
                         help='Keep the callgrind profiles in DIR/<workload>/<engine>/ (default under target/callgrind/)')
     parser.add_argument('--max-ratio', type=float, help='Fail if first/second exceeds this for any workload')
+    parser.add_argument('--warn-headroom', action='store_true',
+                        help='Warn when a passing ratio has at most 0.5%% headroom before its limit')
     parser.add_argument('--limits', type=Path, help='DIR of files named by workload, each its recorded first/second ratio; '
                         'fail if one is exceeded by more than noise (overrides --max-ratio per workload)')
     parser.add_argument('--ratchet', type=Path, nargs='+', metavar='RESULT',
@@ -470,6 +475,9 @@ def main():
             failed |= over
             if over:
                 annotate('error', f'callgrind {workload}', f'ratio {a / b:.4f} over limit {limit:.4f}')
+            elif args.warn_headroom and limit and a / b >= limit / 1.005:
+                annotate('warning', f'callgrind {workload}',
+                         f'ratio {a / b:.4f} has {(limit / (a / b) - 1) * 100:.2f}% headroom before limit {limit:.4f}')
             print(f'ratio {first}/{second} {workload}: {a / b:.4f}' + (f' exceeds {limit:.4f}' if over else '')
                   + (f'; below the recorded {recorded[workload]}, lowest record {lowest(a / b):.2f}' if stale else ''))
     args.output.parent.mkdir(parents=True, exist_ok=True)

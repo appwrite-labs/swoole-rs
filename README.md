@@ -183,8 +183,8 @@ PHP 8.2 to 8.5 on Linux, named
   images have them.
 
 ```sh
-file=swoole-rs-v0.1.0-php8.3-nts-linux-gnu-x86_64.so
-url=https://github.com/appwrite-labs/swoole-rs/releases/download/v0.1.0
+file=swoole-rs-v0.1.1-php8.3-nts-linux-gnu-x86_64.so
+url=https://github.com/appwrite-labs/swoole-rs/releases/download/v0.1.1
 curl -fsSL -O "$url/$file" -O "$url/SHA256SUMS"
 grep " $file\$" SHA256SUMS | sha256sum -c -
 cp "$file" "$(php -r 'echo ini_get("extension_dir");')/swoole.so"
@@ -193,7 +193,7 @@ php --ri swoole
 ```
 
 The last command prints `Version => 6.2.5`, the upstream version this build stands in
-for, and `swoole-rs => 0.1.0 (<commit>)`. `gh attestation verify "$file" --repo
+for, and `swoole-rs => 0.1.1 (<commit>)`. `gh attestation verify "$file" --repo
 appwrite-labs/swoole-rs` checks that the file was built by this repository's release
 workflow.
 
