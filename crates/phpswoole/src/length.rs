@@ -40,36 +40,39 @@ pub trait PackageLength {
 }
 
 /// `php_swoole_length_func`: `L`'s length for the packet so far. A bailout is
-/// re-raised as the last step. The callable is `owner`'s, a [`Named`] the caller
-/// holds for the call; without one, the protocol's `private_data_1` names it: the
-/// value of an `Rc` whose reference its [`Named`] owner keeps, which a caller passes
-/// (a copy of).
+/// re-raised as the last step. The callable is `owner`'s, a [`Named`] whose
+/// reference the caller hands over and this drops before that step; without one,
+/// the protocol's `private_data_1` names it: the value of an `Rc` whose reference
+/// its [`Named`] owner keeps, which a caller passes (a copy of).
 pub fn length<L: PackageLength>(
     protocol: &Protocol,
     _socket: Option<Socket<'_>>,
-    owner: Option<&dyn Any>,
+    owner: Option<Rc<dyn Any>>,
     packet: &mut PacketLength,
 ) -> isize {
-    if let Some(Named(callable)) = owner.and_then(<dyn Any>::downcast_ref::<Named>) {
-        return measure::<L>(callable, packet).map_or(-1, usize::cast_signed);
-    }
-    let raw = protocol.private_data_1;
-    if raw.is_null() {
-        return -1;
-    }
-    // SAFETY: `Named::as_ptr`, which is `Rc::into_raw`'s pointer, of a
-    // reference the owner keeps; borrowed, never dropped here.
-    let slot = ManuallyDrop::new(unsafe { Rc::from_raw(raw.cast_const().cast::<Callable>()) });
-    measure::<L>(&slot, packet).map_or(-1, usize::cast_signed)
-}
-
-/// `L`'s length of `packet` by `callable`, taking a reference for the call where
-/// this thread owns its count; `None` when it failed.
-fn measure<L: PackageLength>(callable: &Rc<Callable>, packet: &mut PacketLength) -> Option<usize> {
-    let held = L::owns().then(|| Rc::clone(callable));
-    let length = L::length(callable, packet.bytes());
-    // Released first: `finish` may jump over this frame.
-    drop(held);
+    let length = if let Some(owner) = owner {
+        let Ok(named) = owner.downcast::<Named>() else {
+            return -1;
+        };
+        let length = L::length(&named.0, packet.bytes());
+        // Released first: `finish` may jump over this frame, and a `set()` the callable
+        // ran may have left this the last reference, whose destructor can bail out.
+        drop(named);
+        length
+    } else {
+        let raw = protocol.private_data_1;
+        if raw.is_null() {
+            return -1;
+        }
+        // SAFETY: `Named::as_ptr`, which is `Rc::into_raw`'s pointer, of a
+        // reference the owner keeps; borrowed, never dropped here.
+        let slot = ManuallyDrop::new(unsafe { Rc::from_raw(raw.cast_const().cast::<Callable>()) });
+        let held = L::owns().then(|| Rc::clone(&slot));
+        let length = L::length(&slot, packet.bytes());
+        // Released first: `finish` may jump over this frame.
+        drop(held);
+        length
+    };
     bailout::finish();
-    length
+    length.map_or(-1, usize::cast_signed)
 }

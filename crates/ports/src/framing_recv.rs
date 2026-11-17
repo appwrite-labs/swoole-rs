@@ -477,7 +477,7 @@ pub const FRAMING: Framing = Framing::new(client_recv::<true>, client_recv::<fal
 pub fn default_length_func(
     p: &Protocol,
     socket: Option<Socket<'_>>,
-    _owner: Option<&dyn core::any::Any>,
+    _owner: Option<std::rc::Rc<dyn core::any::Any>>,
     pl: &mut PacketLength,
 ) -> isize {
     let size = match (p.get_package_length_size, socket) {

@@ -20,7 +20,7 @@ pub fn set_protocol(protocol: &mut Protocol) {
 pub fn get_package_length(
     _: &Protocol,
     _: Option<Socket<'_>>,
-    _: Option<&dyn core::any::Any>,
+    _: Option<std::rc::Rc<dyn core::any::Any>>,
     pl: &mut PacketLength,
 ) -> isize {
     if let Ok(length) = mqtt_frame_length(pl.bytes()) {

@@ -933,16 +933,12 @@ pub fn package_length(this: Handle<'_>, data: &[u8]) -> isize {
     let Some(get) = record.protocol.get_package_length else {
         return -1;
     };
-    // A copy, held for the call: the callable may `set()` another or close the client.
+    // A reference the callback drops: the callable may `set()` another or close the
+    // client, and the old one's destructor must run before the callback finishes.
     let owner = this.get().length_owner.take();
     this.get().length_owner.set(owner.clone());
     let mut packet = PacketLength::new(data);
-    get(
-        &record.protocol,
-        Some(this.socket()),
-        owner.as_deref(),
-        &mut packet,
-    )
+    get(&record.protocol, Some(this.socket()), owner, &mut packet)
 }
 
 /// `Client::close()`: false when already closed or when `close(2)` fails; true when
