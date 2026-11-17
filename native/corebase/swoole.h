@@ -133,7 +133,6 @@ extern "C" char *swr_v1_error_buffer(void);
 uint64_t swoole_random_int();
 size_t swoole_random_bytes(char *buf, size_t size);
 
-void swoole_exit(int _status);
 pid_t swoole_fork(int flags);
 
 namespace swoole {

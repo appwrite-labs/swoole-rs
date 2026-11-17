@@ -17,7 +17,7 @@ const CHUNK: usize = 1 << 16;
 ///
 /// Outside a coroutine it raises upstream's fatal error, which does not return.
 pub fn exec(command: &CStr, errors: bool, status: &mut c_int) -> Option<Vec<u8>> {
-    _ = crate::wait_event::native::current();
+    _ = swoole_rs_corebase::coroutine::current_safe();
     let Some((fd, pid)) = swoole_rs_corebase::swoole_shell_exec(command, errors) else {
         swoole_rs_corebase::log::sys_warning(
             c"exec",

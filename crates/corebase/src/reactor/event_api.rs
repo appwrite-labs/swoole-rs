@@ -9,7 +9,6 @@ use crate::reactor::{Events, ReactorFields};
 use std::ffi::{c_int, c_void};
 use std::io::IoSlice;
 use std::rc::Rc;
-use std::sync::OnceLock;
 
 /// `SwooleTG.reactor`.
 fn current() -> *mut c_void {
@@ -118,23 +117,6 @@ pub fn add_or_update(socket: crate::reactor::Heap<'_>, event: Events) -> bool {
         return false;
     };
     crate::reactor::reactor_upstream::interest(reactor, socket, kind, Events::NONE)
-}
-
-/// The handlers crates/hooks (`System::init_reactor`) and crates/clients
-/// (`Client::init_reactor`) set on an event loop's reactor, in that order. Both depend
-/// on this crate: `swoole_init` registers them.
-static INIT_REACTOR: OnceLock<[fn(crate::reactor::Running<'_>); 2]> = OnceLock::new();
-
-/// Registers the event loop's handler setup; later registrations are ignored.
-pub fn set_init_reactor(init: [fn(crate::reactor::Running<'_>); 2]) {
-    INIT_REACTOR.get_or_init(|| init);
-}
-
-/// The registered handler setup over `reactor`, if any is registered.
-pub(crate) fn init_reactor(reactor: crate::reactor::Running<'_>) {
-    for init in INIT_REACTOR.get().into_iter().flatten() {
-        init(reactor);
-    }
 }
 
 /// `ssize_t swoole_event_write(Socket *socket, const void *data, size_t len)` of `data`

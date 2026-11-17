@@ -182,11 +182,7 @@ pub fn swoole_is_main_thread() -> bool {
 
 /// `void swoole_clean()`: the hooks, signals and this thread first, then the
 /// logger and the memory pool, and `SwooleG` last.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z12swoole_cleanv")
-)]
-pub extern "C-unwind" fn swoole_clean() {
+pub fn swoole_clean() {
     crate::hook::clear();
     crate::reactor::signal_upstream::clear();
     swoole_thread_clean(true);

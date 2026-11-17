@@ -627,7 +627,7 @@ thread_local! {
 /// `void swoole_exit(int status)`. Concurrent exits from several threads can
 /// crash, so callers queue on a lock that the exiting thread keeps; an exit
 /// handler on that thread that exits again goes straight through.
-#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z11swoole_exiti"))]
+#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "swr_v1_ffi_exit"))]
 pub extern "C" fn swoole_exit(status: c_int) -> ! {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     if !EXITING.replace(true) {

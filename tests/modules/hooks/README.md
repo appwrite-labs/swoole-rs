@@ -172,9 +172,8 @@ oracle they share. coroutine/base.cpp and file.cpp run here too
 its 26 TESTs, one function each (`socket.<name>`, upstream's names, inputs, paths,
 ports and expected values), run by `hooks-system-rust`; with reactor/base.cpp already Rust, the
 `reactor-native-originals` lane that compiled it is gone. `network::Socket` is
-Rust's record (`swr_v1_socket`): its
-out-of-line members are called under their upstream symbols and its inline ones
-through the `swr_v1_socket_*` calls the header makes; `Address` is address.rs's.
+Rust's record (`swr_v1_socket`). The fixture releases it through Rust's
+`EventSocket::release`. `Address` is address.rs's.
 `ssl_get_error_reason` calls corebase's typed reason-code/static-string primitive;
 its null-reason, queue-order and text assertions remain the upstream assertions.
 `ERR_put_error` is OpenSSL 3's expansion (`ERR_new`, `ERR_set_debug`,

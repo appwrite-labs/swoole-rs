@@ -369,13 +369,6 @@ pub extern "C" fn swoole_set_print_backtrace_on_error(enable: bool) {
     swr_v1_core_set_print_backtrace_on_error(enable);
 }
 
-/// `swoole::Logger *sw_logger()`.
-#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z9sw_loggerv"))]
-#[must_use]
-pub extern "C" fn sw_logger() -> *mut c_void {
-    swr_v1_core_logger()
-}
-
 /// Replace the stdout stream used by `sw_printf` and `sw_print`.
 pub extern "C" fn swoole_set_stdout_stream(stream: Option<Stream>) {
     swr_v1_core_set_stdout(stream);

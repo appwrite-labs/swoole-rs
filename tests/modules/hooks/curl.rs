@@ -215,7 +215,7 @@ fn transfer() -> Transfer {
     assert_eq!(multi.add_handle(unsafe { &*handle }), CURLM_OK, "added");
     for _ in 0..100 {
         assert_eq!(multi.perform(), CURLM_OK, "performed");
-        if !with(&multi.sockets, |sockets| sockets.is_empty()) {
+        if !multi.sockets.with_taken(|sockets| sockets.is_empty()) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -223,7 +223,7 @@ fn transfer() -> Transfer {
     }
     assert_eq!(swr_v1_curl_multi_running(multi), 1, "running");
     assert_eq!(
-        with(&multi.sockets, |sockets| sockets.len()),
+        multi.sockets.with_taken(|sockets| sockets.len()),
         1,
         "one socket"
     );
@@ -251,7 +251,7 @@ impl Transfer {
             "socket freed with the transfer"
         );
         assert!(
-            with(&self.multi.sockets, |sockets| sockets.is_empty()),
+            self.multi.sockets.with_taken(|sockets| sockets.is_empty()),
             "no sockets"
         );
         assert_eq!(self.multi.ready(), 0, "no active socket");
@@ -269,9 +269,9 @@ fn perform_registers_the_transfer_socket_and_removal_frees_it() {
 fn a_waiterless_socket_event_leaves_the_reactor() {
     let transfer = transfer();
     let multi = transfer.multi;
-    let socket = with(&multi.sockets, |sockets| {
-        Rc::as_ptr(sockets.values().next().unwrap()).cast_mut()
-    });
+    let socket = multi
+        .sockets
+        .with_taken(|sockets| Rc::as_ptr(sockets.values().next().unwrap()).cast_mut());
     socket_event(unsafe { &*socket }, CURL_CSELECT_IN);
     assert_eq!(take(), ["del"], "no waiter: out of the reactor");
     multi.selector_prepare();

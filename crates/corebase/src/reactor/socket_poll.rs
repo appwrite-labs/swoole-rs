@@ -3,13 +3,13 @@
 //! each fd is registered with the reactor, the coroutine parks, and the first
 //! readiness or the timer wakes it once. [`NATIVE`] registers with the reactor, arms
 //! the timer and parks; tests pass their own [`PollOps`].
-use crate::wait_event::{from_poll, to_poll};
+use crate::coroutine::Waker;
+use crate::offload::WakerSlot;
+use crate::reactor::Events;
+use crate::reactor::wait_event::{from_poll, to_poll};
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use swoole_rs_corebase::coroutine::Waker;
-use swoole_rs_corebase::offload::WakerSlot;
-use swoole_rs_corebase::reactor::Events;
 
 /// Why no descriptor became ready.
 #[derive(Debug)]
@@ -72,7 +72,7 @@ impl Registered {
 
 /// A parked poll's pending timer: it fires once, or [`Wake`] deletes it. Only this
 /// module makes one.
-pub struct Timer(swoole_rs_corebase::timer::Held);
+pub struct Timer(crate::timer::Held);
 
 /// A wait's registered sockets: [`Sockets::clean`] unregisters each.
 trait Sockets {
@@ -162,7 +162,7 @@ fn poll_now(fds: &[Cell<PollFd>]) -> Result<(), PollError> {
             revents: 0,
         })
         .collect();
-    let ready = swoole_rs_corebase::sys::poll(&mut list, 0).map_err(PollError::Io)?;
+    let ready = crate::sys::poll(&mut list, 0).map_err(PollError::Io)?;
     if ready == 0 {
         return Err(PollError::Timeout);
     }
@@ -323,11 +323,11 @@ pub fn poll<S>(
 }
 
 /// System's poll operations: the reactor, the timer and the current coroutine.
-pub static NATIVE: PollOps<crate::wait_event::Watch> = PollOps {
+pub static NATIVE: PollOps<crate::reactor::wait_event::Watch> = PollOps {
     add: native::add,
     timer_add: native::timer_add,
-    current: crate::wait_event::native::current,
-    park: swoole_rs_corebase::offload::park,
+    current: crate::reactor::wait_event::native::current,
+    park: crate::offload::park,
     wake: Wake {
         timer_del: native::timer_del,
         defer: native::defer,
@@ -336,11 +336,11 @@ pub static NATIVE: PollOps<crate::wait_event::Watch> = PollOps {
 
 pub(crate) mod native {
     use super::{Events, Registered, Timer};
-    use crate::wait_event::native::{Object, Watch};
-    use swoole_rs_corebase::coroutine::Waker;
-    use swoole_rs_corebase::reactor::event_api::{Deferred, swoole_event_defer_value};
+    use crate::coroutine::Waker;
+    use crate::reactor::event_api::{Deferred, swoole_event_defer_value};
+    use crate::reactor::wait_event::native::{Object, Watch};
 
-    use swoole_rs_corebase::timer::{add_fn_sec, del_id};
+    use crate::timer::{add_fn_sec, del_id};
 
     pub(super) fn add(fd: i32, events: Events, task: Registered) -> Option<Watch> {
         Watch::add(fd, events, Object::Poll(task)).ok()
@@ -429,8 +429,7 @@ mod tests {
         Some(Socket(fd))
     }
     /// The fake timer's id.
-    const FAKE_TIMER: swoole_rs_corebase::timer::Held =
-        swoole_rs_corebase::timer::Held::detached(7);
+    const FAKE_TIMER: crate::timer::Held = crate::timer::Held::detached(7);
     #[expect(
         clippy::unnecessary_wraps,
         reason = "the fake has PollOps::timer_add's type"

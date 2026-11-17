@@ -4,10 +4,10 @@ use core::ffi::{CStr, c_int, c_void};
 use std::sync::{OnceLock, RwLock};
 
 use swoole_rs_clients::protocol::Protocol;
-use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
 use swoole_rs_corebase::reactor::{Heap, Socket};
 use swoole_rs_corebase::tls::{SslVersion, TlsContext};
+use swoole_rs_corebase::{CellExt, StringSlot};
 
 use crate::view::Port;
 
@@ -231,12 +231,7 @@ thread_local! {
 fn with_length_owners<R>(
     f: impl FnOnce(&mut Vec<(u64, core::mem::ManuallyDrop<LengthOwner>)>) -> R,
 ) -> R {
-    LENGTH_OWNERS.with(|cell| {
-        let mut owners = cell.take();
-        let result = f(&mut owners);
-        cell.set(owners);
-        result
-    })
+    LENGTH_OWNERS.with(|cell| cell.with_taken(f))
 }
 
 impl PortConfig {

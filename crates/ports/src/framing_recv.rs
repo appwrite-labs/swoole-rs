@@ -28,18 +28,16 @@ const SW_ERR: isize = swoole_rs_corebase::constants::ResultCode::SW_ERR as isize
 #[derive(Clone, Copy)]
 pub(crate) struct Recv<'a> {
     mode: Mode,
-    protocol: Proto<'a>,
     pub(crate) socket: Socket<'a>,
-    /// Whose `package_length_func` owner each measure hands the length callback.
+    /// Supplies the current protocol and its optional PHP length callable.
     owner: Owner<'a>,
 }
 
-/// Where a receive's measures find their `package_length_func` owner (#4535).
+/// The source of the receive's protocol and its length callable.
 #[derive(Clone, Copy)]
 pub(crate) enum Owner<'a> {
-    /// None to find: a port nobody gave a `package_length_func`, whose measures then
-    /// cost what they did before owners, or a test's bare records.
-    None,
+    /// Protocol settings without a PHP length callable.
+    Plain(&'a Shared<Protocol>),
     /// The client the receive reads for.
     Client(Handle<'a>),
     /// The port the receive reads for, through this thread's registry.
@@ -52,7 +50,7 @@ impl Owner<'_> {
     #[inline(always)]
     fn get(self) -> Option<std::rc::Rc<dyn core::any::Any>> {
         match self {
-            Self::None => None,
+            Self::Plain(_) => None,
             found => found.find(),
         }
     }
@@ -62,7 +60,7 @@ impl Owner<'_> {
     #[inline(never)]
     fn find(self) -> Option<std::rc::Rc<dyn core::any::Any>> {
         match self {
-            Self::None => None,
+            Self::Plain(_) => None,
             Self::Client(client) => client.length_owner(),
             Self::Port(port) => port.length_owner(),
         }
@@ -70,35 +68,22 @@ impl Owner<'_> {
 }
 
 impl Recv<'_> {
-    fn protocol(&self) -> &Protocol {
-        self.protocol.get()
-    }
-}
-
-/// The protocol a receive frames by, live for `'a`. A dispatch may run PHP whose
-/// `set()` rewrites it, so no reference to it is held across one: the receive reads
-/// it again after each.
-#[derive(Clone, Copy)]
-pub(crate) struct Proto<'a> {
-    protocol: *const Protocol,
-    live: PhantomData<&'a Shared<Protocol>>,
-}
-
-impl<'a> From<&'a Shared<Protocol>> for Proto<'a> {
-    fn from(protocol: &'a Shared<Protocol>) -> Self {
-        Self {
-            protocol: protocol.as_ptr(),
-            live: PhantomData,
+    /// Read fresh settings after any callback that can reconfigure the socket.
+    #[inline]
+    fn protocol(&self) -> Protocol {
+        match self.owner {
+            Owner::Plain(protocol) => protocol.get(),
+            Owner::Client(client) => client.client().record().protocol,
+            Owner::Port(port) => port.protocol.get(),
         }
     }
-}
 
-impl Proto<'_> {
-    /// The protocol now, read before the next dispatch.
-    fn get(&self) -> &Protocol {
-        // SAFETY: live for the receive (the type's invariant), and the receive holds
-        // no reference to it across a dispatch, the only effect that may rewrite it.
-        unsafe { &*self.protocol }
+    fn protocol_address(&self) -> *const Protocol {
+        match self.owner {
+            Owner::Plain(protocol) => protocol.as_ptr(),
+            Owner::Client(client) => client.protocol_address(),
+            Owner::Port(port) => port.protocol.as_ptr(),
+        }
     }
 }
 
@@ -148,7 +133,7 @@ pub(crate) trait Packages {
     fn length(&self, r: &Recv<'_>, bytes: &[u8]) -> Option<usize> {
         let mut pl = PacketLength::new(bytes);
         // A copy: the callback may run PHP that rewrites the protocol.
-        let protocol = *r.protocol();
+        let protocol = r.protocol();
         let get = protocol.get_package_length?;
         let owner = r.owner.get();
         let length = get(&protocol, Some(r.socket), owner, &mut pl);
@@ -167,7 +152,7 @@ pub(crate) fn protocol_dispatch(r: &Recv<'_>, package: Package<'_>) -> bool {
     let Some(on_package) = r.protocol().on_package else {
         return false;
     };
-    on_package(r.protocol.protocol, r.socket, package) >= 0
+    on_package(r.protocol_address(), r.socket, package) >= 0
 }
 
 /// The protocol's own callbacks, as upstream calls them, over a client's socket: never
@@ -454,7 +439,6 @@ fn rare(r: Recv<'_>, b: &mut CppString, op: Op, arg: usize) {
 /// One receive of `mode` from `socket` into `buffer`.
 #[inline(always)]
 pub(crate) fn receive<'a, K: Packages>(
-    protocol: Proto<'a>,
     socket: Socket<'a>,
     owner: Owner<'a>,
     buffer: Lent<'a>,
@@ -464,7 +448,6 @@ pub(crate) fn receive<'a, K: Packages>(
     let mut r = With::<K>(
         Recv {
             mode,
-            protocol,
             socket,
             owner,
         },
@@ -472,7 +455,6 @@ pub(crate) fn receive<'a, K: Packages>(
         packages,
         buffer,
     );
-    let p = r.0.protocol();
     let (mut flags, skip) = socket.read(|s| (socket_flags(&r.2, s), s.skip_recv));
     r.1 = flags & FLAG_WAIT != 0;
     let mut head = 0;
@@ -480,6 +462,7 @@ pub(crate) fn receive<'a, K: Packages>(
         head = fixed;
         flags |= if skip { FLAG_SKIP } else { 0 };
     } else if mode == Mode::Length {
+        let p = r.0.protocol();
         let size = p.get_package_length_size;
         head = u32::from(size.map_or(p.package_length_size, |size| size(socket)));
         flags |=
@@ -494,24 +477,16 @@ pub(crate) fn receive<'a, K: Packages>(
 /// `int Protocol::recv_with_eof_protocol(Socket *, String *) const`, over `client`'s.
 fn client_recv<const LENGTH: bool>(client: Handle<'_>) -> c_int {
     let mode = if LENGTH { Mode::Length } else { Mode::Eof };
-    client.with_framed(|protocol, socket, buffer| {
+    client.with_framed(|_, socket, buffer| {
         // The input buffer is null before an async connect made it.
         if buffer.is_null() {
             return Status::Err as c_int;
         }
-        // The client's protocol and input buffer in place, live while the client is,
-        // which its handle vouches for through this receive; only its package callback
-        // rewrites them.
-        let (live, lent) = (PhantomData, PhantomData);
-        let (protocol, buffer) = (Proto { protocol, live }, Lent { buffer, lent });
-        receive(
-            protocol,
-            socket,
-            Owner::Client(client),
+        let buffer = Lent {
             buffer,
-            mode,
-            Callbacks,
-        ) as c_int
+            lent: PhantomData,
+        };
+        receive(socket, Owner::Client(client), buffer, mode, Callbacks) as c_int
     })
 }
 
@@ -599,20 +574,14 @@ mod tests {
 
     /// The framed receive of `LENGTH` a client's read makes, over these records.
     fn client_recv<const LENGTH: bool>(
-        protocol: *const Protocol,
+        protocol: &Shared<Protocol>,
         socket: Socket<'_>,
-        buffer: *mut CppString,
+        buffer: &mut CppString,
     ) -> c_int {
         let mode = if LENGTH { Mode::Length } else { Mode::Eof };
-        let protocol = Proto {
-            protocol,
-            live: PhantomData,
-        };
-        let buffer = unsafe { &mut *buffer };
         receive(
-            protocol,
             socket,
-            Owner::None,
+            Owner::Plain(protocol),
             Lent::new(buffer),
             mode,
             Callbacks,
@@ -649,6 +618,22 @@ mod tests {
     }
 
     #[test]
+    fn framing_reads_updated_settings_at_the_same_protocol_address() {
+        let protocol = Shared::new(Protocol::EMPTY);
+        let mut socket = SocketRecord::new();
+        let recv = Recv {
+            mode: Mode::Length,
+            socket: handle(&mut socket),
+            owner: Owner::Plain(&protocol),
+        };
+        let original = recv.protocol_address();
+        protocol.update(|p| p.package_length_size = 8);
+        assert_eq!(recv.protocol().package_length_size, 8);
+        assert_eq!(recv.protocol_address(), original);
+        assert_eq!(original, protocol.as_ptr().cast_const());
+    }
+
+    #[test]
     fn length_protocol_with_the_default_length() {
         let (mut socket, peer, mut protocol, mut buffer) =
             stream(b"\x00\x03abc\x00\x0chello world!");
@@ -656,9 +641,10 @@ mod tests {
         protocol.package_length_size = 2;
         protocol.package_body_offset = 2;
         protocol.get_package_length = Some(default_length_func);
-        let status = client_recv::<true>(&raw const protocol, handle(&mut socket), &raw mut buffer);
+        let protocol = Shared::new(protocol);
+        let status = client_recv::<true>(&protocol, handle(&mut socket), &mut buffer);
         assert_eq!(status, 0);
-        let status = client_recv::<true>(&raw const protocol, handle(&mut socket), &raw mut buffer);
+        let status = client_recv::<true>(&protocol, handle(&mut socket), &mut buffer);
         assert_eq!(status, 0);
         PACKAGES.with_borrow(|p| {
             assert_eq!(
@@ -668,7 +654,7 @@ mod tests {
         });
         unsafe { libc::close(peer) };
         // The peer's close ends the next receive.
-        let status = client_recv::<true>(&raw const protocol, handle(&mut socket), &raw mut buffer);
+        let status = client_recv::<true>(&protocol, handle(&mut socket), &mut buffer);
         assert_eq!(status, -1);
         buffer.dispose();
         unsafe { libc::close(socket.fd) };
@@ -680,9 +666,9 @@ mod tests {
         protocol.package_eof[..2].copy_from_slice(b"\r\n");
         protocol.package_eof_len = 2;
         protocol.split_by_eof = true;
+        let protocol = Shared::new(protocol);
         buffer.extend(64);
-        let status =
-            client_recv::<false>(&raw const protocol, handle(&mut socket), &raw mut buffer);
+        let status = client_recv::<false>(&protocol, handle(&mut socket), &mut buffer);
         assert_eq!(status, 0);
         PACKAGES.with_borrow(|p| assert_eq!(*p, [b"ab\r\n".to_vec(), b"cd\r\n".to_vec()]));
         assert_eq!(buffer.len(), 1);

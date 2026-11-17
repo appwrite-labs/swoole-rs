@@ -55,12 +55,11 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
+use swoole_rs_clients::protocol::Socket;
 use swoole_rs_corebase::WebSocketStatus;
 use swoole_rs_corebase::buffer::string::{CppString, OwnedString};
+use swoole_rs_ffi::swoole_init;
 use swoole_rs_ports::frame_api::Frame;
-// The crates, once: the C++ in libswoole.a and the cases call them by symbol.
-use swoole_rs_clients::protocol::Socket;
-use swoole_rs_ffi as _;
 use swoole_rs_ports::http_routes::exports as http;
 
 mod client;
@@ -127,13 +126,6 @@ const HTTP2_SETTING_FRAME: [u8; 45] = [
     0, 5, 0, 0, 0x40, 0, //
     0, 6, 0xff, 0xff, 0xff, 0xff,
 ];
-
-unsafe extern "C" {
-    #[link_name = "_Z11swoole_initv"]
-    fn swoole_init();
-    #[link_name = "_Z12swoole_cleanv"]
-    fn swoole_clean();
-}
 
 /// `websocket::encode`.
 ///
@@ -1064,12 +1056,10 @@ fn main() {
     // takes it from the soft descriptor limit.
     // SAFETY: setrlimit(2) with a readable limit.
     unsafe { setrlimit(RLIMIT_NOFILE, &[20000, 20000]) };
-    // SAFETY: once per process, before any other Swoole call.
-    unsafe { swoole_init() };
+    swoole_init();
     // core-tests build with `enable_thread` (SW_THREAD), as this binary does (`corebase::process`'s
     // `thread` feature); the extension's MINIT says so under ZTS, and this binary has none.
     swoole_rs_server::THREAD_SUPPORTED.store(true, std::sync::atomic::Ordering::Relaxed);
     body();
-    // SAFETY: after the case, as core-tests' main.
-    unsafe { swoole_clean() };
+    swoole_rs_corebase::swoole_clean();
 }

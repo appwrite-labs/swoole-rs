@@ -149,11 +149,7 @@ impl From<OwnedSocket> for EventSocket {
 }
 
 /// `void Socket::free()`: [`EventSocket::release`] of the record.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket4freeEv")
-)]
-pub extern "C-unwind" fn socket_free(socket: Option<OwnedSocket>) {
+pub fn socket_free(socket: Option<OwnedSocket>) {
     if let Some(owned) = socket {
         EventSocket::from(owned).release();
     }

@@ -28,7 +28,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::Instant,
 };
-use swoole_rs_corebase::{CCast, sys::Text};
+use swoole_rs_corebase::{CCast, CellExt, sys::Text};
 use swoole_rs_hooks::wait_event::{Events, to_poll, wait_event};
 
 /// How long one wait lasts before libpq is asked again: on macOS `poll` may
@@ -206,12 +206,7 @@ thread_local! {
 /// `f` of the interrupted I/O list, taken out and put back after: `f` only
 /// searches and edits the list, calling neither libpq nor PHP.
 fn with_io_errors<R>(f: impl FnOnce(&mut Vec<(Conn, c_int, bool)>) -> R) -> R {
-    IO_ERRORS.with(|errors| {
-        let mut list = errors.take();
-        let result = f(&mut list);
-        errors.set(list);
-        result
-    })
+    IO_ERRORS.with(|errors| errors.with_taken(f))
 }
 
 /// The connection's interrupted I/O, if any: its error, and whether this is

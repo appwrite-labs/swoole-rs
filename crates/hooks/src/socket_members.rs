@@ -65,7 +65,7 @@ fn on_ready(event: &Event, kind: Events) {
 }
 
 /// `Socket::readable_event_callback(reactor, event)`, registered for
-/// `SW_FD_CO_SOCKET` by `swr_v1_hook_init_reactor`.
+/// `SW_FD_CO_SOCKET` during reactor initialization.
 pub fn readable_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
     on_ready(event, Events::READ);
     0

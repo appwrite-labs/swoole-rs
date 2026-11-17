@@ -22,11 +22,11 @@ use std::{
     rc::Rc,
     sync::atomic::{AtomicPtr, Ordering},
 };
-use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::process;
 use swoole_rs_corebase::reactor::Heap;
 use swoole_rs_corebase::reactor::signal_upstream::Handler as SignalHandler;
 use swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option;
+use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_phpstubs::process_pool;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, handlers,
@@ -144,17 +144,11 @@ struct Handler(Cell<Option<Rc<Callable>>>);
 
 impl Handler {
     fn get(&self) -> Option<Rc<Callable>> {
-        let callable = self.0.take();
-        let copy = callable.clone();
-        self.0.set(callable);
-        copy
+        self.0.with_taken(|callable| callable.clone())
     }
 
     fn is_set(&self) -> bool {
-        let callable = self.0.take();
-        let set = callable.is_some();
-        self.0.set(callable);
-        set
+        self.0.with_taken(|callable| callable.is_some())
     }
 
     /// Store `callable`, handing back the one it replaces for the caller to drop.
