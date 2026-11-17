@@ -179,7 +179,7 @@ pub(crate) fn on_packet(
         crate::event_worker::native::send_to_reactor_thread(serv, &ev).is_none()
     };
     if failed {
-        // The reactor's own close, which is what the caller passes as `_close`.
+        // The server's close, which is what the caller passes as `_close`.
         crate::conn_io::close_connection(serv, reactor, Some(record));
     }
     true
