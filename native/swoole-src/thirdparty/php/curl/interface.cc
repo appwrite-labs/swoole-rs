@@ -2854,8 +2854,8 @@ static void swoole_curl_free_obj(zend_object *object) {
     curl_easy_setopt(ch->cp, CURLOPT_WRITEFUNCTION, fn_write_nothing);
 
     auto handle = swr_v1_curl_get_handle(ch->cp);
-    if (handle && handle->multi) {
-        swr_v1_curl_multi_remove_handle(handle->multi, handle);
+    if (handle) {
+        swr_v1_curl_handle_leave_multi(handle);
     }
 
     /* cURL destructors should be invoked only by last curl handle */

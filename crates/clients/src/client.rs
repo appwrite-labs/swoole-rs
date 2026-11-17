@@ -22,8 +22,9 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::constants::{
     FdType, ResultCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE,
-    SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
+    SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
 };
+use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
 use swoole_rs_corebase::reactor::reactor_upstream::set_handler;
 use swoole_rs_corebase::reactor::socket_upstream::Connect;
@@ -32,7 +33,7 @@ use swoole_rs_corebase::reactor::{
     socket_domain_and_type,
 };
 use swoole_rs_corebase::reactor::{Event, Events, Running};
-use swoole_rs_corebase::sys::{ReadBuffer, ReadSlot};
+use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_corebase::tls::{
     OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslState, SslVersion, TlsContext, TlsSettings,
 };
@@ -119,7 +120,6 @@ const SEND_BUFFER_SIZE: u32 = SW_SEND_BUFFER_SIZE;
 const SSL_BUFFER_SIZE: u32 = SW_SSL_BUFFER_SIZE;
 const BUFFER_SIZE_UDP: usize = SW_BUFFER_SIZE_UDP as usize;
 const CLIENT_BUFFER_SIZE: usize = SW_CLIENT_BUFFER_SIZE as usize;
-const SOCKET_RETRY_COUNT: usize = SW_SOCKET_RETRY_COUNT as usize;
 /// `corebase::tls`'s `SW_SSL_STATE_READY`, `SW_SSL_STATE_WAIT_STREAM`, `SW_SSL_CLIENT`
 /// and `SW_SSL_DTLS`.
 pub use SslState::{
@@ -227,8 +227,8 @@ pub struct Client {
     /// The proxy states owned by the client.
     socks5: Cell<Option<Box<ProxyState>>>,
     http_proxy: Cell<Option<Box<ProxyState>>>,
-    /// The owner of the callable `protocol.private_data_1` names, when the
-    /// client has a `package_length_func`.
+    /// The owner of the client's `package_length_func`, which a measure passes
+    /// its length callback.
     length_owner: Cell<Option<Rc<dyn std::any::Any>>>,
 }
 
@@ -323,6 +323,17 @@ impl Handle<'_> {
         unsafe { &*self.0 }
     }
 
+    /// A reference to the owner of the client's `package_length_func`, for a measure
+    /// to hand its length callback, which drops it: the callable may `set()` another
+    /// or close the client, and the old one's destructor must run before the
+    /// callback finishes.
+    #[must_use]
+    pub fn length_owner(self) -> Option<Rc<dyn std::any::Any>> {
+        let owner = self.get().length_owner.take();
+        self.get().length_owner.set(owner.clone());
+        owner
+    }
+
     fn flag(self, name: Flag) -> bool {
         self.get().flag(name)
     }
@@ -399,31 +410,18 @@ impl Handle<'_> {
 
     /// `Socket::recvfrom(data, length, flags, &remote_addr)`: recvfrom(2),
     /// retried on EINTR.
-    fn recvfrom(self, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
+    fn recvfrom(self, spare: &mut Spare<'_>, flags: c_int) -> Option<usize> {
         let fd = self.socket().fd();
-        self.get().edit_record(|record| {
-            for _ in 0..SOCKET_RETRY_COUNT {
-                let n = record.remote_addr.recvfrom(fd, &mut *buffer, flags);
-                if n.is_some() || errno() != libc::EINTR {
-                    return n;
-                }
-            }
-            None
-        })
+        self.get()
+            .edit_record(|record| spare.recvfrom(fd, flags, &mut record.remote_addr))
     }
 
     /// `Socket::recvfrom_sync(data, length, flags, &remote_addr)`.
-    fn recvfrom_sync(self, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
+    fn recvfrom_sync(self, spare: &mut Spare<'_>, flags: c_int) -> Option<usize> {
         let socket = self.socket();
         let receive = self.get().socket_ops.recvfrom_sync;
-        self.get().edit_record(|record| {
-            receive(
-                socket,
-                ReadSlot::buffer(buffer),
-                flags,
-                &mut record.remote_addr,
-            )
-        })
+        self.get()
+            .edit_record(|record| receive(socket, spare, flags, &mut record.remote_addr))
     }
 
     /// `edit` over the context's fields and a copy of the record; TLS is on.
@@ -934,7 +932,12 @@ pub fn package_length(this: Handle<'_>, data: &[u8]) -> isize {
         return -1;
     };
     let mut packet = PacketLength::new(data);
-    get(&record.protocol, Some(this.socket()), &mut packet)
+    get(
+        &record.protocol,
+        Some(this.socket()),
+        this.length_owner(),
+        &mut packet,
+    )
 }
 
 /// `Client::close()`: false when already closed or when `close(2)` fails; true when
@@ -1534,8 +1537,8 @@ struct SocketOps {
     with_buffer: BufferLoan,
     recv: fn(Socket<'_>, &mut [core::mem::MaybeUninit<u8>], c_int) -> Option<usize>,
     recv_append: fn(Socket<'_>, &mut CppString) -> Option<usize>,
-    recv_sync: fn(Socket<'_>, ReadBuffer<'_>, c_int) -> Option<usize>,
-    recvfrom_sync: fn(Socket<'_>, ReadBuffer<'_>, c_int, &mut SocketAddress) -> Option<usize>,
+    recv_sync: fn(Socket<'_>, &mut Spare<'_>, c_int) -> Option<usize>,
+    recvfrom_sync: fn(Socket<'_>, &mut Spare<'_>, c_int, &mut SocketAddress) -> Option<usize>,
     send_sync: fn(Socket<'_>, &[u8], c_int) -> Option<usize>,
     sendfile_sync: fn(Socket<'_>, &CStr, i64, usize) -> bool,
     sendfile_async: fn(Socket<'_>, &CStr, i64, usize) -> bool,
@@ -1565,22 +1568,8 @@ impl SocketOps {
         with_buffer: |f| swoole_rs_corebase::buffer::string::with_thread_buffer(f),
         recv: swoole_rs_corebase::tls::upstream::recv,
         recv_append: swoole_rs_corebase::tls::upstream::recv_append,
-        recv_sync: |socket, buffer, flags| match buffer {
-            ReadBuffer::Initialized(buffer) => {
-                swoole_rs_corebase::tls::upstream::recv_sync(socket, buffer, flags)
-            }
-            ReadBuffer::Spare(buffer) => {
-                swoole_rs_corebase::tls::upstream::recv_sync(socket, buffer, flags)
-            }
-        },
-        recvfrom_sync: |socket, buffer, flags, address| match buffer {
-            ReadBuffer::Initialized(buffer) => {
-                swoole_rs_corebase::tls::upstream::recvfrom_sync(socket, buffer, flags, address)
-            }
-            ReadBuffer::Spare(buffer) => {
-                swoole_rs_corebase::tls::upstream::recvfrom_sync(socket, buffer, flags, address)
-            }
-        },
+        recv_sync: swoole_rs_corebase::tls::upstream::recv_sync_spare,
+        recvfrom_sync: swoole_rs_corebase::tls::upstream::recvfrom_sync_spare,
         send_sync: swoole_rs_corebase::tls::upstream::send_sync,
         sendfile_sync: swoole_rs_corebase::tls::upstream::sendfile_sync,
         sendfile_async: swoole_rs_corebase::tls::upstream::socket_sendfile_async,
@@ -1787,30 +1776,24 @@ pub fn sendfile(this: Handle<'_>, file: &CStr, offset: i64, length: usize) -> bo
 /// `Client::recv(data, length, flags)`: the bytes read, or none (`SW_ERR`).
 #[must_use]
 pub fn recv(this: Handle<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
+    lend_spare(buffer, |spare| recv_spare(this, spare, flags)).0
+}
+
+/// [`recv`] into lent room, which counts what the receive wrote.
+#[inline]
+pub fn recv_spare(this: Handle<'_>, spare: &mut Spare<'_>, flags: c_int) -> Option<usize> {
     if this.flag(Flag::Stream) || this.flag(Flag::Dtls) {
-        let n = (this.get().socket_ops.recv_sync)(this.socket(), ReadSlot::buffer(buffer), flags);
+        let n = (this.get().socket_ops.recv_sync)(this.socket(), spare, flags);
         // A poll timeout reads as recv(2)'s EAGAIN, as it did before poll.
         if n.is_none() && log::last_error() == ERROR_SOCKET_POLL_TIMEOUT {
             set_errno(libc::EAGAIN);
         }
         n
     } else if this.flag(Flag::Async) {
-        this.recvfrom_sync(buffer, flags)
+        this.recvfrom_sync(spare, flags)
     } else {
-        this.recvfrom(buffer, flags)
+        this.recvfrom(spare, flags)
     }
-}
-
-/// [`recv`] into lent room, counting the prefix that the receive initialized.
-#[inline]
-pub fn recv_spare(
-    this: Handle<'_>,
-    out: &mut swoole_rs_corebase::lent::Spare<'_>,
-    flags: c_int,
-) -> Option<usize> {
-    // SAFETY: all recv paths initialize the reported prefix, bounded by the room
-    // when MSG_TRUNC reports the full length of a datagram.
-    unsafe { out.read(|room| recv(this, room, flags)) }
 }
 
 /// A handshake in the read or write handler failed: close and report.
@@ -1926,11 +1909,13 @@ fn on_datagram(this: Handle<'_>) -> bool {
     )]
     let mut buffer = [0_u8; BUFFER_SIZE_UDP];
     // Upstream's datagram receive, even once DTLS made `recv` a stream one.
-    let n = if this.flag(Flag::Async) {
-        this.recvfrom_sync(&mut buffer, 0)
-    } else {
-        this.recvfrom(&mut buffer, 0)
-    };
+    let (n, _) = lend_spare(&mut buffer, |spare| {
+        if this.flag(Flag::Async) {
+            this.recvfrom_sync(spare, 0)
+        } else {
+            this.recvfrom(spare, 0)
+        }
+    });
     let Some(n) = n else {
         return false;
     };

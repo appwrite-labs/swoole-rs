@@ -57,6 +57,7 @@ pub(crate) fn host_port(address: &SocketAddress) -> (String, c_int) {
 pub fn websocket_length(
     _proto: &Protocol,
     _socket: Option<Socket<'_>>,
+    _owner: Option<std::rc::Rc<dyn core::any::Any>>,
     pl: &mut PacketLength,
 ) -> isize {
     let (length, header) = match swoole_rs_websocket::frame_length(pl.bytes()) {
@@ -131,6 +132,7 @@ pub mod exports {
     pub fn http2_length(
         _proto: &Protocol,
         _socket: Option<Socket<'_>>,
+        _owner: Option<std::rc::Rc<dyn core::any::Any>>,
         pl: &mut PacketLength,
     ) -> isize {
         swoole_rs_http2::frame_length(pl.bytes()).map_or(0, usize::cast_signed)
@@ -444,6 +446,7 @@ pub mod exports {
     pub fn get_package_length(
         proto: &Protocol,
         socket: Option<Socket<'_>>,
+        owner: Option<std::rc::Rc<dyn core::any::Any>>,
         pl: &mut PacketLength,
     ) -> isize {
         // The header size names the connection's route: WebSocket's, HTTP/2's, or
@@ -452,8 +455,8 @@ pub mod exports {
             return -1;
         };
         match get_package_length_size(conn) {
-            WEBSOCKET_FRAME_HEADER_SIZE => super::websocket_length(proto, socket, pl),
-            super::HTTP2_FRAME_HEADER_SIZE => http2_length(proto, socket, pl),
+            WEBSOCKET_FRAME_HEADER_SIZE => super::websocket_length(proto, socket, owner, pl),
+            super::HTTP2_FRAME_HEADER_SIZE => http2_length(proto, socket, owner, pl),
             _ => -1,
         }
     }

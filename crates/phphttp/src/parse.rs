@@ -20,8 +20,8 @@ use swoole_rs_httpbindings::{
     token_list_contains, token_list_fast, trim_quotes,
 };
 use swoole_rs_zend::{
-    ArrayMut, Declared, Insertions, Interned, Minit, Owned, OwnedArray, Separated, Value, ZStr,
-    ZString, bailout, contain_with,
+    ArrayMut, Declared, HeldArray, Insertions, Interned, Minit, Owned, OwnedArray, Separated,
+    Value, ZStr, ZString, bailout, contain_with,
 };
 
 /// A request's multipart parser and the upload it is writing.
@@ -52,7 +52,7 @@ unsafe extern "C" {
         var: Text<'_>,
         val: In<'_, u8>,
         len: Count<'_>,
-        track: Option<&Value>,
+        track: Option<Separated<'_>>,
     );
 }
 
@@ -327,36 +327,44 @@ pub(crate) fn release_uploads(properties: swoole_rs_zend::FreeProperties<'_>) {
 /// `swoole_http_init_and_read_property`: the request object's `which`
 /// property slot, its array made on first use.
 #[inline]
-pub(crate) fn property(request: &mut Request, which: Property) -> Option<&Value> {
+fn property_owner(request: &mut Request, which: Property) -> Option<(&Declared, &Value)> {
     let property = PROPERTIES.get(which as usize)?;
     let size = if matches!(which, Property::Server) {
         HT_MIN_SIZE << 1
     } else {
         HT_MIN_SIZE
     };
-    request
-        .zobject
-        .array(&mut request.arrays, which as usize, property, size)
+    let object =
+        request
+            .zobject
+            .array_owner(&mut request.arrays, which as usize, property, size)?;
+    Some((property, object))
 }
 
-/// The request object's `which` property slot, once [`property`] has made
-/// its array.
 #[inline]
-pub(crate) fn made(request: &Request, which: Property) -> Option<&Value> {
+pub(crate) fn init_property(request: &mut Request, which: Property) -> Option<()> {
+    property_owner(request, which).map(|_| ())
+}
+
+/// Hold the request object's `which` array, once [`init_property`] has made
+/// it. A property PHP replaced with a scalar has no array to hold.
+#[inline]
+pub(crate) fn made(request: &Request, which: Property) -> Option<HeldArray> {
     if request.arrays & (1 << which as u8) == 0 {
         return None;
     }
-    PROPERTIES.get(which as usize)?.get(request.zobject.get()?)
+    PROPERTIES.get(which as usize)?.hold(request.zobject.get()?)
 }
 
-/// [`property`]'s array, lent to `edit`; None without one.
+/// [`init_property`]'s array, lent to `edit`; None without one.
 #[inline(always)]
 pub(crate) fn edit<R>(
     request: &mut Request,
     which: Property,
     edit: impl FnOnce(&mut ArrayMut) -> R,
 ) -> Option<R> {
-    property(request, which)?.edit_array(edit)
+    let (property, object) = property_owner(request, which)?;
+    property.edit_array(object, edit)
 }
 
 /// New server keys share one separation as well as the property loan.
@@ -434,19 +442,19 @@ unsafe extern "C" {
     /// `swoole_php_treat_data`: the pairs of the string, which it frees, into the
     /// array the zval holds, which it does not replace; false once it stopped at
     /// `max_input_vars`.
-    safe fn swr_zend_http_treat_data(arg: c_int, text: Copied, array: &Value) -> bool;
+    safe fn swr_zend_http_treat_data(arg: c_int, text: Copied, array: Separated<'_>) -> bool;
     /// `sapi_module.treat_data(PARSE_STRING, text, array)`, which frees the string.
-    safe fn swr_zend_treat_string(text: Copied, array: &Value);
+    safe fn swr_zend_treat_string(text: Copied, array: Separated<'_>);
 }
 
 /// `sapi_module.treat_data(PARSE_STRING, text, array)`; a bailout is deferred.
-pub(crate) fn treat_string(text: Copied, array: &Value) {
+pub(crate) fn treat_string(text: Copied, array: Separated<'_>) {
     bailout::defer(contain_with(|| swr_zend_treat_string(text, array)));
 }
 
 /// `swoole_php_treat_data(arg, text, array)`; nothing without the array, and a
 /// bailout is deferred.
-fn treat_data(arg: c_int, text: Copied, array: Option<&Value>) {
+fn treat_data(arg: c_int, text: Copied, array: Option<Separated<'_>>) {
     let Some(array) = array else { return };
     let mut within = true;
     bailout::defer(contain_with(|| {
@@ -472,15 +480,17 @@ unsafe extern "C" {
 unsafe extern "C" {
     /// `$request->tmpfiles[] = path` into the array the zval holds, which it does
     /// not replace, and the upload `is_uploaded_file` knows; it copies the bytes.
-    safe fn swr_zend_http_upload(tmpfiles: &Value, path: IoSlice<'_>);
+    safe fn swr_zend_http_upload(tmpfiles: Separated<'_>, path: IoSlice<'_>);
 }
 
 /// `$request->tmpfiles[] = path`, and the upload `is_uploaded_file` knows;
 /// nothing without the array.
 fn add_upload(state: &mut State, path: &[u8]) {
-    if let Some(tmpfiles) = property(&mut state.request, Property::TmpFiles) {
-        swr_zend_http_upload(tmpfiles, IoSlice::new(path));
-    }
+    edit(&mut state.request, Property::TmpFiles, |array| {
+        if let Some(array) = array.separate() {
+            swr_zend_http_upload(array, IoSlice::new(path));
+        }
+    });
 }
 
 /// `swoole_llhttp_parser_init(&ctx->parser, HTTP_REQUEST, ctx)`.
@@ -489,7 +499,7 @@ pub(crate) fn init_request_parser(mut ctx: crate::context::Ctx) {
 }
 
 /// `swoole_http_parse_cookie`.
-pub(crate) fn parse_cookie(array: Option<&Value>, bytes: &[u8]) {
+pub(crate) fn parse_cookie(array: Option<Separated<'_>>, bytes: &[u8]) {
     if !bytes.is_empty() {
         treat_data(PARSE_COOKIE, Copied::of(bytes), array);
     }
@@ -558,11 +568,9 @@ fn url(state: &mut State, span: &[u8]) -> Step {
         return Step::Go;
     }
     add_server(state, Key::QueryString, stringl(query));
-    treat_data(
-        PARSE_STRING,
-        Copied::of(query),
-        property(&mut state.request, Property::Get),
-    );
+    edit(&mut state.request, Property::Get, |array| {
+        treat_data(PARSE_STRING, Copied::of(query), array.separate());
+    });
     Step::Go
 }
 
@@ -655,7 +663,9 @@ fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> Step {
         request_header(name, value_, state.parser.method, state.parse_cookie, true);
     match action {
         RequestHeader::Cookie => {
-            parse_cookie(property(&mut state.request, Property::Cookie), value_);
+            edit(&mut state.request, Property::Cookie, |array| {
+                parse_cookie(array.separate(), value_);
+            });
             return Step::Go;
         }
         RequestHeader::Upgrade => {
@@ -836,21 +846,17 @@ fn on_message_complete(state: &mut State, input: &[u8]) -> Step {
         Some(FormSource::Chunked) => {
             let body = state.parse.chunked_body.as_deref();
             let text = Copied::of(body.map_or(&[], Vec::as_slice));
-            treat_data(
-                PARSE_STRING,
-                text,
-                property(&mut state.request, Property::Post),
-            );
+            edit(&mut state.request, Property::Post, |array| {
+                treat_data(PARSE_STRING, text, array.separate());
+            });
         }
         Some(FormSource::Body) => {
             let (at, length) = (state.request.body_at, state.request.body_length);
             let body = input.get(at..at.saturating_add(length));
             let text = Copied::of(body.unwrap_or_default());
-            treat_data(
-                PARSE_STRING,
-                text,
-                property(&mut state.request, Property::Post),
-            );
+            edit(&mut state.request, Property::Post, |array| {
+                treat_data(PARSE_STRING, text, array.separate());
+            });
         }
         None => {}
     }
@@ -999,8 +1005,8 @@ fn part_header_value<'i>(parts: &mut Parts<'_, 'i>, value_: &'i [u8]) -> bool {
             return true;
         };
         // Released on every return, which upstream's early ones leak.
-        let fields = OwnedArray::default().into_owned();
-        parse_cookie(Some(&fields), value_.get(offset..).unwrap_or_default());
+        let mut fields = OwnedArray::default();
+        parse_cookie(fields.separate(), value_.get(offset..).unwrap_or_default());
         let field = |key: &[u8]| fields.array().and_then(|fields| fields.find(key));
 
         let Some((form_name, form_name_len)) = field(b"name").and_then(string_value) else {
@@ -1161,16 +1167,18 @@ fn part_headers_complete(state: &mut State, upload: &mut Option<Upload>) {
 
 fn part_data_end(state: &mut State, upload: &mut Option<Upload>) {
     if let Some(name) = state.parse.form_data_name.take() {
-        let post = property(&mut state.request, Property::Post);
         let data = state.parse.form_data.get_or_insert_with(Default::default);
         // `c_copy`'s name holds its NUL.
         let name = CStr::from_bytes_until_nul(&name).unwrap_or_default();
         if !bailout::pending() {
-            bailout::defer(contain_with(|| {
-                lend_in(data, |at, count| {
-                    php_register_variable_safe(name.into(), at, count, post);
-                });
-            }));
+            edit(&mut state.request, Property::Post, |array| {
+                let post = array.separate();
+                bailout::defer(contain_with(|| {
+                    lend_in(data, |at, count| {
+                        php_register_variable_safe(name.into(), at, count, post);
+                    });
+                }));
+            });
         }
         data.clear();
         return;

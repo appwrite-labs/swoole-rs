@@ -429,7 +429,10 @@ pub(crate) fn user_func(call: &Call) -> Result<(), Bailout> {
     // SAFETY: the cache of a resolved callable its record keeps until RSHUTDOWN.
     let callee = unsafe { Callee::from_raw(fcc) };
     // The frame's arguments and return slot, handed on.
-    bailout::call(callee, call.args(), None, call.ret()).map(|_| ())
+    let result = Owned::default();
+    bailout::call(callee, call.args(), None, &result)?;
+    call.set_owned(result);
+    Ok(())
 }
 
 /// A class Zend's class table held when [`ClassRef::lookup`] or

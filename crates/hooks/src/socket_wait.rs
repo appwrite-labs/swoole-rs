@@ -60,11 +60,11 @@ impl Wait {
     }
 
     fn want(&self) -> Events {
-        self.0.with_state(|state| state.want)
+        self.0.with_state(|state| state.want.get())
     }
 
     fn set_want(&self, event: Events) {
-        self.0.with_state(|state| state.want = event);
+        self.0.with_state(|state| state.want.set(event));
     }
 
     /// Sets the direction's retry, returning the one it replaces.
@@ -72,8 +72,8 @@ impl Wait {
         self.0.with_state(|state| {
             state
                 .retries
-                .get_mut(slot(event))
-                .map_or(Retry::None, |slot| core::mem::replace(slot, retry))
+                .get(slot(event))
+                .map_or(Retry::None, |slot| slot.replace(retry))
         })
     }
 
@@ -231,11 +231,14 @@ pub(crate) fn ready(socket: Co, event: Events, hup: bool) -> Option<Events> {
         Events::READ
     };
     socket.with_state(|state| {
-        if !state.want.is_empty() {
-            return (state.want == event).then_some(other);
+        let want = state.want.get();
+        if !want.is_empty() {
+            return (want == event).then_some(other);
         }
-        if let Some(retry @ Retry::Waiting) = state.retries.get_mut(slot(event)) {
-            *retry = Retry::Ready { hup };
+        if let Some(retry) = state.retries.get(slot(event))
+            && retry.get() == Retry::Waiting
+        {
+            retry.set(Retry::Ready { hup });
         }
         Some(event)
     })
@@ -265,8 +268,8 @@ pub(crate) fn poll(socket: Co, event: Events, timeout: f64) -> bool {
 /// A resumed coroutine may free the record but not `event_socket`.
 pub(crate) fn error_event(socket: Co, event_socket: swoole_rs_corebase::reactor::Socket<'_>) {
     for event in [Events::WRITE, Events::READ] {
-        let (object, removed) = event_socket.read(|record| (record.object, record.removed));
-        if event == Events::READ && (object != socket.this() || removed) {
+        let (owner, removed) = event_socket.read(|record| (record.owner::<Co>(), record.removed));
+        if event == Events::READ && (owner != Some(socket) || removed) {
             return;
         }
         // The record is live: it still owns `event_socket`.
@@ -413,7 +416,7 @@ mod tests {
             effects(),
             ["set:1024", "yield:512", "woken:false", "remove:1024"]
         );
-        assert_eq!(unsafe { (*s.state()).want }, Events::NONE);
+        assert_eq!(s.with_state(|state| state.want.get()), Events::NONE);
     }
 
     #[test]
@@ -463,7 +466,7 @@ mod tests {
             expected.extend(want);
             expected.push("remove:512");
             assert_eq!(effects(), expected, "{wake:?}");
-            assert_eq!(unsafe { (*s.state()).retries[0] }, Retry::None);
+            assert_eq!(s.with_state(|state| state.retries[0].get()), Retry::None);
             s.0.err_code.set(0);
         }
     }
@@ -526,20 +529,16 @@ mod tests {
             (true, false, true),
         ] {
             let mut s = socket(0);
-            let owner = s.ptr().cast::<c_void>();
+            let owner = s.co();
             let record = unsafe { s.0.record() };
-            record.object = if object_matches {
-                owner
-            } else {
-                core::ptr::null_mut()
-            };
+            record.set_owner(object_matches.then_some(owner));
             record.removed = removed;
             let event_socket = s.0.socket_ptr();
-            unsafe { &mut *s.state() }.bind(Events::READ, (&raw mut reader).cast());
-            unsafe { &mut *s.state() }.bind(Events::WRITE, (&raw mut writer).cast());
+            s.with_state(|state| state.bind(Events::READ, (&raw mut reader).cast()));
+            s.with_state(|state| state.bind(Events::WRITE, (&raw mut writer).cast()));
             ON_RESUME.set(Some(Box::new(move |cid| {
                 if close_in_writer && cid == 8 {
-                    unsafe { (*event_socket).fields.object = core::ptr::null_mut() };
+                    unsafe { (*event_socket).fields.set_owner::<Co>(None) };
                 }
             })));
             s.0.err_code.set(9);
@@ -553,8 +552,8 @@ mod tests {
             }
             assert_eq!(effects(), want);
             assert_eq!(s.0.err_code.get(), 0);
-            unsafe { &mut *s.state() }.bind(Events::READ, core::ptr::null_mut());
-            unsafe { &mut *s.state() }.bind(Events::WRITE, core::ptr::null_mut());
+            s.with_state(|state| state.bind(Events::READ, core::ptr::null_mut()));
+            s.with_state(|state| state.bind(Events::WRITE, core::ptr::null_mut()));
         }
     }
 }

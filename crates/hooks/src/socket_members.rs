@@ -43,12 +43,12 @@ pub enum Receive {
     Peer,
 }
 
-/// The coroutine socket a reactor event came from, and its `network::Socket`.
+/// The coroutine socket a reactor event came from, and its `network::Socket`: none
+/// once the socket let go of it.
 fn event_socket(event: &Event) -> Option<(Co, Socket<'_>)> {
     let source = event.socket()?;
-    let object = source.read(|record| record.object);
-    // SAFETY: a coroutine socket's network::Socket's object is that socket.
-    Some((unsafe { Co::new(object.cast()) }, *source))
+    let socket = source.read(SocketFields::owner::<Co>)?;
+    Some((socket, *source))
 }
 
 /// `Socket::readable_event_callback` and `writable_event_callback`: Rust picks the
@@ -753,7 +753,8 @@ mod tests {
                 .socket
                 .set(Some(Box::new(SocketRecord::with_fd(-1, 6)).into_socket()));
             record.sock_fd.set(100);
-            record.socket_mut().object = native.cast();
+            let co = object.co();
+            object.record().socket_mut().set_owner(Some(co));
             object
         }
         fn record(&mut self) -> &mut CoSocket {

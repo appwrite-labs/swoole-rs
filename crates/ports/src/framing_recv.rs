@@ -30,6 +30,9 @@ pub(crate) struct Recv<'a> {
     mode: Mode,
     protocol: Proto<'a>,
     pub(crate) socket: Socket<'a>,
+    /// The client a client's receive reads for, whose length owner each measure hands
+    /// its length callback; `None` for a port's, which keeps its own (#4535).
+    client: Option<Handle<'a>>,
 }
 
 impl Recv<'_> {
@@ -113,7 +116,8 @@ pub(crate) trait Packages {
         // A copy: the callback may run PHP that rewrites the protocol.
         let protocol = *r.protocol();
         let get = protocol.get_package_length?;
-        let length = get(&protocol, Some(r.socket), &mut pl);
+        let owner = r.client.and_then(Handle::length_owner);
+        let length = get(&protocol, Some(r.socket), owner, &mut pl);
         usize::try_from(length).ok()
     }
     /// `onPackage` over a whole package; whether it succeeded. No reference to the
@@ -418,6 +422,7 @@ fn rare(r: Recv<'_>, b: &mut CppString, op: Op, arg: usize) {
 pub(crate) fn receive<'a, K: Packages>(
     protocol: Proto<'a>,
     socket: Socket<'a>,
+    client: Option<Handle<'a>>,
     buffer: Lent<'a>,
     mode: Mode,
     packages: K,
@@ -427,6 +432,7 @@ pub(crate) fn receive<'a, K: Packages>(
             mode,
             protocol,
             socket,
+            client,
         },
         false,
         packages,
@@ -464,7 +470,7 @@ fn client_recv<const LENGTH: bool>(client: Handle<'_>) -> c_int {
         // rewrites them.
         let (live, lent) = (PhantomData, PhantomData);
         let (protocol, buffer) = (Proto { protocol, live }, Lent { buffer, lent });
-        receive(protocol, socket, buffer, mode, Callbacks) as c_int
+        receive(protocol, socket, Some(client), buffer, mode, Callbacks) as c_int
     })
 }
 
@@ -476,6 +482,7 @@ pub const FRAMING: Framing = Framing::new(client_recv::<true>, client_recv::<fal
 pub fn default_length_func(
     p: &Protocol,
     socket: Option<Socket<'_>>,
+    _owner: Option<std::rc::Rc<dyn core::any::Any>>,
     pl: &mut PacketLength,
 ) -> isize {
     let size = match (p.get_package_length_size, socket) {
@@ -561,7 +568,7 @@ mod tests {
             live: PhantomData,
         };
         let buffer = unsafe { &mut *buffer };
-        receive(protocol, socket, Lent::new(buffer), mode, Callbacks) as c_int
+        receive(protocol, socket, None, Lent::new(buffer), mode, Callbacks) as c_int
     }
 
     /// The handle a client's read passes for its live socket.

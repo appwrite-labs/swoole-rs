@@ -180,14 +180,18 @@ fn exec_without_a_coroutine_asks_cxx_for_the_fatal_error() {
         EXEC_NEEDS_COROUTINE,
         "needs one"
     );
-    assert_eq!(handle.multi.get(), raw(multi), "left in the multi");
+    assert_eq!(
+        handle.multi().map(|multi| Rc::as_ptr(&multi)),
+        Some(raw(multi).cast_const()),
+        "left in the multi"
+    );
     assert_eq!(
         take().first().map(String::as_str),
         Some("timer 1"),
         "curl's immediate timeout"
     );
     assert_eq!(multi.remove_handle(handle), CURLM_OK, "removed");
-    assert!(handle.multi.get().is_null(), "detached");
+    assert!(handle.multi().is_none(), "detached");
     free(multi);
     close(cp);
 }

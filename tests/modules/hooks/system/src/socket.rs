@@ -351,13 +351,16 @@ impl Sock {
         packet::recv_packet(self.co(), timeout).map_or(-1, usize::cast_signed)
     }
 
+    /// `get_read_buffer()`: made on first use, then read through the record's field.
     fn read_buffer(&self) -> &mut CppString {
+        self.co().with_buffer(false, |_| ());
         // SAFETY: the live socket's read buffer, which it keeps.
-        unsafe { &mut *self.co().buffer(false) }
+        unsafe { &mut *self.record().read_buffer }
     }
 
     fn write_buffer(&self) -> *mut CppString {
-        self.co().buffer(true)
+        self.co().with_buffer(true, |_| ());
+        self.record().write_buffer
     }
 
     /// `pop_packet()`: the packet's buffer, which the caller now owns, or null.
