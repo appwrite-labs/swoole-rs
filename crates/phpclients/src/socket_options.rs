@@ -18,8 +18,8 @@ use std::{
 use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
+use swoole_rs_corebase::tls::{self as tls, Text};
 use swoole_rs_phpswoole::{SocketSettings as Settings, Switch, built_with};
-use swoole_rs_tls::{self as tls, Text};
 use swoole_rs_zend::{
     Array, Call, HeldArray, OwnedArray, Value, bailout, report,
     sys::{E_ERROR, E_WARNING, php_stream},

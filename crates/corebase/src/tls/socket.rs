@@ -2,9 +2,13 @@
 //! handshake steps, reads and writes, host and verify checks, PEM export and error
 //! reasons, and the socket's TLS state group they set. `upstream` defines the
 //! `Socket` methods over them, errno, the last error and logs included.
-use crate::SslState;
-use crate::handle::{Ssl, SslFailure};
-use crate::handle::{clear_errors, peek_error, pop_error, reason_string};
+use crate::constants::ReturnCode;
+use crate::lent::{Spare, lend_spare};
+use crate::log;
+use crate::sys::ReadSlot;
+use crate::tls::SslState;
+use crate::tls::handle::{Ssl, SslFailure};
+use crate::tls::handle::{clear_errors, peek_error, pop_error, reason_string};
 use openssl_sys::{
     SSL_ERROR_SSL, SSL_ERROR_SYSCALL, SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE,
     SSL_ERROR_ZERO_RETURN, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER, SSL_RECEIVED_SHUTDOWN,
@@ -12,10 +16,6 @@ use openssl_sys::{
 };
 use std::ffi::CStr;
 use std::os::raw::{c_int, c_long, c_ulong};
-use swoole_rs_corebase::constants::ReturnCode;
-use swoole_rs_corebase::lent::{Spare, lend_spare};
-use swoole_rs_corebase::log;
-use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_error::ErrorCode;
 
 /// `SW_SSL_SERVER` and `SW_SSL_CLIENT`.
@@ -27,11 +27,11 @@ const RESET: c_int = ErrorCode::SW_ERROR_SSL_RESET as c_int;
 const HANDSHAKE_FAILED: c_int = ErrorCode::SW_ERROR_SSL_HANDSHAKE_FAILED as c_int;
 use SslState::{SW_SSL_STATE_READY as STATE_READY, SW_SSL_STATE_WAIT_STREAM as STATE_WAIT_STREAM};
 
-use swoole_rs_corebase::sys::errno;
+use crate::sys::errno;
 
 /// `network::Socket`'s TLS state group (`ssl_state`, `ssl_want_read`,
 /// `ssl_want_write`): the record's own field.
-pub use swoole_rs_corebase::reactor::SocketTlsState as SocketTls;
+pub use crate::reactor::SocketTlsState as SocketTls;
 
 fn want(tls: &mut SocketTls, read: bool, write: bool) {
     tls.want_read = read;
@@ -395,7 +395,7 @@ impl SslNewError {
                 origin,
                 format_args!(
                     "SSL_set_fd() failed. Error: {}[{error}]",
-                    crate::reason_text(error)
+                    crate::tls::reason_text(error)
                 ),
             ),
             Self::ExData => log::warning(origin, format_args!("SSL_set_ex_data() failed")),
@@ -415,8 +415,8 @@ impl SslNewError {
 /// # Errors
 /// The step that failed; the caller warns.
 pub fn socket_ssl_new(
-    socket: swoole_rs_corebase::reactor::Socket<'_>,
-    context: Option<&crate::SslCtx>,
+    socket: crate::reactor::Socket<'_>,
+    context: Option<&crate::tls::SslCtx>,
     flags: c_int,
 ) -> Result<(), SslNewError> {
     socket_ssl_new_over(socket, context, flags, None)
@@ -429,14 +429,14 @@ pub fn socket_ssl_new(
 /// # Errors
 /// As [`socket_ssl_new`].
 pub(crate) fn socket_ssl_new_over(
-    socket: swoole_rs_corebase::reactor::Socket<'_>,
-    context: Option<&crate::SslCtx>,
+    socket: crate::reactor::Socket<'_>,
+    context: Option<&crate::tls::SslCtx>,
     flags: c_int,
-    bios: Option<(crate::OwnedBio, Option<crate::OwnedBio>)>,
+    bios: Option<(crate::tls::OwnedBio, Option<crate::tls::OwnedBio>)>,
 ) -> Result<(), SslNewError> {
     socket.edit(|record| want(&mut record.tls, false, false));
     clear_errors();
-    let Some(mut made) = crate::handle::SSL_new(context) else {
+    let Some(mut made) = crate::tls::handle::SSL_new(context) else {
         // The record's SSL becomes the null `SSL_new` returned, as upstream's.
         socket.edit(|record| record.set_ssl(None));
         return Err(SslNewError::New);
@@ -478,7 +478,7 @@ pub(crate) fn socket_ssl_new_over(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handle::Cert;
+    use crate::tls::handle::Cert;
     use openssl_sys::*;
     use std::mem::ManuallyDrop;
     use std::os::raw::c_int;
@@ -503,6 +503,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn want_read_before_the_handshake() {
         unsafe {
             let (ssl, _) = client();
@@ -537,6 +538,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn handshake_steps() {
         unsafe {
             let (ssl, read) = client();
@@ -599,6 +601,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn check_host_and_verify() {
         unsafe {
             let check = |cert, name: &str| {
@@ -660,6 +663,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn pem_reason_and_new() {
         unsafe {
             let mut pem = [0_u8; 4096];
@@ -670,14 +674,16 @@ mod tests {
                 let owned = std::ptr::NonNull::new(cert).map(|cert| ManuallyDrop::new(Cert(cert)));
                 let written = owned
                     .as_ref()
-                    .map_or(Err(crate::PemError::Write), |cert| cert.get().pem(buffer));
+                    .map_or(Err(crate::tls::PemError::Write), |cert| {
+                        cert.get().pem(buffer)
+                    });
                 drop(owned.filter(|_| consume).map(ManuallyDrop::into_inner));
                 written
             };
             let empty = X509_new();
             assert_eq!(
                 pem_of(empty, &mut pem, true),
-                Err(crate::PemError::Write),
+                Err(crate::tls::PemError::Write),
                 "nothing to encode"
             );
             ERR_clear_error();
@@ -702,16 +708,20 @@ mod tests {
             );
 
             let context = SSL_CTX_new(TLS_method());
-            crate::swr_v1_tls_init().unwrap();
-            let index = crate::swr_v1_tls_connection_index();
-            let mut record = swoole_rs_corebase::reactor::SocketRecord::with_fd(3, 0);
+            crate::tls::swr_v1_tls_init().unwrap();
+            let index = crate::tls::swr_v1_tls_connection_index();
+            let mut record = crate::reactor::SocketRecord::with_fd(3, 0);
             record.tls = SocketTls {
                 state: STATE_READY,
                 want_read: true,
                 want_write: true,
             };
-            let socket = swoole_rs_corebase::reactor::Socket::from_ptr(&raw mut record).unwrap();
-            let made = socket_ssl_new(socket, context.cast::<crate::SslCtx>().as_ref(), CLIENT);
+            let socket = crate::reactor::Socket::from_ptr(&raw mut record).unwrap();
+            let made = socket_ssl_new(
+                socket,
+                context.cast::<crate::tls::SslCtx>().as_ref(),
+                CLIENT,
+            );
             assert_eq!(made, Ok(()));
             assert_eq!(
                 record.tls,
@@ -723,9 +733,13 @@ mod tests {
             assert_eq!(SSL_is_server(made), 0, "connect state");
             assert_eq!(SSL_get_ex_data(made, index), (&raw mut record).cast());
             drop(owner);
-            let socket = swoole_rs_corebase::reactor::Socket::from_ptr(&raw mut record).unwrap();
+            let socket = crate::reactor::Socket::from_ptr(&raw mut record).unwrap();
             assert_eq!(
-                socket_ssl_new(socket, context.cast::<crate::SslCtx>().as_ref(), SERVER),
+                socket_ssl_new(
+                    socket,
+                    context.cast::<crate::tls::SslCtx>().as_ref(),
+                    SERVER
+                ),
                 Ok(())
             );
             let ssl = record.take_ssl().unwrap();
@@ -734,12 +748,12 @@ mod tests {
             // A memory pair: the SSL reads through the first and writes through the
             // second.
             let (read, write) = (
-                crate::OwnedBio::memory().unwrap(),
-                crate::OwnedBio::memory(),
+                crate::tls::OwnedBio::memory().unwrap(),
+                crate::tls::OwnedBio::memory(),
             );
             let bios = (read.bio().as_ptr(), write.as_ref().unwrap().bio().as_ptr());
-            let socket = swoole_rs_corebase::reactor::Socket::from_ptr(&raw mut record).unwrap();
-            let shared = context.cast::<crate::SslCtx>().as_ref();
+            let socket = crate::reactor::Socket::from_ptr(&raw mut record).unwrap();
+            let shared = context.cast::<crate::tls::SslCtx>().as_ref();
             let made = socket_ssl_new_over(socket, shared, SERVER, Some((read, write)));
             assert_eq!(made, Ok(()));
             let owner = record.take_ssl().unwrap();
@@ -761,6 +775,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn garbage_is_a_protocol_error() {
         unsafe {
             let (ssl, read) = client();
@@ -845,7 +860,7 @@ mod shutdown_tests {
             } else {
                 self.injected
             };
-            self.last_error_queue = crate::peek_error();
+            self.last_error_queue = crate::tls::peek_error();
             self.last_error_class
         }
     }
@@ -961,11 +976,13 @@ mod shutdown_tests {
                     let bio = BIO_new_socket(fds[1], 0);
                     SSL_set_bio(client, bio, bio);
                     // The server end as `Socket::ssl_create` makes it.
-                    let mut record = swoole_rs_corebase::reactor::SocketRecord::with_fd(fds[0], 0);
-                    let socket =
-                        swoole_rs_corebase::reactor::Socket::from_ptr(&raw mut record).unwrap();
-                    let made =
-                        socket_ssl_new(socket, server_ctx.cast::<crate::SslCtx>().as_ref(), SERVER);
+                    let mut record = crate::reactor::SocketRecord::with_fd(fds[0], 0);
+                    let socket = crate::reactor::Socket::from_ptr(&raw mut record).unwrap();
+                    let made = socket_ssl_new(
+                        socket,
+                        server_ctx.cast::<crate::tls::SslCtx>().as_ref(),
+                        SERVER,
+                    );
                     assert_eq!(made, Ok(()));
                     // Freed below, by hand.
                     std::mem::ManuallyDrop::new(record.take_ssl().unwrap())
@@ -984,7 +1001,7 @@ mod shutdown_tests {
                 for _ in 0..1000 {
                     if [server, client]
                         .iter()
-                        .all(|&ssl| !crate::Ssl::new(ssl).unwrap().in_init())
+                        .all(|&ssl| !crate::tls::Ssl::new(ssl).unwrap().in_init())
                     {
                         break;
                     }
@@ -994,7 +1011,7 @@ mod shutdown_tests {
                 assert!(
                     [server, client]
                         .iter()
-                        .all(|&ssl| !crate::Ssl::new(ssl).unwrap().in_init())
+                        .all(|&ssl| !crate::tls::Ssl::new(ssl).unwrap().in_init())
                 );
                 ERR_clear_error();
                 Self {
@@ -1050,6 +1067,7 @@ mod shutdown_tests {
     /// socket's SSL takes it; without `SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER` OpenSSL fails
     /// it as a bad write retry and the server drops the rest of the file (#2584).
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn a_write_retried_from_another_buffer_completes() {
         let pair = Pair::new(true);
         let small: c_int = 4096;
@@ -1098,6 +1116,7 @@ mod shutdown_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn one_way_shutdown() {
         let mut pair = Pair::new(false);
         let mut socket = Socket::new(pair.server);
@@ -1134,6 +1153,7 @@ mod shutdown_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn quiet_shutdown() {
         let pair = Pair::new(false);
         let mut socket = Socket::new(pair.server);
@@ -1143,6 +1163,7 @@ mod shutdown_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn peer_first() {
         let pair = Pair::new(false);
         let mut socket = Socket::new(pair.server);
@@ -1164,6 +1185,7 @@ mod shutdown_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn unfinished_handshake() {
         unsafe {
             let context = SSL_CTX_new(TLS_server_method());
@@ -1181,6 +1203,7 @@ mod shutdown_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn nonblocking_want_read() {
         let pair = Pair::new(false);
         let mut socket = Socket::new(pair.server);
@@ -1199,6 +1222,7 @@ mod shutdown_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn pending_write() {
         let pair = Pair::new(false);
         let mut socket = Socket::new(pair.server);
@@ -1226,6 +1250,7 @@ mod shutdown_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn retryable_alert_write() {
         let pair = Pair::new(false);
         let mut socket = Socket::new(pair.server);
@@ -1272,6 +1297,7 @@ mod shutdown_tests {
     /// backpressure: the real write fails with no OpenSSL reason. (The test harness
     /// ignores SIGPIPE, as Swoole does.)
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn closed_peer() {
         let mut pair = Pair::new(true);
         let mut socket = Socket::new(pair.server);
@@ -1310,6 +1336,7 @@ mod shutdown_tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn injected_negative_results() {
         let mut null_warnings = 0;
         for error in [
@@ -1347,12 +1374,13 @@ mod shutdown_tests {
         );
     }
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn shutdown_warning_retains_the_captured_reason() {
         let pair = Pair::new(false);
         let mut socket = Socket::new(pair.server);
         socket.calls.injected = SSL_ERROR_SSL;
         clear_errors();
-        assert!(crate::OwnedBio::open(c"/nonexistent/shutdown-reason").is_none());
+        assert!(crate::tls::OwnedBio::open(c"/nonexistent/shutdown-reason").is_none());
         let queued = peek_error();
         assert_ne!(queued, 0);
         let error = shutdown(
@@ -1375,6 +1403,7 @@ mod shutdown_tests {
     /// Upstream's shutdown (no `--fix-halfclose`): both directions are marked shut
     /// first, so no alert is written, and the socket closes whatever OpenSSL returns.
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn upstream_premarks_shutdown() {
         let pair = Pair::new(false);
         let mut socket = Socket::new(pair.server);
@@ -1396,7 +1425,7 @@ mod shutdown_tests {
             socket.repaired = false;
             socket.calls.injected = SSL_ERROR_WANT_WRITE;
             if queued {
-                assert!(crate::OwnedBio::open(c"/nonexistent/m21").is_none());
+                assert!(crate::tls::OwnedBio::open(c"/nonexistent/m21").is_none());
             }
             assert_eq!(socket.ssl_shutdown(), !queued);
             assert_eq!(socket.warnings, usize::from(queued));

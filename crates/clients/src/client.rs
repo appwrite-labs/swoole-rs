@@ -33,11 +33,11 @@ use swoole_rs_corebase::reactor::{
 };
 use swoole_rs_corebase::reactor::{Event, Events, Running};
 use swoole_rs_corebase::sys::{ReadBuffer, ReadSlot};
-use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
-use swoole_rs_error::ErrorCode;
-use swoole_rs_tls::{
+use swoole_rs_corebase::tls::{
     OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslState, SslVersion, TlsContext, TlsSettings,
 };
+use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
+use swoole_rs_error::ErrorCode;
 
 /// The flags [`Client::flag`] reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,7 +120,7 @@ const SSL_BUFFER_SIZE: u32 = SW_SSL_BUFFER_SIZE;
 const BUFFER_SIZE_UDP: usize = SW_BUFFER_SIZE_UDP as usize;
 const CLIENT_BUFFER_SIZE: usize = SW_CLIENT_BUFFER_SIZE as usize;
 const SOCKET_RETRY_COUNT: usize = SW_SOCKET_RETRY_COUNT as usize;
-/// crates/tls's `SW_SSL_STATE_READY`, `SW_SSL_STATE_WAIT_STREAM`, `SW_SSL_CLIENT`
+/// `corebase::tls`'s `SW_SSL_STATE_READY`, `SW_SSL_STATE_WAIT_STREAM`, `SW_SSL_CLIENT`
 /// and `SW_SSL_DTLS`.
 pub use SslState::{
     SW_SSL_STATE_READY as SSL_STATE_READY, SW_SSL_STATE_WAIT_STREAM as SSL_STATE_WAIT_STREAM,
@@ -444,7 +444,7 @@ impl Handle<'_> {
             return settings.host_name().to_owned();
         }
         let tls = self.get().tls.get();
-        swoole_rs_tls::owner_host_c_str(
+        swoole_rs_corebase::tls::owner_host_c_str(
             tls.unwrap_or_else(|| swoole_rs_corebase::fatal("a TLS client has no TLS context")),
         )
     }
@@ -1558,29 +1558,31 @@ struct SocketOps {
 impl SocketOps {
     const NATIVE: Self = Self {
         with_buffer: |f| swoole_rs_corebase::buffer::string::with_thread_buffer(f),
-        recv: swoole_rs_tls::upstream::recv,
-        recv_append: swoole_rs_tls::upstream::recv_append,
+        recv: swoole_rs_corebase::tls::upstream::recv,
+        recv_append: swoole_rs_corebase::tls::upstream::recv_append,
         recv_sync: |socket, buffer, flags| match buffer {
             ReadBuffer::Initialized(buffer) => {
-                swoole_rs_tls::upstream::recv_sync(socket, buffer, flags)
+                swoole_rs_corebase::tls::upstream::recv_sync(socket, buffer, flags)
             }
-            ReadBuffer::Spare(buffer) => swoole_rs_tls::upstream::recv_sync(socket, buffer, flags),
+            ReadBuffer::Spare(buffer) => {
+                swoole_rs_corebase::tls::upstream::recv_sync(socket, buffer, flags)
+            }
         },
         recvfrom_sync: |socket, buffer, flags, address| match buffer {
             ReadBuffer::Initialized(buffer) => {
-                swoole_rs_tls::upstream::recvfrom_sync(socket, buffer, flags, address)
+                swoole_rs_corebase::tls::upstream::recvfrom_sync(socket, buffer, flags, address)
             }
             ReadBuffer::Spare(buffer) => {
-                swoole_rs_tls::upstream::recvfrom_sync(socket, buffer, flags, address)
+                swoole_rs_corebase::tls::upstream::recvfrom_sync(socket, buffer, flags, address)
             }
         },
-        send_sync: swoole_rs_tls::upstream::send_sync,
-        sendfile_sync: swoole_rs_tls::upstream::sendfile_sync,
-        sendfile_async: swoole_rs_tls::upstream::socket_sendfile_async,
-        free_socket: |socket| swoole_rs_tls::upstream::socket_free(socket),
-        close_tls: swoole_rs_tls::upstream::socket_ssl_close,
+        send_sync: swoole_rs_corebase::tls::upstream::send_sync,
+        sendfile_sync: swoole_rs_corebase::tls::upstream::sendfile_sync,
+        sendfile_async: swoole_rs_corebase::tls::upstream::socket_sendfile_async,
+        free_socket: |socket| swoole_rs_corebase::tls::upstream::socket_free(socket),
+        close_tls: swoole_rs_corebase::tls::upstream::socket_ssl_close,
         write: swoole_rs_corebase::reactor::event_api::event_write,
-        writable: swoole_rs_tls::reactor_write::reactor_writable_callback,
+        writable: swoole_rs_corebase::tls::reactor_write::reactor_writable_callback,
         make_socket: ops::make_socket,
         kernel_timeout: ops::kernel_timeout,
         assign: ops::assign,
@@ -1596,10 +1598,10 @@ impl SocketOps {
         timer_delete: swoole_rs_corebase::timer::del_id,
         tls_freeze,
         tls_session: TlsSettings::create_client_session,
-        tls_connect: swoole_rs_tls::upstream::socket_ssl_connect,
-        tls_set_host_name: swoole_rs_tls::upstream::socket_ssl_set_host_name,
-        tls_verify: swoole_rs_tls::upstream::socket_ssl_verify,
-        tls_check_host: swoole_rs_tls::upstream::socket_ssl_check_host,
+        tls_connect: swoole_rs_corebase::tls::upstream::socket_ssl_connect,
+        tls_set_host_name: swoole_rs_corebase::tls::upstream::socket_ssl_set_host_name,
+        tls_verify: swoole_rs_corebase::tls::upstream::socket_ssl_verify,
+        tls_check_host: swoole_rs_corebase::tls::upstream::socket_ssl_check_host,
     };
 }
 

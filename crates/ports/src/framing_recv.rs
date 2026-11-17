@@ -237,7 +237,7 @@ impl<K: Packages> Effects for With<'_, K> {
         let b = self.3.get();
         // The loop asks for at most the buffer's free tail.
         let read = b.fill_within(size, |tail| {
-            swoole_rs_tls::upstream::recv_spare(socket, tail, 0)
+            swoole_rs_corebase::tls::upstream::recv_spare(socket, tail, 0)
         });
         if let Some(n) = read {
             return Received::Bytes(n);
@@ -272,7 +272,7 @@ impl<K: Packages> Effects for With<'_, K> {
     }
     fn ssl_pending(&mut self, flags: &mut u32) -> bool {
         self.around(flags, |r, _| {
-            swoole_rs_tls::Ssl::of(r.socket).is_some_and(|ssl| ssl.get().pending() > 0)
+            swoole_rs_corebase::tls::Ssl::of(r.socket).is_some_and(|ssl| ssl.get().pending() > 0)
         })
     }
     fn page(&mut self, flags: &mut u32) -> usize {

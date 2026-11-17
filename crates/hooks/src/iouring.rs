@@ -13,7 +13,7 @@ use swoole_rs_corebase::constants::FdType;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::reactor::event_api::{swoole_event_is_available, swoole_event_is_running};
 use swoole_rs_corebase::reactor::{Events, SocketRecord, UringOps};
-use swoole_rs_tls::event_socket::EventSocket;
+use swoole_rs_corebase::tls::event_socket::EventSocket;
 
 /// The thread's `Iouring`: the engine (none if the ring could not be created) and
 /// its fd's record on the thread's reactor, whose destroy callback takes the instance.

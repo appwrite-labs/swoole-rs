@@ -137,12 +137,12 @@ pub(super) fn with_thread_buffer(f: &mut dyn FnMut(&mut CppString)) {
     SHARED.with_borrow_mut(|shared| f(&mut shared.0));
 }
 
-// crates/tls's socket operations.
+// `corebase::tls`'s socket operations.
 fn free_socket(socket: Option<swoole_rs_corebase::reactor::OwnedSocket>) {
     log("free");
     mock(|m| m.freed.0.extend(socket));
 }
-/// crates/tls's slice-taking transfers.
+/// `corebase::tls`'s slice-taking transfers.
 pub(super) mod net {
     use super::{SocketAddress, io, log, mock};
 
@@ -226,7 +226,7 @@ pub(super) fn event_write(_: swoole_rs_corebase::reactor::Heap<'_>, data: &[u8])
     log(format!("write {length}"));
     (log::last_error() != ERROR_OUTPUT_BUFFER_OVERFLOW).then_some(length)
 }
-/// crates/tls's `Reactor::_writable_callback`.
+/// `corebase::tls`'s `Reactor::_writable_callback`.
 pub(super) extern "C-unwind" fn writable_callback(
     _: swoole_rs_corebase::reactor::Running<'_>,
     _: &mut swoole_rs_corebase::reactor::Event,
@@ -278,7 +278,7 @@ fn async_dispatch(lookup: Lookup, request: &crate::resolver::Request) -> bool {
     ));
     true
 }
-// crates/tls's TLS operations, over its own context.
+// `corebase::tls`'s TLS operations, over its own context.
 fn tls_freeze(owner: &TlsContext) -> Option<TlsSettings> {
     log("ssl create");
     super::tls_freeze(owner)
@@ -858,9 +858,9 @@ fn tls_handshake_names_the_host_and_verifies_the_peer() {
     let name = c"example.test";
     {
         let mut owner = tls.borrow_configuration();
-        assert!(owner.set_text(swoole_rs_tls::Text::HostName, name.to_bytes()));
-        owner.set_value(swoole_rs_tls::Value::VerifyPeer(true));
-        owner.set_value(swoole_rs_tls::Value::AllowSelfSigned(true));
+        assert!(owner.set_text(swoole_rs_corebase::tls::Text::HostName, name.to_bytes()));
+        owner.set_value(swoole_rs_corebase::tls::Value::VerifyPeer(true));
+        owner.set_value(swoole_rs_corebase::tls::Value::AllowSelfSigned(true));
     }
     mock(|m| m.ssl_connect_ready = true);
     assert!(ssl_handshake(Handle::raw(client)));
@@ -903,9 +903,9 @@ fn pending_handshake_keeps_its_hostname_and_verification_snapshot() {
     let owner = handle.get().tls_context().unwrap().clone();
     {
         let mut loan = owner.borrow_configuration();
-        assert!(loan.set_text(swoole_rs_tls::Text::HostName, b"first.test"));
-        loan.set_value(swoole_rs_tls::Value::VerifyPeer(true));
-        loan.set_value(swoole_rs_tls::Value::AllowSelfSigned(true));
+        assert!(loan.set_text(swoole_rs_corebase::tls::Text::HostName, b"first.test"));
+        loan.set_value(swoole_rs_corebase::tls::Value::VerifyPeer(true));
+        loan.set_value(swoole_rs_corebase::tls::Value::AllowSelfSigned(true));
     }
     assert!(ssl_handshake(handle));
     assert!(
@@ -915,9 +915,9 @@ fn pending_handshake_keeps_its_hostname_and_verification_snapshot() {
     _ = taken();
     {
         let mut loan = owner.borrow_configuration();
-        assert!(loan.set_text(swoole_rs_tls::Text::HostName, b"later.test"));
-        loan.set_value(swoole_rs_tls::Value::VerifyPeer(false));
-        loan.set_value(swoole_rs_tls::Value::AllowSelfSigned(false));
+        assert!(loan.set_text(swoole_rs_corebase::tls::Text::HostName, b"later.test"));
+        loan.set_value(swoole_rs_corebase::tls::Value::VerifyPeer(false));
+        loan.set_value(swoole_rs_corebase::tls::Value::AllowSelfSigned(false));
     }
     mock(|m| m.ssl_connect_ready = true);
     assert!(ssl_handshake(handle));

@@ -1,7 +1,12 @@
 //! `dtls::Session`: its datagram queue, the BIO OpenSSL reads it through, and
 //! `init`/`listen`. The BIO owns its session: the socket's SSL holds the BIO, and the
 //! session goes when OpenSSL destroys it, so a session is reached through its socket.
-use crate::handle::{BioMethod, SslFailure};
+use crate::CCast;
+use crate::lent::{Count, In, Out};
+use crate::log;
+use crate::reactor::{AddressStorage, Socket};
+use crate::sys::Text;
+use crate::tls::handle::{BioMethod, SslFailure};
 use core::cell::Cell;
 use core::ffi::{c_int, c_long, c_void};
 use core::marker::{PhantomData, PhantomPinned};
@@ -9,11 +14,6 @@ use core::mem::MaybeUninit;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Mutex, PoisonError};
-use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::lent::{Count, In, Out};
-use swoole_rs_corebase::log;
-use swoole_rs_corebase::reactor::{AddressStorage, Socket};
-use swoole_rs_corebase::sys::Text;
 
 /// One queued datagram, upstream's `dtls::Buffer`: the bytes it was received or copied
 /// into, and the `uint16_t` length its header counts of them as the payload.
@@ -46,7 +46,7 @@ pub struct DtlsSession {
     /// OpenSSL or one that yields.
     queue: Cell<Queue>,
     /// The port's context, which upstream's session holds a reference to.
-    _context: Option<std::sync::Arc<crate::TlsSettings>>,
+    _context: Option<std::sync::Arc<crate::tls::TlsSettings>>,
 }
 
 impl DtlsSession {
@@ -54,7 +54,7 @@ impl DtlsSession {
     fn new(
         fd: c_int,
         peer: AddressStorage,
-        context: Option<std::sync::Arc<crate::TlsSettings>>,
+        context: Option<std::sync::Arc<crate::tls::TlsSettings>>,
     ) -> Self {
         Self {
             fd,
@@ -69,7 +69,7 @@ impl DtlsSession {
     /// The session `dtls_open` made, borrowed from the SSL lease that keeps its
     /// BIO and session alive.
     #[must_use]
-    pub fn of(ssl: crate::Ssl<'_>) -> Option<&DtlsSession> {
+    pub fn of(ssl: crate::tls::Ssl<'_>) -> Option<&DtlsSession> {
         let kind = SESSION_TYPE.load(Ordering::Acquire);
         let bio = ssl.read_bio()?;
         BIO_get_data(BIO_find_type(
@@ -98,7 +98,7 @@ impl DtlsSession {
 /// false when the queue can't grow.
 pub fn dtls_session_receive(owner: &DtlsSession, fd: c_int, size: usize) -> bool {
     let mut bytes = Box::new_uninit_slice(size);
-    let read = swoole_rs_corebase::sys::read(fd, &mut bytes);
+    let read = crate::sys::read(fd, &mut bytes);
     owner.with_queue(|queue| {
         if queue.try_reserve(1).is_err() {
             return false;
@@ -263,7 +263,7 @@ unsafe extern "C" {
     #[link_name = "BIO_get_data"]
     safe fn BIO_take_data(bio: Freeing) -> Option<Box<DtlsSession>>;
     safe fn BIO_set_init(bio: &DtlsBio, init: c_int);
-    safe fn BIO_find_type<'a>(bio: crate::Bio<'a>, kind: SessionType) -> Option<&'a DtlsBio>;
+    safe fn BIO_find_type<'a>(bio: crate::tls::Bio<'a>, kind: SessionType) -> Option<&'a DtlsBio>;
     safe fn BIO_set_data(bio: FreshBio<'_>, data: Box<DtlsSession>);
 }
 
@@ -271,7 +271,7 @@ unsafe extern "C" {
 /// [`dtls_open`] makes one, once, so the session it gives the BIO is the BIO's only
 /// data, which the destroy hook frees.
 #[repr(transparent)]
-struct FreshBio<'a>(crate::Bio<'a>);
+struct FreshBio<'a>(crate::tls::Bio<'a>);
 
 /// OpenSSL 3's `BIO_TYPE_SOURCE_SINK`, `BIO_FLAGS_READ`, `BIO_FLAGS_RWS` and
 /// `BIO_FLAGS_SHOULD_RETRY`, and `SW_ERROR_SSL_CREATE_SESSION_FAILED`.
@@ -417,14 +417,11 @@ fn methods() -> Option<&'static BioMethod> {
 /// it in place of upstream's descriptor BIOs, which it would replace at once: only an
 /// allocation failure tells the two orders apart.
 #[must_use]
-pub fn dtls_open(socket: Socket<'_>, context: &std::sync::Arc<crate::TlsSettings>) -> bool {
-    if !socket
-        .read(swoole_rs_corebase::reactor::SocketFields::ssl)
-        .is_null()
-    {
+pub fn dtls_open(socket: Socket<'_>, context: &std::sync::Arc<crate::tls::TlsSettings>) -> bool {
+    if !socket.read(crate::reactor::SocketFields::ssl).is_null() {
         return false;
     }
-    let Some(bio) = methods().and_then(|table| crate::handle::BIO_new(table)) else {
+    let Some(bio) = methods().and_then(|table| crate::tls::handle::BIO_new(table)) else {
         return false;
     };
     let (fd, peer) = socket.read(|record| (record.fd, record.info.addr));
@@ -435,8 +432,8 @@ pub fn dtls_open(socket: Socket<'_>, context: &std::sync::Arc<crate::TlsSettings
         log::set_last_error(SSL_CREATE_SESSION_FAILED);
         return false;
     }
-    let size = swoole_rs_corebase::reactor::SOCKET_DEFAULTS.buffer_size();
-    _ = swoole_rs_corebase::reactor::set_socket_buffer_size(socket.fd(), true, true, size);
+    let size = crate::reactor::SOCKET_DEFAULTS.buffer_size();
+    _ = crate::reactor::set_socket_buffer_size(socket.fd(), true, true, size);
     socket.edit(|record| record.dtls = true);
     true
 }
@@ -446,7 +443,7 @@ pub fn dtls_open(socket: Socket<'_>, context: &std::sync::Arc<crate::TlsSettings
 /// session.
 #[must_use]
 pub fn dtls_session_listen(socket: Socket<'_>) -> bool {
-    let Some(held) = crate::Ssl::of(socket) else {
+    let Some(held) = crate::tls::Ssl::of(socket) else {
         return false;
     };
     let ssl = held.get();
@@ -456,14 +453,14 @@ pub fn dtls_session_listen(socket: Socket<'_>) -> bool {
     if owner.listened() {
         return false;
     }
-    crate::clear_errors();
+    crate::tls::clear_errors();
     let result = ssl.dtls_listen();
     if swr_v1_tls_dtls_listen(owner, result) {
         return true;
     }
-    let reason = crate::swr_v1_socket_ssl_peek_reason();
-    let (host, port) = socket.read(|record| crate::upstream::peer(&record.info));
-    let error = crate::error_line();
+    let reason = crate::tls::swr_v1_socket_ssl_peek_reason();
+    let (host, port) = socket.read(|record| crate::tls::upstream::peer(&record.info));
+    let error = crate::tls::error_line();
     log::warning(
         c"Session::listen",
         format_args!(
@@ -482,7 +479,7 @@ mod tests {
     struct Owner(*mut DtlsSession, Cell<bool>);
     impl Owner {
         fn new() -> Self {
-            let peer = swoole_rs_corebase::reactor::SocketAddress::default().addr;
+            let peer = crate::reactor::SocketAddress::default().addr;
             let session = Box::new(DtlsSession::new(-1, peer, None));
             Self(Box::into_raw(session), Cell::new(false))
         }
@@ -519,6 +516,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn the_bio_reads_queued_datagrams_and_retries_when_empty() {
         unsafe extern "C" {
             fn BIO_test_flags(bio: *const BIO, flags: c_int) -> c_int;
@@ -527,7 +525,7 @@ mod tests {
         let table = methods().unwrap();
         assert!(ptr::eq(methods().unwrap(), table));
         unsafe {
-            let lent = crate::handle::BIO_new(table).unwrap();
+            let lent = crate::tls::handle::BIO_new(table).unwrap();
             BIO_set_data(FreshBio(lent.bio()), Box::from_raw(owner.give()));
             let bio: *mut BIO = lent.bio().as_ptr();
             let mut bytes = [0u8; 8];
@@ -572,11 +570,11 @@ mod tests {
     #[test]
     fn taken_native_datagram_and_scalar_aliases_have_one_canonical_owner() {
         let owner = Owner::new();
-        let [read, write] = swoole_rs_corebase::sys::pipe().unwrap();
-        assert_eq!(swoole_rs_corebase::sys::write(write, b"abc"), Some(3));
+        let [read, write] = crate::sys::pipe().unwrap();
+        assert_eq!(crate::sys::write(write, b"abc"), Some(3));
         assert!(dtls_session_receive(owner.session(), read, 5));
-        _ = swoole_rs_corebase::sys::close(read);
-        _ = swoole_rs_corebase::sys::close(write);
+        _ = crate::sys::close(read);
+        _ = crate::sys::close(write);
         assert_eq!(owner.read(3).1, b"abc");
         let fatal = SslFailure {
             returned: -1,
@@ -618,29 +616,28 @@ mod tests {
     #[cfg_attr(miri, ignore = "OpenSSL and sockets")]
     fn the_session_is_its_sockets_ssls() {
         use std::os::fd::AsRawFd;
-        crate::swr_v1_tls_init().unwrap();
-        let context = crate::TlsContext::new();
+        crate::tls::swr_v1_tls_init().unwrap();
+        let context = crate::tls::TlsContext::new();
         let mut lent = context.borrow_configuration();
-        lent.set_value(crate::Value::Protocols(i64::from(
-            crate::SslVersion::SW_SSL_DTLS.bits(),
+        lent.set_value(crate::tls::Value::Protocols(i64::from(
+            crate::tls::SslVersion::SW_SSL_DTLS.bits(),
         )));
         let context = std::sync::Arc::new(lent.freeze(None).unwrap());
         let (_peer, stream) = std::os::unix::net::UnixDatagram::pair().unwrap();
-        let raw =
-            swoole_rs_corebase::reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
+        let raw = crate::reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
         let socket = unsafe { Socket::from_ptr(raw) }.unwrap();
-        assert!(crate::Ssl::of(socket).is_none());
+        assert!(crate::tls::Ssl::of(socket).is_none());
         assert!(dtls_open(socket, &context));
         assert!(!dtls_open(socket, &context), "one session per socket");
-        let held = crate::Ssl::of(socket).unwrap();
+        let held = crate::tls::Ssl::of(socket).unwrap();
         let session = DtlsSession::of(held.get()).unwrap();
         assert!(swr_v1_tls_dtls_append(session, b"abc"));
         assert_eq!(
             swr_v1_tls_dtls_length(DtlsSession::of(held.get()).unwrap()),
             3
         );
-        crate::upstream::socket_ssl_close(socket);
-        assert!(crate::Ssl::of(socket).is_none());
+        crate::tls::upstream::socket_ssl_close(socket);
+        assert!(crate::tls::Ssl::of(socket).is_none());
         assert_eq!(
             swr_v1_tls_dtls_length(session),
             3,

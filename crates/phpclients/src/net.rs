@@ -122,7 +122,7 @@ impl Conn {
     fn alive(&self) -> bool {
         self.cli()
             .net()
-            .is_some_and(swoole_rs_tls::upstream::check_liveness)
+            .is_some_and(swoole_rs_corebase::tls::upstream::check_liveness)
     }
 
     pub(crate) fn fd(&self) -> c_int {

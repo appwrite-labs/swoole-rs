@@ -60,8 +60,8 @@ pub use swoole_rs_phpruntime as phpruntime;
 
 pub use swoole_rs_corebase::ossupport::*;
 
-// Reactor's Socket patch calls the TLS reads and writes in crates/tls.
-pub use swoole_rs_tls::*;
+// Reactor's Socket patch calls the TLS reads and writes in `corebase::tls`.
+pub use swoole_rs_corebase::tls::*;
 
 pub use swoole_rs_corebase::process::*;
 

@@ -3,7 +3,12 @@
 //! callbacks (password, ALPN, verify, DTLS cookies). The configuration lives in the
 //! owner (`owned.rs`), the info callback in `info.rs`; warnings go through the
 //! configuration's `warn` callback. Requires OpenSSL 3.
-use crate::handle::{Bio, Ssl};
+use crate::CCast;
+use crate::StringSlot;
+use crate::lent::{Count, In, Out};
+use crate::log;
+use crate::sys::Text;
+use crate::tls::handle::{Bio, Ssl};
 use openssl_sys::{
     EVP_PKEY, OPENSSL_NPN_NEGOTIATED, SSL, SSL_CTRL_MODE, SSL_CTRL_SET_GROUPS_LIST,
     SSL_CTRL_SET_READ_AHEAD, SSL_CTRL_SET_SESS_CACHE_MODE, SSL_CTRL_SET_TLSEXT_SERVERNAME_CB,
@@ -20,11 +25,6 @@ use std::mem::MaybeUninit;
 use std::ops::Deref;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::StringSlot;
-use swoole_rs_corebase::lent::{Count, In, Out};
-use swoole_rs_corebase::log;
-use swoole_rs_corebase::sys::Text;
 
 // libssl/libcrypto's declarations, typed so that a live context is a
 // reference and a NUL-terminated string a `Text`: each reads only its arguments
@@ -295,14 +295,14 @@ impl Drop for SslContext {
 }
 
 /// `swSSLVersion`'s protocol bits.
-const SSLV2: crate::SslVersion = crate::constants::SslVersion::SW_SSL_SSLv2;
-const SSLV3: crate::SslVersion = crate::constants::SslVersion::SW_SSL_SSLv3;
-const TLSV1: crate::SslVersion = crate::constants::SslVersion::SW_SSL_TLSv1;
-const TLSV1_1: crate::SslVersion = crate::constants::SslVersion::SW_SSL_TLSv1_1;
-const TLSV1_2: crate::SslVersion = crate::constants::SslVersion::SW_SSL_TLSv1_2;
-const TLSV1_3: crate::SslVersion = crate::constants::SslVersion::SW_SSL_TLSv1_3;
-const DTLS: crate::SslVersion = crate::constants::SslVersion::SW_SSL_DTLS;
-const ALL: crate::SslVersion = crate::constants::SW_SSL_ALL;
+const SSLV2: crate::tls::SslVersion = crate::tls::constants::SslVersion::SW_SSL_SSLv2;
+const SSLV3: crate::tls::SslVersion = crate::tls::constants::SslVersion::SW_SSL_SSLv3;
+const TLSV1: crate::tls::SslVersion = crate::tls::constants::SslVersion::SW_SSL_TLSv1;
+const TLSV1_1: crate::tls::SslVersion = crate::tls::constants::SslVersion::SW_SSL_TLSv1_1;
+const TLSV1_2: crate::tls::SslVersion = crate::tls::constants::SslVersion::SW_SSL_TLSv1_2;
+const TLSV1_3: crate::tls::SslVersion = crate::tls::constants::SslVersion::SW_SSL_TLSv1_3;
+const DTLS: crate::tls::SslVersion = crate::tls::constants::SslVersion::SW_SSL_DTLS;
+const ALL: crate::tls::SslVersion = crate::tls::constants::SW_SSL_ALL;
 
 /// `OPENSSL_INIT_LOAD_CONFIG | OPENSSL_INIT_LOAD_SSL_STRINGS | OPENSSL_INIT_LOAD_CRYPTO_STRINGS`.
 const INIT_OPTIONS: u64 = 0x40 | 0x0020_0000 | 0x2;
@@ -317,7 +317,7 @@ enum BioPeerCtrl {
 type PeerBytes = [u8; size_of::<libc::sockaddr_storage>()];
 // The session BIO's own answer (dtls.rs's `bio_ctrl`) is the native address union.
 const _: () = assert!(
-    size_of::<swoole_rs_corebase::reactor::AddressStorage>() <= size_of::<PeerBytes>(),
+    size_of::<crate::reactor::AddressStorage>() <= size_of::<PeerBytes>(),
     "the session BIO's peer address fits where BIO_dgram_get_peer copies it"
 );
 
@@ -438,8 +438,8 @@ fn warn(config: &TlsConfig<'_>, function: &CStr, message: &[u8]) {
 
 /// Upstream's `ssl_error`: pops one error and appends its reason and code.
 fn ssl_error(config: &TlsConfig<'_>, function: &CStr, message: &[u8]) {
-    let code = crate::pop_error();
-    let reason = crate::reason_string(code).map_or(b"(null)".as_slice(), CStr::to_bytes);
+    let code = crate::tls::pop_error();
+    let reason = crate::tls::reason_string(code).map_or(b"(null)".as_slice(), CStr::to_bytes);
     let code = code.c_cast::<c_long>();
     let mut text = message.to_vec();
     text.extend_from_slice(b", Error: ");
@@ -517,7 +517,7 @@ impl Method<'_> {
             ));
             return false;
         }
-        crate::clear_errors();
+        crate::tls::clear_errors();
         let names = file
             .c_str()
             .and_then(|file| SSL_load_client_CA_file(file.into()));
@@ -525,7 +525,7 @@ impl Method<'_> {
             self.ssl_error(&quoted(b"SSL_load_client_CA_file(\"", file, b"\") failed"));
             return false;
         };
-        crate::clear_errors();
+        crate::tls::clear_errors();
         SSL_CTX_set_client_CA_list(self.ctx, names);
         true
     }
@@ -554,7 +554,7 @@ impl Method<'_> {
     fn set_dhparam(&self) -> bool {
         let file = self.config.dhparam;
         // Freed on each return below, after its error is reported.
-        let Some(bio) = file.c_str().and_then(crate::OwnedBio::open) else {
+        let Some(bio) = file.c_str().and_then(crate::tls::OwnedBio::open) else {
             self.ssl_error(&quoted(b"BIO_new_file(", file, b") failed"));
             return false;
         };
@@ -581,7 +581,7 @@ impl Method<'_> {
     fn configure(&self) -> bool {
         let config = self.config;
         let ctx = self.ctx;
-        let protocols = crate::SslVersion::from_bits(config.protocols);
+        let protocols = crate::tls::SslVersion::from_bits(config.protocols);
         // The other legacy SSL_OP_*_BUG workarounds are 0 in OpenSSL 3.
         SSL_CTX_set_options(ctx, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS);
         SSL_CTX_clear_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1);
@@ -886,7 +886,7 @@ fn cookie_of(ssl: Ssl<'_>, cookie: &mut [u8; 255], cookie_length: &mut c_uint) -
             DataLength::V6,
         ),
         // Upstream's OPENSSL_assert(0).
-        _ => swoole_rs_corebase::fatal("a peer address that is neither IPv4 nor IPv6"),
+        _ => crate::fatal("a peer address that is neither IPv4 nor IPv6"),
     };
     for (slot, &byte) in data.iter_mut().zip(port.iter().chain(address)) {
         *slot = byte;
@@ -1067,7 +1067,7 @@ fn drain_errors() {
 /// `SSLContext::create`: a configured context, or None after logging why. Writes the
 /// normalized protocol mask back to `config.protocols`.
 pub(crate) fn create_context(config: &mut TlsConfig<'_>) -> Option<SslContext> {
-    let method = if crate::SslVersion::from_bits(config.protocols).contains(DTLS) {
+    let method = if crate::tls::SslVersion::from_bits(config.protocols).contains(DTLS) {
         DTLS_method()
     } else {
         TLS_method()
@@ -1091,8 +1091,8 @@ pub(crate) fn create_context(config: &mut TlsConfig<'_>) -> Option<SslContext> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lent::lend_out;
     use openssl_sys::ERR_clear_error;
-    use swoole_rs_corebase::lent::lend_out;
 
     macro_rules! method {
         ($name:ident, $function:literal, $body:ident) => {
@@ -1134,7 +1134,6 @@ mod tests {
     unsafe extern "C" {
         fn SSL_CTX_get_verify_depth(ctx: *const SSL_CTX) -> c_int;
     }
-    use std::ffi::CString;
     use std::sync::Mutex;
 
     static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -1145,19 +1144,18 @@ mod tests {
             .push(format!("{}(): {message}", function.to_string_lossy()));
     }
 
-    /// Configuration strings, leaked so that each view is `'static`.
+    /// Configuration views over the fixture's static C strings.
     struct Owned;
 
     impl Owned {
-        fn str(value: &str) -> TlsStr<'static> {
-            let value: &'static CStr = Box::leak(CString::new(value).unwrap().into_boxed_c_str());
+        fn str(value: &'static CStr) -> TlsStr<'static> {
             TlsStr {
                 terminated: Some(value.to_bytes_with_nul()),
             }
         }
 
         fn config() -> TlsConfig<'static> {
-            let empty = Self::str("");
+            let empty = Self::str(c"");
             TlsConfig {
                 ciphers: empty,
                 ecdh_curve: empty,
@@ -1185,6 +1183,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn protocols_and_options() {
         let _guard = SERIAL.lock().unwrap();
         let mut config = Owned::config();
@@ -1211,11 +1210,12 @@ mod tests {
     static SERIAL: Mutex<()> = Mutex::new(());
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn failures_log_like_upstream() {
         let _guard = SERIAL.lock().unwrap();
         take_log();
         let mut config = Owned::config();
-        config.cert_file = Owned::str("/nonexistent/m21.pem");
+        config.cert_file = Owned::str(c"/nonexistent/m21.pem");
         unsafe { ERR_clear_error() };
         let ctx = create_context(&mut config);
         assert!(ctx.is_none());
@@ -1229,7 +1229,7 @@ mod tests {
         );
 
         let mut config = Owned::config();
-        config.ciphers = Owned::str("M21-nonexistent-cipher");
+        config.ciphers = Owned::str(c"M21-nonexistent-cipher");
         let ctx = create_context(&mut config);
         assert!(ctx.is_none());
         let log = take_log();
@@ -1241,6 +1241,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn direct_methods() {
         let _guard = SERIAL.lock().unwrap();
         take_log();
@@ -1248,11 +1249,11 @@ mod tests {
         unsafe {
             let context = SSL_CTX_new(TLS_method()).unwrap();
             let ctx = &*context;
-            config.ecdh_curve = Owned::str("auto");
+            config.ecdh_curve = Owned::str(c"auto");
             assert!(swr_v1_tls_set_ecdh_curve(ctx, &config));
-            config.ecdh_curve = Owned::str("prime256v1");
+            config.ecdh_curve = Owned::str(c"prime256v1");
             assert!(swr_v1_tls_set_ecdh_curve(ctx, &config));
-            config.ecdh_curve = Owned::str("M21-nonexistent-curve");
+            config.ecdh_curve = Owned::str(c"M21-nonexistent-curve");
             assert!(!swr_v1_tls_set_ecdh_curve(ctx, &config));
             assert_eq!(
                 take_log(),
@@ -1261,21 +1262,21 @@ mod tests {
                 ]
             );
 
-            config.dhparam = Owned::str("/nonexistent/m21-dh.pem");
+            config.dhparam = Owned::str(c"/nonexistent/m21-dh.pem");
             assert!(!swr_v1_tls_set_dhparam(ctx, &config));
             let log = take_log();
             assert!(log[0].starts_with(
                 "SSLContext::set_dhparam(): BIO_new_file(/nonexistent/m21-dh.pem) failed"
             ));
 
-            config.client_cert_file = Owned::str("/nonexistent/m21-ca.pem");
+            config.client_cert_file = Owned::str(c"/nonexistent/m21-ca.pem");
             config.verify_depth = 3;
             assert!(!swr_v1_tls_set_client_certificate(ctx, &config));
             assert_eq!(SSL_CTX_get_verify_mode(ctx.as_ptr()), SSL_VERIFY_PEER);
             assert_eq!(SSL_CTX_get_verify_depth(ctx.as_ptr()), 3);
             take_log();
 
-            config.cafile = Owned::str("/nonexistent/m21-ca.pem");
+            config.cafile = Owned::str(c"/nonexistent/m21-ca.pem");
             assert!(!swr_v1_tls_set_capath(ctx, &config));
             assert_eq!(
                 take_log(),
@@ -1321,11 +1322,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn alpn_prefers_h2() {
         let offered = b"\x08http/1.1\x02h2";
         let mut out = ptr::null();
         let mut length = 0;
-        let chosen = swoole_rs_corebase::lent::lend_in(offered, |list, count| {
+        let chosen = crate::lent::lend_in(offered, |list, count| {
             select_alpn(
                 ptr::null_mut(),
                 &mut out,
@@ -1340,13 +1342,14 @@ mod tests {
             unsafe { std::slice::from_raw_parts(out, length.into()) },
             b"h2"
         );
-        let chosen = swoole_rs_corebase::lent::lend_in(b"\x02h2", |list, count| {
+        let chosen = crate::lent::lend_in(b"\x02h2", |list, count| {
             select_alpn(ptr::null_mut(), &mut out, &mut length, list, count, &HTTP1)
         });
         assert_eq!(chosen, SSL_TLSEXT_ERR_NOACK);
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn init_and_error_text() {
         assert_eq!(swr_v1_tls_init(), Ok(()));
         assert!(swr_v1_tls_connection_index() >= 0);
@@ -1355,7 +1358,7 @@ mod tests {
         assert_eq!(error_line(), "");
         // A failed open queues OpenSSL's errors (fopen's, then the BIO's), which the
         // callback receives as lines: it returns 0, so, as upstream's, it reads one per call.
-        assert!(crate::OwnedBio::open(c"/nonexistent/swoole-rs-tls.pem").is_none());
+        assert!(crate::tls::OwnedBio::open(c"/nonexistent/swoole-rs-tls.pem").is_none());
         for _ in 0..2 {
             let line = error_line();
             assert!(line.contains(":error:"), "{line}");
@@ -1363,7 +1366,7 @@ mod tests {
         }
         assert_eq!(error_line(), "");
         // The C entry lends the same line, NUL-terminated, until the thread's next call.
-        assert!(crate::OwnedBio::open(c"/nonexistent/swoole-rs-tls.pem").is_none());
+        assert!(crate::tls::OwnedBio::open(c"/nonexistent/swoole-rs-tls.pem").is_none());
         let line = unsafe { core::ffi::CStr::from_ptr(swr_v1_tls_error()) };
         assert!(line.to_string_lossy().contains(":error:"), "{line:?}");
         unsafe { ERR_clear_error() };

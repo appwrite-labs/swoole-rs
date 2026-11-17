@@ -39,7 +39,7 @@ fn no_check(_: Co, _: Option<usize>) {}
 struct Sock {
     ops: UringSocketOps<'static>,
     socket: TestSocket,
-    held_ssl: Option<swoole_rs_tls::HeldSsl<'static>>,
+    held_ssl: Option<swoole_rs_corebase::tls::HeldSsl<'static>>,
 }
 
 impl Sock {
@@ -47,7 +47,11 @@ impl Sock {
         let tls = self.ops.tls;
         UringSocketOps {
             socket: self.ops.socket,
-            tls: tls.with_session(self.held_ssl.as_ref().map(swoole_rs_tls::HeldSsl::get)),
+            tls: tls.with_session(
+                self.held_ssl
+                    .as_ref()
+                    .map(swoole_rs_corebase::tls::HeldSsl::get),
+            ),
             connect_timeout: self.ops.connect_timeout,
             available: self.ops.available,
             check: self.ops.check,
@@ -124,7 +128,7 @@ impl Sock {
             let network = self.socket.0.socket.get().unwrap();
             network
                 .edit(|record| record.set_ssl(Some(crate::co_socket::record_ssl(session.cast()))));
-            self.held_ssl = swoole_rs_tls::Ssl::of(*network);
+            self.held_ssl = swoole_rs_corebase::tls::Ssl::of(*network);
         }
     }
 
@@ -132,7 +136,7 @@ impl Sock {
     fn ssl_handshake(&self) -> bool {
         loop {
             // Without a session, OpenSSL's answer is a protocol error.
-            let none = swoole_rs_tls::SslFailure {
+            let none = swoole_rs_corebase::tls::SslFailure {
                 returned: -1,
                 code: openssl_sys::SSL_ERROR_SSL,
             };
@@ -140,7 +144,7 @@ impl Sock {
                 .ops()
                 .tls
                 .ssl
-                .map_or(Err(none), swoole_rs_tls::Ssl::do_handshake);
+                .map_or(Err(none), swoole_rs_corebase::tls::Ssl::do_handshake);
             let Err(failure) = step else {
                 return true;
             };

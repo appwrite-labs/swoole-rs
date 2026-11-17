@@ -14,13 +14,13 @@ use swoole_rs_corebase::constants::{
 };
 use swoole_rs_corebase::reactor::reactor_upstream::trigger_close_event;
 use swoole_rs_corebase::reactor::{Caught, Event, Running, Socket};
+use swoole_rs_corebase::tls::upstream::{recv_append, send};
 use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_framing::recv::{Mode, Status};
 use swoole_rs_http_ffi::{HttpRequest, request_free};
 use swoole_rs_server::port_config::{PortConfig, ReadEvent};
 use swoole_rs_server::static_select::static_select;
 use swoole_rs_server::{Connection as Slot, ServerConfig, view};
-use swoole_rs_tls::upstream::{recv_append, send};
 
 use crate::framing_recv::{self, Lent, Packages, Proto};
 use crate::http_routes::Session;

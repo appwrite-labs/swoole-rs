@@ -21,7 +21,6 @@
     clippy::borrow_as_ptr,
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
-    clippy::cast_ptr_alignment,
     clippy::cast_sign_loss,
     clippy::doc_markdown,
     clippy::duration_suboptimal_units,

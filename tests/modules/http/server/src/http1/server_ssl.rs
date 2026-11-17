@@ -10,8 +10,8 @@
 //! case once the server stops.
 
 use super::case::{
-    CERT_FILE, CLIENT_CERT_FILE, KEY_FILE, SW_LOG_INFO, SW_SOCK_SSL, log_level, set_ssl_path,
-    tls_fields,
+    CERT_FILE, CLIENT_CERT_FILE, KEY_FILE, SW_LOG_INFO, SW_SOCK_SSL, edit_tls, log_level,
+    set_ssl_path,
 };
 use super::*;
 use std::io::{Read, Write};
@@ -638,8 +638,10 @@ fn client_cert_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
 fn test_ssl_client_cert(mode: c_int) {
     let (serv, port) = tls_server(mode, SW_LOG_INFO, "server.crt", "server.key");
     let context = port.ssl_context();
-    tls_fields(context).verify_peer = 1;
-    tls_fields(context).allow_self_signed = 1;
+    edit_tls(context, |fields| {
+        fields.verify_peer = true;
+        fields.allow_self_signed = true;
+    });
     set_ssl_path(context, CLIENT_CERT_FILE, ssl_file("ca-cert.pem").as_ptr());
     port.ssl_init();
 

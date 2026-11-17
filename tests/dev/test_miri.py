@@ -13,7 +13,6 @@ FOREIGN = 'its tests call a C library Miri can\'t run'
 EXEMPT = {
     **dict.fromkeys(['brotli', 'zlib', 'cares-sys', 'curl-sys', 'firebird-sys', 'ssh2-sys',
                      'curl', 'firebird', 'oci', 'odbc', 'pgsql', 'sqlite', 'ssh2'], FOREIGN),
-    'tls': 'OpenSSL (SSL_select_next_proto and the rest)',
     'locale': "libc's setlocale",
     'ports': 'datagram sockets: Miri opens SOCK_STREAM only',
     'oracle': 'the pinned upstream C++, for differential tests',

@@ -1,15 +1,25 @@
 # TLS/DTLS boundary
 
-Feature bit 262144 (`tls`). `crates/tls` defines `swoole_ssl_init`/`destroy`/`get_error`
+Feature bit 262144 (`tls`). `corebase::tls` defines `swoole_ssl_init`/`destroy`/`get_error`
 (`swoole_ssl_init`, `swr_v1_tls_destroy`, `swr_v1_tls_error`), and `dtls::Session` is a Rust
 record. No C or C++ reads `SSLContext`; [swoole_ssl.h](swoole_ssl.h) keeps the OpenSSL
-switches C++ still reads. The TLS constants stay in Rust (`crates/tls/src/constants.rs`);
+switches C++ still reads. The TLS constants stay in Rust (`crates/corebase/src/tls/constants.rs`);
 the `tls-constants` gate compares them with the pinned `swoole_ssl.h`.
-Tests: `crates/tls` unit tests, upstream's `protocol/ssl.cpp` TESTs ported to Rust
+Tests: `cargo test -p swoole-rs-corebase tls::`, upstream's `protocol/ssl.cpp` TESTs ported to Rust
 (`ssl.*` in `hooks-system-rust`, tests/modules/hooks/README.md) and the ssl/dtls PHPT families. Requires OpenSSL 3 (rejected at compile
 time otherwise).
 
-## SSLContext (`crates/tls/src/context.rs`, `owned.rs`)
+Socket writes, close/free operations and process-pool listener creation call this
+module directly. The reactor installs its close/default write handlers when it is
+created; no startup registration is needed for core socket operations. External
+hooks/client reactor initialization and the sleep callback remain registered.
+
+Corebase's Miri job now covers the TLS tests that do not require unsupported foreign
+calls. OpenSSL, access(2) and unsupported socket operations remain explicit Miri
+exclusions and run in ordinary and ASan tests. The former TLS crate was entirely
+excluded from Miri.
+
+## SSLContext (`crates/corebase/src/tls/context.rs`, `owned.rs`)
 
 Rust makes every OpenSSL call that creates and configures the `SSL_CTX`: method
 and protocol options, certificate/key/chain, CA paths, client CA list, ciphers,
@@ -24,8 +34,8 @@ rejected. Ports publish independent immutable `TlsSettings` for concurrent TCP,
 SNI and DTLS handshakes. Clients and coroutine sockets freeze configuration before
 creating a session; accepted sockets retain their listener's snapshot. Handshake
 retries and verification read the snapshot, so later builder edits cannot change
-an active session. Rebuilding a context creates a fresh snapshot. The raw owner
-exports remain for the original-test adapters. The password callback reads the
+an active session. Rebuilding a context creates a fresh snapshot. Original-test adapters edit configuration through scoped loans; no raw field
+view survives a returned loan. The password callback reads the
 configuration's passphrase only while `create` loads the certificate and key files,
 then goes: upstream leaves it installed, but nothing reads a key through the context
 afterwards. `owner_assign` copies configuration and takes a context reference.
@@ -33,7 +43,7 @@ Warnings keep upstream's text and the method name
 upstream's `__SW_FUNC__` printed. Upstream's renegotiation `swoole_debug` exists only
 in `SW_DEBUG` builds and is not reproduced.
 
-## DTLS (`crates/tls/src/dtls.rs`)
+## DTLS (`crates/corebase/src/tls/dtls.rs`)
 
 - `dtls_open` makes a session over a socket: its descriptor and peer, `listened` and `peek_mode`, a datagram queue and a reference to the port's `SSLContext`. The session's BIO owns it, so it goes when the socket's SSL is freed, and `DtlsSession::of` finds it through the socket; crates/server accepts, feeds and closes it.
 - `dtls_append` copies a payload; `dtls_session_receive` reads the socket's next datagram into a new `dtls::Buffer`. Reads preserve datagram boundaries, short-read consumption, zero-length packets, retry and peek behavior.

@@ -13,14 +13,14 @@ use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::ossupport::{Pool, PoolHooks, pool_complete};
 use swoole_rs_corebase::reactor::event_api::{event_del, on_destroy, swr_v1_event_current};
 use swoole_rs_corebase::reactor::{Event, Running, Socket};
+use swoole_rs_corebase::tls::socket_pair::{SocketPair, close, drop, unix_socket};
+use swoole_rs_corebase::tls::upstream::write_sync;
 use swoole_rs_corebase::{
     log, microtime, set_thread_async_threads, swoole_thread_clean, swoole_thread_init,
     swr_v1_core_aio_core_worker_num, swr_v1_core_aio_default_socket, swr_v1_core_aio_max_idle_time,
     swr_v1_core_aio_max_wait_time, swr_v1_core_aio_worker_num, swr_v1_core_cpu_num,
     swr_v1_core_set_aio_default_socket, thread_async_threads,
 };
-use swoole_rs_tls::socket_pair::{SocketPair, close, drop, unix_socket};
-use swoole_rs_tls::upstream::write_sync;
 
 /// `SW_FD_AIO`.
 const FD_AIO: c_int = 5;

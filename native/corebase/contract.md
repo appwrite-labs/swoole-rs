@@ -65,13 +65,13 @@ Rust defines `swoole_thread_init`, `swoole_is_main_thread`, `swoole_clean` and
 `swoole_fork` under their C++ symbols, `swoole_thread_clean` (called by path), `swoole_init`'s body
 (`swr_v1_core_swoole_init`, which crates/ffi calls by path) and `swoole_fork_exec` (`fork_exec`, which crates/server's manager calls).
 `swoole_init` itself is crates/ffi's (`src/init.rs`). It registers the native
-startup leaves and timer cleanup in `native::NativeHost` before running the body.
-Memory, logger, signal and event lifecycles are direct calls inside corebase;
+startup leaves in `native::NativeHost` before running the body.
+Memory, logger, signal, timer and event lifecycles are direct calls inside corebase;
 their order is unchanged. Before host registration the lifecycle sequences skip
 those leaves and `swoole_fork` returns -1. Coroutine event initialization and waiting
-also call `corebase::reactor` directly. Reactor sleep, timer selection and TLS socket
-release remain registered operations of hooks, timer and TLS, as do the external
-reactor initializer and writer callbacks.
+also call `corebase::reactor` directly. Timers, socket I/O/cleanup and process-pool
+listeners are direct calls inside corebase. Reactor sleep and the external
+hooks/client reactor initializers remain registered callbacks.
 
 - Init: the record's defaults (`swr_v1_core_init`, below), `SwooleG = {}`, libc's
   allocator, the native leaves in upstream's order (`sw_error`, stdout, the

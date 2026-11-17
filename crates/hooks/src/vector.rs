@@ -15,7 +15,7 @@ pub(crate) use swoole_rs_corebase::reactor::IovBuffer;
 use swoole_rs_corebase::reactor::{
     Drain, Fill, ReactorIov, Socket, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned,
 };
-use swoole_rs_tls::upstream::{ssl_recv_fill, ssl_send_drain};
+use swoole_rs_corebase::tls::upstream::{ssl_recv_fill, ssl_send_drain};
 
 /// A `msghdr` over the `count` iovecs at `iov`, with no address and no control data.
 fn message_header(iov: *mut libc::iovec, count: usize) -> libc::msghdr {
