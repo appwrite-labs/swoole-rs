@@ -45,7 +45,6 @@
   "crates/phphttp/src/parse.rs:swr_zend_http_max_input_vars": "shim_http_ctx.c: reads PG(max_input_vars).",
   "crates/phphttp/src/parse.rs:swr_zend_http_treat_data": "parse.rs treat_data: contain_with encloses input filtering and variable registration.",
   "crates/phphttp/src/parse.rs:swr_zend_http_upload": "shim_http_ctx.c: inserts retained path strings into the fresh upload list, not user objects.",
-  "crates/phphttp/src/parse.rs:swr_zend_http_uploads_release": "shim_http_ctx.c: unlinks local upload paths and releases the internal uploaded-files table; no user stream wrappers.",
   "crates/phphttp/src/parse.rs:swr_zend_treat_string": "Caller encloses the SAPI treat_data call in contain_with: phphttp parse.rs treat_string or phpstdext text.rs parse_str.",
   "crates/phphttp/src/server.rs:swr_zend_http_uploads_rinit": "shim_http_ctx.c: creates the internal uploaded-files hash with no destructor; allocator contract in docs/zend.md#memory_limit.",
   "crates/phphttp/src/server.rs:swr_zend_http_uploads_rshutdown": "shim_http_ctx.c: unlinks local upload paths and releases the internal uploaded-files table; no user stream wrappers.",
