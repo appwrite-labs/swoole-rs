@@ -1,8 +1,8 @@
 //! `swoole::Protocol`: how a stream socket's bytes split into packages, and the
 //! callbacks that measure and hand on each one. Upstream's layout, which C++ shares.
 use core::ffi::{c_int, c_void};
-use core::marker::PhantomData;
 use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::lent::Fill;
 use swoole_rs_corebase::net_types::PacketLength;
 pub use swoole_rs_corebase::reactor::Socket;
 
@@ -35,47 +35,35 @@ pub type GetPackageLengthSize = fn(Socket<'_>) -> u8;
 /// A whole package in a receive buffer, lent to its handler: `len` bytes at `data`
 /// (null for none), readable and writable for `'a`. It stays a pointer: the handler
 /// may run PHP that frees the buffer, after which it reads the package no more.
-pub struct Package<'a> {
-    data: *mut u8,
-    len: usize,
-    lent: PhantomData<&'a mut [u8]>,
-}
+pub struct Package<'a>(Fill<'a, u8>);
 
 impl<'a> Package<'a> {
     /// `len` bytes of `buffer` from `start`, cut to what it holds.
     pub fn of(buffer: &'a mut CppString, start: usize, len: usize) -> Self {
-        Self {
-            len: len.min(buffer.len().saturating_sub(start)),
-            data: buffer.as_mut_ptr().wrapping_add(start),
-            lent: PhantomData,
-        }
+        Self(Fill::string_range(buffer, start, len))
     }
 
     /// Where the package starts, or null for none.
     #[must_use]
     pub const fn as_ptr(&self) -> *const u8 {
-        self.data
+        self.0.as_ptr()
     }
 
     /// The package's length.
     #[must_use]
     pub const fn len(&self) -> usize {
-        self.len
+        self.0.len()
     }
 
     /// Whether the package is none (null) or holds no bytes.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.data.is_null() || self.len == 0
+        self.0.is_empty()
     }
 
     /// The package's bytes, borrowed from it.
     pub fn bytes(&mut self) -> &mut [u8] {
-        if self.data.is_null() {
-            return &mut [];
-        }
-        // SAFETY: the type's invariant: `len` bytes at `data`, lent to the package.
-        unsafe { core::slice::from_raw_parts_mut(self.data, self.len) }
+        self.0.slots()
     }
 }
 
