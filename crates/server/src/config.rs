@@ -460,21 +460,23 @@ impl ServerConfig {
     }
 
     /// `serv->pipe_command`: the command pipe, once `add_command` has made it.
-    pub(crate) fn command_pipe(&self) -> Option<&swoole_rs_tls::socket_pair::SocketPair> {
+    pub(crate) fn command_pipe(&self) -> Option<&swoole_rs_corebase::tls::socket_pair::SocketPair> {
         self.pipe_command.0.get().map(|pipe| &**pipe)
     }
 }
 
 /// `serv->pipe_command`: the command pipe `add_command` opened, if it has, which the
 /// server keeps as long as its configuration.
-pub struct CommandPipe(std::sync::OnceLock<std::sync::Arc<swoole_rs_tls::socket_pair::SocketPair>>);
+pub struct CommandPipe(
+    std::sync::OnceLock<std::sync::Arc<swoole_rs_corebase::tls::socket_pair::SocketPair>>,
+);
 
 impl CommandPipe {
     /// `serv->pipe_command = pipe`: the server keeps it, unless it kept one already,
     /// whose place it doesn't take: then it closes.
-    pub(crate) fn keep(&self, mut pipe: Box<swoole_rs_tls::socket_pair::SocketPair>) {
+    pub(crate) fn keep(&self, mut pipe: Box<swoole_rs_corebase::tls::socket_pair::SocketPair>) {
         if self.0.get().is_some() {
-            swoole_rs_tls::socket_pair::drop(&mut pipe);
+            swoole_rs_corebase::tls::socket_pair::drop(&mut pipe);
             return;
         }
         let _kept = self.0.set(std::sync::Arc::from(pipe));

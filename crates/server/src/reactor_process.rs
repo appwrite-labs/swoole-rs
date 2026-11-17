@@ -21,7 +21,7 @@ pub(crate) mod native;
 const FD_SESSION: c_int = 0;
 const FD_STREAM_SERVER: c_int = 1;
 #[cfg(any(test, feature = "upstream-symbols"))]
-use swoole_rs_tls::SslState::SW_SSL_STATE_READY as SSL_READY;
+use swoole_rs_corebase::tls::SslState::SW_SSL_STATE_READY as SSL_READY;
 
 /// `Socket::is_stream(type)`.
 fn is_stream(port: view::Port<'_>) -> bool {

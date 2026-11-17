@@ -9,7 +9,7 @@ use std::ffi::{CStr, c_int, c_ulong};
 use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::set_errno;
 use swoole_rs_corebase::sys::ReadSlot;
-use swoole_rs_tls::{Bio, Ssl, SslFailure};
+use swoole_rs_corebase::tls::{Bio, Ssl, SslFailure};
 
 use openssl_sys as ssl;
 
@@ -160,7 +160,7 @@ impl<S: TlsSocket> Tls<'_, S> {
             }
             ssl::SSL_ERROR_SYSCALL => false,
             _ => {
-                let code = swoole_rs_tls::pop_error();
+                let code = swoole_rs_corebase::tls::pop_error();
                 if code == 0 {
                     self.socket.set_err(SSL_BAD_PROTOCOL);
                 } else {
@@ -312,7 +312,7 @@ mod tests {
     }
 
     /// The view over the session `network` holds.
-    fn tls<'a>(fd: c_int, held: &'a swoole_rs_tls::HeldSsl<'_>) -> Tls<'a, Recorder> {
+    fn tls<'a>(fd: c_int, held: &'a swoole_rs_corebase::tls::HeldSsl<'_>) -> Tls<'a, Recorder> {
         let tls = Tls {
             uring: &HOST,
             socket: Recorder,

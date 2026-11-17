@@ -261,7 +261,7 @@ pub(crate) fn add_command(serv: Server<'_>, add: &AddCommand<'_>) -> bool {
 
 /// `serv->pipe_command = new UnixSocket(false, SOCK_DGRAM)`: whether it opened.
 fn new_command_pipe(serv: Server<'_>) -> bool {
-    use swoole_rs_tls::socket_pair::{drop, unix_socket};
+    use swoole_rs_corebase::tls::socket_pair::{drop, unix_socket};
     let mut pipe = Box::new(unix_socket(false, libc::SOCK_DGRAM));
     if pipe.master_end().is_none() || pipe.worker_end().is_none() {
         drop(&mut pipe);
@@ -445,8 +445,9 @@ mod tests {
         if !pipe.is_null() {
             // SAFETY: the pair `add_command` kept, which nothing uses after the test;
             // the configuration frees it.
-            let pair = unsafe { &mut *pipe.cast::<swoole_rs_tls::socket_pair::SocketPair>() };
-            swoole_rs_tls::socket_pair::drop(pair);
+            let pair =
+                unsafe { &mut *pipe.cast::<swoole_rs_corebase::tls::socket_pair::SocketPair>() };
+            swoole_rs_corebase::tls::socket_pair::drop(pair);
         }
         pipe.addr()
     }

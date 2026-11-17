@@ -8,8 +8,8 @@ use std::{
 };
 use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_corebase::reactor::{SocketAddress, SocketFields, TimeoutKind};
+use swoole_rs_corebase::tls::upstream::{recv_sync, send_sync, socket_ssl_close};
 use swoole_rs_hooks::co_socket::{Co, OwnedCo};
-use swoole_rs_tls::upstream::{recv_sync, send_sync, socket_ssl_close};
 use swoole_rs_zend::{
     E_ERROR, Owned, Value, ZString,
     bailout::{self, Bailout},
@@ -297,10 +297,10 @@ impl Socket {
     }
 
     /// The connection's negotiated protocol and cipher, None without an SSL.
-    pub(crate) fn ssl_session(&self) -> Option<swoole_rs_tls::upstream::Session> {
+    pub(crate) fn ssl_session(&self) -> Option<swoole_rs_corebase::tls::upstream::Session> {
         let session = self
             .co()
-            .with_network(swoole_rs_tls::upstream::socket_ssl_session);
+            .with_network(swoole_rs_corebase::tls::upstream::socket_ssl_session);
         session.flatten()
     }
 
@@ -322,7 +322,7 @@ impl Socket {
     pub(crate) fn peer_chain(&self) -> Vec<Vec<u8>> {
         let chain = self
             .co()
-            .with_network(swoole_rs_tls::upstream::socket_ssl_peer_chain_pem);
+            .with_network(swoole_rs_corebase::tls::upstream::socket_ssl_peer_chain_pem);
         chain.unwrap_or_default()
     }
 

@@ -60,7 +60,10 @@ const HOST_1: &CStr = c"www.baidu.com";
 const HOST_2: &CStr = c"www.xxxxxxxxxxxxxxxxxxxxx00000xxxxxxxxx----not_found.com";
 const TEST_TMP_FILE: &CStr = c"/tmp/swoole_core_test_file";
 const TEST_TMP_DIR: &CStr = c"/tmp/swoole_core_test_dir";
-const TEST_LOG_FILE: &CStr = c"/tmp/swoole.log";
+/// Upstream's `/tmp/swoole.log`, renamed: `freopen` unlinks and rewrites it, and the
+/// http-server-rust phase, which can share the container, logs to `/tmp/swoole.log` and
+/// reads it back (#4672).
+const TEST_LOG_FILE: &CStr = c"/tmp/swoole-hooks-system.log";
 const TEST_JPG_FILE: &str = "/examples/test.jpg";
 
 /// Large enough for glibc's `struct stat` and `struct statvfs`; zeroed, so

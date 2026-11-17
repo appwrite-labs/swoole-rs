@@ -450,7 +450,7 @@
         "M07"
       ],
       "owned_paths": [
-        "crates/tls/",
+        "crates/corebase/src/tls/",
         "native/tls/"
       ],
       "phpt_families": [

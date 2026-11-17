@@ -1266,7 +1266,7 @@ pub(crate) fn strncasecmp(left: &CStr, right: &CStr, count: usize) -> c_int {
 /// `strtoul(3)` of `text` in `base`: the value (errno as libc leaves it) and the
 /// text from where the number ended.
 #[must_use]
-pub(crate) fn strtoul(text: &CStr, base: c_int) -> (libc::c_ulong, &CStr) {
+pub fn strtoul(text: &CStr, base: c_int) -> (libc::c_ulong, &CStr) {
     let mut end = text.as_ptr().cast_mut();
     let value = c::strtoul(text.into(), &mut end, base);
     // strtoul ends inside the text, at the latest on its NUL.

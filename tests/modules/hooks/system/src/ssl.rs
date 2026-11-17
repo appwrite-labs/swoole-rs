@@ -1,14 +1,14 @@
 //! Upstream's `core-tests/src/protocol/ssl.cpp`, one function per TEST with the same
-//! inputs and expected values, over crates/tls: `swoole_ssl_init`, `swoole_ssl_destroy`
+//! inputs and expected values, over corebase::tls: `swoole_ssl_init`, `swoole_ssl_destroy`
 //! (`swr_v1_tls_destroy`) and `swoole_ssl_get_error` (`swr_v1_tls_error`) by path,
-//! `SSLContext::create` as crates/tls's `ssl_context_create` by path, and [`SslContext`]
+//! `SSLContext::create` as corebase::tls's `ssl_context_create` by path, and [`SslContext`]
 //! holding an owner from `tls_owner_new` and setting it with `string_set`.
 
-use std::ffi::{CStr, c_char, c_int, c_ulong, c_void};
+use std::ffi::{CStr, c_char, c_int, c_ulong};
 
 use super::network_socket::err_put_error;
 use super::socket::{TlsPrepared, get_ssl_dir, string_set, tls_owner_new};
-use swoole_rs_tls::{swoole_ssl_init, swr_v1_tls_destroy, swr_v1_tls_error};
+use swoole_rs_corebase::tls::{swoole_ssl_init, swr_v1_tls_destroy, swr_v1_tls_error};
 
 // OpenSSL's codes (the SSL_F_* function codes are 0 in OpenSSL 3).
 const ERR_LIB_SSL: c_int = 20;
@@ -18,8 +18,6 @@ const SSL_R_PROTOCOL_IS_SHUTDOWN: c_int = 207;
 const CERT_FILE: usize = 4;
 const KEY_FILE: usize = 5;
 const PASSPHRASE: usize = 6;
-/// `offsetof(swr_v1_tls_owner_fields, context)`.
-const CONTEXT: usize = 24;
 
 #[link(name = "crypto")]
 unsafe extern "C" {
@@ -46,22 +44,25 @@ impl SslContext {
 
     fn create(&self) -> bool {
         // SAFETY: the live owner this context made, which only this test configures.
-        let owner = unsafe { &*self.0.owner.cast::<swoole_rs_tls::OwnedTlsContext>() };
+        let owner = unsafe {
+            &*self
+                .0
+                .owner
+                .cast::<swoole_rs_corebase::tls::OwnedTlsContext>()
+        };
         let mut owner = owner.borrow_configuration();
-        swoole_rs_tls::ssl_context_create(&mut owner)
+        swoole_rs_corebase::tls::ssl_context_create(&mut owner)
     }
 
     fn ready(&self) -> bool {
-        // SAFETY: the owner's live fields, whose `SSL_CTX *context` is at CONTEXT.
-        !unsafe {
-            *self
+        // SAFETY: this fixture holds the owner's reference until Drop.
+        let owner = unsafe {
+            &*self
                 .0
-                .fields
-                .cast::<u8>()
-                .add(CONTEXT)
-                .cast::<*mut c_void>()
-        }
-        .is_null()
+                .owner
+                .cast::<swoole_rs_corebase::tls::OwnedTlsContext>()
+        };
+        !owner.fields().context_ptr().is_null()
     }
 }
 
@@ -69,7 +70,7 @@ impl Drop for SslContext {
     fn drop(&mut self) {
         // SAFETY: the owner's one reference this context made, released once.
         drop(unsafe {
-            std::rc::Rc::<swoole_rs_tls::OwnedTlsContext>::from_raw(self.0.owner.cast())
+            std::rc::Rc::<swoole_rs_corebase::tls::OwnedTlsContext>::from_raw(self.0.owner.cast())
         });
     }
 }

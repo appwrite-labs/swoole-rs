@@ -318,7 +318,7 @@ pub(crate) fn abort(
 /// freed.
 pub(crate) fn discard(serv: view::Server<'_>, port: Option<view::Port<'_>>, sock: OwnedSocket) {
     count_abort(serv, port);
-    swoole_rs_tls::upstream::socket_free(Some(sock));
+    swoole_rs_corebase::tls::upstream::socket_free(Some(sock));
 }
 
 fn count_abort(serv: view::Server<'_>, port: Option<view::Port<'_>>) {

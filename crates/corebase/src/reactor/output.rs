@@ -7,7 +7,7 @@ use crate::reactor::Caught;
 use std::io::Error;
 use std::os::raw::c_int;
 
-/// What queued output needs from its `Socket` (`crates/tls`'s `upstream.rs`).
+/// What queued output needs from its `Socket` (`corebase::tls`'s `upstream.rs`).
 pub trait OutputEffects {
     /// `Socket::send(data, length, 0)`: how many bytes it sent, or None leaving the
     /// kernel's errno.

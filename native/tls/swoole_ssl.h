@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-// The TLS switches C++ reads: OpenSSL's header macros (corebase/switches.cc). crates/tls
+// The TLS switches C++ reads: OpenSSL's header macros (corebase/switches.cc). corebase::tls
 // owns SSLContext and defines swoole_ssl_* under their upstream symbols.
 #pragma once
 

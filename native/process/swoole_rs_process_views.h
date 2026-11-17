@@ -1,6 +1,6 @@
 #ifndef SWOOLE_RS_PROCESS_VIEWS_H
 #define SWOOLE_RS_PROCESS_VIEWS_H
-// Generated from crates/corebase/src/process/{worker_record,process_pool}.rs and crates/tls/src/socket_pair.rs.
+// Generated from crates/corebase/src/process/{worker_record,process_pool}.rs and crates/corebase/src/tls/socket_pair.rs.
 // Typed native loans only; Rust owns the record layouts and operations.
 #define SWR_WORKER_RECORD_FIELDS \
     int pid; \

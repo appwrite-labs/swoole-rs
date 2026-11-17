@@ -7,9 +7,9 @@ use libc::c_int;
 use std::mem::ManuallyDrop;
 use swoole_rs_clients::client::ClientRecord;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::tls::{self as tls, Text, Value};
 use swoole_rs_phpswoole::length::Named;
 use swoole_rs_ports::framing_recv::default_length_func;
-use swoole_rs_tls::{self as tls, Text, Value};
 use swoole_rs_zend::host::callable::Callable;
 use swoole_rs_zend::{Array, E_ERROR, Owned, Value as Zval, ZString, bailout};
 
@@ -327,7 +327,7 @@ fn proxy(
 }
 
 /// `php_swoole_client_check_ssl_setting(cli, settings)`, written into `context`,
-/// a client's `SSLContext` (crates/tls).
+/// a client's `SSLContext` (`corebase::tls`).
 pub(crate) fn apply_ssl(context: &tls::TlsContext, settings: &Array) {
     let mut owner = context.borrow_configuration();
     let options = Options(settings);

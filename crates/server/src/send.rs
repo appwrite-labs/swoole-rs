@@ -94,7 +94,7 @@ pub fn send_parts(
     }
     let (conn, socket) = writes_now(state, session_id)?;
     let parts = [IoSlice::new(head), IoSlice::new(body)];
-    let write = |fd| swoole_rs_tls::upstream::writev(fd, &parts);
+    let write = |fd| swoole_rs_corebase::tls::upstream::writev(fd, &parts);
     // A failed write sent nothing: all of it is queued, where the reactor meets the error.
     let sent = record_write(socket, write, steady_ms).unwrap_or(0);
     let total = head.len() + body.len();
@@ -365,7 +365,7 @@ fn direct_send(
         return false;
     }
     loop {
-        let sent = swoole_rs_tls::upstream::send(sock, data, 0);
+        let sent = swoole_rs_corebase::tls::upstream::send(sock, data, 0);
         if sent == Some(data.len()) {
             conn.set_last_send_time(microtime());
             return true;
@@ -400,7 +400,7 @@ fn send_file(sock: Socket<'_>, task: &[u8]) -> bool {
         return false;
     };
     let (offset, length) = (i64::from_ne_bytes(offset), usize::from_ne_bytes(length));
-    swoole_rs_tls::upstream::socket_sendfile_async(sock, name, offset, length)
+    swoole_rs_corebase::tls::upstream::socket_sendfile_async(sock, name, offset, length)
 }
 
 /// `swoole_timer_add(sec2msec(port->max_idle_time), true, ...)` for the socket's

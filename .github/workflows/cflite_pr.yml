@@ -20,7 +20,6 @@ on:
       - 'crates/locale/**'
       - 'crates/oracle/**'
       - 'crates/protocols/**'
-      - 'crates/tls/**'
       - 'crates/websocket/**'
       - 'crates/zlib/**'
       - 'fuzz/**'

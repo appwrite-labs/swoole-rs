@@ -21,7 +21,7 @@ mod recording {
     use super::{Events, LOOP, Multi, log};
     use std::ffi::{c_long, c_void};
     use std::{cell::Cell, ptr};
-    use swoole_rs_tls::event_socket::EventSocket;
+    use swoole_rs_corebase::tls::event_socket::EventSocket;
 
     pub(super) static OPS: crate::host::Ops = crate::host::Ops {
         event_available,

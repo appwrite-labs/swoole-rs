@@ -316,7 +316,7 @@ the last two that compiled core-tests files on their own, are gone. The timer ca
 call `corebase::timer`'s Rust functions with owned closures and issued timer IDs; `SwooleTG.timer` is crates/corebase's `thread_timer`. Upstream's shared-memory
 counters become `Cell`s (the callbacks run in the case's process), and its
 `uint64_t` elapsed-time subtractions wrap as they do in C++. The ssl cases call
-crates/tls's `swoole_ssl_init`, `swr_v1_tls_destroy`, `swr_v1_tls_error` and
+corebase::tls's `swoole_ssl_init`, `swr_v1_tls_destroy`, `swr_v1_tls_error` and
 `ssl_context_create` (`SSLContext::create`) by path, and build the context through `owner_new` and its string slots' `set_shared`;
 `ERR_put_error` is network_socket.rs's.
 

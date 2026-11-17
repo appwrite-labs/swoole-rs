@@ -2,7 +2,7 @@
 //! [`AddressStorage`]: the sockaddr and length for an IPv4, IPv6 or Unix socket type,
 //! the host parsed as an IP literal (with the numeric grammar native `inet_pton`
 //! accepts) or handed to the caller's fallback. crates/clients exports it to native
-//! code with the resolver; crates/tls binds with it.
+//! code with the resolver; `corebase::tls` binds with it.
 use crate::constants::SocketType;
 use crate::net_types::AddressStorage;
 use std::ffi::c_int;

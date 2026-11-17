@@ -193,19 +193,6 @@ pub fn send_pipe_message(
     swr_v1_process_worker_send(native, pool, pipe, queue, id, data, flags)
 }
 
-/// Creates a listener owned by the process pool, which the pool's `close` hook
-/// frees; supplied by crates/ffi at startup.
-#[cfg(feature = "upstream-symbols")]
-pub type Listener = fn(c_int, &CStr, c_int, c_int) -> Option<crate::process::pool::Connection>;
-#[cfg(feature = "upstream-symbols")]
-static LISTENER: std::sync::OnceLock<Listener> = std::sync::OnceLock::new();
-
-/// Registers the listener factory once, before any pool listens.
-#[cfg(feature = "upstream-symbols")]
-pub fn set_listener(listener: Listener) {
-    LISTENER.get_or_init(|| listener);
-}
-
 /// `ProcessPool::listen(socket_file, backlog)`: a unix stream listener.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
@@ -227,11 +214,8 @@ pub fn listen_socket(
     backlog: c_int,
 ) -> bool {
     listen(pool.record(), host, port, || {
-        LISTENER
-            .get()
-            .unwrap_or_else(|| crate::fatal("pool listener is not registered"))(
-            kind, host, port, backlog,
-        )
+        let socket = crate::tls::upstream::server_socket(kind, host, port, backlog)?;
+        Some(std::rc::Rc::new(socket))
     })
 }
 

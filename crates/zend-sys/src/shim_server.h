@@ -24,8 +24,10 @@ int swr_zend_try_array_merge(zval *dest, zval *src);
 void swr_zend_stack_unlimit(void **saved);
 void swr_zend_stack_restore(void *const *saved);
 
-/* php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE | REPORT_ERRORS, NULL). */
-bool swr_zend_mkdir_recursive(const char *path);
+/* php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE | REPORT_ERRORS, NULL) into
+ * `made`, inside zend_try (nonzero for a bailout): the warning runs the user error
+ * handler, and a user stream wrapper's mkdir() runs PHP code. */
+int swr_zend_try_mkdir_recursive(const char *path, bool *made);
 
 /* php_swoole_is_fatal_error(): the last error's message, file ("-" without one)
  * and line when it was fatal (E_FATAL_ERRORS), else false. */

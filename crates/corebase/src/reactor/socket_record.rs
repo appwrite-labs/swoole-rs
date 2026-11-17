@@ -17,7 +17,7 @@ use std::ops::{Deref, DerefMut};
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-/// `network::Socket`'s TLS state group, in the layout `swoole_rs_tls` works on.
+/// `network::Socket`'s TLS state group, in the layout `swoole_rs_corebase::tls` works on.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SocketTlsState {

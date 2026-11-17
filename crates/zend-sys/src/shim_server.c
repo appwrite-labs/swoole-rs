@@ -1,5 +1,5 @@
-/* Stays C (docs/zend.md, What stays C): bailout (serialize, unserialize and array
- * merges run PHP), globals (EG(stack_limit), PG(last_error_*)) and version
+/* Stays C (docs/zend.md, What stays C): bailout (serialize, unserialize, array
+ * merges and mkdir run PHP), globals (EG(stack_limit), PG(last_error_*)) and version
  * (ZEND_CHECK_STACK_LIMIT). */
 #include "shim.h"
 #include "shim_server.h"
@@ -76,8 +76,12 @@ void swr_zend_stack_restore(void *const *saved) {
 #endif
 }
 
-bool swr_zend_mkdir_recursive(const char *path) {
-    return php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE | REPORT_ERRORS, NULL);
+int swr_zend_try_mkdir_recursive(const char *path, bool *made) {
+    volatile int bailed = 0;
+    *made = false;
+    SWR_ZEND_TRY { *made = php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE | REPORT_ERRORS, NULL); }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
+    return bailed;
 }
 
 bool swr_zend_last_fatal_error(const char **message, const char **file, int *line) {

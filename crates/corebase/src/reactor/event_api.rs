@@ -120,35 +120,6 @@ pub fn add_or_update(socket: crate::reactor::Heap<'_>, event: Events) -> bool {
     crate::reactor::reactor_upstream::interest(reactor, socket, kind, Events::NONE)
 }
 
-/// crates/tls's reactor I/O, which depends on this crate: `swoole_init` registers it.
-#[derive(Clone, Copy)]
-pub struct Writers {
-    /// `Reactor::write` and `Reactor::writev`: send what the socket takes now, copy
-    /// the rest into its output buffer and register the heap socket for writing. The
-    /// bytes taken, or `None` when it failed.
-    pub write: fn(crate::reactor::Running<'_>, crate::reactor::Heap<'_>, &[u8]) -> Option<usize>,
-    pub writev:
-        fn(crate::reactor::Running<'_>, crate::reactor::Heap<'_>, &[IoSlice<'_>]) -> Option<usize>,
-    /// `Reactor::_close` and `Reactor::_writable_callback`: a new reactor's close and
-    /// default write handler.
-    pub close: crate::reactor::ReactorClose,
-    pub writable: Handler,
-}
-
-/// crates/tls's [`Writers`], which depends on this crate: `swoole_init` registers them.
-static WRITERS: OnceLock<Writers> = OnceLock::new();
-
-/// Registers crates/tls's writers; later registrations are ignored.
-pub fn set_writers(writers: Writers) {
-    WRITERS.get_or_init(|| writers);
-}
-
-/// The writers `swoole_init` registered, if it has.
-#[must_use]
-pub fn registered_writers() -> Option<Writers> {
-    WRITERS.get().copied()
-}
-
 /// The handlers crates/hooks (`System::init_reactor`) and crates/clients
 /// (`Client::init_reactor`) set on an event loop's reactor, in that order. Both depend
 /// on this crate: `swoole_init` registers them.
@@ -166,22 +137,13 @@ pub(crate) fn init_reactor(reactor: crate::reactor::Running<'_>) {
     }
 }
 
-/// The thread's reactor and the registered writers. Upstream calls `reactor->write`
-/// unchecked; a reactor with no write function is fatal here.
-fn writers<'a>() -> (crate::reactor::Running<'a>, &'static Writers) {
-    match (running(), WRITERS.get()) {
-        (Some(reactor), Some(writers)) => (reactor, writers),
-        _ => crate::fatal("the reactor has no write function"),
-    }
-}
-
 /// `ssize_t swoole_event_write(Socket *socket, const void *data, size_t len)` of `data`
 /// on a heap socket (a write that can't all go out registers it for writing): the
 /// bytes taken, `None` when it failed.
 #[must_use]
 pub fn event_write(socket: crate::reactor::Heap<'_>, data: &[u8]) -> Option<usize> {
-    let (reactor, writers) = writers();
-    (writers.write)(reactor, socket, data)
+    let reactor = running().unwrap_or_else(|| crate::fatal("the reactor has no write function"));
+    crate::tls::reactor_write::reactor_write(reactor, socket, data)
 }
 
 /// `ssize_t swoole_event_writev(Socket *socket, const iovec *iov, size_t iovcnt)` of
@@ -192,8 +154,8 @@ pub fn swoole_event_writev(
     socket: crate::reactor::Heap<'_>,
     vectors: &[IoSlice<'_>],
 ) -> Option<usize> {
-    let (reactor, writers) = writers();
-    (writers.writev)(reactor, socket, vectors)
+    let reactor = running().unwrap_or_else(|| crate::fatal("the reactor has no write function"));
+    crate::tls::reactor_write::reactor_writev(reactor, socket, vectors)
 }
 
 /// `void swoole_event_set_handler(int fd_type, int event, ReactorHandler handler)`;

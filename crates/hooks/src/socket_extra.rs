@@ -3,8 +3,8 @@
 //! callback.
 use crate::co_socket::Co;
 use std::{any::Any, ffi::c_void, rc::Rc, sync::Arc};
+use swoole_rs_corebase::tls::{TlsContext, TlsSettings};
 use swoole_rs_corebase::{ProxyState, StringSlot};
-use swoole_rs_tls::{TlsContext, TlsSettings};
 
 /// A destructor callback, which gets the native socket.
 pub type CloseHook = Box<dyn FnOnce(*mut c_void)>;

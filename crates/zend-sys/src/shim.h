@@ -36,9 +36,6 @@ zend_class_entry *swr_zend_register_class(const char *name, const zend_function_
 void *swr_zend_emalloc(size_t size);
 void swr_zend_efree(void *ptr);
 
-/* Z_TRY_ADDREF_P. */
-void swr_zval_try_addref(zval *value);
-
 /* zend_string_init (persistent), zend_string_release and ZVAL_STR (the zval
  * takes over the reference). */
 zend_string *swr_zend_string_persistent(const char *text, size_t length);

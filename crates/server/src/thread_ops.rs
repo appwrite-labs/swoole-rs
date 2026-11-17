@@ -358,7 +358,7 @@ fn pipe_read(ctx: &ReactorContext<'_>, event: &Event) -> Option<c_int> {
                 let end = state
                     .config_ref()
                     .command_pipe()
-                    .and_then(swoole_rs_tls::socket_pair::SocketPair::worker_end);
+                    .and_then(swoole_rs_corebase::tls::socket_pair::SocketPair::worker_end);
                 let pipe = end.and_then(|end| bus.pipe_socket(*end));
                 crate::commands::call_command_handler(serv, bus, id, pipe);
             }

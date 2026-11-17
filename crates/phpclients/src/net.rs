@@ -30,7 +30,7 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     host::callable::Callable,
     string::ZBuf,
-    sys::{IS_ARRAY, IS_UNDEF, ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
+    sys::{IS_ARRAY, IS_UNDEF, ZEND_ACC_PUBLIC, zend_class_entry},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -122,7 +122,7 @@ impl Conn {
     fn alive(&self) -> bool {
         self.cli()
             .net()
-            .is_some_and(swoole_rs_tls::upstream::check_liveness)
+            .is_some_and(swoole_rs_corebase::tls::upstream::check_liveness)
     }
 
     pub(crate) fn fd(&self) -> c_int {
@@ -177,6 +177,9 @@ pub(crate) struct Data {
     pub(crate) callbacks: [Cell<Option<Rc<Callable>>>; 7],
     /// `on()` ran: the async client is initialised.
     pub(crate) listening: Cell<bool>,
+    /// The reference an async `connect()` holds on its own object until the
+    /// connection is released.
+    pub(crate) held: Cell<Option<Owned>>,
 }
 
 impl Custom for Data {
@@ -185,6 +188,13 @@ impl Custom for Data {
     }
     fn new() -> Self {
         Self::default()
+    }
+    /// Only shutdown frees an object a connection still holds: the hold goes
+    /// as the release would have given it up, without releasing the object.
+    fn free(&self, _this: &Value) {
+        if let Some(held) = self.held.take() {
+            held.delref();
+        }
     }
 }
 
@@ -242,10 +252,6 @@ impl<'a> Obj<'a> {
     pub(crate) fn this(call: &'a Call) -> Self {
         let object = call.this_value().and_then(Value::object_ref);
         Self::of(object, "a client method's $this without its data")
-    }
-
-    pub(crate) fn as_ptr(self) -> *mut zend_object {
-        self.0.as_ptr()
     }
 
     pub(crate) fn object(self) -> ObjectRef<'a> {

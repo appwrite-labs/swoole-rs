@@ -18,7 +18,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::reactor::{Events, SocketFields, SocketRecord};
 use swoole_rs_corebase::sys::ReadSlot;
-use swoole_rs_tls::Ssl;
+use swoole_rs_corebase::tls::Ssl;
 
 /// The socket's view and effects.
 pub struct UringSocketOps<'a> {
@@ -51,14 +51,14 @@ impl TlsSocket for Co {
     /// `ssl_bio_perform`'s failure: OpenSSL's text for `code`, logged with the
     /// peer and set as the socket's error.
     fn ssl_error(self, function: &CStr, error: c_int, code: c_ulong) {
-        let message = swoole_rs_tls::error_string(code);
+        let message = swoole_rs_corebase::tls::error_string(code);
         let function = function.to_string_lossy();
         self.net(|network| {
-            let (host, port) = swoole_rs_tls::upstream::peer(&network.info);
+            let (host, port) = swoole_rs_corebase::tls::upstream::peer(&network.info);
             log::notice(format_args!(
                 "{function}(fd={}) to server[{host}:{port}] failed. Error: {message}[{error}|{}]",
                 network.fd,
-                swoole_rs_tls::error_reason(code)
+                swoole_rs_corebase::tls::error_reason(code)
             ));
         });
         owned_err(self, SSL_BAD_PROTOCOL, message.as_bytes());
@@ -85,7 +85,7 @@ pub(crate) fn with<T>(socket: Co, f: impl FnOnce(&UringSocketOps<'_>) -> T) -> O
         };
         f(&UringSocketOps {
             socket,
-            tls: tls.with_session(ssl.as_ref().map(swoole_rs_tls::HeldSsl::get)),
+            tls: tls.with_session(ssl.as_ref().map(swoole_rs_corebase::tls::HeldSsl::get)),
             connect_timeout: timeouts.connect,
             available,
             check,
@@ -627,8 +627,8 @@ mod tests {
         co.with_extra(|extra| extra.uring = Some(&HOST));
         let bios = || {
             let view = with(co, |ops| {
-                let bio = |bio: Option<swoole_rs_tls::Bio<'_>>| {
-                    bio.map_or(null(), swoole_rs_tls::Bio::as_ptr)
+                let bio = |bio: Option<swoole_rs_corebase::tls::Bio<'_>>| {
+                    bio.map_or(null(), swoole_rs_corebase::tls::Bio::as_ptr)
                 };
                 let ssl = ops.tls.ssl.map_or(null(), Ssl::as_ptr);
                 (ssl, bio(ops.tls.rbio), bio(ops.tls.wbio))

@@ -12,10 +12,10 @@ use std::{ptr, rc::Rc};
 use swoole_rs_corebase::coroutine::Resume;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::reactor::{SocketRecord, event_api};
+use swoole_rs_corebase::tls::event_socket::EventSocket;
 use swoole_rs_curl_sys::{
     CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLE_FAILED_INIT, CURLcode,
 };
-use swoole_rs_tls::event_socket::EventSocket;
 
 /// Effects borrowed by a multi for its whole lifetime. Socket records and their
 /// ownership are shared by native and recording callbacks.

@@ -167,9 +167,9 @@ impl Drop for Bus {
 }
 
 #[cfg(feature = "upstream-symbols")]
-use swoole_rs_tls::upstream::socket_free as free_socket;
+use swoole_rs_corebase::tls::upstream::socket_free as free_socket;
 #[cfg(feature = "upstream-symbols")]
-use swoole_rs_tls::upstream::writev_sync;
+use swoole_rs_corebase::tls::upstream::writev_sync;
 
 /// `Socket::writev_sync` outside the hybrid: one writev(2).
 #[cfg(not(feature = "upstream-symbols"))]

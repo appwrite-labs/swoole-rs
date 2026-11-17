@@ -1,7 +1,7 @@
 # Queued TLS shutdown
 
-`Socket::ssl_shutdown` and `Socket::handle_sendfile` run in `crates/tls/src/upstream.rs`.
-crates/tls's `halfclose` feature (on with `--fix-halfclose`) selects the repaired
+`Socket::ssl_shutdown` and `Socket::handle_sendfile` run in `crates/corebase/src/tls/upstream.rs`.
+corebase's `halfclose` feature (on with `--fix-halfclose`) selects the repaired
 shutdown and passes EINTR from `handle_sendfile` back to the reactor.
 No public layout, signature, Rust ABI or second queue.
 
@@ -33,7 +33,7 @@ socket shutdown callers keep their own semantics.
 
 ## Test
 
-`cargo test -p swoole-rs-tls shutdown` runs both shutdowns over real TLS 1.2
+`cargo test -p swoole-rs-corebase shutdown` runs both shutdowns over real TLS 1.2
 peers. Paired BIOs check payload-before-alert, one-way shutdown, peer-first,
 quiet mode, repeated close/free, unfinished handshake and nonblocking errors; a
 bounded BIO checks alert retry once capacity frees; five injected result/error

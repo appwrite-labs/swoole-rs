@@ -303,7 +303,7 @@ impl<'a> Connection<'a> {
         //   socket after checking `is_active`, which the close clears first; this is
         //   upstream's unsynchronized `conn->socket` read, which the types don't cover.
         let socket = unsafe { self.record.socket.take() };
-        swoole_rs_tls::upstream::socket_free(socket);
+        swoole_rs_corebase::tls::upstream::socket_free(socket);
     }
 
     /// The WebSocket message being reassembled, taken out of the connection.

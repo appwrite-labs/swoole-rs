@@ -1,9 +1,7 @@
 //! A `Socket` record this owns, on the thread's reactor: `Swoole\Event`'s user
 //! sockets, a pipe's ends and an event waiter's watch.
+use crate::reactor::{Heap, OwnedSocket, Socket, SocketRecord, event_api, socket_upstream};
 use std::ffi::c_int;
-use swoole_rs_corebase::reactor::{
-    Heap, OwnedSocket, Socket, SocketRecord, event_api, socket_upstream,
-};
 
 /// A heap record this owns until [`EventSocket::free`], lending it only for a borrow
 /// of `self`; the reactor reaches it only through the calls below, and `free` takes
@@ -12,7 +10,7 @@ use swoole_rs_corebase::reactor::{
 pub struct EventSocket(OwnedSocket);
 
 fn reactor() -> bool {
-    !swoole_rs_corebase::thread_reactor().is_null()
+    !crate::thread_reactor().is_null()
 }
 
 impl EventSocket {
@@ -52,7 +50,7 @@ impl EventSocket {
     }
 
     #[must_use]
-    pub fn events(&self) -> swoole_rs_corebase::reactor::Events {
+    pub fn events(&self) -> crate::reactor::Events {
         self.socket().read(|record| record.events)
     }
 
@@ -63,13 +61,13 @@ impl EventSocket {
 
     /// `swoole_event_add(socket, events)`: whether it worked.
     #[must_use]
-    pub fn add(&self, events: swoole_rs_corebase::reactor::Events) -> bool {
+    pub fn add(&self, events: crate::reactor::Events) -> bool {
         event_api::event_add(self.heap(), events)
     }
 
     /// `swoole_event_set(socket, events)`: whether it worked.
     #[must_use]
-    pub fn set(&self, events: swoole_rs_corebase::reactor::Events) -> bool {
+    pub fn set(&self, events: crate::reactor::Events) -> bool {
         event_api::event_set(self.heap(), events)
     }
 
@@ -119,7 +117,7 @@ impl EventSocket {
                 )
             });
             for timer in timers.into_iter().flatten() {
-                swoole_rs_corebase::timer::del_id(timer);
+                crate::timer::del_id(timer);
             }
             // `delete in_buffer; delete out_buffer`.
             drop(buffers);
@@ -131,7 +129,7 @@ impl EventSocket {
                 }
                 // `swoole_event_defer(socket_free_defer, this)`; a reactor freed before
                 // it runs closes the socket all the same.
-                match swoole_rs_corebase::reactor::defer_free(owned) {
+                match crate::reactor::defer_free(owned) {
                     Ok(()) => return,
                     Err(owned) => owned,
                 }

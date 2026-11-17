@@ -145,7 +145,6 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-http-ffi",
  "swoole-rs-protocols",
- "swoole-rs-tls",
  "swoole-rs-websocket",
 ]
 
@@ -262,16 +261,6 @@ dependencies = [
 [[package]]
 name = "swoole-rs-protocols"
 version = "0.1.0"
-
-[[package]]
-name = "swoole-rs-tls"
-version = "0.1.0"
-dependencies = [
- "libc",
- "openssl-sys",
- "swoole-rs-corebase",
- "swoole-rs-error",
-]
 
 [[package]]
 name = "swoole-rs-websocket"

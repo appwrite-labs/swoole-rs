@@ -4,7 +4,8 @@ use crate::{
     sys::{self, zend_fcall_info_cache, zval},
 };
 use std::{
-    ffi::{CStr, CString, c_int},
+    ffi::{CStr, CString, c_int, c_long},
+    marker::PhantomData,
     ptr,
     rc::Rc,
 };
@@ -24,6 +25,67 @@ unsafe extern "C" {
     /// `zend_get_callable_name_ex(value)` into `name`, in place of what it
     /// held, which is not released.
     safe fn swr_zend_try_facade_name(value: &Value, name: &Owned) -> c_int;
+    /// `zend_is_callable_at_frame(value, $this, frame, 0, cache, NULL)` into
+    /// `valid` (`$this`: the frame's object, if any), resolving `cache`.
+    safe fn swr_zend_try_facade_callable_frame(
+        value: &Value,
+        frame: crate::CallFrame<'_>,
+        cache: &mut zend_fcall_info_cache,
+        valid: &mut bool,
+    ) -> c_int;
+}
+
+/// A callable resolved in the scope of a running call
+/// (`sw_zend_is_callable_at_frame`), so it can name a private method of the
+/// call's `$this`, which its cache borrows: it lives no longer than the call.
+pub struct FrameCallable<'a> {
+    value: Owned,
+    cache: zend_fcall_info_cache,
+    frame: PhantomData<crate::CallFrame<'a>>,
+}
+
+impl<'a> FrameCallable<'a> {
+    /// `value` resolved at `frame`; None when it is not callable there.
+    /// # Errors
+    /// Resolving it bailed out (an autoloader runs PHP code).
+    pub fn resolve(
+        value: Owned,
+        frame: crate::CallFrame<'a>,
+    ) -> Result<Option<Self>, bailout::Bailout> {
+        let mut cache = crate::EMPTY_FCC;
+        let mut valid = false;
+        bailout::trapped(swr_zend_try_facade_callable_frame(
+            &value, frame, &mut cache, &mut valid,
+        ))?;
+        Ok(valid.then_some(Self {
+            value,
+            cache,
+            frame: PhantomData,
+        }))
+    }
+
+    /// `PHPCoroutine::create(&cache, args, &value)` through `creator`, inside
+    /// `zend_try`: the new coroutine's id, or a negative error.
+    /// # Errors
+    /// The call bailed out, or the leaf raised.
+    pub fn create_coroutine(
+        &self,
+        args: crate::Zvals<'_>,
+        creator: super::Creator,
+    ) -> Result<c_long, bailout::Bailout> {
+        // Zend only reads the resolved cache.
+        let cache = super::Callee(ptr::from_ref(&self.cache).cast_mut(), PhantomData);
+        let mut ran = false;
+        let (trapped, result) = super::private::coroutine_call(
+            cache,
+            args,
+            Some(&self.value),
+            creator,
+            super::NO_THEN,
+            &mut ran,
+        );
+        bailout::trapped(trapped).map(|()| result)
+    }
 }
 
 /// A stable owner of the callback value, resolved cache and diagnostic string.

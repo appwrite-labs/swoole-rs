@@ -1,18 +1,5 @@
-#![expect(
-    clippy::disallowed_types,
-    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
-)]
 // SPDX-License-Identifier: Apache-2.0
-//! TLS and DTLS over OpenSSL (openssl-sys): `SSLContext`'s context creation and
-//! configuration (`context`), `network::Socket`'s TLS I/O (`socket`, called from
-//! reactor's patch), and the DTLS BIO's read/control/listen decisions.
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
+//! TLS, DTLS and socket I/O over OpenSSL, owned by the core runtime.
 #[cfg(unix)]
 mod context;
 #[cfg(unix)]

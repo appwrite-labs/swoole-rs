@@ -350,22 +350,29 @@ impl<'a> Client<'a> {
         let prepared: TlsPrepared = tls_owner_new();
         // SAFETY: the fresh owner's live fields and slot, then the client's live owner.
         unsafe {
-            (*prepared.fields).disable_tls_host_name = u8::from(name.is_empty());
+            (&*prepared
+                .owner
+                .cast::<swoole_rs_corebase::tls::OwnedTlsContext>())
+                .borrow_configuration()
+                .edit(|fields| fields.disable_tls_host_name = name.is_empty());
             assert_eq!(
                 string_set(prepared.owner, TLS_HOST_NAME, name.as_bytes()),
                 0
             );
             let owner = |context: *const c_void| {
-                (&*context.cast::<swoole_rs_tls::OwnedTlsContext>()).borrow_configuration()
+                (&*context.cast::<swoole_rs_corebase::tls::OwnedTlsContext>())
+                    .borrow_configuration()
             };
-            let copied = swoole_rs_tls::owner_assign(
+            let copied = swoole_rs_corebase::tls::owner_assign(
                 &mut owner(self.ssl_context()),
                 &mut owner(prepared.owner),
             );
             assert_eq!(copied, Ok(()));
-            drop(std::rc::Rc::<swoole_rs_tls::OwnedTlsContext>::from_raw(
-                prepared.owner.cast(),
-            ));
+            drop(
+                std::rc::Rc::<swoole_rs_corebase::tls::OwnedTlsContext>::from_raw(
+                    prepared.owner.cast(),
+                ),
+            );
         }
     }
 
@@ -1356,7 +1363,7 @@ fn ssl_vector(sock: *mut c_void, iov: &[IoVec], write: bool) -> isize {
 fn peer_cert_chain(sock: swoole_rs_corebase::reactor::Socket<'_>, limit: usize) -> Vec<Vec<u8>> {
     let mut chain = Vec::new();
     let mut buffer = vec![0_u8; SW_BUFFER_SIZE_BIG];
-    if let Some(ssl) = swoole_rs_tls::Ssl::of(sock) {
+    if let Some(ssl) = swoole_rs_corebase::tls::Ssl::of(sock) {
         ssl.get().each_peer_cert(|cert| {
             // `_ssl_read_x509_file`, which fails without a certificate.
             let rv = cert.pem(&mut buffer).ok();
@@ -1379,10 +1386,12 @@ fn ssl() {
     let mut certificate = cpp_string(SW_BUFFER_SIZE_BIG);
     // SAFETY: the connected socket.
     let handle = unsafe { swoole_rs_corebase::reactor::Socket::from_ptr(sock.cast()) }.unwrap();
-    assert!(swoole_rs_tls::upstream::socket_ssl_peer_certificate_string(
-        handle,
-        &mut certificate
-    ));
+    assert!(
+        swoole_rs_corebase::tls::upstream::socket_ssl_peer_certificate_string(
+            handle,
+            &mut certificate
+        )
+    );
     let ls = peer_cert_chain(handle, 10);
     assert!(!ls.is_empty());
     assert_eq!(client.ssl_verify(false), SW_OK);
