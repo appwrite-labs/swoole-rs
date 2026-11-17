@@ -2635,9 +2635,7 @@ static void swoole_curl_free_obj(zend_object *object) {
         php_curl_object_handlers->free_obj(object);
         return;
     }
-    if (handle->multi) {
-        swr_v1_curl_multi_remove_handle(handle->multi, handle);
-    }
+    swr_v1_curl_handle_leave_multi(handle);
 
     /* cURL destructors should be invoked only by last curl handle */
     if (--(*ch->clone) == 0) {

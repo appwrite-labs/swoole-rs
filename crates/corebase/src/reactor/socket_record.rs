@@ -137,8 +137,12 @@ pub struct SocketFields {
     pub recv_timer: Option<crate::timer_key::Held>,
     pub total_recv_bytes: usize,
     pub total_send_bytes: usize,
-    /// Last, so every offset before it is the same on each LP64 target.
+    /// Last of native code's fields, so every offset before it is the same on each
+    /// LP64 target.
     pub info: SocketAddress,
+    /// What the record serves, by type, for Rust's readiness handlers to get back
+    /// ([`Self::owner`]); dropped with the record. Native code only keeps its place.
+    owner: Option<Box<dyn core::any::Any>>,
 }
 
 /// A process-wide `f64` setting, its bits in an `AtomicU64`.
@@ -204,7 +208,7 @@ pub static SOCKET_DEFAULTS: SocketDefaults = SocketDefaults {
 
 /// Field offsets native code asserts too (`swoole_rs_socket.h`).
 #[cfg(target_pointer_width = "64")]
-const OFFSETS: [(usize, usize); 15] = [
+const OFFSETS: [(usize, usize); 16] = [
     (offset_of!(SocketFields, events), 12),
     (offset_of!(SocketFields, enable_tcp_nodelay), 16),
     (offset_of!(SocketFields, removed), 18),
@@ -220,6 +224,7 @@ const OFFSETS: [(usize, usize); 15] = [
     (offset_of!(SocketFields, recv_timer), 152),
     (offset_of!(SocketFields, total_send_bytes), 168),
     (offset_of!(SocketFields, info), 176),
+    (offset_of!(SocketFields, owner), 296),
 ];
 
 #[cfg(target_pointer_width = "64")]
@@ -247,12 +252,12 @@ const _: () = {
         "network::Address's size moved"
     );
     assert!(
-        size_of::<SocketFields>() == (176 + size_of::<SocketAddress>()).next_multiple_of(8),
+        size_of::<SocketFields>() == 312,
         "network::Socket's size moved"
     );
     assert!(
-        offset_of!(SocketRecord, marks) == 296 && size_of::<SocketRecord>() == 304,
-        "network::Socket's borrow count (byte 296) or reactor mark (byte 300) moved"
+        offset_of!(SocketRecord, marks) == 312 && size_of::<SocketRecord>() == 320,
+        "network::Socket's borrow count (byte 312) or reactor mark (byte 316) moved"
     );
 };
 
@@ -309,6 +314,7 @@ impl SocketRecord {
                 total_recv_bytes: 0,
                 total_send_bytes: 0,
                 info: sys::zeroed(),
+                owner: None,
             },
             marks: [AtomicU32::new(0), AtomicU32::new(0)],
         }
@@ -442,6 +448,18 @@ impl SocketFields {
         self.ssl.take()
     }
 
+    /// A copy of the owner [`Self::set_owner`] attached, when it is a `T`.
+    #[inline]
+    #[must_use]
+    pub fn owner<T: core::any::Any + Clone>(&self) -> Option<T> {
+        self.owner.as_deref()?.downcast_ref::<T>().cloned()
+    }
+
+    /// Attaches `owner` in place of what was attached, which drops; none detaches.
+    pub fn set_owner<T: core::any::Any>(&mut self, owner: Option<T>) {
+        self.owner = owner.map(|owner| -> Box<dyn core::any::Any> { Box::new(owner) });
+    }
+
     /// The socket's type, `None` for a code no `SW_SOCK_*` names.
     #[must_use]
     pub fn kind(&self) -> Option<SocketType> {
@@ -514,6 +532,7 @@ impl SocketFields {
                 ssl: None,
                 in_buffer: None,
                 recv_buffer: None,
+                owner: None,
                 ..*self
             },
             marks: [AtomicU32::new(0), AtomicU32::new(0)],

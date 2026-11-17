@@ -101,14 +101,9 @@ fn shutdown(socket: Co, how: c_int, sys: Sys) -> bool {
     let ssl_shutdown: Option<&dyn Fn()> = tls.then_some(&ssl_shutdown);
     let fd = socket.sock_fd();
     let result = socket.with_state(|state| {
-        crate::shutdown::shutdown(
-            sys.shutdown,
-            fd,
-            how,
-            closed,
-            &mut state.flags,
-            ssl_shutdown,
-        )
+        state.update_flags(|flags| {
+            crate::shutdown::shutdown(sys.shutdown, fd, how, closed, flags, ssl_shutdown)
+        })
     });
     match result {
         Ok(()) => true,
@@ -124,7 +119,7 @@ fn close(socket: Co, sys: Sys) -> bool {
         set_err(socket, libc::EBADF);
         return false;
     }
-    if socket.with_state(|state| state.flags.connected) {
+    if socket.with_state(|state| state.flags.get().connected) {
         shutdown(socket, libc::SHUT_RDWR, sys);
     }
     if !socket
@@ -198,7 +193,7 @@ fn connect(socket: Co, peer: &SocketAddress, sys: Sys) -> bool {
             return false;
         }
     }
-    socket.with_state(|state| state.flags.connected = true);
+    socket.with_state(|state| state.update_flags(|flags| flags.connected = true));
     // `get_name`'s failure is ignored.
     socket.net(swoole_rs_corebase::reactor::SocketFields::get_name);
     set_err(socket, 0);
@@ -229,7 +224,7 @@ mod tests {
     // connect(addr) and check_liveness.
     fn upstream_shutdown(s: Co, mut how: c_int, sys: Sys) -> bool {
         set_err(s, 0);
-        let flags = s.with_state(|state| state.flags);
+        let flags = s.with_state(|state| state.flags.get());
         let connected = flags.connected && !s.is_closed();
         let mut error = 0;
         if !connected || how == libc::SHUT_RD && flags.read || how == libc::SHUT_WR && flags.write {
@@ -246,15 +241,16 @@ mod tests {
                     how = libc::SHUT_RDWR;
                 }
                 s.with_state(|state| {
-                    let flags = &mut state.flags;
-                    match how {
-                        libc::SHUT_RD => flags.read = true,
-                        libc::SHUT_WR => flags.write = true,
-                        _ => (flags.read, flags.write) = (true, true),
-                    }
-                    if flags.read && flags.write {
-                        flags.connected = false;
-                    }
+                    state.update_flags(|flags| {
+                        match how {
+                            libc::SHUT_RD => flags.read = true,
+                            libc::SHUT_WR => flags.write = true,
+                            _ => (flags.read, flags.write) = (true, true),
+                        }
+                        if flags.read && flags.write {
+                            flags.connected = false;
+                        }
+                    });
                 });
                 return true;
             }
@@ -282,7 +278,7 @@ mod tests {
             set_err(s, libc::EBADF);
             return false;
         }
-        if s.with_state(|state| state.flags.connected) {
+        if s.with_state(|state| state.flags.get().connected) {
             upstream_shutdown(s, libc::SHUT_RDWR, sys);
         }
         if s.with_state(|state| state.bound_co(Events::READ | Events::WRITE).is_null()) {
@@ -337,7 +333,7 @@ mod tests {
             }
             timer.stop();
         }
-        s.with_state(|state| state.flags.connected = true);
+        s.with_state(|state| state.update_flags(|flags| flags.connected = true));
         unsafe { (*s.socket()).get_name() };
         set_err(s, 0);
         true
@@ -416,8 +412,8 @@ mod tests {
         state: (c_int, SocketFlags, c_int, bool, c_long, c_long, c_int),
     }
 
-    fn id(state: *mut SocketState, event: Events) -> c_long {
-        let co = unsafe { (*state).co(event) };
+    fn id(state: &SocketState, event: Events) -> c_long {
+        let co = state.co(event);
         if co.is_null() {
             0
         } else {
@@ -444,8 +440,13 @@ mod tests {
         set_errno(0);
         take();
         let result = operation(socket.co());
-        let state = socket.state();
-        let flags = unsafe { (*state).flags };
+        let (flags, read, write) = socket.with_state(|state| {
+            (
+                state.flags.get(),
+                id(state, Events::READ),
+                id(state, Events::WRITE),
+            )
+        });
         let outcome = Outcome {
             result,
             effects: take(),
@@ -454,13 +455,13 @@ mod tests {
                 flags,
                 socket.0.err_code.get(),
                 unsafe { socket.0.record() }.output.close_wait,
-                id(state, Events::READ),
-                id(state, Events::WRITE),
+                read,
+                write,
                 errno(),
             ),
         };
         socket.0.sock_fd.set(100);
-        unsafe { (*state).bind(Events::READ | Events::WRITE, core::ptr::null_mut()) };
+        socket.with_state(|state| state.bind(Events::READ | Events::WRITE, core::ptr::null_mut()));
         outcome
     }
 
@@ -482,20 +483,21 @@ mod tests {
     }
 
     fn set_flags(socket: &TestSocket, connected: bool, read: bool, write: bool) {
-        unsafe {
-            (*socket.state()).flags = SocketFlags {
+        socket.with_state(|state| {
+            state.flags.set(SocketFlags {
                 connected,
                 read,
                 write,
-            };
-        }
+            });
+        });
     }
 
     fn bind(socket: &TestSocket, bindings: usize, cos: &[*mut c_long; 3]) {
         let pick = |on: bool, co: *mut c_long| if on { co.cast() } else { core::ptr::null_mut() };
-        let state = unsafe { &mut *socket.state() };
-        state.bind(Events::READ, pick(bindings & 1 != 0, cos[0]));
-        state.bind(Events::WRITE, pick(bindings & 2 != 0, cos[1]));
+        socket.with_state(|state| {
+            state.bind(Events::READ, pick(bindings & 1 != 0, cos[0]));
+            state.bind(Events::WRITE, pick(bindings & 2 != 0, cos[1]));
+        });
     }
 
     /// Scenarios 0..512: each `how`, connection and half-close state, open or
@@ -554,7 +556,7 @@ mod tests {
             let (event, bindings, unbinds) = (EVENTS[k % 8], (k / 8) % 4, k / 32 == 1);
             let setup = move |s: &mut TestSocket, cos: &[*mut c_long; 3]| {
                 bind(s, bindings, cos);
-                let state = s.state();
+                let co = s.co();
                 ON_RESUME.set(Some(Box::new(move |cid| {
                     if unbinds {
                         let event = if cid == 5 {
@@ -562,7 +564,7 @@ mod tests {
                         } else {
                             Events::WRITE
                         };
-                        unsafe { (*state).bind(event, core::ptr::null_mut()) };
+                        co.with_state(|state| state.bind(event, core::ptr::null_mut()));
                     }
                 })));
             };
@@ -595,17 +597,17 @@ mod tests {
                 s.0.sock_fd.set(if closed { -1 } else { 77 });
                 set_flags(s, connected, false, false);
                 bind(s, bindings, cos);
-                let (state, other) = (s.state(), cos[2]);
-                ON_RESUME.set(Some(Box::new(move |cid| unsafe {
-                    match (cid, mode) {
-                        (5 | 11, 1 | 2) => (*state).bind(Events::READ, core::ptr::null_mut()),
-                        (7, 1) => (*state).bind(Events::WRITE, core::ptr::null_mut()),
+                let (co, other) = (s.co(), cos[2]);
+                ON_RESUME.set(Some(Box::new(move |cid| {
+                    co.with_state(|state| match (cid, mode) {
+                        (5 | 11, 1 | 2) => state.bind(Events::READ, core::ptr::null_mut()),
+                        (7, 1) => state.bind(Events::WRITE, core::ptr::null_mut()),
                         (7, 2) => {
-                            (*state).bind(Events::WRITE, core::ptr::null_mut());
-                            (*state).bind(Events::READ, other.cast::<c_void>());
+                            state.bind(Events::WRITE, core::ptr::null_mut());
+                            state.bind(Events::READ, other.cast::<c_void>());
                         }
                         _ => {}
-                    }
+                    });
                 })));
             };
             let close_with = |close: fn(Co, Sys) -> bool| {

@@ -439,11 +439,7 @@ static int _php_server_push_callback(
     ch->cp = easy;
     swoole_setup_easy_copy_handlers(ch, parent);
 
-    auto parent_handle = swr_v1_curl_get_handle(parent->cp);
-    if (parent_handle) {
-        auto handle = swr_v1_curl_create_handle(easy);
-        handle->multi = parent_handle->multi;
-    }
+    swr_v1_curl_push_handle(easy, parent->cp);
 
     size_t i;
     array_init(&headers);
