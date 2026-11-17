@@ -18,7 +18,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_phpstubs::client_async;
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, Minit, ObjectRef, Owned, ZString,
+    Call, Class, E_ERROR, Minit, Owned, Value, Weak, ZString,
     bailout::{self, Bailout},
     deny_unset,
     host::callable::Callable,
@@ -167,14 +167,16 @@ fn execute_and_release(object: Obj, slot: Slot) -> Result<(), Bailout> {
 /// `zval_addref_p`: the client holds its object from `connect()` until its
 /// connection is released.
 fn hold(object: Obj) {
-    swoole_rs_zend::Value::of(&mut object_zval(object)).add_ref();
+    let held = Value::of(&mut object_zval(object)).copy();
+    object.data().held.set(Some(held));
 }
 
 /// `zval_delref_p`: drop [`hold`]'s reference without destroying the object,
 /// as upstream does.
 fn unhold(object: Obj) {
-    // SAFETY: a live object's refcount, which [`hold`] raised.
-    unsafe { (*object.as_ptr()).gc.refcount -= 1 };
+    if let Some(held) = object.data().held.take() {
+        held.delref();
+    }
 }
 
 fn event(
@@ -360,12 +362,19 @@ fn connect(call: &Call) {
     }
     // The events `network::Client` raises on the object; a PHP bailout is
     // re-raised as the last step.
-    let zobject = object.as_ptr();
+    let Some(weak) = Weak::<net::Data>::of(Value::of(&mut object_zval(object))) else {
+        return call.set_bool(false);
+    };
     let listener = move |kind, data, length| {
-        // SAFETY: `connect()` holds the object (`hold`) until its connection is
-        // released, and only then does the client stop raising events.
-        let object = Obj::new(unsafe { ObjectRef::from_ptr(zobject) });
-        bailout::raise(event(object, kind, data, length));
+        // `connect()` holds the object (`hold`) until its connection is released,
+        // and only then does the client stop raising events.
+        let Some(object) = weak.get() else {
+            return;
+        };
+        let raised = event(Obj::new(object.object_ref()), kind, data, length);
+        // Borrowed for the event: like `unhold`, this never destroys the object.
+        object.delref();
+        bailout::raise(raised);
     };
     state::listen(fresh.cli().get(), events, Rc::new(listener));
     net::this(call).set_conn(Some(fresh.clone()));

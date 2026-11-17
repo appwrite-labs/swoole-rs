@@ -23,10 +23,6 @@ use std::{
 };
 
 unsafe extern "C" {
-    /// `Z_TRY_ADDREF_P`: one more reference to what a counted zval holds, and
-    /// nothing for any other. It reads the zval and writes the count only, on
-    /// the thread the borrow is on; a reference nothing releases is a leak.
-    safe fn swr_zval_try_addref(value: &Value);
     /// `zend_array_count`: it reads the table, and may recount its elements.
     safe fn zend_array_count(table: &Array) -> u32;
     /// `zend_array_is_list`: it reads the table.
@@ -378,6 +374,19 @@ impl Value {
     #[inline]
     fn payload<T>(&self) -> *mut T {
         self.word().cast()
+    }
+
+    /// `Z_COUNTED_P`'s header, when `Z_REFCOUNTED_P`: the zval holds a counted
+    /// value (never an interned string or an immutable array), as long as it is
+    /// borrowed.
+    #[inline]
+    fn counted(&self) -> Option<&Counted> {
+        // `Z_TYPE_FLAGS_P`: the byte above the type.
+        let refcounted = (self.tagged().type_info >> 8) & crate::sys::IS_TYPE_REFCOUNTED != 0;
+        // SAFETY: a counted value begins with its `zend_refcounted_h`, live while the
+        // zval that holds it is borrowed; its two `u32`s are `Cell`s, which allow
+        // the writes Zend makes meanwhile on this thread.
+        refcounted.then(|| unsafe { &*self.payload::<Counted>() })
     }
 
     /// [`Value::word`] as bits.
@@ -866,7 +875,9 @@ impl Value {
     /// whoever the caller hands it to releases (nobody: a leak).
     #[inline]
     pub fn add_ref(&self) {
-        swr_zval_try_addref(self);
+        if let Some(counted) = self.counted() {
+            counted[REFCOUNT].set(counted[REFCOUNT].get() + 1);
+        }
     }
 
     /// `zend_zval_value_name`: the type, or the object's class, a type error names.
@@ -914,7 +925,7 @@ impl Value {
     pub fn copy(&self) -> Owned {
         // The copy carries the reference it adds below.
         let owned = Owned(Self(Cell::new(self.copy_value())));
-        swr_zval_try_addref(&owned);
+        owned.add_ref();
         owned
     }
 }
@@ -1539,6 +1550,17 @@ impl Owned {
     #[inline]
     pub fn into_zval(self) -> zval {
         *std::mem::ManuallyDrop::new(self).0.0.get_mut()
+    }
+
+    /// `zval_delref_p`: give up this reference without releasing what it holds,
+    /// which at the last reference stays allocated (a leak), never destroyed.
+    #[inline]
+    pub fn delref(self) {
+        if let Some(counted) = self.counted() {
+            counted[REFCOUNT].set(counted[REFCOUNT].get() - 1);
+        }
+        // The reference went above: nothing is left to release.
+        let _given_up = self.into_zval();
     }
 
     /// `convert_to_array`, as PHP's `(array)` cast: this then holds an array,

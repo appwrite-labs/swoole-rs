@@ -36,10 +36,6 @@ void swr_zend_efree(void *ptr) {
     efree(ptr);
 }
 
-void swr_zval_try_addref(zval *value) {
-    Z_TRY_ADDREF_P(value);
-}
-
 zend_string *swr_zend_string_persistent(const char *text, size_t length) {
     return zend_string_init(text, length, 1);
 }
