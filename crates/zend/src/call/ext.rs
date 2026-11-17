@@ -27,7 +27,7 @@ impl Call {
     /// # Errors
     /// The function bailed out.
     pub fn call_known(&self, function: Function<'_>, argv: Zvals<'_>) -> Result<(), Bailout> {
-        if swr_zend_try_call_known(function, self.ret(), argv) != 0 {
+        if swr_zend_try_call_known(function, self.ret_slot(), argv) != 0 {
             Err(Bailout)
         } else {
             Ok(())

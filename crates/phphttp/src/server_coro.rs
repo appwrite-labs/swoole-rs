@@ -69,7 +69,7 @@ struct HttpServer {
     default_handler: Cell<Option<Rc<Callable>>>,
     running: Cell<bool>,
     /// The connections, by the coroutine serving each.
-    clients: Owned,
+    clients: Cell<Owned>,
     parse_cookie: Cell<bool>,
     parse_post: Cell<bool>,
     parse_files: Cell<bool>,
@@ -96,7 +96,7 @@ impl HttpServer {
             handlers: Cell::default(),
             default_handler: Cell::default(),
             running: Cell::new(true),
-            clients: OwnedArray::default().into_owned(),
+            clients: Cell::new(OwnedArray::default().into_owned()),
             parse_cookie: Cell::new(true),
             parse_post: Cell::new(true),
             parse_files: Cell::new(false),
@@ -133,8 +133,11 @@ impl HttpServer {
 
     /// `edit` of the connections array, lent out of its slot.
     fn clients(&self, edit: impl FnOnce(&mut ArrayMut)) {
-        self.clients
-            .lend(|clients| clients.array_mut().map(|clients| edit(clients)));
+        let mut clients = self.clients.take();
+        if let Some(array) = clients.array_mut() {
+            edit(array);
+        }
+        drop(self.clients.replace(clients));
     }
 
     /// `set_handler`: `handle` replaces the pattern's handler, if any.
@@ -743,7 +746,8 @@ fn shutdown(call: &Call) {
     server.socket.cancel(Events::READ);
     // Connections waiting for their next request stop waiting.
     let mut waiting: Vec<(z::zend_ulong, Co)> = Vec::new();
-    if let Some(connections) = server.clients.array() {
+    let clients = server.clients.take();
+    if let Some(connections) = clients.array() {
         connections.for_each(|key, connection| {
             let ArrayKey::Index(index) = key else { return };
             let Some(socket) = get_socket(connection).map(swoole_rs_phpclients::Co::handle) else {
@@ -756,6 +760,7 @@ fn shutdown(call: &Call) {
             }
         });
     }
+    server.clients.set(clients);
     for (index, socket) in waiting {
         // The array's connection objects keep their sockets live.
         socket.cancel(Events::READ);
@@ -1080,6 +1085,7 @@ fn find_crlf2(data: &[u8]) -> Option<usize> {
 /// `Expect: 100-continue` (case-insensitive) among the request headers.
 fn expects_continue(mut context: Ctx) -> bool {
     parse::made(&context.state().request, Property::Header)
+        .as_deref()
         .and_then(Value::array)
         .and_then(|header| header.find(b"expect"))
         .and_then(Value::bytes)
@@ -1103,7 +1109,7 @@ fn http2_request(
     server: &HttpServer,
 ) -> Result<(), bailout::Bailout> {
     let source = parse::made(&http1.state().request, Property::Server);
-    if let Some(source) = source.and_then(Value::array) {
+    if let Some(source) = source.as_deref().and_then(Value::array) {
         // `http_server_add_server_array(ht, key, value)`: each entry with a
         // reference of its own.
         parse::edit(&mut context.state().request, Property::Server, |target| {

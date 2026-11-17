@@ -273,7 +273,7 @@ impl FreeProperties<'_> {
     /// one PHP replaced, and forget them in the SAPI upload registry. Non-string
     /// entries and non-array properties are ignored; no PHP code runs.
     pub fn release_uploads(self, property: &Declared) {
-        if let Some(files) = property.get(self.0) {
+        if let Some(files) = property.slot(self.0) {
             swr_zend_http_uploads_release(files);
         }
     }
@@ -600,21 +600,25 @@ impl<'a> Props<'a> {
         self.object().class_entry()
     }
 
-    /// `sw_zend_read_property_ex`: the slot of the instance property the
-    /// object's class declares as `name` (an uninitialised typed property reads
-    /// as null), or None for no such property.
+    /// An owned snapshot of the declared instance property `name`. A later
+    /// write through any alias leaves it valid. Uninitialised typed properties
+    /// read as null; None for no such property.
     #[must_use]
     #[inline]
-    pub fn slot(self, name: &CStr) -> Option<&'a Value> {
+    pub fn slot(self, name: &CStr) -> Option<Owned> {
+        self.property_slot(name).map(|slot| slot.referred().copy())
+    }
+
+    fn property_slot(self, name: &CStr) -> Option<&'a Value> {
         swr_lent_property_slot(self.1, IoSlice::new(name.to_bytes()))
     }
 
     /// The array [`Props::array_slot`] finds, lent to `edit` out of its
-    /// property ([`Value::edit_array`]), which takes it back when `edit`
+    /// property, which takes it back when `edit`
     /// returns, in place of whatever was put there meanwhile. None as
     /// [`Props::array_slot`].
     pub fn edit_array<R>(self, name: &CStr, edit: impl FnOnce(&mut ArrayMut) -> R) -> Option<R> {
-        self.array_slot(name)?.edit_array(edit)
+        self.array_slot(name)?.edit_array_slot(edit)
     }
 
     /// `sw_zend_read_and_convert_property_array`: the slot of the declared
@@ -624,7 +628,10 @@ impl<'a> Props<'a> {
     /// property again. None when the object declares no `name`, a bailout is
     /// pending, or that code left something other than an array there.
     fn array_slot(self, name: &CStr) -> Option<&'a Value> {
-        let array = || self.slot(name).filter(|slot| slot.array().is_some());
+        let array = || {
+            self.property_slot(name)
+                .filter(|slot| slot.array().is_some())
+        };
         let slot = match array() {
             Some(slot) => slot,
             None if bailout::pending() => return None,

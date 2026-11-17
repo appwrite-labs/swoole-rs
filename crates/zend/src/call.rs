@@ -194,10 +194,38 @@ impl Call {
     /// The return slot, live for the handler (`new`).
     #[must_use]
     #[inline]
-    pub fn ret(&self) -> &Value {
-        // SAFETY: Zend's live return slot, which nothing else frees or
-        // overwrites while the handler runs; `Value` is a transparent zval.
+    pub(crate) fn ret_slot(&self) -> &Value {
+        // SAFETY: Zend keeps this zval slot live for the handler. Value is a
+        // transparent zval with interior mutability; public reads take copies.
         unsafe { &*self.value.cast::<Value>() }
+    }
+
+    /// An owned snapshot of the return value, valid across later writes.
+    #[must_use]
+    #[inline]
+    pub fn ret(&self) -> crate::Owned {
+        self.ret_slot().referred().copy()
+    }
+
+    /// Edit a passed by-reference argument's array. The exclusive call borrow
+    /// prevents retaining a borrow of any argument across this edit.
+    ///
+    /// ```compile_fail
+    /// use swoole_rs_zend::Call;
+    /// fn edit(call: &mut Call) {
+    ///     let first = call.array_ref(1).unwrap().index(0).unwrap();
+    ///     call.edit_arg_array(1, |array| for i in 0..64 { array.push_long(i); });
+    ///     let _ = first.long();
+    /// }
+    /// ```
+    pub fn edit_arg_array<R>(
+        &mut self,
+        n: u32,
+        edit: impl FnOnce(&mut crate::ArrayMut) -> R,
+    ) -> Option<R> {
+        self.passed_arg(n)
+            .then(|| self.arg_value(n).referred().edit_array_slot(edit))
+            .flatten()
     }
 
     /// The passed arguments, which the frame holds for the call, lent to
@@ -520,7 +548,7 @@ impl Call {
     pub fn assign(&mut self, n: u32, value: crate::Owned) {
         // Nothing borrows what the slot holds (above): it reads null while
         // that is released, then takes over the value.
-        self.arg_value(n).referred().lend(|old| *old = value);
+        self.arg_value(n).referred().lend_slot(|old| *old = value);
     }
 
     /// `Z_PARAM_OBJECT_OF_CLASS`'s report of argument `n` (1-based), which is
@@ -573,7 +601,7 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn return_slot(&self) -> ReturnSlot<'_> {
-        ReturnSlot(self.ret())
+        ReturnSlot(self.ret_slot())
     }
 
     /// The frame, lent to C for the call.
@@ -587,7 +615,7 @@ impl Call {
     #[inline]
     pub fn set_owned(&self, value: crate::Owned) {
         // The return slot holds nothing that needs releasing.
-        self.ret().put(value);
+        self.ret_slot().put(value);
     }
 
     /// `RETVAL_STR(string)`: the return slot takes over its reference.
@@ -612,8 +640,8 @@ impl Call {
     /// Add to the array in the return slot, after `set_array` (nothing unless
     /// the slot holds an array).
     pub(crate) fn add(&self, add: impl FnOnce(&mut crate::ArrayMut)) {
-        self.ret()
-            .lend(|slot| slot.array_mut().map(|array| add(array)));
+        self.ret_slot()
+            .lend_slot(|slot| slot.array_mut().map(|array| add(array)));
     }
 
     /// `add_assoc_long_ex(return_value, key, value)`, after `set_array`

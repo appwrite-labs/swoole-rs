@@ -234,7 +234,7 @@ pub(crate) fn apply(cli: Cli<'_>, settings: &Array) -> Option<bool> {
             return Some(false);
         };
         let named = Named::new(callable);
-        length_option(cli, &named);
+        length_option(cli);
         bailed(native::free_owner(
             cli.get()
                 .replace_length_owner(Some(std::rc::Rc::new(named))),
@@ -301,15 +301,15 @@ fn proxies(cli: Cli<'_>, options: &Options) -> bool {
     true
 }
 
-/// Point the client's length function at `callable`, which the client then owns.
-fn length_option(cli: Cli<'_>, named: &Named) {
+/// Point the client's length function at its `package_length_func`, whose owner the
+/// client keeps.
+fn length_option(cli: Cli<'_>) {
     edit(cli, |record| {
         let protocol = &mut record.protocol;
         protocol.get_package_length = Some(swoole_rs_phpswoole::length::length::<Length>);
         protocol.package_length_size = 0;
         protocol.package_length_type = 0;
         protocol.package_length_offset = IPC_BUFFER_SIZE;
-        protocol.private_data_1 = named.as_ptr();
     });
 }
 

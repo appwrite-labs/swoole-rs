@@ -37,6 +37,14 @@ The Zend surface (upstream's `ext-src/`) is Rust. `Swoole\Atomic`
   through `Families`; a callable that a C owner
   such as a timer holds runs through `Callable::callbacks::<impl Holder>()`.
   `crates/phptimer` uses no `unsafe` at all. Add wrappers as callers need them.
+  A shared `Value` exposes no content edits; use `Owned::array_mut` for an
+  owned array's exclusive borrow. Property reads
+  (`Value::property`, `Props::slot`, `Declared::get`) and `Call::ret` return
+  owned snapshots, including the current referent of a PHP reference, so writes
+  through another handle cannot invalidate their contents. Property writers
+  lend the slot out while editing and separate arrays before native parser
+  writes; return-slot writers stay behind `Call`. By-reference argument edits
+  require a mutable `Call`, which excludes simultaneous argument borrows.
 - One `crates/php<family>` crate per family (`crates/phplocks`). It calls the
   mechanism crate directly (Rust calls Rust).
 

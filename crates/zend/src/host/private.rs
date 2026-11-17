@@ -349,7 +349,7 @@ pub fn named_call_into(name: &[u8], args: &[Owned], retval: &Owned) {
         if result != 0 {
             // A failed named invocation publishes null before name cleanup, in
             // the slot the failed call left undefined.
-            retval.lend(|value| *value = Owned::null());
+            retval.lend_slot(|value| *value = Owned::null());
         }
         // The local function-name string owns one reference.
         drop(function);

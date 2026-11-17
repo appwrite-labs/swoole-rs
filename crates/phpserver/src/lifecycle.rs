@@ -1269,13 +1269,16 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
         return Ok(());
     }
     // A reference of its own: `$port->set()` may replace the property.
-    let Some(setting) = object.value().property(c"setting").map(Value::copy) else {
+    let Some(setting) = object.value().property(c"setting") else {
         return Ok(());
     };
     let setting: &Value = &setting;
     for zport in ports.iter().skip(1) {
         // The Port class declares `setting`.
-        if zport.property(c"setting").is_some_and(Value::is_null) {
+        if zport
+            .property(c"setting")
+            .is_some_and(|value| value.is_null())
+        {
             // `$port->set($setting)`, Port's own method.
             let set = zport.call_method(Some(&crate::PORT), b"set", &[setting]);
             trapped(set.is_err())?;
