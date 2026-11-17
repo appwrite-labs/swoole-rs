@@ -74,6 +74,14 @@ fn head_bytes<const N: usize>(out: &[u64], at: usize) -> [u8; N] {
     })
 }
 
+/// Whether the `n` bytes received into `out` are the whole `EventData` its head counts,
+/// and a temporary file's task names its file.
+fn whole_task(out: &[u64], n: isize) -> bool {
+    let length = u32::from_ne_bytes(head_bytes(out, HEAD_LEN));
+    let tmpfile = u16::from_ne_bytes(head_bytes(out, HEAD_EXT_FLAGS)) & TASK_TMPFILE != 0;
+    n.c_cast::<u64>() == HEAD as u64 + u64::from(length) && !(tmpfile && length != PACKET_TASK)
+}
+
 /// A stream socket's native owner, which this crate keeps and hands back to the
 /// hooks without knowing its type: the listener `listen` makes, or a connection
 /// `accept` makes.
@@ -400,6 +408,15 @@ impl<'a> Worker<'a> {
         });
     }
 
+    /// The task `call` lends the native hook, the `EventData` at the head of `out`.
+    fn task(&self, call: &mut PoolCall<'a>, out: &[u64]) {
+        self.native.task(call);
+        if call.result < 0 {
+            let fd = i64::from_ne_bytes(head_bytes(out, 0));
+            self.warn(Warning::TaskFailed(fd), 0);
+        }
+    }
+
     /// `SW_PROTOCOL_TASK`: one `EventData` per message.
     fn run_task(
         &self,
@@ -461,27 +478,51 @@ impl<'a> Worker<'a> {
                     n
                 }
                 Mode::Pipe => {
-                    let call = self.io(
-                        |native, call| native.pipe_read(call),
-                        None,
-                        buf,
-                        event_size,
-                        0,
-                    )?;
-                    if call.result < 0 && fatal(call.error) {
-                        self.warn(Warning::Read, call.error);
+                    let (mut read, mut task) = (self.call(), self.call());
+                    (read.data, read.length) = (buf.cast(), event_size);
+                    (task.data, task.length) = (buf.cast(), event_size);
+                    // A whole task with no connection to answer runs under the read's
+                    // own trap, so the iteration sets one trap, not two.
+                    let ran = trapped(|| {
+                        self.native.pipe_read(&mut read);
+                        let ran =
+                            read.result >= 0 && whole_task(&out, read.result) && !self.connected();
+                        if ran {
+                            self.task(&mut task, &out);
+                            self.native.end();
+                        }
+                        ran
+                    })?;
+                    if ran {
+                        continue;
+                    }
+                    if read.result < 0 && fatal(read.error) {
+                        self.warn(Warning::Read, read.error);
                         break;
                     }
-                    call.result
+                    read.result
                 }
             };
             if n >= 0 {
-                let length = u32::from_ne_bytes(head_bytes(&out, HEAD_LEN));
-                let size = HEAD as u64 + u64::from(length);
-                let tmpfile =
-                    u16::from_ne_bytes(head_bytes(&out, HEAD_EXT_FLAGS)) & TASK_TMPFILE != 0;
                 let alone = !self.connected();
-                if n.c_cast::<u64>() != size || (tmpfile && length != PACKET_TASK) {
+                if whole_task(&out, n) {
+                    // Without a connection to answer, nothing comes between the task
+                    // and the iteration's end, so one trap covers both.
+                    let mut call = self.call();
+                    call.data = buf.cast();
+                    call.length = event_size;
+                    trapped(|| {
+                        self.task(&mut call, &out);
+                        if alone {
+                            self.native.end();
+                        }
+                    })?;
+                    if alone {
+                        continue;
+                    }
+                } else {
+                    let length = u32::from_ne_bytes(head_bytes(&out, HEAD_LEN));
+                    let size = HEAD as u64 + u64::from(length);
                     // No task runs; a connection is still answered.
                     self.warn(
                         Warning::BadPacket {
@@ -490,25 +531,6 @@ impl<'a> Worker<'a> {
                         },
                         0,
                     );
-                } else {
-                    // Without a connection to answer, nothing comes between the task
-                    // and the iteration's end, so one trap covers both.
-                    let mut call = self.call();
-                    call.data = buf.cast();
-                    call.length = event_size;
-                    trapped(|| {
-                        self.native.task(&mut call);
-                        if call.result < 0 {
-                            let fd = i64::from_ne_bytes(head_bytes(&out, 0));
-                            self.warn(Warning::TaskFailed(fd), 0);
-                        }
-                        if alone {
-                            self.native.end();
-                        }
-                    })?;
-                    if alone {
-                        continue;
-                    }
                 }
                 if let Some(socket) = self.take_connection() {
                     self.send(&socket, &0i32.to_ne_bytes())?;

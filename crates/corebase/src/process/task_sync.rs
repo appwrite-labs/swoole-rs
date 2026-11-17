@@ -133,9 +133,7 @@ impl<'a> ResultSlot<'a> {
             large.resize(words, 0);
             large.as_mut_slice()
         };
-        for (to, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(self.0) {
-            *to = word.load(Ordering::Relaxed).to_ne_bytes();
-        }
+        load_words(self.0, bytes.as_chunks_mut::<4>().0);
         f(bytes.get(..size).unwrap_or(bytes))
     }
 
@@ -175,15 +173,45 @@ impl<'a> ResultSlot<'a> {
     }
 }
 
+/// The words of `from` into `to`, as many as both hold. Four a step: atomics are never
+/// merged, so only the loop's own count can shrink.
+fn load_words(from: &[AtomicU32], to: &mut [[u8; 4]]) {
+    let count = from.len().min(to.len());
+    let (from, to) = (from.split_at(count).0, to.split_at_mut(count).0);
+    let (from_fours, from_rest) = from.as_chunks::<4>();
+    let (to_fours, to_rest) = to.as_chunks_mut::<4>();
+    for (from, to) in from_fours.iter().zip(to_fours) {
+        for (from, to) in from.iter().zip(to) {
+            *to = from.load(Ordering::Relaxed).to_ne_bytes();
+        }
+    }
+    for (from, to) in from_rest.iter().zip(to_rest) {
+        *to = from.load(Ordering::Relaxed).to_ne_bytes();
+    }
+}
+
+/// `from` stored into the words of `to`, as many as both hold, four a step as
+/// [`load_words`] loads them.
+fn store_words(from: &[[u8; 4]], to: &[AtomicU32]) {
+    let count = from.len().min(to.len());
+    let (from, to) = (from.split_at(count).0, to.split_at(count).0);
+    let (from_fours, from_rest) = from.as_chunks::<4>();
+    let (to_fours, to_rest) = to.as_chunks::<4>();
+    for (from, to) in from_fours.iter().zip(to_fours) {
+        for (from, to) in from.iter().zip(to) {
+            to.store(u32::from_ne_bytes(*from), Ordering::Relaxed);
+        }
+    }
+    for (from, to) in from_rest.iter().zip(to_rest) {
+        to.store(u32::from_ne_bytes(*from), Ordering::Relaxed);
+    }
+}
+
 /// Copies `data` over the start of `words`, a word at a time; the bytes after it stay.
 fn copy_words(words: &[AtomicU32], data: &[u8]) {
     let (whole, tail) = data.as_chunks::<4>();
-    let mut words = words.iter();
-    // `whole` leads the zip, so its end takes no word from `words`.
-    for (&bytes, word) in whole.iter().zip(words.by_ref()) {
-        word.store(u32::from_ne_bytes(bytes), Ordering::Relaxed);
-    }
-    if let Some(word) = words.next().filter(|_| !tail.is_empty()) {
+    store_words(whole, words);
+    if let Some(word) = words.get(whole.len()).filter(|_| !tail.is_empty()) {
         let mut bytes = word.load(Ordering::Relaxed).to_ne_bytes();
         for (to, from) in bytes.iter_mut().zip(tail) {
             *to = *from;

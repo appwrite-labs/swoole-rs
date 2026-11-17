@@ -60,7 +60,26 @@ int swr_zend_try_get_string(zval *value, zend_string **out) {
     SWR_TRAP(*out = zval_get_string(value));
 }
 
+/* Whether releasing `value` runs no PHP code (no destructor, no cycle collection), so
+ * it needs no trap: an uncounted value, a string, or the last reference to a plain
+ * array of those. */
+static bool swr_release_runs_no_code(zval *value) {
+    if (!Z_REFCOUNTED_P(value) || Z_TYPE_P(value) == IS_STRING) return true;
+    if (Z_TYPE_P(value) != IS_ARRAY || Z_REFCOUNT_P(value) != 1 || Z_ARRVAL_P(value)->pDestructor != ZVAL_PTR_DTOR)
+        return false;
+    zval *item;
+    ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(value), item) {
+        if (Z_REFCOUNTED_P(item) && Z_TYPE_P(item) != IS_STRING) return false;
+    } ZEND_HASH_FOREACH_END();
+    return true;
+}
+
 int swr_zend_try_ptr_dtor(zval *value) {
+    /* A pending thread exit makes the trap report a bailout, as before. */
+    if (!SWR_ZEND_EXIT_PENDING() && swr_release_runs_no_code(value)) {
+        zval_ptr_dtor(value);
+        return 0;
+    }
     SWR_TRAP(zval_ptr_dtor(value));
 }
 
