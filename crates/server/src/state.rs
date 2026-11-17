@@ -74,7 +74,7 @@ pub struct ServerState {
         not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid's reactor threads wait on it")
     )]
-    pub(crate) reactor_thread_barrier: swoole_rs_locks::Barrier,
+    pub(crate) reactor_thread_barrier: swoole_rs_corebase::locks::Barrier,
 }
 
 /// A port's place in [`Ports`], set once.
@@ -285,7 +285,7 @@ impl ServerState {
             worker_pipes: std::sync::Mutex::new(Vec::new()),
             stopping: AtomicBool::new(false),
             thread_manager: std::sync::Mutex::new(None),
-            reactor_thread_barrier: swoole_rs_locks::Barrier::new(),
+            reactor_thread_barrier: swoole_rs_corebase::locks::Barrier::new(),
         }
     }
 
@@ -404,7 +404,7 @@ impl ServerState {
         let text = |kind| CString::new(&*self.text(kind)).unwrap_or_default();
         let root = text(ServerText::Chroot);
         let (user, group) = (text(ServerText::User), text(ServerText::Group));
-        swoole_rs_ossupport::set_isolation(&group, &user, &root);
+        swoole_rs_corebase::ossupport::set_isolation(&group, &user, &root);
     }
 
     /// Starts a thread of `serv`, whose state this is, running `body`, which owns
@@ -494,7 +494,7 @@ impl ServerState {
         let file = self.text(ServerText::PidFile);
         if !file.is_empty() {
             let pid = std::process::id().cast_signed().to_string();
-            swoole_rs_ossupport::file_put_contents(&c_path(&file), pid.as_bytes());
+            swoole_rs_corebase::ossupport::file_put_contents(&c_path(&file), pid.as_bytes());
         }
     }
 

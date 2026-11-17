@@ -7,7 +7,7 @@ use swoole_rs_reactor::{Heap, OwnedSocket, Socket, SocketRecord, event_api, sock
 /// of `self`; the reactor reaches it only through the calls below, and `free` takes
 /// it off. Its event calls do nothing, and fail, without a reactor.
 #[repr(transparent)]
-pub struct EventSocket(Heap<'static>);
+pub struct EventSocket(OwnedSocket);
 
 fn reactor() -> bool {
     !swoole_rs_corebase::thread_reactor().is_null()
@@ -19,7 +19,7 @@ impl EventSocket {
     pub fn new(fd: c_int, fd_type: c_int) -> Self {
         let socket = Self::adopt(Box::new(SocketRecord::with_fd(fd, fd_type)));
         socket
-            .0
+            .socket()
             .edit(|record| socket_upstream::socket_set_fd_option(record, 1, -1));
         socket
     }
@@ -27,13 +27,13 @@ impl EventSocket {
     /// `record`, which this owns from here.
     #[must_use]
     pub fn adopt(record: Box<SocketRecord>) -> Self {
-        Self::from(OwnedSocket::new(record))
+        Self(OwnedSocket::new(record))
     }
 
     /// The record, which the caller owns from here.
     #[must_use]
     pub fn into_raw(self) -> *mut SocketRecord {
-        self.0.as_ptr()
+        self.0.leak().as_ptr()
     }
 
     /// The record, for as long as this is borrowed.
@@ -46,35 +46,35 @@ impl EventSocket {
     /// free deletes it from the reactor first.
     #[must_use]
     pub const fn heap(&self) -> Heap<'_> {
-        self.0
+        self.0.heap()
     }
 
     #[must_use]
     pub fn events(&self) -> swoole_rs_reactor::Events {
-        self.0.read(|record| record.events)
+        self.socket().read(|record| record.events)
     }
 
     #[must_use]
     pub fn removed(&self) -> bool {
-        self.0.read(|record| record.removed)
+        self.socket().read(|record| record.removed)
     }
 
     /// `swoole_event_add(socket, events)`: whether it worked.
     #[must_use]
     pub fn add(&self, events: swoole_rs_reactor::Events) -> bool {
-        event_api::event_add(self.0, events)
+        event_api::event_add(self.heap(), events)
     }
 
     /// `swoole_event_set(socket, events)`: whether it worked.
     #[must_use]
     pub fn set(&self, events: swoole_rs_reactor::Events) -> bool {
-        event_api::event_set(self.0, events)
+        event_api::event_set(self.heap(), events)
     }
 
     /// `swoole_event_del(socket)`: whether it worked.
     #[must_use]
     pub fn del(&self) -> bool {
-        event_api::event_del(*self.0)
+        event_api::event_del(self.socket())
     }
 
     /// `swoole_event_write(socket, data, len)`: the bytes taken, `None` when it failed
@@ -84,7 +84,7 @@ impl EventSocket {
         if !reactor() {
             return None;
         }
-        event_api::event_write(self.0, data)
+        event_api::event_write(self.heap(), data)
     }
 
     /// `socket->free()`, which closes the fd unless `keep_fd` (`socket->fd = -1`
@@ -94,7 +94,7 @@ impl EventSocket {
             if !self.removed() {
                 let _deleted = self.del();
             }
-            self.0.edit(|record| record.fd = -1);
+            self.socket().edit(|record| record.fd = -1);
         }
         self.release();
     }
@@ -104,10 +104,7 @@ impl EventSocket {
     /// and defers the close to it; otherwise closes its fd (`-1` for none) and frees
     /// it at once. Outside the hybrid there are no timers, buffers or loop.
     pub fn release(self) {
-        // SAFETY: the record this owns, the leaked box `adopt` (or the caller of
-        // `socket_free`) gave it: no other owner holds it, and nothing uses a handle to
-        // it once it is freed below or by the reactor's deferred task.
-        let owned = unsafe { OwnedSocket::from_socket(*self.0) };
+        let owned = self.0;
         #[cfg(feature = "upstream-symbols")]
         let owned = {
             let record = owned.socket();
@@ -147,7 +144,7 @@ impl EventSocket {
 
 impl From<OwnedSocket> for EventSocket {
     fn from(owned: OwnedSocket) -> Self {
-        Self(owned.leak())
+        Self(owned)
     }
 }
 

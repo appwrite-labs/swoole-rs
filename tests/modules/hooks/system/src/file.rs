@@ -1,5 +1,5 @@
 //! Upstream's `core-tests/src/os/file.cpp`, one function per TEST with the same inputs
-//! and expected values, over crates/ossupport's `file_api` and `file` (the bodies of
+//! and expected values, over crates/corebase/src/ossupport's `file_api` and `file` (the bodies of
 //! `src/os/file.cc`). `ASSERT_ERREQ` reads the last error, which the log host
 //! `swoole_init` installs sets, so they run here. tests/modules/ossupport/README.md maps
 //! each TEST, including the ones with no subject left.
@@ -9,10 +9,10 @@ use std::os::fd::IntoRawFd;
 
 use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::log;
-use swoole_rs_corebase::{swr_v1_core_max_file_content, swr_v1_core_set_max_file_content};
-use swoole_rs_ossupport::{
+use swoole_rs_corebase::ossupport::{
     FileRecord, create_tmpfile, fd_write_all, file_get_contents, file_put_contents, file_size,
 };
+use swoole_rs_corebase::{swr_v1_core_max_file_content, swr_v1_core_set_max_file_content};
 
 use super::{EBADF, ENOENT, TEST_STR, last_error};
 
@@ -159,7 +159,7 @@ fn empty_file() {
     std::fs::remove_file("/tmp/swoole_empty_file.txt").expect("remove the file");
 }
 
-/// `file.<name>`, in upstream's order; `file.open_twice` is crates/ossupport's
+/// `file.<name>`, in upstream's order; `file.open_twice` is crates/corebase/src/ossupport's
 /// `file_record::tests::file_open_twice`.
 pub(super) const CASES: super::Cases = &[
     ("file_put_contents", put_contents),

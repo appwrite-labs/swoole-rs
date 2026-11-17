@@ -346,7 +346,7 @@
         "M00"
       ],
       "owned_paths": [
-        "crates/locks/",
+        "crates/corebase/src/locks/",
         "crates/phplocks/",
         "native/locks/",
         "tests/modules/locks/"
@@ -430,7 +430,7 @@
         "M16"
       ],
       "owned_paths": [
-        "crates/ossupport/",
+        "crates/corebase/src/ossupport/",
         "native/ossupport/",
         "tests/modules/ossupport/"
       ],

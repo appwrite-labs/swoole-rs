@@ -162,9 +162,9 @@ impl<'a> Bus<'a> {
     pub(crate) fn set_always_chunked(self) {
         self.rust().set_always_chunked();
     }
-    /// `MessageBus::init_pipe_socket(sock)`.
-    pub(crate) fn init_pipe_socket(self, fd: c_int) {
-        self.rust().init_pipe_socket(fd);
+    /// `MessageBus::init_pipe_socket(sock)` of each of `fds`.
+    pub(crate) fn init_pipe_sockets(self, fds: impl IntoIterator<Item = c_int>) {
+        self.rust().init_pipe_sockets(fds);
     }
     /// `MessageBus::alloc_buffer()`, after `set_buffer_size(size)`: whether the
     /// allocator gave the bus its buffer.

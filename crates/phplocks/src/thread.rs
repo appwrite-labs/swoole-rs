@@ -15,8 +15,8 @@ use std::{
         atomic::{AtomicI64, AtomicU32},
     },
 };
+use swoole_rs_corebase::locks::{Kind, Lock};
 use swoole_rs_corebase::log::set_last_error;
-use swoole_rs_locks::{Kind, Lock};
 use swoole_rs_phpstubs::{thread_atomic, thread_lock};
 use swoole_rs_zend::{
     Call, Custom, CustomClass, E_ERROR, Minit, Owned, Value,

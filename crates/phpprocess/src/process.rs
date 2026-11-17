@@ -13,7 +13,7 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_corebase::CCast;
-use swoole_rs_ossupport::QueueRecord;
+use swoole_rs_corebase::ossupport::QueueRecord;
 use swoole_rs_phpstubs::process;
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_zend::{
@@ -847,7 +847,8 @@ fn daemon(call: &Call) {
         }
     }
     call.set_bool(
-        swoole_rs_ossupport::swoole_daemon(c_int::from(nochdir), c_int::from(noclose)) == 0,
+        swoole_rs_corebase::ossupport::swoole_daemon(c_int::from(nochdir), c_int::from(noclose))
+            == 0,
     );
 }
 

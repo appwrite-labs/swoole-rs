@@ -17,7 +17,7 @@ use swoole_rs_corebase::{
 };
 
 use swoole_rs_corebase::buffer::string::CppString;
-use swoole_rs_ossupport::fd_write_all;
+use swoole_rs_corebase::ossupport::fd_write_all;
 
 use crate::methods::swoole_get_worker_id;
 use crate::process_pool::SW_IPC_MAX_SIZE;
@@ -143,7 +143,7 @@ pub(crate) fn make_tmpfile(
     {
         *byte = pattern;
     }
-    swoole_rs_ossupport::create_tmpfile(path)
+    swoole_rs_corebase::ossupport::create_tmpfile(path)
 }
 
 /// Writes the payload to the temp file as `File::write_all` does (warning on an

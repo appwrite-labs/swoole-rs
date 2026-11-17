@@ -3,7 +3,7 @@
 
 use crate::Mode;
 use core::ffi::c_int;
-use swoole_rs_locks::SharedMutex;
+use swoole_rs_corebase::locks::SharedMutex;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::worker_record::WorkerType;
 

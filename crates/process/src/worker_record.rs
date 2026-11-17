@@ -13,7 +13,7 @@ use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, Ordering,
 };
 use std::ffi::{c_int, c_void};
-use swoole_rs_locks::SharedMutex;
+use swoole_rs_corebase::locks::SharedMutex;
 
 /// `swWorkerStatus`. A new record's status byte is 0, which is none of them.
 #[repr(u8)]
@@ -830,7 +830,7 @@ mod tests {
         let mut copy: WorkerRecord = unsafe { core::mem::zeroed() };
         // Without onMessage, a message-queue pool's process balances over the pool's queue.
         pool.ipc_mode.set(IpcMode::MsgQueue);
-        pool.queue = Some(Box::new(swoole_rs_ossupport::QueueRecord::new(
+        pool.queue = Some(Box::new(swoole_rs_corebase::ossupport::QueueRecord::new(
             libc::IPC_PRIVATE,
             false,
             0,

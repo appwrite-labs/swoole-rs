@@ -22,9 +22,7 @@ on:
       - crates/hooks/**
       - crates/http2/**
       - crates/httpbindings/**
-      - crates/locks/**
       - crates/memory/**
-      - crates/ossupport/**
       - crates/process/**
       - crates/reactor/**
       - crates/server/**
@@ -59,10 +57,10 @@ jobs:
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: >-
               -p swoole-rs-bus -p swoole-rs-corebase
-              -p swoole-rs-locks -p swoole-rs-process -p swoole-rs-reactor -p swoole-rs-utilities
+              -p swoole-rs-process -p swoole-rs-reactor -p swoole-rs-utilities
           - name: memory
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
-            packages: -p swoole-rs-memory -p swoole-rs-ossupport
+            packages: -p swoole-rs-memory
           # upstream-symbols only adds the timer's Owner and its tests (#3379), so this
           # run covers every test the plain one would.
           - name: timer

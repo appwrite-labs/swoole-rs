@@ -1,12 +1,11 @@
 //! `Socket::wait_event` of the coroutine socket and its readable and writable
 //! reactor callbacks, over the Rust-owned state: which event to add (a TLS session
-//! may want the other direction), binding the coroutine for the wait, the barrier
-//! that retries a transfer before the waiter wakes, and removing the event after.
+//! may want the other direction), binding the coroutine for the wait, the retry
+//! that keeps an `_all` transfer waiting while it is short, and removing the event after.
 //! `poll` waits the same way under a timer. Native code keeps the yield and the
 //! write buffer ([`Host`](crate::co_io::Host)).
 use crate::co_io::{CLOSE_WAIT_ERROR, Timer, available, ops, set_err};
 use crate::co_socket::Co;
-use crate::vector::Barrier;
 use core::ffi::c_void;
 use swoole_rs_reactor::Events;
 
@@ -21,6 +20,15 @@ struct WaitState {
 
 fn slot(event: Events) -> usize {
     usize::from(event == Events::WRITE)
+}
+
+/// A direction's retrying wait ([`wait_retry`]): none, suspended, or woken by the
+/// ready callback, which tells it whether the peer hung up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Retry {
+    None,
+    Waiting,
+    Ready { hup: bool },
 }
 
 /// One wait on a live record. Nothing here holds a borrow of it across a native call.
@@ -59,12 +67,14 @@ impl Wait {
         self.0.with_state(|state| state.want = event);
     }
 
-    fn set_barrier(&self, event: Events, barrier: Option<Barrier>) {
+    /// Sets the direction's retry, returning the one it replaces.
+    fn set_retry(&self, event: Events, retry: Retry) -> Retry {
         self.0.with_state(|state| {
-            if let Some(slot) = state.barriers.get_mut(slot(event)) {
-                *slot = barrier;
-            }
-        });
+            state
+                .retries
+                .get_mut(slot(event))
+                .map_or(Retry::None, |slot| core::mem::replace(slot, retry))
+        })
     }
 
     /// `add_event`: add `event` to the reactor unless it is there already.
@@ -80,7 +90,13 @@ impl Wait {
         added
     }
 
-    fn wait(&self, co: *mut c_void, event: Events, buffer: Option<WriteSlot<'_>>) -> bool {
+    fn wait(
+        &self,
+        co: *mut c_void,
+        event: Events,
+        buffer: Option<WriteSlot<'_>>,
+        retry: Option<&mut dyn FnMut() -> bool>,
+    ) -> bool {
         let Some(state) = self.snapshot() else {
             set_err(self.0, CLOSE_WAIT_ERROR);
             return false;
@@ -116,8 +132,23 @@ impl Wait {
             (ops().buffer)(self.0, &mut slot);
         }
         self.bind(event, co);
+        if retry.is_some() {
+            self.set_retry(event, Retry::Waiting);
+        }
         // Suspends this coroutine until a callback, timer or cancel resumes it.
         (ops().suspend)(self.0, co, event);
+        if let Some(retry) = retry {
+            // Woken by the ready callback, retry the transfer, and suspend again with
+            // the event and timer kept while it would block or is short, unless the
+            // peer hung up. A timer, cancel or error wake leaves it `Waiting`.
+            while let Retry::Ready { hup } = self.set_retry(event, Retry::Waiting) {
+                if !retry() || hup {
+                    break;
+                }
+                (ops().suspend)(self.0, co, event);
+            }
+            self.set_retry(event, Retry::None);
+        }
         self.bind(event, core::ptr::null_mut());
         // Both coroutines may wait for the same event under TLS.
         let bound = !self
@@ -170,64 +201,43 @@ impl<'a> WriteSlot<'a> {
 /// the socket open and no error.
 pub(crate) fn wait(socket: Co, event: Events, buffer: Option<WriteSlot<'_>>) -> bool {
     let co = (ops().current)();
-    !co.is_null() && Wait(socket).wait(co, event, buffer)
+    !co.is_null() && Wait(socket).wait(co, event, buffer, None)
 }
 
-/// [`wait_for`] with `barrier` retrying the transfer while it is installed: the
-/// ready callback calls it, and holds the coroutine while it returns true.
-pub(crate) fn wait_barrier(socket: Co, event: Events, barrier: &mut dyn FnMut() -> bool) -> bool {
+/// [`wait_for`] for `recv_all`/`send_all` and the vector forms: each time the ready
+/// callback wakes it, `retry` transfers the rest, and while it returns true (would
+/// block, or still short) the coroutine suspends again, as upstream's barrier holds
+/// it from the callback.
+pub(crate) fn wait_retry(socket: Co, event: Events, retry: &mut dyn FnMut() -> bool) -> bool {
     let co = (ops().current)();
-    if co.is_null() {
-        return false;
-    }
-    let barrier: *mut (dyn FnMut() -> bool + '_) = barrier;
-    #[expect(
-        clippy::transmute_ptr_to_ptr,
-        reason = "a raw pointer cast cannot extend a trait object's lifetime"
-    )]
-    // SAFETY: only the lifetime changes. The guard uninstalls the barrier before
-    // this returns, while the borrow is still live, and only `ready` calls it meanwhile.
-    let barrier =
-        unsafe { core::mem::transmute::<*mut (dyn FnMut() -> bool + '_), Barrier>(barrier) };
-    let wait = Wait(socket);
-    let _installed = core::mem::DropGuard::new((), |()| wait.set_barrier(event, None));
-    wait.set_barrier(event, Some(barrier));
-    wait.wait(co, event, None)
+    !co.is_null() && Wait(socket).wait(co, event, None, Some(retry))
 }
 
-/// [`wait`] with no barrier and no buffer.
+/// [`wait`] with no retry and no buffer.
 pub(crate) fn wait_for(socket: Co, event: Events) -> bool {
     let co = (ops().current)();
-    !co.is_null() && Wait(socket).wait(co, event, None)
+    !co.is_null() && Wait(socket).wait(co, event, None, None)
 }
 
 /// The readable (`event` read) or writable callback: the direction whose bound
 /// coroutine to resume, or none. Under a TLS wait the other direction's coroutine
-/// wakes; otherwise an installed barrier that keeps waiting holds the coroutine
-/// unless the peer hung up.
+/// wakes; otherwise the direction's own, and a retrying wait learns that the ready
+/// callback (not a timer, cancel or error) woke it, and whether the peer hung up.
 pub(crate) fn ready(socket: Co, event: Events, hup: bool) -> Option<Events> {
     let other = if event == Events::READ {
         Events::WRITE
     } else {
         Events::READ
     };
-    let (want, barrier) = socket.with_state(|state| {
-        (
-            state.want,
-            state.barriers.get(slot(event)).copied().flatten(),
-        )
-    });
-    if !want.is_empty() {
-        return (want == event).then_some(other);
-    }
-    if let Some(barrier) = barrier {
-        // SAFETY: an installed barrier is the live, exclusive borrow its suspended
-        // `wait_barrier` lent; it does not touch the state's barriers or bindings.
-        if unsafe { (*barrier)() } && !hup {
-            return None;
+    socket.with_state(|state| {
+        if !state.want.is_empty() {
+            return (state.want == event).then_some(other);
         }
-    }
-    Some(event)
+        if let Some(retry @ Retry::Waiting) = state.retries.get_mut(slot(event)) {
+            *retry = Retry::Ready { hup };
+        }
+        Some(event)
+    })
 }
 
 /// `Socket::poll(event, timeout)`: wait for `event` under `timeout`, or the
@@ -314,10 +324,10 @@ mod tests {
     fn wait_on(
         socket: &mut TestSocket,
         event: Events,
-        barrier: Option<&mut dyn FnMut() -> bool>,
+        retry: Option<&mut dyn FnMut() -> bool>,
     ) -> bool {
-        if let Some(barrier) = barrier {
-            return wait_barrier(socket.co(), event, barrier);
+        if let Some(retry) = retry {
+            return wait_retry(socket.co(), event, retry);
         }
         let mut moved = false;
         // The test host's `buffer` only logs the length.
@@ -398,19 +408,48 @@ mod tests {
         assert_eq!(effects(), ["set:512", "yield:512", "remove:512"]);
     }
 
+    // Upstream's barrier holds the coroutine from the ready callback while the retry
+    // keeps waiting; here the woken coroutine retries and suspends again, with the
+    // event and timer kept. A hang-up wakes it after one retry, and a timer, cancel or
+    // error wake runs none.
     #[test]
-    fn a_barrier_that_keeps_waiting_holds_the_coroutine() {
-        let mut s = socket(0);
-        ON_SUSPEND.set(Some(Box::new(|socket: Co, event| {
-            let woken = woken(socket, event);
-            log(format!("woken:{}", !woken.is_null()));
-        })));
-        assert!(wait_on(&mut s, Events::READ, Some(&mut || true)));
-        assert_eq!(
-            effects(),
-            ["set:512", "yield:512", "woken:false", "remove:512"]
-        );
-        assert!(unsafe { (*s.state()).barriers[0] }.is_none());
+    fn a_retry_that_keeps_waiting_suspends_again() {
+        for (wake, keeps, want, woke) in [
+            (
+                Some(false),
+                2,
+                &[
+                    "yield:512",
+                    "retry",
+                    "yield:512",
+                    "retry",
+                    "yield:512",
+                    "retry",
+                ][..],
+                true,
+            ),
+            (Some(true), 5, &["yield:512", "retry"][..], true),
+            (None, 5, &["yield:512"][..], false),
+        ] {
+            let mut s = socket(0);
+            ON_SUSPEND.set(Some(Box::new(move |socket: Co, event| match wake {
+                Some(hup) => assert_eq!(ready(socket, event, hup), Some(event)),
+                None => socket.set_err_code(libc::ETIMEDOUT),
+            })));
+            let mut left = keeps;
+            let mut retry = || {
+                log("retry");
+                left -= 1;
+                left >= 0
+            };
+            assert_eq!(wait_on(&mut s, Events::READ, Some(&mut retry)), woke);
+            let mut expected = vec!["set:512"];
+            expected.extend(want);
+            expected.push("remove:512");
+            assert_eq!(effects(), expected, "{wake:?}");
+            assert_eq!(unsafe { (*s.state()).retries[0] }, Retry::None);
+            s.0.err_code.set(0);
+        }
     }
 
     #[test]

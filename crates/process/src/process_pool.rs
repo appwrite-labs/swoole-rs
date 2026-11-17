@@ -100,7 +100,7 @@ pub struct PoolRecord {
     /// The registry `create` made, which `destroy` (or dropping the record) frees.
     pub(crate) registry: Option<Box<WorkerRegistry>>,
     /// A message-queue pool's queue, which goes as the registry does.
-    pub(crate) queue: Option<Box<swoole_rs_ossupport::QueueRecord>>,
+    pub(crate) queue: Option<Box<swoole_rs_corebase::ossupport::QueueRecord>>,
     pub(crate) ipc: Cell<*mut PoolIpc>,
     pub(crate) message_box: SharedChannel,
     message_bus: Owner<Box<dyn std::any::Any>>,
@@ -468,7 +468,7 @@ impl<'a> PoolRef<'a> {
     }
 
     /// Sets the pool's message queue.
-    pub(crate) fn set_queue(self, queue: Option<Box<swoole_rs_ossupport::QueueRecord>>) {
+    pub(crate) fn set_queue(self, queue: Option<Box<swoole_rs_corebase::ossupport::QueueRecord>>) {
         drop(self.replace(|record| &mut record.queue, queue));
     }
 
@@ -500,13 +500,13 @@ impl<'a> PoolRef<'a> {
     /// or `None` for a pool without one or a failed stat.
     #[must_use]
     pub fn queue_stat(self) -> Option<(usize, usize)> {
-        self.with_queue(swoole_rs_ossupport::QueueRecord::stat)?
+        self.with_queue(swoole_rs_corebase::ossupport::QueueRecord::stat)?
     }
 
     /// The pool's message queue's id (`msgget`'s), 0 without one.
     #[must_use]
     pub fn queue_id(self) -> c_int {
-        self.with_queue(swoole_rs_ossupport::QueueRecord::id)
+        self.with_queue(swoole_rs_corebase::ossupport::QueueRecord::id)
             .unwrap_or(0)
     }
 
@@ -529,7 +529,10 @@ impl<'a> PoolRef<'a> {
 
     /// `f` over the pool's message queue; `None` without one. Only this type's queue
     /// reads borrow it, and none of them reaches `destroy`, which frees it.
-    fn with_queue<R>(self, f: impl FnOnce(&swoole_rs_ossupport::QueueRecord) -> R) -> Option<R> {
+    fn with_queue<R>(
+        self,
+        f: impl FnOnce(&swoole_rs_corebase::ossupport::QueueRecord) -> R,
+    ) -> Option<R> {
         self.record().queue.as_deref().map(f)
     }
 
@@ -1237,7 +1240,7 @@ impl PoolHost for Native<'_> {
         self.native.call(&self.call(worker), op, arg);
     }
 
-    /// The message queue is Rust's on every platform (crates/ossupport).
+    /// The message queue is Rust's on every platform (crates/corebase/src/ossupport).
     fn have_msgqueue(&mut self) -> bool {
         true
     }
@@ -1665,7 +1668,7 @@ impl<H: PoolHost> Pool<'_, H> {
             IpcMode::MsgQueue => {
                 self.set_use_msgqueue(true);
                 self.set_msgqueue_key(key);
-                let Some(queue) = swoole_rs_ossupport::QueueRecord::open(key) else {
+                let Some(queue) = swoole_rs_corebase::ossupport::QueueRecord::open(key) else {
                     return false;
                 };
                 self.p.set_queue(Some(queue));

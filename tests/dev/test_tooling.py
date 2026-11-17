@@ -491,7 +491,8 @@ class Lanes(unittest.TestCase):
             stdext = dict(dev.plan(SimpleNamespace(**vars(args), stdext=True), ROOT / 'target/reports/all-registered-stdext'))
         self.assertNotIn('phphelpers-runtime', commands)
         self.assertNotIn('corebase-native', commands)  # Its cases run in corebase-unit.
-        self.assertIn('ossupport-unit', commands)
+        self.assertNotIn('ossupport-unit', commands)  # Its cases moved with corebase::ossupport.
+        self.assertEqual(commands['corebase-unit'], ['cargo', 'test', '--locked', '-p', 'swoole-rs-corebase'])
         self.assertNotIn('http-rewrites', commands)  # Its cases run in http-unit.
         self.assertIn('swoole-rs-corebase', commands['coroutine-rust-asan'])
         self.assertIn('swoole-rs-memory', commands['memory-rust-asan'])
@@ -935,3 +936,18 @@ class ScheduledFailures(unittest.TestCase):
                      for path in workflows.glob('*.yml') if re.search(r'^\s+schedule:', path.read_text(), re.M)}
         watched = re.search(r'workflows: \[(.*?)\]', (workflows / 'scheduled-failures.yml').read_text(), re.S).group(1)
         self.assertEqual({name.strip() for name in watched.split(',')}, scheduled - {'Merge'})
+
+
+class RuntimeVariantOwnership(unittest.TestCase):
+    def test_nested_runtime_modules_keep_their_build_variants(self):
+        workflow = (ROOT / '.github/workflows/pr.yml').read_text()
+        table = workflow.split("done > variants <<'EOF'\n", 1)[1].split('          EOF', 1)[0]
+        patterns = dict(line.strip().split(maxsplit=1) for line in table.splitlines() if line.strip())
+        for path, expected in [
+            ('crates/corebase/src/coroutine/facade.rs', {'cares', 'threadcontext'}),
+            ('crates/corebase/src/coroutine/thread.rs', {'cares', 'zts', 'threadcontext'}),
+            ('crates/corebase/src/locks/mod.rs', {'cares', 'zts'}),
+            ('crates/corebase/src/sys.rs', {'cares'}),
+        ]:
+            with self.subTest(path=path):
+                self.assertEqual({name for name, pattern in patterns.items() if re.match(pattern, path)}, expected)

@@ -3,27 +3,27 @@
 ## Ported GoogleTests
 
 `core-tests/src/os/msg_queue.cpp` no longer builds: `include/swoole_msg_queue.h`
-left the build. Its TEST is a Rust test over `crates/ossupport/src/msg_queue.rs`
-(`cargo test -p swoole-rs-ossupport msg_queue`), with the same inputs and expected
+left the build. Its TEST is a Rust test over `crates/corebase/src/ossupport/msg_queue.rs`
+(`cargo test -p swoole-rs-corebase msg_queue`), with the same inputs and expected
 values:
 
 | Upstream TEST | Rust test |
 | --- | --- |
-| `msg_queue.rbac` | `msg_queue::tests::msg_queue_rbac` |
+| `msg_queue.rbac` | `ossupport::msg_queue::tests::msg_queue_rbac` |
 
 `core-tests/src/os/os.cpp` tests `src/os/base.cc`, which is Rust
-(`crates/ossupport/src/system.rs`); its TESTs are tests there, same inputs and expected
-values (`cargo test -p swoole-rs-ossupport --all-features os_`):
+(`crates/corebase/src/ossupport/system.rs`); its TESTs are tests there, same inputs and expected
+values (`cargo test -p swoole-rs-corebase --all-features os_`):
 
 | Upstream TEST | Rust test or reason |
 | --- | --- |
 | `os.daemon` | `os.daemon` in `tests/modules/hooks/system/src/os.rs` (`hooks-system-rust`), since it needs `swoole_init` |
-| `os.cpu_affinity` | `system::tests::os_cpu_affinity` (Linux). `swoole_set_cpu_affinity` and `swoole_get_cpu_affinity` left the build (crates/process `affinity.rs` pins workers and nothing called the getter), so the case sets and gets through their bodies, `sched_setaffinity(getpid())` and `sched_getaffinity(getpid())`, as `CpuSet::set_process` and `CpuSet::get_process` make them |
-| `os.thread_name` | `system::tests::os_thread_name` (Linux, whose 15-byte limit fails the second name) |
+| `os.cpu_affinity` | `ossupport::system::tests::os_cpu_affinity` (Linux). `swoole_set_cpu_affinity` and `swoole_get_cpu_affinity` left the build (crates/process `affinity.rs` pins workers and nothing called the getter), so the case sets and gets through their bodies, `sched_setaffinity(getpid())` and `sched_getaffinity(getpid())`, as `CpuSet::set_process` and `CpuSet::get_process` make them |
+| `os.thread_name` | `ossupport::system::tests::os_thread_name` (Linux, whose 15-byte limit fails the second name) |
 | `os.thread_id` | none: `swoole_thread_id_to_str` left the build with its one caller, the async-thread warnings, so there is no function to test |
-| `os.set_isolation` | `system::tests::os_set_isolation`, over `set_isolation` |
+| `os.set_isolation` | `ossupport::system::tests::os_set_isolation`, over `set_isolation` |
 
-`core-tests/src/os/file.cpp` tests `src/os/file.cc`, which is Rust (`crates/ossupport`'s
+`core-tests/src/os/file.cpp` tests `src/os/file.cc`, which is Rust (`crates/corebase/src/ossupport`'s
 `file.rs`, `file_api.rs` and `file_record.rs`). Its `ASSERT_ERREQ`s read the last error, which only the log
 host `swoole_init` installs sets, so its TESTs are `file.<name>` in
 `tests/modules/hooks/system/src/file.rs` (`hooks-system-rust`), same inputs and expected values:
@@ -35,7 +35,7 @@ host `swoole_init` installs sets, so its TESTs are `file.<name>` in
 | `file.file_put_contents` | `file.file_put_contents`, over `file_api::file_put_contents` |
 | `file.file_get_contents` | `file.file_get_contents`, over `file_api::file_get_contents`; the large file is the test binary, as upstream's is core-tests' |
 | `file.file_get_size` | `file.file_get_size`, over `file::file_size` (`file_get_size(int)`), which returns the error its caller publishes. The path overload left the build, so its ENOENT check has no subject |
-| `file.open_twice` | `file_record::tests::file_open_twice`, over `FileRecord::open`/`close` (`cargo test -p swoole-rs-ossupport file_open_twice`) |
+| `file.open_twice` | `ossupport::file_record::tests::file_open_twice`, over `FileRecord::open`/`close` (`cargo test -p swoole-rs-corebase file_open_twice`) |
 | `file.error` | `file.error`: `FileRecord::read_all`'s failure and errno (its callers warn), `fd_write_all` (`File::write_all`, which warns), and `file_size`'s `fstat` for `File::stat` |
 | `file.tmp_file` | `file.tmp_file`, over `file_api::create_tmpfile` (`swoole_tmpfile`'s body), and crates/process's `task_file::tests::make_tmpfile_in_a_missing_directory` for `make_tmpfile` |
 | `file.empty_file` | `file.empty_file`, over `FileRecord::read_all` |

@@ -3,14 +3,14 @@
 //! The bodies of `src/os/file.cc` that Rust still calls: `swoole_tmpfile` (under its
 //! upstream symbol with `upstream-symbols`), `file_get_contents` and
 //! `file_put_contents`. Logs name the function as upstream's `__SW_FUNC__` did.
-use crate::file::{FileIo, file_open, file_size, tmpfile, write_all};
-use crate::file_record::FileRecord;
+use crate::buffer::string::CppString;
+use crate::log::LogLevel::{SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING};
+use crate::ossupport::file::{FileIo, file_open, file_size, tmpfile, write_all};
+use crate::ossupport::file_record::FileRecord;
+use crate::{log, sys};
 use libc::c_int;
 use std::ffi::CStr;
 use std::os::fd::OwnedFd;
-use swoole_rs_corebase::buffer::string::CppString;
-use swoole_rs_corebase::log::LogLevel::{SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING};
-use swoole_rs_corebase::{log, sys};
 
 /// `SW_LOG_TRACE`, `SW_LOG_WARNING`, `SW_ERROR_FILE_TOO_LARGE` and `SW_ERROR_FILE_EMPTY`.
 const FILE_TOO_LARGE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_FILE_TOO_LARGE as c_int;
@@ -91,7 +91,7 @@ pub fn file_get_contents(path: &CStr, content: &mut CppString) -> bool {
         );
         return false;
     }
-    if size > swoole_rs_corebase::swr_v1_core_max_file_content() as usize {
+    if size > crate::swr_v1_core_max_file_content() as usize {
         log::error_log(
             LOG_WARNING,
             FILE_TOO_LARGE,
@@ -132,7 +132,7 @@ pub fn file_put_contents(path: &CStr, data: &[u8]) -> bool {
         );
         return false;
     }
-    if data.len() > swoole_rs_corebase::swr_v1_core_max_file_content() as usize {
+    if data.len() > crate::swr_v1_core_max_file_content() as usize {
         log::error_log(
             LOG_WARNING,
             FILE_TOO_LARGE,

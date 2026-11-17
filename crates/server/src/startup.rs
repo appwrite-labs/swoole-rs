@@ -401,7 +401,7 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> b
     let mode = config.mode_;
     swoole_rs_process::methods::set_worker_type(WorkerType::Master);
     if mode == Mode::Thread {
-        let tid = swoole_rs_ossupport::swr_v1_os_thread_native_id().c_cast::<c_int>();
+        let tid = swoole_rs_corebase::ossupport::swr_v1_os_thread_native_id().c_cast::<c_int>();
         swoole_rs_process::methods::swoole_set_worker_pid(tid);
     } else if mode == Mode::Process {
         swoole_rs_process::methods::swoole_set_worker_pid(std::process::id().cast_signed());

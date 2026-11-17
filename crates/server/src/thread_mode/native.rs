@@ -180,7 +180,7 @@ fn body(share: &SharedServer, id: u32, kind: WorkerType, fresh: swoole_rs_coreba
     let slot = u16::try_from(id).unwrap_or(u16::MAX);
     swoole_rs_corebase::swoole_thread_init(false);
     swoole_rs_corebase::set_thread(THREAD_WORKER, slot);
-    let pid = swoole_rs_ossupport::swr_v1_os_thread_native_id().c_cast::<i32>();
+    let pid = swoole_rs_corebase::ossupport::swr_v1_os_thread_native_id().c_cast::<i32>();
     set_worker_type(kind);
     swoole_set_worker_id(id);
     swoole_set_worker_pid(pid);
@@ -256,7 +256,7 @@ fn init_bus(serv: view::Server<'_>, bus: &PoolBus) {
     if !handle.alloc_buffer(serv.config().ipc_max_size() as usize) {
         std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>());
     }
-    server_methods::init_pipe_sockets(serv, handle);
+    server_methods::init_pipe_sockets(serv, handle, None);
 }
 
 /// A thread's main inside `worker_thread_start`: its server, slot and kind; the

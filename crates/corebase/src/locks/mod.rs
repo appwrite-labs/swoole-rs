@@ -1,17 +1,12 @@
 //! Native-compatible synchronization.
-#![deny(unsafe_op_in_unsafe_fn)]
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("Rust locks require validated macOS or Linux platform contracts");
 
 // libc's surface is platform-specific here (e.g. __error on macOS vs
 // __errno_location on Linux, selected by cfg below), so it is not portably enumerable.
+#[cfg(target_os = "linux")]
+use crate::CCast;
+use crate::sys;
 #[cfg_attr(
     not(test),
     expect(
@@ -24,9 +19,6 @@ use std::{
     mem::{align_of, offset_of, size_of},
     sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering},
 };
-#[cfg(target_os = "linux")]
-use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::sys;
 
 pub mod coroutine;
 

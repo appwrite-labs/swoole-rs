@@ -5,7 +5,7 @@
 //! remaining count.
 use crate::co_io::{Timer, available, check, errno, set_err, would_block};
 use crate::co_socket::Co;
-use crate::socket_wait::wait_barrier;
+use crate::socket_wait::wait_retry;
 use core::ffi::c_int;
 use core::marker::PhantomData;
 use std::io::{IoSlice, IoSliceMut};
@@ -211,10 +211,6 @@ impl<'a> IoVector<'a> {
     }
 }
 
-/// Retries the transfer once the socket is ready; true to keep waiting. Installed
-/// only for the wait that lends it ([`wait_barrier`]), which erases its lifetime.
-pub type Barrier = *mut (dyn FnMut() -> bool + 'static);
-
 struct Transfer<'a, V, T, R> {
     socket: Co,
     vector: &'a mut V,
@@ -274,7 +270,7 @@ pub(crate) fn vector_all<V>(
     } else if first == Some(0) || state.remaining() == 0 {
         first
     } else {
-        // The barrier's retry: transfer until the vector is done or a call returns
+        // The retry: transfer until the vector is done or a call returns
         // <= 0; keep waiting only when the last call would block.
         let mut retry = || {
             loop {
@@ -285,7 +281,7 @@ pub(crate) fn vector_all<V>(
             }
             state.result.is_none() && state.would_block()
         };
-        if timer.start() && wait_barrier(socket, event, &mut retry) {
+        if timer.start() && wait_retry(socket, event, &mut retry) {
             check(socket, state.result);
         }
         Some(state.total)
@@ -381,9 +377,7 @@ mod tests {
         }
         TIMER_OK.set(failure != 2);
         ON_SUSPEND.set(Some(Box::new(move |socket: Co, event| {
-            while ready(socket, event, false).is_none() {
-                log("again");
-            }
+            assert_eq!(ready(socket, event, false), Some(event));
             if failure == 3 {
                 socket.set_err_code(libc::ETIMEDOUT);
             }
@@ -466,7 +460,9 @@ mod tests {
             if !(result < 0 && errno == libc::EAGAIN) {
                 break;
             }
-            effects.push("again".into());
+            // Upstream's barrier retries from the ready callback and holds the
+            // coroutine; here the woken coroutine retries and suspends again.
+            effects.push(format!("yield:{event}"));
         }
         effects.push(format!("remove:{event}"));
         if failure == 3 {
@@ -532,7 +528,7 @@ mod tests {
                 "add:1024",
                 "yield:1024",
                 "io",
-                "again",
+                "yield:1024",
                 "io",
                 "vectors:1",
                 "io",

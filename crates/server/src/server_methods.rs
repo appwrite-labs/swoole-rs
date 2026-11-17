@@ -109,9 +109,14 @@ pub(crate) fn start_master_thread(
     crate::startup::start_master_thread(serv, reactor)
 }
 
-/// `Server::init_pipe_sockets(mb)`, once the server has started.
+/// `Server::init_pipe_sockets(mb)`, once the server has started, and `mb`'s own
+/// record of the pipe `command` too.
 #[cfg(feature = "upstream-symbols")]
-pub(crate) fn init_pipe_sockets(serv: view::Server<'_>, mb: crate::objects::Bus<'_>) {
+pub(crate) fn init_pipe_sockets(
+    serv: view::Server<'_>,
+    mb: crate::objects::Bus<'_>,
+    command: Option<c_int>,
+) {
     if !serv.is_started() {
         // upstream's `assert(is_started())`.
         swoole_rs_corebase::fatal("pipe sockets set up before the server started");
@@ -125,14 +130,11 @@ pub(crate) fn init_pipe_sockets(serv: view::Server<'_>, mb: crate::objects::Bus<
     } else {
         workers
     };
-    for id in 0..total {
+    let ends = (0..total).flat_map(|id| {
         let id = u16::try_from(id).unwrap_or(u16::MAX);
-        for master in [true, false] {
-            if let Some(end) = serv.worker_pipe(id, master) {
-                mb.init_pipe_socket(end.fd());
-            }
-        }
-    }
+        [true, false].map(|master| serv.worker_pipe(id, master).map(|end| end.fd()))
+    });
+    mb.init_pipe_sockets(ends.flatten().chain(command));
 }
 
 /// `Server::connection_incoming(reactor, conn)`, over the port `conn` arrived on:
@@ -278,7 +280,7 @@ pub use crate::dispatch::sendfile;
 /// `serv->reactor_thread_barrier.wait()`.
 #[cfg(feature = "upstream-symbols")]
 pub(crate) fn reactor_barrier(serv: view::Server<'_>) {
-    swoole_rs_locks::barrier_wait(crate::server_object::barrier(serv, false));
+    swoole_rs_corebase::locks::barrier_wait(crate::server_object::barrier(serv, false));
 }
 
 /// `Server::get_package_max_length(conn)`, over the fd of one of `serv`'s connections.

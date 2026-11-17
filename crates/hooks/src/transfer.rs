@@ -5,7 +5,7 @@
 //! waits. Native code passes only the `network::Socket` (or syscall) call.
 use crate::co_io::{Timer, available, check, errno, set_err, would_block};
 use crate::co_socket::Co;
-use crate::socket_wait::{WriteSlot, wait, wait_barrier};
+use crate::socket_wait::{WriteSlot, wait, wait_retry};
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_reactor::Events;
 
@@ -102,7 +102,7 @@ fn all(mut op: Op<'_>, timer: &mut Timer, event: Events, length: usize) -> Optio
     let socket = op.socket;
     let mut total = first.unwrap_or(0);
     let mut result = None;
-    // The barrier's retry: transfer the rest; keep waiting while it would block or
+    // The retry: transfer the rest; keep waiting while it would block or
     // is still short.
     let mut rest = || {
         result = op.call(At::Caller(total));
@@ -115,7 +115,7 @@ fn all(mut op: Op<'_>, timer: &mut Timer, event: Events, length: usize) -> Optio
             }
         }
     };
-    if timer.start() && wait_barrier(socket, event, &mut rest) {
+    if timer.start() && wait_retry(socket, event, &mut rest) {
         check(socket, result);
     }
     (result.is_some() || total > 0).then_some(total)
@@ -287,11 +287,9 @@ mod tests {
             socket.0.sock_fd.set(-1);
         }
         TIMER_OK.set(failure != 2);
-        // A woken wait runs the installed barrier while it keeps waiting.
+        // The ready callback wakes each wait.
         ON_SUSPEND.set(Some(Box::new(move |socket: Co, event| {
-            while ready(socket, event, false).is_none() {
-                log("again");
-            }
+            assert_eq!(ready(socket, event, false), Some(event));
             if failure == 3 {
                 socket.set_err_code(libc::ETIMEDOUT);
             }
@@ -463,7 +461,9 @@ mod tests {
                 if !(result == EAGAIN || result > 0 && total < 8) {
                     break;
                 }
-                effects.push("again".into());
+                // Upstream's barrier retries from the ready callback and holds the
+                // coroutine; here the woken coroutine retries and suspends again.
+                effects.push(format!("yield:{event}"));
             }
             effects.push(format!("remove:{event}"));
             error = if failure == 3 {

@@ -4,7 +4,7 @@
 )]
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.2 src/core/base.cc (Swoole contributors).
-//! Core numeric and byte helpers; native code retains allocation and effect custody.
+//! Core runtime state, operations, and native-compatible records.
 #![cfg_attr(
     not(test),
     deny(
@@ -23,6 +23,7 @@ pub mod hook;
 mod host;
 pub mod lent;
 mod lifecycle;
+pub mod locks;
 pub mod log;
 
 // crates/framing's return codes; it can't name these, since corebase depends on it.
@@ -37,6 +38,7 @@ const _: () = assert!(
 pub mod native;
 pub mod net_address;
 pub mod net_types;
+pub mod ossupport;
 mod random;
 mod signal_mask;
 pub mod sys;

@@ -114,57 +114,49 @@ mod descriptor {
     use crate::event_api::{
         FdHandler, event_add, event_del, isset_handler, swoole_event_set_fd_handler,
     };
-    use crate::socket_upstream::make_socket_fd;
-    use crate::{Socket, SocketRecord};
-    use core::ptr;
-    use core::sync::atomic::{AtomicPtr, Ordering::Relaxed};
+    use crate::{OwnedSocket, SocketRecord};
+    use core::cell::Cell;
     use swoole_rs_process::signal_loop::DescriptorOps;
 
-    /// The signalfd's socket wrapper: null, or the live one `make` created and
-    /// `free` has not yet released.
-    static SOCKET: AtomicPtr<SocketRecord> = AtomicPtr::new(ptr::null_mut());
-
-    pub(super) fn make(fd: i32) {
-        SOCKET.store(make_socket_fd(fd, FD_SIGNAL), Relaxed);
+    std::thread_local! {
+        /// The signalfd's socket wrapper, on the signal thread: none, or the one
+        /// `make` created and `free` has not yet released.
+        static SOCKET: Cell<Option<OwnedSocket>> = const { Cell::new(None) };
     }
 
-    /// The wrapper, while there is one.
-    fn socket() -> Option<Socket<'static>> {
-        // SAFETY: null, or the record `make` allocated, which only `free` releases,
-        // after taking it out of SOCKET; only this module's calls, each on the signal
-        // thread and none keeping the handle, reach it.
-        unsafe { Socket::from_ptr(SOCKET.load(Relaxed)) }
+    pub(super) fn make(fd: i32) {
+        let socket = OwnedSocket::new(Box::new(SocketRecord::with_fd(fd, FD_SIGNAL)));
+        SOCKET.set(Some(socket));
+    }
+
+    /// `f` over the wrapper, while there is one, taken out and put back: a call `f`
+    /// makes back into this module finds none.
+    fn with<R>(f: impl FnOnce(&OwnedSocket) -> R) -> Option<R> {
+        let socket = SOCKET.take()?;
+        let out = f(&socket);
+        SOCKET.set(Some(socket));
+        Some(out)
     }
 
     /// Frees the wrapper but not the descriptor, which the signalfd backend closes.
     pub(super) fn free() {
-        let Some(socket) = socket() else {
+        let Some(socket) = SOCKET.take() else {
             return;
         };
-        SOCKET.store(ptr::null_mut(), Relaxed);
-        socket.edit(|record| record.fd = -1);
-        // SAFETY: SOCKET's wrapper, `make`'s heap record, which nothing uses once taken
-        // out of it.
-        (crate::host::get().socket_free)(unsafe { crate::OwnedSocket::from_socket(socket) });
+        socket.socket().edit(|record| record.fd = -1);
+        (crate::host::get().socket_free)(socket);
     }
 
     pub(super) fn events() -> i32 {
-        socket().map_or(0, |socket| socket.read(|record| record.events.bits()))
+        with(|socket| socket.socket().read(|record| record.events.bits())).unwrap_or(0)
     }
 
     pub(super) fn add(events: i32) -> bool {
-        socket().is_some_and(|socket| {
-            event_add(
-                crate::Heap::from_static(socket),
-                crate::Events::from_bits(events),
-            )
-        })
+        with(|socket| event_add(socket.heap(), crate::Events::from_bits(events))).unwrap_or(false)
     }
 
     pub(super) fn del() {
-        if let Some(socket) = socket() {
-            _ = event_del(socket);
-        }
+        with(|socket| _ = event_del(socket.socket()));
     }
 
     pub(super) fn installed() -> bool {
@@ -190,7 +182,7 @@ mod descriptor {
     /// (`OwnedSocket::into_box`), where upstream's stayed counted, so it no longer
     /// needs discounting.
     fn exit_condition(event_num: &mut usize) -> bool {
-        socket().is_none() || swoole_rs_process::signal_loop::exit_condition(event_num)
+        with(|_| ()).is_none() || swoole_rs_process::signal_loop::exit_condition(event_num)
     }
 
     /// The read handler, the exit condition and the destroy callback.

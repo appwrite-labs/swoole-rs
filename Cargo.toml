@@ -42,6 +42,7 @@ unused_dependencies = "deny"
 missing_lints_inheritance = "deny"
 
 [workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
 # `pub` only where another crate uses it, so dead_code sees the rest (#159).
 unreachable_pub = "deny"
 # `cargo fuzz` builds with --cfg fuzzing.

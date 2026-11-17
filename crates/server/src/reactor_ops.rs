@@ -54,7 +54,7 @@ impl<'a> ReactorContext<'a> {
 }
 
 #[cfg(any(test, feature = "upstream-symbols"))]
-pub(crate) use swoole_rs_ossupport::pthread_self;
+pub(crate) use swoole_rs_corebase::ossupport::pthread_self;
 
 /// A socket's output buffer, or `None` without one.
 pub(crate) fn out_buffer(socket: &SocketFields) -> Option<&CppBuffer> {

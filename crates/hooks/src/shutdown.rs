@@ -2,7 +2,7 @@
 //! handle (#439), and `Socket::shutdown` over it: admission, the TLS close, the
 //! `shutdown(2)` call and the half-close flags. Native code keeps `set_err` and
 //! the TLS session.
-use crate::vector::Barrier;
+use crate::socket_wait::Retry;
 use core::ffi::{CStr, c_void};
 use std::io;
 use swoole_rs_reactor::Events;
@@ -23,8 +23,8 @@ pub struct SocketState {
     write_co: *mut c_void,
     /// `want_event`: the direction a TLS wait added instead of its own, or none.
     pub(crate) want: Events,
-    /// The barriers installed for the read and the write wait.
-    pub(crate) barriers: [Option<Barrier>; 2],
+    /// The read and the write wait's retry state.
+    pub(crate) retries: [Retry; 2],
     /// The timers of the read and the write wait.
     pub(crate) timers: [WaitTimer; 2],
 }
@@ -51,7 +51,7 @@ impl SocketState {
             read_co: core::ptr::null_mut(),
             write_co: core::ptr::null_mut(),
             want: Events::NONE,
-            barriers: [None; 2],
+            retries: [Retry::None; 2],
             timers: [WaitTimer::None; 2],
         }
     }

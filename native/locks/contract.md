@@ -1,8 +1,8 @@
 # Locks and atomics ABI
 
 Feature bit 1024 (`locks`). No lock has a C++ class or a C entry point: the server, Table and
-crates/phplocks use crates/locks' `Lock` and `SharedMutex`, and the server's `Barrier` is
-crates/locks' too. The module has no C or C++ source, and this directory declares only
+crates/phplocks use `corebase::locks`' `Lock` and `SharedMutex`, and the server's `Barrier` is
+`corebase::locks`' too. The module has no C or C++ source, and this directory declares only
 `swoole_atomic.h`. crates/phplocks is `Swoole\Atomic`, `Swoole\Lock`,
 `Coroutine\Lock` and the ZTS `Thread\Atomic`, `Atomic\Long` and `Thread\Lock`,
 MINITs included. A thread resource keeps its word or private lock in an `Arc`
@@ -42,7 +42,7 @@ Deliberate fixes relative to upstream:
 
 ## Barrier
 
-Barrier class layout is unchanged (`crates/locks/src/lib.rs`'s `Barrier` is the same
+Barrier class layout is unchanged (`crates/corebase/src/locks/mod.rs`'s `Barrier` is the same
 `repr(C)` record). Linux uses libc pthread init/wait/destroy on its barrier and attr,
 as upstream's `SW_USE_PTHREAD_BARRIER`. Shared attrs are initialized before `setpshared`, fixing
 upstream `Barrier::init`'s use of an uninitialized attribute. Non-pthread
@@ -70,7 +70,7 @@ them directly; other hosts use crates/utilities' wait registry.
 
 ## Coroutine lock
 
-`crates/locks/src/coroutine.rs` owns the lock record, its shared or private
+`crates/corebase/src/locks/coroutine.rs` owns the lock record, its shared or private
 atomic word, owner cookie/CID, acquisition loop, cancellation and unlock. Shared
 words come from the process-shared pool and return to it on destruction.
 Ownership metadata belongs to one cooperative scheduler thread; only the word may

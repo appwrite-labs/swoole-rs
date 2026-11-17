@@ -229,7 +229,6 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-http",
- "swoole-rs-ossupport",
 ]
 
 [[package]]
@@ -254,22 +253,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "swoole-rs-locks"
-version = "0.1.0"
-dependencies = [
- "libc",
- "swoole-rs-corebase",
- "swoole-rs-error",
-]
-
-[[package]]
 name = "swoole-rs-memory"
 version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-locks",
  "swoole-rs-utilities",
 ]
 
@@ -281,24 +270,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "swoole-rs-ossupport"
-version = "0.1.0"
-dependencies = [
- "libc",
- "swoole-rs-corebase",
- "swoole-rs-error",
-]
-
-[[package]]
 name = "swoole-rs-process"
 version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-locks",
  "swoole-rs-memory",
- "swoole-rs-ossupport",
  "swoole-rs-utilities",
 ]
 
@@ -315,7 +293,6 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-memory",
- "swoole-rs-ossupport",
  "swoole-rs-process",
 ]
 
@@ -337,7 +314,6 @@ dependencies = [
  "openssl-sys",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-ossupport",
  "swoole-rs-reactor",
  "swoole-rs-timer",
 ]
@@ -352,7 +328,6 @@ dependencies = [
  "swoole-rs-crc32",
  "swoole-rs-error",
  "swoole-rs-error-ffi",
- "swoole-rs-locks",
 ]
 
 [[package]]

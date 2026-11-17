@@ -4,11 +4,11 @@
 //! root check, daemonizing, user/group/chroot isolation, parent-death signal, CPU
 //! affinity, native thread id and thread names. Logs name the function as
 //! upstream's `__SW_FUNC__` did.
+use crate::lent::{Count, Out};
+use crate::log;
+use crate::sys::Text;
 use libc::{c_int, c_long};
 use std::ffi::CStr;
-use swoole_rs_corebase::lent::{Count, Out};
-use swoole_rs_corebase::log;
-use swoole_rs_corebase::sys::Text;
 
 // libc's own declarations, each a call over plain values that reads and writes no
 // caller memory: the caller's ids and session are the kernel's to check.
@@ -69,7 +69,7 @@ pub extern "C" fn swr_v1_os_is_root_user() -> bool {
 /// then stdin/stdout/stderr onto `/dev/null` unless `noclose`. Logs the failed step.
 #[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
 fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
-    use swoole_rs_corebase::sys;
+    use crate::sys;
     if !nochdir && sys::chdir(c"/").is_err() {
         log::sys_warning(c"swoole_daemon", format_args!("chdir() failed"));
         return false;
@@ -105,7 +105,7 @@ pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
         return -1;
     }
     // Upstream's fork; it rejects a coroutine or async-thread caller itself.
-    let pid = swoole_rs_corebase::swoole_fork(FORK_DAEMON);
+    let pid = crate::swoole_fork(FORK_DAEMON);
     if pid < 0 {
         log::sys_warning(c"swoole_daemon", format_args!("fork() failed"));
         return -1;
@@ -128,12 +128,12 @@ pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
 #[must_use]
 pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
     // Upstream's fork precheck; it forks nothing (-1 before `swoole_init`).
-    if swoole_rs_corebase::swoole_fork(FORK_PRECHECK) < 0 {
+    if crate::swoole_fork(FORK_PRECHECK) < 0 {
         return -1;
     }
     let rv = daemon(nochdir, noclose);
     if rv == 0 {
-        swoole_rs_corebase::hook::call_after_fork();
+        crate::hook::call_after_fork();
     }
     rv
 }
@@ -155,14 +155,14 @@ enum IsolationStep {
 fn isolate(group: &CStr, user: &CStr, root: &CStr, mut warn: impl FnMut(IsolationStep)) {
     let mut gid = None;
     if !group.is_empty() {
-        gid = swoole_rs_corebase::sys::group_id(group);
+        gid = crate::sys::group_id(group);
         if gid.is_none() {
             warn(IsolationStep::GroupLookup);
         }
     }
     let mut uid = None;
     if !user.is_empty() {
-        uid = swoole_rs_corebase::sys::user_id(user);
+        uid = crate::sys::user_id(user);
         if uid.is_none() {
             warn(IsolationStep::UserLookup);
         }
@@ -174,8 +174,8 @@ fn isolate(group: &CStr, user: &CStr, root: &CStr, mut warn: impl FnMut(Isolatio
         warn(IsolationStep::Setuid);
     }
     if !root.is_empty() {
-        if swoole_rs_corebase::sys::chroot(root).is_ok() {
-            if swoole_rs_corebase::sys::chdir(c"/").is_err() {
+        if crate::sys::chroot(root).is_ok() {
+            if crate::sys::chdir(c"/").is_err() {
                 warn(IsolationStep::Chdir);
             }
         } else {
@@ -267,7 +267,7 @@ pub extern "C" fn swr_v1_os_set_process_death_signal(signal: c_int) {
 pub extern "C" fn swr_v1_os_thread_native_id() -> c_long {
     #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
     {
-        swoole_rs_corebase::sys::gettid()
+        crate::sys::gettid()
     }
     #[cfg(target_os = "freebsd")]
     {
@@ -331,7 +331,7 @@ pub fn thread_set_name(name: &CStr) -> bool {
 /// `check_pthread_return_value`: a pthread error becomes the last error.
 fn pthread_ok(rc: c_int) -> bool {
     if rc != 0 {
-        swoole_rs_corebase::log::set_last_error(rc);
+        crate::log::set_last_error(rc);
     }
     rc == 0
 }
@@ -344,7 +344,7 @@ fn pthread_ok(rc: c_int) -> bool {
 )]
 #[must_use]
 pub extern "C" fn swoole_random_bytes<'id>(buf: Out<'id, u8>, size: Count<'id>) -> usize {
-    swoole_rs_corebase::random_bytes(buf.fill(size).slots())
+    crate::random_bytes(buf.fill(size).slots())
 }
 
 #[cfg(test)]
@@ -449,10 +449,10 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri models one CPU")]
     fn os_cpu_affinity() {
-        use crate::CpuSet;
+        use crate::ossupport::CpuSet;
         // The libc calls' 0 or -1, which upstream's assertions compare.
         let status = |done: bool| if done { 0 } else { -1 };
-        let pid = swoole_rs_corebase::sys::getpid();
+        let pid = crate::sys::getpid();
         let mut affinity = CpuSet::empty();
         assert_eq!(status(affinity.get_process(pid)), 0);
         let ori_affinity = affinity;
@@ -490,7 +490,7 @@ mod tests {
             return;
         }
         let child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "system::tests::os_set_isolation"])
+            .args(["--exact", "ossupport::system::tests::os_set_isolation"])
             .env(CHILD, "1")
             .output()
             .unwrap();

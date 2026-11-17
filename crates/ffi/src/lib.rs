@@ -31,8 +31,8 @@ pub use swoole_rs_http_ffi::*;
 
 pub use swoole_rs_utilities::*;
 
-pub use swoole_rs_locks::coroutine;
-pub use swoole_rs_locks::*;
+pub use swoole_rs_corebase::locks::coroutine;
+pub use swoole_rs_corebase::locks::*;
 
 #[cfg(feature = "php")]
 pub use swoole_rs_phplocks::*;
@@ -55,7 +55,7 @@ pub use swoole_rs_corebase::coroutine::*;
 pub use swoole_rs_hooks::*;
 pub use swoole_rs_phpruntime as phpruntime;
 
-pub use swoole_rs_ossupport::*;
+pub use swoole_rs_corebase::ossupport::*;
 
 // Reactor's Socket patch calls the TLS reads and writes in crates/tls.
 pub use swoole_rs_tls::*;
