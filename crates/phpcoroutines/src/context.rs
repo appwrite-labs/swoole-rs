@@ -22,7 +22,7 @@ use std::{
     rc::Rc,
 };
 use swoole_rs_corebase::coroutine::{CoroutineTask, State};
-use swoole_rs_timer::Held;
+use swoole_rs_corebase::timer::Held;
 use swoole_rs_zend::sys::{
     IS_NULL, IS_STRING, IS_UNDEF, swr_zend_callable, swr_zend_callable_hold,
     swr_zend_coroutine_fcc_discard, swr_zend_coroutine_output_reset, swr_zend_coroutine_set_frame,
@@ -712,7 +712,7 @@ fn close(ctx: Ctx) {
         && let Some(co) = ctx.co()
         && let Some(timer) = swap_time_limit(ctx, host::cid(co), None)
     {
-        swoole_rs_timer::del_id(timer);
+        swoole_rs_corebase::timer::del_id(timer);
     }
     swr_zend_coroutine_finish(ctx.running(), origin(ctx).switched_out());
     if let Some(join) = ctx.replace_join(None) {

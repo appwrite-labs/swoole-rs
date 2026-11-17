@@ -4,22 +4,22 @@
 //! patch deletes): this thread's `SwooleTG.timer`, its lazy creation, unit
 //! conversion and warnings, over the Rust-owned timer (`owner.rs`). Timer
 //! callbacks own their captures and operations use issued timer IDs.
-use crate::owner::{Closure, Owner as Timer, TimerNode};
+use crate::CCast;
+use crate::timer::owner::{Closure, Owner as Timer, TimerNode};
+pub use crate::timer_key::Held;
+use crate::{log, swoole_print_backtrace};
 use std::ffi::{CStr, c_long, c_void};
-use swoole_rs_corebase::CCast;
-pub use swoole_rs_corebase::timer_key::Held;
-use swoole_rs_corebase::{log, swoole_print_backtrace};
 
 /// `SW_TIMER_MIN_SEC`.
 const MIN_SEC: f64 = 0.001;
 
 pub(crate) fn timer() -> *mut Timer {
-    swoole_rs_corebase::thread_timer().cast()
+    crate::thread_timer().cast()
 }
 
 /// Publishes `timer` (or null) as this thread's.
 pub(crate) fn publish(timer: *mut Timer) {
-    swoole_rs_corebase::set_thread_timer(timer.cast());
+    crate::set_thread_timer(timer.cast());
 }
 
 /// This thread's timer, if it has one.
@@ -64,13 +64,13 @@ pub fn thread_timer_count() -> usize {
 /// Whether this thread has a timer that no reactor drives (`!timer->get_reactor()`).
 #[must_use]
 pub fn thread_timer_detached() -> bool {
-    current().is_some_and(|timer| crate::owner::owner_reactor(timer).is_null())
+    current().is_some_and(|timer| crate::timer::owner::owner_reactor(timer).is_null())
 }
 
 /// `SwooleTG.timer->reinit(manually_trigger)`, when this thread has a timer.
 pub fn thread_timer_reinit(manually_trigger: bool) {
     if let Some(timer) = current() {
-        crate::owner::owner_reinit(timer, manually_trigger);
+        crate::timer::owner::owner_reinit(timer, manually_trigger);
     }
 }
 
@@ -198,7 +198,7 @@ pub fn delete_held(held: Option<Held>) -> bool {
 pub fn swoole_timer_exists(timer_id: c_long) -> bool {
     available(c"swoole_timer_exists")
         .and_then(|timer| timer.get(timer_id))
-        .is_some_and(|node| !node.removed)
+        .is_some_and(|node| !node.fields.removed)
 }
 
 /// `bool swoole_timer_clear(long timer_id)`: `Timer::remove(id)`.
@@ -241,8 +241,8 @@ pub extern "C-unwind" fn swoole_timer_select() {
 
 /// What `Swoole\Timer` (crates/phptimer) needs: PHP timers on this thread's timer.
 pub mod php {
-    use super::{Timer, TimerNode, current};
-    pub use crate::owner::{Bailout, Info};
+    use super::{Timer, current};
+    pub use crate::timer::owner::{Bailout, Info};
 
     /// `swoole_timer_is_available()`.
     #[must_use]
@@ -250,28 +250,77 @@ pub mod php {
         current().is_some()
     }
 
-    /// Add a PHP timer, taking ownership of its parsed callable on success.
-    /// `H` runs and releases that same callable; a tick receives its id first.
-    ///
-    /// # Errors
-    /// Returns the unkept callable when the timer could not be added.
-    ///
-    /// Raw callback/data pairs cannot be passed through this safe API:
-    /// ```compile_fail
-    /// use swoole_rs_timer::php::add_php;
-    /// unsafe extern "C-unwind" fn callback(_: *mut std::ffi::c_void) {}
-    /// add_php(1, false, callback, callback, std::ptr::null_mut());
-    /// ```
-    #[cfg(feature = "php")]
-    pub fn add_php<H: swoole_rs_zend::Holder>(
-        ms: i64,
-        persistent: bool,
-        callable: swoole_rs_zend::Parsed,
-    ) -> Result<i64, swoole_rs_zend::Parsed> {
-        match super::created() {
-            Some(timer) => timer.add_php::<H>(ms, persistent, callable),
-            None => Err(callable),
+    /// A retained callback of at most two words, aligned no more than a word.
+    /// The timer owns it inline. Release runs after detaching the node
+    /// and before deleting it, so a caller can defer a bailout until deletion.
+    pub trait Callback: 'static {
+        fn run(&self);
+        fn release(self);
+    }
+
+    /// A reserved PHP timer, confined to this thread. Dropping it cancels the
+    /// empty node. No borrow of a timer spans the caller's retention operation.
+    #[must_use]
+    pub struct Reservation {
+        generation: u64,
+        id: std::num::NonZeroI64,
+        armed: bool,
+        thread: std::marker::PhantomData<std::rc::Rc<()>>,
+    }
+
+    impl Reservation {
+        /// The issued timer id, also passed to a persistent PHP callback.
+        #[must_use]
+        pub fn id(&self) -> std::num::NonZeroI64 {
+            self.id
         }
+
+        fn issuer(&self) -> Option<&Timer> {
+            current().filter(|timer| timer.identity() == self.generation)
+        }
+
+        /// Transfer the retained callback to the reserved node. If retention
+        /// re-entered the timer and removed it, release the callback instead.
+        ///
+        /// Raw callback/data pairs cannot pass through this safe API:
+        /// ```compile_fail
+        /// use swoole_rs_corebase::timer::php::reserve;
+        /// unsafe extern "C-unwind" fn callback(_: *mut std::ffi::c_void) {}
+        /// reserve(1, false).unwrap().commit((callback, callback, std::ptr::null_mut::<()>()));
+        /// ```
+        #[must_use]
+        pub fn commit<C: Callback>(mut self, callback: C) -> bool {
+            self.armed = false;
+            if let Some(node) = self.issuer().and_then(|timer| timer.get(self.id.get())) {
+                node.install(callback);
+                true
+            } else {
+                callback.release();
+                false
+            }
+        }
+    }
+
+    impl Drop for Reservation {
+        fn drop(&mut self) {
+            if self.armed
+                && let Some(timer) = self.issuer()
+            {
+                timer.remove(self.id.get());
+            }
+        }
+    }
+
+    /// Reserve a node before retaining the callback; refusal retains nothing.
+    #[must_use]
+    pub fn reserve(ms: i64, persistent: bool) -> Option<Reservation> {
+        let timer = super::created()?;
+        Some(Reservation {
+            generation: timer.identity(),
+            id: std::num::NonZeroI64::new(timer.reserve_php(ms, persistent)?)?,
+            armed: true,
+            thread: std::marker::PhantomData,
+        })
     }
 
     /// `swoole_timer_get(id)`'s fields, and whether it is a PHP timer.
@@ -296,8 +345,7 @@ pub mod php {
     /// timer `id` was one and was removed.
     #[must_use]
     pub fn clear(id: i64) -> bool {
-        current()
-            .is_some_and(|timer| timer.get(id).is_some_and(TimerNode::is_php) && timer.remove(id))
+        current().is_some_and(|timer| timer.remove_php(id))
     }
 
     /// `Timer::abandon_selection(bailout)` of this thread's timer: after a

@@ -51,7 +51,7 @@ A cancelable yield's `cancel_fn` points at a `Canceler` (crates/corebase/src/cor
 function and its data, which C++ holds only as `void *`) on the yielder's stack. Cancel (`Coroutine::cancel`'s
 symbol) refuses a coroutine that is not suspended with one, then calls it.
 `yield_ex` adds its timeout timer through
-crates/timer's `add_fn_sec`, which `swoole_init` registers in the coroutine's `Host`, of the coroutine's id and deletes it after a
+`corebase::timer::add_fn_sec` directly, capturing the coroutine's id and deletes it after a
 wake that was not the timeout.
 
 `src/coroutine/base.cc` is gone. `crates/corebase/src/coroutine/scheduler.rs` keeps the

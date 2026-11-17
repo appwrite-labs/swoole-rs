@@ -22,7 +22,6 @@ swoole-rs-ffi = { path = "../../../../crates/ffi" }
 swoole-rs-hooks = { path = "../../../../crates/hooks" }
 # The original pool cases now pass the real server effects explicitly.
 swoole-rs-server = { path = "../../../../crates/server" }
-swoole-rs-timer = { path = "../../../../crates/timer", features = ["upstream-symbols"] }
 swoole-rs-tls = { path = "../../../../crates/tls" }
 
 [lints]

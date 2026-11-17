@@ -214,7 +214,7 @@ fn dns_lookup(call: &Call) {
         return;
     }
     let cached = with_cache(|cache| {
-        let now = swoole_rs_timer::absolute_msec();
+        let now = swoole_rs_corebase::timer::absolute_msec();
         cache
             .get(name)
             .filter(|entry| entry.expires > now)
@@ -241,7 +241,7 @@ fn dns_lookup(call: &Call) {
     let address = answers.swap_remove(pick);
     call.set_bytes(&address);
     let refresh = f64::from_bits(DNS_REFRESH_SECONDS.load(Ordering::Relaxed));
-    let now = swoole_rs_timer::absolute_msec();
+    let now = swoole_rs_corebase::timer::absolute_msec();
     let expires = now + (refresh * 1000.0).c_cast::<i64>();
     let entry = Cached { address, expires };
     with_cache(|cache| match cache.get_mut(name) {

@@ -363,12 +363,14 @@ fn set_time_limit(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let Some(timer) = swoole_rs_timer::add_fn_sec(timeout, false, move || time_limit(cid)) else {
+    let Some(timer) =
+        swoole_rs_corebase::timer::add_fn_sec(timeout, false, move || time_limit(cid))
+    else {
         call.set_bool(false);
         return;
     };
     if let Some(old) = context::swap_time_limit(ctx, cid, Some(timer)) {
-        swoole_rs_timer::del_id(old);
+        swoole_rs_corebase::timer::del_id(old);
     }
     call.set_bool(true);
 }

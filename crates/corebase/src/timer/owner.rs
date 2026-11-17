@@ -1,21 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/core/timer.cc (Swoole contributors).
 //! `swoole::Timer` (upstream `src/core/timer.cc`, which the timer patch deletes): a
-//! Rust-owned record over this crate's queue, and its nodes. C++ sees both only
-//! through pointers.
-use crate::{
+//! Rust-owned record over the queue and its nodes, accessed by typed Rust paths.
+use crate::CCast;
+use crate::reactor::{event_api, swr_v1_event_set_end_callback, swr_v1_event_set_exit_condition};
+use crate::timer::{
     Status, Timer as Queue, TimerView, absolute_msec, swr_v1_timer_add_delay, swr_v1_timer_backend,
     swr_v1_timer_delay_deadline, swr_v1_timer_rearm_after_add, swr_v1_timer_relative_msec,
     swr_v1_timer_system_set,
 };
+use crate::{log, swr_v1_core_set_signal_alarm, thread_reactor};
 use std::cell::Cell;
 use std::ffi::{CStr, c_int, c_long, c_void};
+#[cfg(test)]
 use std::marker::PhantomData;
-use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::reactor::{
-    event_api, swr_v1_event_set_end_callback, swr_v1_event_set_exit_condition,
-};
-use swoole_rs_corebase::{log, swr_v1_core_set_signal_alarm, thread_reactor};
 
 /// `SW_LOG_WARNING` and `SW_ERROR_INVALID_PARAMS`.
 const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
@@ -25,17 +23,21 @@ const REACTOR: u32 = 1;
 
 /// `swoole::TimerCallback`: `void (*)(Timer *, TimerNode *)`. Only [`Owner::select`]
 /// calls one, with its timer and the node it selected: what the callback is for.
+#[cfg(test)]
 pub(crate) type Callback = extern "C-unwind" fn(timer: &Owner, node: Lent<'_>);
 /// `swoole::TimerDestructor`: `void (*)(TimerNode *)`. Only [`Owner::release`] calls
 /// one, once, with the node it detached and frees next.
+#[cfg(test)]
 type Destructor = extern "C-unwind" fn(node: Lent<'_>);
 
 /// A `TimerNode *` lent to the node's own callback or destructor: live for the call.
 /// Its field is private, so only this module makes one, for those two calls.
+#[cfg(test)]
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub(crate) struct Lent<'a>(std::ptr::NonNull<TimerNode>, PhantomData<&'a TimerNode>);
 
+#[cfg(test)]
 impl Lent<'_> {
     /// A live node, for its callback or destructor; none for null, which no live node is.
     fn of(node: *mut TimerNode) -> Option<Self> {
@@ -48,8 +50,6 @@ impl Lent<'_> {
         self.0.as_ptr()
     }
 }
-/// A callback of the node's data alone.
-type Plain = unsafe extern "C-unwind" fn(*mut c_void);
 /// `abandon_selection`'s pending Zend bailout, raised once the node is gone.
 pub type Bailout = extern "C-unwind" fn();
 
@@ -65,6 +65,12 @@ pub struct Info {
 
 /// A Rust-owned timer node; callers retain issued IDs instead of its layout.
 pub(crate) struct TimerNode {
+    pub(crate) fields: NodeFields,
+    /// Disjoint from fields updated when an inline callback re-enters its timer.
+    retained: Retained,
+}
+
+pub(crate) struct NodeFields {
     pub(crate) id: c_long,
     /// Upstream's `type == TYPE_PHP`: a PHP callable node.
     php: bool,
@@ -73,18 +79,18 @@ pub(crate) struct TimerNode {
     exec_count: u64,
     round: u64,
     pub(crate) removed: bool,
+    #[cfg(test)]
     callback: Option<Callback>,
+    #[cfg(test)]
     data: *mut c_void,
+    #[cfg(test)]
     destructor: Option<Destructor>,
-    plain: Option<Plain>,
-    /// A PHP callable node's destructor of its data.
-    plain_drop: Option<Plain>,
     /// A [`TimerNode::closure`] node's callback.
     closure: Option<Closure>,
 }
 
+use crate::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 pub(crate) use closure::Closure;
-use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 
 /// A `Copy` callback of at most two words, held in its node: no allocation, and
 /// nothing to free when the node goes.
@@ -152,7 +158,6 @@ mod closure {
 /// timer, and so its nodes, stay on that thread.
 mod owned {
     use std::cell::Cell;
-    use std::ffi::c_void;
     use std::rc::Rc;
 
     #[derive(Default)]
@@ -196,7 +201,7 @@ mod owned {
             s.slots.push(Some(f));
             s.slots.len() - 1
         });
-        slot.unwrap_or_else(|| swoole_rs_corebase::fatal("a timer added during thread teardown"))
+        slot.unwrap_or_else(|| crate::fatal("a timer added during thread teardown"))
     }
 
     /// Runs `slot`'s callback, held for the call: it may add owning nodes, moving
@@ -207,10 +212,8 @@ mod owned {
         }
     }
 
-    /// The node's `plain_drop`: frees the slot its `data` keeps, then drops the
-    /// callback, once the slots are back.
-    pub(super) extern "C-unwind" fn free(data: *mut c_void) {
-        let slot = data.addr();
+    /// Frees the owned slot, then drops its callback once the slots are back.
+    pub(super) fn free(slot: usize) {
         let f = with(|s| {
             let f = s.slots.get_mut(slot).and_then(Option::take);
             if f.is_some() {
@@ -229,55 +232,67 @@ mod owned {
 }
 
 impl TimerNode {
-    pub(crate) fn new(callback: Option<Callback>, data: *mut c_void) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            id: 0,
-            php: false,
-            exec_msec: 0,
-            interval: 0,
-            exec_count: 0,
-            round: 0,
-            removed: false,
-            callback,
-            data,
-            destructor: None,
-            plain: None,
-            plain_drop: None,
-            closure: None,
+            retained: Retained::empty(),
+            fields: NodeFields {
+                id: 0,
+                php: false,
+                exec_msec: 0,
+                interval: 0,
+                exec_count: 0,
+                round: 0,
+                removed: false,
+                #[cfg(test)]
+                callback: None,
+                #[cfg(test)]
+                data: std::ptr::null_mut(),
+                #[cfg(test)]
+                destructor: None,
+                closure: None,
+            },
         }
     }
 
     /// A node whose callback is `f`, which `Owner::select` calls directly.
     pub(crate) fn closure(f: Closure) -> Self {
-        let mut node = Self::new(None, std::ptr::null_mut());
-        node.closure = Some(f);
+        let mut node = Self::new();
+        node.fields.closure = Some(f);
         node
     }
 
-    /// A node whose callback is `f`, which it owns: what `f` captured is dropped with
-    /// the node, once it fires for the last time, is deleted, or its timer is freed.
-    /// `f` waits in an [`owned`] slot, which the node keeps in `data`, calls through its
-    /// closure and frees as its `plain_drop`: no field or branch the other kinds pay for.
+    /// Own a closure's slot until cancellation, its last callback or teardown.
     pub(crate) fn owning(f: std::rc::Rc<dyn Fn()>) -> Self {
-        let slot = owned::insert(f);
-        let mut node = Self::closure(Closure::new(move || owned::run(slot)));
-        node.data = std::ptr::without_provenance_mut(slot);
-        let free: Plain = owned::free;
-        node.plain_drop = Some(free);
+        struct Slot(usize);
+        impl crate::timer::php::Callback for Slot {
+            fn run(&self) {
+                owned::run(self.0);
+            }
+            fn release(self) {
+                owned::free(self.0);
+            }
+        }
+        let node = Self::new();
+        node.install(Slot(owned::insert(f)));
         node
+    }
+
+    /// Install into an empty reservation; construction pairs storage and operations.
+    pub(crate) fn install<C: crate::timer::php::Callback>(&self, callback: C) {
+        self.retained.install(callback);
     }
 
     pub(crate) fn is_php(&self) -> bool {
-        self.php
+        self.fields.php
     }
 
     pub(crate) fn info(&self) -> Info {
         Info {
-            exec_msec: self.exec_msec,
-            exec_count: self.exec_count,
-            interval: self.interval,
-            round: self.round,
-            removed: self.removed,
+            exec_msec: self.fields.exec_msec,
+            exec_count: self.fields.exec_count,
+            interval: self.fields.interval,
+            round: self.fields.round,
+            removed: self.fields.removed,
         }
     }
 }
@@ -285,7 +300,7 @@ impl TimerNode {
 /// A queue status that only a broken invariant returns (upstream threw).
 fn check(status: Status) {
     if status != Status::Ok {
-        swoole_rs_corebase::fatal("a timer queue operation failed");
+        crate::fatal("a timer queue operation failed");
     }
 }
 
@@ -298,25 +313,95 @@ extern "C" fn alarm(_signo: c_int) {
     swr_v1_core_set_signal_alarm(true);
 }
 
-/// What a node calls, copied out of it so that no borrow of it spans a call.
+/// Type-erased ownership of a small callback, with no extra allocation. The
+/// operation pair is made with its value, and cleared before release can re-enter.
+struct Retained {
+    value: std::cell::UnsafeCell<std::mem::MaybeUninit<[usize; 2]>>,
+    run: Cell<Option<fn(&Self)>>,
+    free: Cell<Option<fn(&Self)>>,
+}
+
+impl Retained {
+    const fn empty() -> Self {
+        Self {
+            value: std::cell::UnsafeCell::new(std::mem::MaybeUninit::uninit()),
+            run: Cell::new(None),
+            free: Cell::new(None),
+        }
+    }
+
+    fn install<C: crate::timer::php::Callback>(&self, callback: C) {
+        fn run<C: crate::timer::php::Callback>(this: &Retained) {
+            // SAFETY: install paired this operation with a live C in the slot.
+            // Selection defers removing it until this callback returns.
+            let callback = unsafe { &*this.value.get().cast::<C>() };
+            callback.run();
+        }
+        fn free<C: crate::timer::php::Callback>(this: &Retained) {
+            // SAFETY: release cleared the operations before moving C out once.
+            let callback = unsafe { this.value.get().cast::<C>().read() };
+            callback.release();
+        }
+        const {
+            assert!(
+                std::mem::size_of::<C>() <= std::mem::size_of::<[usize; 2]>(),
+                "a retained timer callback holds at most two words"
+            );
+            assert!(
+                std::mem::align_of::<C>() <= std::mem::align_of::<[usize; 2]>(),
+                "a retained timer callback uses at most word alignment"
+            );
+        }
+        assert!(
+            self.free.get().is_none(),
+            "a retained callback is installed only into an empty node"
+        );
+        // SAFETY: the empty slot fits C with its alignment, checked above.
+        unsafe { self.value.get().cast::<C>().write(callback) };
+        self.run.set(Some(run::<C>));
+        self.free.set(Some(free::<C>));
+    }
+
+    fn run(&self) {
+        if let Some(run) = self.run.get() {
+            run(self);
+        }
+    }
+
+    fn release(&self) {
+        self.run.set(None);
+        if let Some(free) = self.free.take() {
+            free(self);
+        }
+    }
+}
+
+impl Drop for Retained {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// What a node calls, copied out so no metadata borrow spans a callback.
 #[derive(Clone, Copy)]
 struct Calls {
     closure: Option<Closure>,
-    plain: Option<PlainCall>,
+    #[cfg(test)]
     callback: Option<Callback>,
+    #[cfg(test)]
     destructor: Option<Destructor>,
-    plain_drop: Option<PlainCall>,
+    retained: RetainedCall,
 }
 
-/// A node's [`Plain`] function with the node's own data, what it was made to be called
-/// with: only [`applied`] pairs them, from one node.
+/// The live node's disjoint callback storage, issued only by applied. Selection
+/// keeps it live through run; detached-node teardown calls release before deletion.
 #[derive(Clone, Copy)]
-struct PlainCall(Plain, *mut c_void);
+struct RetainedCall(*const Retained);
 
-impl PlainCall {
-    fn run(self) {
-        // SAFETY: the node's function of its own data, the pair it was made with.
-        unsafe { (self.0)(self.1) };
+impl RetainedCall {
+    fn get(&self) -> &Retained {
+        // SAFETY: applied issued this live node's slot, used before node deletion.
+        unsafe { &*self.0 }
     }
 }
 
@@ -325,21 +410,25 @@ impl PlainCall {
 #[inline]
 fn applied(view: &TimerView) -> (*mut TimerNode, Calls) {
     let node = view.token.cast::<TimerNode>();
-    // SAFETY: every token is a live TimerNode that `add` made.
-    let node_ref = unsafe { &mut *node };
+    // SAFETY: the queue owns this node. Only its metadata is borrowed mutably;
+    // an active callback may borrow the disjoint inline storage during reentry.
+    let node_ref = unsafe { &mut (*node).fields };
     node_ref.id = view.id;
     node_ref.exec_msec = view.deadline;
     node_ref.interval = view.interval;
     node_ref.exec_count = view.exec_count;
     node_ref.round = view.birth_round;
     node_ref.removed = view.removed;
-    let data = node_ref.data;
+    let retained = node
+        .wrapping_byte_add(std::mem::offset_of!(TimerNode, retained))
+        .cast::<Retained>();
     let calls = Calls {
         closure: node_ref.closure,
-        plain: node_ref.plain.map(|f| PlainCall(f, data)),
+        #[cfg(test)]
         callback: node_ref.callback,
+        #[cfg(test)]
         destructor: node_ref.destructor,
-        plain_drop: node_ref.plain_drop.map(|f| PlainCall(f, data)),
+        retained: RetainedCall(retained),
     };
     (node, calls)
 }
@@ -361,12 +450,12 @@ pub struct Owner {
     pending_bailout: Cell<Option<Bailout>>,
     base_time: i64,
     next_msec: Cell<i64>,
-    /// Which timer this is, for its [`crate::Held`] ids: never 0.
-    generation: u16,
+    /// Which timer this is, for its [`crate::timer::Held`] ids: never 0.
+    generation: u64,
 }
 
 /// The generation the last timer made took.
-static GENERATIONS: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Owner {
     /// `new Timer(manually_trigger)`.
@@ -395,6 +484,10 @@ impl Owner {
     }
 
     pub(crate) fn generation(&self) -> u16 {
+        self.generation.c_cast::<u16>()
+    }
+
+    pub(crate) fn identity(&self) -> u64 {
         self.generation
     }
 
@@ -454,8 +547,8 @@ impl Owner {
             self.reactor.set(reactor);
             attach();
         } else if backend != MANUAL {
-            let alarm = swoole_rs_corebase::reactor::signal_upstream::Handler::new(alarm);
-            _ = swoole_rs_corebase::reactor::signal_upstream::set(libc::SIGALRM, alarm, false);
+            let alarm = crate::reactor::signal_upstream::Handler::new(alarm);
+            _ = crate::reactor::signal_upstream::set(libc::SIGALRM, alarm, false);
         }
     }
 
@@ -483,12 +576,12 @@ impl Owner {
     /// ([`applied`]'s result), and deletes it, then raises a pending bailout. The
     /// destructor may longjmp over these frames, which hold nothing to drop.
     fn release(&self, (node, calls): (*mut TimerNode, Calls)) {
+        #[cfg(test)]
         if let Some((destructor, node)) = calls.destructor.zip(Lent::of(node)) {
             // The detached node, live until its box is dropped below.
             destructor(node);
-        } else if let Some(plain_drop) = calls.plain_drop {
-            plain_drop.run();
         }
+        calls.retained.get().release();
         // SAFETY: `add` boxed it; the queue no longer holds it.
         drop(unsafe { Box::from_raw(node) });
         if let Some(bailout) = self.pending_bailout.take() {
@@ -536,35 +629,27 @@ impl Owner {
         Some((node, view.id))
     }
 
-    /// Own a parsed PHP callable: only the matching Zend callbacks can reach it.
-    /// A rejected add returns it unkept; success keeps it before any selection.
-    #[cfg(feature = "php")]
-    pub(crate) fn add_php<H: swoole_rs_zend::Holder>(
-        &self,
-        ms: i64,
-        persistent: bool,
-        callable: swoole_rs_zend::Parsed,
-    ) -> Result<i64, swoole_rs_zend::Parsed> {
-        let (run, free) = swoole_rs_zend::Callable::callbacks::<H>();
-        let mut node = TimerNode::new(None, std::ptr::null_mut());
-        node.php = true;
-        node.plain = Some(run);
-        node.plain_drop = Some(free);
-        let Some((node, id)) = self.add(ms, persistent, node) else {
-            return Err(callable);
-        };
-        // No user callback runs between adding the node and retaining its callable.
-        // The node now owns it; its matching destructor releases it exactly once.
-        let owned = callable.keep(persistent.then_some(id)).into_raw();
-        // SAFETY: the node was just added; no callback runs before its data is
-        // installed, and the pointer is obtained after Rust relinquishes the box.
-        unsafe { (*node).data = owned };
-        Ok(id)
+    /// Reserve a PHP node before its caller retains a callable.
+    pub(crate) fn reserve_php(&self, ms: i64, persistent: bool) -> Option<i64> {
+        let mut node = TimerNode::new();
+        node.fields.php = true;
+        self.add(ms, persistent, node).map(|(_, id)| id)
     }
 
     /// Whether `id` was removed.
     pub(crate) fn remove(&self, id: c_long) -> bool {
-        let (status, view) = self.lend(|queue| queue.remove(id));
+        self.remove_if(id, |_| true)
+    }
+
+    pub(crate) fn remove_php(&self, id: c_long) -> bool {
+        self.remove_if(id, |view| {
+            // SAFETY: this owner queued the live node, borrowed only for this check.
+            unsafe { (*view.token.cast::<TimerNode>()).fields.php }
+        })
+    }
+
+    fn remove_if(&self, id: c_long, predicate: impl FnOnce(&TimerView) -> bool) -> bool {
+        let (status, view) = self.lend(|queue| queue.remove_if(id, predicate));
         match status {
             Status::Deferred => {
                 apply(&view);
@@ -656,15 +741,18 @@ impl Owner {
             }
             check(status);
             // The node the queue just selected; the copies are read before it runs.
-            let (node, calls) = applied(&view);
+            let (_, calls) = applied(&view);
             if !view.removed {
                 if let Some(closure) = calls.closure {
                     closure.run();
-                } else if let Some(plain) = calls.plain {
-                    plain.run();
-                } else if let Some((callback, node)) = calls.callback.zip(Lent::of(node)) {
-                    // The selected node, which the queue holds until `complete`.
-                    callback(self, node);
+                } else {
+                    #[cfg(test)]
+                    if let Some((callback, node)) = calls.callback.zip(Lent::of(view.token.cast()))
+                    {
+                        // The selected node, held until complete.
+                        callback(self, node);
+                    }
+                    calls.retained.get().run();
                 }
             }
             self.complete(view.id);
@@ -695,7 +783,7 @@ impl Owner {
                     queue.complete(stats.active_id)
                 };
                 if status != Status::Release {
-                    swoole_rs_corebase::fatal("a timer completed without releasing");
+                    crate::fatal("a timer completed without releasing");
                 }
                 if stats.selecting
                     && let Err(status) = queue.end()
@@ -717,7 +805,7 @@ impl Owner {
         };
         // The record's drop frees the drained queue.
         if status != Status::Empty || !self.lend(|queue| queue.idle()) {
-            swoole_rs_corebase::fatal("a timer queue still busy when dropped");
+            crate::fatal("a timer queue still busy when dropped");
         }
     }
 }
@@ -726,16 +814,20 @@ impl Owner {
 #[cold]
 #[inline(never)]
 fn lent() -> ! {
-    swoole_rs_corebase::fatal("a timer queue re-entered during a queue operation")
+    crate::fatal("a timer queue re-entered during a queue operation")
 }
 
-/// A new timer's generation: the next after the last, skipping 0, which
-/// [`crate::Held::detached`] names.
-fn next_generation() -> u16 {
+/// A unique timer identity; low bits retain Held's nonzero packed generation.
+/// Reservations use the full identity, so a packed generation wrapping cannot
+/// install a callback into an unrelated timer's node.
+fn next_generation() -> u64 {
     use std::sync::atomic::Ordering::Relaxed;
     loop {
-        let generation = GENERATIONS.fetch_add(1, Relaxed).wrapping_add(1);
-        if generation != 0 {
+        let previous = GENERATIONS
+            .try_update(Relaxed, Relaxed, |value| value.checked_add(1))
+            .unwrap_or_else(|_| crate::fatal("timer identities exhausted"));
+        let generation = previous + 1;
+        if generation.c_cast::<u16>() != 0 {
             return generation;
         }
     }
@@ -745,29 +837,29 @@ fn next_generation() -> u16 {
 /// round, keep the loop while a timer is pending, and free the timer with it.
 fn attach() {
     swr_v1_event_set_end_callback(
-        swoole_rs_corebase::reactor::Priority::Timer,
-        crate::wrapper::swoole_timer_select,
+        crate::reactor::Priority::Timer,
+        crate::timer::wrapper::swoole_timer_select,
     );
-    swr_v1_event_set_exit_condition(swoole_rs_corebase::reactor::ExitCondition::Timer, idle);
+    swr_v1_event_set_exit_condition(crate::reactor::ExitCondition::Timer, idle);
     event_api::on_destroy(destroyed);
 }
 
 /// The exit condition: no timer is pending.
 fn idle(_event_num: &mut usize) -> bool {
-    crate::wrapper::current().is_none_or(|timer| timer.count() == 0)
+    crate::timer::wrapper::current().is_none_or(|timer| timer.count() == 0)
 }
 
 /// The reactor's destroy callback: frees this thread's timer, closing a
 /// selection a bailout left. `swoole_event_free` destroys the thread's reactor
 /// before it clears it, so the thread's reactor is the one being destroyed.
 fn destroyed() {
-    let Some(timer) = crate::wrapper::current() else {
+    let Some(timer) = crate::timer::wrapper::current() else {
         return;
     };
     if event_api::swoole_event_bailed_out() {
         timer.abandon(None);
     }
-    crate::wrapper::swoole_timer_free();
+    crate::timer::wrapper::swoole_timer_free();
 }
 
 /// `Timer::get_reactor()`.
@@ -789,24 +881,6 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    /// `Owner::init` declares the reactor's `swoole_signal_set` by symbol: naming it
-    /// links its object into the test binary on every linker.
-    #[used]
-    static SIGNAL_SET: extern "C" fn(
-        c_int,
-        swoole_rs_corebase::reactor::signal_upstream::Handler,
-        bool,
-    ) -> swoole_rs_corebase::reactor::signal_upstream::Handler =
-        swoole_rs_corebase::reactor::signal_upstream::swoole_signal_set;
-
-    /// The reactor's signal code calls `Socket::free`, which crates/tls defines and
-    /// a manual timer never reaches; crates/tls depends on this one, so the test
-    /// binary links it from here.
-    #[unsafe(export_name = "_ZN6swoole7network6Socket4freeEv")]
-    extern "C" fn socket_free() {
-        unreachable!("a manual timer frees no socket");
-    }
-
     /// `delete timer`, as `swoole_timer_free` does of the thread's: these timers are
     /// never published.
     unsafe fn free(timer: *mut Owner) {
@@ -824,12 +898,12 @@ mod tests {
 
     extern "C-unwind" fn call(timer: &Owner, node: Lent<'_>) {
         let node = node.as_ptr();
-        let hooks = unsafe { (*node).data.cast::<Hooks>() };
+        let hooks = unsafe { (*node).fields.data.cast::<Hooks>() };
         unsafe { ((*hooks).call)(timer, node) };
     }
 
     extern "C-unwind" fn destruct(node: Lent<'_>) {
-        let mut hooks = unsafe { Box::from_raw((*node.as_ptr()).data.cast::<Hooks>()) };
+        let mut hooks = unsafe { Box::from_raw((*node.as_ptr()).fields.data.cast::<Hooks>()) };
         (hooks.destructor)();
     }
 
@@ -873,11 +947,22 @@ mod tests {
             }));
             let (node, _) = self
                 .timer()
-                .add(1000, repeat, TimerNode::new(Some(call), hooks.cast()))
+                .add(
+                    1000,
+                    repeat,
+                    TimerNode {
+                        fields: NodeFields {
+                            callback: Some(call),
+                            data: hooks.cast(),
+                            ..TimerNode::new().fields
+                        },
+                        retained: Retained::empty(),
+                    },
+                )
                 .expect("add failed");
-            unsafe { (*node).exec_msec = 0 };
-            self.timer().update(unsafe { (*node).id }, 0);
-            unsafe { (*node).destructor = Some(destruct) };
+            unsafe { (*node).fields.exec_msec = 0 };
+            self.timer().update(unsafe { (*node).fields.id }, 0);
+            unsafe { (*node).fields.destructor = Some(destruct) };
             node
         }
         fn record(&self, label: char) -> Call {
@@ -888,7 +973,7 @@ mod tests {
         fn on_destroy(&self, node: *mut TimerNode, label: char, then: impl FnMut() + 'static) {
             let log = Rc::clone(&self.log);
             let mut then = then;
-            let hooks = unsafe { (*node).data.cast::<Hooks>() };
+            let hooks = unsafe { (*node).fields.data.cast::<Hooks>() };
             unsafe {
                 (*hooks).destructor = Box::new(move || {
                     {
@@ -976,12 +1061,12 @@ mod tests {
             'A',
             true,
             Box::new(move |t, n| {
-                let id = unsafe { (*n).id };
+                let id = unsafe { (*n).fields.id };
                 let mut log = log.borrow_mut();
                 log.events.push('A');
                 log.events.push(if t.remove(id) { 'Y' } else { 'N' });
                 log.events.push(if t.remove(id) { 'Y' } else { 'N' });
-                let viewed = t.token(id) == n && unsafe { (*n).removed };
+                let viewed = t.token(id) == n && unsafe { (*n).fields.removed };
                 log.events.push(if viewed { 'V' } else { 'X' });
             }),
         );
@@ -1002,7 +1087,7 @@ mod tests {
                 }
             }),
         );
-        other.set(unsafe { (*p.add('B', false, p.record('B'))).id });
+        other.set(unsafe { (*p.add('B', false, p.record('B'))).fields.id });
         p.add('C', false, p.record('C'));
         if in_destructor {
             let (timer, target) = (p.timer(), Rc::clone(&other));
@@ -1035,17 +1120,17 @@ mod tests {
             Box::new(move |t, n| {
                 log.borrow_mut().events.push('A');
                 if repeat {
-                    unsafe { (*n).exec_msec = 100_000 };
-                    t.update(unsafe { (*n).id }, 100_000);
+                    unsafe { (*n).fields.exec_msec = 100_000 };
+                    t.update(unsafe { (*n).fields.id }, 100_000);
                 } else {
-                    let (id, exec_msec) = unsafe { ((*n).id, (*n).exec_msec) };
+                    let (id, exec_msec) = unsafe { ((*n).fields.id, (*n).fields.exec_msec) };
                     t.delay(id, Some(exec_msec), 100_000);
                 }
                 flag.set(true);
             }),
         );
         let b = p.add('B', false, p.record('B'));
-        let (a, b) = unsafe { ((*a).id, (*b).id) };
+        let (a, b) = unsafe { ((*a).fields.id, (*b).fields.id) };
         let got = finish(&p, a, b, false);
         assert!(updated.get(), "the callback updated its node");
         got
@@ -1104,7 +1189,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no fork")]
     fn fork_teardown() {
         let p = Probe::new();
-        let id = unsafe { (*p.add('A', false, p.record('A'))).id };
+        let id = unsafe { (*p.add('A', false, p.record('A'))).fields.id };
         let child = unsafe { libc::fork() };
         assert!(child >= 0, "fork failed");
         if child == 0 {
@@ -1143,7 +1228,7 @@ mod tests {
                     unsafe { libc::_exit(if ok { 0 } else { 2 }) };
                 }
                 child_status.set(reap(child));
-                let id = unsafe { (*node).id };
+                let id = unsafe { (*node).fields.id };
                 parent_intact
                     .set(t.token(id) == node && t.count() == 2 && log.borrow().destructors == 0);
                 log.borrow_mut().events.push('A');
@@ -1212,11 +1297,13 @@ mod tests {
 
     #[test]
     fn wrapper_clear() {
-        use crate::wrapper::{publish, swoole_timer_clear, swoole_timer_get, timer as slot_value};
+        use crate::timer::wrapper::{
+            publish, swoole_timer_clear, swoole_timer_get, timer as slot_value,
+        };
         let p = Probe::new();
         let previous = slot_value();
         publish(p.timer);
-        let inactive_id = unsafe { (*p.add('C', false, p.record('C'))).id };
+        let inactive_id = unsafe { (*p.add('C', false, p.record('C'))).fields.id };
         let inactive = swoole_timer_clear(inactive_id) && !swoole_timer_clear(inactive_id);
         let missing = !swoole_timer_clear(0)
             && !swoole_timer_clear(-1)
@@ -1231,15 +1318,15 @@ mod tests {
                 log.borrow_mut().events.push('A');
                 let cancelled_other =
                     swoole_timer_clear(target.get()) && !swoole_timer_clear(target.get());
-                let id = unsafe { (*node).id };
+                let id = unsafe { (*node).fields.id };
                 let active = swoole_timer_clear(id) && !swoole_timer_clear(id);
                 let active_view = swoole_timer_get(id).is_some_and(|held| held.id() == id)
                     && timer.token(id) == node
-                    && unsafe { (*node).removed };
+                    && unsafe { (*node).fields.removed };
                 flags.set((active, cancelled_other, active_view));
             }),
         );
-        other.set(unsafe { (*p.add('B', false, p.record('B'))).id });
+        other.set(unsafe { (*p.add('B', false, p.record('B'))).fields.id });
         p.timer().select();
         p.timer().select();
         let remaining = p.timer().count();
@@ -1255,5 +1342,138 @@ mod tests {
         assert_eq!(remaining, 0, "remaining");
         assert_eq!(p.events(), "cAba", "events");
         assert_eq!(p.destructors(), 3, "destructors");
+    }
+    #[test]
+    fn php_reservations_own_callbacks_through_cancel_fire_and_teardown() {
+        use crate::timer::wrapper::{php, publish, timer as slot_value};
+        struct Kept {
+            id: i64,
+            log: Rc<RefCell<Vec<&'static str>>>,
+        }
+        impl php::Callback for Kept {
+            fn run(&self) {
+                self.log.borrow_mut().push("run");
+                assert!(php::clear(self.id));
+                assert!(php::info(self.id).unwrap().0.removed);
+            }
+            fn release(self) {
+                assert!(php::info(self.id).is_none());
+                self.log.borrow_mut().push("release");
+            }
+        }
+        let p = Probe::new();
+        let previous = slot_value();
+        publish(p.timer);
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let native = p.add('N', false, p.record('N'));
+        let native_id = unsafe { (*native).fields.id };
+        assert!(!php::clear(native_id));
+        assert!(p.timer().remove(native_id));
+        assert!(php::reserve(0, false).is_none());
+        assert_eq!(p.timer().count(), 0);
+        let abandoned = php::reserve(1, false).unwrap();
+        assert_eq!(p.timer().count(), 1);
+        drop(abandoned);
+        assert_eq!(p.timer().count(), 0);
+
+        let pending = php::reserve(1, true).unwrap();
+        let id = pending.id().get();
+        assert!(pending.commit(Kept {
+            id,
+            log: Rc::clone(&log)
+        }));
+        p.timer().update(id, 0);
+        p.timer().select();
+        p.timer().select();
+        assert_eq!(*log.borrow(), ["run", "release"]);
+        assert_eq!(p.timer().count(), 0);
+
+        let pending = php::reserve(1, false).unwrap();
+        let id = pending.id().get();
+        assert!(php::clear(id));
+        assert!(!pending.commit(Kept {
+            id,
+            log: Rc::clone(&log)
+        }));
+        assert_eq!(*log.borrow(), ["run", "release", "release"]);
+
+        let pending = php::reserve(1, false).unwrap();
+        let id = pending.id().get();
+        assert!(pending.commit(Kept {
+            id,
+            log: Rc::clone(&log)
+        }));
+        p.free();
+        publish(previous);
+        assert_eq!(*log.borrow(), ["run", "release", "release", "release"]);
+        assert_eq!(Rc::strong_count(&log), 1);
+    }
+
+    #[test]
+    fn a_reservation_cannot_install_into_a_replacement_timer() {
+        use crate::timer::wrapper::{php, publish, timer as slot_value};
+        struct Kept(Rc<Cell<usize>>);
+        impl php::Callback for Kept {
+            fn run(&self) {
+                panic!("the old reservation must not run");
+            }
+            fn release(self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let first = Probe::new();
+        let previous = slot_value();
+        publish(first.timer);
+        let pending = php::reserve(1, false).unwrap();
+        let first_identity = first.timer().identity();
+        first.free();
+        let second = Probe::new();
+        // Simulate the packed Held generation wrapping without changing the
+        // global counter or creating 65,536 timer owners.
+        unsafe { (*second.timer).generation = first_identity + (1 << 16) };
+        assert_eq!(second.timer().generation(), first_identity.c_cast::<u16>());
+        publish(second.timer);
+        let replacement = php::reserve(1, false).unwrap();
+        assert_eq!(pending.id(), replacement.id());
+        let released = Rc::new(Cell::new(0));
+        assert!(!pending.commit(Kept(Rc::clone(&released))));
+        assert_eq!(released.get(), 1);
+        assert_eq!(second.timer().count(), 1);
+        drop(replacement);
+        assert_eq!(second.timer().count(), 0);
+        second.free();
+        publish(previous);
+    }
+
+    #[test]
+    fn a_retained_callback_keeps_its_own_state_between_ticks() {
+        use crate::timer::wrapper::{php, publish, timer as slot_value};
+        struct Counter(Cell<usize>, Rc<Cell<usize>>);
+        impl php::Callback for Counter {
+            fn run(&self) {
+                self.0.set(self.0.get() + 1);
+            }
+            fn release(self) {
+                self.1.set(self.0.get());
+            }
+        }
+        let p = Probe::new();
+        let previous = slot_value();
+        publish(p.timer);
+        let released = Rc::new(Cell::new(0));
+        let pending = php::reserve(1, true).unwrap();
+        let id = pending.id().get();
+        assert!(pending.commit(Counter(Cell::new(0), Rc::clone(&released))));
+        p.timer().select();
+        for _ in 0..2 {
+            p.timer().update(id, 0);
+            p.timer().select();
+        }
+        assert_eq!(released.get(), 0);
+        assert!(php::clear(id));
+        assert_eq!(released.get(), 2);
+        assert_eq!(Rc::strong_count(&released), 1);
+        p.free();
+        publish(previous);
     }
 }

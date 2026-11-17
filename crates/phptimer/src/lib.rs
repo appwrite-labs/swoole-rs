@@ -1,5 +1,5 @@
 //! PHP `Swoole\Timer` (with the `php` feature, see docs/zend.md): class and
-//! function registration, constants and every method, over crates/timer's PHP
+//! function registration, constants and every method, over `corebase::timer`'s PHP
 //! timers. A timer's callback and destructor run the callable here and raise a
 //! bailout once the timer's selection is abandoned.
 #![cfg(feature = "php")]
@@ -7,11 +7,11 @@
 
 use std::ffi::{CStr, c_int};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::timer::php;
 use swoole_rs_corebase::{log::set_last_error, thread_reactor};
 use swoole_rs_phpstubs::timer;
-use swoole_rs_timer::php;
 use swoole_rs_zend::{
-    Call, Callable, Class, E_WARNING, Holder, Minit, OwnedArray,
+    Call, Callable, Class, E_WARNING, Minit, OwnedArray,
     bailout::{self, Bailout},
     report,
 };
@@ -91,14 +91,15 @@ fn warning(message: &CStr) -> Result<(), Bailout> {
 }
 
 /// A PHP timer's callable, which the timer holds as its data.
-struct Timer;
+struct Timer(Callable);
 
-impl Holder for Timer {
+impl php::Callback for Timer {
     /// The timer's callback: `zend::Function::call(nullptr,
     /// php_swoole_is_enable_coroutine())`, warning when it fails. A bailout
     /// abandons the timer's selection, keeping shutdown-visible metadata until
     /// native owner teardown, and is raised from here, which owns nothing.
-    fn run(callable: &Callable) {
+    fn run(&self) {
+        let callable = &self.0;
         let called =
             swoole_rs_phpcoroutines::call_kept(callable, swoole_rs_phpprocess::enable_coroutine())
                 .and_then(|called| {
@@ -116,7 +117,8 @@ impl Holder for Timer {
 
     /// The timer's destructor: release and free the callable. A bailout is
     /// raised once the timer has deleted the node, or at once without a timer.
-    fn free(callable: Callable) {
+    fn release(self) {
+        let callable = self.0;
         if let Err(error) = callable.release() {
             error.defer();
             if php::available() {
@@ -153,13 +155,19 @@ fn add(call: &Call, persistent: bool) {
     if thread_reactor().is_null() && swoole_rs_phpprocess::timer_uses_reactor() {
         swoole_rs_phpswoole::check_reactor();
     }
-    match php::add_php::<Timer>(ms, persistent, callable) {
-        Ok(id) => call.set_long(id),
-        Err(callable) => {
-            fatal_warning(c"add timer failed");
-            callable.discard();
-            call.set_bool(false);
-        }
+    let Some(reservation) = php::reserve(ms, persistent) else {
+        fatal_warning(c"add timer failed");
+        callable.discard();
+        call.set_bool(false);
+        return;
+    };
+    let id = reservation.id().get();
+    let callback = Timer(callable.keep(persistent.then_some(id)));
+    if reservation.commit(callback) {
+        call.set_long(id);
+    } else {
+        fatal_warning(c"add timer failed");
+        call.set_bool(false);
     }
 }
 

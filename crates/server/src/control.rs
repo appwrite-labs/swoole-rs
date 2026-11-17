@@ -278,7 +278,7 @@ pub(crate) fn clear_timer(serv: Server<'_>) {
     ];
     for timer in timers {
         if let Some(timer) = timer.take() {
-            swoole_rs_timer::del_id(timer);
+            swoole_rs_corebase::timer::del_id(timer);
         }
     }
 }

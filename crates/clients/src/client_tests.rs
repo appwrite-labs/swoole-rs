@@ -258,13 +258,13 @@ fn listener(event: ClientEvent, _: *const c_char, length: usize) {
     }
 }
 /// The connect timer: logs, adds nothing.
-#[expect(clippy::unnecessary_wraps, reason = "crates/timer's signature")]
-pub(super) fn timer_add(timeout: f64, _: Handle<'_>) -> Option<swoole_rs_timer::Held> {
+#[expect(clippy::unnecessary_wraps, reason = "`corebase::timer`'s signature")]
+pub(super) fn timer_add(timeout: f64, _: Handle<'_>) -> Option<swoole_rs_corebase::timer::Held> {
     log(format!("timer {timeout}"));
-    Some(swoole_rs_timer::Held::detached(1))
+    Some(swoole_rs_corebase::timer::Held::detached(1))
 }
-/// crates/timer's `del_id`: logs, deletes nothing.
-pub(super) fn del_id(_: swoole_rs_timer::Held) {
+/// `corebase::timer`'s `del_id`: logs, deletes nothing.
+pub(super) fn del_id(_: swoole_rs_corebase::timer::Held) {
     log("timer del");
 }
 /// crates/hooks' `async::dispatch`: logs the request; nothing completes it.

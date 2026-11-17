@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 ext-src/swoole_curl.cc (Swoole contributors).
 //! What a [`Multi`] needs of the process: the reactor (`corebase::reactor`), this
-//! thread's timer (crates/timer) and coroutine scheduler (crates/corebase/src/coroutine),
+//! thread's timer (`corebase::timer`) and coroutine scheduler (crates/corebase/src/coroutine),
 //! and the C entry points the bundled `ext/curl` calls besides the multi's own.
 //! The engine uses an explicit operation table in every build.
 use crate::{EXEC_NEEDS_COROUTINE, Idle, Multi};
@@ -28,8 +28,8 @@ pub(crate) struct Ops {
     pub socket_del: fn(&EventSocket) -> bool,
     pub socket_release: fn(EventSocket),
     pub timer_available: fn() -> bool,
-    pub timer_add: fn(c_long, &Multi) -> Option<swoole_rs_timer::Held>,
-    pub timer_del: fn(swoole_rs_timer::Held),
+    pub timer_add: fn(c_long, &Multi) -> Option<swoole_rs_corebase::timer::Held>,
+    pub timer_del: fn(swoole_rs_corebase::timer::Held),
     pub current: fn() -> *mut c_void,
     pub current_cid: fn() -> c_long,
     pub yield_: fn(*mut c_void, f64, &mut dyn FnMut(swoole_rs_corebase::coroutine::Waker)) -> bool,
@@ -168,13 +168,13 @@ impl ReactorSocket {
 }
 
 pub(crate) fn timer_available() -> bool {
-    swoole_rs_timer::swoole_timer_is_available()
+    swoole_rs_corebase::timer::swoole_timer_is_available()
 }
 
 /// A one-shot timer of `ms` that reaches `multi` through its own `Weak`: its id, or none.
-pub(crate) fn timer_add(ms: c_long, multi: &Multi) -> Option<swoole_rs_timer::Held> {
+pub(crate) fn timer_add(ms: c_long, multi: &Multi) -> Option<swoole_rs_corebase::timer::Held> {
     let multi = multi.this.clone();
-    swoole_rs_timer::add_owned(ms, false, move || {
+    swoole_rs_corebase::timer::add_owned(ms, false, move || {
         if let Some(multi) = multi.upgrade() {
             multi.timer.set(None);
             multi.callback(None);
@@ -183,7 +183,7 @@ pub(crate) fn timer_add(ms: c_long, multi: &Multi) -> Option<swoole_rs_timer::He
 }
 
 /// `swoole_timer_del` of the timer [`timer_add`] returned, by its id.
-pub(crate) use swoole_rs_timer::cancel_held as timer_del;
+pub(crate) use swoole_rs_corebase::timer::cancel_held as timer_del;
 
 /// `Coroutine::get_current()`.
 pub(crate) fn current() -> *mut c_void {

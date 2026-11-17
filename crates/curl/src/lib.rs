@@ -174,7 +174,7 @@ pub struct Multi {
     /// None when libcurl could make no handle: its calls then refuse the null one.
     handle: Option<MultiHandle>,
     /// The id of the pending timer.
-    timer: Cell<Option<swoole_rs_timer::Held>>,
+    timer: Cell<Option<swoole_rs_corebase::timer::Held>>,
     /// The coroutine waiting on this multi.
     co: Cell<Option<Waiter>>,
     running: Cell<c_int>,

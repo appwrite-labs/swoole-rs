@@ -23,7 +23,6 @@ on:
       - crates/http2/**
       - crates/httpbindings/**
       - crates/server/**
-      - crates/timer/**
       - tests/modules/buffer/recycling.rs
       - tests/modules/coroutine/channel.rs
       - tests/modules/memory/**
@@ -34,7 +33,7 @@ concurrency:
 jobs:
   # One job per group, in parallel: run one after another they took ~25 minutes. Each
   # group is one cargo invocation, so hooks and server, which turn on upstream-symbols
-  # in coroutine, reactor and timer, never share a feature set with the core crates.
+  # in coroutine and reactor, never share a feature set with the core crates.
   # The runtime crates' tests open files and read the clock (isolation off), and
   # assert on whole reads and writes that Miri would otherwise shorten at random.
   miri:
@@ -53,11 +52,6 @@ jobs:
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: >-
               -p swoole-rs-bus -p swoole-rs-corebase
-          # upstream-symbols only adds the timer's Owner and its tests (#3379), so this
-          # run covers every test the plain one would.
-          - name: timer
-            flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
-            packages: -p swoole-rs-timer --features upstream-symbols
           - name: clients
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: -p swoole-rs-clients

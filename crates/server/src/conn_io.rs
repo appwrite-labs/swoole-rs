@@ -20,8 +20,8 @@ use swoole_rs_corebase::buffer::cpp::{
 use swoole_rs_corebase::buffer::string::with_thread_buffer;
 use swoole_rs_corebase::constants::{SW_SEND_BUFFER_SIZE, SocketType};
 use swoole_rs_corebase::reactor::{Event, Heap, Socket, what_event_want};
+use swoole_rs_corebase::timer::{del_id, delay_held};
 use swoole_rs_corebase::{CCast, DataHead, microtime};
-use swoole_rs_timer::{del_id, delay_held};
 use swoole_rs_tls::Accept;
 use swoole_rs_tls::upstream as tls;
 
@@ -236,7 +236,7 @@ fn client_cert_file(port: &PortConfig) -> bool {
 /// The connection's own socket, which deletes this timer before it goes.
 fn resume_timer(conn: Connection<'_>) -> bool {
     let (msec, fd) = (c_long::from(conn.waiting_time()), c_long::from(conn.fd()));
-    let timer = swoole_rs_timer::add_fn(msec, false, move || {
+    let timer = swoole_rs_corebase::timer::add_fn(msec, false, move || {
         // The server of the reactor that armed the timer: this thread's.
         if let Some(serv) = Reactor::current().and_then(Reactor::server) {
             resume_data_receiving(serv, fd);

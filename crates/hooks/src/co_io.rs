@@ -144,7 +144,7 @@ mod native {
 
     pub(super) static HOST: Host = Host {
         timer_add,
-        timer_del: swoole_rs_timer::del_id,
+        timer_del: swoole_rs_corebase::timer::del_id,
         read_buffer,
         read_bytes,
         recv,
@@ -153,9 +153,9 @@ mod native {
     };
 
     /// The record's wait deletes its timer before the record goes.
-    fn timer_add(socket: Co, timeout: f64, write: bool) -> Option<swoole_rs_timer::Held> {
+    fn timer_add(socket: Co, timeout: f64, write: bool) -> Option<swoole_rs_corebase::timer::Held> {
         let event = if write { Events::WRITE } else { Events::READ };
-        swoole_rs_timer::add_fn_sec(timeout, false, move || {
+        swoole_rs_corebase::timer::add_fn_sec(timeout, false, move || {
             super::timer_fired(socket, event);
         })
     }

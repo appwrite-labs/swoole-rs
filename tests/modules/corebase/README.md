@@ -141,7 +141,7 @@ that took their callers, same inputs and expected values (`cargo test`):
 | Upstream TEST | Rust test or reason |
 | --- | --- |
 | `time.get_ms` | none: the system clock in milliseconds had no caller, so there is no function to test |
-| `time.get_ms_steady` | crates/timer `runtime::tests::time_get_ms_steady`, over `absolute_msec` (`Timer::get_absolute_msec`) |
+| `time.get_ms_steady` | `corebase::timer` `runtime::tests::time_get_ms_steady`, over `absolute_msec` (`Timer::get_absolute_msec`) |
 | `time.get_seconds` | `global::tests::time_get_seconds`, over `time_now` |
 | `time.get_timezone` | crates/corebase/src/utilities `utilities::helpers::tests::time_get_timezone`, over `timezone`; like upstream's, it needs a zone at or east of UTC |
 

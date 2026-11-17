@@ -36,16 +36,11 @@ const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
 /// [`build`]'s `SW_CORO_TIME` bit, beside the context's flags.
 const CORO_TIME: u32 = 8;
 
-/// The operations of crates/timer and hooks a coroutine runs. Each of
-/// those crates depends on this one, so `swoole_init` (crates/ffi) registers them
+/// The async-thread operation a coroutine runs, supplied by hooks, which depends
+/// on this crate. `swoole_init` (crates/ffi) registers it
 /// with [`set_host`] before any coroutine starts.
 #[derive(Clone, Copy)]
 pub struct Host {
-    /// `swoole_timer_add(timeout, false, ...)`, in seconds, of `f(arg)`: the
-    /// timer's id, which it never reuses, or 0.
-    pub timer_after: fn(f64, fn(c_long), c_long) -> c_long,
-    /// `swoole_timer_clear(id)`: removes the pending timer `id` names.
-    pub timer_clear: fn(c_long),
     /// The thread's async threads, created first when it has none.
     pub async_threads_ensure: fn(),
 }
@@ -131,8 +126,6 @@ pub unsafe fn swr_v1_coroutine_create(routine: Routine, arg: *mut c_void) -> c_l
     run(Sched::this(), co)
 }
 
-fn keep_alive(_: c_long) {}
-
 /// `static void Coroutine::activate()`.
 pub extern "C-unwind" fn activate() {
     if build() & THREAD != 0 {
@@ -140,7 +133,7 @@ pub extern "C-unwind" fn activate() {
         let host = host();
         if crate::thread_timer().is_null() {
             // A 1 ms timer whose callback does nothing.
-            (host.timer_after)(0.001, keep_alive, 0);
+            _ = crate::timer::add_fn_sec(0.001, false, || {});
         }
         (host.async_threads_ensure)();
         swr_v1_thread_context_init();
@@ -260,7 +253,9 @@ pub fn yield_timed_armed(
     let running = Co::running(Sched::this(), co.cast());
     let timer = if timeout > 0.0 {
         // It fires only while `co` waits below, or is cleared first.
-        (host().timer_after)(timeout, timed_out, running.with(|co| co.cid))
+        let cid = running.with(|co| co.cid);
+        crate::timer::add_fn_sec(timeout, false, move || timed_out(cid))
+            .map_or(0, crate::timer::Held::id)
     } else {
         0
     };
@@ -273,7 +268,7 @@ pub fn yield_timed_armed(
     // `co` runs again.
     let code = running.with(|co| co.resume_code);
     if code != Resume::TimedOut && timer != 0 {
-        (host().timer_clear)(timer);
+        _ = crate::timer::swoole_timer_clear(timer);
     }
     code
 }

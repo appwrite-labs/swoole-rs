@@ -10,8 +10,8 @@ use swoole_rs_clients::client::{self as native, ClientEvent, Handle, listen};
 use swoole_rs_corebase::process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_corebase::swoole_random_int;
+use swoole_rs_corebase::timer::Held;
 use swoole_rs_server::{event_worker, manager, task_worker, worker_methods};
-use swoole_rs_timer::Held;
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
 const SW_ERROR_WRONG_OPERATION: c_int = 509;
@@ -774,7 +774,7 @@ fn reload_watchdog_tick(serv: Server, held: Held) {
             );
         }
     }
-    swoole_rs_timer::del_id(held);
+    swoole_rs_corebase::timer::del_id(held);
     shutdown(serv);
 }
 
@@ -990,7 +990,7 @@ fn kill_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
 }
 
 fn kill_on_worker_exit(_: view::Server<'_>, _: Worker<'_>) {
-    _ = swoole_rs_timer::swoole_timer_clear(TEST_TIMER.load(Ordering::SeqCst));
+    _ = swoole_rs_corebase::timer::swoole_timer_clear(TEST_TIMER.load(Ordering::SeqCst));
     counter_incr(6, 1);
 }
 

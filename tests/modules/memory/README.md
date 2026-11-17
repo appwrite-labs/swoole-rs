@@ -43,7 +43,7 @@ test support in `members.rs` (and its `debug` walk in `fixed.rs`) over the crate
 
 `memory/ringbuffer.cpp`, `core/heap.cpp` and `fixed_pool.realloc` have no port:
 their subjects went (#2599, #2849). Upstream calls `RingBuffer` from nowhere but that TEST, and the timer,
-`swoole::Heap`'s one caller, keeps its own heap (`crates/timer/src/heap.rs`), so
+`swoole::Heap`'s one caller, keeps its own heap (`crates/corebase/src/timer/heap.rs`), so
 nothing in the extension used the Rust ports. `fixed_pool.realloc` tests
 `sw_shm_realloc`, which nothing else called.
 

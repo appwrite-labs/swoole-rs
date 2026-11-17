@@ -36,10 +36,14 @@ def main():
     for label, source in [('baseline', args.baseline.resolve()), ('candidate', ROOT)]:
         project = build / label
         project.mkdir(parents=True, exist_ok=True)
+        crates = {name: name if (source / 'crates' / name).is_dir() else 'corebase'
+                  for name in ['buffer', 'timer']}
+        defaults = [f'corebase-{name}' for name, crate in crates.items() if crate == 'corebase']
+        features = '[features]\ncorebase-buffer=[]\ncorebase-timer=[]\ndefault=' + json.dumps(defaults) + '\n'
         dependencies = '\n'.join(f'swoole-rs-{name} = {{ path = {json.dumps(str(source / "crates" / name))} }}'
-                                 for name in ['buffer', 'timer'])
+                                 for name in sorted(set(crates.values())))
         (project / 'Cargo.toml').write_text('[package]\nname="storage-bench"\nversion="0.0.0"\nedition="2024"\n'
-            '[workspace]\n[dependencies]\n' + dependencies + '\n[[bin]]\nname="storage-bench"\npath=' +
+            '[workspace]\n' + features + '[dependencies]\n' + dependencies + '\n[[bin]]\nname="storage-bench"\npath=' +
             json.dumps(str(ROOT / 'benchmarks/storage.rs')) + '\n[profile.release]\nopt-level=3\npanic="abort"\n')
         subprocess.run(['cargo', 'build', '--release', '--manifest-path', str(project / 'Cargo.toml')], check=True)
         binaries[label] = project / 'target/release/storage-bench'

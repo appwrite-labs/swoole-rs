@@ -581,7 +581,7 @@ fn alarm(call: &Call) {
         return;
     }
     // `SwooleTG.timer != nullptr`.
-    if swoole_rs_timer::swoole_timer_is_available() {
+    if swoole_rs_corebase::timer::swoole_timer_is_available() {
         fatal(
             E_WARNING,
             &message!("cannot use both 'timer' and 'alarm' at the same time"),

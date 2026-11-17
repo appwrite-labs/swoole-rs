@@ -364,11 +364,14 @@ pub(crate) fn incoming(
 
 /// `swoole_timer_add(sec2msec(idle), true, Server::get_timeout_callback(...))`: the
 /// persistent idle check of `conn`, on this thread's reactor, or none.
-pub(crate) fn idle_timer(conn: Connection<'_>, idle: f64) -> Option<swoole_rs_timer::Held> {
+pub(crate) fn idle_timer(
+    conn: Connection<'_>,
+    idle: f64,
+) -> Option<swoole_rs_corebase::timer::Held> {
     // sec2msec's (long) cast.
     let msec = (idle * 1000.0).c_cast::<c_long>();
     let fd = c_long::from(conn.fd());
-    swoole_rs_timer::add_fn(msec, true, move || {
+    swoole_rs_corebase::timer::add_fn(msec, true, move || {
         // The server of the reactor that armed the timer: this thread's.
         let Some(reactor) = Reactor::current() else {
             return;
@@ -413,7 +416,7 @@ pub(crate) fn disable_accept(serv: view::Server<'_>) {
     /// `SW_ACCEPT_RETRY_TIME`, in milliseconds.
     #[expect(clippy::cast_possible_truncation, reason = "1000.0")]
     const RETRY_MSEC: c_long = (SW_ACCEPT_RETRY_TIME * 1000.0) as c_long;
-    let timer = swoole_rs_timer::add_fn(RETRY_MSEC, false, || {
+    let timer = swoole_rs_corebase::timer::add_fn(RETRY_MSEC, false, || {
         // The server of the reactor that armed the timer: this thread's.
         if let Some(serv) = Reactor::current().and_then(Reactor::server) {
             enable_accept(serv);

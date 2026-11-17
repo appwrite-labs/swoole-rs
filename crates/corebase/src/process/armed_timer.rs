@@ -4,14 +4,14 @@
 use std::ffi::c_long;
 
 /// Deletes timer `id` from this thread's timer if that timer is still the one that
-/// issued it (`generation`) and still holds it (`swoole_rs_timer::cancel_issued`).
+/// issued it (`generation`) and still holds it (`swoole_rs_corebase::timer::cancel_issued`).
 pub type Cancel = extern "C-unwind" fn(generation: u64, id: c_long);
 
 /// The kill timer `ProcessPool::wait` arms over the pool, or the reload timer a
 /// `ReloadTask` arms over itself. Native code arms the timer; this owns it. A
 /// thread's timer numbers its ids from the start each time it is made, so the id
 /// is kept with the generation of the timer that issued it
-/// (`swoole_rs_timer::Held::generation`), in the layout native code declares.
+/// (`swoole_rs_corebase::timer::Held::generation`), in the layout native code declares.
 #[repr(C)]
 pub struct ArmedTimer {
     generation: u64,

@@ -3,34 +3,22 @@
     clippy::disallowed_types,
     reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
 )]
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
 mod heap;
 mod runtime;
 pub use runtime::*;
-#[cfg(feature = "upstream-symbols")]
 mod owner;
-#[cfg(feature = "upstream-symbols")]
 mod wrapper;
-#[cfg(feature = "upstream-symbols")]
 pub use owner::{Owner, owner_reinit};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::{mem, ptr};
-#[cfg(feature = "upstream-symbols")]
 pub use wrapper::{
     Held, add_fn, add_fn_sec, add_owned, cancel_held, cancel_issued, del_id, delay_held,
     delete_held, php, schedule_owned, swoole_timer_clear, swoole_timer_create, swoole_timer_free,
     swoole_timer_get_next_msec, swoole_timer_is_available, swoole_timer_select, thread_timer_count,
     thread_timer_detached, thread_timer_reinit,
 };
-#[cfg(feature = "upstream-symbols")]
 pub use wrapper::{swoole_timer_exists, swoole_timer_get};
 
 /// What a queue operation did.
@@ -131,7 +119,7 @@ impl Timer {
     }
 }
 
-/// The queue's operations, which crates/timer's owner calls directly
+/// The queue's operations, which `corebase::timer`'s owner calls directly
 /// (docs/timer-abi-v1.md). One whose only success is `Status::Ok` returns a `Result`;
 /// the others return a status and, where the operation has one, a view (the default
 /// when it has none).
@@ -243,6 +231,14 @@ impl Timer {
 
     /// Removes node `id`; only `Status::Release` hands the token back.
     pub fn remove(&mut self, id: i64) -> (Status, TimerView) {
+        self.remove_if(id, |_| true)
+    }
+
+    fn remove_if(
+        &mut self,
+        id: i64,
+        predicate: impl FnOnce(&TimerView) -> bool,
+    ) -> (Status, TimerView) {
         let none = TimerView::default();
         if id <= 0 {
             return (Status::Invalid, none);
@@ -250,6 +246,9 @@ impl Timer {
         let Some((index, mut view)) = self.find(id).filter(|(_, view)| !view.removed) else {
             return (Status::NotFound, none);
         };
+        if !predicate(&view) {
+            return (Status::NotFound, none);
+        }
         if self.active_id == id {
             view.removed = true;
             self.heap.update(index, view);
@@ -471,47 +470,8 @@ mod kernel;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::cell::{Cell, RefCell, RefMut};
-
-    thread_local! { static FAIL_AFTER: Cell<Option<usize>> = const { Cell::new(None) }; }
-    struct FailureAllocator;
-    fn fail() -> bool {
-        FAIL_AFTER
-            .try_with(|counter| match counter.get() {
-                None => false,
-                Some(0) => {
-                    counter.set(None);
-                    true
-                }
-                Some(n) => {
-                    counter.set(Some(n - 1));
-                    false
-                }
-            })
-            .unwrap_or(false)
-    }
-    unsafe impl GlobalAlloc for FailureAllocator {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            if fail() {
-                ptr::null_mut()
-            } else {
-                unsafe { System.alloc(layout) }
-            }
-        }
-        unsafe fn realloc(&self, data: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-            if fail() {
-                ptr::null_mut()
-            } else {
-                unsafe { System.realloc(data, layout, size) }
-            }
-        }
-        unsafe fn dealloc(&self, data: *mut u8, layout: Layout) {
-            unsafe { System.dealloc(data, layout) }
-        }
-    }
-    #[global_allocator]
-    static ALLOCATOR: FailureAllocator = FailureAllocator;
+    use crate::test_allocator::FAIL_ONCE_AFTER as FAIL_AFTER;
+    use std::cell::{RefCell, RefMut};
 
     /// A queue the test owns, closed, drained and checked idle when it drops.
     struct Owned(RefCell<Timer>);

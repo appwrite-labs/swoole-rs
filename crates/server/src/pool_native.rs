@@ -39,7 +39,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_corebase::memory::members::pool as mem_pool;
 use swoole_rs_corebase::reactor::event_api::{event_write, set_handler, swoole_event_is_available};
 use swoole_rs_corebase::reactor::{Event, Heap, Running, Socket};
-use swoole_rs_timer::{
+use swoole_rs_corebase::timer::{
     swoole_timer_create, swoole_timer_free, swoole_timer_get_next_msec, swoole_timer_is_available,
     swoole_timer_select,
 };
@@ -175,11 +175,11 @@ fn arm(pool: Pool<'_>, which: PoolTimer) {
         }
     };
     let armed = || {
-        let held = swoole_rs_timer::add_fn(max_wait_ms(pool), false, fire)?;
+        let held = swoole_rs_corebase::timer::add_fn(max_wait_ms(pool), false, fire)?;
         Some(ArmedTimer::new(
             u64::from(held.generation()),
             held.id(),
-            swoole_rs_timer::cancel_issued,
+            swoole_rs_corebase::timer::cancel_issued,
         ))
     };
     match which {
@@ -378,7 +378,7 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) {
         Op::ReloadTimer => arm(pool, PoolTimer::Reload),
         Op::TimerInit => {
             if swoole_timer_is_available() {
-                swoole_rs_timer::thread_timer_reinit(true);
+                swoole_rs_corebase::timer::thread_timer_reinit(true);
             } else {
                 // This thread has no timer.
                 swoole_timer_create(true);

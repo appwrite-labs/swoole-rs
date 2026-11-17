@@ -32,7 +32,6 @@ swoole-rs-http = { path = "../http" }
 swoole-rs-http-ffi = { path = "../http-ffi" }
 swoole-rs-bus = { path = "../bus" }
 swoole-rs-tls = { path = "../tls" }
-swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 
 [dev-dependencies]
 # The reactor's write handler, which `swr_v1_reactor_new` names, for tests that run one.

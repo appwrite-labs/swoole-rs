@@ -24,10 +24,12 @@ swoole_timer`); the network-dependent ones run only with `--external-network`.
 `bug_4794_4` prints from two processes without an ordering guarantee, so it is
 recorded RACY (`corpus/upstream/run.py`, #3001). The native probe's scenarios (equal deadlines, removal and
 updates from callbacks and destructors, nested selection, fork teardown, the
-`swoole_timer_clear` wrapper) are Rust tests in `crates/timer/src/owner.rs`. `core-tests/src/os/timer.cpp` is Rust:
+`swoole_timer_clear` wrapper) are Rust tests in `crates/corebase/src/timer/owner.rs`. `core-tests/src/os/timer.cpp` is Rust:
 the `timer.*` cases of `hooks-system-rust` (tests/modules/hooks/README.md).
 
-The `php::add_php` rustdoc compile-fail case rejects raw callback/data pairs.
-Its typed boundary consumes `zend::Parsed`, returns it unkept on failure, and
-retains the callable with the tick id before returning on success. The timer
+The `php::Reservation::commit` rustdoc compile-fail case rejects raw callback/data pairs.
+PHP reserves a node before retaining `zend::Parsed` with the tick id. A refused
+reservation retains nothing; commit transfers the owned callback into the node.
+Dropping an empty reservation cancels it, and a removed or replaced timer releases
+the retained callback instead of installing it. The runtime has no Zend dependency. The timer
 PHPTs and bailout/fork gates above exercise the unchanged callback lifecycle.

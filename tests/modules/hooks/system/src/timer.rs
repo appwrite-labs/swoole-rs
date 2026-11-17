@@ -1,5 +1,5 @@
 //! Upstream's `core-tests/src/os/timer.cpp`, one function per TEST with the same inputs
-//! and expected values, over the Rust timer (crates/timer).
+//! and expected values, over the Rust timer (`corebase::timer`).
 //! `SwooleTG.timer` is crates/corebase's `thread_timer`.
 
 use std::cell::{Cell, RefCell};
@@ -8,7 +8,7 @@ use std::rc::{Rc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{SW_ERR, last_error, sleep};
-use swoole_rs_timer::{
+use swoole_rs_corebase::timer::{
     Held, del_id, delay_held, delete_held, realtime_add, swoole_timer_clear, swoole_timer_exists,
     swoole_timer_free, swoole_timer_get, swoole_timer_select,
 };
@@ -60,9 +60,9 @@ fn add(ms: c_long, persistent: bool, checked: bool, f: impl FnMut(Held) + 'stati
         (hooks.call.borrow_mut())(slot.get().expect("timer ID installed before selection"));
     };
     let held = if checked {
-        swoole_rs_timer::schedule_owned(ms, persistent, call)
+        swoole_rs_corebase::timer::schedule_owned(ms, persistent, call)
     } else {
-        swoole_rs_timer::add_owned(ms, persistent, call)
+        swoole_rs_corebase::timer::add_owned(ms, persistent, call)
     }?;
     issued.set(Some(held));
     Some(Node { held, hooks: weak })
@@ -149,7 +149,7 @@ fn sys() {
         }
     });
 
-    while swoole_rs_timer::php::stats().is_some_and(|(count, _)| count > 0) {
+    while swoole_rs_corebase::timer::php::stats().is_some_and(|(count, _)| count > 0) {
         // The signal-driven timer's select loop, as upstream's.
         // SAFETY: sleep(3).
         unsafe { sleep(10) };
@@ -265,7 +265,7 @@ fn reinit() {
     let timer = timer_exchange(std::ptr::null_mut());
     timer_exchange(timer);
     // SAFETY: this thread's live timer.
-    swoole_rs_timer::owner_reinit(unsafe { &*timer.cast() }, false);
+    swoole_rs_corebase::timer::owner_reinit(unsafe { &*timer.cast() }, false);
 
     let ms1 = now_ms();
 

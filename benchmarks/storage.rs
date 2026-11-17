@@ -4,7 +4,13 @@ use std::hint::black_box;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::time::Instant;
-use swoole_rs_corebase::buffer as buffer;
+#[cfg(not(feature = "corebase-buffer"))]
+use swoole_rs_buffer as buffer;
+#[cfg(feature = "corebase-buffer")]
+use swoole_rs_corebase::buffer;
+#[cfg(feature = "corebase-timer")]
+use swoole_rs_corebase::timer;
+#[cfg(not(feature = "corebase-timer"))]
 use swoole_rs_timer as timer;
 
 static TRACK: AtomicBool = AtomicBool::new(false);
@@ -50,7 +56,7 @@ fn run(name: &str, rounds: usize) -> u64 {
             "buffer-1k" | "buffer-16k" | "buffer-cold-1k" => {
                 let bytes = vec![0xa5; 65536];
                 let chunk = if name == "buffer-16k" { 16384 } else { 1024 };
-                let mut owner = buffer::Buffer::create(chunk).unwrap();
+                let mut owner = Box::new(buffer::Buffer::new(chunk));
                 for _ in 0..rounds {
                     assert!(owner.append(&bytes).is_ok());
                     while let Ok(view) = owner.front() {
@@ -58,11 +64,13 @@ fn run(name: &str, rounds: usize) -> u64 {
                         assert!(owner.pop().unwrap().token().is_null());
                     }
                     if name == "buffer-cold-1k" {
-                        assert!(owner.release().is_ok());
-                        owner = buffer::Buffer::create(chunk).unwrap();
+                        assert_eq!(owner.stats(), (0, 0));
+                        drop(owner);
+                        owner = Box::new(buffer::Buffer::new(chunk));
                     }
                 }
-                assert!(owner.release().is_ok());
+                assert_eq!(owner.stats(), (0, 0));
+                drop(owner);
             }
             "timer-churn-512" => {
                 let mut owner = timer::Timer::default();
