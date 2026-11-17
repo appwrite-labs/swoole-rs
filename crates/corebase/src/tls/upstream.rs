@@ -1053,15 +1053,8 @@ fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> bool {
     let text = host.to_bytes();
     let (storage, length) = (&mut address.addr, &mut address.len);
     let assigned = assign(storage, length, kind, text, port, |family| {
-        // the platform's, which reads the NUL-terminated source and writes at
-        // most an IPv6 address's 16 bytes (nothing for a family it doesn't know).
-        unsafe extern "C" {
-            safe fn inet_pton(family: c_int, source: Text<'_>, destination: &mut [u8; 16])
-            -> c_int;
-        }
         let mut bytes = [0; 16];
-        let parsed =
-            platform_parses(family, text) && inet_pton(family, host.into(), &mut bytes) == 1;
+        let parsed = platform_parses(family, text) && crate::pton(family, host, &mut bytes);
         if parsed {
             Ok(bytes)
         } else {

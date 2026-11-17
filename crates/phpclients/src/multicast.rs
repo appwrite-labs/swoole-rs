@@ -644,8 +644,6 @@ pub(crate) fn get_ipv6(_call: &Call, _socket: Co, _level: c_int, _name: c_int) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(not(target_vendor = "apple"))]
-    use libc::socklen_t;
 
     #[test]
     fn membership_names_its_source_options() {
@@ -661,21 +659,6 @@ mod tests {
         let storage: libc::sockaddr_storage = zeroed();
         assert_eq!(storage.ss_family, 0, "zeroed family");
         assert_ne!(family(libc::AF_INET6), 0, "family fits");
-    }
-
-    #[cfg(not(target_vendor = "apple"))]
-    unsafe extern "C" {
-        fn inet_pton(
-            family: c_int,
-            text: *const libc::c_char,
-            address: *mut std::ffi::c_void,
-        ) -> c_int;
-        fn inet_ntop(
-            family: c_int,
-            address: *const std::ffi::c_void,
-            text: *mut libc::c_char,
-            size: socklen_t,
-        ) -> *const libc::c_char;
     }
 
     #[cfg(not(target_vendor = "apple"))]
@@ -701,18 +684,17 @@ mod tests {
     #[test]
     fn parse_matches_inet_pton() {
         for text in TEXTS {
-            let mut v4 = [0_u8; 4];
-            let ok = unsafe { inet_pton(libc::AF_INET, text.as_ptr(), v4.as_mut_ptr().cast()) };
+            let mut bytes = [0; 16];
+            let v4 = swoole_rs_corebase::pton(libc::AF_INET, text, &mut bytes);
             assert_eq!(
                 parse::<Ipv4Addr>(text).map(|a| a.octets()),
-                (ok == 1).then_some(v4),
+                v4.then(|| *bytes.first_chunk::<4>().unwrap()),
                 "{text:?} as IPv4"
             );
-            let mut v6 = [0_u8; 16];
-            let ok = unsafe { inet_pton(libc::AF_INET6, text.as_ptr(), v6.as_mut_ptr().cast()) };
+            let v6 = swoole_rs_corebase::pton(libc::AF_INET6, text, &mut bytes);
             assert_eq!(
                 parse::<Ipv6Addr>(text).map(|a| a.octets()),
-                (ok == 1).then_some(v6),
+                v6.then_some(bytes),
                 "{text:?} as IPv6"
             );
         }
@@ -737,18 +719,16 @@ mod tests {
         ];
         for address in addresses {
             let address: Ipv6Addr = address.parse().unwrap();
-            let octets = address.octets();
-            let mut shown: [libc::c_char; 46] = [0; 46];
-            let length = socklen_t::try_from(shown.len()).unwrap();
-            let text = unsafe {
-                inet_ntop(
-                    libc::AF_INET6,
-                    octets.as_ptr().cast(),
-                    shown.as_mut_ptr(),
-                    length,
-                )
-            };
-            let text = unsafe { CStr::from_ptr(text) }.to_str().unwrap();
+            let octets = address
+                .octets()
+                .map(|byte| libc::c_char::from_ne_bytes([byte]));
+            let shown = swoole_rs_corebase::ntop(libc::AF_INET6, &octets)
+                .unwrap()
+                .map(|c| c.to_ne_bytes()[0]);
+            let text = CStr::from_bytes_until_nul(&shown)
+                .unwrap()
+                .to_str()
+                .unwrap();
             assert_eq!(inet6_text(address), text, "{address:?}");
         }
     }
