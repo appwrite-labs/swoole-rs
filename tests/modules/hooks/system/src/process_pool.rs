@@ -30,6 +30,7 @@ use swoole_rs_corebase::process::task_file::Packed;
 use swoole_rs_corebase::process::worker_record::{
     Worker as WorkerHandle, swr_v1_worker_init, swr_v1_worker_shutdown,
 };
+use swoole_rs_corebase::swoole_random_int;
 use swoole_rs_corebase::swoole_thread_clean;
 
 use super::timer::{after, tick};
@@ -238,8 +239,6 @@ unsafe extern "C" {
     fn swoole_signal_block_all();
     #[link_name = "_Z20swoole_system_randomii"]
     fn swoole_system_random(min: c_int, max: c_int) -> c_int;
-    #[link_name = "_Z17swoole_random_intv"]
-    fn swoole_random_int() -> u64;
     #[link_name = "_Z18swoole_thread_initb"]
     fn swoole_thread_init(main_thread: bool);
 
@@ -1523,8 +1522,7 @@ fn truncated_stream_on_message(pool: PoolRef<'_>, msg: &RecvData<'_>) {
 
 /// `test::get_random_port()`.
 fn get_random_port() -> c_int {
-    // SAFETY: swoole_random_int.
-    TEST_PORT + (unsafe { swoole_random_int() } % 10000) as c_int
+    TEST_PORT + (swoole_random_int() % 10000) as c_int
 }
 
 fn connect(port: c_int) -> TcpStream {

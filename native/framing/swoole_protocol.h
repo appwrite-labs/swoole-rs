@@ -49,4 +49,3 @@ struct Protocol {
 
 char *swoole_dec2hex(ulong_t value, int base);
 ulong_t swoole_hex2dec(const char *hex, size_t *parsed_bytes);
-int swoole_type_size(char type);

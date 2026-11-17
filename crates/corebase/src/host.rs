@@ -516,18 +516,13 @@ pub extern "C" fn swoole_random_int() -> u64 {
 
 /// `int swoole_rand()`: `swoole_rand(0, INT_MAX)`.
 #[must_use]
-#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z11swoole_randv"))]
-pub extern "C" fn swoole_rand_any() -> c_int {
+pub fn swoole_rand_any() -> c_int {
     swoole_rand(0, c_int::MAX)
 }
 
 /// `swoole_rand(min, max)`: uniform over the closed range; `min` when it is empty.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z11swoole_randii")
-)]
-pub extern "C" fn swoole_rand(min: c_int, max: c_int) -> c_int {
+pub fn swoole_rand(min: c_int, max: c_int) -> c_int {
     let Some(span) = u64::try_from(i64::from(max) - i64::from(min) + 1)
         .ok()
         .filter(|span| *span > 0)
