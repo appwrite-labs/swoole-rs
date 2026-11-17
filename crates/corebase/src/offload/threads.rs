@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/os/async_thread.cc (Swoole contributors).
 //! `AsyncThreads`, a reactor thread's handle on crates/corebase/src/ossupport's shared pool, and
-//! `async::dispatch`, under their upstream (Itanium) symbols. The pool runs an event
+//! the dispatcher used by coroutine offload and DNS lookups. The pool runs an event
 //! on a worker and writes its address to the completion pipe; the reactor reads it
 //! back and runs its callback. Each pool copy of an event holds a reference to its
 //! request record. The ossupport patch deletes `src/os/async_thread.cc`.
@@ -272,12 +272,8 @@ pub fn ensure() -> *mut AsyncThreads {
 
 /// `AsyncEvent *async::dispatch(const AsyncEvent *request)`: queues a copy of
 /// `request` on the pool and returns it, or null without a reactor or a pipe.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE")
-)]
 #[must_use]
-pub extern "C" fn dispatch(request: &AsyncEvent) -> *mut AsyncEvent {
+pub fn dispatch(request: &AsyncEvent) -> *mut AsyncEvent {
     if ensure().is_null() {
         return ptr::null_mut();
     }
