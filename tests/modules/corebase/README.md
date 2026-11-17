@@ -72,7 +72,7 @@ the pin in that same mode, so each target proves its own: 1 to 127 where `char` 
 | The seven extracted `TEST(base, ...)` bodies, run on each binary | `base_dec2hex`, `base_hex2dec`, `base_version_compare`, `base_common_divisor`, `base_common_multiple`, `base_itoa`, `base_type_size`: one test per TEST, same inputs and expected values, on the Rust function and on the pinned body |
 | `allocator.cc`: a `strndup` interposer under `swoole_dec2hex` on each binary (one allocation of the exact length, a reentrant `swoole_hex2dec`, `ENOMEM` and null, a retry) | `dec2hex_allocates_once_through_strndup`: the test binary defines `strndup`, so both sides allocate through it; same three calls, counts, lengths and errno |
 | `prove_calls`: the hybrid binary must call `swr_v1_corebase_parse_stoi` and the original must not | none: the export and its one caller, `swoole.h`'s inline `swoole_get_env`, are gone, since no C++ but the driver called either |
-| `prove_definitions`: the archive, not the hybrid unit, defines the seven upstream symbols | none for the test, which calls the functions by path. `swoole_itoa`'s symbol is gone with its `char *` form; the other six are still defined under `upstream-symbols` |
+| `prove_definitions`: the archive, not the hybrid unit, defines the seven upstream symbols | none for the test, which calls the functions by path. all seven symbols and their native declarations are gone; `swoole_itoa` takes a slice and the others retain their typed Rust APIs |
 
 The gate compiled its C++ under ASan and UBSan (`--sanitize`), which covered the pinned
 bodies, `driver.cc` and the `swoole.h` inline wrapper, not the Rust archive. The test has
