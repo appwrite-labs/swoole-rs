@@ -126,6 +126,12 @@ pub fn add_fn_sec(timeout: f64, persistent: bool, f: impl Fn() + Copy + 'static)
     add_fn(sec2msec(timeout), persistent, f)
 }
 
+/// [`add_owned`] of `timeout` seconds, as [`add_fn_sec`].
+#[must_use]
+pub fn add_owned_sec(timeout: f64, persistent: bool, f: impl Fn() + 'static) -> Option<Held> {
+    add_owned(sec2msec(timeout), persistent, f)
+}
+
 /// This thread's timer and the held timer's id, while that timer is the one that
 /// issued it.
 fn issuer(timer: Option<&Timer>, held: Held) -> Option<(&Timer, c_long)> {

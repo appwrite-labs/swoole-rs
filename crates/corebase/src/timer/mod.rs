@@ -14,10 +14,10 @@ use std::ffi::c_void;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::{mem, ptr};
 pub use wrapper::{
-    Held, add_fn, add_fn_sec, add_owned, cancel_held, cancel_issued, del_id, delay_held,
-    delete_held, php, schedule_owned, swoole_timer_clear, swoole_timer_create, swoole_timer_free,
-    swoole_timer_get_next_msec, swoole_timer_is_available, swoole_timer_select, thread_timer_count,
-    thread_timer_detached, thread_timer_reinit,
+    Held, add_fn, add_fn_sec, add_owned, add_owned_sec, cancel_held, cancel_issued, del_id,
+    delay_held, delete_held, php, schedule_owned, swoole_timer_clear, swoole_timer_create,
+    swoole_timer_free, swoole_timer_get_next_msec, swoole_timer_is_available, swoole_timer_select,
+    thread_timer_count, thread_timer_detached, thread_timer_reinit,
 };
 pub use wrapper::{swoole_timer_exists, swoole_timer_get};
 

@@ -6,6 +6,7 @@
 use crate::resolve::WakerSlot;
 use core::cell::Cell;
 use core::ffi::c_void;
+use std::rc::{Rc, Weak};
 use swoole_rs_corebase::coroutine::Waker;
 pub use swoole_rs_corebase::reactor::Events;
 
@@ -24,7 +25,7 @@ pub struct EventWaitOps<S> {
     pub(crate) park: fn(timeout: f64, waker: &WakerSlot) -> Result<(), i32>,
 }
 
-/// A parked `wait_event` (the object of its reactor socket): its coroutine's waker
+/// A parked `wait_event` (the owner of its reactor socket): its coroutine's waker
 /// and the events fired so far.
 pub(crate) struct Waiter {
     waker: WakerSlot,
@@ -51,14 +52,15 @@ impl swoole_rs_corebase::reactor::event_api::Deferred for Parked {
     fn dispose(self) {}
 }
 
-/// A parked wait's waiter as its socket's object. Only `park` makes one, for its own
-/// waiter, which outlives the socket: it drops the socket before it returns.
-#[derive(Clone, Copy)]
-pub(crate) struct Registered(*mut c_void);
+/// A parked wait's waiter as its socket's owner: none once the wait returned, which
+/// drops the waiter.
+#[derive(Clone)]
+pub(crate) struct Registered(Weak<Waiter>);
 
 impl Registered {
-    pub(crate) fn as_ptr(self) -> *mut c_void {
-        self.0
+    /// The waiter, while its wait is parked.
+    pub(crate) fn waiter(&self) -> Option<Rc<Waiter>> {
+        self.0.upgrade()
     }
 }
 
@@ -80,16 +82,11 @@ pub(crate) fn event_ready(waiter: &Waiter, event: Events) -> Option<Parked> {
 fn park<S>(fd: i32, events: Events, timeout: f64, ops: &EventWaitOps<S>) -> Result<Events, i32> {
     // Fatal outside a coroutine.
     (ops.current)();
-    let waiter = Waiter {
+    let waiter = Rc::new(Waiter {
         waker: WakerSlot::new(None),
         revents: Cell::new(Events::NONE),
-    };
-    // `waiter` outlives the socket, dropped (off the reactor) below.
-    let socket = (ops.add)(
-        fd,
-        events,
-        Registered((&raw const waiter).cast_mut().cast()),
-    )?;
+    });
+    let socket = (ops.add)(fd, events, Registered(Rc::downgrade(&waiter)))?;
     let parked = (ops.park)(timeout, &waiter.waker);
     drop(socket);
     parked.map(|()| waiter.revents.get())
@@ -171,10 +168,9 @@ pub(crate) mod native {
     /// `SW_ERROR_WRONG_OPERATION`: there is no event loop to register with.
     const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 
-    /// What a watch's socket carries, with the fd type whose readiness handler
-    /// (`crate::reactor_handlers`) takes that object. Each is a parked wait's own
-    /// registration, live until the wait drops its watches.
-    #[derive(Clone, Copy)]
+    /// What a watch's socket is owned by, with the fd type whose readiness handler
+    /// (`crate::reactor_handlers`) takes that owner: a parked wait's own registration,
+    /// which reaches nothing once the wait returns.
     pub(crate) enum Object {
         /// A hooked poll's task (`SW_FD_CO_POLL`).
         Poll(crate::poll::Registered),
@@ -183,14 +179,13 @@ pub(crate) mod native {
     }
 
     /// A reactor socket over an fd its owner borrows (upstream's `make_socket`), on
-    /// the thread's reactor with an object the readiness handlers reach. Dropping it
+    /// the thread's reactor with an owner the readiness handlers reach. Dropping it
     /// takes it off the reactor and frees the record, leaving the fd open.
     pub struct Watch(Option<EventSocket>);
 
     impl Watch {
-        /// Registers `fd` for `events`, with `object` and its fd type. The readiness
-        /// handlers reach `object`'s task or waiter through the record until the watch
-        /// drops, which its `Registered` keeps live until then.
+        /// Registers `fd` for `events`, owned by `object`, with its fd type: the readiness
+        /// handlers reach `object`'s task or waiter through the record while it waits.
         ///
         /// # Errors
         /// The last error, when there is no reactor or it refuses the socket.
@@ -198,12 +193,15 @@ pub(crate) mod native {
             if !swoole_event_is_available() {
                 return Err(WRONG_OPERATION);
             }
-            let (fd_type, object) = match object {
-                Object::Poll(task) => (FdType::SW_FD_CO_POLL, task.as_ptr()),
-                Object::Waiter(waiter) => (FdType::SW_FD_CO_EVENT, waiter.as_ptr()),
+            let fd_type = match object {
+                Object::Poll(_) => FdType::SW_FD_CO_POLL,
+                Object::Waiter(_) => FdType::SW_FD_CO_EVENT,
             };
             let mut record = SocketRecord::with_fd(fd, fd_type as c_int);
-            record.object = object;
+            match object {
+                Object::Poll(task) => record.set_owner(Some(task)),
+                Object::Waiter(waiter) => record.set_owner(Some(waiter)),
+            }
             // The record is this watch's until it drops, off the reactor by then.
             let socket = EventSocket::adopt(Box::new(record));
             if !socket.add(events) {
@@ -319,7 +317,7 @@ mod tests {
 
     thread_local! {
         /// The waiter `add` registered, and how many sockets are on the reactor.
-        static WAITER: Cell<*mut c_void> = const { Cell::new(core::ptr::null_mut()) };
+        static WAITER: Cell<Option<Registered>> = const { Cell::new(None) };
         static ADDED: Cell<i32> = const { Cell::new(0) };
     }
 
@@ -327,14 +325,17 @@ mod tests {
         CO
     }
     /// The parked waiter `add` registered.
-    fn waiter<'a>() -> &'a Waiter {
-        unsafe { &*WAITER.get().cast::<Waiter>() }
+    fn waiter() -> Rc<Waiter> {
+        let registered = WAITER.take();
+        let waiter = registered.as_ref().and_then(Registered::waiter).unwrap();
+        WAITER.set(registered);
+        waiter
     }
     fn add(fd: i32, _: Events, waiter: Registered) -> Result<Socket, i32> {
         if fd == 9 {
             return Err(libc::EBADF);
         }
-        WAITER.set(waiter.as_ptr());
+        WAITER.set(Some(waiter));
         ADDED.set(ADDED.get() + 1);
         Ok(Socket)
     }
@@ -342,10 +343,10 @@ mod tests {
     fn fires_error(_: f64, waker: &WakerSlot) -> Result<(), i32> {
         waker.set(Some(Waker::NONE));
         assert_eq!(
-            event_ready(waiter(), Events::ERROR).map(|co| co.waker()),
+            event_ready(&waiter(), Events::ERROR).map(|co| co.waker()),
             Some(Waker::NONE)
         );
-        assert!(event_ready(waiter(), Events::READ).is_none());
+        assert!(event_ready(&waiter(), Events::READ).is_none());
         Ok(())
     }
     fn times_out(_: f64, _: &WakerSlot) -> Result<(), i32> {
@@ -363,7 +364,7 @@ mod tests {
         PARKS.set(PARKS.get() + 1);
         waker.set(Some(Waker::NONE));
         assert_eq!(
-            event_ready(waiter(), Events::READ).map(|co| co.waker()),
+            event_ready(&waiter(), Events::READ).map(|co| co.waker()),
             Some(Waker::NONE)
         );
         Err(libc::ETIMEDOUT)
