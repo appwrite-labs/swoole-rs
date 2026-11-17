@@ -62,7 +62,9 @@ pub fn swr_v1_socket_sync(
     event: crate::reactor::Events,
     mut timeout_ms: c_int,
 ) -> Option<usize> {
-    let began = Instant::now();
+    // Upstream reads the clock only for a timeout to count down; the loop returns
+    // once it is spent, so `began` is set exactly while `timeout_ms` is positive.
+    let began = (timeout_ms > 0).then(Instant::now);
     hooks.prepare();
     let mut bytes: usize = 0;
     let call_flags = if mode == SyncMode::Recv {
@@ -115,7 +117,7 @@ pub fn swr_v1_socket_sync(
             set_errno(error.errno());
             return None;
         }
-        if timeout_ms > 0 {
+        if let Some(began) = began {
             let elapsed = began.elapsed().as_millis().c_cast::<c_int>();
             timeout_ms -= elapsed;
             if timeout_ms <= 0 {

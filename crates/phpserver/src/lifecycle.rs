@@ -372,10 +372,13 @@ impl<'a> ServerObject<'a> {
         crate::instance::server_object()
     }
 
-    /// `f` over the running server's object, if there is one.
+    /// `f` over the running server's object, if there is one, borrowed without a
+    /// reference of its own: each `f` only reads or updates the object's Rust data
+    /// and runs no PHP code, so nothing frees the object meanwhile, and no release
+    /// (a bailout trap) follows on every callback lookup.
     pub(crate) fn with_running<R>(f: impl FnOnce(ServerObject<'_>) -> R) -> Option<R> {
-        let held = Self::running()?;
-        Some(f(ServerObject::of(&held)?))
+        let mut object = crate::instance::server_zval();
+        Some(f(ServerObject::of(Value::of(&mut object))?))
     }
 
     /// The Server object `value` holds, if it is one.
