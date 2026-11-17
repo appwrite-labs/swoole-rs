@@ -361,12 +361,15 @@ mod tests {
     extern "C" fn ignore(_signo: c_int) {}
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot fork a process")]
     fn fork_exec_returns_child_error_before_success_exit() {
         let _children = crate::process::wait::tests::CHILDREN
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match fork_exec(|| Err(())) {
-            Err(()) => std::process::exit(17),
+            // The forked test child inherits the harness allocations and exit hooks.
+            // Report its sentinel directly without running the parent's shutdown.
+            Err(()) => unsafe { libc::_exit(17) },
             Ok(pid) if pid > 0 => {
                 let mut status = 0;
                 // SAFETY: a live status slot and this test's own child.
