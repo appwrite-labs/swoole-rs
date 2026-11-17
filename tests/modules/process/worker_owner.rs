@@ -23,6 +23,13 @@ fn fd_open(fd: std::ffi::c_int) -> bool {
     unsafe { libc::fcntl(fd, libc::F_GETFD) != -1 }
 }
 
+/// The open file `fd` names, by device and inode: tests in parallel may reuse a
+/// closed number, so "closed" means it no longer names the same file.
+fn file_of(fd: std::ffi::c_int) -> Option<(libc::dev_t, libc::ino_t)> {
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    (unsafe { libc::fstat(fd, &raw mut stat) } == 0).then_some((stat.st_dev, stat.st_ino))
+}
+
 fn resources() -> (ProcessWorker, std::ffi::c_int, std::ffi::c_int) {
     let owner = ProcessWorker::new(WorkerRecord::empty());
     let fd = owner.open_pipe(libc::SOCK_STREAM).expect("a Unix pair");
@@ -37,6 +44,7 @@ fn resources() -> (ProcessWorker, std::ffi::c_int, std::ffi::c_int) {
 fn server_retains_record_pipe_and_queue_after_the_process_drops() {
     let server = TestServer::new();
     let (owner, fd, queue) = resources();
+    let file = file_of(fd);
     let address = owner.get().raw();
     assert_eq!(worker_methods::add_worker(server.serv(), owner), Some(0));
     assert_eq!(server.serv().user_worker_num(), 1);
@@ -47,26 +55,27 @@ fn server_retains_record_pipe_and_queue_after_the_process_drops() {
         worker.kind(),
         Some(swoole_rs_process::worker_record::WorkerType::User)
     );
-    assert!(fd_open(fd));
+    assert!(file.is_some() && file_of(fd) == file);
     assert!(queue_exists(queue));
     drop(server);
-    assert!(!fd_open(fd), "last owner closed the pipe");
+    assert_ne!(file_of(fd), file, "last owner closed the pipe");
     assert!(!queue_exists(queue), "last owner removed its private queue");
 }
 
 #[test]
 fn a_thread_copy_retains_the_native_resources_and_closes_the_pair_once() {
     let (owner, fd, queue) = resources();
+    let file = file_of(fd);
     let copy = ProcessWorker::new(owner.get().get());
     copy.get().set_shared(true);
     assert!(copy.share_resources(owner));
-    assert!(fd_open(fd));
+    assert!(file.is_some() && file_of(fd) == file);
     assert!(queue_exists(queue));
     assert_eq!(copy.close_pipe(1), Some(true));
     assert_eq!(copy.close_pipe(1), Some(false), "already closed");
     assert_eq!(copy.close_pipe(0), Some(true));
     assert!(copy.get().pipe_object().is_null());
-    assert!(!fd_open(fd));
+    assert_ne!(file_of(fd), file);
     let replacement = std::fs::File::open("/dev/null").expect("replacement fd");
     drop(copy);
     assert!(
@@ -79,10 +88,11 @@ fn a_thread_copy_retains_the_native_resources_and_closes_the_pair_once() {
 #[test]
 fn copying_a_record_does_not_adopt_its_borrowed_resources() {
     let (owner, fd, queue) = resources();
+    let file = file_of(fd);
     drop(ProcessWorker::new(owner.get().get()));
-    assert!(fd_open(fd));
+    assert!(file.is_some() && file_of(fd) == file);
     assert!(queue_exists(queue));
     drop(owner);
-    assert!(!fd_open(fd));
+    assert_ne!(file_of(fd), file);
     assert!(!queue_exists(queue));
 }
