@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license.workspace = true
+# cfg(zts): see that script.
+build = "../phpcoroutines/build.rs"
 description = "PHP Swoole\\Server family classes over the zend crates"
 
 [features]

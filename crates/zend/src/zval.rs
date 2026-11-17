@@ -977,6 +977,17 @@ impl Value {
         self.0.get()
     }
 
+    /// [`Value::copy`] unless the zval holds an object whose free has begun
+    /// (`IS_OBJ_FREE_CALLED`): a new reference to it would dangle.
+    #[inline]
+    pub(crate) fn copy_unfreed(&self) -> Option<Owned> {
+        let freeing = self.object().is_some()
+            && self.counted().is_some_and(|counted| {
+                counted[TYPE_INFO].get() & crate::sys::IS_OBJ_FREE_CALLED != 0
+            });
+        (!freeing).then(|| self.copy())
+    }
+
     /// `ZVAL_COPY`: the same value with a reference of its own.
     #[must_use]
     #[inline]

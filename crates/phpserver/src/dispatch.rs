@@ -195,6 +195,7 @@ fn prepare_worker(server: view::Server<'_>) {
 
 /// The running server's object, held as a callback's first argument.
 #[must_use]
+#[inline]
 pub fn zserv() -> Owned {
     crate::instance::server_object().unwrap_or_default()
 }
