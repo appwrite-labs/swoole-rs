@@ -45,11 +45,11 @@ extern "C" {
  * the network::Socket, the bound state and the extra record (strings, proxies, TLS). */
 void swr_v1_hook_co_socket_release(swr_v1_co_socket *socket);
 /* The public constructors, by how: Socket(domain, type, protocol), Socket(SocketType),
- * Socket(fd, SocketType), Socket(fd, domain, type, protocol). owner is the Socket the
- * network::Socket points back to. Returns what it did, for swr_v1_hook_co_socket_created. */
+ * Socket(fd, SocketType), Socket(fd, domain, type, protocol); the network::Socket
+ * points back to the record, which is the Socket. Returns what it did, for swr_v1_hook_co_socket_created. */
 enum { SWR_CO_SOCKET_BY_FAMILY, SWR_CO_SOCKET_BY_TYPE, SWR_CO_SOCKET_FD_BY_TYPE, SWR_CO_SOCKET_FD_BY_FAMILY };
 uint32_t swr_v1_hook_co_socket_new(
-    swr_v1_co_socket *socket, void *owner, int how, int fd, int socket_type, int domain, int kind, int protocol);
+    swr_v1_co_socket *socket, int how, int fd, int socket_type, int domain, int kind, int protocol);
 /* Rust's `Co` is the record's pointer (`#[repr(transparent)]`). */
 typedef swr_v1_co_socket *swr_v1_co;
 /* Socket::created: a failed socket(2) becomes the last error; the others are warnings. */

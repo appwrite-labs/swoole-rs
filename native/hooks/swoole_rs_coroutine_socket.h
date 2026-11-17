@@ -19,16 +19,16 @@ class Socket : public swr_v1_co_socket {
   public:
     // Rust makes the socket (crates/hooks/src/co_socket.rs).
     Socket(int domain, int type, int protocol) {
-        created(swr_v1_hook_co_socket_new(this, this, SWR_CO_SOCKET_BY_FAMILY, -1, 0, domain, type, protocol));
+        created(swr_v1_hook_co_socket_new(this, SWR_CO_SOCKET_BY_FAMILY, -1, 0, domain, type, protocol));
     }
     Socket(int fd, int domain, int type, int protocol) {
-        created(swr_v1_hook_co_socket_new(this, this, SWR_CO_SOCKET_FD_BY_FAMILY, fd, 0, domain, type, protocol));
+        created(swr_v1_hook_co_socket_new(this, SWR_CO_SOCKET_FD_BY_FAMILY, fd, 0, domain, type, protocol));
     }
     explicit Socket(SocketType type = SW_SOCK_TCP) {
-        created(swr_v1_hook_co_socket_new(this, this, SWR_CO_SOCKET_BY_TYPE, -1, type, 0, 0, 0));
+        created(swr_v1_hook_co_socket_new(this, SWR_CO_SOCKET_BY_TYPE, -1, type, 0, 0, 0));
     }
     Socket(int fd, SocketType type) {
-        created(swr_v1_hook_co_socket_new(this, this, SWR_CO_SOCKET_FD_BY_TYPE, fd, type, 0, 0, 0));
+        created(swr_v1_hook_co_socket_new(this, SWR_CO_SOCKET_FD_BY_TYPE, fd, type, 0, 0, 0));
     }
     // Only after a failed constructor, or once nothing is bound to the socket.
     ~Socket() {

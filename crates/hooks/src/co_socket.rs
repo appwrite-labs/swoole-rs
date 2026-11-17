@@ -674,7 +674,7 @@ impl CoSocket {
     }
 
     /// `init_sock`: a nonblocking, close-on-exec socket of the record's type.
-    fn open(&self, owner: *mut c_void) -> Option<Socket<'static>> {
+    fn open(&self, owner: Co) -> Option<Socket<'static>> {
         let socket = SocketRecord::opened(
             self.kind.get(),
             FD_CO_SOCKET,
@@ -687,16 +687,14 @@ impl CoSocket {
     }
 
     /// The fields `init_sock` and `init_reactor_socket` set on a new socket, which
-    /// this record owns from here; `None`, with the record left alone, for none.
-    fn attach(
-        &self,
-        socket: Option<Box<SocketRecord>>,
-        owner: *mut c_void,
-    ) -> Option<Socket<'static>> {
+    /// this record (`owner`'s) owns from here; `None`, with the record left alone, for
+    /// none. The socket holds `owner` for the readiness handlers until [`Released`]
+    /// frees it.
+    fn attach(&self, socket: Option<Box<SocketRecord>>, owner: Co) -> Option<Socket<'static>> {
         let network = socket?.into_socket();
         self.socket.set(Some(network));
         self.sock_fd.set(network.edit(|record| {
-            record.object = owner;
+            record.set_owner(Some(owner));
             record.info.kind = self.kind.get();
             record.fd
         }));
@@ -704,7 +702,7 @@ impl CoSocket {
     }
 
     /// `init_reactor_socket`: wrap `fd`, which the caller made nonblocking.
-    fn adopt(&self, fd: c_int, owner: *mut c_void) -> Option<Socket<'static>> {
+    fn adopt(&self, fd: c_int, owner: Co) -> Option<Socket<'static>> {
         let mut record = SocketRecord::with_fd(fd, FD_CO_SOCKET);
         record.socket_type = self.kind.get();
         record.output.nonblock = true;
@@ -714,7 +712,7 @@ impl CoSocket {
 
     /// `init_options`: `TCP_NODELAY` for TCP, the default buffer size for UDP, and
     /// the default length protocol.
-    fn init_options(&mut self, record: &SocketFields) -> u32 {
+    fn init_options(&self, record: &SocketFields) -> u32 {
         let (tcp, fd, socket_type) = (record.is_tcp(), record.fd, record.socket_type);
         let mut result = 0;
         if tcp {
@@ -729,12 +727,13 @@ impl CoSocket {
             let size = swoole_rs_corebase::reactor::SOCKET_DEFAULTS.buffer_size();
             _ = swoole_rs_corebase::reactor::set_socket_buffer_size(fd, true, true, size);
         }
-        let protocol = self.protocol.get_mut();
+        let mut protocol = self.protocol.get();
         protocol.package_length_type = b'N';
         protocol.package_length_size = 4;
         protocol.package_length_offset = 0;
         protocol.package_body_offset = 0;
         protocol.package_max_length = SW_INPUT_BUFFER_SIZE;
+        self.protocol.set(protocol);
         result
     }
 }
@@ -808,10 +807,11 @@ pub fn make_quiet(
         (false, true) => New::ByType,
         (false, false) => New::FdByType,
     };
-    let mut socket = Box::new(CoSocket::new());
-    let owner = ptr::from_mut(&mut *socket).cast();
-    let result = socket.construct(owner, how, fd, kind, domain, kind, protocol);
-    let socket = socket.into_owned();
+    let socket = Box::new(CoSocket::new()).into_owned();
+    let co = socket.co();
+    let result = co
+        .record()
+        .construct(co, how, fd, kind, domain, kind, protocol);
     if crate::stdio::host().is_some_and(|host| host.uring_socket) {
         crate::socket_extra::swr_v1_hook_co_socket_uring(socket.co());
     }
@@ -824,14 +824,13 @@ pub fn warn_created(socket: Co, result: u32) {
 }
 
 /// The public constructors, which initialise the record first, by the [`New`] whose
-/// code `how` is (0, nothing opened, for any other). `owner` is the native
-/// `Socket`, which the new `network::Socket` points back to. Returns the bits above.
+/// code `how` is (0, nothing opened, for any other). The native `Socket` is the record,
+/// whose handle the new `network::Socket` holds. Returns the bits above.
 /// `storage` holds one record, which needn't be initialized yet (a record already
 /// there is overwritten, not dropped); the native object owns it for its lifetime.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_hook_co_socket_new(
     socket: &mut MaybeUninit<CoSocket>,
-    owner: *mut c_void,
     how: c_int,
     fd: c_int,
     socket_type: c_int,
@@ -839,11 +838,14 @@ pub extern "C" fn swr_v1_hook_co_socket_new(
     kind: c_int,
     protocol: c_int,
 ) -> u32 {
-    let record = socket.write(CoSocket::new());
+    // The native object's storage, which it keeps until `~Socket()` releases it.
+    let owner = Co(ptr::from_mut(socket.write(CoSocket::new())));
     let Some(how) = New::from_code(how) else {
         return 0;
     };
-    record.construct(owner, how, fd, socket_type, domain, kind, protocol)
+    owner
+        .record()
+        .construct(owner, how, fd, socket_type, domain, kind, protocol)
 }
 
 impl CoSocket {
@@ -859,8 +861,8 @@ impl CoSocket {
     /// [`swr_v1_hook_co_socket_new`]).
     #[expect(clippy::too_many_arguments, reason = "the constructors' union")]
     fn construct(
-        &mut self,
-        owner: *mut c_void,
+        &self,
+        owner: Co,
         how: New,
         fd: c_int,
         socket_type: c_int,
@@ -881,11 +883,10 @@ impl CoSocket {
             }
             New::ByType | New::FdByType => {
                 socket.kind.set(socket_type);
-                domain_and_type(
-                    socket_type,
-                    socket.sock_domain.get_mut(),
-                    socket.sock_type.get_mut(),
-                );
+                let (mut domain, mut kind) = (socket.sock_domain.get(), socket.sock_type.get());
+                domain_and_type(socket_type, &mut domain, &mut kind);
+                socket.sock_domain.set(domain);
+                socket.sock_type.set(kind);
             }
         }
         let opened = if how.opens() {
@@ -920,6 +921,9 @@ impl Released {
 
 impl Drop for Released {
     fn drop(&mut self) {
+        // No readiness handler reaches the record through it any more, while a
+        // deferred free keeps it for the rest of the reactor's pass.
+        self.0.edit(|record| record.set_owner::<Co>(None));
         // SAFETY: the record's own heap socket, which it gave up and nothing uses
         // afterwards.
         socket_free(Some(unsafe {
@@ -932,11 +936,11 @@ impl Drop for Released {
 /// old `network::Socket` is returned, freed as it drops. `None`, with errno set and
 /// nothing changed, if socket(2) failed.
 pub(crate) fn reinit(socket: Co, socket_type: c_int) -> Option<Released> {
-    socket.record().reinit(socket.this(), socket_type)
+    socket.record().reinit(socket, socket_type)
 }
 
 impl CoSocket {
-    fn reinit(&self, owner: *mut c_void, socket_type: c_int) -> Option<Released> {
+    fn reinit(&self, owner: Co, socket_type: c_int) -> Option<Released> {
         let socket = self;
         let (mut domain, mut kind) = (0, 0);
         domain_and_type(socket_type, &mut domain, &mut kind);
@@ -1036,8 +1040,9 @@ pub(crate) fn owned(
 /// `server`, with the server's type, framing and timeouts, connected; `accept`
 /// shares the TLS context after.
 pub(crate) fn accepted(server: Co, mut conn: Box<SocketRecord>) -> OwnedCo {
-    let mut socket = Box::new(CoSocket::new());
-    let owner = ptr::from_mut(&mut *socket).cast::<c_void>();
+    let owned = Box::new(CoSocket::new()).into_owned();
+    let owner = owned.co();
+    let socket = owner.record();
     let timeouts = server.net(|record| record.timeouts);
     let kind = server.kind();
     socket.kind.set(kind);
@@ -1045,7 +1050,7 @@ pub(crate) fn accepted(server: Co, mut conn: Box<SocketRecord>) -> OwnedCo {
     socket.sock_type.set(server.sock_type());
     socket.sock_protocol.set(server.sock_protocol());
     // The accepted record, still this function's own: the new socket owns it below.
-    conn.object = owner;
+    conn.set_owner(Some(owner));
     conn.socket_type = kind;
     conn.fd_type = FD_CO_SOCKET;
     socket.sock_fd.set(conn.fd);
@@ -1059,10 +1064,9 @@ pub(crate) fn accepted(server: Co, mut conn: Box<SocketRecord>) -> OwnedCo {
     socket.http2.set(server.http2());
     socket.protocol.set(server.protocol());
     socket.ssl_is_server.set(server.ssl_is_server());
-    let socket = socket.into_owned();
-    swr_v1_hook_co_socket_created(socket.co(), result);
-    socket.co().with_state(|state| state.flags.connected = true);
-    socket
+    swr_v1_hook_co_socket_created(owner, result);
+    owner.with_state(|state| state.flags.connected = true);
+    owned
 }
 
 /// What a constructor's bits report (`Socket::created`): a failed socket(2) becomes
@@ -1265,11 +1269,10 @@ mod tests {
         d: c_int,
         k: c_int,
     ) -> u32 {
-        let owner = (&raw mut *socket).cast();
         // The constructor writes the record again.
         socket.fini();
         let storage = unsafe { &mut *(&raw mut *socket).cast() };
-        swr_v1_hook_co_socket_new(storage, owner, how, fd, ty, d, k, 0)
+        swr_v1_hook_co_socket_new(storage, how, fd, ty, d, k, 0)
     }
 
     fn option(fd: c_int, level: c_int, name: c_int) -> c_int {
@@ -1331,7 +1334,10 @@ mod tests {
             ),
             (fd, 6, 1, 1)
         );
-        assert_eq!(record.object, (&raw const *socket).cast_mut().cast());
+        assert_eq!(
+            record.owner::<Co>().map(Co::raw),
+            Some((&raw const *socket).cast_mut())
+        );
         assert!(record.output.nonblock);
         assert_ne!(
             unsafe { libc::fcntl(fd, libc::F_GETFL) } & libc::O_NONBLOCK,
@@ -1475,8 +1481,8 @@ mod tests {
         let socket = unsafe { Box::from_raw(socket.into_co().raw()) };
         let conn = socket.socket_ptr();
         assert_eq!(
-            unsafe { (*conn).fields.object },
-            (&raw const *socket).cast_mut().cast()
+            unsafe { (*conn).fields.owner::<Co>() }.map(Co::raw),
+            Some((&raw const *socket).cast_mut())
         );
         assert_eq!((socket.kind.get(), socket.sock_fd.get()), (1, fd));
         assert!(socket.open_eof_check.get() && socket.http2.get() && socket.ssl_is_server.get());

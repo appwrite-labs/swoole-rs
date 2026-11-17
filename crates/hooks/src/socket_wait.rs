@@ -265,8 +265,8 @@ pub(crate) fn poll(socket: Co, event: Events, timeout: f64) -> bool {
 /// A resumed coroutine may free the record but not `event_socket`.
 pub(crate) fn error_event(socket: Co, event_socket: swoole_rs_corebase::reactor::Socket<'_>) {
     for event in [Events::WRITE, Events::READ] {
-        let (object, removed) = event_socket.read(|record| (record.object, record.removed));
-        if event == Events::READ && (object != socket.this() || removed) {
+        let (owner, removed) = event_socket.read(|record| (record.owner::<Co>(), record.removed));
+        if event == Events::READ && (owner != Some(socket) || removed) {
             return;
         }
         // The record is live: it still owns `event_socket`.
@@ -526,20 +526,16 @@ mod tests {
             (true, false, true),
         ] {
             let mut s = socket(0);
-            let owner = s.ptr().cast::<c_void>();
+            let owner = s.co();
             let record = unsafe { s.0.record() };
-            record.object = if object_matches {
-                owner
-            } else {
-                core::ptr::null_mut()
-            };
+            record.set_owner(object_matches.then_some(owner));
             record.removed = removed;
             let event_socket = s.0.socket_ptr();
             s.with_state(|state| state.bind(Events::READ, (&raw mut reader).cast()));
             s.with_state(|state| state.bind(Events::WRITE, (&raw mut writer).cast()));
             ON_RESUME.set(Some(Box::new(move |cid| {
                 if close_in_writer && cid == 8 {
-                    unsafe { (*event_socket).fields.object = core::ptr::null_mut() };
+                    unsafe { (*event_socket).fields.set_owner::<Co>(None) };
                 }
             })));
             s.0.err_code.set(9);
