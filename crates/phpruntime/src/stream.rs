@@ -1189,8 +1189,7 @@ mod tests {
 
     #[test]
     fn ssl_aliases_are_upstreams() {
-        let names: Vec<_> = SSL_ALIASES.iter().map(|(name, _)| *name).collect();
-        assert_eq!(names.len(), 10);
+        assert_eq!(SSL_ALIASES.len(), 10);
         assert!(SSL_ALIASES.contains(&("local_cert", "ssl_cert_file")));
         assert!(SSL_ALIASES.contains(&("peer_name", "ssl_host_name")));
     }

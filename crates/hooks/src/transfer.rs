@@ -515,7 +515,7 @@ mod tests {
         REACTOR_OK.set(false);
         let mut socket = TestSocket::new();
         unsafe { socket.0.record() }.timeouts.read = 0.0;
-        RESULTS.set([EAGAIN].into_iter().collect());
+        RESULTS.set(std::iter::once(EAGAIN).collect());
         let buffer = Buffer::read(8);
         let result = transfer(socket.co(), CHECKED, buffer, &mut |at| call(8, false, at));
         assert_eq!(result, None);
