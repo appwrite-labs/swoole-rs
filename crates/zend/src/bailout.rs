@@ -50,12 +50,6 @@ impl Flag {
     fn set(&self, value: bool) {
         self.0.store(value, std::sync::atomic::Ordering::Relaxed);
     }
-    /// Only the PHP thread writes it, so no atomic swap is needed.
-    fn replace(&self, value: bool) -> bool {
-        let previous = self.get();
-        self.set(value);
-        previous
-    }
 }
 
 /// The native destination of a contained escape. Whole-thread provenance remains
@@ -116,9 +110,14 @@ pub fn outcome<T>(value: T) -> Result<T, Bailout> {
 /// The caller must re-raise a true result in C; consuming the pending bit here
 /// prevents a caught shutdown bailout from poisoning a later request operation.
 #[must_use = "the C caller must re-raise a returned bailout"]
+#[inline]
 pub fn relay_to_c(result: Result<(), Bailout>) -> bool {
-    defer(result);
-    PENDING.replace(false) || thread_exit_pending()
+    if result.is_err() || PENDING.get() {
+        PENDING.set(false);
+        true
+    } else {
+        thread_exit_pending()
+    }
 }
 
 /// A native trap's flag as a result, without resuming a PHP bailout.
