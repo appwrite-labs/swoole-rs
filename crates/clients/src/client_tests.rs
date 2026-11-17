@@ -150,8 +150,9 @@ pub(super) mod net {
         usize::try_from(n).ok()
     }
     use core::ffi::c_int;
+    use swoole_rs_corebase::lent::Spare;
     use swoole_rs_corebase::reactor::Socket;
-    use swoole_rs_corebase::sys::{ReadBuffer, ReadSlot};
+    use swoole_rs_corebase::sys::ReadSlot;
 
     pub(in super::super) fn recv(
         _: Socket<'_>,
@@ -178,10 +179,10 @@ pub(super) mod net {
     }
     pub(in super::super) fn recv_sync(
         _: Socket<'_>,
-        buffer: ReadBuffer<'_>,
+        spare: &mut Spare<'_>,
         _: c_int,
     ) -> Option<usize> {
-        receive("recv_sync", buffer)
+        receive("recv_sync", spare)
     }
     pub(in super::super) fn send_sync(_: Socket<'_>, data: &[u8], _: c_int) -> Option<usize> {
         mock(|m| m.sent.push(data.to_vec()));
@@ -189,26 +190,24 @@ pub(super) mod net {
     }
     pub(in super::super) fn recvfrom_sync(
         _: Socket<'_>,
-        buffer: ReadBuffer<'_>,
+        spare: &mut Spare<'_>,
         _: c_int,
         _: &mut SocketAddress,
     ) -> Option<usize> {
-        receive("recvfrom_sync", buffer)
+        receive("recvfrom_sync", spare)
     }
 
-    fn receive(name: &str, buffer: ReadBuffer<'_>) -> Option<usize> {
-        fn read<S: ReadSlot>(name: &str, buffer: &mut [S]) -> Option<usize> {
-            if let Some(reply) = mock(|m| m.replies.pop()) {
-                log(format!("{name} {}", buffer.len()));
-                Some(S::copy_in(buffer, &reply))
-            } else {
-                count(io(name, buffer.len()))
-            }
+    /// The next reply, what fits of it; else zeros, as many as the read reports.
+    fn receive(name: &str, spare: &mut Spare<'_>) -> Option<usize> {
+        let room = spare.room();
+        if let Some(reply) = mock(|m| m.replies.pop()) {
+            log(format!("{name} {room}"));
+            let fits = reply.get(..room).unwrap_or(&reply);
+            return spare.put(fits).map(|copied| copied.len());
         }
-        match buffer {
-            ReadBuffer::Initialized(buffer) => read(name, buffer),
-            ReadBuffer::Spare(buffer) => read(name, buffer),
-        }
+        let n = count(io(name, room));
+        _ = spare.put(&vec![0; n.unwrap_or(0).min(room)]);
+        n
     }
 }
 pub(super) fn sendfile_sync(_: Socket<'_>, _: &CStr, _: i64, _: usize) -> bool {
