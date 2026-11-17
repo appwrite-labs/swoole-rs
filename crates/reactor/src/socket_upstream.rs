@@ -349,17 +349,13 @@ mod tests {
 
     #[test]
     fn reactor_errors_log_at_warning_level() {
-        thread_local! {
-            static SEEN: std::cell::Cell<c_int> = const { std::cell::Cell::new(-1) };
-        }
-        fn record(_: log::LogKind, level: c_int, _: c_int, origin: &CStr, _: &CStr) {
-            if origin == c"Reactor::change" {
-                SEEN.set(level);
-            }
-        }
-        log::swr_v1_core_set_log_host(record);
+        log::capture::install();
         swr_v1_reactor_log(c"Reactor::change", 1015, "failed");
-        assert_eq!(SEEN.get(), 4, "upstream SW_LOG_WARNING");
+        let mut seen = log::capture::logged().into_iter();
+        let level = seen
+            .rfind(|entry| entry.3 == "Reactor::change")
+            .map(|entry| entry.1);
+        assert_eq!(level, Some(4), "upstream SW_LOG_WARNING");
     }
 
     #[test]

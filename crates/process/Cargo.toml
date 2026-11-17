@@ -26,3 +26,6 @@ swoole-rs-error = { path = "../error" }
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-memory = { path = "../memory" }
 libc = "=0.2.191"
+
+[dev-dependencies]
+swoole-rs-corebase = { path = "../corebase", features = ["log-capture"] }

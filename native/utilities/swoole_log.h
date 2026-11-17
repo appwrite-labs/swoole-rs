@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Swoole's include/swoole_log.h, owned here. The logger and the log macros are Rust's
- * (crates/corebase/src/utilities/src/logger.rs, crates/corebase/src/log.rs); what C++ still expands is
+ * (crates/corebase/src/utilities/logger.rs, crates/corebase/src/log.rs); what C++ still expands is
  * the fatal-error forwarder and, compiled off, the curl hooks' trace log. */
 #pragma once
 

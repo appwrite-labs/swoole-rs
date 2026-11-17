@@ -529,49 +529,32 @@ pub(crate) mod tests {
     use crate::pool::{
         pool_ipc_address, pool_ipc_free, pool_ipc_new, swr_v1_process_pool_ipc_listener,
     };
-    use std::sync::Mutex;
-    use std::thread::{self, ThreadId};
+    use swoole_rs_corebase::log::capture;
 
-    /// A log line: kind, level, code, origin, message and the logging thread,
-    /// so a test sees only its own logs while others run in parallel.
-    type Logged = (c_int, c_int, c_int, String, String, ThreadId);
-
-    static LOGGED: Mutex<Vec<Logged>> = Mutex::new(Vec::new());
-
-    fn record(
-        kind: swoole_rs_corebase::log::LogKind,
-        level: c_int,
-        code: c_int,
-        origin: &CStr,
-        message: &CStr,
-    ) {
-        let text = |s: &CStr| s.to_string_lossy().into_owned();
-        if let Ok(mut logged) = LOGGED.lock() {
-            logged.push((
-                kind as c_int,
-                level,
-                code,
-                text(origin),
-                text(message),
-                thread::current().id(),
-            ));
-        }
+    thread_local! {
+        /// This thread's logs, kept so each origin reads its own.
+        static LOGGED: std::cell::RefCell<Vec<capture::Logged>> = const {
+            std::cell::RefCell::new(Vec::new())
+        };
     }
 
     /// What `origin` logged on this thread: (kind, level, code, message).
     pub(crate) fn logged(origin: &str) -> Vec<(c_int, c_int, c_int, String)> {
-        LOGGED.lock().map_or_default(|logged| {
+        LOGGED.with_borrow_mut(|logged| logged.extend(capture::logged()));
+        LOGGED.with_borrow(|logged| {
             logged
                 .iter()
-                .filter(|entry| entry.3 == origin && entry.5 == thread::current().id())
-                .map(|(kind, level, code, _, message, _)| (*kind, *level, *code, message.clone()))
+                .filter(|entry| entry.3 == origin)
+                .map(|(kind, level, code, _, message)| {
+                    (*kind as c_int, *level, *code, message.clone())
+                })
                 .collect()
         })
     }
 
-    /// Route this binary's logs to [`record`].
+    /// Run this binary's logs through the log macros, where [`logged`] reads them.
     pub(crate) fn install() {
-        swoole_rs_corebase::log::swr_v1_core_set_log_host(record);
+        capture::install();
     }
 
     fn make(kind: c_int, port: c_int) -> Option<crate::pool::Connection> {

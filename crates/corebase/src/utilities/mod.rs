@@ -285,7 +285,7 @@ mod upstream;
     dead_code,
     reason = "utilities runs whole tests in a child; replacement_survives is ossupport's"
 )]
-mod isolated_process {
+pub(crate) mod isolated_process {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../tests/support/isolated_process.rs"

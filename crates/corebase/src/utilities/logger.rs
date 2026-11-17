@@ -1,6 +1,6 @@
 //! `swoole::Logger` (upstream `src/core/log.cc`): level, date format, log file,
 //! rotation, stdout redirection and `put`, behind one lock. Diagnostics go out
-//! through corebase's log host; worker identity and `swoole_redirect_stdout` go
+//! through corebase's `log`; worker identity and `swoole_redirect_stdout` go
 //! through `LoggerHost` (crates/process's). Both run after the lock is released, so a
 //! diagnostic can log through this logger again. The log macros a Rust log runs
 //! (`swr_v1_utils_log`) are here too.
@@ -478,7 +478,7 @@ pub fn set_log_file(file: &CStr) {
 /// The log macros (`swoole_log.h`) for a log Rust emits on behalf of `origin`, of
 /// corebase's `LogKind` (crates/corebase/src/log.rs): the last error, the level
 /// check, the line formatted into `sw_error`, the put and, for the errors, the exit.
-/// `swoole_init` registers it as corebase's log host.
+/// corebase's `log` calls it once `swoole_init` has run.
 pub fn swr_v1_utils_log(
     kind: log::LogKind,
     level: c_int,
@@ -537,20 +537,6 @@ mod ported;
 pub(crate) mod tests {
     use super::*;
     use crate::lent::lend_in;
-    use std::cell::RefCell;
-
-    /// A corebase log call: kind, level, code, origin and message.
-    type Logged = (log::LogKind, c_int, c_int, String, String);
-
-    thread_local! {
-        static HOST: RefCell<Vec<Logged>> = const { RefCell::new(Vec::new()) };
-    }
-
-    fn logged(kind: log::LogKind, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
-        let text = |s: &CStr| s.to_string_lossy().into_owned();
-        let entry = (kind, level, code, text(origin), text(message));
-        HOST.with(|host| host.borrow_mut().push(entry));
-    }
 
     extern "C" fn redirect(_: c_int) {}
 
@@ -564,9 +550,9 @@ pub(crate) mod tests {
 
     const HOST_FAKE: LoggerHost = LoggerHost { redirect, identity };
 
-    fn host() -> Vec<Logged> {
-        crate::log::swr_v1_core_set_log_host(logged);
-        HOST.with(RefCell::take)
+    /// The corebase log calls this thread made since the last call.
+    fn host() -> Vec<log::capture::Logged> {
+        log::capture::logged()
     }
 
     fn path(name: &str) -> (CString, std::path::PathBuf) {
@@ -585,6 +571,12 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no fdopen")]
     fn put_writes_the_upstream_line_to_the_log_file_at_or_above_the_level() {
+        // A child, so the process logger stays out of the tests that reset the record.
+        let case = "utilities::logger::tests::put_writes_the_upstream_line_to_the_log_file_at_or_above_the_level";
+        if crate::utilities::isolated_process::run_in_child(case) {
+            return;
+        }
+        host();
         let logger = &Logger::new(None, HOST_FAKE);
         let (name, file_path) = path("put");
         assert!(logger.open(&name), "opened");
@@ -618,8 +610,13 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no strerror")]
     fn failures_are_logged_after_the_state_changes() {
-        let logger = &Logger::new(None, HOST_FAKE);
+        // A child, so the process logger stays out of the tests that reset the record.
+        let case = "utilities::logger::tests::failures_are_logged_after_the_state_changes";
+        if crate::utilities::isolated_process::run_in_child(case) {
+            return;
+        }
         host();
+        let logger = &Logger::new(None, HOST_FAKE);
         unsafe {
             assert!(!logger.open(c"/nonexistent/dir/log"), "open fails");
             assert_eq!(
@@ -687,6 +684,12 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no localtime")]
     fn rotation_names_the_real_file_by_date_and_reset_restores_defaults() {
+        // A child, so the process logger stays out of the tests that reset the record.
+        let case = "utilities::logger::tests::rotation_names_the_real_file_by_date_and_reset_restores_defaults";
+        if crate::utilities::isolated_process::run_in_child(case) {
+            return;
+        }
+        host();
         let logger = &Logger::new(None, HOST_FAKE);
         let (name, _) = path("rotate");
         logger.set_rotation(2);

@@ -24,6 +24,7 @@ swoole-rs-framing = { path = "../framing" }
 swoole-rs-http2 = { path = "../http2" }
 
 [dev-dependencies]
+swoole-rs-corebase = { path = "../corebase", features = ["log-capture"] }
 swoole-rs-oracle = { path = "../oracle" }
 # System::init_reactor, which crates/reactor's swoole_event_init calls.
 swoole-rs-hooks = { path = "../hooks", features = ["upstream-symbols"] }

@@ -250,16 +250,9 @@ mod tests {
     // core-tests/src/protocol/base.cpp's protocol.socks5_dns_tunnel_target_host_max_length:
     // `Socks5Proxy::create(SW_SOCK_TCP, "127.0.0.1", 1080, "", "")`, then a 255- and a
     // 256-byte target host through the tunnel.
-    /// Native's `swoole_error_log`, as far as the case observes it: it sets the last error.
-    fn error_log(kind: log::LogKind, _: c_int, code: c_int, _: &CStr, _: &CStr) {
-        if kind == log::LogKind::Error {
-            log::set_last_error(code);
-        }
-    }
-
     #[test]
     fn socks5_dns_tunnel_target_host_max_length() {
-        log::swr_v1_core_set_log_host(error_log);
+        log::capture::install();
         assert_eq!(admit(0, 0), 1);
         let owner = ProxyState::new(true);
         let texts: [&[u8]; 3] = [b"127.0.0.1", b"", b""];

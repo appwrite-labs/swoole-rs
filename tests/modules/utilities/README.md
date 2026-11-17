@@ -2,7 +2,7 @@
 
 ABI: [native/utilities/contract.md](../../../native/utilities/contract.md). Rust
 owns the hash arithmetic, shared spin acquisition, the locks module's wait/wake
-calls and the Logger (`crates/corebase/src/utilities/src/logger.rs`).
+calls and the Logger (`crates/corebase/src/utilities/logger.rs`).
 
 Upstream's inline string helpers (`swoole::ltrim`, `rtrim`, `substr_len`,
 `starts_with`, `ends_with`, `swoole_strnstr`, `swoole_strnpos`,
@@ -16,7 +16,7 @@ Use a release archive matching the current utility sources, headers and overlays
 
 ## Pinned differential tests
 
-`crates/corebase/src/utilities/src/upstream.rs` runs the Rust hashes (signed and unsigned
+`crates/corebase/src/utilities/upstream.rs` runs the Rust hashes (signed and unsigned
 `char`), level clamp, labels, rotation formats and the
 logger's line and microsecond formatting (truncation, NUL and errno) against the
 pinned bodies the oracle crate compiles (`crates/oracle/shim/utilities.cc`), and
@@ -29,7 +29,7 @@ ASCII input: the pinned body shifts negative promoted `char`s. It runs in
 `wait.py` (`utilities-wait`, Linux) built `wait.cc` against the pinned misc.cc futex
 bodies and the `swr_v1_utils_wait`/`_wakeup` exports. The oracle crate compiles the same
 bodies (`swoole_rs_oracle::locks::wait`/`wake`), so its checks are Rust tests in
-`crates/corebase/src/utilities/src/upstream.rs` (Linux, in `corebase-unit`) over
+`crates/corebase/src/utilities/upstream.rs` (Linux, in `corebase-unit`) over
 `sw_atomic_futex_wait`/`_wakeup`, which called the exports and now call the locks module
 themselves:
 
@@ -42,7 +42,7 @@ The gate compiled `wait.cc` under ASan and UBSan; the tests have no sanitizer of
 
 ## Logger
 
-The Logger is Rust (`crates/corebase/src/utilities/src/logger.rs`); its crate tests cover
+The Logger is Rust (`crates/corebase/src/utilities/logger.rs`); its crate tests cover
 files, rotation, diagnostics and concurrent `put` with `reopen`. No C++ calls it:
 `swoole::Logger` and the log macros other than `swoole_fatal_error` left
 `swoole_log.h` (#4310), and its one export, `swr_v1_logger_put`, is crates/ffi's
@@ -54,7 +54,7 @@ fatal path's.
 measured it; its port (below) passes a terminated one.
 
 `core-tests/src/core/log.cpp`'s TESTs are ported to
-`crates/corebase/src/utilities/src/logger/ported.rs`, one Rust test per TEST with the same
+`crates/corebase/src/utilities/logger/ported.rs`, one Rust test per TEST with the same
 inputs and expected values, over a logger of their own:
 
 | TEST | Rust test |

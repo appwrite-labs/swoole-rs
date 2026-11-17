@@ -16,9 +16,6 @@ unsafe extern "C" {
 /// `void swoole_init()`.
 #[unsafe(export_name = "_Z11swoole_initv")]
 pub(crate) extern "C-unwind" fn swoole_init() {
-    swoole_rs_corebase::log::swr_v1_core_set_log_host(
-        swoole_rs_corebase::utilities::swr_v1_utils_log,
-    );
     native::set_native_host(NativeHost {
         init,
         delete_pool: pool::delete,

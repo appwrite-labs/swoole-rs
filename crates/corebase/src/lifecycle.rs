@@ -129,6 +129,7 @@ pub fn set_thread_async_threads(threads: *mut c_void) {
 /// pool, signalfd, bug report) and the main thread. Once per process; later calls
 /// do nothing. crates/ffi's `swoole_init` registers the host, then calls this.
 pub fn swr_v1_core_swoole_init() {
+    crate::log::init();
     if !crate::swr_v1_core_init() {
         return;
     }

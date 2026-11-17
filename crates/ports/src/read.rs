@@ -569,7 +569,6 @@ fn body(n: &mut impl Connection, upload: bool) -> Step {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use core::ffi::CStr;
 
     /// The effects a [`Fake`] records.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -778,36 +777,11 @@ pub(crate) mod tests {
         }
     }
 
-    std::thread_local! {
-        static LOGGED: std::cell::RefCell<Vec<(String, c_int, c_int, String)>> = const {
-            std::cell::RefCell::new(Vec::new())
-        };
-    }
-
-    /// The crate's test log host; methods.rs's tests install it too.
-    pub(crate) fn record(
-        kind: log::LogKind,
-        level: c_int,
-        code: c_int,
-        origin: &CStr,
-        message: &CStr,
-    ) {
-        // As crates/utilities' host, the production one, does.
-        if matches!(kind, log::LogKind::SysWarning | log::LogKind::Error) {
-            log::set_last_error(code);
-        }
-        // The log host is process-wide and other tests' threads log through it too, so this
-        // only records; `logged` checks the origin on the thread that ran the case.
-        let text = |s: &CStr| s.to_string_lossy().into_owned();
-        LOGGED.with_borrow_mut(|logged| logged.push((text(origin), level, code, text(message))));
-    }
-
     /// The logs this thread's runs made since the last call.
     fn logged() -> Vec<(c_int, c_int, String)> {
-        LOGGED
-            .take()
+        log::capture::logged()
             .into_iter()
-            .map(|(origin, level, code, message)| {
+            .map(|(_, level, code, origin, message)| {
                 assert_eq!(origin, "ListenPort::readable_callback_http");
                 (level, code, message)
             })
@@ -819,7 +793,7 @@ pub(crate) mod tests {
 
     /// The readable callback's status, as upstream returns it.
     fn run(kind: Readable, fake: &mut Fake) -> i32 {
-        log::swr_v1_core_set_log_host(record);
+        log::capture::install();
         fake.point();
         if readable(kind, fake) { SW_OK } else { SW_ERR }
     }
