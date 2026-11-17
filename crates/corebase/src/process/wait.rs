@@ -246,10 +246,35 @@ pub(crate) mod tests {
         pid
     }
 
+    /// Set in the copy of the test binary [`plain_and_coroutine_waits`] runs itself in.
+    const ALONE: &str = "SWOOLE_RS_WAIT_TEST_ALONE";
+
+    /// Runs its waits in a fresh copy of the test binary running this test alone: a
+    /// wait for any child there can only reap one of its own, never a child another
+    /// test forked or spawned (#4773).
     #[test]
     #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn plain_and_coroutine_waits() {
+        if std::env::var_os(ALONE).is_some() {
+            return waits_of_this_process_alone();
+        }
+        // Held while the copy runs: another test's wait for any child would reap it.
         let _children = CHILDREN.lock().unwrap_or_else(PoisonError::into_inner);
+        let output = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+            .args(["--exact", "process::wait::tests::plain_and_coroutine_waits"])
+            .args(["--test-threads=1", "--nocapture"])
+            .env(ALONE, "1")
+            .output()
+            .expect("the test binary runs");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn waits_of_this_process_alone() {
         let child = spawn(3);
         let mut status = 0;
         let waited = wait_pid(child, &mut status, 0, -1.0, &PLAIN);
