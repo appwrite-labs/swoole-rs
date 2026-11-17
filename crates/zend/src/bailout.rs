@@ -112,7 +112,8 @@ pub fn outcome<T>(value: T) -> Result<T, Bailout> {
 #[must_use = "the C caller must re-raise a returned bailout"]
 #[inline]
 pub fn relay_to_c(result: Result<(), Bailout>) -> bool {
-    if result.is_err() || PENDING.get() {
+    defer(result);
+    if PENDING.get() {
         PENDING.set(false);
         true
     } else {

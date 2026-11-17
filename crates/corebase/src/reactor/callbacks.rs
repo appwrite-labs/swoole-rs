@@ -142,11 +142,14 @@ pub(crate) fn install_builtins(callbacks: &mut Callbacks) {
 /// `Reactor::execute_end_callbacks(timed_out)`. A callback may change the reactor, which
 /// no reference to its state is held across.
 pub(crate) fn execute_end(reactor: Running<'_>, timed_out: bool) {
-    reactor.with(|state| state.fields.timed_out = timed_out);
+    let bailed = reactor.with(|state| {
+        state.fields.timed_out = timed_out;
+        state.fields.bailout
+    });
+    if bailed {
+        return;
+    }
     for slot in 0..END_SLOTS {
-        if reactor.with(|state| state.fields.bailout) {
-            return;
-        }
         // Each borrow ends, its copy read, before a callback runs.
         let Some(end) = reactor.with(|state| state.callbacks.end.get(slot).copied().flatten())
         else {
@@ -154,18 +157,27 @@ pub(crate) fn execute_end(reactor: Running<'_>, timed_out: bool) {
         };
         match end {
             End::Call(call) => call(),
+            End::Defer if !reactor.has_deferred() => continue,
             End::Defer => crate::reactor::deferred::run_defer(reactor),
+            End::Idle if reactor.with(|state| state.fields.idle_task.is_none()) => continue,
             End::Idle => run_idle(reactor),
             End::Signal => crate::process::signal::swoole_signal_dispatch(),
             End::TryExit => {
-                if reactor.with(|state| state.fields.wait_exit) && if_exit(reactor) {
+                if !reactor.with(|state| state.fields.wait_exit) {
+                    continue;
+                }
+                if if_exit(reactor) {
                     reactor.with(|state| state.fields.running = false);
                 }
             }
             #[cfg(all(target_os = "linux", target_env = "gnu"))]
             End::MallocTrim => {
                 reactor.with(|state| malloc_trim(&mut state.fields.last_malloc_trim_time));
+                continue;
             }
+        }
+        if reactor.with(|state| state.fields.bailout) {
+            return;
         }
     }
 }
