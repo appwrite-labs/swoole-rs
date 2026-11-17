@@ -767,7 +767,7 @@ fn writevall_and_readvall() {
 
             thread::sleep(std::time::Duration::from_millis(10));
 
-            let mut io_vector2 = iov.clone();
+            let mut io_vector2 = iov;
             assert_eq!(
                 sock.vector(&mut io_vector2, true, true),
                 (write_iovcnt * length).cast_signed()

@@ -1474,7 +1474,7 @@ fn listen() {
     assert_eq!(start(pool), SW_OK);
 
     let shared = pool as usize;
-    let client_wmem = wmem.clone();
+    let client_wmem = wmem;
     let t1 = std::thread::spawn(move || {
         _ = signal_block_all();
 
@@ -1942,7 +1942,7 @@ fn listen_unixsock() {
 
     assert_eq!(start(pool), SW_OK);
 
-    let client_wmem = wmem.clone();
+    let client_wmem = wmem;
     let t1 = std::thread::spawn(move || {
         _ = signal_block_all();
 

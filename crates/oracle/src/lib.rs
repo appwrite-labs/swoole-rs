@@ -30,7 +30,7 @@ pub mod crc32 {
 pub mod websocket {
     /// Fields of upstream's `websocket::Frame` after `decode`; flags as `Frame::get_flags()`.
     #[repr(C)]
-    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct Frame {
         pub payload_length: u64,
         pub header_length: u16,
@@ -283,7 +283,7 @@ pub mod http_frame {
 
     /// The `Request` fields request framing reads and writes, and the buffer offset.
     #[repr(C)]
-    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct State {
         pub offset: usize,
         pub content_length: u64,

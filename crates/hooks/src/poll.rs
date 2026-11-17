@@ -242,7 +242,7 @@ fn unordered_map_order(keys: impl IntoIterator<Item = i32>) -> Vec<i32> {
         order.insert(at.unwrap_or(0), key);
     }
     let mut order: Vec<i32> = Vec::new();
-    let mut sizes = UNORDERED_BUCKETS.iter().copied().peekable();
+    let mut sizes = UNORDERED_BUCKETS.iter().copied();
     let mut buckets = 0;
     for key in keys {
         if order.contains(&key) {

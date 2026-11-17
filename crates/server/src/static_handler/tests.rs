@@ -634,8 +634,7 @@ fn former_context_gate_directories() {
             "<name>",
             "é.txt",
         ]),
-        [vec![b'x'; 200]]
-            .into_iter()
+        std::iter::once(vec![b'x'; 200])
             .chain(names(&["a.txt", ".", ".."]))
             .collect(),
     ];
