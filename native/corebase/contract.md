@@ -127,9 +127,9 @@ banner, `uname`, compiler and TLS lines, from what C++ compiled (`swr_cpp_bug_re
 `swr_v1_core_max_sockets` is the `RLIMIT_NOFILE` soft limit as `uint32_t`,
 capped at `SW_SESSION_LIST_SIZE`, or -1 with errno kept.
 
-Rust exports `sw_logger` and `swoole_random_int` under their C++ names, and
-`swoole_version`/`swoole_version_id`/`swoole_api_version_id` (C names). No compiled
-code calls `sw_malloc`, `sw_free` or `sw_calloc`, so Rust doesn't define them.
+The native fatal handler reads the process logger through `swr_v1_core_logger`.
+Rust exports `swoole_version`, `swoole_version_id` and `swoole_api_version_id` under
+their C names. No compiled code calls `sw_malloc`, `sw_free` or `sw_calloc`, so Rust doesn't define them.
 `tests/modules/corebase/numbers.rs` compares the number helpers with the pinned
 `base.cc`. The numeric helpers have no C++ callers: their exports and native
 declarations are gone. Their `extern "C"` functions retain abort-on-panic behavior;
