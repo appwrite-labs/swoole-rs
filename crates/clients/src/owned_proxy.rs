@@ -1,6 +1,5 @@
 //! `swoole::Socks5Proxy`'s methods over the Rust proxy owner and its packet buffer.
-//! crates/hooks calls them by path, and [`crate::client`] through the host crates/ffi
-//! registers.
+//! crates/hooks and [`crate::client`] call them directly.
 use std::ffi::{CStr, c_int};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as NOTICE;

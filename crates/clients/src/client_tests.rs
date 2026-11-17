@@ -9,6 +9,8 @@ struct Mock {
     connect: Vec<bool>,
     connect_async: Vec<Connect>,
     io: Vec<isize>,
+    replies: Vec<Vec<u8>>,
+    sent: Vec<Vec<u8>>,
     ssl_connect_ready: bool,
     socket_error: c_int,
     /// The callback that releases the client's socket object (as a PHP close would).
@@ -142,7 +144,7 @@ fn free_socket(socket: Option<swoole_rs_reactor::OwnedSocket>) {
 }
 /// crates/tls's slice-taking transfers.
 pub(super) mod net {
-    use super::{SocketAddress, io};
+    use super::{SocketAddress, io, log, mock};
 
     fn count(n: isize) -> Option<usize> {
         usize::try_from(n).ok()
@@ -162,6 +164,11 @@ pub(super) mod net {
         _: Socket<'_>,
         buffer: &mut swoole_rs_corebase::buffer::string::CppString,
     ) -> Option<usize> {
+        if let Some(reply) = mock(|m| m.replies.pop()) {
+            log(format!("recv {}", buffer.spare().len()));
+            buffer.append(&reply);
+            return Some(reply.len());
+        }
         let n = count(io("recv", buffer.spare().len()));
         // Zeros, as many as the read reports.
         buffer.fill_within(n.unwrap_or(0), |spare| {
@@ -177,6 +184,7 @@ pub(super) mod net {
         receive("recv_sync", buffer)
     }
     pub(in super::super) fn send_sync(_: Socket<'_>, data: &[u8], _: c_int) -> Option<usize> {
+        mock(|m| m.sent.push(data.to_vec()));
         count(io("send_sync", data.len()))
     }
     pub(in super::super) fn recvfrom_sync(
@@ -189,9 +197,17 @@ pub(super) mod net {
     }
 
     fn receive(name: &str, buffer: ReadBuffer<'_>) -> Option<usize> {
+        fn read<S: ReadSlot>(name: &str, buffer: &mut [S]) -> Option<usize> {
+            if let Some(reply) = mock(|m| m.replies.pop()) {
+                log(format!("{name} {}", buffer.len()));
+                Some(S::copy_in(buffer, &reply))
+            } else {
+                count(io(name, buffer.len()))
+            }
+        }
         match buffer {
-            ReadBuffer::Initialized(buffer) => count(io(name, buffer.len())),
-            ReadBuffer::Spare(buffer) => count(io(name, buffer.len())),
+            ReadBuffer::Initialized(buffer) => read(name, buffer),
+            ReadBuffer::Spare(buffer) => read(name, buffer),
         }
     }
 }
@@ -206,6 +222,7 @@ pub(super) fn socket_sendfile_async(_: Socket<'_>, _: &CStr, _: i64, _: usize) -
 /// crates/reactor's, which reads the thread's reactor.
 pub(super) fn event_write(_: swoole_rs_reactor::Heap<'_>, data: &[u8]) -> Option<usize> {
     let length = data.len();
+    mock(|m| m.sent.push(data.to_vec()));
     log(format!("write {length}"));
     (log::last_error() != ERROR_OUTPUT_BUFFER_OVERFLOW).then_some(length)
 }
@@ -293,24 +310,6 @@ pub(super) fn socket_ssl_set_host_name(_: Socket<'_>, _: &CStr) -> bool {
     log("ssl ctrl 55");
     true
 }
-// owned_proxy's, which the hybrid registers.
-fn socks5_admit(user: usize, password: usize) -> c_int {
-    if user != 0 && password != 0 { 2 } else { 1 }
-}
-fn socks5_pack_negotiate(_: &ProxyState) -> isize {
-    3
-}
-/// Any reply makes the proxy ready, with nothing more to send.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "the host's fallible handshake signature"
-)]
-fn socks5_handshake_step(proxy: &ProxyState, reply: &[u8]) -> Option<usize> {
-    log(format!("socks5 {}", reply.len()));
-    proxy.update(|fields| fields.state = 4);
-    Some(0)
-}
-
 /// Gives the client a proxy at proxy.test:1080.
 fn set_proxy(client: *mut Client, http: bool) {
     super::set_proxy(unsafe { &*client }, http, b"proxy.test", 1080, b"", b"");
@@ -357,15 +356,7 @@ fn new_client(kind: c_int, is_async: bool) -> *mut Client {
 /// with `callbacks`.
 fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
     mock(|m| *m = Mock::default());
-    set_host(
-        FRAMING,
-        async_dispatch,
-        Socks5 {
-            admit: socks5_admit,
-            negotiate: socks5_pack_negotiate,
-            handshake: socks5_handshake_step,
-        },
-    );
+    set_host(FRAMING, async_dispatch);
     log::set_last_error(0);
     let client = new_client(kind, is_async);
     if callbacks {
@@ -592,6 +583,7 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
         Handle::raw(client).proxy_state(Proxy::Socks5),
         Some(SOCKS5_WAIT)
     );
+    mock(|m| m.replies = vec![vec![5, 0], vec![5, 0]]);
     assert_eq!(connect(client, c"example.test", 3.0, 0), OK);
     assert_eq!(
         taken(),
@@ -601,7 +593,15 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
             "connect Sync",
             "send_sync 3",
             "recv_sync 64",
-            "socks5 64",
+            "send_sync 19",
+            "recv_sync 64",
+        ]
+    );
+    assert_eq!(
+        mock(|m| m.sent.clone()),
+        [
+            vec![5, 1, 0],
+            b"\x05\x01\x00\x03\x0cexample.test\x00\x50".to_vec()
         ]
     );
     assert!(flag(client, Flag::Active));
@@ -651,6 +651,7 @@ fn writable_after_connect_starts_the_socks5_handshake() {
     unsafe { &*client }.set_watermark(true, 100);
     assert!(writable(client));
     assert_eq!(taken(), ["event Set 512", "write 3"]);
+    assert_eq!(mock(|m| m.sent.clone()), [vec![5, 1, 0]]);
     assert_eq!(
         Handle::raw(client).proxy_state(Proxy::Socks5),
         Some(SOCKS5_HANDSHAKE)
@@ -663,12 +664,23 @@ fn writable_after_connect_starts_the_socks5_handshake() {
 fn stream_read_hands_the_socks5_handshake_the_bytes_received() {
     let client = client(1, true, true);
     set_proxy(client, false);
+    assert!(inet_addr(Handle::raw(client), c"example.test", 80));
     assert!(writable(client));
     Handle::raw(client).input_init();
     taken();
-    mock(|m| m.io = vec![2]);
+    mock(|m| m.replies = vec![vec![5, 0], vec![5, 0]]);
     assert!(on_read(Handle::raw(client)));
-    assert_eq!(taken()[..2], ["recv 65536", "socks5 2"]);
+    assert_eq!(taken(), ["recv 65536", "write 19"]);
+    assert_eq!(Handle::raw(client).proxy_state(Proxy::Socks5), Some(3));
+    assert!(on_read(Handle::raw(client)));
+    assert_eq!(taken(), ["recv 65534", "call Connect 0"]);
+    assert_eq!(
+        mock(|m| m.sent.clone()),
+        [
+            vec![5, 1, 0],
+            b"\x05\x01\x00\x03\x0cexample.test\x00\x50".to_vec()
+        ]
+    );
     assert_eq!(
         Handle::raw(client).proxy_state(Proxy::Socks5),
         Some(SOCKS5_READY)

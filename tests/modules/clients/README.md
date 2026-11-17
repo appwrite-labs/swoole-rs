@@ -45,8 +45,8 @@ The client host registers the DNS pool dispatcher alongside framed receives.
 Unit fixtures register their recording dispatcher and retain the original DNS
 success/error traces. The hooks crate constructs its own pool event and retains
 its resolver request until completion; clients no longer mirrors the event layout.
-SOCKS5 admit, negotiation and handshake operations use the same registered host,
-with typed proxy references and reply slices. The input buffer lives in a `Cell`
+SOCKS5 admission, negotiation and handshake call `owned_proxy` directly; recording
+IO fixtures feed real replies and assert the emitted negotiation/connect packets. The input buffer lives in a `Cell`
 in the client, whose address the public record exposes to framing code; Miri runs
 `the_framed_receive_buffer_stays_usable_across_input_edits` over that pointer.
 Receive, append, synchronous receive and datagram receive use the same operation
@@ -179,7 +179,7 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 - Async gate locale coverage is the C locale only.
 - The pinned `SHUT_RDWR` branch sets only `shutdown_read`; this is preserved.
 - `network::Client` itself (crates/clients/src/client.rs) is covered by its Rust
-  unit tests with explicit socket, reactor, framing, DNS and SOCKS5 operations,
+  unit tests with explicit socket, reactor, framing and DNS operations,
   the original client cases and the PHPTs.
 
 The HTTP connection fixture also splits response headers across writes, receives a
