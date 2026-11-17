@@ -46,6 +46,3 @@ struct Protocol {
     uint8_t (*get_package_length_size)(network::Socket *);
 };
 }  // namespace swoole
-
-char *swoole_dec2hex(ulong_t value, int base);
-ulong_t swoole_hex2dec(const char *hex, size_t *parsed_bytes);

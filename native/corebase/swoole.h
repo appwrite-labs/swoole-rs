@@ -133,13 +133,6 @@ extern "C" char *swr_v1_error_buffer(void);
 uint64_t swoole_random_int();
 size_t swoole_random_bytes(char *buf, size_t size);
 
-//----------------------Tool Function---------------------
-uint32_t swoole_common_multiple(uint32_t u, uint32_t v);
-uint32_t swoole_common_divisor(uint32_t u, uint32_t v);
-
-
-int swoole_version_compare(const char *version1, const char *version2);
-
 void swoole_exit(int _status);
 pid_t swoole_fork(int flags);
 
