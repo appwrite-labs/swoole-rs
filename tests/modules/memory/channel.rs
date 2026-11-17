@@ -1,7 +1,7 @@
 use super::*;
+use crate::CCast;
 use std::collections::VecDeque;
 use std::ptr;
-use swoole_rs_corebase::CCast;
 #[test]
 fn channel_fifo_spill_wrap_peek_and_capacity_match_independent_model() {
     let mut memory = [0u8; 128 + 24 + 4];

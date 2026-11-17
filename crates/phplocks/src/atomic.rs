@@ -2,7 +2,7 @@
 //! pool, so processes forked after construction share it.
 use crate::word::{self, Holder};
 use std::sync::atomic::{AtomicI64, AtomicU32};
-use swoole_rs_memory::members::pool;
+use swoole_rs_corebase::memory::members::pool;
 use swoole_rs_phpstubs::atomic;
 use swoole_rs_zend::{Call, Custom, CustomClass, Minit, method_table, sys::ZEND_ACC_PUBLIC};
 

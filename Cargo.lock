@@ -489,7 +489,6 @@ dependencies = [
  "swoole-rs-http-ffi",
  "swoole-rs-http2",
  "swoole-rs-httpbindings",
- "swoole-rs-memory",
  "swoole-rs-oci",
  "swoole-rs-odbc",
  "swoole-rs-pgsql",
@@ -564,7 +563,6 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-ffi",
  "swoole-rs-hooks",
- "swoole-rs-memory",
  "swoole-rs-process",
  "swoole-rs-reactor",
  "swoole-rs-server",
@@ -638,15 +636,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
-]
-
-[[package]]
-name = "swoole-rs-memory"
-version = "0.1.0"
-dependencies = [
- "libc",
- "swoole-rs-corebase",
- "swoole-rs-error",
 ]
 
 [[package]]
@@ -724,7 +713,6 @@ version = "0.1.0"
 dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-memory",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
@@ -754,7 +742,6 @@ version = "0.1.0"
 dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-memory",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phpprocess",
  "swoole-rs-phpstubs",
@@ -780,7 +767,6 @@ dependencies = [
  "swoole-rs-http2",
  "swoole-rs-httpbindings",
  "swoole-rs-inflate",
- "swoole-rs-memory",
  "swoole-rs-phpclients",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phpruntime",
@@ -827,7 +813,6 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-hooks",
- "swoole-rs-memory",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
@@ -1004,7 +989,6 @@ dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-memory",
 ]
 
 [[package]]
@@ -1019,7 +1003,6 @@ dependencies = [
  "openssl-sys",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-memory",
  "swoole-rs-process",
 ]
 
@@ -1044,7 +1027,6 @@ dependencies = [
  "swoole-rs-hooks",
  "swoole-rs-http",
  "swoole-rs-http-ffi",
- "swoole-rs-memory",
  "swoole-rs-oracle",
  "swoole-rs-process",
  "swoole-rs-reactor",

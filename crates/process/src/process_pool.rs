@@ -18,7 +18,7 @@ use std::ptr;
 use std::sync::atomic::AtomicU32;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::DataHead;
-use swoole_rs_memory::{ChannelInitError, SharedChannel};
+use swoole_rs_corebase::memory::{ChannelInitError, SharedChannel};
 
 use crate::armed_timer::ArmedTimer;
 use crate::os::{getpid, kill};
@@ -234,7 +234,9 @@ impl PoolRecord {
     }
 
     /// The pool's message box, which the workers push to and the master pops from.
-    pub(crate) fn message_box_channel(&self) -> Option<&swoole_rs_memory::channel::Record> {
+    pub(crate) fn message_box_channel(
+        &self,
+    ) -> Option<&swoole_rs_corebase::memory::channel::Record> {
         self.message_box.get()
     }
 

@@ -6,7 +6,7 @@
 //! `PoolRef::install`; a failed assertion inside one aborts the process it runs in (the
 //! build's panics abort). `SwooleWG` is crates/process's `worker_globals`;
 //! `swoole_set_isolation` is crates/corebase/src/ossupport's `set_isolation`. core-tests' shared counters are `sw_mem_pool()` memory
-//! (crates/memory's `members::pool::alloc`), so workers' increments reach the master, as
+//! (`corebase::memory`'s `members::pool::alloc`), so workers' increments reach the master, as
 //! upstream's do.
 
 use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_void};
@@ -17,8 +17,8 @@ use std::ptr::{self, null_mut};
 use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering::SeqCst};
 use std::time::{SystemTime, UNIX_EPOCH};
 use swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
+use swoole_rs_corebase::memory::members::pool as mem_pool;
 use swoole_rs_corebase::swoole_thread_clean;
-use swoole_rs_memory::members::pool as mem_pool;
 use swoole_rs_process::methods as pm;
 use swoole_rs_process::methods::{ExitStatus, swoole_get_worker_symbol, swoole_set_worker_type};
 use swoole_rs_process::process_pool::{

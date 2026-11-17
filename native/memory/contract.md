@@ -16,7 +16,7 @@ upstream symbols below. Supported hosts are 64-bit macOS and Linux.
 
 ## Fixed pool
 
-Rust only (`crates/memory/src/fixed.rs`): the table's row pool. `FixedPool`, the
+Rust only (`crates/corebase/src/memory/fixed.rs`): the table's row pool. `FixedPool`, the
 owner of an arena of its own, is test support (`tests/modules/memory/members.rs`).
 The pool's state (`Fixed`) is a Rust value the table keeps in its shared header, so
 a shared pool stays visible across fork; the arena reserves upstream's 48-byte
@@ -67,7 +67,7 @@ accounting, the mutex and the pipe.
 
 ## Global memory pages
 
-Rust only (`crates/memory/src/global.rs`): `GlobalMemory`'s pages, under its lock.
+Rust only (`crates/corebase/src/memory/global.rs`): `GlobalMemory`'s pages, under its lock.
 Pages are anonymous mappings, `MAP_SHARED` (shared, as `sw_shm_malloc`'s) or
 `MAP_PRIVATE` (which a fork copies, as it would `sw_malloc`'s memory), rounded up to
 whole system pages, and are unmapped when the pool is.
@@ -90,7 +90,7 @@ the header; overflowing sizes return NULL.
 
 ## Upstream members
 
-`crates/memory/src/members.rs` holds upstream's memory members. With
+`crates/corebase/src/memory/members.rs` holds upstream's memory members. With
 `upstream-symbols`, `sw_shm_malloc` and `sw_shm_calloc` are under
 their upstream C++ symbols (`sw_shm_protect` is `Shm::protect`: nothing native called
 it). Upstream's `swoole_memory.h`
@@ -107,7 +107,7 @@ a no-op, so nothing calls it. These run allocators, mmap and logs with a Rust fr
 
 ## Shared tables
 
-Rust owns `swoole::Table` (crates/memory/src/table.rs), and `Swoole\Table`
+Rust owns `swoole::Table` (crates/corebase/src/memory/table.rs), and `Swoole\Table`
 (crates/phpcollections) is its only user; no C++ view is left. Two blocks stay
 shared across `fork()` as upstream's are: the header (`size_of::<Table>()` bytes from
 `members::pool::alloc`, holding sizes, counters and the pool and iterator mutexes) and, at

@@ -78,7 +78,7 @@ pub fn init_event_worker(serv: view::Server<'_>, worker: Worker<'_>) {
 /// global memory pool as upstream's `new Mutex(true)` took it, and its pipe's fds.
 pub fn create_worker(serv: view::Server<'_>, worker: Worker<'_>) {
     // A zeroed `SharedMutex`, which the pool keeps for the program's life.
-    let Some([lock]) = swoole_rs_memory::members::pool::words::<SharedMutex>(1) else {
+    let Some([lock]) = swoole_rs_corebase::memory::members::pool::words::<SharedMutex>(1) else {
         // Upstream's `Mutex` constructor throws, which ends the process here.
         swoole_rs_corebase::fatal("no shared memory for a worker lock");
     };
@@ -121,7 +121,7 @@ pub fn create_event_workers(serv: view::Server<'_>) -> bool {
 pub fn create_user_workers(serv: view::Server<'_>) -> bool {
     let size = size_of::<WorkerRecord>();
     let count = serv.registry().pending().len();
-    let workers = swoole_rs_memory::members::Shm::calloc(count, size);
+    let workers = swoole_rs_corebase::memory::members::Shm::calloc(count, size);
     let mapped = !workers.is_null();
     // A zeroed record is an empty worker, so the array is `count` records from now on.
     serv.state().tables_ref().user_workers.fill(workers);
@@ -162,9 +162,12 @@ mod tests {
         let mut server = crate::TestServer::new();
         let config = server.config_mut();
         config.mode_ = Mode::Base;
-        config.gs =
-            swoole_rs_memory::members::Shm::calloc(1, size_of::<crate::shared::ServerShared>());
-        let workers = swoole_rs_memory::members::Shm::calloc(2, size_of::<WorkerRecord>());
+        config.gs = swoole_rs_corebase::memory::members::Shm::calloc(
+            1,
+            size_of::<crate::shared::ServerShared>(),
+        );
+        let workers =
+            swoole_rs_corebase::memory::members::Shm::calloc(2, size_of::<WorkerRecord>());
         let worker = workers.as_ptr().cast::<WorkerRecord>();
         let other = worker.wrapping_add(1);
         unsafe { worker.write(*WorkerRecord::boxed()) };
@@ -218,7 +221,7 @@ mod tests {
         assert_eq!(worker.counters()[3], 0);
         assert_eq!(serv.counters().concurrency.load(SeqCst), 0);
 
-        *server.tables_mut().session_list_mut() = swoole_rs_memory::members::Shm::empty();
+        *server.tables_mut().session_list_mut() = swoole_rs_corebase::memory::members::Shm::empty();
         server.tables_mut().workers.free();
         server.config_mut().gs.free();
     }

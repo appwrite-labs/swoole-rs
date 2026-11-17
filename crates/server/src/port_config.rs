@@ -6,7 +6,7 @@ use std::sync::{OnceLock, RwLock};
 use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
-use swoole_rs_memory::members::Shm;
+use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_reactor::{Heap, Socket};
 use swoole_rs_tls::{SslVersion, TlsContext};
 

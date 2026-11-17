@@ -537,7 +537,7 @@ class Lanes(unittest.TestCase):
         self.assertEqual(commands['corebase-unit'], ['cargo', 'test', '--locked', '-p', 'swoole-rs-corebase'])
         self.assertNotIn('http-rewrites', commands)  # Its cases run in http-unit.
         self.assertIn('swoole-rs-corebase', commands['coroutine-rust-asan'])
-        self.assertIn('swoole-rs-memory', commands['memory-rust-asan'])
+        self.assertIn('swoole-rs-corebase', commands['memory-rust-asan'])
         self.assertFalse(any(name.startswith('coroutine-registry') for name in commands))
         for name in ['reference-identity','base64-consumers-upstream','base64-consumers-cargo',
                      'crc32-consumers-upstream','crc32-consumers-cargo',
@@ -763,6 +763,7 @@ class ChangedModules(unittest.TestCase):
         with patch.object(dev, 'dependents', return_value={}):
             self.assertEqual(self.changed('crates/zend/src/host/mod.rs'), ['phphelpers'])
             self.assertEqual(self.changed('crates/zend/src/lib.rs'), [])
+            self.assertEqual(self.changed('crates/corebase/src/memory/table.rs'), ['memory'])
 
     def test_a_module_moved_into_another_crate_keeps_its_phpt_family(self):
         manifest = json.loads((dev.ROOT / 'migration/modules.json').read_text())

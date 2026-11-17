@@ -39,7 +39,6 @@ swoole-rs-websocket = { path = "../websocket" }
 swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 swoole-rs-error = { path = "../error" }
 swoole-rs-error-ffi = { path = "../error-ffi", features = ["upstream-symbols"] }
-swoole-rs-memory = { path = "../memory", features = ["upstream-symbols"] }
 swoole-rs-http = { path = "../http" }
 swoole-rs-http-ffi = { path = "../http-ffi", features = ["upstream-symbols"] }
 swoole-rs-phplocks = { path = "../phplocks", optional = true }

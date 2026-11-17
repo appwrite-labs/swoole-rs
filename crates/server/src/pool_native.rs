@@ -2,7 +2,7 @@
 //! timers, event loop and callbacks. crates/process decides every step
 //! (`process_pool.rs`, `pool.rs`) and asks for each effect through the
 //! [`PoolNative`] side [`process_pool_native`] returns. It lives here because these objects are
-//! crates/reactor's, crates/tls's and crates/memory's, which crates/process can't
+//! crates/reactor's, crates/tls's and `corebase::memory`'s, which crates/process can't
 //! depend on.
 //!
 //! Each hook that can reach PHP runs inside the bailout trap crates/process sets
@@ -22,7 +22,7 @@ use swoole_rs_bus::MessageBus;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
 use swoole_rs_corebase::log;
-use swoole_rs_memory::members::pool as mem_pool;
+use swoole_rs_corebase::memory::members::pool as mem_pool;
 use swoole_rs_process::armed_timer::ArmedTimer;
 use swoole_rs_process::methods::raised;
 use swoole_rs_process::methods::{

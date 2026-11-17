@@ -1,19 +1,5 @@
 //! Swoole's memory pools and collections: fixed and global pools, the channel,
 //! shared mappings and the shared-memory table.
-#![cfg_attr(
-    test,
-    expect(
-        clippy::disallowed_types,
-        reason = "the tests check against std model collections"
-    )
-)]
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
 /// Defines each listed function under its upstream C++ symbol with
 /// `upstream-symbols`. `uint64_t` is `unsigned long long` on macOS and `unsigned long`
 /// on Linux, which the symbols spell.
@@ -31,7 +17,7 @@ pub mod flat;
 mod global;
 
 #[cfg(test)]
-#[path = "../../../tests/modules/memory/allocation.rs"]
+#[path = "../../../../tests/modules/memory/allocation.rs"]
 mod allocation_tests;
 
 pub use channel::{

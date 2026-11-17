@@ -98,7 +98,7 @@ impl Drop for Stack {
         /// The allocation a dropped stack held, as [`Stack::alloc`] made it: only this
         /// drop makes one, once per stack.
         #[repr(transparent)]
-        struct Released(NonNull<u8>);
+        struct Released(*mut c_void);
         #[expect(
             suspicious_runtime_symbol_definitions,
             reason = "`free`'s C signature; declared safe because it takes only a \
@@ -113,9 +113,9 @@ impl Drop for Stack {
             return;
         };
         if self.flags & STACK_PROTECT == 0 {
-            free(Released(stack));
+            free(Released(stack.as_ptr().cast()));
         } else {
-            munmap(Released(stack), self.size());
+            munmap(Released(stack.as_ptr().cast()), self.size());
         }
     }
 }

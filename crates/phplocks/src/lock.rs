@@ -7,7 +7,7 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::locks::{Kind, Lock};
-use swoole_rs_memory::members::pool;
+use swoole_rs_corebase::memory::members::pool;
 use swoole_rs_phpstubs::lock;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Minit,

@@ -4,9 +4,9 @@
 //! it, so this archive, which has them all, registers them before corebase's body
 //! runs (`swoole_rs_corebase::native`). src/fatal.c holds what stays C.
 use std::ffi::{c_char, c_int};
+use swoole_rs_corebase::memory::members::pool;
 use swoole_rs_corebase::native::{self, LoggerOp, NativeHost};
 use swoole_rs_corebase::{Switch, built_with};
-use swoole_rs_memory::members::pool;
 
 // src/fatal.c.
 unsafe extern "C" {
@@ -18,7 +18,6 @@ unsafe extern "C" {
 pub(crate) extern "C-unwind" fn swoole_init() {
     native::set_native_host(NativeHost {
         init,
-        delete_pool: pool::delete,
         logger: swoole_rs_process::methods::logger_op,
         signal_clear: swoole_rs_reactor::signal_upstream::swoole_signal_clear,
         timer_free: || swoole_rs_timer::swoole_timer_free(),

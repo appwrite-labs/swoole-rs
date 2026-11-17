@@ -276,7 +276,7 @@
         "M00"
       ],
       "owned_paths": [
-        "crates/memory/",
+        "crates/corebase/src/memory/",
         "native/memory/",
         "tests/modules/memory/"
       ],

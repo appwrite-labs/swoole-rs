@@ -25,6 +25,11 @@ pub mod lent;
 mod lifecycle;
 pub mod locks;
 pub mod log;
+pub mod memory;
+
+#[cfg(test)]
+#[path = "../../../tests/modules/corebase/allocation.rs"]
+mod test_allocator;
 
 // crates/framing's return codes; it can't name these, since corebase depends on it.
 use swoole_rs_framing::recv::Status;

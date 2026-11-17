@@ -1,7 +1,7 @@
 //! `GlobalMemory`'s pages: a bump allocator over anonymous mappings, shared with
 //! forked processes or (as `sw_malloc`'s memory would be) copied by a fork, unmapped
 //! with the pool.
-use crate::members::Shm;
+use crate::memory::members::Shm;
 use std::ffi::c_void;
 use std::ptr;
 
@@ -110,5 +110,5 @@ impl Drop for Global {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/modules/memory/global.rs"]
+#[path = "../../../../tests/modules/memory/global.rs"]
 mod tests;

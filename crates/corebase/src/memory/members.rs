@@ -11,16 +11,16 @@
 //! Each `// assert(...)` comment is the upstream assertion the `assert!` under it
 //! carries.
 
-use crate::global::{self, Global};
-use crate::table::{Handle, Table};
+use crate::log::{self, set_last_error};
+use crate::memory::global::{self, Global};
+use crate::memory::table::{Handle, Table};
+use crate::sys;
 use core::cell::Cell;
 use core::marker::PhantomData;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
-use swoole_rs_corebase::log::{self, set_last_error};
-use swoole_rs_corebase::sys;
 
 const INVALID: i32 = -1;
 const NO_MEMORY: i32 = -2;
@@ -43,8 +43,7 @@ pub struct GlobalImpl {
 impl GlobalImpl {
     /// `new GlobalMemoryImpl(size, shared)`, with its first page.
     fn new(size: u32, shared: bool, inherited: *mut Self) -> Result<*mut Self, i32> {
-        let page =
-            global::page_size(size, swoole_rs_corebase::swr_v1_core_pagesize()).ok_or(INVALID)?;
+        let page = global::page_size(size, crate::swr_v1_core_pagesize()).ok_or(INVALID)?;
         let mut pages = Global::new(page, shared);
         if !pages.add_page() {
             return Err(NO_MEMORY);
@@ -428,9 +427,9 @@ pub mod pool {
     /// `swoole_init`'s pool. Where upstream's constructor throws, the process aborts. A
     /// pool that is already there stays.
     pub fn init() {
-        let page = swoole_rs_corebase::constants::SW_GLOBAL_MEMORY_PAGESIZE;
+        let page = crate::constants::SW_GLOBAL_MEMORY_PAGESIZE;
         let Ok(fresh) = GlobalMemory::new(page, true) else {
-            swoole_rs_corebase::fatal("the global memory pool can't be created");
+            crate::fatal("the global memory pool can't be created");
         };
         let pool = fresh.pool.swap(ptr::null_mut(), SeqCst);
         let installed = POOL
@@ -450,11 +449,11 @@ pub mod pool {
     /// Without futex, waiters register in a Rust registry in shared memory, from the
     /// pool `swoole_init` just made: a fatal error when it can't be had.
     pub fn wait_registry_init() {
-        let count = swoole_rs_corebase::utilities::swr_v1_utils_wait_registry_size().div_ceil(8);
+        let count = crate::utilities::swr_v1_utils_wait_registry_size().div_ceil(8);
         let adopted = words::<AtomicU64>(count)
-            .is_some_and(swoole_rs_corebase::utilities::swr_v1_utils_wait_registry_init);
+            .is_some_and(crate::utilities::swr_v1_utils_wait_registry_init);
         if !adopted {
-            swoole_rs_corebase::fatal("failed to allocate atomic wait registry");
+            crate::fatal("failed to allocate atomic wait registry");
         }
     }
 
@@ -464,7 +463,7 @@ pub mod pool {
     #[must_use]
     pub fn alloc(size: u32) -> *mut c_void {
         POOL.alloc(size)
-            .unwrap_or_else(|_| swoole_rs_corebase::fatal("no memory pool to allocate from"))
+            .unwrap_or_else(|_| crate::fatal("no memory pool to allocate from"))
     }
 
     /// `sw_mem_pool()->get_memory_size()`, or 0 before `swoole_init`.
@@ -479,14 +478,14 @@ pub mod pool {
     impl Word for AtomicU32 {}
     impl Word for AtomicI64 {}
     impl Word for AtomicU64 {}
-    impl Word for swoole_rs_corebase::locks::SharedMutex {}
+    impl Word for crate::locks::SharedMutex {}
     impl<T> Word for MaybeUninit<T> {}
     mod sealed {
         pub trait Sealed {}
         impl Sealed for std::sync::atomic::AtomicU32 {}
         impl Sealed for std::sync::atomic::AtomicI64 {}
         impl Sealed for std::sync::atomic::AtomicU64 {}
-        impl Sealed for swoole_rs_corebase::locks::SharedMutex {}
+        impl Sealed for crate::locks::SharedMutex {}
         impl<T> Sealed for std::mem::MaybeUninit<T> {}
     }
 
@@ -536,7 +535,7 @@ fn table_warning(message: &[u8]) {
 fn php_hash(key: &[u8], compared: usize) -> u64 {
     let key = key.get(..compared).unwrap_or(key);
     // `char`'s signedness, which the hash promotes, as `swoole_hash_php` passes it.
-    swoole_rs_corebase::utilities::swoole_hash(key, 0, std::ffi::c_char::MIN != 0)
+    crate::utilities::swoole_hash(key, 0, std::ffi::c_char::MIN != 0)
 }
 
 /// `Table::create()`: lays the table out in a fresh shared arena.
@@ -571,7 +570,7 @@ impl SharedTable {
     /// header comes from the global memory pool, which keeps it for the process's life,
     /// so forked workers share it.
     #[must_use]
-    pub fn make(rows: u32, conflict: f32, hash: crate::table::Hash) -> Option<Self> {
+    pub fn make(rows: u32, conflict: f32, hash: crate::memory::table::Hash) -> Option<Self> {
         let [slot] = pool::words::<std::mem::MaybeUninit<Table>>(1)? else {
             return None;
         };
@@ -617,5 +616,5 @@ impl Drop for SharedTable {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/modules/memory/members.rs"]
+#[path = "../../../../tests/modules/memory/members.rs"]
 mod tests;

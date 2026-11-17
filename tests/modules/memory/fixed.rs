@@ -1,5 +1,5 @@
 use super::*;
-use swoole_rs_corebase::CCast;
+use crate::CCast;
 
 // `FixedPool::debug`'s walk, which only the ported `FixedPool` (members.rs) prints.
 

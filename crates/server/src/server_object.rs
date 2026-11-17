@@ -23,7 +23,7 @@ fn swr_v1_server_new(mode: c_int) -> ServerObject {
         Some(crate::reactor_ops::STD),
     );
     tables.set_max_connection(swoole_rs_corebase::max_sockets().min(100_000));
-    config.gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerShared>());
+    config.gs = swoole_rs_corebase::memory::members::Shm::calloc(1, size_of::<ServerShared>());
     let gs = config.gs.as_ptr();
     if gs.is_null() {
         log::sys_warning(

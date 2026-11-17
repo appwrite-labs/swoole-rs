@@ -245,7 +245,7 @@ impl Parser<'_> {
     /// Any value, nested without recursion.
     fn value(&mut self) -> Parsed<()> {
         // Each open container: whether it is an object.
-        let mut open = swoole_rs_memory::flat::BitSet::new();
+        let mut open = swoole_rs_corebase::memory::flat::BitSet::new();
         loop {
             self.space();
             match self.peek().ok_or(())? {

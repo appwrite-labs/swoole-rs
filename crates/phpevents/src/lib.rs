@@ -18,7 +18,7 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::{EventType, FdType};
-use swoole_rs_memory::flat::Table;
+use swoole_rs_corebase::memory::flat::Table;
 use swoole_rs_phpstubs::event;
 use swoole_rs_phpswoole::reactor::{self, PhpFdHandler};
 use swoole_rs_reactor::Events;

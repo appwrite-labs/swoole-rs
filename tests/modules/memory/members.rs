@@ -1,11 +1,11 @@
 use super::*;
-use crate::fixed::tests::{DebugCursor, debug_step};
-use crate::fixed::{self, Fixed, Layout};
+use crate::memory::fixed::tests::{DebugCursor, debug_step};
+use crate::memory::fixed::{self, Fixed, Layout};
 
 /// `SW_ERROR_MALLOC_FAIL`.
 const MALLOC_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as c_int;
-use swoole_rs_corebase::log::last_error;
-use swoole_rs_corebase::sys::malloc;
+use crate::log::last_error;
+use crate::sys::malloc;
 
 // `swoole::FixedPool`, as upstream's fixed_pool TESTs use it: nothing else constructs a
 // pool over an arena of its own (the table lays its collision pool out in its own).
@@ -123,14 +123,12 @@ impl FixedPool {
     /// `void FixedPool::debug(int max_lines) const`: the slices on stdout, through C stdio.
     fn debug(&self, max_lines: c_int) {
         let mut cursor = DebugCursor::default();
-        swoole_rs_corebase::sys::print(
+        crate::sys::print(
             b"===============================debug=================================\n",
         );
         while let Some(record) = debug_step(self.header(), &mut cursor, max_lines) {
             if record.self_link {
-                swoole_rs_corebase::sys::print(
-                    b"-------------------@@@@@@@@@@@@@@@@@@@@@@----------------\n",
-                );
+                crate::sys::print(b"-------------------@@@@@@@@@@@@@@@@@@@@@@----------------\n");
             }
             // SAFETY: the arguments match the format.
             unsafe {
@@ -283,7 +281,7 @@ fn a_fixed_pool_refuses_a_pointer_inside_a_slice() {
 #[test]
 #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn words_stay_mapped_after_the_pool_is_deleted() {
-    swoole_rs_corebase::swr_v1_core_set_pagesize(4096);
+    crate::swr_v1_core_set_pagesize(4096);
     // Twice: each kept pool stays reachable, so LeakSanitizer reports neither.
     for _ in 0..2 {
         pool::init();
@@ -296,7 +294,7 @@ fn words_stay_mapped_after_the_pool_is_deleted() {
 
 #[test]
 fn global_memory_bump_allocates_zeroed_blocks_within_a_page() {
-    swoole_rs_corebase::swr_v1_core_set_pagesize(4096);
+    crate::swr_v1_core_set_pagesize(4096);
     let pool = GlobalMemory::new(4096, false).unwrap();
     assert!(!pool.alloc(100).unwrap().is_null());
     assert_eq!(pool.capacity(), 4096 - 112);
@@ -310,7 +308,7 @@ fn global_memory_bump_allocates_zeroed_blocks_within_a_page() {
 #[test]
 #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn a_forked_process_starts_its_own_shared_pool_and_keeps_the_inherited_one() {
-    swoole_rs_corebase::swr_v1_core_set_pagesize(4096);
+    crate::swr_v1_core_set_pagesize(4096);
     for shared in [false, true] {
         let pool = GlobalMemory::new(4096, shared).unwrap();
         let parent = pool.pool.load(Ordering::Relaxed);
@@ -335,7 +333,7 @@ fn a_forked_process_starts_its_own_shared_pool_and_keeps_the_inherited_one() {
 #[test]
 #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
 fn threads_racing_to_replace_a_forked_pool_all_get_the_one_published() {
-    swoole_rs_corebase::swr_v1_core_set_pagesize(4096);
+    crate::swr_v1_core_set_pagesize(4096);
     for _ in 0..20 {
         let pool = GlobalMemory::new(4096, true).unwrap();
         let parent = pool.pool.load(Ordering::Relaxed);
@@ -396,7 +394,7 @@ fn fixed_pool_alloc() {
 /// written to it.
 #[test]
 fn global_memory_alloc() {
-    swoole_rs_corebase::swr_v1_core_set_pagesize(4096);
+    crate::swr_v1_core_set_pagesize(4096);
     let pool = GlobalMemory::new(2 * 1024 * 1024, false).unwrap();
     let alloc = |pool: &GlobalMemory, size| pool.alloc(size).unwrap().cast::<u8>();
     let strcpy = |block: *mut u8, text: &std::ffi::CStr| unsafe {

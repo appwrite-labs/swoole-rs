@@ -30,7 +30,6 @@ swoole-rs-crc32 = { path = "../crc32" }
 swoole-rs-process = { path = "../process" }
 swoole-rs-error = { path = "../error" }
 swoole-rs-framing = { path = "../framing" }
-swoole-rs-memory = { path = "../memory" }
 swoole-rs-http = { path = "../http" }
 swoole-rs-http-ffi = { path = "../http-ffi" }
 swoole-rs-bus = { path = "../bus" }

@@ -16,8 +16,10 @@
 //! Row locks are upstream's spin locks, with its recovery from a dead owner
 //! (`kill(pid, 0)` fails with `ESRCH`) and from an owner that holds a lock for
 //! more than two seconds.
-use crate::fixed::{self, Fixed, HEADER, Layout, Slice};
-use crate::members::Shm;
+use crate::CCast;
+use crate::locks::SharedMutex;
+use crate::memory::fixed::{self, Fixed, HEADER, Layout, Slice};
+use crate::memory::members::Shm;
 use std::cell::Cell;
 use std::ffi::c_int;
 use std::mem::{MaybeUninit, offset_of, size_of};
@@ -26,8 +28,6 @@ use std::sync::atomic::{
 };
 use std::time::Instant;
 use std::{ptr, slice};
-use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::locks::SharedMutex;
 
 /// `TableColumn::TYPE_INT`, `TYPE_FLOAT`, `TYPE_STRING`: [`ColumnType`]'s codes.
 pub const TYPE_INT: u32 = 1;
@@ -209,7 +209,7 @@ impl Live {
             }
             let owner = self.owner().load(Ordering::Relaxed);
             // Signal 0 only checks that `owner` exists.
-            if swoole_rs_corebase::sys::kill(owner, 0)
+            if crate::sys::kill(owner, 0)
                 .is_err_and(|error| error.raw_os_error() == Some(libc::ESRCH))
             {
                 word.store(1, Ordering::Relaxed);
@@ -229,7 +229,7 @@ impl Live {
             }
             std::thread::yield_now();
         }
-        let pid = swoole_rs_corebase::sys::getpid();
+        let pid = crate::sys::getpid();
         self.owner().store(pid, Ordering::Relaxed);
     }
 
@@ -323,7 +323,7 @@ struct Plan {
 
 /// Whether to spin before yielding (`SW_CPU_NUM > 1`, `SwooleG.cpu_num`).
 fn multicore() -> bool {
-    swoole_rs_corebase::swr_v1_core_cpu_num() > 1
+    crate::swr_v1_core_cpu_num() > 1
 }
 
 /// `SW_SPINLOCK_LOOP_N` rounds of doubling pauses, trying after each.
@@ -1182,5 +1182,5 @@ impl Current {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/modules/memory/table.rs"]
+#[path = "../../../../tests/modules/memory/table.rs"]
 mod tests;

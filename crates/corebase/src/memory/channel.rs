@@ -1,9 +1,9 @@
-use crate::members::Shm;
+use crate::CCast;
+use crate::locks::SharedMutex;
+use crate::memory::members::Shm;
+use crate::sys;
 use std::cell::Cell;
 use std::ffi::c_int;
-use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::locks::SharedMutex;
-use swoole_rs_corebase::sys;
 
 /// Layout invariant: `mem` holds `size + maxlen + 4` bytes (see
 /// `swr_v1_memory_channel_bytes`) outside the header, which only the holder of the
@@ -452,7 +452,7 @@ impl Record {
             c.flags,
             c.maxlen,
         );
-        swoole_rs_corebase::sys::print(text.as_bytes());
+        crate::sys::print(text.as_bytes());
     }
 }
 
@@ -475,5 +475,5 @@ pub fn swr_v1_memory_channel_full(state: &CapacityState) -> bool {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/modules/memory/channel.rs"]
+#[path = "../../../../tests/modules/memory/channel.rs"]
 mod tests;

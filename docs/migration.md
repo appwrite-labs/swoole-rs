@@ -72,7 +72,7 @@ job fails if one rises more than 2% (noise) above its record.
 Fast code is designed to be fast; it doesn't patch a slow design afterwards.
 
 - **Flat arrays, not hash tables.** Key state by a small dense integer (an fd, a
-  slot, a worker id) in `swoole_rs_memory::flat::Table`. A reference to another
+  slot, a worker id) in `swoole_rs_corebase::memory::flat::Table`. A reference to another
   record is an index into its table, not a pointer, and the most used facts about
   it can ride in the index's upper bits so the common check never loads the record.
 - **No caches.** A cache hides a slow path; make the path fast instead. The ones
@@ -82,7 +82,7 @@ Fast code is designed to be fast; it doesn't patch a slow design afterwards.
   per field, all indexed by the same key, with hot fields apart from cold ones.
 - **Inline storage, not small heap lists.** A list with a known small bound lives
   in a fixed array with a length.
-- **Bitsets, not arrays of bools** (`swoole_rs_memory::flat::BitSet`).
+- **Bitsets, not arrays of bools** (`swoole_rs_corebase::memory::flat::BitSet`).
 
 `clippy.toml`'s `disallowed-types` rejects std's maps, sets, `LinkedList` and
 `VecDeque`. Crates that already use them carry one crate-level `expect` until

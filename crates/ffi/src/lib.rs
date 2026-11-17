@@ -24,7 +24,7 @@ pub use swoole_rs_timer::*;
 
 pub use swoole_rs_server::*;
 
-pub use swoole_rs_memory::*;
+pub use swoole_rs_corebase::memory::*;
 
 pub use swoole_rs_http::*;
 pub use swoole_rs_http_ffi::*;
