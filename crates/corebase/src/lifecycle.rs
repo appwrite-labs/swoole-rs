@@ -144,11 +144,7 @@ pub fn swr_v1_core_swoole_init() {
 }
 
 /// `void swoole_thread_init(bool main_thread)`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z18swoole_thread_initb")
-)]
-pub extern "C-unwind" fn swoole_thread_init(main_thread: bool) {
+pub fn swoole_thread_init(main_thread: bool) {
     if native::host().is_some() && with(|thread| thread.buffer_stack.get().is_null()) {
         let mut fresh = CppString::EMPTY;
         fresh.alloc(SW_STACK_BUFFER_SIZE as usize, None);
@@ -180,12 +176,8 @@ pub fn swoole_thread_clean(_main_thread: bool) {
 }
 
 /// `bool swoole_is_main_thread()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z21swoole_is_main_threadv")
-)]
 #[must_use]
-pub extern "C" fn swoole_is_main_thread() -> bool {
+pub fn swoole_is_main_thread() -> bool {
     with(|thread| thread.main_thread.get())
 }
 

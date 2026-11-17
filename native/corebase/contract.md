@@ -61,17 +61,18 @@ string needing an appended slash are undefined upstream; Rust rejects them.
 
 ## Lifecycles (`lifecycle.rs`)
 
-Rust defines `swoole_thread_init`, `swoole_is_main_thread`, `swoole_clean` and
-`swoole_fork` under their C++ symbols, `swoole_thread_clean` (called by path), `swoole_init`'s body
-(`swr_v1_core_swoole_init`, which crates/ffi calls by path) and `swoole_fork_exec` (`fork_exec`, which crates/server's manager calls).
+Rust defines `swoole_clean` and `swoole_fork` under their C++ symbols. Thread
+initialization, cleanup, main-thread queries and log-level access use Rust paths,
+as do `swoole_init`'s body (`swr_v1_core_swoole_init`, called by crates/ffi) and
+`swoole_fork_exec` (`fork_exec`, called by crates/server's manager).
 `swoole_init` itself is crates/ffi's (`src/init.rs`). It registers the native
-startup leaves and timer cleanup in `native::NativeHost` before running the body.
-Memory, logger, signal and event lifecycles are direct calls inside corebase;
+startup leaves in `native::NativeHost` before running the body.
+Memory, logger, signal, timer and event lifecycles are direct calls inside corebase;
 their order is unchanged. Before host registration the lifecycle sequences skip
 those leaves and `swoole_fork` returns -1. Coroutine event initialization and waiting
-also call `corebase::reactor` directly. Reactor sleep, timer selection and TLS socket
-release remain registered operations of hooks, timer and TLS, as do the external
-reactor initializer and writer callbacks.
+also call `corebase::reactor` directly, and the reactor selects timers directly.
+Reactor sleep and TLS socket release remain registered operations of hooks and TLS,
+as do the external reactor initializer and writer callbacks.
 
 - Init: the record's defaults (`swr_v1_core_init`, below), `SwooleG = {}`, libc's
   allocator, the native leaves in upstream's order (`sw_error`, stdout, the

@@ -27,6 +27,7 @@ use swoole_rs_corebase::log::last_error;
 use swoole_rs_corebase::net_types::SocketAddress as Address;
 use swoole_rs_corebase::process::task_file::Packed;
 use swoole_rs_corebase::process::worker_record::Worker;
+pub(super) use swoole_rs_corebase::utilities::swoole_set_log_level;
 use swoole_rs_corebase::{DataHead, ServerEvent};
 use swoole_rs_server::callbacks::{Callback, CallbackKind as Slot};
 use swoole_rs_server::reactor_entry::RecvData;
@@ -100,12 +101,6 @@ pub(super) struct Protocol {
     on_package: Native,
     get_package_length: Native,
     pub(super) get_package_length_size: Native,
-}
-
-unsafe extern "C-unwind" {
-    #[link_name = "_Z20swoole_set_log_leveli"]
-    pub(super) fn swoole_set_log_level(level: c_int);
-
 }
 
 unsafe extern "C" {
@@ -313,8 +308,7 @@ fn block_all_signals() {
 }
 
 fn set_log_warning() {
-    // SAFETY: sets the global log level.
-    unsafe { swoole_set_log_level(SW_LOG_WARNING) };
+    swoole_set_log_level(SW_LOG_WARNING);
 }
 
 /// `fork()`: the child runs `child` and exits 0, as upstream's `if (pid == 0)` blocks do.

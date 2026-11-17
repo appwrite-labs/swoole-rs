@@ -203,8 +203,7 @@ pub(super) fn set_ssl_path(context: *const c_void, index: u32, file: *const c_ch
 }
 
 pub(super) fn log_level(level: c_int) {
-    // SAFETY: a plain call.
-    unsafe { swoole_set_log_level(level) };
+    swoole_set_log_level(level);
 }
 
 fn str_of<'a>(text: *const c_char) -> &'a str {
