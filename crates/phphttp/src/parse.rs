@@ -21,7 +21,7 @@ use swoole_rs_httpbindings::{
 };
 use swoole_rs_zend::{
     ArrayMut, Declared, Insertions, Interned, Minit, Owned, OwnedArray, Separated, Value, ZStr,
-    ZString,
+    ZString, bailout, contain_with,
 };
 
 /// A request's multipart parser and the upload it is writing.
@@ -46,7 +46,8 @@ struct Parts<'a, 'i> {
 unsafe extern "C" {
     /// `$track[var] = (string) val`, by PHP's rules for request variable
     /// names: it copies the name and the lent bytes, and registers nothing
-    /// without an array.
+    /// without an array. Its nesting warning runs the error handler, which may
+    /// bail out: call it inside `contain_with`.
     safe fn php_register_variable_safe(
         var: Text<'_>,
         val: In<'_, u8>,
@@ -412,29 +413,47 @@ pub(crate) fn request_path(request: &crate::state::Request) -> &[u8] {
 /// while PHP parses them, which may bail out.
 ///
 /// Invariant: a NUL-terminated string `estrndup` returned, which nothing else
-/// holds. Only [`Copied::of`] makes one, and the call it is moved into frees it.
+/// holds, or null, which both calls read as no text. Only [`Copied::of`] makes
+/// one, and the call it is moved into frees it.
 #[repr(transparent)]
 pub(crate) struct Copied(*mut c_char);
 
 impl Copied {
+    /// The bytes, or null once a bailout is pending: upstream never parsed on.
     pub(crate) fn of(bytes: &[u8]) -> Self {
-        Self(estrndup(bytes))
+        Self(if bailout::pending() {
+            std::ptr::null_mut()
+        } else {
+            estrndup(bytes)
+        })
     }
 }
 
+// Their warnings (`max_input_vars`, the nesting level) run the error handler,
+// which may bail out: each is called inside `contain_with`.
 unsafe extern "C" {
     /// `swoole_php_treat_data`: the pairs of the string, which it frees, into the
     /// array the zval holds, which it does not replace; false once it stopped at
     /// `max_input_vars`.
     safe fn swr_zend_http_treat_data(arg: c_int, text: Copied, array: &Value) -> bool;
     /// `sapi_module.treat_data(PARSE_STRING, text, array)`, which frees the string.
-    pub(crate) safe fn swr_zend_treat_string(text: Copied, array: &Value);
+    safe fn swr_zend_treat_string(text: Copied, array: &Value);
 }
 
-/// `swoole_php_treat_data(arg, text, array)`; nothing without the array.
+/// `sapi_module.treat_data(PARSE_STRING, text, array)`; a bailout is deferred.
+pub(crate) fn treat_string(text: Copied, array: &Value) {
+    bailout::defer(contain_with(|| swr_zend_treat_string(text, array)));
+}
+
+/// `swoole_php_treat_data(arg, text, array)`; nothing without the array, and a
+/// bailout is deferred.
 fn treat_data(arg: c_int, text: Copied, array: Option<&Value>) {
     let Some(array) = array else { return };
-    if !swr_zend_http_treat_data(arg, text, array) {
+    let mut within = true;
+    bailout::defer(contain_with(|| {
+        within = swr_zend_http_treat_data(arg, text, array);
+    }));
+    if !within {
         let limit = max_input_vars();
         log::warning(
             c"swoole_php_treat_data",
@@ -1151,9 +1170,13 @@ fn part_data_end(state: &mut State, upload: &mut Option<Upload>) {
         let data = state.parse.form_data.get_or_insert_with(Default::default);
         // `c_copy`'s name holds its NUL.
         let name = CStr::from_bytes_until_nul(&name).unwrap_or_default();
-        lend_in(data, |at, count| {
-            php_register_variable_safe(name.into(), at, count, post);
-        });
+        if !bailout::pending() {
+            bailout::defer(contain_with(|| {
+                lend_in(data, |at, count| {
+                    php_register_variable_safe(name.into(), at, count, post);
+                });
+            }));
+        }
         data.clear();
         return;
     }
