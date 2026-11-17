@@ -127,8 +127,14 @@ fn accept<'a>(
     }
     conn.active()
         .store(false, core::sync::atomic::Ordering::Relaxed);
-    conn.free_socket();
-    serv.state().tables_ref().clear_connection(fd);
+    // `*conn = {}` before `sock->free()`: the slot is zeroed, `closed` last with
+    // Release, before the close can hand the fd to another thread's accept.
+    conn.free_socket(|| {
+        conn.clear();
+        conn.set_server_fd(0);
+        conn.closed()
+            .store(0, core::sync::atomic::Ordering::Release);
+    });
     None
 }
 

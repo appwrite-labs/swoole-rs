@@ -516,10 +516,9 @@ pub(crate) fn close_connection(
     lower_max_fd(state, fd);
     conn.active().store(false, Relaxed);
     conn.clear_object();
-    // The slot's last write before close(fd): an accept that gets the fd back
-    // acquires it (OP_CONN_RESET) before reusing the slot.
-    conn.closed().store(1, Release);
-    conn.free_socket();
+    // The slot's last write, after the socket leaves it and before close(fd): an
+    // accept that gets the fd back acquires it before reusing the slot.
+    conn.free_socket(|| conn.closed().store(1, Release));
     true
 }
 

@@ -33,10 +33,10 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'target/tsan'
 SANITIZE = '-fsanitize=thread -fno-omit-frame-pointer'
 FAMILIES = ['swoole_thread', 'swoole_atomic', 'swoole_lock']
-# Reports outside upstream's run that main's run has. Lower it with each fix. 4 on CI once a thread-mode
-# worker record's copy and a new connection's publish stopped racing (#4286): the thread lock
-# tests' 3 wrong-thread unlocks, and TSan's "can't find longjmp buf".
-LIMIT = 4
+# Reports outside upstream's run that main's run has. Lower it with each fix. 0 since a thread lock's
+# mutex took any thread's unlock, a closed connection's slot was published after its socket left it,
+# and coroutines became TSan fibers again (#4706): any report fails the run.
+LIMIT = 0
 
 
 def sanitized(reports, name):
@@ -70,7 +70,11 @@ def main():
     host = next(line.split()[1] for line in subprocess.check_output(['rustc', '-vV'], text=True).splitlines()
                 if line.startswith('host:'))
     subprocess.run(['rustup', 'component', 'add', 'rust-src'], cwd=ROOT, check=True)
-    rust = {'RUSTC_BOOTSTRAP': '1', 'RUSTFLAGS': '-Zsanitizer=thread -Zexternal-clangrt=yes -Cforce-frame-pointers=yes'}
+    # cfg(tsan) gives each coroutine a TSan fiber of its own (crates/corebase/src/coroutine/context.rs):
+    # without it a coroutine's setjmp drops its thread's buffers, and the next bailout to one
+    # aborts with "can't find longjmp buf" (#3400).
+    rust = {'RUSTC_BOOTSTRAP': '1',
+            'RUSTFLAGS': '-Zsanitizer=thread -Zexternal-clangrt=yes -Cforce-frame-pointers=yes --cfg tsan'}
     # As `cargo --target`: build scripts and proc macros, which rustc loads, stay uninstrumented.
     build = {**compilers, **rust, 'CARGO_BUILD_TARGET': host, 'CARGO_UNSTABLE_BUILD_STD': 'std,panic_abort'}
     config = ['--php-config', str(php / 'bin/php-config'), '--configure=--enable-swoole-thread']
