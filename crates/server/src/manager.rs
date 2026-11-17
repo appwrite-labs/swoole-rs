@@ -9,6 +9,7 @@
 use core::cell::Cell;
 use core::ffi::c_int;
 use core::ops::Range;
+use swoole_rs_corebase::CellExt;
 
 #[cfg(feature = "upstream-symbols")]
 pub mod native;
@@ -73,13 +74,9 @@ impl Manager {
 
     /// The pids SIGALRM kills: none until shutdown arms it.
     fn kill_list(&self) -> Option<Vec<c_int>> {
-        // Taken and put back around the copy, before the handler sends any kill.
-        let pids = || {
-            let pids = self.kill_workers.take();
-            self.kill_workers.set(pids.clone());
-            pids
-        };
-        self.force_kill.get().then(pids)
+        self.force_kill
+            .get()
+            .then(|| self.kill_workers.with_taken(|pids| pids.clone()))
     }
 
     /// Takes the pending request: every worker's first, then the task workers'.

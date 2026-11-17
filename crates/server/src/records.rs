@@ -5,11 +5,11 @@ use core::sync::atomic::{
     AtomicBool, AtomicU32,
     Ordering::{Acquire, Relaxed},
 };
-use swoole_rs_corebase::WebSocketStatus;
 use swoole_rs_corebase::constants::SocketTypeCode;
 use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::process::worker_record::WorkerRecord;
+use swoole_rs_corebase::{CellExt, WebSocketStatus};
 
 use crate::reactor_ops::ThreadRecord;
 use crate::table::Table;
@@ -338,15 +338,15 @@ impl<'a> Connection<'a> {
         let Ok(fd) = usize::try_from(self.fd()) else {
             return;
         };
-        CLIENT_CERTS.with(|certs| {
-            let mut held = certs.take();
-            if held.len() <= fd {
-                held.resize_with(fd + 1, || None);
-            }
-            if let Some(slot) = held.get_mut(fd) {
-                *slot = Some((self.session_id(), cert.into()));
-            }
-            certs.set(held);
+        CLIENT_CERTS.with(|cell| {
+            cell.with_taken(|held| {
+                if held.len() <= fd {
+                    held.resize_with(fd + 1, || None);
+                }
+                if let Some(slot) = held.get_mut(fd) {
+                    *slot = Some((self.session_id(), cert.into()));
+                }
+            });
         });
     }
 
@@ -360,17 +360,15 @@ impl<'a> Connection<'a> {
     /// holds a certificate only when it was stored for this session.
     fn client_cert<R>(self, f: impl FnOnce(&mut ClientCert) -> Option<R>) -> Option<R> {
         let fd = usize::try_from(self.fd()).ok()?;
-        CLIENT_CERTS.with(|certs| {
-            let mut held = certs.take();
-            let found = held
-                .get_mut(fd)
-                .filter(|slot| {
-                    slot.as_ref()
-                        .is_some_and(|(session, _)| *session == self.session_id())
-                })
-                .and_then(f);
-            certs.set(held);
-            found
+        CLIENT_CERTS.with(|cell| {
+            cell.with_taken(|held| {
+                held.get_mut(fd)
+                    .filter(|slot| {
+                        slot.as_ref()
+                            .is_some_and(|(session, _)| *session == self.session_id())
+                    })
+                    .and_then(f)
+            })
         })
     }
     field!(server_fd, set_server_fd: c_int);
