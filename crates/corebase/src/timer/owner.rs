@@ -5,7 +5,7 @@
 use crate::CCast;
 use crate::reactor::{event_api, swr_v1_event_set_end_callback, swr_v1_event_set_exit_condition};
 use crate::timer::{
-    Status, Timer as Queue, TimerView, absolute_msec, swr_v1_timer_add_delay, swr_v1_timer_backend,
+    Status, Timer as Queue, TimerView, absolute_msec, swr_v1_timer_backend,
     swr_v1_timer_delay_deadline, swr_v1_timer_rearm_after_add, swr_v1_timer_relative_msec,
     swr_v1_timer_system_set,
 };
@@ -609,7 +609,6 @@ impl Owner {
             warning(c"add", format_args!("msec value[{msec}] is invalid"));
             return None;
         }
-        let msec = swr_v1_timer_add_delay(msec, persistent);
         let now = self.relative_msec();
         // The queue boxes the node only once it has room for it, so a refused node
         // drops here with the closure.
