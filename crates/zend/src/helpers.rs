@@ -20,9 +20,10 @@ unsafe extern "C" {
     /// the lent bytes (an `IoSlice` is an iovec), which it writes the two numbers
     /// from; errors are off, so it raises nothing.
     safe fn swr_bytes_numeric(text: IoSlice<'_>, lval: &mut i64, dval: &mut f64) -> u8;
-    /// `php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE | REPORT_ERRORS)`:
-    /// it reads the string and keeps none of it.
-    safe fn swr_zend_mkdir_recursive(path: CText<'_>) -> bool;
+    /// `php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE | REPORT_ERRORS)`
+    /// into `made`, inside `zend_try` (nonzero for a bailout): it reads the string
+    /// and keeps none of it.
+    safe fn swr_zend_try_mkdir_recursive(path: CText<'_>, made: &mut bool) -> std::ffi::c_int;
 }
 
 mod sealed {
@@ -75,9 +76,18 @@ pub fn is_main_thread() -> bool {
 
 /// `php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE | REPORT_ERRORS)`:
 /// whether `path` was made, with its parents; a failure is reported as a warning.
+/// The warning's user error handler, or a user stream wrapper's `mkdir()`, runs
+/// PHP code: a bailout there is deferred, and reads as false.
 #[must_use]
 pub fn mkdir_recursive(path: &CStr) -> bool {
-    swr_zend_mkdir_recursive(CText::from(path))
+    let mut made = false;
+    match crate::bailout::trapped(swr_zend_try_mkdir_recursive(path.into(), &mut made)) {
+        Ok(()) => made,
+        Err(bailout) => {
+            bailout.defer();
+            false
+        }
+    }
 }
 
 /// `php_time`: PHP's clock, in seconds.
