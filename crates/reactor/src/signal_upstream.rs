@@ -180,9 +180,12 @@ mod descriptor {
         swoole_rs_process::signal_loop::destroyed(&OPS);
     }
 
-    /// The signalfd's exit condition, which the reactor calls with its event count.
+    /// The signalfd's exit condition, which the reactor calls with its event count: it
+    /// discounts the wrapper while there is one. A freed wrapper leaves the registry
+    /// (`OwnedSocket::into_box`), where upstream's stayed counted, so it no longer
+    /// needs discounting.
     fn exit_condition(event_num: &mut usize) -> bool {
-        swoole_rs_process::signal_loop::exit_condition(event_num)
+        socket().is_none() || swoole_rs_process::signal_loop::exit_condition(event_num)
     }
 
     /// The read handler, the exit condition and the destroy callback.
