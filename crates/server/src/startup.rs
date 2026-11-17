@@ -907,7 +907,10 @@ mod tests {
         store_listen_socket(live.server());
         let port = (&raw const *live.port()).addr();
         assert_eq!(conn.fd(), fd, "the slot's fd");
-        let held = conn.port().map_or(0, |held| held.raw().addr());
+        let held = live
+            .state()
+            .slot_port(conn)
+            .map_or(0, |held| held.raw().addr());
         assert_eq!(held, port, "the slot holds its port");
         assert_eq!(conn.socket_type(), 1, "TCP");
         assert_eq!(conn.info().kind, 1, "its address");

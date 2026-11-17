@@ -600,7 +600,7 @@ impl<'a> Server<'a> {
     pub fn server_socket(self, fd: c_long) -> Option<(c_int, c_int)> {
         let conn = self.state().connection(fd, Lookup::ByFd)?;
         let read = |s: &swoole_rs_corebase::reactor::SocketFields| (s.fd, s.socket_type);
-        match conn.port() {
+        match self.state().slot_port(conn) {
             Some(port) => port.with_socket(|s| s.read(read)),
             None => Some(conn.socket()?.read(read)),
         }
@@ -698,8 +698,7 @@ impl ServerState {
     /// `server_fd`.
     pub(crate) fn port_by_server_fd(&self, server_fd: c_int) -> Option<Port<'_>> {
         // A listening socket's record holds its port.
-        self.connection(c_long::from(server_fd), Lookup::ByFd)?
-            .port()
+        self.slot_port(self.connection(c_long::from(server_fd), Lookup::ByFd)?)
     }
 
     /// The server's port at `raw`, or `None` when `raw` is none of them: a listening

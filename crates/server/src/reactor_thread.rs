@@ -72,7 +72,7 @@ fn receive_packets(
         return false;
     };
     let kind = conn.socket_type();
-    let Some(port) = conn.port() else {
+    let Some(port) = state.slot_port(conn) else {
         return false;
     };
     let dtls = port.config().ssl && port.config().is_dtls();
