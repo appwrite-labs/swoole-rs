@@ -171,16 +171,18 @@ pub extern "C" fn php_swoole_process_signal_clean() {
     bailout::finish();
 }
 
-/// [`php_swoole_process_signal_clean`]'s body, which frees every callable and
-/// leaves a destructor's bailout pending. The table and the listener count are
-/// the main thread's, the only one [`signal`] registers for: another thread's
-/// request shutdown leaves both alone.
+/// [`php_swoole_process_signal_clean`]'s body, which empties the table, forgets the
+/// listeners and leaves a destructor's bailout pending. The callables are the main
+/// thread's, the only one [`signal`] registers for: a process forked from another
+/// PHP thread forgets them without freeing what that thread allocated.
 fn signal_clean() {
-    if !host::main_thread() {
-        return;
-    }
+    let owner = host::main_thread();
     for slot in &CALLABLES {
-        drop(slot.replace(None));
+        let callable = slot.replace(None);
+        if !owner {
+            // Left to the thread whose allocator made it, which this process lacks.
+            _ = std::mem::ManuallyDrop::new(callable);
+        }
     }
     swoole_rs_corebase::swr_v1_core_set_signal_listener_num(0);
 }
@@ -195,6 +197,11 @@ pub(crate) fn clean() {
 
 /// `php_swoole_process_rshutdown`.
 pub extern "C" fn php_swoole_process_rshutdown() {
-    clean();
+    if host::main_thread() {
+        clean();
+    } else {
+        // The signal table is the main thread's, which is still running.
+        host::reset_worker_type();
+    }
     bailout::finish();
 }
