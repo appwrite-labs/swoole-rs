@@ -243,7 +243,18 @@ impl Timer {
         if id <= 0 {
             return (Status::Invalid, none);
         }
-        let Some((index, mut view)) = self.find(id).filter(|(_, view)| !view.removed) else {
+        // HashMap::entry reserves for a missing key. Removal must not allocate,
+        // even when the index is full or empty.
+        if self.positions.len() == self.positions.capacity() && !self.positions.contains_key(&id) {
+            return (Status::NotFound, none);
+        }
+        let std::collections::hash_map::Entry::Occupied(entry) = self.positions.entry(id) else {
+            return (Status::NotFound, none);
+        };
+        let Some(index) = self.heap.position(*entry.get()) else {
+            return (Status::NotFound, none);
+        };
+        let Some(mut view) = self.heap.get(index).copied().filter(|view| !view.removed) else {
             return (Status::NotFound, none);
         };
         if !predicate(&view) {
@@ -253,9 +264,12 @@ impl Timer {
             view.removed = true;
             self.heap.update(index, view);
             (Status::Deferred, view)
+        } else if let Some(view) = self.heap.swap_remove(index) {
+            // The occupied entry removes the id without hashing it a second time.
+            entry.remove();
+            (Status::Release, view)
         } else {
-            self.detach(index)
-                .map_or((Status::NotFound, none), |entry| (Status::Release, entry))
+            (Status::NotFound, none)
         }
     }
 
@@ -838,10 +852,12 @@ mod tests {
         let mut queue = q.q();
         FAIL_AFTER.set(Some(0));
         let updated = queue.update(last, 0).status();
+        let missing = queue.remove(last + 1).0;
         let removed = queue.remove(1).0;
         let allocation_not_attempted = FAIL_AFTER.replace(None);
         drop(queue);
         assert_eq!(updated, Status::Ok);
+        assert_eq!(missing, Status::NotFound);
         assert_eq!(removed, Status::Release);
         assert_eq!(allocation_not_attempted, Some(0));
         q.invariant();

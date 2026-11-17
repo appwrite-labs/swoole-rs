@@ -317,16 +317,19 @@ extern "C" fn alarm(_signo: c_int) {
 /// operation pair is made with its value, and cleared before release can re-enter.
 struct Retained {
     value: std::cell::UnsafeCell<std::mem::MaybeUninit<[usize; 2]>>,
-    run: Cell<Option<fn(&Self)>>,
-    free: Cell<Option<fn(&Self)>>,
+    operations: Cell<Option<&'static Operations>>,
+}
+
+struct Operations {
+    run: fn(&Retained),
+    free: fn(&Retained),
 }
 
 impl Retained {
     const fn empty() -> Self {
         Self {
             value: std::cell::UnsafeCell::new(std::mem::MaybeUninit::uninit()),
-            run: Cell::new(None),
-            free: Cell::new(None),
+            operations: Cell::new(None),
         }
     }
 
@@ -353,25 +356,30 @@ impl Retained {
             );
         }
         assert!(
-            self.free.get().is_none(),
+            self.operations.get().is_none(),
             "a retained callback is installed only into an empty node"
         );
         // SAFETY: the empty slot fits C with its alignment, checked above.
         unsafe { self.value.get().cast::<C>().write(callback) };
-        self.run.set(Some(run::<C>));
-        self.free.set(Some(free::<C>));
+        self.operations.set(Some(
+            const {
+                &Operations {
+                    run: run::<C>,
+                    free: free::<C>,
+                }
+            },
+        ));
     }
 
     fn run(&self) {
-        if let Some(run) = self.run.get() {
-            run(self);
+        if let Some(operations) = self.operations.get() {
+            (operations.run)(self);
         }
     }
 
     fn release(&self) {
-        self.run.set(None);
-        if let Some(free) = self.free.take() {
-            free(self);
+        if let Some(operations) = self.operations.take() {
+            (operations.free)(self);
         }
     }
 }
