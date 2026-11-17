@@ -30,8 +30,8 @@ ASCII input: the pinned body shifts negative promoted `char`s. It runs in
 bodies and the `swr_v1_utils_wait`/`_wakeup` exports. The oracle crate compiles the same
 bodies (`swoole_rs_oracle::locks::wait`/`wake`), so its checks are Rust tests in
 `crates/corebase/src/utilities/upstream.rs` (Linux, in `corebase-unit`) over
-`sw_atomic_futex_wait`/`_wakeup`, which called the exports and now call the locks module
-themselves:
+`futex_wait` and `futex_wakeup`. The tests convert their typed results to the pinned
+integer results for comparison.
 
 | `wait.cc` | Rust test |
 | --- | --- |

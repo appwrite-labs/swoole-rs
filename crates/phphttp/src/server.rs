@@ -7,7 +7,7 @@
 use crate::{
     context::{self, Ctx, Hold},
     host,
-    parse::{self, Key, add_field, add_protocol, add_server, key, parse_request, request_times},
+    parse::{self, Key, add_field, add_server, key, parse_request},
     state::State,
     websocket,
 };
@@ -32,7 +32,7 @@ use swoole_rs_phpserver::{
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_server::{Connection, DispatchMode, Mode, view};
 use swoole_rs_zend::sys::{ZEND_ACC_NOT_SERIALIZABLE, zend_long};
-use swoole_rs_zend::{Class, Owned, ZStr, ZString, bailout};
+use swoole_rs_zend::{Class, Insertions, Owned, ZStr, ZString, bailout};
 
 unsafe extern "C" {
     /// `SG(rfc1867_uploaded_files)`, made when the request has none: SAPI
@@ -167,7 +167,7 @@ fn addresses(
     remote_port: i64,
     loopback: c_int,
     cache: Option<usize>,
-    master_time: Option<zend_long>,
+    rest: impl FnOnce(&mut Insertions<'_>),
 ) {
     let names = if loopback != 0 {
         let name = if loopback == 6 {
@@ -190,9 +190,7 @@ fn addresses(
             add_field(server, Key::ServerAddr, Owned::string(local));
             add_field(server, Key::RemoteAddr, Owned::string(remote));
         }
-        if let Some(time) = master_time {
-            add_field(server, Key::MasterTime, Owned::long(time));
-        }
+        rest(server);
     });
 }
 
@@ -491,7 +489,7 @@ fn handle(
             facts.remote_port,
             facts.loopback,
             cache,
-            Some(master_time),
+            |server| add_field(server, Key::MasterTime, Owned::long(master_time)),
         );
     } else {
         add_server(state, Key::MasterTime, Owned::long(master_time));
@@ -598,6 +596,10 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
     }
     let state = ctx.state();
     let cache = facts.cache.filter(|_| state.keepalive);
+    let now = swoole_rs_corebase::time_now();
+    let float = swoole_rs_corebase::microtime();
+    let master_time = facts.last_recv_time.c_cast::<zend_long>();
+    // One edit of `$request->server` for the request's keys, in upstream's order.
     addresses(
         server,
         conn,
@@ -607,12 +609,19 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         facts.remote_port,
         facts.loopback,
         cache,
-        None,
+        |server| {
+            add_field(server, Key::RequestTime, Owned::long(now));
+            add_field(server, Key::RequestTimeFloat, Owned::double(float));
+            add_field(server, Key::MasterTime, Owned::long(master_time));
+            if let Some(protocol) = key(Key::Http2) {
+                add_field(
+                    server,
+                    Key::ServerProtocol,
+                    Owned::string(protocol.to_owned()),
+                );
+            }
+        },
     );
-    request_times(state);
-    let master_time = Owned::long(facts.last_recv_time.c_cast::<zend_long>());
-    add_server(state, Key::MasterTime, master_time);
-    add_protocol(state, Key::Http2);
     state.callback = php_swoole_server_get_callback(server, facts.server_fd, PortCallback::Request);
     if state.before_request {
         if facts.unavailable {

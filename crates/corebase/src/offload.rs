@@ -169,7 +169,7 @@ pub struct AsyncOps {
     pub(crate) current: extern "C" fn() -> *mut c_void,
     /// `async::dispatch`: a pool-owned copy of the event, live until its completion
     /// returns, or null if refused.
-    pub(crate) dispatch: extern "C" fn(&AsyncEvent) -> *mut AsyncEvent,
+    pub(crate) dispatch: fn(&AsyncEvent) -> *mut AsyncEvent,
     /// `co->yield()` of the current coroutine, its waker stored first.
     pub(crate) park: fn(&WakerSlot),
     /// `co->yield_ex(timeout)` of the current coroutine, its waker stored first:
@@ -332,7 +332,7 @@ mod tests {
     extern "C" fn current() -> *mut c_void {
         core::ptr::dangling_mut()
     }
-    extern "C" fn dispatch(event: &AsyncEvent) -> *mut AsyncEvent {
+    fn dispatch(event: &AsyncEvent) -> *mut AsyncEvent {
         if REFUSE.get() {
             return core::ptr::null_mut();
         }

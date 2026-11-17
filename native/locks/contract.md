@@ -66,8 +66,8 @@ compare-set = 4; `expected` is the last argument. Loads/stores are relaxed
 wraps at `u32`/`i64` width. CAS returns 0/1 and leaves the word unchanged on
 failure. Callers keep the storage live and exclude concurrent destruction.
 
-`wait` / `wakeup` (Rust functions; crates/corebase/src/utilities' `sw_atomic_futex_wait` /
-`sw_atomic_futex_wakeup` call them) exist on Linux only and implement
+`wait` / `wakeup` (Rust functions; crates/corebase/src/utilities' `futex_wait` /
+`futex_wakeup` call them) exist on Linux only and implement
 the `HAVE_FUTEX` path: CAS token consumption, a single futex syscall (no hidden
 EINTR/spurious-wake retry), timeout conversion and result/errno. NaN/out-of-range
 timeout casts are undefined input. PHP Atomic and its Thread counterpart call

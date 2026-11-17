@@ -1,6 +1,6 @@
 //! Shared HTTP/SOCKS proxy values and packet storage. Native objects only lend
 //! references to these stable slots.
-use crate::StringSlot;
+use crate::{BoxCellExt, CellExt, StringSlot};
 use std::cell::Cell;
 
 #[derive(Clone, Copy, Default)]
@@ -53,11 +53,7 @@ impl ProxyState {
     }
     /// `read` over the slot at `index`, none past the four.
     fn with_slot<R>(&self, index: usize, read: impl FnOnce(&mut StringSlot) -> R) -> Option<R> {
-        let cell = self.strings.get(index)?;
-        let mut slot = cell.take();
-        let result = read(&mut slot);
-        cell.set(slot);
-        Some(result)
+        Some(self.strings.get(index)?.with_taken(read))
     }
     /// A copy of the string at `index`, or empty past the four.
     pub fn string(&self, index: usize) -> Vec<u8> {
@@ -77,10 +73,7 @@ impl ProxyState {
     /// `pack` over the SOCKS5 packet; none for an HTTP proxy, or while `pack` of an
     /// outer call has it.
     pub fn with_packet<R>(&self, pack: impl FnOnce(&mut [u8; 512]) -> R) -> Option<R> {
-        let mut packet = self.packet.take()?;
-        let result = pack(&mut packet);
-        self.packet.set(Some(packet));
-        Some(result)
+        self.packet.with_box(pack)
     }
     /// Configures a fresh proxy after its protocol's credential check: the host,
     /// then the port (and for SOCKS5 the tunnel and socket type), then the
