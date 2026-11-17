@@ -319,9 +319,8 @@ impl Bus {
     }
 
     /// Gives back what [`Bus::take_packet`] took: the buffer, unless the bus freed or
-    /// set another meanwhile, and a packet whose last chunk hasn't arrived, unless
-    /// the bus began it again. A whole packet, which [`Bus::pop`] would free next, is
-    /// freed here, as is anything the bus no longer names.
+    /// set another meanwhile, and a packet the callback left, unless the bus began
+    /// its message again; [`Bus::pop`] frees a whole one, as upstream.
     #[inline]
     pub fn restore(&self, packet: Packet) {
         match packet.held {
@@ -348,7 +347,7 @@ impl Bus {
     /// [`Bus::restore`] of a chunked packet.
     #[inline(never)]
     fn restore_chunked(&self, head: &BusHead, packet: OwnedString) {
-        if head.flags & END == 0 && !packet.as_ptr().is_null() {
+        if !packet.as_ptr().is_null() {
             self.packets.with_taken(|slot| {
                 slot.get_or_insert_with(Box::default)
                     .entry(head.msg_id)
