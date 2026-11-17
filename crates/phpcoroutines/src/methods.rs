@@ -143,7 +143,7 @@ fn set_yielded(cid: c_long, yielded: bool) -> bool {
 fn yield_(call: &Call) {
     let co = host::current_safe();
     set_yielded(host::cid(co), true);
-    swoole_rs_corebase::coroutine::yield_with_cancel(co.raw(), move |_| cancel_yield(co));
+    swoole_rs_corebase::coroutine::yield_with_cancel(co.raw(), move || cancel_yield(co));
     if host::is_canceled(co) {
         host::set_last_error(SW_ERROR_CO_CANCELED);
         call.set_bool(false);

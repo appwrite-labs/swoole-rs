@@ -169,7 +169,7 @@ mod native {
         };
         swoole_rs_corebase::coroutine::yield_with_cancel_armed(
             co,
-            move |_| socket.cancel(event),
+            move || socket.cancel(event),
             |waker| socket.with_state(|state| state.arm(event, waker)),
         );
     }

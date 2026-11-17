@@ -458,8 +458,7 @@ pub fn in_coroutine() -> bool {
 }
 
 pub(crate) fn cancel(co: Co) -> bool {
-    // SAFETY: a live coroutine (the handle's invariant).
-    unsafe { swoole_rs_corebase::coroutine::cancel(co.raw().cast()) }
+    swoole_rs_corebase::coroutine::cancel(cid(co))
 }
 
 /// `co->is_canceled()`.

@@ -5,7 +5,7 @@
 //! conversion and warnings, over the Rust-owned timer (`owner.rs`). Timer
 //! callbacks own their captures and operations use issued timer IDs.
 use crate::CCast;
-use crate::timer::owner::{Closure, Owner as Timer, TimerNode};
+use crate::timer::owner::{Owner as Timer, TimerNode};
 pub use crate::timer_key::Held;
 use crate::{log, swoole_print_backtrace};
 use std::ffi::{CStr, c_long, c_void};
@@ -97,7 +97,7 @@ fn created<'a>() -> Option<&'a Timer> {
 /// `swoole_timer_add(ms, persistent, ...)` of `f`, held by id, or none.
 #[must_use]
 pub fn add_fn(ms: c_long, persistent: bool, f: impl Fn() + Copy + 'static) -> Option<Held> {
-    held(ms, persistent, TimerNode::closure(Closure::new(f)))
+    held(ms, persistent, TimerNode::closure(f))
 }
 
 /// [`add_fn`] of a callback that owns what it captures, a `Weak` say: it is dropped
