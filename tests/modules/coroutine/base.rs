@@ -18,9 +18,9 @@ use super::hook::{
 };
 use super::os::{AsyncEvent, count_handle, dispatch, new_event};
 use super::{
-    _exit, coroutine_cancel, fork, last_error, swoole_coroutine_close, swoole_coroutine_create,
-    swoole_coroutine_get_id, swoole_coroutine_open, swoole_coroutine_read, swoole_coroutine_write,
-    system_sleep, trampoline,
+    _exit, co_sleep, coroutine_cancel, fork, last_error, swoole_coroutine_close,
+    swoole_coroutine_create, swoole_coroutine_get_id, swoole_coroutine_open, swoole_coroutine_read,
+    swoole_coroutine_write, trampoline,
 };
 use std::cell::Cell;
 use std::ffi::{c_int, c_long, c_void};
@@ -496,8 +496,7 @@ fn cancel_() {
         let co = View::current();
         let target = co.0;
         create(move || {
-            // SAFETY: in a coroutine.
-            unsafe { system_sleep(0.002) };
+            co_sleep(0.002);
             View(target).cancel();
         });
         assert!(!co.yield_ex(-1.0));
