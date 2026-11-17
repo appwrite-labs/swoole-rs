@@ -9,7 +9,9 @@ built: swoole.enable_library on, the backing services of its docker-compose.yml 
 localhost, counit for the concurrent suite and PHPUnit for the serial one, but one
 process per file.
 
---services starts those services and waits until the slow ones answer. When one stops
+--services starts those services and waits until the slow ones answer. Oracle's
+known first-start process-scan failure gets one fresh attempt, with logs preserved.
+When one stops
 or they don't answer in time, it keeps every container's state and log under
 <output>/services/ and exits 1.
 
@@ -181,7 +183,7 @@ def ready():
 
 
 def stopped():
-    """The services whose container exited or died: none of them comes back."""
+    """The services whose container exited or died."""
     return compose('ps', '-a', '--status', 'exited', '--status', 'dead', '--format', '{{.Service}}').stdout.split()
 
 
@@ -205,12 +207,26 @@ def keep_evidence(directory):
 
 def start_services(evidence, attempts=120, interval=5):
     subprocess.run([*COMPOSE, 'up', '-d', *SERVICES], cwd=SOURCE, check=True)
+    recovered = False
     for _ in range(attempts):
-        if ready():
-            return True
         if gone := stopped():
             print(f'Stopped before the services were ready: {", ".join(gone)}')
+            # This first-start failure reports a disappeared process (#4624).
+            # Recover only that signature, before any tests run, and keep its evidence.
+            log = compose('logs', 'oracle').stdout if gone == ['oracle'] else ''
+            if not recovered and all(line in log for line in (
+                    'ORA-00442:', 'ORA-27300: OS system dependent operation:read failed with status: 3',
+                    'ORA-27301: OS failure message: No such process',
+                    'ORA-27302: failure occurred at: sxecheck2')):
+                keep_evidence(evidence / 'oracle-first-start')
+                recovered = True
+                print('Recreating Oracle once after its first-start process-scan failure')
+                if compose('up', '-d', '--no-deps', '--force-recreate',
+                           '--renew-anon-volumes', 'oracle').returncode == 0:
+                    continue
             break
+        if ready():
+            return True
         time.sleep(interval)
     else:
         print(f'The services were not ready after {attempts * interval}s')
