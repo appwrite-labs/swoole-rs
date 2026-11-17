@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Per-crate counts in non-test code that may not rise above the base commit's:
+"""Counts in non-test code whose workspace totals may not rise above the base commit's
+(#4733): an item that moves between crates isn't an item that was added, so a crate may
+rise by what others fall, and a fold or a new crate moves what it holds.
 
-  unsafe   `unsafe` blocks, fns and impls (any crate may rise while the workspace total
-           falls, so a PR that makes a callback an `unsafe fn` can pay for it elsewhere,
-           and an `X-ffi` crate, the C ABI over crate X, by as much as X falls while the
-           total doesn't rise)
+  unsafe   `unsafe` blocks, fns and impls
   maps     std hash and B-tree maps and sets, where a flat table belongs
   lists    LinkedList and VecDeque
   bools    arrays and Vecs of bool, where a bitset belongs
@@ -34,19 +33,18 @@
            `Stays C: <reason>` naming those reasons (the PR tier reads the body it had when
            it ran: push again after editing; locally, set PR_BODY)
   unforbidden  1 unless the crate's lib.rs has `#![forbid(unsafe_code)]`, so a crate
-               the compiler verifies safe stays that way
+               the compiler verifies safe stays that way. Checked per crate, not in
+               total: a crate new since REF with no unsafe, counted or in an extern
+               block or attribute, must forbid `unsafe_code`
 
 See docs/migration.md, Data layout.
 
-  budget.py [--base REF]   fail if any crate counts more than at REF (default: the
-                           merge base with origin/main; the PR tier passes HEAD^1)
+  budget.py [--base REF]   fail if any workspace total counts more than at REF (default:
+                           the merge base with origin/main; the PR tier passes HEAD^1)
 
 There is no baseline file: every PR that removes an item would edit it, so
-parallel PRs conflicted on it. A crate new since REF counts from zero once the
-workspace total rises, so code may move into a new crate but not arrive with one; a
-new crate with no unsafe, counted or in an extern block or attribute, must forbid
-`unsafe_code`. Likewise a crate may rise by what crates deleted since REF held, while
-the workspace total doesn't rise: a fold moves a crate's items into its callers (#4512).
+parallel PRs conflicted on it. A failing total lists the crates that rose, to show
+where the items went.
 
 Test code is not counted: a `#[cfg(test)]` inline module, a file a `#[cfg(test)] mod`
 loads, and anything under a tests/ or benches/ directory.
@@ -205,42 +203,10 @@ def above(current, base):
     return {c: (n, base[c]) for c, n in current.items() if c in base and n > base[c]}
 
 
-def boundary_moves(rises, current, base):
-    """`rises` without each `X-ffi` crate whose rise crate X's fall covers: unsafe that
-    moved from X to the C ABI over it. Only while the workspace total doesn't rise, so a
-    fall into a new crate can't cover the rise as well. Nothing is left while the total
-    falls."""
-    def covered(crate, n, was):
-        safe = crate.removesuffix('-ffi')
-        return safe != crate and n - was <= base.get(safe, 0) - current.get(safe, 0)
-    if sum(current.values()) < sum(base.values()):
-        return {}
-    if sum(current.values()) > sum(base.values()):
-        return rises
-    return {c: (n, was) for c, (n, was) in rises.items() if not covered(c, n, was)}
-
-
-def departures(rises, current, base):
-    """`rises` less what the crates deleted since the base held, while the workspace
-    total doesn't rise."""
-    gone = sum(n for c, n in base.items() if c not in current)
-    if not gone or sum(current.values()) > sum(base.values()):
-        return rises
-    left = {}
-    for crate, (n, was) in sorted(rises.items()):
-        if n - was <= gone:
-            gone -= n - was
-        else:
-            left[crate] = (n, was)
-    return left
-
-
-def arrivals(current, base):
-    """{crate: (current, 0)} for crates new since the base, when the workspace total
-    rose: what a new crate holds must have left the crates that were there."""
-    if sum(current.values()) <= sum(base.values()):
-        return {}
-    return {c: (n, 0) for c, n in current.items() if c not in base and n}
+def rises_by_crate(current, base):
+    """{crate: (current, base)} for crates that count more than at the base, a crate new
+    since the base counting from zero."""
+    return {c: (n, base.get(c, 0)) for c, n in current.items() if n > base.get(c, 0)}
 
 
 def must_forbid(current, base, root=ROOT):
@@ -262,6 +228,26 @@ def stays_c(body, zend=ROOT / 'docs/zend.md'):
     return named if named and set(named) <= known else []
 
 
+def failures(current, base, body='', root=ROOT):
+    """{kind: [line]} for each count that rose: its workspace total and the crates that
+    rose, or for `unforbidden` the crates. A `clines` rise passes when `body` says why
+    it stays C."""
+    failed = {}
+    for kind, crates in current.items():
+        if kind == 'unforbidden':
+            rises = above(crates, base[kind]) | must_forbid(current, base[kind], root)
+            if rises:
+                failed[kind] = [f'{c}: {n} {kind}, up from {was}' for c, (n, was) in sorted(rises.items())]
+            continue
+        total, was = sum(crates.values()), sum(base[kind].values())
+        if total <= was or (kind == 'clines' and stays_c(body)):
+            continue
+        failed[kind] = [f'{kind}: {total} in the workspace, up from {was}',
+                        *(f'  {c}: {n}, up from {before}'
+                          for c, (n, before) in sorted(rises_by_crate(crates, base[kind]).items()))]
+    return failed
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--base', help='Commit to compare against (default: merge base with origin/main)')
@@ -269,22 +255,16 @@ def main():
     base_ref = args.base or subprocess.run(['git', '-C', str(ROOT), 'merge-base', 'HEAD', 'origin/main'],
                                            check=True, capture_output=True, text=True).stdout.strip()
     current, base = counts(), counts_at(base_ref)
-    failed = False
+    body = os.environ.get('PR_BODY', '')
+    if (reasons := stays_c(body)) and sum(current['clines'].values()) > sum(base['clines'].values()):
+        print(f'clines may rise: the PR says it stays C ({", ".join(reasons)})', file=sys.stderr)
+    failed = failures(current, base, body)
     for kind, crates in current.items():
-        rises = above(crates, base[kind])
-        if kind == 'unsafe':
-            rises = boundary_moves(rises, crates, base[kind])
-        if kind == 'unforbidden':
-            rises |= must_forbid(current, base[kind])
-        else:
-            rises = departures(rises, crates, base[kind]) | arrivals(crates, base[kind])
-        if kind == 'clines' and rises and (reasons := stays_c(os.environ.get('PR_BODY', ''))):
-            print(f'clines may rise: the PR says it stays C ({", ".join(reasons)})', file=sys.stderr)
-            rises = {}
-        failed = failed or bool(rises)
-        for crate, (n, was) in sorted(rises.items()):
-            print(f'{crate}: {n} {kind}, up from {was} at {base_ref[:12]}', file=sys.stderr)
         print(f'{kind}: {sum(crates.values())} (base {sum(base[kind].values())})')
+        for line in failed.get(kind, []):
+            print(line, file=sys.stderr)
+    if failed:
+        print(f'budget: counts rose over {base_ref[:12]}', file=sys.stderr)
     return 1 if failed else 0
 
 
