@@ -84,15 +84,24 @@ impl Callable {
     /// the record keeps them while borrowed, and nothing changes the cache.
     #[must_use]
     pub fn parts(&self) -> (crate::Fcc<'_>, u32, *mut zval, *mut zval) {
-        // SAFETY: a parsed callable; the shared borrow of its cache is the only
-        // one that lasts, and nothing writes the record while `self` is lent.
-        let callable = unsafe { &mut *self.0 };
+        // SAFETY: a parsed callable, borrowed shared, so a second call's borrow
+        // leaves the first's cache borrow valid; nothing writes the record while
+        // `self` is lent.
+        let callable = unsafe { &*self.0 };
+        // The callable zval, without a borrow: the caller may write through it.
+        let name = self
+            .0
+            .wrapping_byte_add(
+                std::mem::offset_of!(swr_zend_callable, fci)
+                    + std::mem::offset_of!(crate::sys::zend_fcall_info, function_name),
+            )
+            .cast();
         (
             // A kept callable holds its function's object and closure.
             crate::Fcc(&callable.fcc),
             callable.fci.param_count,
             callable.fci.params,
-            &raw mut callable.fci.function_name,
+            name,
         )
     }
 
