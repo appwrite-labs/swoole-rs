@@ -69,13 +69,13 @@ mod http1;
 use http1::case::{
     swr_case_abort_server, swr_case_base_server, swr_case_close, swr_case_close_actively,
     swr_case_close_after, swr_case_connection, swr_case_connection_status, swr_case_create,
-    swr_case_data, swr_case_fake_socket, swr_case_healthy, swr_case_http_server,
-    swr_case_idle_worker_num, swr_case_info, swr_case_init_protocol, swr_case_last_error,
-    swr_case_length_port, swr_case_master_pid, swr_case_mqtt_server, swr_case_port,
-    swr_case_protocol_server, swr_case_redis_server, swr_case_send, swr_case_sendfile,
-    swr_case_set_max_sockets, swr_case_shutdown, swr_case_ssl_client_ca, swr_case_ssl_files,
-    swr_case_ssl_init, swr_case_ssl_protocols, swr_case_ssl_server, swr_case_ssl_sni,
-    swr_case_start, swr_case_tg_buffer, swr_case_tick, swr_case_worker_num,
+    swr_case_fake_socket, swr_case_healthy, swr_case_http_server, swr_case_idle_worker_num,
+    swr_case_info, swr_case_init_protocol, swr_case_last_error, swr_case_length_port,
+    swr_case_master_pid, swr_case_mqtt_server, swr_case_port, swr_case_protocol_server,
+    swr_case_redis_server, swr_case_send, swr_case_sendfile, swr_case_set_max_sockets,
+    swr_case_shutdown, swr_case_ssl_client_ca, swr_case_ssl_files, swr_case_ssl_init,
+    swr_case_ssl_protocols, swr_case_ssl_server, swr_case_ssl_sni, swr_case_start,
+    swr_case_tg_buffer, swr_case_tick, swr_case_worker_num,
 };
 
 type Server = c_void;
@@ -249,13 +249,9 @@ fn info(head: *const c_void) -> (c_long, c_int, u32, u16) {
 
 /// A received packet's session, data and websocket ext_flags.
 fn request(req: *const c_void) -> (c_long, &'static [u8], u16) {
-    let (session_id, _, len, ext_flags) = info(req);
-    // SAFETY: the RecvData's `len` data bytes, live for the callback.
-    let data = match len {
-        0 => &[][..],
-        _ => unsafe { std::slice::from_raw_parts(swr_case_data(req).cast::<u8>(), len as usize) },
-    };
-    (session_id, data, ext_flags)
+    // SAFETY: the callback lends a live RecvData and its payload for this call.
+    let req = unsafe { &*req.cast::<swoole_rs_server::reactor_entry::RecvData<'_>>() };
+    (req.info().fd, req.payload(), req.info().ext_flags)
 }
 
 fn send(serv: *mut Server, session_id: c_long, data: &[u8]) -> bool {

@@ -533,7 +533,8 @@ impl ServerTables {
 
     /// `connection_list = list`: a factory's `max_connection` zeroed records. A list
     /// already mapped stays, as its slots may be lent, and `list` is unmapped.
-    pub(crate) fn map_connections(&self, list: Table<ConnectionRecord>) {
+    pub(crate) fn map_connections(&self, mut list: Table<ConnectionRecord>) {
+        list.truncate(self.max_connection() as usize);
         self.connection_list.fill(list);
     }
 
@@ -568,8 +569,7 @@ impl ServerTables {
     /// or none before they're mapped. Index it with `get`, so every fd lookup is
     /// bounded by the table's own length.
     pub(crate) fn connections(&self) -> &[ConnectionRecord] {
-        let all = self.connection_list.records();
-        all.get(..self.max_connection() as usize).unwrap_or(all)
+        self.connection_list.records()
     }
 
     /// The slot of `fd`, or `None` when `fd` is outside the table.

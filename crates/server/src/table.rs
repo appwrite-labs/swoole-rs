@@ -96,6 +96,11 @@ impl<T> Table<T> {
         filled
     }
 
+    /// Limit the visible records without changing the mapping's allocation.
+    pub(crate) fn truncate(&mut self, count: usize) {
+        self.len.set(self.len.get().min(count));
+    }
+
     /// `SharedMemory::free`: unmaps the mapping, if any, and leaves the table empty.
     pub(crate) fn free(&mut self) {
         self.shm.free();
@@ -159,6 +164,14 @@ pub(crate) mod tests {
             !table.fill(Table::calloc_private(5)),
             "a mapped table keeps its mapping"
         );
+        assert_eq!(
+            table.records()[1].load(core::sync::atomic::Ordering::Relaxed),
+            7
+        );
+        table.truncate(2);
+        assert_eq!(table.records().len(), 2);
+        table.truncate(5);
+        assert_eq!(table.records().len(), 2, "a limit cannot grow the mapping");
         assert_eq!(
             table.records()[1].load(core::sync::atomic::Ordering::Relaxed),
             7
