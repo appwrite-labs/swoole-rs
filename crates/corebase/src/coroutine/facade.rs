@@ -91,7 +91,7 @@ extern "C" fn clock() -> c_long {
 /// Under thread contexts `entry` runs on the coroutine's thread while this one waits
 /// for the baton, so the two never run at once.
 #[must_use]
-pub fn spawn<F: FnOnce() + Copy + 'static>(entry: F) -> c_long {
+pub fn spawn<F: Fn() + Copy + 'static>(entry: F) -> c_long {
     create(Entry::of(entry))
 }
 

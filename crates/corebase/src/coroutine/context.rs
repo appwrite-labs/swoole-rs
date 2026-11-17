@@ -64,12 +64,13 @@ impl Context {
         self.end.get()
     }
 
-    /// A context with nothing to run yet.
-    fn idle(flags: u32) -> Self {
+    /// A context on `stack` (switched into at `fctx`) or `thread`, with no entry yet.
+    #[inline]
+    fn made(stack: Stack, fctx: *mut c_void, thread: Option<Box<Started>>) -> Self {
         Self {
-            fctx: Cell::new(ptr::null_mut()),
+            fctx: Cell::new(fctx),
             swap_fctx: Cell::new(ptr::null_mut()),
-            stack: Stack::none(flags),
+            stack,
             entry: Entry::empty(),
             asan_bottom: Cell::new(ptr::null()),
             asan_size: Cell::new(0),
@@ -78,39 +79,38 @@ impl Context {
             #[cfg(tsan)]
             tsan_caller: Cell::new(None),
             end: Cell::new(false),
-            thread: None,
+            thread,
         }
     }
 }
 
 impl Native {
-    /// A record whose context runs `entry` on a stack it allocates, made in place:
-    /// the entry is moved once, into the record. A [`THREAD`] context starts its
+    /// A record whose context runs `entry` on a stack it allocates: the entry is
+    /// moved once, into the boxed record, where it runs. A [`THREAD`] context starts its
     /// thread with `entry` instead.
     ///
     /// # Errors
     /// No stack (out of memory), or the errno of a [`THREAD`] context whose
     /// thread failed to start.
     pub fn new(stack_size: usize, flags: u32, entry: Entry) -> Result<Box<Self>, Unmade> {
-        let mut native = Box::new(Self {
-            co: Coroutine::idle(),
-            ctx: Context::idle(flags),
-        });
-        let context = &mut native.ctx;
         if flags & THREAD != 0 {
-            context.thread = Some(thread::start(entry).map_err(Unmade::Thread)?);
-            return Ok(native);
+            let thread = thread::start(entry).map_err(Unmade::Thread)?;
+            return Ok(Box::new(Self {
+                co: Coroutine::idle(),
+                ctx: Context::made(Stack::none(flags), ptr::null_mut(), Some(thread)),
+            }));
         }
         let stack_size = stack_size.c_cast::<u32>();
         let size = stack_size as usize;
         let stack = Stack::alloc(stack_size, flags).ok_or(Unmade::NoStack)?;
         let top = stack.base().wrapping_add(size);
         // SAFETY: a fresh `size`-byte stack, which boost builds the context down from.
-        context
-            .fctx
-            .set(unsafe { make_fcontext(top.cast(), size, first_frame) });
-        context.stack = stack;
-        context.entry = entry;
+        let fctx = unsafe { make_fcontext(top.cast(), size, first_frame) };
+        let mut native = Box::new(Self {
+            co: Coroutine::idle(),
+            ctx: Context::made(stack, fctx, None),
+        });
+        native.ctx.entry = entry;
         Ok(native)
     }
 }

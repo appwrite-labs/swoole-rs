@@ -113,12 +113,13 @@ pub struct Entry(SmallFn<(), ENTRY_WORDS>);
 /// The words an [`Entry`] holds.
 const ENTRY_WORDS: usize = 10;
 
-/// An entry's closure, run in place or consumed: either calls a copy of it.
+/// An entry's closure, run in place (through a reference, so its captures are
+/// read where they lie) or consumed.
 #[cfg(any(test, feature = "upstream-symbols"))]
 struct Once<F>(F);
 
 #[cfg(any(test, feature = "upstream-symbols"))]
-impl<F: FnOnce() + Copy + 'static> Small<()> for Once<F> {
+impl<F: Fn() + Copy + 'static> Small<()> for Once<F> {
     fn run(&self) {
         (self.0)();
     }
@@ -148,7 +149,7 @@ impl Entry {
 
     /// The entry that runs `entry`.
     #[cfg(any(test, feature = "upstream-symbols"))]
-    pub(crate) fn of<F: FnOnce() + Copy + 'static>(entry: F) -> Self {
+    pub(crate) fn of<F: Fn() + Copy + 'static>(entry: F) -> Self {
         let slot = SmallFn::empty();
         slot.put(Once(entry));
         Self(slot)

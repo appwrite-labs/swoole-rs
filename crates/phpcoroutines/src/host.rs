@@ -477,13 +477,13 @@ pub(crate) fn is_end(co: Co) -> bool {
 
 /// `PHPCoroutine::create`'s `Coroutine::create(main_func, args)`.
 pub(crate) fn create(args: crate::context::Args) -> c_long {
-    swoole_rs_corebase::coroutine::spawn(move || main(args))
+    swoole_rs_corebase::coroutine::spawn(move || main(&args))
 }
 
 /// `main_func`: the coroutine's function and defer tasks run inside
 /// `zend_first_try`; a coroutine that ended in an exception or a bailout
 /// bails the whole process out. Its frame owns nothing to drop.
-fn main(args: crate::context::Args) {
+fn main(args: &crate::context::Args) {
     if crate::context::run(args) {
         // SAFETY: the main context runs `bail_out`; this frame owns nothing.
         unsafe {

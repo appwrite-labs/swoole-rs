@@ -574,7 +574,7 @@ pub(crate) fn watch_switches(watch: bool) -> usize {
 /// `main_func`, the new coroutine's body: its context lives in this frame,
 /// opened, run (the function and defer tasks inside `zend_first_try`) and
 /// closed. Whether an exception or a bailout ended it.
-pub(crate) fn run(args: Args) -> bool {
+pub(crate) fn run(args: &Args) -> bool {
     // `close` drops everything the context holds that needs a drop, so the frame
     // only frees its bytes, as upstream's `efree` does, with no drop pass.
     let mut context = mem::ManuallyDrop::new(Context::empty());
@@ -590,7 +590,7 @@ pub(crate) fn run(args: Args) -> bool {
 
 /// `create_context`, on the new coroutine, in `context`, live until [`run`]
 /// returns; the creator's executor state, still the executor's, is saved.
-fn open(args: Args, context: &mut Context) -> Option<Ctx> {
+fn open(args: &Args, context: &mut Context) -> Option<Ctx> {
     let co = host::current()?;
     let pcid = host::origin_cid(co);
     let this = Ctx(NonNull::from(context));
