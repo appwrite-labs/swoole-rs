@@ -366,7 +366,7 @@ impl<'a> Server<'a> {
 
     /// The server's per-worker connection counts; none when it keeps one total.
     fn cells(self) -> &'a [AtomicU32] {
-        crate::shared::words(&self.state().tables_ref().connection_nums)
+        self.state().tables_ref().connection_nums.records()
     }
 
     /// Event worker `id`'s count of the server's connections (base mode's
@@ -483,16 +483,12 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn workers(self) -> ServerWorkers<'a> {
         let (config, tables) = (self.config(), self.state().tables_ref());
-        let array = |records: &swoole_rs_corebase::memory::members::Shm, count: usize| {
-            let base = records.as_ptr().cast::<WorkerRecord>();
-            if base.is_null() {
-                return &[][..];
-            }
-            // SAFETY: `create` maps `workers` with `worker_num` records, and the
-            // factory's start `user_workers` with one per added user worker
-            // (`add_worker` refuses once the factory exists); the counts stay, and only
-            // the tables' `unmap`, through `&mut`, unmaps either.
-            unsafe { core::slice::from_raw_parts::<'a, WorkerRecord>(base, count) }
+        // `create` maps `workers` with `worker_num` records, and the factory's start
+        // `user_workers` with one per added user worker (`add_worker` refuses once the
+        // factory exists).
+        let array = |table: &'a crate::table::Table<WorkerRecord>, count: usize| {
+            let records = table.records();
+            records.get(..count).unwrap_or(records)
         };
         let (events, users) = (config.worker_num.get(), self.user_worker_num());
         ServerWorkers::new(
@@ -853,10 +849,7 @@ mod tests {
     fn only_a_single_base_worker_that_ran_here_and_was_not_destroyed_counts() {
         let mut server = crate::TestServer::new();
         let config = server.config_mut();
-        config.gs = swoole_rs_corebase::memory::members::Shm::calloc(
-            1,
-            size_of::<crate::shared::ServerShared>(),
-        );
+        config.gs = crate::table::Table::calloc(1);
         config.mode_ = Mode::Base;
         config.worker_num.set(1);
         let mut factory = 0u8;
@@ -903,8 +896,7 @@ mod tests {
         port.gs.set((&raw mut counters).cast());
         serv.config().worker_num.set(2);
         assert_eq!(serv.port_connections(&port), 99);
-        port.connection_nums
-            .fill(swoole_rs_corebase::memory::members::Shm::calloc(2, 4));
+        port.connection_nums.fill(crate::table::Table::calloc(2));
         port.cells()[0].store(3, Ordering::Relaxed);
         port.cells()[1].store(5, Ordering::Relaxed);
         assert_eq!(serv.port_connections(&port), 8);

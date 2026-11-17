@@ -6,7 +6,6 @@ use std::sync::{OnceLock, RwLock};
 use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
-use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::reactor::{Heap, Socket};
 use swoole_rs_corebase::tls::{SslVersion, TlsContext};
 
@@ -165,7 +164,7 @@ pub struct PortConfig {
     pub gs: Shared<*mut c_void>,
     /// Base mode's per-worker connection counts (`gs->connection_nums`): an
     /// `AtomicU32` per worker, which [`Self::delete`] unmaps.
-    pub(crate) connection_nums: Shm,
+    pub(crate) connection_nums: crate::table::Table<core::sync::atomic::AtomicU32>,
     /// The non-threaded PHP Port object's property, installed once at bind/listen.
     /// Shared callback storage only: it must not own the server. The PHP object
     /// clears its callbacks on release, including when the object is freed first.
@@ -290,7 +289,7 @@ impl PortConfig {
 
     /// The per-worker connection counts; none when the server keeps one total.
     pub(crate) fn cells(&self) -> &[core::sync::atomic::AtomicU32] {
-        crate::shared::words(&self.connection_nums)
+        self.connection_nums.records()
     }
 
     /// The listening socket's record as native code holds it, or null.
@@ -361,7 +360,7 @@ impl PortConfig {
             kernel_socket_recv_buffer_size: Setting::new(0),
             kernel_socket_send_buffer_size: Setting::new(0),
             gs: Shared::new(core::ptr::null_mut()),
-            connection_nums: Shm::empty(),
+            connection_nums: crate::table::Table::empty(),
             property: std::cell::OnceCell::new(),
             websocket_frames: Setting::new(0),
             websocket_protocol: Published::default(),

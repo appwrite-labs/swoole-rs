@@ -13,6 +13,7 @@ use crate::hybrid::hybrid;
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::out_buffer;
 use crate::records::Lookup;
+use crate::table::Table;
 use crate::view;
 use core::ffi::{c_char, c_int, c_long, c_void};
 use core::sync::atomic::Ordering;
@@ -20,7 +21,6 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::buffer::cpp::{swr_cpp_buffer_empty, swr_cpp_buffer_typed_close};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRACE as LOG_TRACE};
-use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::process::methods::swoole_get_worker_id;
 use swoole_rs_corebase::process::worker_globals::{with_current, with_globals};
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerStatus};
@@ -193,7 +193,7 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
     let origin = c"Server::create_base_factory";
     // Private, as `sw_calloc`'s memory was: each base worker indexes its own fds.
     let max = state.tables_ref().max_connection() as usize;
-    let connections = Shm::calloc_private(max, size_of::<crate::ConnectionRecord>());
+    let connections = Table::<crate::ConnectionRecord>::calloc_private(max);
     if connections.is_null() {
         let size = max * size_of::<crate::ConnectionRecord>();
         log::sys_warning(origin, format_args!("calloc[2]({size}) failed"));
@@ -201,7 +201,7 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
     }
     state.tables_ref().map_connections(connections);
     let counts = |what: &str| {
-        let cells = Shm::calloc(workers as usize, ATOMIC_SIZE);
+        let cells = Table::calloc(workers as usize);
         if cells.is_null() {
             let size = workers as usize * ATOMIC_SIZE;
             let m = format_args!("sw_shm_calloc({size}) for {what}->connection_nums failed");
