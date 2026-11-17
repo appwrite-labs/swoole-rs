@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 use swoole_rs_corebase::lent::{Count, In, ItemSize, OneByte, Out, lend_in, lend_out};
 use swoole_rs_corebase::sys::{OpenDir, OpenFile, Text};
 
-use libc::{DIR, FILE, addrinfo, c_char, c_int, dirent, hostent, mode_t, off_t, size_t, ssize_t};
+use libc::{DIR, FILE, addrinfo, c_char, c_int, dirent, mode_t, off_t, size_t, ssize_t};
 
 /// A hooked I/O operation failed or the pool refused to start it.
 #[derive(Debug)]
@@ -592,26 +592,20 @@ unsafe extern "C" {
         hints: Option<&Hints>,
         list: &mut *mut addrinfo,
     ) -> c_int;
-    /// The calling thread's static entry for `name`, or null.
-    safe fn gethostbyname(name: Text<'_>) -> *mut hostent;
 }
 
-/// Hooked `gethostbyname`, always on the pool: the lookup's `h_errno` (0 if the
-/// pool refused it) becomes this thread's.
+/// Resolve the first IPv4 address on the pool, copying it before the worker's
+/// resolver storage expires. The lookup's `h_errno` (0 if refused) becomes this
+/// thread's. No caller needs the old `hostent` aliases or borrowed address list.
 #[must_use]
-pub fn swoole_coroutine_gethostbyname(name: &CStr) -> *mut hostent {
-    let call = || {
-        let entry = gethostbyname(name.into());
-        // The entry is the looking-up thread's, handed to the caller as upstream does:
-        // only its address crosses.
-        (
-            entry.expose_provenance(),
-            swoole_rs_corebase::sys::h_errno(),
-        )
+pub fn swoole_coroutine_gethostbyname(name: &CStr) -> Option<[c_char; 46]> {
+    let call = || match swoole_rs_corebase::gethostbyname_result(libc::AF_INET, name) {
+        Ok(address) => (Some(address), 0),
+        Err(error) => (None, error),
     };
-    let (entry, error) = on_pool(Some(runtime().offload), (0, 0), call);
+    let (address, error) = on_pool(Some(runtime().offload), (None, 0), call);
     swoole_rs_corebase::sys::set_h_errno(error);
-    std::ptr::with_exposed_provenance_mut(entry)
+    address
 }
 
 #[cfg(test)]
@@ -848,13 +842,11 @@ pub(crate) mod tests {
             ));
             assert_eq!(list, before);
 
-            // The entry lives in the looking-up thread's storage, which may end with
-            // the test's pool thread: read it only from a lookup run here.
-            assert!(!with(Pool, || swoole_coroutine_gethostbyname(c"127.0.0.1")).is_null());
-            let entry = with(Here, || swoole_coroutine_gethostbyname(c"127.0.0.1"));
-            assert_eq!((*entry).h_addrtype, libc::AF_INET);
+            assert!(with(Pool, || swoole_coroutine_gethostbyname(c"127.0.0.1")).is_some());
+            let entry = with(Here, || swoole_coroutine_gethostbyname(c"127.0.0.1")).unwrap();
+            assert_eq!(&entry[..4], &[127, 0, 0, 1]);
             swoole_rs_corebase::sys::set_h_errno(3);
-            assert!(with(Refuse, || swoole_coroutine_gethostbyname(c"localhost")).is_null());
+            assert!(with(Refuse, || swoole_coroutine_gethostbyname(c"localhost")).is_none());
             assert_eq!(swoole_rs_corebase::sys::h_errno(), 0);
 
             let mut fds = [0; 2];

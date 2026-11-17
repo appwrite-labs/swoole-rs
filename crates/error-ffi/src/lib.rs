@@ -55,8 +55,8 @@ pub extern "C" fn export_error_buffer() -> *mut c_char {
     swoole_rs_error::swr_v1_error_buffer()
 }
 
-/// Resolve system, known and unknown errors without heap allocation. An unknown code's
-/// message is this thread's buffer, overwritten by the thread's next unknown code.
+/// Resolve system, known and unknown errors. An unknown Swoole code's message is
+/// this thread's buffer, overwritten by the thread's next unknown Swoole code.
 #[unsafe(export_name = "swr_v1_error_strerror")]
 #[must_use]
 pub extern "C" fn export_error_strerror(
@@ -67,13 +67,118 @@ pub extern "C" fn export_error_strerror(
 }
 
 unsafe extern "C" {
-    safe fn strerror(code: i32) -> *const c_char;
+    // The calling thread's errno cell, used synchronously and never sent away.
+    #[cfg_attr(target_os = "linux", link_name = "__errno_location")]
+    #[cfg_attr(target_os = "android", link_name = "__errno")]
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "android")),
+        link_name = "__error"
+    )]
+    safe fn errno_location() -> &'static std::cell::Cell<i32>;
 }
 
-/// libc's message for a system error.
+/// A buffer and its inseparable capacity for the reentrant libc formatter.
+mod message_buffer {
+    use std::marker::PhantomData;
+    type Brand<'id> = PhantomData<fn(&'id ()) -> &'id ()>;
+    #[repr(transparent)]
+    pub(super) struct Out<'id>(*mut std::ffi::c_char, Brand<'id>);
+    #[repr(transparent)]
+    pub(super) struct Count<'id>(usize, Brand<'id>);
+
+    unsafe extern "C" {
+        // libc writes only the lent buffer, retains nothing and accepts every code.
+        #[cfg_attr(
+            all(target_os = "linux", target_env = "gnu"),
+            link_name = "__xpg_strerror_r"
+        )]
+        pub(super) safe fn strerror_r<'id>(code: i32, out: Out<'id>, size: Count<'id>) -> i32;
+    }
+
+    pub(super) fn with<T>(
+        bytes: &mut [u8],
+        call: impl for<'id> FnOnce(Out<'id>, Count<'id>) -> T,
+    ) -> T {
+        call(
+            Out(bytes.as_mut_ptr().cast(), PhantomData),
+            Count(bytes.len(), PhantomData),
+        )
+    }
+}
+
+/// libc's exact message bytes, copied by its reentrant formatter, and whether the
+/// code is known. Unknown codes keep libc's shorter, next-call lifetime.
+fn system_message(code: i32) -> (std::ffi::CString, bool) {
+    let saved = errno_location().get();
+    let mut bytes = vec![0u8; 128];
+    let result = loop {
+        let result = message_buffer::with(&mut bytes, |out, size| {
+            message_buffer::strerror_r(code, out, size)
+        });
+        if result != libc::ERANGE {
+            break result;
+        }
+        bytes.resize(bytes.len() * 2, 0);
+    };
+    // Apple's strerror sets EINVAL for unknown codes; GNU and musl preserve errno.
+    errno_location().set(if cfg!(target_vendor = "apple") && result != 0 {
+        libc::EINVAL
+    } else {
+        saved
+    });
+    (
+        std::ffi::CStr::from_bytes_until_nul(&bytes)
+            .unwrap_or(c"")
+            .to_owned(),
+        result == 0,
+    )
+}
+
+/// libc's message for a system error. Known messages are retained as immutable
+/// bytes for C callers that keep the pointer. Unknown messages live until this
+/// thread's next unknown code or exit. Formatting on every call preserves locale.
 #[must_use]
 pub extern "C" fn system_error(code: i32) -> *const c_char {
-    strerror(code)
+    static MESSAGES: std::sync::Mutex<Vec<std::ffi::CString>> = std::sync::Mutex::new(Vec::new());
+    let (message, known) = system_message(code);
+    let pointer = message.as_ptr();
+    if !known {
+        return unknown_system_message(message);
+    }
+    let mut messages = MESSAGES.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(stored) = messages.iter().find(|stored| **stored == message) {
+        return stored.as_ptr();
+    }
+    messages.push(message);
+    pointer
+}
+
+/// Apple's unknown-message buffer has a fixed `NL_TEXTMAX` address even when a
+/// later lookup overwrites it. Keep that lifetime, independently for each thread.
+#[cfg(target_vendor = "apple")]
+fn unknown_system_message(message: std::ffi::CString) -> *const c_char {
+    thread_local! {
+        static UNKNOWN: [std::cell::Cell<c_char>; 2048] = const { [const { std::cell::Cell::new(0) }; 2048] };
+    }
+    let bytes = message.into_bytes();
+    UNKNOWN.with(|buffer| {
+        let bytes = bytes.iter().take(2047).chain(std::iter::once(&0));
+        for (cell, &byte) in buffer.iter().zip(bytes) {
+            cell.set(c_char::from_ne_bytes([byte]));
+        }
+        buffer.as_ptr().cast()
+    })
+}
+
+/// GNU's unknown-message pointer lasts until the next unknown code or thread exit.
+#[cfg(not(target_vendor = "apple"))]
+fn unknown_system_message(message: std::ffi::CString) -> *const c_char {
+    thread_local! {
+        static UNKNOWN: std::cell::Cell<Option<std::ffi::CString>> = const { std::cell::Cell::new(None) };
+    }
+    let pointer = message.as_ptr();
+    UNKNOWN.set(Some(message));
+    pointer
 }
 
 /// `const char *swoole_strerror(int)`: system messages below 500, as upstream.
@@ -351,6 +456,53 @@ mod tests {
         export_clear_last_error_msg();
         assert_eq!(unsafe { *buffer }, 0);
         assert_eq!(swoole_rs_error::last_error_message().as_c_str(), c"");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no strerror")]
+    fn system_messages_keep_their_bytes_across_threads_and_later_errors() {
+        let known = system_error(libc::ENOENT);
+        let known_text = unsafe { std::ffi::CStr::from_ptr(known) }.to_owned();
+        let unknown = system_error(-1);
+        let unknown_text = unsafe { std::ffi::CStr::from_ptr(unknown) }.to_owned();
+        std::thread::spawn(|| {
+            for code in [libc::EACCES, -2, 499] {
+                let pointer = system_error(code);
+                assert!(!unsafe { std::ffi::CStr::from_ptr(pointer) }.is_empty());
+            }
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            unsafe { std::ffi::CStr::from_ptr(unknown) },
+            unknown_text.as_c_str()
+        );
+        for code in [libc::EACCES, -2, 499] {
+            _ = system_error(code);
+        }
+        assert_eq!(
+            unsafe { std::ffi::CStr::from_ptr(known) },
+            known_text.as_c_str()
+        );
+        assert_eq!(system_error(libc::ENOENT), known);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no strerror")]
+    fn reentrant_system_messages_match_libc_bytes_and_errno() {
+        for code in [-2_147_483_647, -1, 0, libc::ENOENT, libc::EACCES, 499] {
+            errno_location().set(libc::EBADF);
+            let expected = unsafe { std::ffi::CStr::from_ptr(libc::strerror(code)) }.to_owned();
+            let expected_errno = errno_location().get();
+            errno_location().set(libc::EBADF);
+            let actual = system_error(code);
+            assert_eq!(
+                unsafe { std::ffi::CStr::from_ptr(actual) },
+                expected.as_c_str(),
+                "code {code}"
+            );
+            assert_eq!(errno_location().get(), expected_errno, "errno for {code}");
+        }
     }
 
     #[test]

@@ -381,10 +381,10 @@ fn file() {
 fn gethostbyname() {
     run(|| {
         let result1 = swoole_coroutine_gethostbyname(HOST_1);
-        assert!(!result1.is_null());
+        assert!(result1.is_some());
 
         let result2 = swoole_coroutine_gethostbyname(HOST_2);
-        assert!(result2.is_null());
+        assert!(result2.is_none());
         // SAFETY: this thread's h_errno.
         assert_eq!(unsafe { *__h_errno_location() }, HOST_NOT_FOUND);
     });
