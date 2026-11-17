@@ -29,21 +29,28 @@ use swoole_rs_corebase::{CCast, log};
 /// `swoole::SendData`, and the `swoole::RecvData` a receive callback reads (the same
 /// two fields): an event's head and the payload it lends for `'a`, or none.
 ///
-/// The fields are private to this module, so only the constructors set the payload
-/// and `info.len`, which [`SendData::payload`] bounds by the payload; the setters
-/// change the rest of the head, and only the bus's writes ([`SendData::send`]) lower
-/// `len`.
+/// It starts as C's does, `{ info, data }`, which native callbacks read; the slice
+/// after them is what Rust reads. The fields are private to this module, so only the
+/// constructors set the payload, `data` (its start, or null) and `info.len`, which
+/// [`SendData::payload`] bounds by the payload; the setters change the rest of the
+/// head, and only the bus's writes ([`SendData::send`]) lower `len`.
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SendData<'a> {
     info: DataHead,
-    data: Option<&'a [u8]>,
+    data: *const c_char,
+    payload: Option<&'a [u8]>,
 }
 
 impl<'a> SendData<'a> {
     /// An event with no payload.
     #[must_use]
     pub const fn empty(info: DataHead) -> Self {
-        Self { info, data: None }
+        Self {
+            info,
+            data: core::ptr::null(),
+            payload: None,
+        }
     }
 
     /// `info` and the bytes of `data`, whose length becomes `info.len` (at most
@@ -53,7 +60,8 @@ impl<'a> SendData<'a> {
         info.len = u32::try_from(data.len()).unwrap_or(u32::MAX);
         Self {
             info,
-            data: Some(data),
+            data: data.as_ptr().cast(),
+            payload: Some(data),
         }
     }
 
@@ -67,13 +75,12 @@ impl<'a> SendData<'a> {
     #[must_use]
     pub fn data(&self) -> *const c_char {
         self.data
-            .map_or(core::ptr::null(), |data| data.as_ptr().cast())
     }
 
     /// The payload's `info.len` bytes; none without a payload.
     #[must_use]
     pub fn payload(&self) -> &'a [u8] {
-        self.data.map_or(&[], |data| {
+        self.payload.map_or(&[], |data| {
             data.get(..self.info.len as usize).unwrap_or(data)
         })
     }
@@ -116,7 +123,7 @@ impl<'a> SendData<'a> {
         bus: &swoole_rs_bus::Bus,
         pipe: crate::view::PipeSocket<'_>,
     ) -> bool {
-        let data = self.data.map(|_| self.payload());
+        let data = self.payload.map(|_| self.payload());
         bus.send(pipe.socket(), &mut self.info, data)
     }
 }
