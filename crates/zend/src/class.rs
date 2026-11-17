@@ -105,6 +105,18 @@ impl<'a> ClassEntry<'a> {
         swr_zend_instanceof(self, parent)
     }
 
+    /// `object_init_ex` of this class, with no constructor run: the new object.
+    /// Zend refuses a class it cannot instantiate, leaving no object; with no
+    /// frame executing, that `Error` bails out, which is deferred.
+    #[must_use]
+    pub fn create_object(self) -> crate::Owned {
+        let object = crate::Owned::default();
+        crate::bailout::defer(crate::bailout::trapped(swr_zend_try_facade_object_init(
+            &object, self,
+        )));
+        object
+    }
+
     /// `ce->ce_flags` (`ZEND_ACC_*`), as they are now.
     #[must_use]
     #[inline]
@@ -235,21 +247,14 @@ impl Class {
         Ok(object)
     }
 
-    /// `object_init_ex` of this class, with no constructor run: the new object.
-    /// Zend refuses a class it cannot instantiate, leaving no object; with no
-    /// frame executing, that `Error` bails out, which is deferred.
+    /// [`ClassEntry::create_object`] of this class.
     /// # Panics
     /// The class is not registered.
     #[must_use]
     pub fn create_object(&self) -> crate::Owned {
         let entry = self.class_entry();
         assert!(entry.is_some(), "create an object of a registered class");
-        let object = crate::Owned::default();
-        let Some(entry) = entry else { return object };
-        crate::bailout::defer(crate::bailout::trapped(swr_zend_try_facade_object_init(
-            &object, entry,
-        )));
-        object
+        entry.map_or_else(crate::Owned::default, ClassEntry::create_object)
     }
 
     /// `zend_throw_exception(this class, message, code)`: with no frame

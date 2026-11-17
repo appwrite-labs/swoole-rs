@@ -19,7 +19,9 @@ use swoole_rs_zend::{
 unsafe extern "C" {
     /// PHP's `unserialize()`, as Swoole's `zend::unserialize` called it: it
     /// decodes the lent bytes into the call's return slot, with the options
-    /// array (read only) and the function name its notices give.
+    /// array (read only) and the function name its notices give. `__wakeup`,
+    /// `__unserialize`, an autoloader or a notice's error handler run PHP,
+    /// which may bail out: call it inside `contain_with`.
     safe fn php_unserialize_with_options(
         value: ReturnSlot<'_>,
         buf: In<'_, u8>,
@@ -325,15 +327,17 @@ fn substr_unserialize(call: &Call) {
     };
     let bytes = buf.get(offset..).unwrap_or_default();
     let bytes = bytes.get(..length).unwrap_or_default();
-    lend_in(bytes, |at, count| {
-        php_unserialize_with_options(
-            call.return_slot(),
-            at,
-            count,
-            options,
-            c"swoole_ext_unserialize".into(),
-        );
-    });
+    swoole_rs_zend::bailout::defer(swoole_rs_zend::contain_with(|| {
+        lend_in(bytes, |at, count| {
+            php_unserialize_with_options(
+                call.return_slot(),
+                at,
+                count,
+                options,
+                c"swoole_ext_unserialize".into(),
+            );
+        });
+    }));
 }
 
 fn substr_json_decode(call: &Call) {

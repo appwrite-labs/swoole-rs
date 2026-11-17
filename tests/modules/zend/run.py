@@ -13,10 +13,10 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.harness import parse_engines, run_isolated
 
-CASES = ['atomic_coercion', 'process_signal', 'table_column', 'table_conversion', 'timer_after',
-         'event_del', 'cookie_name', 'http_client_file', 'server_coro_accept']
 MEMORY_CASES = ['socket_peek', 'socket_read_vector']
 BAILOUT = Path(__file__).with_name('error_handler_bailout.php')
+# The keys of the script's $cases, in its order.
+CASES = re.findall(r"^    '(\w+)' =>", BAILOUT.read_text(), re.M)
 MEMORY = Path(__file__).with_name('memory_limit.php')
 RUNS = [(BAILOUT, case, mode) for case in CASES for mode in ['exit', 'fatal']] + \
     [(MEMORY, case) for case in MEMORY_CASES]
