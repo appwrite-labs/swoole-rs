@@ -85,7 +85,12 @@ docker run --rm -it -v "$PWD:/work" -w /work swoole-rs-dev bash
 
 Outside the image, the pre-commit hook needs one Python package the system doesn't
 ship: ast-grep's API, which `tools/budget.py` counts with. Install the version
-`install.sh` pins with `python3 -m pip install ast-grep-py==<version>`.
+`install.sh` pins into your user site directory, which a system Python that refuses
+`pip install` (Homebrew's, Ubuntu's) still reads:
+
+```sh
+uv pip install --python python3 --target "$(python3 -m site --user-site)" ast-grep-py==<version>
+```
 
 CI jobs run on gcrunner, appwrite-labs' ephemeral GCE runners: each job names a
 preset from `.github/gcrunner.yml` (`runs-on: gcrunner=${{ github.run_id }}/runner=standard`).

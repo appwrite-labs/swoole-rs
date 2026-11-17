@@ -68,8 +68,7 @@ import tempfile
 try:
     from ast_grep_py import SgRoot
 except ImportError:
-    sys.exit('tools/budget.py needs ast-grep: python3 -m pip install ast-grep-py '
-             '(.devcontainer/install.sh pins the version CI runs)')
+    sys.exit('tools/budget.py needs the ast-grep-py package: see docs/development.md, Linux environment')
 
 ROOT = Path(__file__).resolve().parents[1]
 
