@@ -129,11 +129,16 @@ Upstream's own C++ symbols defined in Rust (`export_name`): `swoole_common_divis
 `swoole_version_compare`, `swoole::microtime`,
 `swoole_set_trace_flags`, `swoole_set_print_backtrace_on_error`, `sw_logger`,
 `swoole_set_stdout_stream`/`swoole_get_stdout_stream` (`FILE` mangles as its libc's
-struct tag), `swoole_hex2dec` (in the target's plain-char mode), both `swoole_rand` overloads, `swoole_random_int`, and
+struct tag), `swoole_hex2dec` (in the target's plain-char mode), `swoole_random_int`, and
 `swoole_version`/`swoole_version_id`/`swoole_api_version_id` (C names). No compiled
 code calls `sw_malloc`, `sw_free` or `sw_calloc`, so Rust doesn't define them.
 `tests/modules/corebase/numbers.rs` compares the number helpers with the pinned
 `base.cc`; `swoole_itoa`, which no C++ called, is a Rust function over a slice.
+Both `swoole_rand` overloads and `swoole_type_size` are plain Rust functions;
+their native declarations and exports are gone. Rust fixtures call those and
+`swoole_random_int` directly, preserving ranges and draw timing. The hash-originals
+PHP test extension still calls `swoole_random_int`, so its native declaration and
+export remain.
 
 Whole operations in Rust (`host.rs`), with native code keeping only their
 warnings: `swoole_shell_exec`, `swoole_dump_ascii`/`_hex`, `swoole_print_backtrace` without Boost,

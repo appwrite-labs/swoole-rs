@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU16, AtomicU64};
 use swoole_rs_clients::client::{self as native, ClientEvent, Handle, listen};
 use swoole_rs_corebase::process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerRecord};
+use swoole_rs_corebase::swoole_random_int;
 use swoole_rs_server::{event_worker, manager, task_worker, worker_methods};
 use swoole_rs_timer::Held;
 
@@ -48,8 +49,6 @@ unsafe extern "C" {
     fn pipe(fds: *mut [c_int; 2]) -> c_int;
     fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
-    #[link_name = "_Z17swoole_random_intv"]
-    fn swoole_random_int() -> u64;
 }
 
 unsafe extern "C-unwind" {
@@ -1398,8 +1397,7 @@ static PROCESS_LOCK: Mutex<[c_int; 2]> = Mutex::new([-1, -1]);
 static PROCESS_T1: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 
 fn process_kill_timer(serv: Server, _: Held) {
-    // SAFETY: random.
-    let id = 1 + unsafe { swoole_random_int() } % 3;
+    let id = 1 + swoole_random_int() % 3;
     kill_worker(serv, id as c_int);
 }
 
