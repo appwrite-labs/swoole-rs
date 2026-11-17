@@ -312,9 +312,9 @@ fn on_buffer(server: view::Server<'_>, full: bool, fd: i64, server_fd: c_int) ->
 
 /// `php_swoole_server_onPacket`'s call, once the datagram is read.
 fn on_packet(server: view::Server<'_>, packet: &Packet<'_>, server_fd: c_int, time: f64) -> bool {
-    let facts = facts(server);
+    let config = server.config();
     let mut args = [Owned::default(), Owned::default()];
-    let argc = if facts.event_object {
+    let argc = if config.event_object.get() {
         let props = Props::init(&mut args[0], &DATA[PACKET]);
         props.long(c"server_socket", i64::from(server_fd));
         props.double(c"dispatch_time", time);
@@ -349,14 +349,25 @@ fn on_packet(server: view::Server<'_>, packet: &Packet<'_>, server_fd: c_int, ti
     let Some(cb) = php_swoole_server_get_callback(server, server_fd, PortCallback::Packet) else {
         return false;
     };
+    // Moved into one array, as onReceive's: with_server's copies cost this hot path.
+    let [data, address] = args;
+    let argv = [zserv(), data, address];
+    let argc = argc + 1;
+    let coroutine = config.enable_coroutine.get();
     // Upstream names onPipeMessage in onPacket's warning.
-    let called = call(
+    let called = call_argv(
         &cb,
-        used(&args, argc),
-        facts.enable_coroutine,
+        Zvals::owned(&argv).take(argc),
+        coroutine,
         "onPipeMessage",
     );
-    called == Called::Bailout && leak(args)
+    if called == Called::Bailout {
+        return leak(argv);
+    }
+    // The Server::start frame keeps the server through every event callback.
+    let [server, ..] = argv;
+    server.delref();
+    false
 }
 
 /// `php_swoole_server_onPipeMessage`'s call with the unpacked `data`.
