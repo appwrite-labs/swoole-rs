@@ -230,7 +230,7 @@ pub fn add<'a>(
     state.locked.unlock();
 
     gs.accept_count.fetch_add(1, Relaxed);
-    let port_gs = ls.counters();
+    let port_gs = state.port_counters(ls);
     if let Some(port_gs) = port_gs {
         port_gs.accept_count.fetch_add(1, Relaxed);
     }
@@ -323,7 +323,7 @@ pub(crate) fn discard(serv: view::Server<'_>, port: Option<view::Port<'_>>, sock
 
 fn count_abort(serv: view::Server<'_>, port: Option<view::Port<'_>>) {
     serv.counters().abort_count.fetch_add(1, SeqCst);
-    if let Some(gs) = port.and_then(|port| port.config().counters()) {
+    if let Some(gs) = port.and_then(|port| serv.state().port_counters(port.config())) {
         gs.abort_count.fetch_add(1, SeqCst);
     }
 }

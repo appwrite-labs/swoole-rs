@@ -125,23 +125,20 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
     tables
         .port_gs_list
         .fill(Shm::calloc(count, size_of::<PortCounters>()));
-    let list = tables.port_gs_list.as_ptr().cast::<PortCounters>();
-    if list.is_null() {
+    if tables.port_gs_list.is_null() {
         let size = size_of::<PortCounters>();
         let m = format_args!("sw_shm_calloc({count}, {size}) for port_connection_num_array failed");
         log::sys_warning(c"Server::create", m);
         return false;
     }
-    // A retry retains the first mapping, whose slots may already be lent.
-    if count > tables.port_gs_list.payload_len() / size_of::<PortCounters>() {
+    // A retry retains the first mapping, whose slots may already be lent. Each port's
+    // slot is the one its `object_id` numbers (`ServerState::port_counters`).
+    if count > crate::shared::slots::<PortCounters>(&tables.port_gs_list).len() {
         log::warning(
             c"Server::create",
             format_args!("cannot add ports to an existing counter mapping"),
         );
         return false;
-    }
-    for (index, port) in state.ports.iter().enumerate() {
-        port.set_gs(list.wrapping_add(index).cast());
     }
     http_defaults(state);
     if let Some(max) = max_connection(state, swoole_rs_corebase::max_sockets()) {
@@ -522,14 +519,11 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
 
 /// The tables (the server's mappings but its shared record and its ports' counts, and
 /// the reactor threads, which every mode's factory destroy left) and factory, then
-/// `SwooleG.server`. The ports stop naming their counters, which go with the tables.
+/// `SwooleG.server`. The ports' counters go with the tables.
 fn free_server(serv: view::Server<'_>) {
     let state = serv.state();
-    for port in &state.ports {
-        port.set_gs(core::ptr::null_mut());
-    }
     // SAFETY: the master's teardown, once the workers, reactor threads and shutdown
-    // callbacks are done and no port names its counters: nothing borrows the tables,
+    // callbacks are done: nothing borrows the tables,
     // or anything lent out of them, while this lives.
     let tables = unsafe { &mut *state.tables() };
     tables.unmap();
@@ -706,13 +700,16 @@ mod tests {
         assert_eq!(calls(), [Call::ProcessFactory]);
         assert_eq!(config(&live).reactor_num.get(), 1, "the reactor stays");
         let free = |live: &LiveServer| {
+            let port = state.ports.get(0).unwrap().config();
+            let held = state
+                .port_counters(port)
+                .map(|held| (&raw const *held).addr());
             let tables = unsafe { &mut *state.tables() };
             assert!(tables.sessions_mapped(), "sessions");
             assert!(!tables.workers.is_null(), "workers");
-            let port = state.ports.get(0).unwrap().config();
             assert_eq!(
-                port.gs.get().addr(),
-                tables.port_gs_list.as_ptr().addr(),
+                held,
+                Some(tables.port_gs_list.as_ptr().addr()),
                 "port counters"
             );
             assert_eq!(config(live).factory_.get().addr(), 0x70, "the factory");
@@ -749,8 +746,7 @@ mod tests {
             .port_gs_list
             .fill(Shm::calloc(1, size_of::<PortCounters>()));
         let first = state.ports.get(0).unwrap();
-        first.set_gs(tables.port_gs_list.as_ptr());
-        let held = first.config().counters().unwrap();
+        let held = state.port_counters(first.config()).unwrap();
         held.connection_num.store(7, Relaxed);
         let second = state.ports.push(crate::port_config::PortConfig::boxed(0));
         calls();
@@ -759,7 +755,7 @@ mod tests {
         config(&live).factory_.set(core::ptr::null_mut());
         assert!(!created, "a retained one-port map cannot serve two ports");
         assert!(
-            second.config().counters().is_none(),
+            state.port_counters(second.config()).is_none(),
             "no out-of-range slot published"
         );
         assert_eq!(
@@ -1032,7 +1028,10 @@ mod tests {
             let tables = live.state().tables_ref();
             assert!(!tables.sessions_mapped(), "sessions freed");
             assert!(tables.port_gs_list.is_null(), "port counters freed");
-            assert!(live.port().counters().is_none(), "and no port names them");
+            assert!(
+                live.state().port_counters(live.port()).is_none(),
+                "and no port finds them"
+            );
             assert!(tables.workers.is_null(), "workers freed");
             assert!(config(&live).factory_.get().is_null(), "factory deleted");
             assert!(!tables.connections_mapped(), "connections freed");

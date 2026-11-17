@@ -112,7 +112,7 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     let received = total_recv_bytes.wrapping_sub(last_recv_bytes);
     if received.cast_signed() > 0 {
         let received = received as u64;
-        if let Some(gs) = port.config().counters() {
+        if let Some(gs) = state.port_counters(port.config()) {
             gs.total_recv_bytes.fetch_add(received, SeqCst);
         }
         if let Some(gs) = crate::shared::server_counters(state) {
@@ -555,7 +555,7 @@ fn count_close(state: &crate::ServerState, port: Option<&PortConfig>, reactor: R
     let (Some(gs), Some(config)) = (gs, port) else {
         return;
     };
-    let Some(port) = config.counters() else {
+    let Some(port) = state.port_counters(config) else {
         return;
     };
     gs.close_count.fetch_add(1, SeqCst);

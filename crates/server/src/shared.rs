@@ -18,17 +18,36 @@ pub struct PortCounters {
     pub total_recv_bytes: AtomicU64,
     pub total_send_bytes: AtomicU64,
 }
+/// A record of atomics only, at most 8-aligned, which a zeroed mapping holds: what
+/// [`slots`] may lend out of one. Private, so only the types below are.
+trait Atomics: Sized {}
+
+impl Atomics for AtomicU32 {}
+
+impl Atomics for PortCounters {}
+
 /// The words of a shared mapping the server made (`connection_nums`' cells, the
 /// `task_results` slots): none without one.
 pub(crate) fn words(nums: &Shm) -> &[AtomicU32] {
-    let base = nums.as_ptr().cast::<AtomicU32>();
+    slots(nums)
+}
+
+/// The records of a zeroed shared mapping the server made, as many as fit: none
+/// without one.
+#[expect(
+    private_bounds,
+    reason = "`Atomics` is the invariant this module vouches for"
+)]
+pub(crate) fn slots<T: Atomics>(list: &Shm) -> &[T] {
+    let base = list.as_ptr().cast::<T>();
     if base.is_null() {
         return &[];
     }
-    // SAFETY: a zeroed mapping whose `payload_len` bytes follow `base`, 8-aligned, and
-    // only ever updated atomically. Only `Shm::free`, through `&mut`, unmaps it, so it
-    // stays mapped while `nums` is borrowed.
-    unsafe { core::slice::from_raw_parts(base, nums.payload_len() / size_of::<AtomicU32>()) }
+    // SAFETY: a zeroed mapping whose `payload_len` bytes follow `base`, 8-aligned, of
+    // records made of atomics (`Atomics`), for which zero is valid and which are only
+    // ever updated atomically. Only `Shm::free`, through `&mut`, unmaps it, so it stays
+    // mapped while `list` is borrowed.
+    unsafe { core::slice::from_raw_parts(base, list.payload_len() / size_of::<T>()) }
 }
 
 impl ServerCounters {
@@ -176,7 +195,19 @@ pub(crate) fn server_counters(state: &crate::ServerState) -> Option<&ServerCount
 fn session_port_counters(state: &crate::ServerState, session_id: i64) -> Option<&PortCounters> {
     // Kind 1 is `get_connection_by_session_id`, kind 0 `get_connection(server_fd)`.
     let server_fd = state.connection(session_id, Lookup::BySession)?.server_fd();
-    state.port_by_server_fd(server_fd)?.config().counters()
+    state.port_counters(state.port_by_server_fd(server_fd)?.config())
+}
+
+impl crate::ServerState {
+    /// `port->gs`: the slot in `port_gs_list` of the server's port `config`, once
+    /// `Server::create` has mapped one for it.
+    pub(crate) fn port_counters(
+        &self,
+        config: &crate::port_config::PortConfig,
+    ) -> Option<&PortCounters> {
+        let index = usize::from(config.object_id).checked_sub(1)?;
+        slots(&self.tables_ref().port_gs_list).get(index)
+    }
 }
 
 /// `Server::send`'s counts: the server's and the session's port's responses and bytes,
@@ -221,10 +252,8 @@ mod tests {
         unsafe { counters.write(ServerCounters::default()) };
         // SAFETY: as above; the mapping outlives every use below.
         let counted = unsafe { &*counters };
-        let mut port = PortCounters::default();
         // A `ListenPort` is its settings.
         let config = crate::port_config::PortConfig::boxed(0);
-        config.gs.set((&raw mut port).cast());
         // SAFETY: a connection record is plain data; zero is a closed one.
         let mut connections: Vec<ConnectionRecord> =
             (0..3).map(|_| unsafe { core::mem::zeroed() }).collect();
@@ -242,10 +271,12 @@ mod tests {
         let tables = server.tables_mut();
         *tables.connection_list_mut() = crate::records::tests::naming(&mut connections);
         *tables.session_list_mut() = crate::records::tests::naming(&mut sessions);
+        tables.port_gs_list = Shm::calloc(1, size_of::<PortCounters>());
         let state = server.state();
         // SAFETY: the tables just named hold 3 records.
         unsafe { state.tables_ref().set_max_connection_unchecked(3) };
-        let _ = state.ports.push(config);
+        let port = state.ports.push(config);
+        let port = state.port_counters(port.config()).unwrap();
         state.hold_port(0, 1).unwrap();
         count_send(state, 1, 4);
         count_send(state, 0, 3);
@@ -260,6 +291,7 @@ mod tests {
             (1, 4),
             "session 0 has no port"
         );
+        server.tables_mut().port_gs_list.free();
         drop(server);
     }
 

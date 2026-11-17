@@ -13,6 +13,7 @@ use crate::records::{ConnectionRecord, ServerTables, SessionRecord};
 use crate::shared::{PortCounters, ServerCounters, ServerShared};
 use crate::{Mode, ServerState, TestServer, view};
 use std::rc::Rc;
+use swoole_rs_corebase::memory::members::Shm;
 
 /// `SW_SESSION_LIST_SIZE`.
 const SESSIONS: usize = 1 << 20;
@@ -30,7 +31,6 @@ pub(crate) struct LiveServer {
     // `Rc`s, not `Box`es: moving a `Box` asserts it unique, which would leave the
     // state's pointers to it stale.
     shared: Rc<ServerShared>,
-    port_counters: Rc<PortCounters>,
     listener: *mut SocketRecord,
     /// This thread's reactor, which the fixture made.
     reactor: Option<swoole_rs_corebase::reactor::OwnedReactor>,
@@ -55,6 +55,8 @@ impl LiveServer {
         let mut sessions: Vec<SessionRecord> = free_slots(SESSIONS);
         let mut connections: Vec<ConnectionRecord> = free_slots(CONNECTIONS);
         let mut tables = ServerTables::default();
+        // The port's counters, a mapping like the one `Server::create` makes.
+        tables.port_gs_list = Shm::calloc(1, size_of::<PortCounters>());
         *tables.session_list_mut() = naming_at(sessions.as_mut_ptr());
         *tables.connection_list_mut() = naming_at(connections.as_mut_ptr());
         // SAFETY: the table just named holds `CONNECTIONS` records.
@@ -65,7 +67,6 @@ impl LiveServer {
         // SAFETY: the shared record is plain data, for which zero is the state
         // `swr_v1_server_new`'s calloc leaves it in.
         let shared: Rc<ServerShared> = Rc::new(unsafe { core::mem::zeroed() });
-        let port_counters = Rc::new(PortCounters::default());
         let config = server.config_mut();
         config.mode_ = Mode::Process;
         config.reactor_num.set(1);
@@ -88,9 +89,6 @@ impl LiveServer {
         settings.set_listening_socket(unsafe {
             swoole_rs_corebase::reactor::OwnedSocket::from_socket(socket)
         });
-        settings
-            .gs
-            .set(Rc::as_ptr(&port_counters).cast_mut().cast());
         let state = server.state();
         let _ = state.ports.push(settings);
         // The listening fd's slot holds its port, as `Server::store_listen_socket` leaves it.
@@ -106,7 +104,6 @@ impl LiveServer {
         Self {
             server,
             shared,
-            port_counters,
             listener,
             reactor: Some(reactor),
             listener_fd: fd,
@@ -123,14 +120,16 @@ impl LiveServer {
     /// The state forgets the fixture's session table, and its connection table too
     /// when `connections`, for a test whose `Server::create` (and base factory) maps the
     /// server's own: their replacement would unmap the fixture's vectors as though a
-    /// mapping's header preceded them.
+    /// mapping's header preceded them. The port's counters, a real mapping, are
+    /// unmapped, so `Server::create` maps those too.
     pub(crate) fn forget_tables(&mut self, connections: bool) {
         // A `Shm` unmaps only when told to: overwriting one forgets it.
         let tables = self.server.tables_mut();
-        *tables.session_list_mut() = swoole_rs_corebase::memory::members::Shm::empty();
+        *tables.session_list_mut() = Shm::empty();
         if connections {
-            *tables.connection_list_mut() = swoole_rs_corebase::memory::members::Shm::empty();
+            *tables.connection_list_mut() = Shm::empty();
         }
+        tables.port_gs_list.free();
     }
 
     pub(crate) fn state(&self) -> &ServerState {
@@ -152,7 +151,8 @@ impl LiveServer {
     }
 
     pub(crate) fn port_counters(&self) -> &PortCounters {
-        &self.port_counters
+        let counters = self.state().port_counters(self.port());
+        counters.unwrap_or_else(|| panic!("the fixture maps its port's counters"))
     }
 
     /// The read event of the port's listening socket, as the reactor hands `accept` it.
@@ -215,7 +215,8 @@ impl Drop for LiveServer {
         unsafe { libc::close(self.listener_fd) };
         // The configuration's `gs` names the fixture's own record, which the state's drop
         // must not unmap.
-        self.config_mut().gs = swoole_rs_corebase::memory::members::Shm::empty();
+        self.config_mut().gs = Shm::empty();
+        self.tables_mut().port_gs_list.free();
     }
 }
 

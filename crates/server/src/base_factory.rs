@@ -241,7 +241,7 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
     };
     state.tables_ref().connection_nums.fill(cells);
     for port in &state.ports {
-        if port.config().counters().is_none() {
+        if state.port_counters(port.config()).is_none() {
             continue;
         }
         let Some(cells) = counts("port") else {

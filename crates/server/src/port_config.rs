@@ -162,7 +162,6 @@ pub struct PortConfig {
     pub open_tcp_keepalive: Setting<bool>,
     pub kernel_socket_recv_buffer_size: Setting<c_int>,
     pub kernel_socket_send_buffer_size: Setting<c_int>,
-    pub gs: Shared<*mut c_void>,
     /// Base mode's per-worker connection counts (`gs->connection_nums`): an
     /// `AtomicU32` per worker, which [`Self::delete`] unmaps.
     pub(crate) connection_nums: Shm,
@@ -277,12 +276,6 @@ pub fn swr_v1_port_config_new(buffer_size: c_int) -> *mut PortConfig {
 }
 
 impl PortConfig {
-    /// The port's slot in `port_gs_list`, once the server has made it.
-    pub(crate) fn counters(&self) -> Option<&crate::shared::PortCounters> {
-        // SAFETY: null, or the port's slot in `port_gs_list`, mapped for the server's life.
-        unsafe { self.gs.get().cast::<crate::shared::PortCounters>().as_ref() }
-    }
-
     /// The per-worker connection counts; none when the server keeps one total.
     pub(crate) fn cells(&self) -> &[core::sync::atomic::AtomicU32] {
         crate::shared::words(&self.connection_nums)
@@ -355,7 +348,6 @@ impl PortConfig {
             open_tcp_keepalive: Setting::new(false),
             kernel_socket_recv_buffer_size: Setting::new(0),
             kernel_socket_send_buffer_size: Setting::new(0),
-            gs: Shared::new(core::ptr::null_mut()),
             connection_nums: Shm::empty(),
             property: std::cell::OnceCell::new(),
             websocket_frames: Setting::new(0),

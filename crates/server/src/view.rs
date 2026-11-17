@@ -434,8 +434,8 @@ impl<'a> Server<'a> {
 
     /// `ListenPort::get_connection_num()` of the port whose settings are `config`.
     pub(crate) fn port_connections(self, config: &PortConfig) -> usize {
-        config
-            .counters()
+        self.state()
+            .port_counters(config)
             .map_or(0, |gs| self.connections(&gs.connection_num, config.cells()))
     }
 
@@ -734,10 +734,6 @@ impl<'a> Port<'a> {
         self.0
     }
 
-    /// `port->gs = gs`: the port's slot in `port_gs_list`.
-    pub(crate) fn set_gs(self, gs: *mut c_void) {
-        self.config().gs.set(gs);
-    }
     /// `port->protocol.package_max_length = length`.
     pub(crate) fn set_package_max_length(self, length: u32) {
         self.config()
@@ -895,24 +891,26 @@ mod tests {
     #[test]
     fn port_counts_use_the_shared_worker_cells_when_present() {
         use crate::PortCounters;
-        let server = crate::TestServer::new();
+        use swoole_rs_corebase::memory::members::Shm;
+        let mut server = crate::TestServer::new();
         let serv = server.serv();
-        let mut counters = PortCounters::default();
-        counters.connection_num.store(99, Ordering::Relaxed);
-        let mut port = PortConfig::boxed(0);
-        port.gs.set((&raw mut counters).cast());
+        let port = serv.state().ports.push(PortConfig::boxed(0)).config();
         serv.config().worker_num.set(2);
-        assert_eq!(serv.port_connections(&port), 99);
-        port.connection_nums
-            .fill(swoole_rs_corebase::memory::members::Shm::calloc(2, 4));
+        assert_eq!(serv.port_connections(port), 0, "no counters yet");
+        let tables = serv.state().tables_ref();
+        tables
+            .port_gs_list
+            .fill(Shm::calloc(1, size_of::<PortCounters>()));
+        let counters = serv.state().port_counters(port).unwrap();
+        counters.connection_num.store(99, Ordering::Relaxed);
+        assert_eq!(serv.port_connections(port), 99);
+        port.connection_nums.fill(Shm::calloc(2, 4));
         port.cells()[0].store(3, Ordering::Relaxed);
         port.cells()[1].store(5, Ordering::Relaxed);
-        assert_eq!(serv.port_connections(&port), 8);
+        assert_eq!(serv.port_connections(port), 8);
         serv.config().worker_num.set(0);
-        assert_eq!(serv.port_connections(&port), 0);
-        port.gs.set(core::ptr::null_mut());
-        assert_eq!(serv.port_connections(&port), 0, "no counters yet");
-        port.connection_nums.free();
+        assert_eq!(serv.port_connections(port), 0);
+        server.tables_mut().unmap();
     }
 
     /// A worker hook gets `{ server, worker id }`; a server hook, the server.

@@ -195,7 +195,7 @@ pub fn dispatch_data(
     if let Some(gs) = crate::shared::server_counters(state) {
         gs.dispatch_count.fetch_add(1, SeqCst);
     }
-    if let Some(gs) = port.and_then(|port| port.counters()) {
+    if let Some(gs) = port.and_then(|port| state.port_counters(port)) {
         gs.dispatch_count.fetch_add(1, SeqCst);
     }
     true
