@@ -120,15 +120,16 @@ impl Ports {
     #[must_use]
     #[inline]
     pub fn get(&self, index: usize) -> Option<Port<'_>> {
+        // The initialized primary slot publishes its own port; no chunk count is
+        // needed to validate it. Other ports retain the chunk bounds below.
+        if index == 0 {
+            return self.first.get().map(|port| Port::from(&**port));
+        }
         if index >= self.len() {
             return None;
         }
-        let port = if index == 0 {
-            self.first.get()?
-        } else {
-            let (chunk, at) = Self::slot(index);
-            self.chunks.get(chunk)?.get()?.get(at)?.get()?
-        };
+        let (chunk, at) = Self::slot(index);
+        let port = self.chunks.get(chunk)?.get()?.get(at)?.get()?;
         Some(Port::from(&**port))
     }
 
