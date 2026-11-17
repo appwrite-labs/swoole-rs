@@ -111,7 +111,7 @@ pub const THREAD: u32 = 4;
 pub struct Entry(SmallFn<(), ENTRY_WORDS>);
 
 /// The words an [`Entry`] holds.
-const ENTRY_WORDS: usize = 12;
+const ENTRY_WORDS: usize = 10;
 
 /// An entry's closure, run in place or consumed: either calls a copy of it.
 #[cfg(any(test, feature = "upstream-symbols"))]

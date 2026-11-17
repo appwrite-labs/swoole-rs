@@ -23,7 +23,21 @@ impl Live {
         self.entries.partition_point(|&(id, _)| id < cid)
     }
 
+    #[inline]
     fn get(&self, cid: c_long) -> Option<Co> {
+        // Ids are taken one apart and appended, so until a compaction drops entries
+        // below it, an id sits at its distance from the first: a resume finds it
+        // without the search.
+        let guess = self
+            .entries
+            .first()
+            .and_then(|&(first, _)| usize::try_from(cid.wrapping_sub(first)).ok())
+            .and_then(|at| self.entries.get(at));
+        if let Some(&(id, co)) = guess
+            && id == cid
+        {
+            return co;
+        }
         match self.entries.get(self.at(cid)) {
             Some(&(id, co)) if id == cid => co,
             _ => None,
