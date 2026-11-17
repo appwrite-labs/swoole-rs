@@ -35,22 +35,72 @@ impl SendData<'_> {
 
     /// An `onPacket` payload's `DgramPacket` head; `None` if the payload is shorter.
     fn datagram_head(&self) -> Option<DgramPacket> {
-        let head = self.payload().get(..size_of::<DgramPacket>())?;
-        // SAFETY: `size_of::<DgramPacket>()` bytes, read unaligned; every field is
-        // plain data.
-        Some(unsafe { head.as_ptr().cast::<DgramPacket>().read_unaligned() })
+        Some(DgramPacket::from_bytes(self.payload().first_chunk()?))
     }
 }
 
 /// `DgramPacket`'s head; the datagram follows.
 #[repr(C)]
+#[derive(Default)]
 pub(crate) struct DgramPacket {
     pub(crate) socket_type: c_int,
     pub(crate) socket_addr: SocketAddress,
     pub(crate) length: u32,
 }
 
+/// A [`DgramPacket`] head's bytes.
+pub(crate) const DGRAM_HEAD: usize = size_of::<DgramPacket>();
+
+/// Where each field of a [`DgramPacket`] head starts, as C lays it out.
+const TYPE_AT: usize = core::mem::offset_of!(DgramPacket, socket_type);
+const ADDR_AT: usize = core::mem::offset_of!(DgramPacket, socket_addr);
+const STORAGE_AT: usize = ADDR_AT + core::mem::offset_of!(SocketAddress, addr);
+const ADDR_LEN_AT: usize = ADDR_AT + core::mem::offset_of!(SocketAddress, len);
+const KIND_AT: usize = ADDR_AT + core::mem::offset_of!(SocketAddress, kind);
+const LENGTH_AT: usize = core::mem::offset_of!(DgramPacket, length);
+
+/// The `N` bytes of `head` at `at`, which the offsets above keep within it.
+fn field<const N: usize>(head: &[u8; DGRAM_HEAD], at: usize) -> [u8; N] {
+    head.get(at..)
+        .and_then(<[u8]>::first_chunk)
+        .copied()
+        .unwrap_or([0; N])
+}
+
 impl DgramPacket {
+    /// The head as C lays it out, its padding zero.
+    pub(crate) fn to_bytes(&self) -> [u8; DGRAM_HEAD] {
+        let mut head = [0; DGRAM_HEAD];
+        let address = &self.socket_addr;
+        for (at, bytes) in [
+            (TYPE_AT, &self.socket_type.to_ne_bytes()[..]),
+            (STORAGE_AT, &address.addr.as_bytes()[..]),
+            (ADDR_LEN_AT, &address.len.to_ne_bytes()[..]),
+            (KIND_AT, &address.kind.to_ne_bytes()[..]),
+            (LENGTH_AT, &self.length.to_ne_bytes()[..]),
+        ] {
+            if let Some(to) = head.get_mut(at..at + bytes.len()) {
+                to.copy_from_slice(bytes);
+            }
+        }
+        head
+    }
+
+    /// The head [`Self::to_bytes`] laid out.
+    pub(crate) fn from_bytes(head: &[u8; DGRAM_HEAD]) -> Self {
+        Self {
+            socket_type: c_int::from_ne_bytes(field(head, TYPE_AT)),
+            socket_addr: SocketAddress {
+                addr: swoole_rs_corebase::net_types::AddressStorage {
+                    bytes: field(head, STORAGE_AT),
+                },
+                len: libc::socklen_t::from_ne_bytes(field(head, ADDR_LEN_AT)),
+                kind: c_int::from_ne_bytes(field(head, KIND_AT)),
+            },
+            length: u32::from_ne_bytes(field(head, LENGTH_AT)),
+        }
+    }
+
     /// The session a datagram is dispatched under: an IPv4 sender's address, else
     /// the CRC32 of its host text.
     pub(crate) fn sender(&self) -> c_long {

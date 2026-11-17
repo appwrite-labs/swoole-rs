@@ -30,42 +30,32 @@ const FD_DGRAM_SERVER: c_int = 2;
 #[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) const HEARTBEAT: u64 = u64::MAX;
 
-/// `ReactorThread_onPacketReceived`: dispatch the datagrams on the event's socket, a
-/// UDP port's, until it would block. Each is read into this thread's buffer; false when
-/// one fails.
-pub(crate) fn packet_received(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> bool {
-    let (buffer, size) = swoole_rs_corebase::buffer::string::with_thread_buffer(|b| {
-        (b.as_mut_ptr().cast(), b.size())
-    });
-    // SAFETY: this thread's packet buffer, live through dispatch; the next packet
-    // does not overwrite it until the current dispatch returns.
-    let buffer = unsafe { swoole_rs_corebase::reactor::Fill::from_raw(buffer, size) };
-    receive_packets(serv, reactor, event.fd(), buffer)
+thread_local! {
+    /// This thread's datagram buffer, the size of its `sw_tg_buffer()`: taken out while
+    /// a read dispatches from it, so a nested read makes its own.
+    static DATAGRAMS: core::cell::Cell<Option<Box<[u8]>>> = const { core::cell::Cell::new(None) };
 }
 
-/// [`packet_received`] from `fd` into the lent buffer. Its packet head must fit and
-/// be aligned; the payload occupies the remaining room.
-fn receive_packets(
-    serv: view::Server<'_>,
-    reactor: Reactor,
-    fd: c_int,
-    mut buffer: swoole_rs_corebase::reactor::Fill<'_>,
-) -> bool {
-    let buffer = buffer.slots();
-    let head = size_of::<DgramPacket>();
-    if !buffer
-        .as_ptr()
-        .addr()
-        .is_multiple_of(align_of::<DgramPacket>())
-    {
+/// `ReactorThread_onPacketReceived`: dispatch the datagrams on the event's socket, a
+/// UDP port's, until it would block. Each is read into this thread's datagram buffer;
+/// false when one fails.
+pub(crate) fn packet_received(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> bool {
+    let mut buffer = DATAGRAMS.take().unwrap_or_else(|| {
+        let size = swoole_rs_corebase::buffer::string::with_thread_buffer(|b| b.size());
+        vec![0; size].into_boxed_slice()
+    });
+    let received = receive_packets(serv, reactor, event.fd(), &mut buffer);
+    DATAGRAMS.set(Some(buffer));
+    received
+}
+
+/// [`packet_received`] from `fd` into `buffer`: each datagram's packet head, then the
+/// datagram in the remaining room.
+fn receive_packets(serv: view::Server<'_>, reactor: Reactor, fd: c_int, buffer: &mut [u8]) -> bool {
+    use crate::reactor_entry::DGRAM_HEAD as HEAD;
+    if buffer.len() < HEAD {
         return false;
     }
-    let data = buffer.as_mut_ptr().cast();
-    let Some(header) = buffer.get_mut(..head) else {
-        return false;
-    };
-    // The complete native head, including its padding, precedes each datagram.
-    header.fill(std::mem::MaybeUninit::new(0));
     let state = serv.state();
     // The event's fd is a listening socket's, whose slot holds its port.
     let Some(conn) = state.connection(fd.into(), Lookup::ByFd) else {
@@ -84,14 +74,10 @@ fn receive_packets(
         ..DataHead::default()
     };
     let base = state.config_ref().mode_ == Mode::Base;
+    // The complete native head, its padding zero, precedes each datagram.
+    let mut pkt = DgramPacket::default();
     loop {
-        let (header, payload) = buffer.split_at_mut(head);
-        #[expect(
-            clippy::cast_ptr_alignment,
-            reason = "alignment and head size checked above"
-        )]
-        // SAFETY: the checked, aligned head is initialized; every field is plain data.
-        let pkt = unsafe { &mut *header.as_mut_ptr().cast::<DgramPacket>() };
+        let (header, payload) = buffer.split_at_mut(HEAD);
         pkt.socket_type = kind;
         pkt.socket_addr.kind = kind;
         let mut room = swoole_rs_corebase::reactor::Fill::new(payload);
@@ -117,14 +103,16 @@ fn receive_packets(
             return false;
         };
         pkt.length = length;
+        header.copy_from_slice(&pkt.to_bytes());
         let info = DataHead {
             fd: pkt.sender(),
-            len: u32::try_from(head).unwrap_or(0).saturating_add(length),
             ..info
         };
-        // SAFETY: the packet head and the `length` bytes just received behind it, in the
-        // caller's buffer, which nothing writes until the dispatch returns.
-        let mut task = unsafe { SendData::from_raw(info, data) };
+        // The packet head and the `length` bytes just received behind it.
+        let Some(packet) = buffer.get(..HEAD + length as usize) else {
+            return false;
+        };
+        let mut task = SendData::new(info, packet);
         let dispatched = if base {
             // Base mode hands it to this process's worker as it does a connection's data.
             crate::base_factory::dispatch(serv, &mut task, true)
@@ -279,34 +267,13 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no datagram sockets")]
-    fn datagram_buffer_rejects_short_or_misaligned_head() {
+    fn datagram_buffer_rejects_a_short_head() {
         let live = crate::fixture::LiveServer::new();
         let (serv, reactor) = (live.server(), live.reactor());
         let (server, _client) = udp_port(&live);
         let fd = std::os::fd::AsRawFd::as_raw_fd(&server);
-        let mut short = [std::mem::MaybeUninit::new(0); 1];
-        assert!(!receive_packets(
-            serv,
-            reactor,
-            fd,
-            swoole_rs_corebase::reactor::Fill::new(&mut short)
-        ));
-
-        let mut bytes =
-            [std::mem::MaybeUninit::new(0); size_of::<DgramPacket>() + align_of::<DgramPacket>()];
-        let offset = usize::from(
-            bytes
-                .as_ptr()
-                .addr()
-                .is_multiple_of(align_of::<DgramPacket>()),
-        );
-        let misaligned = bytes.get_mut(offset..).unwrap();
-        assert!(!receive_packets(
-            serv,
-            reactor,
-            fd,
-            swoole_rs_corebase::reactor::Fill::new(misaligned)
-        ));
+        let mut short = [0; size_of::<DgramPacket>() - 1];
+        assert!(!receive_packets(serv, reactor, fd, &mut short));
     }
 
     #[test]
@@ -317,18 +284,12 @@ mod tests {
         let (serv, reactor) = (live.server(), live.reactor());
         let (server, client) = udp_port(&live);
         let fd = std::os::fd::AsRawFd::as_raw_fd(&server);
-        let mut buffer = vec![0_u64; 1024];
-        let (at, size) = (buffer.as_mut_ptr().cast(), buffer.len() * 8);
+        let mut buffer = vec![0; 8192];
         // Each pass drains what has arrived; loopback may deliver a datagram late.
-        let received = |count: usize| {
+        let mut received = |count: usize| {
             let mut heard = Vec::new();
             for _ in 0..1000 {
-                assert!(
-                    receive_packets(serv, reactor, fd, unsafe {
-                        swoole_rs_corebase::reactor::Fill::from_raw(at, size)
-                    }),
-                    "drained"
-                );
+                assert!(receive_packets(serv, reactor, fd, &mut buffer), "drained");
                 heard.extend(calls());
                 if heard.len() >= count {
                     break;
@@ -370,9 +331,7 @@ mod tests {
             )]
         );
 
-        let no_port = receive_packets(serv, reactor, -1, unsafe {
-            swoole_rs_corebase::reactor::Fill::from_raw(at, size)
-        });
+        let no_port = receive_packets(serv, reactor, -1, &mut buffer);
         assert!(!no_port, "no port");
         assert_eq!(calls(), []);
     }

@@ -15,7 +15,6 @@ use crate::reactor_ops::out_buffer;
 use crate::records::Lookup;
 use crate::view;
 use core::ffi::{c_char, c_int, c_long, c_void};
-use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::ServerEvent;
@@ -28,30 +27,23 @@ use swoole_rs_corebase::process::worker_record::{Worker, WorkerStatus};
 use swoole_rs_corebase::{CCast, log};
 
 /// `swoole::SendData`, and the `swoole::RecvData` a receive callback reads (the same
-/// two fields): an event's head and the payload it lends for `'a`.
+/// two fields): an event's head and the payload it lends for `'a`, or none.
 ///
-/// The fields are private to this module so that the pair keeps one invariant, which
-/// the safe readers ([`SendData::payload`], [`crate::send::send_to_connection`]) rely
-/// on: `data` is null, or points at `info.len` bytes that are readable, and not written,
-/// for `'a`. Only the constructors set `data` and `info.len`; the setters change the
-/// rest of the head, and only the bus's writes ([`SendData::send`]) lower `len`.
-#[repr(C)]
+/// The fields are private to this module, so only the constructors set the payload
+/// and `info.len`, which [`SendData::payload`] bounds by the payload; the setters
+/// change the rest of the head, and only the bus's writes ([`SendData::send`]) lower
+/// `len`.
 #[derive(Clone, Copy)]
 pub struct SendData<'a> {
     info: DataHead,
-    data: *const c_char,
-    lent: PhantomData<&'a [u8]>,
+    data: Option<&'a [u8]>,
 }
 
 impl<'a> SendData<'a> {
     /// An event with no payload.
     #[must_use]
     pub const fn empty(info: DataHead) -> Self {
-        Self {
-            info,
-            data: core::ptr::null(),
-            lent: PhantomData,
-        }
+        Self { info, data: None }
     }
 
     /// `info` and the bytes of `data`, whose length becomes `info.len` (at most
@@ -61,22 +53,7 @@ impl<'a> SendData<'a> {
         info.len = u32::try_from(data.len()).unwrap_or(u32::MAX);
         Self {
             info,
-            data: data.as_ptr().cast(),
-            lent: PhantomData,
-        }
-    }
-
-    /// `info` and the payload at `data`.
-    ///
-    /// # Safety
-    /// `data` is null, or points at `info.len` bytes that are readable, and not
-    /// written, for `'a`.
-    #[must_use]
-    pub const unsafe fn from_raw(info: DataHead, data: *const c_char) -> Self {
-        Self {
-            info,
-            data,
-            lent: PhantomData,
+            data: Some(data),
         }
     }
 
@@ -90,17 +67,15 @@ impl<'a> SendData<'a> {
     #[must_use]
     pub fn data(&self) -> *const c_char {
         self.data
+            .map_or(core::ptr::null(), |data| data.as_ptr().cast())
     }
 
-    /// The payload's `info.len` bytes; none for a null `data`.
+    /// The payload's `info.len` bytes; none without a payload.
     #[must_use]
     pub fn payload(&self) -> &'a [u8] {
-        if self.data.is_null() {
-            return &[];
-        }
-        // SAFETY: the fields' invariant: `info.len` bytes at `data`, readable and
-        // unwritten for `'a`.
-        unsafe { core::slice::from_raw_parts(self.data.cast(), self.info.len as usize) }
+        self.data.map_or(&[], |data| {
+            data.get(..self.info.len as usize).unwrap_or(data)
+        })
     }
 
     /// The head's session, and the listening fd it arrived on.
@@ -141,8 +116,7 @@ impl<'a> SendData<'a> {
         bus: &swoole_rs_bus::Bus,
         pipe: crate::view::PipeSocket<'_>,
     ) -> bool {
-        // The write only ever lowers `len`, so the payload stays within `data`'s bytes.
-        let data = (!self.data.is_null()).then(|| self.payload());
+        let data = self.data.map(|_| self.payload());
         bus.send(pipe.socket(), &mut self.info, data)
     }
 }

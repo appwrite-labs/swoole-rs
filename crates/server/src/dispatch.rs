@@ -612,17 +612,12 @@ mod tests {
     #[test]
     fn a_datagram_hashes_its_sender() {
         let w = Workers::new(4, DispatchMode::IpMod);
-        // SAFETY: a plain record, for which zero is valid.
-        let mut packet: crate::reactor_entry::DgramPacket = unsafe { core::mem::zeroed() };
+        let mut packet = crate::reactor_entry::DgramPacket::default();
         packet.socket_addr.kind = 2;
         packet.socket_addr.addr.inet_v4.sin_addr.s_addr = 0x0a00_0001_u32.to_be();
         // The event's length covers the packet's head, which names its sender.
-        let info = swoole_rs_corebase::DataHead {
-            len: u32::try_from(size_of_val(&packet)).unwrap(),
-            ..Default::default()
-        };
-        // SAFETY: `info.len` bytes of the packet, which outlives the send.
-        let send = unsafe { SendData::from_raw(info, (&raw const packet).cast()) };
+        let head = packet.to_bytes();
+        let send = SendData::new(swoole_rs_corebase::DataHead::default(), &head);
         assert_eq!(ip_key(w.live.state(), -1, Some(&send)), 0x0a00_0001);
         assert_eq!(
             schedule_worker(w.serv(), -1, Some(&send)),
