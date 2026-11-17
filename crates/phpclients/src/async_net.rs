@@ -22,9 +22,7 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     deny_unset,
     host::callable::Callable,
-    sys::{
-        ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, zend_class_entry, zend_object_handlers, zval,
-    },
+    sys::{ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, zend_class_entry, zend_object_handlers},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -129,14 +127,8 @@ fn callback(data: &net::Data, slot: Slot) -> Option<Rc<Callable>> {
 }
 
 /// Call `callable` with `argv`: whether the call succeeded.
-fn invoke(callable: &Callable, argv: &mut [zval]) -> Result<bool, Bailout> {
+fn invoke(callable: &Callable, argv: swoole_rs_zend::Zvals<'_>) -> Result<bool, Bailout> {
     callable.call(argv, None, true)
-}
-
-/// The handle's live object, lent for the call its caller makes: a borrowed
-/// copy, as upstream's `args[0] = *zobject`.
-fn object_zval(object: Obj) -> zval {
-    object.object().copy_value()
 }
 
 /// `client_execute_callback`: run the slot's callback with the object.
@@ -147,7 +139,10 @@ fn execute(object: Obj, slot: Slot) -> Result<(), Bailout> {
         warn(ErrorKind::Fatal, &format!("{class} has no {name} callback"));
         return Ok(());
     };
-    if !invoke(&callable, &mut [object_zval(object)])? {
+    if !object
+        .object()
+        .with_value(|value| invoke(&callable, swoole_rs_zend::Zvals::one(value)))?
+    {
         warn(ErrorKind::Fatal, &format!("{class}->{name} handler error"));
     }
     Ok(())
@@ -167,7 +162,7 @@ fn execute_and_release(object: Obj, slot: Slot) -> Result<(), Bailout> {
 /// `zval_addref_p`: the client holds its object from `connect()` until its
 /// connection is released.
 fn hold(object: Obj) {
-    let held = Value::of(&mut object_zval(object)).copy();
+    let held = object.object().with_value(Value::copy);
     object.data().held.set(Some(held));
 }
 
@@ -199,8 +194,11 @@ fn event(
             // SAFETY: the client lends `length` bytes for the call.
             let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
             let payload = Owned::string(ZString::new(bytes));
-            let mut argv = [object_zval(object), payload.copy_value()];
-            let called = callable.map_or(Ok(false), |callable| invoke(&callable, &mut argv));
+            let called = callable.map_or(Ok(false), |callable| {
+                object.object().with_value(|value| {
+                    swoole_rs_zend::Zvals::with([value, &payload], |args| invoke(&callable, args))
+                })
+            });
             // Our reference to the payload.
             drop(payload);
             if !called? {
@@ -363,7 +361,7 @@ fn connect(call: &Call) {
     }
     // The events `network::Client` raises on the object; a PHP bailout is
     // re-raised as the last step.
-    let Some(weak) = Weak::<net::Data>::of(Value::of(&mut object_zval(object))) else {
+    let Some(weak) = object.object().with_value(Weak::<net::Data>::of) else {
         return call.set_bool(false);
     };
     let listener = move |kind, data, length| {

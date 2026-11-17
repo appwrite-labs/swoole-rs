@@ -31,7 +31,7 @@ use swoole_rs_zend::{
     Value, ZString, Zvals, bailout, handlers,
     host::callable::FrameCallable,
     method_table,
-    sys::{self as z, ZEND_ACC_FINAL, ZEND_ACC_PUBLIC, zend_long, zval},
+    sys::{self as z, ZEND_ACC_FINAL, ZEND_ACC_PUBLIC, zend_long},
 };
 
 static SERVER: CustomClass<Data> = CustomClass::new();
@@ -770,12 +770,15 @@ fn shutdown(call: &Call) {
 
 /// The context's request and response objects, borrowed as upstream's
 /// handler arguments (released by the caller).
-fn objects(mut context: Ctx) -> [zval; 2] {
+fn objects<R>(mut context: Ctx, call: impl FnOnce(Zvals<'_>) -> R) -> R {
     let state = context.state();
-    [
-        state.request.zobject.copy_value(),
-        state.response.zobject.copy_value(),
-    ]
+    Zvals::with(
+        [
+            state.request.zobject.value(),
+            state.response.zobject.value(),
+        ],
+        call,
+    )
 }
 
 /// One connection's state across its requests.
@@ -1001,12 +1004,13 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         request_data(context, &mut buffer, total);
         drop(buffer);
         let callable = conn.server.handler(context);
-        let mut args = objects(context);
         let state = context.state();
         let keep_alive = state.parser.should_keep_alive() && !state.websocket;
         set_recv_wait(conn.socket, false);
         if let Some(callable) = callable {
-            if !call_handler(&callable, &mut args, false, NO_THEN)? {
+            if !objects(context, |args| {
+                call_handler(&callable, args, false, NO_THEN)
+            })? {
                 host::notice("handler error");
             }
         } else {
@@ -1118,10 +1122,9 @@ fn http2_request(
     }
     add_protocol(context.state(), Key::Http2);
     let callable = server.handler(context);
-    let mut args = objects(context);
     let mut result = Ok(());
     if let Some(callable) = callable {
-        match call_handler(&callable, &mut args, true, NO_THEN) {
+        match objects(context, |args| call_handler(&callable, args, true, NO_THEN)) {
             Err(bailout) => result = Err(bailout),
             Ok(false) => {
                 let stream_id = context.state().stream_id;

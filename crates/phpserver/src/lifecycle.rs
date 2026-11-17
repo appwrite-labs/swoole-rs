@@ -372,13 +372,15 @@ impl<'a> ServerObject<'a> {
         crate::instance::server_object()
     }
 
-    /// `f` over the running server's object, if there is one, borrowed without a
-    /// reference of its own: each `f` only reads or updates the object's Rust data
-    /// and runs no PHP code, so nothing frees the object meanwhile, and no release
-    /// (a bailout trap) follows on every callback lookup.
+    /// `f` over the running server's object, if the weak handle still resolves.
+    /// The held reference keeps its Rust data live throughout the callback.
     pub(crate) fn with_running<R>(f: impl FnOnce(ServerObject<'_>) -> R) -> Option<R> {
-        let mut object = crate::instance::server_zval();
-        Some(f(ServerObject::of(Value::of(&mut object))?))
+        let object = Self::running()?;
+        let result = f(ServerObject::of(&object)?);
+        // These callbacks only read or update Rust data; no PHP code can drop
+        // the reference that was live when the weak handle resolved.
+        object.delref();
+        Some(result)
     }
 
     /// The Server object `value` holds, if it is one.
@@ -1347,11 +1349,9 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
     if !swoole_rs_phpswoole::enable_library() {
         return Ok(());
     }
-    let mut zserv = crate::dispatch::zserv();
-    let called = swoole_rs_zend::host::named_call(
-        br"\Swoole\Server\Helper::onBeforeStart",
-        &[Value::of(&mut zserv)],
-    );
+    let zserv = crate::dispatch::zserv();
+    let called =
+        swoole_rs_zend::host::named_call(br"\Swoole\Server\Helper::onBeforeStart", &[&zserv]);
     trapped(called.is_err())
 }
 

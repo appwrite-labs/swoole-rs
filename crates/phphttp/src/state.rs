@@ -5,7 +5,7 @@ use std::{
     ffi::{CString, c_int, c_void},
     rc::Rc,
 };
-use swoole_rs_zend::{Declared, Kept, Owned, Props, UNDEF, Value, sys::zval};
+use swoole_rs_zend::{Declared, Kept, Owned, Props, Value};
 
 /// A context's request or response object: empty until the context sets it.
 #[repr(transparent)]
@@ -43,12 +43,6 @@ impl Slot {
             *made |= bit;
         }
         Some(object)
-    }
-
-    /// `ZVAL_COPY_VALUE`: the zval's bits without a reference of their own
-    /// (`IS_UNDEF` while empty), for Zend to borrow.
-    pub(crate) fn copy_value(&self) -> zval {
-        self.get().map_or(UNDEF, Value::copy_value)
     }
 
     /// Property writes on the slot's object, under its own class; None

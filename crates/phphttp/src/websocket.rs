@@ -31,7 +31,7 @@ use swoole_rs_websocket::{
 use swoole_rs_zend::{
     Array, Call, Class, Declared, Minit, Owned, Value, ZStr, ZString, bailout, handlers,
     method_table, string,
-    sys::{IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, zend_long, zval},
+    sys::{IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, zend_long},
 };
 
 static SERVER: Class = Class::new();
@@ -882,7 +882,7 @@ fn dispatch(
     server: view::Server<'_>,
     server_fd: c_int,
     event: PortCallback,
-    args: &mut [zval],
+    args: swoole_rs_zend::Zvals<'_>,
     fd: zend_long,
 ) -> Result<(), bailout::Bailout> {
     if crate::server::call_port(server, server_fd, event, args)? == Some(false) {
@@ -939,8 +939,14 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<bool, bailout::
     let frame = construct(zend_long::from(opcode), &data, flags);
     set(&frame, FD, Owned::long(fd));
     // The handler borrows the Frame, whose drop releases it.
-    let mut args = [zserv(), frame.copy_value()];
-    if let Err(bailout) = dispatch(server, server_fd, PortCallback::Message, &mut args, fd) {
+    let server_object = zserv();
+    let called = swoole_rs_zend::Zvals::with([&server_object, &frame], |args| {
+        dispatch(server, server_fd, PortCallback::Message, args, fd)
+    });
+    // Server::start's frame keeps the server live through its callbacks.
+    // Give back only this temporary hold, without running a destructor trap.
+    server_object.delref();
+    if let Err(bailout) = called {
         // As upstream, whose bailout jumps past the releases.
         let _kept = (data.into_zval(), frame.into_zval());
         return Err(bailout);
@@ -1011,18 +1017,26 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
             set_header(context, b"Sec-WebSocket-Protocol", &protocol)?;
         }
         let state = context.state();
-        let mut args = [
-            zserv(),
-            state.request.zobject.copy_value(),
-            state.response.zobject.copy_value(),
-        ];
-        dispatch(
-            server,
-            conn.server_fd,
-            PortCallback::BeforeHandshakeResponse,
-            &mut args,
-            fd,
-        )?;
+        let server_object = zserv();
+        let called = swoole_rs_zend::Zvals::with(
+            [
+                &server_object,
+                state.request.zobject.value(),
+                state.response.zobject.value(),
+            ],
+            |args| {
+                dispatch(
+                    server,
+                    conn.server_fd,
+                    PortCallback::BeforeHandshakeResponse,
+                    args,
+                    fd,
+                )
+            },
+        );
+        // The active Server::start frame still holds this object.
+        server_object.delref();
+        called?;
     } else {
         swoole_rs_phpclients::websocket_protocol(&context.state().zsocket);
     }
@@ -1049,8 +1063,11 @@ fn on_open(server: view::Server<'_>, mut context: Ctx) -> Result<(), bailout::Ba
         closed(c"swoole_websocket_onOpen", fd);
         return Ok(());
     };
-    let mut args = [zserv(), context.state().request.zobject.copy_value()];
-    dispatch(server, conn.server_fd, PortCallback::Open, &mut args, fd)
+    let server_object = zserv();
+    swoole_rs_zend::Zvals::with(
+        [&server_object, context.state().request.zobject.value()],
+        |args| dispatch(server, conn.server_fd, PortCallback::Open, args, fd),
+    )
 }
 
 /// `swoole_websocket_onRequest`, the default `onRequest`: 400 and close.

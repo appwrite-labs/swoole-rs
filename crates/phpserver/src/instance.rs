@@ -3,7 +3,7 @@
 //! request's payload (were ext-src/swoole_server.cc's `php_swoole_server_*`),
 //! for crates/phphttp, crates/phphttp2 and crates/phpredis too.
 use crate::RecvData;
-use crate::lifecycle::ServerObject;
+use crate::lifecycle::{ServerData, ServerObject};
 use std::os::unix::ffi::OsStrExt;
 use std::{
     cell::Cell,
@@ -16,39 +16,29 @@ use swoole_rs_corebase::{constants::EventDataFlag, log};
 pub use swoole_rs_ports::PortCallback;
 use swoole_rs_server::{SharedServer, event_worker, server_methods, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
-use swoole_rs_zend::{Owned, Value, ZString, bailout, sys::zval};
+use swoole_rs_zend::{Owned, Value, Weak, ZString, bailout};
 
 thread_local! {
     /// Upstream's `static SW_THREAD_LOCAL zval swoole_server_instance`: the running
-    /// server's object, named without a reference as upstream's zval was, with the
-    /// mark [`set_server_object`] gave it. Only the thread that runs PHP reads it.
-    /// Undefined until bound, and again once the object is being freed.
-    static INSTANCE: Cell<(zval, u64)> = const { Cell::new((swoole_rs_zend::UNDEF, 0)) };
+    /// server's weak handle and the mark [`set_server_object`] gave it. Only
+    /// its PHP thread reads it. Empty before binding and while being freed.
+    static INSTANCE: Cell<(Option<Weak<ServerData>>, u64)> = const { Cell::new((None, 0)) };
 }
 
 /// `php_swoole_server_zval_ptr()`: the running server's object, with a reference
 /// of its own; none before one is bound and once it is being freed.
 #[must_use]
 pub(crate) fn server_object() -> Option<Owned> {
-    let mut object = server_zval();
-    let object = Value::of(&mut object);
-    object.object().map(|_| object.copy())
-}
-
-/// `*php_swoole_server_zval_ptr()` as upstream copies it: the running server's
-/// object without a reference of its own (undefined for none), for an event's
-/// arguments.
-pub(crate) fn server_zval() -> zval {
-    INSTANCE.get().0
+    INSTANCE.get().0.and_then(|object| object.get())
 }
 
 /// `*php_swoole_server_zval_ptr() = *zserv`: no reference is taken.
 pub(crate) fn set_server_object(object: ServerObject<'_>) {
     let mark = INSTANCE.get().1 + 1;
     object.set_mark(mark);
-    // The copy takes no reference: `forget` drops it as the object's data is
-    // dropped, before Zend frees the object.
-    let copy = object.value().copy_value();
+    // The weak handle takes no reference. `forget` clears it before Zend
+    // reuses the handle, and each lookup checks the executor's live object store.
+    let copy = Weak::of(object.value());
     INSTANCE.set((copy, mark));
 }
 
@@ -56,7 +46,7 @@ pub(crate) fn set_server_object(object: ServerObject<'_>) {
 pub(crate) fn forget(mark: u64) {
     let (_, running) = INSTANCE.get();
     if running == mark {
-        INSTANCE.set((swoole_rs_zend::UNDEF, running));
+        INSTANCE.set((None, running));
     }
 }
 

@@ -1,7 +1,7 @@
 //! Long-lived callbacks own their zval, callable cache and diagnostic name together.
 use crate::{
     Function, Owned, Value, ZStr, ZString, bailout,
-    sys::{self, zend_fcall_info_cache, zval},
+    sys::{self, zend_fcall_info_cache},
 };
 use std::{
     ffi::{CStr, CString, c_int, c_long},
@@ -166,13 +166,19 @@ impl Callable {
     /// can replace during it lends an `Rc` clone, never a borrow of the slot.
     /// # Errors
     /// The callable bailed out.
+    ///
+    /// ```compile_fail
+    /// use swoole_rs_zend::{host::callable::Callable, UNDEF};
+    /// fn call_raw(callable: &Callable) {
+    ///     let _ = callable.call(&mut [UNDEF], None, false);
+    /// }
+    /// ```
     pub fn call(
         &self,
-        args: &mut [zval],
+        args: crate::Zvals<'_>,
         retval: Option<&crate::Value>,
         from_loop: bool,
     ) -> Result<bool, bailout::Bailout> {
-        let args = crate::zval::Zvals::of(args);
         let mut result = false;
         let body = || {
             result = if from_loop {

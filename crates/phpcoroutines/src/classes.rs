@@ -16,7 +16,7 @@ use swoole_rs_zend::{
     Call, Class, Minit, Owned, Value, ZStr,
     bailout::Bailout,
     opcode::{Entry, Frame, Handler, Next, handler},
-    sys::{ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, zend_class_entry, zval},
+    sys::{ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, zend_class_entry},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -37,7 +37,7 @@ unsafe extern "C" {
     /// frame's instruction, duplicated into `status`, which it writes without
     /// reading: an operand of a live instruction is a literal of its script or a
     /// slot of its frame.
-    safe fn swr_zend_exit_status(frame: Frame<'_>, status: &mut zval);
+    safe fn swr_zend_exit_status(frame: Frame<'_>, status: &mut Owned);
 }
 
 /// `zend_autoload`'s type: Zend passes the class's name and its lowercase
@@ -290,16 +290,15 @@ impl Handler for Exit {
     fn run(frame: Frame<'_>) -> Next {
         let flags = exit_flags();
         if flags != 0 {
-            let mut status = swoole_rs_zend::UNDEF;
+            let mut status = std::mem::ManuallyDrop::new(Owned::default());
             swr_zend_exit_status(frame, &mut status);
-            let status = Value::of(&mut status);
             // Upstream's extra reference, kept (never released) as it was.
             #[expect(
                 clippy::mem_forget,
                 reason = "upstream keeps this extra reference forever"
             )]
             std::mem::forget(status.copy());
-            throw_exit(c"swoole exit", flags, status);
+            throw_exit(c"swoole exit", flags, &status);
         }
         Next::Dispatch
     }
