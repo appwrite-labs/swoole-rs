@@ -179,6 +179,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "http_static_path"
+path = "fuzz_targets/http_static_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "http2_frame"
 path = "fuzz_targets/http2_frame.rs"
 test = false
