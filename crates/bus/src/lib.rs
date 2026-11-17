@@ -134,6 +134,8 @@ type PipeSockets = Box<[Option<OwnedSocket>]>;
 pub struct Bus {
     /// Taken out around reads and callbacks, like the packet table.
     buffer: Cell<Option<Box<OwnedString>>>,
+    /// Decoded once after a read; byte writes below keep the wire header in sync.
+    current: Cell<BusHead>,
     /// A callback may replace or free the buffer while its old owner is lent.
     buffer_generation: Cell<usize>,
     /// `pass` lends an external packet without serializing its pointer into bytes.
@@ -218,6 +220,7 @@ impl Bus {
     fn new(buffer_size: usize) -> Self {
         Self {
             buffer: Cell::default(),
+            current: Cell::default(),
             buffer_generation: Cell::new(0),
             passed: Cell::new(EMPTY),
             buffer_size: Cell::new(buffer_size),
@@ -228,22 +231,18 @@ impl Bus {
         }
     }
 
-    /// The current message's head; an empty one while no buffer is set.
+    /// The current message's decoded head; empty before allocation or after freeing.
     #[must_use]
+    #[inline]
     pub fn head(&self) -> BusHead {
-        lend(&self.buffer, |buffer| {
-            buffer
-                .view()
-                .first_chunk()
-                .map_or_else(BusHead::default, BusHead::from_bytes)
-        })
-        .unwrap_or_default()
+        self.current.get()
     }
 
     fn set_head(&self, head: &BusHead) {
         lend(&self.buffer, |buffer| {
             if let Some(to) = buffer.view_mut().get_mut(..HEAD) {
                 to.copy_from_slice(&head.to_bytes());
+                self.current.set(*head);
             }
         });
     }
@@ -276,15 +275,17 @@ impl Bus {
         result
     }
 
-    fn set_flags(&self, flags: u8) {
-        lend(&self.buffer, |buffer| {
-            if let Some(to) = buffer
-                .view_mut()
-                .get_mut(std::mem::offset_of!(BusHead, flags))
-            {
-                *to = flags;
-            }
-        });
+    fn set_flags(&self, buffer: &mut OwnedString, flags: u8) {
+        if let Some(to) = buffer
+            .view_mut()
+            .get_mut(std::mem::offset_of!(BusHead, flags))
+        {
+            *to = flags;
+            self.current.set(BusHead {
+                flags,
+                ..self.current.get()
+            });
+        }
     }
 
     fn data(&self) -> *mut u8 {
@@ -293,23 +294,23 @@ impl Bus {
             .wrapping_add(HEAD)
     }
 
-    /// `fill` over the first `length` bytes of the set buffer (at most all of it);
-    /// `None` while no buffer is set. `fill` reads into them and leaves the bus alone.
-    /// The bytes it read, or `None` when it failed (returned less than 0).
+    /// Read into the buffer's prefix, retaining bytes beyond a short read.
     fn fill(
         &self,
+        buffer: &mut OwnedString,
         length: usize,
         fill: impl FnOnce(&mut [MaybeUninit<u8>]) -> Option<usize>,
     ) -> Option<usize> {
-        lend(&self.buffer, |buffer| {
-            // SAFETY: the callers read through sys::read/recv/readv, initializing
-            // the reported prefix. Stream readv conservatively counts less of its
-            // already-initialized header when it reports its separate tail.
-            buffer.overwrite(length.min(self.buffer_size.get()), |spare| unsafe {
-                spare.read(fill)
-            })
-        })
-        .flatten()
+        // SAFETY: callers read through sys::read/recv/readv, initializing the
+        // reported prefix. Stream readv conservatively counts less of its
+        // already-initialized header when it reports its separate tail.
+        let received = buffer.overwrite(length, |spare| unsafe { spare.read(fill) });
+        if received.is_some()
+            && let Some(bytes) = buffer.view().first_chunk()
+        {
+            self.current.set(BusHead::from_bytes(bytes));
+        }
+        received
     }
 
     #[must_use]
@@ -420,15 +421,31 @@ impl Bus {
         nobufs: &mut bool,
     ) -> Option<usize> {
         state.event = None;
-        lend(&self.buffer, |_| ())?;
+        lend(&self.buffer, |buffer| {
+            self.read_buffer(buffer, fd, dgram, state, nobufs)
+        })
+        .flatten()
+    }
+
+    fn read_buffer(
+        &self,
+        buffer: &mut OwnedString,
+        fd: c_int,
+        dgram: bool,
+        state: &mut BusRead,
+        nobufs: &mut bool,
+    ) -> Option<usize> {
+        let buffer_size = self.buffer_size.get();
         loop {
             if state.resume {
                 state.resume = false;
             } else {
                 let n = if dgram {
-                    self.fill(usize::MAX, |slots| sys::read(fd, slots))
+                    self.fill(buffer, buffer_size, |slots| sys::read(fd, slots))
                 } else {
-                    self.fill(HEAD, |slots| sys::recv(fd, slots, libc::MSG_PEEK))
+                    self.fill(buffer, HEAD.min(buffer_size), |slots| {
+                        sys::recv(fd, slots, libc::MSG_PEEK)
+                    })
                 };
                 let Some(n) = n else {
                     return waits(nobufs).then_some(0);
@@ -446,11 +463,14 @@ impl Bus {
                     if dgram {
                         return Some(n);
                     }
-                    return self.fill(HEAD + head.len as usize, |slots| sys::read(fd, slots));
+                    return self.fill(
+                        buffer,
+                        (HEAD + head.len as usize).min(buffer_size),
+                        |slots| sys::read(fd, slots),
+                    );
                 }
             }
             let head = self.head();
-            let buffer_size = self.buffer_size.get();
             // The packets stay out across the stream's readv: one syscall on a
             // nonblocking pipe, which neither yields nor calls back.
             let read = lend(&self.packets, |packets| {
@@ -463,11 +483,9 @@ impl Bus {
                             Self::allocate(state, length);
                             break 'chunk Err(Some(0));
                         }
-                        lend(&self.buffer, |buffer| {
-                            let bytes = buffer.view().get(HEAD..HEAD + count).unwrap_or_default();
-                            packet.fill(|spare| {
-                                let _ = spare.put(bytes);
-                            });
+                        let bytes = buffer.view().get(HEAD..HEAD + count).unwrap_or_default();
+                        packet.fill(|spare| {
+                            let _ = spare.put(bytes);
                         });
                         Some(state.received)
                     } else {
@@ -478,7 +496,7 @@ impl Bus {
                             // only the bytes after that header initialize the lent spare.
                             unsafe {
                                 spare.read(|tail| {
-                                    self.fill(HEAD, |header| {
+                                    self.fill(buffer, HEAD.min(buffer_size), |header| {
                                         received = sys::readv(
                                             fd,
                                             &mut [ReadVec::new(header), ReadVec::new(tail)],
@@ -514,14 +532,16 @@ impl Bus {
                         return None;
                     }
                     // Read the chunk's header from the pipe and discard it.
-                    _ = self.fill(HEAD, |slots| sys::recv(fd, slots, 0));
+                    _ = self.fill(buffer, HEAD.min(buffer_size), |slots| {
+                        sys::recv(fd, slots, 0)
+                    });
                     return Some(0);
                 }
             };
             state.chunks = state.chunks.wrapping_add(1);
             let flags = self.head().flags;
             if flags & END != 0 {
-                self.set_flags(flags | OBJ_PTR);
+                self.set_flags(buffer, flags | OBJ_PTR);
                 return n;
             }
             if state.chunks >= MAX_RECV_CHUNKS {
@@ -736,6 +756,7 @@ impl Bus {
         self.buffer_generation
             .set(self.buffer_generation.get().wrapping_add(1));
         self.passed.set(EMPTY);
+        self.current.set(BusHead::default());
         drop(self.buffer.take());
     }
 
@@ -1223,21 +1244,27 @@ mod tests {
         let mut message = header.to_vec();
         message.extend_from_slice(b"data");
         assert_eq!(
-            bus.fill(128, |room| {
+            lend(&bus.buffer, |buffer| bus.fill(buffer, 128, |room| {
                 room[..message.len()].write_copy_of_slice(&message);
                 Some(message.len())
-            }),
+            }))
+            .flatten(),
             Some(message.len())
         );
         assert_eq!(bus.with_whole(<[u8]>::to_vec), Some(message.clone()));
-        // A short overwrite retains the initialized bytes after it.
+        // A short overwrite updates the decoded head and retains later bytes.
+        let mut changed = header;
+        changed[0] ^= 1;
+        message[0] = changed[0];
         assert_eq!(
-            bus.fill(1, |room| {
-                room[0].write(header[0]);
+            lend(&bus.buffer, |buffer| bus.fill(buffer, 1, |room| {
+                room[0].write(changed[0]);
                 Some(1)
-            }),
+            }))
+            .flatten(),
             Some(1)
         );
+        assert_eq!(bus.head().fd, BusHead::from_bytes(&changed).fd);
         assert_eq!(
             bus.with_whole(|bytes| {
                 bus.free_buffer();
@@ -1246,6 +1273,7 @@ mod tests {
             Some(message)
         );
         assert!(!bus.holds_whole());
+        assert_eq!(bus.head().fd, 0);
         assert!(bus.alloc_buffer(128, allocator()));
         let header = bus.head().to_bytes();
         bus.with_whole(|bytes| {
