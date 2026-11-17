@@ -6,7 +6,9 @@
 use super::*;
 use crate::TEST_STR;
 use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU16, AtomicU64};
-use swoole_rs_clients::client::{self as native, ClientEvent, Handle, listen};
+use swoole_rs_clients::client::{
+    self as native, ClientEvent, Handle, Listener, Notification, listen,
+};
 use swoole_rs_corebase::process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_corebase::process::worker_record::WorkerRecord;
 use swoole_rs_corebase::swoole_random_int;
@@ -1562,20 +1564,6 @@ fn clean_client() -> Handle<'static> {
     client.expect("test_clean_worker made the client").0
 }
 
-/// The client's `on_connect`, `on_close`, `on_error` and `on_receive`.
-fn clean_client_event(event: ClientEvent, _: *const c_char, error: usize) {
-    match event {
-        ClientEvent::Connect => {
-            _ = native::send(clean_client(), TEST_STR.as_bytes(), 0);
-        }
-        ClientEvent::Error => eprintln!("WARNING: connect failed, error={error}"),
-        ClientEvent::Receive => {
-            counter_incr(3, 1);
-        }
-        _ => {}
-    }
-}
-
 fn clean_connect_timer(_: Server, _: Held) {
     let events = [
         ClientEvent::Connect,
@@ -1588,7 +1576,19 @@ fn clean_connect_timer(_: Server, _: Held) {
     listen(
         clean_client().client(),
         events,
-        std::rc::Rc::new(clean_client_event),
+        Listener::new(
+            swoole_rs_corebase::TrustedAllocator::STD,
+            |event| match event {
+                Notification::Connect => {
+                    _ = native::send(clean_client(), TEST_STR.as_bytes(), 0);
+                }
+                Notification::Error(error) => eprintln!("WARNING: connect failed, error={error}"),
+                Notification::Receive(_) => {
+                    counter_incr(3, 1);
+                }
+                _ => {}
+            },
+        ),
     );
     let host = CString::new(TEST_HOST).unwrap();
     let port = CLEAN_PORT.load(Ordering::SeqCst).into();

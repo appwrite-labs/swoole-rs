@@ -21,9 +21,11 @@ use super::{
     fork, kill, last_error, random_bytes,
 };
 use std::cell::{Cell, RefCell};
-use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
+use std::ffi::{CStr, CString, c_int, c_long, c_void};
 use std::io::{Read, Write};
-use swoole_rs_clients::client::{self as native, ClientEvent, Flag, Handle, Owner};
+use swoole_rs_clients::client::{
+    self as native, ClientEvent, Flag, Handle, Listener, Notification, Owner,
+};
 use swoole_rs_corebase::buffer::string::OwnedString;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_ffi::event_api::swoole_event_wait;
@@ -123,26 +125,19 @@ pub(super) struct Client<'a> {
     on_receive: ReceiveSlot<'a>,
 }
 
-unsafe extern "C" fn listener(
-    object: *mut c_void,
-    kind: ClientEvent,
-    data: *const c_char,
-    length: usize,
-) {
+unsafe fn listener(object: *mut c_void, event: Notification) {
     // SAFETY: `listen` passed the boxed client, alive while its loop runs.
     let cli = unsafe { &*object.cast::<Client>() };
-    if kind == ClientEvent::Receive {
-        // SAFETY: the client's received bytes.
-        let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
-        (cli.on_receive.borrow_mut().as_mut().unwrap())(cli, bytes);
-        return;
-    }
-    let slot = match kind {
-        ClientEvent::Connect => &cli.on_connect,
-        ClientEvent::Error => &cli.on_error,
-        ClientEvent::Close => &cli.on_close,
-        ClientEvent::BufferFull => &cli.on_buffer_full,
-        ClientEvent::BufferEmpty | ClientEvent::Receive => &cli.on_buffer_empty,
+    let slot = match event {
+        Notification::Receive(payload) => {
+            (cli.on_receive.borrow_mut().as_mut().unwrap())(cli, payload.view());
+            return;
+        }
+        Notification::Connect => &cli.on_connect,
+        Notification::Error(_) => &cli.on_error,
+        Notification::Close => &cli.on_close,
+        Notification::BufferFull => &cli.on_buffer_full,
+        Notification::BufferEmpty => &cli.on_buffer_empty,
     };
     (slot.borrow_mut().as_mut().unwrap())(cli);
 }
@@ -204,9 +199,12 @@ impl<'a> Client<'a> {
             self.client(),
             events,
             // SAFETY: the boxed client outlives its callbacks.
-            std::rc::Rc::new(move |kind, data, length| unsafe {
-                listener(object.cast_mut(), kind, data, length);
-            }),
+            Listener::new(
+                swoole_rs_corebase::TrustedAllocator::STD,
+                move |event| unsafe {
+                    listener(object.cast_mut(), event);
+                },
+            ),
         );
     }
 

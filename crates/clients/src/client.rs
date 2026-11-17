@@ -18,7 +18,7 @@ use core::ptr::NonNull;
 use std::ffi::{CStr, CString};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
-use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::{CppString, OwnedString};
 use swoole_rs_corebase::constants::{
     FdType, ResultCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE,
     SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
@@ -36,7 +36,7 @@ use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_corebase::tls::{
     OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslState, SslVersion, TlsContext, TlsSettings,
 };
-use swoole_rs_corebase::{BoxCellExt, CCast, CellExt};
+use swoole_rs_corebase::{BoxCellExt, CCast, CellExt, TrustedAllocator};
 use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
 use swoole_rs_error::ErrorCode;
 
@@ -88,11 +88,49 @@ impl ClientEvent {
     }
 }
 
-/// The client's callbacks: `listener(event, data, length)`, with `data`
-/// holding the `length` received bytes for [`ClientEvent::Receive`] (lent for the
-/// call: the listener may free the client, and with it the buffer), and the last
-/// error as `length` for [`ClientEvent::Error`].
-pub type Listener = Rc<dyn Fn(ClientEvent, *const c_char, usize)>;
+/// A notification owns its payload so its handler can close the client.
+pub enum Notification {
+    Connect,
+    Receive(OwnedString),
+    Close,
+    Error(u32),
+    BufferFull,
+    BufferEmpty,
+}
+
+impl Notification {
+    #[must_use]
+    pub const fn kind(&self) -> ClientEvent {
+        match self {
+            Self::Connect => ClientEvent::Connect,
+            Self::Receive(_) => ClientEvent::Receive,
+            Self::Close => ClientEvent::Close,
+            Self::Error(_) => ClientEvent::Error,
+            Self::BufferFull => ClientEvent::BufferFull,
+            Self::BufferEmpty => ClientEvent::BufferEmpty,
+        }
+    }
+}
+
+/// The receiver chooses the allocator for payloads it takes ownership of.
+#[derive(Clone)]
+pub struct Listener {
+    allocator: TrustedAllocator,
+    notify: Rc<dyn Fn(Notification)>,
+}
+
+impl Listener {
+    pub fn new(allocator: TrustedAllocator, notify: impl Fn(Notification) + 'static) -> Self {
+        Self {
+            allocator,
+            notify: Rc::new(notify),
+        }
+    }
+
+    fn payload(&self, bytes: &[u8]) -> OwnedString {
+        OwnedString::copy_in(bytes, self.allocator)
+    }
+}
 
 /// The socket's blocking connect modes: `connect_sync` and `connect(2)`.
 #[derive(Clone, Copy, Debug)]
@@ -380,20 +418,16 @@ impl Handle<'_> {
         self.get().events.get() & event.bit() != 0
     }
 
-    /// Runs the user callback for `event`, if the listener hears it. The client
-    /// may be gone afterwards: the call holds its own reference to the listener.
-    fn call(self, event: ClientEvent, data: *const c_char, length: usize) {
-        let held = self.get().listener.with_taken(|held| held.clone());
-        let Some(listener) = held.filter(|_| self.has(event)) else {
-            return;
-        };
-        let length = if event == ClientEvent::Error {
-            log::last_error().unsigned_abs() as usize
-        } else {
-            length
-        };
-        // Nothing of the client is borrowed across the call, which may release it.
-        listener(event, data, length);
+    fn listener(self, kind: ClientEvent) -> Option<Listener> {
+        self.has(kind)
+            .then(|| self.get().listener.with_taken(|held| held.clone()))
+            .flatten()
+    }
+
+    fn call(self, event: Notification) {
+        if let Some(listener) = self.listener(event.kind()) {
+            (listener.notify)(event);
+        }
     }
 
     fn event(self, op: EventOp, events: Events) -> bool {
@@ -477,8 +511,11 @@ impl Handle<'_> {
     }
 
     /// `edit` over the input buffer, which exists, the socket and its operations.
-    /// `edit` is a plain fn, which cannot reach the client to borrow the buffer again.
-    fn edit_input<R>(self, edit: fn(&mut CppString, Socket<'static>, &SocketOps) -> R) -> R {
+    /// Each edit finishes before a callback can reenter the client.
+    fn edit_input<R>(
+        self,
+        edit: impl FnOnce(&mut CppString, Socket<'static>, &SocketOps) -> R,
+    ) -> R {
         let socket = self.socket();
         let ops = self.get().socket_ops;
         if self.input().is_null() {
@@ -508,16 +545,6 @@ impl Handle<'_> {
                 .edit_record(|record| record.buffer = core::ptr::null_mut());
             self.get().input.replace(CppString::EMPTY).dispose();
         }
-    }
-
-    /// Where the input buffer's next read lands; the buffer exists.
-    fn input_tail(self) -> *const c_char {
-        self.edit_input(|buffer, _, _| buffer.as_mut_ptr().wrapping_add(buffer.len()).cast())
-    }
-
-    /// One read into the input buffer's free tail; the buffer exists.
-    fn input_recv(self) -> Option<usize> {
-        self.edit_input(|buffer, socket, ops| (ops.recv)(socket, buffer.spare(), 0))
     }
 
     /// `buffer->clear()`.
@@ -603,7 +630,7 @@ impl Handle<'_> {
     /// `execute_onConnect`.
     fn on_connect(self) {
         self.timer_clear();
-        self.call(ClientEvent::Connect, core::ptr::null(), 0);
+        self.call(Notification::Connect);
     }
 }
 
@@ -612,16 +639,12 @@ impl Handle<'_> {
 /// holds it, and a client's framed receive calls it with that client's socket, whose
 /// free is deferred past the call: as for the reactor handlers below, the socket's
 /// kind is what makes its object a client.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "`OnPackage` lends the package by value"
-)]
-fn on_package(_: *const Protocol, socket: Socket<'_>, package: Package<'_>) -> c_int {
-    Handle::raw(socket.read(|socket| socket.object).cast()).call(
-        ClientEvent::Receive,
-        package.as_ptr().cast(),
-        package.len(),
-    );
+fn on_package(_: *const Protocol, socket: Socket<'_>, mut package: Package<'_>) -> c_int {
+    let client = Handle::raw(socket.read(|socket| socket.object).cast());
+    if let Some(listener) = client.listener(ClientEvent::Receive) {
+        let payload = listener.payload(package.bytes());
+        (listener.notify)(Notification::Receive(payload));
+    }
     if socket.read(|socket| socket.output.close_wait) {
         ERR
     } else {
@@ -967,7 +990,7 @@ pub fn close(this: Handle<'_>) -> bool {
         if this.flag(Flag::Active) {
             this.set(Flag::Active, false);
             // onClose may destroy the client: only the saved socket is read after it.
-            this.call(ClientEvent::Close, core::ptr::null(), 0);
+            this.call(Notification::Close);
         }
     } else {
         this.set(Flag::Active, false);
@@ -1414,7 +1437,7 @@ fn tcp_connect_async(this: Handle<'_>, host: &CStr, port: c_int, timeout: f64) -
     close(this);
     if this.has(ClientEvent::Error) {
         this.set(Flag::OnerrorCalled, true);
-        this.call(ClientEvent::Error, core::ptr::null(), 0);
+        this.call(Notification::Error(log::last_error().unsigned_abs()));
     }
     false
 }
@@ -1476,7 +1499,7 @@ fn udp_connect(
             close(this);
             if is_async && this.has(ClientEvent::Error) {
                 this.set(Flag::OnerrorCalled, true);
-                this.call(ClientEvent::Error, core::ptr::null(), 0);
+                this.call(Notification::Error(log::last_error().unsigned_abs()));
             }
             return false;
         }
@@ -1526,7 +1549,6 @@ type BufferLoan = fn(&mut dyn FnMut(&mut CppString));
 struct SocketOps {
     /// Lends the scratch buffer to the callback exactly once, synchronously.
     with_buffer: BufferLoan,
-    recv: fn(Socket<'_>, &mut [core::mem::MaybeUninit<u8>], c_int) -> Option<usize>,
     recv_append: fn(Socket<'_>, &mut CppString) -> Option<usize>,
     recv_sync: fn(Socket<'_>, &mut Spare<'_>, c_int) -> Option<usize>,
     recvfrom_sync: fn(Socket<'_>, &mut Spare<'_>, c_int, &mut SocketAddress) -> Option<usize>,
@@ -1557,7 +1579,6 @@ struct SocketOps {
 impl SocketOps {
     const NATIVE: Self = Self {
         with_buffer: |f| swoole_rs_corebase::buffer::string::with_thread_buffer(f),
-        recv: swoole_rs_corebase::tls::upstream::recv,
         recv_append: swoole_rs_corebase::tls::upstream::recv_append,
         recv_sync: swoole_rs_corebase::tls::upstream::recv_sync_spare,
         recvfrom_sync: swoole_rs_corebase::tls::upstream::recvfrom_sync_spare,
@@ -1739,7 +1760,7 @@ fn send_async(this: Handle<'_>, data: &[u8]) -> Option<usize> {
         && this.queued() >= this.get().high_watermark.get()
     {
         this.set(Flag::HighWatermark, true);
-        this.call(ClientEvent::BufferFull, core::ptr::null(), 0);
+        this.call(Notification::BufferFull);
     }
     n
 }
@@ -1792,7 +1813,7 @@ fn connect_failed(this: Handle<'_>) -> bool {
     this.set(Flag::Active, false);
     close(this);
     if this.has(ClientEvent::Error) {
-        this.call(ClientEvent::Error, core::ptr::null(), 0);
+        this.call(Notification::Error(log::last_error().unsigned_abs()));
     }
     true
 }
@@ -1800,7 +1821,6 @@ fn connect_failed(this: Handle<'_>) -> bool {
 /// `Client_onStreamRead`: the proxy and TLS handshakes that finish a connect,
 /// then framed or plain reads, on a live async stream client with its input buffer.
 fn on_read(this: Handle<'_>) -> bool {
-    let buf = this.input_tail();
     let do_ssl_handshake = this.flag(Flag::OpenSsl);
     let http = this.proxy_state(Proxy::Http);
     if http.is_some_and(|state| state != HTTP_PROXY_READY) {
@@ -1870,7 +1890,18 @@ fn on_read(this: Handle<'_>) -> bool {
         }
         return true;
     }
-    let Some(n) = this.input_recv() else {
+    let listener = this.listener(ClientEvent::Receive);
+    let read = this.edit_input(|input, socket, ops| {
+        let start = input.len();
+        let n = (ops.recv_append)(socket, input)?;
+        let payload = listener
+            .as_ref()
+            .filter(|_| n != 0)
+            .map(|listener| listener.payload(input.view().get(start..).unwrap_or_default()));
+        input.truncate(start);
+        Some((n, payload))
+    });
+    let Some((n, payload)) = read else {
         let socket = this.socket();
         return match socket.catch_error(errno()) {
             Caught::Error => {
@@ -1888,7 +1919,9 @@ fn on_read(this: Handle<'_>) -> bool {
     if n == 0 {
         return close(this);
     }
-    this.call(ClientEvent::Receive, buf, n);
+    if let (Some(listener), Some(payload)) = (listener, payload) {
+        (listener.notify)(Notification::Receive(payload));
+    }
     true
 }
 
@@ -1900,17 +1933,20 @@ fn on_datagram(this: Handle<'_>) -> bool {
     )]
     let mut buffer = [0_u8; BUFFER_SIZE_UDP];
     // Upstream's datagram receive, even once DTLS made `recv` a stream one.
-    let (n, _) = lend_spare(&mut buffer, |spare| {
+    let (n, filled) = lend_spare(&mut buffer, |spare| {
         if this.flag(Flag::Async) {
             this.recvfrom_sync(spare, 0)
         } else {
             this.recvfrom(spare, 0)
         }
     });
-    let Some(n) = n else {
+    if n.is_none() {
         return false;
-    };
-    this.call(ClientEvent::Receive, buffer.as_ptr().cast(), n);
+    }
+    if let Some(listener) = this.listener(ClientEvent::Receive) {
+        let payload = listener.payload(buffer.get(..filled).unwrap_or_default());
+        (listener.notify)(Notification::Receive(payload));
+    }
     true
 }
 
@@ -1940,7 +1976,7 @@ fn on_write(this: Handle<'_>, reactor: Running<'_>, event: &mut Event) -> bool {
             && this.queued() <= this.get().low_watermark.get()
         {
             this.set(Flag::HighWatermark, false);
-            this.call(ClientEvent::BufferEmpty, core::ptr::null(), 0);
+            this.call(Notification::BufferEmpty);
         }
         return true;
     }
@@ -1987,7 +2023,7 @@ fn on_write(this: Handle<'_>, reactor: Running<'_>, event: &mut Event) -> bool {
 fn write_failed(this: Handle<'_>) -> bool {
     this.set(Flag::Active, false);
     close(this);
-    this.call(ClientEvent::Error, core::ptr::null(), 0);
+    this.call(Notification::Error(log::last_error().unsigned_abs()));
     true
 }
 
@@ -2016,7 +2052,7 @@ fn on_timeout(this: Handle<'_>) {
     }
     close(this);
     if this.has(ClientEvent::Error) {
-        this.call(ClientEvent::Error, core::ptr::null(), 0);
+        this.call(Notification::Error(log::last_error().unsigned_abs()));
     }
 }
 
@@ -2039,7 +2075,7 @@ fn resolved(this: Handle<'_>, error: c_int, address: &CStr) {
     close(this);
     if this.has(ClientEvent::Error) {
         this.set(Flag::OnerrorCalled, true);
-        this.call(ClientEvent::Error, core::ptr::null(), 0);
+        this.call(Notification::Error(log::last_error().unsigned_abs()));
     }
 }
 

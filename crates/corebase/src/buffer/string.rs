@@ -33,6 +33,19 @@ pub struct CppString {
 pub struct OwnedString(CppString);
 
 impl OwnedString {
+    /// Copy a payload into an exactly sized allocation from the receiver's allocator.
+    #[must_use]
+    pub fn copy_in(bytes: &[u8], allocator: TrustedAllocator) -> Self {
+        if bytes.is_empty() {
+            return Self::default();
+        }
+        let mut owned = Self::try_alloc_exact(bytes.len(), allocator)
+            .unwrap_or_else(|| crate::fatal("out of memory"));
+        owned.0.allocation().write_copy_of_slice(bytes);
+        owned.0.length = bytes.len();
+        owned
+    }
+
     /// A fresh allocation of exactly `size` bytes, or `None` when `allocator` fails.
     #[must_use]
     pub fn try_alloc_exact(size: usize, allocator: TrustedAllocator) -> Option<Self> {
