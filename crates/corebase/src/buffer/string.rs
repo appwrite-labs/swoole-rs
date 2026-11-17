@@ -183,15 +183,6 @@ impl CppString {
         self.offset = 0;
     }
 
-    /// Count the buffer's first `length` bytes as the content.
-    ///
-    /// # Safety
-    /// `length <= size()`, and those bytes are initialized.
-    #[inline]
-    pub const unsafe fn set_len(&mut self, length: usize) {
-        self.length = length;
-    }
-
     /// Appends what `fill` writes into the room past the content: what it returned.
     #[inline]
     pub fn fill<R>(&mut self, fill: impl for<'s> FnOnce(&mut Spare<'s>) -> R) -> R {

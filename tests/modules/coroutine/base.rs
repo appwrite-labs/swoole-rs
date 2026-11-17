@@ -46,8 +46,8 @@ const O_CREAT: c_int = 0o100;
 const SEEK_SET: c_int = 0;
 const SEEK_CUR: c_int = 1;
 /// The offset of the context's `end` in a coroutine's record: the
-/// `swr_v1_coroutine` (96 bytes), then the `swr_v1_context` fields before `end` (64).
-const FACADE_END: usize = 96 + 64;
+/// `swr_v1_coroutine` (120 bytes), then the `swr_v1_context` fields before `end` (56).
+const FACADE_END: usize = 120 + 56;
 
 type SwapCallback = swoole_rs_corebase::coroutine::SwapCallback;
 
@@ -59,7 +59,7 @@ struct Co {
     state: i32,
     resume_code: i32,
     task: *mut c_void,
-    cancel_fn: *mut c_void,
+    cancel: [*mut c_void; 3],
     origin: *mut Co,
     first_child: *mut Co,
     prev_sibling: *mut Co,
@@ -222,8 +222,7 @@ impl View {
         unsafe { swoole_rs_corebase::coroutine::resume(self.0.cast()) };
     }
     fn cancel(&self) -> bool {
-        // SAFETY: a live coroutine.
-        unsafe { coroutine_cancel(self.0.cast()) }
+        coroutine_cancel(self.0.cast())
     }
 }
 

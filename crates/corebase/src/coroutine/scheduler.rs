@@ -6,8 +6,9 @@
 //! build without `upstream-symbols`; facade.rs builds the rest on them.
 use crate::coroutine::context::{self, Native};
 use crate::coroutine::state::{self as ops, Co, Sched};
-use crate::coroutine::{Canceler, Coroutine, CoroutineTask, Hooks, Routine, Scheduler};
+use crate::coroutine::{Coroutine, CoroutineTask, Hooks, Routine, Scheduler};
 use crate::log;
+use crate::small_fn::Small;
 use core::cell::UnsafeCell;
 use core::ffi::{c_long, c_void};
 use core::ptr::{self, NonNull};
@@ -252,19 +253,6 @@ pub unsafe extern "C-unwind" fn resume(co: *mut c_void) {
     }
 }
 
-/// Runs a copy of the yield's closure at `data` over the canceled `co`.
-///
-/// # Safety
-/// `data` is the `F` of the yield `co` still waits in.
-unsafe fn run_canceler<F: FnOnce(*mut c_void) -> bool + Copy>(
-    co: *mut c_void,
-    data: *const c_void,
-) -> bool {
-    // SAFETY: as the caller promises; copied, as `cancel` may end its frame.
-    let cancel = unsafe { data.cast::<F>().read() };
-    cancel(co)
-}
-
 /// `co->yield()` of `co`, the running coroutine (aborting otherwise), until it
 /// is resumed.
 ///
@@ -287,31 +275,36 @@ pub fn park(co: *mut c_void, arm: impl FnOnce(crate::coroutine::Waker)) {
 }
 
 /// `co->yield(&cancel_fn)` of `co`, the running coroutine (aborting
-/// otherwise), where `cancel_fn` calls `cancel(co)` once `co` is marked canceled.
+/// otherwise), where `cancel_fn` calls `cancel()` once `co` is marked canceled.
 ///
-/// As [`suspend`], it asks nothing of its caller: `cancel` and its canceler sit on
-/// this frame, which stays in place while the coroutine is parked, and the
-/// coroutine's cancel function is cleared before this returns.
-pub fn yield_with_cancel<F: FnOnce(*mut c_void) -> bool + Copy>(co: *mut c_void, cancel: F) {
+/// As [`suspend`], it asks nothing of its caller: the coroutine holds a copy of
+/// `cancel` (at most two words) while parked, and drops it before this returns.
+pub fn yield_with_cancel<F: Fn() -> bool + Copy + 'static>(co: *mut c_void, cancel: F) {
     yield_with_cancel_armed(co, cancel, |_| ());
+}
+
+/// A cancelable yield's canceler, which a cancel takes out of the coroutine and runs.
+struct Cancel<F>(F);
+
+impl<F: Fn() -> bool + Copy + 'static> Small<bool> for Cancel<F> {
+    fn run(&self) -> bool {
+        (self.0)()
+    }
+    fn consume(self) -> bool {
+        (self.0)()
+    }
 }
 
 /// [`yield_with_cancel`], handing `arm` the [`Waker`](crate::coroutine::Waker) that ends this
 /// park before `co` switches out.
 #[inline]
-pub fn yield_with_cancel_armed<F: FnOnce(*mut c_void) -> bool + Copy>(
+pub fn yield_with_cancel_armed<F: Fn() -> bool + Copy + 'static>(
     co: *mut c_void,
     cancel: F,
     arm: impl FnOnce(crate::coroutine::Waker),
 ) {
     let s = Sched::this();
-    let co = Co::running(s, co.cast());
-    let canceler = Canceler {
-        call: run_canceler::<F>,
-        data: (&raw const cancel).cast(),
-    };
-    // The canceler outlives the yield.
-    ops::yield_cancelable(s, co, (&raw const canceler).cast_mut().cast(), arm);
+    ops::yield_cancelable(s, Co::running(s, co.cast()), Cancel(cancel), arm);
 }
 
 /// `static void Coroutine::bailout(callback)`: inside a coroutine the

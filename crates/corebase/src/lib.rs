@@ -49,6 +49,7 @@ pub mod net_types;
 pub mod ossupport;
 mod random;
 mod signal_mask;
+mod small_fn;
 pub mod sys;
 pub use sys::set_errno;
 pub mod switches;
