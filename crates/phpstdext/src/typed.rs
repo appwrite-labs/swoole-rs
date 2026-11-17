@@ -7,13 +7,12 @@ use std::{
     cell::Cell,
     ffi::{CStr, CString, c_int},
     io::IoSlice,
-    marker::PhantomData,
     mem::offset_of,
     slice,
     sync::OnceLock,
 };
 use swoole_rs_zend::{
-    Call, ClassEntry, Owned, Php, Value, ZString,
+    Array, Call, ClassEntry, Owned, Php, Value, ZString,
     bailout::Bailout,
     handlers,
     opcode::Handler,
@@ -70,22 +69,6 @@ enum Failure {
     Bailout(Bailout),
 }
 
-/// A `HashTable`'s header as this module reads it, word by word, each a `Cell`:
-/// Zend rewrites the table in place, through pointers, as it changes it.
-type Table = [Cell<u32>; size_of::<HashTable>() / 4];
-
-/// `HT_FLAGS(ht)`'s word in a [`Table`].
-const FLAGS: usize = offset_of!(HashTable, u) / 4;
-/// `zend_hash_num_elements`'s word in a [`Table`].
-const COUNT: usize = offset_of!(HashTable, nNumOfElements) / 4;
-
-const _: () = assert!(
-    offset_of!(HashTable, u).is_multiple_of(4)
-        && offset_of!(HashTable, nNumOfElements).is_multiple_of(4)
-        && size_of::<HashTable>().is_multiple_of(4),
-    "Table words are a HashTable's header"
-);
-
 /// `get_type_info`: the definition behind a typed array's table.
 fn info_of<'a>(ht: *mut HashTable) -> *mut TypeInfo<'a> {
     ht.wrapping_byte_add(size_of::<HashTable>()).cast()
@@ -106,22 +89,24 @@ fn value_part(text: &[u8], this: TypeValue) -> &[u8] {
 /// A typed array's table, live for `'a`, with its parsed definition behind it.
 #[derive(Clone, Copy)]
 pub(crate) struct Typed<'a> {
+    /// The pointer the zval holds, which reaches the definition behind the table.
     ht: *mut HashTable,
-    live: PhantomData<&'a HashTable>,
+    array: &'a Array,
 }
 
 impl<'a> Typed<'a> {
     /// The typed array `value` holds, if it holds one (not dereferenced).
     pub(crate) fn of(value: &'a Value) -> Option<Self> {
-        // The table pointer, not a borrow of the table, so it reaches the
-        // definition behind the table.
-        // The zval holds the table while borrowed; it is a typed array once
-        // its flag says so, and this is returned only then.
-        let table = Self {
-            ht: value.array_ptr()?,
-            live: PhantomData,
-        };
+        let table = Self::held(value)?;
         (table.flags().get() & TYPED != 0).then_some(table)
+    }
+
+    /// The table `value` holds, typed or about to be.
+    fn held(value: &'a Value) -> Option<Self> {
+        Some(Self {
+            ht: value.array_ptr()?,
+            array: value.array()?,
+        })
     }
 
     /// The table, for Zend's hash API.
@@ -129,19 +114,10 @@ impl<'a> Typed<'a> {
         self.ht
     }
 
-    /// The table's header, which Zend rewrites in place as it changes the table.
-    #[inline]
-    fn table_header(self) -> &'a Table {
-        // SAFETY: a live table for `'a` (every `Typed` is made from one), which
-        // Zend writes only through pointers, never a reference; `Table` is its
-        // header word for word, each a `Cell`, at no greater alignment.
-        unsafe { &*self.ht.cast::<Table>() }
-    }
-
     /// `HT_FLAGS(ht)`.
     #[inline]
     fn flags(self) -> &'a Cell<u32> {
-        &self.table_header()[FLAGS]
+        self.array.flags()
     }
 
     /// Flag the table typed again, after a builtin rebuilt it in place.
@@ -184,7 +160,7 @@ impl<'a> Typed<'a> {
 
     /// `zend_hash_num_elements`.
     fn count(self) -> u32 {
-        self.table_header()[COUNT].get()
+        self.array.elements()
     }
 
     /// `ArrayTypeInfo::element_type_equals`: whether `element` is the type of
@@ -526,15 +502,11 @@ pub(crate) fn separate(value: &Value) -> Option<Typed<'_>> {
     separate_array(value, IoSlice::new(source.info()));
     // Separation leaves the container holding an array: `source`'s, or its
     // copy with the definition behind it.
-    let ht = value.array_ptr()?;
-    if source.ht == ht {
+    let own = Typed::held(value)?;
+    if source.ht == own.ht {
         return Some(source);
     }
     // The fresh unshared copy, which `value` holds for `'a`.
-    let own = Typed {
-        ht,
-        live: PhantomData,
-    };
     own.mark();
     Some(own)
 }
@@ -660,7 +632,7 @@ fn fill(call: &Call, parsed: &Parsed, init: Option<&Value>) -> Result<(), Failur
     }
     // `made` takes the new table's reference.
     let mut made = Owned::default();
-    let array = typed_new(
+    typed_new(
         &made,
         init.map_or(0, swoole_rs_zend::Array::count),
         &definition.header(),
@@ -668,16 +640,18 @@ fn fill(call: &Call, parsed: &Parsed, init: Option<&Value>) -> Result<(), Failur
     );
     // The table just made, with its definition, which `made` holds and this
     // frame keeps until it returns it.
-    let typed = Typed {
-        ht: array,
-        live: PhantomData,
-    };
-    typed.mark();
+    if let Some(typed) = Typed::held(&made) {
+        typed.mark();
+    }
     if let Some(init) = init
         && let Some(target) = made.array_mut()
     {
         let mut entries = init.entries();
         while let Some((name, index, element)) = entries.next_stored() {
+            // Marked above; borrowed only until the entry is added.
+            let Some(typed) = Typed::of(target) else {
+                break;
+            };
             let key_type = KeyType {
                 kind: if name.is_some() { IS_STRING } else { IS_LONG },
                 index: if name.is_some() {

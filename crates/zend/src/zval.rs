@@ -1031,7 +1031,7 @@ impl Held for Array {
 /// A borrowed hash table (`zend_array`), word by word, each a `Cell`, which
 /// allows the writes Zend makes through pointers on this thread. Its first
 /// two words are its counted header ([`REFCOUNT`], [`TYPE_INFO`]); this crate
-/// reads and writes no others.
+/// reads and writes no others but its flags and element count.
 #[repr(transparent)]
 pub struct Array([Cell<u32>; size_of::<HashTable>() / 4]);
 
@@ -1040,6 +1040,17 @@ const _: () = assert!(
         && align_of::<HashTable>() >= align_of::<Array>()
         && std::mem::offset_of!(HashTable, gc) == 0,
     "Array is a HashTable, its counted header first"
+);
+
+/// `HT_FLAGS(ht)`'s word in an [`Array`].
+const FLAGS: usize = std::mem::offset_of!(HashTable, u) / 4;
+/// `zend_hash_num_elements`'s word in an [`Array`].
+const ELEMENTS: usize = std::mem::offset_of!(HashTable, nNumOfElements) / 4;
+
+const _: () = assert!(
+    std::mem::offset_of!(HashTable, u).is_multiple_of(4)
+        && std::mem::offset_of!(HashTable, nNumOfElements).is_multiple_of(4),
+    "an Array's flags and element count are words of it"
 );
 
 /// The `zend_refcounted_h` a counted value begins with: its refcount
@@ -1068,6 +1079,20 @@ impl Array {
     #[inline]
     pub fn count(&self) -> u32 {
         zend_array_count(self)
+    }
+
+    /// `HT_FLAGS(ht)`, which Zend rewrites in place as it changes the table.
+    #[must_use]
+    #[inline]
+    pub fn flags(&self) -> &Cell<u32> {
+        &self.0[FLAGS]
+    }
+
+    /// `zend_hash_num_elements`.
+    #[must_use]
+    #[inline]
+    pub fn elements(&self) -> u32 {
+        self.0[ELEMENTS].get()
     }
 
     /// `zend_trace_to_string(trace, false)`: a backtrace array as an exception prints it.

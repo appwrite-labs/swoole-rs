@@ -198,7 +198,8 @@ fn malloc_trim(last: &mut libc::time_t) {
 
 /// `Reactor::if_exit()`: each exit condition in key order over the registered socket
 /// count, until one refuses. A condition may change the reactor, as [`execute_end`]'s.
-pub(crate) fn if_exit(reactor: Running<'_>) -> bool {
+#[must_use]
+pub fn if_exit(reactor: Running<'_>) -> bool {
     let mut event_num = reactor.registry(crate::reactor::Registry::count);
     for slot in 0..EXIT_SLOTS {
         // As above: the copy is read before the condition runs.
@@ -268,24 +269,10 @@ pub fn swr_v1_event_remove_exit_condition(id: ExitCondition) {
     }
 }
 
-/// `bool Reactor::if_exit()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7Reactor7if_exitEv")
-)]
-#[must_use]
-pub extern "C-unwind" fn reactor_if_exit(reactor: Running<'_>) -> bool {
-    if_exit(reactor)
-}
-
 /// `int Reactor::wait()`: the loop over the state's backend, the future task before
 /// each kernel wait and the end callbacks after it.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7Reactor4waitEv")
-)]
 #[must_use]
-pub extern "C-unwind" fn reactor_wait(reactor: Running<'_>) -> c_int {
+pub fn reactor_wait(reactor: Running<'_>) -> c_int {
     if wait(reactor) { 0 } else { -1 }
 }
 

@@ -14,9 +14,9 @@ use crate::reactor::socket_upstream::{
 };
 use crate::reactor::{
     Drain, Events, Fill, OutputEffects, RangeError, Socket, SocketAddress, SocketFields,
-    SocketFileRequest, SocketRecord, SslSendfileWarning, SyncEffects, SyncMode, handle_send_owned,
-    record_peek, record_recv, record_send, sendfile_chunk, ssl_sendfile as ssl_sendfile_fd,
-    steady_ms, swr_v1_reactor_poll_events_to, swr_v1_socket_sync, what_event_want,
+    SocketFileRequest, SslSendfileWarning, SyncEffects, SyncMode, handle_send_owned, record_peek,
+    record_recv, record_send, sendfile_chunk, ssl_sendfile as ssl_sendfile_fd, steady_ms,
+    swr_v1_reactor_poll_events_to, swr_v1_socket_sync, what_event_want,
 };
 use crate::sys::ReadSlot;
 use crate::sys::Text;
@@ -780,32 +780,7 @@ fn file_request(
     None
 }
 
-/// `int Socket::sendfile_sync(const char *filename, off_t offset, size_t length)`:
-/// corked for a large file, through `wait_for`'s loop. `filename` is the caller's
-/// NUL-terminated string, lent for the call.
-#[cfg_attr(
-    all(feature = "upstream-symbols", target_os = "macos"),
-    unsafe(export_name = "_ZN6swoole7network6Socket13sendfile_syncEPKcxm")
-)]
-#[cfg_attr(
-    all(feature = "upstream-symbols", not(target_os = "macos")),
-    unsafe(export_name = "_ZN6swoole7network6Socket13sendfile_syncEPKclm")
-)]
-#[must_use]
-pub extern "C" fn socket_sendfile_sync(
-    socket: Socket<'_>,
-    filename: Text<'_>,
-    offset: libc::off_t,
-    length: usize,
-) -> c_int {
-    if sendfile_sync(socket, filename.get(), offset, length) {
-        0
-    } else {
-        -1
-    }
-}
-
-/// [`socket_sendfile_sync`] of the file `filename` names: whether it was all sent.
+/// Sends the requested file range synchronously, corking the socket for large transfers.
 #[must_use]
 pub fn sendfile_sync(
     socket: Socket<'_>,
@@ -834,21 +809,29 @@ pub(crate) fn buffer_check(status: Result<(), crate::buffer::Error>) {
     }
 }
 
-/// A socket's `out_buffer` queue, null without one.
-pub(crate) fn out_queue(socket: Socket<'_>) -> *mut crate::buffer::Buffer {
-    socket.read(|record| {
-        let buffer = record.output.buffer();
-        buffer.map_or(std::ptr::null_mut(), crate::buffer::cpp::CppBuffer::queue)
-    })
-}
-
-/// `f` over the socket's queue (None without one).
-pub(crate) fn with_queue<R>(
+/// `f` over the socket's `out_buffer` queue (None without one, or while it is lent),
+/// taken out of its buffer meanwhile and put back after, or freed if the socket lost
+/// its buffer meanwhile. `f` may use the socket, but not reach its queue through it.
+pub fn with_queue<R>(
     socket: Socket<'_>,
     f: impl FnOnce(Option<&mut crate::buffer::Buffer>) -> R,
 ) -> R {
-    // SAFETY: null or the socket's live queue, borrowed for `f` alone.
-    f(unsafe { out_queue(socket).as_mut() })
+    use crate::buffer::cpp::{CppBuffer, dispose_queue};
+    let queue = socket.read(|record| record.output.buffer().and_then(CppBuffer::take_queue));
+    let Some(mut queue) = queue else {
+        return f(None);
+    };
+    let result = f(Some(&mut queue));
+    if let Some(queue) = socket.read(|record| match record.output.buffer() {
+        Some(buffer) => {
+            buffer.put_queue(queue);
+            None
+        }
+        None => Some(queue),
+    }) {
+        dispose_queue(queue);
+    }
+    result
 }
 
 /// The queued output's effects on a socket.
@@ -1092,25 +1075,7 @@ fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> bool {
     socket.edit(|record| record.bind(&address))
 }
 
-/// `Socket *make_server_socket(SocketType, const char *address, int port, int backlog)`:
-/// a bound (and, for a stream, listening) socket, or null after a warning. `address`
-/// is the caller's NUL-terminated string, lent for the call.
-#[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole18make_server_socketE12swSocketTypePKcii")
-)]
-pub extern "C-unwind" fn make_server_socket(
-    kind: c_int,
-    address: Text<'_>,
-    port: c_int,
-    backlog: c_int,
-) -> *mut SocketRecord {
-    server_socket(kind, address.get(), port, backlog)
-        .map_or(std::ptr::null_mut(), |owned| owned.leak().as_ptr())
-}
-
-/// [`make_server_socket`]'s socket, owned: `None` after a warning.
+/// Creates a bound socket that listens for stream connections. Logs a warning on failure.
 #[must_use]
 pub fn server_socket(
     kind: c_int,
@@ -1173,6 +1138,7 @@ pub fn server_socket(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reactor::SocketRecord;
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no inet_ntop")]
@@ -1332,34 +1298,11 @@ mod tests {
     fn sendfile_sync_sends_the_range_and_rejects_a_bad_one() {
         let (mut left, right) = pair();
         let (path, name) = temp_file("swoole-sendfile-sync", b"0123456789");
-        let sent = unsafe {
-            socket_sendfile_sync(
-                Socket::from_ptr(&raw mut left).unwrap(),
-                name.as_c_str().into(),
-                2,
-                5,
-            )
-        };
-        assert_eq!(sent, 0);
+        let socket = Socket::new(&mut left);
+        assert!(sendfile_sync(socket, &name, 2, 5));
         assert_eq!(read_all(&right, 5), b"23456");
-        let rejected = unsafe {
-            socket_sendfile_sync(
-                Socket::from_ptr(&raw mut left).unwrap(),
-                name.as_c_str().into(),
-                20,
-                0,
-            )
-        };
-        assert_eq!(rejected, -1, "offset past the end");
-        let missing = unsafe {
-            socket_sendfile_sync(
-                Socket::from_ptr(&raw mut left).unwrap(),
-                c"/nonexistent/x".into(),
-                0,
-                0,
-            )
-        };
-        assert_eq!(missing, -1);
+        assert!(!sendfile_sync(socket, &name, 20, 0), "offset past the end");
+        assert!(!sendfile_sync(socket, c"/nonexistent/x", 0, 0));
         std::fs::remove_file(path).unwrap();
         unsafe { libc::close(left.fd) };
         unsafe { libc::close(right.fd) };
@@ -1372,9 +1315,8 @@ mod tests {
         left.output.out_buffer = Some(crate::buffer::cpp::new_buffer(65536));
         let (path, name) = temp_file("swoole-sendfile-async", b"abcdef");
         let handle = unsafe { Socket::from_ptr(&raw mut left) }.unwrap();
-        let queue = || handle.read(|record| record.output.out_buffer.as_ref().unwrap().queue());
         let request = file_request(&name, 1, 0).unwrap();
-        let queued = unsafe { (*queue()).push_file(request) };
+        let queued = with_queue(handle, |queue| queue.unwrap().push_file(request));
         assert_eq!(queued, Ok(()));
         assert!(
             file_request(c"/nonexistent/x", 0, 0).is_none(),
@@ -1382,10 +1324,17 @@ mod tests {
         );
         assert!(socket_handle_sendfile(handle));
         assert_eq!(read_all(&right, 5), b"bcdef");
-        assert_eq!(unsafe { (*queue()).append(b"tail") }, Ok(()));
+        assert_eq!(
+            with_queue(handle, |queue| queue.unwrap().append(b"tail")),
+            Ok(())
+        );
         assert!(socket_handle_send(handle));
         assert_eq!(read_all(&right, 4), b"tail");
-        assert_eq!(unsafe { (*queue()).stats() }, (0, 0), "both chunks popped");
+        assert_eq!(
+            with_queue(handle, |queue| queue.unwrap().stats()),
+            (0, 0),
+            "both chunks popped"
+        );
         // The queue is released with its `Buffer`, which ends the test if it can't be.
         drop(left.output.out_buffer.take());
         std::fs::remove_file(path).unwrap();
@@ -1395,22 +1344,20 @@ mod tests {
 
     #[test]
     fn make_server_socket_binds_and_listens() {
-        let socket = make_server_socket(1, c"127.0.0.1".into(), 0, 8);
-        assert!(!socket.is_null());
-        let record = unsafe { &*socket };
-        assert!(record.bound && record.listened);
-        assert_ne!(
-            u16::from_be(unsafe { record.info.addr.inet_v4.sin_port }),
-            0,
-            "getsockname filled the port"
-        );
-        socket_free(Some(unsafe {
-            crate::reactor::OwnedSocket::from_socket(Socket::from_ptr(socket).unwrap())
-        }));
+        let socket = server_socket(1, c"127.0.0.1", 0, 8).expect("listening socket");
+        socket.socket().read(|record| {
+            assert!(record.bound && record.listened);
+            assert_ne!(
+                u16::from_be(unsafe { record.info.addr.inet_v4.sin_port }),
+                0,
+                "getsockname filled the port"
+            );
+        });
+        socket_free(Some(socket));
         // The system-warning path reports errno once the shared logger is initialized.
         crate::set_errno(libc::EINVAL);
-        let invalid = make_server_socket(1, c"not an address".into(), 0, 8);
-        assert!(invalid.is_null());
+        let invalid = server_socket(1, c"not an address", 0, 8);
+        assert!(invalid.is_none());
         assert_ne!(log::last_error(), 0);
     }
 

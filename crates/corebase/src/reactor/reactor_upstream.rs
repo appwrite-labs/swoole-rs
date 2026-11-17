@@ -67,36 +67,6 @@ pub fn reactor_del(
     })
 }
 
-/// `int Reactor::interest(Socket *socket, uint32_t kind, int event) const`: -1 without
-/// a socket. The handle types state what C++ passes: the live reactor, and null or a
-/// heap record, which C++'s `delete` frees through its owner.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole7Reactor8interestEPNS_7network6SocketEji")
-)]
-#[must_use]
-pub extern "C" fn reactor_interest(
-    reactor: crate::reactor::Running<'_>,
-    socket: Option<crate::reactor::Heap<'_>>,
-    kind: u32,
-    event: c_int,
-) -> c_int {
-    let Some(record) = socket else {
-        return -1;
-    };
-    let kind = crate::reactor::Interest::from_code(kind);
-    if interest(
-        reactor,
-        record,
-        kind,
-        crate::reactor::Events::from_bits(event),
-    ) {
-        0
-    } else {
-        -1
-    }
-}
-
 /// `void Reactor::set_handler(int fd_type, int event, ReactorHandler handler)`:
 /// upstream asserts the event names a table.
 pub fn set_handler(
@@ -134,21 +104,7 @@ pub fn reactor_default_write_handler(reactor: crate::reactor::Running<'_>) -> Op
     reactor.handlers(|handlers| handlers.fallback(0))
 }
 
-/// `bool Reactor::isset_handler(int fd_type, int event) const`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole7Reactor13isset_handlerEii")
-)]
-#[must_use]
-pub extern "C" fn reactor_isset_handler(
-    reactor: crate::reactor::Running<'_>,
-    fd_type: c_int,
-    event: c_int,
-) -> bool {
-    isset_handler(reactor, fd_type, crate::reactor::Events::from_bits(event))
-}
-
-/// [`reactor_isset_handler`] for typed `event`.
+/// Whether the reactor has a handler for this descriptor type and event.
 #[must_use]
 pub fn isset_handler(
     reactor: crate::reactor::Running<'_>,

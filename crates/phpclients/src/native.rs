@@ -115,9 +115,12 @@ pub fn pop_string(buffer: &mut CppString, init_size: usize, length: usize) -> Op
     if !ours || buffer.view().len() < length {
         return None;
     }
-    let mut value = buffer.pop_owned(init_size)?;
-    value.truncate(length);
-    Some(swoole_rs_phpswoole::received_string(value))
+    let mut popped = buffer.pop_owned(init_size)?;
+    if popped.as_ptr().is_null() {
+        return None;
+    }
+    popped.truncate(length);
+    Some(swoole_rs_phpswoole::received_string(popped))
 }
 
 /// A live coroutine socket (`SocketImpl *`) over crates/hooks' record handle.

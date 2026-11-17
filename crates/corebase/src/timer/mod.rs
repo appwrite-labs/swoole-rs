@@ -47,8 +47,16 @@ pub struct TimerView {
     pub exec_count: u64,
     pub birth_round: u64,
     pub removed: bool,
+    /// Upstream's `type == TYPE_PHP`: a PHP callable node. In the padding after
+    /// `removed`, so the heap entry stays 56 bytes.
+    pub php: bool,
     pub token: *mut c_void,
 }
+
+const _: () = assert!(
+    mem::size_of::<TimerView>() == 56,
+    "a heap entry stays 56 bytes"
+);
 impl Default for TimerView {
     fn default() -> Self {
         Self {
@@ -58,6 +66,7 @@ impl Default for TimerView {
             exec_count: 0,
             birth_round: 0,
             removed: false,
+            php: false,
             token: ptr::null_mut(),
         }
     }
@@ -135,6 +144,20 @@ impl Timer {
         persistent: bool,
         token: impl FnOnce() -> *mut c_void,
     ) -> Result<TimerView, Status> {
+        self.add_marked(now, delay, persistent, false, token)
+    }
+
+    /// [`Self::add`] of a node whose view says whether it is a PHP callable's.
+    /// # Errors
+    /// As [`Self::add`].
+    pub(crate) fn add_marked(
+        &mut self,
+        now: i64,
+        delay: i64,
+        persistent: bool,
+        php: bool,
+        token: impl FnOnce() -> *mut c_void,
+    ) -> Result<TimerView, Status> {
         if now < 0 || delay <= 0 {
             return Err(Status::Invalid);
         }
@@ -165,6 +188,7 @@ impl Timer {
             deadline,
             interval: if persistent { delay } else { 0 },
             birth_round: self.round,
+            php,
             token,
             ..TimerView::default()
         };
