@@ -11,7 +11,7 @@ from tools import budget  # noqa: E402
 # Crates with unsafe code that Miri can't run, and why; the ASan run covers them.
 FOREIGN = 'its tests call a C library Miri can\'t run'
 EXEMPT = {
-    **dict.fromkeys(['brotli', 'zlib', 'cares-sys', 'curl-sys', 'ssh2-sys',
+    **dict.fromkeys(['zlib', 'cares-sys', 'curl-sys', 'ssh2-sys',
                      'curl', 'firebird', 'oci', 'odbc', 'pgsql', 'sqlite', 'ssh2'], FOREIGN),
     'tls': 'OpenSSL (SSL_select_next_proto and the rest)',
     'locale': "libc's setlocale",
