@@ -41,6 +41,7 @@ fn resources() -> (ProcessWorker, std::ffi::c_int, std::ffi::c_int) {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no socket options on a socketpair")]
 fn server_retains_record_pipe_and_queue_after_the_process_drops() {
     let server = TestServer::new();
     let (owner, fd, queue) = resources();
@@ -63,6 +64,7 @@ fn server_retains_record_pipe_and_queue_after_the_process_drops() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no socket options on a socketpair")]
 fn a_thread_copy_retains_the_native_resources_and_closes_the_pair_once() {
     let (owner, fd, queue) = resources();
     let file = file_of(fd);
@@ -86,6 +88,7 @@ fn a_thread_copy_retains_the_native_resources_and_closes_the_pair_once() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no socket options on a socketpair")]
 fn copying_a_record_does_not_adopt_its_borrowed_resources() {
     let (owner, fd, queue) = resources();
     let file = file_of(fd);
