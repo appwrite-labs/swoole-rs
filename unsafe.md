@@ -1,10 +1,10 @@
 # Unsafe code by crate
 
-`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `1005828`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
+`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `e8e0bba`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
 
 | crate | unsafe | forbids |
 | --- | ---: | :---: |
-| `corebase` | 132 |  |
+| `corebase` | 133 |  |
 | `zend` | 58 |  |
 | `server` | 25 |  |
 | `hooks` | 15 |  |
@@ -12,8 +12,8 @@
 | `phpcoroutines` | 12 |  |
 | `phpstdext` | 10 |  |
 | `phpswoole` | 9 |  |
-| `phpruntime` | 8 |  |
 | `phphttp` | 7 |  |
+| `phpruntime` | 7 |  |
 | `phpprocess` | 4 |  |
 | `ports` | 4 |  |
 | `clients` | 3 |  |
