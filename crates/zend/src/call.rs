@@ -186,8 +186,9 @@ impl Call {
     /// `EX(This)`: its value is `$this` and its `u2` the argument count.
     #[inline]
     fn this_slot(&self) -> &Value {
-        // The handler's live frame (`run`).
-        crate::opcode::Executing(self.frame, std::marker::PhantomData).this()
+        // SAFETY: the handler's live frame (`new`) holds `This` for the call;
+        // `Value` is a transparent zval.
+        unsafe { &*self.this_zval().cast::<Value>() }
     }
 
     /// The return slot, live for the handler (`new`).

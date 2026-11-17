@@ -8,7 +8,6 @@ use crate::{
     },
 };
 use std::{
-    cell::Cell,
     ffi::{CStr, c_char, c_int},
     io::IoSlice,
     marker::PhantomData,
@@ -51,34 +50,13 @@ unsafe extern "C" {
 
 /// A live object, borrowed for `'a`: one a zval or frame holds, or one Zend
 /// passes a handler. Zend changes it (its refcount, its properties) whenever PHP
-/// runs, so this reads its leading fields as cells ([`Head`]).
+/// runs, so each read borrows it only while it copies a field out
+/// ([`ObjectRef::read`]).
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct ObjectRef<'a>(
     pub(crate) *mut zend_object,
     pub(crate) PhantomData<&'a zend_object>,
-);
-
-/// A `zend_object`'s leading fields, each a `Cell`, as Zend writes them through
-/// pointers on this thread: the counted header, the handle, the class (never
-/// null in a live object) and the handlers.
-#[repr(C)]
-struct Head {
-    refcount: Cell<u32>,
-    _type_info: Cell<u32>,
-    handle: Cell<u32>,
-    ce: Cell<NonNull<zend_class_entry>>,
-    handlers: Cell<*const zend_object_handlers>,
-}
-
-const _: () = assert!(
-    offset_of!(Head, refcount) == offset_of!(zend_object, gc)
-        && offset_of!(Head, handle) == offset_of!(zend_object, handle)
-        && offset_of!(Head, ce) == offset_of!(zend_object, ce)
-        && offset_of!(Head, handlers) == offset_of!(zend_object, handlers)
-        && size_of::<Head>() <= size_of::<zend_object>()
-        && align_of::<Head>() <= align_of::<zend_object>(),
-    "a Head is the fields a zend_object starts with"
 );
 
 impl<'a> ObjectRef<'a> {
@@ -88,40 +66,34 @@ impl<'a> ObjectRef<'a> {
         self.0
     }
 
-    /// The object's [`Head`].
+    /// `f` of the object, which it reads only: no PHP code runs, so nothing
+    /// changes the object, while it is borrowed.
     #[inline]
-    fn head(self) -> &'a Head {
-        // SAFETY: a live object for `'a`, per the type, which starts with these
-        // fields (asserted above); each is a `Cell`, as Zend writes them through
-        // pointers on this thread.
-        unsafe { &*self.0.cast::<Head>() }
-    }
-
-    /// `GC_REFCOUNT(obj)`, as it is now.
-    #[inline]
-    fn refcount(self) -> u32 {
-        self.head().refcount.get()
+    pub(crate) fn read<R>(self, f: impl FnOnce(&zend_object) -> R) -> R {
+        // SAFETY: a live object, per the type; the borrow ends with `f`.
+        f(unsafe { &*self.0 })
     }
 
     /// `obj->handle`: its slot in the executor's object store.
     #[must_use]
     #[inline]
     pub fn handle(self) -> u32 {
-        self.head().handle.get()
+        self.read(|object| object.handle)
     }
 
     /// `obj->handlers`.
     #[must_use]
     #[inline]
     pub fn handlers(self) -> *const zend_object_handlers {
-        self.head().handlers.get()
+        self.read(|object| object.handlers)
     }
 
     /// `obj->ce`: the object's class, which outlives it.
     #[must_use]
     #[inline]
     pub fn class_entry(self) -> ClassEntry<'a> {
-        ClassEntry(self.head().ce.get(), PhantomData)
+        ClassEntry::live(self.read(|object| object.ce))
+            .unwrap_or_else(|| unreachable!("a live object has its class"))
     }
 
     /// `ZVAL_OBJ`: a value naming the object without a reference of its own,
@@ -465,7 +437,7 @@ extern "C" fn destruct<T: Custom>(object: Handled) {
     unsafe { zend_objects_destroy_object(std) };
     // Per Zend, a live object. Zend holds one reference across this handler,
     // so a count of one means nothing else names the object.
-    let last = ObjectRef(std, PhantomData).refcount() == 1;
+    let last = ObjectRef(std, PhantomData).read(|object| object.gc.refcount) == 1;
     bailout::finish_after(|| {
         // Per Zend, a live object of `T`'s class, which outlives this call.
         if let Some(data) = ObjectRef(std, PhantomData).custom::<T>() {

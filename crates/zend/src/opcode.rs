@@ -1,7 +1,7 @@
 //! User opcode handlers (`zend_set_user_opcode_handler`): [`handler`] is the one
 //! entry Zend calls, and hands the body a [`Frame`].
 use crate::{
-    Function, Php, Value,
+    Function, Php,
     sys::{zend_execute_data, zend_function, zend_op},
 };
 use std::{
@@ -30,13 +30,8 @@ pub(crate) struct Executing<'a>(
     pub(crate) PhantomData<&'a zend_execute_data>,
 );
 
-/// A frame's first fields, each a `Cell`: the words `opline`, `call`,
-/// `return_value` and `func`, then `This`.
-#[repr(C)]
-struct Head {
-    words: [Cell<*mut c_void>; 4],
-    this: Value,
-}
+/// A frame's first words, each a `Cell`: `opline`, `call`, `return_value`, `func`.
+type Head = [Cell<*mut c_void>; 4];
 /// `EX(opline)`'s word in a [`Head`].
 const OPLINE: usize = offset_of!(zend_execute_data, opline) / size_of::<*mut c_void>();
 /// `EX(func)`'s word in a [`Head`].
@@ -47,39 +42,33 @@ const _: () = assert!(
         && offset_of!(zend_execute_data, func) == FUNC * size_of::<*mut c_void>()
         && OPLINE < 4
         && FUNC < 4
-        && offset_of!(zend_execute_data, This) == offset_of!(Head, this)
         && size_of::<zend_execute_data>() >= size_of::<Head>()
         && align_of::<zend_execute_data>() >= align_of::<Head>(),
-    "a Head is the fields a zend_execute_data starts with"
+    "a Head is the pointer words a zend_execute_data starts with"
 );
 
 impl<'a> Executing<'a> {
     /// The frame's [`Head`].
     fn head(self) -> &'a Head {
         // SAFETY: a live frame for `'a`, per the type, which starts with these
-        // fields (asserted above), each a `Cell`, as Zend writes them through
-        // pointers on this thread; every frame sets `This`.
+        // pointer words (asserted above); each is a `Cell`, as Zend writes them
+        // through pointers on this thread.
         unsafe { &*self.0.cast::<Head>() }
     }
 
     /// `EX(func)`.
     pub(crate) fn func(self) -> *mut zend_function {
-        self.head().words[FUNC].get().cast()
-    }
-
-    /// `EX(This)`: its value is `$this` and its `u2` the argument count.
-    pub(crate) fn this(self) -> &'a Value {
-        &self.head().this
+        self.head()[FUNC].get().cast()
     }
 
     /// `EX(opline)`.
     fn opline(self) -> *const zend_op {
-        self.head().words[OPLINE].get().cast_const().cast()
+        self.head()[OPLINE].get().cast_const().cast()
     }
 
     /// `EX(opline) = at`.
     fn set_opline(self, at: *const zend_op) {
-        self.head().words[OPLINE].set(at.cast_mut().cast());
+        self.head()[OPLINE].set(at.cast_mut().cast());
     }
 }
 

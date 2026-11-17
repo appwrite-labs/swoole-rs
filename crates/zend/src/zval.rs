@@ -508,7 +508,7 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn referred(&self) -> &Self {
-        self.held::<Reference>().map_or(self, |reference| &reference.val)
+        self.held::<Self>().unwrap_or(self)
     }
 
     /// `ZVAL_DEREF`'s slot: the zval a reference refers to, else this one. A
@@ -569,10 +569,10 @@ impl Value {
             return None;
         }
         // SAFETY: a zval of a type `T` accepts holds a pointer (never null)
-        // to a live counted value that begins with `T`'s fields at their
-        // offsets (`Held`), which it keeps while borrowed; they are `Cell`s or
+        // to a live counted value that holds `T`'s fields at their offsets from
+        // `T::AT` (`Held`), which it keeps while borrowed; they are `Cell`s or
         // in an `UnsafeCell`, which allow the writes Zend makes meanwhile.
-        Some(unsafe { &*word.cast::<T>() })
+        Some(unsafe { &*word.wrapping_byte_add(T::AT).cast::<T>() })
     }
 
     /// `Z_OBJ_P` of an object.
@@ -1024,9 +1024,11 @@ impl Value {
 }
 
 /// A view of the counted value a zval points to, for [`Value::held`]: the
-/// leading fields, at their offsets, of whatever a zval whose `type_info`
-/// passes `held_by` points to. Only the three below.
+/// fields, at their offsets from `AT` bytes in, of whatever a zval whose
+/// `type_info` passes `held_by` points to. Only the four below.
 trait Held {
+    /// Where the view starts in the counted value.
+    const AT: usize = 0;
     fn held_by(type_info: u32) -> bool;
 }
 
@@ -1052,22 +1054,11 @@ impl Held for Array {
     }
 }
 
-/// A `zend_reference`'s counted header and the slot it refers to, which PHP
-/// code assigning the reference rewrites (a [`Value`], so a cell).
-#[repr(C)]
-struct Reference {
-    _counted: Counted,
-    val: Value,
-}
+/// A reference's slot: what the reference refers to, which PHP code assigning
+/// the reference rewrites (a `Value`, so a cell).
+impl Held for Value {
+    const AT: usize = std::mem::offset_of!(zend_reference, val);
 
-const _: () = assert!(
-    std::mem::offset_of!(Reference, val) == std::mem::offset_of!(zend_reference, val)
-        && size_of::<Reference>() <= size_of::<zend_reference>()
-        && align_of::<Reference>() <= align_of::<zend_reference>(),
-    "a Reference is the fields a zend_reference starts with"
-);
-
-impl Held for Reference {
     #[inline]
     fn held_by(type_info: u32) -> bool {
         type_info & 0xff == IS_REFERENCE
