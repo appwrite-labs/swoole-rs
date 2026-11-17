@@ -186,3 +186,7 @@ allocation, and saturate oversized limits without wrapping signed syscall counts
 
 `spare.rs` verifies scalar receive appends, zero/error results, datagram truncation,
 and a real short `readv` spanning an empty room without exposing unwritten bytes.
+
+`lifecycle.rs` runs `rust_core_lifecycle.reinitialize` in the SDK system binary:
+three init/no-op/clean/reinit cycles check the fatal hook, logger, thread buffer,
+stdout and bug report, including repeated cleanup and fork before initialization.

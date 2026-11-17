@@ -53,6 +53,9 @@ use swoole_rs_ffi as _;
 use swoole_rs_hooks::poll::PollFd;
 
 mod address;
+// tests/modules/corebase/lifecycle.rs shares this binary’s complete SDK initialization.
+#[path = "../../../corebase/lifecycle.rs"]
+mod lifecycle;
 // Upstream's core-tests/src/network/client.cpp: a clients test, built here to share this
 // binary's build and runner.
 #[path = "../../../clients/client.rs"]
@@ -830,6 +833,7 @@ type Cases = &'static [(&'static str, fn())];
 
 /// Each suite and its cases.
 const SUITES: &[(&str, Cases)] = &[
+    ("rust_core_lifecycle", lifecycle::CASES),
     ("coroutine_system", CASES),
     ("coroutine_hook", hook::CASES),
     ("coroutine_socket", socket::CASES),
