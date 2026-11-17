@@ -11,9 +11,10 @@
 use crate::buffer::typed::Front;
 
 /// `swoole::Buffer`: its only member is the queue. Only Rust reaches it, through the
-/// box [`new_buffer`] returns.
+/// box [`new_buffer`] returns. The queue is lent by taking it out: to one operation
+/// ([`CppBuffer::with`]), or across a send ([`CppBuffer::take_queue`]).
 pub struct CppBuffer {
-    queue: std::cell::UnsafeCell<crate::buffer::Buffer>,
+    queue: std::cell::Cell<Option<Box<crate::buffer::Buffer>>>,
 }
 
 fn check(status: Result<(), crate::buffer::Error>) {
@@ -23,18 +24,30 @@ fn check(status: Result<(), crate::buffer::Error>) {
 }
 
 impl CppBuffer {
-    /// The queue's address, for a caller that reaches it between the borrows of the
-    /// record that owns this `Buffer` (`corebase::tls`'s send path).
+    /// The queue, out of this until [`CppBuffer::put_queue`] gives it back (or
+    /// [`dispose_queue`] frees it); `None` while it is already out.
     #[must_use]
-    pub const fn queue(&self) -> *mut crate::buffer::Buffer {
-        self.queue.get()
+    pub fn take_queue(&self) -> Option<Box<crate::buffer::Buffer>> {
+        self.queue.take()
     }
 
-    /// Runs `body` over the queue, which this holds by value.
-    fn with<R>(&self, body: impl FnOnce(&mut crate::buffer::Buffer) -> R) -> R {
-        // SAFETY: the cell is not `Sync`, nothing in `body` reaches this queue another
-        // way, and the borrow ends with it.
-        body(unsafe { &mut *self.queue() })
+    /// Gives back the queue [`CppBuffer::take_queue`] took. Aborts when this holds
+    /// one again: whatever was queued there meanwhile would be lost.
+    pub fn put_queue(&self, queue: Box<crate::buffer::Buffer>) {
+        if self.queue.replace(Some(queue)).is_some() {
+            crate::fatal("a send queue was replaced while it was lent");
+        }
+    }
+
+    /// Runs `body` over the queue, taken out meanwhile. Aborts while the queue is
+    /// lent: nothing that holds it reaches it again through its buffer.
+    pub(crate) fn with<R>(&self, body: impl FnOnce(&mut crate::buffer::Buffer) -> R) -> R {
+        let mut queue = self
+            .take_queue()
+            .unwrap_or_else(|| crate::fatal("a send queue reached while it was lent"));
+        let result = body(&mut queue);
+        self.put_queue(queue);
+        result
     }
 
     /// Pops the first entry and runs its disposer; false when the queue is empty.
@@ -60,14 +73,27 @@ impl CppBuffer {
     }
 }
 
-/// `~Buffer()`: pops every entry, then the queue drops with this.
+/// `~Buffer()`: pops every entry, then the queue drops with this. A queue lent out
+/// meanwhile goes with its borrower ([`dispose_queue`]).
 impl Drop for CppBuffer {
     fn drop(&mut self) {
-        while self.pop() {}
-        if self.queue.get_mut().holds_token() {
-            crate::fatal("a buffer queue still in use when dropped");
+        if let Some(queue) = self.queue.get_mut() {
+            while let Ok(detached) = queue.pop() {
+                detached.dispose();
+            }
+            if queue.holds_token() {
+                crate::fatal("a buffer queue still in use when dropped");
+            }
         }
     }
+}
+
+/// Frees a queue [`CppBuffer::take_queue`] took whose buffer is gone, as `~Buffer()`
+/// would have.
+pub fn dispose_queue(queue: Box<crate::buffer::Buffer>) {
+    drop(CppBuffer {
+        queue: std::cell::Cell::new(Some(queue)),
+    });
 }
 
 /// `typed_front()`: the first entry; the queue must not be empty.
@@ -114,7 +140,7 @@ pub fn swr_cpp_buffer_empty(this: &CppBuffer) -> bool {
 #[must_use]
 pub fn new_buffer(chunk_size: u32) -> Box<CppBuffer> {
     Box::new(CppBuffer {
-        queue: std::cell::UnsafeCell::new(crate::buffer::Buffer::new(chunk_size)),
+        queue: std::cell::Cell::new(Some(Box::new(crate::buffer::Buffer::new(chunk_size)))),
     })
 }
 

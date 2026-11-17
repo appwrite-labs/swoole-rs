@@ -3,15 +3,12 @@ use core::ffi::{c_int, c_long};
 use core::mem::offset_of;
 use core::sync::atomic::Ordering::SeqCst;
 
-use swoole_rs_corebase::buffer::cpp::{
-    swr_cpp_buffer_empty, swr_cpp_buffer_pop, swr_cpp_buffer_typed_front,
-};
-use swoole_rs_corebase::reactor::{Event, Socket};
+use swoole_rs_corebase::reactor::Event;
+use swoole_rs_corebase::tls::upstream::with_queue;
 use swoole_rs_corebase::{DataHead, ServerEvent, log, microtime};
 use swoole_rs_error::ErrorCode as E;
 
 use crate::reactor_handle::Reactor;
-use crate::reactor_ops::out_buffer;
 use crate::records::Lookup;
 use crate::{ServerState, view};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE, SW_LOG_WARNING};
@@ -22,30 +19,32 @@ pub(crate) fn pipe_write(serv: view::Server<'_>, reactor: Reactor, event: &Event
     let Some(sock) = event.socket() else {
         return false;
     };
-    while let Some(front) = sock.read(|s| {
-        let buffer = out_buffer(s).filter(|b| !swr_cpp_buffer_empty(b))?;
-        Some(swr_cpp_buffer_typed_front(buffer))
-    }) {
-        // SAFETY: the front entry's bytes, a worker message that stays queued, and
-        // so live, until this thread pops it.
-        let message = unsafe { core::slice::from_raw_parts(front.data, front.length as usize) };
+    // The front message, sent (or discarded) and popped while the queue is lent;
+    // `Err(errno)` when the send failed.
+    let flush_front = |queue: Option<&mut swoole_rs_corebase::buffer::Buffer>| {
+        let queue = queue.filter(|queue| queue.stats().1 != 0)?;
+        let message = queue.front_data();
         if !discard(serv.state(), message)
             && swoole_rs_corebase::tls::upstream::send(*sock, message, 0).is_none()
         {
             let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            return sock.catch_error(errno) == swoole_rs_corebase::reactor::Caught::Wait;
+            return Some(Err(errno));
         }
-        pop(*sock);
+        Some(Ok(queue.pop().ok()))
+    };
+    while let Some(sent) = with_queue(*sock, flush_front) {
+        match sent {
+            Ok(popped) => popped.map_or((), swoole_rs_corebase::buffer::TypedDetached::dispose),
+            Err(errno) => {
+                return sock.catch_error(errno) == swoole_rs_corebase::reactor::Caught::Wait;
+            }
+        }
     }
     if !reactor.interest(sock, swoole_rs_corebase::reactor::Interest::RemoveWrite) {
         let m = format_args!("reactor->set({}) failed", event.fd());
         log::sys_warning(c"ReactorThread_onPipeWrite", m);
     }
     true
-}
-
-fn pop(sock: Socket<'_>) {
-    sock.read(|s| out_buffer(s).map(swr_cpp_buffer_pop));
 }
 
 /// `N` bytes of `message` at `at`, zero past its end.
@@ -97,6 +96,7 @@ mod tests {
 
     const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
     const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
+    use crate::reactor_ops::out_buffer;
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixDatagram;
     use swoole_rs_corebase::buffer::cpp::swr_cpp_buffer_count;

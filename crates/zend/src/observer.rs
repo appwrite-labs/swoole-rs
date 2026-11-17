@@ -29,7 +29,7 @@ impl<'a> Observed<'a> {
     /// a frame without one.
     fn function(&self) -> Option<Function<'a>> {
         // A live frame executing on this thread, per the type.
-        let function = Executing(self.0, PhantomData).read(|frame| frame.func);
+        let function = Executing(self.0, PhantomData).func();
         (!function.is_null()).then_some(Function(function, PhantomData))
     }
 }

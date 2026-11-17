@@ -12,8 +12,6 @@ use crate::timer::{
 use crate::{log, swr_v1_core_set_signal_alarm, thread_reactor};
 use std::cell::Cell;
 use std::ffi::{CStr, c_int, c_long, c_void};
-#[cfg(test)]
-use std::marker::PhantomData;
 
 /// `SW_LOG_WARNING` and `SW_ERROR_INVALID_PARAMS`.
 const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
@@ -21,35 +19,6 @@ const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAM
 const MANUAL: u32 = 0;
 const REACTOR: u32 = 1;
 
-/// `swoole::TimerCallback`: `void (*)(Timer *, TimerNode *)`. Only [`Owner::select`]
-/// calls one, with its timer and the node it selected: what the callback is for.
-#[cfg(test)]
-pub(crate) type Callback = extern "C-unwind" fn(timer: &Owner, node: Lent<'_>);
-/// `swoole::TimerDestructor`: `void (*)(TimerNode *)`. Only [`Owner::release`] calls
-/// one, once, with the node it detached and frees next.
-#[cfg(test)]
-type Destructor = extern "C-unwind" fn(node: Lent<'_>);
-
-/// A `TimerNode *` lent to the node's own callback or destructor: live for the call.
-/// Its field is private, so only this module makes one, for those two calls.
-#[cfg(test)]
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub(crate) struct Lent<'a>(std::ptr::NonNull<TimerNode>, PhantomData<&'a TimerNode>);
-
-#[cfg(test)]
-impl Lent<'_> {
-    /// A live node, for its callback or destructor; none for null, which no live node is.
-    fn of(node: *mut TimerNode) -> Option<Self> {
-        std::ptr::NonNull::new(node).map(|node| Self(node, PhantomData))
-    }
-
-    /// The node, for a callback that reads or writes its fields in place.
-    #[cfg(test)]
-    fn as_ptr(self) -> *mut TimerNode {
-        self.0.as_ptr()
-    }
-}
 /// `abandon_selection`'s pending Zend bailout, raised once the node is gone.
 pub type Bailout = extern "C-unwind" fn();
 
@@ -63,28 +32,10 @@ pub struct Info {
     pub removed: bool,
 }
 
-/// A Rust-owned timer node; callers retain issued IDs instead of its layout.
+/// A Rust-owned timer node; callers retain issued IDs instead of its layout. Its
+/// metadata (deadline, counts, removal, kind) lives in the queue's view of it.
 pub(crate) struct TimerNode {
-    pub(crate) fields: NodeFields,
-    /// Disjoint from fields updated when an inline callback re-enters its timer.
     retained: SmallFn<()>,
-}
-
-pub(crate) struct NodeFields {
-    pub(crate) id: c_long,
-    /// Upstream's `type == TYPE_PHP`: a PHP callable node.
-    php: bool,
-    pub(crate) exec_msec: i64,
-    interval: i64,
-    exec_count: u64,
-    round: u64,
-    pub(crate) removed: bool,
-    #[cfg(test)]
-    callback: Option<Callback>,
-    #[cfg(test)]
-    data: *mut c_void,
-    #[cfg(test)]
-    destructor: Option<Destructor>,
 }
 
 use crate::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
@@ -193,21 +144,6 @@ impl TimerNode {
     pub(crate) fn new() -> Self {
         Self {
             retained: SmallFn::empty(),
-            fields: NodeFields {
-                id: 0,
-                php: false,
-                exec_msec: 0,
-                interval: 0,
-                exec_count: 0,
-                round: 0,
-                removed: false,
-                #[cfg(test)]
-                callback: None,
-                #[cfg(test)]
-                data: std::ptr::null_mut(),
-                #[cfg(test)]
-                destructor: None,
-            },
         }
     }
 
@@ -238,33 +174,11 @@ impl TimerNode {
     pub(crate) fn install<C: crate::timer::php::Callback>(&self, callback: C) {
         self.retained.put(Retain(callback));
     }
-
-    pub(crate) fn is_php(&self) -> bool {
-        self.fields.php
-    }
-
-    pub(crate) fn info(&self) -> Info {
-        Info {
-            exec_msec: self.fields.exec_msec,
-            exec_count: self.fields.exec_count,
-            interval: self.fields.interval,
-            round: self.fields.round,
-            removed: self.fields.removed,
-        }
-    }
 }
 
 /// Releases the node's callback: once the node is detached and freed, or refused.
 impl Drop for TimerNode {
     fn drop(&mut self) {
-        #[cfg(test)]
-        if let Some((destructor, node)) = self
-            .fields
-            .destructor
-            .zip(Lent::of(std::ptr::from_mut(self)))
-        {
-            destructor(node);
-        }
         if let Some(callback) = self.retained.take() {
             callback.consume();
         }
@@ -285,56 +199,6 @@ fn warning(origin: &CStr, message: std::fmt::Arguments<'_>) {
 /// The system timer's `SIGALRM` handler.
 extern "C" fn alarm(_signo: c_int) {
     swr_v1_core_set_signal_alarm(true);
-}
-
-/// What a node calls, copied out so no metadata borrow spans a callback.
-#[derive(Clone, Copy)]
-struct Calls {
-    #[cfg(test)]
-    callback: Option<Callback>,
-    retained: RetainedCall,
-}
-
-/// The live node's disjoint callback storage, issued only by applied. Selection
-/// keeps it live through run; the node's drop releases it.
-#[derive(Clone, Copy)]
-struct RetainedCall(*const SmallFn<()>);
-
-impl RetainedCall {
-    fn get(&self) -> &SmallFn<()> {
-        // SAFETY: applied issued this live node's slot, used before node deletion.
-        unsafe { &*self.0 }
-    }
-}
-
-/// Copies a view Rust hands back into its node, so the node is current: the node,
-/// and what it calls as of now.
-#[inline]
-fn applied(view: &TimerView) -> (*mut TimerNode, Calls) {
-    let node = view.token.cast::<TimerNode>();
-    // SAFETY: the queue owns this node. Only its metadata is borrowed mutably;
-    // an active callback may borrow the disjoint inline storage during reentry.
-    let node_ref = unsafe { &mut (*node).fields };
-    node_ref.id = view.id;
-    node_ref.exec_msec = view.deadline;
-    node_ref.interval = view.interval;
-    node_ref.exec_count = view.exec_count;
-    node_ref.round = view.birth_round;
-    node_ref.removed = view.removed;
-    let retained = node
-        .wrapping_byte_add(std::mem::offset_of!(TimerNode, retained))
-        .cast::<SmallFn<()>>();
-    let calls = Calls {
-        #[cfg(test)]
-        callback: node_ref.callback,
-        retained: RetainedCall(retained),
-    };
-    (node, calls)
-}
-
-/// [`applied`]'s node.
-fn apply(view: &TimerView) -> *mut TimerNode {
-    applied(view).0
 }
 
 /// `swoole::Timer`. Callbacks re-enter it, so every mutable field is a `Cell`, and the
@@ -424,15 +288,45 @@ impl Owner {
         self.lend(|queue| queue.heap.iter().map(|view| view.id).collect())
     }
 
-    /// `Timer::get(id)`: the node, or null.
-    pub(crate) fn token(&self, id: c_long) -> *mut TimerNode {
-        self.lend(|queue| queue.token(id)).cast()
+    /// Node `id`'s fields, for `Swoole\Timer::info()`, and whether it is a PHP
+    /// callable's; none for a node not queued.
+    pub(crate) fn info(&self, id: c_long) -> Option<(Info, bool)> {
+        let view = self.lend(|queue| queue.get(id)).ok()?;
+        let info = Info {
+            exec_msec: view.deadline,
+            exec_count: view.exec_count,
+            interval: view.interval,
+            round: view.birth_round,
+            removed: view.removed,
+        };
+        Some((info, view.php))
     }
 
     /// `Timer::get(id)`, borrowed.
     pub(crate) fn get(&self, id: c_long) -> Option<&TimerNode> {
-        // SAFETY: null or a live TimerNode that `add` made.
-        unsafe { self.token(id).as_ref() }
+        self.node(Some(id)).2
+    }
+
+    /// The queue's node `id`, or for `None` the next due node of the selection
+    /// ([`Queue::select_next`], which makes it the active one): the queue's status
+    /// and view, and the node when the status is `Ok`.
+    #[inline]
+    fn node(&self, id: Option<c_long>) -> (Status, TimerView, Option<&TimerNode>) {
+        let (status, view) = self.lend(|queue| match id {
+            Some(id) => queue.get(id).map_or_else(
+                |status| (status, TimerView::default()),
+                |view| (Status::Ok, view),
+            ),
+            None => queue.select_next(),
+        });
+        if status != Status::Ok {
+            return (status, view, None);
+        }
+        // SAFETY: a token the queue holds, which it just returned: a live node `add`
+        // boxed, which only `release` frees once the queue has let it go. Nothing
+        // borrows a node mutably.
+        let node = unsafe { view.token.cast::<TimerNode>().as_ref() };
+        (status, view, node)
     }
 
     /// Picks the manual, reactor or system backend. Another backend keeps a
@@ -475,7 +369,7 @@ impl Owner {
     /// releasing its callback, then raises a pending bailout. The release may
     /// longjmp over these frames, which hold nothing to drop.
     fn release(&self, view: &TimerView) {
-        let node = apply(view);
+        let node = view.token.cast::<TimerNode>();
         // SAFETY: `add` boxed it; the queue no longer holds it.
         drop(unsafe { Box::from_raw(node) });
         if let Some(bailout) = self.pending_bailout.take() {
@@ -484,13 +378,14 @@ impl Owner {
         }
     }
 
-    /// The added node and its id, or none.
+    /// The added node's id, or none; `php` marks a PHP callable's node.
     pub(crate) fn add(
         &self,
         msec: c_long,
         persistent: bool,
+        php: bool,
         node: TimerNode,
-    ) -> Option<(*mut TimerNode, c_long)> {
+    ) -> Option<c_long> {
         if msec <= 0 {
             warning(c"add", format_args!("msec value[{msec}] is invalid"));
             return None;
@@ -499,7 +394,7 @@ impl Owner {
         // The queue boxes the node only once it has room for it, so a refused node
         // drops here with the closure.
         let added = self.lend(|queue| {
-            queue.add(now, msec, persistent, || {
+            queue.add_marked(now, msec, persistent, php, || {
                 Box::into_raw(Box::new(node)).cast()
             })
         });
@@ -513,20 +408,17 @@ impl Owner {
                 return None;
             }
         };
-        let node = apply(&view);
         let next = swr_v1_timer_rearm_after_add(self.next_msec.get(), msec);
         if next != self.next_msec.get() {
             self.set(next);
             self.next_msec.set(next);
         }
-        Some((node, view.id))
+        Some(view.id)
     }
 
     /// Reserve a PHP node before its caller retains a callable.
     pub(crate) fn reserve_php(&self, ms: i64, persistent: bool) -> Option<i64> {
-        let mut node = TimerNode::new();
-        node.fields.php = true;
-        self.add(ms, persistent, node).map(|(_, id)| id)
+        self.add(ms, persistent, true, TimerNode::new())
     }
 
     /// Whether `id` was removed.
@@ -535,19 +427,13 @@ impl Owner {
     }
 
     pub(crate) fn remove_php(&self, id: c_long) -> bool {
-        self.remove_if(id, |view| {
-            // SAFETY: this owner queued the live node, borrowed only for this check.
-            unsafe { (*view.token.cast::<TimerNode>()).fields.php }
-        })
+        self.remove_if(id, |view| view.php)
     }
 
     fn remove_if(&self, id: c_long, predicate: impl FnOnce(&TimerView) -> bool) -> bool {
         let (status, view) = self.lend(|queue| queue.remove_if(id, predicate));
         match status {
-            Status::Deferred => {
-                apply(&view);
-                true
-            }
+            Status::Deferred => true,
             Status::Release => {
                 self.release(&view);
                 true
@@ -560,34 +446,25 @@ impl Owner {
     /// value, as for [`Self::delay`].
     #[cfg(test)]
     fn update(&self, id: i64, exec_msec: i64) {
-        let view = self.lend(|queue| queue.update(id, exec_msec).or_else(|_| queue.get(id)));
-        if let Ok(view) = view {
-            apply(&view);
-        }
+        _ = self.lend(|queue| queue.update(id, exec_msec));
     }
 
     /// Moves node `id`'s deadline, now `exec_msec` (its queued deadline for `None`), to
-    /// `delay_ms` from now. The node's fields come by value: `apply` writes the node, so
-    /// no reference to it may be live.
+    /// `delay_ms` from now.
     pub(crate) fn delay(&self, id: i64, exec_msec: Option<i64>, delay_ms: c_long) {
         let now = self.relative_msec();
-        let updated = self.lend(|queue| {
+        _ = self.lend(|queue| {
             queue.reschedule(id, |deadline| {
                 swr_v1_timer_delay_deadline(now, exec_msec.unwrap_or(deadline), delay_ms)
             })
         });
-        if let Ok(view) = updated {
-            apply(&view);
-        }
     }
 
     /// Completes the active node.
     fn complete(&self, id: i64) {
         let (status, view) = self.lend(|queue| queue.complete(id));
         match status {
-            Status::Ok => {
-                apply(&view);
-            }
+            Status::Ok => {}
             Status::Release | Status::ReleaseOverflow => {
                 self.release(&view);
                 if status == Status::ReleaseOverflow {
@@ -628,20 +505,16 @@ impl Owner {
         }
         loop {
             // The queue is back before the node's callback runs.
-            let (status, view) = self.lend(Queue::select_next);
+            let (status, view, node) = self.node(None);
             if status == Status::Empty || status == Status::Closing {
                 break;
             }
             check(status);
-            // The node the queue just selected; the copies are read before it runs.
-            let (_, calls) = applied(&view);
-            if !view.removed {
-                #[cfg(test)]
-                if let Some((callback, node)) = calls.callback.zip(Lent::of(view.token.cast())) {
-                    // The selected node, held until complete.
-                    callback(self, node);
-                }
-                calls.retained.get().run();
+            // The node the queue just selected, held until complete.
+            if !view.removed
+                && let Some(node) = node
+            {
+                node.retained.run();
             }
             self.complete(view.id);
         }
@@ -776,23 +649,35 @@ mod tests {
         drop(unsafe { Box::from_raw(timer) });
     }
 
-    type Call = Box<dyn FnMut(&Owner, *mut TimerNode)>;
+    type Call = Box<dyn FnMut(&Owner, c_long)>;
 
-    /// A node's closures, its data, as probe.cc's `Hooks`.
+    /// A node's closures, as probe.cc's `Hooks`.
     struct Hooks {
-        call: Call,
-        destructor: Box<dyn FnMut()>,
+        id: Cell<c_long>,
+        call: RefCell<Call>,
+        destructor: RefCell<Box<dyn FnMut()>>,
     }
 
-    extern "C-unwind" fn call(timer: &Owner, node: Lent<'_>) {
-        let node = node.as_ptr();
-        let hooks = unsafe { (*node).fields.data.cast::<Hooks>() };
-        unsafe { ((*hooks).call)(timer, node) };
+    /// A probe node's id and hooks.
+    struct Added {
+        id: c_long,
+        hooks: Rc<Hooks>,
     }
 
-    extern "C-unwind" fn destruct(node: Lent<'_>) {
-        let mut hooks = unsafe { Box::from_raw((*node.as_ptr()).fields.data.cast::<Hooks>()) };
-        (hooks.destructor)();
+    /// The hooks a probe node retains: its callback runs `call` with the node's id,
+    /// and its release `destructor`.
+    struct Hook {
+        timer: &'static Owner,
+        hooks: Rc<Hooks>,
+    }
+
+    impl crate::timer::php::Callback for Hook {
+        fn run(&self) {
+            (self.hooks.call.borrow_mut())(self.timer, self.hooks.id.get());
+        }
+        fn release(self) {
+            (self.hooks.destructor.borrow_mut())();
+        }
     }
 
     #[derive(Default)]
@@ -823,47 +708,48 @@ mod tests {
             self.log.borrow().destructors
         }
         /// probe.cc's `add`: due now, with a destructor that logs `label`.
-        fn add(&self, label: char, repeat: bool, call_back: Call) -> *mut TimerNode {
+        fn add(&self, label: char, repeat: bool, call_back: Call) -> Added {
             let log = Rc::clone(&self.log);
-            let hooks = Box::into_raw(Box::new(Hooks {
-                call: call_back,
-                destructor: Box::new(move || {
+            let hooks = Rc::new(Hooks {
+                id: Cell::new(0),
+                call: RefCell::new(call_back),
+                destructor: RefCell::new(Box::new(move || {
                     let mut log = log.borrow_mut();
                     log.destructors += 1;
                     log.events.push(label.to_ascii_lowercase());
-                }),
-            }));
-            let mut node = TimerNode::new();
-            node.fields.callback = Some(call);
-            node.fields.data = hooks.cast();
-            let (node, _) = self.timer().add(1000, repeat, node).expect("add failed");
-            unsafe { (*node).fields.exec_msec = 0 };
-            self.timer().update(unsafe { (*node).fields.id }, 0);
-            unsafe { (*node).fields.destructor = Some(destruct) };
-            node
+                })),
+            });
+            let timer = self.timer();
+            let id = timer
+                .add(1000, repeat, false, TimerNode::new())
+                .expect("add failed");
+            timer.update(id, 0);
+            hooks.id.set(id);
+            timer.get(id).expect("added").install(Hook {
+                timer,
+                hooks: Rc::clone(&hooks),
+            });
+            Added { id, hooks }
         }
         fn record(&self, label: char) -> Call {
             let log = Rc::clone(&self.log);
             Box::new(move |_, _| log.borrow_mut().events.push(label))
         }
         /// Replaces a node's destructor, logging as `add`'s does first.
-        fn on_destroy(&self, node: *mut TimerNode, label: char, then: impl FnMut() + 'static) {
+        fn on_destroy(&self, node: &Added, label: char, then: impl FnMut() + 'static) {
             let log = Rc::clone(&self.log);
             let mut then = then;
-            let hooks = unsafe { (*node).fields.data.cast::<Hooks>() };
-            unsafe {
-                (*hooks).destructor = Box::new(move || {
-                    {
-                        let mut log = log.borrow_mut();
-                        log.destructors += 1;
-                        log.events.push(label);
-                    }
-                    then();
-                });
-            }
+            *node.hooks.destructor.borrow_mut() = Box::new(move || {
+                {
+                    let mut log = log.borrow_mut();
+                    log.destructors += 1;
+                    log.events.push(label);
+                }
+                then();
+            });
         }
         fn present(&self, id: c_long) -> bool {
-            id != 0 && self.timer().get(id).is_some()
+            id != 0 && self.timer().info(id).is_some()
         }
         fn free(&self) {
             unsafe { free(self.timer) };
@@ -937,13 +823,12 @@ mod tests {
         p.add(
             'A',
             true,
-            Box::new(move |t, n| {
-                let id = unsafe { (*n).fields.id };
+            Box::new(move |t, id| {
                 let mut log = log.borrow_mut();
                 log.events.push('A');
                 log.events.push(if t.remove(id) { 'Y' } else { 'N' });
                 log.events.push(if t.remove(id) { 'Y' } else { 'N' });
-                let viewed = t.token(id) == n && unsafe { (*n).fields.removed };
+                let viewed = t.info(id).is_some_and(|(info, _)| info.removed);
                 log.events.push(if viewed { 'V' } else { 'X' });
             }),
         );
@@ -964,11 +849,11 @@ mod tests {
                 }
             }),
         );
-        other.set(unsafe { (*p.add('B', false, p.record('B'))).fields.id });
+        other.set(p.add('B', false, p.record('B')).id);
         p.add('C', false, p.record('C'));
         if in_destructor {
             let (timer, target) = (p.timer(), Rc::clone(&other));
-            p.on_destroy(a, 'a', move || {
+            p.on_destroy(&a, 'a', move || {
                 timer.remove(target.get());
             });
         }
@@ -994,20 +879,19 @@ mod tests {
         let a = p.add(
             'A',
             repeat,
-            Box::new(move |t, n| {
+            Box::new(move |t, id| {
                 log.borrow_mut().events.push('A');
                 if repeat {
-                    unsafe { (*n).fields.exec_msec = 100_000 };
-                    t.update(unsafe { (*n).fields.id }, 100_000);
+                    t.update(id, 100_000);
                 } else {
-                    let (id, exec_msec) = unsafe { ((*n).fields.id, (*n).fields.exec_msec) };
+                    let exec_msec = t.info(id).expect("queued").0.exec_msec;
                     t.delay(id, Some(exec_msec), 100_000);
                 }
                 flag.set(true);
             }),
         );
         let b = p.add('B', false, p.record('B'));
-        let (a, b) = unsafe { ((*a).fields.id, (*b).fields.id) };
+        let (a, b) = (a.id, b.id);
         let got = finish(&p, a, b, false);
         assert!(updated.get(), "the callback updated its node");
         got
@@ -1031,7 +915,7 @@ mod tests {
             timer: p.timer,
             log: Rc::clone(&p.log),
         };
-        p.on_destroy(a, 'a', move || {
+        p.on_destroy(&a, 'a', move || {
             probe.add('C', false, probe.record('C'));
         });
         p.add('B', false, p.record('B'));
@@ -1066,7 +950,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no fork")]
     fn fork_teardown() {
         let p = Probe::new();
-        let id = unsafe { (*p.add('A', false, p.record('A'))).fields.id };
+        let id = p.add('A', false, p.record('A')).id;
         let child = unsafe { libc::fork() };
         assert!(child >= 0, "fork failed");
         if child == 0 {
@@ -1094,7 +978,7 @@ mod tests {
         p.add(
             'A',
             false,
-            Box::new(move |t, node| {
+            Box::new(move |t, id| {
                 let child = unsafe { libc::fork() };
                 assert!(child >= 0, "fork failed");
                 if child == 0 {
@@ -1105,9 +989,8 @@ mod tests {
                     unsafe { libc::_exit(if ok { 0 } else { 2 }) };
                 }
                 child_status.set(reap(child));
-                let id = unsafe { (*node).fields.id };
                 parent_intact
-                    .set(t.token(id) == node && t.count() == 2 && log.borrow().destructors == 0);
+                    .set(t.info(id).is_some() && t.count() == 2 && log.borrow().destructors == 0);
                 log.borrow_mut().events.push('A');
             }),
         );
@@ -1137,8 +1020,8 @@ mod tests {
                     assert!(timer.remove(me.get()));
                 }
             });
-            let (_, id) = timer
-                .add(1000, persistent, TimerNode::owning(f))
+            let id = timer
+                .add(1000, persistent, false, TimerNode::owning(f))
                 .expect("add failed");
             timer.update(id, 0);
             id
@@ -1167,7 +1050,7 @@ mod tests {
         let again = Probe::new();
         again
             .timer()
-            .add(1000, false, TimerNode::owning(Rc::new(|| {})));
+            .add(1000, false, false, TimerNode::owning(Rc::new(|| {})));
         assert_eq!(owned::counts(), (made, free - 1), "a freed slot reused");
         again.free();
     }
@@ -1180,7 +1063,7 @@ mod tests {
         let p = Probe::new();
         let previous = slot_value();
         publish(p.timer);
-        let inactive_id = unsafe { (*p.add('C', false, p.record('C'))).fields.id };
+        let inactive_id = p.add('C', false, p.record('C')).id;
         let inactive = swoole_timer_clear(inactive_id) && !swoole_timer_clear(inactive_id);
         let missing = !swoole_timer_clear(0)
             && !swoole_timer_clear(-1)
@@ -1191,19 +1074,17 @@ mod tests {
         p.add(
             'A',
             true,
-            Box::new(move |timer, node| {
+            Box::new(move |timer, id| {
                 log.borrow_mut().events.push('A');
                 let cancelled_other =
                     swoole_timer_clear(target.get()) && !swoole_timer_clear(target.get());
-                let id = unsafe { (*node).fields.id };
                 let active = swoole_timer_clear(id) && !swoole_timer_clear(id);
                 let active_view = swoole_timer_get(id).is_some_and(|held| held.id() == id)
-                    && timer.token(id) == node
-                    && unsafe { (*node).fields.removed };
+                    && timer.info(id).is_some_and(|(info, _)| info.removed);
                 flags.set((active, cancelled_other, active_view));
             }),
         );
-        other.set(unsafe { (*p.add('B', false, p.record('B'))).fields.id });
+        other.set(p.add('B', false, p.record('B')).id);
         p.timer().select();
         p.timer().select();
         let remaining = p.timer().count();
@@ -1242,8 +1123,7 @@ mod tests {
         let previous = slot_value();
         publish(p.timer);
         let log = Rc::new(RefCell::new(Vec::new()));
-        let native = p.add('N', false, p.record('N'));
-        let native_id = unsafe { (*native).fields.id };
+        let native_id = p.add('N', false, p.record('N')).id;
         assert!(!php::clear(native_id));
         assert!(p.timer().remove(native_id));
         assert!(php::reserve(0, false).is_none());

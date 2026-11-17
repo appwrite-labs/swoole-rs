@@ -62,6 +62,11 @@ mod php {
             // and the generated layout assertions catch a SWITCH build.
             .blocklist_type("zend_vm_opcode_handler_t")
             .raw_line("pub type zend_vm_opcode_handler_t = *const ::std::ffi::c_void;")
+            // An operand (`znode_op`) is a union of `u32` offsets and numbers on
+            // 64-bit builds, where it holds no pointer: a `u32`. The generated
+            // `zend_op` layout assertions catch a build where it is anything else.
+            .blocklist_type("_?znode_op")
+            .raw_line("pub type znode_op = u32;")
             .generate()
             .expect("zend-sys: bindgen")
             .write_to_file(out.join("bindings.rs"))

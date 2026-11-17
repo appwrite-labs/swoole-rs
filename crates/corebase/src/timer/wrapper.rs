@@ -111,7 +111,7 @@ pub fn add_owned(ms: c_long, persistent: bool, f: impl Fn() + 'static) -> Option
 #[inline]
 fn held(ms: c_long, persistent: bool, node: TimerNode) -> Option<Held> {
     let timer = created()?;
-    let (_, id) = timer.add(ms, persistent, node)?;
+    let id = timer.add(ms, persistent, false, node)?;
     let held = Held::new(timer.generation(), id);
     if held.is_none() {
         // An id past what a `Held` packs: as if the add had failed.
@@ -197,8 +197,8 @@ pub fn delete_held(held: Option<Held>) -> bool {
 #[must_use]
 pub fn swoole_timer_exists(timer_id: c_long) -> bool {
     available(c"swoole_timer_exists")
-        .and_then(|timer| timer.get(timer_id))
-        .is_some_and(|node| !node.fields.removed)
+        .and_then(|timer| timer.info(timer_id))
+        .is_some_and(|(info, _)| !info.removed)
 }
 
 /// `bool swoole_timer_clear(long timer_id)`: `Timer::remove(id)`.
@@ -212,7 +212,7 @@ pub fn swoole_timer_clear(timer_id: c_long) -> bool {
 #[must_use]
 pub fn swoole_timer_get(timer_id: c_long) -> Option<Held> {
     let timer = available(c"swoole_timer_get")?;
-    timer.get(timer_id)?;
+    timer.info(timer_id)?;
     Held::new(timer.generation(), timer_id)
 }
 
@@ -326,7 +326,7 @@ pub mod php {
     /// `swoole_timer_get(id)`'s fields, and whether it is a PHP timer.
     #[must_use]
     pub fn info(id: i64) -> Option<(Info, bool)> {
-        current()?.get(id).map(|node| (node.info(), node.is_php()))
+        current()?.info(id)
     }
 
     /// The timer's `count()` and `get_round()`, if there is a timer.
