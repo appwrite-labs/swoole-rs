@@ -12,13 +12,15 @@ use crate::{
 };
 use libc::c_int;
 use std::{ffi::CStr, rc::Rc};
-use swoole_rs_clients::client::{self as state, ClientEvent, Handle, SSL_STATE_WAIT_STREAM};
+use swoole_rs_clients::client::{
+    self as state, ClientEvent, Handle, Notification, SSL_STATE_WAIT_STREAM,
+};
 use swoole_rs_clients::valid_port;
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_phpstubs::client_async;
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, Minit, Owned, Value, Weak, ZString,
+    Call, Class, E_ERROR, Minit, Owned, Value, Weak,
     bailout::{self, Bailout},
     deny_unset,
     host::callable::Callable,
@@ -192,15 +194,15 @@ fn receive(object: Obj, payload: Owned) -> Result<(), Bailout> {
 }
 
 fn listener(weak: Weak<net::Data>) -> state::Listener {
-    Rc::new(move |kind, data, length| {
+    state::Listener::new(swoole_rs_phpswoole::zend_string_allocator(), move |event| {
         // `connect()` holds the object (`hold`) until its connection is released,
         // and only then does the client stop raising events.
         let Some(object) = weak.get() else {
             return;
         };
         let client = Obj::new(object.object_ref());
-        let raised = match kind {
-            ClientEvent::Connect => {
+        let raised = match event {
+            Notification::Connect => {
                 if let Some(conn) = client.data().conn()
                     && conn.ssl_wait.replace(false)
                 {
@@ -209,25 +211,17 @@ fn listener(weak: Weak<net::Data>) -> state::Listener {
                     execute(client, Slot::Connect)
                 }
             }
-            ClientEvent::Receive => {
-                let bytes = if length == 0 {
-                    &[]
-                } else {
-                    // SAFETY: the receive event supplies these initialized bytes. Copy them into
-                    // Zend storage before PHP can reenter and release the client buffer.
-                    unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) }
-                };
-                receive(client, Owned::string(ZString::new(bytes)))
-            }
-            ClientEvent::Close => execute_and_release(client, Slot::Close),
-            ClientEvent::Error => {
-                // The error code arrives as the length (`swoole_get_last_error()`).
-                let error = i64::try_from(length).unwrap_or(0);
-                client.props().long(c"errCode", error);
+            Notification::Receive(payload) => receive(
+                client,
+                Owned::string(swoole_rs_phpswoole::received_string(payload)),
+            ),
+            Notification::Close => execute_and_release(client, Slot::Close),
+            Notification::Error(code) => {
+                client.props().long(c"errCode", i64::from(code));
                 execute_and_release(client, Slot::Error)
             }
-            ClientEvent::BufferFull => execute(client, Slot::BufferFull),
-            ClientEvent::BufferEmpty => execute(client, Slot::BufferEmpty),
+            Notification::BufferFull => execute(client, Slot::BufferFull),
+            Notification::BufferEmpty => execute(client, Slot::BufferEmpty),
         };
         // Borrowed for the event: like `unhold`, this never destroys the object.
         object.delref();

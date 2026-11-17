@@ -152,15 +152,7 @@ pub(super) mod net {
     use core::ffi::c_int;
     use swoole_rs_corebase::lent::Spare;
     use swoole_rs_corebase::reactor::Socket;
-    use swoole_rs_corebase::sys::ReadSlot;
 
-    pub(in super::super) fn recv(
-        _: Socket<'_>,
-        buffer: &mut [impl ReadSlot],
-        _: c_int,
-    ) -> Option<usize> {
-        count(io("recv", buffer.len()))
-    }
     pub(in super::super) fn recv_append(
         _: Socket<'_>,
         buffer: &mut swoole_rs_corebase::buffer::string::CppString,
@@ -250,7 +242,13 @@ fn io(name: &str, length: usize) -> isize {
     log(format!("{name} {length}"));
     mock(|m| m.io.pop()).unwrap_or(length.cast_signed())
 }
-fn listener(event: ClientEvent, _: *const c_char, length: usize) {
+fn listener(notification: Notification) {
+    let event = notification.kind();
+    let length = match notification {
+        Notification::Receive(bytes) => bytes.len(),
+        Notification::Error(code) => code as usize,
+        _ => 0,
+    };
     log(format!("call {event:?} {length}"));
     if mock(|m| m.releases) == Some(event) {
         sock().object = core::ptr::null_mut();
@@ -317,7 +315,6 @@ fn set_proxy(client: *mut Client, http: bool) {
 fn new_client(kind: c_int, is_async: bool) -> *mut Client {
     const OPS: SocketOps = SocketOps {
         with_buffer: with_thread_buffer,
-        recv: net::recv,
         recv_append: net::recv_append,
         recv_sync: net::recv_sync,
         recvfrom_sync: net::recvfrom_sync,
@@ -360,7 +357,11 @@ fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
     let client = new_client(kind, is_async);
     if callbacks {
         // SAFETY: a live state.
-        listen(unsafe { &*client }, 0b111_1110, std::rc::Rc::new(listener));
+        listen(
+            unsafe { &*client },
+            0b111_1110,
+            Listener::new(TrustedAllocator::STD, listener),
+        );
     }
     taken();
     client
@@ -742,6 +743,26 @@ fn connect_timeout_with_a_pending_proxy_fails_without_on_close() {
 }
 
 #[test]
+fn receive_payload_outlives_the_client_input() {
+    let client = client(1, true, true);
+    let handle = Handle::raw(client);
+    handle.input_init();
+    let listener = Listener::new(TrustedAllocator::STD, move |event| {
+        let Notification::Receive(payload) = event else {
+            unreachable!()
+        };
+        Handle::raw(client).input_free();
+        assert_eq!(payload.view(), b"a\0b");
+        log("received");
+    });
+    listen(handle.get(), ClientEvent::Receive.bit(), listener);
+    mock(|m| m.replies.push(b"a\0b".to_vec()));
+    assert!(on_read(handle));
+    assert_eq!(taken(), ["recv 65536", "received"]);
+    free(client);
+}
+
+#[test]
 fn stream_read_delivers_data_and_closes_at_eof() {
     let client = client(1, true, true);
     Handle::raw(client).set(Flag::Active, true);
@@ -801,6 +822,20 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
         assert!(on_read(Handle::raw(client)));
         assert!(taken().contains(&"framed true".to_owned()));
     }
+    free(client);
+}
+
+#[test]
+fn empty_datagram_is_delivered_and_read_failure_is_silent() {
+    let client = client(2, true, true);
+    let handle = Handle::raw(client);
+    mock(|m| m.io = vec![0]);
+    assert!(on_datagram(handle));
+    let read = format!("recvfrom_sync {BUFFER_SIZE_UDP}");
+    assert_eq!(taken(), [&read, "call Receive 0"]);
+    mock(|m| m.io = vec![-1]);
+    assert!(!on_datagram(handle));
+    assert_eq!(taken(), [read]);
     free(client);
 }
 
