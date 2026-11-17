@@ -32,6 +32,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: main
+      # ast-grep's Python API, which tools/budget.py counts with, at the version install.sh pins.
+      - name: Install ast-grep
+        run: python3 -m pip install -q --user --break-system-packages "$(grep -o 'ast-grep-py==[0-9.]*' .devcontainer/install.sh)"
       # From the newest completed merge-tier runs on main, newest first:
       # - gate/: the newest with a gate result (a gate missing a shard uploads no phpt.json)
       #   from every build variant too: a variant job that died before its gate would take its

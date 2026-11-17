@@ -51,6 +51,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 2
+      # ast-grep's Python API, which tools/budget.py counts with, at the version install.sh pins.
+      - name: Install ast-grep
+        run: python3 -m pip install -q --user --break-system-packages "$(grep -o 'ast-grep-py==[0-9.]*' .devcontainer/install.sh)"
       - name: Check Zend import justifications
         run: python3 tools/zend_imports.py
       - name: Check migration ledger

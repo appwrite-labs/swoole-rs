@@ -167,6 +167,38 @@ mod tests {
             self.assertEqual(counted['statuses'], 6)
             self.assertEqual(counted['reprs'], 3)
 
+    def test_a_macro_body_counts_by_its_tokens(self):
+        source = '''\
+macro_rules! exports {
+    ($($name:ident = $call:expr;)*) => {$(
+        #[repr(C)]
+        struct Record;
+        pub unsafe extern "C" fn $name(flags: Vec<bool>) -> c_int { unsafe { $call } }
+        unsafe fn inner() -> Option<i32> { None }
+        unsafe impl Send for Record {}
+        static NAME_CACHE: RefCell<[bool; 2]> = RefCell::new([false; 2]);
+        // unsafe { not code }
+    )*};
+}
+per_thread! { static SEEN: HashSet<u8> = HashSet::new(); }
+fn checked() { assert!(unsafe { ready() }, "unsafe { text }"); }
+type Routine = unsafe extern "C" fn();
+unsafe extern "C" { fn foreign(); }
+#[cfg(test)]
+mod tests {
+    fn t() { assert!(unsafe { skipped() }); }
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'lib.rs'
+            path.write_text(source)
+            counted = budget.count_file(path, set())
+            # $name, its block, inner, the impl and checked's block; Routine is a type and the
+            # extern block declares.
+            self.assertEqual(counted['unsafe'], 5)
+            self.assertEqual({kind: counted[kind] for kind in ('reprs', 'statuses', 'caches', 'cells', 'bools', 'maps')},
+                             {'reprs': 1, 'statuses': 1, 'caches': 1, 'cells': 1, 'bools': 2, 'maps': 2})
+
     def test_a_crate_that_forbids_unsafe_code_counts_zero_unforbidden(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

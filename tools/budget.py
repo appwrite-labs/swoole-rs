@@ -3,7 +3,7 @@
 (#4733): an item that moves between crates isn't an item that was added, so a crate may
 rise by what others fall, and a fold or a new crate moves what it holds.
 
-  unsafe   `unsafe` blocks, fns and impls
+  unsafe   `unsafe` blocks, fns and impls; a fn pointer's type is not a fn
   maps     std hash and B-tree maps and sets, where a flat table belongs
   lists    LinkedList and VecDeque
   bools    arrays and Vecs of bool, where a bitset belongs
@@ -48,8 +48,15 @@ where the items went.
 
 Test code is not counted: a `#[cfg(test)]` inline module, a file a `#[cfg(test)] mod`
 loads, and anything under a tests/ or benches/ directory.
+
+The Rust counts are ast-grep rules over tree-sitter's syntax tree (the `ast-grep-py`
+package), so a comment or a string never counts. The tree has only tokens inside a
+macro's body: there `unsafe`, `bools`, `caches`, `cells`, `statuses` and `reprs` match
+runs of tokens, `maps`, `lists` and `casts` match a name wherever it is, and `mints`,
+`fakes` and `derefs` don't see in.
 """
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 import os
 from pathlib import Path
 import re
@@ -58,132 +65,148 @@ import sys
 import tarfile
 import tempfile
 
+try:
+    from ast_grep_py import SgRoot
+except ImportError:
+    sys.exit('tools/budget.py needs ast-grep: python3 -m pip install ast-grep-py '
+             '(.devcontainer/install.sh pins the version CI runs)')
+
 ROOT = Path(__file__).resolve().parents[1]
-SAFE_FN = re.compile(r'(\bunsafe\s+)?(?:extern\s+"[^"]*"\s+)?\bfn\s+\w+\s*(?:<[^{;()]*?>)?\s*\(')
-RAW_PARAM = re.compile(r'(?:mut\s+)?(\w+)\s*:\s*(?:Option<\s*)?\*\s*(?:const|mut)\b')
-UNSAFE_BLOCK = re.compile(r'\bunsafe\s*\{')
 
 
-def closing(code, i, open_, close):
-    """The index after the `close` that balances an `open_` just before `i`."""
-    depth = 1
-    while i < len(code) and depth:
-        depth += (code[i] == open_) - (code[i] == close)
-        i += 1
-    return i
+def named(*names):
+    """A path or type segment that is one of `names`."""
+    return {'any': [{'kind': 'identifier'}, {'kind': 'type_identifier'}], 'regex': f'^(?:{"|".join(names)})$'}
 
 
-def derefs(code):
-    """The safe fns in `code` whose `unsafe` blocks name one of their raw-pointer parameters."""
+def option(inner):
+    """`inner`, or an `Option` of it."""
+    return {'any': [inner, {'kind': 'generic_type', 'regex': r'^Option\b',
+                            'has': {'kind': 'type_arguments', 'has': inner}}]}
+
+
+def attribute(name, **rule):
+    """The attribute `name`, as in `#[name(...)]`."""
+    return {'kind': 'attribute', 'all': [{'has': {'kind': 'identifier', 'regex': f'^{name}$'}}, *([rule] if rule else [])]}
+
+
+def tokens(*run):
+    """The first of a run of tokens in a macro's body, which the grammar leaves as a tree
+    of tokens. Each is a token's text or a rule."""
+    rule = {}
+    for item in reversed(run):
+        rule = {**({'regex': f'^(?:{item})$'} if isinstance(item, str) else item), **({'precedes': rule} if rule else {})}
+    return {**rule, 'inside': {'any': [{'kind': 'token_tree'}, {'kind': 'token_repetition'}]}}
+
+
+FN = {'any': [{'kind': 'function_item'}, {'kind': 'function_signature_item'}]}
+BRACES = {'kind': 'token_tree', 'regex': r'^\{'}
+UNSAFE = {'has': {'kind': 'function_modifiers', 'regex': r'\bunsafe\b'}}
+MUT_REF = {'kind': 'reference_type', 'has': {'kind': 'mutable_specifier'}}
+STATUS = '(?:i32|i64|isize|c_int)'
+C_LAYOUT = {'kind': 'token_tree', 'has': {'kind': 'identifier', 'regex': '^C$'}}
+RAW_PARAM = {'kind': 'parameter', 'has': {'field': 'type', **option({'kind': 'pointer_type'})}}
+
+
+def derefs(root):
+    """The safe fns under `root` whose `unsafe` blocks name one of their raw-pointer parameters."""
     found = []
-    for fn in SAFE_FN.finditer(code):
-        end = closing(code, fn.end(), '(', ')')
-        # Split at top-level commas: a callback type's `*mut` is not a pointer the fn takes.
-        params, depth = [''], 0
-        for ch in code[fn.end():end - 1].replace('->', '-'):
-            depth += (ch in '(<[') - (ch in ')>]')
-            if ch == ',' and depth == 0:
-                params.append('')
-            else:
-                params[-1] += ch
-        names = [m.group(1) for p in params if (m := RAW_PARAM.match(p.strip()))]
-        start = re.compile(r'[{;]').search(code, end)
-        if fn.group(1) or not names or not start or start.group() == ';':
-            continue
-        body = code[start.end():closing(code, start.end(), '{', '}')]
-        blocks = ''.join(body[b.end():closing(body, b.end(), '{', '}')] for b in UNSAFE_BLOCK.finditer(body))
-        if any(re.search(rf'\b{name}\b', blocks) for name in names):
-            found.append(fn.group())
+    for fn in root.find_all(kind='function_item', **{'not': UNSAFE}):
+        # Its own parameters: a callback type's `*mut` is not a pointer the fn takes.
+        names = [p.field('pattern').text() for p in fn.field('parameters').children() if p.matches(**RAW_PARAM)]
+        if names and fn.find(kind='unsafe_block', has={'stopBy': 'end', **named(*map(re.escape, names))}):
+            found.append(fn)
     return found
 
 
+# Each count's ast-grep rule (https://ast-grep.github.io/reference/rule.html), or a fn of the tree.
 KINDS = {
-    'unsafe': re.compile(r'\bunsafe\s*(?:\{|(?:extern\s+"[^"]*"\s+)?fn\b|impl\b)'),
-    'maps': re.compile(r'\b(?:HashMap|HashSet|BTreeMap|BTreeSet)\b'),
-    'lists': re.compile(r'\b(?:LinkedList|VecDeque)\b'),
-    'bools': re.compile(r'Vec<bool>|\[bool;'),
-    'caches': re.compile(r'^\s*(?:pub(?:\([^)]*\))?\s+)?(?:static|struct|enum|type)\s+\w*(?i:cache)'),
-    # A one-line safe signature returning `&mut` or `Option<&mut>` with no `&mut` anywhere in its
-    # parameters, which may nest one level of parentheses (`()`, a tuple, a fn type). A `&mut`
-    # there, even in a tuple or a callback's type, could be what it lends, so it isn't counted.
-    'mints': re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?fn\s+\w+(?:<[^>]*>)?"
-                        r"\((?:(?!&\s*(?:'\w+\s+)?mut\b)(?:[^()]|\((?:(?!&\s*(?:'\w+\s+)?mut\b)[^()])*\)))*\)"
-                        r"\s*->\s*(?:Option<)?&(?:'\w+\s+)?mut\b"),
-    'fakes': re.compile(r'\bcfg!?\([^\n]*\bnot\(\s*test\s*\)'),
-    'casts': re.compile(r'\bclippy::cast_(?:possible_truncation|sign_loss|possible_wrap|precision_loss)\b'),
-    'cells': re.compile(r'\bRefCell\s*<'),
-    'statuses': re.compile(r'\)\s*->\s*(?:i32|c_int|i64|isize)\s*(?:where\b[^;{]*)?\{'),
-    'reprs': re.compile(r'#\s*\[\s*repr\s*\([^\]]*\bC\b[^\]]*\)\s*\]'),
+    'unsafe': {'any': [{'kind': 'unsafe_block'}, {**FN, **UNSAFE}, {'kind': 'impl_item', 'regex': r'^unsafe\b'},
+                       tokens('unsafe', BRACES), tokens('unsafe', 'fn|impl'),
+                       tokens('unsafe', 'extern', {'kind': 'string_literal'}, 'fn')]},
+    'maps': named('HashMap', 'HashSet', 'BTreeMap', 'BTreeSet'),
+    'lists': named('LinkedList', 'VecDeque'),
+    'bools': {'any': [{'kind': 'generic_type', 'regex': r'^Vec\s*<\s*bool\s*>$'},
+                      {'kind': 'array_type', 'has': {'field': 'element', 'regex': '^bool$'}},
+                      tokens('Vec', '<', 'bool', '>'), {'kind': 'token_tree', 'regex': r'^\[\s*bool\s*;'}]},
+    'caches': {'any': [{'any': [{'kind': f'{kind}_item'} for kind in ('static', 'struct', 'enum', 'type')],
+                        'has': {'field': 'name', 'regex': '(?i)cache'}},
+                       tokens('static|struct|enum|type', {'kind': 'identifier', 'regex': '(?i)cache'})]},
+    # A `&mut` anywhere in the parameters, even in a tuple or a callback's type, could be what
+    # the fn lends, so it isn't counted.
+    'mints': {'kind': 'function_item', 'all': [
+        {'not': UNSAFE},
+        {'has': {'field': 'return_type', **option(MUT_REF)}},
+        {'not': {'has': {'field': 'parameters', 'has': {
+            'stopBy': 'end', 'any': [MUT_REF, {'kind': 'self_parameter', 'regex': r'^&.*\bmut\b'}]}}}},
+    ]},
+    'fakes': {'any': [attribute('cfg'), {'kind': 'macro_invocation', 'has': {'field': 'macro', 'regex': '^cfg$'}}],
+              'regex': r'\bnot\(\s*test\s*\)'},
+    'casts': {'kind': 'identifier', 'regex': '^cast_(?:possible_truncation|sign_loss|possible_wrap|precision_loss)$'},
+    'cells': {'any': [{'kind': 'generic_type', 'has': {'field': 'type', 'regex': r'(?:^|::)RefCell$'}},
+                      tokens('RefCell', '<')]},
+    'statuses': {'any': [{'kind': 'function_item', 'has': {'field': 'return_type', 'regex': f'^(?:\\w+::)*{STATUS}$'}},
+                         tokens('->', STATUS, BRACES)]},
+    'reprs': {'any': [attribute('repr', has=C_LAYOUT), tokens('repr', C_LAYOUT)]},
     'derefs': derefs,
 }
-MULTILINE = ('statuses', 'reprs', 'derefs')
 # What `forbid(unsafe_code)` rejects and KINDS['unsafe'] doesn't count.
-UNCOUNTED = re.compile(r'\bunsafe\s+extern\b|#\[unsafe\(')
+UNCOUNTED = {'any': [{'kind': 'foreign_mod_item', 'regex': r'^unsafe\b'}, attribute('unsafe')]}
 FORBID = re.compile(r'^#!\[forbid\([^)]*\bunsafe_code\b', re.M)
-TEST_MOD = re.compile(r'^(\s*)(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*([;{])')
 PATH_ATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 C_SUFFIXES = ('.c', '.h')
 
 
+def parse(path):
+    """The syntax tree of the Rust file at `path`."""
+    return SgRoot(path.read_text(errors='replace'), 'rust').root()
+
+
 def count_file(path, test_files):
     """{kind: matches} in `path` outside #[cfg(test)] modules; adds files those modules load to `test_files`."""
-    count = dict.fromkeys(KINDS, 0)
-    source = []
-    skip_until, pending, pending_path, depth = None, False, None, 0
-    for line in path.read_text(errors='replace').splitlines():
-        if skip_until is not None:
-            if line.rstrip() == skip_until:
-                skip_until = None
+    root = parse(path)
+    skipped = []
+    for module in root.find_all(kind='mod_item'):
+        attributes, node = [], module.prev()
+        while node and node.kind() in ('attribute_item', 'line_comment', 'block_comment'):
+            attributes.append(node.text())
+            start, node = node.range().start.index, node.prev()
+        if '#[cfg(test)]' not in attributes:
             continue
-        if pending:
-            if match := PATH_ATTR.search(line):
-                pending_path = match.group(1)
-            if depth == 0 and (match := TEST_MOD.match(line)):
-                pending = False
-                if match.group(3) == '{':
-                    skip_until = match.group(1) + '}'
-                else:
-                    name = pending_path or match.group(2) + '.rs'
-                    base = path.parent if pending_path or path.name in ('lib.rs', 'main.rs', 'mod.rs') \
-                        else path.parent / path.stem
-                    test_files.add((base / name).resolve())
-                    test_files.add((base / match.group(2) / 'mod.rs').resolve())
-                continue
-            # Another attribute, which may span lines, before the module.
-            if depth or line.strip().startswith('#['):
-                depth += line.count('[') - line.count(']')
-                continue
-            pending = False  # #[cfg(test)] on an item that is not a module: counted
-        if line.strip() == '#[cfg(test)]':
-            pending, pending_path, depth = True, None, 0
-            continue
-        code = line.split('//', 1)[0]
-        source.append(code)
-        for kind, pattern in KINDS.items():
-            if kind not in MULTILINE:
-                count[kind] += len(pattern.findall(code))
-    code = '\n'.join(source)
-    for kind in MULTILINE:
-        find = KINDS[kind]
-        count[kind] = len(find(code) if callable(find) else find.findall(code))
-    return count
+        # From its first attribute: a lint the module expects is the module's.
+        skipped.append(range(start, module.range().end.index))
+        if not module.field('body'):
+            name = module.field('name').text()
+            given = next((m.group(1) for a in attributes if (m := PATH_ATTR.match(a))), None)
+            base = path.parent if given or path.name in ('lib.rs', 'main.rs', 'mod.rs') else path.parent / path.stem
+            test_files.add((base / (given or name + '.rs')).resolve())
+            test_files.add((base / name / 'mod.rs').resolve())
+    return {kind: sum(not any(node.range().start.index in span for span in skipped)
+                      for node in (rule(root) if callable(rule) else root.find_all(**rule)))
+            for kind, rule in KINDS.items()}
+
+
+def count_crate(crate):
+    """{kind: matches} over the crate's non-test Rust sources."""
+    files = sorted(p for p in crate.rglob('*.rs')
+                   if not {'tests', 'benches', 'target'} & set(p.relative_to(crate).parts[:-1]))
+    test_files, per_file = set(), {}
+    for path in files:
+        per_file[path.resolve()] = count_file(path, test_files)
+    return {
+        **{kind: sum(n[kind] for path, n in per_file.items() if path not in test_files) for kind in KINDS},
+        'clines': sum(len(p.read_text(errors='replace').splitlines())
+                      for p in (crate / 'src').rglob('*') if p.suffix in C_SUFFIXES),
+        'unforbidden': 0 if FORBID.search((crate / 'src/lib.rs').read_text()) else 1,
+    }
 
 
 def counts(root=ROOT):
-    """{kind: {crate: matches}} over crates/*/ non-test Rust sources."""
-    result = {kind: {} for kind in [*KINDS, 'clines', 'unforbidden']}
-    for crate in sorted(p for p in (root / 'crates').iterdir() if (p / 'Cargo.toml').exists()):
-        files = sorted(p for p in crate.rglob('*.rs')
-                       if not {'tests', 'benches', 'target'} & set(p.relative_to(crate).parts[:-1]))
-        test_files, per_file = set(), {}
-        for path in files:
-            per_file[path.resolve()] = count_file(path, test_files)
-        for kind in KINDS:
-            result[kind][crate.name] = sum(n[kind] for path, n in per_file.items() if path not in test_files)
-        result['clines'][crate.name] = sum(len(p.read_text(errors='replace').splitlines())
-                                           for p in (crate / 'src').rglob('*') if p.suffix in C_SUFFIXES)
-        result['unforbidden'][crate.name] = 0 if FORBID.search((crate / 'src/lib.rs').read_text()) else 1
-    return result
+    """{kind: {crate: matches}} over crates/*/, a process per core."""
+    crates = sorted(p for p in (root / 'crates').iterdir() if (p / 'Cargo.toml').exists())
+    with ProcessPoolExecutor() as pool:
+        counted = dict(zip(crates, pool.map(count_crate, crates)))
+    return {kind: {crate.name: n[kind] for crate, n in counted.items()} for kind in [*KINDS, 'clines', 'unforbidden']}
 
 
 def counts_at(ref, root=ROOT):
@@ -214,9 +237,7 @@ def must_forbid(current, base, root=ROOT):
     UNCOUNTED, and don't forbid it."""
     return {c: (1, 0) for c, n in current['unforbidden'].items()
             if n and c not in base and not current['unsafe'][c]
-            and not any(UNCOUNTED.search(line.split('//', 1)[0])
-                        for p in (root / 'crates' / c).rglob('*.rs')
-                        for line in p.read_text(errors='replace').splitlines())}
+            and not any(parse(p).find(**UNCOUNTED) for p in (root / 'crates' / c).rglob('*.rs'))}
 
 
 def stays_c(body, zend=ROOT / 'docs/zend.md'):
