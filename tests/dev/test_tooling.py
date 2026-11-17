@@ -154,7 +154,7 @@ class Phpt(unittest.TestCase):
             original_path = os.environ.get('PATH')
             settings = ('precision=8', 'zend.assertions=-1')
             def run(command, **kwargs):
-                self.assertEqual(command[0], str(executable))
+                self.assertEqual(command[len(phpt.ipc_namespace() or [])], str(executable))
                 self.assertEqual(os.environ.get('PATH'), original_path)
                 result = subprocess.run(['php', '-r', "echo 'literal $value';"], env=kwargs['env'],
                                         capture_output=True, text=True)
@@ -208,6 +208,48 @@ class Phpt(unittest.TestCase):
                 rows, _ = phpt.run_cases(engine, [{'path': 'retry.phpt'}], sandbox, artifact, 1, 1)
             self.assertEqual(rows['retry.phpt']['status'], 'failed')
             self.assertEqual(rows['retry.phpt']['upstream_status'], 'WARNED')
+
+    def test_one_engine_cannot_leave_sysv_messages_for_the_next(self):
+        # A fixed-key queue like the process-pool msgqueue originals: `leave` creates it, queues a
+        # message and optionally hangs past its deadline; `read` reports what the next engine finds.
+        script = [sys.executable, '-c', '''if 1:
+            import ctypes, sys, time
+            libc = ctypes.CDLL(None, use_errno=True)
+            class Message(ctypes.Structure):
+                _fields_ = [('type', ctypes.c_long), ('text', ctypes.c_char * 16)]
+            key, mode = int(sys.argv[1]), sys.argv[2]
+            if mode == 'read':
+                queue, message = libc.msgget(key, 0o600), Message()
+                print('missing' if queue < 0 else message.text.decode()
+                      if libc.msgrcv(queue, ctypes.byref(message), 16, 0, 0o4000) > 0 else 'empty')
+                sys.exit()
+            queue = libc.msgget(key, 0o1600)  # IPC_CREAT
+            if queue < 0 or libc.msgsnd(queue, ctypes.byref(Message(1, b'injected')), 16, 0):
+                sys.exit(f'SysV message queue unavailable: errno {ctypes.get_errno()}')
+            print(queue, flush=True)
+            if mode == 'hang':
+                time.sleep(60)''']
+        key = 0x7a000000 + os.getpid() % 0x10000 * 2
+        existing = subprocess.run([*script, str(key + 1), 'leave'], capture_output=True, text=True)
+        if existing.returncode:
+            self.skipTest(existing.stderr.strip() or 'SysV message queues unavailable on this host')
+        survivor = ('msg', int(existing.stdout))
+        self.addCleanup(subprocess.run, ['ipcrm', '-q', str(survivor[1])], capture_output=True)
+        self.assertIn(survivor, phpt.ipc_objects())
+        for namespace in ([True] if phpt.ipc_namespace() else []) + [False]:
+            with self.subTest(namespace=namespace):
+                with phpt.ipc_isolated([*script, str(key), 'leave'], namespace) as (command, _):
+                    self.assertEqual(harness.run_isolated(command).returncode, 0)
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    with phpt.ipc_isolated([*script, str(key), 'hang'], namespace) as (command, _):
+                        harness.run_isolated(command, timeout=2)
+                with phpt.ipc_isolated([*script, str(key), 'read'], namespace) as (command, mode):
+                    self.assertEqual(harness.run_isolated(command).stdout.strip(), 'missing')
+                self.assertEqual(mode, 'namespace' if namespace else 'cleanup')
+                # Nothing is left on the host, and the queue that predates the runs survives.
+                host = subprocess.run([*script, str(key), 'read'], capture_output=True, text=True)
+                self.assertEqual(host.stdout.strip(), 'missing')
+                self.assertIn(survivor, phpt.ipc_objects())
 
     def test_failed_checkpoint_keeps_previous_json_and_cleans_temporary_file(self):
         with tempfile.TemporaryDirectory() as directory:
