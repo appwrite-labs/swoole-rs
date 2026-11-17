@@ -445,10 +445,7 @@ impl<'a> ServerObject<'a> {
     /// `get_callback(kind)`: the callable, a reference the call holds, or none.
     fn callback(self, kind: ServerCallback) -> Option<Callable> {
         let slot = self.data.callbacks.get(kind as usize)?;
-        let callable = slot.take();
-        let copy = callable.clone();
-        slot.set(callable);
-        copy
+        slot.with_taken(|callable| callable.clone())
     }
 
     /// `on()`'s server-level callback: replace callback `kind` with `callable`;
@@ -465,15 +462,7 @@ impl<'a> ServerObject<'a> {
         let Some(callable) = crate::callable::create(callable) else {
             return false;
         };
-        // A nested on() (from the old callable's destructor) stored its callable
-        // after this one's write: keep theirs, drop ours once it is back.
-        match slot.take() {
-            None => slot.set(Some(callable)),
-            nested => {
-                slot.set(nested);
-                drop(callable);
-            }
-        }
+        crate::callable::install(slot, callable);
         true
     }
 
