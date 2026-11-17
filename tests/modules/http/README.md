@@ -137,6 +137,12 @@ excluded for the reason they had in the GoogleTest lane (they need Node.js and i
 package). Each curl runs to completion before its log is read, where upstream slept a
 second after starting it.
 
+The HTTP fixtures' timers use `add_owned` closures. One-shot callbacks take their
+capture once; repeating and lifecycle callbacks receive the issued `Held` ID for
+self-cancellation. Timer destruction releases captures. The fixtures no longer
+copy `TimerNode`'s layout, cast callback data or resolve C++ timer symbols; their
+callback actions, timeouts and assertions stay the same.
+
 `abort_connection`'s Server builder also sets `SwooleG.max_sockets` (2) before
 `set_max_connection(1)` and hands back the old value, which the case restores once the
 server stops; the 16 `SyncClient`s are blocking `TcpStream` connects. In

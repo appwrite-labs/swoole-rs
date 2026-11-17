@@ -9,7 +9,7 @@
 //! the case fails on it once the server stops, from whichever process it failed in.
 //! `SyncClient` is a blocking `TcpStream`: `send` writes it all, `recv` is one read.
 
-use super::case::{TimerNode, swoole_timer_after};
+use super::case::after_once as timer_after;
 use super::*;
 use crate::{TEST_LOG_FILE, TEST_STR};
 use std::io::{Read, Write};
@@ -223,19 +223,6 @@ fn recv_all(c: &mut TcpStream, buf: &mut [u8]) -> usize {
 
 fn reply() -> Vec<u8> {
     [b"Server: ", PACKET].concat()
-}
-
-unsafe extern "C" fn run_timer(_: *mut c_void, node: *mut TimerNode) {
-    // SAFETY: `timer_after`'s closure, which only this callback takes.
-    let body = unsafe { Box::from_raw((*node).data.cast::<Box<dyn FnOnce()>>()) };
-    body();
-}
-
-/// `swoole_timer_after(ms, [...](TIMER_PARAMS) {...})`.
-fn timer_after(ms: c_long, body: impl FnOnce() + 'static) {
-    let body: Box<Box<dyn FnOnce()>> = Box::new(Box::new(body));
-    // SAFETY: a callback of the timer's signature, which takes the closure.
-    unsafe { swoole_timer_after(ms, run_timer, Box::into_raw(body).cast()) };
 }
 
 /// `serv->shutdown()`.
