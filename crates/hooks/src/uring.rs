@@ -21,11 +21,11 @@ use std::os::fd::AsRawFd;
 use std::ptr;
 use std::rc::Rc;
 use std::sync::atomic::AtomicU32;
-use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::coroutine::Waker;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::set_errno;
 use swoole_rs_corebase::sys::{self as os, ReadSlot};
+use swoole_rs_corebase::{BoxCellExt, CCast, CellExt};
 
 /// `SW_IOURING_QUEUE_SIZE`: default ring size and completion batch.
 const QUEUE_SIZE: u32 = 8192;
@@ -164,7 +164,7 @@ impl Slots {
 /// request, so the engine is shared and its state sits in cells, each taken out
 /// and put back with nothing in between that runs a coroutine or calls back.
 pub struct Uring {
-    /// Taken out within one queue operation ([`Uring::with_ring`]). Boxed, so a
+    /// Taken out within one queue operation. Boxed, so a
     /// take moves a pointer.
     ring: Cell<Option<Box<IoUring>>>,
     /// The ring's fd.
@@ -297,7 +297,7 @@ impl Event {
         let Some(engine) = (host.instance)() else {
             return Err(io::Error::last_os_error());
         };
-        let id = engine.with_slots(Slots::open) as u64;
+        let id = engine.slots.with_taken(Slots::open) as u64;
         // The linked timeout's entry points into this frame, which keeps the event
         // until the completion.
         engine.dispatch(Request {
@@ -314,46 +314,28 @@ impl Event {
         let mut engine = Some(engine);
         (host.suspend)(self.coroutine, id, &mut |waker| {
             if let Some(engine) = engine.take() {
-                engine.with_slots(|slots| slots.slot(id).map(|slot| slot.waker = Some(waker)));
+                engine
+                    .slots
+                    .with_taken(|slots| slots.slot(id).map(|slot| slot.waker = Some(waker)));
             }
         });
         // The wakeup handler stored the result before resuming this coroutine.
         engine
             .or_else(|| (host.instance)())
-            .and_then(|engine| engine.with_slots(|slots| slots.close(id)))
+            .and_then(|engine| engine.slots.with_taken(|slots| slots.close(id)))
             .unwrap_or(Ok(0))
     }
 }
 
 impl Uring {
-    /// `f` over the ring, taken out meanwhile; none while a caller up the stack
-    /// has it, which no caller does, as `f` neither runs a coroutine nor calls back.
-    fn with_ring<R>(&self, f: impl FnOnce(&mut IoUring) -> R) -> Option<R> {
-        let mut ring = self.ring.take()?;
-        let result = f(&mut ring);
-        // `set` would call the drop glue for the `None` it replaces.
-        if let Some(nested) = self.ring.replace(Some(ring)) {
-            drop(nested);
-        }
-        Some(result)
-    }
-
-    /// `f` over the requests in flight, taken out meanwhile, as `f` neither runs a
-    /// coroutine nor calls back.
-    fn with_slots<R>(&self, f: impl FnOnce(&mut Slots) -> R) -> R {
-        let mut slots = self.slots.take();
-        let result = f(&mut slots);
-        self.slots.set(slots);
-        result
-    }
-
     /// The submission queue's used slots and its size; a ring in use has no room.
     fn sq(&self) -> (usize, usize) {
-        self.with_ring(|ring| {
-            let queue = ring.submission();
-            (queue.len(), queue.capacity())
-        })
-        .unwrap_or_default()
+        self.ring
+            .with_box(|ring| {
+                let queue = ring.submission();
+                (queue.len(), queue.capacity())
+            })
+            .unwrap_or_default()
     }
 
     fn sq_space_left(&self) -> usize {
@@ -363,7 +345,7 @@ impl Uring {
 
     /// Queue `entries` together, in the free slots the caller saw there are.
     fn push(&self, entries: &[squeue::Entry]) {
-        let pushed = self.with_ring(|ring| {
+        let pushed = self.ring.with_box(|ring| {
             // SAFETY: a request's entry points into its operation's arguments and frame
             // (`request`'s contract), and its timeout's into the event in that frame:
             // all live until the completion, which the suspended operation waits for.
@@ -381,9 +363,8 @@ impl Uring {
     fn dispatch(&self, request: Request) {
         let space = self.sq_space_left();
         if space == 0 {
-            let mut waiting = self.waiting.take();
-            waiting.push_back(request);
-            self.waiting.set(waiting);
+            self.waiting
+                .with_taken(|waiting| waiting.push_back(request));
             return;
         }
         if request.timeout.is_some() && space < 2 {
@@ -419,17 +400,18 @@ impl Submitter for &Uring {
     }
 
     fn submit(&mut self) -> io::Result<()> {
-        self.with_ring(|ring| {
-            let queue = ring.submission();
-            // As liburing's io_uring_submit: nothing to submit or flush, no system call.
-            let idle = queue.is_empty() && !queue.cq_overflow();
-            drop(queue);
-            if idle {
-                return Ok(());
-            }
-            ring.submit().map(|_| ())
-        })
-        .unwrap_or(Ok(()))
+        self.ring
+            .with_box(|ring| {
+                let queue = ring.submission();
+                // As liburing's io_uring_submit: nothing to submit or flush, no system call.
+                let idle = queue.is_empty() && !queue.cq_overflow();
+                drop(queue);
+                if idle {
+                    return Ok(());
+                }
+                ring.submit().map(|_| ())
+            })
+            .unwrap_or(Ok(()))
     }
 
     fn sleep(&mut self) {
@@ -570,7 +552,7 @@ pub fn wakeup(engine: &Uring) -> bool {
         // Resuming coroutines may re-enter the engine, so the ready list is taken
         // out of it, and no cell of it is borrowed while they run.
         let mut ready = engine.ready.take();
-        let harvested = engine.with_ring(|ring| {
+        let harvested = engine.ring.with_box(|ring| {
             let mut harvested = false;
             for cqe in ring.completion().take(QUEUE_SIZE as usize) {
                 harvested = true;
@@ -588,16 +570,15 @@ pub fn wakeup(engine: &Uring) -> bool {
             if engine.sq_space_left() == 0 {
                 break;
             }
-            let mut queue = engine.waiting.take();
-            let waiting = queue.pop_front();
-            engine.waiting.set(queue);
-            let Some(waiting) = waiting else {
+            let Some(waiting) = engine.waiting.with_taken(VecDeque::pop_front) else {
                 break;
             };
             engine.dispatch(waiting);
         }
         for &(id, result) in &ready {
-            let waker = engine.with_slots(|slots| slots.complete(id, complete(result)));
+            let waker = engine
+                .slots
+                .with_taken(|slots| slots.complete(id, complete(result)));
             engine.task_num.set(engine.task_num.get() - 1);
             // The coroutine suspended in that event's operation, which may re-enter
             // the engine.
@@ -1011,7 +992,7 @@ pub(crate) mod testing {
         let engine = instance().expect("a test engine");
         engine.submit_queued();
         while engine.task_num() > 0 {
-            let _waited = engine.with_ring(|ring| ring.submit_and_wait(1));
+            let _waited = engine.ring.with_box(|ring| ring.submit_and_wait(1));
             wakeup(&engine);
         }
     }
