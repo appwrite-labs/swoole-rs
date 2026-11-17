@@ -8,7 +8,6 @@ use crate::{Mode, ServerState};
 use core::ffi::{CStr, c_int};
 use process::command::{CommandInput, ProcessTypes, Rejected, Rejection, Target, route};
 use std::collections::BTreeMap;
-use std::mem::ManuallyDrop;
 use std::sync::{Arc, MutexGuard, PoisonError};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_NOTICE};
@@ -85,9 +84,7 @@ pub(crate) fn command_result(state: &ServerState, request_id: i64, message: &[u8
             m,
         );
     };
-    let callback = ManuallyDrop::new(callback);
     callback(message);
-    drop(ManuallyDrop::into_inner(callback));
 }
 
 #[cfg(feature = "upstream-symbols")]
@@ -130,6 +127,9 @@ pub(crate) fn answer(
 ) -> bool {
     let mut reply = Vec::<u8>::new();
     handler(serv, message, &mut reply);
+    if process::pool::bailout_pending() {
+        return false;
+    }
     let mut head = DataHead {
         fd,
         reactor_id: reactor_id.cast_signed(),

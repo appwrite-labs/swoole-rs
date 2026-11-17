@@ -59,8 +59,8 @@ void swr_zend_coroutine_switch(swr_zend_coroutine_vm *from, swr_zend_coroutine_v
 void swr_zend_coroutine_start(swr_zend_coroutine_vm *from, swr_zend_coroutine_vm *vm, void *stack,
                               size_t stack_size);
 /* destroy_context's output reset: end and restart output buffering without
- * sending headers, when output is active. */
-void swr_zend_coroutine_output_reset(void);
+ * sending headers, when output is active; nonzero for a contained bailout. */
+int swr_zend_coroutine_output_reset(void);
 /* destroy_context's end: zend_vm_stack_destroy of the running coroutine's
  * VM stack, which `finished`, its saved state, no longer names, then
  * restore_context of `origin`. */
@@ -122,9 +122,6 @@ zend_execute_data *swr_zend_coroutine_show(swr_zend_coroutine_vm *vm);
 bool swr_zend_coroutine_called_by_destructor(void);
 /* Whether the constant SWOOLE_LIBRARY is defined and true (zend_is_true). */
 bool swr_zend_coroutine_library_loaded(void);
-/* sw_zend_fci_cache_discard: release the bound object and closure that
- * swr_zend_callable_hold held. */
-void swr_zend_coroutine_fcc_discard(zend_fcall_info_cache *fcc);
 
 /* sw_php_print_backtrace_impl's output: the fetched trace array as text, inside
  * zend_try (output handlers may run): 1 if it bailed out. */

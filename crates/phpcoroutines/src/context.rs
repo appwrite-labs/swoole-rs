@@ -25,8 +25,7 @@ use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::coroutine::{CoroutineTask, State};
 use swoole_rs_corebase::timer::Held;
 use swoole_rs_zend::sys::{
-    IS_NULL, IS_STRING, IS_UNDEF, swr_zend_callable, swr_zend_callable_hold,
-    swr_zend_coroutine_fcc_discard, swr_zend_coroutine_output_reset, swr_zend_coroutine_set_frame,
+    IS_NULL, IS_STRING, IS_UNDEF, swr_zend_callable, swr_zend_coroutine_set_frame,
     swr_zend_coroutine_vm, zend_class_entry, zend_execute_data, zend_fcall_info,
     zend_fcall_info_cache, zend_fiber_context, zend_fiber_status,
     zend_fiber_status_ZEND_FIBER_STATUS_DEAD, zend_fiber_status_ZEND_FIBER_STATUS_INIT,
@@ -36,6 +35,21 @@ use swoole_rs_zend::sys::{
 use swoole_rs_zend::{Callable, Emalloc, Owned, Value, bailout};
 
 unsafe extern "C" {
+    /// Persist the resolved callable's object and closure using `GC_ADDREF` only.
+    /// Private to open: its freshly initialized call record holds the resolved
+    /// cache lent by Args; no PHP code runs while that record is borrowed.
+    safe fn swr_zend_callable_hold(callable: &mut swr_zend_callable);
+    /// Drop only shared, non-root object/closure references, without invoking
+    /// PHP. Zero means nothing was released and the slow path must trap it.
+    safe fn swr_zend_callable_release_quiet(callable: &mut swr_zend_callable) -> c_int;
+    /// Release the closing coroutine's held object and closure, with no owned
+    /// arguments, inside the existing callable destructor trap. No Rust borrow
+    /// of the context spans its PHP callbacks.
+    #[link_name = "swr_zend_try_callable_release"]
+    safe fn release_cache(callable: ReleasingCall) -> c_int;
+    /// Reset the running coroutine's output handlers inside the native trap;
+    /// no trap is needed when the executor has no output handlers.
+    safe fn swr_zend_coroutine_output_reset() -> c_int;
     /// `init_main_context`'s VM half: clears `EG(opline_before_exception)`,
     /// moves this PHP thread's executor, output and serializer state into `vm`
     /// (`save_context`) and returns `EG(main_fiber_context)`, which lives for
@@ -244,14 +258,6 @@ impl Context {
     }
 }
 
-/// `&raw mut (*callable).fcc`.
-#[inline]
-fn fcc(callable: *mut swr_zend_callable) -> *mut zend_fcall_info_cache {
-    callable
-        .wrapping_byte_add(mem::offset_of!(swr_zend_callable, fcc))
-        .cast()
-}
-
 /// A live context: the thread's main one, or a coroutine's from [`open`] until
 /// [`run`] returns. Only this module makes one, from the thread-local main
 /// context and the host's task pointers. Each method borrows the context for
@@ -263,7 +269,14 @@ pub(crate) struct Ctx(NonNull<Context>);
 /// A live context's callable, which `open` resolved and held: only [`enter`]
 /// makes one, for Zend to call while the coroutine runs.
 #[repr(transparent)]
+#[derive(Clone, Copy)]
 pub(crate) struct Call(NonNull<swr_zend_callable>);
+
+/// The closing coroutine's one held cache, with `param_count` cleared because
+/// its arguments were borrowed. Only close makes this token, after the quiet
+/// release declined; the native trap consumes it without freeing its record.
+#[repr(transparent)]
+struct ReleasingCall(NonNull<swr_zend_callable>);
 
 /// The running frame, set aside while Zend's current one is another's: only
 /// `swr_zend_coroutine_show` and [`enter`] make one, and hand it to
@@ -584,10 +597,16 @@ pub(crate) fn run(args: &Args) -> bool {
         return false;
     };
     let caught = host::run(ctx);
-    close(ctx);
+    let closed = close(ctx);
+    if closed.is_err() {
+        // A destructor failed before normal close restored the origin. Leave
+        // no executor pointer into this stack context when its body returns;
+        // main relays the escape from the coroutine's native bailout hook.
+        swr_zend_coroutine_finish(ctx.running(), origin(ctx).switched_out());
+    }
     // The context goes with this frame.
     swoole_rs_corebase::coroutine::clear_current_task();
-    caught
+    caught || closed.is_err()
 }
 
 /// `create_context`, on the new coroutine, in `context`, live until [`run`]
@@ -628,32 +647,47 @@ fn open(args: &Args, context: &mut Context) -> Option<Ctx> {
             context.callable = callable.copy();
         }
     });
-    // SAFETY: a resolved callable (sw_zend_fci_cache_persist).
-    unsafe { swr_zend_callable_hold(this.call()) };
+    this.with(|context| swr_zend_callable_hold(&mut context.call));
     Some(this)
 }
 
+swoole_rs_zend::exports! {
 /// The start hook and the fiber switch into the running coroutine's function;
 /// its callable, to call (`zend::Function *`).
 pub(crate) extern "C" fn enter(ctx: Ctx) -> Option<Call> {
-    host::coro_hook(false, ctx);
-    let fiber = ctx.fiber();
+    if let Err(error) = host::coro_hook(false, ctx) {
+        error.defer();
+        return None;
+    }
+    if ctx.fiber().is_some() {
+        notify_entry(ctx);
+    }
+    NonNull::new(ctx.call()).map(Call)
+}
+
+/// Only enter the defer loop when this coroutine registered a task.
+pub(crate) extern "C" fn run_defers(ctx: Ctx) {
+    if ctx.with(|context| context.defer.is_some()) {
+        host::run_defers(ctx);
+    }
+}
+}
+
+/// Show the mock fiber's user function to observers during the switch.
+#[inline(never)]
+fn notify_entry(ctx: Ctx) {
     let (handler, opcodes) =
         ctx.with(|context| (context.call.fcc.function_handler, context.opcodes));
-    if fiber.is_some()
-        && let Some(opcodes) = opcodes
-    {
+    if let Some(opcodes) = opcodes {
         let mut frame: zend_execute_data = swoole_rs_zend::zeroed();
-        // A user function is its op array.
         frame.opline = opcodes;
         frame.func = handler;
-        // SAFETY: a frame of the coroutine's function, which outlives the
-        // notification, after which the running one is current again.
+        // SAFETY: the coroutine function outlives this notification, which
+        // restores the previous frame before this one goes out of scope.
         let running = Shown(unsafe { swr_zend_coroutine_set_frame(&raw mut frame) });
         fiber_switch_try_notify(origin(ctx), ctx);
         unshow(running);
     }
-    NonNull::new(ctx.call()).map(Call)
 }
 
 /// The next defer task (last in, first out), and a copy of the coroutine's
@@ -667,48 +701,60 @@ pub(crate) fn defer_next(ctx: Ctx) -> Option<(Callable, Option<Owned>)> {
     Some((task, returned))
 }
 
-/// Drops `value`, raising a destructor's bailout at once. Only an object, array,
-/// reference or resource (above a string) can run one, so only those are guarded.
-fn release(value: Owned) {
-    if value.kind() > IS_STRING {
-        bailout::finish_after(|| drop(value));
+/// Drop `value` and report a newly deferred destructor bailout to the owner.
+fn release(value: Owned) -> Result<(), bailout::Bailout> {
+    // Scalars and strings cannot run PHP during release.
+    if value.kind() <= IS_STRING {
+        return Ok(());
+    }
+    let pending = bailout::pending();
+    drop(value);
+    if pending {
+        Ok(())
+    } else {
+        bailout::outcome(())
     }
 }
 
 /// `destroy_context`, on the running, finishing coroutine, then
-/// `PHPCoroutine::on_close`'s join hook. Its bailout address is null here, so
-/// a bailout in a destructor ends the process rather than longjmp.
-fn close(ctx: Ctx) {
-    host::coro_hook(true, ctx);
-    // SAFETY: output state is the coroutine's own.
-    unsafe { swr_zend_coroutine_output_reset() };
+/// `PHPCoroutine::on_close`'s join hook. Native destructors contain their jumps;
+/// a failed close returns to the owner, which restores the origin's executor.
+fn close(ctx: Ctx) -> Result<(), bailout::Bailout> {
+    host::coro_hook(true, ctx)?;
+    // Output handlers run PHP. Trap their escape before returning through the
+    // context owner, which must restore the origin before leaving this stack.
+    bailout::trapped(swr_zend_coroutine_output_reset())?;
     // Its defer tasks were kept and are not called.
-    for task in ctx
-        .defers(Option::take)
-        .map_or_else(Vec::new, |tasks| *tasks)
-    {
-        if let Err(bailout) = task.release() {
-            bailout.defer();
-            bailout::finish();
+    if let Some(tasks) = ctx.defers(Option::take) {
+        for task in *tasks {
+            task.release()?;
         }
     }
     // Object destruction may yield and let the origin coroutine finish: the
     // origin is looked up again before each use.
-    // Each release below is the coroutine's last, and a destructor's bailout
-    // raised at once, as an unguarded `zval_ptr_dtor` would.
+    // Stop after the first new destructor bailout so later context cleanup
+    // cannot run PHP before the owner restores the origin.
     if let Some(object) = ctx.with(|context| {
         (context.context.kind() != IS_UNDEF)
             .then(|| mem::replace(&mut context.context, Owned::null()))
     }) {
-        release(object);
+        release(object)?;
     }
     // Upstream only drops the references (Z_TRY_DELREF), leaking a callable or
     // return value the coroutine held last, such as `go([new Foo, 'bar'])`'s array.
-    release(ctx.with(|context| mem::take(&mut context.callable)));
-    // SAFETY: a live context's callable, whose object and closure `open` held.
-    unsafe { swr_zend_coroutine_fcc_discard(fcc(ctx.call())) };
-    release(ctx.with(|context| mem::take(&mut context.return_value)));
-    fiber_try_destroy(ctx, origin(ctx));
+    release(ctx.with(|context| mem::take(&mut context.callable)))?;
+    let remaining = ctx.with(|context| {
+        // These arguments were lent to the coroutine, not persisted by it.
+        // Only the cache's object and closure references belong to close.
+        context.call.fci.param_count = 0;
+        (swr_zend_callable_release_quiet(&mut context.call) == 0)
+            .then(|| ReleasingCall(NonNull::from(&mut context.call)))
+    });
+    if let Some(cache) = remaining {
+        bailout::trapped(release_cache(cache))?;
+    }
+    release(ctx.with(|context| mem::take(&mut context.return_value)))?;
+    fiber_try_destroy(ctx);
     // A context-owned __destruct() may have rearmed the time limit.
     if ctx.time_limited()
         && let Some(co) = ctx.co()
@@ -723,6 +769,7 @@ fn close(ctx: Ctx) {
     // Tasks a destructor deferred; with the join, all the context holds that
     // needs a drop.
     drop(ctx.defers(Option::take));
+    Ok(())
 }
 
 /// `init_main_context`, at RINIT.
@@ -765,13 +812,13 @@ extern "C" fn never_switched(_: *mut swoole_rs_zend::sys::zend_fiber_transfer) {
     swoole_rs_corebase::fatal("a coroutine's mock fiber was switched to");
 }
 
-fn fiber_try_destroy(ctx: Ctx, origin: Ctx) {
+fn fiber_try_destroy(ctx: Ctx) {
     let Some(mock) = ctx.with(|context| context.mock.take()) else {
         return;
     };
     let fiber = Fiber(NonNull::from(mock.0.as_ref()).cast());
     fiber.set_status(zend_fiber_status_ZEND_FIBER_STATUS_DEAD);
-    fiber_switch_try_notify(ctx, origin);
+    fiber_switch_try_notify(ctx, origin(ctx));
     ctx.set_fiber(None);
     zend_observer_fiber_destroy_notify(fiber);
     drop(mock);
@@ -830,8 +877,6 @@ mod tests {
         assert_eq!(handle.return_value(), unsafe {
             (&raw mut (*ctx).return_value).cast::<zval>()
         });
-        let callable = unsafe { &raw mut (*ctx).call };
-        assert_eq!(fcc(callable), unsafe { &raw mut (*callable).fcc });
     }
 
     #[test]

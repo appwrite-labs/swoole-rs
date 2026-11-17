@@ -123,21 +123,23 @@ pub(crate) fn defer(pending: Pending) {
 pub(crate) fn unconstructed(list: bool) {
     let message = c"must call constructor first";
     if list {
-        bailout::raise(swoole_rs_phpswoole::swoole_fatal_error(
+        bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
             SW_ERROR_WRONG_OPERATION as c_int,
             message,
         ));
     } else {
         swoole_rs_corebase::log::set_last_error(SW_ERROR_PHP_FATAL_ERROR as c_int);
-        bailout::raise(swoole_rs_zend::report(E_ERROR, message));
+        bailout::defer(swoole_rs_zend::report(E_ERROR, message));
     }
 }
 
-/// Raise what was deferred: a bailout PHP code (`__serialize`,
+/// Report what was deferred: a bailout PHP code (`__serialize`,
 /// `__unserialize`, a user error handler) left, then the fatal error. Called
-/// last by every handler and export, whose frame owns nothing by then.
+/// last by every handler body, before its native boundary.
 pub(crate) fn finish() {
-    swoole_rs_zend::bailout::finish();
+    if bailout::pending() {
+        return;
+    }
     if let Some(Pending::Unconstructed { list }) = PENDING.with(Cell::take) {
         unconstructed(list);
     }

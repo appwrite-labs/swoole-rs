@@ -427,8 +427,8 @@ impl Declared {
 
     #[inline]
     pub(crate) fn slot<'a>(&self, object: &'a Value) -> Option<&'a Value> {
-        let std = object.object()?;
-        let own = object.class_entry()?;
+        let std = object.object_ref()?;
+        let own = std.class_entry();
         let offset = self.offset();
         if offset == 0 {
             return None;
@@ -437,7 +437,10 @@ impl Declared {
         if own.as_ptr() != class.as_ptr() && !own.instance_of(class) {
             return None;
         }
-        let slot = std.wrapping_byte_add(offset as usize).cast::<zval>();
+        let slot = std
+            .as_ptr()
+            .wrapping_byte_add(offset as usize)
+            .cast::<zval>();
         // SAFETY: an object of the class that declares the property at this
         // offset (a registered class, so not null), which keeps the slot while
         // `object` holds it; `Value` is a transparent zval.

@@ -1,7 +1,7 @@
 //! PHP `Swoole\Timer` (with the `php` feature, see docs/zend.md): class and
 //! function registration, constants and every method, over `corebase::timer`'s PHP
-//! timers. A timer's callback and destructor run the callable here and raise a
-//! bailout once the timer's selection is abandoned.
+//! timers. A callback or destructor bailout abandons selection and is deferred
+//! until the surrounding native boundary has finished Rust cleanup.
 #![cfg(feature = "php")]
 #![forbid(unsafe_code)]
 
@@ -97,7 +97,7 @@ impl php::Callback for Timer {
     /// The timer's callback: `zend::Function::call(nullptr,
     /// php_swoole_is_enable_coroutine())`, warning when it fails. A bailout
     /// abandons the timer's selection, keeping shutdown-visible metadata until
-    /// native owner teardown, and is raised from here, which owns nothing.
+    /// native owner teardown, and is deferred to the surrounding boundary.
     fn run(&self) {
         let callable = &self.0;
         let called =
@@ -110,30 +110,22 @@ impl php::Callback for Timer {
                     }
                 });
         if called.is_err() {
-            php::abandon(None);
+            php::abandon();
+            swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
         }
-        bailout::raise(called);
+        bailout::defer(called);
     }
 
-    /// The timer's destructor: release and free the callable. A bailout is
-    /// raised once the timer has deleted the node, or at once without a timer.
+    /// Release and free the callable, deferring a bailout and stopping selection.
     fn release(self) {
         let callable = self.0;
         if let Err(error) = callable.release() {
             error.defer();
-            if php::available() {
-                // Return through the timer's release so the node is deleted first.
-                php::abandon(Some(finish));
-            } else {
-                bailout::finish();
-            }
+            // The node is deleted by the owner before this deferred escape returns.
+            php::abandon();
+            swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
         }
     }
-}
-
-/// A destructor's deferred bailout, raised by the timer after the node is gone.
-extern "C-unwind" fn finish() {
-    bailout::finish();
 }
 
 /// `after()` and `tick()`: `(int $ms, callable $callback, mixed ...$params)`.

@@ -51,7 +51,9 @@ extern "C" fn on_signal(signo: c_int) {
             &message!("Swoole\\Process: signal [{signo}] handler error"),
         );
     }
-    bailout::finish();
+    if bailout::pending() {
+        swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
+    }
 }
 
 /// `Process::signal(int $signo, callable|int|null $callback = null): bool`.
@@ -163,12 +165,13 @@ pub extern "C" fn php_swoole_signal_isset_handler(signo: c_int) -> bool {
     slot.is_set()
 }
 
+swoole_rs_zend::exports! {
 /// `php_swoole_process_signal_clean`: free every signal callable and forget the
 /// listeners, as after a fork, whose `swoole_fork()` removed the inherited handlers.
 #[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_process_signal_clean() {
     signal_clean();
-    bailout::finish();
+}
 }
 
 /// [`php_swoole_process_signal_clean`]'s body, which empties the table, forgets the
@@ -203,5 +206,4 @@ pub extern "C" fn php_swoole_process_rshutdown() {
         // The signal table is the main thread's, which is still running.
         host::reset_worker_type();
     }
-    bailout::finish();
 }

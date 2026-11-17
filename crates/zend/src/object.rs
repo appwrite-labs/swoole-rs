@@ -408,67 +408,83 @@ unsafe extern "C" {
     /// and weak references, as a `free_obj` handler does once; Zend frees the
     /// allocation after the handler returns.
     #[link_name = "zend_object_std_dtor"]
-    safe fn std_dtor(object: Freed);
+    fn std_dtor(object: Freed);
 }
 
-/// `T`'s `free_obj` handler: [`Custom::free`], drop the data, then free the
-/// standard object.
-/// A bailout the drop defers (releasing a callable can run PHP code) is
-/// raised last, unless one was already pending. Zend calls it once, with one of
-/// `T`'s objects whose last reference went.
-extern "C" fn free<T: Custom>(freed: Freed) {
+/// Release the Rust data while Zend still holds the object's allocation.
+fn free_data<T: Custom>(freed: &Freed) {
     let std = freed.0.as_ptr();
-    bailout::finish_after(|| {
-        // Per Zend, a live object of `T`'s class until the drop below.
-        let object = ObjectRef(std, PhantomData);
-        if let Some(data) = object.custom::<T>() {
-            data.free(FreeProperties(&object.copy_value()));
-        }
-        // SAFETY: per Zend; nothing borrows the data any more.
-        unsafe { Object::<T>::data_ptr(std).drop_in_place() };
-        std_dtor(freed);
-    });
+    let object = ObjectRef(std, PhantomData);
+    if let Some(data) = object.custom::<T>() {
+        data.free(FreeProperties(&object.copy_value()));
+    }
+    // SAFETY: Zend calls free_obj once, after the last reference goes.
+    unsafe { Object::<T>::data_ptr(std).drop_in_place() };
 }
 
+/// Zend's native `free_obj` boundary. Property destruction may execute PHP.
+///
+/// # Safety
+/// Zend enters with a bailout scope and no intervening Rust owners.
+unsafe extern "C" fn free<T: Custom>(freed: Freed) {
+    let pending = bailout::pending();
+    free_data::<T>(&freed);
+    // SAFETY: all Rust data has been dropped. Zend lends the standard object
+    // for this last release; only the saved boolean lives across its bailout.
+    unsafe { std_dtor(freed) };
+    if !pending && bailout::relay_to_c(Ok(())) {
+        // SAFETY: cleanup is complete and the caller supplied the bailout scope.
+        unsafe { crate::sys::swr_zend_guard_resume() };
+    }
+}
+
+crate::exports! {
+    preserve_pending:
 /// `T`'s `dtor_obj` handler: `__destruct`, then [`Custom::destruct`]. Zend
 /// calls it once, with one of `T`'s live objects.
 extern "C" fn destruct<T: Custom>(object: Handled) {
     let std = object.0.as_ptr();
-    // SAFETY: per Zend; a bailout from `__destruct` crosses only this frame,
-    // which owns nothing yet.
-    unsafe { zend_objects_destroy_object(std) };
+    if let Err(error) = crate::contain_with(|| {
+        // SAFETY: Zend lends its live object to this destructor. The native
+        // trap contains any bailout from __destruct.
+        unsafe { zend_objects_destroy_object(std) };
+    }) {
+        error.defer();
+        return;
+    }
     // Per Zend, a live object. Zend holds one reference across this handler,
     // so a count of one means nothing else names the object.
     let last = ObjectRef(std, PhantomData).read(|object| object.gc.refcount) == 1;
-    bailout::finish_after(|| {
+    {
         // Per Zend, a live object of `T`'s class, which outlives this call.
         if let Some(data) = ObjectRef(std, PhantomData).custom::<T>() {
             data.destruct(last);
         }
-    });
+    }
 }
+
+}
+
+/// Native object handlers, called by Zend inside its bailout scope.
+type Create = unsafe extern "C" fn(ClassEntry<'_>) -> *mut zend_object;
+type Free = unsafe extern "C" fn(Freed);
+type Destruct = unsafe extern "C" fn(Handled);
 
 unsafe extern "C" {
     /// `ce->create_object = create`, which Zend calls with the class or a
     /// subclass that inherits it.
-    safe fn swr_slot_create_object(
-        entry: &mut zend_class_entry,
-        create: extern "C" fn(ClassEntry<'_>) -> *mut zend_object,
-    );
+    safe fn swr_slot_create_object(entry: &mut zend_class_entry, create: Create);
     /// The handlers' `free_obj` and, unless `None`, `dtor_obj`, which Zend calls
     /// with an object whose class has these handlers.
     safe fn swr_slot_object_free(
         handlers: &mut zend_object_handlers,
-        free: extern "C" fn(Freed),
-        destruct: Option<extern "C" fn(Handled)>,
+        free: Free,
+        destruct: Option<Destruct>,
     );
 }
 
 /// `ce->create_object = create`, as `SW_SET_CLASS_CREATE`.
-pub(crate) fn set_create(
-    entry: &mut zend_class_entry,
-    create: extern "C" fn(ClassEntry<'_>) -> *mut zend_object,
-) {
+pub(crate) fn set_create(entry: &mut zend_class_entry, create: Create) {
     swr_slot_create_object(entry, create);
 }
 
@@ -485,7 +501,7 @@ pub(crate) fn install_custom<T: Custom>(
     // with `Object::create`, and `free::<T>` ends with `zend_object_std_dtor`
     // without freeing the object: Zend then frees the allocation at `std - OFFSET`.
     set_create(entry, create::<T>);
-    let destruct: extern "C" fn(Handled) = destruct::<T>;
+    let destruct: Destruct = destruct::<T>;
     swr_slot_object_free(handlers, free::<T>, T::DESTRUCTS.then_some(destruct));
     handlers.offset = c_int::try_from(Object::<T>::OFFSET).unwrap_or(c_int::MAX);
 }

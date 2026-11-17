@@ -243,9 +243,15 @@ extern "C" fn immediate(signo: c_int) {
 /// the deferred handler marked, in signal order, clearing each mark after its
 /// callback.
 pub fn swoole_signal_dispatch() {
-    if PENDING.load(Relaxed) {
+    dispatch_if_pending();
+}
+
+pub(crate) fn dispatch_if_pending() -> bool {
+    let pending = PENDING.load(Relaxed);
+    if pending {
         dispatch_pending();
     }
+    pending
 }
 
 // Keep the signal walk out of the hot reactor callback loop so its fixed slots
@@ -262,6 +268,9 @@ fn dispatch_pending() {
             // Upstream calls dispatch from a safe context, never a signal frame; the
             // callback may run PHP, and no value with a destructor is live across it.
             callback(signo);
+            if crate::process::pool::bailout_pending() {
+                return;
+            }
             triggered.store(false, Relaxed);
         }
     }

@@ -19,9 +19,6 @@ const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAM
 const MANUAL: u32 = 0;
 const REACTOR: u32 = 1;
 
-/// `abandon_selection`'s pending Zend bailout, raised once the node is gone.
-pub type Bailout = extern "C-unwind" fn();
-
 /// A node's fields, for `Swoole\Timer::info()`.
 #[derive(Debug, Clone, Copy)]
 pub struct Info {
@@ -119,7 +116,6 @@ pub struct Owner {
     owner_pid: libc::pid_t,
     backend: Cell<u32>,
     abandoned: Cell<bool>,
-    pending_bailout: Cell<Option<Bailout>>,
     base_time: i64,
     next_msec: Cell<i64>,
     /// Which timer this is, for its [`crate::timer::Held`] ids: never 0.
@@ -138,7 +134,6 @@ impl Owner {
             owner_pid: std::process::id().cast_signed(),
             backend: Cell::new(MANUAL),
             abandoned: Cell::new(false),
-            pending_bailout: Cell::new(None),
             base_time: absolute_msec(),
             next_msec: Cell::new(-1),
             generation: next_generation(),
@@ -275,16 +270,11 @@ impl Owner {
     }
 
     /// Deletes the detached node whose custody Rust just returned in `view`,
-    /// releasing its callback, then raises a pending bailout. The release may
-    /// longjmp over these frames, which hold nothing to drop.
-    fn release(&self, view: &TimerView) {
+    /// releasing its callback before returning any deferred escape to its caller.
+    fn release(view: &TimerView) {
         let node = view.token.cast::<TimerNode>();
         // SAFETY: `add` boxed it; the queue no longer holds it.
         drop(unsafe { Box::from_raw(node) });
-        if let Some(bailout) = self.pending_bailout.take() {
-            // It may longjmp, over these frames, which hold nothing to drop.
-            bailout();
-        }
     }
 
     /// The added node's id, or none; `php` marks a PHP callable's node.
@@ -344,7 +334,7 @@ impl Owner {
         match status {
             Status::Deferred => true,
             Status::Release => {
-                self.release(&view);
+                Self::release(&view);
                 true
             }
             _ => false,
@@ -375,7 +365,7 @@ impl Owner {
         match status {
             Status::Ok => {}
             Status::Release | Status::ReleaseOverflow => {
-                self.release(&view);
+                Self::release(&view);
                 if status == Status::ReleaseOverflow {
                     warning(c"select", format_args!("Rust timer repeat limit exceeded"));
                 }
@@ -398,6 +388,9 @@ impl Owner {
     /// frames, which hold nothing to drop; a C++ exception aborts at the first
     /// Rust frame (`panic = "abort"`), as an uncaught one would.
     pub(crate) fn select(&self) {
+        if self.abandoned.get() {
+            return;
+        }
         let now = self.relative_msec();
         // Most loop turns find no timer due.
         let idle = self.lend(|queue| queue.select_idle(now));
@@ -425,7 +418,13 @@ impl Owner {
             {
                 node.retained.run();
             }
+            if self.abandoned.get() {
+                return;
+            }
             self.complete(view.id);
+            if self.abandoned.get() {
+                return;
+            }
         }
         if !self.end() {
             check(Status::Closing);
@@ -433,9 +432,8 @@ impl Owner {
     }
 
     /// Only after a caught Zend bailout whose selection will never resume.
-    pub(crate) fn abandon(&self, bailout: Option<Bailout>) {
+    pub(crate) fn abandon(&self) {
         self.abandoned.set(true);
-        self.pending_bailout.set(bailout);
     }
 
     /// `~Timer`: releases every node, then the queue. A forked child or terminal
@@ -463,7 +461,7 @@ impl Owner {
                 (stats.active_id != 0, view)
             });
             if active {
-                self.release(&view);
+                Self::release(&view);
             }
         }
         let status = loop {
@@ -471,7 +469,7 @@ impl Owner {
             if status != Status::Release {
                 break status;
             }
-            self.release(&view);
+            Self::release(&view);
         };
         // The record's drop frees the drained queue.
         if status != Status::Empty || !self.lend(|queue| queue.idle()) {
@@ -527,7 +525,7 @@ fn destroyed() {
         return;
     };
     if event_api::swoole_event_bailed_out() {
-        timer.abandon(None);
+        timer.abandon();
     }
     crate::timer::wrapper::swoole_timer_free();
 }
@@ -663,6 +661,33 @@ mod tests {
         fn free(&self) {
             unsafe { free(self.timer) };
         }
+    }
+
+    #[test]
+    fn escaped_callback_keeps_active_metadata_and_stops_later_timers() {
+        let probe = Probe::new();
+        let log = Rc::clone(&probe.log);
+        let first = probe.add(
+            'A',
+            false,
+            Box::new(move |timer, _| {
+                log.borrow_mut().events.push('A');
+                timer.abandon();
+            }),
+        );
+        probe.add('B', false, probe.record('B'));
+        let timer = probe.timer();
+        timer.select();
+        timer.select();
+        assert_eq!(probe.events(), "A");
+        let first = first.id;
+        assert_eq!(timer.lend(|queue| queue.stats().active_id), first);
+        assert_eq!(timer.count(), 2);
+        timer.select();
+        assert_eq!(probe.events(), "A");
+        probe.free();
+        assert_eq!(probe.events(), "Aab");
+        assert_eq!(probe.destructors(), 2);
     }
 
     /// The common tail: two selections (the first is the creation-round barrier),

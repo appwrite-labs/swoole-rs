@@ -187,11 +187,9 @@ impl Callable {
                     // A loop callback reports an uncaught exception at once.
                     super::private::fatal_exception();
                 }
-                bailout::finish();
                 called
             } else {
                 let called = self.invoke(args, retval);
-                bailout::finish();
                 called.unwrap_or(false)
             };
         };

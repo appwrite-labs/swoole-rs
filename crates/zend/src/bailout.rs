@@ -2,7 +2,7 @@
 //! code Rust calls. A bailout must never jump over a Rust frame, so Rust traps
 //! it in C, returns normally, and hands a [`Bailout`] back to the C or C++ that
 //! called it, which re-raises it with `zend_bailout()`. See docs/zend.md.
-use crate::{Value, Zvals, host::Callee, sys::swr_zend_guard_resume};
+use crate::{Value, Zvals, host::Callee};
 use std::ffi::c_int;
 
 unsafe extern "C" {
@@ -50,12 +50,6 @@ impl Flag {
     fn set(&self, value: bool) {
         self.0.store(value, std::sync::atomic::Ordering::Relaxed);
     }
-    /// Only the PHP thread writes it, so no atomic swap is needed.
-    fn replace(&self, value: bool) -> bool {
-        let previous = self.get();
-        self.set(value);
-        previous
-    }
 }
 
 /// The native destination of a contained escape. Whole-thread provenance remains
@@ -77,8 +71,8 @@ impl Bailout {
         }
     }
 
-    /// Leave the bailout for [`finish`], the last step of the handler or export
-    /// that is the outermost Rust frame.
+    /// Leave the bailout for the generated native boundary ([`crate::exports`]),
+    /// after the handler or export has completed its Rust cleanup.
     pub fn defer(self) {
         PENDING.set(true);
     }
@@ -98,7 +92,7 @@ pub(crate) fn thread_exit_pending() -> bool {
     cfg!(zts) && swr_zend_guard_pending() != 0
 }
 
-/// Whether a bailout waits for [`finish`]. No error is raised meanwhile:
+/// Whether a bailout waits for its native boundary. No error is raised meanwhile:
 /// upstream never ran past the first bailout.
 #[must_use]
 pub fn pending() -> bool {
@@ -116,38 +110,15 @@ pub fn outcome<T>(value: T) -> Result<T, Bailout> {
 /// The caller must re-raise a true result in C; consuming the pending bit here
 /// prevents a caught shutdown bailout from poisoning a later request operation.
 #[must_use = "the C caller must re-raise a returned bailout"]
+#[inline]
 pub fn relay_to_c(result: Result<(), Bailout>) -> bool {
     defer(result);
-    PENDING.replace(false) || thread_exit_pending()
-}
-
-/// Raise a deferred bailout (`zend_bailout()`). Called last by every handler
-/// and every export C or C++ calls, from a frame that owns nothing that needs
-/// a drop by then: the `longjmp` crosses only that frame.
-#[inline]
-pub fn finish() {
-    if PENDING.replace(false) || thread_exit_pending() {
-        // SAFETY: Zend's own bailout, from the outermost Rust frame (above).
-        unsafe { swr_zend_guard_resume() };
+    if PENDING.get() {
+        PENDING.set(false);
+        true
+    } else {
+        thread_exit_pending()
     }
-}
-
-/// A free or destructor handler's `body`, then [`finish`] of what it deferred.
-/// A bailout already pending is its deferrer's to raise: Zend frees objects
-/// while one waits (a whole-thread exit stays pending until its request's
-/// boundary), some outside any `zend_try`, where raising it aborts.
-pub fn finish_after(body: impl FnOnce()) {
-    let pending = pending();
-    body();
-    if !pending {
-        finish();
-    }
-}
-
-/// [`defer`] then [`finish`]: a handler's last step.
-pub fn raise(result: Result<(), Bailout>) {
-    defer(result);
-    finish();
 }
 
 /// A native trap's flag as a result, without resuming a PHP bailout.

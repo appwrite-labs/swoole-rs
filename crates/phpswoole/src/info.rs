@@ -134,11 +134,14 @@ impl Info {
         module.ini_entries()
     }
 }
+swoole_rs_zend::exports! {
 /// `PHP_MINFO_FUNCTION(swoole)`: the module's complete PHP information table
 /// and INI entries, with the headers' and libraries' versions.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_phpswoole_minfo(module: Minfo<'_>) {
     let mut info = Info::default();
     swr_phpswoole_versions(&mut info);
-    bailout::raise(info.output(module));
+    bailout::defer(info.output(module));
+}
+
 }

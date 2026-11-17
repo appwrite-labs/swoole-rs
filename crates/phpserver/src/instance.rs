@@ -16,7 +16,7 @@ use swoole_rs_corebase::{constants::EventDataFlag, log};
 pub use swoole_rs_ports::PortCallback;
 use swoole_rs_server::{SharedServer, event_worker, server_methods, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
-use swoole_rs_zend::{Owned, Value, Weak, ZString, bailout};
+use swoole_rs_zend::{Owned, Value, Weak, ZString};
 
 /// Upstream's `static SW_THREAD_LOCAL zval swoole_server_instance`: the running
 /// server's handle (0 for none: Zend's handles start at 1) and the mark
@@ -176,7 +176,7 @@ pub(crate) fn send(serv: view::Server<'_>, fd: c_long, bytes: &[u8]) -> bool {
     {
         return crate::lifecycle::php_swoole_server_send_yield(serv, fd, bytes).unwrap_or_else(
             |bailed| {
-                bailout::raise(Err(bailed));
+                bailed.defer();
                 false
             },
         );

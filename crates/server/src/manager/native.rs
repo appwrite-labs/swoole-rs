@@ -98,12 +98,26 @@ pub(crate) fn start_manager_process(serv: view::Server<'_>) -> bool {
     }
     if serv.config().mode_ == Mode::Base {
         main(serv);
-    } else if swoole_rs_corebase::fork_exec(|| main(serv)) < 0 {
-        let m = format_args!("failed fork manager process");
-        log::sys_warning(c"Server::start_manager_process", m);
-        return false;
+    } else {
+        let forked = swoole_rs_corebase::fork_exec(|| {
+            main(serv);
+            if process::pool::bailout_pending() {
+                Err(process::pool::Bailed)
+            } else {
+                Ok(())
+            }
+        });
+        match forked {
+            Err(_) => return false,
+            Ok(pid) if pid < 0 => {
+                let m = format_args!("failed fork manager process");
+                log::sys_warning(c"Server::start_manager_process", m);
+                return false;
+            }
+            Ok(_) => {}
+        }
     }
-    true
+    !process::pool::bailout_pending()
 }
 
 /// The manager process: start the task pool, fork the workers, then reap.
@@ -123,20 +137,26 @@ fn main(serv: view::Server<'_>) {
     if config.task_worker_num.get() > 0
         && !methods::start(crate::process_pool_native(), serv.task_pool_ref())
     {
-        log::sys_error(ORIGIN, format_args!("failed to start task worker"));
+        if !process::pool::bailout_pending() {
+            log::sys_error(ORIGIN, format_args!("failed to start task worker"));
+        }
         return;
     }
     // After the task pool starts, which sets the process type to SW_MASTER.
     methods::set_worker_type(WorkerType::Manager);
     for id in worker_ids(true, config.worker_num.get(), 0) {
         if spawn(serv, spawn_event_worker, worker_at(serv, id)).is_none() {
-            log::sys_error(ORIGIN, format_args!("failed to fork event worker"));
+            if !process::pool::bailout_pending() {
+                log::sys_error(ORIGIN, format_args!("failed to fork event worker"));
+            }
             return;
         }
     }
     for at in 0..serv.user_worker_num() {
         if spawn(serv, spawn_user_worker, serv.pending_worker(at)).is_none() {
-            log::sys_error(ORIGIN, format_args!("failed to fork user worker"));
+            if !process::pool::bailout_pending() {
+                log::sys_error(ORIGIN, format_args!("failed to fork user worker"));
+            }
             return;
         }
     }
@@ -190,7 +210,9 @@ fn wait(serv: view::Server<'_>) {
     }
     state.callbacks.call_server(ServerSlot::ManagerStart, serv);
 
-    reaper::run(&mut Reaping { serv, manager });
+    if reaper::run(&mut Reaping { serv, manager }).is_err() {
+        return;
+    }
 
     methods::drop_reload_task(crate::process_pool_native(), serv.event_pool_ref());
     if swoole_rs_corebase::timer::swoole_timer_is_available() {
@@ -271,6 +293,9 @@ impl Reaping<'_> {
         serv.state()
             .callbacks
             .call_server(ServerSlot::BeforeReload, serv);
+        if process::pool::bailout_pending() {
+            return;
+        }
         if events {
             self.add_workers(true);
         }
@@ -310,10 +335,16 @@ impl Reap for Reaping<'_> {
     fn service(&mut self) {
         let serv = self.serv;
         process::signal::swoole_signal_dispatch();
+        if process::pool::bailout_pending() {
+            return;
+        }
         let pool = serv.event_pool_ref();
         if pool.read_message() {
             let mut msg = EventData([0; EVENT_DATA_SIZE]);
             while methods::pop_message(pool, &mut msg.0).is_some_and(|length| length > 0) {
+                if process::pool::bailout_pending() {
+                    return;
+                }
                 if !serv.state().running() {
                     continue;
                 }
@@ -327,6 +358,9 @@ impl Reap for Reaping<'_> {
                     methods::spawn(crate::process_pool_native(), serv.task_pool_ref(), worker);
                 } else {
                     _ = spawn(serv, spawn_event_worker, worker);
+                }
+                if process::pool::bailout_pending() {
+                    return;
                 }
                 serv.registry().detach(pid);
             }
@@ -505,6 +539,9 @@ pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) {
     // Drop the stale pid; the respawn registers the new one.
     serv.registry().unregister(pid);
     check_exit_status(serv, Some(worker), status);
+    if process::pool::bailout_pending() {
+        return;
+    }
     match worker.kind() {
         Some(WorkerType::Event) => _ = spawn_event_worker(serv, worker),
         Some(WorkerType::Task) => methods::spawn(

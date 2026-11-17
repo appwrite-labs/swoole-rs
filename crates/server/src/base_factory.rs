@@ -335,7 +335,11 @@ fn receive_as(serv: view::Server<'_>, task: &SendData, dgram: bool, worker: Work
     } else {
         ReceiveSlot::Receive
     };
-    if state.callbacks.receive(slot, serv, &mut recv) == 0 {
+    let result = state.callbacks.receive(slot, serv, &mut recv);
+    if swoole_rs_corebase::process::pool::bailout_pending() {
+        return false;
+    }
+    if result == 0 {
         worker.add_request_count();
         if let Some(gs) = crate::shared::server_counters(state) {
             gs.request_count.fetch_add(1, Ordering::SeqCst);

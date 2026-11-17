@@ -41,7 +41,7 @@ mod vm;
 pub use asynchronous::php_swoole_set_aio_option;
 pub use entry::{module_entry, swr_v1_phpswoole_fatal_exit};
 pub use functions::{mime_type, zif_swoole_last_error};
-pub use implicit::sw_php_exit;
+pub use implicit::{exit_status, sw_php_exit};
 pub use info::swr_v1_phpswoole_minfo;
 pub use interfaces::sys_warning;
 pub use memory::{received_string, zend_string_allocator};
@@ -51,9 +51,7 @@ pub use module::{
     globals, load_library, php_swoole_register_shutdown_function, zif_swoole_set_process_name,
 };
 pub use optional::{set_blocking, socket_cast, socket_create};
-pub use options::{
-    php_swoole_parse_to_size, php_swoole_set_global_option, set_global, sw_zval_is_serializable,
-};
+pub use options::{php_swoole_parse_to_size, set_global, sw_zval_is_serializable};
 pub use serialize::{serialize, unserialize, unserialize_from};
 pub use swoole_rs_corebase::{Switch, built_with};
 
@@ -121,6 +119,7 @@ pub fn swoole_fatal_error(
     swoole_rs_zend::contain_with(|| unsafe { swoole_rs_corebase::fatal_error(code, message) })
 }
 
+swoole_rs_zend::exports! {
 /// `PHP_MINIT_FUNCTION(swoole)`: the module globals and ini entries, the
 /// global constants, then `Swoole\Exception` and `Swoole\Error`
 /// (`swoole_exception_ce` and `swoole_error_ce`),
@@ -134,8 +133,13 @@ pub(crate) extern "C" fn swr_v1_phpswoole_minit(
     0
 }
 
+}
+
 fn minit_body(minit: &swoole_rs_zend::Minit, kind: c_int) {
     begin(minit, kind);
+    if swoole_rs_zend::bailout::pending() {
+        return;
+    }
     let mut flags = constants::flags();
     if module::globals().use_shortname.get() {
         flags |= constants::SHORTNAME;
@@ -168,7 +172,6 @@ fn minit_body(minit: &swoole_rs_zend::Minit, kind: c_int) {
     } else {
         module::startup(minit);
     }
-    swoole_rs_zend::bailout::finish();
 }
 
 /// MINIT's start: the `SWOOLE_RS_*` constants, then the module globals and

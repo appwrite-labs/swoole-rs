@@ -77,7 +77,7 @@ fn port_call(call: &Call, method: &[u8], args: &[&Value]) -> Owned {
 }
 
 fn on(call: &Call) {
-    let serv = server(call);
+    let Some(serv) = server(call) else { return };
     if closed(serv) {
         fatal(
             E_WARNING,
@@ -132,7 +132,7 @@ fn get_callback(call: &Call) {
 }
 
 fn listen(call: &Call) {
-    let serv = server(call);
+    let Some(serv) = server(call) else { return };
     if closed(serv) {
         fatal(E_WARNING, c"server is running, cannot add listener");
         return call.set_bool(false);
@@ -340,7 +340,9 @@ fn finish(call: &Call) {
 
 fn task_finish(call: &Call) {
     // `$this` is a Task; an `E_ERROR` when it has no server.
-    let serv = crate::server::task_server(call);
+    let Some(serv) = crate::server::task_server(call) else {
+        return;
+    };
     if !serv.is_started() {
         fatal(E_WARNING, c"server is not running");
         return call.set_bool(false);
@@ -348,7 +350,10 @@ fn task_finish(call: &Call) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    finished(call, serv, Some(&crate::server::task_info(call)));
+    let Some(info) = crate::server::task_info(call) else {
+        return;
+    };
+    finished(call, serv, Some(&info));
 }
 
 /// `php_swoole_server_task_finish` of the data argument into the return slot.

@@ -218,8 +218,6 @@ pub struct Families {
     pub coroutine_rshutdown: [Hook; 2],
     pub thread_rshutdown: Hook,
     pub tracer_rshutdown: Hook,
-    /// `php_swoole_thread_bailout()`: the bailout that ends this PHP thread.
-    pub thread_bailout: extern "C" fn(),
     /// `sw_php_print_backtrace(cid)`, on the PHP thread.
     /// # Errors
     /// Its output bailed out.
@@ -382,13 +380,13 @@ fn run(steps: Vec<Step>, phase: Phase<'_>) -> Result<(), Bailout> {
             // A family's MINIT step, whose returned bailout is raised inside
             // the trap.
             (Step::Minit(step), Phase::Minit(minit)) => {
-                contain_with(|| bailout::raise(step(minit)))
+                contain_with(|| bailout::defer(step(minit)))
             }
             (Step::Typed(step), Phase::Minit(minit)) => contain_with(|| step(minit)),
             (Step::Shutdown(step), Phase::Mshutdown(mshutdown)) => contain_with(|| step(mshutdown)),
             (Step::Request(step), Phase::Request(request)) => contain_with(|| step(request)),
             // The shim's setjmp sits between this frame and the hook.
-            (Step::Hook(hook), _) => flag(try_body(hook)),
+            (Step::Hook(hook), _) => flag(try_body(hook)).and_then(|()| bailout::outcome(())),
             (Step::Minit(_) | Step::Typed(_) | Step::Shutdown(_) | Step::Request(_), _) => Ok(()),
         }?;
     }
@@ -608,6 +606,7 @@ extern "C" fn event_free() {
     swoole_rs_corebase::reactor::swoole_event_free();
 }
 
+swoole_rs_zend::exports! {
 /// `PHP_MSHUTDOWN_FUNCTION(swoole)`.
 pub(crate) extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, shutdown: Shutdown<'_>) -> c_int {
     let mut steps = vec![Step::Hook(swoole_rs_zend::host::known_free)];
@@ -616,7 +615,7 @@ pub(crate) extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, shutdown: Shut
     steps.extend(optional::client_mshutdown());
     steps.extend(families().map(|families| Step::Hook(families.server_mshutdown)));
     steps.extend([Step::Hook(clean), Step::Hook(swr_zend_leak_check)]);
-    bailout::raise(shutdown.with(|mshutdown| run(steps, Phase::Mshutdown(mshutdown))));
+    bailout::defer(shutdown.with(|mshutdown| run(steps, Phase::Mshutdown(mshutdown))));
     SUCCESS
 }
 
@@ -646,7 +645,7 @@ pub(crate) extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, request: Request<'
         // correctly (swoole/swoole-src#5182): load it under execute_ex.
         let hook = swr_zend_execute_ex_reset();
         if let Err(bailed) = load_library() {
-            bailout::raise(Err(bailed));
+            bailout::defer(Err(bailed));
             return SUCCESS;
         }
         swr_zend_execute_ex_restore(hook);
@@ -663,7 +662,7 @@ pub(crate) extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, request: Request<'
     steps.extend(optional::rinit(families));
     steps.push(Step::Hook(families.tracer_rinit));
     if let Err(bailed) = run(steps, Phase::Request(request)) {
-        bailout::raise(Err(bailed));
+        bailout::defer(Err(bailed));
         return SUCCESS;
     }
     globals.req_status.set(ReqStatus::RinitEnd);
@@ -698,7 +697,7 @@ pub(crate) extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, request: Reque
         Step::Hook(event_free),
     ]);
     if let Err(bailed) = run(steps, Phase::Request(request)) {
-        bailout::raise(Err(bailed));
+        bailout::defer(Err(bailed));
         return SUCCESS;
     }
     globals.req_status.set(ReqStatus::RshutdownEnd);
@@ -707,6 +706,8 @@ pub(crate) extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, request: Reque
         swr_zend_stream_constant_no_close(name.into());
     }
     SUCCESS
+}
+
 }
 
 /// `php_swoole_register_shutdown_function(function)`, during a request, with

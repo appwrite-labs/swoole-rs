@@ -219,20 +219,6 @@ pub(crate) fn main_thread() -> bool {
     !built_with(Switch::Thread) || swoole_rs_zend::is_main_thread()
 }
 
-/// `php_swoole_thread_bailout()`: the bailout that ends this PHP thread.
-pub(crate) fn thread_exit() {
-    if let Some(families) = families() {
-        (families.thread_bailout)();
-    }
-}
-
-/// `php_swoole_thread_bailout()`, outside the main thread of a `SW_THREAD` build.
-pub(crate) fn thread_bailout() {
-    if !main_thread() {
-        thread_exit();
-    }
-}
-
 /// `Swoole\Thread` and its locks, atomics, barrier and containers, in
 /// upstream's order, inside one `zend_try` as upstream's MINIT.
 fn thread_minit(minit: &swoole_rs_zend::Minit) {
@@ -241,7 +227,10 @@ fn thread_minit(minit: &swoole_rs_zend::Minit) {
     };
     (families.thread_minit)(minit);
     // Raised here, inside this step's `zend_try`, as the registrations' own are.
-    swoole_rs_zend::bailout::raise((families.locks_minit[3])(minit));
+    if let Err(error) = (families.locks_minit[3])(minit) {
+        error.defer();
+        return;
+    }
     for register in families.thread_classes_minit {
         register(minit);
     }

@@ -851,7 +851,7 @@ fn construct(call: &Call) {
 }
 
 fn add_process(call: &Call) {
-    let serv = server(call);
+    let Some(serv) = server(call) else { return };
     if !fact(serv, Fact::WorkerThread) && fact(serv, Fact::Started) {
         fatal(E_WARNING, c"server is running, cannot add process");
         return call.set_bool(false);
@@ -891,7 +891,7 @@ fn add_process(call: &Call) {
 }
 
 fn add_command(call: &Call) {
-    let serv = server(call);
+    let Some(serv) = server(call) else { return };
     if fact(serv, Fact::Started) {
         fatal(E_WARNING, c"server is running, can't add command");
         return call.set_bool(false);
@@ -966,7 +966,8 @@ fn command_run(callable: &Weak<Kept>, message: &[u8], reply: &mut Vec<u8>) {
     drop(retval);
     drop(callable);
     if bailed {
-        bailout::raise(Err(bailout::Bailout));
+        bailout::Bailout.defer();
+        crate::dispatch::stop_if_bailed();
     }
 }
 
@@ -987,7 +988,8 @@ fn command_done(wait: Rc<Wait>) -> impl Fn(&[u8]) {
     move |message| {
         wait.reply.replace(Some(message.to_vec()));
         wait.replied.set(true);
-        bailout::raise(wait.waiter.wake());
+        bailout::defer(wait.waiter.wake());
+        crate::dispatch::stop_if_bailed();
     }
 }
 
@@ -1092,10 +1094,10 @@ fn register_callback(object: ServerObject<'_>, serv: view::Server<'_>) {
     }
 }
 
-fn port_facts(object: &Value) -> PortFacts<'_> {
-    let port = crate::port::bound_port(object);
+fn port_facts(object: &Value) -> Result<PortFacts<'_>, Stop> {
+    let port = crate::port::bound_port(object).ok_or(Stop)?;
     let c = port.config();
-    PortFacts {
+    Ok(PortFacts {
         port,
         protocols: Protocols {
             http: c.open_http_protocol.get(),
@@ -1108,7 +1110,7 @@ fn port_facts(object: &Value) -> PortFacts<'_> {
         stream: matches!(c.r#type, 1 | 3 | 5),
         ssl: c.ssl,
         ssl_verify_without_ca: c.ssl_verify_without_ca(),
-    }
+    })
 }
 
 fn isset(serv: view::Server<'_>, port: view::Port<'_>, kind: PortCallback) -> bool {
@@ -1184,7 +1186,7 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
             let Some(first) = ports.first() else {
                 return Ok(false);
             };
-            let primary = port_facts(first);
+            let primary = port_facts(first)?;
             if kind == Kind::Redis {
                 settings.insert_bool(b"open_redis_protocol", true);
                 settings.insert_bool(b"open_http_protocol", false);
@@ -1265,7 +1267,7 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
         }
     }
     for zport in &ports {
-        let port = port_facts(zport);
+        let port = port_facts(zport)?;
         if port.dgram && !port.ssl && !isset(serv, port.port, PortCallback::Packet) {
             return stop(E_ERROR, c"require onPacket callback");
         }
@@ -1336,7 +1338,7 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
 }
 
 fn start(call: &Call) {
-    let serv = server(call);
+    let Some(serv) = server(call) else { return };
     let object = ServerObject::this(call);
     match crate::thread::worker(object, serv) {
         Some(Ok(())) => return call.set_bool(true),

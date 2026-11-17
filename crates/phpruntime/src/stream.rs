@@ -189,7 +189,7 @@ pub(crate) fn raise<T: Copy>(result: Result<T, Bailout>, failed: T) -> T {
         Ok(value) => (value, Ok(())),
         Err(error) => (failed, Err(error)),
     };
-    swoole_rs_zend::bailout::raise(status);
+    swoole_rs_zend::bailout::defer(status);
     value
 }
 
@@ -330,10 +330,12 @@ fn vm_active() -> bool {
     swr_zend_stream_vm_active()
 }
 
+swoole_rs_zend::exports! {
 /// The stream's `write` (`socket_write`): bytes written, or -1.
 #[unsafe(no_mangle)]
 extern "C" fn swr_v1_phpruntime_socket_write(stream: Stream<'_>, data: IoSlice<'_>) -> isize {
     raise(write(stream, &data), -1)
+}
 }
 
 fn write(stream: Stream<'_>, data: &[u8]) -> Result<isize, Bailout> {
@@ -382,10 +384,13 @@ fn write(stream: Stream<'_>, data: &[u8]) -> Result<isize, Bailout> {
     Ok(written)
 }
 
+swoole_rs_zend::exports! {
 /// The stream's `read` (`socket_read`): bytes read, or -1.
 #[unsafe(no_mangle)]
-extern "C" fn swr_v1_phpruntime_socket_read(stream: Stream<'_>, mut out: ReadVec<'_>) -> isize {
+extern "C" fn swr_v1_phpruntime_socket_read(stream: Stream<'_>, out: ReadVec<'_>) -> isize {
+    let mut out = out;
     raise(read(stream, out.fill().slots()), -1)
+}
 }
 
 fn read(stream: Stream<'_>, out: &mut [MaybeUninit<u8>]) -> Result<isize, Bailout> {
@@ -424,6 +429,7 @@ fn read(stream: Stream<'_>, out: &mut [MaybeUninit<u8>]) -> Result<isize, Bailou
     Ok(read)
 }
 
+swoole_rs_zend::exports! {
 /// The stream's `close`: the socket closes now and is freed once no
 /// operation holds it. Whether it closed.
 #[unsafe(no_mangle)]
@@ -441,8 +447,8 @@ extern "C" fn swr_v1_phpruntime_socket_close(stream: Stream<'_>) -> bool {
         result.map_err(Bailout::defer).is_ok()
     };
     // This is a native callback boundary: the Box/Rc owners have already dropped.
-    swoole_rs_zend::bailout::finish();
     closed
+}
 }
 
 /// The stream's `cast`, whose slot C gives by `castas`: for `PHP_STREAM_AS_STDIO`
@@ -509,6 +515,7 @@ struct Xport<'a> {
     to: Option<&'a [u8]>,
 }
 
+swoole_rs_zend::exports! {
 /// The stream's `set_option` of `PHP_STREAM_OPTION_XPORT_API`, its parameter's
 /// pointers lent typed. Whether it is `PHP_STREAM_OPTION_RETURN_OK`.
 #[unsafe(no_mangle)]
@@ -535,7 +542,9 @@ extern "C" fn swr_v1_phpruntime_socket_xport<'a>(
     });
     raise(result, false)
 }
+}
 
+swoole_rs_zend::exports! {
 /// The stream's `set_option` of any other option, with its parameter for
 /// `PHP_STREAM_OPTION_META_DATA_API` (`data`), `_READ_TIMEOUT` (`timeout`) and
 /// `_CRYPTO_API` (`crypto`). Whether it is `PHP_STREAM_OPTION_RETURN_OK`.
@@ -582,6 +591,7 @@ extern "C" fn swr_v1_phpruntime_socket_option(
     };
     param.outputs.returncode = returncode;
     true
+}
 }
 
 /// `PHP_STREAM_OPTION_META_DATA_API`: the TLS session, `timed_out`, `eof`
@@ -1078,6 +1088,7 @@ pub(crate) extern "C" fn transport_factory_body(
     reraise(flag, factory(), ptr::null_mut())
 }
 
+swoole_rs_zend::exports! {
 /// `php_swoole_create_stream_from_socket`: a coroutine stream over `fd`,
 /// with the default socket timeout. The stream takes `fd`.
 #[unsafe(no_mangle)]
@@ -1088,15 +1099,14 @@ pub extern "C" fn swr_v1_phpruntime_stream_from_socket(
     protocol: c_int,
 ) -> *mut php_stream {
     let result = stream_from_socket(fd, domain, kind, protocol);
-    let stream = match result {
+    match result {
         Ok(stream) => stream.map_or(ptr::null_mut(), Fresh::into_ptr),
         Err(error) => {
             error.defer();
             ptr::null_mut()
         }
-    };
-    swoole_rs_zend::bailout::finish();
-    stream
+    }
+}
 }
 
 fn stream_from_socket(

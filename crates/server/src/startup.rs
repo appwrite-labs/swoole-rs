@@ -84,7 +84,7 @@ pub(crate) fn start(serv: view::Server<'_>) -> bool {
             hybrid().start_worker_threads(serv)
         }
     };
-    if !started {
+    if !started || swoole_rs_corebase::process::pool::bailout_pending() {
         return false;
     }
     if !config.factory_.get().is_null() {
@@ -439,6 +439,9 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> b
         set_master_pid(gs);
     }
     state.callbacks.call_server(ServerSlot::Start, serv);
+    if swoole_rs_corebase::process::pool::bailout_pending() {
+        return false;
+    }
     hybrid().step(serv, Step::EventWait)
 }
 
@@ -509,6 +512,9 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
         gs.shutdown.store(true, SeqCst);
     }
     state.callbacks.call_server(ServerSlot::Shutdown, serv);
+    if swoole_rs_corebase::process::pool::bailout_pending() {
+        return;
+    }
     // `destroy_base_factory` and `destroy_thread_factory` free only tables, which
     // `free_server` frees, and port counts, which go with their ports.
     if mode == Mode::Process {

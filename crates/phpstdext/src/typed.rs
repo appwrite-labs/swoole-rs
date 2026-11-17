@@ -596,7 +596,7 @@ fn typed_array(call: &Call) {
     if let Err(failure) = outcome {
         call.set_null();
         if let Failure::Bailout(bailout) = failure {
-            swoole_rs_zend::bailout::raise(Err(bailout));
+            swoole_rs_zend::bailout::defer(Err(bailout));
         }
     }
 }
@@ -696,7 +696,7 @@ fn array_is_typed(call: &Call) {
         Err(failure) => {
             call.set_bool(false);
             if let Failure::Bailout(bailout) = failure {
-                swoole_rs_zend::bailout::raise(Err(bailout));
+                swoole_rs_zend::bailout::defer(Err(bailout));
             }
         }
     }

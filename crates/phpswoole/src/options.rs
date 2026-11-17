@@ -75,7 +75,7 @@ fn size(value: &Value) -> Result<i64, (&ZStr, ZString)> {
 }
 
 /// `php_swoole_fatal_error(E_ERROR, "failed to parse '%s' to size, Error: %s")`:
-/// a bailout, deferred for the caller's [`bailout::finish`].
+/// a bailout, deferred for the caller's native boundary.
 fn size_error(failed: &ZStr, error: &ZStr) {
     set_last_error(PHP_FATAL_ERROR);
     let message = [
@@ -92,13 +92,15 @@ fn size_error(failed: &ZStr, error: &ZStr) {
 /// `php_swoole_parse_to_size(zv)`: a size string as an ini quantity
 /// ("64M"), anything else as `zval_get_long`. A string that does not parse
 /// is a fatal error, raised from here.
-pub fn php_swoole_parse_to_size(value: &Value) -> i64 {
-    let size = size(value).unwrap_or_else(|(failed, error)| {
-        size_error(failed, &error);
-        0
-    });
-    bailout::finish();
-    size
+pub fn php_swoole_parse_to_size(value: &Value) -> Option<i64> {
+    let size = match size(value) {
+        Ok(size) => size,
+        Err((failed, error)) => {
+            size_error(failed, &error);
+            return None;
+        }
+    };
+    (!bailout::pending()).then_some(size)
 }
 
 /// The option under `key`, if set, as `convert` reads it, passed to `set`.
@@ -122,13 +124,6 @@ fn text_option(options: &Array, key: &CStr, set: impl FnOnce(&ZStr)) {
 /// C's implicit `zend_long` to `int` conversion.
 fn int(value: i64) -> c_int {
     value.c_cast::<c_int>()
-}
-
-/// `php_swoole_set_global_option(options)`, after MINIT. A size that does not
-/// parse stops here with a fatal error.
-pub fn php_swoole_set_global_option(options: &Array) {
-    set_global(options);
-    bailout::finish();
 }
 
 /// `SW_ERROR_OPERATION_NOT_SUPPORT`.

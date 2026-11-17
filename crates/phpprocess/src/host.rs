@@ -223,10 +223,11 @@ impl Slot {
 struct DeferredFree(Callable);
 
 impl Deferred for DeferredFree {
-    /// The outermost Rust frame of its call.
     fn run(self) {
         drop(self.0);
-        bailout::finish();
+        if bailout::pending() {
+            swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
+        }
     }
 
     /// A loop freed first leaks it, as upstream's defer does.

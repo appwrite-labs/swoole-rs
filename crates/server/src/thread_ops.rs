@@ -261,6 +261,9 @@ pub(crate) fn main_loop(serv: view::Server<'_>, id: u16) {
             return;
         };
         call_worker_start_callback(serv, worker);
+        if swoole_rs_corebase::process::pool::bailout_pending() {
+            return;
+        }
     } else {
         swoole_rs_corebase::set_thread(THREAD_REACTOR, id);
     }
@@ -276,6 +279,9 @@ pub(crate) fn main_loop(serv: view::Server<'_>, id: u16) {
         reason = "upstream's reactor thread ignores its loop's result: it cleans up either way"
     )]
     let _ = swoole_rs_corebase::reactor::event_api::swoole_event_wait();
+    if swoole_rs_corebase::process::pool::bailout_pending() {
+        return;
+    }
     if mode == Mode::Thread
         && let Some(worker) = worker()
     {

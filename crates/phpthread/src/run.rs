@@ -83,7 +83,9 @@ impl Steps for Start {
             // A bailout is deferred.
             let global_argv = crate::host::unserialize(&data);
             drop(data);
-            bailout::finish();
+            if bailout::pending() {
+                return;
+            }
             // The symbol table takes a reference of its own; this one goes with `global_argv`.
             prologue.set_argv(&global_argv, i64::from(self.argc));
         }
@@ -91,7 +93,9 @@ impl Steps for Start {
             let array = argv.0.to_array();
             ARGV.set(Some(array));
             drop(argv);
-            bailout::finish();
+            if bailout::pending() {
+                return;
+            }
         }
         // `thread_register_stdio_file_handles(true)`: open `php://stdin`, `stdout`
         // and `stderr` and register them as `STDIN`, `STDOUT` and `STDERR`. During
@@ -128,20 +132,13 @@ impl Steps for Start {
     }
 }
 
-/// Upstream's `php_swoole_thread_bailout()`: `exit()` in a thread unwinds to the nearest
-/// native scope that contains it, else out of the coroutine, else out of the
-/// thread's script.
-pub extern "C" fn thread_bailout() {
-    swoole_rs_zend::thread::exit(|| {
-        if swoole_rs_phpcoroutines::in_coroutine() {
-            // Return to the immediate native resumer; Rust owners relay the
-            // pending exit after cleanup. This request never resumes an exited
-            // PHP frame.
-            loop {
-                swoole_rs_phpcoroutines::suspend();
-            }
+/// Yield an exited PHP frame to its native resumer for cleanup.
+extern "C" fn suspend_exited_coroutine() {
+    if swoole_rs_phpcoroutines::in_coroutine() {
+        loop {
+            swoole_rs_phpcoroutines::suspend();
         }
-    });
+    }
 }
 
 /// The running coroutine's id as the scopes' context token, null outside one.
@@ -154,7 +151,7 @@ extern "C" fn guard_context() -> *mut c_void {
 /// MINIT (`php_swoole_thread_minit`): the exit scopes' hooks, `Swoole\Thread`
 /// with its constants, then `Swoole\Thread\Error`.
 pub fn thread_minit(minit: &Minit) {
-    minit.guard_register(guard_context, thread_bailout);
+    minit.guard_register(guard_context, suspend_exited_coroutine);
     let class = thread::register(minit);
     // `std::thread::hardware_concurrency()`.
     let cpus = swoole_rs_corebase::sys::sysconf(libc::_SC_NPROCESSORS_ONLN).max(0);
@@ -196,7 +193,6 @@ pub fn thread_rinit(rinit: swoole_rs_zend::Request<'_>) {
     if main_thread() {
         let (path, argc, argv) = swoole_rs_zend::thread::main_request(rinit);
         request::keep(path, argv, argc);
-        bailout::finish();
     }
 }
 

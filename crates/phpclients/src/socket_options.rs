@@ -140,8 +140,7 @@ pub(crate) fn apply(socket: Co, settings: &Array, which: Settings) -> bool {
 /// `php_swoole_socket_set(socket, settings)`: every setting, as [`socket_settings`].
 pub fn socket_set(socket: swoole_rs_hooks::co_socket::Co, settings: &Array) -> bool {
     let applied = apply(socket.into(), settings, Settings::All);
-    bailout::finish();
-    applied
+    applied && !bailout::pending()
 }
 
 /// [`apply`] for crates/phpruntime (through crates/phpswoole's families) and the

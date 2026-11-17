@@ -179,11 +179,11 @@ void swr_zend_thread_set_argv(const zval *argv, zend_long argc) {
     zend_hash_update(&EG(symbol_table), ZSTR_KNOWN(ZEND_STR_ARGC), &count);
 }
 
-bool swr_zend_thread_script_running(void) { return script_bailout != NULL; }
-
 void swr_zend_thread_script_bailout(void) {
     if (script_bailout) {
         EG(bailout) = script_bailout;
+    } else {
+        swr_zend_guard_clear();
     }
     zend_bailout();
 }

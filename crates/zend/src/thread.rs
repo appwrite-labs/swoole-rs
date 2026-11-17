@@ -170,13 +170,15 @@ pub struct Entered(PhantomData<*mut ()>);
 /// The steps of one request, behind one thin pointer for C's `void *context`.
 struct Context<'a>(&'a mut dyn Steps);
 
-type Step = extern "C" fn(&mut Context<'_>);
+type Step = unsafe extern "C" fn(&mut Context<'_>);
 
+crate::exports! {
 extern "C" fn prologue(context: &mut Context<'_>) {
     context.0.prologue(Prologue {
         argv: false,
         _call: PhantomData,
     });
+}
 }
 
 extern "C" fn epilogue(context: &mut Context<'_>) {
@@ -256,37 +258,16 @@ unsafe extern "C" {
     /// Clears the thread-exit mark.
     #[link_name = "swr_zend_guard_clear"]
     safe fn guard_clear();
-    /// Whether the thread's script runs, inside its script scope.
-    safe fn swr_zend_thread_script_running() -> bool;
     /// `tsrm_is_shutdown()`; false on NTS.
     safe fn swr_zend_tsrm_is_shutdown() -> bool;
     /// `tsrm_api_name()`: a NUL-terminated literal (empty on NTS).
     safe fn swr_zend_tsrm_api_name() -> Text<'static>;
 }
 
-/// Upstream's `php_swoole_thread_bailout()`: `exit()` in a thread sets the
-/// thread-exit mark and unwinds to the nearest native scope that contains it;
-/// else `coroutine` runs, which returns only outside a coroutine; else out of the
-/// thread's script, the mark cleared if the script is over. The caller's frame
-/// owns nothing.
-pub fn exit(coroutine: impl FnOnce()) {
-    unsafe extern "C" {
-        /// `zend_bailout()` to the innermost native scope of the running context,
-        /// if there is one; else nothing.
-        safe fn swr_zend_guard_bailout();
-        /// `zend_bailout()` to the thread's script scope while its script runs,
-        /// else to Zend's current one.
-        safe fn swr_zend_thread_script_bailout();
-    }
+/// Request whole-thread exit at the next native boundary, after Rust cleanup.
+pub fn defer_exit() {
     guard_mark();
-    swr_zend_guard_bailout();
-    coroutine();
-    if !swr_zend_thread_script_running() {
-        // The script is over: the exit ends the request-shutdown step Zend
-        // runs it in, and the rest of the shutdown runs as usual.
-        guard_clear();
-    }
-    swr_zend_thread_script_bailout();
+    crate::bailout::Bailout.defer();
 }
 
 /// `tsrm_is_shutdown()`; false on NTS.

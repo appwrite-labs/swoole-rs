@@ -1896,7 +1896,13 @@ impl<H: PoolHost> Pool<'_, H> {
     /// The forked worker: its callbacks and loop, then `exit`.
     fn child(&mut self, worker: *mut WorkerRecord) -> Result<!, Bailed> {
         self.on(worker, Op::WorkerInit, 0);
+        if crate::process::pool::bailout_pending() {
+            return Err(Bailed);
+        }
         if self.is_async() && !self.h.event_init() {
+            if crate::process::pool::bailout_pending() {
+                return Err(Bailed);
+            }
             // exit(3), as upstream.
             std::process::exit(254);
         }
@@ -2091,7 +2097,13 @@ impl<H: PoolHost> Pool<'_, H> {
     /// workers' messages (a stopped worker is replaced and its pid detached).
     fn service(&mut self) {
         self.op(Op::SignalDispatch, 0);
+        if crate::process::pool::bailout_pending() {
+            return;
+        }
         self.op(Op::TimerSelect, 0);
+        if crate::process::pool::bailout_pending() {
+            return;
+        }
         if !self.read_message() {
             return;
         }
@@ -2100,6 +2112,9 @@ impl<H: PoolHost> Pool<'_, H> {
         while crate::process::methods::pop_message(self.p, &mut event)
             .is_some_and(|length| length > 0)
         {
+            if crate::process::pool::bailout_pending() {
+                return;
+            }
             if !self.running() {
                 continue;
             }
@@ -2115,9 +2130,10 @@ impl<H: PoolHost> Pool<'_, H> {
             if worker.is_null() {
                 continue;
             }
-            // A bailout in the new worker's callbacks leaves at once; these frames own nothing.
+            // Leave the callback bailout pending for the enclosing native boundary.
             if self.spawn(worker).is_err() {
-                crate::process::pool::raise_bailout();
+                crate::process::pool::defer_bailout();
+                return;
             }
             self.with_registry(|registry| registry.detach(pid));
         }
@@ -2142,9 +2158,13 @@ impl<H: PoolHost> Pool<'_, H> {
         if !libc::WIFEXITED(status) {
             self.on(worker, Op::WorkerError, exited(pid, status));
         }
-        // A bailout in the new worker's callbacks leaves at once; these frames own nothing.
+        // Leave the callback bailout pending for the enclosing native boundary.
+        if crate::process::pool::bailout_pending() {
+            return false;
+        }
         if self.spawn(worker).is_err() {
-            crate::process::pool::raise_bailout();
+            crate::process::pool::defer_bailout();
+            return false;
         }
         true
     }
@@ -2152,7 +2172,7 @@ impl<H: PoolHost> Pool<'_, H> {
     /// `ProcessPool::wait`: reap and restart workers until the pool stops, then
     /// stop them all.
     pub(crate) fn wait(&mut self) -> Result<(), Bailed> {
-        reaper::run(self);
+        reaper::run(self)?;
 
         self.set_running(false);
         self.drop_reload_task();

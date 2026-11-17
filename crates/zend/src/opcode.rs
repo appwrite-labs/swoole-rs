@@ -165,8 +165,9 @@ pub trait Handler {
 /// A user opcode handler as Zend stores it (`user_opcode_handler_t`): Zend
 /// calls it with the live frame executing on this thread, at an instruction of
 /// the opcode it was installed for, which only that call makes a [`Frame`] of.
-pub type Entry = extern "C" fn(Frame<'_>) -> c_int;
+pub type Entry = unsafe extern "C" fn(Frame<'_>) -> c_int;
 
+crate::exports! {
 /// `H` as Zend's `user_opcode_handler_t`, installed for `H::OPCODE` only.
 #[must_use]
 pub extern "C" fn handler<H: Handler>(frame: Frame<'_>) -> c_int {
@@ -175,4 +176,5 @@ pub extern "C" fn handler<H: Handler>(frame: Frame<'_>) -> c_int {
         Next::Continue => 0,
         Next::Dispatch => 2,
     }
+}
 }

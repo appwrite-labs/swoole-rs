@@ -311,8 +311,7 @@ fn lookup_php(
             false
         }
     };
-    bailout::finish();
-    answered
+    answered && !bailout::pending()
 }
 
 /// The lookup's steps, as upstream's; `None` is an empty result. Upstream
@@ -335,7 +334,7 @@ fn resolve(
             // The context's cluster is an `Owned`, whose drop releases it inside
             // `zend_try` and defers a destructor's bailout.
             context.release();
-            bailout::trapped(0)?;
+            bailout::outcome(())?;
         }
     }
     let cluster = if let Some(cluster) = cluster {

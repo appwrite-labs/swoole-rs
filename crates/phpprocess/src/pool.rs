@@ -242,7 +242,7 @@ method_table! {
 }
 
 /// Zend's trap and bailout, for the pool's Rust worker loops, which call PHP
-/// inside the trap and leave it before re-raising.
+/// inside the trap and return deferred escapes to their owners.
 struct Bailouts;
 
 impl process::pool::Bailouts for Bailouts {
@@ -250,9 +250,12 @@ impl process::pool::Bailouts for Bailouts {
         swoole_rs_zend::contain_with(body).is_err()
     }
 
-    /// `zend_bailout()`, from a frame that owns nothing.
-    fn raise(&self) {
-        swoole_rs_zend::bailout::raise(Err(swoole_rs_zend::bailout::Bailout));
+    fn defer(&self) {
+        swoole_rs_zend::bailout::Bailout.defer();
+    }
+
+    fn pending(&self) -> bool {
+        swoole_rs_zend::bailout::pending()
     }
 }
 
@@ -358,7 +361,6 @@ fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
     clean();
     if swoole_rs_zend::bailout::pending() {
         slot.delref();
-        swoole_rs_zend::bailout::finish();
         return;
     }
     CURRENT.store(pool.raw(), Ordering::Release);
@@ -376,13 +378,11 @@ fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
     }
     if swoole_rs_zend::bailout::pending() {
         slot.delref();
-        swoole_rs_zend::bailout::finish();
         return;
     }
     let term = this.on_message.is_set() || this.enable_coroutine.get();
     worker_signals(term);
     slot.delref();
-    swoole_rs_zend::bailout::finish();
 }
 
 /// The worker's handler for SIGTERM (when `term`), SIGWINCH and SIGRTMIN, where
@@ -423,7 +423,6 @@ fn on_message(_: PoolRef<'_>, message: &mut RecvData<'_>) {
     }
     drop(data);
     slot.delref();
-    swoole_rs_zend::bailout::finish();
 }
 
 fn worker_stopped(worker: Worker<'_>, exit: bool) {
@@ -446,12 +445,10 @@ fn worker_stopped(worker: Worker<'_>, exit: bool) {
 
 fn on_worker_stop(_: PoolRef<'_>, worker: Worker<'_>) {
     worker_stopped(worker, false);
-    swoole_rs_zend::bailout::finish();
 }
 
 fn on_worker_exit(_: PoolRef<'_>, worker: Worker<'_>) {
     worker_stopped(worker, true);
-    swoole_rs_zend::bailout::finish();
 }
 
 fn on_start(_: PoolRef<'_>) {
@@ -466,7 +463,6 @@ fn on_start(_: PoolRef<'_>) {
         }
     }
     slot.delref();
-    swoole_rs_zend::bailout::finish();
 }
 
 fn on_shutdown(_: PoolRef<'_>) {
@@ -479,7 +475,6 @@ fn on_shutdown(_: PoolRef<'_>) {
         }
     }
     slot.delref();
-    swoole_rs_zend::bailout::finish();
 }
 
 fn construct(call: &Call) {
@@ -578,7 +573,9 @@ fn set(call: &Call) {
     let Some(pool) = checked(this) else {
         return;
     };
-    swoole_rs_phpswoole::php_swoole_set_global_option(options);
+    if !swoole_rs_phpswoole::set_global(options) {
+        return;
+    }
     swoole_rs_phpcoroutines::set_coroutine_option(options);
     // Each setter stops at a conversion's bailout, which upstream's ended the
     // call at; the handler raises it.
@@ -590,7 +587,9 @@ fn set(call: &Call) {
         return;
     }
     if let Some(value) = options.get(b"max_package_size") {
-        let size = swoole_rs_phpswoole::php_swoole_parse_to_size(value);
+        let Some(size) = swoole_rs_phpswoole::php_swoole_parse_to_size(value) else {
+            return;
+        };
         pool.set_max_packet_size(packet_limit(pool.use_msgqueue(), max_package_size(size)));
     }
     if let Some(value) = options.get(b"max_wait_time") {
@@ -865,6 +864,9 @@ fn start(call: &Call) {
     let started = methods::start(swoole_rs_server::process_pool_native(), view);
     if started {
         methods::wait(swoole_rs_server::process_pool_native(), view);
+    }
+    if swoole_rs_zend::bailout::pending() {
+        return;
     }
     OWNER.set(None);
     if !started {

@@ -1,6 +1,6 @@
 //! Known-string ownership: `sw_zend_known_strings`, the table C++'s
 //! `SW_ZSTR_KNOWN` reads.
-use crate::{Minit, bailout, sys::zend_string};
+use crate::{Minit, sys::zend_string};
 use std::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering::Relaxed},
@@ -32,7 +32,6 @@ pub fn known_init(minit: &Minit) {
             }
         }
     }
-    bailout::finish();
 }
 
 /// MSHUTDOWN: withdraw the table `known_init` published (the interned strings stay Zend's).

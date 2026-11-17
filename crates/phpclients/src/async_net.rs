@@ -225,7 +225,10 @@ fn listener(weak: Weak<net::Data>) -> state::Listener {
         };
         // Borrowed for the event: like `unhold`, this never destroys the object.
         object.delref();
-        bailout::raise(raised);
+        bailout::defer(raised);
+        if bailout::pending() {
+            swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
+        }
     })
 }
 
@@ -366,8 +369,7 @@ fn connect(call: &Call) {
             }
         }
     }
-    // The events `network::Client` raises on the object; a PHP bailout is
-    // re-raised as the last step.
+    // The asynchronous listener holds the object only while delivering an event.
     let Some(weak) = object.object().with_value(Weak::<net::Data>::of) else {
         return call.set_bool(false);
     };

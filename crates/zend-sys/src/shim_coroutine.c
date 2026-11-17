@@ -152,18 +152,26 @@ void swr_zend_coroutine_start(swr_zend_coroutine_vm *from, swr_zend_coroutine_vm
     save_vm_stack(vm);
 }
 
-void swr_zend_coroutine_output_reset(void) {
-    if (OG(handlers).elements) {
-        zend_bool no_headers = SG(request_info).no_headers;
-        /* Do not send headers by SAPI */
-        SG(request_info).no_headers = true;
+static int reset_output_handlers(void) {
+    volatile int bailed = 0;
+    zend_bool no_headers = SG(request_info).no_headers;
+    /* Do not send headers by SAPI */
+    SG(request_info).no_headers = true;
+    SWR_ZEND_TRY {
         if (OG(active)) {
             php_output_end_all();
         }
         php_output_deactivate();
         php_output_activate();
-        SG(request_info).no_headers = no_headers;
     }
+    SWR_ZEND_CATCH { bailed = 1; }
+    SWR_ZEND_END_TRY();
+    SG(request_info).no_headers = no_headers;
+    return bailed;
+}
+
+int swr_zend_coroutine_output_reset(void) {
+    return OG(handlers).elements ? reset_output_handlers() : 0;
 }
 
 void swr_zend_coroutine_finish(swr_zend_coroutine_vm *finished, swr_zend_coroutine_vm *origin) {
@@ -326,15 +334,6 @@ bool swr_zend_coroutine_called_by_destructor(void) {
 bool swr_zend_coroutine_library_loaded(void) {
     zval *library = zend_get_constant_str(ZEND_STRL("SWOOLE_LIBRARY"));
     return library && zend_is_true(library);
-}
-
-void swr_zend_coroutine_fcc_discard(zend_fcall_info_cache *fcc) {
-    if (fcc->object) {
-        OBJ_RELEASE(fcc->object);
-    }
-    if (fcc->function_handler->op_array.fn_flags & ZEND_ACC_CLOSURE) {
-        OBJ_RELEASE(ZEND_CLOSURE_OBJECT(fcc->function_handler));
-    }
 }
 
 int swr_zend_coroutine_print_trace(zval *backtrace) {

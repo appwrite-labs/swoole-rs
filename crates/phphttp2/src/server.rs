@@ -865,7 +865,9 @@ fn on_receive(view: view::Server<'_>, conn: Connection<'_>, request: &mut RecvDa
     let parsed = session.is_some_and(|session| parse(&session, data));
     // Released before a deferred bailout can jump past it.
     drop(zdata);
-    bailout::finish();
+    if bailout::pending() {
+        swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
+    }
     parsed
 }
 

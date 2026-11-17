@@ -45,7 +45,7 @@ pub fn minit(minit: &Minit) {
     pdo.unregister(&swoole_pdo_sqlite_driver);
     // A bailout (`E_ERROR` for a driver built against another PDO API) is raised
     // from this outermost Rust frame.
-    swoole_rs_zend::bailout::raise(pdo.register(&swoole_pdo_sqlite_driver));
+    swoole_rs_zend::bailout::defer(pdo.register(&swoole_pdo_sqlite_driver));
 }
 
 /// `php_swoole_sqlite_mshutdown`.

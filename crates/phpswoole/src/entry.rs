@@ -96,6 +96,7 @@ pub fn module_entry(families: &'static module::Families) -> *mut zend_module_ent
     entry
 }
 
+swoole_rs_zend::exports! {
 /// `fatal_error`'s tail, after `swr_zend_fatal_error` threw and printed the
 /// `Swoole\Error`: a coroutine bound to a socket prints its backtrace, then
 /// the thread bails out (outside the main thread) or the process exits 255.
@@ -115,11 +116,15 @@ pub extern "C" fn swr_v1_phpswoole_fatal_exit(error: Fatal<'_>) {
         if let Some(families) = module::families()
             && let Err(bailed) = (families.print_backtrace)(error.php(), cid)
         {
-            bailout::raise(Err(bailed));
+            bailout::defer(Err(bailed));
             return;
         }
     }
     // Outside the main thread, the thread's bailout; this frame owns nothing.
-    optional::thread_bailout();
+    if !optional::main_thread() {
+        swoole_rs_zend::thread::defer_exit();
+        return;
+    }
     swoole_rs_corebase::swoole_exit(255);
+}
 }

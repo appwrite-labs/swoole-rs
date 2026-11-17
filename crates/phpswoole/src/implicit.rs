@@ -29,16 +29,20 @@ unsafe extern "C" {
     safe fn puts(line: swoole_rs_corebase::sys::Text<'_>) -> c_int;
 }
 
+swoole_rs_zend::exports! {
 /// `sw_php_exit(status)`: `EG(exit_status) = status`, then the bailout that
 /// ends the request, or the thread in a `SW_THREAD` build. The frames it
 /// crosses own nothing.
 #[unsafe(no_mangle)]
-pub extern "C" fn sw_php_exit(status: c_int) {
+pub extern "C" fn sw_php_exit(status: c_int) { exit_status(status); }
+}
+
+pub fn exit_status(status: c_int) {
     swr_zend_set_exit_status(status);
     if built_with(Switch::Thread) {
-        crate::optional::thread_exit();
+        swoole_rs_zend::thread::defer_exit();
     } else {
-        bailout::raise(Err(Bailout));
+        bailout::defer(Err(Bailout));
     }
 }
 
@@ -61,7 +65,7 @@ fn implicit_fn(call: &Call) {
     } else if is(b"bailout") {
         let status = arg.map_or(95, |status| status.long().c_cast::<c_int>());
         // It bails out across this frame, which owns nothing.
-        sw_php_exit(status);
+        exit_status(status);
     } else if is(b"abort") {
         #[expect(clippy::disallowed_methods, reason = "the script called abort()")]
         std::process::abort();

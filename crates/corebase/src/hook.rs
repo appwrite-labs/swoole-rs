@@ -71,7 +71,8 @@ fn slot(kind: HookType) -> Option<&'static AtomicUsize> {
 }
 
 /// Hook type `kind`'s list: empty for none or an unknown type.
-fn list(kind: HookType) -> List {
+#[must_use]
+pub fn callbacks(kind: HookType) -> &'static [HookFn] {
     slot(kind)
         .and_then(|slot| slot.load(Ordering::Acquire).checked_sub(1))
         .and_then(|index| SNAPSHOTS.get(index)?.get().copied())
@@ -87,7 +88,7 @@ pub extern "C" fn swoole_add_hook(kind: HookType, func: HookFn, push_back: c_int
     let mut written = WRITTEN
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut next = list(kind).to_vec();
+    let mut next = callbacks(kind).to_vec();
     if push_back != 0 {
         next.push(func);
     } else {
@@ -108,7 +109,7 @@ pub extern "C" fn swoole_add_hook(kind: HookType, func: HookFn, push_back: c_int
 /// The callbacks accept `arg`.
 #[cfg_attr(feature = "upstream-symbols", unsafe(no_mangle))]
 pub unsafe extern "C" fn swoole_call_hook(kind: HookType, arg: *mut c_void) {
-    for func in list(kind) {
+    for func in callbacks(kind) {
         // SAFETY: the caller's contract.
         unsafe { func(arg) };
     }
@@ -126,7 +127,7 @@ pub fn call_after_fork() {
 #[cfg_attr(feature = "upstream-symbols", unsafe(no_mangle))]
 #[must_use]
 pub extern "C" fn swoole_isset_hook(kind: HookType) -> bool {
-    !list(kind).is_empty()
+    !callbacks(kind).is_empty()
 }
 
 /// `swoole_clean`'s release of every hook list.

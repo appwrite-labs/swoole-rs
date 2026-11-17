@@ -239,8 +239,7 @@ impl<'a> Settings<'a> {
     }
 
     pub(crate) fn size(value: &Value) -> Result<i64, Stop> {
-        let value = swoole_rs_phpswoole::php_swoole_parse_to_size(value);
-        checked().map(|()| value)
+        swoole_rs_phpswoole::php_swoole_parse_to_size(value).ok_or(Stop)
     }
 
     pub(crate) fn truth(value: &Value) -> i64 {
@@ -315,7 +314,7 @@ fn notice(message: &CStr) -> Step {
 }
 
 fn set(call: &Call) {
-    let serv = server(call);
+    let Some(serv) = server(call) else { return };
     let s = Settings { serv, vht: None };
     if s.fact(field::WORKER_THREAD) != 0 {
         set_last_error(SW_ERROR_SERVER_UNRELATED_THREAD);
