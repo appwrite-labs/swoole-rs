@@ -1,8 +1,13 @@
 //! The Firebird client API calls Swoole's bundled `pdo_firebird` makes, as
-//! `ibase.h` (Firebird 3 and later, which `config.m4` requires) declares them.
-//! The extension links the system `libfbclient` itself (`--with-swoole-firebird`,
-//! through `fb_config`); nothing here links it, so the workspace builds and
-//! tests on machines without Firebird.
+//! `ibase.h` (Firebird 3 and later, which `config.m4` requires) declares them,
+//! each argument typed as what the call requires of it. The extension links the
+//! system `libfbclient` itself (`--with-swoole-firebird`, through `fb_config`);
+//! nothing here links it, so the workspace builds and tests on machines without
+//! Firebird.
+//!
+//! Nothing here makes an argument: only the C caller's, passed through an
+//! export's parameters (`crates/firebird`), where its contract (the call's, as
+//! `ibase.h` declares it) stands for the constructor. None is `Send` or `Sync`.
 #![expect(
     non_camel_case_types,
     reason = "the C type names, as ibase.h spells them"
@@ -14,10 +19,6 @@ use std::ffi::{c_char, c_int, c_short, c_uint, c_ushort, c_void};
 pub type ISC_STATUS = isize;
 /// `FB_API_HANDLE`, the type of every `isc_*_handle`.
 pub type FB_API_HANDLE = c_uint;
-pub type isc_db_handle = FB_API_HANDLE;
-pub type isc_tr_handle = FB_API_HANDLE;
-pub type isc_stmt_handle = FB_API_HANDLE;
-pub type isc_blob_handle = FB_API_HANDLE;
 /// `ISC_SCHAR`.
 pub type ISC_SCHAR = c_char;
 /// `XSQLDA`, only ever passed by pointer here.
@@ -30,123 +31,171 @@ pub struct XSQLDA {
 pub struct ISC_QUAD {
     _opaque: [u8; 0],
 }
-/// `ISC_VERSION_CALLBACK`.
-pub type ISC_VERSION_CALLBACK = Option<unsafe extern "C" fn(*mut c_void, *const c_char)>;
 
+/// The caller's status vector (`ISC_STATUS_ARRAY`): writable for its 20 entries.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Status(*mut ISC_STATUS);
+
+/// A database, transaction, statement or blob handle the caller keeps
+/// (`isc_*_handle *`): readable and writable, holding a live handle of the kind
+/// the call takes there, or zero where the call makes one.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Handle(*mut FB_API_HANDLE);
+
+/// Bytes the caller handed over: readable for the length passed beside them, or
+/// up to their NUL where the call takes no length or it is zero.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Bytes(*const ISC_SCHAR);
+
+/// Where the call writes its `T`s: writable for the capacity passed beside it, or for
+/// one `T` when none is.
+#[repr(transparent)]
+pub struct Out<T>(*mut T);
+
+impl<T> Clone for Out<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for Out<T> {}
+
+/// A descriptor area: null where the call takes none, else allocated for its own
+/// `sqln` entries, whose data and indicator buffers are live for the call.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Sqlda(*mut XSQLDA);
+
+/// A blob id, which the call reads (open) or writes (create).
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Quad(*mut ISC_QUAD);
+
+/// The caller's `ISC_VERSION_CALLBACK`, which takes the [`VersionArg`] passed beside
+/// it and each version line, and only touches what that argument lends it.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct VersionCallback(*const c_void);
+
+/// What the caller's [`VersionCallback`] accepts.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct VersionArg(*mut c_void);
+
+// None of these keeps an argument past the call or runs a callback but
+// `isc_version`'s, and each reports through its status vector.
 unsafe extern "C" {
-    pub fn isc_attach_database(
-        status: *mut ISC_STATUS,
+    pub safe fn isc_attach_database(
+        status: Status,
         name_length: c_short,
-        name: *const ISC_SCHAR,
-        db: *mut isc_db_handle,
+        name: Bytes,
+        db: Handle,
         dpb_length: c_short,
-        dpb: *const ISC_SCHAR,
+        dpb: Bytes,
     ) -> ISC_STATUS;
-    pub fn isc_detach_database(status: *mut ISC_STATUS, db: *mut isc_db_handle) -> ISC_STATUS;
-    pub fn isc_dsql_execute(
-        status: *mut ISC_STATUS,
-        tr: *mut isc_tr_handle,
-        stmt: *mut isc_stmt_handle,
+    pub safe fn isc_detach_database(status: Status, db: Handle) -> ISC_STATUS;
+    pub safe fn isc_dsql_execute(
+        status: Status,
+        tr: Handle,
+        stmt: Handle,
         dialect: c_ushort,
-        sqlda: *const XSQLDA,
+        sqlda: Sqlda,
     ) -> ISC_STATUS;
-    pub fn isc_dsql_execute2(
-        status: *mut ISC_STATUS,
-        tr: *mut isc_tr_handle,
-        stmt: *mut isc_stmt_handle,
+    pub safe fn isc_dsql_execute2(
+        status: Status,
+        tr: Handle,
+        stmt: Handle,
         dialect: c_ushort,
-        in_sqlda: *const XSQLDA,
-        out_sqlda: *const XSQLDA,
+        in_sqlda: Sqlda,
+        out_sqlda: Sqlda,
     ) -> ISC_STATUS;
-    pub fn isc_dsql_sql_info(
-        status: *mut ISC_STATUS,
-        stmt: *mut isc_stmt_handle,
+    pub safe fn isc_dsql_sql_info(
+        status: Status,
+        stmt: Handle,
         items_length: c_short,
-        items: *const ISC_SCHAR,
+        items: Bytes,
         buffer_length: c_short,
-        buffer: *mut ISC_SCHAR,
+        buffer: Out<ISC_SCHAR>,
     ) -> ISC_STATUS;
-    pub fn isc_dsql_free_statement(
-        status: *mut ISC_STATUS,
-        stmt: *mut isc_stmt_handle,
+    pub safe fn isc_dsql_free_statement(
+        status: Status,
+        stmt: Handle,
         option: c_ushort,
     ) -> ISC_STATUS;
-    /// Variadic: each database is followed by its TPB length and TPB.
-    pub fn isc_start_transaction(
-        status: *mut ISC_STATUS,
-        tr: *mut isc_tr_handle,
+    /// Variadic: each database handle is followed by its TPB length (`usize`) and
+    /// TPB ([`Bytes`]).
+    pub safe fn isc_start_transaction(
+        status: Status,
+        tr: Handle,
         count: c_short,
         ...
     ) -> ISC_STATUS;
-    pub fn isc_commit_retaining(status: *mut ISC_STATUS, tr: *mut isc_tr_handle) -> ISC_STATUS;
-    pub fn isc_commit_transaction(status: *mut ISC_STATUS, tr: *mut isc_tr_handle) -> ISC_STATUS;
-    pub fn isc_rollback_transaction(status: *mut ISC_STATUS, tr: *mut isc_tr_handle) -> ISC_STATUS;
-    pub fn isc_dsql_allocate_statement(
-        status: *mut ISC_STATUS,
-        db: *mut isc_db_handle,
-        stmt: *mut isc_stmt_handle,
-    ) -> ISC_STATUS;
-    pub fn isc_dsql_prepare(
-        status: *mut ISC_STATUS,
-        tr: *mut isc_tr_handle,
-        stmt: *mut isc_stmt_handle,
+    pub safe fn isc_commit_retaining(status: Status, tr: Handle) -> ISC_STATUS;
+    pub safe fn isc_commit_transaction(status: Status, tr: Handle) -> ISC_STATUS;
+    pub safe fn isc_rollback_transaction(status: Status, tr: Handle) -> ISC_STATUS;
+    pub safe fn isc_dsql_allocate_statement(status: Status, db: Handle, stmt: Handle)
+    -> ISC_STATUS;
+    pub safe fn isc_dsql_prepare(
+        status: Status,
+        tr: Handle,
+        stmt: Handle,
         length: c_ushort,
-        statement: *const ISC_SCHAR,
+        statement: Bytes,
         dialect: c_ushort,
-        sqlda: *mut XSQLDA,
+        sqlda: Sqlda,
     ) -> ISC_STATUS;
-    pub fn isc_dsql_fetch(
-        status: *mut ISC_STATUS,
-        stmt: *mut isc_stmt_handle,
+    pub safe fn isc_dsql_fetch(
+        status: Status,
+        stmt: Handle,
         dialect: c_ushort,
-        sqlda: *const XSQLDA,
+        sqlda: Sqlda,
     ) -> ISC_STATUS;
-    pub fn isc_open_blob(
-        status: *mut ISC_STATUS,
-        db: *mut isc_db_handle,
-        tr: *mut isc_tr_handle,
-        blob: *mut isc_blob_handle,
-        id: *mut ISC_QUAD,
+    pub safe fn isc_open_blob(
+        status: Status,
+        db: Handle,
+        tr: Handle,
+        blob: Handle,
+        id: Quad,
     ) -> ISC_STATUS;
-    pub fn isc_blob_info(
-        status: *mut ISC_STATUS,
-        blob: *mut isc_blob_handle,
+    pub safe fn isc_blob_info(
+        status: Status,
+        blob: Handle,
         items_length: c_short,
-        items: *const ISC_SCHAR,
+        items: Bytes,
         buffer_length: c_short,
-        buffer: *mut ISC_SCHAR,
+        buffer: Out<ISC_SCHAR>,
     ) -> ISC_STATUS;
-    pub fn isc_get_segment(
-        status: *mut ISC_STATUS,
-        blob: *mut isc_blob_handle,
-        length: *mut c_ushort,
+    pub safe fn isc_get_segment(
+        status: Status,
+        blob: Handle,
+        length: Out<c_ushort>,
         buffer_length: c_ushort,
-        buffer: *mut ISC_SCHAR,
+        buffer: Out<ISC_SCHAR>,
     ) -> ISC_STATUS;
-    pub fn isc_put_segment(
-        status: *mut ISC_STATUS,
-        blob: *mut isc_blob_handle,
+    pub safe fn isc_put_segment(
+        status: Status,
+        blob: Handle,
         length: c_ushort,
-        buffer: *const ISC_SCHAR,
+        buffer: Bytes,
     ) -> ISC_STATUS;
-    pub fn isc_create_blob(
-        status: *mut ISC_STATUS,
-        db: *mut isc_db_handle,
-        tr: *mut isc_tr_handle,
-        blob: *mut isc_blob_handle,
-        id: *mut ISC_QUAD,
+    pub safe fn isc_create_blob(
+        status: Status,
+        db: Handle,
+        tr: Handle,
+        blob: Handle,
+        id: Quad,
     ) -> ISC_STATUS;
-    pub fn isc_close_blob(status: *mut ISC_STATUS, blob: *mut isc_blob_handle) -> ISC_STATUS;
-    pub fn isc_dsql_set_cursor_name(
-        status: *mut ISC_STATUS,
-        stmt: *mut isc_stmt_handle,
-        name: *const ISC_SCHAR,
+    pub safe fn isc_close_blob(status: Status, blob: Handle) -> ISC_STATUS;
+    pub safe fn isc_dsql_set_cursor_name(
+        status: Status,
+        stmt: Handle,
+        name: Bytes,
         kind: c_ushort,
     ) -> ISC_STATUS;
-    pub fn fb_ping(status: *mut ISC_STATUS, db: *mut isc_db_handle) -> ISC_STATUS;
-    pub fn isc_version(
-        db: *mut isc_db_handle,
-        callback: ISC_VERSION_CALLBACK,
-        arg: *mut c_void,
-    ) -> c_int;
+    pub safe fn fb_ping(status: Status, db: Handle) -> ISC_STATUS;
+    /// Hands each version line to `callback` with `arg`.
+    pub safe fn isc_version(db: Handle, callback: VersionCallback, arg: VersionArg) -> c_int;
 }
