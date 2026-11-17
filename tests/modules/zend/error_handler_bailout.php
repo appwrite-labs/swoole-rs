@@ -52,6 +52,8 @@ $cases = [
         $server->start();
         });
     },
+    // phpswoole: unserialize's notice, raised inside PHP's own unserialize().
+    'substr_unserialize' => fn() => swoole_substr_unserialize('garbage', 0),
 ];
 
 var_dump($cases[$case]());

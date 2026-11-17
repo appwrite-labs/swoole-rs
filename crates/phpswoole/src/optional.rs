@@ -21,10 +21,6 @@ unsafe extern "C" {
     /// `Socket`, an internal class: written once, by ext/sockets' MINIT, before
     /// any request reads it, and live for the process.
     safe static socket_ce: Option<swoole_rs_zend::ClassEntry<'static>>;
-    /// `object_init_ex(target, class)`: `target` holds a new object of the
-    /// class in place of what it held, which is not released. `Socket` has no
-    /// constant expressions to evaluate, so no frame is read.
-    safe fn object_init_ex(target: &Owned, class: swoole_rs_zend::ClassEntry<'static>) -> c_int;
     /// Imports `fd` into the new `Socket`, which takes it.
     safe fn socket_import_file_descriptor(fd: c_int, socket: PhpSocket<'_>) -> bool;
 }
@@ -116,14 +112,11 @@ pub fn socket_cast(value: &Value) -> c_int {
 /// `fd`: false, with the value undefined, when the build lacks ext/sockets.
 #[must_use]
 pub fn socket_create(fd: c_int) -> (Owned, bool) {
-    let out = Owned::default();
     #[cfg(feature = "sockets")]
     {
         const STD: usize = 4 * size_of::<c_int>() + size_of::<swoole_rs_zend::sys::zval>();
         // Only an abstract class or an interface fails, leaving no object.
-        if let Some(class) = socket_ce {
-            let _ = object_init_ex(&out, class);
-        }
+        let out = socket_ce.map_or_else(Owned::default, swoole_rs_zend::ClassEntry::create_object);
         // The new `Socket`, whose `php_socket` precedes its object.
         let socket = out
             .object()
@@ -138,7 +131,7 @@ pub fn socket_create(fd: c_int) -> (Owned, bool) {
     #[cfg(not(feature = "sockets"))]
     {
         let _ = fd;
-        (out, false)
+        (Owned::default(), false)
     }
 }
 
