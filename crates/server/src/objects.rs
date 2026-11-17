@@ -10,7 +10,7 @@ use swoole_rs_corebase::{DataHead, TrustedAllocator};
 use swoole_rs_bus::{BusPacket, MessageBus};
 
 use crate::pool_native::PoolBus;
-use swoole_rs_corebase::reactor::{reactor_if_exit, reactor_wait};
+use swoole_rs_corebase::reactor::{if_exit, reactor_wait};
 
 pub(crate) use crate::view::{set_nonblock, worker_pipe};
 
@@ -200,7 +200,7 @@ impl Reactor {
         }
     }
     pub(crate) fn if_exit(self) -> bool {
-        reactor_if_exit(self.handle())
+        if_exit(self.handle())
     }
     /// `reactor->wait()`: whether the loop ended without an error.
     pub(crate) fn wait(self) -> bool {

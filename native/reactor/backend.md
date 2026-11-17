@@ -23,7 +23,7 @@ callbacks and exit conditions ([callbacks.md](callbacks.md)).
 
 ## Wait
 
-`Reactor::wait()` is Rust under its upstream symbol (`callbacks.rs`, over
+`Reactor::wait()` is called directly in Rust (`callbacks.rs`, over
 `wait_loop.rs`; #336, #391, #448). Rust runs upstream's `ReactorEpoll`/`ReactorKqueue`/`ReactorPoll::wait`:
 `before_wait`, begin, the kernel wait over the state's own arrays (zero timeout
 while deferred work is queued), `catch_error`'s EINTR test, result, end and once

@@ -17,10 +17,6 @@ class Reactor : public swr_v1_reactor_head {
     ~Reactor() = delete;
     swr_v1_reactor_state *handle() const { return state_.owner; }
 
-    // wait and the end callbacks are Rust's (`corebase::reactor`'s callbacks.rs).
-    int wait();
-    bool isset_handler(int fd_type, int event) const;
-
     bool ready() const {
         return ready_;
     }

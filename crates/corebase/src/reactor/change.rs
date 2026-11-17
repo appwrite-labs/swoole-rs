@@ -69,19 +69,6 @@ impl Interest {
     pub const fn code(self) -> u32 {
         self as u32
     }
-
-    /// A kind from upstream's `uint32_t`; any past the last is `remove_write_event`.
-    #[must_use]
-    pub const fn from_code(kind: u32) -> Self {
-        match kind {
-            0 => Self::AddEvent,
-            1 => Self::DelEvent,
-            2 => Self::AddRead,
-            3 => Self::AddWrite,
-            4 => Self::RemoveRead,
-            _ => Self::RemoveWrite,
-        }
-    }
 }
 
 use crate::sys::errno;
