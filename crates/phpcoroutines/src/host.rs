@@ -487,7 +487,7 @@ fn main(args: &crate::context::Args) {
 /// The running coroutine's function, then its defer tasks, inside
 /// `zend_first_try`: whether an exception or a bailout ended it.
 pub(crate) fn run(ctx: Ctx) -> bool {
-    swr_zend_coroutine_run(crate::context::enter, defers, ctx) != 0
+    swr_zend_coroutine_run(crate::context::enter, crate::context::run_defers, ctx) != 0
 }
 
 /// A failed coroutine has switched back to the main context. Stop its owner
@@ -497,10 +497,10 @@ extern "C" fn bail_out(_data: *mut c_void) {
     bailout::Bailout.defer();
 }
 
-swoole_rs_zend::exports! {
 /// The defer tasks of `ctx`, the running coroutine's context, last in first
 /// out; an exception bails out to the trap.
-extern "C" fn defers(ctx: Ctx) {
+#[inline(never)]
+pub(crate) fn run_defers(ctx: Ctx) {
     while let Some((task, returned)) = crate::context::defer_next(ctx) {
         let (callee, mut args) = task.call_parts();
         if let Some(returned) = &returned {
@@ -524,18 +524,24 @@ extern "C" fn defers(ctx: Ctx) {
         } else {
             drop(temporary);
         }
-        if bailout::pending() { return; }
+        if bailout::pending() {
+            return;
+        }
         if failed {
             fatal_error(swoole_rs_zend::E_WARNING, c"defer callback handler error");
-            if bailout::pending() { return; }
+            if bailout::pending() {
+                return;
+            }
         }
         if !swoole_rs_zend::host::exception().is_null() {
             bailout::Bailout.defer();
             return;
         }
-        if let Err(error) = task.release() { error.defer(); return; }
+        if let Err(error) = task.release() {
+            error.defer();
+            return;
+        }
     }
-}
 }
 
 /// `php_swoole_check_reactor()`.
@@ -611,7 +617,16 @@ pub(crate) fn coro_hook(stop: bool, ctx: Ctx) -> Result<(), bailout::Bailout> {
     } else {
         HookType::ON_CORO_START
     };
-    for hook in swoole_rs_corebase::hook::callbacks(kind) {
+    let hooks = swoole_rs_corebase::hook::callbacks(kind);
+    if hooks.is_empty() {
+        return Ok(());
+    }
+    run_hooks(hooks, ctx)
+}
+
+#[inline(never)]
+fn run_hooks(hooks: &[swoole_rs_corebase::hook::HookFn], ctx: Ctx) -> Result<(), bailout::Bailout> {
+    for hook in hooks {
         swoole_rs_zend::contain_with(|| {
             // SAFETY: each start or stop hook accepts this live coroutine context.
             unsafe { hook(ctx.ptr().cast()) };

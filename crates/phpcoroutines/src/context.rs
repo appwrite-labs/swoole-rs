@@ -659,25 +659,35 @@ pub(crate) extern "C" fn enter(ctx: Ctx) -> Option<Call> {
         error.defer();
         return None;
     }
-    let fiber = ctx.fiber();
-    let (handler, opcodes) =
-        ctx.with(|context| (context.call.fcc.function_handler, context.opcodes));
-    if fiber.is_some()
-        && let Some(opcodes) = opcodes
-    {
-        let mut frame: zend_execute_data = swoole_rs_zend::zeroed();
-        // A user function is its op array.
-        frame.opline = opcodes;
-        frame.func = handler;
-        // SAFETY: a frame of the coroutine's function, which outlives the
-        // notification, after which the running one is current again.
-        let running = Shown(unsafe { swr_zend_coroutine_set_frame(&raw mut frame) });
-        fiber_switch_try_notify(origin(ctx), ctx);
-        unshow(running);
+    if ctx.fiber().is_some() {
+        notify_entry(ctx);
     }
     NonNull::new(ctx.call()).map(Call)
 }
 
+/// Only enter the defer loop when this coroutine registered a task.
+pub(crate) extern "C" fn run_defers(ctx: Ctx) {
+    if ctx.with(|context| context.defer.is_some()) {
+        host::run_defers(ctx);
+    }
+}
+}
+
+/// Show the mock fiber's user function to observers during the switch.
+#[inline(never)]
+fn notify_entry(ctx: Ctx) {
+    let (handler, opcodes) =
+        ctx.with(|context| (context.call.fcc.function_handler, context.opcodes));
+    if let Some(opcodes) = opcodes {
+        let mut frame: zend_execute_data = swoole_rs_zend::zeroed();
+        frame.opline = opcodes;
+        frame.func = handler;
+        // SAFETY: the coroutine function outlives this notification, which
+        // restores the previous frame before this one goes out of scope.
+        let running = Shown(unsafe { swr_zend_coroutine_set_frame(&raw mut frame) });
+        fiber_switch_try_notify(origin(ctx), ctx);
+        unshow(running);
+    }
 }
 
 /// The next defer task (last in, first out), and a copy of the coroutine's
