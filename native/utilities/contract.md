@@ -33,7 +33,7 @@ C++ calls is declared here: the spinlock and the futex wait/wake are Rust's, cal
   native `__sync`, relaxed reads, `spin_loop` backoff, OS thread-yield on exhaustion.
   Caller unlocks with its existing native release store. Backoff multiplication is
   checked. Null/unaligned pointers return immediately.
-- `sw_atomic_futex_wait` / `sw_atomic_futex_wakeup` (`crates/corebase/src/utilities/misc.rs`):
+- `futex_wait` / `futex_wakeup` (`crates/corebase/src/utilities/misc.rs`):
   the locks module's futex wait where `HAVE_FUTEX` is set (Linux). Other builds use `wait_registry.rs`'s `registry_wait`/`_wakeup` over a Rust registry
   that `sw_atomic_wait_init` adopts from the shared memory pool before any fork.
   Caller owns aligned process-shared storage and its lifetime. errno is
