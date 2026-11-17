@@ -96,6 +96,11 @@ const ROW: usize = size_of::<Row>();
 struct Live(*mut Row);
 
 impl Live {
+    /// The row `row` names, or None for null: a row pointer this table handed out.
+    fn of(row: *mut Row) -> Option<Self> {
+        (!row.is_null()).then_some(Self(row))
+    }
+
     fn row(self) -> &'static Row {
         // SAFETY: a live row; its fields are atomics or cells, so a shared
         // reference holds while other processes change them.
@@ -733,7 +738,7 @@ impl Table {
             .map_or(ptr::null_mut(), fixed::alloc)
             .cast::<Row>();
         _ = self.mutex.unlock();
-        (!row.is_null()).then_some(Live(row))
+        Live::of(row)
     }
 
     /// Return a collision row no chain links any more.
@@ -780,9 +785,9 @@ impl Table {
                 continue;
             }
             bucket.lock(self.warning);
-            let found = Self::visit(cursor, bucket).map_or(ptr::null_mut(), |row| row.0);
+            let found = Self::visit(cursor, bucket);
             // Unlocked when the guard drops.
-            let locked = self.locked(bucket.0, found, 0);
+            let locked = self.locked(Some(bucket), found, 0);
             if locked.as_ref().is_some_and(Locked::found) {
                 Self::copy(cursor, locked.as_ref(), row_size);
                 return;
@@ -818,7 +823,7 @@ impl Table {
     pub fn lock_set(&self, key: &[u8]) -> Option<Locked<'_>> {
         let (mut lock, mut flags) = (ptr::null_mut(), 0);
         let row = self.set(key, &mut lock, Some(&mut flags));
-        self.locked(lock, row, flags)
+        self.locked(Live::of(lock), Live::of(row), flags)
     }
 
     /// [`Table::get`] as a guard: None before `create`; a guard without a row
@@ -827,21 +832,22 @@ impl Table {
     pub fn lock_get(&self, key: &[u8]) -> Option<Locked<'_>> {
         let mut lock = ptr::null_mut();
         let row = self.get(key, &mut lock);
-        self.locked(lock, row, 0)
+        self.locked(Live::of(lock), Live::of(row), 0)
     }
 
-    fn locked(&self, lock: *mut Row, row: *mut Row, flags: i32) -> Option<Locked<'_>> {
-        let row = (!row.is_null()).then(|| {
-            let row = Live(row);
+    /// A guard over `lock`, the bucket `get` or `set` locked, and `row`, a row of
+    /// this table under it.
+    fn locked(&self, lock: Option<Live>, row: Option<Live>, flags: i32) -> Option<Locked<'_>> {
+        let row = row.map(|row| {
             // SAFETY: a row of this table holds `item_size` column bytes after its
             // header. The bucket's lock, which the guard holds until it drops, keeps
             // every other user out of them.
             let data = unsafe { slice::from_raw_parts_mut(row.data(), self.item_size) };
             (row, data)
         });
-        (!lock.is_null()).then(|| Locked {
+        lock.map(|bucket| Locked {
             table: self,
-            bucket: Live(lock),
+            bucket,
             row,
             flags,
         })
