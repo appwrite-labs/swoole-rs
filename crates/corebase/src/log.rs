@@ -272,8 +272,6 @@ pub mod capture {
 mod tests {
     use super::*;
 
-    type Seen = (c_int, c_int, c_int, String, String);
-
     #[test]
     fn levels_are_the_native_ones() {
         let header = include_str!("../../../native/utilities/swoole_log.h");
@@ -324,23 +322,23 @@ mod tests {
             c"Socket::ssl_verify",
             format_args!("x"),
         );
-        let seen: Vec<Seen> = capture::logged()
-            .into_iter()
-            .map(|(kind, level, code, origin, message)| {
-                (kind as c_int, level, code, origin, message)
-            })
-            .collect();
         assert_eq!(
-            seen[..],
+            capture::logged(),
             [
                 (
-                    0,
+                    LogKind::SysWarning,
                     0,
                     13,
                     "Socket::connect_sync".into(),
                     "bind(3) failed".into()
                 ),
-                (3, 4, 1015, "Socket::ssl_verify".into(), "x".into()),
+                (
+                    LogKind::Error,
+                    4,
+                    1015,
+                    "Socket::ssl_verify".into(),
+                    "x".into()
+                ),
             ]
         );
     }
