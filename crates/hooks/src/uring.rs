@@ -618,6 +618,21 @@ pub fn cancel(host: &Host, event: u64) -> bool {
     matches!(Event::new(host, cancel).execute(host), Ok(0))
 }
 
+/// Queue cancellation from a reactor callback, which cannot park. The original
+/// request still owns its buffers and wakes only when its completion arrives.
+pub(crate) fn cancel_nowait(host: &Host, event: u64) -> bool {
+    let Some(engine) = (host.instance)() else {
+        return false;
+    };
+    engine.dispatch(Request {
+        entry: opcode::AsyncCancel::new(event)
+            .build()
+            .user_data(TIMEOUT_EVENT),
+        timeout: None,
+    });
+    true
+}
+
 /// One `io_uring` request, end to end.
 ///
 /// # Safety

@@ -21,6 +21,8 @@ pub struct SocketState {
     /// The native `Coroutine` waiting to read and to write, or null.
     read_co: *mut c_void,
     write_co: *mut c_void,
+    /// The socket wait's park. Other operations use their own canceler instead.
+    wakers: [Option<swoole_rs_corebase::coroutine::Waker>; 2],
     /// `want_event`: the direction a TLS wait added instead of its own, or none.
     pub(crate) want: Events,
     /// The read and the write wait's retry state.
@@ -50,6 +52,7 @@ impl SocketState {
             },
             read_co: core::ptr::null_mut(),
             write_co: core::ptr::null_mut(),
+            wakers: [None; 2],
             want: Events::NONE,
             retries: [Retry::None; 2],
             timers: [WaitTimer::None; 2],
@@ -74,10 +77,26 @@ impl SocketState {
     pub(crate) fn bind(&mut self, event: Events, co: *mut c_void) {
         if event.intersects(Events::READ) {
             self.read_co = co;
+            self.wakers[0] = None;
         }
         if event.intersects(Events::WRITE) {
             self.write_co = co;
+            self.wakers[1] = None;
         }
+    }
+
+    /// Arms the bound socket wait before it switches out.
+    pub(crate) fn arm(&mut self, event: Events, waker: swoole_rs_corebase::coroutine::Waker) {
+        if let Some(slot) = self.wakers.get_mut(usize::from(event == Events::WRITE)) {
+            *slot = Some(waker);
+        }
+    }
+
+    pub(crate) fn waker(&self, event: Events) -> Option<swoole_rs_corebase::coroutine::Waker> {
+        self.wakers
+            .get(usize::from(event == Events::WRITE))
+            .copied()
+            .flatten()
     }
 
     /// `get_bound_co(event)`: the reader if `event` includes reading and one is bound,

@@ -494,3 +494,8 @@ share the owned reactor socket implementation. Existing cases cover libcurl's
 socket registration, event coalescing, waiterless removal, queued wake-up release,
 handle reset and timer cancellation. A native socket ownership case also verifies
 that freeing a watch twice leaves the libcurl-owned descriptor open.
+
+`hooks-socket-cancel` (`socket_cancel.py` and `.php`) checks cancel and close during a resolver's second park and a
+UDP receive, from both a coroutine and (`reactor` argument) a non-coroutine timer
+callback. The normal gates and io_uring, c-ares and thread-context variants run it; the latter must complete the
+canceled request before the operation releases its buffers.

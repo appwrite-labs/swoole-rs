@@ -186,6 +186,24 @@ pub unsafe extern "C-unwind" fn cancel(co: *mut Coroutine) -> bool {
     let Some(co) = (unsafe { Co::of(co) }) else {
         return false;
     };
+    cancel_wait(co)
+}
+
+/// Cancels the current wait of the live coroutine numbered `cid`. A missing or
+/// running coroutine cannot be canceled. The wait's own canceler does the cleanup
+/// and wakes it; callers must keep the id bound only for the operation they own.
+#[must_use]
+pub fn cancel_cid(cid: c_long) -> bool {
+    let Some(co) = Sched::this().with(|s| s.live_co(cid)) else {
+        return false;
+    };
+    if co.with(|co| co.state != crate::coroutine::State::Waiting) {
+        return false;
+    }
+    cancel_wait(co)
+}
+
+fn cancel_wait(co: Co) -> bool {
     let canceler = co.with(|co| co.cancel_fn).cast::<Canceler>();
     if canceler.is_null() {
         set_last_error(SW_ERROR_CO_CANNOT_CANCEL);

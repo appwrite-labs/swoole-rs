@@ -268,6 +268,8 @@ def plan(args, reports):
         script('tls-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src',
                '--include-tls', *report('tls-constants'))
     if 'hooks' in modules:
+        script('hooks-socket-cancel', 'tests/modules/hooks/socket_cancel.py', *php_for('sockets', 'curl'),
+               '--engine', f'cargo={cargo}', *report('hooks-socket-cancel'))
         script('hooks-select-handler-arrays', 'tests/modules/hooks/select_handler_arrays.py', *php,
                '--engine', f'cargo={cargo}', *report('hooks-select-handler-arrays'))
         if integrate:
