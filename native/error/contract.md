@@ -12,9 +12,13 @@
   or retain state. It owns the bytes it returns; Rust neither reads nor frees them.
 - `swr_v1_error_strerror` is `swoole_strerror`'s body. Rust classifies the
   code, does the known lookup and formats unknown codes. Codes below the pinned
-  500 boundary go to the native formatter, which calls system `strerror`.
+  500 boundary go to the system formatter, which copies libc's exact bytes using
+  `strerror_r`. Known system messages have immutable process-lifetime storage.
+  Unknown system messages live on their calling thread: Apple reuses its fixed
+  2048-byte buffer; GNU replaces the message on the next unknown code. Formatting
+  still observes the current locale and preserves libc's errno behavior.
 
-Unknown messages are formatted without allocating into each thread's 32-byte
+Unknown Swoole messages are formatted without allocating into each thread's 32-byte
 buffer. Byte layout matches the native `snprintf` buffer: Apple colon spelling,
 signed decimal, NUL position, retained trailing bytes and, within a thread,
 pointer reuse. A thread's next unknown code overwrites its message.

@@ -20,5 +20,4 @@ upstream-symbols = []
 [dependencies]
 swoole-rs-error = { path = "../error" }
 
-[dev-dependencies]
 libc = "=0.2.191"
