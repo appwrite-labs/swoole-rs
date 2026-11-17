@@ -20,8 +20,8 @@ mod protocols_native;
 
 mod network;
 pub use network::{
-    dns_reply, http_chunked, http_decompress, http_inflate, http_rewrite, http2_frame, http2_hpack,
-    multipart, resp_server, ws_inflate,
+    dns_reply, http_chunked, http_decompress, http_inflate, http_rewrite, http_static_path,
+    http2_frame, http2_hpack, multipart, resp_server, ws_inflate,
 };
 use swoole_rs_websocket::{decode_in_place, frame_length, mask};
 
