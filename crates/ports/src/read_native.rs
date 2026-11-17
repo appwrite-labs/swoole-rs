@@ -292,12 +292,6 @@ impl Connection for Read<'_> {
             },
             ..DataHead::default()
         };
-        // The connection holds the request while it runs, so a close frees it there.
-        if dispatch != Dispatch::Task
-            && let Some(request) = self.request.take()
-        {
-            self.conn.hold_http_request(request);
-        }
         // A request waits its turn under `max_concurrency`; a task never does.
         let busy = dispatch != Dispatch::Task && {
             let counters = self.server.counters();
@@ -317,13 +311,11 @@ impl Connection for Read<'_> {
         if dispatch == Dispatch::Task {
             return dispatched;
         }
-        // The connection's request back, unless the request callback closed it
-        // ([`Connection::active`]).
-        self.request = if self.removed() {
-            None
-        } else {
-            self.conn.take_http_request()
-        };
+        // The read keeps the request while the callback runs, and frees it if the
+        // callback closed the connection ([`Connection::active`]).
+        if self.removed() {
+            request_free(self.request.take());
+        }
         dispatched
     }
 

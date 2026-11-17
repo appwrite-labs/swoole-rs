@@ -238,14 +238,14 @@ fn receive_args(
     request: &mut RecvData<'_>,
     event_object: bool,
 ) -> ([Owned; 4], usize) {
-    let info = *request.info();
-    let (fd, reactor_id) = (info.fd, i64::from(info.reactor_id));
+    let info = request.info();
+    let (fd, reactor_id, time) = (info.fd, i64::from(info.reactor_id), info.time);
     if event_object {
         let mut event = Owned::default();
         let props = Props::init(&mut event, &DATA[EVENT]);
         props.long(c"fd", fd);
         props.long(c"reactor_id", reactor_id);
-        props.double(c"dispatch_time", info.time);
+        props.double(c"dispatch_time", time);
         props.set(c"data", &php_swoole_get_recv_data(server, request));
         ([zserv(), event, Owned::default(), Owned::default()], 2)
     } else {
@@ -633,8 +633,8 @@ fn on_pipe_message_slot(server: view::Server<'_>, message: Packed<'_>) {
 /// `php_swoole_server_onReceive`: the port's `onReceive`, if any (and
 /// crates/phphttp's fallback).
 pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &mut RecvData<'_>) {
-    let info = *request.info();
-    let Some(cb) = port_callback(server, info.server_fd, PortCallback::Receive) else {
+    let (fd, server_fd) = (request.info().fd, request.info().server_fd);
+    let Some(cb) = port_callback(server, server_fd, PortCallback::Receive) else {
         return;
     };
     let config = server.config();
@@ -642,7 +642,7 @@ pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &mut Recv
     let argv = Zvals::owned(&owned).take(argc);
     let called = invoke_argv(&cb, argv, None, config.enable_coroutine.get());
     relay(match called {
-        Ok(succeeded) => receive_done(server, succeeded, info.fd, owned),
+        Ok(succeeded) => receive_done(server, succeeded, fd, owned),
         Err(Bailout) => leak(owned),
     });
 }

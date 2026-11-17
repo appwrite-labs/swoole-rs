@@ -330,7 +330,11 @@ impl Bus {
                     self.buffer.restore_box(buffer);
                 }
             }
-            Held::Chunked(chunked) => self.restore_chunked(&packet.head, chunked),
+            // A packet the callback took leaves an empty one, which needs nothing.
+            Held::Chunked(chunked) if !chunked.as_ptr().is_null() => {
+                self.restore_chunked(&packet.head, chunked);
+            }
+            Held::Chunked(_) => {}
         }
     }
 
@@ -347,13 +351,11 @@ impl Bus {
     /// [`Bus::restore`] of a chunked packet.
     #[inline(never)]
     fn restore_chunked(&self, head: &BusHead, packet: OwnedString) {
-        if !packet.as_ptr().is_null() {
-            self.packets.with_taken(|slot| {
-                slot.get_or_insert_with(Box::default)
-                    .entry(head.msg_id)
-                    .or_insert(packet);
-            });
-        }
+        self.packets.with_taken(|slot| {
+            slot.get_or_insert_with(Box::default)
+                .entry(head.msg_id)
+                .or_insert(packet);
+        });
     }
 
     /// `MessageBus::pass`'s head: the bus's head becomes `info`, marked as a pointer

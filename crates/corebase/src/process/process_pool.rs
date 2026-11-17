@@ -593,11 +593,13 @@ impl<'a> RecvData<'a> {
     /// A message of `data` (at most `u32::MAX` bytes of it), its head's `len` their
     /// length.
     #[must_use]
+    #[inline]
     pub fn new(info: DataHead, data: &'a [u8]) -> Self {
         let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+        let data = data.get(..len as usize).unwrap_or(data);
         Self {
             info: DataHead { len, ..info },
-            payload: Payload::Lent(data.get(..len as usize).unwrap_or(data)),
+            payload: Payload::Lent(data),
         }
     }
 
@@ -613,6 +615,7 @@ impl<'a> RecvData<'a> {
     }
 
     #[must_use]
+    #[inline]
     pub fn info(&self) -> &DataHead {
         &self.info
     }
@@ -620,12 +623,16 @@ impl<'a> RecvData<'a> {
     /// The message's bytes, at most its head's `len`; none once
     /// [`RecvData::take_packet`] took them.
     #[must_use]
+    #[inline]
     pub fn payload(&self) -> &[u8] {
-        let bytes = match &self.payload {
+        match &self.payload {
+            // `new` keeps no more than `len`.
             Payload::Lent(data) => data,
-            Payload::Owned(packet) => packet.view(),
-        };
-        bytes.get(..self.info.len as usize).unwrap_or(bytes)
+            Payload::Owned(packet) => {
+                let bytes = packet.view();
+                bytes.get(..self.info.len as usize).unwrap_or(bytes)
+            }
+        }
     }
 
     /// `move_packet()`: the packet this message owns, now the caller's, or `None`

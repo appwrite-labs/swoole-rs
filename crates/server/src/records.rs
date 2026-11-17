@@ -152,7 +152,8 @@ thread_local! {
     /// `conn->object`), by connection fd, each with its session. Only the thread
     /// that reads a connection holds or takes its request, and a later session on
     /// the fd frees one a close on another thread left behind.
-    static HTTP_REQUESTS: Cell<Vec<HeldRequest>> = const { Cell::new(Vec::new()) };
+    static HTTP_REQUESTS: core::cell::RefCell<Vec<HeldRequest>> =
+        const { core::cell::RefCell::new(Vec::new()) };
 }
 
 /// A session's HTTP request, held between reads: the session, and the request.
@@ -402,12 +403,9 @@ impl<'a> Connection<'a> {
     #[inline]
     pub fn take_http_request(self) -> Option<Box<swoole_rs_http::HttpRequest>> {
         let fd = usize::try_from(self.fd()).ok()?;
-        let (session, request) = HTTP_REQUESTS.with(|held| {
-            let mut all = held.take();
-            let request = all.get_mut(fd).and_then(Option::take);
-            held.set(all);
-            request
-        })?;
+        // Neither borrow below runs anything that reaches the table.
+        let (session, request) =
+            HTTP_REQUESTS.with_borrow_mut(|all| all.get_mut(fd).and_then(Option::take))?;
         if session == self.session_id() {
             return Some(request);
         }
@@ -424,16 +422,12 @@ impl<'a> Connection<'a> {
             return swoole_rs_http::request_free(Some(request));
         };
         let session = self.session_id();
-        let replaced = HTTP_REQUESTS.with(|held| {
-            let mut all = held.take();
+        let replaced = HTTP_REQUESTS.with_borrow_mut(|all| {
             if all.len() <= fd {
                 all.resize_with(fd + 1, || None);
             }
-            let replaced = all
-                .get_mut(fd)
-                .and_then(|slot| slot.replace((session, request)));
-            held.set(all);
-            replaced
+            all.get_mut(fd)
+                .and_then(|slot| slot.replace((session, request)))
         });
         if let Some((_, old)) = replaced {
             swoole_rs_http::request_free(Some(old));

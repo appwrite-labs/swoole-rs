@@ -225,7 +225,6 @@ fn cached(
 /// bailout (a handshake's `onOpen`, the handler's `exit()`) is raised last.
 #[must_use]
 pub fn http_server_on_receive(server: view::Server<'_>, request: &mut RecvData<'_>) -> bool {
-    let info = *request.info();
     match receive(server, request) {
         Route::Closed => false,
         Route::Tcp => {
@@ -235,7 +234,8 @@ pub fn http_server_on_receive(server: view::Server<'_>, request: &mut RecvData<'
         Route::WebSocket => websocket::on_message(server, request),
         Route::Http2 => {
             // `receive` verified the session.
-            let (Some(conn), Some(http2)) = (server.verified(info.fd), crate::http2::server())
+            let session = request.info().fd;
+            let (Some(conn), Some(http2)) = (server.verified(session), crate::http2::server())
             else {
                 return false;
             };
@@ -246,8 +246,8 @@ pub fn http_server_on_receive(server: view::Server<'_>, request: &mut RecvData<'
 }
 
 fn receive(server: view::Server<'_>, request: &mut RecvData<'_>) -> Route {
-    let info = *request.info();
-    let (session, server_fd) = (info.fd, c_int::from(info.server_fd));
+    let info = request.info();
+    let (session, server_fd, ext_flags) = (info.fd, c_int::from(info.server_fd), info.ext_flags);
     let Some(conn) = server.verified(session) else {
         host::log(
             LOG_TRACE,
@@ -300,7 +300,7 @@ fn receive(server: view::Server<'_>, request: &mut RecvData<'_>) -> Route {
     context::init(ctx.state(), server);
     let state = ctx.state();
     state.before_request = true;
-    state.upload_preprocessed = info.ext_flags & UPLOAD_PREPROCESSED != 0;
+    state.upload_preprocessed = ext_flags & UPLOAD_PREPROCESSED != 0;
     // The data moves into the request's own zval.
     state.request.zdata = php_swoole_get_recv_data(server, request);
     crate::parse::init_request_parser(ctx);
