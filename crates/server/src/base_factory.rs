@@ -366,7 +366,8 @@ fn receive_as(
     };
     let result = state.callbacks.receive(slot, serv, &mut recv);
     if swoole_rs_corebase::process::pool::bailout_pending() {
-        return false;
+        // The callback already received the packet. Keep it out of the bus fallback.
+        return true;
     }
     if result == 0 {
         worker.add_request_count();
