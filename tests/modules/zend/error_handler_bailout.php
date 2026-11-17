@@ -28,10 +28,35 @@ $cases = [
     },
     // phptimer: a C++ reporter.
     'timer_after' => fn() => Swoole\Timer::after(0, fn() => null),
+    // phpruntime: the hooked stream_select's float-to-int deprecation.
+    'stream_select_coercion' => function () {
+        Swoole\Runtime::enableCoroutine(SWOOLE_HOOK_ALL);
+        return Swoole\Coroutine\run(function () {
+            [$a] = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
+            [$read, $write, $except] = [[$a], null, null];
+            var_dump(stream_select($read, $write, $except, 0.5));
+        });
+    },
     // phpevents: a C++ reporter.
     'event_del' => fn() => Swoole\Event::del(STDIN),
     // phphttp: Cookie's warning.
     'cookie_name' => fn() => (new Swoole\Http\Cookie())->withName('')->toString(),
+    // phphttp: the query's nesting warning, raised inside PHP's variable
+    // registration (only with display_errors off).
+    'request_query' => function () {
+        ini_set('display_errors', '0');
+        return Swoole\Http\Request::create()
+            ->parse("GET /?a" . str_repeat('[b]', 70) . "=1 HTTP/1.1\r\nHost: x\r\n\r\n");
+    },
+    // phphttp: the same for a multipart form field.
+    'request_multipart' => function () {
+        ini_set('display_errors', '0');
+        $body = "--B\r\nContent-Disposition: form-data; name=\"a" . str_repeat('[b]', 70)
+            . "\"\r\n\r\n1\r\n--B--\r\n";
+        return Swoole\Http\Request::create()->parse("POST / HTTP/1.1\r\nHost: x\r\n"
+            . "Content-Type: multipart/form-data; boundary=B\r\nContent-Length: " . strlen($body)
+            . "\r\n\r\n" . $body);
+    },
     // phpclients: php_swoole_sys_error.
     'http_client_file' => fn() => (new Swoole\Coroutine\Http\Client('127.0.0.1', 80))
         ->addFile('/nonexistent/file', 'file'),
@@ -52,6 +77,8 @@ $cases = [
         $server->start();
         });
     },
+    // phpswoole: unserialize's notice, raised inside PHP's own unserialize().
+    'substr_unserialize' => fn() => swoole_substr_unserialize('garbage', 0),
 ];
 
 var_dump($cases[$case]());

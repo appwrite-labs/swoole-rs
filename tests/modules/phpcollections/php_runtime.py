@@ -91,6 +91,10 @@ def main():
         report['passed'] = True
     except Exception as error:
         report.update(passed=False, error=f'{type(error).__name__}: {error}')
+    if report['passed']:
+        # The engine copies (~55 MB) are kept only to inspect a failure.
+        shutil.rmtree(work)
+        del report['work']
     write_report(output, report)
     print(json.dumps({key: report.get(key) for key in ['passed', 'error', 'work']}))
     return int(not report['passed'])

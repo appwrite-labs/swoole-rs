@@ -12,7 +12,7 @@ use crate::reactor::SocketOutput;
 use crate::reactor::socket_timeouts::SocketTimeouts;
 use crate::sys;
 use std::ffi::{c_int, c_void};
-use std::mem::{offset_of, size_of};
+use std::mem::offset_of;
 use std::ops::{Deref, DerefMut};
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};

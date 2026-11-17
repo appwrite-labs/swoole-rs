@@ -1,7 +1,7 @@
 //! The operations against a recording double of the C++ client.
 use super::*;
 use std::cell::RefCell;
-use swoole_rs_corebase::reactor::{Socket, SocketFields, SocketRecord};
+use swoole_rs_corebase::reactor::{SocketFields, SocketRecord};
 
 #[derive(Default)]
 struct Mock {

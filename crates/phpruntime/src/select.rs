@@ -20,7 +20,8 @@ unsafe extern "C" {
     safe fn swr_zend_stream_zval_buffered(value: &Value) -> bool;
     /// `stream_select`'s `ZEND_PARSE_PARAMETERS` block over the call's frame
     /// (Zend reports a failure): 1 if the arguments parsed, each output then
-    /// written, the arrays as null or a by-reference argument's array zval.
+    /// written, the arrays as null or a by-reference argument's array zval. A
+    /// coercion's deprecation runs the error handler, which may bail out.
     safe fn swr_zend_runtime_select_args(
         frame: CallFrame<'_>,
         read: &mut *mut zval,
@@ -143,16 +144,19 @@ fn select(call: &Call) -> Result<(), Bailout> {
     let (mut read, mut write, mut except) = (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
     let (mut seconds, mut micros): (zend_long, zend_long) = (0, 0);
     let (mut seconds_null, mut micros_null) = (false, true);
-    let parsed = swr_zend_runtime_select_args(
-        call.call_frame(),
-        &mut read,
-        &mut write,
-        &mut except,
-        &mut seconds,
-        &mut seconds_null,
-        &mut micros,
-        &mut micros_null,
-    );
+    let mut parsed = 0;
+    swoole_rs_zend::contain_with(|| {
+        parsed = swr_zend_runtime_select_args(
+            call.call_frame(),
+            &mut read,
+            &mut write,
+            &mut except,
+            &mut seconds,
+            &mut seconds_null,
+            &mut micros,
+            &mut micros_null,
+        );
+    })?;
     if parsed == 0 {
         call.set_bool(false);
         return Ok(());

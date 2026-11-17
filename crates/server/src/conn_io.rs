@@ -80,7 +80,8 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     let Some(sock) = event.socket() else {
         return true;
     };
-    let port = serv.port_by_fd(fd);
+    // The slot found above is `fd`'s, so its listener names the port.
+    let port = serv.port_by_server_fd(conn.server_fd());
     if let Some(config) = port.map(view::Port::config)
         && sock.read(|s| SocketType::from_raw(s.socket_type).is_some_and(SocketType::is_dgram))
         && hybrid().dtls_read(config, *sock, fd)

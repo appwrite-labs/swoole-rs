@@ -84,7 +84,17 @@ fn strnstr(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     let haystack = haystack.get(..cut(haystack)).unwrap_or_default();
     let needle = needle.get(..cut(needle)).unwrap_or_default();
     debug_assert!(!needle.is_empty(), "swoole_strnstr's needle is not empty");
-    memchr::memmem::find(haystack, needle)
+    match needle {
+        // A port's EOF, at most `SW_DATA_EOF_MAXLEN` bytes: a scan for its first byte
+        // checks each candidate, which costs far less per search than the
+        // substring searcher `memmem::find` builds for each call.
+        [first, rest @ ..] if rest.len() < 8 => memchr::memchr_iter(*first, haystack).find(|&at| {
+            haystack
+                .get(at + 1..)
+                .is_some_and(|after| after.starts_with(rest))
+        }),
+        _ => memchr::memmem::find(haystack, needle),
+    }
 }
 
 /// An allocator's result, aborting on failure as `std::bad_alloc` would.
@@ -752,6 +762,16 @@ mod tests {
         assert_eq!(s.split(b"\r\n", |_, _| false), Some(0));
         assert_eq!(s.offset, 7);
         s.dispose();
+    }
+
+    /// A short delimiter's first byte alone is no match, and a long one is still found.
+    #[test]
+    fn strnstr_finds_the_first_whole_needle() {
+        assert_eq!(strnstr(b"a\r\rb\r\n", b"\r\n"), Some(4));
+        assert_eq!(strnstr(b"ab\r", b"\r\n"), None);
+        assert_eq!(strnstr(b"xx12345678x", b"12345678"), Some(2));
+        assert_eq!(strnstr(b"1234567812345678x9", b"12345678x"), Some(8));
+        assert_eq!(strnstr(b"12345678", b"123456789"), None);
     }
 
     /// A write's offset stays inside the buffer, and a disposed String is empty.

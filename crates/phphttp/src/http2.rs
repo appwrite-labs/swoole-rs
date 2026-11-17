@@ -417,7 +417,7 @@ impl Ctx<'_> {
         // frame owns is held while PHP parses them, which may bail out.
         let text = parse::Copied::of(query.unwrap_or_else(|| body.map_or(&[], Vec::as_slice)));
         if let Some(array) = Self::value(state, which) {
-            parse::swr_zend_treat_string(text, array);
+            parse::treat_string(text, array);
         }
     }
 }

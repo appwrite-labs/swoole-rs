@@ -8,7 +8,7 @@ use crate::TEST_STR;
 use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU16, AtomicU64};
 use swoole_rs_clients::client::{self as native, ClientEvent, Handle, listen};
 use swoole_rs_corebase::process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
-use swoole_rs_corebase::process::worker_record::{Worker, WorkerRecord};
+use swoole_rs_corebase::process::worker_record::WorkerRecord;
 use swoole_rs_corebase::swoole_random_int;
 use swoole_rs_corebase::timer::Held;
 use swoole_rs_server::{event_worker, manager, task_worker, worker_methods};

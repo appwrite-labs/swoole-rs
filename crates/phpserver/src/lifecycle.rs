@@ -372,10 +372,13 @@ impl<'a> ServerObject<'a> {
         crate::instance::server_object()
     }
 
-    /// `f` over the running server's object, if there is one.
+    /// `f` over the running server's object, if there is one, borrowed without a
+    /// reference of its own: each `f` only reads or updates the object's Rust data
+    /// and runs no PHP code, so nothing frees the object meanwhile, and no release
+    /// (a bailout trap) follows on every callback lookup.
     pub(crate) fn with_running<R>(f: impl FnOnce(ServerObject<'_>) -> R) -> Option<R> {
-        let held = Self::running()?;
-        Some(f(ServerObject::of(&held)?))
+        let mut object = crate::instance::server_zval();
+        Some(f(ServerObject::of(Value::of(&mut object))?))
     }
 
     /// The Server object `value` holds, if it is one.
@@ -594,7 +597,9 @@ fn kept() -> std::sync::MutexGuard<'static, Vec<(SharedServer, bool)>> {
 /// their last share now that no object names them. A started server some other process
 /// runs stays to the exit, as upstream's.
 pub extern "C" fn php_swoole_server_mshutdown() {
-    for (share, orphan) in std::mem::take(&mut *kept()) {
+    // Taken out first, so the deletes below run without `kept`'s lock held.
+    let shares = std::mem::take(&mut *kept());
+    for (share, orphan) in shares {
         let delete = orphan || swoole_rs_server::reactor_process::release_abandoned(share.view());
         if !delete {
             #[expect(

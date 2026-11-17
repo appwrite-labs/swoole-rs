@@ -8,8 +8,6 @@ use swoole_rs_oracle::crc32 as upstream;
 /// sees an aligned buffer, and at every offset into an 8-byte window, which
 /// exercises the Rust word-at-a-time path and its tail.
 fn compare(bytes: &[u8]) {
-    let mut shifted = vec![0xa5; 8];
-    shifted.extend_from_slice(bytes);
     for offset in 1..8 {
         let mut buffer = vec![0xa5; offset];
         buffer.extend_from_slice(bytes);

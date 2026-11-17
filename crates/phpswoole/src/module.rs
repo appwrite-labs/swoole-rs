@@ -498,14 +498,16 @@ extern "C" fn php_hooks() {
     swr_v1_core_set_print_backtrace(Some(print_stack_trace));
 }
 
-/// PHP's stack trace, for `SwooleG.print_backtrace`.
+/// PHP's stack trace, for `SwooleG.print_backtrace`. The core calls it from
+/// deep in its own frames, so an output handler's bailout waits for `finish`.
 extern "C" fn print_stack_trace() {
     unsafe extern "C" {
         /// PHP's backtrace, fetched, printed and freed. Only this hook calls
-        /// it, which MINIT's end installs, so the engine has started.
+        /// it, which MINIT's end installs, so the engine has started. Its
+        /// `ZEND_WRITE` runs output handlers, PHP code that may bail out.
         safe fn swr_zend_print_stack_trace();
     }
-    swr_zend_print_stack_trace();
+    bailout::defer(contain_with(|| swr_zend_print_stack_trace()));
 }
 
 // Native PHP helpers and Zend shims.
@@ -740,7 +742,7 @@ fn set_process_name(call: &Call) {
 #[cfg(test)]
 mod tests {
     use super::{Globals, ReqStatus};
-    use std::mem::{offset_of, size_of};
+    use std::mem::offset_of;
 
     #[test]
     fn globals_match_zend_swoole_globals() {

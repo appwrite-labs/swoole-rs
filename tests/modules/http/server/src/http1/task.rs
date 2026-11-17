@@ -11,16 +11,16 @@
 //! in a forked worker as well as in this process once the server stops.
 
 use super::*;
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::AtomicU32;
 use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::locks::SharedMutex;
 use swoole_rs_corebase::process::methods as pool;
 use swoole_rs_corebase::process::process_pool::{PoolRecord, PoolRef, SW_IPC_MAX_SIZE};
-use swoole_rs_corebase::process::task_file::{self, EventHead, Packed, TaskBuffer};
+use swoole_rs_corebase::process::task_file::{self, EventHead, TaskBuffer};
 use swoole_rs_corebase::process::task_sync::{
     Bailed, MultiTask, ResultSlot, TaskHost, Tasks, Waiting,
 };
-use swoole_rs_corebase::process::worker_record::{Worker, WorkerRecord};
+use swoole_rs_corebase::process::worker_record::WorkerRecord;
 use swoole_rs_corebase::tls::socket_pair::{self, SocketPair};
 use swoole_rs_corebase::utilities::set_log_file;
 use swoole_rs_corebase::{swoole_random_string, swr_v1_core_set_current_task_id};

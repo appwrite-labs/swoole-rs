@@ -23,12 +23,13 @@ use std::{
     ffi::{c_int, c_short, c_ushort},
 };
 use swoole_rs_firebird_sys::{
-    Bytes, Handle, ISC_SCHAR, ISC_STATUS, Out, Quad, Sqlda, Status, VersionArg, VersionCallback,
-    fb_ping, isc_attach_database, isc_blob_info, isc_close_blob, isc_commit_retaining,
-    isc_commit_transaction, isc_create_blob, isc_detach_database, isc_dsql_allocate_statement,
-    isc_dsql_execute, isc_dsql_execute2, isc_dsql_fetch, isc_dsql_free_statement, isc_dsql_prepare,
-    isc_dsql_set_cursor_name, isc_dsql_sql_info, isc_get_segment, isc_open_blob, isc_put_segment,
-    isc_rollback_transaction, isc_start_transaction, isc_version,
+    Bytes, Handle, ISC_SCHAR, ISC_STATUS, Out, Quad, Sqlda, Status, Teb, TebCount, VersionArg,
+    VersionCallback, fb_ping, isc_attach_database, isc_blob_info, isc_close_blob,
+    isc_commit_retaining, isc_commit_transaction, isc_create_blob, isc_detach_database,
+    isc_dsql_allocate_statement, isc_dsql_execute, isc_dsql_execute2, isc_dsql_fetch,
+    isc_dsql_free_statement, isc_dsql_prepare, isc_dsql_set_cursor_name, isc_dsql_sql_info,
+    isc_get_segment, isc_open_blob, isc_put_segment, isc_rollback_transaction, isc_start_multiple,
+    isc_version,
 };
 
 thread_local! {
@@ -114,12 +115,32 @@ offloaded! {
     swoole_isc_dsql_set_cursor_name => isc_dsql_set_cursor_name(
         status: Status, stmt: Handle, name: Bytes, kind: c_ushort);
     swoole_fb_ping => fb_ping(status: Status, db: Handle);
-    // One database's transaction, its TPB passed on through the variadic call.
-    swoole_isc_start_transaction => isc_start_transaction(
-        status: Status, tr: Handle, count: c_short, db: Handle,
-        tpb_length: usize, tpb: Bytes);
     swoole_isc_version => isc_version(
         db: Handle, callback: VersionCallback, arg: VersionArg) -> c_int = -1;
+}
+
+/// `swoole_isc_start_transaction`: one database's transaction, as the variadic
+/// `isc_start_transaction` builds it for `isc_start_multiple`. The driver passes a
+/// count of one, and one database is all this takes, so the count goes unread.
+#[unsafe(no_mangle)]
+pub extern "C" fn swoole_isc_start_transaction(
+    status: Status,
+    tr: Handle,
+    _count: c_short,
+    db: Handle,
+    tpb_length: usize,
+    tpb: Bytes,
+) -> ISC_STATUS {
+    let teb = Teb {
+        database: db,
+        // Fewer than the TPB's bytes when it is longer than an `int`, as the
+        // variadic call's `int` read made of it.
+        tpb_length: c_int::try_from(tpb_length).unwrap_or(c_int::MAX),
+        tpb,
+    };
+    offload(NOT_RUN, || {
+        isc_start_multiple(status, tr, TebCount::One, &teb)
+    })
 }
 
 #[cfg(test)]

@@ -497,7 +497,6 @@ impl Source for Zend<'_> {
 mod tests {
     use super::*;
     use std::{cell::RefCell, collections::HashMap};
-    use swoole_rs_clients::protocol::Protocol;
     use swoole_rs_corebase::net_types::PacketLength;
 
     /// The mock settings' `package_length_func` callback.

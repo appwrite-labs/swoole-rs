@@ -6,10 +6,10 @@
 //! tests/modules/utilities/README.md maps each TEST.
 use super::*;
 use std::cell::Cell;
-use std::ffi::{CString, OsStr};
+use std::ffi::OsStr;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::LazyLock;
 
 const SW_LOG_DEBUG: c_int = 0;
 const SW_LOG_TRACE: c_int = 1;
@@ -109,7 +109,6 @@ fn printf(text: &str) {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri has no fdopen")]
 fn level() {
     let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
     let logger = &sw_logger();
@@ -158,7 +157,6 @@ fn level() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri has no localtime")]
 fn date_format_long_string() {
     let logger = &sw_logger();
     logger.reset();
