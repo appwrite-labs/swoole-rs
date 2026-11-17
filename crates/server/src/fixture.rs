@@ -19,8 +19,9 @@ use std::rc::Rc;
 /// takes ~5 ms a slot to set the table up.
 pub(crate) const CONNECTIONS: usize = if cfg!(miri) { 256 } else { 4096 };
 /// `SW_SESSION_LIST_SIZE`. Miri's session ids stay small too, and it retags the whole
-/// table at each lookup: a minute a test with a million slots.
-const SESSIONS: usize = if cfg!(miri) { CONNECTIONS } else { 1 << 20 };
+/// table at each lookup: a minute a test with a million slots. Slot zero precedes
+/// the session IDs 1 through CONNECTIONS used by the full-table test.
+const SESSIONS: usize = if cfg!(miri) { CONNECTIONS + 1 } else { 1 << 20 };
 /// `SW_SOCK_TCP` and `SW_FD_STREAM_SERVER`.
 const SOCK_TCP: c_int = swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP.raw();
 const FD_STREAM_SERVER: c_int = 1;
