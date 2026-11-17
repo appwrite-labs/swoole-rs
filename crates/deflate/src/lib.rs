@@ -158,9 +158,9 @@ mod tests {
         if window_bits == GZIP {
             assert_eq!(&out[..2], &[0x1f, 0x8b], "gzip magic");
         }
-        let mut plain = vec![0u8; data.len()];
+        let mut plain = Vec::with_capacity(data.len());
         let mut stream = Stream::inflate(window_bits).expect("init");
-        let step = stream.run(&mut &out[..length], &mut plain, Z_FINISH);
+        let step = stream.run_into(&mut &out[..length], &mut plain, Z_FINISH);
         assert_eq!(step.status, Z_STREAM_END, "inflate");
         assert_eq!(plain, data, "round trip");
     }
