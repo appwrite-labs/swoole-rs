@@ -225,7 +225,7 @@ pub extern "C" fn php_swoole_check_reactor() {
 /// `Coroutine::get_current() != nullptr`: whether this thread runs a coroutine.
 #[must_use]
 pub fn in_coroutine() -> bool {
-    !swoole_rs_coroutine::current().is_null()
+    !swoole_rs_corebase::coroutine::current().is_null()
 }
 
 /// `Coroutine::get_current_safe()`: Swoole's fatal error outside a coroutine,

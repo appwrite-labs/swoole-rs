@@ -4,13 +4,13 @@
 //! the operations Rust callers run on it by path: the current coroutine, resume,
 //! the cancelable yield and bailout. They need no timer or event loop, so they
 //! build without `upstream-symbols`; facade.rs builds the rest on them.
-use crate::context::{self, Native};
-use crate::coroutine::{self as ops, Co, Sched};
-use crate::{Canceler, Coroutine, CoroutineTask, Hooks, Routine, Scheduler};
+use crate::coroutine::context::{self, Native};
+use crate::coroutine::state::{self as ops, Co, Sched};
+use crate::coroutine::{Canceler, Coroutine, CoroutineTask, Hooks, Routine, Scheduler};
+use crate::log;
 use core::cell::UnsafeCell;
 use core::ffi::{c_long, c_void};
 use core::ptr::{self, NonNull};
-use swoole_rs_corebase::log;
 
 const SW_DEFAULT_C_STACK_SIZE: usize = 2 * 1024 * 1024;
 const SW_CORO_BAILOUT_EXIT_CODE: i32 = 1;
@@ -94,7 +94,7 @@ pub fn coroutine_get(cid: c_long) -> *mut c_void {
 
 /// [`Scheduler::state`] on this thread.
 #[must_use]
-pub fn coroutine_state(cid: c_long) -> Option<crate::State> {
+pub fn coroutine_state(cid: c_long) -> Option<crate::coroutine::State> {
     with_scheduler(|s| s.state(cid))
 }
 
@@ -128,7 +128,7 @@ pub fn set_stack_size(size: usize) {
 }
 
 /// [`Scheduler::set_callback`] on this thread.
-pub fn set_callback(slot: u32, function: crate::SwapCallback) {
+pub fn set_callback(slot: u32, function: crate::coroutine::SwapCallback) {
     with_scheduler(|s| s.set_callback(slot, function));
 }
 
@@ -171,10 +171,7 @@ pub extern "C" fn current_safe() -> *mut c_void {
     if co.is_null() {
         // SAFETY: Swoole's fatal error hook; this frame owns nothing.
         unsafe {
-            swoole_rs_corebase::fatal_error(
-                OUT_OF_COROUTINE,
-                c"API must be called in the coroutine",
-            );
+            crate::fatal_error(OUT_OF_COROUTINE, c"API must be called in the coroutine");
         }
     }
     co
@@ -216,7 +213,7 @@ pub fn current_cid() -> c_long {
 /// How the running coroutine's last yield ended,
 /// which its last yield returned with; `None` outside a coroutine.
 #[must_use]
-pub fn current_resume_code() -> Option<crate::Resume> {
+pub fn current_resume_code() -> Option<crate::coroutine::Resume> {
     Co::current(Sched::this()).map(|co| co.with(|co| co.resume_code))
 }
 
@@ -281,10 +278,10 @@ pub fn suspend(co: *mut c_void) {
     park(co, |_| ());
 }
 
-/// [`suspend`], handing `arm` the [`Waker`](crate::Waker) that ends this park before
+/// [`suspend`], handing `arm` the [`Waker`](crate::coroutine::Waker) that ends this park before
 /// `co` switches out.
 #[inline]
-pub fn park(co: *mut c_void, arm: impl FnOnce(crate::Waker)) {
+pub fn park(co: *mut c_void, arm: impl FnOnce(crate::coroutine::Waker)) {
     let s = Sched::this();
     ops::yield_armed(s, Co::running(s, co.cast()), arm);
 }
@@ -299,13 +296,13 @@ pub fn yield_with_cancel<F: FnOnce(*mut c_void) -> bool + Copy>(co: *mut c_void,
     yield_with_cancel_armed(co, cancel, |_| ());
 }
 
-/// [`yield_with_cancel`], handing `arm` the [`Waker`](crate::Waker) that ends this
+/// [`yield_with_cancel`], handing `arm` the [`Waker`](crate::coroutine::Waker) that ends this
 /// park before `co` switches out.
 #[inline]
 pub fn yield_with_cancel_armed<F: FnOnce(*mut c_void) -> bool + Copy>(
     co: *mut c_void,
     cancel: F,
-    arm: impl FnOnce(crate::Waker),
+    arm: impl FnOnce(crate::coroutine::Waker),
 ) {
     let s = Sched::this();
     let co = Co::running(s, co.cast());

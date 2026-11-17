@@ -248,5 +248,5 @@ pub fn close<T, F: Effects>(ch: &UnsafeCell<Channel<T, F::Waiter>>, fx: &mut F) 
 }
 
 #[cfg(test)]
-#[path = "../../../tests/modules/coroutine/channel.rs"]
+#[path = "../../../../tests/modules/coroutine/channel.rs"]
 mod tests;

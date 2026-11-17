@@ -43,7 +43,7 @@ const STACK_ALIGNMENT: usize = 4 * 1024;
 /// swap callback, a timer's callback or the bailout callback.
 pub type Routine = unsafe extern "C" fn(*mut c_void);
 
-/// A coroutine's task, which only [`set_current_task`](crate::set_current_task) sets:
+/// A coroutine's task, which only [`set_current_task`](crate::coroutine::set_current_task) sets:
 /// the one kind of object every swap callback takes (in the extension,
 /// crates/phpcoroutines' PHP context), live until the close callback of its
 /// coroutine has run. Safe code can copy one it was handed, but not make one or
@@ -170,7 +170,7 @@ pub struct Scheduler {
     pub on_close: SwapCallback,
     pub hooks: Hooks,
     /// The live coroutines, null until the first registers.
-    pub live: Option<Box<crate::live::Live>>,
+    pub live: Option<Box<crate::coroutine::live::Live>>,
     /// Where `swoole_coroutine_iterator_each` (gdb's walk) resumes.
     pub cursor: c_long,
     pub activated: bool,
@@ -259,7 +259,7 @@ impl Co {
     /// The coroutine a record handed over for good starts with: live until the
     /// scheduler's `destroy` frees the record, once it registered and ended.
     #[cfg(any(test, feature = "upstream-symbols"))]
-    pub(crate) fn leak(native: Box<crate::context::Native>) -> Self {
+    pub(crate) fn leak(native: Box<crate::coroutine::context::Native>) -> Self {
         Self(NonNull::from(Box::leak(native)).cast())
     }
 
@@ -273,7 +273,7 @@ impl Co {
     pub(crate) fn running(s: Sched, co: *mut Coroutine) -> Self {
         match Self::current(s) {
             Some(current) if current.ptr() == co => current,
-            _ => swoole_rs_corebase::fatal("a yield from a coroutine that is not running"),
+            _ => crate::fatal("a yield from a coroutine that is not running"),
         }
     }
 
@@ -309,7 +309,7 @@ pub(crate) struct Sched(NonNull<Scheduler>);
 impl Sched {
     /// This thread's scheduler, live for the thread's life.
     pub(crate) fn this() -> Self {
-        Self(crate::scheduler::this())
+        Self(crate::coroutine::scheduler::this())
     }
 
     /// The scheduler, borrowed for `f`, which runs no hook or callback.

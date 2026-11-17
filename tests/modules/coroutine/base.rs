@@ -4,12 +4,12 @@
 //! Built into the hooks case binary (tests/modules/hooks/system), which links
 //! the crates.
 //!
-//! A `swoole::Coroutine` is crates/coroutine's record (`swr_v1_coroutine`, then its
-//! `swr_v1_context`; swoole_rs_coroutine.h): its getters are field reads here, its
-//! operations crates/coroutine's `suspend` and `resume`, the `swr_v1_coroutine_*`
+//! A `swoole::Coroutine` is crates/corebase/src/coroutine's record (`swr_v1_coroutine`, then its
+//! `swr_v1_context`; swoole_rs_corebase::coroutine.h): its getters are field reads here, its
+//! operations crates/corebase/src/coroutine's `suspend` and `resume`, the `swr_v1_coroutine_*`
 //! exports and upstream symbols.
 //! `Coroutine::create`, `coroutine::run` and `Coroutine::bailout` take a function and
-//! its data here (crates/coroutine's `swr_v1_coroutine_create` and
+//! its data here (crates/corebase/src/coroutine's `swr_v1_coroutine_create` and
 //! `swr_v1_coroutine_bail`, and `swoole_coroutine_create`).
 
 use super::hook::{
@@ -26,7 +26,7 @@ use std::cell::Cell;
 use std::ffi::{c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::AtomicI32;
-use swoole_rs_coroutine::{
+use swoole_rs_corebase::coroutine::{
     coroutine_count as swoole_coroutine_count, coroutine_get as swoole_coroutine_get, print_list,
     swoole_coroutine_iterator_each, swoole_coroutine_iterator_reset,
 };
@@ -48,7 +48,7 @@ const SEEK_CUR: c_int = 1;
 /// `swr_v1_coroutine` (96 bytes), then the `swr_v1_context` fields before `end` (64).
 const FACADE_END: usize = 96 + 64;
 
-type SwapCallback = swoole_rs_coroutine::SwapCallback;
+type SwapCallback = swoole_rs_corebase::coroutine::SwapCallback;
 
 /// `swr_v1_coroutine`.
 #[repr(C)]
@@ -106,10 +106,10 @@ fn create<'a>(body: impl FnOnce() + 'a) -> c_long {
     let arg = Box::into_raw(Box::new(body)).cast::<c_void>();
     // SAFETY: `trampoline` takes the box `arg` owns; the borrows outlive the
     // coroutine, as the C++ lambdas' captures do.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(routine, arg) }
+    unsafe { swoole_rs_corebase::coroutine::swr_v1_coroutine_create(routine, arg) }
 }
 
-/// [`trampoline`] as crates/coroutine's `Routine`, which it catches any unwind for.
+/// [`trampoline`] as crates/corebase/src/coroutine's `Routine`, which it catches any unwind for.
 unsafe extern "C" fn routine(arg: *mut c_void) {
     // SAFETY: as `trampoline`'s caller promises.
     unsafe { trampoline(arg) }
@@ -144,12 +144,12 @@ fn get_current_task() -> *mut c_void {
 
 /// `Coroutine::get_by_cid(cid)`.
 fn get_by_cid(cid: c_long) -> *mut Co {
-    swoole_rs_coroutine::coroutine_get(cid).cast()
+    swoole_rs_corebase::coroutine::coroutine_get(cid).cast()
 }
 
 /// `Coroutine::count()`.
 fn count() -> usize {
-    swoole_rs_coroutine::coroutine_count()
+    swoole_rs_corebase::coroutine::coroutine_count()
 }
 
 /// `Timer::get_absolute_msec()`: the steady clock in milliseconds.
@@ -161,7 +161,7 @@ fn absolute_msec() -> c_long {
 }
 
 fn set_callback(slot: u32, function: SwapCallback) {
-    swoole_rs_coroutine::set_callback(slot, function);
+    swoole_rs_corebase::coroutine::set_callback(slot, function);
 }
 
 /// A live coroutine's facade, read and driven as its C++ members do.
@@ -212,7 +212,7 @@ impl View {
         self.co().resume_code == RC_TIMEDOUT
     }
     fn yield_(&self) {
-        swoole_rs_coroutine::suspend(self.0.cast());
+        swoole_rs_corebase::coroutine::suspend(self.0.cast());
     }
     fn yield_ex(&self, timeout: f64) -> bool {
         // SAFETY: as above.
@@ -220,7 +220,7 @@ impl View {
     }
     fn resume(&self) {
         // SAFETY: a suspended coroutine.
-        unsafe { swoole_rs_coroutine::resume(self.0.cast()) };
+        unsafe { swoole_rs_corebase::coroutine::resume(self.0.cast()) };
     }
     fn cancel(&self) -> bool {
         // SAFETY: a live coroutine.
@@ -255,13 +255,15 @@ fn bailout(body: Option<&dyn Fn()>) {
     match body {
         // SAFETY: `body` outlives the call, or the process ends first.
         Some(body) => unsafe {
-            swoole_rs_coroutine::swr_v1_coroutine_bail(
+            swoole_rs_corebase::coroutine::swr_v1_coroutine_bail(
                 Some(call),
                 (&raw const body).cast_mut().cast(),
             )
         },
         // SAFETY: no callback.
-        None => unsafe { swoole_rs_coroutine::swr_v1_coroutine_bail(None, std::ptr::null_mut()) },
+        None => unsafe {
+            swoole_rs_corebase::coroutine::swr_v1_coroutine_bail(None, std::ptr::null_mut())
+        },
     }
 }
 
@@ -312,14 +314,14 @@ fn get_init_msec() {
     });
 }
 
-extern "C" fn yield_resume_on_yield(_: swoole_rs_coroutine::CoroutineTask) {
+extern "C" fn yield_resume_on_yield(_: swoole_rs_corebase::coroutine::CoroutineTask) {
     let task = get_current_task().cast::<c_long>();
     assert!(!task.is_null());
     // SAFETY: the task is the case's live `cid2`.
     assert_eq!(unsafe { *task }, get_current_cid());
 }
 
-extern "C" fn yield_resume_on_resume(_: swoole_rs_coroutine::CoroutineTask) {
+extern "C" fn yield_resume_on_resume(_: swoole_rs_corebase::coroutine::CoroutineTask) {
     assert!(get_current().is_null());
 }
 

@@ -18,8 +18,7 @@ test = false
 libc = "=0.2.191"
 swoole-rs-buffer = { path = "../../../../crates/buffer" }
 swoole-rs-clients = { path = "../../../../crates/clients" }
-swoole-rs-corebase = { path = "../../../../crates/corebase" }
-swoole-rs-coroutine = { path = "../../../../crates/coroutine", features = ["upstream-symbols"] }
+swoole-rs-corebase = { path = "../../../../crates/corebase", features = ["upstream-symbols"] }
 swoole-rs-ffi = { path = "../../../../crates/ffi" }
 swoole-rs-hooks = { path = "../../../../crates/hooks" }
 swoole-rs-memory = { path = "../../../../crates/memory" }

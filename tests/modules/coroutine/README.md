@@ -16,8 +16,8 @@ case binary with the crates and system.py's static libswoole.a (the pin's thirdp
 | `coroutine_base.<name>`, all 26 (`create` through `c_api`) | `coroutine_base.<name>` |
 | `coroutine_async_file.async_file` | `coroutine_async_file.async_file`: `AsyncFile` left the build (nothing called it), so the case makes the hooked call each member made, with the TEST's inputs and expected values |
 
-The facade's getters are field reads over crates/coroutine's record, its operations
-crates/coroutine's `suspend` and `resume`, the `swr_v1_coroutine_*` exports and upstream symbols. `coroutine::run` and
+The facade's getters are field reads over crates/corebase/src/coroutine's record, its operations
+crates/corebase/src/coroutine's `suspend` and `resume`, the `swr_v1_coroutine_*` exports and upstream symbols. `coroutine::run` and
 `Coroutine::bailout` take a function and its data (`swoole_coroutine_create`,
 `swr_v1_coroutine_bail`). The repo-owned
 `rust_coroutine_lifetime.cancellation_copy_failure_preserves_wait` witness checked
@@ -29,15 +29,15 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 ## Source-body and ABI gates
 
 ```
-python3 tools/cargo_asan.py --package swoole-rs-coroutine --report OUT.json
+python3 tools/cargo_asan.py --package swoole-rs-corebase --report OUT.json
 ```
 
-- `tools/cargo_asan.py` runs crates/coroutine's unit tests under Rust ASan (the plain
-  run is `coroutine-unit`).
-- The scheduler, coroutine state, the live map, stacks and the context switch (crates/coroutine)
+- `tools/cargo_asan.py` runs corebase's unit and integration tests, including the
+  coroutine module, under Rust ASan (the plain run is `corebase-unit`).
+- The scheduler, coroutine state, the live map, stacks and the context switch (crates/corebase/src/coroutine)
   are covered by its Rust unit tests and, through real context switches, by
   `base.rs`'s upstream GoogleTests and the coroutine PHPT families.
-- Channel is covered by `channel.rs` (crates/coroutine's unit tests): upstream's
+- Channel is covered by `channel.rs` (crates/corebase/src/coroutine's unit tests): upstream's
   seven `coroutine_channel` TESTs from core-tests/src/coroutine/channel.cpp, one
   Rust test each (`coroutine_channel_<name>`) with the same inputs and
   assertions, and the two channel-deleting waiter cases of the former

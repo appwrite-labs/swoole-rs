@@ -16,19 +16,19 @@ use swoole_rs_corebase::{
 };
 
 /// Where a park stores its waker before it switches out.
-pub(crate) type WakerSlot = core::cell::Cell<Option<swoole_rs_coroutine::Waker>>;
+pub(crate) type WakerSlot = core::cell::Cell<Option<swoole_rs_corebase::coroutine::Waker>>;
 
 /// `co->yield()` of the current coroutine (fatal outside one), its waker in `waker`.
 pub(crate) fn park(waker: &WakerSlot) {
-    swoole_rs_coroutine::park(current().cast(), |park| waker.set(Some(park)));
+    swoole_rs_corebase::coroutine::park(current().cast(), |park| waker.set(Some(park)));
 }
 
 /// `co->yield_ex(timeout)` of the current coroutine (fatal outside one), its waker
 /// in `waker`.
 pub(crate) fn park_for_armed(timeout: f64, waker: &WakerSlot) -> bool {
     let arm = |park| waker.set(Some(park));
-    let code = swoole_rs_coroutine::yield_timed_armed(current().cast(), timeout, arm);
-    swoole_rs_coroutine::yield_resumed(code)
+    let code = swoole_rs_corebase::coroutine::yield_timed_armed(current().cast(), timeout, arm);
+    swoole_rs_corebase::coroutine::yield_resumed(code)
 }
 
 extern "C" fn last_error() -> c_int {
@@ -41,7 +41,7 @@ pub static COROUTINE_ASYNC: AsyncOps = AsyncOps {
     dispatch: crate::async_threads::dispatch,
     park,
     park_for: park_for_armed,
-    resume: swoole_rs_coroutine::Waker::wake,
+    resume: swoole_rs_corebase::coroutine::Waker::wake,
     last_error,
 };
 
@@ -139,7 +139,7 @@ pub fn name_resolver_lookup(name: &[u8], ctx: &mut NameResolverContext, out: &mu
     if swr_v1_core_name_resolver_resolve(name, ctx, out) {
         return;
     }
-    *out = if swoole_rs_coroutine::current().is_null() {
+    *out = if swoole_rs_corebase::coroutine::current().is_null() {
         resolver::gethostbyname(ctx.options.get().0, name)
     } else {
         system_gethostbyname(name, ctx.options.get().0, ctx.timeout)

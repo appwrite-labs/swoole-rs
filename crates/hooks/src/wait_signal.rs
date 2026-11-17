@@ -8,7 +8,7 @@ use std::ffi::{c_long, c_void};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, Ordering::Relaxed};
 use swoole_rs_corebase::CCast;
-use swoole_rs_coroutine::Waker;
+use swoole_rs_corebase::coroutine::Waker;
 use swoole_rs_reactor::signal_upstream::Handler;
 
 /// `SW_SIGNO_MAX`.
@@ -306,7 +306,7 @@ mod native {
             handler: super::record(records, signo).map_or(Handler::NONE, |r| r.get().handler),
             records: on.then(|| Rc::downgrade(records)),
         };
-        if !swoole_rs_coroutine::thread_context_active() {
+        if !swoole_rs_corebase::coroutine::thread_context_active() {
             change.apply();
             return true;
         }

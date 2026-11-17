@@ -8,7 +8,7 @@ use crate::wait_event::{from_poll, to_poll};
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use swoole_rs_coroutine::Waker;
+use swoole_rs_corebase::coroutine::Waker;
 use swoole_rs_reactor::Events;
 
 /// Why no descriptor became ready.
@@ -337,7 +337,7 @@ pub static NATIVE: PollOps<crate::wait_event::Watch> = PollOps {
 pub(crate) mod native {
     use super::{Events, Registered, Timer};
     use crate::wait_event::native::{Object, Watch};
-    use swoole_rs_coroutine::Waker;
+    use swoole_rs_corebase::coroutine::Waker;
     use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
 
     use swoole_rs_timer::{add_fn_sec, del_id};

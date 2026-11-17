@@ -6,22 +6,26 @@
 //! socket-bound error and the `swoole_coroutine_*` functions gdb and C callers
 //! use, under their upstream symbols, over scheduler.rs. These need the timer
 //! and the event loop, which only the extension links.
-//! The build's switches are `swoole_rs_corebase::built_with`'s (`build`).
-use crate::context::{Context, Native, Unmade};
-use crate::coroutine::{self, Co, Sched, run};
-use crate::scheduler::{bailed_out, current, with_scheduler, yield_with_cancel_armed};
-use crate::thread::{Entry, THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init};
-use crate::{Canceler, Coroutine, Resume, Routine, STACK_MARK, STACK_PROTECT, Scheduler};
+//! The build's switches are `crate::built_with`'s (`build`).
+use crate::coroutine::context::{Context, Native, Unmade};
+use crate::coroutine::scheduler::{bailed_out, current, with_scheduler, yield_with_cancel_armed};
+use crate::coroutine::state::{self as coroutine, Co, Sched, run};
+use crate::coroutine::thread::{
+    Entry, THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init,
+};
+use crate::coroutine::{
+    Canceler, Coroutine, Resume, Routine, STACK_MARK, STACK_PROTECT, Scheduler,
+};
+use crate::{
+    Switch, built_with, fatal_error,
+    log::{self, set_last_error},
+    sw_print,
+};
 use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 use std::ffi::{CStr, CString};
 use std::io;
 use std::sync::OnceLock;
-use swoole_rs_corebase::{
-    Switch, built_with, fatal_error,
-    log::{self, set_last_error},
-    sw_print,
-};
 
 const SW_ERROR_MALLOC_FAIL: c_int = 501;
 const SW_ERROR_CO_HAS_BEEN_BOUND: c_int = 10002;
@@ -62,7 +66,7 @@ pub fn set_host(host: Host) {
 
 fn host() -> &'static Host {
     HOST.get()
-        .unwrap_or_else(|| swoole_rs_corebase::fatal("coroutine host is not registered"))
+        .unwrap_or_else(|| crate::fatal("coroutine host is not registered"))
 }
 
 /// The build's coroutine switches: the context's flags
@@ -86,8 +90,7 @@ fn steady_usec() -> c_long {
     let clock = libc::CLOCK_UPTIME_RAW;
     #[cfg(not(target_vendor = "apple"))]
     let clock = libc::CLOCK_MONOTONIC;
-    swoole_rs_corebase::sys::clock_gettime(clock)
-        .map_or(0, |now| now.tv_sec * 1_000_000 + now.tv_nsec / 1000)
+    crate::sys::clock_gettime(clock).map_or(0, |now| now.tv_sec * 1_000_000 + now.tv_nsec / 1000)
 }
 
 extern "C" fn clock() -> c_long {
@@ -177,7 +180,7 @@ pub extern "C-unwind" fn deactivate() {
 ///
 /// # Safety
 /// `co` is a live coroutine.
-/// Its canceler may resume it: as for [`crate::resume`], a bailout must not
+/// Its canceler may resume it: as for [`crate::coroutine::resume`], a bailout must not
 /// skip pending drops on the main stack.
 #[unsafe(export_name = "_ZN6swoole9Coroutine6cancelEv")]
 pub unsafe extern "C-unwind" fn cancel(co: *mut Coroutine) -> bool {
@@ -210,7 +213,7 @@ fn timed_out(cid: c_long) {
 
 /// `bool Coroutine::yield_ex(double timeout)` of `co`, the running coroutine
 /// (aborting otherwise): false, with the last error, when it timed out or was
-/// canceled. As [`suspend`](crate::suspend), it asks nothing of its caller.
+/// canceled. As [`suspend`](crate::coroutine::suspend), it asks nothing of its caller.
 #[unsafe(export_name = "_ZN6swoole9Coroutine8yield_exEd")]
 pub extern "C-unwind" fn yield_ex(co: *mut c_void, timeout: f64) -> bool {
     yield_resumed(yield_timed(co, timeout))
@@ -229,16 +232,20 @@ pub fn yield_resumed(code: Resume) -> bool {
 }
 
 /// `yield_ex` without its last error: how the yield ended. `co` is the running coroutine
-/// (this aborts otherwise); as [`suspend`](crate::suspend), it asks nothing more.
+/// (this aborts otherwise); as [`suspend`](crate::coroutine::suspend), it asks nothing more.
 #[must_use]
 pub fn yield_timed(co: *mut c_void, timeout: f64) -> Resume {
     yield_timed_armed(co, timeout, |_| ())
 }
 
-/// [`yield_timed`], handing `arm` the [`Waker`](crate::Waker) that ends this park
+/// [`yield_timed`], handing `arm` the [`Waker`](crate::coroutine::Waker) that ends this park
 /// before `co` switches out.
 #[must_use]
-pub fn yield_timed_armed(co: *mut c_void, timeout: f64, arm: impl FnOnce(crate::Waker)) -> Resume {
+pub fn yield_timed_armed(
+    co: *mut c_void,
+    timeout: f64,
+    arm: impl FnOnce(crate::coroutine::Waker),
+) -> Resume {
     let running = Co::running(Sched::this(), co.cast());
     let timer = if timeout > 0.0 {
         // It fires only while `co` waits below, or is cleared first.
@@ -337,7 +344,7 @@ extern "C" fn swoole_coroutine_is_in() -> u8 {
 /// `long swoole_coroutine_get_id()`: -1 outside a coroutine.
 #[unsafe(no_mangle)]
 extern "C" fn swoole_coroutine_get_id() -> c_long {
-    crate::current_cid()
+    crate::coroutine::current_cid()
 }
 
 /// `void swoole_coroutine_iterator_reset()`, for gdb.

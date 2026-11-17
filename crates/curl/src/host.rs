@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 ext-src/swoole_curl.cc (Swoole contributors).
 //! What a [`Multi`] needs of the process: the reactor (crates/reactor), this
-//! thread's timer (crates/timer) and coroutine scheduler (crates/coroutine),
+//! thread's timer (crates/timer) and coroutine scheduler (crates/corebase/src/coroutine),
 //! and the C entry points the bundled `ext/curl` calls besides the multi's own.
 //! The engine uses an explicit operation table in every build.
 use crate::{EXEC_NEEDS_COROUTINE, Idle, Multi};
@@ -9,7 +9,7 @@ use std::cell::Cell;
 use std::ffi::{CStr, c_int, c_long, c_void};
 use std::io::Write;
 use std::{ptr, rc::Rc};
-use swoole_rs_coroutine::Resume;
+use swoole_rs_corebase::coroutine::Resume;
 use swoole_rs_curl_sys::{
     CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLE_FAILED_INIT, CURLcode,
 };
@@ -32,8 +32,8 @@ pub(crate) struct Ops {
     pub timer_del: fn(swoole_rs_timer::Held),
     pub current: fn() -> *mut c_void,
     pub current_cid: fn() -> c_long,
-    pub yield_: fn(*mut c_void, f64, &mut dyn FnMut(swoole_rs_coroutine::Waker)) -> bool,
-    pub wake: fn(swoole_rs_coroutine::Waker),
+    pub yield_: fn(*mut c_void, f64, &mut dyn FnMut(swoole_rs_corebase::coroutine::Waker)) -> bool,
+    pub wake: fn(swoole_rs_corebase::coroutine::Waker),
     pub defer: fn(&Multi),
 }
 
@@ -187,26 +187,26 @@ pub(crate) use swoole_rs_timer::cancel_held as timer_del;
 
 /// `Coroutine::get_current()`.
 pub(crate) fn current() -> *mut c_void {
-    swoole_rs_coroutine::current_native()
+    swoole_rs_corebase::coroutine::current_native()
 }
 
 /// `Coroutine::get_current_cid()`.
-pub(crate) use swoole_rs_coroutine::current_cid;
+pub(crate) use swoole_rs_corebase::coroutine::current_cid;
 
 /// `co->yield_ex(timeout)` of `co`, the running coroutine (aborting otherwise), then
 /// whether it was canceled.
 pub(crate) fn yield_(
     co: *mut c_void,
     timeout: f64,
-    arm: &mut dyn FnMut(swoole_rs_coroutine::Waker),
+    arm: &mut dyn FnMut(swoole_rs_corebase::coroutine::Waker),
 ) -> bool {
-    let code = swoole_rs_coroutine::yield_timed_armed(co, timeout, arm);
+    let code = swoole_rs_corebase::coroutine::yield_timed_armed(co, timeout, arm);
     // `yield_ex`: the last error of a timeout or a cancel.
-    !swoole_rs_coroutine::yield_resumed(code) && code == Resume::Canceled
+    !swoole_rs_corebase::coroutine::yield_resumed(code) && code == Resume::Canceled
 }
 
 /// `co->resume()` of a coroutine parked where `waker` was made, if it still is.
-pub(crate) fn wake(waker: swoole_rs_coroutine::Waker) {
+pub(crate) fn wake(waker: swoole_rs_corebase::coroutine::Waker) {
     waker.wake();
 }
 
@@ -268,7 +268,7 @@ pub(crate) fn bound_co<'b>(
         }
         return Ok(co);
     };
-    swoole_rs_coroutine::set_socket_bound_cid(waiter.cid);
+    swoole_rs_corebase::coroutine::set_socket_bound_cid(waiter.cid);
     let (mut text, _) = buffer.split_at_mut(127);
     // A longer message is cut short.
     write!(

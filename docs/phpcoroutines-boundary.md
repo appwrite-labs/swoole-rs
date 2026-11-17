@@ -13,7 +13,7 @@ MINIT, RINIT and RSHUTDOWN are Rust under upstream's `php_swoole_coroutine_*`
 names, which crates/ffi hands crates/phpswoole's phases in its `Families`
 table (phpswoole sits below this crate), and the coroutine's entry is Rust over `swr_zend_coroutine_run`, the
 zend-sys shim that runs the user callable and its defer tasks inside
-`zend_first_try`. Rust reads the coroutine core's state (crates/coroutine's
+`zend_first_try`. Rust reads the coroutine core's state (crates/corebase/src/coroutine's
 scheduler and each coroutine's record) and calls the module host, the runtime
 hooks and the event loop directly. Rust callers start coroutines with
 `create_coroutine` (and C++ with `zend::function::call`); a coroutine that ends in an exception or a

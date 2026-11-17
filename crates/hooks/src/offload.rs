@@ -5,8 +5,8 @@ use crate::resolve::WakerSlot;
 use core::ffi::{c_int, c_void};
 use core::mem::{offset_of, size_of};
 use core::sync::atomic::{AtomicI32, AtomicIsize, AtomicU8, Ordering::Relaxed};
+use swoole_rs_corebase::coroutine::Waker;
 use swoole_rs_corebase::set_errno;
-use swoole_rs_coroutine::Waker;
 
 /// `async::Handler`: runs on a pool thread over its own copy of the event, of which
 /// the pool keeps `error` and `retval`.

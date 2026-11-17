@@ -493,7 +493,7 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('corebase-native', commands)  # Its cases run in corebase-unit.
         self.assertIn('ossupport-unit', commands)
         self.assertNotIn('http-rewrites', commands)  # Its cases run in http-unit.
-        self.assertIn('swoole-rs-coroutine', commands['coroutine-rust-asan'])
+        self.assertIn('swoole-rs-corebase', commands['coroutine-rust-asan'])
         self.assertIn('swoole-rs-memory', commands['memory-rust-asan'])
         self.assertFalse(any(name.startswith('coroutine-registry') for name in commands))
         for name in ['reference-identity','base64-consumers-upstream','base64-consumers-cargo',
