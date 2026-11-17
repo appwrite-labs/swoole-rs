@@ -499,3 +499,8 @@ that freeing a watch twice leaves the libcurl-owned descriptor open.
 UDP receive, from both a coroutine and (`reactor` argument) a non-coroutine timer
 callback. The normal gates and io_uring, c-ares and thread-context variants run it; the latter must complete the
 canceled request before the operation releases its buffers.
+
+The original `timer.get` and `timer.delay` use the issued timer ID returned
+by `swoole_timer_get`, and `delay_held` moves its deadline. Their ID, elapsed-time
+and missing-timer expectations are unchanged; `None` represents the original
+null node. The test-only `swoole_timer_delay` C++ export is removed.

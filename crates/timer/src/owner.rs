@@ -1242,13 +1242,15 @@ mod tests {
         p.add(
             'A',
             true,
-            Box::new(move |_, node| {
+            Box::new(move |timer, node| {
                 log.borrow_mut().events.push('A');
                 let cancelled_other =
                     swoole_timer_clear(target.get()) && !swoole_timer_clear(target.get());
                 let id = unsafe { (*node).id };
                 let active = swoole_timer_clear(id) && !swoole_timer_clear(id);
-                let active_view = swoole_timer_get(id) == node && unsafe { (*node).removed };
+                let active_view = swoole_timer_get(id).is_some_and(|held| held.id() == id)
+                    && timer.token(id) == node
+                    && unsafe { (*node).removed };
                 flags.set((active, cancelled_other, active_view));
             }),
         );
