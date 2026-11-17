@@ -681,6 +681,70 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "upstream-symbols")]
+    #[test]
+    fn base_receive_buffer_transfers_inline_and_lends_to_the_bus() {
+        use swoole_rs_corebase::buffer::string::OwnedString;
+        use swoole_rs_corebase::process::worker_record::WorkerRecord;
+
+        thread_local! {
+            static PACKET: RefCell<Option<OwnedString>> = const { RefCell::new(None) };
+        }
+        fn take(_: view::Server<'_>, recv: &mut RecvData<'_>) -> c_int {
+            assert_eq!(recv.info().flags, DATA_PTR | POP_PTR);
+            assert_eq!(recv.info().len, 5);
+            assert!(PACKET.replace(recv.take_packet()).is_none());
+            assert!(recv.take_packet().is_none());
+            0
+        }
+
+        let (mut live, _clients) = accepted();
+        live.config_mut().mode_ = crate::Mode::Base;
+        let serv = live.server();
+        let conn = session(&live, 1);
+        live.state().callbacks.set(Callback::Receive(take));
+        let mut buffer = OwnedString::default();
+        buffer.alloc(64, None);
+        buffer.append(b"first");
+        buffer.set_offset(5);
+        let original = buffer.view().as_ptr();
+        let head = DataHead {
+            flags: POP_PTR,
+            ..DataHead::default()
+        };
+
+        // SAFETY: a zeroed worker is fresh, and is current only for this dispatch.
+        let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
+        unsafe { set_current_worker(&raw mut worker) };
+        let delivered = crate::reactor_entry::dispatch_buffer(serv, conn, head, &mut buffer);
+        unsafe { set_current_worker(core::ptr::null_mut()) };
+        assert!(delivered);
+        let packet = PACKET.take().unwrap();
+        assert_eq!(packet.view().as_ptr(), original);
+        assert_eq!(packet.view(), b"first");
+        assert!(buffer.is_empty());
+        assert_eq!(calls(), []);
+
+        // Without a current worker, the bus receives the bytes and the reader keeps them.
+        buffer.append(b"second");
+        buffer.set_offset(6);
+        let original = buffer.view().as_ptr();
+        assert!(crate::reactor_entry::dispatch_buffer(
+            serv,
+            conn,
+            head,
+            &mut buffer
+        ));
+        assert_eq!(
+            calls(),
+            [Call::BasePass(1, ServerEvent::RecvData.code(), 6)]
+        );
+        assert_eq!(crate::hybrid::tests::BASE_PAYLOAD.take(), b"second");
+        assert_eq!(buffer.view().as_ptr(), original);
+        assert_eq!(buffer.view(), b"second");
+        assert!(PACKET.take().is_none());
+    }
+
     #[test]
     fn notify_converts_to_the_session() {
         let (live, _clients) = accepted();
