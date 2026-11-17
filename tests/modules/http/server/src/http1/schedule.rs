@@ -6,11 +6,11 @@
 use super::*;
 use std::collections::BTreeSet;
 use std::sync::atomic::Ordering::Relaxed;
-use swoole_rs_corebase::net_types::AddressStorage;
 use swoole_rs_corebase::process::worker_record::WorkerStatus::{
     Busy as SW_WORKER_BUSY, Idle as SW_WORKER_IDLE,
 };
 use swoole_rs_corebase::swoole_rand;
+use swoole_rs_server::reactor_entry::DgramPacket;
 
 const SW_SOCK_UDP: c_int = 2;
 const SW_SOCK_TCP6: c_int = 3;
@@ -21,22 +21,19 @@ const DISPATCH_CO_CONN_LB: u8 = 8;
 const DISPATCH_CO_REQ_LB: u8 = 9;
 const DISPATCH_CONCURRENT_LB: u8 = 10;
 
-/// `DgramPacket` up to its address.
-#[repr(C)]
-struct DgramPacket {
-    socket_type: c_int,
-    socket_addr: Address,
-}
-
 /// `network::Address::assign(type, host, port, false)`, as swoole_socket.h's inline does.
 fn assign(address: &mut Address, kind: c_int, host: &str, port: c_int) {
     address.kind = kind;
     let host = CString::new(host).unwrap();
-    // SAFETY: the record's union, which is `AddressStorage`'s size and alignment.
-    let storage = unsafe { &mut *(&raw mut address.addr).cast::<AddressStorage>() };
     let host = host.as_bytes_with_nul();
-    let assigned =
-        swoole_rs_clients::address::assign(storage, &mut address.len, kind, host, port, false);
+    let assigned = swoole_rs_clients::address::assign(
+        &mut address.addr,
+        &mut address.len,
+        kind,
+        host,
+        port,
+        false,
+    );
     assert_eq!(assigned, Ok(()));
 }
 
@@ -219,24 +216,10 @@ fn schedule_4() {
         counter[schedule_worker(serv, 101, None)] += 1;
     }
 
-    // SAFETY: the thread's buffer, which holds a `DgramPacket`.
-    let pkt = unsafe { (*case::swr_case_tg_buffer()).as_mut_ptr() }.cast::<DgramPacket>();
-    // SAFETY: as above.
-    assign(
-        unsafe { &mut (*pkt).socket_addr },
-        SW_SOCK_UDP,
-        "192.168.1.103",
-        29321,
-    );
-    // Upstream leaves the head unset and reads none of it but the packet's address,
-    // which is all the length lends.
-    let info = swoole_rs_corebase::DataHead {
-        len: u32::try_from(size_of::<DgramPacket>()).unwrap(),
-        ..Default::default()
-    };
-    // SAFETY: the thread's buffer, which holds the `DgramPacket` and outlives the send.
-    let head = unsafe { core::slice::from_raw_parts(pkt.cast::<u8>(), info.len as usize) };
-    let sdata = swoole_rs_server::SendData::new(info, head);
+    let mut packet = DgramPacket::default();
+    assign(&mut packet.socket_addr, SW_SOCK_UDP, "192.168.1.103", 29321);
+    let head = packet.to_bytes();
+    let sdata = swoole_rs_server::SendData::new(DataHead::default(), &head);
     counter[schedule_worker(serv, 9999, Some(&sdata))] += 1;
 
     assert_eq!(counter[0], 0);

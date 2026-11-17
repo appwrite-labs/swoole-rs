@@ -6,6 +6,7 @@ use core::sync::atomic::{
     Ordering::{Acquire, Relaxed},
 };
 use swoole_rs_corebase::WebSocketStatus;
+use swoole_rs_corebase::constants::SocketTypeCode;
 use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::process::worker_record::WorkerRecord;
@@ -28,7 +29,7 @@ pub struct SessionRecord {
 pub struct ConnectionRecord {
     /// Read by every reactor thread (`is_valid_connection` over the fd range).
     pub active: AtomicBool,
-    pub socket_type: Cell<c_int>,
+    pub socket_type: Cell<SocketTypeCode>,
     pub fd: Cell<c_int>,
     pub worker_id: Cell<c_int>,
     pub session_id: Cell<libc::c_long>,
@@ -88,7 +89,7 @@ impl ConnectionRecord {
     /// Upstream's `memset` of the slot from `socket_type` up to `closed`: every field
     /// but `active`, `closed` and `server_fd` back to its zero value.
     fn clear(&self) {
-        self.socket_type.set(0);
+        self.socket_type.set(SocketTypeCode::default());
         self.fd.set(0);
         self.worker_id.set(0);
         self.session_id.set(0);
@@ -237,7 +238,7 @@ impl<'a> Connection<'a> {
         self.record.clear();
     }
 
-    field!(socket_type, set_socket_type: c_int);
+    field!(socket_type, set_socket_type: SocketTypeCode);
     field!(fd, set_fd: c_int);
     field!(worker_id, set_worker_id: c_int);
     field!(session_id, set_session_id: libc::c_long);

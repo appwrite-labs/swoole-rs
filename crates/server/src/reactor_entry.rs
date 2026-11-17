@@ -4,7 +4,7 @@
 //! is the `onPackage` crates/ports' protocols hold. Every op they make is Rust's.
 use core::ffi::{c_int, c_long};
 
-use swoole_rs_corebase::constants::SocketType;
+use swoole_rs_corebase::constants::{SocketType, SocketTypeCode};
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::reactor::{Event, Running};
 
@@ -20,7 +20,7 @@ impl SendData<'_> {
     /// An `onPacket` payload: the `DgramPacket` head's socket type and sender,
     /// and the datagram that follows it; `None` if the payload is too short.
     #[must_use]
-    pub fn datagram(&self) -> Option<(c_int, SocketAddress, &[u8])> {
+    pub fn datagram(&self) -> Option<(SocketTypeCode, SocketAddress, &[u8])> {
         let head = self.datagram_head()?;
         let start = size_of::<DgramPacket>();
         let data = self.payload().get(start..start + head.length as usize)?;
@@ -42,9 +42,9 @@ impl SendData<'_> {
 /// `DgramPacket`'s head; the datagram follows.
 #[repr(C)]
 #[derive(Default)]
-pub(crate) struct DgramPacket {
-    pub(crate) socket_type: c_int,
-    pub(crate) socket_addr: SocketAddress,
+pub struct DgramPacket {
+    pub(crate) socket_type: SocketTypeCode,
+    pub socket_addr: SocketAddress,
     pub(crate) length: u32,
 }
 
@@ -69,11 +69,12 @@ fn field<const N: usize>(head: &[u8; DGRAM_HEAD], at: usize) -> [u8; N] {
 
 impl DgramPacket {
     /// The head as C lays it out, its padding zero.
-    pub(crate) fn to_bytes(&self) -> [u8; DGRAM_HEAD] {
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; DGRAM_HEAD] {
         let mut head = [0; DGRAM_HEAD];
         let address = &self.socket_addr;
         for (at, bytes) in [
-            (TYPE_AT, &self.socket_type.to_ne_bytes()[..]),
+            (TYPE_AT, &self.socket_type.0.to_ne_bytes()[..]),
             (STORAGE_AT, &address.addr.as_bytes()[..]),
             (ADDR_LEN_AT, &address.len.to_ne_bytes()[..]),
             (KIND_AT, &address.kind.to_ne_bytes()[..]),
@@ -89,7 +90,7 @@ impl DgramPacket {
     /// The head [`Self::to_bytes`] laid out.
     pub(crate) fn from_bytes(head: &[u8; DGRAM_HEAD]) -> Self {
         Self {
-            socket_type: c_int::from_ne_bytes(field(head, TYPE_AT)),
+            socket_type: SocketTypeCode(c_int::from_ne_bytes(field(head, TYPE_AT))),
             socket_addr: SocketAddress {
                 addr: swoole_rs_corebase::net_types::AddressStorage {
                     bytes: field(head, STORAGE_AT),
@@ -104,7 +105,7 @@ impl DgramPacket {
     /// The session a datagram is dispatched under: an IPv4 sender's address, else
     /// the CRC32 of its host text.
     pub(crate) fn sender(&self) -> c_long {
-        if self.socket_type == SocketType::SW_SOCK_UDP.raw() {
+        if self.socket_type.known() == Some(SocketType::SW_SOCK_UDP) {
             let ip = self.socket_addr.addr.v4().sin_addr.s_addr;
             return c_long::from(ip.cast_signed());
         }
