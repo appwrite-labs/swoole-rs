@@ -740,7 +740,7 @@ fn set_process_name(call: &Call) {
 #[cfg(test)]
 mod tests {
     use super::{Globals, ReqStatus};
-    use std::mem::{offset_of, size_of};
+    use std::mem::offset_of;
 
     #[test]
     fn globals_match_zend_swoole_globals() {

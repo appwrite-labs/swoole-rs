@@ -42,6 +42,8 @@ unused_dependencies = "deny"
 missing_lints_inheritance = "deny"
 
 [workspace.lints.rust]
+# #3561: an import a glob or the prelude already brings in.
+redundant_imports = "deny"
 unsafe_op_in_unsafe_fn = "deny"
 # `pub` only where another crate uses it, so dead_code sees the rest (#159).
 unreachable_pub = "deny"

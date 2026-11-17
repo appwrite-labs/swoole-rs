@@ -768,7 +768,6 @@ pub fn swr_v1_worker_shutdown(worker: Worker<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::mem::align_of;
 
     /// The fd a test's pipe end points at.
     fn fd(pipe: NativeSocket<'_>) -> c_int {

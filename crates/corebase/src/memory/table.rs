@@ -22,7 +22,7 @@ use crate::memory::fixed::{self, Fixed, HEADER, Layout, Slice};
 use crate::memory::members::Shm;
 use std::cell::Cell;
 use std::ffi::c_int;
-use std::mem::{MaybeUninit, offset_of, size_of};
+use std::mem::{MaybeUninit, offset_of};
 use std::sync::atomic::{
     AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering,
 };

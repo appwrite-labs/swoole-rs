@@ -368,7 +368,6 @@ pub(crate) mod tests {
         view: &mut ReadBuffer,
         sync: super::BufferSync,
     ) {
-        use super::BufferSync;
         let ctx = context();
         let fake = unsafe { fake(ctx) };
         match sync {

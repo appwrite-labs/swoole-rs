@@ -244,7 +244,6 @@ const NAME_TOO_LONG: i32 = swoole_rs_error::ErrorCode::SW_ERROR_NAME_TOO_LONG as
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
 
     fn path() -> Vec<u8> {
         task_tmpfile().to_bytes().to_vec()

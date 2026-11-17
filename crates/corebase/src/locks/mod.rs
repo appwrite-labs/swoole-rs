@@ -16,7 +16,7 @@ use crate::sys;
 )]
 use libc::*;
 use std::{
-    mem::{align_of, offset_of, size_of},
+    mem::offset_of,
     sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering},
 };
 
