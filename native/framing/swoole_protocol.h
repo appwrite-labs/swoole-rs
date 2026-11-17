@@ -1,8 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-/* Swoole's include/swoole_protocol.h, owned here. The structs keep upstream's layout:
- * crates/framing, crates/ports, crates/server and crates/phpclients read them in place.
- * Every function is Rust under its upstream symbol (crates/ports/src/framing_recv.rs,
- * crates/corebase); only what C++ calls is declared. */
+/* Native packet records and protocol callback signatures. The coroutine socket
+ * embeds Protocol and checks its layout against Rust in swoole_rs_co_socket.h. */
 #pragma once
 
 #include "swoole_socket.h"
