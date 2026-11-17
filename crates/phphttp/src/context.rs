@@ -207,6 +207,7 @@ pub(crate) fn alloc() -> Hold {
 }
 
 /// `Context::init(Server *)`: the server's request settings, then bound to it.
+#[inline]
 pub(crate) fn init(state: &mut State, server: view::Server<'_>) {
     let config = server.config();
     state.parse_cookie = config.http_parse_cookie.get();
@@ -243,6 +244,25 @@ fn unbound() -> ! {
     swoole_rs_corebase::fatal("a context bound to no server")
 }
 
+/// `f` over the server a context not bound to a coroutine socket answers
+/// through, as [`Handle::with`] without a handle: the held server costs a
+/// reactor lookup, no clone.
+#[inline]
+pub(crate) fn with_server<R>(state: &State, f: impl FnOnce(view::Server<'_>) -> R) -> R {
+    match state.server {
+        Some(held) => held.with(f).unwrap_or_else(|| unbound()),
+        None => with_shared(state, f),
+    }
+}
+
+#[cold]
+fn with_shared<R>(state: &State, f: impl FnOnce(view::Server<'_>) -> R) -> R {
+    match &state.shared {
+        Some(shared) => f(shared.view()),
+        None => unbound(),
+    }
+}
+
 /// The server a context not bound to a coroutine socket answers through: a
 /// copy of the held token, or a clone of the share, which only a context bound
 /// off that server's reactor keeps (a user process's `Response::create`, say).
@@ -272,12 +292,13 @@ pub(crate) fn socket(state: &State) -> Option<co::Co> {
 }
 
 /// `ctx->send`: the server's send to the session, or the coroutine socket's.
+#[inline(always)]
 pub(crate) fn send(mut ctx: Ctx, data: &[u8]) -> bool {
     let state = ctx.state();
     match socket(state) {
         // True once every byte is sent.
         Some(socket) => socket.send_all(data) == Some(data.len()),
-        None => server(state).with(|server| server_send(server, state.fd, data)),
+        None => with_server(state, |server| server_send(server, state.fd, data)),
     }
 }
 
@@ -319,8 +340,9 @@ pub(crate) fn sendfile(mut ctx: Ctx, file: &ZStr, offset: i64, length: usize) ->
         socket.sendfile(file.c_str(), offset, length)
     } else {
         let fd = state.fd;
-        server(state)
-            .with(|server| server_methods::sendfile(server, fd, file.bytes(), offset, length))
+        with_server(state, |server| {
+            server_methods::sendfile(server, fd, file.bytes(), offset, length)
+        })
     }
 }
 
@@ -329,26 +351,36 @@ pub(crate) fn close(mut ctx: Ctx) -> bool {
     let state = ctx.state();
     match socket(state) {
         Some(socket) => socket.close(),
-        None => server(state).with(|server| server_methods::close(server, state.fd, false)),
+        None => with_server(state, |server| {
+            server_methods::close(server, state.fd, false)
+        }),
     }
 }
 
 /// `Context::bind(Server *)`: the context sends through the server, which this
-/// thread's reactor holds, else through a share in it: `share`, or the process's.
+/// thread's reactor holds (a request's), else through `share`, a share in it.
 pub(crate) fn bind_server(
     state: &mut State,
     server: view::Server<'_>,
     share: Option<&SharedServer>,
 ) {
     state.server = server.held();
-    state.shared = state
-        .server
-        .is_none()
-        .then(|| share.cloned().or_else(SharedServer::current))
-        .flatten()
-        .filter(|shared| shared.view().raw() == server.raw());
+    state.shared = None;
+    if let Some(share) = share {
+        keep_share(state, server, share);
+    }
     // A server's context holds no socket.
     state.zsocket = Owned::null();
+}
+
+/// [`bind_server`] off the reactor that holds `server`: `share` keeps it.
+#[cold]
+fn keep_share(state: &mut State, server: view::Server<'_>, share: &SharedServer) {
+    let held = state.server.and_then(|held| held.with(|_| ()));
+    if held.is_none() && share.view().raw() == server.raw() {
+        state.server = None;
+        state.shared = Some(share.clone());
+    }
 }
 
 /// `Context::bind(zval *)`: the context holds the socket object and sends
@@ -391,7 +423,7 @@ pub(crate) fn upload_tmp_dir(state: &State) -> Cow<'_, CStr> {
     if co_socket(state) || !server_bound(state) {
         return Cow::Borrowed(c"/tmp");
     }
-    crate::context::server(state).with(|server| Cow::Owned(server.upload_tmp_dir()))
+    with_server(state, |server| Cow::Owned(server.upload_tmp_dir()))
 }
 
 /// A directory as `std::string::c_str()` reads it: up to its first NUL.
@@ -411,30 +443,31 @@ pub(crate) fn compression_type(state: &State, kind: Option<&[u8]>) -> bool {
     if co_socket(state) || !server_bound(state) {
         return false;
     }
-    crate::context::server(state).with(|server| server.compression_type(kind))
+    with_server(state, |server| server.compression_type(kind))
 }
 
 /// `onBeforeRequest`: a server's request is counted, or queued past
 /// `worker_max_concurrency` (false: not now; the queue keeps the handle,
 /// whose context its objects keep live until the queued request runs).
-pub(crate) fn before_request(mut ctx: Ctx) -> bool {
+pub(crate) fn before_request(server: view::Server<'_>, mut ctx: Ctx) -> bool {
     let state = ctx.state();
     if !state.before_request {
         return true;
     }
     state.before_request = false;
     state.after_response = true;
-    // Only `init` sets `before_request`, after binding the server (or a copy, with it).
-    server(state).with(|server| crate::server::admit(server, ctx))
+    // Only `init` sets `before_request`, after binding `server` (or a copy, with it).
+    crate::server::admit(server, ctx)
 }
 
 /// `onAfterResponse`: the server uncounts the request and starts a queued one.
+#[inline]
 pub(crate) fn after_response(mut ctx: Ctx) {
     let state = ctx.state();
     if state.after_response {
         state.after_response = false;
         // Set only by `before_request`, on a server-bound context.
-        server(state).with(crate::server::release_request);
+        with_server(state, crate::server::release_request);
     }
 }
 
@@ -447,7 +480,7 @@ pub(crate) fn available(mut ctx: Ctx) -> bool {
     if co_socket(state) {
         return !swoole_rs_phpclients::is_socket_closed(&state.zsocket);
     }
-    crate::context::server(state).with(|server| {
+    with_server(state, |server| {
         server
             .by_session(state.fd)
             .is_some_and(|conn| conn.closed().load(Relaxed) == 0 && !conn.peer_closed())

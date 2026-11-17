@@ -319,7 +319,7 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> Route {
             return context::release_objects(ctx);
         }
         // False leaves it queued, with its objects.
-        if !context::before_request(ctx) {
+        if !context::before_request(server, ctx) {
             return Ok(());
         }
         call(ctx, facts.coroutine)
@@ -629,7 +629,7 @@ fn http2_answer(server: view::Server<'_>, mut ctx: Ctx, fd: i64) -> Result<(), b
             (http2.respond)(ctx, &[]);
             return context::release_objects(ctx);
         }
-        if !context::before_request(ctx) {
+        if !context::before_request(server, ctx) {
             return Ok(());
         }
     }

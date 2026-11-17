@@ -82,9 +82,8 @@ pub struct Server<'a> {
     live: PhantomData<&'a Fields>,
 }
 
-/// The identity of a server this thread's reactor held ([`Server::held`]): an
-/// address, never read through, so it may outlive the server; `Option<Held>` is
-/// all zeroes when `None`.
+/// A server's identity ([`Server::held`]): an address, never read through, so it
+/// may outlive the server; `Option<Held>` is all zeroes when `None`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Held(core::ptr::NonNull<c_void>);
@@ -165,16 +164,12 @@ impl<'a> Server<'a> {
         crate::reactor_handle::Reactor::current()?.server().map(f)
     }
 
-    /// This server's identity, when this thread's reactor holds it: the worker's own
-    /// server, which serves every request the worker binds. [`Held::with`] lends it
-    /// again while the reactor still does.
+    /// This server's identity, which [`Held::with`] lends back as the server while
+    /// this thread's reactor holds it: the worker's own server, which serves every
+    /// request the worker binds.
     #[must_use]
     pub fn held(self) -> Option<Held> {
-        crate::reactor_handle::Reactor::current()?
-            .server()
-            .filter(|held| held.raw == self.raw)
-            .and_then(|held| core::ptr::NonNull::new(held.raw))
-            .map(Held)
+        core::ptr::NonNull::new(self.raw).map(Held)
     }
 
     /// The server `object` is, live as long as the borrow.

@@ -283,8 +283,11 @@ fn build(
     if let Some(header) = property(&state.response.zobject, 0)
         && let Some(header) = header.array()
     {
-        // Asked once, like upstream's `compression_types` test.
-        let typed = compression && crate::context::compression_type(state, None);
+        // Asked once, like upstream's `compression_types` test, and only when the
+        // client accepts compression: the walk below only ever clears that.
+        let typed = compression
+            && state.accept_compression
+            && crate::context::compression_type(state, None);
         let mut content_type: Option<ZString> = None;
         let walked = each(header, |key, value_| {
             let (key, flag) = header_key(key);
