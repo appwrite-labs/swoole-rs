@@ -1,81 +1,49 @@
-# ListenPort policy ABI (ports)
+# Listening ports
 
-Feature bit 8388608 (`ports`). crates/phpserver (`Swoole\Server\Port`) and
-crates/server call crates/ports' Rust functions; no C or C++ does, so there is no
-header. Tests: `tests/modules/ports/README.md`.
+The server owns each listening port’s settings in `PortConfig`. The ports crate
+supplies the socket operations, protocol selection and callback catalog used by
+the server and the PHP binding. [Port settings](../../crates/server/src/port_config.rs) · [Port tests](../../tests/modules/ports/README.md)
 
-The protocol, event and property functions are pure calls over
-copied scalars and borrowed bytes; no pointer is retained. Returned strings and spans point at static Rust storage. Protocol labels
-and option keys are NUL-terminated (length excludes NUL); class-property spans are
-not. Supported hosts: 64-bit macOS and Linux.
+## Protocol selection
 
-## Protocol selection and configuration
+`get_protocols` returns the label `dgram` for a datagram port. For streams it
+selects the first enabled protocol in the order EOF, length, HTTP, MQTT and
+Redis, with `raw` as the default. HTTP labels also identify enabled HTTP/2 and
+WebSocket support. `init_protocol` installs the protocol callbacks and readable
+handler in the port settings. It leaves ordinary datagram ports alone and
+configures DTLS ports for reads. [Protocol selection](../../crates/ports/src/methods.rs)
 
-crates/ports' `protocol(flags, length_type)` selects the existing protocol setup
-branch and `protocol_name(flags)` its static label: plain Rust functions, with no
-native symbol. Datagram/DTLS
-distinctions and the priority EOF > length > HTTP > MQTT > Redis are preserved,
-including for contradictory flags.
+## Listening sockets and TLS
 
-`ListenPort::protocol` and `onRead` live in the Rust-owned port settings
-(`PortConfig`). `init_protocol`, `set_length_protocol`, `set_stream_protocol` and the
-inline `set_eof_protocol` are Rust functions over a port's `PortConfig`
-(`crates/ports/src/methods.rs`), with no native symbol.
-`swr_v1_port_config_new` gives the constructor's protocol defaults.
+At startup, `register_methods` gives the server the eight functions in
+`PortMethods`. The socket operations are `import`, `create_socket`, `listen`,
+`close_socket` and `close`. The other entries are `get_protocols`,
+`init_protocol` and `destroy_http_request`. Import checks the descriptor’s type,
+address and `SO_ACCEPTCONN` before adopting it. A failed import leaves the
+descriptor with the caller. On macOS the listening-socket probe can return
+`ENOPROTOOPT`. [Method table](../../crates/ports/src/lib.rs) · [Socket creation and options](../../crates/ports/src/methods.rs) · [Import and close](../../crates/ports/src/lifecycle.rs)
 
-## Event catalog and callbacks
+Linux and macOS support `TCP_FASTOPEN` and `SO_KEEPALIVE`. On Linux the port
+also applies configured defer-accept, keepalive timing and retry, and TCP user
+timeout options. A socket option failure logs a warning and leaves the port
+listening. [Listening socket options](../../crates/ports/src/methods.rs)
 
-One immutable 12-event catalog.
+The server initializes the port’s TLS context, creates TLS sessions for accepted
+connections and releases the port’s context and SNI state at teardown. The first
+matching SNI context in insertion order wins. PHP’s `Port::set()` applies
+settings to the port and its TLS context. It reaches `context_dup`, `sni_add` and
+`ssl_init` through the ports crate’s re-exports. The packet EOF delimiter accepts
+one to eight bytes. [TLS ownership and SNI](../../crates/server/src/port_tls.rs) · [PHP port settings](../../crates/phpserver/src/port_settings.rs)
 
-- `event(name, native_casefold)` returns the event's index and property, or `None`.
-  `on()` uses host-libc `strncasecmp` with the original `swoole_strcaseeq` bound
-  (locale-sensitive).
-- `callback_property(name)` (getter) uses Zend ASCII folding in Rust and returns the
-  static property name, or `None`. Reusing the locale-sensitive mode here would change
-  Turkish-locale behavior.
-- `on()` installs the Server slot a port's Connect, Packet, Close, BufferFull or
-  BufferEmpty callback needs (crates/phpserver's `dispatch::port_hook`).
+## PHP events and properties
 
-## Sockets: `ListenPort::create_socket`, `listen` and `close_socket`
+The event catalog pairs 12 event names with their callback properties.
+`Port::on()` uses locale-sensitive libc case folding and installs the server
+hook for Connect, Packet, Close, BufferFull or BufferEmpty when needed.
+`getCallback()` matches event names using Zend’s ASCII case folding.
+[Event lookup](../../crates/ports/src/lib.rs) · [Server hooks](../../crates/phpserver/src/dispatch.rs)
 
-All three are Rust (`crates/ports/src/methods.rs`), over the Rust-owned settings and
-socket record. Only the server calls them, through the table `swoole_init` registers
-(`swoole_rs_ports::register_methods`, `swoole_rs_server::port_config::PortMethods`), with
-`get_protocols`, `init_protocol`, `destroy_http_request`, `ssl_context_init`,
-`ssl_create`, `import` and `close`: ports depends on the
-server, so the server can't name them. `init_protocol` keeps its upstream symbol for
-tests/modules/http/server/src/http1/case.rs. Options are those the platform defines:
-`TCP_DEFER_ACCEPT`, `TCP_KEEPIDLE`/`TCP_KEEPINTVL`/`TCP_KEEPCNT` and
-`TCP_USER_TIMEOUT` on Linux, `TCP_FASTOPEN` and `SO_KEEPALIVE` on both supported
-hosts (`SO_ACCEPTFILTER` is BSD-only). `host` is a Rust string slot in the
-settings, which C++ reads through a `RustStringView`.
-`create_socket` receives the server's `enable_reuse_port` (Linux) and reads `is_dtls()`
-(kqueue hosts). On failure the port is left without a socket. Known: on macOS, querying `SO_ACCEPTCONN` returns `ENOPROTOOPT`
-for both native and Rust, so `import` refuses every descriptor there.
-
-## TLS, SNI, import and close
-
-The server owns TLS setup, accepted-socket TLS creation, SNI selection and teardown in
-`crates/server/src/port_tls.rs`. Socket import and close live in `crates/ports/src/lifecycle.rs`.
-The port's `ssl_context` publishes its Rust owner;
-readers take a reference that survives closing the port. The SNI contexts, each with its
-reference, live in the Rust TLS state (`PortConfig::tls`). `swr_v1_server_delete` releases
-both. A DTLS session lives in its connection's SSL (corebase::tls), which the server opens over
-the port's context. SNI contexts are matched in insertion order; upstream iterated an
-`std::unordered_map`, whose order is unspecified.
-
-## `Port::set`
-
-`Swoole\Server\Port::set()` is Rust (`crates/phpserver/src/port_settings.rs`): every
-option's lookup, conversion, bound and order, written into the Rust-owned
-`PortConfig` and, on an SSL port, the context's Rust TLS owner. An over-long
-`package_eof` is rejected rather than copied. `set()` calls `dup_ssl_context`
-(`lifecycle::context_dup`), `ssl_add_sni_cert` (`sni_add`) and `ssl_init` in
-crates/ports directly.
-
-## Class properties: `swr_v1_ports_class_property(index)`
-
-Returns all 19 original Port property declarations (name, visibility, scalar
-type/default) in declaration order, then `SWR_PORTS_PROPERTY_END`. The 12 private
-names reuse the event catalog. Public: host, port, type, sock, ssl, setting,
-connections.
+During PHP class registration, `class_properties()` yields 19 declarations in
+order. The 12 private callback properties default to null. The public properties
+are `host` (null), `port` (0), `type` (0), `sock` (−1), `ssl`
+(false), `setting` (null) and `connections` (null). [Declaration iterator](../../crates/ports/src/lib.rs) · [PHP class registration](../../crates/phpserver/src/port.rs)
