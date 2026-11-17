@@ -143,8 +143,6 @@ unsafe extern "C-unwind" {
     fn swoole_coroutine_flock(fd: c_int, operation: c_int) -> c_int;
     fn swoole_coroutine_close(fd: c_int) -> c_int;
 
-    #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
-    fn system_sleep(sec: f64) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System7waitpidEiPiid"]
     fn system_waitpid(pid: c_int, status: *mut c_int, options: c_int, timeout: f64) -> c_int;
 }
@@ -216,9 +214,8 @@ fn current() -> *mut c_void {
     swoole_rs_corebase::coroutine::coroutine_get(cid)
 }
 
-fn co_sleep(sec: f64) -> c_int {
-    // SAFETY: called in a coroutine.
-    unsafe { system_sleep(sec) }
+fn co_sleep(sec: f64) {
+    _ = swoole_rs_hooks::sleep::system_sleep(sec);
 }
 
 fn wait_event(fd: c_int, events: c_int, timeout: f64) -> c_int {
