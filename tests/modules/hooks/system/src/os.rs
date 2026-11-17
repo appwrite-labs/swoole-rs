@@ -8,6 +8,7 @@
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
+use swoole_rs_corebase::swoole_rand;
 
 pub(super) use swoole_rs_hooks::async_threads::dispatch;
 pub(super) use swoole_rs_hooks::offload::AsyncEvent;
@@ -36,8 +37,6 @@ unsafe extern "C" {
     fn system_waitpid_safe(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
     #[link_name = "_Z14swoole_waitpidiPii"]
     fn swoole_waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
-    #[link_name = "_Z11swoole_randii"]
-    fn swoole_rand(min: c_int, max: c_int) -> c_int;
     #[link_name = "_Z17swoole_event_initi"]
     fn swoole_event_init(flags: c_int) -> c_int;
     #[link_name = "_Z17swoole_event_waitv"]
@@ -226,8 +225,7 @@ fn schedule() {
     tick(2, move |timer| {
         // SW_LOOP_N(swoole_rand(5, 15)): the bound is drawn again before every iteration.
         let mut i = 0;
-        // SAFETY: swoole_rand(3).
-        while i < unsafe { swoole_rand(5, 15) } {
+        while i < swoole_rand(5, 15) {
             i += 1;
             let ret = dispatch(&event);
             // SAFETY: the pool's live copy.

@@ -18,6 +18,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
+use swoole_rs_corebase::{swoole_rand, swoole_random_int};
 
 const PKG_N: usize = 128;
 const MAX_SIZE: c_int = 1024 * 1024 + 65536;
@@ -27,19 +28,11 @@ const STREAM: c_int = 0;
 const LENGTH_L4: c_int = 1;
 const EOF_CRLF: c_int = 2;
 
-unsafe extern "C" {
-    #[link_name = "_Z11swoole_randii"]
-    fn swoole_rand(min: c_int, max: c_int) -> c_int;
-    #[link_name = "_Z17swoole_random_intv"]
-    fn swoole_random_int() -> u64;
-}
-
 static PKGS: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 static RECV_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 fn rand(min: c_int, max: c_int) -> usize {
-    // SAFETY: a plain call.
-    usize::try_from(unsafe { swoole_rand(min, max) }).unwrap()
+    usize::try_from(swoole_rand(min, max)).unwrap()
 }
 
 /// `String::append_random_bytes(length, base64)` on an empty String.
@@ -100,8 +93,7 @@ fn test_protocol(framing: c_int) {
         let mut offset = 0;
         while offset < wbuf.len() {
             let n = if wbuf.len() - offset > 65536 {
-                // SAFETY: a plain call.
-                usize::try_from(unsafe { swoole_random_int() } % 65536 + 1).unwrap()
+                usize::try_from(swoole_random_int() % 65536 + 1).unwrap()
             } else {
                 wbuf.len() - offset
             };
@@ -127,7 +119,6 @@ fn length() {
     *PKGS.lock().unwrap() = (0..PKG_N)
         .map(|_| length_package(rand(MIN_SIZE, MAX_SIZE)))
         .collect();
-    // SAFETY: a plain call.
     unsafe { swoole_set_log_level(SW_LOG_WARNING) };
     test_protocol(STREAM);
 }
@@ -200,7 +191,6 @@ fn eof() {
             package
         })
         .collect();
-    // SAFETY: a plain call.
     unsafe { swoole_set_log_level(SW_LOG_WARNING) };
     test_protocol(EOF_CRLF);
 }

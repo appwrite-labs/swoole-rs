@@ -7,6 +7,7 @@ use super::*;
 use std::collections::BTreeSet;
 use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::net_types::AddressStorage;
+use swoole_rs_corebase::swoole_rand;
 use swoole_rs_process::worker_record::WorkerStatus::{
     Busy as SW_WORKER_BUSY, Idle as SW_WORKER_IDLE,
 };
@@ -25,11 +26,6 @@ const DISPATCH_CONCURRENT_LB: u8 = 10;
 struct DgramPacket {
     socket_type: c_int,
     socket_addr: Address,
-}
-
-unsafe extern "C" {
-    #[link_name = "_Z11swoole_randii"]
-    fn swoole_rand(min: c_int, max: c_int) -> c_int;
 }
 
 /// `network::Address::assign(type, host, port, false)`, as swoole_socket.h's inline does.
@@ -176,8 +172,7 @@ fn test_worker_schedule(dispatch_mode: u8, get: fn(Worker) -> usize, set: fn(Wor
     let mut init_counter = vec![0usize; worker_num];
 
     for (i, init) in init_counter.iter_mut().enumerate() {
-        // SAFETY: random in a non-empty range.
-        *init = usize::try_from(unsafe { swoole_rand(32, 512) }).unwrap();
+        *init = usize::try_from(swoole_rand(32, 512)).unwrap();
         set(worker(serv, i), *init);
     }
 

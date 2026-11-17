@@ -204,11 +204,7 @@ pub fn get_env(name: &CStr) -> Option<c_int> {
 
 /// `int swoole_type_size(char)`: the byte width of a pack-style length type, or 0.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z16swoole_type_sizec")
-)]
-pub extern "C" fn swoole_type_size(kind: c_char) -> c_int {
+pub fn swoole_type_size(kind: c_char) -> c_int {
     match kind.to_ne_bytes()[0] {
         b'c' | b'C' => 1,
         b's' | b'S' | b'n' | b'v' => 2,

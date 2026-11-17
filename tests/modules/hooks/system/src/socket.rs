@@ -20,6 +20,7 @@ use std::io::{Read, Write};
 use std::mem::ManuallyDrop;
 use std::ptr;
 use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::{swoole_rand, swoole_random_int, swoole_type_size};
 use swoole_rs_hooks::co_socket::{self, Co, OwnedCo};
 use swoole_rs_hooks::vector::{IoVector, RecvMessage, SendMessage, Vectors};
 use swoole_rs_hooks::{TimeoutScope, co_io, packet};
@@ -209,13 +210,6 @@ unsafe extern "C" {
         host: std::io::IoSlice<'_>,
         port: c_int,
     ) -> bool;
-
-    #[link_name = "_Z16swoole_type_sizec"]
-    fn swoole_type_size(kind: c_char) -> c_int;
-    #[link_name = "_Z11swoole_randii"]
-    fn swoole_rand(min: c_int, max: c_int) -> c_int;
-    #[link_name = "_Z17swoole_random_intv"]
-    fn swoole_random_int() -> u64;
 }
 
 unsafe extern "C" {
@@ -232,8 +226,7 @@ fn microtime() -> f64 {
 }
 
 pub(super) fn get_random_port() -> c_int {
-    // SAFETY: Swoole's random source.
-    TEST_PORT + c_int::try_from(unsafe { swoole_random_int() } % 10000).unwrap()
+    TEST_PORT + c_int::try_from(swoole_random_int() % 10000).unwrap()
 }
 
 pub(super) fn get_ssl_dir() -> String {
@@ -480,9 +473,8 @@ impl Sock {
         // SAFETY: every field is an integer, a bool, a byte array or a raw pointer.
         record.protocol = unsafe { std::mem::zeroed() };
         record.protocol.package_length_type = kind;
-        // SAFETY: a pure function of the type character.
         record.protocol.package_length_size =
-            u8::try_from(unsafe { swoole_type_size(c_char::from_ne_bytes([kind])) }).unwrap();
+            u8::try_from(swoole_type_size(c_char::from_ne_bytes([kind]))).unwrap();
         record.protocol.package_body_offset = body_offset;
         record.protocol.get_package_length =
             swoole_rs_ffi::ports::framing_recv::default_length_func as *const c_void;
@@ -1203,8 +1195,7 @@ fn length_protocol_server_func(port: c_int, pkts: &[Cell<Vec<u8>>; 2]) {
     let conn = sock.accept();
     let mut strbuf = Vec::with_capacity(256 * 1024);
     for pkt in pkts {
-        // SAFETY: Swoole's random source.
-        let l = usize::try_from(unsafe { swoole_rand(65536, 65536 * 2) }).unwrap();
+        let l = usize::try_from(swoole_rand(65536, 65536 * 2)).unwrap();
         let start = strbuf.len();
         strbuf.extend_from_slice(&u32::try_from(l).unwrap().to_be_bytes());
         strbuf.extend_from_slice(&random_vec(l));
