@@ -388,7 +388,7 @@ impl<'a> Connection<'a> {
     /// The HTTP request the session holds, which the slot no longer names, or `None`.
     #[must_use]
     #[inline]
-    pub fn take_http_request(self) -> Option<Box<swoole_rs_http_ffi::HttpRequest>> {
+    pub fn take_http_request(self) -> Option<Box<swoole_rs_http::HttpRequest>> {
         const TAG: usize = NOT_PORT | REQUEST;
         let raw = self.object();
         if raw.addr() & TAG != TAG {
@@ -403,10 +403,10 @@ impl<'a> Connection<'a> {
 
     /// The session holds `request` until [`Self::take_http_request`].
     #[inline]
-    pub fn hold_http_request(self, request: Box<swoole_rs_http_ffi::HttpRequest>) {
+    pub fn hold_http_request(self, request: Box<swoole_rs_http::HttpRequest>) {
         const {
             assert!(
-                align_of::<swoole_rs_http_ffi::HttpRequest>() >= 4,
+                align_of::<swoole_rs_http::HttpRequest>() >= 4,
                 "the tag takes the low bit after the shift"
             );
         }

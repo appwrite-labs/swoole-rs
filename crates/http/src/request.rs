@@ -3,6 +3,11 @@
 //! (`swoole::String` allocation, the upload's file and `swoole_tmpfile`) are direct
 //! calls, which tests run too. Its logs go through corebase's `log`. Trace logs are
 //! compiled out, as in upstream's builds without `--enable-trace-log`.
+use crate::multipart_parser::{Flow, MultipartParser, Parts};
+use crate::{
+    ChunkState, HttpChunked, HttpChunks, HttpFrame, HttpHeaderInfo, HttpSpan, MultipartError,
+    case_equal,
+};
 use core::ffi::c_int;
 use std::ffi::OsStr;
 use std::fs::File;
@@ -12,11 +17,6 @@ use swoole_rs_corebase::buffer::string::{CppString, boxed_sized_string};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as NOTICE, SW_LOG_WARNING as WARNING};
 use swoole_rs_corebase::ossupport::create_tmpfile;
 use swoole_rs_corebase::{log, set_errno};
-use swoole_rs_http::multipart_parser::{Flow, MultipartParser, Parts};
-use swoole_rs_http::{
-    ChunkState, HttpChunked, HttpChunks, HttpFrame, HttpHeaderInfo, HttpSpan, MultipartError,
-    case_equal,
-};
 
 /// `SW_LOG_NOTICE`, `SW_LOG_WARNING` and `SW_ERROR_SERVER_INVALID_REQUEST`.
 const INVALID_REQUEST: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SERVER_INVALID_REQUEST as c_int;
@@ -201,7 +201,7 @@ impl HttpRequest {
         };
         loop {
             let end = self.header_length.wrapping_sub(4) as usize;
-            let status = swoole_rs_http::header_info(input, end, &mut state);
+            let status = crate::header_info(input, end, &mut state);
             self.content_length = state.content_length;
             self.known_length = state.flags & 1 != 0;
             self.keep_alive = state.flags & 2 != 0;
@@ -266,14 +266,14 @@ impl HttpRequest {
     /// An `Expect: 100-continue` header.
     #[must_use]
     pub fn has_expect_header(&self, input: &[u8]) -> bool {
-        swoole_rs_http::has_expect_header(input)
+        crate::has_expect_header(input)
     }
 
     /// The value of header `name`, as a span of the buffer.
     #[must_use]
     pub fn get_header(&self, input: &[u8], name: &[u8]) -> Option<HttpSpan> {
         let start = self.url_offset as usize + self.url_length as usize + 10;
-        swoole_rs_http::header_value(input, start, self.header_length as usize, name)
+        crate::header_value(input, start, self.header_length as usize, name)
     }
 
     /// The request's URL, as the buffer's bytes.
@@ -324,7 +324,7 @@ impl HttpRequest {
         let Some(text) = text else {
             return false;
         };
-        let Ok(Some(boundary)) = swoole_rs_http::boundary(text, 0) else {
+        let Ok(Some(boundary)) = crate::boundary(text, 0) else {
             return false;
         };
         let at = boundary.offset..boundary.offset + boundary.length;
@@ -379,7 +379,7 @@ impl HttpRequest {
             body.view(),
         );
         let reason = parser.error_message();
-        let result = swoole_rs_http::multipart_result(processed, length, self.excepted);
+        let result = crate::multipart_result(processed, length, self.excepted);
         if result.is_ok() {
             body.clear();
         }
@@ -470,7 +470,7 @@ impl Parts<'_> for Rewrite<'_> {
         // `parse_cookie` over a NUL-terminated copy, stopping at the first `filename`.
         let mut value = data.to_vec();
         value.push(0);
-        if swoole_rs_http::multipart_filename(&mut value) != Ok(true) {
+        if crate::multipart_filename(&mut value) != Ok(true) {
             return Flow::Go;
         }
         let form = form_of(self.request);
@@ -727,7 +727,7 @@ mod tests {
     fn all_method() {
         let pri = 27;
         for i in 0..pri + 4 {
-            let Some(name) = swoole_rs_http::method_string(i) else {
+            let Some(name) = crate::method_string(i) else {
                 assert!(i == 0 || i > pri, "{i}");
                 continue;
             };

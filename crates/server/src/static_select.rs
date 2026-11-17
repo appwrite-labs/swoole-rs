@@ -251,7 +251,7 @@ impl SendfileTask {
 /// The server, request, session and socket of an HTTP/1 static response.
 struct Wire<'a> {
     server: crate::view::Server<'a>,
-    request: &'a swoole_rs_http_ffi::HttpRequest,
+    request: &'a swoole_rs_http::HttpRequest,
     session_id: core::ffi::c_long,
     socket: swoole_rs_corebase::reactor::Socket<'a>,
 }
@@ -259,10 +259,7 @@ struct Wire<'a> {
 impl Wire<'_> {
     /// Read the owned request with its receive buffer's bytes, while the socket
     /// still holds the buffer.
-    fn read<R>(
-        &self,
-        read: impl FnOnce(&swoole_rs_http_ffi::HttpRequest, &[u8]) -> R,
-    ) -> Option<R> {
+    fn read<R>(&self, read: impl FnOnce(&swoole_rs_http::HttpRequest, &[u8]) -> R) -> Option<R> {
         (self.socket).read(|s| Some(read(self.request, s.recv_buffer.as_ref()?.view())))
     }
 }
@@ -302,7 +299,7 @@ impl Exchange for Wire<'_> {
 #[must_use]
 pub fn static_select(
     server: crate::view::Server<'_>,
-    request: &swoole_rs_http_ffi::HttpRequest,
+    request: &swoole_rs_http::HttpRequest,
     session_id: core::ffi::c_long,
     socket: swoole_rs_corebase::reactor::Socket<'_>,
 ) -> bool {

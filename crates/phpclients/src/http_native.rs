@@ -154,7 +154,7 @@ impl Co {
                 return None;
             }
             let mut value = b"Basic ".to_vec();
-            value.extend(swoole_rs_http_ffi::authorization(proxy));
+            value.extend(swoole_rs_http::authorization(proxy));
             Some(value)
         })
         .flatten()

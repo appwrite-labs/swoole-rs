@@ -12,7 +12,7 @@ crate-type = ["rlib"]
 [dependencies]
 libc = "=0.2.191"
 swoole-rs-server = { path = "../server", features = ["upstream-symbols"] }
-swoole-rs-http-ffi = { path = "../http-ffi" }
+swoole-rs-http = { path = "../http" }
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-error = { path = "../error" }
 swoole-rs-clients = { path = "../clients" }

@@ -16,7 +16,6 @@ swoole-rs-corebase = { path = "../crates/corebase" }
 swoole-rs-deflate = { path = "../crates/deflate" }
 swoole-rs-framing = { path = "../crates/framing" }
 swoole-rs-http = { path = "../crates/http" }
-swoole-rs-http-ffi = { path = "../crates/http-ffi" }
 swoole-rs-http2 = { path = "../crates/http2" }
 swoole-rs-inflate = { path = "../crates/inflate" }
 libc = "=0.2.191"

@@ -27,7 +27,6 @@ pub use swoole_rs_server::*;
 pub use swoole_rs_corebase::memory::*;
 
 pub use swoole_rs_http::*;
-pub use swoole_rs_http_ffi::*;
 
 pub use swoole_rs_corebase::utilities::*;
 

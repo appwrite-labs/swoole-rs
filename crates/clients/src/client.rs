@@ -588,7 +588,7 @@ impl Handle<'_> {
             };
             // The whole allocation, zeroed so every byte lent is initialized.
             shared.read_zeroed(shared.size(), |output| {
-                swoole_rs_http_ffi::proxy_connect(proxy, host, output)
+                swoole_rs_http::proxy_connect(proxy, host, output)
             });
         });
         if packed.is_some() { shared.view() } else { &[] }
@@ -1077,7 +1077,7 @@ pub fn set_proxy(
     let port = port.c_cast::<c_int>();
     let which = if http { Proxy::Http } else { Proxy::Socks5 };
     let proxy = if http {
-        Some(swoole_rs_http_ffi::http_proxy(host, port, user, password))
+        Some(swoole_rs_http::http_proxy(host, port, user, password))
     } else {
         match crate::owned_proxy::admit(user.len(), password.len()) {
             0 => None,
@@ -1356,7 +1356,7 @@ fn tcp_connect_sync(
                 n = recv(this, bytes, 0).unwrap_or(0);
                 n
             });
-            n > 0 && swoole_rs_http_ffi::proxy_accept(shared.view())
+            n > 0 && swoole_rs_http::proxy_accept(shared.view())
         })
     {
         return false;
@@ -1831,8 +1831,7 @@ fn on_read(this: Handle<'_>) -> bool {
     let http = this.proxy_state(Proxy::Http);
     if http.is_some_and(|state| state != HTTP_PROXY_READY) {
         let accepted = this.edit_input(|input, socket, ops| {
-            (ops.recv_append)(socket, input) > Some(0)
-                && swoole_rs_http_ffi::proxy_accept(input.view())
+            (ops.recv_append)(socket, input) > Some(0) && swoole_rs_http::proxy_accept(input.view())
         });
         if !accepted {
             log::set_last_error(ERROR_HTTP_PROXY_HANDSHAKE_ERROR);

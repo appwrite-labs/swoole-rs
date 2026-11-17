@@ -17,7 +17,7 @@ use swoole_rs_clients::owned_proxy::{Socks5Proxy, admit, pack_negotiate_request,
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{NameResolverContext, ProxyState, log};
-use swoole_rs_http_ffi::{proxy_accept, proxy_connect};
+use swoole_rs_http::{proxy_accept, proxy_connect};
 
 /// Swoole error codes this sequence sets.
 const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
@@ -547,7 +547,7 @@ impl Co {
     /// A connect already running keeps the proxy it started with.
     pub fn set_proxy(self, http: bool, host: &[u8], port: c_int, user: &[u8], password: &[u8]) {
         let proxy = if http {
-            Some(Rc::from(swoole_rs_http_ffi::http_proxy(
+            Some(Rc::from(swoole_rs_http::http_proxy(
                 host, port, user, password,
             )))
         } else {

@@ -1,9 +1,7 @@
 //! `HttpProxy`'s create, pack and handshake over corebase's proxy owner, which the
 //! clients and hooks call, over crates/http's CONNECT formatting.
+use crate::{Handshake, HttpProxyRequest, proxy_authorization, proxy_handshake, proxy_pack};
 use swoole_rs_corebase::{ProxyState, VERSION, log, set_errno};
-use swoole_rs_http::{
-    Handshake, HttpProxyRequest, proxy_authorization, proxy_handshake, proxy_pack,
-};
 
 const HANDSHAKE_FAILED: i32 =
     swoole_rs_error::ErrorCode::SW_ERROR_HTTP_PROXY_HANDSHAKE_FAILED as i32;

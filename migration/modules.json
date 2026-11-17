@@ -91,7 +91,6 @@
       ],
       "owned_paths": [
         "crates/http/",
-        "crates/http-ffi/",
         "crates/locale/",
         "crates/brotli/",
         "crates/deflate/",

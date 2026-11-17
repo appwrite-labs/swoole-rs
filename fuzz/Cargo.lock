@@ -143,7 +143,7 @@ dependencies = [
  "swoole-rs-base64",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-http-ffi",
+ "swoole-rs-http",
  "swoole-rs-protocols",
  "swoole-rs-websocket",
 ]
@@ -202,7 +202,6 @@ dependencies = [
  "swoole-rs-deflate",
  "swoole-rs-framing",
  "swoole-rs-http",
- "swoole-rs-http-ffi",
  "swoole-rs-http2",
  "swoole-rs-inflate",
  "swoole-rs-oracle",
@@ -217,17 +216,9 @@ dependencies = [
  "libc",
  "memchr",
  "swoole-rs-base64",
- "swoole-rs-locale",
-]
-
-[[package]]
-name = "swoole-rs-http-ffi"
-version = "0.1.0"
-dependencies = [
- "libc",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-http",
+ "swoole-rs-locale",
 ]
 
 [[package]]

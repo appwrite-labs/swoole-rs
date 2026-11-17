@@ -24,7 +24,7 @@ swoole-rs-clients = { path = "../clients" }
 swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
 swoole-rs-error = { path = "../error" }
 swoole-rs-error-ffi = { path = "../error-ffi" }
-swoole-rs-http-ffi = { path = "../http-ffi" }
+swoole-rs-http = { path = "../http" }
 openssl-sys = { version = "=0.9.118", optional = true }
 swoole-rs-ssh2-sys = { path = "../ssh2-sys", optional = true }
 
