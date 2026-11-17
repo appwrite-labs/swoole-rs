@@ -14,7 +14,7 @@ use std::{
     hash::{BuildHasherDefault, Hasher},
     sync::atomic::{AtomicU64, Ordering},
 };
-use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_corebase::{
     log::set_last_error, swoole_rand_any, swr_v1_core_dns_lookup_random,
     swr_v1_core_set_aio_core_worker_num, swr_v1_core_set_aio_max_idle_time,
@@ -74,10 +74,7 @@ thread_local! {
 
 /// `f` on the cache, out of its cell until `f` returns.
 fn with_cache<R>(f: impl FnOnce(&mut Lookups) -> R) -> R {
-    let mut cache = CACHE.take();
-    let result = f(&mut cache);
-    CACHE.set(cache);
-    result
+    CACHE.with(|cache| cache.with_taken(f))
 }
 
 fn truthy(value: &Value) -> bool {
