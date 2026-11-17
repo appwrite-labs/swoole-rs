@@ -55,15 +55,6 @@ impl<T> Process<T> {
     }
 }
 
-/// `f` of the value taken out of `cell`, which is put back after: a nested
-/// use meanwhile sees the default.
-pub(crate) fn put_back<T: Default, R>(cell: &std::cell::Cell<T>, f: impl FnOnce(&mut T) -> R) -> R {
-    let mut value = cell.take();
-    let result = f(&mut value);
-    cell.set(value);
-    result
-}
-
 pub mod channel;
 mod classes;
 pub use classes::*;
