@@ -1,5 +1,8 @@
 # HTTP tests
 
+The HTTP server fixtures call corebase's `microtime` directly; the clock reads,
+health checks and elapsed-time assertions are unchanged.
+
 The HTTP module is `crates/http`; its exports' contracts are their doc comments.
 
 Rust unit tests:

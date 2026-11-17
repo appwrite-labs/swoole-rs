@@ -28,7 +28,7 @@ use swoole_rs_corebase::net_types::SocketAddress as Address;
 use swoole_rs_corebase::process::task_file::Packed;
 use swoole_rs_corebase::process::worker_record::Worker;
 pub(super) use swoole_rs_corebase::utilities::swoole_set_log_level;
-use swoole_rs_corebase::{DataHead, ServerEvent};
+use swoole_rs_corebase::{DataHead, ServerEvent, microtime};
 use swoole_rs_server::callbacks::{Callback, CallbackKind as Slot};
 use swoole_rs_server::reactor_entry::RecvData;
 use swoole_rs_server::{
@@ -109,11 +109,6 @@ unsafe extern "C" {
     fn time(out: *mut i64) -> i64;
     fn gmtime(time: *const i64) -> *const c_void;
     fn strftime(out: *mut c_char, size: usize, format: *const c_char, tm: *const c_void) -> usize;
-}
-
-unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole9microtimeEv"]
-    fn microtime() -> f64;
 }
 
 unsafe extern "C" {
@@ -543,8 +538,7 @@ fn http_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
         serv.get_idle_worker_num() <= serv.config().worker_num.get(),
         "get_idle_worker_num() <= worker_num",
     );
-    // SAFETY: the clock.
-    let now = unsafe { microtime() };
+    let now = microtime();
     expect(
         serv.is_healthy_connection(now, conn),
         "is_healthy_connection(microtime(), conn)",

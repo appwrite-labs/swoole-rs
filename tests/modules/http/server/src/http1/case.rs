@@ -596,8 +596,7 @@ pub(crate) unsafe fn swr_case_close_actively(serv: *mut c_void, session_id: c_lo
 
 pub(crate) unsafe fn swr_case_healthy(serv: *mut c_void, session_id: c_long) -> bool {
     let serv = Server(serv);
-    // SAFETY: a plain call.
-    let now = unsafe { microtime() };
+    let now = microtime();
     serv.is_healthy_connection(now, serv.get_connection_by_session_id(session_id))
 }
 

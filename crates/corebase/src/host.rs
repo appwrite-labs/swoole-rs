@@ -190,10 +190,6 @@ pub fn swoole_dump_bin(data: &[u8], kind: c_char) {
 
 /// `void swoole_print_backtrace()`: up to 16 frames, one symbol per line (upstream's
 /// build without Boost.Stacktrace).
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z22swoole_print_backtracev")
-)]
 pub extern "C" fn swoole_print_backtrace() {
     #[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
     {
@@ -212,10 +208,6 @@ pub extern "C" fn swoole_print_backtrace() {
 /// `swoole::microtime`: wall-clock seconds, as libstdc++'s
 /// `duration<double>` of the nanosecond `system_clock` count.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole9microtimeEv")
-)]
 pub extern "C" fn microtime() -> f64 {
     // One clock_gettime, as libstdc++'s system_clock::now(); std's SystemTime adds
     // a checked subtraction on every request (#853).
@@ -549,10 +541,6 @@ static DEV_RANDOM: AtomicI32 = AtomicI32::new(-1);
 /// # Panics
 /// Unless `max > min`, as upstream asserts.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z20swoole_system_randomii")
-)]
 pub extern "C" fn swoole_system_random(min: c_int, max: c_int) -> c_int {
     assert!(max > min, "swoole_system_random: max > min");
     let mut fd = DEV_RANDOM.load(Ordering::Relaxed);
@@ -586,10 +574,6 @@ fn redirect(new_fd: c_int) -> [c_int; 2] {
 }
 
 /// `void swoole_redirect_stdout(int new_fd)`: `dup2` onto stdout, then stderr.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z22swoole_redirect_stdouti")
-)]
 pub extern "C" fn swoole_redirect_stdout(new_fd: c_int) {
     let failed = redirect(new_fd);
     let origin = c"swoole_redirect_stdout";
@@ -626,10 +610,6 @@ pub fn swoole_redirect_stdout_file(file: &CStr) {
 
 /// `void swoole_print_backtrace_on_error()`: the backtrace and the host's own,
 /// when `print_backtrace_on_error` is set.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z31swoole_print_backtrace_on_errorv")
-)]
 pub extern "C" fn swoole_print_backtrace_on_error() {
     if !crate::swr_v1_core_print_backtrace_on_error() {
         return;

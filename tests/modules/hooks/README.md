@@ -1,5 +1,8 @@
 # Hooks
 
+The process-pool fixture calls corebase's `swoole_system_random` directly, with
+the original range and draw timing; its C++ export is gone.
+
 Pin `76c657d88be39b7af6bf85e46bcbac0da7387760`.
 
 The socket fixtures borrow `corebase::buffer::string::CppString` directly; client

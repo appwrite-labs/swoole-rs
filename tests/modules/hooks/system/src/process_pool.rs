@@ -235,9 +235,6 @@ struct Worker {
 unsafe extern "C" {
     static swr_case_process_layout: [usize; 6];
 
-    #[link_name = "_Z20swoole_system_randomii"]
-    fn swoole_system_random(min: c_int, max: c_int) -> c_int;
-
     fn fork() -> c_int;
     fn kill(pid: c_int, sig: c_int) -> c_int;
     fn getpid() -> c_int;
@@ -731,8 +728,8 @@ fn random_c_string() -> Vec<u8> {
 
 fn test_func(pool: *mut Pool) {
     let mut data = EventData::new();
-    // SAFETY: swoole_system_random.
-    let size = unsafe { swoole_system_random(1024, 4096.min(SW_IPC_BUFFER_SIZE as c_int)) };
+    let size =
+        swoole_rs_corebase::swoole_system_random(1024, 4096.min(SW_IPC_BUFFER_SIZE as c_int));
     let size = usize::try_from(size).unwrap();
     let mut rmem = random_string(size);
 

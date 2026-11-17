@@ -30,7 +30,5 @@ const char *swoole_strerror(int code);
 void swoole_throw_error(int code);
 void swoole_ignore_error(int code);
 bool swoole_is_ignored_error(int code);
-void swoole_set_trace_flags(long flags);
-void swoole_set_print_backtrace_on_error(bool enable = true);
 #endif
 #endif
