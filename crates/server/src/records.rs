@@ -67,11 +67,6 @@ pub struct ConnectionRecord {
     /// The WebSocket message being reassembled: a box only the connection's reactor
     /// makes, takes and frees.
     pub(crate) websocket_buffer: Cell<Option<Box<swoole_rs_corebase::buffer::string::CppString>>>,
-    /// Null, or the `CppString` box the worker `ssl_client_cert_pid` stored with
-    /// [`Connection::store_client_cert`]. Private with the pid, so nothing else names a
-    /// certificate here.
-    pub(crate) ssl_client_cert: Cell<*mut c_void>,
-    pub(crate) ssl_client_cert_pid: Cell<c_int>,
     pub lock: AtomicU32,
     pub closed: AtomicU32,
     pub server_fd: Cell<c_int>,
@@ -132,10 +127,20 @@ impl ConnectionRecord {
         self.uid.set(0);
         self.websocket_status.set(WebSocketStatus::None);
         self.websocket_buffer.set(None);
-        self.ssl_client_cert.set(core::ptr::null_mut());
-        self.ssl_client_cert_pid.set(0);
         self.lock.store(0, Relaxed);
     }
+}
+
+/// A worker's client certificate slot: the session it was stored for, and its bytes.
+type ClientCert = Option<(libc::c_long, Box<[u8]>)>;
+
+thread_local! {
+    /// The client certificates this worker stored (`OP_STORE_CLIENT_CERT`), by
+    /// connection fd, each with its session. Upstream keeps a pointer and the storing
+    /// worker's pid in the shared connection record; a worker-local table names only
+    /// this worker's own allocations, and a later session on the fd replaces a
+    /// certificate whose close went to another worker.
+    static CLIENT_CERTS: Cell<Vec<ClientCert>> = const { Cell::new(Vec::new()) };
 }
 
 /// The top address bit: set on every slot object but a port.
@@ -260,8 +265,6 @@ impl<'a> Connection<'a> {
     field!(last_dispatch_time, set_last_dispatch_time: f64);
     field!(uid, set_uid: u32);
     field!(websocket_status, set_websocket_status: WebSocketStatus);
-    field!(private ssl_client_cert, set_ssl_client_cert: *mut c_void);
-    field!(private ssl_client_cert_pid, set_ssl_client_cert_pid: c_int);
 
     /// The connection's socket, if it holds one.
     #[must_use]
@@ -321,28 +324,44 @@ impl<'a> Connection<'a> {
 
     /// `OP_STORE_CLIENT_CERT`: `cert` is the connection's client certificate, which
     /// only this worker reads and frees.
-    pub fn store_client_cert(self, cert: swoole_rs_corebase::buffer::string::CppString) {
-        self.set_ssl_client_cert(Box::into_raw(Box::new(cert)).cast());
-        self.set_ssl_client_cert_pid(swoole_rs_corebase::process::methods::swoole_get_worker_pid());
+    pub fn store_client_cert(self, cert: &[u8]) {
+        let Ok(fd) = usize::try_from(self.fd()) else {
+            return;
+        };
+        CLIENT_CERTS.with(|certs| {
+            let mut held = certs.take();
+            if held.len() <= fd {
+                held.resize_with(fd + 1, || None);
+            }
+            if let Some(slot) = held.get_mut(fd) {
+                *slot = Some((self.session_id(), cert.into()));
+            }
+            certs.set(held);
+        });
     }
 
-    /// `OP_FREE_CLIENT_CERT`: the certificate this worker stored, taken from the
-    /// connection, or `None` when this worker stored none.
-    #[must_use]
-    pub fn take_client_cert(self) -> Option<Box<swoole_rs_corebase::buffer::string::CppString>> {
-        let cert = self
-            .ssl_client_cert()
-            .cast::<swoole_rs_corebase::buffer::string::CppString>();
-        if cert.is_null()
-            || self.ssl_client_cert_pid()
-                != swoole_rs_corebase::process::methods::swoole_get_worker_pid()
-        {
-            return None;
-        }
-        self.set_ssl_client_cert(core::ptr::null_mut());
-        // SAFETY: the box `store_client_cert` made in this worker, which the
-        // connection named until just now.
-        Some(unsafe { Box::from_raw(cert) })
+    /// `OP_FREE_CLIENT_CERT`: frees the certificate this worker stored for the
+    /// connection, if any.
+    pub fn free_client_cert(self) {
+        self.client_cert(Option::take);
+    }
+
+    /// `f` over the certificate slot this worker keeps for the connection's fd, which
+    /// holds a certificate only when it was stored for this session.
+    fn client_cert<R>(self, f: impl FnOnce(&mut ClientCert) -> Option<R>) -> Option<R> {
+        let fd = usize::try_from(self.fd()).ok()?;
+        CLIENT_CERTS.with(|certs| {
+            let mut held = certs.take();
+            let found = held
+                .get_mut(fd)
+                .filter(|slot| {
+                    slot.as_ref()
+                        .is_some_and(|(session, _)| *session == self.session_id())
+                })
+                .and_then(f);
+            certs.set(held);
+            found
+        })
     }
     field!(server_fd, set_server_fd: c_int);
 
@@ -437,17 +456,7 @@ impl<'a> Connection<'a> {
     /// `f` over the client certificate this worker stored for the connection
     /// (`OP_STORE_CLIENT_CERT`), or `None` when this worker stored none.
     pub fn with_client_cert<R>(self, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
-        if self.ssl_client_cert_pid()
-            != swoole_rs_corebase::process::methods::swoole_get_worker_pid()
-        {
-            return None;
-        }
-        let cert = self
-            .ssl_client_cert()
-            .cast::<swoole_rs_corebase::buffer::string::CppString>();
-        // SAFETY: null, or the certificate this worker made, which only this worker's
-        // `OP_FREE_CLIENT_CERT` frees, and not during `f`, which gets a borrow.
-        unsafe { cert.as_ref() }.map(|cert| f(cert.view()))
+        self.client_cert(|slot| slot.as_ref().map(|(_, cert)| f(cert)))
     }
 }
 
@@ -803,7 +812,6 @@ pub(crate) mod tests {
         conn.set_last_recv_time(1.5);
         conn.set_uid(6);
         conn.set_websocket_status(WebSocketStatus::Active);
-        conn.set_ssl_client_cert_pid(7);
         record.lock.store(1, Relaxed);
         conn.clear();
         assert!(conn.is_active());
@@ -813,8 +821,46 @@ pub(crate) mod tests {
         assert!(!conn.close_force());
         assert_eq!(conn.last_recv_time().to_bits(), 0);
         assert_eq!(conn.websocket_status(), WebSocketStatus::None);
-        assert_eq!(conn.ssl_client_cert_pid(), 0);
         assert_eq!(record.lock.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn a_client_cert_is_read_and_freed_only_for_its_session() {
+        // SAFETY: a connection record is plain data; zero is a closed one.
+        let record: ConnectionRecord = unsafe { core::mem::zeroed() };
+        let conn = Connection::from(&record);
+        conn.set_fd(9);
+        conn.set_session_id(1);
+        assert_eq!(conn.with_client_cert(<[u8]>::to_vec), None, "none stored");
+        conn.store_client_cert(b"cert");
+        assert_eq!(
+            conn.with_client_cert(<[u8]>::to_vec).as_deref(),
+            Some(&b"cert"[..])
+        );
+        // A later session on the fd reads nothing, and its close keeps the first's.
+        conn.set_session_id(2);
+        assert_eq!(
+            conn.with_client_cert(<[u8]>::to_vec),
+            None,
+            "another session"
+        );
+        conn.free_client_cert();
+        conn.set_session_id(1);
+        assert!(conn.with_client_cert(|_| ()).is_some(), "still stored");
+        conn.free_client_cert();
+        assert_eq!(conn.with_client_cert(<[u8]>::to_vec), None, "freed");
+        // Another thread (worker) never sees this one's.
+        conn.store_client_cert(b"cert");
+        let other = std::thread::spawn(|| {
+            // SAFETY: as above.
+            let record: ConnectionRecord = unsafe { core::mem::zeroed() };
+            let conn = Connection::from(&record);
+            conn.set_fd(9);
+            conn.set_session_id(1);
+            conn.with_client_cert(|_| ()).is_some()
+        });
+        assert_eq!(other.join().ok(), Some(false), "another worker's");
+        conn.free_client_cert();
     }
 
     #[test]

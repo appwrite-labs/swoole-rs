@@ -20,10 +20,7 @@ pub mod minit;
 #[cfg(feature = "php")]
 pub mod pdo;
 
-use pq_sys::{
-    ConnStatusType, Oid, PGconn, PGresult, PQsendPrepare, PQsendQueryParams, PQsendQueryPrepared,
-    PostgresPollingStatusType,
-};
+use pq_sys::{ConnStatusType, Oid, PGconn, PGresult, PostgresPollingStatusType};
 use std::{
     cell::Cell,
     ffi::{c_char, c_int, c_void},
@@ -494,32 +491,75 @@ pub extern "C" fn swoole_pgsql_exec(conn: Conn, query: Text<'_>) -> *mut PGresul
     finish(conn, PQsendQuery(conn, query))
 }
 
+/// A parameter array the driver handed over: null, or readable for the parameter
+/// count passed beside it. As with [`Conn`], only the exports' parameters make one.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Params<T>(*const T);
+
+/// One parameter's value: null for SQL NULL, else readable up to its NUL in text
+/// format, or for its length in the lengths array beside it in binary format.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Value(*const c_char);
+
+// libpq's own declarations of the parameterised sends, each argument typed as what
+// libpq requires of it. As `PQsendQuery`, each copies the statement and parameters
+// into the connection's output buffer and parses no input, so it runs no notice
+// callback; it refuses a null name or statement with an error on the connection.
+unsafe extern "C" {
+    safe fn PQsendPrepare(
+        conn: Conn,
+        stmt_name: Option<Text<'_>>,
+        query: Option<Text<'_>>,
+        n_params: c_int,
+        param_types: Params<Oid>,
+    ) -> c_int;
+    safe fn PQsendQueryPrepared(
+        conn: Conn,
+        stmt_name: Option<Text<'_>>,
+        n_params: c_int,
+        param_values: Params<Value>,
+        param_lengths: Params<c_int>,
+        param_formats: Params<c_int>,
+        result_format: c_int,
+    ) -> c_int;
+    safe fn PQsendQueryParams(
+        conn: Conn,
+        command: Option<Text<'_>>,
+        n_params: c_int,
+        param_types: Params<Oid>,
+        param_values: Params<Value>,
+        param_lengths: Params<c_int>,
+        param_formats: Params<c_int>,
+        result_format: c_int,
+    ) -> c_int;
+}
+
 /// Each `swoole_pgsql_<call>` sends `<send>` on the connection, then waits for its
-/// result, as libpq's blocking call would.
+/// result, as libpq's blocking call would. `<send>`'s whole contract is what the
+/// arguments' types carry.
 macro_rules! sent {
     ($($name:ident => $send:ident, like $blocking:literal ($($arg:ident: $ty:ty),*);)*) => {$(
-        #[doc = concat!("`", stringify!($name), "`: `", stringify!($send), "`, then its result.")]
-        /// # Safety
-        #[doc = concat!("As `", $blocking, "`.")]
+        #[doc = concat!("`", stringify!($name), "`: `", stringify!($send), "`, then its result, as `", $blocking, "`.")]
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(conn: Conn, $($arg: $ty),*) -> *mut PGresult {
-            // SAFETY: per the caller.
-            let sent = unsafe { $send(conn.0, $($arg),*) };
-            finish(conn, sent)
+        pub extern "C" fn $name(conn: Conn, $($arg: $ty),*) -> *mut PGresult {
+            finish(conn, $send(conn, $($arg),*))
         }
     )*};
 }
 
 sent! {
     swoole_pgsql_prepare => PQsendPrepare, like "PQprepare" (
-        stmt_name: *const c_char, query: *const c_char, n_params: c_int, param_types: *const Oid);
+        stmt_name: Option<Text<'_>>, query: Option<Text<'_>>, n_params: c_int,
+        param_types: Params<Oid>);
     swoole_pgsql_exec_prepared => PQsendQueryPrepared, like "PQexecPrepared" (
-        stmt_name: *const c_char, n_params: c_int, param_values: *const *const c_char,
-        param_lengths: *const c_int, param_formats: *const c_int, result_format: c_int);
+        stmt_name: Option<Text<'_>>, n_params: c_int, param_values: Params<Value>,
+        param_lengths: Params<c_int>, param_formats: Params<c_int>, result_format: c_int);
     swoole_pgsql_exec_params => PQsendQueryParams, like "PQexecParams" (
-        command: *const c_char, n_params: c_int, param_types: *const Oid,
-        param_values: *const *const c_char, param_lengths: *const c_int,
-        param_formats: *const c_int, result_format: c_int);
+        command: Option<Text<'_>>, n_params: c_int, param_types: Params<Oid>,
+        param_values: Params<Value>, param_lengths: Params<c_int>,
+        param_formats: Params<c_int>, result_format: c_int);
 }
 
 #[cfg(test)]

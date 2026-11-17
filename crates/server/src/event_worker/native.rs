@@ -15,7 +15,6 @@ use process::worker_globals::{
     current_worker, with_current, with_globals, worker_global_detach, worker_global_stopped,
 };
 use process::worker_record::{Worker, WorkerStatus, WorkerType, swr_v1_worker_shutdown};
-use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::reactor::{Event, Heap, Running};
 use swoole_rs_corebase::{DataHead, log};
 
@@ -183,24 +182,15 @@ fn run_task(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead, slot: R
 /// The session's client certificate, sent with its connect event.
 fn store_client_cert(serv: view::Server<'_>, info: &DataHead) {
     if let Some(conn) = serv.state().connection(info.fd, Lookup::Verified) {
-        conn.store_client_cert(bus(serv).with_packet(client_cert));
+        bus(serv).with_packet(|cert| conn.store_client_cert(cert));
     }
 }
 
 /// Frees the session's client certificate, if this worker stored it.
 fn free_client_cert(serv: view::Server<'_>, info: &DataHead) {
-    let conn = serv.state().connection(info.fd, Lookup::Verified);
-    if let Some(mut cert) = conn.and_then(crate::Connection::take_client_cert) {
-        cert.dispose();
+    if let Some(conn) = serv.state().connection(info.fd, Lookup::Verified) {
+        conn.free_client_cert();
     }
-}
-
-/// `new String(data, length)`: the connection's client certificate.
-fn client_cert(data: &[u8]) -> CppString {
-    let mut cert = CppString::EMPTY;
-    cert.alloc(data.len(), None);
-    cert.append(data);
-    cert
 }
 
 /// `Server::worker_start_callback(worker)`.

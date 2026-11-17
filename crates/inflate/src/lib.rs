@@ -141,10 +141,9 @@ mod tests {
     fn deflate(bytes: &[u8], window_bits: c_int) -> Vec<u8> {
         // Produce a reference stream with zlib's own deflate, matching window bits.
         let mut stream = Stream::deflate(6, window_bits, 8).unwrap();
-        let mut out = vec![0u8; bytes.len() + 64];
-        let step = stream.run(&mut &bytes[..], &mut out, swoole_rs_zlib::Z_FINISH);
+        let mut out = Vec::with_capacity(bytes.len() + 64);
+        let step = stream.run_into(&mut &bytes[..], &mut out, swoole_rs_zlib::Z_FINISH);
         assert_eq!(step.status, Z_STREAM_END);
-        out.truncate(step.written);
         out
     }
 

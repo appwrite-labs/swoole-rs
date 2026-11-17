@@ -47,10 +47,22 @@ unsafe extern "C" {
     ) -> usize;
 }
 
+/// A native `char` widened to `int`, as the pinned C passes one to `<ctype.h>`: a value
+/// in -128..=255, which glibc's, musl's and Apple's tables all index.
+#[repr(transparent)]
+struct Char(c_int);
+
+impl From<u8> for Char {
+    fn from(byte: u8) -> Self {
+        Self(c_int::from(c_char::from_ne_bytes([byte])))
+    }
+}
+
 // `tolower` reads only the current locale's table, and glibc and musl bound the
-// argument first, so any `int` is defined.
+// argument first, so any `int` is defined. `isspace` reads the table at a [`Char`].
 unsafe extern "C" {
     safe fn tolower(byte: c_int) -> c_int;
+    safe fn isspace(byte: Char) -> c_int;
 }
 
 /// An all-zero `tm`, as a native `tm{}`.
@@ -193,9 +205,7 @@ fn longer(left: &[u8], right: &[u8]) -> bool {
 /// pinned C passes it.
 #[must_use]
 pub fn is_space(byte: u8) -> bool {
-    let byte = std::ffi::c_int::from(std::ffi::c_char::from_ne_bytes([byte]));
-    // SAFETY: a value in -128..=255, which glibc's, musl's and Apple's tables all index.
-    unsafe { libc::isspace(byte) != 0 }
+    isspace(byte.into()) != 0
 }
 /// True when libc's case-insensitive comparison differs at this first byte pair in
 /// every locale, so the call can be skipped: `tolower` keeps ASCII in ASCII except
@@ -220,6 +230,15 @@ pub fn case_prefix(input: &[u8], expected: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn is_space_matches_libc() {
+        for byte in 0..=u8::MAX {
+            let native = c_int::from(c_char::from_ne_bytes([byte]));
+            // SAFETY: a native `char`'s value, which libc's table indexes.
+            let libc = unsafe { libc::isspace(native) } != 0;
+            assert_eq!(is_space(byte), libc, "{byte:#x}");
+        }
+    }
     #[test]
     fn case_comparison_matches_libc_in_each_locale() {
         let locales = [

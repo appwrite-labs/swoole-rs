@@ -10,14 +10,16 @@
 )]
 
 use std::ffi::{CStr, c_char, c_int, c_void};
+use std::marker::PhantomData;
+use std::mem::MaybeUninit;
 use std::ptr::null_mut;
 
 pub use libz_sys::{
     Z_BUF_ERROR, Z_DATA_ERROR, Z_FINISH, Z_NO_FLUSH, Z_OK, Z_STREAM_END, Z_SYNC_FLUSH,
 };
-use libz_sys::{Z_DEFAULT_STRATEGY, Z_DEFLATED, deflate, inflate, uInt, uLong, z_stream};
+use libz_sys::{Z_DEFAULT_STRATEGY, Z_DEFLATED, uInt, uLong, z_stream};
 
-/// The most input or output one [`Stream::run`] hands zlib (its `uInt`).
+/// The most input or output one [`Stream::run_into`] hands zlib (its `uInt`).
 pub const CHUNK: usize = uInt::MAX as usize;
 
 /// A [`Stream`]'s `z_stream`. Only [`fresh`] makes one, and only zlib's own calls
@@ -26,6 +28,31 @@ pub const CHUNK: usize = uInt::MAX as usize;
 /// check accepts or refuses without reading anything else.
 #[repr(transparent)]
 struct Z(z_stream);
+
+/// A [`Stream`]'s `z_stream` lent to one `inflate` or `deflate` call: its `next_in`
+/// names `avail_in` bytes readable and its `next_out` `avail_out` bytes writable, each
+/// live and reached through nothing else for `'a`. Only [`Lent::new`] makes one.
+#[repr(transparent)]
+struct Lent<'a>(
+    &'a mut Z,
+    PhantomData<(&'a [u8], &'a mut [MaybeUninit<u8>])>,
+);
+
+/// A length as zlib's `uInt`, saturated: never more than the length.
+fn room(length: usize) -> uInt {
+    uInt::try_from(length).unwrap_or(uInt::MAX)
+}
+
+impl<'a> Lent<'a> {
+    /// `z` with `input` as its input and `out` as its output room.
+    fn new(z: &'a mut Z, input: &'a [u8], out: &'a mut [MaybeUninit<u8>]) -> Self {
+        z.0.next_in = input.as_ptr().cast_mut();
+        z.0.avail_in = room(input.len());
+        z.0.next_out = out.as_mut_ptr().cast();
+        z.0.avail_out = room(out.len());
+        Self(z, PhantomData)
+    }
+}
 
 /// The running library's version string, static and NUL-terminated, which an init
 /// call compares with its own. Only `zlibVersion` makes one.
@@ -67,6 +94,10 @@ unsafe extern "C" {
     safe fn deflateBound(z: &mut Z, length: uLong) -> uLong;
     safe fn deflateEnd(z: &mut Z) -> c_int;
     safe fn inflateEnd(z: &mut Z) -> c_int;
+    // The stream calls: each reads at most the lent input, writes at most the lent
+    // room, moves each address on with its count, and keeps neither.
+    safe fn inflate(z: Lent<'_>, flush: c_int) -> c_int;
+    safe fn deflate(z: Lent<'_>, flush: c_int) -> c_int;
 }
 
 extern "C" fn c_alloc(_: *mut c_void, items: uInt, size: uInt) -> *mut c_void {
@@ -82,7 +113,7 @@ unsafe extern "C" fn c_free(_: *mut c_void, address: *mut c_void) {
     unsafe { free(address) };
 }
 
-/// What one [`Stream::run`] did.
+/// What one [`Stream::run_into`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Step {
     /// zlib's status.
@@ -154,42 +185,22 @@ impl Stream {
             .ok_or(status)
     }
 
-    /// One `inflate(flush)` or `deflate(flush)` writing `out`; `input` advances
-    /// past what it read.
-    pub fn run(&mut self, input: &mut &[u8], out: &mut [u8], flush: c_int) -> Step {
-        self.step(input, out.as_mut_ptr(), out.len(), flush)
-    }
-
-    /// [`run`](Self::run) into `out`'s spare capacity, appending what it wrote.
+    /// One `inflate(flush)` or `deflate(flush)` into `out`'s spare capacity, appending
+    /// what it wrote; `input` advances past what it read.
     pub fn run_into(&mut self, input: &mut &[u8], out: &mut Vec<u8>, flush: c_int) -> Step {
         let spare = out.spare_capacity_mut();
-        let step = self.step(input, spare.as_mut_ptr().cast(), spare.len(), flush);
-        // SAFETY: zlib wrote the first `written` spare bytes, so the new length is
-        // initialised and within capacity.
-        unsafe { out.set_len(out.len() + step.written) };
-        step
-    }
-
-    /// `out` is `room` writable bytes, live for the call.
-    fn step(&mut self, input: &mut &[u8], out: *mut u8, room: usize, flush: c_int) -> Step {
-        let z = &mut self.z.0;
-        z.next_in = input.as_ptr().cast_mut();
-        z.avail_in = uInt::try_from(input.len()).unwrap_or(uInt::MAX);
-        z.next_out = out;
-        z.avail_out = uInt::try_from(room).unwrap_or(uInt::MAX);
-        let (avail_in, avail_out) = (z.avail_in, z.avail_out);
+        let (avail_in, avail_out) = (room(input.len()), room(spare.len()));
         let call = if self.deflate { deflate } else { inflate };
-        // SAFETY: an initialised stream over the live input, which zlib only reads,
-        // and `room` writable output bytes.
-        let status = unsafe { call(&raw mut self.z.0, flush) };
+        let status = call(Lent::new(&mut self.z, input, spare), flush);
         let used = |before: uInt, after: uInt| usize::try_from(before - after).unwrap_or(0);
         *input = input
             .get(used(avail_in, self.z.0.avail_in)..)
             .unwrap_or_default();
-        Step {
-            status,
-            written: used(avail_out, self.z.0.avail_out),
-        }
+        let written = used(avail_out, self.z.0.avail_out);
+        // SAFETY: zlib wrote the first `written` spare bytes, so the new length is
+        // initialised and within capacity.
+        unsafe { out.set_len(out.len() + written) };
+        Step { status, written }
     }
 
     /// `deflateReset`: the deflate stream as `deflateInit2` left it, keeping its

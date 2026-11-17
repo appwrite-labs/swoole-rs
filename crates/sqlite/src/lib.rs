@@ -65,7 +65,7 @@ pub struct Stmt(*mut Sqlite3Stmt);
 #[derive(Clone, Copy)]
 pub struct Sql(*const c_char);
 
-/// What `sqlite3_exec` hands the row callback passed beside it, which accepts it.
+/// What `sqlite3_exec` hands the [`ExecCallback`] passed beside it, which accepts it.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct Argument(*mut c_void);
@@ -76,9 +76,11 @@ fn close(close: impl FnOnce(OwnedDb) -> c_int, db: OwnedDb) -> c_int {
     offload(|| call.take().map_or(0, |(close, db)| close(db)))
 }
 
-/// `sqlite3_exec`'s row callback.
-pub type ExecCallback =
-    Option<unsafe extern "C" fn(*mut c_void, c_int, *mut *mut c_char, *mut *mut c_char) -> c_int>;
+/// The row callback the driver passes `sqlite3_exec`: null, or one that accepts the
+/// [`Argument`] passed beside it. Only SQLite calls it.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct ExecCallback(*const c_void);
 
 unsafe extern "C" {
     /// The library's compile-time option: no arguments, no state.

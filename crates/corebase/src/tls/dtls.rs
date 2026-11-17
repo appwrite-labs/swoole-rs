@@ -210,7 +210,7 @@ type Control = extern "C" fn(&DtlsBio, c_int, c_long, Argument) -> c_long;
 /// meanwhile: the only `&mut DtlsBio` there is.
 type Hook = extern "C" fn(&mut DtlsBio) -> c_int;
 /// OpenSSL calls the destroy hook once per BIO, as it frees it.
-type Destroy = extern "C" fn(Freeing) -> c_int;
+type BioDestroy = extern "C" fn(Freeing) -> c_int;
 
 /// The pointer argument OpenSSL lends a control command: for `DGRAM_GET_PEER`, null or
 /// a destination writable for the native address union. Only OpenSSL makes one.
@@ -249,7 +249,7 @@ unsafe extern "C" {
     safe fn BIO_get_new_index() -> c_int;
     safe fn BIO_meth_new(kind: c_int, name: Text<'_>) -> Option<&'static mut BioMethod>;
     safe fn BIO_meth_set_create(table: &mut BioMethod, create: Option<Hook>) -> c_int;
-    safe fn BIO_meth_set_destroy(table: &mut BioMethod, destroy: Option<Destroy>) -> c_int;
+    safe fn BIO_meth_set_destroy(table: &mut BioMethod, destroy: Option<BioDestroy>) -> c_int;
     safe fn BIO_meth_set_write(table: &mut BioMethod, write: Option<Write>) -> c_int;
     safe fn BIO_meth_set_read(table: &mut BioMethod, read: Option<Read>) -> c_int;
     safe fn BIO_meth_set_ctrl(table: &mut BioMethod, control: Option<Control>) -> c_int;
