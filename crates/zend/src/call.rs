@@ -283,7 +283,7 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn custom<T: crate::Custom>(&self) -> Option<&T> {
-        self.this_value()?.custom()
+        self.this_slot().custom()
     }
 
     /// `ZEND_THIS` holding an object, borrowed for the call, or None without
@@ -297,7 +297,7 @@ impl Call {
     /// `Z_OBJ_P(ZEND_THIS)`, or None without an object (a static method).
     #[inline]
     pub(crate) fn this_object(&self) -> Option<*mut zend_object> {
-        self.this_value()?.object()
+        self.this_slot().object()
     }
 
     /// `ZSTR_VAL(Z_OBJCE_P(ZEND_THIS)->name)`, or None without a `$this` (a

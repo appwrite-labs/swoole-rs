@@ -152,24 +152,26 @@ void swr_zend_coroutine_start(swr_zend_coroutine_vm *from, swr_zend_coroutine_vm
     save_vm_stack(vm);
 }
 
-int swr_zend_coroutine_output_reset(void) {
+static int reset_output_handlers(void) {
     volatile int bailed = 0;
-    if (OG(handlers).elements) {
-        zend_bool no_headers = SG(request_info).no_headers;
-        /* Do not send headers by SAPI */
-        SG(request_info).no_headers = true;
-        SWR_ZEND_TRY {
-            if (OG(active)) {
-                php_output_end_all();
-            }
-            php_output_deactivate();
-            php_output_activate();
+    zend_bool no_headers = SG(request_info).no_headers;
+    /* Do not send headers by SAPI */
+    SG(request_info).no_headers = true;
+    SWR_ZEND_TRY {
+        if (OG(active)) {
+            php_output_end_all();
         }
-        SWR_ZEND_CATCH { bailed = 1; }
-        SWR_ZEND_END_TRY();
-        SG(request_info).no_headers = no_headers;
+        php_output_deactivate();
+        php_output_activate();
     }
+    SWR_ZEND_CATCH { bailed = 1; }
+    SWR_ZEND_END_TRY();
+    SG(request_info).no_headers = no_headers;
     return bailed;
+}
+
+int swr_zend_coroutine_output_reset(void) {
+    return OG(handlers).elements ? reset_output_handlers() : 0;
 }
 
 void swr_zend_coroutine_finish(swr_zend_coroutine_vm *finished, swr_zend_coroutine_vm *origin) {

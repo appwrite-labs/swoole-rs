@@ -715,11 +715,10 @@ fn close(ctx: Ctx) -> Result<(), bailout::Bailout> {
     // context owner, which must restore the origin before leaving this stack.
     bailout::trapped(swr_zend_coroutine_output_reset())?;
     // Its defer tasks were kept and are not called.
-    for task in ctx
-        .defers(Option::take)
-        .map_or_else(Vec::new, |tasks| *tasks)
-    {
-        task.release()?;
+    if let Some(tasks) = ctx.defers(Option::take) {
+        for task in *tasks {
+            task.release()?;
+        }
     }
     // Object destruction may yield and let the origin coroutine finish: the
     // origin is looked up again before each use.
@@ -745,7 +744,7 @@ fn close(ctx: Ctx) -> Result<(), bailout::Bailout> {
         bailout::trapped(release_cache(cache))?;
     }
     release(ctx.with(|context| mem::take(&mut context.return_value)))?;
-    fiber_try_destroy(ctx, origin(ctx));
+    fiber_try_destroy(ctx);
     // A context-owned __destruct() may have rearmed the time limit.
     if ctx.time_limited()
         && let Some(co) = ctx.co()
@@ -803,13 +802,13 @@ extern "C" fn never_switched(_: *mut swoole_rs_zend::sys::zend_fiber_transfer) {
     swoole_rs_corebase::fatal("a coroutine's mock fiber was switched to");
 }
 
-fn fiber_try_destroy(ctx: Ctx, origin: Ctx) {
+fn fiber_try_destroy(ctx: Ctx) {
     let Some(mock) = ctx.with(|context| context.mock.take()) else {
         return;
     };
     let fiber = Fiber(NonNull::from(mock.0.as_ref()).cast());
     fiber.set_status(zend_fiber_status_ZEND_FIBER_STATUS_DEAD);
-    fiber_switch_try_notify(ctx, origin);
+    fiber_switch_try_notify(ctx, origin(ctx));
     ctx.set_fiber(None);
     zend_observer_fiber_destroy_notify(fiber);
     drop(mock);
