@@ -46,7 +46,7 @@ mod deferred;
 pub use deferred::*;
 
 mod socket;
-pub use socket::{Heap, OwnedSocket, Socket};
+pub use socket::{Heap, OwnedSocket, OwnerCell, Socket};
 
 mod callbacks;
 pub use callbacks::*;

@@ -127,10 +127,7 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     let process = config.mode_ == Mode::Process;
     if process && max != 0 && conn.recv_queued_bytes().load(SeqCst) > max {
         conn.set_waiting_time(1);
-        // The active connection's socket: the event's.
-        if let Some(own) = conn.socket()
-            && resume_timer(conn, own)
-        {
+        if resume_timer(conn) {
             reactor.interest(sock, swoole_rs_reactor::Interest::RemoveRead);
         }
     }
@@ -237,12 +234,12 @@ fn client_cert_file(port: &PortConfig) -> bool {
 /// Arms `conn`'s resume timer for its paused `socket`, after its waiting time.
 ///
 /// The connection's own socket, which deletes this timer before it goes.
-fn resume_timer(conn: Connection<'_>, socket: Heap<'static>) -> bool {
-    let msec = c_long::from(conn.waiting_time());
+fn resume_timer(conn: Connection<'_>) -> bool {
+    let (msec, fd) = (c_long::from(conn.waiting_time()), c_long::from(conn.fd()));
     let timer = swoole_rs_timer::add_fn(msec, false, move || {
         // The server of the reactor that armed the timer: this thread's.
         if let Some(serv) = Reactor::current().and_then(Reactor::server) {
-            resume_data_receiving(serv, socket);
+            resume_data_receiving(serv, fd);
         }
     });
     conn.set_timer(timer);
@@ -251,10 +248,13 @@ fn resume_timer(conn: Connection<'_>, socket: Heap<'static>) -> bool {
 
 /// `ReactorThread_resume_data_receiving`, the timer of a paused session socket: back
 /// off (doubling up to 1024ms) while the workers still hold too many bytes, then
-/// read again.
-fn resume_data_receiving(serv: view::Server<'_>, socket: Heap<'static>) {
+/// read again. The connection's close deletes the timer, so `fd`'s slot is its own.
+fn resume_data_receiving(serv: view::Server<'_>, fd: c_long) {
     let state = serv.state();
-    let Some(conn) = state.connection(c_long::from(socket.fd()), Lookup::ByFd) else {
+    let Some((conn, socket)) = state
+        .connection(fd, Lookup::ByFd)
+        .and_then(|conn| Some((conn, conn.socket()?)))
+    else {
         return;
     };
     if conn.recv_queued_bytes().load(SeqCst) > state.config_ref().max_queued_bytes.get() {
@@ -262,7 +262,7 @@ fn resume_data_receiving(serv: view::Server<'_>, socket: Heap<'static>) {
         if waiting != MAX_WAITING_TIME {
             conn.set_waiting_time(waiting.saturating_mul(2));
         }
-        if resume_timer(conn, socket) {
+        if resume_timer(conn) {
             return;
         }
     }
@@ -336,7 +336,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         Some(swr_cpp_buffer_typed_front(buffer).kind)
     }) {
         let sent = match kind {
-            EntryKind::Close => return reactor.close(sock),
+            EntryKind::Close => return close_connection(serv, reactor, Some(sock)),
             EntryKind::Sendfile => tls::socket_handle_sendfile(*sock),
             EntryKind::Data => {
                 let sent = tls::socket_handle_send(*sock);
@@ -442,19 +442,26 @@ fn fin_ends(prequeue: bool, state: &crate::ServerState, conn: Connection<'_>) ->
 }
 
 /// `Server::close_connection`: release what the connection holds, count the close,
-/// clear its session and move the max fd down past it, then close the socket.
+/// clear its session and move the max fd down past it, then take the socket from the
+/// connection and close it. False unless `sock` is its connection's.
 pub(crate) fn close_connection(
     serv: view::Server<'_>,
     reactor: Reactor,
-    sock: Option<Heap<'static>>,
+    sock: Option<Heap<'_>>,
 ) -> bool {
     let state = serv.state();
     let Some(sock) = sock else {
         return false;
     };
     let fd = sock.fd();
-    // A session socket's connection is its fd's slot.
-    let Some(conn) = state.connection(c_long::from(fd), Lookup::ByFd) else {
+    // A session socket's connection is its fd's slot, which owns it.
+    let Some(conn) = state
+        .connection(c_long::from(fd), Lookup::ByFd)
+        .filter(|conn| {
+            conn.socket()
+                .is_some_and(|own| own.as_ptr() == sock.as_ptr())
+        })
+    else {
         return false;
     };
     let port = serv.port_by_fd(fd).map(view::Port::config);
@@ -503,15 +510,11 @@ pub(crate) fn close_connection(
     }
     lower_max_fd(state, fd);
     conn.active().store(false, Relaxed);
-    conn.set_socket(None);
     conn.clear_object();
     // The slot's last write before close(fd): an accept that gets the fd back
     // acquires it (OP_CONN_RESET) before reusing the slot.
     conn.closed().store(1, Release);
-    // SAFETY: the closing socket, the accepted heap record the slot no longer names,
-    // which nothing uses afterwards.
-    let sock = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(*sock) };
-    _ = swoole_rs_tls::reactor_write::reactor_close(reactor.handle(), sock);
+    conn.free_socket();
     true
 }
 

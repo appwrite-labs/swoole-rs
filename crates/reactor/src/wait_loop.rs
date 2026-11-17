@@ -62,19 +62,22 @@ pub struct Event {
 }
 
 impl Event {
-    /// An event over `socket`.
+    /// An event over `socket`, which it names as a registry entry does.
     #[must_use]
     pub const fn of(
         fd: c_int,
         reactor_id: i16,
         fd_type: c_int,
-        socket: Option<crate::Heap<'static>>,
+        socket: Option<crate::Heap<'_>>,
     ) -> Self {
         Self {
             fd,
             reactor_id,
             fd_type,
-            socket,
+            socket: match socket {
+                Some(socket) => Some(socket.named()),
+                None => None,
+            },
         }
     }
 

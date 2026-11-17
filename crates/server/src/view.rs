@@ -594,11 +594,16 @@ impl<'a> Server<'a> {
     }
 
     /// `Server::get_server_socket(fd)`: the fd and `swSocketType` of the
-    /// listening socket at `fd`, or `None`.
+    /// listening socket at `fd` (its slot names its port, which owns it), or of the
+    /// session socket a slot owns; `None` for neither.
     #[must_use]
     pub fn server_socket(self, fd: c_long) -> Option<(c_int, c_int)> {
-        let socket = self.connection_field(fd, Lookup::ByFd, Connection::socket)??;
-        Some(socket.read(|s| (s.fd, s.socket_type)))
+        let conn = self.state().connection(fd, Lookup::ByFd)?;
+        let read = |s: &swoole_rs_reactor::SocketFields| (s.fd, s.socket_type);
+        match conn.port() {
+            Some(port) => port.with_socket(|s| s.read(read)),
+            None => Some(conn.socket()?.read(read)),
+        }
     }
 
     /// The fd and `swSocketType` of the server's own datagram socket of `kind`

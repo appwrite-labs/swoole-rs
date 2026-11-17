@@ -450,7 +450,6 @@ pub(crate) fn store_listen_socket(serv: view::Server<'_>) {
             continue;
         };
         conn.set_fd(fd);
-        conn.set_socket(Some(socket));
         conn.set_socket_type(port.r#type);
         let mut info = conn.info();
         info.kind = port.r#type;

@@ -54,11 +54,11 @@ fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
 /// `None`, with everything it made undone, when a step fails.
 ///
 /// `listen` is one of `serv`'s DTLS ports.
-fn accept(
-    serv: crate::view::Server<'_>,
+fn accept<'a>(
+    serv: crate::view::Server<'a>,
     listen: crate::view::Port<'_>,
     sa: &SocketAddress,
-) -> Option<Heap<'static>> {
+) -> Option<Heap<'a>> {
     let (kind, number, host) = {
         let config = listen.config();
         // NUL-terminated: the address parser reads the host as a C string.
@@ -66,12 +66,12 @@ fn accept(
         (config.r#type, config.port.get(), host)
     };
     let server_fd = listen.fd();
-    let socket = make_typed(
+    let owned = swoole_rs_reactor::OwnedSocket::new(make_typed(
         kind,
         FD_SESSION,
         (SocketFlag::SW_SOCK_CLOEXEC | SocketFlag::SW_SOCK_NONBLOCK).bits(),
-    )?
-    .into_socket();
+    )?);
+    let socket = owned.socket();
     let fd = socket.fd();
     set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, 1);
     if cfg!(any(
@@ -88,11 +88,10 @@ fn accept(
         swoole_rs_corebase::fatal("OpenSSL internal error: assertion failed: 0");
     }
     let origin = c"Server::accept_dtls_connection";
-    let mut added = false;
-    'setup: {
-        if !bind(*socket, kind, &host, number) {
+    let connected = 'setup: {
+        if !bind(socket, kind, &host, number) {
             log::sys_warning(origin, format_args!("bind() failed"));
-            break 'setup;
+            break 'setup false;
         }
         if kind == SocketType::SW_SOCK_UDP6.raw() {
             set_option(fd, libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, 0);
@@ -100,28 +99,36 @@ fn accept(
         if !sa.connect(fd) {
             let (host, port) = swoole_rs_tls::upstream::peer(sa);
             log::sys_warning(origin, format_args!("connect({host}:{port}) failed"));
-            break 'setup;
+            break 'setup false;
         }
         socket.edit(|socket| {
             socket.info = *sa;
             socket.chunk_size = SW_SSL_BUFFER_SIZE;
         });
-        added = crate::connection::add(serv, listen, socket, server_fd).is_some();
-        if !added {
-            break 'setup;
+        true
+    };
+    let conn = if connected {
+        crate::connection::add(serv, listen, owned, server_fd)
+    } else {
+        Err(owned)
+    };
+    let conn = match conn {
+        Ok(conn) => conn,
+        Err(owned) => {
+            swoole_rs_tls::upstream::socket_free(Some(owned));
+            return None;
         }
-        // `ListenPort::create_dtls_session(sock)`, over the port's context.
-        let context = listen.config().tls.settings.get();
-        if context.is_some_and(|context| dtls_open(*socket, &context)) {
-            return Some(socket);
-        }
+    };
+    let socket = conn.socket()?;
+    // `ListenPort::create_dtls_session(sock)`, over the port's context.
+    let context = listen.config().tls.settings.get();
+    if context.is_some_and(|context| dtls_open(*socket, &context)) {
+        return Some(socket);
     }
-    if added {
-        serv.state().tables_ref().clear_connection(fd);
-    }
-    // SAFETY: the heap record made above, which nothing uses afterwards.
-    let socket = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(*socket) };
-    swoole_rs_tls::upstream::socket_free(Some(socket));
+    conn.active()
+        .store(false, core::sync::atomic::Ordering::Relaxed);
+    conn.free_socket();
+    serv.state().tables_ref().clear_connection(fd);
     None
 }
 
@@ -173,8 +180,8 @@ pub(crate) fn on_packet(
         crate::event_worker::native::send_to_reactor_thread(serv, &ev).is_none()
     };
     if failed {
-        // The reactor's own close, which is what the caller passes as `_close`.
-        reactor.close(record);
+        // The server's close, which is what the caller passes as `_close`.
+        crate::conn_io::close_connection(serv, reactor, Some(record));
     }
     true
 }

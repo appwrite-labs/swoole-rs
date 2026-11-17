@@ -54,9 +54,10 @@ pub struct ConnectionRecord {
     /// address, a pipe end's pipe with [`NOT_PORT`] set, or a session's HTTP request
     /// with [`REQUEST`] set too. Private: only this module's typed setters write it.
     object: Cell<*mut c_void>,
-    /// The session socket, `None` before the connection has one or after it closes: a
-    /// record live until the unsafe free that ends the connection.
-    pub socket: Cell<Option<swoole_rs_reactor::Heap<'static>>>,
+    /// The session socket, which the connection owns from `add` until its close takes
+    /// it out and frees it: empty before and after, and on a listening slot. Only the
+    /// process that accepted it (the master, or a base worker) reads or takes it.
+    socket: swoole_rs_reactor::OwnerCell,
     pub connect_time: Cell<f64>,
     pub last_recv_time: Cell<f64>,
     pub last_send_time: Cell<f64>,
@@ -119,7 +120,7 @@ impl ConnectionRecord {
         self.timer.set(None);
         self.info.set(SocketAddress::default());
         self.object.set(core::ptr::null_mut());
-        self.socket.set(None);
+        self.socket.forget();
         for time in [
             &self.connect_time,
             &self.last_recv_time,
@@ -253,7 +254,6 @@ impl<'a> Connection<'a> {
     field!(timer, set_timer: Option<swoole_rs_corebase::timer_key::Held>);
     field!(info, set_info: SocketAddress);
     field!(private object, set_object: *mut c_void);
-    field!(socket, set_socket: Option<swoole_rs_reactor::Heap<'static>>);
     field!(connect_time, set_connect_time: f64);
     field!(last_recv_time, set_last_recv_time: f64);
     field!(last_send_time, set_last_send_time: f64);
@@ -262,6 +262,46 @@ impl<'a> Connection<'a> {
     field!(websocket_status, set_websocket_status: WebSocketStatus);
     field!(private ssl_client_cert, set_ssl_client_cert: *mut c_void);
     field!(private ssl_client_cert_pid, set_ssl_client_cert_pid: c_int);
+
+    /// The connection's socket, if it holds one.
+    #[must_use]
+    #[inline]
+    pub fn socket(self) -> Option<swoole_rs_reactor::Heap<'a>> {
+        self.record.socket.get()
+    }
+
+    /// The connection owns `socket` from here (a socket it held leaks).
+    pub(crate) fn hold_socket(self, socket: swoole_rs_reactor::OwnedSocket) {
+        self.record.socket.put(socket);
+    }
+
+    /// The connection forgets its socket, which leaks.
+    #[cfg(test)]
+    pub(crate) fn forget_socket(self) {
+        self.record.socket.forget();
+    }
+
+    /// `delete conn->socket`: the connection's socket, which it no longer holds, freed.
+    /// The one free of a connection's socket: [`crate::conn_io::close_connection`], on
+    /// the thread whose reactor runs the connection, and the DTLS accept that failed
+    /// before the connection reached a reactor.
+    pub(crate) fn free_socket(self) {
+        // SAFETY: what still holds a handle the slot lent, and why none is used after:
+        // - the slot: from here it names nothing, so `socket()` lends no more;
+        // - the reactor's registry: the free deletes the record from it first
+        //   (`OwnedSocket::into_box`), and ends the process if another reactor names it;
+        // - the handler running the close (its `Event::socket` and the handle it passed
+        //   to `close_connection`): every caller returns, or moves to another fd, once
+        //   the close returns, and the reactor's flush close is under its own contract;
+        // - timers: a connection's idle and resume timers keep its fd, not its socket,
+        //   and the close deletes the one the slot holds;
+        // - other threads: only the connection's reactor (or base worker) closes it.
+        //   Other reactor threads, the heartbeat thread and admin listings read a
+        //   socket after checking `is_active`, which the close clears first; this is
+        //   upstream's unsynchronized `conn->socket` read, which the types don't cover.
+        let socket = unsafe { self.record.socket.take() };
+        swoole_rs_tls::upstream::socket_free(socket);
+    }
 
     /// The WebSocket message being reassembled, taken out of the connection.
     #[must_use]

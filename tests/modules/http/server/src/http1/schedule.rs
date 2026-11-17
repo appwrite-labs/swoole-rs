@@ -69,10 +69,15 @@ fn add_connection(serv: Server, port: Port, sock: *mut c_void) -> Connection<'st
         .iter()
         .find(|p| p.raw() == port.0)
         .unwrap();
-    // SAFETY: a live socket.
-    let sock = unsafe { swoole_rs_ffi::Socket::from_ptr(sock.cast()) }.unwrap();
-    let sock = swoole_rs_ffi::Heap::from_static(sock);
-    server_methods::add_connection(serv_view, listen, sock, port.get_fd()).unwrap()
+    // SAFETY: the record `fake_sock` made, which the connection owns from here (and
+    // never frees: the test leaks it).
+    let sock = unsafe {
+        swoole_rs_ffi::OwnedSocket::from_socket(
+            swoole_rs_ffi::Socket::from_ptr(sock.cast()).unwrap(),
+        )
+    };
+    server_methods::add_connection(serv_view, listen, sock, port.get_fd())
+        .unwrap_or_else(|_| panic!("no session slot"))
 }
 
 fn schedule_worker(serv: Server, fd: c_int, data: Option<&swoole_rs_server::SendData>) -> usize {
