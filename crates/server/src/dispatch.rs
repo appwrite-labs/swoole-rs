@@ -11,8 +11,8 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_TRACE, SW_LOG_WARNING};
+use swoole_rs_corebase::utilities::swoole_hash;
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
-use swoole_rs_utilities::swoole_hash;
 
 /// `DISPATCH_RESULT_USERFUNC_FALLBACK`.
 const USERFUNC_FALLBACK: c_int = -3;

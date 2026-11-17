@@ -57,7 +57,7 @@ fn identity() -> LoggerIdentity {
 /// `sw_logger()`, with the process's `swoole_redirect_stdout`.
 fn sw_logger() -> &'static Logger {
     let host = LoggerHost {
-        redirect: swoole_rs_corebase::swoole_redirect_stdout,
+        redirect: crate::swoole_redirect_stdout,
         identity,
     };
     Box::leak(Box::new(Logger::new(None, host)))
@@ -258,7 +258,7 @@ fn redirect_1() {
     // test binary rather than a fork of this threaded one (whose other threads may hold
     // libc locks), and fails the test unless it exits 0, where upstream's helper exited 0
     // anyway.
-    if crate::isolated_process::run_in_child("logger::ported::redirect_1") {
+    if crate::utilities::isolated_process::run_in_child("utilities::logger::ported::redirect_1") {
         return;
     }
     let logger = sw_logger();
@@ -289,7 +289,7 @@ fn redirect_2() {
     // test binary rather than a fork of this threaded one (whose other threads may hold
     // libc locks), and fails the test unless it exits 0, where upstream's helper exited 0
     // anyway.
-    if crate::isolated_process::run_in_child("logger::ported::redirect_2") {
+    if crate::utilities::isolated_process::run_in_child("utilities::logger::ported::redirect_2") {
         return;
     }
     let file = test_log_file();
@@ -322,12 +322,12 @@ fn ignore_error() {
     // test binary rather than a fork of this threaded one (whose other threads may hold
     // libc locks), and fails the test unless it exits 0, where upstream's helper exited 0
     // anyway.
-    if crate::isolated_process::run_in_child("logger::ported::ignore_error") {
+    if crate::utilities::isolated_process::run_in_child("utilities::logger::ported::ignore_error") {
         return;
     }
     let logger = sw_logger();
     let cpp: &'static &'static Logger = Box::leak(Box::new(logger));
-    swoole_rs_corebase::swr_v1_core_set_logger(std::ptr::from_ref(cpp).cast_mut().cast());
+    crate::swr_v1_core_set_logger(std::ptr::from_ref(cpp).cast_mut().cast());
     logger.reset();
     logger.set_level(SW_LOG_NOTICE);
     open(logger, file());

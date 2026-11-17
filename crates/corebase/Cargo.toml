@@ -6,15 +6,17 @@ publish = false
 license.workspace = true
 
 [features]
-# Define base.cc's helpers under their C++ symbols. Only crates/ffi, whose builds apply
-# the corebase patches that delete the C++ definitions, turns it on; another crate
-# linking this one would otherwise duplicate them.
+# Define base.cc's and misc.cc's helpers, and base.cc's log-level functions, under their
+# C++ symbols. Only crates/ffi, whose builds apply the corebase patches that delete the C++
+# definitions, turns it on; another crate linking this one would otherwise duplicate them.
 upstream-symbols = ["dep:cc"]
 
 [dependencies]
 memchr = "2.8.3"
 swoole-rs-base64 = { path = "../base64" }
+swoole-rs-crc32 = { path = "../crc32" }
 swoole-rs-error = { path = "../error" }
+swoole-rs-error-ffi = { path = "../error-ffi" }
 itoa = "1.0.18"
 libc = "=0.2.191"
 swoole-rs-framing = { path = "../framing" }

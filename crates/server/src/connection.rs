@@ -144,7 +144,7 @@ pub fn add<'a>(
 
     // `sw_spinlock`, with `SW_SPINLOCK_LOOP_N`.
     let cpus = u32::from(swoole_rs_corebase::swr_v1_core_cpu_num());
-    swoole_rs_utilities::swr_v1_utils_spinlock(Some(&gs.spinlock), cpus, 1024);
+    swoole_rs_corebase::utilities::swr_v1_utils_spinlock(Some(&gs.spinlock), cpus, 1024);
     let mut session_id = gs.session_round.load(Relaxed);
     let mut found = false;
     for _ in 0..serv.max_connection() {

@@ -154,7 +154,7 @@ fn dispatch(serv: Server<'_>, signo: c_int) {
 
 /// This process's log file reopens.
 fn reopen_log() {
-    if let Some(logger) = swoole_rs_utilities::process_logger() {
+    if let Some(logger) = swoole_rs_corebase::utilities::process_logger() {
         logger.reopen();
     }
 }

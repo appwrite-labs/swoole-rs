@@ -46,6 +46,7 @@ pub use sys::set_errno;
 pub mod switches;
 pub use switches::Switch;
 pub mod timer_key;
+pub mod utilities;
 
 unsafe extern "C" {
     /// native/corebase/switches.cc: a bit per [`Switch`] the build has.

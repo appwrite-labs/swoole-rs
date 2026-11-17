@@ -22,7 +22,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
     let state = serv.state();
     match step {
         Step::Daemon => {
-            match swoole_rs_utilities::process_logger() {
+            match swoole_rs_corebase::utilities::process_logger() {
                 Some(logger) if logger.is_opened() => {
                     logger.redirect_stdout_and_stderr(true);
                 }

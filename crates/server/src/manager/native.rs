@@ -431,7 +431,7 @@ pub(crate) fn signal(serv: view::Server<'_>, signo: c_int) {
         }
         _ if signo == libc::SIGWINCH || sigrtmin() == Some(signo) => {
             // Manager::reopen_logger
-            if let Some(logger) = swoole_rs_utilities::process_logger() {
+            if let Some(logger) = swoole_rs_corebase::utilities::process_logger() {
                 logger.reopen();
             }
             let config = serv.config();

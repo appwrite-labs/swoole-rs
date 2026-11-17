@@ -25,7 +25,6 @@ on:
       - 'crates/reactor/**'
       - 'crates/timer/**'
       - 'crates/tls/**'
-      - 'crates/utilities/**'
       - 'crates/websocket/**'
       - 'crates/zlib/**'
       - 'fuzz/**'

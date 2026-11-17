@@ -313,7 +313,7 @@
         "M16"
       ],
       "owned_paths": [
-        "crates/utilities/",
+        "crates/corebase/src/utilities/",
         "native/utilities/",
         "tests/modules/utilities/"
       ],

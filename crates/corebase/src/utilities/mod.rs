@@ -1,12 +1,5 @@
 //! Pinned utility arithmetic and logging byte policy; no native callbacks.
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
-use swoole_rs_corebase::CCast;
+use crate::CCast;
 mod helpers;
 pub use helpers::timezone;
 mod logger;

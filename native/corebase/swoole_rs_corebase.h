@@ -30,7 +30,7 @@ struct NameResolver {
 };
 }  // namespace swoole
 /* Upstream's error and log API under its C++ symbols: Rust's (crates/error,
- * crates/utilities, crates/corebase). */
+ * crates/corebase). */
 const char *swoole_strerror(int code);
 void swoole_throw_error(int code);
 void swoole_ignore_error(int code);

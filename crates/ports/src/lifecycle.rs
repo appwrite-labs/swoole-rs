@@ -12,6 +12,7 @@ use std::sync::{Arc, PoisonError, RwLockReadGuard};
 
 use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::constants::{SW_SSL_CIPHER_LIST, SW_SSL_ECDH_CURVE};
+use swoole_rs_corebase::utilities::sni_wildcard_matches;
 use swoole_rs_corebase::{log, sys};
 use swoole_rs_reactor::{OwnedSocket, Socket, SocketRecord, socket_type};
 use swoole_rs_server::port_config::{PortConfig, TlsState};
@@ -20,7 +21,6 @@ use swoole_rs_tls::{
     OwnedTlsContext, OwnedTlsFields, Ssl, SslVersion, Text, TlsContext, TlsSettings, has_files,
     swr_v1_tls_port_index,
 };
-use swoole_rs_utilities::sni_wildcard_matches;
 
 use crate::methods::{FD_DGRAM_SERVER, FD_STREAM_SERVER, socket_free};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_WARNING as LOG_WARNING};
@@ -287,7 +287,7 @@ pub(crate) fn close(config: &PortConfig) {
 
 #[cfg(test)]
 mod tests {
-    use swoole_rs_utilities::sni_wildcard_matches;
+    use swoole_rs_corebase::utilities::sni_wildcard_matches;
 
     #[test]
     fn the_tls_state_lives_in_the_port_until_freed() {

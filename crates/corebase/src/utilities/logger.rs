@@ -4,19 +4,19 @@
 //! through `LoggerHost` (crates/process's). Both run after the lock is released, so a
 //! diagnostic can log through this logger again. The log macros a Rust log runs
 //! (`swr_v1_utils_log`) are here too.
-use crate::{log_level, log_line, log_micros, log_rotation};
+use crate::lent::{Count, In};
+use crate::log;
+use crate::sys::{self, errno};
+use crate::utilities::{log_level, log_line, log_micros, log_rotation};
+use crate::{CCast, Stream};
 use libc::{c_char, c_int};
 use std::ffi::{CStr, CString};
 use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
-use swoole_rs_corebase::lent::{Count, In};
-use swoole_rs_corebase::log;
-use swoole_rs_corebase::sys::{self, errno};
-use swoole_rs_corebase::{CCast, Stream};
 
 const SW_LOG_INFO: c_int = 2;
-const SW_LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
+const SW_LOG_NOTICE: c_int = crate::log::LogLevel::SW_LOG_NOTICE as c_int;
 const SW_LOG_ERROR: c_int = 5;
 const SW_LOG_DATE_STRLEN: usize = 128;
 const SW_LOG_BUFFER_SIZE: usize = 16384 + 256;
@@ -412,7 +412,7 @@ impl Logger {
         }
         let mut identity = (self.host.identity)();
         if identity.worker_pid == 0 {
-            identity.worker_pid = swoole_rs_corebase::sys::getpid();
+            identity.worker_pid = crate::sys::getpid();
         }
         self.with(|state, effects| state.write(level, content, &identity, effects));
     }
@@ -440,7 +440,7 @@ pub extern "C" fn swr_v1_logger_put<'id>(
 /// this crate's `Logger`, or null before `swoole_init`.
 #[must_use]
 pub fn process_logger() -> Option<&'static Logger> {
-    let cpp = swoole_rs_corebase::swr_v1_core_logger().cast::<&'static Logger>();
+    let cpp = crate::swr_v1_core_logger().cast::<&'static Logger>();
     // SAFETY: null, or a live `swoole::Logger` whose only member is a non-null pointer
     // to a live Logger (crates/process's `LOGGER`, freed only with the object).
     unsafe { cpp.as_ref() }.copied()
@@ -490,13 +490,13 @@ pub fn swr_v1_utils_log(
     let message = message.to_bytes();
     let threshold = swoole_get_log_level();
     let failed = || {
-        let reason = swoole_rs_error::strerror_text(code, swoole_rs_corebase::sys::strerror);
+        let reason = swoole_rs_error::strerror_text(code, crate::sys::strerror);
         let code = code.to_string();
         let tail = [b", Error: ", reason.to_bytes(), b"[", code.as_bytes(), b"]"];
         [origin, b"(): ", message, &tail.concat()].concat()
     };
     if matches!(kind, log::LogKind::SysWarning | log::LogKind::SysError) {
-        swoole_rs_corebase::set_errno(code);
+        crate::set_errno(code);
     }
     if matches!(kind, log::LogKind::SysWarning | log::LogKind::Error) {
         log::set_last_error(code);
@@ -526,7 +526,7 @@ pub fn swr_v1_utils_log(
         logger.put(level, line.get(..length).unwrap_or(&line));
     }
     if matches!(kind, log::LogKind::SysError | log::LogKind::Fatal) {
-        swoole_rs_corebase::swoole_exit(1);
+        crate::swoole_exit(1);
     }
 }
 
@@ -536,8 +536,8 @@ mod ported;
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::lent::lend_in;
     use std::cell::RefCell;
-    use swoole_rs_corebase::lent::lend_in;
 
     /// A corebase log call: kind, level, code, origin and message.
     type Logged = (log::LogKind, c_int, c_int, String, String);
@@ -565,7 +565,7 @@ pub(crate) mod tests {
     const HOST_FAKE: LoggerHost = LoggerHost { redirect, identity };
 
     fn host() -> Vec<Logged> {
-        swoole_rs_corebase::log::swr_v1_core_set_log_host(logged);
+        crate::log::swr_v1_core_set_log_host(logged);
         HOST.with(RefCell::take)
     }
 

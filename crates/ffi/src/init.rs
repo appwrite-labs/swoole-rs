@@ -16,7 +16,9 @@ unsafe extern "C" {
 /// `void swoole_init()`.
 #[unsafe(export_name = "_Z11swoole_initv")]
 pub(crate) extern "C-unwind" fn swoole_init() {
-    swoole_rs_corebase::log::swr_v1_core_set_log_host(swoole_rs_utilities::swr_v1_utils_log);
+    swoole_rs_corebase::log::swr_v1_core_set_log_host(
+        swoole_rs_corebase::utilities::swr_v1_utils_log,
+    );
     native::set_native_host(NativeHost {
         init,
         delete_pool: pool::delete,
@@ -67,7 +69,7 @@ fn init() {
     swoole_rs_corebase::set_fatal_error(Some(swr_v1_ffi_fatal_error));
     swoole_rs_process::methods::logger_op(LoggerOp::New);
     if built_with(Switch::Debug) {
-        swoole_rs_utilities::swoole_set_log_level(0);
+        swoole_rs_corebase::utilities::swoole_set_log_level(0);
         swoole_rs_corebase::swr_v1_core_set_trace_flags(0x7fff_ffff);
     }
     pool::init();

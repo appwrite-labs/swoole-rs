@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Swoole's include/swoole_atomic.h, owned here: the atomic word types and the four
  * operations C++ still uses. swoole.h includes it from the Rust prefix's include path;
- * the spin lock and futex waits are Rust's (crates/utilities, crates/phplocks). */
+ * the spin lock and futex waits are Rust's (crates/corebase/src/utilities, crates/phplocks). */
 #pragma once
 
 typedef volatile int64_t sw_atomic_long_t;

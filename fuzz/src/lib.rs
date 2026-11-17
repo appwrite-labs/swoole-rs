@@ -1105,7 +1105,7 @@ pub fn sni_wildcard(bytes: &[u8]) {
         names.next().unwrap_or_default(),
     );
     assert_eq!(
-        swoole_rs_utilities::sni_wildcard_matches(subject, cert),
+        swoole_rs_corebase::utilities::sni_wildcard_matches(subject, cert),
         sni_glob(&subject.to_ascii_lowercase(), &cert.to_ascii_lowercase()),
         "sni wildcard for {subject:?} and {cert:?}"
     );

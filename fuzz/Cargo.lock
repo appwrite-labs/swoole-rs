@@ -160,7 +160,9 @@ dependencies = [
  "libc",
  "memchr",
  "swoole-rs-base64",
+ "swoole-rs-crc32",
  "swoole-rs-error",
+ "swoole-rs-error-ffi",
  "swoole-rs-framing",
 ]
 
@@ -207,7 +209,6 @@ dependencies = [
  "swoole-rs-inflate",
  "swoole-rs-oracle",
  "swoole-rs-protocols",
- "swoole-rs-utilities",
  "swoole-rs-websocket",
 ]
 
@@ -259,7 +260,6 @@ dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-error",
- "swoole-rs-utilities",
 ]
 
 [[package]]
@@ -277,7 +277,6 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-memory",
- "swoole-rs-utilities",
 ]
 
 [[package]]
@@ -316,18 +315,6 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-reactor",
  "swoole-rs-timer",
-]
-
-[[package]]
-name = "swoole-rs-utilities"
-version = "0.1.0"
-dependencies = [
- "libc",
- "memchr",
- "swoole-rs-corebase",
- "swoole-rs-crc32",
- "swoole-rs-error",
- "swoole-rs-error-ffi",
 ]
 
 [[package]]

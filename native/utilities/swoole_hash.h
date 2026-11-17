@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Swoole's include/swoole_hash.h, owned here. Rust defines all four under their upstream
- * symbols (crates/utilities); core-tests/src/core/hash.cpp declares them
+ * symbols (crates/corebase/src/utilities); core-tests/src/core/hash.cpp declares them
  * through this header. */
 #pragma once
 

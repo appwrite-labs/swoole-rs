@@ -96,7 +96,7 @@ and fail on the same step, and the loop ends within one step per byte. `resp_ser
 `Redis\Server` request with `resp_php_next`: spans stay inside the request,
 the walk advances and ends, and there is one command at most.
 `sni_wildcard` splits its input at NUL into an SNI name and a certificate name and
-checks `swoole_rs_utilities::sni_wildcard_matches` against a glob over the lowercased
+checks `swoole_rs_corebase::utilities::sni_wildcard_matches` against a glob over the lowercased
 names, in which the first `*`, with no `.` before it, matches any run without a `.`.
 `http_rewrite` adds one `~pattern~` rule to `swoole_rs_http::RewriteRules` and applies it
 to a URL (pattern, replacement and URL split at NUL): compiling and matching end, and a

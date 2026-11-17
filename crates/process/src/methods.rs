@@ -466,14 +466,15 @@ pub fn swoole_get_worker_symbol() -> std::ffi::c_char {
 
 /// The process logger's native effects.
 #[cfg(feature = "upstream-symbols")]
-const LOGGER_HOST: swoole_rs_utilities::LoggerHost = swoole_rs_utilities::LoggerHost {
-    redirect: swoole_rs_corebase::swoole_redirect_stdout,
-    identity: logger_identity,
-};
+const LOGGER_HOST: swoole_rs_corebase::utilities::LoggerHost =
+    swoole_rs_corebase::utilities::LoggerHost {
+        redirect: swoole_rs_corebase::swoole_redirect_stdout,
+        identity: logger_identity,
+    };
 
 #[cfg(feature = "upstream-symbols")]
-fn logger_identity() -> swoole_rs_utilities::LoggerIdentity {
-    swoole_rs_utilities::LoggerIdentity {
+fn logger_identity() -> swoole_rs_corebase::utilities::LoggerIdentity {
+    swoole_rs_corebase::utilities::LoggerIdentity {
         worker_id: swoole_get_worker_id().cast_signed(),
         worker_pid: swoole_get_worker_pid(),
         worker_symbol: swoole_get_worker_symbol(),
@@ -483,12 +484,12 @@ fn logger_identity() -> swoole_rs_utilities::LoggerIdentity {
 /// The process logger. `SwooleG.logger` points here, as at a `swoole::Logger`,
 /// whose only member is its logger.
 #[cfg(feature = "upstream-symbols")]
-static LOGGER: std::sync::atomic::AtomicPtr<swoole_rs_utilities::Logger> =
+static LOGGER: std::sync::atomic::AtomicPtr<swoole_rs_corebase::utilities::Logger> =
     std::sync::atomic::AtomicPtr::new(ptr::null_mut());
 
 /// The logger [`LOGGER`] points at, which this owns from `new` until `delete`.
 #[cfg(feature = "upstream-symbols")]
-static OWNER: std::sync::Mutex<Option<std::sync::Arc<swoole_rs_utilities::Logger>>> =
+static OWNER: std::sync::Mutex<Option<std::sync::Arc<swoole_rs_corebase::utilities::Logger>>> =
     std::sync::Mutex::new(None);
 
 /// The process logger's `new Logger()` on `SwooleG.stdout`, `->reopen()`, `->close()`
@@ -497,7 +498,7 @@ static OWNER: std::sync::Mutex<Option<std::sync::Arc<swoole_rs_utilities::Logger
 pub fn logger_op(op: swoole_rs_corebase::native::LoggerOp) {
     use std::sync::atomic::Ordering::Relaxed;
     use swoole_rs_corebase::native::LoggerOp;
-    use swoole_rs_utilities::{Logger, process_logger};
+    use swoole_rs_corebase::utilities::{Logger, process_logger};
     let owner = || {
         OWNER
             .lock()
