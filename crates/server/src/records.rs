@@ -7,7 +7,6 @@ use core::sync::atomic::{
 };
 use swoole_rs_corebase::WebSocketStatus;
 use swoole_rs_corebase::constants::SocketTypeCode;
-use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::process::worker_record::WorkerRecord;
 
@@ -58,8 +57,8 @@ pub struct ConnectionRecord {
     pub timer: Cell<Option<swoole_rs_corebase::timer_key::Held>>,
     pub info: Cell<SocketAddress>,
     /// Null, a listening slot's port ([`ServerState::hold_port`]) as its plain
-    /// address, a pipe end's pipe with [`NOT_PORT`] set, or a session's HTTP request
-    /// with [`REQUEST`] set too. Private: only this module's typed setters write it.
+    /// address, or a pipe end's pipe with [`NOT_PORT`] set. Private: only this
+    /// module's typed setters write it.
     object: Cell<*mut c_void>,
     /// The session socket, which the connection owns from `add` until its close takes
     /// it out and frees it: empty before and after, and on a listening slot. Only the
@@ -148,13 +147,19 @@ thread_local! {
     /// this worker's own allocations, and a later session on the fd replaces a
     /// certificate whose close went to another worker.
     static CLIENT_CERTS: Cell<Vec<ClientCert>> = const { Cell::new(Vec::new()) };
+
+    /// The HTTP requests this thread's reads hold between them (upstream's
+    /// `conn->object`), by connection fd, each with its session. Only the thread
+    /// that reads a connection holds or takes its request, and a later session on
+    /// the fd frees one a close on another thread left behind.
+    static HTTP_REQUESTS: Cell<Vec<HeldRequest>> = const { Cell::new(Vec::new()) };
 }
+
+/// A session's HTTP request, held between reads: the session, and the request.
+type HeldRequest = Option<(libc::c_long, Box<swoole_rs_http::HttpRequest>)>;
 
 /// The top address bit: set on every slot object but a port.
 const NOT_PORT: usize = 1 << (usize::BITS - 1);
-/// The low address bit, set beside [`NOT_PORT`] on an HTTP request
-/// (`(address >> 1) | NOT_PORT | REQUEST`) and on nothing else.
-const REQUEST: usize = 1;
 
 /// A slot of a shared table, borrowed for `'a` and read and written one field at a
 /// time: every field is a cell or an atomic, so two handles to one slot share it and
@@ -392,43 +397,56 @@ impl<'a> Connection<'a> {
             .map(crate::view::Port::from)
     }
 
-    /// The HTTP request the session holds, which the slot no longer names, or `None`.
+    /// The HTTP request this thread holds for the session, no longer held, or `None`.
     #[must_use]
     #[inline]
     pub fn take_http_request(self) -> Option<Box<swoole_rs_http::HttpRequest>> {
-        const TAG: usize = NOT_PORT | REQUEST;
-        let raw = self.object();
-        if raw.addr() & TAG != TAG {
-            return None;
+        let fd = usize::try_from(self.fd()).ok()?;
+        let (session, request) = HTTP_REQUESTS.with(|held| {
+            let mut all = held.take();
+            let request = all.get_mut(fd).and_then(Option::take);
+            held.set(all);
+            request
+        })?;
+        if session == self.session_id() {
+            return Some(request);
         }
-        self.clear_object();
-        let request = raw.map_addr(|a| (a & !TAG) << 1).cast();
-        // SAFETY: only `hold_http_request` sets `REQUEST`, on the box it leaked, and
-        // this take clears it, so each box comes back once.
-        Some(unsafe { Box::from_raw(request) })
+        // An earlier session's, which closed on another thread.
+        swoole_rs_http::request_free(Some(request));
+        None
     }
 
-    /// The session holds `request` until [`Self::take_http_request`].
+    /// This thread holds `request` for the session until [`Self::take_http_request`],
+    /// freeing any it held for the fd before.
     #[inline]
     pub fn hold_http_request(self, request: Box<swoole_rs_http::HttpRequest>) {
-        const {
-            assert!(
-                align_of::<swoole_rs_http::HttpRequest>() >= 4,
-                "the tag takes the low bit after the shift"
-            );
+        let Ok(fd) = usize::try_from(self.fd()) else {
+            return swoole_rs_http::request_free(Some(request));
+        };
+        let session = self.session_id();
+        let replaced = HTTP_REQUESTS.with(|held| {
+            let mut all = held.take();
+            if all.len() <= fd {
+                all.resize_with(fd + 1, || None);
+            }
+            let replaced = all
+                .get_mut(fd)
+                .and_then(|slot| slot.replace((session, request)));
+            held.set(all);
+            replaced
+        });
+        if let Some((_, old)) = replaced {
+            swoole_rs_http::request_free(Some(old));
         }
-        let raw = Box::into_raw(request).cast::<c_void>();
-        self.set_object(raw.map_addr(|a| (a >> 1) | NOT_PORT | REQUEST));
     }
 
     /// `Server::store_pipe_fd`: a pipe end's slot names its pipe, which nothing reads
-    /// back as a port or a request. An address with the top bit set, which no
-    /// user-space pointer has, is not kept; a pipe is 2-aligned, so its low bit is
-    /// clear.
+    /// back as a port. An address with the top bit set, which no user-space pointer
+    /// has, is not kept.
     pub(crate) fn set_pipe(self, pipe: *mut c_void) {
         let kept = pipe.addr().cast_signed() >= 0;
         self.set_object(if kept {
-            pipe.map_addr(|a| (a | NOT_PORT) & !REQUEST)
+            pipe.map_addr(|a| a | NOT_PORT)
         } else {
             core::ptr::null_mut()
         });
@@ -481,7 +499,6 @@ pub struct ServerTables {
     connection_list: Table<ConnectionRecord>,
     /// `SW_SESSION_LIST_SIZE` of them.
     session_list: Table<SessionRecord>,
-    pub port_gs_list: Shm,
     /// `worker_num` of them.
     pub(crate) workers: Table<WorkerRecord>,
     /// One per added user worker.
@@ -559,7 +576,6 @@ impl ServerTables {
     pub(crate) fn unmap(&mut self) {
         self.connection_list.free();
         self.session_list.free();
-        self.port_gs_list.free();
         self.workers.free();
         self.user_workers.free();
         self.task_results.free();
@@ -628,7 +644,6 @@ impl Default for ServerTables {
         Self {
             connection_list: Table::empty(),
             session_list: Table::empty(),
-            port_gs_list: Shm::empty(),
             workers: Table::empty(),
             user_workers: Table::empty(),
             task_results: Table::empty(),

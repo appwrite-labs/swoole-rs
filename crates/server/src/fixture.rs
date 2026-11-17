@@ -31,7 +31,6 @@ pub(crate) struct LiveServer {
     // `Rc`s, not `Box`es: moving a `Box` asserts it unique, which would leave the
     // state's pointers to it stale.
     shared: Rc<ServerShared>,
-    port_counters: Rc<PortCounters>,
     listener: *mut SocketRecord,
     /// This thread's reactor, which the fixture made.
     reactor: Option<swoole_rs_corebase::reactor::OwnedReactor>,
@@ -66,7 +65,6 @@ impl LiveServer {
         // SAFETY: the shared record is plain data, for which zero is the state
         // `swr_v1_server_new`'s calloc leaves it in.
         let shared: Rc<ServerShared> = Rc::new(unsafe { core::mem::zeroed() });
-        let port_counters = Rc::new(PortCounters::default());
         let config = server.config_mut();
         config.mode_ = Mode::Process;
         config.reactor_num.set(1);
@@ -89,9 +87,7 @@ impl LiveServer {
         settings.set_listening_socket(unsafe {
             swoole_rs_corebase::reactor::OwnedSocket::from_socket(socket)
         });
-        settings
-            .gs
-            .set(Rc::as_ptr(&port_counters).cast_mut().cast());
+        settings.gs.fill(crate::table::Table::calloc(1));
         let state = server.state();
         let _ = state.ports.push(settings);
         // The listening fd's slot holds its port, as `Server::store_listen_socket` leaves it.
@@ -105,7 +101,6 @@ impl LiveServer {
         Self {
             server,
             shared,
-            port_counters,
             listener,
             reactor: Some(reactor),
             listener_fd: fd,
@@ -151,7 +146,9 @@ impl LiveServer {
     }
 
     pub(crate) fn port_counters(&self) -> &PortCounters {
-        &self.port_counters
+        let port = self.state().ports.get(0).map(view::Port::config);
+        port.and_then(PortConfig::counters)
+            .expect("the fixture's port counters")
     }
 
     /// The read event of the port's listening socket, as the reactor hands `accept` it.

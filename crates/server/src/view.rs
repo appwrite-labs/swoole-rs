@@ -713,10 +713,6 @@ impl<'a> Port<'a> {
         self.0
     }
 
-    /// `port->gs = gs`: the port's slot in `port_gs_list`.
-    pub(crate) fn set_gs(self, gs: *mut c_void) {
-        self.config().gs.set(gs);
-    }
     /// `port->protocol.package_max_length = length`.
     pub(crate) fn set_package_max_length(self, length: u32) {
         self.config()
@@ -873,10 +869,11 @@ mod tests {
         use crate::PortCounters;
         let server = crate::TestServer::new();
         let serv = server.serv();
-        let mut counters = PortCounters::default();
-        counters.connection_num.store(99, Ordering::Relaxed);
         let mut port = PortConfig::boxed(0);
-        port.gs.set((&raw mut counters).cast());
+        assert_eq!(serv.port_connections(&port), 0, "no counters yet");
+        port.gs.fill(crate::table::Table::calloc(1));
+        let counters: &PortCounters = port.counters().unwrap();
+        counters.connection_num.store(99, Ordering::Relaxed);
         serv.config().worker_num.set(2);
         assert_eq!(serv.port_connections(&port), 99);
         port.connection_nums.fill(crate::table::Table::calloc(2));
@@ -885,9 +882,8 @@ mod tests {
         assert_eq!(serv.port_connections(&port), 8);
         serv.config().worker_num.set(0);
         assert_eq!(serv.port_connections(&port), 0);
-        port.gs.set(core::ptr::null_mut());
-        assert_eq!(serv.port_connections(&port), 0, "no counters yet");
         port.connection_nums.free();
+        port.gs.free();
     }
 
     /// A worker hook gets `{ server, worker id }`; a server hook, the server.

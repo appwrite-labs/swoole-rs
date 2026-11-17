@@ -200,10 +200,9 @@ mod tests {
     #[test]
     fn a_send_counts_on_the_server_and_its_sessions_port() {
         use crate::records::{ConnectionRecord, SessionRecord};
-        let mut port = PortCounters::default();
         // A `ListenPort` is its settings.
         let config = crate::port_config::PortConfig::boxed(0);
-        config.gs.set((&raw mut port).cast());
+        config.gs.fill(crate::table::Table::calloc(1));
         // SAFETY: a connection record is plain data; zero is a closed one.
         let mut connections: Vec<ConnectionRecord> =
             (0..3).map(|_| unsafe { core::mem::zeroed() }).collect();
@@ -224,7 +223,7 @@ mod tests {
         let state = server.state();
         // SAFETY: the tables just named hold 3 records.
         unsafe { state.tables_ref().set_max_connection_unchecked(3) };
-        let _ = state.ports.push(config);
+        let port = state.ports.push(config);
         state.hold_port(0, 1).unwrap();
         count_send(state, 1, 4);
         count_send(state, 0, 3);
@@ -236,7 +235,10 @@ mod tests {
             (2, 7)
         );
         assert_eq!(
-            totals(&port.response_count, &port.total_send_bytes),
+            totals(
+                &port.config().counters().unwrap().response_count,
+                &port.config().counters().unwrap().total_send_bytes
+            ),
             (1, 4),
             "session 0 has no port"
         );
