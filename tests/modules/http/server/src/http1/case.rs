@@ -30,37 +30,14 @@ pub(super) const KEY_FILE: u32 = 5;
 pub(super) const CLIENT_CERT_FILE: u32 = 7;
 const CAFILE: u32 = 9;
 
-/// `OwnedTlsFields` (crates/tls/src/owned.rs), up to `context`.
-#[repr(C)]
-pub(super) struct TlsFields {
-    http: u8,
-    http_v2: u8,
-    prefer_server_ciphers: u8,
-    session_tickets: u8,
-    stapling: u8,
-    stapling_verify: u8,
-    disable_tls_host_name: u8,
-    grease: u8,
-    verify_depth: u8,
-    disable_compress: u8,
-    pub(super) verify_peer: u8,
-    pub(super) allow_self_signed: u8,
-    protocols: u32,
-    create_flag: u8,
-    context: *mut c_void,
-}
+/// The typed TLS configuration; the original layout witness still checks its fields.
+pub(super) type TlsFields = swoole_rs_corebase::tls::OwnedTlsFields;
 const _: () = assert!(
     size_of::<TlsFields>() == 32
         && offset_of!(TlsFields, allow_self_signed) == 11
         && offset_of!(TlsFields, protocols) == 12
         && offset_of!(TlsFields, context) == 24
 );
-
-/// crates/tls's view of a live `SSLContext` owner.
-fn tls_view(context: *const c_void) -> swoole_rs_tls::OwnedTlsPrepared {
-    // SAFETY: a live context.
-    swoole_rs_tls::owner_view(unsafe { &*context.cast::<swoole_rs_tls::OwnedTlsContext>() })
-}
 
 /// The head of `network::Socket`, through `object` (native/reactor/swoole_rs_socket.h); `info`
 /// is at [`SOCKET_INFO`].
@@ -178,10 +155,11 @@ impl Port {
     }
 }
 
-/// `SSLContext::fields()`.
-pub(super) fn tls_fields(context: *const c_void) -> &'static mut TlsFields {
-    // SAFETY: a live context, whose fields live as long as it.
-    unsafe { &mut *tls_view(context).fields.cast::<TlsFields>() }
+/// Edits the TLS configuration only while its exclusive loan is held.
+pub(super) fn edit_tls(context: *const c_void, edit: impl FnOnce(&mut TlsFields)) {
+    // SAFETY: the fixture's port keeps this context live.
+    let owner = unsafe { &*context.cast::<swoole_rs_corebase::tls::OwnedTlsContext>() };
+    owner.borrow_configuration().edit(edit);
 }
 
 /// `SSLContext::set_cert_file` (`CERT_FILE`), `set_key_file` and `set_client_cert_file`,
@@ -190,13 +168,13 @@ pub(super) fn set_ssl_path(context: *const c_void, index: u32, file: *const c_ch
     // SAFETY: a NUL-terminated path.
     let path = unsafe { CStr::from_ptr(file) };
     let which = match index {
-        CERT_FILE => swoole_rs_tls::Text::CertFile,
-        KEY_FILE => swoole_rs_tls::Text::KeyFile,
-        CLIENT_CERT_FILE => swoole_rs_tls::Text::ClientCertFile,
+        CERT_FILE => swoole_rs_corebase::tls::Text::CertFile,
+        KEY_FILE => swoole_rs_corebase::tls::Text::KeyFile,
+        CLIENT_CERT_FILE => swoole_rs_corebase::tls::Text::ClientCertFile,
         other => unreachable!("SSL path {other}"),
     };
     // SAFETY: a live context, which only the case's thread configures.
-    let context = unsafe { &*context.cast::<swoole_rs_tls::OwnedTlsContext>() };
+    let context = unsafe { &*context.cast::<swoole_rs_corebase::tls::OwnedTlsContext>() };
     let mut context = context.borrow_configuration();
     // The owner's setter, which warns itself and ends the process on `bad_alloc`.
     _ = context.set_text(which, path.to_bytes());
@@ -420,7 +398,7 @@ pub(crate) unsafe fn swr_case_ssl_server(
     port.config().open_http_protocol.set(true);
     set_ssl_path(port.ssl_context(), CERT_FILE, cert);
     set_ssl_path(port.ssl_context(), KEY_FILE, key);
-    tls_fields(port.ssl_context()).http = 1;
+    edit_tls(port.ssl_context(), |fields| fields.http = true);
     let _ = lifecycle::ssl_init(port.settings());
     let created = serv.create();
     serv.on_start(on_start);
@@ -693,18 +671,21 @@ pub(crate) unsafe fn swr_case_ssl_sni(
 /// `set_ssl_protocols`; the cases' ports are TCP, so the DTLS bit stays.
 pub(crate) unsafe fn swr_case_ssl_protocols(serv: *mut c_void, protocols: c_long) {
     let context = Server(serv).get_primary_port().ssl_context();
-    tls_fields(context).protocols = u32::try_from(protocols).unwrap();
+    edit_tls(context, |fields| {
+        fields.protocols = u32::try_from(protocols).unwrap();
+    });
 }
 
 pub(crate) unsafe fn swr_case_ssl_client_ca(serv: *mut c_void, cafile: *const c_char) {
     let context = Server(serv).get_primary_port().ssl_context();
-    let fields = tls_fields(context);
-    fields.verify_peer = 1;
-    fields.allow_self_signed = 1;
+    edit_tls(context, |fields| {
+        fields.verify_peer = true;
+        fields.allow_self_signed = true;
+    });
     // SAFETY: a live context; a NUL-terminated path.
     let status = unsafe {
         let path = CStr::from_ptr(cafile);
-        let owner = &*context.cast::<swoole_rs_tls::OwnedTlsContext>();
+        let owner = &*context.cast::<swoole_rs_corebase::tls::OwnedTlsContext>();
         owner
             .borrow_configuration()
             .set_string(CAFILE as usize, path.to_bytes())

@@ -259,7 +259,7 @@ pub mod exports {
                     lend_spare(&mut reply, |out| {
                         let close = FrameFlags::default().with_final();
                         if encode_frame(payload.len(), payload, Opcode::Close, close, out).is_ok() {
-                            _ = swoole_rs_tls::upstream::send(s.socket, out.written(), 0);
+                            _ = swoole_rs_corebase::tls::upstream::send(s.socket, out.written(), 0);
                         }
                     });
                 }

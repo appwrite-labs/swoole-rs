@@ -2,7 +2,7 @@
 //! timers, event loop and callbacks. `corebase::process` decides every step
 //! (`process_pool.rs`, `pool.rs`) and asks for each effect through the
 //! [`PoolNative`] side [`process_pool_native`] returns. It lives here because these objects are
-//! `corebase::reactor`'s, crates/tls's and `corebase::memory`'s, which `corebase::process` can't
+//! `corebase::reactor`'s, `corebase::tls`'s and `corebase::memory`'s, which `corebase::process` can't
 //! depend on.
 //!
 //! Each hook that can reach PHP runs inside the bailout trap `corebase::process` sets
@@ -43,8 +43,8 @@ use swoole_rs_corebase::timer::{
     swoole_timer_create, swoole_timer_free, swoole_timer_get_next_msec, swoole_timer_is_available,
     swoole_timer_select,
 };
-use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket};
-use swoole_rs_tls::upstream::{self, read_sync_fill, recv_sync_fill, socket_free};
+use swoole_rs_corebase::tls::socket_pair::{self, SocketPair, unix_socket};
+use swoole_rs_corebase::tls::upstream::{self, read_sync_fill, recv_sync_fill, socket_free};
 
 /// `swoole::ProtocolType`, `SW_FD_PIPE`, `SW_EVENT_READ`,
 /// `SW_EVENTLOOP_WAIT_EXIT` and the `Channel` flags.

@@ -21,9 +21,9 @@ use swoole_rs_corebase::constants::{EventType, FdType};
 use swoole_rs_corebase::memory::flat::Table;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::reactor::event_api::{self, CycleTask, Deferred};
+use swoole_rs_corebase::tls::event_socket::EventSocket;
 use swoole_rs_phpstubs::event;
 use swoole_rs_phpswoole::reactor::{self, PhpFdHandler};
-use swoole_rs_tls::event_socket::EventSocket;
 use swoole_rs_zend::host::callable::Callable;
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Minit, Owned, Php, Value,

@@ -19,7 +19,7 @@ pub enum SyncMode {
     Sendfile,
 }
 
-/// What a blocking call needs from its `Socket` (`crates/tls`'s `upstream.rs`).
+/// What a blocking call needs from its `Socket` (`corebase::tls`'s `upstream.rs`).
 pub trait SyncEffects {
     /// The socket's descriptor (asked for each wait, as upstream's `wait_event`
     /// reads it) and `dont_restart`.

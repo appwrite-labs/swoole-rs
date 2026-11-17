@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 use crate::port_config::PortConfig;
 use crate::view::Port;
 use std::ffi::CString;
-use swoole_rs_tls::socket_pair::SocketPair;
+use swoole_rs_corebase::tls::socket_pair::SocketPair;
 
 /// Owned by `Server::state_`, from the constructor to the destructor. Reactor threads
 /// share it, so each counter is atomic.
@@ -296,13 +296,13 @@ impl ServerState {
         &self,
         worker: swoole_rs_corebase::process::worker_record::Worker<'_>,
     ) -> bool {
-        let mut pair = Box::new(swoole_rs_tls::socket_pair::unix_socket(
+        let mut pair = Box::new(swoole_rs_corebase::tls::socket_pair::unix_socket(
             true,
             libc::SOCK_DGRAM,
         ));
         let (master, end) = pair.raw_ends();
         if master.is_null() || end.is_null() {
-            swoole_rs_tls::socket_pair::drop(&mut pair);
+            swoole_rs_corebase::tls::socket_pair::drop(&mut pair);
             return false;
         }
         let mut pipes = lock(&self.worker_pipes);
@@ -322,19 +322,19 @@ impl ServerState {
     pub(crate) fn open_task_pipes(&self, count: u32) -> bool {
         let mut pipes = Vec::new();
         for _ in 0..count {
-            let pair = swoole_rs_tls::socket_pair::pipe(true);
+            let pair = swoole_rs_corebase::tls::socket_pair::pipe(true);
             let ready = pair.master_end().is_some() && pair.worker_end().is_some();
             pipes.push(pair);
             if !ready {
                 for pipe in &mut pipes {
-                    swoole_rs_tls::socket_pair::drop(pipe);
+                    swoole_rs_corebase::tls::socket_pair::drop(pipe);
                 }
                 return false;
             }
         }
         if let Err(mut pipes) = self.task_pipes.set(pipes.into_boxed_slice()) {
             for pipe in &mut pipes {
-                swoole_rs_tls::socket_pair::drop(pipe);
+                swoole_rs_corebase::tls::socket_pair::drop(pipe);
             }
         }
         true
@@ -564,7 +564,7 @@ impl Drop for ServerState {
                 .into_iter()
                 .flat_map(|pipes| pipes.iter_mut());
             for pipe in task.chain(worker.iter_mut().map(|pipe| &mut **pipe)) {
-                swoole_rs_tls::socket_pair::drop(pipe);
+                swoole_rs_corebase::tls::socket_pair::drop(pipe);
             }
         }
         for port in self.ports.drain() {

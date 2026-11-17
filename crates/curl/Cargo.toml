@@ -16,7 +16,6 @@ swoole-rs-error = { path = "../error" }
 libc = "=0.2.191"
 swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
 swoole-rs-curl-sys = { path = "../curl-sys" }
-swoole-rs-tls = { path = "../tls", features = ["upstream-symbols"] }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-zend = { path = "../zend", optional = true }
 

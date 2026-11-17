@@ -224,7 +224,7 @@ pub(crate) fn stop_master_thread(serv: Server<'_>) {
     if let Some(master) = serv
         .config()
         .command_pipe()
-        .and_then(swoole_rs_tls::socket_pair::SocketPair::master_end)
+        .and_then(swoole_rs_corebase::tls::socket_pair::SocketPair::master_end)
     {
         reactor.del(*master);
     }

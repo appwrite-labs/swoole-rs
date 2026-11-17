@@ -29,6 +29,7 @@ pub mod memory;
 pub mod process;
 pub mod reactor;
 pub mod timer;
+pub mod tls;
 
 #[cfg(test)]
 #[path = "../../../tests/modules/corebase/allocation.rs"]

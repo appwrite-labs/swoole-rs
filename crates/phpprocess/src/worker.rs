@@ -1,6 +1,6 @@
 //! A Process object's `Worker` and its pipe (were the host table's worker and
 //! pipe entries in ext-src/swoole_server.cc): the record `corebase::process` lays
-//! out, the `UnixSocket` crates/tls defines, and the pipe's `network::Socket`.
+//! out, the `UnixSocket` `corebase::tls` defines, and the pipe's `network::Socket`.
 use std::{cell::OnceCell, ffi::c_int};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::process::{
@@ -13,8 +13,8 @@ use swoole_rs_corebase::reactor::{
         socket_set_fd_option, socket_set_kernel_read_timeout, socket_set_kernel_write_timeout,
     },
 };
+use swoole_rs_corebase::tls::upstream::{read_sync, send_sync};
 use swoole_rs_server::view;
-use swoole_rs_tls::upstream::{read_sync, send_sync};
 
 /// `SW_PIPE_CLOSE_READ` and `SW_PIPE_CLOSE_WRITE`.
 const CLOSE_READ: i64 = 3;

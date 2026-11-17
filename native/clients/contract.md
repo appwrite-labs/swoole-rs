@@ -48,7 +48,7 @@ uncaught `bad_alloc` does.
   normalized in bounded stack storage before `std::net` parsing.
 - IPv4 loopback is exactly `127.0.0.1`, not `/8`.
 - `Address::assign(type, host, port, resolve)` is one Rust function,
-  `address::assign` (crates/corebase's `net_address::assign`, which crates/tls
+  `address::assign` (crates/corebase's `net_address::assign`, which corebase::tls
   binds with): port check, then the sockaddr union and length for
   IPv4/IPv6/raw (literal, else `gethostbyname` when resolving) or Unix (length
   limit, `strlcpy` copy); it returns the `SW_ERROR_*` code the caller sets as
@@ -110,9 +110,9 @@ event mask (`listen`); a PHP bailout in one longjmps out, so no C++
 exception crosses Rust. The socket's `object` is the Rust state, which the handlers and
 `onPackage` read. Warnings log under upstream's function names so the lines match.
 The socket IO, sendfile, reactor writes, framed reads and the socket's release call
-crates/tls's, `corebase::reactor`'s and crates/ports' definitions by their upstream symbols
+corebase::tls's, `corebase::reactor`'s and crates/ports' definitions by their upstream symbols
 (those crates sit above this one), and the input buffer is a Rust-owned `String`.
-The TLS context is crates/tls's owner and the proxies are corebase's `ProxyState`s,
+The TLS context is corebase::tls's owner and the proxies are corebase's `ProxyState`s,
 held by the state. The TLS session calls and `SSLContext::create` are called by their
 upstream symbols too, and the SOCKS5 codec (`owned_proxy`) through the host crates/ffi
 registers; the HTTP proxy's are

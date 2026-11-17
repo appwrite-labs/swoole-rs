@@ -175,7 +175,7 @@ fn native_tls_effects_keep_the_session_and_settings_while_the_peer_is_pending() 
     assert!(
         context
             .borrow_configuration()
-            .set_text(swoole_rs_tls::Text::HostName, b"first.test")
+            .set_text(swoole_rs_corebase::tls::Text::HostName, b"first.test")
     );
     assert!(ssl_handshake(this));
     let session = this
@@ -191,7 +191,7 @@ fn native_tls_effects_keep_the_session_and_settings_while_the_peer_is_pending() 
     assert!(
         context
             .borrow_configuration()
-            .set_text(swoole_rs_tls::Text::HostName, b"later.test")
+            .set_text(swoole_rs_corebase::tls::Text::HostName, b"later.test")
     );
     assert!(ssl_handshake(this));
     assert_eq!(

@@ -25,14 +25,10 @@ swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
 swoole-rs-error = { path = "../error" }
 swoole-rs-error-ffi = { path = "../error-ffi" }
 swoole-rs-http-ffi = { path = "../http-ffi" }
-swoole-rs-tls = { path = "../tls" }
 openssl-sys = { version = "=0.9.118", optional = true }
 swoole-rs-ssh2-sys = { path = "../ssh2-sys", optional = true }
 
 [dev-dependencies]
 swoole-rs-oracle = { path = "../oracle" }
-# The reactor's signal code, which the tests now link, calls tls's `Socket::free`.
-swoole-rs-tls = { path = "../tls", features = ["upstream-symbols"] }
-
 [lints]
 workspace = true

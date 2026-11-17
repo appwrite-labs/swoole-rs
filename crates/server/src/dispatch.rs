@@ -214,7 +214,7 @@ pub fn sendwait(serv: Server<'_>, session_id: c_long, data: &[u8]) -> bool {
     };
     let sent = conn
         .socket()
-        .and_then(|socket| swoole_rs_tls::upstream::send_sync(*socket, data, 0));
+        .and_then(|socket| swoole_rs_corebase::tls::upstream::send_sync(*socket, data, 0));
     sent == Some(data.len())
 }
 

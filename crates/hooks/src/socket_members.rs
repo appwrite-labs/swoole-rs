@@ -27,7 +27,7 @@ use swoole_rs_corebase::reactor::{
     Drain, Event, Fill, Running, Socket, SocketAddress, SocketFields, SocketRecord,
 };
 use swoole_rs_corebase::sys::{self, ReadSlot, strerror};
-use swoole_rs_tls::upstream::{
+use swoole_rs_corebase::tls::upstream::{
     peek, recv, recv_fill, send, send_drain, sendfile as socket_sendfile_fd,
     socket_ssl_peer_certificate_pem,
 };

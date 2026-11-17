@@ -11,7 +11,7 @@ because it premarks both shutdown bits, so the upstream test sees no warning.
 substitutes `no OpenSSL reason available`. The fatal warning and failure/retry
 state are unchanged; a failed write is not treated as a delivered alert.
 
-`crates/tls/src/socket.rs`'s `closed_peer` test reproduces terminal EPIPE with a completed TLS
+`crates/corebase/src/tls/socket.rs`'s `closed_peer` test reproduces terminal EPIPE with a completed TLS
 handshake over a nonblocking socketpair and a closed peer, with the non-null
 reason checks.
 

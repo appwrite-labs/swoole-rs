@@ -24,7 +24,7 @@ iouring = ["swoole-rs-hooks/iouring", "swoole-rs-phplocks?/iouring", "swoole-rs-
 cares = ["swoole-rs-clients/cares"]
 stdext = ["swoole-rs-phpstdext/active", "swoole-rs-phpswoole?/stdext"]
 # --fix-halfclose (M15, native/halfclose): the queued-close drain, synchronous prequeue and TLS repairs.
-halfclose = ["swoole-rs-server/halfclose", "swoole-rs-tls/halfclose"]
+halfclose = ["swoole-rs-server/halfclose", "swoole-rs-corebase/halfclose"]
 pgsql = ["dep:swoole-rs-pgsql", "swoole-rs-phpswoole?/pgsql"]
 odbc = ["dep:swoole-rs-odbc", "swoole-rs-phpswoole?/odbc"]
 firebird = ["dep:swoole-rs-firebird", "swoole-rs-phpswoole?/firebird"]
@@ -48,7 +48,6 @@ swoole-rs-server = { path = "../server", features = ["upstream-symbols"] }
 swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
 swoole-rs-hooks = { path = "../hooks", features = ["upstream-symbols"] }
 swoole-rs-phpruntime = { path = "../phpruntime", features = ["upstream-symbols"] }
-swoole-rs-tls = { path = "../tls", features = ["upstream-symbols"] }
 swoole-rs-phpprocess = { path = "../phpprocess", optional = true }
 swoole-rs-phpthread = { path = "../phpthread", optional = true }
 swoole-rs-clients = { path = "../clients" }

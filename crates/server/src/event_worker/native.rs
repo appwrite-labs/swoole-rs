@@ -602,7 +602,7 @@ pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) ->
         swoole_rs_corebase::reactor::event_api::event_write(pipe, &info)
     } else {
         let event = swoole_rs_corebase::reactor::Drain::new(&info);
-        swoole_rs_tls::upstream::send_sync_drain(*pipe, event, 0)
+        swoole_rs_corebase::tls::upstream::send_sync_drain(*pipe, event, 0)
     }
 }
 

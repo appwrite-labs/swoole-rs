@@ -55,7 +55,7 @@ impl WritePayload<'_> {
     }
 }
 
-/// The write's effects (`crates/tls`'s `reactor_write.rs`); `send` preserves the
+/// The write's effects (`corebase::tls`'s `reactor_write.rs`); `send` preserves the
 /// kernel's errno.
 pub trait WriteEffects {
     /// `socket->set_fd_option(1, -1)`, which also sets `nonblock`.

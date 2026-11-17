@@ -7,7 +7,7 @@ use std::{
 };
 use swoole_rs_corebase::ossupport::QueueRecord;
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerRecord};
-use swoole_rs_tls::socket_pair::{self, SocketPair};
+use swoole_rs_corebase::tls::socket_pair::{self, SocketPair};
 
 /// A stable worker record, its owned pipe and its owned message queue. No PHP
 /// value is retained here. Atomic reference counts allow the server to release

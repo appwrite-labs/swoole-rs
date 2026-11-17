@@ -1,6 +1,6 @@
 //! OpenSSL info callback over the authoritative reactor Socket record. Upstream's
 //! renegotiation `swoole_debug` exists only in `SW_DEBUG` builds, which the hybrid isn't.
-use crate::{Ssl, SslCtx};
+use crate::tls::{Ssl, SslCtx};
 use std::ffi::c_int;
 // OpenSSL's declaration; openssl-sys does not bind this entry point. It
 // stores the callback in the live context, and calls it with the live, non-null SSL
@@ -24,7 +24,7 @@ pub(crate) extern "C" fn info(ssl: Ssl<'_>, where_: c_int, _result: c_int) {
     };
     if renegotiating {
         socket.edit(|record| {
-            if record.tls.state == crate::constants::SslState::SW_SSL_STATE_READY {
+            if record.tls.state == crate::tls::constants::SslState::SW_SSL_STATE_READY {
                 record.ssl_renegotiation = true;
             }
         });

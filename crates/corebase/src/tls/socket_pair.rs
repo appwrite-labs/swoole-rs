@@ -5,18 +5,16 @@
 //! `network::Socket`, the master end writing and the worker end reading. With
 //! `upstream-symbols` each member is defined under its upstream (Itanium) symbol, and
 //! the process patch deletes `pipe.cc` and `unix_socket.cc`.
-use crate::event_socket::EventSocket;
-use crate::upstream::{read_sync, write_sync};
+use crate::CCast;
+use crate::log;
+use crate::reactor::socket_upstream::socket_set_fd_option;
+use crate::reactor::{Heap, SOCKET_DEFAULTS, SocketRecord, TimeoutKind, set_socket_buffer_size};
+use crate::tls::event_socket::EventSocket;
+use crate::tls::upstream::{read_sync, write_sync};
 use std::cell::Cell;
 use std::ffi::{CStr, c_int};
 use std::mem::MaybeUninit;
 use std::ptr;
-use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::log;
-use swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option;
-use swoole_rs_corebase::reactor::{
-    Heap, SOCKET_DEFAULTS, SocketRecord, TimeoutKind, set_socket_buffer_size,
-};
 
 /// `SW_FD_PIPE`.
 const FD_PIPE: c_int = 3;
@@ -55,8 +53,8 @@ fn open(blocking: bool, unix: Option<c_int>, origin: &CStr) -> (SocketPair, bool
         worker_socket: None,
     };
     let socks = match unix {
-        Some(protocol) => swoole_rs_corebase::sys::socketpair(libc::AF_UNIX, protocol, 0),
-        None => swoole_rs_corebase::sys::pipe(),
+        Some(protocol) => crate::sys::socketpair(libc::AF_UNIX, protocol, 0),
+        None => crate::sys::pipe(),
     };
     let Some(socks) = socks else {
         let call = if unix.is_some() { "socketpair" } else { "pipe" };
@@ -195,7 +193,7 @@ pub fn read_into(this: &SocketPair, buffer: &mut [MaybeUninit<u8>]) -> Option<us
     if this.blocking {
         read_sync(*socket, buffer)
     } else {
-        swoole_rs_corebase::sys::read(socket.fd(), buffer)
+        crate::sys::read(socket.fd(), buffer)
     }
 }
 
@@ -209,7 +207,7 @@ pub fn write_from(this: &SocketPair, data: &[u8]) -> Option<usize> {
     if this.blocking {
         write_sync(*socket, data)
     } else {
-        swoole_rs_corebase::sys::write(socket.fd(), data)
+        crate::sys::write(socket.fd(), data)
     }
 }
 
@@ -219,8 +217,8 @@ pub fn clean(this: &SocketPair) {
         return;
     };
     let mut buffer = [0_u8; 1024];
-    while socket.wait_event(0, swoole_rs_corebase::reactor::Events::READ) {
-        if swoole_rs_corebase::sys::read(socket.fd(), &mut buffer) <= Some(0) {
+    while socket.wait_event(0, crate::reactor::Events::READ) {
+        if crate::sys::read(socket.fd(), &mut buffer) <= Some(0) {
             break;
         }
     }
@@ -309,6 +307,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no socket options or datagram socketpair")]
     fn a_unix_socket_is_a_pair_of_the_protocol_asked() {
         for protocol in [libc::SOCK_STREAM, libc::SOCK_DGRAM] {
             let pair = pair(|this| {

@@ -14,6 +14,8 @@ upstream-symbols = ["dep:cc"]
 log-capture = []
 # Worker globals are per thread for SW_THREAD builds without thread-safe PHP.
 thread = []
+# `--fix-halfclose`: TLS close_notify and interrupted-sendfile repairs.
+halfclose = []
 
 [dependencies]
 memchr = "2.8.3"
@@ -62,6 +64,10 @@ swoole-rs-oracle = { path = "../oracle" }
 [[example]]
 name = "constants"
 path = "../../tests/modules/corebase/corebase_enums.rs"
+
+[[example]]
+name = "tls-constants"
+path = "../../tests/modules/corebase/tls_enums.rs"
 
 [lints]
 workspace = true

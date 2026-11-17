@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The TLS identifiers, which no C header exports, as `NAME VALUE` lines that
 //! `constants.py` compares with the pinned `swoole_ssl.h`.
-use swoole_rs_tls::{SW_SSL_ALL, SslCreateFlag, SslMethod, SslVersion};
+use swoole_rs_corebase::tls::{SW_SSL_ALL, SslCreateFlag, SslMethod, SslVersion};
 
 include!("enum_table.rs");
 

@@ -8,7 +8,7 @@ use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
 use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::reactor::{Heap, Socket};
-use swoole_rs_tls::{SslVersion, TlsContext};
+use swoole_rs_corebase::tls::{SslVersion, TlsContext};
 
 use crate::view::Port;
 
@@ -197,9 +197,14 @@ pub struct PortConfig {
 pub struct TlsState {
     /// Fully configured settings for reactor threads; replacing them never edits
     /// the configuration an existing reader holds.
-    pub settings: Published<swoole_rs_tls::TlsSettings>,
+    pub settings: Published<swoole_rs_corebase::tls::TlsSettings>,
     /// `sni_contexts`, in insertion order: the name and its context.
-    pub sni: RwLock<Vec<(Vec<u8>, std::sync::Arc<swoole_rs_tls::TlsSettings>)>>,
+    pub sni: RwLock<
+        Vec<(
+            Vec<u8>,
+            std::sync::Arc<swoole_rs_corebase::tls::TlsSettings>,
+        )>,
+    >,
 }
 
 /// A `package_length_func`'s owner, whose callable the port's protocol names.
@@ -243,7 +248,7 @@ impl PortConfig {
     /// Reads the context's fields while holding a reference of this call's own.
     pub(crate) fn with_ssl_fields<R>(
         &self,
-        read: impl FnOnce(&TlsContext, &swoole_rs_tls::OwnedTlsFields) -> R,
+        read: impl FnOnce(&TlsContext, &swoole_rs_corebase::tls::OwnedTlsFields) -> R,
     ) -> Option<R> {
         let context = self.ssl_context.get()?;
         Some(read(&context, &context.fields()))

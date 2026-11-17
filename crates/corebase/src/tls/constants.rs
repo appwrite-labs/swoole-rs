@@ -7,7 +7,7 @@ pub enum SslCreateFlag {
     SW_SSL_SERVER = 1,
     SW_SSL_CLIENT = 2,
 }
-pub use swoole_rs_corebase::constants::SslState;
+pub use crate::constants::SslState;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SslVersion(u32);
 
@@ -22,7 +22,7 @@ impl SslVersion {
     pub const SW_SSL_DTLS: Self = Self(1 << 7);
 }
 
-swoole_rs_corebase::impl_flags!(SslVersion, u32);
+crate::impl_flags!(SslVersion, u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum SslMethod {

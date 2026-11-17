@@ -21,9 +21,9 @@ use swoole_rs_corebase::process::task_sync::{
     Bailed, MultiTask, ResultSlot, TaskHost, Tasks, Waiting,
 };
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerRecord};
+use swoole_rs_corebase::tls::socket_pair::{self, SocketPair};
 use swoole_rs_corebase::utilities::set_log_file;
 use swoole_rs_corebase::{swoole_random_string, swr_v1_core_set_current_task_id};
-use swoole_rs_tls::socket_pair::{self, SocketPair};
 
 use case::after_once as after;
 

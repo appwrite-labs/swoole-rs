@@ -349,12 +349,12 @@ mod native {
     }
 
     pub(super) fn ssl_shutdown(socket: Co) {
-        socket.with_network(swoole_rs_tls::upstream::socket_ssl_shutdown);
+        socket.with_network(swoole_rs_corebase::tls::upstream::socket_ssl_shutdown);
     }
 
     pub(super) fn liveness(socket: Co) -> bool {
         socket
-            .with_network(swoole_rs_tls::upstream::check_liveness)
+            .with_network(swoole_rs_corebase::tls::upstream::check_liveness)
             .unwrap_or(false)
     }
 }

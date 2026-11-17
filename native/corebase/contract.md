@@ -70,9 +70,9 @@ startup leaves in `native::NativeHost` before running the body.
 Memory, logger, signal, timer and event lifecycles are direct calls inside corebase;
 their order is unchanged. Before host registration the lifecycle sequences skip
 those leaves and `swoole_fork` returns -1. Coroutine event initialization and waiting
-also call `corebase::reactor` directly, and the reactor selects timers directly.
-Reactor sleep and TLS socket release remain registered operations of hooks and TLS,
-as do the external reactor initializer and writer callbacks.
+also call `corebase::reactor` directly. Timers, socket I/O/cleanup and process-pool
+listeners are direct calls inside corebase. Reactor sleep and the external
+hooks/client reactor initializers remain registered callbacks.
 
 - Init: the record's defaults (`swr_v1_core_init`, below), `SwooleG = {}`, libc's
   allocator, the native leaves in upstream's order (`sw_error`, stdout, the

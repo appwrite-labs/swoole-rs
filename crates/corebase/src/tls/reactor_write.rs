@@ -4,21 +4,20 @@
 //! `_writable_callback` and `drain_write_buffer`), defined under their upstream
 //! symbols over the Rust socket methods. `swoole_rs_reactor`'s
 //! `swr_v1_reactor_write`, `_flush` and `_drain` decide; these are their effects.
-use crate::upstream::{
+use crate::CCast;
+use crate::log;
+use crate::reactor::reactor_upstream::{interest, trigger_close_event};
+use crate::reactor::socket_upstream::socket_set_fd_option;
+use crate::reactor::{
+    Drain, Event, FlushEffects, Heap, Interest, OwnedSocket, Running, SOCKET_DEFAULTS,
+    WriteEffects, WriteError, WritePayload,
+};
+use crate::tls::upstream::{
     send_drain, socket_free, socket_handle_send, socket_handle_sendfile, writev,
 };
 use std::cell::Cell;
 use std::ffi::c_int;
 use std::io::IoSlice;
-use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::log;
-use swoole_rs_corebase::reactor::event_api::Writers;
-use swoole_rs_corebase::reactor::reactor_upstream::{interest, trigger_close_event};
-use swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option;
-use swoole_rs_corebase::reactor::{
-    Drain, Event, FlushEffects, Heap, Interest, OwnedSocket, Running, SOCKET_DEFAULTS,
-    WriteEffects, WriteError, WritePayload,
-};
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
@@ -60,7 +59,7 @@ impl WriteEffects for Write<'_> {
     fn create_buffer(&self) {
         let socket = self.socket;
         let chunk_size = socket.read(|record| record.chunk_size);
-        let buffer = swoole_rs_corebase::buffer::cpp::new_buffer(chunk_size);
+        let buffer = crate::buffer::cpp::new_buffer(chunk_size);
         socket.edit(|record| record.output.out_buffer = Some(buffer));
     }
 
@@ -68,14 +67,14 @@ impl WriteEffects for Write<'_> {
         if !self
             .socket
             .read(|record| record.events)
-            .intersects(swoole_rs_corebase::reactor::Events::WRITE)
+            .intersects(crate::reactor::Events::WRITE)
         {
             // `reactor->add_write_event(socket)`, which logs a failure.
             _ = interest(
                 self.reactor,
                 self.socket,
                 Interest::AddWrite,
-                swoole_rs_corebase::reactor::Events::NONE,
+                crate::reactor::Events::NONE,
             );
         }
     }
@@ -90,8 +89,7 @@ fn write(reactor: Running<'_>, socket: Heap<'_>, payload: WritePayload<'_>) -> O
         payload,
     };
     let default_size = SOCKET_DEFAULTS.buffer_size();
-    let result =
-        swoole_rs_corebase::reactor::swr_v1_reactor_write(*socket, default_size, payload, &ops);
+    let result = crate::reactor::swr_v1_reactor_write(*socket, default_size, payload, &ops);
     let origin = c"Reactor::write_func";
     match result {
         Ok(value) => return Some(value),
@@ -131,10 +129,7 @@ pub fn reactor_writev(
     socket: Heap<'_>,
     vectors: &[IoSlice<'_>],
 ) -> Option<usize> {
-    if !socket
-        .read(swoole_rs_corebase::reactor::SocketFields::ssl)
-        .is_null()
-    {
+    if !socket.read(crate::reactor::SocketFields::ssl).is_null() {
         log::error_log(
             log::LogLevel::SW_LOG_WARNING,
             SW_ERROR_OPERATION_NOT_SUPPORT,
@@ -145,15 +140,6 @@ pub fn reactor_writev(
     }
     write(reactor, socket, WritePayload::Vectors(vectors))
 }
-
-/// The reactor's writes, which `swoole_init` registers
-/// (`swoole_rs_corebase::reactor::event_api::set_writers`).
-pub const WRITERS: Writers = Writers {
-    write: reactor_write,
-    writev: reactor_writev,
-    close: reactor_close,
-    writable: |reactor, event| reactor_writable_callback(reactor, event),
-};
 
 impl FlushEffects for Flush<'_> {
     fn handle_send(&self) -> bool {
@@ -183,8 +169,8 @@ impl FlushEffects for Flush<'_> {
         result
     }
 
-    fn delete_timer(&self, timer: swoole_rs_corebase::timer::Held) {
-        swoole_rs_corebase::timer::del_id(timer);
+    fn delete_timer(&self, timer: crate::timer::Held) {
+        crate::timer::del_id(timer);
     }
 
     fn remove_write_event(&self) {
@@ -193,7 +179,7 @@ impl FlushEffects for Flush<'_> {
             self.reactor,
             self.socket,
             Interest::RemoveWrite,
-            swoole_rs_corebase::reactor::Events::NONE,
+            crate::reactor::Events::NONE,
         );
     }
 
@@ -201,7 +187,7 @@ impl FlushEffects for Flush<'_> {
         let timeout = SOCKET_DEFAULTS.write.get();
         let timeout = (timeout * 1000.0).c_cast::<c_int>();
         self.socket
-            .wait_event(timeout, swoole_rs_corebase::reactor::Events::WRITE)
+            .wait_event(timeout, crate::reactor::Events::WRITE)
     }
 }
 
@@ -223,7 +209,7 @@ pub extern "C-unwind" fn reactor_writable_callback(
         socket,
         event: &lent,
     };
-    let flushed = swoole_rs_corebase::reactor::swr_v1_reactor_flush(*socket, &flush);
+    let flushed = crate::reactor::swr_v1_reactor_flush(*socket, &flush);
     *event = lent.get();
     if flushed { 0 } else { -1 }
 }
@@ -236,7 +222,7 @@ pub fn reactor_drain_write_buffer(reactor: Running<'_>, record: Heap<'static>) {
         socket: record,
         event: &event,
     };
-    swoole_rs_corebase::reactor::swr_v1_reactor_drain(*record, &flush);
+    crate::reactor::swr_v1_reactor_drain(*record, &flush);
 }
 
 /// `int Reactor::_close(Reactor *reactor, Socket *socket)`: frees the socket.

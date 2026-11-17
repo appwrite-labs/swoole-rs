@@ -39,7 +39,7 @@ so the native `swoole_sys_warning` sees its errno.
   `EINTR`/`EAGAIN` retry, other errors set `failed` for the upstream warning.
 - `file_size`: `fstat` errno or `EISDIR` for non-regular files.
 - `swr_v1_os_sendfile` is upstream's `swoole_sendfile` (`src/os/sendfile.cc`) for
-  Rust's one caller, crates/tls: on Darwin and FreeBSD it retries `EINTR`, advancing
+  Rust's one caller, corebase::tls: on Darwin and FreeBSD it retries `EINTR`, advancing
   the offset by each call's progress (Darwin retries with the length the interrupted
   call reported); Linux keeps its direct `sendfile`.
 - `random_bytes` (in corebase, so String's `append_random_bytes` reaches

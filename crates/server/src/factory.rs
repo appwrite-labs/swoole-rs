@@ -426,7 +426,7 @@ impl crate::hybrid::Hybrid for Linked {
         // The `SendData` upstream sends: the head, then a null payload pointer.
         let mut send = process::process_pool::head_view(&head).to_vec();
         send.resize(size_of::<SendData>(), 0);
-        swoole_rs_tls::upstream::send_async(pipe, &send).is_some_and(|sent| sent > 0)
+        swoole_rs_corebase::tls::upstream::send_async(pipe, &send).is_some_and(|sent| sent > 0)
     }
 
     fn thread0_shutdown(&self, serv: crate::view::Server<'_>) {

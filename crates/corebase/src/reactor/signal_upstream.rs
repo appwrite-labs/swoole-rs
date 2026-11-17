@@ -144,7 +144,7 @@ mod descriptor {
             return;
         };
         socket.socket().edit(|record| record.fd = -1);
-        (crate::reactor::host::get().socket_free)(socket);
+        crate::tls::upstream::socket_free(Some(socket));
     }
 
     pub(super) fn events() -> i32 {

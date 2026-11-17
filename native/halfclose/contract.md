@@ -8,7 +8,7 @@ unchanged.
 `--fix-halfclose` builds the Rust archive with crates/ffi's `halfclose` feature; it
 patches no upstream file and compiles no native code. crates/server's feature runs the
 drain and the synchronous prequeue (`send.rs`, `base_factory.rs`, `conn_io.rs`), and
-crates/tls's the TLS repairs in [tls.md](tls.md).
+corebase's the TLS repairs in [tls.md](tls.md).
 
 ## Queued close
 
