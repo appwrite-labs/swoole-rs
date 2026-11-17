@@ -167,12 +167,18 @@ mod tsan {
     }
 
     impl Fiber {
+        #[inline(always)]
         pub(super) fn to(&self) -> To<'_> {
             To(self.0, PhantomData)
         }
     }
 
     impl To<'_> {
+        /// Inlined: TSan counts each instrumented function's return on the running
+        /// fiber's shadow stack, so no frame may return between the switch and the
+        /// jump it announces. One that did would pop the new fiber's stack below its
+        /// start, and its next call writes under it.
+        #[inline(always)]
         pub(super) fn switch(self) {
             switch_to(self, 0);
         }
@@ -253,7 +259,9 @@ impl Co {
 pub(crate) fn swap_in(co: Co) -> bool {
     let asan = asan();
     let mut fake_stack = FakeStack::NONE;
-    let fctx = co.read_context(|ctx| {
+    // The jump sits in the frame that switches fibers, which returns on the fiber it
+    // entered on (see `tsan::To::switch`).
+    let transfer = co.read_context(|ctx| {
         if let Some(thread) = &ctx.thread {
             let ended = thread.swap_in();
             ctx.end.set(ended);
@@ -275,14 +283,13 @@ pub(crate) fn swap_in(co: Co) -> bool {
                 fiber.to().switch();
             }
         }
-        Ok(ctx.fctx.get())
+        // SAFETY: the context's suspended state; it resumes with its coroutine.
+        Ok(unsafe { jump_fcontext(ctx.fctx.get(), co) })
     });
-    let fctx = match fctx {
-        Ok(fctx) => fctx,
+    let transfer = match transfer {
+        Ok(transfer) => transfer,
         Err(ended) => return ended,
     };
-    // SAFETY: `fctx` is the context's suspended state; it resumes with its coroutine.
-    let transfer = unsafe { jump_fcontext(fctx, co) };
     // The context switched back out, so this stack owns the record again.
     co.read_context(|ctx| {
         ctx.fctx.set(transfer.fctx);
@@ -299,7 +306,8 @@ pub(crate) fn swap_in(co: Co) -> bool {
 pub(crate) fn swap_out(co: Co) {
     let asan = asan();
     let mut fake_stack = FakeStack::NONE;
-    let swap_fctx = co.read_context(|ctx| {
+    // As in `swap_in`, the jump sits in the frame that switches fibers.
+    let transfer = co.read_context(|ctx| {
         if let Some(thread) = &ctx.thread {
             thread.swap_out();
             return None;
@@ -315,13 +323,12 @@ pub(crate) fn swap_out(co: Co) {
         if let Some(caller) = ctx.tsan_caller.get() {
             caller.switch();
         }
-        Some(ctx.swap_fctx.get())
+        // SAFETY: the suspended caller of `swap_in`.
+        Some(unsafe { jump_fcontext(ctx.swap_fctx.get(), co) })
     });
-    let Some(swap_fctx) = swap_fctx else {
+    let Some(transfer) = transfer else {
         return;
     };
-    // SAFETY: `swap_fctx` is the suspended caller of `swap_in`.
-    let transfer = unsafe { jump_fcontext(swap_fctx, co) };
     // Switched back in, so this stack owns the record again.
     co.read_context(|ctx| switched_in(ctx, transfer.fctx, asan, fake_stack));
 }
