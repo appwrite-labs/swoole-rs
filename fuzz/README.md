@@ -50,7 +50,16 @@ For MQTT and RESP, `mqtt_length` compares `mqtt::get_package_length` over any
 received bytes and `resp_parse` compares `redis::parse` (every string and, on
 glibc, `ERANGE`), each against the hybrid's body over Rust's codec
 (`src/protocols_native.rs`). Outside the compared domain only Rust runs; `resp_parse` finds those inputs with
-a model of upstream's walk. `resp_stream` runs `redis::recv_packet`
+a model of upstream's walk. `resp_server` compares the pinned PHP request loop
+with `resp_php_next`: the command and whether one was seen, each string/integer/null
+parameter, and Linux `ERANGE`. The independent model accepts nonempty inputs whose
+number conversions end in CRLF and whose consumed strings plus two trailer bytes
+stay within the input. It retains upstream's signed-long clamping, narrowing to
+`int`, ignored array count, null/integer parameters before the command, and
+unknown-prefix fallthrough using the previous string length. It does not require
+string trailers to be CRLF because the loop does not inspect them. Outside that
+domain only Rust runs, checking bounded spans, forward progress, termination and
+at most one command. `resp_stream` runs `redis::recv_packet`
 over a chunked stream and `socks5` drives `Socks5Proxy` from `create` through
 arbitrary server replies, each against Rust's (`recv_packet`, and the SOCKS5 codec
 behind the hybrid's `Socks5Proxy` methods).
@@ -92,9 +101,7 @@ input into header block fragments of one connection and decodes each with
 `swoole_rs_http2::hpack` and the nghttp2 inflater upstream bundled
 (`upstream/thirdparty/nghttp2`) through the step loop the HTTP/2 server and client
 run (`sw_rs_http2_inflate_step`): both read the same bytes, decode the same fields
-and fail on the same step, and the loop ends within one step per byte. `resp_server` walks a
-`Redis\Server` request with `resp_php_next`: spans stay inside the request,
-the walk advances and ends, and there is one command at most.
+and fail on the same step, and the loop ends within one step per byte.
 `sni_wildcard` splits its input at NUL into an SNI name and a certificate name and
 checks `swoole_rs_corebase::utilities::sni_wildcard_matches` against a glob over the lowercased
 names, in which the first `*`, with no `.` before it, matches any run without a `.`.

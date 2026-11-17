@@ -174,3 +174,9 @@ a missing length header is incomplete, and a fourth continuation bit is malforme
 `crates/clients`' MQTT length callback retains the warning and 0/-1/count convention. Original
 unit/oracle/fuzz expectations convert only at their test boundary; packet-type
 bytes and nonminimal remaining lengths remain accepted.
+
+`fuzz_request.rs` checks the independent input-domain model for the `resp_server`
+differential and exercises the pinned PHP request loop on bounded numeric, binary,
+null, prefix-fallthrough and retained-length inputs. Run with
+`cargo test --manifest-path fuzz/Cargo.toml --lib fuzz_request_tests`; the fuzz
+target retains the span/progress/command invariants on inputs outside that domain.

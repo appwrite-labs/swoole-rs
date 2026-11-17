@@ -12,7 +12,6 @@ use swoole_rs_http2::{
 };
 use swoole_rs_inflate::Inflate;
 use swoole_rs_oracle::nghttp2;
-use swoole_rs_protocols::{RespKind, RespPhpState, resp_php_next};
 
 /// Any bytes as an HTTP/2 frame header (RFC 9113 4.1) and a SETTINGS entry (6.5.1):
 /// `frame_length`, `sw_rs_http2_decode_frame` and `sw_rs_http2_unpack_setting`
@@ -324,32 +323,6 @@ pub fn http2_hpack(bytes: &[u8]) {
     unsafe { nghttp2::nghttp2_hd_inflate_del(inflater) };
 }
 
-/// Any bytes as a `Redis\Server` request, walked with `resp_php_next` as the
-/// server's receive loop does: every event's span lies inside the request, the walk
-/// moves forward and ends, and only the first string is the command.
-pub fn resp_server(bytes: &[u8]) {
-    let mut state = RespPhpState::default();
-    let mut commands = 0;
-    for _ in 0..=bytes.len() {
-        let before = state.cursor.position;
-        let Ok(Some(span)) = resp_php_next(bytes, &mut state, &mut false) else {
-            return;
-        };
-        assert!(state.cursor.position > before, "stalled on {bytes:?}");
-        assert!(
-            matches!(span.kind, RespKind::Integer | RespKind::Null)
-                || span
-                    .offset
-                    .checked_add(span.length)
-                    .is_some_and(|end| end <= bytes.len()),
-            "span {span:?} outside {bytes:?}"
-        );
-        commands += usize::from(span.kind == RespKind::Command);
-        assert!(commands <= 1, "second command in {bytes:?}");
-    }
-    panic!("no end for {bytes:?}");
-}
-
 /// Up to 32 bytes of pattern, a replacement and up to 64 bytes of URL, NUL-separated, as one
 /// `~pattern~` rule of `RewriteRules`: compiling and applying it ends, and a pattern of
 /// letters, digits and `/` (all literal) replaces each occurrence, left to right, as
@@ -437,7 +410,7 @@ pub fn http_inflate(bytes: &[u8]) {
     // read as a zlib header, or whose first chunk is shorter, fails in pieces.
     if window_bits < 0
         && (lengths.first().is_some_and(|&n| n < 2)
-            || u16::from_be_bytes([stream[0], stream[1]]) % 31 == 0 && stream[0] & 0xf == 8)
+            || u16::from_be_bytes([stream[0], stream[1]]).is_multiple_of(31) && stream[0] & 0xf == 8)
     {
         return;
     }
