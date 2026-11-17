@@ -70,7 +70,6 @@ struct Socket : swr_v1_socket {
         return sock_fd;
     }
 
-    void free();
 };
 
 }  // namespace network
