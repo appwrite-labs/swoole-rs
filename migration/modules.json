@@ -430,7 +430,7 @@
         "M16"
       ],
       "owned_paths": [
-        "crates/ossupport/",
+        "crates/corebase/src/ossupport/",
         "native/ossupport/",
         "tests/modules/ossupport/"
       ],

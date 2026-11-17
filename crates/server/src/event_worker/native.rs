@@ -205,7 +205,7 @@ fn client_cert(data: &[u8]) -> CppString {
 /// `Server::worker_start_callback(worker)`.
 pub(crate) fn worker_start_callback(serv: view::Server<'_>, worker: Worker<'_>) {
     let config = serv.config();
-    if swoole_rs_ossupport::swr_v1_os_is_root_user() {
+    if swoole_rs_corebase::ossupport::swr_v1_os_is_root_user() {
         serv.state().set_isolation();
     }
     let me = worker.id();

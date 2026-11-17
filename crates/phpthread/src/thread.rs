@@ -14,7 +14,7 @@ use std::{
     },
 };
 use swoole_rs_corebase::CCast;
-use swoole_rs_ossupport::CurrentThread;
+use swoole_rs_corebase::ossupport::CurrentThread;
 use swoole_rs_phpstubs::thread;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_WARNING, Message, Minit, OwnedArray, bailout, message,
@@ -199,7 +199,7 @@ fn get_arguments(call: &Call) {
 }
 
 fn get_id(call: &Call) {
-    let id = swoole_rs_ossupport::pthread_self();
+    let id = swoole_rs_corebase::ossupport::pthread_self();
     #[expect(
         clippy::cast_possible_wrap,
         reason = "upstream's (zend_long) pthread_t, a pointer on musl"
@@ -227,7 +227,7 @@ fn set_name(call: &Call) {
     // The name as C reads it: up to its first NUL.
     let name = name.split(|&byte| byte == 0).next().unwrap_or_default();
     let name = std::ffi::CString::new(name).unwrap_or_default();
-    call.set_bool(swoole_rs_ossupport::thread_set_name(&name));
+    call.set_bool(swoole_rs_corebase::ossupport::thread_set_name(&name));
 }
 
 /// `php_swoole_error(E_WARNING, "%s", message)`.
@@ -239,7 +239,7 @@ fn warn(message: &Message) {
 /// `setAffinity`/`getAffinity` (`HAVE_CPU_AFFINITY`: Linux here).
 pub mod thread_affinity {
     use super::{Call, message, warn};
-    use swoole_rs_ossupport::CpuSet;
+    use swoole_rs_corebase::ossupport::CpuSet;
     use swoole_rs_phpprocess::{cpu_set_from_array, cpu_set_to_array};
 
     pub(super) fn set(call: &Call) {
@@ -316,7 +316,7 @@ fn get_priority(call: &Call) {
 }
 
 fn get_native_id(call: &Call) {
-    call.set_long(swoole_rs_ossupport::swr_v1_os_thread_native_id());
+    call.set_long(swoole_rs_corebase::ossupport::swr_v1_os_thread_native_id());
 }
 
 handlers! {

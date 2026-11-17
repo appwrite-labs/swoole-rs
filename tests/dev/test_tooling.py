@@ -491,7 +491,8 @@ class Lanes(unittest.TestCase):
             stdext = dict(dev.plan(SimpleNamespace(**vars(args), stdext=True), ROOT / 'target/reports/all-registered-stdext'))
         self.assertNotIn('phphelpers-runtime', commands)
         self.assertNotIn('corebase-native', commands)  # Its cases run in corebase-unit.
-        self.assertIn('ossupport-unit', commands)
+        self.assertNotIn('ossupport-unit', commands)  # Its cases moved with corebase::ossupport.
+        self.assertEqual(commands['corebase-unit'], ['cargo', 'test', '--locked', '-p', 'swoole-rs-corebase'])
         self.assertNotIn('http-rewrites', commands)  # Its cases run in http-unit.
         self.assertIn('swoole-rs-corebase', commands['coroutine-rust-asan'])
         self.assertIn('swoole-rs-memory', commands['memory-rust-asan'])

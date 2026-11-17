@@ -53,7 +53,7 @@ impl Slot {
         self.0.get().cloned()
     }
 
-    pub(crate) fn own_queue(&self, queue: swoole_rs_ossupport::QueueRecord) {
+    pub(crate) fn own_queue(&self, queue: swoole_rs_corebase::ossupport::QueueRecord) {
         if let Some(owner) = self.0.get() {
             owner.own_queue(queue);
         }

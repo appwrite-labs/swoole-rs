@@ -12,8 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::log::{self, set_last_error};
+use swoole_rs_corebase::ossupport::file_get_contents;
 use swoole_rs_corebase::task_tmpfile;
-use swoole_rs_ossupport::file_get_contents;
 
 pub use crate::pool::Bailed;
 use crate::pool::trapped;

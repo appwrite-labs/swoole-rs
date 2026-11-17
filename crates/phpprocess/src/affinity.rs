@@ -1,7 +1,7 @@
 //! `Process::setAffinity()`/`getAffinity()` and the cpu-set conversions
 //! `Thread` shares (`HAVE_CPU_AFFINITY`: Linux here).
 use crate::report::{fatal, sys};
-use swoole_rs_ossupport::CpuSet;
+use swoole_rs_corebase::ossupport::CpuSet;
 use swoole_rs_zend::{Array, Call, E_WARNING, Owned, OwnedArray, bailout, message};
 
 fn cpu_num() -> usize {

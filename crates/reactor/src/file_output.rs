@@ -4,7 +4,7 @@ use crate::{OutputEffects, OutputResult};
 use libc::{c_int, off_t};
 use std::ffi::CStr;
 use swoole_rs_corebase::CCast;
-use swoole_rs_ossupport::FileRecord;
+use swoole_rs_corebase::ossupport::FileRecord;
 
 #[derive(Clone, Copy, Default)]
 pub struct SocketFileFields {

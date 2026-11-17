@@ -7,7 +7,7 @@ sendfile and entropy.
 
 ## Thread pool
 
-`crates/ossupport/src/pool.rs` is upstream's `async::ThreadPool`: one process-wide
+`crates/corebase/src/ossupport/pool.rs` is upstream's `async::ThreadPool`: one process-wide
 pool (created on first `Pool::acquire` with that call's configuration,
 restarted after a full shutdown), its queue, `std::thread` workers, growth
 scheduling and idle retirement. Each `AsyncThreads` holds one reference; the last
@@ -30,7 +30,7 @@ unsynchronized `canceled` field and the retirement leak in
 
 ## File, sendfile and entropy
 
-`crates/ossupport/src/file.rs` runs the syscalls; C++ keeps `String` allocation
+`crates/corebase/src/ossupport/file.rs` runs the syscalls; C++ keeps `String` allocation
 and logging. Each call returns right after a failing syscall
 so the native `swoole_sys_warning` sees its errno.
 

@@ -1,5 +1,5 @@
 //! A `cpu_set_t` and the affinity calls over it, as safe functions.
-use crate::CurrentThread;
+use crate::ossupport::CurrentThread;
 use std::ffi::{c_int, c_ulong};
 
 /// The set's words: the kernel's CPU mask is an array of `unsigned long`.

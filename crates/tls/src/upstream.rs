@@ -734,7 +734,7 @@ pub fn sendfile(
         return ssl_sendfile(socket, fd, offset, length);
     }
     // `swoole_sendfile` (src/os/sendfile.cc): the platform's sendfile.
-    let sent = swoole_rs_ossupport::swr_v1_os_sendfile(out, fd, Some(offset), length);
+    let sent = swoole_rs_corebase::ossupport::swr_v1_os_sendfile(out, fd, Some(offset), length);
     if cfg!(not(target_os = "linux")) && sent.warn {
         log::sys_warning(c"swoole_sendfile", format_args!("sendfile failed"));
     }

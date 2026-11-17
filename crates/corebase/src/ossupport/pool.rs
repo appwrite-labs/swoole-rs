@@ -2,13 +2,13 @@
 //! pool shared by every reactor thread, its task queue, worker threads, growth
 //! scheduling and idle retirement. Events are opaque native tokens; native code
 //! runs them, writes them to the completion pipe and frees them.
+use crate::CCast;
 use libc::c_int;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use swoole_rs_corebase::CCast;
 
 /// Native callbacks, fixed when the shared pool is first created.
 #[repr(C)]
@@ -152,7 +152,7 @@ impl Pool {
         // Registered under the lock, so a worker can never retire before it is known.
         let mut threads = lock(&self.threads);
         // The worker inherits a fully blocked mask (upstream's `ThreadPool::create_thread`).
-        let spawned = swoole_rs_corebase::with_signals_blocked(|| {
+        let spawned = crate::with_signals_blocked(|| {
             std::thread::Builder::new()
                 .stack_size(STACK_SIZE)
                 .spawn(move || self.work(core, key))
@@ -305,7 +305,7 @@ impl Pool {
 pub fn complete(fd: c_int, mut complete: impl FnMut(usize)) -> Option<usize> {
     const TOKEN: usize = size_of::<usize>();
     let mut events = [0_u8; 128 * TOKEN];
-    let count = swoole_rs_corebase::sys::read(fd, &mut events)? / TOKEN;
+    let count = crate::sys::read(fd, &mut events)? / TOKEN;
     for token in events.as_chunks::<TOKEN>().0.iter().take(count) {
         complete(usize::from_ne_bytes(*token));
     }
@@ -548,7 +548,7 @@ mod tests {
                     0
                 );
                 if already_blocked {
-                    swoole_rs_corebase::signal_block_all();
+                    crate::signal_block_all();
                 }
                 let expected = mask();
                 UNBLOCKED.store(false, Ordering::SeqCst);
@@ -560,22 +560,20 @@ mod tests {
                     ..HOOKS
                 };
                 // aio_core_worker_num = 1, aio_worker_num = 2.
-                let pool: &'static Pool =
-                    Box::leak(Box::new(Pool::new(config(1, 1, 2, 0.0, 0.0), hooks)));
+                let storage = Box::into_raw(Box::new(Pool::new(config(1, 1, 2, 0.0, 0.0), hooks)));
+                let pool: &'static Pool = &*storage;
                 let before = RAN.load(Ordering::SeqCst);
                 pool.start();
                 pool.dispatch(0);
                 until(|| RAN.load(Ordering::SeqCst) > before);
                 pool.shutdown();
+                // Shutdown joined every worker; none can retain the pool now.
+                drop(Box::from_raw(storage));
 
                 let context = format!("already_blocked={already_blocked}");
                 assert!(!UNBLOCKED.load(Ordering::SeqCst), "{context}");
                 assert!(OBSERVED.load(Ordering::SeqCst) > 0, "{context}");
-                assert_eq!(
-                    swoole_rs_corebase::signal_blocking_all(),
-                    already_blocked,
-                    "{context}"
-                );
+                assert_eq!(crate::signal_blocking_all(), already_blocked, "{context}");
                 let actual = mask();
                 for signo in 1..NSIG {
                     assert_eq!(

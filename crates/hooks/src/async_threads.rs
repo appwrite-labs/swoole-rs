@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/os/async_thread.cc (Swoole contributors).
-//! `AsyncThreads`, a reactor thread's handle on crates/ossupport's shared pool, and
+//! `AsyncThreads`, a reactor thread's handle on crates/corebase/src/ossupport's shared pool, and
 //! `async::dispatch`, under their upstream (Itanium) symbols. The pool runs an event
 //! on a worker and writes its address to the completion pipe; the reactor reads it
 //! back and runs its callback. Each pool copy of an event holds a reference to its
@@ -10,13 +10,13 @@ use std::cell::Cell;
 use std::ffi::c_int;
 use std::ptr;
 use std::sync::atomic::Ordering::Relaxed;
+use swoole_rs_corebase::ossupport::{Pool, PoolHooks, pool_complete};
 use swoole_rs_corebase::{
     log, microtime, set_thread_async_threads, swoole_thread_clean, swoole_thread_init,
     swr_v1_core_aio_core_worker_num, swr_v1_core_aio_default_socket, swr_v1_core_aio_max_idle_time,
     swr_v1_core_aio_max_wait_time, swr_v1_core_aio_worker_num, swr_v1_core_cpu_num,
     swr_v1_core_set_aio_default_socket, thread_async_threads,
 };
-use swoole_rs_ossupport::{Pool, PoolHooks, pool_complete};
 use swoole_rs_reactor::event_api::{event_del, on_destroy, swr_v1_event_current};
 use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_tls::socket_pair::{SocketPair, close, drop, unix_socket};
