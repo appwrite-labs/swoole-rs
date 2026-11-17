@@ -4,7 +4,6 @@
 //! calls, which tests run too. Its logs go through corebase's `log`. Trace logs are
 //! compiled out, as in upstream's builds without `--enable-trace-log`.
 use core::ffi::c_int;
-use core::ptr;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -22,26 +21,16 @@ use swoole_rs_http::{
 /// `SW_LOG_NOTICE`, `SW_LOG_WARNING` and `SW_ERROR_SERVER_INVALID_REQUEST`.
 const INVALID_REQUEST: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SERVER_INVALID_REQUEST as c_int;
 
-use swoole_rs_corebase::sys::errno;
+use swoole_rs_corebase::sys::{errno, strtoul};
 
-unsafe extern "C" {
-    /// Reads `text` up to its NUL and points `end` into it; any base is defined (an
-    /// unsupported one sets `EINVAL`).
-    safe fn strtoull(
-        text: swoole_rs_corebase::sys::Text<'_>,
-        end: &mut *mut core::ffi::c_char,
-        base: c_int,
-    ) -> core::ffi::c_ulonglong;
-}
-
-/// The errno libc's `strtoull` leaves when no digits convert; libcs differ.
+/// The errno libc's `strtoull` leaves when no digits convert; libcs differ. Its
+/// `strtoul` shares the conversion (both are 64-bit on every target).
 fn no_digits_errno() -> c_int {
     static VALUE: std::sync::OnceLock<c_int> = std::sync::OnceLock::new();
     *VALUE.get_or_init(|| {
         let saved = errno();
         set_errno(0);
-        let mut end = ptr::null_mut();
-        strtoull(c"x".into(), &mut end, 10);
+        _ = strtoul(c"x", 10);
         let value = errno();
         set_errno(saved);
         value

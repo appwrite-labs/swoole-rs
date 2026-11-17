@@ -237,7 +237,7 @@ impl<K: Packages> Effects for With<'_, K> {
         let b = self.3.get();
         // The loop asks for at most the buffer's free tail.
         let read = b.fill_within(size, |tail| {
-            swoole_rs_tls::upstream::recv_spare(socket, tail, 0)
+            swoole_rs_corebase::tls::upstream::recv_spare(socket, tail, 0)
         });
         if let Some(n) = read {
             return Received::Bytes(n);
@@ -272,7 +272,7 @@ impl<K: Packages> Effects for With<'_, K> {
     }
     fn ssl_pending(&mut self, flags: &mut u32) -> bool {
         self.around(flags, |r, _| {
-            swoole_rs_tls::Ssl::of(r.socket).is_some_and(|ssl| ssl.get().pending() > 0)
+            swoole_rs_corebase::tls::Ssl::of(r.socket).is_some_and(|ssl| ssl.get().pending() > 0)
         })
     }
     fn page(&mut self, flags: &mut u32) -> usize {
@@ -455,17 +455,16 @@ pub(crate) fn receive<'a, K: Packages>(
 fn client_recv<const LENGTH: bool>(client: Handle<'_>) -> c_int {
     let mode = if LENGTH { Mode::Length } else { Mode::Eof };
     client.with_framed(|protocol, socket, buffer| {
-        // SAFETY: a live client's input buffer, or null before an async connect made it.
-        let Some(buffer) = (unsafe { buffer.as_mut() }) else {
+        // The input buffer is null before an async connect made it.
+        if buffer.is_null() {
             return Status::Err as c_int;
-        };
-        // The client's protocol in place, live while the client is, which its handle
-        // vouches for through this receive; only its package callback rewrites it.
-        let protocol = Proto {
-            protocol,
-            live: PhantomData,
-        };
-        receive(protocol, socket, Lent::new(buffer), mode, Callbacks) as c_int
+        }
+        // The client's protocol and input buffer in place, live while the client is,
+        // which its handle vouches for through this receive; only its package callback
+        // rewrites them.
+        let (live, lent) = (PhantomData, PhantomData);
+        let (protocol, buffer) = (Proto { protocol, live }, Lent { buffer, lent });
+        receive(protocol, socket, buffer, mode, Callbacks) as c_int
     })
 }
 

@@ -55,7 +55,7 @@ python3 corpus/upstream/run.py --manifest tests/modules/halfclose/pause-original
 
 - The read dispatcher with a cached EOF after close queued:
   `cargo test -p swoole-rs-server prequeue`.
-- TLS shutdown/close: `cargo test -p swoole-rs-tls shutdown` covers it over real
+- TLS shutdown/close: `cargo test -p swoole-rs-corebase shutdown` covers it over real
   OpenSSL memory BIOs and nonblocking socketpairs (ordering, one-way, peer-first,
   quiet shutdown, backpressure retry, peer death) plus five injected error results.
 

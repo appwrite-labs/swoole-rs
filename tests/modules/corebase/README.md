@@ -19,7 +19,7 @@ native-TU gates.
   signedness and string bytes; the enums no header exports (and `SW_PIPE_READ`/`WRITE`)
   compare by the values `cargo run -p swoole-rs-corebase --example constants`
   (`corebase_enums.rs`) prints. `tls-constants` (`--include-tls`) adds the pinned
-  `swoole_ssl.h` and the TLS crate's example (`tls_enums.rs`).
+  `swoole_ssl.h` and corebase's `tls-constants` example (`tls_enums.rs`).
 
 - `mkdir_startup.py --engine native=... --engine cargo=... --build-manifest M --output R`
   (`corebase-startup`): PHP startup through `sys_temp_dir` (create, repeated

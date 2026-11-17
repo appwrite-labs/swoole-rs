@@ -10,7 +10,7 @@ description = "PHP Swoole\\Process class over the Worker record, its pipe and qu
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
 php = ["dep:swoole-rs-error", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:libc", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php",
        "swoole-rs-corebase/upstream-symbols", "dep:swoole-rs-corebase",
-       "dep:swoole-rs-phpswoole", "dep:swoole-rs-tls", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php",
+       "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php",
        "dep:swoole-rs-server",
        "dep:swoole-rs-phpclients", "swoole-rs-phpclients/php", "swoole-rs-corebase/upstream-symbols"]
 
@@ -22,7 +22,6 @@ swoole-rs-phpstubs = { path = "../phpstubs", optional = true }
 swoole-rs-corebase = { path = "../corebase", optional = true }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-phpclients = { path = "../phpclients", optional = true }
-swoole-rs-tls = { path = "../tls", optional = true }
 swoole-rs-phpcoroutines = { path = "../phpcoroutines", optional = true }
 swoole-rs-server = { path = "../server", optional = true }
 

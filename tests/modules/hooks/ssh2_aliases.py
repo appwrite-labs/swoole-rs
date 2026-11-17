@@ -48,6 +48,9 @@ def main():
                 # As in native_link, discard unrelated Rust sections from the archive.
                 command += ['-DSWR_HYBRID', str(a.archive.resolve()), '-lpthread',
                             '-Wl,-dead_strip' if sys.platform == 'darwin' else '-Wl,--gc-sections']
+                # The core runtime archive owns TLS and needs its OpenSSL dependencies.
+                command += shlex.split(subprocess.check_output(
+                    ['pkg-config', '--cflags', '--libs', 'openssl'], text=True))
                 if sys.platform.startswith('linux'):
                     command += ['-ldl', '-lm']
             command += [*flags, '-o', str(binary)]

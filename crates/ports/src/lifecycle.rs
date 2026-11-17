@@ -5,7 +5,7 @@
 //!
 //! `PortConfig::ssl_context` holds the configuration builder. Its TLS state
 //! publishes immutable settings for handshakes and SNI selection. A DTLS session
-//! retains its frozen settings through the connection's SSL (crates/tls).
+//! retains its frozen settings through the connection's SSL (`corebase::tls`).
 use core::ffi::{CStr, c_int, c_void};
 use core::ptr;
 use std::sync::{Arc, PoisonError, RwLockReadGuard};
@@ -13,14 +13,14 @@ use std::sync::{Arc, PoisonError, RwLockReadGuard};
 use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::constants::{SW_SSL_CIPHER_LIST, SW_SSL_ECDH_CURVE};
 use swoole_rs_corebase::reactor::{OwnedSocket, Socket, SocketRecord, socket_type};
+use swoole_rs_corebase::tls::{
+    OwnedTlsContext, OwnedTlsFields, Ssl, SslVersion, Text, TlsContext, TlsSettings, has_files,
+    swr_v1_tls_port_index,
+};
 use swoole_rs_corebase::utilities::sni_wildcard_matches;
 use swoole_rs_corebase::{log, sys};
 use swoole_rs_server::port_config::{PortConfig, TlsState};
 use swoole_rs_server::view;
-use swoole_rs_tls::{
-    OwnedTlsContext, OwnedTlsFields, Ssl, SslVersion, Text, TlsContext, TlsSettings, has_files,
-    swr_v1_tls_port_index,
-};
 
 use crate::methods::{FD_DGRAM_SERVER, FD_STREAM_SERVER, socket_free};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_WARNING as LOG_WARNING};
@@ -73,7 +73,7 @@ pub(crate) fn context_create(
     config: &PortConfig,
     context: &OwnedTlsContext,
     allow_empty_cert: bool,
-    callback: Option<swoole_rs_tls::ServernameCallback>,
+    callback: Option<swoole_rs_corebase::tls::ServernameCallback>,
 ) -> Option<TlsSettings> {
     let (cert, key) = has_files(context);
     if cert != key || (!cert && !allow_empty_cert) {
@@ -132,7 +132,7 @@ pub fn ssl_init(config: &PortConfig) -> bool {
         return false;
     };
     let has_sni = !sni(config).is_empty();
-    let callback: swoole_rs_tls::ServernameCallback = sni_callback;
+    let callback: swoole_rs_corebase::tls::ServernameCallback = sni_callback;
     let callback = has_sni.then_some(callback);
     let Some(settings) = context_create(config, &context, has_sni, callback) else {
         return false;
@@ -155,7 +155,7 @@ pub(crate) fn ssl_context_init(config: &mut PortConfig) -> bool {
         fields.stapling = true;
         fields.stapling_verify = true;
     });
-    // crates/tls requires OpenSSL 3, which has DTLS.
+    // `corebase::tls` requires OpenSSL 3, which has DTLS.
     if matches!(config.r#type, 2 | 4 | 6) {
         let protocols = SslVersion::SW_SSL_DTLS.bits();
         edit(&context, |fields| fields.protocols = protocols);
@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn the_tls_state_lives_in_the_port_until_freed() {
-        let builder = swoole_rs_tls::TlsContext::new();
+        let builder = swoole_rs_corebase::tls::TlsContext::new();
         let settings = builder.borrow_configuration().freeze(None).unwrap();
         let settings = std::sync::Arc::new(settings);
         let config = swoole_rs_server::port_config::swr_v1_port_config_new(0);

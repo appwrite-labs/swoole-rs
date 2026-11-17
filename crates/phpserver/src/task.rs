@@ -28,6 +28,7 @@ use swoole_rs_corebase::process::{
     task_file::{Packed, TaskBuffer},
     task_sync::{Bailed, MultiTask, TaskHost, Tasks, Waiting},
 };
+use swoole_rs_corebase::tls::socket_pair::{self, SocketPair};
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_phpcoroutines::{Coroutine, Waiter};
 use swoole_rs_phpswoole::unserialize_from;
@@ -35,7 +36,6 @@ use swoole_rs_server::{
     task_worker::{native::finish, result_slot},
     view,
 };
-use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_zend::{
     Array, ArrayMut, Call, E_WARNING, Owned, OwnedArray, Value, ZString, bailout::Bailout, message,
     report,

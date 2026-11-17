@@ -31,3 +31,15 @@ int swr_zend_try_facade_throw(zend_class_entry *ce, const char *message, zend_lo
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
+int swr_zend_try_facade_throw_error(const char *message) {
+    volatile int bailed = 0;
+    SWR_ZEND_TRY { zend_throw_error(NULL, "%s", message); }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
+    return bailed;
+}
+int swr_zend_try_facade_object_init(zval *target, zend_class_entry *ce) {
+    volatile int bailed = 0;
+    SWR_ZEND_TRY { object_init_ex(target, ce); }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
+    return bailed;
+}

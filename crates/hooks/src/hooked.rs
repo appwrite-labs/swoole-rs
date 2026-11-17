@@ -383,7 +383,7 @@ pub fn read(fd: c_int, buf: &mut [MaybeUninit<u8>]) -> Result<usize, IoError> {
         Err(IoError::PoolRefused),
         || {
             let mut socket = blocking(fd, false);
-            swoole_rs_tls::upstream::read_sync(Socket::new(&mut socket), buf)
+            swoole_rs_corebase::tls::upstream::read_sync(Socket::new(&mut socket), buf)
                 .ok_or_else(IoError::last_os_error)
         },
     )
@@ -420,7 +420,7 @@ pub fn write(fd: c_int, buf: &[u8]) -> Result<usize, IoError> {
         Err(IoError::PoolRefused),
         || {
             let mut socket = blocking(fd, true);
-            swoole_rs_tls::upstream::write_sync(Socket::new(&mut socket), buf)
+            swoole_rs_corebase::tls::upstream::write_sync(Socket::new(&mut socket), buf)
                 .ok_or_else(IoError::last_os_error)
         },
     )

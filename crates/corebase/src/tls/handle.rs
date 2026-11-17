@@ -7,7 +7,10 @@
 //! live handle are declared `safe`. An SSL's BIOs are set only while this side owns
 //! it ([`OwnedSsl`]), before any handle exists. Socket operations retain a
 //! [`HeldSsl`] reference; closing the socket slot cannot free a borrowed session.
-use crate::context::SslCtx;
+use crate::lent::{Count, In, Out, Spare, Wrote, lend_in, lend_out, lend_spare};
+use crate::reactor::{Socket, SocketFields, SocketSsl};
+use crate::sys::{ReadSlot, Text};
+use crate::tls::context::SslCtx;
 use openssl_sys::{
     BIO, OPENSSL_STACK, SSL, SSL_CIPHER, SSL_CTRL_MODE, SSL_CTRL_SET_TLSEXT_HOSTNAME, SSL_CTX,
     TLSEXT_NAMETYPE_host_name, X509, stack_st_X509,
@@ -15,9 +18,6 @@ use openssl_sys::{
 use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong, c_void};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
-use swoole_rs_corebase::lent::{Count, In, Out, Spare, Wrote, lend_in, lend_out, lend_spare};
-use swoole_rs_corebase::reactor::{Socket, SocketFields, SocketSsl};
-use swoole_rs_corebase::sys::{ReadSlot, Text};
 
 // libssl's and libcrypto's own declarations, with each pointer typed as the
 // handle it is: `Ssl`, `Bio` and `CertRef` are live for their lifetime, `CipherRef` is
@@ -157,7 +157,7 @@ struct ConnectionIndex(c_int);
 
 impl ConnectionIndex {
     fn get() -> Self {
-        Self(crate::swr_v1_tls_connection_index())
+        Self(crate::tls::swr_v1_tls_connection_index())
     }
 }
 
@@ -275,8 +275,8 @@ pub struct Ssl<'a>(NonNull<SSL>, PhantomData<&'a SSL>);
 /// lifetime. Its handles borrow this lease, so none can survive its release.
 ///
 /// ```compile_fail
-/// use swoole_rs_corebase::reactor::Socket;
-/// use swoole_rs_tls::Ssl;
+/// use crate::reactor::Socket;
+/// use swoole_rs_corebase::tls::Ssl;
 /// fn escape(socket: Socket<'_>) -> Option<Ssl<'_>> {
 ///     let held = Ssl::of(socket)?;
 ///     Some(held.get())
@@ -563,10 +563,11 @@ impl<'a> Ssl<'a> {
 
     /// `SSL_set_ex_data` at `index`: false when OpenSSL fails. Also false, setting
     /// nothing, at the connection's index: the info callback reads that entry as the
-    /// SSL's socket record, so only [`crate::socket_ssl_new`] sets it.
+    /// SSL's socket record, so only [`crate::tls::socket_ssl_new`] sets it.
     #[must_use]
     pub fn set_ex_data(self, index: c_int, data: *mut c_void) -> bool {
-        index != crate::swr_v1_tls_connection_index() && SSL_set_ex_data(self, index, data) != 0
+        index != crate::tls::swr_v1_tls_connection_index()
+            && SSL_set_ex_data(self, index, data) != 0
     }
 
     /// The SNI host name the client sent, None without one.
@@ -850,6 +851,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn clear_errors_empties_the_queue() {
         // A length of -1 reads to the NUL.
         let text = c"not a certificate";

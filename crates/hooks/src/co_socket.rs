@@ -16,7 +16,7 @@ use swoole_rs_corebase::constants::{
     FdType, SW_BUFFER_SIZE_BIG, SW_INPUT_BUFFER_SIZE, SocketFlag, SocketType,
 };
 use swoole_rs_corebase::reactor::{Socket, SocketAddress, SocketFields, SocketRecord};
-use swoole_rs_tls::upstream::{socket_free, socket_ssl_close};
+use swoole_rs_corebase::tls::upstream::{socket_free, socket_ssl_close};
 
 pub use swoole_rs_clients::protocol::Protocol;
 

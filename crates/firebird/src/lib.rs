@@ -20,15 +20,15 @@ pub mod minit;
 
 use std::{
     cell::Cell,
-    ffi::{c_char, c_int, c_short, c_ushort, c_void},
+    ffi::{c_int, c_short, c_ushort},
 };
 use swoole_rs_firebird_sys::{
-    ISC_QUAD, ISC_SCHAR, ISC_STATUS, ISC_VERSION_CALLBACK, XSQLDA, fb_ping, isc_attach_database,
-    isc_blob_handle, isc_blob_info, isc_close_blob, isc_commit_retaining, isc_commit_transaction,
-    isc_create_blob, isc_db_handle, isc_detach_database, isc_dsql_allocate_statement,
+    Bytes, Handle, ISC_SCHAR, ISC_STATUS, Out, Quad, Sqlda, Status, VersionArg, VersionCallback,
+    fb_ping, isc_attach_database, isc_blob_info, isc_close_blob, isc_commit_retaining,
+    isc_commit_transaction, isc_create_blob, isc_detach_database, isc_dsql_allocate_statement,
     isc_dsql_execute, isc_dsql_execute2, isc_dsql_fetch, isc_dsql_free_statement, isc_dsql_prepare,
     isc_dsql_set_cursor_name, isc_dsql_sql_info, isc_get_segment, isc_open_blob, isc_put_segment,
-    isc_rollback_transaction, isc_start_transaction, isc_stmt_handle, isc_tr_handle, isc_version,
+    isc_rollback_transaction, isc_start_transaction, isc_version,
 };
 
 thread_local! {
@@ -53,17 +53,15 @@ fn offload<R>(fallback: R, call: impl FnMut() -> R) -> R {
 /// What a wrapper returns when the pool could not run the call.
 const NOT_RUN: ISC_STATUS = -1;
 
-/// Each `swoole_<call>` runs `<call>` through [`offload`], returning `NOT_RUN` (or
-/// the fallback given) when the pool did not run it.
+/// Each `swoole_<call>` runs `<call>`, whose whole contract the arguments' types
+/// carry, through [`offload`], returning `NOT_RUN` (or the fallback given) when the
+/// pool did not run it.
 macro_rules! offloaded {
     ($($name:ident => $call:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty = $fallback:expr)?;)*) => {$(
         #[doc = concat!("`", stringify!($name), "`: `", stringify!($call), "` off the coroutine.")]
-        /// # Safety
-        /// As the Firebird call.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name($($arg: $ty),*) -> offloaded!(@ret $($ret)?) {
-            // SAFETY: per the caller.
-            offload(offloaded!(@fallback $($fallback)?), || unsafe { $call($($arg),*) })
+        pub extern "C" fn $name($($arg: $ty),*) -> offloaded!(@ret $($ret)?) {
+            offload(offloaded!(@fallback $($fallback)?), || $call($($arg),*))
         }
     )*};
     (@ret) => { ISC_STATUS };
@@ -74,54 +72,54 @@ macro_rules! offloaded {
 
 offloaded! {
     swoole_isc_attach_database => isc_attach_database(
-        status: *mut ISC_STATUS, name_length: c_short, name: *const ISC_SCHAR,
-        db: *mut isc_db_handle, dpb_length: c_short, dpb: *const ISC_SCHAR);
-    swoole_isc_detach_database => isc_detach_database(status: *mut ISC_STATUS, db: *mut isc_db_handle);
+        status: Status, name_length: c_short, name: Bytes,
+        db: Handle, dpb_length: c_short, dpb: Bytes);
+    swoole_isc_detach_database => isc_detach_database(status: Status, db: Handle);
     swoole_isc_dsql_execute => isc_dsql_execute(
-        status: *mut ISC_STATUS, tr: *mut isc_tr_handle, stmt: *mut isc_stmt_handle,
-        dialect: c_ushort, sqlda: *const XSQLDA);
+        status: Status, tr: Handle, stmt: Handle,
+        dialect: c_ushort, sqlda: Sqlda);
     swoole_isc_dsql_execute2 => isc_dsql_execute2(
-        status: *mut ISC_STATUS, tr: *mut isc_tr_handle, stmt: *mut isc_stmt_handle,
-        dialect: c_ushort, in_sqlda: *const XSQLDA, out_sqlda: *const XSQLDA);
+        status: Status, tr: Handle, stmt: Handle,
+        dialect: c_ushort, in_sqlda: Sqlda, out_sqlda: Sqlda);
     swoole_isc_dsql_sql_info => isc_dsql_sql_info(
-        status: *mut ISC_STATUS, stmt: *mut isc_stmt_handle, items_length: c_short,
-        items: *const ISC_SCHAR, buffer_length: c_short, buffer: *mut ISC_SCHAR);
+        status: Status, stmt: Handle, items_length: c_short,
+        items: Bytes, buffer_length: c_short, buffer: Out<ISC_SCHAR>);
     swoole_isc_dsql_free_statement => isc_dsql_free_statement(
-        status: *mut ISC_STATUS, stmt: *mut isc_stmt_handle, option: c_ushort);
-    swoole_isc_commit_retaining => isc_commit_retaining(status: *mut ISC_STATUS, tr: *mut isc_tr_handle);
-    swoole_isc_commit_transaction => isc_commit_transaction(status: *mut ISC_STATUS, tr: *mut isc_tr_handle);
-    swoole_isc_rollback_transaction => isc_rollback_transaction(status: *mut ISC_STATUS, tr: *mut isc_tr_handle);
+        status: Status, stmt: Handle, option: c_ushort);
+    swoole_isc_commit_retaining => isc_commit_retaining(status: Status, tr: Handle);
+    swoole_isc_commit_transaction => isc_commit_transaction(status: Status, tr: Handle);
+    swoole_isc_rollback_transaction => isc_rollback_transaction(status: Status, tr: Handle);
     swoole_isc_dsql_allocate_statement => isc_dsql_allocate_statement(
-        status: *mut ISC_STATUS, db: *mut isc_db_handle, stmt: *mut isc_stmt_handle);
+        status: Status, db: Handle, stmt: Handle);
     swoole_isc_dsql_prepare => isc_dsql_prepare(
-        status: *mut ISC_STATUS, tr: *mut isc_tr_handle, stmt: *mut isc_stmt_handle, length: c_ushort,
-        statement: *const ISC_SCHAR, dialect: c_ushort, sqlda: *mut XSQLDA);
+        status: Status, tr: Handle, stmt: Handle, length: c_ushort,
+        statement: Bytes, dialect: c_ushort, sqlda: Sqlda);
     swoole_isc_dsql_fetch => isc_dsql_fetch(
-        status: *mut ISC_STATUS, stmt: *mut isc_stmt_handle, dialect: c_ushort, sqlda: *const XSQLDA);
+        status: Status, stmt: Handle, dialect: c_ushort, sqlda: Sqlda);
     swoole_isc_open_blob => isc_open_blob(
-        status: *mut ISC_STATUS, db: *mut isc_db_handle, tr: *mut isc_tr_handle,
-        blob: *mut isc_blob_handle, id: *mut ISC_QUAD);
+        status: Status, db: Handle, tr: Handle,
+        blob: Handle, id: Quad);
     swoole_isc_blob_info => isc_blob_info(
-        status: *mut ISC_STATUS, blob: *mut isc_blob_handle, items_length: c_short,
-        items: *const ISC_SCHAR, buffer_length: c_short, buffer: *mut ISC_SCHAR);
+        status: Status, blob: Handle, items_length: c_short,
+        items: Bytes, buffer_length: c_short, buffer: Out<ISC_SCHAR>);
     swoole_isc_get_segment => isc_get_segment(
-        status: *mut ISC_STATUS, blob: *mut isc_blob_handle, length: *mut c_ushort,
-        buffer_length: c_ushort, buffer: *mut ISC_SCHAR);
+        status: Status, blob: Handle, length: Out<c_ushort>,
+        buffer_length: c_ushort, buffer: Out<ISC_SCHAR>);
     swoole_isc_put_segment => isc_put_segment(
-        status: *mut ISC_STATUS, blob: *mut isc_blob_handle, length: c_ushort, buffer: *const ISC_SCHAR);
+        status: Status, blob: Handle, length: c_ushort, buffer: Bytes);
     swoole_isc_create_blob => isc_create_blob(
-        status: *mut ISC_STATUS, db: *mut isc_db_handle, tr: *mut isc_tr_handle,
-        blob: *mut isc_blob_handle, id: *mut ISC_QUAD);
-    swoole_isc_close_blob => isc_close_blob(status: *mut ISC_STATUS, blob: *mut isc_blob_handle);
+        status: Status, db: Handle, tr: Handle,
+        blob: Handle, id: Quad);
+    swoole_isc_close_blob => isc_close_blob(status: Status, blob: Handle);
     swoole_isc_dsql_set_cursor_name => isc_dsql_set_cursor_name(
-        status: *mut ISC_STATUS, stmt: *mut isc_stmt_handle, name: *const ISC_SCHAR, kind: c_ushort);
-    swoole_fb_ping => fb_ping(status: *mut ISC_STATUS, db: *mut isc_db_handle);
+        status: Status, stmt: Handle, name: Bytes, kind: c_ushort);
+    swoole_fb_ping => fb_ping(status: Status, db: Handle);
     // One database's transaction, its TPB passed on through the variadic call.
     swoole_isc_start_transaction => isc_start_transaction(
-        status: *mut ISC_STATUS, tr: *mut isc_tr_handle, count: c_short, db: *mut isc_db_handle,
-        tpb_length: usize, tpb: *mut c_char);
+        status: Status, tr: Handle, count: c_short, db: Handle,
+        tpb_length: usize, tpb: Bytes);
     swoole_isc_version => isc_version(
-        db: *mut isc_db_handle, callback: ISC_VERSION_CALLBACK, arg: *mut c_void) -> c_int = -1;
+        db: Handle, callback: VersionCallback, arg: VersionArg) -> c_int = -1;
 }
 
 #[cfg(test)]

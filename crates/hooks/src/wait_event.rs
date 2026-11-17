@@ -163,7 +163,7 @@ pub(crate) mod native {
     use swoole_rs_corebase::log;
     use swoole_rs_corebase::reactor::event_api::swoole_event_is_available;
     use swoole_rs_corebase::reactor::{Events, SocketRecord};
-    use swoole_rs_tls::event_socket::EventSocket;
+    use swoole_rs_corebase::tls::event_socket::EventSocket;
 
     /// `Coroutine::get_current_safe()`.
     pub(crate) use swoole_rs_corebase::coroutine::current_safe as current;

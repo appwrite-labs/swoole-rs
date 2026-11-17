@@ -326,7 +326,7 @@ pub fn finish(
         }
         let flag = 1u64.to_ne_bytes();
         super::notify(
-            || swoole_rs_tls::socket_pair::write_from(pipe, &flag),
+            || swoole_rs_corebase::tls::socket_pair::write_from(pipe, &flag),
             || {
                 let error = errno();
                 pipe.master_end().is_some_and(|socket| {
@@ -402,7 +402,7 @@ fn stream_connection(
 
 /// The result over a stream: its length, big-endian, then its bytes.
 fn send_stream(socket: Socket<'_>, data: &[u8]) -> Option<usize> {
-    let send = |data: &[u8]| swoole_rs_tls::upstream::send_sync(socket, data, 0);
+    let send = |data: &[u8]| swoole_rs_corebase::tls::upstream::send_sync(socket, data, 0);
     match send(&data.len().c_cast::<u32>().to_be_bytes())? {
         0 => Some(0),
         _ => send(data),

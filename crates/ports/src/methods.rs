@@ -11,7 +11,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::reactor::socket_upstream::make_typed;
 use swoole_rs_corebase::reactor::{OwnedSocket, Running, SocketRecord};
-pub(crate) use swoole_rs_tls::upstream::socket_free;
+pub(crate) use swoole_rs_corebase::tls::upstream::socket_free;
 
 /// `SW_FD_STREAM_SERVER` and `SW_FD_DGRAM_SERVER`.
 pub(crate) const FD_STREAM_SERVER: c_int = 1;

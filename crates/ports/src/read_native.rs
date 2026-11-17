@@ -14,13 +14,13 @@ use swoole_rs_corebase::constants::{
 };
 use swoole_rs_corebase::reactor::reactor_upstream::trigger_close_event;
 use swoole_rs_corebase::reactor::{Caught, Event, Running, Socket};
+use swoole_rs_corebase::tls::upstream::{recv_append, send};
 use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_framing::recv::{Mode, Status};
 use swoole_rs_http_ffi::{HttpRequest, request_free};
 use swoole_rs_server::port_config::{PortConfig, ReadEvent};
 use swoole_rs_server::static_select::static_select;
 use swoole_rs_server::{Connection as Slot, ServerConfig, view};
-use swoole_rs_tls::upstream::{recv_append, send};
 
 use crate::framing_recv::{self, Lent, Packages, Proto};
 use crate::http_routes::Session;
@@ -432,11 +432,14 @@ impl Connection for Read<'_> {
 
     #[inline]
     fn parse<R>(&mut self, parse: impl FnOnce(&mut HttpRequest, &mut CppString) -> R) -> R {
-        let recv = self.recv;
-        // SAFETY: the socket's receive buffer, live while the request `init_request`
-        // made current is, and apart from it; only calls on `self`, which the borrow
-        // excludes, touch it.
-        parse(self.request(), unsafe { &mut *recv })
+        let socket = self.socket;
+        let request = self.request();
+        // The receive buffer `init_request` made the socket hold; parsing calls nothing
+        // that reaches the socket.
+        socket.edit(|s| {
+            let mut none = CppString::EMPTY;
+            parse(request, s.recv_buffer.as_deref_mut().unwrap_or(&mut none))
+        })
     }
 
     fn init_multipart(&mut self) -> bool {

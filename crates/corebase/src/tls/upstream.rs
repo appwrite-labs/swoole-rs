@@ -4,33 +4,33 @@
 //! error, errno and logs included. With `upstream-symbols` (the hybrid's reactor
 //! build) they are defined under their upstream (Itanium) symbols and
 //! `socket.cc` no longer defines them.
-use crate::{
-    Accept, Cert, CertRef, HandshakeLog, SocketTls, Ssl, SslIoResult, ssl_recv_into, ssl_shutdown,
-    swr_v1_socket_ssl_accept, swr_v1_socket_ssl_clear, swr_v1_socket_ssl_connect,
-    swr_v1_socket_ssl_error_reason, swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_send,
-    swr_v1_socket_ssl_verify,
-};
-use openssl_sys::{X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK};
-use std::ffi::{CStr, c_char, c_int, c_long};
-use std::io::IoSlice;
-use std::mem::MaybeUninit;
-use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::buffer::string::CppString;
-use swoole_rs_corebase::constants::SocketFlag;
-use swoole_rs_corebase::lent::{Spare, lend_spare};
-use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
-use swoole_rs_corebase::reactor::socket_upstream::{
+use crate::CCast;
+use crate::buffer::string::CppString;
+use crate::constants::SocketFlag;
+use crate::lent::{Spare, lend_spare};
+use crate::net_address::{BAD_HOST_ADDR, assign, platform_parses};
+use crate::reactor::socket_upstream::{
     make_typed, socket_cork, socket_set_fd_option, socket_uncork,
 };
-use swoole_rs_corebase::reactor::{
+use crate::reactor::{
     Drain, Events, Fill, OutputEffects, RangeError, Socket, SocketAddress, SocketFields,
     SocketFileRequest, SocketRecord, SslSendfileWarning, SyncEffects, SyncMode, handle_send_owned,
     record_peek, record_recv, record_send, sendfile_chunk, ssl_sendfile as ssl_sendfile_fd,
     steady_ms, swr_v1_reactor_poll_events_to, swr_v1_socket_sync, what_event_want,
 };
-use swoole_rs_corebase::sys::ReadSlot;
-use swoole_rs_corebase::sys::Text;
-use swoole_rs_corebase::{log, set_errno};
+use crate::sys::ReadSlot;
+use crate::sys::Text;
+use crate::tls::{
+    Accept, Cert, CertRef, HandshakeLog, SocketTls, Ssl, SslIoResult, ssl_recv_into, ssl_shutdown,
+    swr_v1_socket_ssl_accept, swr_v1_socket_ssl_clear, swr_v1_socket_ssl_connect,
+    swr_v1_socket_ssl_error_reason, swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_send,
+    swr_v1_socket_ssl_verify,
+};
+use crate::{log, set_errno};
+use openssl_sys::{X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK};
+use std::ffi::{CStr, c_char, c_int, c_long};
+use std::io::IoSlice;
+use std::mem::MaybeUninit;
 use swoole_rs_error::ErrorCode;
 
 // libcrypto's own declaration: it reads only the code, and answers one of its
@@ -49,7 +49,7 @@ const FD_STREAM_SERVER: c_int = 1;
 const VERIFY_FAILED: c_int = ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int;
 const BAD_PROTOCOL: c_int = ErrorCode::SW_ERROR_SSL_BAD_PROTOCOL as c_int;
 
-use swoole_rs_corebase::sys::errno;
+use crate::sys::errno;
 
 /// `Address::get_addr()` and `get_port()` of the socket's own address, as its logs print them.
 #[must_use]
@@ -87,7 +87,7 @@ pub fn peer(info: &SocketAddress) -> (String, c_int) {
         *to = c_char::from_ne_bytes([*from]);
     }
     // inet_ntop's NUL-terminated text, or `(null)` as `%s` prints its null.
-    let host = swoole_rs_corebase::ntop(family, &binary).map_or_else(
+    let host = crate::ntop(family, &binary).map_or_else(
         || "(null)".into(),
         |text| {
             let text: Vec<u8> = text
@@ -155,7 +155,7 @@ pub fn socket_ssl_peer_chain_pem(socket: Socket<'_>) -> Vec<Vec<u8>> {
     let Some(held) = Ssl::of(socket) else {
         return chain;
     };
-    let mut pem = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
+    let mut pem = vec![0_u8; crate::constants::SW_STACK_BUFFER_SIZE as usize];
     let ssl = held.get();
     ssl.each_peer_cert(|cert| {
         let read = lend_spare(pem.as_mut_slice(), |spare| read_x509(cert, spare)).0;
@@ -333,7 +333,7 @@ pub fn socket_ssl_accept(socket: Socket<'_>) -> Accept {
         );
     } else if let HandshakeLog::Failed(ssl_error) = result.log {
         let code = errno();
-        let message = swoole_rs_corebase::sys::strerror(code);
+        let message = crate::sys::strerror(code);
         log::warning(
             c"Socket::ssl_accept",
             format_args!("SSL_do_handshake() failed. Error: {message}[{ssl_error}|{code}]"),
@@ -354,12 +354,12 @@ pub fn socket_ssl_connect(socket: Socket<'_>) -> bool {
     };
     handshake(result.last_error);
     if let HandshakeLog::Failed(ssl_error) = result.log {
-        let error = crate::pop_error();
-        let message = crate::error_string(error);
+        let error = crate::tls::pop_error();
+        let message = crate::tls::error_string(error);
         let ((host, port), fd) = socket.read(|record| (peer(&record.info), record.fd));
         log::notice(format_args!(
             "ssl_connect(fd={fd}) to server[{host}:{port}] failed. Error: {message}[{ssl_error}|{}]",
-            crate::socket::error_reason(error)
+            crate::tls::socket::error_reason(error)
         ));
     }
     result.code
@@ -481,8 +481,7 @@ pub fn check_liveness(socket: Socket<'_>) -> bool {
     set_errno(0);
     let peeked = peek(socket, &mut byte, libc::MSG_DONTWAIT);
     !(peeked == Some(0)
-        || (peeked.is_none()
-            && socket.catch_error(errno()) == swoole_rs_corebase::reactor::Caught::Close))
+        || (peeked.is_none() && socket.catch_error(errno()) == crate::reactor::Caught::Close))
 }
 
 /// One blocking call: the socket, and its I/O with the bytes it has left.
@@ -505,10 +504,8 @@ enum Io<'a, S: ReadSlot = MaybeUninit<u8>> {
     Sendfile(&'a mut SocketFileRequest, usize),
 }
 
-use swoole_rs_corebase::log::LogLevel::{
-    SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_WARNING as LOG_WARNING,
-};
-pub use swoole_rs_corebase::sys::writev;
+use crate::log::LogLevel::{SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_WARNING as LOG_WARNING};
+pub use crate::sys::writev;
 
 impl<S: ReadSlot> SyncEffects for Call<'_, S> {
     /// Read on each wait, as upstream's `wait_event` reads `this->fd`: a signal
@@ -534,7 +531,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
         });
     }
 
-    fn events(&self, event: swoole_rs_corebase::reactor::Events) -> i16 {
+    fn events(&self, event: crate::reactor::Events) -> i16 {
         swr_v1_reactor_poll_events_to(self.socket.read(|record| what_event_want(record, event)))
     }
 
@@ -566,7 +563,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
         }
     }
 
-    fn catch_error(&self, error: c_int) -> swoole_rs_corebase::reactor::Caught {
+    fn catch_error(&self, error: c_int) -> crate::reactor::Caught {
         self.socket.catch_error(error)
     }
 
@@ -679,9 +676,9 @@ fn peer_certificate_pem(socket: Socket<'_>, spare: &mut Spare<'_>) -> Option<usi
 fn read_x509(cert: CertRef<'_>, spare: &mut Spare<'_>) -> Option<usize> {
     let step = match cert.pem_into(spare) {
         Ok(written) => return Some(written),
-        Err(crate::PemError::Read) => return None,
-        Err(crate::PemError::Bio) => "BIO_new",
-        Err(crate::PemError::Write) => "PEM_write_bio_X509",
+        Err(crate::tls::PemError::Read) => return None,
+        Err(crate::tls::PemError::Bio) => "BIO_new",
+        Err(crate::tls::PemError::Write) => "PEM_write_bio_X509",
     };
     log::warning(
         c"network::_ssl_read_x509_file",
@@ -735,7 +732,7 @@ pub fn sendfile(
         return ssl_sendfile(socket, fd, offset, length);
     }
     // `swoole_sendfile` (src/os/sendfile.cc): the platform's sendfile.
-    let sent = swoole_rs_corebase::ossupport::swr_v1_os_sendfile(out, fd, Some(offset), length);
+    let sent = crate::ossupport::swr_v1_os_sendfile(out, fd, Some(offset), length);
     if cfg!(not(target_os = "linux")) && sent.warn {
         log::sys_warning(c"swoole_sendfile", format_args!("sendfile failed"));
     }
@@ -841,27 +838,24 @@ pub fn sendfile_sync(
 
 /// A failed Rust queue status. Native `Buffer` raises it as a C++ exception that
 /// nothing catches, so the process ends either way; here it aborts.
-pub(crate) fn buffer_check(status: Result<(), swoole_rs_corebase::buffer::Error>) {
+pub(crate) fn buffer_check(status: Result<(), crate::buffer::Error>) {
     if status.is_err() {
-        swoole_rs_corebase::fatal("a send queue operation failed");
+        crate::fatal("a send queue operation failed");
     }
 }
 
 /// A socket's `out_buffer` queue, null without one.
-pub(crate) fn out_queue(socket: Socket<'_>) -> *mut swoole_rs_corebase::buffer::Buffer {
+pub(crate) fn out_queue(socket: Socket<'_>) -> *mut crate::buffer::Buffer {
     socket.read(|record| {
         let buffer = record.output.buffer();
-        buffer.map_or(
-            std::ptr::null_mut(),
-            swoole_rs_corebase::buffer::cpp::CppBuffer::queue,
-        )
+        buffer.map_or(std::ptr::null_mut(), crate::buffer::cpp::CppBuffer::queue)
     })
 }
 
 /// `f` over the socket's queue (None without one).
 pub(crate) fn with_queue<R>(
     socket: Socket<'_>,
-    f: impl FnOnce(Option<&mut swoole_rs_corebase::buffer::Buffer>) -> R,
+    f: impl FnOnce(Option<&mut crate::buffer::Buffer>) -> R,
 ) -> R {
     // SAFETY: null or the socket's live queue, borrowed for `f` alone.
     f(unsafe { out_queue(socket).as_mut() })
@@ -891,7 +885,7 @@ impl OutputEffects for Output<'_> {
         });
     }
 
-    fn catch_error(&self, error: c_int) -> swoole_rs_corebase::reactor::Caught {
+    fn catch_error(&self, error: c_int) -> crate::reactor::Caught {
         self.0.catch_error(error)
     }
 }
@@ -904,9 +898,7 @@ pub fn socket_handle_send(record: Socket<'_>) -> bool {
     let output = with_queue(record, |queue| {
         handle_send_owned(
             record,
-            queue.unwrap_or_else(|| {
-                swoole_rs_corebase::fatal("handle_send on a socket without a send queue")
-            }),
+            queue.unwrap_or_else(|| crate::fatal("handle_send on a socket without a send queue")),
             &hooks,
         )
     });
@@ -935,13 +927,13 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> bool {
     // The effects send the request's file and never reach the queue itself.
     let (failed, detached) = with_queue(socket, |queue| {
         let Some(queue) = queue else {
-            swoole_rs_corebase::fatal("sendfile on a socket with nothing queued");
+            crate::fatal("sendfile on a socket with nothing queued");
         };
         let Some(request) = queue.front_file::<SocketFileRequest>() else {
             if queue.front().is_err() {
-                swoole_rs_corebase::fatal("sendfile on a socket with nothing queued");
+                crate::fatal("sendfile on a socket with nothing queued");
             }
-            swoole_rs_corebase::fatal("sendfile's queued entry is not a file");
+            crate::fatal("sendfile's queued entry is not a file");
         };
         request.cork(&hooks);
         let (rv, requested) = send_chunk(socket, request);
@@ -961,8 +953,8 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> bool {
         let detached = if result.pop {
             match queue.pop() {
                 Ok(detached) => Some(detached),
-                Err(swoole_rs_corebase::buffer::Error::Empty) => None,
-                Err(_) => swoole_rs_corebase::fatal("popping the send queue failed"),
+                Err(crate::buffer::Error::Empty) => None,
+                Err(_) => crate::fatal("popping the send queue failed"),
             }
         } else {
             None
@@ -988,12 +980,12 @@ pub fn socket_sendfile_async(
         return false;
     };
     if socket.read(|record| record.output.out_buffer.is_none()) {
-        let buffer = swoole_rs_corebase::buffer::cpp::new_buffer(65536);
+        let buffer = crate::buffer::cpp::new_buffer(65536);
         socket.edit(|record| record.output.out_buffer = Some(buffer));
     }
     // A refused request is dropped with its file.
     let status = with_queue(socket, |queue| {
-        queue.map_or(Err(swoole_rs_corebase::buffer::Error::Invalid), |queue| {
+        queue.map_or(Err(crate::buffer::Error::Invalid), |queue| {
             queue.push_file(request)
         })
     });
@@ -1005,11 +997,11 @@ pub fn socket_sendfile_async(
 /// loop when there is one, else `send_sync`: the bytes taken, `None` when it failed.
 /// The loop may register the socket to send what it queues, so it is a heap socket.
 #[must_use]
-pub fn send_async(socket: swoole_rs_corebase::reactor::Heap<'_>, data: &[u8]) -> Option<usize> {
-    if swoole_rs_corebase::reactor::socket_upstream::event_reactor().is_none() {
+pub fn send_async(socket: crate::reactor::Heap<'_>, data: &[u8]) -> Option<usize> {
+    if crate::reactor::socket_upstream::event_reactor().is_none() {
         return send_sync(*socket, data, 0);
     }
-    swoole_rs_corebase::reactor::event_api::event_write(socket, data)
+    crate::reactor::event_api::event_write(socket, data)
 }
 
 /// `bool Socket::ssl_shutdown()`: false without an SSL.
@@ -1070,15 +1062,15 @@ pub fn socket_ssl_close(socket: Socket<'_>) {
 #[must_use]
 pub fn socket_ssl_create(
     socket: Socket<'_>,
-    context: Option<&crate::SslCtx>,
+    context: Option<&crate::tls::SslCtx>,
     flags: c_int,
 ) -> bool {
-    crate::socket_ssl_new(socket, context, flags)
+    crate::tls::socket_ssl_new(socket, context, flags)
         .inspect_err(|error| error.warn())
         .is_ok()
 }
 
-pub use crate::event_socket::socket_free;
+pub use crate::tls::event_socket::socket_free;
 
 /// `Socket::bind(host, port)`: the address resolved without DNS, the last error set
 /// when it is invalid.
@@ -1135,7 +1127,7 @@ pub fn server_socket(
     address: &CStr,
     port: c_int,
     backlog: c_int,
-) -> Option<swoole_rs_corebase::reactor::OwnedSocket> {
+) -> Option<crate::reactor::OwnedSocket> {
     const ORIGIN: &CStr = c"make_server_socket";
     // The new record, which only this function holds.
     let Some(record) = make_typed(kind, FD_STREAM_SERVER, SocketFlag::SW_SOCK_CLOEXEC.bits())
@@ -1143,16 +1135,15 @@ pub fn server_socket(
         log::sys_warning(ORIGIN, format_args!("socket() failed"));
         return None;
     };
-    let owned = swoole_rs_corebase::reactor::OwnedSocket::new(record);
+    let owned = crate::reactor::OwnedSocket::new(record);
     let record = owned.socket();
     let fd = record.fd();
     // Only TCP sockets need to rebind addresses held by TIME_WAIT. Enabling reuse for
     // datagram sockets can allow duplicate binds.
-    let kind = swoole_rs_corebase::constants::SocketType::from_raw(kind);
-    if kind.is_some_and(swoole_rs_corebase::constants::SocketType::is_tcp) {
+    let kind = crate::constants::SocketType::from_raw(kind);
+    if kind.is_some_and(crate::constants::SocketType::is_tcp) {
         let enable: c_int = 1;
-        let set =
-            swoole_rs_corebase::sys::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &enable);
+        let set = crate::sys::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &enable);
         if set.is_err() {
             log::sys_warning(
                 ORIGIN,
@@ -1168,7 +1159,7 @@ pub fn server_socket(
             format_args!("bind({fd}, {host}:{port}, {backlog}) failed"),
         );
         false
-    } else if kind.is_some_and(swoole_rs_corebase::constants::SocketType::is_stream)
+    } else if kind.is_some_and(crate::constants::SocketType::is_stream)
         && !record.edit(|record| record.listen(backlog))
     {
         log::sys_warning(
@@ -1194,6 +1185,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no inet_ntop")]
     fn peer_prints_the_address_as_upstream() {
         let mut socket = SocketRecord::new();
         socket.info.kind = 1;
@@ -1240,21 +1232,21 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn ssl_create_then_close_frees_the_ssl() {
         unsafe {
-            let owner = crate::owner_new(crate::tls_warning);
-            (*owner.fields).context = Some(crate::SslContext::tls());
+            let context = crate::tls::SslContext::tls();
             let mut fds = [0; 2];
             assert_eq!(
                 libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()),
                 0
             );
             let mut socket = SocketRecord::with_fd(fds[0], 0);
-            socket.tls.state = crate::SslState::SW_SSL_STATE_WAIT_STREAM;
+            socket.tls.state = crate::tls::SslState::SW_SSL_STATE_WAIT_STREAM;
             socket.tls.want_read = true;
             let created = socket_ssl_create(
                 Socket::from_ptr(&raw mut socket).unwrap(),
-                (*owner.fields).context.as_deref(),
+                Some(&context),
                 2,
             );
             assert!(created);
@@ -1264,28 +1256,28 @@ mod tests {
                 (0, false),
                 "state and want flags cleared"
             );
-            let index = crate::swr_v1_tls_connection_index();
+            let index = crate::tls::swr_v1_tls_connection_index();
             let data = openssl_sys::SSL_get_ex_data(socket.ssl().cast(), index);
             assert_eq!(data, (&raw mut socket).cast());
             socket_ssl_close(Socket::from_ptr(&raw mut socket).unwrap());
             assert!(socket.ssl().is_null());
-            drop(std::rc::Rc::from_raw(owner.owner));
+            drop(context);
             libc::close(fds[0]);
             libc::close(fds[1]);
         }
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn session_of_an_ssl_before_its_handshake() {
         let (mut socket, peer) = pair();
         let handle = unsafe { Socket::from_ptr(&raw mut socket) }.unwrap();
         assert_eq!(socket_ssl_session(handle), None);
         unsafe {
-            let owner = crate::owner_new(crate::tls_warning);
-            (*owner.fields).context = Some(crate::SslContext::tls());
+            let context = crate::tls::SslContext::tls();
             assert!(socket_ssl_create(
                 Socket::from_ptr(&raw mut socket).unwrap(),
-                (*owner.fields).context.as_deref(),
+                Some(&context),
                 2
             ));
             let session = socket_ssl_session(handle).unwrap();
@@ -1303,7 +1295,7 @@ mod tests {
             );
             socket_ssl_close(handle);
             assert_eq!(socket_ssl_session(handle), None);
-            drop(std::rc::Rc::from_raw(owner.owner));
+            drop(context);
             libc::close(socket.fd);
             libc::close(peer.fd);
         }
@@ -1342,6 +1334,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sendfile")]
     fn sendfile_sync_sends_the_range_and_rejects_a_bad_one() {
         let (mut left, right) = pair();
         let (path, name) = temp_file("swoole-sendfile-sync", b"0123456789");
@@ -1379,27 +1372,26 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sendfile")]
     fn queued_file_and_data_drain_through_the_handlers() {
         let (mut left, right) = pair();
-        let native = swoole_rs_corebase::buffer::cpp::new_buffer(65536);
-        let queue = native.queue();
-        left.output.out_buffer = Some(native);
+        left.output.out_buffer = Some(crate::buffer::cpp::new_buffer(65536));
         let (path, name) = temp_file("swoole-sendfile-async", b"abcdef");
-        let socket = &raw mut left;
+        let handle = unsafe { Socket::from_ptr(&raw mut left) }.unwrap();
+        let queue = || handle.read(|record| record.output.out_buffer.as_ref().unwrap().queue());
         let request = file_request(&name, 1, 0).unwrap();
-        let queued = unsafe { (*queue).push_file(request) };
+        let queued = unsafe { (*queue()).push_file(request) };
         assert_eq!(queued, Ok(()));
         assert!(
             file_request(c"/nonexistent/x", 0, 0).is_none(),
             "a file that won't open is refused"
         );
-        let handle = unsafe { Socket::from_ptr(socket) }.unwrap();
         assert!(socket_handle_sendfile(handle));
         assert_eq!(read_all(&right, 5), b"bcdef");
-        assert_eq!(unsafe { (*queue).append(b"tail") }, Ok(()));
+        assert_eq!(unsafe { (*queue()).append(b"tail") }, Ok(()));
         assert!(socket_handle_send(handle));
         assert_eq!(read_all(&right, 4), b"tail");
-        assert_eq!(unsafe { (*queue).stats() }, (0, 0), "both chunks popped");
+        assert_eq!(unsafe { (*queue()).stats() }, (0, 0), "both chunks popped");
         // The queue is released with its `Buffer`, which ends the test if it can't be.
         drop(left.output.out_buffer.take());
         std::fs::remove_file(path).unwrap();
@@ -1419,14 +1411,17 @@ mod tests {
             "getsockname filled the port"
         );
         socket_free(Some(unsafe {
-            swoole_rs_corebase::reactor::OwnedSocket::from_socket(Socket::from_ptr(socket).unwrap())
+            crate::reactor::OwnedSocket::from_socket(Socket::from_ptr(socket).unwrap())
         }));
+        // The system-warning path reports errno once the shared logger is initialized.
+        crate::set_errno(libc::EINVAL);
         let invalid = make_server_socket(1, c"not an address".into(), 0, 8);
         assert!(invalid.is_null());
         assert_ne!(log::last_error(), 0);
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no MSG_PEEK")]
     fn blocking_calls_and_liveness_over_a_socket_pair() {
         let mut fds = [0; 2];
         assert_eq!(

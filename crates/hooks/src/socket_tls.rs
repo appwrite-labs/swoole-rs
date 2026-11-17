@@ -9,11 +9,11 @@ use core::ffi::{CStr, c_int};
 use std::sync::Arc;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::reactor::Events;
-use swoole_rs_tls::SslCreateFlag::{SW_SSL_CLIENT as CLIENT, SW_SSL_SERVER as SERVER};
-use swoole_rs_tls::upstream::{
+use swoole_rs_corebase::tls::SslCreateFlag::{SW_SSL_CLIENT as CLIENT, SW_SSL_SERVER as SERVER};
+use swoole_rs_corebase::tls::upstream::{
     socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,
 };
-use swoole_rs_tls::{
+use swoole_rs_corebase::tls::{
     Accept, OwnedTlsContext, SocketContextError, SslNewError, SslState, TlsContext, TlsSettings,
     freeze_socket_context, socket_session,
 };
@@ -53,8 +53,9 @@ impl Co {
     pub(crate) fn tls_host_name(self) -> Vec<u8> {
         self.tls_settings().map_or_else(
             || {
-                self.tls_context()
-                    .map_or_else(Vec::new, |owner| swoole_rs_tls::owner_host_name(&owner))
+                self.tls_context().map_or_else(Vec::new, |owner| {
+                    swoole_rs_corebase::tls::owner_host_name(&owner)
+                })
             },
             |settings| settings.host_name().to_bytes().to_vec(),
         )
@@ -332,7 +333,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no OPENSSL_init_ssl")]
     fn accepted_socket_keeps_snapshot_across_listener_rebuild_and_drop() {
         use std::{os::fd::AsRawFd, sync::Arc};
-        use swoole_rs_tls::Text;
+        use swoole_rs_corebase::tls::Text;
 
         let (_peer, stream) = std::os::unix::net::UnixStream::pair().unwrap();
         let (mut server, mut client) = (TestSocket::new(), TestSocket::new());
@@ -366,6 +367,6 @@ mod tests {
         assert_eq!(client.co().tls_host_name(), b"first.test");
         client
             .co()
-            .with_network(swoole_rs_tls::upstream::socket_ssl_close);
+            .with_network(swoole_rs_corebase::tls::upstream::socket_ssl_close);
     }
 }

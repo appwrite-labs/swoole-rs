@@ -192,7 +192,7 @@ impl Reactor {
     /// `reactor->drain_write_buffer(sock)`.
     pub(crate) fn drain(self, sock: Socket<'_>) {
         if let Some(sock) = crate::reactor_handle::registered(sock) {
-            swoole_rs_tls::reactor_write::reactor_drain_write_buffer(self.handle(), sock);
+            swoole_rs_corebase::tls::reactor_write::reactor_drain_write_buffer(self.handle(), sock);
         }
     }
     pub(crate) fn if_exit(self) -> bool {

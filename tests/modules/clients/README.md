@@ -74,7 +74,7 @@ test keeps and whose drop deletes it, and given its callbacks by `client::listen
 its methods, `enable_ssl_encrypt` and `ssl_verify` among them, are `client::Handle` calls or other
 `swr_v1_clients_*` exports, and the `Socket` TLS reads are called under their
 upstream symbols (`ssl_get_peer_cert_chain(limit)`'s PEM of each certificate is
-crates/tls' `CertRef::pem`).
+corebase::tls' `CertRef::pem`).
 `set_tls_host_name` assigns a fresh `SSLContext` with the name set.
 `SyncClient` and `AsyncClient` are `Client`'s `created`/`connected` bookkeeping.
 `swoole_timer_after` takes the Rust closure through `corebase::timer`'s

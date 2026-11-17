@@ -343,18 +343,17 @@ impl OwnedReactor {
 
 /// `new Reactor(max_event, type)`: the state `ReactorState::open` makes and, once
 /// ready, upstream's close and default write handler, the create hook and then the
-/// built-in end callbacks and exit conditions. Those two are crates/tls's, which
-/// `swoole_init` registers with its writes ([`crate::reactor::event_api::set_writers`]).
+/// built-in end callbacks and exit conditions. Socket I/O is corebase's TLS module.
 pub fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> OwnedReactor {
     let mut owner = ReactorState::open(kind, max_event);
     if !owner.fields.ready {
         return OwnedReactor(crate::reactor::Running::leak(owner));
     }
     owner.fields.timeout_msec = -1;
-    if let Some(writers) = crate::reactor::event_api::registered_writers() {
-        owner.fields.close = Some(writers.close);
-        owner.handlers.defaults[0].set(Some(writers.writable));
-    }
+    owner.fields.close = Some(crate::tls::reactor_write::reactor_close);
+    owner.handlers.defaults[0].set(Some(|reactor, event| {
+        crate::tls::reactor_write::reactor_writable_callback(reactor, event)
+    }));
     let reactor = crate::reactor::Running::leak(owner);
     reactor_hook(HookType::ON_REACTOR_CREATE, reactor);
     // The hook has returned.

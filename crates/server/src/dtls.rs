@@ -1,5 +1,5 @@
 //! A DTLS port's sessions on the reactor thread: `Server::accept_dtls_connection`
-//! and the datagram and read steps over them. crates/tls owns each session's queue
+//! and the datagram and read steps over them. `corebase::tls` owns each session's queue
 //! and handshake, in its connection's SSL.
 use core::ffi::{CStr, c_int};
 use std::ffi::CString;
@@ -10,10 +10,10 @@ use swoole_rs_corebase::constants::{
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::reactor::socket_upstream::make_typed;
 use swoole_rs_corebase::reactor::{Heap, Socket};
-use swoole_rs_corebase::{DataHead, log};
-use swoole_rs_tls::{
+use swoole_rs_corebase::tls::{
     DtlsSession, dtls_open, dtls_session_listen, dtls_session_receive, swr_v1_tls_dtls_append,
 };
+use swoole_rs_corebase::{DataHead, log};
 
 use crate::reactor_entry::DgramPacket;
 
@@ -97,7 +97,7 @@ fn accept<'a>(
             set_option(fd, libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, 0);
         }
         if !sa.connect(fd) {
-            let (host, port) = swoole_rs_tls::upstream::peer(sa);
+            let (host, port) = swoole_rs_corebase::tls::upstream::peer(sa);
             log::sys_warning(origin, format_args!("connect({host}:{port}) failed"));
             break 'setup false;
         }
@@ -115,7 +115,7 @@ fn accept<'a>(
     let conn = match conn {
         Ok(conn) => conn,
         Err(owned) => {
-            swoole_rs_tls::upstream::socket_free(Some(owned));
+            swoole_rs_corebase::tls::upstream::socket_free(Some(owned));
             return None;
         }
     };
@@ -154,7 +154,7 @@ pub(crate) fn on_packet(
     let Some(record) = accept(serv, port, peer) else {
         return false;
     };
-    if let Some(held) = swoole_rs_tls::Ssl::of(*record)
+    if let Some(held) = swoole_rs_corebase::tls::Ssl::of(*record)
         && let Some(session) = DtlsSession::of(held.get())
     {
         appended(swr_v1_tls_dtls_append(session, data));
@@ -190,7 +190,7 @@ pub(crate) fn on_packet(
 /// session; whether a pending handshake failed (as it does without a session).
 pub(crate) fn on_read(sock: Socket<'_>) -> bool {
     let size = usize::try_from(SW_BUFFER_SIZE_UDP).unwrap_or(0);
-    let Some(held) = swoole_rs_tls::Ssl::of(sock) else {
+    let Some(held) = swoole_rs_corebase::tls::Ssl::of(sock) else {
         return true;
     };
     let Some(session) = DtlsSession::of(held.get()) else {

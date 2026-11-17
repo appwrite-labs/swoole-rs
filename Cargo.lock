@@ -371,7 +371,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
- "swoole-rs-tls",
 ]
 
 [[package]]
@@ -394,7 +393,6 @@ dependencies = [
  "swoole-rs-http-ffi",
  "swoole-rs-oracle",
  "swoole-rs-protocols",
- "swoole-rs-tls",
  "swoole-rs-websocket",
 ]
 
@@ -432,7 +430,6 @@ dependencies = [
  "swoole-rs-curl-sys",
  "swoole-rs-error",
  "swoole-rs-phpswoole",
- "swoole-rs-tls",
  "swoole-rs-zend",
 ]
 
@@ -507,7 +504,6 @@ dependencies = [
  "swoole-rs-server",
  "swoole-rs-sqlite",
  "swoole-rs-ssh2",
- "swoole-rs-tls",
  "swoole-rs-websocket",
 ]
 
@@ -542,7 +538,6 @@ dependencies = [
  "swoole-rs-http-ffi",
  "swoole-rs-oracle",
  "swoole-rs-ssh2-sys",
- "swoole-rs-tls",
 ]
 
 [[package]]
@@ -555,7 +550,6 @@ dependencies = [
  "swoole-rs-ffi",
  "swoole-rs-hooks",
  "swoole-rs-server",
- "swoole-rs-tls",
 ]
 
 [[package]]
@@ -590,7 +584,6 @@ dependencies = [
  "swoole-rs-ffi",
  "swoole-rs-ports",
  "swoole-rs-server",
- "swoole-rs-tls",
 ]
 
 [[package]]
@@ -687,7 +680,6 @@ dependencies = [
  "swoole-rs-phpswoole",
  "swoole-rs-ports",
  "swoole-rs-server",
- "swoole-rs-tls",
  "swoole-rs-websocket",
  "swoole-rs-zend",
 ]
@@ -730,7 +722,6 @@ dependencies = [
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-phptimer",
- "swoole-rs-tls",
  "swoole-rs-zend",
 ]
 
@@ -756,7 +747,6 @@ dependencies = [
  "swoole-rs-phpswoole",
  "swoole-rs-ports",
  "swoole-rs-server",
- "swoole-rs-tls",
  "swoole-rs-websocket",
  "swoole-rs-zend",
 ]
@@ -809,7 +799,6 @@ dependencies = [
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
  "swoole-rs-server",
- "swoole-rs-tls",
  "swoole-rs-zend",
 ]
 
@@ -839,7 +828,6 @@ dependencies = [
  "swoole-rs-hooks",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
- "swoole-rs-tls",
  "swoole-rs-zend",
 ]
 
@@ -860,7 +848,6 @@ dependencies = [
  "swoole-rs-phpthread",
  "swoole-rs-ports",
  "swoole-rs-server",
- "swoole-rs-tls",
  "swoole-rs-zend",
 ]
 
@@ -946,7 +933,6 @@ dependencies = [
  "swoole-rs-locale",
  "swoole-rs-oracle",
  "swoole-rs-server",
- "swoole-rs-tls",
  "swoole-rs-websocket",
 ]
 
@@ -976,7 +962,6 @@ dependencies = [
  "swoole-rs-http",
  "swoole-rs-http-ffi",
  "swoole-rs-oracle",
- "swoole-rs-tls",
 ]
 
 [[package]]
@@ -1002,16 +987,6 @@ name = "swoole-rs-ssh2-sys"
 version = "0.1.0"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "swoole-rs-tls"
-version = "0.1.0"
-dependencies = [
- "libc",
- "openssl-sys",
- "swoole-rs-corebase",
- "swoole-rs-error",
 ]
 
 [[package]]

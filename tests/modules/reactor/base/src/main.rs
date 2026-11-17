@@ -320,8 +320,6 @@ unsafe fn create() {
         let view = &*fields(reactor);
         assert_eq!(view.max_event_num, SW_REACTOR_MAXEVENTS);
         assert!(view.ready);
-        // `reactor->write`: every reactor writes through the writers `swoole_init` registered.
-        assert!(event_api::registered_writers().is_some());
         assert!(view.close.is_some());
         assert!(view.defer_tasks.is_none());
         assert!(reactor_upstream::reactor_default_write_handler(reactor).is_some());
@@ -337,6 +335,16 @@ unsafe fn create() {
                 assert_ne!(get_handler(reactor, fd_type, event), 0);
             }
         }
+        // `reactor->write != nullptr`: the direct Rust write path must be usable.
+        let pair = unix_socket(true, SOCK_STREAM);
+        assert_eq!(
+            event_api::event_write(handle(sock(&pair, true)), b"x"),
+            Some(1)
+        );
+        let mut byte = [0];
+        assert_eq!(sock_read(sock(&pair, false), &mut byte), 1);
+        assert_eq!(&byte, b"x");
+        pair_delete(pair);
         let _ = swoole_rs_ffi::swoole_event_free();
     }
 }

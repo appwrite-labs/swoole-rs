@@ -178,7 +178,7 @@ pub(super) fn make_socket(kind: c_int, fd_type: c_int, flags: c_int) -> Option<S
 
 fn make_server_socket(kind: c_int, address: &str, port: c_int, backlog: c_int) -> Option<Socket> {
     let address = std::ffi::CString::new(address).unwrap();
-    Socket::from(swoole_rs_tls::upstream::make_server_socket(
+    Socket::from(swoole_rs_corebase::tls::upstream::make_server_socket(
         kind,
         address.as_c_str().into(),
         port,
@@ -305,19 +305,23 @@ impl Socket {
     }
 
     fn recv(&self, buf: &mut [u8], flags: c_int) -> isize {
-        swoole_rs_tls::upstream::recv(self.handle(), buf, flags).map_or(-1, usize::cast_signed)
+        swoole_rs_corebase::tls::upstream::recv(self.handle(), buf, flags)
+            .map_or(-1, usize::cast_signed)
     }
 
     fn send(&self, buf: &[u8], flags: c_int) -> isize {
-        swoole_rs_tls::upstream::send(self.handle(), buf, flags).map_or(-1, usize::cast_signed)
+        swoole_rs_corebase::tls::upstream::send(self.handle(), buf, flags)
+            .map_or(-1, usize::cast_signed)
     }
 
     fn peek(&self, buf: &mut [u8], flags: c_int) -> isize {
-        swoole_rs_tls::upstream::peek(self.handle(), buf, flags).map_or(-1, usize::cast_signed)
+        swoole_rs_corebase::tls::upstream::peek(self.handle(), buf, flags)
+            .map_or(-1, usize::cast_signed)
     }
 
     fn recv_sync(&self, buf: &mut [u8], flags: c_int) -> isize {
-        swoole_rs_tls::upstream::recv_sync(self.handle(), buf, flags).map_or(-1, usize::cast_signed)
+        swoole_rs_corebase::tls::upstream::recv_sync(self.handle(), buf, flags)
+            .map_or(-1, usize::cast_signed)
     }
 
     fn send_async(&self, buf: &[u8]) -> isize {
@@ -325,15 +329,17 @@ impl Socket {
         let socket =
             unsafe { swoole_rs_corebase::reactor::Socket::from_ptr(self.0.cast()) }.unwrap();
         let socket = swoole_rs_corebase::reactor::Heap::from_static(socket);
-        swoole_rs_tls::upstream::send_async(socket, buf).map_or(-1, usize::cast_signed)
+        swoole_rs_corebase::tls::upstream::send_async(socket, buf).map_or(-1, usize::cast_signed)
     }
 
     fn read_sync(&self, buf: &mut [u8]) -> isize {
-        swoole_rs_tls::upstream::read_sync(self.handle(), buf).map_or(-1, usize::cast_signed)
+        swoole_rs_corebase::tls::upstream::read_sync(self.handle(), buf)
+            .map_or(-1, usize::cast_signed)
     }
 
     fn write_sync(&self, buf: &[u8]) -> isize {
-        swoole_rs_tls::upstream::write_sync(self.handle(), buf).map_or(-1, usize::cast_signed)
+        swoole_rs_corebase::tls::upstream::write_sync(self.handle(), buf)
+            .map_or(-1, usize::cast_signed)
     }
 
     /// `sendto(host, port, data, len)`: assigns with the socket's type, then sendto(2).
@@ -362,7 +368,7 @@ impl Socket {
     fn sendto_sync(&self, address: &Address, data: &[u8]) -> isize {
         // SAFETY: `Address` mirrors crates/corebase's record.
         let address = unsafe { &*std::ptr::from_ref(address).cast() };
-        swoole_rs_tls::upstream::sendto_sync(self.handle(), address, data, 0)
+        swoole_rs_corebase::tls::upstream::sendto_sync(self.handle(), address, data, 0)
             .map_or(-1, usize::cast_signed)
     }
 
@@ -393,13 +399,13 @@ impl Socket {
     fn recvfrom_sync(&self, buf: &mut [u8], address: &mut Address) -> isize {
         // SAFETY: `Address` mirrors crates/corebase's record.
         let address = unsafe { &mut *std::ptr::from_mut(address).cast() };
-        swoole_rs_tls::upstream::recvfrom_sync(self.handle(), buf, 0, address)
+        swoole_rs_corebase::tls::upstream::recvfrom_sync(self.handle(), buf, 0, address)
             .map_or(-1, usize::cast_signed)
     }
 
     fn sendfile_sync(&self, file: &str, offset: i64, length: usize) -> c_int {
         let file = std::ffi::CString::new(file).unwrap();
-        status(swoole_rs_tls::upstream::sendfile_sync(
+        status(swoole_rs_corebase::tls::upstream::sendfile_sync(
             self.handle(),
             &file,
             offset,
@@ -412,7 +418,7 @@ impl Socket {
     }
 
     fn check_liveness(&self) -> bool {
-        swoole_rs_tls::upstream::check_liveness(self.handle())
+        swoole_rs_corebase::tls::upstream::check_liveness(self.handle())
     }
 
     fn shutdown(&self, how: c_int) -> c_int {
@@ -536,7 +542,8 @@ fn ssl_fail() {
     let sock = Socket(client.socket().cast());
     // TEST_STR without its NUL.
     assert_eq!(
-        swoole_rs_tls::upstream::ssl_send(sock.handle(), TEST_STR).map_or(-1, usize::cast_signed),
+        swoole_rs_corebase::tls::upstream::ssl_send(sock.handle(), TEST_STR)
+            .map_or(-1, usize::cast_signed),
         SW_ERR as isize
     );
     assert_eq!(errno(), SW_ERROR_SSL_RESET);
@@ -549,7 +556,7 @@ fn ssl_fail() {
     // SW_STRL(buf) is its size less one.
     let size = buf.len() - 1;
     assert_eq!(
-        swoole_rs_tls::upstream::ssl_recv(sock.handle(), &mut buf[..size])
+        swoole_rs_corebase::tls::upstream::ssl_recv(sock.handle(), &mut buf[..size])
             .map_or(-1, usize::cast_signed),
         0
     );
@@ -559,7 +566,7 @@ fn ssl_fail() {
     sock.move_fd();
 
     assert_eq!(
-        swoole_rs_tls::upstream::ssl_recv(sock.handle(), &mut buf[..size])
+        swoole_rs_corebase::tls::upstream::ssl_recv(sock.handle(), &mut buf[..size])
             .map_or(-1, usize::cast_signed),
         0
     );
@@ -1165,7 +1172,7 @@ fn make_server_socket_rebind_after_time_wait() {
 }
 
 fn ssl_get_error_reason_case() {
-    swoole_rs_tls::swoole_ssl_init();
+    swoole_rs_corebase::tls::swoole_ssl_init();
     {
         let mut reason = -1;
         let error_str = ssl_get_error_reason(Some(&mut reason));

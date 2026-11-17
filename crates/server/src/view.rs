@@ -16,8 +16,8 @@ use swoole_rs_corebase::process::process_pool::{PoolRecord, PoolRef};
 use swoole_rs_corebase::process::server_workers::{ServerWorkers, swr_v1_process_server_worker};
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_corebase::reactor::{Heap, Socket};
+use swoole_rs_corebase::tls::socket_pair::SocketPair;
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
-use swoole_rs_tls::socket_pair::SocketPair;
 
 /// The head of every `Server`.
 #[repr(C)]

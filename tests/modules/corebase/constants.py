@@ -39,15 +39,15 @@ def main():
         names = sorted(set(re.findall(r'^\s*(SW_\w+)\s*(?:=|,)', re.sub(r'/\*.*?\*/', '', enums, flags=re.S), re.M)))
         constants = (ROOT / 'crates/corebase/src/constants.rs').read_text()
         if args.include_tls:
-            constants += (ROOT / 'crates/tls/src/constants.rs').read_text()
+            constants += (ROOT / 'crates/corebase/src/tls/constants.rs').read_text()
         names = sorted(set(names) | set(re.findall(r'pub const (SW_\w+):', constants)))
         values = {}
-        for package in ['swoole-rs-corebase'] + ['swoole-rs-tls'] * args.include_tls:
-            command = ['cargo', 'run', '--quiet', '--locked', '-p', package, '--example', 'constants']
+        for example in ['constants'] + ['tls-constants'] * args.include_tls:
+            command = ['cargo', 'run', '--quiet', '--locked', '-p', 'swoole-rs-corebase', '--example', example]
             result = run_isolated(command, cwd=ROOT, timeout=1800)
             report['commands'].append(dict(command=command, exit=result.returncode, stderr=result.stderr))
             if result.returncode:
-                raise RuntimeError(f'{package} constants table failed')
+                raise RuntimeError(f'{example} constants table failed')
             values.update(line.split(' ') for line in result.stdout.splitlines())
         # SslState's identifiers are swoole_ssl.h's, which only the TLS run reads.
         if args.include_tls and set(values) - set(names):

@@ -14,6 +14,7 @@
 use std::ffi::{c_int, c_void};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
+use swoole_rs_corebase::lent::{Count, In, Out, lend_in, lend_out};
 use swoole_rs_corebase::sys::Text;
 
 /// `BROTLI_MIN_QUALITY`, `BROTLI_MAX_QUALITY`.
@@ -62,36 +63,6 @@ struct Dying(NonNull<State>);
 /// null here (nothing makes the reference), which selects malloc and free.
 type DefaultAllocator = Option<&'static !>;
 
-/// The lifetime that names one lending: invariant, so no other lending's tokens unify
-/// with it.
-type Brand<'a> = PhantomData<fn(&'a ()) -> &'a ()>;
-/// How many bytes are left at the [`Next`] of the same lending. A stream call lowers
-/// it by as many as it moves that address past; the encoder overwrites it with how
-/// many it wrote, never more than it was.
-#[repr(transparent)]
-struct Left<'a>(usize, Brand<'a>);
-/// Where a lending's bytes left start: readable (`*const u8`) or writable (`*mut u8`)
-/// for its [`Left`] count, and reached through nothing else for `'a`. Only [`lend`]
-/// and [`lend_mut`] make one, with its count.
-#[repr(transparent)]
-struct Next<'a, P>(P, Brand<'a>);
-
-/// Lends `bytes` to `call` as a [`Left`] count and its [`Next`] address.
-fn lend<R>(bytes: &[u8], call: impl for<'a> FnOnce(Left<'a>, Next<'a, *const u8>) -> R) -> R {
-    call(
-        Left(bytes.len(), PhantomData),
-        Next(bytes.as_ptr(), PhantomData),
-    )
-}
-
-/// [`lend`] for a call that writes `bytes`.
-fn lend_mut<R>(bytes: &mut [u8], call: impl for<'a> FnOnce(Left<'a>, Next<'a, *mut u8>) -> R) -> R {
-    call(
-        Left(bytes.len(), PhantomData),
-        Next(bytes.as_mut_ptr(), PhantomData),
-    )
-}
-
 // libbrotli's own declarations. Each reads the lent input, writes at most the lent
 // room, moves a lending's address and count on together, and keeps no argument; the
 // decoder calls read or write only the live state they are given, and the destroy
@@ -104,10 +75,10 @@ unsafe extern "C" {
         quality: c_int,
         lgwin: c_int,
         mode: c_int,
-        input_size: Left<'i>,
-        input_buffer: Next<'i, *const u8>,
-        encoded_size: &mut Left<'o>,
-        encoded_buffer: Next<'o, *mut u8>,
+        input_size: Count<'i>,
+        input_buffer: In<'i, u8>,
+        encoded_size: &mut Count<'o>,
+        encoded_buffer: Out<'o, u8>,
     ) -> c_int;
     /// A new decoder state on malloc, or none.
     safe fn BrotliDecoderCreateInstance(
@@ -119,10 +90,10 @@ unsafe extern "C" {
     /// Accepts a null `total_out`.
     safe fn BrotliDecoderDecompressStream<'i, 'o>(
         state: Live<'_>,
-        available_in: &mut Left<'i>,
-        next_in: &mut Next<'i, *const u8>,
-        available_out: &mut Left<'o>,
-        next_out: &mut Next<'o, *mut u8>,
+        available_in: &mut Count<'i>,
+        next_in: &mut In<'i, u8>,
+        available_out: &mut Count<'o>,
+        next_out: &mut Out<'o, u8>,
         total_out: Option<&mut usize>,
     ) -> c_int;
     safe fn BrotliDecoderGetErrorCode(state: Live<'_>) -> c_int;
@@ -141,8 +112,8 @@ pub fn versions() -> String {
 #[must_use]
 pub fn compress(input: &[u8], quality: i32) -> Option<Vec<u8>> {
     let mut out = vec![0; BrotliEncoderMaxCompressedSize(input.len())];
-    let size = lend(input, |size, input| {
-        lend_mut(&mut out, |mut room, out| {
+    let size = lend_in(input, |input, size| {
+        lend_out(&mut out, |out, mut room| {
             let compressed = BrotliEncoderCompress(
                 quality,
                 DEFAULT_WINDOW,
@@ -152,7 +123,7 @@ pub fn compress(input: &[u8], quality: i32) -> Option<Vec<u8>> {
                 &mut room,
                 out,
             );
-            (compressed == BROTLI_TRUE).then_some(room.0)
+            (compressed == BROTLI_TRUE).then_some(room.get())
         })
     })?;
     out.truncate(size);
@@ -185,7 +156,7 @@ impl Decoder {
     /// Upstream's warning, with libbrotli's reason, when the stream is corrupt.
     pub fn decode(&mut self, input: &[u8]) -> Result<&[u8], String> {
         let (state, out) = (self.state.live(), &mut self.out);
-        let decoded = lend(input, |mut available_in, mut next_in| {
+        let decoded = lend_in(input, |mut next_in, mut available_in| {
             let mut filled = 0;
             loop {
                 if out.len() < filled + BUFFER {
@@ -193,7 +164,7 @@ impl Decoder {
                 }
                 let room = out.get_mut(filled..).unwrap_or_default();
                 let size = room.len();
-                let (result, left) = lend_mut(room, |mut available_out, mut next_out| {
+                let (result, left) = lend_out(room, |mut next_out, mut available_out| {
                     let result = BrotliDecoderDecompressStream(
                         state,
                         &mut available_in,
@@ -202,7 +173,7 @@ impl Decoder {
                         &mut next_out,
                         None,
                     );
-                    (result, available_out.0)
+                    (result, available_out.get())
                 });
                 filled += size - left;
                 match result {

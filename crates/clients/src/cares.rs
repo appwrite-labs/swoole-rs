@@ -18,9 +18,9 @@ use swoole_rs_corebase::constants::{FdType, SW_DNS_SERVER_PORT};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::reactor::{Event, Events, Running, SocketRecord, event_api};
 use swoole_rs_corebase::sys::Text;
+use swoole_rs_corebase::tls::event_socket::EventSocket;
 use swoole_rs_corebase::{CCast, Hostent};
 use swoole_rs_error::ErrorCode;
-use swoole_rs_tls::event_socket::EventSocket;
 
 /// A channel's socket-state callback: `(query id, fd, readable, writable)`.
 type SocketState = extern "C" fn(*mut c_void, c_int, c_int, c_int);

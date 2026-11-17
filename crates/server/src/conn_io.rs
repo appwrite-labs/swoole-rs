@@ -21,9 +21,9 @@ use swoole_rs_corebase::buffer::string::with_thread_buffer;
 use swoole_rs_corebase::constants::{SW_SEND_BUFFER_SIZE, SocketType};
 use swoole_rs_corebase::reactor::{Event, Heap, Socket, what_event_want};
 use swoole_rs_corebase::timer::{del_id, delay_held};
+use swoole_rs_corebase::tls::Accept;
+use swoole_rs_corebase::tls::upstream as tls;
 use swoole_rs_corebase::{CCast, DataHead, microtime};
-use swoole_rs_tls::Accept;
-use swoole_rs_tls::upstream as tls;
 
 use crate::base_factory::SendData;
 use crate::callbacks::CallbackKind;
@@ -283,7 +283,7 @@ pub(crate) const fn status(ok: bool) -> c_int {
     if ok { OK } else { ERR }
 }
 /// `SW_EVENT_READ`, `SW_EVENT_WRITE` and `SW_SSL_STATE_READY`.
-use swoole_rs_tls::SslState::SW_SSL_STATE_READY as SSL_READY;
+use swoole_rs_corebase::tls::SslState::SW_SSL_STATE_READY as SSL_READY;
 
 /// Whether the socket has TLS whose handshake is not finished.
 fn handshaking(sock: Socket<'_>) -> bool {

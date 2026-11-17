@@ -61,7 +61,7 @@ for both native and Rust, so `import` refuses every descriptor there.
 socket record and OpenSSL. The port's `ssl_context` publishes its Rust owner;
 readers take a reference that survives closing the port. The SNI contexts, each with its
 reference, live in the Rust TLS state (`PortConfig::tls`). `swr_v1_server_delete` releases
-both. A DTLS session lives in its connection's SSL (crates/tls), which the server opens over
+both. A DTLS session lives in its connection's SSL (corebase::tls), which the server opens over
 the port's context. SNI contexts are matched in insertion order; upstream iterated an
 `std::unordered_map`, whose order is unspecified.
 

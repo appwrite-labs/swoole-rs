@@ -10,8 +10,8 @@ name = "swoole_rs_bus"
 crate-type = ["rlib"]
 
 [features]
-# The bus's socket writes and frees over the tls crate's upstream socket.
-upstream-symbols = ["dep:swoole-rs-tls"]
+# The bus's socket writes and frees over corebase's TLS socket.
+upstream-symbols = []
 
 [lints]
 workspace = true
@@ -19,4 +19,3 @@ workspace = true
 [dependencies]
 libc = "=0.2.191"
 swoole-rs-corebase = { path = "../corebase" }
-swoole-rs-tls = { path = "../tls", optional = true }

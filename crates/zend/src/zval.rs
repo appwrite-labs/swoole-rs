@@ -23,10 +23,6 @@ use std::{
 };
 
 unsafe extern "C" {
-    /// `Z_TRY_ADDREF_P`: one more reference to what a counted zval holds, and
-    /// nothing for any other. It reads the zval and writes the count only, on
-    /// the thread the borrow is on; a reference nothing releases is a leak.
-    safe fn swr_zval_try_addref(value: &Value);
     /// `zend_array_count`: it reads the table, and may recount its elements.
     safe fn zend_array_count(table: &Array) -> u32;
     /// `zend_array_is_list`: it reads the table.
@@ -95,6 +91,15 @@ unsafe extern "C" {
     /// lent key, which Zend copies, or appends it to what is there, made a list
     /// first unless it is one. No PHP code runs: it releases nothing.
     safe fn swr_lent_array_add_or_merge(array: Separated<'_>, key: IoSlice<'_>, value: Given<'_>);
+    /// `php_register_variable_ex`: the array takes `value` under the request
+    /// variable `name`, by PHP's rules for its `a[b]` nesting, or releases it
+    /// (an empty name, or one nested past `max_input_nesting_level`, which
+    /// warns: a user error handler runs PHP code).
+    safe fn php_register_variable_ex(
+        name: crate::helpers::CText<'_>,
+        value: Given<'_>,
+        array: Separated<'_>,
+    );
     /// `zend_zval_value_name`: it reads the zval, and returns a static type
     /// name or the name of the object's class, which outlives its objects.
     /// `mixed` for a slot that holds no PHP value.
@@ -378,6 +383,19 @@ impl Value {
     #[inline]
     fn payload<T>(&self) -> *mut T {
         self.word().cast()
+    }
+
+    /// `Z_COUNTED_P`'s header, when `Z_REFCOUNTED_P`: the zval holds a counted
+    /// value (never an interned string or an immutable array), as long as it is
+    /// borrowed.
+    #[inline]
+    fn counted(&self) -> Option<&Counted> {
+        // `Z_TYPE_FLAGS_P`: the byte above the type.
+        let refcounted = (self.tagged().type_info >> 8) & crate::sys::IS_TYPE_REFCOUNTED != 0;
+        // SAFETY: a counted value begins with its `zend_refcounted_h`, live while the
+        // zval that holds it is borrowed; its two `u32`s are `Cell`s, which allow
+        // the writes Zend makes meanwhile on this thread.
+        refcounted.then(|| unsafe { &*self.payload::<Counted>() })
     }
 
     /// [`Value::word`] as bits.
@@ -866,7 +884,9 @@ impl Value {
     /// whoever the caller hands it to releases (nobody: a leak).
     #[inline]
     pub fn add_ref(&self) {
-        swr_zval_try_addref(self);
+        if let Some(counted) = self.counted() {
+            counted[REFCOUNT].set(counted[REFCOUNT].get() + 1);
+        }
     }
 
     /// `zend_zval_value_name`: the type, or the object's class, a type error names.
@@ -914,7 +934,7 @@ impl Value {
     pub fn copy(&self) -> Owned {
         // The copy carries the reference it adds below.
         let owned = Owned(Self(Cell::new(self.copy_value())));
-        swr_zval_try_addref(&owned);
+        owned.add_ref();
         owned
     }
 }
@@ -1541,6 +1561,17 @@ impl Owned {
         *std::mem::ManuallyDrop::new(self).0.0.get_mut()
     }
 
+    /// `zval_delref_p`: give up this reference without releasing what it holds,
+    /// which at the last reference stays allocated (a leak), never destroyed.
+    #[inline]
+    pub fn delref(self) {
+        if let Some(counted) = self.counted() {
+            counted[REFCOUNT].set(counted[REFCOUNT].get() - 1);
+        }
+        // The reference went above: nothing is left to release.
+        let _given_up = self.into_zval();
+    }
+
     /// `convert_to_array`, as PHP's `(array)` cast: this then holds an array,
     /// unless the conversion bailed out.
     /// # Errors
@@ -1614,6 +1645,18 @@ impl ArrayMut {
         if let Some(array) = self.separate() {
             swr_lent_push_bytes(array, IoSlice::new(data));
         }
+    }
+
+    /// `php_register_variable_ex(name, value, array)`: the array takes `value`
+    /// under the request variable `name` (`a[b][]` nests), or releases it.
+    /// # Errors
+    /// A warning's user error handler bailed out.
+    pub fn register_variable(&mut self, name: &CStr, value: Owned) -> Result<(), bailout::Bailout> {
+        let Some(array) = self.separate() else {
+            return Ok(());
+        };
+        let mut value = value.into_zval();
+        crate::contain_with(|| php_register_variable_ex(name.into(), Given(&mut value), array))
     }
 
     /// `add_next_index_long`.

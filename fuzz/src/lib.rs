@@ -32,9 +32,14 @@ const CANDIDATE: Engine = Engine {
     frame: request::frame,
     expect: request::expect,
     header: request::header,
-    method: swoole_rs_http_ffi::http_server::get_method_string,
+    method: method_string,
     header_info: request::header_info,
 };
+
+/// `get_method_string` as the oracle's engine table holds it: crates/http's name, or null.
+extern "C" fn method_string(method: i32) -> *const c_char {
+    swoole_rs_http::method_string(method).map_or(std::ptr::null(), CStr::as_ptr)
+}
 
 mod request {
     use std::ffi::{CStr, c_char};

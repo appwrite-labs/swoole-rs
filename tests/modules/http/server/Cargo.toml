@@ -22,7 +22,6 @@ swoole-rs-corebase = { path = "../../../../crates/corebase", features = ["thread
 swoole-rs-ffi = { path = "../../../../crates/ffi" }
 swoole-rs-ports = { path = "../../../../crates/ports" }
 swoole-rs-server = { path = "../../../../crates/server" }
-swoole-rs-tls = { path = "../../../../crates/tls" }
 
 [lints]
 workspace = true

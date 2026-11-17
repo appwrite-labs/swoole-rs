@@ -3,7 +3,7 @@
 //!
 //! A `Socket` is the hooks crate's `Co`, whose methods the cases call (`Sock::co`).
 //! Fields are read through the record layout (native/hooks/swoole_rs_co_socket.h).
-//! The TLS setters write the socket's `SSLContext` owner (crates/tls/src/owned.rs) as
+//! The TLS setters write the socket's `SSLContext` owner (crates/corebase/src/tls/owned.rs) as
 //! `enable_ssl_encrypt` and the `set_ssl_*` members did; `TimeoutSetter` and
 //! `TimeoutController` are the crate's `TimeoutScope` and its `timed_out`.
 //! The two `Server` fixtures (`recv_success`, `recv_fail`) are a forked std echo
@@ -146,7 +146,7 @@ struct NetHead {
 /// `owner` is a live owner that nothing else configures meanwhile.
 pub(super) unsafe fn string_set(owner: *const c_void, index: usize, value: &[u8]) -> c_int {
     // SAFETY: the caller's live owner.
-    let owner = unsafe { &*owner.cast::<swoole_rs_tls::OwnedTlsContext>() };
+    let owner = unsafe { &*owner.cast::<swoole_rs_corebase::tls::OwnedTlsContext>() };
     if owner.borrow_configuration().set_string(index, value) {
         0
     } else {
@@ -154,45 +154,23 @@ pub(super) unsafe fn string_set(owner: *const c_void, index: usize, value: &[u8]
     }
 }
 
-/// `OwnedTlsPrepared` (crates/tls/src/owned.rs), its fields seen as [`TlsFields`].
+/// A TLS owner kept live by the fixture or the socket that supplied it.
 #[derive(Clone, Copy)]
 pub(super) struct TlsPrepared {
     pub(super) owner: *const c_void,
-    pub(super) fields: *mut TlsFields,
 }
 
-impl From<swoole_rs_tls::OwnedTlsPrepared> for TlsPrepared {
-    fn from(view: swoole_rs_tls::OwnedTlsPrepared) -> Self {
-        Self {
-            owner: view.owner.cast(),
-            fields: view.fields.cast(),
-        }
+/// A new TLS owner, holding one reference.
+pub(super) fn tls_owner_new() -> TlsPrepared {
+    TlsPrepared {
+        owner: std::rc::Rc::into_raw(swoole_rs_corebase::tls::owner_new(
+            swoole_rs_corebase::tls::tls_warning,
+        ))
+        .cast(),
     }
 }
 
-/// A new `SSLContext` owner (crates/tls's `owner_new`), holding one reference, and its view.
-pub(super) fn tls_owner_new() -> TlsPrepared {
-    swoole_rs_tls::owner_new(swoole_rs_tls::tls_warning).into()
-}
-
-/// `OwnedTlsFields`, up to `allow_self_signed`.
-#[repr(C)]
-pub(super) struct TlsFields {
-    http: u8,
-    http_v2: u8,
-    prefer_server_ciphers: u8,
-    session_tickets: u8,
-    stapling: u8,
-    stapling_verify: u8,
-    pub(super) disable_tls_host_name: u8,
-    grease: u8,
-    verify_depth: u8,
-    disable_compress: u8,
-    verify_peer: u8,
-    allow_self_signed: u8,
-}
-
-/// The owner's string slots (crates/tls/src/owned.rs).
+/// The owner's string slots (crates/corebase/src/tls/owned.rs).
 const TLS_ECDH_CURVE: usize = 1;
 const TLS_DHPARAM: usize = 3;
 pub(super) const TLS_HOST_NAME: usize = 8;
@@ -486,7 +464,9 @@ impl Sock {
             return false;
         }
         let owner = self.co().tls_context().expect("enable_ssl made one");
-        self.tls.set(Some(swoole_rs_tls::owner_view(&owner).into()));
+        self.tls.set(Some(TlsPrepared {
+            owner: owner.as_ptr().cast(),
+        }));
         true
     }
 
@@ -509,8 +489,10 @@ impl Sock {
         // SAFETY: the open socket's network::Socket.
         let socket =
             unsafe { swoole_rs_corebase::reactor::Socket::from_ptr(self.record().socket.cast()) };
-        let length =
-            swoole_rs_tls::upstream::socket_ssl_peer_certificate_pem(socket.unwrap(), &mut pem);
+        let length = swoole_rs_corebase::tls::upstream::socket_ssl_peer_certificate_pem(
+            socket.unwrap(),
+            &mut pem,
+        );
         pem.truncate(length.unwrap_or(0));
         pem
     }
@@ -536,9 +518,15 @@ impl Sock {
 struct Tls(TlsPrepared);
 
 impl Tls {
-    fn fields(&self) -> &mut TlsFields {
-        // SAFETY: the live owner's fields, which nothing else borrows meanwhile.
-        unsafe { &mut *self.0.fields }
+    fn edit(&self, edit: impl FnOnce(&mut swoole_rs_corebase::tls::OwnedTlsFields)) {
+        // SAFETY: the fixture's socket keeps this owner live.
+        let owner = unsafe {
+            &*self
+                .0
+                .owner
+                .cast::<swoole_rs_corebase::tls::OwnedTlsContext>()
+        };
+        owner.borrow_configuration().edit(edit);
     }
 
     fn set_string(&self, index: usize, value: &str) {
@@ -551,19 +539,24 @@ impl Tls {
 
     /// `SSLContext::set_cert_file` or `set_key_file`: false, warned, when the file
     /// can't be read.
-    fn set_path(&self, which: swoole_rs_tls::Text, file: &str) -> bool {
+    fn set_path(&self, which: swoole_rs_corebase::tls::Text, file: &str) -> bool {
         // SAFETY: the live owner, which only the case's thread configures.
-        let owner = unsafe { &*self.0.owner.cast::<swoole_rs_tls::OwnedTlsContext>() };
+        let owner = unsafe {
+            &*self
+                .0
+                .owner
+                .cast::<swoole_rs_corebase::tls::OwnedTlsContext>()
+        };
         let mut owner = owner.borrow_configuration();
         owner.set_text(which, file.as_bytes())
     }
 
     fn set_ssl_cert_file(&self, file: &str) -> bool {
-        self.set_path(swoole_rs_tls::Text::CertFile, file)
+        self.set_path(swoole_rs_corebase::tls::Text::CertFile, file)
     }
 
     fn set_ssl_key_file(&self, file: &str) -> bool {
-        self.set_path(swoole_rs_tls::Text::KeyFile, file)
+        self.set_path(swoole_rs_corebase::tls::Text::KeyFile, file)
     }
 
     fn set_ssl_cafile(&self, file: &str) {
@@ -580,15 +573,15 @@ impl Tls {
 
     fn set_tls_host_name(&self, name: &str) {
         self.set_string(TLS_HOST_NAME, name);
-        self.fields().disable_tls_host_name = u8::from(name.is_empty());
+        self.edit(|fields| fields.disable_tls_host_name = name.is_empty());
     }
 
     fn set_ssl_verify_peer(&self, value: bool) {
-        self.fields().verify_peer = u8::from(value);
+        self.edit(|fields| fields.verify_peer = value);
     }
 
     fn set_ssl_allow_self_signed(&self, value: bool) {
-        self.fields().allow_self_signed = u8::from(value);
+        self.edit(|fields| fields.allow_self_signed = value);
     }
 }
 

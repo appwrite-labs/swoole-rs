@@ -40,7 +40,7 @@ impl<D: FnMut(RecvData<'_>) -> bool> RespConnection for Connection<'_, D> {
     fn recv(&mut self) -> Received {
         let socket = self.socket;
         let buffer = self.buffer.get();
-        if let Some(received) = swoole_rs_tls::upstream::recv_append(socket, buffer) {
+        if let Some(received) = swoole_rs_corebase::tls::upstream::recv_append(socket, buffer) {
             return Received::Bytes(received);
         }
         let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);

@@ -1,11 +1,11 @@
 //! The reactor's writable handler and drain (upstream `Reactor::_writable_callback` and
 //! `drain_write_buffer`) over the socket's write-path block and its output queue.
-//! `crates/tls`'s `reactor_write.rs` supplies the effects.
+//! `corebase::tls`'s `reactor_write.rs` supplies the effects.
 use crate::buffer::EntryKind;
 use crate::buffer::cpp::{swr_cpp_buffer_count, swr_cpp_buffer_typed_front};
 use crate::reactor::Socket;
 
-/// The flush's effects (`crates/tls`'s `reactor_write.rs`).
+/// The flush's effects (`corebase::tls`'s `reactor_write.rs`).
 pub trait FlushEffects {
     /// Sends the front data entry: false when the send could not proceed.
     fn handle_send(&self) -> bool;

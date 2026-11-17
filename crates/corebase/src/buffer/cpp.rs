@@ -24,7 +24,7 @@ fn check(status: Result<(), crate::buffer::Error>) {
 
 impl CppBuffer {
     /// The queue's address, for a caller that reaches it between the borrows of the
-    /// record that owns this `Buffer` (crates/tls's send path).
+    /// record that owns this `Buffer` (`corebase::tls`'s send path).
     #[must_use]
     pub const fn queue(&self) -> *mut crate::buffer::Buffer {
         self.queue.get()

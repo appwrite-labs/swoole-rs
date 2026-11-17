@@ -20,18 +20,12 @@ pub(crate) extern "C-unwind" fn swoole_init() {
     swoole_rs_corebase::coroutine::set_host(swoole_rs_corebase::coroutine::Host {
         async_threads_ensure: || _ = swoole_rs_hooks::async_threads::ensure(),
     });
-    swoole_rs_corebase::reactor::event_api::set_writers(swoole_rs_tls::reactor_write::WRITERS);
     swoole_rs_corebase::reactor::event_api::set_init_reactor([
         |reactor| swoole_rs_hooks::reactor_handlers::system_init_reactor(reactor),
         swoole_rs_clients::client::init_reactor,
     ]);
     swoole_rs_corebase::reactor::host::set_host(swoole_rs_corebase::reactor::host::Host {
         sleep: swoole_rs_hooks::sleep::system_sleep,
-        socket_free: |socket| swoole_rs_tls::upstream::socket_free(Some(socket)),
-    });
-    swoole_rs_corebase::process::methods::set_listener(|kind, host, port, backlog| {
-        let listener = swoole_rs_tls::upstream::server_socket(kind, host, port, backlog)?;
-        Some(std::rc::Rc::new(listener))
     });
     swoole_rs_clients::client::set_host(
         swoole_rs_ports::framing_recv::FRAMING,
