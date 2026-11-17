@@ -30,6 +30,7 @@ use swoole_rs_corebase::coroutine::{
     coroutine_count as swoole_coroutine_count, coroutine_get as swoole_coroutine_get, print_list,
     swoole_coroutine_iterator_each, swoole_coroutine_iterator_reset,
 };
+use swoole_rs_ffi::swoole_event_init;
 
 const SW_ERROR_CO_CANNOT_CANCEL: c_int = 10015;
 const SW_FORK_PRECHECK: c_int = 8;
@@ -87,8 +88,6 @@ unsafe extern "C-unwind" {
 }
 
 unsafe extern "C" {
-    #[link_name = "_Z17swoole_event_initi"]
-    fn swoole_event_init(flags: c_int) -> c_int;
     fn clock_gettime(clock: c_int, ts: *mut [i64; 2]) -> c_int;
     fn usleep(usec: u32) -> c_int;
     fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
@@ -656,8 +655,7 @@ fn undefined_behavior() {
             Some(ignore),
         );
 
-        // SAFETY: a fresh event loop on this thread.
-        unsafe { swoole_event_init(0) };
+        _ = swoole_event_init(0);
         let ret = dispatch(&event);
         assert!(!ret.is_null());
         // SAFETY: swoole_fork after async threads, the behaviour under test.

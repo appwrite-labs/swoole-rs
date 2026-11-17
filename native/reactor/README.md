@@ -13,6 +13,11 @@ class over `swr_v1_reactor_head`, which Rust's reactor state begins with, so a
 (`iov_owned.rs`) holding a typed copy of the caller's descriptors; payload bytes are not
 copied.
 
+The event-loop init, wait, availability and socket-lookup helpers are Rust APIs.
+Original Rust fixtures call them directly; no native caller remains, so their
+C++ declarations and exports are retired. Typed `isset_handler` also replaces the
+unused integer-event wrapper.
+
 ## Contents
 
 - [backend.md](backend.md): construction, backends, wait and kqueue signals.

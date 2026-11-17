@@ -9,6 +9,8 @@ use std::thread;
 use std::time::Duration;
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::reactor::{SocketFields, SocketRecord as Record, socket_upstream};
+use swoole_rs_ffi::event_api::swoole_event_wait;
+use swoole_rs_ffi::swoole_event_init;
 
 use super::address::Address;
 use super::client::Client;
@@ -88,10 +90,6 @@ unsafe extern "C" {
 }
 
 unsafe extern "C" {
-    #[link_name = "_Z17swoole_event_initi"]
-    fn swoole_event_init(flags: c_int) -> c_int;
-    #[link_name = "_Z17swoole_event_waitv"]
-    fn swoole_event_wait() -> c_int;
     fn close(fd: c_int) -> c_int;
     fn pipe(fds: *mut c_int) -> c_int;
     fn unlink(path: *const c_char) -> c_int;
@@ -774,8 +772,7 @@ fn send_async_2() {
     assert!(sock.set_block());
     assert_eq!(sock.connect(http_domain(), 80), SW_OK);
 
-    // SAFETY: a new loop on this thread.
-    unsafe { swoole_event_init(SW_EVENTLOOP_WAIT_EXIT) };
+    _ = swoole_event_init(SW_EVENTLOOP_WAIT_EXIT);
 
     let req = http_get_request(TEST_HTTP_DOMAIN, "/");
     assert_eq!(sock.send_async(&req), req.len() as isize);
@@ -793,7 +790,7 @@ fn send_async_2() {
             socket,
             swoole_rs_ffi::Events::from_bits(SW_EVENT_READ | SW_EVENT_ONCE),
         );
-        swoole_event_wait();
+        _ = swoole_event_wait();
     }
 
     sock.free();
