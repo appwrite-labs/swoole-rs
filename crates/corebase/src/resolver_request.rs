@@ -1,8 +1,8 @@
 //! Owned DNS request strings, hints and address storage. A record is reference
 //! counted: its native request holds one reference and each pool copy of an
 //! `AsyncEvent` carrying it another. Records contain no callbacks.
-use crate::StringSlot;
 use crate::resolver::{DIAGNOSTIC_FAILED, gethostbyname, ntop, resolve_addresses};
+use crate::{CellExt, StringSlot};
 use core::cell::Cell;
 use core::ffi::{c_char, c_int};
 use std::ffi::CString;
@@ -137,10 +137,7 @@ impl ResolverRequest {
     /// The text address `host` wrote.
     #[must_use]
     pub fn address(&self) -> Vec<u8> {
-        let address = self.address.take();
-        let copy = copy(&address);
-        self.address.set(address);
-        copy
+        self.address.with_taken(|address| copy(address))
     }
 
     /// `async::handler_getaddrinfo`'s body: resolves the hints and replaces the
@@ -223,24 +220,20 @@ impl ResolverRequest {
     #[must_use]
     pub fn addresses(&self) -> Vec<Vec<u8>> {
         let family = self.fields().family;
-        let results = self.results.take();
-        let texts = results
-            .iter()
-            .map(|address| Self::text(family, address))
-            .filter(|text| text.valid)
-            .map(|text| terminated(&text.bytes))
-            .collect();
-        self.results.set(results);
-        texts
+        self.results.with_taken(|results| {
+            results
+                .iter()
+                .map(|address| Self::text(family, address))
+                .filter(|text| text.valid)
+                .map(|text| terminated(&text.bytes))
+                .collect()
+        })
     }
 
     /// A copy of the socket addresses `lookup` found.
     #[must_use]
     pub fn results(&self) -> Vec<libc::sockaddr_in6> {
-        let results = self.results.take();
-        let copy = results.clone();
-        self.results.set(results);
-        copy
+        self.results.with_taken(|results| results.clone())
     }
 }
 
