@@ -7,7 +7,7 @@ use std::{
     rc::Rc,
     sync::{Arc, Mutex, PoisonError, atomic::Ordering},
 };
-use swoole_rs_corebase::Thread;
+use swoole_rs_corebase::{CellExt, Thread};
 use swoole_rs_phpthread::Arguments;
 use swoole_rs_server::Mode;
 use swoole_rs_server::thread_mode::set_worker_thread_start;
@@ -119,8 +119,7 @@ fn run_worker(object: ServerObject<'_>) -> Result<(), Bailout> {
     if bailout::pending() {
         return Err(Bailout);
     }
-    let main = MAIN.take();
-    MAIN.set(main.clone());
+    let main = MAIN.with(|slot| slot.with_taken(|main| main.clone()));
     let Some(main) = main else {
         return Ok(());
     };
