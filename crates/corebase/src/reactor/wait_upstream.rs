@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.5 src/os/wait.cc (Swoole contributors).
-//! Coroutine `waitpid` (`System::wait`, `waitpid`, `waitpid_safe`) and
+//! Coroutine `waitpid` (`System::wait`, `waitpid`) and
 //! `swoole_waitpid` over `corebase::process`'s wait
 //! registry, or the `io_uring` engine when one is registered. The process patch deletes
-//! `src/os/wait.cc`. Only `System::waitpid` and `waitpid_safe` retain native exports
-//! for bundled `proc_open`, selected by its `SW_THREAD` build configuration.
+//! `src/os/wait.cc`. Hooks owns the polling `System::waitpid_safe` used by threaded `proc_open`.
 use crate::process::signal::swoole_signal_dispatch;
 use crate::process::wait::wait_count;
 use crate::{log, sys};
@@ -113,18 +112,19 @@ mod registry {
 }
 
 /// `Iouring::waitpid`, the last error set from errno when it fails.
-fn iouring_waitpid(
-    uring: &crate::reactor::UringOps,
+#[must_use]
+pub fn iouring_waitpid(
     pid: libc::pid_t,
     status: Option<&mut c_int>,
     options: c_int,
     timeout: f64,
-) -> libc::pid_t {
+) -> Option<libc::pid_t> {
+    let uring = crate::reactor::wait_loop::uring()?;
     let result = (uring.waitpid)(pid, status, options, timeout);
     if result < 0 {
         log::set_last_error(errno());
     }
-    result
+    Some(result)
 }
 
 /// `pid_t System::waitpid(pid_t, int *, int, double timeout)`: in a coroutine, yields
@@ -136,8 +136,8 @@ pub extern "C" fn system_waitpid(
     options: c_int,
     timeout: f64,
 ) -> libc::pid_t {
-    if let Some(uring) = crate::reactor::wait_loop::uring() {
-        return iouring_waitpid(uring, pid, Some(status), options, timeout);
+    if let Some(result) = iouring_waitpid(pid, Some(status), options, timeout) {
+        return result;
     }
     let waited =
         crate::process::wait::wait_pid(pid, status, options, timeout, &registry::COROUTINES);
@@ -151,42 +151,6 @@ pub extern "C" fn system_waitpid(
 /// `pid_t System::wait(int *, double timeout)`: any child.
 pub extern "C" fn system_wait(status: &mut c_int, timeout: f64) -> libc::pid_t {
     system_waitpid(-1, status, 0, timeout)
-}
-
-/// `pid_t System::waitpid_safe(pid_t, int *, int)`: in a coroutine, polls
-/// `waitpid(WNOHANG)` between coroutine sleeps that back off, without SIGCHLD.
-/// `status` may be null, as `waitpid`'s.
-#[unsafe(export_name = "_ZN6swoole9coroutine6System12waitpid_safeEiPii")]
-#[must_use]
-pub extern "C" fn system_waitpid_safe(
-    pid: libc::pid_t,
-    status: Option<&mut c_int>,
-    options: c_int,
-) -> libc::pid_t {
-    /// `SW_FILE_LOCK_DEFAULT_SECOND` and `SW_FILE_LOCK_MAX_SECOND`.
-    const LOCK_DEFAULT_SECOND: f64 = 0.001;
-    const LOCK_MAX_SECOND: f64 = 0.1;
-    let mut status = status;
-    let outside = crate::reactor::event_api::swr_v1_event_current().is_null()
-        || crate::coroutine::current().is_null();
-    if outside || options & libc::WNOHANG != 0 {
-        return sys::waitpid(pid, status, options).map_or(-1, |pid| pid.unwrap_or(0));
-    }
-    if let Some(uring) = crate::reactor::wait_loop::uring() {
-        return iouring_waitpid(uring, pid, status, options, -1.0);
-    }
-    let mut second = LOCK_DEFAULT_SECOND;
-    loop {
-        match sys::waitpid(pid, status.as_deref_mut(), libc::WNOHANG) {
-            Ok(Some(child)) => return child,
-            Err(_) => return -1,
-            // In a coroutine, checked above. A failed sleep keeps its errno and
-            // returns the wait's no-child result, as upstream does.
-            Ok(None) if !(crate::reactor::host::get().sleep)(second) => return 0,
-            Ok(None) => {}
-        }
-        second = crate::reactor::backoff(second, LOCK_DEFAULT_SECOND, LOCK_MAX_SECOND);
-    }
 }
 
 /// `pid_t swoole_waitpid(pid_t, int *, int)`: `waitpid`, dispatching signals and

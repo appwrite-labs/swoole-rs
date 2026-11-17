@@ -19,9 +19,6 @@ pub(crate) extern "C-unwind" fn swoole_init() {
         |reactor| swoole_rs_hooks::reactor_handlers::system_init_reactor(reactor),
         swoole_rs_clients::client::init_reactor,
     ]);
-    swoole_rs_corebase::reactor::host::set_host(swoole_rs_corebase::reactor::host::Host {
-        sleep: swoole_rs_hooks::sleep::system_sleep,
-    });
     swoole_rs_clients::client::set_host(
         swoole_rs_ports::framing_recv::FRAMING,
         swoole_rs_hooks::resolve::dispatch_client,

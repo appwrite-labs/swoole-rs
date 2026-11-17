@@ -98,9 +98,6 @@ pub mod socket_upstream;
 #[cfg(all(unix, feature = "upstream-symbols"))]
 pub mod wait_upstream;
 
-#[cfg(unix)]
-pub mod host;
-
 mod iov_progress;
 pub use iov_progress::*;
 
