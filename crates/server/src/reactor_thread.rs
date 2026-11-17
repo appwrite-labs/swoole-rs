@@ -10,7 +10,7 @@ use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::reactor::Event;
 #[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_corebase::reactor::Heap;
-use swoole_rs_corebase::{DataHead, log, microtime};
+use swoole_rs_corebase::{CellExt, DataHead, log, microtime};
 #[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_error::ErrorCode;
 
@@ -42,13 +42,16 @@ thread_local! {
 /// UDP port's, until it would block. Each is read into this thread's datagram buffer;
 /// false when one fails.
 pub(crate) fn packet_received(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> bool {
-    let mut buffer = DATAGRAMS.take().unwrap_or_else(|| {
+    let allocate = || {
         let size = swoole_rs_corebase::buffer::string::with_thread_buffer(|b| b.size());
         vec![0; size].into_boxed_slice()
-    });
-    let received = receive_packets(serv, reactor, event.fd(), &mut buffer);
-    DATAGRAMS.set(Some(buffer));
-    received
+    };
+    DATAGRAMS.with(|cell| {
+        cell.with_taken(|buffer| {
+            let buffer = buffer.get_or_insert_with(allocate);
+            receive_packets(serv, reactor, event.fd(), buffer)
+        })
+    })
 }
 
 /// [`packet_received`] from `fd` into `buffer`: each datagram's packet head, then the
