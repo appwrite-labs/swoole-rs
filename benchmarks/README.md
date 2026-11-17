@@ -95,6 +95,13 @@ arm64 Linux VM whose reactor wakes on ~3 ms ticks, at two connections, `sleep`'s
 6.7 ms. In Appwrite, the same late wake-ups doubled the time a session creation spent
 waiting on its connection pools' locks, from 58 ms to 115 ms.
 
+`table-contended` (#4730) reads one `Swoole\Table` row 64 times per request from six worker
+processes per CPU, against `benchmarks/table`, as Appwrite checks one certified-domain row on
+every request. Its cost is the row lock's spin across processes, so the nightly runs it in
+`wall.py`. The Cargo build pauses with `isb` on aarch64, where upstream pauses with `yield`.
+On a 10-CPU arm64 Linux VM at 64 connections it served 86k requests/s at 0.108 ms of CPU each,
+against upstream's 63k at 0.138 ms. A build pausing with `yield` fell back to 65k at 0.132 ms.
+
 `atomic` (#2654) adds 64 values to a `Swoole\Atomic`, each under a `Swoole\Lock`
 mutex, against `benchmarks/primitives`, and `process-mode` is `plaintext` against
 `benchmarks/process`: `SWOOLE_PROCESS` with two workers, so the master's reactor

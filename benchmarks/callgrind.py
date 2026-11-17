@@ -103,6 +103,9 @@ WORKLOADS = {
     # handed over after a 1 ms hold, and a 2 ms Coroutine::sleep.
     'coroutine-lock': ('benchmarks/primitives', 'GET', '/coroutine-lock', None, b'64\n'),
     'sleep': ('benchmarks/primitives', 'GET', '/sleep', None, b'64\n'),
+    # One hot Swoole\Table row read by six worker processes per CPU (#4730); wall.py only, since
+    # its cost is spinning on the row lock across processes.
+    'table-contended': ('benchmarks/table', 'GET', '/', None, b'64\n'),
     'process-mode': ('benchmarks/process', 'GET', '/', None, b'Hello, Swoole!\n'),
     # Larger and concurrent traffic (#2652), against benchmarks/traffic.
     'http2-concurrent': ('benchmarks/traffic', 'H2C', '/echo', H2BODY, H2BODY),
