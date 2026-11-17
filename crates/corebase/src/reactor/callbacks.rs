@@ -161,7 +161,8 @@ pub(crate) fn execute_end(reactor: Running<'_>, timed_out: bool) {
             End::Defer => crate::reactor::deferred::run_defer(reactor),
             End::Idle if reactor.with(|state| state.fields.idle_task.is_none()) => continue,
             End::Idle => run_idle(reactor),
-            End::Signal => crate::process::signal::swoole_signal_dispatch(),
+            End::Signal if !crate::process::signal::dispatch_if_pending() => continue,
+            End::Signal => {}
             End::TryExit => {
                 if !reactor.with(|state| state.fields.wait_exit) {
                     continue;

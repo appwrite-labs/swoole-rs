@@ -43,7 +43,7 @@ fn error(level: swoole_rs_corebase::log::LogLevel, code: E, message: core::fmt::
 )]
 pub fn send(serv: Server<'_>, session_id: core::ffi::c_long, data: &[u8]) -> bool {
     let len = data.len().c_cast::<u32>();
-    let info = DataHead {
+    let info = || DataHead {
         fd: session_id,
         kind: ServerEvent::SendData.code(),
         len,
@@ -62,9 +62,9 @@ pub fn send(serv: Server<'_>, session_id: core::ffi::c_long, data: &[u8]) -> boo
             crate::shared::count_sent(state, port.and_then(|port| port.config().counters()), len);
             return true;
         }
-        to_connection(serv, &info, data, first.map(|(sent, _)| sent))
+        to_connection(serv, &info(), data, first.map(|(sent, _)| sent))
     } else {
-        let mut send = SendData::new(info, data);
+        let mut send = SendData::new(info(), data);
         crate::hybrid::hybrid().factory_finish(serv, &mut send)
     };
     if sent {
