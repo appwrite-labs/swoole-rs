@@ -14,7 +14,7 @@ use crate::co_socket::{Co, OwnedCo, peer_name};
 use crate::sendfile::{SendFailure, send_range};
 use crate::setup::{Setup, swr_v1_hook_accept};
 use crate::socket_wait::{error_event, ready, wait_for};
-use crate::transfer::{ALL, Buffer, CHECKED, RETRY_INTERRUPTED, timeout_kind, transfer};
+use crate::transfer::{ALL, At, Buffer, CHECKED, RETRY_INTERRUPTED, timeout_kind, transfer};
 #[cfg(feature = "iouring")]
 use crate::uring_socket as ring;
 use crate::vector::{IoVector, RecvMessage, SendMessage, vector_all};
@@ -116,17 +116,6 @@ impl Setup for Accepting {
     }
 }
 
-/// A transfer's call over the `network::Socket` and the buffer it is given.
-macro_rules! call {
-    (|$s:tt, $at:tt, $len:tt| $body:expr) => {
-        |$s: Socket<'_>, $at: *mut u8, $len: usize| {
-            // SAFETY: the transfer's live network::Socket, over the buffer it lends
-            // (null for the vector and message calls, which carry their own).
-            unsafe { $body }
-        }
-    };
-}
-
 /// `SW_ERROR_BAD_HOST_ADDR` and `SW_ERROR_SSL_EMPTY_PEER_CERTIFICATE`.
 const BAD_HOST_ADDR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_BAD_HOST_ADDR as c_int;
 const SSL_EMPTY_PEER_CERTIFICATE: c_int =
@@ -158,11 +147,6 @@ impl Drop for OpenFile {
     fn drop(&mut self) {
         _ = sys::close(self.0);
     }
-}
-
-/// A transfer's byte count, or `None` for its -1.
-fn count(n: isize) -> Option<usize> {
-    usize::try_from(n).ok()
 }
 
 impl Co {
@@ -309,16 +293,58 @@ impl Co {
         true
     }
 
-    /// `Socket::transfer(event, buffer, length, flags, call)`: Rust's retry loop
-    /// over `call`, which gets the `network::Socket` and the buffer at each try.
-    fn transfer(
+    /// `Socket::transfer(event, buffer, length, flags, call)` of a read into `buf`:
+    /// Rust's retry loop over `call`, which gets the `network::Socket` and the slots
+    /// left to fill at each try.
+    fn receive<S: ReadSlot>(
         self,
         flags: u32,
-        buffer: Buffer<'_>,
-        mut call: impl FnMut(Socket<'_>, *mut u8, usize) -> Option<usize>,
+        buf: &mut [S],
+        mut call: impl FnMut(Socket<'_>, Fill<'_, S>) -> Option<usize>,
     ) -> Option<usize> {
-        let mut each = |at, length| self.with_network(|s| call(s, at, length)).flatten();
-        transfer(self, flags, buffer, &mut each)
+        let length = buf.len();
+        let mut fill = Fill::new(buf);
+        let mut each = |at| {
+            let mut rest = fill.reborrow();
+            if let At::Caller(skip) = at {
+                rest.advance(skip);
+            }
+            self.with_network(|s| call(s, rest)).flatten()
+        };
+        transfer(self, flags, Buffer::read(length), &mut each)
+    }
+
+    /// [`receive`](Self::receive) of a write of `buf`, sent from the write buffer once
+    /// a wait moved the bytes there.
+    fn deliver(
+        self,
+        flags: u32,
+        buf: &[u8],
+        mut call: impl FnMut(Socket<'_>, Drain<'_>) -> Option<usize>,
+    ) -> Option<usize> {
+        let mut each = |at| match at {
+            At::Caller(skip) => {
+                let mut rest = Drain::new(buf);
+                rest.advance(skip);
+                self.with_network(|s| call(s, rest)).flatten()
+            }
+            At::WriteBuffer => self.with_buffer(true, |moved| {
+                self.with_network(|s| call(s, Drain::new(moved.view())))
+                    .flatten()
+            }),
+        };
+        transfer(self, flags, Buffer::write(buf), &mut each)
+    }
+
+    /// [`receive`](Self::receive) in `event`'s direction of a call that carries its
+    /// own buffers.
+    fn carry(
+        self,
+        event: Events,
+        mut call: impl FnMut(Socket<'_>) -> Option<usize>,
+    ) -> Option<usize> {
+        let mut each = |_| self.with_network(&mut call).flatten();
+        transfer(self, 0, Buffer::none(event), &mut each)
     }
 
     /// `Socket::bind(host, port)`: `SO_REUSEADDR` (a failure is only logged), bind to
@@ -391,15 +417,13 @@ impl Co {
             default_err(self, log::last_error());
             return None;
         }
-        let to = (&raw mut address.addr).cast::<libc::sockaddr>();
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::sendto(ops, buf, &address)) {
             return n;
         }
-        let length = address.len;
-        let call = call!(|s, at, len| count(libc::sendto(s.fd(), at.cast(), len, 0, to, length)));
+        let call = |s: Socket<'_>, data: Drain<'_>| data.sendto(s.fd(), 0, &address);
         // Availability was checked above.
-        self.transfer(RETRY_INTERRUPTED | CHECKED, Buffer::write(buf), call)
+        self.deliver(RETRY_INTERRUPTED | CHECKED, buf, call)
     }
 
     /// The peer certificate's PEM, or empty with the error set when there is none.
@@ -438,8 +462,7 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::recv(ops, buf)) {
             return n;
         }
-        let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0));
-        self.transfer(0, Buffer::read(buf), call)
+        self.receive(0, buf, |s, fill| recv_fill(s, fill, 0))
     }
 
     /// `Socket::send(buf, n)`.
@@ -449,8 +472,7 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::send(ops, ring::SEND, buf)) {
             return n;
         }
-        let call = call!(|s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0));
-        self.transfer(0, Buffer::write(buf), call)
+        self.deliver(0, buf, |s, data| send_drain(s, data, 0))
     }
 
     /// `Socket::recv_all(buf, n)`: the count of `buf`'s first slots it wrote, or -1.
@@ -459,8 +481,7 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::recv_all(ops, buf)) {
             return n;
         }
-        let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0));
-        self.transfer(ALL, Buffer::read(buf), call)
+        self.receive(ALL, buf, |s, fill| recv_fill(s, fill, 0))
     }
 
     /// `Socket::send_all(buf, n)`.
@@ -470,8 +491,7 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::send_all(ops, buf)) {
             return n;
         }
-        let call = call!(|s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0));
-        self.transfer(ALL, Buffer::write(buf), call)
+        self.deliver(ALL, buf, |s, data| send_drain(s, data, 0))
     }
 
     /// `Socket::read(buf, n)`.
@@ -480,8 +500,7 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::read(ops, buf)) {
             return n;
         }
-        let call = call!(|s, at, len| count(libc::read(s.fd(), at.cast(), len)));
-        self.transfer(0, Buffer::read(buf), call)
+        self.receive(0, buf, |s, mut fill| fill.read(s.fd()))
     }
 
     /// `Socket::write(buf, n)`.
@@ -491,8 +510,7 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::send(ops, ring::WRITE, buf)) {
             return n;
         }
-        let call = call!(|s, at, len| count(libc::write(s.fd(), at.cast(), len)));
-        self.transfer(0, Buffer::write(buf), call)
+        self.deliver(0, buf, |s, data| data.write(s.fd()))
     }
 
     /// A vectored receive into lent rooms, with the cursor where it stopped.
@@ -536,9 +554,7 @@ impl Co {
                 |vector: &mut IoVector<'_>| self.with_network(|s| vector.transfer(s)).flatten();
             return vector_all(self, event, vector, call, IoVector::remaining);
         }
-        // The vector carries its own buffers.
-        let each = |s: Socket<'_>, _: *mut u8, _: usize| vector.transfer(s);
-        self.transfer(0, Buffer::none(event), each)
+        self.carry(event, |s| vector.transfer(s))
     }
 
     /// `set_err(error, message)` with owned text. A failed copy (allocation) leaves
@@ -623,27 +639,25 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::recvfrom_into(ops, buf, peer)) {
             return n;
         }
-        let (addr, addrlen) = ((&raw mut peer.addr).cast(), &raw mut peer.len);
         let fd = self.sock_fd();
-        // The borrowed storage and its capacity above, both live across the transfer.
-        let call = call!(|_, at, len| count(libc::recvfrom(fd, at.cast(), len, 0, addr, addrlen)));
-        self.transfer(RETRY_INTERRUPTED, Buffer::read(buf), call)
+        self.receive(RETRY_INTERRUPTED, buf, |_, mut fill| {
+            fill.recvfrom_one(fd, 0, peer)
+        })
     }
 
     /// `Socket::recvfrom(buf, n)`: into the `network::Socket`'s peer address, retrying
     /// `EINTR` at once; the count of `buf`'s first slots it wrote, or -1.
     pub fn recvfrom_peer(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
-        let receive = |addr, addrlen| {
+        let receive = || {
             #[cfg(feature = "iouring")]
             // The ring's path fills the same record's peer address itself.
             if let Some(n) = ring::with(self, |ops| ring::recvfrom_peer(ops, buf)) {
                 return n;
             }
             let fd = self.sock_fd();
-            // The record's peer address and its length, as `recvfrom_peer` lends them.
-            let call =
-                call!(|_, at, len| count(libc::recvfrom(fd, at.cast(), len, 0, addr, addrlen)));
-            self.transfer(RETRY_INTERRUPTED, Buffer::read(buf), call)
+            self.receive(RETRY_INTERRUPTED, buf, |s, mut fill| {
+                s.edit(|network| fill.recvfrom_one(fd, 0, &mut network.info))
+            })
         };
         crate::transfer::recvfrom_peer(self, receive)
     }
@@ -655,8 +669,7 @@ impl Co {
             return n;
         }
         let fd = self.sock_fd();
-        let call = |_: Socket<'_>, _: *mut u8, _: usize| msg.recv(fd, flags);
-        self.transfer(0, Buffer::none(Events::READ), call)
+        self.carry(Events::READ, |_| msg.recv(fd, flags))
     }
 
     /// `Socket::sendmsg(msg, flags)`.
@@ -667,8 +680,7 @@ impl Co {
             return n;
         }
         let fd = self.sock_fd();
-        let call = |_: Socket<'_>, _: *mut u8, _: usize| msg.send(fd, flags);
-        self.transfer(0, Buffer::none(Events::WRITE), call)
+        self.carry(Events::WRITE, |_| msg.send(fd, flags))
     }
 
     /// `Socket::recv_once(buf, n)`: one `network::Socket` receive, no wait; the count
