@@ -28,6 +28,15 @@ $cases = [
     },
     // phptimer: a C++ reporter.
     'timer_after' => fn() => Swoole\Timer::after(0, fn() => null),
+    // phpruntime: the hooked stream_select's float-to-int deprecation.
+    'stream_select_coercion' => function () {
+        Swoole\Runtime::enableCoroutine(SWOOLE_HOOK_ALL);
+        return Swoole\Coroutine\run(function () {
+            [$a] = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
+            [$read, $write, $except] = [[$a], null, null];
+            var_dump(stream_select($read, $write, $except, 0.5));
+        });
+    },
     // phpevents: a C++ reporter.
     'event_del' => fn() => Swoole\Event::del(STDIN),
     // phphttp: Cookie's warning.

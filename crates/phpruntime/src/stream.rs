@@ -27,7 +27,7 @@ use swoole_rs_corebase::{
 use swoole_rs_zend::{
     ArrayMut, Call, E_WARNING, Message, Owned, OwnedArray, StreamContext, Value,
     bailout::Bailout,
-    message, string,
+    contain_with, message, string,
     sys::{
         PHP_STREAM_FLAG_AVOID_BLOCKING, php_stream, php_stream_xport_crypto_param,
         php_stream_xport_param, sockaddr, timeval, zend_long, zend_string,
@@ -72,7 +72,8 @@ unsafe extern "C" {
     /// bailed out.
     safe fn swr_zend_stream_progress(stream: Stream<'_>, bytes: usize) -> c_int;
     /// The context's option `name` for `wrapper` becomes a copy of `value`, with a
-    /// reference of its own; the option it replaces is released.
+    /// reference of its own; the option it replaces is released, which may run
+    /// a destructor that bails out.
     safe fn php_stream_context_set_option(
         context: StreamContext<'_>,
         wrapper: Text<'_>,
@@ -949,7 +950,7 @@ fn capture_peer_certs(stream: Stream<'_>, socket: &Socket) -> Result<bool, Bailo
         return Ok(false);
     }
     let certificate = x509_read(&cert)?;
-    set_context_option(stream, c"peer_certificate", &certificate);
+    set_context_option(stream, c"peer_certificate", &certificate)?;
     if option_true(stream, c"ssl", c"capture_peer_cert_chain") {
         let chain = socket.peer_chain();
         let list = if chain.is_empty() {
@@ -961,16 +962,17 @@ fn capture_peer_certs(stream: Stream<'_>, socket: &Socket) -> Result<bool, Bailo
             }
             list.into_owned()
         };
-        set_context_option(stream, c"peer_certificate_chain", &list);
+        set_context_option(stream, c"peer_certificate_chain", &list)?;
     }
     Ok(true)
 }
 
 /// Set the `ssl` option `name` of the stream's context, if it has one, to `value`.
-fn set_context_option(stream: Stream<'_>, name: &CStr, value: &Value) {
-    if let Some(context) = stream.context() {
-        php_stream_context_set_option(context, c"ssl".into(), name.into(), value);
-    }
+fn set_context_option(stream: Stream<'_>, name: &CStr, value: &Value) -> Result<(), Bailout> {
+    let Some(context) = stream.context() else {
+        return Ok(());
+    };
+    contain_with(|| php_stream_context_set_option(context, c"ssl".into(), name.into(), value))
 }
 
 /// The `ssl` context options and the names Swoole's socket takes them under.
