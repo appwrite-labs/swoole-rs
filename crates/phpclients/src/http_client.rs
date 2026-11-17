@@ -763,11 +763,11 @@ impl Client {
         if let Some(auth) = socket.proxy_authorization() {
             request::header(&mut out, b"Proxy-Authorization", &auth);
         }
-        let auth = self.basic_auth.take();
-        if !auth.is_empty() {
-            request::header(&mut out, b"Authorization", &auth);
-        }
-        self.basic_auth.set(auth);
+        self.basic_auth.with_taken(|auth| {
+            if !auth.is_empty() {
+                request::header(&mut out, b"Authorization", auth);
+            }
+        });
         if !has_connection {
             let value: &[u8] = if self.keep_alive.get() {
                 b"keep-alive"
@@ -926,12 +926,9 @@ impl Client {
     /// `exec`: send, and unless deferred receive, retrying 502 and 503.
     fn exec(&self, path: &[u8]) -> bool {
         self.receiving(|parser| {
-            let mut resolve = self.resolve.take();
-            crate::resolver::swoole_name_resolver_context_reset(
-                &mut resolve,
-                self.use_default_port,
-            );
-            self.resolve.set(resolve);
+            self.resolve.with_taken(|resolve| {
+                crate::resolver::swoole_name_resolver_context_reset(resolve, self.use_default_port);
+            });
             let mut attempt = 0;
             while attempt < u32::from(self.max_retries.get()) + 1 {
                 if !self.send_request(path) {
