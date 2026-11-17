@@ -323,6 +323,17 @@ impl Handle<'_> {
         unsafe { &*self.0 }
     }
 
+    /// A reference to the owner of the client's `package_length_func`, for a measure
+    /// to hand its length callback, which drops it: the callable may `set()` another
+    /// or close the client, and the old one's destructor must run before the
+    /// callback finishes.
+    #[must_use]
+    pub fn length_owner(self) -> Option<Rc<dyn std::any::Any>> {
+        let owner = self.get().length_owner.take();
+        self.get().length_owner.set(owner.clone());
+        owner
+    }
+
     fn flag(self, name: Flag) -> bool {
         self.get().flag(name)
     }
@@ -933,12 +944,13 @@ pub fn package_length(this: Handle<'_>, data: &[u8]) -> isize {
     let Some(get) = record.protocol.get_package_length else {
         return -1;
     };
-    // A reference the callback drops: the callable may `set()` another or close the
-    // client, and the old one's destructor must run before the callback finishes.
-    let owner = this.get().length_owner.take();
-    this.get().length_owner.set(owner.clone());
     let mut packet = PacketLength::new(data);
-    get(&record.protocol, Some(this.socket()), owner, &mut packet)
+    get(
+        &record.protocol,
+        Some(this.socket()),
+        this.length_owner(),
+        &mut packet,
+    )
 }
 
 /// `Client::close()`: false when already closed or when `close(2)` fails; true when
