@@ -7,7 +7,7 @@
 use core::ffi::{CStr, c_int};
 use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
-use swoole_rs_clients::client::{Framing, Handle};
+use swoole_rs_clients::client::{ClientFraming, Framing};
 use swoole_rs_clients::protocol::{Package, Protocol};
 use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_WARNING as LOG_WARNING};
@@ -39,7 +39,7 @@ pub(crate) enum Owner<'a> {
     /// Protocol settings without a PHP length callable.
     Plain(&'a Shared<Protocol>),
     /// The client the receive reads for.
-    Client(Handle<'a>),
+    Client(&'a ClientFraming),
     /// The port the receive reads for, through this thread's registry.
     Port(&'a swoole_rs_server::port_config::PortConfig),
 }
@@ -73,7 +73,7 @@ impl Recv<'_> {
     fn protocol(&self) -> Protocol {
         match self.owner {
             Owner::Plain(protocol) => protocol.get(),
-            Owner::Client(client) => client.client().record().protocol,
+            Owner::Client(client) => client.protocol(),
             Owner::Port(port) => port.protocol.get(),
         }
     }
@@ -475,19 +475,19 @@ pub(crate) fn receive<'a, K: Packages>(
 
 /// `int Protocol::recv_with_length_protocol(Socket *, String *) const` when `LENGTH`, else
 /// `int Protocol::recv_with_eof_protocol(Socket *, String *) const`, over `client`'s.
-fn client_recv<const LENGTH: bool>(client: Handle<'_>) -> c_int {
+fn client_recv<const LENGTH: bool>(
+    client: &ClientFraming,
+    socket: Socket<'_>,
+    buffer: &mut CppString,
+) -> c_int {
     let mode = if LENGTH { Mode::Length } else { Mode::Eof };
-    client.with_framed(|_, socket, buffer| {
-        // The input buffer is null before an async connect made it.
-        if buffer.is_null() {
-            return Status::Err as c_int;
-        }
-        let buffer = Lent {
-            buffer,
-            lent: PhantomData,
-        };
-        receive(socket, Owner::Client(client), buffer, mode, Callbacks) as c_int
-    })
+    receive(
+        socket,
+        Owner::Client(client),
+        Lent::new(buffer),
+        mode,
+        Callbacks,
+    ) as c_int
 }
 
 /// The framed receives a client's reads use, which `swoole_init` registers

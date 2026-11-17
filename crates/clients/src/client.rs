@@ -186,7 +186,7 @@ const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int =
 
 /// One of `Protocol::recv_with_length_protocol` and `recv_with_eof_protocol` over a
 /// live client's protocol, socket and input buffer ([`Handle::with_framed`]).
-pub type Framed = fn(Handle<'_>) -> c_int;
+pub type Framed = fn(&ClientFraming, Socket<'_>, &mut CppString) -> c_int;
 
 /// The framed receives crates/ports defines; ports depends on this crate, so
 /// `swoole_init` (crates/ffi) registers them with [`set_framing`]. Only a
@@ -224,14 +224,11 @@ pub struct ClientRecord {
 
 /// One client's state: `network::Client`.
 pub struct Client {
-    record: Cell<ClientRecord>,
+    framing: Rc<ClientFraming>,
     /// `socket`: the record the constructor made, freed with the client (an async
     /// one's free is deferred past its callbacks).
     socket: OwnedSocket,
     socket_ops: &'static SocketOps,
-    /// The input buffer, whose address the public record's buffer pointer names
-    /// once it is allocated: a pointer derived from the cell outlives its edits.
-    input: Cell<CppString>,
     flags: Cell<u32>,
     domain: c_int,
     sock_flags: Cell<c_int>,
@@ -252,9 +249,44 @@ pub struct Client {
     /// The proxy states owned by the client.
     socks5: Cell<Option<Box<ProxyState>>>,
     http_proxy: Cell<Option<Box<ProxyState>>>,
-    /// The owner of the client's `package_length_func`, which a measure passes
-    /// its length callback.
+}
+
+/// The input and protocol settings a framed receive keeps through callbacks.
+pub struct ClientFraming {
+    record: Cell<ClientRecord>,
+    input: Cell<CppString>,
     length_owner: Cell<Option<Rc<dyn std::any::Any>>>,
+}
+
+impl Drop for ClientFraming {
+    fn drop(&mut self) {
+        self.input.get_mut().dispose();
+    }
+}
+
+impl ClientFraming {
+    #[must_use]
+    pub fn protocol(&self) -> Protocol {
+        self.record.get().protocol
+    }
+
+    /// A reference to the owner of the client's `package_length_func`, for a measure
+    /// to hand its length callback, which drops it: the callable may `set()` another
+    /// or close the client, and the old one's destructor must run before the
+    /// callback finishes.
+    #[must_use]
+    pub fn length_owner(&self) -> Option<Rc<dyn std::any::Any>> {
+        self.length_owner.with_taken(|owner| owner.clone())
+    }
+
+    /// The record's protocol, in place: its callbacks take it by address.
+    #[must_use]
+    pub fn protocol_address(&self) -> *const Protocol {
+        let record = self.record.as_ptr();
+        record
+            .wrapping_byte_add(core::mem::offset_of!(ClientRecord, protocol))
+            .cast()
+    }
 }
 
 /// A client's proxies.
@@ -279,12 +311,12 @@ impl Client {
         &self,
         owner: Option<Rc<dyn std::any::Any>>,
     ) -> Option<Rc<dyn std::any::Any>> {
-        self.length_owner.replace(owner)
+        self.framing.length_owner.replace(owner)
     }
 
     /// A copy of the public record.
     pub fn record(&self) -> ClientRecord {
-        self.record.get()
+        self.framing.record.get()
     }
 
     /// `cli->socket`: a constructed client's socket record, live until the client is
@@ -302,9 +334,9 @@ impl Client {
     /// Edit a copy of the public record and write it back, so no reference
     /// into the record is live while `edit` runs.
     pub fn edit_record<R>(&self, edit: impl FnOnce(&mut ClientRecord) -> R) -> R {
-        let mut record = self.record.get();
+        let mut record = self.framing.record.get();
         let result = edit(&mut record);
-        self.record.set(record);
+        self.framing.record.set(record);
         result
     }
 
@@ -348,15 +380,6 @@ impl Handle<'_> {
         unsafe { &*self.0 }
     }
 
-    /// A reference to the owner of the client's `package_length_func`, for a measure
-    /// to hand its length callback, which drops it: the callable may `set()` another
-    /// or close the client, and the old one's destructor must run before the
-    /// callback finishes.
-    #[must_use]
-    pub fn length_owner(self) -> Option<Rc<dyn std::any::Any>> {
-        self.get().length_owner.with_taken(|owner| owner.clone())
-    }
-
     fn flag(self, name: Flag) -> bool {
         self.get().flag(name)
     }
@@ -368,15 +391,6 @@ impl Handle<'_> {
     /// A copy of the client's public record.
     fn record(self) -> ClientRecord {
         self.get().record()
-    }
-
-    /// The record's protocol, in place: its callbacks take it by address.
-    #[must_use]
-    pub fn protocol_address(self) -> *const Protocol {
-        let record = self.get().record.as_ptr();
-        record
-            .wrapping_byte_add(core::mem::offset_of!(ClientRecord, protocol))
-            .cast()
     }
 
     fn socket(self) -> Socket<'static> {
@@ -508,9 +522,9 @@ impl Handle<'_> {
         if self.input().is_null() {
             swoole_rs_corebase::fatal("client input buffer is not available");
         }
-        let mut buffer = self.get().input.replace(CppString::EMPTY);
+        let mut buffer = self.get().framing.input.replace(CppString::EMPTY);
         let result = edit(&mut buffer, socket, ops);
-        self.get().input.set(buffer);
+        self.get().framing.input.set(buffer);
         result
     }
 
@@ -519,8 +533,8 @@ impl Handle<'_> {
         if self.input().is_null() {
             let mut buffer = CppString::EMPTY;
             buffer.alloc(CLIENT_BUFFER_SIZE, None);
-            self.get().input.set(buffer);
-            let input = self.get().input.as_ptr().cast();
+            self.get().framing.input.set(buffer);
+            let input = self.get().framing.input.as_ptr().cast();
             self.get().edit_record(|record| record.buffer = input);
         }
     }
@@ -530,7 +544,7 @@ impl Handle<'_> {
         if !self.input().is_null() {
             self.get()
                 .edit_record(|record| record.buffer = core::ptr::null_mut());
-            self.get().input.replace(CppString::EMPTY).dispose();
+            self.get().framing.input.replace(CppString::EMPTY).dispose();
         }
     }
 
@@ -730,16 +744,28 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
     let mut client = Client {
         socket,
         socket_ops,
-        input: Cell::new(CppString::EMPTY),
-        record: Cell::new(ClientRecord {
-            http2: false,
-            open_length_check: false,
-            open_eof_check: false,
-            protocol: Protocol::EMPTY,
-            server_addr: swoole_rs_corebase::sys::zeroed(),
-            remote_addr: swoole_rs_corebase::sys::zeroed(),
-            object: core::ptr::null_mut(),
-            buffer: core::ptr::null_mut(),
+        framing: Rc::new(ClientFraming {
+            input: Cell::new(CppString::EMPTY),
+            length_owner: Cell::new(None),
+            record: Cell::new(ClientRecord {
+                http2: false,
+                open_length_check: false,
+                open_eof_check: false,
+                protocol: Protocol {
+                    package_length_type: b'N',
+                    package_length_size: 4,
+                    package_max_length: 2 * 1024 * 1024,
+                    on_package: Some(on_package),
+                    ..Protocol::EMPTY
+                },
+                server_addr: swoole_rs_corebase::sys::zeroed(),
+                remote_addr: SocketAddress {
+                    kind,
+                    ..swoole_rs_corebase::sys::zeroed()
+                },
+                object: core::ptr::null_mut(),
+                buffer: core::ptr::null_mut(),
+            }),
         }),
         flags: Cell::new(0),
         domain: 0,
@@ -755,15 +781,8 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
         tls_settings: OnceCell::new(),
         socks5: Cell::new(None),
         http_proxy: Cell::new(None),
-        length_owner: Cell::new(None),
     };
     client.set(Flag::Async, is_async);
-    let fields = client.record.get_mut();
-    fields.remote_addr.kind = kind;
-    fields.protocol.package_length_type = b'N';
-    fields.protocol.package_length_size = 4;
-    fields.protocol.package_max_length = 2 * 1024 * 1024;
-    fields.protocol.on_package = Some(on_package);
     client.set(Flag::Stream, is_stream(socket_type));
     if let Some((domain, _)) = socket_domain_and_type(kind) {
         client.domain = domain;
@@ -815,7 +834,9 @@ impl Drop for Owner {
         if !this.flag(Flag::Closed) {
             close(this);
         }
+        // A framed receive keeps the allocation alive until its callback returns.
         this.input_free();
+        this.get().edit_record(|r| r.protocol = Protocol::EMPTY);
         // A pending connect timer would fire on a freed client.
         this.timer_clear();
         if this.flag(Flag::WaitDns) {
@@ -828,6 +849,7 @@ impl Drop for Owner {
             this.socket()
                 .edit(|socket| socket.object = core::ptr::null_mut());
         }
+        drop(this.get().framing.length_owner.take());
         // Only the owner holds the client.
         let Some(Client {
             socket,
@@ -852,14 +874,20 @@ impl Drop for Owner {
 }
 
 impl<'a> Handle<'a> {
-    /// `f` over the protocol, socket and input buffer a framed receive acts on, live
-    /// while the client is (until its owner frees it): the record's protocol in place, as
-    /// its callbacks take it by address, and the input buffer an async connect made.
-    pub fn with_framed<R>(
+    /// Lend the async input allocation to one framing loop. A nested notification
+    /// leaves the pending bytes to the loop that already owns them.
+    fn with_framed(
         self,
-        f: impl FnOnce(*const Protocol, Socket<'_>, *mut CppString) -> R,
-    ) -> R {
-        f(self.protocol_address(), self.socket(), self.input())
+        receive: impl FnOnce(&ClientFraming, Socket<'_>, &mut CppString) -> c_int,
+    ) -> c_int {
+        let framing = self.get().framing.clone();
+        let mut buffer = framing.input.replace(CppString::EMPTY);
+        if buffer.size() == 0 {
+            return if self.input().is_null() { ERR } else { OK };
+        }
+        let result = receive(&framing, self.socket(), &mut buffer);
+        framing.input.set(buffer);
+        result
     }
 
     /// The client, live while its owner is.
@@ -939,7 +967,7 @@ pub fn package_length(this: Handle<'_>, data: &[u8]) -> isize {
     get(
         &record.protocol,
         Some(this.socket()),
-        this.length_owner(),
+        this.get().framing.length_owner(),
         &mut packet,
     )
 }
@@ -1876,7 +1904,7 @@ fn on_read(this: Handle<'_>) -> bool {
         let framed = if eof { framing.eof } else { framing.length };
         let socket = this.socket();
         // A package callback may destroy the client; its socket outlives this handler.
-        let n = framed(this);
+        let n = this.with_framed(framed);
         // A destroyed client cleared its object.
         let released = socket.read(|socket| socket.object.is_null());
         if n < 0 && !released && !this.flag(Flag::Closed) {
