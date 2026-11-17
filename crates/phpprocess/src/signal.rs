@@ -175,15 +175,18 @@ pub extern "C" fn php_swoole_process_signal_clean() {
     bailout::finish();
 }
 
-/// [`php_swoole_process_signal_clean`]'s body, which frees every callable and
-/// leaves a destructor's bailout pending.
+/// [`php_swoole_process_signal_clean`]'s body, which frees this thread's
+/// callables and leaves a destructor's bailout pending. Only the main thread
+/// registers any, so only it forgets the process's listeners.
 fn signal_clean() {
     CALLABLES.with(|slots| {
         for slot in slots {
             drop(slot.replace(None));
         }
     });
-    swoole_rs_corebase::swr_v1_core_set_signal_listener_num(0);
+    if host::main_thread() {
+        swoole_rs_corebase::swr_v1_core_set_signal_listener_num(0);
+    }
 }
 
 /// `php_swoole_process_clean`: [`php_swoole_process_signal_clean`]; outside thread
