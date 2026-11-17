@@ -15,11 +15,12 @@ use crate::shared::{PortCounters, ServerCounters, ServerShared};
 use crate::{Mode, ServerState, TestServer, view};
 use std::rc::Rc;
 
-/// `SW_SESSION_LIST_SIZE`.
-const SESSIONS: usize = 1 << 20;
 /// Connection slots: fds below this are accepted. Miri's descriptors stay small, and it
 /// takes ~5 ms a slot to set the table up.
 pub(crate) const CONNECTIONS: usize = if cfg!(miri) { 256 } else { 4096 };
+/// `SW_SESSION_LIST_SIZE`. Miri's session ids stay small too, and it retags the whole
+/// table at each lookup: a minute a test with a million slots.
+const SESSIONS: usize = if cfg!(miri) { CONNECTIONS } else { 1 << 20 };
 /// `SW_SOCK_TCP` and `SW_FD_STREAM_SERVER`.
 const SOCK_TCP: c_int = swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP.raw();
 const FD_STREAM_SERVER: c_int = 1;
@@ -44,8 +45,7 @@ pub(crate) struct LiveServer {
     _connections: Vec<ConnectionRecord>,
 }
 
-/// `count` zeroed records: a table of free slots, zeroed in one allocation (Miri
-/// takes minutes to zero a million records one by one).
+/// `count` zeroed records: a table of free slots, zeroed in one allocation.
 fn free_slots<T>(count: usize) -> Vec<T> {
     // SAFETY: the tables' records are plain data, and zero is a free slot.
     unsafe { Box::<[T]>::new_zeroed_slice(count).assume_init() }.into_vec()
