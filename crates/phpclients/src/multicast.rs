@@ -9,8 +9,6 @@ use crate::{
     socket_options::{Stop, checked, errno, fd, long, string, text},
 };
 use libc::{c_int, c_uint, in_addr, in6_addr, sockaddr_in, sockaddr_in6};
-#[cfg(not(target_vendor = "apple"))]
-use std::ptr;
 use std::{
     ffi::CStr,
     net::{Ipv4Addr, Ipv6Addr},
@@ -252,23 +250,6 @@ fn inet46(s: Sock, host: &[u8]) -> Result<Option<AddressStorage>, Stop> {
     Ok(Some(storage))
 }
 
-/// `address` in a zeroed `sockaddr_storage`, as the RFC 3678 requests carry it.
-#[cfg(not(target_vendor = "apple"))]
-fn stored(address: &AddressStorage) -> libc::sockaddr_storage {
-    const {
-        assert!(
-            size_of::<AddressStorage>() <= size_of::<libc::sockaddr_storage>(),
-            "a sockaddr fits"
-        );
-    }
-    let mut storage: libc::sockaddr_storage = zeroed();
-    let at = ptr::from_mut(&mut storage).cast::<AddressStorage>();
-    // SAFETY: a sockaddr_storage has room for the address, as checked above, at any
-    // alignment.
-    unsafe { at.write_unaligned(*address) };
-    storage
-}
-
 fn family(domain: c_int) -> libc::sa_family_t {
     libc::sa_family_t::try_from(domain).unwrap_or(0)
 }
@@ -336,13 +317,13 @@ fn change(
     let result = if let Some(source) = source {
         let mut request: libc::group_source_req = zeroed();
         request.gsr_interface = index;
-        request.gsr_group = stored(group);
-        request.gsr_source = stored(source);
+        group.write_to(&mut request.gsr_group);
+        source.write_to(&mut request.gsr_source);
         setsockopt(s.fd, level, name, &request)
     } else {
         let mut request: libc::group_req = zeroed();
         request.gr_interface = index;
-        request.gr_group = stored(group);
+        group.write_to(&mut request.gr_group);
         setsockopt(s.fd, level, name, &request)
     };
     Ok(Some(result.is_ok()))

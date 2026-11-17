@@ -30,6 +30,24 @@ impl Default for SocketAddress {
 }
 
 impl AddressStorage {
+    /// Copy this address into the prefix of a native socket address storage record.
+    #[cfg(not(target_vendor = "apple"))]
+    pub fn write_to(&self, storage: &mut libc::sockaddr_storage) {
+        const {
+            assert!(
+                size_of::<AddressStorage>() <= size_of::<libc::sockaddr_storage>(),
+                "a native storage record must fit the address"
+            );
+        };
+        // SAFETY: the destination has room for the whole address, at any alignment,
+        // and each address member starts with the native socket address header.
+        unsafe {
+            std::ptr::from_mut(storage)
+                .cast::<Self>()
+                .write_unaligned(*self);
+        }
+    }
+
     /// The family, which every member starts with.
     #[must_use]
     pub const fn family(&self) -> libc::sa_family_t {
