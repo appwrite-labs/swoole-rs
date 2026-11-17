@@ -47,3 +47,23 @@ fn an_address_from_bytes_sends_where_its_bytes_say() {
     let long = SocketAddress::from_bytes(&[1; 200]);
     assert_eq!(long.len, crate::sys::socklen::<libc::sockaddr_un>());
 }
+
+#[test]
+#[cfg(not(target_vendor = "apple"))]
+fn native_storage_keeps_the_ipv6_address_and_scope() {
+    let mut v6: libc::sockaddr_in6 = crate::sys::zeroed();
+    v6.sin6_family = libc::sa_family_t::try_from(libc::AF_INET6).unwrap();
+    v6.sin6_addr.s6_addr = std::net::Ipv6Addr::LOCALHOST.octets();
+    v6.sin6_scope_id = 17;
+    let address = crate::net_types::AddressStorage { inet_v6: v6 };
+    let mut storage = crate::sys::zeroed();
+    address.write_to(&mut storage);
+    assert_eq!(storage.ss_family, v6.sin6_family);
+    let copied = unsafe {
+        (&raw const storage)
+            .cast::<libc::sockaddr_in6>()
+            .read_unaligned()
+    };
+    assert_eq!(copied.sin6_addr.s6_addr, v6.sin6_addr.s6_addr);
+    assert_eq!(copied.sin6_scope_id, 17);
+}

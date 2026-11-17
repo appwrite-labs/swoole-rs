@@ -14,19 +14,13 @@ use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_corebase::ntop;
 use swoole_rs_corebase::sys::Text;
 
-// libc's own declaration. `inet_pton` reads the NUL-terminated source and
-// writes at most an IPv6 address's 16 bytes (nothing for a family it doesn't know).
-unsafe extern "C" {
-    safe fn inet_pton(family: c_int, source: Text<'_>, destination: &mut [u8; 16]) -> c_int;
-}
-
 /// `clients_parse_ip`: the host as an IP literal of `family` into `destination`,
 /// which holds any family's address.
 fn parse_ip(family: c_int, host: &CStr, destination: &mut [u8; 16]) -> bool {
     let text = host.to_bytes();
     // Other families, and the hosts crates/corebase leaves to it, go to the platform.
     if (family != libc::AF_INET && family != libc::AF_INET6) || platform_parses(family, text) {
-        return inet_pton(family, host.into(), destination) == 1;
+        return swoole_rs_corebase::pton(family, host, destination);
     }
     let version = if family == libc::AF_INET { 4 } else { 6 };
     let allow_zeroes = u8::from(cfg!(target_os = "macos"));

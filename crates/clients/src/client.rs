@@ -18,7 +18,6 @@ use core::ptr::NonNull;
 use std::ffi::{CStr, CString};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
-use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::constants::{
     FdType, ResultCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE,
@@ -37,6 +36,7 @@ use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_corebase::tls::{
     OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslState, SslVersion, TlsContext, TlsSettings,
 };
+use swoole_rs_corebase::{BoxCellExt, CCast, CellExt};
 use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
 use swoole_rs_error::ErrorCode;
 
@@ -329,9 +329,7 @@ impl Handle<'_> {
     /// callback finishes.
     #[must_use]
     pub fn length_owner(self) -> Option<Rc<dyn std::any::Any>> {
-        let owner = self.get().length_owner.take();
-        self.get().length_owner.set(owner.clone());
-        owner
+        self.get().length_owner.with_taken(|owner| owner.clone())
     }
 
     fn flag(self, name: Flag) -> bool {
@@ -348,7 +346,8 @@ impl Handle<'_> {
     }
 
     /// The record's protocol, in place: its callbacks take it by address.
-    fn protocol(self) -> *const Protocol {
+    #[must_use]
+    pub fn protocol_address(self) -> *const Protocol {
         let record = self.get().record.as_ptr();
         record
             .wrapping_byte_add(core::mem::offset_of!(ClientRecord, protocol))
@@ -384,8 +383,7 @@ impl Handle<'_> {
     /// Runs the user callback for `event`, if the listener hears it. The client
     /// may be gone afterwards: the call holds its own reference to the listener.
     fn call(self, event: ClientEvent, data: *const c_char, length: usize) {
-        let held = self.get().listener.take();
-        self.get().listener.set(held.clone());
+        let held = self.get().listener.with_taken(|held| held.clone());
         let Some(listener) = held.filter(|_| self.has(event)) else {
             return;
         };
@@ -451,11 +449,7 @@ impl Handle<'_> {
     /// (it stays where it is on the heap); `None` without one. `f` runs no effect that
     /// reaches the client's proxies.
     fn with_proxy<R>(self, which: Proxy, f: impl FnOnce(&ProxyState) -> R) -> Option<R> {
-        let slot = self.get().proxy_slot(which);
-        let proxy = slot.take()?;
-        let result = f(&proxy);
-        slot.set(Some(proxy));
-        Some(result)
+        self.get().proxy_slot(which).with_box(|proxy| f(proxy))
     }
 
     /// The proxy's state; `None` when there is no proxy.
@@ -855,7 +849,7 @@ impl<'a> Handle<'a> {
         self,
         f: impl FnOnce(*const Protocol, Socket<'_>, *mut CppString) -> R,
     ) -> R {
-        f(self.protocol(), self.socket(), self.input())
+        f(self.protocol_address(), self.socket(), self.input())
     }
 
     /// The client, live while its owner is.
@@ -1208,10 +1202,10 @@ fn inet_addr(this: Handle<'_>, host: &CStr, port: c_int) -> bool {
 /// Whether the pool took the lookup.
 fn dns_lookup(this: Handle<'_>) -> bool {
     // The request copies the host's bytes, so nothing points into it once it is back.
-    let host = this.get().server_host.take();
-    let name = host.as_deref().map_or(&b""[..], CStr::to_bytes);
-    let request = crate::resolver::Request::new(this.get().domain, 0, 0, name, b"");
-    this.get().server_host.set(host);
+    let request = this.get().server_host.with_taken(|host| {
+        let name = host.as_deref().map_or(&b""[..], CStr::to_bytes);
+        crate::resolver::Request::new(this.get().domain, 0, 0, name, b"")
+    });
     let id = LAST_LOOKUP.get() + 1;
     LAST_LOOKUP.set(id);
     // The entry outlives this call; `free` drops it with the client.
@@ -1254,10 +1248,7 @@ thread_local! {
 
 /// `f` over the clients awaiting a lookup, taken out and put back.
 fn with_awaiting<R>(f: impl FnOnce(&mut Vec<(usize, Handle<'static>)>) -> R) -> R {
-    let mut awaiting = AWAITING.take();
-    let result = f(&mut awaiting);
-    AWAITING.set(awaiting);
-    result
+    AWAITING.with(|slot| slot.with_taken(f))
 }
 
 /// The client awaiting `lookup`, now no longer: none once it was freed.

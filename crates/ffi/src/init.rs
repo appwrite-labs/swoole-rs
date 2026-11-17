@@ -10,8 +10,7 @@ unsafe extern "C" {
 }
 
 /// `void swoole_init()`.
-#[unsafe(export_name = "_Z11swoole_initv")]
-pub(crate) extern "C-unwind" fn swoole_init() {
+pub fn swoole_init() {
     swoole_rs_corebase::reactor::event_api::set_init_reactor([
         |reactor| swoole_rs_hooks::reactor_handlers::system_init_reactor(reactor),
         swoole_rs_clients::client::init_reactor,
@@ -23,10 +22,4 @@ pub(crate) extern "C-unwind" fn swoole_init() {
     swoole_rs_ports::register_methods();
     swoole_rs_hooks::stdio::swr_v1_hook_install();
     swoole_rs_corebase::swr_v1_core_swoole_init(Some(swr_v1_ffi_fatal_error));
-}
-
-/// fatal.c's `swoole_exit`.
-#[unsafe(no_mangle)]
-extern "C" fn swr_v1_ffi_exit(status: c_int) -> ! {
-    swoole_rs_corebase::swoole_exit(status)
 }

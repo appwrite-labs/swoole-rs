@@ -10,6 +10,7 @@
 )]
 
 mod init;
+pub use init::swoole_init;
 
 pub use swoole_rs_error::*;
 pub use swoole_rs_error_ffi::*;
@@ -156,7 +157,7 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
     use swoole_rs_phphttp as http;
     use swoole_rs_phpthread as thread;
     swoole_rs_phpswoole::Families {
-        core_startup: || init::swoole_init(),
+        core_startup: swoole_init,
         coroutine_minit: [
             co::php_swoole_coroutine_minit,
             co::php_swoole_coroutine_system_minit,

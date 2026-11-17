@@ -19,7 +19,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_corebase::reactor::{Event, Events, Running, SocketRecord, event_api};
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_corebase::tls::event_socket::EventSocket;
-use swoole_rs_corebase::{CCast, Hostent};
+use swoole_rs_corebase::{CCast, CellExt, Hostent};
 use swoole_rs_error::ErrorCode;
 
 /// A channel's socket-state callback: `(query id, fd, readable, writable)`.
@@ -98,9 +98,7 @@ struct Query {
 impl Query {
     /// The query's channel, while it has one.
     fn channel(&self) -> Option<Rc<sdk::OwnedChannel>> {
-        let channel = self.channel.take();
-        self.channel.set(channel.clone());
-        channel
+        self.channel.with_taken(|channel| channel.clone())
     }
 }
 
@@ -114,10 +112,7 @@ thread_local! {
 
 /// `f` over the running queries, taken out and put back.
 fn with_queries<R>(f: impl FnOnce(&mut Vec<(usize, Rc<Query>)>) -> R) -> R {
-    let mut queries = QUERIES.take();
-    let result = f(&mut queries);
-    QUERIES.set(queries);
-    result
+    QUERIES.with(|slot| slot.with_taken(f))
 }
 
 /// The running query whose id `data` is, if any.
@@ -236,9 +231,9 @@ extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, writable: 
     wrapper.socket().edit(|wrapper| wrapper.object = data);
     // Register this fresh wrapper.
     _ = wrapper.add(events);
-    let mut sockets = query.sockets.take();
-    sockets.push((fd, wrapper));
-    query.sockets.set(sockets);
+    query
+        .sockets
+        .with_taken(|sockets| sockets.push((fd, wrapper)));
 }
 extern "C" fn host(data: *mut c_void, status: i32, timeouts: i32, entry: Option<Hostent<'_>>) {
     let Some(query) = registered(data) else {
@@ -258,9 +253,7 @@ extern "C" fn host(data: *mut c_void, status: i32, timeouts: i32, entry: Option<
             let text = swr_v1_clients_ip_text(version, address);
             let length = usize::try_from(text.length).unwrap_or(0);
             let text = text.bytes.get(..length).unwrap_or_default().to_vec();
-            let mut results = query.results.take();
-            results.push(text);
-            query.results.set(results);
+            query.results.with_taken(|results| results.push(text));
         }
     }
     let waker = query.waker.get();

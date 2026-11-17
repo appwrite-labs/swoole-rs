@@ -22,7 +22,7 @@ use swoole_rs_server::port_config::{PortConfig, ReadEvent};
 use swoole_rs_server::static_select::static_select;
 use swoole_rs_server::{Connection as Slot, ServerConfig, view};
 
-use crate::framing_recv::{self, Lent, Packages, Proto};
+use crate::framing_recv::{self, Lent, Packages};
 use crate::http_routes::Session;
 use crate::http_routes::exports::{Frames, Port, Route, Tasks};
 use crate::read::{Connection, Dispatch, Framing, Readable, Reply, Upgrade, readable};
@@ -167,15 +167,15 @@ impl<'a> Read<'a> {
     /// `packages`.
     #[inline(always)]
     fn framed(&mut self, mode: Mode, packages: impl Packages) -> bool {
-        let (protocol, socket) = (Proto::from(&self.port.protocol), self.socket);
+        let socket = self.socket;
         // Asked once per receive, not per measure: most ports have no PHP length callable.
         let owner = if self.port.has_length_owner() {
             framing_recv::Owner::Port(self.port)
         } else {
-            framing_recv::Owner::None
+            framing_recv::Owner::Plain(&self.port.protocol)
         };
         let buffer = Lent::new(self.buffer());
-        framing_recv::receive(protocol, socket, owner, buffer, mode, packages) != Status::Err
+        framing_recv::receive(socket, owner, buffer, mode, packages) != Status::Err
     }
 }
 
