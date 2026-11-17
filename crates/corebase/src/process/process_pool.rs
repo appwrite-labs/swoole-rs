@@ -17,7 +17,7 @@ use crate::memory::{ChannelInitError, SharedChannel};
 use crate::process::task_file::Packed;
 use crate::process::worker_record::{Worker, WorkerType};
 use core::cell::Cell;
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_int, c_long, c_void};
 use std::ptr;
 use std::sync::atomic::AtomicU32;
 
@@ -506,21 +506,22 @@ impl<'a> PoolRef<'a> {
             .unwrap_or(0)
     }
 
-    /// `queue->pop(node, size)` into a `QueueNode` held in words, and `errno` right
-    /// after it; -1 when it failed or there is no queue.
-    pub(crate) fn queue_pop(self, node: &mut [u64], size: usize) -> (isize, c_int) {
+    /// `queue->pop(node, size)` into a `QueueNode` (a `long` type, then room for
+    /// `size` payload bytes), and `errno` right after it; -1 when it failed or there
+    /// is no queue.
+    pub(crate) fn queue_pop(self, node: &mut [u8], size: usize) -> (isize, c_int) {
+        let node = node.get_mut(..size_of::<c_long>().saturating_add(size));
         let result = self
-            .with_queue(|queue| queue.pop_words(node, size))
+            .with_queue(|queue| queue.pop(node?))
             .flatten();
         let length = result.map_or(-1, CCast::c_cast::<isize>);
         (length, crate::sys::errno())
     }
 
-    /// `queue->push(node, length)` of a `QueueNode` held in words; false without a
-    /// queue.
-    pub(crate) fn queue_push(self, node: &[u64], length: usize) -> bool {
-        self.with_queue(|queue| queue.push_words(node, length))
-            .unwrap_or(false)
+    /// `queue->push(node)` of a `QueueNode`, a `long` type and then its payload;
+    /// false without a queue.
+    pub(crate) fn queue_push(self, node: &[u8]) -> bool {
+        self.with_queue(|queue| queue.push(node)).unwrap_or(false)
     }
 
     /// `f` over the pool's message queue; `None` without one. Only this type's queue
@@ -561,13 +562,19 @@ impl<'a> PoolRef<'a> {
         self.record().ipc_connection()
     }
 
-    /// The worker loop's receive buffer and its size in bytes; null and 0 before
-    /// the loop allocates it.
+    /// The event loop's receive buffer, taken out until [`Self::restore_ipc_packet`];
+    /// empty before the loop allocates it, or while it is taken.
     #[must_use]
-    pub fn ipc_packet(self) -> (*mut c_char, usize) {
+    pub fn take_ipc_packet(self) -> Vec<u8> {
         self.record()
-            .with_ipc(crate::process::pool::pool_ipc_packet)
-            .unwrap_or((ptr::null_mut(), 0))
+            .with_ipc(crate::process::pool::pool_ipc_take_packet)
+            .unwrap_or_default()
+    }
+
+    /// Give back the buffer [`Self::take_ipc_packet`] took.
+    pub fn restore_ipc_packet(self, packet: Vec<u8>) {
+        self.record()
+            .with_ipc(|ipc| crate::process::pool::pool_ipc_restore_packet(ipc, packet));
     }
 }
 

@@ -143,14 +143,6 @@ impl QueueRecord {
         self.send(node, kind, length)
     }
 
-    /// [`Self::push`] of a `QueueNode` held in words: its type, then `length`
-    /// payload bytes.
-    #[must_use]
-    pub fn push_words(&self, node: &[u64], length: usize) -> bool {
-        let kind = node.first().map_or(0, |kind| kind.cast_signed());
-        self.send(node, kind, length)
-    }
-
     /// `msgsnd` of `node`, whose type is `kind`, with `length` payload bytes; a
     /// node too short for them is `EINVAL`.
     fn send(&self, node: &[impl Pod], kind: c_long, length: usize) -> bool {
@@ -189,13 +181,6 @@ impl QueueRecord {
             invalid();
             return None;
         };
-        self.receive(node, kind, size)
-    }
-
-    /// [`Self::pop`] into a `QueueNode` held in words: the type it holds, then room
-    /// for `size` payload bytes.
-    pub fn pop_words(&self, node: &mut [u64], size: usize) -> Option<usize> {
-        let kind = node.first().map_or(0, |kind| kind.cast_signed());
         self.receive(node, kind, size)
     }
 
@@ -278,11 +263,6 @@ fn node_parts(node: &[u8]) -> Option<(c_long, usize)> {
     let (kind, payload) = node.split_first_chunk::<{ size_of::<c_long>() }>()?;
     Some((c_long::from_ne_bytes(*kind), payload.len()))
 }
-
-const _: () = assert!(
-    size_of::<c_long>() == size_of::<u64>(),
-    "a QueueNode held in words starts with its long type"
-);
 
 /// `struct msqid_ds`, which libc omits on Darwin.
 #[cfg(target_os = "linux")]
