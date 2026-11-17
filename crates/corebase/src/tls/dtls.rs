@@ -1,12 +1,12 @@
 //! `dtls::Session`: its datagram queue, the BIO OpenSSL reads it through, and
 //! `init`/`listen`. The BIO owns its session: the socket's SSL holds the BIO, and the
 //! session goes when OpenSSL destroys it, so a session is reached through its socket.
-use crate::CCast;
 use crate::lent::{Count, In, Out, lend_spare};
 use crate::log;
 use crate::reactor::{AddressStorage, Socket};
 use crate::sys::Text;
 use crate::tls::handle::{BioMethod, SslFailure};
+use crate::{CCast, CellExt};
 use core::cell::Cell;
 use core::ffi::{c_int, c_long, c_void};
 use core::marker::{PhantomData, PhantomPinned};
@@ -64,14 +64,6 @@ impl DtlsSession {
         )?)
     }
 
-    /// `edit` over the queue, taken out and put back.
-    fn with_queue<R>(&self, edit: impl FnOnce(&mut Queue) -> R) -> R {
-        let mut queue = self.queue.take();
-        let result = edit(&mut queue);
-        self.queue.set(queue);
-        result
-    }
-
     /// Whether `listen` has published the session.
     #[must_use]
     pub fn listened(&self) -> bool {
@@ -99,7 +91,7 @@ pub fn swr_v1_tls_dtls_append(owner: &DtlsSession, data: &[u8]) -> bool {
 
 /// `bytes` at the back of the queue; false when the queue can't grow.
 fn queue(owner: &DtlsSession, bytes: Box<[u8]>) -> bool {
-    owner.with_queue(|queue| {
+    owner.queue.with_taken(|queue| {
         if queue.try_reserve(1).is_err() {
             return false;
         }
@@ -112,7 +104,7 @@ fn queue(owner: &DtlsSession, bytes: Box<[u8]>) -> bool {
 /// and popped unless peeking; `None`, a retry, when the queue is empty.
 pub fn swr_v1_tls_dtls_read(owner: &DtlsSession, buffer: &mut [MaybeUninit<u8>]) -> Option<c_int> {
     let peek = owner.peek.get();
-    owner.with_queue(|queue| {
+    owner.queue.with_taken(|queue| {
         let front = queue.front()?;
         // No more than `buffer` holds, so a datagram is never popped uncopied.
         let copied = front.0.len().min(buffer.len());
@@ -128,7 +120,7 @@ pub fn swr_v1_tls_dtls_read(owner: &DtlsSession, buffer: &mut [MaybeUninit<u8>])
 
 /// The queued datagrams' total length.
 pub fn swr_v1_tls_dtls_length(owner: &DtlsSession) -> usize {
-    owner.with_queue(|queue| {
+    owner.queue.with_taken(|queue| {
         queue.iter().fold(0usize, |total, datagram| {
             total.wrapping_add(datagram.0.len())
         })
@@ -144,7 +136,7 @@ fn swr_v1_tls_dtls_control(
     value: c_long,
 ) -> c_long {
     match command {
-        Command::Eof => c_long::from(owner.with_queue(|queue| queue.is_empty())),
+        Command::Eof => c_long::from(owner.queue.with_taken(|queue| queue.is_empty())),
         Command::GetClose => shutdown,
         Command::Pending => swr_v1_tls_dtls_length(owner).c_cast::<c_long>(),
         Command::SetClose | Command::Ignore => 0,
@@ -537,16 +529,16 @@ mod tests {
         assert_eq!(owner.length(), 0);
         assert_eq!(owner.read(1).0, None);
         owner.append(b"");
-        assert!(!owner.session().with_queue(|queue| queue.is_empty()));
+        assert!(!owner.session().queue.with_taken(|queue| queue.is_empty()));
         assert_eq!(owner.read(0).0, Some(0));
-        assert!(owner.session().with_queue(|queue| queue.is_empty()));
+        assert!(owner.session().queue.with_taken(|queue| queue.is_empty()));
     }
 
     #[test]
     fn a_failed_read_queues_no_datagram() {
         let owner = Owner::new();
         assert!(dtls_session_receive(owner.session(), -1, 5));
-        assert!(owner.session().with_queue(|queue| queue.is_empty()));
+        assert!(owner.session().queue.with_taken(|queue| queue.is_empty()));
     }
 
     #[test]
