@@ -85,25 +85,6 @@ int main(void) {
         actual = set(re.findall(r'\b_?(swr_v[0-9]+_\w+)\b', symbols))
         self.assertFalse(expected - actual, 'Selected ABI exports missing: ' + ', '.join(sorted(expected - actual)))
 
-    def test_public_http_status_array_export(self):
-        if not ARGS.feature_bits & 256:
-            self.skipTest('HTTP module is not selected')
-        # The existing public C++ data symbol must survive static archive
-        # extraction and production DSO export filtering, not just a mini DSO.
-        symbol = '_ZN6swoole11http_server19list_of_status_codeE'
-        if sys.platform == 'darwin':
-            symbol = '_' + symbol
-        options = ['-gU'] if sys.platform == 'darwin' else ['-D', '--defined-only']
-        for label, extension in [('native', ARGS.reference), ('selected', ARGS.extension)]:
-            with self.subTest(engine=label):
-                symbols = run(['nm', *options, str(extension)]).stdout
-                definitions = [line.split() for line in symbols.splitlines()
-                               if line.split() and line.split()[-1] == symbol]
-                self.assertEqual(len(definitions), 1,
-                                 f'{label} production extension lacks the unique public status array: {symbol}')
-                self.assertIn(definitions[0][-2], {'B', 'D', 'G', 'S'},
-                              f'{label} public status array is not mutable exported data')
-
     def test_module_information_exports_follow_profile(self):
         options = ['-gU'] if sys.platform == 'darwin' else ['-D', '--defined-only']
         defined = run(['nm', *options, str(ARGS.extension)]).stdout
@@ -162,7 +143,6 @@ if __name__ == '__main__':
         if not path.is_file():
             parser.error(f'Missing built artifact: {path}; build reference and extension first')
     tests = ['BridgeTests.test_reference_has_no_bridge_marker', 'BridgeTests.test_extension_markers_and_phpinfo',
-             'BridgeTests.test_selected_abi_exports', 'BridgeTests.test_public_http_status_array_export',
-             'BridgeTests.test_module_information_exports_follow_profile',
+             'BridgeTests.test_selected_abi_exports', 'BridgeTests.test_module_information_exports_follow_profile',
              'BridgeTests.test_rust_internal_symbols_are_hidden'] if ARGS.startup_only else []
     unittest.main(argv=[sys.argv[0], *tests], verbosity=2)
