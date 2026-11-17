@@ -26,11 +26,10 @@ impl std::ops::DerefMut for Slot {
 }
 
 impl Slot {
-    /// `swoole_http_init_and_read_property`: the slot of the object's declared
-    /// `property`, which holds an array made on first use, bit `which` of
-    /// `made`. Read at each use, the slot holds whatever the property now does.
+    /// The object, with `property` made an array on its first use (bit `which`
+    /// of `made`). Later uses preserve whatever PHP put in the property.
     #[inline]
-    pub(crate) fn array(
+    pub(crate) fn array_owner(
         &self,
         made: &mut u8,
         which: usize,
@@ -39,12 +38,11 @@ impl Slot {
     ) -> Option<&Value> {
         let object = self.get()?;
         let bit = 1 << which;
-        if *made & bit != 0 {
-            return property.get(object);
+        if *made & bit == 0 {
+            property.init_array(object, size)?;
+            *made |= bit;
         }
-        let array = property.init_array(object, size)?;
-        *made |= bit;
-        Some(array)
+        Some(object)
     }
 
     /// `ZVAL_COPY_VALUE`: the zval's bits without a reference of their own

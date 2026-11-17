@@ -16,7 +16,9 @@ use swoole_rs_httpbindings::{
 };
 use swoole_rs_inflate::brotli::{self, MAX_QUALITY, MIN_QUALITY};
 use swoole_rs_inflate::zstd;
-use swoole_rs_zend::{Array, Class, Declared, HeldArray, Key, Value, ZStr, ZString, bailout};
+use swoole_rs_zend::{
+    Array, ArrayMut, Class, Declared, HeldArray, Key, Value, ZStr, ZString, bailout,
+};
 
 /// llhttp's `HTTP_HEAD`.
 const HEAD: u8 = 2;
@@ -61,12 +63,26 @@ pub(crate) fn minit(class: &Class) {
 /// `cookie` or `trailer` property slot, its array made on first use; none
 /// without a response object.
 #[inline]
-pub(crate) fn response_property(state: &mut State, which: Property) -> Option<&Value> {
+fn response_owner(state: &mut State, which: Property) -> Option<(&Declared, &Value)> {
     let response = &mut state.response;
     let property = PROPERTIES.get(which as usize)?;
-    response
+    let object = response
         .zobject
-        .array(&mut response.arrays, which as usize, property, 8)
+        .array_owner(&mut response.arrays, which as usize, property, 8)?;
+    Some((property, object))
+}
+
+pub(crate) fn response_property(state: &mut State, which: Property) -> Option<()> {
+    response_owner(state, which).map(|_| ())
+}
+
+pub(crate) fn edit_response_property<R>(
+    state: &mut State,
+    which: Property,
+    edit: impl FnOnce(&mut ArrayMut) -> R,
+) -> Option<R> {
+    let (property, object) = response_owner(state, which)?;
+    property.edit_array(object, edit)
 }
 
 /// `sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, name)`, when it
@@ -76,7 +92,7 @@ pub(crate) fn response_property(state: &mut State, which: Property) -> Option<&V
 /// context, or replace the property, while the array is walked: the hold keeps
 /// it live and borrows nothing from the context's state.
 pub(crate) fn property(response: &Slot, which: usize) -> Option<HeldArray> {
-    PROPERTIES.get(which)?.get(response.get()?)?.hold()
+    PROPERTIES.get(which)?.hold(response.get()?)
 }
 
 /// `zend::String(value)`: a string zval's own string, or `zval_get_string`'s new one.

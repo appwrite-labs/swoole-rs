@@ -482,7 +482,7 @@ impl Client {
         if let Some(this) = self.conn.this()
             && let Some(setting) = this.property(c"setting")
         {
-            apply(socket, setting);
+            apply(socket, &setting);
         }
         let host = self.with_host(|host| host.clone());
         if !socket.connect_host(&host, c_int::try_from(self.port).unwrap_or(-1)) {
@@ -638,13 +638,16 @@ impl Client {
     /// `build_header`: a HEADERS frame whose first nine bytes are left for
     /// its header, then the request's HPACK block.
     fn build_header(&self, request: Request<'_>) -> Vec<u8> {
-        let text = |field| {
-            request
-                .property(field)?
-                .bytes()
-                .filter(|text| !text.is_empty())
-        };
-        let (method, path) = (text(Field::Method), text(Field::Path));
+        let method_value = request.property(Field::Method);
+        let path_value = request.property(Field::Path);
+        let method = method_value
+            .as_deref()
+            .and_then(Value::bytes)
+            .filter(|text| !text.is_empty());
+        let path = path_value
+            .as_deref()
+            .and_then(Value::bytes)
+            .filter(|text| !text.is_empty());
         let headers = request.array(Held::Headers);
         let cookies = request.array(Held::Cookies);
         // Converting a header value can run PHP code, which may build another request.
@@ -712,7 +715,7 @@ impl Client {
                 }
             });
         }
-        let truthy = |field| request.property(field).is_some_and(Value::truthy);
+        let truthy = |field| request.property(field).is_some_and(|value| value.truthy());
         let pipeline = truthy(Field::Pipeline);
         let use_pipeline_read = truthy(Field::UsePipelineRead);
         let empty = match data.bytes() {
@@ -744,7 +747,7 @@ impl Client {
         };
         let sent = self.send(&frame)
             && (empty
-                || body_bytes(data).is_some_and(|body| self.send_data(id, body.bytes(), flag)));
+                || body_bytes(&data).is_some_and(|body| self.send_data(id, body.bytes(), flag)));
         if !sent {
             if self.stream_id.get() == id + 2 {
                 self.stream_id.set(id);
@@ -1469,7 +1472,7 @@ fn close(call: &Call) {
 /// `headers` and `cookies` are readable only held ([`Request::array`]).
 mod request {
     use std::ffi::CStr;
-    use swoole_rs_zend::{HeldArray, Props, Value};
+    use swoole_rs_zend::{HeldArray, Owned, Props, Value};
 
     /// A `Swoole\Http2\Request` argument, live for the call.
     #[derive(Clone, Copy)]
@@ -1504,11 +1507,11 @@ mod request {
         }
 
         /// The slot of a property the request class declares.
-        fn slot(self, name: &CStr) -> Option<&'a Value> {
+        fn slot(self, name: &CStr) -> Option<Owned> {
             self.0.property(name)
         }
 
-        pub(super) fn property(self, field: Field) -> Option<&'a Value> {
+        pub(super) fn property(self, field: Field) -> Option<Owned> {
             self.slot(match field {
                 Field::Method => c"method",
                 Field::Path => c"path",
@@ -1526,7 +1529,7 @@ mod request {
                 Held::Headers => c"headers",
                 Held::Cookies => c"cookies",
             })?
-            .hold()
+            .into_held_array()
         }
     }
 }

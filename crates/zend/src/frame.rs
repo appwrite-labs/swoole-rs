@@ -103,7 +103,12 @@ impl Call {
         let start = window.start.min(end);
         // Always in bounds: `start <= end < bytes.len()`.
         let lent = IoSlice::new(bytes.get(start..=end).unwrap_or_default());
-        crate::bailout::trapped(swr_bytes_json_decode_ex(self.ret(), lent, options, depth))
+        crate::bailout::trapped(swr_bytes_json_decode_ex(
+            self.ret_slot(),
+            lent,
+            options,
+            depth,
+        ))
     }
 
     /// `RETVAL_STRINGL`: a copy of `bytes`.

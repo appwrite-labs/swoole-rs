@@ -13,7 +13,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{Connection, view};
 use swoole_rs_zend::{
-    HeldArray, Owned, ZString,
+    ArrayMut, HeldArray, Owned, ZString,
     bailout::{self, Bailout},
 };
 
@@ -164,8 +164,8 @@ impl Ctx<'_> {
     /// header block makes both, whatever it holds.
     pub fn header_arrays(mut self) {
         let request = &mut self.state().request;
-        parse::property(request, parse::Property::Header);
-        parse::property(request, parse::Property::Server);
+        parse::init_property(request, parse::Property::Header);
+        parse::init_property(request, parse::Property::Server);
     }
 
     /// `add_assoc_str_ex` on `$request->server` or `header` (made on first
@@ -184,16 +184,20 @@ impl Ctx<'_> {
 
     /// `$request->server`, `header`, `get`, `post` or `cookie` (made on first
     /// use), or the response object.
-    fn value(state: &mut crate::state::State, which: Value) -> Option<&swoole_rs_zend::Value> {
+    fn edit_value<R>(
+        state: &mut crate::state::State,
+        which: Value,
+        edit: impl FnOnce(&mut ArrayMut) -> R,
+    ) -> Option<R> {
         let property = match which {
-            Value::Response => return state.response.zobject.get(),
+            Value::Response => return None,
             Value::Server => parse::Property::Server,
             Value::Header => parse::Property::Header,
             Value::Get => parse::Property::Get,
             Value::Post => parse::Property::Post,
             Value::Cookie => parse::Property::Cookie,
         };
-        parse::property(&mut state.request, property)
+        parse::edit(&mut state.request, property, edit)
     }
 
     /// The response's `header`, `cookie` or `trailer` array, with a reference
@@ -229,7 +233,8 @@ impl Ctx<'_> {
             Value::Cookie => parse::Property::Cookie,
             Value::Response => return None,
         };
-        let array = parse::made(&self.state().request, property)?.array()?;
+        let value = parse::made(&self.state().request, property)?;
+        let array = value.array()?;
         Some(array.find(key)?.copy())
     }
 
@@ -351,7 +356,9 @@ impl Ctx<'_> {
     /// `swoole_http_parse_cookie`: a `cookie` header's pairs into the request's
     /// `$cookie`.
     pub fn cookie(mut self, value: &[u8]) {
-        parse::parse_cookie(Self::value(self.state(), Value::Cookie), value);
+        Self::edit_value(self.state(), Value::Cookie, |array| {
+            parse::parse_cookie(array.separate(), value);
+        });
     }
 
     /// A server connection's settings context (`default_ctx`): the server's
@@ -416,8 +423,10 @@ impl Ctx<'_> {
         // The bytes, copied into request memory the SAPI frees. Nothing this
         // frame owns is held while PHP parses them, which may bail out.
         let text = parse::Copied::of(query.unwrap_or_else(|| body.map_or(&[], Vec::as_slice)));
-        if let Some(array) = Self::value(state, which) {
-            parse::treat_string(text, array);
-        }
+        Self::edit_value(state, which, |array| {
+            if let Some(array) = array.separate() {
+                parse::treat_string(text, array);
+            }
+        });
     }
 }
