@@ -225,7 +225,7 @@ fn schedule_4() {
     }
 
     // SAFETY: the thread's buffer, which holds a `DgramPacket`.
-    let pkt = unsafe { (*case::swr_case_tg_buffer()).str }.cast::<DgramPacket>();
+    let pkt = unsafe { (*case::swr_case_tg_buffer()).as_mut_ptr() }.cast::<DgramPacket>();
     // SAFETY: as above.
     assign(
         unsafe { &mut (*pkt).socket_addr },

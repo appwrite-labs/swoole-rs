@@ -2,6 +2,10 @@
 
 Pin `76c657d88be39b7af6bf85e46bcbac0da7387760`.
 
+The socket fixtures borrow `corebase::buffer::string::CppString` directly; client
+certificate buffers use `OwnedString`. Packet ownership transfer still uses
+`CppString::pop`, with the same original byte, length and offset assertions.
+
 ## Native-facade gates
 
 Gates whose bodies moved to Rust became `ported_*` tests in `crates/hooks`.

@@ -137,6 +137,10 @@ excluded for the reason they had in the GoogleTest lane (they need Node.js and i
 package). Each curl runs to completion before its log is read, where upstream slept a
 second after starting it.
 
+The HTTP and included framing fixtures use `OwnedString` for local buffers and
+borrow the runtime's `CppString` for thread buffers. The WebSocket header buffer
+keeps its 32-byte capacity and original flags, payload and assertions.
+
 The HTTP fixtures' timers use `add_owned` closures. One-shot callbacks take their
 capture once; repeating and lifecycle callbacks receive the issued `Held` ID for
 self-cancellation. Timer destruction releases captures. The fixtures no longer

@@ -594,18 +594,21 @@ fn pointer(at: *const u8) -> String {
     }
 }
 
-// Constructors and destructors return `this`: Apple's arm64 C++ ABI does, and
-// elsewhere the caller ignores it. Nothing derives from String, so only the
-// complete-object (C1/D1) symbols.
+/// `String(size_t, const Allocator *)`.
+pub fn swr_string_new(
+    this: &mut MaybeUninit<CppString>,
+    size: usize,
+    with: Option<TrustedAllocator>,
+) -> *mut CppString {
+    let string = this.write(CppString::EMPTY);
+    string.alloc(size, with);
+    string
+}
+
+// Copy/move constructors return `this`: Apple's arm64 C++ ABI does, and
+// elsewhere the caller ignores it. Nothing derives from String.
 // A constructor's `this` is uninitialized storage; every other `this` is a live String.
 upstream! {
-    "_ZN6swoole6StringC1EmPKNS_9AllocatorE", "_ZN6swoole6StringC1EmPKNS_9AllocatorE" =>
-    /// `String(size_t, const Allocator *)`.
-    pub extern "C" fn swr_string_new(this: &mut MaybeUninit<CppString>, size: usize, with: Option<TrustedAllocator>) -> *mut CppString {
-        let string = this.write(CppString::EMPTY);
-        string.alloc(size, with);
-        string
-    }
     "_ZN6swoole6StringC1ERKS0_", "_ZN6swoole6StringC1ERKS0_" =>
     /// `String(const String &)`.
     pub extern "C" fn swr_string_copy(this: &mut MaybeUninit<CppString>, source: &CppString) -> *mut CppString {
@@ -619,12 +622,6 @@ upstream! {
         let string = this.write(CppString::EMPTY);
         string.move_from(source);
         string
-    }
-    "_ZN6swoole6StringD1Ev", "_ZN6swoole6StringD1Ev" =>
-    /// `~String()`.
-    pub extern "C" fn swr_string_drop(this: &mut CppString) -> *mut CppString {
-        this.dispose();
-        this
     }
     "_ZNK6swoole6String6substrEmm", "_ZNK6swoole6String6substrEmm" =>
     /// `String substr(size_t, size_t) const`. The C++ ABI returns a class with a
@@ -661,10 +658,6 @@ upstream! {
         let mut buffer = itoa::Buffer::new();
         this.append(buffer.format(value).as_bytes());
     }
-    "_ZN6swoole6String19append_random_bytesEmb", "_ZN6swoole6String19append_random_bytesEmb" =>
-    pub extern "C" fn swr_string_append_random_bytes(this: &mut CppString, length: usize, base64: bool) -> bool {
-        this.append_random_bytes(length, base64)
-    }
     "_ZN6swoole6String5writeElRKS0_", "_ZN6swoole6String5writeExRKS0_" =>
     pub extern "C" fn swr_string_write_string(this: &mut CppString, offset: i64, source: &CppString) {
         this.write(offset, source.view());
@@ -673,11 +666,6 @@ upstream! {
     /// `print(bool)`, through C's stdout as upstream.
     pub extern "C" fn swr_string_print(this: &CppString, value: bool) {
         this.print(value);
-    }
-    "_ZN6swoole6String3popEm", "_ZN6swoole6String3popEm" =>
-    /// `pop(size_t)`: hands over the buffer and keeps the bytes after `offset` in a new one.
-    pub extern "C" fn swr_string_pop(this: &mut CppString, init_size: usize) -> *mut u8 {
-        this.pop(init_size)
     }
     "_ZN6swoole6String6reduceEl", "_ZN6swoole6String6reduceEx" =>
     /// `reduce(off_t)`: moves the bytes after `offset` to the head.

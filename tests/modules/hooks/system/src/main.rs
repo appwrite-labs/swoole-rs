@@ -124,16 +124,6 @@ const GREETING: &[u8] = b"hello world, hello swoole";
 
 type Routine = unsafe extern "C-unwind" fn(*mut c_void);
 
-/// `swoole::String`.
-#[repr(C)]
-struct CppString {
-    length: usize,
-    size: usize,
-    offset: i64,
-    str: *mut c_char,
-    allocator: *const c_void,
-}
-
 unsafe extern "C-unwind" {
     #[link_name = "_Z11swoole_initv"]
     fn swoole_init();
@@ -141,8 +131,6 @@ unsafe extern "C-unwind" {
     fn swoole_clean();
     #[link_name = "_Z19swoole_random_bytesPcm"]
     fn swoole_random_bytes(buf: *mut c_char, size: usize) -> usize;
-    #[link_name = "_ZN6swoole6StringC1EmPKNS_9AllocatorE"]
-    fn string_new(this: *mut CppString, size: usize, allocator: *const c_void);
 
     fn swoole_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long;
     fn swoole_coroutine_get_id() -> c_long;
