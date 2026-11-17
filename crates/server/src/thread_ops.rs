@@ -95,7 +95,11 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
     crate::reactor_thread::init_reactor(server, handle);
     let thread = ctx.thread_record()?;
     let bus = thread.message_bus();
-    methods::init_pipe_sockets(server, bus);
+    // The server's live command pipe, whose end the bus keeps a record of too.
+    let command = config
+        .command_pipe()
+        .and_then(|pipe| Some(pipe.worker_end()?.fd()));
+    methods::init_pipe_sockets(server, bus, command);
     if config.mode_ == Mode::Thread {
         let worker = worker(server, id)?;
         crate::worker_methods::init_event_worker(server, worker);
@@ -106,14 +110,8 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             thread.heartbeat_timer.set(heartbeat_timer(state, handle));
         }
     }
-    if let Some(pipe) = config.command_pipe() {
-        // The server's live command pipe.
-        let fd = pipe.worker_end()?.fd();
-        bus.init_pipe_socket(fd);
-        thread.pipe_command.set(bus.pipe_fd(fd).cast());
-        bus.rust()
-            .pipe(fd)?
-            .edit(|s| s.output.buffer_size = u32::MAX);
+    if config.command_pipe().is_some() {
+        thread.pipe_command.set(bus.pipe_fd(command?).cast());
     }
     bus.rust().count_ids(state.msg_ids.get()?);
     bus.set_always_chunked();
