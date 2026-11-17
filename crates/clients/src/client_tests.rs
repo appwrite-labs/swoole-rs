@@ -372,7 +372,8 @@ fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
 fn free(client: *mut Client) {
     drop(Owner {
         client,
-        kept: Cell::new(false),
+        // SAFETY: the reference `keep` leaked in `new_client`.
+        own: Cell::new(Some(unsafe { Rc::from_raw(client) })),
     });
 }
 
