@@ -1111,6 +1111,10 @@ impl Interfaces {
     /// The list, or `None` with errno set.
     #[must_use]
     pub fn new() -> Option<Self> {
+        // Miri has no getifaddrs: an empty list, as a host with no interface reads.
+        if cfg!(miri) {
+            return Some(Self(None));
+        }
         let mut list = None;
         (c::getifaddrs(&mut list) == 0).then_some(Self(list))
     }
