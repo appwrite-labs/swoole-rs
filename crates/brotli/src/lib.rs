@@ -13,7 +13,7 @@
 
 use std::ffi::{c_int, c_void};
 use std::marker::PhantomData;
-use std::ptr::{NonNull, null_mut};
+use std::ptr::NonNull;
 use swoole_rs_corebase::sys::Text;
 
 /// `BROTLI_MIN_QUALITY`, `BROTLI_MAX_QUALITY`.
@@ -32,63 +32,99 @@ const BUFFER: usize = 16384;
 
 /// The opaque `BrotliDecoderState`.
 type State = c_void;
-/// A decoder state `BrotliDecoderCreateInstance` made, live until
-/// `BrotliDecoderDestroyInstance` consumes it. It is neither `Copy` nor `Clone`, so it
-/// is destroyed once, and not `Send`, as the pointer it replaced was not.
+/// A decoder state `BrotliDecoderCreateInstance` made, which its drop destroys. It is
+/// neither `Copy` nor `Clone`, so it is destroyed once, and not `Send`, as the pointer
+/// it replaced was not.
 #[repr(transparent)]
 struct Owned(NonNull<State>);
 
 impl Owned {
-    /// The state, for the calls that stay unsafe.
-    const fn as_ptr(&self) -> *mut State {
-        self.0.as_ptr()
-    }
-
-    /// The state while its owner is borrowed, for the safe calls.
+    /// The state while its owner is borrowed, for the calls that use it.
     const fn live(&self) -> Live<'_> {
         Live(self.0, PhantomData)
     }
 }
 
-/// An [`Owned`] state, borrowed: what a safe libbrotli call takes.
+impl Drop for Owned {
+    fn drop(&mut self) {
+        BrotliDecoderDestroyInstance(Dying(self.0));
+    }
+}
+
+/// An [`Owned`] state, borrowed: what a libbrotli call that uses the state takes.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 struct Live<'a>(NonNull<State>, PhantomData<&'a Owned>);
+/// An [`Owned`] state that its drop alone makes, for the call that frees it.
+#[repr(transparent)]
+struct Dying(NonNull<State>);
 /// Where libbrotli takes a custom allocator's `alloc`, `free` or `opaque`: always
 /// null here (nothing makes the reference), which selects malloc and free.
 type DefaultAllocator = Option<&'static !>;
 
+/// The lifetime that names one lending: invariant, so no other lending's tokens unify
+/// with it.
+type Brand<'a> = PhantomData<fn(&'a ()) -> &'a ()>;
+/// How many bytes are left at the [`Next`] of the same lending. A stream call lowers
+/// it by as many as it moves that address past; the encoder overwrites it with how
+/// many it wrote, never more than it was.
+#[repr(transparent)]
+struct Left<'a>(usize, Brand<'a>);
+/// Where a lending's bytes left start: readable (`*const u8`) or writable (`*mut u8`)
+/// for its [`Left`] count, and reached through nothing else for `'a`. Only [`lend`]
+/// and [`lend_mut`] make one, with its count.
+#[repr(transparent)]
+struct Next<'a, P>(P, Brand<'a>);
+
+/// Lends `bytes` to `call` as a [`Left`] count and its [`Next`] address.
+fn lend<R>(bytes: &[u8], call: impl for<'a> FnOnce(Left<'a>, Next<'a, *const u8>) -> R) -> R {
+    call(
+        Left(bytes.len(), PhantomData),
+        Next(bytes.as_ptr(), PhantomData),
+    )
+}
+
+/// [`lend`] for a call that writes `bytes`.
+fn lend_mut<R>(bytes: &mut [u8], call: impl for<'a> FnOnce(Left<'a>, Next<'a, *mut u8>) -> R) -> R {
+    call(
+        Left(bytes.len(), PhantomData),
+        Next(bytes.as_mut_ptr(), PhantomData),
+    )
+}
+
+// libbrotli's own declarations. Each reads the lent input, writes at most the lent
+// room, moves a lending's address and count on together, and keeps no argument; the
+// decoder calls read or write only the live state they are given, and the destroy
+// call frees the state no one holds afterwards.
 unsafe extern "C" {
     safe fn BrotliEncoderVersion() -> u32;
     safe fn BrotliDecoderVersion() -> u32;
     safe fn BrotliEncoderMaxCompressedSize(input_size: usize) -> usize;
-    fn BrotliEncoderCompress(
+    safe fn BrotliEncoderCompress<'i, 'o>(
         quality: c_int,
         lgwin: c_int,
         mode: c_int,
-        input_size: usize,
-        input_buffer: *const u8,
-        encoded_size: *mut usize,
-        encoded_buffer: *mut u8,
+        input_size: Left<'i>,
+        input_buffer: Next<'i, *const u8>,
+        encoded_size: &mut Left<'o>,
+        encoded_buffer: Next<'o, *mut u8>,
     ) -> c_int;
-    /// A new decoder state on malloc, or none. Its caller owns it until
-    /// `BrotliDecoderDestroyInstance`.
+    /// A new decoder state on malloc, or none.
     safe fn BrotliDecoderCreateInstance(
         alloc: DefaultAllocator,
         free: DefaultAllocator,
         opaque: DefaultAllocator,
     ) -> Option<Owned>;
-    /// Frees the state it is given, which no one holds afterwards.
-    safe fn BrotliDecoderDestroyInstance(state: Owned);
-    fn BrotliDecoderDecompressStream(
-        state: *mut State,
-        available_in: *mut usize,
-        next_in: *mut *const u8,
-        available_out: *mut usize,
-        next_out: *mut *mut u8,
-        total_out: *mut usize,
+    safe fn BrotliDecoderDestroyInstance(state: Dying);
+    /// Accepts a null `total_out`.
+    safe fn BrotliDecoderDecompressStream<'i, 'o>(
+        state: Live<'_>,
+        available_in: &mut Left<'i>,
+        next_in: &mut Next<'i, *const u8>,
+        available_out: &mut Left<'o>,
+        next_out: &mut Next<'o, *mut u8>,
+        total_out: Option<&mut usize>,
     ) -> c_int;
-    /// The live state's last error: it reads the state and nothing else.
     safe fn BrotliDecoderGetErrorCode(state: Live<'_>) -> c_int;
     /// The code's name: a static string for every code, `INVALID` for an unknown one.
     safe fn BrotliDecoderErrorString(code: c_int) -> Text<'static>;
@@ -105,29 +141,28 @@ pub fn versions() -> String {
 #[must_use]
 pub fn compress(input: &[u8], quality: i32) -> Option<Vec<u8>> {
     let mut out = vec![0; BrotliEncoderMaxCompressedSize(input.len())];
-    let mut size = out.len();
-    // SAFETY: `input` is readable for its length and `out` writable for `size` bytes.
-    let compressed = unsafe {
-        BrotliEncoderCompress(
-            quality,
-            DEFAULT_WINDOW,
-            DEFAULT_MODE,
-            input.len(),
-            input.as_ptr(),
-            &raw mut size,
-            out.as_mut_ptr(),
-        )
-    };
-    (compressed == BROTLI_TRUE).then(|| {
-        out.truncate(size);
-        out
-    })
+    let size = lend(input, |size, input| {
+        lend_mut(&mut out, |mut room, out| {
+            let compressed = BrotliEncoderCompress(
+                quality,
+                DEFAULT_WINDOW,
+                DEFAULT_MODE,
+                size,
+                input,
+                &mut room,
+                out,
+            );
+            (compressed == BROTLI_TRUE).then_some(room.0)
+        })
+    })?;
+    out.truncate(size);
+    Some(out)
 }
 
-/// A response's Brotli decoder. `out` holds the bytes the last chunk produced.
+/// A response's Brotli decoder. The first bytes of `out` hold what the last chunk
+/// produced; all of it is initialised, so it grows, zeroed, only past its largest.
 pub struct Decoder {
-    /// Some until `drop` destroys it.
-    state: Option<Owned>,
+    state: Owned,
     out: Vec<u8>,
 }
 
@@ -139,7 +174,7 @@ impl Decoder {
         let state = BrotliDecoderCreateInstance(None, None, None)
             .ok_or("BrotliDecoderCreateInstance() failed")?;
         Ok(Self {
-            state: Some(state),
+            state,
             out: Vec::new(),
         })
     }
@@ -149,58 +184,45 @@ impl Decoder {
     /// # Errors
     /// Upstream's warning, with libbrotli's reason, when the stream is corrupt.
     pub fn decode(&mut self, input: &[u8]) -> Result<&[u8], String> {
-        self.out.clear();
-        let (mut next_in, mut available_in) = (input.as_ptr(), input.len());
-        let state = self.state.as_ref().map_or(null_mut(), Owned::as_ptr);
-        loop {
-            self.out.reserve(BUFFER);
-            let spare = self.out.spare_capacity_mut();
-            let (mut next_out, room) = (spare.as_mut_ptr().cast::<u8>(), spare.len());
-            let mut available_out = room;
-            // SAFETY: the decoder's live state (`state` is Some until `drop`); `next_in` has `available_in` readable
-            // bytes left of `input` and `next_out` `available_out` writable bytes of
-            // `out`'s spare capacity. libbrotli accepts a null `total_out`.
-            let result = unsafe {
-                BrotliDecoderDecompressStream(
-                    state,
-                    &raw mut available_in,
-                    &raw mut next_in,
-                    &raw mut available_out,
-                    &raw mut next_out,
-                    null_mut(),
-                )
-            };
-            let written = self.out.len() + room - available_out;
-            // SAFETY: libbrotli initialised the `room - available_out` bytes it wrote.
-            unsafe { self.out.set_len(written) };
-            match result {
-                SUCCESS | NEEDS_MORE_INPUT => return Ok(&self.out),
-                NEEDS_MORE_OUTPUT => {}
-                _ => return Err(self.error()),
+        let (state, out) = (self.state.live(), &mut self.out);
+        let decoded = lend(input, |mut available_in, mut next_in| {
+            let mut filled = 0;
+            loop {
+                if out.len() < filled + BUFFER {
+                    out.resize(filled + BUFFER, 0);
+                }
+                let room = out.get_mut(filled..).unwrap_or_default();
+                let size = room.len();
+                let (result, left) = lend_mut(room, |mut available_out, mut next_out| {
+                    let result = BrotliDecoderDecompressStream(
+                        state,
+                        &mut available_in,
+                        &mut next_in,
+                        &mut available_out,
+                        &mut next_out,
+                        None,
+                    );
+                    (result, available_out.0)
+                });
+                filled += size - left;
+                match result {
+                    SUCCESS | NEEDS_MORE_INPUT => return Ok(filled),
+                    NEEDS_MORE_OUTPUT => {}
+                    _ => return Err(error(state)),
+                }
             }
-        }
-    }
-
-    /// `BrotliDecoderDecompressStream() failed, <BrotliDecoderErrorString>`.
-    fn error(&self) -> String {
-        let code = self
-            .state
-            .as_ref()
-            .map_or(0, |state| BrotliDecoderGetErrorCode(state.live()));
-        let reason = BrotliDecoderErrorString(code).get();
-        format!(
-            "BrotliDecoderDecompressStream() failed, {}",
-            reason.to_string_lossy()
-        )
+        })?;
+        Ok(self.out.get(..decoded).unwrap_or_default())
     }
 }
 
-impl Drop for Decoder {
-    fn drop(&mut self) {
-        if let Some(state) = self.state.take() {
-            BrotliDecoderDestroyInstance(state);
-        }
-    }
+/// `BrotliDecoderDecompressStream() failed, <BrotliDecoderErrorString>`.
+fn error(state: Live<'_>) -> String {
+    let reason = BrotliDecoderErrorString(BrotliDecoderGetErrorCode(state)).get();
+    format!(
+        "BrotliDecoderDecompressStream() failed, {}",
+        reason.to_string_lossy()
+    )
 }
 
 #[cfg(test)]
