@@ -18,6 +18,7 @@ use std::{
     mem::ManuallyDrop,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
+use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::memory::flat::Table;
 use swoole_rs_corebase::process::worker_globals::with_current;
 use swoole_rs_corebase::process::worker_record::WorkerType;
@@ -133,25 +134,14 @@ php_local! {
     static QUEUED: Cell<Queue> = Cell::new(Queue::new());
 }
 
-/// The address table, out of its cell until the caller puts it back; an
-/// empty table allocates nothing.
-fn take_addresses() -> Addresses {
-    ADDRESSES.replace(ManuallyDrop::new(Table::new()))
-}
-
 /// Queue `ctx` behind the waiting requests.
 fn enqueue(ctx: Ctx) {
-    let mut queued = QUEUED.take();
-    queued.push_back(ctx.hold());
-    QUEUED.set(queued);
+    QUEUED.with(|cell| cell.with_taken(|queue| queue.push_back(ctx.hold())));
 }
 
 /// The oldest waiting request, out of the queue before the caller acts on it.
 fn dequeue() -> Option<Hold> {
-    let mut queued = QUEUED.take();
-    let ctx = queued.pop_front();
-    QUEUED.set(queued);
-    ctx
+    QUEUED.with(|cell| cell.with_taken(Queue::pop_front))
 }
 
 fn address(server: view::Server<'_>, conn: Connection<'_>, local: bool) -> ZString {
@@ -214,18 +204,20 @@ fn cached(
     fd: usize,
     session: i64,
 ) -> Option<[ZString; 2]> {
-    let mut cached = take_addresses();
-    if let Some((owner, addresses)) = cached.get(fd)
-        && *owner == session
-    {
-        let copies = addresses.each_ref().map(|address| ZStr::to_owned(address));
-        ADDRESSES.set(cached);
-        return Some(copies);
-    }
-    let addresses = [address(server, conn, true), address(server, conn, false)];
-    let copies = addresses.each_ref().map(|address| ZStr::to_owned(address));
-    let inserted = cached.insert(fd, (session, addresses));
-    ADDRESSES.set(cached);
+    let mut inserted = Ok(None);
+    let copies = ADDRESSES.with(|cell| {
+        cell.with_taken(|cached| {
+            if let Some((owner, addresses)) = cached.get(fd)
+                && *owner == session
+            {
+                return addresses.each_ref().map(|address| ZStr::to_owned(address));
+            }
+            let addresses = [address(server, conn, true), address(server, conn, false)];
+            let copies = addresses.each_ref().map(|address| ZStr::to_owned(address));
+            inserted = cached.insert(fd, (session, addresses));
+            copies
+        })
+    });
     // A reused fd's old entry, or the entry the table couldn't hold, goes now.
     inserted.ok().map(|_| copies)
 }
@@ -664,12 +656,14 @@ pub fn http_server_on_close(server: view::Server<'_>, info: &DataHead) {
     if let Some(conn) = server.by_session(session)
         && let Ok(fd) = usize::try_from(conn.fd())
     {
-        let mut cached = take_addresses();
-        let removed = cached
-            .get(fd)
-            .is_some_and(|(owner, _)| *owner == session)
-            .then(|| cached.remove(fd));
-        ADDRESSES.set(cached);
+        let removed = ADDRESSES.with(|cell| {
+            cell.with_taken(|cached| {
+                cached
+                    .get(fd)
+                    .is_some_and(|(owner, _)| *owner == session)
+                    .then(|| cached.remove(fd))
+            })
+        });
         drop(removed);
     }
     php_swoole_server_on_close(server, info);
@@ -758,7 +752,7 @@ pub extern "C" fn server_rinit() {
 /// deferred is raised last, into the hook's `zend_try`.
 pub extern "C" fn server_rshutdown() {
     swr_zend_http_uploads_rshutdown();
-    drop(ManuallyDrop::into_inner(take_addresses()));
+    drop(ManuallyDrop::into_inner(ADDRESSES.take()));
     while let Some(hold) = dequeue() {
         abandon(hold.ctx());
     }

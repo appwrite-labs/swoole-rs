@@ -1,6 +1,7 @@
 //! PHP `Swoole\Http\Cookie`: class registration, objects and every method, and
 //! the `Set-Cookie` line `Swoole\Http\Response::cookie()` sends.
 use std::{cell::Cell, ffi::CStr};
+use swoole_rs_corebase::CellExt;
 use swoole_rs_phpstubs::http_cookie;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{Call, Custom, CustomClass, Owned, OwnedArray, Value, ZStr, ZString};
@@ -30,10 +31,7 @@ impl Held {
     /// `f` on the constructed cookie, taken out and put back; what `f` returns
     /// (such as a replaced field) is dropped by the caller, after the put-back.
     fn with<R>(&self, f: impl FnOnce(&mut Cookie) -> R) -> Option<R> {
-        let mut cookie = self.0.take();
-        let result = cookie.as_mut().map(f);
-        self.0.set(cookie);
-        result
+        self.0.with_taken(|cookie| cookie.as_mut().map(f))
     }
 
     /// `Cookie::toString`: the line, or None after a warning, which resets the

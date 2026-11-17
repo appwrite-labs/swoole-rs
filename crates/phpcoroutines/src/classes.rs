@@ -1,7 +1,7 @@
 //! MINIT: `Swoole\Coroutine` and its iterator, context and exception
 //! classes, the constants, `Swoole\ExitException`, the exit and `@` opcode
 //! handlers and the coroutine-aware autoloader.
-use crate::{context, host, put_back, runtime};
+use crate::{context, host, runtime};
 use std::{
     cell::Cell,
     collections::{HashMap, VecDeque},
@@ -11,6 +11,7 @@ use std::{
     rc::Rc,
     sync::OnceLock,
 };
+use swoole_rs_corebase::CellExt;
 use swoole_rs_phpstubs::{coroutine, coroutine_system};
 use swoole_rs_zend::{
     Call, Class, Minit, Owned, Value, ZStr,
@@ -412,7 +413,7 @@ per_thread! {
 
 /// `f` on the classes being autoloaded, taken out meanwhile.
 fn autoloading<R>(f: impl FnOnce(&mut Loads) -> R) -> R {
-    AUTOLOADING.with(|loads| put_back(loads, f))
+    AUTOLOADING.with(|loads| loads.with_taken(f))
 }
 
 /// Run Zend's autoloader, trapping its bailouts.

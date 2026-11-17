@@ -24,6 +24,13 @@ pub(crate) struct Process<T>(pub(crate) T);
 unsafe impl<T> Sync for Process<T> {}
 
 #[cfg(not(any(zts, panic = "unwind")))]
+impl<T> Process<T> {
+    pub(crate) fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        f(&self.0)
+    }
+}
+
+#[cfg(not(any(zts, panic = "unwind")))]
 impl<T> Process<std::cell::Cell<T>> {
     pub(crate) fn take(&self) -> T
     where
@@ -33,8 +40,5 @@ impl<T> Process<std::cell::Cell<T>> {
     }
     pub(crate) fn set(&self, value: T) {
         self.0.set(value);
-    }
-    pub(crate) fn replace(&self, value: T) -> T {
-        self.0.replace(value)
     }
 }

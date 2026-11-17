@@ -7,7 +7,7 @@
 //!
 //! The heap hooks are C (their signatures follow the PHP build), and call back
 //! here with the hooks removed while Rust may allocate.
-use crate::{context, host::now_us, put_back, runtime};
+use crate::{context, host::now_us, runtime};
 use std::{
     cell::Cell,
     collections::{BTreeMap, HashMap, hash_map::DefaultHasher},
@@ -18,6 +18,7 @@ use std::{
     sync::OnceLock,
 };
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::CellExt;
 use swoole_rs_zend::{
     Call, Function, Owned, OwnedArray, Value, ZString, bailout, handlers,
     observer::{self, Observer},
@@ -122,7 +123,7 @@ struct Profile {
     events: Option<OwnedArray>,
 }
 
-// Each is taken out and put back (`put_back`) around code that neither yields
+// Each is taken out and put back around code that neither yields
 // nor runs PHP, so nothing is borrowed across a call.
 per_thread! {
     static LEAKS: Cell<Leaks> = Cell::new(Leaks {
@@ -145,11 +146,11 @@ per_thread! {
 }
 
 fn with_leaks<R>(f: impl FnOnce(&mut Leaks) -> R) -> R {
-    LEAKS.with(|leaks| put_back(leaks, f))
+    LEAKS.with(|leaks| leaks.with_taken(f))
 }
 
 fn with_profile<R>(f: impl FnOnce(&mut Profile) -> R) -> R {
-    PROFILE.with(|profile| put_back(profile, f))
+    PROFILE.with(|profile| profile.with_taken(f))
 }
 
 /// `swoole_thread_get_native_id()`.
@@ -611,7 +612,7 @@ fn blocking_begin(func: Func<'_>) {
     };
     let key = func.key();
     SPANS.with(|spans| {
-        put_back(spans, |spans| {
+        spans.with_taken(|spans| {
             // A recursive call's span replaces the open one, as the slot's store did.
             match spans.iter_mut().find(|(at, _)| *at == key) {
                 Some(open) => open.1 = span,
@@ -630,7 +631,7 @@ fn blocking_end(func: Func<'_>) {
     }
     let key = func.key();
     let span = SPANS.with(|spans| {
-        put_back(spans, |spans| {
+        spans.with_taken(|spans| {
             let at = spans.iter().rposition(|(open, _)| *open == key)?;
             Some(spans.swap_remove(at).1)
         })
