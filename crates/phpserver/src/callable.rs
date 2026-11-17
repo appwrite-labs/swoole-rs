@@ -14,7 +14,7 @@ pub(crate) fn create(value: &Value) -> Option<Callable> {
     callable::Callable::new(value).ok().flatten()
 }
 
-/// A nested on() may already have installed its callable and property.
+/// A nested `on()` may already have installed its callable and property.
 /// Restore that pair before dropping the unused callable, whose destructor may re-enter.
 pub(crate) fn install(slot: &Cell<Option<Callable>>, callable: Callable) {
     if let Some(nested) = slot.replace(Some(callable)) {
