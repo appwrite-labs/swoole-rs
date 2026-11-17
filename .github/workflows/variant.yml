@@ -149,6 +149,11 @@ jobs:
               --build-manifest target/ext/build-manifest.json \
               --output target/phpt/zts/collections-$profile.json
           done
+      - name: Socket cancellation across parks
+        if: inputs.variant == 'iouring' || inputs.variant == 'cares' || inputs.variant == 'threadcontext'
+        run: >
+          python3 tests/modules/hooks/socket_cancel.py --php "$PHP" $RUN
+          --engine cargo=target/phpt/cargo.so --output "target/phpt/$VARIANT/socket-cancel.json"
       - name: Run and gate PHPTs
         run: corpus/upstream/families.sh "target/phpt/$VARIANT" target/phpt/upstream.so target/phpt/cargo.so $FAMILIES $RUN
       - if: inputs.variant == 'zts'
