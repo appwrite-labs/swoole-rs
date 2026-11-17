@@ -5,7 +5,7 @@
 use crate::server::{Value, begin_file, current, finish_file, of, respond, send_body, set};
 use std::ffi::CString;
 use swoole_rs_corebase::CCast;
-use swoole_rs_hooks::offload::async_job;
+use swoole_rs_corebase::offload::async_job;
 use swoole_rs_http2::{FileMode, sw_rs_http2_file_length, sw_rs_http2_file_mode};
 use swoole_rs_phphttp::http2::{Ctx, Field};
 use swoole_rs_server::static_handler::{StaticHandler, page_404};

@@ -157,6 +157,9 @@
       ],
       "owned_paths": [
         "crates/hooks/",
+        "crates/corebase/src/offload/threads.rs",
+        "crates/corebase/src/offload.rs",
+        "crates/corebase/src/offload/",
         "crates/phpruntime/",
         "crates/pgsql/",
         "crates/odbc/",

@@ -3,7 +3,7 @@
  * AsyncEvent is a plain record whose layout crates/hooks/src/offload.rs mirrors (asserted
  * below). The DNS requests are Rust's resolver record (crates/corebase/src/
  * resolver_request.rs), which C++ only carries; the
- * pool (AsyncThreads, async::dispatch) is crates/hooks/src/async_threads.rs. Upstream's
+ * pool (AsyncThreads, async::dispatch) is crates/corebase/src/offload/threads.rs. Upstream's
  * file is deleted, so `#include "swoole_async.h"` finds this copy on the Rust prefix's
  * include path. */
 #pragma once

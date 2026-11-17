@@ -14,7 +14,7 @@ scheduling and idle retirement. Each `AsyncThreads` holds one reference; the las
 release shuts the pool down and joins every worker, as upstream's `use_count() == 1`.
 
 Event tokens are `AsyncEvent` pointers the pool never dereferences. Its hooks
-(`PoolHooks`) are `crates/hooks/src/async_threads.rs`, which is also `AsyncThreads`
+(`PoolHooks`) are `crates/corebase/src/offload/threads.rs`, which is also `AsyncThreads`
 and `async::dispatch` (under its upstream symbol; `Co::stats()` reads the counts
 through `async_threads::stats`): `execute` runs the handler
 over a copy (missing handler wins over canceled; the dispatcher may set `canceled`,
@@ -73,5 +73,5 @@ it logs each failed step as it happens, errno intact.
 
 `file_open`/`file_close` and `tmpfile` back `File::open`,
 `File::close` and `swoole_tmpfile`. `swoole_async.h` keeps `AsyncEvent`, whose layout
-`crates/hooks/src/offload.rs` mirrors; the resolver requests it carries and their
+`crates/corebase/src/offload.rs` mirrors; the resolver requests it carries and their
 `gethostbyname`/`getaddrinfo` handlers are Rust's (`crates/corebase/src/resolver_request.rs`).

@@ -14,7 +14,6 @@
 )]
 
 pub mod address;
-pub mod async_threads;
 pub mod buffered;
 pub mod co_io;
 pub mod co_socket;
@@ -28,7 +27,6 @@ pub mod hooked;
 #[cfg(all(feature = "iouring", feature = "upstream-symbols"))]
 pub mod iouring;
 pub mod lifecycle;
-pub mod offload;
 pub mod packet;
 pub mod poll;
 pub mod reactor_handlers;
@@ -60,11 +58,6 @@ pub mod wait_signal;
 #[must_use]
 pub fn timeval(seconds: f64, micros: f64) -> f64 {
     seconds + micros / 1000.0 / 1000.0
-}
-
-#[must_use]
-pub fn sleep_timeout(seconds: f64, minimum: f64) -> f64 {
-    if seconds < minimum { minimum } else { seconds }
 }
 
 mod socket_scope;

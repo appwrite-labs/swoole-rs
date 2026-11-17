@@ -3,12 +3,12 @@
 //! each fd is registered with the reactor, the coroutine parks, and the first
 //! readiness or the timer wakes it once. [`NATIVE`] registers with the reactor, arms
 //! the timer and parks; tests pass their own [`PollOps`].
-use crate::resolve::WakerSlot;
 use crate::wait_event::{from_poll, to_poll};
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use swoole_rs_corebase::coroutine::Waker;
+use swoole_rs_corebase::offload::WakerSlot;
 use swoole_rs_corebase::reactor::Events;
 
 /// Why no descriptor became ready.
@@ -327,7 +327,7 @@ pub static NATIVE: PollOps<crate::wait_event::Watch> = PollOps {
     add: native::add,
     timer_add: native::timer_add,
     current: crate::wait_event::native::current,
-    park: crate::resolve::park,
+    park: swoole_rs_corebase::offload::park,
     wake: Wake {
         timer_del: native::timer_del,
         defer: native::defer,
