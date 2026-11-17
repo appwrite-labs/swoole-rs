@@ -287,14 +287,18 @@ fn direct(kind: i32, shared: bool, stage: i32) {
         unreachable!("a lock of kind {kind}");
     };
     let row = if shared {
-        let storage: &'static mut [AtomicU64] = Box::leak(
+        let storage = Box::into_raw(
             (0..Lock::words(lock))
                 .map(|_| AtomicU64::new(0))
                 .collect::<Box<[_]>>(),
         );
-        faulted(kind, stage, || {
-            (Lock::shared(lock, storage).is_some(), None)
-        })
+        let row = faulted(kind, stage, || {
+            // SAFETY: this allocation outlives the temporary lock, which is dropped here.
+            (Lock::shared(lock, unsafe { &mut *storage }).is_some(), None)
+        });
+        // SAFETY: the constructor retained no reference and the temporary lock is gone.
+        drop(unsafe { Box::from_raw(storage) });
+        row
     } else {
         faulted(kind, stage, || (Lock::private(lock).is_some(), None))
     };
