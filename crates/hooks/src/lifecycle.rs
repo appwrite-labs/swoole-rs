@@ -416,8 +416,8 @@ mod tests {
         state: (c_int, SocketFlags, c_int, bool, c_long, c_long, c_int),
     }
 
-    fn id(state: *mut SocketState, event: Events) -> c_long {
-        let co = unsafe { (*state).co(event) };
+    fn id(state: &SocketState, event: Events) -> c_long {
+        let co = state.co(event);
         if co.is_null() {
             0
         } else {
@@ -444,8 +444,13 @@ mod tests {
         set_errno(0);
         take();
         let result = operation(socket.co());
-        let state = socket.state();
-        let flags = unsafe { (*state).flags };
+        let (flags, read, write) = socket.with_state(|state| {
+            (
+                state.flags,
+                id(state, Events::READ),
+                id(state, Events::WRITE),
+            )
+        });
         let outcome = Outcome {
             result,
             effects: take(),
@@ -454,13 +459,13 @@ mod tests {
                 flags,
                 socket.0.err_code.get(),
                 unsafe { socket.0.record() }.output.close_wait,
-                id(state, Events::READ),
-                id(state, Events::WRITE),
+                read,
+                write,
                 errno(),
             ),
         };
         socket.0.sock_fd.set(100);
-        unsafe { (*state).bind(Events::READ | Events::WRITE, core::ptr::null_mut()) };
+        socket.with_state(|state| state.bind(Events::READ | Events::WRITE, core::ptr::null_mut()));
         outcome
     }
 
@@ -482,20 +487,21 @@ mod tests {
     }
 
     fn set_flags(socket: &TestSocket, connected: bool, read: bool, write: bool) {
-        unsafe {
-            (*socket.state()).flags = SocketFlags {
+        socket.with_state(|state| {
+            state.flags = SocketFlags {
                 connected,
                 read,
                 write,
             };
-        }
+        });
     }
 
     fn bind(socket: &TestSocket, bindings: usize, cos: &[*mut c_long; 3]) {
         let pick = |on: bool, co: *mut c_long| if on { co.cast() } else { core::ptr::null_mut() };
-        let state = unsafe { &mut *socket.state() };
-        state.bind(Events::READ, pick(bindings & 1 != 0, cos[0]));
-        state.bind(Events::WRITE, pick(bindings & 2 != 0, cos[1]));
+        socket.with_state(|state| {
+            state.bind(Events::READ, pick(bindings & 1 != 0, cos[0]));
+            state.bind(Events::WRITE, pick(bindings & 2 != 0, cos[1]));
+        });
     }
 
     /// Scenarios 0..512: each `how`, connection and half-close state, open or
@@ -554,7 +560,7 @@ mod tests {
             let (event, bindings, unbinds) = (EVENTS[k % 8], (k / 8) % 4, k / 32 == 1);
             let setup = move |s: &mut TestSocket, cos: &[*mut c_long; 3]| {
                 bind(s, bindings, cos);
-                let state = s.state();
+                let co = s.co();
                 ON_RESUME.set(Some(Box::new(move |cid| {
                     if unbinds {
                         let event = if cid == 5 {
@@ -562,7 +568,7 @@ mod tests {
                         } else {
                             Events::WRITE
                         };
-                        unsafe { (*state).bind(event, core::ptr::null_mut()) };
+                        co.with_state(|state| state.bind(event, core::ptr::null_mut()));
                     }
                 })));
             };
@@ -595,17 +601,17 @@ mod tests {
                 s.0.sock_fd.set(if closed { -1 } else { 77 });
                 set_flags(s, connected, false, false);
                 bind(s, bindings, cos);
-                let (state, other) = (s.state(), cos[2]);
-                ON_RESUME.set(Some(Box::new(move |cid| unsafe {
-                    match (cid, mode) {
-                        (5 | 11, 1 | 2) => (*state).bind(Events::READ, core::ptr::null_mut()),
-                        (7, 1) => (*state).bind(Events::WRITE, core::ptr::null_mut()),
+                let (co, other) = (s.co(), cos[2]);
+                ON_RESUME.set(Some(Box::new(move |cid| {
+                    co.with_state(|state| match (cid, mode) {
+                        (5 | 11, 1 | 2) => state.bind(Events::READ, core::ptr::null_mut()),
+                        (7, 1) => state.bind(Events::WRITE, core::ptr::null_mut()),
                         (7, 2) => {
-                            (*state).bind(Events::WRITE, core::ptr::null_mut());
-                            (*state).bind(Events::READ, other.cast::<c_void>());
+                            state.bind(Events::WRITE, core::ptr::null_mut());
+                            state.bind(Events::READ, other.cast::<c_void>());
                         }
                         _ => {}
-                    }
+                    });
                 })));
             };
             let close_with = |close: fn(Co, Sys) -> bool| {

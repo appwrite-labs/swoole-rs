@@ -313,7 +313,7 @@ impl Co {
     /// read buffer.
     pub(crate) fn recv_packet(self, timeout: f64, clear_empty: bool) -> Option<usize> {
         let retval = swoole_rs_hooks::packet::recv_packet(self.0, timeout);
-        if retval == Some(0) && clear_empty && !self.0.read_buffer().is_null() {
+        if retval == Some(0) && clear_empty && self.0.has_read_buffer() {
             self.0
                 .with_buffer(false, swoole_rs_corebase::buffer::string::CppString::clear);
         }
@@ -324,7 +324,7 @@ impl Co {
     /// or None after `set_err(ENOMEM)`.
     pub(crate) fn pop_packet(self, length: usize) -> Option<ZString> {
         let init_size = self.0.buffer_init_size();
-        let packet = (!self.0.read_buffer().is_null())
+        let packet = (self.0.has_read_buffer())
             .then(|| {
                 self.0.with_buffer(false, |buffer| {
                     (buffer.offset() != 0)

@@ -6,12 +6,12 @@
 //! [`SocketExtra`](crate::socket_extra::SocketExtra).
 use crate::shutdown::SocketState;
 use crate::socket_extra::SocketExtra;
-use core::cell::{Cell, UnsafeCell};
+use core::cell::Cell;
 use core::ffi::{CStr, c_char, c_int, c_void};
 use core::mem::{MaybeUninit, offset_of};
 use core::ptr;
 use std::ffi::CString;
-use swoole_rs_corebase::buffer::string::{CppString, new_sized_string};
+use swoole_rs_corebase::buffer::string::{CppString, boxed_sized_string};
 use swoole_rs_corebase::constants::{
     FdType, SW_BUFFER_SIZE_BIG, SW_INPUT_BUFFER_SIZE, SocketFlag, SocketType,
 };
@@ -50,8 +50,10 @@ pub struct CoSocket {
     /// The buffers' allocator: none for the default.
     pub(crate) buffer_allocator: Cell<Option<swoole_rs_corebase::TrustedAllocator>>,
     pub buffer_init_size: Cell<usize>,
-    pub(crate) read_buffer: Cell<*mut c_void>,
-    pub(crate) write_buffer: Cell<*mut c_void>,
+    /// The read and write `String`s, none before first use. Native code only keeps
+    /// their place (`String *`), so the record owns them as boxes.
+    pub(crate) read_buffer: Cell<Option<Box<CppString>>>,
+    pub(crate) write_buffer: Cell<Option<Box<CppString>>>,
     pub ssl_is_server: Cell<bool>,
     pub ssl_handshaked: Cell<bool>,
     pub zero_copy: Cell<bool>,
@@ -141,11 +143,10 @@ pub const FD_WARNINGS_SHIFT: u32 = 8;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Co(*mut CoSocket);
 
-/// What a record's `state` points to: the bound state, first, so the pointer is the
-/// state's too, and which parts of the record a [`Co`] `with_*` call has lent out.
-#[repr(C)]
+/// What a record's `state` points to: the bound state, which [`Co::with_state`] takes
+/// out while it runs, and which parts a [`Co`] `with_*` call has lent out.
 pub struct Bound {
-    state: UnsafeCell<SocketState>,
+    state: Cell<Option<Box<SocketState>>>,
     lent: Cell<u8>,
     #[cfg(any(test, feature = "iouring"))]
     tls_buffers: [Cell<Option<TlsBuffer>>; 2],
@@ -155,16 +156,11 @@ impl Bound {
     /// A new record's: nothing bound, nothing lent. `fini` frees it.
     fn new() -> Self {
         Self {
-            state: UnsafeCell::new(SocketState::new()),
+            state: Cell::new(Some(Box::new(SocketState::new()))),
             lent: Cell::new(0),
             #[cfg(any(test, feature = "iouring"))]
             tls_buffers: [const { Cell::new(None) }; 2],
         }
-    }
-
-    /// The bound state's address, which [`Co::with_state`] borrows.
-    fn state(&self) -> *mut SocketState {
-        self.state.get()
     }
 }
 
@@ -309,12 +305,15 @@ impl Co {
         context
     }
 
-    fields!(get
-        /// Null, or the live `String` the record owns: a `new String`, a Box.
-        read_buffer: *mut c_void);
-    fields!(get
-        /// Null, or the live `String` the record owns: a `new String`, a Box.
-        write_buffer: *mut c_void);
+    /// Whether the record holds its read buffer: made, and not given up meanwhile.
+    #[must_use]
+    pub fn has_read_buffer(self) -> bool {
+        let slot = self.buffer_slot(false);
+        let buffer = slot.take();
+        let held = buffer.is_some();
+        slot.set(buffer);
+        held
+    }
 
     /// The buffers' allocator: none for the default.
     #[must_use]
@@ -404,21 +403,13 @@ impl Co {
         self.sock_fd() == -1
     }
 
-    /// `get_read_buffer()` / `get_write_buffer()`: the buffer, made on first use.
-    #[must_use]
-    pub fn buffer(self, write: bool) -> *mut CppString {
-        let slot = if write {
-            self.write_buffer()
-        } else {
-            self.read_buffer()
-        };
-        if !slot.is_null() {
-            return slot.cast();
-        }
-        let made = new_sized_string(BUFFER_SIZE_BIG, self.buffer_allocator());
-        // A `new String`, which the record owns now.
-        self.buffer_slot(write).set(made.cast());
-        made
+    /// `get_read_buffer()` / `get_write_buffer()`'s first use: a new buffer.
+    #[expect(
+        clippy::unnecessary_box_returns,
+        reason = "the record owns its buffers boxed: native code keeps a `String *`"
+    )]
+    fn new_buffer(self) -> Box<CppString> {
+        boxed_sized_string(BUFFER_SIZE_BIG, self.buffer_allocator())
     }
 
     /// `f` over TLS's read (`write` false) or write BIO scratch, which it owns
@@ -450,7 +441,7 @@ impl Co {
     }
 
     /// The record's read or write buffer slot.
-    fn buffer_slot(&self, write: bool) -> &Cell<*mut c_void> {
+    fn buffer_slot(&self, write: bool) -> &Cell<Option<Box<CppString>>> {
         self.record().buffer_slot(write)
     }
 
@@ -474,13 +465,10 @@ impl Co {
     #[track_caller]
     #[must_use]
     pub fn own_read_buffer(self) -> OwnedRead {
-        let _made = self.buffer(false);
-        let Some(buffer) = self.take_buffer(false) else {
-            swoole_rs_corebase::fatal("a coroutine socket without its read buffer")
-        };
+        let buffer = self.take_buffer(false).unwrap_or_else(|| self.new_buffer());
         OwnedRead {
             socket: self,
-            buffer: core::mem::ManuallyDrop::new(buffer),
+            buffer: Some(buffer),
         }
     }
 
@@ -494,13 +482,6 @@ impl Co {
         self.take_buffer(true)
     }
 
-    /// The bound state's address; [`Co::with_state`] borrows it.
-    #[must_use]
-    pub fn state(self) -> *mut SocketState {
-        let bound = self.record().state.as_deref();
-        bound.map_or(ptr::null_mut(), Bound::state)
-    }
-
     /// `f` with `part` lent out: the loan, of the [`Bound`] `new`'s contract keeps
     /// live, ends with the call.
     #[track_caller]
@@ -508,14 +489,21 @@ impl Co {
         self.record().lend(part, f)
     }
 
-    /// `f` over [`Co::buffer`]'s String.
+    /// `f` over the read or write buffer (`get_read_buffer()` / `get_write_buffer()`),
+    /// made on first use, which the record gives up while `f` runs and takes back after.
     /// # Panics
     /// Inside another `with_buffer` over the same buffer.
     #[track_caller]
     pub fn with_buffer<T>(self, write: bool, f: impl FnOnce(&mut CppString) -> T) -> T {
         let part = if write { WRITE_BUFFER } else { READ_BUFFER };
-        // SAFETY: the record's live String; the loan makes this its only reference.
-        self.lend(part, |_| f(unsafe { &mut *self.buffer(write) }))
+        self.lend(part, |_| {
+            let slot = self.buffer_slot(write);
+            let mut buffer = slot.take().unwrap_or_else(|| self.new_buffer());
+            let result = f(&mut buffer);
+            // The loan kept every other taker off the slot, so it is still empty.
+            slot.set(Some(buffer));
+            result
+        })
     }
 
     /// `f` over the `network::Socket`, or `None` before the socket opens: an
@@ -566,13 +554,21 @@ impl Co {
         Some(result)
     }
 
-    /// The bound coroutines, retries and timers.
+    /// The bound coroutines, retries and timers, which the record gives up while `f`
+    /// runs and takes back after.
     /// # Panics
     /// Inside another `with_state` over the same record.
     #[track_caller]
     pub fn with_state<T>(self, f: impl FnOnce(&mut SocketState) -> T) -> T {
-        // SAFETY: the live state; the loan makes this its only reference.
-        self.lend(STATE, |bound| f(unsafe { bound.state.as_mut_unchecked() }))
+        self.lend(STATE, |bound| {
+            // The loan keeps every other taker off the slot until it is back.
+            let Some(mut state) = bound.state.take() else {
+                swoole_rs_corebase::fatal("a coroutine socket without its state")
+            };
+            let result = f(&mut state);
+            bound.state.set(Some(state));
+            result
+        })
     }
 
     /// `errno` classified by the open socket, as `catch_read_error`/`catch_write_error`
@@ -607,15 +603,20 @@ impl CoSocket {
     /// loan ends with the call.
     #[track_caller]
     fn lend<T>(&self, part: u8, f: impl FnOnce(&Bound) -> T) -> T {
-        let bound = self.state.as_deref();
-        let bound =
-            bound.unwrap_or_else(|| swoole_rs_corebase::fatal("a hooked socket without its state"));
+        let bound = self.bound();
         let _loan = Loan::take(&bound.lent, part);
         f(bound)
     }
 
+    /// The [`Bound`] `init` made, live until `fini`.
+    #[track_caller]
+    fn bound(&self) -> &Bound {
+        let bound = self.state.as_deref();
+        bound.unwrap_or_else(|| swoole_rs_corebase::fatal("a hooked socket without its state"))
+    }
+
     /// The read or write buffer slot.
-    fn buffer_slot(&self, write: bool) -> &Cell<*mut c_void> {
+    fn buffer_slot(&self, write: bool) -> &Cell<Option<Box<CppString>>> {
         if write {
             &self.write_buffer
         } else {
@@ -627,13 +628,7 @@ impl CoSocket {
     #[track_caller]
     fn take_buffer(&self, write: bool) -> Option<Box<CppString>> {
         let part = if write { WRITE_BUFFER } else { READ_BUFFER };
-        self.lend(part, |_| {
-            let buffer = self.buffer_slot(write).replace(ptr::null_mut());
-            let buffer = buffer.cast::<CppString>();
-            // SAFETY: null or the `new String` the record owned, which nothing else
-            // reaches: the record no longer does and no `with_buffer` lends it.
-            (!buffer.is_null()).then(|| unsafe { Box::from_raw(buffer) })
-        })
+        self.lend(part, |_| self.buffer_slot(write).take())
     }
 
     /// The `network::Socket`'s address: null before the socket opens.
@@ -667,8 +662,8 @@ impl CoSocket {
             backlog: Cell::new(0),
             buffer_allocator: Cell::new(None),
             buffer_init_size: Cell::new(BUFFER_SIZE_BIG),
-            read_buffer: Cell::new(ptr::null_mut()),
-            write_buffer: Cell::new(ptr::null_mut()),
+            read_buffer: Cell::new(None),
+            write_buffer: Cell::new(None),
             ssl_is_server: Cell::new(false),
             ssl_handshaked: Cell::new(false),
             zero_copy: Cell::new(false),
@@ -988,29 +983,39 @@ impl Drop for OwnedCo {
 /// frame abandoned while holding it keeps the allocation from the socket's teardown.
 pub struct OwnedRead {
     socket: Co,
-    /// Never dropped: `drop` hands the box to the socket's slot.
-    buffer: core::mem::ManuallyDrop<Box<CppString>>,
+    /// Some until `drop` hands the box back to the socket's slot.
+    buffer: Option<Box<CppString>>,
 }
 
 impl core::ops::Deref for OwnedRead {
     type Target = CppString;
     fn deref(&self) -> &CppString {
-        &self.buffer
+        self.buffer
+            .as_deref()
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("an owned read buffer given back"))
     }
 }
 
 impl core::ops::DerefMut for OwnedRead {
     fn deref_mut(&mut self) -> &mut CppString {
-        &mut self.buffer
+        self.buffer
+            .as_deref_mut()
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("an owned read buffer given back"))
     }
 }
 
 impl Drop for OwnedRead {
     fn drop(&mut self) {
-        let slot = self.socket.buffer_slot(false);
-        assert!(slot.get().is_null(), "the read buffer is owned elsewhere");
-        // The slot owns the box from here, as `Box::into_raw` would leave it.
-        slot.set(ptr::from_mut::<CppString>(&mut self.buffer).cast());
+        let record = self.socket.record();
+        let slot = record.buffer_slot(false);
+        // Neither made again nor lent out meanwhile, as with the pointer the slot was.
+        let lent = record.bound().lent.get() & READ_BUFFER != 0;
+        let held = slot.take();
+        assert!(
+            held.is_none() && !lent,
+            "the read buffer is owned elsewhere"
+        );
+        slot.set(self.buffer.take());
     }
 }
 
@@ -1189,21 +1194,20 @@ mod test_support {
             unsafe { Co::new(self.ptr()) }
         }
 
-        pub(crate) fn state(&self) -> *mut SocketState {
-            self.0
-                .state
-                .as_deref()
-                .map_or(ptr::null_mut(), Bound::state)
+        /// [`Co::with_state`] of the record.
+        pub(crate) fn with_state<T>(&self, f: impl FnOnce(&mut SocketState) -> T) -> T {
+            unsafe { Co::new((&raw const *self.0).cast_mut()) }.with_state(f)
         }
     }
 
     impl Drop for TestSocket {
         fn drop(&mut self) {
             unsafe {
-                for buffer in [self.0.read_buffer.get(), self.0.write_buffer.get()] {
-                    if !buffer.is_null() {
-                        swoole_rs_corebase::buffer::string::delete_string(buffer.cast());
-                    }
+                for mut buffer in [self.0.read_buffer.take(), self.0.write_buffer.take()]
+                    .into_iter()
+                    .flatten()
+                {
+                    buffer.dispose();
                 }
                 if let Some(s) = Socket::from_ptr(self.0.socket_ptr()) {
                     // A test's `SSL` is its own to free, or a stub.
@@ -1480,12 +1484,8 @@ mod tests {
         let record = unsafe { &*conn };
         assert_eq!((record.fd_type, record.socket_type), (6, 1));
         assert!((record.timeouts.read - 1.5).abs() < f64::EPSILON);
-        assert!(
-            socket
-                .state
-                .as_deref()
-                .is_some_and(|bound| unsafe { (*bound.state()).flags.connected })
-        );
+        let co = unsafe { Co::new((&raw const *socket).cast_mut()) };
+        assert!(co.with_state(|state| state.flags.connected));
         release(socket);
         release(server);
     }
@@ -1560,7 +1560,7 @@ mod tests {
             buffer.as_ptr()
         });
         let mut pending = co.take_buffer(false).unwrap();
-        assert!(co.read_buffer().is_null());
+        assert!(!co.has_read_buffer());
         assert_eq!(pending.as_ptr(), address);
         drop(socket);
         // A completion can still write after the socket's teardown. The pending
@@ -1578,7 +1578,7 @@ mod tests {
         let co = socket.co();
         let address = co.with_buffer(false, |buffer| buffer.as_ptr());
         let mut pending = co.own_read_buffer();
-        assert!(co.read_buffer().is_null(), "given up while owned");
+        assert!(!co.has_read_buffer(), "given up while owned");
         pending.fill_within(3, |spare| {
             assert!(spare.put(b"abc").is_some());
         });

@@ -761,7 +761,7 @@ mod tests {
     use swoole_rs_corebase::CCast;
 
     fn slot_state(socket: &TestSocket) -> usize {
-        match unsafe { (*socket.state()).timers[0] } {
+        match socket.with_state(|state| state.timers[0]) {
             WaitTimer::None => 0,
             WaitTimer::Armed(_) => 1,
             WaitTimer::Unbounded => 2,
@@ -785,7 +785,7 @@ mod tests {
                 WaitTimer::Armed(Held::detached(2)),
                 WaitTimer::Unbounded,
             ][start_state];
-            unsafe { (*socket.state()).timers[0] = preset };
+            socket.with_state(|state| state.timers[0] = preset);
             TIMER_OK.set(timer_ok);
             take();
             // Upstream: start() adds only into an empty slot for a nonzero timeout.
@@ -821,7 +821,7 @@ mod tests {
             timer.stop();
             assert_eq!(take(), expected, "scenario {}", k + 931);
             assert_eq!(slot_state(&socket), node, "scenario {}", k + 931);
-            unsafe { (*socket.state()).timers[0] = WaitTimer::None };
+            socket.with_state(|state| state.timers[0] = WaitTimer::None);
         }
     }
 
@@ -835,9 +835,12 @@ mod tests {
         bind(&socket, 3, &mut ids);
         let node = WaitTimer::Armed(Held::detached(1));
         for (slot, event, cid) in [(1, Events::WRITE, 4), (0, Events::READ, 3)] {
-            unsafe { (*socket.state()).timers[slot] = node };
+            socket.with_state(|state| state.timers[slot] = node);
             timer_fired(socket.co(), event);
-            assert_eq!(unsafe { (*socket.state()).timers[slot] }, WaitTimer::None);
+            assert_eq!(
+                socket.with_state(|state| state.timers[slot]),
+                WaitTimer::None
+            );
             assert_eq!(socket.co().err_code(), libc::ETIMEDOUT);
             assert_eq!(
                 take(),
@@ -868,9 +871,10 @@ mod tests {
                 ptr::null_mut()
             }
         };
-        let state = unsafe { &mut *socket.state() };
-        state.bind(Events::READ, co(bound & 1 != 0, reader));
-        state.bind(Events::WRITE, co(bound & 2 != 0, writer));
+        socket.with_state(|state| {
+            state.bind(Events::READ, co(bound & 1 != 0, reader));
+            state.bind(Events::WRITE, co(bound & 2 != 0, writer));
+        });
     }
 
     /// Upstream's `get_event_str`, `get_bound_cid` and `check_bound_co`.
@@ -923,8 +927,8 @@ mod tests {
             bind(&socket, bound, &mut cells);
             let (cid, name, effects) = upstream_bound(100, bound, ids, event);
             assert_eq!((ops().cid)(socket.co(), event), cid);
-            let state = unsafe { &*socket.state() };
-            assert_eq!(state.event_name(event).to_str(), Ok(name), "scenario {k}");
+            let got = socket.with_state(|state| state.event_name(event));
+            assert_eq!(got.to_str(), Ok(name), "scenario {k}");
             take();
             check_bound(socket.co(), event);
             assert_eq!(take(), effects, "scenario {k}");

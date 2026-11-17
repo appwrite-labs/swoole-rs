@@ -413,7 +413,7 @@ mod tests {
             effects(),
             ["set:1024", "yield:512", "woken:false", "remove:1024"]
         );
-        assert_eq!(unsafe { (*s.state()).want }, Events::NONE);
+        assert_eq!(s.with_state(|state| state.want), Events::NONE);
     }
 
     #[test]
@@ -463,7 +463,7 @@ mod tests {
             expected.extend(want);
             expected.push("remove:512");
             assert_eq!(effects(), expected, "{wake:?}");
-            assert_eq!(unsafe { (*s.state()).retries[0] }, Retry::None);
+            assert_eq!(s.with_state(|state| state.retries[0]), Retry::None);
             s.0.err_code.set(0);
         }
     }
@@ -535,8 +535,8 @@ mod tests {
             };
             record.removed = removed;
             let event_socket = s.0.socket_ptr();
-            unsafe { &mut *s.state() }.bind(Events::READ, (&raw mut reader).cast());
-            unsafe { &mut *s.state() }.bind(Events::WRITE, (&raw mut writer).cast());
+            s.with_state(|state| state.bind(Events::READ, (&raw mut reader).cast()));
+            s.with_state(|state| state.bind(Events::WRITE, (&raw mut writer).cast()));
             ON_RESUME.set(Some(Box::new(move |cid| {
                 if close_in_writer && cid == 8 {
                     unsafe { (*event_socket).fields.object = core::ptr::null_mut() };
@@ -553,8 +553,8 @@ mod tests {
             }
             assert_eq!(effects(), want);
             assert_eq!(s.0.err_code.get(), 0);
-            unsafe { &mut *s.state() }.bind(Events::READ, core::ptr::null_mut());
-            unsafe { &mut *s.state() }.bind(Events::WRITE, core::ptr::null_mut());
+            s.with_state(|state| state.bind(Events::READ, core::ptr::null_mut()));
+            s.with_state(|state| state.bind(Events::WRITE, core::ptr::null_mut()));
         }
     }
 }
