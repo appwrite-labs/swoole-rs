@@ -166,35 +166,22 @@ impl Framing {
 struct Host {
     framing: Framing,
     dispatch_dns: fn(Lookup, &crate::resolver::Request) -> bool,
-    socks5: Socks5,
 }
 
 static HOST: OnceLock<Host> = OnceLock::new();
 
-/// Registers framing, DNS dispatch and SOCKS5 operations; later registrations are
+/// Registers framing and DNS dispatch; later registrations are
 /// ignored. A successful dispatch holds the request until its completion returns.
-pub fn set_host(
-    framing: Framing,
-    dispatch_dns: fn(Lookup, &crate::resolver::Request) -> bool,
-    socks5: Socks5,
-) {
+pub fn set_host(framing: Framing, dispatch_dns: fn(Lookup, &crate::resolver::Request) -> bool) {
     HOST.get_or_init(|| Host {
         framing,
         dispatch_dns,
-        socks5,
     });
 }
 
 fn native_host() -> &'static Host {
     HOST.get()
         .unwrap_or_else(|| swoole_rs_corebase::fatal("client host is not registered"))
-}
-
-/// SOCKS5 operations over the client's owned proxy state.
-pub struct Socks5 {
-    pub admit: fn(usize, usize) -> c_int,
-    pub negotiate: fn(&ProxyState) -> isize,
-    pub handshake: fn(&ProxyState, &[u8]) -> Option<usize>,
 }
 
 /// The public, trivially copyable fields of `network::Client`.
@@ -546,13 +533,13 @@ impl Handle<'_> {
         self.edit_input(|buffer, _, _| buffer.clear());
     }
 
-    /// The SOCKS5 negotiation request's length in [`Self::socks5_packet`].
-    fn socks5_negotiate(self) -> usize {
+    /// Packs the SOCKS5 negotiation request and returns its length, or failure.
+    fn socks5_negotiate(self) -> Option<usize> {
         // The SOCKS5 proxy, whose buffer the request is packed into.
         self.with_proxy(Proxy::Socks5, |proxy| {
-            (native_host().socks5.negotiate)(proxy).cast_unsigned()
+            crate::owned_proxy::pack_negotiate_request(&crate::owned_proxy::Socks5Proxy::new(proxy))
         })
-        .unwrap_or(0)
+        .flatten()
     }
 
     /// Send the first `length` bytes of the SOCKS5 proxy's packet buffer, copied
@@ -570,7 +557,7 @@ impl Handle<'_> {
     fn socks5_handshake(self, reply: &[u8]) -> bool {
         let n = self
             .with_proxy(Proxy::Socks5, |proxy| {
-                (native_host().socks5.handshake)(proxy, reply)
+                crate::owned_proxy::socks5_step(&crate::owned_proxy::Socks5Proxy::new(proxy), reply)
             })
             .flatten();
         n.is_some_and(|n| n == 0 || self.socks5_send(n) == Some(n))
@@ -1087,7 +1074,7 @@ pub fn set_proxy(
     let proxy = if http {
         Some(swoole_rs_http_ffi::http_proxy(host, port, user, password))
     } else {
-        match (native_host().socks5.admit)(user.len(), password.len()) {
+        match crate::owned_proxy::admit(user.len(), password.len()) {
             0 => None,
             config => {
                 let owner = ProxyState::new(true);
@@ -1328,7 +1315,11 @@ fn tcp_connect_sync(
     // Only a proxy handshake reads the thread's shared buffer, which a thread
     // that never set up SwooleTG doesn't have.
     if this.proxy_state(Proxy::Socks5).is_some() {
-        if this.socks5_send(this.socks5_negotiate()).is_none() {
+        if this
+            .socks5_negotiate()
+            .and_then(|n| this.socks5_send(n))
+            .is_none()
+        {
             return false;
         }
         this.set_proxy_state(Proxy::Socks5, SOCKS5_HANDSHAKE);
@@ -1980,7 +1971,9 @@ fn on_write(this: Handle<'_>, reactor: Running<'_>, event: &mut Event) -> bool {
     this.event(EventOp::Set, Events::READ);
     this.set(Flag::Active, true);
     if this.proxy_state(Proxy::Socks5) == Some(SOCKS5_WAIT) {
-        let length = this.socks5_negotiate();
+        let Some(length) = this.socks5_negotiate() else {
+            return false;
+        };
         this.set_proxy_state(Proxy::Socks5, SOCKS5_HANDSHAKE);
         return this.socks5_send(length).is_some();
     }
