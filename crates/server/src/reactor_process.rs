@@ -349,6 +349,8 @@ mod tests {
         let reactor = live.reactor().handle();
         assert_eq!(reactor.id(), 0, "the worker's reactor");
         assert_eq!(reactor.object(), live.server().raw(), "it holds the server");
+        let held = live.server().held().map(crate::view::Server::raw);
+        assert_eq!(held, Some(live.server().raw()), "a request binds it held");
         assert_eq!(
             live.counters().master_pid.load(Relaxed),
             std::process::id().cast_signed(),

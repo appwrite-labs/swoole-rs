@@ -2,7 +2,7 @@
 //! `context::alloc` allocates and Request and Response point at.
 use std::{
     collections::HashSet,
-    ffi::{CString, c_int, c_void},
+    ffi::{CString, c_int},
     rc::Rc,
 };
 use swoole_rs_zend::{Declared, Kept, Owned, Props, UNDEF, Value, sys::zval};
@@ -144,8 +144,11 @@ pub(crate) struct State {
     pub(crate) zsocket: Owned,
     /// The HTTP/2 stream, 0 once it is released.
     pub(crate) stream_id: u32,
-    /// The `Server` a server's context answers through (`private_data`).
-    pub(crate) private_data: *mut c_void,
+    /// The `Server` a server's context answers through (`private_data`), when this
+    /// thread's reactor holds it.
+    pub(crate) server: Option<swoole_rs_server::view::Server<'static>>,
+    /// A share in that `Server` otherwise (`Response::create` off its reactor).
+    pub(crate) shared: Option<swoole_rs_server::SharedServer>,
     /// The coroutine socket of `zsocket`'s object, while that is bound; the
     /// all-zeroes handle until then, which nothing reads.
     pub(crate) socket: swoole_rs_phpruntime::co::Co,

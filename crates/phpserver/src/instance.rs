@@ -67,6 +67,13 @@ pub fn php_swoole_server_of(value: &Value) -> Option<view::Server<'_>> {
     ServerObject::server_of(value)
 }
 
+/// A share in the `Server` of a Server object, which keeps it past `value`; none
+/// before `__construct`, and for any other value.
+#[must_use]
+pub fn php_swoole_server_share(value: &Value) -> Option<SharedServer> {
+    ServerObject::of(value)?.share()
+}
+
 /// `php_swoole_server_isset_callback`: the port, or the primary port, has callback `kind`.
 #[must_use]
 #[inline]

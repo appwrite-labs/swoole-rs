@@ -428,7 +428,8 @@ struct Turn(Hold);
 impl swoole_rs_corebase::reactor::event_api::Deferred for Turn {
     fn run(self) {
         let mut ctx = self.0.ctx();
-        bailout::raise(call(ctx, enable_coroutine(context::server(ctx.state()))));
+        let server = context::server(ctx.state());
+        bailout::raise(call(ctx, enable_coroutine(server.view())));
     }
     fn dispose(self) {}
 }
@@ -589,6 +590,7 @@ const HTTP2_INTERNAL_ERROR: u32 = 2;
 /// The handler bailed out.
 pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
     let (server, fd) = (context::server(ctx.state()), ctx.state().fd);
+    let server = server.view();
     let Some((conn, facts)) = http2_connection(server, fd) else {
         return context::release_objects(ctx);
     };

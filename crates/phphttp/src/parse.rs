@@ -631,6 +631,7 @@ fn websocket_connection(state: &State) -> bool {
         return true;
     }
     let server = crate::context::server(state);
+    let server = server.view();
     let Some(conn) = server.by_session(state.fd) else {
         return false;
     };

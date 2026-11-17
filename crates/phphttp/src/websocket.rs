@@ -952,6 +952,7 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<bool, bailout::
 /// `swoole_websocket_onHandshake`: the handshake, then `onOpen`, or a reset.
 pub(crate) fn handshake_open(mut context: Ctx) -> Result<(), bailout::Bailout> {
     let server = context::server(context.state());
+    let server = server.view();
     let fd = context.fd();
     if handshake(context)? {
         on_open(server, context)
@@ -1000,6 +1001,7 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
     let fd = context.fd();
     if context.flags() & CO_SOCKET == 0 {
         let server = context::server(context.state());
+        let server = server.view();
         let Some(conn) = connection(server, fd, false) else {
             closed(c"swoole_websocket_handshake", fd);
             return Ok(false);
@@ -1122,6 +1124,7 @@ pub(crate) fn accept(mut context: Ctx) {
         state.websocket_settings & SETTING_COMPRESSION != 0
     } else {
         crate::context::server(state)
+            .view()
             .config()
             .websocket_compression
             .get()
@@ -1146,7 +1149,7 @@ pub(crate) fn accept(mut context: Ctx) {
     let state = context.state();
     state.websocket_compression = accepted;
     if !crate::context::co_socket(state)
-        && let Some(conn) = crate::context::server(state).verified(state.fd)
+        && let Some(conn) = crate::context::server(state).view().verified(state.fd)
     {
         conn.set_websocket_compression(accepted);
     }
@@ -1157,6 +1160,7 @@ pub(crate) fn accept(mut context: Ctx) {
 pub(crate) fn handshaked(mut context: Ctx) {
     let state = context.state();
     let (server, fd) = (crate::context::server(state), state.fd);
+    let server = server.view();
     let Some(conn) = connection(server, fd, true) else {
         return;
     };

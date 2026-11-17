@@ -641,8 +641,8 @@ fn refuse(call: &Call, message: &str) {
 fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     let mut paired = false;
     let mut ctx = None;
-    // The running server's share, which keeps it while this method reads it.
-    let shared;
+    // The server's share, which keeps it while this method reads it.
+    let mut shared = None;
     let mut server = None;
     let mut socket = None;
     if let Some(pair) = object.array() {
@@ -669,6 +669,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
                 return;
             };
             server = Some(checked);
+            shared = swoole_rs_phpserver::php_swoole_server_share(object);
             if !websocket::server_connection(checked, fd) {
                 return refuse(
                     call,
@@ -722,7 +723,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     });
     let mut ctx = hold.ctx();
     if let Some(server) = server {
-        context::bind_server(ctx.state(), server);
+        context::bind_server(ctx.state(), server, shared.as_ref());
     } else if let Some(socket) = socket {
         context::bind(ctx.state(), socket);
     }
