@@ -6,7 +6,7 @@
 use crate::resolve::WakerSlot;
 use core::cell::Cell;
 use core::ffi::c_void;
-use swoole_rs_coroutine::Waker;
+use swoole_rs_corebase::coroutine::Waker;
 pub use swoole_rs_reactor::Events;
 
 pub use native::Watch;
@@ -166,7 +166,7 @@ pub(crate) mod native {
     use swoole_rs_tls::event_socket::EventSocket;
 
     /// `Coroutine::get_current_safe()`.
-    pub(crate) use swoole_rs_coroutine::current_safe as current;
+    pub(crate) use swoole_rs_corebase::coroutine::current_safe as current;
 
     /// `SW_ERROR_WRONG_OPERATION`: there is no event loop to register with.
     const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;

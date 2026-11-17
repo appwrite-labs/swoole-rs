@@ -42,7 +42,7 @@ jobs:
             # libcares resolves coroutine DNS lookups instead of the built-in UDP client.
             cares) build=--configure=--enable-cares probe=c-ares
               families='swoole_coroutine swoole_coroutine_system swoole_client_coro swoole_http_client_coro swoole_socket_coro';;
-            # Each coroutine on its own thread (crates/coroutine/src/thread.rs).
+            # Each coroutine on its own thread (crates/corebase/src/coroutine/thread.rs).
             threadcontext) build=--configure=--enable-thread-context probe='thread context'
               families='swoole_coroutine swoole_channel_coro swoole_coroutine_scheduler swoole_coroutine_system swoole_event';;
             # A thread-safe PHP, whose headers zend-sys binds (PHP_CONFIG), with sockets and curl

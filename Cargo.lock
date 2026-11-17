@@ -404,7 +404,6 @@ dependencies = [
  "swoole-rs-buffer",
  "swoole-rs-cares-sys",
  "swoole-rs-corebase",
- "swoole-rs-coroutine",
  "swoole-rs-error",
  "swoole-rs-http-ffi",
  "swoole-rs-oracle",
@@ -428,14 +427,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "swoole-rs-coroutine"
-version = "0.1.0"
-dependencies = [
- "libc",
- "swoole-rs-corebase",
-]
-
-[[package]]
 name = "swoole-rs-crc32"
 version = "0.1.0"
 dependencies = [
@@ -449,7 +440,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
- "swoole-rs-coroutine",
  "swoole-rs-curl-sys",
  "swoole-rs-error",
  "swoole-rs-phpswoole",
@@ -500,7 +490,6 @@ dependencies = [
  "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
- "swoole-rs-coroutine",
  "swoole-rs-curl",
  "swoole-rs-error",
  "swoole-rs-error-ffi",
@@ -570,7 +559,6 @@ dependencies = [
  "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
- "swoole-rs-coroutine",
  "swoole-rs-error",
  "swoole-rs-error-ffi",
  "swoole-rs-http-ffi",
@@ -590,7 +578,6 @@ dependencies = [
  "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
- "swoole-rs-coroutine",
  "swoole-rs-ffi",
  "swoole-rs-hooks",
  "swoole-rs-memory",
@@ -745,7 +732,6 @@ dependencies = [
  "libc",
  "pq-sys",
  "swoole-rs-corebase",
- "swoole-rs-coroutine",
  "swoole-rs-error-ffi",
  "swoole-rs-hooks",
  "swoole-rs-zend",
@@ -796,7 +782,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
- "swoole-rs-coroutine",
  "swoole-rs-error",
  "swoole-rs-hooks",
  "swoole-rs-phpruntime",
@@ -1000,7 +985,6 @@ dependencies = [
  "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
- "swoole-rs-coroutine",
  "swoole-rs-error",
  "swoole-rs-error-ffi",
  "swoole-rs-firebird",
@@ -1099,7 +1083,6 @@ dependencies = [
  "openssl-sys",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
- "swoole-rs-coroutine",
  "swoole-rs-error",
  "swoole-rs-memory",
  "swoole-rs-ossupport",
@@ -1122,7 +1105,6 @@ dependencies = [
  "swoole-rs-bus",
  "swoole-rs-clients",
  "swoole-rs-corebase",
- "swoole-rs-coroutine",
  "swoole-rs-crc32",
  "swoole-rs-error",
  "swoole-rs-framing",

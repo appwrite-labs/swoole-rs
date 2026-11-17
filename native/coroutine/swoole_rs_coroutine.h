@@ -8,7 +8,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* The scheduler and each coroutine's state (crates/coroutine/src/coroutine.rs,
+/* The scheduler and each coroutine's state (crates/corebase/src/coroutine/state.rs,
  * live.rs, scheduler.rs, facade.rs). Rust owns both: this thread's scheduler, and each
  * swoole::Coroutine record (a swr_v1_coroutine, then its context). C++ reads
  * fields inline; Rust does every write. The hooks are Rust functions over a

@@ -44,9 +44,8 @@ pub(crate) extern "C-unwind" fn swoole_init() {
         timer_free: || swoole_rs_timer::swoole_timer_free(),
         event_available: || swoole_rs_reactor::event_api::swoole_event_is_available(),
         event_free: || _ = swoole_rs_reactor::swoole_event_free(),
-        coroutine_is_in: || !swoole_rs_coroutine::current().is_null(),
     });
-    swoole_rs_coroutine::set_host(swoole_rs_coroutine::Host {
+    swoole_rs_corebase::coroutine::set_host(swoole_rs_corebase::coroutine::Host {
         timer_after: |timeout, f, arg| {
             swoole_rs_timer::add_fn_sec(timeout, false, move || f(arg))
                 .map_or(0, swoole_rs_timer::Held::id)

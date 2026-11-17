@@ -474,7 +474,7 @@ pub extern "C" fn swoole_pgsql_connectdb(conninfo: Text<'_>) -> *mut PGconn {
     if conn.socket() < 0 {
         return started;
     }
-    conn.set_nonblocking(!blocking() && !swoole_rs_coroutine::current().is_null());
+    conn.set_nonblocking(!blocking() && !swoole_rs_corebase::coroutine::current().is_null());
     wait_connect(conn, Conn::connect_poll);
     started
 }

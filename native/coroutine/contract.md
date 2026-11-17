@@ -17,7 +17,7 @@ out of a callback, skips no cleanup.
 
 ## Scheduler and coroutine state
 
-`crates/coroutine/src/coroutine.rs` owns two `repr(C)` records:
+`crates/corebase/src/coroutine/state.rs` owns two `repr(C)` records:
 `swr_v1_coroutine_scheduler` (current coroutine, last and socket-bound ids, peak
 count, stack size, the three swap callbacks, the hooks, the live map, gdb's
 cursor, activation and the bailout mark) and `swr_v1_coroutine` (id, state,
@@ -47,17 +47,17 @@ hook. `swr_v1_coroutine_bail(callback, data)` is `Coroutine::bailout`: inside a
 coroutine it sets the hook, jumps to the main context and exits with
 `SW_CORO_BAILOUT_EXIT_CODE` if that returns; outside one it marks the scheduler.
 
-A cancelable yield's `cancel_fn` points at a `Canceler` (crates/coroutine's: a Rust
+A cancelable yield's `cancel_fn` points at a `Canceler` (crates/corebase/src/coroutine's: a Rust
 function and its data, which C++ holds only as `void *`) on the yielder's stack. Cancel (`Coroutine::cancel`'s
 symbol) refuses a coroutine that is not suspended with one, then calls it.
 `yield_ex` adds its timeout timer through
 crates/timer's `add_fn_sec`, which `swoole_init` registers in the coroutine's `Host`, of the coroutine's id and deletes it after a
 wake that was not the timeout.
 
-`src/coroutine/base.cc` is gone. `crates/coroutine/src/scheduler.rs` keeps the
+`src/coroutine/base.cc` is gone. `crates/corebase/src/coroutine/scheduler.rs` keeps the
 scheduler, `swr_v1_coroutine_{scheduler_get,bail}` and the operations Rust calls by
 path (`current`, `resume`, `yield_with_cancel`), which need no timer or event loop,
-so they build in every configuration. `crates/coroutine/src/facade.rs`, which only
+so they build in every configuration. `crates/corebase/src/coroutine/facade.rs`, which only
 the extension builds (`upstream-symbols`), defines the rest under their upstream
 symbols (`yield_ex`, `cancel`), `activate`, `deactivate`, `print_list` and
 `print_socket_bound_error` (Rust's only, by path), `swr_v1_coroutine_create` and the
@@ -68,7 +68,7 @@ no native source left.
 
 ## Context stack
 
-`Stack::alloc(size, flags)` (crates/coroutine/src/stack.rs) allocates a coroutine stack with
+`Stack::alloc(size, flags)` (crates/corebase/src/coroutine/stack.rs) allocates a coroutine stack with
 `malloc`, or with `STACK_PROTECT` (`SW_CONTEXT_PROTECT_STACK_PAGE`) as an
 anonymous mapping (plus `MAP_STACK` on OpenBSD) whose lowest page is made
 inaccessible; it returns `None` on failure, which context init reports as upstream does.
@@ -78,19 +78,19 @@ markers before the context is made: at `size - offset + 31` for each doubling
 them (`get_stack_usage`), which stack.rs's tests keep. The `Stack` owns the
 allocation and frees it, with the same size and flags, when dropped.
 
-`crates/coroutine/src/context.rs` owns the `Context` record that follows
+`crates/corebase/src/coroutine/context.rs` owns the `Context` record that follows
 each coroutine's `swr_v1_coroutine`: init
 allocates the stack and makes the boost.context fcontext (out of memory is
 upstream's fatal error and exit 254), swap_in/swap_out jump with
 `jump_fcontext`, and the first frame runs the coroutine's C routine, sets `end` and switches out.
-`crates/coroutine/src/fcontext.rs` carries boost's x86_64 and aarch64 switch as naked
+`crates/corebase/src/coroutine/fcontext.rs` carries boost's x86_64 and aarch64 switch as naked
 functions; other architectures fail to compile, where config.m4 failed on a CPU without
 boost asm. ASan's fiber annotations run
 when `dlsym` finds `__sanitizer_{start,finish}_switch_fiber`. ucontext and
 valgrind stack registration are not kept.
 
 With `THREAD` (`--enable-thread-context`) the record has no stack and
-`fctx` owns a thread (`crates/coroutine/src/thread.rs`; `thread_context.cc` is
+`fctx` owns a thread (`crates/corebase/src/coroutine/thread.rs`; `thread_context.cc` is
 gone). A switch hands a baton, a binary semaphore, from one thread to the next,
 where upstream unlocks `std::mutex`es from threads that didn't lock them. init
 returns the errno of a failed spawn, which create reports as a warning and -1. `activate` adds the keep-alive timer and async threads as
@@ -101,7 +101,7 @@ families against upstream built the same way.
 
 ## Channel
 
-`crates/coroutine/src/chan.rs` is the whole Channel; `src/coroutine/channel.cc`
+`crates/corebase/src/coroutine/chan.rs` is the whole Channel; `src/coroutine/channel.cc`
 and its header are gone. pop/push/close
 run the host's coroutines through the `Effects` trait: crates/phpcollections
 implements it over PHP's coroutines (timer, cancelable yield, resume), and the

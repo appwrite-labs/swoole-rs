@@ -219,7 +219,7 @@ fn run<'a>(body: impl FnOnce() + 'a) {
 fn current() -> *mut c_void {
     // SAFETY: no preconditions.
     let cid = unsafe { swoole_coroutine_get_id() };
-    swoole_rs_coroutine::coroutine_get(cid)
+    swoole_rs_corebase::coroutine::coroutine_get(cid)
 }
 
 fn co_sleep(sec: f64) -> c_int {

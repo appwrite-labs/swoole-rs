@@ -26,7 +26,6 @@ pub struct NativeHost {
     pub timer_free: fn(),
     pub event_available: fn() -> bool,
     pub event_free: fn(),
-    pub coroutine_is_in: fn() -> bool,
 }
 
 /// An operation on the process logger.

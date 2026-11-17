@@ -34,7 +34,7 @@
 //! DEALINGS IN THE SOFTWARE.
 //! ```
 
-use crate::coroutine::Co;
+use crate::coroutine::state::Co;
 use core::arch::naked_asm;
 use core::ffi::c_void;
 
