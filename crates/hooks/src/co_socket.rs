@@ -58,7 +58,7 @@ pub struct CoSocket {
     /// The `NameResolver::Context` the socket's connects resolve with, shared with
     /// its owner (the HTTP client); none for a fresh one per connect.
     pub(crate) resolve_context: Cell<Option<SharedResolve>>,
-    /// The coroutines, barriers and timers bound to each direction, and the parts
+    /// The coroutines, retries and timers bound to each direction, and the parts
     /// lent out, which `init` makes and `fini` releases.
     pub(crate) state: Option<Box<Bound>>,
     /// The record's metadata, which `init` makes and `fini` releases.
@@ -567,7 +567,7 @@ impl Co {
         Some(result)
     }
 
-    /// The bound coroutines, barriers and timers.
+    /// The bound coroutines, retries and timers.
     /// # Panics
     /// Inside another `with_state` over the same record.
     #[track_caller]
