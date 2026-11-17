@@ -47,9 +47,20 @@ pub(crate) enum Owner<'a> {
 }
 
 impl Owner<'_> {
-    /// A reference to the owner, which the length callback drops.
-    #[inline]
+    /// A reference to the owner, which the length callback drops. Inlined into each
+    /// measure, so a port without one tests the variant and calls nothing.
+    #[inline(always)]
     fn get(self) -> Option<std::rc::Rc<dyn core::any::Any>> {
+        match self {
+            Self::None => None,
+            found => found.find(),
+        }
+    }
+
+    /// [`Self::get`] of a client or a port, which has a PHP length callable.
+    #[cold]
+    #[inline(never)]
+    fn find(self) -> Option<std::rc::Rc<dyn core::any::Any>> {
         match self {
             Self::None => None,
             Self::Client(client) => client.length_owner(),
