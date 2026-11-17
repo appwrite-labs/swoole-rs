@@ -3,19 +3,28 @@
 #[cfg(feature = "upstream-symbols")]
 use crate::{Mode, ServerState, view::PipeSocket};
 
-/// `serv->get_worker_message_bus()`: this thread's in thread mode, else the
+/// `f` over `serv->get_worker_message_bus()`: this thread's in thread mode, else the
 /// server's.
 #[cfg(feature = "upstream-symbols")]
-pub(crate) fn worker_message_bus(state: &ServerState) -> crate::objects::Bus<'_> {
-    crate::objects::Bus::over(state.worker_bus_record())
+#[inline]
+pub(crate) fn with_worker_message_bus<R>(
+    state: &ServerState,
+    f: impl FnOnce(crate::objects::Bus<'_>) -> R,
+) -> R {
+    state.with_worker_bus(|record| f(crate::objects::Bus::over(record)))
 }
 
 /// Base mode's message bus takes `send`, then `worker_accept_event` of it.
 #[cfg(feature = "upstream-symbols")]
 pub(crate) fn base_pass(serv: crate::view::Server<'_>, send: &crate::base_factory::SendData) {
-    let bus = worker_message_bus(serv.state());
-    bus.rust().pass(send.info(), send.data());
-    crate::event_worker::native::accept_event(serv, &bus.head());
+    use crate::event_worker::native::{Payload, accept_event};
+    let head = with_worker_message_bus(serv.state(), |bus| bus.rust().pass(send.info()));
+    let payload = if send.info().len > 0 {
+        Payload::Passed(send.payload())
+    } else {
+        Payload::Bus
+    };
+    accept_event(serv, &head, payload);
 }
 
 /// The message bus writes `send` to the pipe of the worker that owns its session.
@@ -30,17 +39,18 @@ pub(crate) fn forward(serv: crate::view::Server<'_>, send: &crate::base_factory:
     let Some(pipe) = worker.and_then(|worker| PipeSocket::of_worker(worker, true)) else {
         return false;
     };
-    let bus = worker_message_bus(state);
-    let pipe = if state.config_ref().mode_ == Mode::Thread {
-        PipeSocket::of_bus(bus.rust(), pipe)
-    } else {
-        Some(pipe)
-    };
-    let Some(pipe) = pipe else {
-        return false;
-    };
-    let mut send = *send;
-    send.send(bus.rust(), pipe)
+    with_worker_message_bus(state, |bus| {
+        let pipe = if state.config_ref().mode_ == Mode::Thread {
+            PipeSocket::of_bus(bus.rust(), pipe)
+        } else {
+            Some(pipe)
+        };
+        let Some(pipe) = pipe else {
+            return false;
+        };
+        let mut send = *send;
+        send.send(bus.rust(), pipe)
+    })
 }
 
 /// `Server::create_pipe_buffers()`: the bus's buffer, `ipc_max_size` bytes.

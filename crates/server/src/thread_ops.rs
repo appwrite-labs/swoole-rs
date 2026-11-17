@@ -7,7 +7,6 @@ use crate::Mode;
 use crate::reactor_thread::{HEARTBEAT, each_connection, send_event};
 use crate::records::{Connection, Lookup};
 use core::ffi::{c_int, c_long};
-use core::ptr;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::constants::SocketTypeCode;
 use swoole_rs_corebase::reactor::Events;
@@ -250,7 +249,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, id: u16) {
         return;
     };
     record.id.set(c_int::from(id));
-    swoole_rs_corebase::set_thread_message_bus(ptr::from_ref(&record.bus).cast_mut().cast());
+    crate::objects::set_thread_bus(Some(crate::objects::ThreadBus::Reactor(usize::from(id))));
     if swoole_rs_corebase::reactor::swoole_event_init(0) < 0 {
         return;
     }

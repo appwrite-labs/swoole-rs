@@ -7,7 +7,7 @@ use core::ffi::{c_int, c_void};
 use swoole_rs_corebase::reactor::{Heap, Socket};
 use swoole_rs_corebase::{DataHead, TrustedAllocator};
 
-use swoole_rs_bus::{BusPacket, MessageBus};
+use swoole_rs_bus::MessageBus;
 
 use crate::pool_native::PoolBus;
 use swoole_rs_corebase::reactor::{if_exit, reactor_wait};
@@ -24,9 +24,7 @@ pub(crate) fn in_worker_bus<R>(
 ) -> Option<R> {
     let pipe = pipe?;
     if config.mode_ == Mode::Thread {
-        crate::master_ops::worker_message_bus(state)
-            .pipe_socket(*pipe)
-            .map(f)
+        crate::master_ops::with_worker_message_bus(state, |bus| bus.pipe_socket(*pipe).map(f))
     } else {
         Some(f(pipe))
     }
@@ -48,19 +46,61 @@ impl crate::ServerState {
         Bus::over(self.message_bus_record())
     }
 
-    /// `serv->get_worker_message_bus()`'s record: this thread's in thread mode, else
-    /// the server's.
-    pub(crate) fn worker_bus_record(&self) -> &PoolBus {
+    /// `f` over `serv->get_worker_message_bus()`'s record: this thread's in thread
+    /// mode ([`set_thread_bus`]), else the server's.
+    #[inline]
+    pub(crate) fn with_worker_bus<R>(&self, f: impl FnOnce(&PoolBus) -> R) -> R {
         if self.config_ref().mode_ != Mode::Thread {
-            return self.message_bus_record();
+            return f(self.message_bus_record());
         }
-        let bus = swoole_rs_corebase::thread_message_bus();
-        // SAFETY: a thread-mode thread that sends to workers has its bus: a reactor
-        // thread's record's, set for its loop, or the one `create_message_bus` boxed
-        // for a task or user worker thread until it ends. Either outlives the server's
-        // use on this thread, and only this thread uses it.
-        unsafe { &*bus.cast::<PoolBus>() }
+        let bus = THREAD_BUS.with(|slot| {
+            let bus = slot.take();
+            slot.set(bus.clone());
+            bus
+        });
+        match bus {
+            Some(ThreadBus::Reactor(id)) => {
+                let thread = self.tables_ref().reactor_thread(id);
+                f(&thread
+                    .unwrap_or_else(|| swoole_rs_corebase::fatal("no reactor thread"))
+                    .bus)
+            }
+            Some(ThreadBus::Own(bus)) => f(&bus),
+            None => swoole_rs_corebase::fatal("a thread without its message bus"),
+        }
     }
+}
+
+/// `SwooleTG.message_bus`: in thread mode, the bus a thread sends and receives on.
+#[derive(Clone)]
+pub(crate) enum ThreadBus {
+    /// A reactor thread's record's, by the thread's id.
+    #[cfg_attr(
+        not(feature = "upstream-symbols"),
+        expect(dead_code, reason = "only the hybrid runs reactor threads")
+    )]
+    Reactor(usize),
+    /// The one a task or user worker thread made, shared with the thread's body,
+    /// which drops it as the thread ends.
+    #[cfg_attr(
+        not(feature = "upstream-symbols"),
+        expect(dead_code, reason = "only the hybrid runs worker threads")
+    )]
+    Own(std::rc::Rc<PoolBus>),
+}
+
+thread_local! {
+    /// This thread's [`ThreadBus`], if it has one.
+    static THREAD_BUS: core::cell::Cell<Option<ThreadBus>> = const { core::cell::Cell::new(None) };
+}
+
+/// This thread's bus from now on (`SwooleTG.message_bus = bus`), or none.
+#[cfg_attr(
+    not(feature = "upstream-symbols"),
+    expect(dead_code, reason = "only the hybrid runs server threads")
+)]
+pub(crate) fn set_thread_bus(bus: Option<ThreadBus>) {
+    THREAD_BUS.set(bus);
 }
 
 /// A `MessageBus`: its Rust bus and the allocator of its packets, as its record
@@ -90,35 +130,19 @@ impl<'a> Bus<'a> {
     pub(crate) fn head(self) -> DataHead {
         self.rust().head()
     }
-    /// The whole packet the bus holds.
-    #[inline]
-    pub(crate) fn packet(self) -> BusPacket {
-        self.rust().packet()
-    }
-    /// `f` over the bytes of the packet the bus holds, which stay put while it runs.
+    /// `f` over the bytes of the packet the bus holds, which it lends meanwhile.
     pub(crate) fn with_packet<R>(self, f: impl FnOnce(&[u8]) -> R) -> R {
-        self.with_message(&DataHead::default(), |message| f(message.payload()))
+        self.rust().with_packet(f)
     }
     /// `f` over the message the bus holds: a copy of `info`, its `len` the packet's,
-    /// and the packet's bytes, which stay put while it runs.
+    /// and the packet's bytes, which the bus lends meanwhile.
     #[inline]
     pub(crate) fn with_message<R>(
         self,
         info: &DataHead,
         f: impl FnOnce(&crate::base_factory::SendData<'_>) -> R,
     ) -> R {
-        let packet = self.packet();
-        let head = DataHead {
-            len: u32::try_from(packet.length).unwrap_or(u32::MAX),
-            ..*info
-        };
-        if packet.data.is_null() {
-            return f(&crate::base_factory::SendData::empty(head));
-        }
-        // SAFETY: the bus's packet, `length` bytes it keeps until it pops or reads
-        // again, which this thread alone would do and not during `f`.
-        let data = unsafe { core::slice::from_raw_parts(packet.data.cast(), packet.length) };
-        f(&crate::base_factory::SendData::new(head, data))
+        self.with_packet(|data| f(&crate::base_factory::SendData::lent(*info, data)))
     }
     /// `f` over the event the bus just read whole into its buffer, as its sender
     /// packed it: an `EventData`, its head and the payload the head counts. `None`,

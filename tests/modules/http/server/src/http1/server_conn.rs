@@ -289,7 +289,7 @@ fn unlock_and_count(_: view::Server<'_>, _: Worker<'_>) {
 }
 
 /// `onReceive` of `sendwait` and `system`: the packet, answered with `sendwait`.
-fn sendwait_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn sendwait_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let (session, data) = request(req);
     check(data == PACKET, "string(req->data, req->info.len) == packet");
     let _ = server_methods::sendwait(Server(serv.raw()).view(), session, &reply());
@@ -373,8 +373,9 @@ fn system() {
 }
 
 /// `TEST(server, udp_packet)`'s `onPacket`: the datagram, echoed with `sendto`.
-fn udp_on_packet(_: view::Server<'_>, req: &RecvData) -> c_int {
-    let (_, peer, data) = req.datagram().expect("complete UDP packet");
+fn udp_on_packet(_: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
+    let datagram = swoole_rs_server::reactor_entry::datagram(req.payload());
+    let (_, peer, data) = datagram.expect("complete UDP packet");
     let fd = c_int::from(req.info().server_fd);
     check(
         data == PACKET,
@@ -484,7 +485,7 @@ fn forward_pipe_message(serv: view::Server<'_>, req: Packed<'_>) {
 }
 
 /// `TEST(server, forward_message)`'s `onReceive`: the session, to the other worker.
-fn forward_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn forward_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let mut msg = TaskBuffer::default();
     let (client_fd, _) = request(req);
     pack(&mut msg, &client_fd.to_ne_bytes());
@@ -620,7 +621,7 @@ fn overflow_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     counter_incr(3, 1);
 }
 
-fn overflow_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn overflow_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let serv = Server(serv.raw());
     let (sid, _) = request(req);
     serv.get_connection_by_session_id(sid).set_overflow(true);
@@ -724,7 +725,7 @@ fn no_idle_worker_client(serv: Server) {
 }
 
 /// `onReceive`: `usleep(10000); return SW_OK;`.
-fn slow_receive(_: view::Server<'_>, _: &RecvData) -> c_int {
+fn slow_receive(_: view::Server<'_>, _: &mut RecvData<'_>) -> c_int {
     micro_sleep(10000);
     SW_OK
 }
@@ -801,7 +802,7 @@ fn max_request_client(serv: Server) {
 
 /// Acknowledge receipt through the case's process-shared counter, keeping the
 /// original no-response callback and packet bytes.
-fn max_request_receive(_: view::Server<'_>, _: &RecvData) -> c_int {
+fn max_request_receive(_: view::Server<'_>, _: &mut RecvData<'_>) -> c_int {
     counter_incr(1, 1);
     SW_OK
 }
@@ -868,7 +869,7 @@ fn watermark_client(serv: Server) {
     shutdown(serv);
 }
 
-fn watermark_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn watermark_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let (session, _) = request(req);
     check(
         Server(serv.raw()).send(session, WBUF.get().unwrap()),
@@ -936,7 +937,7 @@ fn discard_data_client(serv: Server) {
     kill_pid(serv.get_master_pid());
 }
 
-fn discard_data_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn discard_data_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     micro_sleep(10000);
     let (session, _) = request(req);
     close(Server(serv.raw()), session);
@@ -1002,7 +1003,7 @@ fn pause_connect(serv: view::Server<'_>, ev: &DataHead) {
 }
 
 /// `onReceive`: the packet, answered with `Server: ` and the packet.
-fn reply_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn reply_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let (session, data) = request(req);
     check(data == PACKET, "string(req->data, req->info.len) == packet");
     Server(serv.raw()).send(session, &reply());
@@ -1061,7 +1062,7 @@ fn slow_connect(_: view::Server<'_>, _: &DataHead) {
     micro_sleep(100_000);
 }
 
-fn max_queued_bytes_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn max_queued_bytes_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let (session, data) = request(req);
     if counter_incr(0, data.len() as c_int) == SEND_COUNT * BUFFER_SIZE {
         Server(serv.raw()).send(session, TEST_STR.as_bytes());
@@ -1270,7 +1271,7 @@ fn close_on_connect(_: view::Server<'_>, _: &DataHead) {
     set_flag(SERVER_ON_CONNECT);
 }
 
-fn close_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn close_on_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let serv = Server(serv.raw());
     let (session, data) = request(req);
     serv.send(session, data);
@@ -1419,7 +1420,7 @@ fn eof_check_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
     client_thread(|| unsafe { getpid() }, move || eof_check_client(serv));
 }
 
-fn eof_check_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn eof_check_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let (session, _) = request(req);
     Server(serv.raw()).send(session, b"OK");
     counter_incr(RECV_COUNT, 1);
@@ -1661,7 +1662,7 @@ fn abort_worker_connect(_: view::Server<'_>, ev: &DataHead) {
 }
 
 /// `abort_worker`'s `onReceive`: only the live session is left in the session list.
-fn abort_worker_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn abort_worker_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let serv = Server(serv.raw());
     let count = (0..SW_SESSION_LIST_SIZE)
         .filter_map(|id| serv.view().session(id))
@@ -1742,7 +1743,7 @@ fn pipe_writable_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     micro_sleep(300_000);
 }
 
-fn pipe_writable_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn pipe_writable_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let serv = Server(serv.raw());
     let rdata = RDATA_4M.get().unwrap();
     let len = (rdata.len() as u32).to_be_bytes();
@@ -1762,8 +1763,9 @@ fn pipe_writable_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     );
     check(data.get(4..) == Some(&rdata[..]), "req->data + 4 == rdata");
 
-    // `serv->get_worker_message_bus()->move_packet()`: the packet's block, now ours to free.
-    let data = serv.view().move_worker_packet();
+    // `serv->get_worker_message_bus()->move_packet()`: the packet's block, which the
+    // request owns, now ours to free.
+    let data = req.take_packet();
     check(
         data.as_ref().is_some_and(|data| !data.as_ptr().is_null()),
         "data != nullptr",
@@ -1864,7 +1866,7 @@ fn send_timeout_client(serv: Server) {
     kill_pid(serv.get_master_pid());
 }
 
-fn send_timeout_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn send_timeout_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let serv = Server(serv.raw());
     let (sid, _) = request(req);
     let socket = serv

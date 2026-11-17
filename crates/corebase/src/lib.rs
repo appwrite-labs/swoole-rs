@@ -88,10 +88,10 @@ pub use lifecycle::{
     SharedThread, adopt_shared_thread, lend_thread_buffer, shared_thread, thread_buffer,
 };
 pub use lifecycle::{
-    fork_exec, set_thread, set_thread_async_threads, set_thread_message_bus, set_thread_reactor,
-    set_thread_timer, swoole_clean, swoole_fork, swoole_is_main_thread, swoole_thread_clean,
-    swoole_thread_init, swr_v1_core_swoole_init, thread_async_threads, thread_id, thread_kind,
-    thread_message_bus, thread_reactor, thread_timer,
+    fork_exec, set_thread, set_thread_async_threads, set_thread_reactor, set_thread_timer,
+    swoole_clean, swoole_fork, swoole_is_main_thread, swoole_thread_clean, swoole_thread_init,
+    swr_v1_core_swoole_init, thread_async_threads, thread_id, thread_kind, thread_reactor,
+    thread_timer,
 };
 pub use log::fatal;
 pub use random::{random_bytes, swoole_random_string};

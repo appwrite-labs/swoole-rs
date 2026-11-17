@@ -45,7 +45,7 @@ pub type ServerFn = fn(Server<'_>);
 /// `void (Server *, DataInfo *)`.
 pub type EventFn = fn(Server<'_>, &DataHead);
 /// `int (Server *, RecvData *)`.
-pub type ReceiveFn = fn(Server<'_>, &RecvData) -> c_int;
+pub type ReceiveFn = fn(Server<'_>, &mut RecvData<'_>) -> c_int;
 /// `int (Server *, EventData *)`.
 pub type TaskFn = fn(Server<'_>, Packed<'_>) -> c_int;
 /// `void (Server *, EventData *)`.
@@ -57,7 +57,8 @@ pub type WorkerErrorFn = fn(Server<'_>, Worker<'_>, &ExitStatus);
 /// `void (Server *, Worker *)`, of a user worker about to start.
 pub type UserWorkerFn = fn(Server<'_>, Worker<'_>);
 /// `int (Server *, Connection *, SendData *)`.
-pub type DispatchFn = fn(Server<'_>, Option<crate::Connection<'_>>, Option<&RecvData>) -> c_int;
+pub type DispatchFn =
+    fn(Server<'_>, Option<crate::Connection<'_>>, Option<&crate::base_factory::SendData>) -> c_int;
 
 /// A Rust fn for one of a server's slots, of that slot's own signature
 /// ([`Server::set_callback`]). The server calls it with the objects of the event,
@@ -346,7 +347,7 @@ impl ServerCallbacks {
         &self,
         serv: Server<'_>,
         conn: Option<crate::Connection<'_>>,
-        send: Option<&RecvData>,
+        send: Option<&crate::base_factory::SendData>,
     ) -> c_int {
         self.dispatch_func
             .get()
@@ -429,7 +430,12 @@ impl ServerCallbacks {
     /// `serv->onReceive(serv, data)` or `onPacket(serv, data)`; -1 when the slot is
     /// empty. Inlined, as [`ServerCallbacks::event`] is: every request calls it.
     #[inline(always)]
-    pub(crate) fn receive(&self, slot: ReceiveSlot, serv: Server<'_>, data: &RecvData) -> c_int {
+    pub(crate) fn receive(
+        &self,
+        slot: ReceiveSlot,
+        serv: Server<'_>,
+        data: &mut RecvData<'_>,
+    ) -> c_int {
         let slot = match slot {
             ReceiveSlot::Receive => &self.receive,
             ReceiveSlot::Packet => &self.packet,

@@ -132,15 +132,6 @@ impl PoolBus {
     }
 }
 
-/// `pool->message_bus->move_packet()`: the bus's current packet block, now the
-/// caller's; none for a pool without a bus or a packet.
-#[must_use]
-pub fn pool_bus_move_packet(
-    pool: swoole_rs_corebase::process::process_pool::PoolRef<'_>,
-) -> Option<swoole_rs_corebase::buffer::string::OwnedString> {
-    PoolBus::with_pool(pool, |bus| bus.bus.move_packet()).flatten()
-}
-
 /// `pool->message_bus->set_allocator(allocator)`, when the pool has a bus: its
 /// packets come from `allocator` from now on.
 pub fn pool_bus_set_allocator(

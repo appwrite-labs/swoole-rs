@@ -22,6 +22,7 @@ mod sealed {
     // The counters' atomics, and the pool records and barrier, each of the same kinds
     // (`IpcMode::None` is zero), as `swr_v1_server_new` maps them.
     impl Sealed for crate::shared::ServerShared {}
+    impl Sealed for crate::shared::PortCounters {}
 }
 
 /// A shared mapping (a [`Shm`]) of `len` zeroed `T`s, or none. Only [`Table::calloc`]

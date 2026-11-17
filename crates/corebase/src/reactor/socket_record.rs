@@ -472,6 +472,26 @@ impl SocketFields {
         self.owner = owner.map(|owner| -> Box<dyn core::any::Any> { Box::new(owner) });
     }
 
+    /// Attaches the boxed `owner` without another allocation, giving back what was
+    /// attached.
+    pub fn hold_owner<T: core::any::Any>(
+        &mut self,
+        owner: Box<T>,
+    ) -> Option<Box<dyn core::any::Any>> {
+        self.owner.replace(owner)
+    }
+
+    /// The owner, detached, when it is a `T`; another type's stays attached.
+    pub fn take_owner<T: core::any::Any>(&mut self) -> Option<Box<T>> {
+        match self.owner.take()?.downcast::<T>() {
+            Ok(owner) => Some(owner),
+            Err(other) => {
+                self.owner = Some(other);
+                None
+            }
+        }
+    }
+
     /// Attaches a weak handle to `owner` in place of the shared owner attached.
     pub fn set_shared_owner<T: core::any::Any>(&mut self, owner: std::rc::Weak<T>) {
         self.shared_owner = Some(owner);
@@ -651,6 +671,18 @@ mod tests {
             socket.shared_owner::<u32>().is_none(),
             "a dropped owner is gone"
         );
+        assert!(socket.take_owner::<u64>().is_none());
+        assert_eq!(socket.take_owner::<u32>().as_deref(), Some(&7), "kept");
+        assert!(socket.take_owner::<u32>().is_none(), "taken once");
+        assert!(socket.hold_owner(Box::new(1_u8)).is_none());
+        let replaced = socket.hold_owner(Box::new(2_u8));
+        assert_eq!(
+            replaced
+                .and_then(|old| old.downcast::<u8>().ok())
+                .as_deref(),
+            Some(&1)
+        );
+        assert_eq!(socket.owner::<u8>(), Some(2));
     }
 
     #[test]

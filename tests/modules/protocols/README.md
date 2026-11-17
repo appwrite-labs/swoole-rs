@@ -41,11 +41,12 @@ callback that can bail out runs beneath a Rust frame.
   the packet allocator's `free`, and the write calls native `send`, neither of
   which bails out. `cargo test -p swoole-rs-bus` round-trips packets over
   real socketpairs, upstream's `message_bus` TESTs among them (see below).
-  Packet storage reuses buffer's `OwnedString`; `move_packet` hands that owner to
-  its consumer. The moved packet no longer contributes to the bus's retained-memory
-  count. `moved_packets_are_not_freed_and_memory_counts_reassembly` checks the same
-  allocation address across transfer and that the bus cannot free the new owner's
-  payload. Allocation and resizing run outside the packet-table borrow.
+  Packet storage reuses buffer's `OwnedString`; a delivered message takes its packet
+  out of the bus (`take_packet`) and moves it into the receive callback's `RecvData`,
+  whose `take_packet` is upstream's `move_packet`. A taken packet no longer counts
+  toward the bus's retained memory. `moved_packets_are_not_freed_and_memory_counts_reassembly`
+  checks the same allocation address across transfer and that the bus cannot free
+  the new owner's payload. Allocation and resizing run outside the packet-table borrow.
   The receive allocation is also an `OwnedString`, freed by its own allocator on
   replacement, allocation failure or drop. Server and pool receive buffers use
   libc because their bus can survive PHP request shutdown; transferable packets

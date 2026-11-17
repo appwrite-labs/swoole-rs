@@ -20,7 +20,7 @@ use crate::sys::set_errno;
 use std::any::Any;
 #[cfg(any(feature = "upstream-symbols", test))]
 use std::ffi::CStr;
-use std::ffi::{CString, c_char, c_int, c_long, c_void};
+use std::ffi::{CString, c_int, c_long, c_void};
 use std::ptr;
 use std::rc::Rc;
 use std::sync::OnceLock;
@@ -63,20 +63,27 @@ pub enum Warning {
     Send { size: i64, worker: i64 },
 }
 
-const _: () = assert!(MTYPE == 8, "QueueNode::mtype is the u64 heading the buffer");
-
 /// The `N` bytes at `at` into the `EventData` after `out`'s mtype; zeros past its end.
-fn head_bytes<const N: usize>(out: &[u64], at: usize) -> [u8; N] {
-    core::array::from_fn(|i| {
-        let byte = MTYPE + at + i;
-        let word = out.get(byte / 8).map_or([0; 8], |word| word.to_ne_bytes());
-        word.get(byte % 8).copied().unwrap_or(0)
-    })
+fn head_bytes<const N: usize>(out: &[u8], at: usize) -> [u8; N] {
+    core::array::from_fn(|i| out.get(MTYPE + at + i).copied().unwrap_or(0))
+}
+
+/// The `EventData` after `out`'s mtype.
+fn payload(out: &mut [u8]) -> &mut [u8] {
+    out.get_mut(MTYPE..).unwrap_or_default()
+}
+
+/// `bytes` written into `out` at `at`, as far as `out` reaches.
+fn put(out: &mut [u8], at: usize, bytes: &[u8]) {
+    out.iter_mut()
+        .skip(at)
+        .zip(bytes)
+        .for_each(|(to, from)| *to = *from);
 }
 
 /// Whether the `n` bytes received into `out` are the whole `EventData` its head counts,
 /// and a temporary file's task names its file.
-fn whole_task(out: &[u64], n: isize) -> bool {
+fn whole_task(out: &[u8], n: isize) -> bool {
     let length = u32::from_ne_bytes(head_bytes(out, HEAD_LEN));
     let tmpfile = u16::from_ne_bytes(head_bytes(out, HEAD_EXT_FLAGS)) & TASK_TMPFILE != 0;
     n.c_cast::<u64>() == HEAD as u64 + u64::from(length) && !(tmpfile && length != PACKET_TASK)
@@ -90,19 +97,25 @@ pub type Connection = Rc<dyn Any>;
 /// One hook's arguments and results. Only this crate makes and fills one, over
 /// objects live for the hook: its pool and worker (null when none), its socket
 /// (null or a live native socket: a worker's pipe end), the stream connection it
-/// serves (or the listener `close` frees), and `data`, which holds `length` bytes.
+/// serves (or the listener `close` frees), and the bytes it reads or fills.
 pub struct PoolCall<'a> {
     pub(crate) pool: crate::process::process_pool::PoolRef<'a>,
     pub(crate) worker: Option<Record<'a>>,
     pub(crate) socket: *mut c_void,
     pub(crate) connection: Option<Connection>,
-    pub(crate) data: *mut c_void,
-    pub(crate) length: usize,
+    pub(crate) buffer: Buffer<'a>,
     pub(crate) flags: c_int,
     /// The call's return value.
     pub(crate) result: isize,
     /// `errno` right after the call.
     pub(crate) error: c_int,
+}
+
+/// The bytes a hook reads ([`PoolCall::bytes`]) or fills
+/// ([`PoolCall::connection_buffer`]), lent by the loop for the call.
+pub(crate) enum Buffer<'a> {
+    Lent(&'a [u8]),
+    Fill(&'a mut [u8]),
 }
 
 impl<'a> PoolCall<'a> {
@@ -115,8 +128,7 @@ impl<'a> PoolCall<'a> {
             worker,
             socket: ptr::null_mut(),
             connection: None,
-            data: ptr::null_mut(),
-            length: 0,
+            buffer: Buffer::Lent(&[]),
             flags: 0,
             result: 0,
             error: 0,
@@ -142,29 +154,13 @@ impl<'a> PoolCall<'a> {
         crate::process::worker_record::NativeSocket::lend(self.socket)
     }
 
-    /// The buffer of [`PoolCall::length`] bytes the hook reads or fills.
-    #[must_use]
-    pub fn data(&self) -> *mut c_void {
-        self.data
-    }
-
-    #[must_use]
-    pub fn length(&self) -> usize {
-        self.length
-    }
-
-    /// The [`PoolCall::length`] bytes at [`PoolCall::data`] as they are now; none
-    /// without a buffer. A hook that fills its buffer writes through `data`, with no
-    /// borrow of this live.
+    /// The call's bytes as they are now; none without a buffer.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
-        if self.data.is_null() {
-            return &[];
+        match &self.buffer {
+            Buffer::Lent(bytes) => bytes,
+            Buffer::Fill(bytes) => bytes,
         }
-        // SAFETY: only this crate makes and fills a call: `data` is a buffer of at
-        // least `length` initialized bytes (a zeroed receive buffer, or the bytes a
-        // send lends) that outlives the hook, and so this borrow of its call.
-        unsafe { std::slice::from_raw_parts(self.data.cast(), self.length) }
     }
 
     /// The stream connection the hook serves, if any.
@@ -173,14 +169,14 @@ impl<'a> PoolCall<'a> {
         self.connection.as_deref()
     }
 
-    /// [`PoolCall::connection`] and the [`PoolCall::length`] bytes at
-    /// [`PoolCall::data`], lent to a read that fills them, for this borrow of the call.
-    pub fn connection_fill(&mut self) -> (Option<&dyn Any>, crate::lent::Fill<'_>) {
-        // SAFETY: only this crate makes a call: `data` is null or a buffer of at least
-        // `length` writable bytes that outlives the hook, which nothing else reaches
-        // while this borrow of its call lasts.
-        let fill = unsafe { crate::lent::Fill::from_raw(self.data, self.length) };
-        (self.connection.as_deref(), fill)
+    /// [`PoolCall::connection`] and the bytes a read fills (none when the call only
+    /// lends bytes to read), for this borrow of the call.
+    pub fn connection_buffer(&mut self) -> (Option<&dyn Any>, &mut [u8]) {
+        let buffer = match &mut self.buffer {
+            Buffer::Fill(bytes) => &mut **bytes,
+            Buffer::Lent(_) => &mut [],
+        };
+        (self.connection.as_deref(), buffer)
     }
 
     #[must_use]
@@ -215,8 +211,9 @@ pub struct PoolIpc {
     /// `SW_IPC_SOCKET`: the listener (a native socket), its address, the
     /// connection being served and the reply the callback wrote.
     stream: Option<Stream>,
-    /// The receive buffer, allocated when a worker's loop starts.
-    packet: Vec<u64>,
+    /// The event loop's receive buffer (`ProcessPool::recv_packet`'s), allocated when
+    /// a worker's loop starts, and taken out while a read fills it.
+    packet: Vec<u8>,
 }
 
 struct Stream {
@@ -297,18 +294,19 @@ impl<'a> Worker<'a> {
         run(self.native, |native, _| native.end(), &mut self.call())
     }
 
-    fn io(
+    fn io<'b>(
         &self,
         hook: Hook,
         connection: Option<&Connection>,
-        data: *mut u8,
-        length: usize,
+        buffer: Buffer<'b>,
         flags: c_int,
-    ) -> Result<PoolCall<'a>, Bailed> {
-        let mut call = self.call();
+    ) -> Result<PoolCall<'b>, Bailed>
+    where
+        'a: 'b,
+    {
+        let mut call: PoolCall<'b> = self.call();
         call.connection = connection.cloned();
-        call.data = data.cast();
-        call.length = length;
+        call.buffer = buffer;
         call.flags = flags;
         run(self.native, hook, &mut call)?;
         Ok(call)
@@ -328,13 +326,12 @@ impl<'a> Worker<'a> {
     }
 
     /// `socket->recv_sync(data, length, MSG_WAITALL)`.
-    fn recv_all(&self, socket: &Connection, data: *mut u8, length: usize) -> Result<isize, Bailed> {
+    fn recv_all(&self, socket: &Connection, data: &mut [u8]) -> Result<isize, Bailed> {
         Ok(self
             .io(
                 |native, call| native.recv(call),
                 Some(socket),
-                data,
-                length,
+                Buffer::Fill(data),
                 libc::MSG_WAITALL,
             )?
             .result)
@@ -345,31 +342,29 @@ impl<'a> Worker<'a> {
             .io(
                 |native, call| native.send(call),
                 Some(socket),
-                data.as_ptr().cast_mut(),
-                data.len(),
+                Buffer::Lent(data),
                 0,
             )?
             .result)
     }
 
-    /// `Stream::recv_sync`: a length-prefixed frame of at most `length` bytes.
-    fn recv_frame(
-        &self,
-        socket: &Connection,
-        data: *mut u8,
-        length: usize,
-    ) -> Result<isize, Bailed> {
+    /// `Stream::recv_sync`: a length-prefixed frame of at most `data.len()` bytes.
+    fn recv_frame(&self, socket: &Connection, data: &mut [u8]) -> Result<isize, Bailed> {
         let mut head = [0u8; 4];
-        if self.recv_all(socket, head.as_mut_ptr(), head.len())? != 4 {
+        if self.recv_all(socket, &mut head)? != 4 {
             return Ok(-1);
         }
         let size = i32::from_be_bytes(head);
-        if size <= 0 || i64::from(size) > i64::try_from(length).unwrap_or(i64::MAX) {
+        let Some(data) = usize::try_from(size)
+            .ok()
+            .filter(|&size| size > 0)
+            .and_then(|size| data.get_mut(..size))
+        else {
             return Ok(-1);
-        }
-        let size = size.cast_unsigned() as usize;
-        let n = self.recv_all(socket, data, size)?;
-        Ok(if n == size.cast_signed() { n } else { -1 })
+        };
+        let size = data.len().cast_signed();
+        let n = self.recv_all(socket, data)?;
+        Ok(if n == size { n } else { -1 })
     }
 
     /// Whether a stream connection is being served.
@@ -408,9 +403,11 @@ impl<'a> Worker<'a> {
         });
     }
 
-    /// The task `call` lends the native hook, the `EventData` at the head of `out`.
-    fn task(&self, call: &mut PoolCall<'a>, out: &[u64]) {
-        self.native.task(call);
+    /// The task hook over the `EventData` after `out`'s mtype.
+    fn task(&self, out: &[u8]) {
+        let mut call = self.call();
+        call.buffer = Buffer::Lent(out.get(MTYPE..).unwrap_or_default());
+        self.native.task(&mut call);
         if call.result < 0 {
             let fd = i64::from_ne_bytes(head_bytes(out, 0));
             self.warn(Warning::TaskFailed(fd), 0);
@@ -426,21 +423,18 @@ impl<'a> Worker<'a> {
         worker_id: u32,
     ) -> Result<(), Bailed> {
         // `struct { long mtype; EventData buf; }`, zeroed.
-        let mut out = vec![0u64; (MTYPE + event_size).div_ceil(8)];
-        let Some(mtype) = out.first_mut() else {
-            return Ok(());
-        };
-        *mtype = if by_sysvmsg {
+        let mut out = vec![0u8; MTYPE + event_size];
+        let mtype: u64 = if by_sysvmsg {
             0
         } else {
             u64::from(worker_id) + 1
         };
-        let server_fd = u64::from(worker_id.c_cast::<u16>());
-        // `info.server_fd`: bytes 24..26 of the head, i.e. of out[4].
-        if let Some(word) = out.get_mut(1 + HEAD_SERVER_FD / 8) {
-            *word = server_fd << (8 * (HEAD_SERVER_FD % 8));
-        }
-        let mut buf = out.as_mut_ptr().cast::<u8>().wrapping_add(MTYPE);
+        put(&mut out, 0, &mtype.to_ne_bytes());
+        put(
+            &mut out,
+            MTYPE + HEAD_SERVER_FD,
+            &worker_id.c_cast::<u16>().to_ne_bytes(),
+        );
 
         while self.running() {
             let n = match mode {
@@ -448,8 +442,6 @@ impl<'a> Worker<'a> {
                     // The received mtype stays in `out` for the next receive, as upstream.
                     let call = self.call();
                     let (n, error) = trapped(|| call.pool().queue_pop(&mut out, event_size))?;
-                    // The receive borrowed `out`: its payload's address again.
-                    buf = out.as_mut_ptr().cast::<u8>().wrapping_add(MTYPE);
                     if n < 0 && fatal(error) {
                         self.warn(Warning::Msgrcv, error);
                         break;
@@ -468,7 +460,7 @@ impl<'a> Worker<'a> {
                             continue;
                         }
                     };
-                    let n = self.recv_frame(&socket, buf, event_size)?;
+                    let n = self.recv_frame(&socket, payload(&mut out))?;
                     if n <= 0 {
                         self.close(socket);
                         self.end()?;
@@ -478,29 +470,28 @@ impl<'a> Worker<'a> {
                     n
                 }
                 Mode::Pipe => {
-                    let (mut read, mut task) = (self.call(), self.call());
-                    (read.data, read.length) = (buf.cast(), event_size);
-                    (task.data, task.length) = (buf.cast(), event_size);
                     // A whole task with no connection to answer runs under the read's
                     // own trap, so the iteration sets one trap, not two.
-                    let ran = trapped(|| {
+                    let (ran, result, error) = trapped(|| {
+                        let mut read = self.call();
+                        read.buffer = Buffer::Fill(payload(&mut out));
                         self.native.pipe_read(&mut read);
-                        let ran =
-                            read.result >= 0 && whole_task(&out, read.result) && !self.connected();
+                        let (result, error) = (read.result, read.error);
+                        let ran = result >= 0 && whole_task(&out, result) && !self.connected();
                         if ran {
-                            self.task(&mut task, &out);
+                            self.task(&out);
                             self.native.end();
                         }
-                        ran
+                        (ran, result, error)
                     })?;
                     if ran {
                         continue;
                     }
-                    if read.result < 0 && fatal(read.error) {
-                        self.warn(Warning::Read, read.error);
+                    if result < 0 && fatal(error) {
+                        self.warn(Warning::Read, error);
                         break;
                     }
-                    read.result
+                    result
                 }
             };
             if n >= 0 {
@@ -508,11 +499,8 @@ impl<'a> Worker<'a> {
                 if whole_task(&out, n) {
                     // Without a connection to answer, nothing comes between the task
                     // and the iteration's end, so one trap covers both.
-                    let mut call = self.call();
-                    call.data = buf.cast();
-                    call.length = event_size;
                     trapped(|| {
-                        self.task(&mut call, &out);
+                        self.task(&out);
                         if alone {
                             self.native.end();
                         }
@@ -545,31 +533,23 @@ impl<'a> Worker<'a> {
     /// `SW_PROTOCOL_STREAM`: raw messages, length-prefixed over the stream socket.
     fn run_stream(&self, mode: Mode, max_packet_size: u32) -> Result<(), Bailed> {
         // A zeroed buffer: the `QueueNode` mtype is 0.
-        let Some(packet) = self.with_ipc(|ipc| ipc.prepare(max_packet_size)) else {
+        let Some(mut packet) = self.with_ipc(|ipc| ipc.prepare(max_packet_size)) else {
             return Ok(());
         };
+        let most = (max_packet_size as usize).min(packet.len());
 
         while self.running() {
-            let (data, n) = match mode {
+            // Where the message starts in `packet`, and its length.
+            let (at, n) = match mode {
                 Mode::Queue => {
                     let call = self.call();
-                    let popped = self
-                        .with_ipc(|ipc| trapped(|| call.pool().queue_pop(&mut ipc.packet, MSGMAX)));
-                    let Some((n, error)) = popped.transpose()? else {
-                        break;
-                    };
+                    let (n, error) = trapped(|| call.pool().queue_pop(&mut packet, MSGMAX))?;
                     if n < 0 && fatal(error) {
                         self.warn(Warning::Msgrcv, error);
                         break;
                     }
-                    let payload = self.with_ipc(|ipc| {
-                        if let Some(mtype) = ipc.packet.first_mut() {
-                            *mtype = 0;
-                        }
-                        // The receive borrowed the packet: its payload's address again.
-                        ipc.packet.as_mut_ptr().cast::<u8>().wrapping_add(MTYPE)
-                    });
-                    (payload.unwrap_or(packet), n)
+                    put(&mut packet, 0, &[0; MTYPE]);
+                    (MTYPE, n)
                 }
                 Mode::Socket => {
                     let socket = match self.accept()? {
@@ -584,38 +564,47 @@ impl<'a> Worker<'a> {
                         }
                     };
                     let mut head = [0u8; 4];
-                    let mut received = self.recv_all(&socket, head.as_mut_ptr(), head.len())? == 4;
+                    let mut received = self.recv_all(&socket, &mut head)? == 4;
                     let n = u32::from_be_bytes(head);
                     // Errors on one connection close it and carry on with the next.
                     received = received && n != 0 && n <= max_packet_size;
-                    if !received
-                        || self.recv_all(&socket, packet, n as usize)? != n.c_cast::<isize>()
-                    {
+                    let data = packet.get_mut(..n as usize).filter(|_| received);
+                    let Some(data) = data else {
+                        self.close(socket);
+                        self.end()?;
+                        continue;
+                    };
+                    if self.recv_all(&socket, data)? != n.c_cast::<isize>() {
                         self.close(socket);
                         self.end()?;
                         continue;
                     }
                     self.set_connection(socket);
-                    (packet, n.c_cast::<isize>())
+                    (0, n.c_cast::<isize>())
                 }
                 Mode::Pipe => {
                     let call = self.io(
                         |native, call| native.pipe_read(call),
                         None,
-                        packet,
-                        max_packet_size as usize,
+                        Buffer::Fill(packet.get_mut(..most).unwrap_or_default()),
                         0,
                     )?;
                     if call.result < 0 && fatal(call.error) {
                         self.warn(Warning::Read, call.error);
                         break;
                     }
-                    (packet, call.result)
+                    (0, call.result)
                 }
             };
             if n >= 0 {
                 let length = n.c_cast::<u32>() as usize;
-                self.io(|native, call| native.message(call), None, data, length, 0)?;
+                let data = packet.get(at..at + length).unwrap_or_default();
+                self.io(
+                    |native, call| native.message(call),
+                    None,
+                    Buffer::Lent(data),
+                    0,
+                )?;
                 if let Some(socket) = self.take_connection() {
                     let response = self.take_response();
                     if !response.is_empty() {
@@ -700,16 +689,15 @@ enum Mode {
 }
 
 impl PoolIpc {
-    /// Allocate the packet buffer (and, for a stream listener, the response
-    /// buffer) a worker receives into: its address.
-    fn prepare(&mut self, max_packet_size: u32) -> *mut u8 {
+    /// A zeroed packet buffer a worker receives into, and, for a stream listener,
+    /// the response buffer.
+    fn prepare(&mut self, max_packet_size: u32) -> Vec<u8> {
         // A queue receive reads up to SW_MSGMAX bytes after the mtype.
         let size = (max_packet_size as usize).max(MTYPE + MSGMAX);
-        self.packet = vec![0u64; size.div_ceil(8)];
         if let Some(stream) = self.stream.as_mut() {
             stream.response = Some(Vec::with_capacity(RESPONSE_CAPACITY));
         }
-        self.packet.as_mut_ptr().cast()
+        vec![0; size]
     }
 }
 
@@ -868,17 +856,20 @@ pub(crate) fn swr_v1_process_pool_ipc_respond(ipc: &mut PoolIpc, data: &[u8]) ->
     true
 }
 
-/// Allocate a worker's receive buffers for its event loop: the packet buffer.
-pub fn pool_ipc_prepare(ipc: &mut PoolIpc, max_packet_size: u32) -> *mut c_char {
-    ipc.prepare(max_packet_size).cast()
+/// Allocate a worker's receive buffers for its event loop.
+pub fn pool_ipc_prepare(ipc: &mut PoolIpc, max_packet_size: u32) {
+    ipc.packet = ipc.prepare(max_packet_size);
 }
 
-/// The packet buffer `_prepare` allocated and its size in bytes; null and 0 before.
-pub fn pool_ipc_packet(ipc: &mut PoolIpc) -> (*mut c_char, usize) {
-    if ipc.packet.is_empty() {
-        return (ptr::null_mut(), 0);
-    }
-    (ipc.packet.as_mut_ptr().cast(), size_of_val(&*ipc.packet))
+/// The packet buffer `_prepare` allocated, taken out until
+/// [`pool_ipc_restore_packet`]; empty before, or while taken.
+pub(crate) fn pool_ipc_take_packet(ipc: &mut PoolIpc) -> Vec<u8> {
+    std::mem::take(&mut ipc.packet)
+}
+
+/// Give the packet buffer back.
+pub(crate) fn pool_ipc_restore_packet(ipc: &mut PoolIpc, packet: Vec<u8>) {
+    ipc.packet = packet;
 }
 
 fn mode(ipc_mode: IpcMode) -> Mode {
@@ -970,18 +961,11 @@ pub(crate) fn swr_v1_process_worker_send(
     let length = data.len();
     let mut call = PoolCall::new(pool, None);
     if queue {
-        // `mtype`, then `data` in native-endian words, zero-padded.
-        let message: Vec<u64> = std::iter::once(u64::from(worker_id) + 1)
-            .chain(data.chunks(MTYPE).map(|chunk| {
-                let mut word = [0; MTYPE];
-                word.iter_mut()
-                    .zip(chunk)
-                    .for_each(|(to, from)| *to = *from);
-                u64::from_ne_bytes(word)
-            }))
-            .collect();
+        // `mtype`, then `data`.
+        let mtype = c_long::from(worker_id) + 1;
+        let message = [&mtype.to_ne_bytes()[..], data].concat();
         // The queue's push, which cannot reach PHP.
-        return pool.queue_push(&message, length).then_some(length);
+        return pool.queue_push(&message).then_some(length);
     }
     if pipe.is_null() {
         // A worker without a pipe, which upstream doesn't send through.
@@ -989,8 +973,7 @@ pub(crate) fn swr_v1_process_worker_send(
     }
     // A worker's pipe end, a live socket (the record's invariant).
     call.socket = pipe;
-    call.data = data.as_ptr().cast_mut().cast();
-    call.length = length;
+    call.buffer = Buffer::Lent(data);
     call.flags = flags & PIPE_NONBLOCK;
     // The native pipe write, which cannot reach PHP.
     native.pipe_write(&mut call);
@@ -1093,10 +1076,8 @@ mod tests {
     #[test]
     fn the_packet_buffer_holds_a_queue_message() {
         let mut ipc = PoolIpc::default();
-        ipc.prepare(64);
-        assert!(ipc.packet.len() * 8 >= MTYPE + MSGMAX);
-        ipc.prepare(4 << 20);
-        assert!(ipc.packet.len() * 8 >= 4 << 20);
+        assert!(ipc.prepare(64).len() >= MTYPE + MSGMAX);
+        assert!(ipc.prepare(4 << 20).len() >= 4 << 20);
     }
 
     fn records(busy: &[bool]) -> Vec<crate::process::worker_record::WorkerRecord> {
@@ -1166,20 +1147,12 @@ mod tests {
     }
 
     fn fill(call: &mut PoolCall, bytes: &[u8]) {
-        // SAFETY: the loop's buffer of `length` bytes.
-        unsafe {
-            ptr::copy_nonoverlapping(
-                bytes.as_ptr(),
-                call.data.cast(),
-                bytes.len().min(call.length),
-            );
-        }
+        put(call.connection_buffer().1, 0, bytes);
         call.result = bytes.len().c_cast::<isize>();
     }
 
     fn bytes_of(call: &PoolCall) -> Vec<u8> {
-        // SAFETY: the loop's bytes.
-        unsafe { std::slice::from_raw_parts(call.data.cast::<u8>(), call.length) }.to_vec()
+        call.bytes().to_vec()
     }
 
     /// The scripted hooks, over the thread's [`Script`].

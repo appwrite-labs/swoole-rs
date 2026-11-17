@@ -103,7 +103,7 @@ fn on_connect(serv: view::Server<'_>, info: &DataHead) {
 fn on_close(serv: view::Server<'_>, info: &DataHead) {
     case(&CLOSE)(serv.raw(), ptr::from_ref(info).cast());
 }
-fn on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn on_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     case(&RECEIVE)(serv.raw(), ptr::from_ref(req).cast())
 }
 

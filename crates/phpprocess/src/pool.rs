@@ -122,16 +122,16 @@ fn worker_busy(busy: bool) {
 }
 
 /// The message's payload as a string: the bus's packet itself when it holds one.
-fn message_data(pool: PoolRef<'_>, message: &RecvData<'_>) -> Owned {
-    let length = message.data().len();
+fn message_data(message: &mut RecvData<'_>) -> Owned {
+    let length = message.payload().len();
     let moved = (length != 0 && message.info().flags & EVENT_DATA_OBJ_PTR != 0)
-        .then(|| swoole_rs_server::pool_bus_move_packet(pool))
+        .then(|| message.take_packet())
         .flatten();
     let string = if let Some(mut buffer) = moved {
         buffer.truncate(length);
         swoole_rs_phpswoole::received_string(buffer)
     } else {
-        ZString::new(message.data())
+        ZString::new(message.payload())
     };
     Owned::string(string)
 }
@@ -400,12 +400,12 @@ fn worker_signals(term: bool) {
     }
 }
 
-fn on_message(pool: PoolRef<'_>, message: &RecvData<'_>) {
+fn on_message(_: PoolRef<'_>, message: &mut RecvData<'_>) {
     let mut slot = Owned::default();
     let Some((object, this)) = owner(&mut slot) else {
         return;
     };
-    let data = message_data(pool, message);
+    let data = message_data(message);
     worker_busy(true);
     // The onMessage callable `start()` required.
     let callable = this.on_message.get();

@@ -114,8 +114,8 @@ impl<'a> Lent<'a> {
 pub(crate) fn send_data<'a>(
     package: &'a mut Package<'_>,
     info: DataHead,
-) -> swoole_rs_server::reactor_entry::RecvData<'a> {
-    use swoole_rs_server::reactor_entry::RecvData as SendData;
+) -> swoole_rs_server::SendData<'a> {
+    use swoole_rs_server::SendData;
     if package.as_ptr().is_null() {
         SendData::empty(info)
     } else {

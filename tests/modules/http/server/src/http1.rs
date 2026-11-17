@@ -405,7 +405,7 @@ fn respond(serv: Server, session: c_long, body: &str) {
 }
 
 /// The request a callback receives, and its bytes.
-fn request<'a>(req: &RecvData<'a>) -> (c_long, &'a [u8]) {
+fn request<'r>(req: &'r RecvData<'_>) -> (c_long, &'r [u8]) {
     (req.info().fd, req.payload())
 }
 
@@ -421,7 +421,7 @@ fn on_close(serv: view::Server<'_>, info: &DataHead) {
 
 /// `test_base_server`'s `onReceive`. The WebSocket frames its `websocket_*` TESTs send
 /// are #1842's.
-fn base_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn base_on_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let serv = Server(serv.raw());
     let (session, data) = request(req);
     COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -518,7 +518,7 @@ fn ignore_server(_: view::Server<'_>) {}
 fn ignore_event(_: view::Server<'_>, _: &DataHead) {}
 
 /// `serv.onReceive = [](Server *, RecvData *) -> int { return SW_OK; }`.
-fn receive_ok(_: view::Server<'_>, _: &RecvData) -> c_int {
+fn receive_ok(_: view::Server<'_>, _: &mut RecvData<'_>) -> c_int {
     SW_OK
 }
 
@@ -528,7 +528,7 @@ fn task_ok(_: view::Server<'_>, _: Packed<'_>) -> c_int {
 }
 
 /// `test_http_server`'s `onReceive`.
-fn http_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn http_on_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let serv = Server(serv.raw());
     let (session, data) = request(req);
     let conn = serv.get_connection_by_session_id(session);
@@ -602,7 +602,7 @@ fn default_http_server() -> Server {
 }
 
 /// `test_proxy_server`'s `onReceive`.
-fn proxy_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn proxy_on_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let server = Server(serv.raw());
     let (session, data) = request(req);
 
@@ -1112,7 +1112,7 @@ fn max_queued_bytes() {
 fn dispatch_error(
     _: view::Server<'_>,
     _: Option<swoole_rs_server::Connection<'_>>,
-    data: Option<&RecvData>,
+    data: Option<&swoole_rs_server::SendData<'_>>,
 ) -> c_int {
     let fd = data.expect("the packet it dispatches").info().fd;
     if fd % 2 == 0 {
