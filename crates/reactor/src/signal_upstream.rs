@@ -115,13 +115,13 @@ mod descriptor {
         FdHandler, event_add, event_del, isset_handler, swoole_event_set_fd_handler,
     };
     use crate::{OwnedSocket, SocketRecord};
-    use core::cell::RefCell;
+    use core::cell::Cell;
     use swoole_rs_process::signal_loop::DescriptorOps;
 
     std::thread_local! {
         /// The signalfd's socket wrapper, on the signal thread: none, or the one
         /// `make` created and `free` has not yet released.
-        static SOCKET: RefCell<Option<OwnedSocket>> = const { RefCell::new(None) };
+        static SOCKET: Cell<Option<OwnedSocket>> = const { Cell::new(None) };
     }
 
     pub(super) fn make(fd: i32) {
@@ -129,9 +129,13 @@ mod descriptor {
         SOCKET.set(Some(socket));
     }
 
-    /// `f` over the wrapper, while there is one.
+    /// `f` over the wrapper, while there is one, taken out and put back: a call `f`
+    /// makes back into this module finds none.
     fn with<R>(f: impl FnOnce(&OwnedSocket) -> R) -> Option<R> {
-        SOCKET.with_borrow(|socket| socket.as_ref().map(f))
+        let socket = SOCKET.take()?;
+        let out = f(&socket);
+        SOCKET.set(Some(socket));
+        Some(out)
     }
 
     /// Frees the wrapper but not the descriptor, which the signalfd backend closes.
@@ -178,8 +182,7 @@ mod descriptor {
     /// (`OwnedSocket::into_box`), where upstream's stayed counted, so it no longer
     /// needs discounting.
     fn exit_condition(event_num: &mut usize) -> bool {
-        SOCKET.with_borrow(Option::is_none)
-            || swoole_rs_process::signal_loop::exit_condition(event_num)
+        with(|_| ()).is_none() || swoole_rs_process::signal_loop::exit_condition(event_num)
     }
 
     /// The read handler, the exit condition and the destroy callback.
