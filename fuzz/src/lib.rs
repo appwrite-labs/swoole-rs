@@ -4,6 +4,7 @@
 
 use std::ffi::{CStr, c_char};
 use swoole_rs_clients::{cookie, domain_decode};
+use swoole_rs_corebase::log;
 use swoole_rs_framing::{DefaultLength, default_length, unpack, width};
 use swoole_rs_http::{
     BOUNDARY_SIZE, HttpStaticContext, HttpStaticObservation, StaticEffects,
@@ -12,7 +13,8 @@ use swoole_rs_oracle::{
     base64 as upstream, clients, framing as upstream_framing, framing_stream,
     http as upstream_http,
     http_frame::{self, Engine, UPSTREAM},
-    http_range, protocols, resp_stream, socks5, websocket as upstream_ws,
+    http_proxy as upstream_proxy, http_range, protocols, resp_stream, socks5,
+    websocket as upstream_ws,
 };
 
 mod framing_native;
@@ -700,6 +702,18 @@ pub fn clients_cookie(bytes: &[u8]) {
         want,
         "cookie {bytes:?}"
     );
+}
+
+/// Any bytes as an HTTP proxy's reply to the client's CONNECT: `proxy_accept`, which
+/// the client calls, and the pinned `HttpProxy::handshake` agree on whether the tunnel
+/// is up and on the last error they set.
+pub fn http_proxy(bytes: &[u8]) {
+    let mut error = 0;
+    // SAFETY: reads `bytes`; `error` is a local.
+    let accepted = unsafe { upstream_proxy::handshake(bytes.as_ptr(), bytes.len(), &mut error) };
+    log::set_last_error(0);
+    let got = (swoole_rs_http_ffi::proxy_accept(bytes), log::last_error());
+    assert_eq!(got, (accepted, error), "proxy handshake {bytes:?}");
 }
 
 /// Any bytes as a received DNS name buffer: where Rust decodes it, upstream

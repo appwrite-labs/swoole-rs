@@ -255,5 +255,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "http_proxy"
+path = "fuzz_targets/http_proxy.rs"
+test = false
+doc = false
+bench = false
+
 # Built only by `cargo +nightly fuzz`, outside the pinned stable workspace.
 [workspace]
