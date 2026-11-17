@@ -592,7 +592,7 @@ impl<'a> Props<'a> {
     }
 
     /// The array [`Props::array_slot`] finds, lent to `edit` out of its
-    /// property ([`Value::edit_array`]), which takes it back when `edit`
+    /// property, which takes it back when `edit`
     /// returns, in place of whatever was put there meanwhile. None as
     /// [`Props::array_slot`].
     pub fn edit_array<R>(self, name: &CStr, edit: impl FnOnce(&mut ArrayMut) -> R) -> Option<R> {

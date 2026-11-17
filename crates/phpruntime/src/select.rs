@@ -64,9 +64,9 @@ impl Entry {
     }
 }
 
-/// `$read`, `$write` and `$except` as parsing left them: none, or the zval a
-/// by-reference argument refers to. Each array is edited lent out of its zval
-/// ([`Value::edit_array`]), as the same array may be passed twice by reference.
+/// The argument numbers for `$read`, `$write` and `$except` arrays. Edits
+/// re-read their by-reference slots through an exclusive Call borrow, since
+/// the same array may be passed twice by reference.
 struct Arrays([Option<u32>; 3]);
 
 impl Arrays {

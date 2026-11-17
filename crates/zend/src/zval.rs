@@ -301,6 +301,27 @@ impl<'a> Zvals<'a> {
 
 /// A borrowed zval. Zend may change it and what it points to (refcounts, a
 /// conversion's cache) through pointers on this thread, hence the cell.
+///
+/// Contents cannot be lent out or edited through a shared Value. Mutate an
+/// owned array through [`Owned::array_mut`], or a property/argument through its
+/// owning handle, which protects any earlier reads.
+///
+/// ```compile_fail
+/// use swoole_rs_zend::{Owned, ZString};
+/// let mut value = Owned::from(ZString::new(b"borrowed"));
+/// let text = value.str().unwrap();
+/// value.lend(|held| *held = Owned::null());
+/// let _ = text.bytes();
+/// ```
+///
+/// ```compile_fail
+/// use swoole_rs_zend::OwnedArray;
+/// let mut value = OwnedArray::default().into_owned();
+/// value.array_mut().unwrap().push_long(1);
+/// let first = value.array().unwrap().index(0).unwrap();
+/// value.edit_array(|array| for i in 0..64 { array.push_long(i); });
+/// let _ = first.long();
+/// ```
 #[repr(transparent)]
 pub struct Value(Cell<zval>);
 
@@ -561,22 +582,6 @@ impl Value {
         self.0.set(value);
     }
 
-    /// Lend what the zval holds to `edit`, with null in its place meanwhile,
-    /// then put it back and release whatever `edit` left there. The exclusive
-    /// borrow prevents retaining a content borrow across the edit.
-    ///
-    /// ```compile_fail
-    /// use swoole_rs_zend::{Owned, ZString};
-    /// let mut value = Owned::from(ZString::new(b"borrowed"));
-    /// let text = value.str().unwrap();
-    /// value.lend(|held| *held = Owned::null());
-    /// let _ = text.bytes();
-    /// ```
-    #[inline(always)]
-    pub fn lend<R>(&mut self, edit: impl FnOnce(&mut Owned) -> R) -> R {
-        self.lend_slot(edit)
-    }
-
     // Only slot owners use this: public property and return-slot reads hold
     // copies, and argument edits require an exclusive Call borrow.
     #[inline(always)]
@@ -587,23 +592,6 @@ impl Value {
         // released after the held value is back in its slot.
         drop(Owned::from_zval(self.0.replace(held.into_zval())));
         result
-    }
-
-    /// The array this holds, lent to `edit` as [`Value::lend`] lends it: the
-    /// zval reads null meanwhile, so nothing `edit` does can free or replace
-    /// the array under it. None for anything but an array.
-    ///
-    /// ```compile_fail
-    /// use swoole_rs_zend::OwnedArray;
-    /// let mut value = OwnedArray::default().into_owned();
-    /// value.array_mut().unwrap().push_long(1);
-    /// let first = value.array().unwrap().index(0).unwrap();
-    /// value.edit_array(|array| for i in 0..64 { array.push_long(i); });
-    /// let _ = first.long();
-    /// ```
-    #[inline(always)]
-    pub fn edit_array<R>(&mut self, edit: impl FnOnce(&mut ArrayMut) -> R) -> Option<R> {
-        self.edit_array_slot(edit)
     }
 
     #[inline(always)]
@@ -1948,13 +1936,6 @@ impl std::ops::Deref for Owned {
     #[inline]
     fn deref(&self) -> &Value {
         &self.0
-    }
-}
-
-impl std::ops::DerefMut for Owned {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Value {
-        &mut self.0
     }
 }
 
