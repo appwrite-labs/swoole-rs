@@ -168,7 +168,9 @@ fn init_mutex(
     if result != 0 {
         return Err(result);
     }
-    let attributes = if shared {
+    // Miri has no pthread_mutexattr_setpshared, and with no fork a process-shared
+    // mutex is no different.
+    let attributes = if shared && !cfg!(miri) {
         pthread_mutexattr_setpshared(attr, PTHREAD_PROCESS_SHARED)
     } else {
         0
@@ -860,7 +862,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
     fn shared_mutex_locks_once_made_and_refuses_after_destroy() {
         let mut mutex = SharedMutex::new();
         assert_eq!(mutex.init(), Ok(()));

@@ -787,7 +787,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no kqueue")]
+    #[cfg_attr(all(miri, not(target_os = "linux")), ignore = "Miri has no kqueue")]
     fn freeing_a_registered_socket_deletes_it_from_the_reactor() {
         #[cfg(target_os = "linux")]
         let native_kind = 1;
