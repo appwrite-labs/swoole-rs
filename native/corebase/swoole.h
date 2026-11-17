@@ -95,7 +95,6 @@ namespace swoole {
 class Reactor;
 class String;
 class Timer;
-struct TimerNode;
 struct Event;
 class Pipe;
 class UnixSocket;

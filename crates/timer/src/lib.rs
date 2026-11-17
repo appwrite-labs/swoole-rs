@@ -18,15 +18,15 @@ mod owner;
 #[cfg(feature = "upstream-symbols")]
 mod wrapper;
 #[cfg(feature = "upstream-symbols")]
-pub use owner::{Owner, TimerNode, owner_reinit};
+pub use owner::{Owner, owner_reinit};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::{mem, ptr};
 #[cfg(feature = "upstream-symbols")]
 pub use wrapper::{
-    Held, add_fn, add_fn_sec, add_owned, cancel_held, cancel_issued, del_id, delay_held, php,
-    swoole_timer_clear, swoole_timer_create, swoole_timer_del, swoole_timer_free,
+    Held, add_fn, add_fn_sec, add_owned, cancel_held, cancel_issued, del_id, delay_held,
+    delete_held, php, schedule_owned, swoole_timer_clear, swoole_timer_create, swoole_timer_free,
     swoole_timer_get_next_msec, swoole_timer_is_available, swoole_timer_select, thread_timer_count,
     thread_timer_detached, thread_timer_reinit,
 };

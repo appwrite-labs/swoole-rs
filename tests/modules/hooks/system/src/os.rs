@@ -13,7 +13,7 @@ pub(super) use swoole_rs_hooks::async_threads::dispatch;
 pub(super) use swoole_rs_hooks::offload::AsyncEvent;
 use swoole_rs_hooks::offload::{Callback, Handler};
 
-use super::timer::{swoole_timer_del, tick};
+use super::timer::tick;
 use super::{_exit, fork, getpid, run, spawn_exec};
 
 const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
@@ -223,21 +223,19 @@ fn schedule() {
     swoole_rs_corebase::swr_v1_core_set_aio_max_idle_time_bits(0.5_f64.to_bits());
 
     let count = Cell::new(n);
-    let event = &event;
-    tick(2, |timer| {
+    tick(2, move |timer| {
         // SW_LOOP_N(swoole_rand(5, 15)): the bound is drawn again before every iteration.
         let mut i = 0;
         // SAFETY: swoole_rand(3).
         while i < unsafe { swoole_rand(5, 15) } {
             i += 1;
-            let ret = dispatch(event);
+            let ret = dispatch(&event);
             // SAFETY: the pool's live copy.
             assert_eq!(unsafe { (*ret).object() }, event.object());
             count.set(count.get() - 1);
             let (worker_num, queue_size, task_num) = stats();
             if count.get() == 0 {
-                // SAFETY: the running tick's node.
-                unsafe { swoole_timer_del(timer) };
+                swoole_rs_timer::del_id(timer);
                 assert!(worker_num > 16);
                 assert!(queue_size > 100);
                 assert!(task_num > 100);
@@ -255,8 +253,7 @@ fn schedule() {
     // core-tests' DEBUG() lines, which print only in its debug builds, are left out.
     tick(2000, |timer| {
         if stats().0 < 16 {
-            // SAFETY: the running tick's node.
-            unsafe { swoole_timer_del(timer) };
+            swoole_rs_timer::del_id(timer);
         }
     });
 

@@ -2,16 +2,15 @@
 // Compatibility derived from Swoole v6.2.4 src/wrapper/timer.cc (Swoole contributors).
 //! The `swoole_timer_*` API (upstream `src/wrapper/timer.cc`, which the timer
 //! patch deletes): this thread's `SwooleTG.timer`, its lazy creation, unit
-//! conversion and warnings, over the Rust-owned timer (`owner.rs`). Only the
-//! raw-callback adds and the node-pointer `del` keep upstream symbols.
-use crate::owner::{Callback, Closure, Owner as Timer, TimerNode};
+//! conversion and warnings, over the Rust-owned timer (`owner.rs`). Timer
+//! callbacks own their captures and operations use issued timer IDs.
+use crate::owner::{Closure, Owner as Timer, TimerNode};
 use std::ffi::{CStr, c_long, c_void};
 use swoole_rs_corebase::CCast;
 pub use swoole_rs_corebase::timer_key::Held;
 use swoole_rs_corebase::{log, swoole_print_backtrace};
 
-/// `SW_ERR` and `SW_TIMER_MIN_SEC`.
-const ERR: c_long = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_long;
+/// `SW_TIMER_MIN_SEC`.
 const MIN_SEC: f64 = 0.001;
 
 pub(crate) fn timer() -> *mut Timer {
@@ -86,11 +85,6 @@ fn sec2msec(timeout: f64) -> c_long {
     (timeout * 1000.0).c_cast::<c_long>()
 }
 
-/// Adds `node` to this thread's timer, creating it on first use: the node and its id.
-fn add(ms: c_long, persistent: bool, node: TimerNode) -> Option<(*mut TimerNode, c_long)> {
-    created()?.add(ms, persistent, node)
-}
-
 /// This thread's timer, created on first use.
 fn created<'a>() -> Option<&'a Timer> {
     // One thread-local read when the timer exists, the usual case.
@@ -98,23 +92,6 @@ fn created<'a>() -> Option<&'a Timer> {
         swoole_timer_create(false);
         current()
     })
-}
-
-/// The node [`add`] added, or null.
-fn node(added: Option<(*mut TimerNode, c_long)>) -> *mut TimerNode {
-    added.map_or(std::ptr::null_mut(), |(node, _)| node)
-}
-
-/// `TimerNode *swoole_timer_add(long ms, ...)`: creates this thread's timer on
-/// first use.
-#[unsafe(export_name = "_Z16swoole_timer_addlbPFvPN6swoole5TimerEPNS_9TimerNodeEEPv")]
-extern "C-unwind" fn swoole_timer_add(
-    ms: c_long,
-    persistent: bool,
-    callback: Option<Callback>,
-    data: *mut c_void,
-) -> *mut TimerNode {
-    node(add(ms, persistent, TimerNode::new(callback, data)))
 }
 
 /// `swoole_timer_add(ms, persistent, ...)` of `f`, held by id, or none.
@@ -157,12 +134,10 @@ fn issuer(timer: Option<&Timer>, held: Held) -> Option<(&Timer, c_long)> {
         .map(|timer| (timer, held.id()))
 }
 
-/// [`swoole_timer_del`] of a held timer. A timer never reuses an id, so one that
+/// Delete a held timer. A timer never reuses an id, so one that
 /// already fired is left alone, as is one whose thread timer has since been freed.
 pub fn del_id(held: Held) {
-    if let Some((timer, id)) = issuer(available(c"swoole_timer_del"), held) {
-        timer.remove(id);
-    }
+    _ = delete_held(Some(held));
 }
 
 /// [`del_id`] without the warning when the thread has no timer.
@@ -193,66 +168,29 @@ pub fn delay_held(held: Option<Held>, delay_ms: c_long) {
     }
 }
 
-/// `swoole_timer_after`/`swoole_timer_tick`: the new timer's id, or `SW_ERR`.
-fn schedule(
-    origin: &CStr,
-    ms: c_long,
-    persistent: bool,
-    callback: Option<Callback>,
-    data: *mut c_void,
-) -> c_long {
-    if ms <= 0 {
-        log::warning(origin, format_args!("Timer must be greater than 0"));
-        return ERR;
-    }
-    add(ms, persistent, TimerNode::new(callback, data)).map_or(ERR, |(_, id)| id)
-}
-
-/// `long swoole_timer_after(long ms, TimerCallback, void *)`.
-#[unsafe(export_name = "_Z18swoole_timer_afterlPFvPN6swoole5TimerEPNS_9TimerNodeEEPv")]
-extern "C-unwind" fn swoole_timer_after(
-    ms: c_long,
-    callback: Option<Callback>,
-    data: *mut c_void,
-) -> c_long {
-    schedule(c"swoole_timer_after", ms, false, callback, data)
-}
-
-/// `long swoole_timer_tick(long ms, TimerCallback, void *)`.
-#[unsafe(export_name = "_Z17swoole_timer_ticklPFvPN6swoole5TimerEPNS_9TimerNodeEEPv")]
-extern "C-unwind" fn swoole_timer_tick(
-    ms: c_long,
-    callback: Option<Callback>,
-    data: *mut c_void,
-) -> c_long {
-    schedule(c"swoole_timer_tick", ms, true, callback, data)
-}
-
-/// A `TimerNode *` C++ hands back: one of this thread's live nodes, as
-/// `swoole_timer_add` returned it, live when the call that takes it starts. Only an
-/// export's argument is one; Rust makes none.
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct HeldNode(std::ptr::NonNull<TimerNode>);
-
-impl HeldNode {
-    /// The node's id, read on entry, before anything can free it.
-    fn id(self) -> c_long {
-        // SAFETY: the type's invariant: a live node, which no `&mut` borrows between
-        // the queue's calls.
-        let node = unsafe { self.0.as_ref() };
-        node.id
-    }
-}
-
-/// `bool swoole_timer_del(TimerNode *)`: `Timer::remove(tnode)`.
+/// Schedule an owned `after` or `tick` callback. Nonpositive intervals warn and
+/// fail before creating a thread timer, as those APIs do.
 #[must_use]
-#[unsafe(export_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE")]
-pub extern "C-unwind" fn swoole_timer_del(node: Option<HeldNode>) -> bool {
-    let Some(timer) = available(c"swoole_timer_del") else {
-        return false;
-    };
-    node.is_some_and(|node| timer.remove(node.id()))
+pub fn schedule_owned(ms: c_long, persistent: bool, f: impl Fn() + 'static) -> Option<Held> {
+    if ms <= 0 {
+        let origin = if persistent {
+            c"swoole_timer_tick"
+        } else {
+            c"swoole_timer_after"
+        };
+        log::warning(origin, format_args!("Timer must be greater than 0"));
+        return None;
+    }
+    add_owned(ms, persistent, f)
+}
+
+/// Delete an issued timer. None, an expired timer, or an ID from a different
+/// thread timer returns false. A missing thread timer retains the original warning.
+#[must_use]
+pub fn delete_held(held: Option<Held>) -> bool {
+    let timer = available(c"swoole_timer_del");
+    held.and_then(|held| issuer(timer, held))
+        .is_some_and(|(timer, id)| timer.remove(id))
 }
 
 /// `bool swoole_timer_exists(long timer_id)`: a node that isn't removed.

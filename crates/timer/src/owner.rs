@@ -63,11 +63,8 @@ pub struct Info {
     pub removed: bool,
 }
 
-/// `swoole::TimerNode`. Only `TimerNode::new` makes one, so `plain` can trail the head
-/// the test fixtures read (tests/modules/hooks/system and http/server), which the
-/// assertion below pins.
-#[repr(C)]
-pub struct TimerNode {
+/// A Rust-owned timer node; callers retain issued IDs instead of its layout.
+pub(crate) struct TimerNode {
     pub(crate) id: c_long,
     /// Upstream's `type == TYPE_PHP`: a PHP callable node.
     php: bool,
@@ -85,12 +82,6 @@ pub struct TimerNode {
     /// A [`TimerNode::closure`] node's callback.
     closure: Option<Closure>,
 }
-const _: () = assert!(
-    std::mem::offset_of!(TimerNode, exec_msec) == 16
-        && std::mem::offset_of!(TimerNode, removed) == 48
-        && std::mem::offset_of!(TimerNode, destructor) == 72,
-    "the TimerNode head the fixtures read"
-);
 
 pub(crate) use closure::Closure;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
@@ -278,12 +269,6 @@ impl TimerNode {
 
     pub(crate) fn is_php(&self) -> bool {
         self.php
-    }
-
-    /// The timer's id, which its timer never reuses.
-    #[must_use]
-    pub fn id(&self) -> c_long {
-        self.id
     }
 
     pub(crate) fn info(&self) -> Info {

@@ -14,13 +14,14 @@ reactor, clock base, armed wakeup, abandoned-selection marker) and its
 operations, `init`/`reinit`, `add`, `remove`, `update`, `delay`, `select` and the
 destructor's close/complete/end/drain. It holds the queue in a `RefCell` that no
 borrow holds across a callback or destructor, so a bailout never skips a release. It allocates and frees every
-`TimerNode`, whose callback and destructor are plain C function pointers;
-`add_fn` adds one whose callback is a Rust closure,
-for Rust callers, which call it by path. With a reactor it hooks
-`Reactor::timeout_msec`, the timer-priority end callback, the exit condition and a
-destroy callback that frees this thread's timer. No C++ reaches into the timer or calls the
-`swoole_timer_*` API; `swoole.h` declares `TimerNode` for the pointers it passes.
-`crates/timer/src/wrapper.rs` is that API, under its C++ names, with `SwooleTG.timer` through `swr_v1_core_timer_slot`.
+`TimerNode`, which is internal to the crate. `add_fn` adds a small copyable Rust
+closure; `add_owned` retains owned captures until the last callback hold drops.
+Callers retain generation-tagged `Held` IDs for cancellation and delay. With a
+reactor it hooks `Reactor::timeout_msec`, the timer-priority end callback, the exit
+condition and a destroy callback that frees this thread's timer. No C++ reaches
+into the timer or calls the `swoole_timer_*` API.
+`crates/timer/src/wrapper.rs` provides these operations by Rust path over this
+thread's timer slot; the raw callback and node-pointer exports are gone.
 
 A Zend bailout longjmps out of a callback or destructor over `select`'s Rust
 frames, which hold nothing to drop. A C++ exception a callback or destructor
