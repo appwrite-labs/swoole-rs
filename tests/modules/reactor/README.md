@@ -24,7 +24,7 @@ case at exit, as GoogleTest's nonfatal assertions do.
 | `new Reactor(n, type)`, `delete reactor` | `swr_v1_reactor_new`, `swr_v1_reactor_delete` |
 | `reactor->add`, `set`, `del` | `reactor_upstream::change` with `ChangeOp::Add`, `Set`, `Del` |
 | `reactor->wait()` | `reactor_wait` |
-| `reactor->set_handler`, `isset_handler`, `get_handler`, `default_write_handler` | `reactor_upstream::set_handler`, `reactor_isset_handler`, `reactor_get_handler`, `reactor_default_write_handler` |
+| `reactor->set_handler`, `isset_handler`, `get_handler`, `default_write_handler` | `reactor_upstream::set_handler`, `reactor_upstream::isset_handler`, `reactor_get_handler`, `reactor_default_write_handler` |
 | `reactor->exists(fd)`, `get_event_num()` | `swr_v1_reactor_registry_get`, `swr_v1_reactor_registry_count` |
 | `reactor->set_end_callback`, `erase_end_callback` | `swr_v1_reactor_set_end` |
 | the `Reactor`'s fields (`max_event_num`, `once`, `ptr`, `future_task`, ...) | `ReactorFields` through `ReactorPrepared::of`, and `Running`'s setters |
