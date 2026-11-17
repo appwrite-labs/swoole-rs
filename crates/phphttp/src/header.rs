@@ -186,8 +186,8 @@ pub(crate) fn has_crlf(bytes: &[u8]) -> bool {
     false
 }
 
-/// `http_response_add_custom_header`. Like upstream, the right trim writes
-/// into the value's own string.
+/// `http_response_add_custom_header`: the value without its trailing whitespace.
+/// The caller's string is read, never written.
 fn add_custom_header(
     out: &mut Vec<u8>,
     key: &[u8],
@@ -197,18 +197,12 @@ fn add_custom_header(
         return Ok(());
     }
     let text = to_string(value_)?;
-    let length = text.bytes().len();
-    let trimmed = text
-        .bytes()
+    let bytes = text.bytes();
+    let end = bytes
         .iter()
         .rposition(|byte| !byte.is_ascii_whitespace_c())
         .map_or(0, |last| last + 1);
-    if trimmed != length {
-        // SAFETY: the live string, which no borrow reads across the write
-        // (`bytes` is read again below); `swoole::rtrim` writes it in place.
-        unsafe { swoole_rs_zend::sys::swr_zend_http_rtrim(text.as_ptr(), trimmed) };
-    }
-    let bytes = text.bytes();
+    let bytes = bytes.get(..end).unwrap_or_default();
     if !has_crlf(bytes) {
         out.extend_from_slice(key);
         out.extend_from_slice(b": ");

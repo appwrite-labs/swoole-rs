@@ -2,7 +2,7 @@
 //! `init`/`listen`. The BIO owns its session: the socket's SSL holds the BIO, and the
 //! session goes when OpenSSL destroys it, so a session is reached through its socket.
 use crate::CCast;
-use crate::lent::{Count, In, Out};
+use crate::lent::{Count, In, Out, lend_spare};
 use crate::log;
 use crate::reactor::{AddressStorage, Socket};
 use crate::sys::Text;
@@ -15,26 +15,12 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Mutex, PoisonError};
 
-/// One queued datagram, upstream's `dtls::Buffer`: the bytes it was received or copied
-/// into, and the `uint16_t` length its header counts of them as the payload.
-struct Datagram {
-    bytes: Box<[MaybeUninit<u8>]>,
-    length: u16,
-}
+/// One queued datagram, upstream's `dtls::Buffer`: exactly the bytes received or
+/// copied, never more than upstream's `uint16_t` header counts.
+struct Datagram(Box<[u8]>);
 type Queue = VecDeque<Datagram>;
-impl Datagram {
-    /// The payload's length.
-    fn length(&self) -> u16 {
-        self.length
-    }
-
-    /// The payload, which nothing writes while the datagram is queued; as
-    /// `MaybeUninit`, its bytes need not be initialized.
-    fn payload(&self) -> &[MaybeUninit<u8>] {
-        let length = usize::from(self.length);
-        self.bytes.get(..length).unwrap_or(&self.bytes)
-    }
-}
+/// The most a datagram holds.
+const DATAGRAM_MAX: usize = u16::MAX as usize;
 
 pub struct DtlsSession {
     /// The socket's descriptor and peer, which are its own for as long as its SSL.
@@ -93,41 +79,31 @@ impl DtlsSession {
     }
 }
 
-/// One read(2) of at most `size` bytes from `fd` into a new `dtls::Buffer`, queued as a
-/// datagram whose length is the read's result as upstream's `uint16_t` header takes it;
-/// false when the queue can't grow.
+/// One read(2) of at most `size` bytes from `fd`, queued as a datagram. A failed
+/// read queues nothing; false when the queue can't grow.
 pub fn dtls_session_receive(owner: &DtlsSession, fd: c_int, size: usize) -> bool {
-    let mut bytes = Box::new_uninit_slice(size);
-    let read = crate::sys::read(fd, &mut bytes);
-    owner.with_queue(|queue| {
-        if queue.try_reserve(1).is_err() {
-            return false;
-        }
-        queue.push_back(Datagram {
-            bytes,
-            length: read.map_or(-1, usize::cast_signed).c_cast::<u16>(),
-        });
-        true
-    })
+    let mut room = Box::new_uninit_slice(size.min(DATAGRAM_MAX));
+    let (received, _) = lend_spare(&mut room, |spare| {
+        spare.read_fd(fd)?;
+        Some(Box::from(&*spare.written()))
+    });
+    received.is_none_or(|bytes| queue(owner, bytes))
 }
 
 /// A copy of `data` queued as one datagram: as many of its bytes as upstream's `u16`
-/// header counts; false when it can't allocate.
+/// header counts; false when the queue can't grow.
 pub fn swr_v1_tls_dtls_append(owner: &DtlsSession, data: &[u8]) -> bool {
+    let length = usize::from(data.len().c_cast::<u16>());
+    queue(owner, data.iter().copied().take(length).collect())
+}
+
+/// `bytes` at the back of the queue; false when the queue can't grow.
+fn queue(owner: &DtlsSession, bytes: Box<[u8]>) -> bool {
     owner.with_queue(|queue| {
         if queue.try_reserve(1).is_err() {
             return false;
         }
-        let length = usize::from(data.len().c_cast::<u16>());
-        let mut bytes = Vec::new();
-        if bytes.try_reserve_exact(length).is_err() {
-            return false;
-        }
-        bytes.extend(data.iter().take(length).map(|&byte| MaybeUninit::new(byte)));
-        queue.push_back(Datagram {
-            bytes: bytes.into_boxed_slice(),
-            length: length.c_cast::<u16>(),
-        });
+        queue.push_back(Datagram(bytes));
         true
     })
 }
@@ -139,10 +115,9 @@ pub fn swr_v1_tls_dtls_read(owner: &DtlsSession, buffer: &mut [MaybeUninit<u8>])
     owner.with_queue(|queue| {
         let front = queue.front()?;
         // No more than `buffer` holds, so a datagram is never popped uncopied.
-        let copied = usize::from(front.length()).min(buffer.len());
-        if let (Some(out), Some(source)) = (buffer.get_mut(..copied), front.payload().get(..copied))
-        {
-            out.copy_from_slice(source);
+        let copied = front.0.len().min(buffer.len());
+        for (out, &byte) in buffer.iter_mut().zip(&front.0) {
+            out.write(byte);
         }
         if !peek {
             queue.pop_front();
@@ -154,8 +129,8 @@ pub fn swr_v1_tls_dtls_read(owner: &DtlsSession, buffer: &mut [MaybeUninit<u8>])
 /// The queued datagrams' total length.
 pub fn swr_v1_tls_dtls_length(owner: &DtlsSession) -> usize {
     owner.with_queue(|queue| {
-        queue.iter().fold(0usize, |total, buffer| {
-            total.wrapping_add(usize::from(buffer.length()))
+        queue.iter().fold(0usize, |total, datagram| {
+            total.wrapping_add(datagram.0.len())
         })
     })
 }
@@ -564,6 +539,13 @@ mod tests {
         owner.append(b"");
         assert!(!owner.session().with_queue(|queue| queue.is_empty()));
         assert_eq!(owner.read(0).0, Some(0));
+        assert!(owner.session().with_queue(|queue| queue.is_empty()));
+    }
+
+    #[test]
+    fn a_failed_read_queues_no_datagram() {
+        let owner = Owner::new();
+        assert!(dtls_session_receive(owner.session(), -1, 5));
         assert!(owner.session().with_queue(|queue| queue.is_empty()));
     }
 

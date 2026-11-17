@@ -20,6 +20,9 @@ foreach ([0, 1, 125, 126, 127, 65535, 65536] as $length) {
             try {
                 $input = $payload;
                 $packed = Frame::pack($input, $opcode, $flags);
+                // The frame as packed: unpack's argument is the caller's string.
+                $wire = ['packed_sha256' => hash('sha256', $packed), 'packed_length' => strlen($packed),
+                    'header_hex' => bin2hex(substr($packed, 0, min(strlen($packed), 14)))];
                 $decoded = Frame::unpack($packed);
                 if (!$decoded instanceof Frame || $decoded->opcode !== $opcode || !$decoded->finish) {
                     throw new RuntimeException('Incorrect decoded frame metadata');
@@ -30,9 +33,7 @@ foreach ([0, 1, 125, 126, 127, 65535, 65536] as $length) {
                 if ($opcode === 8 && $decoded->reason !== $payload) {
                     throw new RuntimeException('Incorrect close reason');
                 }
-                $cases[$id] = [
-                    'packed_sha256' => hash('sha256', $packed), 'packed_length' => strlen($packed),
-                    'header_hex' => bin2hex(substr($packed, 0, min(strlen($packed), 14))),
+                $cases[$id] = $wire + [
                     'decoded_data_sha256' => hash('sha256', $decoded->data ?? ''),
                     'decoded_data_length' => strlen($decoded->data ?? ''),
                     'decoded_opcode' => $decoded->opcode, 'decoded_finish' => $decoded->finish,
@@ -74,7 +75,6 @@ foreach ([0, 1, 123] as $length) {
                     $wireHash = hash('sha256', $packed);
                     $compressed = (bool) (ord($packed[0]) & 64);
                     $decoded = Frame::unpack($packed);
-                    $inputAfterHash = hash('sha256', $packed);
                     if ($kind !== 'string' && $input->flags !== $flags) throw new RuntimeException('Pack mutated frame flags');
                     unset($input, $packed);
                     gc_collect_cycles();
@@ -88,7 +88,7 @@ foreach ([0, 1, 123] as $length) {
                     if ($opcode === 8) $copy->reason .= 'changed';
                     else $copy->data .= 'changed';
                     if (($opcode === 8 ? $decoded->reason : $decoded->data) !== $payload) throw new RuntimeException('Clone aliased payload');
-                    $cases[$id] = ['packed_sha256' => $wireHash, 'input_after_unpack_sha256' => $inputAfterHash,
+                    $cases[$id] = ['packed_sha256' => $wireHash,
                         'decoded_flags' => $decoded->flags, 'decoded_finish' => $decoded->finish, 'compressed' => $compressed];
                 } catch (Throwable $error) {
                     $errors[$id] = $error::class . ': ' . $error->getMessage();

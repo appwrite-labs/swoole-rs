@@ -367,6 +367,7 @@ def plan(args, reports):
         pytest('websocket-differential', 'tests/modules/websocket/test_differential.py', *php,
                '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
         pytest('websocket-invalid', 'tests/modules/websocket/test_invalid.py', *php, *engines)
+        pytest('websocket-unpack', 'tests/modules/websocket/test_unpack.py', *php, '--engine', f'cargo={cargo}')
         if integrate:
             pytest('websocket-close', 'tests/modules/websocket/test_close.py', *php, *engines)
     if repair:

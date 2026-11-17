@@ -690,15 +690,14 @@ fn unpack(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let length = string.bytes().len();
-    // SAFETY: the argument's string holds `length` bytes at its value.
-    let data = unsafe { std::slice::from_raw_parts_mut(string::val(string.as_ptr()), length) };
+    // The argument is the caller's string: a masked payload is unmasked in a copy.
+    let mut data = string.bytes().to_vec();
     if data.len() < 2 {
         host::set_last_error(PROTOCOL_ERROR);
         call.set_bool(false);
         return;
     }
-    let Some(frame) = decode(data) else {
+    let Some(frame) = decode(&mut data) else {
         host::set_last_error(PROTOCOL_ERROR);
         call.set_bool(false);
         return;

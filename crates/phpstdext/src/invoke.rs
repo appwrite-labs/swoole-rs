@@ -44,18 +44,32 @@ struct CallInfo {
     op1_type: u8,
 }
 
-/// `swoole_call_{array,string,stream}_method`, by `Receiver`.
+/// The method dispatchers, by `Receiver`: copies of
+/// `swoole_call_{array,string,stream}_method` that no function table names, so
+/// the `INIT_METHOD_CALL` handler's frames are the only ones that run
+/// [`call_method`].
 static METHODS: [AtomicPtr<zend_function>; 3] = [const { AtomicPtr::new(ptr::null_mut()) }; 3];
 
-/// Look up the method dispatchers (MINIT).
+/// Take the method dispatchers out of PHP's reach (MINIT): the handler keeps a
+/// copy of each, and the function PHP code can name refuses a call.
 pub(crate) fn install(minit: &swoole_rs_zend::Minit) {
     for (slot, name) in METHODS.iter().zip([
         c"swoole_call_array_method",
         c"swoole_call_string_method",
         c"swoole_call_stream_method",
     ]) {
-        slot.store(minit.compiled_function(name), Ordering::Relaxed);
+        slot.store(minit.unnamed_copy(name), Ordering::Relaxed);
+        _ = minit.replace_handler(name, zif_swoole_method_called_directly);
     }
+}
+
+/// A dispatcher called by name: it has no method call to run.
+fn called_directly(frame: &Call) {
+    frame.throw_error(c"A method dispatcher runs a method call on an array, string or stream; it cannot be called directly");
+}
+
+swoole_rs_zend::handlers! {
+    zif_swoole_method_called_directly => called_directly;
 }
 
 /// The `INIT_METHOD_CALL` user opcode handler.
@@ -134,9 +148,9 @@ fn arguments(prefix: &[&Value], frame: &Call) -> Vec<Owned> {
 /// handler pushed with its `CallInfo`.
 fn call_method(receiver: Receiver, frame: &Call) {
     let allocation = frame.take_run_time_cache().cast::<CallInfo>();
-    // SAFETY: the handler's initialized allocation, which the frame's
-    // `run_time_cache` alone pointed to, until the take above, and which is
-    // freed below.
+    // SAFETY: the handler's initialized allocation: only its frames run a
+    // dispatcher (`install`). The frame's `run_time_cache` alone pointed to it,
+    // until the take above, and it is freed below.
     let mut info = unsafe { Box::from_raw_in(allocation, Emalloc::default()) };
     // op2 of INIT_METHOD_CALL is the method name, a string literal.
     let name = info.func.str();

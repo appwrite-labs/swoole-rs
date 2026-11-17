@@ -58,7 +58,8 @@ impl Callable {
     /// `Z_PARAM_FUNC` of argument `n`, then `Z_PARAM_VARIADIC('*')` of the
     /// arguments after it, which stay in the frame until [`Parsed::keep`].
     /// # Errors
-    /// Argument `n` is not callable; Zend has raised its parameter error.
+    /// Argument `n` is not callable, or is a magic-method callable, whose cache
+    /// names no function; the parameter error is raised.
     pub fn parse(call: &Call, n: u32) -> Result<Parsed, Invalid> {
         // Zend's allocator, for one empty callable (`ecalloc`).
         let mut this = Parsed(Box::new_in(
@@ -71,6 +72,16 @@ impl Callable {
             return Err(invalid);
         }
         let callable = this.record();
+        // Zend resolves a `__call` or `__callStatic` method to a trampoline and
+        // releases it, leaving a cache that names no function to keep.
+        if callable.fcc.function_handler.is_null() {
+            call.argument_type_error(
+                n,
+                c"must be a callable that is not a __call or __callStatic method",
+            );
+            this.discard();
+            return Err(Invalid);
+        }
         callable.fci.param_count = call.num_args().saturating_sub(n);
         callable.fci.params = if callable.fci.param_count > 0 {
             call.arg(n + 1)
