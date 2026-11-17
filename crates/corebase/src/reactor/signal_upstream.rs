@@ -111,6 +111,7 @@ fn report(report: Report) {
 #[cfg(target_os = "linux")]
 mod descriptor {
     use super::{FD_SIGNAL, OPS, c_int};
+    use crate::CellExt;
     use crate::process::signal_loop::DescriptorOps;
     use crate::reactor::event_api::{
         FdHandler, event_add, event_del, isset_handler, swoole_event_set_fd_handler,
@@ -132,10 +133,7 @@ mod descriptor {
     /// `f` over the wrapper, while there is one, taken out and put back: a call `f`
     /// makes back into this module finds none.
     fn with<R>(f: impl FnOnce(&OwnedSocket) -> R) -> Option<R> {
-        let socket = SOCKET.take()?;
-        let out = f(&socket);
-        SOCKET.set(Some(socket));
-        Some(out)
+        SOCKET.with(|cell| cell.with_taken(|socket| socket.as_ref().map(f)))
     }
 
     /// Frees the wrapper but not the descriptor, which the signalfd backend closes.
