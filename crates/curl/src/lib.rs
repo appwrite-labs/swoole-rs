@@ -377,10 +377,8 @@ impl Multi {
                 action: Cell::new(0),
                 deleted: Cell::new(false),
             });
-            // The reactor socket carries the socket it reports.
-            socket
-                .socket
-                .set_object(Rc::as_ptr(&socket).cast_mut().cast());
+            // The reactor socket reports to the socket while it lives.
+            socket.socket.set_owner(Rc::downgrade(&socket));
             let replaced = with(&self.sockets, |sockets| {
                 sockets.insert(sockfd, Rc::clone(&socket))
             });
