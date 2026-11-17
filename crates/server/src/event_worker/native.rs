@@ -38,9 +38,10 @@ const SERVER_WORKER_EXIT_TIMEOUT: c_int =
 const SERVER_WORKER_UNPROCESSED_DATA: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_SERVER_WORKER_UNPROCESSED_DATA as c_int;
 
-/// `serv->get_worker_message_bus()`.
-fn bus(serv: view::Server<'_>) -> Bus<'_> {
-    crate::master_ops::worker_message_bus(serv.state())
+/// `f` over `serv->get_worker_message_bus()`.
+#[inline]
+fn with_bus<R>(serv: view::Server<'_>, f: impl FnOnce(Bus<'_>) -> R) -> R {
+    crate::master_ops::with_worker_message_bus(serv.state(), f)
 }
 
 /// `serv->get_worker(id)`, or `None` past the last worker.
@@ -86,7 +87,7 @@ impl Payload<'_> {
     /// `f` over the event's data.
     fn with<R>(self, serv: view::Server<'_>, f: impl FnOnce(&[u8]) -> R) -> R {
         match self {
-            Self::Bus => bus(serv).with_packet(f),
+            Self::Bus => with_bus(serv, |bus| bus.with_packet(f)),
             Self::Passed(data) => f(data),
         }
     }
@@ -102,10 +103,9 @@ impl Payload<'_> {
     ) {
         match self {
             Self::Bus => {
-                let bus = bus(serv);
-                let mut packet = bus.rust().take_packet();
+                let mut packet = with_bus(serv, |bus| bus.rust().take_packet());
                 f(&mut packet.receive(*info));
-                bus.rust().restore(packet);
+                with_bus(serv, |bus| bus.rust().restore(packet));
             }
             Self::Passed(data) => f(&mut crate::reactor_entry::RecvData::new(*info, data)),
         }
@@ -157,10 +157,14 @@ fn accept(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead, payload: 
         Some(ServerEvent::BufferFull) => callbacks.event(EventSlot::BufferFull, serv, info),
         Some(ServerEvent::BufferEmpty) => callbacks.event(EventSlot::BufferEmpty, serv, info),
         Some(ServerEvent::Finish) => {
-            _ = bus(serv).with_event(|event| callbacks.task(TaskSlot::Finish, serv, event));
+            _ = with_bus(serv, |bus| {
+                bus.with_event(|event| callbacks.task(TaskSlot::Finish, serv, event))
+            });
         }
         Some(ServerEvent::PipeMessage) => {
-            _ = bus(serv).with_event(|event| callbacks.pipe_message(serv, event));
+            _ = with_bus(serv, |bus| {
+                bus.with_event(|event| callbacks.pipe_message(serv, event))
+            });
         }
         Some(ServerEvent::CommandRequest) => {
             // The server's live command pipe, a `UnixSocket`.
@@ -270,16 +274,17 @@ pub(crate) fn call_worker_stop_callback(serv: view::Server<'_>, worker: Worker<'
     serv.state()
         .callbacks
         .worker(WorkerSlot::Stop, serv, worker);
-    let bus = bus(serv);
-    if !bus.is_empty() {
-        log::error_log(
-            WARNING,
-            SERVER_WORKER_UNPROCESSED_DATA,
-            c"Server::call_worker_stop_callback",
-            format_args!("unprocessed data in the worker process buffer"),
-        );
-        bus.clear();
-    }
+    with_bus(serv, |bus| {
+        if !bus.is_empty() {
+            log::error_log(
+                WARNING,
+                SERVER_WORKER_UNPROCESSED_DATA,
+                c"Server::call_worker_stop_callback",
+                format_args!("unprocessed data in the worker process buffer"),
+            );
+            bus.clear();
+        }
+    });
     worker_global_stopped();
 }
 
@@ -468,14 +473,15 @@ fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
     let Some(serv) = Reactor::running(reactor).server() else {
         return -1;
     };
-    let bus = bus(serv);
-    if event
-        .socket()
-        .is_some_and(|socket| bus.read(*socket) > Some(0))
-    {
-        accept_event(serv, &bus.rust().head(), Payload::Bus);
-        bus.pop();
-    }
+    with_bus(serv, |bus| {
+        if event
+            .socket()
+            .is_some_and(|socket| bus.read(*socket) > Some(0))
+        {
+            accept_event(serv, &bus.rust().head(), Payload::Bus);
+            bus.pop();
+        }
+    });
     0
 }
 

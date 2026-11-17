@@ -35,7 +35,6 @@ struct ThreadGlobal {
     buffer_stack: Cell<*mut c_void>,
     reactor: Cell<*mut c_void>,
     timer: Cell<*mut c_void>,
-    message_bus: Cell<*mut c_void>,
     async_threads: Cell<*mut c_void>,
 }
 
@@ -48,7 +47,6 @@ thread_local! {
             buffer_stack: Cell::new(ptr::null_mut()),
             reactor: Cell::new(ptr::null_mut()),
             timer: Cell::new(ptr::null_mut()),
-            message_bus: Cell::new(ptr::null_mut()),
             async_threads: Cell::new(ptr::null_mut()),
         }
     };
@@ -94,17 +92,6 @@ pub fn set_thread(kind: u8, id: u16) {
 #[must_use]
 pub fn thread_id() -> u16 {
     with(|thread| thread.id.get())
-}
-
-/// `SwooleTG.message_bus`.
-#[must_use]
-pub fn thread_message_bus() -> *mut c_void {
-    with(|thread| thread.message_bus.get())
-}
-
-/// Sets `SwooleTG.message_bus`.
-pub fn set_thread_message_bus(bus: *mut c_void) {
-    with(|thread| thread.message_bus.set(bus));
 }
 
 /// Sets `SwooleTG.reactor`.

@@ -206,12 +206,11 @@ impl<'a> Server<'a> {
     #[cfg(feature = "upstream-symbols")]
     pub fn set_bus_allocator(self, worker: bool, allocator: swoole_rs_corebase::TrustedAllocator) {
         let state = self.state();
-        let bus = if worker {
-            state.worker_bus_record()
+        if worker {
+            state.with_worker_bus(|bus| bus.set_allocator(allocator));
         } else {
-            state.message_bus_record()
-        };
-        bus.set_allocator(allocator);
+            state.message_bus_record().set_allocator(allocator);
+        }
     }
 
     /// `upload_tmp_dir = dir`.
