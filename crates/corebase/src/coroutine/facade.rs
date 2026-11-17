@@ -175,8 +175,7 @@ pub extern "C-unwind" fn deactivate() {
 /// `co` is a live coroutine.
 /// Its canceler may resume it: as for [`crate::coroutine::resume`], a bailout must not
 /// skip pending drops on the main stack.
-#[unsafe(export_name = "_ZN6swoole9Coroutine6cancelEv")]
-pub unsafe extern "C-unwind" fn cancel(co: *mut Coroutine) -> bool {
+pub unsafe fn cancel(co: *mut Coroutine) -> bool {
     // SAFETY: as the caller promises.
     let Some(co) = (unsafe { Co::of(co) }) else {
         return false;
@@ -220,14 +219,6 @@ fn timed_out(cid: c_long) {
     };
     co.with(Coroutine::mark_timed_out);
     coroutine::resume(s, co);
-}
-
-/// `bool Coroutine::yield_ex(double timeout)` of `co`, the running coroutine
-/// (aborting otherwise): false, with the last error, when it timed out or was
-/// canceled. As [`suspend`](crate::coroutine::suspend), it asks nothing of its caller.
-#[unsafe(export_name = "_ZN6swoole9Coroutine8yield_exEd")]
-pub extern "C-unwind" fn yield_ex(co: *mut c_void, timeout: f64) -> bool {
-    yield_resumed(yield_timed(co, timeout))
 }
 
 /// `yield_ex`'s result for a [`yield_timed`]'s code: false, with the last error,
