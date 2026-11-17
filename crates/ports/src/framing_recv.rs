@@ -190,7 +190,7 @@ impl<K: Packages> With<'_, K> {
     /// closed it.
     #[inline(always)]
     fn refresh(&mut self, flags: &mut u32) {
-        *flags = self.0.socket.read(|s| socket_flags(&self.2, s));
+        *flags = self.0.socket.read(|s| socket_flags(s, || self.2.paused()));
         self.1 = *flags & FLAG_WAIT != 0;
     }
 
@@ -204,11 +204,11 @@ impl<K: Packages> With<'_, K> {
     }
 }
 
-fn socket_flags(packages: &impl Packages, socket: &SocketFields) -> u32 {
+pub(crate) fn socket_flags(socket: &SocketFields, paused: impl FnOnce() -> bool) -> u32 {
     (if socket.removed { FLAG_REMOVED } else { 0 })
         | (if socket.recv_wait { FLAG_WAIT } else { 0 })
         | (if socket.ssl().is_null() { 0 } else { FLAG_TLS })
-        | (if socket.removed && packages.paused() {
+        | (if socket.removed && paused() {
             FLAG_PAUSED
         } else {
             0
@@ -444,6 +444,7 @@ pub(crate) fn receive<'a, K: Packages>(
     buffer: Lent<'a>,
     mode: Mode,
     packages: K,
+    initial: Option<(u32, bool)>,
 ) -> Status {
     let mut r = With::<K>(
         Recv {
@@ -455,7 +456,8 @@ pub(crate) fn receive<'a, K: Packages>(
         packages,
         buffer,
     );
-    let (mut flags, skip) = socket.read(|s| (socket_flags(&r.2, s), s.skip_recv));
+    let (mut flags, skip) =
+        initial.unwrap_or_else(|| socket.read(|s| (socket_flags(s, || r.2.paused()), s.skip_recv)));
     r.1 = flags & FLAG_WAIT != 0;
     let mut head = 0;
     if let Some(fixed) = K::HEAD {
@@ -486,7 +488,7 @@ fn client_recv<const LENGTH: bool>(client: Handle<'_>) -> c_int {
             buffer,
             lent: PhantomData,
         };
-        receive(socket, Owner::Client(client), buffer, mode, Callbacks) as c_int
+        receive(socket, Owner::Client(client), buffer, mode, Callbacks, None) as c_int
     })
 }
 
@@ -585,6 +587,7 @@ mod tests {
             Lent::new(buffer),
             mode,
             Callbacks,
+            None,
         ) as c_int
     }
 

@@ -35,6 +35,8 @@ const SETTING_FRAME_SIZE: usize = 9 + 6 * 6;
 struct Read<'a> {
     /// The socket's receive buffer, initialized before reading.
     recv: Box<OwnedString>,
+    /// Flags read with the buffer for a port that enters framing immediately.
+    framing_flags: Option<(u32, bool)>,
     /// The connection's request once made current, taken out of its slot until a
     /// dispatch or the read's end.
     request: Option<Box<HttpRequest>>,
@@ -70,7 +72,16 @@ pub(crate) fn on_read(
         return false;
     };
     let port = port.config();
-    let recv = socket.edit(|s| s.recv_buffer.take()).unwrap_or_else(|| {
+    let (recv, framing_flags) = socket.edit(|s| {
+        let flags = matches!(kind, Readable::Length | Readable::Eof).then(|| {
+            (
+                framing_recv::socket_flags(s, || framing_recv::paused(conn)),
+                s.skip_recv,
+            )
+        });
+        (s.recv_buffer.take(), flags)
+    });
+    let recv = recv.unwrap_or_else(|| {
         let mut recv = Box::<OwnedString>::default();
         recv.alloc(
             SW_BUFFER_SIZE_BIG as usize,
@@ -81,6 +92,7 @@ pub(crate) fn on_read(
     let mut read = Read {
         request: None,
         recv,
+        framing_flags,
         reactor,
         event: lent,
         socket: *socket,
@@ -164,8 +176,9 @@ impl<'a> Read<'a> {
         } else {
             framing_recv::Owner::Plain(&self.port.protocol)
         };
+        let initial = self.framing_flags.take();
         let buffer = Lent::new(self.buffer());
-        framing_recv::receive(socket, owner, buffer, mode, packages) != Status::Err
+        framing_recv::receive(socket, owner, buffer, mode, packages, initial) != Status::Err
     }
 }
 
