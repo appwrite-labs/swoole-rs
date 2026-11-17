@@ -31,7 +31,8 @@ listening. [Listening socket options](../../crates/ports/src/methods.rs)
 The server initializes the port’s TLS context, creates TLS sessions for accepted
 connections and releases the port’s context and SNI state at teardown. The first
 matching SNI context in insertion order wins. PHP’s `Port::set()` applies
-settings to the port and its TLS context. It reaches `context_dup`, `sni_add` and
+port settings first. On an SSL-enabled port with a context, it also applies TLS
+settings. It reaches `context_dup`, `sni_add` and
 `ssl_init` through the ports crate’s re-exports. The packet EOF delimiter accepts
 one to eight bytes. [TLS ownership and SNI](../../crates/server/src/port_tls.rs) · [PHP port settings](../../crates/phpserver/src/port_settings.rs)
 
