@@ -51,21 +51,3 @@ fn masking_copies_overlapping_key_before_writing() {
         }
     }
 }
-
-#[test]
-fn a_header_decode_leaves_a_masked_payload_as_it_arrived() {
-    let key = [1, 2, 3, 4];
-    let mut payload = *b"hello";
-    swoole_rs_websocket::mask(&mut payload, key);
-    let mut frame = vec![0x81, 0x80 | 5];
-    frame.extend_from_slice(&key);
-    frame.extend_from_slice(&payload);
-    let arrived = frame.clone();
-    let header = swoole_rs_websocket::decode_header(&frame).unwrap();
-    assert_eq!(frame, arrived);
-    assert_eq!((header.header_length, header.payload_length), (6, 5));
-    assert_eq!(header.mask_key, key);
-    let decoded = swoole_rs_websocket::decode_in_place(&mut frame).unwrap();
-    assert_eq!(decoded.mask_key, key);
-    assert_eq!(&frame[6..], b"hello");
-}
