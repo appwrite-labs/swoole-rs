@@ -44,7 +44,6 @@ const _: () = assert!(
         && Status::Close as i32 == constants::ReturnCode::SW_CLOSE as i32,
     "crates/framing's return codes"
 );
-pub mod native;
 pub mod net_address;
 pub mod net_types;
 pub mod ossupport;

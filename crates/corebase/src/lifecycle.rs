@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/core/base.cc (Swoole contributors).
-//! base.cc's init, thread, clean and fork sequences, and `SwooleTG`. Each leaf in
-//! a crate above this one (an object's `new`/`delete`, the timer, event, signal
-//! and coroutine leaves) runs through the host crates/ffi's `swoole_init`
-//! registers (`native.rs`); without it there is nothing to set up or tear down.
+//! base.cc's init, thread, clean and fork sequences, and `SwooleTG`.
+//! Runtime resources are initialized and cleaned through their owners in this crate.
 use crate::buffer::string::CppString;
 use crate::constants::SW_STACK_BUFFER_SIZE;
 use crate::log;
-use crate::native;
+use crate::memory::members::pool;
+use crate::{Switch, built_with};
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::ptr;
@@ -124,11 +123,10 @@ pub fn set_thread_async_threads(threads: *mut c_void) {
     with(|thread| thread.async_threads.set(threads));
 }
 
-/// `void swoole_init()`'s body: the core record's defaults, `SwooleG`'s
-/// configuration, the native leaves (`NativeHost::init`: streams, logger, memory
-/// pool, signalfd, bug report) and the main thread. Once per process; later calls
-/// do nothing. crates/ffi's `swoole_init` registers the host, then calls this.
-pub fn swr_v1_core_swoole_init() {
+/// `void swoole_init()`'s body, including its streams, logger, memory pool,
+/// signalfd, bug report and main thread. Later calls are no-ops until cleanup.
+/// The archive supplies the C variadic fatal handler; Rust callers may omit it.
+pub fn swr_v1_core_swoole_init(fatal_error: Option<crate::FatalError>) {
     crate::log::init();
     if !crate::swr_v1_core_init() {
         return;
@@ -136,16 +134,31 @@ pub fn swr_v1_core_swoole_init() {
     crate::config_state::reset();
     crate::swr_v1_core_name_resolver_clear();
     crate::config_state::init_allocator();
-    if let Some(host) = native::host() {
-        (host.init)();
+    swoole_rs_error::swoole_clear_last_error_msg();
+    crate::swr_v1_core_set_stdout(Some(crate::Stream::stdout()));
+    crate::set_fatal_error(fatal_error);
+    crate::process::methods::logger_new();
+    if built_with(Switch::Debug) {
+        crate::utilities::swoole_set_log_level(0);
+        crate::swr_v1_core_set_trace_flags(0x7fff_ffff);
     }
+    pool::init();
+    if !built_with(Switch::Futex) {
+        pool::wait_registry_init();
+    }
+    #[cfg(target_os = "linux")]
+    if built_with(Switch::Signalfd) {
+        crate::process::signalfd::swoole_signalfd_init();
+        crate::swr_v1_core_set_enable_signalfd(true);
+    }
+    crate::bug_report_init();
     swoole_thread_init(true);
     crate::config_state::init();
 }
 
 /// `void swoole_thread_init(bool main_thread)`.
 pub fn swoole_thread_init(main_thread: bool) {
-    if native::host().is_some() && with(|thread| thread.buffer_stack.get().is_null()) {
+    if with(|thread| thread.buffer_stack.get().is_null()) {
         let mut fresh = CppString::EMPTY;
         fresh.alloc(SW_STACK_BUFFER_SIZE as usize, None);
         let buffer = BUFFER.with(|buffer| {
@@ -162,7 +175,6 @@ pub fn swoole_thread_init(main_thread: bool) {
 
 /// `void swoole_thread_clean(bool main_thread)`.
 pub fn swoole_thread_clean(_main_thread: bool) {
-    let Some(_) = native::host() else { return };
     if with(|thread| !thread.timer.get().is_null()) {
         crate::timer::swoole_timer_free();
     }
@@ -189,15 +201,13 @@ pub fn swoole_is_main_thread() -> bool {
 )]
 pub extern "C-unwind" fn swoole_clean() {
     crate::hook::clear();
-    if native::host().is_some() {
-        crate::reactor::signal_upstream::clear();
-        swoole_thread_clean(true);
-        crate::utilities::process_logger()
-            .into_iter()
-            .for_each(crate::utilities::Logger::close);
-        crate::process::methods::logger_delete();
-        crate::memory::members::pool::delete();
-    }
+    crate::reactor::signal_upstream::clear();
+    swoole_thread_clean(true);
+    crate::utilities::process_logger()
+        .into_iter()
+        .for_each(crate::utilities::Logger::close);
+    crate::process::methods::logger_delete();
+    pool::delete();
     crate::config_state::reset();
     crate::swr_v1_core_name_resolver_clear();
     crate::swr_v1_core_reset();
@@ -215,9 +225,9 @@ pub extern "C-unwind" fn swoole_clean() {
 #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z11swoole_forki"))]
 #[must_use]
 pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
-    let Some(_) = native::host() else {
+    if !crate::swr_v1_core_initialized() {
         return -1;
-    };
+    }
     if flags & FORK_EXEC == 0 {
         let refuse = |message| {
             // SAFETY: the frames a native longjmp skips own nothing.
@@ -359,12 +369,6 @@ mod tests {
         unsafe { libc::pthread_sigmask(how, &raw const set, ptr::null_mut()) };
     }
 
-    /// Real reactor cleanup delays the fork child and changes its mask, as
-    /// signalfd cleanup does; the lifecycle must preserve that change on restore.
-    fn host() {
-        native::set_native_host(native::NativeHost { init: || {} });
-    }
-
     fn reactor() {
         assert_eq!(crate::reactor::swoole_event_init(0), 0);
         crate::reactor::event_api::on_destroy(|| {
@@ -391,7 +395,7 @@ mod tests {
             return;
         }
         let _state = crate::process::signal_state_lock();
-        host();
+        assert!(crate::swr_v1_core_init());
         std::thread::spawn(|| {
             reactor();
             _ = crate::reactor::signal_upstream::set(
@@ -427,7 +431,7 @@ mod tests {
             return;
         }
         let _state = crate::process::signal_state_lock();
-        host();
+        assert!(crate::swr_v1_core_init());
         std::thread::spawn(|| {
             reactor();
             change(libc::SIG_BLOCK, libc::SIGUSR1);
