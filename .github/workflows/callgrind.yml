@@ -42,28 +42,32 @@ jobs:
       matrix:
         include:
           - shard: 1
+            redis: redis:7.4
             workloads: --workload plaintext --workload echo-1k --workload json --workload service-health --workload websocket --workload timer --workload app --workload http2 --workload table --workload channel
           - shard: 2
+            mysql: mysql:8.4
             workloads: --workload task --workload mysql --workload http-client --workload gzip --workload websocket-deflate --workload tcp-length --workload tcp-eof --workload udp
           - shard: 3
             workloads: --workload connect --workload https --workload wss --workload atomic --workload process-mode --workload http2-concurrent --workload websocket-64k --workload websocket-fragmented --workload upload --workload static --workload client --workload socket
           - shard: 4
+            postgres: postgres:14
             workloads: --workload pgsql --workload sqlite --workload curl --workload dns
             configure: --configure=--enable-swoole-pgsql --configure=--enable-swoole-sqlite --configure=--enable-swoole-curl --configure=--enable-cares
             # The swoole-pgsql build registers its own PDO pgsql driver, so PHP's pdo_pgsql stays out.
             extensions: --php-extension pdo --php-extension pdo_sqlite --php-extension curl
     runs-on: gcrunner=${{ github.run_id }}/runner=steady
     timeout-minutes: 40
+    # An empty image skips the service; each shard starts only what it uses.
     services:
       mysql:
-        image: mysql:8.4
+        image: ${{ matrix.mysql || '' }}
         env:
           MYSQL_ROOT_PASSWORD: root
           MYSQL_DATABASE: test
         ports: ['3306:3306']
         options: --health-cmd "mysqladmin ping -proot" --health-interval 2s --health-retries 60
       postgres:
-        image: postgres:14
+        image: ${{ matrix.postgres || '' }}
         env:
           POSTGRES_USER: root
           POSTGRES_PASSWORD: root
@@ -71,7 +75,7 @@ jobs:
         ports: ['5432:5432']
         options: --health-cmd pg_isready --health-interval 2s --health-retries 30
       redis:
-        image: redis:7.4
+        image: ${{ matrix.redis || '' }}
         ports: ['6379:6379']
         options: --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
     steps:
