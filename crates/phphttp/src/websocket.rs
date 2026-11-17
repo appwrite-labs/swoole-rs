@@ -17,7 +17,7 @@ use std::{
 };
 use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING};
-use swoole_rs_corebase::{CCast, WebSocketStatus};
+use swoole_rs_corebase::{CCast, CellExt, WebSocketStatus};
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpserver::PortCallback;
 use swoole_rs_phpserver::{RecvData, php_swoole_get_recv_data, php_swoole_server_of, zserv};
@@ -1271,10 +1271,8 @@ impl swoole_rs_phpclients::WebSocket for ClientWebSocket {
     }
 
     fn recv(&self, socket: swoole_rs_phpclients::Co, timeout: f64) -> Owned {
-        let mut message = self.message.take();
-        let frame = recv(self.frames.get(), &mut message, socket.handle(), timeout);
-        self.message.set(message);
-        frame
+        self.message
+            .with_taken(|message| recv(self.frames.get(), message, socket.handle(), timeout))
     }
 }
 
