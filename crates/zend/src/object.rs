@@ -92,28 +92,20 @@ impl<'a> ObjectRef<'a> {
     #[must_use]
     #[inline]
     pub fn class_entry(self) -> ClassEntry<'a> {
-        let class = self.read(|object| object.ce);
-        // SAFETY: every live object has its class, which is never null.
-        ClassEntry(
-            unsafe { std::ptr::NonNull::new_unchecked(class) },
-            PhantomData,
-        )
+        match ClassEntry::live(self.read(|object| object.ce)) {
+            Some(class) => class,
+            None => classless(),
+        }
     }
 
-    /// `ZVAL_OBJ`: a zval naming the object without a reference of its own, for
-    /// a slot that must not outlive the borrow or release it, such as a call's
-    /// argument array (Zend copies each argument, with a reference, into the
-    /// frame it calls). Nothing here reads the object.
+    /// `ZVAL_OBJ`: a value naming the object without a reference of its own,
+    /// for a slot that must not outlive the borrow or release it, such as a
+    /// call's argument array (Zend copies each argument, with a reference, into
+    /// the frame it calls). Nothing here reads the object.
     #[must_use]
     #[inline]
-    pub fn copy_value(self) -> crate::sys::zval {
-        crate::sys::zval {
-            value: crate::sys::zend_value { obj: self.0 },
-            u1: crate::sys::_zval_struct__bindgen_ty_1 {
-                type_info: crate::sys::IS_OBJECT_EX,
-            },
-            u2: crate::sys::_zval_struct__bindgen_ty_2 { next: 0 },
-        }
+    pub(crate) fn copy_value(self) -> Value {
+        Value::naming(self)
     }
 
     /// Lend this live object as a value without taking another reference.
@@ -127,8 +119,7 @@ impl<'a> ObjectRef<'a> {
     /// ```
     #[inline]
     pub fn with_value<R>(self, call: impl FnOnce(&Value) -> R) -> R {
-        let mut value = self.copy_value();
-        call(Value::of(&mut value))
+        call(&self.copy_value())
     }
 
     /// `T`'s data in the object, when it is one of `T`'s objects: made by
@@ -431,8 +422,7 @@ extern "C" fn free<T: Custom>(freed: Freed) {
         // Per Zend, a live object of `T`'s class until the drop below.
         let object = ObjectRef(std, PhantomData);
         if let Some(data) = object.custom::<T>() {
-            let mut this = object.copy_value();
-            data.free(FreeProperties(Value::of(&mut this)));
+            data.free(FreeProperties(&object.copy_value()));
         }
         // SAFETY: per Zend; nothing borrows the data any more.
         unsafe { Object::<T>::data_ptr(std).drop_in_place() };
@@ -664,6 +654,14 @@ impl<'a> Props<'a> {
         };
         Some(slot)
     }
+}
+
+/// A live object without a class: Zend never makes one. Kept out of line so
+/// `class_entry` inlines as the bare load it was.
+#[cold]
+#[inline(never)]
+fn classless() -> ! {
+    unreachable!("a live object has its class")
 }
 
 #[cfg(test)]

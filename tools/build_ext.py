@@ -22,6 +22,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -78,6 +79,40 @@ def cargo(arguments, env):
     return messages
 
 
+def extension_path(messages):
+    path, = [name for m in messages if m['reason'] == 'compiler-artifact' and m['target']['name'] == 'swoole'
+             for name in m['filenames'] if name.endswith(('.so', '.dylib'))]
+    return Path(path)
+
+
+def pgo_build(arguments, env, php, preload, out):
+    """Train the instrumented extension, then rebuild with only this run's profile."""
+    from benchmarks.callgrind import WORKLOADS, send
+    from tools.harness import Engine, server
+
+    libdir = Path(subprocess.check_output(['rustc', '--print', 'target-libdir'], text=True).strip())
+    profdata = libdir.parent / 'bin/llvm-profdata'
+    flags = env.get('CARGO_ENCODED_RUSTFLAGS', '\x1f'.join(env.get('RUSTFLAGS', '').split()))
+    prefix = flags + '\x1f' if flags else ''
+    with tempfile.TemporaryDirectory(dir=out) as directory:
+        work = Path(directory)
+        raw = work / 'training'
+        raw.mkdir()
+        instrumented = extension_path(cargo(arguments, {
+            **env, 'CARGO_ENCODED_RUSTFLAGS': prefix + f'-Cprofile-generate={work}',
+        }))
+        engine = Engine('training', instrumented, str(php), preload)
+        for name in ('plaintext', 'json', 'echo-1k', 'table', 'channel', 'websocket', 'timer',
+                     'http2', 'tcp-length', 'gzip'):
+            workload = WORKLOADS[name]
+            with server(engine, ROOT / workload[0] / 'server.php',
+                        {'LLVM_PROFILE_FILE': str(raw / f'{name}-%m-%p.profraw')}) as (port, _):
+                send(port, workload, 400)
+        profile = work / 'swoole.profdata'
+        subprocess.run([profdata, 'merge', '-o', profile, raw], check=True)
+        return cargo(arguments, {**env, 'CARGO_ENCODED_RUSTFLAGS': prefix + f'-Cprofile-use={profile}'})
+
+
 def sdk(out, features, profile, env):
     """target/ext/sdk: the Zend-free FFI archive (no Zend references, so fixtures link it into
     executables), crates/ext's native archives, and the ABI headers with the build's config.h,
@@ -132,6 +167,8 @@ def main():
     parser.add_argument('--fix-halfclose', action='store_true', help='Build the opt-in half-close repairs')
     parser.add_argument('--configure', action='append', default=[], metavar='ARG',
                         help="A service hook's configure switch, as build_upstream.py takes it; repeatable")
+    parser.add_argument('--pgo', action='store_true',
+                        help='Train and apply a native Linux release profile (needs llvm-tools-preview)')
     parser.add_argument('--native', action='store_true', help='Also lay out target/ext/sdk for the native gates')
     args = parser.parse_args()
     out = ROOT / 'target/ext'
@@ -158,22 +195,26 @@ def main():
         # `unixODBC,DIR` and `instantclient,DIR` name the library's directory.
         if feature in ('odbc', 'oci') and ',' in value:
             env['SWOOLE_ODBC_DIR' if feature == 'odbc' else 'SWOOLE_ORACLE_DIR'] = value.split(',')[1]
-    messages = cargo(['build', '--profile', args.profile, '-p', 'swoole-rs-ext', '--features', ','.join(features)], env)
-    built_by = Path(next(m['out_dir'] for m in messages if m['reason'] == 'build-script-executed'
-                         and m['package_id'].split('#')[0].endswith('/ext')))
-    shutil.copy2(built_by / 'config.h', out / 'config.h')
-    if args.native:
-        sdk(built_by, [f for f in features if f in FFI_FEATURES], args.profile, env)
-    built, = [name for m in messages if m['reason'] == 'compiler-artifact' and m['target']['name'] == 'swoole'
-              for name in m['filenames'] if name.endswith(('.so', '.dylib'))]
-    extension = out / 'swoole.so'
-    shutil.copy2(built, extension)
     php = Path(subprocess.check_output([args.php_config, '--php-binary'], text=True).strip())
     # The PHP extensions the profile's hooks link against, unless PHP has them built in.
     needs = {'sockets': 'sockets', 'curl': 'curl', 'mysqlnd': 'mysqlnd',
              **dict.fromkeys(['pgsql', 'odbc', 'firebird', 'sqlite', 'oci'], 'pdo')}
     builtin = subprocess.check_output([str(php), '-n', '-m'], text=True).lower().split()
     load = sorted({needs[f] for f in features if f in needs} - set(builtin))
+    arguments = ['build', '--profile', args.profile, '-p', 'swoole-rs-ext', '--features', ','.join(features)]
+    if args.pgo:
+        # Instrumentation retains PDO references that LTO drops from the release binary.
+        preload = sorted((set(load) | {'pdo'}) - set(builtin))
+        messages = pgo_build(arguments, env, php, preload, out)
+    else:
+        messages = cargo(arguments, env)
+    built_by = Path(next(m['out_dir'] for m in messages if m['reason'] == 'build-script-executed'
+                         and m['package_id'].split('#')[0].endswith('/ext')))
+    shutil.copy2(built_by / 'config.h', out / 'config.h')
+    if args.native:
+        sdk(built_by, [f for f in features if f in FFI_FEATURES], args.profile, env)
+    extension = out / 'swoole.so'
+    shutil.copy2(extension_path(messages), extension)
     version = subprocess.run([str(php), '-n', *[a for name in load for a in ('-d', f'extension={name}')],
                               '-d', f'extension={extension}', '-r', 'echo SWOOLE_VERSION;'],
                              capture_output=True, text=True)

@@ -14,8 +14,8 @@ use std::{
     ffi::{CStr, CString},
     sync::atomic::{AtomicUsize, Ordering},
 };
-use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::socket_coro;
 use swoole_rs_phpswoole::{Switch, built_with};
@@ -81,18 +81,12 @@ impl Data {
     /// The imported stream (`php_stream_from_zval_no_verify`), or null when
     /// the slot holds no stream resource.
     fn stream(&self) -> *mut swoole_rs_zend::sys::php_stream {
-        let held = self.stream.take();
-        let stream = held.stream();
-        self.stream.set(held);
-        stream
+        self.stream.with_taken(|held| held.stream())
     }
 
     /// Whether the object holds an imported stream.
     fn has_stream(&self) -> bool {
-        let stream = self.stream.take();
-        let held = stream.kind() != IS_UNDEF;
-        self.stream.set(stream);
-        held
+        self.stream.with_taken(|stream| stream.kind() != IS_UNDEF)
     }
 }
 

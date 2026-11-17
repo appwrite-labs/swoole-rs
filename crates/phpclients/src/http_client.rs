@@ -474,10 +474,9 @@ impl Client {
     /// A reference to the socket object for the rest of a call
     /// (`SW_CLIENT_PRESERVE_SOCKET`), so a close inside it cannot free the socket.
     fn hold(&self) -> Option<Owned> {
-        let zsocket = self.conn.zsocket.take();
-        let held = zsocket.object().map(|_| zsocket.copy());
-        self.conn.zsocket.set(zsocket);
-        held
+        self.conn
+            .zsocket
+            .with_taken(|zsocket| zsocket.object().map(|_| zsocket.copy()))
     }
 
     fn set_error(&self, code: c_int, message: &CStr, status: i64) {
@@ -585,7 +584,7 @@ impl Client {
         if self.co().is_some() {
             return true;
         }
-        self.with_body(|body| {
+        self.body.with_taken(|body| {
             if body.capacity() == 0 {
                 body.reserve(BODY_SIZE);
             }
@@ -675,7 +674,7 @@ impl Client {
         };
         socket.check_bound(Events::WRITE);
         swoole_rs_corebase::log::set_last_error(0);
-        self.with_body(Vec::clear);
+        self.body.with_taken(Vec::clear);
 
         let method = not_null(props, c"requestMethod");
         let headers_value = property(props, c"requestHeaders");
@@ -978,14 +977,6 @@ impl Client {
         let received = receive(&mut parser);
         self.parser.set(Some(parser));
         Some(received)
-    }
-
-    /// `f` with the body, out of the client for the call and back after it.
-    fn with_body<R>(&self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
-        let mut body = self.body.take();
-        let result = f(&mut body);
-        self.body.set(body);
-        result
     }
 
     fn recv_response(&self, parser: &mut Parser, timeout: f64) -> bool {
@@ -1354,7 +1345,7 @@ impl Client {
         };
         match output {
             Ok(output) => {
-                self.with_body(|body| body.extend_from_slice(output));
+                self.body.with_taken(|body| body.extend_from_slice(output));
                 true
             }
             Err(message) => {
@@ -1547,7 +1538,7 @@ fn on_body(client: &Client, data: &[u8]) -> Flow {
                 decoded.clear();
                 drop(client.body.replace(decoded));
             }
-            None => client.with_body(Vec::clear),
+            None => client.body.with_taken(Vec::clear),
         }
         client.in_callback.set(false);
         if result.is_err() {
@@ -1562,10 +1553,10 @@ fn on_body(client: &Client, data: &[u8]) -> Flow {
     if decompress {
         if !client.decompress(data) {
             client.compression_error.set(true);
-            client.with_body(|body| body.extend_from_slice(data));
+            client.body.with_taken(|body| body.extend_from_slice(data));
         }
     } else {
-        client.with_body(|body| body.extend_from_slice(data));
+        client.body.with_taken(|body| body.extend_from_slice(data));
     }
     let name = client.download_name.take();
     let downloading = name.is_some();
@@ -1574,7 +1565,7 @@ fn on_body(client: &Client, data: &[u8]) -> Flow {
         return Flow::Go;
     }
     // Out of the client while the file calls yield to other coroutines.
-    let written = client.with_body(|body| {
+    let written = client.body.with_taken(|body| {
         let written = body.is_empty() || write_download(client, body);
         if written {
             body.clear();
@@ -1612,7 +1603,7 @@ fn on_message_complete(hooks: &mut Hooks) -> Flow {
     props.long(c"statusCode", i64::from(hooks.parser.status_code));
     if client.download_file.get().is_none() {
         // Out of the client while the write can run PHP code.
-        client.with_body(|body| props.bytes(c"body", body));
+        client.body.with_taken(|body| props.bytes(c"body", body));
     } else {
         drop(client.download_name.take());
     }

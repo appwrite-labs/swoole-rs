@@ -12,16 +12,10 @@ unsafe extern "C" {
 /// `void swoole_init()`.
 #[unsafe(export_name = "_Z11swoole_initv")]
 pub(crate) extern "C-unwind" fn swoole_init() {
-    swoole_rs_corebase::coroutine::set_host(swoole_rs_corebase::coroutine::Host {
-        async_threads_ensure: || _ = swoole_rs_hooks::async_threads::ensure(),
-    });
     swoole_rs_corebase::reactor::event_api::set_init_reactor([
         |reactor| swoole_rs_hooks::reactor_handlers::system_init_reactor(reactor),
         swoole_rs_clients::client::init_reactor,
     ]);
-    swoole_rs_corebase::reactor::host::set_host(swoole_rs_corebase::reactor::host::Host {
-        sleep: swoole_rs_hooks::sleep::system_sleep,
-    });
     swoole_rs_clients::client::set_host(
         swoole_rs_ports::framing_recv::FRAMING,
         swoole_rs_hooks::resolve::dispatch_client,

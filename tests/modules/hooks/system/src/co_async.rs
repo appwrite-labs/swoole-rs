@@ -6,8 +6,8 @@
 use std::ffi::{c_char, c_int, c_void};
 use std::net::Ipv4Addr;
 
-use swoole_rs_hooks::offload::{AsyncEvent, Handler, async_job, swr_v1_hook_async};
-use swoole_rs_hooks::resolve::COROUTINE_ASYNC;
+use swoole_rs_corebase::offload::COROUTINE_ASYNC;
+use swoole_rs_corebase::offload::{AsyncEvent, Handler, async_job, swr_v1_hook_async};
 
 use super::{AF_INET, ENOENT, O_RDONLY, SW_ERROR_CO_TIMEDOUT};
 use super::{coroutine_cancel, current, errno, open, run, timer};

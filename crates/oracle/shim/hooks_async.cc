@@ -2,7 +2,7 @@
 // and System::getaddrinfo behind one C entry point. build.rs copies them from
 // upstream/src/coroutine/system.cc unchanged into hooks_async.inc; they compile over
 // the deterministic facade below, which records every effect in order. The Rust side
-// drives the hybrid's offload through the same facade (crates/hooks/src/offload/ported.rs).
+// drives the hybrid's offload through the same facade (crates/corebase/src/offload/ported.rs).
 #include <cassert>
 #include <cerrno>
 #include <cstdint>

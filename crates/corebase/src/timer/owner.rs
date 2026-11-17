@@ -41,10 +41,12 @@ pub(crate) struct TimerNode {
 use crate::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use crate::small_fn::{Small, SmallFn};
 
-/// A `Copy` callback held in its node: nothing to free when the node goes.
-struct Copied<F>(F);
+/// A callback held in its node, dropped with it: once the node fires for the last
+/// time, is deleted, or its timer is freed. A node removed while its callback runs
+/// is released only after the callback returns.
+struct Inline<F>(F);
 
-impl<F: Fn() + Copy + 'static> Small<()> for Copied<F> {
+impl<F: Fn() + 'static> Small<()> for Inline<F> {
     fn run(&self) {
         (self.0)();
     }
@@ -63,83 +65,6 @@ impl<C: crate::timer::php::Callback> Small<()> for Retain<C> {
     }
 }
 
-/// The callbacks of this thread's [`TimerNode::owning`] nodes, by slot. A thread's
-/// timer, and so its nodes, stay on that thread.
-mod owned {
-    use std::cell::Cell;
-    use std::rc::Rc;
-
-    #[derive(Default)]
-    pub(super) struct Slots {
-        slots: Vec<Option<Rc<dyn Fn()>>>,
-        /// Emptied slots, reused first.
-        free: Vec<usize>,
-    }
-
-    thread_local! {
-        static SLOTS: Cell<Slots> = const {
-            Cell::new(Slots {
-                slots: Vec::new(),
-                free: Vec::new(),
-            })
-        };
-    }
-
-    /// `f` over this thread's slots, taken out for the call. `f` only moves callbacks
-    /// in and out: none runs or drops inside it, so nothing reaches the slots while
-    /// they are out. None after the thread's teardown dropped them.
-    fn with<R>(f: impl FnOnce(&mut Slots) -> R) -> Option<R> {
-        SLOTS
-            .try_with(|slots| {
-                let mut taken = slots.take();
-                let out = f(&mut taken);
-                slots.set(taken);
-                out
-            })
-            .ok()
-    }
-
-    pub(super) fn insert(f: Rc<dyn Fn()>) -> usize {
-        let slot = with(|s| {
-            if let Some(slot) = s.free.pop()
-                && let Some(entry) = s.slots.get_mut(slot)
-            {
-                *entry = Some(f);
-                return slot;
-            }
-            s.slots.push(Some(f));
-            s.slots.len() - 1
-        });
-        slot.unwrap_or_else(|| crate::fatal("a timer added during thread teardown"))
-    }
-
-    /// Runs `slot`'s callback, held for the call: it may add owning nodes, moving
-    /// the slots. A Zend bailout out of it leaks that hold, and so what it captured.
-    pub(super) fn run(slot: usize) {
-        if let Some(f) = with(|s| s.slots.get(slot).cloned().flatten()).flatten() {
-            f();
-        }
-    }
-
-    /// Frees the owned slot, then drops its callback once the slots are back.
-    pub(super) fn free(slot: usize) {
-        let f = with(|s| {
-            let f = s.slots.get_mut(slot).and_then(Option::take);
-            if f.is_some() {
-                s.free.push(slot);
-            }
-            f
-        });
-        drop(f);
-    }
-
-    /// This thread's slots: (made, free).
-    #[cfg(test)]
-    pub(super) fn counts() -> (usize, usize) {
-        with(|s| (s.slots.len(), s.free.len())).unwrap_or_default()
-    }
-}
-
 impl TimerNode {
     pub(crate) fn new() -> Self {
         Self {
@@ -147,26 +72,10 @@ impl TimerNode {
         }
     }
 
-    /// A node whose callback is `f`.
-    pub(crate) fn closure<F: Fn() + Copy + 'static>(f: F) -> Self {
+    /// A node whose callback is `f`, which may own what it captures, at most two words.
+    pub(crate) fn closure<F: Fn() + 'static>(f: F) -> Self {
         let node = Self::new();
-        node.retained.put(Copied(f));
-        node
-    }
-
-    /// Own a closure's slot until cancellation, its last callback or teardown.
-    pub(crate) fn owning(f: std::rc::Rc<dyn Fn()>) -> Self {
-        struct Slot(usize);
-        impl crate::timer::php::Callback for Slot {
-            fn run(&self) {
-                owned::run(self.0);
-            }
-            fn release(self) {
-                owned::free(self.0);
-            }
-        }
-        let node = Self::new();
-        node.install(Slot(owned::insert(f)));
+        node.retained.put(Inline(f));
         node
     }
 
@@ -1021,7 +930,7 @@ mod tests {
                 }
             });
             let id = timer
-                .add(1000, persistent, false, TimerNode::owning(f))
+                .add(1000, persistent, false, TimerNode::closure(move || f()))
                 .expect("add failed");
             timer.update(id, 0);
             id
@@ -1045,14 +954,6 @@ mod tests {
             1,
             "dropped when the timer is freed"
         );
-        let (made, free) = owned::counts();
-        assert_eq!(made, free, "every slot freed for reuse");
-        let again = Probe::new();
-        again
-            .timer()
-            .add(1000, false, false, TimerNode::owning(Rc::new(|| {})));
-        assert_eq!(owned::counts(), (made, free - 1), "a freed slot reused");
-        again.free();
     }
 
     #[test]

@@ -84,7 +84,7 @@ pub extern "C" fn system_init_reactor(reactor: Running<'_>) {
     set(
         FdType::SW_FD_AIO as c_int,
         Events::READ,
-        crate::async_threads::callback,
+        swoole_rs_corebase::offload::threads::callback,
     );
     #[cfg(feature = "iouring")]
     set(FdType::SW_FD_IOURING as c_int, Events::READ, iouring_ready);
@@ -170,7 +170,7 @@ mod tests {
         Ok(Socket(socket))
     }
     /// The reactor fires write, then read, on the waiter's socket.
-    fn park(_: f64, waker: &crate::resolve::WakerSlot) -> Result<(), i32> {
+    fn park(_: f64, waker: &swoole_rs_corebase::offload::WakerSlot) -> Result<(), i32> {
         waker.set(Some(swoole_rs_corebase::coroutine::Waker::NONE));
         let mut event = unsafe {
             Event::of(

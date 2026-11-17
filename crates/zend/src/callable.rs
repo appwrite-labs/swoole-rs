@@ -188,10 +188,9 @@ fn keep_params(callable: &mut swr_zend_callable, first: Option<i64>, count: usiz
     if let Some(value) = first {
         params.push(long(value));
     }
-    for index in 0..count {
-        let source = callable.fci.params.wrapping_add(index);
-        // SAFETY: a live argument, which the frame holds for this call.
-        let value = unsafe { &*source.cast::<crate::Value>() };
+    // The frame's arguments, which it holds for this call.
+    let args = crate::Zvals::counted(callable.fci.params, callable.fci.param_count);
+    for value in args.values() {
         params.push(value.copy().into_zval());
     }
     callable.fci.params = Box::into_raw_with_allocator(params.into_boxed_slice())

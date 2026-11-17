@@ -1,7 +1,7 @@
 # Known bug: idle-retirement event leaked at reactor shutdown
 
 The idle-retirement notice (a 72-byte `AsyncEvent` from the `retire` hook in
-`crates/hooks/src/async_threads.rs`) can leak at reactor shutdown, as upstream's
+`crates/corebase/src/offload/threads.rs`) can leak at reactor shutdown, as upstream's
 does. It is unrelated to queued ordinary events at shutdown.
 
 Cause (confirmed with test-only scheduling barriers on macOS and Linux, both

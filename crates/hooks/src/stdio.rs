@@ -84,7 +84,7 @@ pub(crate) struct Ops {
 /// The coroutine runtime's.
 pub(crate) static NATIVE: Ops = Ops {
     in_coroutine: native::in_coroutine,
-    offload: crate::offload::async_job,
+    offload: swoole_rs_corebase::offload::async_job,
     sleep: crate::sleep::system_sleep,
     set_last_error: swoole_rs_corebase::log::set_last_error,
 };

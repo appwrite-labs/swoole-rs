@@ -338,9 +338,10 @@ impl Call {
     /// Argument `n` was not passed (the caller's arity check allows it).
     #[inline]
     pub(crate) fn arg_value(&self, n: u32) -> &Value {
-        assert!(self.passed_arg(n), "argument {n} was not passed");
-        // SAFETY: a passed argument lives for the call.
-        unsafe { &*self.arg(n).cast::<Value>() }
+        match self.args().values().get(n.wrapping_sub(1) as usize) {
+            Some(value) => value,
+            None => unpassed(n),
+        }
     }
 
     /// `ZEND_PARSE_PARAMETERS_START(min, max)`'s count check.
@@ -730,6 +731,14 @@ impl Call {
     pub fn set_empty_array(&self) {
         self.set_owned(crate::Owned::empty_array());
     }
+}
+
+/// The caller asked for an argument past `num_args`. Kept out of line so
+/// `arg_value` inlines as the bare index it was.
+#[cold]
+#[inline(never)]
+fn unpassed(n: u32) -> ! {
+    unreachable!("argument {n} was not passed")
 }
 
 #[cfg(test)]

@@ -2,13 +2,13 @@
 //! `signals` arrives. The listener table, the wake-up handler and [`NATIVE`]'s signal
 //! registration, reactor exit condition and coroutine operations are here; tests
 //! pass their own `SignalOps`.
-use crate::resolve::WakerSlot;
 use std::cell::Cell;
 use std::ffi::{c_long, c_void};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, Ordering::Relaxed};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::coroutine::Waker;
+use swoole_rs_corebase::offload::WakerSlot;
 use swoole_rs_corebase::reactor::signal_upstream::Handler;
 
 /// `SW_SIGNO_MAX`.
@@ -238,7 +238,7 @@ static NATIVE: SignalOps = SignalOps {
     busy: native::busy,
     listen: native::listen,
     waiting: native::waiting,
-    yield_for: crate::resolve::park_for_armed,
+    yield_for: swoole_rs_corebase::offload::park_for_armed,
     resume: Waker::wake,
 };
 
