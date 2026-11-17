@@ -30,7 +30,7 @@ impl Custom for Data {
     /// The object goes: the uploads it received are removed.
     fn free(&self, properties: swoole_rs_zend::FreeProperties<'_>) {
         if let Some(mut ctx) = self.0.get().map(Hold::ctx)
-            && parse::made(&ctx.state().request, Property::TmpFiles).is_some()
+            && ctx.state().request.arrays & (1 << Property::TmpFiles as u8) != 0
         {
             parse::release_uploads(properties);
         }

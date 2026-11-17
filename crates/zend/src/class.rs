@@ -417,6 +417,15 @@ impl Declared {
         self.slot(object).map(|slot| slot.referred().copy())
     }
 
+    /// Hold only an array property, without constructing a snapshot for null
+    /// or scalar properties. Writes still separate from the held table.
+    #[must_use]
+    #[inline]
+    pub fn hold(&self, object: &Value) -> Option<crate::HeldArray> {
+        self.slot(object)?.referred().hold()
+    }
+
+    #[inline]
     pub(crate) fn slot<'a>(&self, object: &'a Value) -> Option<&'a Value> {
         let std = object.object()?;
         let own = object.class_entry()?;

@@ -20,8 +20,8 @@ use swoole_rs_httpbindings::{
     token_list_contains, token_list_fast, trim_quotes,
 };
 use swoole_rs_zend::{
-    ArrayMut, Declared, Insertions, Interned, Minit, Owned, OwnedArray, Separated, Value, ZStr,
-    ZString, bailout, contain_with,
+    ArrayMut, Declared, HeldArray, Insertions, Interned, Minit, Owned, OwnedArray, Separated,
+    Value, ZStr, ZString, bailout, contain_with,
 };
 
 /// A request's multipart parser and the upload it is writing.
@@ -346,14 +346,14 @@ pub(crate) fn init_property(request: &mut Request, which: Property) -> Option<()
     property_owner(request, which).map(|_| ())
 }
 
-/// The request object's `which` property slot, once [`init_property`] has made
-/// its array.
+/// Hold the request object's `which` array, once [`init_property`] has made
+/// it. A property PHP replaced with a scalar has no array to hold.
 #[inline]
-pub(crate) fn made(request: &Request, which: Property) -> Option<Owned> {
+pub(crate) fn made(request: &Request, which: Property) -> Option<HeldArray> {
     if request.arrays & (1 << which as u8) == 0 {
         return None;
     }
-    PROPERTIES.get(which as usize)?.get(request.zobject.get()?)
+    PROPERTIES.get(which as usize)?.hold(request.zobject.get()?)
 }
 
 /// [`init_property`]'s array, lent to `edit`; None without one.

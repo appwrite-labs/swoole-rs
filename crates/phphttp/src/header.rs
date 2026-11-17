@@ -92,10 +92,7 @@ pub(crate) fn edit_response_property<R>(
 /// context, or replace the property, while the array is walked: the hold keeps
 /// it live and borrows nothing from the context's state.
 pub(crate) fn property(response: &Slot, which: usize) -> Option<HeldArray> {
-    PROPERTIES
-        .get(which)?
-        .get(response.get()?)?
-        .into_held_array()
+    PROPERTIES.get(which)?.hold(response.get()?)
 }
 
 /// `zend::String(value)`: a string zval's own string, or `zval_get_string`'s new one.
