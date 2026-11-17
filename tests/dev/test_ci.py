@@ -494,6 +494,12 @@ class Ci(unittest.TestCase):
     def test_status_without_a_run_is_none(self):
         code, result, _ = self.ci('status', '--commit', 'abc1234', runs={})
         self.assertEqual((code, result['state']), (2, 'none'))
+        from tools import ci
+        # GraphQL's partial result: a null node, a suite without a run, a run whose workflow is null.
+        partial = [{'object': {'checkSuites': {'nodes': [None, {'workflowRun': None},
+                                                         {'workflowRun': {'workflow': None}}]}}}]
+        with unittest.mock.patch.object(ci, 'graphql', return_value=partial):
+            self.assertEqual(ci.status('pr.yml', 'abc1234')['state'], 'none')
 
     def test_latest_schedule_selects_run_id_even_with_a_newer_dispatch_on_the_same_commit(self):
         history = [dict(databaseId=9, headSha='h' * 40, conclusion='success', event='workflow_dispatch',
