@@ -31,7 +31,7 @@ unsafe extern "C" {
     /// `*result = create(cache, argc, argv, callable, &raised)` inside
     /// `zend_try`, then `then(arg)` unless an exception is pending (`*ran`
     /// set): nonzero for a bailout. `raised` is the shim's own local.
-    pub fn swr_zend_try_facade_coroutine(
+    fn swr_zend_try_facade_coroutine(
         create: Option<Create>,
         cache: *mut zend_fcall_info_cache,
         argc: u32,
@@ -238,8 +238,8 @@ pub fn function_call(
     args: crate::zval::Zvals<'_>,
     retval: Option<&crate::Value>,
     coroutine: bool,
-    Creator(create): Creator,
-    Then(then, arg): Then,
+    creator: Creator,
+    then: Then,
 ) -> Result<bool, bailout::Bailout> {
     // Upstream never ran past a pending bailout: no coroutine starts, as no call runs.
     bailout::outcome(())?;
@@ -250,23 +250,8 @@ pub fn function_call(
             // coroutines publish null before creation and have no return value.
             retval.retype_null();
         }
-        let mut result: c_long = -1;
-        // SAFETY: the leaf (`Creator`) and `then` (`Then`) are as their makers
-        // vouched, with a callable's cache and lent arguments; they run inside
-        // the C trap, and no Rust borrow spans a switch.
-        bailed(unsafe {
-            swr_zend_try_facade_coroutine(
-                Some(create),
-                cache.0,
-                args.argc(),
-                args.argv(),
-                ptr::null_mut(),
-                &raw mut result,
-                then,
-                arg,
-                &raw mut ran,
-            )
-        });
+        let (trapped, result) = coroutine_call(cache, args, None, creator, then, &mut ran);
+        bailed(trapped);
         result >= 0
     } else {
         direct_call(cache, args, retval)
@@ -281,6 +266,39 @@ pub fn function_call(
     } else {
         Ok(success)
     }
+}
+
+/// `create(cache, args, callable)`, then `then` once the coroutine runs or
+/// waits with no exception pending (`ran` set), inside one `zend_try`: the
+/// trap's flag (nonzero for a bailout, or a leaf that raised) and the leaf's
+/// result, the new coroutine's id or a negative error.
+#[inline]
+pub(crate) fn coroutine_call(
+    cache: Callee<'_>,
+    args: crate::zval::Zvals<'_>,
+    callable: Option<&crate::Value>,
+    Creator(create): Creator,
+    Then(then, arg): Then,
+    ran: &mut bool,
+) -> (c_int, c_long) {
+    let mut result: c_long = -1;
+    // SAFETY: the leaf (`Creator`) and `then` (`Then`) are as their makers
+    // vouched, with a callable's cache, lent arguments and the callable's
+    // live zval; they run inside the C trap, and no Rust borrow spans a switch.
+    let trapped = unsafe {
+        swr_zend_try_facade_coroutine(
+            Some(create),
+            cache.0,
+            args.argc(),
+            args.argv(),
+            callable.map_or(ptr::null_mut(), crate::Value::as_ptr),
+            &raw mut result,
+            then,
+            arg,
+            ran,
+        )
+    };
+    (trapped, result)
 }
 
 /// No [`Then`].
