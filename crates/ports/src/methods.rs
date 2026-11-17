@@ -446,9 +446,9 @@ readable_callbacks! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lifecycle::{context_create, ssl_init};
     use std::ffi::c_void;
     use swoole_rs_server::ConnectionRecord;
+    use swoole_rs_server::port_tls::{context_create, ssl_context_init, ssl_init, tls_free};
 
     /// The server's port settings, and the two raw steps these tests take on a port
     /// they made themselves.
@@ -499,9 +499,7 @@ mod tests {
     fn close(at: *mut c_void) {
         crate::lifecycle::close(port_at(at).config());
     }
-    fn ssl_context_init(at: *mut c_void) -> bool {
-        crate::lifecycle::ssl_context_init(unsafe { port_config::of(at) })
-    }
+
     use swoole_rs_clients::protocol::Protocol;
     use swoole_rs_corebase::net_types::PacketLength;
 
@@ -531,7 +529,7 @@ mod tests {
         let at = fresh.at();
         let config = unsafe { port_config::of(at) };
         config.ssl = true;
-        assert!(ssl_context_init(at), "a stream port's context");
+        assert!(ssl_context_init(config), "a stream port's context");
         let context = config.ssl_context.get().expect("published");
         let fields = context.fields();
         assert_eq!(
@@ -554,9 +552,9 @@ mod tests {
             "a reader's context stays alive after the port closes"
         );
         config.r#type = 2;
-        assert!(ssl_context_init(at), "a datagram port's context");
+        assert!(ssl_context_init(config), "a datagram port's context");
         assert!(config.is_dtls(), "DTLS");
-        crate::lifecycle::tls_free(unsafe { &mut *fresh.0 });
+        tls_free(config);
         assert!(
             config.ssl_context.get().is_none(),
             "the destructor releases what close left"
@@ -1168,7 +1166,7 @@ mod tests {
             SW_DATA_EOF_MAXLEN
         );
 
-        assert!(ssl_context_init(at));
+        assert!(ssl_context_init(config));
         let context = config.ssl_context.get().unwrap();
         assert!(context_create(config, &context, false, None).is_none());
         assert_eq!(log::last_error(), 509, "SW_ERROR_WRONG_OPERATION");
