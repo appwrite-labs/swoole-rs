@@ -586,6 +586,9 @@ pub(crate) mod test_host {
         /// The liveness probe's answer and errno; the errno a TLS shutdown leaves.
         pub(crate) static PROBE: Cell<(bool, c_int)> = const { Cell::new((true, 0)) };
         pub(crate) static SSL_ERRNO: Cell<c_int> = const { Cell::new(0) };
+        /// Whether a write's wait moves its bytes to the write buffer, as the native
+        /// `buffer` does unless they are there already or the socket is zero-copy.
+        pub(crate) static MOVES: Cell<bool> = const { Cell::new(false) };
         static NODES: Cell<usize> = const { Cell::new(0) };
     }
 
@@ -648,6 +651,7 @@ pub(crate) mod test_host {
         ON_RESUME.set(None);
         ON_RELEASE.set(None);
         PROBE.set((true, 0));
+        MOVES.set(false);
         SSL_ERRNO.set(0);
     }
 
@@ -704,6 +708,9 @@ pub(crate) mod test_host {
     }
     fn buffer(_: Co, slot: &mut crate::socket_wait::WriteSlot<'_>) {
         log(format!("buffer:{}", slot.length()));
+        if MOVES.get() && !slot.moved() {
+            slot.moved_to_write_buffer();
+        }
     }
     fn remove(_: Co, event: Events) {
         log(format!("remove:{event}"));
