@@ -235,16 +235,15 @@ fn text_setting(server: &HttpServer, kind: Setting, text: Option<&[u8]>) {
             .set(context::directory(text.unwrap_or_default()));
         return;
     }
-    let mut types = server.compression_types.take();
-    match text {
-        None => types = Some(Rc::default()),
-        Some(kind) => {
-            if let Some(types) = types.as_mut() {
+    if let Some(kind) = text {
+        server.compression_types.with_taken(|types| {
+            if let Some(types) = types {
                 Rc::make_mut(types).insert(kind.into());
             }
-        }
+        });
+    } else {
+        server.compression_types.set(Some(Rc::default()));
     }
-    server.compression_types.set(types);
 }
 
 /// HTTP statuses the loop answers with, and llhttp's codes it checks.
@@ -741,9 +740,11 @@ fn shutdown(call: &Call) {
     server.running.set(false);
     server.socket.cancel(Events::READ);
     // Connections waiting for their next request stop waiting.
-    let mut waiting: Vec<(z::zend_ulong, Co)> = Vec::new();
-    let clients = server.clients.take();
-    if let Some(connections) = clients.array() {
+    let mut waiting = Vec::new();
+    server.clients.with_taken(|clients| {
+        let Some(connections) = clients.array() else {
+            return;
+        };
         connections.for_each(|key, connection| {
             let ArrayKey::Index(index) = key else { return };
             let Some(socket) = get_socket(connection).map(swoole_rs_phpclients::Co::handle) else {
@@ -755,8 +756,7 @@ fn shutdown(call: &Call) {
                 waiting.push((index, socket));
             }
         });
-    }
-    server.clients.set(clients);
+    });
     for (index, socket) in waiting {
         // The array's connection objects keep their sockets live.
         socket.cancel(Events::READ);
