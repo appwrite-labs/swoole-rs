@@ -227,8 +227,8 @@ pub struct Client {
     /// The proxy states owned by the client.
     socks5: Cell<Option<Box<ProxyState>>>,
     http_proxy: Cell<Option<Box<ProxyState>>>,
-    /// The owner of the callable `protocol.private_data_1` names, when the
-    /// client has a `package_length_func`.
+    /// The owner of the client's `package_length_func`, which a measure passes
+    /// its length callback.
     length_owner: Cell<Option<Rc<dyn std::any::Any>>>,
 }
 
@@ -321,6 +321,17 @@ impl Handle<'_> {
         // SAFETY: the client is live between callbacks; callers drop the reference
         // before any effect that may release it.
         unsafe { &*self.0 }
+    }
+
+    /// A reference to the owner of the client's `package_length_func`, for a measure
+    /// to hand its length callback, which drops it: the callable may `set()` another
+    /// or close the client, and the old one's destructor must run before the
+    /// callback finishes.
+    #[must_use]
+    pub fn length_owner(self) -> Option<Rc<dyn std::any::Any>> {
+        let owner = self.get().length_owner.take();
+        self.get().length_owner.set(owner.clone());
+        owner
     }
 
     fn flag(self, name: Flag) -> bool {
@@ -921,7 +932,12 @@ pub fn package_length(this: Handle<'_>, data: &[u8]) -> isize {
         return -1;
     };
     let mut packet = PacketLength::new(data);
-    get(&record.protocol, Some(this.socket()), &mut packet)
+    get(
+        &record.protocol,
+        Some(this.socket()),
+        this.length_owner(),
+        &mut packet,
+    )
 }
 
 /// `Client::close()`: false when already closed or when `close(2)` fails; true when

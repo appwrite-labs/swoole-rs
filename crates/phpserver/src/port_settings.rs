@@ -503,6 +503,7 @@ mod tests {
     fn length_func(
         _: &Protocol,
         _: Option<swoole_rs_clients::protocol::Socket<'_>>,
+        _: Option<std::rc::Rc<dyn std::any::Any>>,
         _: &mut PacketLength,
     ) -> isize {
         11

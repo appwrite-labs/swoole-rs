@@ -25,8 +25,8 @@ use swoole_rs_phpruntime::Report;
 use swoole_rs_phpstubs::client;
 use swoole_rs_phpswoole::{Switch, built_with, display_errors};
 use swoole_rs_zend::{
-    Array, Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, ObjectRef, Owned,
-    OwnedArray, Props, Value, ZStr, ZString,
+    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, ObjectRef, Owned, OwnedArray,
+    Props, Value, ZStr, ZString,
     bailout::{self, Bailout},
     host::callable::Callable,
     string::ZBuf,
@@ -273,7 +273,7 @@ impl<'a> Obj<'a> {
     }
 
     /// The property `name`, which the client class declares.
-    fn property(self, name: &CStr) -> &'a Value {
+    fn property(self, name: &CStr) -> Owned {
         let slot = self.props().slot(name);
         slot.unwrap_or_else(|| swoole_rs_corebase::fatal("an undeclared client property"))
     }
@@ -554,9 +554,9 @@ pub(crate) fn type_property(object: Obj, async_message: bool) -> Option<i64> {
 }
 
 /// The `setting` property when it is an array.
-pub(crate) fn settings(object: Obj<'_>) -> Option<&Array> {
+pub(crate) fn settings(object: Obj<'_>) -> Option<Owned> {
     let zset = object.property(c"setting");
-    (zset.kind() == IS_ARRAY).then(|| zset.array()).flatten()
+    (zset.kind() == IS_ARRAY).then_some(zset)
 }
 
 /// `php_swoole_client_new`: a pooled or new connection for `host:port`.
@@ -568,7 +568,8 @@ fn connection(object: Obj, host: &[u8], port: i64) -> Option<Rc<Conn>> {
         set_last_error(INVALID_PARAMS);
         return None;
     }
-    let id = object.property(c"id").str().map(ZStr::bytes);
+    let id_value = object.property(c"id");
+    let id = id_value.str().map(ZStr::bytes);
     let key = match id {
         Some(id) if !id.is_empty() => id.to_vec(),
         _ => {
@@ -728,7 +729,9 @@ fn connect(call: &Call) {
         );
         return call.set_bool(false);
     }
-    if let Some(zset) = settings(object) {
+    if let Some(zset) = settings(object)
+        && let Some(zset) = zset.array()
+    {
         set_last_error(0);
         let Some(applied) = crate::settings::apply(conn.cli(), zset) else {
             return call.set_bool(false);
@@ -1264,7 +1267,9 @@ pub(crate) fn enable_ssl(call: &Call, conn: &Conn) -> bool {
     }
     // A reference of this call's own to the new context.
     let owner = conn.cli().get().tls_context().cloned();
-    if let (Some(owner), Some(zset)) = (owner, settings(Obj::this(call))) {
+    if let (Some(owner), Some(zset)) = (owner, settings(Obj::this(call)))
+        && let Some(zset) = zset.array()
+    {
         crate::settings::apply_ssl(&owner, zset);
     }
     true

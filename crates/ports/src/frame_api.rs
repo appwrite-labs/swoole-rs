@@ -354,7 +354,7 @@ mod tests {
         let mut pl = swoole_rs_corebase::net_types::PacketLength::new(&data);
         let protocol = swoole_rs_clients::protocol::Protocol::EMPTY;
         assert_eq!(
-            crate::http_routes::websocket_length(&protocol, None, &mut pl),
+            crate::http_routes::websocket_length(&protocol, None, None, &mut pl),
             260
         );
         assert_eq!(pl.header_len, 4);
