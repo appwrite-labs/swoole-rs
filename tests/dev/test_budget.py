@@ -212,6 +212,17 @@ mod tests {
         current = {'http': 4, 'http-ffi': 11, 'locale': 6}
         self.assertEqual(budget.boundary_moves(budget.above(current, base), current, base), {'http-ffi': (11, 5)})
 
+    def test_a_crate_may_rise_by_what_a_deleted_crate_held(self):
+        base = {'protocols': 0, 'protocols-ffi': 4, 'ports': 7, 'hooks': 5}
+        current = {'protocols': 2, 'ports': 9, 'hooks': 5}  # protocols-ffi's 4 moved
+        self.assertEqual(budget.departures(budget.above(current, base), current, base), {})
+        current = {'protocols': 2, 'ports': 12, 'hooks': 0}  # hooks' fall doesn't count
+        self.assertEqual(budget.departures(budget.above(current, base), current, base),
+                         {'ports': (12, 7)}, 'a rise past what the deleted crate held fails')
+        current = {'protocols': 2, 'ports': 10, 'hooks': 5}
+        self.assertEqual(budget.departures(budget.above(current, base), current, base),
+                         {'ports': (10, 7), 'protocols': (2, 0)}, 'not while the total rises')
+
     def test_a_new_crate_counts_from_zero_once_the_total_rises(self):
         base = {'http': 10}
         self.assertEqual(budget.arrivals({'http': 10, 'brotli': 6, 'safe': 0}, base), {'brotli': (6, 0)})

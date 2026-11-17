@@ -13,11 +13,11 @@ use core::ptr::null_mut;
 use std::rc::Rc;
 use swoole_rs_reactor::Events;
 
+use swoole_rs_clients::owned_proxy::{Socks5Proxy, admit, pack_negotiate_request, socks5_step};
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{NameResolverContext, ProxyState, log};
 use swoole_rs_http_ffi::{proxy_accept, proxy_connect};
-use swoole_rs_protocols_ffi::{Socks5Proxy, pack_negotiate_request};
 
 /// Swoole error codes this sequence sets.
 const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
@@ -444,14 +444,14 @@ impl Connecting for Live<'_> {
         let Some(owner) = self.socks5 else {
             return Vec::new();
         };
-        let length = usize::try_from(pack_negotiate_request(&Socks5Proxy::new(owner))).ok();
+        let length = pack_negotiate_request(&Socks5Proxy::new(owner));
         owner.update(|fields| fields.state = SOCKS5_HANDSHAKE);
         self.socks5_packet(length)
     }
 
     fn socks5_step(&mut self, reply: &[u8]) -> Option<bool> {
         let owner = self.socks5?;
-        let n = swoole_rs_protocols_ffi::socks5_step(&Socks5Proxy::new(owner), reply)?;
+        let n = socks5_step(&Socks5Proxy::new(owner), reply)?;
         if n > 0 && self.send(&self.socks5_packet(Some(n))) != Some(n) {
             return None;
         }
@@ -546,7 +546,7 @@ impl Co {
                 host, port, user, password,
             )))
         } else {
-            match swoole_rs_protocols_ffi::admit(user.len(), password.len()) {
+            match admit(user.len(), password.len()) {
                 0 => None,
                 config => {
                     let owner = ProxyState::new(true);
