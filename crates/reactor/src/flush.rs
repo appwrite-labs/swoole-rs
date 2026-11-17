@@ -2,8 +2,8 @@
 //! `drain_write_buffer`) over the socket's write-path block and its output queue.
 //! `crates/tls`'s `reactor_write.rs` supplies the effects.
 use crate::Socket;
-use swoole_rs_buffer::EntryKind;
-use swoole_rs_buffer::cpp::{swr_cpp_buffer_count, swr_cpp_buffer_typed_front};
+use swoole_rs_corebase::buffer::EntryKind;
+use swoole_rs_corebase::buffer::cpp::{swr_cpp_buffer_count, swr_cpp_buffer_typed_front};
 
 /// The flush's effects (`crates/tls`'s `reactor_write.rs`).
 pub trait FlushEffects {
@@ -91,7 +91,7 @@ mod tests {
     use crate::{SocketOutput, SocketRecord};
     use std::cell::RefCell;
     use std::ffi::c_int;
-    use swoole_rs_buffer::cpp::{
+    use swoole_rs_corebase::buffer::cpp::{
         CppBuffer, new_buffer, swr_cpp_buffer_pop, swr_cpp_buffer_typed_close,
     };
 
@@ -116,7 +116,10 @@ mod tests {
         let socket = unsafe { Socket::from_ptr(record as *mut SocketRecord) }.unwrap();
         socket.read(|record| {
             let buffer = record.output.buffer().unwrap();
-            assert_ne!(swoole_rs_buffer::cpp::swr_cpp_buffer_count(buffer), 0);
+            assert_ne!(
+                swoole_rs_corebase::buffer::cpp::swr_cpp_buffer_count(buffer),
+                0
+            );
             swr_cpp_buffer_pop(buffer);
         });
     }
@@ -322,7 +325,7 @@ mod tests {
         }
 
         fn run(kinds: &[EntryKind], timer: bool, drain: bool) -> Vec<String> {
-            let buffer = swoole_rs_buffer::cpp::new_buffer(1);
+            let buffer = swoole_rs_corebase::buffer::cpp::new_buffer(1);
             super::queue(&buffer, kinds);
             let mut record = SocketRecord::new();
             record.output = SocketOutput {

@@ -56,7 +56,7 @@ unsafe extern "C" fn free(address: *mut c_void) {
 /// bytes. The owner frees a copied allocation; a transferred one is Zend's again.
 #[must_use]
 pub fn received_string(
-    mut buffer: swoole_rs_buffer::string::OwnedString,
+    mut buffer: swoole_rs_corebase::buffer::string::OwnedString,
 ) -> swoole_rs_zend::ZString {
     let zend = buffer
         .allocator()

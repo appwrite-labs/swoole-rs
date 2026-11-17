@@ -3,10 +3,7 @@
 //! `swoole_init`: the leaves corebase's lifecycles run live in the crates above
 //! it, so this archive, which has them all, registers them before corebase's body
 //! runs (`swoole_rs_corebase::native`). src/fatal.c holds what stays C.
-use std::cell::Cell;
 use std::ffi::{c_char, c_int};
-use swoole_rs_buffer::string::CppString;
-use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::native::{self, LoggerOp, NativeHost};
 use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_memory::members::pool;
@@ -16,28 +13,12 @@ unsafe extern "C" {
     fn swr_v1_ffi_fatal_error(code: c_int, format: *const c_char, ...);
 }
 
-thread_local! {
-    /// This thread's `SwooleTG.buffer_stack`, which lives as long as the thread.
-    /// C++ keeps a pointer to the slot, so it is set once in place and replaced
-    /// only when the thread is cleaned.
-    static BUFFER: Cell<CppString> = const { Cell::new(CppString::EMPTY) };
-}
-
 /// `void swoole_init()`.
 #[unsafe(export_name = "_Z11swoole_initv")]
 pub(crate) extern "C-unwind" fn swoole_init() {
     swoole_rs_corebase::log::swr_v1_core_set_log_host(swoole_rs_utilities::swr_v1_utils_log);
     native::set_native_host(NativeHost {
         init,
-        new_buffer: || {
-            let mut fresh = CppString::EMPTY;
-            fresh.alloc(SW_STACK_BUFFER_SIZE as usize, None);
-            BUFFER.with(|buffer| {
-                buffer.set(fresh);
-                buffer.as_ptr().cast()
-            })
-        },
-        delete_buffer: || BUFFER.with(|buffer| buffer.replace(CppString::EMPTY).dispose()),
         delete_pool: pool::delete,
         logger: swoole_rs_process::methods::logger_op,
         signal_clear: swoole_rs_reactor::signal_upstream::swoole_signal_clear,

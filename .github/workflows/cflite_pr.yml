@@ -6,7 +6,6 @@ on:
     paths:
       - 'crates/base64/**'
       - 'crates/brotli/**'
-      - 'crates/buffer/**'
       - 'crates/clients/**'
       - 'crates/corebase/**'
       - 'crates/coroutine/**'

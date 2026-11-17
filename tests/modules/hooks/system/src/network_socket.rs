@@ -513,7 +513,7 @@ impl Socket {
             0
         } else {
             // SAFETY: a live output buffer.
-            swoole_rs_buffer::cpp::swr_cpp_buffer_length(unsafe { &*buffer.cast() })
+            swoole_rs_corebase::buffer::cpp::swr_cpp_buffer_length(unsafe { &*buffer.cast() })
         }
     }
 

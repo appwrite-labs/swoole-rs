@@ -9,11 +9,11 @@
 //! An allocation failure aborts: upstream throws `std::bad_alloc`, which no
 //! first-party code catches. Arithmetic wraps, as upstream's `size_t` does, and
 //! the casts are upstream's C casts.
+use crate::lent::{Spare, lend_spare};
+use crate::{CCast, TrustedAllocator};
 use std::ffi::{c_int, c_void};
 use std::mem::{MaybeUninit, offset_of};
 use std::ptr;
-use swoole_rs_corebase::lent::{Spare, lend_spare};
-use swoole_rs_corebase::{CCast, TrustedAllocator};
 
 /// `swoole::String` (`string.cc` asserts the same layout).
 ///
@@ -87,7 +87,7 @@ const fn aligned(size: usize) -> usize {
 
 /// `swoole_size_align(size, swoole_pagesize())`.
 fn page_aligned(size: usize) -> usize {
-    let page = swoole_rs_corebase::swr_v1_core_pagesize() as usize;
+    let page = crate::swr_v1_core_pagesize() as usize;
     size.wrapping_add(page.wrapping_sub(size % page))
 }
 
@@ -103,7 +103,7 @@ fn strnstr(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// An allocator's result, aborting on failure as `std::bad_alloc` would.
 fn checked(pointer: *mut c_void) -> *mut u8 {
     if pointer.is_null() {
-        swoole_rs_corebase::fatal("out of memory");
+        crate::fatal("out of memory");
     }
     pointer.cast()
 }
@@ -339,7 +339,7 @@ impl CppString {
     pub fn write(&mut self, offset: i64, data: &[u8]) {
         let offset = unsigned(offset.max(0));
         let Some(new_length) = offset.checked_add(data.len()) else {
-            swoole_rs_corebase::fatal("a string write past the address space");
+            crate::fatal("a string write past the address space");
         };
         if new_length > self.size {
             self.reserve(page_aligned(new_length.saturating_mul(2)).max(new_length));
@@ -484,7 +484,7 @@ impl CppString {
             return false;
         };
         if !base64 {
-            if swoole_rs_corebase::random_bytes(spare) != length {
+            if crate::random_bytes(spare) != length {
                 return false;
             }
             self.length = self.length.wrapping_add(length);
@@ -493,7 +493,7 @@ impl CppString {
         // Upstream draws the raw bytes into the free space and encodes them over it; they
         // are scratch, so they go in a buffer of their own.
         let mut raw = vec![0u8; length];
-        if swoole_rs_corebase::random_bytes(raw.as_mut_slice()) != length {
+        if crate::random_bytes(raw.as_mut_slice()) != length {
             return false;
         }
         let mut out = vec![0u8; encoded];
@@ -569,13 +569,13 @@ impl CppString {
             "String[length={},size={},offset={}]=",
             self.length, self.size, self.offset
         );
-        swoole_rs_corebase::sys::print(head.as_bytes());
+        crate::sys::print(head.as_bytes());
         if value {
             // `%.*s` of the content: `print` stops at a NUL, as upstream's does.
-            swoole_rs_corebase::sys::print(self.view());
-            swoole_rs_corebase::sys::print(b"\n");
+            crate::sys::print(self.view());
+            crate::sys::print(b"\n");
         } else {
-            swoole_rs_corebase::sys::print(format!("{}\n", pointer(self.str)).as_bytes());
+            crate::sys::print(format!("{}\n", pointer(self.str)).as_bytes());
         }
     }
 }
@@ -753,22 +753,16 @@ pub unsafe fn delete_string(string: *mut CppString) {
 /// `swoole_thread_init` didn't set up has none, which aborts.
 #[inline]
 pub fn with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
-    try_with_thread_buffer(f)
-        .unwrap_or_else(|| swoole_rs_corebase::fatal("a thread without its buffer"))
+    try_with_thread_buffer(f).unwrap_or_else(|| crate::fatal("a thread without its buffer"))
 }
 
 /// [`with_thread_buffer`], or `None` on a thread without a buffer.
 #[inline]
 pub fn try_with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> Option<R> {
-    swoole_rs_corebase::lend_thread_buffer(|| {
+    crate::lend_thread_buffer(|| {
         // SAFETY: null, or the calling thread's live buffer, which
         // `swoole_thread_init` set up, lent to `f` alone.
-        unsafe {
-            swoole_rs_corebase::thread_buffer()
-                .cast::<CppString>()
-                .as_mut()
-        }
-        .map(f)
+        unsafe { crate::thread_buffer().cast::<CppString>().as_mut() }.map(f)
     })
 }
 
@@ -886,13 +880,13 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/modules/buffer/string/originals.rs"]
+#[path = "../../../../tests/modules/buffer/string/originals.rs"]
 mod originals;
 
 #[cfg(test)]
-#[path = "../../../tests/modules/buffer/thread_buffer.rs"]
+#[path = "../../../../tests/modules/buffer/thread_buffer.rs"]
 mod thread_buffer;
 
 #[cfg(test)]
-#[path = "../../../tests/modules/buffer/owned_string.rs"]
+#[path = "../../../../tests/modules/buffer/owned_string.rs"]
 mod owned_tests;

@@ -160,7 +160,7 @@ pub(super) mod net {
     }
     pub(in super::super) fn recv_append(
         _: Socket<'_>,
-        buffer: &mut swoole_rs_buffer::string::CppString,
+        buffer: &mut swoole_rs_corebase::buffer::string::CppString,
     ) -> Option<usize> {
         let n = count(io("recv", buffer.spare().len()));
         // Zeros, as many as the read reports.
@@ -620,7 +620,7 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
 fn async_send_raises_buffer_full_at_the_high_watermark() {
     let client = client(1, true, true);
     // Ten bytes queued on the socket.
-    let queue = swoole_rs_buffer::cpp::new_buffer(1024);
+    let queue = swoole_rs_corebase::buffer::cpp::new_buffer(1024);
     queue.append(&[0_u8; 10]);
     sock().output.out_buffer = Some(queue);
     // SAFETY: a live state.
@@ -817,7 +817,7 @@ fn a_failed_socket_makes_no_client_and_keeps_its_errno() {
 fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
     let client = client(1, true, true);
     let socket = Handle::raw(client).socket();
-    let mut data = swoole_rs_buffer::string::boxed_string(b"data");
+    let mut data = swoole_rs_corebase::buffer::string::boxed_string(b"data");
     let package = Package::of(&mut data, 0, 4);
     assert_eq!(on_package(core::ptr::null(), socket, package), OK);
     assert_eq!(taken(), ["call Receive 4"]);

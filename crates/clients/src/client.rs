@@ -18,8 +18,8 @@ use core::ptr::NonNull;
 use std::ffi::{CStr, CString};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
-use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::constants::{
     FdType, ResultCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE,
     SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
@@ -482,7 +482,7 @@ impl Handle<'_> {
         self.socket().read(|socket| {
             let buffer = socket.output.buffer();
             buffer.map_or(0, |buffer| {
-                swoole_rs_buffer::cpp::swr_cpp_buffer_length(buffer)
+                swoole_rs_corebase::buffer::cpp::swr_cpp_buffer_length(buffer)
             })
         })
     }
@@ -1536,7 +1536,7 @@ struct SocketOps {
 
 impl SocketOps {
     const NATIVE: Self = Self {
-        with_buffer: |f| swoole_rs_buffer::string::with_thread_buffer(f),
+        with_buffer: |f| swoole_rs_corebase::buffer::string::with_thread_buffer(f),
         recv: swoole_rs_tls::upstream::recv,
         recv_append: swoole_rs_tls::upstream::recv_append,
         recv_sync: |socket, buffer, flags| match buffer {

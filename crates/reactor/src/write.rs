@@ -5,8 +5,8 @@
 //! registering write interest. It logs and raises from the returned outcome.
 use crate::{Drain, Socket};
 use std::io::IoSlice;
-use swoole_rs_buffer::cpp::{CppBuffer, swr_cpp_buffer_count, swr_cpp_buffer_length};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::buffer::cpp::{CppBuffer, swr_cpp_buffer_count, swr_cpp_buffer_length};
 
 /// `network::Socket`'s write-path fields, in the order and types it embeds them.
 #[repr(C)]
@@ -161,7 +161,7 @@ mod tests {
     use crate::SocketRecord;
     use std::cell::RefCell;
     use std::ffi::c_int;
-    use swoole_rs_buffer::cpp::new_buffer;
+    use swoole_rs_corebase::buffer::cpp::new_buffer;
 
     #[derive(Default)]
     struct Native {

@@ -206,7 +206,7 @@ impl<'a> Server<'a> {
     /// Take ownership of the worker message bus's current packet.
     #[cfg(feature = "upstream-symbols")]
     #[must_use]
-    pub fn move_worker_packet(self) -> Option<swoole_rs_buffer::string::OwnedString> {
+    pub fn move_worker_packet(self) -> Option<swoole_rs_corebase::buffer::string::OwnedString> {
         crate::master_ops::worker_message_bus(self.state())
             .rust()
             .move_packet()
@@ -835,7 +835,9 @@ pub(crate) fn set_nonblock(sock: Socket<'_>) {
 /// buffer's bytes, now the caller's, while the buffer takes a fresh one as large;
 /// `None` without a socket or buffer.
 #[must_use]
-pub fn pop_recv_buffer(conn: Connection<'_>) -> Option<swoole_rs_buffer::string::OwnedString> {
+pub fn pop_recv_buffer(
+    conn: Connection<'_>,
+) -> Option<swoole_rs_corebase::buffer::string::OwnedString> {
     conn.socket()?.edit(|s| {
         s.recv_buffer
             .as_mut()

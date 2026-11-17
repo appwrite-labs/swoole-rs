@@ -18,7 +18,7 @@ and the sendfile requests in `file_output.rs`:
   none and queues the request, which the queue drops when it pops or drains it.
 
 Server sends, `BaseFactory::end` and the reactor thread's pipe writes use the same
-typed Rust queue (`swoole_rs_buffer`).
+typed Rust queue (`swoole_rs_corebase::buffer`).
 
 ## Writable callback
 

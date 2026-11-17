@@ -109,9 +109,9 @@ pub mod exports {
     use swoole_rs_corebase::CCast;
 
     use crate::frame_api::decode_frame;
-    use swoole_rs_buffer::string::boxed_string;
     use swoole_rs_clients::protocol::Protocol;
     use swoole_rs_corebase::DataHead;
+    use swoole_rs_corebase::buffer::string::boxed_string;
     use swoole_rs_corebase::lent::lend_spare;
     use swoole_rs_corebase::net_types::PacketLength;
     use swoole_rs_corebase::{WebSocketStatus, log};

@@ -13,7 +13,7 @@ const TEST_DATA: &[u8] = b"hello,world,swoole,php,last";
 
 /// The gates' `SwooleG.pagesize = 4096`, which a growing `write` rounds to.
 fn page_size() {
-    swoole_rs_corebase::swr_v1_core_set_pagesize(4096);
+    crate::swr_v1_core_set_pagesize(4096);
 }
 
 /// `ASSERT_MEMEQ(s.str, expected, s.length)`.

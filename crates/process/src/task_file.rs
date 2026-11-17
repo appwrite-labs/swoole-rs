@@ -16,7 +16,7 @@ use swoole_rs_corebase::{
     swr_v1_core_set_current_task_id, task_tmpfile,
 };
 
-use swoole_rs_buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_ossupport::fd_write_all;
 
 use crate::methods::swoole_get_worker_id;
@@ -467,7 +467,7 @@ mod tests {
         bytes[1 + head..].copy_from_slice(b"abc");
         let task = super::Packed::from_bytes(&bytes[1..]).unwrap();
         assert_eq!((task.head().fd, task.head().len), (7, 3));
-        let mut string = swoole_rs_buffer::string::CppString::EMPTY;
+        let mut string = swoole_rs_corebase::buffer::string::CppString::EMPTY;
         let (payload, flags) = task.unpack(&mut string).unwrap();
         assert_eq!((payload, flags), (&b"abc"[..], 0));
         assert!(super::Packed::from_bytes(&bytes[1..bytes.len() - 1]).is_none());

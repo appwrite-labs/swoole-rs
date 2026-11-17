@@ -12,7 +12,6 @@ on:
     paths:
       - .github/workflows/miri.yml
       - crates/base64/**
-      - crates/buffer/**
       - crates/bus/**
       - crates/clients/**
       - crates/corebase/**
@@ -60,7 +59,7 @@ jobs:
           - name: core
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: >-
-              -p swoole-rs-buffer -p swoole-rs-bus -p swoole-rs-corebase -p swoole-rs-coroutine
+              -p swoole-rs-bus -p swoole-rs-corebase -p swoole-rs-coroutine
               -p swoole-rs-locks -p swoole-rs-process -p swoole-rs-reactor -p swoole-rs-utilities
           - name: memory
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations

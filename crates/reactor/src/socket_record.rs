@@ -119,11 +119,11 @@ pub struct SocketFields {
     pub last_received_time: f64,
     pub last_sent_time: f64,
     /// `Buffer *in_buffer`: owned as `output.out_buffer` is.
-    pub in_buffer: Option<Box<swoole_rs_buffer::cpp::CppBuffer>>,
+    pub in_buffer: Option<Box<swoole_rs_corebase::buffer::cpp::CppBuffer>>,
     /// `String *recv_buffer`: the server session's receive buffer, which the socket
     /// owns. Its address is read through `Box::as_mut_ptr`, which a reader holding it
     /// across a callback and a worker taking the buffer's bytes share.
-    pub recv_buffer: Option<Box<swoole_rs_buffer::string::CppString>>,
+    pub recv_buffer: Option<Box<swoole_rs_corebase::buffer::string::CppString>>,
     /// `TimerNode *recv_timer`, held by id.
     pub recv_timer: Option<swoole_rs_corebase::timer_key::Held>,
     pub total_recv_bytes: usize,

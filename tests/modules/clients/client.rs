@@ -1401,7 +1401,7 @@ fn ssl() {
 
     let sock = client.socket();
     let mut certificate = cpp_string(SW_BUFFER_SIZE_BIG);
-    // SAFETY: a live `swoole::String`, which is crates/buffer's.
+    // SAFETY: a live `swoole::String`, which is crates/corebase/src/buffer's.
     let string = unsafe { &mut *(&raw mut certificate).cast() };
     // SAFETY: the connected socket.
     let handle = unsafe { swoole_rs_reactor::Socket::from_ptr(sock.cast()) }.unwrap();

@@ -1,15 +1,4 @@
 //! Allocation-fallible owned buffer queue. See docs/buffer-abi-v1.md.
-#![expect(
-    clippy::disallowed_types,
-    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
-)]
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
 /// Defines each listed function under its upstream symbol with `upstream-symbols`.
 /// `off_t` is `long long` on macOS and `long` on Linux, which the symbols spell.
 macro_rules! upstream {
@@ -613,5 +602,5 @@ mod tests {
 pub mod string;
 
 #[cfg(test)]
-#[path = "../../../tests/modules/buffer/recycling.rs"]
+#[path = "../../../../tests/modules/buffer/recycling.rs"]
 mod recycling_tests;

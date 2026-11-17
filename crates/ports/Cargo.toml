@@ -19,7 +19,6 @@ swoole-rs-error = { path = "../error" }
 swoole-rs-clients = { path = "../clients" }
 swoole-rs-tls = { path = "../tls" }
 swoole-rs-websocket = { path = "../websocket" }
-swoole-rs-buffer = { path = "../buffer" }
 swoole-rs-utilities = { path = "../utilities" }
 swoole-rs-locale = { path = "../locale" }
 swoole-rs-framing = { path = "../framing" }

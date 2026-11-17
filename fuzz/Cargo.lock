@@ -136,23 +136,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "swoole-rs-buffer"
-version = "0.1.0"
-dependencies = [
- "itoa",
- "libc",
- "memchr",
- "swoole-rs-base64",
- "swoole-rs-corebase",
-]
-
-[[package]]
 name = "swoole-rs-clients"
 version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-base64",
- "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
  "swoole-rs-error",
@@ -170,6 +158,8 @@ version = "0.1.0"
 dependencies = [
  "itoa",
  "libc",
+ "memchr",
+ "swoole-rs-base64",
  "swoole-rs-error",
  "swoole-rs-framing",
 ]
@@ -215,7 +205,6 @@ dependencies = [
  "libc",
  "libfuzzer-sys",
  "swoole-rs-base64",
- "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-deflate",
@@ -245,7 +234,6 @@ name = "swoole-rs-http-ffi"
 version = "0.1.0"
 dependencies = [
  "libc",
- "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-http",
@@ -305,7 +293,6 @@ name = "swoole-rs-ossupport"
 version = "0.1.0"
 dependencies = [
  "libc",
- "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-error",
 ]
@@ -315,7 +302,6 @@ name = "swoole-rs-process"
 version = "0.1.0"
 dependencies = [
  "libc",
- "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-locks",
@@ -334,7 +320,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "openssl-sys",
- "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
  "swoole-rs-error",
@@ -359,7 +344,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "openssl-sys",
- "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-ossupport",

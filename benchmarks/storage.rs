@@ -4,7 +4,7 @@ use std::hint::black_box;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::time::Instant;
-use swoole_rs_buffer as buffer;
+use swoole_rs_corebase::buffer as buffer;
 use swoole_rs_timer as timer;
 
 static TRACK: AtomicBool = AtomicBool::new(false);

@@ -4,12 +4,21 @@
 //! a crate above this one (an object's `new`/`delete`, the timer, event, signal
 //! and coroutine leaves) runs through the host crates/ffi's `swoole_init`
 //! registers (`native.rs`); without it there is nothing to set up or tear down.
+use crate::buffer::string::CppString;
+use crate::constants::SW_STACK_BUFFER_SIZE;
 use crate::log;
 use crate::native;
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
+
+thread_local! {
+    /// This thread's `SwooleTG.buffer_stack`, which lives as long as the thread.
+    /// C++ keeps a pointer to the slot, so it is set once in place and replaced
+    /// only when the thread is cleaned.
+    static BUFFER: Cell<CppString> = const { Cell::new(CppString::EMPTY) };
+}
 
 /// `SW_FORK_EXEC`, `SW_FORK_DAEMON` and `SW_FORK_PRECHECK`.
 const FORK_EXEC: c_int = 2;
@@ -139,10 +148,13 @@ pub fn swr_v1_core_swoole_init() {
     unsafe(export_name = "_Z18swoole_thread_initb")
 )]
 pub extern "C-unwind" fn swoole_thread_init(main_thread: bool) {
-    if let Some(host) = native::host()
-        && with(|thread| thread.buffer_stack.get().is_null())
-    {
-        let buffer = (host.new_buffer)();
+    if native::host().is_some() && with(|thread| thread.buffer_stack.get().is_null()) {
+        let mut fresh = CppString::EMPTY;
+        fresh.alloc(SW_STACK_BUFFER_SIZE as usize, None);
+        let buffer = BUFFER.with(|buffer| {
+            buffer.set(fresh);
+            buffer.as_ptr().cast()
+        });
         with(|thread| thread.buffer_stack.set(buffer));
     }
     if !main_thread {
@@ -161,7 +173,7 @@ pub fn swoole_thread_clean(_main_thread: bool) {
         (host.event_free)();
     }
     if with(|thread| !thread.buffer_stack.get().is_null()) {
-        (host.delete_buffer)();
+        BUFFER.with(|buffer| buffer.replace(CppString::EMPTY).dispose());
         with(|thread| thread.buffer_stack.set(ptr::null_mut()));
     }
 }
@@ -362,8 +374,6 @@ mod tests {
     fn host() {
         native::set_native_host(native::NativeHost {
             init: || {},
-            new_buffer: ptr::null_mut,
-            delete_buffer: || {},
             delete_pool: || {},
             logger: |op| {
                 if op == native::LoggerOp::Reopen {
@@ -454,5 +464,6 @@ mod tests {
         .unwrap();
         assert_eq!((thread_id(), thread_kind()), (19, 3));
         assert!(swoole_is_main_thread());
+        swoole_thread_clean(true);
     }
 }

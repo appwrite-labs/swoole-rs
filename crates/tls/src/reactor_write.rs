@@ -60,7 +60,7 @@ impl WriteEffects for Write<'_> {
     fn create_buffer(&self) {
         let socket = self.socket;
         let chunk_size = socket.read(|record| record.chunk_size);
-        let buffer = swoole_rs_buffer::cpp::new_buffer(chunk_size);
+        let buffer = swoole_rs_corebase::buffer::cpp::new_buffer(chunk_size);
         socket.edit(|record| record.output.out_buffer = Some(buffer));
     }
 
