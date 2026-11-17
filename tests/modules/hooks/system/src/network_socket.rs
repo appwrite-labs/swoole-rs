@@ -414,6 +414,7 @@ impl Socket {
     fn send_async(&self, buf: &[u8]) -> isize {
         // SAFETY: a live record, which the case frees only once its loop is done.
         let socket = unsafe { swoole_rs_reactor::Socket::from_ptr(self.0.cast()) }.unwrap();
+        let socket = swoole_rs_reactor::Heap::from_static(socket);
         swoole_rs_tls::upstream::send_async(socket, buf).map_or(-1, usize::cast_signed)
     }
 
@@ -884,6 +885,7 @@ fn send_async_2() {
             Some(send_async_2_read),
         );
         let socket = swoole_rs_ffi::Socket::from_ptr(sock.0.cast()).unwrap();
+        let socket = swoole_rs_ffi::Heap::from_static(socket);
         let _ = swoole_rs_ffi::event_api::event_add(
             socket,
             swoole_rs_ffi::Events::from_bits(SW_EVENT_READ | SW_EVENT_ONCE),

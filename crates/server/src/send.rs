@@ -136,7 +136,7 @@ fn writes_now(
         || socket.read(|record| {
             !record.direct_send || !record.ssl().is_null() || record.output.out_buffer.is_some()
         });
-    (!queues).then_some((conn, socket))
+    (!queues).then_some((conn, *socket))
 }
 
 /// [`send`]'s direct write, made here when it needs nothing else ([`writes_now`]).
@@ -241,7 +241,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         } else if writing {
             reactor.change(sock, ChangeOp::Set, Events::WRITE)
         } else {
-            reactor.del(sock)
+            reactor.del(*sock)
         };
     }
     if kind == Some(ServerEvent::ResumeRecv) {
@@ -269,7 +269,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
             reactor.close(sock);
             return true;
         }
-        if !file && direct && direct_send(conn, sock, &mut data, first) {
+        if !file && direct && direct_send(conn, *sock, &mut data, first) {
             return true;
         }
         if unbuffered {
@@ -285,7 +285,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
             reactor.interest(sock, Interest::RemoveRead);
         }
     } else if file {
-        if !send_file(sock, data) {
+        if !send_file(*sock, data) {
             return true;
         }
     } else {
@@ -320,7 +320,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     }
     let idle = port.map_or(0.0, |port| port.config().max_idle_time.get());
     if idle > 0.0 && sock.read(|s| s.output.send_timer.is_none()) {
-        idle_timer(conn, sock, idle);
+        idle_timer(conn, *sock, idle);
     }
     if !sock.read(|s| s.events.intersects(Events::WRITE)) {
         reactor.interest(sock, Interest::AddWrite);
@@ -447,7 +447,7 @@ mod tests {
             state.connection(1, Lookup::Verified).unwrap()
         }
         fn sock(&self) -> Socket<'_> {
-            self.conn().socket().unwrap()
+            *self.conn().socket().unwrap()
         }
         /// `send_to_connection` of an event of `kind` with `data` to `session`.
         fn send(&self, kind: ServerEvent, session: i64, data: &[u8]) -> c_int {

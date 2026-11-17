@@ -136,7 +136,11 @@ impl<'a> SendData<'a> {
         not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid's factories write to a pipe")
     )]
-    pub(crate) fn send(&mut self, bus: &swoole_rs_bus::Bus, pipe: crate::view::PipeSocket) -> bool {
+    pub(crate) fn send(
+        &mut self,
+        bus: &swoole_rs_bus::Bus,
+        pipe: crate::view::PipeSocket<'_>,
+    ) -> bool {
         // The write only ever lowers `len`, so the payload stays within `data`'s bytes.
         let data = (!self.data.is_null()).then(|| self.payload());
         bus.send(pipe.socket(), &mut self.info, data)

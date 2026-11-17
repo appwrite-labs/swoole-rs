@@ -40,7 +40,7 @@ pub struct CoSocket {
     /// The `network::Socket`, none before the socket opens: the record's own from
     /// `into_socket`, live until `~Socket()` frees it, when no handle reaches this
     /// record any more.
-    pub(crate) socket: Cell<Option<Socket<'static>>>,
+    pub(crate) socket: Cell<Option<swoole_rs_reactor::Heap<'static>>>,
     pub sock_domain: Cell<c_int>,
     pub sock_type: Cell<c_int>,
     pub sock_protocol: Cell<c_int>,
@@ -528,7 +528,7 @@ impl Co {
     /// `f` over the `network::Socket`'s handle, or `None` before the socket opens. The
     /// handle lives only for the call, so it cannot outlive the record.
     pub fn with_network<T>(self, f: impl FnOnce(Socket<'_>) -> T) -> Option<T> {
-        self.record().socket.get().map(f)
+        self.record().socket.get().map(|socket| f(*socket))
     }
 
     /// `Reactor::change`'s add (`add`) or set of the open socket for `events`, on the
@@ -639,7 +639,9 @@ impl CoSocket {
 
     /// The `network::Socket`'s address: null before the socket opens.
     pub(crate) fn socket_ptr(&self) -> *mut SocketRecord {
-        self.socket.get().map_or(ptr::null_mut(), Socket::as_ptr)
+        self.socket
+            .get()
+            .map_or(ptr::null_mut(), |socket| socket.as_ptr())
     }
 
     /// The owner of a record this module boxed, with the state and metadata `new`
@@ -704,7 +706,7 @@ impl CoSocket {
             record.info.kind = self.kind.get();
             record.fd
         }));
-        Some(network)
+        Some(*network)
     }
 
     /// `init_reactor_socket`: wrap `fd`, which the caller made nonblocking.
@@ -785,9 +787,9 @@ pub extern "C" fn swr_v1_hook_co_socket_release(socket: &mut CoSocket) {
     }
     if let Some(network) = socket.socket.take() {
         if !network.read(|record| record.ssl().is_null()) {
-            socket_ssl_close(network);
+            socket_ssl_close(*network);
         }
-        drop(Released(network));
+        drop(Released(*network));
     }
     socket.fini();
 }
@@ -958,7 +960,7 @@ impl CoSocket {
         socket.sock_type.set(kind);
         socket.kind.set(socket_type);
         // The old socket, which the record no longer holds.
-        old.map(Released)
+        old.map(|old| Released(*old))
     }
 }
 

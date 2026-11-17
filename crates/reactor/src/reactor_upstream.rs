@@ -16,15 +16,14 @@ pub fn trigger_close_event(reactor: crate::Running<'_>, event: &mut crate::Event
         .is_some_and(|handler| handler(reactor, event) >= 0)
 }
 
-/// `Reactor::add` or `set` of a socket that is never freed while registered: whether
-/// it worked.
+/// `Reactor::add` or `set` of a heap socket: whether it worked.
 /// A registered record's address stays in the registry and with the kernel until its
 /// removal: its owner's free deletes it first (`OwnedSocket::into_box`), and a record
-/// no owner frees outlives it, as `'static` states.
+/// no owner frees outlives it, as [`crate::Heap`] states.
 #[must_use]
 pub fn change(
     reactor: crate::Running<'_>,
-    socket: crate::Socket<'static>,
+    socket: crate::Heap<'_>,
     op: crate::ChangeOp,
     events: crate::Events,
 ) -> bool {
@@ -33,16 +32,16 @@ pub fn change(
     reactor.with(|state| crate::change::apply(state, request, events, swr_v1_reactor_log))
 }
 
-/// `Reactor::interest` of a socket that is never freed while registered, as [`change`]
-/// takes one: whether the change worked, true when nothing changes.
+/// `Reactor::interest` of a heap socket, as [`change`] takes one: whether the change
+/// worked, true when nothing changes.
 #[must_use]
 pub fn interest(
     reactor: crate::Running<'_>,
-    socket: crate::Socket<'static>,
+    socket: crate::Heap<'_>,
     kind: crate::Interest,
     event: crate::Events,
 ) -> bool {
-    crate::change::interest_change(socket, kind, event)
+    crate::change::interest_change(*socket, kind, event)
         .is_none_or(|(op, events)| change(reactor, socket, op, events))
 }
 
@@ -58,7 +57,7 @@ pub fn reactor_del(reactor: crate::Running<'_>, socket: crate::Socket<'_>) -> bo
 
 /// `int Reactor::interest(Socket *socket, uint32_t kind, int event) const`: -1 without
 /// a socket. The handle types state what C++ passes: the live reactor, and null or a
-/// record that stays live while it is registered.
+/// heap record, which C++'s `delete` frees through its owner.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole7Reactor8interestEPNS_7network6SocketEji")
@@ -66,7 +65,7 @@ pub fn reactor_del(reactor: crate::Running<'_>, socket: crate::Socket<'_>) -> bo
 #[must_use]
 pub extern "C" fn reactor_interest(
     reactor: crate::Running<'_>,
-    socket: Option<crate::Socket<'static>>,
+    socket: Option<crate::Heap<'_>>,
     kind: u32,
     event: c_int,
 ) -> c_int {
@@ -74,12 +73,7 @@ pub extern "C" fn reactor_interest(
         return -1;
     };
     let kind = crate::Interest::from_code(kind);
-    let Some((op, events)) =
-        crate::change::interest_change(record, kind, crate::Events::from_bits(event))
-    else {
-        return 0;
-    };
-    if change(reactor, record, op, events) {
+    if interest(reactor, record, kind, crate::Events::from_bits(event)) {
         0
     } else {
         -1

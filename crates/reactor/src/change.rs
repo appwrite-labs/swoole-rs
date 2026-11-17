@@ -5,7 +5,7 @@
 use crate::reactor_state::{Backend, ReactorState};
 use crate::registration;
 use crate::socket_sync::set_errno;
-use crate::{Events, Socket};
+use crate::{Events, Heap, Socket};
 use std::ffi::{CStr, c_int};
 
 /// Logs `message` as from `origin`: `code` 0 is `swoole_sys_warning`, with errno as the
@@ -307,22 +307,22 @@ impl Change {
 }
 
 /// One change of a socket's registration. An add or set leaves the socket's address in
-/// the registry and with the kernel until its removal, so only a socket that is never
-/// freed while registered (`'static`) is registered; any live socket may be removed.
+/// the registry and with the kernel until its removal, so only a [`Heap`] socket, whose
+/// free deregisters it, is registered; any live socket may be removed.
 #[derive(Clone, Copy)]
 pub(crate) enum Request<'a> {
-    Add(Socket<'static>),
-    Set(Socket<'static>),
+    Add(Heap<'a>),
+    Set(Heap<'a>),
     Del(Socket<'a>),
 }
 
-impl Request<'_> {
+impl<'a> Request<'a> {
     /// `op` of `socket`.
-    pub(crate) const fn new(socket: Socket<'static>, op: ChangeOp) -> Self {
+    pub(crate) const fn new(socket: Heap<'a>, op: ChangeOp) -> Self {
         match op {
             ChangeOp::Add => Self::Add(socket),
             ChangeOp::Set => Self::Set(socket),
-            ChangeOp::Del => Self::Del(socket),
+            ChangeOp::Del => Self::Del(socket.socket()),
         }
     }
 }
@@ -337,8 +337,8 @@ pub(crate) fn apply(
     log: ChangeLog,
 ) -> bool {
     let (socket, op) = match request {
-        Request::Add(socket) => (socket, ChangeOp::Add),
-        Request::Set(socket) => (socket, ChangeOp::Set),
+        Request::Add(socket) => (socket.socket(), ChangeOp::Add),
+        Request::Set(socket) => (socket.socket(), ChangeOp::Set),
         Request::Del(socket) => (socket, ChangeOp::Del),
     };
     let change = Change {
@@ -421,7 +421,7 @@ mod tests {
         events: Events,
         log: ChangeLog,
     ) -> c_int {
-        let socket = unsafe { Socket::from_ptr(socket) }.unwrap();
+        let socket = Heap::from_static(unsafe { Socket::from_ptr(socket) }.unwrap());
         let done = apply(
             unsafe { &mut *owner },
             Request::new(socket, ChangeOp::from_code(op)),

@@ -154,7 +154,8 @@ mod tests {
         let mut conn: ConnectionRecord = unsafe { core::mem::zeroed() };
         conn.fd.set(pairs[1]);
         let handle = unsafe { Socket::from_ptr(&raw mut socket) }.unwrap();
-        conn.socket.set(Some(handle));
+        conn.socket
+            .set(Some(swoole_rs_reactor::Heap::from_static(handle)));
         let mut protocol = Protocol::EMPTY;
         protocol.package_max_length = 65536 * 2;
         let mut buffer = CppString::EMPTY;

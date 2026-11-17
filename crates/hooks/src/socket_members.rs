@@ -48,7 +48,7 @@ fn event_socket(event: &Event) -> Option<(Co, Socket<'_>)> {
     let source = event.socket()?;
     let object = source.read(|record| record.object);
     // SAFETY: a coroutine socket's network::Socket's object is that socket.
-    Some((unsafe { Co::new(object.cast()) }, source))
+    Some((unsafe { Co::new(object.cast()) }, *source))
 }
 
 /// `Socket::readable_event_callback` and `writable_event_callback`: Rust picks the
@@ -765,6 +765,7 @@ mod tests {
         fn event(&mut self) -> Event {
             Event::of(-1, 0, 6, unsafe {
                 Socket::from_ptr(self.record().socket_ptr())
+                    .map(swoole_rs_reactor::Heap::from_static)
             })
         }
         fn bind(&mut self, event: Events, co: *mut c_long) {

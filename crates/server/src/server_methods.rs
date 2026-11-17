@@ -443,9 +443,10 @@ mod tests {
         // SAFETY: as above.
         let mut connections: [ConnectionRecord; 4] = unsafe { core::mem::zeroed() };
         // SAFETY: the record above, which outlives the connections that point to it.
-        connections[3]
-            .socket
-            .set(unsafe { swoole_rs_reactor::Socket::from_ptr(&raw mut sock) });
+        connections[3].socket.set(
+            unsafe { swoole_rs_reactor::Socket::from_ptr(&raw mut sock) }
+                .map(swoole_rs_reactor::Heap::from_static),
+        );
         connections[3].reactor_id.set(1);
         // SAFETY: as above.
         let mut workers: [WorkerRecord; 4] = unsafe { core::mem::zeroed() };

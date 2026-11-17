@@ -13,10 +13,10 @@ use std::io::IoSlice;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::event_api::Writers;
-use swoole_rs_reactor::reactor_upstream::{interest, reactor_interest, trigger_close_event};
+use swoole_rs_reactor::reactor_upstream::{interest, trigger_close_event};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_reactor::{
-    Drain, Event, FlushEffects, Interest, OwnedSocket, Running, SOCKET_DEFAULTS, Socket,
+    Drain, Event, FlushEffects, Heap, Interest, OwnedSocket, Running, SOCKET_DEFAULTS,
     WriteEffects, WriteError, WritePayload,
 };
 
@@ -27,18 +27,18 @@ const SW_ERROR_OUTPUT_BUFFER_OVERFLOW: c_int =
 const SW_ERROR_PACKAGE_LENGTH_TOO_LARGE: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE as c_int;
 
-/// One write: the reactor, the socket, never freed while registered, and the payload.
+/// One write: the reactor, the heap socket and the payload.
 struct Write<'a> {
     reactor: Running<'a>,
-    socket: Socket<'static>,
+    socket: Heap<'a>,
     payload: WritePayload<'a>,
 }
 
-/// One flush or drain: the reactor, the socket, never freed while registered, and its
-/// event, which the close handler may change and the caller then sees.
+/// One flush or drain: the reactor, the registered socket and its event, which the
+/// close handler may change and the caller then sees.
 struct Flush<'a> {
     reactor: Running<'a>,
-    socket: Socket<'static>,
+    socket: Heap<'static>,
     event: &'a Cell<Event>,
 }
 
@@ -51,7 +51,7 @@ impl WriteEffects for Write<'_> {
     fn send(&self) -> Option<usize> {
         match self.payload {
             // `socket->send(buf, n, 0)`.
-            WritePayload::Bytes(data) => send_drain(self.socket, data, 0),
+            WritePayload::Bytes(data) => send_drain(*self.socket, data, 0),
             // `socket->writev(iov, iovcnt)`.
             WritePayload::Vectors(vectors) => writev(self.socket.fd(), vectors),
         }
@@ -83,18 +83,14 @@ impl WriteEffects for Write<'_> {
 
 /// `Reactor::write_func`: the bytes written or queued, or `None` once the failure is
 /// logged or set as the last error.
-fn write(
-    reactor: Running<'_>,
-    socket: Socket<'static>,
-    payload: WritePayload<'_>,
-) -> Option<usize> {
+fn write(reactor: Running<'_>, socket: Heap<'_>, payload: WritePayload<'_>) -> Option<usize> {
     let ops = Write {
         reactor,
         socket,
         payload,
     };
     let default_size = SOCKET_DEFAULTS.buffer_size();
-    let result = swoole_rs_reactor::swr_v1_reactor_write(socket, default_size, payload, &ops);
+    let result = swoole_rs_reactor::swr_v1_reactor_write(*socket, default_size, payload, &ops);
     let origin = c"Reactor::write_func";
     match result {
         Ok(value) => return Some(value),
@@ -122,7 +118,7 @@ fn write(
 
 /// `ssize_t Reactor::_write(Reactor *, Socket *, const void *buf, size_t n)`.
 #[must_use]
-pub fn reactor_write(reactor: Running<'_>, socket: Socket<'static>, data: &[u8]) -> Option<usize> {
+pub fn reactor_write(reactor: Running<'_>, socket: Heap<'_>, data: &[u8]) -> Option<usize> {
     write(reactor, socket, WritePayload::Bytes(Drain::new(data)))
 }
 
@@ -131,7 +127,7 @@ pub fn reactor_write(reactor: Running<'_>, socket: Socket<'static>, data: &[u8])
 #[must_use]
 pub fn reactor_writev(
     reactor: Running<'_>,
-    socket: Socket<'static>,
+    socket: Heap<'_>,
     vectors: &[IoSlice<'_>],
 ) -> Option<usize> {
     if !socket.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
@@ -157,11 +153,11 @@ pub const WRITERS: Writers = Writers {
 
 impl FlushEffects for Flush<'_> {
     fn handle_send(&self) -> bool {
-        socket_handle_send(self.socket)
+        socket_handle_send(*self.socket)
     }
 
     fn handle_sendfile(&self) -> bool {
-        socket_handle_sendfile(self.socket)
+        socket_handle_sendfile(*self.socket)
     }
 
     fn close(&self) -> bool {
@@ -172,7 +168,7 @@ impl FlushEffects for Flush<'_> {
         // SAFETY: `reactor->close(reactor, socket)`: the queued close of the flushed
         // socket, a heap record of the reactor's, which nothing uses after it.
         close(self.reactor, unsafe {
-            OwnedSocket::from_socket(self.socket)
+            OwnedSocket::from_socket(*self.socket)
         }) >= 0
     }
 
@@ -189,11 +185,11 @@ impl FlushEffects for Flush<'_> {
 
     fn remove_write_event(&self) {
         // `reactor->remove_write_event(socket)` on the flush's live reactor.
-        _ = reactor_interest(
+        _ = interest(
             self.reactor,
-            Some(self.socket),
-            Interest::RemoveWrite.code(),
-            0,
+            self.socket,
+            Interest::RemoveWrite,
+            swoole_rs_reactor::Events::NONE,
         );
     }
 
@@ -223,20 +219,20 @@ pub extern "C-unwind" fn reactor_writable_callback(
         socket,
         event: &lent,
     };
-    let flushed = swoole_rs_reactor::swr_v1_reactor_flush(socket, &flush);
+    let flushed = swoole_rs_reactor::swr_v1_reactor_flush(*socket, &flush);
     *event = lent.get();
     if flushed { 0 } else { -1 }
 }
 
 /// `void Reactor::drain_write_buffer(Socket *socket)`.
-pub fn reactor_drain_write_buffer(reactor: Running<'_>, record: Socket<'static>) {
+pub fn reactor_drain_write_buffer(reactor: Running<'_>, record: Heap<'static>) {
     let event = Cell::new(Event::of(record.fd(), 0, 0, Some(record)));
     let flush = Flush {
         reactor,
         socket: record,
         event: &event,
     };
-    swoole_rs_reactor::swr_v1_reactor_drain(record, &flush);
+    swoole_rs_reactor::swr_v1_reactor_drain(*record, &flush);
 }
 
 /// `int Reactor::_close(Reactor *reactor, Socket *socket)`: frees the socket.

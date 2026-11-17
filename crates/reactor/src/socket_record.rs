@@ -333,8 +333,8 @@ impl SocketRecord {
     /// A new heap record as the socket its maker holds: live until an owner taken
     /// back with the unsafe [`crate::OwnedSocket::from_socket`] frees it.
     #[must_use]
-    pub fn into_socket(self: Box<Self>) -> crate::Socket<'static> {
-        crate::Socket::new(Box::leak(self))
+    pub fn into_socket(self: Box<Self>) -> crate::Heap<'static> {
+        crate::Heap::from_static(crate::Socket::new(Box::leak(self)))
     }
 
     /// base.cc's `socket_free_defer`: [`SocketFields::release`], warning when close(2)

@@ -49,16 +49,16 @@ pub(crate) fn uring() -> Option<&'static UringOps> {
     URING.get().copied()
 }
 
-/// Upstream's `swoole::Event`: what a handler is called with. Its socket is a record
-/// live until an unsafe free whose caller answers for the events left, as any
-/// `Socket<'static>` is: C++ that hands one over vouches for it by the field's type.
+/// Upstream's `swoole::Event`: what a handler is called with. Its socket is a heap
+/// record the registry named, live until its owner's free, as any [`crate::Heap`] is:
+/// C++ that hands one over vouches for it by the field's type.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Event {
     fd: c_int,
     reactor_id: i16,
     fd_type: c_int,
-    socket: Option<Socket<'static>>,
+    socket: Option<crate::Heap<'static>>,
 }
 
 impl Event {
@@ -68,7 +68,7 @@ impl Event {
         fd: c_int,
         reactor_id: i16,
         fd_type: c_int,
-        socket: Option<Socket<'static>>,
+        socket: Option<crate::Heap<'static>>,
     ) -> Self {
         Self {
             fd,
@@ -100,7 +100,7 @@ impl Event {
 
     /// The event's socket, if it has one.
     #[must_use]
-    pub const fn socket(&self) -> Option<Socket<'static>> {
+    pub const fn socket(&self) -> Option<crate::Heap<'static>> {
         self.socket
     }
 }
@@ -261,9 +261,9 @@ fn entry(ops: &Loop<'_>, index: usize) {
 }
 
 /// poll and epoll: read, write, error (unless read or write already ran), then a oneshot removal.
-fn ready(ops: &Loop<'_>, socket: Socket<'static>, fd: c_int, mask: u32) {
+fn ready(ops: &Loop<'_>, socket: crate::Heap<'static>, fd: c_int, mask: u32) {
     let fd_type = prepare(ops, socket, fd, mask & HANGUP != 0);
-    let live = || registered(socket);
+    let live = || registered(*socket);
     for (kind, bit) in [(Table::Read, READ), (Table::Write, WRITE)] {
         if mask & bit != 0 && live() && !handle(ops, kind, fd_type) {
             handler_failed(ops, kind);
@@ -278,7 +278,7 @@ fn ready(ops: &Loop<'_>, socket: Socket<'static>, fd: c_int, mask: u32) {
             handler_failed(ops, Table::Error);
         }
     }
-    oneshot(ops, socket, live);
+    oneshot(ops, *socket, live);
 }
 
 /// kqueue: one socket entry per filter, or a signal, as upstream's `ReactorKqueue::wait`.
@@ -297,7 +297,7 @@ fn kqueue(ops: &Loop<'_>, event: &libc::kevent) {
             return;
         };
         let fd_type = prepare(ops, socket, -1, false);
-        let live = || registered(socket);
+        let live = || registered(*socket);
         if !live() {
             return;
         }
@@ -309,7 +309,7 @@ fn kqueue(ops: &Loop<'_>, event: &libc::kevent) {
         if !handle(ops, kind, fd_type) {
             handler_failed(ops, kind);
         }
-        oneshot(ops, socket, live);
+        oneshot(ops, *socket, live);
     } else if filter == c_int::from(libc::EVFILT_SIGNAL) {
         // A signal entry's ident is its signal number, whose table slot is its udata.
         dispatch_signal(c_int::try_from(event.ident).unwrap_or(0));
@@ -463,7 +463,7 @@ fn handle(ops: &Loop<'_>, kind: Table, fd_type: c_int) -> bool {
 
 /// Fills the event for a ready socket, as each upstream backend did: `fd` is poll's entry
 /// fd (-1: the socket's own), and `hangup` marks `event_hup`. Returns the fd type.
-fn prepare(ops: &Loop<'_>, socket: Socket<'static>, fd: c_int, hangup: bool) -> c_int {
+fn prepare(ops: &Loop<'_>, socket: crate::Heap<'static>, fd: c_int, hangup: bool) -> c_int {
     let (fd_type, own) = socket.read(|record| (record.fd_type, record.fd));
     let event = Event::of(
         if fd < 0 { own } else { fd },
@@ -480,7 +480,7 @@ fn prepare(ops: &Loop<'_>, socket: Socket<'static>, fd: c_int, hangup: bool) -> 
 
 /// Whether `socket` is still registered (`!socket->removed`).
 /// The socket the reactor's registry holds for `fd`, the kernel entry's token.
-fn registered_at(ops: &Loop<'_>, fd: c_int) -> Option<Socket<'static>> {
+fn registered_at(ops: &Loop<'_>, fd: c_int) -> Option<crate::Heap<'static>> {
     ops.reactor.with(|state| state.registry.get(fd))
 }
 

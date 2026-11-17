@@ -9,9 +9,9 @@
 use core::ffi::{c_int, c_void};
 
 use swoole_rs_reactor::reactor_upstream::{
-    change as reactor_change, interest as reactor_interest, set_handler,
+    change as reactor_change, interest as reactor_interest, reactor_del, set_handler,
 };
-use swoole_rs_reactor::{ChangeOp, Events, Handler, Interest, OwnedSocket, Running, Socket};
+use swoole_rs_reactor::{ChangeOp, Events, Handler, Heap, Interest, OwnedSocket, Running, Socket};
 
 /// The key a reactor holds its server under: private, so only [`Reactor::hold_server`]
 /// stores an object under it.
@@ -73,32 +73,31 @@ impl Reactor {
         unsafe { Running::new(self.0) }
     }
     /// `Reactor::change`'s `op` of `sock` with `events`: whether it applied.
-    pub(crate) fn change(self, sock: Socket<'_>, op: ChangeOp, events: Events) -> bool {
-        registered(sock).is_some_and(|sock| reactor_change(self.handle(), sock, op, events))
+    pub(crate) fn change(self, sock: Heap<'_>, op: ChangeOp, events: Events) -> bool {
+        reactor_change(self.handle(), sock, op, events)
     }
     /// `Reactor::interest(sock, kind, 0)`: whether it applied.
-    pub(crate) fn interest(self, sock: Socket<'_>, kind: Interest) -> bool {
-        registered(sock)
-            .is_some_and(|sock| reactor_interest(self.handle(), sock, kind, Events::NONE))
+    pub(crate) fn interest(self, sock: Heap<'_>, kind: Interest) -> bool {
+        reactor_interest(self.handle(), sock, kind, Events::NONE)
     }
     /// `reactor->add(sock, events)`: whether it applied.
-    pub(crate) fn add(self, sock: Socket<'_>, events: Events) -> bool {
+    pub(crate) fn add(self, sock: Heap<'_>, events: Events) -> bool {
         self.change(sock, ChangeOp::Add, events)
     }
     /// `reactor->del(sock)`: whether it applied.
     pub(crate) fn del(self, sock: Socket<'_>) -> bool {
-        self.change(sock, ChangeOp::Del, Events::NONE)
+        reactor_del(self.handle(), sock)
     }
     /// `reactor->remove_read_event(sock)`.
-    pub(crate) fn unread(self, sock: Socket<'_>) {
+    pub(crate) fn unread(self, sock: Heap<'_>) {
         let _ = self.interest(sock, Interest::RemoveRead);
     }
     /// The reactor's own `close` of `sock`, when it has one: whether it succeeded.
-    pub(crate) fn close(self, sock: Socket<'static>) -> bool {
+    pub(crate) fn close(self, sock: Heap<'static>) -> bool {
         self.handle().close().is_none_or(|close| {
             // SAFETY: the reactor's close on one of its live heap sockets, which
             // nothing uses after it.
-            close(self.handle(), unsafe { OwnedSocket::from_socket(sock) }) >= 0
+            close(self.handle(), unsafe { OwnedSocket::from_socket(*sock) }) >= 0
         })
     }
     /// `reactor->trigger_close_event(event)`: the default error handler, whether it
@@ -119,7 +118,7 @@ impl Reactor {
 /// left, as the reactor holds it while registered: the server's sockets (sessions,
 /// listeners, pipes and its pool's connections) are heap records freed only by such a
 /// free, after their removal from any reactor.
-pub(crate) fn registered(sock: Socket<'_>) -> Option<Socket<'static>> {
+pub(crate) fn registered(sock: Socket<'_>) -> Option<Heap<'static>> {
     // SAFETY: a live socket, which stays live until its unsafe free.
-    unsafe { Socket::from_ptr(sock.as_ptr()) }
+    unsafe { Socket::from_ptr(sock.as_ptr()) }.map(Heap::from_static)
 }

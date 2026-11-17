@@ -1002,12 +1002,11 @@ pub fn socket_sendfile_async(
 
 /// `ssize_t Socket::send_async(const void *data, size_t length)`: through the event
 /// loop when there is one, else `send_sync`: the bytes taken, `None` when it failed.
-/// The loop may register the socket to send what it queues, so it is a record live
-/// until an unsafe free.
+/// The loop may register the socket to send what it queues, so it is a heap socket.
 #[must_use]
-pub fn send_async(socket: Socket<'static>, data: &[u8]) -> Option<usize> {
+pub fn send_async(socket: swoole_rs_reactor::Heap<'_>, data: &[u8]) -> Option<usize> {
     if swoole_rs_reactor::socket_upstream::event_reactor().is_none() {
-        return send_sync(socket, data, 0);
+        return send_sync(*socket, data, 0);
     }
     swoole_rs_reactor::event_api::event_write(socket, data)
 }

@@ -218,7 +218,7 @@ pub(crate) fn stop_master_thread(serv: Server<'_>) {
         if removed == Some(false)
             && let Some(sock) = serv.port_socket_at(index)
         {
-            reactor.del(sock);
+            reactor.del(*sock);
         }
     }
     if let Some(master) = serv
@@ -226,7 +226,7 @@ pub(crate) fn stop_master_thread(serv: Server<'_>) {
         .command_pipe()
         .and_then(swoole_rs_tls::socket_pair::SocketPair::master_end)
     {
-        reactor.del(master);
+        reactor.del(*master);
     }
     clear_timer(serv);
     if serv.config().max_wait_time.get() > 0 {
@@ -525,7 +525,7 @@ mod tests {
         stop_master_thread(serv);
         assert!(live.reactor().handle().wait_exit(), "draining");
         assert!(
-            !live.reactor().del(live.port_socket()),
+            !live.reactor().del(*live.port_socket()),
             "the stream port left the reactor"
         );
         assert_eq!(calls(), [Call::Thread0Shutdown], "single thread");

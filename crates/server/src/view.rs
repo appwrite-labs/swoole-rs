@@ -16,7 +16,7 @@ use swoole_rs_corebase::worker_registry::WorkerRegistry;
 use swoole_rs_process::process_pool::{PoolRecord, PoolRef};
 use swoole_rs_process::server_workers::{ServerWorkers, swr_v1_process_server_worker};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
-use swoole_rs_reactor::Socket;
+use swoole_rs_reactor::{Heap, Socket};
 use swoole_rs_tls::socket_pair::SocketPair;
 
 /// The head of every `Server`.
@@ -576,13 +576,13 @@ impl<'a> Server<'a> {
 
     /// Worker `id`'s pipe socket, its master end or its worker end, or `None` while it has none.
     #[must_use]
-    pub(crate) fn worker_pipe(self, id: u16, master: bool) -> Option<Socket<'a>> {
+    pub(crate) fn worker_pipe(self, id: u16, master: bool) -> Option<Heap<'a>> {
         worker_pipe(self.worker_record(id)?, master)
     }
 
     /// The listening socket of `serv->ports[index]`, or `None` past the last.
     #[must_use]
-    pub(crate) fn port_socket_at(self, index: usize) -> Option<Socket<'a>> {
+    pub(crate) fn port_socket_at(self, index: usize) -> Option<Heap<'a>> {
         // One of the server's live ports, whose socket it keeps open while it serves.
         self.port_at(index)?.config().listening_socket()
     }
@@ -742,7 +742,7 @@ impl<'a> Port<'a> {
     /// `f` over the port's listening socket, or `None` before it has one (or after
     /// it closes). The socket can't outlive `f`: a port's socket closes while the port
     /// lives (`OP_PORT_CLOSE_SOCKET`), so no handle to it is kept past a read.
-    pub fn with_socket<R>(self, f: impl FnOnce(Socket<'_>) -> R) -> Option<R> {
+    pub fn with_socket<R>(self, f: impl FnOnce(Heap<'_>) -> R) -> Option<R> {
         // Live now, and the handle ends with `f`.
         self.config().listening_socket().map(f)
     }
@@ -756,25 +756,19 @@ impl<'a> Port<'a> {
 
 pub use swoole_rs_process::worker_record::PipeEnd;
 
-/// The `end` of `worker`'s pipe, or `None` while it has none.
+/// The `end` of `worker`'s pipe, or `None` while it has none. A pipe end's owner, its
+/// pair, frees it, so a reactor may register it and a write that queues may too.
 #[inline]
 #[must_use]
-pub fn worker_pipe_end(worker: Worker<'_>, end: PipeEnd) -> Option<Socket<'_>> {
-    worker.pipe(end).map(Socket::lent)
-}
-
-/// [`worker_pipe_end`] as a reactor may hold it: a pipe end is freed only with its
-/// pair, after the event loops that watch it, so a write that queues may register it.
-#[must_use]
-pub fn registered_pipe_end(worker: Worker<'_>, end: PipeEnd) -> Option<Socket<'static>> {
-    worker_pipe_end(worker, end).and_then(crate::reactor_handle::registered)
+pub fn worker_pipe_end(worker: Worker<'_>, end: PipeEnd) -> Option<Heap<'_>> {
+    worker.pipe(end).map(Heap::lent)
 }
 
 /// The master end (`master`) or the worker end of `worker`'s pipe, or `None` while
 /// it has none.
 #[inline]
 #[must_use]
-pub(crate) fn worker_pipe(worker: Worker<'_>, master: bool) -> Option<Socket<'_>> {
+pub(crate) fn worker_pipe(worker: Worker<'_>, master: bool) -> Option<Heap<'_>> {
     worker_pipe_end(
         worker,
         if master {
@@ -785,36 +779,31 @@ pub(crate) fn worker_pipe(worker: Worker<'_>, master: bool) -> Option<Socket<'_>
     )
 }
 
-/// A pipe end the server writes messages to: a worker's (its pair kept by the server's
-/// or its pool's list until they shut down, after the event loops) or a message bus's
-/// own record of one (kept by the bus, which outlives its loop). Either outlives any
-/// event loop that watches it, so a write that queues on it may register it.
+/// A pipe end the server writes messages to: a worker's or a message bus's own record
+/// of one. Their owners (the pair, the bus) free them, so a write that queues on one
+/// may register it.
 #[derive(Clone, Copy)]
-pub(crate) struct PipeSocket(Socket<'static>);
+pub(crate) struct PipeSocket<'a>(Heap<'a>);
 
 #[cfg_attr(
     not(feature = "upstream-symbols"),
     expect(dead_code, reason = "only the hybrid's factories write to a pipe")
 )]
-impl PipeSocket {
+impl<'a> PipeSocket<'a> {
     /// The master end (`master`) or the worker end of `worker`'s pipe.
     #[inline]
-    pub(crate) fn of_worker(worker: Worker<'_>, master: bool) -> Option<Self> {
-        worker_pipe(worker, master)
-            .and_then(crate::reactor_handle::registered)
-            .map(Self)
+    pub(crate) fn of_worker(worker: Worker<'a>, master: bool) -> Option<Self> {
+        worker_pipe(worker, master).map(Self)
     }
 
     /// `bus`'s own record of the pipe `end`, if it has one.
     #[inline]
-    pub(crate) fn of_bus(bus: &swoole_rs_bus::MessageBus, end: Self) -> Option<Self> {
-        bus.pipe(end.0.fd())
-            .and_then(crate::reactor_handle::registered)
-            .map(Self)
+    pub(crate) fn of_bus(bus: &'a swoole_rs_bus::MessageBus, end: PipeSocket<'_>) -> Option<Self> {
+        bus.pipe(end.0.fd()).map(Self)
     }
 
     #[inline]
-    pub(crate) fn socket(self) -> Socket<'static> {
+    pub(crate) fn socket(self) -> Heap<'a> {
         self.0
     }
 }

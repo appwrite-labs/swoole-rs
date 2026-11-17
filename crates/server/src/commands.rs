@@ -11,13 +11,10 @@ use std::mem::ManuallyDrop;
 use std::sync::{Arc, MutexGuard, PoisonError};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_NOTICE};
+#[cfg(feature = "upstream-symbols")]
+use swoole_rs_corebase::{CCast, DataHead, ServerEvent};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_process::command::{CommandInput, ProcessTypes, Rejected, Rejection, Target, route};
-#[cfg(feature = "upstream-symbols")]
-use {
-    swoole_rs_corebase::{CCast, DataHead, ServerEvent},
-    swoole_rs_reactor::Socket,
-};
 
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 
@@ -100,7 +97,7 @@ pub(crate) fn call_command_handler(
     serv: crate::view::Server<'_>,
     bus: crate::objects::Bus<'_>,
     worker_id: u16,
-    sock: Option<Socket<'_>>,
+    sock: Option<swoole_rs_reactor::Heap<'_>>,
 ) {
     let request = bus.head();
     let command_id = i32::from(request.server_fd);
@@ -123,7 +120,7 @@ pub(crate) fn answer(
     handler: &CommandHandler,
     serv: crate::view::Server<'_>,
     message: &[u8],
-    (bus, sock): (crate::objects::Bus<'_>, Socket<'_>),
+    (bus, sock): (crate::objects::Bus<'_>, swoole_rs_reactor::Heap<'_>),
     fd: i64,
     reactor_id: u16,
 ) -> bool {
@@ -145,7 +142,7 @@ pub(crate) fn answer(
 pub(crate) fn reply_socket<'a>(
     state: &'a ServerState,
     serv: crate::view::Server<'a>,
-) -> Option<Socket<'a>> {
+) -> Option<swoole_rs_reactor::Heap<'a>> {
     let config = state.config_ref();
     if config.mode_ == Mode::Base {
         return serv.worker_pipe(0, true);

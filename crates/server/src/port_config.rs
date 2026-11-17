@@ -7,7 +7,7 @@ use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
 use swoole_rs_memory::members::Shm;
-use swoole_rs_reactor::Socket;
+use swoole_rs_reactor::{Heap, Socket};
 use swoole_rs_tls::{SslVersion, TlsContext};
 
 use crate::view::Port;
@@ -147,7 +147,7 @@ pub struct PortConfig {
     /// The listening socket's record (`network::Socket *`), or null: stored by
     /// `create_socket()` and `import()`, nulled by `close_socket()` and `close()`.
     /// Private: only [`Self::set_listening_socket`] stores a record here.
-    pub(crate) socket: Shared<Option<Socket<'static>>>,
+    pub(crate) socket: Shared<Option<Heap<'static>>>,
     pub thread_id: Shared<libc::pthread_t>,
     pub heartbeat_idle_time: Setting<u16>,
     pub open_eof_check: Setting<bool>,
@@ -309,14 +309,14 @@ impl PortConfig {
         let socket = self.socket.replace(None)?;
         // SAFETY: only `set_listening_socket` stores a socket, an owner it leaked, and
         // the port no longer names it: this is its only owner.
-        Some(unsafe { swoole_rs_reactor::OwnedSocket::from_socket(socket) })
+        Some(unsafe { swoole_rs_reactor::OwnedSocket::from_socket(*socket) })
     }
 
     /// The port's listening socket, or `None` before it has one or after it closes
     /// (`OP_PORT_CLOSE_SOCKET`): a record live until that unsafe free, whose caller
     /// answers for the handles left.
     #[must_use]
-    pub fn listening_socket(&self) -> Option<Socket<'static>> {
+    pub fn listening_socket(&self) -> Option<Heap<'static>> {
         self.socket.get()
     }
     /// A new port's settings.

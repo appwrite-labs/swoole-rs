@@ -131,7 +131,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> bool {
         let pool = crate::shared::ServerShared::of(serv).task_pool();
         for index in 0..usize::try_from(pool.worker_num()).unwrap_or(0) {
             if let Some(pipe) = pool.worker(index).and_then(|w| view::worker_pipe(w, true)) {
-                view::set_nonblock(pipe);
+                view::set_nonblock(*pipe);
             }
         }
     }
@@ -177,8 +177,8 @@ fn add_pipes(reactor: Reactor, worker: Worker<'_>) -> bool {
     let (Some(pipe_worker), Some(pipe_master)) = pipes else {
         return false;
     };
-    view::set_nonblock(pipe_worker);
-    view::set_nonblock(pipe_master);
+    view::set_nonblock(*pipe_worker);
+    view::set_nonblock(*pipe_master);
     reactor.add(pipe_worker, Events::READ) && reactor.add(pipe_master, Events::READ)
 }
 
@@ -203,7 +203,7 @@ pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> 
     if socket.read(|s| s.removed) {
         return crate::conn_io::close_connection(serv, reactor, Some(socket));
     }
-    if !reactor.del(socket) {
+    if !reactor.del(*socket) {
         return false;
     }
     if conn.close_queued() {
@@ -360,12 +360,12 @@ mod tests {
         );
         let fd = live.listener_fd;
         assert_eq!(live.counters().max_fd(), fd, "listen sockets stored");
-        live.reactor().del(live.port_socket());
+        live.reactor().del(*live.port_socket());
 
         fail(Some(MasterTimer));
         assert!(!main_loop(live.server(), worker));
         assert_eq!(calls()[3..], steps(&[MasterTimer, EventFree]), "no loop");
-        live.reactor().del(live.port_socket());
+        live.reactor().del(*live.port_socket());
 
         config(&live).heartbeat_check_interval.set(5);
         fail(Some(HeartbeatTimer));
@@ -404,7 +404,7 @@ mod tests {
         let (live, _clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
         let conn = session(&live, 1);
-        assert!(reactor.del(conn.socket().unwrap()));
+        assert!(reactor.del(*conn.socket().unwrap()));
         assert!(close(serv, reactor, &conn.event(0, 0)));
         assert_eq!(calls(), [], "nobody is told");
         assert!(closed(conn));

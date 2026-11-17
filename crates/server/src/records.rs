@@ -56,7 +56,7 @@ pub struct ConnectionRecord {
     object: Cell<*mut c_void>,
     /// The session socket, `None` before the connection has one or after it closes: a
     /// record live until the unsafe free that ends the connection.
-    pub socket: Cell<Option<swoole_rs_reactor::Socket<'static>>>,
+    pub socket: Cell<Option<swoole_rs_reactor::Heap<'static>>>,
     pub connect_time: Cell<f64>,
     pub last_recv_time: Cell<f64>,
     pub last_send_time: Cell<f64>,
@@ -253,7 +253,7 @@ impl<'a> Connection<'a> {
     field!(timer, set_timer: Option<swoole_rs_corebase::timer_key::Held>);
     field!(info, set_info: SocketAddress);
     field!(private object, set_object: *mut c_void);
-    field!(socket, set_socket: Option<swoole_rs_reactor::Socket<'static>>);
+    field!(socket, set_socket: Option<swoole_rs_reactor::Heap<'static>>);
     field!(connect_time, set_connect_time: f64);
     field!(last_recv_time, set_last_recv_time: f64);
     field!(last_send_time, set_last_send_time: f64);

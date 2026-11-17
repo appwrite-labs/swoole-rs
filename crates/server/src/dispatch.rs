@@ -214,7 +214,7 @@ pub fn sendwait(serv: Server<'_>, session_id: c_long, data: &[u8]) -> bool {
     };
     let sent = conn
         .socket()
-        .and_then(|socket| swoole_rs_tls::upstream::send_sync(socket, data, 0));
+        .and_then(|socket| swoole_rs_tls::upstream::send_sync(*socket, data, 0));
     sent == Some(data.len())
 }
 
@@ -388,9 +388,7 @@ pub fn add_port<'a>(
 fn keep_port(serv: Server<'_>, port: Box<PortConfig>) -> Port<'_> {
     let config = serv.config();
     if SocketType::from_raw(port.r#type).is_some_and(SocketType::is_dgram) {
-        let fd = port
-            .listening_socket()
-            .map_or(-1, swoole_rs_reactor::Socket::fd);
+        let fd = port.listening_socket().map_or(-1, |socket| socket.fd());
         let size = port.socket_buffer_size.get().cast_unsigned();
         _ = swoole_rs_reactor::set_socket_buffer_size(fd, true, true, size);
         config.have_dgram_sock.set(true);
