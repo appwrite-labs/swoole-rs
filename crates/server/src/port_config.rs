@@ -258,15 +258,21 @@ impl PortConfig {
         })
     }
 
+    /// Whether any thread gave the port a `package_length_func` owner, which a receive
+    /// asks before it looks for this thread's.
+    #[inline]
+    #[must_use]
+    pub fn has_length_owner(&self) -> bool {
+        self.has_length_owner
+            .load(core::sync::atomic::Ordering::Acquire)
+    }
+
     /// A reference to this thread's `package_length_func` owner for the port, for a
     /// measure to hand its length callback, which drops it; `None` without one.
     #[inline]
     #[must_use]
     pub fn length_owner(&self) -> Option<LengthOwner> {
-        if !self
-            .has_length_owner
-            .load(core::sync::atomic::Ordering::Acquire)
-        {
+        if !self.has_length_owner() {
             return None;
         }
         let key = self.length_key;

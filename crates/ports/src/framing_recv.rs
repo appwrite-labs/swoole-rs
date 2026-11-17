@@ -37,8 +37,8 @@ pub(crate) struct Recv<'a> {
 /// Where a receive's measures find their `package_length_func` owner (#4535).
 #[derive(Clone, Copy)]
 pub(crate) enum Owner<'a> {
-    /// None to find: a test's receive over bare records.
-    #[cfg(test)]
+    /// None to find: a port nobody gave a `package_length_func`, whose measures then
+    /// cost what they did before owners, or a test's bare records.
     None,
     /// The client the receive reads for.
     Client(Handle<'a>),
@@ -51,7 +51,6 @@ impl Owner<'_> {
     #[inline]
     fn get(self) -> Option<std::rc::Rc<dyn core::any::Any>> {
         match self {
-            #[cfg(test)]
             Self::None => None,
             Self::Client(client) => client.length_owner(),
             Self::Port(port) => port.length_owner(),
