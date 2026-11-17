@@ -359,7 +359,8 @@ pub(crate) fn swr_v1_hook_uring_connect(ops: &UringSocketOps<'_>, peer: &SocketA
     if result.is_err() {
         return false;
     }
-    ops.socket.with_state(|state| state.flags.connected = true);
+    ops.socket
+        .with_state(|state| state.update_flags(|flags| flags.connected = true));
     // A failure is ignored, as upstream does.
     ops.socket
         .net(swoole_rs_corebase::reactor::SocketFields::get_name);
