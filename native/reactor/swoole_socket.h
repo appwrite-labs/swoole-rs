@@ -74,6 +74,4 @@ struct Socket : swr_v1_socket {
 };
 
 }  // namespace network
-
-network::Socket *make_socket(int fd, FdType fd_type);
 }  // namespace swoole

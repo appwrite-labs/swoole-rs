@@ -71,8 +71,6 @@ pub(super) const SOCKET_INFO: usize = 176;
 unsafe extern "C-unwind" {
     #[link_name = "_Z25swoole_get_last_error_msgv"]
     fn swoole_get_last_error_msg() -> *const c_char;
-    #[link_name = "_ZN6swoole11make_socketEi8swFdType"]
-    pub(super) fn make_socket(fd: c_int, fd_type: c_int) -> *mut SocketHead;
     /// `SwooleG`, whose first member is `max_sockets`.
     #[link_name = "SwooleG"]
     static mut SWOOLE_G_MAX_SOCKETS: u32;
@@ -483,7 +481,9 @@ pub(crate) unsafe fn swr_case_fake_socket(port: *mut c_void, out: *mut *mut c_vo
     let conn = Box::leak(Box::new(unsafe { std::mem::zeroed::<ConnectionRecord>() }));
     // SAFETY: a new record, as `new network::Socket()`, whose fields this sets.
     unsafe {
-        let sock = make_socket(fd, 0);
+        let sock = swoole_rs_corebase::reactor::SocketRecord::with_fd(fd, 0)
+            .into_raw()
+            .cast::<SocketHead>();
         (*sock).removed = 0;
         (*sock).object = ptr::from_mut(conn).cast();
         (*sock).socket_type = config.r#type;
