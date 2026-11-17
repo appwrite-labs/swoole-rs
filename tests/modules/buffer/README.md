@@ -2,13 +2,12 @@
 
 Gates for the Rust `swoole::Buffer` queue (`crates/corebase/src/buffer`) and `swoole::String`
 (`crates/corebase/src/buffer/string.rs`, gates in [string/](string/)).
-Native runners compile the upstream side from pinned upstream
-`76c657d88be39b7af6bf85e46bcbac0da7387760`, extracted into a disposable tree, and
-the Rust side from the headers and switches of the Cargo build whose SDK the supplied
-Rust archive belongs to (`tools.build_ext.native_flags`); the String gates link that
-build's native archives with the Rust archive (`native_link`). They never rebuild the
-archive. The `test_*.py` gates run under pytest (`python3 -m pytest tests/modules/buffer/<file>`) with the
-shared options in `tests/conftest.py` and read sources from `target/upstream/src`. `--sanitize` adds C++ ASan/UBSan; the Rust archive is not instrumented.
+The native reference gates compile pinned upstream
+`76c657d88be39b7af6bf85e46bcbac0da7387760`, extracted into a disposable tree.
+The String gate runs only that oracle; the runtime's original assertions are
+Rust tests in `string/originals.rs`. The `test_*.py` gates run under pytest with
+the shared options in `tests/conftest.py` and read `target/upstream/src`.
+`--sanitize` adds C++ ASan/UBSan to the reference build.
 
 ## Native queue gates
 
@@ -72,8 +71,17 @@ The hooks, client, HTTP and framing Rust case fixtures use the real `CppString`
 for borrowed runtime buffers and `OwnedString` for allocations they own. They no
 longer copy the record layout or call the sized constructor, destructor,
 `append_random_bytes` or `pop` through Itanium symbols; those four exports are gone.
-The original test inputs and assertions are unchanged. Other String exports and
-the native layout remain pending the compiled-reader audit.
+The original test inputs and assertions are unchanged. The remaining eleven
+String member exports and their unused wrappers are gone too; helpers called by
+the Rust original tests use Rust's calling convention. `CppString` has Rust layout.
+`native/buffer/swoole_string.h` only declares an opaque class: socket and co-socket
+records retain pointers, and no compiled native consumer reads its fields.
+
+The oracle's framing, HTTP-frame, HTTP-proxy and RESP shims define their own
+String records over pinned bodies. In particular, both framing-stream engines
+use the local record in `crates/oracle/shim/framing_stream.cc`, including its
+candidate ABI assertions; neither lends a runtime `CppString` to that ABI.
+Those oracle layouts and assertions remain unchanged.
 
 Run as `python3 tests/modules/buffer/<script>`; `S` is the pinned upstream
 checkout (`target/upstream/src`).
@@ -109,10 +117,9 @@ checkout (`target/upstream/src`).
 | --- | --- |
 | Queue chunks, bytes, count, offset validation, failure rollback | Rust |
 | `swoole::Buffer`'s methods, sendfile tokens and their disposers | Rust |
-| `swoole::String`'s methods (growth, edits, copy/move, search, split, random bytes) | Rust, under the upstream symbols, calling the String's own allocator |
-| `format_impl`'s printf varargs, inline accessors | C++ |
+| `swoole::String`'s methods (growth, edits, copy/move, search, split, random bytes) | Rust, calling the String's own allocator |
 
-The Rust-only `OwnedString` wraps the ABI record with its existing disposal path.
+`OwnedString` wraps the Rust buffer with its existing disposal path.
 `popped_owner_keeps_the_prefix_and_frees_each_allocation_once` checks an exact
 13-byte allocation, an independently retained unread tail, prefix truncation and
-one allocator release for each owner. The raw ABI pop still transfers its block.
+one allocator release for each owner. The pointer-returning Rust pop still transfers its block.

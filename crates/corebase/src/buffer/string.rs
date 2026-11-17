@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/core/string.cc and include/swoole_string.h
 // (Swoole contributors).
-//! `swoole::String`: the C++ object itself (its layout pinned on both sides), and
-//! every method upstream gives a body. With `upstream-symbols` (on in the real
-//! build, through crates/ffi) each is also exported under its upstream (Itanium)
-//! symbol.
+//! Rust string storage and operations. Native socket records retain opaque pointers;
+//! the allocation and its fields are accessed only by Rust.
 //!
 //! An allocation failure aborts: upstream throws `std::bad_alloc`, which no
 //! first-party code catches. Arithmetic wraps, as upstream's `size_t` does, and
@@ -12,18 +10,16 @@
 use crate::lent::{Spare, lend_spare};
 use crate::{CCast, TrustedAllocator};
 use std::ffi::{c_int, c_void};
-use std::mem::{MaybeUninit, offset_of};
+use std::mem::MaybeUninit;
 use std::ptr;
 
-/// `swoole::String` (`string.cc` asserts the same layout).
+/// The runtime string buffer.
 ///
 /// Its fields are private, so safe code keeps what the safe methods trust: `str`
 /// is null with `length` and `size` 0, or the live allocation of `size` bytes
 /// that `allocator` (then set) made, whose first `length` are initialized.
 /// `offset` holds anything (a cursor, or a caller's flags), so a
-/// method that indexes by it bounds it first. C++ writes the fields directly: a
-/// `&CppString` made from a C++ pointer is that pointer's `unsafe` promise.
-#[repr(C)]
+/// method that indexes by it bounds it first.
 pub struct CppString {
     length: usize,
     size: usize,
@@ -32,15 +28,6 @@ pub struct CppString {
     /// A nullable `const Allocator *`, which lives for the process.
     allocator: Option<TrustedAllocator>,
 }
-
-const _: () = assert!(
-    size_of::<CppString>() == 40
-        && offset_of!(CppString, offset) == 16
-        && offset_of!(CppString, str) == 24
-        && offset_of!(CppString, allocator) == 32
-        && size_of::<Option<TrustedAllocator>>() == 8,
-    "swoole::String's layout"
-);
 
 /// A Rust-owned string allocation, disposed when it leaves scope.
 pub struct OwnedString(CppString);
@@ -605,73 +592,43 @@ pub fn swr_string_new(
     string
 }
 
-// Copy/move constructors return `this`: Apple's arm64 C++ ABI does, and
-// elsewhere the caller ignores it. Nothing derives from String.
-// A constructor's `this` is uninitialized storage; every other `this` is a live String.
-upstream! {
-    "_ZN6swoole6StringC1ERKS0_", "_ZN6swoole6StringC1ERKS0_" =>
-    /// `String(const String &)`.
-    pub extern "C" fn swr_string_copy(this: &mut MaybeUninit<CppString>, source: &CppString) -> *mut CppString {
-        let string = this.write(CppString::EMPTY);
-        string.copy_from(source);
-        string
+/// `String(const String &)`.
+pub fn swr_string_copy(this: &mut MaybeUninit<CppString>, source: &CppString) -> *mut CppString {
+    let string = this.write(CppString::EMPTY);
+    string.copy_from(source);
+    string
+}
+
+/// `String(String &&)`.
+pub fn swr_string_move(
+    this: &mut MaybeUninit<CppString>,
+    source: &mut CppString,
+) -> *mut CppString {
+    let string = this.write(CppString::EMPTY);
+    string.move_from(source);
+    string
+}
+
+/// A copied substring, or an empty string when the range is outside the input.
+#[must_use]
+pub fn swr_string_substr(this: &CppString, offset: usize, length: usize) -> CppString {
+    let mut result = CppString::EMPTY;
+    // Checked: upstream's `offset + len > length` wraps, and this fn is safe.
+    if let Some(end) = offset.checked_add(length).filter(|&end| end <= this.length) {
+        result.alloc(length, None);
+        result.append(this.view().get(offset..end).unwrap_or_default());
     }
-    "_ZN6swoole6StringC1EOS0_", "_ZN6swoole6StringC1EOS0_" =>
-    /// `String(String &&)`.
-    pub extern "C" fn swr_string_move(this: &mut MaybeUninit<CppString>, source: &mut CppString) -> *mut CppString {
-        let string = this.write(CppString::EMPTY);
-        string.move_from(source);
-        string
-    }
-    "_ZNK6swoole6String6substrEmm", "_ZNK6swoole6String6substrEmm" =>
-    /// `String substr(size_t, size_t) const`. The C++ ABI returns a class with a
-    /// destructor in caller memory (`sret`), as C does a 40-byte struct.
-    #[must_use]
-    pub extern "C" fn swr_string_substr(this: &CppString, offset: usize, length: usize) -> CppString {
-        let mut result = CppString::EMPTY;
-        // Checked: upstream's `offset + len > length` wraps, and this fn is safe.
-        if let Some(end) = offset.checked_add(length).filter(|&end| end <= this.length) {
-            result.alloc(length, None);
-            result.append(this.view().get(offset..end).unwrap_or_default());
-        }
-        result
-    }
-    "_ZN6swoole6String6extendEv", "_ZN6swoole6String6extendEv" =>
-    pub extern "C" fn swr_string_extend_double(this: &mut CppString) {
-        this.extend(this.size.wrapping_mul(2));
-    }
-    "_ZN6swoole6String6extendEm", "_ZN6swoole6String6extendEm" =>
-    pub extern "C" fn swr_string_extend(this: &mut CppString, new_size: usize) {
-        this.extend(new_size);
-    }
-    "_ZN6swoole6String7reserveEm", "_ZN6swoole6String7reserveEm" =>
-    pub extern "C" fn swr_string_reserve(this: &mut CppString, new_size: usize) {
-        this.reserve(new_size);
-    }
-    "_ZN6swoole6String7releaseEv", "_ZN6swoole6String7releaseEv" =>
-    pub extern "C" fn swr_string_release(this: &mut CppString) -> *mut u8 {
-        this.release()
-    }
-    "_ZN6swoole6String6appendEi", "_ZN6swoole6String6appendEi" =>
-    /// `append(int)`: its decimal text.
-    pub extern "C" fn swr_string_append_int(this: &mut CppString, value: c_int) {
-        let mut buffer = itoa::Buffer::new();
-        this.append(buffer.format(value).as_bytes());
-    }
-    "_ZN6swoole6String5writeElRKS0_", "_ZN6swoole6String5writeExRKS0_" =>
-    pub extern "C" fn swr_string_write_string(this: &mut CppString, offset: i64, source: &CppString) {
-        this.write(offset, source.view());
-    }
-    "_ZNK6swoole6String5printEb", "_ZNK6swoole6String5printEb" =>
-    /// `print(bool)`, through C's stdout as upstream.
-    pub extern "C" fn swr_string_print(this: &CppString, value: bool) {
-        this.print(value);
-    }
-    "_ZN6swoole6String6reduceEl", "_ZN6swoole6String6reduceEx" =>
-    /// `reduce(off_t)`: moves the bytes after `offset` to the head.
-    pub extern "C" fn swr_string_reduce(this: &mut CppString, offset: i64) {
-        this.reduce(offset);
-    }
+    result
+}
+
+/// `append(int)`: its decimal text.
+pub fn swr_string_append_int(this: &mut CppString, value: c_int) {
+    let mut buffer = itoa::Buffer::new();
+    this.append(buffer.format(value).as_bytes());
+}
+
+pub fn swr_string_write_string(this: &mut CppString, offset: i64, source: &CppString) {
+    this.write(offset, source.view());
 }
 
 /// `String(data.data(), data.size())` in `this`: a NUL-terminated copy.
