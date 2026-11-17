@@ -256,7 +256,7 @@ fn init_bus(serv: view::Server<'_>, bus: &PoolBus) {
     if !handle.alloc_buffer(serv.config().ipc_max_size() as usize) {
         std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>());
     }
-    server_methods::init_pipe_sockets(serv, handle);
+    server_methods::init_pipe_sockets(serv, handle, None);
 }
 
 /// A thread's main inside `worker_thread_start`: its server, slot and kind; the

@@ -2,7 +2,7 @@
 //! Rust owns the receive buffer's bookkeeping, the chunked packets being
 //! reassembled, and the read and write loops over the pipe's file descriptor.
 //!
-//! It also owns the bus's own records of its pipes (`init_pipe_socket`), and logs
+//! It also owns the bus's own records of its pipes (`init_pipe_sockets`), and logs
 //! what a read reports.
 //!
 //! The buffer and each packet's block come from a [`TrustedAllocator`] the bus's
@@ -21,7 +21,7 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int};
 use std::hash::{BuildHasherDefault, Hasher};
@@ -133,12 +133,13 @@ impl Hasher for IdHasher {
 type Packets = HashMap<u64, OwnedString, BuildHasherDefault<IdHasher>>;
 
 /// This bus's pipe records, by descriptor.
-type PipeSockets = Vec<Option<Heap<'static>>>;
+type PipeSockets = Box<[Option<OwnedSocket>]>;
 
 /// Its methods take `&self`: the server lends the bus through a `Copy` handle, so
-/// each field is a cell. The packets and pipe records are boxed, so a take moves a
-/// pointer, and are taken out and put back around each access, which asks no
-/// [`TrustedAllocator`] and calls nothing back into the server or PHP.
+/// each field is a cell. The packets are boxed, so a take moves a pointer, and are
+/// taken out and put back around each access, which asks no [`TrustedAllocator`] and
+/// calls nothing back into the server or PHP. The pipe records are set once and
+/// freed only by the drop, so a borrow of the bus lends them.
 pub struct Bus {
     /// Null, or the block [`Bus::alloc_buffer`] made: `buffer_size` bytes, and at
     /// least [`BUFFER_MIN`], until [`Bus::free_buffer`].
@@ -149,8 +150,8 @@ pub struct Bus {
     always_chunked: Cell<bool>,
     packets: Cell<Option<Box<Packets>>>,
     /// `pipe_sockets_`: by descriptor, this bus's own records of the pipes, which
-    /// `init_pipe_socket` made and only the bus's drop frees.
-    pipe_sockets: Cell<Option<Box<PipeSockets>>>,
+    /// `init_pipe_sockets` made and only the bus's drop frees.
+    pipe_sockets: OnceCell<PipeSockets>,
     /// `id_generator_`: the counter that numbers each written message.
     next_id: Cell<Option<&'static AtomicU64>>,
 }
@@ -162,17 +163,11 @@ impl Drop for Bus {
         // is the record's deallocation.
         #[cfg(not(feature = "upstream-symbols"))]
         let free_socket = |socket: Option<OwnedSocket>| socket.map(OwnedSocket::free);
-        // By descriptor, as `init_pipe_socket` recorded them.
-        let records = self
-            .pipe_sockets
-            .get_mut()
-            .take()
-            .map_or_else(Vec::new, |b| *b);
+        // By descriptor, as `init_pipe_sockets` recorded them.
+        let records = self.pipe_sockets.take().unwrap_or_default();
         for record in records.into_iter().flatten() {
-            record.edit(|record| record.fd = -1);
-            // SAFETY: a heap record `init_pipe_socket` made, used by nothing else now
-            // and freed once: the bus is dropping.
-            free_socket(Some(unsafe { OwnedSocket::from_socket(*record) }));
+            record.socket().edit(|record| record.fd = -1);
+            free_socket(Some(record));
         }
     }
 }
@@ -235,7 +230,7 @@ impl Bus {
             buffer_size: Cell::new(buffer_size),
             always_chunked: Cell::new(false),
             packets: Cell::new(None),
-            pipe_sockets: Cell::new(None),
+            pipe_sockets: OnceCell::new(),
             next_id: Cell::new(None),
         }
     }
@@ -881,27 +876,31 @@ impl Bus {
         self.write(head, data, send, reduce)
     }
 
-    /// `MessageBus::init_pipe_socket`: this bus's own nonblocking record of the pipe
-    /// `fd`, with no send-buffer limit.
-    pub fn init_pipe_socket(&self, fd: c_int) {
-        let Ok(index) = usize::try_from(fd) else {
-            return;
-        };
-        // `make_socket`: a new record, which the bus frees on drop.
-        let mut socket = Box::new(SocketRecord::with_fd(fd, /* SW_FD_PIPE */ 3));
-        socket.output.buffer_size = u32::MAX;
-        if !socket.output.nonblock {
-            swoole_rs_reactor::socket_upstream::socket_set_fd_option(&mut socket, 1, -1);
-        }
-        let socket = socket.into_socket();
-        lend_or_default(&self.pipe_sockets, |sockets| {
+    /// `MessageBus::init_pipe_socket` of each of `fds`: this bus's own nonblocking
+    /// records of the pipes, with no send-buffer limit. A bus sets its pipes once, as
+    /// its thread starts; a second call is fatal.
+    pub fn init_pipe_sockets(&self, fds: impl IntoIterator<Item = c_int>) {
+        let mut sockets = Vec::new();
+        for fd in fds {
+            let Ok(index) = usize::try_from(fd) else {
+                continue;
+            };
+            // `make_socket`: a new record, which the bus frees on drop.
+            let mut socket = Box::new(SocketRecord::with_fd(fd, /* SW_FD_PIPE */ 3));
+            socket.output.buffer_size = u32::MAX;
+            if !socket.output.nonblock {
+                swoole_rs_reactor::socket_upstream::socket_set_fd_option(&mut socket, 1, -1);
+            }
             if index >= sockets.len() {
-                sockets.resize(index + 1, None);
+                sockets.resize_with(index + 1, || None);
             }
             if let Some(slot) = sockets.get_mut(index) {
-                *slot = Some(socket);
+                *slot = Some(OwnedSocket::new(socket));
             }
-        });
+        }
+        if self.pipe_sockets.set(sockets.into_boxed_slice()).is_err() {
+            swoole_rs_corebase::fatal("a message bus's pipes set twice");
+        }
     }
 
     /// `MessageBus::get_pipe_socket`: the record `init_pipe_socket` made for `fd`.
@@ -913,15 +912,16 @@ impl Bus {
     }
 
     /// [`MessageBus::pipe_socket`]'s record as a handle, or `None` before
-    /// `init_pipe_socket` made one for `fd`.
+    /// `init_pipe_sockets` made one for `fd`.
     #[must_use]
     #[inline]
     pub fn pipe(&self, fd: c_int) -> Option<Heap<'_>> {
         let index = usize::try_from(fd).ok()?;
-        lend(&self.pipe_sockets, |sockets| {
-            sockets.get(index).copied().flatten()
-        })
-        .flatten()
+        self.pipe_sockets
+            .get()?
+            .get(index)?
+            .as_ref()
+            .map(OwnedSocket::heap)
     }
 }
 
