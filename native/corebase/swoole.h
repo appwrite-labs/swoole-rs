@@ -137,8 +137,6 @@ size_t swoole_random_bytes(char *buf, size_t size);
 uint32_t swoole_common_multiple(uint32_t u, uint32_t v);
 uint32_t swoole_common_divisor(uint32_t u, uint32_t v);
 
-int swoole_rand();
-int swoole_rand(int min, int max);
 
 int swoole_version_compare(const char *version1, const char *version2);
 
