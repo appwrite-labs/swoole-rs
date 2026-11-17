@@ -23,7 +23,6 @@ use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 use std::ffi::{CStr, CString};
 use std::io;
-use std::sync::OnceLock;
 
 const SW_ERROR_MALLOC_FAIL: c_int = 501;
 const SW_ERROR_CO_HAS_BEEN_BOUND: c_int = 10002;
@@ -33,27 +32,6 @@ const SW_ERROR_CO_TIMEDOUT: c_int = 10018;
 const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
 /// [`build`]'s `SW_CORO_TIME` bit, beside the context's flags.
 const CORO_TIME: u32 = 8;
-
-/// The async-thread operation a coroutine runs, supplied by hooks, which depends
-/// on this crate. `swoole_init` (crates/ffi) registers it
-/// with [`set_host`] before any coroutine starts.
-#[derive(Clone, Copy)]
-pub struct Host {
-    /// The thread's async threads, created first when it has none.
-    pub async_threads_ensure: fn(),
-}
-
-static HOST: OnceLock<Host> = OnceLock::new();
-
-/// Registers the host; later registrations are ignored.
-pub fn set_host(host: Host) {
-    HOST.get_or_init(|| host);
-}
-
-fn host() -> &'static Host {
-    HOST.get()
-        .unwrap_or_else(|| crate::fatal("coroutine host is not registered"))
-}
 
 /// The build's coroutine switches: the context's flags
 /// (`SW_USE_THREAD_CONTEXT`, `SW_CONTEXT_PROTECT_STACK_PAGE`,
@@ -137,12 +115,11 @@ fn unmade_error(unmade: &Unmade) -> c_long {
 pub extern "C-unwind" fn activate() {
     if build() & THREAD != 0 {
         // Coroutine threads share this thread's timer and async threads.
-        let host = host();
         if crate::thread_timer().is_null() {
             // A 1 ms timer whose callback does nothing.
             _ = crate::timer::add_fn_sec(0.001, false, || {});
         }
-        (host.async_threads_ensure)();
+        _ = crate::offload::threads::ensure();
         swr_v1_thread_context_init();
     }
     with_scheduler(|s| {

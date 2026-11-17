@@ -13,9 +13,9 @@ use swoole_rs_corebase::swoole_rand;
 use swoole_rs_ffi::event_api::swoole_event_wait;
 use swoole_rs_ffi::swoole_event_init;
 
-pub(super) use swoole_rs_hooks::async_threads::dispatch;
-pub(super) use swoole_rs_hooks::offload::AsyncEvent;
-use swoole_rs_hooks::offload::{Callback, Handler};
+pub(super) use swoole_rs_corebase::offload::AsyncEvent;
+pub(super) use swoole_rs_corebase::offload::threads::dispatch;
+use swoole_rs_corebase::offload::{Callback, Handler};
 
 use super::timer::tick;
 use super::{_exit, fork, getpid, run, spawn_exec};
@@ -154,7 +154,8 @@ extern "C" fn sleep_and_count_handle(event: &mut AsyncEvent) {
 /// `(get_worker_num(), get_queue_size(), get_task_num())`.
 fn stats() -> (i64, i64, i64) {
     let count = |n| i64::try_from(n).unwrap_or(i64::MAX);
-    let (tasks, workers, queued) = swoole_rs_hooks::async_threads::stats().unwrap_or_default();
+    let (tasks, workers, queued) =
+        swoole_rs_corebase::offload::threads::stats().unwrap_or_default();
     (count(workers), count(queued), count(tasks))
 }
 

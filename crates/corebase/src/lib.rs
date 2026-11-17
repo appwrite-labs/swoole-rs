@@ -26,6 +26,7 @@ mod lifecycle;
 pub mod locks;
 pub mod log;
 pub mod memory;
+pub mod offload;
 pub mod process;
 pub mod reactor;
 pub mod timer;

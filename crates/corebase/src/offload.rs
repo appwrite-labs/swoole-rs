@@ -1,12 +1,46 @@
 //! `coroutine::async`: hand a job to the `AsyncThreads` pool and park the current
 //! coroutine until the pool's completion resumes it. [`AsyncOps`] holds the pool's
 //! `async::dispatch` and the coroutine operations.
-use crate::resolve::WakerSlot;
+#[cfg(feature = "upstream-symbols")]
+pub mod threads;
+
+use crate::coroutine::Waker;
+use crate::set_errno;
 use core::ffi::{c_int, c_void};
 use core::mem::offset_of;
 use core::sync::atomic::{AtomicI32, AtomicIsize, AtomicU8, Ordering::Relaxed};
-use swoole_rs_corebase::coroutine::Waker;
-use swoole_rs_corebase::set_errno;
+
+/// Where a park stores its waker before it switches out.
+pub type WakerSlot = core::cell::Cell<Option<Waker>>;
+
+/// `co->yield()` of the current coroutine (fatal outside one), its waker in `waker`.
+#[cfg(feature = "upstream-symbols")]
+pub fn park(waker: &WakerSlot) {
+    crate::coroutine::park(crate::coroutine::current_safe().cast(), |park| {
+        waker.set(Some(park));
+    });
+}
+
+/// `co->yield_ex(timeout)` of the current coroutine (fatal outside one), its waker
+/// in `waker`.
+#[cfg(feature = "upstream-symbols")]
+pub fn park_for_armed(timeout: f64, waker: &WakerSlot) -> bool {
+    let arm = |park| waker.set(Some(park));
+    let code =
+        crate::coroutine::yield_timed_armed(crate::coroutine::current_safe().cast(), timeout, arm);
+    crate::coroutine::yield_resumed(code)
+}
+
+/// `coroutine::async`'s coroutine and pool operations.
+#[cfg(feature = "upstream-symbols")]
+pub static COROUTINE_ASYNC: AsyncOps = AsyncOps {
+    current: crate::coroutine::current_safe,
+    dispatch: threads::dispatch,
+    park,
+    park_for: park_for_armed,
+    resume: Waker::wake,
+    last_error: crate::log::last_error,
+};
 
 /// `async::Handler`: runs on a pool thread over its own copy of the event, of which
 /// the pool keeps `error` and `retval`.
@@ -26,14 +60,14 @@ pub struct AsyncEvent {
     /// dispatching thread may set `canceled` there: [`AsyncEvent::result`].
     error: AtomicI32,
     /// A reference to the request's resolver record, or none.
-    pub(crate) data: Option<swoole_rs_corebase::ResolverRef>,
+    data: Option<crate::ResolverRef>,
     retval: AtomicIsize,
     pub pipe_socket: *mut c_void,
     pub timestamp: f64,
     /// What the handler and completion read; paired with them at construction.
-    pub(crate) object: *mut c_void,
-    pub(crate) handler: Option<Handler>,
-    pub(crate) callback: Option<Callback>,
+    object: *mut c_void,
+    handler: Option<Handler>,
+    callback: Option<Callback>,
 }
 
 impl AsyncEvent {
@@ -81,7 +115,8 @@ impl AsyncEvent {
     }
 
     /// `retval` and `error`, stored through a shared copy: the pool's result.
-    pub(crate) fn publish(&self, (retval, error): (isize, c_int)) {
+    #[cfg(feature = "upstream-symbols")]
+    fn publish(&self, (retval, error): (isize, c_int)) {
         self.retval.store(retval, Relaxed);
         self.error.store(error, Relaxed);
     }
@@ -92,8 +127,14 @@ impl AsyncEvent {
         self.object
     }
 
+    /// Retains the resolver request in this event and each queued copy.
+    pub fn set_record(&mut self, record: crate::ResolverRef) {
+        self.data = Some(record);
+    }
+
     /// The request's resolver record, when the event has one.
-    pub(crate) fn record(&self) -> Option<&swoole_rs_corebase::ResolverRequest> {
+    #[must_use]
+    pub fn record(&self) -> Option<&crate::ResolverRequest> {
         self.data.as_deref()
     }
 }
@@ -137,7 +178,7 @@ pub struct AsyncOps {
     /// `co->resume()` of a parked coroutine.
     pub(crate) resume: fn(Waker),
     /// `swoole_get_last_error()`.
-    pub(crate) last_error: extern "C" fn() -> c_int,
+    pub(crate) last_error: fn() -> c_int,
 }
 
 /// The waiting coroutine, on its stack; the event's `object` while the job runs.
@@ -242,8 +283,9 @@ pub fn swr_v1_hook_async(
 /// `coroutine::async_job`: [`swr_v1_hook_async_job`] over the coroutine's own
 /// operations; the hooked functions' and `System::read_file`'s offload. Outside a
 /// coroutine it raises upstream's fatal error.
+#[cfg(feature = "upstream-symbols")]
 pub fn async_job(job: &mut (dyn FnMut() + Send)) -> bool {
-    swr_v1_hook_async_job(job, &crate::resolve::COROUTINE_ASYNC)
+    swr_v1_hook_async_job(job, &COROUTINE_ASYNC)
 }
 
 /// `coroutine::async(fn)`, inside a coroutine: runs `job` on the pool and waits for
@@ -265,6 +307,11 @@ pub fn swr_v1_hook_async_job(job: &mut (dyn FnMut() + Send), ops: &AsyncOps) -> 
     (ops.park)(&waker);
     set_errno(task.result.get().1);
     true
+}
+
+#[must_use]
+pub fn sleep_timeout(seconds: f64, minimum: f64) -> f64 {
+    if seconds < minimum { minimum } else { seconds }
 }
 
 #[cfg(test)]
@@ -313,7 +360,7 @@ mod tests {
     fn resume(_: Waker) {
         RESUMED.set(RESUMED.get() + 1);
     }
-    extern "C" fn last_error() -> c_int {
+    fn last_error() -> c_int {
         9001
     }
     const OPS: AsyncOps = AsyncOps {
@@ -335,7 +382,7 @@ mod tests {
         event
     }
 
-    use swoole_rs_corebase::sys::errno;
+    use crate::sys::errno;
 
     #[test]
     fn job_runs_on_the_pool_and_publishes_its_errno() {

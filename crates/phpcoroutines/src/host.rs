@@ -251,7 +251,7 @@ pub(crate) fn stats(stats: &mut Stats) {
     }
     #[cfg(feature = "iouring")]
     iouring_stats(stats);
-    if let Some((tasks, workers, queued)) = swoole_rs_hooks::async_threads::stats() {
+    if let Some((tasks, workers, queued)) = swoole_rs_corebase::offload::threads::stats() {
         let count = |n| i64::try_from(n).unwrap_or(i64::MAX);
         stats.aio_task_num = count(tasks);
         stats.aio_worker_num = count(workers);
