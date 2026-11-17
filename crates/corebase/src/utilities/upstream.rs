@@ -214,13 +214,27 @@ fn spinlock_across_threads_and_a_fork() {
     assert_eq!(unsafe { libc::munmap(page, 4096) }, 0);
 }
 
+// Compare the Rust operations with the pinned functions' integer results.
+#[cfg(target_os = "linux")]
+fn wait_result(word: &AtomicU32, timeout: f64) -> i32 {
+    if super::misc::futex_wait(word, timeout) {
+        0
+    } else {
+        -1
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn wake_result(word: &AtomicU32, n: i32) -> i32 {
+    super::misc::futex_wakeup(word, n).map_or(-1, |count| i32::try_from(count).unwrap_or(i32::MAX))
+}
+
 /// The former `wait.cc`'s differential: the pinned misc.cc futex wait and wake against
-/// Rust's `sw_atomic_futex_wait`/`_wakeup`, each from errno `EDOM` on its own copy of
+/// Rust's `futex_wait` and `futex_wakeup`, each from errno `EDOM` on its own copy of
 /// the word, with the same result, errno and word after.
 #[cfg(target_os = "linux")]
 #[test]
 fn futex_wait_and_wake_match_the_pin() {
-    use crate::utilities::misc::{sw_atomic_futex_wait, sw_atomic_futex_wakeup};
     use swoole_rs_oracle::locks as pinned;
     let call = |word: u32, f: &dyn Fn(&AtomicU32) -> i32| {
         let word = AtomicU32::new(word);
@@ -232,7 +246,7 @@ fn futex_wait_and_wake_match_the_pin() {
         for n in [i32::MIN, -2, -1, 0, 1, 2, i32::MAX] {
             assert_eq!(
                 call(word, &|a| unsafe { pinned::wake(a.as_ptr(), n) }),
-                call(word, &|a| sw_atomic_futex_wakeup(Some(a), n)),
+                call(word, &|a| wake_result(a, n)),
                 "wake {word:#x} {n}"
             );
         }
@@ -241,7 +255,7 @@ fn futex_wait_and_wake_match_the_pin() {
         for &timeout in [0.000_001, 0.001, 0.0015].iter().chain(nonpositive) {
             assert_eq!(
                 call(word, &|a| unsafe { pinned::wait(a.as_ptr(), timeout) }),
-                call(word, &|a| sw_atomic_futex_wait(Some(a), timeout)),
+                call(word, &|a| wait_result(a, timeout)),
                 "wait {word:#x} {timeout}"
             );
         }
@@ -253,7 +267,6 @@ fn futex_wait_and_wake_match_the_pin() {
 #[cfg(target_os = "linux")]
 #[test]
 fn futex_wakes_a_shared_waiter() {
-    use crate::utilities::misc::{sw_atomic_futex_wait, sw_atomic_futex_wakeup};
     use swoole_rs_oracle::locks as pinned;
     if crate::utilities::isolated_process::run_in_child(
         "utilities::upstream::futex_wakes_a_shared_waiter",
@@ -264,10 +277,7 @@ fn futex_wakes_a_shared_waiter() {
         |a, timeout| unsafe { pinned::wait(a.as_ptr(), timeout) },
         |a, n| unsafe { pinned::wake(a.as_ptr(), n) },
     );
-    shared_waiter(
-        |a, timeout| sw_atomic_futex_wait(Some(a), timeout),
-        |a, n| sw_atomic_futex_wakeup(Some(a), n),
-    );
+    shared_waiter(wait_result, wake_result);
 }
 
 #[cfg(target_os = "linux")]

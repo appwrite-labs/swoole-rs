@@ -211,12 +211,6 @@ fn with<T>(
     run(registry, word)
 }
 
-/// `word`, or -1 with `EINVAL` recorded for null.
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn atomic(word: Option<&AtomicU32>) -> Result<&AtomicU32, c_int> {
-    word.ok_or_else(|| failed(libc::EINVAL))
-}
-
 /// -1 with a nonzero error recorded as the last error.
 #[cfg(not(target_os = "linux"))]
 fn failed(code: c_int) -> c_int {
