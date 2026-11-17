@@ -348,7 +348,8 @@ impl Handle<'_> {
     }
 
     /// The record's protocol, in place: its callbacks take it by address.
-    fn protocol(self) -> *const Protocol {
+    #[must_use]
+    pub fn protocol_address(self) -> *const Protocol {
         let record = self.get().record.as_ptr();
         record
             .wrapping_byte_add(core::mem::offset_of!(ClientRecord, protocol))
@@ -855,7 +856,7 @@ impl<'a> Handle<'a> {
         self,
         f: impl FnOnce(*const Protocol, Socket<'_>, *mut CppString) -> R,
     ) -> R {
-        f(self.protocol(), self.socket(), self.input())
+        f(self.protocol_address(), self.socket(), self.input())
     }
 
     /// The client, live while its owner is.
