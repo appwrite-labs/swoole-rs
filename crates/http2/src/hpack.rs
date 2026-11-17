@@ -229,10 +229,17 @@ impl Bits {
 
 /// The first static entry named `name` (its value too if given), from 1.
 fn static_index(name: &[u8], value: Option<&[u8]>) -> Option<usize> {
-    let index = STATIC
-        .iter()
-        .position(|&(n, v)| n == name && value.is_none_or(|value| v == value))?;
-    Some(index + 1)
+    let index = STATIC.iter().position(|&(n, _)| n == name)?;
+    // Appendix A groups entries by name; an exact match cannot occur past its group.
+    let offset = match value {
+        Some(value) => STATIC
+            .get(index..)?
+            .iter()
+            .take_while(|&&(n, _)| n == name)
+            .position(|&(_, v)| v == value)?,
+        None => 0,
+    };
+    Some(index + offset + 1)
 }
 
 /// A dynamic table entry's name and value.
