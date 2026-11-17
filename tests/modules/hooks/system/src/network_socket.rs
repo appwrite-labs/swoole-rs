@@ -76,8 +76,6 @@ unsafe extern "C" {
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole7network6Socket4freeEv"]
     fn socket_free(socket: *mut c_void);
-    #[link_name = "_ZN6swoole7network6Socket20ssl_get_error_reasonEPi"]
-    fn socket_ssl_get_error_reason(reason: *mut c_int) -> *const c_char;
 }
 
 #[link(name = "crypto")]
@@ -132,8 +130,11 @@ fn reason_names(error_str: *const c_char, a: &str, b: &str) -> bool {
 }
 
 fn ssl_get_error_reason(reason: Option<&mut c_int>) -> *const c_char {
-    // SAFETY: null or a writable reason.
-    unsafe { socket_ssl_get_error_reason(reason.map_or(std::ptr::null_mut(), std::ptr::from_mut)) }
+    let (code, text) = swoole_rs_corebase::tls::swr_v1_socket_ssl_error_reason();
+    if let Some(reason) = reason {
+        *reason = code;
+    }
+    text.map_or(std::ptr::null(), CStr::as_ptr)
 }
 
 fn is_dgram(kind: c_int) -> bool {
