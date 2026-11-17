@@ -19,11 +19,10 @@ use swoole_rs_corebase::reactor::{Heap, Socket};
 use swoole_rs_corebase::tls::socket_pair::SocketPair;
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
 
-/// The head of every `Server`.
-#[repr(C)]
+/// The head of every `Server`: Rust alone reads it, through [`ServerObject`]'s first
+/// field, so only that object fixes its place, not its own layout.
 pub(crate) struct Fields {
     state: *const ServerState,
-    config: *mut ServerConfig,
 }
 
 /// A `Server *`: the head C++ and [`Server`] read.
@@ -48,12 +47,11 @@ pub(crate) struct ServerObject {
 impl ServerObject {
     /// The object over `state`, which it owns from now on.
     pub(crate) fn new(state: Box<ServerState>) -> Self {
-        let (config, tables) = (state.config(), state.tables());
+        let tables = state.tables();
         let state = Arc::<ServerState>::from(state);
         Self {
             head: Fields {
                 state: Arc::as_ptr(&state),
-                config,
             },
             tables,
             state,
@@ -68,7 +66,6 @@ impl Fields {
     pub(crate) fn of(state: &std::rc::Rc<ServerState>) -> Self {
         Self {
             state: std::rc::Rc::as_ptr(state),
-            config: state.config(),
         }
     }
 }

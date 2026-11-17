@@ -275,6 +275,9 @@ impl<'a> PacketLength<'a> {
 }
 
 /// `swoole::RecvData`: a received package's head and its `info.len` bytes at `data`.
+/// It stays `repr(C)`: a `Protocol`'s `onPackage` hands it to C++ as `const RecvData *`
+/// (`native/framing/swoole_protocol.h`), which the oracle's framing shim
+/// (`crates/oracle/shim/framing_stream.cc`) reads in place.
 #[repr(C)]
 pub struct RecvData {
     pub info: crate::DataHead,
