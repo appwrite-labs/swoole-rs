@@ -294,12 +294,7 @@ pub(crate) fn wait(reactor: Running<'_>) -> bool {
     fn begin(reactor: Running<'_>) {
         run_task(reactor.with(|state| state.fields.future_task.clone()));
     }
-    let ops = crate::reactor::WaitOps {
-        reactor,
-        begin,
-        end: execute_end,
-    };
-    crate::reactor::wait_loop::wait(&ops)
+    crate::reactor::wait_loop::wait(reactor, begin, execute_end)
 }
 
 #[cfg(test)]
