@@ -10,7 +10,7 @@ on:
     - cron: '0 3 * * *'
   workflow_dispatch:
   pull_request:
-    paths: [benchmarks/wall.py, benchmarks/memory.py, .github/workflows/bench.yml]
+    paths: [benchmarks/wall.py, benchmarks/memory.py, benchmarks/table-contention/**, .github/workflows/bench.yml]
 defaults:
   run:
     shell: bash
@@ -47,6 +47,12 @@ jobs:
           --engine cargo=target/ext/swoole.so
           --engine upstream=target/upstream/src/modules/swoole.so
           --output target/wall/wall.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Contended table CPU report
+        run: >
+          python3 benchmarks/wall.py --workload table-contended
+          --engine cargo=target/ext/swoole.so
+          --engine upstream=target/upstream/src/modules/swoole.so
+          --output target/wall/table-contended.json | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Memory benchmarks
         if: always()
         run: >

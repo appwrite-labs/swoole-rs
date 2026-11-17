@@ -76,6 +76,7 @@ WORKLOADS = {
     # Runtime primitives (#1909). method 'H2' sends the request as HTTP/2 with prior knowledge.
     'http2': ('benchmarks/primitives', 'H2', '/', None, b'ok\n'),
     'table': ('benchmarks/primitives', 'GET', '/table', None, b'2016\n'),
+    'table-contended': ('benchmarks/table-contention', 'GET', '/', None, b'1024\n'),
     'channel': ('benchmarks/primitives', 'GET', '/channel', None, b'2016\n'),
     'task': ('corpus/10-task-workers', 'POST', '/', b'[1,2,3]', b'{"sum":6,"count":3,"task_worker":true}'),
     # A prepared SELECT through hooked PDO mysql (#2066); needs MySQL on MYSQL_HOST (root/root,

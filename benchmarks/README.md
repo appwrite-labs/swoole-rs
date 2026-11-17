@@ -43,6 +43,14 @@ values through a `Coroutine\Channel` from a second coroutine), all against
 `benchmarks/primitives`, and `task`, a `Server::taskwait` round trip against
 `10-task-workers`.
 
+`table-contended` runs eight worker processes, each testing `exists()` on the same
+shared row 1,024 times per request. Run it with `wall.py --workload table-contended`
+and at least eight connections (the default is 32). The nightly wall benchmark
+records CPU time per request and latency under row-lock contention; the serial
+`table` instruction benchmark does not exercise this path. Set `BENCH_TABLE_WORKERS=64`
+and `--connections 64` to oversubscribe a smaller machine. This new workload reports
+results without a ratio gate until repeated measurements establish its baseline.
+
 Every other HTTP workload reuses one kept-alive connection. `connect` (#2651) is
 `plaintext` on a new connection per request, sent with `Connection: close`, and the
 client waits for the server's close, so accepting the connection, setting up its
