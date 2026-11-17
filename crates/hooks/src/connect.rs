@@ -405,12 +405,17 @@ impl Connecting for Live<'_> {
             .unwrap_or(0.0);
         let mut address = Vec::<u8>::new();
         let co = (ops().current)();
+        set_err(self.socket, 0);
         // Locked like wait_event.
         self.socket.with_state(|state| state.bind(Events::RDWR, co));
         let with_port =
             crate::resolve::socket_lookup(self.resolve, domain, timeout, &name, &mut address);
         self.socket
             .with_state(|state| state.bind(Events::RDWR, null_mut()));
+        if self.socket.err_code() != 0 {
+            set_err(self.socket, self.socket.err_code());
+            return false;
+        }
         if address.is_empty() {
             Connecting::set_err(self, log::last_error());
             return false;

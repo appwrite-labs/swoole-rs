@@ -87,7 +87,7 @@ pub(crate) struct Ops {
     /// `Coroutine::print_socket_bound_error(fd, event, cid)`.
     pub bound_error: fn(c_int, &CStr, c_long),
     /// `System::sleep(0.01)`.
-    pub sleep: fn(),
+    pub sleep: fn(Co, Events),
     /// `swoole_event_add(events)` when `add`, else `swoole_event_set(events)`;
     /// false, with errno set, on failure.
     pub reactor: fn(Co, Events, bool) -> bool,
@@ -167,7 +167,11 @@ mod native {
         } else {
             Events::WRITE
         };
-        swoole_rs_corebase::coroutine::yield_with_cancel(co, move |_| socket.cancel(event));
+        swoole_rs_corebase::coroutine::yield_with_cancel_armed(
+            co,
+            move |_| socket.cancel(event),
+            |waker| socket.with_state(|state| state.arm(event, waker)),
+        );
     }
 
     /// `get_write_buffer()`, cleared and holding the write's bytes.
@@ -309,10 +313,14 @@ mod native {
 
     /// [`super::Ops::resume`].
     pub(super) fn resume(socket: Co, event: Events) {
-        let co = socket.with_state(|state| state.co(event));
-        // SAFETY: null, which resumes nothing, or the coroutine bound for `event`,
-        // suspended in its operation on this socket until it unbinds itself.
-        unsafe { swoole_rs_corebase::coroutine::resume(co) };
+        if let Some(waker) = socket.with_state(|state| state.waker(event)) {
+            waker.wake();
+        } else {
+            // DNS, ENOBUFS backoff and ring requests bind across their own waits.
+            // Their cancelers release timers or cancel the request; a ring operation
+            // remains parked until its completion has released the borrowed buffers.
+            _ = swoole_rs_corebase::coroutine::cancel_cid(bound_cid(socket, event));
+        }
     }
 
     pub(super) fn bound_error(fd: c_int, event: &CStr, cid: c_long) {
@@ -320,7 +328,7 @@ mod native {
         unsafe { print_socket_bound_error(fd, event, cid) };
     }
 
-    pub(super) fn sleep() {
+    pub(super) fn sleep(_: Co, _: Events) {
         _ = crate::sleep::system_sleep(0.01);
     }
 
@@ -662,7 +670,8 @@ pub(crate) mod test_host {
         c"native-error".as_ptr()
     }
     fn current() -> *mut c_void {
-        ptr::dangling_mut::<u64>().cast()
+        static CID: c_long = 1;
+        (&raw const CID).cast_mut().cast()
     }
     fn cid(socket: Co, event: Events) -> c_long {
         let Some(cid) = bound_id(socket.with_state(|state| state.bound_co(event))) else {
@@ -691,8 +700,9 @@ pub(crate) mod test_host {
     fn timer_del(_: Held) {
         log("timer:delete");
     }
-    fn sleep() {
+    fn sleep(socket: Co, event: Events) {
         log("sleep");
+        hook(&ON_SUSPEND, |f| f(socket, event));
     }
     fn reactor(_: Co, events: Events, add: bool) -> bool {
         log(format!("{}:{events}", if add { "add" } else { "set" }));

@@ -3,6 +3,9 @@
 import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import fcntl
+import functools
+import getpass
 import hashlib
 import io
 import json
@@ -297,6 +300,60 @@ def require_free_port(port):
         guard.bind(('127.0.0.1', port))
 
 
+# Originals such as the process-pool msgqueue pair use fixed SysV keys, so one engine's leftover
+# queue or message would reach the next engine's run (#4582).
+IPC_KINDS = {'msg': '-q', 'sem': '-s', 'shm': '-m'}
+
+
+@functools.cache
+def ipc_namespace():
+    """unshare's prefix for a private SysV IPC namespace, or None where the host gives none.
+    The user namespace maps the runner's own uid, so tests still see who they are."""
+    if not (unshare := shutil.which('unshare')):
+        return None
+    for flags in ([['--ipc']] if os.geteuid() == 0 else []) + [['--user', '--map-current-user', '--ipc']]:
+        try:
+            if subprocess.run([unshare, *flags, 'true'], capture_output=True, timeout=10).returncode == 0:
+                return [unshare, *flags]
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return None
+
+
+def ipc_objects():
+    """(kind, id) of each SysV IPC object this user owns."""
+    if Path('/proc/sysvipc').is_dir():
+        found = set()
+        for kind in IPC_KINDS:
+            header, *lines = Path('/proc/sysvipc', kind).read_text().splitlines()
+            uid = header.split().index('uid')
+            found |= {(kind, int(row[1])) for row in map(str.split, lines) if int(row[uid]) == os.getuid()}
+        return found
+    # macOS: "q  65536 0x70000001 --rw-rw-rw-  owner  group"
+    kinds = {flag[1]: kind for kind, flag in IPC_KINDS.items()}
+    listing = subprocess.run(['ipcs', '-q', '-s', '-m'], capture_output=True, text=True).stdout
+    return {(kinds[row[0]], int(row[1])) for row in map(str.split, listing.splitlines())
+            if len(row) > 4 and row[0] in kinds and row[1].isdigit() and row[4] == getpass.getuser()}
+
+
+@contextmanager
+def ipc_isolated(command, namespace=True):
+    """Yield the command to run in a private IPC namespace. Without one, afterwards remove only
+    the objects this user gained during the run: pre-existing and other users' objects survive."""
+    if namespace and (prefix := ipc_namespace()):
+        yield [*prefix, *command], 'namespace'
+        return
+    # Concurrent runs of this user would otherwise remove each other's live objects.
+    with open(f'/tmp/swoole-phpt-ipc-{os.getuid()}.lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        before = ipc_objects()
+        try:
+            yield command, 'cleanup'
+        finally:
+            for kind, ident in sorted(ipc_objects() - before):
+                subprocess.run(['ipcrm', IPC_KINDS[kind], str(ident)], capture_output=True)
+
+
 def batches(cases, isolate=False):
     safe = [case for case in cases if case['path'] in PARALLEL_SAFE]
     return ([safe] if safe and not isolate else []) + [
@@ -432,8 +489,9 @@ def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True,
                           'fallback_exec_argv': argv, 'argument_policy': 'Use official TEST_PHP_EXTRA_ARGS when present, parsed as argv without shell evaluation; otherwise engine defaults', 'scope': 'Explicit bare php children only; absolute PHP paths are unchanged'}
     started = time.monotonic()
     try:
-        result = run_isolated(command, cwd=sandbox, env=env,
-                              timeout=((len(cases) + jobs - 1) // jobs) * (timeout + 5) + 15)
+        with ipc_isolated(command) as (isolated, ipc_mode):
+            result = run_isolated(isolated, cwd=sandbox, env=env,
+                                  timeout=((len(cases) + jobs - 1) // jobs) * (timeout + 5) + 15)
         output = result.stdout + result.stderr
         exit_code = result.returncode
     except subprocess.TimeoutExpired as error:
@@ -486,7 +544,7 @@ def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True,
             diff = artifact / Path(path).with_suffix('.diff').name
             row['detail'] = ('Invalid/duplicate result ledger\n' if invalid else '') + (diff.read_text(errors='replace') if diff.exists() else output)[-6000:]
         rows[path] = row
-    return rows, {'child_php_selector': child_selector, 'runner_ini': list(runner_ini), 'offline': offline, 'online_flag_supported': online_flag if not offline else None, 'cases': [case['path'] for case in cases], 'jobs': jobs if len(cases) > 1 else 1,
+    return rows, {'child_php_selector': child_selector, 'runner_ini': list(runner_ini), 'offline': offline, 'online_flag_supported': online_flag if not offline else None, 'cases': [case['path'] for case in cases], 'jobs': jobs if len(cases) > 1 else 1, 'ipc_isolation': ipc_mode,
                   'seconds': round(time.monotonic() - started, 4), 'exit_code': exit_code,
                   'timings_seconds': {'runner': runner_seconds,
                                       'receipts_and_artifacts': round(time.monotonic() - receipts_started, 4)}}

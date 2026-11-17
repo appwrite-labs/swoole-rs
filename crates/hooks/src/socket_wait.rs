@@ -107,10 +107,11 @@ impl Wait {
             Events::WRITE
         };
         if state.nobufs {
+            set_err(self.0, 0);
             self.bind(event, co);
-            (ops().sleep)();
+            (ops().sleep)(self.0, event);
             self.bind(event, core::ptr::null_mut());
-            return !self.0.is_closed();
+            return !self.0.is_closed() && self.0.err_code() == 0;
         }
         set_err(self.0, 0);
         let mut added = event;
@@ -385,6 +386,21 @@ mod tests {
         REACTOR_OK.set(false);
         assert!(!wait_on(&mut s, Events::READ, None));
         assert_eq!(effects(), ["set:512"]);
+    }
+
+    #[test]
+    fn cancelling_the_nobufs_backoff_stops_the_transfer() {
+        let mut s = socket(NOBUFS);
+        ON_SUSPEND.set(Some(Box::new(|socket, event| {
+            assert!(socket.cancel(event));
+        })));
+        assert!(!wait_on(&mut s, Events::WRITE, None));
+        assert_eq!(s.0.err_code.get(), libc::ECANCELED);
+        assert!(
+            s.co()
+                .with_state(|state| state.bound_co(Events::RDWR))
+                .is_null()
+        );
     }
 
     #[test]
