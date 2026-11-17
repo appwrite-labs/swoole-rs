@@ -48,8 +48,8 @@ coroutine it sets the hook, jumps to the main context and exits with
 `SW_CORO_BAILOUT_EXIT_CODE` if that returns; outside one it marks the scheduler.
 
 A cancelable yield's `cancel_fn` points at a `Canceler` (crates/corebase/src/coroutine's: a Rust
-function and its data, which C++ holds only as `void *`) on the yielder's stack. Cancel (`Coroutine::cancel`'s
-symbol) refuses a coroutine that is not suspended with one, then calls it.
+function and its data) on the yielder's stack. Rust's `cancel` refuses a coroutine
+that is not suspended with one, then calls it.
 `yield_ex` adds its timeout timer through
 `corebase::timer::add_fn_sec` directly, capturing the coroutine's id and deletes it after a
 wake that was not the timeout.
@@ -58,9 +58,9 @@ wake that was not the timeout.
 scheduler, `swr_v1_coroutine_{scheduler_get,bail}` and the operations Rust calls by
 path (`current`, `resume`, `yield_with_cancel`), which need no timer or event loop,
 so they build in every configuration. `crates/corebase/src/coroutine/facade.rs`, which only
-the extension builds (`upstream-symbols`), defines the rest under their upstream
-symbols (`yield_ex`, `cancel`), `activate`, `deactivate`, `print_list` and
-`print_socket_bound_error` (Rust's only, by path), `swr_v1_coroutine_create` and the
+the extension builds (`upstream-symbols`), defines timed yield, `cancel`,
+`activate`, `deactivate`, `print_list` and `print_socket_bound_error` by Rust path,
+plus `swr_v1_coroutine_create` and the
 `swoole_coroutine_*` C API. The configure switches it reads (`SW_USE_THREAD_CONTEXT`,
 `SW_CONTEXT_PROTECT_STACK_PAGE`, `SW_CONTEXT_DETECT_STACK_USAGE`, `SW_CORO_TIME`) are
 `swoole_rs_corebase::built_with`'s (native/corebase/switches.cc), so the module has

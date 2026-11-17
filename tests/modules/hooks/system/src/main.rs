@@ -46,6 +46,7 @@
 
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use swoole_rs_corebase::coroutine::cancel as coroutine_cancel;
 use swoole_rs_corebase::log::last_error;
 // The crates, once: the C++ in libswoole.a and the cases call them by symbol.
 use swoole_rs_corebase::reactor::Events;
@@ -134,8 +135,6 @@ unsafe extern "C-unwind" {
 
     fn swoole_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long;
     fn swoole_coroutine_get_id() -> c_long;
-    #[link_name = "_ZN6swoole9Coroutine6cancelEv"]
-    fn coroutine_cancel(co: *mut c_void) -> bool;
 
     fn swoole_coroutine_open(path: *const c_char, flags: c_int, mode: u32) -> c_int;
     fn swoole_coroutine_read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
@@ -452,7 +451,7 @@ fn cancel_sleep() {
         go(move || {
             co_sleep(0.002);
             // SAFETY: `co` is suspended in its sleep.
-            unsafe { coroutine_cancel(co) };
+            unsafe { coroutine_cancel(co.cast()) };
         });
         co_sleep(1000.0);
     });

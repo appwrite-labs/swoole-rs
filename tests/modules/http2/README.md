@@ -24,7 +24,7 @@ choices, table size updates, limits and `NGHTTP2_ERR_HEADER_COMP` failures.
 `hpack.rs` (`cargo test -p swoole-rs-http2 --test hpack`) decodes every RFC 7541
 Appendix C example, whole and in fragments, with the table sizes listed there;
 encodes C.4's requests to the same bytes; checks the encoder's indexing and table
-size updates and the decoder's errors; and decodes encoded and corrupted blocks
+size updates, static name-group boundaries and the decoder's errors; and decodes encoded and corrupted blocks
 on one connection alongside crates/oracle's nghttp2 inflater, which must agree on
 every field and failure. The `http2_hpack` fuzz target runs the same comparison
 step by step.
