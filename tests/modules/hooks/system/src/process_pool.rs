@@ -30,6 +30,8 @@ use swoole_rs_corebase::process::task_file::Packed;
 use swoole_rs_corebase::process::worker_record::{
     Worker as WorkerHandle, swr_v1_worker_init, swr_v1_worker_shutdown,
 };
+use swoole_rs_corebase::reactor::signal_upstream::{self as signal, Handler as SignalHandler};
+use swoole_rs_corebase::signal_block_all;
 use swoole_rs_corebase::swoole_random_int;
 use swoole_rs_corebase::swoole_thread_clean;
 
@@ -233,10 +235,6 @@ struct Worker {
 unsafe extern "C" {
     static swr_case_process_layout: [usize; 6];
 
-    #[link_name = "_Z17swoole_signal_setiPFviEb"]
-    fn swoole_signal_set(signo: c_int, handler: Handler, safety: bool) -> *mut c_void;
-    #[link_name = "_Z23swoole_signal_block_allv"]
-    fn swoole_signal_block_all();
     #[link_name = "_Z20swoole_system_randomii"]
     fn swoole_system_random(min: c_int, max: c_int) -> c_int;
     #[link_name = "_Z18swoole_thread_initb"]
@@ -979,8 +977,7 @@ fn message_protocol_with_timer() {
 
     set_protocol(pool, Protocol::Message);
 
-    // SAFETY: an extern "C" handler.
-    unsafe { swoole_signal_set(SIGTERM, stop_current_pool, false) };
+    _ = signal::set(SIGTERM, SignalHandler::new(stop_current_pool), false);
 
     install(
         pool,
@@ -1221,8 +1218,11 @@ fn async_on_worker_start(pool: PoolRef<'_>, worker: WorkerHandle<'_>) {
     CURRENT_POOL.store(pool, SeqCst);
     sysv(SIGTERM, handler(stop_current_pool));
 
-    // SAFETY: an extern "C" handler.
-    unsafe { swoole_signal_set(SIGTERM, async_stop_current_worker, false) };
+    _ = signal::set(
+        SIGTERM,
+        SignalHandler::new(async_stop_current_worker),
+        false,
+    );
 
     ms_sleep(10);
 }
@@ -1293,8 +1293,7 @@ fn async_mb_on_worker_start(pool: PoolRef<'_>, worker: WorkerHandle<'_>) {
 
     counter_incr_and_put_log();
 
-    // SAFETY: an extern "C" handler.
-    unsafe { swoole_signal_set(SIGTERM, async_mb_stop_worker, false) };
+    _ = signal::set(SIGTERM, SignalHandler::new(async_mb_stop_worker), false);
 
     ms_sleep(10);
 }
@@ -1320,11 +1319,8 @@ fn send_message(pool: *mut Pool, message: &[u8]) {
 fn async_mb_on_start(pool: PoolRef<'_>) {
     let pool = pool.raw().cast::<Pool>();
     CURRENT_POOL.store(pool, SeqCst);
-    // SAFETY: extern "C" handlers.
-    unsafe {
-        swoole_signal_set(SIGTERM, stop_current_pool, false);
-        swoole_signal_set(SIGIO, read_current_message, false);
-    }
+    _ = signal::set(SIGTERM, SignalHandler::new(stop_current_pool), false);
+    _ = signal::set(SIGIO, SignalHandler::new(read_current_message), false);
 
     counter_incr_and_put_log();
 
@@ -1482,8 +1478,7 @@ fn listen() {
     let shared = pool as usize;
     let client_wmem = wmem.clone();
     let t1 = std::thread::spawn(move || {
-        // SAFETY: this thread's signal mask.
-        unsafe { swoole_signal_block_all() };
+        _ = signal_block_all();
 
         let mut c = TcpStream::connect(("127.0.0.1", port as u16)).unwrap();
         exchange(&mut c, &rmem, &client_wmem);
@@ -1952,8 +1947,7 @@ fn listen_unixsock() {
 
     let client_wmem = wmem.clone();
     let t1 = std::thread::spawn(move || {
-        // SAFETY: this thread's signal mask.
-        unsafe { swoole_signal_block_all() };
+        _ = signal_block_all();
 
         let mut c = UnixStream::connect(TEST_SOCK.to_str().unwrap()).unwrap();
         exchange(&mut c, &rmem, &client_wmem);
@@ -2047,8 +2041,7 @@ extern "C" fn shutdown_current_worker(_: c_int) {
 
 fn child_exit_on_worker_start(_: PoolRef<'_>, worker: WorkerHandle<'_>) {
     let worker = worker.raw().cast::<Worker>();
-    // SAFETY: an extern "C" handler.
-    unsafe { swoole_signal_set(SIGTERM, shutdown_current_worker, false) };
+    _ = signal::set(SIGTERM, SignalHandler::new(shutdown_current_worker), false);
     // SAFETY: the worker's record.
     counter_incr(unsafe { (*worker).id } as usize);
     while !pm::worker_is_shutdown() {
