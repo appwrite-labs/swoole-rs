@@ -189,11 +189,12 @@ fn format_bytes(size: u64) -> String {
     format!("{adjusted:.2} {}", UNITS.get(unit).unwrap_or(&"YB"))
 }
 
-/// `zend_fetch_debug_backtrace(.., 0, options, limit)`: the frames from Zend's
-/// current one, as a new array.
-pub(crate) fn backtrace(options: i32, limit: i32) -> Owned {
+/// `zend_fetch_debug_backtrace(.., skip_last, options, limit)`: the frames from
+/// Zend's current one, less the last `skip_last`, as a new array. It runs no PHP
+/// code.
+pub(crate) fn backtrace(skip_last: i32, options: i32, limit: i32) -> Owned {
     let trace = Owned::default();
-    zend_fetch_debug_backtrace(&trace, 0, options, limit);
+    zend_fetch_debug_backtrace(&trace, skip_last, options, limit);
     trace
 }
 
@@ -245,7 +246,7 @@ fn unhook() {
 /// is fetched with the state put back.
 fn save_backtrace(at: Option<Vec<u8>>) {
     if let Some(at) = at {
-        let trace = ManuallyDrop::new(backtrace(BACKTRACE_IGNORE_ARGS, 0));
+        let trace = ManuallyDrop::new(backtrace(0, BACKTRACE_IGNORE_ARGS, 0));
         with_leaks(|leaks| leaks.backtraces.insert(at, trace));
     }
 }
@@ -643,7 +644,7 @@ fn blocking_end(func: Func<'_>) {
         return;
     }
     let duration = ZString::number_format(duration);
-    let trace_text = trace_to_string(&backtrace(0, 0));
+    let trace_text = trace_to_string(&backtrace(0, 0, 0));
     let mut message = format!(
         " >>> [Detected blocking I/O in Coroutine#{}, internal function `",
         runtime::get_cid()

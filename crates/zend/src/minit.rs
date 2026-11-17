@@ -513,6 +513,19 @@ impl Minit {
         swr_zend_compiled_function_find(name.into())
     }
 
+    /// A copy of the compiled function `name` (lower case) that no function table
+    /// names, so only a frame its owner pushes runs it; null when there is no
+    /// such function. It lives for the process.
+    #[must_use]
+    pub fn unnamed_copy(&self, name: &CStr) -> *mut zend_function {
+        let named = self.compiled_function(name);
+        if named.is_null() {
+            return named;
+        }
+        // SAFETY: a registered function's record, which nothing writes during MINIT.
+        Box::into_raw(Box::new(unsafe { named.read() }))
+    }
+
     /// The compiled internal function `name` (lower case) runs `handler` from
     /// now on: its original handler, or none when there is no such function.
     pub fn replace_handler(&self, name: &CStr, handler: Handler) -> zif_handler {

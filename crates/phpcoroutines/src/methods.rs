@@ -516,7 +516,7 @@ fn get_back_trace(call: &Call) {
     };
     let (options, limit) = (narrow(options), narrow(limit));
     // The return slot holds nothing yet, as the frames were written straight into it.
-    let trace = || call.set_owned(tracer::backtrace(options, limit));
+    let trace = || call.set_owned(tracer::backtrace(0, options, limit));
     if cid == 0 || cid == runtime::get_cid() {
         return trace();
     }
@@ -543,18 +543,21 @@ fn print_backtrace(
     call: Option<&Call>,
 ) -> Result<(), Bailout> {
     let (options, limit) = (narrow(options), narrow(limit));
-    if cid == 0 || cid == runtime::get_cid() {
-        return leased::print_trace(php, 1, options, limit);
-    }
-    let Some(ctx) = context::by_cid(cid) else {
-        host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
-        if let Some(call) = call {
-            call.set_bool(false);
-        }
-        return Ok(());
+    let trace = if cid == 0 || cid == runtime::get_cid() {
+        tracer::backtrace(1, options, limit)
+    } else {
+        let Some(ctx) = context::by_cid(cid) else {
+            host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
+            if let Some(call) = call {
+                call.set_bool(false);
+            }
+            return Ok(());
+        };
+        // Fetched in the coroutine's frame, which runs no PHP code. The output
+        // below may, so it runs once this coroutine's frame is back.
+        ctx.in_frame(|| tracer::backtrace(0, options, limit))
     };
-    // In the coroutine's frame.
-    ctx.in_frame(|| leased::print_trace(php, 0, options, limit))
+    leased::print_trace(php, &trace)
 }
 
 /// `sw_php_print_backtrace(cid)`, printed (crates/phpswoole's fatal error).

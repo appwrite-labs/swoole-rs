@@ -1,7 +1,7 @@
 //! A server retains a Process's native record, pipe and private queue.
 use super::*;
 use crate::{state::tests::TestServer, worker_methods};
-use std::os::fd::AsRawFd;
+use swoole_rs_corebase::process::worker_record::PipeEnd;
 
 unsafe extern "C" {
     fn msgsnd(
@@ -17,10 +17,6 @@ fn queue_exists(id: std::ffi::c_int) -> bool {
     // works on Darwin, where libc does not expose the SysV message queue calls.
     let kind: libc::c_long = 1;
     unsafe { msgsnd(id, ptr::from_ref(&kind).cast(), 0, libc::IPC_NOWAIT) == 0 }
-}
-
-fn fd_open(fd: std::ffi::c_int) -> bool {
-    unsafe { libc::fcntl(fd, libc::F_GETFD) != -1 }
 }
 
 /// The open file `fd` names, by device and inode: tests in parallel may reuse a
@@ -65,25 +61,28 @@ fn server_retains_record_pipe_and_queue_after_the_process_drops() {
 
 #[test]
 #[cfg_attr(miri, ignore = "Miri has no socket options on a socketpair")]
-fn a_thread_copy_retains_the_native_resources_and_closes_the_pair_once() {
+fn a_thread_copy_retains_the_native_resources_and_leaves_the_pair_to_its_owner() {
     let (owner, fd, queue) = resources();
     let file = file_of(fd);
     let copy = ProcessWorker::new(owner.get().get());
     copy.get().set_shared(true);
-    assert!(copy.share_resources(owner));
+    assert!(copy.share_resources(owner.clone()));
     assert!(file.is_some() && file_of(fd) == file);
     assert!(queue_exists(queue));
     assert_eq!(copy.close_pipe(1), Some(true));
     assert_eq!(copy.close_pipe(1), Some(false), "already closed");
     assert_eq!(copy.close_pipe(0), Some(true));
     assert!(copy.get().pipe_object().is_null());
-    assert_ne!(file_of(fd), file);
-    let replacement = std::fs::File::open("/dev/null").expect("replacement fd");
-    drop(copy);
+    assert_eq!(file_of(fd), file, "a copy's close frees no end");
+    let named = |end| owner.get().pipe(end).is_some();
     assert!(
-        fd_open(replacement.as_raw_fd()),
-        "drop must not close a reused fd"
+        named(PipeEnd::Master) && named(PipeEnd::Worker),
+        "the owner's record still names its live ends"
     );
+    drop(copy);
+    assert!(file_of(fd) == file && queue_exists(queue));
+    drop(owner);
+    assert_ne!(file_of(fd), file, "last owner closed the pipe");
     assert!(!queue_exists(queue));
 }
 

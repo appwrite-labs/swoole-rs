@@ -44,5 +44,4 @@ void swr_zend_http_release_objects(void *arg);
 int swr_zend_http_try_release_objects(swr_zend_http_release *release);
 /* swoole::rtrim's write: `text` ends after its first `length` bytes, the rest
  * zeroed; nothing when it is no longer. */
-void swr_zend_http_rtrim(zend_string *text, size_t length);
 #endif
