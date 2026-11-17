@@ -340,7 +340,7 @@ fn pipe_read(ctx: &ReactorContext<'_>, event: &Event) -> Option<c_int> {
                     && !methods::connection_incoming(serv, reactor, conn)
                     && let Some(sock) = conn.socket()
                 {
-                    reactor.close(sock);
+                    crate::conn_io::close_connection(serv, reactor, Some(sock));
                 }
             }
             Some(ServerEvent::CommandRequest) => {

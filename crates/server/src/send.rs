@@ -223,7 +223,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         return false;
     }
     if close && (conn.close_reset() || conn.close_force() || conn.peer_closed()) {
-        reactor.close(sock);
+        crate::conn_io::close_connection(serv, reactor, Some(sock));
         return true;
     }
     let halfclose = cfg!(feature = "halfclose");
@@ -266,7 +266,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     let (out_empty, unbuffered, direct) = sock.read(output_state);
     if out_empty {
         if close {
-            reactor.close(sock);
+            crate::conn_io::close_connection(serv, reactor, Some(sock));
             return true;
         }
         if !file && direct && direct_send(conn, *sock, &mut data, first) {
@@ -454,10 +454,11 @@ mod tests {
             let sent = send_to_connection(self.serv(), &event(kind, session, data));
             if sent { SW_OK } else { SW_ERR }
         }
-        /// The reactor records its closes, as the server's would close them.
-        fn closes(&self) {
-            self.live.reactor().handle().set_close(Some(record_close));
-            closed();
+        /// Whether the connection on `fd` was closed: its slot freed its socket.
+        fn closed(&self, fd: c_int) -> bool {
+            let state = self.live.state();
+            let conn = state.connection(core::ffi::c_long::from(fd), Lookup::ByFd);
+            conn.is_some_and(|conn| !conn.is_active() && conn.socket().is_none())
         }
         fn queued(&self) -> u32 {
             self.sock()
@@ -468,23 +469,6 @@ mod tests {
             self.client.read_exact(&mut got).unwrap();
             got
         }
-    }
-
-    std::thread_local! {
-        static CLOSED: core::cell::RefCell<Vec<c_int>> = const { core::cell::RefCell::new(Vec::new()) };
-    }
-
-    /// The fds the reactor's close was given since the last call.
-    fn closed() -> Vec<c_int> {
-        CLOSED.with_borrow_mut(core::mem::take)
-    }
-
-    extern "C-unwind" fn record_close(
-        _: swoole_rs_reactor::Running<'_>,
-        socket: swoole_rs_reactor::OwnedSocket,
-    ) -> c_int {
-        CLOSED.with_borrow_mut(|closed| closed.push(socket.socket().fd()));
-        0
     }
 
     fn event(kind: ServerEvent, session: i64, data: &[u8]) -> SendData<'_> {
@@ -679,28 +663,28 @@ mod tests {
     #[test]
     fn close_closes_now_or_queues_behind_the_output() {
         let a = Accepted::new();
-        a.closes();
+        let fd = a.conn().fd();
         a.sock().edit(|s| s.direct_send = false);
         assert_eq!(a.send(ServerEvent::SendData, 1, b"hello"), SW_OK);
         assert_eq!(a.send(ServerEvent::Close, 1, b""), SW_OK);
         assert!(a.conn().close_queued(), "behind the output");
-        assert_eq!(closed(), [], "not yet");
+        assert!(!a.closed(fd), "not yet");
 
         let a = Accepted::new();
-        a.closes();
+        let fd = a.conn().fd();
         assert_eq!(a.send(ServerEvent::Close, 1, b""), SW_OK);
-        assert_eq!(closed(), [a.conn().fd()], "closed now");
+        assert!(a.closed(fd), "closed now");
     }
 
     #[test]
     fn a_forced_close_skips_the_output() {
         let a = Accepted::new();
-        a.closes();
+        let fd = a.conn().fd();
         a.sock().edit(|s| s.direct_send = false);
         assert_eq!(a.send(ServerEvent::SendData, 1, b"hello"), SW_OK);
         a.conn().set_close_force(true);
         assert_eq!(a.send(ServerEvent::Close, 1, b""), SW_OK);
-        assert_eq!(closed(), [a.conn().fd()], "closed with output still queued");
+        assert!(a.closed(fd), "closed with output still queued");
     }
 
     #[test]

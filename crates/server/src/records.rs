@@ -54,9 +54,10 @@ pub struct ConnectionRecord {
     /// address, a pipe end's pipe with [`NOT_PORT`] set, or a session's HTTP request
     /// with [`REQUEST`] set too. Private: only this module's typed setters write it.
     object: Cell<*mut c_void>,
-    /// The session socket, `None` before the connection has one or after it closes: a
-    /// record live until the unsafe free that ends the connection.
-    pub socket: Cell<Option<swoole_rs_reactor::Heap<'static>>>,
+    /// The session socket, which the connection owns from `add` until its close takes
+    /// it out and frees it: empty before and after, and on a listening slot. Only the
+    /// process that accepted it (the master, or a base worker) reads or takes it.
+    socket: swoole_rs_reactor::OwnerCell,
     pub connect_time: Cell<f64>,
     pub last_recv_time: Cell<f64>,
     pub last_send_time: Cell<f64>,
@@ -119,7 +120,7 @@ impl ConnectionRecord {
         self.timer.set(None);
         self.info.set(SocketAddress::default());
         self.object.set(core::ptr::null_mut());
-        self.socket.set(None);
+        _ = self.socket.take();
         for time in [
             &self.connect_time,
             &self.last_recv_time,
@@ -253,7 +254,6 @@ impl<'a> Connection<'a> {
     field!(timer, set_timer: Option<swoole_rs_corebase::timer_key::Held>);
     field!(info, set_info: SocketAddress);
     field!(private object, set_object: *mut c_void);
-    field!(socket, set_socket: Option<swoole_rs_reactor::Heap<'static>>);
     field!(connect_time, set_connect_time: f64);
     field!(last_recv_time, set_last_recv_time: f64);
     field!(last_send_time, set_last_send_time: f64);
@@ -262,6 +262,27 @@ impl<'a> Connection<'a> {
     field!(websocket_status, set_websocket_status: WebSocketStatus);
     field!(private ssl_client_cert, set_ssl_client_cert: *mut c_void);
     field!(private ssl_client_cert_pid, set_ssl_client_cert_pid: c_int);
+
+    /// The connection's socket, if it holds one.
+    #[must_use]
+    #[inline]
+    pub fn socket(self) -> Option<swoole_rs_reactor::Heap<'a>> {
+        self.record.socket.get()
+    }
+
+    /// The connection owns `socket` from here (the socket it held, if any, comes back).
+    pub(crate) fn hold_socket(
+        self,
+        socket: swoole_rs_reactor::OwnedSocket,
+    ) -> Option<swoole_rs_reactor::OwnedSocket> {
+        self.record.socket.put(socket)
+    }
+
+    /// The connection's socket, which it no longer holds.
+    #[must_use]
+    pub(crate) fn take_socket(self) -> Option<swoole_rs_reactor::OwnedSocket> {
+        self.record.socket.take()
+    }
 
     /// The WebSocket message being reassembled, taken out of the connection.
     #[must_use]

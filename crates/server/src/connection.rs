@@ -7,7 +7,7 @@ use swoole_rs_reactor::Events;
 use swoole_rs_corebase::constants::{SW_ACCEPT_RETRY_TIME, SW_SEND_BUFFER_SIZE, SocketType};
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{Event, Heap};
+use swoole_rs_reactor::{Event, Heap, OwnedSocket};
 
 use crate::reactor_handle::Reactor;
 use crate::records::Lookup;
@@ -33,37 +33,40 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
         return;
     };
     for _ in 0..ACCEPT_MAX_COUNT {
-        // The record `accepted` just made, leaked to the connection that takes it or
-        // `abort`, which frees it (an unsafe free whose caller answers for the handles left).
+        // The record `accepted` just made: the connection takes it, or `discard` frees it.
         let accepted = listener.edit(swoole_rs_reactor::SocketFields::accepted);
-        let Some(sock) = accepted.map(swoole_rs_reactor::SocketRecord::into_socket) else {
+        let Some(sock) = accepted.map(OwnedSocket::new) else {
             if accept_failed(serv, errno()) {
                 continue;
             }
             return;
         };
-        if i64::from(sock.fd()) >= i64::from(serv.max_connection()) {
-            let m = format_args!("Too many connections [now: {}]", sock.fd());
+        let fd = sock.socket().fd();
+        if i64::from(fd) >= i64::from(serv.max_connection()) {
+            let m = format_args!("Too many connections [now: {fd}]");
             log::error_log(
                 LOG_WARNING,
                 E::SW_ERROR_SERVER_TOO_MANY_SOCKET as c_int,
                 c"Server::accept_connection",
                 m,
             );
-            abort(serv, reactor, Some(port), sock);
+            discard(serv, Some(port), sock);
             disable_accept(serv);
             return;
         }
         if port.config().ssl {
-            if !(crate::port_config::methods().ssl_create)(port.config(), Some(*sock)) {
-                abort(serv, reactor, Some(port), sock);
+            if !(crate::port_config::methods().ssl_create)(port.config(), Some(sock.socket())) {
+                discard(serv, Some(port), sock);
                 return;
             }
         } else {
-            sock.edit(|s| s.set_ssl(None));
+            sock.socket().edit(|s| s.set_ssl(None));
         }
-        let Some(conn) = add(serv, port, sock, server_fd) else {
-            abort(serv, reactor, Some(port), sock);
+        let conn = match add(serv, port, sock, server_fd) {
+            Ok(conn) => conn,
+            Err(sock) => return discard(serv, Some(port), sock),
+        };
+        let Some(sock) = conn.socket() else {
             return;
         };
         sock.edit(|s| s.chunk_size = SW_SEND_BUFFER_SIZE);
@@ -108,21 +111,24 @@ fn to_reactor_thread(serv: view::Server<'_>, conn: Connection<'_>) -> Option<usi
 }
 
 /// `Server::add_connection(port, sock, server_fd)`: the next free session slot after
-/// `session_round` takes `sock`, and its fd's connection slot is set up; `None` when
-/// every slot is taken.
-#[must_use]
+/// `session_round` takes `sock`, and its fd's connection slot is set up and owns it.
+///
+/// # Errors
+/// `sock`, which no connection took, when its fd has no slot or every session is taken.
 pub fn add<'a>(
     serv: view::Server<'a>,
     port: view::Port<'_>,
-    sock: Heap<'static>,
+    sock: OwnedSocket,
     server_fd: c_int,
-) -> Option<Connection<'a>> {
+) -> Result<Connection<'a>, OwnedSocket> {
     let state = serv.state();
     let config = serv.config();
     let ls = port.config();
     let gs = serv.counters();
-    let fd = sock.fd();
-    let conn = state.tables_ref().connection_at(fd)?;
+    let fd = sock.socket().fd();
+    let Some(conn) = state.tables_ref().connection_at(fd) else {
+        return Err(sock);
+    };
     // C++'s ReactorId (uint8_t).
     let reactor_id = if config.mode_ == Mode::Base {
         swoole_rs_process::methods::swoole_get_worker_id().c_cast::<u8>()
@@ -135,7 +141,6 @@ pub fn add<'a>(
     // Upstream zeroes the slot up to `closed`; other reactor threads read `active`.
     conn.active().store(false, Relaxed);
     state.tables_ref().reset_connection(fd);
-    let conn = state.tables_ref().connection_at(fd)?;
 
     // `sw_spinlock`, with `SW_SPINLOCK_LOOP_N`.
     let cpus = u32::from(swoole_rs_corebase::swr_v1_core_cpu_num());
@@ -164,12 +169,13 @@ pub fn add<'a>(
             c"Server::add_connection",
             m,
         );
-        return None;
+        return Err(sock);
     }
     gs.session_round.store(session_id, Relaxed);
     conn.set_session_id(session_id);
     let buffer_size = ls.socket_buffer_size.get().cast_unsigned();
-    sock.edit(|s| {
+    let socket = sock.socket();
+    socket.edit(|s| {
         s.object = conn.as_ptr().cast();
         s.removed = true;
         s.output.buffer_size = buffer_size;
@@ -180,13 +186,13 @@ pub fn add<'a>(
     let listener = ls.listening_socket();
     let tcp = listener.is_some_and(|l| l.read(swoole_rs_reactor::SocketFields::is_tcp));
     if ls.open_tcp_nodelay.get() && tcp {
-        if !sock.edit(|s| s.set_tcp_nodelay(1)) {
+        if !socket.edit(|s| s.set_tcp_nodelay(1)) {
             log::sys_warning(
                 c"Server::add_connection",
                 format_args!("setsockopt(TCP_NODELAY) failed"),
             );
         }
-        sock.edit(|s| s.enable_tcp_nodelay = true);
+        socket.edit(|s| s.enable_tcp_nodelay = true);
     }
     // Upstream sets the buffer sizes on the listening socket.
     let listen_fd = listener.map_or(-1, |listener| listener.fd());
@@ -210,10 +216,10 @@ pub fn add<'a>(
             log::sys_warning(c"Server::add_connection", m);
         }
     }
-    init(serv, conn, ls, sock, server_fd, reactor_id);
     if !ls.ssl {
-        sock.edit(|s| s.direct_send = true);
+        socket.edit(|s| s.direct_send = true);
     }
+    init(serv, conn, ls, sock, server_fd, reactor_id);
 
     state.locked.lock();
     if fd > gs.max_fd() {
@@ -246,7 +252,7 @@ pub fn add<'a>(
             port_gs.connection_num.fetch_add(1, SeqCst);
         }
     }
-    Some(conn)
+    Ok(conn)
 }
 
 /// The connection's fields from its socket: the peer address, then the local one
@@ -255,12 +261,12 @@ fn init(
     serv: view::Server<'_>,
     conn: Connection<'_>,
     ls: &crate::port_config::PortConfig,
-    sock: Heap<'static>,
+    sock: OwnedSocket,
     server_fd: c_int,
     reactor_id: u8,
 ) {
     let state = serv.state();
-    let (ssl, local_port, local_addr_index) = sock.edit(|sock| {
+    let (ssl, local_port, local_addr_index) = sock.socket().edit(|sock| {
         conn.set_info(sock.info);
         sock.get_name();
         let info = &sock.info;
@@ -276,7 +282,7 @@ fn init(
         let index = crate::local_addr::index(state, v6, addr);
         (!sock.ssl().is_null(), port, index)
     });
-    conn.set_fd(sock.fd());
+    conn.set_fd(sock.socket().fd());
     conn.set_reactor_id(reactor_id);
     conn.set_server_fd(server_fd);
     let now = swoole_rs_corebase::microtime();
@@ -285,7 +291,8 @@ fn init(
     conn.closed().store(0, Relaxed);
     conn.set_worker_id(-1);
     conn.set_socket_type(ls.r#type);
-    conn.set_socket(Some(sock));
+    // The slot is empty: `reset_connection` cleared it, and each close takes its socket.
+    _ = conn.hold_socket(sock);
     conn.set_ssl(ssl);
     conn.info().kind = conn.socket_type();
     conn.set_local_port(local_port);
@@ -295,25 +302,29 @@ fn init(
     conn.active().store(true, Release);
 }
 
-/// `Server::abort_connection(reactor, port, sock)`: counted, then closed through the
-/// reactor when it is a connection's, else freed.
+/// `Server::abort_connection(reactor, port, sock)` of a connection's socket: counted,
+/// then the connection closed.
 pub(crate) fn abort(
     serv: view::Server<'_>,
     reactor: Reactor,
     port: Option<view::Port<'_>>,
-    sock: Heap<'static>,
+    sock: Heap<'_>,
 ) {
+    count_abort(serv, port);
+    crate::conn_io::close_connection(serv, reactor, Some(sock));
+}
+
+/// `Server::abort_connection` of an accepted socket no connection took: counted, then
+/// freed.
+pub(crate) fn discard(serv: view::Server<'_>, port: Option<view::Port<'_>>, sock: OwnedSocket) {
+    count_abort(serv, port);
+    swoole_rs_tls::upstream::socket_free(Some(sock));
+}
+
+fn count_abort(serv: view::Server<'_>, port: Option<view::Port<'_>>) {
     serv.counters().abort_count.fetch_add(1, SeqCst);
     if let Some(gs) = port.and_then(|port| port.config().counters()) {
         gs.abort_count.fetch_add(1, SeqCst);
-    }
-    if sock.read(|s| !s.object.is_null()) {
-        reactor.close(sock);
-    } else {
-        // SAFETY: an accepted heap record no connection took, which nothing uses
-        // afterwards.
-        let sock = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(*sock) };
-        swoole_rs_tls::upstream::socket_free(Some(sock));
     }
 }
 

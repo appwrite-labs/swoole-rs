@@ -2,6 +2,7 @@
 //! from (a reactor event, a connection, an owner's field), then read and edited
 //! without `unsafe`.
 use crate::{SocketFields, SocketRecord};
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use std::{ffi::c_int, marker::PhantomData, ptr::NonNull};
@@ -404,6 +405,36 @@ impl OwnedSocket {
     /// `Socket::operator delete`: the record goes, its descriptor stays open.
     pub fn free(self) {
         drop(self.into_box());
+    }
+}
+
+/// A cell owning at most one heap socket: it lends the record as a [`Heap`] for a
+/// borrow of itself, and [`Self::take`] gives the owner back. Its field is a cell, so a
+/// record that threads share under their own synchronization (a server's connection
+/// slot) may hold one. A handle it lent is, like a registry entry's, not used once the
+/// owner taken from it is freed. Dropping it leaks the record, as dropping an
+/// [`OwnedSocket`] does; all zero bytes are an empty cell.
+#[derive(Default)]
+#[repr(transparent)]
+pub struct OwnerCell(Cell<Option<Heap<'static>>>);
+
+impl OwnerCell {
+    /// The record it owns, if any.
+    #[must_use]
+    #[inline]
+    pub fn get(&self) -> Option<Heap<'_>> {
+        self.0.get()
+    }
+
+    /// Owns `owner` from here; the owner it held before, if any, comes back.
+    pub fn put(&self, owner: OwnedSocket) -> Option<OwnedSocket> {
+        self.0.replace(Some(owner.leak())).map(OwnedSocket)
+    }
+
+    /// The owner it held, which it no longer names.
+    #[must_use]
+    pub fn take(&self) -> Option<OwnedSocket> {
+        self.0.take().map(OwnedSocket)
     }
 }
 

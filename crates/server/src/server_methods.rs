@@ -434,6 +434,10 @@ mod tests {
         use crate::records::tests::naming;
         use swoole_rs_process::worker_record::WorkerRecord;
         use swoole_rs_reactor::SocketRecord;
+        fn session(serv: view::Server<'_>) -> swoole_rs_reactor::Socket<'_> {
+            let conn = serv.state().connection(3, Lookup::ByFd).unwrap();
+            *conn.socket().unwrap()
+        }
 
         // SAFETY: plain records, for which zero is valid.
         let (mut sock, mut pipe): (SocketRecord, SocketRecord) =
@@ -442,10 +446,11 @@ mod tests {
         pipe.kernel_nobufs = true;
         // SAFETY: as above.
         let mut connections: [ConnectionRecord; 4] = unsafe { core::mem::zeroed() };
-        // SAFETY: the record above, which outlives the connections that point to it.
-        connections[3].socket.set(
-            unsafe { swoole_rs_reactor::Socket::from_ptr(&raw mut sock) }
-                .map(swoole_rs_reactor::Heap::from_static),
+        let owned = swoole_rs_reactor::OwnedSocket::new(Box::new(sock));
+        assert!(
+            crate::Connection::from(&connections[3])
+                .hold_socket(owned)
+                .is_none()
         );
         connections[3].reactor_id.set(1);
         // SAFETY: as above.
@@ -482,12 +487,17 @@ mod tests {
         assert!(!has_kernel_nobufs_error(serv, 3), "taken");
         assert!(pipe.kernel_nobufs, "base mode leaves the pipe");
 
-        sock.kernel_nobufs = true;
+        session(serv).edit(|s| s.kernel_nobufs = true);
         server.config_mut().mode_ = Mode::Process;
         let serv = server.serv();
         assert!(has_kernel_nobufs_error(serv, 3), "the reactor pipe's flag");
         assert!(!has_kernel_nobufs_error(serv, 3), "taken");
-        assert!(sock.kernel_nobufs, "process mode leaves the socket");
+        assert!(
+            session(serv).read(|s| s.kernel_nobufs),
+            "process mode leaves the socket"
+        );
+        let conn = serv.state().connection(3, Lookup::ByFd).unwrap();
+        conn.take_socket().unwrap().free();
 
         server.config_mut().gs.free();
     }

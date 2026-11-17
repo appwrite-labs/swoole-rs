@@ -11,7 +11,7 @@ use core::ffi::{c_int, c_void};
 use swoole_rs_reactor::reactor_upstream::{
     change as reactor_change, interest as reactor_interest, reactor_del, set_handler,
 };
-use swoole_rs_reactor::{ChangeOp, Events, Handler, Heap, Interest, OwnedSocket, Running, Socket};
+use swoole_rs_reactor::{ChangeOp, Events, Handler, Heap, Interest, Running, Socket};
 
 /// The key a reactor holds its server under: private, so only [`Reactor::hold_server`]
 /// stores an object under it.
@@ -91,14 +91,6 @@ impl Reactor {
     /// `reactor->remove_read_event(sock)`.
     pub(crate) fn unread(self, sock: Heap<'_>) {
         let _ = self.interest(sock, Interest::RemoveRead);
-    }
-    /// The reactor's own `close` of `sock`, when it has one: whether it succeeded.
-    pub(crate) fn close(self, sock: Heap<'static>) -> bool {
-        self.handle().close().is_none_or(|close| {
-            // SAFETY: the reactor's close on one of its live heap sockets, which
-            // nothing uses after it.
-            close(self.handle(), unsafe { OwnedSocket::from_socket(*sock) }) >= 0
-        })
     }
     /// `reactor->trigger_close_event(event)`: the default error handler, whether it
     /// succeeded; false with none.

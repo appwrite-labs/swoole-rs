@@ -95,7 +95,6 @@ impl LiveServer {
         // The listening fd's slot holds its port, as `Server::store_listen_socket` leaves it.
         let slot = state.hold_port(0, fd).unwrap();
         slot.set_fd(fd);
-        slot.set_socket(Some(swoole_rs_reactor::Heap::from_static(socket)));
         slot.set_socket_type(SOCK_TCP);
 
         // The thread's reactor, without `swoole_event_init`'s coroutine and client handlers,
