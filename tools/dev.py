@@ -659,8 +659,10 @@ def docker(arguments):
                # Docker Desktop (macOS) already gives the host user what a container writes.
                *(['-e', f'SWR_USER={os.getuid()}:{os.getgid()}'] if sys.platform == 'linux' and os.getuid() else []),
                *[part for variable in git_config for part in ('-e', variable)],
-               # The upstream prep's make -j follows the caller's job limit (#4477).
-               *[part for name in JOBS_VARIABLES if os.environ.get(name) for part in ('-e', name)],
+               # The upstream prep's make -j follows the caller's job limit (#4477), and
+               # `cargo miri` the caller's MIRIFLAGS (AGENTS.md's -Zmiri-disable-isolation).
+               *[part for name in (*JOBS_VARIABLES, 'MIRIFLAGS') if os.environ.get(name)
+                 for part in ('-e', name)],
                image, 'bash', '-c', DOCKER_SCRIPT, 'dev.py', *arguments]
     return subprocess.run(command).returncode
 
