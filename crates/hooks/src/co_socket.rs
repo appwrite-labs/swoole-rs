@@ -187,8 +187,7 @@ impl Drop for TlsBuffer {
     }
 }
 
-/// The parts `with_*` lend as `&mut`, one bit each in [`Bound`]'s `lent`.
-const STATE: u8 = 1;
+/// The buffers `with_buffer` lends as `&mut`, one bit each in [`Bound`]'s `lent`.
 const READ_BUFFER: u8 = 4;
 const WRITE_BUFFER: u8 = 8;
 
@@ -497,12 +496,8 @@ impl Co {
     pub fn with_buffer<T>(self, write: bool, f: impl FnOnce(&mut CppString) -> T) -> T {
         let part = if write { WRITE_BUFFER } else { READ_BUFFER };
         self.lend(part, |_| {
-            let slot = self.buffer_slot(write);
-            let mut buffer = slot.take().unwrap_or_else(|| self.new_buffer());
-            let result = f(&mut buffer);
-            // The loan kept every other taker off the slot, so it is still empty.
-            slot.set(Some(buffer));
-            result
+            let mut taken = Taken::new(self.buffer_slot(write));
+            f(taken.0.get_or_insert_with(|| self.new_buffer()))
         })
     }
 
@@ -558,17 +553,19 @@ impl Co {
     /// runs and takes back after.
     /// # Panics
     /// Inside another `with_state` over the same record.
+    #[inline]
     #[track_caller]
     pub fn with_state<T>(self, f: impl FnOnce(&mut SocketState) -> T) -> T {
-        self.lend(STATE, |bound| {
-            // The loan keeps every other taker off the slot until it is back.
-            let Some(mut state) = bound.state.take() else {
-                swoole_rs_corebase::fatal("a coroutine socket without its state")
-            };
-            let result = f(&mut state);
-            bound.state.set(Some(state));
-            result
-        })
+        // Only a loan empties the slot, so an empty one is an overlapping loan.
+        let mut taken = Taken::new(&self.record().bound().state);
+        assert!(
+            taken.0.is_some(),
+            "a coroutine socket's borrow overlaps another of the same part"
+        );
+        let Some(state) = taken.0.as_mut() else {
+            swoole_rs_corebase::fatal("a coroutine socket without its state")
+        };
+        f(state)
     }
 
     /// `errno` classified by the open socket, as `catch_read_error`/`catch_write_error`
@@ -607,7 +604,25 @@ impl CoSocket {
         let _loan = Loan::take(&bound.lent, part);
         f(bound)
     }
+}
 
+/// What a slot held, taken out while a loan keeps every other taker off it, and
+/// put back when this drops, unwinding included.
+struct Taken<'a, T>(Option<T>, &'a Cell<Option<T>>);
+
+impl<'a, T> Taken<'a, T> {
+    fn new(slot: &'a Cell<Option<T>>) -> Self {
+        Self(slot.take(), slot)
+    }
+}
+
+impl<T> Drop for Taken<'_, T> {
+    fn drop(&mut self) {
+        self.1.set(self.0.take());
+    }
+}
+
+impl CoSocket {
     /// The [`Bound`] `init` made, live until `fini`.
     #[track_caller]
     fn bound(&self) -> &Bound {
