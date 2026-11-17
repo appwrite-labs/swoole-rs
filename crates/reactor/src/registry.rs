@@ -6,7 +6,8 @@ use crate::Socket;
 use std::ffi::{c_int, c_void};
 use swoole_rs_memory::flat::Table;
 
-/// Only an add, which takes a socket never freed while registered, puts one here.
+/// Only an add puts a socket here, and freeing its record deletes it first
+/// (`OwnedSocket::into_box`), so every entry is live.
 type Sockets = Table<(Socket<'static>, crate::Events)>;
 
 pub struct Registry {
