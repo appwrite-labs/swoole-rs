@@ -26,8 +26,8 @@ pub struct Context {
     swap_fctx: Cell<*mut c_void>,
     /// The stack it runs on and its flags: none under [`THREAD`].
     stack: Stack,
-    /// What the first switch in runs: none under [`THREAD`], or once it started.
-    entry: Cell<Option<Entry>>,
+    /// What the first switch in runs, in place: empty under [`THREAD`].
+    entry: Entry,
     /// The stack that last switched in, which `swap_out` returns to (`AddressSanitizer` only).
     asan_bottom: Cell<*const c_void>,
     asan_size: Cell<usize>,
@@ -64,18 +64,13 @@ impl Context {
         self.end.get()
     }
 
-    /// Allocates the stack and makes the context that runs `entry` on it. A
-    /// [`THREAD`] context starts its thread instead.
-    ///
-    /// # Errors
-    /// No stack (out of memory), or the errno of a [`THREAD`] context whose
-    /// thread failed to start.
-    pub fn new(stack_size: usize, flags: u32, entry: Entry) -> Result<Self, Unmade> {
-        let mut context = Self {
+    /// A context with nothing to run yet.
+    fn idle(flags: u32) -> Self {
+        Self {
             fctx: Cell::new(ptr::null_mut()),
             swap_fctx: Cell::new(ptr::null_mut()),
             stack: Stack::none(flags),
-            entry: Cell::new(None),
+            entry: Entry::empty(),
             asan_bottom: Cell::new(ptr::null()),
             asan_size: Cell::new(0),
             #[cfg(tsan)]
@@ -84,10 +79,27 @@ impl Context {
             tsan_caller: Cell::new(None),
             end: Cell::new(false),
             thread: None,
-        };
+        }
+    }
+}
+
+impl Native {
+    /// A record whose context runs `entry` on a stack it allocates, made in place:
+    /// the entry is moved once, into the record. A [`THREAD`] context starts its
+    /// thread with `entry` instead.
+    ///
+    /// # Errors
+    /// No stack (out of memory), or the errno of a [`THREAD`] context whose
+    /// thread failed to start.
+    pub fn new(stack_size: usize, flags: u32, entry: Entry) -> Result<Box<Self>, Unmade> {
+        let mut native = Box::new(Self {
+            co: Coroutine::idle(),
+            ctx: Context::idle(flags),
+        });
+        let context = &mut native.ctx;
         if flags & THREAD != 0 {
             context.thread = Some(thread::start(entry).map_err(Unmade::Thread)?);
-            return Ok(context);
+            return Ok(native);
         }
         let stack_size = stack_size.c_cast::<u32>();
         let size = stack_size as usize;
@@ -98,12 +110,12 @@ impl Context {
             .fctx
             .set(unsafe { make_fcontext(top.cast(), size, first_frame) });
         context.stack = stack;
-        context.entry.set(Some(entry));
-        Ok(context)
+        context.entry = entry;
+        Ok(native)
     }
 }
 
-/// Why [`Context::new`] made no context.
+/// Why [`Native::new`] made no record.
 #[derive(Debug)]
 pub enum Unmade {
     /// The stack's allocation failed.
@@ -360,13 +372,10 @@ fn switched_in(
 /// `swap_in` jumped here with its coroutine, which now runs.
 extern "C" fn first_frame(transfer: Transfer) {
     let co = transfer.data;
-    let entry = co.read_context(|record| {
+    co.read_context(|record| {
         switched_in(record, transfer.fctx, asan(), FakeStack::NONE);
-        record.entry.take()
+        record.entry.run_held();
     });
-    if let Some(entry) = entry {
-        entry.run();
-    }
     co.read_context(|ctx| ctx.end.set(true));
     // The running coroutine; an ended one is never switched back in.
     swap_out(co);
@@ -405,11 +414,8 @@ mod tests {
         let log = &raw mut log;
         // SAFETY: the record lives until freed below, and each switch is the stack's turn.
         unsafe {
-            let ctx = Context::new(64 * 1024, 0, Entry::of(move || entry(log))).unwrap();
-            (*log).co = Some(Co::leak(Box::new(Native {
-                co: Coroutine::idle(),
-                ctx,
-            })));
+            let native = Native::new(64 * 1024, 0, Entry::of(move || entry(log))).unwrap();
+            (*log).co = Some(Co::leak(native));
             assert!(!swap_in(co(log)));
             (*log).steps.push("main");
             assert!(swap_in(co(log)));

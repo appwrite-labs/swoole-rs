@@ -141,12 +141,23 @@ impl<F: FnOnce() + Copy + 'static> Small<()> for Once<F> {
 unsafe impl Send for Entry {}
 
 impl Entry {
+    /// No entry: a [`THREAD`] context's, whose thread holds it.
+    pub(crate) const fn empty() -> Self {
+        Self(SmallFn::empty())
+    }
+
     /// The entry that runs `entry`.
     #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn of<F: FnOnce() + Copy + 'static>(entry: F) -> Self {
         let slot = SmallFn::empty();
         slot.put(Once(entry));
         Self(slot)
+    }
+
+    /// Runs the held entry in place, where it stays: a stack context's, whose
+    /// record never moves and whose first frame alone runs it.
+    pub(crate) fn run_held(&self) {
+        _ = self.0.run();
     }
 
     /// Runs the entry; this takes it, so it runs once.

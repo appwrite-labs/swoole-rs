@@ -7,7 +7,7 @@
 //! use, under their upstream symbols, over scheduler.rs. These need the timer
 //! and the event loop, which only the extension links.
 //! The build's switches are `crate::built_with`'s (`build`).
-use crate::coroutine::context::{Context, Native, Unmade};
+use crate::coroutine::context::{Native, Unmade};
 use crate::coroutine::scheduler::{bailed_out, current, with_scheduler, yield_with_cancel_armed};
 use crate::coroutine::state::{self as coroutine, Co, Sched, run};
 use crate::coroutine::thread::{
@@ -92,16 +92,34 @@ extern "C" fn clock() -> c_long {
 /// for the baton, so the two never run at once.
 #[must_use]
 pub fn spawn<F: FnOnce() + Copy + 'static>(entry: F) -> c_long {
+    create(Entry::of(entry))
+}
+
+/// [`spawn`] of a made entry: one body for every entry type.
+fn create(entry: Entry) -> c_long {
     let flags = build() & (THREAD | STACK_PROTECT | STACK_MARK);
     let stack_size = with_scheduler(|s| s.stack_size);
-    let ctx = match Context::new(stack_size, flags, Entry::of(entry)) {
-        Ok(ctx) => ctx,
-        Err(Unmade::NoStack) => {
+    let native = match Native::new(stack_size, flags, entry) {
+        Ok(native) => native,
+        Err(unmade) => return unmade_error(&unmade),
+    };
+    let co = Co::leak(native);
+    let now = steady_usec();
+    if with_scheduler(|s| s.register(co, co.ptr().cast(), now / 1000, now)) {
+        activate();
+    }
+    run(Sched::this(), co)
+}
+
+/// [`spawn`]'s failure: a fatal error without a stack, -1 when a thread failed.
+fn unmade_error(unmade: &Unmade) -> c_long {
+    match unmade {
+        Unmade::NoStack => {
             // SAFETY: this frame owns nothing with a destructor; the caller's, as above.
             unsafe { fatal_error(SW_ERROR_MALLOC_FAIL, c"failed to malloc stack memory.") };
             std::process::exit(254);
         }
-        Err(Unmade::Thread(error)) => {
+        &Unmade::Thread(error) => {
             set_last_error(error);
             log::warning(
                 c"Coroutine::create",
@@ -110,18 +128,9 @@ pub fn spawn<F: FnOnce() + Copy + 'static>(entry: F) -> c_long {
                     io::Error::from_raw_os_error(error)
                 ),
             );
-            return -1;
+            -1
         }
-    };
-    let co = Co::leak(Box::new(Native {
-        co: Coroutine::idle(),
-        ctx,
-    }));
-    let now = steady_usec();
-    if with_scheduler(|s| s.register(co, co.ptr().cast(), now / 1000, now)) {
-        activate();
     }
-    run(Sched::this(), co)
 }
 
 /// `static void Coroutine::activate()`.
