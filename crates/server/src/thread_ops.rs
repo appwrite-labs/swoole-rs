@@ -15,7 +15,7 @@ use crate::objects::worker_pipe;
 use crate::reactor_handle::Reactor;
 use crate::reactor_io::owns;
 use swoole_rs_process::worker_record::Worker;
-use swoole_rs_reactor::{Event, Running, Socket};
+use swoole_rs_reactor::{Event, Running};
 
 use crate::callbacks::TaskSlot;
 use crate::event_worker::native::{
@@ -34,9 +34,9 @@ const CLOSE_ACTIVELY: c_int = 1 << 2;
 /// `thread->message_bus.get_pipe_socket(sock)`.
 fn pipe_socket<'b>(
     bus: &'b crate::objects::Bus<'_>,
-    pipe: Option<Socket<'_>>,
-) -> Option<Socket<'b>> {
-    bus.pipe_socket(pipe?)
+    pipe: Option<swoole_rs_reactor::Heap<'_>>,
+) -> Option<swoole_rs_reactor::Heap<'b>> {
+    bus.pipe_socket(*pipe?)
 }
 
 /// The server's worker `id`, if it has one.
@@ -130,7 +130,8 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
         }
         // Only synchronous sends go to the notify pipe: thread-safe, no separate memory.
         if thread.notify_pipe.get().is_none() {
-            let pipe = worker_pipe(worker, false).and_then(crate::reactor_handle::registered);
+            let pipe = worker_pipe(worker, false)
+                .and_then(|pipe| crate::reactor_handle::registered(*pipe));
             thread.notify_pipe.set(pipe);
         }
     }
@@ -328,7 +329,7 @@ fn pipe_read(ctx: &ReactorContext<'_>, event: &Event) -> Option<c_int> {
     let bus = thread.message_bus();
     let sock = event.socket()?;
     loop {
-        if bus.read_dgram(sock) <= Some(0) {
+        if bus.read_dgram(*sock) <= Some(0) {
             return Some(0);
         }
         let head = bus.head();
@@ -349,7 +350,7 @@ fn pipe_read(ctx: &ReactorContext<'_>, event: &Event) -> Option<c_int> {
                     .config_ref()
                     .command_pipe()
                     .and_then(swoole_rs_tls::socket_pair::SocketPair::worker_end);
-                let pipe = end.and_then(|end| bus.pipe_socket(end));
+                let pipe = end.and_then(|end| bus.pipe_socket(*end));
                 crate::commands::call_command_handler(serv, bus, id, pipe);
             }
             Some(ServerEvent::CommandResponse) => {
@@ -398,7 +399,7 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
                 .port_socket_at(index)
                 .filter(|s| !s.read(|s| s.removed))
             {
-                reactor.del(socket);
+                reactor.del(*socket);
             }
         }
     }

@@ -19,7 +19,7 @@ pub fn swr_v1_reactor_poll_events_to(events: crate::Events) -> i16 {
 /// held them before the wait, so an entry's socket is live: freeing a record deletes it from the registry first.
 pub struct PollSnapshot {
     entries: Vec<libc::pollfd>,
-    sockets: Vec<crate::Socket<'static>>,
+    sockets: Vec<crate::Heap<'static>>,
 }
 
 impl PollSnapshot {
@@ -57,7 +57,7 @@ impl PollSnapshot {
 
     /// Entry `index` as `poll()` left it, and the socket it was built from.
     #[inline]
-    pub(crate) fn entry(&self, index: usize) -> Option<(libc::pollfd, crate::Socket<'static>)> {
+    pub(crate) fn entry(&self, index: usize) -> Option<(libc::pollfd, crate::Heap<'static>)> {
         Some((*self.entries.get(index)?, *self.sockets.get(index)?))
     }
 

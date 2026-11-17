@@ -124,7 +124,7 @@ impl Sock {
             let network = self.socket.0.socket.get().unwrap();
             network
                 .edit(|record| record.set_ssl(Some(crate::co_socket::record_ssl(session.cast()))));
-            self.held_ssl = swoole_rs_tls::Ssl::of(network);
+            self.held_ssl = swoole_rs_tls::Ssl::of(*network);
         }
     }
 

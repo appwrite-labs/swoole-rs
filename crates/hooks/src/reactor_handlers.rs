@@ -172,7 +172,8 @@ mod tests {
                 7,
                 0,
                 FdType::SW_FD_CO_EVENT as c_int,
-                swoole_rs_reactor::Socket::from_ptr(SOCKET.get()),
+                swoole_rs_reactor::Socket::from_ptr(SOCKET.get())
+                    .map(swoole_rs_reactor::Heap::from_static),
             )
         };
         for events in [Events::WRITE, Events::READ] {

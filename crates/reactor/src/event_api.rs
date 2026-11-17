@@ -73,34 +73,28 @@ pub fn swoole_event_is_running() -> bool {
 
 /// [`crate::reactor_upstream::change`] of `socket` on the thread's reactor; false
 /// without one.
-fn change(socket: crate::Socket<'static>, op: crate::ChangeOp, events: Events) -> bool {
+fn change(socket: crate::Heap<'_>, op: crate::ChangeOp, events: Events) -> bool {
     running().is_some_and(|reactor| crate::reactor_upstream::change(reactor, socket, op, events))
 }
 
-/// `int swoole_event_add(Socket *socket, int events)` of a socket that is never freed
-/// while registered: whether it worked, false without a reactor.
+/// `int swoole_event_add(Socket *socket, int events)` of a heap socket: whether it
+/// worked, false without a reactor.
 #[must_use]
-pub fn event_add(socket: crate::Socket<'static>, events: Events) -> bool {
+pub fn event_add(socket: crate::Heap<'_>, events: Events) -> bool {
     change(socket, crate::ChangeOp::Add, events)
 }
 
-/// `int swoole_event_set(Socket *socket, int events)` of a socket that is never freed
-/// while registered (kqueue's set registers its address again): whether it worked,
-/// false without a reactor.
+/// `int swoole_event_set(Socket *socket, int events)` of a heap socket (kqueue's set
+/// registers its address again): whether it worked, false without a reactor.
 #[must_use]
-pub fn event_set(socket: crate::Socket<'static>, events: Events) -> bool {
+pub fn event_set(socket: crate::Heap<'_>, events: Events) -> bool {
     change(socket, crate::ChangeOp::Set, events)
 }
 
-/// `Reactor::interest(socket, kind, event)` on the thread's reactor, of a socket that
-/// is never freed while registered: whether the change worked, true when nothing
-/// changes, false without a reactor.
+/// `Reactor::interest(socket, kind, event)` on the thread's reactor, of a heap socket:
+/// whether the change worked, true when nothing changes, false without a reactor.
 #[must_use]
-pub fn event_interest(
-    socket: crate::Socket<'static>,
-    kind: crate::Interest,
-    event: Events,
-) -> bool {
+pub fn event_interest(socket: crate::Heap<'_>, kind: crate::Interest, event: Events) -> bool {
     running().is_some_and(|reactor| crate::reactor_upstream::interest(reactor, socket, kind, event))
 }
 
@@ -112,11 +106,11 @@ pub fn event_del(socket: crate::Socket<'_>) -> bool {
 }
 
 /// `int swoole_event_add_or_update(Socket *socket, int event)` (`add_read_event` or
-/// `add_write_event`) of a socket that is never freed while registered: whether it
-/// worked, false without a reactor or for an event that is neither `SW_EVENT_READ` nor
-/// `SW_EVENT_WRITE`, where upstream asserts.
+/// `add_write_event`) of a heap socket: whether it worked, false without a reactor or
+/// for an event that is neither `SW_EVENT_READ` nor `SW_EVENT_WRITE`, where upstream
+/// asserts.
 #[must_use]
-pub fn add_or_update(socket: crate::Socket<'static>, event: Events) -> bool {
+pub fn add_or_update(socket: crate::Heap<'_>, event: Events) -> bool {
     let (Some(reactor), Some(kind)) = (running(), direction(event)) else {
         return false;
     };
@@ -127,10 +121,10 @@ pub fn add_or_update(socket: crate::Socket<'static>, event: Events) -> bool {
 #[derive(Clone, Copy)]
 pub struct Writers {
     /// `Reactor::write` and `Reactor::writev`: send what the socket takes now, copy
-    /// the rest into its output buffer and register the socket, never freed while
-    /// registered, for writing. The bytes taken, or `None` when it failed.
-    pub write: fn(crate::Running<'_>, crate::Socket<'static>, &[u8]) -> Option<usize>,
-    pub writev: fn(crate::Running<'_>, crate::Socket<'static>, &[IoSlice<'_>]) -> Option<usize>,
+    /// the rest into its output buffer and register the heap socket for writing. The
+    /// bytes taken, or `None` when it failed.
+    pub write: fn(crate::Running<'_>, crate::Heap<'_>, &[u8]) -> Option<usize>,
+    pub writev: fn(crate::Running<'_>, crate::Heap<'_>, &[IoSlice<'_>]) -> Option<usize>,
     /// `Reactor::_close` and `Reactor::_writable_callback`: a new reactor's close and
     /// default write handler.
     pub close: crate::ReactorClose,
@@ -179,23 +173,19 @@ fn writers<'a>() -> (crate::Running<'a>, &'static Writers) {
 }
 
 /// `ssize_t swoole_event_write(Socket *socket, const void *data, size_t len)` of `data`
-/// on a socket that is never freed while registered (a write that can't all go out
-/// registers it for writing): the bytes taken, `None` when it failed.
+/// on a heap socket (a write that can't all go out registers it for writing): the
+/// bytes taken, `None` when it failed.
 #[must_use]
-pub fn event_write(socket: crate::Socket<'static>, data: &[u8]) -> Option<usize> {
+pub fn event_write(socket: crate::Heap<'_>, data: &[u8]) -> Option<usize> {
     let (reactor, writers) = writers();
     (writers.write)(reactor, socket, data)
 }
 
 /// `ssize_t swoole_event_writev(Socket *socket, const iovec *iov, size_t iovcnt)` of
-/// `vectors` on a socket that is never freed while registered (what can't all go out
-/// is copied and the socket registered for writing): the bytes taken, `None` when it
-/// failed.
+/// `vectors` on a heap socket (what can't all go out is copied and the socket
+/// registered for writing): the bytes taken, `None` when it failed.
 #[must_use]
-pub fn swoole_event_writev(
-    socket: crate::Socket<'static>,
-    vectors: &[IoSlice<'_>],
-) -> Option<usize> {
+pub fn swoole_event_writev(socket: crate::Heap<'_>, vectors: &[IoSlice<'_>]) -> Option<usize> {
     let (reactor, writers) = writers();
     (writers.writev)(reactor, socket, vectors)
 }
@@ -259,7 +249,7 @@ pub fn swoole_event_num() -> Option<usize> {
 
 /// The sockets the thread's `Reactor` holds, in fd order; none without one.
 #[must_use]
-pub fn swoole_event_sockets() -> Vec<crate::Socket<'static>> {
+pub fn swoole_event_sockets() -> Vec<crate::Heap<'static>> {
     with_registry(|registry| registry.map(crate::Registry::sockets))
         .flatten()
         .unwrap_or_default()

@@ -5,7 +5,7 @@ use crate::Mode;
 use core::ffi::{c_int, c_void};
 
 use swoole_rs_corebase::{DataHead, TrustedAllocator};
-use swoole_rs_reactor::Socket;
+use swoole_rs_reactor::{Heap, Socket};
 
 use swoole_rs_bus::{BusPacket, MessageBus};
 
@@ -19,13 +19,13 @@ pub(crate) use crate::view::{set_nonblock, worker_pipe};
 pub(crate) fn in_worker_bus<R>(
     state: &crate::ServerState,
     config: &crate::ServerConfig,
-    pipe: Option<Socket<'_>>,
-    f: impl FnOnce(Socket<'_>) -> R,
+    pipe: Option<Heap<'_>>,
+    f: impl FnOnce(Heap<'_>) -> R,
 ) -> Option<R> {
     let pipe = pipe?;
     if config.mode_ == Mode::Thread {
         crate::master_ops::worker_message_bus(state)
-            .pipe_socket(pipe)
+            .pipe_socket(*pipe)
             .map(f)
     } else {
         Some(f(pipe))
@@ -154,13 +154,8 @@ impl<'a> Bus<'a> {
     }
     /// `MessageBus::write(sock, {head, data})`, `head.len` set to the data's length:
     /// whether the whole message went.
-    pub(crate) fn write(self, sock: Socket<'_>, head: &mut DataHead, data: &[u8]) -> bool {
+    pub(crate) fn write(self, sock: Heap<'_>, head: &mut DataHead, data: &[u8]) -> bool {
         head.len = u32::try_from(data.len()).unwrap_or(u32::MAX);
-        // Every caller passes a worker pipe (a command's reply socket is one), which the
-        // server keeps until it shuts down, after its event loop.
-        let Some(sock) = crate::reactor_handle::registered(sock) else {
-            return false;
-        };
         self.rust().send(sock, head, Some(data))
     }
     /// `MessageBus::set_always_chunked_transfer()`.
@@ -181,7 +176,7 @@ impl<'a> Bus<'a> {
         self.rust().free_buffer();
     }
     /// `get_pipe_socket(sock)`: this bus's own end of the pipe `sock`.
-    pub(crate) fn pipe_socket(&self, sock: Socket<'_>) -> Option<Socket<'_>> {
+    pub(crate) fn pipe_socket(&self, sock: Socket<'_>) -> Option<Heap<'_>> {
         self.rust().pipe(sock.fd())
     }
     /// This bus's own end of the pipe `fd`.

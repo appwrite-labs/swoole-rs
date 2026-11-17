@@ -1,13 +1,13 @@
 //! A `Socket` record this owns, on the thread's reactor: `Swoole\Event`'s user
 //! sockets, a pipe's ends and an event waiter's watch.
 use std::ffi::c_int;
-use swoole_rs_reactor::{OwnedSocket, Socket, SocketRecord, event_api, socket_upstream};
+use swoole_rs_reactor::{Heap, OwnedSocket, Socket, SocketRecord, event_api, socket_upstream};
 
 /// A heap record this owns until [`EventSocket::free`], lending it only for a borrow
 /// of `self`; the reactor reaches it only through the calls below, and `free` takes
 /// it off. Its event calls do nothing, and fail, without a reactor.
 #[repr(transparent)]
-pub struct EventSocket(Socket<'static>);
+pub struct EventSocket(Heap<'static>);
 
 fn reactor() -> bool {
     !swoole_rs_corebase::thread_reactor().is_null()
@@ -39,6 +39,13 @@ impl EventSocket {
     /// The record, for as long as this is borrowed.
     #[must_use]
     pub const fn socket(&self) -> Socket<'_> {
+        self.0.socket()
+    }
+
+    /// The record for as long as this is borrowed, which a reactor may register: its
+    /// free deletes it from the reactor first.
+    #[must_use]
+    pub const fn heap(&self) -> Heap<'_> {
         self.0
     }
 
@@ -67,7 +74,7 @@ impl EventSocket {
     /// `swoole_event_del(socket)`: whether it worked.
     #[must_use]
     pub fn del(&self) -> bool {
-        event_api::event_del(self.0)
+        event_api::event_del(*self.0)
     }
 
     /// `swoole_event_write(socket, data, len)`: the bytes taken, `None` when it failed
@@ -100,7 +107,7 @@ impl EventSocket {
         // SAFETY: the record this owns, the leaked box `adopt` (or the caller of
         // `socket_free`) gave it: no other owner holds it, and nothing uses a handle to
         // it once it is freed below or by the reactor's deferred task.
-        let owned = unsafe { OwnedSocket::from_socket(self.0) };
+        let owned = unsafe { OwnedSocket::from_socket(*self.0) };
         #[cfg(feature = "upstream-symbols")]
         let owned = {
             let record = owned.socket();

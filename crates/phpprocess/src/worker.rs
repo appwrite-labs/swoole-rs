@@ -8,7 +8,7 @@ use swoole_rs_process::{
     worker_record::{Worker, WorkerRecord},
 };
 use swoole_rs_reactor::{
-    Socket, event_api,
+    event_api,
     socket_upstream::{
         socket_set_fd_option, socket_set_kernel_read_timeout, socket_set_kernel_write_timeout,
     },
@@ -115,7 +115,7 @@ pub(crate) fn set_id(worker: Worker<'_>, id: u32) {
 }
 
 /// The worker's current pipe end, while it has one.
-fn pipe(worker: Worker<'_>) -> Option<Socket<'_>> {
+fn pipe(worker: Worker<'_>) -> Option<swoole_rs_reactor::Heap<'_>> {
     view::worker_pipe_end(worker, view::PipeEnd::Current)
 }
 
@@ -123,7 +123,7 @@ pub(crate) fn view(worker: Worker<'_>) -> WorkerView {
     WorkerView {
         id: worker.id(),
         pid: worker.pid(),
-        pipe: pipe(worker).map(Socket::fd),
+        pipe: pipe(worker).map(|pipe| pipe.fd()),
         pipe_object: !worker.pipe_object().is_null(),
         redirect_stdin: worker.redirect_stdin(),
         redirect_stdout: worker.redirect_stdout(),
@@ -160,7 +160,7 @@ pub(crate) fn child_enter(worker: Worker<'_>) {
 pub(crate) fn pipe_read(worker: Worker<'_>, buffer: &mut [u8], blocking: bool) -> Option<usize> {
     let socket = pipe(worker)?;
     if blocking {
-        read_sync(socket, buffer)
+        read_sync(*socket, buffer)
     } else {
         swoole_rs_corebase::sys::read(socket.fd(), buffer)
     }
@@ -169,17 +169,16 @@ pub(crate) fn pipe_read(worker: Worker<'_>, buffer: &mut [u8], blocking: bool) -
 /// Write `data` to the pipe: the length written, or `None`.
 pub(crate) fn pipe_write(worker: Worker<'_>, data: &[u8], blocking: bool) -> Option<usize> {
     if !blocking && event_api::swoole_event_is_available() {
-        let socket = view::registered_pipe_end(worker, view::PipeEnd::Current)?;
-        event_api::event_write(socket, data)
+        event_api::event_write(pipe(worker)?, data)
     } else {
-        send_sync(pipe(worker)?, data, 0)
+        send_sync(*pipe(worker)?, data, 0)
     }
 }
 
 /// Shut one direction of the pipe, or close the pair's `which` end (0: both,
 /// then free the pair); false when it failed or the worker owns no pipe object.
 pub(crate) fn pipe_close(slot: &Slot, worker: Worker<'_>, which: i64) -> bool {
-    let fd = pipe(worker).map_or(-1, Socket::fd);
+    let fd = pipe(worker).map_or(-1, |pipe| pipe.fd());
     let pair = worker.pipe_object();
     if pair.is_null() {
         return false;

@@ -481,10 +481,7 @@ impl ReactorState {
     /// poll's entry `index` and the socket it was built from; none past its end or
     /// for another backend.
     #[inline]
-    pub(crate) fn poll_entry(
-        &self,
-        index: usize,
-    ) -> Option<(libc::pollfd, crate::Socket<'static>)> {
+    pub(crate) fn poll_entry(&self, index: usize) -> Option<(libc::pollfd, crate::Heap<'static>)> {
         match &self.backend {
             Backend::Poll(snapshot) => snapshot.entry(index),
             _ => None,
@@ -618,7 +615,10 @@ impl ReactorState {
         events: crate::Events,
     ) -> bool {
         use crate::change::Request;
-        let (Request::Add(socket) | Request::Set(socket) | Request::Del(socket)) = request;
+        let socket = match request {
+            Request::Add(socket) | Request::Set(socket) => *socket,
+            Request::Del(socket) => socket,
+        };
         let serial = self.serial;
         socket.edit(|record| {
             match request {
@@ -629,7 +629,7 @@ impl ReactorState {
                     }
                     // A socket whose fd closed unremoved is no longer this registry's.
                     if let Some(replaced) = replaced.filter(|old| old.as_ptr() != added.as_ptr()) {
-                        unmark(replaced, serial);
+                        unmark(*replaced, serial);
                     }
                     added.mark().store(serial, Ordering::Relaxed);
                     record.events = events;
@@ -672,7 +672,7 @@ impl ReactorState {
     /// Lets every socket the registry names go: freeing one no longer deletes it here.
     fn release_sockets(&self) {
         for (_, socket, _) in self.registry.registered() {
-            unmark(socket, self.serial);
+            unmark(*socket, self.serial);
         }
     }
 
@@ -703,7 +703,7 @@ pub(crate) mod tests {
         op: crate::ChangeOp,
         events: crate::Events,
     ) -> bool {
-        let socket = unsafe { crate::Socket::from_ptr(socket) }.unwrap();
+        let socket = crate::Heap::from_static(unsafe { crate::Socket::from_ptr(socket) }.unwrap());
         unsafe { (*owner).record(crate::change::Request::new(socket, op), events) }
     }
     pub(crate) unsafe fn free(owner: *mut ReactorState) {
@@ -771,10 +771,9 @@ pub(crate) mod tests {
         let mut fds = [0; 2];
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         let owned = crate::OwnedSocket::new(Box::new(SocketRecord::with_fd(fds[0], 0)));
-        let socket = unsafe { crate::Socket::from_ptr(owned.socket().as_ptr()) }.unwrap();
         assert!(crate::reactor_upstream::change(
             reactor,
-            socket,
+            owned.heap(),
             crate::ChangeOp::Add,
             crate::Events::READ
         ));

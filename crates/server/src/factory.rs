@@ -154,7 +154,7 @@ fn accept_command_result(
     let Some(sock) = event.socket() else {
         return 0;
     };
-    if bus.read(sock) <= Some(0) {
+    if bus.read(*sock) <= Some(0) {
         return 0;
     }
     let request_id = bus.head().fd;
@@ -422,8 +422,7 @@ impl crate::hybrid::Hybrid for Linked {
             ..DataHead::default()
         };
         // `serv->get_reactor_pipe_socket(0, 0)`.
-        let pipe = serv.worker_pipe(0, false);
-        let Some(pipe) = pipe.and_then(crate::reactor_handle::registered) else {
+        let Some(pipe) = serv.worker_pipe(0, false) else {
             return false;
         };
         // The `SendData` upstream sends: the head, then a null payload pointer.

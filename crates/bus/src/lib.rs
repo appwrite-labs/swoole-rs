@@ -33,7 +33,7 @@ use swoole_rs_corebase::buffer::string::OwnedString;
 use swoole_rs_corebase::lent::ReadVec;
 use swoole_rs_corebase::sys::{self, errno};
 use swoole_rs_corebase::{DataHead as BusHead, TrustedAllocator, log};
-use swoole_rs_reactor::{Caught, OwnedSocket, Socket, SocketRecord};
+use swoole_rs_reactor::{Caught, Heap, OwnedSocket, Socket, SocketRecord};
 
 pub use Bus as MessageBus;
 
@@ -133,7 +133,7 @@ impl Hasher for IdHasher {
 type Packets = HashMap<u64, OwnedString, BuildHasherDefault<IdHasher>>;
 
 /// This bus's pipe records, by descriptor.
-type PipeSockets = Vec<Option<Socket<'static>>>;
+type PipeSockets = Vec<Option<Heap<'static>>>;
 
 /// Its methods take `&self`: the server lends the bus through a `Copy` handle, so
 /// each field is a cell. The packets and pipe records are boxed, so a take moves a
@@ -172,7 +172,7 @@ impl Drop for Bus {
             record.edit(|record| record.fd = -1);
             // SAFETY: a heap record `init_pipe_socket` made, used by nothing else now
             // and freed once: the bus is dropping.
-            free_socket(Some(unsafe { OwnedSocket::from_socket(record) }));
+            free_socket(Some(unsafe { OwnedSocket::from_socket(*record) }));
         }
     }
 }
@@ -860,15 +860,15 @@ impl Bus {
     /// unless it has none, the payload its `len` counts (at most `data`'s bytes are
     /// sent). Numbers the message, then writes it through the event loop while one is
     /// available, else synchronously. False if the pipe failed. (What the event loop
-    /// cannot send at once it queues, and watches `socket` until it drains: a
-    /// `Socket<'static>` may be.)
-    pub fn send(&self, socket: Socket<'static>, head: &mut BusHead, data: Option<&[u8]>) -> bool {
+    /// cannot send at once it queues, and watches `socket` until it drains: a [`Heap`]
+    /// socket may be.)
+    pub fn send(&self, socket: Heap<'_>, head: &mut BusHead, data: Option<&[u8]>) -> bool {
         use swoole_rs_reactor::event_api;
         let send = |vectors: &[IoSlice<'_>]| {
             if event_api::swoole_event_is_available() {
                 event_api::swoole_event_writev(socket, vectors)
             } else {
-                writev_sync(socket, vectors)
+                writev_sync(*socket, vectors)
             }
         };
         let reduce = || {
@@ -888,12 +888,12 @@ impl Bus {
             return;
         };
         // `make_socket`: a new record, which the bus frees on drop.
-        let socket = Box::leak(Box::new(SocketRecord::with_fd(fd, /* SW_FD_PIPE */ 3)));
+        let mut socket = Box::new(SocketRecord::with_fd(fd, /* SW_FD_PIPE */ 3));
         socket.output.buffer_size = u32::MAX;
         if !socket.output.nonblock {
-            swoole_rs_reactor::socket_upstream::socket_set_fd_option(socket, 1, -1);
+            swoole_rs_reactor::socket_upstream::socket_set_fd_option(&mut socket, 1, -1);
         }
-        let socket = Socket::new(socket);
+        let socket = socket.into_socket();
         lend_or_default(&self.pipe_sockets, |sockets| {
             if index >= sockets.len() {
                 sockets.resize(index + 1, None);
@@ -908,14 +908,15 @@ impl Bus {
     #[must_use]
     #[inline]
     pub fn pipe_socket(&self, fd: c_int) -> *mut SocketRecord {
-        self.pipe(fd).map_or(ptr::null_mut(), Socket::as_ptr)
+        self.pipe(fd)
+            .map_or(ptr::null_mut(), |socket| socket.as_ptr())
     }
 
     /// [`MessageBus::pipe_socket`]'s record as a handle, or `None` before
     /// `init_pipe_socket` made one for `fd`.
     #[must_use]
     #[inline]
-    pub fn pipe(&self, fd: c_int) -> Option<Socket<'_>> {
+    pub fn pipe(&self, fd: c_int) -> Option<Heap<'_>> {
         let index = usize::try_from(fd).ok()?;
         lend(&self.pipe_sockets, |sockets| {
             sockets.get(index).copied().flatten()

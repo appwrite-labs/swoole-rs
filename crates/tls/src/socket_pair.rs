@@ -14,9 +14,7 @@ use std::ptr;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
-use swoole_rs_reactor::{
-    SOCKET_DEFAULTS, Socket, SocketRecord, TimeoutKind, set_socket_buffer_size,
-};
+use swoole_rs_reactor::{Heap, SOCKET_DEFAULTS, SocketRecord, TimeoutKind, set_socket_buffer_size};
 
 /// `SW_FD_PIPE`.
 const FD_PIPE: c_int = 3;
@@ -116,9 +114,9 @@ pub fn unix_socket(blocking: bool, protocol: c_int) -> SocketPair {
 }
 
 /// The two ends, master first (None once closed).
-fn ends(pair: &SocketPair) -> [Option<Socket<'_>>; 2] {
-    let master = pair.master_socket.as_ref().map(EventSocket::socket);
-    [master, pair.worker_socket.as_ref().map(EventSocket::socket)]
+fn ends(pair: &SocketPair) -> [Option<Heap<'_>>; 2] {
+    let master = pair.master_socket.as_ref().map(EventSocket::heap);
+    [master, pair.worker_socket.as_ref().map(EventSocket::heap)]
 }
 
 impl SocketPair {
@@ -126,20 +124,20 @@ impl SocketPair {
     /// that keeps them while the pair lives.
     #[must_use]
     pub fn raw_ends(&self) -> (*mut SocketRecord, *mut SocketRecord) {
-        let raw = |end: Option<Socket<'_>>| end.map_or(ptr::null_mut(), Socket::as_ptr);
+        let raw = |end: Option<Heap<'_>>| end.map_or(ptr::null_mut(), |end| end.as_ptr());
         let [master, worker] = ends(self);
         (raw(master), raw(worker))
     }
 
     /// The master's end, or `None` once closed.
     #[must_use]
-    pub fn master_end(&self) -> Option<Socket<'_>> {
+    pub fn master_end(&self) -> Option<Heap<'_>> {
         ends(self)[0]
     }
 
     /// The worker's end, or `None` once closed.
     #[must_use]
-    pub fn worker_end(&self) -> Option<Socket<'_>> {
+    pub fn worker_end(&self) -> Option<Heap<'_>> {
         ends(self)[1]
     }
 
@@ -193,7 +191,7 @@ pub fn read_into(this: &SocketPair, buffer: &mut [MaybeUninit<u8>]) -> Option<us
         return None;
     };
     if this.blocking {
-        read_sync(socket, buffer)
+        read_sync(*socket, buffer)
     } else {
         swoole_rs_corebase::sys::read(socket.fd(), buffer)
     }
@@ -207,7 +205,7 @@ pub fn write_from(this: &SocketPair, data: &[u8]) -> Option<usize> {
         return None;
     };
     if this.blocking {
-        write_sync(socket, data)
+        write_sync(*socket, data)
     } else {
         swoole_rs_corebase::sys::write(socket.fd(), data)
     }

@@ -20,7 +20,7 @@ use swoole_rs_corebase::buffer::cpp::{
 use swoole_rs_corebase::buffer::string::with_thread_buffer;
 use swoole_rs_corebase::constants::{SW_SEND_BUFFER_SIZE, SocketType};
 use swoole_rs_corebase::{CCast, DataHead, microtime};
-use swoole_rs_reactor::{Event, Socket, what_event_want};
+use swoole_rs_reactor::{Event, Heap, Socket, what_event_want};
 use swoole_rs_timer::{del_id, delay_held};
 use swoole_rs_tls::Accept;
 use swoole_rs_tls::upstream as tls;
@@ -83,12 +83,12 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     let port = serv.port_by_fd(fd);
     if let Some(config) = port.map(view::Port::config)
         && sock.read(|s| SocketType::from_raw(s.socket_type).is_some_and(SocketType::is_dgram))
-        && hybrid().dtls_read(config, sock, fd)
+        && hybrid().dtls_read(config, *sock, fd)
     {
         crate::connection::abort(serv, reactor, port, sock);
         return true;
     }
-    match verify_ssl(serv, reactor, port, sock) {
+    match verify_ssl(serv, reactor, port, *sock) {
         Handshake::Error => {
             crate::connection::abort(serv, reactor, port, sock);
             return true;
@@ -237,7 +237,7 @@ fn client_cert_file(port: &PortConfig) -> bool {
 /// Arms `conn`'s resume timer for its paused `socket`, after its waiting time.
 ///
 /// The connection's own socket, which deletes this timer before it goes.
-fn resume_timer(conn: Connection<'_>, socket: Socket<'static>) -> bool {
+fn resume_timer(conn: Connection<'_>, socket: Heap<'static>) -> bool {
     let msec = c_long::from(conn.waiting_time());
     let timer = swoole_rs_timer::add_fn(msec, false, move || {
         // The server of the reactor that armed the timer: this thread's.
@@ -252,7 +252,7 @@ fn resume_timer(conn: Connection<'_>, socket: Socket<'static>) -> bool {
 /// `ReactorThread_resume_data_receiving`, the timer of a paused session socket: back
 /// off (doubling up to 1024ms) while the workers still hold too many bytes, then
 /// read again.
-fn resume_data_receiving(serv: view::Server<'_>, socket: Socket<'static>) {
+fn resume_data_receiving(serv: view::Server<'_>, socket: Heap<'static>) {
     let state = serv.state();
     let Some(conn) = state.connection(c_long::from(socket.fd()), Lookup::ByFd) else {
         return;
@@ -322,7 +322,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         return false;
     };
     if conn.close_notify() {
-        if handshaking(sock) {
+        if handshaking(*sock) {
             return close_connection(serv, reactor, Some(sock));
         }
         crate::server_methods::notify(serv, conn, ServerEvent::Close);
@@ -337,11 +337,11 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
     }) {
         let sent = match kind {
             EntryKind::Close => return reactor.close(sock),
-            EntryKind::Sendfile => tls::socket_handle_sendfile(sock),
+            EntryKind::Sendfile => tls::socket_handle_sendfile(*sock),
             EntryKind::Data => {
-                let sent = tls::socket_handle_send(sock);
+                let sent = tls::socket_handle_send(*sock);
                 if sent {
-                    conn.set_send_queued_bytes(output(sock).0);
+                    conn.set_send_queued_bytes(output(*sock).0);
                 }
                 sent
             }
@@ -357,7 +357,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
             }
         }
     }
-    let queued = output(sock).0;
+    let queued = output(*sock).0;
     if conn.overflow() && queued < sock.read(|s| s.output.buffer_size) {
         conn.set_overflow(false);
     }
@@ -403,7 +403,7 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     if state.config_ref().disable_notify.get() {
         return close_connection(serv, reactor, Some(sock));
     }
-    if !reactor.del(sock) {
+    if !reactor.del(*sock) {
         return false;
     }
     if conn.close_queued() {
@@ -446,7 +446,7 @@ fn fin_ends(prequeue: bool, state: &crate::ServerState, conn: Connection<'_>) ->
 pub(crate) fn close_connection(
     serv: view::Server<'_>,
     reactor: Reactor,
-    sock: Option<Socket<'static>>,
+    sock: Option<Heap<'static>>,
 ) -> bool {
     let state = serv.state();
     let Some(sock) = sock else {
@@ -464,9 +464,9 @@ pub(crate) fn close_connection(
     }
     let removed = sock.read(|s| s.removed);
     // A TLS close notify that cannot be sent now goes behind the queued output.
-    if BUILT_PREQUEUE && owes_close_notify(conn, sock) {
+    if BUILT_PREQUEUE && owes_close_notify(conn, *sock) {
         if !conn.close_queued() {
-            queue_close(conn, sock);
+            queue_close(conn, *sock);
         }
         let events = sock.read(|s| what_event_want(s, Events::WRITE));
         let op = if removed {
@@ -481,14 +481,14 @@ pub(crate) fn close_connection(
     if let Some(mut websocket) = conn.take_websocket_buffer() {
         websocket.dispose();
     }
-    if !removed && !reactor.del(sock) {
+    if !removed && !reactor.del(*sock) {
         return false;
     }
     count_close(state, port, reactor);
     let ssl = sock.read(|s| !s.ssl().is_null());
     if ssl {
         sock.edit(|s| s.ssl_quiet_shutdown = conn.peer_closed());
-        tls::socket_ssl_close(sock);
+        tls::socket_ssl_close(*sock);
     }
     if let Some(mut recv_buffer) = sock.edit(|s| s.recv_buffer.take()) {
         recv_buffer.dispose();
@@ -510,7 +510,7 @@ pub(crate) fn close_connection(
     conn.closed().store(1, Release);
     // SAFETY: the closing socket, the accepted heap record the slot no longer names,
     // which nothing uses afterwards.
-    let sock = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(sock) };
+    let sock = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(*sock) };
     _ = swoole_rs_tls::reactor_write::reactor_close(reactor.handle(), sock);
     true
 }
@@ -744,7 +744,7 @@ pub(crate) mod tests {
         let mut got = [0; 6];
         client.read_exact(&mut got).unwrap();
         assert_eq!(&got, b"queued");
-        assert_eq!(output(sock), (0, true));
+        assert_eq!(output(*sock), (0, true));
         assert_eq!(conn.send_queued_bytes(), 0);
         let events = sock.read(|s| s.events);
         assert!(!events.intersects(Events::WRITE), "reads only");
@@ -769,7 +769,7 @@ pub(crate) mod tests {
         );
         assert_eq!(calls(), [close]);
         assert!(!conn.close_notify());
-        assert_eq!(output(conn.socket().unwrap()).0, 4, "nothing flushed");
+        assert_eq!(output(*conn.socket().unwrap()).0, 4, "nothing flushed");
 
         live.server().config().disable_notify.set(true);
         let conn = session(&live, 2);
@@ -942,7 +942,7 @@ pub(crate) mod tests {
         let (live, _clients) = accepted();
         let sock = session(&live, 1).socket().unwrap();
         let port = live.server().port_by_fd(sock.fd());
-        let handshake = verify_ssl(live.server(), live.reactor(), port, sock);
+        let handshake = verify_ssl(live.server(), live.reactor(), port, *sock);
         assert_eq!(handshake, Handshake::Continue);
     }
 }

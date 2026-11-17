@@ -14,7 +14,7 @@ use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_reactor::{Socket as Handle, SocketFields, SocketRecord};
+use swoole_rs_reactor::{SocketFields, SocketRecord};
 
 /// `zend_memory_usage(true)`, from the PHP binding.
 static PHP_MEMORY: OnceLock<extern "C" fn() -> usize> = OnceLock::new();
@@ -96,7 +96,7 @@ struct Live<'a> {
     state: &'a ServerState,
     config: &'a ServerConfig,
     tables: &'a ServerTables,
-    sockets: Vec<Handle<'static>>,
+    sockets: Vec<swoole_rs_reactor::Heap<'static>>,
     connections: Vec<crate::Connection<'a>>,
 }
 

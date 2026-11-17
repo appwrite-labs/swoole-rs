@@ -37,7 +37,7 @@ use swoole_rs_process::process_pool::{
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
 use swoole_rs_reactor::event_api::{event_write, set_handler, swoole_event_is_available};
-use swoole_rs_reactor::{Event, Running, Socket};
+use swoole_rs_reactor::{Event, Heap, Running, Socket};
 use swoole_rs_timer::{
     swoole_timer_create, swoole_timer_free, swoole_timer_get_next_msec, swoole_timer_is_available,
     swoole_timer_select,
@@ -58,8 +58,8 @@ const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 type Pool<'a> = PoolRef<'a>;
 
 /// A socket's fd, or -1 for none.
-fn fd(socket: Option<Socket<'_>>) -> c_int {
-    socket.map_or(-1, Socket::fd)
+fn fd(socket: Option<Heap<'_>>) -> c_int {
+    socket.map_or(-1, |socket| socket.fd())
 }
 
 use swoole_rs_corebase::sys::errno;
@@ -76,8 +76,8 @@ fn with_bus<R>(pool: Pool<'_>, f: impl FnOnce(crate::objects::Bus<'_>) -> R) -> 
 }
 
 /// `MessageBus::read(sock)`; `None` (upstream's -1) without a socket or a bus too.
-fn bus_read(pool: Pool<'_>, sock: Option<Socket<'_>>) -> Option<usize> {
-    sock.and_then(|sock| with_bus(pool, |bus| bus.read(sock)).flatten())
+fn bus_read(pool: Pool<'_>, sock: Option<Heap<'_>>) -> Option<usize> {
+    sock.and_then(|sock| with_bus(pool, |bus| bus.read(*sock)).flatten())
 }
 
 /// `onMessage` with the bus's packet, then `message_bus->pop()`.
@@ -338,7 +338,7 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> bool {
             if let Some(pipe) = worker_pipe(worker, false)
                 && (arg == 0 || pipe.read(|pipe| !pipe.removed))
             {
-                Reactor::thread().del(pipe);
+                Reactor::thread().del(*pipe);
             }
         }
         Op::ExitCallback => {
@@ -603,7 +603,7 @@ impl PoolNative for Native {
                 pipe.timeouts
                     .set(timeout, swoole_rs_reactor::TimeoutKind::READ);
             });
-            read_sync_fill(pipe, c.connection_fill().1).map_or(-1, usize::cast_signed)
+            read_sync_fill(*pipe, c.connection_fill().1).map_or(-1, usize::cast_signed)
         });
     }
 
@@ -671,14 +671,14 @@ impl PoolNative for Native {
         if c.flags() != 0 && swoole_event_is_available() {
             io(c, |c| {
                 // The worker's pipe, in this thread's loop.
-                let pipe = c.lent_socket().map(Socket::lent);
-                pipe.and_then(crate::reactor_handle::registered)
+                c.lent_socket()
+                    .map(Heap::lent)
                     .and_then(|pipe| event_write(pipe, c.bytes()))
                     .map_or(-1, usize::cast_signed)
             });
         } else {
             // The worker's pipe the call lends.
-            send_on(c, |c| c.lent_socket().map(Socket::lent));
+            send_on(c, |c| c.lent_socket().map(|pipe| *Heap::lent(pipe)));
         }
     }
 
@@ -697,7 +697,7 @@ impl PoolNative for Native {
                 let listener = crate::view::pool_ipc_listener(pool);
                 let fd = fd(listener
                     .as_deref()
-                    .map(swoole_rs_reactor::OwnedSocket::socket));
+                    .map(swoole_rs_reactor::OwnedSocket::heap));
                 log::sys_warning(origin, format_args!("[Worker#{id}] accept({fd}) failed"));
             }
             Warning::Read => {
