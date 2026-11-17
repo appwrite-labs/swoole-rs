@@ -8,10 +8,11 @@ use crate::{EXEC_NEEDS_COROUTINE, Idle, Multi};
 use std::cell::Cell;
 use std::ffi::{CStr, c_int, c_long, c_void};
 use std::io::Write;
-use std::{ptr, rc::Rc};
+use std::ptr;
+use std::rc::{Rc, Weak};
 use swoole_rs_corebase::coroutine::Resume;
 use swoole_rs_corebase::reactor::Events;
-use swoole_rs_corebase::reactor::{SocketRecord, event_api};
+use swoole_rs_corebase::reactor::{SocketFields, SocketRecord, event_api};
 use swoole_rs_corebase::tls::event_socket::EventSocket;
 use swoole_rs_curl_sys::{
     CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLE_FAILED_INIT, CURLcode,
@@ -66,7 +67,7 @@ const CO_OUT_OF_COROUTINE: c_int = 10001;
 const CO_HAS_BEEN_BOUND: c_int = 10002;
 
 /// The reactor's handler for the cURL fd type: `BITMASK` happened on the
-/// socket whose object is a [`crate::Socket`].
+/// socket a [`crate::Socket`] owns, which nothing reaches once the multi dropped it.
 fn on_event<const BITMASK: c_int>(
     _: swoole_rs_corebase::reactor::Running<'_>,
     event: &mut swoole_rs_corebase::reactor::Event,
@@ -74,10 +75,9 @@ fn on_event<const BITMASK: c_int>(
     let Some(socket) = event.socket() else {
         return -1;
     };
-    let object = socket.read(|socket| socket.object).cast::<crate::Socket>();
-    // SAFETY: the multi set the object, its socket, which it keeps live while the
-    // reactor socket is registered.
-    crate::socket_event(unsafe { &*object }, BITMASK);
+    if let Some(owner) = socket.read(SocketFields::shared_owner::<crate::Socket>) {
+        crate::socket_event(&owner, BITMASK);
+    }
     0
 }
 
@@ -109,7 +109,7 @@ pub(crate) struct ReactorSocket {
 }
 
 impl ReactorSocket {
-    /// Out of the reactor, carrying no object yet.
+    /// Out of the reactor, owned by nothing yet.
     pub(crate) fn new(fd: c_int, ops: &'static Ops) -> Self {
         Self {
             socket: Cell::new(Some((ops.socket_new)(fd))),
@@ -125,9 +125,13 @@ impl ReactorSocket {
         result
     }
 
-    /// Carry `object`, which the reactor handlers report.
-    pub(crate) fn set_object(&self, object: *mut c_void) {
-        self.with(|socket| socket.socket().edit(|socket| socket.object = object));
+    /// Owned by `owner`, which the reactor handlers report while it lives.
+    pub(crate) fn set_owner(&self, owner: Weak<crate::Socket>) {
+        self.with(|socket| {
+            socket
+                .socket()
+                .edit(|socket| socket.set_shared_owner(owner));
+        });
     }
 
     /// The events it is registered for.

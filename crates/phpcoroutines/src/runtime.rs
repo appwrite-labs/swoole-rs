@@ -404,16 +404,9 @@ pub fn call_handler(
 /// PHP bailed out.
 pub fn call_args(
     handler: &swoole_rs_zend::host::callable::Callable,
-    args: &mut [zval],
+    args: Zvals<'_>,
     retval: Option<&swoole_rs_zend::Value>,
     coroutine: bool,
 ) -> Result<bool, Bailout> {
-    function_call(
-        handler.cache(),
-        Zvals::of(args),
-        retval,
-        coroutine,
-        CREATOR,
-        NO_THEN,
-    )
+    function_call(handler.cache(), args, retval, coroutine, CREATOR, NO_THEN)
 }

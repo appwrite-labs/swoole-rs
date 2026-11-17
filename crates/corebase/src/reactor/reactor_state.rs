@@ -781,9 +781,9 @@ pub(crate) mod tests {
         (owned, fds[1])
     }
 
-    /// The mark at the record's byte 300, where native code's layout has room for it.
-    fn mark_at_300(socket: crate::reactor::Socket<'_>) -> u32 {
-        unsafe { socket.as_ptr().byte_add(300).cast::<u32>().read() }
+    /// The mark at the record's byte 332, where native code's layout has room for it.
+    fn mark_at_332(socket: crate::reactor::Socket<'_>) -> u32 {
+        unsafe { socket.as_ptr().byte_add(332).cast::<u32>().read() }
     }
 
     #[test]
@@ -798,14 +798,14 @@ pub(crate) mod tests {
             let reactor = running(state.owner);
             crate::set_thread_reactor(state.owner.cast());
             let (owned, writer) = registered(reactor);
-            assert_eq!(mark_at_300(owned.socket()), reactor.serial());
+            assert_eq!(mark_at_332(owned.socket()), reactor.serial());
             assert_eq!(reactor.registry(Registry::count), 1);
             let record = Box::leak(owned.into_box());
             assert_eq!(reactor.registry(Registry::count), 0, "the free deleted it");
             assert!(record.removed && record.events == crate::reactor::Events::NONE);
             let fd = record.fd;
             let record = crate::reactor::Socket::new(record);
-            assert_eq!(mark_at_300(record), 0);
+            assert_eq!(mark_at_332(record), 0);
             // Its descriptor is the kernel's no more: a write wakes nothing.
             assert_eq!(unsafe { libc::write(writer, b"a".as_ptr().cast(), 1) }, 1);
             unsafe { (*state.fields).timeout_msec = 0 };
@@ -826,10 +826,10 @@ pub(crate) mod tests {
         let state = state(3, 4);
         let reactor = running(state.owner);
         let (owned, writer) = registered(reactor);
-        assert_eq!(mark_at_300(owned.socket()), reactor.serial());
+        assert_eq!(mark_at_332(owned.socket()), reactor.serial());
         unsafe { free(state.owner) };
         assert_eq!(
-            mark_at_300(owned.socket()),
+            mark_at_332(owned.socket()),
             0,
             "the reactor's delete let it go"
         );

@@ -11,7 +11,7 @@ use swoole_rs_zend::{
     Value,
     bailout::{self, Bailout},
     message,
-    sys::{IS_FALSE, IS_NULL, ZEND_ACC_FINAL},
+    sys::{IS_FALSE, ZEND_ACC_FINAL},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -369,17 +369,16 @@ fn can_exit() -> Result<bool, Bailout> {
     let Some(handle) = EXIT_CONDITION.with(|c| put_back(c, |handle| handle.clone())) else {
         return Ok(true);
     };
-    let mut retval = swoole_rs_zend::UNDEF;
-    retval.u1.type_info = IS_NULL;
+    let retval = std::mem::ManuallyDrop::new(swoole_rs_zend::Owned::null());
     // The result slot is, as upstream's, not released.
-    if !handle.call(&mut [], Some(Value::of(&mut retval)), false)? {
+    if !handle.call(swoole_rs_zend::Zvals::owned(&[]), Some(&retval), false)? {
         host::try_fatal_error(E_ERROR, c"Coroutine can_exit callback handler error")?;
     }
     swoole_rs_zend::host::uncaught_exception()?;
     // The last reference once the condition replaced itself: a bailout its
     // destructor deferred is raised by the reactor's callback.
     drop(handle);
-    bailout::outcome(Value::of(&mut retval).kind() != IS_FALSE)
+    bailout::outcome(retval.kind() != IS_FALSE)
 }
 
 /// RSHUTDOWN: drop the PHP name resolvers and the exit condition.

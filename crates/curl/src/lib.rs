@@ -106,22 +106,51 @@ impl Private {
 }
 
 /// `struct swr_v1_curl_handle`: the easy handle's multi while it is in one,
-/// and the multi `curl_exec` runs it in. C++ reads and writes `multi`.
+/// and the multi `curl_exec` runs it in. C++ only asks whether `multi` is set.
 #[repr(C)]
 pub struct Handle {
     cp: *mut CURL,
-    multi: Cell<*mut Multi>,
+    /// The multi the easy handle is in, which nothing reaches once it is freed.
+    multi: Cell<Option<Weak<Multi>>>,
     /// The handle's reference to its exec multi, which [`swr_v1_curl_destroy_handle`]
     /// releases. C++ never reads it: to C it is an opaque pointer of the same size.
     easy_multi: Cell<Option<Rc<Multi>>>,
 }
 
 const _: () = assert!(
-    size_of::<Cell<Option<Rc<Multi>>>>() == size_of::<*mut Multi>(),
-    "C's `struct swr_v1_curl_multi *easy_multi`"
+    size_of::<Cell<Option<Rc<Multi>>>>() == size_of::<*mut Multi>()
+        && size_of::<Cell<Option<Weak<Multi>>>>() == size_of::<*mut Multi>(),
+    "C's `void *multi` and `void *easy_multi`"
 );
 
 impl Handle {
+    /// A handle for `cp`, in `multi`'s set if any, which only
+    /// [`swr_v1_curl_destroy_handle`] frees.
+    fn create(cp: Easy<'_>, multi: Option<Weak<Multi>>) -> *mut Self {
+        let handle = Private::new(Self {
+            cp: cp.0,
+            multi: Cell::new(multi),
+            easy_multi: Cell::new(None),
+        });
+        cp.set_private(handle);
+        handle.0
+    }
+
+    /// The multi the easy handle is in, while that multi lives.
+    fn multi(&self) -> Option<Rc<Multi>> {
+        let multi = self.multi.take();
+        let live = multi.as_ref().and_then(Weak::upgrade);
+        self.multi.set(multi);
+        live
+    }
+
+    /// A reference to the multi the easy handle is in, for another handle.
+    fn multi_ref(&self) -> Option<Weak<Multi>> {
+        let multi = self.multi.take();
+        self.multi.set(multi.clone());
+        multi
+    }
+
     /// The easy handle it was made for, which outlives it: ext/curl destroys the
     /// handle before it cleans the easy handle up.
     fn easy(&self) -> Easy<'_> {
@@ -377,10 +406,8 @@ impl Multi {
                 action: Cell::new(0),
                 deleted: Cell::new(false),
             });
-            // The reactor socket carries the socket it reports.
-            socket
-                .socket
-                .set_object(Rc::as_ptr(&socket).cast_mut().cast());
+            // The reactor socket reports to the socket while it lives.
+            socket.socket.set_owner(Rc::downgrade(&socket));
             let replaced = with(&self.sockets, |sockets| {
                 sockets.insert(sockfd, Rc::clone(&socket))
             });
@@ -419,14 +446,14 @@ impl Multi {
     fn add_handle(&self, handle: &Handle) -> CURLMcode {
         let result = curl_multi_add_handle(self.live(), handle.easy());
         if result == CURLM_OK {
-            handle.multi.set(ptr::from_ref(self).cast_mut());
+            handle.multi.set(Some(self.this.clone()));
         }
         result
     }
 
     fn remove_handle(&self, handle: &Handle) -> CURLMcode {
         let result = curl_multi_remove_handle(self.live(), handle.easy());
-        handle.multi.set(ptr::null_mut());
+        handle.multi.set(None);
         if result == CURLM_OK {
             // Refresh the running count even if no socket event follows.
             self.timer_callback.set(true);
@@ -821,13 +848,25 @@ pub extern "C" fn swr_v1_curl_get_handle(cp: Easy<'_>) -> *mut Handle {
 /// `swoole::curl::create_handle`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_curl_create_handle(cp: Easy<'_>) -> *mut Handle {
-    let handle = Private::new(Handle {
-        cp: cp.0,
-        multi: Cell::new(ptr::null_mut()),
-        easy_multi: Cell::new(None),
-    });
-    cp.set_private(handle);
-    handle.0
+    Handle::create(cp, None)
+}
+
+/// A pushed stream's easy handle `cp` takes the multi of its parent's handle, when
+/// the parent has one (`create_handle`, then `handle->multi = parent->multi`).
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_curl_push_handle(cp: Easy<'_>, parent: Easy<'_>) {
+    if let Some(parent) = parent.handle() {
+        Handle::create(cp, parent.multi_ref());
+    }
+}
+
+/// `if (handle->multi) multi->remove_handle(handle)`: the handle leaves the multi
+/// it is in, while that multi lives.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_curl_handle_leave_multi(handle: &mut Handle) {
+    if let Some(multi) = handle.multi() {
+        multi.remove_handle(handle);
+    }
 }
 
 /// An easy handle on which no transfer runs, and whose Swoole handle nothing else

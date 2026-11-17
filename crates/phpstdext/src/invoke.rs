@@ -9,16 +9,15 @@ use crate::{
 };
 use std::{
     ffi::{CStr, c_void},
-    ptr, slice,
+    ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_zend::{
-    Call, Emalloc, Value,
+    Call, Emalloc, Owned, Value, Zvals,
     bailout::Bailout,
     opcode::Handler,
     sys::{
         IS_ARRAY, IS_CONST, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_zval_release, zend_function,
-        zval,
     },
 };
 
@@ -37,11 +36,11 @@ unsafe extern "C" {
 }
 
 /// Upstream's `CallInfo`: what the handler hands the method call's frame in
-/// `run_time_cache`. `this` is the receiver's live zval, which the method call
-/// releases once when it was a `VAR` operand.
+/// `run_time_cache`. Hold the method name and receiver until dispatch finishes.
+/// The method also releases the original receiver reference for a `VAR` operand.
 struct CallInfo {
-    func: zval,
-    this: zval,
+    func: Owned,
+    this: Owned,
     op1_type: u8,
 }
 
@@ -98,12 +97,12 @@ impl Handler for MethodCall {
             IS_RESOURCE => Receiver::Stream,
             _ => return Next::Dispatch,
         };
-        // Zend's request allocator, freed by the method call. The literal is
-        // a plain copy, as upstream's.
+        // Zend's request allocator, freed by the method call. Keep valid values
+        // across the separate opcode dispatch rather than unowned zval bits.
         let info = Box::into_raw_with_allocator(Box::new_in(
             CallInfo {
-                func: name.copy_value(),
-                this: object.copy_value(),
+                func: name.copy(),
+                this: object.copy(),
                 op1_type: op.op1_type,
             },
             Emalloc::default(),
@@ -132,12 +131,16 @@ impl Handler for MethodCall {
 }
 
 /// `prefix`, then `ZEND_CALL_ARG(frame, 1)` through `ZEND_CALL_NUM_ARGS(frame)`:
-/// plain copies, as upstream's.
-fn arguments(prefix: &[zval], frame: &Call) -> Vec<zval> {
+/// held values, lent to Zend for the nested call.
+fn arguments(prefix: &[&Value], frame: &Call) -> Vec<Owned> {
     let passed = (1..=frame.num_args())
         .filter_map(|n| frame.value(n))
-        .map(Value::copy_value);
-    prefix.iter().copied().chain(passed).collect()
+        .map(Value::copy);
+    prefix
+        .iter()
+        .map(|value| value.copy())
+        .chain(passed)
+        .collect()
 }
 
 /// Upstream's `call_method`: call the function `receiver`'s method names with
@@ -150,11 +153,11 @@ fn call_method(receiver: Receiver, frame: &Call) {
     // until the take above, and it is freed below.
     let mut info = unsafe { Box::from_raw_in(allocation, Emalloc::default()) };
     // op2 of INIT_METHOD_CALL is the method name, a string literal.
-    let name = Value::of(&mut info.func).str();
+    let name = info.func.str();
     let alias = name.and_then(|name| aliases::find(receiver, name.bytes()));
     let outcome = match alias {
         None => {
-            let kind = Value::of(&mut info.this).type_name().to_bytes();
+            let kind = info.this.type_name().to_bytes();
             // "(null)" is what Zend's printf shows for a null string.
             let name = name.map_or(&b"(null)"[..], |name| name.bytes());
             swoole_rs_zend::throw_error(&crate::typed::message(&[
@@ -183,12 +186,11 @@ fn call_alias(alias: &CStr, info: &mut CallInfo, frame: &Call) -> Result<(), Bai
         ]));
         return Ok(());
     };
-    // A plain copy, as upstream's.
-    let this = info.this;
-    let mut argv = arguments(slice::from_ref(&this), frame);
-    frame.call_known(function, &mut argv)?;
+    // Keep the receiver and arguments live throughout the nested call.
+    let argv = arguments(&[&info.this], frame);
+    frame.call_known(function, Zvals::owned(&argv))?;
     if u32::from(info.op1_type) == IS_VAR {
-        let receiver = (&raw mut info.this).cast();
+        let receiver = info.this.as_ptr().cast();
         // SAFETY: the receiver's reference (`CallInfo::this`), released once,
         // inside the trap: its destructors may bail out.
         swoole_rs_zend::contain_with(|| unsafe { swr_zend_zval_release(receiver) })?;
@@ -199,7 +201,7 @@ fn call_alias(alias: &CStr, info: &mut CallInfo, frame: &Call) -> Result<(), Bai
 /// Upstream's `move_first_element`: the first argument moves to `position`.
 /// With `position` or fewer arguments the first argument moves to the end, and
 /// the target function reports the missing arguments itself.
-fn move_first(args: &mut [zval], position: usize) {
+fn move_first<T>(args: &mut [T], position: usize) {
     let Some(last) = args.len().checked_sub(1) else {
         return;
     };
@@ -224,7 +226,9 @@ impl Wrapper {
         };
         let mut argv = arguments(&[], frame);
         move_first(&mut argv, self.position);
-        swoole_rs_zend::bailout::raise(frame.call_known(target, &mut argv));
+        let outcome = frame.call_known(target, Zvals::owned(&argv));
+        drop(argv);
+        swoole_rs_zend::bailout::raise(outcome);
     }
 }
 
@@ -286,6 +290,7 @@ swoole_rs_zend::handlers! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use swoole_rs_zend::sys::zval;
 
     fn moved(count: usize, position: usize) -> Vec<i64> {
         let mut src = vec![unsafe { std::mem::zeroed::<zval>() }; count];

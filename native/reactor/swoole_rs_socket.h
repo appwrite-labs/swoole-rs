@@ -64,6 +64,8 @@ struct swr_v1_socket {
     size_t total_send_bytes;
     /* Written by getsockname/accept: the exact actual address. */
     swoole::network::Address info;
+    /* Rust's owner of the record (a boxed trait object, then a weak one), dropped with it: opaque here. */
+    alignas(8) void *owner_[4];
     /* Rust's atomic count of the read and edit closures holding the fields above. */
     alignas(8) uint32_t borrows;
     /* The serial of the reactor whose registry names this record, or 0: Rust's. */
@@ -99,9 +101,9 @@ static_assert(offsetof(swr_v1_socket, events) == 12 && offsetof(swr_v1_socket, e
                   offsetof(swr_v1_socket, ssl_state) == 80 && offsetof(swr_v1_socket, dns_timeout) == 88 &&
                   offsetof(swr_v1_socket, last_received_time) == 120 && offsetof(swr_v1_socket, in_buffer) == 136 &&
                   offsetof(swr_v1_socket, recv_timer) == 152 && offsetof(swr_v1_socket, total_send_bytes) == 168 &&
-                  offsetof(swr_v1_socket, info) == 176 && offsetof(swr_v1_socket, borrows) == 296 &&
-                  offsetof(swr_v1_socket, reactor_serial) == 300 &&
-                  sizeof(swr_v1_socket) == 304,
+                  offsetof(swr_v1_socket, info) == 176 && offsetof(swr_v1_socket, owner_) == 296 && offsetof(swr_v1_socket, borrows) == 328 &&
+                  offsetof(swr_v1_socket, reactor_serial) == 332 &&
+                  sizeof(swr_v1_socket) == 336,
               "network::Socket's layout is Rust's SocketRecord");
 static_assert(offsetof(swr_v1_socket, send_timer) - offsetof(swr_v1_socket, out_buffer) ==
                       offsetof(swr_v1_socket_output, send_timer) &&

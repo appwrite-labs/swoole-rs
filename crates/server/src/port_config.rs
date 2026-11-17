@@ -184,9 +184,12 @@ pub struct PortConfig {
     /// The SNI contexts crates/ports keeps; `ListenPort`'s
     /// destructor releases them with the context.
     pub tls: Box<TlsState>,
-    /// The owner of the callable `protocol.private_data_1` names, when the port
-    /// has a `package_length_func`.
-    pub length_owner: Shared<Option<LengthOwner>>,
+    /// The key of this port's `package_length_func` owners, one per thread that
+    /// `set()` it ([`Self::length_owner`]).
+    length_key: u64,
+    /// Whether any thread holds an owner under [`Self::length_key`], so a receive asks
+    /// its thread's registry only then.
+    has_length_owner: core::sync::atomic::AtomicBool,
 }
 
 /// What `ListenPort` kept in C++ containers, each entry with a reference to its
@@ -206,10 +209,81 @@ pub struct TlsState {
     >,
 }
 
-/// A `package_length_func`'s owner, whose callable the port's protocol names.
-pub type LengthOwner = Box<Box<dyn core::any::Any>>;
+/// A `package_length_func`'s owner, whose callable a measure hands the port's length
+/// callback.
+pub type LengthOwner = std::rc::Rc<dyn core::any::Any>;
+
+/// The next port's [`PortConfig::length_key`]: never reused, so an owner a freed port
+/// left in another thread's registry is never another port's.
+static NEXT_LENGTH_KEY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+thread_local! {
+    /// This thread's `package_length_func` owners, by port: a thread-mode worker
+    /// measures with the callable its own `set()` registered (#4535). They are never
+    /// dropped at thread exit, when PHP may be gone: a port's release drops its own.
+    static LENGTH_OWNERS: core::cell::Cell<Vec<(u64, core::mem::ManuallyDrop<LengthOwner>)>> =
+        const { core::cell::Cell::new(Vec::new()) };
+}
+
+/// `f` over this thread's owners, taken out and put back: `f` runs no PHP code.
+fn with_length_owners<R>(
+    f: impl FnOnce(&mut Vec<(u64, core::mem::ManuallyDrop<LengthOwner>)>) -> R,
+) -> R {
+    LENGTH_OWNERS.with(|cell| {
+        let mut owners = cell.take();
+        let result = f(&mut owners);
+        cell.set(owners);
+        result
+    })
+}
 
 impl PortConfig {
+    /// This thread's `package_length_func` owner for the port, replaced by `owner`; the
+    /// caller drops the previous one, whose destructor may reach the port.
+    #[must_use]
+    pub fn replace_length_owner(&self, owner: Option<LengthOwner>) -> Option<LengthOwner> {
+        let key = self.length_key;
+        if owner.is_some() {
+            self.has_length_owner
+                .store(true, core::sync::atomic::Ordering::Release);
+        }
+        with_length_owners(|owners| {
+            let at = owners.iter().position(|(k, _)| *k == key);
+            let previous =
+                at.map(|at| core::mem::ManuallyDrop::into_inner(owners.swap_remove(at).1));
+            if let Some(owner) = owner {
+                owners.push((key, core::mem::ManuallyDrop::new(owner)));
+            }
+            previous
+        })
+    }
+
+    /// Whether any thread gave the port a `package_length_func` owner, which a receive
+    /// asks before it looks for this thread's.
+    #[inline]
+    #[must_use]
+    pub fn has_length_owner(&self) -> bool {
+        self.has_length_owner
+            .load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// A reference to this thread's `package_length_func` owner for the port, for a
+    /// measure to hand its length callback, which drops it; `None` without one.
+    #[inline]
+    #[must_use]
+    pub fn length_owner(&self) -> Option<LengthOwner> {
+        if !self.has_length_owner() {
+            return None;
+        }
+        let key = self.length_key;
+        with_length_owners(|owners| {
+            owners
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, owner)| LengthOwner::clone(owner))
+        })
+    }
+
     /// The host's bytes, embedded NULs included; the slot keeps a NUL after them.
     #[must_use]
     pub fn host_bytes(&self) -> &[u8] {
@@ -369,7 +443,8 @@ impl PortConfig {
             on_read: ReaderSlot(Shared::new(None)),
             ssl_context: Published::default(),
             tls: Box::default(),
-            length_owner: Shared::new(None),
+            length_key: NEXT_LENGTH_KEY.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
+            has_length_owner: core::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -396,7 +471,7 @@ impl PortConfig {
             clippy::mem_forget,
             reason = "a port kept past this owns the callable to the exit"
         )]
-        std::mem::forget(self.length_owner.replace(None));
+        std::mem::forget(self.replace_length_owner(None));
         // The record of a port `destroy` never closed (a server never started). Its
         // descriptor stays open to the exit, as upstream's.
         if let Some(socket) = self.take_socket() {

@@ -168,8 +168,14 @@ impl<'a> Read<'a> {
     #[inline(always)]
     fn framed(&mut self, mode: Mode, packages: impl Packages) -> bool {
         let (protocol, socket) = (Proto::from(&self.port.protocol), self.socket);
+        // Asked once per receive, not per measure: most ports have no PHP length callable.
+        let owner = if self.port.has_length_owner() {
+            framing_recv::Owner::Port(self.port)
+        } else {
+            framing_recv::Owner::None
+        };
         let buffer = Lent::new(self.buffer());
-        framing_recv::receive(protocol, socket, None, buffer, mode, packages) != Status::Err
+        framing_recv::receive(protocol, socket, owner, buffer, mode, packages) != Status::Err
     }
 }
 

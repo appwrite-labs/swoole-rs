@@ -171,13 +171,14 @@ impl Callable {
 
 /// [`Callable::call`] of the callable itself.
 fn call(callable: &callable::Callable, args: &[&Value], coroutine: bool) -> bool {
-    let mut argv = [swoole_rs_zend::UNDEF; 2];
+    let empty = Owned::default();
+    let mut argv = [&*empty; 2];
     for (slot, arg) in argv.iter_mut().zip(args) {
-        // Copied bitwise; the copy is never released.
-        *slot = arg.copy_value();
+        *slot = arg;
     }
-    let (argv, _) = argv.split_at_mut(args.len().min(2));
-    let called = swoole_rs_phpcoroutines::call_args(callable, argv, None, coroutine);
+    let called = swoole_rs_zend::Zvals::with(argv, |argv| {
+        swoole_rs_phpcoroutines::call_args(callable, argv.take(args.len()), None, coroutine)
+    });
     deferred(called).unwrap_or(false)
 }
 

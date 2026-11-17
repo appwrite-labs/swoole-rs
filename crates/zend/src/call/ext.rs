@@ -26,8 +26,8 @@ impl Call {
     /// argv, NULL)` under `zend_try`, into this call's return slot.
     /// # Errors
     /// The function bailed out.
-    pub fn call_known(&self, function: Function<'_>, argv: &mut [zval]) -> Result<(), Bailout> {
-        if swr_zend_try_call_known(function, self.ret_slot(), Zvals::of(argv)) != 0 {
+    pub fn call_known(&self, function: Function<'_>, argv: Zvals<'_>) -> Result<(), Bailout> {
+        if swr_zend_try_call_known(function, self.ret_slot(), argv) != 0 {
             Err(Bailout)
         } else {
             Ok(())

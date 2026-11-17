@@ -40,7 +40,7 @@ struct swr_v1_curl_multi;
  * runs it in. */
 struct swr_v1_curl_handle {
     CURL *cp;
-    struct swr_v1_curl_multi *multi;
+    void *multi;      /* Rust-owned (a Weak), which C only null-checks */
     void *easy_multi; /* Rust-owned (an Rc), opaque to C */
 };
 /* A multi the caller gives up (or null), freed by swr_v1_curl_multi_free. */
@@ -55,6 +55,10 @@ int swr_v1_curl_multi_perform(const struct swr_v1_curl_multi *multi);
 long swr_v1_curl_multi_select(const struct swr_v1_curl_multi *multi, void *co, double timeout);
 struct swr_v1_curl_handle *swr_v1_curl_get_handle(swr_v1_curl_easy cp);
 struct swr_v1_curl_handle *swr_v1_curl_create_handle(swr_v1_curl_easy cp);
+/* A pushed stream's handle for cp, in the multi of its parent's handle, when parent has one. */
+void swr_v1_curl_push_handle(swr_v1_curl_easy cp, swr_v1_curl_easy parent);
+/* The handle leaves the multi it is in, while that multi lives. */
+void swr_v1_curl_handle_leave_multi(struct swr_v1_curl_handle *handle);
 /* No transfer of cp runs, and nothing uses its handle afterwards. */
 void swr_v1_curl_destroy_handle(swr_v1_curl_easy cp);
 /* Curl's FILE* may be a PHP stream cookie, so fread/fwrite must not run in an AIO thread. */

@@ -1,13 +1,13 @@
-//! A protocol's `package_length_func`: the PHP callable its `private_data_1`
-//! names: an `Rc`'s value, whose reference a [`Named`] owner beside the slot
-//! keeps.
-use std::{any::Any, ffi::c_void, mem::ManuallyDrop, rc::Rc};
+//! A protocol's `package_length_func`: the PHP callable of the [`Named`] owner a
+//! client, a coroutine socket or this thread's port registry keeps, which a measure
+//! hands the length callback.
+use std::{any::Any, rc::Rc};
 use swoole_rs_clients::protocol::{Protocol, Socket};
 use swoole_rs_corebase::net_types::PacketLength;
 use swoole_rs_zend::{bailout, host::callable::Callable};
 
-/// A callable a protocol's `private_data_1` names: the owner holds the
-/// reference, which goes when it drops. The protocol only names it.
+/// A `package_length_func`'s owner: it holds the callable's reference, which goes
+/// when the last reference to the owner drops.
 pub struct Named(Rc<Callable>);
 
 impl Named {
@@ -15,64 +15,32 @@ impl Named {
     pub fn new(callable: Rc<Callable>) -> Self {
         Self(callable)
     }
-
-    /// The pointer `private_data_1` keeps: `Rc::as_ptr`, the pointer
-    /// `Rc::into_raw` would give for the reference this holds.
-    #[must_use]
-    pub fn as_ptr(&self) -> *mut c_void {
-        Rc::as_ptr(&self.0).cast_mut().cast()
-    }
 }
 
 /// How a crate runs a protocol's length callable.
 pub trait PackageLength {
-    /// Whether this thread owns the slot's count, so the call takes its own
-    /// reference and a `set()` the callable runs drops only the slot's.
-    #[must_use]
-    fn owns() -> bool {
-        true
-    }
-
     /// The packet length `callable` returns for `bytes` so far (0: not yet
     /// known), or `None` when it failed or returned a negative length, with any
     /// bailout deferred.
     fn length(callable: &Callable, bytes: &[u8]) -> Option<usize>;
 }
 
-/// `php_swoole_length_func`: `L`'s length for the packet so far. A bailout is
-/// re-raised as the last step. The callable is `owner`'s, a [`Named`] whose
-/// reference the caller hands over and this drops before that step; without one,
-/// the protocol's `private_data_1` names it: the value of an `Rc` whose reference
-/// its [`Named`] owner keeps, which a caller passes (a copy of).
+/// `php_swoole_length_func`: `L`'s length for the packet so far, by the callable of
+/// `owner`, a [`Named`] whose reference the caller hands over; -1 without one. A
+/// bailout is re-raised as the last step.
 pub fn length<L: PackageLength>(
-    protocol: &Protocol,
+    _protocol: &Protocol,
     _socket: Option<Socket<'_>>,
     owner: Option<Rc<dyn Any>>,
     packet: &mut PacketLength,
 ) -> isize {
-    let length = if let Some(owner) = owner {
-        let Ok(named) = owner.downcast::<Named>() else {
-            return -1;
-        };
-        let length = L::length(&named.0, packet.bytes());
-        // Released first: `finish` may jump over this frame, and a `set()` the callable
-        // ran may have left this the last reference, whose destructor can bail out.
-        drop(named);
-        length
-    } else {
-        let raw = protocol.private_data_1;
-        if raw.is_null() {
-            return -1;
-        }
-        // SAFETY: `Named::as_ptr`, which is `Rc::into_raw`'s pointer, of a
-        // reference the owner keeps; borrowed, never dropped here.
-        let slot = ManuallyDrop::new(unsafe { Rc::from_raw(raw.cast_const().cast::<Callable>()) });
-        let held = L::owns().then(|| Rc::clone(&slot));
-        let length = L::length(&slot, packet.bytes());
-        // Released first: `finish` may jump over this frame.
-        drop(held);
-        length
+    let Some(Ok(named)) = owner.map(<Rc<dyn Any>>::downcast::<Named>) else {
+        return -1;
     };
+    let length = L::length(&named.0, packet.bytes());
+    // Released first: `finish` may jump over this frame, and a `set()` the callable
+    // ran may have left this the last reference, whose destructor can bail out.
+    drop(named);
     bailout::finish();
     length.map_or(-1, usize::cast_signed)
 }

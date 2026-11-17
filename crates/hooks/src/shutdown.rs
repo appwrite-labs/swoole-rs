@@ -3,6 +3,7 @@
 //! `shutdown(2)` call and the half-close flags. Native code keeps `set_err` and
 //! the TLS session.
 use crate::socket_wait::Retry;
+use core::cell::Cell;
 use core::ffi::{CStr, c_void};
 use std::io;
 use swoole_rs_corebase::reactor::Events;
@@ -15,20 +16,21 @@ pub struct SocketFlags {
     pub write: bool,
 }
 
-/// One coroutine socket's state; native code holds it only as a pointer.
+/// One coroutine socket's state, a cell per field: every field is a copy, so a
+/// shared borrow reads and writes it. Native code holds it only as a pointer.
 pub struct SocketState {
-    pub(crate) flags: SocketFlags,
+    pub(crate) flags: Cell<SocketFlags>,
     /// The native `Coroutine` waiting to read and to write, or null.
-    read_co: *mut c_void,
-    write_co: *mut c_void,
+    read_co: Cell<*mut c_void>,
+    write_co: Cell<*mut c_void>,
     /// The socket wait's park. Other operations use their own canceler instead.
-    wakers: [Option<swoole_rs_corebase::coroutine::Waker>; 2],
+    wakers: [Cell<Option<swoole_rs_corebase::coroutine::Waker>>; 2],
     /// `want_event`: the direction a TLS wait added instead of its own, or none.
-    pub(crate) want: Events,
+    pub(crate) want: Cell<Events>,
     /// The read and the write wait's retry state.
-    pub(crate) retries: [Retry; 2],
+    pub(crate) retries: [Cell<Retry>; 2],
     /// The timers of the read and the write wait.
-    pub(crate) timers: [WaitTimer; 2],
+    pub(crate) timers: [Cell<WaitTimer>; 2],
 }
 
 /// A direction's wait timer (`TimerController`'s slot).
@@ -45,27 +47,35 @@ impl SocketState {
     #[must_use]
     pub(crate) const fn new() -> Self {
         Self {
-            flags: SocketFlags {
+            flags: Cell::new(SocketFlags {
                 connected: false,
                 read: false,
                 write: false,
-            },
-            read_co: core::ptr::null_mut(),
-            write_co: core::ptr::null_mut(),
-            wakers: [None; 2],
-            want: Events::NONE,
-            retries: [Retry::None; 2],
-            timers: [WaitTimer::None; 2],
+            }),
+            read_co: Cell::new(core::ptr::null_mut()),
+            write_co: Cell::new(core::ptr::null_mut()),
+            wakers: [const { Cell::new(None) }; 2],
+            want: Cell::new(Events::NONE),
+            retries: [const { Cell::new(Retry::None) }; 2],
+            timers: [const { Cell::new(WaitTimer::None) }; 2],
         }
+    }
+
+    /// `f` over a copy of the flags, which then replaces them.
+    pub(crate) fn update_flags<T>(&self, f: impl FnOnce(&mut SocketFlags) -> T) -> T {
+        let mut flags = self.flags.get();
+        let result = f(&mut flags);
+        self.flags.set(flags);
+        result
     }
 
     /// The coroutine bound to `event` (`SW_EVENT_READ` or `SW_EVENT_WRITE`), or null.
     #[must_use]
     pub fn co(&self, event: Events) -> *mut c_void {
         if event == Events::READ {
-            self.read_co
+            self.read_co.get()
         } else {
-            self.write_co
+            self.write_co.get()
         }
     }
 
@@ -74,39 +84,40 @@ impl SocketState {
     /// to suspend in, which unbinds it before it returns: so a bound coroutine is live
     /// and suspended, as [`Co::cancel`](crate::co_socket::Co::cancel) and the reactor
     /// callbacks that resume it, and the bound-coroutine checks that read its id, rely on.
-    pub(crate) fn bind(&mut self, event: Events, co: *mut c_void) {
+    pub(crate) fn bind(&self, event: Events, co: *mut c_void) {
+        let [read_waker, write_waker] = &self.wakers;
         if event.intersects(Events::READ) {
-            self.read_co = co;
-            self.wakers[0] = None;
+            self.read_co.set(co);
+            read_waker.set(None);
         }
         if event.intersects(Events::WRITE) {
-            self.write_co = co;
-            self.wakers[1] = None;
+            self.write_co.set(co);
+            write_waker.set(None);
         }
     }
 
     /// Arms the bound socket wait before it switches out.
-    pub(crate) fn arm(&mut self, event: Events, waker: swoole_rs_corebase::coroutine::Waker) {
-        if let Some(slot) = self.wakers.get_mut(usize::from(event == Events::WRITE)) {
-            *slot = Some(waker);
+    pub(crate) fn arm(&self, event: Events, waker: swoole_rs_corebase::coroutine::Waker) {
+        if let Some(slot) = self.wakers.get(usize::from(event == Events::WRITE)) {
+            slot.set(Some(waker));
         }
     }
 
     pub(crate) fn waker(&self, event: Events) -> Option<swoole_rs_corebase::coroutine::Waker> {
         self.wakers
             .get(usize::from(event == Events::WRITE))
-            .copied()
-            .flatten()
+            .and_then(Cell::get)
     }
 
     /// `get_bound_co(event)`: the reader if `event` includes reading and one is bound,
     /// otherwise the writer if it includes writing, otherwise null.
     #[must_use]
     pub fn bound_co(&self, event: Events) -> *mut c_void {
-        if event.intersects(Events::READ) && !self.read_co.is_null() {
-            self.read_co
-        } else if event.intersects(Events::WRITE) && !self.write_co.is_null() {
-            self.write_co
+        let (read_co, write_co) = (self.read_co.get(), self.write_co.get());
+        if event.intersects(Events::READ) && !read_co.is_null() {
+            read_co
+        } else if event.intersects(Events::WRITE) && !write_co.is_null() {
+            write_co
         } else {
             core::ptr::null_mut()
         }
@@ -116,7 +127,10 @@ impl SocketState {
     /// coroutine is bound.
     #[must_use]
     pub fn event_name(&self, event: Events) -> &'static CStr {
-        let (read_bound, write_bound) = (!self.read_co.is_null(), !self.write_co.is_null());
+        let (read_bound, write_bound) = (
+            !self.read_co.get().is_null(),
+            !self.write_co.get().is_null(),
+        );
         if event == Events::READ {
             c"reading"
         } else if event == Events::WRITE {
@@ -273,7 +287,7 @@ mod tests {
 
     #[test]
     fn binding_follows_get_bound_co_and_event_names() {
-        let state = &mut SocketState::new();
+        let state = &SocketState::new();
         let (mut reader, mut writer) = (1u8, 2u8);
         let (r, w) = (
             (&raw mut reader).cast::<c_void>(),

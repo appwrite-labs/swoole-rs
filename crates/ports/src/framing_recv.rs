@@ -30,9 +30,43 @@ pub(crate) struct Recv<'a> {
     mode: Mode,
     protocol: Proto<'a>,
     pub(crate) socket: Socket<'a>,
-    /// The client a client's receive reads for, whose length owner each measure hands
-    /// its length callback; `None` for a port's, which keeps its own (#4535).
-    client: Option<Handle<'a>>,
+    /// Whose `package_length_func` owner each measure hands the length callback.
+    owner: Owner<'a>,
+}
+
+/// Where a receive's measures find their `package_length_func` owner (#4535).
+#[derive(Clone, Copy)]
+pub(crate) enum Owner<'a> {
+    /// None to find: a port nobody gave a `package_length_func`, whose measures then
+    /// cost what they did before owners, or a test's bare records.
+    None,
+    /// The client the receive reads for.
+    Client(Handle<'a>),
+    /// The port the receive reads for, through this thread's registry.
+    Port(&'a swoole_rs_server::port_config::PortConfig),
+}
+
+impl Owner<'_> {
+    /// A reference to the owner, which the length callback drops. Inlined into each
+    /// measure, so a port without one tests the variant and calls nothing.
+    #[inline(always)]
+    fn get(self) -> Option<std::rc::Rc<dyn core::any::Any>> {
+        match self {
+            Self::None => None,
+            found => found.find(),
+        }
+    }
+
+    /// [`Self::get`] of a client or a port, which has a PHP length callable.
+    #[cold]
+    #[inline(never)]
+    fn find(self) -> Option<std::rc::Rc<dyn core::any::Any>> {
+        match self {
+            Self::None => None,
+            Self::Client(client) => client.length_owner(),
+            Self::Port(port) => port.length_owner(),
+        }
+    }
 }
 
 impl Recv<'_> {
@@ -116,7 +150,7 @@ pub(crate) trait Packages {
         // A copy: the callback may run PHP that rewrites the protocol.
         let protocol = *r.protocol();
         let get = protocol.get_package_length?;
-        let owner = r.client.and_then(Handle::length_owner);
+        let owner = r.owner.get();
         let length = get(&protocol, Some(r.socket), owner, &mut pl);
         usize::try_from(length).ok()
     }
@@ -422,7 +456,7 @@ fn rare(r: Recv<'_>, b: &mut CppString, op: Op, arg: usize) {
 pub(crate) fn receive<'a, K: Packages>(
     protocol: Proto<'a>,
     socket: Socket<'a>,
-    client: Option<Handle<'a>>,
+    owner: Owner<'a>,
     buffer: Lent<'a>,
     mode: Mode,
     packages: K,
@@ -432,7 +466,7 @@ pub(crate) fn receive<'a, K: Packages>(
             mode,
             protocol,
             socket,
-            client,
+            owner,
         },
         false,
         packages,
@@ -470,7 +504,14 @@ fn client_recv<const LENGTH: bool>(client: Handle<'_>) -> c_int {
         // rewrites them.
         let (live, lent) = (PhantomData, PhantomData);
         let (protocol, buffer) = (Proto { protocol, live }, Lent { buffer, lent });
-        receive(protocol, socket, Some(client), buffer, mode, Callbacks) as c_int
+        receive(
+            protocol,
+            socket,
+            Owner::Client(client),
+            buffer,
+            mode,
+            Callbacks,
+        ) as c_int
     })
 }
 
@@ -568,7 +609,14 @@ mod tests {
             live: PhantomData,
         };
         let buffer = unsafe { &mut *buffer };
-        receive(protocol, socket, None, Lent::new(buffer), mode, Callbacks) as c_int
+        receive(
+            protocol,
+            socket,
+            Owner::None,
+            Lent::new(buffer),
+            mode,
+            Callbacks,
+        ) as c_int
     }
 
     /// The handle a client's read passes for its live socket.

@@ -391,7 +391,12 @@ pub fn send(socket: Socket<'_>, data: &[u8], flags: c_int) -> Option<usize> {
 
 /// [`recv_sync_fill`] into `buffer`.
 pub fn recv_sync(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
-    sync(socket, Io::Recv(Fill::new(buffer)), flags)
+    lend_spare(buffer, |spare| recv_sync_spare(socket, spare, flags)).0
+}
+
+/// [`recv_sync_fill`] into `spare`'s room, which counts what each receive wrote.
+pub fn recv_sync_spare(socket: Socket<'_>, spare: &mut Spare<'_>, flags: c_int) -> Option<usize> {
+    sync(socket, Io::<MaybeUninit<u8>>::Recv(spare), flags)
 }
 
 /// [`send_sync_drain`] of `data`.
@@ -431,8 +436,24 @@ pub fn recvfrom_sync(
     flags: c_int,
     address: &mut SocketAddress,
 ) -> Option<usize> {
-    let io = Io::RecvFrom(address, Fill::new(buffer));
-    sync(socket, io, flags)
+    lend_spare(buffer, |spare| {
+        recvfrom_sync_spare(socket, spare, flags, address)
+    })
+    .0
+}
+
+/// [`recvfrom_sync`] into `spare`'s room, which counts what the receive wrote.
+pub fn recvfrom_sync_spare(
+    socket: Socket<'_>,
+    spare: &mut Spare<'_>,
+    flags: c_int,
+    address: &mut SocketAddress,
+) -> Option<usize> {
+    sync(
+        socket,
+        Io::<MaybeUninit<u8>>::RecvFrom(address, spare),
+        flags,
+    )
 }
 
 /// `ssize_t Socket::peek(void *, size_t, int) const` into `buffer`.
@@ -452,20 +473,21 @@ pub fn check_liveness(socket: Socket<'_>) -> bool {
 }
 
 /// One blocking call: the socket, and its I/O with the bytes it has left.
-struct Call<'a, S: ReadSlot> {
+struct Call<'a, 's, S: ReadSlot> {
     socket: Socket<'a>,
-    io: Io<'a, S>,
+    io: Io<'a, 's, S>,
     dont_restart: bool,
 }
 
-/// The I/O a blocking call repeats, over the bytes and operands it was lent.
-enum Io<'a, S: ReadSlot = MaybeUninit<u8>> {
+/// The I/O a blocking call repeats, over the bytes and operands it was lent. A
+/// receive fills a [`Spare`], which counts what each call wrote.
+enum Io<'a, 's, S: ReadSlot = MaybeUninit<u8>> {
     Send(Drain<'a>),
-    Recv(Fill<'a, S>),
+    Recv(&'a mut Spare<'s>),
     Read(Fill<'a, S>),
     Write(Drain<'a>),
     SendTo(&'a SocketAddress, Drain<'a>),
-    RecvFrom(&'a mut SocketAddress, Fill<'a, S>),
+    RecvFrom(&'a mut SocketAddress, &'a mut Spare<'s>),
     Writev(&'a [IoSlice<'a>]),
     /// The request, and how many of its bytes are still to send.
     Sendfile(&'a mut SocketFileRequest, usize),
@@ -474,7 +496,7 @@ enum Io<'a, S: ReadSlot = MaybeUninit<u8>> {
 use crate::log::LogLevel::{SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_WARNING as LOG_WARNING};
 pub use crate::sys::writev;
 
-impl<S: ReadSlot> SyncEffects for Call<'_, S> {
+impl<S: ReadSlot> SyncEffects for Call<'_, '_, S> {
     /// Read on each wait, as upstream's `wait_event` reads `this->fd`: a signal
     /// handler an earlier wait dispatched may have changed it.
     fn fd(&self) -> c_int {
@@ -508,11 +530,11 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
         let fd = socket.fd();
         match &mut self.io {
             Io::Send(data) => record_send(socket, *data, flags, ssl_send_drain, steady_ms),
-            Io::Recv(buffer) => buffer.spare(|spare| recv_spare(socket, spare, flags)),
+            Io::Recv(spare) => recv_spare(socket, spare, flags),
             Io::Read(buffer) => buffer.read(fd),
             Io::Write(data) => data.write(fd),
             Io::SendTo(address, data) => data.sendto(fd, flags, address),
-            Io::RecvFrom(address, buffer) => buffer.recvfrom(fd, flags, address),
+            Io::RecvFrom(address, spare) => spare.recvfrom(fd, flags, address),
             Io::Sendfile(request, _) => send_chunk(socket, request).0,
             Io::Writev(vectors) => writev(fd, vectors),
         }
@@ -521,7 +543,8 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
     fn advance(&mut self, moved: usize) -> bool {
         match &mut self.io {
             Io::Send(data) | Io::Write(data) | Io::SendTo(_, data) => data.advance(moved),
-            Io::Recv(buffer) | Io::Read(buffer) | Io::RecvFrom(_, buffer) => buffer.advance(moved),
+            Io::Read(buffer) => buffer.advance(moved),
+            Io::Recv(spare) | Io::RecvFrom(_, spare) => spare.room() > 0,
             Io::Sendfile(_, left) => {
                 *left = left.saturating_sub(moved);
                 *left > 0
@@ -545,7 +568,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
 
 /// `Socket::wait_for`'s loop (`crates/corebase/src/reactor/socket_sync.rs`) around `io`,
 /// waiting for writability (else readability) up to the socket's timeout.
-fn sync<S: ReadSlot>(socket: Socket<'_>, io: Io<'_, S>, flags: c_int) -> Option<usize> {
+fn sync<S: ReadSlot>(socket: Socket<'_>, io: Io<'_, '_, S>, flags: c_int) -> Option<usize> {
     let (mode, event) = match &io {
         Io::Send(_) => (SyncMode::Send, Events::WRITE),
         Io::Recv(_) => (SyncMode::Recv, Events::READ),
@@ -572,7 +595,7 @@ fn sync<S: ReadSlot>(socket: Socket<'_>, io: Io<'_, S>, flags: c_int) -> Option<
 }
 
 /// [`sync`] of an I/O that fills nothing, waiting for writability.
-fn sync_out(socket: Socket<'_>, io: Io<'_>, flags: c_int) -> Option<usize> {
+fn sync_out(socket: Socket<'_>, io: Io<'_, '_>, flags: c_int) -> Option<usize> {
     sync(socket, io, flags)
 }
 
@@ -586,8 +609,8 @@ pub fn send_sync_drain(socket: Socket<'_>, data: Drain<'_>, flags: c_int) -> Opt
 /// `MSG_WAITALL` is cleared for each call, since under nonblocking I/O it would spin on
 /// EAGAIN.
 #[must_use]
-pub fn recv_sync_fill(socket: Socket<'_>, buffer: Fill<'_>, flags: c_int) -> Option<usize> {
-    sync(socket, Io::Recv(buffer), flags)
+pub fn recv_sync_fill(socket: Socket<'_>, mut buffer: Fill<'_>, flags: c_int) -> Option<usize> {
+    buffer.spare(|spare| recv_sync_spare(socket, spare, flags))
 }
 
 /// `ssize_t Socket::read_sync(void *, size_t)` into the bytes `buffer` lends.
