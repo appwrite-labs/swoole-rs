@@ -17,9 +17,9 @@ use std::{
     sync::atomic::Ordering::Relaxed,
 };
 use swoole_rs_clients::address::{address_port, with_host};
-use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::buffer::string::CppString as Buffer;
 use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_members::Receive};
 use swoole_rs_httpbindings::Setting;
 use swoole_rs_phpclients::{NewSocket, get_socket, is_socket_closed, socket_settings};
@@ -133,25 +133,25 @@ impl HttpServer {
 
     /// `edit` of the connections array, lent out of its slot.
     fn clients(&self, edit: impl FnOnce(&mut ArrayMut)) {
-        let mut clients = self.clients.take();
-        if let Some(array) = clients.array_mut() {
-            edit(array);
-        }
-        drop(self.clients.replace(clients));
+        self.clients.with_taken(|clients| {
+            if let Some(array) = clients.array_mut() {
+                edit(array);
+            }
+        });
     }
 
     /// `set_handler`: `handle` replaces the pattern's handler, if any.
     fn set_handler(&self, pattern: &[u8], handle: Rc<Callable>) -> Result<(), bailout::Bailout> {
         let old_default =
             (pattern == b"/").then(|| self.default_handler.replace(Some(handle.clone())));
-        let mut handlers = self.handlers.take();
-        let mut old = None;
-        if let Some(entry) = handlers.iter_mut().find(|(known, _)| known == pattern) {
-            old = Some(std::mem::replace(&mut entry.1, handle));
-        } else {
-            handlers.push((pattern.to_vec(), handle));
-        }
-        self.handlers.set(handlers);
+        let old = self.handlers.with_taken(|handlers| {
+            if let Some(entry) = handlers.iter_mut().find(|(known, _)| known == pattern) {
+                Some(std::mem::replace(&mut entry.1, handle))
+            } else {
+                handlers.push((pattern.to_vec(), handle));
+                None
+            }
+        });
         // The handler this one replaces, released once the handlers are back.
         drop((old_default, old));
         bailout::outcome(())
@@ -160,17 +160,16 @@ impl HttpServer {
     /// `get_handler`: the callable for the request's path, if any.
     fn handler(&self, mut context: Ctx) -> Option<Rc<Callable>> {
         let path = crate::parse::request_path(&context.state().request);
-        let default = self.default_handler.take();
-        self.default_handler.set(default.clone());
+        let default = self.default_handler.with_taken(|handler| handler.clone());
         let is_default =
             |handle: &Rc<Callable>| default.as_ref().is_some_and(|d| Rc::ptr_eq(d, handle));
-        let handlers = self.handlers.take();
-        let found = handlers
-            .iter()
-            .filter(|(_, handle)| !is_default(handle))
-            .find(|(pattern, _)| swoole_rs_httpbindings::handler_matches(path, pattern))
-            .map(|(_, handle)| handle.clone());
-        self.handlers.set(handlers);
+        let found = self.handlers.with_taken(|handlers| {
+            handlers
+                .iter()
+                .filter(|(_, handle)| !is_default(handle))
+                .find(|(pattern, _)| swoole_rs_httpbindings::handler_matches(path, pattern))
+                .map(|(_, handle)| handle.clone())
+        });
         found.or(default)
     }
 
@@ -197,12 +196,9 @@ impl HttpServer {
         }
         context::bind(context.state(), zconn);
         let state = context.state();
-        let types = self.compression_types.take();
-        state.compression_types.clone_from(&types);
-        self.compression_types.set(types);
-        let directory = self.upload_tmp_dir.take();
-        state.upload_tmp_dir = Some(Rc::clone(&directory));
-        self.upload_tmp_dir.set(directory);
+        self.compression_types
+            .with_taken(|types| state.compression_types.clone_from(types));
+        state.upload_tmp_dir = Some(self.upload_tmp_dir.with_taken(|dir| Rc::clone(dir)));
         state.websocket_settings = self.websocket_settings.get();
         state.parse_body = self.parse_post.get();
         state.parse_cookie = self.parse_cookie.get();
