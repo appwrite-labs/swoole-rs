@@ -725,7 +725,7 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
         record.chunk_size = SEND_BUFFER_SIZE;
         record.socket_type
     });
-    let mut client = Box::new(Client {
+    let mut client = Client {
         socket,
         socket_ops,
         input: Cell::new(CppString::EMPTY),
@@ -754,7 +754,7 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
         socks5: Cell::new(None),
         http_proxy: Cell::new(None),
         length_owner: Cell::new(None),
-    });
+    };
     client.set(Flag::Async, is_async);
     let fields = client.record.get_mut();
     fields.remote_addr.kind = kind;
@@ -766,13 +766,14 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
     if let Some((domain, _)) = socket_domain_and_type(kind) {
         client.domain = domain;
     }
-    let client = Box::into_raw(client);
+    let own = Rc::new(client);
+    let client = Rc::as_ptr(&own).cast_mut();
     Handle::raw(client)
         .socket()
         .edit(|record| record.object = client.cast());
     Some(Owner {
         client,
-        kept: Cell::new(false),
+        own: Cell::new(Some(own)),
     })
 }
 
@@ -780,8 +781,10 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
 /// `delete client`, which may raise `onClose`, unless [`Owner::keep`] kept the
 /// client.
 pub struct Owner {
+    /// The client `own` holds, which handles reach it by: a callback may free it.
     client: *mut Client,
-    kept: Cell<bool>,
+    /// The only strong reference to the client; none once [`Owner::keep`] leaked it.
+    own: Cell<Option<Rc<Client>>>,
 }
 
 impl Owner {
@@ -794,7 +797,7 @@ impl Owner {
     /// Never free the client: dropping this owner leaves it, as upstream leaves a
     /// client nothing deletes.
     pub fn keep(&self) {
-        self.kept.set(true);
+        let _ = self.own.take().map(Rc::into_raw);
     }
 }
 
@@ -802,9 +805,9 @@ impl Drop for Owner {
     /// `delete client`, which may raise `onClose`. Only [`create`] makes an owner,
     /// and only this frees its client.
     fn drop(&mut self) {
-        if self.kept.get() {
+        let Some(own) = self.own.take() else {
             return;
-        }
+        };
         let client = self.client;
         let this = Handle::raw(client);
         if !this.flag(Flag::Closed) {
@@ -823,15 +826,17 @@ impl Drop for Owner {
             this.socket()
                 .edit(|socket| socket.object = core::ptr::null_mut());
         }
-        // SAFETY: the Box `create` made, released once: by its owner's drop.
-        let client = unsafe { Box::from_raw(client) };
-        let Client {
+        // Only the owner holds the client.
+        let Some(Client {
             socket,
             socket_ops,
             socks5,
             http_proxy,
             ..
-        } = *client;
+        }) = Rc::into_inner(own)
+        else {
+            return;
+        };
         if is_async {
             (socket_ops.free_socket)(Some(socket));
         } else {
