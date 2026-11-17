@@ -208,15 +208,11 @@ impl Slot {
     /// [`Callable::call`] of the slot's callable, which the slot keeps: `None`
     /// when it has none.
     pub(crate) fn call(&self, args: &[&Value], coroutine: bool) -> Option<bool> {
-        let stored = self.0.load(Ordering::Acquire);
-        if stored.is_null() {
-            return None;
-        }
-        // SAFETY: the `Rc` `replace` stored, still the slot's, borrowed without
-        // taking it (the slot keeps its reference).
-        let stored = std::mem::ManuallyDrop::new(unsafe { Rc::from_raw(stored) });
-        // A reference of its own, so the callable outlives a handler that replaces it.
-        let callable = Rc::clone(&*stored);
+        // A reference of its own, so the callable outlives a handler that replaces
+        // it; the slot gets its own back before the call.
+        let stored = self.replace(None)?;
+        let callable = Rc::clone(&stored.0);
+        drop(self.replace(Some(stored)));
         Some(call(&callable, args, coroutine))
     }
 }
