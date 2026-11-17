@@ -52,7 +52,7 @@ fn event_socket(event: &Event) -> Option<(Co, Socket<'_>)> {
 }
 
 /// `Socket::readable_event_callback` and `writable_event_callback`: Rust picks the
-/// coroutine to wake, a TLS wait's other direction, or none while a barrier waits.
+/// coroutine to wake: the direction's own, a TLS wait's other direction, or none.
 fn on_ready(event: &Event, kind: Events) {
     let Some((socket, source)) = event_socket(event) else {
         return;
