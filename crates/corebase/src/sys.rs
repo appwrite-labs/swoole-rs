@@ -1134,6 +1134,27 @@ impl<'a> Interface<'a> {
         unsafe { self.0.addr.as_ref() }
     }
 
+    /// The six-byte hardware address following a BSD link-layer interface name.
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub fn mac(self) -> Option<&'a [u8; 6]> {
+        use std::mem::offset_of;
+        let header = self.address()?;
+        if c_int::from(header.sa_family) != libc::AF_LINK {
+            return None;
+        }
+        // SAFETY: getifaddrs lends sa_len bytes at the original ifa_addr pointer.
+        let link = unsafe {
+            std::slice::from_raw_parts(self.0.addr.cast::<u8>(), usize::from(header.sa_len))
+        };
+        let name = usize::from(*link.get(offset_of!(libc::sockaddr_dl, sdl_nlen))?);
+        let start = offset_of!(libc::sockaddr_dl, sdl_data) + name;
+        if *link.get(offset_of!(libc::sockaddr_dl, sdl_alen))? != 6 {
+            return None;
+        }
+        link.get(start..)?.first_chunk()
+    }
+
     /// The address, when it is an `AF_INET` or `AF_INET6` one.
     #[must_use]
     pub fn ip(self) -> Option<std::net::IpAddr> {
@@ -1642,6 +1663,33 @@ mod tests {
                 .ok()
                 .is_none()
         );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn link_address_follows_the_interface_name() {
+        fn mac(family: u8, length: u8, address_len: u8) -> Option<[u8; 6]> {
+            // SAFETY: sockaddr_dl consists of integer fields and a char array.
+            let mut link: libc::sockaddr_dl = unsafe { std::mem::zeroed() };
+            link.sdl_family = family;
+            link.sdl_len = length;
+            link.sdl_nlen = 6;
+            link.sdl_alen = address_len;
+            link.sdl_data[6..12].copy_from_slice(&[1, 2, 3, 4, 5, 6]);
+            let entry = Entry {
+                next: None,
+                name: c"bridge".into(),
+                flags: 0,
+                addr: std::ptr::from_mut(&mut link).cast(),
+            };
+            Interface(&entry).mac().copied()
+        }
+        let family = u8::try_from(libc::AF_LINK).unwrap();
+        let length = u8::try_from(size_of::<libc::sockaddr_dl>()).unwrap();
+        assert_eq!(mac(family, length, 6), Some([1, 2, 3, 4, 5, 6]));
+        assert_eq!(mac(family, 16, 6), None);
+        assert_eq!(mac(family, length, 0), None);
+        assert_eq!(mac(u8::try_from(libc::AF_INET).unwrap(), length, 6), None);
     }
 
     #[test]
