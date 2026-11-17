@@ -15,8 +15,8 @@ use std::sync::Arc;
 use swoole_rs_corebase::process::process_pool::{PoolRecord, PoolRef};
 use swoole_rs_corebase::process::server_workers::{ServerWorkers, swr_v1_process_server_worker};
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerRecord};
+use swoole_rs_corebase::reactor::{Heap, Socket};
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
-use swoole_rs_reactor::{Heap, Socket};
 use swoole_rs_tls::socket_pair::SocketPair;
 
 /// The head of every `Server`.
@@ -599,7 +599,7 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn server_socket(self, fd: c_long) -> Option<(c_int, c_int)> {
         let conn = self.state().connection(fd, Lookup::ByFd)?;
-        let read = |s: &swoole_rs_reactor::SocketFields| (s.fd, s.socket_type);
+        let read = |s: &swoole_rs_corebase::reactor::SocketFields| (s.fd, s.socket_type);
         match conn.port() {
             Some(port) => port.with_socket(|s| s.read(read)),
             None => Some(conn.socket()?.read(read)),
@@ -815,13 +815,15 @@ impl<'a> PipeSocket<'a> {
 
 /// The listening socket of `pool`'s stream IPC, or `None` without one.
 #[must_use]
-pub fn pool_ipc_listener(pool: PoolRef<'_>) -> Option<std::rc::Rc<swoole_rs_reactor::OwnedSocket>> {
+pub fn pool_ipc_listener(
+    pool: PoolRef<'_>,
+) -> Option<std::rc::Rc<swoole_rs_corebase::reactor::OwnedSocket>> {
     pool.ipc_listener()?.downcast().ok()
 }
 
 /// `sock->set_nonblock()`.
 pub(crate) fn set_nonblock(sock: Socket<'_>) {
-    let set = swoole_rs_reactor::socket_upstream::socket_set_fd_option;
+    let set = swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option;
     let _ = sock.edit(|sock| set(sock, 1, -1));
 }
 

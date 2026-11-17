@@ -317,7 +317,7 @@ enum BioPeerCtrl {
 type PeerBytes = [u8; size_of::<libc::sockaddr_storage>()];
 // The session BIO's own answer (dtls.rs's `bio_ctrl`) is the native address union.
 const _: () = assert!(
-    size_of::<swoole_rs_reactor::AddressStorage>() <= size_of::<PeerBytes>(),
+    size_of::<swoole_rs_corebase::reactor::AddressStorage>() <= size_of::<PeerBytes>(),
     "the session BIO's peer address fits where BIO_dgram_get_peer copies it"
 );
 

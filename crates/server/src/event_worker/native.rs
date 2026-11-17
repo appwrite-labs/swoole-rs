@@ -6,7 +6,7 @@ use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::process;
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 
 use process::methods::{
     ExitStatus, push_stop, set_worker_type, swoole_get_worker_id, swoole_set_worker_id, worker_type,
@@ -16,8 +16,8 @@ use process::worker_globals::{
 };
 use process::worker_record::{Worker, WorkerStatus, WorkerType, swr_v1_worker_shutdown};
 use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::reactor::{Event, Heap, Running};
 use swoole_rs_corebase::{DataHead, log};
-use swoole_rs_reactor::{Event, Heap, Running};
 
 use super::{SignalHandler, Wait};
 use crate::callbacks::{CallbackKind, EventSlot, ReceiveSlot, ServerSlot, TaskSlot, WorkerSlot};
@@ -381,8 +381,8 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
         Mode::Thread => {}
     }
     reactor.handle().set_wait_exit(true);
-    swoole_rs_reactor::swr_v1_event_set_end_callback(
-        swoole_rs_reactor::Priority::TryExit,
+    swoole_rs_corebase::reactor::swr_v1_event_set_end_callback(
+        swoole_rs_corebase::reactor::Priority::TryExit,
         try_to_exit,
     );
     let now = swoole_rs_corebase::time_now();
@@ -472,7 +472,7 @@ pub(crate) fn swr_workers_signal_set(
     handler: SignalHandler,
     own: extern "C" fn(c_int),
 ) {
-    use swoole_rs_reactor::signal_upstream::{self, Handler};
+    use swoole_rs_corebase::reactor::signal_upstream::{self, Handler};
     let handler = match handler {
         SignalHandler::None => Handler::NONE,
         SignalHandler::Ignore => Handler::IGNORE,
@@ -495,7 +495,7 @@ pub(crate) fn signal(serv: view::Server<'_>, signo: c_int) {
         }
         if signo == libc::SIGTERM {
             // An event worker stops asynchronously; a task worker just shuts down.
-            if swoole_rs_reactor::event_api::swoole_event_is_available() {
+            if swoole_rs_corebase::reactor::event_api::swoole_event_is_available() {
                 stop_async_worker(serv, worker);
             } else {
                 swr_v1_worker_shutdown(worker);
@@ -555,7 +555,7 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
     swoole_set_worker_id(worker.id());
     set_worker_type(WorkerType::Event);
     crate::worker_methods::init_event_worker(serv, worker);
-    if swoole_rs_reactor::swoole_event_init(0) < 0 {
+    if swoole_rs_corebase::reactor::swoole_event_init(0) < 0 {
         return false;
     }
     worker_signal_init(serv);
@@ -581,15 +581,15 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
         Some(DispatchMode::CoConnLb | DispatchMode::CoReqLb)
     ) {
         let count = count_coroutines;
-        swoole_rs_reactor::swr_v1_event_set_end_callback(
-            swoole_rs_reactor::Priority::WorkerCallback,
+        swoole_rs_corebase::reactor::swr_v1_event_set_end_callback(
+            swoole_rs_corebase::reactor::Priority::WorkerCallback,
             count,
         );
     }
     worker_start_callback(serv, worker);
     let rv = reactor.wait();
     drain_worker_pipe(serv);
-    swoole_rs_reactor::swoole_event_free();
+    swoole_rs_corebase::reactor::swoole_event_free();
     call_worker_stop_callback(serv, worker);
     rv
 }
@@ -608,10 +608,10 @@ pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) ->
         .and_then(|worker| worker_pipe(worker, false));
     let pipe = pipe?;
     let info = process::process_pool::head_view(head);
-    if swoole_rs_reactor::event_api::swoole_event_is_available() {
-        swoole_rs_reactor::event_api::event_write(pipe, &info)
+    if swoole_rs_corebase::reactor::event_api::swoole_event_is_available() {
+        swoole_rs_corebase::reactor::event_api::event_write(pipe, &info)
     } else {
-        let event = swoole_rs_reactor::Drain::new(&info);
+        let event = swoole_rs_corebase::reactor::Drain::new(&info);
         swoole_rs_tls::upstream::send_sync_drain(*pipe, event, 0)
     }
 }

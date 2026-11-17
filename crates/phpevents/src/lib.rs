@@ -19,10 +19,10 @@ use std::{
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::{EventType, FdType};
 use swoole_rs_corebase::memory::flat::Table;
+use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::event_api::{self, CycleTask, Deferred};
 use swoole_rs_phpstubs::event;
 use swoole_rs_phpswoole::reactor::{self, PhpFdHandler};
-use swoole_rs_reactor::Events;
-use swoole_rs_reactor::event_api::{self, CycleTask, Deferred};
 use swoole_rs_tls::event_socket::EventSocket;
 use swoole_rs_zend::host::callable::Callable;
 use swoole_rs_zend::{
@@ -165,8 +165,8 @@ fn registered(php: Php, fd: i32) -> bool {
 }
 
 /// `int` events, as the reactor takes them.
-fn events_of(events: i64) -> swoole_rs_reactor::Events {
-    swoole_rs_reactor::Events::from_bits(events.c_cast::<c_int>())
+fn events_of(events: i64) -> swoole_rs_corebase::reactor::Events {
+    swoole_rs_corebase::reactor::Events::from_bits(events.c_cast::<c_int>())
 }
 
 /// The callable argument `value`, deferring a bailout.
@@ -698,10 +698,14 @@ fn error_event(php: Php, fd: i32) -> Result<bool, Bailout> {
     let Some((id, events)) = found else {
         return Ok(true);
     };
-    if !events.intersects(swoole_rs_reactor::Events::ERROR) {
-        return ready(php, fd, !events.intersects(swoole_rs_reactor::Events::READ));
+    if !events.intersects(swoole_rs_corebase::reactor::Events::ERROR) {
+        return ready(
+            php,
+            fd,
+            !events.intersects(swoole_rs_corebase::reactor::Events::READ),
+        );
     }
-    match swoole_rs_reactor::socket_error(fd) {
+    match swoole_rs_corebase::reactor::socket_error(fd) {
         Ok(0) => {}
         Ok(error) => {
             let description = errno_message(error);

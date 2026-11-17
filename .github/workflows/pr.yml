@@ -133,10 +133,10 @@ jobs:
               echo "$variant"
             fi
           done > variants <<'EOF'
-          iouring native/(hooks|reactor)/|crates/(hooks|reactor|phpcoroutines|phplocks)/|\.devcontainer/install\.sh$
+          iouring native/(hooks|reactor)/|crates/corebase/src/reactor/|crates/(hooks|phpcoroutines|phplocks)/|\.devcontainer/install\.sh$
           cares crates/(clients|corebase|cares-sys)/
           zts crates/corebase/src/locks/|crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|crates/(corebase|process|server|phpserver)/src/([^/]+/)*thread[^/]*\.rs$|native/(locks|phpthread)/|\.devcontainer/(install|php)\.sh$
-          threadcontext crates/corebase/src/coroutine/|native/(coroutine|phpcoroutines)/|crates/(phpcoroutines|phpcollections|phpevents|phpprocess|process|zend)/|crates/ext/build\.rs$|crates/hooks/src/wait_signal\.rs$|crates/reactor/src/wait_upstream\.rs$
+          threadcontext crates/corebase/src/coroutine/|native/(coroutine|phpcoroutines)/|crates/(phpcoroutines|phpcollections|phpevents|phpprocess|process|zend)/|crates/ext/build\.rs$|crates/hooks/src/wait_signal\.rs$|crates/corebase/src/reactor/wait_upstream\.rs$
           EOF
           echo "variants=$(jq -Rnc '[inputs]' variants)" >> "$GITHUB_OUTPUT"
           if echo "$changed" | grep -qE '^(crates/(http2|phphttp2)/|tests/modules/http2/h2spec\.|\.github/workflows/h2spec\.yml$)'; then

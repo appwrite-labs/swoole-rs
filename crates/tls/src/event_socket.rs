@@ -1,7 +1,9 @@
 //! A `Socket` record this owns, on the thread's reactor: `Swoole\Event`'s user
 //! sockets, a pipe's ends and an event waiter's watch.
 use std::ffi::c_int;
-use swoole_rs_reactor::{Heap, OwnedSocket, Socket, SocketRecord, event_api, socket_upstream};
+use swoole_rs_corebase::reactor::{
+    Heap, OwnedSocket, Socket, SocketRecord, event_api, socket_upstream,
+};
 
 /// A heap record this owns until [`EventSocket::free`], lending it only for a borrow
 /// of `self`; the reactor reaches it only through the calls below, and `free` takes
@@ -50,7 +52,7 @@ impl EventSocket {
     }
 
     #[must_use]
-    pub fn events(&self) -> swoole_rs_reactor::Events {
+    pub fn events(&self) -> swoole_rs_corebase::reactor::Events {
         self.socket().read(|record| record.events)
     }
 
@@ -61,13 +63,13 @@ impl EventSocket {
 
     /// `swoole_event_add(socket, events)`: whether it worked.
     #[must_use]
-    pub fn add(&self, events: swoole_rs_reactor::Events) -> bool {
+    pub fn add(&self, events: swoole_rs_corebase::reactor::Events) -> bool {
         event_api::event_add(self.heap(), events)
     }
 
     /// `swoole_event_set(socket, events)`: whether it worked.
     #[must_use]
-    pub fn set(&self, events: swoole_rs_reactor::Events) -> bool {
+    pub fn set(&self, events: swoole_rs_corebase::reactor::Events) -> bool {
         event_api::event_set(self.heap(), events)
     }
 
@@ -129,7 +131,7 @@ impl EventSocket {
                 }
                 // `swoole_event_defer(socket_free_defer, this)`; a reactor freed before
                 // it runs closes the socket all the same.
-                match swoole_rs_reactor::defer_free(owned) {
+                match swoole_rs_corebase::reactor::defer_free(owned) {
                     Ok(()) => return,
                     Err(owned) => owned,
                 }

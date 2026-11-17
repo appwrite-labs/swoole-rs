@@ -9,13 +9,13 @@ use crate::records::{Connection, Lookup};
 use core::ffi::{c_int, c_long};
 use core::ptr;
 use swoole_rs_corebase::ServerEvent;
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 
 use crate::objects::worker_pipe;
 use crate::reactor_handle::Reactor;
 use crate::reactor_io::owns;
 use swoole_rs_corebase::process::worker_record::Worker;
-use swoole_rs_reactor::{Event, Running};
+use swoole_rs_corebase::reactor::{Event, Running};
 
 use crate::callbacks::TaskSlot;
 use crate::event_worker::native::{
@@ -34,8 +34,8 @@ const CLOSE_ACTIVELY: c_int = 1 << 2;
 /// `thread->message_bus.get_pipe_socket(sock)`.
 fn pipe_socket<'b>(
     bus: &'b crate::objects::Bus<'_>,
-    pipe: Option<swoole_rs_reactor::Heap<'_>>,
-) -> Option<swoole_rs_reactor::Heap<'b>> {
+    pipe: Option<swoole_rs_corebase::reactor::Heap<'_>>,
+) -> Option<swoole_rs_corebase::reactor::Heap<'b>> {
     bus.pipe_socket(*pipe?)
 }
 
@@ -87,7 +87,11 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             port.config()
                 .thread_id
                 .set(crate::reactor_ops::pthread_self());
-            if !handle.change(socket, swoole_rs_reactor::ChangeOp::Add, Events::READ) {
+            if !handle.change(
+                socket,
+                swoole_rs_corebase::reactor::ChangeOp::Add,
+                Events::READ,
+            ) {
                 return Some(-1);
             }
         }
@@ -139,7 +143,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
 /// The destroy callback of a reactor thread's reactor: close its connections.
 struct CloseConnections(Reactor);
 
-impl swoole_rs_reactor::event_api::Deferred for CloseConnections {
+impl swoole_rs_corebase::reactor::event_api::Deferred for CloseConnections {
     fn run(self) {
         // A reactor thread's reactor, which runs its destroy callbacks on its own
         // thread while it lives.
@@ -178,7 +182,7 @@ fn heartbeat_main(server: view::Server<'_>) {
 pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> bool {
     let state = serv.state();
     let config = state.config_ref();
-    if swoole_rs_reactor::swoole_event_init(0) < 0 {
+    if swoole_rs_corebase::reactor::swoole_event_init(0) < 0 {
         return false;
     }
     let reactor = Reactor::thread();
@@ -187,11 +191,15 @@ pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> bool {
             continue;
         }
         if !(crate::port_config::methods().listen)(port.config()) {
-            swoole_rs_reactor::swoole_event_free();
+            swoole_rs_corebase::reactor::swoole_event_free();
             return false;
         }
         if let Some(socket) = serv.port_socket_at(index) {
-            reactor.change(socket, swoole_rs_reactor::ChangeOp::Add, Events::READ);
+            reactor.change(
+                socket,
+                swoole_rs_corebase::reactor::ChangeOp::Add,
+                Events::READ,
+            );
         }
     }
     methods::store_listen_socket(serv);
@@ -239,7 +247,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, id: u16) {
     };
     record.id.set(c_int::from(id));
     swoole_rs_corebase::set_thread_message_bus(ptr::from_ref(&record.bus).cast_mut().cast());
-    if swoole_rs_reactor::swoole_event_init(0) < 0 {
+    if swoole_rs_corebase::reactor::swoole_event_init(0) < 0 {
         return;
     }
     ctx.reactor = Some(Reactor::thread());
@@ -264,7 +272,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, id: u16) {
         clippy::let_underscore_must_use,
         reason = "upstream's reactor thread ignores its loop's result: it cleans up either way"
     )]
-    let _ = swoole_rs_reactor::event_api::swoole_event_wait();
+    let _ = swoole_rs_corebase::reactor::event_api::swoole_event_wait();
     if mode == Mode::Thread
         && let Some(worker) = worker()
     {
@@ -408,7 +416,7 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
     if let Some(timer) = thread.heartbeat_timer.take() {
         swoole_rs_timer::del_id(timer);
     }
-    swoole_rs_reactor::defer_destroy_value(reactor.handle(), CloseConnections(reactor));
+    swoole_rs_corebase::reactor::defer_destroy_value(reactor.handle(), CloseConnections(reactor));
     if config.mode_ == Mode::Thread {
         stop_async_worker(serv, worker(serv, id)?);
         return Some(());
@@ -416,7 +424,7 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
     let bus = thread.message_bus();
     for w in (0..config.worker_num.get()).filter(|&w| owns(i64::from(w), reactors, id)) {
         if let Some(sock) = pipe_socket(&bus, worker_pipe(worker(serv, w)?, true)) {
-            reactor.interest(sock, swoole_rs_reactor::Interest::RemoveRead);
+            reactor.interest(sock, swoole_rs_corebase::reactor::Interest::RemoveRead);
         }
     }
     each_connection(state, |conn| {
@@ -425,7 +433,7 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
         };
         let reading = !conn.peer_closed() && !sock.read(|s| s.removed);
         if reading && owns(i64::from(conn.fd()), reactors, id) {
-            reactor.interest(sock, swoole_rs_reactor::Interest::RemoveRead);
+            reactor.interest(sock, swoole_rs_corebase::reactor::Interest::RemoveRead);
         }
     });
     reactor.handle().set_wait_exit(true);

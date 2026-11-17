@@ -199,7 +199,7 @@ impl Join {
             return;
         }
         let resume = JoinResume { join: self };
-        if swoole_rs_reactor::event_api::swoole_event_defer_value(resume).is_err() {
+        if swoole_rs_corebase::reactor::event_api::swoole_event_defer_value(resume).is_err() {
             // Upstream dereferences `sw_reactor()` here unchecked.
             swoole_rs_corebase::fatal("no reactor to defer the resume to");
         }
@@ -220,7 +220,7 @@ struct JoinResume {
     join: Rc<Join>,
 }
 
-impl swoole_rs_reactor::event_api::Deferred for JoinResume {
+impl swoole_rs_corebase::reactor::event_api::Deferred for JoinResume {
     fn run(self) {
         // The token goes before the resume, which may not return.
         let (co, canceled) = (self.join.co, self.join.canceled.get());

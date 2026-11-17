@@ -25,6 +25,9 @@ itoa = "1.0.18"
 libc = "=0.2.191"
 swoole-rs-framing = { path = "../framing" }
 
+[target.'cfg(unix)'.dependencies]
+openssl-sys = "=0.9.118"
+
 [build-dependencies]
 cc = { version = "=1.11.1", optional = true }
 

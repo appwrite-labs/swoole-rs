@@ -19,10 +19,10 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::reactor::Events;
 use swoole_rs_http::llhttp::{self, Callbacks, Flow, Parser};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
-use swoole_rs_reactor::Events;
 use swoole_rs_websocket::Opcode;
 use swoole_rs_zend::{
     Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value,
@@ -1024,7 +1024,7 @@ impl Client {
         let mut controller = socket.read_timeout(timeout);
         let mut success = false;
         loop {
-            if controller.timed_out(swoole_rs_reactor::TimeoutKind::READ) {
+            if controller.timed_out(swoole_rs_corebase::reactor::TimeoutKind::READ) {
                 break;
             }
             let received = socket.recv_input(input);

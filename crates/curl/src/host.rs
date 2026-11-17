@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 ext-src/swoole_curl.cc (Swoole contributors).
-//! What a [`Multi`] needs of the process: the reactor (crates/reactor), this
+//! What a [`Multi`] needs of the process: the reactor (`corebase::reactor`), this
 //! thread's timer (crates/timer) and coroutine scheduler (crates/corebase/src/coroutine),
 //! and the C entry points the bundled `ext/curl` calls besides the multi's own.
 //! The engine uses an explicit operation table in every build.
@@ -10,11 +10,11 @@ use std::ffi::{CStr, c_int, c_long, c_void};
 use std::io::Write;
 use std::{ptr, rc::Rc};
 use swoole_rs_corebase::coroutine::Resume;
+use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::{SocketRecord, event_api};
 use swoole_rs_curl_sys::{
     CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLE_FAILED_INIT, CURLcode,
 };
-use swoole_rs_reactor::Events;
-use swoole_rs_reactor::{SocketRecord, event_api};
 use swoole_rs_tls::event_socket::EventSocket;
 
 /// Effects borrowed by a multi for its whole lifetime. Socket records and their
@@ -68,8 +68,8 @@ const CO_HAS_BEEN_BOUND: c_int = 10002;
 /// The reactor's handler for the cURL fd type: `BITMASK` happened on the
 /// socket whose object is a [`crate::Socket`].
 fn on_event<const BITMASK: c_int>(
-    _: swoole_rs_reactor::Running<'_>,
-    event: &mut swoole_rs_reactor::Event,
+    _: swoole_rs_corebase::reactor::Running<'_>,
+    event: &mut swoole_rs_corebase::reactor::Event,
 ) -> c_int {
     let Some(socket) = event.socket() else {
         return -1;
@@ -90,7 +90,7 @@ pub(crate) fn install_handlers() {
     if event_api::isset_handler(FD_CO_CURL, Events::READ) {
         return;
     }
-    let read: swoole_rs_reactor::Handler = on_event::<CURL_CSELECT_IN>;
+    let read: swoole_rs_corebase::reactor::Handler = on_event::<CURL_CSELECT_IN>;
     for (event, handler) in [
         (Events::READ, read),
         (Events::WRITE, on_event::<CURL_CSELECT_OUT>),

@@ -8,9 +8,9 @@ use swoole_rs_corebase::constants::{
     SW_BUFFER_SIZE_UDP, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
 };
 use swoole_rs_corebase::net_types::SocketAddress;
+use swoole_rs_corebase::reactor::socket_upstream::make_typed;
+use swoole_rs_corebase::reactor::{Heap, Socket};
 use swoole_rs_corebase::{DataHead, log};
-use swoole_rs_reactor::socket_upstream::make_typed;
-use swoole_rs_reactor::{Heap, Socket};
 use swoole_rs_tls::{
     DtlsSession, dtls_open, dtls_session_listen, dtls_session_receive, swr_v1_tls_dtls_append,
 };
@@ -66,7 +66,7 @@ fn accept<'a>(
         (config.r#type, config.port.get(), host)
     };
     let server_fd = listen.fd();
-    let owned = swoole_rs_reactor::OwnedSocket::new(make_typed(
+    let owned = swoole_rs_corebase::reactor::OwnedSocket::new(make_typed(
         kind,
         FD_SESSION,
         (SocketFlag::SW_SOCK_CLOEXEC | SocketFlag::SW_SOCK_NONBLOCK).bits(),

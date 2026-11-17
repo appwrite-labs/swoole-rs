@@ -253,7 +253,7 @@ struct Wire<'a> {
     server: crate::view::Server<'a>,
     request: &'a swoole_rs_http_ffi::HttpRequest,
     session_id: core::ffi::c_long,
-    socket: swoole_rs_reactor::Socket<'a>,
+    socket: swoole_rs_corebase::reactor::Socket<'a>,
 }
 
 impl Wire<'_> {
@@ -281,7 +281,7 @@ impl Exchange for Wire<'_> {
     }
     fn cork(&self) {
         // An `extern "C"` fn is no closure.
-        let cork = swoole_rs_reactor::socket_upstream::socket_cork;
+        let cork = swoole_rs_corebase::reactor::socket_upstream::socket_cork;
         self.socket.edit(cork);
     }
     fn send(&self, kind: ServerEvent, data: &[u8]) {
@@ -304,7 +304,7 @@ pub fn static_select(
     server: crate::view::Server<'_>,
     request: &swoole_rs_http_ffi::HttpRequest,
     session_id: core::ffi::c_long,
-    socket: swoole_rs_reactor::Socket<'_>,
+    socket: swoole_rs_corebase::reactor::Socket<'_>,
 ) -> bool {
     let wire = Wire {
         server,

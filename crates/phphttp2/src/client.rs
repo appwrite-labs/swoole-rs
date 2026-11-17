@@ -11,6 +11,7 @@ use std::{
     rc::Rc,
 };
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::reactor::Events;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_close_hook};
 use swoole_rs_http2::{
     FrameAction, FrameType, HeaderKind, HeaderRole, Http2FrameFacts, Http2Settings,
@@ -25,7 +26,6 @@ use swoole_rs_http2::{
 };
 use swoole_rs_inflate::Inflate;
 use swoole_rs_phpstubs::http2_client_coro;
-use swoole_rs_reactor::Events;
 use swoole_rs_zend::{
     ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, Weak,
     ZString, sys::ZEND_ACC_PUBLIC,
@@ -440,7 +440,7 @@ impl Client {
         }
         // `php_swoole_create_socket(convert_to_type(host))`.
         let kind = self.with_host(|host| {
-            let kind = swoole_rs_reactor::host_type(host);
+            let kind = swoole_rs_corebase::reactor::host_type(host);
             let erase = kind.erase.min(host.len());
             host.drain(..erase);
             kind

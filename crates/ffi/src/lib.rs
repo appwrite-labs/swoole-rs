@@ -46,7 +46,10 @@ pub use swoole_rs_phpswoole::*;
 #[cfg(feature = "php")]
 pub use swoole_rs_phpredis::*;
 
-pub use swoole_rs_reactor::*;
+// Keep the existing PHP reactor namespace when its facade is enabled.
+pub use swoole_rs_corebase::reactor::*;
+#[cfg(feature = "php")]
+pub use swoole_rs_phpswoole::reactor;
 
 pub use swoole_rs_corebase::*;
 

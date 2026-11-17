@@ -1,6 +1,6 @@
 # Reactor tests
 
-`reactor-unit` runs `crates/reactor`'s tests.
+`corebase-unit` runs `corebase::reactor`'s tests, including the original reactor unit cases.
 `network/socket.cpp`'s TESTs are Rust cases in `hooks-system-rust`
 (tests/modules/hooks/README.md), so the `reactor` core-tests lane
 (`reactor-native-originals`) is gone.

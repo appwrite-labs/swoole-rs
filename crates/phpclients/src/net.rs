@@ -20,10 +20,10 @@ use swoole_rs_clients::{
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::net_types::SocketAddress;
+use swoole_rs_corebase::reactor::{Socket as Net, SocketFields};
 use swoole_rs_phpruntime::Report;
 use swoole_rs_phpstubs::client;
 use swoole_rs_phpswoole::{Switch, built_with, display_errors};
-use swoole_rs_reactor::{Socket as Net, SocketFields};
 use swoole_rs_zend::{
     Array, Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, ObjectRef, Owned,
     OwnedArray, Props, Value, ZStr, ZString,

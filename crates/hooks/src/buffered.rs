@@ -3,8 +3,8 @@
 use crate::co_io::{available, host};
 use crate::co_socket::Co;
 use crate::packet::{BufferSync, ReadBuffer};
+use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::sys::ReadSlot;
-use swoole_rs_reactor::Events;
 
 fn to_off(offset: usize) -> libc::off_t {
     libc::off_t::try_from(offset).unwrap_or(libc::off_t::MAX)

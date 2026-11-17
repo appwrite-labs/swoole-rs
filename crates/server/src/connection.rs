@@ -2,12 +2,12 @@
 use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
 use swoole_rs_corebase::ServerEvent;
-use swoole_rs_reactor::Events;
+use swoole_rs_corebase::reactor::Events;
 
 use swoole_rs_corebase::constants::{SW_ACCEPT_RETRY_TIME, SW_SEND_BUFFER_SIZE, SocketType};
+use swoole_rs_corebase::reactor::{Event, Heap, OwnedSocket};
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{Event, Heap, OwnedSocket};
 
 use crate::reactor_handle::Reactor;
 use crate::records::Lookup;
@@ -34,7 +34,7 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
     };
     for _ in 0..ACCEPT_MAX_COUNT {
         // The record `accepted` just made: the connection takes it, or `discard` frees it.
-        let accepted = listener.edit(swoole_rs_reactor::SocketFields::accepted);
+        let accepted = listener.edit(swoole_rs_corebase::reactor::SocketFields::accepted);
         let Some(sock) = accepted.map(OwnedSocket::new) else {
             if accept_failed(serv, errno()) {
                 continue;
@@ -184,7 +184,7 @@ pub fn add<'a>(
     });
 
     let listener = ls.listening_socket();
-    let tcp = listener.is_some_and(|l| l.read(swoole_rs_reactor::SocketFields::is_tcp));
+    let tcp = listener.is_some_and(|l| l.read(swoole_rs_corebase::reactor::SocketFields::is_tcp));
     if ls.open_tcp_nodelay.get() && tcp {
         if !socket.edit(|s| s.set_tcp_nodelay(1)) {
             log::sys_warning(
@@ -391,7 +391,7 @@ pub(crate) fn idle_timeout(serv: view::Server<'_>, reactor: Reactor, conn: Conne
     let idle = serv
         .port_by_server_fd(conn.server_fd())
         .map_or(0.0, |port| port.config().max_idle_time.get());
-    let now = swoole_rs_reactor::steady_ms();
+    let now = swoole_rs_corebase::reactor::steady_ms();
     let (received, sent) = conn
         .socket()
         .map_or_default(|s| s.read(|s| (s.last_received_time, s.last_sent_time)));
@@ -646,7 +646,7 @@ mod tests {
             sock.read(|s| s.recv_timer).is_some(),
             "the idle timer is armed"
         );
-        let now = swoole_rs_reactor::steady_ms();
+        let now = swoole_rs_corebase::reactor::steady_ms();
         sock.edit(|s| {
             s.last_received_time = now;
             s.last_sent_time = now;
@@ -737,7 +737,7 @@ mod tests {
     }
 
     /// Whether the reactor reads `sock`.
-    fn reading(sock: swoole_rs_reactor::Socket<'_>) -> bool {
+    fn reading(sock: swoole_rs_corebase::reactor::Socket<'_>) -> bool {
         sock.read(|s| !s.removed && s.events.intersects(Events::READ))
     }
 

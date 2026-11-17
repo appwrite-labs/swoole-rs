@@ -425,7 +425,7 @@ fn call(mut ctx: Ctx, coroutine: bool) -> Result<(), bailout::Bailout> {
 /// release its objects. The context is a queued server request's.
 struct Turn(Hold);
 
-impl swoole_rs_reactor::event_api::Deferred for Turn {
+impl swoole_rs_corebase::reactor::event_api::Deferred for Turn {
     fn run(self) {
         let mut ctx = self.0.ctx();
         bailout::raise(call(ctx, enable_coroutine(context::server(ctx.state()))));
@@ -735,7 +735,7 @@ pub(crate) fn release_request(server: view::Server<'_>) {
     with_current(|current| current.sub_concurrency());
     if let Some(hold) = dequeue() {
         // Upstream dereferences `sw_reactor()` here unchecked.
-        if swoole_rs_reactor::event_api::swoole_event_defer_value(Turn(hold)).is_err() {
+        if swoole_rs_corebase::reactor::event_api::swoole_event_defer_value(Turn(hold)).is_err() {
             swoole_rs_corebase::fatal("no reactor to defer the queued request to");
         }
     }

@@ -22,7 +22,6 @@ on:
       - crates/hooks/**
       - crates/http2/**
       - crates/httpbindings/**
-      - crates/reactor/**
       - crates/server/**
       - crates/timer/**
       - tests/modules/buffer/recycling.rs
@@ -54,7 +53,6 @@ jobs:
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: >-
               -p swoole-rs-bus -p swoole-rs-corebase
-              -p swoole-rs-reactor
           # upstream-symbols only adds the timer's Owner and its tests (#3379), so this
           # run covers every test the plain one would.
           - name: timer

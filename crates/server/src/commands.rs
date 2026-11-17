@@ -98,7 +98,7 @@ pub(crate) fn call_command_handler(
     serv: crate::view::Server<'_>,
     bus: crate::objects::Bus<'_>,
     worker_id: u16,
-    sock: Option<swoole_rs_reactor::Heap<'_>>,
+    sock: Option<swoole_rs_corebase::reactor::Heap<'_>>,
 ) {
     let request = bus.head();
     let command_id = i32::from(request.server_fd);
@@ -121,7 +121,10 @@ pub(crate) fn answer(
     handler: &CommandHandler,
     serv: crate::view::Server<'_>,
     message: &[u8],
-    (bus, sock): (crate::objects::Bus<'_>, swoole_rs_reactor::Heap<'_>),
+    (bus, sock): (
+        crate::objects::Bus<'_>,
+        swoole_rs_corebase::reactor::Heap<'_>,
+    ),
     fd: i64,
     reactor_id: u16,
 ) -> bool {
@@ -143,7 +146,7 @@ pub(crate) fn answer(
 pub(crate) fn reply_socket<'a>(
     state: &'a ServerState,
     serv: crate::view::Server<'a>,
-) -> Option<swoole_rs_reactor::Heap<'a>> {
+) -> Option<swoole_rs_corebase::reactor::Heap<'a>> {
     let config = state.config_ref();
     if config.mode_ == Mode::Base {
         return serv.worker_pipe(0, true);

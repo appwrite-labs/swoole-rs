@@ -125,7 +125,7 @@ pub(crate) fn flag(bit: u32) -> bool {
             .is_some_and(|server| server.view().is_started()),
         FATAL => {
             swoole_rs_zend::last_fatal_error()
-                || swoole_rs_reactor::event_api::swoole_event_bailed_out()
+                || swoole_rs_corebase::reactor::event_api::swoole_event_bailed_out()
         }
         // `sw_is_main_thread()`.
         MAIN_THREAD => !cfg!(zts) || swoole_rs_zend::is_main_thread(),
@@ -246,7 +246,7 @@ pub(crate) fn list(cids: &mut [c_long]) -> usize {
 
 /// `Co::stats()`.
 pub(crate) fn stats(stats: &mut Stats) {
-    if let Some(count) = swoole_rs_reactor::event_api::swoole_event_num() {
+    if let Some(count) = swoole_rs_corebase::reactor::event_api::swoole_event_num() {
         stats.event_num = i64::try_from(count).unwrap_or(i64::MAX);
     }
     #[cfg(feature = "iouring")]
@@ -257,9 +257,9 @@ pub(crate) fn stats(stats: &mut Stats) {
         stats.aio_worker_num = count(workers);
         stats.aio_queue_size = count(queued);
     }
-    // crates/reactor counts this thread's listeners.
+    // `corebase::reactor` counts this thread's listeners.
     stats.signal_listener_num =
-        i64::from(swoole_rs_reactor::signal_upstream::swoole_signal_get_listener_num());
+        i64::from(swoole_rs_corebase::reactor::signal_upstream::swoole_signal_get_listener_num());
     let s = swoole_rs_corebase::coroutine::counters();
     stats.c_stack_size = i64::try_from(s.stack_size).unwrap_or(i64::MAX);
     stats.coroutine_num = i64::try_from(count()).unwrap_or(i64::MAX);
@@ -502,7 +502,7 @@ pub(crate) fn run(ctx: Ctx) -> bool {
 /// The bailout of a coroutine that ended in an exception or a bailout, in the
 /// main context: the loop stops, then PHP bails out.
 extern "C" fn bail_out(_: *mut c_void) {
-    swoole_rs_reactor::event_api::swoole_event_bail_out();
+    swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
     bailout::raise(Err(bailout::Bailout));
 }
 
@@ -555,10 +555,10 @@ pub(crate) fn attach(
     on_resume: extern "C" fn(swoole_rs_corebase::coroutine::CoroutineTask),
 ) {
     // Upstream dereferences `sw_reactor()` here unchecked.
-    if swoole_rs_reactor::event_api::current_prepared().is_none() {
+    if swoole_rs_corebase::reactor::event_api::current_prepared().is_none() {
         swoole_rs_corebase::fatal("no reactor for the coroutine host");
     }
-    swoole_rs_reactor::event_api::on_destroy(deactivate_on_free);
+    swoole_rs_corebase::reactor::event_api::on_destroy(deactivate_on_free);
     // The core's activation, on a running loop.
     swoole_rs_corebase::coroutine::activate();
     set_callbacks([Some(on_yield), Some(on_resume), None]);
@@ -637,9 +637,9 @@ pub(crate) fn absolute_msec() -> c_long {
 }
 
 /// `swoole_event_defer` of `value`.
-pub(crate) fn defer(value: impl swoole_rs_reactor::event_api::Deferred) {
+pub(crate) fn defer(value: impl swoole_rs_corebase::reactor::event_api::Deferred) {
     // Upstream dereferences `sw_reactor()` here unchecked.
-    if swoole_rs_reactor::event_api::swoole_event_defer_value(value).is_err() {
+    if swoole_rs_corebase::reactor::event_api::swoole_event_defer_value(value).is_err() {
         swoole_rs_corebase::fatal("no reactor to defer to");
     }
 }
@@ -694,13 +694,13 @@ pub(crate) fn set_exit_condition(set: bool) {
         return;
     }
     if set {
-        swoole_rs_reactor::swr_v1_event_set_exit_condition(
-            swoole_rs_reactor::ExitCondition::UserAfterDefault,
+        swoole_rs_corebase::reactor::swr_v1_event_set_exit_condition(
+            swoole_rs_corebase::reactor::ExitCondition::UserAfterDefault,
             crate::scheduler::reactor_can_exit,
         );
     } else {
-        swoole_rs_reactor::swr_v1_event_remove_exit_condition(
-            swoole_rs_reactor::ExitCondition::UserAfterDefault,
+        swoole_rs_corebase::reactor::swr_v1_event_remove_exit_condition(
+            swoole_rs_corebase::reactor::ExitCondition::UserAfterDefault,
         );
     }
 }

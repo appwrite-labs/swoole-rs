@@ -19,5 +19,4 @@ workspace = true
 [dependencies]
 libc = "=0.2.191"
 swoole-rs-corebase = { path = "../corebase" }
-swoole-rs-reactor = { path = "../reactor" }
 swoole-rs-tls = { path = "../tls", optional = true }

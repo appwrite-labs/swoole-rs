@@ -158,8 +158,8 @@ pub(crate) fn connection_incoming(
 /// Registered only on a server's reactor (its `ptr` is the live `Server`) for its
 /// listening sockets.
 pub(crate) fn accept_connection(
-    reactor: swoole_rs_reactor::Running<'_>,
-    event: &mut swoole_rs_reactor::Event,
+    reactor: swoole_rs_corebase::reactor::Running<'_>,
+    event: &mut swoole_rs_corebase::reactor::Event,
 ) -> c_int {
     let reactor = crate::reactor_handle::Reactor::running(reactor);
     let Some(serv) = reactor.server() else {
@@ -435,8 +435,8 @@ mod tests {
         use crate::records::ConnectionRecord;
         use crate::records::tests::naming;
         use swoole_rs_corebase::process::worker_record::WorkerRecord;
-        use swoole_rs_reactor::SocketRecord;
-        fn session(serv: view::Server<'_>) -> swoole_rs_reactor::Socket<'_> {
+        use swoole_rs_corebase::reactor::SocketRecord;
+        fn session(serv: view::Server<'_>) -> swoole_rs_corebase::reactor::Socket<'_> {
             let conn = serv.state().connection(3, Lookup::ByFd).unwrap();
             *conn.socket().unwrap()
         }
@@ -448,7 +448,7 @@ mod tests {
         pipe.kernel_nobufs = true;
         // SAFETY: as above.
         let mut connections: [ConnectionRecord; 4] = unsafe { core::mem::zeroed() };
-        let owned = swoole_rs_reactor::OwnedSocket::new(Box::new(sock));
+        let owned = swoole_rs_corebase::reactor::OwnedSocket::new(Box::new(sock));
         crate::Connection::from(&connections[3]).hold_socket(owned);
         connections[3].reactor_id.set(1);
         // SAFETY: as above.
@@ -507,7 +507,7 @@ mod tests {
     fn pipe_fds_map_to_the_pipe_and_raise_the_highest_fd() {
         use core::sync::atomic::Ordering::Relaxed;
         use swoole_rs_corebase::process::worker_record::{Worker, WorkerRecord};
-        use swoole_rs_reactor::SocketRecord;
+        use swoole_rs_corebase::reactor::SocketRecord;
         let live = crate::fixture::LiveServer::new();
         live.counters().max_fd.store(7, Relaxed);
         // SAFETY: plain records, for which zero is valid.

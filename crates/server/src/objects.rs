@@ -4,13 +4,13 @@
 use crate::Mode;
 use core::ffi::{c_int, c_void};
 
+use swoole_rs_corebase::reactor::{Heap, Socket};
 use swoole_rs_corebase::{DataHead, TrustedAllocator};
-use swoole_rs_reactor::{Heap, Socket};
 
 use swoole_rs_bus::{BusPacket, MessageBus};
 
 use crate::pool_native::PoolBus;
-use swoole_rs_reactor::{reactor_if_exit, reactor_wait};
+use swoole_rs_corebase::reactor::{reactor_if_exit, reactor_wait};
 
 pub(crate) use crate::view::{set_nonblock, worker_pipe};
 

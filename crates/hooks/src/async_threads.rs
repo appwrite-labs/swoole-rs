@@ -11,14 +11,14 @@ use std::ffi::c_int;
 use std::ptr;
 use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::ossupport::{Pool, PoolHooks, pool_complete};
+use swoole_rs_corebase::reactor::event_api::{event_del, on_destroy, swr_v1_event_current};
+use swoole_rs_corebase::reactor::{Event, Running, Socket};
 use swoole_rs_corebase::{
     log, microtime, set_thread_async_threads, swoole_thread_clean, swoole_thread_init,
     swr_v1_core_aio_core_worker_num, swr_v1_core_aio_default_socket, swr_v1_core_aio_max_idle_time,
     swr_v1_core_aio_max_wait_time, swr_v1_core_aio_worker_num, swr_v1_core_cpu_num,
     swr_v1_core_set_aio_default_socket, thread_async_threads,
 };
-use swoole_rs_reactor::event_api::{event_del, on_destroy, swr_v1_event_current};
-use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_tls::socket_pair::{SocketPair, close, drop, unix_socket};
 use swoole_rs_tls::upstream::write_sync;
 
@@ -240,11 +240,11 @@ fn create() -> *mut AsyncThreads {
     // The pipe owns its read end, which stays registered until `destroyed` frees the
     // pipe with the reactor.
     if let Some(read) = threads.pipe.worker_event() {
-        _ = read.add(swoole_rs_reactor::Events::READ);
+        _ = read.add(swoole_rs_corebase::reactor::Events::READ);
     }
     on_destroy(destroyed);
-    swoole_rs_reactor::swr_v1_event_set_exit_condition(
-        swoole_rs_reactor::ExitCondition::AioTask,
+    swoole_rs_corebase::reactor::swr_v1_event_set_exit_condition(
+        swoole_rs_corebase::reactor::ExitCondition::AioTask,
         pending,
     );
     threads.pool = Some(Pool::acquire(

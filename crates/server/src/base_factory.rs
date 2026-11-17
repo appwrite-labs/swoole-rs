@@ -493,7 +493,7 @@ pub(crate) fn end(serv: view::Server<'_>, id: c_long, flags: c_int) -> bool {
     socket.read(|s| out_buffer(s).map(swr_cpp_buffer_typed_close));
     // Only the half-close drain stops reading (`SW_HALFCLOSE_DRAIN`); upstream reads on.
     !cfg!(feature = "halfclose")
-        || reactor.interest(socket, swoole_rs_reactor::Interest::RemoveRead)
+        || reactor.interest(socket, swoole_rs_corebase::reactor::Interest::RemoveRead)
 }
 
 /// `BaseFactory::finish`: send here, or forward data and files to the session's worker.
@@ -717,7 +717,7 @@ mod tests {
         conn.set_close_force(true);
         assert!(!end(serv, 1, 0), "no socket");
         // SAFETY: the heap record the slot just forgot, which nothing else owns.
-        conn.hold_socket(unsafe { swoole_rs_reactor::OwnedSocket::from_socket(sock) });
+        conn.hold_socket(unsafe { swoole_rs_corebase::reactor::OwnedSocket::from_socket(sock) });
         conn.active().store(false, Ordering::Relaxed);
         assert!(!end(serv, 1, 0), "no connection");
         conn.active().store(true, Ordering::Relaxed);

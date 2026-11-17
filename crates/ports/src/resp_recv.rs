@@ -3,8 +3,8 @@
 use core::cell::Cell;
 use core::ffi::{c_int, c_long};
 use swoole_rs_clients::resp_recv::{Dispatched, ORIGIN, Received, RespConnection, RespRequest};
+use swoole_rs_corebase::reactor::{Caught, Socket};
 use swoole_rs_corebase::{DataHead, log};
-use swoole_rs_reactor::{Caught, Socket};
 use swoole_rs_server::reactor_entry::RecvData;
 
 use crate::framing_recv::Lent;
@@ -131,7 +131,7 @@ mod tests {
     use super::*;
     use swoole_rs_clients::protocol::Protocol;
     use swoole_rs_corebase::buffer::string::CppString;
-    use swoole_rs_reactor::SocketRecord;
+    use swoole_rs_corebase::reactor::SocketRecord;
     use swoole_rs_server::ConnectionRecord;
 
     /// `core-tests/src/protocol/redis.cpp`, `TEST(redis, recv_packet_with_partially_filled_buffer)`.

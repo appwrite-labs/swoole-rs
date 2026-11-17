@@ -15,10 +15,10 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::reactor::Events;
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::socket_coro;
 use swoole_rs_phpswoole::{Switch, built_with};
-use swoole_rs_reactor::Events;
 use swoole_rs_zend::{
     Array, Call, Class, Custom, CustomClass, Invalid, Minit, Owned, OwnedArray, Props, Value,
     ZString,

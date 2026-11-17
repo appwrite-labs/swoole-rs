@@ -3,7 +3,7 @@
 ## Socket output progression
 
 `Socket::handle_send`, `handle_sendfile`, `sendfile`, `sendfile_sync` and
-`send_async` are Rust (`crates/tls/src/upstream.rs`), over `crates/reactor/src/output.rs`
+`send_async` are Rust (`crates/tls/src/upstream.rs`), over `crates/corebase/src/reactor/output.rs`
 and the sendfile requests in `file_output.rs`:
 
 - `handle_send` sends the unsent tail of the front data chunk and classifies the
@@ -23,7 +23,7 @@ typed Rust queue (`swoole_rs_corebase::buffer`).
 ## Writable callback
 
 `Reactor::_writable_callback` and `drain_write_buffer` are `swr_v1_reactor_flush` and
-`swr_v1_reactor_drain` (`crates/reactor/src/flush.rs`), over the `FlushEffects` trait
+`swr_v1_reactor_drain` (`crates/corebase/src/reactor/flush.rs`), over the `FlushEffects` trait
 that `crates/tls/src/reactor_write.rs`'s `Flush` implements.
 
 - DATA (0), SENDFILE (1) or CLOSE (2) pick the send; other kinds fall back to

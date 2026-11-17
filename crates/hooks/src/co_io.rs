@@ -8,8 +8,8 @@ use crate::shutdown::WaitTimer;
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 #[cfg(test)]
 use core::ptr;
+use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::timer_key::Held;
-use swoole_rs_reactor::Events;
 
 /// `SW_ERROR_CO_SOCKET_CLOSE_WAIT`.
 pub(crate) const CLOSE_WAIT_ERROR: c_int = 10019;
@@ -140,7 +140,7 @@ mod native {
     use core::ffi::{CStr, c_int, c_long, c_void};
     use swoole_rs_corebase::coroutine::print_socket_bound_error;
     use swoole_rs_corebase::net_types::PacketLength;
-    use swoole_rs_reactor::Events;
+    use swoole_rs_corebase::reactor::Events;
 
     pub(super) static HOST: Host = Host {
         timer_add,
@@ -248,8 +248,9 @@ mod native {
         let taken = socket.own_read_buffer();
         let view = taken.view();
         let mut packet = PacketLength::new(view.get(..size as usize).unwrap_or(view));
-        let mut measure =
-            |net: Option<swoole_rs_reactor::Socket<'_>>| call(&protocol, net, &mut packet);
+        let mut measure = |net: Option<swoole_rs_corebase::reactor::Socket<'_>>| {
+            call(&protocol, net, &mut packet)
+        };
         let length = socket
             .with_network(|net| measure(Some(net)))
             .unwrap_or_else(|| measure(None));
@@ -337,7 +338,7 @@ mod native {
     }
 
     pub(super) fn remove(socket: Co, event: Events) {
-        use swoole_rs_reactor::Interest;
+        use swoole_rs_corebase::reactor::Interest;
         // `Reactor::interest`'s `remove_read_event` or `remove_write_event`.
         let kind = if event == Events::READ {
             Interest::RemoveRead
@@ -460,7 +461,7 @@ pub fn timed_out(
     timeout: f64,
     startup: &mut f64,
     now: f64,
-    kind: swoole_rs_reactor::TimeoutKind,
+    kind: swoole_rs_corebase::reactor::TimeoutKind,
 ) -> bool {
     /// `SW_TIMER_MIN_SEC`.
     const MIN_SEC: f64 = 0.001;
@@ -482,7 +483,7 @@ pub fn timed_out(
 
 /// `catch_read_error`/`catch_write_error(errno) == SW_WAIT`.
 pub(crate) fn would_block(socket: Co) -> bool {
-    socket.catch_error(errno()) == Some(swoole_rs_reactor::Caught::Wait)
+    socket.catch_error(errno()) == Some(swoole_rs_corebase::reactor::Caught::Wait)
 }
 
 /// `TimerController`: one wait's timer in the socket's slot for its direction.
@@ -1071,7 +1072,7 @@ mod tests {
                     timeout,
                     &mut startup,
                     now,
-                    swoole_rs_reactor::TimeoutKind::READ,
+                    swoole_rs_corebase::reactor::TimeoutKind::READ,
                 );
                 let after = unsafe { socket.0.record() }.timeouts.read;
                 assert_eq!(
@@ -1160,7 +1161,7 @@ mod tests {
     /// `NESTED`, writes into that socket's read buffer meanwhile.
     fn record_length(
         _: &crate::co_socket::Protocol,
-        _: Option<swoole_rs_reactor::Socket<'_>>,
+        _: Option<swoole_rs_corebase::reactor::Socket<'_>>,
         packet: &mut swoole_rs_corebase::net_types::PacketLength,
     ) -> isize {
         MEASURED.set(packet.bytes().to_vec());

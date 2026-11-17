@@ -19,19 +19,19 @@ use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::constants::SocketFlag;
 use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
-use swoole_rs_corebase::sys::ReadSlot;
-use swoole_rs_corebase::sys::Text;
-use swoole_rs_corebase::{log, set_errno};
-use swoole_rs_error::ErrorCode;
-use swoole_rs_reactor::socket_upstream::{
+use swoole_rs_corebase::reactor::socket_upstream::{
     make_typed, socket_cork, socket_set_fd_option, socket_uncork,
 };
-use swoole_rs_reactor::{
+use swoole_rs_corebase::reactor::{
     Drain, Events, Fill, OutputEffects, RangeError, Socket, SocketAddress, SocketFields,
     SocketFileRequest, SocketRecord, SslSendfileWarning, SyncEffects, SyncMode, handle_send_owned,
     record_peek, record_recv, record_send, sendfile_chunk, ssl_sendfile as ssl_sendfile_fd,
     steady_ms, swr_v1_reactor_poll_events_to, swr_v1_socket_sync, what_event_want,
 };
+use swoole_rs_corebase::sys::ReadSlot;
+use swoole_rs_corebase::sys::Text;
+use swoole_rs_corebase::{log, set_errno};
+use swoole_rs_error::ErrorCode;
 
 // libcrypto's own declaration: it reads only the code, and answers one of its
 // static strings.
@@ -481,7 +481,8 @@ pub fn check_liveness(socket: Socket<'_>) -> bool {
     set_errno(0);
     let peeked = peek(socket, &mut byte, libc::MSG_DONTWAIT);
     !(peeked == Some(0)
-        || (peeked.is_none() && socket.catch_error(errno()) == swoole_rs_reactor::Caught::Close))
+        || (peeked.is_none()
+            && socket.catch_error(errno()) == swoole_rs_corebase::reactor::Caught::Close))
 }
 
 /// One blocking call: the socket, and its I/O with the bytes it has left.
@@ -533,7 +534,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
         });
     }
 
-    fn events(&self, event: swoole_rs_reactor::Events) -> i16 {
+    fn events(&self, event: swoole_rs_corebase::reactor::Events) -> i16 {
         swr_v1_reactor_poll_events_to(self.socket.read(|record| what_event_want(record, event)))
     }
 
@@ -565,7 +566,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
         }
     }
 
-    fn catch_error(&self, error: c_int) -> swoole_rs_reactor::Caught {
+    fn catch_error(&self, error: c_int) -> swoole_rs_corebase::reactor::Caught {
         self.socket.catch_error(error)
     }
 
@@ -578,7 +579,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
     }
 }
 
-/// `Socket::wait_for`'s loop (`crates/reactor/src/socket_sync.rs`) around `io`,
+/// `Socket::wait_for`'s loop (`crates/corebase/src/reactor/socket_sync.rs`) around `io`,
 /// waiting for writability (else readability) up to the socket's timeout.
 fn sync<S: ReadSlot>(socket: Socket<'_>, io: Io<'_, S>, flags: c_int) -> Option<usize> {
     let (mode, event) = match &io {
@@ -890,7 +891,7 @@ impl OutputEffects for Output<'_> {
         });
     }
 
-    fn catch_error(&self, error: c_int) -> swoole_rs_reactor::Caught {
+    fn catch_error(&self, error: c_int) -> swoole_rs_corebase::reactor::Caught {
         self.0.catch_error(error)
     }
 }
@@ -1004,11 +1005,11 @@ pub fn socket_sendfile_async(
 /// loop when there is one, else `send_sync`: the bytes taken, `None` when it failed.
 /// The loop may register the socket to send what it queues, so it is a heap socket.
 #[must_use]
-pub fn send_async(socket: swoole_rs_reactor::Heap<'_>, data: &[u8]) -> Option<usize> {
-    if swoole_rs_reactor::socket_upstream::event_reactor().is_none() {
+pub fn send_async(socket: swoole_rs_corebase::reactor::Heap<'_>, data: &[u8]) -> Option<usize> {
+    if swoole_rs_corebase::reactor::socket_upstream::event_reactor().is_none() {
         return send_sync(*socket, data, 0);
     }
-    swoole_rs_reactor::event_api::event_write(socket, data)
+    swoole_rs_corebase::reactor::event_api::event_write(socket, data)
 }
 
 /// `bool Socket::ssl_shutdown()`: false without an SSL.
@@ -1134,7 +1135,7 @@ pub fn server_socket(
     address: &CStr,
     port: c_int,
     backlog: c_int,
-) -> Option<swoole_rs_reactor::OwnedSocket> {
+) -> Option<swoole_rs_corebase::reactor::OwnedSocket> {
     const ORIGIN: &CStr = c"make_server_socket";
     // The new record, which only this function holds.
     let Some(record) = make_typed(kind, FD_STREAM_SERVER, SocketFlag::SW_SOCK_CLOEXEC.bits())
@@ -1142,7 +1143,7 @@ pub fn server_socket(
         log::sys_warning(ORIGIN, format_args!("socket() failed"));
         return None;
     };
-    let owned = swoole_rs_reactor::OwnedSocket::new(record);
+    let owned = swoole_rs_corebase::reactor::OwnedSocket::new(record);
     let record = owned.socket();
     let fd = record.fd();
     // Only TCP sockets need to rebind addresses held by TIME_WAIT. Enabling reuse for
@@ -1418,7 +1419,7 @@ mod tests {
             "getsockname filled the port"
         );
         socket_free(Some(unsafe {
-            swoole_rs_reactor::OwnedSocket::from_socket(Socket::from_ptr(socket).unwrap())
+            swoole_rs_corebase::reactor::OwnedSocket::from_socket(Socket::from_ptr(socket).unwrap())
         }));
         let invalid = make_server_socket(1, c"not an address".into(), 0, 8);
         assert!(invalid.is_null());
