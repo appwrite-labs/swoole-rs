@@ -61,7 +61,7 @@ string needing an appended slash are undefined upstream; Rust rejects them.
 
 ## Lifecycles (`lifecycle.rs`)
 
-Rust defines `swoole_clean` and `swoole_fork` under their C++ symbols. Thread
+Rust exports `swoole_fork` under its C++ name. Process and thread
 initialization, cleanup, main-thread queries and log-level access use Rust paths,
 as do `swoole_init`'s body (`swr_v1_core_swoole_init`, called by crates/ffi) and
 `swoole_fork_exec` (`fork_exec`, called by crates/server's manager).

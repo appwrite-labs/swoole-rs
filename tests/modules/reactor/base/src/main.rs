@@ -86,13 +86,6 @@ struct CppString {
 }
 
 unsafe extern "C" {
-    #[link_name = "_Z11swoole_initv"]
-    fn swoole_init();
-    #[link_name = "_Z12swoole_cleanv"]
-    fn swoole_clean();
-}
-
-unsafe extern "C" {
     fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
     fn pipe(fds: *mut c_int) -> c_int;
@@ -1394,12 +1387,10 @@ fn main() {
     // it from the soft descriptor limit.
     // SAFETY: setrlimit(2) with a readable limit.
     unsafe { setrlimit(RLIMIT_NOFILE, &[20000, 20000]) };
-    // SAFETY: once per process, before any other Swoole call; the case, then cleanup.
-    unsafe {
-        swoole_init();
-        body();
-        swoole_clean();
-    }
+    swoole_rs_ffi::swoole_init();
+    // SAFETY: the selected case runs after process initialization and before cleanup.
+    unsafe { body() };
+    swoole_rs_ffi::swoole_clean();
     if EXPECT_FAILED.load(Relaxed) {
         std::process::exit(1);
     }
