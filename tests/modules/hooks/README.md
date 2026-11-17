@@ -346,10 +346,11 @@ corebase::tls's `swoole_ssl_init`, `swr_v1_tls_destroy`, `swr_v1_tls_error` and
 `core-tests/src/os/process_pool.cpp` and `os/pipe.cpp` are Rust too: `system/src/process_pool.rs`
 and `pipe.rs`, one function per TEST (`process_pool.<name>`, `pipe.<name>`), run by
 `hooks-system-rust`; `process-worker-retirement`, the last phase that built core-tests
-itself, and `tools/core_tests.py` are gone. The cases call the Rust `ProcessPool`,
-`Worker` and `SocketPair` methods under their upstream symbols over zeroed mirrors of
-the records Rust owns, which `process_pool` checks against the fixture's `sizeof`s and
-offsets. The pool callbacks are `extern "C"` functions, as upstream's are captureless
+itself, and `tools/core_tests.py` are gone. The process-pool cases retain their
+`ProcessPool` and `Worker` mirrors, checked against the fixture's `sizeof`s and
+offsets. The pipe cases use the real Rust `SocketPair`, typed constructors and
+operations, closing at the original destructor boundary. Its six C++ exports,
+constructor adapters, copied fixture record and native layout are gone. The pool callbacks are `extern "C"` functions, as upstream's are captureless
 lambdas; a failed assertion in one aborts the process it runs in (the master or a
 worker), as GoogleTest's does only in the master. core-tests' counters are
 `sw_mem_pool()` memory (corebase::memory's `members::pool::alloc`, by path), so workers'

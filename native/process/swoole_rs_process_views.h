@@ -1,6 +1,6 @@
 #ifndef SWOOLE_RS_PROCESS_VIEWS_H
 #define SWOOLE_RS_PROCESS_VIEWS_H
-// Generated from crates/corebase/src/process/{worker_record,process_pool}.rs and crates/corebase/src/tls/socket_pair.rs.
+// Generated from crates/corebase/src/process/{worker_record,process_pool}.rs.
 // Typed native loans only; Rust owns the record layouts and operations.
 #define SWR_WORKER_RECORD_FIELDS \
     int pid; \
@@ -76,10 +76,4 @@
     void * ptr; \
     struct { uint64_t generation; long id; void *cancel; } kill_timer = {}; \
     const void * ptr_key = nullptr;
-#define SWR_SOCKET_PAIR_RECORD_FIELDS \
-    bool blocking; \
-    double timeout; \
-    int socks[2]; \
-    network::Socket * master_socket; \
-    network::Socket * worker_socket;
 #endif
