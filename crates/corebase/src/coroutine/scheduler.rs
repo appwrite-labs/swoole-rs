@@ -240,11 +240,17 @@ pub fn counters() -> Counters {
 }
 
 /// `co->resume()` of live coroutine `cid` while it is parked (waiting and
-/// switched out); nothing otherwise, as for a [`Waker`](crate::coroutine::Waker) of
-/// its park. As every resume, a bailout in the coroutine may longjmp over the
-/// caller's frames, leaking what they own: abandoned coroutine stacks stay
-/// allocated, but the main stack can be reused.
-pub fn resume(cid: c_long) {
+/// switched out); nothing otherwise. As every resume, a bailout in the coroutine
+/// may longjmp over the caller's frames, leaking what they own: abandoned coroutine
+/// stacks stay allocated, but the main stack can be reused.
+///
+/// # Safety
+/// The caller owns the coroutine's current park, as its
+/// [`Waker`](crate::coroutine::Waker), timeout or canceler does: it queued the
+/// coroutine as a waiter it now hands off to, or the site that parked it lets
+/// anything end the park early (a user yield). A park site may lend its frame's
+/// memory until its own wake, so ending another's park early is unsound.
+pub unsafe fn resume(cid: c_long) {
     ops::resume_cid(Sched::this(), cid);
 }
 

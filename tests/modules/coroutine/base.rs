@@ -215,7 +215,8 @@ impl View {
         ))
     }
     fn resume(&self) {
-        swoole_rs_corebase::coroutine::resume(self.get_cid());
+        // SAFETY: the case's own yield (a user yield), which any resume may end.
+        unsafe { swoole_rs_corebase::coroutine::resume(self.get_cid()) };
     }
     fn cancel(&self) -> bool {
         coroutine_cancel(self.0.cast())

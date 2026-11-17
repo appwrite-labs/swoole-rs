@@ -342,7 +342,10 @@ pub fn counts() -> (usize, u64) {
 /// Switch to `co` if it is parked. The caller's frames must own nothing that needs
 /// a drop: a bailout in the coroutine may longjmp across them on the main stack.
 pub(crate) fn resume(co: Co) {
-    swoole_rs_corebase::coroutine::resume(cid(co));
+    // SAFETY: callers own the park they end: a waiter they took off a queue it
+    // parked itself on (channels, joins, autoloads), the canceler or the user
+    // yield (`Co::yield`) of its own park, or the interrupt's own yield.
+    unsafe { swoole_rs_corebase::coroutine::resume(cid(co)) };
 }
 
 /// A coroutine by id, the handle other crates hold. A coroutine's record is
