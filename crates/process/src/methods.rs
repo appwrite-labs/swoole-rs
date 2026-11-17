@@ -564,7 +564,6 @@ pub(crate) mod tests {
     fn keep(_: crate::pool::Connection) {}
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no strftime, which the logger calls")]
     fn listen_needs_a_socket_pool_and_keeps_its_listener() {
         install();
         // SAFETY: a zeroed record is a pool before `create`.
@@ -650,7 +649,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no strftime, which the logger calls")]
     fn reload_kills_warn_under_upstream_reload_task() {
         install();
         reload_warn(KillWarning::KillAllFailed, 10, 1);
@@ -678,7 +676,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no strftime, which the logger calls")]
     fn an_abnormal_exit_reports_its_code_and_signal() {
         install();
         // SAFETY: a zeroed record is a worker before `init`.

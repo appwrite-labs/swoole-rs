@@ -348,7 +348,6 @@ mod tests {
     use std::ptr;
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no strftime, which the logger calls")]
     fn reactor_errors_log_at_warning_level() {
         log::capture::install();
         swr_v1_reactor_log(c"Reactor::change", 1015, "failed");

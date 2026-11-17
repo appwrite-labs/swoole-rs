@@ -251,7 +251,6 @@ mod tests {
     // `Socks5Proxy::create(SW_SOCK_TCP, "127.0.0.1", 1080, "", "")`, then a 255- and a
     // 256-byte target host through the tunnel.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no strftime, which the logger calls")]
     fn socks5_dns_tunnel_target_host_max_length() {
         log::capture::install();
         assert_eq!(admit(0, 0), 1);

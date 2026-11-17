@@ -4,7 +4,6 @@ use crate::process_pool::{IpcMode, Op, PoolRecord, PoolRef, Protocol};
 use crate::worker_record::WorkerType;
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri has no strftime, which the logger calls")]
 fn methods_use_the_supplied_host_without_a_server_link_or_registration() {
     take_ops();
     methods::tests::install();
@@ -38,7 +37,6 @@ fn methods_use_the_supplied_host_without_a_server_link_or_registration() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri has no strftime, which the logger calls")]
 fn start_check_keeps_the_missing_listener_warning_with_a_supplied_host() {
     take_ops();
     methods::tests::install();
