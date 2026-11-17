@@ -30,17 +30,18 @@ unsafe extern "C" {
     safe fn swr_zend_try_error(level: c_int, message: CText<'_>) -> c_int;
     /// `zend_error(level, "%s", message)`, as [`swr_zend_try_error`].
     safe fn swr_zend_try_zend_error(level: c_int, message: CText<'_>) -> c_int;
-    /// `zend_throw_error(class, format, ...)`: called only by [`throw_error`],
-    /// with no class (`Error`), `"%s"` and the message, which Zend copies.
-    /// With no frame executing it raises a fatal error.
-    safe fn zend_throw_error(class: Option<ClassEntry<'_>>, format: CText<'_>, ...);
+    /// `zend_throw_error(NULL, "%s", message)` inside `zend_try` (nonzero for a
+    /// bailout): an `Error`; Zend copies the message.
+    safe fn swr_zend_try_facade_throw_error(message: CText<'_>) -> c_int;
 }
 
-/// `zend_throw_error(NULL, "%s", message)`: an `Error`. Like [`Class::throw`], from a
-/// handler or a callback Zend runs under one: with a frame executing, Zend only sets
-/// the exception.
+/// `zend_throw_error(NULL, "%s", message)`: an `Error`. With a frame executing, Zend
+/// only sets the exception; with none it reports a fatal error and bails out, which
+/// is deferred.
 pub fn throw_error(message: &CStr) {
-    zend_throw_error(None, c"%s".into(), CText::from(message));
+    bailout::defer(bailout::trapped(swr_zend_try_facade_throw_error(
+        message.into(),
+    )));
 }
 
 /// `zend_type_error("%s", message)`: a `TypeError`, as [`throw_error`].
