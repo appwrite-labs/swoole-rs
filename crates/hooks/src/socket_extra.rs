@@ -22,8 +22,8 @@ pub struct SocketExtra {
     pub(crate) strings: Box<[StringSlot; 3]>,
     /// `set_dtor`'s callback.
     pub(crate) close_hook: Option<CloseHook>,
-    /// The owner of the callable `protocol.private_data_1` names, when the
-    /// socket has a `package_length_func`.
+    /// The owner of the socket's `package_length_func`, which a measure passes
+    /// its length callback.
     length_owner: Option<Rc<dyn Any>>,
     /// `socks5_proxy` and `http_proxy`: each the socket's own, or none. A connect
     /// holds its own references, so a proxy replaced meanwhile lives until it ends.
