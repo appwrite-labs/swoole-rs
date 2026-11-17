@@ -545,8 +545,8 @@ pub(crate) mod tests {
     fn listen_needs_a_socket_pool_and_keeps_its_listener() {
         install();
         // SAFETY: a zeroed record is a pool before `create`.
-        let pool: PoolRecord = unsafe { std::mem::zeroed() };
-        pool.ipc.set(pool_ipc_new(true));
+        let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
+        pool.ipc = Some(Box::new(std::cell::Cell::new(pool_ipc_new(true))));
         pool.ipc_mode
             .set(crate::process::process_pool::IpcMode::UnixSock);
         let refused = listen(&pool, c"127.0.0.1", 9501, || make(1, 9501));
@@ -565,25 +565,23 @@ pub(crate) mod tests {
             .set(crate::process::process_pool::IpcMode::Socket);
         let failed = listen(&pool, c"127.0.0.1", 9502, || make(1, 9502));
         assert!(!failed, "no socket, no listener");
-        // SAFETY: the pool's IPC state.
-        assert!(
-            swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc.get() }).is_none(),
+        assert_eq!(
+            pool.with_ipc(|ipc| swr_v1_process_pool_ipc_listener(ipc).is_none()),
+            Some(true),
             "none kept"
         );
         let listened = listen(&pool, c"127.0.0.1", 9501, || make(1, 9501));
         assert!(listened, "listening");
-        // SAFETY: the pool's IPC state.
-        let listener = swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc.get() });
+        let ipc = pool.ipc.take().unwrap().into_inner();
+        let listener = swr_v1_process_pool_ipc_listener(&ipc);
         assert_eq!(
             listener.and_then(|listener| listener.downcast_ref::<c_int>()),
             Some(&9501),
             "the socket is kept"
         );
-        // SAFETY: the pool's IPC state.
-        let address = pool_ipc_address(unsafe { &*pool.ipc.get() });
+        let address = pool_ipc_address(&ipc);
         assert_eq!(address, Some((c"127.0.0.1", 9501)), "and its address");
-        // SAFETY: the pool's IPC state, not used again.
-        pool_ipc_free(*unsafe { Box::from_raw(pool.ipc.get()) }, keep);
+        pool_ipc_free(ipc, keep);
     }
 
     #[test]
@@ -616,11 +614,10 @@ pub(crate) mod tests {
     fn a_response_needs_a_connection() {
         // SAFETY: a zeroed record is a pool before `create`.
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
-        pool.ipc.set(pool_ipc_new(true));
+        pool.ipc = Some(Box::new(std::cell::Cell::new(pool_ipc_new(true))));
         assert!(!response(PoolRef::from(&mut pool), b"ok"), "no connection");
         assert_eq!(crate::log::last_error(), 505, "SW_ERROR_INVALID_PARAMS");
-        // SAFETY: the pool's IPC state, not used again.
-        pool_ipc_free(*unsafe { Box::from_raw(pool.ipc.get()) }, keep);
+        pool_ipc_free(pool.ipc.take().unwrap().into_inner(), keep);
     }
 
     #[test]

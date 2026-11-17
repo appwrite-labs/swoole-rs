@@ -219,7 +219,10 @@ fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
         return 0;
     }
     let size = packet.len().min(pool.max_packet_size() as usize);
-    let n = swoole_rs_corebase::sys::read(fd(event.socket()), packet.get_mut(..size).unwrap_or_default());
+    let n = swoole_rs_corebase::sys::read(
+        fd(event.socket()),
+        packet.get_mut(..size).unwrap_or_default(),
+    );
     if n.is_none() && errno() != libc::EINTR {
         log::sys_warning(
             c"ProcessPool::recv_packet",

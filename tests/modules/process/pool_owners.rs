@@ -21,7 +21,7 @@ fn borrowing_ipc_in_one_process_keeps_it_available_to_another() {
     assert_ne!(mapping, libc::MAP_FAILED);
     let raw = mapping.cast::<PoolRecord>();
     unsafe { raw.write(PoolRecord::empty()) };
-    unsafe { (*raw).ipc.set(super::pool_ipc_new(false)) };
+    unsafe { (*raw).ipc = Some(Box::new(std::cell::Cell::new(super::pool_ipc_new(false)))) };
     let record = unsafe { &*raw };
     let mut pipe = [-1; 2];
     assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
@@ -49,7 +49,7 @@ fn borrowing_ipc_in_one_process_keeps_it_available_to_another() {
     unsafe {
         libc::close(pipe[0]);
         libc::close(pipe[1]);
-        drop(Box::from_raw(record.ipc.get()));
+        drop((*raw).ipc.take());
         std::ptr::drop_in_place(raw);
         libc::munmap(mapping, size);
     }
