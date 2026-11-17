@@ -592,23 +592,6 @@ impl ServerTables {
         }
     }
 
-    /// Zeroes all of `fd`'s slot, as a DTLS session that fails its setup leaves it.
-    /// It writes through the table's own pointer: the padding between the cells is no
-    /// cell, so a slot's shared borrow can't write it. Borrow the slot again afterwards.
-    #[cfg(any(test, feature = "upstream-symbols"))]
-    pub(crate) fn clear_connection(&self, fd: c_int) {
-        let Some(index) = usize::try_from(fd)
-            .ok()
-            .filter(|&i| i < self.connections().len())
-        else {
-            return;
-        };
-        let record = self.connection_list.as_ptr().cast::<ConnectionRecord>();
-        // SAFETY: a slot of the mapped table, which `connections` bounds, written
-        // through the mapping's own pointer.
-        unsafe { record.wrapping_add(index).write_bytes(0, 1) };
-    }
-
     /// Session slot `index` (below `SW_SESSION_LIST_SIZE`), or none before the table is
     /// mapped. Only that slot is borrowed: a unit test maps a smaller table.
     pub(crate) fn session_slot(&self, index: usize) -> Option<&SessionRecord> {
@@ -1043,10 +1026,10 @@ pub(crate) mod tests {
         assert!(tables.set_max_connection(3), "free to change again");
     }
 
-    /// A reset keeps a slot's `active` and `closed` and zeroes what lies between; a
-    /// clear zeroes all of it; neither reaches outside the table.
+    /// A reset keeps a slot's `active` and `closed` and zeroes what lies between, and
+    /// doesn't reach outside the table.
     #[test]
-    fn reset_and_clear_zero_their_part_of_one_slot() {
+    fn reset_zeroes_its_part_of_one_slot() {
         let mut server = TestServer::new();
         // SAFETY: a connection record is plain data; zero is a closed one.
         let mut connections: [ConnectionRecord; 3] = unsafe { core::mem::zeroed() };
@@ -1076,11 +1059,10 @@ pub(crate) mod tests {
             fill(unsafe { &*at.add(index) });
         }
         tables.reset_connection(1);
-        tables.clear_connection(2);
         tables.reset_connection(3);
-        tables.clear_connection(-1);
+        tables.reset_connection(-1);
         assert_eq!(read(0), (true, 7, 2, 1), "untouched");
         assert_eq!(read(1), (true, 0, 0, 1), "reset");
-        assert_eq!(read(2), (false, 0, 0, 0), "cleared");
+        assert_eq!(read(2), (true, 7, 2, 1), "untouched");
     }
 }
