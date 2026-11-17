@@ -570,7 +570,7 @@ pub fn wakeup(engine: &Uring) -> bool {
             if engine.sq_space_left() == 0 {
                 break;
             }
-            let Some(waiting) = engine.waiting.with_taken(VecDeque::pop_front) else {
+            let Some(waiting) = engine.waiting.with_taken(|queue| queue.pop_front()) else {
                 break;
             };
             engine.dispatch(waiting);
