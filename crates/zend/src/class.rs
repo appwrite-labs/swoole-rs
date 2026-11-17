@@ -408,11 +408,16 @@ impl Declared {
         self.offset.load(Ordering::Relaxed)
     }
 
-    /// `OBJ_PROP(Z_OBJ_P(object), offset)`: the slot in `object`, an object of
-    /// the class or of a subclass; None for any other value, or before MINIT.
+    /// An owned snapshot of the declared slot in an object of this class or
+    /// a subclass. Later property writes leave it valid. None for another
+    /// value or before MINIT.
     #[must_use]
     #[inline]
-    pub fn get<'a>(&self, object: &'a Value) -> Option<&'a Value> {
+    pub fn get(&self, object: &Value) -> Option<crate::Owned> {
+        self.slot(object).map(|slot| slot.referred().copy())
+    }
+
+    pub(crate) fn slot<'a>(&self, object: &'a Value) -> Option<&'a Value> {
         let std = object.object()?;
         let own = object.class_entry()?;
         let offset = self.offset();
@@ -430,6 +435,16 @@ impl Declared {
         unsafe { Value::from_ptr(slot) }
     }
 
+    /// Edit the property's array while its slot reads null. Reads through
+    /// [`Declared::get`] hold their own references and remain valid.
+    pub fn edit_array<R>(
+        &self,
+        object: &Value,
+        edit: impl FnOnce(&mut crate::ArrayMut) -> R,
+    ) -> Option<R> {
+        self.slot(object)?.edit_array_slot(edit)
+    }
+
     /// `ZVAL_COPY_VALUE` of `value` into `object`'s slot (see
     /// [`Declared::get`]), which takes its reference, as
     /// `zend_update_property` does once it has found the slot, but without
@@ -438,18 +453,18 @@ impl Declared {
     /// `value` is dropped.
     #[inline]
     pub fn init(&self, object: &Value, value: crate::Owned) {
-        if let Some(slot) = self.get(object) {
+        if let Some(slot) = self.slot(object) {
             // The slot takes any value, and holds nothing to release.
             slot.put(value);
         }
     }
 
     /// `array_init_size` in `object`'s slot (see [`Declared::get`]), which
-    /// is not released first: the new array, or None without a slot.
+    /// is not released first: None without a slot.
     #[inline]
-    pub fn init_array<'a>(&self, object: &'a Value, size: u32) -> Option<&'a Value> {
-        let slot = self.get(object)?;
+    pub fn init_array(&self, object: &Value, size: u32) -> Option<()> {
+        let slot = self.slot(object)?;
         swr_zend_array_init_size(slot, size);
-        Some(slot)
+        Some(())
     }
 }

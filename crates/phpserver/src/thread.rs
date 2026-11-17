@@ -140,6 +140,7 @@ pub(crate) fn prepare(object: ServerObject<'_>, serv: view::Server<'_>) -> Resul
     // The Server class declares `bootstrap`; read again after the write.
     let bootstrap = || {
         this.property(c"bootstrap")
+            .as_deref()
             .map_or(&[][..], string_of)
             .to_vec()
     };

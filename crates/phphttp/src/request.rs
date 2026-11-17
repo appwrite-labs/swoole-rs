@@ -149,8 +149,8 @@ fn create_request(call: &Call) {
             }
         });
     }
-    parse::property(&mut ctx.state().request, Property::Server);
-    parse::property(&mut ctx.state().request, Property::Header);
+    parse::init_property(&mut ctx.state().request, Property::Server);
+    parse::init_property(&mut ctx.state().request, Property::Header);
 }
 
 /// One of `Request::create`'s options (a bailout in a conversion is deferred).
@@ -191,7 +191,9 @@ fn parse(call: &Call) {
 fn get_method(call: &Call) {
     let Some(mut ctx) = checked(call) else { return };
     if ctx.flags() & HTTP2 != 0 {
-        let method = parse::made(&ctx.state().request, Property::Server)
+        let server = parse::made(&ctx.state().request, Property::Server);
+        let method = server
+            .as_deref()
             .and_then(Value::array)
             .and_then(|server| server.find(b"request_method"));
         return match method {

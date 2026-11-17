@@ -15,7 +15,7 @@ use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::reactor::SocketFields;
 use swoole_rs_phpstubs::client_coro;
 use swoole_rs_zend::{
-    Array, Call, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, Weak, ZString,
+    Call, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Weak, ZString,
     bailout::Bailout,
     string::ZBuf,
     sys::{ZEND_ACC_PUBLIC, zend_string},
@@ -181,15 +181,17 @@ fn report_socket(call: &Call, socket: Co) {
 }
 
 /// The client's `setting` property, if it is an array.
-fn setting(call: &Call) -> Option<&Array> {
-    call.this_value()?.property(c"setting")?.array()
+fn setting(call: &Call) -> Option<Owned> {
+    call.this_value()?
+        .property(c"setting")
+        .filter(|value| value.array().is_some())
 }
 
 /// `zval_get_long` of the client's `type` property.
 fn type_property(call: &Call) -> i64 {
     call.this_value()
         .and_then(|this| this.property(c"type"))
-        .map_or(0, Value::long)
+        .map_or(0, |value| value.long())
 }
 
 /// The socket's length callable goes, deferring a destructor's bailout.
@@ -292,7 +294,8 @@ fn socket_for_connect(call: &Call, port: i64) -> Option<Co> {
         return None;
     }
     let socket = create_socket(call, data, kind)?;
-    if let Some(settings) = setting(call) {
+    let settings = setting(call);
+    if let Some(settings) = settings.as_ref().and_then(|value| value.array()) {
         crate::socket_options::apply(socket, settings, swoole_rs_phpswoole::SocketSettings::All);
     }
     Some(socket)
@@ -618,7 +621,11 @@ fn enable_ssl(call: &Call) {
         report_code(call, libc::EISCONN);
         return call.set_bool(false);
     }
-    let settings = setting(call).filter(|settings| settings.count() > 0);
+    let kept = setting(call);
+    let settings = kept
+        .as_ref()
+        .and_then(|value| value.array())
+        .filter(|settings| settings.count() > 0);
     if let Some(settings) = settings {
         crate::socket_options::apply(socket, settings, swoole_rs_phpswoole::SocketSettings::Ssl);
     }

@@ -331,7 +331,7 @@ impl<'a> FrameObject<'a> {
             };
         };
         // The Frame class declares both properties read here.
-        let long = |name: &CStr| frame.property(name).map_or(0, Value::long);
+        let long = |name: &CStr| frame.property(name).map_or(0, |value| value.long());
         let opcode = byte(long(c"opcode"));
         let mut code = 0;
         let data = if opcode == Opcode::Close.code() {
@@ -978,6 +978,7 @@ fn set_header(context: Ctx, key: &[u8], value: &[u8]) -> Result<(), bailout::Bai
 fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
     let header = crate::parse::made(&context.state().request, crate::parse::Property::Header);
     let key = header
+        .as_deref()
         .and_then(Value::array)
         .and_then(|header| header.find(b"sec-websocket-key"));
     let key = key.map(Value::string);
@@ -1127,7 +1128,9 @@ pub(crate) fn accept(mut context: Ctx) {
     };
     let mut accepted = false;
     if offered && state.request.zobject.get().is_some() {
-        let text = crate::parse::made(&state.request, crate::parse::Property::Header)
+        let header = crate::parse::made(&state.request, crate::parse::Property::Header);
+        let text = header
+            .as_deref()
             .and_then(Value::array)
             .and_then(|header| header.find(b"sec-websocket-extensions"))
             .and_then(Value::bytes);

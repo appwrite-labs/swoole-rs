@@ -562,10 +562,25 @@ impl Value {
     }
 
     /// Lend what the zval holds to `edit`, with null in its place meanwhile,
-    /// then put it back and release whatever `edit` left there. The caller
-    /// holds nothing borrowed from the zval.
+    /// then put it back and release whatever `edit` left there. The exclusive
+    /// borrow prevents retaining a content borrow across the edit.
+    ///
+    /// ```compile_fail
+    /// use swoole_rs_zend::{Owned, ZString};
+    /// let mut value = Owned::from(ZString::new(b"borrowed"));
+    /// let text = value.str().unwrap();
+    /// value.lend(|held| *held = Owned::null());
+    /// let _ = text.bytes();
+    /// ```
     #[inline(always)]
-    pub fn lend<R>(&self, edit: impl FnOnce(&mut Owned) -> R) -> R {
+    pub fn lend<R>(&mut self, edit: impl FnOnce(&mut Owned) -> R) -> R {
+        self.lend_slot(edit)
+    }
+
+    // Only slot owners use this: public property and return-slot reads hold
+    // copies, and argument edits require an exclusive Call borrow.
+    #[inline(always)]
+    pub(crate) fn lend_slot<R>(&self, edit: impl FnOnce(&mut Owned) -> R) -> R {
         let mut held = Owned::from_zval(self.0.replace(Owned::null().into_zval()));
         let result = edit(&mut held);
         // Replace the slot once: any value installed by a reentrant edit is
@@ -577,12 +592,23 @@ impl Value {
     /// The array this holds, lent to `edit` as [`Value::lend`] lends it: the
     /// zval reads null meanwhile, so nothing `edit` does can free or replace
     /// the array under it. None for anything but an array.
+    ///
+    /// ```compile_fail
+    /// use swoole_rs_zend::OwnedArray;
+    /// let mut value = OwnedArray::default().into_owned();
+    /// value.array_mut().unwrap().push_long(1);
+    /// let first = value.array().unwrap().index(0).unwrap();
+    /// value.edit_array(|array| for i in 0..64 { array.push_long(i); });
+    /// let _ = first.long();
+    /// ```
     #[inline(always)]
-    pub fn edit_array<R>(&self, edit: impl FnOnce(&mut ArrayMut) -> R) -> Option<R> {
-        let mut held = Owned::from_zval(self.0.replace(Owned::null().into_zval()));
-        let result = held.array_mut().map(|array| edit(array));
-        drop(Owned::from_zval(self.0.replace(held.into_zval())));
-        result
+    pub fn edit_array<R>(&mut self, edit: impl FnOnce(&mut ArrayMut) -> R) -> Option<R> {
+        self.edit_array_slot(edit)
+    }
+
+    #[inline(always)]
+    pub(crate) fn edit_array_slot<R>(&self, edit: impl FnOnce(&mut ArrayMut) -> R) -> Option<R> {
+        self.lend_slot(|held| held.array_mut().map(|array| edit(array)))
     }
 
     /// Property writes on the object this holds, under `scope` (Zend's view of
@@ -593,12 +619,12 @@ impl Value {
         Some(crate::Props::of(scope, self.object_ref()?))
     }
 
-    /// `sw_zend_read_property_ex` of an object: the slot of the instance
-    /// property its class declares as `name` (an uninitialised typed property
-    /// reads as null), or None for no object or no such property.
+    /// An owned snapshot of the declared instance property `name`, unaffected
+    /// by later writes through this object or another alias. An uninitialised
+    /// typed property reads as null; None for no object or no such property.
     #[must_use]
     #[inline]
-    pub fn property(&self, name: &CStr) -> Option<&Self> {
+    pub fn property(&self, name: &CStr) -> Option<Owned> {
         self.props(None)?.slot(name)
     }
 
@@ -1546,6 +1572,14 @@ impl Owned {
         Some(unsafe { &mut *ptr::from_mut(self).cast::<OwnedArray>() })
     }
 
+    /// Keep this array as a read-only hold without taking another reference.
+    #[must_use]
+    #[inline]
+    pub fn into_held_array(self) -> Option<HeldArray> {
+        self.array()?;
+        Some(HeldArray(self))
+    }
+
     /// `ZVAL_OBJ(value, std)`: the result takes over the new object's reference.
     #[must_use]
     #[inline]
@@ -1914,6 +1948,13 @@ impl std::ops::Deref for Owned {
     #[inline]
     fn deref(&self) -> &Value {
         &self.0
+    }
+}
+
+impl std::ops::DerefMut for Owned {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Value {
+        &mut self.0
     }
 }
 
