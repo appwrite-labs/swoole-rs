@@ -197,7 +197,7 @@ thread_local! {
 }
 
 /// `onWorkerExit`, then stop the loop once it may exit.
-extern "C-unwind" fn worker_exit() {
+fn worker_exit() {
     if let Some(pool) = LOOP_POOL.get()
         && let Some(worker) = EXITING.get().and_then(|index| pool.worker(index))
     {

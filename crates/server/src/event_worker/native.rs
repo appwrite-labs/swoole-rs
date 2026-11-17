@@ -386,7 +386,7 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
 }
 
 /// `Worker_reactor_try_to_exit`: the loop's end callback while the worker exits.
-extern "C-unwind" fn try_to_exit() {
+fn try_to_exit() {
     let reactor = Reactor::thread();
     if let Some(serv) = reactor.server() {
         try_exit(serv, reactor);
@@ -536,7 +536,7 @@ pub fn clean_worker_connections(serv: view::Server<'_>, worker: Worker<'_>) {
 
 /// `worker->coroutine_num = Coroutine::count()`, after each round of the loop, of the
 /// worker `start_event_worker` runs: the process's current one (`enter_child`).
-extern "C-unwind" fn count_coroutines() {
+fn count_coroutines() {
     let count = swoole_rs_corebase::coroutine::coroutine_count();
     _ = with_current(|worker| worker.write_coroutine_num(count));
 }

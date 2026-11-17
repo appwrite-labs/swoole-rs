@@ -957,7 +957,7 @@ unsafe fn poll_extra() {
 /// The reactor whose end callback [`end_timed_out`] is (end callbacks take no argument).
 static END_REACTOR: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 
-extern "C-unwind" fn end_timed_out() {
+fn end_timed_out() {
     let reactor = END_REACTOR.load(Relaxed);
     // SAFETY: the reactor running its end callbacks.
     assert!(unsafe { (*ReactorPrepared::of(reactor).fields).timed_out });
@@ -966,7 +966,7 @@ extern "C-unwind" fn end_timed_out() {
 extern "C" fn on_sigio(_: c_int) {}
 
 /// `reactor->set_end_callback(id, fn)`, or `erase_end_callback(id)` without one.
-unsafe fn set_end_callback(reactor: Running<'_>, id: c_int, f: Option<extern "C-unwind" fn()>) {
+unsafe fn set_end_callback(reactor: Running<'_>, id: c_int, f: Option<fn()>) {
     // SAFETY: the live reactor's state, which nothing else borrows meanwhile.
     let state = unsafe { &mut *reactor.as_ptr().cast::<ReactorState>() };
     swoole_rs_ffi::swr_v1_reactor_set_end(state, id, f);

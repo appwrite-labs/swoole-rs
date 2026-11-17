@@ -634,7 +634,7 @@ fn open(args: Args, context: &mut Context) -> Option<Ctx> {
 /// The start hook and the fiber switch into the running coroutine's function;
 /// its callable, to call (`zend::Function *`).
 pub(crate) extern "C" fn enter(ctx: Ctx) -> Option<Call> {
-    host::coro_hook(false, ctx.ptr().cast());
+    host::coro_hook(false, ctx);
     let fiber = ctx.fiber();
     let (handler, opcodes) =
         ctx.with(|context| (context.call.fcc.function_handler, context.opcodes));
@@ -677,7 +677,7 @@ fn release(value: Owned) {
 /// `PHPCoroutine::on_close`'s join hook. Its bailout address is null here, so
 /// a bailout in a destructor ends the process rather than longjmp.
 fn close(ctx: Ctx) {
-    host::coro_hook(true, ctx.ptr().cast());
+    host::coro_hook(true, ctx);
     // SAFETY: output state is the coroutine's own.
     unsafe { swr_zend_coroutine_output_reset() };
     // Its defer tasks were kept and are not called.
