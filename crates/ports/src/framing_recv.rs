@@ -455,17 +455,16 @@ pub(crate) fn receive<'a, K: Packages>(
 fn client_recv<const LENGTH: bool>(client: Handle<'_>) -> c_int {
     let mode = if LENGTH { Mode::Length } else { Mode::Eof };
     client.with_framed(|protocol, socket, buffer| {
-        // SAFETY: a live client's input buffer, or null before an async connect made it.
-        let Some(buffer) = (unsafe { buffer.as_mut() }) else {
+        // The input buffer is null before an async connect made it.
+        if buffer.is_null() {
             return Status::Err as c_int;
-        };
-        // The client's protocol in place, live while the client is, which its handle
-        // vouches for through this receive; only its package callback rewrites it.
-        let protocol = Proto {
-            protocol,
-            live: PhantomData,
-        };
-        receive(protocol, socket, Lent::new(buffer), mode, Callbacks) as c_int
+        }
+        // The client's protocol and input buffer in place, live while the client is,
+        // which its handle vouches for through this receive; only its package callback
+        // rewrites them.
+        let (live, lent) = (PhantomData, PhantomData);
+        let (protocol, buffer) = (Proto { protocol, live }, Lent { buffer, lent });
+        receive(protocol, socket, buffer, mode, Callbacks) as c_int
     })
 }
 
