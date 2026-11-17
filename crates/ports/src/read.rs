@@ -74,8 +74,6 @@ pub(crate) trait Connection {
     /// `reactor->trigger_close_event(event)`.
     fn close(&mut self);
     fn send(&mut self, reply: Reply);
-    /// `serv->get_recv_buffer(socket)` becomes the current buffer; false when there is none.
-    fn use_recv_buffer(&mut self) -> bool;
     /// Frees the socket's receive buffer when larger than twice `SW_BUFFER_SIZE_BIG`
     /// (`if_empty`: and empty). Whether it did.
     fn release(&mut self, if_empty: bool) -> bool;
@@ -165,7 +163,7 @@ pub(crate) fn readable(kind: Readable, n: &mut impl Connection) -> bool {
     match kind {
         Readable::Raw => raw(n),
         Readable::Length => framed(n, Framing::Length, true),
-        Readable::Eof => eof(n),
+        Readable::Eof => framed(n, Framing::Eof, true),
         Readable::Redis => framed(n, Framing::Redis, false),
         Readable::Http => http(n),
     }
@@ -192,7 +190,6 @@ fn read_error(n: &mut impl Connection) -> Failure {
 }
 
 fn raw(n: &mut impl Connection) -> bool {
-    n.use_recv_buffer();
     let Some(received) = n.recv(true) else {
         if matches!(read_error(n), Failure::Close) {
             n.close();
@@ -211,7 +208,6 @@ fn raw(n: &mut impl Connection) -> bool {
 /// Length and Redis framing; length (and EOF) ports free a large drained buffer.
 #[inline(always)]
 fn framed(n: &mut impl Connection, framing: Framing, release: bool) -> bool {
-    n.use_recv_buffer();
     if !n.receive(framing) {
         n.close_errno();
         n.close();
@@ -219,19 +215,6 @@ fn framed(n: &mut impl Connection, framing: Framing, release: bool) -> bool {
     if release {
         n.release(true);
     }
-    true
-}
-
-fn eof(n: &mut impl Connection) -> bool {
-    if !n.use_recv_buffer() {
-        n.close();
-        return false;
-    }
-    if !n.receive(Framing::Eof) {
-        n.close_errno();
-        n.close();
-    }
-    n.release(true);
     true
 }
 
@@ -677,9 +660,6 @@ pub(crate) mod tests {
         }
         fn send(&mut self, reply: Reply) {
             self.sent.push(reply);
-        }
-        fn use_recv_buffer(&mut self) -> bool {
-            true
         }
         fn release(&mut self, _: bool) -> bool {
             self.effects.push(Effect::Release);

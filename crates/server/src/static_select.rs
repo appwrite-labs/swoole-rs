@@ -252,23 +252,16 @@ impl SendfileTask {
 struct Wire<'a> {
     server: crate::view::Server<'a>,
     request: &'a swoole_rs_http::HttpRequest,
+    input: &'a [u8],
     session_id: core::ffi::c_long,
     socket: swoole_rs_corebase::reactor::Socket<'a>,
 }
 
-impl Wire<'_> {
-    /// Read the owned request with its receive buffer's bytes, while the socket
-    /// still holds the buffer.
-    fn read<R>(&self, read: impl FnOnce(&swoole_rs_http::HttpRequest, &[u8]) -> R) -> Option<R> {
-        (self.socket).read(|s| Some(read(self.request, s.recv_buffer.as_ref()?.view())))
-    }
-}
-
 impl Exchange for Wire<'_> {
     fn header(&self, name: &[u8]) -> Vec<u8> {
-        self.read(|request, input| request.header_bytes(input, name).map(<[u8]>::to_vec))
-            .flatten()
-            .unwrap_or_default()
+        self.request
+            .header_bytes(self.input, name)
+            .map_or_default(<[u8]>::to_vec)
     }
     fn keep_alive(&self) -> bool {
         self.request.keep_alive
@@ -300,19 +293,18 @@ impl Exchange for Wire<'_> {
 pub fn static_select(
     server: crate::view::Server<'_>,
     request: &swoole_rs_http::HttpRequest,
+    input: &[u8],
     session_id: core::ffi::c_long,
     socket: swoole_rs_corebase::reactor::Socket<'_>,
 ) -> bool {
     let wire = Wire {
         server,
         request,
+        input,
         session_id,
         socket,
     };
-    let Some(url) = wire.read(|request, input| request.url_bytes(input).to_vec()) else {
-        return false;
-    };
-    let Some(mut handler) = StaticHandler::new(wire.server, &url) else {
+    let Some(mut handler) = StaticHandler::new(wire.server, request.url_bytes(input)) else {
         return false;
     };
     select(&mut handler, &wire)
