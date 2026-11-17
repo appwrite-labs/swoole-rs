@@ -340,7 +340,7 @@ impl Call {
     pub(crate) fn arg_value(&self, n: u32) -> &Value {
         match self.args().values().get(n.wrapping_sub(1) as usize) {
             Some(value) => value,
-            None => unreachable!("argument {n} was not passed"),
+            None => unpassed(n),
         }
     }
 
@@ -731,6 +731,14 @@ impl Call {
     pub fn set_empty_array(&self) {
         self.set_owned(crate::Owned::empty_array());
     }
+}
+
+/// The caller asked for an argument past `num_args`. Kept out of line so
+/// `arg_value` inlines as the bare index it was.
+#[cold]
+#[inline(never)]
+fn unpassed(n: u32) -> ! {
+    unreachable!("argument {n} was not passed")
 }
 
 #[cfg(test)]

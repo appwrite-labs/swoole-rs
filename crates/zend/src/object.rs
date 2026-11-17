@@ -92,8 +92,10 @@ impl<'a> ObjectRef<'a> {
     #[must_use]
     #[inline]
     pub fn class_entry(self) -> ClassEntry<'a> {
-        ClassEntry::live(self.read(|object| object.ce))
-            .unwrap_or_else(|| unreachable!("a live object has its class"))
+        match ClassEntry::live(self.read(|object| object.ce)) {
+            Some(class) => class,
+            None => classless(),
+        }
     }
 
     /// `ZVAL_OBJ`: a value naming the object without a reference of its own,
@@ -652,6 +654,14 @@ impl<'a> Props<'a> {
         };
         Some(slot)
     }
+}
+
+/// A live object without a class: Zend never makes one. Kept out of line so
+/// `class_entry` inlines as the bare load it was.
+#[cold]
+#[inline(never)]
+fn classless() -> ! {
+    unreachable!("a live object has its class")
 }
 
 #[cfg(test)]
