@@ -178,7 +178,7 @@ pub(crate) fn timer_available() -> bool {
 /// A one-shot timer of `ms` that reaches `multi` through its own `Weak`: its id, or none.
 pub(crate) fn timer_add(ms: c_long, multi: &Multi) -> Option<swoole_rs_corebase::timer::Held> {
     let multi = multi.this.clone();
-    swoole_rs_corebase::timer::add_owned(ms, false, move || {
+    swoole_rs_corebase::timer::add_fn(ms, false, move || {
         if let Some(multi) = multi.upgrade() {
             multi.timer.set(None);
             multi.callback(None);
