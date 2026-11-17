@@ -178,7 +178,7 @@ fn idle(event_num: &mut usize) -> bool {
 }
 
 /// The end-of-loop callback: submit what the loop queued.
-extern "C-unwind" fn submit() {
+fn submit() {
     with_engine(Uring::submit_queued);
 }
 
