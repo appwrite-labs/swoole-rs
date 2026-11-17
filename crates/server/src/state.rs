@@ -554,8 +554,7 @@ fn lock<T>(list: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl Drop for ServerState {
     fn drop(&mut self) {
-        // `~Server`'s close of `task_notify_pipes` and `worker_pipes`; an archive user
-        // that never runs a server links no C++ for `Socket::free`.
+        // `~Server` closes `task_notify_pipes` and `worker_pipes`.
         #[cfg(feature = "upstream-symbols")]
         {
             let worker = self.worker_pipes.get_mut();
