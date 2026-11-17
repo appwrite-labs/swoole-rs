@@ -399,9 +399,9 @@ impl Client {
         let data = Owned::string(ZString::new(data));
         // The object outlives its client, so the call; it is borrowed for the
         // call as upstream's `ZVAL_OBJ`.
-        let this = self.props().object().copy_value();
-        let mut args = [this, data.copy_value()];
-        callable.call(&mut args, None, false)
+        self.props().object().with_value(|this| {
+            swoole_rs_zend::Zvals::with([this, &data], |args| callable.call(args, None, false))
+        })
     }
 
     /// `zval_get_long` of a declared property of the client object.

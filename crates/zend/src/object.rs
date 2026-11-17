@@ -132,6 +132,21 @@ impl<'a> ObjectRef<'a> {
         }
     }
 
+    /// Lend this live object as a value without taking another reference.
+    /// The temporary slot cannot escape the call or outlive the object borrow.
+    ///
+    /// ```compile_fail
+    /// use swoole_rs_zend::{ObjectRef, Value};
+    /// fn escape<'a>(object: ObjectRef<'a>) -> &'a Value {
+    ///     object.with_value(|value| value)
+    /// }
+    /// ```
+    #[inline]
+    pub fn with_value<R>(self, call: impl FnOnce(&Value) -> R) -> R {
+        let mut value = self.copy_value();
+        call(Value::of(&mut value))
+    }
+
     /// `T`'s data in the object, when it is one of `T`'s objects: made by
     /// [`create`] or [`new_object`], whose handlers are `T`'s class's.
     #[must_use]
@@ -297,6 +312,13 @@ impl<T> std::ops::Deref for CustomClass<T> {
 /// what it finds. The handle means something only to the executor of the
 /// thread that made it, so a `Weak` is neither `Send` nor `Sync`.
 pub struct Weak<T>(u32, PhantomData<*const T>);
+
+impl<T> Copy for Weak<T> {}
+impl<T> Clone for Weak<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
 
 impl<T: Custom> Weak<T> {
     /// The handle of the `T` object `value` holds.

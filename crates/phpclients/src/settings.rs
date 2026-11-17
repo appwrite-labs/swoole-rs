@@ -36,7 +36,7 @@ fn package_length(callable: &Callable, bytes: &[u8]) -> Option<usize> {
     let data = Owned::string(ZString::new(bytes));
     // Released only once the call returned a result, as upstream releases it.
     let retval = ManuallyDrop::new(Owned::long(0));
-    let called = callable.call(&mut [data.copy_value()], Some(&**retval), true);
+    let called = callable.call(swoole_rs_zend::Zvals::one(&data), Some(&**retval), true);
     match called {
         Err(bailout) => {
             bailout.defer();

@@ -297,3 +297,10 @@ Feature-enabled Rust checks use `--features php,active`.
 - A callgrind A/B of a tight method loop against upstream, in the PR.
 - Alpine (musl) builds build scripts with `-C target-feature=-crt-static`
   (merge tier); a static build script cannot `dlopen` libclang.
+
+Raw bindgen `zval` bits are not validated values. `Value::of` and `Zvals::of`
+are private to the Zend crate. Local results use `Owned`; call helpers accept
+`Zvals::owned`, `Zvals::one`, or `Zvals::with`, whose temporary stack copies
+cannot escape the closure. `ObjectRef::with_value` lends a live object's value
+within its borrow, and persistent non-owning holders use `Weak<T>` to acquire a
+live object before reading its state.
