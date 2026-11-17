@@ -157,6 +157,14 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
         return false;
     }
     tables.workers.fill(workers);
+    // A retry retains the first mapping, which `workers()` reads `worker_num` records of.
+    if worker_num as usize > tables.workers.payload_len() / size_of::<WorkerRecord>() {
+        log::warning(
+            c"Server::create",
+            format_args!("cannot add workers to an existing worker mapping"),
+        );
+        return false;
+    }
     let factory = match state.config_ref().mode_ {
         Mode::Base => crate::base_factory::create(serv),
         Mode::Process => hybrid().process_factory(serv),
@@ -767,6 +775,24 @@ mod tests {
             7,
             "the old loan stays live"
         );
+        assert_eq!(calls(), [], "no factory started");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no getifaddrs")]
+    fn create_retry_rejects_more_workers_than_the_retained_mapping() {
+        let mut live = LiveServer::new();
+        live.forget_tables(true);
+        let state = live.state();
+        let tables = state.tables_ref();
+        tables
+            .workers
+            .fill(Shm::calloc(1, size_of::<WorkerRecord>()));
+        config(&live).worker_num.set(4);
+        calls();
+        let created = create_on(live.server(), 4);
+        config(&live).factory_.set(core::ptr::null_mut());
+        assert!(!created, "a retained one-worker map cannot serve four");
         assert_eq!(calls(), [], "no factory started");
     }
 
