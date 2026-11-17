@@ -9,10 +9,6 @@ license.workspace = true
 name = "swoole_rs_bus"
 crate-type = ["rlib"]
 
-[features]
-# The bus's socket writes and frees over corebase's TLS socket.
-upstream-symbols = []
-
 [lints]
 workspace = true
 
