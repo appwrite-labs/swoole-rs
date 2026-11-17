@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/wrapper/event.cc (Swoole contributors).
-//! event.cc's `swoole_event_*` C API over the thread's `Reactor` (`SwooleTG.reactor`).
-//! With `upstream-symbols` those C++ or a test crate calls are defined under their
-//! upstream (Itanium) symbols.
+//! event.cc's operations over the thread's `Reactor` (`SwooleTG.reactor`), called
+//! directly by Rust consumers and original fixtures.
 //! `swoole_event_init` and `swoole_event_free` are `reactor_state.rs`'s, with the
 //! `Reactor`'s constructor and destructor; deferring is deferred.rs's.
 use crate::handlers::Handler;
@@ -56,12 +55,8 @@ pub fn swr_v1_event_current() -> *mut c_void {
 }
 
 /// `bool swoole_event_is_available()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z25swoole_event_is_availablev")
-)]
 #[must_use]
-pub extern "C" fn swoole_event_is_available() -> bool {
+pub fn swoole_event_is_available() -> bool {
     field(|fields| !fields.destroyed).unwrap_or(false)
 }
 
@@ -199,29 +194,15 @@ pub fn set_handler(fd_type: c_int, event: Events, handler: Option<Handler>) {
     }
 }
 
-/// `bool swoole_event_isset_handler(int fd_type, int event)`: false without a reactor.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z26swoole_event_isset_handlerii")
-)]
-#[must_use]
-pub extern "C" fn swoole_event_isset_handler(fd_type: c_int, event: c_int) -> bool {
-    isset_handler(fd_type, Events::from_bits(event))
-}
-
-/// [`swoole_event_isset_handler`] for typed `event`.
+/// Whether the thread's reactor has a handler for typed `event`.
 #[must_use]
 pub fn isset_handler(fd_type: c_int, event: Events) -> bool {
     running().is_some_and(|reactor| crate::reactor_upstream::isset_handler(reactor, fd_type, event))
 }
 
 /// `Socket *swoole_event_get_socket(int fd)`: null without a reactor.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z23swoole_event_get_socketi")
-)]
 #[must_use]
-pub extern "C" fn swoole_event_get_socket(fd: c_int) -> *mut c_void {
+pub fn swoole_event_get_socket(fd: c_int) -> *mut c_void {
     with_registry(|registry| crate::swr_v1_reactor_registry_get(registry, fd))
         .unwrap_or(std::ptr::null_mut())
 }
@@ -417,9 +398,8 @@ pub fn swoole_event_defer_value<T: Deferred>(value: T) -> Result<(), T> {
 
 /// `int swoole_event_wait()`: run the loop unless it may already exit, then free it.
 #[cfg(feature = "upstream-symbols")]
-#[unsafe(export_name = "_Z17swoole_event_waitv")]
 #[must_use]
-pub extern "C-unwind" fn swoole_event_wait() -> c_int {
+pub fn swoole_event_wait() -> c_int {
     // `if_exit` runs only under wait_exit, as upstream's `or`.
     let wait_exit = field(|fields| fields.wait_exit).unwrap_or(false);
     let ran = (wait_exit && swoole_event_if_exit()) || swoole_event_run();

@@ -26,6 +26,8 @@ use std::io::{Read, Write};
 use swoole_rs_clients::client::{self as native, ClientEvent, Flag, Handle, Owner};
 use swoole_rs_corebase::buffer::string::OwnedString;
 use swoole_rs_corebase::net_types::SocketAddress;
+use swoole_rs_ffi::event_api::swoole_event_wait;
+use swoole_rs_ffi::swoole_event_init;
 
 const GREETER: &[u8] = b"Hello Swoole\0";
 const GREETER_SIZE: usize = GREETER.len();
@@ -67,10 +69,6 @@ const SIGIO: c_int = 29;
 const SIGPIPE: c_int = 13;
 
 unsafe extern "C" {
-    #[link_name = "_Z17swoole_event_initi"]
-    fn swoole_event_init(flags: c_int) -> c_int;
-    #[link_name = "_Z17swoole_event_waitv"]
-    fn swoole_event_wait() -> c_int;
     #[link_name = "_Z17swoole_signal_setiPFviEii"]
     fn swoole_signal_set(
         signo: c_int,
@@ -95,13 +93,11 @@ fn cstring(text: &str) -> CString {
 }
 
 fn event_init() {
-    // SAFETY: a fresh event loop for this thread.
-    unsafe { swoole_event_init(SW_EVENTLOOP_WAIT_EXIT) };
+    _ = swoole_event_init(SW_EVENTLOOP_WAIT_EXIT);
 }
 
 fn event_wait() {
-    // SAFETY: runs the loop `event_init` made.
-    unsafe { swoole_event_wait() };
+    _ = swoole_event_wait();
 }
 
 unsafe fn closure_invoker<F: FnMut()>(data: *mut c_void) {

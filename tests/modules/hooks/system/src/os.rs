@@ -8,6 +8,8 @@
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
+use swoole_rs_ffi::event_api::swoole_event_wait;
+use swoole_rs_ffi::swoole_event_init;
 
 pub(super) use swoole_rs_hooks::async_threads::dispatch;
 pub(super) use swoole_rs_hooks::offload::AsyncEvent;
@@ -38,10 +40,6 @@ unsafe extern "C" {
     fn swoole_waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
     #[link_name = "_Z11swoole_randii"]
     fn swoole_rand(min: c_int, max: c_int) -> c_int;
-    #[link_name = "_Z17swoole_event_initi"]
-    fn swoole_event_init(flags: c_int) -> c_int;
-    #[link_name = "_Z17swoole_event_waitv"]
-    fn swoole_event_wait() -> c_int;
     fn usleep(usec: u32) -> c_int;
     fn getsid(pid: c_int) -> c_int;
     fn isatty(fd: c_int) -> c_int;
@@ -167,13 +165,11 @@ fn stats() -> (i64, i64, i64) {
 }
 
 pub(super) fn event_init() {
-    // SAFETY: a fresh loop on this thread.
-    unsafe { swoole_event_init(SW_EVENTLOOP_WAIT_EXIT) };
+    _ = swoole_event_init(SW_EVENTLOOP_WAIT_EXIT);
 }
 
 pub(super) fn event_wait() {
-    // SAFETY: the loop `event_init` made.
-    unsafe { swoole_event_wait() };
+    _ = swoole_event_wait();
 }
 
 fn async_dispatch_() {

@@ -31,8 +31,3 @@ class Reactor : public swr_v1_reactor_head {
 };
 
 }  // namespace swoole
-
-SW_API int swoole_event_init(int flags);
-SW_API swoole::network::Socket *swoole_event_get_socket(int fd);
-SW_API int swoole_event_wait();
-SW_API bool swoole_event_is_available();
