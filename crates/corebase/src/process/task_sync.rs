@@ -178,12 +178,11 @@ impl<'a> ResultSlot<'a> {
 /// Copies `data` over the start of `words`, a word at a time; the bytes after it stay.
 fn copy_words(words: &[AtomicU32], data: &[u8]) {
     let (whole, tail) = data.as_chunks::<4>();
-    let mut words = words.iter();
-    // `whole` leads the zip, so its end takes no word from `words`.
-    for (&bytes, word) in whole.iter().zip(words.by_ref()) {
+    // A zip of two slice iterators is a counted loop; one over `by_ref` is not.
+    for (&bytes, word) in whole.iter().zip(words) {
         word.store(u32::from_ne_bytes(bytes), Ordering::Relaxed);
     }
-    if let Some(word) = words.next().filter(|_| !tail.is_empty()) {
+    if let Some(word) = words.get(whole.len()).filter(|_| !tail.is_empty()) {
         let mut bytes = word.load(Ordering::Relaxed).to_ne_bytes();
         for (to, from) in bytes.iter_mut().zip(tail) {
             *to = *from;
