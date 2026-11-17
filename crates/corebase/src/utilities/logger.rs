@@ -550,7 +550,8 @@ pub(crate) mod tests {
 
     const HOST_FAKE: LoggerHost = LoggerHost { redirect, identity };
 
-    /// The corebase log calls this thread made since the last call.
+    /// The corebase log calls this thread made since the last call. The cases that read
+    /// them run in a child, so the process logger stays out of the tests that reset the record.
     fn host() -> Vec<log::capture::Logged> {
         log::capture::logged()
     }
@@ -571,7 +572,6 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no fdopen")]
     fn put_writes_the_upstream_line_to_the_log_file_at_or_above_the_level() {
-        // A child, so the process logger stays out of the tests that reset the record.
         let case = "utilities::logger::tests::put_writes_the_upstream_line_to_the_log_file_at_or_above_the_level";
         if crate::utilities::isolated_process::run_in_child(case) {
             return;
@@ -610,7 +610,6 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no strerror")]
     fn failures_are_logged_after_the_state_changes() {
-        // A child, so the process logger stays out of the tests that reset the record.
         let case = "utilities::logger::tests::failures_are_logged_after_the_state_changes";
         if crate::utilities::isolated_process::run_in_child(case) {
             return;
@@ -684,7 +683,6 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no localtime")]
     fn rotation_names_the_real_file_by_date_and_reset_restores_defaults() {
-        // A child, so the process logger stays out of the tests that reset the record.
         let case = "utilities::logger::tests::rotation_names_the_real_file_by_date_and_reset_restores_defaults";
         if crate::utilities::isolated_process::run_in_child(case) {
             return;
