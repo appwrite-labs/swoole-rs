@@ -23,7 +23,7 @@ use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_utilities::set_log_file;
 
-use case::{TimerNode, swoole_timer_after};
+use case::after_once as after;
 
 const PACKET: &[u8] = b"hello world\n";
 const TEST_STR: &[u8] = b"hello world, hello swoole\n";
@@ -260,22 +260,6 @@ fn assert_no_failure() {
         !shared().failed.load(Ordering::SeqCst),
         "a server-side expectation failed"
     );
-}
-
-type Deferred = Box<dyn FnOnce()>;
-
-unsafe extern "C" fn fire(_: *mut c_void, node: *mut TimerNode) {
-    // SAFETY: the node `after` armed, whose data is its boxed closure, run once.
-    let deferred = unsafe { Box::from_raw((*node).data.cast::<Deferred>()) };
-    deferred();
-}
-
-/// `swoole_timer_after(ms, fn)`.
-fn after(ms: c_long, deferred: impl FnOnce() + 'static) {
-    let deferred: Deferred = Box::new(deferred);
-    let data = Box::into_raw(Box::new(deferred));
-    // SAFETY: a callback of the timer's signature, which takes `data` back once.
-    unsafe { swoole_timer_after(ms, fire, data.cast()) };
 }
 
 fn sleep_us(usec: u32) {

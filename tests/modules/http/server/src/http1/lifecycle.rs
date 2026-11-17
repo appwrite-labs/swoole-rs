@@ -5,12 +5,12 @@
 
 use super::*;
 use crate::TEST_STR;
-use case::TimerNode;
 use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU16, AtomicU64};
 use swoole_rs_clients::client::{self as native, ClientEvent, Handle, listen};
 use swoole_rs_process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_server::{event_worker, manager, task_worker, worker_methods};
+use swoole_rs_timer::Held;
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
 const SW_ERROR_WRONG_OPERATION: c_int = 509;
@@ -53,8 +53,6 @@ unsafe extern "C" {
 }
 
 unsafe extern "C-unwind" {
-    #[link_name = "_Z17swoole_timer_ticklPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
-    fn swoole_timer_tick(ms: c_long, callback: TimerFn, data: *mut c_void) -> c_long;
     fn swr_v1_core_set_last_error(code: c_int);
 }
 
@@ -170,31 +168,23 @@ fn is_task_worker() -> bool {
     swoole_get_worker_type() == SW_TASK_WORKER
 }
 
-type TimerFn = unsafe extern "C" fn(*mut c_void, *mut TimerNode);
+type TimerFn = fn(Server, Held);
 
 /// `swoole_timer_after(ms, [serv](TIMER_PARAMS) {...})`.
 fn timer_after(ms: c_long, callback: TimerFn, serv: Server) {
-    // SAFETY: a callback of the timer's signature, over the running server.
-    unsafe { case::swoole_timer_after(ms, callback, serv.0) };
+    _ = case::schedule(ms, false, move |held| callback(serv, held));
 }
 
 /// `swoole_timer_tick(ms, [serv](TIMER_PARAMS) {...})`.
 fn timer_tick(ms: c_long, callback: TimerFn, serv: Server) -> c_long {
-    // SAFETY: as above.
-    unsafe { swoole_timer_tick(ms, callback, serv.0) }
+    case::schedule(ms, true, move |held| callback(serv, held)).map_or(-1, Held::id)
 }
 
-/// The server a timer of [`timer_after`] or [`timer_tick`] captured.
-fn timer_server(tnode: *mut TimerNode) -> Server {
-    // SAFETY: the node the timer passes its callback.
-    Server(unsafe { (*tnode).data })
+fn shutdown_timer(serv: Server, _: Held) {
+    shutdown(serv);
 }
 
-unsafe extern "C" fn shutdown_timer(_: *mut c_void, tnode: *mut TimerNode) {
-    shutdown(timer_server(tnode));
-}
-
-unsafe extern "C" fn idle_timer(_: *mut c_void, _: *mut TimerNode) {}
+fn idle_timer(_: Server, _: Held) {}
 
 /// `microtime()`.
 fn now() -> f64 {
@@ -232,8 +222,7 @@ fn create_task_worker_fail() {
     serv.delete();
 }
 
-unsafe extern "C" fn reload_single_timer(_: *mut c_void, tnode: *mut TimerNode) {
-    let serv = timer_server(tnode);
+fn reload_single_timer(serv: Server, _: Held) {
     if !check(!reload(serv, true), "!serv->reload(true)")
         || !check(
             last_error() == SW_ERROR_OPERATION_NOT_SUPPORT,
@@ -272,8 +261,7 @@ fn reload_single_process() {
     serv.delete();
 }
 
-unsafe extern "C" fn reload_no_task_timer(_: *mut c_void, tnode: *mut TimerNode) {
-    let serv = timer_server(tnode);
+fn reload_no_task_timer(serv: Server, _: Held) {
     if !check(reload(serv, false), "serv->reload(false)") {
         return;
     }
@@ -556,9 +544,9 @@ const SHUTDOWN: usize = 16;
 const WORKER_STARTS: usize = 17;
 const USER_WORKER_STARTS: usize = 4;
 
-unsafe extern "C" fn reload_thread_timer(_: *mut c_void, tnode: *mut TimerNode) {
+fn reload_thread_timer(serv: Server, _: Held) {
     counter_set(RELOAD, 1);
-    expect(reload(timer_server(tnode), true), "serv->reload(true)");
+    expect(reload(serv, true), "serv->reload(true)");
 }
 
 /// `onManagerStart`: reload every worker after 500 ms.
@@ -566,9 +554,9 @@ fn reload_thread_manager_start(serv: view::Server<'_>) {
     timer_after(500, reload_thread_timer, Server(serv.raw()));
 }
 
-unsafe extern "C" fn reload_thread_shutdown(_: *mut c_void, tnode: *mut TimerNode) {
+fn reload_thread_shutdown(serv: Server, _: Held) {
     counter_set(SHUTDOWN, 1);
-    shutdown(timer_server(tnode));
+    shutdown(serv);
 }
 
 fn reload_thread_manager_stop(_: view::Server<'_>) {
@@ -765,8 +753,7 @@ fn reload_completed() -> bool {
     counter_get(25) == 1 && counter_get(0) == if task_only { 2 } else { 3 } && counter_get(1) == 2
 }
 
-unsafe extern "C" fn reload_watchdog_tick(_: *mut c_void, tnode: *mut TimerNode) {
-    let serv = timer_server(tnode);
+fn reload_watchdog_tick(serv: Server, held: Held) {
     if !reload_completed() {
         if now() < f64::from_bits(WATCHDOG_DEADLINE.load(Ordering::SeqCst)) {
             return;
@@ -788,8 +775,7 @@ unsafe extern "C" fn reload_watchdog_tick(_: *mut c_void, tnode: *mut TimerNode)
             );
         }
     }
-    // SAFETY: this timer's own node.
-    unsafe { case::swoole_timer_del(tnode) };
+    swoole_rs_timer::del_id(held);
     shutdown(serv);
 }
 
@@ -1411,10 +1397,10 @@ fn base() {
 static PROCESS_LOCK: Mutex<[c_int; 2]> = Mutex::new([-1, -1]);
 static PROCESS_T1: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 
-unsafe extern "C" fn process_kill_timer(_: *mut c_void, tnode: *mut TimerNode) {
+fn process_kill_timer(serv: Server, _: Held) {
     // SAFETY: random.
     let id = 1 + unsafe { swoole_random_int() } % 3;
-    kill_worker(timer_server(tnode), id as c_int);
+    kill_worker(serv, id as c_int);
 }
 
 fn process_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
@@ -1593,7 +1579,7 @@ fn clean_client_event(event: ClientEvent, _: *const c_char, error: usize) {
     }
 }
 
-unsafe extern "C" fn clean_connect_timer(_: *mut c_void, _: *mut TimerNode) {
+fn clean_connect_timer(_: Server, _: Held) {
     let events = [
         ClientEvent::Connect,
         ClientEvent::Error,

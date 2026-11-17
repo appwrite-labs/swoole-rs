@@ -62,26 +62,6 @@ fn tls_view(context: *const c_void) -> swoole_rs_tls::OwnedTlsPrepared {
     swoole_rs_tls::owner_view(unsafe { &*context.cast::<swoole_rs_tls::OwnedTlsContext>() })
 }
 
-/// The head of `TimerNode`, through `destructor` (crates/timer/src/owner.rs).
-#[repr(C)]
-pub(super) struct TimerNode {
-    id: c_long,
-    php: bool,
-    exec_msec: i64,
-    interval: i64,
-    exec_count: u64,
-    round: u64,
-    removed: bool,
-    callback: *const c_void,
-    pub(super) data: *mut c_void,
-    destructor: Option<unsafe extern "C" fn(*mut TimerNode)>,
-}
-const _: () = assert!(
-    offset_of!(TimerNode, exec_msec) == 16
-        && offset_of!(TimerNode, removed) == 48
-        && offset_of!(TimerNode, destructor) == 72
-);
-
 /// The head of `network::Socket`, through `object` (native/reactor/swoole_rs_socket.h); `info`
 /// is at [`SOCKET_INFO`].
 #[repr(C)]
@@ -111,33 +91,11 @@ const _: () = assert!(
 const _: () = assert!(size_of::<Address>() == 120);
 pub(super) const SOCKET_INFO: usize = 176;
 
-/// A timer's data: what upstream's lambdas capture.
-struct Tick {
-    serv: Server,
-    tick: Option<extern "C" fn(*mut c_void, c_long) -> bool>,
-    session_id: c_long,
-}
-
 unsafe extern "C-unwind" {
     #[link_name = "_Z25swoole_get_last_error_msgv"]
     fn swoole_get_last_error_msg() -> *const c_char;
     #[link_name = "_ZN6swoole11make_socketEi8swFdType"]
     pub(super) fn make_socket(fd: c_int, fd_type: c_int) -> *mut SocketHead;
-    #[link_name = "_Z16swoole_timer_addlbPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
-    pub(super) fn swoole_timer_add(
-        ms: c_long,
-        persistent: bool,
-        callback: unsafe extern "C" fn(*mut c_void, *mut TimerNode),
-        data: *mut c_void,
-    ) -> *mut TimerNode;
-    #[link_name = "_Z18swoole_timer_afterlPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
-    pub(super) fn swoole_timer_after(
-        ms: c_long,
-        callback: unsafe extern "C" fn(*mut c_void, *mut TimerNode),
-        data: *mut c_void,
-    ) -> c_long;
-    #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-    pub(super) fn swoole_timer_del(node: *mut TimerNode) -> bool;
     /// `SwooleG`, whose first member is `max_sockets`.
     #[link_name = "SwooleG"]
     static mut SWOOLE_G_MAX_SOCKETS: u32;
@@ -320,18 +278,33 @@ pub(crate) unsafe fn swr_case_mqtt_server(
     serv.0
 }
 
-unsafe extern "C" fn tick_free(node: *mut TimerNode) {
-    // SAFETY: the node's `Tick`, freed once, with the node.
-    drop(unsafe { Box::from_raw((*node).data.cast::<Tick>()) });
+/// Schedule a one-shot owned capture; dropping the timer also drops the capture.
+pub(super) fn after_once(ms: c_long, body: impl FnOnce() + 'static) {
+    let body = std::cell::Cell::new(Some(body));
+    _ = swoole_rs_timer::add_owned(ms, false, move || {
+        if let Some(body) = body.take() {
+            body();
+        }
+    });
 }
 
-unsafe extern "C" fn on_tick(_: *mut c_void, node: *mut TimerNode) {
-    // SAFETY: the live node of `swr_case_tick`, whose data is its `Tick`.
-    let tick = unsafe { &*(*node).data.cast::<Tick>() };
-    if !(tick.tick.unwrap())(tick.serv.0, tick.session_id) {
-        // SAFETY: as above.
-        unsafe { swoole_timer_del(node) };
-    }
+/// A callback that receives its issued timer ID, including when it cancels itself.
+pub(super) fn schedule(
+    ms: c_long,
+    persistent: bool,
+    body: impl Fn(swoole_rs_timer::Held) + 'static,
+) -> Option<swoole_rs_timer::Held> {
+    let slot = std::rc::Rc::new(std::cell::Cell::new(None));
+    let issued = std::rc::Rc::clone(&slot);
+    let held = swoole_rs_timer::add_owned(ms, persistent, move || {
+        body(
+            issued
+                .get()
+                .expect("the timer was published before selecting it"),
+        );
+    });
+    slot.set(held);
+    held
 }
 
 /// swoole_timer_tick(ms): `tick(serv, session_id)` until it returns false.
@@ -341,16 +314,11 @@ pub(crate) unsafe fn swr_case_tick(
     tick: extern "C" fn(*mut c_void, c_long) -> bool,
     session_id: c_long,
 ) {
-    let data = Box::into_raw(Box::new(Tick {
-        serv: Server(serv),
-        tick: Some(tick),
-        session_id,
-    }));
-    // SAFETY: a callback of the timer's signature; the node takes `data`.
-    unsafe {
-        let node = swoole_timer_add(ms, true, on_tick, data.cast());
-        (*node).destructor = Some(tick_free);
-    }
+    _ = schedule(ms, true, move |held| {
+        if !tick(serv, session_id) {
+            swoole_rs_timer::del_id(held);
+        }
+    });
 }
 
 /// test_base_server's Server, created: null when set_document_root fails.
@@ -669,9 +637,7 @@ pub(crate) unsafe fn swr_case_worker_num(serv: *mut c_void) -> u32 {
     Server(serv).config().worker_num.get()
 }
 
-unsafe extern "C" fn close_timeout(_: *mut c_void, node: *mut TimerNode) {
-    // SAFETY: `swr_case_close_after`'s `Tick`, which only this callback frees.
-    let tick = unsafe { Box::from_raw((*node).data.cast::<Tick>()) };
+fn close_timeout(serv: Server, session_id: c_long) {
     let reason = "swoole close";
     // SAFETY: this thread's buffer; the reason is readable for its length.
     unsafe {
@@ -684,24 +650,14 @@ unsafe extern "C" fn close_timeout(_: *mut c_void, node: *mut TimerNode) {
             reason.as_bytes(),
             0,
         );
-        swr_case_send(
-            tick.serv.0,
-            tick.session_id,
-            (*buffer).str,
-            (*buffer).length as u32,
-        );
+        swr_case_send(serv.0, session_id, (*buffer).str, (*buffer).length as u32);
     }
 }
 
 /// The `/ws/close` handshake's timer: a policy close frame after `ms`.
 pub(crate) unsafe fn swr_case_close_after(serv: *mut c_void, session_id: c_long, ms: c_long) {
-    let data = Box::into_raw(Box::new(Tick {
-        serv: Server(serv),
-        tick: None,
-        session_id,
-    }));
-    // SAFETY: a callback of the timer's signature, which takes `data`.
-    unsafe { swoole_timer_after(ms, close_timeout, data.cast()) };
+    let serv = Server(serv);
+    after_once(ms, move || close_timeout(serv, session_id));
 }
 
 // The primary port's TLS settings.
