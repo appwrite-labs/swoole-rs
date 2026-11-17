@@ -140,6 +140,10 @@ their native declarations and exports are gone. Rust fixtures call those and
 PHP test extension still calls `swoole_random_int`, so its native declaration and
 export remain.
 
+Upstream installs `include/swoole_api.h` for extension consumers. It declares
+the three version functions above, which `src/core/base.cc` marks `SW_API`.
+Keeping their C names lets native extensions query the Swoole and API versions.
+
 Whole operations in Rust (`host.rs`): `swoole_shell_exec`, `swoole_dump_ascii`/`_hex`, `swoole_print_backtrace` without Boost,
 `microtime`, `DataHead::dump`, `swoole_rand`/`swoole_random_int` (a per-thread
 xoshiro256** seeded by getentropy), `swoole_system_random` and

@@ -4,10 +4,10 @@ use core::ffi::{CStr, c_int, c_void};
 use std::sync::{OnceLock, RwLock};
 
 use swoole_rs_clients::protocol::Protocol;
-use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
 use swoole_rs_corebase::reactor::{Heap, Socket};
 use swoole_rs_corebase::tls::{SslVersion, TlsContext};
+use swoole_rs_corebase::{CellExt, StringSlot};
 
 use crate::view::Port;
 
@@ -161,7 +161,9 @@ pub struct PortConfig {
     pub open_tcp_keepalive: Setting<bool>,
     pub kernel_socket_recv_buffer_size: Setting<c_int>,
     pub kernel_socket_send_buffer_size: Setting<c_int>,
-    pub gs: Shared<*mut c_void>,
+    /// `gs`: the port's counters, shared with every process the server forks, once
+    /// `Server::create` maps them; [`Self::delete`] unmaps them.
+    pub(crate) gs: crate::table::Table<crate::shared::PortCounters>,
     /// Base mode's per-worker connection counts (`gs->connection_nums`): an
     /// `AtomicU32` per worker, which [`Self::delete`] unmaps.
     pub(crate) connection_nums: crate::table::Table<core::sync::atomic::AtomicU32>,
@@ -229,12 +231,7 @@ thread_local! {
 fn with_length_owners<R>(
     f: impl FnOnce(&mut Vec<(u64, core::mem::ManuallyDrop<LengthOwner>)>) -> R,
 ) -> R {
-    LENGTH_OWNERS.with(|cell| {
-        let mut owners = cell.take();
-        let result = f(&mut owners);
-        cell.set(owners);
-        result
-    })
+    LENGTH_OWNERS.with(|cell| cell.with_taken(f))
 }
 
 impl PortConfig {
@@ -355,10 +352,10 @@ pub fn swr_v1_port_config_new(buffer_size: c_int) -> *mut PortConfig {
 }
 
 impl PortConfig {
-    /// The port's slot in `port_gs_list`, once the server has made it.
+    /// The port's counters, once the server has made them.
+    #[inline]
     pub(crate) fn counters(&self) -> Option<&crate::shared::PortCounters> {
-        // SAFETY: null, or the port's slot in `port_gs_list`, mapped for the server's life.
-        unsafe { self.gs.get().cast::<crate::shared::PortCounters>().as_ref() }
+        self.gs.records().first()
     }
 
     /// The per-worker connection counts; none when the server keeps one total.
@@ -433,7 +430,7 @@ impl PortConfig {
             open_tcp_keepalive: Setting::new(false),
             kernel_socket_recv_buffer_size: Setting::new(0),
             kernel_socket_send_buffer_size: Setting::new(0),
-            gs: Shared::new(core::ptr::null_mut()),
+            gs: crate::table::Table::empty(),
             connection_nums: crate::table::Table::empty(),
             property: std::cell::OnceCell::new(),
             websocket_frames: Setting::new(0),
@@ -461,6 +458,7 @@ impl PortConfig {
     /// connection counts, and the record of a socket `destroy` never closed.
     pub(crate) fn delete(mut self: Box<Self>) {
         self.connection_nums.free();
+        self.gs.free();
         // Without methods, nothing made the port's TLS state.
         if let Some(methods) = METHODS.get() {
             (methods.tls_free)(&mut self);

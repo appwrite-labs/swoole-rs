@@ -285,7 +285,8 @@ impl crate::hybrid::Hybrid for Linked {
     }
 
     fn accept_event(&self, serv: crate::view::Server<'_>, head: &mut DataHead) {
-        crate::event_worker::native::accept_event(serv, head);
+        use crate::event_worker::native::{Payload, accept_event};
+        accept_event(serv, head, Payload::Bus);
     }
 
     fn forward(&self, serv: crate::view::Server<'_>, send: &SendData) -> bool {

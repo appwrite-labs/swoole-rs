@@ -7,7 +7,7 @@
 #[cfg(any(test, feature = "upstream-symbols"))]
 use crate::small_fn::Small;
 use crate::small_fn::SmallFn;
-use crate::{SharedThread, adopt_shared_thread, shared_thread};
+use crate::{CellExt, SharedThread, adopt_shared_thread, shared_thread};
 use core::cell::Cell;
 use core::ffi::c_int;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,13 +58,9 @@ thread_local! {
     static ME: Cell<Option<Arc<Thread>>> = const { Cell::new(None) };
 }
 
-/// The calling thread's record, cloned out of [`ME`], which is put back.
+/// An owned reference to the calling coroutine thread, if any.
 fn me() -> Option<Arc<Thread>> {
-    ME.with(|me| {
-        let mine = me.take();
-        me.set(mine.clone());
-        mine
-    })
+    ME.with(|me| me.with_taken(|record| record.clone()))
 }
 
 /// One coroutine's thread, shared by the thread and its context.

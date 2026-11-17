@@ -10,6 +10,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
+use swoole_rs_corebase::CellExt;
 use swoole_rs_zend::{
     Call, Minit, Owned, OwnedArray, Value, bailout,
     thread::{Entered, Prologue, Stdio, Steps},
@@ -216,9 +217,7 @@ pub extern "C" fn thread_rshutdown() {
 /// `Thread::getArguments()`: the thread's arguments, if it has any.
 pub(crate) fn arguments(call: &Call) {
     // `ZVAL_COPY` only adds a reference; the copy is returned once the arguments are back.
-    let argv = ARGV.take();
-    let copy = argv.as_deref().map(Value::copy);
-    ARGV.set(argv);
+    let copy = ARGV.with(|slot| slot.with_taken(|argv| argv.as_deref().map(Value::copy)));
     if let Some(copy) = copy {
         call.set_owned(copy);
     }

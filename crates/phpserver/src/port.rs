@@ -44,10 +44,7 @@ impl PortProperty {
         let Some(slot) = self.callbacks.get(kind.index()) else {
             return select(&None);
         };
-        let callable = slot.take();
-        let selected = select(&callable);
-        slot.set(callable);
-        selected
+        slot.with_taken(|callable| select(callable))
     }
 }
 
@@ -357,15 +354,7 @@ fn on(call: &Call) {
     let Some(callable) = crate::callable::create(cb) else {
         return call.set_bool(false);
     };
-    // A nested on() stored its callable, and the property, after this one's
-    // write: keep that pair and drop ours once it is back.
-    match slot.take() {
-        None => slot.set(Some(callable)),
-        nested => {
-            slot.set(nested);
-            drop(callable);
-        }
-    }
+    crate::callable::install(slot, callable);
     crate::dispatch::port_hook(serv, index);
     call.set_bool(true);
 }

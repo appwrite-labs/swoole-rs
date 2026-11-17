@@ -8,7 +8,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 use swoole_rs_corebase::constants::SocketType;
-use swoole_rs_corebase::reactor::{SocketFields, SocketRecord as Record, socket_upstream};
+use swoole_rs_corebase::reactor::{
+    OwnedSocket, SocketFields, SocketRecord as Record, socket_upstream,
+};
 use swoole_rs_ffi::event_api::swoole_event_wait;
 use swoole_rs_ffi::swoole_event_init;
 
@@ -71,11 +73,6 @@ const BIO_R_BROKEN_PIPE: c_int = 124;
 
 unsafe extern "C" {
     fn free(pointer: *mut c_void);
-}
-
-unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole7network6Socket4freeEv"]
-    fn socket_free(socket: *mut c_void);
 }
 
 #[link(name = "crypto")]
@@ -212,8 +209,9 @@ impl Socket {
     }
 
     pub(super) fn free(self) {
-        // SAFETY: frees the live socket once.
-        unsafe { socket_free(self.0.cast()) };
+        // SAFETY: this case gives back its heap record once, after its last use.
+        let owned = unsafe { OwnedSocket::from_socket(self.handle()) };
+        swoole_rs_corebase::tls::event_socket::EventSocket::from(owned).release();
     }
 
     /// `delete sock`: operator delete, without closing.

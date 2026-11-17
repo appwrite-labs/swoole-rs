@@ -23,7 +23,7 @@ use std::{
     ffi::{CString, c_int, c_long},
     rc::Rc,
 };
-use swoole_rs_corebase::{log::set_last_error, sys::set_errno};
+use swoole_rs_corebase::{CellExt, log::set_last_error, sys::set_errno};
 use swoole_rs_phpserver::REDIS_SERVER as SERVER;
 use swoole_rs_phpstubs::redis_server as stubs;
 use swoole_rs_protocols::{RespKind, RespPhpState, resp_handler_key, resp_php_next};
@@ -59,14 +59,6 @@ thread_local! {
     /// one replaced or freed is released, only once the map is back, so a
     /// handler that replaces itself while it runs lives until its call returns.
     static HANDLERS: Cell<Handlers> = Cell::default();
-}
-
-/// `f` on the handlers, out of their cell until `f` returns. `f` runs no PHP code.
-fn with_handlers<R>(f: impl FnOnce(&mut Handlers) -> R) -> R {
-    let mut handlers = HANDLERS.take();
-    let result = f(&mut handlers);
-    HANDLERS.set(handlers);
-    result
 }
 
 method_table! {
@@ -163,7 +155,7 @@ fn set_handler(call: &Call) {
         return;
     }
     // The handler this one replaces goes; a destructor's bailout stays pending.
-    let old = with_handlers(|map| map.insert(key, callable));
+    let old = HANDLERS.with(|slot| slot.with_taken(|map| map.insert(key, callable)));
     drop(old);
     call.set_bool(true);
 }
@@ -222,7 +214,7 @@ fn receive(
         return Ok(true);
     }
     let key = handler_key(command);
-    let Some(callable) = with_handlers(|map| map.get(&key).cloned()) else {
+    let Some(callable) = HANDLERS.with(|slot| slot.with_taken(|map| map.get(&key).cloned())) else {
         let mut reply = b"-ERR unknown command '".to_vec();
         reply.extend_from_slice(until_nul(command));
         reply.extend_from_slice(b"'\r\n");

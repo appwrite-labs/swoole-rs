@@ -15,11 +15,13 @@ use crate::shared::{PortCounters, ServerCounters, ServerShared};
 use crate::{Mode, ServerState, TestServer, view};
 use std::rc::Rc;
 
-/// `SW_SESSION_LIST_SIZE`.
-const SESSIONS: usize = 1 << 20;
 /// Connection slots: fds below this are accepted. Miri's descriptors stay small, and it
 /// takes ~5 ms a slot to set the table up.
 pub(crate) const CONNECTIONS: usize = if cfg!(miri) { 256 } else { 4096 };
+/// `SW_SESSION_LIST_SIZE`. Miri's session ids stay small too, and it retags the whole
+/// table at each lookup: a minute a test with a million slots. Slot zero precedes
+/// the session IDs 1 through CONNECTIONS used by the full-table test.
+const SESSIONS: usize = if cfg!(miri) { CONNECTIONS + 1 } else { 1 << 20 };
 /// `SW_SOCK_TCP` and `SW_FD_STREAM_SERVER`.
 const SOCK_TCP: c_int = swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP.raw();
 const FD_STREAM_SERVER: c_int = 1;
@@ -31,7 +33,6 @@ pub(crate) struct LiveServer {
     // `Rc`s, not `Box`es: moving a `Box` asserts it unique, which would leave the
     // state's pointers to it stale.
     shared: Rc<ServerShared>,
-    port_counters: Rc<PortCounters>,
     listener: *mut SocketRecord,
     /// This thread's reactor, which the fixture made.
     reactor: Option<swoole_rs_corebase::reactor::OwnedReactor>,
@@ -44,8 +45,7 @@ pub(crate) struct LiveServer {
     _connections: Vec<ConnectionRecord>,
 }
 
-/// `count` zeroed records: a table of free slots, zeroed in one allocation (Miri
-/// takes minutes to zero a million records one by one).
+/// `count` zeroed records: a table of free slots, zeroed in one allocation.
 fn free_slots<T>(count: usize) -> Vec<T> {
     // SAFETY: the tables' records are plain data, and zero is a free slot.
     unsafe { Box::<[T]>::new_zeroed_slice(count).assume_init() }.into_vec()
@@ -66,7 +66,6 @@ impl LiveServer {
         // SAFETY: the shared record is plain data, for which zero is the state
         // `swr_v1_server_new`'s calloc leaves it in.
         let shared: Rc<ServerShared> = Rc::new(unsafe { core::mem::zeroed() });
-        let port_counters = Rc::new(PortCounters::default());
         let config = server.config_mut();
         config.mode_ = Mode::Process;
         config.reactor_num.set(1);
@@ -89,9 +88,7 @@ impl LiveServer {
         settings.set_listening_socket(unsafe {
             swoole_rs_corebase::reactor::OwnedSocket::from_socket(socket)
         });
-        settings
-            .gs
-            .set(Rc::as_ptr(&port_counters).cast_mut().cast());
+        settings.gs.fill(crate::table::Table::calloc(1));
         let state = server.state();
         let _ = state.ports.push(settings);
         // The listening fd's slot holds its port, as `Server::store_listen_socket` leaves it.
@@ -105,7 +102,6 @@ impl LiveServer {
         Self {
             server,
             shared,
-            port_counters,
             listener,
             reactor: Some(reactor),
             listener_fd: fd,
@@ -151,7 +147,9 @@ impl LiveServer {
     }
 
     pub(crate) fn port_counters(&self) -> &PortCounters {
-        &self.port_counters
+        let port = self.state().ports.get(0).map(view::Port::config);
+        port.and_then(PortConfig::counters)
+            .expect("the fixture's port counters")
     }
 
     /// The read event of the port's listening socket, as the reactor hands `accept` it.

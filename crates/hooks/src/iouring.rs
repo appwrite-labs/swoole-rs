@@ -45,7 +45,7 @@ fn with_instance<R>(f: impl FnOnce(Option<&Iouring>) -> R) -> R {
 /// The engine's callbacks into the coroutine scheduler, the thread's instance and
 /// the log.
 pub(crate) static HOST: Host = Host {
-    current: crate::wait_event::native::current,
+    current: swoole_rs_corebase::coroutine::current_safe,
     instance,
     suspend,
     resume: swoole_rs_corebase::coroutine::Waker::wake,

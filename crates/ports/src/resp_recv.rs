@@ -4,8 +4,8 @@ use core::cell::Cell;
 use core::ffi::{c_int, c_long};
 use swoole_rs_clients::resp_recv::{Dispatched, ORIGIN, Received, RespConnection, RespRequest};
 use swoole_rs_corebase::reactor::{Caught, Socket};
-use swoole_rs_corebase::{DataHead, log};
-use swoole_rs_server::reactor_entry::RecvData;
+use swoole_rs_corebase::{CellExt, DataHead, log};
+use swoole_rs_server::SendData;
 
 use crate::framing_recv::Lent;
 
@@ -18,12 +18,7 @@ thread_local! {
 
 /// `f` over this thread's request states, taken out of the cell for `f` only.
 fn requests<R>(f: impl FnOnce(&mut Vec<(c_long, RespRequest)>) -> R) -> R {
-    REQUESTS.with(|cell| {
-        let mut requests = cell.take();
-        let result = f(&mut requests);
-        cell.set(requests);
-        result
-    })
+    REQUESTS.with(|cell| cell.with_taken(f))
 }
 
 /// The connection's socket, receive buffer and request state, and where a whole
@@ -36,7 +31,7 @@ struct Connection<'a, D> {
     dispatch: D,
 }
 
-impl<D: FnMut(RecvData<'_>) -> bool> RespConnection for Connection<'_, D> {
+impl<D: FnMut(SendData<'_>) -> bool> RespConnection for Connection<'_, D> {
     fn recv(&mut self) -> Received {
         let socket = self.socket;
         let buffer = self.buffer.get();
@@ -69,7 +64,7 @@ impl<D: FnMut(RecvData<'_>) -> bool> RespConnection for Connection<'_, D> {
 
     fn dispatch(&mut self) -> Dispatched {
         let buffer = self.buffer.get();
-        if !(self.dispatch)(RecvData::new(DataHead::default(), buffer.view())) {
+        if !(self.dispatch)(SendData::new(DataHead::default(), buffer.view())) {
             return Dispatched::Failed;
         }
         if self.socket.read(|s| s.removed) {
@@ -94,7 +89,7 @@ pub(crate) fn recv_packet<'a>(
     conn: swoole_rs_server::Connection<'a>,
     socket: Socket<'a>,
     buffer: Lent<'a>,
-    dispatch: impl FnMut(RecvData<'_>) -> bool,
+    dispatch: impl FnMut(SendData<'_>) -> bool,
 ) -> bool {
     let (fd, session) = (conn.fd(), conn.session_id());
     let slot = usize::try_from(fd).ok();
@@ -161,7 +156,7 @@ mod tests {
         let buffer_size = buffer.size();
 
         let max_length = protocol.package_max_length;
-        let dispatch = |_: RecvData<'_>| unreachable!("a partial command");
+        let dispatch = |_: SendData<'_>| unreachable!("a partial command");
         assert!(!recv_packet(
             max_length,
             (&mut conn).into(),

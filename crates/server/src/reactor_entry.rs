@@ -12,30 +12,25 @@ use crate::base_factory::SendData;
 use crate::reactor_handle::Reactor;
 use crate::view;
 
-/// `swoole::RecvData`: the head and payload a receive or dispatch callback reads,
-/// which is a [`SendData`]'s.
-pub type RecvData<'a> = SendData<'a>;
+/// `swoole::RecvData`: the head and payload a receive callback reads, which may take
+/// a packet the message owns.
+pub use swoole_rs_corebase::process::process_pool::RecvData;
+
+/// An `onPacket` payload: the `DgramPacket` head's socket type and sender, and the
+/// datagram that follows it; `None` if the payload is too short.
+#[must_use]
+pub fn datagram(payload: &[u8]) -> Option<(SocketTypeCode, SocketAddress, &[u8])> {
+    let head = DgramPacket::from_bytes(payload.first_chunk()?);
+    let start = size_of::<DgramPacket>();
+    let data = payload.get(start..start + head.length as usize)?;
+    Some((head.socket_type, head.socket_addr, data))
+}
 
 impl SendData<'_> {
-    /// An `onPacket` payload: the `DgramPacket` head's socket type and sender,
-    /// and the datagram that follows it; `None` if the payload is too short.
-    #[must_use]
-    pub fn datagram(&self) -> Option<(SocketTypeCode, SocketAddress, &[u8])> {
-        let head = self.datagram_head()?;
-        let start = size_of::<DgramPacket>();
-        let data = self.payload().get(start..start + head.length as usize)?;
-        Some((head.socket_type, head.socket_addr, data))
-    }
-
     /// The sender an `onPacket` payload's `DgramPacket` head names; `None` if the
     /// payload ends before the head does.
     pub(crate) fn datagram_sender(&self) -> Option<SocketAddress> {
-        Some(self.datagram_head()?.socket_addr)
-    }
-
-    /// An `onPacket` payload's `DgramPacket` head; `None` if the payload is shorter.
-    fn datagram_head(&self) -> Option<DgramPacket> {
-        Some(DgramPacket::from_bytes(self.payload().first_chunk()?))
+        Some(DgramPacket::from_bytes(self.payload().first_chunk()?).socket_addr)
     }
 }
 
@@ -109,14 +104,13 @@ impl DgramPacket {
             let ip = self.socket_addr.addr.v4().sin_addr.s_addr;
             return c_long::from(ip.cast_signed());
         }
-        let host = swoole_rs_clients::address::host_in_scratch(&self.socket_addr);
+        // Upstream hashes as many bytes of the text as the address is long.
         let length = self.socket_addr.len as usize;
-        if host.is_null() || length == 0 {
-            return 0;
+        let text = swoole_rs_clients::address::host_bytes(&self.socket_addr, length);
+        match text.as_ref().and_then(|text| text.get(..length)) {
+            Some(text) if length > 0 => c_long::from(swoole_rs_crc32::crc32(text)),
+            _ => 0,
         }
-        // SAFETY: upstream hashes as many bytes of the text as the address is long.
-        let text = unsafe { std::slice::from_raw_parts(host.cast::<u8>(), length) };
-        c_long::from(swoole_rs_crc32::crc32(text))
     }
 }
 

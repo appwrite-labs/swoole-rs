@@ -5,11 +5,10 @@ use core::sync::atomic::{
     AtomicBool, AtomicU32,
     Ordering::{Acquire, Relaxed},
 };
-use swoole_rs_corebase::WebSocketStatus;
 use swoole_rs_corebase::constants::SocketTypeCode;
-use swoole_rs_corebase::memory::members::Shm;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::process::worker_record::WorkerRecord;
+use swoole_rs_corebase::{CellExt, WebSocketStatus};
 
 use crate::reactor_ops::ThreadRecord;
 use crate::table::Table;
@@ -58,8 +57,8 @@ pub struct ConnectionRecord {
     pub timer: Cell<Option<swoole_rs_corebase::timer_key::Held>>,
     pub info: Cell<SocketAddress>,
     /// Null, a listening slot's port ([`ServerState::hold_port`]) as its plain
-    /// address, a pipe end's pipe with [`NOT_PORT`] set, or a session's HTTP request
-    /// with [`REQUEST`] set too. Private: only this module's typed setters write it.
+    /// address, or a pipe end's pipe with [`NOT_PORT`] set. Private: only this
+    /// module's typed setters write it.
     object: Cell<*mut c_void>,
     /// The session socket, which the connection owns from `add` until its close takes
     /// it out and frees it: empty before and after, and on a listening slot. Only the
@@ -152,9 +151,6 @@ thread_local! {
 
 /// The top address bit: set on every slot object but a port.
 const NOT_PORT: usize = 1 << (usize::BITS - 1);
-/// The low address bit, set beside [`NOT_PORT`] on an HTTP request
-/// (`(address >> 1) | NOT_PORT | REQUEST`) and on nothing else.
-const REQUEST: usize = 1;
 
 /// A slot of a shared table, borrowed for `'a` and read and written one field at a
 /// time: every field is a cell or an atomic, so two handles to one slot share it and
@@ -338,15 +334,15 @@ impl<'a> Connection<'a> {
         let Ok(fd) = usize::try_from(self.fd()) else {
             return;
         };
-        CLIENT_CERTS.with(|certs| {
-            let mut held = certs.take();
-            if held.len() <= fd {
-                held.resize_with(fd + 1, || None);
-            }
-            if let Some(slot) = held.get_mut(fd) {
-                *slot = Some((self.session_id(), cert.into()));
-            }
-            certs.set(held);
+        CLIENT_CERTS.with(|cell| {
+            cell.with_taken(|held| {
+                if held.len() <= fd {
+                    held.resize_with(fd + 1, || None);
+                }
+                if let Some(slot) = held.get_mut(fd) {
+                    *slot = Some((self.session_id(), cert.into()));
+                }
+            });
         });
     }
 
@@ -360,17 +356,15 @@ impl<'a> Connection<'a> {
     /// holds a certificate only when it was stored for this session.
     fn client_cert<R>(self, f: impl FnOnce(&mut ClientCert) -> Option<R>) -> Option<R> {
         let fd = usize::try_from(self.fd()).ok()?;
-        CLIENT_CERTS.with(|certs| {
-            let mut held = certs.take();
-            let found = held
-                .get_mut(fd)
-                .filter(|slot| {
-                    slot.as_ref()
-                        .is_some_and(|(session, _)| *session == self.session_id())
-                })
-                .and_then(f);
-            certs.set(held);
-            found
+        CLIENT_CERTS.with(|cell| {
+            cell.with_taken(|held| {
+                held.get_mut(fd)
+                    .filter(|slot| {
+                        slot.as_ref()
+                            .is_some_and(|(session, _)| *session == self.session_id())
+                    })
+                    .and_then(f)
+            })
         })
     }
     field!(server_fd, set_server_fd: c_int);
@@ -392,43 +386,36 @@ impl<'a> Connection<'a> {
             .map(crate::view::Port::from)
     }
 
-    /// The HTTP request the session holds, which the slot no longer names, or `None`.
+    /// The HTTP request the session's socket holds (upstream's `conn->object`), no
+    /// longer held, or `None`.
     #[must_use]
     #[inline]
     pub fn take_http_request(self) -> Option<Box<swoole_rs_http::HttpRequest>> {
-        const TAG: usize = NOT_PORT | REQUEST;
-        let raw = self.object();
-        if raw.addr() & TAG != TAG {
-            return None;
-        }
-        self.clear_object();
-        let request = raw.map_addr(|a| (a & !TAG) << 1).cast();
-        // SAFETY: only `hold_http_request` sets `REQUEST`, on the box it leaked, and
-        // this take clears it, so each box comes back once.
-        Some(unsafe { Box::from_raw(request) })
+        self.socket()?
+            .edit(swoole_rs_corebase::reactor::SocketFields::take_owner)
     }
 
-    /// The session holds `request` until [`Self::take_http_request`].
+    /// The session's socket holds `request` until [`Self::take_http_request`]; without
+    /// a socket, it is freed.
     #[inline]
     pub fn hold_http_request(self, request: Box<swoole_rs_http::HttpRequest>) {
-        const {
-            assert!(
-                align_of::<swoole_rs_http::HttpRequest>() >= 4,
-                "the tag takes the low bit after the shift"
-            );
+        let Some(socket) = self.socket() else {
+            return swoole_rs_http::request_free(Some(request));
+        };
+        // A session socket holds nothing else.
+        let replaced = socket.edit(|socket| socket.hold_owner(request));
+        if let Some(Ok(old)) = replaced.map(Box::<dyn core::any::Any>::downcast) {
+            swoole_rs_http::request_free(Some(old));
         }
-        let raw = Box::into_raw(request).cast::<c_void>();
-        self.set_object(raw.map_addr(|a| (a >> 1) | NOT_PORT | REQUEST));
     }
 
     /// `Server::store_pipe_fd`: a pipe end's slot names its pipe, which nothing reads
-    /// back as a port or a request. An address with the top bit set, which no
-    /// user-space pointer has, is not kept; a pipe is 2-aligned, so its low bit is
-    /// clear.
+    /// back as a port. An address with the top bit set, which no user-space pointer
+    /// has, is not kept.
     pub(crate) fn set_pipe(self, pipe: *mut c_void) {
         let kept = pipe.addr().cast_signed() >= 0;
         self.set_object(if kept {
-            pipe.map_addr(|a| (a | NOT_PORT) & !REQUEST)
+            pipe.map_addr(|a| a | NOT_PORT)
         } else {
             core::ptr::null_mut()
         });
@@ -481,7 +468,6 @@ pub struct ServerTables {
     connection_list: Table<ConnectionRecord>,
     /// `SW_SESSION_LIST_SIZE` of them.
     session_list: Table<SessionRecord>,
-    pub port_gs_list: Shm,
     /// `worker_num` of them.
     pub(crate) workers: Table<WorkerRecord>,
     /// One per added user worker.
@@ -559,7 +545,6 @@ impl ServerTables {
     pub(crate) fn unmap(&mut self) {
         self.connection_list.free();
         self.session_list.free();
-        self.port_gs_list.free();
         self.workers.free();
         self.user_workers.free();
         self.task_results.free();
@@ -628,7 +613,6 @@ impl Default for ServerTables {
         Self {
             connection_list: Table::empty(),
             session_list: Table::empty(),
-            port_gs_list: Shm::empty(),
             workers: Table::empty(),
             user_workers: Table::empty(),
             task_results: Table::empty(),
@@ -757,6 +741,23 @@ pub(crate) mod tests {
     }
 
     pub(crate) use crate::table::tests::{naming, naming_at};
+
+    #[test]
+    fn a_sessions_socket_holds_its_http_request_between_reads() {
+        // SAFETY: a connection record is plain data; zero is a closed one.
+        let record: ConnectionRecord = unsafe { core::mem::zeroed() };
+        let conn = Connection::from(&record);
+        conn.hold_http_request(swoole_rs_http::request_new());
+        assert!(conn.take_http_request().is_none(), "no socket: freed");
+        let socket = Box::new(swoole_rs_corebase::reactor::SocketRecord::new());
+        conn.hold_socket(swoole_rs_corebase::reactor::OwnedSocket::new(socket));
+        conn.hold_http_request(swoole_rs_http::request_new());
+        conn.hold_http_request(swoole_rs_http::request_new());
+        assert!(conn.take_http_request().is_some(), "the later one");
+        assert!(conn.take_http_request().is_none(), "taken once");
+        // Freeing it would close fd 0.
+        conn.forget_socket();
+    }
 
     #[test]
     fn clearing_a_slot_keeps_only_active_closed_and_server_fd() {

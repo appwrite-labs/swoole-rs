@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 const PACKET: &[u8] = b"hello world\n";
 
 /// `send_buffer`'s `onReceive`: the packet, answered with 16 MiB of `A` and a close.
-fn send_buffer_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn send_buffer_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
     let serv = Server(serv.raw());
     let (session, data) = request(req);
     expect(data == PACKET, "string(req->data, req->info.len) == packet");

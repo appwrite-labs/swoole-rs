@@ -261,8 +261,7 @@ impl Connection for Read<'_> {
                 let max_length = self.port.protocol.get().package_max_length;
                 let buffer = Lent::new(self.buffer());
                 // A redis port's `onPackage` is `dispatch_task`.
-                let dispatch =
-                    |data: swoole_rs_server::reactor_entry::RecvData<'_>| session.task(data);
+                let dispatch = |data: swoole_rs_server::SendData<'_>| session.task(data);
                 crate::resp_recv::recv_packet(
                     max_length,
                     session.conn,
@@ -293,12 +292,6 @@ impl Connection for Read<'_> {
             },
             ..DataHead::default()
         };
-        // The connection holds the request while it runs, so a close frees it there.
-        if dispatch != Dispatch::Task
-            && let Some(request) = self.request.take()
-        {
-            self.conn.hold_http_request(request);
-        }
         // A request waits its turn under `max_concurrency`; a task never does.
         let busy = dispatch != Dispatch::Task && {
             let counters = self.server.counters();
@@ -313,18 +306,16 @@ impl Connection for Read<'_> {
             let bytes = self.buffer().view();
             let length = usize::try_from(length).unwrap_or(usize::MAX);
             let data = bytes.get(..length).unwrap_or(bytes);
-            session.task(swoole_rs_server::reactor_entry::RecvData::new(head, data))
+            session.task(swoole_rs_server::SendData::new(head, data))
         };
         if dispatch == Dispatch::Task {
             return dispatched;
         }
-        // The connection's request back, unless the request callback closed it
-        // ([`Connection::active`]).
-        self.request = if self.removed() {
-            None
-        } else {
-            self.conn.take_http_request()
-        };
+        // The read keeps the request while the callback runs, and frees it if the
+        // callback closed the connection ([`Connection::active`]).
+        if self.removed() {
+            request_free(self.request.take());
+        }
         dispatched
     }
 

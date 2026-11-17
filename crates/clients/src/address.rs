@@ -185,6 +185,35 @@ pub fn host_in_scratch(address: &SocketAddress) -> *const c_char {
     }
 }
 
+/// The first `length` bytes (at most 128) where [`host_in_scratch`] puts `address`'s
+/// text, zeros past their end, as upstream's `crc32(get_addr(), len)` hashes them: the
+/// IP text in this thread's scratch, the Unix path and the storage after it, or the
+/// fallback. `None` when the IP does not format.
+#[must_use]
+pub fn host_bytes(address: &SocketAddress, length: usize) -> Option<[u8; 128]> {
+    let mut bytes = [0; 128];
+    let mut copy = |text: &[u8]| {
+        let length = length.min(bytes.len());
+        bytes
+            .iter_mut()
+            .take(length)
+            .zip(text)
+            .for_each(|(to, from)| *to = *from);
+    };
+    if inet4(address.kind) || inet6(address.kind) {
+        if host_in_scratch(address).is_null() {
+            return None;
+        }
+        copy(&ADDRESS_SCRATCH.with(Cell::get));
+    } else if local(address.kind) {
+        let path = std::mem::offset_of!(libc::sockaddr_un, sun_path);
+        copy(address.addr.as_bytes().get(path..).unwrap_or_default());
+    } else {
+        copy(c"unknown".to_bytes_with_nul());
+    }
+    Some(bytes)
+}
+
 /// `Address::get_addr` for Rust: `f` reads the text, which an IP address formats
 /// into this call's own buffer rather than the thread's scratch, so nothing can
 /// overwrite it while `f` runs.
@@ -417,6 +446,27 @@ mod tests {
             ..SocketAddress::default()
         };
         assert_eq!(with_host(&unknown, CStr::to_owned).as_c_str(), c"unknown");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no inet_pton or inet_ntop")]
+    fn host_bytes_are_the_texts_bytes_then_zeros() {
+        let v6 = socket_address(UDP6, c"fe80::1");
+        let bytes = host_bytes(&v6, 28).unwrap();
+        assert_eq!(&bytes[..8], b"fe80::1\0");
+        assert!(bytes[8..].iter().all(|&byte| byte == 0));
+        let unix = socket_address(UNIX_DGRAM, c"/tmp/s.sock");
+        let bytes = host_bytes(&unix, 14).unwrap();
+        assert_eq!(&bytes[..12], b"/tmp/s.sock\0");
+        assert!(
+            bytes[14..].iter().all(|&byte| byte == 0),
+            "only `length` bytes"
+        );
+        let unknown = SocketAddress {
+            kind: 9,
+            ..SocketAddress::default()
+        };
+        assert_eq!(&host_bytes(&unknown, 10).unwrap()[..10], b"unknown\0\0\0");
     }
 
     #[test]

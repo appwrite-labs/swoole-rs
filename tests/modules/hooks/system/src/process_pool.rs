@@ -772,13 +772,13 @@ fn test_func_task_protocol(pool: *mut Pool) {
     test_func(pool);
 }
 
-fn message_protocol_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+fn message_protocol_on_message(pool: PoolRef<'_>, rdata: &mut RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     // SAFETY: the running pool.
     unsafe { (*pool).running = false };
     ms_sleep(10000);
     // SAFETY: the pool's message.
-    assert_eq!(pool_data(pool), rdata.data());
+    assert_eq!(pool_data(pool), rdata.payload());
 }
 
 fn test_func_message_protocol(pool: *mut Pool) {
@@ -794,12 +794,18 @@ fn test_func_message_protocol(pool: *mut Pool) {
     test_func(pool);
 }
 
-fn stream_protocol_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+fn stream_protocol_on_message(pool: PoolRef<'_>, rdata: &mut RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     // SAFETY: the running pool.
     unsafe { (*pool).running = false };
     // SAFETY: the message is an EventData's bytes, which it lends for the call.
-    let msg = unsafe { rdata.data().as_ptr().cast::<EventData>().read_unaligned() };
+    let msg = unsafe {
+        rdata
+            .payload()
+            .as_ptr()
+            .cast::<EventData>()
+            .read_unaligned()
+    };
     ms_sleep(10000);
     assert_eq!(pool_data(pool), msg.payload());
 }
@@ -839,13 +845,13 @@ fn unix_sock() {
     test_func_task_protocol(pool);
 }
 
-fn tcp_raw_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+fn tcp_raw_on_message(pool: PoolRef<'_>, rdata: &mut RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     // SAFETY: the running pool.
     unsafe { (*pool).running = false };
     let data = pool_data(pool);
     assert_eq!(rdata.info().len as usize, data.len());
-    assert_eq!(data, rdata.data());
+    assert_eq!(data, rdata.payload());
 }
 
 fn tcp_raw() {
@@ -959,11 +965,11 @@ fn with_timer_on_worker_start(pool: PoolRef<'_>, _: WorkerHandle<'_>) {
     });
 }
 
-fn with_timer_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+fn with_timer_on_message(pool: PoolRef<'_>, rdata: &mut RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     ms_sleep(10000);
     // SAFETY: the pool's message.
-    assert_eq!(pool_data(pool), rdata.data());
+    assert_eq!(pool_data(pool), rdata.payload());
 }
 
 fn message_protocol_with_timer() {
@@ -1222,7 +1228,7 @@ fn async_on_worker_start(pool: PoolRef<'_>, worker: WorkerHandle<'_>) {
     ms_sleep(10);
 }
 
-fn async_on_message(pool: PoolRef<'_>, _: &RecvData<'_>) {
+fn async_on_message(pool: PoolRef<'_>, _: &mut RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     counter_incr(0);
     // SAFETY: kill(2) on the master.
@@ -1330,10 +1336,10 @@ fn async_mb_on_shutdown(_: PoolRef<'_>) {
     counter_incr_and_put_log();
 }
 
-fn async_mb_on_message(pool: PoolRef<'_>, msg: &RecvData<'_>) {
+fn async_mb_on_message(pool: PoolRef<'_>, msg: &mut RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     // SAFETY: the pool's message.
-    let req = msg.data();
+    let req = msg.payload();
 
     if req == b"detach" {
         counter_incr_and_put_log();
@@ -1417,7 +1423,7 @@ fn socket() {
     destroy(pool);
 }
 
-fn listen_on_message(pool: PoolRef<'_>, _: &RecvData<'_>) {
+fn listen_on_message(pool: PoolRef<'_>, _: &mut RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     let wmem = pool_data(pool);
     assert_eq!(response(pool, wmem.as_ptr(), wmem.len() as u32), SW_OK);
@@ -1499,11 +1505,11 @@ fn listen() {
     t1.join().unwrap();
 }
 
-fn truncated_stream_on_message(pool: PoolRef<'_>, msg: &RecvData<'_>) {
+fn truncated_stream_on_message(pool: PoolRef<'_>, msg: &mut RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     let messages = messages(pool);
     // SAFETY: the pool's message.
-    messages.push(msg.data().to_vec());
+    messages.push(msg.payload().to_vec());
     if messages.last().unwrap() == b"sentinel" {
         // SAFETY: the running pool.
         unsafe { (*pool).running = false };
@@ -1804,10 +1810,10 @@ fn set_max_packet_size(pool: *mut Pool, size: u32) {
     };
 }
 
-fn small_packet_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+fn small_packet_on_message(pool: PoolRef<'_>, rdata: &mut RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     assert_eq!(rdata.info().len, 1);
-    assert_eq!(rdata.data()[0], b'x');
+    assert_eq!(rdata.payload()[0], b'x');
     // SAFETY: the running pool.
     unsafe { (*pool).running = false };
 }
@@ -1841,9 +1847,9 @@ fn stream_protocol_small_packet() {
     destroy(pool);
 }
 
-fn msgqueue_package_size_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+fn msgqueue_package_size_on_message(pool: PoolRef<'_>, rdata: &mut RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
-    messages(pool).push(rdata.data().to_vec());
+    messages(pool).push(rdata.payload().to_vec());
     if rdata.info().len == 0 {
         // SAFETY: the running pool.
         unsafe { (*pool).running = false };
@@ -1906,7 +1912,7 @@ fn stream_protocol_msgqueue_ignores_package_size() {
 
 const TEST_SOCK: &CStr = c"/tmp/swoole_process_pool.sock";
 
-fn listen_unixsock_on_message(pool: PoolRef<'_>, _: &RecvData<'_>) {
+fn listen_unixsock_on_message(pool: PoolRef<'_>, _: &mut RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     let wmem = pool_data(pool);
     response(pool, wmem.as_ptr(), wmem.len() as u32);

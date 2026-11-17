@@ -17,7 +17,7 @@ use crate::memory::{ChannelInitError, SharedChannel};
 use crate::process::task_file::Packed;
 use crate::process::worker_record::{Worker, WorkerType};
 use core::cell::Cell;
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_int, c_long, c_void};
 use std::ptr;
 use std::sync::atomic::AtomicU32;
 
@@ -506,21 +506,20 @@ impl<'a> PoolRef<'a> {
             .unwrap_or(0)
     }
 
-    /// `queue->pop(node, size)` into a `QueueNode` held in words, and `errno` right
-    /// after it; -1 when it failed or there is no queue.
-    pub(crate) fn queue_pop(self, node: &mut [u64], size: usize) -> (isize, c_int) {
-        let result = self
-            .with_queue(|queue| queue.pop_words(node, size))
-            .flatten();
+    /// `queue->pop(node, size)` into a `QueueNode` (a `long` type, then room for
+    /// `size` payload bytes), and `errno` right after it; -1 when it failed or there
+    /// is no queue.
+    pub(crate) fn queue_pop(self, node: &mut [u8], size: usize) -> (isize, c_int) {
+        let node = node.get_mut(..size_of::<c_long>().saturating_add(size));
+        let result = self.with_queue(|queue| queue.pop(node?)).flatten();
         let length = result.map_or(-1, CCast::c_cast::<isize>);
         (length, crate::sys::errno())
     }
 
-    /// `queue->push(node, length)` of a `QueueNode` held in words; false without a
-    /// queue.
-    pub(crate) fn queue_push(self, node: &[u64], length: usize) -> bool {
-        self.with_queue(|queue| queue.push_words(node, length))
-            .unwrap_or(false)
+    /// `queue->push(node)` of a `QueueNode`, a `long` type and then its payload;
+    /// false without a queue.
+    pub(crate) fn queue_push(self, node: &[u8]) -> bool {
+        self.with_queue(|queue| queue.push(node)).unwrap_or(false)
     }
 
     /// `f` over the pool's message queue; `None` without one. Only this type's queue
@@ -561,42 +560,108 @@ impl<'a> PoolRef<'a> {
         self.record().ipc_connection()
     }
 
-    /// The worker loop's receive buffer and its size in bytes; null and 0 before
-    /// the loop allocates it.
+    /// The event loop's receive buffer, taken out until [`Self::restore_ipc_packet`];
+    /// empty before the loop allocates it, or while it is taken.
     #[must_use]
-    pub fn ipc_packet(self) -> (*mut c_char, usize) {
+    pub fn take_ipc_packet(self) -> Vec<u8> {
         self.record()
-            .with_ipc(crate::process::pool::pool_ipc_packet)
-            .unwrap_or((ptr::null_mut(), 0))
+            .with_ipc(crate::process::pool::pool_ipc_take_packet)
+            .unwrap_or_default()
+    }
+
+    /// Give back the buffer [`Self::take_ipc_packet`] took.
+    pub fn restore_ipc_packet(self, packet: Vec<u8>) {
+        self.record()
+            .with_ipc(|ipc| crate::process::pool::pool_ipc_restore_packet(ipc, packet));
     }
 }
 
-/// `swoole::RecvData`: a message's head and its bytes, lent for one `onMessage`.
+/// `swoole::RecvData`: a message's head and its bytes, for one callback: lent by
+/// their holder, or a packet the callback owns and may take
+/// ([`RecvData::take_packet`]), freed with it otherwise.
 pub struct RecvData<'a> {
     info: DataHead,
-    data: &'a [u8],
+    payload: Payload<'a>,
+}
+
+enum Payload<'a> {
+    Lent(&'a [u8]),
+    Owned(crate::buffer::string::OwnedString),
 }
 
 impl<'a> RecvData<'a> {
     /// A message of `data` (at most `u32::MAX` bytes of it), its head's `len` their
     /// length.
     #[must_use]
+    #[inline]
     pub fn new(info: DataHead, data: &'a [u8]) -> Self {
         let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+        let data = data.get(..len as usize).unwrap_or(data);
         Self {
             info: DataHead { len, ..info },
-            data: data.get(..len as usize).unwrap_or(data),
+            payload: Payload::Lent(data),
+        }
+    }
+
+    /// A message of `info` as it is, over at most its `len` bytes of `data`.
+    #[must_use]
+    #[inline]
+    pub fn within(info: DataHead, data: &'a [u8]) -> Self {
+        let data = data.get(..info.len as usize).unwrap_or(data);
+        Self {
+            info,
+            payload: Payload::Lent(data),
+        }
+    }
+
+    /// A message of `packet`, which the callback owns, its head's `len` the packet's
+    /// length (at most `u32::MAX`).
+    #[must_use]
+    pub fn owned(info: DataHead, packet: crate::buffer::string::OwnedString) -> Self {
+        let len = u32::try_from(packet.len()).unwrap_or(u32::MAX);
+        Self {
+            info: DataHead { len, ..info },
+            payload: Payload::Owned(packet),
         }
     }
 
     #[must_use]
+    #[inline]
     pub fn info(&self) -> &DataHead {
         &self.info
     }
 
+    /// The message's bytes, at most its head's `len`; none once
+    /// [`RecvData::take_packet`] took them.
     #[must_use]
-    pub fn data(&self) -> &'a [u8] {
-        self.data
+    #[inline]
+    pub fn payload(&self) -> &[u8] {
+        match &self.payload {
+            // `new` keeps no more than `len`.
+            Payload::Lent(data) => data,
+            Payload::Owned(packet) => {
+                let bytes = packet.view();
+                bytes.get(..self.info.len as usize).unwrap_or(bytes)
+            }
+        }
+    }
+
+    /// The head's `flags`.
+    #[inline]
+    pub fn set_flags(&mut self, flags: u8) {
+        self.info.flags = flags;
+    }
+
+    /// `move_packet()`: the packet this message owns, now the caller's, or `None`
+    /// when its bytes are lent.
+    pub fn take_packet(&mut self) -> Option<crate::buffer::string::OwnedString> {
+        match core::mem::replace(&mut self.payload, Payload::Lent(&[])) {
+            Payload::Owned(packet) => Some(packet),
+            lent @ Payload::Lent(_) => {
+                self.payload = lent;
+                None
+            }
+        }
     }
 }
 
@@ -615,7 +680,7 @@ pub type MainLoopFn = fn(PoolRef<'_>, Worker<'_>) -> c_int;
 /// `onTask`: the task the worker read.
 pub type TaskFn = fn(PoolRef<'_>, Worker<'_>, Packed<'_>) -> c_int;
 /// `onMessage`: the message, lent for the call.
-pub type MessageFn = fn(PoolRef<'_>, &RecvData<'_>);
+pub type MessageFn = fn(PoolRef<'_>, &mut RecvData<'_>);
 /// `onWorkerMessage`: the `EventData` the master popped, as its bytes.
 pub type EventFn = fn(PoolRef<'_>, &[u8; crate::constants::SW_IPC_MAX_SIZE as usize]);
 /// `onWorkerError`.
@@ -754,7 +819,7 @@ impl PoolRef<'_> {
     }
 
     /// `onMessage(pool, message)`; nothing without one.
-    pub fn call_on_message(self, message: &RecvData<'_>) {
+    pub fn call_on_message(self, message: &mut RecvData<'_>) {
         if let Some(hook) = self.on_message() {
             hook(self, message);
         }
@@ -2943,7 +3008,7 @@ mod tests {
 
     #[test]
     fn async_loop_still_waits_after_pipe_registration_failure() {
-        fn on_message(_: PoolRef<'_>, _: &RecvData<'_>) {}
+        fn on_message(_: PoolRef<'_>, _: &mut RecvData<'_>) {}
         let mut fixture = Fixture::new(1);
         let mut script = Script::default();
         script.answers.insert(Op::AddPipe, -1);

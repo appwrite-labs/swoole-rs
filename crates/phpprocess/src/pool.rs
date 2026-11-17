@@ -22,11 +22,11 @@ use std::{
     rc::Rc,
     sync::atomic::{AtomicPtr, Ordering},
 };
-use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::process;
 use swoole_rs_corebase::reactor::Heap;
 use swoole_rs_corebase::reactor::signal_upstream::Handler as SignalHandler;
 use swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option;
+use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_phpstubs::process_pool;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, handlers,
@@ -122,16 +122,16 @@ fn worker_busy(busy: bool) {
 }
 
 /// The message's payload as a string: the bus's packet itself when it holds one.
-fn message_data(pool: PoolRef<'_>, message: &RecvData<'_>) -> Owned {
-    let length = message.data().len();
+fn message_data(message: &mut RecvData<'_>) -> Owned {
+    let length = message.payload().len();
     let moved = (length != 0 && message.info().flags & EVENT_DATA_OBJ_PTR != 0)
-        .then(|| swoole_rs_server::pool_bus_move_packet(pool))
+        .then(|| message.take_packet())
         .flatten();
     let string = if let Some(mut buffer) = moved {
         buffer.truncate(length);
         swoole_rs_phpswoole::received_string(buffer)
     } else {
-        ZString::new(message.data())
+        ZString::new(message.payload())
     };
     Owned::string(string)
 }
@@ -144,17 +144,11 @@ struct Handler(Cell<Option<Rc<Callable>>>);
 
 impl Handler {
     fn get(&self) -> Option<Rc<Callable>> {
-        let callable = self.0.take();
-        let copy = callable.clone();
-        self.0.set(callable);
-        copy
+        self.0.with_taken(|callable| callable.clone())
     }
 
     fn is_set(&self) -> bool {
-        let callable = self.0.take();
-        let set = callable.is_some();
-        self.0.set(callable);
-        set
+        self.0.with_taken(|callable| callable.is_some())
     }
 
     /// Store `callable`, handing back the one it replaces for the caller to drop.
@@ -406,12 +400,12 @@ fn worker_signals(term: bool) {
     }
 }
 
-fn on_message(pool: PoolRef<'_>, message: &RecvData<'_>) {
+fn on_message(_: PoolRef<'_>, message: &mut RecvData<'_>) {
     let mut slot = Owned::default();
     let Some((object, this)) = owner(&mut slot) else {
         return;
     };
-    let data = message_data(pool, message);
+    let data = message_data(message);
     worker_busy(true);
     // The onMessage callable `start()` required.
     let callable = this.on_message.get();

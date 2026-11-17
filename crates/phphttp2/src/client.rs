@@ -356,10 +356,7 @@ impl Client {
 
     /// `SW_CLIENT_PRESERVE_SOCKET`: a reference to the socket object for the call.
     fn hold_socket(&self) -> Owned {
-        let zsocket = self.conn.zsocket.take();
-        let held = zsocket.copy();
-        self.conn.zsocket.set(zsocket);
-        held
+        self.conn.zsocket.with_taken(|socket| socket.copy())
     }
 
     /// `socket_dtor`'s release of what hung off the closed socket.
@@ -619,52 +616,53 @@ impl Client {
         let headers = request.array(Held::Headers);
         let cookies = request.array(Held::Cookies);
         // Converting a header value can run PHP code, which may build another request.
-        let mut set = self.headers.take();
-        set.clear();
-        set.add(b":method", &[method.unwrap_or(b"GET")]);
-        set.add(b":path", &[path.unwrap_or(b"/")]);
-        set.add(b":scheme", &[if self.ssl { b"https" } else { b"http" }]);
-        set.slots.push(None);
-        let mut host = false;
-        for (key, value) in entries(headers.as_ref()) {
-            let Some(key) = key.filter(|key| key.first() != Some(&b':') && !value.is_null()) else {
-                continue;
-            };
-            let value = value.string();
-            if header_kind(HeaderRole::Client, key) == HeaderKind::Host {
-                set.set(AUTHORITY, b":authority", value.bytes());
-                host = true;
-            } else {
-                set.add(key, &[value.bytes()]);
-            }
-        }
-        if !host {
-            let authority = self.host.with_taken(|host| {
-                if self.port == if self.ssl { 443 } else { 80 } {
-                    host.clone()
+        self.headers.with_taken(|set| {
+            set.clear();
+            set.add(b":method", &[method.unwrap_or(b"GET")]);
+            set.add(b":path", &[path.unwrap_or(b"/")]);
+            set.add(b":scheme", &[if self.ssl { b"https" } else { b"http" }]);
+            set.slots.push(None);
+            let mut host = false;
+            for (key, value) in entries(headers.as_ref()) {
+                let Some(key) = key.filter(|key| key.first() != Some(&b':') && !value.is_null())
+                else {
+                    continue;
+                };
+                let value = value.string();
+                if header_kind(HeaderRole::Client, key) == HeaderKind::Host {
+                    set.set(AUTHORITY, b":authority", value.bytes());
+                    host = true;
                 } else {
-                    let host = host.split(|&b| b == 0).next().unwrap_or_default();
-                    [host, format!(":{}", self.port).as_bytes()].concat()
+                    set.add(key, &[value.bytes()]);
+                }
+            }
+            if !host {
+                let authority = self.host.with_taken(|host| {
+                    if self.port == if self.ssl { 443 } else { 80 } {
+                        host.clone()
+                    } else {
+                        let host = host.split(|&b| b == 0).next().unwrap_or_default();
+                        [host, format!(":{}", self.port).as_bytes()].concat()
+                    }
+                });
+                set.set(AUTHORITY, b":authority", &authority);
+            }
+            for (key, value) in entries(cookies.as_ref()) {
+                let Some(key) = key.filter(|_| !value.is_null()) else {
+                    continue;
+                };
+                let value = value.string();
+                let encoded = ZString::url_encode(value.bytes());
+                set.add(b"cookie", &[key, b"=", encoded.bytes()]);
+            }
+            let mut frame = vec![0_u8; FRAME_HEADER];
+            self.hpack.with_taken(|hpack| {
+                if let Some((_, _, encoder)) = hpack.as_mut() {
+                    encoder.encode(set.list(), &mut frame);
                 }
             });
-            set.set(AUTHORITY, b":authority", &authority);
-        }
-        for (key, value) in entries(cookies.as_ref()) {
-            let Some(key) = key.filter(|_| !value.is_null()) else {
-                continue;
-            };
-            let value = value.string();
-            let encoded = ZString::url_encode(value.bytes());
-            set.add(b"cookie", &[key, b"=", encoded.bytes()]);
-        }
-        let mut frame = vec![0_u8; FRAME_HEADER];
-        self.hpack.with_taken(|hpack| {
-            if let Some((_, _, encoder)) = hpack.as_mut() {
-                encoder.encode(set.list(), &mut frame);
-            }
-        });
-        self.headers.set(set);
-        frame
+            frame
+        })
     }
 
     /// `send_request`: the new stream's id, or 0.

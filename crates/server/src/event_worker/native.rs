@@ -38,9 +38,10 @@ const SERVER_WORKER_EXIT_TIMEOUT: c_int =
 const SERVER_WORKER_UNPROCESSED_DATA: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_SERVER_WORKER_UNPROCESSED_DATA as c_int;
 
-/// `serv->get_worker_message_bus()`.
-fn bus(serv: view::Server<'_>) -> Bus<'_> {
-    crate::master_ops::worker_message_bus(serv.state())
+/// `f` over `serv->get_worker_message_bus()`.
+#[inline]
+fn with_bus<R>(serv: view::Server<'_>, f: impl FnOnce(Bus<'_>) -> R) -> R {
+    crate::master_ops::with_worker_message_bus(serv.state(), f)
 }
 
 /// `serv->get_worker(id)`, or `None` past the last worker.
@@ -74,19 +75,56 @@ fn readable(conn: crate::Connection<'_>) -> bool {
     !conn.peer_closed() && !removed
 }
 
-/// `Server::worker_accept_event(info)`: the event whose head is `info` (its data, if
-/// any, in the worker message bus), in this thread's worker.
-pub(crate) fn accept_event(serv: view::Server<'_>, info: &DataHead) {
-    _ = with_current(|&worker| accept(serv, worker, info));
+/// Where an event's data is: in the worker message bus, or passed with the event
+/// (base mode's `MessageBus::pass`).
+#[derive(Clone, Copy)]
+pub(crate) enum Payload<'a> {
+    Bus,
+    Passed(&'a [u8]),
 }
 
-fn accept(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead) {
+impl Payload<'_> {
+    /// `f` over the event's data.
+    fn with<R>(self, serv: view::Server<'_>, f: impl FnOnce(&[u8]) -> R) -> R {
+        match self {
+            Self::Bus => with_bus(serv, |bus| bus.with_packet(f)),
+            Self::Passed(data) => f(data),
+        }
+    }
+
+    /// `f` over the event under the head `info`, as a receive callback takes it: the
+    /// bus's packet, which `f` may take, or the data passed with the event.
+    #[inline(always)]
+    fn receive(
+        self,
+        serv: view::Server<'_>,
+        info: &DataHead,
+        f: impl FnOnce(&mut crate::reactor_entry::RecvData<'_>),
+    ) {
+        match self {
+            Self::Bus => {
+                let mut packet = with_bus(serv, |bus| bus.rust().take_packet());
+                f(&mut packet.receive(*info));
+                with_bus(serv, |bus| bus.rust().restore(packet));
+            }
+            Self::Passed(data) => f(&mut crate::reactor_entry::RecvData::new(*info, data)),
+        }
+    }
+}
+
+/// `Server::worker_accept_event(info)`: the event whose head is `info` (its data, if
+/// any, at `payload`), in this thread's worker.
+pub(crate) fn accept_event(serv: view::Server<'_>, info: &DataHead, payload: Payload<'_>) {
+    _ = with_current(|&worker| accept(serv, worker, info, payload));
+}
+
+fn accept(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead, payload: Payload<'_>) {
     let (state, config) = (serv.state(), serv.config());
     let callbacks = &state.callbacks;
     worker.set_status(WorkerStatus::Busy);
     match info.event() {
-        Some(ServerEvent::RecvData) => {
-            let closed = received(serv, info);
+        Some(ServerEvent::RecvData) => payload.receive(serv, info, |recv| {
+            let closed = received(serv, recv.info());
             let (notify, timeout) = (
                 config.disable_notify.get(),
                 config.discard_timeout_request.get(),
@@ -100,27 +138,33 @@ fn accept(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead) {
                     format_args!("[2] ignore data[{len} bytes] received from session#{session}"),
                 );
             } else {
-                run_task(serv, worker, info, ReceiveSlot::Receive);
+                run_task(serv, worker, recv, ReceiveSlot::Receive);
             }
-        }
-        Some(ServerEvent::RecvDgram) => run_task(serv, worker, info, ReceiveSlot::Packet),
+        }),
+        Some(ServerEvent::RecvDgram) => payload.receive(serv, info, |recv| {
+            run_task(serv, worker, recv, ReceiveSlot::Packet);
+        }),
         Some(ServerEvent::Close) => {
             free_client_cert(serv, info);
             _ = crate::factory::end(serv, info.fd, 0);
         }
         Some(ServerEvent::Connect) => {
             if info.len > 0 {
-                store_client_cert(serv, info);
+                store_client_cert(serv, info, payload);
             }
             callbacks.event(EventSlot::Connect, serv, info);
         }
         Some(ServerEvent::BufferFull) => callbacks.event(EventSlot::BufferFull, serv, info),
         Some(ServerEvent::BufferEmpty) => callbacks.event(EventSlot::BufferEmpty, serv, info),
         Some(ServerEvent::Finish) => {
-            _ = bus(serv).with_event(|event| callbacks.task(TaskSlot::Finish, serv, event));
+            _ = with_bus(serv, |bus| {
+                bus.with_event(|event| callbacks.task(TaskSlot::Finish, serv, event))
+            });
         }
         Some(ServerEvent::PipeMessage) => {
-            _ = bus(serv).with_event(|event| callbacks.pipe_message(serv, event));
+            _ = with_bus(serv, |bus| {
+                bus.with_event(|event| callbacks.pipe_message(serv, event))
+            });
         }
         Some(ServerEvent::CommandRequest) => {
             // The server's live command pipe, a `UnixSocket`.
@@ -153,35 +197,26 @@ fn accept(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead) {
     }
 }
 
-/// The connection received data is for, its queued bytes and dispatch time updated:
-/// `None` without one, else whether the server closed it.
+/// The connection received data (whose head is `info`) is for, its queued bytes (less
+/// the `len` received) and dispatch time updated: `None` without one, else whether
+/// the server closed it.
 fn received(serv: view::Server<'_>, info: &DataHead) -> Option<bool> {
     let conn = serv.state().connection(info.fd, Lookup::VerifiedTls)?;
     if info.len > 0 {
-        let length = u32::try_from(bus(serv).packet().length).unwrap_or(u32::MAX);
-        conn.recv_queued_bytes().fetch_sub(length, Relaxed);
+        conn.recv_queued_bytes().fetch_sub(info.len, Relaxed);
     }
     conn.set_last_dispatch_time(info.time);
     Some(conn.closed().load(Relaxed) != 0)
 }
 
-/// The receive or packet callback over the bus's packet; a request counted when it
-/// succeeds.
-fn run_task(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead, slot: ReceiveSlot) {
-    let packet = bus(serv).packet();
-    let mut head = *info;
-    head.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
-    // Built here rather than through `Bus::with_message`, whose closure costs every
-    // process-mode request about 20 instructions (it moves `run_task` out of line).
-    let recv = if packet.data.is_null() {
-        crate::base_factory::SendData::empty(head)
-    } else {
-        // SAFETY: the bus's packet, `length` bytes it keeps until it pops or reads
-        // again, which this thread does after the callback returns.
-        let data = unsafe { core::slice::from_raw_parts(packet.data.cast(), packet.length) };
-        crate::base_factory::SendData::new(head, data)
-    };
-    let result = serv.state().callbacks.receive(slot, serv, &recv);
+/// The receive or packet callback over `recv`; a request counted when it succeeds.
+fn run_task(
+    serv: view::Server<'_>,
+    worker: Worker<'_>,
+    recv: &mut crate::reactor_entry::RecvData<'_>,
+    slot: ReceiveSlot,
+) {
+    let result = serv.state().callbacks.receive(slot, serv, recv);
     if swoole_rs_corebase::process::pool::bailout_pending() {
         return;
     }
@@ -192,9 +227,9 @@ fn run_task(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead, slot: R
 }
 
 /// The session's client certificate, sent with its connect event.
-fn store_client_cert(serv: view::Server<'_>, info: &DataHead) {
+fn store_client_cert(serv: view::Server<'_>, info: &DataHead, payload: Payload<'_>) {
     if let Some(conn) = serv.state().connection(info.fd, Lookup::Verified) {
-        bus(serv).with_packet(|cert| conn.store_client_cert(cert));
+        payload.with(serv, |cert| conn.store_client_cert(cert));
     }
 }
 
@@ -249,16 +284,17 @@ pub(crate) fn call_worker_stop_callback(serv: view::Server<'_>, worker: Worker<'
     if swoole_rs_corebase::process::pool::bailout_pending() {
         return;
     }
-    let bus = bus(serv);
-    if !bus.is_empty() {
-        log::error_log(
-            WARNING,
-            SERVER_WORKER_UNPROCESSED_DATA,
-            c"Server::call_worker_stop_callback",
-            format_args!("unprocessed data in the worker process buffer"),
-        );
-        bus.clear();
-    }
+    with_bus(serv, |bus| {
+        if !bus.is_empty() {
+            log::error_log(
+                WARNING,
+                SERVER_WORKER_UNPROCESSED_DATA,
+                c"Server::call_worker_stop_callback",
+                format_args!("unprocessed data in the worker process buffer"),
+            );
+            bus.clear();
+        }
+    });
     worker_global_stopped();
 }
 
@@ -447,14 +483,15 @@ fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
     let Some(serv) = Reactor::running(reactor).server() else {
         return -1;
     };
-    let bus = bus(serv);
-    if event
-        .socket()
-        .is_some_and(|socket| bus.read(*socket) > Some(0))
-    {
-        accept_event(serv, &bus.rust().head());
-        bus.pop();
-    }
+    with_bus(serv, |bus| {
+        if event
+            .socket()
+            .is_some_and(|socket| bus.read(*socket) > Some(0))
+        {
+            accept_event(serv, &bus.rust().head(), Payload::Bus);
+            bus.pop();
+        }
+    });
     0
 }
 

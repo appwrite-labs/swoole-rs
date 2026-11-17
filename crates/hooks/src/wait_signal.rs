@@ -234,7 +234,7 @@ fn wait_signal(
 /// System's signal operations: registration through the signal table (on the loop's
 /// thread under thread contexts), the reactor's exit condition and the coroutine.
 static NATIVE: SignalOps = SignalOps {
-    current: crate::wait_event::native::current,
+    current: swoole_rs_corebase::coroutine::current_safe,
     busy: native::busy,
     listen: native::listen,
     waiting: native::waiting,

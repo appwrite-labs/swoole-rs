@@ -47,10 +47,9 @@ impl<T> Channel<T> {
     pub fn queue(&self) -> Option<Queue<T>> {
         let queue = self.0.take();
         let copy = queue.clone();
-        // Still empty: cloning an `Rc` runs no code, so nothing filled the slot.
         #[expect(
             clippy::mem_forget,
-            reason = "the slot is still empty, so there is nothing to release"
+            reason = "Rc cloning cannot re-enter, so the hot path can omit CellExt::with_taken's displaced-value drop"
         )]
         mem::forget(self.0.replace(queue));
         copy

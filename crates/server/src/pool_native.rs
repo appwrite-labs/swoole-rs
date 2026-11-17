@@ -44,7 +44,7 @@ use swoole_rs_corebase::timer::{
     swoole_timer_select,
 };
 use swoole_rs_corebase::tls::socket_pair::{self, SocketPair, unix_socket};
-use swoole_rs_corebase::tls::upstream::{self, read_sync_fill, recv_sync_fill, socket_free};
+use swoole_rs_corebase::tls::upstream::{self, socket_free};
 
 /// `swoole::ProtocolType`, `SW_FD_PIPE`, `SW_EVENT_READ`,
 /// `SW_EVENTLOOP_WAIT_EXIT` and the `Channel` flags.
@@ -81,22 +81,21 @@ fn bus_read(pool: Pool<'_>, sock: Option<Heap<'_>>) -> Option<usize> {
     sock.and_then(|sock| with_bus(pool, |bus| bus.read(*sock)).flatten())
 }
 
-/// `onMessage` with the bus's packet, then `message_bus->pop()`.
+/// `onMessage` with the bus's packet, taken out of the bus meanwhile (`onMessage`
+/// may take it), then `message_bus->pop()`.
 fn bus_deliver(pool: Pool<'_>) {
-    let Some((info, packet)) = with_bus(pool, |bus| (bus.head(), bus.packet())) else {
+    let taken = with_bus(pool, |bus| (bus.head(), bus.rust().take_packet()));
+    let Some((info, mut packet)) = taken else {
         return;
     };
-    let data = if packet.data.is_null() {
-        &[][..]
-    } else {
-        // SAFETY: the bus's packet, `length` bytes it keeps until it pops or reads
-        // again, which only this worker's loop does, once `onMessage` returns.
-        unsafe { core::slice::from_raw_parts(packet.data.cast::<u8>(), packet.length) }
-    };
-    pool.call_on_message(&RecvData::new(info, data));
-    if !process::pool::bailout_pending() {
-        PoolBus::with_pool(pool, |bus| bus.parts().0.pop());
-    }
+    pool.call_on_message(&mut packet.receive(info));
+    PoolBus::with_pool(pool, |bus| {
+        let bus = bus.parts().0;
+        bus.restore(packet);
+        if !process::pool::bailout_pending() {
+            bus.pop();
+        }
+    });
 }
 
 /// The pool's new bus, owned, or None when its counter can't be allocated.
@@ -220,15 +219,15 @@ fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
     let Some(pool) = LOOP_POOL.get() else {
         return 0;
     };
-    let (packet, size) = pool.ipc_packet();
-    if packet.is_null() {
+    let mut packet = pool.take_ipc_packet();
+    if packet.is_empty() {
         return 0;
     }
-    let size = size.min(pool.max_packet_size() as usize);
-    // SAFETY: the zeroed buffer the worker's loop allocated, at least `size` bytes,
-    // which only this handler fills and nothing borrows meanwhile.
-    let packet = unsafe { core::slice::from_raw_parts_mut(packet.cast::<u8>(), size) };
-    let n = swoole_rs_corebase::sys::read(fd(event.socket()), packet);
+    let size = packet.len().min(pool.max_packet_size() as usize);
+    let n = swoole_rs_corebase::sys::read(
+        fd(event.socket()),
+        packet.get_mut(..size).unwrap_or_default(),
+    );
     if n.is_none() && errno() != libc::EINTR {
         log::sys_warning(
             c"ProcessPool::recv_packet",
@@ -241,7 +240,8 @@ fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
     };
     // The bytes read: none when the read failed.
     let read = packet.get(..n.unwrap_or(0)).unwrap_or_default();
-    pool.call_on_message(&RecvData::new(info, read));
+    pool.call_on_message(&mut RecvData::new(info, read));
+    pool.restore_ipc_packet(packet);
     0
 }
 
@@ -581,10 +581,10 @@ impl PoolNative for Native {
     fn recv(&self, c: &mut PoolCall) {
         io(c, |c| {
             let flags = c.flags();
-            let (connection, buffer) = c.connection_fill();
+            let (connection, buffer) = c.connection_buffer();
             connection
                 .and_then(connection_socket)
-                .and_then(|socket| recv_sync_fill(socket, buffer, flags))
+                .and_then(|socket| upstream::recv_sync(socket, buffer, flags))
                 .map_or(-1, usize::cast_signed)
         });
     }
@@ -617,7 +617,7 @@ impl PoolNative for Native {
                 pipe.timeouts
                     .set(timeout, swoole_rs_corebase::reactor::TimeoutKind::READ);
             });
-            read_sync_fill(*pipe, c.connection_fill().1).map_or(-1, usize::cast_signed)
+            upstream::read_sync(*pipe, c.connection_buffer().1).map_or(-1, usize::cast_signed)
         });
     }
 
@@ -672,7 +672,8 @@ impl PoolNative for Native {
             reactor_id: -1,
             ..DataHead::default()
         };
-        c.pool().call_on_message(&RecvData::new(info, c.bytes()));
+        c.pool()
+            .call_on_message(&mut RecvData::new(info, c.bytes()));
     }
 
     fn shutdown(&self, c: &PoolCall) {

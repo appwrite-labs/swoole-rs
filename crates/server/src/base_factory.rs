@@ -65,6 +65,17 @@ impl<'a> SendData<'a> {
         }
     }
 
+    /// `info` over the lent `data`: [`SendData::new`], or [`SendData::empty`] (its
+    /// `len` 0) without bytes.
+    #[must_use]
+    pub fn lent(info: DataHead, data: &'a [u8]) -> Self {
+        if data.is_empty() {
+            Self::empty(DataHead { len: 0, ..info })
+        } else {
+            Self::new(info, data)
+        }
+    }
+
     /// The event's head.
     #[must_use]
     pub fn info(&self) -> &DataHead {
@@ -314,7 +325,8 @@ fn receive_as(serv: view::Server<'_>, task: &SendData, dgram: bool, worker: Work
         }
         c.set_last_dispatch_time(task.info.time);
     }
-    let mut recv = *task;
+    // The head as it is, a block copy: the payload is already `len` bytes.
+    let mut recv = crate::reactor_entry::RecvData::within(task.info, task.payload());
     if task.info.len > 0 {
         recv.set_flags(DATA_PTR | (task.info.flags & POP_PTR));
     }
@@ -323,7 +335,7 @@ fn receive_as(serv: view::Server<'_>, task: &SendData, dgram: bool, worker: Work
     } else {
         ReceiveSlot::Receive
     };
-    let result = state.callbacks.receive(slot, serv, &recv);
+    let result = state.callbacks.receive(slot, serv, &mut recv);
     if swoole_rs_corebase::process::pool::bailout_pending() {
         return false;
     }
@@ -524,8 +536,8 @@ mod tests {
         HEARD.with_borrow_mut(core::mem::take)
     }
 
-    fn on_receive(_: view::Server<'_>, data: &RecvData) -> c_int {
-        let i = data.info;
+    fn on_receive(_: view::Server<'_>, data: &mut RecvData<'_>) -> c_int {
+        let i = data.info();
         HEARD.with_borrow_mut(|h| h.push((i.kind, i.fd, i.reactor_id, i.flags, i.len)));
         0
     }
@@ -534,13 +546,17 @@ mod tests {
         HEARD.with_borrow_mut(|h| h.push((4, i.fd, i.reactor_id, i.flags, i.len)));
     }
 
+    /// An event of `len` bytes.
     fn send(fd: c_long, kind: ServerEvent, len: u32) -> SendData<'static> {
-        SendData::empty(DataHead {
+        let head = DataHead {
             fd,
             kind: kind.code(),
-            len,
             ..DataHead::default()
-        })
+        };
+        if len == 0 {
+            return SendData::empty(head);
+        }
+        SendData::new(head, &[b'x'; 16][..len as usize])
     }
 
     #[test]

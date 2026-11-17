@@ -846,7 +846,7 @@ pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool) -> bool {
 
 /// `swoole_http2_server_onReceive`: an async server's data on an HTTP/2
 /// connection, whose session (and settings context) the first data makes.
-fn on_receive(view: view::Server<'_>, conn: Connection<'_>, request: &RecvData) -> bool {
+fn on_receive(view: view::Server<'_>, conn: Connection<'_>, request: &mut RecvData<'_>) -> bool {
     let session_id = request.info().fd;
     let session = SessionState::find(session_id).or_else(|| {
         let default_ctx = Ctx::server_context(view, session_id);

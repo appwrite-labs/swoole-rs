@@ -183,13 +183,12 @@ fn body(share: &SharedServer, id: u32, kind: WorkerType, fresh: swoole_rs_coreba
     set_worker_type(kind);
     swoole_set_worker_id(id);
     swoole_set_worker_pid(pid);
-    // The thread's own bus, which outlives its use as the thread's below.
-    let bus = matches!(kind, WorkerType::Task | WorkerType::User).then(|| Box::new(new_bus(serv)));
-    if let Some(bus) = &bus {
-        init_bus(serv, bus);
-        swoole_rs_corebase::set_thread_message_bus(
-            core::ptr::from_ref::<PoolBus>(bus).cast_mut().cast(),
-        );
+    // The thread's own bus, which it drops as it ends.
+    let own = matches!(kind, WorkerType::Task | WorkerType::User);
+    if own {
+        let bus = Rc::new(new_bus(serv));
+        init_bus(serv, &bus);
+        crate::objects::set_thread_bus(Some(crate::objects::ThreadBus::Own(bus)));
     }
     let worker = (kind != WorkerType::Manager).then(|| {
         let worker = serv.worker_record(slot);
@@ -221,10 +220,9 @@ fn body(share: &SharedServer, id: u32, kind: WorkerType, fresh: swoole_rs_coreba
         }
         None => run_main(serv, slot, kind),
     }
-    if bus.is_some() {
-        swoole_rs_corebase::set_thread_message_bus(core::ptr::null_mut());
+    if own {
+        crate::objects::set_thread_bus(None);
     }
-    drop(bus);
     if worker.is_some() {
         factory.push(Wake::Exited(slot));
     } else {

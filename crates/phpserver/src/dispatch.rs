@@ -235,17 +235,17 @@ pub(crate) fn used(args: &[Owned], argc: usize) -> &[Owned] {
 /// Move the event or data into its slot, without another reference or allocation.
 fn receive_args(
     server: view::Server<'_>,
-    request: &RecvData,
+    request: &mut RecvData<'_>,
     event_object: bool,
 ) -> ([Owned; 4], usize) {
     let info = request.info();
-    let (fd, reactor_id) = (info.fd, i64::from(info.reactor_id));
+    let (fd, reactor_id, time) = (info.fd, i64::from(info.reactor_id), info.time);
     if event_object {
         let mut event = Owned::default();
         let props = Props::init(&mut event, &DATA[EVENT]);
         props.long(c"fd", fd);
         props.long(c"reactor_id", reactor_id);
-        props.double(c"dispatch_time", info.time);
+        props.double(c"dispatch_time", time);
         props.set(c"data", &php_swoole_get_recv_data(server, request));
         ([zserv(), event, Owned::default(), Owned::default()], 2)
     } else {
@@ -509,9 +509,8 @@ pub(crate) fn stop_if_bailed() {
 const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 
-/// `RecvData`: the event's head, then its payload. Native code lends each
-/// receive slot its request for the call; its fields are private, so safe code
-/// can't make one whose payload pointer and length disagree.
+/// `RecvData`: the event's head, then its payload, which a receive slot may take
+/// when the message owns it.
 pub use swoole_rs_server::reactor_entry::RecvData;
 
 fn port_callback(server: view::Server<'_>, server_fd: u16, kind: PortCallback) -> Option<Callable> {
@@ -621,9 +620,9 @@ fn on_pipe_message_slot(server: view::Server<'_>, message: Packed<'_>) {
 
 /// `php_swoole_server_onReceive`: the port's `onReceive`, if any (and
 /// crates/phphttp's fallback).
-pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &RecvData) {
-    let info = request.info();
-    let Some(cb) = port_callback(server, info.server_fd, PortCallback::Receive) else {
+pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &mut RecvData<'_>) {
+    let (fd, server_fd) = (request.info().fd, request.info().server_fd);
+    let Some(cb) = port_callback(server, server_fd, PortCallback::Receive) else {
         return;
     };
     let config = server.config();
@@ -631,7 +630,7 @@ pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &RecvData
     let argv = Zvals::owned(&owned).take(argc);
     let called = call_argv(&cb, argv, config.enable_coroutine.get(), "onReceive");
     if called == Called::Failed {
-        server_methods::close(server, info.fd, false);
+        server_methods::close(server, fd, false);
     }
     // Server::start keeps the server alive even when the callback bails out.
     let [object, args @ ..] = owned;
@@ -640,7 +639,7 @@ pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &RecvData
     relay(bailed);
 }
 
-fn on_receive(server: view::Server<'_>, request: &RecvData) -> c_int {
+fn on_receive(server: view::Server<'_>, request: &mut RecvData<'_>) -> c_int {
     php_swoole_server_on_receive(server, request);
     SW_OK
 }
@@ -648,7 +647,7 @@ fn on_receive(server: view::Server<'_>, request: &RecvData) -> c_int {
 /// crates/phphttp's `Swoole\Http\Server` hooks, which crates/ffi registers.
 pub struct HttpHooks {
     /// `php_swoole_http_server_onReceive`: whether it succeeded.
-    pub on_receive: fn(view::Server<'_>, &RecvData) -> bool,
+    pub on_receive: fn(view::Server<'_>, &mut RecvData<'_>) -> bool,
     /// `php_swoole_http_server_onClose`.
     pub on_close: fn(view::Server<'_>, &DataHead),
     /// `swoole_http_server_can_cache_session_addr`.
@@ -667,13 +666,13 @@ pub(crate) fn http() -> Option<&'static HttpHooks> {
     HTTP.get().copied()
 }
 
-fn on_http_receive(server: view::Server<'_>, request: &RecvData) -> c_int {
+fn on_http_receive(server: view::Server<'_>, request: &mut RecvData<'_>) -> c_int {
     code(http().is_none_or(|http| (http.on_receive)(server, request)))
 }
 
 /// `php_swoole_redis_server_onReceive`: Redis ports parse the request in
 /// crates/phpredis, others take the plain `onReceive`.
-fn on_redis_receive(server: view::Server<'_>, request: &RecvData) -> c_int {
+fn on_redis_receive(server: view::Server<'_>, request: &mut RecvData<'_>) -> c_int {
     let fd = request.info().fd;
     let Some(conn) = server.by_session(fd) else {
         log::warning(
@@ -701,8 +700,9 @@ fn on_redis_receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     code(result.unwrap_or(false))
 }
 
-fn on_packet_slot(server: view::Server<'_>, request: &RecvData) -> c_int {
-    let Some((socket_type, socket_addr, data)) = request.datagram() else {
+fn on_packet_slot(server: view::Server<'_>, request: &mut RecvData<'_>) -> c_int {
+    let datagram = swoole_rs_server::reactor_entry::datagram(request.payload());
+    let Some((socket_type, socket_addr, data)) = datagram else {
         return SW_ERR;
     };
     let info = request.info();
@@ -992,7 +992,7 @@ fn call_unlimited(
 fn on_dispatch(
     server: view::Server<'_>,
     conn: Option<Connection<'_>>,
-    send: Option<&RecvData>,
+    send: Option<&swoole_rs_server::SendData<'_>>,
 ) -> c_int {
     let config = server.config();
     // Its own reference for the call: the `Rc` inside is only read, so a thread-mode

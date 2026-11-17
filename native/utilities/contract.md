@@ -3,9 +3,9 @@
 Feature bit 512 (`utilities`). This directory's `swoole_log.h`, `swoole_hash.h`
 and `swoole_version.h` replace upstream's and keep what C++ and the utilities gates use; nothing built includes upstream's
 `swoole_util.h`. `swoole_log.h` keeps the levels, the fatal-error forwarder and the
-compiled-off trace macro: no C++ left logs through `swoole::Logger` or the other log macros. Nothing
-C++ calls is declared here: the spinlock and the futex wait/wake are Rust's, called by path. Tests:
-`tests/modules/utilities/README.md`. Depends on the locks module for wait/wake.
+compiled-off trace macro: no C++ left logs through `swoole::Logger` or the other log macros. The C++ hash-originals fixture imports all four functions in `swoole_hash.h`
+because it compiles the pinned hash GoogleTests together. Its runtime filter selects
+`hash.php` and `hash.jenkins`. Rust callers use the spinlock and futex operations directly.
 
 ## General rules
 

@@ -91,10 +91,16 @@ pub use socket_record::*;
 pub mod event_api;
 #[cfg(unix)]
 pub mod reactor_upstream;
+#[cfg(all(unix, feature = "upstream-symbols"))]
+pub mod readiness;
 #[cfg(unix)]
 pub mod signal_upstream;
+#[cfg(all(unix, feature = "upstream-symbols"))]
+pub mod socket_poll;
 #[cfg(unix)]
 pub mod socket_upstream;
+#[cfg(all(unix, feature = "upstream-symbols"))]
+pub mod wait_event;
 #[cfg(all(unix, feature = "upstream-symbols"))]
 pub mod wait_upstream;
 

@@ -888,17 +888,26 @@ fn dispatch(
 /// `swoole_websocket_onMessage`: a frame `Server::dispatch_frame` delivered,
 /// answered by policy or handed to `onMessage` as a Frame. A bailout in the
 /// handler is raised last, over this frame only.
-pub(crate) fn on_message(server: view::Server<'_>, request: &RecvData) -> bool {
-    let result = message(server, request);
+pub(crate) fn on_message(
+    server: view::Server<'_>,
+    fd: zend_long,
+    request: &mut RecvData<'_>,
+) -> bool {
+    let result = message(server, fd, request);
     let ok = *result.as_ref().unwrap_or(&true);
     bailout::defer(result.map(|_| ()));
     host::stop_if_bailed();
     ok
 }
 
-fn message(view: view::Server<'_>, request: &RecvData) -> Result<bool, bailout::Bailout> {
+/// `fd` is the frame's session.
+fn message(
+    view: view::Server<'_>,
+    fd: zend_long,
+    request: &mut RecvData<'_>,
+) -> Result<bool, bailout::Bailout> {
     let info = request.info();
-    let (fd, server_fd, ext_flags) = (info.fd, c_int::from(info.server_fd), info.ext_flags);
+    let (server_fd, ext_flags) = (c_int::from(info.server_fd), info.ext_flags);
     let server = view;
     let Some(settings) = port_frames(server, fd) else {
         return Ok(false);
