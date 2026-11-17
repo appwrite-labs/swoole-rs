@@ -31,7 +31,6 @@ pub(crate) extern "C-unwind" fn swoole_init() {
             swoole_rs_timer::add_fn_sec(timeout, false, move || f(arg))
                 .map_or(0, swoole_rs_timer::Held::id)
         },
-        timer_is_available: || swoole_rs_timer::swoole_timer_is_available(),
         timer_clear: |id| _ = swoole_rs_timer::swoole_timer_clear(id),
         async_threads_ensure: || _ = swoole_rs_hooks::async_threads::ensure(),
         event_init: |flags| swoole_rs_reactor::swoole_event_init(flags),
