@@ -1,6 +1,4 @@
-//! `Swoole\Process`: registration, objects and methods. Each method mirrors
-//! upstream's ZPP block and checks, then works on the object's `Worker` through
-//! the host table.
+//! Registration, object state and method handlers for `Swoole\Process`.
 use crate::{
     host::{self, Callable},
     report::{INVALID_PARAMS, cli, errno, fatal, notice, set_errno, set_last_error, sys},
