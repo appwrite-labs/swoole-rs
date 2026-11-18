@@ -9,6 +9,7 @@ use swoole_rs_zend::{Minit, Mshutdown, pdo::Driver};
 unsafe extern "C" {
     /// The bundled driver (`thirdparty/php*/pdo_pgsql/pgsql_driver.c`).
     safe static swoole_pdo_pgsql_driver: Driver;
+    safe fn pdo_pgsql_bind_subclass();
 }
 
 /// `PDO_ATTR_DRIVER_SPECIFIC`, `PDO_PGSQL_ATTR_DISABLE_PREPARES`'s value.
@@ -37,7 +38,10 @@ pub fn minit(minit: &Minit) {
     pdo.unregister(&swoole_pdo_pgsql_driver);
     // A bailout (`E_ERROR` for a driver built against another PDO API) is raised
     // from this outermost Rust frame.
-    swoole_rs_zend::bailout::defer(pdo.register(&swoole_pdo_pgsql_driver));
+    match pdo.register(&swoole_pdo_pgsql_driver) {
+        Ok(()) => pdo_pgsql_bind_subclass(),
+        Err(error) => error.defer(),
+    }
 }
 
 /// `php_swoole_pgsql_mshutdown`.

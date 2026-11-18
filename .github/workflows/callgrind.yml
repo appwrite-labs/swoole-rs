@@ -105,6 +105,9 @@ jobs:
       - name: Build cargo engine
         id: engine
         run: python3 tools/build_ext.py --profile release-lto ${{ matrix.configure }}
+      - name: Check PostgreSQL COPY and large objects
+        if: matrix.postgres
+        run: php -n -d extension=pdo -d extension=pdo_sqlite -d extension=curl -d extension=target/ext/swoole.so tests/modules/hooks/pgsql_copy.php
       - name: Run callgrind workloads
         run: >
           python3 benchmarks/callgrind.py --requests 1000 --limits benchmarks/callgrind_limits
