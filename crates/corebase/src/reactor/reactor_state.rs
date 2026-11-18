@@ -3,7 +3,7 @@
 // (Swoole contributors).
 //! The `Reactor` object: its public fields and backend resources share one Rust
 //! lifetime, from its constructor and `swoole_event_init` to its destructor and
-//! `swoole_event_free`. The C++ class is methods over this state (`swoole_reactor.h`).
+//! `swoole_event_free`.
 use crate::reactor::wait_loop::BackendKind;
 use crate::reactor::{PollSnapshot, handlers::Handlers, registry::Registry};
 use libc::{c_int, c_void};
@@ -14,8 +14,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 pub type ReactorClose =
     extern "C-unwind" fn(crate::reactor::Running<'_>, crate::reactor::OwnedSocket) -> c_int;
 
-// `repr(C)`: C's `swr_v1_reactor_head` (`native/reactor/swoole_rs_reactor.h`).
-#[repr(C)]
 pub struct ReactorFields {
     pub kind: c_int,
     pub ptr: *mut c_void,
@@ -34,7 +32,6 @@ pub struct ReactorFields {
     pub max_socket: u32,
     pub last_malloc_trim_time: crate::sys::UnixSeconds,
     pub close: Option<ReactorClose>,
-    // Rust-only fields follow the native head. No native caller reads these.
     /// No queue until a task is deferred; detached before its callbacks run.
     pub defer_tasks: Option<crate::reactor::ReactorDeferred>,
     /// Callbacks run as the reactor is destroyed.
@@ -44,12 +41,8 @@ pub struct ReactorFields {
     pub future_task: Option<std::rc::Rc<dyn crate::reactor::event_api::CycleTask>>,
 }
 
-/// The C++ `Reactor` object (`swr_v1_reactor_head`, which the methods-only class
-/// extends): its prepared views of this state, then its public fields, then Rust's own.
-// `repr(C)`: begins with C's `swr_v1_reactor_head` (`native/reactor/swoole_rs_reactor.h`).
-#[repr(C)]
+/// The state owned by a live reactor.
 pub struct ReactorState {
-    pub(crate) head: ReactorPrepared,
     pub(crate) fields: ReactorFields,
     pub(crate) registry: Registry,
     pub(crate) handlers: Handlers,
@@ -65,16 +58,6 @@ pub struct ReactorState {
     /// Process-unique and nonzero: the mark a socket this registry names carries.
     pub(crate) serial: u32,
 }
-// swoole_rs_reactor.h asserts the same layout for swr_v1_reactor_head.
-const _: () = assert!(
-    std::mem::offset_of!(ReactorState, fields) == size_of::<ReactorPrepared>(),
-    "Reactor's fields follow its prepared views"
-);
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(
-    size_of::<ReactorPrepared>() == 32 && std::mem::offset_of!(ReactorFields, defer_tasks) == 64,
-    "swr_v1_reactor_head's layout"
-);
 
 /// The backend's output arrays, allocated once and zeroed, so each entry is a value
 /// the wait loop reads in place.
@@ -136,8 +119,6 @@ impl ReactorState {
         queues
     }
 }
-// `repr(C)`: the start of C's `swr_v1_reactor_head` (`native/reactor/swoole_rs_reactor.h`).
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ReactorPrepared {
     pub owner: *mut ReactorState,
@@ -147,9 +128,7 @@ pub struct ReactorPrepared {
 }
 
 impl ReactorPrepared {
-    /// The views of the `Reactor` at `reactor`, as its head holds them: a `Reactor`
-    /// is its state, so they are the addresses of the state's parts. Computing
-    /// them reads nothing; using them needs a live reactor.
+    /// Compute pointers to the state's parts without reading it. Using them requires a live reactor.
     #[must_use]
     pub fn of(reactor: *const c_void) -> Self {
         let owner = reactor.cast::<ReactorState>().cast_mut();
@@ -199,17 +178,9 @@ impl ReactorState {
     /// the backend `requested` selects open for `count` events, or not ready after
     /// logging the kernel's refusal. Allocation failure aborts (upstream's `bad_alloc`),
     /// as does a negative `count` (`bad_array_new_length`).
-    /// The head is set by [`crate::reactor::Running::leak`], once the caller is done with the
-    /// box.
     pub(crate) fn open(requested: c_int, count: c_int) -> Box<Self> {
         let (kind, opened) = select(requested);
         let mut owner = Box::new(Self {
-            head: ReactorPrepared {
-                owner: ptr::null_mut(),
-                fields: ptr::null_mut(),
-                registry: ptr::null_mut(),
-                handlers: ptr::null_mut(),
-            },
             fields: ReactorFields {
                 kind,
                 ptr: ptr::null_mut(),
@@ -381,7 +352,7 @@ pub fn swr_v1_reactor_delete(OwnedReactor(handle): OwnedReactor) {
         state.close_backend();
     });
     crate::hook::call(crate::hook::Hook::ReactorDestroy(handle));
-    // A disposer can defer again through the reactor's head (a PHP destructor calling
+    // A disposer can defer again through the reactor (a PHP destructor calling
     // `Event::defer`), so the queues are detached and freed until they stay empty, and
     // no reference to the state (a `Drop`'s `&mut self` included) is live meanwhile.
     loop {
@@ -732,7 +703,7 @@ pub(crate) mod tests {
     /// native effects.
     pub(crate) fn state(kind: c_int, count: c_int) -> ReactorPrepared {
         let reactor = crate::reactor::Running::leak(ReactorState::open(kind, count));
-        reactor.with(|state| state.head)
+        ReactorPrepared::of(reactor.as_ptr())
     }
     /// [`ReactorState::record`] with the test's socket.
     pub(crate) unsafe fn record(
@@ -758,10 +729,8 @@ pub(crate) mod tests {
         unsafe {
             let state = state(3, 4);
             let fields = state.fields;
-            assert_eq!(
-                state.owner.cast::<ReactorPrepared>(),
-                &raw mut (*state.owner).head
-            );
+            assert_eq!(state.registry, &raw mut (*state.owner).registry);
+            assert_eq!(state.handlers, &raw mut (*state.owner).handlers);
             assert_eq!(fields, &raw mut (*state.owner).fields);
             assert_eq!((*fields).kind, 3);
             assert!((*fields).ready);

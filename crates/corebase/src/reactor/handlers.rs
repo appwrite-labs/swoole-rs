@@ -80,19 +80,13 @@ impl Running<'_> {
         }
     }
 
-    /// The handle of a reactor just made from `owner`, on this thread, its head set
-    /// to the views of where it now stays: live until `swr_v1_reactor_delete` of its
-    /// one owner, and borrowed by no reference. The views come from the handle's
-    /// pointer, which every later borrow derives from too.
+    /// Keep the reactor at a stable address until its owner calls `swr_v1_reactor_delete`.
     #[cfg(unix)]
     pub(crate) fn leak(owner: Box<crate::reactor::ReactorState>) -> Running<'static> {
-        let reactor = Running {
+        Running {
             raw: Box::into_raw(owner).cast(),
             live: PhantomData,
-        };
-        let head = crate::reactor::ReactorPrepared::of(reactor.raw);
-        reactor.with(|state| state.head = head);
-        reactor
+        }
     }
 
     #[must_use]
