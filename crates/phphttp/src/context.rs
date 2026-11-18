@@ -424,6 +424,7 @@ unsafe extern "C" {
 /// [`Release::finish`]'s. The response is released even after the request's
 /// bailout, so the context is freed, and the bailout is deferred first, so the
 /// response's free hooks call no PHP code.
+// `repr(C)`: C's `swr_zend_http_release` (`crates/zend-sys/src/shim_http_ctx.h`), which the shim reads.
 #[repr(C)]
 pub(crate) struct Release {
     request: *mut zval,

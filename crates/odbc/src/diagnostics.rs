@@ -9,6 +9,7 @@ use crate::{Handle, Statement, driver::swr_odbc_connection};
 
 /// The `pdo_odbc_errinfo` record from `php_pdo_odbc_int.h`. File and operation names are static
 /// C literals, including for errors originating in the statement callbacks.
+// `repr(C)`: C's `pdo_odbc_errinfo` (`native/hooks/php_pdo_odbc_int.h`).
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct ErrorInfo {

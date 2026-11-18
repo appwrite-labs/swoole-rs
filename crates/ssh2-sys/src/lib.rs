@@ -16,6 +16,7 @@ use std::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void};
 macro_rules! opaque {
     ($($name:ident),*) => {$(
         /// Only ever passed by pointer.
+        // `repr(C)`: libssh2's opaque types.
         #[repr(C)]
         pub struct $name {
             _opaque: [u8; 0],

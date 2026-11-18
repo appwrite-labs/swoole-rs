@@ -9,6 +9,7 @@ use swoole_rs_zend::{
 
 /// The headers' and libraries' versions (native/phphelpers/host.c), with no
 /// PHP output or row policy: static strings, or none.
+// `repr(C)`: C's `swr_phpswoole_versions` (`native/phphelpers/host.c`), which fills it.
 #[repr(C)]
 #[derive(Default)]
 pub(crate) struct Info {

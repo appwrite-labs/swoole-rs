@@ -84,6 +84,7 @@ pub struct VersionArg(*mut c_void);
 
 /// One database's part of a transaction (`why.cpp`'s `TEB`, the vector
 /// `isc_start_multiple` reads): its handle, and its TPB with the TPB's length.
+// `repr(C)`: Firebird's transaction existence block, which `isc_start_multiple` reads.
 #[repr(C)]
 pub struct Teb {
     pub database: Handle,

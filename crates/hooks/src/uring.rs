@@ -216,6 +216,7 @@ fn ring_entries(configured: u32) -> u32 {
 
 /// `siginfo_t`'s `_sigchld` member: the child, its user and its status (then its
 /// times, which nothing reads). Its `long`s align it as the kernel's union is.
+// `repr(C)`: the kernel's `siginfo_t` child fields, which `waitid` fills.
 #[repr(C)]
 #[derive(Default)]
 struct Child {
@@ -227,6 +228,7 @@ struct Child {
 
 /// The `siginfo_t` `IORING_OP_WAITID` fills, read as a waited child's: the code, then
 /// the union as [`Child`], padded to the kernel's size, all plain integers.
+// `repr(C)`: the kernel's `siginfo_t`, which `waitid` fills.
 #[repr(C)]
 #[derive(Default)]
 struct ChildInfo {

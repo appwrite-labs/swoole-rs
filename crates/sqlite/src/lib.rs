@@ -26,12 +26,14 @@ use std::{
 use swoole_rs_corebase::sys::Text;
 
 /// `sqlite3`, only ever passed by pointer here.
+// `repr(C)`: SQLite's opaque connection.
 #[repr(C)]
 pub struct Sqlite3 {
     _opaque: [u8; 0],
 }
 
 /// `sqlite3_stmt`, only ever passed by pointer here.
+// `repr(C)`: SQLite's opaque statement.
 #[repr(C)]
 pub struct Sqlite3Stmt {
     _opaque: [u8; 0],

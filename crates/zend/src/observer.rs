@@ -35,6 +35,7 @@ impl<'a> Observed<'a> {
 }
 
 /// `zend_observer_fcall_handlers`, with the entries typed as what Zend passes them.
+// `repr(C)`: returned by value to Zend as `zend_observer_fcall_handlers`.
 #[repr(C)]
 struct Handlers {
     begin: Option<extern "C" fn(Observed<'_>)>,
