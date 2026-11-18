@@ -945,7 +945,6 @@ dependencies = [
  "swoole-rs-crc32",
  "swoole-rs-error",
  "swoole-rs-framing",
- "swoole-rs-hooks",
  "swoole-rs-http",
  "swoole-rs-oracle",
 ]
