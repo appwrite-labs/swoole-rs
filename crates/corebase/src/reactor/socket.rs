@@ -502,13 +502,13 @@ fn leave_reactor(socket: Socket<'_>) {
     }
 }
 
-/// Deletes `socket` from the thread's reactor, whose serial is `mark`, as it is freed:
+/// Deletes `socket` from the thread's reactor (or the one `swoole_event_free` is
+/// deleting, which the thread no longer names), whose serial is `mark`, as it is freed:
 /// from the kernel too while its descriptor is still the one registered, quietly, since
 /// it may be closed already; then from the registry wherever it names the record.
 fn deregister(socket: Socket<'_>, mark: u32) {
-    let Some(reactor) =
-        crate::reactor::event_api::running().filter(|reactor| reactor.serial() == mark)
-    else {
+    let reactor = crate::reactor::event_api::running().or_else(crate::reactor::deleting);
+    let Some(reactor) = reactor.filter(|reactor| reactor.serial() == mark) else {
         crate::fatal("a socket was freed while registered with a reactor other than this thread's");
     };
     let (fd, removed) = socket.read(|record| (record.fd, record.removed));

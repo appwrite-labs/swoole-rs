@@ -471,20 +471,24 @@ mod tests {
 
     impl Drop for Dropped {
         fn drop(&mut self) {
-            push(self.0);
+            // Dropped as `swoole_event_free` deletes the reactor: the thread names
+            // none, and none is made meanwhile.
+            let refused = crate::thread_reactor().is_null()
+                && crate::reactor::swoole_event_deleting()
+                && crate::reactor::swoole_event_init(0) == -1;
+            push(if refused { self.0 } else { "reached" });
         }
     }
 
     #[test]
     fn freeing_the_reactor_drops_its_cycle_tasks() {
-        let state = crate::reactor::reactor_state::tests::state(3, 1);
-        crate::set_thread_reactor(state.owner.cast());
+        assert_eq!(crate::reactor::swoole_event_init(0), 0);
         swoole_event_cycle(false, Some(Rc::new(Dropped("idle"))));
         swoole_event_cycle(true, Some(Rc::new(Dropped("future"))));
         assert_eq!(take(), Vec::<String>::new());
-        crate::set_thread_reactor(std::ptr::null_mut());
-        unsafe { crate::reactor::reactor_state::tests::free(state.owner) };
+        assert!(crate::reactor::swoole_event_free());
         assert_eq!(take(), ["idle", "future"]);
+        assert!(!crate::reactor::swoole_event_deleting());
     }
 
     /// A cycle task that gives its reference up, then leaves the loop without

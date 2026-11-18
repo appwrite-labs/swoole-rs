@@ -20,9 +20,15 @@ pub(super) fn init() -> Result<bool, Bailout> {
         native::fatal(E_ERROR, refusal)?;
         return Ok(false);
     }
-    if !has_reactor() && !native::create() {
-        native::fatal(E_ERROR, c"Unable to create event-loop reactor")?;
-        return Ok(false);
+    if !has_reactor() {
+        // None while the thread's reactor is deleted, as none after shutdown began.
+        if native::deleting() {
+            return Ok(false);
+        }
+        if !native::create() {
+            native::fatal(E_ERROR, c"Unable to create event-loop reactor")?;
+            return Ok(false);
+        }
     }
     swoole_rs_phpcoroutines::install_exit_condition();
     Ok(true)
@@ -34,9 +40,9 @@ pub(super) fn check(php: swoole_rs_zend::Php<'_>) -> Result<(), Bailout> {
     Ok(())
 }
 
-/// The event loop, made unless shutdown began.
+/// The event loop, made unless shutdown began or the thread's reactor is being deleted.
 pub(super) fn ensure() -> Result<(), Bailout> {
-    if !native::shutdown_begun() && !has_reactor() {
+    if !native::shutdown_begun() && !native::deleting() && !has_reactor() {
         init()?;
     }
     Ok(())
