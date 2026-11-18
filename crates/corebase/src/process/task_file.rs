@@ -87,16 +87,14 @@ impl PacketTask {
         }
     }
 
-    /// A tmpfile task's `PacketTask`, copied as upstream does: all but its last
-    /// byte, so the name stays NUL-terminated.
+    /// Copies the descriptor from the start of a task payload.
     fn read(from: &[u8]) -> Result<Self, TaskFileError> {
         let (length, name) = from
             .split_first_chunk()
             .ok_or(TaskFileError::Short { read: from.len() })?;
-        let mut tmpfile = *name
+        let tmpfile = *name
             .first_chunk::<TASK_TMP_PATH_SIZE>()
             .ok_or(TaskFileError::Short { read: from.len() })?;
-        tmpfile[TASK_TMP_PATH_SIZE - 1] = 0;
         Ok(Self {
             length: usize::from_ne_bytes(*length),
             tmpfile,
@@ -393,10 +391,26 @@ impl<'a> Packed<'a> {
         'a: 'b,
     {
         let (payload, flags) = (self.payload(), self.head().ext_flags);
-        if !TaskFlag::from_bits(flags).contains(TaskFlag::SW_TASK_TMPFILE) {
+        let spilled = TaskFlag::from_bits(flags).contains(TaskFlag::SW_TASK_TMPFILE);
+        let malformed = |message| {
+            log::error_log(
+                log::LogLevel::SW_LOG_WARNING,
+                swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_MALFORMED_DATA as c_int,
+                c"Server::task_unpack",
+                format_args!("{message}"),
+            );
+            None
+        };
+        if payload.len() > IPC_PAYLOAD || (spilled && payload.len() != size_of::<PacketTask>()) {
+            return malformed("invalid task packet length");
+        }
+        if !spilled {
             return Some((payload, flags));
         }
         let pkg = PacketTask::read(payload).ok()?;
+        let Ok(path) = CStr::from_bytes_until_nul(&pkg.tmpfile) else {
+            return malformed("unterminated task tmpfile path");
+        };
         if buffer.size() < pkg.length {
             buffer.extend(pkg.length);
         }
@@ -408,7 +422,7 @@ impl<'a> Packed<'a> {
         let mut read = Ok(());
         buffer.read_zeroed(pkg.length, |target| {
             read = read_file(
-                pkg.path(),
+                path,
                 target,
                 TaskFlag::from_bits(flags).contains(TaskFlag::SW_TASK_PEEK),
             );
@@ -419,7 +433,7 @@ impl<'a> Packed<'a> {
             Err(TaskFileError::Short { .. }) => return None,
             Err(TaskFileError::Open(error)) => {
                 crate::sys::set_errno(error);
-                let name = pkg.path().to_string_lossy();
+                let name = path.to_string_lossy();
                 log::sys_warning(c"Server::task_unpack", format_args!("open({name}) failed"));
                 return None;
             }
