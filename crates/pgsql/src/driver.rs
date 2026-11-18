@@ -69,7 +69,7 @@ pub struct Handle {
     lazy_fetch: Cell<bool>,
     /// Zend allocates resource IDs in creation order. Each stream unregisters on close.
     lob_streams: Cell<Vec<(zend_long, NonNull<c_void>)>>,
-    notice_callback: Cell<*mut c_void>,
+    notice_callback: Cell<Option<NonNull<c_void>>>,
     running_stmt: Cell<*mut c_void>,
 }
 
@@ -122,13 +122,11 @@ unsafe extern "C" {
 
 // PDO and Zend glue in `native/hooks/pgsql_driver.c`.
 unsafe extern "C" {
-    /// The methods table PDO calls, whose entries are the exports below and the C
-    /// statement preparer, driver methods and scanner.
+    /// PDO installs this version-specific table on a connected handle.
     safe static swoole_pdo_pgsql_methods: pdo_dbh_methods;
-    /// `_pdo_pgsql_notice`: the notice processor, which calls the callback the C
-    /// `pgsqlSetNoticeCallback` set (PHP 8.4+; before, it does nothing). Only libpq
-    /// calls it.
-    fn pdo_pgsql_notice(dbh: &Dbh, message: Text<'_>);
+    /// Zend invokes or releases a callable cache, including its trampoline.
+    safe fn pdo_pgsql_call_notice(callback: NonNull<c_void>, message: Text<'_>);
+    safe fn pdo_pgsql_release_notice(callback: NonNull<c_void>);
 }
 
 #[expect(
@@ -138,6 +136,7 @@ unsafe extern "C" {
 unsafe extern "C" {
     /// The handle's driver data, as the factory below set it, or none.
     safe fn swr_zend_pdo_driver_data(dbh: &Dbh) -> Option<&Handle>;
+    safe fn pdo_pgsql_take_handle(dbh: &Dbh) -> Option<Box<Handle>>;
 }
 
 /// The handle the factory made for `dbh`, if it is still open.
@@ -214,7 +213,7 @@ impl Handle {
             disable_prepares: Cell::new(false),
             lazy_fetch: Cell::new(false),
             lob_streams: Cell::default(),
-            notice_callback: Cell::new(ptr::null_mut()),
+            notice_callback: Cell::new(None),
             running_stmt: Cell::new(ptr::null_mut()),
         }
     }
@@ -384,11 +383,13 @@ fn raise(
 
 /// Close the handle's LOB streams, which may run PHP code: a bailout is deferred to
 /// the export's boundary.
-fn close_lob_streams(dbh: &Dbh) {
+fn close_lob_streams(dbh: &Dbh) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     unsafe extern "C" {
         safe fn pdo_pgsql_close_resource(resource: NonNull<c_void>);
     }
-    let Some(handle) = handle(dbh) else { return };
+    let Some(handle) = handle(dbh) else {
+        return Ok(());
+    };
     let mut before = None;
     loop {
         let next = handle.lob_streams.with_taken(|streams| {
@@ -401,11 +402,9 @@ fn close_lob_streams(dbh: &Dbh) {
         });
         let Some((id, resource)) = next else { break };
         before = Some(id);
-        if let Err(bailout) = contain_with(|| pdo_pgsql_close_resource(resource)) {
-            bailout.defer();
-            break;
-        }
+        contain_with(|| pdo_pgsql_close_resource(resource))?;
     }
+    Ok(())
 }
 
 /// `pdo_pgsql_transaction_cmd`.
@@ -537,14 +536,7 @@ extern "C" fn pdo_pgsql_connect(
     }
     dbh.set_methods(&swoole_pdo_pgsql_methods);
     if !connected {
-        unsafe extern "C" {
-            /// `pgsql_handle_closer`: free the LOB streams' table and the notice
-            /// callback, then hand the handle to [`pdo_pgsql_free`], which frees what
-            /// [`handle`] lends. Declared here, its one caller, which holds no lent
-            /// handle; a connection that failed has no LOB streams to close.
-            safe fn pdo_pgsql_handle_closer(dbh: &Dbh);
-        }
-        pdo_pgsql_handle_closer(dbh);
+        close_handle(dbh);
         return Connected::Failed;
     }
     Connected::Open
@@ -574,7 +566,7 @@ extern "C" fn pdo_pgsql_handle_doer(dbh: &Dbh, sql: &ZStr) -> zend_long {
     };
     PQclear(result);
     if in_transaction && !handle.in_transaction() {
-        close_lob_streams(dbh);
+        swoole_rs_zend::bailout::defer(close_lob_streams(dbh));
     }
     changed
 }
@@ -609,7 +601,7 @@ extern "C" fn pdo_pgsql_handle_commit(dbh: &Dbh) -> bool {
     };
     let committed = transaction(dbh, handle, c"COMMIT");
     if committed {
-        close_lob_streams(dbh);
+        swoole_rs_zend::bailout::defer(close_lob_streams(dbh));
     } else {
         dbh.set_in_txn(handle.in_transaction());
     }
@@ -621,7 +613,7 @@ extern "C" fn pdo_pgsql_handle_commit(dbh: &Dbh) -> bool {
 extern "C" fn pdo_pgsql_handle_rollback(dbh: &Dbh) -> bool {
     let rolled_back = handle(dbh).is_some_and(|handle| transaction(dbh, handle, c"ROLLBACK"));
     if rolled_back {
-        close_lob_streams(dbh);
+        swoole_rs_zend::bailout::defer(close_lob_streams(dbh));
     }
     rolled_back
 }
@@ -809,11 +801,22 @@ pub extern "C" fn pdo_pgsql_raise(
     );
 }
 
-/// The handle the C close hands back, with its driver data cleared: drop it, which
-/// finishes the connection.
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_free(handle: Box<Handle>) {
-    drop(handle);
+/// Close the stream resources before the callback and connection they can use.
+fn close_handle(dbh: &Dbh) {
+    let Some(handle) = handle(dbh) else { return };
+    if let Err(bailout) = close_lob_streams(dbh).and_then(|()| replace_notice(handle, None)) {
+        bailout.defer();
+        return;
+    }
+    drop(pdo_pgsql_take_handle(dbh));
+}
+
+swoole_rs_zend::exports! {
+    preserve_pending:
+    #[unsafe(no_mangle)]
+    extern "C" fn pdo_pgsql_handle_closer(dbh: &Dbh) {
+        close_handle(dbh);
+    }
 }
 
 /// Send borrowed input to COPY, appending a missing newline for array rows.
@@ -1098,6 +1101,7 @@ pub extern "C" fn pgsql_handle_preparer(dbh: &Dbh, sql: &ZStr, stmt: &Stmt, opti
         .and_then(|opts| opts.index(ATTR_PREFETCH.into()))
         .and_then(pdo::long_param)
         .map_or_else(|| handle.lazy_fetch.get(), |value| value == 0);
+    if swoole_rs_zend::bailout::pending() { return false; }
     let mut parsed = false;
     if let Err(failure) = contain_with(||parsed=pdo_pgsql_parse_statement(stmt, sql, emulate, unbuffered)) {
         failure.defer();
@@ -1132,7 +1136,7 @@ swoole_rs_zend::exports! {
     preserve_pending:
     #[unsafe(no_mangle)]
     extern "C" fn pdo_pgsql_close_lob_streams(dbh: &Dbh) {
-        close_lob_streams(dbh);
+        swoole_rs_zend::bailout::defer(close_lob_streams(dbh));
     }
 }
 
@@ -1329,20 +1333,32 @@ fn get_notify(call: &swoole_rs_zend::Call<'_>) {
     }
 }
 
-/// Callback Zend invokes for a PostgreSQL notice (PHP 8.4+).
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_notice_callback(handle: &Handle) -> *mut c_void {
-    handle.notice_callback.get()
+swoole_rs_zend::exports! {
+/// libpq calls this synchronously while receiving server messages.
+extern "C" fn pdo_pgsql_notice(dbh: &Dbh, message: Text<'_>) {
+    if let Some(callback) = handle(dbh).and_then(|handle| handle.notice_callback.get()) {
+        swoole_rs_zend::bailout::defer(contain_with(|| pdo_pgsql_call_notice(callback, message)));
+    }
 }
 
-/// Transfer the previous callback back to Zend for destruction. Install its
-/// replacement first because releasing a callable may run a PHP destructor.
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_replace_notice_callback(
+}
+
+fn replace_notice(
     handle: &Handle,
-    next: *mut c_void,
-) -> *mut c_void {
-    handle.notice_callback.replace(next)
+    next: Option<NonNull<c_void>>,
+) -> Result<(), swoole_rs_zend::bailout::Bailout> {
+    // A PHP destructor can replace the callback again while releasing the previous one.
+    if let Some(previous) = handle.notice_callback.replace(next) {
+        contain_with(|| pdo_pgsql_release_notice(previous))?;
+    }
+    Ok(())
+}
+
+swoole_rs_zend::exports! {
+    #[unsafe(no_mangle)]
+    extern "C" fn pdo_pgsql_replace_notice_callback(handle: &Handle, next: Option<NonNull<c_void>>) {
+        swoole_rs_zend::bailout::defer(replace_notice(handle, next));
+    }
 }
 
 /// `&H->running_stmt`: the C statement code's running unbuffered statement (PHP 8.5).

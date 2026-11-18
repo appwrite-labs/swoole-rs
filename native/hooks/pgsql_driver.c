@@ -23,46 +23,30 @@
 #include "ext/pdo/php_pdo_error.h"
 #include "pgsql_driver_arginfo.h"
 
-void pdo_pgsql_notice(void *context, const char *message) /* {{{ */
+/* Zend owns the callable cache and its version-specific trampoline. */
+void pdo_pgsql_call_notice(void *callback, const char *message)
 {
 #if PHP_VERSION_ID >= 80400
-	pdo_dbh_t * dbh = (pdo_dbh_t *)context;
-	zend_fcall_info_cache *fc = pdo_pgsql_notice_callback(dbh->driver_data);
-	if (fc) {
-		zval zarg;
-		ZVAL_STRING(&zarg, message);
-		zend_call_known_fcc(fc, NULL, 1, &zarg, NULL);
-		zval_ptr_dtor_str(&zarg);
-	}
+    zval argument;
+    ZVAL_STRING(&argument, message);
+    zend_call_known_fcc(callback, NULL, 1, &argument, NULL);
+    zval_ptr_dtor_str(&argument);
 #endif
 }
-/* }}} */
 
-#if PHP_VERSION_ID >= 80400
-static void replace_notice_callback(pdo_pgsql_db_handle *handle, zend_fcall_info_cache *next)
+void pdo_pgsql_release_notice(void *callback)
 {
-    zend_fcall_info_cache *previous = pdo_pgsql_replace_notice_callback(handle, next);
-    if (previous) {
-        zend_fcc_dtor(previous);
-        efree(previous);
-    }
-}
-/* }}} */
-
-#endif
-
-/* The handle's close: C's state (the LOB streams and their table, and the notice
- * callback), then the handle and its connection (pdo_pgsql_free). */
-void pdo_pgsql_handle_closer(pdo_dbh_t *dbh) {
-	pdo_pgsql_db_handle *H = (pdo_pgsql_db_handle *) dbh->driver_data;
-	if (H) {
-		pdo_pgsql_close_lob_streams(dbh);
 #if PHP_VERSION_ID >= 80400
-		replace_notice_callback(H, NULL);
+    zend_fcall_info_cache *cache = callback;
+    zend_fcc_dtor(cache);
+    efree(cache);
 #endif
-		dbh->driver_data = NULL;
-		pdo_pgsql_free(H);
-	}
+}
+
+pdo_pgsql_db_handle *pdo_pgsql_take_handle(pdo_dbh_t *dbh) {
+    pdo_pgsql_db_handle *handle = dbh->driver_data;
+    dbh->driver_data = NULL;
+    return handle;
 }
 
 /* PDO's statement layout and the driver's PHP-version-specific storage. */
@@ -126,7 +110,7 @@ PHP_METHOD(PDO_PGSql_Ext, pgsqlSetNoticeCallback)
         next = emalloc(sizeof(*next));
         zend_fcc_dup(next, &fcc);
     }
-    replace_notice_callback(H, next);
+    pdo_pgsql_replace_notice_callback(H, next);
 
 	return;
 

@@ -28,8 +28,7 @@
 
 void pdo_pgsql_register_lob(pdo_pgsql_db_handle *H, zend_long id, zend_resource *resource);
 void pdo_pgsql_unregister_lob(pdo_pgsql_db_handle *H, zend_long id);
-zend_fcall_info_cache *pdo_pgsql_notice_callback(pdo_pgsql_db_handle *H);
-zend_fcall_info_cache *pdo_pgsql_replace_notice_callback(pdo_pgsql_db_handle *H, zend_fcall_info_cache *next);
+void pdo_pgsql_replace_notice_callback(pdo_pgsql_db_handle *H, zend_fcall_info_cache *next);
 pdo_pgsql_stmt **pdo_pgsql_running_stmt(pdo_pgsql_db_handle *H);
 
 extern const pdo_driver_t pdo_pgsql_driver;
@@ -40,7 +39,6 @@ extern int pdo_pgsql_scanner(pdo_scanner_t *s);
 
 int pdo_pgsql_connect(pdo_dbh_t *dbh, const char *data_source, const char *username, const char *password,
                       zval *driver_options);
-void pdo_pgsql_free(pdo_pgsql_db_handle *H);
 zend_long pdo_pgsql_handle_doer(pdo_dbh_t *dbh, const zend_string *sql);
 zend_string *pdo_pgsql_handle_quoter(pdo_dbh_t *dbh, const zend_string *unquoted, enum pdo_param_type paramtype);
 bool pdo_pgsql_handle_begin(pdo_dbh_t *dbh);
@@ -54,8 +52,6 @@ zend_result pdo_pgsql_check_liveness(pdo_dbh_t *dbh);
 bool pdo_pgsql_handle_in_transaction(pdo_dbh_t *dbh);
 extern const struct pdo_dbh_methods swoole_pdo_pgsql_methods;
 
-/* Called by Rust: the notice processor, and the close on a failed connect. */
-void pdo_pgsql_notice(void *context, const char *message);
 void pdo_pgsql_handle_closer(pdo_dbh_t *dbh);
 
 #define pdo_pgsql_error(d, e, z) pdo_pgsql_raise(d, NULL, e, z, NULL)
