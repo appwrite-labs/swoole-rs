@@ -517,7 +517,7 @@ fn get(call: &Call) {
 }
 
 /// A key argument (`"s"` or `Z_PARAM_STRING`), or `RETURN_FALSE`.
-fn key(call: &Call) -> Option<&[u8]> {
+fn key<'c>(call: &'c Call<'_>) -> Option<&'c [u8]> {
     let key = call.arity(1, 1).and_then(|()| call.string(1, b""));
     if key.is_err() {
         call.set_bool(false);

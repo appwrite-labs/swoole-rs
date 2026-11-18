@@ -283,7 +283,7 @@ pub(crate) fn minit(minit: &Minit, sockets: bool) {
 }
 
 /// `$this`'s data: the class's methods are non-static, so `$this` is one of ours.
-fn data(call: &Call) -> Option<&PortData> {
+fn data<'c>(call: &'c Call<'_>) -> Option<&'c PortData> {
     call.custom().or_else(|| {
         invalid(call);
         None
@@ -298,7 +298,7 @@ fn invalid(call: &Call) {
 }
 
 /// The port's bound server; an `E_ERROR`, which does not return, when unbound.
-fn bound_server(call: &Call) -> Option<view::Server<'_>> {
+fn bound_server<'c>(call: &'c Call<'_>) -> Option<view::Server<'c>> {
     data(call)?.server().or_else(|| {
         invalid(call);
         None

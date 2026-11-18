@@ -397,7 +397,7 @@ impl<'a> ServerObject<'a> {
     }
 
     /// [`ServerObject::server`] of a Server method's `$this`, which the call holds.
-    pub(crate) fn this_server(call: &Call) -> Option<view::Server<'_>> {
+    pub(crate) fn this_server<'c>(call: &'c Call<'_>) -> Option<view::Server<'c>> {
         call.custom::<ServerData>()?
             .serv
             .get()

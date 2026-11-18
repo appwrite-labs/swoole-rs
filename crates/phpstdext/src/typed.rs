@@ -732,7 +732,7 @@ pub(crate) fn install(minit: &swoole_rs_zend::Minit) {
 }
 
 /// The typed array a builtin's first argument names, if it is one.
-fn typed_target(call: &Call) -> Option<Typed<'_>> {
+fn typed_target<'a>(call: &'a Call<'_>) -> Option<Typed<'a>> {
     // The array the by-reference argument refers to, which the builtin works
     // on in place.
     Typed::of(call.value(1)?.referred())

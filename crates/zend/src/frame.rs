@@ -1,8 +1,8 @@
-//! More of the call frame: optional ints, callables, nullable zvals, `$this` as a
-//! zval and string returns (crates/phpprocess).
+//! More of the call frame: optional ints, callables, nullable zvals and string
+//! returns (crates/phpprocess).
 use crate::{
     Call, Invalid, Value,
-    sys::{zend_execute_data, zend_fcall_info, zend_fcall_info_cache, zend_long, zval},
+    sys::{zend_fcall_info, zend_fcall_info_cache, zend_long},
 };
 use std::{ffi::c_int, io::IoSlice};
 
@@ -27,7 +27,7 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-impl Call {
+impl Call<'_> {
     /// `Z_PARAM_LONG_OR_NULL` of argument `n`: `None` when null or not passed.
     /// # Errors
     /// As [`Call::long`].
@@ -73,15 +73,6 @@ impl Call {
     #[inline]
     pub fn zval_or_null(&self, n: u32) -> Option<&crate::Value> {
         self.value(n).filter(|value| !value.is_null())
-    }
-
-    /// `ZEND_THIS`: the zval holding `$this`, in a non-static method.
-    #[must_use]
-    #[inline]
-    pub fn this_zval(&self) -> *mut zval {
-        self.frame
-            .wrapping_byte_add(std::mem::offset_of!(zend_execute_data, This))
-            .cast()
     }
 
     /// Swoole's `zend::json_decode` of `text[window]` into the return value,

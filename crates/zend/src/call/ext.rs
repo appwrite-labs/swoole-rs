@@ -28,7 +28,7 @@ unsafe extern "C" {
 
 }
 
-impl Call {
+impl Call<'_> {
     /// `zend_call_known_function(function, NULL, NULL, return_value, argc,
     /// argv, NULL)` under `zend_try`, into this call's return slot.
     /// # Errors
@@ -95,7 +95,7 @@ impl Call {
     #[must_use]
     pub fn take_run_time_cache(&self) -> *mut std::ffi::c_void {
         // The handler's live frame (`Call::new`).
-        crate::opcode::Executing(self.frame, std::marker::PhantomData).take_run_time_cache()
+        self.executing().take_run_time_cache()
     }
 
     /// `Z_PARAM_STR_OR_LONG` of argument `n`: `Ok(None)` when not passed,

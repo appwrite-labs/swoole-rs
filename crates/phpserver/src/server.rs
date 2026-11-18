@@ -45,7 +45,7 @@ pub(crate) fn invalid(name: &CStr) {
 }
 
 /// `$this`'s class name, for [`invalid`].
-pub(crate) fn this_class(call: &Call) -> &CStr {
+pub(crate) fn this_class<'c>(call: &'c Call<'_>) -> &'c CStr {
     call.class_name().unwrap_or_default()
 }
 
@@ -162,7 +162,7 @@ impl Custom for TaskData {
 }
 
 /// `$this`, a `Server\Task`; an `E_ERROR`, which does not return, otherwise.
-fn task(call: &Call) -> Option<&TaskData> {
+fn task<'c>(call: &'c Call<'_>) -> Option<&'c TaskData> {
     call.custom::<TaskData>().or_else(|| {
         invalid(this_class(call));
         None
@@ -188,7 +188,7 @@ pub(crate) fn task_bind(task: &Value, info: &DataHead) {
 }
 
 /// A `Server\Task`'s server; an `E_ERROR`, which does not return, when it has none.
-pub(crate) fn task_server(call: &Call) -> Option<view::Server<'_>> {
+pub(crate) fn task_server<'c>(call: &'c Call<'_>) -> Option<view::Server<'c>> {
     task(call)?.serv.get().map(SharedServer::view).or_else(|| {
         invalid(this_class(call));
         None
@@ -510,7 +510,7 @@ pub(crate) fn fatal(level: i32, message: &CStr) {
 
 /// `php_swoole_server_get_and_check_server(ZEND_THIS)`: an `E_ERROR`, which
 /// does not return, for a Server never constructed. The frames own nothing.
-pub(crate) fn server(call: &Call) -> Option<view::Server<'_>> {
+pub(crate) fn server<'c>(call: &'c Call<'_>) -> Option<view::Server<'c>> {
     crate::lifecycle::ServerObject::this_server(call).or_else(|| {
         invalid(this_class(call));
         None
@@ -529,7 +529,7 @@ pub(crate) fn new_iterator(serv: SharedServer, port: *mut c_void) -> swoole_rs_z
 /// `server(call)`, or `None` with a warning and `false` returned when the
 /// server is not running.
 #[inline]
-pub(crate) fn running(call: &Call) -> Option<view::Server<'_>> {
+pub(crate) fn running<'c>(call: &'c Call<'_>) -> Option<view::Server<'c>> {
     let serv = server(call)?;
     if serv.is_started() {
         return Some(serv);
@@ -539,7 +539,7 @@ pub(crate) fn running(call: &Call) -> Option<view::Server<'_>> {
 
 /// [`running`]'s warning and `false`, off its fast path.
 #[cold]
-fn not_running(call: &Call) -> Option<view::Server<'_>> {
+fn not_running<'c>(call: &'c Call<'_>) -> Option<view::Server<'c>> {
     fatal(E_WARNING, c"server is not running");
     call.set_bool(false);
     None
@@ -980,7 +980,7 @@ fn stop(call: &Call) {
 }
 
 /// `php_swoole_connection_iterator_get_and_check_ptr(ZEND_THIS)`.
-fn iterator(call: &Call) -> Option<(&Iterator, view::Server<'_>)> {
+fn iterator<'c>(call: &'c Call<'_>) -> Option<(&'c Iterator, view::Server<'c>)> {
     let bound = call.custom::<Iterator>();
     let bound = bound.and_then(|iterator| Some((iterator, iterator.serv.get()?.view())));
     bound.or_else(|| {

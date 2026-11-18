@@ -238,7 +238,7 @@ fn constructed(held: Option<&Held>) -> Option<&Held> {
 }
 
 /// `$this`'s constructed cookie.
-fn cookie(call: &Call) -> Option<&Held> {
+fn cookie<'c>(call: &'c Call<'_>) -> Option<&'c Held> {
     constructed(call.custom())
 }
 

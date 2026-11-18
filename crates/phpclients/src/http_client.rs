@@ -289,7 +289,7 @@ mod props {
 
     /// Writes on `$this`, a client method's object, under the client class;
     /// None in a static call.
-    pub(super) fn this(call: &Call) -> Option<Props<'_>> {
+    pub(super) fn this<'c>(call: &'c Call<'_>) -> Option<Props<'c>> {
         call.props(Some(&CLIENT))
     }
 }
@@ -1689,7 +1689,7 @@ pub fn http_client_minit(minit: &Minit) -> Result<(), Bailout> {
 
 /// `http_client_coro_get_client`: the constructed client; else Swoole's fatal
 /// error, and the method returns.
-fn client(call: &Call) -> Option<&Client> {
+fn client<'c>(call: &'c Call<'_>) -> Option<&'c Client> {
     let client = call.custom::<Data>().and_then(|data| data.client.get());
     if client.is_none() {
         crate::native::unconstructed();
@@ -1960,7 +1960,7 @@ fn finish(client: &Client, call: &Call, result: bool) -> bool {
 }
 
 /// The path argument of `execute`, `get`, `upgrade`.
-fn path_arg(call: &Call) -> Option<&[u8]> {
+fn path_arg<'c>(call: &'c Call<'_>) -> Option<&'c [u8]> {
     let path = call.arity(1, 1).and_then(|()| call.string(1, b"")).ok();
     if path.is_none() {
         call.set_bool(false);
