@@ -8,7 +8,7 @@ use swoole_rs_corebase::process::worker_record::Worker;
 use swoole_rs_corebase::reactor::ErrorHandler::ConnectionDefault;
 use swoole_rs_corebase::reactor::{Event, Running};
 
-use crate::callbacks::TaskSlot;
+use crate::callbacks::{CallbackError, CallbackResult, TaskSlot};
 use crate::objects::Bus;
 use crate::reactor_handle::Reactor;
 use crate::view;
@@ -55,15 +55,11 @@ pub(crate) fn create_pool(serv: view::Server<'_>) -> bool {
 }
 
 /// `pool->main_loop`: `Server::reactor_process_main_loop` over the pool's worker.
-fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
-    let Some(serv) = crate::shared::pool_server(pool) else {
-        return -1;
-    };
-    if super::main_loop(serv, worker) {
-        0
-    } else {
-        -1
-    }
+fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> CallbackResult {
+    let serv = crate::shared::pool_server(pool).ok_or(CallbackError::Missing)?;
+    super::main_loop(serv, worker)
+        .then_some(())
+        .ok_or(CallbackError::Failed)
 }
 
 /// `pool->onWorkerNotFound`: restart the event worker that exited. The pool lends
