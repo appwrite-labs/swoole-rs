@@ -74,11 +74,6 @@ fn info_of<'a>(ht: *mut HashTable) -> *mut TypeInfo<'a> {
     ht.wrapping_byte_add(size_of::<HashTable>()).cast()
 }
 
-/// Bytes a `TypeInfo` with `len` bytes of text takes.
-fn info_size(len: usize) -> usize {
-    size_of::<TypeInfo<'static>>() + len + 1
-}
-
 /// The value part of a definition's text.
 fn value_part(text: &[u8], this: TypeValue) -> &[u8] {
     let start = usize::from(this.offset);
@@ -136,21 +131,13 @@ impl<'a> Typed<'a> {
         self.header().this
     }
 
-    /// The definition behind the table: its header, text and NUL.
-    fn info(self) -> &'a [u8] {
-        let length = info_size(usize::from(self.header().len));
-        // SAFETY: a parsed definition, `info_size` of its text's length,
-        // follows the table, which Zend never writes.
-        unsafe { slice::from_raw_parts(info_of(self.ht).cast::<u8>(), length) }
-    }
-
-    /// The definition's text.
+    /// The initialized definition text following the Zend table.
     fn text(self) -> &'a [u8] {
-        let start = offset_of!(TypeInfo, text);
-        let text = self
-            .info()
-            .get(start..start + usize::from(self.header().len));
-        text.unwrap_or_default()
+        let text = info_of(self.ht)
+            .cast::<u8>()
+            .wrapping_add(offset_of!(TypeInfo, text));
+        // SAFETY: the typed HashTable owns header.len initialized text bytes here.
+        unsafe { slice::from_raw_parts(text, usize::from(self.header().len)) }
     }
 
     /// `get_value_type_str()` with its length.
@@ -223,11 +210,11 @@ unsafe extern "C" {
     /// libc's `isspace`, as upstream's `remove_all_spaces` classifies bytes.
     safe fn isspace(c: c_int) -> c_int;
     /// `SEPARATE_ARRAY` of an array zval (anything else is left alone): a
-    /// shared table is copied for the slot, with the lent bytes (an `IoSlice`
-    /// is an iovec) behind the copy, and its count only drops, so it stays
+    /// shared table is copied for the slot, with its definition
+    /// behind the copy, and its count only drops, so it stays
     /// live for whoever else holds it.
     #[link_name = "swr_phpstdext_separate"]
-    safe fn separate_array(array: &Value, info: IoSlice<'_>);
+    safe fn separate_array(array: &Value, info_size: usize);
     /// `ZVAL_ARR(made, ...)` of a new table of `size` elements with a copy of
     /// `header` behind it, then `header.len` bytes of the lent `text` (zeros past
     /// its end) and a NUL: the table. What `made` held is not released.
@@ -499,7 +486,10 @@ fn check_array(typed: Typed, element: Option<Typed>) -> bool {
 /// array.
 pub(crate) fn separate(value: &Value) -> Option<Typed<'_>> {
     let source = Typed::of(value)?;
-    separate_array(value, IoSlice::new(source.info()));
+    separate_array(
+        value,
+        size_of::<TypeInfo>() + usize::from(source.header().len) + 1,
+    );
     // Separation leaves the container holding an array: `source`'s, or its
     // copy with the definition behind it.
     let own = Typed::held(value)?;

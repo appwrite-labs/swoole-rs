@@ -96,9 +96,9 @@ uint8_t swr_phpstdext_pcre_cache(zend_string *regex, void **result) {
 }
 
 /* SEPARATE_ARRAY of an array zval (anything else is left alone); a table it
- * copies is moved into an allocation with the lent bytes behind it, a typed
+ * copies is moved into an allocation with the original definition behind it, a typed
  * array's definition, which its plain copy lacks. */
-void swr_phpstdext_separate(zval *array, struct iovec info) {
+void swr_phpstdext_separate(zval *array, size_t info_size) {
     if (Z_TYPE_P(array) != IS_ARRAY) {
         return;
     }
@@ -108,9 +108,9 @@ void swr_phpstdext_separate(zval *array, struct iovec info) {
     if (plain == shared) {
         return;
     }
-    HashTable *copy = emalloc(sizeof(HashTable) + info.iov_len);
+    HashTable *copy = emalloc(sizeof(HashTable) + info_size);
     memcpy(copy, plain, sizeof(HashTable));
-    memcpy(copy + 1, info.iov_base, info.iov_len);
+    memcpy(copy + 1, shared + 1, info_size);
     Z_ARR_P(array) = copy;
     efree(plain);
 }
