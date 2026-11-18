@@ -495,6 +495,22 @@ pub fn sw_rs_http2_decode_frame(
     })
 }
 
+/// The opaque eight-byte PING payload, echoed in its acknowledgement.
+///
+/// # Errors
+/// RFC 9113 requires exactly eight bytes.
+pub fn ping_payload(bytes: &[u8]) -> Result<[u8; 8], std::array::TryFromSliceError> {
+    bytes.try_into()
+}
+
+/// The four-byte `WINDOW_UPDATE` field in network byte order.
+///
+/// # Errors
+/// RFC 9113 requires exactly four bytes.
+pub fn window_increment(bytes: &[u8]) -> Result<u32, std::array::TryFromSliceError> {
+    bytes.try_into().map(u32::from_be_bytes)
+}
+
 /// The packet ended before the header or its declared payload was complete.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ShortFrame;
@@ -1117,3 +1133,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(kani)]
+#[path = "../../../tests/modules/http2/kani.rs"]
+mod proofs;

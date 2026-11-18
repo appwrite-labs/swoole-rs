@@ -810,8 +810,8 @@ impl Client {
                 Payload::Unread
             }
             FrameAction::WindowUpdate => {
-                let credit =
-                    u32::from_be_bytes(payload.try_into().map_err(|_| FrameReadError::Short)?);
+                let credit = swoole_rs_http2::window_increment(payload)
+                    .map_err(|_| FrameReadError::Short)?;
                 if id == 0 {
                     let plan = window(self.remote_window.get(), credit as usize, 0, true);
                     self.remote_window.set(plan.value);
@@ -827,9 +827,9 @@ impl Client {
             }
             // RFC 9113 6.7: the ACK echoes the PING's eight payload bytes; any
             // other length is a FRAME_SIZE_ERROR.
-            FrameAction::PingReply => {
-                Payload::Ping(payload.try_into().map_err(|_| FrameReadError::Short)?)
-            }
+            FrameAction::PingReply => Payload::Ping(
+                swoole_rs_http2::ping_payload(payload).map_err(|_| FrameReadError::Short)?,
+            ),
             FrameAction::Goaway => {
                 let (last, rest) = payload.split_first_chunk().ok_or(FrameReadError::Goaway)?;
                 let (code, debug) = rest.split_first_chunk().ok_or(FrameReadError::Goaway)?;
