@@ -1,5 +1,5 @@
 /* PDO method signatures, Zend allocation and native statement record access.
- * Each supported PHP driver supplies its preparer and original diagnostic locations. */
+ * Each supported PHP driver supplies its original diagnostic locations. */
 extern void swr_odbc_fetch_error(pdo_dbh_t *, pdo_stmt_t *, zval *);
 
 /* The native statement still owns its record. Rust reads the same error
@@ -76,6 +76,49 @@ extern zend_result swr_odbc_check_liveness(pdo_dbh_t *);
 static int odbc_handle_get_attr(pdo_dbh_t *dbh, zend_long attr, zval *value) {
     pdo_odbc_db_handle *handle = (pdo_odbc_db_handle *) dbh->driver_data;
     return swr_odbc_get_attr(dbh, attr, value, handle->assume_utf8, "ODBC-" PDO_ODBC_TYPE);
+}
+
+void swr_odbc_publish_statement(pdo_stmt_t *stmt, SQLHSTMT handle) {
+    ((pdo_odbc_stmt *) stmt->driver_data)->stmt = handle;
+}
+
+void swr_odbc_prepare_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt) {
+    pdo_odbc_errinfo *source = swr_odbc_error_record(dbh, stmt);
+    pdo_odbc_errinfo *dest = swr_odbc_error_record(dbh, NULL);
+    strcpy(dest->last_err_msg, source->last_err_msg);
+    dest->file = source->file;
+    dest->line = source->line;
+    dest->what = source->what;
+    strcpy(dbh->error_code, stmt->error_code);
+}
+
+extern bool swr_odbc_prepare(pdo_dbh_t *, pdo_stmt_t *, const zend_string *, zval *, const char *, const int (*)[3]);
+static bool odbc_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *stmt, zval *options) {
+    zend_string *rewritten = NULL;
+    stmt->supports_placeholders = PDO_PLACEHOLDER_POSITIONAL;
+    if (pdo_parse_params(stmt, sql, &rewritten) == -1) {
+        strcpy(dbh->error_code, stmt->error_code);
+        return false;
+    }
+    pdo_odbc_stmt *record = ecalloc(1, sizeof(*record));
+    record->H = dbh->driver_data;
+    record->assume_utf8 = record->H->assume_utf8;
+    stmt->driver_data = record;
+    bool ok = swr_odbc_prepare(dbh, stmt, rewritten ? rewritten : sql, options, driver_file, &prepare_lines);
+    if (rewritten) {
+        zend_string_release(rewritten);
+    }
+    if (!record->stmt) {
+        efree(record);
+        stmt->driver_data = NULL;
+        return false;
+    }
+#if PHP_VERSION_ID >= 80500
+    stmt->methods = &swoole_odbc_stmt_methods;
+#else
+    stmt->methods = &odbc_stmt_methods;
+#endif
+    return ok;
 }
 
 static const struct pdo_dbh_methods odbc_methods = {

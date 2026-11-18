@@ -134,7 +134,6 @@ typedef struct {
     zend_ulong datalen;
     SQLLEN fetched_len;
     SQLSMALLINT coltype;
-    char colname[128];
     unsigned is_long;
     unsigned is_unicode : 1;
     unsigned _spare : 31;
@@ -156,6 +155,7 @@ typedef struct {
 typedef struct {
     SQLLEN len;
     SQLSMALLINT paramtype;
+    size_t capacity;
     char *outbuf;
     unsigned is_unicode : 1;
     unsigned _spare : 31;
