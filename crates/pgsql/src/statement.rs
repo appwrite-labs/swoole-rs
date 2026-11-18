@@ -155,7 +155,7 @@ extern "C" fn pdo_pgsql_fetch_cursor(
     if let Some(previous) = result.take() {
         crate::PQclear(previous);
     }
-    crate::driver::cursor_result(dbh, stmt, result, handle.exec(query.as_cstr()))
+    crate::driver::statement_result(dbh, stmt, result, handle.exec(query.as_cstr()))
         .is_some_and(|rows| rows > 0)
 }
 
@@ -202,7 +202,7 @@ extern "C" fn pdo_pgsql_open_cursor(
             return false;
         }
     }
-    if crate::driver::cursor_result(dbh, stmt, result, declared).is_none() {
+    if crate::driver::statement_result(dbh, stmt, result, declared).is_none() {
         return false;
     }
     if let Some(previous) = result.take() {
@@ -214,4 +214,66 @@ extern "C" fn pdo_pgsql_open_cursor(
     result.set(handle.exec(fetch.as_cstr()));
     true
 }
+}
+
+/// Release a generated statement name. PHP 8.4+ uses the close-prepared
+/// protocol when the linked libpq implements it.
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_close_statement(handle: &Handle, name: Text<'_>) {
+    let result = if PHP_VERSION_ID >= 80400 && crate::lib_version() >= 170_000 {
+        std::ptr::NonNull::new(crate::swoole_pgsql_close_prepared(
+            crate::driver::pdo_pgsql_server(handle),
+            name,
+        ))
+        .map(crate::PgResult)
+    } else {
+        let mut query = swoole_rs_zend::message!("DEALLOCATE ");
+        query.push(name.get().to_bytes());
+        handle.exec(query.as_cstr())
+    };
+    if let Some(result) = result {
+        crate::PQclear(result);
+    }
+}
+
+/// Prepare once parameter types are known. A pooled connection may still have
+/// this generated name from its previous client; remove it and retry once.
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_prepare_statement(
+    dbh: &Dbh,
+    stmt: &Stmt,
+    slot: &Cell<Option<crate::PgResult>>,
+    name: Text<'_>,
+    query: Text<'_>,
+    count: c_int,
+    types: crate::Params<Oid>,
+) -> bool {
+    let Some(handle) = crate::driver::handle(dbh) else {
+        return false;
+    };
+    let prepare = || {
+        std::ptr::NonNull::new(crate::swoole_pgsql_prepare(
+            crate::driver::pdo_pgsql_server(handle),
+            Some(name),
+            Some(query),
+            count,
+            types,
+        ))
+        .map(crate::PgResult)
+    };
+    let mut result = prepare();
+    if crate::driver::sqlstate(result.as_ref()) == Some(c"42P05") {
+        if let Some(old) = result.take() {
+            crate::PQclear(old);
+        }
+        pdo_pgsql_close_statement(handle, name);
+        result = prepare();
+    }
+    if crate::driver::statement_result(dbh, stmt, slot, result).is_none() {
+        return false;
+    }
+    if let Some(old) = slot.take() {
+        crate::PQclear(old);
+    }
+    true
 }

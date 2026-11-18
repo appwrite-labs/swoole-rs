@@ -82,21 +82,7 @@ static void pgsql_stmt_finish(pdo_pgsql_stmt *S, int fin_mode)
 	}
 
 	if (S->stmt_name && S->is_prepared && (fin_mode & FIN_CLOSE)) {
-		PGresult *res;
-#ifndef HAVE_PQCLOSEPREPARED
-		// TODO (??) libpq does not support close statement protocol < postgres 17
-		// check if we can circumvent this.
-		char *q = NULL;
-		spprintf(&q, 0, "DEALLOCATE %s", S->stmt_name);
-		res = PQexec(pdo_pgsql_server(H), q);
-		efree(q);
-#else
-		res = PQclosePrepared(pdo_pgsql_server(H), S->stmt_name);
-#endif
-		if (res) {
-			PQclear(res);
-		}
-
+		pdo_pgsql_close_statement(H, S->stmt_name);
 		S->is_prepared = false;
 		if (*pdo_pgsql_running_stmt(H) == S) {
 			*pdo_pgsql_running_stmt(H) = NULL;
@@ -183,48 +169,12 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt)
 		/* using a prepared statement */
 
 		if (!S->is_prepared) {
-stmt_retry:
-			/* we deferred the prepare until now, because we didn't
-			 * know anything about the parameter types; now we do */
-			S->result = PQprepare(pdo_pgsql_server(H), S->stmt_name, ZSTR_VAL(S->query),
-						stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0,
-						S->param_types);
-			status = PQresultStatus(S->result);
-			switch (status) {
-				case PGRES_COMMAND_OK:
-				case PGRES_TUPLES_OK:
-					/* it worked */
-					S->is_prepared = true;
-					PQclear(S->result);
-					S->result = NULL;
-					break;
-				default: {
-					char *sqlstate = pdo_pgsql_sqlstate(S->result);
-					/* 42P05 means that the prepared statement already existed. this can happen if you use
-					 * a connection pooling software line pgpool which doesn't close the db-connection once
-					 * php disconnects. if php dies (no chance to run RSHUTDOWN) during execution it has no
-					 * chance to DEALLOCATE the prepared statements it has created. so, if we hit a 42P05 we
-					 * deallocate it and retry ONCE (thies 2005.12.15)
-					 */
-					if (sqlstate && !strcmp(sqlstate, "42P05")) {
-						PGresult *res;
-#ifndef HAVE_PQCLOSEPREPARED
-						char buf[100]; /* stmt_name == "pdo_crsr_%08x" */
-						snprintf(buf, sizeof(buf), "DEALLOCATE %s", S->stmt_name);
-						res = PQexec(pdo_pgsql_server(H), buf);
-#else
-						res = PQclosePrepared(pdo_pgsql_server(H), S->stmt_name);
-#endif
-						if (res) {
-							PQclear(res);
-						}
-						goto stmt_retry;
-					} else {
-						pdo_pgsql_error_stmt(stmt, status, sqlstate);
-						return 0;
-					}
-				}
+			int count = stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0;
+			if (!pdo_pgsql_prepare_statement(stmt->dbh, stmt, &S->result, S->stmt_name,
+					ZSTR_VAL(S->query), count, S->param_types)) {
+				return 0;
 			}
+			S->is_prepared = true;
 		}
 		if (S->is_unbuffered) {
 			dispatch_result = PQsendQueryPrepared(pdo_pgsql_server(H), S->stmt_name,

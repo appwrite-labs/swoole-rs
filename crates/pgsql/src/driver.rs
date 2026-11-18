@@ -265,7 +265,7 @@ impl Handle {
 }
 
 /// `pdo_pgsql_sqlstate`: an error result's SQLSTATE.
-fn sqlstate(result: Option<&PgResult>) -> Option<&CStr> {
+pub(crate) fn sqlstate(result: Option<&PgResult>) -> Option<&CStr> {
     PQresultErrorField(result?.get(), DIAG_SQLSTATE).map(Text::get)
 }
 
@@ -276,8 +276,8 @@ fn status(result: Option<&PgResult>) -> ExecStatusType {
     })
 }
 
-/// Install the cursor result before reporting a PDO error, as the statement owns it.
-pub(crate) fn cursor_result(
+/// Install the statement result before reporting a PDO error, as the statement owns it.
+pub(crate) fn statement_result(
     dbh: &Dbh,
     stmt: &Stmt,
     slot: &Cell<Option<PgResult>>,
