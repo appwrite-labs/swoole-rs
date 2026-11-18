@@ -45,6 +45,26 @@ CLIENT_PROXY = ['https_get_async_with_http_proxy', 'https_get_async_with_socks5_
 NODE_WS = 'needs Node.js and its ws package'
 
 
+def tls_alerts_plaintext():
+    """Whether this OpenSSL answers a first record that isn't TLS with an alert before the close (Ubuntu's 3.4.1 and
+    3.5.5 send record_overflow; 3.0.13, 3.3.7 and 3.5.9 send nothing). Python's ssl is the system OpenSSL the build links."""
+    import socket
+    import ssl
+    server, client = socket.socketpair()
+    with server, client:
+        client.sendall(b'hello world\n')
+        tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).wrap_socket(server, server_side=True, do_handshake_on_connect=False)
+        try:
+            tls.do_handshake()
+        except ssl.SSLError:
+            pass
+        client.setblocking(False)
+        try:
+            return bool(client.recv(16))
+        except BlockingIOError:
+            return False
+
+
 def require_frozen_source(expected):
     """Boundary guard; individual build/source/artifact attestations remain required."""
     def head():
@@ -328,6 +348,9 @@ def plan(args, reports):
                '--package', ROOT / 'tests/modules/http/server',
                '--exclude', 'http_server.node_websocket_client_1=' + NODE_WS, '--exclude', 'http_server.node_websocket_client_2=' + NODE_WS,
                '--exclude', 'redis.get=needs a Redis server on 127.0.0.1:6379', '--exclude', 'mqtt.echo=needs Node.js and its mqtt and pino packages',
+               # The case's second client sends the plain packet to the TLS port and expects EOF.
+               *(['--exclude', "server.ssl=expects EOF after a plain packet to the TLS port; this OpenSSL sends an alert first"]
+                 if tls_alerts_plaintext() else []),
                *report('http-server-rust'))
     if 'utilities' in modules and integrate:
         script('utilities-php-logger', 'tests/modules/utilities/php_logger.py', *php, *engines,
