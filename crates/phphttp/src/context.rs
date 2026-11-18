@@ -90,7 +90,8 @@ impl Ctx<'_> {
             Hook::BeforeRequest => HookType::BEFORE_REQUEST,
             Hook::AfterResponse => HookType::AFTER_RESPONSE,
         };
-        // SAFETY: the hooks of both kinds take a live context.
+        // SAFETY: both hook kinds take an HttpContext pointer. The borrowed Hold keeps its State
+        // allocation live through the callback.
         unsafe { swoole_call_hook(kind, self.raw()) };
     }
 

@@ -201,8 +201,8 @@ impl Slot {
     pub(crate) fn replace(&self, callable: Option<Callable>) -> Option<Callable> {
         let new = callable.map_or(ptr::null(), |callable| Rc::into_raw(callable.0));
         let old = self.0.swap(new.cast_mut(), Ordering::AcqRel);
-        // SAFETY: null or the `Rc` a `replace` gave up, which the swap took out of
-        // the slot, so it is taken back once.
+        // SAFETY: the swap transfers the slot's one Rc reference to the retained Zend callable.
+        // Every non-null pointer stored here came from Rc::into_raw above.
         (!old.is_null()).then(|| Callable(unsafe { Rc::from_raw(old) }))
     }
 

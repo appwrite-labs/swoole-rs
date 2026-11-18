@@ -39,7 +39,8 @@ fn update_environment(stored: &CStr, unset: bool) -> bool {
         unsetenv(stored.into());
         return true;
     }
-    // SAFETY: the process table retains this string on success until libc releases it.
+    // SAFETY: under PHP's environment lock, Assignment::store retains this C string on
+    // success until a later update releases libc's pointer to it.
     unsafe { libc::putenv(stored.as_ptr().cast_mut()) == 0 }
 }
 
