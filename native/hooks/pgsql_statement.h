@@ -32,7 +32,7 @@ typedef struct pdo_pgsql_stmt {
     char *cursor_name;
     char *stmt_name;
     zend_string *query;
-    pdo_pgsql_parameter_arrays params;
+    void *params;
     int current_row;
     bool is_prepared;
 #if PHP_VERSION_ID >= 80500
@@ -56,6 +56,7 @@ bool pdo_pgsql_bind_value(void *params, size_t index, enum pdo_param_type kind, 
 bool pdo_pgsql_emulated_parameter(enum pdo_param_type *kind, zval *value);
 bool pdo_pgsql_normalize_parameter(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zend_string *name, zend_long *index);
 bool pdo_pgsql_check_parameter(pdo_dbh_t *dbh, pdo_stmt_t *stmt, HashTable *map, zend_long index);
+bool pdo_pgsql_bind_parameter(pdo_dbh_t *dbh, pdo_stmt_t *stmt, HashTable *map, zend_long index, enum pdo_param_type kind, zval *value);
 bool pdo_pgsql_execution_result(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult *result);
 void pdo_pgsql_finish_result(PGconn *active, PGresult **result, bool abort_query);
 void pdo_pgsql_close_statement(pdo_pgsql_db_handle *H, const char *name);

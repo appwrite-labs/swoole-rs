@@ -28,7 +28,7 @@ static bool pdo_pgsql_dispatch(pdo_stmt_t *stmt, pdo_pgsql_stmt *S, bool unbuffe
     zend_string *query = named || S->stmt_name ? S->query : stmt->active_query_string;
     unsigned int count = stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0;
     return pdo_pgsql_send_statement(stmt->dbh, stmt, &S->result, S->stmt_name, ZSTR_VAL(query),
-                                    S->params.owner, count, &S->is_prepared, named, unbuffered);
+                                    S->params, count, &S->is_prepared, named, unbuffered);
 }
 
 static int pdo_pgsql_stmt_fetch(pdo_stmt_t *stmt, enum pdo_fetch_orientation ori, zend_long offset) {
@@ -91,7 +91,7 @@ const zend_string *pdo_pgsql_rewritten_name(pdo_stmt_t *stmt, zend_string *name)
 }
 
 /* Zend exposes PostgreSQL's large-object handle through a stream's private data. */
-static bool pdo_pgsql_bind_stream(pdo_dbh_t *dbh, pdo_stmt_t *stmt, void *params, size_t index, zval *value) {
+bool pdo_pgsql_bind_stream(pdo_dbh_t *dbh, pdo_stmt_t *stmt, void *params, size_t index, zval *value) {
     php_stream *stream;
     php_stream_from_zval_no_verify(stream, value);
     if (!stream) {
@@ -111,47 +111,37 @@ static bool pdo_pgsql_bind_stream(pdo_dbh_t *dbh, pdo_stmt_t *stmt, void *params
     return pdo_pgsql_bind_value(params, index, PDO_PARAM_LOB, value);
 }
 
+/* Zend owns the bound record. The normalized value may be a PHP reference. */
 static int pdo_pgsql_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *param, enum pdo_param_event event) {
     if (!param->is_param) {
         return 1;
     }
+    if (event == PDO_PARAM_EVT_NORMALIZE) {
+        return stmt->supports_placeholders == PDO_PLACEHOLDER_NAMED
+            ? pdo_pgsql_normalize_parameter(stmt->dbh, stmt, param->name, &param->paramno)
+            : pdo_pgsql_emulated_parameter(&param->param_type, &param->parameter);
+    }
     if (stmt->supports_placeholders != PDO_PLACEHOLDER_NAMED) {
-        return event != PDO_PARAM_EVT_NORMALIZE || pdo_pgsql_emulated_parameter(&param->param_type, &param->parameter);
+        return 1;
     }
-    switch (event) {
-    case PDO_PARAM_EVT_NORMALIZE:
-        return pdo_pgsql_normalize_parameter(stmt->dbh, stmt, param->name, &param->paramno);
-    case PDO_PARAM_EVT_ALLOC:
+    if (event == PDO_PARAM_EVT_ALLOC) {
         return pdo_pgsql_check_parameter(stmt->dbh, stmt, stmt->bound_param_map, param->paramno);
-    case PDO_PARAM_EVT_EXEC_PRE:
-        break;
-    default:
+    }
+    if (event != PDO_PARAM_EVT_EXEC_PRE) {
         return 1;
-    }
-
-    if (!stmt->bound_param_map) {
-        return 1;
-    }
-    pdo_pgsql_stmt *S = stmt->driver_data;
-    if (!S->params.owner) {
-        S->params.count = zend_hash_num_elements(stmt->bound_param_map);
-        S->params.owner = pdo_pgsql_allocate_parameters(S->params.count);
-    }
-    if (param->paramno < 0) {
-        return 1;
-    }
-    size_t index = (size_t)param->paramno;
-    if (index >= S->params.count) {
-        pdo_pgsql_raise(stmt->dbh, stmt, 0, "HY093", "parameter was not defined");
-        return 0;
     }
     zval *value = &param->parameter;
     ZVAL_DEREF(value);
-    enum pdo_param_type kind = PDO_PARAM_TYPE(param->param_type);
-    if (kind == PDO_PARAM_LOB && Z_TYPE_P(value) == IS_RESOURCE) {
-        return pdo_pgsql_bind_stream(stmt->dbh, stmt, S->params.owner, index, value);
+    return pdo_pgsql_bind_parameter(stmt->dbh, stmt, stmt->bound_param_map,
+                                    param->paramno, PDO_PARAM_TYPE(param->param_type), value);
+}
+
+void *pdo_pgsql_stmt_parameters(pdo_stmt_t *stmt, size_t count) {
+    pdo_pgsql_stmt *state = stmt->driver_data;
+    if (!state->params) {
+        state->params = pdo_pgsql_allocate_parameters(count);
     }
-    return pdo_pgsql_bind_value(S->params.owner, index, kind, value);
+    return state->params;
 }
 
 static void finish_statement(pdo_pgsql_stmt *S, bool close, bool abort_query) {
@@ -187,7 +177,7 @@ static int pgsql_stmt_dtor(pdo_stmt_t *stmt) {
     if (S->stmt_name) {
         efree(S->stmt_name);
     }
-    pdo_pgsql_free_parameters(S->params.owner);
+    pdo_pgsql_free_parameters(S->params);
     if (S->query) {
         zend_string_release(S->query);
     }

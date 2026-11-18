@@ -534,8 +534,39 @@ extern "C" fn pdo_pgsql_emulated_parameter(kind: &Cell<pdo_param_type>, slot: &S
         return false;
     }
     kind.set(STR);
-    slot.set(swoole_rs_zend::Owned::string(ZString::new(if truth { b"t" } else { b"f" })));
+    slot.set(swoole_rs_zend::Owned::string(ZString::new(if truth {
+        b"t"
+    } else {
+        b"f"
+    })));
     true
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_bind_parameter(dbh: &Dbh, stmt: &Stmt, map: Option<&swoole_rs_zend::Array>,
+    index: i64, kind: pdo_param_type, value: &Slot) -> bool {
+    #[expect(improper_ctypes, reason = "C retains the opaque Rust parameter storage until statement destruction")]
+    unsafe extern "C" {
+        safe fn pdo_pgsql_stmt_parameters(stmt: &Stmt, count: usize) -> &ParameterStorage;
+        safe fn pdo_pgsql_bind_stream(dbh: &Dbh, stmt: &Stmt, params: &ParameterStorage, index: usize, slot: &Slot) -> bool;
+    }
+    let Some(map) = map else { return true };
+    let params = pdo_pgsql_stmt_parameters(stmt, map.elements() as usize);
+    let Ok(index) = usize::try_from(index) else { return true };
+    if index >= params.owned.len() {
+        crate::driver::pdo_pgsql_raise(dbh, Some(stmt), 0, Some(c"HY093".into()), Some(c"parameter was not defined".into()));
+        return false;
+    }
+    if kind == LOB && value.value().kind() == swoole_rs_zend::sys::IS_RESOURCE {
+        let mut bound = false;
+        if let Err(bailout) = swoole_rs_zend::contain_with(|| bound = pdo_pgsql_bind_stream(dbh, stmt, params, index, value)) {
+            bailout.defer();
+            return false;
+        }
+        bound
+    } else {
+        bind_value(params, index, kind, value)
+    }
 }
 }
 
@@ -610,8 +641,15 @@ swoole_rs_zend::exports! {
 /// of a later parameter invokes PHP and changes an earlier bound reference.
 #[unsafe(no_mangle)]
 extern "C" fn pdo_pgsql_bind_value(params: &ParameterStorage, index: usize, kind: pdo_param_type, slot: &Slot) -> bool {
-    use swoole_rs_zend::sys::{IS_TRUE, IS_FALSE, pdo_param_type_PDO_PARAM_NULL as NULL};
-    let Some(owned) = params.owned.get(index) else { return false; };
+    bind_value(params, index, kind, slot)
+}
+}
+
+fn bind_value(params: &ParameterStorage, index: usize, kind: pdo_param_type, slot: &Slot) -> bool {
+    use swoole_rs_zend::sys::{IS_FALSE, IS_TRUE, pdo_param_type_PDO_PARAM_NULL as NULL};
+    let Some(owned) = params.owned.get(index) else {
+        return false;
+    };
     let value = slot.value();
     let (bytes, len, string) = if kind == NULL || value.is_null() {
         (std::ptr::null(), 0, None)
@@ -620,17 +658,22 @@ extern "C" fn pdo_pgsql_bind_value(params: &ParameterStorage, index: usize, kind
         (literal.as_ptr(), 1, None)
     } else {
         if value.str().is_none() {
-            let Some(text) = value.applied_string() else { return false; };
+            let Some(text) = value.applied_string() else {
+                return false;
+            };
             slot.set(swoole_rs_zend::Owned::string(text));
         }
-        let Some(text) = slot.value().str() else { return false; };
+        let Some(text) = slot.value().str() else {
+            return false;
+        };
         let bytes = text.bytes();
-        let Ok(len) = c_int::try_from(bytes.len()) else { return false; };
+        let Ok(len) = c_int::try_from(bytes.len()) else {
+            return false;
+        };
         (bytes.as_ptr().cast(), len, Some(text.to_owned()))
     };
     owned.string.set(string);
     params.bind(index, bytes, len, kind == LOB, 0)
-}
 }
 
 #[unsafe(no_mangle)]
