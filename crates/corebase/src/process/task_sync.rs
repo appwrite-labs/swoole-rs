@@ -15,19 +15,15 @@ use crate::log::{self, set_last_error};
 use crate::ossupport::file_get_contents;
 use crate::task_tmpfile;
 
+use crate::constants::SW_IPC_MAX_SIZE;
 pub use crate::process::pool::Bailed;
 use crate::process::pool::trapped;
-use crate::process::process_pool::SW_IPC_MAX_SIZE;
 use crate::process::task_file::{Packed, TASK_TMP_PATH_SIZE, TaskBuffer, errno, make_tmpfile};
 
 /// `swoole::DataHead`: `fd` (the task id) at 0, `len` at 16.
 const HEAD: usize = 40;
 const HEAD_LEN: usize = 16;
 /// `sizeof(EventData)`.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "SW_IPC_MAX_SIZE is 2048 or 8192"
-)]
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 /// `SW_TASK_WAITALL`.
 const TASK_WAITALL: u16 = crate::constants::TaskFlag::SW_TASK_WAITALL.bits();

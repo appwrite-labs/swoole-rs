@@ -1,6 +1,7 @@
 //! Complete-frame codec and the pinned server's message/control policy.
 //! Allocation, connection state, PHP and callbacks stay with the native caller.
 use std::mem::MaybeUninit;
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::lent::{Spare, lend_spare};
 
 use crate::{LengthError, Opcode, frame_length, header, mask};
@@ -285,13 +286,8 @@ pub fn encode_close(
     else {
         return Err(EncodeError::InvalidControl);
     };
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "upstream packs the close code as uint16_t"
-    )]
-    let code = code as u16;
-    *code_bytes = code.to_be_bytes();
+    // Upstream packs the close code as `uint16_t`.
+    *code_bytes = code.c_cast::<u16>().to_be_bytes();
     reason_bytes.copy_from_slice(reason);
     let payload = payload.get(..reason.len() + 2).unwrap_or_default();
     encode_frame(
