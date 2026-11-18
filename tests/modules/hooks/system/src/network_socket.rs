@@ -781,10 +781,11 @@ fn send_async_2() {
 
     // SAFETY: the live loop; the handler reads the socket once.
     unsafe {
-        swoole_rs_ffi::event_api::set_handler(
+        swoole_rs_ffi::event_api::set_handlers(
             SW_FD_STREAM_CLIENT,
-            swoole_rs_ffi::Events::READ,
             Some(send_async_2_read),
+            None,
+            swoole_rs_ffi::ErrorHandler::ConnectionDefault,
         );
         let socket = swoole_rs_ffi::Socket::from_ptr(sock.0.cast()).unwrap();
         let socket = swoole_rs_ffi::Heap::from_static(socket);

@@ -9,7 +9,7 @@
 use core::ffi::{c_int, c_void};
 
 use swoole_rs_corebase::reactor::reactor_upstream::{
-    change as reactor_change, interest as reactor_interest, reactor_del, set_handler,
+    change as reactor_change, interest as reactor_interest, reactor_del, set_handlers,
 };
 use swoole_rs_corebase::reactor::{ChangeOp, Events, Handler, Heap, Interest, Running, Socket};
 
@@ -98,8 +98,14 @@ impl Reactor {
     pub(crate) fn trigger_close(self, event: &mut swoole_rs_corebase::reactor::Event) -> bool {
         swoole_rs_corebase::reactor::reactor_upstream::trigger_close_event(self.handle(), event)
     }
-    pub(crate) fn set_handler(self, fd_type: c_int, event: Events, handler: Handler) {
-        set_handler(self.handle(), fd_type, event, Some(handler));
+    pub(crate) fn set_handlers(
+        self,
+        fd_type: c_int,
+        read: Option<Handler>,
+        write: Option<Handler>,
+        error: swoole_rs_corebase::reactor::ErrorHandler,
+    ) {
+        set_handlers(self.handle(), fd_type, read, write, error);
     }
     /// `reactor->set_default_error_handler(handler)`.
     pub(crate) fn set_error_handler(self, handler: Handler) {

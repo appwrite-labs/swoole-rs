@@ -67,16 +67,16 @@ pub fn reactor_del(
     })
 }
 
-/// `void Reactor::set_handler(int fd_type, int event, ReactorHandler handler)`:
-/// upstream asserts the event names a table.
-pub fn set_handler(
+/// Replace the read, write and error registrations for a descriptor type.
+pub fn set_handlers(
     reactor: crate::reactor::Running<'_>,
     fd_type: c_int,
-    event: crate::reactor::Events,
-    handler: Option<Handler>,
+    read: Option<Handler>,
+    write: Option<Handler>,
+    error: crate::reactor::ErrorHandler,
 ) {
-    let set = reactor.handlers(|handlers| handlers.set(fd_type, event, handler));
-    debug_assert!(set, "Reactor::set_handler: no table for event {event}");
+    let set = reactor.handlers(|handlers| handlers.register(fd_type, read, write, error));
+    debug_assert!(set, "invalid descriptor type {fd_type}");
 }
 
 /// `ReactorHandler Reactor::get_handler(FdType fd_type, EventType event) const`: the

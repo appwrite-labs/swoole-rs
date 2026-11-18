@@ -5,6 +5,7 @@ use core::ffi::c_int;
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerType};
+use swoole_rs_corebase::reactor::ErrorHandler::ConnectionDefault;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::reactor::{Event, Running};
 
@@ -116,10 +117,11 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> bool {
     reactor.hold_server(serv);
     running.set_max_socket(serv.state().tables_ref().max_connection());
     running.set_close(Some(crate::reactor_entry::close_connection));
-    reactor.set_handler(
+    reactor.set_handlers(
         FD_STREAM_SERVER,
-        Events::READ,
-        crate::server_methods::accept_connection,
+        Some(crate::server_methods::accept_connection),
+        None,
+        ConnectionDefault,
     );
     reactor.set_error_handler(on_close);
     hybrid().step(serv, Step::PipeHandler);

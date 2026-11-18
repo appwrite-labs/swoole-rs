@@ -5,7 +5,7 @@ use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::process::methods::ExitStatus;
 use swoole_rs_corebase::process::process_pool::{Hooks, IpcMode, PoolRef};
 use swoole_rs_corebase::process::worker_record::Worker;
-use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::ErrorHandler::ConnectionDefault;
 use swoole_rs_corebase::reactor::{Event, Running};
 
 use crate::callbacks::TaskSlot;
@@ -76,7 +76,7 @@ fn worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) {
 
 /// This thread's reactor reads its pipes with [`on_pipe_read`].
 pub(crate) fn set_pipe_handler() {
-    Reactor::thread().set_handler(FD_PIPE, Events::READ, on_pipe_read);
+    Reactor::thread().set_handlers(FD_PIPE, Some(on_pipe_read), None, ConnectionDefault);
 }
 
 /// `ReactorProcess_onPipeRead`: a message from another worker or a task worker.

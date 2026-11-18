@@ -26,6 +26,7 @@ use std::io::IoSlice;
 use std::ptr::{self, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering::Relaxed};
 use std::time::{SystemTime, UNIX_EPOCH};
+use swoole_rs_ffi::ErrorHandler::{Callback, ConnectionDefault};
 use swoole_rs_ffi::socket_pair::{self, SocketPair};
 use swoole_rs_ffi::{
     ChangeOp, ErrorCode, Event, Events, Handler, Heap, OwnedSocket, ReactorFields, ReactorPrepared,
@@ -388,19 +389,20 @@ unsafe fn create_failure() {
 unsafe fn set_handler() {
     unsafe {
         let reactor = reactor_new(SW_REACTOR_MAXEVENTS as c_int, TYPE_AUTO);
+        // Upstream compares these sentinel addresses without calling them.
+        let [read, write, error] = [1usize, 2, 3].map(|n| std::mem::transmute::<usize, Handler>(n));
+        reactor_upstream::set_handlers(
+            reactor,
+            SW_FD_SESSION,
+            Some(read),
+            Some(write),
+            Callback(error),
+        );
         for (event, fake) in [
             (SW_EVENT_READ, 1usize),
             (SW_EVENT_WRITE, 2),
             (SW_EVENT_ERROR, 3),
         ] {
-            // `(ReactorHandler) 0x1`: an address the case only compares, never calls.
-            let fake_handler = std::mem::transmute::<usize, Handler>(fake);
-            reactor_upstream::set_handler(
-                reactor,
-                SW_FD_SESSION,
-                Events::from_bits(event),
-                Some(fake_handler),
-            );
             assert!(reactor_upstream::isset_handler(
                 reactor,
                 SW_FD_SESSION,
@@ -441,7 +443,7 @@ unsafe fn wait() {
         assert!(!tg_reactor().is_null());
         assert!((*fields(tg())).ready);
 
-        event_api::set_handler(SW_FD_PIPE, Events::READ, Some(read_hello));
+        event_api::set_handlers(SW_FD_PIPE, Some(read_hello), None, ConnectionDefault);
 
         let ret = event_api::event_add(handle(sock(&p, false)), Events::READ);
         assert_eq!(
@@ -491,7 +493,7 @@ unsafe fn write_case() {
         );
         assert!(!tg_reactor().is_null());
 
-        event_api::set_handler(SW_FD_PIPE, Events::READ, Some(read_hello));
+        event_api::set_handlers(SW_FD_PIPE, Some(read_hello), None, ConnectionDefault);
         assert!(event_api::event_add(handle(sock(&p, false)), Events::READ));
 
         let n = event_api::event_write(handle(sock(&p, true)), HELLO);
@@ -615,7 +617,7 @@ unsafe fn write_2m() {
         );
         assert!(!tg_reactor().is_null());
 
-        event_api::set_handler(SW_FD_PIPE, Events::READ, Some(read_2m));
+        event_api::set_handlers(SW_FD_PIPE, Some(read_2m), None, ConnectionDefault);
 
         socket_pair::set_blocking(&mut p, false);
         let _ = socket_pair::unix_socket_set_buffer_size(&p, 65536);
@@ -716,17 +718,12 @@ unsafe fn reactor_test_func(reactor: Running<'_>) {
         let p = pipe_pair(false);
         assert!(ready(&p));
 
-        reactor_upstream::set_handler(
+        reactor_upstream::set_handlers(
             reactor,
             SW_FD_PIPE,
-            Events::from_bits(SW_EVENT_READ),
             Some(pipe_read),
-        );
-        reactor_upstream::set_handler(
-            reactor,
-            SW_FD_PIPE,
-            Events::from_bits(SW_EVENT_WRITE),
             Some(pipe_write),
+            ConnectionDefault,
         );
 
         assert_eq!(add(reactor, sock(&p, false), SW_EVENT_READ), SW_OK);
@@ -740,11 +737,12 @@ unsafe fn reactor_test_func(reactor: Running<'_>) {
         (*sock2).fields.object = write_count.cast();
         (*sock2).fields.fd_type = SW_FD_STREAM;
 
-        reactor_upstream::set_handler(
+        reactor_upstream::set_handlers(
             reactor,
             SW_FD_STREAM,
-            Events::from_bits(SW_EVENT_WRITE),
+            None,
             Some(count_write),
+            ConnectionDefault,
         );
         assert_eq!(
             add(
@@ -849,17 +847,19 @@ unsafe fn poll_readiness_after_fd_reuse() {
             (*socket).fields.object = state.cast();
         }
 
-        reactor_upstream::set_handler(
+        reactor_upstream::set_handlers(
             reactor,
             SW_FD_STREAM,
-            Events::from_bits(SW_EVENT_READ),
             Some(reuse_read),
+            None,
+            ConnectionDefault,
         );
-        reactor_upstream::set_handler(
+        reactor_upstream::set_handlers(
             reactor,
             SW_FD_USER,
-            Events::from_bits(SW_EVENT_READ),
             Some(count_user),
+            None,
+            ConnectionDefault,
         );
 
         assert_eq!(add(reactor, (*state).sockets[0], SW_EVENT_READ), SW_OK);
@@ -1161,11 +1161,12 @@ unsafe fn test_error_event(kind: c_int, mut retval: c_int) {
 
         reactor.set_object((&raw mut retval).cast());
 
-        reactor_upstream::set_handler(
+        reactor_upstream::set_handlers(
             reactor,
             SW_FD_PIPE,
-            Events::from_bits(SW_EVENT_ERROR),
-            Some(error_event_handler),
+            None,
+            None,
+            Callback(error_event_handler),
         );
 
         add(reactor, sock(&p, true), SW_EVENT_ERROR);
@@ -1324,8 +1325,12 @@ unsafe fn handle_fail() {
         );
         assert!(!tg_reactor().is_null());
 
-        event_api::set_handler(SW_FD_PIPE, Events::READ, Some(fail_read));
-        event_api::set_handler(SW_FD_PIPE, Events::WRITE, Some(fail_write));
+        event_api::set_handlers(
+            SW_FD_PIPE,
+            Some(fail_read),
+            Some(fail_write),
+            ConnectionDefault,
+        );
 
         let socket = sock(&p, false);
         (*socket).fields.object = ptr::from_ref::<SocketPair>(&p).cast_mut().cast();
