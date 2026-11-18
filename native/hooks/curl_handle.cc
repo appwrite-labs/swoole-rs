@@ -292,6 +292,63 @@ extern "C" zval *swoole_curl_private(php_curl *ch) {
     return &ch->private_data;
 }
 
+/* curl_easy_getinfo, which is variadic, for each result type: whether libcurl answered. */
+extern "C" bool swoole_curl_info_string(php_curl *ch, int info, const char **value) {
+    return curl_easy_getinfo(ch->cp, (CURLINFO) info, value) == CURLE_OK;
+}
+
+extern "C" bool swoole_curl_info_long(php_curl *ch, int info, int64_t *value) {
+    long answer = 0;
+    if (curl_easy_getinfo(ch->cp, (CURLINFO) info, &answer) != CURLE_OK) {
+        return false;
+    }
+    *value = answer;
+    return true;
+}
+
+extern "C" bool swoole_curl_info_double(php_curl *ch, int info, double *value) {
+    return curl_easy_getinfo(ch->cp, (CURLINFO) info, value) == CURLE_OK;
+}
+
+extern "C" bool swoole_curl_info_off_t(php_curl *ch, int info, curl_off_t *value) {
+    return curl_easy_getinfo(ch->cp, (CURLINFO) info, value) == CURLE_OK;
+}
+
+/* A list the caller frees with swoole_curl_list_free. */
+extern "C" bool swoole_curl_info_list(php_curl *ch, int info, struct curl_slist **list) {
+    return curl_easy_getinfo(ch->cp, (CURLINFO) info, list) == CURLE_OK;
+}
+
+/* The next string of a list libcurl owns, or null at its end. */
+extern "C" const char *swoole_curl_list_next(const struct curl_slist **cursor) {
+    const struct curl_slist *node = *cursor;
+    if (!node) {
+        return NULL;
+    }
+    *cursor = node->next;
+    return node->data;
+}
+
+/* CURLINFO_CERTINFO: the number of certificates, or -1 when libcurl did not answer. */
+extern "C" int swoole_curl_info_certs(php_curl *ch, const struct curl_certinfo **certs) {
+    struct curl_certinfo *info = NULL;
+    if (curl_easy_getinfo(ch->cp, CURLINFO_CERTINFO, &info) != CURLE_OK) {
+        return -1;
+    }
+    *certs = info;
+    return info ? info->num_of_certs : 0;
+}
+
+/* The fields of certificate `index`, which swoole_curl_info_certs counted. */
+extern "C" const struct curl_slist *swoole_curl_cert_fields(const struct curl_certinfo *certs, int index) {
+    return certs->certinfo[index];
+}
+
+/* The request header CURLINFO_HEADER_OUT recorded, or null. */
+extern "C" const zend_string *swoole_curl_header_out(php_curl *ch) {
+    return ch->header.str;
+}
+
 /* The stream resource's FILE * and whether it was opened for writing, or null after the error. */
 extern "C" FILE *swoole_curl_stream_file(zval *value, bool *writable) {
     php_stream *what =
