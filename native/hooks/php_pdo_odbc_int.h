@@ -14,6 +14,8 @@
   +----------------------------------------------------------------------+
 */
 
+/* internal header; not supposed to be installed */
+
 #ifdef PHP_WIN32
 # define PDO_ODBC_TYPE	"Win32"
 #endif
@@ -91,10 +93,6 @@
 # include <cli0env.h>
 #endif
 
-#ifdef HAVE_ODBCSDK_H
-# include <odbcsdk.h>
-#endif
-
 /* }}} */
 
 /* {{{ Figure out the type for handles */
@@ -116,7 +114,7 @@
 typedef struct {
 	char last_state[6];
 	char last_err_msg[SQL_MAX_MESSAGE_LENGTH];
-	SDWORD last_error;
+	SQLINTEGER last_error;
 	const char *file, *what;
 	int line;
 } pdo_odbc_errinfo;
@@ -133,7 +131,7 @@ typedef struct {
 	char *data;
 	zend_ulong datalen;
 	SQLLEN fetched_len;
-	SWORD	coltype;
+	SQLSMALLINT coltype;
 	unsigned is_long;
 	unsigned is_unicode:1;
 	unsigned _spare:31;
@@ -144,8 +142,6 @@ typedef struct {
 	pdo_odbc_column *cols;
 	pdo_odbc_db_handle *H;
 	pdo_odbc_errinfo einfo;
-	char *convbuf;
-	zend_ulong convbufsize;
 	unsigned going_long:1;
 	unsigned assume_utf8:1;
 	signed col_count:16;
@@ -161,21 +157,9 @@ typedef struct {
 	unsigned _spare:31;
 } pdo_odbc_param;
 
-extern const pdo_driver_t pdo_odbc_driver;
-extern const struct pdo_stmt_methods odbc_stmt_methods;
+extern const struct pdo_stmt_methods swoole_odbc_stmt_methods;
 
 void pdo_odbc_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PDO_ODBC_HSTMT statement, char *what, const char *file, int line);
-#define pdo_odbc_drv_error(what)	pdo_odbc_error(dbh, NULL, SQL_NULL_HSTMT, what, __FILE__, __LINE__)
-#define pdo_odbc_stmt_error(what)	pdo_odbc_error(stmt->dbh, stmt, SQL_NULL_HSTMT, what, __FILE__, __LINE__)
-#define pdo_odbc_doer_error(what)	pdo_odbc_error(dbh, NULL, stmt, what, __FILE__, __LINE__)
-
-void pdo_odbc_init_error_table(void);
-void pdo_odbc_fini_error_table(void);
-
-#ifdef SQL_ATTR_CONNECTION_POOLING
-extern zend_ulong pdo_odbc_pool_on;
-extern zend_ulong pdo_odbc_pool_mode;
-#endif
 
 enum {
 	PDO_ODBC_ATTR_USE_CURSOR_LIBRARY = PDO_ATTR_DRIVER_SPECIFIC,

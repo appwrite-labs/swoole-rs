@@ -1,22 +1,14 @@
 /* The coroutine ODBC calls crates/odbc exports (--with-swoole-odbc), and the
  * macros that point the bundled pdo_odbc driver at them. The driver includes
- * this first and gets its php_pdo_odbc_int.h (the ODBC flavour's headers) from
- * here. */
+ * this first and gets php_pdo_odbc_int.h (the ODBC flavour's headers and the
+ * driver's records) from here. */
 #ifndef PHP_SWOOLE_ODBC_H
 #define PHP_SWOOLE_ODBC_H
 #include "php_swoole.h"
 #ifdef SW_USE_ODBC
 BEGIN_EXTERN_C()
 #include "ext/pdo/php_pdo_driver.h"
-#if PHP_VERSION_ID < 80300
-#include "thirdparty/php82/pdo_odbc/php_pdo_odbc_int.h"
-#elif PHP_VERSION_ID < 80400
-#include "thirdparty/php83/pdo_odbc/php_pdo_odbc_int.h"
-#elif PHP_VERSION_ID < 80500
-#include "thirdparty/php84/pdo_odbc/php_pdo_odbc_int.h"
-#else
-#include "thirdparty/php85/pdo_odbc/php_pdo_odbc_int.h"
-#endif
+#include "php_pdo_odbc_int.h"
 RETCODE swoole_odbc_SQLConnect(SQLHDBC dbc, SQLCHAR *server, SQLSMALLINT server_len, SQLCHAR *user, SQLSMALLINT user_len,
                                SQLCHAR *password, SQLSMALLINT password_len);
 SQLRETURN SQL_API swoole_odbc_SQLDriverConnect(SQLHDBC dbc, SQLHWND hwnd, SQLCHAR *in, SQLSMALLINT in_len, SQLCHAR *out,
