@@ -113,5 +113,5 @@ copies trimmed to what C++ still uses: `include/swoole_server.h` in #1465
 in #959 (`native/corebase/swoole.h`).
 
 References: [Rust FFI](https://doc.rust-lang.org/nomicon/ffi.html),
-[upstream CMake build](https://github.com/swoole/swoole-src/blob/v6.2.5/CMakeLists.txt),
-[upstream config.m4](https://github.com/swoole/swoole-src/blob/v6.2.5/config.m4).
+[upstream CMake build](https://github.com/swoole/swoole-src/blob/v6.2.6/CMakeLists.txt),
+[upstream config.m4](https://github.com/swoole/swoole-src/blob/v6.2.6/config.m4).

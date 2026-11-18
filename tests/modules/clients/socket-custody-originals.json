@@ -1,6 +1,6 @@
 {
   "repository": "https://github.com/swoole/swoole-src",
-  "commit": "76c657d88be39b7af6bf85e46bcbac0da7387760",
+  "commit": "13d2f33664d60b72aaa9f102ff0ef4085c028513",
   "tests": [
     {
       "path": "tests/swoole_socket_coro/construct_parse_args_failed.phpt",
@@ -44,7 +44,7 @@
     },
     {
       "path": "tests/swoole_socket_coro/import_4.phpt",
-      "sha256": "d278e932ef0ef394b33407200f8a5810a8cac49b9f7e4af75098574c42da82f6",
+      "sha256": "de26d2ef6d27127fbeee3970e06080dd967a2707d6172b35945a99737e2c1372",
       "module": "socket-custody",
       "requires": [
         "coroutines"

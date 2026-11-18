@@ -1,6 +1,6 @@
 # Core primitives ABI v1: Base64, CRC32, error messages
 
-Reference: Swoole v6.2.5, `76c657d88be39b7af6bf85e46bcbac0da7387760`. Feature
+Reference: Swoole v6.2.6, `13d2f33664d60b72aaa9f102ff0ef4085c028513`. Feature
 values: base64 8, CRC32 16, error messages 32.
 
 The primitives this page describes (Base64, CRC32 and the error-message
