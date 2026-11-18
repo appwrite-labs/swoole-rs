@@ -11,7 +11,6 @@ use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::reactor::socket_upstream::make_typed;
 use swoole_rs_corebase::reactor::{OwnedSocket, Running, SocketRecord};
-pub(crate) use swoole_rs_corebase::tls::upstream::socket_free;
 
 /// `SW_FD_STREAM_SERVER` and `SW_FD_DGRAM_SERVER`.
 pub(crate) const FD_STREAM_SERVER: c_int = 1;
@@ -226,20 +225,18 @@ use swoole_rs_corebase::sys::errno;
 
 /// `ListenPort::close_socket()`: closes and frees the port's socket.
 pub(crate) fn close_socket(config: &PortConfig) {
-    // Taken first, so nothing finds the record once it is freed.
-    let Some(socket) = config.take_socket() else {
+    // Retired first, so nothing finds the record once its descriptor closes. The port
+    // keeps the record, which upstream deletes.
+    let Some(socket) = config.retire_socket() else {
         return;
     };
-    // `delete socket`.
-    let socket = socket.into_box();
-    let fd = socket.fd;
+    let fd = socket.edit(|record| core::mem::replace(&mut record.fd, -1));
     if swoole_rs_corebase::sys::close(fd).is_err() {
         log::sys_warning(
             c"ListenPort::close_socket",
             format_args!("close({fd}) failed"),
         );
     }
-    drop(socket);
 }
 
 /// `ListenPort::get_protocols()`: a datagram port, else the first protocol its

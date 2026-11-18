@@ -560,7 +560,7 @@ pub fn drain_worker_pipe(serv: view::Server<'_>) {
         };
         for master in [false, true] {
             if let Some(pipe) = worker_pipe(worker, master) {
-                Reactor::thread().drain(*pipe);
+                Reactor::thread().drain(pipe);
             }
         }
     }

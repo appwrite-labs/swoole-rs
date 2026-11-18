@@ -402,10 +402,7 @@ impl OwnedSocket {
         if socket.borrows().load(Ordering::Relaxed) != 0 {
             crate::fatal("a socket was freed inside a read or edit of it");
         }
-        let mark = socket.mark().load(Ordering::Relaxed);
-        if mark != 0 {
-            deregister(socket, mark);
-        }
+        leave_reactor(socket);
         // SAFETY: the box `new` leaked, or the heap record `from_socket` took back; this
         // owner is its only one and goes here.
         unsafe { Box::from_raw(self.0.as_ptr()) }
@@ -561,6 +558,61 @@ impl SocketLoans {
     }
 }
 
+/// The sockets a holder owns until it is given up by value: it lends the current one
+/// for a borrow of itself, and [`Self::retire`] takes that one off its reactor for its
+/// descriptor to close but keeps the record. Nothing frees a record through `&self`, so
+/// no handle it lent outlives its record; the owners leave only through
+/// [`Self::take_all`], which needs the holder alone. Dropping it leaks the records, as
+/// dropping an [`OwnedSocket`] does.
+#[derive(Default)]
+pub struct KeptSockets {
+    current: Cell<Option<Heap<'static>>>,
+    owners: Cell<Vec<OwnedSocket>>,
+}
+
+impl KeptSockets {
+    /// The current socket, if any.
+    #[must_use]
+    #[inline]
+    pub fn get(&self) -> Option<Heap<'_>> {
+        self.current.get()
+    }
+
+    /// Keeps `owner`, which is the current socket from here. One current before stays
+    /// kept as it is, no longer lent.
+    pub fn put(&self, owner: OwnedSocket) {
+        self.current.set(Some(owner.0));
+        let mut owners = self.owners.take();
+        owners.push(owner);
+        self.owners.set(owners);
+    }
+
+    /// The current socket, which no longer is: deleted from the reactor whose registry
+    /// names it, as a free deletes it first, and kept for the rest of this holder's life.
+    /// The caller closes its descriptor.
+    pub fn retire(&self) -> Option<Socket<'_>> {
+        let socket = self.current.take()?.socket();
+        leave_reactor(socket);
+        Some(socket)
+    }
+
+    /// Every record this kept, current or retired, for the caller to free: holding this
+    /// alone, it has no lend left.
+    #[must_use]
+    pub fn take_all(&mut self) -> Vec<OwnedSocket> {
+        self.current.set(None);
+        std::mem::take(self.owners.get_mut())
+    }
+}
+
+/// Deletes `socket` from the reactor whose registry names it, if one does.
+fn leave_reactor(socket: Socket<'_>) {
+    let mark = socket.mark().load(Ordering::Relaxed);
+    if mark != 0 {
+        deregister(socket, mark);
+    }
+}
+
 /// Deletes `socket` from the thread's reactor, whose serial is `mark`, as it is freed:
 /// from the kernel too while its descriptor is still the one registered, quietly, since
 /// it may be closed already; then from the registry wherever it names the record.
@@ -619,6 +671,29 @@ mod tests {
         assert_eq!(fd, 0, "reads of one record nest");
         socket.edit(|fields| fields.fd = 2);
         assert_eq!(socket.fd(), 2, "the count cleared after the reads");
+    }
+
+    #[test]
+    fn kept_sockets_keep_a_retired_record_live_until_taken_by_value() {
+        let mut kept = KeptSockets::default();
+        assert!(kept.get().is_none(), "none at first");
+        let mut record = SocketRecord::new();
+        record.fd = -1;
+        kept.put(OwnedSocket::new(Box::new(record)));
+        let lent = kept.get().expect("the current socket");
+        let retired = kept.retire().expect("the current socket retires");
+        assert!(kept.get().is_none(), "no current socket once retired");
+        assert!(kept.retire().is_none(), "nothing more to retire");
+        // Both handles still reach the record, which the holder keeps.
+        retired.edit(|record| record.fd = 3);
+        assert_eq!(lent.fd(), 3);
+        kept.put(OwnedSocket::new(Box::default()));
+        let owners = kept.take_all();
+        assert_eq!(owners.len(), 2, "the retired record and the current one");
+        assert!(kept.get().is_none(), "nothing current once taken");
+        for owner in owners {
+            owner.free();
+        }
     }
 
     #[test]

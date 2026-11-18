@@ -5,7 +5,7 @@ use std::sync::{OnceLock, RwLock};
 
 use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
-use swoole_rs_corebase::reactor::Heap;
+use swoole_rs_corebase::reactor::{Heap, KeptSockets, Socket};
 use swoole_rs_corebase::tls::{SslVersion, TlsContext};
 use swoole_rs_corebase::{CellExt, StringSlot};
 
@@ -137,10 +137,11 @@ pub struct PortConfig {
     pub r#type: c_int,
     pub ssl: bool,
     pub port: Setting<c_int>,
-    /// The listening socket's record (`network::Socket *`), or null: stored by
-    /// `create_socket()` and `import()`, nulled by `close_socket()` and `close()`.
-    /// Private: only [`Self::set_listening_socket`] stores a record here.
-    pub(crate) socket: Shared<Option<Heap<'static>>>,
+    /// The listening socket's record (`network::Socket *`), or none: stored by
+    /// `create_socket()` and `import()`, retired by `close_socket()` and `close()`. The
+    /// port keeps every record it owned until [`Self::delete`], so a socket it lent
+    /// stays live as long as the port.
+    sockets: KeptSockets,
     pub thread_id: Shared<libc::pthread_t>,
     pub heartbeat_idle_time: Setting<u16>,
     pub open_eof_check: Setting<bool>,
@@ -360,33 +361,29 @@ impl PortConfig {
     /// The listening socket's record as native code holds it, or null.
     #[must_use]
     pub fn socket_ptr(&self) -> *mut c_void {
-        self.socket
+        self.sockets
             .get()
             .map_or(core::ptr::null_mut(), |socket| socket.as_ptr().cast())
     }
 
     /// Make `socket` the port's listening socket, which the port owns until
-    /// [`Self::take_socket`] gives it back.
+    /// [`Self::delete`].
     pub fn set_listening_socket(&self, socket: swoole_rs_corebase::reactor::OwnedSocket) {
-        self.socket.set(Some(socket.leak()));
+        self.sockets.put(socket);
     }
 
-    /// The listening socket's owner, taken from the port so nothing finds the record
-    /// once the caller frees it.
+    /// The listening socket, which stops being one: off its reactor, for the caller to
+    /// close its descriptor. The port keeps the record, so a handle it lent stays live.
     #[must_use]
-    pub fn take_socket(&self) -> Option<swoole_rs_corebase::reactor::OwnedSocket> {
-        let socket = self.socket.replace(None)?;
-        // SAFETY: only `set_listening_socket` stores a socket, an owner it leaked, and
-        // the port no longer names it: this is its only owner.
-        Some(unsafe { swoole_rs_corebase::reactor::OwnedSocket::from_socket(*socket) })
+    pub fn retire_socket(&self) -> Option<Socket<'_>> {
+        self.sockets.retire()
     }
 
     /// The port's listening socket, or `None` before it has one or after it closes
-    /// (`OP_PORT_CLOSE_SOCKET`): a record live until that unsafe free, whose caller
-    /// answers for the handles left.
+    /// (`OP_PORT_CLOSE_SOCKET`).
     #[must_use]
-    pub fn listening_socket(&self) -> Option<Heap<'static>> {
-        self.socket.get()
+    pub fn listening_socket(&self) -> Option<Heap<'_>> {
+        self.sockets.get()
     }
     /// A new port's settings.
     #[must_use]
@@ -408,7 +405,7 @@ impl PortConfig {
             r#type: 1,
             ssl: false,
             port: Setting::new(0),
-            socket: Shared::new(None),
+            sockets: KeptSockets::default(),
             // Zero is the original native empty sentinel.
             thread_id: Shared::new(swoole_rs_corebase::sys::zeroed()),
             heartbeat_idle_time: Setting::new(0),
@@ -461,9 +458,10 @@ impl PortConfig {
             reason = "a port kept past this owns the callable to the exit"
         )]
         std::mem::forget(self.replace_length_owner(None));
-        // The record of a port `destroy` never closed (a server never started). Its
-        // descriptor stays open to the exit, as upstream's.
-        if let Some(socket) = self.take_socket() {
+        // The records the port kept: those its closes retired, and one `destroy` never
+        // closed (a server never started), whose descriptor stays open to the exit, as
+        // upstream's.
+        for socket in self.sockets.take_all() {
             socket.free();
         }
     }

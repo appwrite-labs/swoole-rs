@@ -34,14 +34,6 @@ use swoole_rs_zend::{
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-unsafe extern "C" {
-    /// `SEPARATE_ARRAY` of an array zval (anything else is left alone): a
-    /// shared table is copied for the slot, and its count only drops, so it
-    /// stays live for whoever else holds it.
-    #[link_name = "swr_zend_separate_array"]
-    safe fn separate_array(array: &Value);
-}
-
 /// `swHttpErrorStatusCode`: the negative `statusCode` a failed request leaves.
 #[derive(Clone, Copy)]
 enum ErrorStatus {
@@ -1763,22 +1755,23 @@ fn set_method(call: &Call) {
 
 /// `Z_PARAM_ARRAY_EX(.., 0, 1)` then a property update: the stored array is
 /// the argument, separated.
-fn set_array_property(call: &Call, name: &CStr) {
-    let Ok(array) = call.arity(1, 1).and_then(|()| call.array(1)) else {
+fn set_array_property(call: &mut Call, name: &CStr) {
+    if call.arity(1, 1).and_then(|()| call.array(1)).is_err()
+        || call.edit_arg_array(1, |array| array.separate().is_some()) != Some(true)
+    {
         return call.set_bool(false);
-    };
-    separate_array(array);
-    if let Some(props) = props::this(call) {
+    }
+    if let (Some(props), Some(array)) = (props::this(call), call.value(1)) {
         props.value(name, array);
     }
     call.set_bool(true);
 }
 
-fn set_headers(call: &Call) {
+fn set_headers(call: &mut Call) {
     set_array_property(call, c"requestHeaders");
 }
 
-fn set_cookies(call: &Call) {
+fn set_cookies(call: &mut Call) {
     set_array_property(call, c"cookies");
 }
 
