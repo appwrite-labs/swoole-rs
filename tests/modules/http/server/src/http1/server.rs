@@ -62,7 +62,7 @@ fn send_buffer() {
     assert_eq!(serv.create(), SW_OK);
 
     serv.set_callback(Callback::WorkerStart(send_buffer_worker_start));
-    serv.set_callback(Callback::Receive(send_buffer_receive));
+    serv.set_callback(Callback::Receive(status_callback!(send_buffer_receive)));
 
     serv.start();
     join_client();

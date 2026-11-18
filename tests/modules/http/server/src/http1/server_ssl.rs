@@ -298,7 +298,7 @@ fn ssl() {
     assert_eq!(serv.create(), SW_OK);
     serv.set_callback(Callback::Start(ssl_start));
     serv.set_callback(Callback::WorkerStart(unlock));
-    serv.set_callback(Callback::Receive(echo_receive));
+    serv.set_callback(Callback::Receive(status_callback!(echo_receive)));
     run_server(serv);
     serv.delete();
 }
@@ -342,7 +342,7 @@ fn ssl_error() {
     assert_eq!(serv.create(), SW_OK);
     serv.set_callback(Callback::Start(ssl_error_start));
     serv.set_callback(Callback::WorkerStart(unlock));
-    serv.set_callback(Callback::Receive(ignore_receive));
+    serv.set_callback(Callback::Receive(status_callback!(ignore_receive)));
     serv.set_callback(Callback::Connect(count_connect));
     run_server(serv);
     assert_eq!(shared().counter.load(Ordering::SeqCst), 0);
@@ -410,7 +410,7 @@ fn ssl_write() {
     wbuf();
     serv.set_callback(Callback::Start(ssl_write_start));
     serv.set_callback(Callback::WorkerStart(unlock));
-    serv.set_callback(Callback::Receive(ssl_write_receive));
+    serv.set_callback(Callback::Receive(status_callback!(ssl_write_receive)));
     run_server(serv);
     assert_eq!(shared().counter.load(Ordering::SeqCst), 1);
     serv.delete();
@@ -481,7 +481,7 @@ fn dtls() {
     assert_eq!(serv.create(), SW_OK);
     serv.set_callback(Callback::Start(dtls_start));
     serv.set_callback(Callback::WorkerStart(unlock));
-    serv.set_callback(Callback::Receive(echo_receive));
+    serv.set_callback(Callback::Receive(status_callback!(echo_receive)));
     run_server(serv);
     serv.delete();
 }
@@ -497,7 +497,7 @@ fn dtls2() {
     port.ssl_init();
 
     server.create();
-    server.set_callback(Callback::Receive(echo_receive));
+    server.set_callback(Callback::Receive(status_callback!(echo_receive)));
 
     let pid = fork_with(move || {
         sleep(1.0);
@@ -644,7 +644,7 @@ fn test_ssl_client_cert(mode: c_int) {
     assert_eq!(serv.create(), SW_OK);
     serv.set_callback(Callback::Start(client_cert_start));
     serv.set_callback(Callback::WorkerStart(unlock));
-    serv.set_callback(Callback::Receive(client_cert_receive));
+    serv.set_callback(Callback::Receive(status_callback!(client_cert_receive)));
     run_server(serv);
     serv.delete();
 }

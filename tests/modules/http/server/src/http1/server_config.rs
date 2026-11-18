@@ -198,7 +198,7 @@ fn startup_error() {
     assert!(startup_error.contains("require 'onTask' callback"));
     assert_eq!(last_error(), SW_ERROR_SERVER_INVALID_CALLBACK);
 
-    server.set_callback(Callback::Task(task_ok));
+    server.set_callback(Callback::Task(status_callback!(task_ok)));
 
     assert_eq!(server.start(), -1);
     assert!(
@@ -217,7 +217,7 @@ fn startup_error() {
 
     swoole_set_log_level(ori_log_level);
 
-    server.set_callback(Callback::Receive(receive_ok));
+    server.set_callback(Callback::Receive(status_callback!(receive_ok)));
 
     assert_eq!(server.start(), -1);
     assert!(
