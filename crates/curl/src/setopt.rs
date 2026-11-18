@@ -2,8 +2,8 @@
 //! a string or a blob are set here, through the typed accessors in
 //! `native/hooks/curl_handle.cc` (`curl_easy_setopt` is variadic), as are the
 //! list options, `CURLOPT_RETURNTRANSFER`, `CURLOPT_PRIVATE`, the file-handle
-//! options and `CURLOPT_SHARE`; the rest (callables, post fields and
-//! `CURLINFO_HEADER_OUT`) still go to the bundled copies'
+//! options, `CURLOPT_SHARE` and `CURLOPT_POSTFIELDS` (`postfields.rs`); the
+//! callables and `CURLINFO_HEADER_OUT` still go to the bundled copies'
 //! `swoole_curl_setopt_native`, which also rejects an unknown option.
 //!
 //! Each option is gated as the copies' `#if`s gated its `case`: by the libcurl
@@ -18,15 +18,19 @@ unsafe extern "C" {
     // `LIBCURL_VERSION_NUM`, from the headers the extension was built against.
     safe static swoole_curl_header_version: u32;
     // Each returns the option's `CURLcode` and saves it as the handle's error.
-    safe fn swoole_curl_setopt_long(handle: PhpHandle<'_>, option: c_int, value: c_long) -> c_int;
+    pub(super) safe fn swoole_curl_setopt_long(
+        handle: PhpHandle<'_>,
+        option: c_int,
+        value: c_long,
+    ) -> c_int;
     safe fn swoole_curl_setopt_off_t(handle: PhpHandle<'_>, option: c_int, value: i64) -> c_int;
-    safe fn swoole_curl_setopt_string(
+    pub(super) safe fn swoole_curl_setopt_string(
         handle: PhpHandle<'_>,
         option: c_int,
         value: Option<&ZStr>,
     ) -> c_int;
     safe fn swoole_curl_setopt_blob(handle: PhpHandle<'_>, option: c_int, value: &ZStr) -> c_int;
-    safe fn swoole_curl_save_error(handle: PhpHandle<'_>, error: c_int);
+    pub(super) safe fn swoole_curl_save_error(handle: PhpHandle<'_>, error: c_int);
     // `curl_slist_append`; false leaves the list as it was.
     safe fn swoole_curl_list_append(list: &mut List, value: &ZStr) -> bool;
     safe fn swoole_curl_list_free(list: List);
@@ -53,7 +57,7 @@ unsafe extern "C" {
     safe fn swoole_curl_private<'a>(handle: PhpHandle<'a>) -> &'a mut swoole_rs_zend::Owned;
     safe fn swoole_curl_open_basedir() -> bool;
     // Warns about a path outside open_basedir, which a user error handler can bail out of.
-    safe fn swoole_curl_allowed_path(path: &ZStr) -> bool;
+    pub(super) safe fn swoole_curl_allowed_path(path: &ZStr) -> bool;
     // The URL as `curl_init` sets it: file:// is turned off under open_basedir.
     safe fn swoole_curl_set_url(handle: PhpHandle<'_>, url: &ZStr) -> bool;
     // The bundled copies' `_php_curl_setopt`, for every option not set here.
@@ -200,6 +204,7 @@ const CURLOPT_PINNEDPUBLICKEY: zend_long = 10230;
 const CURLOPT_PIPEWAIT: zend_long = 237;
 const CURLOPT_PORT: zend_long = 3;
 const CURLOPT_POST: zend_long = 47;
+const CURLOPT_POSTFIELDS: zend_long = 10015;
 const CURLOPT_POSTQUOTE: zend_long = 10039;
 const CURLOPT_POSTREDIR: zend_long = 161;
 const CURLOPT_PREQUOTE: zend_long = 10093;
@@ -371,6 +376,8 @@ enum Kind {
     File,
     /// A `CurlShareHandle`; anything else is ignored.
     Share,
+    /// The body: a string, or an array of multipart fields.
+    PostFields,
     /// Kept for compatibility; nothing is set.
     Ignored,
 }
@@ -405,6 +412,7 @@ fn kind(option: zend_long) -> Option<Kind> {
         CURLOPT_PRIVATE => Some(Kind::Private),
         CURLOPT_FILE | CURLOPT_INFILE | CURLOPT_STDERR | CURLOPT_WRITEHEADER => Some(Kind::File),
         CURLOPT_SHARE => Some(Kind::Share),
+        CURLOPT_POSTFIELDS => Some(Kind::PostFields),
         CURLOPT_HTTP200ALIASES => Some(Kind::List(c"CURLOPT_HTTP200ALIASES")),
         CURLOPT_HTTPHEADER => Some(Kind::List(c"CURLOPT_HTTPHEADER")),
         CURLOPT_POSTQUOTE => Some(Kind::List(c"CURLOPT_POSTQUOTE")),
@@ -863,6 +871,7 @@ fn set(
             true
         }
         Kind::File => set_file(call, handle, option, value),
+        Kind::PostFields => super::postfields::set(handle, value),
         Kind::Share => {
             swoole_curl_set_share(handle, value);
             swoole_curl_save_error(handle, 0);
@@ -971,7 +980,7 @@ fn set_long(handle: PhpHandle<'_>, id: c_int, long: zend_long) -> bool {
 }
 
 /// `php_error_docref(NULL, level, message)`: false once it bailed out.
-fn warn(level: i32, message: &std::ffi::CStr) -> bool {
+pub(super) fn warn(level: i32, message: &std::ffi::CStr) -> bool {
     let reported = swoole_rs_zend::report(level, message);
     let ok = reported.is_ok();
     bailout::defer(reported);

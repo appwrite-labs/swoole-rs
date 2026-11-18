@@ -702,6 +702,18 @@ impl Value {
         self.read(self.scope(scope), name.to_bytes(), false)
     }
 
+    /// `zend_read_property(scope, object, name, 0)` under a class this crate
+    /// didn't register, as [`Value::read_property_loud`].
+    /// # Errors
+    /// The bailout a `__get` or the warning's error handler raised, trapped.
+    pub fn read_property_of(
+        &self,
+        scope: crate::ClassEntry<'_>,
+        name: &CStr,
+    ) -> Result<Option<Owned>, bailout::Bailout> {
+        self.read(Some(scope), name.to_bytes(), false)
+    }
+
     /// The class a property read sees the object's properties as: `scope`,
     /// or the object's own class for None.
     fn scope(&self, scope: Option<&crate::Class>) -> Option<crate::ClassEntry<'_>> {
