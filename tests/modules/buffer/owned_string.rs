@@ -1,4 +1,4 @@
-use super::{CppString, TrustedAllocator, c_void};
+use super::{StringBuffer, TrustedAllocator, c_void};
 
 #[test]
 fn popped_owner_keeps_the_prefix_and_frees_each_allocation_once() {
@@ -18,7 +18,7 @@ fn popped_owner_keeps_the_prefix_and_frees_each_allocation_once() {
     };
     FREES.set(0);
     let allocator = unsafe { TrustedAllocator::new(&ALLOCATOR) };
-    let mut buffer = CppString::EMPTY;
+    let mut buffer = StringBuffer::EMPTY;
     buffer.alloc_exact(13, Some(allocator));
     buffer.append(b"prefix:tail");
     buffer.set_offset(7);

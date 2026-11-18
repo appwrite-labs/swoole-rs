@@ -19,7 +19,7 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::CellExt;
-use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::constants::TaskFlag;
 use swoole_rs_corebase::locks::SharedMutex;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING;
@@ -266,14 +266,17 @@ fn encode(data: &Value, buf: &mut TaskBuffer) -> Result<Option<i64>, Bailout> {
 pub(crate) fn decode(task: Packed<'_>) -> Result<Option<(Owned, bool)>, Bailout> {
     // Upstream reads a temporary file into `sw_tg_buffer()`; this reads it into its
     // own buffer, which unserialize's PHP code can't reach.
-    let mut buffer = CppString::EMPTY;
+    let mut buffer = StringBuffer::EMPTY;
     let decoded = decode_into(task, &mut buffer);
     buffer.dispose();
     decoded
 }
 
 /// [`decode`] with `buffer` for a temporary file's bytes.
-fn decode_into(task: Packed<'_>, buffer: &mut CppString) -> Result<Option<(Owned, bool)>, Bailout> {
+fn decode_into(
+    task: Packed<'_>,
+    buffer: &mut StringBuffer,
+) -> Result<Option<(Owned, bool)>, Bailout> {
     let Some((data, flags)) = task.unpack(buffer) else {
         return Ok(None);
     };

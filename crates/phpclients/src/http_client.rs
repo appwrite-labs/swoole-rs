@@ -974,7 +974,7 @@ impl Client {
         &self,
         parser: &mut Parser,
         timeout: f64,
-        input: &mut swoole_rs_corebase::buffer::string::CppString,
+        input: &mut swoole_rs_corebase::buffer::string::StringBuffer,
     ) -> bool {
         input.clear();
         let Some(socket) = self.co() else {

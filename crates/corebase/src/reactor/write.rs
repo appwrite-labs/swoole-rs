@@ -4,7 +4,7 @@
 //! objects: making the socket nonblocking, the send, creating the `Buffer`, and
 //! registering write interest. It logs and raises from the returned outcome.
 use crate::CCast;
-use crate::buffer::cpp::{CppBuffer, swr_cpp_buffer_count, swr_cpp_buffer_length};
+use crate::buffer::cpp::{OutputQueue, swr_cpp_buffer_count, swr_cpp_buffer_length};
 use crate::reactor::{Drain, Socket};
 use std::io::IoSlice;
 
@@ -12,7 +12,7 @@ use std::io::IoSlice;
 #[repr(C)]
 pub struct SocketOutput {
     /// `Buffer *out_buffer`: the `Buffer` the socket owns, a null pointer without one.
-    pub out_buffer: Option<Box<CppBuffer>>,
+    pub out_buffer: Option<Box<OutputQueue>>,
     /// `TimerNode *send_timer`, held by id.
     pub send_timer: Option<crate::timer_key::Held>,
     pub buffer_size: u32,
@@ -25,7 +25,7 @@ pub struct SocketOutput {
 impl SocketOutput {
     /// `out_buffer`, or `None` without one.
     #[must_use]
-    pub fn buffer(&self) -> Option<&CppBuffer> {
+    pub fn buffer(&self) -> Option<&OutputQueue> {
         self.out_buffer.as_deref()
     }
 

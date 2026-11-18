@@ -17,7 +17,7 @@ use std::{
     sync::atomic::Ordering::Relaxed,
 };
 use swoole_rs_clients::address::{address_port, with_host};
-use swoole_rs_corebase::buffer::string::CppString as Buffer;
+use swoole_rs_corebase::buffer::string::StringBuffer as Buffer;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_members::Receive};

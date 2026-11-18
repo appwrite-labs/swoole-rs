@@ -586,7 +586,7 @@ pub struct RecvData<'a> {
 
 enum Payload<'a> {
     Lent(&'a [u8]),
-    Buffer(&'a mut crate::buffer::string::CppString),
+    Buffer(&'a mut crate::buffer::string::StringBuffer),
     Owned(crate::buffer::string::OwnedString),
 }
 
@@ -617,7 +617,7 @@ impl<'a> RecvData<'a> {
 
     /// The complete receive buffer, whose allocation a local worker may take.
     #[must_use]
-    pub fn buffer(info: DataHead, buffer: &'a mut crate::buffer::string::CppString) -> Self {
+    pub fn buffer(info: DataHead, buffer: &'a mut crate::buffer::string::StringBuffer) -> Self {
         Self {
             info,
             payload: Payload::Buffer(buffer),

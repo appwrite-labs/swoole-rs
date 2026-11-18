@@ -17,26 +17,26 @@ fn page_size() {
 }
 
 /// `ASSERT_MEMEQ(s.str, expected, s.length)`.
-fn assert_memeq(s: &CppString, expected: &[u8]) {
+fn assert_memeq(s: &StringBuffer, expected: &[u8]) {
     assert_eq!(s.view(), &expected[..s.length]);
 }
 
 /// `String copy(source)`.
-fn copy_of(source: &CppString) -> CppString {
+fn copy_of(source: &StringBuffer) -> StringBuffer {
     let mut s = MaybeUninit::uninit();
     swr_string_copy(&mut s, source);
     unsafe { s.assume_init() }
 }
 
 /// `this = source`, between two Strings.
-fn assign_copy(this: &mut CppString, source: &CppString) {
+fn assign_copy(this: &mut StringBuffer, source: &StringBuffer) {
     this.dispose();
     this.copy_from(source);
 }
 
 /// A String over `text`, which it does not own: upstream sets `str` and `length`.
-fn borrowed(text: &'static CStr) -> CppString {
-    CppString {
+fn borrowed(text: &'static CStr) -> StringBuffer {
+    StringBuffer {
         length: text.to_bytes().len(),
         size: 0,
         offset: 0,
@@ -64,12 +64,12 @@ fn move_and_copy() {
     assert_memeq(&s3, TEST_STR);
     assert!(s1.str.is_null());
 
-    let mut s4 = CppString::EMPTY;
+    let mut s4 = StringBuffer::EMPTY;
     assign_copy(&mut s4, &s3);
     assert_memeq(&s4, TEST_STR);
     assert!(!s3.str.is_null());
 
-    let mut s5 = CppString::EMPTY;
+    let mut s5 = StringBuffer::EMPTY;
     s5.dispose();
     s5.move_from(&mut s3);
     assert_memeq(&s5, TEST_STR);
@@ -99,7 +99,7 @@ fn append() {
 #[test]
 fn write() {
     page_size();
-    let mut s1 = CppString::EMPTY;
+    let mut s1 = StringBuffer::EMPTY;
     s1.reserve(32);
 
     let mut s2 = new(TEST_STR);
@@ -116,7 +116,7 @@ fn write() {
 #[test]
 fn repeat() {
     let end_str = b"[end]";
-    let mut s1 = CppString::EMPTY;
+    let mut s1 = StringBuffer::EMPTY;
     s1.repeat(b"hello\r\n", 5);
     s1.append(end_str);
 

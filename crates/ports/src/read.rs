@@ -4,7 +4,7 @@
 //! and the HTTP request are read and written in place, as upstream's reader did; the
 //! request's own operations are `swoole_rs_http`'s.
 use core::ffi::c_int;
-use swoole_rs_corebase::buffer::string::CppString as Buffer;
+use swoole_rs_corebase::buffer::string::StringBuffer as Buffer;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_TRACE as TRACE, SW_LOG_WARNING as WARNING};
 use swoole_rs_corebase::ossupport::TempFile;

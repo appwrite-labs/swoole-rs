@@ -16,7 +16,7 @@ use super::{
     TEXT_GROUP, TEXT_USER, Worker, ignore_event, ignore_server, last_error, microtime,
     swoole_set_log_level,
 };
-use crate::{CppString, Event, Hook, Receive};
+use crate::{Event, Hook, Receive, StringBuffer};
 use swoole_rs_ports::{lifecycle, methods};
 use swoole_rs_server::{ConnectionRecord, server_methods, view};
 
@@ -535,7 +535,7 @@ pub(crate) unsafe fn swr_case_sendfile(
 }
 
 /// `sw_tg_buffer()`: `SwooleTG.buffer_stack`.
-pub(crate) fn swr_case_tg_buffer() -> *mut CppString {
+pub(crate) fn swr_case_tg_buffer() -> *mut StringBuffer {
     swoole_rs_corebase::thread_buffer().cast()
 }
 

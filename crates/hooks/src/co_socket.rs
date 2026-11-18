@@ -12,7 +12,7 @@ use core::mem::{MaybeUninit, offset_of};
 use core::ptr;
 use std::ffi::CString;
 use std::os::fd::RawFd;
-use swoole_rs_corebase::buffer::string::{CppString, boxed_sized_string};
+use swoole_rs_corebase::buffer::string::{StringBuffer, boxed_sized_string};
 use swoole_rs_corebase::constants::{
     FdType, SW_BUFFER_SIZE_BIG, SW_INPUT_BUFFER_SIZE, SocketFlag, SocketType,
 };
@@ -54,8 +54,8 @@ pub struct CoSocket {
     pub buffer_init_size: Cell<usize>,
     /// The read and write `String`s, none before first use. Native code only keeps
     /// their place (`String *`), so the record owns them as boxes.
-    pub(crate) read_buffer: Cell<Option<Box<CppString>>>,
-    pub(crate) write_buffer: Cell<Option<Box<CppString>>>,
+    pub(crate) read_buffer: Cell<Option<Box<StringBuffer>>>,
+    pub(crate) write_buffer: Cell<Option<Box<StringBuffer>>>,
     pub ssl_is_server: Cell<bool>,
     pub ssl_handshaked: Cell<bool>,
     pub zero_copy: Cell<bool>,
@@ -191,12 +191,12 @@ impl Bound {
 /// throughout a receive. Its bytes use the socket's allocator, as those do, and are
 /// zeroed once when made, so all of them are content a receive may overwrite.
 #[cfg(any(test, feature = "iouring"))]
-struct TlsBuffer(CppString);
+struct TlsBuffer(StringBuffer);
 
 #[cfg(any(test, feature = "iouring"))]
 impl TlsBuffer {
     fn new(allocator: Option<swoole_rs_corebase::TrustedAllocator>) -> Self {
-        let mut string = CppString::EMPTY;
+        let mut string = StringBuffer::EMPTY;
         string.alloc(BUFFER_SIZE_BIG, allocator);
         string.read_zeroed(string.size(), |bytes| bytes.len());
         Self(string)
@@ -440,7 +440,7 @@ impl Co {
         clippy::unnecessary_box_returns,
         reason = "the record owns its buffers boxed: native code keeps a `String *`"
     )]
-    fn new_buffer(self) -> Box<CppString> {
+    fn new_buffer(self) -> Box<StringBuffer> {
         boxed_sized_string(BUFFER_SIZE_BIG, self.buffer_allocator())
     }
 
@@ -473,7 +473,7 @@ impl Co {
     }
 
     /// The record's read or write buffer slot.
-    fn buffer_slot(&self, write: bool) -> &Cell<Option<Box<CppString>>> {
+    fn buffer_slot(&self, write: bool) -> &Cell<Option<Box<StringBuffer>>> {
         self.record().buffer_slot(write)
     }
 
@@ -483,7 +483,7 @@ impl Co {
     /// Inside a `with_buffer` over the same buffer.
     #[track_caller]
     #[must_use]
-    pub(crate) fn take_buffer(self, write: bool) -> Option<Box<CppString>> {
+    pub(crate) fn take_buffer(self, write: bool) -> Option<Box<StringBuffer>> {
         self.record().take_buffer(write)
     }
 
@@ -510,7 +510,7 @@ impl Co {
     /// Inside a `with_buffer` over the write buffer.
     #[track_caller]
     #[must_use]
-    pub fn take_write_buffer(self) -> Option<Box<CppString>> {
+    pub fn take_write_buffer(self) -> Option<Box<StringBuffer>> {
         self.take_buffer(true)
     }
 
@@ -526,7 +526,7 @@ impl Co {
     /// # Panics
     /// Inside another `with_buffer` over the same buffer.
     #[track_caller]
-    pub fn with_buffer<T>(self, write: bool, f: impl FnOnce(&mut CppString) -> T) -> T {
+    pub fn with_buffer<T>(self, write: bool, f: impl FnOnce(&mut StringBuffer) -> T) -> T {
         let part = if write { WRITE_BUFFER } else { READ_BUFFER };
         self.lend(part, |_| {
             let mut taken = Taken::new(self.buffer_slot(write));
@@ -656,7 +656,7 @@ impl CoSocket {
     }
 
     /// The read or write buffer slot.
-    fn buffer_slot(&self, write: bool) -> &Cell<Option<Box<CppString>>> {
+    fn buffer_slot(&self, write: bool) -> &Cell<Option<Box<StringBuffer>>> {
         if write {
             &self.write_buffer
         } else {
@@ -666,7 +666,7 @@ impl CoSocket {
 
     /// [`Co::take_buffer`].
     #[track_caller]
-    fn take_buffer(&self, write: bool) -> Option<Box<CppString>> {
+    fn take_buffer(&self, write: bool) -> Option<Box<StringBuffer>> {
         let part = if write { WRITE_BUFFER } else { READ_BUFFER };
         self.lend(part, |_| self.buffer_slot(write).take())
     }
@@ -1066,12 +1066,12 @@ impl Drop for OwnedCo {
 pub struct OwnedRead {
     socket: Co,
     /// Some until `drop` hands the box back to the socket's slot.
-    buffer: Option<Box<CppString>>,
+    buffer: Option<Box<StringBuffer>>,
 }
 
 impl core::ops::Deref for OwnedRead {
-    type Target = CppString;
-    fn deref(&self) -> &CppString {
+    type Target = StringBuffer;
+    fn deref(&self) -> &StringBuffer {
         self.buffer
             .as_deref()
             .unwrap_or_else(|| swoole_rs_corebase::fatal("an owned read buffer given back"))
@@ -1079,7 +1079,7 @@ impl core::ops::Deref for OwnedRead {
 }
 
 impl core::ops::DerefMut for OwnedRead {
-    fn deref_mut(&mut self) -> &mut CppString {
+    fn deref_mut(&mut self) -> &mut StringBuffer {
         self.buffer
             .as_deref_mut()
             .unwrap_or_else(|| swoole_rs_corebase::fatal("an owned read buffer given back"))

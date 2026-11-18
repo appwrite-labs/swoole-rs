@@ -470,7 +470,7 @@ impl<'a> Fill<'a, u8> {
     /// address, including a null address for an unallocated string at offset zero.
     #[inline]
     pub fn string_range(
-        buffer: &'a mut crate::buffer::string::CppString,
+        buffer: &'a mut crate::buffer::string::StringBuffer,
         start: usize,
         len: usize,
     ) -> Self {

@@ -3,7 +3,7 @@
 //! The TLS methods of `network::Socket` that are whole Rust operations, last
 //! error, errno and logs included.
 use crate::CCast;
-use crate::buffer::string::CppString;
+use crate::buffer::string::StringBuffer;
 use crate::constants::SocketFlag;
 use crate::lent::{Spare, lend_spare};
 use crate::net_address::{BAD_HOST_ADDR, assign, platform_parses};
@@ -377,7 +377,7 @@ pub fn recv(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> O
 /// One [`recv`] into `buffer`'s room past its content, which then counts what it
 /// wrote: what `recv` returned.
 #[inline]
-pub fn recv_append(socket: Socket<'_>, buffer: &mut CppString) -> Option<usize> {
+pub fn recv_append(socket: Socket<'_>, buffer: &mut StringBuffer) -> Option<usize> {
     buffer.fill(|spare| recv_spare(socket, spare, 0))
 }
 
@@ -683,7 +683,7 @@ fn read_x509(cert: CertRef<'_>, spare: &mut Spare<'_>) -> Option<usize> {
 /// `bool Socket::ssl_get_peer_certificate(String *buf) const`: the peer certificate's
 /// PEM as `buffer`'s content, written from the start of its allocation; false, with
 /// the content's length as it was, without one.
-pub fn socket_ssl_peer_certificate_string(socket: Socket<'_>, buffer: &mut CppString) -> bool {
+pub fn socket_ssl_peer_certificate_string(socket: Socket<'_>, buffer: &mut StringBuffer) -> bool {
     buffer
         .refill(|spare| peer_certificate_pem(socket, spare))
         .is_some()
@@ -819,8 +819,8 @@ pub fn with_queue<R>(
     socket: Socket<'_>,
     f: impl FnOnce(Option<&mut crate::buffer::Buffer>) -> R,
 ) -> R {
-    use crate::buffer::cpp::{CppBuffer, dispose_queue};
-    let queue = socket.read(|record| record.output.buffer().and_then(CppBuffer::take_queue));
+    use crate::buffer::cpp::{OutputQueue, dispose_queue};
+    let queue = socket.read(|record| record.output.buffer().and_then(OutputQueue::take_queue));
     let Some(mut queue) = queue else {
         return f(None);
     };
@@ -1175,7 +1175,7 @@ mod tests {
             &mut [0_u8; 64],
         );
         assert_eq!(n, None);
-        let mut string = CppString::EMPTY;
+        let mut string = StringBuffer::EMPTY;
         string.alloc(64, None);
         string.append(b"content");
         let filled = socket_ssl_peer_certificate_string(

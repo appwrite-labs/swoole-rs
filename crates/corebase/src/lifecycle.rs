@@ -2,7 +2,7 @@
 // Compatibility derived from Swoole v6.2.4 src/core/base.cc (Swoole contributors).
 //! base.cc's init, thread, clean and fork sequences, and `SwooleTG`.
 //! Runtime resources are initialized and cleaned through their owners in this crate.
-use crate::buffer::string::CppString;
+use crate::buffer::string::StringBuffer;
 use crate::constants::SW_STACK_BUFFER_SIZE;
 use crate::log;
 use crate::memory::members::pool;
@@ -16,7 +16,7 @@ thread_local! {
     /// This thread's `SwooleTG.buffer_stack`, which lives as long as the thread.
     /// C++ keeps a pointer to the slot, so it is set once in place and replaced
     /// only when the thread is cleaned.
-    static BUFFER: Cell<CppString> = const { Cell::new(CppString::EMPTY) };
+    static BUFFER: Cell<StringBuffer> = const { Cell::new(StringBuffer::EMPTY) };
 }
 
 /// `SW_FORK_EXEC`, `SW_FORK_DAEMON` and `SW_FORK_PRECHECK`.
@@ -154,7 +154,7 @@ pub fn swr_v1_core_swoole_init(fatal_error: Option<crate::FatalError>) {
 /// `void swoole_thread_init(bool main_thread)`.
 pub fn swoole_thread_init(main_thread: bool) {
     if with(|thread| thread.buffer_stack.get().is_null()) {
-        let mut fresh = CppString::EMPTY;
+        let mut fresh = StringBuffer::EMPTY;
         fresh.alloc(SW_STACK_BUFFER_SIZE as usize, None);
         let buffer = BUFFER.with(|buffer| {
             buffer.set(fresh);
@@ -177,7 +177,7 @@ pub fn swoole_thread_clean(_main_thread: bool) {
         crate::reactor::swoole_event_free();
     }
     if with(|thread| !thread.buffer_stack.get().is_null()) {
-        BUFFER.with(|buffer| buffer.replace(CppString::EMPTY).dispose());
+        BUFFER.with(|buffer| buffer.replace(StringBuffer::EMPTY).dispose());
         with(|thread| thread.buffer_stack.set(ptr::null_mut()));
     }
 }

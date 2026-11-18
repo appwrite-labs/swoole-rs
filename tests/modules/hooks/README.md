@@ -5,9 +5,9 @@ the original range and draw timing; its C++ export is gone.
 
 Pin `13d2f33664d60b72aaa9f102ff0ef4085c028513`.
 
-The socket fixtures borrow `corebase::buffer::string::CppString` directly; client
+The socket fixtures borrow `corebase::buffer::string::StringBuffer` directly; client
 certificate buffers use `OwnedString`. Packet ownership transfer still uses
-`CppString::pop`, with the same original byte, length and offset assertions.
+`StringBuffer::pop`, with the same original byte, length and offset assertions.
 
 ## Native-facade gates
 
@@ -31,7 +31,7 @@ their frames. A parked receive owns its read allocation outside the socket and
 restores it on return; teardown cannot free pending kernel write storage.
 `pending_read_allocation_survives_socket_teardown` checks a completion write after
 teardown, and `completed_read_restores_its_allocation_and_initialized_prefix`
-checks normal restoration. `CppString::fill_within` commits only the prefix
+checks normal restoration. `StringBuffer::fill_within` commits only the prefix
 verified by `Spare`. The 240 trace expectations
 are unchanged. `co_socket::tests::tls_scratch_is_stable_and_independent_of_application_loans`
 checks that TLS BIO scratch remains distinct and reusable while both application

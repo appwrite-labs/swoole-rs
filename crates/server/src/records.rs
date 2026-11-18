@@ -73,7 +73,8 @@ pub struct ConnectionRecord {
     pub websocket_status: Cell<WebSocketStatus>,
     /// The WebSocket message being reassembled: a box only the connection's reactor
     /// makes, takes and frees.
-    pub(crate) websocket_buffer: Cell<Option<Box<swoole_rs_corebase::buffer::string::CppString>>>,
+    pub(crate) websocket_buffer:
+        Cell<Option<Box<swoole_rs_corebase::buffer::string::StringBuffer>>>,
     pub lock: AtomicU32,
     pub closed: AtomicU32,
     pub server_fd: Cell<c_int>,
@@ -317,13 +318,16 @@ impl<'a> Connection<'a> {
     #[must_use]
     pub fn take_websocket_buffer(
         self,
-    ) -> Option<Box<swoole_rs_corebase::buffer::string::CppString>> {
+    ) -> Option<Box<swoole_rs_corebase::buffer::string::StringBuffer>> {
         self.record.websocket_buffer.take()
     }
 
     /// The connection reassembles `buffer`, which must hold none (one it held is
     /// freed).
-    pub fn set_websocket_buffer(self, buffer: Box<swoole_rs_corebase::buffer::string::CppString>) {
+    pub fn set_websocket_buffer(
+        self,
+        buffer: Box<swoole_rs_corebase::buffer::string::StringBuffer>,
+    ) {
         if let Some(mut held) = self.record.websocket_buffer.replace(Some(buffer)) {
             held.dispose();
         }
