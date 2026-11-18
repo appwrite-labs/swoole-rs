@@ -131,16 +131,17 @@ pub(crate) fn view(worker: Worker<'_>) -> WorkerView {
     }
 }
 
-/// `swoole_fork(0)`, recording the child's pid in the parent.
-pub(crate) fn fork(worker: Worker<'_>) -> c_int {
+/// `swoole_fork(0)`, recording the child's pid in the parent: the pid there, 0 in the
+/// child, `None` when the fork failed.
+pub(crate) fn fork(worker: Worker<'_>) -> Option<c_int> {
     let pid = swoole_rs_corebase::swoole_fork(0);
     if pid > 0 {
         worker.set_pid(pid);
     }
-    if pid >= 0 {
+    (pid >= 0).then(|| {
         worker.set_child_process(pid == 0);
-    }
-    pid
+        pid
+    })
 }
 
 /// In the child: the worker end becomes the pipe and the worker this process's.

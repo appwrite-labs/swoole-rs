@@ -707,7 +707,7 @@ fn xport_api(stream: Stream<'_>, socket: &Socket, xport: Xport<'_>) -> Result<()
                         .map_or(-1, usize::cast_signed),
                 )
             } else {
-                recvfrom(socket, p, buffer)
+                returncode(recvfrom(socket, p, buffer).map_or(-1, usize::cast_signed))
             };
         }
         xport::SHUTDOWN => {
@@ -898,14 +898,10 @@ fn recvfrom(
     socket: &Socket,
     param: &mut php_stream_xport_param,
     buffer: &mut [MaybeUninit<u8>],
-) -> c_int {
+) -> Option<usize> {
     let (want_textaddr, want_addr) = (param.want_textaddr() != 0, param.want_addr() != 0);
     if !want_textaddr && !want_addr {
-        return returncode(
-            socket
-                .recv(RecvOp::Recv, buffer)
-                .map_or(-1, usize::cast_signed),
-        );
+        return socket.recv(RecvOp::Recv, buffer);
     }
     let mut peer = SocketAddress::default();
     let received = socket.recvfrom(buffer, &mut peer);
@@ -921,7 +917,7 @@ fn recvfrom(
             param.outputs.addrlen = 0;
         }
     }
-    returncode(received.map_or(-1, usize::cast_signed))
+    received
 }
 
 /// `socket_enable_crypto`: whether it succeeded (upstream's 1, else -1).
