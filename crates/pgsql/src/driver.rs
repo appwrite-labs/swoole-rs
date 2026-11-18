@@ -3,12 +3,9 @@
 //! factory, close, attributes, transactions, `quote`, `lastInsertId` and the
 //! libpq-error to SQLSTATE mapping.
 //!
-//! The statement layer, COPY, large objects and notices stay C for now
-//! (`pgsql_statement.c` and what is left of `pgsql_driver.c`). They keep the methods
-//! table and the driver record, which point here, and reach the handle, which is
-//! opaque to them, only through the `pdo_pgsql_*` accessors below, as
-//! `php_pdo_pgsql_int.h` declares them. Each version's differences are switched on
-//! `PHP_VERSION_ID` where they arise.
+//! Statement execution and decoding live in the statement module. The PDO method
+//! tables, Zend stream adapters, COPY, large objects and notices use the opaque
+//! handle through the accessors declared in the bundled driver headers.
 //!
 //! libpq runs the notice processor, which from PHP 8.4 calls the user's callback,
 //! whenever it reads the server's messages; a bailout there jumps over every frame
@@ -83,7 +80,7 @@ impl Drop for Handle {
 /// A result libpq returned, borrowed from its owner.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-struct Res<'a>(NonNull<PGresult>, PhantomData<&'a PgResult>);
+pub(crate) struct Res<'a>(NonNull<PGresult>, PhantomData<&'a PgResult>);
 
 impl PgResult {
     fn get(&self) -> Res<'_> {
@@ -104,6 +101,9 @@ impl Escaped {
 // libpq's own declarations, each argument typed as what libpq requires of it. None
 // parses input, so none runs the notice processor.
 unsafe extern "C" {
+    safe fn PQnfields(res: Res<'_>) -> c_int;
+    safe fn PQntuples(res: Res<'_>) -> c_int;
+    safe fn PQgetisnull(res: Res<'_>, row: c_int, column: c_int) -> c_int;
     safe fn PQresultStatus(res: Res<'_>) -> ExecStatusType;
     /// A field of an error result, live as long as the result.
     safe fn PQresultErrorField<'a>(res: Res<'a>, field: c_int) -> Option<Text<'a>>;
@@ -150,7 +150,7 @@ unsafe extern "C" {
 }
 
 /// The handle the factory made for `dbh`, if it is still open.
-fn handle(dbh: &Dbh) -> Option<&Handle> {
+pub(crate) fn handle(dbh: &Dbh) -> Option<&Handle> {
     swr_zend_pdo_driver_data(dbh)
 }
 
@@ -229,8 +229,31 @@ impl Handle {
     }
 
     /// `PQexec`, with the hook's waits.
-    fn exec(&self, query: &CStr) -> Option<PgResult> {
+    pub(crate) fn exec(&self, query: &CStr) -> Option<PgResult> {
         NonNull::new(crate::swoole_pgsql_exec(self.server, query.into())).map(PgResult)
+    }
+
+    /// Read a single catalogue name, copying it before releasing its result.
+    pub(crate) fn catalogue_name(
+        &self,
+        query: &CStr,
+    ) -> Result<Option<CString>, swoole_rs_zend::bailout::Bailout> {
+        let mut result = None;
+        contain_with(|| result = self.exec(query))?;
+        let Some(result) = result else {
+            return Ok(None);
+        };
+        let res = result.get();
+        let name = if PQresultStatus(res) == ExecStatusType::PGRES_TUPLES_OK
+            && PQntuples(res) == 1
+            && PQgetisnull(res, 0, 0) == 0
+        {
+            PQgetvalue(res, 0, 0).map(|name| name.get().to_owned())
+        } else {
+            None
+        };
+        PQclear(result);
+        Ok(name)
     }
 
     /// `pgsql_handle_in_transaction`.
@@ -240,7 +263,7 @@ impl Handle {
 }
 
 /// `pdo_pgsql_sqlstate`: an error result's SQLSTATE.
-fn sqlstate(result: Option<&PgResult>) -> Option<&CStr> {
+pub(crate) fn sqlstate(result: Option<&PgResult>) -> Option<&CStr> {
     PQresultErrorField(result?.get(), DIAG_SQLSTATE).map(Text::get)
 }
 
@@ -249,6 +272,67 @@ fn status(result: Option<&PgResult>) -> ExecStatusType {
     result.map_or(ExecStatusType::PGRES_FATAL_ERROR, |result| {
         PQresultStatus(result.get())
     })
+}
+
+fn affected_rows(result: Res<'_>) -> zend_long {
+    swoole_rs_corebase::strtol(PQcmdTuples(result).get().to_bytes()).0
+}
+
+/// Publish the shape of a successful execute, or preserve the server's SQLSTATE.
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_execution_result(dbh: &Dbh, stmt: &Stmt, result: Option<Res<'_>>) -> bool {
+    let Some(res) = result else {
+        raise(
+            dbh,
+            Some(stmt),
+            ExecStatusType::PGRES_FATAL_ERROR as c_int,
+            None,
+            None,
+        );
+        return false;
+    };
+    let code = PQresultStatus(res);
+    let rows = match code {
+        ExecStatusType::PGRES_COMMAND_OK => affected_rows(res),
+        ExecStatusType::PGRES_TUPLES_OK => i64::from(PQntuples(res)),
+        ExecStatusType::PGRES_SINGLE_TUPLE if PHP_VERSION_ID >= 80500 => i64::from(PQntuples(res)),
+        _ => {
+            raise(
+                dbh,
+                Some(stmt),
+                code as c_int,
+                PQresultErrorField(res, DIAG_SQLSTATE).map(Text::get),
+                None,
+            );
+            return false;
+        }
+    };
+    stmt.set_result_counts(PQnfields(res), rows);
+    true
+}
+
+/// Install the statement result before reporting a PDO error, as the statement owns it.
+pub(crate) fn statement_result(
+    dbh: &Dbh,
+    stmt: &Stmt,
+    slot: &Cell<Option<PgResult>>,
+    result: Option<PgResult>,
+) -> Option<c_int> {
+    let code = status(result.as_ref());
+    if matches!(
+        code,
+        ExecStatusType::PGRES_COMMAND_OK
+            | ExecStatusType::PGRES_TUPLES_OK
+            | ExecStatusType::PGRES_SINGLE_TUPLE
+    ) {
+        let rows = result.as_ref().map(|result| PQntuples(result.get()));
+        slot.set(result);
+        return rows;
+    }
+    let state = sqlstate(result.as_ref()).map(CStr::to_owned);
+    slot.set(result);
+    raise(dbh, Some(stmt), code as c_int, state.as_deref(), None);
+    None
 }
 
 /// `_pdo_pgsql_trim_message`: libpq's message without its trailing line breaks,
@@ -472,7 +556,7 @@ extern "C" fn pdo_pgsql_handle_doer(dbh: &Dbh, sql: &ZStr) -> zend_long {
         return -1;
     }
     let changed = if status == ExecStatusType::PGRES_COMMAND_OK {
-        swoole_rs_corebase::strtol(PQcmdTuples(result.get()).get().to_bytes()).0
+        affected_rows(result.get())
     } else {
         0
     };

@@ -7,6 +7,14 @@
 #ifdef SW_USE_PGSQL
 #include <libpq-fe.h>
 BEGIN_EXTERN_C()
+typedef struct {
+    size_t count;
+    void *owner;
+} pdo_pgsql_parameter_arrays;
+
+void *pdo_pgsql_allocate_parameters(size_t count);
+void pdo_pgsql_free_parameters(void *owner);
+
 PGconn *swoole_pgsql_connectdb(const char *conninfo);
 PGresult *swoole_pgsql_prepare(PGconn *conn, const char *stmt_name, const char *query, int n_params, const Oid *param_types);
 PGresult *swoole_pgsql_exec_prepared(PGconn *conn, const char *stmt_name, int n_params, const char *const *param_values,

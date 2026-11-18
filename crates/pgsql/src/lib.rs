@@ -21,6 +21,10 @@ pub mod driver;
 pub mod minit;
 #[cfg(feature = "php")]
 pub mod pdo;
+#[cfg(feature = "php")]
+mod scanner;
+#[cfg(feature = "php")]
+mod statement;
 
 use pq_sys::{ConnStatusType, Oid, PGconn, PGresult, PostgresPollingStatusType};
 use std::{

@@ -21,20 +21,13 @@
 #ifndef PHP_PDO_PGSQL_INT_H
 #define PHP_PDO_PGSQL_INT_H
 
+#include "pgsql_statement.h"
 #include <libpq-fe.h>
 #include <libpq/libpq-fs.h>
 #include <php.h>
 
 #define PHP_PDO_PGSQL_CONNECTION_FAILURE_SQLSTATE "08006"
 
-typedef struct pdo_pgsql_stmt pdo_pgsql_stmt;
-
-/* The database handle is Rust's (crates/pgsql/src/driver.rs), which also implements
- * the handle's methods: the statement, COPY, LOB and notice code reach its state only
- * through these accessors. */
-typedef struct pdo_pgsql_db_handle pdo_pgsql_db_handle;
-
-PGconn *pdo_pgsql_server(pdo_pgsql_db_handle *H);
 unsigned int pdo_pgsql_next_stmt_id(pdo_pgsql_db_handle *H);
 bool pdo_pgsql_emulate_prepares(pdo_pgsql_db_handle *H);
 bool pdo_pgsql_disable_prepares(pdo_pgsql_db_handle *H);
@@ -42,31 +35,6 @@ HashTable **pdo_pgsql_lob_streams(pdo_pgsql_db_handle *H);
 zend_fcall_info_cache **pdo_pgsql_notice_callback(pdo_pgsql_db_handle *H);
 bool pdo_pgsql_lazy_fetch(pdo_pgsql_db_handle *H);
 pdo_pgsql_stmt **pdo_pgsql_running_stmt(pdo_pgsql_db_handle *H);
-
-typedef struct {
-	Oid          pgsql_type;
-} pdo_pgsql_column;
-
-struct pdo_pgsql_stmt {
-	pdo_pgsql_db_handle     *H;
-	PGresult                *result;
-	pdo_pgsql_column        *cols;
-	char *cursor_name;
-	char *stmt_name;
-	zend_string *query;
-	char **param_values;
-	int *param_lengths;
-	int *param_formats;
-	Oid *param_types;
-	int                     current_row;
-	bool is_prepared;
-	bool is_unbuffered;
-	bool is_running_unbuffered;
-};
-
-typedef struct {
-	Oid     oid;
-} pdo_pgsql_bound_param;
 
 extern const pdo_driver_t pdo_pgsql_driver;
 
@@ -92,7 +60,6 @@ extern const struct pdo_dbh_methods swoole_pdo_pgsql_methods;
 void pdo_pgsql_notice(void *context, const char *message);
 void pdo_pgsql_handle_closer(pdo_dbh_t *dbh);
 
-void pdo_pgsql_raise(pdo_dbh_t *dbh, pdo_stmt_t *stmt, int errcode, const char *sqlstate, const char *msg);
 #define pdo_pgsql_error(d, e, z) pdo_pgsql_raise(d, NULL, e, z, NULL)
 #define pdo_pgsql_error_msg(d, e, m) pdo_pgsql_raise(d, NULL, e, NULL, m)
 #define pdo_pgsql_error_stmt(s, e, z) pdo_pgsql_raise(s->dbh, s, e, z, NULL)
@@ -107,13 +74,6 @@ enum {
 	PDO_PGSQL_ATTR_RESULT_MEMORY_SIZE,
 };
 
-struct pdo_pgsql_lob_self {
-	zval dbh;
-	PGconn *conn;
-	int lfd;
-	Oid oid;
-};
-
 enum pdo_pgsql_specific_constants {
 	PGSQL_TRANSACTION_IDLE = PQTRANS_IDLE,
 	PGSQL_TRANSACTION_ACTIVE = PQTRANS_ACTIVE,
@@ -122,8 +82,6 @@ enum pdo_pgsql_specific_constants {
 	PGSQL_TRANSACTION_UNKNOWN = PQTRANS_UNKNOWN
 };
 
-php_stream *pdo_pgsql_create_lob_stream(zend_object *pdh, int lfd, Oid oid);
-extern const php_stream_ops pdo_pgsql_lob_stream_ops;
 
 void pdo_pgsql_cleanup_notice_callback(pdo_pgsql_db_handle *H);
 

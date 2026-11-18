@@ -189,6 +189,26 @@ impl Dbh {
 pub struct Stmt(Cell<pdo_stmt_t>);
 
 impl Stmt {
+    /// Number of rows PDO exposes for the current result.
+    pub fn row_count(&self) -> zend_long {
+        self.0.get().row_count
+    }
+
+    /// Update the row count for a new batch of the current result.
+    pub fn set_row_count(&self, rows: zend_long) {
+        let mut stmt = self.0.get();
+        stmt.row_count = rows;
+        self.0.set(stmt);
+    }
+
+    /// Publish the dimensions of the newly executed statement to PDO.
+    pub fn set_result_counts(&self, columns: i32, rows: zend_long) {
+        let mut stmt = self.0.get();
+        stmt.column_count = columns;
+        stmt.row_count = rows;
+        self.0.set(stmt);
+    }
+
     /// `strcpy(stmt->error_code, sqlstate)`.
     pub fn set_error_code(&self, sqlstate: &CStr) {
         let mut stmt = self.0.get();
@@ -211,6 +231,12 @@ fn copy_state(code: &mut pdo_error_type, sqlstate: &CStr) {
 pub struct Slot(Value);
 
 impl Slot {
+    /// The current value of this PDO slot.
+    #[must_use]
+    pub fn value(&self) -> &Value {
+        &self.0
+    }
+
     /// The slot holds `value`, releasing what it held.
     pub fn set(&self, value: Owned) {
         self.0.lend_slot(|held| *held = value);
