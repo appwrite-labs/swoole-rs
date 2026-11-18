@@ -3,13 +3,13 @@
 # `docker run php:<series>-<cli|zts>-<bookworm|alpine> tools/release.sh <version>`), so it
 # links that image's libc, OpenSSL, Brotli and zstd. Writes
 # dist/swoole-rs-<version>-php<series>-<nts|zts>-linux-<gnu|musl>-<machine>.so.
-# The default build profile, which loads in a PHP with no other extension: no sockets
-# integration and no service hooks. A thread-safe PHP gets Swoole\Thread.
+# The default build profile plus coroutine cURL, which the official images build into PHP:
+# no sockets integration and no other service hooks. A thread-safe PHP gets Swoole\Thread.
 set -e
 if command -v apk >/dev/null; then
     libc=musl
     # shellcheck disable=SC2086 # the image's word list
-    apk add --no-cache $PHPIZE_DEPS git python3 openssl-dev pcre2-dev zlib-dev brotli-dev zstd-dev linux-headers clang-dev
+    apk add --no-cache $PHPIZE_DEPS git python3 openssl-dev pcre2-dev zlib-dev brotli-dev zstd-dev curl-dev linux-headers clang-dev
     # Rust's std links the unwinder as -lgcc_s, and the php image on arm64 has no libgcc_s.so.1.
     # A directory that offers that name only as a linker script for gcc's static unwinder
     # (and libgcc, whose atomics it calls on arm64) wins the linker's search; --exclude-libs
@@ -21,7 +21,7 @@ if command -v apk >/dev/null; then
 else
     libc=gnu
     apt-get update -q
-    apt-get install -yq --no-install-recommends git python3 libclang-dev libssl-dev libpcre2-dev zlib1g-dev libbrotli-dev libzstd-dev
+    apt-get install -yq --no-install-recommends git python3 libclang-dev libssl-dev libpcre2-dev zlib1g-dev libbrotli-dev libzstd-dev libcurl4-openssl-dev
 fi
 # rust-toolchain.toml selects the version on first use.
 curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
@@ -36,6 +36,9 @@ else
 fi
 version=$1
 shift
+# Without it, SWOOLE_HOOK_ALL falls back to the library's Swoole\Curl\Handler, which
+# rejects options such as CURLOPT_SHARE.
+set -- "$@" --configure=--enable-swoole-curl
 if [ "$libc" = gnu ] && [ "$(uname -m)" = aarch64 ]; then
     rustup component add llvm-tools-preview
     set -- "$@" --pgo
