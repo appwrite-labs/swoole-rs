@@ -62,11 +62,31 @@ def prepare(composer):
         git('init', '-q')
         git('fetch', '-q', '--depth', '1', REPOSITORY, commit)
         git('checkout', '-q', '--detach', 'FETCH_HEAD')
+    # PHPUnit 12 reads method attributes. The pinned library still declares its
+    # data providers and test dependencies in docblocks.
+    attributes = {'dataProvider': 'DataProvider', 'depends': 'Depends'}
+
+    def add_attributes(match):
+        names = re.findall(r'@(dataProvider|depends) (\w+)', match[0])
+        return match[0] + ''.join(
+            f"    #[\\PHPUnit\\Framework\\Attributes\\{attributes[kind]}('{name}')]\n"
+            for kind, name in names)
+
+    for path in (SOURCE / 'tests/unit').rglob('*.php'):
+        source = path.read_text()
+        updated = re.sub(r'    /\*\*(?:(?!\*/).)*\*/\n(?=    public function test)',
+                         add_attributes, source, flags=re.S)
+        if updated != source:
+            path.write_text(updated)
     shutil.copy2(HERE / 'composer.json', SOURCE / COMPOSER)
     shutil.copy2(HERE / 'composer.lock', SOURCE / COMPOSER.replace('.json', '.lock'))
     # Swoole and phpredis need not be loaded in the PHP that runs Composer.
     subprocess.run([composer, 'install', '--no-interaction', '--no-progress', '--ignore-platform-req=ext-*'],
                    cwd=SOURCE, env={**os.environ, 'COMPOSER': COMPOSER}, check=True)
+    # The schema migrator retains the old extension element verbatim.
+    config = (SOURCE / 'phpunit.xml.dist').read_text().replace('<extension class=', '<bootstrap class=')
+    (SOURCE / 'phpunit.xml').write_text(config)
+    subprocess.run(['vendor/bin/phpunit', '--migrate-configuration'], cwd=SOURCE, check=True)
 
 
 def junit(path):

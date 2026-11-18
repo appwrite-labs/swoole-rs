@@ -73,9 +73,7 @@ Results are saved atomically after each batch with `execution_status` of
 
 ## Linux environment
 
-`.devcontainer/` is the same OS and packages as the CI runners (`ubuntu-24.04`,
-PHP 8.3); `.devcontainer/install.sh` is shared with the merge tier, so the two
-cannot drift. Open the folder in any devcontainer host (VS Code, Codespaces,
+`.devcontainer/` uses Ubuntu 26.04 and shares its package install script with the merge tier. Open the folder in any devcontainer host (VS Code, Codespaces,
 cloud agent environments), or run it by hand:
 
 ```sh

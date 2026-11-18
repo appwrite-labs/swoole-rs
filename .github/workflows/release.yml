@@ -68,7 +68,7 @@ jobs:
   # Every binary or no release: a target that failed to build or load publishes nothing.
   release:
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: write
