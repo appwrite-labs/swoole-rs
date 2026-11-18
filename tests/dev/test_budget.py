@@ -92,10 +92,22 @@ class Budget(unittest.TestCase):
                 # STATE and queue; the import and the constructors name no type.
                 'cells': {'one': 2},
                 'statuses': {'one': 0}, 'reprs': {'one': 0}, 'derefs': {'one': 0},
-                'externs': {'one': 0},
+                'externs': {'one': 0}, 'shortreads': {'one': 0},
                 # shim.c's three and shim.h's one; tests/ isn't src/.
                 'clines': {'one': 4},
             })
+
+    def test_short_reads_only_count_in_wire_readers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for crate, expected in [('http2', 2), ('other', 0)]:
+                path = Path(directory) / 'crates' / crate / 'src/lib.rs'
+                path.parent.mkdir(parents=True)
+                path.write_text("""
+fn decode(bytes: &[u8]) { bytes.get(4..).unwrap_or_default(); }
+fn read_u32(input: &[u8]) { for (a,b) in raw.iter_mut().zip(input) { *a = *b; } }
+fn encode(bytes: &[u8]) { bytes.get(4..).unwrap_or_default(); }
+""")
+                self.assertEqual(budget.count_file(path, set())['shortreads'], expected)
 
     def test_safe_fns_whose_unsafe_blocks_use_a_raw_pointer_parameter(self):
         source = '''\

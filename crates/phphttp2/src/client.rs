@@ -16,14 +16,14 @@ use swoole_rs_corebase::reactor::Events;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_close_hook};
 use swoole_rs_http2::{
     FrameAction, FrameType, HeaderKind, HeaderRole, Http2FrameFacts, Http2Settings,
-    Http2WindowPlan, Media, QueueAction,
+    Http2WindowPlan, Media, QueueAction, decode_packet,
     hpack::{self, Decoder, Encoder, Error},
-    send_frame_size, sw_rs_http2_chunk, sw_rs_http2_decode_frame, sw_rs_http2_default_settings,
-    sw_rs_http2_header_plan, sw_rs_http2_headers_flags, sw_rs_http2_inflate_step,
-    sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header, sw_rs_http2_pack_settings,
-    sw_rs_http2_queue_action, sw_rs_http2_response, sw_rs_http2_send_complete,
-    sw_rs_http2_setting_plan, sw_rs_http2_stream_flags, sw_rs_http2_stream_update,
-    sw_rs_http2_window_plan, sw_rs_http2_write_allowed,
+    send_frame_size, sw_rs_http2_chunk, sw_rs_http2_default_settings, sw_rs_http2_header_plan,
+    sw_rs_http2_headers_flags, sw_rs_http2_inflate_step, sw_rs_http2_media_kind,
+    sw_rs_http2_pack_frame_header, sw_rs_http2_pack_settings, sw_rs_http2_queue_action,
+    sw_rs_http2_response, sw_rs_http2_send_complete, sw_rs_http2_setting_plan,
+    sw_rs_http2_stream_flags, sw_rs_http2_stream_update, sw_rs_http2_window_plan,
+    sw_rs_http2_write_allowed,
 };
 use swoole_rs_inflate::Inflate;
 use swoole_rs_phpstubs::http2_client_coro;
@@ -175,12 +175,17 @@ impl Response {
     }
 }
 
+enum FrameReadError {
+    Short,
+    Goaway,
+}
+
 /// What a frame's payload held, read while the read buffer was on loan.
 enum Payload {
     /// Nothing that outlives the read.
     Unread,
     /// A PING's eight bytes, if it had eight.
-    Ping(Option<[u8; PING_PAYLOAD]>),
+    Ping([u8; PING_PAYLOAD]),
     Goaway {
         server_last: u32,
         code: u32,
@@ -788,33 +793,25 @@ impl Client {
     /// What the frame at the front of `packet` holds, with everything its
     /// payload is needed for done: the read buffer is on loan to the caller, so
     /// nothing here yields or runs PHP code.
-    fn read_frame(&self, packet: &[u8]) -> (Http2FrameFacts, Payload) {
-        let (head, body) = packet.split_at_checked(FRAME_HEADER).unwrap_or_default();
-        let facts =
-            sw_rs_http2_decode_frame(head, self.last_stream_id.get(), true).unwrap_or_default();
-        let length = facts.length as usize;
-        // The length protocol's packet is the header and `length` payload bytes.
-        let payload = body.get(..length).unwrap_or(body);
+    fn read_frame(&self, packet: &[u8]) -> Result<(Http2FrameFacts, Payload), FrameReadError> {
+        let (facts, payload) = decode_packet(packet, self.last_stream_id.get(), true)
+            .map_err(|_| FrameReadError::Short)?;
         let id = facts.stream_id;
-        if facts.publish_last_id {
-            self.last_stream_id.set(id);
-        }
         let known = || self.streams.with_taken(|streams| streams.contains_key(&id));
         let read = match facts.action {
             FrameAction::Settings => {
-                for setting in payload.chunks(6) {
-                    let mut raw = [0_u8; 6];
-                    for (slot, byte) in raw.iter_mut().zip(setting) {
-                        *slot = *byte;
-                    }
-                    let key = u16::from_be_bytes([raw[0], raw[1]]);
-                    let number = u32::from_be_bytes([raw[2], raw[3], raw[4], raw[5]]);
+                let (entries, &[]) = payload.as_chunks::<6>() else {
+                    return Err(FrameReadError::Short);
+                };
+                for entry in entries {
+                    let (key, number) = swoole_rs_http2::sw_rs_http2_unpack_setting(entry);
                     self.apply_remote_setting(key, number);
                 }
                 Payload::Unread
             }
             FrameAction::WindowUpdate => {
-                let credit = read_u32(payload);
+                let credit =
+                    u32::from_be_bytes(payload.try_into().map_err(|_| FrameReadError::Short)?);
                 if id == 0 {
                     let plan = window(self.remote_window.get(), credit as usize, 0, true);
                     self.remote_window.set(plan.value);
@@ -830,31 +827,55 @@ impl Client {
             }
             // RFC 9113 6.7: the ACK echoes the PING's eight payload bytes; any
             // other length is a FRAME_SIZE_ERROR.
-            FrameAction::PingReply => Payload::Ping(<[u8; PING_PAYLOAD]>::try_from(payload).ok()),
-            FrameAction::Goaway => Payload::Goaway {
-                server_last: read_u32(payload),
-                code: read_u32(payload.get(4..).unwrap_or_default()),
-                debug: payload.get(GOAWAY_SIZE..).unwrap_or_default().to_vec(),
-            },
+            FrameAction::PingReply => {
+                Payload::Ping(payload.try_into().map_err(|_| FrameReadError::Short)?)
+            }
+            FrameAction::Goaway => {
+                let (last, rest) = payload.split_first_chunk().ok_or(FrameReadError::Goaway)?;
+                let (code, debug) = rest.split_first_chunk().ok_or(FrameReadError::Goaway)?;
+                Payload::Goaway {
+                    server_last: u32::from_be_bytes(*last),
+                    code: u32::from_be_bytes(*code),
+                    debug: debug.to_vec(),
+                }
+            }
             FrameAction::Headers if known() => {
-                Payload::Headers(self.parse_header(id, facts.flags, payload))
+                let block = if facts.flags & FLAG_PRIORITY != 0 {
+                    payload.get(5..).ok_or(FrameReadError::Short)?
+                } else {
+                    payload
+                };
+                Payload::Headers(self.parse_header(id, block))
             }
             FrameAction::Data if known() => {
                 Payload::Data(payload.len(), self.buffer_data(id, facts.flags, payload))
             }
             _ => Payload::Unread,
         };
-        (facts, read)
+        if facts.publish_last_id {
+            self.last_stream_id.set(id);
+        }
+        Ok((facts, read))
     }
 
     /// The frame in the `received` bytes `recv_packet` left in the read buffer.
     fn parse_frame(&self, call: &Call, socket: Co, received: usize, pipeline_read: bool) -> Frame {
         // The packet `recv_packet` just returned starts the read buffer. It is
         // read under the buffer's loan; what sends or runs PHP code comes after.
-        let (facts, read) = socket.with_buffer(false, |buffer| {
+        let read = socket.with_buffer(false, |buffer| {
             let buffered = buffer.view();
-            self.read_frame(buffered.get(..received).unwrap_or(buffered))
+            self.read_frame(buffered.get(..received).ok_or(FrameReadError::Short)?)
         });
+        let (facts, read) = match read {
+            Ok(frame) => frame,
+            Err(error) => {
+                if matches!(error, FrameReadError::Goaway) {
+                    self.close();
+                    self.update_error(6, b"invalid GOAWAY frame length");
+                }
+                return Frame::Fail;
+            }
+        };
         let id = facts.stream_id;
         match facts.action {
             FrameAction::SettingsAck
@@ -870,7 +891,7 @@ impl Client {
                 return Frame::Continue;
             }
             FrameAction::PingReply => {
-                let Payload::Ping(Some(echo)) = read else {
+                let Payload::Ping(echo) = read else {
                     return Frame::Fail;
                 };
                 let mut frame = frame_header(FrameType::Ping, PING_PAYLOAD, FLAG_ACK, id).to_vec();
@@ -1074,10 +1095,7 @@ impl Client {
 
     /// `parse_header`: HPACK-decode a HEADERS block onto the stream's response.
     /// Its failure is the caller's to report.
-    fn parse_header(&self, id: u32, flags: u32, mut input: &[u8]) -> Option<Error> {
-        if flags & FLAG_PRIORITY != 0 {
-            input = input.get(5..).unwrap_or_default();
-        }
+    fn parse_header(&self, id: u32, input: &[u8]) -> Option<Error> {
         // The response, held apart from the streams.
         let response = self
             .streams
@@ -1137,7 +1155,10 @@ impl Client {
                 Ok(step) => step,
                 Err(error) => break Some(error),
             };
-            input = input.get(step.read..).unwrap_or_default();
+            let Some(rest) = input.get(step.read..) else {
+                break Some(Error);
+            };
+            input = rest;
             let flags = step.flags();
             if let Some((name, text)) = step.header {
                 let kind = header_kind(HeaderRole::Response, name);
@@ -1193,14 +1214,6 @@ impl Drop for Client {
 fn warn(message: &CStr) {
     use swoole_rs_phpruntime::{Report, report};
     swoole_rs_zend::bailout::defer(report(Report::Swoole, swoole_rs_zend::E_WARNING, message));
-}
-
-fn read_u32(bytes: &[u8]) -> u32 {
-    let mut raw = [0_u8; 4];
-    for (slot, byte) in raw.iter_mut().zip(bytes) {
-        *slot = *byte;
-    }
-    u32::from_be_bytes(raw)
 }
 
 /// `sw_atol`.

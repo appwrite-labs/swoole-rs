@@ -89,26 +89,18 @@ impl PacketTask {
 
     /// A tmpfile task's `PacketTask`, copied as upstream does: all but its last
     /// byte, so the name stays NUL-terminated.
-    fn read(from: &[u8]) -> Self {
-        let mut pkg = Self {
-            length: 0,
-            tmpfile: [0; TASK_TMP_PATH_SIZE],
-        };
+    fn read(from: &[u8]) -> Result<Self, TaskFileError> {
         let (length, name) = from
-            .split_at_checked(size_of::<usize>())
-            .unwrap_or((from, &[]));
-        if let Ok(length) = length.try_into() {
-            pkg.length = usize::from_ne_bytes(length);
-        }
-        for (byte, &from) in pkg
-            .tmpfile
-            .iter_mut()
-            .take(TASK_TMP_PATH_SIZE - 1)
-            .zip(name)
-        {
-            *byte = from;
-        }
-        pkg
+            .split_first_chunk()
+            .ok_or(TaskFileError::Short { read: from.len() })?;
+        let mut tmpfile = *name
+            .first_chunk::<TASK_TMP_PATH_SIZE>()
+            .ok_or(TaskFileError::Short { read: from.len() })?;
+        tmpfile[TASK_TMP_PATH_SIZE - 1] = 0;
+        Ok(Self {
+            length: usize::from_ne_bytes(*length),
+            tmpfile,
+        })
     }
 
     /// The temporary file's path.
@@ -324,8 +316,9 @@ impl EventData {
         datahead_dump(&self.head, &mut buf);
         let text = CStr::from_bytes_until_nul(&buf).unwrap_or_default();
         crate::sys::print(text.to_bytes());
-        if TaskFlag::from_bits(self.head.ext_flags).contains(TaskFlag::SW_TASK_TMPFILE) {
-            let pkg = PacketTask::read(&self.data);
+        if TaskFlag::from_bits(self.head.ext_flags).contains(TaskFlag::SW_TASK_TMPFILE)
+            && let Ok(pkg) = PacketTask::read(&self.data)
+        {
             // Upstream prints the payload's length in bytes of the file's name; a
             // negative `(int)` precision prints all of it.
             let name = pkg.path().to_bytes();
@@ -351,12 +344,16 @@ impl<'a> Packed<'a> {
     /// head and the `len` bytes it counts.
     #[must_use]
     pub fn from_bytes(bytes: &'a [u8]) -> Option<Self> {
+        Self::split(bytes).map(|(record, _)| record)
+    }
+
+    pub(super) fn split(bytes: &'a [u8]) -> Option<(Self, &'a [u8])> {
         let len = bytes
             .get(offset_of!(DataHead, len)..)
             .and_then(<[u8]>::first_chunk)
             .map(|len| u32::from_ne_bytes(*len) as usize)?;
-        let bytes = bytes.get(..size_of::<DataHead>().checked_add(len)?)?;
-        Some(Self { bytes })
+        let (bytes, rest) = bytes.split_at_checked(size_of::<DataHead>().checked_add(len)?)?;
+        Some((Self { bytes }, rest))
     }
 
     /// The task's address, for the native-shaped calls that still take it.
@@ -366,11 +363,16 @@ impl<'a> Packed<'a> {
     }
 
     /// The task's head.
+    ///
+    /// # Panics
+    /// Only if an internal constructor violates the complete-header invariant.
     #[must_use]
     pub fn head(self) -> DataHead {
-        self.bytes
-            .first_chunk()
-            .map_or_else(DataHead::default, DataHead::from_bytes)
+        #[expect(
+            clippy::expect_used,
+            reason = "both Packed constructors include the entire DataHead"
+        )]
+        DataHead::from_bytes(self.bytes.first_chunk().expect("validated task header"))
     }
 
     /// The task's head and the `len` bytes after it.
@@ -380,9 +382,7 @@ impl<'a> Packed<'a> {
     }
 
     fn payload(self) -> &'a [u8] {
-        self.bytes()
-            .get(size_of::<DataHead>()..)
-            .unwrap_or_default()
+        self.bytes.split_at(size_of::<DataHead>()).1
     }
 
     /// `Server::task_unpack(task, buffer, &packet)`: the payload's bytes, read
@@ -396,7 +396,7 @@ impl<'a> Packed<'a> {
         if !TaskFlag::from_bits(flags).contains(TaskFlag::SW_TASK_TMPFILE) {
             return Some((payload, flags));
         }
-        let pkg = PacketTask::read(payload);
+        let pkg = PacketTask::read(payload).ok()?;
         if buffer.size() < pkg.length {
             buffer.extend(pkg.length);
         }
@@ -697,7 +697,7 @@ mod tests {
                 (head.len as usize, head.ext_flags),
                 (size_of::<PacketTask>(), TaskFlag::SW_TASK_TMPFILE.bits())
             );
-            let pkg = PacketTask::read(unsafe { &(*event).data });
+            let pkg = PacketTask::read(unsafe { &(*event).data }).unwrap();
             let path = pkg.path().to_str().unwrap().to_owned();
             assert!(path.starts_with("/tmp/swoole.task."));
             let mut string = crate::buffer::string::OwnedString::default();

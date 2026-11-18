@@ -82,11 +82,13 @@ pub fn default_length(
     if size == 0 {
         return DefaultLength::Invalid;
     }
-    let need = offset as usize + size as usize;
-    if data.len() < need {
-        return DefaultLength::Need(i64::try_from(need).unwrap_or(i64::MAX));
-    }
-    let field = data.get(offset as usize..).unwrap_or_default();
+    let need = i64::from(offset) + i64::from(size);
+    let Some(field) = data
+        .get(offset as usize..)
+        .filter(|field| field.len() >= size as usize)
+    else {
+        return DefaultLength::Need(need);
+    };
     match unpack(format, field) {
         Ok(value) if value >= 0 => value
             .checked_add(i64::from(body_offset))
