@@ -16,15 +16,15 @@ pub fn set_protocol(protocol: &mut Protocol) {
 
 /// `swoole::mqtt::get_package_length(protocol, socket, pl)`, the protocol's length
 /// callback: 0 until the remaining length is buffered, then the whole packet's length;
-/// -1, with a warning, past four length bytes. It reads only `pl`.
+/// `None`, with a warning, past four length bytes. It reads only `pl`.
 pub fn get_package_length(
     _: &Protocol,
     _: Option<u8>,
     _: Option<std::rc::Rc<dyn core::any::Any>>,
     pl: &mut PacketLength,
-) -> isize {
+) -> Option<usize> {
     if let Ok(length) = mqtt_frame_length(pl.bytes()) {
-        length.map_or(0, |length| isize::try_from(length).unwrap_or(-1))
+        Some(length.unwrap_or(0))
     } else {
         swoole_rs_corebase::log::error_log(
             swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
@@ -32,7 +32,7 @@ pub fn get_package_length(
             c"mqtt::get_package_length",
             format_args!("bad request, the variable header size is larger than {MAX_LENGTH_SIZE}"),
         );
-        -1
+        None
     }
 }
 
@@ -64,8 +64,8 @@ mod tests {
             assert_eq!(pl.header_len, 99);
             length
         };
-        assert_eq!(measure(&[0x30]), 0);
-        assert_eq!(measure(&[0x30, 0x80, 0]), 3);
-        assert_eq!(measure(&[0x30, 0x80, 0x80, 0x80, 0x80]), -1);
+        assert_eq!(measure(&[0x30]), Some(0));
+        assert_eq!(measure(&[0x30, 0x80, 0]), Some(3));
+        assert_eq!(measure(&[0x30, 0x80, 0x80, 0x80, 0x80]), None);
     }
 }

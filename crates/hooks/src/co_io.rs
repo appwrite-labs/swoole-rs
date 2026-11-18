@@ -357,11 +357,8 @@ mod native {
     }
 }
 
-pub(crate) fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
 pub(crate) use swoole_rs_corebase::set_errno;
+pub(crate) use swoole_rs_corebase::sys::errno;
 
 /// `set_err(e)`: the record's code and message, errno and the last error.
 pub(crate) fn set_err(socket: Co, error: c_int) {
@@ -1159,18 +1156,19 @@ mod tests {
 
     /// A length function that records the bytes it measures and, given a socket in
     /// `NESTED`, writes into that socket's read buffer meanwhile.
+    #[expect(clippy::unnecessary_wraps, reason = "a `GetPackageLength`")]
     fn record_length(
         _: &crate::co_socket::Protocol,
         _: Option<u8>,
         _: Option<std::rc::Rc<dyn std::any::Any>>,
         packet: &mut swoole_rs_corebase::net_types::PacketLength,
-    ) -> isize {
+    ) -> Option<usize> {
         MEASURED.set(packet.bytes().to_vec());
         if let Some(socket) = NESTED.get() {
             socket.with_buffer(false, |buffer| buffer.append(b"nested"));
         }
         packet.header_len = 4;
-        7
+        Some(7)
     }
 
     /// The native length step hands the protocol's function the buffered prefix it

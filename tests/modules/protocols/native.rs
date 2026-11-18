@@ -706,7 +706,7 @@ fn mqtt_candidate(packet: &[u8]) -> (isize, u32) {
         None,
         &mut pl,
     );
-    (length, pl.header_len)
+    (length.map_or(-1, usize::cast_signed), pl.header_len)
 }
 
 /// The pinned `mqtt::get_package_length` over `packet`.

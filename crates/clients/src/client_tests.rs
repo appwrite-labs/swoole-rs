@@ -419,19 +419,20 @@ fn construction_makes_a_cloexec_socket_nonblocking_when_async() {
 
 #[test]
 fn a_call_measures_with_the_protocol_and_frees_the_client() {
+    #[expect(clippy::unnecessary_wraps, reason = "a `GetPackageLength`")]
     fn twice(
         _: &Protocol,
         _: Option<u8>,
         _: Option<std::rc::Rc<dyn std::any::Any>>,
         packet: &mut PacketLength,
-    ) -> isize {
-        2 * isize::try_from(packet.bytes().len()).unwrap()
+    ) -> Option<usize> {
+        Some(2 * packet.bytes().len())
     }
     let client = client(1, true, false);
     Handle::raw(client)
         .get()
         .edit_record(|record| record.protocol.get_package_length = Some(twice));
-    assert_eq!(package_length(Handle::raw(client), b"abc"), 6);
+    assert_eq!(package_length(Handle::raw(client), b"abc"), Some(6));
     free(client);
     assert_eq!(taken(), ["event Del 0", "free"]);
 }

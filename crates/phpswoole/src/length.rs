@@ -26,22 +26,17 @@ pub trait PackageLength {
 }
 
 /// `php_swoole_length_func`: `L`'s length for the packet so far, by the callable of
-/// `owner`, a [`Named`] whose reference the caller hands over; -1 without one. A
+/// `owner`, a [`Named`] whose reference the caller hands over; `None` without one. A
 /// bailout is re-raised as the last step.
 pub fn length<L: PackageLength>(
     _protocol: &Protocol,
     _: Option<u8>,
     owner: Option<Rc<dyn Any>>,
     packet: &mut PacketLength,
-) -> isize {
-    let Some(Ok(named)) = owner.map(<Rc<dyn Any>>::downcast::<Named>) else {
-        return -1;
-    };
+) -> Option<usize> {
+    let named = owner?.downcast::<Named>().ok()?;
     let length = L::length(&named.0, packet.bytes());
     // A callback may replace its own last stored reference.
     drop(named);
-    if bailout::pending() {
-        return -1;
-    }
-    length.map_or(-1, usize::cast_signed)
+    length.filter(|_| !bailout::pending())
 }

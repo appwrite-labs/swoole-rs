@@ -493,8 +493,8 @@ mod tests {
         _: Option<u8>,
         _: Option<std::rc::Rc<dyn std::any::Any>>,
         _: &mut PacketLength,
-    ) -> isize {
-        11
+    ) -> Option<usize> {
+        Some(11)
     }
 
     /// A settings value, as PHP converts it.

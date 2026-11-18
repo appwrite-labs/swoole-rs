@@ -23,7 +23,7 @@ pub enum Failure {
     NoEof,
 }
 
-/// What a protocol's length function made of the buffered bytes: its `ssize_t`.
+/// What a protocol's length function made of the buffered bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Length {
     /// Negative: no length in them.
@@ -35,13 +35,13 @@ pub enum Length {
 }
 
 impl Length {
-    /// The length function's `ssize_t`.
+    /// The length function's result.
     #[must_use]
-    pub fn of(length: isize) -> Self {
-        match usize::try_from(length) {
-            Err(_) => Self::NotFound,
-            Ok(0) => Self::More,
-            Ok(length) => Self::Packet(length),
+    pub const fn of(length: Option<usize>) -> Self {
+        match length {
+            None => Self::NotFound,
+            Some(0) => Self::More,
+            Some(length) => Self::Packet(length),
         }
     }
 }
@@ -429,7 +429,7 @@ pub(crate) mod tests {
     ) -> super::Length {
         let ctx = context();
         let at = unsafe { fake(ctx) }.storage.as_ptr();
-        super::Length::of(unsafe { package_length(ctx, at, size, header) })
+        super::Length::of(usize::try_from(unsafe { package_length(ctx, at, size, header) }).ok())
     }
     pub(crate) fn failure(_: crate::co_socket::Co, kind: super::Failure) {
         let ctx = context();

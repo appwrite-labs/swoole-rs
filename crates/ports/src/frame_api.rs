@@ -352,7 +352,7 @@ mod tests {
         let protocol = swoole_rs_clients::protocol::Protocol::EMPTY;
         assert_eq!(
             crate::http_routes::websocket_length(&protocol, None, None, &mut pl),
-            260
+            Some(260)
         );
         assert_eq!(pl.header_len, 4);
     }

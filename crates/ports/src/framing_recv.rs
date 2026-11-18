@@ -21,8 +21,6 @@ use swoole_rs_framing::recv::{
 use swoole_rs_framing::{DefaultLength, default_length};
 use swoole_rs_server::Shared;
 
-const SW_ERR: isize = swoole_rs_corebase::constants::ResultCode::SW_ERR as isize;
-
 /// One receive: the protocol and socket each effect acts on, live for the receive.
 #[derive(Clone, Copy)]
 pub(crate) struct Recv<'a> {
@@ -116,8 +114,7 @@ pub(crate) trait Packages {
         let protocol = r.protocol();
         let get = protocol.get_package_length?;
         let owner = r.owner.get();
-        let length = get(&protocol, self.dynamic_header(&protocol), owner, &mut pl);
-        usize::try_from(length).ok()
+        get(&protocol, self.dynamic_header(&protocol), owner, &mut pl)
     }
     /// `onPackage` over a whole package; whether it succeeded. No reference to the
     /// protocol is held across it: the callback may run PHP that rewrites it.
@@ -477,7 +474,7 @@ pub fn default_length_func(
     header: Option<u8>,
     _owner: Option<std::rc::Rc<dyn core::any::Any>>,
     pl: &mut PacketLength,
-) -> isize {
+) -> Option<usize> {
     let size = header.unwrap_or(p.package_length_size);
     let bytes = pl.bytes();
     match default_length(
@@ -489,17 +486,17 @@ pub fn default_length_func(
     ) {
         DefaultLength::Need(need) => {
             pl.header_len = u32::try_from(need).unwrap_or(u32::MAX);
-            0
+            Some(0)
         }
         DefaultLength::Total(total) => {
             pl.header_len = u32::from(p.package_length_size);
-            isize::try_from(total).unwrap_or(SW_ERR)
+            usize::try_from(total).ok()
         }
         DefaultLength::Format => {
             invalid_format(p.package_length_type);
-            SW_ERR
+            None
         }
-        DefaultLength::Invalid => SW_ERR,
+        DefaultLength::Invalid => None,
     }
 }
 

@@ -61,13 +61,17 @@ pub fn websocket_length(
     _: Option<u8>,
     _owner: Option<std::rc::Rc<dyn core::any::Any>>,
     pl: &mut PacketLength,
-) -> isize {
+) -> Option<usize> {
     let (length, header) = match swoole_rs_websocket::frame_length(pl.bytes()) {
-        Ok(frame) => (frame.total.c_cast::<isize>(), Some(frame.header_length)),
+        // A total past `ssize_t` is upstream's negative length.
+        Ok(frame) => (
+            Some(frame.total).filter(|&total| isize::try_from(total).is_ok()),
+            Some(frame.header_length),
+        ),
         Err(error) => (
             match error {
-                swoole_rs_websocket::LengthError::IncompleteHeader { .. } => 0,
-                swoole_rs_websocket::LengthError::Overflow { .. } => -1,
+                swoole_rs_websocket::LengthError::IncompleteHeader { .. } => Some(0),
+                swoole_rs_websocket::LengthError::Overflow { .. } => None,
             },
             error.header_length(),
         ),
@@ -138,8 +142,8 @@ pub mod exports {
         _: Option<u8>,
         _owner: Option<std::rc::Rc<dyn core::any::Any>>,
         pl: &mut PacketLength,
-    ) -> isize {
-        swoole_rs_http2::frame_length(pl.bytes()).map_or(0, usize::cast_signed)
+    ) -> Option<usize> {
+        Some(swoole_rs_http2::frame_length(pl.bytes()).unwrap_or(0))
     }
 
     /// `SW_WEBSOCKET_HEADER_LEN + SW_WEBSOCKET_CLOSE_CODE_LEN + SW_WEBSOCKET_CLOSE_REASON_MAX_LEN`.
@@ -455,13 +459,13 @@ pub mod exports {
         header: Option<u8>,
         owner: Option<std::rc::Rc<dyn core::any::Any>>,
         pl: &mut PacketLength,
-    ) -> isize {
+    ) -> Option<usize> {
         // The header size names the connection's route: WebSocket's, HTTP/2's, or
         // none (warned).
         match header {
             Some(WEBSOCKET_FRAME_HEADER_SIZE) => super::websocket_length(proto, header, owner, pl),
             Some(super::HTTP2_FRAME_HEADER_SIZE) => http2_length(proto, header, owner, pl),
-            _ => -1,
+            _ => None,
         }
     }
 

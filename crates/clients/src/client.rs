@@ -958,13 +958,10 @@ impl<'a> Handle<'a> {
 
 /// The client protocol's length of the packet in `data`.
 #[must_use]
-pub fn package_length(this: Handle<'_>, data: &[u8]) -> isize {
+pub fn package_length(this: Handle<'_>, data: &[u8]) -> Option<usize> {
     let record = this.record();
-    let Some(get) = record.protocol.get_package_length else {
-        return -1;
-    };
     let mut packet = PacketLength::new(data);
-    get(
+    record.protocol.get_package_length?(
         &record.protocol,
         None,
         this.get().framing.length_owner(),
