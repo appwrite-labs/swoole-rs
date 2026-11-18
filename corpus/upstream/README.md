@@ -96,8 +96,9 @@ a separate TMPDIR and process group. Before cleanup, its result records the file
 count under TMPDIR, surviving non-zombie group members and their total open
 descriptors. Surviving groups get 100 ms to finish closing connections before
 the observation. Workers that exited have already released their descriptors. The gate
-compares Cargo and upstream counts for each executed test and reports increases
-independently of the official PHPT verdict. Historical reports without measurements
+compares Cargo and upstream counts for each test that ended the same way on both and
+reports increases. A test that failed on one engine only is left to the pass/fail gate:
+a failed run leaves whatever it had open when it stopped. Historical reports without measurements
 can still be read.
 
 
