@@ -27,8 +27,6 @@ const SW_ERROR_WRONG_OPERATION: c_int = 509;
 const F_GETFD: c_int = 1;
 
 unsafe extern "C" {
-    #[link_name = "_Z13sw_shm_mallocm"]
-    fn sw_shm_malloc(size: usize) -> *mut c_void;
     fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
 }
 
@@ -65,15 +63,13 @@ struct Shared {
 
 /// The shared page, mapped before the server forks.
 fn shared() -> &'static Shared {
-    static AT: OnceLock<usize> = OnceLock::new();
-    let at = *AT.get_or_init(|| {
-        // SAFETY: a fresh zeroed shared mapping, never freed.
-        let at = unsafe { sw_shm_malloc(size_of::<Shared>()) };
+    static SHARED: OnceLock<&'static Shared> = OnceLock::new();
+    SHARED.get_or_init(|| {
+        let at = swoole_rs_corebase::memory::members::sw_shm_malloc(size_of::<Shared>());
         assert!(!at.is_null(), "sw_shm_malloc");
-        at as usize
-    });
-    // SAFETY: the mapping holds a `Shared`, zeroed as its atomics' initial values.
-    unsafe { &*(at as *const Shared) }
+        // SAFETY: the zero-filled shared mapping holds the atomics for the process lifetime.
+        unsafe { &*at.cast::<Shared>() }
+    })
 }
 
 /// `EXPECT_*` anywhere: report and record, then carry on as gtest does.
