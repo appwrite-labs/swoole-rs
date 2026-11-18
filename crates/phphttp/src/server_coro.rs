@@ -908,7 +908,7 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         let max = conn.package_max_length();
         if !header_completed {
             let length = buffer.len();
-            let found = find_crlf2(data(&buffer, crlf_offset, length));
+            let found = swoole_rs_http::header_delimiter(data(&buffer, crlf_offset, length));
             let Some(pos) = found else {
                 if length == buffer.size() {
                     context.state().response.status = ENTITY_TOO_LARGE;
@@ -1072,11 +1072,6 @@ fn http2(conn: &mut Connection, mut context: Ctx) -> Result<(), bailout::Bailout
     context::release_objects(context)
 }
 
-/// `swoole_strnpos(.., "\r\n\r\n")`.
-fn find_crlf2(data: &[u8]) -> Option<usize> {
-    data.windows(4).position(|window| window == b"\r\n\r\n")
-}
-
 /// `Expect: 100-continue` (case-insensitive) among the request headers.
 fn expects_continue(mut context: Ctx) -> bool {
     parse::made(&context.state().request, Property::Header)
@@ -1134,15 +1129,4 @@ fn http2_request(
         context.state().response.status = NOT_FOUND;
     }
     result.and_then(|()| context::release_objects(context))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_header_ends_at_the_first_blank_line() {
-        assert_eq!(find_crlf2(b"GET / HTTP/1.1\r\n\r\nbody"), Some(14), "end");
-        assert_eq!(find_crlf2(b"GET / HTTP/1.1\r\n"), None, "incomplete");
-    }
 }

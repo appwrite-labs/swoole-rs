@@ -188,11 +188,6 @@ pub(crate) fn multipart_length(parts: usize) -> usize {
     parts + BOUNDARY_SIZE + 6
 }
 
-/// `swoole_strnpos(data, "\r\n\r\n")`.
-pub(crate) fn header_end(data: &[u8]) -> Option<usize> {
-    data.windows(4).position(|window| window == b"\r\n\r\n")
-}
-
 /// `swoole_http_token_list_contains_value` as its callers read it: a list too long
 /// to check (-1 upstream) counts as found.
 pub(crate) fn token_list_contains(list: &[u8], value: &[u8]) -> bool {
@@ -428,6 +423,5 @@ mod tests {
             contains_ignore_case(b"x, Permessage-Deflate", b"permessage-deflate"),
             "strncasestr"
         );
-        assert_eq!(header_end(b"a\r\n\r\nb"), Some(1), "header end");
     }
 }

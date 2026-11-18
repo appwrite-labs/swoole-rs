@@ -1012,7 +1012,7 @@ impl Client {
             };
             if !header_completed {
                 let unparsed = input.view().get(header_offset..).unwrap_or_default();
-                let ended = request::header_end(unparsed).is_some();
+                let ended = swoole_rs_http::header_delimiter(unparsed).is_some();
                 if !ended {
                     if length == size {
                         socket.set_err(INVALID_PROTOCOL);
@@ -2124,7 +2124,7 @@ fn get_header_out(call: &Call) {
         return;
     };
     // The buffer the socket's close left, which the conn keeps until the next close.
-    let respond = |data: &[u8]| match request::header_end(data) {
+    let respond = |data: &[u8]| match swoole_rs_http::header_delimiter(data) {
         Some(end) if end > 0 => call.set_bytes(data.get(..end).unwrap_or(data)),
         _ => call.set_bool(false),
     };

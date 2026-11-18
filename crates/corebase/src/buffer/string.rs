@@ -113,6 +113,12 @@ fn strnstr(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     let haystack = haystack.get(..cut(haystack)).unwrap_or_default();
     let needle = needle.get(..cut(needle)).unwrap_or_default();
     debug_assert!(!needle.is_empty(), "swoole_strnstr's needle is not empty");
+    find_bytes(haystack, needle)
+}
+
+/// Byte offset of the first whole needle. An empty needle matches at zero.
+#[must_use]
+pub fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     match needle {
         // A port's EOF, at most `SW_DATA_EOF_MAXLEN` bytes: a scan for its first byte
         // checks each candidate, which costs far less per search than the
@@ -756,6 +762,17 @@ mod tests {
         assert_eq!(s.split(b"\r\n", |_, _| false), Some(0));
         assert_eq!(s.offset, 7);
         s.dispose();
+    }
+
+    #[test]
+    fn first_header_delimiter() {
+        let end = |data: &[u8]| find_bytes(data, b"\r\n\r\n");
+        assert_eq!(end(b"GET / HTTP/1.1\r\n\r\nbody"), Some(14));
+        assert_eq!(end(b"GET / HTTP/1.1\r\n"), None);
+        assert_eq!(end(b"a\r\n\r\nb"), Some(1));
+        assert_eq!(end(b"\r\r\n\r\n\r\n"), Some(1));
+        assert_eq!(end(b"body"), None);
+        assert_eq!(find_bytes(b"body", b""), Some(0));
     }
 
     /// A short delimiter's first byte alone is no match, and a long one is still found.
