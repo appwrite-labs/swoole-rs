@@ -5,7 +5,6 @@
 //! the buffer and the protocol's callbacks; `default_length_func`; and `swoole_hton64`/`swoole_ntoh64`. Logs name the
 //! upstream function that wrote them.
 use core::ffi::{CStr, c_int};
-use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 use swoole_rs_clients::client::{ClientFraming, Framing};
 use swoole_rs_clients::protocol::{Package, Protocol};
@@ -87,28 +86,6 @@ impl Recv<'_> {
     }
 }
 
-/// The receive's buffer, lent for `'a` except that a dispatch may run PHP that frees
-/// it: the receive reads it after a dispatch only while the socket stays.
-pub(crate) struct Lent<'a> {
-    buffer: *mut CppString,
-    lent: PhantomData<&'a mut CppString>,
-}
-
-impl<'a> Lent<'a> {
-    pub(crate) fn new(buffer: &'a mut CppString) -> Self {
-        Self {
-            buffer,
-            lent: PhantomData,
-        }
-    }
-
-    pub(crate) fn get(&mut self) -> &mut CppString {
-        // SAFETY: the buffer lent (the type's invariant); the borrow of `self` is the
-        // only reference to it.
-        unsafe { &mut *self.buffer }
-    }
-}
-
 /// `package` as the payload a dispatch with the head `info` sends: none (a null one)
 /// when the package is.
 pub(crate) fn send_data<'a>(
@@ -173,7 +150,7 @@ impl Packages for Callbacks {
 /// A [`Recv`] and its buffer, whose packages `K` measures and hands on, and the
 /// `recv_wait` the socket holds: only this receive writes it, so a flag that didn't
 /// change costs no edit.
-struct With<'a, K>(Recv<'a>, bool, K, Lent<'a>);
+struct With<'a, K>(Recv<'a>, bool, K, &'a mut CppString);
 
 impl<K: Packages> With<'_, K> {
     /// `socket->recv_wait = flags & FLAG_WAIT`, when it differs.
@@ -198,7 +175,7 @@ impl<K: Packages> With<'_, K> {
     #[inline(always)]
     fn around<T>(&mut self, flags: &mut u32, f: impl FnOnce(Recv<'_>, &mut CppString) -> T) -> T {
         self.apply_wait(*flags);
-        let result = f(self.0, self.3.get());
+        let result = f(self.0, self.3);
         self.refresh(flags);
         result
     }
@@ -257,9 +234,8 @@ impl<K: Packages> Effects for With<'_, K> {
     fn recv(&mut self, size: usize, flags: &mut u32) -> Received {
         self.apply_wait(*flags);
         let socket = self.0.socket;
-        let b = self.3.get();
         // The loop asks for at most the buffer's free tail.
-        let read = b.fill_within(size, |tail| {
+        let read = self.3.fill_within(size, |tail| {
             swoole_rs_corebase::tls::upstream::recv_spare(socket, tail, 0)
         });
         if let Some(n) = read {
@@ -275,7 +251,7 @@ impl<K: Packages> Effects for With<'_, K> {
         self.apply_wait(*flags);
         let length = self
             .2
-            .length(&self.0, self.3.get().view().get(from..).unwrap_or_default());
+            .length(&self.0, self.3.view().get(from..).unwrap_or_default());
         if length.is_none() {
             self.refresh(flags);
         }
@@ -284,7 +260,7 @@ impl<K: Packages> Effects for With<'_, K> {
     #[inline(always)]
     fn dispatch(&mut self, from: usize, flags: &mut u32) -> bool {
         self.apply_wait(*flags);
-        let b = self.3.get();
+        let b = &mut *self.3;
         let length = usize::try_from(b.offset().unsigned_abs()).unwrap_or(usize::MAX);
         let handled = self.2.dispatch(&self.0, Package::of(b, from, length));
         self.refresh(flags);
@@ -303,22 +279,20 @@ impl<K: Packages> Effects for With<'_, K> {
     }
     #[inline(always)]
     fn buffer(&mut self) -> Buffer {
-        let b = self.3.get();
         Buffer {
-            length: b.len(),
-            size: b.size(),
-            offset: b.offset(),
+            length: self.3.len(),
+            size: self.3.size(),
+            offset: self.3.offset(),
         }
     }
     #[inline(always)]
     fn set_buffer(&mut self, length: usize, offset: i64) {
-        let b = self.3.get();
-        b.truncate(length);
-        b.set_offset(offset);
+        self.3.truncate(length);
+        self.3.set_offset(offset);
     }
     #[inline(always)]
     fn data(&mut self) -> &[u8] {
-        self.3.get().view()
+        self.3.view()
     }
     #[inline(always)]
     fn protocol(&self) -> recv::Protocol {
@@ -441,7 +415,7 @@ fn rare(r: Recv<'_>, b: &mut CppString, op: Op, arg: usize) {
 pub(crate) fn receive<'a, K: Packages>(
     socket: Socket<'a>,
     owner: Owner<'a>,
-    buffer: Lent<'a>,
+    buffer: &'a mut CppString,
     mode: Mode,
     packages: K,
     initial: Option<(u32, bool)>,
@@ -483,14 +457,7 @@ fn client_recv<const LENGTH: bool>(
     buffer: &mut CppString,
 ) -> c_int {
     let mode = if LENGTH { Mode::Length } else { Mode::Eof };
-    receive(
-        socket,
-        Owner::Client(client),
-        Lent::new(buffer),
-        mode,
-        Callbacks,
-        None,
-    ) as c_int
+    receive(socket, Owner::Client(client), buffer, mode, Callbacks, None) as c_int
 }
 
 /// The framed receives a client's reads use, which `swoole_init` registers
@@ -585,7 +552,7 @@ mod tests {
         receive(
             socket,
             Owner::Plain(protocol),
-            Lent::new(buffer),
+            buffer,
             mode,
             Callbacks,
             None,

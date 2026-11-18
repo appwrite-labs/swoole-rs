@@ -21,7 +21,7 @@ use swoole_rs_server::port_config::{PortConfig, ReadEvent};
 use swoole_rs_server::static_select::static_select;
 use swoole_rs_server::{Connection as Slot, ServerConfig, view};
 
-use crate::framing_recv::{self, Lent, Packages};
+use crate::framing_recv::{self, Packages};
 use crate::http_routes::Session;
 use crate::http_routes::exports::{Frames, Port, Route, Tasks};
 use crate::read::{Connection, Dispatch, Framing, Readable, Reply, Upgrade, readable};
@@ -178,7 +178,7 @@ impl<'a> Read<'a> {
             framing_recv::Owner::Plain(&self.port.protocol)
         };
         let initial = self.framing_flags.take();
-        let buffer = Lent::new(self.buffer());
+        let buffer = self.buffer();
         framing_recv::receive(socket, owner, buffer, mode, packages, initial) != Status::Err
     }
 }
@@ -257,7 +257,7 @@ impl Connection for Read<'_> {
             Framing::Redis => {
                 let session = self.session();
                 let max_length = self.port.protocol.get().package_max_length;
-                let buffer = Lent::new(self.buffer());
+                let buffer = self.buffer();
                 // A redis port's `onPackage` is `dispatch_task`.
                 let dispatch = |data: swoole_rs_server::SendData<'_>| session.task(data);
                 crate::resp_recv::recv_packet(
