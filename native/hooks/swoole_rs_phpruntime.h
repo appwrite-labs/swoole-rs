@@ -45,6 +45,9 @@ int swr_v1_phpruntime_plain_rename(struct _php_stream_wrapper *wrapper, const ch
                                    struct _php_stream_context *context);
 int swr_v1_phpruntime_plain_mkdir(struct _php_stream_wrapper *wrapper, const char *dir, int mode, int options,
                                   struct _php_stream_context *context);
+struct utimbuf;
+int swr_v1_phpruntime_plain_metadata(const char *url, int option, const struct utimbuf *times, const char *name,
+                                     long number);
 int swr_v1_phpruntime_plain_rmdir(struct _php_stream_wrapper *wrapper, const char *url, int options,
                                   struct _php_stream_context *context);
 

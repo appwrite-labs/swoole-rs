@@ -5,10 +5,8 @@ The Swoole reactor (backends, wait loop, handlers, callbacks, deferred queues),
 `crates/corebase/src/reactor/`; `crates/corebase/src/tls/upstream.rs` and `reactor_write.rs` hold the
 `Socket` and write-path members that also touch TLS.
 
-This directory's `swoole_socket.h` and `swoole_reactor.h` replace upstream's headers
-under the same names, each keeping only the members the build's C uses. `Reactor` is a methods-only
-class over `swr_v1_reactor_head`, which Rust's reactor state begins with, so a
-`Reactor *` is that state; `reactor_state.rs` constructs and frees it
+`swoole_socket.h` exposes the socket members native code uses.
+`reactor_state.rs` constructs and frees the reactor state
 (`swoole_event_init`, `swoole_event_free`). An `IOVector` is a Rust owner
 (`iov_owned.rs`) holding a typed copy of the caller's descriptors; payload bytes are not
 copied.

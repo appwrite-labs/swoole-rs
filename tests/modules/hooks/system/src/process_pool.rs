@@ -16,7 +16,7 @@ use std::os::unix::net::UnixStream;
 use std::ptr::{self, null_mut};
 use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering::SeqCst};
 use std::time::{SystemTime, UNIX_EPOCH};
-use swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
+use swoole_rs_corebase::constants::{SW_IPC_BUFFER_SIZE, SW_IPC_MAX_SIZE};
 use swoole_rs_corebase::memory::members::pool as mem_pool;
 use swoole_rs_corebase::process::methods as pm;
 use swoole_rs_corebase::process::methods::{
@@ -63,8 +63,6 @@ const SW_USER_WORKER: c_int = 5;
 const SW_WORKER_BUSY: u8 = 1;
 const SW_WORKER_IDLE: u8 = 2;
 const SW_WORKER_MESSAGE_STOP: u8 = 1;
-/// Linux's SW_IPC_MAX_SIZE (8192) less the DataHead.
-const SW_IPC_BUFFER_SIZE: usize = 8192 - 40;
 const TEST_HOST: &CStr = c"127.0.0.1";
 const TEST_PORT: c_int = 9501;
 const TEST_SOCK_FILE: &CStr = c"/tmp/swoole-core-tests.sock";
@@ -104,6 +102,8 @@ struct EventData {
     info: DataHead,
     data: [u8; SW_IPC_BUFFER_SIZE],
 }
+
+const _: () = assert!(size_of::<EventData>() == SW_IPC_MAX_SIZE as usize);
 
 impl EventData {
     /// `EventData msg{}`.
@@ -165,8 +165,7 @@ unsafe extern "C" {
     fn __libc_current_sigrtmin() -> c_int;
 }
 
-// The `ProcessPool` and `Worker` methods: `corebase::process`'s Rust functions over the records,
-// whose layout the fixture checks against the records'.
+// The ported ProcessPool and Worker cases call the Rust record methods directly.
 unsafe fn pool_create(pool: *mut Pool, worker_num: c_uint, key: c_int, ipc_mode: c_int) -> c_int {
     // SAFETY: as the caller guarantees.
     let created = unsafe {

@@ -1,17 +1,18 @@
 //! The coroutine plain-files wrapper's path operations: `php_plain_files_url_stater`,
-//! `php_plain_files_unlink`, `php_plain_files_rename`, `php_plain_files_mkdir` and
-//! `php_plain_files_rmdir` of upstream's copy of PHP's
+//! `php_plain_files_unlink`, `php_plain_files_rename`, `php_plain_files_mkdir`,
+//! `php_plain_files_rmdir` and `php_plain_files_metadata` of upstream's copy of PHP's
 //! plain-files wrapper (`thirdparty/php/streams/plain_wrapper.c`), whose wrapper
 //! table names them. A warning runs the user error handler, so each traps a bailout
 //! and raises it last.
 use crate::stream::raise;
-use libc::{c_char, c_int, gid_t, mode_t, uid_t};
+use libc::{c_char, c_int, c_long, gid_t, mode_t, uid_t};
 use std::ffi::{CStr, CString, c_void};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::{Text, errno, strerror};
+use swoole_rs_hooks::hooked::swoole_coroutine_close;
 use swoole_rs_hooks::stdio::{
-    swoole_coroutine_mkdir, swoole_coroutine_rename, swoole_coroutine_rmdir,
-    swoole_coroutine_unlink,
+    swoole_coroutine_access, swoole_coroutine_mkdir, swoole_coroutine_open,
+    swoole_coroutine_rename, swoole_coroutine_rmdir, swoole_coroutine_unlink,
 };
 use swoole_rs_zend::{
     E_WARNING, ZTS,
@@ -38,6 +39,13 @@ unsafe extern "C" {
     safe fn chown(path: Text<'_>, owner: uid_t, group: gid_t) -> c_int;
     safe fn chmod(path: Text<'_>, mode: mode_t) -> c_int;
     safe fn umask(mask: mode_t) -> mode_t;
+    /// `utime(2)`: the times given, or now for none.
+    safe fn utime(path: Text<'_>, times: Option<&libc::utimbuf>) -> c_int;
+    /// `php_get_uid_by_name` and `php_get_gid_by_name`: the id of the user or group
+    /// `name` in the slot given, `SUCCESS` (0) when there is one. They ask libc's
+    /// user database and run no PHP code.
+    safe fn php_get_uid_by_name(name: Text<'_>, uid: &mut uid_t) -> c_int;
+    safe fn php_get_gid_by_name(name: Text<'_>, gid: &mut gid_t) -> c_int;
     /// `expand_filepath_with_mode(path, real_path, NULL, 0, use_realpath)`: the
     /// absolute form of `path` in `real_path`, a `MAXPATHLEN` buffer, or null. It
     /// reads this thread's working directory and runs no PHP code.
@@ -83,6 +91,13 @@ const REPORT_ERRORS: c_int = 8;
 const MKDIR_RECURSIVE: c_int = 1;
 const CWD_EXPAND: c_int = 0;
 const MAXPATHLEN: usize = libc::PATH_MAX.unsigned_abs() as usize;
+/// `PHP_STREAM_META_TOUCH`, `_OWNER_NAME`, `_OWNER`, `_GROUP_NAME`, `_GROUP` and `_ACCESS`.
+const META_TOUCH: c_int = 1;
+const META_OWNER_NAME: c_int = 2;
+const META_OWNER: c_int = 3;
+const META_GROUP_NAME: c_int = 4;
+const META_GROUP: c_int = 5;
+const META_ACCESS: c_int = 6;
 
 /// `url` past a leading `file://`, which upstream finds with `strncasecmp`.
 fn local(url: &CStr) -> &CStr {
@@ -107,11 +122,17 @@ fn refused(path: &CStr, warn: bool) -> Result<bool, Bailout> {
 
 /// `php_error_docref1(NULL, path, E_WARNING, "%s", strerror(code))`.
 fn warn(path: &CStr, code: c_int) -> Result<(), Bailout> {
-    let reason = CString::new(strerror(code)).unwrap_or_default();
+    warn_text(path, &[strerror(code).as_bytes()])
+}
+
+/// `php_error_docref1(NULL, path, E_WARNING, "%s", message)`, the message being
+/// `parts` end to end: a path or a name goes in as its bytes, as C's `%s` prints it.
+fn warn_text(path: &CStr, parts: &[&[u8]]) -> Result<(), Bailout> {
+    let message = CString::new(parts.concat()).unwrap_or_default();
     bailout::trapped(swr_zend_try_error1(
         path.into(),
         E_WARNING,
-        reason.as_c_str().into(),
+        message.as_c_str().into(),
     ))
 }
 
@@ -360,6 +381,75 @@ fn mkdir(dir: &CStr, mode: c_int, options: c_int) -> Result<c_int, Bailout> {
     }
 }
 
+/// `php_plain_files_metadata` (`touch`, `chown`, `chgrp`, `chmod`): 1 once done, else
+/// 0. Its C entry reads `value` as the option types it: `times` for a touch, `name`
+/// for an owner or group by name, `number` for an id or a mode.
+fn metadata(
+    url: &CStr,
+    option: c_int,
+    times: Option<&libc::utimbuf>,
+    name: Option<&CStr>,
+    number: c_long,
+) -> Result<c_int, Bailout> {
+    let path = local(url);
+    if refused(path, true)? {
+        return Ok(0);
+    }
+    let name = name.unwrap_or_default();
+    let status = match option {
+        META_TOUCH => {
+            if swoole_coroutine_access(path.into(), libc::F_OK) != 0 {
+                let flags = libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC;
+                let file = swoole_coroutine_open(path.into(), flags, 0o666);
+                if file == -1 {
+                    let reason = strerror(errno());
+                    warn_text(
+                        path,
+                        &[
+                            b"Unable to create file ",
+                            path.to_bytes(),
+                            b" because ",
+                            reason.as_bytes(),
+                        ],
+                    )?;
+                    return Ok(0);
+                }
+                swoole_coroutine_close(file);
+            }
+            utime(path.into(), times)
+        }
+        META_OWNER_NAME | META_OWNER => {
+            let mut uid = number.c_cast::<uid_t>();
+            if option == META_OWNER_NAME && php_get_uid_by_name(name.into(), &mut uid) != 0 {
+                warn_text(path, &[b"Unable to find uid for ", name.to_bytes()])?;
+                return Ok(0);
+            }
+            // `(gid_t) -1`: the group stays.
+            chown(path.into(), uid, gid_t::MAX)
+        }
+        META_GROUP_NAME | META_GROUP => {
+            let mut gid = number.c_cast::<gid_t>();
+            if option == META_GROUP_NAME && php_get_gid_by_name(name.into(), &mut gid) != 0 {
+                warn_text(path, &[b"Unable to find gid for ", name.to_bytes()])?;
+                return Ok(0);
+            }
+            chown(path.into(), uid_t::MAX, gid)
+        }
+        META_ACCESS => chmod(path.into(), number.c_cast::<mode_t>()),
+        _ => {
+            let message = format!("Unknown option {option} for stream_metadata");
+            swoole_rs_zend::value_error(&CString::new(message).unwrap_or_default());
+            return Ok(0);
+        }
+    };
+    if status == -1 {
+        warn_text(path, &[b"Operation failed: ", strerror(errno()).as_bytes()])?;
+        return Ok(0);
+    }
+    php_clear_stat_cache(false, None, 0);
+    Ok(1)
+}
+
 swoole_rs_zend::exports! {
 /// The wrapper's `url_stat`: `ssb` is a `php_stream_statbuf`, whose one member is the
 /// `zend_stat_t` (`struct stat`) written here.
@@ -407,6 +497,21 @@ extern "C" fn swr_v1_phpruntime_plain_mkdir(
     _context: *mut c_void,
 ) -> c_int {
     raise(mkdir(dir.get(), mode, options), 0)
+}
+
+/// The wrapper's `metadata`, with `value` as its C entry read it for `option`.
+#[unsafe(no_mangle)]
+extern "C" fn swr_v1_phpruntime_plain_metadata(
+    url: Text<'_>,
+    option: c_int,
+    times: Option<&libc::utimbuf>,
+    name: Option<Text<'_>>,
+    number: c_long,
+) -> c_int {
+    raise(
+        metadata(url.get(), option, times, name.map(Text::get), number),
+        0,
+    )
 }
 
 /// The wrapper's `rmdir`.
