@@ -104,6 +104,9 @@ pub(crate) fn send_data<'a>(
 pub(crate) trait Packages {
     /// The fixed length header size, or `None` to ask the protocol's callbacks.
     const HEAD: Option<u32>;
+    fn dynamic_header(&self, _: &Protocol) -> Option<u8> {
+        None
+    }
     /// `get_package_length` over the buffered `bytes`: `None` for malformed bytes,
     /// `Some(0)` while the header is incomplete. The protocol's, `None` without one.
     #[inline(always)]
@@ -113,7 +116,7 @@ pub(crate) trait Packages {
         let protocol = r.protocol();
         let get = protocol.get_package_length?;
         let owner = r.owner.get();
-        let length = get(&protocol, Some(r.socket), owner, &mut pl);
+        let length = get(&protocol, self.dynamic_header(&protocol), owner, &mut pl);
         usize::try_from(length).ok()
     }
     /// `onPackage` over a whole package; whether it succeeded. No reference to the
@@ -440,7 +443,7 @@ pub(crate) fn receive<'a, K: Packages>(
     } else if mode == Mode::Length {
         let p = r.0.protocol();
         let size = p.get_package_length_size;
-        head = u32::from(size.map_or(p.package_length_size, |size| size(socket)));
+        head = u32::from(r.2.dynamic_header(&p).unwrap_or(p.package_length_size));
         flags |=
             (if skip { FLAG_SKIP } else { 0 }) | (if size.is_some() { FLAG_DYNAMIC } else { 0 });
     }
@@ -467,14 +470,11 @@ pub const FRAMING: Framing = Framing::new(client_recv::<true>, client_recv::<fal
 /// `static ssize_t Protocol::default_length_func(const Protocol *, Socket *, PacketLength *)`.
 pub fn default_length_func(
     p: &Protocol,
-    socket: Option<Socket<'_>>,
+    header: Option<u8>,
     _owner: Option<std::rc::Rc<dyn core::any::Any>>,
     pl: &mut PacketLength,
 ) -> isize {
-    let size = match (p.get_package_length_size, socket) {
-        (Some(size), Some(socket)) => size(socket),
-        _ => p.package_length_size,
-    };
+    let size = header.unwrap_or(p.package_length_size);
     let bytes = pl.bytes();
     match default_length(
         p.package_length_type,

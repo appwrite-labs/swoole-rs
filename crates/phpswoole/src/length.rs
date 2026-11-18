@@ -2,7 +2,7 @@
 //! client, a coroutine socket or this thread's port registry keeps, which a measure
 //! hands the length callback.
 use std::{any::Any, rc::Rc};
-use swoole_rs_clients::protocol::{Protocol, Socket};
+use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::net_types::PacketLength;
 use swoole_rs_zend::{bailout, host::callable::Callable};
 
@@ -30,7 +30,7 @@ pub trait PackageLength {
 /// bailout is re-raised as the last step.
 pub fn length<L: PackageLength>(
     _protocol: &Protocol,
-    _socket: Option<Socket<'_>>,
+    _: Option<u8>,
     owner: Option<Rc<dyn Any>>,
     packet: &mut PacketLength,
 ) -> isize {

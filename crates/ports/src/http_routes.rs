@@ -5,11 +5,11 @@
 
 use std::ffi::c_int;
 
-use swoole_rs_clients::protocol::{Protocol, Socket};
+use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::log;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
-use swoole_rs_corebase::{WebSocketStatus, log};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_server::Connection;
 
@@ -26,12 +26,15 @@ fn route<T>(
     http2: impl FnOnce() -> T,
     error: T,
 ) -> T {
-    if conn.websocket_status() >= WebSocketStatus::Handshake {
-        return websocket();
+    match length_size(conn, exports::get_package_length_size) {
+        WEBSOCKET_FRAME_HEADER_SIZE => websocket(),
+        HTTP2_FRAME_HEADER_SIZE => http2(),
+        _ => error,
     }
-    if conn.http2_stream() {
-        return http2();
-    }
+}
+
+/// Report a session whose framing route has not been established.
+fn warn_protocol_status(conn: Connection<'_>) {
     let (host, port) = host_port(&conn.info());
     log::error_log(
         LOG_WARNING,
@@ -42,7 +45,6 @@ fn route<T>(
             conn.session_id()
         ),
     );
-    error
 }
 
 /// The host and port of an address that holds its socket type's member, as
@@ -56,7 +58,7 @@ pub(crate) fn host_port(address: &SocketAddress) -> (String, c_int) {
 /// `websocket::get_package_length` as a protocol's length callback: it reads only `pl`.
 pub fn websocket_length(
     _proto: &Protocol,
-    _socket: Option<Socket<'_>>,
+    _: Option<u8>,
     _owner: Option<std::rc::Rc<dyn core::any::Any>>,
     pl: &mut PacketLength,
 ) -> isize {
@@ -77,13 +79,15 @@ pub fn websocket_length(
 }
 
 /// `get_package_length_size`'s result for `conn`.
-fn length_size(conn: Connection<'_>) -> u8 {
-    route(
-        conn,
-        || WEBSOCKET_FRAME_HEADER_SIZE,
-        || HTTP2_FRAME_HEADER_SIZE,
-        0,
-    )
+pub fn length_size(
+    conn: Connection<'_>,
+    size: swoole_rs_clients::protocol::GetPackageLengthSize,
+) -> u8 {
+    let header = size(conn.websocket_status(), conn.http2_stream());
+    if header == 0 {
+        warn_protocol_status(conn);
+    }
+    header
 }
 
 /// A server session as a port's package handlers see it: the port's server, the
@@ -132,7 +136,7 @@ pub mod exports {
     /// crates/phphttp's coroutine server.
     pub fn http2_length(
         _proto: &Protocol,
-        _socket: Option<Socket<'_>>,
+        _: Option<u8>,
         _owner: Option<std::rc::Rc<dyn core::any::Any>>,
         pl: &mut PacketLength,
     ) -> isize {
@@ -397,6 +401,11 @@ pub mod exports {
 
     impl Packages for Port<'_> {
         const HEAD: Option<u32> = None;
+        fn dynamic_header(&self, protocol: &Protocol) -> Option<u8> {
+            protocol
+                .get_package_length_size
+                .map(|size| length_size(self.0.conn, size))
+        }
         #[inline(always)]
         fn dispatch(&self, _: &Recv<'_>, package: Package<'_>) -> bool {
             let info = DataHead {
@@ -444,39 +453,38 @@ pub mod exports {
     /// connection socket.
     pub fn get_package_length(
         proto: &Protocol,
-        socket: Option<Socket<'_>>,
+        header: Option<u8>,
         owner: Option<std::rc::Rc<dyn core::any::Any>>,
         pl: &mut PacketLength,
     ) -> isize {
         // The header size names the connection's route: WebSocket's, HTTP/2's, or
         // none (warned).
-        let Some(conn) = socket else {
-            return -1;
-        };
-        match get_package_length_size(conn) {
-            WEBSOCKET_FRAME_HEADER_SIZE => super::websocket_length(proto, socket, owner, pl),
-            super::HTTP2_FRAME_HEADER_SIZE => http2_length(proto, socket, owner, pl),
+        match header {
+            Some(WEBSOCKET_FRAME_HEADER_SIZE) => super::websocket_length(proto, header, owner, pl),
+            Some(super::HTTP2_FRAME_HEADER_SIZE) => http2_length(proto, header, owner, pl),
             _ => -1,
         }
     }
 
-    /// `uint8_t get_package_length_size(Socket *)` of a connection socket: only an
-    /// HTTP port's protocol holds it, so the socket's kind makes its object a
-    /// connection slot.
+    /// The frame header for the live session's current protocol.
+    // The native protocol table and its callers compare this callback by address.
+    #[inline(never)]
     #[must_use]
-    pub fn get_package_length_size(socket: Socket<'_>) -> u8 {
-        let conn = socket.read(|s| s.object);
-        // SAFETY: a connection socket's object is its live connection slot, shared
-        // through the slot's handle, as its fields are cells and atomics.
-        length_size(Connection::from(unsafe {
-            &*conn.cast::<swoole_rs_server::ConnectionRecord>()
-        }))
+    pub fn get_package_length_size(status: WebSocketStatus, http2: bool) -> u8 {
+        if status >= WebSocketStatus::Handshake {
+            WEBSOCKET_FRAME_HEADER_SIZE
+        } else if http2 {
+            super::HTTP2_FRAME_HEADER_SIZE
+        } else {
+            0
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use swoole_rs_corebase::WebSocketStatus;
     use swoole_rs_server::ConnectionRecord;
 
     /// Pinned `http.cc`'s branch for a connection: 1 WebSocket, 2 HTTP/2, 0 error.
@@ -528,7 +536,7 @@ mod tests {
                     }
                 );
                 assert_eq!(
-                    length_size(conn),
+                    length_size(conn, exports::get_package_length_size),
                     [0, WEBSOCKET_FRAME_HEADER_SIZE, HTTP2_FRAME_HEADER_SIZE][expected as usize]
                 );
                 let frame = route(conn, || -22, || 55, -1);

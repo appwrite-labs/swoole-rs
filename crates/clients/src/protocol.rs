@@ -16,21 +16,15 @@ pub type OnPackage = fn(*const Protocol, Socket<'_>, Package<'_>) -> c_int;
 /// `buf_size` readable bytes at `buf`, 0 while incomplete, -1 when bad. A caller
 /// passes a copy of the protocol the socket reads with, taken before the call, so
 /// PHP code the callback runs may `set()` the protocol meanwhile; the callback may
-/// rely on the private data stored beside it there. The socket is `None` where a
-/// measure has none. The owner is a reference to the length owner the caller keeps
+/// rely on the private data stored beside it there. The optional header size comes from
+/// the current server connection. The owner is a reference the caller keeps
 /// beside the protocol, which the callback drops, or `None` where it keeps none. Only
 /// Rust calls it.
-pub type GetPackageLength = fn(
-    &Protocol,
-    Option<Socket<'_>>,
-    Option<std::rc::Rc<dyn core::any::Any>>,
-    &mut PacketLength,
-) -> isize;
+pub type GetPackageLength =
+    fn(&Protocol, Option<u8>, Option<std::rc::Rc<dyn core::any::Any>>, &mut PacketLength) -> isize;
 
-/// `Protocol::get_package_length_size`: a socket's length-header size. As for
-/// [`OnPackage`], the socket's kind, which the protocol was set up for, is what
-/// makes its object the callback's. Only Rust calls it.
-pub type GetPackageLengthSize = fn(Socket<'_>) -> u8;
+/// The dynamic header size for a session's WebSocket status and HTTP/2 flag.
+pub type GetPackageLengthSize = fn(swoole_rs_corebase::WebSocketStatus, bool) -> u8;
 
 /// A whole package in a receive buffer, lent to its handler: `len` bytes at `data`
 /// (null for none), readable and writable for `'a`. It stays a pointer: the handler

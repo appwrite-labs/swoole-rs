@@ -55,26 +55,26 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
-use swoole_rs_clients::protocol::Socket;
 use swoole_rs_corebase::WebSocketStatus;
 use swoole_rs_corebase::buffer::string::{CppString, OwnedString};
 use swoole_rs_ffi::swoole_init;
 use swoole_rs_ports::frame_api::Frame;
 use swoole_rs_ports::http_routes::exports as http;
+use swoole_rs_server::Connection;
 
 mod client;
 mod http1;
 
 use http1::case::{
-    swr_case_abort_server, swr_case_base_server, swr_case_close, swr_case_close_actively,
-    swr_case_close_after, swr_case_connection, swr_case_connection_status, swr_case_create,
-    swr_case_fake_socket, swr_case_healthy, swr_case_http_server, swr_case_idle_worker_num,
-    swr_case_info, swr_case_init_protocol, swr_case_last_error, swr_case_length_port,
-    swr_case_master_pid, swr_case_mqtt_server, swr_case_port, swr_case_protocol_server,
-    swr_case_redis_server, swr_case_send, swr_case_sendfile, swr_case_set_max_sockets,
-    swr_case_shutdown, swr_case_ssl_client_ca, swr_case_ssl_files, swr_case_ssl_init,
-    swr_case_ssl_protocols, swr_case_ssl_server, swr_case_ssl_sni, swr_case_start,
-    swr_case_tg_buffer, swr_case_tick, swr_case_worker_num,
+    length_connection, swr_case_abort_server, swr_case_base_server, swr_case_close,
+    swr_case_close_actively, swr_case_close_after, swr_case_connection, swr_case_create,
+    swr_case_healthy, swr_case_http_server, swr_case_idle_worker_num, swr_case_info,
+    swr_case_init_protocol, swr_case_last_error, swr_case_length_port, swr_case_master_pid,
+    swr_case_mqtt_server, swr_case_port, swr_case_protocol_server, swr_case_redis_server,
+    swr_case_send, swr_case_sendfile, swr_case_set_max_sockets, swr_case_shutdown,
+    swr_case_ssl_client_ca, swr_case_ssl_files, swr_case_ssl_init, swr_case_ssl_protocols,
+    swr_case_ssl_server, swr_case_ssl_sni, swr_case_start, swr_case_tg_buffer, swr_case_tick,
+    swr_case_worker_num,
 };
 
 type Server = c_void;
@@ -153,31 +153,26 @@ fn ws_decode(frame: &mut Frame, data: &mut [u8]) -> bool {
 /// `http_server::get_package_length`, over the cases' records.
 ///
 /// # Safety
-/// The port's protocol, a connection socket and a live packet length, laid out as
+/// The port's protocol and a live packet length, laid out as
 /// the crates' records.
 unsafe fn http_get_package_length(
     protocol: *const http1::Protocol,
-    socket: *mut c_void,
+    conn: Connection<'_>,
     pl: *mut PacketLength,
 ) -> isize {
     // SAFETY: per the caller.
     unsafe {
         http::get_package_length(
             &*protocol.cast(),
-            Socket::from_ptr(socket.cast()),
+            Some(http_get_package_length_size(conn)),
             None,
             &mut *pl.cast(),
         )
     }
 }
 
-/// `http_server::get_package_length_size`.
-///
-/// # Safety
-/// `socket` is a connection socket.
-unsafe fn http_get_package_length_size(socket: *mut c_void) -> u8 {
-    // SAFETY: per the caller.
-    unsafe { http::get_package_length_size(Socket::from_ptr(socket.cast()).expect("a socket")) }
+fn http_get_package_length_size(conn: Connection<'_>) -> u8 {
+    swoole_rs_ports::http_routes::length_size(conn, http::get_package_length_size)
 }
 
 // The handshake's `Sec-WebSocket-Accept`, as upstream's `http_context` computes it.
@@ -924,12 +919,11 @@ fn abort_connection() {
     }
 }
 
-/// `http_server::get_package_length(_size)` over a fake connection socket: a WebSocket
+/// `http_server::get_package_length(_size)` over a standalone connection: a WebSocket
 /// frame, an HTTP/2 settings frame, then an HTTP/1.1 connection, which is an error.
 fn get_package_length() {
     const SW_HTTP2_FRAME_HEADER_SIZE: u8 = 9;
     const SW_WEBSOCKET_FRAME_HEADER_SIZE: u8 = 14;
-    const STATUS_HANDSHAKE: u8 = 2;
     const SW_ERROR_PROTOCOL_ERROR: c_int = 508;
     let mut serv = std::ptr::null_mut();
     // SAFETY: a writable out-parameter.
@@ -945,18 +939,17 @@ fn get_package_length() {
         http::get_package_length_size as *mut c_void
     );
 
-    let mut conn = std::ptr::null_mut();
-    // SAFETY: the live port and a writable out-parameter.
-    let fake_sock = unsafe { swr_case_fake_socket(port, &mut conn) };
+    // SAFETY: port is the live listen port created above.
+    let record = unsafe { length_connection(port) };
+    let conn = Connection::from(&record);
     // SAFETY: the server, configured.
     assert_eq!(unsafe { swr_case_create(serv) }, SW_OK);
 
     // websocket
     let buffer = tg_buffer();
-    // SAFETY: the fake socket's Connection.
-    unsafe { swr_case_connection_status(conn, STATUS_HANDSHAKE, 0) };
-    // SAFETY: the fake socket, whose object is its Connection.
-    let size = unsafe { http_get_package_length_size(fake_sock) };
+    conn.set_websocket_status(WebSocketStatus::Handshake);
+    conn.set_http2_stream(false);
+    let size = http_get_package_length_size(conn);
     assert_eq!(size, SW_WEBSOCKET_FRAME_HEADER_SIZE);
     // SAFETY: the live buffer; TEST_STR's bytes.
     assert!(unsafe { ws_encode(buffer, TEST_STR.as_bytes(), OPCODE_TEXT, FLAG_FIN) });
@@ -968,31 +961,29 @@ fn get_package_length() {
             header_len: 0,
         }
     };
-    // SAFETY: the port's protocol, the fake socket and the frame.
-    let length = unsafe { http_get_package_length(protocol, fake_sock, &mut pl) };
+    // SAFETY: the port's protocol and the live frame.
+    let length = unsafe { http_get_package_length(protocol, conn, &mut pl) };
     assert_eq!(length, (SW_WEBSOCKET_HEADER_LEN + TEST_STR.len()) as isize);
 
     // http2
-    // SAFETY: the fake socket's Connection.
-    unsafe { swr_case_connection_status(conn, 0, 1) };
-    // SAFETY: as above.
-    let size = unsafe { http_get_package_length_size(fake_sock) };
+    conn.set_websocket_status(WebSocketStatus::None);
+    conn.set_http2_stream(true);
+    let size = http_get_package_length_size(conn);
     assert_eq!(size, SW_HTTP2_FRAME_HEADER_SIZE);
     let length = HTTP2_SETTING_FRAME.len();
     pl.buf = HTTP2_SETTING_FRAME.as_ptr();
     pl.buf_size = length as u32;
     assert!(length > 16);
-    // SAFETY: the port's protocol, the fake socket and the frame.
-    let got = unsafe { http_get_package_length(protocol, fake_sock, &mut pl) };
+    // SAFETY: the port's protocol and the live frame.
+    let got = unsafe { http_get_package_length(protocol, conn, &mut pl) };
     assert_eq!(got, length as isize);
 
     // http1.1
-    // SAFETY: the fake socket's Connection.
-    unsafe { swr_case_connection_status(conn, 0, 0) };
+    conn.set_websocket_status(WebSocketStatus::None);
+    conn.set_http2_stream(false);
+    assert_eq!(http_get_package_length_size(conn), 0);
     // SAFETY: as above.
-    assert_eq!(unsafe { http_get_package_length_size(fake_sock) }, 0);
-    // SAFETY: as above.
-    let got = unsafe { http_get_package_length(protocol, fake_sock, &mut pl) };
+    let got = unsafe { http_get_package_length(protocol, conn, &mut pl) };
     assert_eq!(got, SW_ERR as isize);
 
     let mut msg = std::ptr::null();
