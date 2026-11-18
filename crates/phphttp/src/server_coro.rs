@@ -368,7 +368,7 @@ fn register(minit: &Minit, short_name: bool, compression: bool) -> Result<(), ba
 
 /// `$this`'s server, once constructed. The frame holds `$this` for the
 /// call, and the connections' coroutines run inside `onAccept` calls.
-fn server_of(call: &Call) -> Option<&HttpServer> {
+fn server_of<'c>(call: &'c Call<'_>) -> Option<&'c HttpServer> {
     call.custom::<Data>()?.0.get()
 }
 
@@ -467,7 +467,7 @@ const ACCEPT_RETRY_TIME: c_int = 1;
 
 /// `sw_zend_is_callable_at_frame("onAccept")` on `$this` at `start`'s frame;
 /// an `E_CORE_ERROR` when it is not.
-fn accept_callable(call: &Call) -> Result<Option<FrameCallable<'_>>, bailout::Bailout> {
+fn accept_callable<'c>(call: &'c Call<'_>) -> Result<Option<FrameCallable<'c>>, bailout::Bailout> {
     let name = Owned::string(ZString::new(b"onAccept"));
     if let Some(accept) = FrameCallable::resolve(name, call.call_frame())? {
         return Ok(Some(accept));
@@ -718,7 +718,7 @@ fn handle(call: &Call) {
 }
 
 fn set(call: &Call) {
-    let Ok(settings) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
+    let Ok(settings) = http_server_coro::parse_class_swoole_coroutine_http_server_set(call) else {
         call.set_bool(false);
         return;
     };

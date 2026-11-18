@@ -64,3 +64,4 @@ pub static arginfo_class_Swoole_Process_Pool_start: a::ArgInfo<1> =
 pub static arginfo_class_Swoole_Process_Pool_stop: a::ArgInfo<1> =
     a::ArgInfo::new([a::begin_type(0, 0, z::IS_VOID, false)]);
 pub use self::arginfo_class_Swoole_Process_Pool_detach as arginfo_class_Swoole_Process_Pool_shutdown;
+pub use crate::required_array as parse_class_swoole_process_pool_set;

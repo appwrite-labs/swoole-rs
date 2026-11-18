@@ -76,3 +76,4 @@ pub static arginfo_class_Swoole_Client_shutdown: a::ArgInfo<2> = a::ArgInfo::new
 ]);
 pub static arginfo_class_Swoole_Client_getSocket: a::ArgInfo<1> =
     a::ArgInfo::new([a::begin_class_mask(0, 0, c"Socket", z::MAY_BE_FALSE)]);
+pub use crate::required_array as parse_class_swoole_client_set;

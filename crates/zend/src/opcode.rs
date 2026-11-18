@@ -1,7 +1,7 @@
 //! User opcode handlers (`zend_set_user_opcode_handler`): [`handler`] is the one
 //! entry Zend calls, and hands the body a [`Frame`].
 use crate::{
-    Function, Php,
+    Function, Php, Value,
     sys::{zend_execute_data, zend_function, zend_op},
 };
 use std::{
@@ -30,45 +30,61 @@ pub(crate) struct Executing<'a>(
     pub(crate) PhantomData<&'a zend_execute_data>,
 );
 
-/// A frame's first words, each a `Cell`: `opline`, `call`, `return_value`, `func`.
-type Head = [Cell<*mut c_void>; 4];
-/// `EX(opline)`'s word in a [`Head`].
-const OPLINE: usize = offset_of!(zend_execute_data, opline) / size_of::<*mut c_void>();
-/// `EX(func)`'s word in a [`Head`].
-const FUNC: usize = offset_of!(zend_execute_data, func) / size_of::<*mut c_void>();
+/// A frame's first words, as Zend lays them out: each pointer a `Cell` and `This`
+/// a [`Value`], as Zend writes them through pointers on this thread.
+#[repr(C)]
+struct Head {
+    opline: Cell<*const zend_op>,
+    _call_return_value: [Cell<*mut c_void>; 2],
+    func: Cell<*mut zend_function>,
+    this: Value,
+    _prev_symbol_table: [Cell<*mut c_void>; 2],
+    run_time_cache: Cell<*mut c_void>,
+}
 
 const _: () = assert!(
-    offset_of!(zend_execute_data, opline) == OPLINE * size_of::<*mut c_void>()
-        && offset_of!(zend_execute_data, func) == FUNC * size_of::<*mut c_void>()
-        && OPLINE < 4
-        && FUNC < 4
+    offset_of!(zend_execute_data, opline) == offset_of!(Head, opline)
+        && offset_of!(zend_execute_data, func) == offset_of!(Head, func)
+        && offset_of!(zend_execute_data, This) == offset_of!(Head, this)
+        && offset_of!(zend_execute_data, run_time_cache) == offset_of!(Head, run_time_cache)
         && size_of::<zend_execute_data>() >= size_of::<Head>()
         && align_of::<zend_execute_data>() >= align_of::<Head>(),
-    "a Head is the pointer words a zend_execute_data starts with"
+    "a Head is the words a zend_execute_data starts with"
 );
 
 impl<'a> Executing<'a> {
     /// The frame's [`Head`].
     fn head(self) -> &'a Head {
         // SAFETY: a live frame for `'a`, per the type, which starts with these
-        // pointer words (asserted above); each is a `Cell`, as Zend writes them
-        // through pointers on this thread.
+        // words (asserted above); each is a `Cell` or a `Value`, as Zend writes
+        // them through pointers on this thread.
         unsafe { &*self.0.cast::<Head>() }
     }
 
     /// `EX(func)`.
     pub(crate) fn func(self) -> *mut zend_function {
-        self.head()[FUNC].get().cast()
+        self.head().func.get()
+    }
+
+    /// `EX(This)`: `$this` in its value and the argument count in its `u2`,
+    /// which the frame holds for `'a`.
+    pub(crate) fn this(self) -> &'a Value {
+        &self.head().this
     }
 
     /// `EX(opline)`.
     fn opline(self) -> *const zend_op {
-        self.head()[OPLINE].get().cast_const().cast()
+        self.head().opline.get()
     }
 
     /// `EX(opline) = at`.
     fn set_opline(self, at: *const zend_op) {
-        self.head()[OPLINE].set(at.cast_mut().cast());
+        self.head().opline.set(at);
+    }
+
+    /// `EX(run_time_cache)`, left null in its place.
+    pub(crate) fn take_run_time_cache(self) -> *mut c_void {
+        self.head().run_time_cache.replace(std::ptr::null_mut())
     }
 }
 

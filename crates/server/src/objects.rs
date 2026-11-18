@@ -4,6 +4,8 @@
 use crate::Mode;
 use core::ffi::{c_int, c_void};
 
+#[cfg(feature = "upstream-symbols")]
+use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::reactor::{Heap, Socket};
 use swoole_rs_corebase::{DataHead, TrustedAllocator};
 
@@ -53,11 +55,7 @@ impl crate::ServerState {
         if self.config_ref().mode_ != Mode::Thread {
             return f(self.message_bus_record());
         }
-        let bus = THREAD_BUS.with(|slot| {
-            let bus = slot.take();
-            slot.set(bus.clone());
-            bus
-        });
+        let bus = THREAD_BUS.with(|slot| slot.with_taken(|bus| bus.clone()));
         match bus {
             Some(ThreadBus::Reactor(id)) => {
                 let thread = self.tables_ref().reactor_thread(id);

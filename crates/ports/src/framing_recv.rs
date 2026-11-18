@@ -7,7 +7,7 @@
 use core::ffi::{CStr, c_int};
 use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
-use swoole_rs_clients::client::{Framing, Handle};
+use swoole_rs_clients::client::{ClientFraming, Framing};
 use swoole_rs_clients::protocol::{Package, Protocol};
 use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_WARNING as LOG_WARNING};
@@ -39,7 +39,7 @@ pub(crate) enum Owner<'a> {
     /// Protocol settings without a PHP length callable.
     Plain(&'a Shared<Protocol>),
     /// The client the receive reads for.
-    Client(Handle<'a>),
+    Client(&'a ClientFraming),
     /// The port the receive reads for, through this thread's registry.
     Port(&'a swoole_rs_server::port_config::PortConfig),
 }
@@ -73,7 +73,7 @@ impl Recv<'_> {
     fn protocol(&self) -> Protocol {
         match self.owner {
             Owner::Plain(protocol) => protocol.get(),
-            Owner::Client(client) => client.client().record().protocol,
+            Owner::Client(client) => client.protocol(),
             Owner::Port(port) => port.protocol.get(),
         }
     }
@@ -190,7 +190,7 @@ impl<K: Packages> With<'_, K> {
     /// closed it.
     #[inline(always)]
     fn refresh(&mut self, flags: &mut u32) {
-        *flags = self.0.socket.read(|s| socket_flags(&self.2, s));
+        *flags = self.0.socket.read(|s| socket_flags(s, || self.2.paused()));
         self.1 = *flags & FLAG_WAIT != 0;
     }
 
@@ -204,11 +204,11 @@ impl<K: Packages> With<'_, K> {
     }
 }
 
-fn socket_flags(packages: &impl Packages, socket: &SocketFields) -> u32 {
+pub(crate) fn socket_flags(socket: &SocketFields, paused: impl FnOnce() -> bool) -> u32 {
     (if socket.removed { FLAG_REMOVED } else { 0 })
         | (if socket.recv_wait { FLAG_WAIT } else { 0 })
         | (if socket.ssl().is_null() { 0 } else { FLAG_TLS })
-        | (if socket.removed && packages.paused() {
+        | (if socket.removed && paused() {
             FLAG_PAUSED
         } else {
             0
@@ -444,6 +444,7 @@ pub(crate) fn receive<'a, K: Packages>(
     buffer: Lent<'a>,
     mode: Mode,
     packages: K,
+    initial: Option<(u32, bool)>,
 ) -> Status {
     let mut r = With::<K>(
         Recv {
@@ -455,7 +456,8 @@ pub(crate) fn receive<'a, K: Packages>(
         packages,
         buffer,
     );
-    let (mut flags, skip) = socket.read(|s| (socket_flags(&r.2, s), s.skip_recv));
+    let (mut flags, skip) =
+        initial.unwrap_or_else(|| socket.read(|s| (socket_flags(s, || r.2.paused()), s.skip_recv)));
     r.1 = flags & FLAG_WAIT != 0;
     let mut head = 0;
     if let Some(fixed) = K::HEAD {
@@ -475,19 +477,20 @@ pub(crate) fn receive<'a, K: Packages>(
 
 /// `int Protocol::recv_with_length_protocol(Socket *, String *) const` when `LENGTH`, else
 /// `int Protocol::recv_with_eof_protocol(Socket *, String *) const`, over `client`'s.
-fn client_recv<const LENGTH: bool>(client: Handle<'_>) -> c_int {
+fn client_recv<const LENGTH: bool>(
+    client: &ClientFraming,
+    socket: Socket<'_>,
+    buffer: &mut CppString,
+) -> c_int {
     let mode = if LENGTH { Mode::Length } else { Mode::Eof };
-    client.with_framed(|_, socket, buffer| {
-        // The input buffer is null before an async connect made it.
-        if buffer.is_null() {
-            return Status::Err as c_int;
-        }
-        let buffer = Lent {
-            buffer,
-            lent: PhantomData,
-        };
-        receive(socket, Owner::Client(client), buffer, mode, Callbacks) as c_int
-    })
+    receive(
+        socket,
+        Owner::Client(client),
+        Lent::new(buffer),
+        mode,
+        Callbacks,
+        None,
+    ) as c_int
 }
 
 /// The framed receives a client's reads use, which `swoole_init` registers
@@ -585,6 +588,7 @@ mod tests {
             Lent::new(buffer),
             mode,
             Callbacks,
+            None,
         ) as c_int
     }
 

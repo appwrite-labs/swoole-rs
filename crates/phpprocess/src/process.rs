@@ -91,7 +91,7 @@ pub fn process_class() -> &'static Class {
 }
 
 /// `$this`, which every instance method runs on.
-fn this(call: &Call) -> Option<&Process> {
+fn this<'c>(call: &'c Call<'_>) -> Option<&'c Process> {
     call.custom()
 }
 
@@ -908,7 +908,7 @@ fn close(call: &Call) {
 }
 
 fn set(call: &Call) {
-    let Ok(options) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
+    let Ok(options) = process::parse_class_swoole_process_set(call) else {
         call.set_bool(false);
         return;
     };

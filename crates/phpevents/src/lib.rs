@@ -49,6 +49,7 @@ struct Registered {
 }
 
 /// `event_socket_map`, flat by fd.
+#[derive(Default)]
 struct Sockets(Table<Registered>);
 
 impl Sockets {
@@ -89,21 +90,10 @@ php_local! {
     /// PHP, as upstream's static: a thread-context coroutine's callback runs on its
     /// own thread and must find the fds the loop's thread added. Never dropped: what
     /// a ZTS thread leaves registered is leaked, as upstream's, not released once
-    /// PHP is gone. Out of its cell only inside [`with_sockets`].
+    /// PHP is gone. Each access restores the map before acting on a registration.
     static SOCKETS: Cell<ManuallyDrop<Sockets>> = Cell::new(ManuallyDrop::new(Sockets(Table::new())));
     /// The last `Registered::id` handed out.
     static ADDED: Cell<u64> = Cell::new(0);
-}
-
-/// `apply` to the socket table, taken out of its cell (an empty table, which
-/// allocates nothing, stands in) and put back once `apply` returns. `apply` runs
-/// no PHP, which may reach the table through `Swoole\Event`: what it copies,
-/// removes or replaces is acted on, and dropped, after the put-back.
-fn with_sockets<R>(php: Php, apply: impl FnOnce(&mut Sockets) -> R) -> R {
-    let mut sockets = SOCKETS.replace(php, ManuallyDrop::new(Sockets(Table::new())));
-    let result = apply(&mut sockets);
-    SOCKETS.set(php, sockets);
-    result
 }
 
 /// The global functions `SW_FUNCTION_ALIAS` registers, in upstream's order.
@@ -161,7 +151,7 @@ fn fd(value: Option<&Value>) -> i32 {
 }
 
 fn registered(php: Php, fd: i32) -> bool {
-    with_sockets(php, |sockets| sockets.contains_key(fd))
+    SOCKETS.with_taken(php, |sockets| sockets.contains_key(fd))
 }
 
 /// `int` events, as the reactor takes them.
@@ -269,7 +259,7 @@ fn add(call: &Call) {
     let id = ADDED.get(php) + 1;
     ADDED.set(php, id);
     let registered = Registered { id, socket, object };
-    drop(with_sockets(php, |sockets| sockets.insert(fd, registered)));
+    drop(SOCKETS.with_taken(php, |sockets| sockets.insert(fd, registered)));
     call.set_long(fd.into());
 }
 
@@ -312,7 +302,7 @@ fn write(call: &Call) {
         error.defer();
         return;
     }
-    let written = with_sockets(php, |sockets| {
+    let written = SOCKETS.with_taken(php, |sockets| {
         sockets.get(fd).and_then(|r| r.socket.write(data))
     });
     call.set_bool(written.is_some());
@@ -338,7 +328,7 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     }
-    if !with_sockets(php, |sockets| {
+    if !SOCKETS.with_taken(php, |sockets| {
         sockets.get(fd).is_some_and(|r| r.object.is_some())
     }) {
         not_found(fd);
@@ -354,7 +344,7 @@ fn set(call: &Call) {
         return;
     }
     // The replaced callables, which the reactor may still be in.
-    let (has, replaced) = with_sockets(php, |sockets| {
+    let (has, replaced) = SOCKETS.with_taken(php, |sockets| {
         let Some(object) = sockets.get_mut(fd).and_then(|r| r.object.as_mut()) else {
             return ((false, false), [readable, writable]);
         };
@@ -381,7 +371,7 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let set = with_sockets(php, |sockets| {
+    let set = SOCKETS.with_taken(php, |sockets| {
         sockets
             .get(fd)
             .is_some_and(|r| r.socket.set(events_of(events)))
@@ -415,7 +405,7 @@ fn del(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let Some(registered) = with_sockets(php, |sockets| sockets.remove(fd)) else {
+    let Some(registered) = SOCKETS.with_taken(php, |sockets| sockets.remove(fd)) else {
         call.set_bool(false);
         return;
     };
@@ -560,7 +550,7 @@ fn isset(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let set = with_sockets(php, |sockets| {
+    let set = SOCKETS.with_taken(php, |sockets| {
         sockets.get(fd).is_some_and(|r| {
             !r.socket.removed() && i64::from(r.socket.events().bits()) & events != 0
         })
@@ -648,7 +638,7 @@ fn registration<T>(
     id: u64,
     apply: impl FnOnce(&mut Registered) -> T,
 ) -> Option<T> {
-    with_sockets(php, |sockets| {
+    SOCKETS.with_taken(php, |sockets| {
         sockets.get_mut(fd).filter(|r| r.id == id).map(apply)
     })
 }
@@ -656,7 +646,7 @@ fn registration<T>(
 /// The read (`write` false) or write handler of a user fd: run its callback;
 /// on failure warn, detach and delete the fd.
 fn ready(php: Php, fd: i32, write: bool) -> Result<bool, Bailout> {
-    let found = with_sockets(php, |sockets| {
+    let found = SOCKETS.with_taken(php, |sockets| {
         let registered = sockets.get(fd)?;
         let object = registered.object.as_ref()?;
         let callable = if write {
@@ -699,7 +689,7 @@ fn ready(php: Php, fd: i32, write: bool) -> Result<bool, Bailout> {
 /// The error handler: dispatch to the read or write handler unless the socket
 /// reported an error; then warn, free the fd's object and delete it.
 fn error_event(php: Php, fd: i32) -> Result<bool, Bailout> {
-    let found = with_sockets(php, |sockets| {
+    let found = SOCKETS.with_taken(php, |sockets| {
         sockets.get(fd).map(|r| (r.id, r.socket.events()))
     });
     let Some((id, events)) = found else {

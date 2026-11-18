@@ -65,6 +65,28 @@ class Overlays(unittest.TestCase):
                     build_ext.headers_for(['websocket'])
 
 class Phpt(unittest.TestCase):
+    @unittest.skipUnless(Path('/proc/self/fd').is_dir(), 'process-group resource counts require procfs')
+    def test_leftovers_are_observed_before_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            case = {'path': 'probe.phpt'}
+            artifact = root / 'artifacts'
+            engine = Engine('fixture', root / 'unused.so')
+            command = [sys.executable, '-c', r"""
+import os, subprocess, sys
+from pathlib import Path
+Path(os.environ['TMPDIR'], 'leftover').touch()
+subprocess.Popen(['sleep', '30'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+Path(sys.argv[1]).write_text('PASSED ' + sys.argv[2] + '\n')
+""", str(artifact / 'status.txt'), str(root / case['path'])]
+            with patch.object(Engine, 'command', return_value=command), patch.object(phpt, 'ipc_namespace', return_value=None):
+                rows, _ = phpt.run_cases(engine, [case], root, artifact, 3, 1, measure_leftovers=True)
+            row = rows[case['path']]
+            self.assertEqual(row['status'], 'passed')
+            self.assertEqual(row['leftovers']['temp_files'], 1)
+            self.assertEqual(row['leftovers']['processes'], 1)
+            self.assertGreaterEqual(row['leftovers']['descriptors'], 2)
+
     def test_manifest_lists_every_pinned_timer_original(self):
         tests = json.loads((ROOT / 'corpus/upstream/manifest.json').read_text())['tests']
         timer = {Path(case['path']).stem: case for case in tests if case['path'].startswith('tests/swoole_timer/')}

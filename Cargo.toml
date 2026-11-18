@@ -48,7 +48,7 @@ unsafe_op_in_unsafe_fn = "deny"
 # `pub` only where another crate uses it, so dead_code sees the rest (#159).
 unreachable_pub = "deny"
 # `cargo fuzz` builds with --cfg fuzzing.
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)", "cfg(tsan)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)", "cfg(tsan)", "cfg(kani)"] }
 # #3555: lifetimes, casts and macros rustc leaves at allow.
 unused_lifetimes = "deny"
 single_use_lifetimes = "deny"

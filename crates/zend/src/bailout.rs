@@ -2,7 +2,10 @@
 //! code Rust calls. A bailout must never jump over a Rust frame, so Rust traps
 //! it in C, returns normally, and hands a [`Bailout`] back to the C or C++ that
 //! called it, which re-raises it with `zend_bailout()`. See docs/zend.md.
-use crate::{Value, Zvals, host::Callee};
+use crate::{
+    Value, Zvals,
+    host::{Callee, CalleePtr},
+};
 use std::ffi::c_int;
 
 unsafe extern "C" {
@@ -13,7 +16,7 @@ unsafe extern "C" {
     /// callable's cache (an empty one resolves `name`, when given), its lent
     /// arguments and a live return slot: `result` says whether it succeeded.
     safe fn swr_zend_try_call(
-        cache: Callee<'_>,
+        cache: CalleePtr<'_>,
         args: Zvals<'_>,
         name: Option<&Value>,
         retval: &Value,
@@ -148,7 +151,7 @@ pub fn call(
         return Err(Bailout);
     }
     let mut result = 0;
-    if swr_zend_try_call(cache, args, name, retval, &mut result) != 0 {
+    if swr_zend_try_call(cache.cache, args, name, retval, &mut result) != 0 {
         return Err(Bailout);
     }
     Ok(result != 0)

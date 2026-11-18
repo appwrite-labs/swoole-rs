@@ -91,6 +91,16 @@ Pre-existing and other users' objects are never removed; a per-user lock in `/tm
 these groups so concurrent runs don't remove each other's live objects. Each batch records its
 mode as `ipc_isolation` (`namespace` or `cleanup`).
 
+The merge-tier runner uses `--measure-leftovers` on Linux. Each runnable test gets
+a separate TMPDIR and process group. Before cleanup, its result records the file
+count under TMPDIR, surviving non-zombie group members and their total open
+descriptors. Surviving groups get 100 ms to finish closing connections before
+the observation. Workers that exited have already released their descriptors. The gate
+compares Cargo and upstream counts for each executed test and reports increases
+independently of the official PHPT verdict. Historical reports without measurements
+can still be read.
+
+
 JSON defaults to `target/reports/upstream-phpt.json`. Adjacent `*-artifacts/`
 directories retain runner logs, its result ledger, and available expected/actual/
 diff/generated-PHP files per engine/test. Tests are never blessed or rewritten to

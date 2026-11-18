@@ -242,3 +242,4 @@ pub static arginfo_class_Swoole_Server_Task_unpack: a::ArgInfo<2> = a::ArgInfo::
     a::begin_type(1, 0, z::IS_MIXED, false),
     a::arg_type(c"data", 0, false, z::IS_STRING, false, None),
 ]);
+pub use crate::required_array as parse_class_swoole_server_set;

@@ -140,3 +140,4 @@ pub static arginfo_swoole_implicit_fn: a::ArgInfo<3> = a::ArgInfo::new([
     a::arg_type(c"fn", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"args", 0, false, z::IS_MIXED, false, Some(c"null")),
 ]);
+pub use crate::required_array as parse_swoole_async_set;

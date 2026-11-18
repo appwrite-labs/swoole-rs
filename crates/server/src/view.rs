@@ -802,20 +802,6 @@ pub(crate) fn set_nonblock(sock: Socket<'_>) {
     let _ = sock.edit(|sock| set(sock, 1, -1));
 }
 
-/// `conn->socket->recv_buffer->pop(size)`, its whole size: the block holding the
-/// buffer's bytes, now the caller's, while the buffer takes a fresh one as large;
-/// `None` without a socket or buffer.
-#[must_use]
-pub fn pop_recv_buffer(
-    conn: Connection<'_>,
-) -> Option<swoole_rs_corebase::buffer::string::OwnedString> {
-    conn.socket()?.edit(|s| {
-        s.recv_buffer
-            .as_mut()
-            .and_then(|buffer| buffer.pop_owned(buffer.size()))
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

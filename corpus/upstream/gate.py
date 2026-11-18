@@ -109,6 +109,8 @@ def rows(reports):
         for row in data['results']:
             entry = {'test': row['test'], 'family': row['module'], 'engine': row.get('engine', 'upstream'),
                      'status': row['status'], 'upstream_status': row.get('upstream_status')}
+            if 'leftovers' in row:
+                entry['leftovers'] = row['leftovers']
             if row['status'] == 'excluded':
                 entry['reason'] = row.get('detail', '')
             elif row['status'] == 'skipped':
@@ -121,6 +123,21 @@ def rows(reports):
                                          and bool(ABORTED.search(row.get('detail') or '')))
                 entry['report'] = next((name for name, pattern in REPORTS if pattern.search(row.get('detail') or '')), None)
             yield entry
+
+
+def resource_regressions(results):
+    """Compare measurements for the same PHPT when its test body ran on both engines."""
+    upstream = {row['test']: row['leftovers'] for row in results
+                if row['engine'] == 'upstream' and row['status'] in ('passed', 'failed') and 'leftovers' in row}
+    regressions = []
+    for row in results:
+        if row['engine'] != 'cargo' or row['status'] not in ('passed', 'failed') or row['test'] not in upstream:
+            continue
+        for metric, count in row.get('leftovers', {}).items():
+            baseline = upstream[row['test']][metric]
+            if baseline is not None and (count is None or count > baseline):
+                regressions.append(f"{row['test']} ({metric}: cargo {count}, upstream {baseline})")
+    return sorted(regressions)
 
 
 def compare(results):
@@ -270,6 +287,7 @@ def markdown(results, rechecked=None):
     elif len(engines) > 1:
         lines += listing('passing on upstream but not here (regressions)', regressions)
         lines += listing('failing on upstream too', both)
+    lines += listing('PHPT resource regressions', resource_regressions(results))
     reported = [f'{row["test"]} ({row["engine"]}: {row["report"]})' for row in results if row.get('report')]
     if reported:
         lines += listing('leak or assertion reports (gated like any failure)', reported)
@@ -302,6 +320,9 @@ def main():
             mark_reruns(results, rechecked)
         args.output.write_text(json.dumps(results, indent=1) + '\n')
     print(markdown(results, rechecked))
+    resources = resource_regressions(results)
+    for regression in resources:
+        annotate('error', 'PHPT regression', regression)
     if rechecked is not None:
         confirmed, flaky, recovered, inconclusive = recheck(flagged(results), rechecked)
         annotate_regressions(results, confirmed + inconclusive)
@@ -309,11 +330,11 @@ def main():
             annotate('notice', 'PHPT flaky on upstream', test)
         for test in recovered:
             annotate('notice', 'PHPT passed on re-run', test)
-        return int(bool(confirmed or inconclusive))
+        return int(bool(confirmed or inconclusive or resources))
     regressions = compare(results)[0]
     for regression in regressions:
         annotate('error', 'PHPT regression', regression)
-    return int(bool(regressions))
+    return int(bool(regressions or resources))
 
 
 def annotate_regressions(results, tests):

@@ -43,3 +43,4 @@ pub static arginfo_class_Swoole_Thread_setPriority: a::ArgInfo<3> = a::ArgInfo::
 ]);
 pub use self::arginfo_class_Swoole_Thread_getExitStatus as arginfo_class_Swoole_Thread_getNativeId;
 pub use self::arginfo_class_Swoole_Thread_getInfo as arginfo_class_Swoole_Thread_getPriority;
+pub use crate::required_array as parse_class_swoole_thread_setaffinity;

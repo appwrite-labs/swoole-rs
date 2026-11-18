@@ -145,3 +145,6 @@ pub static arginfo_class_Swoole_Coroutine_Http_Client_disconnect: a::ArgInfo<3> 
         ),
         a::arg_type(c"reason", 0, false, z::IS_STRING, false, Some(c"\"\"")),
     ]);
+pub use crate::required_array as parse_class_swoole_coroutine_http_client_set;
+pub use crate::required_array as parse_class_swoole_coroutine_http_client_setheaders;
+pub use crate::required_array as parse_class_swoole_coroutine_http_client_setcookies;

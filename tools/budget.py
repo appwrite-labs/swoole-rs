@@ -14,12 +14,14 @@ rise by what others fall, and a fold or a new crate moves what it holds.
   fakes    `cfg(...not(test)...)`: code tests and Miri don't run, usually because a
            test build swaps in a stand-in. Pass the dependency in (an ops table, a
            closure, a trait) so tests run the shipped body (#3556)
+  shortreads  wire readers that default a missing field or zero-pad a partial field
   casts    cast lints a `#[expect]` names: convert with `c_cast::<T>()` (corebase) where
            upstream's C converts, or keep the value in the type it is used as (#3564)
   cells    `RefCell` types (fields, statics, thread-locals): a borrow held across a yield
            or a PHP callback is re-entered, and the process aborts. Make the state a
            plain field of the handle that owns it, borrowed `&mut`, or a `Cell` taken and
            put back (#3565). A `RefCell::new` whose type is inferred isn't counted
+  php_args registered PHP argument reads accepting types beyond the generated stub signature
   statuses integer-returning bodies (`i32`, `c_int`, `i64`, `isize`), including extern
            wrappers; foreign declarations and callback types have no body to migrate
   reprs    `#[repr(C)]` layouts, including C combined with other representation hints
@@ -60,6 +62,7 @@ runs of tokens, `maps`, `lists` and `casts` match a name wherever it is, and `mi
 `fakes` and `derefs` don't see in.
 """
 import argparse
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 import os
 from pathlib import Path
@@ -75,6 +78,9 @@ except ImportError:
     sys.exit('tools/budget.py needs the ast-grep-py package: see docs/development.md, Linux environment')
 
 ROOT = Path(__file__).resolve().parents[1]
+
+sys.path.insert(0, str(ROOT))
+from tools.audit_php_args import audit
 
 
 def named(*names):
@@ -123,8 +129,20 @@ def derefs(root):
     return found
 
 
+# Limit fallbacks to readers: encoders also take bounded slices of scratch buffers.
+WIRE_PATH = re.compile(r'(?:^|/)crates/(?:(?:phphttp2|http2|websocket|framing|protocols)/src/|corebase/src/process/)')
+WIRE_READER = {'inside': {'stopBy': 'end', 'kind': 'function_item', 'has': {
+    'field': 'name', 'regex': r'(?:read|decode|unpack|parse|whole_task|head_bytes|default_length)'}}}
+WIRE_DEFAULT = {'kind': 'call_expression', 'any': [
+    {**WIRE_READER, 'regex': r'(?s)^(?:[\w.]+\s*\.\s*(?:get|split_at_checked|first_chunk)\b|[\w:]*decode_frame\().*\.\s*unwrap_or(?:_default)?\('},
+    {**WIRE_READER, 'pattern': '$OUT.iter_mut().zip($INPUT)'},
+    {'regex': r'(?s)^(?:[\w:]+::)?from_(?:ne|be|le)_bytes\(.*\.unwrap_or(?:_default)?\('},
+    {'regex': r'(?s)^(?:[\w:]+::)?from_fn\(.*\.get\(.*\.unwrap_or\(0\)'},
+]}
+
 # Each count's ast-grep rule (https://ast-grep.github.io/reference/rule.html), or a fn of the tree.
 KINDS = {
+    'shortreads': WIRE_DEFAULT,
     'unsafe': {'any': [{'kind': 'unsafe_block'}, {**FN, **UNSAFE}, {'kind': 'impl_item', 'regex': r'^unsafe\b'},
                        tokens('unsafe', BRACES), tokens('unsafe', 'fn|impl'),
                        tokens('unsafe', 'extern', {'kind': 'string_literal'}, 'fn')]},
@@ -193,6 +211,7 @@ def count_file(path, test_files):
             test_files.add((base / name / 'mod.rs').resolve())
     return {kind: sum(not any(node.range().start.index in span for span in skipped)
                       for node in (rule(root) if callable(rule) else root.find_all(**rule)))
+            if kind != 'shortreads' or WIRE_PATH.search(path.as_posix()) else 0
             for kind, rule in KINDS.items()}
 
 
@@ -216,7 +235,10 @@ def counts(root=ROOT):
     crates = sorted(p for p in (root / 'crates').iterdir() if (p / 'Cargo.toml').exists())
     with ProcessPoolExecutor() as pool:
         counted = dict(zip(crates, pool.map(count_crate, crates)))
-    return {kind: {crate.name: n[kind] for crate, n in counted.items()} for kind in [*KINDS, 'clines', 'unforbidden']}
+    results = {kind: {crate.name: n[kind] for crate, n in counted.items()} for kind in [*KINDS, 'clines', 'unforbidden']}
+    _, _, mismatches = audit(root)
+    results['php_args'] = dict(Counter(path.parts[1] for *_, path, _ in mismatches))
+    return results
 
 
 def counts_at(ref, root=ROOT):

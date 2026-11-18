@@ -141,13 +141,17 @@ pub struct ReturnSlot<'a>(&'a Value);
 /// takes a `zend_execute_data *`.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub struct CallFrame<'a>(*mut zend_execute_data, std::marker::PhantomData<&'a Call>);
+pub struct CallFrame<'a>(
+    *mut zend_execute_data,
+    std::marker::PhantomData<&'a zend_execute_data>,
+);
 
 /// One call of an internal function or method: what Zend passes a handler
-/// (`INTERNAL_FUNCTION_PARAMETERS`).
-pub struct Call {
+/// (`INTERNAL_FUNCTION_PARAMETERS`), live for `'f`, the handler's run.
+pub struct Call<'f> {
     pub(crate) frame: *mut zend_execute_data,
-    value: *mut zval,
+    live: std::marker::PhantomData<&'f zend_execute_data>,
+    ret: &'f Value,
 }
 
 /// The frame Zend passes an internal function's handler (`execute_data`),
@@ -157,24 +161,31 @@ pub struct Call {
 #[repr(transparent)]
 pub struct Entered<'a>(
     *mut zend_execute_data,
-    std::marker::PhantomData<&'a mut zval>,
+    std::marker::PhantomData<&'a zend_execute_data>,
 );
 
 /// The return slot Zend passes an internal function's handler with its
-/// [`Entered`] frame (`return_value`), live for the call.
+/// [`Entered`] frame (`return_value`), live for the call: never null, as Zend
+/// passes every internal handler a slot, a temporary when the result goes unused.
 #[repr(transparent)]
-pub struct Returned<'a>(*mut zval, std::marker::PhantomData<&'a mut zval>);
+pub struct Returned<'a>(&'a Value);
 
-impl Call {
+impl<'f> Call<'f> {
     /// `body` over the call Zend passed a handler: its frame and return slot,
     /// which live for the handler, as the `Call` lent to `body` does.
     #[inline]
     pub fn run(
-        Entered(frame, _): Entered<'_>,
-        Returned(value, _): Returned<'_>,
+        Entered(frame, live): Entered<'f>,
+        Returned(ret): Returned<'f>,
         body: impl FnOnce(&mut Self),
     ) {
-        body(&mut Self { frame, value });
+        body(&mut Self { frame, live, ret });
+    }
+
+    /// The handler's frame, live for the call.
+    #[inline]
+    fn executing(&self) -> crate::opcode::Executing<'f> {
+        crate::opcode::Executing(self.frame, self.live)
     }
 
     /// This thread runs PHP for as long as the call lasts.
@@ -185,19 +196,15 @@ impl Call {
 
     /// `EX(This)`: its value is `$this` and its `u2` the argument count.
     #[inline]
-    fn this_slot(&self) -> &Value {
-        // SAFETY: the handler's live frame (`new`) holds `This` for the call;
-        // `Value` is a transparent zval.
-        unsafe { &*self.this_zval().cast::<Value>() }
+    fn this_slot(&self) -> &'f Value {
+        self.executing().this()
     }
 
     /// The return slot, live for the handler (`new`).
     #[must_use]
     #[inline]
-    pub(crate) fn ret_slot(&self) -> &Value {
-        // SAFETY: Zend keeps this zval slot live for the handler. Value is a
-        // transparent zval with interior mutability; public reads take copies.
-        unsafe { &*self.value.cast::<Value>() }
+    pub(crate) fn ret_slot(&self) -> &'f Value {
+        self.ret
     }
 
     /// An owned snapshot of the return value, valid across later writes.
@@ -240,9 +247,8 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn function(&self) -> crate::Function<'_> {
-        // The handler's live frame (`new`), which runs a function.
-        let frame = crate::opcode::Executing(self.frame, std::marker::PhantomData);
-        crate::Function(frame.func(), std::marker::PhantomData)
+        // The handler's live frame, which runs a function.
+        crate::Function(self.executing().func(), std::marker::PhantomData)
     }
 
     /// `ZEND_NUM_ARGS()`.
@@ -595,7 +601,7 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn return_value(&self) -> *mut zval {
-        self.value
+        self.ret.as_ptr()
     }
 
     /// The return slot, lent to C for the call.

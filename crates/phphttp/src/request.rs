@@ -48,7 +48,7 @@ impl Drop for Data {
 }
 
 /// The method's `$this` context.
-fn this(call: &Call) -> Option<Ctx<'_>> {
+fn this<'c>(call: &'c Call<'_>) -> Option<Ctx<'c>> {
     call.custom::<Data>()?.0.get().map(Hold::ctx)
 }
 
@@ -85,7 +85,7 @@ pub fn request_minit(args: &MinitArgs) {
 }
 
 /// `http_request_get_and_check_context`.
-fn checked(call: &Call) -> Option<Ctx<'_>> {
+fn checked<'c>(call: &'c Call<'_>) -> Option<Ctx<'c>> {
     let ctx = this(call);
     if ctx.is_none() {
         host::set_last_error(HTTP_CONTEXT_UNAVAILABLE);

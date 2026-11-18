@@ -139,3 +139,4 @@ pub static arginfo_class_Swoole_Coroutine_Socket_import: a::ArgInfo<2> = a::ArgI
     a::begin_class_mask(1, 0, c"Swoole\\Coroutine\\Socket", z::MAY_BE_FALSE),
     a::arg(c"stream", 0, false, None),
 ]);
+pub use crate::required_array as parse_class_swoole_coroutine_socket_setprotocol;

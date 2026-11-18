@@ -199,7 +199,7 @@ impl Drop for PoolObject {
 }
 
 /// `$this`, which every instance method runs on.
-fn this(call: &Call) -> Option<&PoolObject> {
+fn this<'c>(call: &'c Call<'_>) -> Option<&'c PoolObject> {
     call.custom()
 }
 
@@ -563,7 +563,7 @@ fn construct(call: &Call) {
 fn destruct(_call: &Call) {}
 
 fn set(call: &Call) {
-    let Ok(options) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
+    let Ok(options) = process_pool::parse_class_swoole_process_pool_set(call) else {
         call.set_bool(false);
         return;
     };

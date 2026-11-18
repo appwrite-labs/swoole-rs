@@ -64,6 +64,12 @@ What is not:
   ([#3342](https://github.com/appwrite-labs/swoole-rs/issues/3342),
   [#3343](https://github.com/appwrite-labs/swoole-rs/issues/3343)) were fixed on
   2026-11-12. Miri, the API fuzzer and the soak run passed all five.
+  The nightly Kani job checks every byte value and prefix length up to 17 bytes for
+  HTTP/2 packets, 9 for fixed HTTP/2 payloads, 16 for WebSocket frames, 8 for
+  length fields and a task header plus 4 payload bytes for packed tasks. It checks
+  rejection of incomplete inputs and checks for panics and arithmetic overflow.
+  For URLs up to 3 bytes it checks encoded capacity, short output buffers and
+  the in-place decoded length.
 - **The tests reach 76% of the Rust.** That is line coverage of `crates/` under the PHPTs,
   the corpus apps and swoole/library's suite. The coverage build has no thread support, so
   `Swoole\Thread`'s code counts as unreached; its own PHPTs run in a separate job

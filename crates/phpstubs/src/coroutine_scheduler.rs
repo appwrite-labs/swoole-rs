@@ -25,3 +25,4 @@ pub static arginfo_class_Swoole_Coroutine_Scheduler_getOptions: a::ArgInfo<1> =
     a::ArgInfo::new([a::begin_type(0, 0, z::IS_ARRAY, true)]);
 pub static arginfo_class_Swoole_Coroutine_Scheduler_start: a::ArgInfo<1> =
     a::ArgInfo::new([a::begin_type(0, 0, z::_IS_BOOL, false)]);
+pub use crate::required_array as parse_class_swoole_coroutine_scheduler_set;

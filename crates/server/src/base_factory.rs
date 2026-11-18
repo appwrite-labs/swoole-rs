@@ -249,6 +249,18 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
 /// `direct` (base mode's reactor) lets this worker take it without the bus.
 #[inline(always)]
 pub(crate) fn dispatch(serv: view::Server<'_>, task: &mut SendData, direct: bool) -> bool {
+    dispatch_buffer(serv, task, direct, None)
+}
+
+/// A local worker may take the complete receive buffer during its callback.
+/// Other deliveries lend the bytes only for the duration of the send.
+#[inline(always)]
+pub(crate) fn dispatch_buffer(
+    serv: view::Server<'_>,
+    task: &mut SendData,
+    direct: bool,
+    mut buffer: Option<&mut swoole_rs_corebase::buffer::string::CppString>,
+) -> bool {
     let info = &mut task.info;
     if info.event().is_some_and(ServerEvent::is_stream) {
         let conn = serv.state().connection(info.fd, Lookup::ByFd);
@@ -278,8 +290,12 @@ pub(crate) fn dispatch(serv: view::Server<'_>, task: &mut SendData, direct: bool
     }
     // `MessageBus::pass` replaces the flags of every payload with `SW_EVENT_DATA_PTR`,
     // so `SW_EVENT_DATA_POP_PTR` reaches a worker only through `receive_now`.
-    if !direct || !receive_now(serv, task) {
-        hybrid().base_pass(serv, task);
+    if !direct || !receive_now(serv, task, buffer.as_deref_mut()) {
+        if let Some(buffer) = buffer {
+            hybrid().base_pass(serv, &SendData::new(task.info, buffer.view()));
+        } else {
+            hybrid().base_pass(serv, task);
+        }
     }
     true
 }
@@ -292,7 +308,11 @@ pub(crate) fn dispatch(serv: view::Server<'_>, task: &mut SendData, direct: bool
 /// and nothing reads the bus after them in base mode. False leaves the event to the bus,
 /// untouched.
 #[inline(always)]
-fn receive_now(serv: view::Server<'_>, task: &SendData) -> bool {
+fn receive_now(
+    serv: view::Server<'_>,
+    task: &SendData,
+    buffer: Option<&mut swoole_rs_corebase::buffer::string::CppString>,
+) -> bool {
     let dgram = task.info.event() == Some(ServerEvent::RecvDgram);
     if !dgram && task.info.event() != Some(ServerEvent::RecvData) {
         return false;
@@ -301,12 +321,18 @@ fn receive_now(serv: view::Server<'_>, task: &SendData) -> bool {
         return false;
     }
     // The current worker's record, which this worker loop owns.
-    with_current(|&worker| receive_as(serv, task, dgram, worker)).unwrap_or(false)
+    with_current(|&worker| receive_as(serv, task, dgram, worker, buffer)).unwrap_or(false)
 }
 
 /// [`receive_now`] for the worker this loop runs.
 #[inline(always)]
-fn receive_as(serv: view::Server<'_>, task: &SendData, dgram: bool, worker: Worker<'_>) -> bool {
+fn receive_as(
+    serv: view::Server<'_>,
+    task: &SendData,
+    dgram: bool,
+    worker: Worker<'_>,
+    buffer: Option<&mut swoole_rs_corebase::buffer::string::CppString>,
+) -> bool {
     let state = serv.state();
     let conn = if dgram {
         None
@@ -326,7 +352,10 @@ fn receive_as(serv: view::Server<'_>, task: &SendData, dgram: bool, worker: Work
         c.set_last_dispatch_time(task.info.time);
     }
     // The head as it is, a block copy: the payload is already `len` bytes.
-    let mut recv = crate::reactor_entry::RecvData::within(task.info, task.payload());
+    let mut recv = match buffer {
+        Some(buffer) => crate::reactor_entry::RecvData::buffer(task.info, buffer),
+        None => crate::reactor_entry::RecvData::within(task.info, task.payload()),
+    };
     if task.info.len > 0 {
         recv.set_flags(DATA_PTR | (task.info.flags & POP_PTR));
     }
@@ -337,7 +366,8 @@ fn receive_as(serv: view::Server<'_>, task: &SendData, dgram: bool, worker: Work
     };
     let result = state.callbacks.receive(slot, serv, &mut recv);
     if swoole_rs_corebase::process::pool::bailout_pending() {
-        return false;
+        // The callback already received the packet. Keep it out of the bus fallback.
+        return true;
     }
     if result == 0 {
         worker.add_request_count();
@@ -649,6 +679,70 @@ mod tests {
             calls(),
             [Call::BasePass(1, ServerEvent::RecvData.code(), 5); 2]
         );
+    }
+
+    #[cfg(feature = "upstream-symbols")]
+    #[test]
+    fn base_receive_buffer_transfers_inline_and_lends_to_the_bus() {
+        use swoole_rs_corebase::buffer::string::OwnedString;
+        use swoole_rs_corebase::process::worker_record::WorkerRecord;
+
+        thread_local! {
+            static PACKET: RefCell<Option<OwnedString>> = const { RefCell::new(None) };
+        }
+        fn take(_: view::Server<'_>, recv: &mut RecvData<'_>) -> c_int {
+            assert_eq!(recv.info().flags, DATA_PTR | POP_PTR);
+            assert_eq!(recv.info().len, 5);
+            assert!(PACKET.replace(recv.take_packet()).is_none());
+            assert!(recv.take_packet().is_none());
+            0
+        }
+
+        let (mut live, _clients) = accepted();
+        live.config_mut().mode_ = crate::Mode::Base;
+        let serv = live.server();
+        let conn = session(&live, 1);
+        live.state().callbacks.set(Callback::Receive(take));
+        let mut buffer = OwnedString::default();
+        buffer.alloc(64, None);
+        buffer.append(b"first");
+        buffer.set_offset(5);
+        let original = buffer.view().as_ptr();
+        let head = DataHead {
+            flags: POP_PTR,
+            ..DataHead::default()
+        };
+
+        // SAFETY: a zeroed worker is fresh, and is current only for this dispatch.
+        let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
+        unsafe { set_current_worker(&raw mut worker) };
+        let delivered = crate::reactor_entry::dispatch_buffer(serv, conn, head, &mut buffer);
+        unsafe { set_current_worker(core::ptr::null_mut()) };
+        assert!(delivered);
+        let packet = PACKET.take().unwrap();
+        assert_eq!(packet.view().as_ptr(), original);
+        assert_eq!(packet.view(), b"first");
+        assert!(buffer.is_empty());
+        assert_eq!(calls(), []);
+
+        // Without a current worker, the bus receives the bytes and the reader keeps them.
+        buffer.append(b"second");
+        buffer.set_offset(6);
+        let original = buffer.view().as_ptr();
+        assert!(crate::reactor_entry::dispatch_buffer(
+            serv,
+            conn,
+            head,
+            &mut buffer
+        ));
+        assert_eq!(
+            calls(),
+            [Call::BasePass(1, ServerEvent::RecvData.code(), 6)]
+        );
+        assert_eq!(crate::hybrid::tests::BASE_PAYLOAD.take(), b"second");
+        assert_eq!(buffer.view().as_ptr(), original);
+        assert_eq!(buffer.view(), b"second");
+        assert!(PACKET.take().is_none());
     }
 
     #[test]

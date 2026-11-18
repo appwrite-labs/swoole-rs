@@ -130,7 +130,7 @@ pub fn client_coro_minit(minit: &Minit) -> Result<(), Bailout> {
 }
 
 /// The client data of `$this`; None in a static call.
-fn this(call: &Call) -> Option<&Data> {
+fn this<'c>(call: &'c Call<'_>) -> Option<&'c Data> {
     call.custom()
 }
 
@@ -147,7 +147,7 @@ fn report(call: &Call, code: c_int, message: &CStr) {
 
 /// Property writes on `$this`, a client method's object, under the client
 /// class; None in a static call.
-fn props(call: &Call) -> Option<Props<'_>> {
+fn props<'c>(call: &'c Call<'_>) -> Option<Props<'c>> {
     call.props(Some(&CLIENT))
 }
 
@@ -327,7 +327,7 @@ fn destruct(_call: &Call) {}
 
 /// `set(array $settings): bool`.
 fn set(call: &Call) {
-    let Ok(array) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
+    let Ok(array) = client_coro::parse_class_swoole_coroutine_client_set(call) else {
         return call.set_bool(false);
     };
     if array.count() == 0 {

@@ -243,7 +243,7 @@ pub mod thread_affinity {
     use swoole_rs_phpprocess::{cpu_set_from_array, cpu_set_to_array};
 
     pub(super) fn set(call: &Call) {
-        let Ok(array) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
+        let Ok(array) = super::thread::parse_class_swoole_thread_setaffinity(call) else {
             return;
         };
         let Some(set) = cpu_set_from_array(array) else {
