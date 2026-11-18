@@ -174,7 +174,7 @@ aliases are never uninstalled.
 ## Async tasks, DNS and io_uring
 
 - `coroutine::async` and `async_job` are Rust (`offload.rs`): they fill the event
-  (Rust mirrors `AsyncEvent`'s layout; swoole_async.h asserts it), dispatch it to
+  and dispatch it to
   the pool, park and resume the coroutine, and publish the result. Upstream's
   `async(std::function)` had no caller left and is gone. A refused dispatch returns
   false before parking; a timeout or cancel marks the pool's copy canceled, so its
