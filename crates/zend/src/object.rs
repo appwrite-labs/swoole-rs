@@ -70,7 +70,7 @@ impl<'a> ObjectRef<'a> {
     /// changes the object, while it is borrowed.
     #[inline]
     pub(crate) fn read<R>(self, f: impl FnOnce(&zend_object) -> R) -> R {
-        // SAFETY: a live object, per the type; the borrow ends with `f`.
+        // SAFETY: ObjectRef points to a live zend_object for the duration of `f`.
         f(unsafe { &*self.0 })
     }
 
@@ -182,7 +182,7 @@ impl<T: Custom> LaidOut<T> {
         // SAFETY: an `Object<T>` laid out for class `ce`, its `zend_object`
         // last, `offset` bytes in, with `T`'s class's handlers.
         let std = unsafe { swr_zend_object_new(size, offset, ce, T::class().handlers()) };
-        // SAFETY: the object's data, allocated above and unused.
+        // SAFETY: the fresh zend_object is embedded in Object<T> with an uninitialized data slot.
         unsafe { Object::<T>::data_ptr(std.0.as_ptr()).write(data) };
         std
     }

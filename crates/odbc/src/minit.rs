@@ -1,34 +1,16 @@
 //! MINIT for the bundled `pdo_odbc` driver (upstream's
 //! `php_swoole_odbc_minit`): connection pooling from `pdo_odbc.connection_pooling`,
 //! PDO's `ODBC_*` constants unless `pdo_odbc` declared them, and the driver.
+use crate::{Handle, driver::set_env_attr};
 use std::{
     ffi::CStr,
     sync::atomic::{AtomicUsize, Ordering},
 };
-use swoole_rs_odbc_sys::{SQLINTEGER, SQLRETURN};
 use swoole_rs_zend::{Minit, pdo::Driver, sys::E_CORE_ERROR};
 
 unsafe extern "C" {
-    /// The bundled driver (`thirdparty/php*/pdo_odbc/odbc_driver.c`).
-    safe static swoole_pdo_odbc_driver: Driver;
-    /// `SQLSetEnvAttr` of no environment (nothing makes the reference), which sets
-    /// the process-wide connection pooling to `value`, an integer passed in the
-    /// pointer: the only attribute the type allows, and one the driver manager
-    /// reads no memory for.
-    #[link_name = "SQLSetEnvAttr"]
-    safe fn set_process_attr(
-        environment: Option<&'static !>,
-        attribute: ProcessAttribute,
-        value: usize,
-        length: SQLINTEGER,
-    ) -> SQLRETURN;
-}
-
-/// What [`set_process_attr`] sets: `sqlext.h`'s `SQL_ATTR_CONNECTION_POOLING`.
-#[repr(i32)]
-#[derive(Clone, Copy)]
-enum ProcessAttribute {
-    ConnectionPooling = 201,
+    /// The immutable ABI table compiled against this installation's PDO headers.
+    safe fn swr_odbc_descriptor() -> &'static Driver;
 }
 
 /// `sqlext.h`'s pooling values.
@@ -83,7 +65,8 @@ pub fn minit(minit: &Minit) {
         pdo_odbc_pool_on.store(on, Ordering::Relaxed);
         pdo_odbc_pool_mode.store(mode, Ordering::Relaxed);
         if on != SQL_CP_OFF {
-            set_process_attr(None, ProcessAttribute::ConnectionPooling, on, 0);
+            // SQL_ATTR_CONNECTION_POOLING applies to the entire process.
+            set_env_attr(Handle(std::ptr::null_mut()), 201, on, 0);
         }
         let constants = [
             (c"ODBC_ATTR_USE_CURSOR_LIBRARY", PDO_ATTR_DRIVER_SPECIFIC),
@@ -98,10 +81,11 @@ pub fn minit(minit: &Minit) {
         }
     }
     // Registering replaces pdo_odbc's own.
-    pdo.unregister(&swoole_pdo_odbc_driver);
+    let driver = swr_odbc_descriptor();
+    pdo.unregister(driver);
     // A bailout (`E_ERROR` for a driver built against another PDO API) is raised
     // from this outermost Rust frame.
-    swoole_rs_zend::bailout::defer(pdo.register(&swoole_pdo_odbc_driver));
+    swoole_rs_zend::bailout::defer(pdo.register(driver));
 }
 
 #[cfg(test)]

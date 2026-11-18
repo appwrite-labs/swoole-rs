@@ -122,7 +122,8 @@ pub fn globals() -> &'static Globals {
 /// `ZEND_INIT_MODULE_GLOBALS(swoole, init_globals, nullptr)`: what the ini
 /// entries take, the TSRM id under ZTS or else the storage.
 pub(crate) fn globals_init() -> *mut c_void {
-    // SAFETY: MINIT, once, before any thread reads them.
+    // SAFETY: MINIT registers zend_swoole_globals once, before PHP threads read the globals.
+    // Globals has the C layout expected by init_globals.
     unsafe {
         swr_zend_module_globals_init(
             (&raw mut swoole_globals).cast(),

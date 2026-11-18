@@ -18,6 +18,10 @@
 )]
 
 #[cfg(feature = "php")]
+mod diagnostics;
+#[cfg(feature = "php")]
+mod driver;
+#[cfg(feature = "php")]
 pub mod minit;
 
 use std::sync::atomic::{AtomicBool, Ordering};
