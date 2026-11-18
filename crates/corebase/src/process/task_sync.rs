@@ -119,22 +119,20 @@ impl<'a> ResultSlot<'a> {
     /// finished writing: its head and the `len` bytes that head counts, read a word
     /// at a time, for [`Packed::from_bytes`]. A small result is copied on the stack.
     pub fn read<R>(self, f: impl FnOnce(&[u8]) -> R) -> R {
-        let len = self
-            .0
-            .get(HEAD_LEN / 4)
-            .map_or(0, |len| len.load(Ordering::Relaxed) as usize);
-        let size = HEAD.saturating_add(len);
-        let words = size.min(EVENT_SIZE).next_multiple_of(4);
+        let len = self.0[HEAD_LEN / 4].load(Ordering::Relaxed) as usize;
+        // Copy at most the slot capacity. Packed::from_bytes checks the declared length.
+        let size = HEAD.saturating_add(len).min(EVENT_SIZE);
+        let words = size.next_multiple_of(4);
         let mut small = [0u8; 512];
         let mut large = Vec::new();
-        let bytes = if words <= small.len() {
-            small.get_mut(..words).unwrap_or_default()
+        let bytes = if let Some(prefix) = small.get_mut(..words) {
+            prefix
         } else {
             large.resize(words, 0);
             large.as_mut_slice()
         };
         load_words(self.0, bytes.as_chunks_mut::<4>().0);
-        f(bytes.get(..size).unwrap_or(bytes))
+        f(bytes.split_at(size).0)
     }
 
     /// Zeroes the slot's head. Upstream zeroes the whole slot; its head is what is
@@ -450,24 +448,15 @@ fn unpack_all(
     indexes: &[(Option<i64>, u16)],
     content: &CppString,
 ) -> Result<(), Bailed> {
-    let bytes = content.view();
-    let mut offset = 0;
-    while let Some(record) = bytes.get(offset..).filter(|record| record.len() >= HEAD) {
-        let task_id = i64::from_ne_bytes(record.first_chunk().copied().unwrap_or_default());
-        let len = u32::from_ne_bytes(
-            record
-                .get(HEAD_LEN..)
-                .and_then(<[u8]>::first_chunk)
-                .copied()
-                .unwrap_or_default(),
-        );
+    let mut bytes = content.view();
+    while let Some((record, rest)) = Packed::split(bytes) {
+        let task_id = record.head().fd;
         if let Ok(found) = indexes.binary_search_by_key(&Some(task_id), |&(id, _)| id)
             && let Some(&(_, index)) = indexes.get(found)
-            && let Some(record) = Packed::from_bytes(record)
         {
             multi.unpack(index, record)?;
         }
-        offset += HEAD + len as usize;
+        bytes = rest;
     }
     Ok(())
 }

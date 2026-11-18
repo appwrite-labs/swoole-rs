@@ -15,5 +15,7 @@ disallowed-types = [
   { path = "std::collections::VecDeque", reason = "use a ring over a fixed array, or a flat::Table" },
 ]
 disallowed-methods = [
+  { path = "swoole_rs_phphttp2::client::read_u32", allow-invalid = true, reason = "decode a complete four-byte wire field" },
+  { path = "swoole_rs_corebase::process::pool::head_bytes", allow-invalid = true, reason = "decode a complete DataHead" },
   { path = "std::process::abort", reason = "use swoole_rs_corebase::log::fatal, which logs the reason and location first" },
 ]

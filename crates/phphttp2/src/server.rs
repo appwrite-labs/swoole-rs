@@ -10,14 +10,14 @@ use std::ffi::{CStr, CString};
 use swoole_rs_corebase::CCast;
 use swoole_rs_http2::{
     FileCompletion, FrameAction, FrameType, HeaderKind, HeaderRole, Http2HeaderPlan,
-    Http2RespondFacts, Http2WindowPlan, Media, Respond, WindowAction,
+    Http2RespondFacts, Http2WindowPlan, Media, Respond, WindowAction, decode_packet,
     hpack::{Encoder, Error},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_content_length_rejected,
-    sw_rs_http2_data_rejected, sw_rs_http2_decode_frame, sw_rs_http2_file_complete,
-    sw_rs_http2_header_defaults, sw_rs_http2_header_plan, sw_rs_http2_headers_flags,
-    sw_rs_http2_inflate_step, sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header,
-    sw_rs_http2_respond_next, sw_rs_http2_response_status, sw_rs_http2_setting_plan,
-    sw_rs_http2_window_action, sw_rs_http2_window_plan,
+    sw_rs_http2_data_rejected, sw_rs_http2_file_complete, sw_rs_http2_header_defaults,
+    sw_rs_http2_header_plan, sw_rs_http2_headers_flags, sw_rs_http2_inflate_step,
+    sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header, sw_rs_http2_respond_next,
+    sw_rs_http2_response_status, sw_rs_http2_setting_plan, sw_rs_http2_window_action,
+    sw_rs_http2_window_plan,
 };
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{Connection, view};
@@ -902,7 +902,7 @@ pub(crate) static HOOKS: swoole_rs_phphttp::http2::Server = swoole_rs_phphttp::h
 /// says, or one the session refuses.
 fn parse(session: &Session, frame: &[u8]) -> bool {
     let last_stream_id = session.last_stream_id.get();
-    let Some(facts) = sw_rs_http2_decode_frame(frame, last_stream_id, false) else {
+    let Ok((facts, payload)) = decode_packet(frame, last_stream_id, false) else {
         return false;
     };
     let stream_id = facts.stream_id;
@@ -924,11 +924,6 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
         );
         return false;
     }
-    // The payload follows the header in the frame.
-    let body = frame.get(FRAME_HEADER..).unwrap_or_default();
-    let Some(payload) = body.get(..facts.length as usize) else {
-        return false;
-    };
     let flags = facts.flags & 0xff;
     match facts.action {
         FrameAction::Settings => return settings(session, payload),
@@ -1238,7 +1233,10 @@ fn parse_header(
                 break false;
             }
         };
-        input = input.get(step.read..).unwrap_or_default();
+        let Some(rest) = input.get(step.read..) else {
+            break false;
+        };
+        input = rest;
         let inflate_flags = step.flags();
         // Trailers are decoded for the HPACK table but never exposed or acted on.
         if let Some((name, value)) = step.header.filter(|_| !discard)

@@ -495,6 +495,25 @@ pub fn sw_rs_http2_decode_frame(
     })
 }
 
+/// The packet ended before the header or its declared payload was complete.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ShortFrame;
+
+/// Borrows the declared payload of the first complete frame in the buffer.
+///
+/// # Errors
+/// Returns `ShortFrame` until both header and payload are present.
+pub fn decode_packet(
+    bytes: &[u8],
+    previous_last_id: u32,
+    client: bool,
+) -> Result<(Http2FrameFacts, &[u8]), ShortFrame> {
+    let (header, body) = bytes.split_at_checked(9).ok_or(ShortFrame)?;
+    let facts = sw_rs_http2_decode_frame(header, previous_last_id, client).ok_or(ShortFrame)?;
+    let payload = body.get(..facts.length as usize).ok_or(ShortFrame)?;
+    Ok((facts, payload))
+}
+
 /// `swoole::http2::get_frame_length` over the buffered bytes: None until the nine-byte
 /// frame header is buffered, then the whole frame's length.
 #[must_use]
@@ -886,6 +905,14 @@ mod tests {
         let f = sw_rs_http2_decode_frame(&bytes, 0, false).unwrap();
         assert_eq!(f.stream_id, 0x7fff_ffff);
         assert!(f.publish_last_id);
+
+        let mut packet = header(0, 3, 0, 1).to_vec();
+        packet.extend_from_slice(b"abc");
+        for end in 0..packet.len() {
+            assert_eq!(decode_packet(&packet[..end], 0, true), Err(ShortFrame));
+        }
+        packet.extend_from_slice(&header(0, 0, 0, 3));
+        assert_eq!(decode_packet(&packet, 0, true).unwrap().1, b"abc");
     }
     #[test]
     fn role_specific_setting_effects() {
