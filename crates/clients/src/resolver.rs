@@ -94,11 +94,12 @@ pub fn address(owner: &ResolverRequest) -> Vec<u8> {
     owner.address()
 }
 
-/// `async::handler_gethostbyname`'s body, on a pool thread: its `(retval, error)`.
-#[must_use]
-pub fn host(owner: &ResolverRequest) -> (isize, c_int) {
-    let status = checked(owner.host());
-    (status, if status < 0 { RESOLVE_FAILED } else { 0 })
+/// Resolve the retained request on the pool thread and record its status.
+pub extern "C" fn handler_gethostbyname(event: &mut swoole_rs_corebase::offload::AsyncEvent) {
+    if let Some(request) = event.record() {
+        let status = checked(request.host());
+        event.set_result(status, if status < 0 { RESOLVE_FAILED } else { 0 });
+    }
 }
 
 fn unknown_family(family: c_int) -> bool {

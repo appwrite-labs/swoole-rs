@@ -227,11 +227,11 @@ pub(super) extern "C-unwind" fn writable_callback(
 }
 /// The framed receives, as crates/ports registers them.
 const FRAMING: Framing = Framing {
-    length: |_| {
+    length: |_, _, _| {
         log("framed false");
         0
     },
-    eof: |_| {
+    eof: |_, _, _| {
         log("framed true");
         0
     },
@@ -264,7 +264,7 @@ pub(super) fn timer_add(timeout: f64, _: Handle<'_>) -> Option<swoole_rs_corebas
 pub(super) fn del_id(_: swoole_rs_corebase::timer::Held) {
     log("timer del");
 }
-/// crates/hooks' `async::dispatch`: logs the request; nothing completes it.
+/// The async pool submission: logs the request; nothing completes it.
 fn async_dispatch(lookup: Lookup, request: &crate::resolver::Request) -> bool {
     mock(|m| m.lookup = Some(lookup));
     let request = request.get();
@@ -314,6 +314,7 @@ fn set_proxy(client: *mut Client, http: bool) {
 
 fn new_client(kind: c_int, is_async: bool) -> *mut Client {
     const OPS: SocketOps = SocketOps {
+        dispatch_dns: async_dispatch,
         with_buffer: with_thread_buffer,
         recv_append: net::recv_append,
         recv_sync: net::recv_sync,
@@ -352,7 +353,7 @@ fn new_client(kind: c_int, is_async: bool) -> *mut Client {
 /// with `callbacks`.
 fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
     mock(|m| *m = Mock::default());
-    set_host(FRAMING, async_dispatch);
+    set_framing(FRAMING);
     log::set_last_error(0);
     let client = new_client(kind, is_async);
     if callbacks {
@@ -794,8 +795,7 @@ fn datagram_sends_fail_with_sendto_and_dtls_sends_as_a_stream() {
 #[test]
 fn public_record_defaults_and_direct_framing_writes_drive_reads() {
     let client = client(1, true, true);
-    // SAFETY: the live client.
-    let fields = unsafe { (*client).record.as_ptr() };
+    let fields = Handle::raw(client).get().framing.record.as_ptr();
     unsafe {
         assert!(!(*fields).http2 && !(*fields).open_eof_check && !(*fields).open_length_check);
         assert_eq!((*fields).remote_addr.kind, 1);
@@ -842,8 +842,7 @@ fn empty_datagram_is_delivered_and_read_failure_is_silent() {
 #[test]
 fn datagram_peer_is_a_snapshot() {
     let client = client(2, false, false);
-    // SAFETY: the live client.
-    let fields = unsafe { (*client).record.as_ptr() };
+    let fields = Handle::raw(client).get().framing.record.as_ptr();
     unsafe {
         (*fields).remote_addr.len = 17;
         (*fields).remote_addr.kind = 4;
@@ -996,15 +995,22 @@ fn pending_handshake_keeps_its_hostname_and_verification_snapshot() {
 #[test]
 fn the_framed_receive_buffer_stays_usable_across_input_edits() {
     let client = client(1, true, true);
-    Handle::raw(client).input_init();
-    Handle::raw(client).input_clear();
-    // crates/ports' framed receive reads the buffer through the record's pointer.
-    let size = Handle::raw(client).with_framed(|_, _, buffer| unsafe { (*buffer).size() });
-    assert!(size >= CLIENT_BUFFER_SIZE);
-    Handle::raw(client).input_clear();
-    assert_eq!(
-        Handle::raw(client).with_framed(|_, _, buffer| unsafe { (*buffer).len() }),
-        0
-    );
-    free(client);
+    let handle = Handle::raw(client);
+    assert!(!handle.with_framed(|_, _, _| panic!("uninitialized input")));
+    handle.input_init();
+    handle.input_clear();
+    assert!(handle.with_framed(|_, _, buffer| {
+        buffer.append(b"partial");
+        assert!(handle.with_framed(|_, _, _| panic!("nested read took the buffer")));
+        buffer.size() >= CLIENT_BUFFER_SIZE
+    }));
+    assert!(handle.with_framed(|_, _, buffer| buffer.view() == b"partial"));
+    handle.input_clear();
+    assert!(handle.with_framed(|framing, _, buffer| {
+        assert!(buffer.is_empty());
+        buffer.append(b"last");
+        free(client);
+        assert!(framing.protocol().on_package.is_none());
+        buffer.view() == b"last"
+    }));
 }

@@ -7,7 +7,7 @@
 use crate::socket::warn;
 pub use native::swoole_name_resolver_php_remove;
 use std::{cell::Cell, ffi::c_void, mem::ManuallyDrop, rc::Rc};
-use swoole_rs_corebase::{CCast, NameResolverContext, ResolverOptions};
+use swoole_rs_corebase::{CCast, CellExt, NameResolverContext, ResolverOptions};
 use swoole_rs_phpstubs::name_resolver;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Minit, Owned, Value, ZString, bailout, method_table,
@@ -116,6 +116,7 @@ pub(crate) use native::swoole_name_resolver_context_reset;
 
 /// The lookup owns its cluster state while PHP callbacks share only the settings
 /// that `__construct` may change. No mutable context borrow reaches those callbacks.
+#[derive(Default)]
 struct Held {
     context: Cell<Option<NameResolverContext>>,
     options: Rc<Cell<(libc::c_int, bool)>>,
@@ -126,36 +127,8 @@ impl Custom for Held {
         &CONTEXT
     }
     fn new() -> Self {
-        let options = Rc::new(Cell::new((0, false)));
-        let context = NameResolverContext {
-            options: ResolverOptions::Shared(Rc::clone(&options)),
-            ..NameResolverContext::default()
-        };
-        Self {
-            context: Cell::new(Some(context)),
-            options,
-        }
+        Self::default()
     }
-}
-
-/// `swoole_name_resolver_context_get_object_safe`, then `f` of the object's
-/// context, taken out of the object meanwhile (a fresh one while a lookup holds
-/// it); None after Swoole's fatal error.
-fn with_context<T>(
-    held: Option<&Held>,
-    f: impl FnOnce(&mut NameResolverContext) -> T,
-) -> Option<T> {
-    let Some(held) = held else {
-        crate::native::unconstructed();
-        return None;
-    };
-    let mut context = held.context.take().unwrap_or_else(|| NameResolverContext {
-        options: ResolverOptions::Shared(Rc::clone(&held.options)),
-        ..NameResolverContext::default()
-    });
-    let result = f(&mut context);
-    held.context.set(Some(context));
-    Some(result)
 }
 
 method_table! {
@@ -199,17 +172,23 @@ fn lookup(call: &Call) {
         return;
     };
     let held = call.value(2).map(Value::dereferenced);
+    let Some(held) = held.as_deref().and_then(Value::custom::<Held>) else {
+        return crate::native::unconstructed();
+    };
     let mut result = Vec::new();
-    // The lookup holds only borrows of this frame; a PHP resolver may bail out,
-    // which the trap catches.
-    let looked_up = with_context(held.as_deref().and_then(Value::custom::<Held>), |context| {
-        let lookup = || swoole_rs_hooks::resolve::name_resolver_lookup(name, context, &mut result);
-        swoole_rs_zend::contain_with(lookup)
+    let looked_up = held.context.with_taken(|slot| {
+        let context = slot.get_or_insert_with(|| NameResolverContext {
+            options: ResolverOptions::Shared(Rc::clone(&held.options)),
+            ..NameResolverContext::default()
+        });
+        // Catch a PHP resolver's bailout before restoring the context.
+        swoole_rs_zend::contain_with(|| {
+            swoole_rs_hooks::resolve::name_resolver_lookup(name, context, &mut result);
+        })
     });
     match looked_up {
-        Some(Ok(())) => call.set_zstring(ZString::new(&result)),
-        Some(Err(bailout)) => bailout.defer(),
-        None => {}
+        Ok(()) => call.set_zstring(ZString::new(&result)),
+        Err(bailout) => bailout.defer(),
     }
 }
 

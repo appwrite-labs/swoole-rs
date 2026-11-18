@@ -10,6 +10,7 @@
 //! holds none, so it can't reach a process value at the same time.
 use crate::sys;
 use std::{ffi::c_int, marker::PhantomData};
+use swoole_rs_corebase::CellExt;
 
 // What a [`Php`] reads of its thread's executor: each takes no argument, reads
 // one value and runs no PHP code. Private, so only a lease's methods call them.
@@ -256,6 +257,14 @@ impl<T> PhpLocal<T> {
 }
 
 impl<T> PhpLocal<std::cell::Cell<T>> {
+    /// Edit the value while a nested access sees its default.
+    pub fn with_taken<R>(&'static self, php: Php<'_>, f: impl FnOnce(&mut T) -> R) -> R
+    where
+        T: Default,
+    {
+        self.with(php, |cell| cell.with_taken(f))
+    }
+
     /// `Cell::set`: the old value is dropped here, after it is out of the cell.
     pub fn set(&'static self, php: Php<'_>, value: T) {
         self.with(php, |cell| cell.set(value));

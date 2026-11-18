@@ -14,38 +14,8 @@ use swoole_rs_corebase::{
     swr_v1_core_name_resolver_resolve,
 };
 
-/// `async::handler_gethostbyname`: the request's address, on a pool thread.
-extern "C" fn handler_gethostbyname(event: &mut AsyncEvent) {
-    // Only `run` dispatches it, with a request.
-    if let Some((retval, error)) = event.record().map(resolver::host) {
-        event.set_result(retval, error);
-    }
-}
-
-/// Dispatches a client's DNS lookup, retaining the request in the pool's copy.
-pub fn dispatch_client(lookup: swoole_rs_clients::client::Lookup, request: &Request) -> bool {
-    let mut event = AsyncEvent::new(
-        std::ptr::without_provenance_mut(lookup.id()),
-        Some(handler_gethostbyname),
-        Some(client_completed),
-        std::ptr::null_mut(),
-    );
-    event.set_record(request.reference());
-    !swoole_rs_corebase::offload::threads::dispatch(&event).is_null()
-}
-
-extern "C" fn client_completed(event: &AsyncEvent) {
-    let Some(request) = event.record() else {
-        return;
-    };
-    // `dispatch_client`'s lookup, back on the client's reactor thread.
-    let lookup = swoole_rs_clients::client::Lookup::from_id(event.object().addr());
-    swoole_rs_clients::client::resolve_completed(lookup, request, event.result().1);
-}
-
 /// `async::handler_getaddrinfo`: the request's addresses, on a pool thread.
 extern "C" fn handler_getaddrinfo(event: &mut AsyncEvent) {
-    // As `handler_gethostbyname`.
     if let Some((retval, error)) = event.record().map(resolver::lookup) {
         event.set_result(retval, error);
     }
@@ -71,7 +41,7 @@ fn run(
 /// `gethostbyname_impl_with_async`: the address, or empty with the last error set.
 fn gethostbyname_with_async(name: &[u8], domain: c_int, timeout: f64) -> Vec<u8> {
     let request = Request::new(domain, 0, 0, name, b"");
-    if let Some(error) = run(&request, handler_gethostbyname, 1, timeout, false) {
+    if let Some(error) = run(&request, resolver::handler_gethostbyname, 1, timeout, false) {
         log::set_last_error(error);
         return Vec::new();
     }
