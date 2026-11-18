@@ -71,9 +71,6 @@ PENDING_PORTS = {
         'swoole_server/task/task_wait_multi_string_keys.phpt',
         'swoole_server/task/unpack_unterminated_tmpfile_path.phpt',
     ],
-    4929: [
-        'swoole_server/base/connection_bounds_after_other_worker_close.phpt',
-    ],
     4930: [
         'swoole_http2_client_coro/flow_control_connection_window.phpt',
         'swoole_http2_client_coro/goaway_frame_length.phpt',

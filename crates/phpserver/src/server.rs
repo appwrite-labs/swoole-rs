@@ -628,8 +628,8 @@ fn stats(call: &Call) {
         load(&gs.pipe_packet_msg_id),
         i64::from(gs.concurrency.load(Ordering::Relaxed)),
         gs.session_round.load(Ordering::Relaxed),
-        i64::from(gs.min_fd()),
-        i64::from(gs.max_fd()),
+        i64::from(serv.fd_bounds().min_fd()),
+        i64::from(serv.fd_bounds().max_fd()),
     ];
     call.set_array();
     for (key, value) in STATS.into_iter().zip(values) {
@@ -697,8 +697,9 @@ fn heartbeat(call: &Call) {
     call.set_array();
     let now = microtime();
     // `foreach_connection`: `max_fd` is read afresh for each fd.
-    let mut fd = serv.counters().min_fd();
-    while fd <= serv.counters().max_fd() {
+    let bounds = serv.fd_bounds();
+    let mut fd = bounds.min_fd();
+    while fd <= bounds.max_fd() {
         if let Some(conn) = serv.iterated(fd) {
             let session_id = conn.session_id();
             if session_id > 0 && !serv.healthy(now, conn) {
@@ -824,16 +825,16 @@ fn get_client_list(call: &Call) {
         fatal(E_WARNING, c"swoole connection list max_find_count=100");
         return call.set_bool(false);
     }
-    let counters = serv.counters();
+    let bounds = serv.fd_bounds();
     let start_fd = if start_session_id == 0 {
-        counters.min_fd()
+        bounds.min_fd()
     } else {
         match serv.verified(start_session_id) {
             None => return call.set_bool(false),
             Some(conn) => conn.fd(),
         }
     };
-    let max_fd = counters.max_fd();
+    let max_fd = bounds.max_fd();
     if start_fd >= max_fd {
         return call.set_bool(false);
     }
@@ -998,14 +999,14 @@ fn rewind(call: &Call) {
         return;
     };
     iterator.index.set(0);
-    iterator.current_fd.set(server.counters().min_fd());
+    iterator.current_fd.set(server.fd_bounds().min_fd());
 }
 
 fn valid(call: &Call) {
     let Some((iterator, server)) = iterator(call) else {
         return;
     };
-    let max_fd = server.counters().max_fd();
+    let max_fd = server.fd_bounds().max_fd();
     let port = iterator.port();
     for fd in iterator.current_fd.get()..=max_fd {
         let Some(conn) = server.iterated(fd) else {

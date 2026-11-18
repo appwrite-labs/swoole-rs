@@ -577,13 +577,14 @@ fn lower_max_fd(state: &crate::ServerState, fd: c_int) {
     let Some(gs) = crate::shared::server_counters(state) else {
         return;
     };
+    let bounds = state.fd_bounds(gs);
     state.locked.lock();
-    if fd == gs.max_fd() {
+    if fd == bounds.max_fd() {
         let mut find = fd - 1;
-        while !valid(state.connection(c_long::from(find), Lookup::ByFd)) && find > gs.min_fd() {
+        while !valid(state.connection(c_long::from(find), Lookup::ByFd)) && find > bounds.min_fd() {
             find -= 1;
         }
-        gs.max_fd.store(find, Relaxed);
+        bounds.max_fd.store(find, Relaxed);
     }
     state.locked.unlock();
 }
@@ -634,8 +635,9 @@ pub(crate) mod tests {
             core::mem::swap(&mut one, &mut two);
         }
         let gs = live.counters();
-        gs.max_fd.store(two.fd(), Relaxed);
-        gs.min_fd.store(0, Relaxed);
+        let bounds = serv.fd_bounds();
+        bounds.max_fd.store(two.fd(), Relaxed);
+        bounds.min_fd.store(0, Relaxed);
         let (gs_before, port_before) = (
             gs.connection_num.load(SeqCst),
             live.port_counters().connection_num.load(SeqCst),
@@ -643,13 +645,13 @@ pub(crate) mod tests {
         let session_id = two.session_id();
         assert!(close_connection(serv, reactor, two.socket()));
         assert!(closed(two));
-        assert_eq!(gs.max_fd(), one.fd(), "down to the open session");
+        assert_eq!(bounds.max_fd(), one.fd(), "down to the open session");
         let session = live.state().session(session_id).unwrap();
         assert_eq!(session.fd(), 0, "the session is clear");
-        gs.max_fd.store(one.fd() + 1, Relaxed);
+        bounds.max_fd.store(one.fd() + 1, Relaxed);
         assert!(close_connection(serv, reactor, one.socket()));
         assert!(closed(one));
-        assert_eq!(gs.max_fd(), one.fd() + 1, "not the max fd");
+        assert_eq!(bounds.max_fd(), one.fd() + 1, "not the max fd");
         assert_eq!(gs.close_count.load(SeqCst), 2);
         assert_eq!(live.port_counters().close_count.load(SeqCst), 2);
         assert_eq!(gs.connection_num.load(SeqCst), gs_before - 2);

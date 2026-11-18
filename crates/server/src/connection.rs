@@ -223,11 +223,12 @@ pub fn add<'a>(
     }
     init(serv, conn, ls, sock, server_fd, reactor_id);
 
+    let bounds = state.fd_bounds(gs);
     state.locked.lock();
-    if fd > gs.max_fd() {
-        gs.max_fd.store(fd, Relaxed);
-    } else if fd < gs.min_fd() {
-        gs.min_fd.store(fd, Relaxed);
+    if fd > bounds.max_fd() {
+        bounds.max_fd.store(fd, Relaxed);
+    } else if fd < bounds.min_fd() {
+        bounds.min_fd.store(fd, Relaxed);
     }
     state.locked.unlock();
 
@@ -585,7 +586,7 @@ mod tests {
         let first = live.state().session(1).unwrap().fd();
         let second = live.state().session(2).unwrap().fd();
         assert_eq!(
-            gs.max_fd.load(Relaxed),
+            live.server().fd_bounds().max_fd(),
             first.max(second),
             "maxfd grows to the highest fd"
         );

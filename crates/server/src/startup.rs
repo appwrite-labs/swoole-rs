@@ -477,8 +477,9 @@ pub(crate) fn store_listen_socket(serv: view::Server<'_>) {
         }
         socket.edit(|socket| socket.object = ls);
         if let Some(gs) = crate::shared::server_counters(state) {
-            gs.min_fd.store(fd, Relaxed);
-            gs.max_fd.store(fd, Relaxed);
+            let bounds = state.fd_bounds(gs);
+            bounds.min_fd.store(fd, Relaxed);
+            bounds.max_fd.store(fd, Relaxed);
         }
     }
 }
@@ -922,7 +923,10 @@ mod tests {
             "the socket's port"
         );
         assert_eq!(
-            (live.counters().min_fd(), live.counters().max_fd()),
+            (
+                live.server().fd_bounds().min_fd(),
+                live.server().fd_bounds().max_fd()
+            ),
             (fd, fd)
         );
     }
