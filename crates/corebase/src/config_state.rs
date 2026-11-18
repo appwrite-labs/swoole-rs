@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+// `repr(C)`: C's `swoole::Allocator`, a member of `SwooleG` (`native/corebase/swoole.h`).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct CoreAllocator {
@@ -63,6 +64,7 @@ impl TrustedAllocator {
 /// plain `SwooleG`, so each is an atomic of its C type's size: Rust loads and stores
 /// whole words and holds no reference to their contents. Rust writes them only in
 /// `swoole_init` and `swoole_clean`, before and after any other thread, as upstream does.
+// `repr(C)`: the `SwooleG` symbol C declares (`native/corebase/swoole.h`).
 #[repr(C)]
 struct Global {
     max_sockets: AtomicU32,

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Derived from Swoole v6.2.4 include/swoole_error.h (Swoole contributors).
 //! Canonical Swoole error identifiers, shared by Rust dispatch and generated C bindings.
+// `repr(C)`: cbindgen exports it to C as `swErrorCode` (`native/include/swoole_rs_error.h`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(

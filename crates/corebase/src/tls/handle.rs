@@ -181,12 +181,14 @@ unsafe extern "C" {
 /// A `BIO_METHOD` table. It is zero-sized, so a reference to it claims none of the
 /// bytes OpenSSL keeps behind it, which only its setters write, before any BIO is made
 /// of it.
+// `repr(C)`: OpenSSL's opaque type, named behind references in `extern` blocks.
 #[repr(C)]
 pub(crate) struct BioMethod {
     _opaque: [u8; 0],
 }
 
 /// A `BIO_ADDR`, which this side never makes.
+// `repr(C)`: OpenSSL's opaque type, named behind references in `extern` blocks.
 #[repr(C)]
 struct BioAddr {
     _opaque: [u8; 0],

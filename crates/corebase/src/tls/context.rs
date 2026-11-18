@@ -122,18 +122,21 @@ type ExDup =
     extern "C" fn(*mut c_void, *const c_void, *mut c_void, c_int, c_long, *mut c_void) -> c_int;
 
 /// An `OPENSSL_INIT_SETTINGS`, which this side never makes.
+// `repr(C)`: OpenSSL's opaque type, named behind references in `extern` blocks.
 #[repr(C)]
 struct InitSettings {
     _opaque: [u8; 0],
 }
 
 /// An `SSL_METHOD`, one of libssl's static tables.
+// `repr(C)`: OpenSSL's opaque type, named behind references in `extern` blocks.
 #[repr(C)]
 struct SslMethod {
     _opaque: [u8; 0],
 }
 
 /// An `EVP_MD`, one of libcrypto's static method tables.
+// `repr(C)`: OpenSSL's opaque type, named behind references in `extern` blocks.
 #[repr(C)]
 struct EvpMd {
     _opaque: [u8; 0],
@@ -186,6 +189,7 @@ fn set_dh_params(ctx: &SslCtx, key: DhParams) -> bool {
 }
 
 /// An `EVP_PKEY *` for `PEM_read_bio_Parameters` to reuse, which this side never makes.
+// `repr(C)`: OpenSSL's opaque type, named behind references in `extern` blocks.
 #[repr(C)]
 struct KeySlot {
     _opaque: [u8; 0],
@@ -197,6 +201,7 @@ static SESSION_ID_CONTEXT: [u8; 32] =
 
 /// A live `SSL_CTX`, borrowed from an [`SslContext`]. It is zero-sized, so a
 /// reference to it claims none of the bytes OpenSSL changes behind it.
+// `repr(C)`: OpenSSL's opaque type, named behind references in `extern` blocks.
 #[repr(C)]
 pub struct SslCtx {
     _opaque: [u8; 0],
@@ -722,6 +727,7 @@ fn quoted(prefix: &[u8], value: TlsStr<'_>, suffix: &[u8]) -> Vec<u8> {
 }
 
 /// An ALPN wire-format list: the first `length` bytes of `wire`.
+// `repr(C)`: handed to OpenSSL as the ALPN callback's argument, behind a reference in an `extern` block.
 #[repr(C)]
 struct Protos {
     wire: [u8; 12],

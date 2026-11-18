@@ -125,6 +125,7 @@ pub enum PipeEnd {
 /// over it trust them. The records are shared memory, and each process owns its
 /// own sockets at these addresses: a process that frees its pipes leaves the fields
 /// to the others, and sends through the record no more.
+// `repr(C)`: `native/process/swoole_rs_process_views.h` mirrors it for the system fixture.
 #[repr(C)]
 pub struct WorkerRecord {
     pub(crate) pid: AtomicI32,
