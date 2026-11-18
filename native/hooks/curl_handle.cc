@@ -251,6 +251,47 @@ extern "C" void swoole_curl_save_error(php_curl *ch, int error) {
     ch->err.no = error;
 }
 
+/* curl_slist_append: false leaves the list as it was. */
+extern "C" bool swoole_curl_list_append(struct curl_slist **list, const zend_string *value) {
+    struct curl_slist *appended = curl_slist_append(*list, ZSTR_VAL(value));
+    if (!appended) {
+        return false;
+    }
+    *list = appended;
+    return true;
+}
+
+extern "C" void swoole_curl_list_free(struct curl_slist *list) {
+    curl_slist_free_all(list);
+}
+
+/* Sets a list option and keeps the list until the handle's clone family frees it. A handle with
+ * no clone replaces (and frees) its previous list for the option; otherwise the old one is kept, as
+ * a clone may still use it. */
+extern "C" int swoole_curl_setopt_list(php_curl *ch, int option, struct curl_slist *list) {
+    if (list) {
+#if PHP_VERSION_ID >= 80500
+        HashTable *lists = &ch->to_free->slist;
+#else
+        HashTable *lists = ch->to_free->slist;
+#endif
+        if (*ch->clone == 1) {
+            zend_hash_index_update_ptr(lists, option, list);
+        } else {
+            zend_hash_next_index_insert_ptr(lists, list);
+        }
+    }
+    return ch->err.no = curl_easy_setopt(ch->cp, (CURLoption) option, list);
+}
+
+extern "C" void swoole_curl_set_write_method(php_curl *ch, int method) {
+    ch->handlers.write->method = method;
+}
+
+extern "C" zval *swoole_curl_private(php_curl *ch) {
+    return &ch->private_data;
+}
+
 /* PG(open_basedir) is set and not empty. */
 extern "C" bool swoole_curl_open_basedir() {
     return PG(open_basedir) && *PG(open_basedir);

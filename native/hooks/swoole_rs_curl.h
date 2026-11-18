@@ -30,8 +30,6 @@ void swoole_curl_free_obj(zend_object *object);
 HashTable *swoole_curl_get_gc(zend_object *object, zval **table, int *n);
 zend_object *swoole_curl_clone_obj(zend_object *object);
 zend_function *swoole_curl_get_constructor(zend_object *object);
-/* Store a referenced copy before releasing the old value: its destructor may reenter. */
-zval swoole_curl_replace_private(zval *slot, const zval *value);
 /* Whether the current coroutine may use the php_curl whose easy handle is cp:
  * false after the error of a missing coroutine handle or of a multi bound to
  * another coroutine. */

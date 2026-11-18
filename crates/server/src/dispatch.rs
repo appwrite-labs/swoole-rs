@@ -34,8 +34,8 @@ pub fn schedule_worker(serv: Server<'_>, fd: c_int, send: Option<&SendData>) -> 
     if dispatch_func.is_set() {
         let conn = state.connection(key, Lookup::ByFd);
         let id = state.callbacks.dispatch(serv, conn, send);
-        if id != USERFUNC_FALLBACK {
-            return u32::try_from(id).map_err(|_| id);
+        if id != Err(USERFUNC_FALLBACK) {
+            return id;
         }
     }
     let config = serv.config();
@@ -593,21 +593,15 @@ mod tests {
         assert_eq!(idle.live.state().next_round(), 6, "four tries after two");
     }
 
-    fn to_six(_: Server<'_>, _: Option<crate::Connection<'_>>, _: Option<&SendData>) -> c_int {
-        6
-    }
-
-    fn fall_back(_: Server<'_>, _: Option<crate::Connection<'_>>, _: Option<&SendData>) -> c_int {
-        USERFUNC_FALLBACK
-    }
-
     #[test]
     fn a_dispatch_function_comes_first_unless_it_falls_back() {
         let w = Workers::new(4, DispatchMode::FD_MOD);
         let callbacks = &w.live.state().callbacks;
-        callbacks.set(crate::callbacks::Callback::DispatchFunc(to_six));
+        callbacks.set(crate::callbacks::Callback::DispatchFunc(|_, _, _| Ok(6)));
         assert_eq!(w.schedule(10), 6, "user function");
-        callbacks.set(crate::callbacks::Callback::DispatchFunc(fall_back));
+        callbacks.set(crate::callbacks::Callback::DispatchFunc(|_, _, _| {
+            Err(USERFUNC_FALLBACK)
+        }));
         assert_eq!(w.schedule(10), 2, "user function falls back");
     }
 

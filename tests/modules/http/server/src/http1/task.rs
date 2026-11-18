@@ -443,7 +443,7 @@ fn task_worker() {
 
     listen(serv);
 
-    serv.set_callback(Callback::Task(task_worker_on_task));
+    serv.set_callback(Callback::Task(status_callback!(task_worker_on_task)));
 
     assert_eq!(serv.create(), SW_OK);
 
@@ -547,10 +547,10 @@ fn task_worker2() {
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
 
-    serv.set_callback(Callback::Task(task_zero));
+    serv.set_callback(Callback::Task(status_callback!(task_zero)));
     serv.set_callback(Callback::PipeMessage(task_worker2_on_pipe_message));
     serv.set_callback(Callback::WorkerStart(task_worker2_on_worker_start));
-    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
 
     assert_eq!(serv.create(), SW_OK);
     super::timeline::arm();
@@ -632,9 +632,9 @@ fn task_worker_3() {
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
 
-    serv.set_callback(Callback::Task(task_zero));
+    serv.set_callback(Callback::Task(status_callback!(task_zero)));
     serv.set_callback(Callback::WorkerStart(task_worker_3_on_worker_start));
-    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
 
     assert_eq!(serv.create(), SW_OK);
     assert_eq!(serv.start(), SW_OK);
@@ -702,9 +702,9 @@ fn test_task(mode: c_int, task_ipc_mode: u8) {
 
     listen(serv);
 
-    serv.set_callback(Callback::Receive(receive_ok));
-    serv.set_callback(Callback::Task(finish_packet));
-    serv.set_callback(Callback::Finish(finished_packet));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
+    serv.set_callback(Callback::Task(status_callback!(finish_packet)));
+    serv.set_callback(Callback::Finish(status_callback!(finished_packet)));
 
     assert_eq!(serv.create(), SW_OK);
 
@@ -741,9 +741,9 @@ fn coroutine_task_server(on_worker_start: swoole_rs_server::callbacks::WorkerFn)
 
     listen(serv);
 
-    serv.set_callback(Callback::Receive(receive_ok));
-    serv.set_callback(Callback::Task(finish_packet));
-    serv.set_callback(Callback::Finish(finished_packet));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
+    serv.set_callback(Callback::Task(status_callback!(finish_packet)));
+    serv.set_callback(Callback::Finish(status_callback!(finished_packet)));
 
     assert_eq!(serv.create(), SW_OK);
 
@@ -915,8 +915,8 @@ fn task_sync_multi_task() {
 
     listen(serv);
 
-    serv.set_callback(Callback::Receive(receive_ok));
-    serv.set_callback(Callback::Task(task_sync_multi_on_task));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
+    serv.set_callback(Callback::Task(status_callback!(task_sync_multi_on_task)));
 
     assert_eq!(serv.create(), SW_OK);
     // `SwooleG.current_task_id = 100`.
@@ -973,8 +973,8 @@ fn task_sync() {
 
     listen(serv);
 
-    serv.set_callback(Callback::Receive(receive_ok));
-    serv.set_callback(Callback::Task(task_sync_on_task));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
+    serv.set_callback(Callback::Task(status_callback!(task_sync_on_task)));
 
     assert_eq!(serv.create(), SW_OK);
 
@@ -1013,9 +1013,9 @@ fn task_ipc_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
 fn test_task_ipc(serv: Server) {
     listen(serv);
 
-    serv.set_callback(Callback::Receive(receive_ok));
-    serv.set_callback(Callback::Task(finish_packet));
-    serv.set_callback(Callback::Finish(task_ipc_on_finish));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
+    serv.set_callback(Callback::Task(status_callback!(finish_packet)));
+    serv.set_callback(Callback::Finish(status_callback!(task_ipc_on_finish)));
 
     assert_eq!(serv.create(), SW_OK);
 
@@ -1188,7 +1188,7 @@ fn thread() {
 
     serv.set_callback(Callback::Start(unlock_on_start));
     serv.set_callback(Callback::WorkerStart(thread_on_worker_start));
-    serv.set_callback(Callback::Receive(thread_on_receive));
+    serv.set_callback(Callback::Receive(status_callback!(thread_on_receive)));
     serv.set_callback(Callback::PipeMessage(thread_on_pipe_message));
 
     assert_eq!(serv.start(), SW_OK);
@@ -1274,9 +1274,9 @@ fn task_thread() {
 
     serv.set_callback(Callback::Start(unlock_on_start));
     serv.set_callback(Callback::WorkerStart(task_thread_on_worker_start));
-    serv.set_callback(Callback::Finish(task_thread_on_finish));
-    serv.set_callback(Callback::Task(task_thread_on_task));
-    serv.set_callback(Callback::Receive(task_thread_on_receive));
+    serv.set_callback(Callback::Finish(status_callback!(task_thread_on_finish)));
+    serv.set_callback(Callback::Task(status_callback!(task_thread_on_task)));
+    serv.set_callback(Callback::Receive(status_callback!(task_thread_on_receive)));
 
     assert_eq!(serv.start(), SW_OK);
     join_client();
@@ -1371,8 +1371,8 @@ fn no_idle_task_worker() {
 
     serv.set_callback(Callback::Start(no_idle_on_start));
     serv.set_callback(Callback::WorkerStart(no_idle_on_worker_start));
-    serv.set_callback(Callback::Receive(no_idle_on_receive));
-    serv.set_callback(Callback::Task(no_idle_on_task));
+    serv.set_callback(Callback::Receive(status_callback!(no_idle_on_receive)));
+    serv.set_callback(Callback::Task(status_callback!(no_idle_on_task)));
 
     assert_eq!(serv.start(), 0);
 
