@@ -4,7 +4,6 @@
 //! The `Reactor` object: its public fields and backend resources share one Rust
 //! lifetime, from its constructor and `swoole_event_init` to its destructor and
 //! `swoole_event_free`. The C++ class is methods over this state (`swoole_reactor.h`).
-use crate::HookType;
 use crate::reactor::wait_loop::BackendKind;
 use crate::reactor::{PollSnapshot, handlers::Handlers, registry::Registry};
 use libc::{c_int, c_void};
@@ -355,19 +354,10 @@ pub fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> OwnedReactor {
         crate::tls::reactor_write::reactor_writable_callback(reactor, event)
     }));
     let reactor = crate::reactor::Running::leak(owner);
-    reactor_hook(HookType::ON_REACTOR_CREATE, reactor);
+    crate::hook::call(crate::hook::Hook::ReactorCreate(reactor));
     // The hook has returned.
     reactor.with(|state| crate::reactor::callbacks::install_builtins(&mut state.callbacks));
     OwnedReactor(reactor)
-}
-
-/// The `kind` hooks (`ON_REACTOR_CREATE` or `ON_REACTOR_DESTROY`) over `reactor`, if
-/// any is set.
-fn reactor_hook(kind: HookType, reactor: crate::reactor::Running<'_>) {
-    if crate::swoole_isset_hook(kind) {
-        // SAFETY: the reactor hooks take a `Reactor *`, and the handle's is live.
-        unsafe { crate::swoole_call_hook(kind, reactor.as_ptr()) };
-    }
 }
 
 /// `delete reactor`: marks it destroyed, runs its destroy callbacks, closes its
@@ -389,7 +379,7 @@ pub fn swr_v1_reactor_delete(OwnedReactor(handle): OwnedReactor) {
         state.release_sockets();
         state.close_backend();
     });
-    reactor_hook(HookType::ON_REACTOR_DESTROY, handle);
+    crate::hook::call(crate::hook::Hook::ReactorDestroy(handle));
     // A disposer can defer again through the reactor's head (a PHP destructor calling
     // `Event::defer`), so the queues are detached and freed until they stay empty, and
     // no reference to the state (a `Drop`'s `&mut self` included) is live meanwhile.

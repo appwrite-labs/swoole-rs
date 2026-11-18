@@ -259,9 +259,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     }
     crate::reactor::signal_upstream::clear();
     crate::signal_mask::restore_after_fork(previous, true);
-    if crate::swoole_isset_hook(crate::HookType::AFTER_FORK) {
-        crate::hook::call_after_fork();
-    }
+    crate::hook::call(crate::hook::Hook::AfterFork);
     0
 }
 

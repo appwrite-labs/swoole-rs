@@ -37,17 +37,37 @@ impl HookType {
     pub const AFTER_RESPONSE: Self = Self(27);
 }
 
-/// Runtime hooks whose callbacks can edit the enabled flags.
-pub struct EnableHook(HookType);
+/// A hook corebase and the runtime call, with the argument its callbacks take.
+pub enum Hook<'a> {
+    /// `PHP_SWOOLE_HOOK_BEFORE_ENABLE_HOOK` (`AFTER`): the enabled flags, which the
+    /// callbacks can edit.
+    BeforeEnable(&'a mut u32),
+    AfterEnable(&'a mut u32),
+    /// `SW_GLOBAL_HOOK_AFTER_FORK`, in whoever forked: no argument.
+    AfterFork,
+    /// `SW_GLOBAL_HOOK_ON_REACTOR_CREATE` (`DESTROY`): the reactor.
+    ReactorCreate(crate::reactor::Running<'a>),
+    ReactorDestroy(crate::reactor::Running<'a>),
+}
 
-impl EnableHook {
-    pub const BEFORE: Self = Self(HookType::BEFORE_ENABLE_HOOK);
-    pub const AFTER: Self = Self(HookType::AFTER_ENABLE_HOOK);
-
-    pub fn call(self, flags: &mut u32) {
-        // SAFETY: both enable-hook kinds take the live, mutable flags word.
-        unsafe { swoole_call_hook(self.0, std::ptr::from_mut(flags).cast()) };
-    }
+/// Each of `hook`'s callbacks in turn, given its argument.
+pub fn call(hook: Hook<'_>) {
+    let (kind, arg) = match hook {
+        Hook::BeforeEnable(flags) => (
+            HookType::BEFORE_ENABLE_HOOK,
+            std::ptr::from_mut(flags).cast(),
+        ),
+        Hook::AfterEnable(flags) => (
+            HookType::AFTER_ENABLE_HOOK,
+            std::ptr::from_mut(flags).cast(),
+        ),
+        Hook::AfterFork => (HookType::AFTER_FORK, std::ptr::null_mut()),
+        Hook::ReactorCreate(reactor) => (HookType::ON_REACTOR_CREATE, reactor.as_ptr()),
+        Hook::ReactorDestroy(reactor) => (HookType::ON_REACTOR_DESTROY, reactor.as_ptr()),
+    };
+    // SAFETY: each kind's callbacks take what it is paired with above: the live,
+    // mutable flags word, nothing, or the live reactor.
+    unsafe { swoole_call_hook(kind, arg) };
 }
 
 type List = &'static [HookFn];
@@ -115,14 +135,6 @@ pub unsafe extern "C" fn swoole_call_hook(kind: HookType, arg: *mut c_void) {
     }
 }
 
-/// `swoole_call_hook(SW_GLOBAL_HOOK_AFTER_FORK, nullptr)`, for whoever forked: the
-/// one hook type whose callbacks are passed nothing.
-pub fn call_after_fork() {
-    // SAFETY: an after-fork hook is registered to be called with no argument, which
-    // is what it gets.
-    unsafe { swoole_call_hook(HookType::AFTER_FORK, std::ptr::null_mut()) };
-}
-
 /// `bool swoole_isset_hook(swGlobalHookType)`.
 #[cfg_attr(feature = "upstream-symbols", unsafe(no_mangle))]
 #[must_use]
@@ -173,13 +185,13 @@ mod tests {
         assert_eq!(count, 9999, "the front callback runs first");
 
         let mut flags = 1_u32;
-        EnableHook::BEFORE.call(&mut flags);
+        call(Hook::BeforeEnable(&mut flags));
         assert_eq!(flags, 1);
         swoole_add_hook(HookType::BEFORE_ENABLE_HOOK, set_9999, 1);
         swoole_add_hook(HookType::AFTER_ENABLE_HOOK, double, 1);
-        EnableHook::BEFORE.call(&mut flags);
+        call(Hook::BeforeEnable(&mut flags));
         assert_eq!(flags, 9999);
-        EnableHook::AFTER.call(&mut flags);
+        call(Hook::AfterEnable(&mut flags));
         assert_eq!(flags, 19998);
 
         clear();
