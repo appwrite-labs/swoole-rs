@@ -10,7 +10,7 @@
 //! reference to the state lives across one: operations work on a raw [`Handle`]
 //! and borrow the state only between effects. A PHP bailout in a callback
 //! longjmps out, so nothing that needs dropping is held across one.
-use crate::protocol::{Package, Protocol};
+use crate::protocol::{Package, PackageError, Protocol};
 use core::cell::{Cell, OnceCell};
 use core::ffi::{c_char, c_int, c_void};
 use core::marker::PhantomData;
@@ -644,16 +644,20 @@ impl Handle<'_> {
 /// holds it, and a client's framed receive calls it with that client's socket, whose
 /// free is deferred past the call: as for the reactor handlers below, the socket's
 /// kind is what makes its object a client.
-fn on_package(_: *const Protocol, socket: Socket<'_>, mut package: Package<'_>) -> c_int {
+fn on_package(
+    _: *const Protocol,
+    socket: Socket<'_>,
+    mut package: Package<'_>,
+) -> Result<(), PackageError> {
     let client = Handle::raw(socket.read(|socket| socket.object).cast());
     if let Some(listener) = client.listener(ClientEvent::Receive) {
         let payload = listener.payload(package.bytes());
         (listener.notify)(Notification::Receive(payload));
     }
     if socket.read(|socket| socket.output.close_wait) {
-        ERR
+        Err(PackageError::Closing)
     } else {
-        OK
+        Ok(())
     }
 }
 

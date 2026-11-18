@@ -896,11 +896,14 @@ fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
     let socket = Handle::raw(client).socket();
     let mut data = swoole_rs_corebase::buffer::string::boxed_string(b"data");
     let package = Package::of(&mut data, 0, 4);
-    assert_eq!(on_package(core::ptr::null(), socket, package), OK);
+    assert_eq!(on_package(core::ptr::null(), socket, package), Ok(()));
     assert_eq!(taken(), ["call Receive 4"]);
     sock().output.close_wait = true;
     let package = Package::of(&mut data, 0, 4);
-    assert_eq!(on_package(core::ptr::null(), socket, package), ERR);
+    assert_eq!(
+        on_package(core::ptr::null(), socket, package),
+        Err(PackageError::Closing)
+    );
     data.dispose();
     free(client);
 }

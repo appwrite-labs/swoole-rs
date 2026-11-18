@@ -132,7 +132,7 @@ pub(crate) fn protocol_dispatch(r: &Recv<'_>, package: Package<'_>) -> bool {
     let Some(on_package) = r.protocol().on_package else {
         return false;
     };
-    on_package(r.protocol_address(), r.socket, package) >= 0
+    on_package(r.protocol_address(), r.socket, package).is_ok()
 }
 
 /// The protocol's own callbacks, as upstream calls them, over a client's socket: never
@@ -544,9 +544,8 @@ mod tests {
         static PACKAGES: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
     }
 
-    fn record(_: *const Protocol, _: Socket<'_>, mut packet: Package<'_>) -> c_int {
+    fn record(mut packet: Package<'_>) {
         PACKAGES.with_borrow_mut(|p| p.push(packet.bytes().to_vec()));
-        0
     }
 
     /// The framed receive of `LENGTH` a client's read makes, over these records.
@@ -576,7 +575,10 @@ mod tests {
         socket.socket_type = 5; // SW_SOCK_UNIX_STREAM
         let mut protocol = Protocol::EMPTY;
         protocol.package_max_length = 1024;
-        protocol.on_package = Some(record);
+        protocol.on_package = Some(|_, _, packet| {
+            record(packet);
+            Ok(())
+        });
         let mut buffer = StringBuffer::EMPTY;
         buffer.alloc(8, None);
         PACKAGES.with_borrow_mut(Vec::clear);

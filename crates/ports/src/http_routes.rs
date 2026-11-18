@@ -110,7 +110,7 @@ impl Session<'_> {
 }
 
 pub mod exports {
-    use std::ffi::c_int;
+
     use std::mem::MaybeUninit;
     use swoole_rs_corebase::CCast;
 
@@ -129,7 +129,7 @@ pub mod exports {
 
     use super::{Session, WEBSOCKET_FRAME_HEADER_SIZE, length_size, route};
     use crate::framing_recv::{Packages, Recv, paused, send_data};
-    use swoole_rs_clients::protocol::Package;
+    use swoole_rs_clients::protocol::{Package, PackageError};
 
     /// `swoole::http2::get_frame_length(const Protocol *, Socket *, PacketLength *)`:
     /// the length callback of an HTTP/2 port, and of crates/phphttp2's client and
@@ -325,23 +325,20 @@ pub mod exports {
     }
 
     /// A server port protocol's `onPackage`: `H` over the session of `socket` in the
-    /// server this thread's reactor serves, -1 for none. [`OnPackage`]'s contract has
+    /// server this thread's reactor serves. [`OnPackage`]'s contract has
     /// the caller pass a whole package of a socket the protocol reads: a session's of
     /// that server, as only a server's ports hold these, and the package `H` may
     /// change in place. The server's own reader hands its packages to `H` directly
     /// ([`Port`]).
     ///
     /// [`OnPackage`]: swoole_rs_clients::protocol::OnPackage
-    #[must_use]
     pub(crate) fn on_package<H: Handler>(
         _: *const Protocol,
         socket: Socket<'_>,
         package: Package<'_>,
-    ) -> c_int {
-        let handled = view::Server::with_reactor(|server| {
-            let Some(conn) = server.at(socket.fd()) else {
-                return false;
-            };
+    ) -> Result<(), PackageError> {
+        view::Server::with_reactor(|server| {
+            let conn = server.at(socket.fd()).ok_or(PackageError::MissingSession)?;
             let info = DataHead {
                 len: u32::try_from(package.len()).unwrap_or(u32::MAX),
                 ..DataHead::default()
@@ -353,8 +350,10 @@ pub mod exports {
                 socket,
             };
             H::handle(s, package, info)
-        });
-        if handled == Some(true) { 0 } else { -1 }
+                .then_some(())
+                .ok_or(PackageError::DispatchFailed)
+        })
+        .ok_or(PackageError::MissingSession)?
     }
 
     /// A session's packages, all [`Session::task`]'s: an EOF or length port's, whose

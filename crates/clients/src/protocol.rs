@@ -1,16 +1,24 @@
 //! `swoole::Protocol`: how a stream socket's bytes split into packages, and the
 //! callbacks that measure and hand on each one. Upstream's layout, which C++ shares.
-use core::ffi::{c_int, c_void};
+use core::ffi::c_void;
 use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::lent::Fill;
 use swoole_rs_corebase::net_types::PacketLength;
 pub use swoole_rs_corebase::reactor::Socket;
 
+/// Why the receiver must stop handing packages to its handler.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackageError {
+    Closing,
+    MissingSession,
+    DispatchFailed,
+}
+
 /// `Protocol::onPackage`: hands on one whole package read from the socket. A caller
 /// passes the protocol the socket reads with, which the callback may ignore. The
 /// protocol stays a pointer: the callback may run PHP code, whose `set()` can rewrite
 /// it meanwhile. Only Rust calls it, so it takes the package as Rust lends it.
-pub type OnPackage = fn(*const Protocol, Socket<'_>, Package<'_>) -> c_int;
+pub type OnPackage = fn(*const Protocol, Socket<'_>, Package<'_>) -> Result<(), PackageError>;
 
 /// `Protocol::get_package_length`: the length of the package in the packet's
 /// `buf_size` readable bytes at `buf`, 0 while incomplete, -1 when bad. A caller
