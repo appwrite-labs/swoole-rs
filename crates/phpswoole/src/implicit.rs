@@ -29,14 +29,7 @@ unsafe extern "C" {
     safe fn puts(line: swoole_rs_corebase::sys::Text<'_>) -> c_int;
 }
 
-swoole_rs_zend::exports! {
-/// `sw_php_exit(status)`: `EG(exit_status) = status`, then the bailout that
-/// ends the request, or the thread in a `SW_THREAD` build. The frames it
-/// crosses own nothing.
-#[unsafe(no_mangle)]
-pub extern "C" fn sw_php_exit(status: c_int) { exit_status(status); }
-}
-
+/// Set Zend’s exit status and defer the request or thread bailout.
 pub fn exit_status(status: c_int) {
     swr_zend_set_exit_status(status);
     if built_with(Switch::Thread) {
