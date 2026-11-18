@@ -834,10 +834,10 @@ fn daemon(call: &Call) {
     };
     if let Some(pipes) = pipes {
         for ((_, value), fd) in pipes.entries().zip(0..=2) {
-            if value.kind() != IS_NULL {
-                if let Some(from) = host::convert_to_fd(value) {
-                    worker::dup(from, fd);
-                }
+            if value.kind() != IS_NULL
+                && let Some(from) = host::convert_to_fd(value)
+            {
+                worker::dup(from, fd);
             }
         }
     }
