@@ -94,7 +94,7 @@ class Budget(unittest.TestCase):
                 'statuses': {'one': 0}, 'reprs': {'one': 0}, 'derefs': {'one': 0},
                 'externs': {'one': 0}, 'shortreads': {'one': 0},
                 # shim.c's three and shim.h's one; tests/ isn't src/.
-                'clines': {'one': 4},
+                'clines': {'one': 4}, 'php_args': {},
             })
 
     def test_short_reads_only_count_in_wire_readers(self):
