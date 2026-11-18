@@ -80,14 +80,19 @@ impl TempFile {
             sys::set_errno(errno);
             return None;
         };
-        Some(Self {
-            file: DropGuard::new(File::from(fd), close),
-            path: DropGuard::new(name.to_owned(), remove),
-        })
+        Some(Self::from_parts(name.to_owned(), File::from(fd)))
     }
 }
 
 impl<T> TempFile<T> {
+    /// Take ownership of a newly created file and its cleanup path.
+    pub(crate) fn from_parts(path: CString, file: T) -> Self {
+        Self {
+            file: DropGuard::new(file, close),
+            path: DropGuard::new(path, remove),
+        }
+    }
+
     #[must_use]
     pub fn path(&self) -> &CStr {
         &self.path
