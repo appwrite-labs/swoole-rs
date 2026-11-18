@@ -617,6 +617,7 @@ dependencies = [
 name = "swoole-rs-odbc"
 version = "0.1.0"
 dependencies = [
+ "swoole-rs-corebase",
  "swoole-rs-hooks",
  "swoole-rs-odbc-sys",
  "swoole-rs-zend",
