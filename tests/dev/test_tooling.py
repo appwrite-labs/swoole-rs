@@ -86,6 +86,7 @@ Path(sys.argv[1]).write_text('PASSED ' + sys.argv[2] + '\n')
             self.assertEqual(row['leftovers']['temp_files'], 1)
             self.assertEqual(row['leftovers']['processes'], 1)
             self.assertGreaterEqual(row['leftovers']['descriptors'], 2)
+            self.assertEqual([member['name'] for member in row['remaining_processes']], ['sleep'])
 
     def test_manifest_lists_every_pinned_timer_original(self):
         tests = json.loads((ROOT / 'corpus/upstream/manifest.json').read_text())['tests']
