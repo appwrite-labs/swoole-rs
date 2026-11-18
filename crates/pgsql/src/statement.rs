@@ -230,6 +230,43 @@ extern "C" fn pdo_pgsql_open_cursor(
 }
 }
 
+/// Release PHP 8.5's active result. A displaced single-row query must be drained
+/// before another send, including after the destructor requests cancellation.
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_finish_result(
+    active: Option<std::ptr::NonNull<pq_sys::PGconn>>,
+    result: &Cell<Option<crate::PgResult>>,
+    abort_query: bool,
+) {
+    use std::ptr::NonNull;
+    unsafe extern "C" {
+        safe fn PQgetCancel(conn: crate::Conn) -> Option<NonNull<pq_sys::PGcancel>>;
+        safe fn PQcancel(
+            cancel: NonNull<pq_sys::PGcancel>,
+            error: &mut [std::ffi::c_char; 256],
+            size: c_int,
+        ) -> c_int;
+        safe fn PQfreeCancel(cancel: NonNull<pq_sys::PGcancel>);
+    }
+    let previous = result.take();
+    if previous.is_some()
+        && abort_query
+        && let Some(cancel) = active.and_then(|conn| PQgetCancel(crate::Conn(conn.as_ptr())))
+    {
+        let mut error = [0; 256];
+        PQcancel(cancel, &mut error, 256);
+        PQfreeCancel(cancel);
+    }
+    if let Some(previous) = previous {
+        crate::PQclear(previous);
+    }
+    if let Some(conn) = active {
+        while let Some(next) = crate::PQgetResult(crate::Conn(conn.as_ptr())) {
+            crate::PQclear(next);
+        }
+    }
+}
+
 /// Release a generated statement name. PHP 8.4+ uses the close-prepared
 /// protocol when the linked libpq implements it.
 #[unsafe(no_mangle)]

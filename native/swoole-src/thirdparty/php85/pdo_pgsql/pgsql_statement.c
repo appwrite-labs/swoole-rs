@@ -41,7 +41,6 @@
 #define FLOAT4OID 700
 #define FLOAT8OID 701
 
-#define FIN_DISCARD 0x1
 #define FIN_CLOSE   0x2
 #define FIN_ABORT   0x4
 
@@ -51,42 +50,15 @@ static void pgsql_stmt_finish(pdo_pgsql_stmt *S, int fin_mode)
 {
 	pdo_pgsql_db_handle *H = S->H;
 
-	if (S->is_running_unbuffered && S->result && (fin_mode & FIN_ABORT)) {
-		PGcancel *cancel = PQgetCancel(pdo_pgsql_server(H));
-		char errbuf[256];
-		PQcancel(cancel, errbuf, 256);
-		PQfreeCancel(cancel);
-		S->is_running_unbuffered = false;
-	}
-
-	if (S->result) {
-		/* free the resource */
-		PQclear(S->result);
-		S->result = NULL;
-	}
-
-	if (S->is_running_unbuffered) {
-		/* https://postgresql.org/docs/current/libpq-async.html:
-		 * "PQsendQuery cannot be called again until PQgetResult has returned NULL"
-		 * And as all single-row functions are connection-wise instead of statement-wise,
-		 * any new single-row query has to make sure no preceding one is still running.
-		 */
-		// @todo Implement !(fin_mode & FIN_DISCARD)
-		//       instead of discarding results we could store them to their statement
-		//       so that their fetch() will get them (albeit not in lazy mode anymore).
-		while ((S->result = PQgetResult(pdo_pgsql_server(H)))) {
-			PQclear(S->result);
-			S->result = NULL;
-		}
-		S->is_running_unbuffered = false;
-	}
+	pdo_pgsql_finish_result(S->is_running_unbuffered ? pdo_pgsql_server(H) : NULL, &S->result, (fin_mode & FIN_ABORT) != 0);
+	S->is_running_unbuffered = false;
 
 	if (S->stmt_name && S->is_prepared && (fin_mode & FIN_CLOSE)) {
 		pdo_pgsql_close_statement(H, S->stmt_name);
 		S->is_prepared = false;
-		if (*pdo_pgsql_running_stmt(H) == S) {
-			*pdo_pgsql_running_stmt(H) = NULL;
-		}
+	}
+	if ((fin_mode & FIN_CLOSE) && *pdo_pgsql_running_stmt(H) == S) {
+		*pdo_pgsql_running_stmt(H) = NULL;
 	}
 }
 
@@ -95,7 +67,7 @@ static int pgsql_stmt_dtor(pdo_stmt_t *stmt)
 	pdo_pgsql_stmt *S = (pdo_pgsql_stmt*)stmt->driver_data;
 	bool server_obj_usable = php_pdo_stmt_valid_db_obj_handle(stmt);
 
-	pgsql_stmt_finish(S, FIN_DISCARD|(server_obj_usable ? FIN_CLOSE|FIN_ABORT : 0));
+	pgsql_stmt_finish(S, server_obj_usable ? FIN_CLOSE|FIN_ABORT : 0);
 
 	if (S->stmt_name) {
 		efree(S->stmt_name);
@@ -308,7 +280,6 @@ static int pgsql_stmt_fetch(pdo_stmt_t *stmt, enum pdo_fetch_orientation ori, ze
 		S->current_row = 0;
 
 		if (!stmt->row_count) {
-			S->is_running_unbuffered = false;
 			/* libpq requires looping until getResult returns null */
 			pgsql_stmt_finish(S, 0);
 		}
