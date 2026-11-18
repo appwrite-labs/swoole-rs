@@ -992,7 +992,7 @@ fn recv_length(
             .truncate(have + usize::try_from(read).unwrap_or(0));
         let Some(measured) = bailed(
             conn.cli()
-                .run(|h| state::package_length(h, &frame.buffer) as i64),
+                .run(|h| isize::from(state::package_length(h, &frame.buffer)) as i64),
         ) else {
             call.set_bool(false);
             return None;

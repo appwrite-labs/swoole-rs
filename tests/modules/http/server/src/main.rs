@@ -141,7 +141,7 @@ fn ws_get_package_length(bytes: &[u8]) -> (isize, u32) {
     let mut pl = swoole_rs_corebase::net_types::PacketLength::new(bytes);
     let protocol = swoole_rs_clients::protocol::Protocol::EMPTY;
     let length = swoole_rs_ports::http_routes::websocket_length(&protocol, None, None, &mut pl);
-    (length, pl.header_len)
+    (length.into(), pl.header_len)
 }
 
 /// `websocket::decode`.
@@ -167,6 +167,7 @@ unsafe fn http_get_package_length(
             None,
             &mut *pl.cast(),
         )
+        .into()
     }
 }
 

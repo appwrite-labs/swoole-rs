@@ -7,7 +7,7 @@
 use core::ffi::{CStr, c_int};
 use core::sync::atomic::Ordering;
 use swoole_rs_clients::client::{ClientFraming, Framing};
-use swoole_rs_clients::protocol::{Package, Protocol};
+use swoole_rs_clients::protocol::{Length, Package, Protocol};
 use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_WARNING as LOG_WARNING};
 use swoole_rs_corebase::net_types::PacketLength;
@@ -20,8 +20,6 @@ use swoole_rs_framing::recv::{
 };
 use swoole_rs_framing::{DefaultLength, default_length};
 use swoole_rs_server::Shared;
-
-const SW_ERR: isize = swoole_rs_corebase::constants::ResultCode::SW_ERR as isize;
 
 /// One receive: the protocol and socket each effect acts on, live for the receive.
 #[derive(Clone, Copy)]
@@ -117,7 +115,11 @@ pub(crate) trait Packages {
         let get = protocol.get_package_length?;
         let owner = r.owner.get();
         let length = get(&protocol, self.dynamic_header(&protocol), owner, &mut pl);
-        usize::try_from(length).ok()
+        match length {
+            Length::More => Some(0),
+            Length::Packet(size) => Some(size),
+            Length::NotFound => None,
+        }
     }
     /// `onPackage` over a whole package; whether it succeeded. No reference to the
     /// protocol is held across it: the callback may run PHP that rewrites it.
@@ -477,7 +479,7 @@ pub fn default_length_func(
     header: Option<u8>,
     _owner: Option<std::rc::Rc<dyn core::any::Any>>,
     pl: &mut PacketLength,
-) -> isize {
+) -> Length {
     let size = header.unwrap_or(p.package_length_size);
     let bytes = pl.bytes();
     match default_length(
@@ -489,17 +491,17 @@ pub fn default_length_func(
     ) {
         DefaultLength::Need(need) => {
             pl.header_len = u32::try_from(need).unwrap_or(u32::MAX);
-            0
+            Length::More
         }
         DefaultLength::Total(total) => {
             pl.header_len = u32::from(p.package_length_size);
-            isize::try_from(total).unwrap_or(SW_ERR)
+            isize::try_from(total).map_or(Length::NotFound, Length::of)
         }
         DefaultLength::Format => {
             invalid_format(p.package_length_type);
-            SW_ERR
+            Length::NotFound
         }
-        DefaultLength::Invalid => SW_ERR,
+        DefaultLength::Invalid => Length::NotFound,
     }
 }
 

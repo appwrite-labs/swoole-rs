@@ -1,5 +1,5 @@
 //! `swoole::mqtt`'s entries, over [`mqtt_frame_length`].
-use crate::protocol::Protocol;
+use crate::protocol::{Length, Protocol};
 use swoole_rs_corebase::net_types::PacketLength;
 use swoole_rs_protocols::mqtt_frame_length;
 
@@ -22,9 +22,9 @@ pub fn get_package_length(
     _: Option<u8>,
     _: Option<std::rc::Rc<dyn core::any::Any>>,
     pl: &mut PacketLength,
-) -> isize {
+) -> Length {
     if let Ok(length) = mqtt_frame_length(pl.bytes()) {
-        length.map_or(0, |length| isize::try_from(length).unwrap_or(-1))
+        length.map_or(Length::More, Length::Packet)
     } else {
         swoole_rs_corebase::log::error_log(
             swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
@@ -32,7 +32,7 @@ pub fn get_package_length(
             c"mqtt::get_package_length",
             format_args!("bad request, the variable header size is larger than {MAX_LENGTH_SIZE}"),
         );
-        -1
+        Length::NotFound
     }
 }
 
@@ -64,8 +64,8 @@ mod tests {
             assert_eq!(pl.header_len, 99);
             length
         };
-        assert_eq!(measure(&[0x30]), 0);
-        assert_eq!(measure(&[0x30, 0x80, 0]), 3);
-        assert_eq!(measure(&[0x30, 0x80, 0x80, 0x80, 0x80]), -1);
+        assert_eq!(measure(&[0x30]), Length::More);
+        assert_eq!(measure(&[0x30, 0x80, 0]), Length::Packet(3));
+        assert_eq!(measure(&[0x30, 0x80, 0x80, 0x80, 0x80]), Length::NotFound);
     }
 }

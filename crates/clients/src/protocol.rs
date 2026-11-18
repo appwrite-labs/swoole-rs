@@ -12,8 +12,41 @@ pub use swoole_rs_corebase::reactor::Socket;
 /// it meanwhile. Only Rust calls it, so it takes the package as Rust lends it.
 pub type OnPackage = fn(*const Protocol, Socket<'_>, Package<'_>) -> c_int;
 
+/// What a length callback learned from the buffered header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Length {
+    /// The header could not be measured.
+    NotFound,
+    /// More bytes are needed to measure the packet.
+    More,
+    /// The whole packet's length.
+    Packet(usize),
+}
+
+impl Length {
+    /// The length function's `ssize_t`.
+    #[must_use]
+    pub fn of(length: isize) -> Self {
+        match usize::try_from(length) {
+            Err(_) => Self::NotFound,
+            Ok(0) => Self::More,
+            Ok(length) => Self::Packet(length),
+        }
+    }
+}
+
+impl From<Length> for isize {
+    fn from(length: Length) -> Self {
+        match length {
+            Length::More => 0,
+            Length::Packet(size) => Self::try_from(size).unwrap_or(-1),
+            Length::NotFound => -1,
+        }
+    }
+}
+
 /// `Protocol::get_package_length`: the length of the package in the packet's
-/// `buf_size` readable bytes at `buf`, 0 while incomplete, -1 when bad. A caller
+/// `buf_size` readable bytes at `buf`, or the reason it is unavailable. A caller
 /// passes a copy of the protocol the socket reads with, taken before the call, so
 /// PHP code the callback runs may `set()` the protocol meanwhile; the callback may
 /// rely on the private data stored beside it there. The optional header size comes from
@@ -21,7 +54,7 @@ pub type OnPackage = fn(*const Protocol, Socket<'_>, Package<'_>) -> c_int;
 /// beside the protocol, which the callback drops, or `None` where it keeps none. Only
 /// Rust calls it.
 pub type GetPackageLength =
-    fn(&Protocol, Option<u8>, Option<std::rc::Rc<dyn core::any::Any>>, &mut PacketLength) -> isize;
+    fn(&Protocol, Option<u8>, Option<std::rc::Rc<dyn core::any::Any>>, &mut PacketLength) -> Length;
 
 /// The dynamic header size for a session's WebSocket status and HTTP/2 flag.
 pub type GetPackageLengthSize = fn(swoole_rs_corebase::WebSocketStatus, bool) -> u8;

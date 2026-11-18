@@ -258,7 +258,7 @@ mod native {
             nested.dispose();
         }
         drop(taken);
-        crate::packet::Length::of(length)
+        length
     }
 
     /// `SW_ERROR_PACKAGE_LENGTH_TOO_LARGE`, `SW_ERROR_PACKAGE_LENGTH_NOT_FOUND` and
@@ -1164,13 +1164,13 @@ mod tests {
         _: Option<u8>,
         _: Option<std::rc::Rc<dyn std::any::Any>>,
         packet: &mut swoole_rs_corebase::net_types::PacketLength,
-    ) -> isize {
+    ) -> crate::packet::Length {
         MEASURED.set(packet.bytes().to_vec());
         if let Some(socket) = NESTED.get() {
             socket.with_buffer(false, |buffer| buffer.append(b"nested"));
         }
         packet.header_len = 4;
-        7
+        crate::packet::Length::Packet(7)
     }
 
     /// The native length step hands the protocol's function the buffered prefix it

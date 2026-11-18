@@ -2,7 +2,7 @@
 //! client, a coroutine socket or this thread's port registry keeps, which a measure
 //! hands the length callback.
 use std::{any::Any, rc::Rc};
-use swoole_rs_clients::protocol::Protocol;
+use swoole_rs_clients::protocol::{Length, Protocol};
 use swoole_rs_corebase::net_types::PacketLength;
 use swoole_rs_zend::{bailout, host::callable::Callable};
 
@@ -33,15 +33,17 @@ pub fn length<L: PackageLength>(
     _: Option<u8>,
     owner: Option<Rc<dyn Any>>,
     packet: &mut PacketLength,
-) -> isize {
+) -> Length {
     let Some(Ok(named)) = owner.map(<Rc<dyn Any>>::downcast::<Named>) else {
-        return -1;
+        return Length::NotFound;
     };
     let length = L::length(&named.0, packet.bytes());
     // A callback may replace its own last stored reference.
     drop(named);
     if bailout::pending() {
-        return -1;
+        return Length::NotFound;
     }
-    length.map_or(-1, usize::cast_signed)
+    length
+        .and_then(|size| isize::try_from(size).ok())
+        .map_or(Length::NotFound, Length::of)
 }

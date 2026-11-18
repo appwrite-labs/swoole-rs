@@ -31,11 +31,11 @@ fn fastcgi_length(
     _: Option<u8>,
     _owner: Option<std::rc::Rc<dyn std::any::Any>>,
     pl: &mut PacketLength,
-) -> isize {
-    pl.bytes()
-        .first_chunk::<8>()
-        .map_or(Some(0), |&p| fastcgi_record_length(p))
-        .map_or(-1, usize::cast_signed)
+) -> swoole_rs_clients::protocol::Length {
+    use swoole_rs_clients::protocol::Length;
+    pl.bytes().first_chunk::<8>().map_or(Length::More, |&p| {
+        fastcgi_record_length(p).map_or(Length::NotFound, Length::Packet)
+    })
 }
 
 fn fastcgi_record_length(p: [u8; 8]) -> Option<usize> {

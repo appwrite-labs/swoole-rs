@@ -10,7 +10,7 @@
 //! reference to the state lives across one: operations work on a raw [`Handle`]
 //! and borrow the state only between effects. A PHP bailout in a callback
 //! longjmps out, so nothing that needs dropping is held across one.
-use crate::protocol::{Package, Protocol};
+use crate::protocol::{Length, Package, Protocol};
 use core::cell::{Cell, OnceCell};
 use core::ffi::{c_char, c_int, c_void};
 use core::marker::PhantomData;
@@ -968,10 +968,10 @@ impl<'a> Handle<'a> {
 
 /// The client protocol's length of the packet in `data`.
 #[must_use]
-pub fn package_length(this: Handle<'_>, data: &[u8]) -> isize {
+pub fn package_length(this: Handle<'_>, data: &[u8]) -> Length {
     let record = this.record();
     let Some(get) = record.protocol.get_package_length else {
-        return -1;
+        return Length::NotFound;
     };
     let mut packet = PacketLength::new(data);
     get(

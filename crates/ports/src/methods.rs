@@ -475,8 +475,8 @@ mod tests {
         _: Option<u8>,
         _: Option<std::rc::Rc<dyn core::any::Any>>,
         _: &mut PacketLength,
-    ) -> isize {
-        N.into()
+    ) -> swoole_rs_clients::protocol::Length {
+        swoole_rs_clients::protocol::Length::of(N.into())
     }
 
     /// A length function's address, 0 for none.

@@ -23,28 +23,7 @@ pub enum Failure {
     NoEof,
 }
 
-/// What a protocol's length function made of the buffered bytes: its `ssize_t`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Length {
-    /// Negative: no length in them.
-    NotFound,
-    /// Zero: read more first.
-    More,
-    /// The whole packet's length.
-    Packet(usize),
-}
-
-impl Length {
-    /// The length function's `ssize_t`.
-    #[must_use]
-    pub fn of(length: isize) -> Self {
-        match usize::try_from(length) {
-            Err(_) => Self::NotFound,
-            Ok(0) => Self::More,
-            Ok(length) => Self::Packet(length),
-        }
-    }
-}
+pub use swoole_rs_clients::protocol::Length;
 
 /// What a sync of the read String does before it refreshes the view: nothing, or it
 /// stores the view's length and offset, then grows the String to a size or drops that
