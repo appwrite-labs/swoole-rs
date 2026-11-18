@@ -192,13 +192,7 @@ static int pgsql_stmt_param_hook(pdo_stmt_t *stmt,
                     if (stm) {
                         if (php_stream_is(stm, &pdo_pgsql_lob_stream_ops)) {
                             struct pdo_pgsql_lob_self *self = (struct pdo_pgsql_lob_self *) stm->abstract;
-                            Oid *bound = &S->params.lob_oids[param->paramno];
-                            *bound = htonl(self->oid);
-                            S->params.values[param->paramno] = (const char *) bound;
-                            S->params.lengths[param->paramno] = sizeof(*bound);
-                            S->params.formats[param->paramno] = 1;
-                            S->params.types[param->paramno] = OIDOID;
-                            return 1;
+                            return pdo_pgsql_bind_oid(S->params.owner, param->paramno, self->oid);
                         } else {
                             zend_string *str = php_stream_copy_to_mem(stm, PHP_STREAM_COPY_ALL, 0);
                             if (str != NULL) {
@@ -214,26 +208,7 @@ static int pgsql_stmt_param_hook(pdo_stmt_t *stmt,
                     }
                 }
 
-                if (PDO_PARAM_TYPE(param->param_type) == PDO_PARAM_NULL || Z_TYPE_P(parameter) == IS_NULL) {
-                    S->params.values[param->paramno] = NULL;
-                    S->params.lengths[param->paramno] = 0;
-                } else if (Z_TYPE_P(parameter) == IS_FALSE || Z_TYPE_P(parameter) == IS_TRUE) {
-                    S->params.values[param->paramno] = Z_TYPE_P(parameter) == IS_TRUE ? "t" : "f";
-                    S->params.lengths[param->paramno] = 1;
-                    S->params.formats[param->paramno] = 0;
-                } else {
-                    convert_to_string(parameter);
-                    S->params.values[param->paramno] = Z_STRVAL_P(parameter);
-                    S->params.lengths[param->paramno] = Z_STRLEN_P(parameter);
-                    S->params.formats[param->paramno] = 0;
-                }
-
-                if (PDO_PARAM_TYPE(param->param_type) == PDO_PARAM_LOB) {
-                    S->params.types[param->paramno] = 0;
-                    S->params.formats[param->paramno] = 1;
-                } else {
-                    S->params.types[param->paramno] = 0;
-                }
+                return pdo_pgsql_bind_value(S->params.owner, param->paramno, PDO_PARAM_TYPE(param->param_type), parameter);
             }
             break;
         }

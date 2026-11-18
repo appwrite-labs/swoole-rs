@@ -9,19 +9,18 @@
 BEGIN_EXTERN_C()
 typedef struct {
     size_t count;
-    const char **values;
-    int *lengths;
-    int *formats;
-    Oid *types;
-    Oid *lob_oids;
+    const char *const *values;
+    const int *lengths;
+    const int *formats;
+    const Oid *types;
     void *owner;
 } pdo_pgsql_parameter_arrays;
 
-void *pdo_pgsql_allocate_parameters(size_t count, const char ***values, int **lengths, int **formats, Oid **types, Oid **lob_oids);
+void *pdo_pgsql_allocate_parameters(size_t count, const char *const **values, const int **lengths, const int **formats, const Oid **types);
 static inline void pdo_pgsql_init_parameters(pdo_pgsql_parameter_arrays *params, size_t count) {
     params->count = count;
     params->owner = pdo_pgsql_allocate_parameters(count, &params->values, &params->lengths, &params->formats,
-                                                   &params->types, &params->lob_oids);
+                                                   &params->types);
 }
 void pdo_pgsql_free_parameters(void *owner);
 

@@ -359,35 +359,106 @@ extern "C" fn pdo_pgsql_emulated_parameter(kind: &Cell<pdo_param_type>, slot: &S
 /// Parallel libpq parameter arrays. Each slot also has stable storage for a
 /// large object's network-order OID until libpq copies the bound parameters.
 struct ParameterStorage {
-    values: Vec<*const std::ffi::c_char>,
-    lengths: Vec<c_int>,
-    formats: Vec<c_int>,
-    types: Vec<Oid>,
-    lob_oids: Vec<Oid>,
+    values: Vec<Cell<*const std::ffi::c_char>>,
+    lengths: Vec<Cell<c_int>>,
+    formats: Vec<Cell<c_int>>,
+    types: Vec<Cell<Oid>>,
+    owned: Vec<BoundValue>,
 }
 
+#[derive(Default)]
+struct BoundValue {
+    string: Cell<Option<ZString>>,
+    lob_oid: Cell<Oid>,
+}
+
+#[expect(
+    clippy::unnecessary_box_returns,
+    reason = "the C statement owns this opaque pointer until its destructor"
+)]
 #[unsafe(no_mangle)]
 extern "C" fn pdo_pgsql_allocate_parameters(
     count: usize,
-    values: &mut *mut *const std::ffi::c_char,
-    lengths: &mut *mut c_int,
-    formats: &mut *mut c_int,
-    types: &mut *mut Oid,
-    lob_oids: &mut *mut Oid,
+    values: &mut *const *const std::ffi::c_char,
+    lengths: &mut *const c_int,
+    formats: &mut *const c_int,
+    types: &mut *const Oid,
 ) -> Box<ParameterStorage> {
-    let mut owner = Box::new(ParameterStorage {
-        values: vec![std::ptr::null(); count],
-        lengths: vec![0; count],
-        formats: vec![0; count],
-        types: vec![0; count],
-        lob_oids: vec![0; count],
+    let owner = Box::new(ParameterStorage {
+        values: vec![Cell::new(std::ptr::null()); count],
+        lengths: vec![Cell::new(0); count],
+        formats: vec![Cell::new(0); count],
+        types: vec![Cell::new(0); count],
+        owned: (0..count).map(|_| BoundValue::default()).collect(),
     });
-    *values = owner.values.as_mut_ptr();
-    *lengths = owner.lengths.as_mut_ptr();
-    *formats = owner.formats.as_mut_ptr();
-    *types = owner.types.as_mut_ptr();
-    *lob_oids = owner.lob_oids.as_mut_ptr();
+    *values = owner.values.as_ptr().cast();
+    *lengths = owner.lengths.as_ptr().cast();
+    *formats = owner.formats.as_ptr().cast();
+    *types = owner.types.as_ptr().cast();
     owner
+}
+
+impl ParameterStorage {
+    fn bind(
+        &self,
+        index: usize,
+        bytes: *const std::ffi::c_char,
+        length: c_int,
+        binary: bool,
+        oid: Oid,
+    ) -> bool {
+        let (Some(value), Some(len), Some(format), Some(ty)) = (
+            self.values.get(index),
+            self.lengths.get(index),
+            self.formats.get(index),
+            self.types.get(index),
+        ) else {
+            return false;
+        };
+        value.set(bytes);
+        len.set(length);
+        format.set(i32::from(binary));
+        ty.set(oid);
+        true
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_bind_oid(params: &ParameterStorage, index: usize, oid: Oid) -> bool {
+    let Some(owned) = params.owned.get(index) else {
+        return false;
+    };
+    owned.string.set(None);
+    owned.lob_oid.set(oid.to_be());
+    params.bind(index, owned.lob_oid.as_ptr().cast(), 4, true, 26)
+}
+
+swoole_rs_zend::exports! {
+/// Keep the encoded bytes alive through libpq's send, including when conversion
+/// of a later parameter invokes PHP and changes an earlier bound reference.
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_bind_value(params: &ParameterStorage, index: usize, kind: pdo_param_type, slot: &Slot) -> bool {
+    use swoole_rs_zend::sys::{IS_TRUE, IS_FALSE, pdo_param_type_PDO_PARAM_NULL as NULL};
+    let Some(owned) = params.owned.get(index) else { return false; };
+    let value = slot.value();
+    let (bytes, len, string) = if kind == NULL || value.is_null() {
+        (std::ptr::null(), 0, None)
+    } else if matches!(value.kind(), IS_TRUE | IS_FALSE) {
+        let literal = if value.kind() == IS_TRUE { c"t" } else { c"f" };
+        (literal.as_ptr(), 1, None)
+    } else {
+        if value.str().is_none() {
+            let Some(text) = value.applied_string() else { return false; };
+            slot.set(swoole_rs_zend::Owned::string(text));
+        }
+        let Some(text) = slot.value().str() else { return false; };
+        let bytes = text.bytes();
+        let Ok(len) = c_int::try_from(bytes.len()) else { return false; };
+        (bytes.as_ptr().cast(), len, Some(text.to_owned()))
+    };
+    owned.string.set(string);
+    params.bind(index, bytes, len, kind == LOB, 0)
+}
 }
 
 #[unsafe(no_mangle)]
