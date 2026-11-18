@@ -138,7 +138,7 @@ mod tests {
         let mut socket = SocketRecord::new();
         socket.fd = reader.as_raw_fd();
         socket.socket_type = 5; // SW_SOCK_UNIX_STREAM
-        let mut conn: ConnectionRecord = unsafe { core::mem::zeroed() };
+        let mut conn = ConnectionRecord::default();
         conn.fd.set(reader.as_raw_fd());
         let handle = Socket::new(&mut socket);
         let mut protocol = Protocol::EMPTY;

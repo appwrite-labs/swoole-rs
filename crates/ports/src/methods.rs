@@ -1014,8 +1014,7 @@ mod tests {
 
     #[test]
     fn destroy_http_request_frees_and_clears() {
-        // SAFETY: an all-zero record is a closed connection with no object.
-        let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
+        let mut conn = ConnectionRecord::default();
         let slot = swoole_rs_server::Connection::from(&mut conn);
         slot.hold_http_request(swoole_rs_http::request_new());
         destroy_http_request(slot);

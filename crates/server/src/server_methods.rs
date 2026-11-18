@@ -407,8 +407,7 @@ mod tests {
             "close ends the session actively, reset or not"
         );
 
-        // SAFETY: a zeroed record is a valid connection.
-        let mut conn: ConnectionRecord = unsafe { core::mem::zeroed() };
+        let mut conn = ConnectionRecord::default();
         conn.fd.set(22);
         conn.reactor_id.set(3);
         conn.server_fd.set(0x1_0005);
@@ -448,8 +447,7 @@ mod tests {
             unsafe { (core::mem::zeroed(), core::mem::zeroed()) };
         sock.kernel_nobufs = true;
         pipe.kernel_nobufs = true;
-        // SAFETY: as above.
-        let mut connections: [ConnectionRecord; 4] = unsafe { core::mem::zeroed() };
+        let mut connections: [ConnectionRecord; 4] = Default::default();
         let owned = swoole_rs_corebase::reactor::OwnedSocket::new(Box::new(sock));
         crate::Connection::from(&connections[3]).hold_socket(owned);
         connections[3].reactor_id.set(1);
