@@ -231,7 +231,7 @@ impl Handle {
     }
 
     /// `PQexec`, with the hook's waits.
-    fn exec(&self, query: &CStr) -> Option<PgResult> {
+    pub(crate) fn exec(&self, query: &CStr) -> Option<PgResult> {
         NonNull::new(crate::swoole_pgsql_exec(self.server, query.into())).map(PgResult)
     }
 

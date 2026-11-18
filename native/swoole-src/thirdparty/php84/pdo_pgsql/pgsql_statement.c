@@ -406,42 +406,10 @@ static int pgsql_stmt_fetch(pdo_stmt_t *stmt, enum pdo_fetch_orientation ori, ze
     pdo_pgsql_stmt *S = (pdo_pgsql_stmt *) stmt->driver_data;
 
     if (S->cursor_name) {
-        char *ori_str = NULL;
-        char *q = NULL;
         ExecStatusType status;
-
-        switch (ori) {
-        case PDO_FETCH_ORI_NEXT:
-            spprintf(&ori_str, 0, "NEXT");
-            break;
-        case PDO_FETCH_ORI_PRIOR:
-            spprintf(&ori_str, 0, "BACKWARD");
-            break;
-        case PDO_FETCH_ORI_FIRST:
-            spprintf(&ori_str, 0, "FIRST");
-            break;
-        case PDO_FETCH_ORI_LAST:
-            spprintf(&ori_str, 0, "LAST");
-            break;
-        case PDO_FETCH_ORI_ABS:
-            spprintf(&ori_str, 0, "ABSOLUTE " ZEND_LONG_FMT, offset);
-            break;
-        case PDO_FETCH_ORI_REL:
-            spprintf(&ori_str, 0, "RELATIVE " ZEND_LONG_FMT, offset);
-            break;
-        default:
+        if (!pdo_pgsql_fetch_cursor(S->H, &S->result, S->cursor_name, ori, offset)) {
             return 0;
         }
-
-        if (S->result) {
-            PQclear(S->result);
-            S->result = NULL;
-        }
-
-        spprintf(&q, 0, "FETCH %s FROM %s", ori_str, S->cursor_name);
-        efree(ori_str);
-        S->result = PQexec(pdo_pgsql_server(S->H), q);
-        efree(q);
         status = PQresultStatus(S->result);
 
         if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK) {

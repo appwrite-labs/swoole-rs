@@ -1,4 +1,4 @@
-//! PostgreSQL statement column types exposed by `PDOStatement::getColumnMeta`.
+//! PostgreSQL statement fetching and column metadata.
 use crate::driver::{Handle, Res};
 use pq_sys::Oid;
 use std::ffi::{CStr, c_int};
@@ -93,4 +93,43 @@ extern "C" fn pdo_pgsql_column_meta(handle: &Handle, oid: Oid, table: Oid, outpu
         Err(error) => { error.defer(); -1 }
     }
 }
+}
+
+/// Issue FETCH for a scrollable cursor. The driver names every cursor `pdo_crsr_%08x`.
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_fetch_cursor(
+    handle: &Handle,
+    result: &std::cell::Cell<Option<crate::PgResult>>,
+    cursor: Text<'_>,
+    orientation: swoole_rs_zend::sys::pdo_fetch_orientation,
+    offset: swoole_rs_zend::sys::zend_long,
+) -> bool {
+    use swoole_rs_zend::sys::{
+        pdo_fetch_orientation_PDO_FETCH_ORI_ABS as ABS,
+        pdo_fetch_orientation_PDO_FETCH_ORI_FIRST as FIRST,
+        pdo_fetch_orientation_PDO_FETCH_ORI_LAST as LAST,
+        pdo_fetch_orientation_PDO_FETCH_ORI_NEXT as NEXT,
+        pdo_fetch_orientation_PDO_FETCH_ORI_PRIOR as PRIOR,
+        pdo_fetch_orientation_PDO_FETCH_ORI_REL as REL,
+    };
+    let direction = match orientation {
+        NEXT => "NEXT",
+        PRIOR => "BACKWARD",
+        FIRST => "FIRST",
+        LAST => "LAST",
+        ABS => "ABSOLUTE",
+        REL => "RELATIVE",
+        _ => return false,
+    };
+    let mut query = if matches!(orientation, ABS | REL) {
+        swoole_rs_zend::message!("FETCH {direction} {offset} FROM ")
+    } else {
+        swoole_rs_zend::message!("FETCH {direction} FROM ")
+    };
+    query.push(cursor.get().to_bytes());
+    if let Some(previous) = result.take() {
+        crate::PQclear(previous);
+    }
+    result.set(handle.exec(query.as_cstr()));
+    true
 }
