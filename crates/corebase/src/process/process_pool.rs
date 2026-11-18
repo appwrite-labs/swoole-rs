@@ -586,6 +586,7 @@ pub struct RecvData<'a> {
 
 enum Payload<'a> {
     Lent(&'a [u8]),
+    Buffer(&'a mut crate::buffer::string::CppString),
     Owned(crate::buffer::string::OwnedString),
 }
 
@@ -614,6 +615,15 @@ impl<'a> RecvData<'a> {
         }
     }
 
+    /// The complete receive buffer, whose allocation a local worker may take.
+    #[must_use]
+    pub fn buffer(info: DataHead, buffer: &'a mut crate::buffer::string::CppString) -> Self {
+        Self {
+            info,
+            payload: Payload::Buffer(buffer),
+        }
+    }
+
     /// A message of `packet`, which the callback owns, its head's `len` the packet's
     /// length (at most `u32::MAX`).
     #[must_use]
@@ -639,6 +649,10 @@ impl<'a> RecvData<'a> {
         match &self.payload {
             // `new` keeps no more than `len`.
             Payload::Lent(data) => data,
+            Payload::Buffer(buffer) => buffer
+                .view()
+                .get(..self.info.len as usize)
+                .unwrap_or(buffer.view()),
             Payload::Owned(packet) => {
                 let bytes = packet.view();
                 bytes.get(..self.info.len as usize).unwrap_or(bytes)
@@ -655,9 +669,14 @@ impl<'a> RecvData<'a> {
     /// `move_packet()`: the packet this message owns, now the caller's, or `None`
     /// when its bytes are lent.
     pub fn take_packet(&mut self) -> Option<crate::buffer::string::OwnedString> {
+        if let Payload::Buffer(buffer) = &mut self.payload {
+            let packet = buffer.pop_owned(buffer.size())?;
+            self.payload = Payload::Lent(&[]);
+            return Some(packet);
+        }
         match core::mem::replace(&mut self.payload, Payload::Lent(&[])) {
             Payload::Owned(packet) => Some(packet),
-            lent @ Payload::Lent(_) => {
+            lent => {
                 self.payload = lent;
                 None
             }
@@ -2502,6 +2521,30 @@ mod owner_tests;
 mod tests {
     use super::*;
     use std::mem::offset_of;
+
+    #[test]
+    fn worker_can_take_the_receive_allocation_once() {
+        use crate::buffer::string::OwnedString;
+        let mut buffer = OwnedString::default();
+        buffer.alloc(64, None);
+        buffer.append(b"request");
+        buffer.set_offset(7);
+        let original = buffer.view().as_ptr();
+        let info = DataHead {
+            len: 7,
+            ..DataHead::default()
+        };
+        let mut recv = RecvData::buffer(info, &mut buffer);
+        assert_eq!(recv.payload(), b"request");
+        let packet = recv.take_packet().unwrap();
+        assert_eq!(packet.view().as_ptr(), original);
+        assert_eq!(packet.view(), b"request");
+        assert_eq!(recv.payload(), b"");
+        assert!(recv.take_packet().is_none());
+        assert!(buffer.is_empty());
+        buffer.append(b"next");
+        assert_eq!(buffer.view(), b"next");
+    }
 
     /// core-tests' `base.clamp`, over `max_package_size`'s clamp.
     #[test]

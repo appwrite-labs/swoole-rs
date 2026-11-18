@@ -502,9 +502,7 @@ pub(crate) fn close_connection(
         sock.edit(|s| s.ssl_quiet_shutdown = conn.peer_closed());
         tls::socket_ssl_close(*sock);
     }
-    if let Some(mut recv_buffer) = sock.edit(|s| s.recv_buffer.take()) {
-        recv_buffer.dispose();
-    }
+    drop(sock.edit(|s| s.recv_buffer.take()));
     if let Some(port) = port
         && port.open_http_protocol.get()
     {

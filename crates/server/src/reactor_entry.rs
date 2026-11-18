@@ -191,6 +191,34 @@ pub fn dispatch_data(
     server: view::Server<'_>,
     conn: crate::Connection<'_>,
     data: SendData<'_>,
+    port: Option<&crate::port_config::PortConfig>,
+) -> bool {
+    dispatch_input(server, conn, data, None, port)
+}
+
+/// Dispatch a complete receive buffer that a base worker can take without copying.
+#[cfg(feature = "upstream-symbols")]
+#[must_use]
+pub fn dispatch_buffer(
+    server: view::Server<'_>,
+    conn: crate::Connection<'_>,
+    mut head: swoole_rs_corebase::DataHead,
+    buffer: &mut swoole_rs_corebase::buffer::string::CppString,
+) -> bool {
+    if server.config().mode_ != crate::Mode::Base {
+        return dispatch_data(server, conn, SendData::new(head, buffer.view()), None);
+    }
+    head.len = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
+    dispatch_input(server, conn, SendData::empty(head), Some(buffer), None)
+}
+
+#[cfg(feature = "upstream-symbols")]
+fn dispatch_input(
+    server: view::Server<'_>,
+    conn: crate::Connection<'_>,
+    data: SendData<'_>,
+    buffer: Option<&mut swoole_rs_corebase::buffer::string::CppString>,
+    port: Option<&crate::port_config::PortConfig>,
 ) -> bool {
     use core::sync::atomic::Ordering::SeqCst;
     let state = server.state();
@@ -214,7 +242,7 @@ pub fn dispatch_data(
         fd: fd.into(),
         ..swoole_rs_corebase::DataHead::default()
     });
-    let port = server.port_of_server_fd(conn.server_fd());
+    let port = port.or_else(|| server.port_of_server_fd(conn.server_fd()));
     let mode = state.config_ref().mode_;
     let dispatched = if mode == crate::Mode::Process {
         crate::factory::dispatch(server, &mut task)
@@ -224,7 +252,7 @@ pub fn dispatch_data(
             // only a worker in the reader's own thread may act on.
             task.set_flags(head.flags & crate::base_factory::POP_PTR);
         }
-        crate::base_factory::dispatch(server, &mut task, mode == crate::Mode::Base)
+        crate::base_factory::dispatch_buffer(server, &mut task, mode == crate::Mode::Base, buffer)
     };
     if !dispatched {
         if len > 0 {

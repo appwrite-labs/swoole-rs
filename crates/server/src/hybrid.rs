@@ -343,6 +343,7 @@ pub(crate) mod tests {
     }
 
     thread_local! {
+        pub(crate) static BASE_PAYLOAD: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
         static CALLS: RefCell<Vec<Call>> = const { RefCell::new(Vec::new()) };
         static FAILING: core::cell::Cell<Option<Step>> = const { core::cell::Cell::new(None) };
     }
@@ -438,6 +439,7 @@ pub(crate) mod tests {
 
         fn base_pass(&self, _: Server<'_>, send: &crate::base_factory::SendData) {
             let info = send.info();
+            BASE_PAYLOAD.replace(send.payload().to_vec());
             hear(Call::BasePass(info.fd, info.kind, info.len));
         }
 

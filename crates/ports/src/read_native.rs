@@ -3,11 +3,10 @@
 //! connection, its socket and receive buffer, the port's protocol and the server's
 //! settings. Logs name the upstream function that wrote them.
 use core::ffi::CStr;
-use core::ptr;
 use core::sync::atomic::Ordering;
 
 use std::cell::Cell;
-use swoole_rs_corebase::buffer::string::{CppString, boxed_sized_string};
+use swoole_rs_corebase::buffer::string::{CppString, OwnedString};
 use swoole_rs_corebase::constants::{
     EventDataFlag, SW_BUFFER_SIZE_BIG, SW_HTTP_100_CONTINUE_PACKET, SW_HTTP_BAD_REQUEST_PACKET,
     SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET, SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
@@ -34,9 +33,10 @@ const SETTING_FRAME_SIZE: usize = 9 + 6 * 6;
 
 /// One readable event on a live connection, which only this reactor thread touches.
 struct Read<'a> {
-    /// The current buffer and the socket's receive buffer.
-    buffer: *mut CppString,
-    recv: *mut CppString,
+    /// The socket's receive buffer, initialized before reading.
+    recv: Box<OwnedString>,
+    /// Flags read with the buffer for a port that enters framing immediately.
+    framing_flags: Option<(u32, bool)>,
     /// The connection's request once made current, taken out of its slot until a
     /// dispatch or the read's end.
     request: Option<Box<HttpRequest>>,
@@ -72,10 +72,27 @@ pub(crate) fn on_read(
         return false;
     };
     let port = port.config();
+    let (recv, framing_flags) = socket.edit(|s| {
+        let flags = matches!(kind, Readable::Length | Readable::Eof).then(|| {
+            (
+                framing_recv::socket_flags(s, || framing_recv::paused(conn)),
+                s.skip_recv,
+            )
+        });
+        (s.recv_buffer.take(), flags)
+    });
+    let recv = recv.unwrap_or_else(|| {
+        let mut recv = Box::<OwnedString>::default();
+        recv.alloc(
+            SW_BUFFER_SIZE_BIG as usize,
+            server.config().recv_buffer_allocator.get(),
+        );
+        recv
+    });
     let mut read = Read {
-        buffer: ptr::null_mut(),
         request: None,
-        recv: ptr::null_mut(),
+        recv,
+        framing_flags,
         reactor,
         event: lent,
         socket: *socket,
@@ -98,6 +115,11 @@ pub(crate) fn on_read(
             read.conn.hold_http_request(request);
         }
     }
+    if read.recv.size() > 0 {
+        read.socket.edit(|s| {
+            s.recv_buffer.get_or_insert(read.recv);
+        });
+    }
     *event = read.event.get();
     ok
 }
@@ -108,6 +130,7 @@ impl<'a> Read<'a> {
     /// The session this read is on.
     fn session(&self) -> Session<'a> {
         Session {
+            port: Some(self.port),
             server: self.server,
             conn: self.conn,
             socket: self.socket,
@@ -119,13 +142,15 @@ impl<'a> Read<'a> {
     /// buffer for the payload and not copy it (`SW_EVENT_DATA_POP_PTR`). A smaller
     /// payload is cheaper to copy than to keep a whole buffer alive for.
     fn whole_buffer(&mut self, length: u64) -> bool {
-        let string = self.buffer();
-        let (len, size) = (string.len() as u64, string.size() as u64);
-        length >= size / 2
-            && length == len
-            && self.socket.read(|s| {
-                (s.recv_buffer.as_ref()).is_some_and(|held| ptr::eq(Box::as_ptr(held), self.buffer))
-            })
+        if self
+            .request
+            .as_deref_mut()
+            .and_then(HttpRequest::body)
+            .is_some()
+        {
+            return false;
+        }
+        length >= self.recv.size() as u64 / 2 && length == self.recv.len() as u64
     }
 
     /// `socket->removed`: out of the reactor, as a close leaves it.
@@ -135,28 +160,6 @@ impl<'a> Read<'a> {
 
     fn config(&self) -> &ServerConfig {
         self.server.config()
-    }
-
-    /// `serv->get_recv_buffer(socket)`.
-    fn recv_buffer(&self) -> *mut CppString {
-        let held = self
-            .socket
-            .edit(|s| s.recv_buffer.as_mut().map(Box::as_mut_ptr));
-        if let Some(held) = held {
-            return held;
-        }
-        let allocator = self.config().recv_buffer_allocator.get();
-        let made = boxed_sized_string(SW_BUFFER_SIZE_BIG as usize, allocator);
-        self.socket
-            .edit(|s| Box::as_mut_ptr(s.recv_buffer.insert(made)))
-    }
-
-    /// Makes the buffer the current request receives into current: its multipart
-    /// body's, if any, else the receive buffer.
-    #[inline]
-    fn use_request_buffer(&mut self) {
-        let recv = self.recv;
-        self.buffer = self.request().body().map_or(recv, ptr::from_mut);
     }
 
     fn send_bytes(&self, packet: &[u8]) {
@@ -174,8 +177,9 @@ impl<'a> Read<'a> {
         } else {
             framing_recv::Owner::Plain(&self.port.protocol)
         };
+        let initial = self.framing_flags.take();
         let buffer = Lent::new(self.buffer());
-        framing_recv::receive(socket, owner, buffer, mode, packages) != Status::Err
+        framing_recv::receive(socket, owner, buffer, mode, packages, initial) != Status::Err
     }
 }
 
@@ -225,19 +229,13 @@ impl Connection for Read<'_> {
     }
 
     #[inline]
-    fn use_recv_buffer(&mut self) -> bool {
-        self.buffer = self.recv_buffer();
-        !self.buffer.is_null()
-    }
-
-    #[inline]
     fn release(&mut self, if_empty: bool) -> bool {
-        let released = self.socket.edit(|s| {
-            s.recv_buffer.take_if(|held| {
-                (!if_empty || held.is_empty()) && held.size() > SW_BUFFER_SIZE_BIG as usize * 2
-            })
-        });
-        released.map(|mut held| held.dispose()).is_some()
+        if (!if_empty || self.recv.is_empty()) && self.recv.size() > SW_BUFFER_SIZE_BIG as usize * 2
+        {
+            self.recv.dispose();
+            return true;
+        }
+        false
     }
 
     #[inline(always)]
@@ -303,10 +301,19 @@ impl Connection for Read<'_> {
             false
         } else {
             let session = self.session();
-            let bytes = self.buffer().view();
-            let length = usize::try_from(length).unwrap_or(usize::MAX);
-            let data = bytes.get(..length).unwrap_or(bytes);
-            session.task(swoole_rs_server::SendData::new(head, data))
+            if head.flags != 0 {
+                swoole_rs_server::reactor_entry::dispatch_buffer(
+                    session.server,
+                    session.conn,
+                    head,
+                    &mut self.recv,
+                )
+            } else {
+                let bytes = self.buffer().view();
+                let length = usize::try_from(length).unwrap_or(usize::MAX);
+                let data = bytes.get(..length).unwrap_or(bytes);
+                session.task(swoole_rs_server::SendData::new(head, data))
+            }
         };
         if dispatch == Dispatch::Task {
             return dispatched;
@@ -377,14 +384,17 @@ impl Connection for Read<'_> {
 
     fn serve_static(&mut self) -> bool {
         let (server, session, socket) = (self.server, self.conn.session_id(), self.socket);
-        static_select(server, self.request(), session, socket)
+        self.request.as_deref().is_some_and(|request| {
+            static_select(server, request, self.recv.view(), session, socket)
+        })
     }
 
     #[inline]
     fn buffer(&mut self) -> &mut CppString {
-        // SAFETY: the current buffer is live once a receive buffer or request made it
-        // current; only calls on `self`, which the borrow excludes, touch it.
-        unsafe { &mut *self.buffer }
+        if let Some(body) = self.request.as_deref_mut().and_then(HttpRequest::body) {
+            return body;
+        }
+        &mut self.recv
     }
 
     fn reduce(&mut self, offset: u64) {
@@ -407,8 +417,6 @@ impl Connection for Read<'_> {
             let held = self.conn.take_http_request();
             self.request = Some(held.unwrap_or_else(swoole_rs_http::request_new));
         }
-        self.recv = self.recv_buffer();
-        self.use_request_buffer();
     }
 
     #[inline]
@@ -428,27 +436,18 @@ impl Connection for Read<'_> {
 
     #[inline]
     fn parse<R>(&mut self, parse: impl FnOnce(&mut HttpRequest, &mut CppString) -> R) -> R {
-        let socket = self.socket;
-        let request = self.request();
-        // The receive buffer `init_request` made the socket hold; parsing calls nothing
-        // that reaches the socket.
-        socket.edit(|s| {
-            let mut none = CppString::EMPTY;
-            parse(request, s.recv_buffer.as_deref_mut().unwrap_or(&mut none))
-        })
+        let request = self.request.get_or_insert_with(swoole_rs_http::request_new);
+        parse(request, &mut self.recv)
     }
 
     fn init_multipart(&mut self) -> bool {
         let dir = self.server.upload_tmp_dir();
         let max = self.config().upload_max_filesize.get();
-        let ok = self.parse(|r, b| r.init_multipart_parser(b, dir.as_bytes(), max));
-        self.use_request_buffer();
-        ok
+        self.parse(|r, b| r.init_multipart_parser(b, dir.as_bytes(), max))
     }
 
     fn finish_multipart(&mut self) {
         self.request().destroy_multipart_parser();
-        self.use_request_buffer();
     }
 
     fn client(&mut self) -> (i64, String, i64) {

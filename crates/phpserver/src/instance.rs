@@ -124,7 +124,7 @@ pub fn php_swoole_server_get_callback(
 /// `php_swoole_get_recv_data`: a request's payload, taking the message bus's
 /// packet or the connection's receive buffer when it holds them.
 #[must_use]
-pub fn php_swoole_get_recv_data(serv: view::Server<'_>, req: &mut RecvData<'_>) -> Owned {
+pub fn php_swoole_get_recv_data(_serv: view::Server<'_>, req: &mut RecvData<'_>) -> Owned {
     let (flags, length) = (
         EventDataFlag::from_bits(req.info().flags),
         req.info().len as usize,
@@ -132,11 +132,10 @@ pub fn php_swoole_get_recv_data(serv: view::Server<'_>, req: &mut RecvData<'_>) 
     if length == 0 {
         return Owned::string(ZString::empty());
     }
-    let buffer = if flags.contains(EventDataFlag::SW_EVENT_DATA_OBJ_PTR) {
+    let buffer = if flags.contains(EventDataFlag::SW_EVENT_DATA_OBJ_PTR)
+        || flags.contains(EventDataFlag::SW_EVENT_DATA_POP_PTR)
+    {
         req.take_packet()
-    } else if flags.contains(EventDataFlag::SW_EVENT_DATA_POP_PTR) {
-        serv.by_session(req.info().fd)
-            .and_then(view::pop_recv_buffer)
     } else {
         None
     };
