@@ -348,25 +348,35 @@ pub fn swr_v1_reactor_handlers_set_default(
 mod tests {
     use super::*;
 
+    thread_local! {
+        /// The handler that ran last: 0 for none.
+        static RAN: Cell<usize> = const { Cell::new(0) };
+    }
+
     fn one(_: Running<'_>, _: &mut Event) -> bool {
+        RAN.set(1);
         true
     }
     fn two(_: Running<'_>, _: &mut Event) -> bool {
+        RAN.set(2);
         true
     }
     fn three(_: Running<'_>, _: &mut Event) -> bool {
+        RAN.set(3);
         true
     }
 
-    /// Which of the handlers above `handler` is: 0 for none.
+    /// Which of the handlers above `handler` is, by running it: 0 for none.
     fn call(handler: Option<Handler>) -> usize {
-        let all: [Handler; 3] = [one, two, three];
-        handler.map_or(0, |h| {
-            1 + all
-                .iter()
-                .position(|&known| std::ptr::fn_addr_eq(known, h))
-                .unwrap()
-        })
+        RAN.set(0);
+        if let Some(handler) = handler {
+            let mut event = Event::of(0, 0, 0, None);
+            assert!(handler(
+                unsafe { Running::new(std::ptr::null_mut()) },
+                &mut event
+            ));
+        }
+        RAN.get()
     }
 
     #[test]
