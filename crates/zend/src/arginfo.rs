@@ -15,12 +15,13 @@ use std::{
 };
 
 /// A stub's `zend_internal_arg_info[N]`: the return slot, then each parameter,
-/// built only from [`Slot`]s, so each pointer in it is null or a static C string
-/// its type bits agree with.
+/// built from [`Slot`]s using the same field encodings as the Zend macros.
 #[repr(transparent)]
 pub struct ArgInfo<const N: usize>([zend_internal_arg_info; N]);
 
-// SAFETY: each immutable zend_internal_arg_info points only to static strings or null.
+// SAFETY: zend_internal_arg_info rows are immutable. The return slot encodes the required
+// argument count in its name field as an integer that Zend never dereferences.
+// The string pointers used by the other fields are static or null.
 unsafe impl<const N: usize> Sync for ArgInfo<N> {}
 
 impl<const N: usize> ArgInfo<N> {
