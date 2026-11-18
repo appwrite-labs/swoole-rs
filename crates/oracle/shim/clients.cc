@@ -135,7 +135,7 @@ int swr_oracle_clients_url(const char *data, size_t length, bool accept, int *ty
     Address address;
     // A sentinel no SocketType holds, copied as bytes: loading it as the enum is UB.
     const int unset = 87;
-    static_assert(sizeof(address.type) == sizeof(unset));
+    static_assert(sizeof(address.type) == sizeof(unset), "address type must fit the unset sentinel");
     memcpy(&address.type, &unset, sizeof unset);
     address.accept = accept;
     logs = 0;
