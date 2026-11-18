@@ -201,9 +201,14 @@ const php_stream_ops swoole_runtime_socket_ops = {
     socket_cast, socket_stat, socket_set_option,
 };
 
-int swr_zend_try_socket_stream_alloc(const char *persistent, php_stream **stream) {
+static const php_stream_ops unix_socket_ops = {
+    socket_write, socket_read, socket_close, socket_flush, "unix_socket", NULL,
+    socket_cast, socket_stat, socket_set_option,
+};
+
+int swr_zend_try_socket_stream_alloc(const char *persistent, bool unix_stream, php_stream **stream) {
     volatile int bailed = 0;
-    SWR_ZEND_TRY { *stream = php_stream_alloc(&swoole_runtime_socket_ops, NULL, persistent, "r+"); }
+    SWR_ZEND_TRY { *stream = php_stream_alloc(unix_stream ? &unix_socket_ops : &swoole_runtime_socket_ops, NULL, persistent, "r+"); }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }

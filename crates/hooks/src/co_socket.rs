@@ -757,6 +757,31 @@ fn domain_and_type(socket_type: c_int, domain: &mut c_int, kind: &mut c_int) {
     }
 }
 
+fn release_descriptor(network: Socket<'_>) {
+    let fd = network.read(|record| record.fd);
+    if fd < 0 {
+        return;
+    }
+    if !network.read(|record| record.removed) {
+        _ = swoole_rs_corebase::reactor::event_api::event_del(network);
+    }
+    if !network.edit(SocketFields::release) {
+        swoole_rs_corebase::log::sys_warning(c"close_fd", format_args!("close({fd}) failed"));
+    }
+}
+
+impl Co {
+    /// Release the transport while the PHP socket object still owns its record.
+    pub fn close_fd(self) {
+        self.with_network(|network| {
+            if !network.read(|record| record.ssl().is_null()) {
+                socket_ssl_close(network);
+            }
+            release_descriptor(network);
+        });
+    }
+}
+
 /// `~Socket()`: the destructor callback if it has not run, the buffers, the
 /// `network::Socket` (its TLS session closed first), then the bound state and the
 /// metadata, whose TLS context outlived the session. The buffers and the socket are
@@ -778,6 +803,9 @@ pub extern "C" fn swr_v1_hook_co_socket_release(socket: &mut CoSocket) {
     if let Some(network) = socket.socket.take() {
         if !network.read(|record| record.ssl().is_null()) {
             socket_ssl_close(*network);
+        }
+        if socket.is_closed() || network.read(|record| record.output.close_wait) {
+            release_descriptor(*network);
         }
         drop(Released(*network));
     }

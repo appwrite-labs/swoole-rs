@@ -1564,7 +1564,7 @@ fn sendfile() {
 
         let mut data = vec![0_u8; 250_000];
         let sock = Sock::with_fd(pairs[1], SW_SOCK_UNIX_STREAM);
-        let result = sock.read(&mut data);
+        let result = sock.recv_all(data.as_mut_ptr(), data.len());
         sock.close();
         assert!(result > 0);
     });

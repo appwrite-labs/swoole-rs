@@ -90,6 +90,7 @@ unsafe extern "C" {
     /// is set, and each reads a null one as closed.
     safe fn swr_zend_try_socket_stream_alloc(
         persistent: Option<Text<'_>>,
+        unix_stream: bool,
         stream: &mut Option<Fresh>,
     ) -> c_int;
     /// `php_network_populate_name_from_sockaddr` of the first `size` bytes of
@@ -244,9 +245,13 @@ impl Fresh {
 
 /// `php_stream_alloc(ops, abstract, persistent_id, "r+")` of `socket` with these
 /// operations; none (the socket freed) if it fails.
-fn alloc(socket: Rc<Socket>, persistent_id: Option<Text<'_>>) -> Result<Option<Fresh>, Bailout> {
+fn alloc(
+    socket: Rc<Socket>,
+    persistent_id: Option<Text<'_>>,
+    unix_stream: bool,
+) -> Result<Option<Fresh>, Bailout> {
     let mut stream: Option<Fresh> = None;
-    if swr_zend_try_socket_stream_alloc(persistent_id, &mut stream) != 0 {
+    if swr_zend_try_socket_stream_alloc(persistent_id, unix_stream, &mut stream) != 0 {
         return Err(Bailout);
     }
     if let Some(fresh) = &stream {
@@ -845,7 +850,7 @@ fn accept(
     if nodelay {
         client.set_nodelay(1);
     }
-    let connection = alloc(Rc::new(client), None)?;
+    let connection = alloc(Rc::new(client), None, false)?;
     if let Some(connection) = &connection {
         // The new stream, which names no context yet, counts its reference.
         connection.stream().fields(|client| {
@@ -1063,7 +1068,8 @@ pub(crate) extern "C" fn transport_factory_body(
             };
             socket.set_zero_copy();
             let socket = Rc::new(socket);
-            let Some(stream) = alloc(Rc::clone(&socket), persistent)? else {
+            let Some(stream) = alloc(Rc::clone(&socket), persistent, kind == kind::UNIX_STREAM)?
+            else {
                 return Ok(ptr::null_mut());
             };
             if !ssl_set_options(&socket, context)? {
@@ -1122,7 +1128,7 @@ fn stream_from_socket(
     if seconds > 0 {
         socket.set_timeout(seconds.c_cast::<f64>(), TimeoutKind::ALL);
     }
-    let stream = alloc(Rc::new(socket), None)?;
+    let stream = alloc(Rc::new(socket), None, false)?;
     if let Some(stream) = &stream {
         stream.stream().fields(|stream| {
             stream.flags |= PHP_STREAM_FLAG_AVOID_BLOCKING;
