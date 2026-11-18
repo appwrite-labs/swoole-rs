@@ -187,6 +187,7 @@ pub use crate::DataHead as EventHead;
 const IPC_PAYLOAD: usize = SW_IPC_MAX_SIZE as usize - size_of::<DataHead>();
 
 /// `swoole::EventData`: the header, then the payload one pipe message holds.
+// `repr(C)`: C's `EventData` (`native/corebase/swoole.h`): a head, then its payload.
 #[repr(C)]
 pub struct EventData {
     head: DataHead,

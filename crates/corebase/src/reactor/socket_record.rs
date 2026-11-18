@@ -18,6 +18,7 @@ use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// `network::Socket`'s TLS state group, in the layout `swoole_rs_corebase::tls` works on.
+// `repr(C)`: a group C's socket record embeds (`native/reactor/swoole_rs_socket.h`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SocketTlsState {

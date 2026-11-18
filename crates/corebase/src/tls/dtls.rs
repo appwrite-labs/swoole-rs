@@ -162,6 +162,7 @@ pub fn swr_v1_tls_dtls_listen(owner: &DtlsSession, result: Result<bool, SslFailu
 /// A BIO of the table `methods` makes, which OpenSSL lends each callback for the
 /// call. It is zero-sized, so a reference to it claims none of the bytes OpenSSL
 /// changes behind it.
+// `repr(C)`: OpenSSL's opaque type, named behind references in `extern` blocks.
 #[repr(C)]
 struct DtlsBio {
     _opaque: [u8; 0],

@@ -27,6 +27,7 @@ pub(super) struct Cursor {
 }
 
 /// The first entry, as C++'s `Buffer::typed_front()` returns it.
+// `repr(C)`: the layout the typed-queue tests assert.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct Front {

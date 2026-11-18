@@ -43,6 +43,7 @@ type Owner<T> = core::cell::Cell<Option<Box<T>>>;
 /// Every field but the three owners the record lends in place (`registry`, `queue`
 /// and `message_box`) is a cell or an atomic, so a handle writes it through
 /// `&PoolRecord` while other loans of the record are live.
+// `repr(C)`: `native/process/swoole_rs_process_views.h` mirrors it for the system fixture.
 #[repr(C)]
 pub struct PoolRecord {
     pub running: Cell<bool>,

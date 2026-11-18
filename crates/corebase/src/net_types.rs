@@ -15,6 +15,7 @@ pub union AddressStorage {
 }
 
 /// `network::Address`: the storage, its length and its `swSocketType`.
+// `repr(C)`: C's `network::Address` inside the socket record (`native/reactor/swoole_rs_socket.h`).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SocketAddress {
