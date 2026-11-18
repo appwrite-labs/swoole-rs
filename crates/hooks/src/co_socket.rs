@@ -1543,16 +1543,29 @@ mod tests {
         new(&mut socket, New::ByType, 0, 1, 0, 0);
         let first = socket.socket_ptr();
         let co = unsafe { Co::new(&raw mut *socket) };
-        // `reinit` inside `with_network`: the old record stays live for the loan,
-        // and is freed when it ends.
-        let (swapped, old_kind) = co
+        // The socket a descriptor names, or none once it is closed: freeing the old
+        // record (`free_network`, with no reactor) closes its descriptor, and a reused
+        // number names another socket.
+        let inode = |fd: c_int| {
+            let mut stat = MaybeUninit::<libc::stat>::uninit();
+            (unsafe { libc::fstat(fd, stat.as_mut_ptr()) } == 0)
+                .then(|| unsafe { stat.assume_init() }.st_ino)
+        };
+        // `reinit` inside `with_network`: the old record stays live for the loan, and
+        // is freed when it ends. Only its descriptor is looked at after the swap.
+        let (swapped, old) = co
             .with_network(|old| {
+                let (fd, kind) = old.read(|record| (record.fd, record.info.kind));
+                let before = inode(fd);
                 let swapped = reinit(co, 3) && co.record().socket_ptr() != first;
-                (swapped, old.read(|record| record.info.kind))
+                assert!(before.is_some() && inode(fd) == before, "kept for the loan");
+                (swapped, (fd, kind, before))
             })
             .unwrap();
+        let (fd, old_kind, before) = old;
         assert!(swapped);
         assert_eq!(old_kind, 1);
+        assert_ne!(inode(fd), before, "freed once the loan ended");
         assert_eq!(
             (socket.kind.get(), socket.sock_domain.get()),
             (3, libc::AF_INET6)
