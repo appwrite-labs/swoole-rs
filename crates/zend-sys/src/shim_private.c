@@ -49,8 +49,10 @@ zend_object *swr_zend_object_deny(zend_class_entry *ce, bool *bailed) {
 int swr_zend_try_facade_callable_frame(zval *value, zend_execute_data *frame, zend_fcall_info_cache *cache,
                                        bool *result) {
     volatile int bailed = 0;
-    zend_object *object = Z_TYPE(frame->This) == IS_OBJECT ? Z_OBJ(frame->This) : NULL;
-    SWR_ZEND_TRY { *result = zend_is_callable_at_frame(value, object, frame, 0, cache, NULL); }
+    SWR_ZEND_TRY {
+        zend_object *object = Z_TYPE(frame->This) == IS_OBJECT ? Z_OBJ(frame->This) : NULL;
+        *result = zend_is_callable_at_frame(value, object, frame, 0, cache, NULL);
+    }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
