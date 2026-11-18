@@ -43,8 +43,8 @@ pub use call::{Call, CallFrame, Entered, Invalid, ReturnSlot, Returned};
 pub use callable::{Callable, Parsed};
 pub use class::{Class, ClassEntry, Declared, deny_unset, lookup_class};
 pub use descriptor::{
-    FatalError, StreamContext, contain, contain_with, fatal_error, last_fatal_error, memory_usage,
-    pause_shutdown, restore_shutdown, with_unlimited_stack,
+    FatalError, StreamContext, StreamSocket, contain, contain_with, fatal_error, last_fatal_error,
+    memory_usage, pause_shutdown, restore_shutdown, with_unlimited_stack,
 };
 pub use error::{
     E_ERROR, E_WARNING, Message, report, throw_error, throw_trapped, type_error, type_name,

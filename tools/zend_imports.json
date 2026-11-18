@@ -2,8 +2,6 @@
   "crates/pgsql/src/pdo.rs:swr_zend_pdo_driver_data": "shim_pdo.c: reads pdo_dbh_t.driver_data; no callbacks.",
   "crates/pgsql/src/pdo.rs:swr_zend_pdo_forget_persistent": "shim_pdo.c: nulls the resource pointer before deleting its persistent-list entry, so PDO cannot close the handle again.",
   "crates/phpclients/src/multicast.rs:swr_zend_gethostbyname4": "shim_socket.c: PHP hostname lookup copies an IPv4 address; no user stream or PHP callback.",
-  "crates/phpclients/src/socket_options.rs:swr_zend_stream_socketd": "shim_socket.c: SWR_ZEND_TRY encloses resource lookup and php_stream_cast.",
-  "crates/phpclients/src/socket_options.rs:swr_zend_stream_unbuffer": "socket_options.rs import: contain_with encloses stream_set_option and any user-wrapper callback.",
   "crates/phpcoroutines/src/classes.rs:swr_zend_autoload_forget": "shim_coroutine.c: deletes the recursion-guard marker from EG(in_autoload), not a user value.",
   "crates/phpcoroutines/src/classes.rs:swr_zend_autoload_try": "shim_coroutine.c: SWR_ZEND_TRY encloses the autoload handler.",
   "crates/phpcoroutines/src/classes.rs:swr_zend_coroutine_opcodes": "shim_coroutine.c: installs handler pointers without invoking them.",

@@ -10,6 +10,13 @@ use std::ffi::{CStr, CString, c_int, c_void};
 use std::{marker::PhantomData, ptr, ptr::NonNull};
 
 unsafe extern "C" {
+    /// The trapped cast writes the stream and descriptor to local output slots.
+    safe fn swr_zend_stream_socketd(
+        value: &Value,
+        stream: &mut Option<NonNull<crate::sys::php_stream>>,
+        fd: &mut c_int,
+    ) -> c_int;
+
     /// `php_stream_from_zval_no_verify`: the stream a resource zval names, or
     /// null for any other value or resource. It reads the zval, the resource's
     /// type and the two stream type numbers PHP registers at startup.
@@ -82,7 +89,41 @@ impl<'a> StreamContext<'a> {
     }
 }
 
+/// Outcome of casting a PHP resource with `PHP_STREAM_AS_SOCKETD`.
+pub enum StreamSocket {
+    Descriptor(c_int),
+    InvalidResource,
+    CastFailed,
+}
+
 impl Value {
+    /// Cast the resource to a socket descriptor, preserving Zend's resource error.
+    /// # Errors
+    /// The stream wrapper bailed out during the cast.
+    pub fn stream_socket(&self) -> Result<StreamSocket, Bailout> {
+        let mut stream = None;
+        let mut fd = -1;
+        match swr_zend_stream_socketd(self, &mut stream, &mut fd) {
+            0 => Ok(StreamSocket::Descriptor(fd)),
+            2 => Err(Bailout),
+            _ if stream.is_none() => Ok(StreamSocket::InvalidResource),
+            _ => Ok(StreamSocket::CastFailed),
+        }
+    }
+
+    /// Disable stream read buffering, trapping a user stream wrapper's bailout.
+    /// # Errors
+    /// The stream wrapper bailed out while changing the read buffer.
+    pub fn unbuffer_stream(&self) -> Result<(), Bailout> {
+        contain_with(|| {
+            unsafe extern "C" {
+                // Only called inside contain_with, which traps the wrapper's bailout.
+                safe fn swr_zend_stream_unbuffer(value: &Value);
+            }
+            swr_zend_stream_unbuffer(self);
+        })
+    }
+
     /// `instanceof_function(Z_OBJCE_P(value), class)`: false for a non-object or
     /// a class not registered.
     #[must_use]
