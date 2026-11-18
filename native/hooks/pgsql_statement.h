@@ -49,12 +49,6 @@ struct pdo_pgsql_lob_self {
 };
 
 PGconn *pdo_pgsql_server(pdo_pgsql_db_handle *H);
-#if PHP_VERSION_ID >= 80500
-php_stream *pdo_pgsql_create_lob_stream(zend_object *dbh, int lfd, Oid oid);
-#else
-php_stream *pdo_pgsql_create_lob_stream(zval *dbh, int lfd, Oid oid);
-#endif
-
 extern const php_stream_ops pdo_pgsql_lob_stream_ops;
 
 bool pdo_pgsql_bind_oid(void *params, size_t index, Oid oid);
@@ -71,7 +65,7 @@ bool pdo_pgsql_send_statement(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **resul
 void pdo_pgsql_close_cursor(pdo_pgsql_db_handle *H, const char *cursor);
 bool pdo_pgsql_open_cursor(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *cursor, bool *prepared, const char *sql);
 bool pdo_pgsql_fetch_row(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *cursor, unsigned int orientation, zend_long offset, int *row, bool *running);
-void pdo_pgsql_scalar_column(Oid oid, struct iovec bytes, zval *output);
+bool pdo_pgsql_read_column(pdo_stmt_t *stmt, pdo_pgsql_db_handle *H, PGresult *result, int row, int column, enum pdo_param_type *type, zval *output);
 struct pdo_column_data;
 bool pdo_pgsql_describe_column(PGresult *result, int colno, struct pdo_column_data *column);
 int pdo_pgsql_column_meta(pdo_pgsql_db_handle *H, PGresult *result, int colno, zval *output);

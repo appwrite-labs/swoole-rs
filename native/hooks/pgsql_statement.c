@@ -41,51 +41,31 @@ static int pdo_pgsql_stmt_fetch(pdo_stmt_t *stmt, enum pdo_fetch_orientation ori
     return pdo_pgsql_fetch_row(stmt->dbh, stmt, &S->result, S->cursor_name, ori, offset, &S->current_row, running);
 }
 
-/* PDO returns bytea columns as read-only memory streams and OIDs explicitly
- * bound as LOBs as live large-object streams, both owned by Zend. */
-static int pdo_pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type) {
-    pdo_pgsql_stmt *S = stmt->driver_data;
-    int row = S->current_row - 1;
-    if (!S->result) {
-        return 0;
+/* libpq owns the decoded bytes; Zend's memory stream retains the copied string. */
+bool pdo_pgsql_bytea_stream(const char *text, zval *output) {
+    size_t len;
+    unsigned char *decoded = PQunescapeBytea((const unsigned char *)text, &len);
+    if (!decoded) {
+        return false;
     }
-    if (PQgetisnull(S->result, row, colno)) {
-        ZVAL_NULL(result);
-        return 1;
-    }
-    Oid kind = PQftype(S->result, colno);
-    char *text = PQgetvalue(S->result, row, colno);
-    php_stream *stream;
-    if (kind == 17) { /* bytea */
-        size_t len;
-        unsigned char *decoded = PQunescapeBytea((unsigned char *)text, &len);
-        if (!decoded) {
-            return 0;
-        }
-        zend_string *bytes = zend_string_init((char *)decoded, len, 0);
-        PQfreemem(decoded);
-        stream = php_stream_memory_open(TEMP_STREAM_READONLY, bytes);
-        zend_string_release(bytes);
-    } else if (kind == 26 && type && *type == PDO_PARAM_LOB) {
-        Oid oid = (Oid)strtoul(text, NULL, 10);
-        int fd = lo_open(pdo_pgsql_server(S->H), oid, INV_READ);
-        if (fd < 0) {
-            return 0;
-        }
-#if PHP_VERSION_ID >= 80500
-        stream = pdo_pgsql_create_lob_stream(stmt->database_object_handle, fd, oid);
-#else
-        stream = pdo_pgsql_create_lob_stream(&stmt->database_object_handle, fd, oid);
-#endif
-    } else {
-        pdo_pgsql_scalar_column(kind, (struct iovec){text, PQgetlength(S->result, row, colno)}, result);
-        return 1;
-    }
+    zend_string *bytes = zend_string_init((char *)decoded, len, 0);
+    PQfreemem(decoded);
+    php_stream *stream = php_stream_memory_open(TEMP_STREAM_READONLY, bytes);
+    zend_string_release(bytes);
     if (!stream) {
-        return 0;
+        return false;
     }
-    php_stream_to_zval(stream, result);
-    return 1;
+    php_stream_to_zval(stream, output);
+    return true;
+}
+
+static int pdo_pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *output, enum pdo_param_type *type) {
+    pdo_pgsql_stmt *S = stmt->driver_data;
+    return pdo_pgsql_read_column(stmt, S->H, S->result, S->current_row - 1, colno, type, output);
+}
+
+struct iovec pdo_pgsql_column_bytes(PGresult *result, int row, int column) {
+    return (struct iovec){PQgetvalue(result, row, column), PQgetlength(result, row, column)};
 }
 
 static int pdo_pgsql_stmt_describe(pdo_stmt_t *stmt, int colno) {

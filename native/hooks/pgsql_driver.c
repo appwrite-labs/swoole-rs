@@ -56,13 +56,7 @@ static void replace_notice_callback(pdo_pgsql_db_handle *handle, zend_fcall_info
 void pdo_pgsql_handle_closer(pdo_dbh_t *dbh) {
 	pdo_pgsql_db_handle *H = (pdo_pgsql_db_handle *) dbh->driver_data;
 	if (H) {
-		HashTable **streams = pdo_pgsql_lob_streams(H);
-		if (*streams) {
-			pdo_pgsql_close_lob_streams(dbh);
-			zend_hash_destroy(*streams);
-			pefree(*streams, dbh->is_persistent);
-			*streams = NULL;
-		}
+		pdo_pgsql_close_lob_streams(dbh);
 #if PHP_VERSION_ID >= 80400
 		replace_notice_callback(H, NULL);
 #endif

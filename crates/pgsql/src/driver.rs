@@ -24,6 +24,7 @@ use std::{
     ptr::{self, NonNull},
 };
 use swoole_rs_corebase::{
+    CellExt,
     lent::{Count, In, Out, lend_in, lend_out},
     sys::Text,
 };
@@ -66,9 +67,8 @@ pub struct Handle {
     disable_prepares: Cell<bool>,
     /// PHP 8.5's `default_fetching_laziness`.
     lazy_fetch: Cell<bool>,
-    /// The C side's own state, which Rust never reads: the open LOB streams'
-    /// table, the notice callback (8.4+) and the running unbuffered statement (8.5).
-    lob_streams: Cell<*mut c_void>,
+    /// Zend allocates resource IDs in creation order. Each stream unregisters on close.
+    lob_streams: Cell<Vec<(zend_long, NonNull<c_void>)>>,
     notice_callback: Cell<*mut c_void>,
     running_stmt: Cell<*mut c_void>,
 }
@@ -94,17 +94,17 @@ impl Escaped {
 unsafe extern "C" {
     safe fn PQnfields(res: Res<'_>) -> c_int;
     safe fn PQntuples(res: Res<'_>) -> c_int;
-    safe fn PQgetisnull(res: Res<'_>, row: c_int, column: c_int) -> c_int;
+    pub(crate) safe fn PQgetisnull(res: Res<'_>, row: c_int, column: c_int) -> c_int;
     /// A field of an error result, live as long as the result.
     safe fn PQresultErrorField<'a>(res: Res<'a>, field: c_int) -> Option<Text<'a>>;
     safe fn PQcmdTuples<'a>(res: Res<'a>) -> Text<'a>;
     /// A text value, live as long as the result; none out of range.
-    safe fn PQgetvalue<'a>(res: Res<'a>, row: c_int, column: c_int) -> Option<Text<'a>>;
+    pub(crate) safe fn PQgetvalue<'a>(res: Res<'a>, row: c_int, column: c_int) -> Option<Text<'a>>;
     safe fn PQtransactionStatus(conn: Conn) -> PGTransactionStatusType;
     safe fn PQputCopyData(conn: Conn, data: In<'_, u8>, length: Count<'_, c_int>) -> c_int;
     safe fn PQputCopyEnd(conn: Conn, error: Option<Text<'_>>) -> c_int;
     safe fn lo_creat(conn: Conn, mode: c_int) -> pq_sys::Oid;
-    safe fn lo_open(conn: Conn, oid: pq_sys::Oid, mode: c_int) -> c_int;
+    pub(crate) safe fn lo_open(conn: Conn, oid: pq_sys::Oid, mode: c_int) -> c_int;
     safe fn lo_unlink(conn: Conn, oid: pq_sys::Oid) -> c_int;
     safe fn PQprotocolVersion(conn: Conn) -> c_int;
     safe fn PQbackendPID(conn: Conn) -> c_int;
@@ -213,7 +213,7 @@ impl Handle {
             emulate_prepares: Cell::new(false),
             disable_prepares: Cell::new(false),
             lazy_fetch: Cell::new(false),
-            lob_streams: Cell::new(ptr::null_mut()),
+            lob_streams: Cell::default(),
             notice_callback: Cell::new(ptr::null_mut()),
             running_stmt: Cell::new(ptr::null_mut()),
         }
@@ -386,12 +386,26 @@ fn raise(
 /// the export's boundary.
 fn close_lob_streams(dbh: &Dbh) {
     unsafe extern "C" {
-        /// Close the handle's open LOB streams. Closing a stream may run PHP code (a
-        /// user filter), so it is declared here, where the one call is inside
-        /// `zend_try`.
-        safe fn pdo_pgsql_close_lob_streams(dbh: &Dbh);
+        safe fn pdo_pgsql_close_resource(resource: NonNull<c_void>);
     }
-    swoole_rs_zend::bailout::defer(contain_with(|| pdo_pgsql_close_lob_streams(dbh)));
+    let Some(handle) = handle(dbh) else { return };
+    let mut before = None;
+    loop {
+        let next = handle.lob_streams.with_taken(|streams| {
+            let end = before.map_or(streams.len(), |id| {
+                streams.partition_point(|&(key, _)| key < id)
+            });
+            end.checked_sub(1)
+                .and_then(|index| streams.get(index))
+                .copied()
+        });
+        let Some((id, resource)) = next else { break };
+        before = Some(id);
+        if let Err(bailout) = contain_with(|| pdo_pgsql_close_resource(resource)) {
+            bailout.defer();
+            break;
+        }
+    }
 }
 
 /// `pdo_pgsql_transaction_cmd`.
@@ -919,7 +933,7 @@ fn end_copy_in(dbh: &Dbh) -> bool {
 }
 
 // Access flags from libpq/libpq-fs.h.
-const INV_READ: c_int = 0x40000;
+pub(crate) const INV_READ: c_int = 0x40000;
 const INV_WRITE: c_int = 0x20000;
 
 fn pgsql_fatal_error(dbh: &Dbh, state: Option<&CStr>) {
@@ -1097,10 +1111,29 @@ pub extern "C" fn pgsql_handle_preparer(dbh: &Dbh, sql: &ZStr, stmt: &Stmt, opti
 }
 }
 
-/// `&H->lob_streams`: the C LOB code's table of open streams, null until its first.
+/// Called only after allocating a Zend stream, and before releasing its database object.
 #[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_lob_streams(handle: &Handle) -> *mut *mut c_void {
-    handle.lob_streams.as_ptr()
+extern "C" fn pdo_pgsql_register_lob(handle: &Handle, id: zend_long, resource: NonNull<c_void>) {
+    handle
+        .lob_streams
+        .with_taken(|streams| streams.push((id, resource)));
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_unregister_lob(handle: &Handle, id: zend_long) {
+    handle.lob_streams.with_taken(|streams| {
+        if let Ok(index) = streams.binary_search_by_key(&id, |&(key, _)| key) {
+            streams.remove(index);
+        }
+    });
+}
+
+swoole_rs_zend::exports! {
+    preserve_pending:
+    #[unsafe(no_mangle)]
+    extern "C" fn pdo_pgsql_close_lob_streams(dbh: &Dbh) {
+        close_lob_streams(dbh);
+    }
 }
 
 // Both the PDO subclass and the older dynamically registered methods enter

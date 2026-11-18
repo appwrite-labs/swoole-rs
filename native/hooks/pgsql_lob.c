@@ -43,7 +43,7 @@ static int pgsql_lob_close(php_stream *stream, int close_handle)
     if (close_handle) {
         lo_close(self->conn, self->lfd);
     }
-    zend_hash_index_del(*pdo_pgsql_lob_streams(H), php_stream_get_resource_id(stream));
+    pdo_pgsql_unregister_lob(H, php_stream_get_resource_id(stream));
     zval_ptr_dtor(&self->dbh);
     efree(self);
     return 0;
@@ -79,15 +79,8 @@ const php_stream_ops pdo_pgsql_lob_stream_ops = {
     NULL
 };
 
-#if PHP_VERSION_ID >= 80500
-php_stream *pdo_pgsql_create_lob_stream(zend_object *dbh, int lfd, Oid oid)
+static bool lob_resource(zend_object *dbh, int lfd, Oid oid, zval *output)
 {
-#else
-php_stream *pdo_pgsql_create_lob_stream(zval *value, int lfd, Oid oid)
-{
-    zend_object *dbh = Z_OBJ_P(value);
-#endif
-    php_stream *stm;
     struct pdo_pgsql_lob_self *self = ecalloc(1, sizeof(*self));
     pdo_pgsql_db_handle *H = (pdo_pgsql_db_handle *)(php_pdo_dbh_fetch_inner(dbh))->driver_data;
 
@@ -96,48 +89,38 @@ php_stream *pdo_pgsql_create_lob_stream(zval *value, int lfd, Oid oid)
     self->oid = oid;
     self->conn = pdo_pgsql_server(H);
 
-    stm = php_stream_alloc(&pdo_pgsql_lob_stream_ops, self, 0, "r+b");
+    php_stream *stm = php_stream_alloc(&pdo_pgsql_lob_stream_ops, self, 0, "r+b");
 
     if (stm) {
-        HashTable **streams = pdo_pgsql_lob_streams(H);
-        if (!*streams) {
-            *streams = pemalloc(sizeof(HashTable), php_pdo_dbh_fetch_inner(dbh)->is_persistent);
-            zend_hash_init(*streams, 0, NULL, NULL, 1);
-        }
         GC_ADDREF(dbh);
-        zend_hash_index_add_ptr(*pdo_pgsql_lob_streams(H), php_stream_get_resource_id(stm), stm->res);
-        return stm;
+        pdo_pgsql_register_lob(H, php_stream_get_resource_id(stm), stm->res);
+        php_stream_to_zval(stm, output);
+        return true;
     }
 
     efree(self);
-    return NULL;
+    return false;
 }
 
-void pdo_pgsql_close_lob_streams(pdo_dbh_t *dbh)
+void pdo_pgsql_close_resource(zend_resource *resource)
 {
-    zend_resource *res;
-    pdo_pgsql_db_handle *H = (pdo_pgsql_db_handle *)dbh->driver_data;
-    if (*pdo_pgsql_lob_streams(H)) {
-        ZEND_HASH_REVERSE_FOREACH_PTR(*pdo_pgsql_lob_streams(H), res) {
-            if (res->type >= 0) {
-                zend_list_close(res);
-            }
-        } ZEND_HASH_FOREACH_END();
+    if (resource->type >= 0) {
+        zend_list_close(resource);
     }
 }
 
 /* php_stream_to_zval consumes the stream resource. */
 bool pdo_pgsql_lob_resource(zend_execute_data *execute_data, int fd, Oid oid, zval *output)
 {
+    return lob_resource(Z_OBJ_P(ZEND_THIS), fd, oid, output);
+}
+
+bool pdo_pgsql_stmt_lob_stream(pdo_stmt_t *stmt, int fd, Oid oid, zval *output)
+{
 #if PHP_VERSION_ID >= 80500
-    php_stream *stream = pdo_pgsql_create_lob_stream(Z_OBJ_P(ZEND_THIS), fd, oid);
+    return lob_resource(stmt->database_object_handle, fd, oid, output);
 #else
-    php_stream *stream = pdo_pgsql_create_lob_stream(ZEND_THIS, fd, oid);
+    return lob_resource(Z_OBJ(stmt->database_object_handle), fd, oid, output);
 #endif
-    if (!stream) {
-        return false;
-    }
-    php_stream_to_zval(stream, output);
-    return true;
 }
 #endif

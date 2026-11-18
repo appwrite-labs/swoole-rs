@@ -70,11 +70,40 @@ unsafe extern "C" {
     safe fn PQftype(result: Res<'_>, column: c_int) -> Oid;
 }
 
-/// Decode PostgreSQL's text-format result. PHP 8.2 and 8.3 return floats as strings.
+swoole_rs_zend::exports! {
+/// Decode a text-format result or return the Zend stream requested for a LOB.
 #[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_scalar_column(oid: Oid, bytes: std::io::IoSlice<'_>, output: &Slot) {
-    use swoole_rs_zend::Owned;
+extern "C" fn pdo_pgsql_read_column(
+    stmt: &Stmt, handle: &Handle, result: Option<Res<'_>>, row: c_int, column: c_int,
+    bound: Option<&pdo_param_type>, output: &Slot,
+) -> bool {
+    use crate::driver::{INV_READ, PQgetisnull, PQgetvalue, lo_open, pdo_pgsql_server};
+    use swoole_rs_zend::{Owned, contain_with};
+    unsafe extern "C" {
+        safe fn pdo_pgsql_column_bytes<'a>(result: Res<'a>, row: c_int, column: c_int) -> std::io::IoSlice<'a>;
+        safe fn pdo_pgsql_bytea_stream(text: Text<'_>, output: &Slot) -> bool;
+        safe fn pdo_pgsql_stmt_lob_stream(stmt: &Stmt, fd: c_int, oid: Oid, output: &Slot) -> bool;
+    }
+    let Some(result) = result else { return false };
+    if PQgetisnull(result, row, column) != 0 {
+        output.set(Owned::null());
+        return true;
+    }
+    let oid = PQftype(result, column);
+    if oid == 17 {
+        return PQgetvalue(result, row, column).is_some_and(|text| pdo_pgsql_bytea_stream(text, output));
+    }
+    let bytes = pdo_pgsql_column_bytes(result, row, column);
     let text = || std::str::from_utf8(&bytes).unwrap_or_default();
+    if oid == 26 && bound == Some(&LOB) {
+        let oid = text().parse().unwrap_or_default();
+        let mut fd = -1;
+        if let Err(bailout) = contain_with(|| fd = lo_open(pdo_pgsql_server(handle), oid, INV_READ)) {
+            bailout.defer();
+            return false;
+        }
+        return fd >= 0 && pdo_pgsql_stmt_lob_stream(stmt, fd, oid, output);
+    }
     let value = match oid {
         16 => Owned::bool(bytes.first() == Some(&b't')),
         20 | 21 | 23 | 26 => Owned::long(text().parse().unwrap_or_default()),
@@ -82,6 +111,8 @@ extern "C" fn pdo_pgsql_scalar_column(oid: Oid, bytes: std::io::IoSlice<'_>, out
         _ => Owned::string(ZString::new(&bytes)),
     };
     output.set(value);
+    true
+}
 }
 
 /// Fill PDO's column description.
