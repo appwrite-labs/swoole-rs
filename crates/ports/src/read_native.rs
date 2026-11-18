@@ -130,6 +130,7 @@ impl<'a> Read<'a> {
     /// The session this read is on.
     fn session(&self) -> Session<'a> {
         Session {
+            port: Some(self.port),
             server: self.server,
             conn: self.conn,
             socket: self.socket,

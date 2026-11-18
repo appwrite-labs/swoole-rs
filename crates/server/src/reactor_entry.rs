@@ -191,8 +191,9 @@ pub fn dispatch_data(
     server: view::Server<'_>,
     conn: crate::Connection<'_>,
     data: SendData<'_>,
+    port: Option<&crate::port_config::PortConfig>,
 ) -> bool {
-    dispatch_input(server, conn, data, None)
+    dispatch_input(server, conn, data, None, port)
 }
 
 /// Dispatch a complete receive buffer that a base worker can take without copying.
@@ -205,10 +206,10 @@ pub fn dispatch_buffer(
     buffer: &mut swoole_rs_corebase::buffer::string::CppString,
 ) -> bool {
     if server.config().mode_ != crate::Mode::Base {
-        return dispatch_data(server, conn, SendData::new(head, buffer.view()));
+        return dispatch_data(server, conn, SendData::new(head, buffer.view()), None);
     }
     head.len = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
-    dispatch_input(server, conn, SendData::empty(head), Some(buffer))
+    dispatch_input(server, conn, SendData::empty(head), Some(buffer), None)
 }
 
 #[cfg(feature = "upstream-symbols")]
@@ -217,6 +218,7 @@ fn dispatch_input(
     conn: crate::Connection<'_>,
     data: SendData<'_>,
     buffer: Option<&mut swoole_rs_corebase::buffer::string::CppString>,
+    port: Option<&crate::port_config::PortConfig>,
 ) -> bool {
     use core::sync::atomic::Ordering::SeqCst;
     let state = server.state();
@@ -240,7 +242,7 @@ fn dispatch_input(
         fd: fd.into(),
         ..swoole_rs_corebase::DataHead::default()
     });
-    let port = server.port_of_server_fd(conn.server_fd());
+    let port = port.or_else(|| server.port_of_server_fd(conn.server_fd()));
     let mode = state.config_ref().mode_;
     let dispatched = if mode == crate::Mode::Process {
         crate::factory::dispatch(server, &mut task)

@@ -92,6 +92,7 @@ fn length_size(conn: Connection<'_>) -> u8 {
 /// callback, from the protocol and socket it is called with.
 #[derive(Clone, Copy)]
 pub(crate) struct Session<'a> {
+    pub(crate) port: Option<&'a swoole_rs_server::port_config::PortConfig>,
     pub(crate) server: swoole_rs_server::view::Server<'a>,
     pub(crate) conn: Connection<'a>,
     pub(crate) socket: swoole_rs_corebase::reactor::Socket<'a>,
@@ -100,7 +101,7 @@ pub(crate) struct Session<'a> {
 impl Session<'_> {
     /// `Server::dispatch_task` of `data` to the workers; whether it went.
     pub(crate) fn task(self, data: swoole_rs_server::SendData<'_>) -> bool {
-        swoole_rs_server::reactor_entry::dispatch_data(self.server, self.conn, data)
+        swoole_rs_server::reactor_entry::dispatch_data(self.server, self.conn, data, self.port)
     }
 }
 
@@ -342,6 +343,7 @@ pub mod exports {
                 ..DataHead::default()
             };
             let s = Session {
+                port: None,
                 server,
                 conn,
                 socket,
