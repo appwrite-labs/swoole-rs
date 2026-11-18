@@ -53,7 +53,6 @@ php_stream *pdo_pgsql_create_lob_stream(zend_object *dbh, int lfd, Oid oid);
 php_stream *pdo_pgsql_create_lob_stream(zval *dbh, int lfd, Oid oid);
 #endif
 
-int pdo_pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type);
 extern const php_stream_ops pdo_pgsql_lob_stream_ops;
 
 bool pdo_pgsql_bind_oid(void *params, size_t index, Oid oid);
@@ -64,21 +63,15 @@ bool pdo_pgsql_check_parameter(pdo_dbh_t *dbh, pdo_stmt_t *stmt, HashTable *map,
 bool pdo_pgsql_execution_result(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult *result);
 void pdo_pgsql_finish_result(PGconn *active, PGresult **result, bool abort_query);
 void pdo_pgsql_close_statement(pdo_pgsql_db_handle *H, const char *name);
-bool pdo_pgsql_dispatch(pdo_stmt_t *stmt, pdo_pgsql_stmt *S, bool unbuffered);
 bool pdo_pgsql_send_statement(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *name,
                               const char *query, const void *params, unsigned int count, bool *prepared,
                               bool named, bool unbuffered);
 void pdo_pgsql_close_cursor(pdo_pgsql_db_handle *H, const char *cursor);
 bool pdo_pgsql_open_cursor(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *cursor, bool *prepared, const char *sql);
-int pdo_pgsql_stmt_describe(pdo_stmt_t *stmt, int colno);
-int pdo_pgsql_stmt_get_column_meta(pdo_stmt_t *stmt, zend_long colno, zval *output);
-int pdo_pgsql_stmt_cursor_closer(pdo_stmt_t *stmt);
-int pdo_pgsql_stmt_fetch(pdo_stmt_t *stmt, enum pdo_fetch_orientation ori, zend_long offset);
 bool pdo_pgsql_fetch_row(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *cursor, unsigned int orientation, zend_long offset, int *row, bool *running);
 void pdo_pgsql_scalar_column(Oid oid, struct iovec bytes, zval *output);
 struct pdo_column_data;
 bool pdo_pgsql_describe_column(PGresult *result, int colno, struct pdo_column_data *column);
 int pdo_pgsql_column_meta(pdo_pgsql_db_handle *H, PGresult *result, int colno, zval *output);
-int pdo_pgsql_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *param, enum pdo_param_event event);
 void pdo_pgsql_raise(pdo_dbh_t *dbh, pdo_stmt_t *stmt, int errcode, const char *sqlstate, const char *msg);
 #endif

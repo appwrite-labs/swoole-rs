@@ -3,12 +3,9 @@
 //! factory, close, attributes, transactions, `quote`, `lastInsertId` and the
 //! libpq-error to SQLSTATE mapping.
 //!
-//! The statement layer, COPY, large objects and notices stay C for now
-//! (`pgsql_statement.c` and what is left of `pgsql_driver.c`). They keep the methods
-//! table and the driver record, which point here, and reach the handle, which is
-//! opaque to them, only through the `pdo_pgsql_*` accessors below, as
-//! `php_pdo_pgsql_int.h` declares them. Each version's differences are switched on
-//! `PHP_VERSION_ID` where they arise.
+//! Statement execution and decoding live in the statement module. The PDO method
+//! tables, Zend stream adapters, COPY, large objects and notices use the opaque
+//! handle through the accessors declared in the bundled driver headers.
 //!
 //! libpq runs the notice processor, which from PHP 8.4 calls the user's callback,
 //! whenever it reads the server's messages; a bailout there jumps over every frame
