@@ -11,7 +11,7 @@
         "ext-redis": "*",
         "ext-sockets": "*",
         "mongodb/mongodb": "^2.1",
-        "deminy/counit": "~0.3"
+        "deminy/counit": "~1.0"
     },
     "autoload": {
         "classmap": [

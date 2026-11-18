@@ -42,10 +42,10 @@ jobs:
       matrix:
         include:
           - shard: 1
-            redis: redis:7.4
+            redis: redis:8.10
             workloads: --workload plaintext --workload echo-1k --workload json --workload service-health --workload websocket --workload timer --workload app --workload http2 --workload table --workload channel
           - shard: 2
-            mysql: mysql:8.4
+            mysql: mysql:26.10
             workloads: --workload task --workload mysql --workload http-client --workload gzip --workload websocket-deflate --workload tcp-length --workload tcp-eof --workload udp
           - shard: 3
             workloads: --workload connect --workload https --workload wss --workload atomic --workload process-mode --workload http2-concurrent --workload websocket-64k --workload websocket-fragmented --workload upload --workload static --workload client --workload socket
