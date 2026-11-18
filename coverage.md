@@ -1,63 +1,57 @@
 # Coverage of crates/
 
-Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus apps and swoole/library's suite, measured on `58ccfc7` (`tools/coverage.py`, nightly `.github/workflows/coverage.yml`). A process that exits by a signal or `_exit` records nothing.
+Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus apps and swoole/library's suite, measured on `4f22d1e` (`tools/coverage.py`, nightly `.github/workflows/coverage.yml`). A process that exits by a signal or `_exit` records nothing.
 
 | crate | lines | covered | entry points not reached |
 | --- | ---: | ---: | ---: |
-| phpthread | 1,646 | 0.0% | 52 |
+| phpthread | 1,647 | 0.0% | 52 |
 | base64 | 84 | 35.7% | 0 |
-| utilities | 724 | 37.0% | 1 |
-| error-ffi | 69 | 39.1% | 6 |
 | crc32 | 40 | 47.5% | 0 |
-| phplocks | 441 | 59.2% | 17 |
+| error-ffi | 115 | 55.7% | 6 |
+| phplocks | 438 | 58.7% | 17 |
 | error | 120 | 62.5% | 0 |
 | odbc | 185 | 64.9% | 0 |
+| phpredis | 195 | 66.7% | 0 |
 | protocols | 399 | 67.4% | 0 |
-| phpredis | 200 | 67.5% | 0 |
-| phpevents | 729 | 67.8% | 0 |
-| corebase | 6,161 | 71.5% | 3 |
-| server | 10,409 | 72.4% | 0 |
-| ports | 1,989 | 72.6% | 0 |
-| phpprocess | 2,012 | 73.2% | 2 |
-| clients | 2,450 | 73.2% | 0 |
-| tls | 2,843 | 73.3% | 0 |
-| phpcoroutines | 2,849 | 74.8% | 2 |
-| http | 3,708 | 74.9% | 0 |
-| reactor | 3,633 | 76.0% | 0 |
-| process | 4,100 | 76.2% | 0 |
-| zend | 3,290 | 76.9% | 0 |
-| phpruntime | 1,892 | 77.8% | 1 |
-| memory | 1,563 | 78.5% | 0 |
-| phpswoole | 1,629 | 79.4% | 0 |
-| brotli | 73 | 79.5% | 0 |
-| hooks | 5,041 | 80.0% | 1 |
-| timer | 1,082 | 80.2% | 0 |
-| phpserver | 4,589 | 81.3% | 1 |
-| http-ffi | 459 | 81.7% | 0 |
-| phpclients | 6,567 | 81.8% | 0 |
-| bus | 544 | 84.2% | 0 |
-| phptimer | 160 | 84.4% | 0 |
-| pgsql | 318 | 84.9% | 0 |
+| phpevents | 729 | 67.5% | 0 |
+| ports | 1,844 | 71.8% | 0 |
+| phpprocess | 2,014 | 72.9% | 2 |
+| server | 10,872 | 73.3% | 0 |
+| clients | 2,518 | 73.3% | 0 |
+| phpcoroutines | 2,866 | 74.2% | 2 |
+| corebase | 20,988 | 75.1% | 4 |
+| http | 4,154 | 75.9% | 0 |
+| zend | 3,474 | 76.9% | 0 |
+| phpruntime | 1,869 | 77.5% | 1 |
+| phpswoole | 1,614 | 79.1% | 0 |
+| hooks | 4,314 | 79.3% | 1 |
+| phpclients | 6,545 | 81.7% | 0 |
+| phpserver | 4,607 | 82.5% | 1 |
+| bus | 553 | 84.1% | 0 |
+| pgsql | 312 | 84.6% | 0 |
 | sqlite | 80 | 85.0% | 0 |
-| phpcollections | 561 | 85.2% | 0 |
-| ffi | 68 | 85.3% | 1 |
+| phpcollections | 557 | 85.1% | 0 |
+| phptimer | 165 | 85.5% | 0 |
 | websocket | 402 | 85.6% | 0 |
 | inflate | 96 | 86.5% | 0 |
-| phphttp | 5,085 | 87.0% | 0 |
-| phphttp2 | 2,439 | 87.0% | 0 |
-| framing | 349 | 88.5% | 0 |
+| phphttp2 | 2,416 | 86.5% | 0 |
+| phphttp | 5,151 | 87.0% | 0 |
+| framing | 349 | 88.8% | 0 |
+| brotli | 75 | 89.3% | 0 |
 | httpbindings | 224 | 90.2% | 0 |
-| zlib | 99 | 90.9% | 0 |
-| http2 | 720 | 91.0% | 0 |
+| http2 | 740 | 91.2% | 0 |
 | deflate | 58 | 91.4% | 0 |
-| curl | 680 | 92.6% | 1 |
+| curl | 698 | 92.6% | 1 |
 | ssh2 | 85 | 92.9% | 0 |
-| firebird | 30 | 93.3% | 0 |
+| zlib | 95 | 93.7% | 0 |
 | oci | 125 | 94.4% | 0 |
-| locale | 114 | 99.1% | 0 |
+| firebird | 50 | 96.0% | 0 |
+| locale | 116 | 99.1% | 0 |
 | curl-sys | 10 | 100.0% | 0 |
 | ext | 3 | 100.0% | 0 |
-| **crates/** | 83,226 | 75.6% | 88 |
+| ffi | 15 | 100.0% | 0 |
+| phpstubs | 12 | 100.0% | 0 |
+| **crates/** | 84,018 | 76.1% | 87 |
 
 # Entry points no run reached
 
@@ -68,6 +62,7 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 - `swr_v1_core_format_result`
 - `swr_v1_locks_atomic32`
 - `swr_v1_locks_atomic64`
+- `swr_v1_logger_put`
 
 ## curl
 
@@ -81,10 +76,6 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 - `swr_v1_error_resolve`
 - `swr_v1_error_strerror`
 - `swr_v1_feature_bits`
-
-## ffi
-
-- `swr_v1_ffi_exit`
 
 ## hooks
 
@@ -182,7 +173,3 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 - `zim_swoole_thread_setName`
 - `zim_swoole_thread_setPriority`
 - `zim_swoole_thread_yield`
-
-## utilities
-
-- `swr_v1_logger_put`
