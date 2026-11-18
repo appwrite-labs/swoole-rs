@@ -35,28 +35,18 @@ impl Format {
     ];
 }
 
-/// Where a request is formatted.
-pub trait Output {
-    fn capacity(&self) -> usize;
-    /// Writes `bytes` at `offset`, which the writer keeps inside the capacity.
-    fn put(&mut self, offset: usize, bytes: &[u8]);
-}
-impl Output for [u8] {
-    fn capacity(&self) -> usize {
-        self.len()
-    }
-    fn put(&mut self, offset: usize, bytes: &[u8]) {
-        if let Some(to) = self.get_mut(offset..offset + bytes.len()) {
-            to.copy_from_slice(bytes);
-        }
+/// Writes `bytes` at `offset`, which the writer keeps inside the output.
+fn put(output: &mut [u8], offset: usize, bytes: &[u8]) {
+    if let Some(to) = output.get_mut(offset..offset + bytes.len()) {
+        to.copy_from_slice(bytes);
     }
 }
-struct Writer<'a, O: Output + ?Sized> {
-    output: &'a mut O,
+struct Writer<'a> {
+    output: &'a mut [u8],
     capacity: usize,
     count: usize,
 }
-impl<O: Output + ?Sized> Writer<'_, O> {
+impl Writer<'_> {
     fn append(&mut self, bytes: &[u8]) -> Option<()> {
         let count = self.count.checked_add(bytes.len())?;
         let offset = self.count.min(self.capacity.saturating_sub(1));
@@ -64,8 +54,7 @@ impl<O: Output + ?Sized> Writer<'_, O> {
             .len()
             .min(self.capacity.saturating_sub(1).saturating_sub(offset));
         // `offset + copied <= capacity - 1`.
-        self.output
-            .put(offset, bytes.get(..copied).unwrap_or_default());
+        put(self.output, offset, bytes.get(..copied).unwrap_or_default());
         self.count = count;
         Some(())
     }
@@ -89,7 +78,7 @@ impl<O: Output + ?Sized> Writer<'_, O> {
         };
         if self.capacity != 0 {
             // `written <= capacity - 1` (or 0), inside the output.
-            self.output.put(if error == 0 { written } else { 0 }, &[0]);
+            put(self.output, if error == 0 { written } else { 0 }, &[0]);
         }
         ClientsFormatResult { written, error }
     }
@@ -108,13 +97,13 @@ fn precision_string(bytes: &[u8]) -> &[u8] {
 }
 /// The request formatter's `sw_snprintf` call for `kind` over `spans` (`None` for an
 /// invalid one, an error only where the kind reads it) and `number`, into `output`.
-pub fn http_format<O: Output + ?Sized>(
+pub fn http_format(
     kind: Format,
     spans: [Option<&[u8]>; 4],
     number: usize,
-    output: &mut O,
+    output: &mut [u8],
 ) -> ClientsFormatResult {
-    let capacity = output.capacity();
+    let capacity = output.len();
     if capacity > i32::MAX as usize {
         return ClientsFormatResult {
             written: 0,
