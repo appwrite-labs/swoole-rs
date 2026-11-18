@@ -1,0 +1,23 @@
+name: Pinned PHPT fixtures
+description: Restore the pinned tests and PHP runner, or prepare them on a cache miss.
+runs:
+  using: composite
+  steps:
+    - id: pin
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: target/upstream
+        key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
+    - if: steps.pin.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        python3 -c 'from tools.build_upstream import ROOT, prepare_pin; prepare_pin(ROOT / "target/upstream/src")'
+        php_version=$(php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')
+        api=$(php -i | awk '/^PHP API =>/ { print $NF }')
+        runner="/usr/lib/php/$api/build/run-tests.php"
+        if [ ! -f "$runner" ]; then
+          tmp=$(mktemp -d)
+          (cd "$tmp" && apt-get download "php$php_version-dev=$(dpkg-query -W -f='${Version}' "php$php_version-cli")" && dpkg-deb -x ./*.deb .)
+          runner="$tmp$runner"
+        fi
+        cp "$runner" target/upstream/src/run-tests.php
