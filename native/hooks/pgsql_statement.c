@@ -3,6 +3,8 @@
 
 #ifdef SW_USE_PGSQL
 #include "pgsql_statement.h"
+#include <libpq/libpq-fs.h>
+#include "main/php_memory_streams.h"
 bool pdo_pgsql_dispatch(pdo_stmt_t *stmt, pdo_pgsql_stmt *S, bool unbuffered) {
     bool named = stmt->supports_placeholders == PDO_PLACEHOLDER_NAMED;
     zend_string *query = named || S->stmt_name ? S->query : stmt->active_query_string;
@@ -19,6 +21,53 @@ int pdo_pgsql_stmt_fetch(pdo_stmt_t *stmt, enum pdo_fetch_orientation ori, zend_
     bool *running = NULL;
 #endif
     return pdo_pgsql_fetch_row(stmt->dbh, stmt, &S->result, S->cursor_name, ori, offset, &S->current_row, running);
+}
+
+/* PDO returns bytea columns as read-only memory streams and OIDs explicitly
+ * bound as LOBs as live large-object streams, both owned by Zend. */
+int pdo_pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type) {
+    pdo_pgsql_stmt *S = stmt->driver_data;
+    int row = S->current_row - 1;
+    if (!S->result) {
+        return 0;
+    }
+    if (PQgetisnull(S->result, row, colno)) {
+        ZVAL_NULL(result);
+        return 1;
+    }
+    Oid kind = PQftype(S->result, colno);
+    char *text = PQgetvalue(S->result, row, colno);
+    php_stream *stream;
+    if (kind == 17) { /* bytea */
+        size_t len;
+        unsigned char *decoded = PQunescapeBytea((unsigned char *)text, &len);
+        if (!decoded) {
+            return 0;
+        }
+        zend_string *bytes = zend_string_init((char *)decoded, len, 0);
+        PQfreemem(decoded);
+        stream = php_stream_memory_open(TEMP_STREAM_READONLY, bytes);
+        zend_string_release(bytes);
+    } else if (kind == 26 && type && *type == PDO_PARAM_LOB) {
+        Oid oid = (Oid)strtoul(text, NULL, 10);
+        int fd = lo_open(pdo_pgsql_server(S->H), oid, INV_READ);
+        if (fd < 0) {
+            return 0;
+        }
+#if PHP_VERSION_ID >= 80500
+        stream = pdo_pgsql_create_lob_stream(stmt->database_object_handle, fd, oid);
+#else
+        stream = pdo_pgsql_create_lob_stream(&stmt->database_object_handle, fd, oid);
+#endif
+    } else {
+        pdo_pgsql_scalar_column(kind, (struct iovec){text, PQgetlength(S->result, row, colno)}, result);
+        return 1;
+    }
+    if (!stream) {
+        return 0;
+    }
+    php_stream_to_zval(stream, result);
+    return 1;
 }
 
 int pdo_pgsql_stmt_describe(pdo_stmt_t *stmt, int colno) {

@@ -31,10 +31,6 @@
 #include <netinet/in.h>
 #endif
 
-/* from postgresql/src/include/catalog/pg_type.h */
-#define BYTEAOID    17
-#define OIDOID      26
-
 #define FIN_CLOSE   0x2
 #define FIN_ABORT   0x4
 
@@ -133,68 +129,6 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt)
 	return 1;
 }
 
-static int pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type)
-{
-	pdo_pgsql_stmt *S = (pdo_pgsql_stmt*)stmt->driver_data;
-	if (!S->result) {
-		return 0;
-	}
-
-	/* We have already increased count by 1 in pgsql_stmt_fetch() */
-	if (PQgetisnull(S->result, S->current_row - 1, colno)) { /* Check if we got NULL */
-		ZVAL_NULL(result);
-	} else {
-		char *ptr = PQgetvalue(S->result, S->current_row - 1, colno);
-		size_t len = PQgetlength(S->result, S->current_row - 1, colno);
-
-		Oid oid_type = PQftype(S->result, colno);
-		switch (oid_type) {
-			case OIDOID: {
-				char *end_ptr;
-				Oid oid = (Oid)strtoul(ptr, &end_ptr, 10);
-				if (type && *type == PDO_PARAM_LOB) {
-					/* If column was bound as LOB, return a stream. */
-					int loid = lo_open(pdo_pgsql_server(S->H), oid, INV_READ);
-					if (loid >= 0) {
-						php_stream *stream = pdo_pgsql_create_lob_stream(stmt->database_object_handle, loid, oid);
-						if (stream) {
-							php_stream_to_zval(stream, result);
-							return 1;
-						}
-					}
-					return 0;
-				} else {
-					/* Otherwise return OID as integer. */
-					ZVAL_LONG(result, oid);
-				}
-				break;
-			}
-
-			case BYTEAOID: {
-				size_t tmp_len;
-				char *tmp_ptr = (char *)PQunescapeBytea((unsigned char *) ptr, &tmp_len);
-				if (!tmp_ptr) {
-					/* PQunescapeBytea returned an error */
-					return 0;
-				}
-
-				zend_string *str = zend_string_init(tmp_ptr, tmp_len, 0);
-				php_stream *stream = php_stream_memory_open(TEMP_STREAM_READONLY, str);
-				php_stream_to_zval(stream, result);
-				zend_string_release(str);
-				PQfreemem(tmp_ptr);
-				break;
-			}
-
-			default:
-				pdo_pgsql_scalar_column(oid_type, (struct iovec){ptr, len}, result);
-				break;
-		}
-	}
-
-	return 1;
-}
-
 static int pgsql_stmt_get_attr(pdo_stmt_t *stmt, zend_long attr, zval *val)
 {
 	pdo_pgsql_stmt *S = (pdo_pgsql_stmt*)stmt->driver_data;
@@ -227,7 +161,7 @@ const struct pdo_stmt_methods swoole_pgsql_stmt_methods = {
 	pgsql_stmt_execute,
 	pdo_pgsql_stmt_fetch,
 	pdo_pgsql_stmt_describe,
-	pgsql_stmt_get_col,
+	pdo_pgsql_stmt_get_col,
 	pdo_pgsql_stmt_param_hook,
 	NULL, /* set_attr */
 	pgsql_stmt_get_attr,

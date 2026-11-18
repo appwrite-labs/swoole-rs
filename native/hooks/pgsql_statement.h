@@ -46,6 +46,14 @@ struct pdo_pgsql_lob_self {
     Oid oid;
 };
 
+PGconn *pdo_pgsql_server(pdo_pgsql_db_handle *H);
+#if PHP_VERSION_ID >= 80500
+php_stream *pdo_pgsql_create_lob_stream(zend_object *dbh, int lfd, Oid oid);
+#else
+php_stream *pdo_pgsql_create_lob_stream(zval *dbh, int lfd, Oid oid);
+#endif
+
+int pdo_pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type);
 extern const php_stream_ops pdo_pgsql_lob_stream_ops;
 
 bool pdo_pgsql_bind_oid(void *params, size_t index, Oid oid);

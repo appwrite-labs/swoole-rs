@@ -26,7 +26,6 @@
 
 #define PHP_PDO_PGSQL_CONNECTION_FAILURE_SQLSTATE "08006"
 
-PGconn *pdo_pgsql_server(pdo_pgsql_db_handle *H);
 unsigned int pdo_pgsql_next_stmt_id(pdo_pgsql_db_handle *H);
 bool pdo_pgsql_emulate_prepares(pdo_pgsql_db_handle *H);
 bool pdo_pgsql_disable_prepares(pdo_pgsql_db_handle *H);
@@ -79,7 +78,6 @@ enum pdo_pgsql_specific_constants {
     PGSQL_TRANSACTION_UNKNOWN = PQTRANS_UNKNOWN
 };
 
-php_stream *pdo_pgsql_create_lob_stream(zval *pdh, int lfd, Oid oid);
 
 void pdo_pgsql_cleanup_notice_callback(pdo_pgsql_db_handle *H);
 

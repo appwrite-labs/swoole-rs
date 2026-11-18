@@ -77,7 +77,7 @@ extern "C" fn pdo_pgsql_scalar_column(oid: Oid, bytes: std::io::IoSlice<'_>, out
     let text = || std::str::from_utf8(&bytes).unwrap_or_default();
     let value = match oid {
         16 => Owned::bool(bytes.first() == Some(&b't')),
-        20 | 21 | 23 => Owned::long(text().parse().unwrap_or_default()),
+        20 | 21 | 23 | 26 => Owned::long(text().parse().unwrap_or_default()),
         700 | 701 if PHP_VERSION_ID >= 80400 => Owned::double(text().parse().unwrap_or_default()),
         _ => Owned::string(ZString::new(&bytes)),
     };
