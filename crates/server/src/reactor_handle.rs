@@ -115,12 +115,3 @@ impl Reactor {
         );
     }
 }
-
-/// `sock` as a record live until an unsafe free whose caller answers for the handles
-/// left, as the reactor holds it while registered: the server's sockets (sessions,
-/// listeners, pipes and its pool's connections) are heap records freed only by such a
-/// free, after their removal from any reactor.
-pub(crate) fn registered(sock: Socket<'_>) -> Option<Heap<'static>> {
-    // SAFETY: a live socket, which stays live until its unsafe free.
-    unsafe { Socket::from_ptr(sock.as_ptr()) }.map(Heap::from_static)
-}

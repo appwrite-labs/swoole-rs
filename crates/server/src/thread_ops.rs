@@ -139,10 +139,8 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             return Some(-1);
         }
         // Only synchronous sends go to the notify pipe: thread-safe, no separate memory.
-        if thread.notify_pipe.get().is_none() {
-            let pipe = worker_pipe(worker, false)
-                .and_then(|pipe| crate::reactor_handle::registered(*pipe));
-            thread.notify_pipe.set(pipe);
+        if thread.notify_worker.get().is_none() && worker_pipe(worker, false).is_some() {
+            thread.notify_worker.set(u16::try_from(w).ok());
         }
     }
     Some(0)

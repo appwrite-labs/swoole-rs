@@ -74,7 +74,8 @@ pub(crate) fn valid(conn: Option<Connection<'_>>) -> bool {
 /// shared reference.
 pub(crate) struct ThreadRecord {
     pub(crate) id: Cell<c_int>,
-    pub(crate) notify_pipe: Cell<Option<swoole_rs_corebase::reactor::Heap<'static>>>,
+    /// The worker whose pipe tells the thread to shut down: the first it reads.
+    pub(crate) notify_worker: Cell<Option<u16>>,
     pub(crate) dispatch_count: Cell<u64>,
     pub(crate) pipe_command: Cell<*mut SocketRecord>,
     pub(crate) heartbeat_timer: Cell<Option<swoole_rs_corebase::timer_key::Held>>,
@@ -157,7 +158,7 @@ impl ThreadRecord {
         (0..count)
             .map(|_| Self {
                 id: Cell::new(0),
-                notify_pipe: Cell::new(None),
+                notify_worker: Cell::new(None),
                 dispatch_count: Cell::new(0),
                 pipe_command: Cell::new(core::ptr::null_mut()),
                 heartbeat_timer: Cell::new(None),
