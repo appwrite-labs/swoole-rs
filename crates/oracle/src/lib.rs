@@ -93,7 +93,7 @@ pub mod http {
         #[link_name = "swr_oracle_http_url_decode"]
         pub fn url_decode(data: *mut u8, length: usize) -> usize;
         /// Upstream `http_server::url_encode`, copied with its NUL into `output`
-        /// (capacity `3 * length + 1`); returns the encoded length.
+        /// (capacity `3 * length + 1`); returns the encoded length or `usize::MAX` on failure.
         #[link_name = "swr_oracle_http_url_encode"]
         pub fn url_encode(data: *const u8, length: usize, output: *mut u8) -> usize;
         /// Every `http_server::parse_cookie` callback as u32 key length, key,

@@ -307,6 +307,7 @@ pub fn http_url_encode(bytes: &[u8]) {
     // SAFETY: `theirs` has upstream's capacity.
     let want =
         unsafe { upstream_http::url_encode(bytes.as_ptr(), bytes.len(), theirs.as_mut_ptr()) };
+    assert_ne!(want, usize::MAX, "upstream URL encoding failed");
     let capacity = swoole_rs_http::url_capacity(bytes).unwrap();
     let mut ours = vec![std::mem::MaybeUninit::new(0xa5); capacity];
     let written = swoole_rs_http::url_encode(bytes, &mut ours).unwrap();
