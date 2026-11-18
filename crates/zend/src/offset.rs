@@ -32,7 +32,7 @@ impl Value {
     }
 }
 
-impl Call {
+impl Call<'_> {
     /// A double used as an offset (`zend_dval_to_lval_safe`), which may raise
     /// `E_DEPRECATED` and so run the user's error handler: in the call, which
     /// proves this thread runs PHP.

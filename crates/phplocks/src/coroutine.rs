@@ -70,7 +70,7 @@ impl Custom for Held {
 /// The constructed lock. Operations take `&CoroutineLock`, so the borrow may
 /// span suspension while another coroutine unlocks: Zend holds `$this`, and so
 /// the lock, throughout the method.
-fn constructed(call: &Call) -> Option<&CoroutineLock> {
+fn constructed<'c>(call: &'c Call<'_>) -> Option<&'c CoroutineLock> {
     let lock = call.custom::<Held>()?.0.get();
     if lock.is_none() {
         let message = c"must call constructor first";

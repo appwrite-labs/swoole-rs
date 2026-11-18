@@ -25,7 +25,7 @@ pub(crate) mod raw {
         tls: TlsIo,
         now: SteadyMs,
     ) -> isize {
-        let data = unsafe { Drain::from_raw(buffer, length) };
+        let data = Drain::new(unsafe { std::slice::from_raw_parts(buffer.cast(), length) });
         let tls = |socket: Socket<'_>, data: Drain<'_>| {
             count(unsafe { tls(socket.as_ptr().cast(), data.as_ptr().cast_mut(), data.len()) })
         };
@@ -61,7 +61,9 @@ pub(crate) mod raw {
         let tls = |socket: Socket<'_>, spare: &mut Spare<'_>| {
             count(spare.lend(|at, n| unsafe { tls(socket.as_ptr().cast(), at, n) }))
         };
-        let mut buffer = unsafe { Fill::from_raw(buffer, length) };
+        let mut buffer = Fill::new(unsafe {
+            std::slice::from_raw_parts_mut(buffer.cast::<std::mem::MaybeUninit<u8>>(), length)
+        });
         let received = buffer.spare(|spare| record_recv(socket, spare, flags, tls, now));
         received.map_or(-1, usize::cast_signed)
     }
@@ -73,7 +75,9 @@ pub(crate) mod raw {
         flags: c_int,
         tls: TlsIo,
     ) -> isize {
-        let buffer = unsafe { Fill::from_raw(buffer, length) };
+        let buffer = Fill::new(unsafe {
+            std::slice::from_raw_parts_mut(buffer.cast::<std::mem::MaybeUninit<u8>>(), length)
+        });
         record_peek(socket, buffer, flags, fills(tls)).map_or(-1, usize::cast_signed)
     }
 }

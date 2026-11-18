@@ -126,12 +126,9 @@ pub(super) fn direct_call(
     args: crate::zval::Zvals<'_>,
     retval: Option<&crate::Value>,
 ) -> bool {
-    let cache = callee.0;
     // The call's result when the caller wants none; undefined otherwise.
     let temporary = Owned::default();
-    // SAFETY: a non-null cache is a callable's, which keeps it initialised
-    // (`Callee`).
-    if cache.is_null() || unsafe { (*cache).function_handler }.is_null() {
+    if !callee.resolved {
         callable_warning(c"Bad function");
         return false;
     }
@@ -212,10 +209,19 @@ impl Then {
 /// lent for a call: made only from a callable that owns it.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub struct Callee<'a>(
+pub(crate) struct CalleePtr<'a>(
     pub(crate) *mut zend_fcall_info_cache,
     pub(crate) std::marker::PhantomData<&'a zend_fcall_info_cache>,
 );
+
+/// A [`CalleePtr`] lent for a call, with whether its owner saw it name a function
+/// when it lent it. Zend handles a cache without one itself (it resolves the
+/// call's name, or fails), so the flag only picks upstream's warning.
+#[derive(Clone, Copy)]
+pub struct Callee<'a> {
+    pub(crate) cache: CalleePtr<'a>,
+    pub(crate) resolved: bool,
+}
 
 /// Invoke directly or create a coroutine, preserving the immediate fatal-exception check;
 /// in a coroutine, then `then`. The call writes its result into `retval`, in place of
@@ -277,7 +283,7 @@ pub(crate) fn coroutine_call(
     let trapped = unsafe {
         swr_zend_try_facade_coroutine(
             Some(create),
-            cache.0,
+            cache.cache.0,
             args.argc(),
             args.argv(),
             callable.map_or(ptr::null_mut(), crate::Value::as_ptr),

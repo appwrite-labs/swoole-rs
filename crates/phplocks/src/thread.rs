@@ -237,7 +237,7 @@ fn construct_long(call: &Call) {
 
 /// The constructed lock, or the fatal error upstream intends for a method
 /// called before the constructor (`php_swoole_fatal_error(E_ERROR, ...)`).
-fn constructed(call: &Call) -> Option<&Lock> {
+fn constructed<'c>(call: &'c Call<'_>) -> Option<&'c Lock> {
     let resource = call.custom::<ThreadLock>()?.0.get();
     let Some(resource) = resource else {
         set_last_error(PHP_FATAL_ERROR);

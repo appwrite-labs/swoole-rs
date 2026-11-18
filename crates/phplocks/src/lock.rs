@@ -39,7 +39,7 @@ impl Custom for Held {
 }
 
 /// The constructed lock, or Swoole's fatal error (which exits).
-fn constructed(call: &Call) -> Option<&Lock> {
+fn constructed<'c>(call: &'c Call<'_>) -> Option<&'c Lock> {
     let lock = call.custom::<Held>()?.0.get();
     if lock.is_none() {
         unconstructed();
@@ -162,7 +162,7 @@ pub(crate) fn milliseconds(seconds: f64) -> i32 {
 
 /// `lock(int $operation = LOCK_EX, float $timeout = -1): bool` of `lock`, for
 /// a leaf handler: `lock` defers the fatal error of an unconstructed object.
-pub(crate) fn lock_with(call: &Call, lock: impl FnOnce(&Call) -> Option<&Lock>) {
+pub(crate) fn lock_with(call: &Call, lock: impl for<'c> FnOnce(&'c Call<'_>) -> Option<&'c Lock>) {
     let (operation, timeout_ms) = if call.num_args() == 0 {
         (LOCK_EX, milliseconds(-1.0))
     } else {

@@ -366,7 +366,7 @@ pub fn php_swoole_client_minit(minit: &Minit) -> Result<(), Bailout> {
     Ok(())
 }
 
-pub(crate) fn this(call: &Call) -> &Data {
+pub(crate) fn this<'c>(call: &'c Call<'_>) -> &'c Data {
     Obj::this(call).data()
 }
 

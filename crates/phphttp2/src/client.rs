@@ -1356,12 +1356,12 @@ fn register(minit: &Minit, shortname: bool) -> Result<(), swoole_rs_zend::bailou
 }
 
 /// `$this`'s client, none before its constructor.
-fn this(call: &Call) -> Option<&Client> {
+fn this<'c>(call: &'c Call<'_>) -> Option<&'c Client> {
     call.custom::<Data>()?.client.get()
 }
 
 /// `http2_client_coro_get_client`: the constructed client; a fatal error if not.
-fn client(call: &Call) -> Option<&Client> {
+fn client<'c>(call: &'c Call<'_>) -> Option<&'c Client> {
     let Some(client) = this(call) else {
         swoole_rs_zend::bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
             swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int,
@@ -1509,7 +1509,7 @@ mod request {
 const REQUEST_NAME: &CStr = c"Swoole\\Http2\\Request";
 
 /// `Z_PARAM_OBJECT_OF_CLASS(.., Swoole\Http2\Request)` of the first argument.
-fn request_arg(call: &Call) -> Option<Request<'_>> {
+fn request_arg<'c>(call: &'c Call<'_>) -> Option<Request<'c>> {
     let arg = call.value(1)?;
     if arg.instance_of(&REQUEST) {
         return Some(Request::new(arg));

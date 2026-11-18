@@ -65,7 +65,7 @@ pub(crate) trait Holder: Custom {
     fn word(&self) -> Option<&Self::Word>;
 }
 
-fn word<H: Holder>(call: &Call) -> Option<&H::Word> {
+fn word<'c, H: Holder>(call: &'c Call<'_>) -> Option<&'c H::Word> {
     call.custom::<H>()?.word()
 }
 
