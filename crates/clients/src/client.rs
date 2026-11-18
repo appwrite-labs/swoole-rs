@@ -25,6 +25,7 @@ use swoole_rs_corebase::constants::{
 };
 use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
+use swoole_rs_corebase::offload::AsyncEvent;
 use swoole_rs_corebase::reactor::reactor_upstream::set_handler;
 use swoole_rs_corebase::reactor::socket_upstream::Connect;
 use swoole_rs_corebase::reactor::{
@@ -188,7 +189,7 @@ const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int =
 pub type Framed = fn(Handle<'_>) -> c_int;
 
 /// The framed receives crates/ports defines; ports depends on this crate, so
-/// `swoole_init` (crates/ffi) registers them with [`set_host`]. Only a
+/// `swoole_init` (crates/ffi) registers them with [`set_framing`]. Only a
 /// client's `on_read` calls them, so the fields stay private.
 pub struct Framing {
     length: Framed,
@@ -201,25 +202,11 @@ impl Framing {
     }
 }
 
-struct Host {
-    framing: Framing,
-    dispatch_dns: fn(Lookup, &crate::resolver::Request) -> bool,
-}
+static FRAMED_READERS: OnceLock<Framing> = OnceLock::new();
 
-static HOST: OnceLock<Host> = OnceLock::new();
-
-/// Registers framing and DNS dispatch; later registrations are
-/// ignored. A successful dispatch holds the request until its completion returns.
-pub fn set_host(framing: Framing, dispatch_dns: fn(Lookup, &crate::resolver::Request) -> bool) {
-    HOST.get_or_init(|| Host {
-        framing,
-        dispatch_dns,
-    });
-}
-
-fn native_host() -> &'static Host {
-    HOST.get()
-        .unwrap_or_else(|| swoole_rs_corebase::fatal("client host is not registered"))
+/// Register the client’s length and EOF readers at startup.
+pub fn set_framing(framing: Framing) {
+    FRAMED_READERS.get_or_init(|| framing);
 }
 
 /// The public, trivially copyable fields of `network::Client`.
@@ -1235,7 +1222,7 @@ fn dns_lookup(this: Handle<'_>) -> bool {
     with_awaiting(|awaiting| awaiting.push((id, Handle::raw(this.0))));
     let lookup = Lookup(id);
     // The pool's copy holds its own reference to the request.
-    let dispatched = (native_host().dispatch_dns)(lookup, &request);
+    let dispatched = (this.get().socket_ops.dispatch_dns)(lookup, &request);
     if !dispatched {
         _ = awaiting(lookup);
     }
@@ -1245,19 +1232,22 @@ fn dns_lookup(this: Handle<'_>) -> bool {
 /// A client's DNS lookup in the async pool: what its event carries back to
 /// [`resolve_completed`] on the client's thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Lookup(usize);
+struct Lookup(usize);
 
-impl Lookup {
-    /// The id the pool's event carries.
-    #[must_use]
-    pub const fn id(self) -> usize {
-        self.0
-    }
+fn dispatch_dns(lookup: Lookup, request: &crate::resolver::Request) -> bool {
+    let mut event = AsyncEvent::new(
+        std::ptr::without_provenance_mut(lookup.0),
+        Some(crate::resolver::handler_gethostbyname),
+        Some(client_completed),
+        std::ptr::null_mut(),
+    );
+    event.set_record(request.reference());
+    !swoole_rs_corebase::offload::threads::dispatch(&event).is_null()
+}
 
-    /// The lookup [`Lookup::id`] named.
-    #[must_use]
-    pub const fn from_id(id: usize) -> Self {
-        Self(id)
+extern "C" fn client_completed(event: &AsyncEvent) {
+    if let Some(request) = event.record() {
+        resolve_completed(Lookup(event.object().addr()), request, event.result().1);
     }
 }
 
@@ -1284,7 +1274,7 @@ fn awaiting(lookup: Lookup) -> Option<Handle<'static>> {
 
 /// Completes a client's DNS lookup on its reactor thread, while the pool still
 /// owns the request. A client freed meanwhile is not reached.
-pub fn resolve_completed(lookup: Lookup, request: &ResolverRequest, error: c_int) {
+fn resolve_completed(lookup: Lookup, request: &ResolverRequest, error: c_int) {
     let Some(this) = awaiting(lookup) else {
         return;
     };
@@ -1547,6 +1537,7 @@ type BufferLoan = fn(&mut dyn FnMut(&mut CppString));
 /// Host effects selected at construction; callbacks copy the function pointer
 /// before an effect can release the client.
 struct SocketOps {
+    dispatch_dns: fn(Lookup, &crate::resolver::Request) -> bool,
     /// Lends the scratch buffer to the callback exactly once, synchronously.
     with_buffer: BufferLoan,
     recv_append: fn(Socket<'_>, &mut CppString) -> Option<usize>,
@@ -1578,6 +1569,7 @@ struct SocketOps {
 
 impl SocketOps {
     const NATIVE: Self = Self {
+        dispatch_dns,
         with_buffer: |f| swoole_rs_corebase::buffer::string::with_thread_buffer(f),
         recv_append: swoole_rs_corebase::tls::upstream::recv_append,
         recv_sync: swoole_rs_corebase::tls::upstream::recv_sync_spare,
@@ -1878,7 +1870,9 @@ fn on_read(this: Handle<'_>) -> bool {
     let (eof, length) = (record.open_eof_check, record.open_length_check);
     if eof || length {
         // `swoole_init` registered them before any client existed.
-        let framing = &native_host().framing;
+        let framing = FRAMED_READERS
+            .get()
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("client framing is not registered"));
         let framed = if eof { framing.eof } else { framing.length };
         let socket = this.socket();
         // A package callback may destroy the client; its socket outlives this handler.

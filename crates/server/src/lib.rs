@@ -53,6 +53,7 @@ pub mod process_worker;
 #[cfg(feature = "upstream-symbols")]
 pub use pool_native::process_pool_native;
 pub mod port_config;
+pub mod port_tls;
 mod process_factory;
 pub mod reactor_entry;
 mod reactor_handle;

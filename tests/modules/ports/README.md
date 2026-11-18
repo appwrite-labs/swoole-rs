@@ -21,7 +21,7 @@ macros, which the tests turn on with `log::capture`, as `swoole_init` does. `cer
 without the setter's file check.
 
 `core-tests/src/server/server.cpp`'s `server.ssl_matches_wildcard_name` starts no server, so
-it is `lifecycle::tests::server_ssl_matches_wildcard_name`, over the Rust
+it is `swoole_rs_server::port_tls::tests::server_ssl_matches_wildcard_name`, over the Rust
 `ListenPort::ssl_matches_wildcard_name`: upstream's 44 live `EXPECT`s with the same subject,
 certificate name and expected result, in its order (its commented-out ones stay out).
 server.cpp's other TLS TESTs start a server: tests/modules/http/README.md maps them.

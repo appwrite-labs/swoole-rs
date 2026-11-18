@@ -15,7 +15,7 @@ cares = ["dep:swoole-rs-cares-sys", "swoole-rs-cares-sys/libcares"]
 [dependencies]
 swoole-rs-cares-sys = { path = "../cares-sys", optional = true }
 swoole-rs-error = { path = "../error" }
-swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
 swoole-rs-base64 = { path = "../base64" }
 swoole-rs-websocket = { path = "../websocket" }
 swoole-rs-http = { path = "../http" }
@@ -23,7 +23,7 @@ swoole-rs-protocols = { path = "../protocols" }
 libc = "=0.2.191"
 
 [dev-dependencies]
-swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols", "log-capture"] }
+swoole-rs-corebase = { path = "../corebase", features = ["log-capture"] }
 swoole-rs-oracle = { path = "../oracle" }
 
 # The request formatter against the pinned calls (tests/modules/clients/README.md).

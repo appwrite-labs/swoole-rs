@@ -264,7 +264,7 @@ pub(super) fn timer_add(timeout: f64, _: Handle<'_>) -> Option<swoole_rs_corebas
 pub(super) fn del_id(_: swoole_rs_corebase::timer::Held) {
     log("timer del");
 }
-/// crates/hooks' `async::dispatch`: logs the request; nothing completes it.
+/// The async pool submission: logs the request; nothing completes it.
 fn async_dispatch(lookup: Lookup, request: &crate::resolver::Request) -> bool {
     mock(|m| m.lookup = Some(lookup));
     let request = request.get();
@@ -314,6 +314,7 @@ fn set_proxy(client: *mut Client, http: bool) {
 
 fn new_client(kind: c_int, is_async: bool) -> *mut Client {
     const OPS: SocketOps = SocketOps {
+        dispatch_dns: async_dispatch,
         with_buffer: with_thread_buffer,
         recv_append: net::recv_append,
         recv_sync: net::recv_sync,
@@ -352,7 +353,7 @@ fn new_client(kind: c_int, is_async: bool) -> *mut Client {
 /// with `callbacks`.
 fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
     mock(|m| *m = Mock::default());
-    set_host(FRAMING, async_dispatch);
+    set_framing(FRAMING);
     log::set_last_error(0);
     let client = new_client(kind, is_async);
     if callbacks {

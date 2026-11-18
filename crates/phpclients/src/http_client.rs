@@ -960,7 +960,10 @@ impl Client {
     /// otherwise (`write_func`, which runs inside the parse) the caller gets
     /// none and fails.
     fn receiving<R>(&self, receive: impl FnOnce(&mut Parser) -> R) -> Option<R> {
-        let Some(mut parser) = self.parser.take() else {
+        let received = self
+            .parser
+            .with_taken(|parser| parser.as_mut().map(receive));
+        if received.is_none() {
             if let Some(socket) = self.co() {
                 socket.check_bound(Events::RDWR);
             }
@@ -969,11 +972,8 @@ impl Client {
                 CO_HAS_BEEN_BOUND,
                 &strerror(CO_HAS_BEEN_BOUND),
             );
-            return None;
-        };
-        let received = receive(&mut parser);
-        self.parser.set(Some(parser));
-        Some(received)
+        }
+        received
     }
 
     fn recv_response(&self, parser: &mut Parser, timeout: f64) -> bool {
@@ -1507,31 +1507,28 @@ fn on_body(client: &Client, data: &[u8]) -> Flow {
         && !client.compression_error.get()
         && client.compress.get() != Compress::None;
     if let Some(callable) = client.write_func.with_taken(|callable| callable.clone()) {
-        // The decoded chunk leaves the client for the call, which can reenter it.
-        let decoded = if !decompress {
-            None
-        } else if client.decompress(data) {
-            let decoded = client.body.take();
-            if decoded.is_empty() {
-                client.body.set(decoded);
-                return Flow::Go;
-            }
-            Some(decoded)
-        } else {
-            client.compression_error.set(true);
-            None
+        let write = |chunk: &[u8]| {
+            client.in_callback.set(true);
+            client.call_write(&callable, chunk)
         };
-        let chunk = decoded.as_deref().unwrap_or(data);
-        client.in_callback.set(true);
-        let result = client.call_write(&callable, chunk);
-        // Cleared after the call, keeping the buffer.
-        match decoded {
-            Some(mut decoded) => {
-                decoded.clear();
-                drop(client.body.replace(decoded));
+        let result = if decompress && client.decompress(data) {
+            // Nested calls see an empty body while the callback consumes this chunk.
+            let Some(result) = client.body.with_taken(|body| {
+                let result = (!body.is_empty()).then(|| write(body));
+                body.clear();
+                result
+            }) else {
+                return Flow::Go;
+            };
+            result
+        } else {
+            if decompress {
+                client.compression_error.set(true);
             }
-            None => client.body.with_taken(Vec::clear),
-        }
+            let result = write(data);
+            client.body.with_taken(Vec::clear);
+            result
+        };
         client.in_callback.set(false);
         if result.is_err() {
             client.bailout.set(true);

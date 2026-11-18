@@ -10,11 +10,11 @@ use std::{
     ffi::{CStr, c_int},
     rc::Rc,
 };
-use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::memory::{
     members::SharedTable,
     table::{Column, ColumnType, Current, Locked, TYPE_FLOAT, TYPE_INT, TYPE_STRING},
 };
+use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_phpstubs::table;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, E_ERROR, E_WARNING, Message, Minit, Owned, OwnedArray, Value,
@@ -184,10 +184,8 @@ fn change(call: &Call, change: impl FnOnce(&mut SharedTable) -> bool) -> bool {
     let Some(held) = call.custom::<Held>() else {
         return false;
     };
-    let mut table = held.0.take();
-    let changed = table.as_mut().and_then(Rc::get_mut).is_some_and(change);
-    held.0.set(table);
-    changed
+    held.0
+        .with_taken(|table| table.as_mut().and_then(Rc::get_mut).is_some_and(change))
 }
 
 /// `__construct(int $table_size, float $conflict_proportion = 0.2)`.

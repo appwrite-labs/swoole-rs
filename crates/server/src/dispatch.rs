@@ -370,7 +370,7 @@ pub fn add_port<'a>(
     if socket_type & SOCK_SSL != 0 {
         port.r#type = socket_type & !SOCK_SSL;
         port.ssl = true;
-        (methods().ssl_context_init)(&mut port);
+        crate::port_tls::ssl_context_init(&mut port);
     }
     if !(methods().create_socket)(&port, serv.config().enable_reuse_port.get()) {
         let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
@@ -696,8 +696,6 @@ mod tests {
     /// fd 3 as TCP, fd 4 as UDP and refuses the rest, keeping the fd as the port.
     fn fake_port_methods() {
         crate::port_config::set_methods(crate::port_config::PortMethods {
-            ssl_context_init: |_| true,
-            ssl_create: |_, _| unreachable!(),
             import: |config, fd| {
                 config.r#type = if fd == 4 { SOCK_UDP } else { 1 };
                 config.port.set(fd);
@@ -710,7 +708,6 @@ mod tests {
             get_protocols: |_| unreachable!(),
             init_protocol: |_| unreachable!(),
             destroy_http_request: |_| unreachable!(),
-            tls_free: |_| {},
         });
     }
 
