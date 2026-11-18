@@ -8,6 +8,8 @@
 // 127.0.0.1), root/root, database test; SQLite is a file under TEST_DATA. Each handle is the
 // worker's own, opened by its route's first request: with hooks on, a connect in workerStart
 // yields, and the worker serves requests before it returns (#2235).
+// /file goes through the hooked plain-file stream wrapper (#5145): a stat, a 16 KiB file read in
+// 4 KiB chunks, the same file through file_get_contents, a small write and a directory walk.
 require __DIR__ . '/../../corpus/bootstrap.php';
 
 // No DNS cache, so every request asks the resolver.
@@ -46,6 +48,32 @@ $server->on('request', static function ($request, $response) use (&$handles): vo
                 curl_setopt($handles[$route], CURLOPT_RETURNTRANSFER, true);
             }
             $ok = curl_exec($handles[$route]) === 'pong';
+            break;
+        case '/file':
+            $dir = getenv('TEST_DATA') . '/files';
+            if (!isset($handles[$route])) {
+                @mkdir($dir);
+                file_put_contents("$dir/data.bin", str_repeat('0123456789abcdef', 1024));
+                $handles[$route] = hash_file('crc32b', "$dir/data.bin");
+            }
+            $read = '';
+            $file = fopen("$dir/data.bin", 'rb');
+            while (!feof($file)) {
+                $read .= fread($file, 4096);
+            }
+            fclose($file);
+            file_put_contents("$dir/out.txt", 'written');
+            $names = [];
+            $walk = opendir($dir);
+            while (($name = readdir($walk)) !== false) {
+                $names[] = $name;
+            }
+            closedir($walk);
+            sort($names);
+            $ok = filesize("$dir/data.bin") === 16384
+                && hash('crc32b', $read) === $handles[$route]
+                && file_get_contents("$dir/data.bin") === $read
+                && $names === ['.', '..', 'data.bin', 'out.txt'];
             break;
         case '/dns':
             $ok = Swoole\Coroutine\System::dnsLookup('callgrind.test') === '127.0.0.1';

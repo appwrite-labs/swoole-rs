@@ -51,7 +51,7 @@ jobs:
             workloads: --workload connect --workload https --workload wss --workload atomic --workload process-mode --workload http2-concurrent --workload websocket-64k --workload websocket-fragmented --workload upload --workload static --workload client --workload socket
           - shard: 4
             postgres: postgres:14
-            workloads: --workload pgsql --workload sqlite --workload curl --workload dns
+            workloads: --workload pgsql --workload sqlite --workload curl --workload dns --workload file
             configure: --configure=--enable-swoole-pgsql --configure=--enable-swoole-sqlite --configure=--enable-swoole-curl --configure=--enable-cares
             # The swoole-pgsql build registers its own PDO pgsql driver, so PHP's pdo_pgsql stays out.
             extensions: --php-extension pdo --php-extension pdo_sqlite --php-extension curl
