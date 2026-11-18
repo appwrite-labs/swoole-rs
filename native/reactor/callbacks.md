@@ -26,9 +26,16 @@ condition, the idle task, signal dispatch (main thread), try-exit, `malloc_trim`
 ## Handlers
 
 Rust stores handlers in `crates/corebase/src/reactor/handlers.rs`. Callers register
-through `reactor_upstream::set_handler` or `event_api::set_handler`, and query a
+through `reactor_upstream::set_handlers` or `event_api::set_handlers`, and query a
 typed event with `reactor_upstream::isset_handler`. The C++ class declares no
 handler methods.
+
+A registration replaces the read, write and error slots for one descriptor type.
+Coroutine sockets, poll and event waiters, stream clients, PHP user events, cURL
+and c-ares supply their own error callback. Server sessions, TCP listeners,
+datagram server and client sockets, worker pipes, signal descriptors, AIO and
+io_uring select `ConnectionDefault`. That choice uses the current reactor's
+error fallback. Without one, error dispatch tries the read and write handlers.
 
 ## Deferred queues
 

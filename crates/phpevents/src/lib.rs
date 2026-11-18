@@ -617,9 +617,7 @@ fn install_handlers(php: Php<'_>) {
     if event_api::isset_handler(FD_USER, Events::READ) {
         return;
     }
-    reactor::set_fd_handler::<Readable>(php, FD_USER, Events::READ);
-    reactor::set_fd_handler::<Writable>(php, FD_USER, Events::WRITE);
-    reactor::set_fd_handler::<Error>(php, FD_USER, Events::ERROR);
+    reactor::set_fd_handlers::<Readable, Writable, Error>(php, FD_USER);
 }
 
 /// The errno's description, as libc's `strerror`.

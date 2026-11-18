@@ -71,7 +71,20 @@ pub fn case_equal(input: &[u8], expected: &[u8]) -> bool {
 fn unreserved(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || b"-._~".contains(&byte)
 }
+fn check_url_length(length: usize) -> Result<(), i32> {
+    if length > (usize::MAX - 1) / 3 {
+        Err(OVERFLOW)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[path = "../../../tests/modules/http/url_length.rs"]
+mod url_length;
+
 fn encoded_length(input: &[u8]) -> Result<usize, i32> {
+    check_url_length(input.len())?;
     let escaped = input.iter().filter(|&&byte| !unreserved(byte)).count();
     input
         .len()
@@ -83,7 +96,7 @@ fn encoded_length(input: &[u8]) -> Result<usize, i32> {
 /// The encoded capacity of `input`, its NUL included.
 ///
 /// # Errors
-/// `OVERFLOW` when it exceeds `isize::MAX`.
+/// `OVERFLOW` when the maximum expansion overflows or the result exceeds `isize::MAX`.
 pub fn url_capacity(input: &[u8]) -> Result<usize, i32> {
     encoded_length(input)
 }

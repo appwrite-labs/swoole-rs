@@ -174,14 +174,12 @@ fn cleanup() {
 }
 /// The first query of a reactor's lifetime: its handlers and library cleanup.
 fn install() {
-    let readable: swoole_rs_corebase::reactor::Handler = readable;
-    for (event, handler) in [
-        (Events::READ, readable),
-        (Events::WRITE, writable),
-        (Events::ERROR, readable),
-    ] {
-        event_api::set_handler(FD, event, Some(handler));
-    }
+    event_api::set_handlers(
+        FD,
+        Some(readable),
+        Some(writable),
+        swoole_rs_corebase::reactor::ErrorHandler::Callback(readable),
+    );
     // `cleanup` runs once, when the reactor goes.
     event_api::on_destroy(cleanup);
 }

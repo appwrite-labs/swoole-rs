@@ -438,8 +438,13 @@ impl Owner {
 
     /// `~Timer`: releases every node, then the queue. A forked child or terminal
     /// Zend bailout will never resume an active selection, so it is closed here;
-    /// same-process deletion during a live callback aborts.
-    pub(crate) fn destroy(&self) {
+    /// same-process deletion during a live callback aborts. Takes the timer by
+    /// value: a published timer is first taken out of its slot (`wrapper::take`).
+    #[expect(
+        clippy::boxed_local,
+        reason = "the timer stays at its address while released callbacks run"
+    )]
+    pub(crate) fn destroy(self: Box<Self>) {
         self.lend(Queue::close);
         self.set(-1);
         if self.abandoned.get() || std::process::id().cast_signed() != self.owner_pid {
@@ -552,8 +557,7 @@ mod tests {
     /// `delete timer`, as `swoole_timer_free` does of the thread's: these timers are
     /// never published.
     unsafe fn free(timer: *mut Owner) {
-        unsafe { &*timer }.destroy();
-        drop(unsafe { Box::from_raw(timer) });
+        unsafe { Box::from_raw(timer) }.destroy();
     }
 
     type Call = Box<dyn FnMut(&Owner, c_long)>;
@@ -986,12 +990,20 @@ mod tests {
 
     #[test]
     fn timer_is_unpublished_when_callbacks_are_released() {
-        use crate::timer::wrapper::{current, publish, swoole_timer_free, timer};
+        use crate::timer::wrapper::{
+            current, publish, swoole_timer_clear, swoole_timer_free, timer,
+        };
         let previous = timer();
         let p = Probe::new();
         publish(p.timer);
         let node = p.add('A', false, p.record('A'));
-        p.on_destroy(&node, 'a', || assert!(current().is_none()));
+        let id = node.id;
+        // A destructor that calls back into the API finds no timer, not the one
+        // being destroyed.
+        p.on_destroy(&node, 'a', move || {
+            assert!(current().is_none());
+            assert!(!swoole_timer_clear(id));
+        });
         swoole_timer_free();
         publish(previous);
         assert_eq!(p.destructors(), 1);

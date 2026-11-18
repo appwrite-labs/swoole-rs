@@ -18,7 +18,7 @@ use swoole_rs_corebase::process::worker_record::WorkerRecord;
 #[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_corebase::process::worker_record::WorkerType;
 #[cfg(any(test, feature = "upstream-symbols"))]
-use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::{ErrorHandler::ConnectionDefault, Events};
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode;
 
@@ -410,7 +410,7 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> b
     }
     reactor.hold_server(serv);
     let accept: swoole_rs_corebase::reactor::Handler = crate::server_methods::accept_connection;
-    reactor.set_handler(FD_STREAM_SERVER, Events::READ, accept);
+    reactor.set_handlers(FD_STREAM_SERVER, Some(accept), None, ConnectionDefault);
     if let Some(pipe) = config.command_pipe() {
         if !single {
             hybrid().step(serv, Step::CommandHandler);

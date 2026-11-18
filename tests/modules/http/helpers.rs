@@ -220,10 +220,11 @@ fn positive_url_encoding_capacity_and_bytes_cover_loop_boundaries() {
     }
 }
 #[test]
-fn url_roundtrips_all_bytes_and_handles_malformed_escapes() {
+fn all_byte_values_keep_their_encoding_and_round_trip() {
     let input: Vec<u8> = (0..=255).collect();
     let mut encoded = vec![0; swoole_rs_http::url_capacity(&input).unwrap()];
     let length = encode_into(&input, &mut encoded).unwrap();
+    assert_eq!(length, 636);
     let length = swoole_rs_http::url_decode(&mut encoded[..length]);
     assert_eq!(&encoded[..length], input);
     let mut malformed = b"%+%0%GG%a0+%00!".to_vec();
@@ -521,4 +522,32 @@ fn boundaries_match_the_pin() {
             }
         }
     }
+}
+
+#[test]
+fn terminator_stays_within_the_requested_allocation() {
+    for (input, length) in [(&b""[..], 0), (b" ", 3), (&[0xff; 31], 93)] {
+        let mut output = vec![0xa5; length + 2];
+        assert_eq!(encode_into(input, &mut output[..=length]), Ok(length));
+        assert_eq!(&output[length..], &[0, 0xa5]);
+    }
+}
+
+#[test]
+fn unreserved_bytes_and_explicit_length_keep_their_behavior() {
+    let literal = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+    assert_eq!(encode(literal), literal);
+    assert_eq!(encode(&b"a b?ignored"[..3]), b"a%20b");
+}
+
+#[test]
+fn allocation_failure_preserves_errno_and_releases_storage() {
+    // Rust's encoder takes caller-owned storage, so neither upstream allocation is needed.
+    let mut storage = [MaybeUninit::new(0); 6];
+    assert_eq!(swoole_rs_http::url_encode(b"a b", &mut storage), Ok(5));
+    // SAFETY: every slot was initialized before encoding.
+    assert_eq!(
+        storage.map(|slot| unsafe { slot.assume_init() }),
+        *b"a%20b\0"
+    );
 }

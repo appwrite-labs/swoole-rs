@@ -144,7 +144,7 @@ impl SessionState {
             local,
             remote: local.map(Cell::new),
             remote_window_size: Cell::new(local[INIT_WINDOW_SIZE]),
-            local_window_size: Cell::new(local[INIT_WINDOW_SIZE]),
+            local_window_size: Cell::new(swoole_rs_http2::INITIAL_CONNECTION_WINDOW),
             max_body_size,
             last_stream_id: Cell::new(0),
             header_stream_id: Cell::new(0),

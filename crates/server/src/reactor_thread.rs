@@ -5,7 +5,7 @@ use core::ffi::{c_int, c_long};
 use swoole_rs_corebase::ServerEvent;
 #[cfg(test)]
 use swoole_rs_corebase::constants::SocketTypeCode;
-use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::ErrorHandler::ConnectionDefault;
 
 use swoole_rs_corebase::reactor::Event;
 #[cfg(any(test, feature = "upstream-symbols"))]
@@ -207,9 +207,13 @@ pub(crate) fn init_reactor(serv: view::Server<'_>, reactor: Reactor) {
             b.extend(b.size().wrapping_mul(2));
         });
     }
-    reactor.set_handler(FD_DGRAM_SERVER, Events::READ, on_packet_received);
-    reactor.set_handler(FD_SESSION, Events::WRITE, on_write);
-    reactor.set_handler(FD_SESSION, Events::READ, on_read);
+    reactor.set_handlers(
+        FD_DGRAM_SERVER,
+        Some(on_packet_received),
+        None,
+        ConnectionDefault,
+    );
+    reactor.set_handlers(FD_SESSION, Some(on_read), Some(on_write), ConnectionDefault);
 }
 
 /// `Server::join_reactor_thread`: tell each running reactor thread to shut down,
@@ -256,6 +260,7 @@ pub(crate) fn send_event(sock: Option<Heap<'_>>, fd: c_long, kind: ServerEvent) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use swoole_rs_corebase::reactor::Events;
 
     /// A UDP socket listed as a datagram port of `live`, as `store_listen_socket`
     /// leaves one, and a client that sends to it.
