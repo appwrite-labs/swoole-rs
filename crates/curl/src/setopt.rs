@@ -1,9 +1,10 @@
 //! `curl_setopt` and `curl_setopt_array` (#5131). The options that take a number,
 //! a string or a blob are set here, through the typed accessors in
-//! `native/hooks/curl_handle.cc` (`curl_easy_setopt` is variadic); the rest
-//! (callables, file handles, lists, post fields, share, private,
-//! `CURLINFO_HEADER_OUT` and `CURLOPT_RETURNTRANSFER`) still go to the bundled
-//! copies' `swoole_curl_setopt_native`, which also rejects an unknown option.
+//! `native/hooks/curl_handle.cc` (`curl_easy_setopt` is variadic), as are the
+//! list options, `CURLOPT_RETURNTRANSFER` and `CURLOPT_PRIVATE`; the rest
+//! (callables, file handles, post fields, share and `CURLINFO_HEADER_OUT`)
+//! still go to the bundled copies' `swoole_curl_setopt_native`, which also
+//! rejects an unknown option.
 //!
 //! Each option is gated as the copies' `#if`s gated its `case`: by the libcurl
 //! headers the extension was built against and by the PHP version, so one the
@@ -26,6 +27,14 @@ unsafe extern "C" {
     ) -> c_int;
     safe fn swoole_curl_setopt_blob(handle: PhpHandle<'_>, option: c_int, value: &ZStr) -> c_int;
     safe fn swoole_curl_save_error(handle: PhpHandle<'_>, error: c_int);
+    // `curl_slist_append`; false leaves the list as it was.
+    safe fn swoole_curl_list_append(list: &mut List, value: &ZStr) -> bool;
+    safe fn swoole_curl_list_free(list: List);
+    // Sets a list option and gives the list to the handle's clone family, which frees it.
+    safe fn swoole_curl_setopt_list(handle: PhpHandle<'_>, option: c_int, list: List) -> c_int;
+    safe fn swoole_curl_set_write_method(handle: PhpHandle<'_>, method: c_int);
+    // The handle's `private_data`, for `CURLINFO_PRIVATE`.
+    safe fn swoole_curl_private<'a>(handle: PhpHandle<'a>) -> &'a mut swoole_rs_zend::Owned;
     safe fn swoole_curl_open_basedir() -> bool;
     // Warns about a path outside open_basedir, which a user error handler can bail out of.
     safe fn swoole_curl_allowed_path(path: &ZStr) -> bool;
@@ -46,8 +55,12 @@ swoole_rs_zend::handlers! {
 }
 
 /// PHP's own options, outside curl.h (`curl_private.h`).
+const CURLOPT_RETURNTRANSFER: zend_long = 19913;
 const CURLOPT_BINARYTRANSFER: zend_long = 19914;
 const CURLOPT_SAFE_UPLOAD: zend_long = -1;
+/// `PHP_CURL_STDOUT` and `PHP_CURL_RETURN`: where the write handler sends the body.
+const PHP_CURL_STDOUT: c_int = 0;
+const PHP_CURL_RETURN: c_int = 4;
 /// `CURLPROTO_FILE` and `CURL_REDIR_POST_ALL`.
 const CURLPROTO_FILE: zend_long = 1 << 10;
 const CURL_REDIR_POST_ALL: zend_long = 7;
@@ -71,6 +84,7 @@ const CURLOPT_CERTINFO: zend_long = 172;
 const CURLOPT_CONNECTTIMEOUT: zend_long = 78;
 const CURLOPT_CONNECTTIMEOUT_MS: zend_long = 156;
 const CURLOPT_CONNECT_ONLY: zend_long = 141;
+const CURLOPT_CONNECT_TO: zend_long = 10243;
 const CURLOPT_COOKIE: zend_long = 10022;
 const CURLOPT_COOKIEFILE: zend_long = 10031;
 const CURLOPT_COOKIEJAR: zend_long = 10082;
@@ -119,8 +133,10 @@ const CURLOPT_HEADEROPT: zend_long = 229;
 const CURLOPT_HSTS: zend_long = 10300;
 const CURLOPT_HSTS_CTRL: zend_long = 299;
 const CURLOPT_HTTP09_ALLOWED: zend_long = 285;
+const CURLOPT_HTTP200ALIASES: zend_long = 10104;
 const CURLOPT_HTTPAUTH: zend_long = 107;
 const CURLOPT_HTTPGET: zend_long = 80;
+const CURLOPT_HTTPHEADER: zend_long = 10023;
 const CURLOPT_HTTPPROXYTUNNEL: zend_long = 61;
 const CURLOPT_HTTP_CONTENT_DECODING: zend_long = 158;
 const CURLOPT_HTTP_TRANSFER_DECODING: zend_long = 157;
@@ -141,6 +157,7 @@ const CURLOPT_LOW_SPEED_LIMIT: zend_long = 19;
 const CURLOPT_LOW_SPEED_TIME: zend_long = 20;
 const CURLOPT_MAIL_AUTH: zend_long = 10217;
 const CURLOPT_MAIL_FROM: zend_long = 10186;
+const CURLOPT_MAIL_RCPT: zend_long = 10187;
 const CURLOPT_MAIL_RCPT_ALLLOWFAILS: zend_long = 290;
 const CURLOPT_MAXAGE_CONN: zend_long = 288;
 const CURLOPT_MAXCONNECTS: zend_long = 71;
@@ -165,12 +182,16 @@ const CURLOPT_PINNEDPUBLICKEY: zend_long = 10230;
 const CURLOPT_PIPEWAIT: zend_long = 237;
 const CURLOPT_PORT: zend_long = 3;
 const CURLOPT_POST: zend_long = 47;
+const CURLOPT_POSTQUOTE: zend_long = 10039;
 const CURLOPT_POSTREDIR: zend_long = 161;
+const CURLOPT_PREQUOTE: zend_long = 10093;
 const CURLOPT_PRE_PROXY: zend_long = 10262;
+const CURLOPT_PRIVATE: zend_long = 10103;
 const CURLOPT_PROTOCOLS: zend_long = 181;
 const CURLOPT_PROTOCOLS_STR: zend_long = 10318;
 const CURLOPT_PROXY: zend_long = 10004;
 const CURLOPT_PROXYAUTH: zend_long = 111;
+const CURLOPT_PROXYHEADER: zend_long = 10228;
 const CURLOPT_PROXYPASSWORD: zend_long = 10176;
 const CURLOPT_PROXYPORT: zend_long = 59;
 const CURLOPT_PROXYTYPE: zend_long = 101;
@@ -203,12 +224,14 @@ const CURLOPT_PROXY_TLSAUTH_USERNAME: zend_long = 10251;
 const CURLOPT_PROXY_TRANSFER_MODE: zend_long = 166;
 const CURLOPT_PUT: zend_long = 54;
 const CURLOPT_QUICK_EXIT: zend_long = 322;
+const CURLOPT_QUOTE: zend_long = 10028;
 const CURLOPT_RANDOM_FILE: zend_long = 10076;
 const CURLOPT_RANGE: zend_long = 10007;
 const CURLOPT_REDIR_PROTOCOLS: zend_long = 182;
 const CURLOPT_REDIR_PROTOCOLS_STR: zend_long = 10319;
 const CURLOPT_REFERER: zend_long = 10016;
 const CURLOPT_REQUEST_TARGET: zend_long = 10266;
+const CURLOPT_RESOLVE: zend_long = 10203;
 const CURLOPT_RESUME_FROM: zend_long = 21;
 const CURLOPT_RTSP_CLIENT_CSEQ: zend_long = 193;
 const CURLOPT_RTSP_REQUEST: zend_long = 189;
@@ -259,6 +282,7 @@ const CURLOPT_TCP_KEEPCNT: zend_long = 326;
 const CURLOPT_TCP_KEEPIDLE: zend_long = 214;
 const CURLOPT_TCP_KEEPINTVL: zend_long = 215;
 const CURLOPT_TCP_NODELAY: zend_long = 121;
+const CURLOPT_TELNETOPTIONS: zend_long = 10070;
 const CURLOPT_TFTP_BLKSIZE: zend_long = 178;
 const CURLOPT_TFTP_NO_OPTIONS: zend_long = 242;
 const CURLOPT_TIMECONDITION: zend_long = 33;
@@ -314,6 +338,12 @@ enum Kind {
     /// A long, masked to `CURL_REDIR_POST_ALL`.
     PostRedirect,
     Blob,
+    /// An array of strings, as a `curl_slist` the handle's clone family frees.
+    List(&'static std::ffi::CStr),
+    /// Whether `curl_exec` returns the body.
+    ReturnTransfer,
+    /// Any value, kept for `CURLINFO_PRIVATE`.
+    Private,
     /// Kept for compatibility; nothing is set.
     Ignored,
 }
@@ -344,6 +374,18 @@ fn kind(option: zend_long) -> Option<Kind> {
         CURLOPT_INFILESIZE_LARGE if PHP_VERSION_ID >= 80500 => Some(Kind::Offset),
         CURLOPT_POSTREDIR => Some(Kind::PostRedirect),
         CURLOPT_BINARYTRANSFER => Some(Kind::Ignored),
+        CURLOPT_RETURNTRANSFER => Some(Kind::ReturnTransfer),
+        CURLOPT_PRIVATE => Some(Kind::Private),
+        CURLOPT_HTTP200ALIASES => Some(Kind::List(c"CURLOPT_HTTP200ALIASES")),
+        CURLOPT_HTTPHEADER => Some(Kind::List(c"CURLOPT_HTTPHEADER")),
+        CURLOPT_POSTQUOTE => Some(Kind::List(c"CURLOPT_POSTQUOTE")),
+        CURLOPT_PREQUOTE => Some(Kind::List(c"CURLOPT_PREQUOTE")),
+        CURLOPT_QUOTE => Some(Kind::List(c"CURLOPT_QUOTE")),
+        CURLOPT_TELNETOPTIONS => Some(Kind::List(c"CURLOPT_TELNETOPTIONS")),
+        CURLOPT_MAIL_RCPT => Some(Kind::List(c"CURLOPT_MAIL_RCPT")),
+        CURLOPT_RESOLVE => Some(Kind::List(c"CURLOPT_RESOLVE")),
+        CURLOPT_PROXYHEADER => Some(Kind::List(c"CURLOPT_PROXYHEADER")),
+        CURLOPT_CONNECT_TO => Some(Kind::List(c"CURLOPT_CONNECT_TO")),
         _ => long(option)
             .or_else(|| text(option))
             .or_else(|| newer_long(option))
@@ -773,11 +815,82 @@ fn set(
                 }
             }
         }
+        Kind::List(name) => set_list(call, handle, id, name, value),
+        Kind::ReturnTransfer => {
+            let method = if value.truthy() {
+                PHP_CURL_RETURN
+            } else {
+                PHP_CURL_STDOUT
+            };
+            swoole_curl_set_write_method(handle, method);
+            swoole_curl_save_error(handle, 0);
+            true
+        }
+        Kind::Private => {
+            // The previous value is released once the slot is no longer borrowed: its
+            // destructor can call back into this handle.
+            let previous = std::mem::replace(swoole_curl_private(handle), value.copy());
+            drop(previous);
+            true
+        }
         Kind::Ignored => {
             swoole_curl_save_error(handle, 0);
             true
         }
     }
+}
+
+/// A `curl_slist` being built, freed unless [`swoole_curl_setopt_list`] takes it.
+#[repr(transparent)]
+struct List(Option<std::ptr::NonNull<std::ffi::c_void>>);
+
+impl Drop for List {
+    fn drop(&mut self) {
+        if self.0.is_some() {
+            swoole_curl_list_free(Self(self.0.take()));
+        }
+    }
+}
+
+/// The list options: each element as a string, in order.
+fn set_list(
+    call: &Call<'_>,
+    handle: PhpHandle<'_>,
+    id: c_int,
+    name: &std::ffi::CStr,
+    value: &Value,
+) -> bool {
+    // A conversion can run PHP code, which must not free the table.
+    let Some(held) = value.hold() else {
+        let function = call
+            .function()
+            .name()
+            .map_or(&[][..], |function| function.bytes());
+        let message = [
+            function,
+            b"(): The ",
+            name.to_bytes(),
+            b" option must have an array value",
+        ]
+        .concat();
+        swoole_rs_zend::type_error(&CString::new(message).unwrap_or_default());
+        return false;
+    };
+    let Some(table) = held.array() else {
+        return false;
+    };
+    let mut list = List(None);
+    let mut entries = table.entries();
+    while let Some((_, element)) = entries.next_keyed() {
+        let Some(text) = element.referred().applied_string() else {
+            return false;
+        };
+        if !swoole_curl_list_append(&mut list, &text) {
+            warn(E_WARNING, c"Could not build curl_slist");
+            return false;
+        }
+    }
+    swoole_curl_setopt_list(handle, id, list) == 0
 }
 
 fn set_long(handle: PhpHandle<'_>, id: c_int, long: zend_long) -> bool {
