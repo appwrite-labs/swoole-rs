@@ -1,18 +1,13 @@
 # Buffer ABI v1
 
-Types: `native/include/swoole_rs_buffer.h`. Feature value 2 (graduated: always on).
-
-Rust owns one queue and its data allocations. Entries are Rust data, sendfile
-tokens or CLOSE markers; the front cursor (offset and generation) is Rust's too. The socket
-record's `Buffer` (declared in `native/buffer/swoole_buffer.h`) holds only the Rust
-handle, and its methods are Rust (`crates/corebase/src/buffer/cpp.rs`), which only Rust calls.
-Callers read the first entry with `typed_front()`, commit sends with
-`typed_consume()`, queue a close with `typed_close()` and drop the entry with `pop()`.
+Feature value 2 is always enabled. Native socket headers forward-declare
+`swoole::Buffer`. Rust owns the queue, its allocations and its front cursor.
+`CppBuffer` lends the queue to Rust send operations in
+`crates/corebase/src/buffer/cpp.rs`.
 
 ## Ownership and accounting
 
-- `Buffer::create` returns a unique queue, or `NOMEM`. Chunk size 0 means
-  `INT32_MAX`. `Buffer::release` drops it, or hands it back while a token is queued.
+- `Buffer::new` creates an empty queue. A chunk size of zero selects `INT32_MAX`.
 - Append copies borrowed slices into stable Rust allocations.
 - Vector offset is an unsigned byte offset into the concatenated slices.
   Empty slices are allowed. Offset equal to the total succeeds and inserts
@@ -21,17 +16,15 @@ Callers read the first entry with `typed_front()`, commit sends with
   chunk is popped. Pop subtracts the entry's copied length. Total length cannot
   exceed `UINT32_MAX`. Tokens count zero bytes.
 - The queue never dereferences, calls or frees a token or its disposer; pop hands
-  both back as a `TypedDetached`, whose `dispose()` runs the disposer once, after the
+  both back as a `Detached`, whose `dispose()` runs the disposer once, after the
   queue call returns. Data pointers survive append; pop invalidates the removed front.
-- Release with pending tokens fails without mutation; otherwise it drops remaining
-  data. `~Buffer` drains and disposes tokens first.
+- Dropping a `CppBuffer` drains its resident queue and disposes each detached
+  entry. A borrower that has taken the queue owns its disposal.
 
 ## Errors, threads, fork
 
-Allocation is fallible. On failure no entry, view or accounting changes. No
-panic, exception or callback crosses the seam. `Buffer`'s methods abort on any
-failed status. Existing `void` append signatures remain and never drop bytes
-silently.
+Queue operations return Rust errors. The socket wrapper checks append results
+and treats failure as fatal.
 
 One owner uses a handle at a time. Sequential transfer between threads is fine
 once views are no longer used. A quiescent fork gives parent and child
