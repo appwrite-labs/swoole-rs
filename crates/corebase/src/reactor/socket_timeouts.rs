@@ -38,8 +38,6 @@ impl core::ops::BitOr for TimeoutKind {
 
 /// `dns_timeout`, `connect_timeout`, `read_timeout` and `write_timeout`, in the
 /// order and types `network::Socket` embeds them (asserted natively).
-// `repr(C)`: a group C's socket record embeds (`native/reactor/swoole_rs_socket.h`).
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SocketTimeouts {
     pub dns: f64,

@@ -9,8 +9,6 @@ use crate::reactor::{Drain, Socket};
 use std::io::IoSlice;
 
 /// `network::Socket`'s write-path fields, in the order and types it embeds them.
-// `repr(C)`: a group C's socket record embeds (`native/reactor/swoole_rs_socket.h`).
-#[repr(C)]
 pub struct SocketOutput {
     /// `Buffer *out_buffer`: the `Buffer` the socket owns, a null pointer without one.
     pub out_buffer: Option<Box<OutputQueue>>,

@@ -1133,8 +1133,6 @@ const SW_EVENT_DATA_CHUNK: u8 = 1 << 2;
 const SW_EVENT_DATA_BEGIN: u8 = 1 << 3;
 const SW_EVENT_DATA_OBJ_PTR: u8 = 1 << 5;
 const SW_SESSION_LIST_SIZE: c_long = 1 << 20;
-/// `offsetof(swr_v1_socket, recv_timer)` (native/reactor/swoole_rs_socket.h asserts it).
-const SOCKET_RECV_TIMER: usize = 152;
 const SIGKILL: c_int = 9;
 const EAGAIN: c_int = 11;
 
@@ -1876,15 +1874,7 @@ fn send_timeout_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int
         .socket()
         .expect("a live socket");
 
-    // SAFETY: the connection's live socket, whose `recv_timer` is at SOCKET_RECV_TIMER.
-    let recv_timer = unsafe {
-        &mut *socket
-            .as_ptr()
-            .cast::<u8>()
-            .add(SOCKET_RECV_TIMER)
-            .cast::<Option<swoole_rs_corebase::timer_key::Held>>()
-    };
-    if let Some(timer) = recv_timer.take() {
+    if let Some(timer) = socket.edit(|fields| fields.recv_timer.take()) {
         swoole_rs_ffi::del_id(timer);
     }
     set_buffer_size(socket.fd(), 65536);

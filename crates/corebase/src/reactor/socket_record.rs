@@ -1,8 +1,4 @@
-//! `network::Socket`'s record: every field, in Rust's layout, allocated, initialised,
-//! duplicated and freed here. Native `Socket` derives from its mirror
-//! (`native/reactor/swoole_rs_socket.h`) and adds only methods; both sides assert the
-//! offsets below. The upstream 1-bit flags are bytes here, which keeps every value
-//! the code assigns.
+//! Rust owns the socket record. The native SSH2 hook reads its leading descriptor.
 use crate::constants::SocketType;
 use crate::constants::{
     SW_SOCKET_BUFFER_SIZE, SW_SOCKET_DEFAULT_CONNECT_TIMEOUT, SW_SOCKET_DEFAULT_DNS_TIMEOUT,
@@ -18,8 +14,6 @@ use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// `network::Socket`'s TLS state group, in the layout `swoole_rs_corebase::tls` works on.
-// `repr(C)`: a group C's socket record embeds (`native/reactor/swoole_rs_socket.h`).
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SocketTlsState {
     pub state: crate::constants::SslState,
@@ -64,8 +58,7 @@ impl Drop for SocketSsl {
 ///   closure has the fields.
 /// - `[REACTOR]`: the serial of the reactor whose registry names the record, or 0.
 ///   [`crate::reactor::OwnedSocket::into_box`] deletes the record from that reactor before it
-///   goes, so no registry outlives its socket. It sits in what was the record's tail
-///   padding, so native code's layout is unchanged.
+///   goes, so no registry outlives its socket.
 // `repr(C)`: the bundled ssh2 hook reads `fd` through `native/hooks/swoole_rs_coroutine_socket.h`.
 #[repr(C)]
 pub struct SocketRecord {
@@ -210,61 +203,11 @@ pub static SOCKET_DEFAULTS: SocketDefaults = SocketDefaults {
     buffer_size: AtomicU32::new(SW_SOCKET_BUFFER_SIZE),
 };
 
-/// Field offsets native code asserts too (`swoole_rs_socket.h`).
-#[cfg(target_pointer_width = "64")]
-const OFFSETS: [(usize, usize); 17] = [
-    (offset_of!(SocketFields, events), 12),
-    (offset_of!(SocketFields, enable_tcp_nodelay), 16),
-    (offset_of!(SocketFields, removed), 18),
-    (offset_of!(SocketFields, close_notified), 35),
-    (offset_of!(SocketFields, chunk_size), 36),
-    (offset_of!(SocketFields, output), 40),
-    (offset_of!(SocketFields, object), 64),
-    (offset_of!(SocketFields, ssl), 72),
-    (offset_of!(SocketFields, tls), 80),
-    (offset_of!(SocketFields, timeouts), 88),
-    (offset_of!(SocketFields, last_received_time), 120),
-    (offset_of!(SocketFields, in_buffer), 136),
-    (offset_of!(SocketFields, recv_timer), 152),
-    (offset_of!(SocketFields, total_send_bytes), 168),
-    (offset_of!(SocketFields, info), 176),
-    (offset_of!(SocketFields, owner), 296),
-    (offset_of!(SocketFields, shared_owner), 312),
-];
-
-#[cfg(target_pointer_width = "64")]
-#[expect(
-    clippy::indexing_slicing,
-    reason = "const-evaluated: an out-of-range index fails the build, and const has no get()"
-)]
-const _: () = {
-    let mut i = 0;
-    while i < OFFSETS.len() {
-        assert!(
-            OFFSETS[i].0 == OFFSETS[i].1,
-            "network::Socket's layout moved"
-        );
-        i += 1;
-    }
-    #[cfg(target_os = "linux")]
-    assert!(
-        size_of::<SocketAddress>() == 120,
-        "network::Address's size moved"
-    );
-    #[cfg(target_os = "macos")]
-    assert!(
-        size_of::<SocketAddress>() == 116,
-        "network::Address's size moved"
-    );
-    assert!(
-        size_of::<SocketFields>() == 328,
-        "network::Socket's size moved"
-    );
-    assert!(
-        offset_of!(SocketRecord, marks) == 328 && size_of::<SocketRecord>() == 336,
-        "network::Socket's borrow count (byte 328) or reactor mark (byte 332) moved"
-    );
-};
+// The native SSH2 hook reads network::Socket::fd from the allocation's start.
+const _: () = assert!(
+    offset_of!(SocketRecord, fields) == 0 && offset_of!(SocketFields, fd) == 0,
+    "native socket callers read the descriptor at offset zero"
+);
 
 impl SocketRecord {
     /// A socket as `new Socket()` makes it: all zero but the default timeouts, and

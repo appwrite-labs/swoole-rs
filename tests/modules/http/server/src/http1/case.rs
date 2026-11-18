@@ -6,7 +6,6 @@
 //! lambdas captured the case's function, the slot's fn reads it from a static the case set.
 
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
-use std::mem::offset_of;
 use std::ptr;
 use std::sync::Mutex;
 
@@ -31,35 +30,6 @@ const CAFILE: u32 = 9;
 
 /// The typed TLS configuration.
 pub(super) type TlsFields = swoole_rs_corebase::tls::OwnedTlsFields;
-
-/// The head of `network::Socket`, through `object` (native/reactor/swoole_rs_socket.h); `info`
-/// is at [`SOCKET_INFO`].
-#[repr(C)]
-pub(super) struct SocketHead {
-    fd: c_int,
-    fd_type: c_int,
-    socket_type: c_int,
-    events: c_int,
-    enable_tcp_nodelay: bool,
-    kernel_nobufs: bool,
-    removed: u8,
-    flags: [u8; 17],
-    chunk_size: u32,
-    out_buffer: *mut c_void,
-    send_timer: u64,
-    buffer_size: u32,
-    output_flags: [u8; 4],
-    object: *mut c_void,
-}
-const _: () = assert!(
-    offset_of!(SocketHead, removed) == 18
-        && offset_of!(SocketHead, chunk_size) == 36
-        && offset_of!(SocketHead, object) == 64
-);
-// `sockaddr_un` is shorter on the BSDs, so the address is Linux's size only there.
-#[cfg(target_os = "linux")]
-const _: () = assert!(size_of::<super::Address>() == 120);
-pub(super) const SOCKET_INFO: usize = 176;
 
 unsafe extern "C-unwind" {
     /// `SwooleG`, whose first member is `max_sockets`.

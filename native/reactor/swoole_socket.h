@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Swoole's include/swoole_socket.h, owned here and cut to what the build's C uses:
- * network::Address and the Socket methods over Rust's socket record (swoole_rs_socket.h).
+ * the SSH2 hook reads the descriptor prefix and checks IPv6 host strings.
  * Rust defines the rest of upstream's Socket methods under their C++ symbols. Upstream's
  * file is deleted, so `#include "swoole_socket.h"` finds this copy on the Rust prefix's
  * include path. */
@@ -11,7 +11,6 @@
 #include "swoole_buffer.h"
 #include "swoole_string.h"
 
-#include "swoole_rs_reactor.h"
 #include "swoole_rs_clients.h"
 
 #include <poll.h>
@@ -30,47 +29,19 @@
 #include <string>
 #include <vector>
 
-enum {
-    SW_BAD_SOCKET = -1,
-};
-
-struct swr_v1_core_resolver;
-
 namespace swoole {
-
 namespace network {
-struct Address {
-    union {
-        sockaddr ss;
-        sockaddr_in inet_v4;
-        sockaddr_in6 inet_v6;
-        sockaddr_un un;
-    } addr;
-    socklen_t len;
-    SocketType type;
 
+struct Address {
     static bool verify_ip(int family, const std::string &str) { return swr_v1_clients_address_verify(family, str.c_str()); }
 };
 
-}  // namespace network
-}  // namespace swoole
-
-#include "swoole_rs_socket.h"
-
-namespace swoole {
-namespace network {
-// The fields are Rust's record (swoole_rs_socket.h); Rust allocates and frees it, so
-// C++ never makes one (SocketRecord::new: zeroed, with the default timeouts).
-struct Socket : swr_v1_socket {
+// Rust owns the record. SSH2's coroutine socket reads only its descriptor prefix.
+struct Socket {
     Socket() = delete;
-
-    int move_fd() {
-        int sock_fd = fd;
-        fd = SW_BAD_SOCKET;
-        return sock_fd;
-    }
-
+    int fd;
 };
+static_assert(offsetof(Socket, fd) == 0, "SocketRecord starts with the descriptor");
 
 }  // namespace network
 }  // namespace swoole

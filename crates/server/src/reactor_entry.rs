@@ -5,7 +5,7 @@
 use core::ffi::{c_int, c_long};
 
 use swoole_rs_corebase::constants::{SocketType, SocketTypeCode};
-use swoole_rs_corebase::net_types::SocketAddress;
+use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_corebase::reactor::{Event, Running};
 
 use crate::base_factory::SendData;
@@ -48,9 +48,10 @@ pub(crate) const DGRAM_HEAD: usize = size_of::<DgramPacket>();
 /// Where each field of a [`DgramPacket`] head starts.
 const TYPE_AT: usize = core::mem::offset_of!(DgramPacket, socket_type);
 const ADDR_AT: usize = core::mem::offset_of!(DgramPacket, socket_addr);
-const STORAGE_AT: usize = ADDR_AT + core::mem::offset_of!(SocketAddress, addr);
-const ADDR_LEN_AT: usize = ADDR_AT + core::mem::offset_of!(SocketAddress, len);
-const KIND_AT: usize = ADDR_AT + core::mem::offset_of!(SocketAddress, kind);
+// The message stores sockaddr storage, socklen_t and socket kind in that order.
+const STORAGE_AT: usize = ADDR_AT;
+const ADDR_LEN_AT: usize = STORAGE_AT + size_of::<AddressStorage>();
+const KIND_AT: usize = ADDR_LEN_AT + size_of::<libc::socklen_t>();
 const LENGTH_AT: usize = core::mem::offset_of!(DgramPacket, length);
 
 /// The `N` bytes of `head` at `at`, which the offsets above keep within it.

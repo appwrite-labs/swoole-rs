@@ -34,19 +34,11 @@ fn assign(address: &mut Address, kind: c_int, host: &str, port: c_int) {
 /// `network::Socket fake_sock{}; fake_sock.fd = fd`, its `info` assigned when `address`
 /// is given. It leaks, as the stack socket outlives every schedule.
 fn fake_sock(fd: c_int, address: Option<(c_int, &str, c_int)>) -> *mut c_void {
-    let sock = swoole_rs_corebase::reactor::SocketRecord::with_fd(fd, 0)
-        .into_raw()
-        .cast::<c_void>();
+    let mut sock = swoole_rs_corebase::reactor::SocketRecord::with_fd(fd, 0);
     if let Some((kind, host, port)) = address {
-        // SAFETY: the socket's `info` (case.rs's SOCKET_INFO), an `Address`.
-        assign(
-            unsafe { &mut *sock.cast::<u8>().add(case::SOCKET_INFO).cast::<Address>() },
-            kind,
-            host,
-            port,
-        );
+        assign(&mut sock.info, kind, host, port);
     }
-    sock
+    sock.into_raw().cast()
 }
 
 /// `serv.add_connection(port, sock, port->get_fd())`.
