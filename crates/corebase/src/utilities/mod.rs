@@ -12,6 +12,18 @@ pub use wait_registry::{swr_v1_utils_wait_registry_init, swr_v1_utils_wait_regis
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
+/// Upstream's `move_first_element`: the first argument moves to `position`.
+/// With `position` or fewer arguments the first argument moves to the end, and
+/// the target function reports the missing arguments itself.
+pub fn move_first_argument<T>(args: &mut [T], position: usize) {
+    let Some(last) = args.len().checked_sub(1) else {
+        return;
+    };
+    if let Some(moved) = args.get_mut(..=position.min(last)) {
+        moved.rotate_left(1);
+    }
+}
+
 fn promoted(byte: u8, signed: bool) -> u64 {
     if signed {
         i64::from(byte.cast_signed()).cast_unsigned()
@@ -301,5 +313,26 @@ mod tests {
         assert_eq!(hash(&[], 0, 2, true), 0);
         assert_ne!(hash(&[255], 1, 0, true), hash(&[255], 1, 0, false));
         assert_eq!(hash(b"hello", 5, 0, true), 210_714_636_441);
+    }
+}
+
+#[cfg(test)]
+mod argument_order {
+    use super::move_first_argument;
+
+    fn moved(count: usize, position: usize) -> Vec<usize> {
+        let mut args: Vec<_> = (0..count).collect();
+        move_first_argument(&mut args, position);
+        args
+    }
+
+    #[test]
+    fn first_argument_moves_to_its_position() {
+        assert_eq!(moved(3, 1), [1, 0, 2]);
+        assert_eq!(moved(4, 2), [1, 2, 0, 3]);
+        assert_eq!(moved(3, 2), [1, 2, 0]);
+        assert_eq!(moved(1, 1), [0], "too few arguments: to the end");
+        assert_eq!(moved(2, 2), [1, 0]);
+        assert_eq!(moved(0, 1), Vec::<usize>::new());
     }
 }

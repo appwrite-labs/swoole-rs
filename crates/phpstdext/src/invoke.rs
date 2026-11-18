@@ -200,18 +200,6 @@ fn call_alias(alias: &CStr, info: &mut CallInfo, frame: &Call) -> Result<(), Bai
     Ok(())
 }
 
-/// Upstream's `move_first_element`: the first argument moves to `position`.
-/// With `position` or fewer arguments the first argument moves to the end, and
-/// the target function reports the missing arguments itself.
-fn move_first<T>(args: &mut [T], position: usize) {
-    let Some(last) = args.len().checked_sub(1) else {
-        return;
-    };
-    if let Some(moved) = args.get_mut(..=position.min(last)) {
-        moved.rotate_left(1);
-    }
-}
-
 /// A `SW_CREATE_PHP_FUNCTION_WRAPPER` function: it calls `name` with its first
 /// argument moved to `position`.
 struct Wrapper {
@@ -227,7 +215,7 @@ impl Wrapper {
             return;
         };
         let mut argv = arguments(&[], frame);
-        move_first(&mut argv, self.position);
+        swoole_rs_corebase::utilities::move_first_argument(&mut argv, self.position);
         let outcome = frame.call_known(target, Zvals::owned(&argv));
         drop(argv);
         swoole_rs_zend::bailout::defer(outcome);
@@ -286,29 +274,4 @@ swoole_rs_zend::handlers! {
     zif_swoole_call_array_method => array_method;
     zif_swoole_call_string_method => string_method;
     zif_swoole_call_stream_method => stream_method;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use swoole_rs_zend::sys::zval;
-
-    fn moved(count: usize, position: usize) -> Vec<i64> {
-        let mut src = vec![unsafe { std::mem::zeroed::<zval>() }; count];
-        for (index, slot) in src.iter_mut().enumerate() {
-            slot.value.lval = i64::try_from(index).unwrap();
-        }
-        move_first(&mut src, position);
-        src.iter().map(|slot| unsafe { slot.value.lval }).collect()
-    }
-
-    #[test]
-    fn first_argument_moves_to_its_position() {
-        assert_eq!(moved(3, 1), [1, 0, 2]);
-        assert_eq!(moved(4, 2), [1, 2, 0, 3]);
-        assert_eq!(moved(3, 2), [1, 2, 0]);
-        assert_eq!(moved(1, 1), [0], "too few arguments: to the end");
-        assert_eq!(moved(2, 2), [1, 0]);
-        assert_eq!(moved(0, 1), Vec::<i64>::new());
-    }
 }
