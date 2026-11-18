@@ -1,10 +1,8 @@
 //! `putenv` for Swoole's threads (ZTS builds, `SW_THREAD`): its strings live
 //! for the process, one per name, under PHP's environment lock.
-use std::{
-    collections::HashMap,
-    ffi::CString,
-    sync::{LazyLock, Mutex, PoisonError},
-};
+use std::ffi::CStr;
+use std::sync::{LazyLock, Mutex, PoisonError};
+use swoole_rs_hooks::putenv::{Assignment, Table};
 use swoole_rs_zend::Call;
 
 swoole_rs_zend::handlers! {
@@ -14,30 +12,20 @@ swoole_rs_zend::handlers! {
 /// Each name's latest `NAME=value` (or bare `NAME`) string.
 static ENVIRON: LazyLock<Mutex<Table>> = LazyLock::new(Mutex::default);
 
-type Table = HashMap<Vec<u8>, CString>;
-
 /// `putenv(string $assignment): bool`.
 fn putenv(call: &Call) {
     let Ok(setting) = call.arity(1, 1).and_then(|()| call.string(1, b"")) else {
         return;
     };
-    if setting.first().is_none_or(|&first| first == b'=') {
+    let Some(assignment) = Assignment::parse(setting) else {
         call.argument_value_error(1, c"must have a valid syntax");
         return;
-    }
-    // as C reads it: up to the first NUL
-    let text = setting.split(|&b| b == 0).next().unwrap_or_default();
-    let assignment = text.iter().position(|&b| b == b'=');
-    let key = assignment
-        .and_then(|end| setting.get(..end))
-        .unwrap_or(setting);
-    let stored = CString::new(text).unwrap_or_default();
-
-    // PHP's environment lock, released below.
+    };
+    let timezone = assignment.key.eq_ignore_ascii_case(b"TZ");
     let lock = call.php().env_lock();
     let mut environ = ENVIRON.lock().unwrap_or_else(PoisonError::into_inner);
-    let set = store(&mut environ, key, stored, assignment.is_none());
-    if set && key.eq_ignore_ascii_case(b"TZ") {
+    let set = assignment.store(&mut environ, update_environment);
+    if set && timezone {
         // TZ changed; under the environment lock.
         tzset();
     }
@@ -46,25 +34,13 @@ fn putenv(call: &Call) {
     call.set_bool(set);
 }
 
-/// Point the process environment at `stored` for `key` (or unset `key`), keeping
-/// `stored` in `environ`. libc holds the pointer it is given, so the name's previous
-/// string is freed only once libc has let go of it.
-fn store(environ: &mut Table, key: &[u8], stored: CString, unset: bool) -> bool {
+fn update_environment(stored: &CStr, unset: bool) -> bool {
     if unset {
-        unsetenv(stored.as_c_str().into());
+        unsetenv(stored.into());
+        return true;
     }
-    let pointer = stored.as_ptr().cast_mut();
-    let previous = environ.insert(key.to_vec(), stored);
-    // SAFETY: the string stays in `environ` until this name is set again.
-    let set = unset || unsafe { libc::putenv(pointer) } == 0;
-    if !set {
-        // libc took nothing: it still holds the previous string, if there was one.
-        match previous {
-            Some(previous) => environ.insert(key.to_vec(), previous),
-            None => environ.remove(key),
-        };
-    }
-    set
+    // SAFETY: the process table retains this string on success until libc releases it.
+    unsafe { libc::putenv(stored.as_ptr().cast_mut()) == 0 }
 }
 
 unsafe extern "C" {
@@ -77,7 +53,7 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::{CStr, c_char};
+    use std::ffi::c_char;
 
     unsafe extern "C" {
         static environ: *const *const c_char;
@@ -105,8 +81,13 @@ mod tests {
             "second",
             "third",
         ] {
-            let stored = CString::new(format!("SWR_PUTENV_TEST={value}")).unwrap();
-            assert!(store(&mut map, name, stored, false), "putenv {value}");
+            let text = format!("SWR_PUTENV_TEST={value}");
+            assert!(
+                Assignment::parse(text.as_bytes())
+                    .unwrap()
+                    .store(&mut map, update_environment),
+                "putenv {value}"
+            );
             assert_eq!(entries(name), 1, "after {value}");
             assert_eq!(
                 std::env::var("SWR_PUTENV_TEST").as_deref(),
@@ -115,12 +96,9 @@ mod tests {
             );
         }
         assert!(
-            store(
-                &mut map,
-                name,
-                CString::new("SWR_PUTENV_TEST").unwrap(),
-                true
-            ),
+            Assignment::parse(name)
+                .unwrap()
+                .store(&mut map, update_environment),
             "unset"
         );
         assert_eq!(entries(name), 0, "after the unset");
