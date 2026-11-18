@@ -1,4 +1,10 @@
 {
+  "crates/curl/src/php_handle.rs:swr_zend_object_new": "shim.c initializes standard object storage and declared properties without invoking a PHP constructor. Allocator contract: docs/zend.md#memory_limit.",
+  "crates/curl/src/php_handle.rs:zend_clear_exception": "copy_handle contains exception destruction in a Zend bailout scope.",
+  "crates/curl/src/php_handle.rs:zend_get_gc_buffer_create": "Obtains Zend's scratch buffer during get_gc without invoking PHP. Allocator contract: docs/zend.md#memory_limit.",
+  "crates/curl/src/php_handle.rs:zend_object_std_dtor": "free_obj contains property and guard destruction in a Zend bailout scope.",
+  "crates/curl/src/php_handle.rs:zend_std_cast_object_tostring": "CurlHandle and CurlMultiHandle are final internal classes without __toString; the standard cast has no user method to invoke.",
+  "crates/curl/src/php_handle.rs:zend_std_get_properties": "Reads or materializes the final internal CurlHandle object's standard property table without invoking property handlers. Allocator contract: docs/zend.md#memory_limit.",
   "crates/pgsql/src/driver.rs:swr_zend_pdo_driver_data": "shim_pdo.c: reads pdo_dbh_t.driver_data; no callbacks.",
   "crates/pgsql/src/pdo.rs:swr_zend_pdo_forget_persistent": "shim_pdo.c: nulls the resource pointer before deleting its persistent-list entry, so PDO cannot close the handle again.",
   "crates/phpcoroutines/src/classes.rs:swr_zend_autoload_forget": "shim_coroutine.c: deletes the recursion-guard marker from EG(in_autoload), not a user value.",
