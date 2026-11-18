@@ -20,7 +20,7 @@ use std::{
 #[repr(transparent)]
 pub struct ArgInfo<const N: usize>([zend_internal_arg_info; N]);
 
-// SAFETY: immutable static data; its pointers are to static strings.
+// SAFETY: each immutable zend_internal_arg_info points only to static strings or null.
 unsafe impl<const N: usize> Sync for ArgInfo<N> {}
 
 impl<const N: usize> ArgInfo<N> {
@@ -57,8 +57,8 @@ pub struct Methods<const N: usize> {
     names: [Option<&'static CStr>; N],
 }
 
-// SAFETY: immutable static data; its pointers are to static strings, arginfo and
-// handlers.
+// SAFETY: each immutable zend_function_entry points only to static names, arginfo and
+// handlers, or null for an absent field.
 unsafe impl<const N: usize> Sync for Methods<N> {}
 
 impl<const N: usize> Methods<N> {
