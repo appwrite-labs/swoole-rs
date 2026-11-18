@@ -1,11 +1,5 @@
 //! Callback-free `ListenPort` decisions. All native effects and object custody stay native.
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
+#![forbid(unsafe_code)]
 
 use swoole_rs_server::port_config::PortMethods;
 
