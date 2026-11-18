@@ -23,6 +23,111 @@
 #include "php_pdo_pgsql_int.h"
 #include "ext/pdo/php_pdo_error.h"
 
+#include "main/php_network.h"
+
+void pdo_pgsql_wait_notify(int fd, int timeout)
+{
+    php_pollfd_for_ms(fd, PHP_POLLREADABLE, timeout);
+}
+
+bool pdo_pgsql_read_notify(pdo_pgsql_db_handle *handle, int timeout, PGnotify **result);
+void pdo_pgsql_backend_pid(pdo_pgsql_db_handle *handle, zval *output);
+
+void pgsqlGetNotify_internal(INTERNAL_FUNCTION_PARAMETERS)
+{
+	pdo_dbh_t *dbh;
+	pdo_pgsql_db_handle *H;
+	zend_long result_type = PDO_FETCH_USE_DEFAULT;
+	zend_long ms_timeout = 0;
+	PGnotify *pgsql_notify;
+
+	if (FAILURE == zend_parse_parameters(ZEND_NUM_ARGS(), "|ll",
+				&result_type, &ms_timeout)) {
+		RETURN_THROWS();
+	}
+
+	dbh = Z_PDO_DBH_P(ZEND_THIS);
+	PDO_CONSTRUCT_CHECK;
+
+	if (result_type == PDO_FETCH_USE_DEFAULT) {
+		result_type = dbh->default_fetch_type;
+	}
+
+	if (result_type != PDO_FETCH_BOTH && result_type != PDO_FETCH_ASSOC && result_type != PDO_FETCH_NUM) {
+		zend_argument_value_error(1, "must be one of PDO::FETCH_BOTH, PDO::FETCH_ASSOC, or PDO::FETCH_NUM");
+		RETURN_THROWS();
+	}
+
+	if (ms_timeout < 0) {
+		zend_argument_value_error(2, "must be greater than or equal to 0");
+		RETURN_THROWS();
+#ifdef ZEND_ENABLE_ZVAL_LONG64
+	} else if (ms_timeout > INT_MAX) {
+		php_error_docref(NULL, E_WARNING, "Timeout was shrunk to %d", INT_MAX);
+		ms_timeout = INT_MAX;
+#endif
+	}
+
+	H = (pdo_pgsql_db_handle *)dbh->driver_data;
+
+	if (!pdo_pgsql_read_notify(H, (int)ms_timeout, &pgsql_notify)) {
+        pdo_pgsql_error(dbh, PGRES_FATAL_ERROR, NULL);
+        PDO_HANDLE_DBH_ERR();
+        RETURN_FALSE;
+    }
+
+    if (!pgsql_notify) {
+		RETURN_FALSE;
+	}
+
+	array_init(return_value);
+	if (result_type == PDO_FETCH_NUM || result_type == PDO_FETCH_BOTH) {
+		add_index_string(return_value, 0, pgsql_notify->relname);
+		add_index_long(return_value, 1, pgsql_notify->be_pid);
+		if (pgsql_notify->extra && pgsql_notify->extra[0]) {
+			add_index_string(return_value, 2, pgsql_notify->extra);
+		}
+	}
+	if (result_type == PDO_FETCH_ASSOC || result_type == PDO_FETCH_BOTH) {
+		add_assoc_string(return_value, "message", pgsql_notify->relname);
+		add_assoc_long(return_value, "pid", pgsql_notify->be_pid);
+		if (pgsql_notify->extra && pgsql_notify->extra[0]) {
+			add_assoc_string(return_value, "payload", pgsql_notify->extra);
+		}
+	}
+
+	PQfreemem(pgsql_notify);
+}
+
+/* {{{ Get asynchronous notification */
+PHP_METHOD(PDO_PGSql_Ext, pgsqlGetNotify)
+{
+	pgsqlGetNotify_internal(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+/* }}} */
+
+void pgsqlGetPid_internal(INTERNAL_FUNCTION_PARAMETERS)
+{
+	pdo_dbh_t *dbh;
+	pdo_pgsql_db_handle *H;
+
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	dbh = Z_PDO_DBH_P(ZEND_THIS);
+	PDO_CONSTRUCT_CHECK;
+
+	H = (pdo_pgsql_db_handle *)dbh->driver_data;
+
+	pdo_pgsql_backend_pid(H, return_value);
+}
+
+/* {{{ Get backend(server) pid */
+PHP_METHOD(PDO_PGSql_Ext, pgsqlGetPid)
+{
+	pgsqlGetPid_internal(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+/* }}} */
+
 #if PHP_VERSION_ID >= 80400
 #include "zend_attributes.h"
 

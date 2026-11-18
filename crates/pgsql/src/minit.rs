@@ -7,7 +7,7 @@ use pq_sys::PGTransactionStatusType::{
 use swoole_rs_zend::{Minit, Mshutdown, pdo::Driver};
 
 unsafe extern "C" {
-    /// The bundled driver (`thirdparty/php*/pdo_pgsql/pgsql_driver.c`).
+    /// The bundled driver (`native/hooks/pgsql_driver.c`).
     safe static swoole_pdo_pgsql_driver: Driver;
     safe fn pdo_pgsql_bind_subclass();
 }
