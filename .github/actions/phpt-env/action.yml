@@ -50,13 +50,7 @@ runs:
           "$(dpkg -L odbc-mariadb | grep '/libmaodbc.so$' | head -1)" | sudo tee /etc/odbcinst.ini
         printf '[mysql-test]\nDescription = MySQL test database\nDriver = mysql\nSERVER = mysql\nUSER = root\nPASSWORD = root\nPORT = 3306\nDATABASE = test\n' \
           | sudo tee /etc/odbc.ini
-    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-      with:
-        path: target/upstream
-        key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
-        # Only the pinned tests are read here, and those don't change with the build script.
-        restore-keys: upstream-${{ runner.os }}-
-        fail-on-cache-miss: true
+    - uses: ./.github/actions/phpt-pin
     # The ssh2 tests' account on localhost (ssh2_test.inc's defaults), password and key
     # logins, as upstream's tests/init creates it.
     - shell: bash

@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/swoole/swoole-src",
-  "tag": "v6.2.5",
-  "commit": "76c657d88be39b7af6bf85e46bcbac0da7387760",
+  "tag": "v6.2.6",
+  "commit": "13d2f33664d60b72aaa9f102ff0ef4085c028513",
   "tests": [
     {
       "path": "tests/swoole_server/client_close_in_writable_event.phpt",

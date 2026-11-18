@@ -1,6 +1,6 @@
 # Error handling
 
-Reference: Swoole v6.2.5, commit `76c657d88be39b7af6bf85e46bcbac0da7387760`.
+Reference: Swoole v6.2.6, commit `13d2f33664d60b72aaa9f102ff0ef4085c028513`.
 The error overlay replaces first-party message lookup,
 error classification, unknown-message formatting and ignored-error membership
 in `src/core/error.cc`.

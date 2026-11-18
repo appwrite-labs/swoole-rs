@@ -94,13 +94,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: ./.github/actions/install
       # The pinned tests; this PHP's own build of them lives in the engines artifact.
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
-          # Only the pinned tests are read here, and those don't change with the build script.
-          restore-keys: upstream-${{ runner.os }}-
-          fail-on-cache-miss: true
+      - uses: ./.github/actions/phpt-pin
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: target/php

@@ -18,7 +18,7 @@
 
 [Swoole](https://github.com/swoole/swoole-src)'s PHP extension, rewritten in Rust.
 `swoole.so` is built by Cargo from the crates in `crates/`. It presents the same PHP
-classes, functions and constants as upstream Swoole v6.2.5, and upstream is built only
+classes, functions and constants as upstream Swoole v6.2.6, and upstream is built only
 to compare against.
 
 The numbers on this page were measured on 2026-11-16: the code counts at `d577a1d`, the
@@ -40,14 +40,11 @@ What is done:
   of shims under `crates/`, nearly all in `crates/zend-sys` over the parts of PHP's C API
   that Rust can't call ([what stays C](docs/zend.md#what-stays-c)), and 225 lines in
   `native/`. TLS is OpenSSL, as it is upstream.
-- **Upstream's PHP tests pass wherever upstream passes them.** Of 1,866 pinned PHPTs, 55
-  can't run here: upstream skips them unconditionally, or they need an older PHP or an
-  outside network ([the list, with reasons](corpus/upstream/not_applicable.json)). Of the
-  other 1,811 this build passes 1,746 and upstream passes 1,742 in the same CI run. No
-  test passes on upstream and fails here. The 65 that neither build passes are 39 the
-  runner sets aside because something outside the extension decides them (a race in the
-  test, the network, a missing tool), and 26 that fail or skip on both.
-- **It is faster than upstream on all 34 benchmark workloads**, by instruction count.
+- **The v6.2.6 test inventory contains 1,897 original PHPTs.** CI runs the same
+  assertions against both builds. The remaining compatibility fixes are tracked in
+  [the v6.2.6 migration](https://github.com/appwrite-labs/swoole-rs/issues/4926).
+  The last v6.2.5 comparison is shown [below](#compared-with-upstream-swoole).
+- **On v6.2.5, the Rust build used fewer instructions on all 34 benchmark workloads.**
   See [the comparison](#compared-with-upstream-swoole).
 
 What is not:
@@ -77,7 +74,7 @@ What is not:
   the corpus apps and swoole/library's suite. The coverage build has no thread support, so
   `Swoole\Thread`'s code counts as unreached; its own PHPTs run in a separate job
   ([per crate](https://github.com/appwrite-labs/swoole-rs/blob/badges/coverage.md)).
-- **One upstream version.** It tracks v6.2.5 (pinned at `76c657d8`) and reports itself as
+- **One upstream version.** It tracks v6.2.6 (pinned at `13d2f336`) and reports itself as
   that version.
 - **Linux is what CI tests.** Every merge runs Ubuntu 24.04 on x86-64 with PHP 8.3, plus
   Alpine (musl) and a thread-safe PHP. PHP 8.2, 8.4 and 8.5 run nightly, as does
@@ -92,12 +89,11 @@ What is not:
 
 ## Goals
 
-- **A drop-in replacement.** A PHP application written for Swoole v6.2.5 runs unchanged.
+- **A drop-in replacement.** A PHP application written for Swoole v6.2.6 runs unchanged.
   Upstream's tests, run with their original assertions, are the definition of the same
   behaviour.
 - **Faster than upstream on every workload**
-  ([#1894](https://github.com/appwrite-labs/swoole-rs/issues/1894)). All 34 are now, and
-  each one's limit keeps it there.
+  ([#1894](https://github.com/appwrite-labs/swoole-rs/issues/1894)). CI measures each workload against its own limit.
 - **Memory-safe under load, with evidence**
   ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893)): clean sanitizer,
   fuzz, soak and Miri runs, and an `unsafe` count that only falls. Replacing the C ABI
@@ -112,8 +108,7 @@ or putting an async runtime under Swoole's reactor (`deny.toml` bans them). The
 
 ## Features
 
-The target is all of upstream's PHP API at v6.2.5, and nothing is knowingly missing. How
-well each part works is what the tests above show.
+The target is the full PHP API of Swoole v6.2.6. The upstream tests measure compatibility.
 
 - **Servers.** `Swoole\Server` over TCP, UDP and Unix sockets in base, process and thread
   mode, `Swoole\Http\Server`, `Swoole\WebSocket\Server`, HTTP/2, task workers, static
@@ -146,13 +141,13 @@ Optional parts are build switches. Each of upstream's `configure` switches goes 
 
 ## Compared with upstream Swoole
 
-| | Upstream Swoole v6.2.5 | swoole-rs |
+| | Upstream Swoole | swoole-rs |
 | --- | --- | --- |
 | Language | C and C++ | Rust, plus the 42,000 lines of C and C++ that upstream bundles |
 | Build | `phpize`, `configure`, `make` | Cargo, through `tools/build_ext.py` |
 | PHP API | the reference | the same, generated from upstream's stubs (`tools/arginfo.py`) |
-| Upstream PHPTs passing, of 1,811 | 1,742 | 1,746 |
-| Instructions per request | 1.00× | 0.85× geometric mean over 34 workloads |
+| v6.2.5 PHPTs passing, of 1,811 | 1,742 | 1,746 |
+| Instructions per request (v6.2.5) | 1.00× | 0.85× geometric mean over 34 workloads |
 | Releases and packages | yes | prebuilt Linux binaries, as pre-releases; no packages |
 | Production use | years | none |
 
@@ -198,7 +193,7 @@ echo extension=swoole > "$(php --ini | sed -n 's/^Scan for additional .ini files
 php --ri swoole
 ```
 
-The last command prints `Version => 6.2.5`, the upstream version this build stands in
+For the v0.1.1 binary above, the last command prints `Version => 6.2.5`, the upstream version it stands in
 for, and `swoole-rs => 0.1.1 (<commit>)`. `gh attestation verify "$file" --repo
 appwrite-labs/swoole-rs` checks that the file was built by this repository's release
 workflow.
@@ -227,7 +222,7 @@ python3 tools/build_ext.py
 php -n -d extension="$PWD/target/ext/swoole.so" -r 'echo SWOOLE_VERSION, "\n";'
 ```
 
-That prints `6.2.5`. Add switches from the table above, for example
+That prints `6.2.6`. Add switches from the table above, for example
 `python3 tools/build_ext.py --php-sockets --configure=--enable-swoole-curl`, and
 `--php-config PATH` for a PHP that isn't first on `PATH`.
 

@@ -20,8 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.harness import ROOT
 from tools.private_copy import copy_private
 
-VERSION = 'v6.2.5'
-COMMIT = '76c657d88be39b7af6bf85e46bcbac0da7387760'
+VERSION = 'v6.2.6'
+COMMIT = '13d2f33664d60b72aaa9f102ff0ef4085c028513'
 
 
 def require_build_space(path):

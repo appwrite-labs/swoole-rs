@@ -3,10 +3,12 @@
 // Adapted here: the thread-global buffer parse_cookie copies into, and sw_malloc
 // and sw_free over libc.
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <vector>
 
 namespace oracle_http {
@@ -21,7 +23,7 @@ static Buffer *sw_tg_buffer() {
     buffer.str = cookie_storage.data();
     return &buffer;
 }
-#define sw_malloc(size) malloc((size) + 1)
+#define sw_malloc malloc
 #define sw_free(pointer) free(pointer)
 #include "http.inc"
 }  // namespace oracle_http
@@ -34,6 +36,9 @@ size_t swr_oracle_http_url_decode(char *data, size_t length) {
 // Writes the encoding and its NUL into output (capacity length * 3 + 1); returns its length.
 size_t swr_oracle_http_url_encode(const char *data, size_t length, char *output) {
     char *encoded = oracle_http::url_encode(data, length);
+    if (encoded == nullptr) {
+        return SIZE_MAX;
+    }
     size_t size = strlen(encoded);
     memcpy(output, encoded, size + 1);
     free(encoded);

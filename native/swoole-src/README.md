@@ -1,6 +1,6 @@
 # native/swoole-src
 
-Files from swoole-src v6.2.5 (76c657d), at the paths they have there. crates/ext's build.rs
+Files from swoole-src v6.2.6 (13d2f33), at the paths they have there. crates/ext's build.rs
 compiles these; it reads nothing from the pin.
 
 Some carry changes the deleted patch set made: `php_swoole.h`, the curl hooks, `proc_open`, `plain_wrapper`

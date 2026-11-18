@@ -375,6 +375,9 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
         path: &CStr,
     ) -> Result<Option<bool>, Bailed> {
         let (tasks, result) = (&mut self.tasks, self.result);
+        let _result_file = core::mem::DropGuard::new(path, |path| {
+            _ = crate::sys::unlink(path);
+        });
         tasks.pipe_clean()?;
 
         let count = multi.count();
@@ -433,11 +436,7 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
         };
         content.dispose();
         unpacked?;
-        if !read {
-            return Ok(Some(false));
-        }
-        _ = crate::sys::unlink(path);
-        Ok(Some(true))
+        Ok(Some(read))
     }
 }
 
@@ -660,7 +659,11 @@ mod tests {
             packs: vec![-1],
             ..Multi::default()
         };
-        let done = tasks.sync_many(&mut multi, -1.0, c"/x");
+        let path = std::env::temp_dir().join(format!("swr-task-empty-{}", std::process::id()));
+        std::fs::File::create_new(&path).unwrap();
+        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        let done = tasks.sync_many(&mut multi, -1.0, &name);
+        assert!(!path.try_exists().unwrap());
         assert_eq!(done.ok(), Some(None));
         assert_eq!(multi.failed, vec![0]);
     }

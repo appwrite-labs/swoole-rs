@@ -3,7 +3,7 @@
  * swoole_version() and swoole_version_id(). */
 #pragma once
 
-#define SWOOLE_VERSION "6.2.5"
+#define SWOOLE_VERSION "6.2.6"
 
 #define SWOOLE_BUG_REPORT                                                                                              \
     "A process crash occurred in Swoole-v" SWOOLE_VERSION ". Please report this issue.\n"                              \

@@ -3,7 +3,7 @@
 The process-pool fixture calls corebase's `swoole_system_random` directly, with
 the original range and draw timing; its C++ export is gone.
 
-Pin `76c657d88be39b7af6bf85e46bcbac0da7387760`.
+Pin `13d2f33664d60b72aaa9f102ff0ef4085c028513`.
 
 The socket fixtures borrow `corebase::buffer::string::CppString` directly; client
 certificate buffers use `OwnedString`. Packet ownership transfer still uses
