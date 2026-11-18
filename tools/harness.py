@@ -209,15 +209,24 @@ def run_compiler(command, *, timeout=60):
             'seconds': round(time.monotonic() - started, 4)}
 
 
-def run_isolated(command, *, timeout=15, cwd=None, env=None):
+def temp_file_count(directory):
+    """Non-directory entries below a workload's private TMPDIR, including symlinks."""
+    return sum(1 for path in Path(directory).rglob('*') if path.is_symlink() or not path.is_dir())
+
+
+def run_isolated(command, *, timeout=15, cwd=None, env=None, before_cleanup=None):
     """Capture a CLI test, bounding its whole process group including forked children."""
     proc = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, errors='replace', start_new_session=True)
     result = None
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-        result = subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
-        return result
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+            result = subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+            return result
+        finally:
+            if before_cleanup:
+                before_cleanup(proc.pid)
     finally:
         try:
             stop_process_group(proc)
