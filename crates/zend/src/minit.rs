@@ -524,7 +524,7 @@ impl Minit {
         if named.is_null() {
             return named;
         }
-        // SAFETY: a registered function's record, which nothing writes during MINIT.
+        // SAFETY: a registered zend_function, which nothing writes during MINIT.
         Box::into_raw(Box::new(unsafe { named.read() }))
     }
 

@@ -122,7 +122,7 @@ impl<'a> Typed<'a> {
     }
 
     fn header(self) -> &'a TypeInfo<'a> {
-        // SAFETY: a typed table carries a parsed definition right after it,
+        // SAFETY: a typed Zend HashTable carries a parsed definition right after it,
         // whose class (one `Php::lookup_class` found) outlives the table.
         unsafe { &*info_of(self.ht) }
     }

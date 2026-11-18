@@ -208,7 +208,7 @@ impl<'a> Stream<'a> {
 
     /// `f` of the stream's own fields, for an immediate access that runs no PHP.
     fn fields<T>(self, f: impl FnOnce(&mut php_stream) -> T) -> T {
-        // SAFETY: a live stream (see `Stream`), and nothing else reaches it while
+        // SAFETY: a live php_stream (see `Stream`), and nothing else reaches it while
         // `f`, which runs no PHP, holds the reference.
         f(unsafe { &mut *self.as_ptr() })
     }
@@ -217,7 +217,7 @@ impl<'a> Stream<'a> {
     /// close, which no borrow outlives: each is taken for one operation.
     fn net<'n>(self) -> Option<&'n NetStream> {
         let net = self.fields(|stream| stream.abstract_.cast::<NetStream>());
-        // SAFETY: null or the stream's live NetStream (see `Stream`).
+        // SAFETY: php_stream.abstract holds the live NetStream until close, or null.
         unsafe { net.as_ref() }
     }
 
@@ -444,7 +444,7 @@ extern "C" fn swr_v1_phpruntime_socket_close(stream: Stream<'_>) -> bool {
         .fields(|stream| mem::replace(&mut stream.abstract_, ptr::null_mut()))
         .cast();
     let closed = !net.is_null() && {
-        // SAFETY: the stream's own NetStream (see `Stream`), detached above, so
+        // SAFETY: the php_stream's NetStream (see `Stream`), detached above, so
         // this takes its unique owner back.
         let net = unsafe { Box::from_raw(net) };
         let result = net.socket.close();

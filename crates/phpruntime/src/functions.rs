@@ -92,7 +92,7 @@ impl Entry {
             "an internal function borrowed twice"
         );
         let _lent = core::mem::DropGuard::new((), |()| BORROWED.set(false));
-        // SAFETY: a live internal function (`find`), borrowed by no other `with` on
+        // SAFETY: a live zend_internal_function (`find`), borrowed by no other `with` on
         // this thread; the borrow ends with `f`, which takes no `Entry`'s `&mut` again.
         f(unsafe { &mut *self.0.as_ptr() })
     }
