@@ -4,7 +4,6 @@ use crate::{
     host::{self, Callable},
     process::set_worker_of,
     report::{INVALID_PARAMS, OPERATION_NOT_SUPPORT, cli, fatal, notice, set_last_error},
-    signal::clean,
 };
 use process::process_pool::IpcMode;
 use process::process_pool::{Hooks, MessageFn, PoolRef, RecvData, WorkerFn};
@@ -358,7 +357,7 @@ fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
     let Some((object, this)) = owner(&mut slot) else {
         return;
     };
-    clean();
+    host::reset_worker_type();
     if swoole_rs_zend::bailout::pending() {
         slot.delref();
         return;

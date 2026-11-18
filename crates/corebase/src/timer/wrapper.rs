@@ -218,7 +218,7 @@ pub fn swoole_timer_get(timer_id: c_long) -> Option<Held> {
     Held::new(timer.generation(), timer_id)
 }
 
-/// `void swoole_timer_free()`: `delete SwooleTG.timer`, then clear the slot.
+/// `void swoole_timer_free()`: clear the thread slot before destroying its timer.
 pub fn swoole_timer_free() {
     let timer = timer();
     let Some(live) = current() else {
@@ -226,11 +226,11 @@ pub fn swoole_timer_free() {
         log::warning(c"swoole_timer_free", format_args!("timer is not available"));
         return;
     };
+    publish(std::ptr::null_mut());
     live.destroy();
     // SAFETY: this thread's timer, `Owner::create`'s allocation, which
     // swoole_timer_create published; destroyed above, borrowed no more and freed once.
     drop(unsafe { Box::from_raw(timer) });
-    publish(std::ptr::null_mut());
 }
 
 /// `void swoole_timer_select()`: runs due timers, if there is a timer; also the

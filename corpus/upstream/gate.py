@@ -83,7 +83,6 @@ PENDING_PORTS = {
         'swoole_socket_coro/close_unix_socket.phpt',
         'swoole_socket_coro/import_4.phpt',
     ],
-    4933: ['swoole_thread/server/signal_handler_user_process.phpt'],
 }
 PENDING = {f'tests/{test}': issue for issue, tests in PENDING_PORTS.items() for test in tests}
 
