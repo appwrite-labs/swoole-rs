@@ -21,6 +21,7 @@
 #ifndef PHP_PDO_PGSQL_INT_H
 #define PHP_PDO_PGSQL_INT_H
 
+#include <sys/uio.h>
 #include <libpq-fe.h>
 #include <libpq/libpq-fs.h>
 #include <php.h>
@@ -35,6 +36,7 @@ typedef struct pdo_pgsql_stmt pdo_pgsql_stmt;
 typedef struct pdo_pgsql_db_handle pdo_pgsql_db_handle;
 
 bool pdo_pgsql_fetch_cursor(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *cursor, unsigned int orientation, zend_long offset);
+void pdo_pgsql_scalar_column(Oid oid, struct iovec bytes, zval *output);
 struct pdo_column_data;
 bool pdo_pgsql_describe_column(PGresult *result, int colno, struct pdo_column_data *column, Oid *oid);
 int pdo_pgsql_column_meta(pdo_pgsql_db_handle *H, Oid oid, Oid table, zval *output);

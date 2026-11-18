@@ -446,18 +446,6 @@ static int pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pd
 		size_t len = PQgetlength(S->result, S->current_row - 1, colno);
 
 		switch (S->cols[colno].pgsql_type) {
-			case BOOLOID:
-				ZVAL_BOOL(result, *ptr == 't');
-				break;
-
-			case INT2OID:
-			case INT4OID:
-#if SIZEOF_ZEND_LONG >= 8
-			case INT8OID:
-#endif
-				ZVAL_LONG(result, ZEND_ATOL(ptr));
-				break;
-
 			case OIDOID: {
 				char *end_ptr;
 				Oid oid = (Oid)strtoul(ptr, &end_ptr, 10);
@@ -496,7 +484,7 @@ static int pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pd
 			}
 
 			default:
-				ZVAL_STRINGL_FAST(result, ptr, len);
+				pdo_pgsql_scalar_column(S->cols[colno].pgsql_type, (struct iovec){ptr, len}, result);
 				break;
 		}
 	}
