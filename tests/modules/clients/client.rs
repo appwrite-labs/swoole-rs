@@ -1338,7 +1338,7 @@ fn cpp_string(size: usize) -> OwnedString {
 /// `ssl_readv` or `ssl_writev` (when `write`) on `sock` over `IOVector(iov, count)`,
 /// destroyed after: crates/hooks' vector, which is both.
 fn ssl_vector(sock: *mut c_void, iov: &[IoVec], write: bool) -> isize {
-    use swoole_rs_hooks::vector::{IoVector, Vectors};
+    use swoole_rs_hooks::vector::{IoVector, Vectored, Vectors};
     let (at, count) = (iov.as_ptr(), iov.len());
     // SAFETY: `IoVec` is `struct iovec` and so an `IoSlice`, and `iov` a live array of
     // them over buffers nothing else touches meanwhile.

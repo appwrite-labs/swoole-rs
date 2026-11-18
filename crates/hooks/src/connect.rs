@@ -15,6 +15,7 @@ use swoole_rs_corebase::reactor::Events;
 
 use swoole_rs_clients::owned_proxy::{Socks5Proxy, admit, pack_negotiate_request, socks5_step};
 use swoole_rs_corebase::constants::SocketType;
+use swoole_rs_corebase::lent::lend_spare;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{NameResolverContext, ProxyState, log};
 use swoole_rs_http::{proxy_accept, proxy_connect};
@@ -442,7 +443,7 @@ impl Connecting for Live<'_> {
     }
 
     fn recv(&mut self, into: &mut [u8]) -> Option<usize> {
-        self.socket.recv(into)
+        lend_spare(into, |out| self.socket.recv(out)).0
     }
 
     fn socks5_negotiate(&mut self) -> Vec<u8> {

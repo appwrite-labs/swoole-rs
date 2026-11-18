@@ -11,11 +11,12 @@
 use super::*;
 use crate::co_socket::TestSocket;
 use crate::uring::testing::{HOST, with_engine};
-use crate::vector::Vectors;
+use crate::vector::{IoVector, Vectors};
 use openssl_sys as ssl;
 use std::ffi::CString;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::{mem, ptr, thread};
+use swoole_rs_corebase::lent::lend_spare;
 
 const TEST_STR: &[u8] = b"hello world, hello swoole\n";
 const TEST_STR2: &[u8] = b"I am Rango\n";
@@ -173,7 +174,7 @@ impl Sock {
     fn io(&self, op: c_int, buf: &mut [u8]) -> isize {
         match op {
             READ => read(&self.ops(), buf),
-            RECV => recv(&self.ops(), buf),
+            RECV => lend_spare(buf, |out| recv(&self.ops(), out)).0,
             _ => send(&self.ops(), op, buf),
         }
         .map_or(-1, usize::cast_signed)
@@ -580,7 +581,8 @@ fn sendto(sock: &Sock, to: &Address, data: &[u8]) -> isize {
 }
 
 fn recvfrom(sock: &Sock, buf: &mut [u8], from: Option<&mut Address>) -> isize {
-    let result = recvfrom_peer(&sock.ops(), buf).map_or(-1, usize::cast_signed);
+    let result = lend_spare(buf, |out| recvfrom_peer(&sock.ops(), out)).0;
+    let result = result.map_or(-1, usize::cast_signed);
     if let (Some(from), Some(info)) = (from, sock.ops().socket.net(|record| record.info)) {
         from.len = info.len;
         unsafe {
@@ -813,7 +815,8 @@ fn send_and_recv_all() {
             sock.set_buffer_size(libc::SO_RCVBUF, 65536);
 
             let mut rbuf = vec![0_u8; wbuf.len()];
-            let result = recv_all(&sock.ops(), &mut rbuf).map_or(-1, usize::cast_signed);
+            let result = lend_spare(&mut rbuf, |out| recv_all(&sock.ops(), out)).0;
+            let result = result.map_or(-1, usize::cast_signed);
             assert_eq!(result, wbuf.len().cast_signed());
             assert_eq!(rbuf, wbuf);
             thread::sleep(std::time::Duration::from_millis(100));

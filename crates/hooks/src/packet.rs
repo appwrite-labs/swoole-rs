@@ -294,6 +294,7 @@ pub(crate) mod tests {
     use crate::buffered::recv_buffered;
     use core::ffi::c_void;
     use std::collections::VecDeque;
+    use swoole_rs_corebase::lent::lend_spare;
 
     /// A socket whose `recv` hands out `chunks` in order, then 0 (EOF).
     struct Fake {
@@ -556,7 +557,7 @@ pub(crate) mod tests {
         let mut out = [0; 4];
         for (length, expected) in [(3, &b"abc"[..]), (4, &b"defg"[..]), (4, &b"hij"[..])] {
             assert_eq!(
-                recv_buffered(socket.co(), &mut out[..length]),
+                lend_spare(&mut out[..length], |out| recv_buffered(socket.co(), out)).0,
                 Some(expected.len())
             );
             assert_eq!(&out[..expected.len()], expected);
@@ -578,7 +579,10 @@ pub(crate) mod tests {
         let mut socket = socket_for(&mut fake, false, b"", 1024);
         socket.0.set_test_fd(-1);
         let mut out = [0; 1];
-        assert_eq!(recv_buffered(socket.co(), &mut out), None);
+        assert_eq!(
+            lend_spare(&mut out, |out| recv_buffered(socket.co(), out)).0,
+            None
+        );
         assert_eq!(recv_packet(socket.co(), 0.0), None);
         assert_eq!(socket.0.err_code.get(), libc::EBADF);
         assert_eq!((fake.gets, fake.receives), (0, 0));

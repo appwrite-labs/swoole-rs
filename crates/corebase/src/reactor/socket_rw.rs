@@ -183,7 +183,7 @@ mod tests {
     }
 
     /// No TLS calls, for a vector over a plain descriptor.
-    type Read = fn(crate::reactor::Fill<'_>) -> Option<usize>;
+    type Read = fn(&mut crate::lent::Spare<'_>) -> Option<usize>;
     type Write = fn(crate::reactor::Drain<'_>) -> Option<usize>;
     const NO_TLS: Option<&(Read, Write)> = None;
 
@@ -273,14 +273,14 @@ mod tests {
     #[test]
     fn iov_plain_and_tls() {
         use crate::reactor::{
-            ReactorIov, ReadVec, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned,
+            Plain, ReactorIov, ReadVec, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned,
         };
         use std::io::IoSlice;
         let [a, b] = pair();
         let (first, second) = (*b"abc", *b"defg");
         let iov = [IoSlice::new(&first), IoSlice::new(&second)];
         let mut owner = ReactorIov::writing(&iov).unwrap();
-        let sent = swr_v1_socket_iov_owned(a, &mut owner, NO_TLS);
+        let sent = swr_v1_socket_iov_owned(Plain::Fd(a), &mut owner, NO_TLS);
         let state = swr_v1_reactor_iov_view(&owner);
         assert_eq!((sent, state.remain_count), (Some(7), 0));
 
@@ -288,7 +288,7 @@ mod tests {
         let mut tail = [0_u8; 5];
         let mut iov = [ReadVec::new(&mut into), ReadVec::new(&mut tail)];
         let mut owner = ReactorIov::reading(&mut iov).unwrap();
-        let read = swr_v1_socket_iov_owned(b, &mut owner, NO_TLS);
+        let read = swr_v1_socket_iov_owned(Plain::Fd(b), &mut owner, NO_TLS);
         let state = swr_v1_reactor_iov_view(&owner);
         drop(owner);
         assert_eq!(read, Some(7));
@@ -305,21 +305,25 @@ mod tests {
         let mut iov = [ReadVec::new(&mut into), ReadVec::new(&mut tail)];
         let mut owner = ReactorIov::reading(&mut iov).unwrap();
         // The counter stands in for the socket; the iovecs are local.
-        let counter = (&raw mut left).cast();
-        let read = unsafe {
-            swr_v1_socket_iov_owned(
-                -1,
-                &mut owner,
-                Some(&(
-                    |mut fill: crate::reactor::Fill<'_>| {
-                        let slots = fill.slots();
-                        let n = tls_in_pieces(counter, slots.as_mut_ptr().cast(), slots.len());
-                        usize::try_from(n).ok()
-                    },
-                    |_: crate::reactor::Drain<'_>| unreachable!("a read"),
-                )),
-            )
-        };
+        let counter: *mut c_void = (&raw mut left).cast();
+        // The stub writes what it returns: the same call, with the tokens' layout and
+        // its result as what it wrote.
+        let stub: crate::reactor::lent::raw::TlsIo = tls_in_pieces;
+        let tls: for<'id> unsafe extern "C" fn(
+            *mut c_void,
+            crate::lent::Out<'id>,
+            crate::lent::Count<'id>,
+        ) -> crate::lent::Wrote<'id> = unsafe { std::mem::transmute(stub) };
+        let read = swr_v1_socket_iov_owned(
+            Plain::Fd(-1),
+            &mut owner,
+            Some(&(
+                |spare: &mut crate::lent::Spare<'_>| {
+                    usize::try_from(spare.lend(|at, n| unsafe { tls(counter, at, n) })).ok()
+                },
+                |_: crate::reactor::Drain<'_>| unreachable!("a read"),
+            )),
+        );
         let state = swr_v1_reactor_iov_view(&owner);
         assert_eq!((read, left), (Some(7), 0));
         assert_eq!((&into, &tail[..3]), (b"xxxx", &b"xxx"[..]));

@@ -3,8 +3,8 @@
 use crate::co_io::{available, host};
 use crate::co_socket::Co;
 use crate::packet::{BufferSync, ReadBuffer};
+use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::reactor::Events;
-use swoole_rs_corebase::sys::ReadSlot;
 
 fn to_off(offset: usize) -> libc::off_t {
     libc::off_t::try_from(offset).unwrap_or(libc::off_t::MAX)
@@ -14,21 +14,26 @@ fn to_off(offset: usize) -> libc::off_t {
 trait Buffer {
     fn length(&self) -> usize;
     fn capacity(&self) -> usize;
-    fn copy<S: ReadSlot>(&mut self, at: usize, out: &mut [S]) -> usize;
+    /// Copies what fits of the bytes from `at` into `out`'s room: the count.
+    fn copy(&mut self, at: usize, out: &mut Spare<'_>) -> usize;
     fn reduce(&mut self, at: usize);
     fn recv(&mut self, offset: usize) -> Option<usize>;
 }
 
-fn read_buffered<S: ReadSlot>(
-    data: &mut impl Buffer,
-    offset: &mut usize,
-    out: &mut [S],
-) -> Option<usize> {
+/// What fits of `bytes` into `out`'s room: the count.
+fn put(out: &mut Spare<'_>, bytes: &[u8]) -> usize {
+    let n = bytes.len().min(out.room());
+    out.put(bytes.get(..n).unwrap_or_default());
+    n
+}
+
+fn read_buffered(data: &mut impl Buffer, offset: &mut usize, out: &mut Spare<'_>) -> Option<usize> {
     let mut at = (*offset).min(data.length());
     let held = data.length() - at;
+    let wanted = out.room();
     let take = data.copy(at, out);
     at += take;
-    if out.len() <= held {
+    if wanted <= held {
         *offset = at;
         return Some(take);
     }
@@ -41,38 +46,30 @@ fn read_buffered<S: ReadSlot>(
     if received <= Some(0) {
         return if held > 0 { Some(held) } else { received };
     }
-    let copied = data.copy(at, out.get_mut(held..).unwrap_or_default());
+    let copied = data.copy(at, out);
     *offset = at + copied;
     Some(held + copied)
 }
 
 /// `recv_line`: bytes up to and including the first `\n` or `\r`, at most
-/// `out.len()`, one `read` (`recv_with_buffer`) of a byte at a time, each copied to
-/// the next of `out`'s slots. None on error; at EOF, what was read.
-pub(crate) fn recv_line<S: ReadSlot>(
-    out: &mut [S],
-    mut read: impl FnMut(&mut [u8]) -> Option<usize>,
+/// `out.room()`, one `read` (`recv_with_buffer`) of a byte at a time, each appended
+/// to `out`. None on error; at EOF, what was read.
+pub(crate) fn recv_line(
+    out: &mut Spare<'_>,
+    mut read: impl FnMut(&mut Spare<'_>) -> Option<usize>,
 ) -> Option<usize> {
-    let limit = out.len();
     let mut count = 0;
-    let mut last = 0;
-    // The byte at `count`: a NUL in the first slot until a read replaces it.
     let mut byte = [0];
-    S::copy_in(out, &byte);
-    while count < limit && !matches!(byte, [b'\n' | b'\r']) {
-        if last > 0 {
-            count += 1;
+    while out.room() > 0 {
+        let (got, wrote) = lend_spare(&mut byte, &mut read);
+        if got? == 0 || wrote == 0 {
+            break;
         }
-        if count < limit {
-            last = read(&mut byte)?;
-            if last == 0 {
-                return Some(count);
-            }
-            S::copy_in(out.get_mut(count..).unwrap_or_default(), &byte);
-        }
-    }
-    if count < limit {
+        out.put(&byte);
         count += 1;
+        if matches!(byte, [b'\n' | b'\r']) {
+            break;
+        }
     }
     Some(count)
 }
@@ -95,10 +92,10 @@ impl Buffer for Context {
     fn capacity(&self) -> usize {
         self.view.size
     }
-    fn copy<S: ReadSlot>(&mut self, at: usize, out: &mut [S]) -> usize {
+    fn copy(&mut self, at: usize, out: &mut Spare<'_>) -> usize {
         let mut copied = 0;
         (host().read_bytes)(self.socket, &mut |bytes| {
-            copied = S::copy_in(out, bytes.get(at..).unwrap_or_default());
+            copied = put(out, bytes.get(at..).unwrap_or_default());
         });
         copied
     }
@@ -123,7 +120,7 @@ impl Buffer for Context {
 
 /// `Socket::recv_with_buffer`, including availability and lazy buffer allocation.
 /// `out` cannot overlap the socket's buffer.
-pub fn recv_buffered(socket: Co, out: &mut [impl ReadSlot]) -> Option<usize> {
+pub fn recv_buffered(socket: Co, out: &mut Spare<'_>) -> Option<usize> {
     if !available(socket, Events::READ) {
         return None;
     }
@@ -163,8 +160,8 @@ mod tests {
         fn capacity(&self) -> usize {
             self.storage.len()
         }
-        fn copy<S: ReadSlot>(&mut self, at: usize, out: &mut [S]) -> usize {
-            S::copy_in(out, &self.storage[at..self.length])
+        fn copy(&mut self, at: usize, out: &mut Spare<'_>) -> usize {
+            put(out, &self.storage[at..self.length])
         }
         fn reduce(&mut self, at: usize) {
             self.storage.copy_within(at..self.length, 0);
@@ -194,9 +191,10 @@ mod tests {
         fn read(&mut self, n: usize) -> (Option<usize>, Vec<u8>) {
             let mut out = vec![0; n];
             let mut offset = self.offset;
-            let got = read_buffered(self, &mut offset, &mut out);
+            let (got, wrote) = lend_spare(&mut out, |out| read_buffered(self, &mut offset, out));
             self.offset = offset;
-            out.truncate(got.unwrap_or(0));
+            assert_eq!(wrote, got.unwrap_or(0));
+            out.truncate(wrote);
             (got, out)
         }
     }
@@ -217,12 +215,14 @@ mod tests {
         let mut b = Buffered::new(16, b"ab\ncd");
         let line = |b: &mut Buffered, limit: usize| {
             let mut out = vec![0; limit];
-            let n = recv_line(&mut out, |at| {
-                let (got, bytes) = b.read(at.len());
-                at[..bytes.len()].copy_from_slice(&bytes);
+            let read = |at: &mut Spare<'_>| {
+                let (got, bytes) = b.read(at.room());
+                at.put(&bytes);
                 got
-            });
-            out.truncate(n.unwrap_or(0));
+            };
+            let (n, wrote) = lend_spare(&mut out, |out| recv_line(out, read));
+            assert_eq!(wrote, n.unwrap_or(0));
+            out.truncate(wrote);
             (n, out)
         };
         assert_eq!(line(&mut b, 10), (Some(3), b"ab\n".to_vec()));

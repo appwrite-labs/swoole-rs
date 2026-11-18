@@ -9,6 +9,9 @@
 //! lifetime, which only one lending of a live buffer mints, so each call gets an address
 //! and the count that buffer holds, and is declared `safe`.
 use crate::net_types::{AddressStorage, Room, SocketAddress, StoredLength};
+use crate::reactor::{
+    IovState, Plain, ReactorIov, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned,
+};
 use crate::sys::ReadSlot;
 use std::ffi::{c_char, c_int, c_void};
 use std::io::IoSlice;
@@ -728,19 +731,18 @@ impl Spare<'_> {
         n
     }
 
-    /// Receives into the remaining room and counts the initialized prefix.
-    ///
-    /// # Safety
-    /// On `Some(n)`, `read` must have initialized the first `min(n, room.len())`
-    /// slots it was lent. A datagram read may report more than the room with
-    /// `MSG_TRUNC`; a failed read contributes no initialized bytes.
+    /// A ring's receive into the room, counted as [`Ring::recv`] vouches.
     #[inline]
-    pub unsafe fn read(
-        &mut self,
-        read: impl FnOnce(&mut [MaybeUninit<u8>]) -> Option<usize>,
-    ) -> Option<usize> {
-        let received = read(self.rest().slots());
+    pub fn receive(&mut self, ring: &mut (impl Ring + ?Sized)) -> Option<usize> {
+        let received = ring.recv(self.rest().slots());
         self.count(received)
+    }
+
+    /// The room to `write`, which nothing counts: a peek the receive after it
+    /// overwrites.
+    #[inline]
+    pub fn uncounted<R>(&mut self, write: impl FnOnce(&mut [MaybeUninit<u8>]) -> R) -> R {
+        write(self.rest().slots())
     }
 
     /// read(2) into the room, as [`Fill::read`].
@@ -766,6 +768,18 @@ impl Spare<'_> {
     #[inline]
     pub fn recv(&mut self, fd: c_int, flags: c_int) -> Option<usize> {
         let received = self.rest().recv(fd, flags);
+        self.count(received)
+    }
+
+    /// One recvfrom(2) into the room, as [`Fill::recvfrom_one`].
+    #[inline]
+    pub fn recvfrom_one(
+        &mut self,
+        fd: c_int,
+        flags: c_int,
+        address: &mut SocketAddress,
+    ) -> Option<usize> {
+        let received = self.rest().recvfrom_one(fd, flags, address);
         self.count(received)
     }
 
@@ -969,21 +983,42 @@ impl<'b> ReadVec<'b> {
     }
 }
 
-/// Ordered rooms lent to one vectored receive. Only the trusted reader can count
-/// their initialized prefix; callers cannot exchange individual rooms or counts.
+/// A ring's receives, whose results count the bytes they wrote.
+///
+/// # Safety
+/// `Some(n)` from [`recv`](Self::recv) or [`readv`](Self::readv) means the call wrote
+/// the first `n` bytes it was lent, in order across the vectors (all of them when they
+/// hold fewer than `n`).
+pub unsafe trait Ring {
+    /// Receives into `room`.
+    fn recv(&mut self, room: &mut [MaybeUninit<u8>]) -> Option<usize>;
+    /// Receives into the vectors' slots, in order.
+    fn readv(&mut self, vectors: &mut [ReadVec<'_>]) -> Option<usize>;
+    /// Sends the vectors' bytes, in order.
+    fn writev(&mut self, vectors: &[IoSlice<'_>]) -> Option<usize>;
+}
+
+/// Ordered rooms lent to vectored receives: a cursor over a copy of their descriptors,
+/// and how many bytes from the first room's start the receives wrote. Only
+/// [`transfer`](Self::transfer) moves either, by what a receive wrote.
 pub struct SpareVectors<'s> {
-    vectors: Vec<ReadVec<'s>>,
+    vectors: ReactorIov<'s>,
     filled: usize,
     lent: Brand<'s>,
 }
 
-/// Lends several rooms in order: the operation's result and its initialized prefix.
+/// Lends several rooms in order: the operation's result and how many bytes it wrote
+/// across them.
 pub fn lend_spare_vectors<'a, R>(
-    rooms: impl IntoIterator<Item = &'a mut [MaybeUninit<u8>]>,
+    rooms: impl IntoIterator<Item = &'a mut [MaybeUninit<u8>], IntoIter: ExactSizeIterator>,
     fill: impl for<'s> FnOnce(&mut SpareVectors<'s>) -> R,
 ) -> (R, usize) {
+    let Some(vectors) = ReactorIov::rooms(rooms.into_iter().map(ReadVec::new)) else {
+        // `IOVector`'s constructor throws here, which ended at this Rust frame.
+        crate::fatal("the I/O vectors can't be built");
+    };
     let mut out = SpareVectors {
-        vectors: rooms.into_iter().map(ReadVec::new).collect(),
+        vectors,
         filled: 0,
         lent: PhantomData,
     };
@@ -992,21 +1027,24 @@ pub fn lend_spare_vectors<'a, R>(
 }
 
 impl SpareVectors<'_> {
-    /// Runs a vectored receive and counts its successful initialized prefix.
-    ///
-    /// # Safety
-    /// When the returned count is `Some(n)`, `read` initialized that many bytes
-    /// across the original rooms in order (or all rooms if the count exceeds them).
-    /// It must not change which storage the descriptors name.
-    pub unsafe fn read<R>(
+    /// One receive into the rooms past the written bytes, as
+    /// [`swr_v1_socket_iov_owned`]: what it wrote, counted.
+    pub fn transfer(
         &mut self,
-        read: impl FnOnce(&mut [ReadVec<'_>]) -> (R, Option<usize>),
-    ) -> R {
-        let (result, count) = read(&mut self.vectors);
-        let capacity = self.vectors.iter().fold(0usize, |size, vector| {
-            size.saturating_add(vector.iov.iov_len)
-        });
-        self.filled = count.unwrap_or(0).min(capacity);
-        result
+        plain: Plain<'_>,
+        tls: Option<&(
+            impl Fn(&mut Spare<'_>) -> Option<usize>,
+            impl Fn(Drain<'_>) -> Option<usize>,
+        )>,
+    ) -> Option<usize> {
+        let received = swr_v1_socket_iov_owned(plain, &mut self.vectors, tls);
+        self.filled += received.unwrap_or(0);
+        received
+    }
+
+    /// The cursor: where the receives stopped and the descriptors left.
+    #[must_use]
+    pub fn state(&self) -> IovState {
+        swr_v1_reactor_iov_view(&self.vectors)
     }
 }

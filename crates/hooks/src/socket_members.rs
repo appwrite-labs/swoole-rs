@@ -17,18 +17,18 @@ use crate::socket_wait::{error_event, ready, wait_for};
 use crate::transfer::{ALL, At, Buffer, CHECKED, RETRY_INTERRUPTED, timeout_kind, transfer};
 #[cfg(feature = "iouring")]
 use crate::uring_socket as ring;
-use crate::vector::{IoVector, RecvMessage, SendMessage, vector_all};
+use crate::vector::{RecvMessage, SendMessage, Vectored, vector_all};
 use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::constants::{SW_STACK_BUFFER_SIZE, SocketType};
-use swoole_rs_corebase::lent::{Spare, SpareVectors};
+use swoole_rs_corebase::lent::{Spare, SpareVectors, lend_spare};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::reactor::{
-    Drain, Event, Fill, Running, Socket, SocketAddress, SocketFields, SocketRecord,
+    Drain, Event, Running, Socket, SocketAddress, SocketFields, SocketRecord,
 };
 use swoole_rs_corebase::sys::{self, ReadSlot, strerror};
 use swoole_rs_corebase::tls::upstream::{
-    peek, recv, recv_fill, send, send_drain, sendfile as socket_sendfile_fd,
+    peek_spare, recv, recv_spare, send, send_drain, sendfile as socket_sendfile_fd,
     socket_ssl_peer_certificate_pem,
 };
 
@@ -167,17 +167,17 @@ impl Co {
         }
     }
 
-    /// `Socket::recv_with_buffer(buf, n)` into `out`, which is outside the socket's
-    /// read buffer: the count of `out`'s first slots it wrote, or -1.
-    pub fn recv_with_buffer(self, out: &mut [impl ReadSlot]) -> Option<usize> {
+    /// `Socket::recv_with_buffer(buf, n)` into `out`'s room, which is outside the
+    /// socket's read buffer: the count it wrote there, or -1.
+    pub fn recv_with_buffer(self, out: &mut Spare<'_>) -> Option<usize> {
         recv_buffered(self, out)
     }
 
-    /// `Socket::recv_line(buf, maxlen)` of at most `out.len()` bytes, one buffered
-    /// byte at a time, into `out`, which is outside the socket's read buffer: the
-    /// count of `out`'s first slots it wrote, or -1.
-    pub fn recv_line(self, out: &mut [impl ReadSlot]) -> Option<usize> {
-        recv_line(out, |at| recv_buffered(self, at))
+    /// `Socket::recv_line(buf, maxlen)` of at most `out.room()` bytes, one buffered
+    /// byte at a time, into `out`'s room, which is outside the socket's read buffer:
+    /// the count it wrote there, or -1.
+    pub fn recv_line(self, out: &mut Spare<'_>) -> Option<usize> {
+        recv_line(out, |byte| recv_buffered(self, byte))
     }
 
     /// `Socket::set_option(level, optname, optval, optlen)`: `setsockopt`, warning on
@@ -293,24 +293,17 @@ impl Co {
         true
     }
 
-    /// `Socket::transfer(event, buffer, length, flags, call)` of a read into `buf`:
-    /// Rust's retry loop over `call`, which gets the `network::Socket` and the slots
-    /// left to fill at each try.
-    fn receive<S: ReadSlot>(
+    /// `Socket::transfer(event, buffer, length, flags, call)` of a read into `out`'s
+    /// room: Rust's retry loop over `call`, which gets the `network::Socket` and `out`,
+    /// whose room past what the tries before wrote is what is left to fill.
+    fn receive(
         self,
         flags: u32,
-        buf: &mut [S],
-        mut call: impl FnMut(Socket<'_>, Fill<'_, S>) -> Option<usize>,
+        out: &mut Spare<'_>,
+        mut call: impl FnMut(Socket<'_>, &mut Spare<'_>) -> Option<usize>,
     ) -> Option<usize> {
-        let length = buf.len();
-        let mut fill = Fill::new(buf);
-        let mut each = |at| {
-            let mut rest = fill.reborrow();
-            if let At::Caller(skip) = at {
-                rest.advance(skip);
-            }
-            self.with_network(|s| call(s, rest)).flatten()
-        };
+        let length = out.room();
+        let mut each = |_| self.with_network(|s| call(s, out)).flatten();
         transfer(self, flags, Buffer::read(length), &mut each)
     }
 
@@ -439,30 +432,26 @@ impl Co {
         Vec::new()
     }
 
-    /// Receive into `out`, counting the bytes the selected operation initialized.
+    /// The selected receive into `out`'s room, which counts what it wrote.
     #[inline]
     pub fn recv_spare(self, op: Receive, out: &mut Spare<'_>) -> Option<usize> {
-        // SAFETY: each socket receive initializes the reported prefix of its room;
-        // recvfrom may report the full datagram length, which Spare clamps to the room.
-        unsafe {
-            out.read(|room| match op {
-                Receive::Recv => self.recv(room),
-                Receive::All => self.recv_all(room),
-                Receive::Line => self.recv_line(room),
-                Receive::Buffered => self.recv_with_buffer(room),
-                Receive::Peek => self.peek(room),
-                Receive::Peer => self.recvfrom_peer(room),
-            })
+        match op {
+            Receive::Recv => self.recv(out),
+            Receive::All => self.recv_all(out),
+            Receive::Line => self.recv_line(out),
+            Receive::Buffered => self.recv_with_buffer(out),
+            Receive::Peek => self.peek(out),
+            Receive::Peer => self.recvfrom_peer(out),
         }
     }
 
-    /// `Socket::recv(buf, n)`: the count of `buf`'s first slots it wrote, or -1.
-    pub fn recv(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
+    /// `Socket::recv(buf, n)` into `out`'s room: the count it wrote there, or -1.
+    pub fn recv(self, out: &mut Spare<'_>) -> Option<usize> {
         #[cfg(feature = "iouring")]
-        if let Some(n) = ring::with(self, |ops| ring::recv(ops, buf)) {
+        if let Some(n) = ring::with(self, |ops| ring::recv(ops, out)) {
             return n;
         }
-        self.receive(0, buf, |s, fill| recv_fill(s, fill, 0))
+        self.receive(0, out, |s, out| recv_spare(s, out, 0))
     }
 
     /// `Socket::send(buf, n)`.
@@ -475,13 +464,13 @@ impl Co {
         self.deliver(0, buf, |s, data| send_drain(s, data, 0))
     }
 
-    /// `Socket::recv_all(buf, n)`: the count of `buf`'s first slots it wrote, or -1.
-    pub fn recv_all(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
+    /// `Socket::recv_all(buf, n)` into `out`'s room: the count it wrote there, or -1.
+    pub fn recv_all(self, out: &mut Spare<'_>) -> Option<usize> {
         #[cfg(feature = "iouring")]
-        if let Some(n) = ring::with(self, |ops| ring::recv_all(ops, buf)) {
+        if let Some(n) = ring::with(self, |ops| ring::recv_all(ops, out)) {
             return n;
         }
-        self.receive(ALL, buf, |s, fill| recv_fill(s, fill, 0))
+        self.receive(ALL, out, |s, out| recv_spare(s, out, 0))
     }
 
     /// `Socket::send_all(buf, n)`.
@@ -500,7 +489,8 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::read(ops, buf)) {
             return n;
         }
-        self.receive(0, buf, |s, mut fill| fill.read(s.fd()))
+        let read = |s: Socket<'_>, out: &mut Spare<'_>| out.read_fd(s.fd());
+        lend_spare(buf, |out| self.receive(0, out, read)).0
     }
 
     /// `Socket::write(buf, n)`.
@@ -513,33 +503,22 @@ impl Co {
         self.deliver(0, buf, |s, data| data.write(s.fd()))
     }
 
-    /// A vectored receive into lent rooms, with the cursor where it stopped.
+    /// A vectored receive into lent rooms, which count what it wrote, with the
+    /// cursor where it stopped.
     pub fn recv_spare_vectors(
         self,
         out: &mut SpareVectors<'_>,
         all: bool,
     ) -> Option<(usize, c_int, usize)> {
-        // SAFETY: vector's read paths initialize their successful byte count in
-        // descriptor order, including a partial read before an error. The cursor
-        // advances a private descriptor copy, leaving the original rooms intact.
-        unsafe {
-            out.read(|rooms| {
-                if c_int::try_from(rooms.len()).is_err() {
-                    swoole_rs_corebase::fatal("too many I/O vectors for an int");
-                }
-                let mut vector = IoVector::new(crate::vector::Vectors::Read(rooms))
-                    .unwrap_or_else(|| swoole_rs_corebase::fatal("the I/O vectors can't be built"));
-                let received = self.vector(&mut vector, all);
-                let (index, offset) = vector.stopped();
-                (received.map(|count| (count, index, offset)), received)
-            })
-        }
+        let received = self.vector(out, all)?;
+        let state = out.state();
+        Some((received, state.index, state.offset_bytes))
     }
 
     /// `Socket::readv(io_vector)` or `writev`, in the direction the vector was made
     /// for, or with `all` `readv_all` or `writev_all`.
     #[must_use]
-    pub fn vector(self, vector: &mut IoVector<'_>, all: bool) -> Option<usize> {
+    pub fn vector(self, vector: &mut impl Vectored, all: bool) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::swr_v1_hook_uring_vector(ops, vector, all)) {
             return n;
@@ -550,9 +529,11 @@ impl Co {
             Events::READ
         };
         if all {
-            let call =
-                |vector: &mut IoVector<'_>| self.with_network(|s| vector.transfer(s)).flatten();
-            return vector_all(self, event, vector, call, IoVector::remaining);
+            let call = |vector: &mut _| {
+                self.with_network(|s| Vectored::transfer(vector, s))
+                    .flatten()
+            };
+            return vector_all(self, event, vector, call, Vectored::remaining);
         }
         self.carry(event, |s| vector.transfer(s))
     }
@@ -640,23 +621,22 @@ impl Co {
             return n;
         }
         let fd = self.sock_fd();
-        self.receive(RETRY_INTERRUPTED, buf, |_, mut fill| {
-            fill.recvfrom_one(fd, 0, peer)
-        })
+        let receive = |_: Socket<'_>, out: &mut Spare<'_>| out.recvfrom_one(fd, 0, peer);
+        lend_spare(buf, |out| self.receive(RETRY_INTERRUPTED, out, receive)).0
     }
 
-    /// `Socket::recvfrom(buf, n)`: into the `network::Socket`'s peer address, retrying
-    /// `EINTR` at once; the count of `buf`'s first slots it wrote, or -1.
-    pub fn recvfrom_peer(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
+    /// `Socket::recvfrom(buf, n)` into `out`'s room and the `network::Socket`'s peer
+    /// address, retrying `EINTR` at once: the count it wrote there, or -1.
+    pub fn recvfrom_peer(self, out: &mut Spare<'_>) -> Option<usize> {
         let receive = || {
             #[cfg(feature = "iouring")]
             // The ring's path fills the same record's peer address itself.
-            if let Some(n) = ring::with(self, |ops| ring::recvfrom_peer(ops, buf)) {
+            if let Some(n) = ring::with(self, |ops| ring::recvfrom_peer(ops, out)) {
                 return n;
             }
             let fd = self.sock_fd();
-            self.receive(RETRY_INTERRUPTED, buf, |s, mut fill| {
-                s.edit(|network| fill.recvfrom_one(fd, 0, &mut network.info))
+            self.receive(RETRY_INTERRUPTED, out, |s, out| {
+                s.edit(|network| out.recvfrom_one(fd, 0, &mut network.info))
             })
         };
         crate::transfer::recvfrom_peer(self, receive)
@@ -706,10 +686,12 @@ impl Co {
         io()
     }
 
-    /// `Socket::peek(buf, n)`: one `network::Socket` peek, then `check_return_value`;
-    /// the count of `buf`'s first slots it wrote, or -1. The socket is open.
-    pub fn peek(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
-        let result = self.with_network(|socket| peek(socket, buf, 0)).flatten();
+    /// `Socket::peek(buf, n)` into `out`'s room: one `network::Socket` peek, then
+    /// `check_return_value`; the count it wrote there, or -1. The socket is open.
+    pub fn peek(self, out: &mut Spare<'_>) -> Option<usize> {
+        let result = self
+            .with_network(|socket| peek_spare(socket, out, 0))
+            .flatten();
         check(self, result);
         result
     }

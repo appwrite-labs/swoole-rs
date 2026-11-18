@@ -5,8 +5,7 @@
 use crate::CCast;
 use crate::lent::Spare;
 use crate::reactor::socket_rw::interrupted;
-use crate::reactor::{Drain, Fill, Socket, SocketAddress, SocketFields};
-use crate::sys::ReadSlot;
+use crate::reactor::{Drain, Socket, SocketAddress, SocketFields};
 use std::ffi::c_int;
 
 /// `SW_OK`, `SW_ERR` and `SW_BACKLOG`.
@@ -246,16 +245,16 @@ fn counted(
 
 /// `Socket::peek`: recv(2) with `MSG_PEEK`, or `tls` (`SSL_peek`), retried on EINTR.
 /// `tls` runs only for a record that holds an `SSL`.
-pub fn record_peek<S: ReadSlot>(
+pub fn record_peek(
     socket: Socket<'_>,
-    mut buffer: Fill<'_, S>,
+    buffer: &mut Spare<'_>,
     flags: c_int,
-    tls: impl Fn(Socket<'_>, Fill<'_, S>) -> Option<usize>,
+    tls: impl Fn(Socket<'_>, &mut Spare<'_>) -> Option<usize>,
 ) -> Option<usize> {
     let (fd, _, _, secure) = io_of(socket);
     loop {
         let peeked = if secure {
-            tls(socket, buffer.reborrow())
+            tls(socket, buffer)
         } else {
             buffer.recv(fd, flags | libc::MSG_PEEK)
         };

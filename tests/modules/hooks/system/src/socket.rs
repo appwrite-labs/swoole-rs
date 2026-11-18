@@ -20,6 +20,7 @@ use std::io::{Read, Write};
 use std::mem::ManuallyDrop;
 use std::ptr;
 use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::lent::lend_spare;
 use swoole_rs_corebase::reactor::{Events, TimeoutKind};
 use swoole_rs_corebase::{swoole_rand, swoole_random_int, swoole_type_size};
 use swoole_rs_hooks::co_socket::{self, Co, OwnedCo};
@@ -317,7 +318,9 @@ impl Sock {
     }
 
     fn recv(&self, buf: &mut [u8]) -> isize {
-        self.co().recv(buf).map_or(-1, usize::cast_signed)
+        lend_spare(buf, |out| self.co().recv(out))
+            .0
+            .map_or(-1, usize::cast_signed)
     }
 
     fn send_all(&self, buf: &[u8]) -> isize {
@@ -326,8 +329,9 @@ impl Sock {
 
     fn recv_all(&self, buf: *mut u8, n: usize) -> isize {
         // SAFETY: `buf` holds `n` writable bytes.
-        self.co()
-            .recv_all(unsafe { std::slice::from_raw_parts_mut(buf, n) })
+        let buf = unsafe { std::slice::from_raw_parts_mut(buf, n) };
+        lend_spare(buf, |out| self.co().recv_all(out))
+            .0
             .map_or(-1, usize::cast_signed)
     }
 
@@ -341,8 +345,9 @@ impl Sock {
 
     fn recv_line(&self, buf: *mut u8, n: usize) -> isize {
         // SAFETY: `buf` holds `n` writable bytes.
-        self.co()
-            .recv_line(unsafe { std::slice::from_raw_parts_mut(buf, n) })
+        let buf = unsafe { std::slice::from_raw_parts_mut(buf, n) };
+        lend_spare(buf, |out| self.co().recv_line(out))
+            .0
             .map_or(-1, usize::cast_signed)
     }
 
@@ -1617,9 +1622,9 @@ fn test_sendto_recvfrom(sock_type: c_int) {
         let _ = sock_client
             .co()
             .sendto(local.to_bytes(), port, &client_text[..client_length]);
-        let result = sock_server
-            .co()
-            .recvfrom_peer(&mut data_from_client[..client_length])
+        let into = &mut data_from_client[..client_length];
+        let result = lend_spare(into, |out| sock_server.co().recvfrom_peer(out))
+            .0
             .map_or(-1, usize::cast_signed);
         assert_eq!(
             result,
@@ -1822,9 +1827,8 @@ fn peek() {
 
         let mut data = [0_u8; 128];
         let sock = Sock::with_fd(pairs[1], SW_SOCK_UNIX_STREAM);
-        let result = sock
-            .co()
-            .peek(&mut data[..5])
+        let result = lend_spare(&mut data[..5], |out| sock.co().peek(out))
+            .0
             .map_or(-1, usize::cast_signed);
         sock.close();
         assert_eq!(result, 5);

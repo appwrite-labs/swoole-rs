@@ -7,7 +7,7 @@
 //! live handle are declared `safe`. An SSL's BIOs are set only while this side owns
 //! it ([`OwnedSsl`]), before any handle exists. Socket operations retain a
 //! [`HeldSsl`] reference; closing the socket slot cannot free a borrowed session.
-use crate::lent::{Count, In, Out, Spare, Wrote, lend_in, lend_out, lend_spare};
+use crate::lent::{Count, In, Out, Spare, Wrote, lend_in, lend_spare};
 use crate::reactor::{Socket, SocketFields, SocketSsl};
 use crate::sys::{ReadSlot, Text};
 use crate::tls::context::SslCtx;
@@ -64,7 +64,11 @@ unsafe extern "C" {
         length: Count<'id, c_int>,
     ) -> Wrote<'id, c_int>;
     /// As `SSL_read`, leaving the bytes queued.
-    safe fn SSL_peek<'id>(ssl: Ssl<'_>, buffer: Out<'id>, length: Count<'id, c_int>) -> c_int;
+    safe fn SSL_peek<'id>(
+        ssl: Ssl<'_>,
+        buffer: Out<'id>,
+        length: Count<'id, c_int>,
+    ) -> Wrote<'id, c_int>;
     /// Reads at most `length` bytes of `data`, the count its lending gives.
     safe fn SSL_write<'id>(ssl: Ssl<'_>, data: In<'id>, length: Count<'id, c_int>) -> c_int;
     /// As `SSL_read`, from the BIO.
@@ -404,14 +408,12 @@ impl<'a> Ssl<'a> {
         }))
     }
 
-    /// `SSL_peek` into `buffer`.
+    /// `SSL_peek` into `spare`'s room.
     ///
     /// # Errors
     /// Nothing was peeked.
-    pub fn peek(self, buffer: &mut [impl ReadSlot]) -> Result<usize, SslFailure> {
-        self.count(lend_out(buffer, |at, length| {
-            SSL_peek(self, at.bytes(), length)
-        }))
+    pub fn peek(self, spare: &mut Spare<'_>) -> Result<usize, SslFailure> {
+        self.count(spare.lend(|at, length| SSL_peek(self, at, length)))
     }
 
     /// One `SSL_accept` step.

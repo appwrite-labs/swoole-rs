@@ -10,18 +10,19 @@
 //! [`Slot`] of the engine's, the user data the completion handler ([`wakeup`]) finds
 //! it by: the handler writes the result there before resuming the coroutine.
 
-use crate::vector::{IoVector, RecvMessage, SendMessage};
+use crate::vector::{RecvMessage, SendMessage};
 use io_uring::types::{Fd, FsyncFlags, Timespec};
 use io_uring::{IoUring, Probe, opcode, squeue};
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::ffi::{CStr, c_int, c_uint, c_void};
-use std::io;
+use std::io::{self, IoSlice};
 use std::os::fd::AsRawFd;
 use std::ptr;
 use std::rc::Rc;
 use std::sync::atomic::AtomicU32;
 use swoole_rs_corebase::coroutine::Waker;
+use swoole_rs_corebase::lent::ReadVec;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::set_errno;
 use swoole_rs_corebase::sys::{self as os, ReadSlot};
@@ -622,6 +623,11 @@ unsafe fn request(host: &Host, timeout: f64, entry: squeue::Entry) -> io::Result
     Event::new(host, entry).with_timeout(timeout).execute(host)
 }
 
+/// An iovec count as an entry holds it: none of them when it does not fit an `int`.
+fn iov_count(count: usize) -> u32 {
+    c_int::try_from(count).unwrap_or(0).cast_unsigned()
+}
+
 fn byte_count(result: io::Result<isize>) -> io::Result<usize> {
     // Successful CQE values are nonnegative; complete rejects every negative one.
     result.map(isize::cast_unsigned)
@@ -632,7 +638,7 @@ fn file_status(result: io::Result<isize>) -> io::Result<()> {
 }
 
 /// One request per operation, whose entries carry no pointer but their borrowed
-/// arguments' (an [`IoVector`]'s include its buffers, in its direction).
+/// arguments' (a vector's include the buffers its iovecs name, in its direction).
 macro_rules! safe_operations {
     ($(
         $(#[$doc:meta])*
@@ -721,34 +727,12 @@ safe_operations! {
         timeout -1.0, opcode::Fsync::new(Fd(fd)).flags(FsyncFlags::DATASYNC), file_status;
     pub fn ftruncate(fd: c_int, length: libc::off_t) -> io::Result<()>,
         timeout -1.0, opcode::Ftruncate::new(Fd(fd), length.cast_unsigned()), file_status;
-    /// `IORING_OP_READV` into `vector`'s remaining buffers, or `IORING_OP_WRITEV` from
-    /// them, as the vector was made for.
-    pub fn vector(fd: c_int, vector: &IoVector<'_>, timeout: f64) -> io::Result<usize>,
-        timeout timeout, Vectored::new(fd, vector), byte_count;
-}
-
-/// The `IORING_OP_READV` or `IORING_OP_WRITEV` entry over a vector's remaining
-/// iovecs, which only its `&mut` methods move, in the direction it was made for.
-struct Vectored(squeue::Entry);
-
-impl Vectored {
-    fn new(fd: c_int, vector: &IoVector<'_>) -> Self {
-        let (iov, count) = vector.iovecs();
-        let count = c_int::try_from(count).unwrap_or(0).cast_unsigned();
-        Self(if vector.write() {
-            opcode::Writev::new(Fd(fd), iov, count)
-                .offset(u64::MAX)
-                .build()
-        } else {
-            opcode::Readv::new(Fd(fd), iov, count)
-                .offset(u64::MAX)
-                .build()
-        })
-    }
-
-    fn build(self) -> squeue::Entry {
-        self.0
-    }
+    /// `IORING_OP_READV` into `vectors`' slots, in order.
+    pub fn readv(fd: c_int, vectors: &mut [ReadVec<'_>], timeout: f64) -> io::Result<usize>,
+        timeout timeout, opcode::Readv::new(Fd(fd), vectors.as_ptr().cast(), iov_count(vectors.len())).offset(u64::MAX), byte_count;
+    /// `IORING_OP_WRITEV` of `vectors`' bytes, in order.
+    pub fn writev(fd: c_int, vectors: &[IoSlice<'_>], timeout: f64) -> io::Result<usize>,
+        timeout timeout, opcode::Writev::new(Fd(fd), vectors.as_ptr().cast(), iov_count(vectors.len())).offset(u64::MAX), byte_count;
 }
 
 /// Sleep `seconds` in the ring's timer.
@@ -1240,8 +1224,6 @@ mod tests {
         let mut input = [std::io::IoSliceMut::new(&mut message_buffer)];
         let message = SendMessage::new(&output);
         let mut received = RecvMessage::new(&mut input);
-        let vectors = IoVector::new(crate::vector::Vectors::Write(&output)).unwrap();
-        let stopped = vectors.stopped();
         let mut address = SocketAddress {
             len: 16,
             ..SocketAddress::default()
@@ -1254,7 +1236,8 @@ mod tests {
             sendto(&host, -1, b"xy", &address, -1.0).unwrap_err(),
             sendmsg(&host, -1, &message, 0, -1.0).unwrap_err(),
             recvmsg(&host, -1, &mut received, 0, -1.0).unwrap_err(),
-            vector(&host, -1, &vectors, -1.0).unwrap_err(),
+            writev(&host, -1, &output, -1.0).unwrap_err(),
+            readv(&host, -1, &mut [ReadVec::new(&mut buffer)], -1.0).unwrap_err(),
             accept(&host, -1, &mut address, 0, -1.0).unwrap_err(),
             connect(&host, -1, &address, -1.0).unwrap_err(),
         ];
@@ -1264,7 +1247,6 @@ mod tests {
         }
         assert_eq!(buffer, [7, 8]);
         assert_eq!(message_buffer, [9, 10]);
-        assert_eq!(vectors.stopped(), stopped);
         assert_eq!(address.len, 16);
     }
 
