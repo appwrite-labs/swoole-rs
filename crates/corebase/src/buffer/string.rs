@@ -132,6 +132,15 @@ pub fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     }
 }
 
+/// Offset of the first delimiter. An empty delimiter never terminates a package.
+#[must_use]
+pub fn find_delimiter(bytes: &[u8], delimiter: &[u8]) -> Option<usize> {
+    if delimiter.is_empty() {
+        return None;
+    }
+    find_bytes(bytes, delimiter)
+}
+
 /// An allocator's result, aborting on failure as `std::bad_alloc` would.
 fn checked(pointer: *mut c_void) -> *mut u8 {
     if pointer.is_null() {
@@ -762,6 +771,23 @@ mod tests {
         assert_eq!(s.split(b"\r\n", |_, _| false), Some(0));
         assert_eq!(s.offset, 7);
         s.dispose();
+    }
+
+    #[test]
+    fn eof_search_finds_the_first_match() {
+        assert_eq!(find_delimiter(b"ab\r\ncd\r\n", b"\r\n"), Some(2), "first");
+        assert_eq!(find_delimiter(b"abc", b"\r\n"), None, "absent");
+        assert_eq!(find_delimiter(b"\r", b"\r\n"), None, "shorter than the EOF");
+        assert_eq!(find_delimiter(b"abc", b""), None, "no EOF");
+    }
+
+    #[test]
+    fn strnpos_finds_the_needle_anywhere() {
+        assert_eq!(
+            find_delimiter(b"x; form-data; name=a", b"form-data;"),
+            Some(3)
+        );
+        assert_eq!(find_delimiter(b"inline", b"attachment;"), None);
     }
 
     #[test]
