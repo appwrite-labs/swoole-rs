@@ -571,8 +571,6 @@ pub(crate) mod tests {
     /// A scripted connection: chunks to receive (empty: peer closed; none left:
     /// would block), a receive buffer and the connection's request.
     struct Fake {
-        /// The current buffer: `buf`, or one the request made.
-        current: *mut Buffer,
         upgrade: Upgrade,
         static_handler: bool,
         buf: Buffer,
@@ -593,7 +591,6 @@ pub(crate) mod tests {
 
     fn fake(chunks: &[&[u8]]) -> Fake {
         Fake {
-            current: core::ptr::null_mut(),
             upgrade: Upgrade::default(),
             static_handler: true,
             buf: {
@@ -614,17 +611,6 @@ pub(crate) mod tests {
         }
     }
 
-    impl Fake {
-        /// Points the current buffer at the request's body buffer, if any, else at
-        /// this fake's own, as native code does when its effects change it.
-        fn point(&mut self) {
-            self.current = self
-                .req
-                .body()
-                .map_or(&raw mut self.buf, core::ptr::from_mut);
-        }
-    }
-
     impl Drop for Fake {
         fn drop(&mut self) {
             self.buf.dispose();
@@ -635,7 +621,7 @@ pub(crate) mod tests {
         /// Into the current buffer; what doesn't fit arrives next.
         fn recv(&mut self, whole: bool) -> Option<usize> {
             let mut chunk = self.incoming.pop()?;
-            let buffer = unsafe { &mut *self.current };
+            let buffer = self.buffer();
             if whole {
                 buffer.truncate(0);
             }
@@ -713,26 +699,23 @@ pub(crate) mod tests {
             false
         }
         fn buffer(&mut self) -> &mut Buffer {
-            unsafe { &mut *self.current }
+            self.req.body().unwrap_or(&mut self.buf)
         }
         fn reduce(&mut self, offset: u64) {
             self.buf.reduce(offset.cast_signed());
         }
         fn extend(&mut self, size: u64) {
             self.buf.extend(usize::try_from(size).unwrap());
-            self.point();
         }
         fn header_end(&mut self) -> bool {
             self.buffer().view().windows(4).any(|w| w == b"\r\n\r\n")
         }
         fn init_request(&mut self) {
             self.request = true;
-            self.point();
         }
         fn destroy_request(&mut self) {
             self.request = false;
             self.req = Request::default();
-            self.point();
         }
         fn request(&mut self) -> &mut Request {
             assert!(self.request, "a current request");
@@ -744,13 +727,11 @@ pub(crate) mod tests {
         }
         fn init_multipart(&mut self) -> bool {
             let upload_max = usize::try_from(self.uploads).unwrap();
-            let ok = (self.req).init_multipart_parser(&mut self.buf, b"/tmp", upload_max);
-            self.point();
-            ok
+            self.req
+                .init_multipart_parser(&mut self.buf, b"/tmp", upload_max)
         }
         fn finish_multipart(&mut self) {
             self.req.destroy_multipart_parser();
-            self.point();
         }
         fn client(&mut self) -> (i64, String, i64) {
             (7, "127.0.0.1".to_owned(), 9501)
@@ -774,7 +755,6 @@ pub(crate) mod tests {
     /// The readable callback's status, as upstream returns it.
     fn run(kind: Readable, fake: &mut Fake) -> i32 {
         log::capture::install();
-        fake.point();
         if readable(kind, fake) { SW_OK } else { SW_ERR }
     }
 
