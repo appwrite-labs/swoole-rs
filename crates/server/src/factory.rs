@@ -30,7 +30,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
                 _ => swoole_rs_corebase::swoole_redirect_stdout_file(c"/dev/null"),
             }
             // The master, before it starts any thread.
-            return swoole_rs_corebase::ossupport::swoole_daemon(0, 1) >= 0;
+            return swoole_rs_corebase::ossupport::swoole_daemon(0, 1).is_ok();
         }
         Step::FactoryStart => return start(serv),
         // In the master, after the process factory forks and before any reactor

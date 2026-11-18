@@ -1,7 +1,7 @@
 //! Registration, object state and method handlers for `Swoole\Process`.
 use crate::{
     host::{self, Callable},
-    report::{INVALID_PARAMS, cli, errno, fatal, notice, set_errno, set_last_error, sys},
+    report::{INVALID_PARAMS, cli, errno, fatal, notice, set_last_error, sys},
     signal::signal,
     worker::{self, Slot as WorkerSlot, WorkerView},
 };
@@ -831,7 +831,7 @@ fn daemon(call: &Call) {
     }
     call.set_bool(
         swoole_rs_corebase::ossupport::swoole_daemon(c_int::from(nochdir), c_int::from(noclose))
-            == 0,
+            .is_ok(),
     );
 }
 
@@ -998,15 +998,14 @@ fn get_priority(call: &Call) {
     let Some(who) = priority_who(call, which, who) else {
         return;
     };
-    set_errno(0);
-    let priority =
-        swoole_rs_corebase::sys::getpriority(which.c_cast::<c_int>(), who.c_cast::<libc::id_t>());
-    if priority == -1 && errno() != 0 {
-        set_last_error(errno());
-        call.set_bool(false);
-        return;
+    match swoole_rs_corebase::sys::getpriority(which.c_cast::<c_int>(), who.c_cast::<libc::id_t>())
+    {
+        Ok(priority) => call.set_long(i64::from(priority)),
+        Err(error) => {
+            set_last_error(error.raw_os_error().unwrap_or(0));
+            call.set_bool(false);
+        }
     }
-    call.set_long(i64::from(priority));
 }
 
 handlers! {
