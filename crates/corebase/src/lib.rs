@@ -22,6 +22,7 @@ mod flags;
 pub use c_cast::{CCast, CastFrom};
 mod cell;
 pub use cell::{BoxCellExt, CellExt};
+pub mod array_type;
 pub mod buffer;
 pub mod constants;
 pub mod coroutine;

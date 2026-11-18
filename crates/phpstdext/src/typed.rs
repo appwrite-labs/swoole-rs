@@ -269,32 +269,18 @@ fn parse_value(text: &[u8], start: usize, len: usize) -> Option<TypeValue> {
 /// [`parse_value`]'s split: the value, or where in `text` the text after a key
 /// that is not `string` or `int` begins.
 fn split_value(text: &[u8], start: usize, len: usize) -> Result<TypeValue, usize> {
-    let from_start = text.get(start..).unwrap_or_default();
-    let rest = from_start
-        .split(|&byte| byte == 0)
-        .next()
-        .unwrap_or_default();
-    let bytes = |from: usize, count: usize| {
-        from_start
-            .get(from..from.saturating_add(count))
-            .unwrap_or_default()
-    };
-    let mut target = TypeValue::default();
-    match rest.iter().position(|&byte| byte == b',') {
-        None => target.offset = 1,
-        Some(comma) => {
-            target.key = type_of_name(bytes(1, comma.saturating_sub(1)));
-            if !matches!(u32::from(target.key), IS_STRING | IS_LONG) {
-                return Err(start + comma + 1);
-            }
-            // Definitions are shorter than 65535 bytes.
-            target.offset = u16::try_from(comma + 1).unwrap_or(u16::MAX);
-        }
-    }
-    let len = u16::try_from(len).unwrap_or(u16::MAX);
-    target.len = len.wrapping_sub(target.offset).wrapping_sub(1);
-    target.value = type_of_name(bytes(usize::from(target.offset), usize::from(target.len)));
-    Ok(target)
+    use swoole_rs_corebase::array_type::{self, Key};
+    let definition = array_type::split(text, start, len)?;
+    Ok(TypeValue {
+        key: match definition.key {
+            Key::List => 0,
+            Key::Int => code(IS_LONG),
+            Key::String => code(IS_STRING),
+        },
+        value: type_of_name(definition.value(text.get(start..).unwrap_or_default())),
+        offset: definition.offset,
+        len: definition.len,
+    })
 }
 
 /// `ArrayTypeInfo::parse`.
