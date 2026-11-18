@@ -34,8 +34,6 @@ pub(super) fn new_event(
 }
 
 unsafe extern "C" {
-    #[link_name = "_ZN6swoole9coroutine6System12waitpid_safeEiPii"]
-    fn system_waitpid_safe(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
     fn usleep(usec: u32) -> c_int;
     fn getsid(pid: c_int) -> c_int;
     fn isatty(fd: c_int) -> c_int;
@@ -122,8 +120,7 @@ fn waitpid_safe() {
     run(|| {
         let pid = fork_child();
         let mut status = -1;
-        // SAFETY: a writable status, in a coroutine.
-        let pid2 = unsafe { system_waitpid_safe(pid, &raw mut status, 0) };
+        let pid2 = swoole_rs_hooks::exec::system_waitpid_safe(pid, Some(&mut status), 0);
         assert_eq!(pid2, pid);
         assert_eq!(wexitstatus(status), 0);
     });

@@ -47,6 +47,7 @@ use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use swoole_rs_corebase::log::last_error;
 use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::wait_upstream::system_waitpid as waitpid;
 use swoole_rs_ffi::swoole_init;
 use swoole_rs_hooks::poll::PollFd;
 
@@ -138,8 +139,6 @@ unsafe extern "C-unwind" {
     fn swoole_coroutine_flock(fd: c_int, operation: c_int) -> c_int;
     fn swoole_coroutine_close(fd: c_int) -> c_int;
 
-    #[link_name = "_ZN6swoole9coroutine6System7waitpidEiPiid"]
-    fn system_waitpid(pid: c_int, status: *mut c_int, options: c_int, timeout: f64) -> c_int;
 }
 
 unsafe extern "C" {
@@ -220,11 +219,6 @@ fn wait_event(fd: c_int, events: c_int, timeout: f64) -> c_int {
 
 fn wait_signal(signal: c_int, timeout: f64) -> c_int {
     swoole_rs_hooks::wait_signal::system_wait_signal(&[c_long::from(signal)], timeout).unwrap_or(-1)
-}
-
-fn waitpid(pid: c_int, status: &mut c_int, options: c_int, timeout: f64) -> c_int {
-    // SAFETY: a writable status, in a coroutine.
-    unsafe { system_waitpid(pid, status, options, timeout) }
 }
 
 fn read_file(file: &CStr, lock: bool) -> Option<Vec<u8>> {

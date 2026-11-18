@@ -12,6 +12,8 @@
 //! the case's boxed body; `coroutine::run` and `Coroutine::bailout` take a function and
 //! its data here (`swoole_coroutine_create` and `swr_v1_coroutine_bail`).
 
+use swoole_rs_corebase::swoole_fork;
+
 use super::hook::{
     ST_SIZE, Stat, swoole_coroutine_fstat, swoole_coroutine_fsync, swoole_coroutine_ftruncate,
     swoole_coroutine_lseek, swoole_coroutine_usleep,
@@ -77,9 +79,6 @@ struct Scheduler {
 
 unsafe extern "C-unwind" {
     fn swr_v1_coroutine_scheduler_get() -> *mut Scheduler;
-    #[link_name = "_Z11swoole_forki"]
-    fn swoole_fork(flags: c_int) -> c_int;
-
 }
 
 unsafe extern "C" {
@@ -636,8 +635,7 @@ fn undefined_behavior() {
     let status = spawn_exec_and_wait(|| {
         // test::coroutine::run.
         super::run(|| {
-            // SAFETY: swoole_fork in a coroutine, the behaviour under test.
-            let _ = unsafe { swoole_fork(0) };
+            let _ = swoole_fork(0);
         });
     });
     assert_eq!(1, wexitstatus(status));
@@ -654,13 +652,11 @@ fn undefined_behavior() {
         _ = swoole_event_init(0);
         let ret = dispatch(&event);
         assert!(!ret.is_null());
-        // SAFETY: swoole_fork after async threads, the behaviour under test.
-        let _ = unsafe { swoole_fork(0) };
+        let _ = swoole_fork(0);
     });
     assert_eq!(1, wexitstatus(status));
 
-    // SAFETY: the precheck only.
-    assert_eq!(0, unsafe { swoole_fork(SW_FORK_PRECHECK) });
+    assert_eq!(0, swoole_fork(SW_FORK_PRECHECK));
 }
 
 unsafe extern "C-unwind" fn c_api_inner(_: *mut c_void) {
