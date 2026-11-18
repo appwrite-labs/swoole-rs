@@ -1,8 +1,14 @@
 #include "config.h"
 #include "php.h"
 
-#if defined(SW_USE_PGSQL) && PHP_VERSION_ID >= 80400
+#ifdef SW_USE_PGSQL
 #include "ext/pdo/php_pdo_driver.h"
+/* PDO stores zend_string pointers under the original parameter names. */
+const zend_string *pdo_pgsql_rewritten_name(pdo_stmt_t *stmt, zend_string *name) {
+    return stmt->bound_param_map ? zend_hash_find_ptr(stmt->bound_param_map, name) : NULL;
+}
+
+#if PHP_VERSION_ID >= 80400
 #include <sys/uio.h>
 
 extern int pdo_pgsql_scan_token(struct iovec, size_t *);
@@ -15,4 +21,5 @@ int pdo_pgsql_scanner(pdo_scanner_t *s) {
     s->cur += consumed;
     return token;
 }
+#endif
 #endif

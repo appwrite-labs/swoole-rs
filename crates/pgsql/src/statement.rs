@@ -277,3 +277,61 @@ extern "C" fn pdo_pgsql_prepare_statement(
     }
     true
 }
+
+/// Resolve a PDO parameter to the index expected by the bundled statement.
+/// Direct dollar names keep their parsed index; map entries are one-based.
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_normalize_parameter(
+    dbh: &Dbh,
+    stmt: &Stmt,
+    name: Option<&swoole_rs_zend::ZStr>,
+    index: &Cell<i64>,
+) -> bool {
+    unsafe extern "C" {
+        // PDO's rewrite map owns the name until the statement is changed.
+        safe fn pdo_pgsql_rewritten_name<'a>(
+            stmt: &'a Stmt,
+            name: &swoole_rs_zend::ZStr,
+        ) -> Option<&'a swoole_rs_zend::ZStr>;
+    }
+    let Some(name) = name else {
+        return true;
+    };
+    if let Some(number) = name.bytes().strip_prefix(b"$") {
+        index.set(swoole_rs_corebase::strtol(number).0);
+        return true;
+    }
+    if let Some(rewritten) = pdo_pgsql_rewritten_name(stmt, name) {
+        let number = rewritten.bytes().get(1..).unwrap_or_default();
+        index.set(swoole_rs_corebase::strtol(number).0 - 1);
+        return true;
+    }
+    crate::driver::pdo_pgsql_raise(
+        dbh,
+        Some(stmt),
+        0,
+        Some(c"HY093".into()),
+        Some(name.c_str().into()),
+    );
+    false
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_check_parameter(
+    dbh: &Dbh,
+    stmt: &Stmt,
+    map: Option<&swoole_rs_zend::Array>,
+    index: i64,
+) -> bool {
+    if map.is_none_or(|map| map.index(index.cast_unsigned()).is_some()) {
+        return true;
+    }
+    crate::driver::pdo_pgsql_raise(
+        dbh,
+        Some(stmt),
+        0,
+        Some(c"HY093".into()),
+        Some(c"parameter was not defined".into()),
+    );
+    false
+}
