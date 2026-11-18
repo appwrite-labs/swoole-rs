@@ -289,17 +289,28 @@ mod tests {
         );
     }
 
-    // core-tests/src/server/http_server.cpp: websocket_encode. `print_frame` writes to
-    // Swoole's stdout stream, pointed at a log file for the case.
+    // core-tests/src/server/http_server.cpp: websocket_encode.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no fopen")]
+    #[cfg_attr(miri, ignore = "Miri cannot run the child test process")]
     fn websocket_encode() {
-        unsafe extern "C" {
-            /// A stream open until the `fclose` below, as a `Stream` (`FILE *`).
-            fn fopen(
-                path: *const c_char,
-                mode: *const c_char,
-            ) -> Option<swoole_rs_corebase::Stream>;
+        const CHILD: &str = "SWOOLE_TEST_WEBSOCKET_STDOUT";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "frame_api::tests::websocket_encode",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let rs = String::from_utf8(output.stdout).unwrap();
+            assert!(rs.contains("FIN: 1,"), "{rs}");
+            assert!(rs.contains("RSV1: 0,"), "{rs}");
+            assert!(rs.contains("opcode: 1,"), "{rs}");
+            assert!(rs.contains("payload: hello world\n"), "{rs}");
+            return;
         }
         let mut buffer = string();
         let packet = b"hello world\n";
@@ -308,26 +319,11 @@ mod tests {
         let mut wire = buffer.view().to_vec();
         assert!(decode(&mut ws, &mut wire));
 
-        let log = std::env::temp_dir().join(format!(
-            "swoole-websocket-encode-{}.log",
-            std::process::id()
-        ));
-        let path = std::ffi::CString::new(log.to_str().unwrap()).unwrap();
-        let fp = unsafe { fopen(path.as_ptr(), c"a+".as_ptr()) };
-        assert!(fp.is_some());
-        let ori_fp = swoole_rs_corebase::swoole_get_stdout_stream();
-        swoole_rs_corebase::swoole_set_stdout_stream(fp);
+        let stdout = swoole_rs_corebase::Stream::stdout();
+        swoole_rs_corebase::swoole_set_stdout_stream(Some(stdout));
         let payload = &wire[usize::from(ws.header_length)..][..ws.payload_length];
         print_frame(ws.header, payload);
-        swoole_rs_corebase::swoole_set_stdout_stream(ori_fp);
-        unsafe { libc::fclose(fp.unwrap().as_ptr()) };
-
-        let rs = std::fs::read_to_string(&log).unwrap();
-        assert!(rs.contains("FIN: 1,"), "{rs}");
-        assert!(rs.contains("RSV1: 0,"), "{rs}");
-        assert!(rs.contains("opcode: 1,"), "{rs}");
-        assert!(rs.contains("payload: hello world\n"), "{rs}");
-        std::fs::remove_file(&log).unwrap();
+        stdout.flush();
         buffer.dispose();
     }
 
