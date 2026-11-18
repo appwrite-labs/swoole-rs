@@ -236,7 +236,11 @@ pub(crate) fn join_reactor_threads(serv: view::Server<'_>) {
         };
         // Only the field is read: the thread itself holds its record meanwhile.
         if let Some(thread) = state.tables_ref().reactor_thread(usize::from(id)) {
-            send_event(thread.notify_pipe.get(), 0, ServerEvent::Shutdown);
+            let pipe = thread
+                .notify_worker
+                .get()
+                .and_then(|worker| serv.worker_pipe(worker, false));
+            send_event(pipe, 0, ServerEvent::Shutdown);
         }
         joining.join().unwrap_or_default();
     }
