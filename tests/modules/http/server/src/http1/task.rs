@@ -16,7 +16,7 @@ use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::locks::SharedMutex;
 use swoole_rs_corebase::process::methods as pool;
 use swoole_rs_corebase::process::process_pool::{PoolRecord, PoolRef, SW_IPC_MAX_SIZE};
-use swoole_rs_corebase::process::task_file::{self, EventHead, TaskBuffer};
+use swoole_rs_corebase::process::task_file::{EventHead, TaskBuffer};
 use swoole_rs_corebase::process::task_sync::{
     Bailed, MultiTask, ResultSlot, TaskHost, Tasks, Waiting,
 };
@@ -816,8 +816,7 @@ fn task_sync_multi_on_task(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
     let Some(packet) = unpack(task) else {
         return -1;
     };
-    // SAFETY: the live task.
-    unsafe { &*task.as_ptr().cast::<task_file::EventData>() }.dump();
+    task.dump();
     check(
         Server(serv.raw()).finish(&packet, task),
         "serv->finish(packet.data, packet.length, 0, task)",
@@ -935,8 +934,7 @@ fn task_sync_on_task(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
         payload == PACKET,
         "string(task->data, task->info.len) == packet",
     );
-    // SAFETY: the live task.
-    unsafe { &*task.as_ptr().cast::<task_file::EventData>() }.dump();
+    task.dump();
     check(
         Server(serv.raw()).finish(payload, task),
         "serv->finish(task->data, task->info.len, 0, task)",

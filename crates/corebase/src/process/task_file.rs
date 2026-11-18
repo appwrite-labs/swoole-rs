@@ -186,14 +186,6 @@ pub use crate::DataHead as EventHead;
 
 const IPC_PAYLOAD: usize = SW_IPC_MAX_SIZE as usize - size_of::<DataHead>();
 
-/// `swoole::EventData`: the header, then the payload one pipe message holds.
-// `repr(C)`: C's `EventData` (`native/corebase/swoole.h`): a head, then its payload.
-#[repr(C)]
-pub struct EventData {
-    head: DataHead,
-    data: [u8; IPC_PAYLOAD],
-}
-
 /// An `EventData` to pack a task into. Its payload starts uninitialized, as a
 /// stack `swoole::EventData` does, and only [`Self::pack`] sets the head's `len`,
 /// so the bytes it counts are always written.
@@ -299,16 +291,24 @@ impl TaskBuffer {
     }
 }
 
-impl EventData {
+/// A packed task lent for `'a`: its `DataHead`, at any alignment, then the `len`
+/// bytes it counts (the payload, or a temporary file's `PacketTask`).
+#[derive(Clone, Copy)]
+pub struct Packed<'a> {
+    /// The head and exactly the `len` bytes it counts.
+    bytes: &'a [u8],
+}
+
+impl<'a> Packed<'a> {
     /// `Server::task_dump`: the header, and the temporary file's name if it has one.
-    pub fn dump(&self) {
+    pub fn dump(self) {
         let mut buf = [0_u8; 1024];
-        datahead_dump(&self.head, &mut buf);
+        let head = self.head();
+        datahead_dump(&head, &mut buf);
         let text = CStr::from_bytes_until_nul(&buf).unwrap_or_default();
         crate::sys::print(text.to_bytes());
-        if TaskFlag::from_bits(self.head.ext_flags).contains(TaskFlag::SW_TASK_TMPFILE)
-            && let Some(payload) = self.data.get(..self.head.len as usize)
-            && let Ok((length, path)) = PacketTask::read(payload)
+        if TaskFlag::from_bits(head.ext_flags).contains(TaskFlag::SW_TASK_TMPFILE)
+            && let Ok((length, path)) = PacketTask::read(self.payload())
         {
             // Upstream prints the payload's length in bytes of the file's name; a
             // negative `(int)` precision prints all of it.
@@ -320,17 +320,7 @@ impl EventData {
             crate::sys::print(&line);
         }
     }
-}
 
-/// A packed task lent for `'a`: its `DataHead`, at any alignment, then the `len`
-/// bytes it counts (the payload, or a temporary file's `PacketTask`).
-#[derive(Clone, Copy)]
-pub struct Packed<'a> {
-    /// The head and exactly the `len` bytes it counts.
-    bytes: &'a [u8],
-}
-
-impl<'a> Packed<'a> {
     /// The task at the start of `bytes`; `None` when they are too short for its
     /// head and the `len` bytes it counts.
     #[must_use]
@@ -668,27 +658,13 @@ mod tests {
         /// `task_pack` draws from the process-wide task id, so its tests take turns.
         pub(super) static TASK_ID: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-        /// An `EventData`-sized, 8-aligned buffer.
-        fn event() -> Vec<u64> {
-            vec![0; 8192 / 8 + 8]
-        }
-
-        /// The packed task in the `EventData` at `event`, one of [`event`]'s buffers.
-        fn packed<'a>(event: *const EventData) -> Packed<'a> {
-            let bytes =
-                unsafe { std::slice::from_raw_parts(event.cast::<u8>(), size_of::<EventData>()) };
-            Packed::from_bytes(bytes).unwrap()
-        }
-
         #[test]
         fn a_small_task_packs_inline_and_unpacks_in_place() {
             let _turn = TASK_ID.lock();
-            let mut buf = event();
-            let task = buf.as_mut_ptr().cast::<EventHead>();
-            let event = task.cast::<EventData>();
+            let mut task = TaskBuffer::default();
             swr_v1_core_set_current_task_id(41);
-            assert!(unsafe { &mut *task.cast::<TaskBuffer>() }.pack(b"hello"));
-            let head = unsafe { &*task };
+            assert!(task.pack(b"hello"));
+            let head = task.head();
             assert_eq!(
                 (head.fd, head.len, head.kind, head.ext_flags),
                 (41, 5, 8, 0)
@@ -696,9 +672,9 @@ mod tests {
             assert!(head.time > 0.0);
             assert_eq!(swr_v1_core_current_task_id(), 42);
             let mut string = crate::buffer::string::OwnedString::default();
-            let (data, _) = packed(event).unpack(&mut string).unwrap();
+            let (data, _) = task.packed().unpack(&mut string).unwrap();
             assert_eq!(data.len(), 5);
-            assert_eq!(data.as_ptr(), unsafe { (*event).data.as_ptr() }.cast());
+            assert_eq!(data.as_ptr(), task.data.as_ptr().cast());
             assert!(string.as_ptr().is_null());
         }
 
@@ -708,27 +684,25 @@ mod tests {
             let _turn = TASK_ID.lock();
             assert!(crate::set_task_tmpdir(c"/tmp"));
             let data = vec![7u8; 9000];
-            let mut buf = event();
-            let task = buf.as_mut_ptr().cast::<EventHead>();
-            let event = task.cast::<EventData>();
-            assert!(unsafe { &mut *task.cast::<TaskBuffer>() }.pack(&data));
-            let head = unsafe { &*task };
+            let mut task = TaskBuffer::default();
+            assert!(task.pack(&data));
+            let head = task.head();
             assert_eq!(
                 (head.len as usize, head.ext_flags),
                 (size_of::<PacketTask>(), TaskFlag::SW_TASK_TMPFILE.bits())
             );
-            let (_, path) = PacketTask::read(packed(event).payload()).unwrap();
+            let (_, path) = PacketTask::read(task.packed().payload()).unwrap();
             let path = path.to_str().unwrap().to_owned();
             assert!(path.starts_with("/tmp/swoole.task."));
             let mut string = crate::buffer::string::OwnedString::default();
-            let (read, _) = packed(event).unpack(&mut string).unwrap();
+            let (read, _) = task.packed().unpack(&mut string).unwrap();
             assert_eq!(read, data.as_slice());
             let read = read.as_ptr();
             assert_eq!(read, string.as_ptr());
             assert_eq!((string.len(), string.size()), (9000, 9000));
             assert!(!std::path::Path::new(&path).exists());
             // A second unpack finds no file.
-            assert!(packed(event).unpack(&mut string).is_none());
+            assert!(task.packed().unpack(&mut string).is_none());
         }
     }
 }

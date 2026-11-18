@@ -105,7 +105,6 @@ struct Address;
 }  // namespace network
 class AsyncThreads;
 struct Protocol;
-struct EventData;
 struct DataHead;
 typedef std::function<void(void *)> Callback;
 }  // namespace swoole
@@ -157,19 +156,6 @@ struct DataHead {
     uint16_t ext_flags;
     uint32_t reserved;
     double time;
-};
-
-struct EventData {
-    DataHead info;
-    char data[SW_IPC_BUFFER_SIZE];
-
-    uint32_t size() const {
-        return sizeof(info) + len();
-    }
-
-    uint32_t len() const {
-        return info.len;
-    }
 };
 
 }  // namespace swoole

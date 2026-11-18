@@ -3,7 +3,7 @@ use crate::buffer::string::OwnedString;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
-const LARGE: usize = size_of::<EventData>() * 2;
+const LARGE: usize = size_of::<TaskBuffer>() * 2;
 
 fn directory(case: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("swr-{case}-{}", std::process::id()));
