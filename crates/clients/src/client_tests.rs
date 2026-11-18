@@ -229,11 +229,11 @@ pub(super) extern "C-unwind" fn writable_callback(
 const FRAMING: Framing = Framing {
     length: |_, _, _| {
         log("framed false");
-        0
+        true
     },
     eof: |_, _, _| {
         log("framed true");
-        0
+        true
     },
 };
 

@@ -186,7 +186,7 @@ const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int =
 
 /// One of `Protocol::recv_with_length_protocol` and `recv_with_eof_protocol` over a
 /// live client's protocol, socket and input buffer ([`Handle::with_framed`]).
-pub type Framed = fn(&ClientFraming, Socket<'_>, &mut StringBuffer) -> c_int;
+pub type Framed = fn(&ClientFraming, Socket<'_>, &mut StringBuffer) -> bool;
 
 /// The framed receives crates/ports defines; ports depends on this crate, so
 /// `swoole_init` (crates/ffi) registers them with [`set_framing`]. Only a
@@ -1918,7 +1918,7 @@ fn on_read(this: Handle<'_>) -> bool {
         let framed = if eof { framing.eof } else { framing.length };
         let socket = this.socket();
         // A package callback may destroy the client; its socket outlives this handler.
-        let received = this.with_framed(|state, socket, buffer| framed(state, socket, buffer) >= 0);
+        let received = this.with_framed(framed);
         // A destroyed client cleared its object.
         let released = socket.read(|socket| socket.object.is_null());
         if !received && !released && !this.flag(Flag::Closed) {

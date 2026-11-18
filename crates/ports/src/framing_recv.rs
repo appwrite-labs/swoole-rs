@@ -462,9 +462,9 @@ fn client_recv<const LENGTH: bool>(
     client: &ClientFraming,
     socket: Socket<'_>,
     buffer: &mut StringBuffer,
-) -> c_int {
+) -> bool {
     let mode = if LENGTH { Mode::Length } else { Mode::Eof };
-    receive(socket, Owner::Client(client), buffer, mode, Callbacks, None) as c_int
+    receive(socket, Owner::Client(client), buffer, mode, Callbacks, None) != Status::Err
 }
 
 /// The framed receives a client's reads use, which `swoole_init` registers
