@@ -82,7 +82,37 @@ impl<'a> StreamContext<'a> {
     }
 }
 
+/// Outcome of casting a PHP resource with `PHP_STREAM_AS_SOCKETD`.
+pub enum StreamSocket {
+    Descriptor(c_int),
+    InvalidResource,
+    CastFailed,
+}
+
 impl Value {
+    /// Cast the resource to a socket descriptor, preserving Zend's resource error.
+    pub fn stream_socket(&self) -> Result<StreamSocket, Bailout> {
+        let mut stream = ptr::null_mut();
+        let mut fd = -1;
+        // SAFETY: self holds the zval and the shim writes only the two local outputs.
+        match unsafe {
+            crate::sys::swr_zend_stream_socketd(self.as_ptr(), &raw mut stream, &raw mut fd)
+        } {
+            0 => Ok(StreamSocket::Descriptor(fd)),
+            2 => Err(Bailout),
+            _ if stream.is_null() => Ok(StreamSocket::InvalidResource),
+            _ => Ok(StreamSocket::CastFailed),
+        }
+    }
+
+    /// Disable stream read buffering, trapping a user stream wrapper's bailout.
+    pub fn unbuffer_stream(&self) -> Result<(), Bailout> {
+        contain_with(|| {
+            // SAFETY: the shim borrows the live zval only for this call.
+            unsafe { crate::sys::swr_zend_stream_unbuffer(self.as_ptr()) }
+        })
+    }
+
     /// `instanceof_function(Z_OBJCE_P(value), class)`: false for a non-object or
     /// a class not registered.
     #[must_use]
