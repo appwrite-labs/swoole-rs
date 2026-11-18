@@ -213,7 +213,7 @@ void swoole_native_curl_minit(int module_number) {
     }
 
 #ifdef PHP_CURL_NEED_OPENSSL_TSL
-    if (!CRYPTO_get_id_callback()) {
+    if (CRYPTO_get_id_callback() == nullptr) {
         int i, c = CRYPTO_num_locks();
 
         php_curl_openssl_tsl = (MUTEX_T *) malloc(c * sizeof(MUTEX_T));
