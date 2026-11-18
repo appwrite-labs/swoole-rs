@@ -91,70 +91,12 @@ static int sw_php_stdiop_flush(php_stream *stream);
 static int sw_php_stdiop_seek(php_stream *stream, zend_off_t offset, int whence, zend_off_t *newoffset);
 static int sw_php_stdiop_set_option(php_stream *stream, int option, int value, void *ptrparam);
 static int sw_php_stdiop_cast(php_stream *stream, int castas, void **ret);
-static void php_stream_mode_sanitize_fdopen_fopencookie(php_stream *stream, char *result);
 static php_stream *_sw_php_stream_fopen_from_fd_int(int fd, const char *mode, const char *persistent_id STREAMS_DC);
 #if PHP_VERSION_ID >= 80200
 static php_stream *_sw_php_stream_fopen_from_fd(int fd, const char *mode, const char *persistent_id, bool zero_position STREAMS_DC);
 #else
 static php_stream *_sw_php_stream_fopen_from_fd(int fd, const char *mode, const char *persistent_id STREAMS_DC);
 #endif
-
-static int sw_php_stream_parse_fopen_modes(const char *mode, int *open_flags) {
-    int flags;
-
-    switch (mode[0]) {
-    case 'r':
-        flags = 0;
-        break;
-    case 'w':
-        flags = O_TRUNC | O_CREAT;
-        break;
-    case 'a':
-        flags = O_CREAT | O_APPEND;
-        break;
-    case 'x':
-        flags = O_CREAT | O_EXCL;
-        break;
-    case 'c':
-        flags = O_CREAT;
-        break;
-    default:
-        /* unknown mode */
-        return FAILURE;
-    }
-
-    if (strchr(mode, '+')) {
-        flags |= O_RDWR;
-    } else if (flags) {
-        flags |= O_WRONLY;
-    } else {
-        flags |= O_RDONLY;
-    }
-
-#if defined(O_CLOEXEC)
-    if (strchr(mode, 'e')) {
-        flags |= O_CLOEXEC;
-    }
-#endif
-
-#if defined(O_NONBLOCK)
-    if (strchr(mode, 'n')) {
-        flags |= O_NONBLOCK;
-    }
-#endif
-
-#if defined(_O_TEXT) && defined(O_BINARY)
-    if (strchr(mode, 't')) {
-        flags |= _O_TEXT;
-    } else {
-        flags |= O_BINARY;
-    }
-#endif
-
-    *open_flags = flags;
-    return SUCCESS;
-}
-
 
 /* {{{ ------- STDIO stream implementation -------*/
 
@@ -560,7 +502,7 @@ static int sw_php_stdiop_cast(php_stream *stream, int castas, void **ret) {
                 /* we were opened as a plain file descriptor, so we
                  * need fdopen now */
                 char fixed_mode[5];
-                php_stream_mode_sanitize_fdopen_fopencookie(stream, fixed_mode);
+                swr_v1_phpruntime_plain_fdopen_mode(stream->mode, (uint8_t *) fixed_mode);
                 data->file = fdopen(data->fd, fixed_mode);
                 if (data->file == NULL) {
                     return FAILURE;
@@ -1046,7 +988,7 @@ static php_stream *_sw_php_stream_fopen(const char *filename,
     int persistent = options & STREAM_OPEN_PERSISTENT;
     char *persistent_id = NULL;
 
-    if (FAILURE == sw_php_stream_parse_fopen_modes(mode, &open_flags)) {
+    if (!swr_v1_phpruntime_plain_open_flags(mode, &open_flags)) {
         php_stream_wrapper_log_error(&php_plain_files_wrapper, options, "`%s' is not a valid mode for fopen", mode);
         return NULL;
     }
@@ -1205,42 +1147,6 @@ PHPAPI php_stream_wrapper sw_php_plain_files_wrapper = {
     NULL,
     0
 };
-
-static void php_stream_mode_sanitize_fdopen_fopencookie(php_stream *stream, char *result) {
-    /* replace modes not supported by fdopen and fopencookie, but supported
-     * by PHP's fread(), so that their calls won't fail */
-    const char *cur_mode = stream->mode;
-    int has_plus = 0, has_bin = 0, i, res_curs = 0;
-
-    if (cur_mode[0] == 'r' || cur_mode[0] == 'w' || cur_mode[0] == 'a') {
-        result[res_curs++] = cur_mode[0];
-    } else {
-        /* assume cur_mode[0] is 'c' or 'x'; substitute by 'w', which should not
-         * truncate anything in fdopen/fopencookie */
-        result[res_curs++] = 'w';
-
-        /* x is allowed (at least by glibc & compat), but not as the 1st mode
-         * as in PHP and in any case is (at best) ignored by fdopen and fopencookie */
-    }
-
-    /* assume current mode has at most length 4 (e.g. wbn+) */
-    for (i = 1; i < 4 && cur_mode[i] != '\0'; i++) {
-        if (cur_mode[i] == 'b') {
-            has_bin = 1;
-        } else if (cur_mode[i] == '+') {
-            has_plus = 1;
-        }
-        /* ignore 'n', 't' or other stuff */
-    }
-
-    if (has_bin) {
-        result[res_curs++] = 'b';
-    }
-    if (has_plus) {
-        result[res_curs++] = '+';
-    }
-    result[res_curs] = '\0';
-}
 
 void php_swoole_runtime_rinit(void) {
     if (!swr_v1_phpruntime_rinit()) {
