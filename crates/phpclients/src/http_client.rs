@@ -1023,9 +1023,9 @@ impl Client {
             let Some(mut count) = received.filter(|&n| n > 0) else {
                 if received == Some(0) {
                     socket.set_err(libc::ECONNRESET);
-                    if total > 0 && !hooks.parser.should_keep_alive() {
+                    if total > 0 && hooks.parser.needs_eof() {
                         hooks.finish();
-                        success = true;
+                        success = self.completed.get();
                     }
                 }
                 break;
