@@ -103,17 +103,23 @@ def rows(reports):
 
 
 def resource_regressions(results):
-    """Compare measurements for the same PHPT when its test body ran on both engines."""
-    upstream = {row['test']: row['leftovers'] for row in results
+    """Compare measurements for the same PHPT when it ended the same way on both engines.
+
+    A run that fails leaves whatever it had open when it stopped, so a failure on one engine
+    against a pass on the other compares a stopped run with a finished one. The pass/fail
+    gate and its re-runs judge that difference.
+    """
+    upstream = {row['test']: row for row in results
                 if row['engine'] == 'upstream' and row['status'] in ('passed', 'failed') and 'leftovers' in row}
     regressions = []
     for row in results:
-        if row['engine'] != 'cargo' or row['status'] not in ('passed', 'failed') or row['test'] not in upstream:
+        baseline = upstream.get(row['test'])
+        if row['engine'] != 'cargo' or baseline is None or row['status'] != baseline['status']:
             continue
         for metric, count in row.get('leftovers', {}).items():
-            baseline = upstream[row['test']][metric]
-            if baseline is not None and (count is None or count > baseline):
-                regressions.append(f"{row['test']} ({metric}: cargo {count}, upstream {baseline})")
+            allowed = baseline['leftovers'][metric]
+            if allowed is not None and (count is None or count > allowed):
+                regressions.append(f"{row['test']} ({metric}: cargo {count}, upstream {allowed})")
     return sorted(regressions)
 
 

@@ -68,8 +68,6 @@ const _: () = assert!(size_of::<super::Address>() == 120);
 pub(super) const SOCKET_INFO: usize = 176;
 
 unsafe extern "C-unwind" {
-    #[link_name = "_Z25swoole_get_last_error_msgv"]
-    fn swoole_get_last_error_msg() -> *const c_char;
     /// `SwooleG`, whose first member is `max_sockets`.
     #[link_name = "SwooleG"]
     static mut SWOOLE_G_MAX_SOCKETS: u32;
@@ -494,12 +492,6 @@ pub(crate) unsafe fn length_connection(port: *mut c_void) -> ConnectionRecord {
 
 pub(crate) unsafe fn swr_case_create(serv: *mut c_void) -> c_int {
     Server(serv).create()
-}
-
-pub(crate) unsafe fn swr_case_last_error(msg: *mut *const c_char) -> c_int {
-    // SAFETY: a writable out-parameter; the thread's message.
-    unsafe { *msg = swoole_get_last_error_msg() };
-    last_error()
 }
 
 pub(crate) unsafe fn swr_case_port(serv: *mut c_void) -> c_int {
