@@ -23,7 +23,7 @@ use swoole_rs_corebase::reactor::{Event, Running, Socket};
 use swoole_rs_corebase::{CCast, DataHead, log};
 use swoole_rs_error::ErrorCode as E;
 
-use crate::callbacks::TaskSlot;
+use crate::callbacks::{CallbackError, CallbackResult, TaskSlot};
 use crate::event_worker::native::{
     call_worker_stop_callback, stop_async_worker, swr_workers_signal_set, worker_signal_handler,
     worker_start_callback,
@@ -90,18 +90,16 @@ pub(crate) fn init(serv: view::Server<'_>) -> bool {
 }
 
 /// `TaskWorker_onTask`: the pool's task callback.
-fn on_task(pool: PoolRef<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_int {
-    crate::shared::pool_server(pool)
-        .and_then(|serv| run_task(serv, worker, task).ok())
-        .map_or(ERR, |()| OK)
+fn on_task(pool: PoolRef<'_>, worker: Worker<'_>, task: Packed<'_>) -> CallbackResult {
+    run_task(
+        crate::shared::pool_server(pool).ok_or(CallbackError::Missing)?,
+        worker,
+        task,
+    )
 }
 
 /// `TaskWorker_onTask`: one task, pipe message, shutdown or command.
-fn run_task(
-    serv: view::Server<'_>,
-    worker: Worker<'_>,
-    task: Packed<'_>,
-) -> crate::callbacks::CallbackResult {
+fn run_task(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> CallbackResult {
     let head = task.head();
     LATEST_TASK.set(Some(head));
     worker.set_status(WorkerStatus::busy(true));
@@ -120,7 +118,7 @@ fn run_task(
         }
         Some(ServerEvent::CommandRequest) => command(serv, worker, task)
             .then_some(())
-            .ok_or(crate::callbacks::CallbackError::Failed),
+            .ok_or(CallbackError::Failed),
         _ => {
             let ret = callbacks.task(TaskSlot::Task, serv, task);
             if swoole_rs_corebase::process::pool::bailout_pending() {
@@ -212,10 +210,8 @@ fn on_stop(pool: PoolRef<'_>, worker: Worker<'_>) {
 }
 
 /// `TaskWorker_loop_async`: the coroutine task worker's event loop over its pipe.
-fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
-    let Some(serv) = crate::shared::pool_server(pool) else {
-        return ERR;
-    };
+fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> CallbackResult {
+    let serv = crate::shared::pool_server(pool).ok_or(CallbackError::Missing)?;
     let (state, config) = (serv.state(), serv.config());
     worker.set_status(WorkerStatus::busy(false));
     in_worker_bus(state, config, worker_pipe(worker, false), |pipe| {
@@ -234,7 +230,7 @@ fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
             });
         }
     }
-    swoole_rs_corebase::reactor::event_api::swoole_event_wait().map_or(ERR, |()| 0)
+    swoole_rs_corebase::reactor::event_api::swoole_event_wait().map_err(|_| CallbackError::Failed)
 }
 
 /// `TaskWorker_onPipeReceive`: a task from a worker, in the coroutine loop.

@@ -21,15 +21,14 @@ use crate::objects::{Reactor, worker_pipe};
 pub(crate) use crate::reactor_ops::PoolBus;
 use core::sync::atomic::AtomicU64;
 use process::armed_timer::ArmedTimer;
-use process::methods::deferred;
 use process::methods::{
     ExitStatus, is_worker_running, kill_all_workers, push_stop, reload_warn, swoole_set_worker_id,
     swoole_set_worker_pid, worker_report_error,
 };
 use process::pool::{PoolCall, Warning};
 use process::process_pool::{
-    Callback, Hooks, MainLoopFn, Op, PipeError, PoolNative, PoolRef, Protocol, RecvData,
-    pool_run_main,
+    Callback, CallbackError, CallbackResult, Hooks, MainLoopFn, Op, PipeError, PoolNative, PoolRef,
+    Protocol, RecvData, pool_run_main,
 };
 use process::task_file::Packed;
 use process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
@@ -259,20 +258,15 @@ fn recv_message(_: Running<'_>, event: &mut Event) -> c_int {
 }
 
 /// `ProcessPool::run_with_*_protocol` and `run_async`: the worker loop.
-macro_rules! main_loops {
-    ($($name:ident = $protocol:expr;)*) => {$(
-        fn $name(pool: PoolRef<'_>, worker: Record<'_>) -> c_int {
-            // A callback's bailout is raised once the export's frames are gone.
-            deferred(pool_run_main(&NATIVE, pool, worker, $protocol).map(crate::conn_io::status))
+fn run_loop(pool: PoolRef<'_>, worker: Record<'_>, protocol: Option<Protocol>) -> CallbackResult {
+    match pool_run_main(&NATIVE, pool, worker, protocol) {
+        Ok(false) => Err(CallbackError::Failed),
+        Ok(true) => Ok(()),
+        Err(_) => {
+            process::pool::defer_bailout();
+            Ok(())
         }
-    )*};
-}
-
-main_loops! {
-    run_task = Some(Protocol::Task);
-    run_stream = Some(Protocol::Stream);
-    run_message = Some(Protocol::Message);
-    run_async = None;
+    }
 }
 
 // ---------------------------------------------------------------- the table
@@ -300,10 +294,14 @@ fn objects(pool: Pool<'_>, op: Op, arg: u64) -> bool {
     match op {
         Op::MainLoop => {
             let main_loop: MainLoopFn = match Protocol::from_code(arg.c_cast::<c_int>()) {
-                Some(Protocol::Task) => run_task,
-                Some(Protocol::Stream) => run_stream,
-                Some(Protocol::Message) => run_message,
-                None => run_async,
+                Some(Protocol::Task) => |pool, worker| run_loop(pool, worker, Some(Protocol::Task)),
+                Some(Protocol::Stream) => {
+                    |pool, worker| run_loop(pool, worker, Some(Protocol::Stream))
+                }
+                Some(Protocol::Message) => {
+                    |pool, worker| run_loop(pool, worker, Some(Protocol::Message))
+                }
+                None => |pool, worker| run_loop(pool, worker, None),
             };
             let hooks = Hooks {
                 main_loop: Some(main_loop),
@@ -546,7 +544,7 @@ impl PoolNative for Native {
             (Callback::WorkerStop, Some(worker)) => pool.call_on_worker_stop(worker),
             (Callback::MainLoop, Some(worker)) => {
                 if let Some(code) = pool.call_main_loop(worker) {
-                    c.set_result(code as isize);
+                    c.set_result(code.map_or(-1, |()| 0));
                 }
             }
             _ => {}
@@ -666,7 +664,7 @@ impl PoolNative for Native {
         if let Some((worker, task)) = worker.zip(Packed::from_bytes(c.bytes()))
             && let Some(code) = pool.call_on_task(worker, task)
         {
-            c.set_result(code as isize);
+            c.set_result(code.map_or(-1, |()| 0));
         }
     }
 
