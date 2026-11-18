@@ -15,10 +15,12 @@ this PHP, must be reported, or the run proves nothing. Upstream is the reference
 reports are counted and never fail the run. Every other report is a race in this repository's
 code, fixed rather than suppressed: the run fails while there are more than LIMIT, which falls
 as fixes land, the way the callgrind records do, until it reaches zero (#2252). Reports stay in
-target/tsan/reports/ and are only counted on stdout: a report may locate an upstream bug, which
-goes to the private security repository (AGENTS.md), so a public CI log never shows one. Rerun
-locally to read them. Needs clang with its TSan runtime and a kernel with at most 28 bits of mmap
-randomisation (vm.mmap_rnd_bits; tsan.yml sets it).
+target/tsan/reports/, each named for the PHPT whose process wrote it, and are only counted on
+stdout. Those outside upstream's runs are also kept, with their test names, in
+target/tsan/phpt/reports.txt for the artifact, so a one-off report can be read (#5099). Upstream's
+never leave the machine: one may locate an upstream bug, which goes to the private security
+repository (AGENTS.md). Rerun locally to read them. Needs clang with its TSan runtime and a kernel
+with at most 28 bits of mmap randomisation (vm.mmap_rnd_bits; tsan.yml sets it).
 
     python3 tools/dev.py docker -- tools/tsan.py
 """
@@ -45,6 +47,42 @@ def sanitized(reports, name):
     # A worker forked from a threaded process may start threads; TSan would kill it.
     options = f'log_path={reports / name}/report:die_after_fork=0:second_deadlock_stack=1'
     return {'TSAN_OPTIONS': options}
+
+
+def named(php, reports):
+    """A PHP that sends a PHPT's reports, its children's included, to files named for the test.
+
+    run-tests.php runs each section of a test as `php ... -f x.php` (x.skip.php, x.clean.php)
+    beside it; the first process given one names the test for everything it starts. TSan
+    appends the pid, and a later log_path overrides the one before it."""
+    return f"""#!/bin/sh
+if [ -z "$TSAN_PHPT" ]; then
+  previous=
+  for arg; do
+    if [ "$previous" = -f ]; then
+      case "$arg" in
+        *.php) test="${{arg%.php}}"; test="${{test%.skip}}"; test="${{test%.clean}}"; directory="${{test%/*}}"
+               TSAN_PHPT="${{directory##*/}}-${{test##*/}}" ;;
+      esac
+      break
+    fi
+    previous="$arg"
+  done
+fi
+if [ -n "$TSAN_PHPT" ]; then
+  TSAN_OPTIONS="$TSAN_OPTIONS:log_path={reports}/$TSAN_PHPT"
+  export TSAN_PHPT TSAN_OPTIONS
+fi
+exec '{php}' "$@"
+"""
+
+
+def kept(reports, output):
+    """Writes the text of every report outside upstream's runs, each under its run and test, to output."""
+    with output.open('w') as text:
+        for run in sorted(path for path in reports.iterdir() if not path.name.startswith('upstream')):
+            for report in sorted(run.iterdir()):
+                text.write(f'==== {run.name}: {report.name.rsplit(".", 1)[0]} ({report.name})\n{report.read_text(errors="replace")}\n')
 
 
 def outside_upstream(counts):
@@ -109,8 +147,11 @@ def main():
     subprocess.run([sys.executable, 'corpus/upstream/inventory.py', '--output', OUT / 'phpt/manifest.json'], cwd=ROOT, check=True)
     for name, extension in engines.items():
         families = [arg for family in FAMILIES for arg in ['--module', family]]
+        wrapper = OUT / f'{name}-php'
+        wrapper.write_text(named(php / 'bin/php', reports / name))
+        wrapper.chmod(0o755)
         status = subprocess.run([sys.executable, 'corpus/upstream/run.py', '--manifest', OUT / 'phpt/manifest.json',
-                                 *families, '--timeout', str(args.timeout), '--php', php / 'bin/php',
+                                 *families, '--timeout', str(args.timeout), '--php', wrapper,
                                  '--engine', f'{name}={extension}', '--output', OUT / f'phpt/{name}.json'],
                                 cwd=ROOT, env={**run, **sanitized(reports, name)}).returncode
         if status not in (0, 1):  # 1: a test failed, which the ZTS lane gates
@@ -132,6 +173,7 @@ exec '{php / 'bin/php'}' "$@"
         failed.append('exit_guard')
     counts = {path.name: len(list(path.iterdir())) for path in sorted(reports.iterdir())}
     ours = outside_upstream(counts)
+    kept(reports, OUT / 'phpt/reports.txt')
     print('sanitizer reports: ' + ', '.join(f'{found} in {reports / name}' for name, found in counts.items()))
     if ours > LIMIT:
         failed.append(f'{ours} reports outside upstream, over the limit of {LIMIT},')
