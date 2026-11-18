@@ -128,7 +128,7 @@ impl Server {
     }
     fn on_receive(self, receive: Receive) {
         *RECEIVE.lock().unwrap() = Some(receive);
-        self.set_callback(Callback::Receive(on_receive));
+        self.set_callback(Callback::Receive(status_callback!(on_receive)));
     }
 
     /// fixture.cc's `listen_port`: the port, or exit 2.

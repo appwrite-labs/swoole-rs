@@ -245,9 +245,9 @@ fn reload_single_process() {
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
 
-    serv.set_callback(Callback::Task(task_ok));
+    serv.set_callback(Callback::Task(status_callback!(task_ok)));
     serv.set_callback(Callback::WorkerStart(reload_single_worker_start));
-    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
 
     assert_eq!(serv.create(), SW_OK);
     assert_eq!(serv.start(), SW_OK);
@@ -279,9 +279,9 @@ fn reload_no_task_worker() {
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
 
-    serv.set_callback(Callback::Task(task_ok));
+    serv.set_callback(Callback::Task(status_callback!(task_ok)));
     serv.set_callback(Callback::WorkerStart(reload_no_task_worker_start));
-    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
 
     assert_eq!(serv.create(), SW_OK);
     assert_eq!(serv.start(), SW_OK);
@@ -360,8 +360,8 @@ fn reload_server(task_enable_coroutine: bool) -> Server {
     set_log_warning();
 
     serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
-    serv.set_callback(Callback::Task(task_ok));
-    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Task(status_callback!(task_ok)));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
 
     assert_eq!(serv.create(), SW_OK);
 
@@ -426,9 +426,9 @@ fn kill_user_workers() {
     assert_eq!(serv.create(), SW_OK);
 
     serv.set_callback(Callback::UserWorkerStart(kill_user_workers_user_start));
-    serv.set_callback(Callback::Task(sleeping_task));
+    serv.set_callback(Callback::Task(status_callback!(sleeping_task)));
     serv.set_callback(Callback::WorkerStart(kill_user_workers_start));
-    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
 
     assert_eq!(serv.start(), 0);
     drop(worker1);
@@ -470,9 +470,9 @@ fn force_kill_all_workers() {
     assert_eq!(serv.create(), SW_OK);
 
     serv.set_callback(Callback::UserWorkerStart(force_kill_user_start));
-    serv.set_callback(Callback::Task(task_ok));
+    serv.set_callback(Callback::Task(status_callback!(task_ok)));
     serv.set_callback(Callback::WorkerStart(force_kill_worker_start));
-    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
     serv.set_callback(Callback::ManagerStart(force_kill_manager_start));
 
     assert_eq!(serv.start(), 0);
@@ -518,9 +518,9 @@ fn kill_user_workers1() {
     assert_eq!(serv.create(), SW_OK);
 
     serv.set_callback(Callback::UserWorkerStart(kill_user_workers1_user_start));
-    serv.set_callback(Callback::Task(spinning_task));
+    serv.set_callback(Callback::Task(status_callback!(spinning_task)));
     serv.set_callback(Callback::WorkerStart(kill_user_workers1_start));
-    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
 
     assert_eq!(serv.start(), 0);
     assert_no_failure();
@@ -591,7 +591,7 @@ fn reload_thread_server(prepare: impl FnOnce(Server)) -> Server {
     assert_eq!(serv.create(), SW_OK);
 
     serv.set_callback(Callback::WorkerStart(count_thread_worker_start));
-    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
     serv.set_callback(Callback::ManagerStart(reload_thread_manager_start));
     serv.set_callback(Callback::ManagerStop(reload_thread_manager_stop));
     serv
@@ -605,7 +605,7 @@ fn reload_thread_2() {
         serv.config().task_worker_num.set(2);
         user_worker = Some(add_user_worker(serv));
     });
-    serv.set_callback(Callback::Task(task_ok));
+    serv.set_callback(Callback::Task(status_callback!(task_ok)));
     serv.set_callback(Callback::UserWorkerStart(reload_thread_2_user_start));
     serv.set_callback(Callback::BeforeReload(reload_thread_before_reload));
     serv.set_callback(Callback::AfterReload(reload_thread_2_after_reload));
@@ -665,7 +665,7 @@ fn reload_thread() {
             swoole_rs_corebase::swoole_thread_clean(false);
         },
     );
-    serv.set_callback(Callback::Task(task_ok));
+    serv.set_callback(Callback::Task(status_callback!(task_ok)));
     serv.set_callback(Callback::UserWorkerStart(reload_thread_user_start));
     serv.set_callback(Callback::ManagerStart(unlock_on_manager_start));
 
@@ -840,8 +840,8 @@ fn test_reload_from_worker_error(task_only: bool) {
     counter_init();
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
     assert_eq!(serv.create(), SW_OK);
-    serv.set_callback(Callback::Task(task_ok));
-    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Task(status_callback!(task_ok)));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
     serv.set_callback(Callback::WorkerStart(worker_error_start));
     serv.set_callback(Callback::ManagerStart(worker_error_manager_start));
     serv.set_callback(Callback::WorkerError(worker_error_on_error));
@@ -1064,7 +1064,7 @@ fn test_kill_worker(mode: c_int, options: Options) {
     assert_eq!(serv.create(), SW_OK);
 
     serv.set_callback(Callback::Connect(kill_on_connect));
-    serv.set_callback(Callback::Receive(kill_on_receive));
+    serv.set_callback(Callback::Receive(status_callback!(kill_on_receive)));
     serv.set_callback(Callback::WorkerStop(kill_on_worker_stop));
     serv.set_callback(Callback::Close(kill_on_close));
     serv.set_callback(Callback::WorkerStart(kill_on_worker_start));
@@ -1200,7 +1200,7 @@ fn test_kill_self(mode: c_int) {
     assert_eq!(serv.create(), SW_OK);
 
     serv.set_callback(Callback::Connect(kill_on_connect));
-    serv.set_callback(Callback::Receive(kill_on_receive));
+    serv.set_callback(Callback::Receive(status_callback!(kill_on_receive)));
     serv.set_callback(Callback::WorkerStop(kill_self_on_worker_stop));
     serv.set_callback(Callback::Close(kill_on_close));
     serv.set_callback(Callback::WorkerStart(kill_self_on_worker_start));
@@ -1369,7 +1369,7 @@ fn test_base() {
     });
 
     serv.set_callback(Callback::WorkerStart(base_worker_start));
-    serv.set_callback(Callback::Receive(base_receive));
+    serv.set_callback(Callback::Receive(status_callback!(base_receive)));
     serv.set_callback(Callback::Start(base_on_start));
     serv.set_callback(Callback::BeforeShutdown(before_shutdown));
 
@@ -1509,8 +1509,8 @@ fn test_process(single_thread: bool) {
 
     serv.set_callback(Callback::Start(process_on_start));
     serv.set_callback(Callback::WorkerStart(process_worker_start));
-    serv.set_callback(Callback::Receive(process_receive));
-    serv.set_callback(Callback::Task(task_ok));
+    serv.set_callback(Callback::Receive(status_callback!(process_receive)));
+    serv.set_callback(Callback::Task(status_callback!(task_ok)));
     serv.set_callback(Callback::ManagerStart(manager_start_stop));
     serv.set_callback(Callback::ManagerStop(manager_start_stop));
     serv.set_callback(Callback::BeforeShutdown(before_shutdown));
@@ -1652,7 +1652,7 @@ fn test_clean_worker(mode: c_int) {
     assert_eq!(serv.create(), SW_OK);
 
     serv.set_callback(Callback::Connect(clean_on_connect));
-    serv.set_callback(Callback::Receive(kill_on_receive));
+    serv.set_callback(Callback::Receive(status_callback!(kill_on_receive)));
     serv.set_callback(Callback::Close(kill_on_close));
     serv.set_callback(Callback::WorkerStart(clean_worker_start));
     serv.set_callback(Callback::WorkerStop(ignore_worker));

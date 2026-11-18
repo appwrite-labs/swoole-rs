@@ -328,7 +328,7 @@ fn sendwait() {
     packet_client(move || serv.get_primary_port().port());
 
     serv.set_callback(Callback::WorkerStart(unlock_on_worker_start));
-    serv.set_callback(Callback::Receive(sendwait_receive));
+    serv.set_callback(Callback::Receive(status_callback!(sendwait_receive)));
 
     serv.start();
     join_client();
@@ -364,7 +364,7 @@ fn system() {
     packet_client(move || svr_port);
 
     serv.set_callback(Callback::WorkerStart(unlock_on_worker_start));
-    serv.set_callback(Callback::Receive(sendwait_receive));
+    serv.set_callback(Callback::Receive(status_callback!(sendwait_receive)));
 
     serv.start();
     join_client();
@@ -405,8 +405,8 @@ fn udp_packet() {
     server.add_port(SW_SOCK_UDP, TEST_HOST, 0);
 
     server.create();
-    server.set_callback(Callback::Packet(udp_on_packet));
-    server.set_callback(Callback::Receive(receive_ok));
+    server.set_callback(Callback::Packet(status_callback!(udp_on_packet)));
+    server.set_callback(Callback::Receive(status_callback!(receive_ok)));
 
     let pid = fork_with(move || {
         let client = catch_unwind(AssertUnwindSafe(move || {
@@ -469,7 +469,7 @@ fn pipe_message() {
 
     server.create();
     server.set_callback(Callback::PipeMessage(pipe_message_check));
-    server.set_callback(Callback::Receive(receive_ok));
+    server.set_callback(Callback::Receive(status_callback!(receive_ok)));
     server.set_callback(Callback::WorkerStart(pipe_message_worker_start));
 
     server.start();
@@ -513,7 +513,7 @@ fn forward_message() {
 
     serv.set_callback(Callback::WorkerStart(unlock_on_worker_start));
     serv.set_callback(Callback::PipeMessage(forward_pipe_message));
-    serv.set_callback(Callback::Receive(forward_receive));
+    serv.set_callback(Callback::Receive(status_callback!(forward_receive)));
 
     serv.start();
     join_client();
@@ -555,7 +555,7 @@ fn reopen_log() {
     assert_eq!(serv.create(), SW_OK);
 
     serv.set_callback(Callback::WorkerStart(reopen_log_worker_start));
-    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
 
     assert_eq!(serv.start(), 0);
     checks_held();
@@ -592,7 +592,7 @@ fn reopen_log2() {
 
     serv.set_callback(Callback::Start(reopen_log2_start));
     serv.set_callback(Callback::WorkerStart(count_worker_start));
-    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
 
     assert_eq!(serv.start(), 0);
     let _ = std::fs::remove_file(TEST_LOG_FILE);
@@ -670,7 +670,7 @@ fn test_conn_overflow(mode: c_int, send_yield: bool) {
 
     set_start_client(serv, overflow_client);
     serv.set_callback(Callback::WorkerStart(overflow_worker_start));
-    serv.set_callback(Callback::Receive(overflow_receive));
+    serv.set_callback(Callback::Receive(status_callback!(overflow_receive)));
 
     assert_eq!(serv.start(), 0);
 
@@ -750,7 +750,7 @@ fn no_idle_worker() {
 
     set_start_client(serv, no_idle_worker_client);
     serv.set_callback(Callback::WorkerStart(unlock_on_worker_start));
-    serv.set_callback(Callback::Receive(slow_receive));
+    serv.set_callback(Callback::Receive(status_callback!(slow_receive)));
 
     assert_eq!(serv.start(), 0);
 
@@ -820,7 +820,7 @@ fn test_max_request(mode: c_int) {
 
     set_start_client(serv, max_request_client);
     serv.set_callback(Callback::WorkerStart(unlock_and_count));
-    serv.set_callback(Callback::Receive(max_request_receive));
+    serv.set_callback(Callback::Receive(status_callback!(max_request_receive)));
 
     assert_eq!(serv.start(), 0);
 
@@ -905,7 +905,7 @@ fn watermark() {
 
     set_start_client(serv, watermark_client);
     serv.set_callback(Callback::WorkerStart(unlock_and_count));
-    serv.set_callback(Callback::Receive(watermark_receive));
+    serv.set_callback(Callback::Receive(status_callback!(watermark_receive)));
     serv.set_callback(Callback::BufferEmpty(count_buffer_empty));
     serv.set_callback(Callback::BufferFull(count_buffer_full));
 
@@ -968,7 +968,7 @@ fn discard_data() {
 
     set_start_client(serv, discard_data_client);
     serv.set_callback(Callback::WorkerStart(unlock_on_worker_start));
-    serv.set_callback(Callback::Receive(discard_data_receive));
+    serv.set_callback(Callback::Receive(status_callback!(discard_data_receive)));
 
     assert_eq!(serv.start(), 0);
 
@@ -1047,7 +1047,7 @@ fn pause_and_resume() {
 
     serv.set_callback(Callback::WorkerStart(unlock_on_worker_start));
     serv.set_callback(Callback::Connect(pause_connect));
-    serv.set_callback(Callback::Receive(reply_receive));
+    serv.set_callback(Callback::Receive(status_callback!(reply_receive)));
 
     serv.start();
     join_client();
@@ -1108,7 +1108,9 @@ fn max_queued_bytes() {
 
     serv.set_callback(Callback::WorkerStart(unlock_on_worker_start));
     serv.set_callback(Callback::Connect(slow_connect));
-    serv.set_callback(Callback::Receive(max_queued_bytes_receive));
+    serv.set_callback(Callback::Receive(status_callback!(
+        max_queued_bytes_receive
+    )));
 
     serv.start();
     join_client();
@@ -1226,7 +1228,7 @@ fn test_heartbeat_check(mode: c_int, single_thread: bool) {
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Receive(status_callback!(receive_ok)));
     set_start_client(serv, heartbeat_client);
 
     serv.start();
@@ -1333,7 +1335,7 @@ fn test_close(mode: c_int, close_in_client: bool, single_thread: bool) {
     assert_eq!(serv.create(), SW_OK);
 
     serv.set_callback(Callback::Connect(close_on_connect));
-    serv.set_callback(Callback::Receive(close_on_receive));
+    serv.set_callback(Callback::Receive(status_callback!(close_on_receive)));
     serv.set_callback(Callback::Close(close_on_close));
     serv.set_callback(Callback::WorkerStop(close_on_worker_stop));
     set_start_client(serv, close_client);
@@ -1454,7 +1456,7 @@ fn eof_check() {
     counter_init();
 
     serv.set_callback(Callback::WorkerStart(eof_check_worker_start));
-    serv.set_callback(Callback::Receive(eof_check_receive));
+    serv.set_callback(Callback::Receive(status_callback!(eof_check_receive)));
     serv.set_callback(Callback::Connect(eof_check_connect));
 
     serv.start();
@@ -1539,8 +1541,8 @@ fn test_command(mode: c_int) {
 
     serv.set_callback(Callback::Start(command_start));
     serv.set_callback(Callback::WorkerStart(ignore_worker_start));
-    serv.set_callback(Callback::Task(task_ok));
-    serv.set_callback(Callback::Receive(reply_receive));
+    serv.set_callback(Callback::Task(status_callback!(task_ok)));
+    serv.set_callback(Callback::Receive(status_callback!(reply_receive)));
 
     assert_eq!(serv.start(), 0);
     checks_held();
@@ -1613,7 +1615,7 @@ fn abnormal_pipeline_data() {
 
     server.create();
 
-    server.set_callback(Callback::Receive(receive_ok));
+    server.set_callback(Callback::Receive(status_callback!(receive_ok)));
     server.set_callback(Callback::WorkerStart(abnormal_worker_start));
 
     server.start();
@@ -1639,7 +1641,7 @@ fn base_event_worker_pool_cleanup() {
     assert!(server.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
     assert_eq!(server.create(), SW_OK);
 
-    server.set_callback(Callback::Receive(receive_ok));
+    server.set_callback(Callback::Receive(status_callback!(receive_ok)));
     server.set_callback(Callback::ManagerStart(shutdown_after_manager_start));
 
     assert_eq!(server.start(), SW_OK);
@@ -1727,7 +1729,7 @@ fn abort_worker() {
     });
 
     server.set_callback(Callback::Connect(abort_worker_connect));
-    server.set_callback(Callback::Receive(abort_worker_receive));
+    server.set_callback(Callback::Receive(status_callback!(abort_worker_receive)));
     server.set_callback(Callback::WorkerStart(abort_worker_start));
 
     assert_eq!(server.start(), 0);
@@ -1829,7 +1831,7 @@ fn reactor_thread_pipe_writable() {
     });
 
     serv.set_callback(Callback::WorkerStart(pipe_writable_worker_start));
-    serv.set_callback(Callback::Receive(pipe_writable_receive));
+    serv.set_callback(Callback::Receive(status_callback!(pipe_writable_receive)));
 
     serv.start();
     join_client();
@@ -1920,7 +1922,7 @@ fn send_timeout() {
 
     set_start_client(serv, send_timeout_client);
     serv.set_callback(Callback::WorkerStart(overflow_worker_start));
-    serv.set_callback(Callback::Receive(send_timeout_receive));
+    serv.set_callback(Callback::Receive(status_callback!(send_timeout_receive)));
 
     assert_eq!(serv.start(), 0);
 

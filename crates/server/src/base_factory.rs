@@ -353,7 +353,7 @@ fn receive_as(
         // The callback already received the packet. Keep it out of the bus fallback.
         return true;
     }
-    if result == 0 {
+    if result.is_ok() {
         worker.add_request_count();
         if let Some(gs) = crate::shared::server_counters(state) {
             gs.request_count.fetch_add(1, Ordering::SeqCst);
@@ -550,10 +550,9 @@ mod tests {
         HEARD.with_borrow_mut(core::mem::take)
     }
 
-    fn on_receive(_: view::Server<'_>, data: &mut RecvData<'_>) -> c_int {
+    fn on_receive(_: view::Server<'_>, data: &mut RecvData<'_>) {
         let i = data.info();
         HEARD.with_borrow_mut(|h| h.push((i.kind, i.fd, i.reactor_id, i.flags, i.len)));
-        0
     }
 
     fn closing(_: view::Server<'_>, i: &DataHead) {
@@ -615,8 +614,14 @@ mod tests {
         use swoole_rs_corebase::process::worker_record::WorkerRecord;
         let (live, _clients) = accepted();
         let (serv, state, conn) = (live.server(), live.state(), session(&live, 1));
-        state.callbacks.set(Callback::Receive(on_receive));
-        state.callbacks.set(Callback::Packet(on_receive));
+        state.callbacks.set(Callback::Receive(|s, data| {
+            on_receive(s, data);
+            Ok(())
+        }));
+        state.callbacks.set(Callback::Packet(|s, data| {
+            on_receive(s, data);
+            Ok(())
+        }));
         conn.recv_queued_bytes().store(5, Ordering::Relaxed);
         // SAFETY: a worker record is plain data; zero is a fresh one.
         let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
@@ -673,19 +678,21 @@ mod tests {
         thread_local! {
             static PACKET: RefCell<Option<OwnedString>> = const { RefCell::new(None) };
         }
-        fn take(_: view::Server<'_>, recv: &mut RecvData<'_>) -> c_int {
+        fn take(_: view::Server<'_>, recv: &mut RecvData<'_>) {
             assert_eq!(recv.info().flags, DATA_PTR | POP_PTR);
             assert_eq!(recv.info().len, 5);
             assert!(PACKET.replace(recv.take_packet()).is_none());
             assert!(recv.take_packet().is_none());
-            0
         }
 
         let (mut live, _clients) = accepted();
         live.config_mut().mode_ = crate::Mode::Base;
         let serv = live.server();
         let conn = session(&live, 1);
-        live.state().callbacks.set(Callback::Receive(take));
+        live.state().callbacks.set(Callback::Receive(|s, data| {
+            take(s, data);
+            Ok(())
+        }));
         let mut buffer = OwnedString::default();
         buffer.alloc(64, None);
         buffer.append(b"first");

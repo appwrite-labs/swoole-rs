@@ -21,7 +21,7 @@ use swoole_rs_corebase::process::worker_record::Worker;
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
 use swoole_rs_corebase::{ServerEvent, WebSocketStatus};
 use swoole_rs_server::Connection;
-use swoole_rs_server::callbacks::{Callback, CallbackKind};
+use swoole_rs_server::callbacks::{Callback, CallbackError, CallbackKind, CallbackResult};
 use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
     E_WARNING, Owned, OwnedArray, Value, ZString, Zvals,
@@ -505,10 +505,6 @@ pub(crate) fn stop_if_bailed() {
     }
 }
 
-/// `SW_OK` / `SW_ERR`.
-const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
-const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
-
 /// `RecvData`: the event's head, then its payload, which a receive slot may take
 /// when the message owns it.
 pub use swoole_rs_server::reactor_entry::RecvData;
@@ -580,27 +576,22 @@ fn on_worker_error_slot(server: view::Server<'_>, worker: Worker<'_>, exit: &Exi
     ));
 }
 
-/// `SW_OK` for `ok`, else `SW_ERR`: what the server's int slots return.
-const fn code(ok: bool) -> c_int {
-    if ok { SW_OK } else { SW_ERR }
-}
-
 /// A task event's result, or its bailout raised.
-fn task_result(outcome: Result<bool, Bailout>) -> c_int {
+fn task_result(outcome: Result<bool, Bailout>) -> CallbackResult {
     let ok = outcome.unwrap_or_else(|bailed| {
         bailed.defer();
         true
     });
     // A callable's release can leave one pending behind an `Ok`.
     stop_if_bailed();
-    code(ok)
+    ok.then_some(()).ok_or(CallbackError::Failed)
 }
 
-fn on_task(server: view::Server<'_>, task: Packed<'_>) -> c_int {
+fn on_task(server: view::Server<'_>, task: Packed<'_>) -> CallbackResult {
     task_result(crate::task::on_task(server, task))
 }
 
-fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> c_int {
+fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> CallbackResult {
     task_result(crate::task::on_finish(server, task))
 }
 
@@ -639,11 +630,6 @@ pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &mut Recv
     relay(bailed);
 }
 
-fn on_receive(server: view::Server<'_>, request: &mut RecvData<'_>) -> c_int {
-    php_swoole_server_on_receive(server, request);
-    SW_OK
-}
-
 /// crates/phphttp's `Swoole\Http\Server` hooks, which crates/ffi registers.
 pub struct HttpHooks {
     /// `php_swoole_http_server_onReceive`: whether it succeeded.
@@ -666,44 +652,50 @@ pub(crate) fn http() -> Option<&'static HttpHooks> {
     HTTP.get().copied()
 }
 
-fn on_http_receive(server: view::Server<'_>, request: &mut RecvData<'_>) -> c_int {
-    code(http().is_none_or(|http| (http.on_receive)(server, request)))
+fn on_http_receive(server: view::Server<'_>, request: &mut RecvData<'_>) -> CallbackResult {
+    http()
+        .is_none_or(|http| (http.on_receive)(server, request))
+        .then_some(())
+        .ok_or(CallbackError::Failed)
 }
 
 /// `php_swoole_redis_server_onReceive`: Redis ports parse the request in
 /// crates/phpredis, others take the plain `onReceive`.
-fn on_redis_receive(server: view::Server<'_>, request: &mut RecvData<'_>) -> c_int {
+fn on_redis_receive(server: view::Server<'_>, request: &mut RecvData<'_>) -> CallbackResult {
     let fd = request.info().fd;
     let Some(conn) = server.by_session(fd) else {
         log::warning(
             c"php_swoole_redis_server_onReceive",
             format_args!("connection[{fd}] is closed"),
         );
-        return SW_ERR;
+        return Err(CallbackError::Failed);
     };
     if !server
         .port_of_fd(conn.fd())
         .is_some_and(|port| port.open_redis_protocol.get())
     {
         php_swoole_server_on_receive(server, request);
-        return SW_OK;
+        return Ok(());
     }
     let Some(redis) = crate::server::redis_receive() else {
         php_swoole_server_on_receive(server, request);
-        return SW_OK;
+        return Ok(());
     };
     let data = php_swoole_get_recv_data(server, request);
     let result = redis(server, fd, &data, coroutine_enabled(server));
     // The relay's longjmp would skip `data`'s release.
     drop(data);
     relay(result.is_err());
-    code(result.unwrap_or(false))
+    result
+        .unwrap_or(false)
+        .then_some(())
+        .ok_or(CallbackError::Failed)
 }
 
-fn on_packet_slot(server: view::Server<'_>, request: &mut RecvData<'_>) -> c_int {
+fn on_packet_slot(server: view::Server<'_>, request: &mut RecvData<'_>) -> CallbackResult {
     let datagram = swoole_rs_server::reactor_entry::datagram(request.payload());
     let Some((socket_type, socket_addr, data)) = datagram else {
-        return SW_ERR;
+        return Err(CallbackError::Failed);
     };
     let info = request.info();
     // The sender, of the packet's socket type: an IP address and port, or a path.
@@ -733,7 +725,7 @@ fn on_packet_slot(server: view::Server<'_>, request: &mut RecvData<'_>) -> c_int
             info.time,
         ));
     });
-    SW_OK
+    Ok(())
 }
 
 fn on_connect(server: view::Server<'_>, info: &DataHead) {
@@ -935,7 +927,10 @@ pub(crate) fn install(server: view::Server<'_>, which: Install) {
         Install::BufferEmpty => &[Callback::BufferEmpty(on_buffer_empty)],
         Install::Close => &[Callback::Close(on_close)],
         Install::HttpClose => &[Callback::Close(on_http_close)],
-        Install::Receive => &[Callback::Receive(on_receive)],
+        Install::Receive => &[Callback::Receive(|server, request| {
+            php_swoole_server_on_receive(server, request);
+            Ok(())
+        })],
         Install::HttpReceive => &[Callback::Receive(on_http_receive)],
         Install::RedisReceive => &[Callback::Receive(on_redis_receive)],
         Install::UserWorkerStart if server.has_callback(CallbackKind::UserWorkerStart) => &[],
@@ -993,7 +988,7 @@ fn on_dispatch(
     server: view::Server<'_>,
     conn: Option<Connection<'_>>,
     send: Option<&swoole_rs_server::SendData<'_>>,
-) -> c_int {
+) -> Result<u32, c_int> {
     let config = server.config();
     // Its own reference for the call: the `Rc` inside is only read, so a thread-mode
     // worker leaves the master's count alone.
@@ -1002,7 +997,7 @@ fn on_dispatch(
         .as_deref()
         .and_then(|owner| owner.downcast_ref::<Callable>())
     else {
-        return -1;
+        return Err(-1);
     };
     let session = match conn {
         Some(conn) => conn.session_id(),
@@ -1049,7 +1044,8 @@ fn on_dispatch(
     drop(args);
     drop(owner);
     stop_if_bailed();
-    c_int::try_from(worker_id).unwrap_or(-1)
+    let id = c_int::try_from(worker_id).unwrap_or(-1);
+    u32::try_from(id).map_err(|_| id)
 }
 
 /// `php_swoole_server_length_func`: a port's `package_length_func($data)`.

@@ -1219,9 +1219,8 @@ static bool php_curl_set_callable_handler(zend_fcall_info_cache *const handler_f
         break;                                                                                                         \
     }
 
-/* The options crates/curl/src/setopt.rs leaves to C++: callables, file handles, lists, post
- * fields, share, private, CURLINFO_HEADER_OUT and CURLOPT_RETURNTRANSFER, and the error for an
- * unknown option. */
+/* The options crates/curl/src/setopt.rs leaves to C++: callables, file handles, post fields,
+ * share and CURLINFO_HEADER_OUT, and the error for an unknown option. */
 extern "C" zend_result swoole_curl_setopt_native(php_curl *ch, zend_long option, zval *zvalue, bool is_array_config) {
     CURLcode error = CURLE_OK;
 
@@ -1241,13 +1240,6 @@ extern "C" zend_result swoole_curl_setopt_native(php_curl *ch, zend_long option,
 #if LIBCURL_VERSION_NUM >= 0x075400 /* Available since 7.84.0 */
         HANDLE_CURL_OPTION_CALLABLE(ch, CURLOPT_SSH_HOSTKEY, handlers.sshhostkey, fn_ssh_hostkeyfunction);
 #endif
-
-    /* Curl private option */
-    case CURLOPT_PRIVATE: {
-        zval previous = swoole_curl_replace_private(&ch->private_data, zvalue);
-        zval_ptr_dtor(&previous);
-        return SUCCESS;
-    }
 
     /* Curl file handle options */
     case CURLOPT_FILE:
@@ -1347,97 +1339,6 @@ extern "C" zend_result swoole_curl_setopt_native(php_curl *ch, zend_long option,
         break;
     }
 
-    /* Curl linked list options */
-    case CURLOPT_HTTP200ALIASES:
-    case CURLOPT_HTTPHEADER:
-    case CURLOPT_POSTQUOTE:
-    case CURLOPT_PREQUOTE:
-    case CURLOPT_QUOTE:
-    case CURLOPT_TELNETOPTIONS:
-    case CURLOPT_MAIL_RCPT:
-    case CURLOPT_RESOLVE:
-    case CURLOPT_PROXYHEADER:
-    case CURLOPT_CONNECT_TO: {
-        zval *current;
-        HashTable *ph;
-        zend_string *val, *tmp_val;
-        struct curl_slist *slist = NULL;
-
-        if (Z_TYPE_P(zvalue) != IS_ARRAY) {
-            const char *name = NULL;
-            switch (option) {
-            case CURLOPT_HTTPHEADER:
-                name = "CURLOPT_HTTPHEADER";
-                break;
-            case CURLOPT_QUOTE:
-                name = "CURLOPT_QUOTE";
-                break;
-            case CURLOPT_HTTP200ALIASES:
-                name = "CURLOPT_HTTP200ALIASES";
-                break;
-            case CURLOPT_POSTQUOTE:
-                name = "CURLOPT_POSTQUOTE";
-                break;
-            case CURLOPT_PREQUOTE:
-                name = "CURLOPT_PREQUOTE";
-                break;
-            case CURLOPT_TELNETOPTIONS:
-                name = "CURLOPT_TELNETOPTIONS";
-                break;
-            case CURLOPT_MAIL_RCPT:
-                name = "CURLOPT_MAIL_RCPT";
-                break;
-            case CURLOPT_RESOLVE:
-                name = "CURLOPT_RESOLVE";
-                break;
-            case CURLOPT_PROXYHEADER:
-                name = "CURLOPT_PROXYHEADER";
-                break;
-            case CURLOPT_CONNECT_TO:
-                name = "CURLOPT_CONNECT_TO";
-                break;
-            }
-
-            zend_type_error("%s(): The %s option must have an array value", get_active_function_name(), name);
-            return FAILURE;
-        }
-
-        ph = Z_ARRVAL_P(zvalue);
-        ZEND_HASH_FOREACH_VAL(ph, current) {
-            ZVAL_DEREF(current);
-            val = zval_get_tmp_string(current, &tmp_val);
-            struct curl_slist *new_slist = curl_slist_append(slist, ZSTR_VAL(val));
-            zend_tmp_string_release(tmp_val);
-            if (!new_slist) {
-                curl_slist_free_all(slist);
-                php_error_docref(NULL, E_WARNING, "Could not build curl_slist");
-                return FAILURE;
-            }
-            slist = new_slist;
-        }
-        ZEND_HASH_FOREACH_END();
-
-        if (slist) {
-#if PHP_VERSION_ID >= 80500
-            if ((*ch->clone) == 1) {
-                zend_hash_index_update_ptr(&ch->to_free->slist, option, slist);
-            } else {
-                zend_hash_next_index_insert_ptr(&ch->to_free->slist, slist);
-            }
-#else
-            if ((*ch->clone) == 1) {
-                zend_hash_index_update_ptr(ch->to_free->slist, option, slist);
-            } else {
-                zend_hash_next_index_insert_ptr(ch->to_free->slist, slist);
-            }
-#endif
-        }
-
-        error = curl_easy_setopt(ch->cp, (CURLoption) option, slist);
-
-        break;
-    }
-
     case CURLOPT_POSTFIELDS:
         if (Z_TYPE_P(zvalue) == IS_ARRAY) {
             if (zend_hash_num_elements(Z_ARRVAL_P(zvalue)) == 0) {
@@ -1455,14 +1356,6 @@ extern "C" zend_result swoole_curl_setopt_native(php_curl *ch, zend_long option,
             error = curl_easy_setopt(ch->cp, CURLOPT_POSTFIELDSIZE, ZSTR_LEN(str));
             error = curl_easy_setopt(ch->cp, CURLOPT_COPYPOSTFIELDS, ZSTR_VAL(str));
             zend_tmp_string_release(tmp_str);
-        }
-        break;
-
-    case CURLOPT_RETURNTRANSFER:
-        if (zend_is_true(zvalue)) {
-            ch->handlers.write->method = PHP_CURL_RETURN;
-        } else {
-            ch->handlers.write->method = PHP_CURL_STDOUT;
         }
         break;
 
