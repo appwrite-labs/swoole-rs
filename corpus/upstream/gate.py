@@ -71,7 +71,6 @@ PENDING_PORTS = {
         'swoole_http2_server/flow_control_connection_window.phpt',
         'swoole_http_client_coro/response_eof_framing.phpt',
     ],
-    4933: ['swoole_thread/server/signal_handler_user_process.phpt'],
 }
 PENDING = {f'tests/{test}': issue for issue, tests in PENDING_PORTS.items() for test in tests}
 

@@ -315,7 +315,7 @@ fn start_child(worker: Worker<'_>, this: &Value) {
             sys(E_WARNING, &message!("dup2() failed"));
         }
     }
-    crate::signal::clean();
+    host::reset_worker_type();
     if swoole_rs_zend::bailout::pending() {
         return;
     }

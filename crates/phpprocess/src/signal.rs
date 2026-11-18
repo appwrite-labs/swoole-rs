@@ -190,20 +190,10 @@ fn signal_clean() {
     swoole_rs_corebase::swr_v1_core_set_signal_listener_num(0);
 }
 
-/// `php_swoole_process_clean`: [`php_swoole_process_signal_clean`]; outside thread
-/// builds, a process that is not a user worker forgets its worker type. A
-/// destructor's bailout stays pending for the caller to stop on.
-pub(crate) fn clean() {
-    signal_clean();
-    host::reset_worker_type();
-}
-
 /// `php_swoole_process_rshutdown`.
 pub extern "C" fn php_swoole_process_rshutdown() {
     if host::main_thread() {
-        clean();
-    } else {
-        // The signal table is the main thread's, which is still running.
-        host::reset_worker_type();
+        signal_clean();
     }
+    host::reset_worker_type();
 }
