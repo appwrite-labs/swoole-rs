@@ -99,6 +99,12 @@ unsafe extern "C" {
     /// A text value, live as long as the result; none out of range.
     safe fn PQgetvalue<'a>(res: Res<'a>, row: c_int, column: c_int) -> Option<Text<'a>>;
     safe fn PQtransactionStatus(conn: Conn) -> PGTransactionStatusType;
+    safe fn PQgetCopyData(conn: Conn, buffer: &mut Option<Escaped>, asynchronous: c_int) -> c_int;
+    safe fn PQputCopyData(conn: Conn, data: In<'_, u8>, length: Count<'_, c_int>) -> c_int;
+    safe fn PQputCopyEnd(conn: Conn, error: Option<Text<'_>>) -> c_int;
+    safe fn lo_creat(conn: Conn, mode: c_int) -> pq_sys::Oid;
+    safe fn lo_open(conn: Conn, oid: pq_sys::Oid, mode: c_int) -> c_int;
+    safe fn lo_unlink(conn: Conn, oid: pq_sys::Oid) -> c_int;
     safe fn PQprotocolVersion(conn: Conn) -> c_int;
     safe fn PQbackendPID(conn: Conn) -> c_int;
     /// `from`'s lent bytes escaped as a bytea literal, NUL-terminated, with the
@@ -790,6 +796,204 @@ pub extern "C" fn pdo_pgsql_raise(
 #[unsafe(no_mangle)]
 pub extern "C" fn pdo_pgsql_free(handle: Box<Handle>) {
     drop(handle);
+}
+
+/// Send borrowed input to COPY, appending a missing newline for array rows.
+#[unsafe(no_mangle)]
+pub extern "C" fn pdo_pgsql_send_copy_data(
+    handle: &Handle,
+    bytes: std::io::IoSlice<'_>,
+    array_row: bool,
+) -> bool {
+    let send = |data: &[u8]| {
+        lend_in(data, |buffer, count| {
+            PQputCopyData(handle.server, buffer, count) == 1
+        })
+    };
+    bytes.chunks(c_int::MAX as usize).all(send)
+        && (!array_row || bytes.is_empty() || bytes.ends_with(b"\n") || send(b"\n"))
+}
+
+/// Clear pending results before COPY starts or after COPY TO has sent its last row.
+#[unsafe(no_mangle)]
+pub extern "C" fn pdo_pgsql_drain_copy_results(handle: &Handle) {
+    while let Some(result) = crate::PQgetResult(handle.server) {
+        PQclear(result);
+    }
+}
+
+/// Build the legacy COPY command accepted by the supported PostgreSQL versions.
+/// Fields and identifiers arrive as SQL fragments, exactly as PDO received them.
+#[unsafe(no_mangle)]
+pub extern "C" fn pdo_pgsql_copy_query(
+    table: Text<'_>,
+    fields: Option<Text<'_>>,
+    delimiter: u8,
+    null_marker: Option<Text<'_>>,
+    direction: ExecStatusType,
+) -> *mut zend_string {
+    let parts: &[&[u8]] = &[
+        b"COPY ",
+        table.get().to_bytes(),
+        if fields.is_some() { b" (" } else { b"" },
+        fields.map_or(&[][..], |fields| fields.get().to_bytes()),
+        if fields.is_some() { b")" } else { b"" },
+        if direction == ExecStatusType::PGRES_COPY_IN {
+            b" FROM STDIN"
+        } else {
+            b" TO STDIN"
+        },
+        b" WITH DELIMITER E'",
+        &[delimiter],
+        b"' NULL AS E'",
+        null_marker.map_or(br"\\N", |marker| marker.get().to_bytes()),
+        b"'",
+    ];
+    let mut sql =
+        swoole_rs_zend::string::ZBuf::with_capacity(parts.iter().map(|part| part.len()).sum());
+    for part in parts {
+        sql.extend_from_slice(part);
+    }
+    sql.into_zstring().into_raw()
+}
+
+/// Begin the requested COPY direction and record its SQLSTATE on failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn pdo_pgsql_start_copy(
+    dbh: &Dbh,
+    query: Text<'_>,
+    expected: ExecStatusType,
+) -> bool {
+    let Some(handle) = handle(dbh) else {
+        return false;
+    };
+    let result = handle.exec(query.get());
+    let started = status(result.as_ref()) == expected;
+    if !started {
+        pgsql_fatal_error(dbh, sqlstate(result.as_ref()));
+    }
+    if let Some(result) = result {
+        PQclear(result);
+    }
+    started
+}
+
+/// Return the next libpq-owned COPY row to the Zend stream or array adapter.
+/// A successful read with no row marks the end of the COPY stream.
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_read_copy_row(
+    dbh: &Dbh,
+    row: &mut Option<Escaped>,
+    length: &mut usize,
+) -> bool {
+    let Some(handle) = handle(dbh) else {
+        return false;
+    };
+    let count = PQgetCopyData(handle.server, row, 0);
+    if count > 0 {
+        *length = count.cast_unsigned() as usize;
+        return true;
+    }
+    if count == -1 {
+        return true;
+    }
+    pgsql_fatal_error(dbh, None);
+    false
+}
+
+/// Roll back an incomplete COPY when a PHP row producer stops with an error.
+#[unsafe(no_mangle)]
+pub extern "C" fn pdo_pgsql_abort_copy_in(handle: &Handle) {
+    if PQputCopyEnd(handle.server, Some(c"client aborted COPY".into())) == 1 {
+        pdo_pgsql_drain_copy_results(handle);
+    }
+}
+
+/// Finish COPY FROM, consuming every final result and preserving server SQLSTATEs.
+#[unsafe(no_mangle)]
+pub extern "C" fn pdo_pgsql_end_copy_in(dbh: &Dbh) -> bool {
+    let Some(handle) = handle(dbh) else {
+        return false;
+    };
+    if PQputCopyEnd(handle.server, None) != 1 {
+        pgsql_fatal_error(dbh, None);
+        return false;
+    }
+    let mut complete = true;
+    while let Some(result) = crate::PQgetResult(handle.server) {
+        if PQresultStatus(result.get()) != ExecStatusType::PGRES_COMMAND_OK {
+            pgsql_fatal_error(dbh, sqlstate(Some(&result)));
+            complete = false;
+        }
+        PQclear(result);
+    }
+    complete
+}
+
+// Access flags from libpq/libpq-fs.h.
+const INV_READ: c_int = 0x40000;
+const INV_WRITE: c_int = 0x20000;
+
+fn pgsql_fatal_error(dbh: &Dbh, state: Option<&CStr>) {
+    raise(
+        dbh,
+        None,
+        ExecStatusType::PGRES_FATAL_ERROR as c_int,
+        state,
+        None,
+    );
+}
+
+/// Create a large object on the PDO connection and record libpq's error on failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn pdo_pgsql_create_lob(dbh: &Dbh) -> pq_sys::Oid {
+    let Some(handle) = handle(dbh) else { return 0 };
+    let oid = lo_creat(handle.server, INV_READ | INV_WRITE);
+    if oid == 0 {
+        pgsql_fatal_error(dbh, None);
+    }
+    oid
+}
+
+/// Open the object for reading, adding write access for PDO's writable modes.
+#[unsafe(no_mangle)]
+pub extern "C" fn pdo_pgsql_open_lob(
+    dbh: &Dbh,
+    oid: pq_sys::Oid,
+    mode: Text<'_>,
+    fd: &mut c_int,
+) -> bool {
+    let Some(handle) = handle(dbh) else {
+        return false;
+    };
+    let flags = if mode
+        .get()
+        .to_bytes()
+        .iter()
+        .any(|b| matches!(b, b'+' | b'w'))
+    {
+        INV_READ | INV_WRITE
+    } else {
+        INV_READ
+    };
+    *fd = lo_open(handle.server, oid, flags);
+    if *fd < 0 {
+        pgsql_fatal_error(dbh, None);
+    }
+    *fd >= 0
+}
+
+/// Unlink an object in the connection's current transaction.
+#[unsafe(no_mangle)]
+pub extern "C" fn pdo_pgsql_unlink_lob(dbh: &Dbh, oid: pq_sys::Oid) -> bool {
+    let Some(handle) = handle(dbh) else {
+        return false;
+    };
+    let removed = lo_unlink(handle.server, oid) == 1;
+    if !removed {
+        pgsql_fatal_error(dbh, None);
+    }
+    removed
 }
 
 /// `H->server`.
