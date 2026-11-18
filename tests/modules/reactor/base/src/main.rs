@@ -375,12 +375,12 @@ unsafe fn create_failure() {
         let restore_result = setrlimit(RLIMIT_NOFILE, &original_limit);
 
         assert_eq!(restore_result, 0);
-        assert_eq!(retval, SW_ERR);
+        assert_eq!(retval, Err(swoole_rs_ffi::InitError::Open));
         assert_eq!(error, EMFILE);
         assert!(tg_reactor().is_null());
         assert_eq!(REACTOR_DESTROY_COUNT.load(Relaxed), 1);
 
-        assert_eq!(swoole_rs_ffi::swoole_event_init(0), SW_OK);
+        assert_eq!(swoole_rs_ffi::swoole_event_init(0), Ok(()));
         assert!(swoole_rs_ffi::swoole_event_free());
         assert_eq!(REACTOR_DESTROY_COUNT.load(Relaxed), 2);
     }
@@ -438,7 +438,7 @@ unsafe fn wait() {
 
         assert_eq!(
             swoole_rs_ffi::swoole_event_init(SW_EVENTLOOP_WAIT_EXIT),
-            SW_OK
+            Ok(())
         );
         assert!(!tg_reactor().is_null());
         assert!((*fields(tg())).ready);
@@ -454,7 +454,7 @@ unsafe fn wait() {
 
         assert_eq!(pair_write(&p, HELLO), HELLO.len() as isize);
 
-        assert_eq!(event_api::swoole_event_wait(), SW_OK);
+        assert_eq!(event_api::swoole_event_wait(), Ok(()));
         assert!(tg_reactor().is_null());
         pair_delete(p);
     }
@@ -464,7 +464,7 @@ unsafe fn get_missing_socket() {
     unsafe {
         let p = unix_socket(true, SOCK_DGRAM);
         assert!(ready(&p));
-        assert_eq!(swoole_rs_ffi::swoole_event_init(0), SW_OK);
+        assert_eq!(swoole_rs_ffi::swoole_event_init(0), Ok(()));
 
         let socket = sock(&p, false);
         let fd = (*socket).fields.fd;
@@ -489,7 +489,7 @@ unsafe fn write_case() {
 
         assert_eq!(
             swoole_rs_ffi::swoole_event_init(SW_EVENTLOOP_WAIT_EXIT),
-            SW_OK
+            Ok(())
         );
         assert!(!tg_reactor().is_null());
 
@@ -499,7 +499,7 @@ unsafe fn write_case() {
         let n = event_api::event_write(handle(sock(&p, true)), HELLO);
         assert_eq!(n, Some(HELLO.len()));
 
-        assert_eq!(event_api::swoole_event_wait(), SW_OK);
+        assert_eq!(event_api::swoole_event_wait(), Ok(()));
         assert!(tg_reactor().is_null());
         pair_delete(p);
     }
@@ -508,13 +508,13 @@ unsafe fn write_case() {
 unsafe fn wait_timeout() {
     assert_eq!(
         swoole_rs_ffi::swoole_event_init(SW_EVENTLOOP_WAIT_EXIT),
-        SW_OK
+        Ok(())
     );
     assert!(!tg_reactor().is_null());
 
     tg().set_timeout_msec(30);
     let started_at = microtime();
-    assert_eq!(swoole_rs_ffi::reactor_wait(tg()), SW_OK);
+    assert_eq!(swoole_rs_ffi::reactor_wait(tg()), Ok(()));
 
     let dr = microtime() - started_at;
     assert!(dr >= 0.03, "{dr}");
@@ -527,13 +527,16 @@ unsafe fn wait_error() {
     unsafe {
         assert_eq!(
             swoole_rs_ffi::swoole_event_init(SW_EVENTLOOP_WAIT_EXIT),
-            SW_OK
+            Ok(())
         );
         assert!(!tg_reactor().is_null());
 
         // EINVAL: maxevents is less than or equal to zero.
         (*fields(tg())).max_event_num = 0;
-        assert_eq!(swoole_rs_ffi::reactor_wait(tg()), SW_ERR);
+        assert_eq!(
+            swoole_rs_ffi::reactor_wait(tg()),
+            Err(swoole_rs_ffi::LoopError::Failed)
+        );
         assert_eq!(errno(), EINVAL);
 
         let _ = swoole_rs_ffi::swoole_event_free();
@@ -613,7 +616,7 @@ unsafe fn write_2m() {
 
         assert_eq!(
             swoole_rs_ffi::swoole_event_init(SW_EVENTLOOP_WAIT_EXIT),
-            SW_OK
+            Ok(())
         );
         assert!(!tg_reactor().is_null());
 
@@ -657,7 +660,7 @@ unsafe fn write_2m() {
             error(ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE)
         );
 
-        assert_eq!(event_api::swoole_event_wait(), SW_OK);
+        assert_eq!(event_api::swoole_event_wait(), Ok(()));
         assert!(!event_api::swoole_event_is_available());
         // ASSERT_STREQ: the two as C strings.
         assert_eq!(
@@ -754,7 +757,7 @@ unsafe fn reactor_test_func(reactor: Running<'_>) {
         );
 
         assert_eq!(*write_count, 0);
-        assert_eq!(swoole_rs_ffi::reactor_wait(reactor), SW_OK);
+        assert_eq!(swoole_rs_ffi::reactor_wait(reactor), Ok(()));
         assert_eq!(*write_count, 1);
 
         drop(Box::from_raw(write_count));
@@ -866,7 +869,7 @@ unsafe fn poll_readiness_after_fd_reuse() {
         assert_eq!(add(reactor, (*state).sockets[1], SW_EVENT_READ), SW_OK);
         assert_eq!(sock_write(sock(&sockets[0], true), b"x"), 1);
         assert_eq!(sock_write(sock(&sockets[1], true), b"x"), 1);
-        assert_eq!(swoole_rs_ffi::reactor_wait(reactor), SW_OK);
+        assert_eq!(swoole_rs_ffi::reactor_wait(reactor), Ok(()));
 
         assert_eq!((*state).replacement_count, 0);
         assert!(!(*state).dispatched_socket.is_null());
@@ -972,7 +975,7 @@ unsafe fn poll_extra2() {
         reactor.set_timeout_msec(10);
         END_REACTOR.store(reactor.as_ptr(), Relaxed);
         set_end_callback(reactor, PRIORITY_DEFER_TASK, Some(end_timed_out));
-        assert_eq!(swoole_rs_ffi::reactor_wait(reactor), SW_OK);
+        assert_eq!(swoole_rs_ffi::reactor_wait(reactor), Ok(()));
 
         let handler: extern "C" fn(c_int) = on_sigio;
         let _ = swoole_rs_ffi::signal::swoole_signal_set_action(SIGIO, handler as usize, 0, 0);
@@ -986,7 +989,7 @@ unsafe fn poll_extra2() {
             kill(getpid(), SIGIO);
         });
         *__errno_location() = 0;
-        assert_eq!(swoole_rs_ffi::reactor_wait(reactor), SW_OK);
+        assert_eq!(swoole_rs_ffi::reactor_wait(reactor), Ok(()));
         assert_eq!(errno(), EINTR);
 
         t.join().unwrap();
@@ -1001,7 +1004,7 @@ unsafe fn add_or_update() {
 
         assert_eq!(
             swoole_rs_ffi::swoole_event_init(SW_EVENTLOOP_WAIT_EXIT),
-            SW_OK
+            Ok(())
         );
         assert!(!tg_reactor().is_null());
 
@@ -1173,7 +1176,7 @@ unsafe fn test_error_event(kind: c_int, mut retval: c_int) {
         add(reactor, sock(&p, false), SW_EVENT_ERROR);
 
         socket_pair::close(&mut p, SW_PIPE_CLOSE_WORKER);
-        assert_eq!(swoole_rs_ffi::reactor_wait(reactor), SW_OK);
+        assert_eq!(swoole_rs_ffi::reactor_wait(reactor), Ok(()));
         reactor_delete(reactor);
         swoole_rs_ffi::set_thread_reactor(null_mut());
         pair_delete(p);
@@ -1239,7 +1242,7 @@ unsafe fn drain_write_buffer() {
 
         assert_eq!(
             swoole_rs_ffi::swoole_event_init(SW_EVENTLOOP_WAIT_EXIT),
-            SW_OK
+            Ok(())
         );
 
         socket_pair::set_blocking(&mut p, false);
@@ -1275,7 +1278,7 @@ unsafe fn drain_write_buffer() {
 
             swoole_rs_ffi::reactor_write::reactor_drain_write_buffer(tg(), handle(wsock));
 
-            assert_eq!(event_api::swoole_event_wait(), SW_OK);
+            assert_eq!(event_api::swoole_event_wait(), Ok(()));
             assert!(!event_api::swoole_event_is_available());
             t.join().unwrap();
         });
@@ -1321,7 +1324,7 @@ unsafe fn handle_fail() {
 
         assert_eq!(
             swoole_rs_ffi::swoole_event_init(SW_EVENTLOOP_WAIT_EXIT),
-            SW_OK
+            Ok(())
         );
         assert!(!tg_reactor().is_null());
 
@@ -1337,7 +1340,7 @@ unsafe fn handle_fail() {
 
         assert!(event_api::event_add(handle(socket), Events::RDWR));
 
-        assert_eq!(event_api::swoole_event_wait(), SW_OK);
+        assert_eq!(event_api::swoole_event_wait(), Ok(()));
         assert!(tg_reactor().is_null());
         pair_delete(p);
     }

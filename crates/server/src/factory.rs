@@ -66,7 +66,9 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
             return timer.is_some();
         }
         Step::EventFree => _ = swoole_rs_corebase::reactor::swoole_event_free(),
-        Step::EventWait => return swoole_rs_corebase::reactor::event_api::swoole_event_wait() >= 0,
+        Step::EventWait => {
+            return swoole_rs_corebase::reactor::event_api::swoole_event_wait().is_ok();
+        }
         Step::ReactorBarrier | Step::ManagerBarrier => {
             let manager = step == Step::ManagerBarrier;
             swoole_rs_corebase::locks::barrier_wait(crate::server_object::barrier(serv, manager));
@@ -107,7 +109,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
         }
         Step::CreatePipeBuffers => return crate::master_ops::create_pipe_buffers(serv),
         Step::StartManager => return crate::manager::native::start_manager_process(serv),
-        Step::EventInit => return swoole_rs_corebase::reactor::swoole_event_init(0) >= 0,
+        Step::EventInit => return swoole_rs_corebase::reactor::swoole_event_init(0).is_ok(),
         Step::WorkerSignalInit => crate::event_worker::native::worker_signal_init(serv),
         Step::PipeHandler => crate::reactor_process::native::set_pipe_handler(),
         Step::WorkerStart(id) | Step::WorkerStop(id) => {

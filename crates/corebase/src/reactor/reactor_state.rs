@@ -398,29 +398,38 @@ pub fn swr_v1_reactor_delete(OwnedReactor(handle): OwnedReactor) {
     drop(unsafe { Box::from_raw(state) });
 }
 
+/// Reason the thread could not initialize its reactor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InitError {
+    /// The previous reactor is still being destroyed.
+    Deleting,
+    /// No backend could be opened.
+    Open,
+}
+
 /// `int swoole_event_init(int flags)`: the thread's `Reactor` with
 /// `SW_REACTOR_MAXEVENTS` events, waiting to exit under `SW_EVENTLOOP_WAIT_EXIT`, and the
-/// coroutine system's and client's handlers set; `SW_ERR` when no backend opens, or
-/// while [`swoole_event_free`] deletes the thread's reactor ([`swoole_event_deleting`]).
-#[must_use]
-pub fn swoole_event_init(flags: c_int) -> c_int {
+/// coroutine system's and client's handlers set.
+/// # Errors
+/// Initialization fails if the backend cannot open or the thread is deleting its reactor.
+pub fn swoole_event_init(flags: c_int) -> Result<(), InitError> {
     const SW_REACTOR_MAXEVENTS: c_int = 4096;
     const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
     if swoole_event_deleting() {
-        return -1;
+        return Err(InitError::Deleting);
     }
     let reactor = swr_v1_reactor_new(SW_REACTOR_MAXEVENTS, 0);
     let handle = reactor.running();
     if !handle.with(|state| state.fields.ready) {
         swr_v1_reactor_delete(reactor);
-        return -1;
+        return Err(InitError::Open);
     }
     handle.with(|state| state.fields.wait_exit = flags & SW_EVENTLOOP_WAIT_EXIT != 0);
     crate::reactor::readiness::init_reactor(handle);
     crate::set_thread_reactor(handle.as_ptr());
     // A reactor this replaces stays allocated, as upstream's overwritten pointer did.
     EVENT_REACTOR.set(Some(reactor));
-    0
+    Ok(())
 }
 
 thread_local! {

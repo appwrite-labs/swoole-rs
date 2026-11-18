@@ -168,7 +168,7 @@ fn on_start(pool: PoolRef<'_>, worker: Worker<'_>) {
     set_worker_type(WorkerType::Task);
     // Make the task worker support asynchronous.
     let coroutine = serv.config().task_enable_coroutine.get();
-    if coroutine && swoole_rs_corebase::reactor::swoole_event_init(0) < 0 {
+    if coroutine && swoole_rs_corebase::reactor::swoole_event_init(0).is_err() {
         let m = format_args!("[TaskWorker] create reactor failed");
         log::error(c"TaskWorker_onStart", m);
         return;
@@ -226,7 +226,7 @@ fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
             });
         }
     }
-    swoole_rs_corebase::reactor::event_api::swoole_event_wait()
+    swoole_rs_corebase::reactor::event_api::swoole_event_wait().map_or(ERR, |()| 0)
 }
 
 /// `TaskWorker_onPipeReceive`: a task from a worker, in the coroutine loop.
