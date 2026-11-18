@@ -5,7 +5,7 @@ Cargo builds `swoole.so` from the crates (`crates/ext`, through
 and in the module contracts is what the C left in the build calls: the
 third-party C that swoole-src bundles (`native/swoole-src/thirdparty`), the
 first-party glue (`native/corebase/switches.cc`, `native/phphelpers/host.c`,
-`crates/ffi/src/fatal.c`, `crates/corebase/src/format.c`), and the native gates,
+`crates/corebase/src/fatal.c`, `crates/corebase/src/format.c`), and the native gates,
 which link `libswoole_rs_ffi.a` into fixtures outside PHP.
 
 ## Base contract (`native/include/swoole_rs.h`)
@@ -20,9 +20,8 @@ or throw. Module startup (crates/phpswoole) publishes them as the
 
 ## Rules for all module contracts
 
-- No Zend values, Rust references, exceptions or panics cross the ABI. A C++
-  layout C still reads (`swoole::String`, `swoole::Global`) is asserted in its
-  header and mirrored in Rust.
+- No Zend values, Rust references, exceptions or panics cross the ABI. The native header checks the size
+  and field offsets of `swoole::Global` against the Rust layout.
 - Buffers are released by the side that allocated them. Borrowed pointers are
   valid only for the call. Writable ranges must not alias each other or Rust
   state unless a contract says otherwise.

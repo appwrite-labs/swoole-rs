@@ -129,7 +129,7 @@ pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
     }
     let rv = daemon(nochdir, noclose);
     if rv == 0 {
-        crate::hook::call_after_fork();
+        crate::hook::call(crate::hook::Hook::AfterFork);
     }
     rv
 }

@@ -236,10 +236,13 @@ fn dispatch(frame: Frame, operation: bool) -> Result<Next, Bailout> {
     } else {
         z::ZEND_ASSIGN_DIM
     };
-    if u32::from(frame.instruction().opcode) != opcode {
+    let Some(instruction) = frame
+        .instruction()
+        .filter(|i| u32::from(i.opcode) == opcode)
+    else {
         return Ok(Next::Dispatch);
-    }
-    let op = Op::current(frame);
+    };
+    let op = Op::at(frame, instruction);
     let Some(array) = op.op1_container() else {
         return Ok(Next::Dispatch);
     };

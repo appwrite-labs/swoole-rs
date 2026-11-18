@@ -447,6 +447,7 @@ readable_callbacks! {
 mod tests {
     use super::*;
     use std::ffi::c_void;
+    use swoole_rs_corebase::sys;
     use swoole_rs_server::ConnectionRecord;
     use swoole_rs_server::port_tls::{context_create, ssl_context_init, ssl_init, tls_free};
 
@@ -546,13 +547,13 @@ mod tests {
         assert!(config.listening.get(), "listening");
         close(config);
         assert!(config.socket_ptr().is_null(), "freed");
-        let stream = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        let stream = sys::socket(libc::AF_INET, libc::SOCK_STREAM, 0).unwrap();
         assert!(!crate::lifecycle::import(config, stream), "not listening");
         assert!(
             config.socket_ptr().is_null(),
             "the refused record freed, not kept"
         );
-        unsafe { libc::close(stream) };
+        sys::close(stream).unwrap();
     }
 
     /// A port whose settings own a fresh `kind` socket on 127.0.0.1, unbound
@@ -560,20 +561,19 @@ mod tests {
     fn socket_port(kind: c_int, bind: bool) -> Box<PortConfig> {
         let config = PortConfig::boxed(1000);
         let mut socket = Box::new(SocketRecord::new());
-        unsafe {
-            socket.fields.fd = libc::socket(libc::AF_INET, kind, 0);
-            assert!(socket.fields.fd >= 0, "socket(2)");
-            if bind {
-                let mut addr: libc::sockaddr_in = std::mem::zeroed();
-                addr.sin_family = libc::sa_family_t::try_from(libc::AF_INET).unwrap();
-                addr.sin_addr.s_addr = u32::from_ne_bytes([127, 0, 0, 1]);
-                let size = libc::socklen_t::try_from(size_of::<libc::sockaddr_in>()).unwrap();
-                assert_eq!(
-                    libc::bind(socket.fields.fd, (&raw const addr).cast(), size),
-                    0,
-                    "bind(2)"
-                );
-            }
+        socket.fields.fd = sys::socket(libc::AF_INET, kind, 0).unwrap();
+        if bind {
+            let mut address = SocketAddress::default();
+            assign(
+                &mut address.addr,
+                &mut address.len,
+                1,
+                b"127.0.0.1\0",
+                0,
+                false,
+            )
+            .unwrap();
+            assert!(address.bind(socket.fields.fd), "bind(2)");
         }
         config.set_listening_socket(OwnedSocket::new(socket));
         config
@@ -581,19 +581,16 @@ mod tests {
 
     fn option(fd: c_int, level: c_int, name: c_int) -> c_int {
         let mut value: c_int = -1;
-        let mut size = libc::socklen_t::try_from(size_of::<c_int>()).unwrap();
-        let got =
-            unsafe { libc::getsockopt(fd, level, name, (&raw mut value).cast(), &raw mut size) };
-        assert_eq!(got, 0, "getsockopt(2)");
+        sys::getsockopt(fd, level, name, &mut value).unwrap();
         value
     }
 
     /// The local address `fd` is bound to, or `None` when it names no socket.
     fn local_addr(fd: c_int) -> Option<(u16, u32)> {
-        let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-        let mut size = libc::socklen_t::try_from(size_of::<libc::sockaddr_in>()).unwrap();
-        let got = unsafe { libc::getsockname(fd, (&raw mut addr).cast(), &raw mut size) };
-        (got == 0).then_some((addr.sin_port, addr.sin_addr.s_addr))
+        let mut address = SocketAddress::default();
+        address.local_name(fd).ok()?;
+        let addr = address.addr.v4();
+        Some((addr.sin_port, addr.sin_addr.s_addr))
     }
 
     #[test]
@@ -652,12 +649,11 @@ mod tests {
         // bound, and so unique, until the check is done.
         let bound = local_addr(fd);
         assert!(bound.is_some(), "bound");
-        let held = unsafe { libc::dup(fd) };
-        assert!(held >= 0, "dup(2)");
+        let held = sys::dup(fd).unwrap();
         close_socket(config);
         assert!(config.socket_ptr().is_null(), "socket released");
         assert_ne!(local_addr(fd), bound, "descriptor closed");
-        unsafe { libc::close(held) };
+        sys::close(held).unwrap();
     }
 
     #[test]
@@ -708,9 +704,9 @@ mod tests {
             0,
             "SO_REUSEADDR"
         );
-        let flags = unsafe { libc::fcntl(socket.fd(), libc::F_GETFL) };
+        let flags = sys::fcntl(socket.fd(), libc::F_GETFL, 0).unwrap();
         assert_ne!(flags & libc::O_NONBLOCK, 0, "nonblocking");
-        let fd_flags = unsafe { libc::fcntl(socket.fd(), libc::F_GETFD) };
+        let fd_flags = sys::fcntl(socket.fd(), libc::F_GETFD, 0).unwrap();
         assert_ne!(fd_flags & libc::FD_CLOEXEC, 0, "close-on-exec");
         // A port with a socket keeps it unless the server reuses ports.
         let kept = config.socket_ptr();
@@ -1014,8 +1010,7 @@ mod tests {
 
     #[test]
     fn destroy_http_request_frees_and_clears() {
-        // SAFETY: an all-zero record is a closed connection with no object.
-        let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
+        let mut conn = ConnectionRecord::default();
         let slot = swoole_rs_server::Connection::from(&mut conn);
         slot.hold_http_request(swoole_rs_http::request_new());
         destroy_http_request(slot);
@@ -1040,10 +1035,10 @@ mod tests {
         assert!(!crate::lifecycle::import(&mut port, libc::STDIN_FILENO));
         assert_eq!(log::last_error(), libc::ENOTSOCK);
 
-        let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        let sock = sys::socket(libc::AF_INET, libc::SOCK_STREAM, 0).unwrap();
         assert!(!crate::lifecycle::import(&mut port, sock));
         assert_eq!(log::last_error(), libc::EINVAL);
-        unsafe { libc::close(sock) };
+        sys::close(sock).unwrap();
     }
 
     /// Upstream's `server_port.create`. `Server::add_port` creates the socket, then the

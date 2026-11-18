@@ -30,9 +30,9 @@ mod registry {
         wait_count() == 0
     }
 
-    fn destroyed() {
+    fn destroyed(reactor: crate::reactor::Running<'_>) {
         SIGNAL_READY.store(false, Ordering::Relaxed);
-        signal_upstream::clear();
+        signal_upstream::clear_destroyed(reactor);
     }
 
     fn register() {

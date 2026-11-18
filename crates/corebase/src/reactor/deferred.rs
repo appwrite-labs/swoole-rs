@@ -9,8 +9,9 @@ use crate::reactor::reactor_state::ReactorFields;
 use std::collections::VecDeque;
 
 enum Task {
-    /// A destroy callback that takes nothing ([`crate::reactor::event_api::on_destroy`]).
-    Call(fn()),
+    /// A destroy callback, given the reactor it was queued on
+    /// ([`crate::reactor::event_api::on_destroy`]).
+    Call(fn(Running<'_>)),
     /// base.cc's `socket_free_defer` of a record the task owns: closed and freed when
     /// it runs, or when the queue is freed unrun.
     Free(crate::reactor::OwnedSocket),
@@ -44,10 +45,10 @@ impl<T: Deferred> Erased for T {
 }
 
 impl Task {
-    /// Runs it; the queue no longer holds it.
-    fn run(self) {
+    /// Runs it on `reactor`, whose queue no longer holds it.
+    fn run(self, reactor: Running<'_>) {
         match self {
-            Self::Call(call) => call(),
+            Self::Call(call) => call(reactor),
             Self::Free(socket) => socket.into_box().close_and_free(),
             Self::Value(value) => value.run(),
         }
@@ -128,7 +129,7 @@ pub(crate) fn run_destroy(reactor: Running<'_>) {
         queue.pop()
     };
     while let Some(task) = reactor.with(next) {
-        task.run();
+        task.run(reactor);
     }
 }
 
@@ -154,8 +155,8 @@ pub fn defer_destroy_value(reactor: crate::reactor::Running<'_>, value: impl Def
     reactor.with(|state| push(&mut state.fields.destroy_callbacks, task));
 }
 
-/// `Reactor::add_destroy_callback(fn, nullptr)` of a `call` that takes nothing.
-pub(crate) fn defer_destroy_call(fields: &mut ReactorFields, call: fn()) {
+/// `Reactor::add_destroy_callback(fn, nullptr)` of a `call` that takes the reactor.
+pub(crate) fn defer_destroy_call(fields: &mut ReactorFields, call: fn(Running<'_>)) {
     push(&mut fields.destroy_callbacks, Task::Call(call));
 }
 
@@ -183,7 +184,7 @@ fn run_queue(reactor: Running<'_>) {
     };
     // Reborrow after each call: a nested pass can move the vector's storage.
     while let Some(task) = reactor.with(|state| state.running_defer.get_mut(index)?.pop()) {
-        task.run();
+        task.run(reactor);
         if reactor.with(|state| state.fields.bailout) {
             return;
         }

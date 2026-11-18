@@ -476,8 +476,7 @@ pub(crate) unsafe fn swr_case_init_protocol(port: *mut c_void, websocket: bool) 
 /// A standalone session with the listen address and ID used in the error assertion.
 pub(crate) unsafe fn length_connection(port: *mut c_void) -> ConnectionRecord {
     let port = Port(port);
-    // SAFETY: zeroed is upstream's value-initialized connection record.
-    let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
+    let mut conn = ConnectionRecord::default();
     let info = conn.info.get_mut();
     info.len = size_of_val(&info.addr) as u32;
     // SAFETY: info owns the writable address storage and its length.

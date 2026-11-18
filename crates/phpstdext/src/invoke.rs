@@ -78,7 +78,9 @@ pub(crate) struct MethodCall;
 impl Handler for MethodCall {
     const OPCODE: u32 = swoole_rs_zend::sys::ZEND_INIT_METHOD_CALL;
     fn run(frame: Frame<'_>) -> Next {
-        let op = Op::current(frame);
+        let Some(op) = Op::current(frame) else {
+            return Next::Dispatch;
+        };
         let Some(object) = op.op1() else {
             return Next::Dispatch;
         };

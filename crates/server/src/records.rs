@@ -25,6 +25,7 @@ pub struct SessionRecord {
 }
 
 /// A connection-table slot's record.
+#[derive(Default)]
 pub struct ConnectionRecord {
     /// Read by every reactor thread (`is_valid_connection` over the fd range).
     pub active: AtomicBool,
@@ -744,8 +745,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_sessions_socket_holds_its_http_request_between_reads() {
-        // SAFETY: a connection record is plain data; zero is a closed one.
-        let record: ConnectionRecord = unsafe { core::mem::zeroed() };
+        let record = ConnectionRecord::default();
         let conn = Connection::from(&record);
         conn.hold_http_request(swoole_rs_http::request_new());
         assert!(conn.take_http_request().is_none(), "no socket: freed");
@@ -761,8 +761,7 @@ pub(crate) mod tests {
 
     #[test]
     fn clearing_a_slot_keeps_only_active_closed_and_server_fd() {
-        // SAFETY: a connection record is plain data; zero is a closed one.
-        let record: ConnectionRecord = unsafe { core::mem::zeroed() };
+        let record = ConnectionRecord::default();
         let conn = Connection::from(&record);
         record.active.store(true, Relaxed);
         record.closed.store(1, Relaxed);
@@ -787,8 +786,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_client_cert_is_read_and_freed_only_for_its_session() {
-        // SAFETY: a connection record is plain data; zero is a closed one.
-        let record: ConnectionRecord = unsafe { core::mem::zeroed() };
+        let record = ConnectionRecord::default();
         let conn = Connection::from(&record);
         conn.set_fd(9);
         conn.set_session_id(1);
@@ -813,8 +811,7 @@ pub(crate) mod tests {
         // Another thread (worker) never sees this one's.
         conn.store_client_cert(b"cert");
         let other = std::thread::spawn(|| {
-            // SAFETY: as above.
-            let record: ConnectionRecord = unsafe { core::mem::zeroed() };
+            let record = ConnectionRecord::default();
             let conn = Connection::from(&record);
             conn.set_fd(9);
             conn.set_session_id(1);
@@ -867,7 +864,7 @@ pub(crate) mod tests {
                 reactor_bits: Cell::new(7),
             },
         ];
-        let mut connections: [ConnectionRecord; 3] = unsafe { core::mem::zeroed() };
+        let mut connections: [ConnectionRecord; 3] = Default::default();
         connections[2].active.store(true, Relaxed);
         connections[2].session_id.set(1);
         let (session_at, connection_at) = (
@@ -1006,8 +1003,7 @@ pub(crate) mod tests {
     #[test]
     fn reset_zeroes_its_part_of_one_slot() {
         let mut server = TestServer::new();
-        // SAFETY: a connection record is plain data; zero is a closed one.
-        let mut connections: [ConnectionRecord; 3] = unsafe { core::mem::zeroed() };
+        let mut connections: [ConnectionRecord; 3] = Default::default();
         let at = (&raw mut connections).cast::<ConnectionRecord>();
         *server.tables_mut().connection_list_mut() = unsafe { naming_at(at, 3) };
         let tables = server.state().tables_ref();

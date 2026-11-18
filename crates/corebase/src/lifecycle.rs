@@ -110,6 +110,15 @@ pub fn set_thread_async_threads(threads: *mut c_void) {
     with(|thread| thread.async_threads.set(threads));
 }
 
+/// Initialize the runtime with the upstream variadic fatal handler.
+#[cfg(feature = "upstream-symbols")]
+pub fn init_with_default_fatal_handler() {
+    unsafe extern "C" {
+        fn swr_v1_ffi_fatal_error(code: core::ffi::c_int, format: *const core::ffi::c_char, ...);
+    }
+    swr_v1_core_swoole_init(Some(swr_v1_ffi_fatal_error));
+}
+
 /// `void swoole_init()`'s body, including its streams, logger, memory pool,
 /// signalfd, bug report and main thread. Later calls are no-ops until cleanup.
 /// The archive supplies the C variadic fatal handler; Rust callers may omit it.
@@ -259,9 +268,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     }
     crate::reactor::signal_upstream::clear();
     crate::signal_mask::restore_after_fork(previous, true);
-    if crate::swoole_isset_hook(crate::HookType::AFTER_FORK) {
-        crate::hook::call_after_fork();
-    }
+    crate::hook::call(crate::hook::Hook::AfterFork);
     0
 }
 
@@ -378,7 +385,7 @@ mod tests {
 
     fn reactor() {
         assert_eq!(crate::reactor::swoole_event_init(0), 0);
-        crate::reactor::event_api::on_destroy(|| {
+        crate::reactor::event_api::on_destroy(|_| {
             std::thread::sleep(std::time::Duration::from_millis(200));
             change(libc::SIG_UNBLOCK, libc::SIGUSR1);
         });
