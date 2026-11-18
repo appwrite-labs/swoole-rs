@@ -588,6 +588,7 @@ pub(crate) mod tests {
         uploads: u64,
         http2: bool,
         dispatched: Vec<Vec<u8>>,
+        on_dispatch: fn(&[u8]) -> bool,
         /// Each dispatched request's URL.
         urls: Vec<Vec<u8>>,
         effects: Vec<Effect>,
@@ -610,6 +611,7 @@ pub(crate) mod tests {
             uploads: 0,
             http2: false,
             dispatched: Vec::new(),
+            on_dispatch: |_| true,
             urls: Vec::new(),
             effects: Vec::new(),
             sent: Vec::new(),
@@ -670,7 +672,7 @@ pub(crate) mod tests {
             let url = self.req.url_offset as usize;
             self.urls
                 .push(bytes[url..url + self.req.url_length as usize].to_vec());
-            true
+            (self.on_dispatch)(&bytes[..at])
         }
         fn active(&mut self) -> bool {
             true
@@ -812,6 +814,8 @@ pub(crate) mod tests {
             "large buffers released after dispatch"
         );
     }
+
+    include!("../../../tests/modules/ports/upload_dispatch.rs");
 
     /// A multipart body over `package_max_length` is rewritten by the reactor and
     /// dispatched flagged as preprocessed; a client's own `Swoole-Upload-File` part
