@@ -21,6 +21,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering::Relaxed},
 };
+use swoole_rs_corebase::lent::{Count, In, lend_in};
 
 unsafe extern "C" {
     /// `zend_array_count`: it reads the table, and may recount its elements.
@@ -32,7 +33,11 @@ unsafe extern "C" {
     safe fn zend_hash_index_find(table: &Array, index: zend_ulong) -> Option<&Value>;
     /// `zend_hash_str_find`: as [`zend_hash_index_find`], under the lent
     /// bytes (an `IoSlice` is an iovec), which it reads only.
-    safe fn swr_lent_hash_find<'a>(table: &'a Array, key: IoSlice<'_>) -> Option<&'a Value>;
+    safe fn zend_hash_str_find<'a, 'b>(
+        table: &'a Array,
+        key: In<'b, u8>,
+        len: Count<'b>,
+    ) -> Option<&'a Value>;
     /// `Z_OBJPROP` of a live object inside `zend_try` (nonzero for a bailout:
     /// its `get_properties` handler may build the table, and a lazy object's
     /// initializer runs PHP code): `out` then holds the table, if it has one,
@@ -160,14 +165,15 @@ unsafe extern "C" {
     ) -> std::ffi::c_int;
     /// `php_format_date(format, timestamp, local)` of the lent format: a new
     /// string; no PHP code runs.
-    safe fn swr_lent_format_date(
-        format: IoSlice<'_>,
+    safe fn php_format_date<'a>(
+        format: In<'a, u8>,
+        len: Count<'a>,
         timestamp: zend_long,
         local: bool,
     ) -> *mut zend_string;
-    /// `php_url_encode`: it reads the lent bytes (an `IoSlice` is an iovec) and
+    /// `php_url_encode`: it reads the lent bytes and
     /// returns a new string; no PHP code runs.
-    safe fn swr_bytes_url_encode(bytes: IoSlice<'_>) -> *mut zend_string;
+    safe fn php_url_encode<'a>(bytes: In<'a, u8>, len: Count<'a>) -> *mut zend_string;
     /// `php_url_decode` of a new string's copy of the lent bytes: them as
     /// `urldecode()` decodes them.
     safe fn swr_bytes_url_decode(bytes: IoSlice<'_>) -> *mut zend_string;
@@ -1149,7 +1155,7 @@ impl Array {
     #[must_use]
     #[inline]
     pub fn find(&self, key: &[u8]) -> Option<&Value> {
-        swr_lent_hash_find(self, IoSlice::new(key))
+        lend_in(key, |bytes, len| zend_hash_str_find(self, bytes, len))
     }
 
     /// `zend_hash_index_find`.
@@ -1428,7 +1434,7 @@ impl ZString {
     /// `php_url_encode`: `bytes` as `urlencode()` encodes them.
     #[must_use]
     pub fn url_encode(bytes: &[u8]) -> Self {
-        Self(swr_bytes_url_encode(IoSlice::new(bytes)))
+        Self(lend_in(bytes, |data, len| php_url_encode(data, len)))
     }
 
     /// `php_url_decode` of a copy of `bytes`: them as `urldecode()` decodes them.
@@ -1453,11 +1459,9 @@ impl ZString {
     /// formats it.
     #[must_use]
     pub fn format_date(format: &CStr, timestamp: zend_long, local: bool) -> Self {
-        Self(swr_lent_format_date(
-            IoSlice::new(format.to_bytes()),
-            timestamp,
-            local,
-        ))
+        Self(lend_in(format.to_bytes(), |bytes, len| {
+            php_format_date(bytes, len, timestamp, local)
+        }))
     }
 
     /// Give up the reference to whoever takes the pointer.

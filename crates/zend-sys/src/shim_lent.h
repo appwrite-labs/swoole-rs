@@ -22,9 +22,6 @@ int swr_lent_class_alias(struct iovec alias, zend_class_entry *ce, bool *registe
  * to null first). */
 zval *swr_lent_property_slot(zend_object *object, struct iovec name);
 
-/* zend_hash_str_find(table, key): null, or the element under the key's bytes. */
-zval *swr_lent_hash_find(const HashTable *table, struct iovec key);
-
 /* zend_read_property(scope, object, name, silent, rv) inside zend_try (nonzero for a
  * bailout): `rv` then holds what it read, a copy (ZVAL_COPY) unless Zend computed it
  * there. */
@@ -45,6 +42,4 @@ int swr_lent_call_method(zend_object *object, zend_class_entry *scope, struct io
  * the bytes under its next index (none at ZEND_LONG_MAX, leaking it, as Zend's). */
 void swr_lent_push_bytes(zval *array, struct iovec bytes);
 
-/* php_format_date(format, timestamp, local): a new string. */
-zend_string *swr_lent_format_date(struct iovec format, zend_long timestamp, bool local);
 #endif
