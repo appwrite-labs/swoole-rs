@@ -189,7 +189,7 @@ fn activate(php: Php<'_>) -> Result<(), Bailout> {
 }
 
 /// `PHPCoroutine::deactivate`, also the reactor's destroy callback.
-pub(crate) fn deactivate() -> Result<(), Bailout> {
+pub(crate) fn deactivate(reactor_bailed_out: bool) -> Result<(), Bailout> {
     if !activated() {
         return Ok(());
     }
@@ -200,7 +200,7 @@ pub(crate) fn deactivate() -> Result<(), Bailout> {
     }
     host::detach();
     hold_interrupt(false);
-    if CONFIG.with(|c| c.deadlock_check.get()) {
+    if !reactor_bailed_out && CONFIG.with(|c| c.deadlock_check.get()) {
         deadlock_check()?;
     }
     host::deactivate();
@@ -229,7 +229,7 @@ fn deadlock_check() -> Result<(), Bailout> {
 
 /// `PHPCoroutine::shutdown` (RSHUTDOWN): 1 if deactivation bailed out.
 pub(crate) fn shutdown() -> bool {
-    let bailed = activated() && deactivate().is_err();
+    let bailed = activated() && deactivate(false).is_err();
     if !bailed {
         crate::scheduler::free_options();
         context::free_main();

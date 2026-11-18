@@ -98,10 +98,11 @@ CASES = {
         Swoole\Event::cycle(function() use ($late) {});
         unset($late);
         Swoole\Event::defer(function() {});
-        Swoole\Event::wait(); echo "waited\n";
-        Swoole\Coroutine\run(function() { echo "coroutine\n"; });
-        echo "done\n";
-    ''', 'destructed\nbool(true)\nwaited\ncoroutine\ndone\n'),
+        Swoole\Event::wait();
+        $ran = false;
+        Swoole\Coroutine\run(function() use (&$ran) { $ran = true; });
+        if (!$ran) { exit(1); }
+    ''', 'destructed\nbool(true)\n'),
 }
 
 SOCKET_CASE = (r"""
