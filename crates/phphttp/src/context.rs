@@ -452,9 +452,9 @@ impl Release {
     /// The releases, as a coroutine call's [`Then`], for as long as `self`
     /// is not moved.
     pub(crate) fn then(&mut self) -> Then {
-        // SAFETY: the C body over this record's live objects, which reads and
-        // writes only the record; the caller keeps `self` in place through the
-        // call it is given to.
+        // SAFETY: the caller keeps the record in place during the call. The C callback
+        // advances its progress before releasing each request or response zval,
+        // so a destructor bailout leaves the remaining reference available to finish.
         unsafe {
             Then::new(
                 Some(swr_zend_http_release_objects),
