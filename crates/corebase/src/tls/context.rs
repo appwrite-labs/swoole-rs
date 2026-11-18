@@ -714,6 +714,7 @@ extern "C" fn password<'id>(
         buffer.fill(capacity).slots(),
         passphrase.terminated.unwrap_or_default(),
     )
+    .unwrap_or(0)
 }
 
 fn quoted(prefix: &[u8], value: TlsStr<'_>, suffix: &[u8]) -> Vec<u8> {
@@ -819,17 +820,15 @@ extern "C" fn verify_callback(_ok: c_int, _store: *mut X509_STORE_CTX) -> c_int 
 
 /// Copies the passphrase and the NUL after it (`terminated` is both) into `buffer`
 /// when it fits with a spare byte, else reports none.
-fn copy_password(buffer: &mut [MaybeUninit<u8>], terminated: &[u8]) -> c_int {
-    let Ok(length) = c_int::try_from(terminated.len().saturating_sub(1)) else {
-        return 0;
-    };
+fn copy_password(buffer: &mut [MaybeUninit<u8>], terminated: &[u8]) -> Option<c_int> {
+    let length = c_int::try_from(terminated.len().checked_sub(1)?).ok()?;
     if length == 0 || terminated.len() >= buffer.len() {
-        return 0;
+        return None;
     }
     for (slot, &byte) in buffer.iter_mut().zip(terminated) {
         slot.write(byte);
     }
-    length
+    Some(length)
 }
 
 /// The buffer OpenSSL lends a cookie generator: `DTLS1_COOKIE_LENGTH` bytes.
@@ -857,17 +856,26 @@ fn field<const N: usize>(bytes: &[u8], at: usize) -> [u8; N] {
         .unwrap_or([0; N])
 }
 
-/// DTLS cookie: HMAC-SHA1 of the peer's port and address, keyed by the SSL's address,
-/// into `cookie` with its length in `cookie_length`: whether there is one.
-fn cookie_of(ssl: Ssl<'_>, cookie: &mut [u8; 255], cookie_length: &mut c_uint) -> bool {
-    let mut secret = [0; 32];
-    let address_bytes = (ssl.as_ptr() as c_long).to_ne_bytes();
-    for chunk in secret.as_chunks_mut::<{ size_of::<c_long>() }>().0 {
-        chunk.copy_from_slice(&address_bytes);
+type Cookie = [u8; 20];
+
+/// The server authenticates the peer port and address with one key for its lifetime.
+fn cookie_key() -> Option<&'static [u8; 32]> {
+    static KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+    if KEY.get().is_none() {
+        let mut bytes = [0; 32];
+        if crate::random::random_bytes(&mut bytes) != bytes.len() {
+            return None;
+        }
+        _ = KEY.set(bytes);
     }
+    KEY.get()
+}
+
+fn cookie_of(ssl: Ssl<'_>) -> Option<Cookie> {
     let mut peer: PeerBytes = [0; size_of::<PeerBytes>()];
-    // `BIO_dgram_get_peer` on the SSL's write BIO.
-    bio_peer(ssl.write_bio(), BioPeerCtrl::GetPeer, 0, &mut peer);
+    if bio_peer(ssl.write_bio(), BioPeerCtrl::GetPeer, 0, &mut peer) <= 0 {
+        return None;
+    }
     let family = libc::sa_family_t::from_ne_bytes(field(
         &peer,
         std::mem::offset_of!(libc::sockaddr_storage, ss_family),
@@ -885,25 +893,26 @@ fn cookie_of(ssl: Ssl<'_>, cookie: &mut [u8; 255], cookie_length: &mut c_uint) -
             &field::<16>(&peer, std::mem::offset_of!(libc::sockaddr_in6, sin6_addr))[..],
             DataLength::V6,
         ),
-        // Upstream's OPENSSL_assert(0).
-        _ => crate::fatal("a peer address that is neither IPv4 nor IPv6"),
+        _ => return None,
     };
     for (slot, &byte) in data.iter_mut().zip(port.iter().chain(address)) {
         *slot = byte;
     }
-    let Some(sha1) = EVP_sha1() else {
-        return false;
-    };
-    let digest = HMAC(
-        sha1,
-        &secret,
+    let mut digest = [0; 255];
+    let mut digest_len = 0;
+    let result = HMAC(
+        EVP_sha1()?,
+        cookie_key()?,
         KeyLength::Secret,
         &data,
         length,
-        cookie,
-        cookie_length,
+        &mut digest,
+        &mut digest_len,
     );
-    !digest.is_null()
+    if result.is_null() || digest_len as usize != size_of::<Cookie>() {
+        return None;
+    }
+    digest.first_chunk().copied()
 }
 
 /// OpenSSL's cookie generator: [`cookie_of`] into the buffer it lends, the length
@@ -913,17 +922,24 @@ extern "C" fn generate_cookie(
     cookie: &mut CookieBuffer,
     cookie_length: &mut MaybeUninit<c_uint>,
 ) -> c_int {
-    let mut made_cookie = [0; 255];
-    let mut length = 0;
-    let made = cookie_of(ssl, &mut made_cookie, &mut length);
-    if made {
-        let digest = made_cookie.get(..length as usize).unwrap_or_default();
-        for (slot, &byte) in cookie.iter_mut().zip(digest) {
-            slot.write(byte);
-        }
-        cookie_length.write(length);
+    let Some(digest) = cookie_of(ssl) else {
+        return 0;
+    };
+    for (slot, byte) in cookie.iter_mut().zip(digest) {
+        slot.write(byte);
     }
-    c_int::from(made)
+    cookie_length.write(digest.len().c_cast());
+    1
+}
+
+#[repr(usize)]
+enum CookieLength {
+    Digest = size_of::<Cookie>(),
+}
+
+unsafe extern "C" {
+    /// Both arrays contain exactly the number of bytes selected by `CookieLength`.
+    safe fn CRYPTO_memcmp(left: &Cookie, right: &Cookie, length: CookieLength) -> c_int;
 }
 
 /// OpenSSL's cookie verifier: whether the cookie it lends is [`cookie_of`] the SSL.
@@ -932,11 +948,13 @@ extern "C" fn verify_cookie<'id>(
     cookie: In<'id, u8>,
     cookie_length: Count<'id, c_uint>,
 ) -> c_int {
-    let mut expected = [0u8; 255];
-    let mut length: c_uint = 0;
-    cookie_of(ssl, &mut expected, &mut length);
-    let cookie = cookie.drain(cookie_length).bytes();
-    c_int::from(expected.get(..length as usize) == Some(cookie))
+    let Ok(received) = <&Cookie>::try_from(cookie.drain(cookie_length).bytes()) else {
+        return 0;
+    };
+    c_int::from(
+        cookie_of(ssl)
+            .is_some_and(|expected| CRYPTO_memcmp(&expected, received, CookieLength::Digest) == 0),
+    )
 }
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);

@@ -99,18 +99,16 @@ pub unsafe fn set_current_worker(worker: *mut WorkerRecord) {
     with_globals(|globals| globals.worker.store(worker, Relaxed));
 }
 
-/// Grace randomization calls the existing native wrapper so its assertion and
-/// warning/errno behavior stay identical; all request-limit decisions and storage are Rust's.
-/// `random` is `swoole_system_random(int,int)` or a stand-in.
+/// Apply the randomized worker grace. A failed draw subtracts one, as in the native request limit.
 pub fn worker_global_max_requests(
     max_request: u32,
     grace: u32,
-    random: extern "C" fn(c_int, c_int) -> c_int,
+    random: impl FnOnce(c_int, c_int) -> std::io::Result<c_int>,
 ) {
     let mut limit = max_request;
     if max_request > 0 && grace > 0 {
         let extra = random(1, c_int::from_ne_bytes(grace.to_ne_bytes()));
-        limit = limit.wrapping_add(extra.cast_unsigned());
+        limit = extra.map_or_else(|_| limit.wrapping_sub(1), |n| limit.wrapping_add_signed(n));
     }
     with_globals(|globals| globals.max_request.store(limit, Relaxed));
 }
@@ -149,10 +147,10 @@ mod tests {
     }
 
     static RANDOM_CALLS: AtomicUsize = AtomicUsize::new(0);
-    extern "C" fn maximum(_: c_int, max: c_int) -> c_int {
+    const MAXIMUM: fn(c_int, c_int) -> std::io::Result<c_int> = |_, max| {
         RANDOM_CALLS.fetch_add(1, Relaxed);
-        max
-    }
+        Ok(max)
+    };
 
     #[test]
     fn worker_identity_is_thread_local() {
@@ -181,7 +179,7 @@ mod tests {
             assert!(Worker::from(&worker).is_idle());
             assert!(worker_is_running());
             assert!(!worker_is_shutdown());
-            worker_global_max_requests(2, 0, maximum);
+            worker_global_max_requests(2, 0, MAXIMUM);
             Worker::from(&worker).add_request_count();
             assert!(!Worker::from(&worker).exceeded_max_request());
             Worker::from(&worker).add_request_count();
@@ -222,13 +220,15 @@ mod tests {
     #[test]
     fn request_grace_keeps_native_unsigned_wrap_and_zero_short_circuit() {
         RANDOM_CALLS.store(0, Relaxed);
-        worker_global_max_requests(0, 10, maximum);
+        worker_global_max_requests(0, 10, MAXIMUM);
         assert_eq!(max_request(), 0);
-        worker_global_max_requests(10, 0, maximum);
+        worker_global_max_requests(10, 0, MAXIMUM);
         assert_eq!(max_request(), 10);
         assert_eq!(RANDOM_CALLS.load(Relaxed), 0);
-        worker_global_max_requests(u32::MAX - 2, 10, maximum);
+        worker_global_max_requests(u32::MAX - 2, 10, MAXIMUM);
         assert_eq!(max_request(), 7);
         assert_eq!(RANDOM_CALLS.load(Relaxed), 1);
+        worker_global_max_requests(10, 3, |_, _| Err(std::io::ErrorKind::UnexpectedEof.into()));
+        assert_eq!(max_request(), 9);
     }
 }

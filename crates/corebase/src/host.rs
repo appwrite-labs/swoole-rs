@@ -531,34 +531,44 @@ static DEV_RANDOM: AtomicI32 = AtomicI32::new(-1);
 
 /// `int swoole_system_random(int min, int max)`: four bytes from a cached
 /// `/dev/urandom` descriptor mapped onto `min..=max`; [`swoole_rand`] when it can't
-/// be opened. A short read warns and returns -1.
+/// be opened. A short read emits a warning.
+///
+/// # Errors
+/// Reading the descriptor failed or returned fewer than four bytes.
 ///
 /// # Panics
 /// Unless `max > min`, as upstream asserts.
-#[must_use]
-pub extern "C" fn swoole_system_random(min: c_int, max: c_int) -> c_int {
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "invalid ranges violate the upstream precondition; I/O failures are recoverable"
+)]
+pub fn swoole_system_random(min: c_int, max: c_int) -> std::io::Result<c_int> {
     assert!(max > min, "swoole_system_random: max > min");
     let mut fd = DEV_RANDOM.load(Ordering::Relaxed);
     if fd == -1 {
         fd = crate::sys::open(c"/dev/urandom", libc::O_RDONLY, 0).unwrap_or(-1);
         DEV_RANDOM.store(fd, Ordering::Relaxed);
         if fd < 0 {
-            return swoole_rand(min, max);
+            return Ok(swoole_rand(min, max));
         }
     }
     let mut value = [0u8; 4];
-    if crate::sys::read(fd, &mut value) != Some(4) {
+    if let Err(error) = match crate::sys::read(fd, &mut value) {
+        Some(4) => Ok(()),
+        Some(_) => Err(std::io::ErrorKind::UnexpectedEof.into()),
+        None => Err(std::io::Error::last_os_error()),
+    } {
         crate::log::sys_warning(
             c"swoole_system_random",
             format_args!("read() from /dev/urandom failed"),
         );
-        return -1;
+        return Err(error);
     }
     // Upstream's `min + (random % (max - min + 1))` in unsigned arithmetic.
     let width = max.wrapping_sub(min).wrapping_add(1).cast_unsigned();
     let value = u32::from_ne_bytes(value);
     let offset = value.checked_rem(width).unwrap_or(value);
-    min.cast_unsigned().wrapping_add(offset).cast_signed()
+    Ok(min.cast_unsigned().wrapping_add(offset).cast_signed())
 }
 
 /// `dup2` onto stdout, then stderr: each call's errno, 0 when it succeeded.
@@ -724,7 +734,7 @@ mod tests {
     #[test]
     fn system_random_reads_urandom_into_the_range() {
         for _ in 0..100 {
-            let value = swoole_system_random(10, 20);
+            let value = swoole_system_random(10, 20).unwrap();
             assert!((10..=20).contains(&value), "{value} out of range");
         }
     }

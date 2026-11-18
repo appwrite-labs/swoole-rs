@@ -3,14 +3,11 @@
 //! Rust socket methods and constructors from `socket.cc`, including their last-error
 //! and warning behavior.
 use crate::CCast;
-use crate::constants::ResultCode;
 use crate::log;
+use crate::reactor::IoError;
 use crate::reactor::socket_sync::set_errno;
 use crate::reactor::{SocketAddress, SocketFields, SocketRecord};
 use std::ffi::{CStr, c_int};
-
-const OK: c_int = ResultCode::SW_OK as c_int;
-const ERR: c_int = ResultCode::SW_ERR as c_int;
 
 use crate::sys::errno;
 
@@ -20,18 +17,19 @@ pub fn socket_clean(socket: &SocketFields) {
 }
 
 /// `int Socket::wait_event(int timeout_ms, int events) const`.
-#[must_use]
-pub fn socket_wait_event(socket: &SocketFields, timeout_ms: c_int, events: c_int) -> c_int {
-    if wait_event(
+/// # Errors
+/// The timeout or poll error, also recorded for the caller.
+pub fn socket_wait_event(
+    socket: &SocketFields,
+    timeout_ms: c_int,
+    events: c_int,
+) -> Result<(), IoError> {
+    wait_event(
         socket.fd,
         socket.dont_restart,
         timeout_ms,
         crate::reactor::Events::from_bits(events),
-    ) {
-        OK
-    } else {
-        ERR
-    }
+    )
 }
 
 /// [`socket_wait_event`] over a socket's `fd` and `dont_restart`: whether an event
@@ -41,19 +39,17 @@ pub(crate) fn wait_event(
     dont_restart: bool,
     timeout_ms: c_int,
     events: crate::reactor::Events,
-) -> bool {
-    let result = crate::reactor::fd_wait(
+) -> Result<(), IoError> {
+    crate::reactor::fd_wait(
         fd,
         crate::reactor::swr_v1_reactor_poll_events_to(events),
         timeout_ms,
         dont_restart,
-    );
-    result
-        .inspect_err(|error| {
-            log::set_last_error(error.last_error());
-            set_errno(error.errno());
-        })
-        .is_ok()
+    )
+    .inspect_err(|error| {
+        log::set_last_error(error.last_error());
+        set_errno(error.errno());
+    })
 }
 
 /// What `Socket::connect_async` returns: `SW_READY`, `SW_WAIT` (in progress) or
@@ -84,12 +80,16 @@ pub fn socket_connect_async(socket: &mut SocketFields, address: &SocketAddress) 
 
 /// `int Socket::connect_sync(const Address &sa)` of `this`, a live socket on this
 /// thread; it waits outside any borrow.
-#[must_use]
-pub fn connect_sync(socket: crate::reactor::Socket<'_>, address: &SocketAddress) -> c_int {
+/// # Errors
+/// The connection or readiness failure recorded in Swoole's last-error slot.
+pub fn connect_sync(
+    socket: crate::reactor::Socket<'_>,
+    address: &SocketAddress,
+) -> Result<(), IoError> {
     match socket.edit(|record| socket_connect_async(record, address)) {
         Connect::Wait => {}
-        Connect::Ready => return OK,
-        Connect::Error => return ERR,
+        Connect::Ready => return Ok(()),
+        Connect::Error => return Err(IoError::Failed(log::last_error())),
     }
     let timeout = socket.read(|record| record.timeouts.connect);
     // Upstream's `timeout > 0 ? sec2msec(timeout) : timeout` is a double.
@@ -100,14 +100,14 @@ pub fn connect_sync(socket: crate::reactor::Socket<'_>, address: &SocketAddress)
     };
     if !socket.wait_event(timeout_ms, crate::reactor::Events::WRITE) {
         log::set_last_error(libc::ETIMEDOUT);
-        return ERR;
+        return Err(IoError::TimedOut);
     }
     if let Err(error) = crate::reactor::fd_pending_error(socket.fd()) {
         log::set_last_error(error);
-        return ERR;
+        return Err(IoError::Failed(error));
     }
     socket.edit(|record| socket_set_fd_option(record, 0, -1));
-    OK
+    Ok(())
 }
 
 /// `bool Socket::has_timedout() const`.
@@ -286,7 +286,7 @@ mod tests {
         let mut fds = [0; 2];
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         let socket = SocketRecord::with_fd(fds[0], 0);
-        assert_eq!(socket_wait_event(&socket, 0, 0), ERR);
+        assert_eq!(socket_wait_event(&socket, 0, 0), Err(IoError::TimedOut));
         assert_eq!(log::last_error(), crate::reactor::socket_io::POLL_TIMEOUT);
         assert!(socket_has_timedout());
         unsafe {

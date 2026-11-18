@@ -252,7 +252,7 @@ impl Socket {
     }
 
     fn connect_sync(&self, address: &Address) -> c_int {
-        socket_upstream::connect_sync(self.handle(), address.record())
+        socket_upstream::connect_sync(self.handle(), address.record()).map_or(SW_ERR, |()| SW_OK)
     }
 
     pub(super) fn connect_address(&self, address: &Address) -> c_int {
