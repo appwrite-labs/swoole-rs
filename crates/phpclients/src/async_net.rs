@@ -223,8 +223,8 @@ fn listener(weak: Weak<net::Data>) -> state::Listener {
             Notification::BufferFull => execute(client, Slot::BufferFull),
             Notification::BufferEmpty => execute(client, Slot::BufferEmpty),
         };
-        // Borrowed for the event: like `unhold`, this never destroys the object.
-        object.delref();
+        // A close inside the callback can leave this event with the last reference.
+        drop(object);
         bailout::defer(raised);
         if bailout::pending() {
             swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
