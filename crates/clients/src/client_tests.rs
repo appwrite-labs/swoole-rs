@@ -418,7 +418,7 @@ fn construction_makes_a_cloexec_socket_nonblocking_when_async() {
 fn a_call_measures_with_the_protocol_and_frees_the_client() {
     fn twice(
         _: &Protocol,
-        _: Option<swoole_rs_corebase::reactor::Socket<'_>>,
+        _: Option<u8>,
         _: Option<std::rc::Rc<dyn std::any::Any>>,
         packet: &mut PacketLength,
     ) -> isize {

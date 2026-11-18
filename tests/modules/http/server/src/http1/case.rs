@@ -11,13 +11,12 @@ use std::ptr;
 use std::sync::Mutex;
 
 use super::{
-    Address, COMPRESSION_TYPES, Callback, Connection, DataHead, LOCATIONS, MODE_BASE, MODE_PROCESS,
-    Port, Protocol, RecvData, SW_LOG_WARNING, SW_SOCK_TCP, Server, Slot, TEST_HOST, TEXT_CHROOT,
+    COMPRESSION_TYPES, Callback, Connection, DataHead, LOCATIONS, MODE_BASE, MODE_PROCESS, Port,
+    Protocol, RecvData, SW_LOG_WARNING, SW_SOCK_TCP, Server, Slot, TEST_HOST, TEXT_CHROOT,
     TEXT_GROUP, TEXT_USER, Worker, ignore_event, ignore_server, last_error, microtime,
     swoole_set_log_level,
 };
 use crate::{CppString, Event, Hook, Receive};
-use swoole_rs_corebase::WebSocketStatus;
 use swoole_rs_ports::{lifecycle, methods};
 use swoole_rs_server::{ConnectionRecord, server_methods, view};
 
@@ -65,7 +64,7 @@ const _: () = assert!(
 );
 // `sockaddr_un` is shorter on the BSDs, so the address is Linux's size only there.
 #[cfg(target_os = "linux")]
-const _: () = assert!(size_of::<Address>() == 120);
+const _: () = assert!(size_of::<super::Address>() == 120);
 pub(super) const SOCKET_INFO: usize = 176;
 
 unsafe extern "C-unwind" {
@@ -474,41 +473,24 @@ pub(crate) unsafe fn swr_case_init_protocol(port: *mut c_void, websocket: bool) 
     (&raw const port.config().protocol).cast()
 }
 
-/// get_package_length's fake connection socket on the port's fd, its object a Connection of
-/// session 2025. Both leak, as upstream's do.
-pub(crate) unsafe fn swr_case_fake_socket(port: *mut c_void, out: *mut *mut c_void) -> *mut c_void {
+/// A standalone session with the listen address and ID used in the error assertion.
+pub(crate) unsafe fn length_connection(port: *mut c_void) -> ConnectionRecord {
     let port = Port(port);
-    let (config, fd) = (port.config(), port.get_fd());
-    // SAFETY: zeroed is `new Connection()`'s value.
-    let conn = Box::leak(Box::new(unsafe { std::mem::zeroed::<ConnectionRecord>() }));
-    // SAFETY: a new record, as `new network::Socket()`, whose fields this sets.
+    // SAFETY: zeroed is upstream's value-initialized connection record.
+    let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
+    let info = conn.info.get_mut();
+    info.len = size_of_val(&info.addr) as u32;
+    // SAFETY: info owns the writable address storage and its length.
     unsafe {
-        let sock = swoole_rs_corebase::reactor::SocketRecord::with_fd(fd, 0)
-            .into_raw()
-            .cast::<SocketHead>();
-        (*sock).removed = 0;
-        (*sock).object = ptr::from_mut(conn).cast();
-        (*sock).socket_type = config.r#type;
-        let info = &mut *sock.cast::<u8>().add(SOCKET_INFO).cast::<Address>();
-        info.len = size_of_val(&info.addr) as u32;
-        getsockname(fd, (&raw mut info.addr).cast(), &raw mut info.len);
-        info.kind = config.r#type;
-        conn.info.set(*info);
-        conn.session_id.set(2025);
-        *out = ptr::from_mut(conn).cast();
-        sock.cast()
-    }
-}
-
-pub(crate) unsafe fn swr_case_connection_status(
-    conn: *mut c_void,
-    websocket_status: u8,
-    http2_stream: u8,
-) {
-    // SAFETY: the fake socket's live Connection.
-    let conn = Connection::from(unsafe { &*conn.cast::<ConnectionRecord>() });
-    conn.set_websocket_status(WebSocketStatus::ALL[usize::from(websocket_status)]);
-    conn.set_http2_stream(http2_stream != 0);
+        getsockname(
+            port.get_fd(),
+            (&raw mut info.addr).cast(),
+            &raw mut info.len,
+        )
+    };
+    info.kind = port.config().r#type;
+    conn.session_id.set(2025);
+    conn
 }
 
 pub(crate) unsafe fn swr_case_create(serv: *mut c_void) -> c_int {

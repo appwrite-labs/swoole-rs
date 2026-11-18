@@ -36,7 +36,7 @@ const OPERATION_NOT_SUPPORT: i64 =
 /// plus its 8-byte header, or -1 past 65535.
 fn fastcgi_length(
     _protocol: &Protocol,
-    _socket: Option<swoole_rs_corebase::reactor::Socket<'_>>,
+    _: Option<u8>,
     _owner: Option<std::rc::Rc<dyn std::any::Any>>,
     pl: &mut PacketLength,
 ) -> isize {

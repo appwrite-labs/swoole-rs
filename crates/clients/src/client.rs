@@ -966,7 +966,7 @@ pub fn package_length(this: Handle<'_>, data: &[u8]) -> isize {
     let mut packet = PacketLength::new(data);
     get(
         &record.protocol,
-        Some(this.socket()),
+        None,
         this.get().framing.length_owner(),
         &mut packet,
     )

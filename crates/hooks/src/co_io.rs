@@ -250,13 +250,8 @@ mod native {
         let mut packet = PacketLength::new(view.get(..size as usize).unwrap_or(view));
         // A reference the callback drops: the callable may `set()` another, whose
         // old one's destructor must run before the callback finishes.
-        let mut owner = crate::socket_extra::length_owner(socket);
-        let mut measure = |net: Option<swoole_rs_corebase::reactor::Socket<'_>>| {
-            call(&protocol, net, owner.take(), &mut packet)
-        };
-        let length = socket
-            .with_network(|net| measure(Some(net)))
-            .unwrap_or_else(|| measure(None));
+        let owner = crate::socket_extra::length_owner(socket);
+        let length = call(&protocol, None, owner, &mut packet);
         *header = packet.header_len;
         // One a nested receive made goes; the guard restores the packet's buffer.
         if let Some(mut nested) = socket.take_buffer(false) {
@@ -1167,7 +1162,7 @@ mod tests {
     /// `NESTED`, writes into that socket's read buffer meanwhile.
     fn record_length(
         _: &crate::co_socket::Protocol,
-        _: Option<swoole_rs_corebase::reactor::Socket<'_>>,
+        _: Option<u8>,
         _: Option<std::rc::Rc<dyn std::any::Any>>,
         packet: &mut swoole_rs_corebase::net_types::PacketLength,
     ) -> isize {

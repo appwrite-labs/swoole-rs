@@ -511,7 +511,7 @@ mod tests {
     /// A stub length function, each `N` a distinct body and address.
     pub(super) fn length<const N: u8>(
         _: &Protocol,
-        _: Option<swoole_rs_corebase::reactor::Socket<'_>>,
+        _: Option<u8>,
         _: Option<std::rc::Rc<dyn core::any::Any>>,
         _: &mut PacketLength,
     ) -> isize {

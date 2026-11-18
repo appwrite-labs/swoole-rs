@@ -1,5 +1,5 @@
 //! `swoole::mqtt`'s entries, over [`mqtt_frame_length`].
-use crate::protocol::{Protocol, Socket};
+use crate::protocol::Protocol;
 use swoole_rs_corebase::net_types::PacketLength;
 use swoole_rs_protocols::mqtt_frame_length;
 
@@ -19,7 +19,7 @@ pub fn set_protocol(protocol: &mut Protocol) {
 /// -1, with a warning, past four length bytes. It reads only `pl`.
 pub fn get_package_length(
     _: &Protocol,
-    _: Option<Socket<'_>>,
+    _: Option<u8>,
     _: Option<std::rc::Rc<dyn core::any::Any>>,
     pl: &mut PacketLength,
 ) -> isize {
