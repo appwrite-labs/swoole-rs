@@ -78,11 +78,6 @@ fn or_false<T>(call: &Call, parsed: Result<T, Invalid>) -> Option<T> {
     parsed.map_err(|Invalid| call.set_bool(false)).ok()
 }
 
-/// `zend_long` to the `int` upstream passes on, as C converts it.
-fn int(value: i64) -> i32 {
-    value.c_cast::<i32>()
-}
-
 fn version(call: &Call) {
     call.set_bytes(VERSION.to_bytes());
 }
@@ -113,14 +108,14 @@ fn strerror(call: &Call) {
         return;
     };
     let message = if kind == STRERROR_GAI {
-        Cow::Borrowed(gai_strerror(int(code)).get())
+        Cow::Borrowed(gai_strerror(code.c_cast::<i32>()).get())
     } else if kind == STRERROR_DNS {
-        Cow::Borrowed(hstrerror(int(code)).get())
+        Cow::Borrowed(hstrerror(code.c_cast::<i32>()).get())
     } else if kind == STRERROR_SWOOLE || (code > ERROR_BEGIN && code < ERROR_END) {
         // Swoole's `swoole_strerror`, with the system fallback C++ passes.
-        swoole_rs_error::strerror_text(int(code), sys::strerror)
+        swoole_rs_error::strerror_text(code.c_cast::<i32>(), sys::strerror)
     } else {
-        Cow::Owned(CString::new(sys::strerror(int(code))).unwrap_or_default())
+        Cow::Owned(CString::new(sys::strerror(code.c_cast::<i32>())).unwrap_or_default())
     };
     call.set_bytes(message.to_bytes());
 }
@@ -167,7 +162,7 @@ fn error_log(call: &Call) {
         .arity(2, 2)
         .and_then(|()| Ok((call.long(1, 0)?, call.string(2, b"")?)));
     if let Some((level, message)) = or_false(call, parsed) {
-        log_put(int(level), message);
+        log_put(level.c_cast::<i32>(), message);
     }
 }
 
@@ -186,7 +181,7 @@ fn error_log_ex(call: &Call) {
         .arity(3, 3)
         .and_then(|()| Ok((call.long(1, 0)?, call.long(2, 0)?, call.string(3, b"")?)));
     if let Some((level, error, message)) = or_false(call, parsed) {
-        let (level, error) = (int(level), int(error));
+        let (level, error) = (level.c_cast::<i32>(), error.c_cast::<i32>());
         set_last_error(error);
         if level >= swoole_rs_corebase::utilities::swoole_get_log_level()
             && !swoole_rs_error_ffi::swoole_is_ignored_error(error)
@@ -199,7 +194,7 @@ fn error_log_ex(call: &Call) {
 fn ignore_error(call: &Call) {
     let parsed = call.arity(1, 1).and_then(|()| call.long(1, 0));
     if let Some(error) = or_false(call, parsed) {
-        swoole_rs_error_ffi::swoole_ignore_error(int(error));
+        swoole_rs_error_ffi::swoole_ignore_error(error.c_cast::<i32>());
     }
 }
 

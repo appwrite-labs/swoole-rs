@@ -10,6 +10,15 @@
 /* php_error_docref(NULL, level, "%s", message), and zend_error(level, "%s", message). */
 int swr_zend_try_error(int level, const char *message);
 int swr_zend_try_zend_error(int level, const char *message);
+/* php_error_docref1(NULL, param, level, "%s", message): the error names `param`. */
+int swr_zend_try_error1(const char *param, int level, const char *message);
+/* php_error_docref2(NULL, param1, param2, level, "%s", message). */
+int swr_zend_try_error2(const char *param1, const char *param2, int level, const char *message);
+/* php_copy_file(source, target) into *copied: it opens both through their stream wrappers,
+ * which may warn. */
+int swr_zend_try_copy_file(const char *source, const char *target, bool *copied);
+/* php_check_open_basedir_ex(path, warn) into *refused; with `warn`, a refusal is an E_WARNING. */
+int swr_zend_try_open_basedir(const char *path, int warn, bool *refused);
 
 /* Swoole's sw_callable_warning, php_swoole_fatal_error(E_WARNING, "%s", message), for
  * swoole_rs_zend::host::function_call, which runs it in the trap below. */

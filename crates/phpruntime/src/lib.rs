@@ -27,6 +27,7 @@
 )]
 
 mod functions;
+mod plain_files;
 mod putenv;
 mod select;
 mod sleep;

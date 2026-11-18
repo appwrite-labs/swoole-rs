@@ -684,7 +684,7 @@ fn xport_api(stream: Stream<'_>, socket: &Socket, xport: Xport<'_>) -> Result<()
                 Some(to) => SocketAddress::from_bytes(to).sendto(socket.fd(), data, 0),
             };
             let sent = sent.map_or(-1, usize::cast_signed);
-            p.outputs.returncode = returncode(sent);
+            p.outputs.returncode = sent.c_cast::<c_int>();
             if p.outputs.returncode == -1 {
                 // `php_socket_strerror`: `strerror` of the code.
                 let mut message = Message::new();
@@ -699,15 +699,12 @@ fn xport_api(stream: Stream<'_>, socket: &Socket, xport: Xport<'_>) -> Result<()
             }
             let mut room = recv.map(ReadVec::fill);
             let buffer = room.as_mut().map_or(&mut [][..], Fill::slots);
-            p.outputs.returncode = if p.inputs.flags & STREAM_PEEK == STREAM_PEEK {
-                returncode(
-                    socket
-                        .recv(RecvOp::Peek, buffer)
-                        .map_or(-1, usize::cast_signed),
-                )
+            let received = if p.inputs.flags & STREAM_PEEK == STREAM_PEEK {
+                socket.recv(RecvOp::Peek, buffer)
             } else {
-                returncode(recvfrom(socket, p, buffer).map_or(-1, usize::cast_signed))
+                recvfrom(socket, p, buffer)
             };
+            p.outputs.returncode = received.map_or(-1, usize::cast_signed).c_cast::<c_int>();
         }
         xport::SHUTDOWN => {
             let how = [libc::SHUT_RD, libc::SHUT_WR, libc::SHUT_RDWR];
@@ -720,10 +717,6 @@ fn xport_api(stream: Stream<'_>, socket: &Socket, xport: Xport<'_>) -> Result<()
         _ => {}
     }
     Ok(())
-}
-
-fn returncode(bytes: isize) -> c_int {
-    bytes.c_cast::<c_int>()
 }
 
 /// `STREAM_OOB`: unsupported.
