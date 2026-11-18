@@ -6,17 +6,12 @@ use crate::{native::Co, socket::Sock};
 use libc::c_int;
 use std::{ffi::CStr, sync::OnceLock};
 use swoole_rs_corebase::buffer::string::CppString;
-use swoole_rs_corebase::{ProxyState, log, sys::Text};
+use swoole_rs_corebase::{ProxyState, log};
 use swoole_rs_hooks::hooked::{swoole_coroutine_close, write};
 use swoole_rs_hooks::socket_extra::{CloseHook, set_close_hook};
-// crates/hooks' coroutine file calls, by symbol: each reads its path up to the NUL
-// or works on a descriptor, as `open`, `ftruncate` and `lseek` do, so they are
-// declared `safe`.
-unsafe extern "C" {
-    safe fn swoole_coroutine_open(path: Text<'_>, flags: c_int, mode: libc::mode_t) -> c_int;
-    safe fn swoole_coroutine_ftruncate(fd: c_int, length: libc::off_t) -> c_int;
-    safe fn swoole_coroutine_lseek(fd: c_int, offset: libc::off_t, whence: c_int) -> libc::off_t;
-}
+use swoole_rs_hooks::stdio::{
+    swoole_coroutine_ftruncate, swoole_coroutine_lseek, swoole_coroutine_open,
+};
 use swoole_rs_phpruntime::co;
 use swoole_rs_zend::{Array, Owned, Value};
 
