@@ -31,7 +31,7 @@ pub struct ReactorFields {
     pub timeout_msec: i32,
     pub id: u16,
     pub max_socket: u32,
-    pub last_malloc_trim_time: libc::time_t,
+    pub last_malloc_trim_time: crate::sys::UnixSeconds,
     pub close: Option<ReactorClose>,
     // Rust-only fields follow the native head. No native caller reads these.
     /// No queue until a task is deferred; detached before its callbacks run.

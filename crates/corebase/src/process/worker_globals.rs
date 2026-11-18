@@ -22,10 +22,6 @@ pub struct WorkerGlobalRecord {
     pub exit_time: AtomicI64,
 }
 
-const _: () = assert!(
-    size_of::<libc::time_t>() == size_of::<i64>(),
-    "exit_time is a time_t"
-);
 const _: () = assert!(size_of::<c_int>() == size_of::<i32>(), "pid is an int");
 
 const fn init() -> WorkerGlobalRecord {

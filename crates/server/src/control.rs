@@ -245,7 +245,7 @@ static FORCED_EXIT_DEADLINE: AtomicI64 = AtomicI64::new(0);
 
 /// The loop stops by force once the server's `max_wait_time` has passed.
 fn exit_after_max_wait_time(serv: Server<'_>) {
-    let wait = libc::time_t::from(serv.config().max_wait_time.get());
+    let wait = i64::from(serv.config().max_wait_time.get());
     FORCED_EXIT_DEADLINE.store(swoole_rs_corebase::time_now() + wait, Relaxed);
     swoole_rs_corebase::reactor::swr_v1_event_set_exit_condition(
         swoole_rs_corebase::reactor::ExitCondition::ForcedTermination,

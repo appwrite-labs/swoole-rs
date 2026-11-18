@@ -198,11 +198,7 @@ pub fn set_socket_buffer_size(fd: c_int, recv: bool, send: bool, size: u32) -> s
 pub fn swr_v1_socket_kernel_timeout(fd: c_int, send: bool, timeout: f64) -> bool {
     let seconds = timeout.c_cast::<c_int>();
     let microseconds = ((timeout - f64::from(seconds)) * 1000.0 * 1000.0).c_cast::<c_int>();
-    let microseconds = libc::suseconds_t::from(microseconds);
-    let value = libc::timeval {
-        tv_sec: seconds.into(),
-        tv_usec: microseconds,
-    };
+    let value = crate::sys::timeval(seconds.into(), microseconds);
     let name = if send {
         libc::SO_SNDTIMEO
     } else {

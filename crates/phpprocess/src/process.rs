@@ -575,17 +575,7 @@ fn alarm(call: &Call) {
     }
     // Zero is a disarmed timer.
     let usec = usec.max(0);
-    #[cfg_attr(
-        not(target_vendor = "apple"),
-        expect(
-            trivial_numeric_casts,
-            reason = "suseconds_t is i64 here, i32 on macOS"
-        )
-    )]
-    let interval = libc::timeval {
-        tv_sec: usec / 1_000_000,
-        tv_usec: (usec % 1_000_000) as libc::suseconds_t,
-    };
+    let interval = swoole_rs_corebase::sys::timeval(usec / 1_000_000, (usec % 1_000_000).c_cast());
     let timer = libc::itimerval {
         it_interval: interval,
         it_value: interval,

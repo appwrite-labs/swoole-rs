@@ -10,11 +10,6 @@ use core::sync::atomic::{
 };
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
 
-const _: () = assert!(
-    size_of::<libc::time_t>() == size_of::<AtomicI64>(),
-    "`warning_time` holds a `time_t`"
-);
-
 /// A value a [`Setting`] holds, and the atomic of its layout that holds it.
 pub trait Plain: Copy {
     type Atomic;

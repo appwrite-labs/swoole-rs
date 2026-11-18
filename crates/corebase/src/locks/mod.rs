@@ -223,7 +223,7 @@ fn deadline(millis: i32) -> timespec {
         tv_sec: 0,
         tv_nsec: 0,
     });
-    now.tv_sec += (millis / 1000) as time_t;
+    now.tv_sec += i64::from(millis / 1000);
     now.tv_nsec += c_long::from(millis % 1000) * 1_000_000;
     now.tv_sec += now.tv_nsec / 1_000_000_000;
     now.tv_nsec %= 1_000_000_000;
@@ -264,7 +264,7 @@ impl Word {
                         return Err(ETIMEDOUT);
                     }
                     Some(timespec {
-                        tv_sec: left.as_secs().c_cast::<time_t>(),
+                        tv_sec: left.as_secs().c_cast(),
                         tv_nsec: c_long::from(left.subsec_nanos().c_cast::<i32>()),
                     })
                 }
@@ -851,9 +851,10 @@ pub fn wait(a: &AtomicU32, timeout: f64) -> bool {
     {
         return true;
     }
+    let seconds = timeout.c_cast::<i64>();
     let duration = timespec {
-        tv_sec: timeout as time_t,
-        tv_nsec: ((timeout - (timeout as time_t).c_cast::<f64>()) * 1000.0 * 1000.0 * 1000.0)
+        tv_sec: seconds,
+        tv_nsec: ((timeout - seconds.c_cast::<f64>()) * 1000.0 * 1000.0 * 1000.0)
             .c_cast::<c_long>(),
     };
     // A wakeup between the check above and the syscall makes FUTEX_WAIT fail with

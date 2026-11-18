@@ -151,7 +151,7 @@ fn each<'a, E>(
 
 php_local! {
     /// `php_swoole_http_get_date`'s per-second cache: the time and its text.
-    static DATE_CACHE: std::cell::Cell<Option<(libc::time_t, ZString)>> =
+    static DATE_CACHE: std::cell::Cell<Option<(swoole_rs_corebase::sys::UnixSeconds, ZString)>> =
         std::cell::Cell::new(None);
 }
 
