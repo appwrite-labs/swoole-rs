@@ -1,8 +1,6 @@
-//! PHP client classes in Rust over the zend crate: `Swoole\Client`,
-//! `Swoole\Async\Client`, `Swoole\Coroutine\Socket` and `Swoole\Coroutine\Client`
-//! (registration, constants, objects and methods). C++ keeps the method tables
-//! built from the stubs' arginfo, `network::Client` and the coroutine socket,
-//! which the methods reach through `native`. See docs/zend.md.
+//! PHP registration and method handlers for `Swoole\Client`, `Swoole\Async\Client`,
+//! `Swoole\Coroutine\Client`, `Swoole\Coroutine\Socket` and `Swoole\Coroutine\Http\Client`.
+//! The method tables use arginfo from the PHP stubs. See docs/zend.md.
 //!
 //! Without the `php` feature the crate is empty.
 #![cfg(feature = "php")]

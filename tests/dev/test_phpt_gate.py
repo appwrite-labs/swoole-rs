@@ -148,6 +148,18 @@ class PhptGate(unittest.TestCase):
                     with mock.patch.object(sys, 'argv', ['gate', str(report), *extra]), mock.patch('builtins.print'):
                         self.assertEqual(main(), expected)
 
+    def test_leftovers_compare_only_runs_that_ended_the_same_way(self):
+        from corpus.upstream.gate import resource_regressions
+
+        def row(engine, status, processes):
+            return {'test': 'a.phpt', 'engine': engine, 'status': status, 'leftovers': {'processes': processes}}
+        leak = ['a.phpt (processes: cargo 2, upstream 0)']
+        self.assertEqual(resource_regressions([row('upstream', 'passed', 0), row('cargo', 'passed', 2)]), leak)
+        self.assertEqual(resource_regressions([row('upstream', 'failed', 0), row('cargo', 'failed', 2)]), leak)
+        # A flaky failure on one engine is the pass/fail gate's to judge, not a leak.
+        self.assertEqual(resource_regressions([row('upstream', 'passed', 0), row('cargo', 'failed', 2)]), [])
+        self.assertEqual(resource_regressions([row('upstream', 'failed', 0), row('cargo', 'passed', 2)]), [])
+
     def test_only_upstream_passes_gate_cargo(self):
         def row(test, engine, status):
             return {'test': test, 'family': 'a', 'engine': engine, 'status': status, 'category': 'other'}

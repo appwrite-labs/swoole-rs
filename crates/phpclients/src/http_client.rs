@@ -1,9 +1,6 @@
-//! `Swoole\Coroutine\Http\Client`: registration, the object, the client's
-//! state and every operation over it (connect and keep-alive, request
-//! building with multipart uploads, the response loop and llhttp's callbacks,
-//! decompression, downloads, the WebSocket upgrade, push and receive). The
-//! coroutine socket, files and callables are reached through
-//! `crate::http_native`, as is WebSocket framing, which stays C++.
+//! Registration and state for `Swoole\Coroutine\Http\Client`, including connection reuse,
+//! multipart requests, response parsing, decompression, downloads and WebSocket upgrades.
+//! The phphttp crate supplies the framing used for WebSocket push and receive.
 use crate::{
     http_native::{self as native, PushError, WebSocket},
     http_request::{self as request, Compress},

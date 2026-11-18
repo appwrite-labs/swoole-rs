@@ -914,7 +914,6 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-framing",
- "swoole-rs-hooks",
  "swoole-rs-http",
  "swoole-rs-http2",
  "swoole-rs-locale",
@@ -945,7 +944,6 @@ dependencies = [
  "swoole-rs-crc32",
  "swoole-rs-error",
  "swoole-rs-framing",
- "swoole-rs-hooks",
  "swoole-rs-http",
  "swoole-rs-oracle",
 ]

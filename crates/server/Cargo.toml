@@ -13,8 +13,7 @@ crate-type = ["rlib"]
 workspace = true
 
 [features]
-# Define the upstream C++ symbols of the methods `crates/server/src/server_methods.rs` holds;
-# only the hybrid's archive, whose upstream sources no longer define them, turns it on.
+# Build the server factories and worker runtime used by the extension.
 upstream-symbols = ["swoole-rs-corebase/upstream-symbols"]
 # `--fix-halfclose` (M15, native/halfclose): drain queued output before close and keep a
 # synchronous worker's response after a clean FIN.
@@ -32,7 +31,4 @@ swoole-rs-bus = { path = "../bus" }
 
 [dev-dependencies]
 swoole-rs-oracle = { path = "../oracle" }
-# The upstream symbols crates/clients and `corebase::reactor` call, which the hybrid's
-# modules reach: System::init_reactor.
-swoole-rs-hooks = { path = "../hooks", features = ["upstream-symbols"] }
 swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }

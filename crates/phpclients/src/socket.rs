@@ -1,8 +1,5 @@
-//! `Swoole\Coroutine\Socket` and its exception: registration, the socket
-//! constants, the object and its methods (`getOption`, `setOption` and `import`
-//! are in `socket_options`).
-//! Each method parses as upstream's ZPP block does, then makes one call into the
-//! C++ socket (`crate::native`).
+//! Registration and method handlers for `Swoole\Coroutine\Socket` and its exception.
+//! The `socket_options` module handles `getOption`, `setOption` and `import`.
 use crate::{
     constants,
     native::{self, Co, NewSocket, Transfer},

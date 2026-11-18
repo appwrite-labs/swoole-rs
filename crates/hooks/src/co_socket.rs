@@ -16,7 +16,9 @@ use swoole_rs_corebase::buffer::string::{CppString, boxed_sized_string};
 use swoole_rs_corebase::constants::{
     FdType, SW_BUFFER_SIZE_BIG, SW_INPUT_BUFFER_SIZE, SocketFlag, SocketType,
 };
-use swoole_rs_corebase::reactor::{Socket, SocketAddress, SocketFields, SocketRecord};
+use swoole_rs_corebase::reactor::{
+    Heap, OwnedSocket, Socket, SocketAddress, SocketFields, SocketLoans, SocketRecord,
+};
 use swoole_rs_corebase::tls::upstream::{socket_free, socket_ssl_close};
 use swoole_rs_corebase::{BoxCellExt, CellExt};
 
@@ -39,10 +41,9 @@ pub struct CoSocket {
     pub protocol: Cell<Protocol>,
     /// `swSocketType`.
     pub kind: Cell<c_int>,
-    /// The `network::Socket`, none before the socket opens: the record's own from
-    /// `into_socket`, live until `~Socket()` frees it, when no handle reaches this
-    /// record any more.
-    pub(crate) socket: Cell<Option<swoole_rs_corebase::reactor::Heap<'static>>>,
+    /// The `network::Socket`'s address for native code, null before the socket opens.
+    /// Rust reaches the record only through [`Bound::network`], which owns it.
+    pub(crate) socket: Cell<*mut SocketRecord>,
     pub sock_domain: Cell<c_int>,
     pub sock_type: Cell<c_int>,
     pub sock_protocol: Cell<c_int>,
@@ -166,6 +167,9 @@ pub struct Co(*mut CoSocket);
 pub struct Bound {
     state: SocketState,
     lent: Cell<u8>,
+    /// The `network::Socket`, which this owns and lends to closures: one released
+    /// while lent (by `reinit`, say) is freed when the last loan ends.
+    network: SocketLoans,
     #[cfg(any(test, feature = "iouring"))]
     tls_buffers: [Cell<Option<TlsBuffer>>; 2],
 }
@@ -176,6 +180,7 @@ impl Bound {
         Self {
             state: SocketState::new(),
             lent: Cell::new(0),
+            network: SocketLoans::default(),
             #[cfg(any(test, feature = "iouring"))]
             tls_buffers: [const { Cell::new(None) }; 2],
         }
@@ -533,13 +538,13 @@ impl Co {
     /// [`edit`](Socket::edit), so a nested borrow of the same record panics.
     #[track_caller]
     pub fn net<T>(self, f: impl FnOnce(&mut SocketFields) -> T) -> Option<T> {
-        self.with_network(|network| network.edit(f))
+        self.record().state.as_deref()?.network.edit(f)
     }
 
     /// `f` over the `network::Socket`'s handle, or `None` before the socket opens. The
     /// handle lives only for the call, so it cannot outlive the record.
     pub fn with_network<T>(self, f: impl FnOnce(Socket<'_>) -> T) -> Option<T> {
-        self.record().socket.get().map(|socket| f(*socket))
+        self.record().with_socket(|socket| f(*socket))
     }
 
     /// `Reactor::change`'s add (`add`) or set of the open socket for `events`, on the
@@ -550,9 +555,8 @@ impl Co {
         use swoole_rs_corebase::reactor::event_api::{event_add, event_set};
         let change = if add { event_add } else { event_set };
         self.record()
-            .socket
-            .get()
-            .is_some_and(|network| change(network, events))
+            .with_socket(|network| change(network, events))
+            .unwrap_or(false)
     }
 
     /// `Reactor::interest(socket, kind, 0)` of the open socket on the thread's reactor,
@@ -561,9 +565,11 @@ impl Co {
     #[must_use]
     pub fn interest(self, kind: swoole_rs_corebase::reactor::Interest) -> bool {
         let interest = swoole_rs_corebase::reactor::event_api::event_interest;
-        self.record().socket.get().is_some_and(|network| {
-            interest(network, kind, swoole_rs_corebase::reactor::Events::NONE)
-        })
+        self.record()
+            .with_socket(|network| {
+                interest(network, kind, swoole_rs_corebase::reactor::Events::NONE)
+            })
+            .unwrap_or(false)
     }
 
     /// `f` over the record's metadata, which the record gives up while `f` runs and
@@ -603,13 +609,16 @@ impl Co {
 
 impl CoSocket {
     pub(crate) fn descriptor(&self) -> Descriptor {
-        self.socket.get().map_or(Descriptor::Closed, |network| {
-            network.read(|record| match record.fd {
-                -1 => Descriptor::Closed,
-                fd if record.output.close_wait => Descriptor::Closing(fd),
-                fd => Descriptor::Open(fd),
+        let network = self.state.as_deref().map(|bound| &bound.network);
+        network
+            .and_then(|network| {
+                network.read(|record| match record.fd {
+                    -1 => Descriptor::Closed,
+                    fd if record.output.close_wait => Descriptor::Closing(fd),
+                    fd => Descriptor::Open(fd),
+                })
             })
-        })
+            .unwrap_or(Descriptor::Closed)
     }
 
     /// `f` with `part` lent out of the record's [`Bound`], live until `fini`; the
@@ -664,9 +673,21 @@ impl CoSocket {
 
     /// The `network::Socket`'s address: null before the socket opens.
     pub(crate) fn socket_ptr(&self) -> *mut SocketRecord {
-        self.socket
-            .get()
-            .map_or(ptr::null_mut(), |socket| socket.as_ptr())
+        self.socket.get()
+    }
+
+    /// `f` over the `network::Socket`, lent by the record's [`Bound::network`]: live
+    /// until `f` returns, even if `f` replaces or releases it. `None` before the
+    /// socket opens or once the record is released.
+    fn with_socket<T>(&self, f: impl FnOnce(Heap<'_>) -> T) -> Option<T> {
+        self.state.as_deref()?.network.lend(f)
+    }
+
+    /// `network`, which the record owns from here; the one it held is freed
+    /// ([`free_network`]) once no loan of it is out.
+    pub(crate) fn put_socket(&self, network: OwnedSocket) {
+        self.socket.set(network.heap().as_ptr());
+        self.bound().network.put(network, free_network);
     }
 
     /// The owner of a record this module boxed, with the state and metadata `new`
@@ -684,7 +705,7 @@ impl CoSocket {
             http2: Cell::new(false),
             protocol: Cell::new(Protocol::EMPTY),
             kind: Cell::new(0),
-            socket: Cell::new(None),
+            socket: Cell::new(ptr::null_mut()),
             sock_domain: Cell::new(0),
             sock_type: Cell::new(0),
             sock_protocol: Cell::new(0),
@@ -703,8 +724,9 @@ impl CoSocket {
         }
     }
 
-    /// `init_sock`: a nonblocking, close-on-exec socket of the record's type.
-    fn open(&self, owner: Co) -> Option<Socket<'static>> {
+    /// `init_sock`: a nonblocking, close-on-exec socket of the record's type; false
+    /// if socket(2) failed.
+    fn open(&self, owner: Co) -> bool {
         let socket = SocketRecord::opened(
             self.kind.get(),
             FD_CO_SOCKET,
@@ -717,21 +739,24 @@ impl CoSocket {
     }
 
     /// The fields `init_sock` and `init_reactor_socket` set on a new socket, which
-    /// this record (`owner`'s) owns from here; `None`, with the record left alone, for
-    /// none. The socket holds `owner` for the readiness handlers until [`Released`]
-    /// frees it.
-    fn attach(&self, socket: Option<Box<SocketRecord>>, owner: Co) -> Option<Socket<'static>> {
-        let network = socket?.into_socket();
-        self.socket.set(Some(network));
-        network.edit(|record| {
+    /// this record (`owner`'s) owns from here; false, with the record left alone, for
+    /// none. The socket holds `owner` for the readiness handlers until
+    /// [`free_network`] frees it.
+    fn attach(&self, socket: Option<Box<SocketRecord>>, owner: Co) -> bool {
+        let Some(socket) = socket else {
+            return false;
+        };
+        let network = OwnedSocket::new(socket);
+        network.socket().edit(|record| {
             record.set_owner(Some(owner));
             record.info.kind = self.kind.get();
         });
-        Some(*network)
+        self.put_socket(network);
+        true
     }
 
     /// `init_reactor_socket`: wrap `fd`, which the caller made nonblocking.
-    fn adopt(&self, fd: c_int, owner: Co) -> Option<Socket<'static>> {
+    fn adopt(&self, fd: c_int, owner: Co) -> bool {
         let mut record = SocketRecord::with_fd(fd, FD_CO_SOCKET);
         record.socket_type = self.kind.get();
         record.output.nonblock = true;
@@ -833,14 +858,9 @@ pub extern "C" fn swr_v1_hook_co_socket_release(socket: &mut CoSocket) {
             buffer.dispose();
         }
     }
-    if let Some(network) = socket.socket.take() {
-        if !network.read(|record| record.ssl().is_null()) {
-            socket_ssl_close(*network);
-        }
-        if network.read(|record| record.output.close_wait) {
-            release_descriptor(*network);
-        }
-        drop(Released(*network));
+    socket.socket.set(ptr::null_mut());
+    if let Some(bound) = socket.state.as_deref() {
+        bound.network.release(close_network);
     }
     socket.fini();
 }
@@ -951,53 +971,54 @@ impl CoSocket {
         } else {
             socket.adopt(fd, owner)
         };
-        let Some(network) = opened else {
+        if !opened {
             return 0;
-        };
-        if !how.opens() {
-            if how == New::FdByType && socket_type == SOCK_RAW {
-                return result;
-            }
-            result |= set_nonblock(network);
         }
-        result | network.read(|record| socket.init_options(record))
+        let raw = how == New::FdByType && socket_type == SOCK_RAW;
+        socket
+            .with_socket(|network| {
+                if !how.opens() {
+                    if raw {
+                        return result;
+                    }
+                    result |= set_nonblock(*network);
+                }
+                result | network.read(|record| socket.init_options(record))
+            })
+            .unwrap_or(0)
     }
 }
 
-/// A `network::Socket` a record owned and gave up: no handle reaches it any more, so
-/// dropping this frees it (`Socket::free`). Only the record's own release and
-/// [`reinit`] make one, from the socket they take out of it.
-pub(crate) struct Released(Socket<'static>);
-
-impl Released {
-    #[cfg(test)]
-    pub(crate) fn socket(&self) -> Socket<'_> {
-        self.0
-    }
+/// `Socket::free` of a `network::Socket` a record gave up, once no loan of it is
+/// out: no readiness handler reaches it through the record any more, while a
+/// deferred free keeps it for the rest of the reactor's pass.
+fn free_network(network: OwnedSocket) {
+    network.socket().edit(|record| record.set_owner::<Co>(None));
+    socket_free(Some(network));
 }
 
-impl Drop for Released {
-    fn drop(&mut self) {
-        // No readiness handler reaches the record through it any more, while a
-        // deferred free keeps it for the rest of the reactor's pass.
-        self.0.edit(|record| record.set_owner::<Co>(None));
-        // SAFETY: the record's own heap socket, which it gave up and nothing uses
-        // afterwards.
-        socket_free(Some(unsafe {
-            swoole_rs_corebase::reactor::OwnedSocket::from_socket(self.0)
-        }));
+/// `~Socket()`'s release of its `network::Socket`: the TLS session closed and a
+/// descriptor in `close_wait` released, then [`free_network`].
+fn close_network(network: OwnedSocket) {
+    let socket = network.socket();
+    if !socket.read(|record| record.ssl().is_null()) {
+        socket_ssl_close(socket);
     }
+    if socket.read(|record| record.output.close_wait) {
+        release_descriptor(socket);
+    }
+    free_network(network);
 }
 
 /// `reinit_sock(type)`: a new socket of `socket_type` replaces the record's, whose
-/// old `network::Socket` is returned, freed as it drops. `None`, with errno set and
-/// nothing changed, if socket(2) failed.
-pub(crate) fn reinit(socket: Co, socket_type: c_int) -> Option<Released> {
+/// old `network::Socket` is freed once no loan of it is out. False, with errno set
+/// and nothing changed, if socket(2) failed.
+pub(crate) fn reinit(socket: Co, socket_type: c_int) -> bool {
     socket.record().reinit(socket, socket_type)
 }
 
 impl CoSocket {
-    fn reinit(&self, owner: Co, socket_type: c_int) -> Option<Released> {
+    fn reinit(&self, owner: Co, socket_type: c_int) -> bool {
         let socket = self;
         let (mut domain, mut kind) = (0, 0);
         domain_and_type(socket_type, &mut domain, &mut kind);
@@ -1009,14 +1030,14 @@ impl CoSocket {
             socket.sock_protocol.get(),
             OPEN_FLAGS.bits(),
         );
-        let old = socket.socket.get();
         // Upstream records the old type on the new socket before taking the new one.
-        socket.attach(made, owner)?;
+        if !socket.attach(made, owner) {
+            return false;
+        }
         socket.sock_domain.set(domain);
         socket.sock_type.set(kind);
         socket.kind.set(socket_type);
-        // The old socket, which the record no longer holds.
-        old.map(|old| Released(*old))
+        true
     }
 }
 
@@ -1114,7 +1135,7 @@ pub(crate) fn accepted(server: Co, mut conn: Box<SocketRecord>) -> OwnedCo {
     if let Some(timeouts) = timeouts {
         conn.timeouts = timeouts;
     }
-    socket.socket.set(Some(conn.into_socket()));
+    socket.put_socket(OwnedSocket::new(conn));
     socket.open_length_check.set(server.open_length_check());
     socket.open_eof_check.set(server.open_eof_check());
     socket.http2.set(server.http2());
@@ -1174,9 +1195,18 @@ mod test_support {
     use super::*;
 
     impl CoSocket {
+        /// Releases the `network::Socket`, if any, with `free`.
+        pub(crate) fn release_socket(&self, free: fn(OwnedSocket)) {
+            self.socket.set(ptr::null_mut());
+            if let Some(bound) = self.state.as_deref() {
+                bound.network.release(free);
+            }
+        }
+
         /// Script a descriptor for a fake transport.
         pub(crate) fn set_test_fd(&self, fd: c_int) {
-            self.socket.get().unwrap().edit(|network| network.fd = fd);
+            self.with_socket(|network| network.edit(|network| network.fd = fd))
+                .unwrap();
         }
 
         /// The `network::Socket` record.
@@ -1216,7 +1246,7 @@ mod test_support {
     pub(crate) fn over(fd: c_int) -> OwnedCo {
         let socket = unopened();
         let record = Box::new(SocketRecord::with_fd(fd, FD_CO_SOCKET));
-        socket.co().record().socket.set(Some(record.into_socket()));
+        socket.co().record().put_socket(OwnedSocket::new(record));
         socket
     }
 
@@ -1243,9 +1273,10 @@ mod test_support {
             let mut storage = Box::new(core::mem::MaybeUninit::<CoSocket>::uninit());
             unsafe { init(storage.as_mut_ptr()) };
             let socket = unsafe { Box::from_raw(Box::into_raw(storage).cast::<CoSocket>()) };
-            socket.socket.set(Some(
-                Box::new(SocketRecord::with_fd(-1, FD_CO_SOCKET)).into_socket(),
-            ));
+            socket.put_socket(OwnedSocket::new(Box::new(SocketRecord::with_fd(
+                -1,
+                FD_CO_SOCKET,
+            ))));
             socket.set_test_fd(100);
             Self(socket)
         }
@@ -1266,20 +1297,18 @@ mod test_support {
 
     impl Drop for TestSocket {
         fn drop(&mut self) {
-            unsafe {
-                for mut buffer in [self.0.read_buffer.take(), self.0.write_buffer.take()]
-                    .into_iter()
-                    .flatten()
-                {
-                    buffer.dispose();
-                }
-                if let Some(s) = Socket::from_ptr(self.0.socket_ptr()) {
-                    // A test's `SSL` is its own to free, or a stub.
-                    s.edit(|record| record.set_ssl(None));
-                    swoole_rs_corebase::reactor::OwnedSocket::from_socket(s).free();
-                }
-                self.0.fini();
+            for mut buffer in [self.0.read_buffer.take(), self.0.write_buffer.take()]
+                .into_iter()
+                .flatten()
+            {
+                buffer.dispose();
             }
+            // A test's `SSL` is its own to free, or a stub.
+            self.0.release_socket(|network| {
+                network.socket().edit(|record| record.set_ssl(None));
+                network.free();
+            });
+            self.0.fini();
         }
     }
 }
@@ -1308,14 +1337,10 @@ mod tests {
         reason = "the records live in boxes so their addresses stay put"
     )]
     fn release(mut socket: Box<CoSocket>) {
-        if !socket.socket_ptr().is_null() {
-            unsafe {
-                libc::close((*socket.socket_ptr()).fields.fd);
-                if let Some(s) = Socket::from_ptr(socket.socket_ptr()) {
-                    swoole_rs_corebase::reactor::OwnedSocket::from_socket(s).free();
-                }
-            }
-        }
+        socket.release_socket(|network| {
+            unsafe { libc::close(network.socket().fd()) };
+            network.free();
+        });
         socket.fini();
         assert!(socket.state.is_none());
     }
@@ -1515,18 +1540,39 @@ mod tests {
     }
 
     #[test]
-    fn reinit_swaps_the_socket_and_hands_back_the_old_one() {
+    fn reinit_swaps_the_socket_and_keeps_a_lent_one_until_the_loan_ends() {
         let mut socket = record();
         new(&mut socket, New::ByType, 0, 1, 0, 0);
         let first = socket.socket_ptr();
-        let old = reinit(unsafe { Co::new(&raw mut *socket) }, 3).unwrap();
-        assert_eq!(old.socket().as_ptr(), first);
+        let co = unsafe { Co::new(&raw mut *socket) };
+        // The socket a descriptor names, or none once it is closed: freeing the old
+        // record (`free_network`, with no reactor) closes its descriptor, and a reused
+        // number names another socket.
+        let inode = |fd: c_int| {
+            let mut stat = MaybeUninit::<libc::stat>::uninit();
+            (unsafe { libc::fstat(fd, stat.as_mut_ptr()) } == 0)
+                .then(|| unsafe { stat.assume_init() }.st_ino)
+        };
+        // `reinit` inside `with_network`: the old record stays live for the loan, and
+        // is freed when it ends. Only its descriptor is looked at after the swap.
+        let (swapped, old) = co
+            .with_network(|old| {
+                let (fd, kind) = old.read(|record| (record.fd, record.info.kind));
+                let before = inode(fd);
+                let swapped = reinit(co, 3) && co.record().socket_ptr() != first;
+                assert!(before.is_some() && inode(fd) == before, "kept for the loan");
+                (swapped, (fd, kind, before))
+            })
+            .unwrap();
+        let (fd, old_kind, before) = old;
+        assert!(swapped);
+        assert_eq!(old_kind, 1);
+        assert_ne!(inode(fd), before, "freed once the loan ended");
         assert_eq!(
             (socket.kind.get(), socket.sock_domain.get()),
             (3, libc::AF_INET6)
         );
         assert_eq!(unsafe { (*socket.socket_ptr()).fields.info.kind }, 1);
-        drop(old);
         release(socket);
     }
 

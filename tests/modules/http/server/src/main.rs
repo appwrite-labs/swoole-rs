@@ -69,12 +69,11 @@ use http1::case::{
     length_connection, swr_case_abort_server, swr_case_base_server, swr_case_close,
     swr_case_close_actively, swr_case_close_after, swr_case_connection, swr_case_create,
     swr_case_healthy, swr_case_http_server, swr_case_idle_worker_num, swr_case_info,
-    swr_case_init_protocol, swr_case_last_error, swr_case_length_port, swr_case_master_pid,
-    swr_case_mqtt_server, swr_case_port, swr_case_protocol_server, swr_case_redis_server,
-    swr_case_send, swr_case_sendfile, swr_case_set_max_sockets, swr_case_shutdown,
-    swr_case_ssl_client_ca, swr_case_ssl_files, swr_case_ssl_init, swr_case_ssl_protocols,
-    swr_case_ssl_server, swr_case_ssl_sni, swr_case_start, swr_case_tg_buffer, swr_case_tick,
-    swr_case_worker_num,
+    swr_case_init_protocol, swr_case_length_port, swr_case_master_pid, swr_case_mqtt_server,
+    swr_case_port, swr_case_protocol_server, swr_case_redis_server, swr_case_send,
+    swr_case_sendfile, swr_case_set_max_sockets, swr_case_shutdown, swr_case_ssl_client_ca,
+    swr_case_ssl_files, swr_case_ssl_init, swr_case_ssl_protocols, swr_case_ssl_server,
+    swr_case_ssl_sni, swr_case_start, swr_case_tg_buffer, swr_case_tick, swr_case_worker_num,
 };
 
 type Server = c_void;
@@ -977,13 +976,15 @@ fn get_package_length() {
     let got = unsafe { http_get_package_length(protocol, conn, &mut pl) };
     assert_eq!(got, SW_ERR as isize);
 
-    let mut msg = std::ptr::null();
-    // SAFETY: a writable out-parameter.
-    let error = unsafe { swr_case_last_error(&mut msg) };
-    // SAFETY: the thread's NUL-terminated error message.
-    let str = unsafe { std::ffi::CStr::from_ptr(msg) }.to_string_lossy();
-    assert_eq!(error, SW_ERROR_PROTOCOL_ERROR);
-    assert!(str.contains("unexpected protocol status of session"));
+    let msg = swoole_rs_ffi::last_error_message();
+    assert_eq!(
+        swoole_rs_corebase::log::last_error(),
+        SW_ERROR_PROTOCOL_ERROR
+    );
+    assert!(
+        msg.to_string_lossy()
+            .contains("unexpected protocol status of session")
+    );
 }
 
 type Cases = &'static [(&'static str, fn())];

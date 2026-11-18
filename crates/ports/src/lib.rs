@@ -11,9 +11,6 @@ pub mod methods;
 pub mod read;
 mod read_native;
 mod resp_recv;
-// Linked for System::init_reactor (Cargo.toml).
-#[cfg(test)]
-use swoole_rs_hooks as _;
 
 const _: () = {
     assert!(
