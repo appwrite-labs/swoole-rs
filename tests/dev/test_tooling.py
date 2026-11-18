@@ -76,16 +76,35 @@ class Phpt(unittest.TestCase):
 import os, subprocess, sys
 from pathlib import Path
 Path(os.environ['TMPDIR'], 'leftover').touch()
-subprocess.Popen(['sleep', '30'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+child = subprocess.Popen(['sleep', '30'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+Path('child.pid').write_text(str(child.pid))
 Path(sys.argv[1]).write_text('PASSED ' + sys.argv[2] + '\n')
 """, str(artifact / 'status.txt'), str(root / case['path'])]
-            with patch.object(Engine, 'command', return_value=command), patch.object(phpt, 'ipc_namespace', return_value=None):
+            expected = {}
+            measure = phpt.group_leftovers
+
+            def observe(group, members):
+                counts = measure(group, members)
+                pid = int((root / 'child.pid').read_text())
+                proc = Path('/proc') / str(pid)
+                fields = dict(line.split(':', 1) for line in (proc / 'status').read_text().splitlines())
+                expected.update(pid=pid, parent=int(fields['PPid']), state=fields['State'].split()[0], name='sleep')
+                try:
+                    expected['wait_channel'] = (proc / 'wchan').read_text().strip()
+                except OSError:
+                    pass
+                return counts
+
+            with (patch.object(Engine, 'command', return_value=command),
+                  patch.object(phpt, 'ipc_namespace', return_value=None),
+                  patch.object(phpt, 'group_leftovers', side_effect=observe)):
                 rows, _ = phpt.run_cases(engine, [case], root, artifact, 3, 1, measure_leftovers=True)
             row = rows[case['path']]
             self.assertEqual(row['status'], 'passed')
             self.assertEqual(row['leftovers']['temp_files'], 1)
             self.assertEqual(row['leftovers']['processes'], 1)
             self.assertGreaterEqual(row['leftovers']['descriptors'], 2)
+            self.assertEqual(row['remaining_processes'], [expected])
 
     def test_manifest_lists_every_pinned_timer_original(self):
         tests = json.loads((ROOT / 'corpus/upstream/manifest.json').read_text())['tests']

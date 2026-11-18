@@ -418,7 +418,7 @@ def prepare(source, destination, cases, support_files=()):
         (vendor / 'autoload.php').write_text(AUTOLOAD)
 
 
-def group_leftovers(group):
+def group_leftovers(group, members):
     """Live members of the test group and their open descriptors before cleanup (Linux)."""
     try:
         os.killpg(group, 0)
@@ -434,10 +434,18 @@ def group_leftovers(group):
         try:
             if os.getpgid(int(entry.name)) != group:
                 continue
-            state, _, pgid, *_ = (entry / 'stat').read_bytes().rsplit(b')', 1)[1].split()
+            name, fields = (entry / 'stat').read_bytes().rsplit(b')', 1)
+            state, parent, pgid, *_ = fields.split()
             if int(pgid) != group or state in (b'Z', b'X'):
                 continue
             processes += 1
+            member = dict(pid=int(entry.name), parent=int(parent), state=state.decode(),
+                          name=name.split(b'(', 1)[1].decode(errors='replace'))
+            members.append(member)
+            try:
+                member['wait_channel'] = (entry / 'wchan').read_text().strip()
+            except OSError:
+                pass
             if descriptors is not None:
                 try:
                     descriptors += len(os.listdir(entry / 'fd'))
@@ -518,11 +526,11 @@ def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True,
         child_selector = {'path': str(wrapper), 'sha256': hashlib.sha256(wrapper.read_bytes()).hexdigest(),
                           'fallback_exec_argv': argv, 'argument_policy': 'Use official TEST_PHP_EXTRA_ARGS when present, parsed as argv without shell evaluation; otherwise engine defaults', 'scope': 'Explicit bare php children only; absolute PHP paths are unchanged'}
     started = time.monotonic()
-    leftovers, observer = {}, {}
+    leftovers, observer, members = {}, {}, []
     with tempfile.TemporaryDirectory(dir=sandbox, prefix='t') if measure_leftovers else nullcontext() as tmp:
         if measure_leftovers:
             env['TMPDIR'] = tmp
-            observer['before_cleanup'] = lambda pid: leftovers.update(group_leftovers(pid), temp_files=temp_file_count(tmp))
+            observer['before_cleanup'] = lambda pid: leftovers.update(group_leftovers(pid, members), temp_files=temp_file_count(tmp))
         try:
             with ipc_isolated(command) as (isolated, ipc_mode):
                 result = run_isolated(isolated, cwd=sandbox, env=env, **observer,
@@ -577,6 +585,8 @@ def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True,
                'isolated_runner_seconds': runner_seconds if len(cases) == 1 else None}
         if measure_leftovers:
             row['leftovers'] = leftovers
+            if members:
+                row['remaining_processes'] = members
         if status != 'passed':
             diff = artifact / Path(path).with_suffix('.diff').name
             row['detail'] = ('Invalid/duplicate result ledger\n' if invalid else '') + (diff.read_text(errors='replace') if diff.exists() else output)[-6000:]
