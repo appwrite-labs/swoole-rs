@@ -1,15 +1,5 @@
 //! Swoole's memory pools and collections: fixed and global pools, the channel,
 //! shared mappings and the shared-memory table.
-/// Defines each listed function under its upstream C++ symbol. `uint64_t` is `unsigned long long` on macOS and `unsigned long`
-/// on Linux, which the symbols spell.
-macro_rules! upstream {
-    ($($linux:literal, $macos:literal => $item:item)*) => {$(
-        #[cfg_attr(not(target_os = "macos"), unsafe(export_name = $linux))]
-        #[cfg_attr(target_os = "macos", unsafe(export_name = $macos))]
-        $item
-    )*};
-}
-
 pub mod channel;
 pub mod fixed;
 pub mod flat;
