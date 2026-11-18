@@ -26,6 +26,20 @@ unsafe extern "C" {
     safe fn swr_zend_try_mkdir_recursive(path: CText<'_>, made: &mut bool) -> std::ffi::c_int;
 }
 
+/// Resolve an IPv4 host through PHP. The address is in network byte order.
+pub fn lookup_ipv4(host: &CStr) -> Result<u32, std::ffi::c_int> {
+    // MAXFQDNLEN in PHP's sockets extension.
+    if host.count_bytes() > 255 {
+        return Err(-1);
+    }
+    let mut address = crate::sys::in_addr { s_addr: 0 };
+    // SAFETY: the shim reads the terminated name and writes one address on success.
+    match unsafe { crate::sys::swr_zend_gethostbyname4(host.as_ptr(), &raw mut address) } {
+        0 => Ok(address.s_addr),
+        status => Err(status),
+    }
+}
+
 mod sealed {
     /// Only the records `Record` documents.
     pub trait Zero {}

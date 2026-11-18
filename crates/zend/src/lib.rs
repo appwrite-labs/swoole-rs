@@ -52,8 +52,8 @@ pub use error::{
 };
 pub use function::{Fcc, Function};
 pub use helpers::{
-    EMPTY_FCC, EMPTY_FCI, Record, is_main_thread, long_zval, mkdir_recursive, module_loaded,
-    numeric, time, zeroed,
+    EMPTY_FCC, EMPTY_FCI, Record, is_main_thread, long_zval, lookup_ipv4, mkdir_recursive,
+    module_loaded, numeric, time, zeroed,
 };
 pub use local::{EnvLock, Fatal, Php};
 pub use minit::{Lifecycle, Minfo, Minit, Mshutdown, Parent, Request, Shutdown, Startup};
