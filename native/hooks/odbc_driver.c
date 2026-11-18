@@ -1,5 +1,102 @@
-/* PDO method signatures, Zend allocation and native statement record access.
- * Each supported PHP driver supplies its original diagnostic locations. */
+/*
+  +----------------------------------------------------------------------+
+  | Copyright (c) The PHP Group                                          |
+  +----------------------------------------------------------------------+
+  | This source file is subject to version 3.01 of the PHP license,      |
+  | that is bundled with this package in the file LICENSE, and is        |
+  | available through the world-wide-web at the following url:           |
+  | https://www.php.net/license/3_01.txt                                 |
+  | If you did not receive a copy of the PHP license and are unable to   |
+  | obtain it through the world-wide-web, please send a note to          |
+  | license@php.net so we can mail you a copy immediately.               |
+  +----------------------------------------------------------------------+
+  | Author: Wez Furlong <wez@php.net>                                    |
+  +----------------------------------------------------------------------+
+*/
+
+/* pdo_odbc's connection side that stays C: PDO's method signatures, Zend allocation and
+ * the native connection record. crates/odbc/src/driver.rs has the operations. One copy
+ * serves every supported PHP version; each supplies the diagnostic locations of its own
+ * ext/pdo_odbc/odbc_driver.c. Nothing after the tables below reads __LINE__. */
+#include "php_swoole_odbc.h"
+
+#ifdef SW_USE_ODBC
+#include "php.h"
+#include "ext/pdo/php_pdo.h"
+#include "ext/pdo/php_pdo_driver.h"
+#include "zend_exceptions.h"
+
+#if PHP_VERSION_ID >= 80500
+static const char driver_file[] = "thirdparty/php85/pdo_odbc/odbc_driver.c";
+static const int doer_lines[] = {229, 244, 250};
+static const int begin_line = 279;
+static const int commit_lines[] = {294, 305};
+static const int rollback_lines[] = {320, 330};
+static const int setup_lines[] = {484, 491, 499, 507, 514, 522};
+static const int connect_line = 610;
+static const int prepare_lines[] = {176, 186, 203};
+/* The line the original's multiline macro call reports, on both GCC and Clang. */
+static int attribute_line(void) {
+#define SWR_ODBC_LINE() __LINE__
+#line 367
+    return SWR_ODBC_LINE(
+
+    );
+#undef SWR_ODBC_LINE
+}
+#elif PHP_VERSION_ID >= 80400
+static const char driver_file[] = "thirdparty/php84/pdo_odbc/odbc_driver.c";
+static const int doer_lines[] = {229, 244, 250};
+static const int begin_line = 279;
+static const int commit_lines[] = {293, 304};
+static const int rollback_lines[] = {318, 328};
+static const int setup_lines[] = {476, 483, 491, 499, 508, 516};
+static const int connect_line = 619;
+static const int prepare_lines[] = {177, 187, 204};
+/* The line the original's multiline macro call reports, on both GCC and Clang. */
+static int attribute_line(void) {
+#define SWR_ODBC_LINE() __LINE__
+#line 364
+    return SWR_ODBC_LINE(
+    );
+#undef SWR_ODBC_LINE
+}
+#elif PHP_VERSION_ID >= 80300
+static const char driver_file[] = "thirdparty/php83/pdo_odbc/odbc_driver.c";
+static const int doer_lines[] = {231, 246, 252};
+static const int begin_line = 281;
+static const int commit_lines[] = {295, 306};
+static const int rollback_lines[] = {320, 330};
+static const int setup_lines[] = {477, 484, 492, 500, 509, 517};
+static const int connect_line = 586;
+static const int prepare_lines[] = {179, 189, 206};
+/* The line the original's multiline macro call reports, on both GCC and Clang. */
+static int attribute_line(void) {
+#define SWR_ODBC_LINE() __LINE__
+#line 366
+    return SWR_ODBC_LINE(
+    );
+#undef SWR_ODBC_LINE
+}
+#else
+static const char driver_file[] = "thirdparty/php82/pdo_odbc/odbc_driver.c";
+static const int doer_lines[] = {231, 246, 252};
+static const int begin_line = 281;
+static const int commit_lines[] = {295, 306};
+static const int rollback_lines[] = {320, 330};
+static const int setup_lines[] = {477, 484, 492, 500, 509, 517};
+static const int connect_line = 586;
+static const int prepare_lines[] = {179, 189, 206};
+/* The line the original's multiline macro call reports, on both GCC and Clang. */
+static int attribute_line(void) {
+#define SWR_ODBC_LINE() __LINE__
+#line 366
+    return SWR_ODBC_LINE(
+    );
+#undef SWR_ODBC_LINE
+}
+#endif
+
 extern void swr_odbc_fetch_error(pdo_dbh_t *, pdo_stmt_t *, zval *);
 
 /* The native statement still owns its record. Rust reads the same error
@@ -113,11 +210,7 @@ static bool odbc_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *s
         stmt->driver_data = NULL;
         return false;
     }
-#if PHP_VERSION_ID >= 80500
     stmt->methods = &swoole_odbc_stmt_methods;
-#else
-    stmt->methods = &odbc_stmt_methods;
-#endif
     return ok;
 }
 
@@ -165,3 +258,4 @@ const pdo_driver_t *swr_odbc_descriptor(void) {
     static const pdo_driver_t driver = {PDO_DRIVER_HEADER(odbc), swr_odbc_factory};
     return &driver;
 }
+#endif

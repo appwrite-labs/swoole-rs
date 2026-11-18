@@ -134,7 +134,6 @@ mod php {
 
     fn profile(third: &Path, php: u32) -> Profile {
         let mut p = Profile::default();
-        let bundled = third.join(format!("php{php}"));
         if feature("sockets") {
             p.define(&["SW_SOCKETS", "HAVE_SOCKETS"]);
         }
@@ -196,8 +195,6 @@ mod php {
                     ));
                 }
             }
-            let dir = bundled.join("pdo_odbc");
-            p.c.extend(["odbc_driver.c", "odbc_stmt.c"].map(|f| dir.join(f)));
             p.includes.push(include);
             p.libs.push("odbc");
         }

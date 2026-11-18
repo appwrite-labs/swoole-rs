@@ -333,7 +333,7 @@ extern "C" fn swr_odbc_setup(
     file: Text<'static>,
     lines: &[i32; 6],
 ) -> bool {
-    use crate::minit::{pdo_odbc_pool_mode, pdo_odbc_pool_on};
+    use crate::minit::{POOL_MODE, POOL_ON};
     use std::sync::atomic::Ordering;
     let fail = |what: &'static std::ffi::CStr, line| {
         pdo_odbc_error(dbh, None, Statement::NULL, what.into(), file, line);
@@ -348,11 +348,11 @@ extern "C" fn swr_odbc_setup(
     if !matches!(set_env_attr(env.get(), 200, 3, 0), 0 | 1) {
         return fail(c"SQLSetEnvAttr: ODBC3", lines[1]);
     }
-    if pdo_odbc_pool_on.load(Ordering::Relaxed) != 0
+    if POOL_ON.load(Ordering::Relaxed) != 0
         && set_env_attr(
             env.get(),
             202,
-            pdo_odbc_pool_mode.load(Ordering::Relaxed),
+            POOL_MODE.load(Ordering::Relaxed),
             0,
         ) != 0
     {

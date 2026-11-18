@@ -18,15 +18,13 @@ const SQL_CP_OFF: usize = 0;
 const SQL_CP_ONE_PER_HENV: usize = 2;
 const SQL_CP_STRICT_MATCH: usize = 0;
 const SQL_CP_RELAXED_MATCH: usize = 1;
-/// `PDO_ATTR_DRIVER_SPECIFIC`, where `php_pdo_odbc_int.h`'s attributes start.
+/// `PDO_ATTR_DRIVER_SPECIFIC`, where `native/hooks/php_pdo_odbc_int.h`'s attributes start.
 const PDO_ATTR_DRIVER_SPECIFIC: i64 = 1000;
 
-/// The `pdo_odbc_pool_on` and `pdo_odbc_pool_mode` the driver reads
-/// (`zend_ulong`, as `php_pdo_odbc_int.h` declares them).
-#[unsafe(no_mangle)]
-pub static pdo_odbc_pool_on: AtomicUsize = AtomicUsize::new(SQL_CP_OFF);
-#[unsafe(no_mangle)]
-pub static pdo_odbc_pool_mode: AtomicUsize = AtomicUsize::new(SQL_CP_ONE_PER_HENV);
+/// `pdo_odbc`'s `pdo_odbc_pool_on` and `pdo_odbc_pool_mode`, which the driver reads when
+/// it connects.
+pub static POOL_ON: AtomicUsize = AtomicUsize::new(SQL_CP_OFF);
+pub static POOL_MODE: AtomicUsize = AtomicUsize::new(SQL_CP_ONE_PER_HENV);
 
 /// `pdo_odbc.connection_pooling`'s (on, mode), or none for an invalid value.
 fn pooling(value: &[u8]) -> Option<(usize, usize)> {
@@ -35,7 +33,7 @@ fn pooling(value: &[u8]) -> Option<(usize, usize)> {
     } else if value.eq_ignore_ascii_case(b"relaxed") {
         Some((SQL_CP_ONE_PER_HENV, SQL_CP_RELAXED_MATCH))
     } else if value.is_empty() || value.eq_ignore_ascii_case(b"off") {
-        Some((SQL_CP_OFF, pdo_odbc_pool_mode.load(Ordering::Relaxed)))
+        Some((SQL_CP_OFF, POOL_MODE.load(Ordering::Relaxed)))
     } else {
         None
     }
@@ -62,8 +60,8 @@ pub fn minit(minit: &Minit) {
             ));
             return;
         };
-        pdo_odbc_pool_on.store(on, Ordering::Relaxed);
-        pdo_odbc_pool_mode.store(mode, Ordering::Relaxed);
+        POOL_ON.store(on, Ordering::Relaxed);
+        POOL_MODE.store(mode, Ordering::Relaxed);
         if on != SQL_CP_OFF {
             // SQL_ATTR_CONNECTION_POOLING applies to the entire process.
             set_env_attr(Handle(std::ptr::null_mut()), 201, on, 0);
