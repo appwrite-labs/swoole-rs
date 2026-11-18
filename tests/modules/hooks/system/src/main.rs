@@ -46,6 +46,7 @@
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use swoole_rs_corebase::log::last_error;
+use swoole_rs_corebase::random_bytes;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_ffi::swoole_init;
 use swoole_rs_hooks::poll::PollFd;
@@ -126,9 +127,6 @@ const GREETING: &[u8] = b"hello world, hello swoole";
 type Routine = unsafe extern "C-unwind" fn(*mut c_void);
 
 unsafe extern "C-unwind" {
-    #[link_name = "_Z19swoole_random_bytesPcm"]
-    fn swoole_random_bytes(buf: *mut c_char, size: usize) -> usize;
-
     fn swoole_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long;
     fn swoole_coroutine_get_id() -> c_long;
 
@@ -166,11 +164,6 @@ fn errno() -> c_int {
 /// The bytes before the first NUL, as `ASSERT_STREQ` compares.
 fn c_str(bytes: &[u8]) -> &[u8] {
     &bytes[..bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len())]
-}
-
-fn random_bytes(buf: &mut [u8]) -> usize {
-    // SAFETY: `buf` is writable for its length.
-    unsafe { swoole_random_bytes(buf.as_mut_ptr().cast(), buf.len()) }
 }
 
 unsafe extern "C-unwind" fn trampoline(arg: *mut c_void) {
