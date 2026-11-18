@@ -13,7 +13,6 @@ use std::{
 
 const STRING_COUNT: usize = 11;
 const PASSPHRASE: usize = 6;
-#[repr(C)]
 #[derive(Default)]
 pub struct OwnedTlsFields {
     pub http: bool,

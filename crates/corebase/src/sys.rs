@@ -1071,6 +1071,7 @@ impl InterfaceList {
 
 /// `struct ifaddrs`'s leading fields, as glibc, musl and the BSDs (Apple's) lay them
 /// out: an entry of a list `getifaddrs` stored, whose fields are live while the list is.
+// `repr(C)`: the head of libc's `struct ifaddrs`, which `getifaddrs` fills.
 #[repr(C)]
 struct Entry<'a> {
     /// `ifa_next`: the list's next entry, none at its end.

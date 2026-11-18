@@ -7,7 +7,6 @@
 
 /// The socket TLS handshake state, shared by reactor storage and TLS operations. It
 /// keeps C's layout: the socket record native code shares holds it as `ssl_state`.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum SslState {
