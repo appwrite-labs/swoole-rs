@@ -41,7 +41,7 @@ mod vm;
 pub use asynchronous::php_swoole_set_aio_option;
 pub use entry::{module_entry, swr_v1_phpswoole_fatal_exit};
 pub use functions::{mime_type, zif_swoole_last_error};
-pub use implicit::{exit_status, sw_php_exit};
+pub use implicit::exit_status;
 pub use info::swr_v1_phpswoole_minfo;
 pub use interfaces::sys_warning;
 pub use memory::{received_string, zend_string_allocator};
