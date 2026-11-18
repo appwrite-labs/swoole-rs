@@ -311,6 +311,16 @@ pub fn attr_long(options: Option<&Value>, attribute: u32, default: zend_long) ->
         .map_or(default, Value::long)
 }
 
+/// PDO's integer option parser, including its type error for an invalid value.
+#[must_use]
+pub fn long_param(value: &Value) -> Option<zend_long> {
+    unsafe extern "C" {
+        safe fn pdo_get_long_param(output: &mut zend_long, value: &Value) -> bool;
+    }
+    let mut output = 0;
+    pdo_get_long_param(&mut output, value).then_some(output)
+}
+
 /// `pdo_get_bool_param`: the value as an attribute's bool, or none with a
 /// `TypeError` thrown.
 #[must_use]

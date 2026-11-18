@@ -1041,29 +1041,60 @@ pub extern "C" fn pdo_pgsql_server(handle: &Handle) -> Conn {
 }
 
 /// `++H->stmt_counter`: the next statement or cursor number.
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_next_stmt_id(handle: &Handle) -> u32 {
+fn next_stmt_id(handle: &Handle) -> u32 {
     let id = handle.stmt_counter.get().wrapping_add(1);
     handle.stmt_counter.set(id);
     id
 }
 
-/// `H->emulate_prepares` (`PDO::ATTR_EMULATE_PREPARES`).
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_emulate_prepares(handle: &Handle) -> bool {
-    handle.emulate_prepares.get()
+unsafe extern "C" {
+    safe fn pdo_pgsql_init_statement(stmt: &Stmt);
+    safe fn pdo_pgsql_name_statement(stmt: &Stmt, name: Text<'_>, cursor: bool);
+    safe fn pdo_pgsql_parse_statement(
+        stmt: &Stmt,
+        sql: &ZStr,
+        emulate: bool,
+        unbuffered: bool,
+    ) -> bool;
 }
 
-/// `H->disable_prepares` (`PDO::PGSQL_ATTR_DISABLE_PREPARES`).
+swoole_rs_zend::exports! {
+/// Install the statement and select cursor, emulated or native preparation
+/// before PDO rewrites its placeholders.
 #[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_disable_prepares(handle: &Handle) -> bool {
-    handle.disable_prepares.get()
+pub extern "C" fn pgsql_handle_preparer(dbh: &Dbh, sql: &ZStr, stmt: &Stmt, options: Option<&Value>) -> bool {
+    use swoole_rs_zend::sys::{
+        pdo_attribute_type_PDO_ATTR_CURSOR as CURSOR, pdo_cursor_type_PDO_CURSOR_FWDONLY as FORWARD,
+        pdo_cursor_type_PDO_CURSOR_SCROLL as SCROLL,
+    };
+    let Some(handle) = handle(dbh) else {return false};
+    pdo_pgsql_init_statement(stmt);
+    let cursor = pdo::attr_long(options, CURSOR, FORWARD.into()) == i64::from(SCROLL);
+    let mut emulate = cursor;
+    let mut direct = false;
+    if cursor {
+        let name = swoole_rs_zend::message!("pdo_crsr_{:08x}", next_stmt_id(handle));
+        pdo_pgsql_name_statement(stmt, name.as_cstr().into(), true);
+    } else {
+        emulate = pdo::attr_long(options, ATTR_EMULATE_PREPARES, handle.emulate_prepares.get().into()) == 1;
+        direct = pdo::attr_long(options, ATTR_DISABLE_PREPARES, handle.disable_prepares.get().into()) == 1;
+    }
+    emulate |= PHP_VERSION_ID < 80400 && PQprotocolVersion(handle.server) <= 2;
+    let unbuffered = PHP_VERSION_ID >= 80500 && options.and_then(Value::array)
+        .and_then(|opts| opts.index(ATTR_PREFETCH.into()))
+        .and_then(pdo::long_param)
+        .map_or_else(|| handle.lazy_fetch.get(), |value| value == 0);
+    let mut parsed = false;
+    if let Err(failure) = contain_with(||parsed=pdo_pgsql_parse_statement(stmt, sql, emulate, unbuffered)) {
+        failure.defer();
+        return false;
+    }
+    if parsed && !emulate && !direct {
+        let name = swoole_rs_zend::message!("pdo_stmt_{:08x}", next_stmt_id(handle));
+        pdo_pgsql_name_statement(stmt, name.as_cstr().into(), false);
+    }
+    parsed
 }
-
-/// `H->default_fetching_laziness` (PHP 8.5: `PDO::ATTR_PREFETCH` off).
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_lazy_fetch(handle: &Handle) -> bool {
-    handle.lazy_fetch.get()
 }
 
 /// `&H->lob_streams`: the C LOB code's table of open streams, null until its first.

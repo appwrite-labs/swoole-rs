@@ -26,13 +26,9 @@
 
 #define PHP_PDO_PGSQL_CONNECTION_FAILURE_SQLSTATE "08006"
 
-unsigned int pdo_pgsql_next_stmt_id(pdo_pgsql_db_handle *H);
-bool pdo_pgsql_emulate_prepares(pdo_pgsql_db_handle *H);
-bool pdo_pgsql_disable_prepares(pdo_pgsql_db_handle *H);
 HashTable **pdo_pgsql_lob_streams(pdo_pgsql_db_handle *H);
 zend_fcall_info_cache *pdo_pgsql_notice_callback(pdo_pgsql_db_handle *H);
 zend_fcall_info_cache *pdo_pgsql_replace_notice_callback(pdo_pgsql_db_handle *H, zend_fcall_info_cache *next);
-bool pdo_pgsql_lazy_fetch(pdo_pgsql_db_handle *H);
 pdo_pgsql_stmt **pdo_pgsql_running_stmt(pdo_pgsql_db_handle *H);
 
 extern const pdo_driver_t pdo_pgsql_driver;
