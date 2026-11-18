@@ -56,8 +56,8 @@ pub struct DescriptorOps {
     pub events: fn() -> i32,
     /// Add the wrapper to the thread's loop for `events`: whether it worked.
     pub add: fn(i32) -> bool,
-    /// Remove the wrapper, if any, from the loop.
-    pub del: fn(),
+    /// Remove the wrapper, if any, from `reactor`.
+    pub del: fn(crate::reactor::Running<'_>),
     pub installed: fn() -> bool,
     pub install: fn(),
     pub erase_end: fn(),
@@ -216,13 +216,13 @@ pub fn read(fd: i32, ops: &Ops) {
         Received::Nothing => {}
     }
 }
-/// The reactor is destroyed: this process removes its signalfd wrapper from it.
+/// `reactor` is destroyed: this process removes its signalfd wrapper from it.
 #[cfg(target_os = "linux")]
-pub fn destroyed(ops: &Ops) {
+pub fn destroyed(ops: &Ops, reactor: crate::reactor::Running<'_>) {
     if crate::process::signalfd::signalfd_owned()
         && let Some(descriptor) = ops.descriptor
     {
-        (descriptor.del)();
+        (descriptor.del)(reactor);
     }
 }
 /// The signal loop's exit condition: one event fewer, with upstream's unsigned wrap.

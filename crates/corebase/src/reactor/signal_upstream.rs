@@ -114,7 +114,7 @@ mod descriptor {
     use crate::CellExt;
     use crate::process::signal_loop::DescriptorOps;
     use crate::reactor::event_api::{
-        FdHandler, event_add, event_del, fd_handler, isset_handler, set_handlers,
+        FdHandler, event_add, fd_handler, isset_handler, set_handlers,
     };
     use crate::reactor::{OwnedSocket, SocketRecord};
     use core::cell::Cell;
@@ -154,8 +154,13 @@ mod descriptor {
             .unwrap_or(false)
     }
 
-    pub(super) fn del() {
-        with(|socket| _ = event_del(socket.socket()));
+    pub(super) fn del(reactor: crate::reactor::Running<'_>) {
+        with(|socket| {
+            let socket = socket.socket();
+            if !socket.read(|record| record.removed) {
+                _ = crate::reactor::reactor_upstream::reactor_del(reactor, socket);
+            }
+        });
     }
 
     pub(super) fn installed() -> bool {
@@ -172,8 +177,8 @@ mod descriptor {
         }
     }
 
-    fn destroyed() {
-        crate::process::signal_loop::destroyed(&OPS);
+    pub(super) fn destroyed(reactor: crate::reactor::Running<'_>) {
+        crate::process::signal_loop::destroyed(&OPS, reactor);
     }
 
     /// The signalfd's exit condition, which the reactor calls with its event count: it
@@ -238,6 +243,16 @@ pub fn set(signo: c_int, handler: Handler, safety: bool) -> Handler {
 #[must_use]
 pub fn get(signo: c_int) -> Handler {
     signal_loop::get(signo, &OPS)
+}
+
+/// `swoole_signal_clear()` as `reactor` is destroyed: the signalfd wrapper leaves
+/// `reactor` first, so freeing it doesn't reach for the thread's reactor.
+pub(crate) fn clear_destroyed(reactor: crate::reactor::Running<'_>) {
+    #[cfg(target_os = "linux")]
+    descriptor::destroyed(reactor);
+    #[cfg(not(target_os = "linux"))]
+    let _ = reactor;
+    clear();
 }
 
 /// `swoole_signal_clear()`.

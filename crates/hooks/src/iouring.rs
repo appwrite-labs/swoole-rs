@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicU32;
 use swoole_rs_corebase::constants::FdType;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::reactor::event_api::{swoole_event_is_available, swoole_event_is_running};
-use swoole_rs_corebase::reactor::{Events, SocketRecord, UringOps};
+use swoole_rs_corebase::reactor::{Events, Running, SocketRecord, UringOps};
 use swoole_rs_corebase::tls::event_socket::EventSocket;
 
 /// The thread's `Iouring`: the engine (none if the ring could not be created) and
@@ -183,12 +183,18 @@ fn submit() {
 }
 
 /// The reactor's destroy callback: `delete SwooleTG.iouring`.
-fn destroyed() {
+fn destroyed(reactor: Running<'_>) {
     let Some(iouring) = INSTANCE.take() else {
         return;
     };
-    // Off the reactor, keeping the fd, which the engine closes.
+    // Off `reactor`, keeping the fd, which the engine closes.
     if let Some(socket) = iouring.socket {
+        if !socket.removed() {
+            _ = swoole_rs_corebase::reactor::reactor_upstream::reactor_del(
+                reactor,
+                socket.socket(),
+            );
+        }
         socket.free(true);
     }
     // The engine goes with it, with nothing in flight as the loop has ended.

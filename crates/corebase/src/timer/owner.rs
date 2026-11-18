@@ -521,13 +521,12 @@ fn idle(_event_num: &mut usize) -> bool {
 }
 
 /// The reactor's destroy callback: frees this thread's timer, closing a
-/// selection a bailout left. `swoole_event_free` destroys the thread's reactor
-/// before it clears it, so the thread's reactor is the one being destroyed.
-fn destroyed() {
+/// selection a bailout of `reactor` left.
+fn destroyed(reactor: crate::reactor::Running<'_>) {
     let Some(timer) = crate::timer::wrapper::current() else {
         return;
     };
-    if event_api::swoole_event_bailed_out() {
+    if reactor.with(|state| state.fields.bailout) {
         timer.abandon();
     }
     crate::timer::wrapper::swoole_timer_free();
