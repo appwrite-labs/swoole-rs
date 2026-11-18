@@ -375,7 +375,8 @@ impl Ctx {
     /// context through another handle or pointer.
     #[inline]
     fn with<R>(self, f: impl FnOnce(&mut Context) -> R) -> R {
-        // SAFETY: a live context (the handle's invariant); the borrow ends with `f`.
+        // SAFETY: the handle keeps track of a live PHP Context containing the saved
+        // Zend VM state. Only this call accesses it until `f` returns.
         f(unsafe { &mut *self.ptr() })
     }
 
@@ -618,8 +619,8 @@ fn open(args: &Args, context: &mut Context) -> Option<Ctx> {
     this.set_co(Some(co));
     this.set_pcid(pcid);
     this.set_enable_scheduler(true);
-    // SAFETY: a new PHP context, the kind `on_yield` and `on_resume` take,
-    // which lives until `run` clears the task.
+    // SAFETY: on_yield and on_resume expect this PHP Context with its Zend VM
+    // state. It lives until run clears the task.
     unsafe { swoole_rs_corebase::coroutine::set_current_task(this.0.cast()) };
     if host::flag(host::FIBER_MOCK) {
         fiber_init(this);
@@ -682,8 +683,8 @@ fn notify_entry(ctx: Ctx) {
         let mut frame: zend_execute_data = swoole_rs_zend::zeroed();
         frame.opline = opcodes;
         frame.func = handler;
-        // SAFETY: the coroutine function outlives this notification, which
-        // restores the previous frame before this one goes out of scope.
+        // SAFETY: the zend_execute_data and its coroutine function stay live
+        // through the notification. unshow restores the previous frame.
         let running = Shown(unsafe { swr_zend_coroutine_set_frame(&raw mut frame) });
         fiber_switch_try_notify(origin(ctx), ctx);
         unshow(running);
@@ -870,13 +871,14 @@ mod tests {
         // Built at compile time and never dropped: releasing its zvals is Zend's,
         // which unit tests do not load.
         let mut context = mem::ManuallyDrop::new(const { Context::empty() });
-        let ctx = &raw mut *context;
-        let handle = Ctx(NonNull::new(ctx).unwrap());
-        assert_eq!(handle.vm().as_ptr(), unsafe { &raw mut (*ctx).vm });
-        assert_eq!(handle.call(), unsafe { &raw mut (*ctx).call });
-        assert_eq!(handle.return_value(), unsafe {
-            (&raw mut (*ctx).return_value).cast::<zval>()
-        });
+        let ctx = &mut *context;
+        let handle = Ctx(NonNull::from_mut(ctx));
+        assert_eq!(handle.vm().as_ptr(), &raw mut ctx.vm);
+        assert_eq!(handle.call(), &raw mut ctx.call);
+        assert_eq!(
+            handle.return_value(),
+            (&raw mut ctx.return_value).cast::<zval>()
+        );
     }
 
     #[test]
