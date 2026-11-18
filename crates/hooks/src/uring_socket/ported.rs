@@ -126,10 +126,11 @@ impl Sock {
             }
             // The test socket's record holds the session, as a socket's does, until
             // `drop`; the record lives as long as `self`.
-            let network = self.socket.0.socket.get().unwrap();
+            let network =
+                swoole_rs_corebase::reactor::Socket::from_ptr(self.socket.0.socket_ptr()).unwrap();
             network
                 .edit(|record| record.set_ssl(Some(crate::co_socket::record_ssl(session.cast()))));
-            self.held_ssl = swoole_rs_corebase::tls::Ssl::of(*network);
+            self.held_ssl = swoole_rs_corebase::tls::Ssl::of(network);
         }
     }
 
