@@ -47,13 +47,16 @@ pub struct Http2ResponsePlan {
     pub ready: bool,
 }
 
+/// RFC 7540 connection window before any `WINDOW_UPDATE`.
+pub const INITIAL_CONNECTION_WINDOW: u32 = 65_535;
+
 /// The process-wide defaults (`SW_HTTP2_DEFAULT_*`), indexed by setting id - 1:
 /// header table, push, concurrent streams, initial window, frame size, header list.
 static DEFAULT_SETTINGS: [AtomicU32; 6] = [
     AtomicU32::new(1 << 12),
     AtomicU32::new(0),
     AtomicU32::new(u32::MAX),
-    AtomicU32::new((1 << 16) - 1),
+    AtomicU32::new(INITIAL_CONNECTION_WINDOW),
     AtomicU32::new(1 << 14),
     AtomicU32::new(u32::MAX),
 ];

@@ -74,12 +74,6 @@ PENDING_PORTS = {
     4929: [
         'swoole_server/base/connection_bounds_after_other_worker_close.phpt',
     ],
-    4930: [
-        'swoole_http2_client_coro/flow_control_connection_window.phpt',
-        'swoole_http2_client_coro/goaway_frame_length.phpt',
-        'swoole_http2_server/flow_control_connection_window.phpt',
-        'swoole_http_client_coro/response_eof_framing.phpt',
-    ],
     4931: [
         'swoole_runtime/stream_socket_server_close.phpt',
         'swoole_socket_coro/close_listener.phpt',

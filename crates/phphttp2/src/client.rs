@@ -346,7 +346,7 @@ impl Client {
             local,
             remote: Cell::default(),
             remote_window: Cell::new(0),
-            local_window: Cell::new(local.init_window_size),
+            local_window: Cell::default(),
             streams: Cell::default(),
             headers: Cell::default(),
             queue: Cell::default(),
@@ -460,6 +460,8 @@ impl Client {
         self.stream_id.set(1);
         let remote = sw_rs_http2_default_settings();
         self.remote.set(remote);
+        self.local_window
+            .set(swoole_rs_http2::INITIAL_CONNECTION_WINDOW);
         self.remote_window.set(remote.init_window_size);
         self.hpack.replace(Some((
             Decoder::default(),
