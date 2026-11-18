@@ -596,7 +596,7 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
     swoole_set_worker_id(worker.id());
     set_worker_type(WorkerType::Event);
     crate::worker_methods::init_event_worker(serv, worker);
-    if swoole_rs_corebase::reactor::swoole_event_init(0) < 0 {
+    if swoole_rs_corebase::reactor::swoole_event_init(0).is_err() {
         return false;
     }
     worker_signal_init(serv);

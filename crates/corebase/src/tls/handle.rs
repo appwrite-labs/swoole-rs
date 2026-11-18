@@ -221,6 +221,26 @@ pub struct SslFailure {
     pub code: c_int,
 }
 
+pub(super) fn shutdown_result(
+    returned: c_int,
+    repaired: bool,
+    error: impl FnOnce() -> c_int,
+) -> Result<(), SslFailure> {
+    let check = if repaired {
+        returned < 0
+    } else {
+        returned != 1 && peek_error() != 0
+    };
+    if check {
+        Err(SslFailure {
+            returned,
+            code: error(),
+        })
+    } else {
+        Ok(())
+    }
+}
+
 /// Clears this thread's OpenSSL error queue. Usually it is already empty, and the peek
 /// is a quarter of the clear, which frees and zeroes all sixteen slots (#4283).
 pub fn clear_errors() {
@@ -440,10 +460,12 @@ impl<'a> Ssl<'a> {
         self.step(SSL_do_handshake(self))
     }
 
-    /// `SSL_shutdown`.
-    #[must_use]
-    pub fn shutdown(self) -> c_int {
-        SSL_shutdown(self)
+    /// Run the shutdown step with the socket's half-close policy.
+    /// # Errors
+    /// Returns the OpenSSL error class when the step requires error handling.
+    pub(crate) fn shutdown(self, repaired: bool) -> Result<(), SslFailure> {
+        let returned = SSL_shutdown(self);
+        shutdown_result(returned, repaired, || self.error(returned))
     }
 
     /// `SSL_in_init`: whether the handshake is still running.

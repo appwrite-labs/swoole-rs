@@ -280,7 +280,7 @@ pub unsafe fn print_socket_bound_error(fd: c_int, event: &CStr, bound_cid: c_lon
 unsafe extern "C-unwind" fn swoole_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long {
     let fresh = !crate::reactor::event_api::swoole_event_is_available();
     if fresh {
-        if crate::reactor::swoole_event_init(SW_EVENTLOOP_WAIT_EXIT) < 0 {
+        if crate::reactor::swoole_event_init(SW_EVENTLOOP_WAIT_EXIT).is_err() {
             return -1;
         }
         activate();

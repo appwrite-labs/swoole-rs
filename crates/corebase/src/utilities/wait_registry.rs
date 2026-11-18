@@ -211,13 +211,12 @@ fn with<T>(
     run(registry, word)
 }
 
-/// -1 with a nonzero error recorded as the last error.
+/// Record a nonzero registry error before returning to the caller.
 #[cfg(not(target_os = "linux"))]
-fn failed(code: c_int) -> c_int {
+fn record_error(code: c_int) {
     if code != 0 {
         crate::log::set_last_error(code);
     }
-    -1
 }
 
 /// `sw_atomic_futex_wait` without futex: take the word's token (1 -> 0),
@@ -226,7 +225,7 @@ fn failed(code: c_int) -> c_int {
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn registry_wait(word: &AtomicU32, timeout: f64) -> bool {
     with(word, |registry, word| registry.wait(word, timeout))
-        .map_err(failed)
+        .map_err(record_error)
         .is_ok()
 }
 
@@ -236,7 +235,7 @@ pub(crate) fn registry_wait(word: &AtomicU32, timeout: f64) -> bool {
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn registry_wakeup(word: &AtomicU32, n: c_int) -> Option<u32> {
     with(word, |registry, word| registry.wakeup(word, n))
-        .map_err(failed)
+        .map_err(record_error)
         .ok()
         .map(|notified| u32::try_from(notified).unwrap_or(0))
 }

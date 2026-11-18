@@ -114,7 +114,7 @@ pub(crate) fn start_worker_threads(serv: view::Server<'_>) -> bool {
         spawn(serv, tasks + workers + id, WorkerType::User);
     }
     spawn(serv, manager_thread_id(serv), WorkerType::Manager);
-    if swoole_rs_corebase::reactor::swoole_event_init(0) < 0 {
+    if swoole_rs_corebase::reactor::swoole_event_init(0).is_err() {
         return false;
     }
     let reactor = Reactor::thread();

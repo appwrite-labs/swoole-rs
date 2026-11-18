@@ -203,6 +203,6 @@ impl Reactor {
     }
     /// `reactor->wait()`: whether the loop ended without an error.
     pub(crate) fn wait(self) -> bool {
-        reactor_wait(self.handle()) == 0
+        reactor_wait(self.handle()).is_ok()
     }
 }

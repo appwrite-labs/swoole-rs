@@ -1317,12 +1317,22 @@ pub fn kill(pid: pid_t, signo: c_int) -> std::io::Result<()> {
     status_result(c::kill(pid, signo))
 }
 
-/// `getpriority(2)`: -1 is a priority too, so the caller clears errno first.
-#[must_use]
-pub fn getpriority(which: c_int, who: libc::id_t) -> c_int {
+/// `getpriority(2)`, including a successful priority of -1.
+///
+/// # Errors
+/// The syscall's errno.
+pub fn getpriority(which: c_int, who: libc::id_t) -> std::io::Result<c_int> {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     let which = which.cast_unsigned();
-    c::getpriority(which, who)
+    set_errno(0);
+    let priority = c::getpriority(which, who);
+    if priority == -1 {
+        let code = errno();
+        if code != 0 {
+            return Err(std::io::Error::from_raw_os_error(code));
+        }
+    }
+    Ok(priority)
 }
 
 /// `setpriority(2)`.
