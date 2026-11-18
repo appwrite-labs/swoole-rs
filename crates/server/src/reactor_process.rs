@@ -191,12 +191,11 @@ fn add_pipes(reactor: Reactor, worker: Worker<'_>) -> bool {
 }
 
 /// `ReactorProcess_onClose`: the reactor's default error handler.
-fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_close(reactor: Running<'_>, event: &mut Event) -> bool {
     let reactor = Reactor::running(reactor);
-    let closed = reactor
+    reactor
         .server()
-        .is_some_and(|serv| close(serv, reactor, event));
-    crate::conn_io::status(closed)
+        .is_some_and(|serv| close(serv, reactor, event))
 }
 
 /// The peer closed (or errored) the connection of `event`: closed now when it already

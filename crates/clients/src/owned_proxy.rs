@@ -4,8 +4,9 @@ use std::ffi::{CStr, c_int};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as NOTICE;
 use swoole_rs_corebase::{ProxyState, log, net_types::AddressStorage};
+pub use swoole_rs_protocols::SocksConfig;
 use swoole_rs_protocols::{
-    ConnectRefusal, SocksConfig, SocksError, SocksSend, socks_auth, socks_config, socks_connect,
+    ConnectRefusal, SocksError, SocksSend, socks_auth, socks_config, socks_connect,
     socks_negotiate, socks_strerror, socks_transition,
 };
 
@@ -212,7 +213,7 @@ pub fn strerror(code: c_int) -> &'static CStr {
 /// `int Socks5Proxy::admit(size_t, size_t)`: `create`'s credential check, with
 /// upstream's notice when one is too long.
 #[must_use]
-pub fn admit(user_length: usize, password_length: usize) -> c_int {
+pub fn admit(user_length: usize, password_length: usize) -> SocksConfig {
     let config = socks_config(user_length, password_length);
     if config == SocksConfig::Refused {
         log::error_log(
@@ -222,12 +223,7 @@ pub fn admit(user_length: usize, password_length: usize) -> c_int {
             format_args!("SOCKS5 username or password is too long, max length is 250 bytes"),
         );
     }
-    // Upstream's codes: 0 refused, 1 anonymous, 2 both credentials.
-    match config {
-        SocksConfig::Refused => 0,
-        SocksConfig::Anonymous => 1,
-        SocksConfig::Credentials => 2,
-    }
+    config
 }
 
 #[cfg(test)]
@@ -253,7 +249,7 @@ mod tests {
     #[test]
     fn socks5_dns_tunnel_target_host_max_length() {
         log::capture::install();
-        assert_eq!(admit(0, 0), 1);
+        assert_eq!(admit(0, 0), SocksConfig::Anonymous);
         let owner = ProxyState::new(true);
         let texts: [&[u8]; 3] = [b"127.0.0.1", b"", b""];
         assert_eq!(owner.configure(texts, 1080, false, 1), Ok(()));
@@ -281,8 +277,8 @@ mod tests {
         let owner = ProxyState::new(true);
         let texts: [&[u8]; 3] = [b"proxy", b"user", b"pass"];
         assert_eq!(owner.configure(texts, 1080, true, 1), Ok(()));
-        assert_eq!(admit(4, 4), 2);
-        assert_eq!(admit(251, 0), 0);
+        assert_eq!(admit(4, 4), SocksConfig::Credentials);
+        assert_eq!(admit(251, 0), SocksConfig::Refused);
         let p = &Socks5Proxy::new(&owner);
         assert_eq!(pack_negotiate_request(p), Some(3));
         assert_eq!(owner.fields().method, 2);

@@ -754,7 +754,7 @@ fn send_async_1() {
     sock.free();
 }
 
-fn send_async_2_read(_: swoole_rs_ffi::Running<'_>, event: &mut swoole_rs_ffi::Event) -> c_int {
+fn send_async_2_read(_: swoole_rs_ffi::Running<'_>, event: &mut swoole_rs_ffi::Event) -> bool {
     let socket = Socket(
         event
             .socket()
@@ -766,7 +766,7 @@ fn send_async_2_read(_: swoole_rs_ffi::Running<'_>, event: &mut swoole_rs_ffi::E
     let n = socket.recv_sync(&mut buf, 0);
     assert!(n > 0);
     assert!(contains(&buf[..n as usize], TEST_HTTP_EXPECT));
-    0
+    true
 }
 
 fn send_async_2() {

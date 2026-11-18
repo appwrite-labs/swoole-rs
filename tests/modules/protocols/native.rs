@@ -706,7 +706,7 @@ fn mqtt_candidate(packet: &[u8]) -> (isize, u32) {
         None,
         &mut pl,
     );
-    (length, pl.header_len)
+    (length.map_or(-1, usize::cast_signed), pl.header_len)
 }
 
 /// The pinned `mqtt::get_package_length` over `packet`.
@@ -974,7 +974,7 @@ fn candidate_create(
     password: &[u8],
 ) -> Result<Option<Box<ProxyState>>, i32> {
     let config = swoole_rs_clients::owned_proxy::admit(user.len(), password.len());
-    if config == 0 {
+    if config == swoole_rs_clients::owned_proxy::SocksConfig::Refused {
         return Ok(None);
     }
     let proxy = ProxyState::new(true);
@@ -984,7 +984,7 @@ fn candidate_create(
         fields.dns_tunnel = 1;
         fields.socket_type = socket_type;
     });
-    if config == 2 {
+    if config == swoole_rs_clients::owned_proxy::SocksConfig::Credentials {
         set &= proxy.set_string(1, user) & proxy.set_string(2, password);
     }
     if set { Ok(Some(proxy)) } else { Err(-2) }

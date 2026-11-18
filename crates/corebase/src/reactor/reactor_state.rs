@@ -350,9 +350,7 @@ pub fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> OwnedReactor {
     }
     owner.fields.timeout_msec = -1;
     owner.fields.close = Some(crate::tls::reactor_write::reactor_close);
-    owner.handlers.defaults[0].set(Some(|reactor, event| {
-        crate::tls::reactor_write::reactor_writable_callback(reactor, event)
-    }));
+    owner.handlers.defaults[0].set(Some(crate::tls::reactor_write::reactor_writable_callback));
     let reactor = crate::reactor::Running::leak(owner);
     crate::hook::call(crate::hook::Hook::ReactorCreate(reactor));
     // The hook has returned.

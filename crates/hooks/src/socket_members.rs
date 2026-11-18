@@ -66,24 +66,24 @@ fn on_ready(event: &Event, kind: Events) {
 
 /// `Socket::readable_event_callback(reactor, event)`, registered for
 /// `SW_FD_CO_SOCKET` during reactor initialization.
-pub fn readable_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
+pub fn readable_event_callback(_: Running<'_>, event: &mut Event) -> bool {
     on_ready(event, Events::READ);
-    0
+    true
 }
 
 /// `Socket::writable_event_callback(reactor, event)`.
-pub fn writable_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
+pub fn writable_event_callback(_: Running<'_>, event: &mut Event) -> bool {
     on_ready(event, Events::WRITE);
-    0
+    true
 }
 
 /// `Socket::error_event_callback(reactor, event)`: wakes the writer, then the
 /// reader unless the writer closed the socket; the `network::Socket` outlives the wake-ups.
-pub fn error_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
+pub fn error_event_callback(_: Running<'_>, event: &mut Event) -> bool {
     if let Some((socket, source)) = event_socket(event) {
         error_event(socket, source);
     }
-    0
+    true
 }
 
 /// What `accept`'s setup steps act on: the listening socket, its wait's timeout and
@@ -785,17 +785,17 @@ mod tests {
         let mut co: c_long = 3;
         object.bind(Events::READ, &raw mut co);
         let mut event = object.event();
-        assert_eq!(
-            readable_event_callback(unsafe { Running::new(core::ptr::null_mut()) }, &mut event),
-            0
-        );
+        assert!(readable_event_callback(
+            unsafe { Running::new(core::ptr::null_mut()) },
+            &mut event
+        ));
         assert_eq!(object.record().err_code.get(), 0);
         assert_eq!(take(), ["last-error:0", "resume:3"]);
         // Nobody writes: a writable event wakes no one.
-        assert_eq!(
-            writable_event_callback(unsafe { Running::new(core::ptr::null_mut()) }, &mut event),
-            0
-        );
+        assert!(writable_event_callback(
+            unsafe { Running::new(core::ptr::null_mut()) },
+            &mut event
+        ));
         assert_eq!(take(), ["last-error:0"]);
     }
 

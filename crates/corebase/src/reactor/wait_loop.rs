@@ -73,12 +73,6 @@ impl Event {
         }
     }
 
-    /// An event with no socket, which the wait loop fills.
-    #[cfg(test)]
-    pub(crate) const fn empty() -> Self {
-        Self::of(0, 0, 0, None)
-    }
-
     #[must_use]
     pub const fn fd(&self) -> c_int {
         self.fd
@@ -469,7 +463,7 @@ fn handle(ops: &Loop<'_>, event: &mut Event, kind: Table, fd_type: c_int) -> boo
     };
     // The handler may change the event, which the next handler of this socket sees; a
     // nested wait prepares its own.
-    handler(ops.reactor, event) >= 0
+    handler(ops.reactor, event)
 }
 
 /// Fills the event for a ready socket, as each upstream backend did: `fd` is poll's entry
@@ -560,14 +554,14 @@ mod tests {
         }
     }
 
-    fn read(_: crate::reactor::Running<'_>, event: &mut Event) -> c_int {
+    fn read(_: crate::reactor::Running<'_>, event: &mut Event) -> bool {
         effect("read");
         let mut byte = 0u8;
         assert_eq!(
             unsafe { libc::read(event.fd, (&raw mut byte).cast(), 1) },
             1
         );
-        0
+        true
     }
 
     /// The pinned loops' before/begin/wait/dispatch/end frame, `once`, `running` and the

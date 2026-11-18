@@ -470,13 +470,14 @@ mod tests {
     }
 
     /// A stub length function, each `N` a distinct body and address.
+    #[expect(clippy::unnecessary_wraps, reason = "a `GetPackageLength`")]
     pub(super) fn length<const N: u8>(
         _: &Protocol,
         _: Option<u8>,
         _: Option<std::rc::Rc<dyn core::any::Any>>,
         _: &mut PacketLength,
-    ) -> isize {
-        N.into()
+    ) -> Option<usize> {
+        Some(N.into())
     }
 
     /// A length function's address, 0 for none.

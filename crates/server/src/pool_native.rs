@@ -218,13 +218,13 @@ fn worker_exit() {
 }
 
 /// `ProcessPool::recv_packet`: the event loop's pipe handler under the stream protocol.
-fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
+fn recv_packet(_: Running<'_>, event: &mut Event) -> bool {
     let Some(pool) = LOOP_POOL.get() else {
-        return 0;
+        return true;
     };
     let mut packet = pool.take_ipc_packet();
     if packet.is_empty() {
-        return 0;
+        return true;
     }
     let size = packet.len().min(pool.max_packet_size() as usize);
     let n = swoole_rs_corebase::sys::read(
@@ -245,17 +245,17 @@ fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
     let read = packet.get(..n.unwrap_or(0)).unwrap_or_default();
     pool.call_on_message(&mut RecvData::new(info, read));
     pool.restore_ipc_packet(packet);
-    0
+    true
 }
 
 /// `ProcessPool::recv_message`: the event loop's pipe handler under the message protocol.
-fn recv_message(_: Running<'_>, event: &mut Event) -> c_int {
+fn recv_message(_: Running<'_>, event: &mut Event) -> bool {
     if let Some(pool) = LOOP_POOL.get()
         && bus_read(pool, event.socket()) > Some(0)
     {
         bus_deliver(pool);
     }
-    0
+    true
 }
 
 /// `ProcessPool::run_with_*_protocol` and `run_async`: the worker loop.

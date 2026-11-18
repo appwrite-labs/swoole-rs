@@ -415,7 +415,7 @@ unsafe fn set_handler() {
 }
 
 /// wait's and write's handler: one "hello world" datagram, then the socket leaves.
-fn read_hello(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn read_hello(reactor: Running<'_>, event: &mut Event) -> bool {
     let mut buffer = [0u8; 16];
     // SAFETY: the event's socket, live during dispatch.
     unsafe {
@@ -428,7 +428,7 @@ fn read_hello(reactor: Running<'_>, event: &mut Event) -> c_int {
         );
         del(reactor, socket);
     }
-    SW_OK
+    true
 }
 
 unsafe fn wait() {
@@ -583,7 +583,7 @@ unsafe fn writev() {
 }
 
 /// write_2m's handler: fill the thread buffer until DATA_SIZE bytes arrived.
-fn read_2m(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn read_2m(reactor: Running<'_>, event: &mut Event) -> bool {
     // SAFETY: the event's socket and the thread buffer, live during dispatch.
     unsafe {
         let tg_buf = swoole_rs_ffi::thread_buffer().cast::<StringBuffer>();
@@ -594,7 +594,7 @@ fn read_2m(reactor: Running<'_>, event: &mut Event) -> c_int {
             (*tg_buf).size - (*tg_buf).length,
         );
         if n <= 0 {
-            return SW_ERR;
+            return false;
         }
         // `String::grow`: count the bytes read, doubling a buffer they fill.
         (*tg_buf).length += n as usize;
@@ -606,7 +606,7 @@ fn read_2m(reactor: Running<'_>, event: &mut Event) -> c_int {
             del(reactor, socket);
         }
     }
-    SW_OK
+    true
 }
 
 unsafe fn write_2m() {
@@ -686,7 +686,7 @@ unsafe fn bad_fd() {
     }
 }
 
-fn pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn pipe_read(reactor: Running<'_>, event: &mut Event) -> bool {
     let mut buf = [0u8; 1024];
     // SAFETY: the event's socket, live during dispatch.
     unsafe {
@@ -696,23 +696,23 @@ fn pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
         expect_eq!(&buf[..n.max(0) as usize], PKT);
         del(reactor, socket);
     }
-    SW_OK
+    true
 }
 
-fn pipe_write(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn pipe_write(reactor: Running<'_>, event: &mut Event) -> bool {
     // SAFETY: the event's socket, live during dispatch.
     unsafe {
         let socket = ev_socket(event);
         expect_eq!(sock_write(socket, PKT), PKT.len() as isize);
         del(reactor, socket);
     }
-    SW_OK
+    true
 }
 
-fn count_write(_: Running<'_>, event: &mut Event) -> c_int {
+fn count_write(_: Running<'_>, event: &mut Event) -> bool {
     // SAFETY: the socket's object is reactor_test_func's write_count.
     unsafe { *(*ev_socket(event)).fields.object.cast::<c_int>() += 1 };
-    SW_OK
+    true
 }
 
 /// Upstream's reactor_test_func.
@@ -791,7 +791,7 @@ struct PollSocketState {
     replacement_count: c_int,
 }
 
-fn reuse_read(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn reuse_read(reactor: Running<'_>, event: &mut Event) -> bool {
     // SAFETY: the socket's object is the case's PollSocketState.
     unsafe {
         let socket = ev_socket(event);
@@ -814,13 +814,13 @@ fn reuse_read(reactor: Running<'_>, event: &mut Event) -> c_int {
         (*state.replacement_socket).fields.object = (&raw mut state.replacement_count).cast();
         expect_eq!(add(reactor, state.replacement_socket, SW_EVENT_READ), SW_OK);
     }
-    SW_OK
+    true
 }
 
-fn count_user(_: Running<'_>, event: &mut Event) -> c_int {
+fn count_user(_: Running<'_>, event: &mut Event) -> bool {
     // SAFETY: the socket's object is the state's replacement_count.
     unsafe { *(*ev_socket(event)).fields.object.cast::<c_int>() += 1 };
-    SW_OK
+    true
 }
 
 unsafe fn poll_readiness_after_fd_reuse() {
@@ -1145,12 +1145,12 @@ unsafe fn set_fd() {
     }
 }
 
-fn error_event_handler(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn error_event_handler(reactor: Running<'_>, event: &mut Event) -> bool {
     // SAFETY: the reactor's ptr is test_error_event's retval.
     unsafe {
         expect_eq!(del(reactor, ev_socket(event)), SW_OK);
         reactor.set_running(false);
-        *reactor.object().cast::<c_int>()
+        *reactor.object().cast::<c_int>() >= SW_OK
     }
 }
 
@@ -1291,7 +1291,7 @@ fn write_pkt(pair: *mut c_void) {
     unsafe { sock_write(sock(&*pair.cast::<SocketPair>(), true), PKT) };
 }
 
-fn fail_read(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn fail_read(reactor: Running<'_>, event: &mut Event) -> bool {
     let mut buffer = [0u8; 16];
     // SAFETY: the event's socket, live during dispatch.
     unsafe {
@@ -1303,10 +1303,10 @@ fn fail_read(reactor: Running<'_>, event: &mut Event) -> c_int {
 
         expect_eq!(event_num(reactor), 0);
     }
-    SW_ERR
+    false
 }
 
-fn fail_write(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn fail_write(reactor: Running<'_>, event: &mut Event) -> bool {
     // SAFETY: the socket's object is handle_fail's UnixSocket.
     unsafe {
         let socket = ev_socket(event);
@@ -1314,7 +1314,7 @@ fn fail_write(reactor: Running<'_>, event: &mut Event) -> c_int {
         let pair = (*socket).fields.object;
         assert!(swoole_rs_ffi::add_fn(10, false, move || write_pkt(pair)).is_some());
     }
-    SW_ERR
+    false
 }
 
 unsafe fn handle_fail() {

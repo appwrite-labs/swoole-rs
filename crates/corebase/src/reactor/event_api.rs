@@ -264,8 +264,8 @@ pub trait FdHandler {
 pub fn fd_handler<H: FdHandler>(
     _: crate::reactor::Running<'_>,
     event: &mut crate::reactor::Event,
-) -> c_int {
-    if H::handle(event.fd()) { 0 } else { -1 }
+) -> bool {
+    H::handle(event.fd())
 }
 
 /// A reactor cycle task: `Reactor::future_task` or `idle_task`. The reactor

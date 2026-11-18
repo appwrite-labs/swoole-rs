@@ -488,13 +488,14 @@ mod tests {
     use swoole_rs_corebase::net_types::PacketLength;
 
     /// The mock settings' `package_length_func` callback.
+    #[expect(clippy::unnecessary_wraps, reason = "a `GetPackageLength`")]
     fn length_func(
         _: &Protocol,
         _: Option<u8>,
         _: Option<std::rc::Rc<dyn std::any::Any>>,
         _: &mut PacketLength,
-    ) -> isize {
-        11
+    ) -> Option<usize> {
+        Some(11)
     }
 
     /// A settings value, as PHP converts it.

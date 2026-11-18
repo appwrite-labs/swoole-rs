@@ -6,10 +6,10 @@ use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::marker::PhantomData;
 
-/// `ReactorHandler`: `int (*)(Reactor *, Event *)`. The loop lends the handler its
+/// `ReactorHandler`: `int (*)(Reactor *, Event *)`, whose `SW_OK` is true. The loop lends the handler its
 /// reactor and the event it prepared for this call. Only Rust registers and calls one.
 /// A handler runs only for the fd types and reactors it was registered with.
-pub type Handler = fn(Running<'_>, &mut Event) -> c_int;
+pub type Handler = fn(Running<'_>, &mut Event) -> bool;
 
 /// How error readiness is dispatched for a descriptor type.
 #[derive(Clone, Copy)]
@@ -348,21 +348,35 @@ pub fn swr_v1_reactor_handlers_set_default(
 mod tests {
     use super::*;
 
-    fn one(_: Running<'_>, _: &mut Event) -> c_int {
-        1
-    }
-    fn two(_: Running<'_>, _: &mut Event) -> c_int {
-        2
-    }
-    fn three(_: Running<'_>, _: &mut Event) -> c_int {
-        3
+    thread_local! {
+        /// The handler that ran last: 0 for none.
+        static RAN: Cell<usize> = const { Cell::new(0) };
     }
 
-    fn call(handler: Option<Handler>) -> c_int {
-        let mut event = Event::empty();
-        handler.map_or(0, |h| {
-            h(unsafe { Running::new(std::ptr::null_mut()) }, &mut event)
-        })
+    fn one(_: Running<'_>, _: &mut Event) -> bool {
+        RAN.set(1);
+        true
+    }
+    fn two(_: Running<'_>, _: &mut Event) -> bool {
+        RAN.set(2);
+        true
+    }
+    fn three(_: Running<'_>, _: &mut Event) -> bool {
+        RAN.set(3);
+        true
+    }
+
+    /// Which of the handlers above `handler` is, by running it: 0 for none.
+    fn call(handler: Option<Handler>) -> usize {
+        RAN.set(0);
+        if let Some(handler) = handler {
+            let mut event = Event::of(0, 0, 0, None);
+            assert!(handler(
+                unsafe { Running::new(std::ptr::null_mut()) },
+                &mut event
+            ));
+        }
+        RAN.get()
     }
 
     #[test]

@@ -10,6 +10,6 @@ pub const SOCKET: [Handler; 3] = [
 ];
 
 #[cfg(feature = "iouring")]
-pub const IOURING: Option<Handler> = Some(|_, _| if crate::iouring::ready() { 0 } else { -1 });
+pub const IOURING: Option<Handler> = Some(|_, _| crate::iouring::ready());
 #[cfg(not(feature = "iouring"))]
 pub const IOURING: Option<Handler> = None;

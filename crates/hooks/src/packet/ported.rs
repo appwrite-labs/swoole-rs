@@ -149,7 +149,7 @@ fn package_length(_: Co, n: u32, header: &mut u32) -> Length {
         let length = s.lengths[s.parsed.min(s.lengths.len() - 1)];
         s.parsed += 1;
         s.trace.push(format!("trace:{length}:{n}"));
-        Length::of(length)
+        Length::of(usize::try_from(length).ok())
     })
 }
 

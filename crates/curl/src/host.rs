@@ -72,14 +72,14 @@ const CO_HAS_BEEN_BOUND: c_int = 10002;
 fn on_event<const BITMASK: c_int>(
     _: swoole_rs_corebase::reactor::Running<'_>,
     event: &mut swoole_rs_corebase::reactor::Event,
-) -> c_int {
+) -> bool {
     let Some(socket) = event.socket() else {
-        return -1;
+        return false;
     };
     if let Some(owner) = socket.read(SocketFields::shared_owner::<crate::Socket>) {
         crate::socket_event(&owner, BITMASK);
     }
-    0
+    true
 }
 
 pub(crate) fn event_available() -> bool {

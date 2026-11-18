@@ -421,14 +421,8 @@ pub(crate) fn warn_sys(message: &str, error: c_int) {
     ));
 }
 
-/// `swoole_set_last_error(code)`.
-pub(crate) fn set_last_error(code: c_int) {
-    swoole_rs_corebase::log::set_last_error(code);
-}
-
-pub(crate) fn last_error() -> c_int {
-    swoole_rs_corebase::log::last_error()
-}
+/// `swoole_set_last_error(code)` and `swoole_get_last_error()`.
+pub(crate) use swoole_rs_corebase::log::{last_error, set_last_error};
 
 /// `errCode = code`.
 pub(crate) fn set_err_code(object: Obj, code: c_int) {
@@ -990,10 +984,9 @@ fn recv_length(
         frame
             .buffer
             .truncate(have + usize::try_from(read).unwrap_or(0));
-        let Some(measured) = bailed(
-            conn.cli()
-                .run(|h| state::package_length(h, &frame.buffer) as i64),
-        ) else {
+        let Some(measured) = bailed(conn.cli().run(|h| {
+            state::package_length(h, &frame.buffer).map_or(-1, usize::cast_signed) as i64
+        })) else {
             call.set_bool(false);
             return None;
         };

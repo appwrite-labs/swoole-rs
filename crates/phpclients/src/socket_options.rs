@@ -25,17 +25,16 @@ const OPERATION_NOT_SUPPORT: i64 =
     swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as i64;
 
 /// `open_fastcgi_protocol`'s length: the record's content and padding lengths
-/// plus its 8-byte header, or -1 past 65535.
+/// plus its 8-byte header, or `None` past 65535.
 fn fastcgi_length(
     _protocol: &Protocol,
     _: Option<u8>,
     _owner: Option<std::rc::Rc<dyn std::any::Any>>,
     pl: &mut PacketLength,
-) -> isize {
+) -> Option<usize> {
     pl.bytes()
         .first_chunk::<8>()
         .map_or(Some(0), |&p| fastcgi_record_length(p))
-        .map_or(-1, usize::cast_signed)
 }
 
 fn fastcgi_record_length(p: [u8; 8]) -> Option<usize> {

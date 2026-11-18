@@ -142,11 +142,11 @@ impl event_api::Deferred for Completion {
     fn dispose(self) {}
 }
 /// The `SW_FD_CARES` read and write handlers: the wrapper's object is its query.
-fn readable(_: Running<'_>, event: &mut Event) -> i32 {
-    if process(event, false) { 0 } else { -1 }
+fn readable(_: Running<'_>, event: &mut Event) -> bool {
+    process(event, false)
 }
-fn writable(_: Running<'_>, event: &mut Event) -> i32 {
-    if process(event, true) { 0 } else { -1 }
+fn writable(_: Running<'_>, event: &mut Event) -> bool {
+    process(event, true)
 }
 /// Hands the ready descriptor to its query's channel: false for an event that has none.
 fn process(event: &Event, write: bool) -> bool {
@@ -305,7 +305,7 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
     let status = swrs_cares_init(
         &mut channel,
         c"fb".into(),
-        millis(timeout),
+        (timeout * 1000.0).c_cast::<i32>(),
         swoole_rs_corebase::swr_v1_core_dns_tries(),
         Some(socket_state),
         data,
@@ -375,9 +375,6 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
     // The channel and its callbacks are gone: the query goes, once.
     with_queries(|queries| queries.retain(|&(query, _)| query != id));
     query.results.take()
-}
-fn millis(timeout: f64) -> i32 {
-    (timeout * 1000.0).c_cast::<i32>()
 }
 
 #[cfg(test)]

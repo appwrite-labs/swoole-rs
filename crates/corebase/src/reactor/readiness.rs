@@ -67,22 +67,22 @@ fn fired(event: &Event) -> (*mut c_void, c_int) {
     (object, event.fd())
 }
 
-fn poll_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
+fn poll_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> bool {
     let (task, fd) = fired(event);
     // SAFETY: a `SW_FD_CO_POLL` socket, whose object is its parked poll task.
     let task = unsafe { &*task.cast::<crate::reactor::socket_poll::Task<'_>>() };
     crate::reactor::socket_poll::ready(task, fd, Events::from_bits(KIND));
-    0
+    true
 }
 
-fn waiter_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
+fn waiter_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> bool {
     let (waiter, _) = fired(event);
     // SAFETY: a `SW_FD_CO_EVENT` socket, whose object is its parked waiter.
     let waiter = unsafe { &*waiter.cast::<crate::reactor::wait_event::Waiter>() };
     if let Some(co) = event_ready(waiter, Events::from_bits(KIND)) {
         wake(co);
     }
-    0
+    true
 }
 
 /// Registers the coroutine socket (`Socket::init_reactor`), poll and event-waiter
@@ -205,17 +205,14 @@ mod tests {
         };
         for events in [Events::WRITE, Events::READ] {
             let ready = handler(FdType::SW_FD_CO_EVENT, events);
-            assert_eq!(
-                unsafe { ready(Running::new(core::ptr::null_mut()), &mut event) },
-                0
-            );
+            assert!(unsafe { ready(Running::new(core::ptr::null_mut()), &mut event) });
         }
         Ok(())
     }
 
     #[test]
     fn registers_nine_handlers_and_wakes_a_waiter_once() {
-        register([|_, _| 0; 3], set);
+        register([|_, _| true; 3], set);
         assert_eq!(HANDLERS.with_borrow(Vec::len), 9);
         for fd_type in [
             FdType::SW_FD_CO_SOCKET,
