@@ -210,8 +210,10 @@ pub extern "C-unwind" fn reactor_writable_callback(
     if flushed { 0 } else { -1 }
 }
 
-/// `void Reactor::drain_write_buffer(Socket *socket)`.
-pub fn reactor_drain_write_buffer(reactor: Running<'_>, record: Heap<'static>) {
+/// `void Reactor::drain_write_buffer(Socket *socket)`. The event names `record` as
+/// the registry does, for this call.
+pub fn reactor_drain_write_buffer(reactor: Running<'_>, record: Heap<'_>) {
+    let record = record.named();
     let event = Cell::new(Event::of(record.fd(), 0, 0, Some(record)));
     let flush = Flush {
         reactor,
