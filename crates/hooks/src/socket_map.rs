@@ -95,6 +95,14 @@ thread_local! {
     static DOOMED: Cell<Vec<OwnedCo>> = const { Cell::new(Vec::new()) };
 }
 
+/// Remove the mapping before close(2) lets another socket reuse this number.
+pub(crate) fn retire(fd: c_int) {
+    let owned = remove(fd);
+    let mut doomed = DOOMED.take();
+    doomed.extend(owned);
+    DOOMED.set(doomed);
+}
+
 /// `swoole_coroutine_close(fd)` for a coroutine socket: its close outcome, or
 /// `None` (errno `ENOTSOCK`) when `fd` has no socket. A successful close removes
 /// the socket from the map. Each removed socket is deleted after the outermost
@@ -104,17 +112,11 @@ pub(crate) fn close(fd: c_int, close: impl FnOnce(Co) -> bool) -> Option<bool> {
     let socket = get(fd)?;
     CLOSING.set(CLOSING.get() + 1);
     let closed = close(socket);
-    let removed = if closed { remove(fd) } else { None };
     let depth = CLOSING.get() - 1;
     CLOSING.set(depth);
-    let mut doomed = DOOMED.take();
-    doomed.extend(removed);
-    if depth > 0 {
-        // A close further out deletes them.
-        DOOMED.set(doomed);
-        doomed = Vec::new();
+    if depth == 0 {
+        drop(DOOMED.take());
     }
-    drop(doomed);
     Some(closed)
 }
 
@@ -179,6 +181,7 @@ mod tests {
     /// The cancelled reader's close, which succeeds.
     fn inner_close(_: Co) -> bool {
         log("inner close");
+        retire(NESTED);
         true
     }
 

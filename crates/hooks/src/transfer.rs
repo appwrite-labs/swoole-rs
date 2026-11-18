@@ -283,7 +283,7 @@ mod tests {
         unsafe { socket.0.record() }.timeouts.write = 1.0;
         RESULTS.set(results.iter().copied().collect());
         if failure == 1 {
-            socket.0.sock_fd.set(-1);
+            socket.0.set_test_fd(-1);
         }
         TIMER_OK.set(failure != 2);
         // The ready callback wakes each wait.
@@ -307,7 +307,7 @@ mod tests {
         let result = transfer(socket.co(), flags, buffer, &mut |at| call(8, buffered, at));
         let result = result.map_or(-1, usize::cast_signed);
         let error = socket.0.err_code.get();
-        socket.0.sock_fd.set(100);
+        socket.0.set_test_fd(100);
         let events = take()
             .into_iter()
             .filter(|e| !e.starts_with("last-error"))
@@ -556,10 +556,10 @@ mod tests {
         }
         install();
         let mut socket = TestSocket::new();
-        socket.0.sock_fd.set(-1);
+        socket.0.set_test_fd(-1);
         let s = socket.co();
         assert_eq!(recvfrom_peer(s, || peer(s)), None);
         assert!(!take().iter().any(|e| e.starts_with("recvfrom")));
-        socket.0.sock_fd.set(100);
+        socket.0.set_test_fd(100);
     }
 }

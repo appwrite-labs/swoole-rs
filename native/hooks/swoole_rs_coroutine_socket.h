@@ -43,7 +43,7 @@ class Socket : public swr_v1_co_socket {
     }
 
     int get_fd() const {
-        return sock_fd;
+        return socket ? socket->fd : -1;
     }
 
   protected:

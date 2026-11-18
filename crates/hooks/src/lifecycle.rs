@@ -16,12 +16,14 @@ use swoole_rs_corebase::reactor::Events;
 /// `getsockopt(SO_ERROR)` into the int it is given. Tests script them.
 #[derive(Clone, Copy)]
 struct Sys {
+    release: fn(Co),
     shutdown: fn(c_int, c_int) -> std::io::Result<()>,
     connect: fn(c_int, &SocketAddress) -> bool,
     option: fn(c_int, &mut c_int) -> std::io::Result<()>,
 }
 
 const SYS: Sys = Sys {
+    release: Co::close_fd,
     shutdown: swoole_rs_corebase::sys::shutdown,
     connect: sys_connect,
     option: so_error,
@@ -67,6 +69,21 @@ impl Co {
     )]
     pub fn close(self) -> bool {
         close(self, SYS)
+    }
+
+    /// A hooked fd leaves the map before its number can be reused. The map
+    /// keeps the socket alive until all nested closes return.
+    pub(crate) fn close_mapped(self) -> bool {
+        close(
+            self,
+            Sys {
+                release: |socket| {
+                    crate::socket_map::retire(socket.sock_fd());
+                    socket.close_fd();
+                },
+                ..SYS
+            },
+        )
     }
 
     /// `Socket::check_liveness()`.
@@ -132,7 +149,7 @@ fn close(socket: Co, sys: Sys) -> bool {
         set_err(socket, CLOSE_WAIT_ERROR);
         return false;
     }
-    socket.set_sock_fd(-1);
+    (sys.release)(socket);
     // The socket's last use here: it may destroy the socket.
     crate::socket_extra::run_close_hook(socket);
     true
@@ -282,7 +299,7 @@ mod tests {
             upstream_shutdown(s, libc::SHUT_RDWR, sys);
         }
         if s.with_state(|state| state.bound_co(Events::READ | Events::WRITE).is_null()) {
-            s.set_sock_fd(-1);
+            s.move_fd();
             crate::socket_extra::run_close_hook(s);
             true
         } else {
@@ -399,6 +416,7 @@ mod tests {
         }
     }
     const FAKE: Sys = Sys {
+        release: Co::move_fd,
         shutdown: fake_shutdown,
         connect: fake_connect,
         option: fake_option,
@@ -451,7 +469,7 @@ mod tests {
             result,
             effects: take(),
             state: (
-                socket.0.sock_fd.get(),
+                socket.0.descriptor().raw_fd(),
                 flags,
                 socket.0.err_code.get(),
                 unsafe { socket.0.record() }.output.close_wait,
@@ -460,7 +478,7 @@ mod tests {
                 errno(),
             ),
         };
-        socket.0.sock_fd.set(100);
+        socket.0.set_test_fd(100);
         socket.with_state(|state| state.bind(Events::READ | Events::WRITE, core::ptr::null_mut()));
         outcome
     }
@@ -510,7 +528,7 @@ mod tests {
             let mode = k / 128;
             let setup = move |s: &mut TestSocket, _: &[*mut c_long; 3]| {
                 set_flags(s, (k / 4) % 2 == 1, (k / 16) % 2 == 1, (k / 32) % 2 == 1);
-                s.0.sock_fd.set(if (k / 8) % 2 == 1 { -1 } else { 77 });
+                s.0.set_test_fd(if (k / 8) % 2 == 1 { -1 } else { 77 });
                 if (k / 64) % 2 == 1 {
                     unsafe { s.0.record() }.set_ssl(Some(crate::co_socket::stub_ssl()));
                 }
@@ -594,7 +612,7 @@ mod tests {
                 k / 48 == 1,
             );
             let setup = move |s: &mut TestSocket, cos: &[*mut c_long; 3]| {
-                s.0.sock_fd.set(if closed { -1 } else { 77 });
+                s.0.set_test_fd(if closed { -1 } else { 77 });
                 set_flags(s, connected, false, false);
                 bind(s, bindings, cos);
                 let (co, other) = (s.co(), cos[2]);
@@ -659,7 +677,7 @@ mod tests {
             let (option, admission) = (u32::try_from((k / 40) % 4).unwrap(), k / 160);
             let setup = move |s: &mut TestSocket, _: &[*mut c_long; 3]| {
                 if admission == 1 {
-                    s.0.sock_fd.set(-1);
+                    s.0.set_test_fd(-1);
                 }
                 if admission == 2 {
                     unsafe { s.0.record() }.output.close_wait = true;
@@ -671,7 +689,7 @@ mod tests {
                 TIMER_OK.set(timer_ok);
                 ON_SUSPEND.set(Some(Box::new(move |s: Co, _| {
                     if closes {
-                        s.set_sock_fd(-1);
+                        s.move_fd();
                     }
                     if !wake_ok {
                         set_err(s, libc::ETIMEDOUT);
@@ -702,7 +720,7 @@ mod tests {
             compare(
                 k + 1232,
                 &move |s: &mut TestSocket, _: &[*mut c_long; 3]| {
-                    s.0.sock_fd.set(if closed { -1 } else { 77 });
+                    s.0.set_test_fd(if closed { -1 } else { 77 });
                 },
                 &|s| s.check_liveness(),
                 &|s| upstream_liveness(s),

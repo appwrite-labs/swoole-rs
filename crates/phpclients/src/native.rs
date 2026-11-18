@@ -182,8 +182,7 @@ impl Co {
 
     /// `move_fd()`: the socket forgets its fd, which stays open.
     pub(crate) fn move_fd(self) {
-        self.0.set_sock_fd(-1);
-        self.with_net(|net| net.edit(|record| record.fd = -1));
+        self.0.move_fd();
     }
 
     /// `close()` inside `zend_try`.
@@ -195,9 +194,6 @@ impl Co {
             && !self.0.has_bound(Events::READ | Events::WRITE)
         {
             co::close_trapped(self.0)?;
-        }
-        if self.is_closed() {
-            self.0.close_fd();
         }
         Ok(())
     }

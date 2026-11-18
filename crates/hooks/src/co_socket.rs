@@ -11,6 +11,7 @@ use core::ffi::{CStr, c_char, c_int, c_void};
 use core::mem::{MaybeUninit, offset_of};
 use core::ptr;
 use std::ffi::CString;
+use std::os::fd::RawFd;
 use swoole_rs_corebase::buffer::string::{CppString, boxed_sized_string};
 use swoole_rs_corebase::constants::{
     FdType, SW_BUFFER_SIZE_BIG, SW_INPUT_BUFFER_SIZE, SocketFlag, SocketType,
@@ -45,7 +46,6 @@ pub struct CoSocket {
     pub sock_domain: Cell<c_int>,
     pub sock_type: Cell<c_int>,
     pub sock_protocol: Cell<c_int>,
-    pub sock_fd: Cell<c_int>,
     pub connect_port: Cell<c_int>,
     pub backlog: Cell<c_int>,
     /// The buffers' allocator: none for the default.
@@ -84,7 +84,7 @@ const _: () = {
         offset_of!(CoSocket, protocol) == 24
             && offset_of!(CoSocket, kind) == 88
             && offset_of!(CoSocket, socket) == 96
-            && offset_of!(CoSocket, backlog) == 124
+            && offset_of!(CoSocket, backlog) == 120
             && offset_of!(CoSocket, buffer_allocator) == 128
             && offset_of!(CoSocket, ssl_is_server) == 160
             && offset_of!(CoSocket, resolve_context) == 168
@@ -135,6 +135,23 @@ impl New {
 pub const OPENED: u32 = 1;
 pub const NODELAY_FAILED: u32 = 2;
 pub const FD_WARNINGS_SHIFT: u32 = 8;
+
+/// The reactor transport is the only descriptor owner. A waiter keeps the
+/// descriptor until cancellation has completed and close can be retried.
+pub(crate) enum Descriptor {
+    Open(RawFd),
+    Closing(RawFd),
+    Closed,
+}
+
+impl Descriptor {
+    pub(crate) fn raw_fd(self) -> RawFd {
+        match self {
+            Self::Open(fd) | Self::Closing(fd) => fd,
+            Self::Closed => -1,
+        }
+    }
+}
 
 /// A live coroutine socket record: the only way to reach one's fields. The handle is
 /// `Copy`, and a coroutine parked in one member shares the record with another
@@ -275,7 +292,6 @@ impl Co {
         sock_domain, set_sock_domain: c_int;
         sock_type, set_sock_type: c_int;
         sock_protocol, set_sock_protocol: c_int;
-        sock_fd, set_sock_fd: c_int;
         connect_port, set_connect_port: c_int;
         backlog, set_backlog: c_int;
         buffer_init_size, set_buffer_init_size: usize;
@@ -391,6 +407,21 @@ impl Co {
         let result = f(&mut protocol);
         self.set_protocol(protocol);
         result
+    }
+
+    /// The transport's descriptor, or -1 after close or transfer.
+    #[must_use]
+    pub fn sock_fd(self) -> RawFd {
+        self.descriptor().raw_fd()
+    }
+
+    /// Transfer the descriptor to an external owner, leaving the socket closed.
+    pub fn move_fd(self) {
+        self.net(|record| record.fd = -1);
+    }
+
+    pub(crate) fn descriptor(self) -> Descriptor {
+        self.record().descriptor()
     }
 
     /// `is_closed`.
@@ -571,10 +602,14 @@ impl Co {
 }
 
 impl CoSocket {
-    /// `is_closed`.
-    #[must_use]
-    pub fn is_closed(&self) -> bool {
-        self.sock_fd.get() == -1
+    pub(crate) fn descriptor(&self) -> Descriptor {
+        self.socket.get().map_or(Descriptor::Closed, |network| {
+            network.read(|record| match record.fd {
+                -1 => Descriptor::Closed,
+                fd if record.output.close_wait => Descriptor::Closing(fd),
+                fd => Descriptor::Open(fd),
+            })
+        })
     }
 
     /// `f` with `part` lent out of the record's [`Bound`], live until `fini`; the
@@ -653,7 +688,6 @@ impl CoSocket {
             sock_domain: Cell::new(0),
             sock_type: Cell::new(0),
             sock_protocol: Cell::new(0),
-            sock_fd: Cell::new(-1),
             connect_port: Cell::new(0),
             backlog: Cell::new(0),
             buffer_allocator: Cell::new(None),
@@ -689,11 +723,10 @@ impl CoSocket {
     fn attach(&self, socket: Option<Box<SocketRecord>>, owner: Co) -> Option<Socket<'static>> {
         let network = socket?.into_socket();
         self.socket.set(Some(network));
-        self.sock_fd.set(network.edit(|record| {
+        network.edit(|record| {
             record.set_owner(Some(owner));
             record.info.kind = self.kind.get();
-            record.fd
-        }));
+        });
         Some(*network)
     }
 
@@ -772,7 +805,7 @@ fn release_descriptor(network: Socket<'_>) {
 
 impl Co {
     /// Release the transport while the PHP socket object still owns its record.
-    pub fn close_fd(self) {
+    pub(crate) fn close_fd(self) {
         self.with_network(|network| {
             if !network.read(|record| record.ssl().is_null()) {
                 socket_ssl_close(network);
@@ -804,7 +837,7 @@ pub extern "C" fn swr_v1_hook_co_socket_release(socket: &mut CoSocket) {
         if !network.read(|record| record.ssl().is_null()) {
             socket_ssl_close(*network);
         }
-        if socket.is_closed() || network.read(|record| record.output.close_wait) {
+        if network.read(|record| record.output.close_wait) {
             release_descriptor(*network);
         }
         drop(Released(*network));
@@ -1077,7 +1110,6 @@ pub(crate) fn accepted(server: Co, mut conn: Box<SocketRecord>) -> OwnedCo {
     conn.set_owner(Some(owner));
     conn.socket_type = kind;
     conn.fd_type = FD_CO_SOCKET;
-    socket.sock_fd.set(conn.fd);
     let result = OPENED | socket.init_options(&conn);
     if let Some(timeouts) = timeouts {
         conn.timeouts = timeouts;
@@ -1142,6 +1174,11 @@ mod test_support {
     use super::*;
 
     impl CoSocket {
+        /// Script a descriptor for a fake transport.
+        pub(crate) fn set_test_fd(&self, fd: c_int) {
+            self.socket.get().unwrap().edit(|network| network.fd = fd);
+        }
+
         /// The `network::Socket` record.
         ///
         /// # Safety
@@ -1180,7 +1217,6 @@ mod test_support {
         let socket = unopened();
         let record = Box::new(SocketRecord::with_fd(fd, FD_CO_SOCKET));
         socket.co().record().socket.set(Some(record.into_socket()));
-        socket.co().set_sock_fd(fd);
         socket
     }
 
@@ -1210,7 +1246,7 @@ mod test_support {
             socket.socket.set(Some(
                 Box::new(SocketRecord::with_fd(-1, FD_CO_SOCKET)).into_socket(),
             ));
-            socket.sock_fd.set(100);
+            socket.set_test_fd(100);
             Self(socket)
         }
 
@@ -1251,6 +1287,10 @@ mod test_support {
 pub(crate) use test_support::record_ssl;
 #[cfg(test)]
 pub(crate) use test_support::{TestSocket, init, over, stub_ssl, unopened};
+
+#[cfg(test)]
+#[path = "../../../tests/modules/hooks/socket_close.rs"]
+mod socket_close;
 
 #[cfg(test)]
 mod tests {
@@ -1311,7 +1351,7 @@ mod tests {
     #[test]
     fn defaults_are_upstreams_member_initialisers() {
         let socket = record();
-        assert_eq!(socket.sock_fd.get(), -1);
+        assert_eq!(socket.descriptor().raw_fd(), -1);
         assert_eq!(socket.buffer_init_size.get(), 65536);
         assert_eq!(unsafe { *socket.err_msg.get() }, 0);
         assert!(socket.state.is_some());
@@ -1347,7 +1387,7 @@ mod tests {
             (socket.sock_domain.get(), socket.sock_type.get()),
             (libc::AF_INET, libc::SOCK_STREAM)
         );
-        let fd = socket.sock_fd.get();
+        let fd = socket.descriptor().raw_fd();
         let record = unsafe { &*socket.socket_ptr() };
         assert_eq!(
             (
@@ -1406,7 +1446,7 @@ mod tests {
         let mut socket = record();
         assert_eq!(new(&mut socket, New::ByType, 0, 99, 0, 0), 0);
         assert!(socket.socket_ptr().is_null());
-        assert_eq!(socket.sock_fd.get(), -1);
+        assert_eq!(socket.descriptor().raw_fd(), -1);
         release(socket);
     }
 
@@ -1419,7 +1459,7 @@ mod tests {
             let mut socket = record();
             assert_eq!(new_by_code(&mut socket, how, fd, 1, 0, 0), 0, "{how}");
             assert!(socket.socket_ptr().is_null(), "{how}: no network socket");
-            assert_eq!(socket.sock_fd.get(), -1, "{how}: no fd");
+            assert_eq!(socket.descriptor().raw_fd(), -1, "{how}: no fd");
             release(socket);
         }
         // Still the caller's, untouched: blocking and open.
@@ -1445,7 +1485,7 @@ mod tests {
             ),
             OPENED
         );
-        assert_eq!(socket.sock_fd.get(), fd);
+        assert_eq!(socket.descriptor().raw_fd(), fd);
         assert_ne!(
             unsafe { libc::fcntl(fd, libc::F_GETFL) } & libc::O_NONBLOCK,
             0
@@ -1508,7 +1548,7 @@ mod tests {
             unsafe { (*conn).fields.owner::<Co>() }.map(Co::raw),
             Some((&raw const *socket).cast_mut())
         );
-        assert_eq!((socket.kind.get(), socket.sock_fd.get()), (1, fd));
+        assert_eq!((socket.kind.get(), socket.descriptor().raw_fd()), (1, fd));
         assert!(socket.open_eof_check.get() && socket.http2.get() && socket.ssl_is_server.get());
         assert_eq!(socket.protocol.get().package_eof_len, 2);
         let record = unsafe { &*conn };
