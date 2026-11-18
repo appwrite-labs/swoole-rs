@@ -507,8 +507,7 @@ mod tests {
         let mut cases = 0;
         for websocket_status in WebSocketStatus::ALL {
             for http2_stream in [false, true] {
-                // SAFETY: the record is plain integers, pointers and atomics.
-                let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
+                let mut conn = ConnectionRecord::default();
                 conn.websocket_status.set(websocket_status);
                 conn.http2_stream.set(http2_stream);
                 conn.info.get_mut().kind = 1;
