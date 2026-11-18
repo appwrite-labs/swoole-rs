@@ -46,9 +46,10 @@ Unit fixtures register their recording dispatcher and retain the original DNS
 success/error traces. The hooks crate constructs its own pool event and retains
 its resolver request until completion; clients no longer mirrors the event layout.
 SOCKS5 admission, negotiation and handshake call `owned_proxy` directly; recording
-IO fixtures feed real replies and assert the emitted negotiation/connect packets. The input buffer lives in a `Cell`
-in the client, whose address the public record exposes to framing code; Miri runs
-`the_framed_receive_buffer_stays_usable_across_input_edits` over that pointer.
+IO fixtures feed real replies and assert the emitted negotiation/connect packets. The framing loop takes the client’s input allocation for one read and lends it to
+the length or EOF reader. The Miri case
+`the_framed_receive_buffer_stays_usable_across_input_edits` checks a partial
+packet, a nested read, and client destruction during the callback.
 Receive, append, synchronous receive and datagram receive use the same operation
 table in production and tests. `ReadBuffer` retains initialized bytes versus spare
 capacity across the callback boundary. Real TCP and async UDP tests check binary
