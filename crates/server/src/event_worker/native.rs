@@ -6,6 +6,7 @@ use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::process;
+use swoole_rs_corebase::reactor::ErrorHandler::ConnectionDefault;
 use swoole_rs_corebase::reactor::Events;
 
 use process::methods::{
@@ -614,7 +615,7 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
         set_nonblock(*pipe);
         reactor.hold_server(serv);
         reactor.add(pipe, Events::READ);
-        reactor.set_handler(FD_PIPE, Events::READ, on_pipe_receive);
+        reactor.set_handlers(FD_PIPE, Some(on_pipe_receive), None, ConnectionDefault);
     }
     if matches!(
         config.dispatch_mode.get(),

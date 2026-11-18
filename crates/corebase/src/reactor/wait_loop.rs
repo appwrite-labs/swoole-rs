@@ -624,7 +624,12 @@ mod tests {
                 crate::reactor::ChangeOp::Add,
                 events
             ));
-            assert!((*state.handlers).set(5, crate::reactor::Events::READ, Some(read)));
+            (*state.handlers).register(
+                5,
+                Some(read),
+                None,
+                crate::reactor::ErrorHandler::ConnectionDefault,
+            );
             let descriptor = (*state.owner).backend_fd;
             #[cfg(target_os = "linux")]
             if kind == 1 {

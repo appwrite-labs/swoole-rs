@@ -9,6 +9,7 @@ use crate::records::{Connection, Lookup};
 use core::ffi::{c_int, c_long};
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::constants::SocketTypeCode;
+use swoole_rs_corebase::reactor::ErrorHandler::ConnectionDefault;
 use swoole_rs_corebase::reactor::Events;
 
 use crate::objects::worker_pipe;
@@ -70,8 +71,12 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
     reactor.set_max_socket(tables.max_connection());
     reactor.set_close(Some(entry::close_connection));
     handle.set_error_handler(entry::on_close);
-    handle.set_handler(FD_PIPE, Events::READ, on_pipe_read);
-    handle.set_handler(FD_PIPE, Events::WRITE, entry::on_pipe_write);
+    handle.set_handlers(
+        FD_PIPE,
+        Some(on_pipe_read),
+        Some(entry::on_pipe_write),
+        ConnectionDefault,
+    );
     let reactors = config.reactor_num.get();
     // Listen on this thread's UDP ports.
     if config.have_dgram_sock.get() {

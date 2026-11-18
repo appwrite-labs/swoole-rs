@@ -114,7 +114,7 @@ mod descriptor {
     use crate::CellExt;
     use crate::process::signal_loop::DescriptorOps;
     use crate::reactor::event_api::{
-        FdHandler, event_add, event_del, isset_handler, swoole_event_set_fd_handler,
+        FdHandler, event_add, event_del, fd_handler, isset_handler, set_handlers,
     };
     use crate::reactor::{OwnedSocket, SocketRecord};
     use core::cell::Cell;
@@ -186,7 +186,12 @@ mod descriptor {
 
     /// The read handler, the exit condition and the destroy callback.
     pub(super) fn install() {
-        swoole_event_set_fd_handler::<Read>(FD_SIGNAL, crate::reactor::Events::READ);
+        set_handlers(
+            FD_SIGNAL,
+            Some(fd_handler::<Read>),
+            None,
+            crate::reactor::ErrorHandler::ConnectionDefault,
+        );
         crate::reactor::swr_v1_event_set_exit_condition(
             crate::reactor::ExitCondition::Signalfd,
             exit_condition,

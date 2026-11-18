@@ -11,6 +11,15 @@ use std::marker::PhantomData;
 /// A handler runs only for the fd types and reactors it was registered with.
 pub type Handler = fn(Running<'_>, &mut Event) -> c_int;
 
+/// How error readiness is dispatched for a descriptor type.
+#[derive(Clone, Copy)]
+pub enum ErrorHandler {
+    /// Use the reactor's default error handler, falling back to read then write.
+    ConnectionDefault,
+    /// Dispatch errors to this type-specific callback.
+    Callback(Handler),
+}
+
 /// A getter and setter of one of the reactor's fields, each borrowing its state for
 /// the one read or write.
 macro_rules! field {
@@ -225,7 +234,7 @@ pub(crate) enum Table {
 /// Each slot is a cell: a registration needs only the shared tables, as a lookup does.
 #[derive(Default)]
 pub struct Handlers {
-    tables: [[Cell<Option<Handler>>; FD_TYPES]; 3],
+    tables: [Cell<[Option<Handler>; 3]>; FD_TYPES],
     /// Write and error fallbacks (`default_write_handler`, `default_error_handler`).
     pub(crate) defaults: [Cell<Option<Handler>>; 2],
 }
@@ -244,12 +253,26 @@ fn table(events: Events) -> Option<Table> {
 }
 
 impl Handlers {
-    /// `Reactor::set_handler`: false when `events` names no table (upstream asserts) or
-    /// `fd_type` is out of range.
-    pub(crate) fn set(&self, fd_type: c_int, events: Events, handler: Option<Handler>) -> bool {
-        self.slot(fd_type, events)
-            .map(|slot| slot.set(handler))
-            .is_some()
+    /// Replace all three registrations together, including previously installed overrides.
+    pub(crate) fn register(
+        &self,
+        fd_type: c_int,
+        read: Option<Handler>,
+        write: Option<Handler>,
+        error: ErrorHandler,
+    ) -> bool {
+        let Some(slot) = usize::try_from(fd_type)
+            .ok()
+            .and_then(|fd| self.tables.get(fd))
+        else {
+            return false;
+        };
+        let error = match error {
+            ErrorHandler::ConnectionDefault => None,
+            ErrorHandler::Callback(handler) => Some(handler),
+        };
+        slot.set([read, write, error]);
+        true
     }
 
     /// `Reactor::isset_handler`.
@@ -257,16 +280,9 @@ impl Handlers {
         table(events).is_some_and(|kind| self.registered(kind, fd_type).is_some())
     }
 
-    fn slot(&self, fd_type: c_int, events: Events) -> Option<&Cell<Option<Handler>>> {
-        let table = table(events)?;
-        self.tables
-            .get(table as usize)?
-            .get(usize::try_from(fd_type).ok()?)
-    }
-
     fn registered(&self, kind: Table, fd_type: c_int) -> Option<Handler> {
-        let row = self.tables.get(kind as usize)?;
-        row.get(usize::try_from(fd_type).ok()?)?.get()
+        let row = self.tables.get(usize::try_from(fd_type).ok()?)?.get();
+        row.get(kind as usize).copied().flatten()
     }
 
     /// `default_write_handler` (0) or `default_error_handler` (1).
@@ -344,34 +360,43 @@ mod tests {
 
     #[test]
     fn upstream_lookup_order() {
-        let mut handlers = Handlers::default();
-        let h = &raw mut handlers;
-        unsafe {
-            // A mask below SW_EVENT_DEAULT is a read registration, as upstream.
-            assert!((*h).set(5, Events::NONE, Some(one)));
-            assert!((*h).isset(5, Events::READ));
-            assert!(!(*h).isset(5, Events::WRITE));
-            assert!(!(*h).set(5, Events::DEFAULT, Some(two)));
-            assert!(!(*h).set(32, Events::READ, Some(two)));
-            assert!(!(*h).isset(5, Events::DEFAULT));
+        let h = Handlers::default();
+        assert!(h.register(5, Some(one), None, ErrorHandler::ConnectionDefault));
+        assert!(h.isset(5, Events::NONE));
+        assert!(h.isset(5, Events::READ));
+        assert!(!h.isset(5, Events::WRITE));
+        assert!(!h.register(32, Some(two), None, ErrorHandler::ConnectionDefault));
+        assert!(!h.isset(5, Events::DEFAULT));
 
-            // Write and error fall back to the defaults; error dispatch then to read.
-            assert_eq!(call((*h).get(Table::Write, 5)), 0);
-            swr_v1_reactor_handlers_set_default(&*h, 1, Some(two));
-            assert_eq!(call((*h).get(Table::Write, 5)), 2);
-            assert_eq!(call((*h).get(Table::Error, 5)), 0);
-            assert_eq!(call((*h).dispatch(Table::Error, 5)), 1);
-            swr_v1_reactor_handlers_set_default(&*h, 2, Some(three));
-            assert_eq!(call((*h).dispatch(Table::Error, 5)), 3);
-            assert_eq!(call((*h).fallback(1)), 3);
-            assert!((*h).fallback(2).is_none());
-            assert!((*h).set(5, Events::WRITE | Events::ERROR, Some(one)));
-            assert_eq!(call((*h).get(Table::Write, 5)), 1);
-            // Error-only types: no read handler, the error default still applies.
-            assert_eq!(call((*h).get(Table::Read, 6)), 0);
-            assert_eq!(call((*h).dispatch(Table::Error, 6)), 3);
-            assert_eq!(call((*h).get(Table::Read, -1)), 0);
-        }
+        // Write and error fall back to the defaults; error dispatch then to read.
+        assert_eq!(call(h.get(Table::Write, 5)), 0);
+        swr_v1_reactor_handlers_set_default(&h, 1, Some(two));
+        assert_eq!(call(h.get(Table::Write, 5)), 2);
+        assert_eq!(call(h.get(Table::Error, 5)), 0);
+        assert_eq!(call(h.dispatch(Table::Error, 5)), 1);
+        swr_v1_reactor_handlers_set_default(&h, 2, Some(three));
+        assert_eq!(call(h.dispatch(Table::Error, 5)), 3);
+        assert_eq!(call(h.fallback(1)), 3);
+        assert!(h.fallback(2).is_none());
+        assert!(h.register(5, Some(one), Some(one), ErrorHandler::ConnectionDefault));
+        assert!(h.isset(5, Events::WRITE | Events::ERROR));
+        assert_eq!(call(h.get(Table::Write, 5)), 1);
+        // Error-only types: no read handler, the error default still applies.
+        assert_eq!(call(h.get(Table::Read, 6)), 0);
+        assert_eq!(call(h.dispatch(Table::Error, 6)), 3);
+        assert_eq!(call(h.get(Table::Read, -1)), 0);
+    }
+
+    #[test]
+    fn replacing_a_descriptor_restores_its_selected_fallback() {
+        let handlers = Handlers::default();
+        swr_v1_reactor_handlers_set_default(&handlers, 2, Some(three));
+        handlers.register(5, Some(one), Some(one), ErrorHandler::Callback(two));
+        assert_eq!(call(handlers.dispatch(Table::Error, 5)), 2);
+        handlers.register(5, Some(one), None, ErrorHandler::ConnectionDefault);
+        assert_eq!(call(handlers.dispatch(Table::Error, 5)), 3);
+        assert!(!handlers.isset(5, Events::WRITE));
+        assert!(!handlers.isset(5, Events::ERROR));
     }
 
     /// An object held under a key reads back under that key alone, until `set_object`

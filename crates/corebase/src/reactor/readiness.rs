@@ -2,9 +2,10 @@
 //! (`SW_FD_CO_SOCKET`), hooked polls (`SW_FD_CO_POLL`) and event waiters
 //! (`SW_FD_CO_EVENT`), registered through `set`; a ready waiter's coroutine resumes
 //! through [`wake`], deferred on the thread's reactor.
+use super::reactor_upstream::set_handlers;
 use crate::constants::FdType;
 use crate::reactor::wait_event::{Parked, event_ready};
-use crate::reactor::{Event, Events, Handler, Running};
+use crate::reactor::{ErrorHandler, Event, Events, Handler, Running};
 use core::ffi::{c_int, c_void};
 
 use std::sync::OnceLock;
@@ -30,17 +31,30 @@ pub(crate) fn init_reactor(reactor: Running<'_>) {
     let Some(init) = INIT_REACTOR.get() else {
         return;
     };
-    let mut set = |fd_type, events, handler| {
-        super::reactor_upstream::set_handler(reactor, fd_type, events, Some(handler));
-    };
-    register(init.socket, &mut set);
-    set(
+    register(init.socket, |fd, read, write, error| {
+        set_handlers(
+            reactor,
+            fd,
+            Some(read),
+            Some(write),
+            ErrorHandler::Callback(error),
+        );
+    });
+    set_handlers(
+        reactor,
         FdType::SW_FD_AIO as i32,
-        Events::READ,
-        crate::offload::threads::callback,
+        Some(crate::offload::threads::callback),
+        None,
+        ErrorHandler::ConnectionDefault,
     );
     if let Some(handler) = init.uring {
-        set(FdType::SW_FD_IOURING as i32, Events::READ, handler);
+        set_handlers(
+            reactor,
+            FdType::SW_FD_IOURING as i32,
+            Some(handler),
+            None,
+            ErrorHandler::ConnectionDefault,
+        );
     }
     (init.client)(reactor);
 }
@@ -72,28 +86,30 @@ fn waiter_ready<const KIND: i32>(_: Running<'_>, event: &mut Event) -> c_int {
 }
 
 /// Registers the coroutine socket (`Socket::init_reactor`), poll and event-waiter
-/// handlers through `set(fd_type, events, handler)`.
-fn register([read, write, error]: [Handler; 3], mut set: impl FnMut(c_int, Events, Handler)) {
+/// handlers as complete read, write and error triples.
+fn register(
+    [read, write, error]: [Handler; 3],
+    mut set: impl FnMut(c_int, Handler, Handler, Handler),
+) {
     const READ: c_int = Events::READ.bits();
     const WRITE: c_int = Events::WRITE.bits();
     const ERROR: c_int = Events::ERROR.bits();
     let poll = FdType::SW_FD_CO_POLL as c_int;
     let waiter = FdType::SW_FD_CO_EVENT as c_int;
     let socket = FdType::SW_FD_CO_SOCKET as c_int;
-    let handlers: [(c_int, Events, Handler); 9] = [
-        (socket, Events::READ, read),
-        (socket, Events::WRITE, write),
-        (socket, Events::ERROR, error),
-        (poll, Events::READ, poll_ready::<READ>),
-        (poll, Events::WRITE, poll_ready::<WRITE>),
-        (poll, Events::ERROR, poll_ready::<ERROR>),
-        (waiter, Events::READ, waiter_ready::<READ>),
-        (waiter, Events::WRITE, waiter_ready::<WRITE>),
-        (waiter, Events::ERROR, waiter_ready::<ERROR>),
-    ];
-    for (fd_type, events, handler) in handlers {
-        set(fd_type, events, handler);
-    }
+    set(socket, read, write, error);
+    set(
+        poll,
+        poll_ready::<READ>,
+        poll_ready::<WRITE>,
+        poll_ready::<ERROR>,
+    );
+    set(
+        waiter,
+        waiter_ready::<READ>,
+        waiter_ready::<WRITE>,
+        waiter_ready::<ERROR>,
+    );
 }
 
 /// `sw_reactor()->defer([co] { co->resume(); })`, or the unit tests' recorder.
@@ -128,8 +144,14 @@ mod tests {
         static WOKEN: Cell<u32> = const { Cell::new(0) };
     }
 
-    fn set(fd_type: c_int, events: Events, handler: Handler) {
-        HANDLERS.with_borrow_mut(|handlers| handlers.push((fd_type, events, handler)));
+    fn set(fd_type: c_int, read: Handler, write: Handler, error: Handler) {
+        HANDLERS.with_borrow_mut(|handlers| {
+            handlers.extend([
+                (fd_type, Events::READ, read),
+                (fd_type, Events::WRITE, write),
+                (fd_type, Events::ERROR, error),
+            ]);
+        });
     }
     /// Records the wake in place of deferring it.
     pub(super) const WAKE: Option<fn(Parked)> = Some(wake);

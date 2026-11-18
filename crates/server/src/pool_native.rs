@@ -14,6 +14,7 @@ use process::worker_record::WorkerType;
 use std::rc::Rc;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::process;
+use swoole_rs_corebase::reactor::ErrorHandler::ConnectionDefault;
 use swoole_rs_corebase::reactor::Events;
 
 use crate::objects::{Reactor, worker_pipe};
@@ -37,7 +38,9 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::memory::members::pool as mem_pool;
-use swoole_rs_corebase::reactor::event_api::{event_write, set_handler, swoole_event_is_available};
+use swoole_rs_corebase::reactor::event_api::{
+    event_write, set_handlers, swoole_event_is_available,
+};
 use swoole_rs_corebase::reactor::{Event, Heap, Running, Socket};
 use swoole_rs_corebase::timer::{
     swoole_timer_create, swoole_timer_free, swoole_timer_get_next_msec, swoole_timer_is_available,
@@ -279,7 +282,7 @@ fn loop_ops(op: Op, arg: u64) -> bool {
     match op {
         Op::PipeHandler => {
             let handler = if arg == 0 { recv_packet } else { recv_message };
-            set_handler(FD_PIPE, Events::READ, Some(handler));
+            set_handlers(FD_PIPE, Some(handler), None, ConnectionDefault);
         }
         Op::TimerSelect => swoole_timer_select(),
         Op::TimerFree => {

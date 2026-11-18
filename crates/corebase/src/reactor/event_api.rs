@@ -140,12 +140,15 @@ pub fn swoole_event_writev(
     crate::tls::reactor_write::reactor_writev(reactor, socket, vectors)
 }
 
-/// `void swoole_event_set_handler(int fd_type, int event, ReactorHandler handler)`;
-/// nothing without a reactor. A `Handler` is a safe function, sound with the live
-/// reactor and event the loop calls it with.
-pub fn set_handler(fd_type: c_int, event: Events, handler: Option<Handler>) {
+/// Register a descriptor type on the current thread's reactor, when present.
+pub fn set_handlers(
+    fd_type: c_int,
+    read: Option<Handler>,
+    write: Option<Handler>,
+    error: crate::reactor::ErrorHandler,
+) {
     if let Some(reactor) = running() {
-        crate::reactor::reactor_upstream::set_handler(reactor, fd_type, event, handler);
+        crate::reactor::reactor_upstream::set_handlers(reactor, fd_type, read, write, error);
     }
 }
 
@@ -256,16 +259,12 @@ pub trait FdHandler {
     fn handle(fd: c_int) -> bool;
 }
 
-fn fd_handler<H: FdHandler>(
+/// Adapt a descriptor callback for registration on the reactor.
+pub fn fd_handler<H: FdHandler>(
     _: crate::reactor::Running<'_>,
     event: &mut crate::reactor::Event,
 ) -> c_int {
     if H::handle(event.fd()) { 0 } else { -1 }
-}
-
-/// `swoole_event_set_handler(fd_type, event, H)`, when there is a reactor.
-pub fn swoole_event_set_fd_handler<H: FdHandler>(fd_type: c_int, event: Events) {
-    set_handler(fd_type, event, Some(fd_handler::<H>));
 }
 
 /// A reactor cycle task: `Reactor::future_task` or `idle_task`. The reactor

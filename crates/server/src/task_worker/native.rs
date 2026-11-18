@@ -17,6 +17,7 @@ use swoole_rs_corebase::process::task_sync::ResultSlot;
 use swoole_rs_corebase::process::worker_record::{
     Worker, WorkerStatus, WorkerType, swr_v1_worker_init, swr_v1_worker_shutdown,
 };
+use swoole_rs_corebase::reactor::ErrorHandler::ConnectionDefault;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::reactor::{Event, Running, Socket};
 use swoole_rs_corebase::{CCast, DataHead, log};
@@ -214,7 +215,7 @@ fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
         let reactor = Reactor::thread();
         reactor.hold_server(serv);
         reactor.add(pipe, Events::READ);
-        reactor.set_handler(FD_PIPE, Events::READ, on_pipe_receive);
+        reactor.set_handlers(FD_PIPE, Some(on_pipe_receive), None, ConnectionDefault);
     });
     // A task's result may be larger than a pipe's buffer: let every worker's grow.
     let workers = config.worker_num.get() + config.task_worker_num.get();

@@ -91,14 +91,12 @@ pub(crate) fn install_handlers() {
     if event_api::isset_handler(FD_CO_CURL, Events::READ) {
         return;
     }
-    let read: swoole_rs_corebase::reactor::Handler = on_event::<CURL_CSELECT_IN>;
-    for (event, handler) in [
-        (Events::READ, read),
-        (Events::WRITE, on_event::<CURL_CSELECT_OUT>),
-        (Events::ERROR, on_event::<CURL_CSELECT_ERR>),
-    ] {
-        event_api::set_handler(FD_CO_CURL, event, Some(handler));
-    }
+    event_api::set_handlers(
+        FD_CO_CURL,
+        Some(on_event::<CURL_CSELECT_IN>),
+        Some(on_event::<CURL_CSELECT_OUT>),
+        swoole_rs_corebase::reactor::ErrorHandler::Callback(on_event::<CURL_CSELECT_ERR>),
+    );
 }
 
 /// A reactor `network::Socket` of the cURL fd type over curl's fd, owned from
