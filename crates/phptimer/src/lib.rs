@@ -58,7 +58,7 @@ method_table! {
 /// A registration bailed out.
 pub fn minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_static(&TIMER, c"Swoole\\Timer", METHODS.table());
-    minit.function_aliases(&TIMER, METHODS.table(), &ALIASES)?;
+    minit.function_aliases(&TIMER, &METHODS, &ALIASES)?;
     let parent = minit.array_iterator();
     minit.register_child(
         &ITERATOR,

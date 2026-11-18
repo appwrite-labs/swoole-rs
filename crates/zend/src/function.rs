@@ -3,11 +3,10 @@
 //! Also [`Function`], a borrowed `zend_function`.
 use crate::{
     Call, ClassEntry, Invalid, ZStr,
-    arginfo::Table,
     sys::{
         _zend_function__bindgen_ty_1, zend_class_entry, zend_fcall_info, zend_fcall_info_cache,
-        zend_function, zend_function_entry, zend_internal_function, zend_object,
-        zend_object_handlers, zend_op, zend_op_array,
+        zend_function, zend_internal_function, zend_object, zend_object_handlers, zend_op,
+        zend_op_array,
     },
 };
 use std::{ffi::CStr, marker::PhantomData, mem::offset_of};
@@ -214,14 +213,8 @@ pub(crate) fn deny(entry: &mut zend_class_entry, _: &mut zend_object_handlers) {
     crate::object::set_create(entry, create_object_deny);
 }
 
-/// The row of `method` in a method table, with its arginfo.
-pub(crate) fn arg_info(methods: Table, method: &CStr) -> Option<&'static zend_function_entry> {
-    methods.find(method)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::arginfo::{ArgInfo, END, Methods, begin, entry};
 
     extern "C" fn handler(_: crate::Entered<'_>, _: crate::Returned<'_>) {}
@@ -238,7 +231,7 @@ mod tests {
             entry(c"clearAll", handler, &CLEAR_ALL, 0),
             END,
         ]);
-        let info = |method| arg_info(TABLE.table(), method).map(|row| row.arg_info);
+        let info = |method| TABLE.find(method).map(|row| row.arg_info);
         assert_eq!(info(c"after"), Some(AFTER.as_ptr()), "after's arginfo");
         assert_eq!(info(c"clearAll"), Some(CLEAR_ALL.as_ptr()), "clearAll's");
         assert!(info(c"list").is_none(), "a missing method");
