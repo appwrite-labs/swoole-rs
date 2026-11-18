@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 pub type ReactorClose =
     extern "C-unwind" fn(crate::reactor::Running<'_>, crate::reactor::OwnedSocket) -> c_int;
 
+// `repr(C)`: C's `swr_v1_reactor_head` (`native/reactor/swoole_rs_reactor.h`).
 #[repr(C)]
 pub struct ReactorFields {
     pub kind: c_int,
@@ -31,7 +32,7 @@ pub struct ReactorFields {
     pub timeout_msec: i32,
     pub id: u16,
     pub max_socket: u32,
-    pub last_malloc_trim_time: libc::time_t,
+    pub last_malloc_trim_time: crate::sys::UnixSeconds,
     pub close: Option<ReactorClose>,
     // Rust-only fields follow the native head. No native caller reads these.
     /// No queue until a task is deferred; detached before its callbacks run.
@@ -45,6 +46,7 @@ pub struct ReactorFields {
 
 /// The C++ `Reactor` object (`swr_v1_reactor_head`, which the methods-only class
 /// extends): its prepared views of this state, then its public fields, then Rust's own.
+// `repr(C)`: begins with C's `swr_v1_reactor_head` (`native/reactor/swoole_rs_reactor.h`).
 #[repr(C)]
 pub struct ReactorState {
     pub(crate) head: ReactorPrepared,
@@ -134,6 +136,7 @@ impl ReactorState {
         queues
     }
 }
+// `repr(C)`: the start of C's `swr_v1_reactor_head` (`native/reactor/swoole_rs_reactor.h`).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ReactorPrepared {

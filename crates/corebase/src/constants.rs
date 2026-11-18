@@ -7,7 +7,6 @@
 
 /// The socket TLS handshake state, shared by reactor storage and TLS operations. It
 /// keeps C's layout: the socket record native code shares holds it as `ssl_state`.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum SslState {
@@ -37,6 +36,7 @@ pub enum ReturnCode {
     SW_REDUCE_SIZE = 7,
 }
 
+// `repr(C)`: cbindgen exports it to C as `swFdType` (`swoole_rs_corebase_constants.h`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
@@ -73,6 +73,7 @@ impl SocketFlag {
 
 crate::impl_flags!(SocketFlag, core::ffi::c_int);
 
+// `repr(C)`: cbindgen exports it to C as `swSocketType` (`swoole_rs_corebase_constants.h`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
@@ -204,6 +205,7 @@ pub enum EventType {
     SW_EVENT_ONCE = 4096,
 }
 
+// `repr(C)`: cbindgen exports it to C as `swForkType` (`swoole_rs_corebase_constants.h`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(

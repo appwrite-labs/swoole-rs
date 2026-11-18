@@ -35,7 +35,6 @@ impl SendData<'_> {
 }
 
 /// `DgramPacket`'s head; the datagram follows.
-#[repr(C)]
 #[derive(Default)]
 pub struct DgramPacket {
     pub(crate) socket_type: SocketTypeCode,
@@ -46,7 +45,7 @@ pub struct DgramPacket {
 /// A [`DgramPacket`] head's bytes.
 pub(crate) const DGRAM_HEAD: usize = size_of::<DgramPacket>();
 
-/// Where each field of a [`DgramPacket`] head starts, as C lays it out.
+/// Where each field of a [`DgramPacket`] head starts.
 const TYPE_AT: usize = core::mem::offset_of!(DgramPacket, socket_type);
 const ADDR_AT: usize = core::mem::offset_of!(DgramPacket, socket_addr);
 const STORAGE_AT: usize = ADDR_AT + core::mem::offset_of!(SocketAddress, addr);
@@ -63,7 +62,7 @@ fn field<const N: usize>(head: &[u8; DGRAM_HEAD], at: usize) -> [u8; N] {
 }
 
 impl DgramPacket {
-    /// The head as C lays it out, its padding zero.
+    /// The head's bytes, its padding zero.
     #[must_use]
     pub fn to_bytes(&self) -> [u8; DGRAM_HEAD] {
         let mut head = [0; DGRAM_HEAD];

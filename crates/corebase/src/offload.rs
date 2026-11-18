@@ -47,6 +47,7 @@ pub type Callback = extern "C" fn(&AsyncEvent);
 
 /// Upstream's `AsyncEvent`, with its `shared_ptr` request replaced by a counted
 /// DNS record; native code asserts the same layout.
+// `repr(C)`: mirrored and asserted by `native/ossupport/swoole_async.h`.
 #[repr(C)]
 pub struct AsyncEvent {
     pub task_id: usize,

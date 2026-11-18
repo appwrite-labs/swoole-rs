@@ -9,6 +9,7 @@ use swoole_rs_ssh2_sys::LIBSSH2_SESSION;
 
 /// `php_ssh2_session_data`: four userspace callbacks, then the `SocketImpl *`, the
 /// session's live coroutine socket.
+// `repr(C)`: C's `php_ssh2_session_data` (`native/hooks/swoole_rs_ssh2.h`), which the bundled ssh2 code writes.
 #[repr(C)]
 struct SessionData {
     callbacks: [*mut c_void; 4],

@@ -30,17 +30,18 @@ zend_string *swr_zend_serialize(zval *value, bool *bailed) {
 bool swr_zend_unserialize(zval *out, struct iovec bytes, size_t *offset, bool *bailed) {
     const char *data = bytes.iov_base;
     size_t length = bytes.iov_len;
-    const unsigned char *cursor = (const unsigned char *) data;
-    bool done = false;
+    volatile bool done = false;
+    *offset = 0;
     SWR_ZEND_TRY {
+        const unsigned char *cursor = (const unsigned char *) data;
         php_unserialize_data_t var_hash;
         PHP_VAR_UNSERIALIZE_INIT(var_hash);
         done = php_var_unserialize(out, &cursor, (const unsigned char *) data + length, &var_hash);
+        *offset = (size_t) ((const char *) cursor - data);
         PHP_VAR_UNSERIALIZE_DESTROY(var_hash);
     } SWR_ZEND_CATCH {
         *bailed = true;
     } SWR_ZEND_END_TRY();
-    *offset = (size_t) ((const char *) cursor - data);
     return done;
 }
 

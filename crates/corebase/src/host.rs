@@ -4,7 +4,9 @@
 
 use crate::CCast;
 use std::cell::Cell;
-use std::ffi::{CStr, c_char, c_int, c_long, c_void};
+#[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
+use std::ffi::c_void;
+use std::ffi::{CStr, c_char, c_int, c_long};
 use std::ptr;
 use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -92,7 +94,9 @@ impl Filled {
     }
 }
 
-use crate::sys::{Text, close, dup2, errno, set_errno};
+#[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
+use crate::sys::Text;
+use crate::sys::{close, dup2, errno, set_errno};
 
 /// `int swoole_shell_exec(const char *command, pid_t *pid, bool get_error_stream)`:
 /// run `command` under `/bin/sh -c` with its stdout (and stderr when
@@ -228,6 +232,7 @@ pub extern "C" fn microtime() -> f64 {
 }
 
 /// `DataHead`'s layout (include/swoole.h), checked by a native static assertion.
+// `repr(C)`: the pipe and task code read an event's head as bytes at fixed offsets (`EVENT_TYPE`, `TaskBuffer`).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct DataHead {

@@ -397,7 +397,7 @@ pub extern "C" fn swoole_set_trace_flags(flags: c_long) {
 /// reads (`CLOCK_REALTIME_COARSE` on Linux) in one vDSO call. `SystemTime::now`
 /// and `duration_since` cost five times as much, and every HTTP request asks.
 #[must_use]
-pub fn time_now() -> libc::time_t {
+pub fn time_now() -> crate::sys::UnixSeconds {
     #[cfg(target_os = "linux")]
     const CLOCK: libc::clockid_t = libc::CLOCK_REALTIME_COARSE;
     #[cfg(not(target_os = "linux"))]

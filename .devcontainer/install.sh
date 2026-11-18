@@ -44,7 +44,7 @@ fi
 [ -z "$APT_CACHE" ] || chmod -R a+rX "$APT_CACHE"
 # ast-grep's Python API, which tools/budget.py counts with. Ubuntu packages no ast-grep;
 # jobs that skip this script read the version from this line.
-if $build; then python3 -m pip install -q --break-system-packages ast-grep-py==0.51.3; fi
+if $build; then python3 -m pip install -q --root-user-action=ignore --break-system-packages ast-grep-py==0.51.3; fi
 # liburing for upstream's --enable-iouring build. Upstream needs >= 2.8
 # and Ubuntu 24.04 ships 2.5, so build the release upstream's own CI installs
 # (scripts/install-liburing.sh) into /usr/local, where pkg-config and ld find it.

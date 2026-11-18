@@ -23,8 +23,8 @@ use swoole_rs_corebase::process::methods::{
     ExitStatus, swoole_get_worker_symbol, swoole_set_worker_type,
 };
 use swoole_rs_corebase::process::process_pool::{
-    ErrorFn, EventFn, Hooks, MainLoopFn, MessageFn, NotFoundFn, PoolFn, PoolRef, Protocol,
-    RecvData, TaskFn, WorkerFn,
+    CallbackError, ErrorFn, EventFn, Hooks, MainLoopFn, MessageFn, NotFoundFn, PoolFn, PoolRef,
+    Protocol, RecvData, TaskFn, WorkerFn,
 };
 use swoole_rs_corebase::process::task_file::Packed;
 use swoole_rs_corebase::process::worker_record::{
@@ -627,7 +627,7 @@ fn main_loop(pool: *mut Pool, worker: *mut Worker) -> c_int {
             WorkerHandle::from(&*(worker.cast())),
         )
     };
-    pool.call_main_loop(worker).unwrap()
+    pool.call_main_loop(worker).unwrap().map_or(-1, |()| 0)
 }
 
 /// `pool.onX = fn` for each hook `hooks` names.
@@ -751,14 +751,14 @@ fn test_func(pool: *mut Pool) {
     destroy(pool);
 }
 
-fn task_protocol_on_task(pool: PoolRef<'_>, _: WorkerHandle<'_>, task: Packed<'_>) -> c_int {
+const TASK_PROTOCOL_ON_TASK: TaskFn = |pool, _, task| {
     let pool = pool.raw().cast::<Pool>();
     // SAFETY: the running pool.
     unsafe { (*pool).running = false };
     ms_sleep(10000);
     assert_eq!(pool_data(pool), payload(task));
-    0
-}
+    Ok(())
+};
 
 fn test_func_task_protocol(pool: *mut Pool) {
     set_protocol(pool, Protocol::Task);
@@ -766,7 +766,7 @@ fn test_func_task_protocol(pool: *mut Pool) {
     install(
         pool,
         Hooks {
-            on_task: Some(task_protocol_on_task),
+            on_task: Some(TASK_PROTOCOL_ON_TASK),
             ..Hooks::default()
         },
     );
@@ -1014,13 +1014,13 @@ fn shutdown_on_worker_start(pool: PoolRef<'_>, _: WorkerHandle<'_>) {
     ms_sleep(1);
 }
 
-fn shutdown_on_task(pool: PoolRef<'_>, _: WorkerHandle<'_>, _: Packed<'_>) -> c_int {
+const SHUTDOWN_ON_TASK: TaskFn = |pool, _, _| {
     let pool = pool.raw().cast::<Pool>();
     ms_sleep(1000);
     // SAFETY: kill(2) on the master.
     unsafe { kill((*pool).master_pid, SIGTERM) };
-    0
-}
+    Ok(())
+};
 
 fn dispatch_random_128(pool: PoolRef<'_>) {
     let pool = pool.raw().cast::<Pool>();
@@ -1046,7 +1046,7 @@ fn shutdown_() {
             pool,
             Hooks {
                 on_worker_start: Some(shutdown_on_worker_start),
-                on_task: Some(shutdown_on_task),
+                on_task: Some(SHUTDOWN_ON_TASK),
                 on_start: Some(dispatch_random_128),
                 ..Hooks::default()
             },
@@ -1585,7 +1585,7 @@ fn listen_rejects_truncated_stream_packet() {
     assert_eq!(messages[1], b"sentinel");
 }
 
-fn truncated_task_on_task(pool: PoolRef<'_>, _: WorkerHandle<'_>, task: Packed<'_>) -> c_int {
+const TRUNCATED_TASK_ON_TASK: TaskFn = |pool, _, task| {
     let pool = pool.raw().cast::<Pool>();
     let messages = messages(pool);
     messages.push(payload(task).to_vec());
@@ -1593,8 +1593,8 @@ fn truncated_task_on_task(pool: PoolRef<'_>, _: WorkerHandle<'_>, task: Packed<'
         // SAFETY: the running pool.
         unsafe { (*pool).running = false };
     }
-    SW_OK
-}
+    Ok(())
+};
 
 fn listen_rejects_truncated_task_packet() {
     let pool = new_pool();
@@ -1610,7 +1610,7 @@ fn listen_rejects_truncated_task_packet() {
         install(
             pool,
             Hooks {
-                on_task: Some(truncated_task_on_task),
+                on_task: Some(TRUNCATED_TASK_ON_TASK),
                 ..Hooks::default()
             },
         );
@@ -1647,7 +1647,7 @@ fn listen_rejects_truncated_task_packet() {
     assert_eq!(messages[1], b"sentinel");
 }
 
-fn malformed_on_task(pool: PoolRef<'_>, _: WorkerHandle<'_>, task: Packed<'_>) -> c_int {
+const MALFORMED_ON_TASK: TaskFn = |pool, _, task| {
     let pool = pool.raw().cast::<Pool>();
     // SAFETY: the case's counter.
     unsafe { *(*pool).ptr.cast::<usize>() += 1 };
@@ -1655,8 +1655,8 @@ fn malformed_on_task(pool: PoolRef<'_>, _: WorkerHandle<'_>, task: Packed<'_>) -
         // SAFETY: the running pool.
         unsafe { (*pool).running = false };
     }
-    SW_OK
-}
+    Ok(())
+};
 
 /// `get_worker(0)->send_pipe_message(event, n, SW_PIPE_MASTER)`.
 fn send_to_worker(pool: *mut Pool, event: &EventData, n: usize) -> Option<usize> {
@@ -1684,7 +1684,7 @@ fn task_protocol_rejects_malformed_packets() {
         install(
             pool,
             Hooks {
-                on_task: Some(malformed_on_task),
+                on_task: Some(MALFORMED_ON_TASK),
                 ..Hooks::default()
             },
         );
@@ -1736,7 +1736,7 @@ fn task_protocol_rejects_malformed_socket_packet() {
         install(
             pool,
             Hooks {
-                on_task: Some(malformed_on_task),
+                on_task: Some(MALFORMED_ON_TASK),
                 ..Hooks::default()
             },
         );
@@ -2071,6 +2071,28 @@ fn child_exit_on_after_reload(pool: PoolRef<'_>) {
     counter_incr(25);
 }
 
+fn failed_main_loop_sets_worker_exit_status() {
+    let pool = new_pool();
+    assert_eq!(create(pool, 1, 0, SW_IPC_NONE), SW_OK);
+    install(
+        pool,
+        Hooks {
+            main_loop: Some(|_, _| Err(CallbackError::Failed)),
+            ..Hooks::default()
+        },
+    );
+    assert_eq!(start(pool), SW_OK);
+    // SAFETY: start spawned the only worker and stored its pid in the live pool.
+    let pid = unsafe { (*get_worker(pool, 0)).pid };
+    assert!(pid > 0);
+    let mut status = 0;
+    // SAFETY: pid is our child and status is writable for the call.
+    assert_eq!(unsafe { waitpid(pid, &raw mut status, 0) }, pid);
+    assert!(libc::WIFEXITED(status));
+    assert_eq!(libc::WEXITSTATUS(status), 255);
+    destroy(pool);
+}
+
 fn reload_from_child_exit_callback() {
     let pool = new_pool();
     counter_init();
@@ -2160,6 +2182,10 @@ pub(super) fn check_layout() {
 pub(super) const CASES: super::Cases = &[
     ("tcp", tcp),
     ("unix_sock", unix_sock),
+    (
+        "failed_main_loop_sets_worker_exit_status",
+        failed_main_loop_sets_worker_exit_status,
+    ),
     (
         "task_protocol_rejects_malformed_packets",
         task_protocol_rejects_malformed_packets,

@@ -1,6 +1,7 @@
 //! The streaming `multipart/form-data` parser upstream bundled as
 //! `thirdparty/multipart_parser.c` (node-formidable's, by way of libcat), state for
 //! state: the same callbacks, results, quirks and error messages.
+use swoole_rs_corebase::CCast;
 
 /// A callback's result: upstream's 0 goes on, `MPPE_PAUSED` stops
 /// [`MultipartParser::execute`] where the parser is, any other value fails the call.
@@ -116,11 +117,8 @@ impl MultipartParser {
         stored.extend_from_slice(boundary);
         // Upstream terminates the copy; the boundary match can read that NUL.
         stored.push(0);
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream's unsigned char boundary_length"
-        )]
-        let boundary_length = boundary.len().wrapping_add(2) as u8;
+        // Upstream's `unsigned char boundary_length`.
+        let boundary_length = boundary.len().wrapping_add(2).c_cast::<u8>();
         MultipartParser {
             boundary: stored,
             boundary_length,

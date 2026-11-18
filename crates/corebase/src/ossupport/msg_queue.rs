@@ -62,13 +62,10 @@ const fn blocking_flags(flags: c_int, blocking: bool) -> c_int {
 }
 
 /// `swoole::MsgQueue`.
-#[repr(C)]
 pub struct QueueRecord {
-    blocking: bool,
     id: c_int,
     key: libc::key_t,
     flags: c_int,
-    perms: c_int,
 }
 
 impl QueueRecord {
@@ -101,13 +98,7 @@ impl QueueRecord {
         } else {
             blocking_flags(0, blocking)
         };
-        Self {
-            blocking,
-            id,
-            key,
-            flags,
-            perms,
-        }
+        Self { id, key, flags }
     }
 
     #[must_use]
@@ -284,6 +275,7 @@ fn node_parts(node: &[u8]) -> Option<(c_long, usize)> {
 #[cfg(target_os = "linux")]
 use libc::msqid_ds as MsqidDs;
 #[cfg(target_os = "macos")]
+// `repr(C)`: Darwin's `struct msqid_ds`, which `msgctl` fills.
 #[repr(C, packed(4))]
 #[derive(Clone, Copy)]
 struct MsqidDs {
@@ -491,7 +483,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no msgget")]
     fn a_private_queue_round_trips_reports_empty_quietly_and_is_removed_on_drop() {
         let queue = QueueRecord::new(libc::IPC_PRIVATE, false, 0);
-        assert_eq!(queue.perms, 0o666, "default permissions");
+        assert_eq!(permissions(0), 0o666, "default permissions");
         if !queue.ready() {
             return; // SysV IPC unavailable in this sandbox.
         }

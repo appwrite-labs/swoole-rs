@@ -45,13 +45,11 @@ struct FormData {
         static std::vector<FormData *> all;
         return all;
     }
-    static void *operator new(size_t size) {
-        void *memory = ::operator new(size);
-        owned().push_back(static_cast<FormData *>(memory));
-        return memory;
+    FormData() : multipart_boundary_buf(nullptr), multipart_boundary_len(0) {
+        owned().push_back(this);
     }
     static void release() {
-        for (FormData *data : owned()) ::operator delete(data);
+        for (FormData *data : owned()) delete data;
         owned().clear();
     }
 };

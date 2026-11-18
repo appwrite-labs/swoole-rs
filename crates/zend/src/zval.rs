@@ -259,6 +259,7 @@ pub struct Insertions<'a>(&'a Array);
 /// let escaped = Zvals::with([&value], |args| args);
 /// ```
 #[derive(Clone, Copy)]
+// `repr(C)`: passed by value to the shims as `swr_zvals` (`crates/zend-sys/src/shim_values.h`).
 #[repr(C)]
 pub struct Zvals<'a> {
     argv: *mut zval,
@@ -378,6 +379,7 @@ pub struct Value(Cell<zval>);
 
 /// A zval's value word, type and `u2`, without the unions bindgen gives
 /// them: what [`Value::word`], [`Value::kind`] and [`Value::u2`] read.
+// `repr(C)`: read out of a `zval` in place.
 #[repr(C)]
 struct Tagged {
     word: *mut c_void,
@@ -704,6 +706,18 @@ impl Value {
         name: &CStr,
     ) -> Result<Option<Owned>, bailout::Bailout> {
         self.read(self.scope(scope), name.to_bytes(), false)
+    }
+
+    /// `zend_read_property(scope, object, name, 0)` under a class this crate
+    /// didn't register, as [`Value::read_property_loud`].
+    /// # Errors
+    /// The bailout a `__get` or the warning's error handler raised, trapped.
+    pub fn read_property_of(
+        &self,
+        scope: crate::ClassEntry<'_>,
+        name: &CStr,
+    ) -> Result<Option<Owned>, bailout::Bailout> {
+        self.read(Some(scope), name.to_bytes(), false)
     }
 
     /// The class a property read sees the object's properties as: `scope`,
@@ -1296,6 +1310,7 @@ impl<'a> Iterator for Entries<'a> {
 /// A borrowed `zend_string`: the counted header, the cached hash and the
 /// length, which Zend reads and writes through pointers on this thread, then
 /// the bytes and the NUL after them, which run on past the struct.
+// `repr(C)`: Zend's `zend_string`.
 #[repr(C)]
 pub struct ZStr {
     counted: Counted,

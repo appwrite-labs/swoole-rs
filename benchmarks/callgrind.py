@@ -122,6 +122,8 @@ WORKLOADS = {
     'sqlite': ('benchmarks/hooks', 'GET', '/sqlite', None, b'ok\n'),
     'curl': ('benchmarks/hooks', 'GET', '/curl', None, b'ok\n'),
     'dns': ('benchmarks/hooks', 'GET', '/dns', None, b'ok\n'),
+    # The hooked plain-file stream wrapper (#5145): no configure flag of its own; it shares the server.
+    'file': ('benchmarks/hooks', 'GET', '/file', None, b'ok\n'),
     # Build variants (#2683), each on its own pair: a coroutine file read through io_uring on the
     # --enable-iouring build, and a Swoole\Thread start and join on the ZTS --enable-swoole-thread one.
     'uring-file': ('benchmarks/variants', 'GET', '/file', None, VARIANT_FILE),

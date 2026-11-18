@@ -159,8 +159,7 @@ const AS_SOCKETD: c_int = 2;
 const AS_FD_FOR_SELECT: c_int = 3;
 
 /// `E_NOTICE`.
-#[expect(clippy::cast_possible_wrap, reason = "error levels are small")]
-const E_NOTICE: i32 = swoole_rs_zend::sys::E_NOTICE as i32;
+const E_NOTICE: i32 = swoole_rs_zend::sys::E_NOTICE.cast_signed();
 
 /// A stream's `abstract`: the socket, shared with an operation in flight so a
 /// close while it waits only drops this reference.
@@ -685,7 +684,7 @@ fn xport_api(stream: Stream<'_>, socket: &Socket, xport: Xport<'_>) -> Result<()
                 Some(to) => SocketAddress::from_bytes(to).sendto(socket.fd(), data, 0),
             };
             let sent = sent.map_or(-1, usize::cast_signed);
-            p.outputs.returncode = returncode(sent);
+            p.outputs.returncode = sent.c_cast::<c_int>();
             if p.outputs.returncode == -1 {
                 // `php_socket_strerror`: `strerror` of the code.
                 let mut message = Message::new();
@@ -700,15 +699,12 @@ fn xport_api(stream: Stream<'_>, socket: &Socket, xport: Xport<'_>) -> Result<()
             }
             let mut room = recv.map(ReadVec::fill);
             let buffer = room.as_mut().map_or(&mut [][..], Fill::slots);
-            p.outputs.returncode = if p.inputs.flags & STREAM_PEEK == STREAM_PEEK {
-                returncode(
-                    socket
-                        .recv(RecvOp::Peek, buffer)
-                        .map_or(-1, usize::cast_signed),
-                )
+            let received = if p.inputs.flags & STREAM_PEEK == STREAM_PEEK {
+                socket.recv(RecvOp::Peek, buffer)
             } else {
                 recvfrom(socket, p, buffer)
             };
+            p.outputs.returncode = received.map_or(-1, usize::cast_signed).c_cast::<c_int>();
         }
         xport::SHUTDOWN => {
             let how = [libc::SHUT_RD, libc::SHUT_WR, libc::SHUT_RDWR];
@@ -721,10 +717,6 @@ fn xport_api(stream: Stream<'_>, socket: &Socket, xport: Xport<'_>) -> Result<()
         _ => {}
     }
     Ok(())
-}
-
-fn returncode(bytes: isize) -> c_int {
-    bytes.c_cast::<c_int>()
 }
 
 /// `STREAM_OOB`: unsupported.
@@ -898,14 +890,10 @@ fn recvfrom(
     socket: &Socket,
     param: &mut php_stream_xport_param,
     buffer: &mut [MaybeUninit<u8>],
-) -> c_int {
+) -> Option<usize> {
     let (want_textaddr, want_addr) = (param.want_textaddr() != 0, param.want_addr() != 0);
     if !want_textaddr && !want_addr {
-        return returncode(
-            socket
-                .recv(RecvOp::Recv, buffer)
-                .map_or(-1, usize::cast_signed),
-        );
+        return socket.recv(RecvOp::Recv, buffer);
     }
     let mut peer = SocketAddress::default();
     let received = socket.recvfrom(buffer, &mut peer);
@@ -921,7 +909,7 @@ fn recvfrom(
             param.outputs.addrlen = 0;
         }
     }
-    returncode(received.map_or(-1, usize::cast_signed))
+    received
 }
 
 /// `socket_enable_crypto`: whether it succeeded (upstream's 1, else -1).

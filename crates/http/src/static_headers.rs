@@ -1,6 +1,7 @@
 //! Static response header encoding. Native retains allocation, dates and IO.
 use crate::{OVERFLOW, c_text};
 use std::io::Write;
+use swoole_rs_corebase::CCast;
 
 /// A static response's head; each text is read as `%s`, up to its first NUL.
 pub struct HttpStaticHeaders<'a> {
@@ -104,12 +105,10 @@ pub fn static_headers(header: &HttpStaticHeaders<'_>) -> Result<Vec<u8>, i32> {
                     length,
                     filesize,
                 }) => {
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        clippy::cast_sign_loss,
-                        reason = "native size_t arithmetic on the off_t range offset"
-                    )]
-                    let end = length.wrapping_add(offset as usize).wrapping_sub(1);
+                    // Native `size_t` arithmetic on the `off_t` range offset.
+                    let end = length
+                        .wrapping_add(offset.c_cast::<usize>())
+                        .wrapping_sub(1);
                     write!(sink, "Content-Range: bytes {offset}-{end}/{filesize}\r\n")?;
                 }
                 StaticHead::File(StaticRange::Accept) => {

@@ -15,6 +15,7 @@ use std::ptr::NonNull;
 
 /// An `ares_channel`'s state. Only an [`OwnedChannel`] lends one, and only to its
 /// own thread: c-ares does no locking here.
+// `repr(C)`: c-ares' opaque channel.
 #[repr(C)]
 pub struct Channel {
     _opaque: [u8; 0],
@@ -40,6 +41,7 @@ impl Drop for OwnedChannel {
     }
 }
 /// Constants read from the actual SDK, including its server API generation.
+// `repr(C)`: C's `struct metadata` (`sdk.c`), returned by `swrs_cares_metadata`.
 #[repr(C)]
 pub struct Metadata {
     pub library_all: c_int,

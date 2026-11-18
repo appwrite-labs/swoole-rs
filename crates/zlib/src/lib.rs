@@ -204,10 +204,10 @@ impl Stream {
     }
 
     /// `deflateReset`: the deflate stream as `deflateInit2` left it, keeping its
-    /// level, window and memory. zlib's status.
-    pub fn reset(&mut self) -> c_int {
+    /// level, window and memory: whether zlib did.
+    pub fn reset(&mut self) -> bool {
         // zlib refuses an inflate stream.
-        deflateReset(&mut self.z)
+        deflateReset(&mut self.z) == Z_OK
     }
 
     /// `deflateBound` for `length` input bytes.

@@ -52,8 +52,7 @@ thread_local! {
 /// fails is dropped and one that ends well goes back with [`keep`].
 fn stream(level: c_int, window_bits: c_int) -> Result<Stream, c_int> {
     let kept = KEPT.take().and_then(|(kept_level, kept_bits, mut stream)| {
-        ((kept_level, kept_bits) == (level, window_bits) && stream.reset() == Z_OK)
-            .then_some(stream)
+        ((kept_level, kept_bits) == (level, window_bits) && stream.reset()).then_some(stream)
     });
     kept.map_or_else(|| Stream::deflate(level, window_bits, MEM_LEVEL), Ok)
 }

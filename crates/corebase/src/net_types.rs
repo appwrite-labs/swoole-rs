@@ -2,6 +2,7 @@
 use core::ffi::c_int;
 
 /// `network::Address`'s storage: the largest of the address families it holds.
+// `repr(C)`: libc's socket address storage, which `connect`, `bind` and `getsockname` read and fill.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub union AddressStorage {
@@ -14,6 +15,7 @@ pub union AddressStorage {
 }
 
 /// `network::Address`: the storage, its length and its `swSocketType`.
+// `repr(C)`: C's `network::Address` inside the socket record (`native/reactor/swoole_rs_socket.h`).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SocketAddress {
@@ -259,7 +261,6 @@ unsafe extern "C" {
 /// `swoole::PacketLength`: the bytes a length function measures, and the header
 /// length it reports. Rust makes one only over a borrowed slice, so `buf` holds
 /// `buf_size` readable bytes; native code that passes one promises the same.
-#[repr(C)]
 pub struct PacketLength<'a> {
     buf: *const u8,
     buf_size: u32,
@@ -290,14 +291,4 @@ impl<'a> PacketLength<'a> {
         // SAFETY: `buf` holds `buf_size` readable bytes for `'a` (the type's invariant).
         unsafe { core::slice::from_raw_parts(self.buf, self.buf_size as usize) }
     }
-}
-
-/// `swoole::RecvData`: a received package's head and its `info.len` bytes at `data`.
-/// It stays `repr(C)`: a `Protocol`'s `onPackage` hands it to C++ as `const RecvData *`
-/// (`native/framing/swoole_protocol.h`), which the oracle's framing shim
-/// (`crates/oracle/shim/framing_stream.cc`) reads in place.
-#[repr(C)]
-pub struct RecvData {
-    pub info: crate::DataHead,
-    pub data: *const u8,
 }

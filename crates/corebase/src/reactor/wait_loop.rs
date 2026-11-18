@@ -44,7 +44,6 @@ pub(crate) fn uring() -> Option<&'static UringOps> {
 /// Upstream's `swoole::Event`: what a handler is called with. Its socket is a heap
 /// record the registry named, live until its owner's free, as any [`crate::reactor::Heap`] is:
 /// C++ that hands one over vouches for it by the field's type.
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Event {
     fd: c_int,

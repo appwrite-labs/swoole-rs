@@ -52,10 +52,8 @@ pub fn encode(input: &[u8], output: &mut [u8]) -> usize {
 
 const fn decoding_table() -> [u8; 256] {
     let mut table = [u8::MAX; 256];
-    let mut index = 0;
+    let (mut index, mut value) = (0, 0_u8);
     while index < ALPHABET.len() {
-        #[expect(clippy::cast_possible_truncation, reason = "index < 64")]
-        let value = index as u8;
         #[expect(
             clippy::indexing_slicing,
             reason = "index < 64 and a u8 indexes 256 entries; get() isn't const"
@@ -64,6 +62,7 @@ const fn decoding_table() -> [u8; 256] {
             table[ALPHABET[index] as usize] = value;
         }
         index += 1;
+        value += 1;
     }
     table
 }

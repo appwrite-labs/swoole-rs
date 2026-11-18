@@ -43,6 +43,7 @@ type Owner<T> = core::cell::Cell<Option<Box<T>>>;
 /// Every field but the three owners the record lends in place (`registry`, `queue`
 /// and `message_box`) is a cell or an atomic, so a handle writes it through
 /// `&PoolRecord` while other loans of the record are live.
+// `repr(C)`: `native/process/swoole_rs_process_views.h` mirrors it for the system fixture.
 #[repr(C)]
 pub struct PoolRecord {
     pub running: Cell<bool>,
@@ -694,10 +695,21 @@ impl<'a> RecvData<'a> {
 pub type PoolFn = fn(PoolRef<'_>);
 /// `onWorkerStart`, `onWorkerStop`, `onWorkerExit`.
 pub type WorkerFn = fn(PoolRef<'_>, Worker<'_>);
-/// `main_loop`: the worker's loop, and its exit code.
-pub type MainLoopFn = fn(PoolRef<'_>, Worker<'_>) -> c_int;
+/// A worker or server callback could not complete its operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallbackError {
+    /// The callback or the state it requires is missing.
+    Missing,
+    /// The installed handler declined or failed to process the event.
+    Failed,
+}
+
+pub type CallbackResult = Result<(), CallbackError>;
+
+/// `main_loop`: the outcome of running the worker loop.
+pub type MainLoopFn = fn(PoolRef<'_>, Worker<'_>) -> CallbackResult;
 /// `onTask`: the task the worker read.
-pub type TaskFn = fn(PoolRef<'_>, Worker<'_>, Packed<'_>) -> c_int;
+pub type TaskFn = fn(PoolRef<'_>, Worker<'_>, Packed<'_>) -> CallbackResult;
 /// `onMessage`: the message, lent for the call.
 pub type MessageFn = fn(PoolRef<'_>, &mut RecvData<'_>);
 /// `onWorkerMessage`: the `EventData` the master popped, as its bytes.
@@ -854,7 +866,7 @@ impl PoolRef<'_> {
         clippy::must_use_candidate,
         reason = "callers ignore the result where upstream's do"
     )]
-    pub fn call_main_loop(self, worker: Worker<'_>) -> Option<c_int> {
+    pub fn call_main_loop(self, worker: Worker<'_>) -> Option<CallbackResult> {
         Some(self.main_loop()?(self, worker))
     }
 
@@ -869,7 +881,7 @@ impl PoolRef<'_> {
         clippy::must_use_candidate,
         reason = "callers ignore the result where upstream's do"
     )]
-    pub fn call_on_task(self, worker: Worker<'_>, task: Packed<'_>) -> Option<c_int> {
+    pub fn call_on_task(self, worker: Worker<'_>, task: Packed<'_>) -> Option<CallbackResult> {
         Some(self.on_task()?(self, worker, task))
     }
 

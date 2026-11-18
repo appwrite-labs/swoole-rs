@@ -14,10 +14,16 @@
   +----------------------------------------------------------------------+
 */
 
-/* pdo_odbc's statement side that stays C: PDO's method signatures, Zend allocation and
- * the native statement record. crates/odbc/src/statement.rs has the operations. One copy
+/* pdo_odbc's statement side. crates/odbc/src/statement.rs has the operations. One copy
  * serves every supported PHP version; each supplies the diagnostic locations of its own
- * ext/pdo_odbc/odbc_stmt.c. */
+ * ext/pdo_odbc/odbc_stmt.c.
+ *
+ * Stays C (docs/zend.md, What stays C): allocator (column and parameter buffers, column
+ * names and result strings are Zend's to allocate and free), bailout (converting a bound
+ * value to a string, releasing the value an output parameter replaces and a stream's stat
+ * can run PHP code) and budget (pdo_stmt_t's columns and bound parameters, read as PDO's
+ * own drivers read them). The method table is C because PDO declares each entry over
+ * pdo_stmt_t pointers, which the C compiler checks against the functions here. */
 #include "php_swoole_odbc.h"
 
 #ifdef SW_USE_ODBC

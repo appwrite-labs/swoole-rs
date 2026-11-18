@@ -42,11 +42,10 @@ fn system_interval(milliseconds: i64) -> NativeTime {
 /// `setitimer`'s errno.
 pub fn swr_v1_timer_system_set(milliseconds: i64) -> std::io::Result<()> {
     let interval = system_interval(milliseconds);
-    let every = libc::timeval {
-        tv_sec: interval.seconds,
-        // Under a million microseconds.
-        tv_usec: libc::suseconds_t::try_from(interval.fraction).unwrap_or_default(),
-    };
+    let every = crate::sys::timeval(
+        interval.seconds,
+        i32::try_from(interval.fraction).unwrap_or_default(),
+    );
     let value = libc::itimerval {
         it_interval: every,
         it_value: every,

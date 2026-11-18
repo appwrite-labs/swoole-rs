@@ -27,6 +27,7 @@
 )]
 
 mod functions;
+mod plain_files;
 mod putenv;
 mod select;
 mod sleep;
@@ -157,6 +158,7 @@ mod registration {
     use swoole_rs_zend::Minit;
 
     /// A `php_stream_wrapper`, which is only passed on by address.
+    // `repr(C)`: PHP's opaque `php_stream_wrapper`.
     #[repr(C)]
     pub(super) struct Wrapper([u8; 0]);
 

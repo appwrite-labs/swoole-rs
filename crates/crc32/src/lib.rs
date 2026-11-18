@@ -12,10 +12,9 @@
 )]
 const fn tables() -> [[u32; 256]; 8] {
     let mut entries = [[0; 256]; 8];
-    let mut index = 0;
+    let (mut index, mut seed) = (0, 0_u32);
     while index < 256 {
-        #[expect(clippy::cast_possible_truncation, reason = "index < 256")]
-        let mut value = index as u32;
+        let mut value = seed;
         let mut bit = 0;
         while bit < 8 {
             value = (value >> 1) ^ (0xedb8_8320 * (value & 1));
@@ -23,6 +22,7 @@ const fn tables() -> [[u32; 256]; 8] {
         }
         entries[0][index] = value;
         index += 1;
+        seed += 1;
     }
     let mut row = 1;
     while row < entries.len() {

@@ -572,14 +572,13 @@ pub fn execute<'i>(cb: &mut (impl Callbacks<'i> + ?Sized), data: &'i [u8]) -> Re
     let parser = run.cb.parser();
     let span = parser.span;
     let start = parser.span_start;
-    if span != Span::None {
-        let error = run.call(span, start, data.len());
-        if error != 0 {
-            let parser = run.cb.parser();
-            parser.error = error;
-            parser.error_pos = data.len();
-            return Err(error);
-        }
+    if span != Span::None
+        && let Err(error) = run.call(span, start, data.len())
+    {
+        let parser = run.cb.parser();
+        parser.error = error;
+        parser.error_pos = data.len();
+        return Err(error);
     }
     Ok(())
 }
@@ -779,11 +778,11 @@ impl<'i, C: Callbacks<'i> + ?Sized> Run<'_, 'i, C> {
         self.cb.parser()
     }
 
-    /// A span's callback, with `SPAN_CALLBACK_MAYBE`'s -1 as `HPE_USER`.
-    fn call(&mut self, span: Span, start: usize, end: usize) -> i32 {
+    /// A span's callback: its error, with `SPAN_CALLBACK_MAYBE`'s -1 as `HPE_USER`.
+    fn call(&mut self, span: Span, start: usize, end: usize) -> Result<(), i32> {
         let data = self.data.get(start..end).unwrap_or_default();
         let (error, reason) = match span {
-            Span::None => return 0,
+            Span::None => return Ok(()),
             Span::Url => (
                 self.cb.on_url(data).code(),
                 &"Span callback error in on_url",
@@ -801,11 +800,14 @@ impl<'i, C: Callbacks<'i> + ?Sized> Run<'_, 'i, C> {
                 &"Span callback error in on_body",
             ),
         };
-        if error == -1 {
-            self.parser().reason = Some(reason);
-            return HPE_USER;
+        match error {
+            0 => Ok(()),
+            -1 => {
+                self.parser().reason = Some(reason);
+                Err(HPE_USER)
+            }
+            error => Err(error),
         }
-        error
     }
 
     /// Consume the byte and go to `next`.
@@ -882,11 +884,11 @@ impl<'i, C: Callbacks<'i> + ?Sized> Run<'_, 'i, C> {
         let span = parser.span;
         let start = parser.span_start;
         parser.span = Span::None;
-        let error = self.call(span, start, self.p);
+        let called = self.call(span, start, self.p);
         if eat {
             self.p += 1;
         }
-        if error != 0 {
+        if let Err(error) = called {
             let p = self.p;
             let parser = self.parser();
             parser.error = error;

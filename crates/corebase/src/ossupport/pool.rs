@@ -11,7 +11,6 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// Native callbacks, fixed when the shared pool is first created.
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct PoolHooks {
     /// `swoole_thread_init(false)`, first thing on a worker thread.

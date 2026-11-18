@@ -14,10 +14,16 @@
   +----------------------------------------------------------------------+
 */
 
-/* pdo_odbc's connection side that stays C: PDO's method signatures, Zend allocation and
- * the native connection record. crates/odbc/src/driver.rs has the operations. One copy
+/* pdo_odbc's connection side. crates/odbc/src/driver.rs has the operations. One copy
  * serves every supported PHP version; each supplies the diagnostic locations of its own
- * ext/pdo_odbc/odbc_driver.c. Nothing after the tables below reads __LINE__. */
+ * ext/pdo_odbc/odbc_driver.c. Nothing after the tables below reads __LINE__.
+ *
+ * Stays C (docs/zend.md, What stays C): allocator (the connection record, the statement
+ * record and the data source copy are Zend's to allocate and free), version (the driver
+ * header's API number, pdo_dbh_t's bitfields and data_source_len), variadic (the connect
+ * exception's format) and bailout (pdo_parse_params can raise). The method table is C
+ * because PDO declares each entry over pdo_dbh_t and pdo_stmt_t pointers, which the C
+ * compiler checks against the functions here. */
 #include "php_swoole_odbc.h"
 
 #ifdef SW_USE_ODBC

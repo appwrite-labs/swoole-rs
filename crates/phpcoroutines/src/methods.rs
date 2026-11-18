@@ -520,7 +520,8 @@ fn get_back_trace(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let (options, limit) = (narrow(options), narrow(limit));
+    // `(int) value`, as C's conversion to the `int` Zend takes.
+    let (options, limit) = (options.c_cast::<i32>(), limit.c_cast::<i32>());
     // The return slot holds nothing yet, as the frames were written straight into it.
     let trace = || call.set_owned(tracer::backtrace(0, options, limit));
     if cid == 0 || cid == runtime::get_cid() {
@@ -535,11 +536,6 @@ fn get_back_trace(call: &Call) {
     ctx.in_frame(trace);
 }
 
-/// `(int) value`, as C's conversion to the `int` Zend takes.
-fn narrow(value: i64) -> i32 {
-    value.c_cast::<i32>()
-}
-
 /// `sw_php_print_backtrace`.
 fn print_backtrace(
     php: Php<'_>,
@@ -548,7 +544,8 @@ fn print_backtrace(
     limit: i64,
     call: Option<&Call>,
 ) -> Result<(), Bailout> {
-    let (options, limit) = (narrow(options), narrow(limit));
+    // `(int) value`, as C's conversion to the `int` Zend takes.
+    let (options, limit) = (options.c_cast::<i32>(), limit.c_cast::<i32>());
     let trace = if cid == 0 || cid == runtime::get_cid() {
         tracer::backtrace(1, options, limit)
     } else {

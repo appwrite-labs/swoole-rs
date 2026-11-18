@@ -28,6 +28,7 @@ pub(crate) struct Fields {
 /// A `Server *`: the head C++ and [`Server`] read.
 /// It owns the state it names, which it frees when it drops, so a borrowed object
 /// is a live server ([`Server::of_object`]).
+// `repr(C)`: read through a pointer to its leading fields (`Fields`).
 #[repr(C)]
 pub(crate) struct ServerObject {
     head: Fields,

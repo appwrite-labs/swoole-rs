@@ -110,7 +110,10 @@ struct Connection {
 };
 
 namespace redis {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
 #include "resp_stream_upstream.inc"
+#pragma GCC diagnostic pop
 }  // namespace redis
 
 static std::string *events;

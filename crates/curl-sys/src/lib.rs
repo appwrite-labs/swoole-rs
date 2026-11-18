@@ -18,11 +18,13 @@ use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 /// `CURL`, only ever passed by pointer.
+// `repr(C)`: libcurl's opaque easy handle.
 #[repr(C)]
 pub struct CURL {
     _opaque: [u8; 0],
 }
 /// `CURLM`, only ever passed by pointer.
+// `repr(C)`: libcurl's opaque multi handle.
 #[repr(C)]
 pub struct CURLM {
     _opaque: [u8; 0],
@@ -94,6 +96,7 @@ pub const CURL_CSELECT_ERR: c_int = 4;
 pub const CURLMSG_DONE: c_int = 1;
 
 /// `CURLMsg`: `data` is a union of `void *whatever` and `CURLcode result`.
+// `repr(C)`: libcurl's `CURLMsg`, which `curl_multi_info_read` returns.
 #[repr(C)]
 pub struct CURLMsg {
     pub msg: c_int,

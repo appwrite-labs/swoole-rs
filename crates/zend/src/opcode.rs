@@ -32,6 +32,7 @@ pub(crate) struct Executing<'a>(
 
 /// A frame's first words, as Zend lays them out: each pointer a `Cell` and `This`
 /// a [`Value`], as Zend writes them through pointers on this thread.
+// `repr(C)`: the head of Zend's `zend_execute_data`.
 #[repr(C)]
 struct Head {
     opline: Cell<*const zend_op>,

@@ -19,8 +19,8 @@ use crate::{
 use crate::buffer::string::StringBuffer;
 use crate::ossupport::fd_write_all;
 
+use crate::constants::SW_IPC_MAX_SIZE;
 use crate::process::methods::swoole_get_worker_id;
-use crate::process::process_pool::SW_IPC_MAX_SIZE;
 
 /// Why reading a task's temporary file failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,13 +184,10 @@ fn pack_payload<T: AsRef<CStr>>(
 /// `swoole::EventData`'s header (`DataHead`), which native asserts is 40 bytes.
 pub use crate::DataHead as EventHead;
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "SW_IPC_MAX_SIZE is a few KiB"
-)]
 const IPC_PAYLOAD: usize = SW_IPC_MAX_SIZE as usize - size_of::<DataHead>();
 
 /// `swoole::EventData`: the header, then the payload one pipe message holds.
+// `repr(C)`: C's `EventData` (`native/corebase/swoole.h`): a head, then its payload.
 #[repr(C)]
 pub struct EventData {
     head: DataHead,
@@ -200,6 +197,7 @@ pub struct EventData {
 /// An `EventData` to pack a task into. Its payload starts uninitialized, as a
 /// stack `swoole::EventData` does, and only [`Self::pack`] sets the head's `len`,
 /// so the bytes it counts are always written.
+// `repr(C)`: sent and received as its head followed by its payload bytes.
 #[repr(C)]
 pub struct TaskBuffer {
     head: DataHead,

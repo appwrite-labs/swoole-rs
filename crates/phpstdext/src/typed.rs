@@ -36,6 +36,7 @@ const fn code(kind: u32) -> u8 {
 }
 
 /// Upstream's `ArrayTypeValue`.
+// `repr(C)`: C's `swr_type_value` (`stdext.c`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct TypeValue {
@@ -48,6 +49,7 @@ struct TypeValue {
 /// Upstream's `ArrayTypeInfo`, followed by `len` bytes of definition and a NUL.
 /// Its `ce` is the class of an object value type, which outlives the request's
 /// arrays: borrowed for `'a`, as long as the array it describes.
+// `repr(C)`: C's `swr_type_info` (`stdext.c`).
 #[repr(C)]
 struct TypeInfo<'a> {
     this: TypeValue,

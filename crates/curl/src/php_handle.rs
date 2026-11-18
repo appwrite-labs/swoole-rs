@@ -80,7 +80,6 @@ unsafe extern "C" {
     safe fn swoole_curl_set_easy(handle: PhpHandle<'_>, easy: Easy<'_>);
     safe fn curl_easy_duphandle(source: Easy<'_>) -> *mut swoole_rs_curl_sys::CURL;
     safe fn swoole_setup_easy_copy_handlers(clone: PhpHandle<'_>, source: PhpHandle<'_>);
-    safe fn swoole_curl_clone_postfields(clone: PhpHandle<'_>, source: PhpHandle<'_>) -> bool;
     safe fn swoole_curl_error_number(handle: PhpHandle<'_>) -> c_int;
     safe fn swoole_curl_error_buffer(handle: PhpHandle<'_>) -> Text<'_>;
     safe fn curl_easy_strerror(code: c_int) -> Text<'static>;
@@ -310,7 +309,7 @@ fn clone_object(source: PhpHandle<'_>) -> swoole_rs_zend::Owned {
         crate::swr_v1_curl_create_handle(easy);
         let mut ok = false;
         let result = swoole_rs_zend::contain_with(|| {
-            ok = swoole_curl_clone_postfields(clone, source);
+            ok = super::postfields::copy(clone, source);
         });
         if result.is_err() {
             swoole_rs_zend::bailout::defer(result);

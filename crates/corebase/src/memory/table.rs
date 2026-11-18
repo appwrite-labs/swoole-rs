@@ -80,7 +80,6 @@ pub type Error = fn(code: c_int);
 /// change only under the bucket's lock, and `active` is also read before it
 /// (`del`, the iterator), as upstream does. All-zero bytes are an unlocked,
 /// inactive row with no key or link, which is how `create` makes one.
-#[repr(C)]
 pub struct Row {
     lock: AtomicU32,
     lock_pid: AtomicI32,
@@ -291,7 +290,6 @@ pub struct Stats {
 /// Invariant: while `memory` holds a mapping, it is the arena `create` laid out:
 /// bucket row `i` is at `first + i * stride` and `pool` is a fixed pool of
 /// collision rows.
-#[repr(C)]
 pub struct Table {
     mutex: SharedMutex,
     iterator_mutex: SharedMutex,

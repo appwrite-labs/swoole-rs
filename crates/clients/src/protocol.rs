@@ -69,6 +69,7 @@ impl<'a> Package<'a> {
 
 /// `swoole::Protocol`, whole (`split_by_eof` is a C++ `bool`). The callbacks are
 /// nullable function pointers, upstream's layout.
+// `repr(C)`: C's `Protocol` (`native/framing/swoole_protocol.h`), embedded in `swr_v1_co_socket`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Protocol {

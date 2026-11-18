@@ -575,17 +575,7 @@ fn alarm(call: &Call) {
     }
     // Zero is a disarmed timer.
     let usec = usec.max(0);
-    #[cfg_attr(
-        not(target_vendor = "apple"),
-        expect(
-            trivial_numeric_casts,
-            reason = "suseconds_t is i64 here, i32 on macOS"
-        )
-    )]
-    let interval = libc::timeval {
-        tv_sec: usec / 1_000_000,
-        tv_usec: (usec % 1_000_000) as libc::suseconds_t,
-    };
+    let interval = swoole_rs_corebase::sys::timeval(usec / 1_000_000, (usec % 1_000_000).c_cast());
     let timer = libc::itimerval {
         it_interval: interval,
         it_value: interval,
@@ -608,19 +598,18 @@ fn start(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let pid = worker::fork(worker);
-    match pid.cmp(&0) {
-        std::cmp::Ordering::Less => {
+    match worker::fork(worker) {
+        None => {
             sys(E_WARNING, &message!("fork() failed"));
             call.set_bool(false);
         }
-        std::cmp::Ordering::Greater => {
+        Some(pid) if pid > 0 => {
             // Upstream names Server as the scope; the property is public, so
             // the scope does not change which slot is written.
             call.update_property_long(Some(&PROCESS), c"pid", i64::from(pid));
             call.set_long(i64::from(pid));
         }
-        std::cmp::Ordering::Equal => {
+        Some(_) => {
             // The child returns here only when it could not start.
             if let Some(this) = call.this_value() {
                 start_child(worker, this);

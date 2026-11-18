@@ -69,6 +69,7 @@ impl CoroutineTask {
 pub type SwapCallback = Option<extern "C" fn(CoroutineTask)>;
 
 /// One coroutine. `native` is the `swoole::Coroutine` record that starts with it.
+// `repr(C)`: the bundled `proc_open` reads `native` through `native/coroutine/swoole_coroutine.h`.
 #[repr(C)]
 #[derive(Debug)]
 pub struct Coroutine {
@@ -137,7 +138,6 @@ impl Coroutine {
 /// record, `Coroutine::native`, starts with it). Rust frames between these
 /// calls own nothing with a destructor, so a coroutine stack the bailout
 /// abandons, or a longjmp out of a callback, skips no cleanup.
-#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Hooks {
     /// Switches into the coroutine; returns once it yields or ends, and whether it ended.
@@ -155,6 +155,7 @@ pub struct Hooks {
 }
 
 /// Per-thread scheduler state (one per PHP thread under ZTS).
+// `repr(C)`: the bundled `proc_open` reads `current` through `native/coroutine/swoole_coroutine.h`.
 #[repr(C)]
 #[derive(Debug)]
 pub struct Scheduler {

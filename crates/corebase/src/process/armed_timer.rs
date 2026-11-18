@@ -12,6 +12,7 @@ pub type Cancel = extern "C-unwind" fn(generation: u64, id: c_long);
 /// thread's timer numbers its ids from the start each time it is made, so the id
 /// is kept with the generation of the timer that issued it
 /// (`swoole_rs_corebase::timer::Held::generation`), in the layout native code declares.
+// `repr(C)`: a member of the pool record `native/process/swoole_rs_process_views.h` mirrors.
 #[repr(C)]
 pub struct ArmedTimer {
     generation: u64,

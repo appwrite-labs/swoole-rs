@@ -104,7 +104,8 @@ std::vector<int> exercise() {
     usleep(2000);CHECK(shared.unlock()==0);int status;CHECK(waitpid(child,&status,0)==child);CHECK(WIFEXITED(status)&&WEXITSTATUS(status)==0);CHECK(*payload==12345);munmap(payload,4096);
     Barrier barrier{};barrier.init(false,4);int slots[4]={0,0,0,0};threads.clear();
     for(int i=0;i<4;i++)threads.emplace_back([&,i]{slots[i]=1;barrier.wait();for(int j:slots)assert(j==1);});
-    for(auto&t:threads)t.join();barrier.destroy();
+    for (auto &thread : threads) thread.join();
+    barrier.destroy();
     return results;
 }
 

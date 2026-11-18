@@ -46,6 +46,7 @@ compile_error!("coroutine: no fcontext switch for x86_64 with 32-bit pointers (x
 
 /// What a jump hands the context it lands in: the context it left, and its data, the
 /// coroutine whose context switches (every jump passes one).
+// `repr(C)`: passed by value to the context entry (`extern "C" fn(Transfer)`) and by the switch's assembly.
 #[repr(C)]
 pub(crate) struct Transfer {
     pub(crate) fctx: *mut c_void,

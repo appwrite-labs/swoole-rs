@@ -71,17 +71,20 @@ mod php {
             .expect("zend-sys: bindgen")
             .write_to_file(out.join("bindings.rs"))
             .expect("zend-sys: write bindings");
-        cc::Build::new()
-            .files(
-                sources
-                    .iter()
-                    .filter(|p| p.extension().is_some_and(|e| e == "c")),
-            )
-            .includes(&includes)
-            // Run native scope cleanup when a C++ caller unwinds through a C
-            // shim. Zend longjmp uses the explicit cleanup in the guard macros.
-            .flag("-fexceptions")
-            .warnings(true)
-            .compile("swoole_rs_zend_shim");
+        let mut shim = cc::Build::new();
+        for dir in &includes {
+            shim.flag("-isystem").flag(dir.as_os_str());
+        }
+        shim.files(
+            sources
+                .iter()
+                .filter(|p| p.extension().is_some_and(|e| e == "c")),
+        )
+        // Run native scope cleanup when a C++ caller unwinds through a C
+        // shim. Zend longjmp uses the explicit cleanup in the guard macros.
+        .flag("-fexceptions")
+        .warnings(true)
+        .warnings_into_errors(true)
+        .compile("swoole_rs_zend_shim");
     }
 }

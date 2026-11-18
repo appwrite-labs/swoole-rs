@@ -73,6 +73,7 @@ struct Conninfo(NonNull<ConnOption<'static>>);
 
 /// `PQconninfoOption`, its strings typed as what libpq makes them: null, or
 /// NUL-terminated and live as long as the array. A null keyword ends the array.
+// `repr(C)`: libpq's `PQconninfoOption`.
 #[repr(C)]
 struct ConnOption<'a> {
     keyword: Option<Text<'a>>,
