@@ -1525,6 +1525,8 @@ extern "C" zend_result swoole_curl_setopt_native(php_curl *ch, zend_long option,
     }
 }
 /* }}} */
+
+/* {{{ _php_curl_cleanup_handle(ch)
    Cleanup an execution phase */
 void swoole_curl_cleanup_handle(php_curl *ch) {
     smart_str_free(&ch->handlers.write->buf);
