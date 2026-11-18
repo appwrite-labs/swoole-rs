@@ -576,7 +576,7 @@ pub(crate) mod tests {
     fn unavailable_record_reads_do_not_allocate_or_receive() {
         let mut fake = Box::new(buffered_fake());
         let mut socket = socket_for(&mut fake, false, b"", 1024);
-        socket.0.sock_fd.set(-1);
+        socket.0.set_test_fd(-1);
         let mut out = [0; 1];
         assert_eq!(recv_buffered(socket.co(), &mut out), None);
         assert_eq!(recv_packet(socket.co(), 0.0), None);

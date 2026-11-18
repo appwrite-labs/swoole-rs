@@ -372,7 +372,7 @@ mod tests {
         unsafe { socket.0.record() }.timeouts.write = 1.0;
         socket.0.err_code.set(9);
         if failure == 1 {
-            socket.0.sock_fd.set(-1);
+            socket.0.set_test_fd(-1);
         }
         TIMER_OK.set(failure != 2);
         ON_SUSPEND.set(Some(Box::new(move |socket: Co, event| {
@@ -404,7 +404,7 @@ mod tests {
         )
         .map_or(-1, usize::cast_signed);
         let error = socket.0.err_code.get();
-        socket.0.sock_fd.set(100);
+        socket.0.set_test_fd(100);
         ON_SUSPEND.set(None);
         let effects = take()
             .into_iter()

@@ -268,8 +268,7 @@ pub extern "C" fn swoole_coroutine_socket_unwrap(fd: c_int) -> c_int {
         return -1;
     };
     // `move_fd`, so its deletion leaves the fd open.
-    unwrapped.co().set_sock_fd(-1);
-    unwrapped.co().net(|record| record.fd = -1);
+    unwrapped.co().move_fd();
     drop(unwrapped);
     0
 }
@@ -341,7 +340,7 @@ pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     if coroutine().is_none() {
         return sys::close(fd).map_or(-1, |()| 0);
     }
-    if let Some(closed) = socket_map::close(fd, Co::close) {
+    if let Some(closed) = socket_map::close(fd, Co::close_mapped) {
         return if closed { 0 } else { -1 };
     }
     #[cfg(feature = "iouring")]

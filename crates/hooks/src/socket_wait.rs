@@ -474,9 +474,9 @@ mod tests {
     #[test]
     fn a_wake_with_an_error_or_close_fails() {
         let mut s = socket(0);
-        ON_SUSPEND.set(Some(Box::new(|socket: Co, _| socket.set_sock_fd(-1))));
+        ON_SUSPEND.set(Some(Box::new(|socket: Co, _| socket.move_fd())));
         assert!(!wait_on(&mut s, Events::READ, None));
-        s.0.sock_fd.set(100);
+        s.0.set_test_fd(100);
     }
 
     // Upstream's poll: is_available, the direction's timeout when none is given,
@@ -510,10 +510,10 @@ mod tests {
         crate::co_io::test_host::TIMER_OK.set(false);
         assert!(!poll(s.co(), Events::READ, 1.0));
         assert_eq!(effects(), ["timer:add:1"]);
-        s.0.sock_fd.set(-1);
+        s.0.set_test_fd(-1);
         assert!(!poll(s.co(), Events::READ, 1.0));
         assert_eq!(effects(), Vec::<String>::new());
-        s.0.sock_fd.set(100);
+        s.0.set_test_fd(100);
     }
 
     // Upstream's error_event_callback: resume the writer, then the reader while

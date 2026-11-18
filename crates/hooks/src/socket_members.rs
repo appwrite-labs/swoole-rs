@@ -752,7 +752,7 @@ mod tests {
             record
                 .socket
                 .set(Some(Box::new(SocketRecord::with_fd(-1, 6)).into_socket()));
-            record.sock_fd.set(100);
+            record.set_test_fd(100);
             let co = object.co();
             object.record().socket_mut().set_owner(Some(co));
             object
@@ -889,7 +889,7 @@ mod tests {
     fn listen_stores_the_backlog_and_reports_a_closed_socket() {
         install();
         let mut object = Object::new();
-        object.record().sock_fd.set(-1);
+        object.record().set_test_fd(-1);
         assert!(!object.co().listen(0));
         assert_eq!(object.record().err_code.get(), libc::EBADF);
         assert_eq!(object.record().backlog.get(), 0);

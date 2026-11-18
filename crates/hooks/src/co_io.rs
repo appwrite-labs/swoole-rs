@@ -3,7 +3,7 @@
 //! buffer, `recv` and the packet callbacks). Over them,
 //! the record's `set_err`, `check_return_value` and `is_available`, and the
 //! per-direction timer (`TimerController`).
-use crate::co_socket::Co;
+use crate::co_socket::{Co, Descriptor};
 use crate::shutdown::WaitTimer;
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 #[cfg(test)]
@@ -390,12 +390,10 @@ pub(crate) fn available(socket: Co, event: Events) -> bool {
         // The report may close the socket, so it is read again after.
         check_bound(socket, event);
     }
-    let error = if socket.is_closed() {
-        libc::EBADF
-    } else if socket.net(|record| record.output.close_wait) == Some(true) {
-        CLOSE_WAIT_ERROR
-    } else {
-        return true;
+    let error = match socket.descriptor() {
+        Descriptor::Open(_) => return true,
+        Descriptor::Closing(_) => CLOSE_WAIT_ERROR,
+        Descriptor::Closed => libc::EBADF,
     };
     set_err(socket, error);
     false
@@ -945,18 +943,19 @@ mod tests {
             let mut socket = TestSocket::new();
             let mut ids = [5, 7];
             bind(&socket, bound, &mut ids);
-            socket.0.sock_fd.set(if state == 1 { -1 } else { 100 });
+            socket.0.set_test_fd(if state == 1 { -1 } else { 100 });
             unsafe { socket.0.record() }.output.close_wait = state == 2;
             let target = socket.co();
             if closes {
-                ON_BOUND.set(Some(Box::new(move || target.set_sock_fd(-1))));
+                ON_BOUND.set(Some(Box::new(move || target.move_fd())));
             }
             set_errno(0);
             take();
             let mut expected = Vec::new();
             let mut closed = state == 1;
             if !event.is_empty() {
-                let (_, _, effects) = upstream_bound(socket.0.sock_fd.get(), bound, [5, 7], event);
+                let (_, _, effects) =
+                    upstream_bound(socket.0.descriptor().raw_fd(), bound, [5, 7], event);
                 closed |= closes && effects.len() == 2;
                 expected = effects;
             }
@@ -979,7 +978,7 @@ mod tests {
             );
             assert_eq!(take(), expected, "scenario {}", k + 72);
             ON_BOUND.set(None);
-            socket.0.sock_fd.set(100);
+            socket.0.set_test_fd(100);
         }
     }
 

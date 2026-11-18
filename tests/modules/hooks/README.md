@@ -82,7 +82,7 @@ slice of pollfds and a `SendMessage` or `RecvMessage` of borrowed buffers (as
 `coroutine_socket.sendmsg_and_recvmsg` passes `Co::sendmsg` and `recvmsg`). Upstream's test helpers are written out over
 libc (`File`, `String`, `create_socket_pair`, `file_get_contents`,
 `Address::assign`), `System::gethostbyname` is `resolve::system_gethostbyname`,
-and `exists` reads the socket's `sock_fd` through the hybrid's record layout.
+and `exists` reads the mapped socket's transport descriptor.
 `coroutine_hook.socket` resolves `localhost` and connects to an ephemeral loopback
 HTTP peer instead of public `www.baidu.com:80`. Its request bytes, hook operations,
 assertions and coroutine/non-coroutine runs are unchanged. The peer checks the

@@ -109,7 +109,6 @@ struct Record {
     sock_domain: c_int,
     sock_type: c_int,
     sock_protocol: c_int,
-    sock_fd: c_int,
     connect_port: c_int,
     backlog: c_int,
     buffer_allocator: *const c_void,
@@ -387,7 +386,7 @@ impl Sock {
     }
 
     fn is_closed(&self) -> bool {
-        self.record().sock_fd == -1
+        self.co().is_closed()
     }
 
     fn check_liveness(&self) -> bool {
@@ -408,7 +407,7 @@ impl Sock {
     }
 
     fn fd(&self) -> c_int {
-        self.record().sock_fd
+        self.co().sock_fd()
     }
 
     /// `get_socket()->set_option(SOL_SOCKET, name, size)`.

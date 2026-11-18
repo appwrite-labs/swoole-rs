@@ -97,38 +97,6 @@ struct SockAddrIn {
     zero: [u8; 8],
 }
 
-/// `swoole::Protocol`, as the coroutine socket's record holds it.
-#[repr(C)]
-struct Protocol {
-    split_by_eof: bool,
-    package_eof: [u8; 8],
-    package_eof_len: u8,
-    package_length_type: u8,
-    package_length_size: u8,
-    package_length_offset: u16,
-    package_body_offset: u16,
-    package_max_length: u32,
-    callbacks: [*mut c_void; 5],
-}
-
-/// The head of the hybrid's coroutine `Socket`, which is `swr_v1_co_socket`
-/// (native/hooks/swoole_rs_co_socket.h), up to `sock_fd`.
-#[repr(C)]
-struct CoSocket {
-    err_code: c_int,
-    err_msg: *const c_char,
-    open_length_check: bool,
-    open_eof_check: bool,
-    http2: bool,
-    protocol: Protocol,
-    kind: c_int,
-    socket: *mut c_void,
-    sock_domain: c_int,
-    sock_type: c_int,
-    sock_protocol: c_int,
-    sock_fd: c_int,
-}
-
 unsafe extern "C" {
     fn swoole_coroutine_sleep(sec: c_int);
     pub(super) fn swoole_coroutine_usleep(usec: c_int);
@@ -825,10 +793,13 @@ fn exists() {
         assert_eq!(socket_create(fd), 0);
         // SAFETY: a lookup.
         assert!(unsafe { swoole_coroutine_socket_exists(fd) } != 0);
-        let sock = swoole_coroutine_get_socket_object(fd).cast::<CoSocket>();
+        let sock = swoole_coroutine_get_socket_object(fd);
         assert!(!sock.is_null());
         // SAFETY: the live socket the map holds.
-        assert_eq!(unsafe { (*sock).sock_fd }, fd);
+        assert_eq!(
+            unsafe { swoole_rs_hooks::co_socket::Co::new(sock.cast()) }.sock_fd(),
+            fd
+        );
         co_close(fd);
     });
 }

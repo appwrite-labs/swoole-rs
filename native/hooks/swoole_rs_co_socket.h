@@ -24,7 +24,6 @@ struct swr_v1_co_socket {
     int sock_domain;
     int sock_type;
     int sock_protocol;
-    int sock_fd;
     int connect_port;
     int backlog;
     const swoole::Allocator *buffer_allocator;
@@ -65,7 +64,7 @@ static_assert(sizeof(swoole::Protocol) == 64 && offsetof(swoole::Protocol, packa
                   offsetof(swoole::Protocol, private_data_1) == 24,
               "swoole::Protocol is Rust's Protocol");
 static_assert(offsetof(swr_v1_co_socket, protocol) == 24 && offsetof(swr_v1_co_socket, type) == 88 &&
-                  offsetof(swr_v1_co_socket, socket) == 96 && offsetof(swr_v1_co_socket, backlog) == 124 &&
+                  offsetof(swr_v1_co_socket, socket) == 96 && offsetof(swr_v1_co_socket, backlog) == 120 &&
                   offsetof(swr_v1_co_socket, buffer_allocator) == 128 &&
                   offsetof(swr_v1_co_socket, ssl_is_server) == 160 &&
                   offsetof(swr_v1_co_socket, resolve_context_) == 168 && offsetof(swr_v1_co_socket, extra_) == 184 && sizeof(swr_v1_co_socket) == 192,
