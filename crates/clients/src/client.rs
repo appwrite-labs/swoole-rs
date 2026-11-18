@@ -878,12 +878,12 @@ impl<'a> Handle<'a> {
     /// leaves the pending bytes to the loop that already owns them.
     fn with_framed(
         self,
-        receive: impl FnOnce(&ClientFraming, Socket<'_>, &mut CppString) -> c_int,
-    ) -> c_int {
+        receive: impl FnOnce(&ClientFraming, Socket<'_>, &mut CppString) -> bool,
+    ) -> bool {
         let framing = self.get().framing.clone();
         let mut buffer = framing.input.replace(CppString::EMPTY);
         if buffer.size() == 0 {
-            return if self.input().is_null() { ERR } else { OK };
+            return !self.input().is_null();
         }
         let result = receive(&framing, self.socket(), &mut buffer);
         framing.input.set(buffer);
@@ -1904,10 +1904,10 @@ fn on_read(this: Handle<'_>) -> bool {
         let framed = if eof { framing.eof } else { framing.length };
         let socket = this.socket();
         // A package callback may destroy the client; its socket outlives this handler.
-        let n = this.with_framed(framed);
+        let received = this.with_framed(|state, socket, buffer| framed(state, socket, buffer) >= 0);
         // A destroyed client cleared its object.
         let released = socket.read(|socket| socket.object.is_null());
-        if n < 0 && !released && !this.flag(Flag::Closed) {
+        if !received && !released && !this.flag(Flag::Closed) {
             close(this);
         }
         return true;

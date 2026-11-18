@@ -996,34 +996,21 @@ fn pending_handshake_keeps_its_hostname_and_verification_snapshot() {
 fn the_framed_receive_buffer_stays_usable_across_input_edits() {
     let client = client(1, true, true);
     let handle = Handle::raw(client);
-    assert_eq!(
-        handle.with_framed(|_, _, _| panic!("uninitialized input")),
-        ERR
-    );
+    assert!(!handle.with_framed(|_, _, _| panic!("uninitialized input")));
     handle.input_init();
     handle.input_clear();
-    let size = handle.with_framed(|_, _, buffer| {
+    assert!(handle.with_framed(|_, _, buffer| {
         buffer.append(b"partial");
-        assert_eq!(
-            handle.with_framed(|_, _, _| panic!("nested read took the buffer")),
-            OK
-        );
-        c_int::try_from(buffer.size()).unwrap()
-    });
-    assert!(usize::try_from(size).unwrap() >= CLIENT_BUFFER_SIZE);
-    let length = handle.with_framed(|_, _, buffer| {
-        assert_eq!(buffer.view(), b"partial");
-        c_int::try_from(buffer.len()).unwrap()
-    });
-    assert_eq!(length, 7);
+        assert!(handle.with_framed(|_, _, _| panic!("nested read took the buffer")));
+        buffer.size() >= CLIENT_BUFFER_SIZE
+    }));
+    assert!(handle.with_framed(|_, _, buffer| buffer.view() == b"partial"));
     handle.input_clear();
-    let length = handle.with_framed(|framing, _, buffer| {
+    assert!(handle.with_framed(|framing, _, buffer| {
         assert!(buffer.is_empty());
         buffer.append(b"last");
         free(client);
         assert!(framing.protocol().on_package.is_none());
-        assert_eq!(buffer.view(), b"last");
-        c_int::try_from(buffer.len()).unwrap()
-    });
-    assert_eq!(length, 4);
+        buffer.view() == b"last"
+    }));
 }
