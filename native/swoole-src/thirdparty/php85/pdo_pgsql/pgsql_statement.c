@@ -88,7 +88,6 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt)
 {
 	pdo_pgsql_stmt *S = (pdo_pgsql_stmt*)stmt->driver_data;
 	pdo_pgsql_db_handle *H = S->H;
-	int dispatch_result = 1;
 
 	bool in_trans = stmt->dbh->methods->in_transaction(stmt->dbh);
 
@@ -109,72 +108,12 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt)
 		if (!pdo_pgsql_open_cursor(stmt->dbh, stmt, &S->result, S->cursor_name, &S->is_prepared, ZSTR_VAL(stmt->active_query_string))) {
 			return 0;
 		}
-	} else if (S->stmt_name) {
-		/* using a prepared statement */
-
-		if (!S->is_prepared) {
-			int count = stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0;
-			if (!pdo_pgsql_prepare_statement(stmt->dbh, stmt, &S->result, S->stmt_name,
-					ZSTR_VAL(S->query), count, S->params.types)) {
-				return 0;
-			}
-			S->is_prepared = true;
-		}
-		if (S->is_unbuffered) {
-			dispatch_result = PQsendQueryPrepared(pdo_pgsql_server(H), S->stmt_name,
-					stmt->bound_params ?
-						zend_hash_num_elements(stmt->bound_params) :
-						0,
-					S->params.values,
-					S->params.lengths,
-					S->params.formats,
-					0);
-		} else {
-			S->result = PQexecPrepared(pdo_pgsql_server(H), S->stmt_name,
-				stmt->bound_params ?
-					zend_hash_num_elements(stmt->bound_params) :
-					0,
-				S->params.values,
-				S->params.lengths,
-				S->params.formats,
-				0);
-		}
-	} else if (stmt->supports_placeholders == PDO_PLACEHOLDER_NAMED) {
-		/* execute query with parameters */
-		if (S->is_unbuffered) {
-			dispatch_result = PQsendQueryParams(pdo_pgsql_server(H), ZSTR_VAL(S->query),
-					stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0,
-					S->params.types,
-					S->params.values,
-					S->params.lengths,
-					S->params.formats,
-					0);
-		} else {
-			S->result = PQexecParams(pdo_pgsql_server(H), ZSTR_VAL(S->query),
-				stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0,
-				S->params.types,
-				S->params.values,
-				S->params.lengths,
-				S->params.formats,
-				0);
-		}
-	} else {
-		/* execute plain query (with embedded parameters) */
-		if (S->is_unbuffered) {
-			dispatch_result = PQsendQuery(pdo_pgsql_server(H), ZSTR_VAL(stmt->active_query_string));
-		} else {
-			S->result = PQexec(pdo_pgsql_server(H), ZSTR_VAL(stmt->active_query_string));
-		}
+	} else if (!pdo_pgsql_dispatch(stmt, S, S->is_unbuffered)) {
+		return 0;
 	}
-
 	*pdo_pgsql_running_stmt(H) = S;
 
 	if (S->is_unbuffered) {
-		if (!dispatch_result) {
-			pdo_pgsql_error_stmt(stmt, 0, NULL);
-			*pdo_pgsql_running_stmt(H) = NULL;
-			return 0;
-		}
 		S->is_running_unbuffered = true;
 		(void)PQsetSingleRowMode(pdo_pgsql_server(H));
 		/* no matter if it returns 0: PQ then transparently fallbacks to full result fetching */

@@ -3,6 +3,14 @@
 
 #ifdef SW_USE_PGSQL
 #include "pgsql_statement.h"
+bool pdo_pgsql_dispatch(pdo_stmt_t *stmt, pdo_pgsql_stmt *S, bool unbuffered) {
+    bool named = stmt->supports_placeholders == PDO_PLACEHOLDER_NAMED;
+    zend_string *query = named || S->stmt_name ? S->query : stmt->active_query_string;
+    unsigned int count = stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0;
+    return pdo_pgsql_send_statement(stmt->dbh, stmt, &S->result, S->stmt_name, ZSTR_VAL(query),
+                                    S->params.owner, count, &S->is_prepared, named, unbuffered);
+}
+
 int pdo_pgsql_stmt_fetch(pdo_stmt_t *stmt, enum pdo_fetch_orientation ori, zend_long offset) {
     pdo_pgsql_stmt *S = stmt->driver_data;
 #if PHP_VERSION_ID >= 80500
@@ -79,7 +87,8 @@ int pdo_pgsql_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *par
     }
     pdo_pgsql_stmt *S = stmt->driver_data;
     if (!S->params.owner) {
-        pdo_pgsql_init_parameters(&S->params, zend_hash_num_elements(stmt->bound_param_map));
+        S->params.count = zend_hash_num_elements(stmt->bound_param_map);
+        S->params.owner = pdo_pgsql_allocate_parameters(S->params.count);
     }
     if (param->paramno < 0) {
         return 1;

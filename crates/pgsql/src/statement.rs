@@ -325,8 +325,7 @@ extern "C" fn pdo_pgsql_close_statement(handle: &Handle, name: Text<'_>) {
 
 /// Prepare once parameter types are known. A pooled connection may still have
 /// this generated name from its previous client; remove it and retry once.
-#[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_prepare_statement(
+fn prepare_statement(
     dbh: &Dbh,
     stmt: &Stmt,
     slot: &Cell<Option<crate::PgResult>>,
@@ -361,6 +360,67 @@ extern "C" fn pdo_pgsql_prepare_statement(
     }
     if let Some(old) = slot.take() {
         crate::PQclear(old);
+    }
+    true
+}
+
+/// Queue the statement in libpq. Buffered statements use the coroutine-aware
+/// flush and receive path; PHP 8.5 enables single-row mode just after the send.
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_send_statement(
+    dbh: &Dbh,
+    stmt: &Stmt,
+    result: &Cell<Option<crate::PgResult>>,
+    name: Option<Text<'_>>,
+    query: Text<'_>,
+    params: Option<&ParameterStorage>,
+    count: u32,
+    prepared: &Cell<bool>,
+    named: bool,
+    unbuffered: bool,
+) -> bool {
+    use crate::Params;
+    let Some(handle) = crate::driver::handle(dbh) else {
+        return false;
+    };
+    let conn = crate::driver::pdo_pgsql_server(handle);
+    if (named || name.is_some()) && count as usize > params.map_or(0, |p| p.owned.len()) {
+        crate::driver::pdo_pgsql_raise(
+            dbh,
+            Some(stmt),
+            0,
+            Some(c"HY093".into()),
+            Some(c"parameter was not defined".into()),
+        );
+        return false;
+    }
+    let Ok(count) = c_int::try_from(count) else {
+        return false;
+    };
+    let types = Params(params.map_or(std::ptr::null(), |p| p.types.as_ptr().cast()));
+    let values = Params(params.map_or(std::ptr::null(), |p| p.values.as_ptr().cast()));
+    let lengths = Params(params.map_or(std::ptr::null(), |p| p.lengths.as_ptr().cast()));
+    let formats = Params(params.map_or(std::ptr::null(), |p| p.formats.as_ptr().cast()));
+    let sent = if let Some(name) = name {
+        if !prepared.get() {
+            if !prepare_statement(dbh, stmt, result, name, query, count, types) {
+                return false;
+            }
+            prepared.set(true);
+        }
+        crate::PQsendQueryPrepared(conn, Some(name), count, values, lengths, formats, 0)
+    } else if named {
+        crate::PQsendQueryParams(conn, Some(query), count, types, values, lengths, formats, 0)
+    } else {
+        crate::PQsendQuery(conn, query)
+    };
+    if unbuffered {
+        if sent == 0 {
+            crate::driver::pdo_pgsql_raise(dbh, Some(stmt), 0, None, None);
+            return false;
+        }
+    } else {
+        result.set(std::ptr::NonNull::new(crate::finish(conn, sent)).map(crate::PgResult));
     }
     true
 }
@@ -464,25 +524,14 @@ struct BoundValue {
     reason = "the C statement owns this opaque pointer until its destructor"
 )]
 #[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_allocate_parameters(
-    count: usize,
-    values: &mut *const *const std::ffi::c_char,
-    lengths: &mut *const c_int,
-    formats: &mut *const c_int,
-    types: &mut *const Oid,
-) -> Box<ParameterStorage> {
-    let owner = Box::new(ParameterStorage {
+extern "C" fn pdo_pgsql_allocate_parameters(count: usize) -> Box<ParameterStorage> {
+    Box::new(ParameterStorage {
         values: vec![Cell::new(std::ptr::null()); count],
         lengths: vec![Cell::new(0); count],
         formats: vec![Cell::new(0); count],
         types: vec![Cell::new(0); count],
         owned: (0..count).map(|_| BoundValue::default()).collect(),
-    });
-    *values = owner.values.as_ptr().cast();
-    *lengths = owner.lengths.as_ptr().cast();
-    *formats = owner.formats.as_ptr().cast();
-    *types = owner.types.as_ptr().cast();
-    owner
+    })
 }
 
 impl ParameterStorage {

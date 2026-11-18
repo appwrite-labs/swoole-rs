@@ -76,7 +76,6 @@ static int pgsql_stmt_dtor(pdo_stmt_t *stmt) {
 
 static int pgsql_stmt_execute(pdo_stmt_t *stmt) {
     pdo_pgsql_stmt *S = (pdo_pgsql_stmt *) stmt->driver_data;
-    pdo_pgsql_db_handle *H = S->H;
 
     bool in_trans = stmt->dbh->methods->in_transaction(stmt->dbh);
 
@@ -92,37 +91,8 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt) {
         if (!pdo_pgsql_open_cursor(stmt->dbh, stmt, &S->result, S->cursor_name, &S->is_prepared, ZSTR_VAL(stmt->active_query_string))) {
             return 0;
         }
-    } else if (S->stmt_name) {
-        /* using a prepared statement */
-
-        if (!S->is_prepared) {
-            int count = stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0;
-            if (!pdo_pgsql_prepare_statement(stmt->dbh, stmt, &S->result, S->stmt_name,
-                    ZSTR_VAL(S->query), count, S->params.types)) {
-                return 0;
-            }
-            S->is_prepared = true;
-        }
-        S->result = PQexecPrepared(pdo_pgsql_server(H),
-                                   S->stmt_name,
-                                   stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0,
-                                   S->params.values,
-                                   S->params.lengths,
-                                   S->params.formats,
-                                   0);
-    } else if (stmt->supports_placeholders == PDO_PLACEHOLDER_NAMED) {
-        /* execute query with parameters */
-        S->result = PQexecParams(pdo_pgsql_server(H),
-                                 ZSTR_VAL(S->query),
-                                 stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0,
-                                 S->params.types,
-                                 S->params.values,
-                                 S->params.lengths,
-                                 S->params.formats,
-                                 0);
-    } else {
-        /* execute plain query (with embedded parameters) */
-        S->result = PQexec(pdo_pgsql_server(H), ZSTR_VAL(stmt->active_query_string));
+    } else if (!pdo_pgsql_dispatch(stmt, S, false)) {
+        return 0;
     }
     if (!pdo_pgsql_execution_result(stmt->dbh, stmt, S->result)) {
         return 0;

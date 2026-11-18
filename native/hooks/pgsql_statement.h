@@ -56,7 +56,10 @@ bool pdo_pgsql_check_parameter(pdo_dbh_t *dbh, pdo_stmt_t *stmt, HashTable *map,
 bool pdo_pgsql_execution_result(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult *result);
 void pdo_pgsql_finish_result(PGconn *active, PGresult **result, bool abort_query);
 void pdo_pgsql_close_statement(pdo_pgsql_db_handle *H, const char *name);
-bool pdo_pgsql_prepare_statement(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *name, const char *sql, int count, const Oid *types);
+bool pdo_pgsql_dispatch(pdo_stmt_t *stmt, pdo_pgsql_stmt *S, bool unbuffered);
+bool pdo_pgsql_send_statement(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *name,
+                              const char *query, const void *params, unsigned int count, bool *prepared,
+                              bool named, bool unbuffered);
 void pdo_pgsql_close_cursor(pdo_pgsql_db_handle *H, const char *cursor);
 bool pdo_pgsql_open_cursor(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *cursor, bool *prepared, const char *sql);
 int pdo_pgsql_stmt_describe(pdo_stmt_t *stmt, int colno);
