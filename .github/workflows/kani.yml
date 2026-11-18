@@ -1,0 +1,22 @@
+name: Kani
+on:
+  schedule:
+    - cron: '22 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  proofs:
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/install
+      - name: Install Kani
+        run: |
+          cargo install --locked --version 0.68.0 kani-verifier
+          cargo kani setup
+      - name: Verify decoder bounds
+        run: >
+          cargo kani --lib -p swoole-rs-corebase -p swoole-rs-framing
+          -p swoole-rs-http -p swoole-rs-http2 -p swoole-rs-websocket
+          -Z unstable-options --harness-timeout 3m --output-format terse

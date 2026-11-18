@@ -939,7 +939,7 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
         FrameAction::PingReply => {
             // RFC 9113 6.7: the ACK echoes the PING's eight payload bytes; any
             // other length is a FRAME_SIZE_ERROR.
-            let Ok(echo) = <[u8; PING_PAYLOAD]>::try_from(payload) else {
+            let Ok(echo) = swoole_rs_http2::ping_payload(payload) else {
                 return false;
             };
             let mut ack = [0; FRAME_HEADER + PING_PAYLOAD];
@@ -955,10 +955,9 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
         FrameAction::WindowUpdate => {
             // RFC 9113 6.9: the increment's four bytes; any other length is a
             // FRAME_SIZE_ERROR.
-            let Ok(increment) = <[u8; 4]>::try_from(payload) else {
+            let Ok(value) = swoole_rs_http2::window_increment(payload) else {
                 return false;
             };
-            let value = u32::from_be_bytes(increment);
             if stream_id == 0 {
                 session
                     .remote_window_size

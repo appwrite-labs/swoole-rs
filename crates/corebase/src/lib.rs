@@ -1,3 +1,8 @@
+// Kani 0.68's compiler predates stabilization of these Rust 1.100 features.
+#![cfg_attr(
+    kani,
+    feature(never_type, drop_guard, unsafe_cell_access, trim_prefix_suffix)
+)]
 #![expect(
     clippy::disallowed_types,
     reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
@@ -712,3 +717,7 @@ pub use resolver_request::*;
 mod name_resolver;
 use crate::log::LogLevel::SW_LOG_ERROR as LOG_ERROR;
 pub use name_resolver::*;
+
+#[cfg(kani)]
+#[path = "../../../tests/modules/process/kani.rs"]
+mod proofs;

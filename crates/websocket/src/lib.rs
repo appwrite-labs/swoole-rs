@@ -200,3 +200,7 @@ mod handshake_tests {
         );
     }
 }
+
+#[cfg(kani)]
+#[path = "../../../tests/modules/websocket/kani.rs"]
+mod proofs;
