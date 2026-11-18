@@ -1,5 +1,6 @@
-//! PHP entry points over the bundled `php_curl` object. Native accessors supply
-//! the version-specific field offsets, and the argument zval owns the object.
+//! PHP entry points from both bundled `thirdparty/php*/curl/interface.cc` copies.
+//! The argument zval keeps its `php_curl` object alive. Native accessors supply
+//! the version-specific field offsets for callbacks, streams and option storage.
 use crate::Easy;
 use std::{ffi::c_int, marker::PhantomData, ptr::NonNull};
 use swoole_rs_corebase::sys::Text;
@@ -367,37 +368,6 @@ pub extern "C" fn swoole_curl_cast_object(object: ObjectRef<'_>, result: &mut st
     }
 }
 
-/// Zend has finished using this object; no transfer can still own its easy handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn swoole_curl_free_obj(object: ObjectRef<'_>) {
-    let result = swoole_rs_zend::contain_with(|| {
-        if let Some(handle) = swoole_curl_object_handle(object) {
-            let easy = swoole_curl_easy(handle);
-            if !easy.0.is_null() {
-                if !swoole_curl_prepare_free(handle) {
-                    return;
-                }
-                if let Some(owner) = easy.handle()
-                    && let Some(multi) = owner.multi()
-                {
-                    multi.remove_handle(owner);
-                }
-                if swoole_curl_release_clone(handle) {
-                    swoole_curl_free_lists(handle);
-                }
-                // Each duplicate has its own easy and coroutine handle. Only
-                // the option lists are shared by the clone family.
-                crate::swr_v1_curl_destroy_handle(crate::Retired(easy));
-                curl_easy_cleanup(crate::Retired(easy));
-                swoole_curl_free_callbacks(handle);
-                swoole_curl_release_values(handle);
-            }
-        }
-        zend_object_std_dtor(object);
-    });
-    swoole_rs_zend::bailout::defer(result);
-}
-
 /// Enumerate edges held outside Zend's standard object properties.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_curl_get_gc(object: ObjectRef<'_>, table: &mut std::mem::MaybeUninit<*mut swoole_rs_zend::sys::zval>, count: &mut std::mem::MaybeUninit<c_int>) -> *mut std::ffi::c_void {
@@ -429,5 +399,39 @@ pub extern "C" fn swoole_curl_clone_obj(object: ObjectRef<'_>) -> *mut swoole_rs
 pub extern "C" fn swoole_curl_get_constructor(_object: ObjectRef<'_>) -> *mut swoole_rs_zend::sys::zend_function {
     swoole_rs_zend::throw_error(c"Cannot directly construct CurlHandle, use curl_init() instead");
     std::ptr::null_mut()
+}
+}
+
+swoole_rs_zend::exports! {
+    preserve_pending:
+/// Zend has finished using this object; no transfer can still own its easy handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn swoole_curl_free_obj(object: ObjectRef<'_>) {
+    let result = swoole_rs_zend::contain_with(|| {
+        if let Some(handle) = swoole_curl_object_handle(object) {
+            let easy = swoole_curl_easy(handle);
+            if !easy.0.is_null() {
+                if !swoole_curl_prepare_free(handle) {
+                    return;
+                }
+                if let Some(owner) = easy.handle()
+                    && let Some(multi) = owner.multi()
+                {
+                    multi.remove_handle(owner);
+                }
+                if swoole_curl_release_clone(handle) {
+                    swoole_curl_free_lists(handle);
+                }
+                // Each duplicate has its own easy and coroutine handle. Only
+                // the option lists are shared by the clone family.
+                crate::swr_v1_curl_destroy_handle(crate::Retired(easy));
+                curl_easy_cleanup(crate::Retired(easy));
+                swoole_curl_free_callbacks(handle);
+                swoole_curl_release_values(handle);
+            }
+        }
+        zend_object_std_dtor(object);
+    });
+    swoole_rs_zend::bailout::defer(result);
 }
 }
