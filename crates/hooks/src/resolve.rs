@@ -8,6 +8,7 @@
 use core::ffi::{CStr, c_int};
 use swoole_rs_clients::dns::{DnsSocket, RecvError, received};
 use swoole_rs_clients::resolver::{self, Request};
+use swoole_rs_corebase::lent::lend_spare;
 use swoole_rs_corebase::offload::{AsyncEvent, COROUTINE_ASYNC, Handler, swr_v1_hook_async};
 use swoole_rs_corebase::{
     NameResolverContext, log, swoole_rand_any, swr_v1_core_dns_lookup_random,
@@ -143,7 +144,7 @@ impl DnsSocket for DnsUdp {
 
     fn recv(&mut self, buffer: &mut [u8]) -> Result<usize, RecvError> {
         let socket = self.0.co();
-        let n = socket.recv(buffer);
+        let n = lend_spare(buffer, |out| socket.recv(out)).0;
         received(n, socket.err_code() == libc::ECANCELED)
     }
 }

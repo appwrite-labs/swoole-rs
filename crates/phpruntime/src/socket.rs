@@ -6,6 +6,7 @@ use std::{
     ffi::{CStr, CString},
     mem::MaybeUninit,
 };
+use swoole_rs_corebase::lent::lend_spare;
 use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_corebase::reactor::{SocketAddress, SocketFields, TimeoutKind};
 use swoole_rs_corebase::tls::upstream::{recv_sync, send_sync, socket_ssl_close};
@@ -196,9 +197,9 @@ impl Socket {
             RecvOp::Sync => socket
                 .with_network(|network| recv_sync(network, out, 0))
                 .flatten(),
-            RecvOp::Recv => socket.recv(out),
+            RecvOp::Recv => lend_spare(out, |out| socket.recv(out)).0,
             RecvOp::Once => socket.recv_once(out),
-            RecvOp::Peek => socket.peek(out),
+            RecvOp::Peek => lend_spare(out, |out| socket.peek(out)).0,
         }
     }
 

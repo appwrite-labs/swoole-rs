@@ -18,7 +18,7 @@ pub use libc::pollfd;
 use libc::{c_int, c_void, nfds_t, size_t, ssize_t};
 use std::io;
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::lent::{Count, In, InOut, Out};
+use swoole_rs_corebase::lent::{Count, In, InOut, Out, lend_spare};
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::reactor::{Socket, SocketRecord};
 use swoole_rs_corebase::{log, sys};
@@ -144,9 +144,9 @@ pub fn recv(fd: c_int, buf: &mut [u8], flags: c_int) -> io::Result<usize> {
         return sys::recv(fd, buf, flags).ok_or_else(io::Error::last_os_error);
     };
     if flags & libc::MSG_PEEK != 0 {
-        socket.peek(buf)
+        lend_spare(buf, |out| socket.peek(out)).0
     } else {
-        socket.recv(buf)
+        lend_spare(buf, |out| socket.recv(out)).0
     }
     .ok_or_else(io::Error::last_os_error)
 }

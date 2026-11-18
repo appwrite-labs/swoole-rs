@@ -8,7 +8,6 @@
 use std::ffi::{CStr, c_int, c_ulong};
 use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::set_errno;
-use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_corebase::tls::{Bio, Ssl, SslFailure};
 
 use openssl_sys as ssl;
@@ -197,10 +196,10 @@ impl<S: TlsSocket> Tls<'_, S> {
         }
     }
 
-    /// `ssl_recv`: decrypted bytes into `buf`, or `None`.
-    pub(crate) fn recv(&self, buf: &mut [impl ReadSlot]) -> Option<usize> {
+    /// `ssl_recv`: decrypted bytes into `out`'s room, which counts them, or `None`.
+    pub(crate) fn recv(&self, out: &mut Spare<'_>) -> Option<usize> {
         let ssl = self.ssl?;
-        self.transfer(c"ssl_recv", || ssl.read(buf))
+        self.transfer(c"ssl_recv", || ssl.read_into(out))
     }
 
     /// `ssl_send`: bytes of `buf` encrypted and sent, or `None`.
@@ -515,10 +514,10 @@ mod tests {
             assert_eq!(tls.send(b"ping"), Some(4));
 
             let mut buf = [0_u8; 16];
-            assert_eq!(tls.recv(&mut buf), Some(2));
+            assert_eq!(lend_spare(&mut buf, |out| tls.recv(out)).0, Some(2));
 
             // the next read sees the close_notify
-            assert!(tls.recv(&mut buf) <= Some(0));
+            assert!(lend_spare(&mut buf, |out| tls.recv(out)).0 <= Some(0));
             assert_eq!(
                 ERRORS.with(|errors| errors.borrow().clone()),
                 [SSL_RESET, -1],

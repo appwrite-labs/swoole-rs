@@ -1,27 +1,47 @@
-//! The trusted reader adapter only exposes a successful, bounded initialized prefix.
+//! Receives count only a successful, bounded written prefix.
 use super::*;
+
+/// No TLS calls, for a vector over a plain descriptor.
+type Tls = fn(&mut Spare<'_>) -> Option<usize>;
+type Send = fn(Drain<'_>) -> Option<usize>;
+
+/// A ring that writes the bytes it holds and reports `reported`.
+struct Script<'a> {
+    bytes: &'a [u8],
+    reported: Option<usize>,
+}
+
+// SAFETY: test stand-in; each case below writes at least the prefix it reports, or
+// reports more only when it filled the whole room.
+unsafe impl Ring for Script<'_> {
+    fn recv(&mut self, room: &mut [MaybeUninit<u8>]) -> Option<usize> {
+        let n = self.bytes.len().min(room.len());
+        room[..n].write_copy_of_slice(&self.bytes[..n]);
+        self.reported
+    }
+    fn readv(&mut self, _: &mut [ReadVec<'_>]) -> Option<usize> {
+        unreachable!("a scalar receive")
+    }
+    fn writev(&mut self, _: &[IoSlice<'_>]) -> Option<usize> {
+        unreachable!("a receive")
+    }
+}
 
 #[test]
 fn read_appends_and_clamps_datagram_lengths() {
     let mut room = [MaybeUninit::uninit(); 5];
     let (reported, filled) = lend_spare(&mut room, |out| {
         out.put(b"a").unwrap();
-        assert_eq!(
-            unsafe {
-                out.read(|room| {
-                    room[..2].write_copy_of_slice(b"bc");
-                    Some(2)
-                })
-            },
-            Some(2)
-        );
-        assert_eq!(out.written(), b"abc");
-        let reported = unsafe {
-            out.read(|room| {
-                room.write_copy_of_slice(b"de");
-                Some(99)
-            })
+        let mut bc = Script {
+            bytes: b"bc",
+            reported: Some(2),
         };
+        assert_eq!(out.receive(&mut bc), Some(2));
+        assert_eq!(out.written(), b"abc");
+        let reported = out.receive(&mut Script {
+            bytes: b"de",
+            reported: Some(99),
+        });
         assert_eq!(out.written(), b"abcde");
         reported
     });
@@ -33,16 +53,19 @@ fn zero_and_failed_reads_leave_the_initialized_prefix_alone() {
     let mut room = [MaybeUninit::uninit(); 3];
     let ((), filled) = lend_spare(&mut room, |out| {
         out.put(b"a").unwrap();
-        assert_eq!(unsafe { out.read(|_| Some(0)) }, Some(0));
-        assert_eq!(
-            unsafe {
-                out.read(|room| {
-                    room[0].write(b'x');
-                    None
-                })
-            },
-            None
-        );
+        let zero = Script {
+            bytes: b"",
+            reported: Some(0),
+        };
+        assert_eq!(out.receive(&mut { zero }), Some(0));
+        let failed = Script {
+            bytes: b"x",
+            reported: None,
+        };
+        assert_eq!(out.receive(&mut { failed }), None);
+        out.uncounted(|room| {
+            room[0].write(b'y');
+        });
         assert_eq!(out.written(), b"a");
     });
     assert_eq!(filled, 1);
@@ -65,19 +88,13 @@ fn vectored_read_counts_short_reads_across_empty_rooms() {
             empty.as_mut_slice(),
             tail.as_mut_slice(),
         ],
-        |out| unsafe {
-            out.read(|rooms| {
-                let descriptors: Vec<_> = rooms.iter().map(ReadVec::descriptor).collect();
-                let received = libc::readv(
-                    read.as_raw_fd(),
-                    descriptors.as_ptr(),
-                    c_int::try_from(descriptors.len()).unwrap(),
-                );
-                (received, usize::try_from(received).ok())
-            })
+        |out| {
+            let received = out.transfer(Plain::Fd(read.as_raw_fd()), None::<&(Tls, Send)>);
+            let state = out.state();
+            (received, (state.index, state.offset_bytes))
         },
     );
-    assert_eq!((received, filled), (5, 5));
+    assert_eq!((received, filled), ((Some(5), (2, 3)), 5));
     assert_eq!(unsafe { head.assume_init_ref() }, b"ab");
     assert_eq!(unsafe { tail[..3].assume_init_ref() }, b"cde");
 }

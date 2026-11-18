@@ -1,9 +1,11 @@
 //! An `IOVector`: a copy of the caller's descriptors, typed by the direction their
 //! buffers are lent in, and its cursor. Payload bytes are neither read nor copied.
+use crate::lent::{Ring, Spare, lend_spare};
 use crate::reactor::iov_progress::progress;
 use crate::reactor::socket_rw::IovState;
 use crate::reactor::{Drain, Fill, IovStep};
 use crate::sys;
+use std::ffi::c_int;
 use std::io::IoSlice;
 
 pub use crate::lent::ReadVec;
@@ -25,36 +27,9 @@ pub struct ReactorIov<'a> {
 
 /// What is left of one of a [`ReactorIov`]'s buffers, lent in its direction: slots
 /// to read into, or bytes to write.
-pub enum IovBuffer<'a> {
+enum IovBuffer<'a> {
     Read(Fill<'a>),
     Write(Drain<'a>),
-}
-
-impl IovBuffer<'_> {
-    /// Whether nothing is left of it.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        match self {
-            Self::Read(fill) => fill.is_empty(),
-            Self::Write(data) => data.is_empty(),
-        }
-    }
-
-    /// The same buffer, lent again for a call that may be repeated.
-    pub fn reborrow(&mut self) -> IovBuffer<'_> {
-        match self {
-            Self::Read(fill) => IovBuffer::Read(fill.reborrow()),
-            Self::Write(data) => IovBuffer::Write(*data),
-        }
-    }
-
-    /// Steps past the `moved` bytes a call transferred: whether any are left.
-    pub fn advance(&mut self, moved: usize) -> bool {
-        match self {
-            Self::Read(fill) => fill.advance(moved),
-            Self::Write(data) => data.advance(moved),
-        }
-    }
 }
 
 /// A copy of `source` and a cursor at its start; none where `IOVector`'s constructor
@@ -80,7 +55,12 @@ impl<'a> ReactorIov<'a> {
     /// their descriptors; none when it can't allocate.
     #[must_use]
     pub fn reading(vectors: &'a mut [ReadVec<'_>]) -> Option<Self> {
-        let (copy, state) = copy(vectors.iter_mut().map(ReadVec::reborrow))?;
+        Self::rooms(vectors.iter_mut().map(ReadVec::reborrow))
+    }
+
+    /// [`reading`](Self::reading) into `rooms`, which it takes.
+    pub(crate) fn rooms(rooms: impl ExactSizeIterator<Item = ReadVec<'a>>) -> Option<Self> {
+        let (copy, state) = copy(rooms)?;
         Some(Self {
             descriptors: Descriptors::Read(copy),
             state,
@@ -114,27 +94,9 @@ impl<'a> ReactorIov<'a> {
         count.saturating_sub(left)
     }
 
-    /// The descriptors left, the current one trimmed to where the transfers stopped,
-    /// as the `iovec` array a ring request names: where it starts and how many. Both
-    /// descriptor types are ABI-compatible with an `iovec`.
-    #[must_use]
-    pub fn remaining_iovecs(&self) -> (*const libc::iovec, usize) {
-        let left = self.left();
-        match &self.descriptors {
-            Descriptors::Read(vectors) => {
-                let rest = vectors.get(left..).unwrap_or_default();
-                (rest.as_ptr().cast(), rest.len())
-            }
-            Descriptors::Write(vectors) => {
-                let rest = vectors.get(left..).unwrap_or_default();
-                (rest.as_ptr().cast(), rest.len())
-            }
-        }
-    }
-
     /// The buffers left, in order, each lent in the vector's direction, the current
     /// one trimmed to where the transfers stopped.
-    pub fn buffers(&mut self) -> impl Iterator<Item = IovBuffer<'_>> {
+    fn buffers(&mut self) -> impl Iterator<Item = IovBuffer<'_>> {
         let left = self.left();
         let (read, write): (&mut [ReadVec<'a>], &[IoSlice<'a>]) = match &mut self.descriptors {
             Descriptors::Read(vectors) => (
@@ -156,7 +118,7 @@ impl<'a> ReactorIov<'a> {
     /// `IOVector::update_iterator(n)`: advance the descriptors and counters together.
     /// # Panics
     /// When `n` is more than the remaining descriptors hold.
-    pub fn advance(&mut self, n: isize) {
+    fn advance(&mut self, n: isize) {
         let (left, state) = (self.left(), self.state);
         let (remain, index, offset) = (state.remain_count, state.index, state.offset_bytes);
         let reply = match &self.descriptors {
@@ -206,15 +168,23 @@ pub fn swr_v1_reactor_iov_view(owner: &ReactorIov<'_>) -> IovState {
     owner.state
 }
 
+/// A vector transfer's own calls, for a socket without an SSL: readv(2) and writev(2)
+/// on a descriptor, or a ring's.
+pub enum Plain<'a> {
+    Fd(c_int),
+    Ring(&'a mut dyn Ring),
+}
+
 /// `Socket::readv`/`writev` through an owned `IOVector`, in the direction it was made
-/// for: readv(2)/writev(2) over the remaining iovecs, or `tls` (its read and its
-/// write) one iovec at a time until one comes up short, advancing the cursor; retried
-/// on EINTR.
+/// for: `plain`'s readv/writev over the remaining iovecs, or `tls` (its read and its
+/// write) one iovec at a time until one comes up short, advancing the cursor by what
+/// each moved; retried on EINTR. A read advances it by what it wrote: the count readv(2)
+/// declares, a ring vouches for, or `tls` wrote into its [`Spare`].
 pub fn swr_v1_socket_iov_owned(
-    fd: i32,
+    mut plain: Plain<'_>,
     owner: &mut ReactorIov<'_>,
     tls: Option<&(
-        impl Fn(Fill<'_>) -> Option<usize>,
+        impl Fn(&mut Spare<'_>) -> Option<usize>,
         impl Fn(Drain<'_>) -> Option<usize>,
     )>,
 ) -> Option<usize> {
@@ -224,7 +194,10 @@ pub fn swr_v1_socket_iov_owned(
             loop {
                 let done = match owner.buffers().next() {
                     None => break Some(total),
-                    Some(IovBuffer::Read(fill)) => read(fill),
+                    Some(IovBuffer::Read(mut fill)) => {
+                        let (read, wrote) = lend_spare(fill.slots(), read);
+                        read.map(|_| wrote)
+                    }
                     Some(IovBuffer::Write(data)) => send(data),
                 };
                 total += done.unwrap_or(0);
@@ -235,12 +208,20 @@ pub fn swr_v1_socket_iov_owned(
             }
         } else {
             let left = owner.left();
-            let done = match &mut owner.descriptors {
-                Descriptors::Read(vectors) => {
-                    sys::readv(fd, vectors.get_mut(left..).unwrap_or_default())
+            let done = match (&mut owner.descriptors, &mut plain) {
+                (Descriptors::Read(vectors), plain) => {
+                    let vectors = vectors.get_mut(left..).unwrap_or_default();
+                    match plain {
+                        Plain::Fd(fd) => sys::readv(*fd, vectors),
+                        Plain::Ring(ring) => ring.readv(vectors),
+                    }
                 }
-                Descriptors::Write(vectors) => {
-                    sys::writev(fd, vectors.get(left..).unwrap_or_default())
+                (Descriptors::Write(vectors), plain) => {
+                    let vectors = vectors.get(left..).unwrap_or_default();
+                    match plain {
+                        Plain::Fd(fd) => sys::writev(*fd, vectors),
+                        Plain::Ring(ring) => ring.writev(vectors),
+                    }
                 }
             };
             owner.advance(done.map_or(-1, usize::cast_signed));

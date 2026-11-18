@@ -340,8 +340,8 @@ pub fn socket_ssl_connect(socket: Socket<'_>) -> bool {
 }
 
 /// `SSL_peek` on the record into `buffer`; None on error or without an SSL.
-fn tls_peek<S: ReadSlot>(socket: Socket<'_>, mut buffer: Fill<'_, S>) -> Option<usize> {
-    match Ssl::of(socket)?.get().peek(buffer.slots()) {
+fn tls_peek(socket: Socket<'_>, buffer: &mut Spare<'_>) -> Option<usize> {
+    match Ssl::of(socket)?.get().peek(buffer) {
         Ok(count) => Some(count),
         Err(failure) => usize::try_from(failure.returned).ok(),
     }
@@ -458,7 +458,12 @@ pub fn recvfrom_sync_spare(
 
 /// `ssize_t Socket::peek(void *, size_t, int) const` into `buffer`.
 pub fn peek(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
-    record_peek(socket, Fill::new(buffer), flags, tls_peek)
+    lend_spare(buffer, |spare| peek_spare(socket, spare, flags)).0
+}
+
+/// [`peek`] into `spare`'s room, which counts what it wrote.
+pub fn peek_spare(socket: Socket<'_>, spare: &mut Spare<'_>, flags: c_int) -> Option<usize> {
+    record_peek(socket, spare, flags, tls_peek)
 }
 
 /// `bool Socket::check_liveness()`: a nonblocking one-byte peek that neither

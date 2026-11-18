@@ -32,17 +32,14 @@ pub(crate) mod raw {
         record_send(socket, data, flags, tls, now).map_or(-1, usize::cast_signed)
     }
 
-    /// `tls` over a typed buffer.
-    pub(crate) fn fills(tls: TlsIo) -> impl Fn(Socket<'_>, Fill<'_>) -> Option<usize> {
-        move |socket, mut fill| {
-            let slots = fill.slots();
-            count(unsafe {
-                tls(
-                    socket.as_ptr().cast(),
-                    slots.as_mut_ptr().cast(),
-                    slots.len(),
-                )
-            })
+    /// `tls` into a [`Spare`]'s room.
+    pub(crate) fn fills(tls: TlsIo) -> impl Fn(Socket<'_>, &mut Spare<'_>) -> Option<usize> {
+        // The stubs write what they return, as the C TLS reads do: the same call,
+        // with the tokens' layout and its result as what it wrote.
+        let tls: for<'id> unsafe extern "C" fn(*mut c_void, Out<'id>, Count<'id>) -> Wrote<'id> =
+            unsafe { std::mem::transmute(tls) };
+        move |socket, spare| {
+            count(spare.lend(|at, n| unsafe { tls(socket.as_ptr().cast(), at, n) }))
         }
     }
 
@@ -54,13 +51,7 @@ pub(crate) mod raw {
         tls: TlsIo,
         now: SteadyMs,
     ) -> isize {
-        // The stubs write what they return, as the C TLS reads do: the same call,
-        // with the tokens' layout and its result as what it wrote.
-        let tls: for<'id> unsafe extern "C" fn(*mut c_void, Out<'id>, Count<'id>) -> Wrote<'id> =
-            unsafe { std::mem::transmute(tls) };
-        let tls = |socket: Socket<'_>, spare: &mut Spare<'_>| {
-            count(spare.lend(|at, n| unsafe { tls(socket.as_ptr().cast(), at, n) }))
-        };
+        let tls = fills(tls);
         let mut buffer = Fill::new(unsafe {
             std::slice::from_raw_parts_mut(buffer.cast::<std::mem::MaybeUninit<u8>>(), length)
         });
@@ -75,9 +66,10 @@ pub(crate) mod raw {
         flags: c_int,
         tls: TlsIo,
     ) -> isize {
-        let buffer = Fill::new(unsafe {
+        let mut buffer = Fill::new(unsafe {
             std::slice::from_raw_parts_mut(buffer.cast::<std::mem::MaybeUninit<u8>>(), length)
         });
-        record_peek(socket, buffer, flags, fills(tls)).map_or(-1, usize::cast_signed)
+        let peeked = buffer.spare(|spare| record_peek(socket, spare, flags, fills(tls)));
+        peeked.map_or(-1, usize::cast_signed)
     }
 }

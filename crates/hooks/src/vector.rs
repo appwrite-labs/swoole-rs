@@ -9,13 +9,12 @@ use crate::socket_wait::wait_retry;
 use core::ffi::c_int;
 use core::marker::PhantomData;
 use std::io::{IoSlice, IoSliceMut};
+use swoole_rs_corebase::lent::{Spare, SpareVectors};
 use swoole_rs_corebase::reactor::Events;
-#[cfg(feature = "iouring")]
-pub(crate) use swoole_rs_corebase::reactor::IovBuffer;
 use swoole_rs_corebase::reactor::{
-    Drain, Fill, ReactorIov, Socket, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned,
+    Drain, Plain, ReactorIov, Socket, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned,
 };
-use swoole_rs_corebase::tls::upstream::{ssl_recv_fill, ssl_send_drain};
+use swoole_rs_corebase::tls::upstream::{ssl_recv_spare, ssl_send_drain};
 
 /// A `msghdr` over the `count` iovecs at `iov`, with no address and no control data.
 fn message_header(iov: *mut libc::iovec, count: usize) -> libc::msghdr {
@@ -135,11 +134,6 @@ impl<'a> IoVector<'a> {
         Some(Self { owner })
     }
 
-    /// Whether the vector was made to write from.
-    pub(crate) fn write(&self) -> bool {
-        self.owner.write()
-    }
-
     fn owner(&self) -> &ReactorIov<'a> {
         &self.owner
     }
@@ -150,64 +144,81 @@ impl<'a> IoVector<'a> {
         let state = swr_v1_reactor_iov_view(self.owner());
         (state.index, state.offset_bytes)
     }
+}
+
+/// What the coroutine socket's vector members transfer over: an [`IoVector`], or rooms
+/// that count what a receive wrote into them ([`SpareVectors`]).
+pub trait Vectored {
+    /// Whether it was made to write from.
+    fn write(&self) -> bool;
 
     /// The iovecs left to transfer.
-    pub(crate) fn remaining(&self) -> usize {
-        usize::try_from(swr_v1_reactor_iov_view(self.owner()).remain_count).unwrap_or(0)
-    }
+    fn remaining(&self) -> usize;
 
-    /// The iovecs left to transfer, the current one trimmed to where the transfers
-    /// stopped: where the array starts and how many, valid while the vector is
-    /// borrowed, during which [`update`](Self::update) can't move them.
-    #[cfg(feature = "iouring")]
-    pub(crate) fn iovecs(&self) -> (*const libc::iovec, usize) {
-        self.owner.remaining_iovecs()
-    }
-
-    /// Advance past a transfer's `result`. It takes `&mut self`, so no transfer
-    /// borrowing the vector can advance it itself.
-    #[cfg(feature = "iouring")]
-    pub(crate) fn update(&mut self, result: Option<usize>) {
-        self.owner.advance(result.map_or(-1, usize::cast_signed));
-    }
-
-    /// `io` over each remaining buffer in order while it moves data, again over what a
-    /// short transfer left of one. The bytes moved, or the failing result when none
-    /// moved; the caller advances the vector by that, once ([`update`](Self::update)).
-    #[cfg(feature = "iouring")]
-    pub(crate) fn transfer_each(
+    /// One transfer: `plain`'s over the iovecs left, or with `tls` one buffer at a time,
+    /// as [`swr_v1_socket_iov_owned`].
+    fn io(
         &mut self,
-        mut io: impl FnMut(IovBuffer<'_>) -> Option<usize>,
-    ) -> Option<usize> {
-        let mut total = 0;
-        let mut result = Some(0);
-        'buffers: for mut buffer in self.owner.buffers() {
-            while !buffer.is_empty() {
-                result = io(buffer.reborrow());
-                let Some(moved @ 1..) = result else {
-                    break 'buffers;
-                };
-                total += moved;
-                if !buffer.advance(moved) {
-                    break;
-                }
-            }
-        }
-        if total > 0 { Some(total) } else { result }
-    }
+        plain: Plain<'_>,
+        tls: Option<&(
+            impl Fn(&mut Spare<'_>) -> Option<usize>,
+            impl Fn(Drain<'_>) -> Option<usize>,
+        )>,
+    ) -> Option<usize>;
 
     /// `Socket::readv(io_vector)` or `writev` on `socket`, in the direction the vector
     /// was made for: readv(2) or writev(2) over the iovecs left, or OpenSSL one buffer
     /// at a time when the socket holds an SSL (upstream's `ssl_readv` and `ssl_writev`),
     /// advancing the vector past what moved.
-    pub fn transfer(&mut self, socket: Socket<'_>) -> Option<usize> {
+    fn transfer(&mut self, socket: Socket<'_>) -> Option<usize> {
         let (fd, ssl) = socket.read(|record| (record.fd, record.ssl()));
         let calls = (
-            |buffer: Fill<'_>| ssl_recv_fill(socket, buffer),
+            |spare: &mut Spare<'_>| ssl_recv_spare(socket, spare),
             |data: Drain<'_>| ssl_send_drain(socket, data),
         );
-        let tls = (!ssl.is_null()).then_some(&calls);
-        swr_v1_socket_iov_owned(fd, &mut self.owner, tls)
+        self.io(Plain::Fd(fd), (!ssl.is_null()).then_some(&calls))
+    }
+}
+
+impl Vectored for IoVector<'_> {
+    fn write(&self) -> bool {
+        self.owner.write()
+    }
+
+    fn remaining(&self) -> usize {
+        usize::try_from(swr_v1_reactor_iov_view(self.owner()).remain_count).unwrap_or(0)
+    }
+
+    fn io(
+        &mut self,
+        plain: Plain<'_>,
+        tls: Option<&(
+            impl Fn(&mut Spare<'_>) -> Option<usize>,
+            impl Fn(Drain<'_>) -> Option<usize>,
+        )>,
+    ) -> Option<usize> {
+        swr_v1_socket_iov_owned(plain, &mut self.owner, tls)
+    }
+}
+
+impl Vectored for SpareVectors<'_> {
+    fn write(&self) -> bool {
+        false
+    }
+
+    fn remaining(&self) -> usize {
+        usize::try_from(self.state().remain_count).unwrap_or(0)
+    }
+
+    fn io(
+        &mut self,
+        plain: Plain<'_>,
+        tls: Option<&(
+            impl Fn(&mut Spare<'_>) -> Option<usize>,
+            impl Fn(Drain<'_>) -> Option<usize>,
+        )>,
+    ) -> Option<usize> {
+        self.transfer(plain, tls)
     }
 }
 
