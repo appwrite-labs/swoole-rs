@@ -39,6 +39,15 @@ pub enum Finish {
     Unsafe,
 }
 
+/// Whether a message was delivered when input ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub enum EndOfInput {
+    Complete,
+    CompleteAtEof,
+    Truncated,
+}
+
 /// `llhttp_flags_t`.
 pub const F_CONNECTION_KEEP_ALIVE: u16 = 0x1;
 pub const F_CONNECTION_CLOSE: u16 = 0x2;
@@ -211,6 +220,24 @@ impl Flow {
 pub trait Callbacks<'i> {
     /// The parser these callbacks drive, which they may read and change.
     fn parser(&mut self) -> &mut Parser;
+    /// Finish one message, delivering a close-delimited body exactly once.
+    fn end_of_input(&mut self) -> EndOfInput {
+        if self.parser().message_complete() {
+            return EndOfInput::Complete;
+        }
+        if self.parser().state == State::Eof && self.parser().error == HPE_OK {
+            match finish(self) {
+                Ok(()) | Err(HPE_PAUSED) => {
+                    self.parser().state = State::Closed;
+                    self.parser().finish = Finish::Safe;
+                    return EndOfInput::CompleteAtEof;
+                }
+                Err(code) => self.parser().error = code,
+            }
+        }
+        EndOfInput::Truncated
+    }
+
     fn on_url(&mut self, _data: &'i [u8]) -> Flow {
         Flow::Go
     }
@@ -238,6 +265,7 @@ pub trait Callbacks<'i> {
 enum State {
     #[default]
     Start,
+    NextMessage,
     Method,
     ReqFirstSpace,
     ReqSpaces,
@@ -424,6 +452,21 @@ impl Parser {
         if self.error == HPE_PAUSED_UPGRADE {
             self.error = 0;
         }
+    }
+
+    /// A completion callback has accepted this message, including a pause at
+    /// the message boundary. A fresh parser is still waiting for its first one.
+    #[must_use]
+    pub fn message_complete(&self) -> bool {
+        matches!(self.error, HPE_OK | HPE_PAUSED | HPE_PAUSED_UPGRADE)
+            && matches!(
+                self.state,
+                State::NextMessage
+                    | State::Closed
+                    | State::AfterMessageComplete
+                    | State::UpgradeCheck
+                    | State::PauseUpgrade
+            )
     }
 
     /// `llhttp_message_needs_eof`.
@@ -1126,7 +1169,7 @@ impl<'i, C: Callbacks<'i> + ?Sized> Run<'_, 'i, C> {
         parser.flags = 0;
         if keep_alive {
             parser.content_length = 0;
-            State::Start
+            State::NextMessage
         } else {
             State::Closed
         }
@@ -1377,9 +1420,9 @@ impl<'i, C: Callbacks<'i> + ?Sized> Run<'_, 'i, C> {
     fn step(&mut self, state: State, c: u8) -> Next {
         use State as S;
         match state {
-            S::Start => {
+            S::Start | S::NextMessage => {
                 if matches!(c, b'\r' | b'\n') {
-                    return self.eat(S::Start);
+                    return self.eat(state);
                 }
                 let parser = self.parser();
                 parser.finish = Finish::Unsafe;
@@ -1815,85 +1858,5 @@ impl<'i, C: Callbacks<'i> + ?Sized> Run<'_, 'i, C> {
 }
 
 #[cfg(test)]
-mod result_tests {
-    use super::*;
-
-    struct Hooks {
-        parser: Parser,
-        answer: Flow,
-        calls: usize,
-    }
-
-    impl Callbacks<'_> for Hooks {
-        fn parser(&mut self) -> &mut Parser {
-            &mut self.parser
-        }
-        fn on_url(&mut self, _: &[u8]) -> Flow {
-            self.calls += 1;
-            self.answer
-        }
-        fn on_message_complete(&mut self) -> Flow {
-            self.calls += 1;
-            self.answer
-        }
-    }
-
-    #[test]
-    fn flushed_spans_retain_arbitrary_callback_codes_and_error_position() {
-        let input = b"GET /partial";
-        for code in [0, 1, 2, -1, -7, 21, 22, 23, 99, i32::MIN, i32::MAX] {
-            let mut hooks = Hooks {
-                parser: Parser::new(Kind::Request),
-                answer: Flow::from_code(code),
-                calls: 0,
-            };
-            let expected = match code {
-                0 => Ok(()),
-                -1 => Err(HPE_USER),
-                code => Err(code),
-            };
-            assert_eq!(execute(&mut hooks, input), expected);
-            assert_eq!(hooks.calls, 1);
-            if let Err(error) = expected {
-                assert_eq!(hooks.parser.error, error);
-                assert_eq!(hooks.parser.error_pos(), input.len());
-                assert_eq!(execute(&mut hooks, b"ignored"), expected);
-                assert_eq!(finish(&mut hooks), Ok(()));
-                assert_eq!(hooks.calls, 1, "an existing error invokes no callback");
-            }
-        }
-    }
-
-    #[test]
-    fn finish_retains_completion_codes_without_storing_a_parser_error() {
-        for code in [0, 1, 2, -1, -7, 21, 22, 23, 99, i32::MIN, i32::MAX] {
-            let mut hooks = Hooks {
-                parser: Parser::new(Kind::Response),
-                answer: Flow::from_code(code),
-                calls: 0,
-            };
-            assert_eq!(execute(&mut hooks, b"HTTP/1.1 200 OK\r\n\r\nbody"), Ok(()));
-            assert_eq!(hooks.parser.finish, Finish::SafeWithCb);
-            assert_eq!(hooks.calls, 0);
-            let expected = if code == 0 { Ok(()) } else { Err(code) };
-            assert_eq!(finish(&mut hooks), expected);
-            assert_eq!(hooks.calls, 1);
-            assert_eq!(hooks.parser.error, 0);
-            assert_eq!(hooks.parser.reason(), "");
-        }
-    }
-
-    #[test]
-    fn incomplete_eof_sets_reason_but_does_not_store_an_error() {
-        let mut hooks = Hooks {
-            parser: Parser::new(Kind::Request),
-            answer: Flow::Go,
-            calls: 0,
-        };
-        assert_eq!(execute(&mut hooks, b"GET / HTTP/1.1\r\nHost:"), Ok(()));
-        assert_eq!(finish(&mut hooks), Err(HPE_INVALID_EOF_STATE));
-        assert_eq!(hooks.parser.reason(), "Invalid EOF state");
-        assert_eq!(hooks.parser.error, 0);
-        assert_eq!(hooks.calls, 1);
-    }
-}
+#[path = "../../../tests/modules/http/llhttp_results.rs"]
+mod result_tests;
