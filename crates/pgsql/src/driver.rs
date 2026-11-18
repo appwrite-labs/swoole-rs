@@ -83,7 +83,7 @@ impl Drop for Handle {
 /// A result libpq returned, borrowed from its owner.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-struct Res<'a>(NonNull<PGresult>, PhantomData<&'a PgResult>);
+pub(crate) struct Res<'a>(NonNull<PGresult>, PhantomData<&'a PgResult>);
 
 impl PgResult {
     fn get(&self) -> Res<'_> {
@@ -104,6 +104,8 @@ impl Escaped {
 // libpq's own declarations, each argument typed as what libpq requires of it. None
 // parses input, so none runs the notice processor.
 unsafe extern "C" {
+    safe fn PQntuples(res: Res<'_>) -> c_int;
+    safe fn PQgetisnull(res: Res<'_>, row: c_int, column: c_int) -> c_int;
     safe fn PQresultStatus(res: Res<'_>) -> ExecStatusType;
     /// A field of an error result, live as long as the result.
     safe fn PQresultErrorField<'a>(res: Res<'a>, field: c_int) -> Option<Text<'a>>;
@@ -231,6 +233,29 @@ impl Handle {
     /// `PQexec`, with the hook's waits.
     fn exec(&self, query: &CStr) -> Option<PgResult> {
         NonNull::new(crate::swoole_pgsql_exec(self.server, query.into())).map(PgResult)
+    }
+
+    /// Read a single catalogue name, copying it before releasing its result.
+    pub(crate) fn catalogue_name(
+        &self,
+        query: &CStr,
+    ) -> Result<Option<CString>, swoole_rs_zend::bailout::Bailout> {
+        let mut result = None;
+        contain_with(|| result = self.exec(query))?;
+        let Some(result) = result else {
+            return Ok(None);
+        };
+        let res = result.get();
+        let name = if PQresultStatus(res) == ExecStatusType::PGRES_TUPLES_OK
+            && PQntuples(res) == 1
+            && PQgetisnull(res, 0, 0) == 0
+        {
+            PQgetvalue(res, 0, 0).map(|name| name.get().to_owned())
+        } else {
+            None
+        };
+        PQclear(result);
+        Ok(name)
     }
 
     /// `pgsql_handle_in_transaction`.

@@ -34,6 +34,9 @@ typedef struct pdo_pgsql_stmt pdo_pgsql_stmt;
  * through these accessors. */
 typedef struct pdo_pgsql_db_handle pdo_pgsql_db_handle;
 
+struct pdo_column_data;
+bool pdo_pgsql_describe_column(PGresult *result, int colno, struct pdo_column_data *column, Oid *oid);
+int pdo_pgsql_column_meta(pdo_pgsql_db_handle *H, Oid oid, Oid table, zval *output);
 PGconn *pdo_pgsql_server(pdo_pgsql_db_handle *H);
 unsigned int pdo_pgsql_next_stmt_id(pdo_pgsql_db_handle *H);
 bool pdo_pgsql_emulate_prepares(pdo_pgsql_db_handle *H);

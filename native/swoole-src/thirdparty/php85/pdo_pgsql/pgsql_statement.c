@@ -32,28 +32,13 @@
 #endif
 
 /* from postgresql/src/include/catalog/pg_type.h */
-#define BOOLLABEL   "bool"
 #define BOOLOID     16
-#define BYTEALABEL  "bytea"
 #define BYTEAOID    17
-#define DATELABEL   "date"
-#define DATEOID     1082
-#define INT2LABEL   "int2"
 #define INT2OID     21
-#define INT4LABEL   "int4"
 #define INT4OID     23
-#define INT8LABEL   "int8"
 #define INT8OID     20
 #define OIDOID      26
-#define TEXTLABEL   "text"
-#define TEXTOID     25
-#define TIMESTAMPLABEL "timestamp"
-#define TIMESTAMPOID   1114
-#define VARCHARLABEL "varchar"
-#define VARCHAROID   1043
-#define FLOAT4LABEL "float4"
 #define FLOAT4OID 700
-#define FLOAT8LABEL "float8"
 #define FLOAT8OID 701
 
 #define FIN_DISCARD 0x1
@@ -599,21 +584,11 @@ static int pgsql_stmt_fetch(pdo_stmt_t *stmt,
 
 static int pgsql_stmt_describe(pdo_stmt_t *stmt, int colno)
 {
-	pdo_pgsql_stmt *S = (pdo_pgsql_stmt*)stmt->driver_data;
-	struct pdo_column_data *cols = stmt->columns;
-	char *str;
-
-	if (!S->result) {
-		return 0;
-	}
-
-	str = PQfname(S->result, colno);
-	cols[colno].name = zend_string_init(str, strlen(str), 0);
-	cols[colno].maxlen = PQfsize(S->result, colno);
-	cols[colno].precision = PQfmod(S->result, colno);
-	S->cols[colno].pgsql_type = PQftype(S->result, colno);
-
-	return 1;
+    pdo_pgsql_stmt *S = (pdo_pgsql_stmt *) stmt->driver_data;
+    if (!S->result) {
+        return 0;
+    }
+    return pdo_pgsql_describe_column(S->result, colno, &stmt->columns[colno], &S->cols[colno].pgsql_type);
 }
 
 static int pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type)
@@ -701,128 +676,13 @@ static int pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pd
 	return 1;
 }
 
-static zend_always_inline char * pdo_pgsql_translate_oid_to_table(Oid oid, PGconn *conn)
-{
-	char *table_name = NULL;
-	PGresult *tmp_res;
-	char *querystr = NULL;
-
-	spprintf(&querystr, 0, "SELECT RELNAME FROM PG_CLASS WHERE OID=%d", oid);
-
-	if ((tmp_res = PQexec(conn, querystr)) == NULL || PQresultStatus(tmp_res) != PGRES_TUPLES_OK) {
-		if (tmp_res) {
-			PQclear(tmp_res);
-		}
-		efree(querystr);
-		return 0;
-	}
-	efree(querystr);
-
-	if (1 == PQgetisnull(tmp_res, 0, 0) || (table_name = PQgetvalue(tmp_res, 0, 0)) == NULL) {
-		PQclear(tmp_res);
-		return 0;
-	}
-
-	table_name = estrdup(table_name);
-
-	PQclear(tmp_res);
-	return table_name;
-}
-
 static int pgsql_stmt_get_column_meta(pdo_stmt_t *stmt, zend_long colno, zval *return_value)
 {
-	pdo_pgsql_stmt *S = (pdo_pgsql_stmt*)stmt->driver_data;
-	PGresult *res;
-	char *q=NULL;
-	ExecStatusType status;
-	Oid table_oid;
-	char *table_name=NULL;
-
-	if (!S->result) {
-		return FAILURE;
-	}
-
-	if (colno >= stmt->column_count) {
-		return FAILURE;
-	}
-
-	array_init(return_value);
-	add_assoc_long(return_value, "pgsql:oid", S->cols[colno].pgsql_type);
-
-	table_oid = PQftable(S->result, colno);
-	add_assoc_long(return_value, "pgsql:table_oid", table_oid);
-	table_name = pdo_pgsql_translate_oid_to_table(table_oid, pdo_pgsql_server(S->H));
-	if (table_name) {
-		add_assoc_string(return_value, "table", table_name);
-		efree(table_name);
-	}
-
-	switch (S->cols[colno].pgsql_type) {
-		case BOOLOID:
-			add_assoc_string(return_value, "native_type", BOOLLABEL);
-			break;
-		case BYTEAOID:
-			add_assoc_string(return_value, "native_type", BYTEALABEL);
-			break;
-		case INT8OID:
-			add_assoc_string(return_value, "native_type", INT8LABEL);
-			break;
-		case INT2OID:
-			add_assoc_string(return_value, "native_type", INT2LABEL);
-			break;
-		case INT4OID:
-			add_assoc_string(return_value, "native_type", INT4LABEL);
-			break;
-		case FLOAT4OID:
-			add_assoc_string(return_value, "native_type", FLOAT4LABEL);
-			break;
-		case FLOAT8OID:
-			add_assoc_string(return_value, "native_type", FLOAT8LABEL);
-			break;
-		case TEXTOID:
-			add_assoc_string(return_value, "native_type", TEXTLABEL);
-			break;
-		case VARCHAROID:
-			add_assoc_string(return_value, "native_type", VARCHARLABEL);
-			break;
-		case DATEOID:
-			add_assoc_string(return_value, "native_type", DATELABEL);
-			break;
-		case TIMESTAMPOID:
-			add_assoc_string(return_value, "native_type", TIMESTAMPLABEL);
-			break;
-		default:
-			/* Fetch metadata from Postgres system catalogue */
-			spprintf(&q, 0, "SELECT TYPNAME FROM PG_TYPE WHERE OID=%u", S->cols[colno].pgsql_type);
-			res = PQexec(pdo_pgsql_server(S->H), q);
-			efree(q);
-			status = PQresultStatus(res);
-			if (status == PGRES_TUPLES_OK && 1 == PQntuples(res)) {
-				add_assoc_string(return_value, "native_type", PQgetvalue(res, 0, 0));
-			}
-			PQclear(res);
-	}
-
-	enum pdo_param_type param_type;
-	switch (S->cols[colno].pgsql_type) {
-		case BOOLOID:
-			param_type = PDO_PARAM_BOOL;
-			break;
-		case INT2OID:
-		case INT4OID:
-		case INT8OID:
-			param_type = PDO_PARAM_INT;
-			break;
-		case OIDOID:
-		case BYTEAOID:
-			param_type = PDO_PARAM_LOB;
-			break;
-		default:
-			param_type = PDO_PARAM_STR;
-	}
-	add_assoc_long(return_value, "pdo_type", param_type);
-
-	return 1;
+    pdo_pgsql_stmt *S = (pdo_pgsql_stmt *) stmt->driver_data;
+    if (!S->result || colno < 0 || colno >= stmt->column_count) {
+        return FAILURE;
+    }
+    return pdo_pgsql_column_meta(S->H, S->cols[colno].pgsql_type, PQftable(S->result, colno), return_value);
 }
 
 static int pdo_pgsql_stmt_cursor_closer(pdo_stmt_t *stmt)
