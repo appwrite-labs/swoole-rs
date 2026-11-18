@@ -35,6 +35,8 @@ typedef struct pdo_pgsql_stmt pdo_pgsql_stmt;
  * through these accessors. */
 typedef struct pdo_pgsql_db_handle pdo_pgsql_db_handle;
 
+void pdo_pgsql_close_cursor(pdo_pgsql_db_handle *H, const char *cursor);
+bool pdo_pgsql_open_cursor(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *cursor, bool *prepared, const char *sql);
 bool pdo_pgsql_fetch_cursor(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *cursor, unsigned int orientation, zend_long offset);
 void pdo_pgsql_scalar_column(Oid oid, struct iovec bytes, zval *output);
 struct pdo_column_data;

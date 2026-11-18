@@ -138,14 +138,7 @@ static int pgsql_stmt_dtor(pdo_stmt_t *stmt)
 
 	if (S->cursor_name) {
 		if (server_obj_usable) {
-			pdo_pgsql_db_handle *H = S->H;
-			char *q = NULL;
-			PGresult *res;
-
-			spprintf(&q, 0, "CLOSE %s", S->cursor_name);
-			res = PQexec(pdo_pgsql_server(H), q);
-			efree(q);
-			if (res) PQclear(res);
+			pdo_pgsql_close_cursor(S->H, S->cursor_name);
 		}
 		efree(S->cursor_name);
 		S->cursor_name = NULL;
@@ -183,33 +176,9 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt)
 	S->current_row = 0;
 
 	if (S->cursor_name) {
-		char *q = NULL;
-
-		if (S->is_prepared) {
-			spprintf(&q, 0, "CLOSE %s", S->cursor_name);
-			PQclear(PQexec(pdo_pgsql_server(H), q));
-			efree(q);
-		}
-
-		spprintf(&q, 0, "DECLARE %s SCROLL CURSOR WITH HOLD FOR %s", S->cursor_name, ZSTR_VAL(stmt->active_query_string));
-		S->result = PQexec(pdo_pgsql_server(H), q);
-		efree(q);
-
-		/* check if declare failed */
-		status = PQresultStatus(S->result);
-		if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK) {
-			pdo_pgsql_error_stmt(stmt, status, pdo_pgsql_sqlstate(S->result));
+		if (!pdo_pgsql_open_cursor(stmt->dbh, stmt, &S->result, S->cursor_name, &S->is_prepared, ZSTR_VAL(stmt->active_query_string))) {
 			return 0;
 		}
-		PQclear(S->result);
-
-		/* the cursor was declared correctly */
-		S->is_prepared = true;
-
-		/* fetch to be able to get the number of tuples later, but don't advance the cursor pointer */
-		spprintf(&q, 0, "FETCH FORWARD 0 FROM %s", S->cursor_name);
-		S->result = PQexec(pdo_pgsql_server(H), q);
-		efree(q);
 	} else if (S->stmt_name) {
 		/* using a prepared statement */
 

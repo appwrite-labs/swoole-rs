@@ -1,14 +1,21 @@
 //! PostgreSQL statement fetching and column metadata.
 use crate::driver::{Handle, Res};
 use pq_sys::Oid;
-use std::ffi::{CStr, c_int};
+use std::{
+    cell::Cell,
+    ffi::{CStr, CString, c_int},
+};
 use swoole_rs_corebase::{CCast, sys::Text};
 use swoole_rs_zend::sys::{
     PHP_VERSION_ID, pdo_param_type, pdo_param_type_PDO_PARAM_BOOL as BOOL,
     pdo_param_type_PDO_PARAM_INT as INT, pdo_param_type_PDO_PARAM_LOB as LOB,
     pdo_param_type_PDO_PARAM_STR as STR,
 };
-use swoole_rs_zend::{OwnedArray, bailout::Bailout, pdo::Slot};
+use swoole_rs_zend::{
+    OwnedArray,
+    bailout::Bailout,
+    pdo::{Dbh, Slot, Stmt},
+};
 use swoole_rs_zend::{ZString, sys::pdo_column_data};
 
 /// PostgreSQL's built-in OIDs with a known native label. The statement looks up
@@ -112,9 +119,9 @@ extern "C" fn pdo_pgsql_column_meta(handle: &Handle, oid: Oid, table: Oid, outpu
 /// Issue FETCH for a scrollable cursor. The driver names every cursor `pdo_crsr_%08x`.
 #[unsafe(no_mangle)]
 extern "C" fn pdo_pgsql_fetch_cursor(
-    dbh: &swoole_rs_zend::pdo::Dbh,
-    stmt: &swoole_rs_zend::pdo::Stmt,
-    result: &std::cell::Cell<Option<crate::PgResult>>,
+    dbh: &Dbh,
+    stmt: &Stmt,
+    result: &Cell<Option<crate::PgResult>>,
     cursor: Text<'_>,
     orientation: swoole_rs_zend::sys::pdo_fetch_orientation,
     offset: swoole_rs_zend::sys::zend_long,
@@ -149,4 +156,62 @@ extern "C" fn pdo_pgsql_fetch_cursor(
         crate::PQclear(previous);
     }
     crate::driver::cursor_result(dbh, stmt, result, handle.exec(query.as_cstr()))
+        .is_some_and(|rows| rows > 0)
+}
+
+/// Close the driver-generated server cursor, discarding its command result.
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_close_cursor(handle: &Handle, cursor: Text<'_>) {
+    let mut query = swoole_rs_zend::message!("CLOSE ");
+    query.push(cursor.get().to_bytes());
+    if let Some(result) = handle.exec(query.as_cstr()) {
+        crate::PQclear(result);
+    }
+}
+
+swoole_rs_zend::exports! {
+/// Declare the cursor and fetch its column descriptions without advancing it.
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_open_cursor(
+    dbh: &Dbh,
+    stmt: &Stmt,
+    result: &Cell<Option<crate::PgResult>>,
+    cursor: Text<'_>,
+    prepared: &Cell<bool>,
+    sql: Text<'_>,
+) -> bool {
+    let Some(handle) = crate::driver::handle(dbh) else {
+        return false;
+    };
+    if prepared.get() {
+        pdo_pgsql_close_cursor(handle, cursor);
+    }
+    let mut declared = None;
+    {
+        let parts: &[&[u8]] = &[
+            b"DECLARE ",
+            cursor.get().to_bytes(),
+            b" SCROLL CURSOR WITH HOLD FOR ",
+            sql.get().to_bytes(),
+        ];
+        let Ok(query) = CString::new(parts.concat()) else {
+            return false;
+        };
+        if let Err(error) = swoole_rs_zend::contain_with(|| declared = handle.exec(&query)) {
+            error.defer();
+            return false;
+        }
+    }
+    if crate::driver::cursor_result(dbh, stmt, result, declared).is_none() {
+        return false;
+    }
+    if let Some(previous) = result.take() {
+        crate::PQclear(previous);
+    }
+    prepared.set(true);
+    let mut fetch = swoole_rs_zend::message!("FETCH FORWARD 0 FROM ");
+    fetch.push(cursor.get().to_bytes());
+    result.set(handle.exec(fetch.as_cstr()));
+    true
+}
 }

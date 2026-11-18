@@ -282,22 +282,20 @@ pub(crate) fn cursor_result(
     stmt: &Stmt,
     slot: &Cell<Option<PgResult>>,
     result: Option<PgResult>,
-) -> bool {
+) -> Option<c_int> {
     let code = status(result.as_ref());
     if matches!(
         code,
         ExecStatusType::PGRES_COMMAND_OK | ExecStatusType::PGRES_TUPLES_OK
     ) {
-        let found = result
-            .as_ref()
-            .is_some_and(|result| PQntuples(result.get()) > 0);
+        let rows = result.as_ref().map(|result| PQntuples(result.get()));
         slot.set(result);
-        return found;
+        return rows;
     }
     let state = sqlstate(result.as_ref()).map(CStr::to_owned);
     slot.set(result);
     raise(dbh, Some(stmt), code as c_int, state.as_deref(), None);
-    false
+    None
 }
 
 /// `_pdo_pgsql_trim_message`: libpq's message without its trailing line breaks,
