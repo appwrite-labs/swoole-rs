@@ -78,10 +78,10 @@ static int pgsql_stmt_dtor(pdo_stmt_t *stmt) {
             // check if we can circumvent this.
             char *q = NULL;
             spprintf(&q, 0, "DEALLOCATE %s", S->stmt_name);
-            res = PQexec(H->server, q);
+            res = PQexec(pdo_pgsql_server(H), q);
             efree(q);
 #else
-            res = PQclosePrepared(H->server, S->stmt_name);
+            res = PQclosePrepared(pdo_pgsql_server(H), S->stmt_name);
 #endif
             if (res) {
                 PQclear(res);
@@ -118,7 +118,7 @@ static int pgsql_stmt_dtor(pdo_stmt_t *stmt) {
             PGresult *res;
 
             spprintf(&q, 0, "CLOSE %s", S->cursor_name);
-            res = PQexec(H->server, q);
+            res = PQexec(pdo_pgsql_server(H), q);
             efree(q);
             if (res) PQclear(res);
         }
@@ -155,13 +155,13 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt) {
 
         if (S->is_prepared) {
             spprintf(&q, 0, "CLOSE %s", S->cursor_name);
-            PQclear(PQexec(H->server, q));
+            PQclear(PQexec(pdo_pgsql_server(H), q));
             efree(q);
         }
 
         spprintf(
             &q, 0, "DECLARE %s SCROLL CURSOR WITH HOLD FOR %s", S->cursor_name, ZSTR_VAL(stmt->active_query_string));
-        S->result = PQexec(H->server, q);
+        S->result = PQexec(pdo_pgsql_server(H), q);
         efree(q);
 
         /* check if declare failed */
@@ -177,7 +177,7 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt) {
 
         /* fetch to be able to get the number of tuples later, but don't advance the cursor pointer */
         spprintf(&q, 0, "FETCH FORWARD 0 FROM %s", S->cursor_name);
-        S->result = PQexec(H->server, q);
+        S->result = PQexec(pdo_pgsql_server(H), q);
         efree(q);
     } else if (S->stmt_name) {
         /* using a prepared statement */
@@ -186,7 +186,7 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt) {
         stmt_retry:
             /* we deferred the prepare until now, because we didn't
              * know anything about the parameter types; now we do */
-            S->result = PQprepare(H->server,
+            S->result = PQprepare(pdo_pgsql_server(H),
                                   S->stmt_name,
                                   ZSTR_VAL(S->query),
                                   stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0,
@@ -212,9 +212,9 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt) {
 #ifndef HAVE_PQCLOSEPREPARED
                     char buf[100]; /* stmt_name == "pdo_crsr_%08x" */
                     snprintf(buf, sizeof(buf), "DEALLOCATE %s", S->stmt_name);
-                    res = PQexec(H->server, buf);
+                    res = PQexec(pdo_pgsql_server(H), buf);
 #else
-                    res = PQclosePrepared(H->server, S->stmt_name);
+                    res = PQclosePrepared(pdo_pgsql_server(H), S->stmt_name);
 #endif
                     if (res) {
                         PQclear(res);
@@ -227,7 +227,7 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt) {
             }
             }
         }
-        S->result = PQexecPrepared(H->server,
+        S->result = PQexecPrepared(pdo_pgsql_server(H),
                                    S->stmt_name,
                                    stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0,
                                    (const char **) S->param_values,
@@ -236,7 +236,7 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt) {
                                    0);
     } else if (stmt->supports_placeholders == PDO_PLACEHOLDER_NAMED) {
         /* execute query with parameters */
-        S->result = PQexecParams(H->server,
+        S->result = PQexecParams(pdo_pgsql_server(H),
                                  ZSTR_VAL(S->query),
                                  stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0,
                                  S->param_types,
@@ -246,7 +246,7 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt) {
                                  0);
     } else {
         /* execute plain query (with embedded parameters) */
-        S->result = PQexec(H->server, ZSTR_VAL(stmt->active_query_string));
+        S->result = PQexec(pdo_pgsql_server(H), ZSTR_VAL(stmt->active_query_string));
     }
     status = PQresultStatus(S->result);
 
@@ -262,7 +262,6 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt) {
 
     if (status == PGRES_COMMAND_OK) {
         stmt->row_count = ZEND_ATOL(PQcmdTuples(S->result));
-        H->pgoid = PQoidValue(S->result);
     } else {
         stmt->row_count = (zend_long) PQntuples(S->result);
     }
@@ -456,7 +455,7 @@ static int pgsql_stmt_fetch(pdo_stmt_t *stmt, enum pdo_fetch_orientation ori, ze
 
         spprintf(&q, 0, "FETCH %s FROM %s", ori_str, S->cursor_name);
         efree(ori_str);
-        S->result = PQexec(S->H->server, q);
+        S->result = PQexec(pdo_pgsql_server(S->H), q);
         efree(q);
         status = PQresultStatus(S->result);
 
@@ -542,7 +541,7 @@ static int pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pd
             Oid oid = (Oid) strtoul(ptr, &end_ptr, 10);
             if (type && *type == PDO_PARAM_LOB) {
                 /* If column was bound as LOB, return a stream. */
-                int loid = lo_open(S->H->server, oid, INV_READ);
+                int loid = lo_open(pdo_pgsql_server(S->H), oid, INV_READ);
                 if (loid >= 0) {
                     php_stream *stream = pdo_pgsql_create_lob_stream(&stmt->database_object_handle, loid, oid);
                     if (stream) {
@@ -631,7 +630,7 @@ static int pgsql_stmt_get_column_meta(pdo_stmt_t *stmt, zend_long colno, zval *r
 
     table_oid = PQftable(S->result, colno);
     add_assoc_long(return_value, "pgsql:table_oid", table_oid);
-    table_name = pdo_pgsql_translate_oid_to_table(table_oid, S->H->server);
+    table_name = pdo_pgsql_translate_oid_to_table(table_oid, pdo_pgsql_server(S->H));
     if (table_name) {
         add_assoc_string(return_value, "table", table_name);
         efree(table_name);
@@ -674,7 +673,7 @@ static int pgsql_stmt_get_column_meta(pdo_stmt_t *stmt, zend_long colno, zval *r
     default:
         /* Fetch metadata from Postgres system catalogue */
         spprintf(&q, 0, "SELECT TYPNAME FROM PG_TYPE WHERE OID=%u", S->cols[colno].pgsql_type);
-        res = PQexec(S->H->server, q);
+        res = PQexec(pdo_pgsql_server(S->H), q);
         efree(q);
         status = PQresultStatus(res);
         if (status == PGRES_TUPLES_OK && 1 == PQntuples(res)) {

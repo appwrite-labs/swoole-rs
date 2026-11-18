@@ -4,11 +4,12 @@
 //! is never reused, and a hooked persistent connection resets without
 //! blocking the event loop.
 use crate::{
-    Conn, PQreset, PQresetPoll, PQresetStart, blocking, has_io_error, take_io_error, wait_connect,
+    Conn, PQreset, PQresetPoll, PQresetStart, blocking, driver, has_io_error, take_io_error,
+    wait_connect,
 };
 use pq_sys::{ConnStatusType, PostgresPollingStatusType};
-use std::ffi::{c_char, c_int, c_void};
-use std::marker::PhantomData;
+use std::{borrow::Cow, ffi::CStr};
+use swoole_rs_zend::pdo::Dbh;
 
 impl Conn {
     fn reset_poll(self) -> PostgresPollingStatusType {
@@ -24,51 +25,21 @@ impl Conn {
     }
 }
 
-/// `SUCCESS` and `FAILURE`.
-const SUCCESS: c_int = 0;
-const FAILURE: c_int = -1;
-
-/// A live pgsql `pdo_dbh_t` the driver handed over: its driver data is a
-/// `pdo_pgsql_db_handle`, whose first field is the connection.
-/// Only an export parameter makes one, live for the call (`'a`).
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct Dbh<'a>(*mut c_void, PhantomData<&'a ()>);
-
-// crates/zend-sys' shim (shim_pdo.c), with the handle typed as what it is
-// (`Dbh` has a `void *`'s layout). `Dbh` is neither `Send` nor `Sync`, so both run
+// crates/zend-sys' shim (shim_pdo.c). `Dbh` is neither `Send` nor `Sync`, so it runs
 // on the request's thread.
 unsafe extern "C" {
-    /// It only reads the live handle's `driver_data`, a `pdo_pgsql_db_handle` the
-    /// handle factory set, whose first field is the connection and which lives as
-    /// long as the handle.
-    safe fn swr_zend_pdo_driver_data<'a>(dbh: Dbh<'a>) -> &'a Conn;
     /// The persistent pool forgets the live handle if it holds it: it clears the
     /// pool entry's pointer before deleting the entry, so the entry's destructor
     /// leaves the handle, whose owners keep their references.
-    safe fn swr_zend_pdo_forget_persistent(dbh: Dbh<'_>);
+    safe fn swr_zend_pdo_forget_persistent(dbh: &Dbh);
 }
 
-impl Dbh<'_> {
-    fn server(self) -> Conn {
-        *swr_zend_pdo_driver_data(self)
-    }
-}
-
-/// `php_swoole_pgsql_handle_io_error`: whether the connection's I/O was
-/// interrupted, with its message in `message`. The first time, the socket is
-/// shut down so the rest of the reply is never read as another's, and the
-/// persistent pool lets go of the handle; PDO's own owners keep it until
-/// their destructors `PQfinish` it.
-#[unsafe(no_mangle)]
-pub extern "C" fn php_swoole_pgsql_handle_io_error(
-    dbh: Dbh<'_>,
-    message: &mut *const c_char,
-) -> bool {
-    let conn = dbh.server();
-    let Some((code, first)) = take_io_error(conn) else {
-        return false;
-    };
+/// `php_swoole_pgsql_handle_io_error`: the message of the connection's interrupted
+/// I/O, if it was. The first time, the socket is shut down so the rest of the reply
+/// is never read as another's, and the persistent pool lets go of the handle; PDO's
+/// own owners keep it until their destructors `PQfinish` it.
+pub(crate) fn io_error(dbh: &Dbh, conn: Conn) -> Option<Cow<'static, CStr>> {
+    let (code, first) = take_io_error(conn)?;
     if first {
         let fd = conn.socket();
         if fd >= 0 {
@@ -77,35 +48,51 @@ pub extern "C" fn php_swoole_pgsql_handle_io_error(
         }
         swr_zend_pdo_forget_persistent(dbh);
     }
-    *message = swoole_rs_error_ffi::swoole_strerror(code);
-    true
+    Some(swoole_rs_error::strerror_text(
+        code,
+        swoole_rs_corebase::sys::strerror,
+    ))
 }
 
-/// `php_swoole_pgsql_check_liveness`: an interrupted connection is dead; a
-/// broken one resets, by polling with the hook on.
-#[unsafe(no_mangle)]
-pub extern "C" fn php_swoole_pgsql_check_liveness(dbh: Dbh<'_>) -> c_int {
-    let conn = dbh.server();
+/// `zend_result`, as PDO reads `check_liveness`'s.
+#[repr(i32)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Liveness {
+    Alive = 0,
+    Dead = -1,
+}
+
+/// Whether `conn` is up: an interrupted connection is dead; a broken one resets,
+/// by polling with the hook on.
+fn liveness(conn: Conn) -> Liveness {
     if has_io_error(conn) {
-        return FAILURE;
+        return Liveness::Dead;
     }
     if !conn.consume_input() || conn.status() == ConnStatusType::CONNECTION_BAD {
         if !blocking() {
             if !conn.reset_start() || conn.socket() < 0 {
-                return FAILURE;
+                return Liveness::Dead;
             }
             conn.set_nonblocking(true);
             return if wait_connect(conn, Conn::reset_poll) {
-                SUCCESS
+                Liveness::Alive
             } else {
-                FAILURE
+                Liveness::Dead
             };
         }
         conn.reset();
     }
     if conn.status() == ConnStatusType::CONNECTION_OK {
-        SUCCESS
+        Liveness::Alive
     } else {
-        FAILURE
+        Liveness::Dead
     }
+}
+
+swoole_rs_zend::exports! {
+/// `pdo_pgsql_check_liveness` (upstream's `php_swoole_pgsql_check_liveness`).
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_check_liveness(dbh: &Dbh) -> Liveness {
+    driver::server(dbh).map_or(Liveness::Dead, liveness)
+}
 }
