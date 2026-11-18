@@ -31,7 +31,7 @@ swoole-rs-framing = { path = "../framing" }
 openssl-sys = "=0.9.118"
 
 [build-dependencies]
-cc = { version = "=1.11.1", optional = true }
+cc = { version = "=1.11.2", optional = true }
 
 [lib]
 name = "swoole_rs_corebase"

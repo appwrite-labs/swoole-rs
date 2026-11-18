@@ -44,7 +44,7 @@ swoole-rs-ffi = { path = "../ffi" }
 openssl-sys = { version = "=0.9.118", optional = true }
 
 [build-dependencies]
-cc = { version = "=1.11.1", optional = true }
+cc = { version = "=1.11.2", optional = true }
 
 [lints]
 workspace = true

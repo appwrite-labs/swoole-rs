@@ -17,7 +17,7 @@ swoole-rs-corebase = { path = "../corebase", optional = true }
 swoole-rs-zend = { path = "../zend", optional = true }
 
 [build-dependencies]
-cc = { version = "=1.11.1", optional = true }
+cc = { version = "=1.11.2", optional = true }
 
 [lints]
 workspace = true
