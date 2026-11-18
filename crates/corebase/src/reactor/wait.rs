@@ -6,7 +6,7 @@
 pub fn kqueue_timeout(milliseconds: i32, deferred: bool) -> Option<libc::timespec> {
     if milliseconds > 0 {
         Some(libc::timespec {
-            tv_sec: libc::time_t::from(milliseconds / 1000),
+            tv_sec: (milliseconds / 1000).into(),
             tv_nsec: libc::c_long::from(milliseconds % 1000) * 1_000_000,
         })
     } else {

@@ -81,12 +81,12 @@ pub struct Logger {
     state: Mutex<State>,
 }
 
-fn now() -> (libc::time_t, i64) {
+fn now() -> (sys::UnixSeconds, i64) {
     let since = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     (
-        libc::time_t::try_from(since.as_secs()).unwrap_or(libc::time_t::MAX),
+        i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
         i64::from(since.subsec_micros()),
     )
 }
@@ -94,7 +94,7 @@ fn now() -> (libc::time_t, i64) {
 /// `std::strftime(out, format, std::localtime(&time))`, through the reentrant
 /// `localtime_r`: the same calendar, without libc's shared record.
 /// Under Miri, which can't call strftime(3), it renders nothing: lines go out undated.
-fn strftime(out: &mut [u8], format: &CStr, time: libc::time_t) -> usize {
+fn strftime(out: &mut [u8], format: &CStr, time: sys::UnixSeconds) -> usize {
     if cfg!(miri) {
         return 0;
     }

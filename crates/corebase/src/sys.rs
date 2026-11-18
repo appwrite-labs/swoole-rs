@@ -181,7 +181,7 @@ mod c {
         /// Returns `calendar`, or null for a time with no calendar.
         #[cfg_attr(target_os = "netbsd", link_name = "__localtime_r50")]
         pub(crate) safe fn localtime_r(
-            time: &libc::time_t,
+            time: &super::UnixSeconds,
             calendar: &mut libc::tm,
         ) -> *mut libc::tm;
         #[cfg_attr(target_os = "netbsd", link_name = "__clock_gettime50")]
@@ -1354,9 +1354,25 @@ pub fn setitimer(which: c_int, value: &libc::itimerval) -> std::io::Result<()> {
     status_result(c::setitimer(which, value, None))
 }
 
+/// Construct a timeval from whole seconds and signed fractional microseconds.
+#[must_use]
+pub fn timeval(seconds: i64, micros: i32) -> libc::timeval {
+    #[cfg(not(target_vendor = "apple"))]
+    let micros = i64::from(micros);
+    libc::timeval {
+        tv_sec: seconds,
+        tv_usec: micros,
+    }
+}
+
+/// Signed seconds since the Unix epoch, shared with libc and the server's atomic timestamps.
+pub type UnixSeconds = i64;
+const _: unsafe extern "C" fn(*const UnixSeconds, *mut libc::tm) -> *mut libc::tm =
+    libc::localtime_r;
+
 /// `localtime_r(3)`: `time`'s calendar in the local zone, None when it has none.
 #[must_use]
-pub fn localtime_r(time: libc::time_t) -> Option<libc::tm> {
+pub fn localtime_r(time: UnixSeconds) -> Option<libc::tm> {
     let mut tm = zeroed::<libc::tm>();
     (!c::localtime_r(&time, &mut tm).is_null()).then_some(tm)
 }
