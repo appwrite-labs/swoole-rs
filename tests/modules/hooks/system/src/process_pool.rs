@@ -23,8 +23,8 @@ use swoole_rs_corebase::process::methods::{
     ExitStatus, swoole_get_worker_symbol, swoole_set_worker_type,
 };
 use swoole_rs_corebase::process::process_pool::{
-    ErrorFn, EventFn, Hooks, MainLoopFn, MessageFn, NotFoundFn, PoolFn, PoolRef, Protocol,
-    RecvData, TaskFn, WorkerFn,
+    CallbackError, ErrorFn, EventFn, Hooks, MainLoopFn, MessageFn, NotFoundFn, PoolFn, PoolRef,
+    Protocol, RecvData, TaskFn, WorkerFn,
 };
 use swoole_rs_corebase::process::task_file::Packed;
 use swoole_rs_corebase::process::worker_record::{
@@ -2071,6 +2071,28 @@ fn child_exit_on_after_reload(pool: PoolRef<'_>) {
     counter_incr(25);
 }
 
+fn failed_main_loop_sets_worker_exit_status() {
+    let pool = new_pool();
+    assert_eq!(create(pool, 1, 0, SW_IPC_NONE), SW_OK);
+    install(
+        pool,
+        Hooks {
+            main_loop: Some(|_, _| Err(CallbackError::Failed)),
+            ..Hooks::default()
+        },
+    );
+    assert_eq!(start(pool), SW_OK);
+    // SAFETY: start spawned the only worker and stored its pid in the live pool.
+    let pid = unsafe { (*get_worker(pool, 0)).pid };
+    assert!(pid > 0);
+    let mut status = 0;
+    // SAFETY: pid is our child and status is writable for the call.
+    assert_eq!(unsafe { waitpid(pid, &raw mut status, 0) }, pid);
+    assert!(libc::WIFEXITED(status));
+    assert_eq!(libc::WEXITSTATUS(status), 255);
+    destroy(pool);
+}
+
 fn reload_from_child_exit_callback() {
     let pool = new_pool();
     counter_init();
@@ -2160,6 +2182,10 @@ pub(super) fn check_layout() {
 pub(super) const CASES: super::Cases = &[
     ("tcp", tcp),
     ("unix_sock", unix_sock),
+    (
+        "failed_main_loop_sets_worker_exit_status",
+        failed_main_loop_sets_worker_exit_status,
+    ),
     (
         "task_protocol_rejects_malformed_packets",
         task_protocol_rejects_malformed_packets,
