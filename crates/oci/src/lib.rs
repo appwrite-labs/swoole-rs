@@ -269,7 +269,6 @@ pub extern "C" fn swoole_oci_ping(svc: Live<Svc>, err: Live<Error>, mode: Ub4) -
 /// `php_swoole_oracle_rinit`: the shared environment, once per process. OCI
 /// fills a local first, so concurrent requests at worst each create one, as
 /// upstream's unlocked check let them.
-#[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_oracle_rinit() {
     if swoole_pdo_oci_Env.load(Ordering::Relaxed).is_null() {
         let mut env = ptr::null_mut();

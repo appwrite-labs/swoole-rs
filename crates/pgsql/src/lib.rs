@@ -4,8 +4,6 @@
 //! flushes and waits for the result on the connection's socket: with `poll(2)`
 //! while blocking, otherwise by parking the coroutine (`System::wait_event`).
 //! With `php`, MINIT ([`minit`]) registers the driver with PDO.
-//!
-//! The bundled C driver redirects `PQexec` through `native/hooks/php_swoole_pgsql.h`.
 #![cfg_attr(
     not(test),
     deny(
@@ -504,7 +502,7 @@ pub extern "C" fn swoole_pgsql_finish(conn: OwnedConn) {
 
 /// `swoole_pgsql_exec`: `PQsendQuery`, then its result. `PQexec`'s whole contract is
 /// the live connection and the query's string, which the types carry.
-#[unsafe(no_mangle)]
+#[must_use]
 pub extern "C" fn swoole_pgsql_exec(conn: Conn, query: Text<'_>) -> *mut PGresult {
     finish(conn, PQsendQuery(conn, query))
 }
