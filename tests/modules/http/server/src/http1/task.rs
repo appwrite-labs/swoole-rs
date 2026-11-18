@@ -12,7 +12,7 @@
 
 use super::*;
 use std::sync::atomic::AtomicU32;
-use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::locks::SharedMutex;
 use swoole_rs_corebase::process::methods as pool;
 use swoole_rs_corebase::process::process_pool::{PoolRecord, PoolRef, SW_IPC_MAX_SIZE};
@@ -805,7 +805,7 @@ fn task_worker4() {
 
 /// `Server::task_unpack(task, &buffer, &packet)` into a 32 KiB `String`: the bytes.
 fn unpack(task: Packed<'_>) -> Option<Vec<u8>> {
-    let mut buffer = CppString::EMPTY;
+    let mut buffer = StringBuffer::EMPTY;
     buffer.alloc(32 * 1024, None);
     let bytes = task.unpack(&mut buffer).map(|(data, _)| data.to_vec());
     buffer.dispose();

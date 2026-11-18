@@ -3,7 +3,7 @@
 use core::cell::Cell;
 use core::ffi::{c_int, c_long};
 use swoole_rs_clients::resp_recv::{Dispatched, ORIGIN, Received, RespConnection, RespRequest};
-use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::reactor::{Caught, Socket};
 use swoole_rs_corebase::{CellExt, DataHead, log};
 use swoole_rs_server::SendData;
@@ -24,7 +24,7 @@ fn requests<R>(f: impl FnOnce(&mut Vec<(c_long, RespRequest)>) -> R) -> R {
 /// command goes. The read owns the buffer throughout dispatch.
 struct Connection<'a, D> {
     socket: Socket<'a>,
-    buffer: &'a mut CppString,
+    buffer: &'a mut StringBuffer,
     request: RespRequest,
     fd: c_int,
     dispatch: D,
@@ -85,7 +85,7 @@ pub(crate) fn recv_packet<'a>(
     max_length: u32,
     conn: swoole_rs_server::Connection<'a>,
     socket: Socket<'a>,
-    buffer: &'a mut CppString,
+    buffer: &'a mut StringBuffer,
     dispatch: impl FnMut(SendData<'_>) -> bool,
 ) -> bool {
     let (fd, session) = (conn.fd(), conn.session_id());
@@ -143,7 +143,7 @@ mod tests {
         let handle = Socket::new(&mut socket);
         let mut protocol = Protocol::EMPTY;
         protocol.package_max_length = 65536 * 2;
-        let mut buffer = CppString::EMPTY;
+        let mut buffer = StringBuffer::EMPTY;
         buffer.alloc(65536, None);
         let buffer_size = buffer.size();
 

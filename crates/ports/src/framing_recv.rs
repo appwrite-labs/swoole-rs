@@ -8,7 +8,7 @@ use core::ffi::{CStr, c_int};
 use core::sync::atomic::Ordering;
 use swoole_rs_clients::client::{ClientFraming, Framing};
 use swoole_rs_clients::protocol::{Package, Protocol};
-use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_WARNING as LOG_WARNING};
 use swoole_rs_corebase::net_types::PacketLength;
 use swoole_rs_corebase::reactor::{Caught, Socket, SocketFields, swr_v1_socket_reset_on_close};
@@ -153,7 +153,7 @@ impl Packages for Callbacks {
 /// A [`Recv`] and its buffer, whose packages `K` measures and hands on, and the
 /// `recv_wait` the socket holds: only this receive writes it, so a flag that didn't
 /// change costs no edit.
-struct With<'a, K>(Recv<'a>, bool, K, &'a mut CppString);
+struct With<'a, K>(Recv<'a>, bool, K, &'a mut StringBuffer);
 
 impl<K: Packages> With<'_, K> {
     /// `socket->recv_wait = flags & FLAG_WAIT`, when it differs.
@@ -176,7 +176,11 @@ impl<K: Packages> With<'_, K> {
 
     /// Runs `f` between applying `flags`' wait and refreshing them.
     #[inline(always)]
-    fn around<T>(&mut self, flags: &mut u32, f: impl FnOnce(Recv<'_>, &mut CppString) -> T) -> T {
+    fn around<T>(
+        &mut self,
+        flags: &mut u32,
+        f: impl FnOnce(Recv<'_>, &mut StringBuffer) -> T,
+    ) -> T {
         self.apply_wait(*flags);
         let result = f(self.0, self.3);
         self.refresh(flags);
@@ -351,7 +355,7 @@ fn failed_recv(r: &Recv<'_>, size: usize) -> Received {
 /// `buffer->split` on the EOF, each part to `onPackage` while the socket stays.
 #[cold]
 #[inline(never)]
-fn split(r: Recv<'_>, b: &mut CppString) -> Option<usize> {
+fn split(r: Recv<'_>, b: &mut StringBuffer) -> Option<usize> {
     let s = r.socket;
     // A copy: `onPackage` may run PHP whose `set()` rewrites the protocol.
     let (eof, eof_len) = {
@@ -368,7 +372,7 @@ fn split(r: Recv<'_>, b: &mut CppString) -> Option<usize> {
 /// The effects a frame rarely needs.
 #[cold]
 #[inline(never)]
-fn rare(r: Recv<'_>, b: &mut CppString, op: Op, arg: usize) {
+fn rare(r: Recv<'_>, b: &mut StringBuffer, op: Op, arg: usize) {
     let s = r.socket;
     let length_mode = r.mode == Mode::Length;
     let origin = origin(&r);
@@ -418,7 +422,7 @@ fn rare(r: Recv<'_>, b: &mut CppString, op: Op, arg: usize) {
 pub(crate) fn receive<'a, K: Packages>(
     socket: Socket<'a>,
     owner: Owner<'a>,
-    buffer: &'a mut CppString,
+    buffer: &'a mut StringBuffer,
     mode: Mode,
     packages: K,
     initial: Option<(u32, bool)>,
@@ -457,7 +461,7 @@ pub(crate) fn receive<'a, K: Packages>(
 fn client_recv<const LENGTH: bool>(
     client: &ClientFraming,
     socket: Socket<'_>,
-    buffer: &mut CppString,
+    buffer: &mut StringBuffer,
 ) -> c_int {
     let mode = if LENGTH { Mode::Length } else { Mode::Eof };
     receive(socket, Owner::Client(client), buffer, mode, Callbacks, None) as c_int
@@ -549,7 +553,7 @@ mod tests {
     fn client_recv<const LENGTH: bool>(
         protocol: &Shared<Protocol>,
         socket: Socket<'_>,
-        buffer: &mut CppString,
+        buffer: &mut StringBuffer,
     ) -> c_int {
         let mode = if LENGTH { Mode::Length } else { Mode::Eof };
         receive(
@@ -563,7 +567,7 @@ mod tests {
     }
 
     /// A connected socket with `sent` waiting, the protocol and an 8-byte buffer.
-    fn stream(sent: &[u8]) -> (SocketRecord, UnixStream, UnixStream, Protocol, CppString) {
+    fn stream(sent: &[u8]) -> (SocketRecord, UnixStream, UnixStream, Protocol, StringBuffer) {
         let (mut peer, reader) = UnixStream::pair().unwrap();
         assert_eq!(peer.write(sent).unwrap(), sent.len());
         reader.set_nonblocking(true).unwrap();
@@ -573,7 +577,7 @@ mod tests {
         let mut protocol = Protocol::EMPTY;
         protocol.package_max_length = 1024;
         protocol.on_package = Some(record);
-        let mut buffer = CppString::EMPTY;
+        let mut buffer = StringBuffer::EMPTY;
         buffer.alloc(8, None);
         PACKAGES.with_borrow_mut(Vec::clear);
         (socket, peer, reader, protocol, buffer)

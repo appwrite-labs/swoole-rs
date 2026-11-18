@@ -6,7 +6,7 @@
 
 use std::ffi::{CStr, c_int};
 
-use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::ossupport::{
     FileRecord, TempFile, fd_write_all, file_get_contents, file_put_contents, file_size,
@@ -38,8 +38,8 @@ fn errno() -> c_int {
     unsafe { *__errno_location() }
 }
 
-fn get_contents(path: &CStr) -> Option<CppString> {
-    let mut content = CppString::EMPTY;
+fn get_contents(path: &CStr) -> Option<StringBuffer> {
+    let mut content = StringBuffer::EMPTY;
     file_get_contents(path, &mut content).then_some(content)
 }
 

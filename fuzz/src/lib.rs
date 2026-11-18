@@ -46,7 +46,7 @@ extern "C" fn method_string(method: i32) -> *const c_char {
 
 mod request {
     use std::ffi::{CStr, c_char};
-    use swoole_rs_corebase::buffer::string::{CppString, boxed_string};
+    use swoole_rs_corebase::buffer::string::{StringBuffer, boxed_string};
     use swoole_rs_corebase::{set_errno, sys::errno};
     use swoole_rs_http::ChunkState;
     use swoole_rs_http::HttpRequest as Request;
@@ -58,7 +58,7 @@ mod request {
         data: *mut c_char,
         length: usize,
         offset: usize,
-        parse: impl FnOnce(&mut Request, &mut CppString) -> T,
+        parse: impl FnOnce(&mut Request, &mut StringBuffer) -> T,
     ) -> (T, usize) {
         let bytes = if data.is_null() {
             &[]

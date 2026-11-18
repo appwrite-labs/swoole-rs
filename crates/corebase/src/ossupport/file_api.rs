@@ -3,7 +3,7 @@
 //! The bodies of `src/os/file.cc` that Rust still calls: `swoole_tmpfile` (under its
 //! upstream symbol), `file_get_contents` and
 //! `file_put_contents`. Logs name the function as upstream's `__SW_FUNC__` did.
-use crate::buffer::string::CppString;
+use crate::buffer::string::StringBuffer;
 use crate::log::LogLevel::{SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING};
 use crate::ossupport::file::{FileIo, file_open, file_size, write_all};
 use crate::ossupport::file_record::FileRecord;
@@ -58,7 +58,7 @@ fn size_of_fd(fd: c_int) -> Option<usize> {
 
 /// `file_get_contents`: true with the file's bytes, NUL-terminated, in `content`
 /// (a default-constructed String); false after upstream's log.
-pub fn file_get_contents(path: &CStr, content: &mut CppString) -> bool {
+pub fn file_get_contents(path: &CStr, content: &mut StringBuffer) -> bool {
     let name = path.to_string_lossy();
     let Ok(fd) = sys::open(path, libc::O_RDONLY, 0) else {
         log::sys_warning(c"file_get_contents", format_args!("open('{name}') failed"));

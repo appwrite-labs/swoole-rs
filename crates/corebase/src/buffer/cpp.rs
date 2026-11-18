@@ -12,8 +12,8 @@ use crate::buffer::typed::Front;
 
 /// `swoole::Buffer`: its only member is the queue. Only Rust reaches it, through the
 /// box [`new_buffer`] returns. The queue is lent by taking it out: to one operation
-/// ([`CppBuffer::with`]), or across a send ([`CppBuffer::take_queue`]).
-pub struct CppBuffer {
+/// ([`OutputQueue::with`]), or across a send ([`OutputQueue::take_queue`]).
+pub struct OutputQueue {
     queue: std::cell::Cell<Option<Box<crate::buffer::Buffer>>>,
 }
 
@@ -23,15 +23,15 @@ fn check(status: Result<(), crate::buffer::Error>) {
     }
 }
 
-impl CppBuffer {
-    /// The queue, out of this until [`CppBuffer::put_queue`] gives it back (or
+impl OutputQueue {
+    /// The queue, out of this until [`OutputQueue::put_queue`] gives it back (or
     /// [`dispose_queue`] frees it); `None` while it is already out.
     #[must_use]
     pub fn take_queue(&self) -> Option<Box<crate::buffer::Buffer>> {
         self.queue.take()
     }
 
-    /// Gives back the queue [`CppBuffer::take_queue`] took. Aborts when this holds
+    /// Gives back the queue [`OutputQueue::take_queue`] took. Aborts when this holds
     /// one again: whatever was queued there meanwhile would be lost.
     pub fn put_queue(&self, queue: Box<crate::buffer::Buffer>) {
         if self.queue.replace(Some(queue)).is_some() {
@@ -75,7 +75,7 @@ impl CppBuffer {
 
 /// `~Buffer()`: pops every entry, then the queue drops with this. A queue lent out
 /// meanwhile goes with its borrower ([`dispose_queue`]).
-impl Drop for CppBuffer {
+impl Drop for OutputQueue {
     fn drop(&mut self) {
         if let Some(queue) = self.queue.get_mut() {
             while let Ok(detached) = queue.pop() {
@@ -88,58 +88,58 @@ impl Drop for CppBuffer {
     }
 }
 
-/// Frees a queue [`CppBuffer::take_queue`] took whose buffer is gone, as `~Buffer()`
+/// Frees a queue [`OutputQueue::take_queue`] took whose buffer is gone, as `~Buffer()`
 /// would have.
 pub fn dispose_queue(queue: Box<crate::buffer::Buffer>) {
-    drop(CppBuffer {
+    drop(OutputQueue {
         queue: std::cell::Cell::new(Some(queue)),
     });
 }
 
 /// `typed_front()`: the first entry; the queue must not be empty.
 #[must_use]
-pub fn swr_cpp_buffer_typed_front(this: &CppBuffer) -> Front {
+pub fn swr_cpp_buffer_typed_front(this: &OutputQueue) -> Front {
     this.with(|queue| queue.front())
         .unwrap_or_else(|_| crate::fatal("typed_front of an empty buffer"))
 }
 
 /// `typed_consume(front, count)`: commits `count` sent bytes of `front`'s entry.
-pub fn swr_cpp_buffer_typed_consume(this: &CppBuffer, front: &Front, count: u32) {
+pub fn swr_cpp_buffer_typed_consume(this: &OutputQueue, front: &Front, count: u32) {
     check(this.with(|queue| queue.consume(front.generation, front.offset, count)));
 }
 
 /// `typed_close()`: queues a payload-free CLOSE marker.
-pub fn swr_cpp_buffer_typed_close(this: &CppBuffer) {
+pub fn swr_cpp_buffer_typed_close(this: &OutputQueue) {
     check(this.with(crate::buffer::Buffer::push_close));
 }
 
 /// `pop()`: drops the first entry, if any.
-pub fn swr_cpp_buffer_pop(this: &CppBuffer) {
+pub fn swr_cpp_buffer_pop(this: &OutputQueue) {
     this.pop();
 }
 
 /// `length()`: queued bytes.
 #[must_use]
-pub fn swr_cpp_buffer_length(this: &CppBuffer) -> u32 {
+pub fn swr_cpp_buffer_length(this: &OutputQueue) -> u32 {
     this.stats().0
 }
 
 /// `count()`: queued entries.
 #[must_use]
-pub fn swr_cpp_buffer_count(this: &CppBuffer) -> usize {
+pub fn swr_cpp_buffer_count(this: &OutputQueue) -> usize {
     this.stats().1
 }
 
 /// `empty()`.
 #[must_use]
-pub fn swr_cpp_buffer_empty(this: &CppBuffer) -> bool {
+pub fn swr_cpp_buffer_empty(this: &OutputQueue) -> bool {
     this.stats().1 == 0
 }
 
 /// `new Buffer(chunk_size)`; dropping the box is `delete buffer`.
 #[must_use]
-pub fn new_buffer(chunk_size: u32) -> Box<CppBuffer> {
-    Box::new(CppBuffer {
+pub fn new_buffer(chunk_size: u32) -> Box<OutputQueue> {
+    Box::new(OutputQueue {
         queue: std::cell::Cell::new(Some(Box::new(crate::buffer::Buffer::new(chunk_size)))),
     })
 }
@@ -150,13 +150,13 @@ mod tests {
     use crate::buffer::EntryKind;
 
     /// Runs `body` over a constructed Buffer, then destroys it.
-    fn with_buffer(chunk_size: u32, body: impl FnOnce(&CppBuffer)) {
+    fn with_buffer(chunk_size: u32, body: impl FnOnce(&OutputQueue)) {
         body(&new_buffer(chunk_size));
     }
 
     /// Drains the queue as upstream's tests read `front()`: each entry's bytes past its
     /// cursor, then `pop()`.
-    fn drain(this: &CppBuffer) -> Vec<u8> {
+    fn drain(this: &OutputQueue) -> Vec<u8> {
         let mut out = Vec::new();
         while !swr_cpp_buffer_empty(this) {
             let front = swr_cpp_buffer_typed_front(this);

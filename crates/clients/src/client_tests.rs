@@ -119,9 +119,9 @@ fn sock() -> &'static mut SocketFields {
 }
 
 /// `f` over `sw_tg_buffer()`: a 64-byte String per test thread.
-pub(super) fn with_thread_buffer(f: &mut dyn FnMut(&mut CppString)) {
+pub(super) fn with_thread_buffer(f: &mut dyn FnMut(&mut StringBuffer)) {
     /// Freed with the test's thread.
-    struct Shared(CppString);
+    struct Shared(StringBuffer);
     impl Drop for Shared {
         fn drop(&mut self) {
             self.0.dispose();
@@ -129,7 +129,7 @@ pub(super) fn with_thread_buffer(f: &mut dyn FnMut(&mut CppString)) {
     }
     thread_local! {
         static SHARED: std::cell::RefCell<Shared> = {
-            let mut buffer = CppString::EMPTY;
+            let mut buffer = StringBuffer::EMPTY;
             buffer.alloc(64, None);
             std::cell::RefCell::new(Shared(buffer))
         };
@@ -155,7 +155,7 @@ pub(super) mod net {
 
     pub(in super::super) fn recv_append(
         _: Socket<'_>,
-        buffer: &mut swoole_rs_corebase::buffer::string::CppString,
+        buffer: &mut swoole_rs_corebase::buffer::string::StringBuffer,
     ) -> Option<usize> {
         if let Some(reply) = mock(|m| m.replies.pop()) {
             log(format!("recv {}", buffer.spare().len()));
@@ -870,8 +870,8 @@ fn a_failed_socket_makes_no_client_and_keeps_its_errno() {
 
 #[test]
 fn framed_package_ranges_keep_the_address_and_clip_the_writable_bytes() {
-    use swoole_rs_corebase::buffer::string::{CppString, boxed_string};
-    let mut empty = CppString::EMPTY;
+    use swoole_rs_corebase::buffer::string::{StringBuffer, boxed_string};
+    let mut empty = StringBuffer::EMPTY;
     let mut package = Package::of(&mut empty, 0, 12);
     assert!(package.as_ptr().is_null());
     assert_eq!(package.bytes(), []);

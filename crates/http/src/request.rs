@@ -11,7 +11,7 @@ use crate::{
 use core::ffi::c_int;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use swoole_rs_corebase::buffer::string::{CppString, boxed_sized_string};
+use swoole_rs_corebase::buffer::string::{StringBuffer, boxed_sized_string};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as NOTICE, SW_LOG_WARNING as WARNING};
 use swoole_rs_corebase::ossupport::TempFile;
 use swoole_rs_corebase::{log, set_errno};
@@ -53,7 +53,7 @@ pub struct HttpForm {
     /// The body's own buffer, which receives go into and the parser reads from
     /// `init_multipart_parser` until `destroy_multipart_parser`, while the body is
     /// rewritten into the receive buffer.
-    body: Option<Box<CppString>>,
+    body: Option<Box<StringBuffer>>,
     /// `upload_tmp_dir + "/swoole.upfile.XXXXXX"`.
     template: Vec<u8>,
     /// The part header's name, copied: it may arrive split across reads.
@@ -144,11 +144,15 @@ impl HttpRequest {
 
     /// The multipart body's own buffer, from `init_multipart_parser` until
     /// `destroy_multipart_parser`: what is received goes into it, not the receive buffer.
-    pub fn body(&mut self) -> Option<&mut CppString> {
+    pub fn body(&mut self) -> Option<&mut StringBuffer> {
         self.form.as_deref_mut()?.body.as_deref_mut()
     }
 
-    fn frame(&mut self, buffer: &mut CppString, parse: fn(&mut HttpFrame, &[u8]) -> bool) -> bool {
+    fn frame(
+        &mut self,
+        buffer: &mut StringBuffer,
+        parse: fn(&mut HttpFrame, &[u8]) -> bool,
+    ) -> bool {
         let mut frame = HttpFrame {
             offset: usize::try_from(buffer.offset()).unwrap_or(usize::MAX),
             content_length: self.content_length,
@@ -177,12 +181,12 @@ impl HttpRequest {
     }
 
     /// The method, URL and version from the request line, or an HTTP/2 preface.
-    pub fn get_protocol(&mut self, buffer: &mut CppString) -> bool {
+    pub fn get_protocol(&mut self, buffer: &mut StringBuffer) -> bool {
         self.frame(buffer, HttpFrame::request_line)
     }
 
     /// Finds the `\r\n\r\n` ending the header block.
-    pub fn get_header_length(&mut self, buffer: &mut CppString) -> bool {
+    pub fn get_header_length(&mut self, buffer: &mut StringBuffer) -> bool {
         self.frame(buffer, HttpFrame::header_end)
     }
 
@@ -306,7 +310,7 @@ impl HttpRequest {
     /// to the header for the body to be rewritten into. False without a form.
     pub fn init_multipart_parser(
         &mut self,
-        buffer: &mut CppString,
+        buffer: &mut StringBuffer,
         tmp_dir: &[u8],
         upload_max: usize,
     ) -> bool {
@@ -353,7 +357,7 @@ impl HttpRequest {
     /// `Request::parse_multipart_data(buffer_)`: feeds the body received since
     /// `init_multipart_parser` to the parser, whose callbacks rewrite it into `saved`,
     /// the receive buffer. False rejects the request.
-    pub fn parse_multipart_data(&mut self, saved: &mut CppString) -> bool {
+    pub fn parse_multipart_data(&mut self, saved: &mut StringBuffer) -> bool {
         self.excepted = false;
         let Some(form) = self.form.as_deref_mut() else {
             return false;
@@ -421,7 +425,7 @@ fn form_of(request: &mut HttpRequest) -> &mut HttpForm {
 /// receive buffer, `saved`.
 struct Rewrite<'a> {
     request: &'a mut HttpRequest,
-    saved: &'a mut CppString,
+    saved: &'a mut StringBuffer,
 }
 
 impl Parts<'_> for Rewrite<'_> {
@@ -586,14 +590,14 @@ mod tests {
         if done { SW_OK } else { SW_ERR }
     }
     /// A receive buffer holding `text`, with room to grow.
-    struct Input(Box<CppString>);
+    struct Input(Box<StringBuffer>);
 
     impl Input {
-        fn get(&self) -> &CppString {
+        fn get(&self) -> &StringBuffer {
             &self.0
         }
 
-        fn get_mut(&mut self) -> &mut CppString {
+        fn get_mut(&mut self) -> &mut StringBuffer {
             &mut self.0
         }
 

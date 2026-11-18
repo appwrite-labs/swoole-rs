@@ -1,7 +1,7 @@
 //! `swoole::Protocol`: how a stream socket's bytes split into packages, and the
 //! callbacks that measure and hand on each one. Upstream's layout, which C++ shares.
 use core::ffi::{c_int, c_void};
-use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::lent::Fill;
 use swoole_rs_corebase::net_types::PacketLength;
 pub use swoole_rs_corebase::reactor::Socket;
@@ -33,7 +33,7 @@ pub struct Package<'a>(Fill<'a, u8>);
 
 impl<'a> Package<'a> {
     /// `len` bytes of `buffer` from `start`, cut to what it holds.
-    pub fn of(buffer: &'a mut CppString, start: usize, len: usize) -> Self {
+    pub fn of(buffer: &'a mut StringBuffer, start: usize, len: usize) -> Self {
         Self(Fill::string_range(buffer, start, len))
     }
 

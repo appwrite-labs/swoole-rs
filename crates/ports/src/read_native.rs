@@ -6,7 +6,7 @@ use core::ffi::CStr;
 use core::sync::atomic::Ordering;
 
 use std::cell::Cell;
-use swoole_rs_corebase::buffer::string::{CppString, OwnedString};
+use swoole_rs_corebase::buffer::string::{OwnedString, StringBuffer};
 use swoole_rs_corebase::constants::{
     EventDataFlag, SW_BUFFER_SIZE_BIG, SW_HTTP_100_CONTINUE_PACKET, SW_HTTP_BAD_REQUEST_PACKET,
     SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET, SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
@@ -390,7 +390,7 @@ impl Connection for Read<'_> {
     }
 
     #[inline]
-    fn buffer(&mut self) -> &mut CppString {
+    fn buffer(&mut self) -> &mut StringBuffer {
         if let Some(body) = self.request.as_deref_mut().and_then(HttpRequest::body) {
             return body;
         }
@@ -435,7 +435,7 @@ impl Connection for Read<'_> {
     }
 
     #[inline]
-    fn parse<R>(&mut self, parse: impl FnOnce(&mut HttpRequest, &mut CppString) -> R) -> R {
+    fn parse<R>(&mut self, parse: impl FnOnce(&mut HttpRequest, &mut StringBuffer) -> R) -> R {
         let request = self.request.get_or_insert_with(swoole_rs_http::request_new);
         parse(request, &mut self.recv)
     }

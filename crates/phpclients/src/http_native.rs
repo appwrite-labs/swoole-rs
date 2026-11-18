@@ -3,7 +3,7 @@
 use crate::{native::Co, socket::Sock};
 use libc::c_int;
 use std::{ffi::CStr, sync::OnceLock};
-use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::{ProxyState, log};
 use swoole_rs_hooks::hooked::{swoole_coroutine_close, write};
 use swoole_rs_hooks::socket_extra::{CloseHook, set_close_hook};
@@ -83,11 +83,11 @@ pub(crate) fn swoole_http_client_coro_create_socket(kind: i64) -> Result<Owned, 
 
 /// An owned HTTP buffer: a response's input or the write buffer a closed socket left.
 #[derive(Default)]
-pub(crate) struct HttpBuffer(Option<Box<CppString>>);
+pub(crate) struct HttpBuffer(Option<Box<StringBuffer>>);
 
 impl HttpBuffer {
     /// The response's own buffer, separate from TLS's socket read buffer.
-    pub(crate) fn input(&mut self) -> &mut CppString {
+    pub(crate) fn input(&mut self) -> &mut StringBuffer {
         self.0.get_or_insert_with(|| {
             swoole_rs_corebase::buffer::string::boxed_sized_string(
                 swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as usize,
@@ -97,7 +97,7 @@ impl HttpBuffer {
     }
 
     /// The bytes the socket had written, if it left a buffer.
-    pub(crate) fn buffer(&self) -> Option<&CppString> {
+    pub(crate) fn buffer(&self) -> Option<&StringBuffer> {
         self.0.as_deref()
     }
 }
@@ -196,17 +196,17 @@ impl Co {
     }
 
     /// `f` over `get_write_buffer()`, made on first use.
-    pub(crate) fn with_write_buffer<R>(self, f: impl FnOnce(&mut CppString) -> R) -> R {
+    pub(crate) fn with_write_buffer<R>(self, f: impl FnOnce(&mut StringBuffer) -> R) -> R {
         self.handle().with_buffer(true, f)
     }
 
     /// `f` over `get_read_buffer()`, made on first use.
-    pub(crate) fn with_input<R>(self, f: impl FnOnce(&mut CppString) -> R) -> R {
+    pub(crate) fn with_input<R>(self, f: impl FnOnce(&mut StringBuffer) -> R) -> R {
         self.handle().with_buffer(false, f)
     }
 
     /// Receive into the response's own buffer, leaving the socket's buffer to TLS.
-    pub(crate) fn recv_input(self, input: &mut CppString) -> Option<usize> {
+    pub(crate) fn recv_input(self, input: &mut StringBuffer) -> Option<usize> {
         input.fill(|out| {
             self.handle()
                 .recv_spare(swoole_rs_hooks::socket_members::Receive::Recv, out)

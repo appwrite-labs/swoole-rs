@@ -128,7 +128,7 @@ pub struct SocketFields {
     pub last_received_time: f64,
     pub last_sent_time: f64,
     /// `Buffer *in_buffer`: owned as `output.out_buffer` is.
-    pub in_buffer: Option<Box<crate::buffer::cpp::CppBuffer>>,
+    pub in_buffer: Option<Box<crate::buffer::cpp::OutputQueue>>,
     /// The session's receive buffer between readable events.
     pub recv_buffer: Option<Box<crate::buffer::string::OwnedString>>,
     /// `TimerNode *recv_timer`, held by id.

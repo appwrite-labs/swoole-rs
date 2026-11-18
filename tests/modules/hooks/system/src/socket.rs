@@ -19,7 +19,7 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::io::{Read, Write};
 use std::mem::ManuallyDrop;
 use std::ptr;
-use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::lent::lend_spare;
 use swoole_rs_corebase::reactor::{Events, TimeoutKind};
 use swoole_rs_corebase::{swoole_rand, swoole_random_int, swoole_type_size};
@@ -114,8 +114,8 @@ struct Record {
     backlog: c_int,
     buffer_allocator: *const c_void,
     buffer_init_size: usize,
-    read_buffer: *mut CppString,
-    write_buffer: *mut CppString,
+    read_buffer: *mut StringBuffer,
+    write_buffer: *mut StringBuffer,
     ssl_is_server: bool,
     ssl_handshaked: bool,
     zero_copy: bool,
@@ -356,13 +356,13 @@ impl Sock {
     }
 
     /// `get_read_buffer()`: made on first use, then read through the record's field.
-    fn read_buffer(&self) -> &mut CppString {
+    fn read_buffer(&self) -> &mut StringBuffer {
         self.co().with_buffer(false, |_| ());
         // SAFETY: the live socket's read buffer, which it keeps.
         unsafe { &mut *self.record().read_buffer }
     }
 
-    fn write_buffer(&self) -> *mut CppString {
+    fn write_buffer(&self) -> *mut StringBuffer {
         self.co().with_buffer(true, |_| ());
         self.record().write_buffer
     }
@@ -624,7 +624,7 @@ fn delete(conn: ManuallyDrop<Sock>) {
 }
 
 /// `delete string`.
-fn delete_string(string: *mut CppString) {
+fn delete_string(string: *mut StringBuffer) {
     // SAFETY: a boxed String the caller owns, which the record gave up.
     unsafe { Box::from_raw(string) }.dispose();
 }

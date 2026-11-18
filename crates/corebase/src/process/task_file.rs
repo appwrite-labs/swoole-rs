@@ -16,7 +16,7 @@ use crate::{
     swr_v1_core_set_current_task_id, task_tmpfile,
 };
 
-use crate::buffer::string::CppString;
+use crate::buffer::string::StringBuffer;
 use crate::ossupport::fd_write_all;
 
 use crate::process::methods::swoole_get_worker_id;
@@ -381,7 +381,7 @@ impl<'a> Packed<'a> {
     /// `Server::task_unpack(task, buffer, &packet)`: the payload's bytes, read
     /// into `buffer` from its temporary file if it has one, and the task's
     /// `ext_flags`; `None` (warned) if that file can't be read.
-    pub fn unpack<'b>(self, buffer: &'b mut CppString) -> Option<(&'b [u8], u16)>
+    pub fn unpack<'b>(self, buffer: &'b mut StringBuffer) -> Option<(&'b [u8], u16)>
     where
         'a: 'b,
     {
@@ -480,7 +480,7 @@ mod tests {
         bytes[1 + head..].copy_from_slice(b"abc");
         let task = super::Packed::from_bytes(&bytes[1..]).unwrap();
         assert_eq!((task.head().fd, task.head().len), (7, 3));
-        let mut string = crate::buffer::string::CppString::EMPTY;
+        let mut string = crate::buffer::string::StringBuffer::EMPTY;
         let (payload, flags) = task.unpack(&mut string).unwrap();
         assert_eq!((payload, flags), (&b"abc"[..], 0));
         assert!(super::Packed::from_bytes(&bytes[1..bytes.len() - 1]).is_none());

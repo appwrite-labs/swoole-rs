@@ -67,20 +67,20 @@ The project-written `compatibility.cc` consumer is ported there too:
 `swoole_thread_init` never set up gets `None` from `try_with_thread_buffer`, not a
 null String.
 
-The hooks, client, HTTP and framing Rust case fixtures use the real `CppString`
+The hooks, client, HTTP and framing Rust case fixtures use the real `StringBuffer`
 for borrowed runtime buffers and `OwnedString` for allocations they own. They no
 longer copy the record layout or call the sized constructor, destructor,
 `append_random_bytes` or `pop` through Itanium symbols; those four exports are gone.
 The original test inputs and assertions are unchanged. The remaining eleven
 String member exports and their unused wrappers are gone too; helpers called by
-the Rust original tests use Rust's calling convention. `CppString` has Rust layout.
+the Rust original tests use Rust's calling convention. `StringBuffer` has Rust layout.
 `native/buffer/swoole_string.h` only declares an opaque class: socket and co-socket
 records retain pointers, and no compiled native consumer reads its fields.
 
 The oracle's framing, HTTP-frame, HTTP-proxy and RESP shims define their own
 String records over pinned bodies. In particular, both framing-stream engines
 use the local record in `crates/oracle/shim/framing_stream.cc`, including its
-candidate ABI assertions; neither lends a runtime `CppString` to that ABI.
+candidate ABI assertions; neither lends a runtime `StringBuffer` to that ABI.
 Those oracle layouts and assertions remain unchanged.
 
 Run as `python3 tests/modules/buffer/<script>`; `S` is the pinned upstream

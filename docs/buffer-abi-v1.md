@@ -2,7 +2,7 @@
 
 Feature value 2 is always enabled. Native socket headers forward-declare
 `swoole::Buffer`. Rust owns the queue, its allocations and its front cursor.
-`CppBuffer` lends the queue to Rust send operations in
+`OutputQueue` lends the queue to Rust send operations in
 `crates/corebase/src/buffer/cpp.rs`.
 
 ## Ownership and accounting
@@ -18,7 +18,7 @@ Feature value 2 is always enabled. Native socket headers forward-declare
 - The queue never dereferences, calls or frees a token or its disposer; pop hands
   both back as a `Detached`, whose `dispose()` runs the disposer once, after the
   queue call returns. Data pointers survive append; pop invalidates the removed front.
-- Dropping a `CppBuffer` drains its resident queue and disposes each detached
+- Dropping an `OutputQueue` drains its resident queue and disposes each detached
   entry. A borrower that has taken the queue owns its disposal.
 
 ## Errors, threads, fork
@@ -37,7 +37,7 @@ that starts there.
 
 ## String
 
-`CppString` and its operations are Rust (`crates/corebase/src/buffer/string.rs`).
+`StringBuffer` and its operations are Rust (`crates/corebase/src/buffer/string.rs`).
 It has Rust layout; no String member exports or shared field-layout contract remain.
 `native/buffer/swoole_string.h` declares an opaque `swoole::String` because native
 socket records retain pointers. They never inspect or mutate the pointed-to fields.

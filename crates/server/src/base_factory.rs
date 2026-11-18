@@ -243,7 +243,7 @@ pub(crate) fn dispatch_buffer(
     serv: view::Server<'_>,
     task: &mut SendData,
     direct: bool,
-    mut buffer: Option<&mut swoole_rs_corebase::buffer::string::CppString>,
+    mut buffer: Option<&mut swoole_rs_corebase::buffer::string::StringBuffer>,
 ) -> bool {
     let info = &mut task.info;
     if info.event().is_some_and(ServerEvent::is_stream) {
@@ -295,7 +295,7 @@ pub(crate) fn dispatch_buffer(
 fn receive_now(
     serv: view::Server<'_>,
     task: &SendData,
-    buffer: Option<&mut swoole_rs_corebase::buffer::string::CppString>,
+    buffer: Option<&mut swoole_rs_corebase::buffer::string::StringBuffer>,
 ) -> bool {
     let dgram = task.info.event() == Some(ServerEvent::RecvDgram);
     if !dgram && task.info.event() != Some(ServerEvent::RecvData) {
@@ -315,7 +315,7 @@ fn receive_as(
     task: &SendData,
     dgram: bool,
     worker: Worker<'_>,
-    buffer: Option<&mut swoole_rs_corebase::buffer::string::CppString>,
+    buffer: Option<&mut swoole_rs_corebase::buffer::string::StringBuffer>,
 ) -> bool {
     let state = serv.state();
     let conn = if dgram {

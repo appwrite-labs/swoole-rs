@@ -6,7 +6,7 @@
 use std::ffi::{CStr, c_char, c_int};
 use swoole_rs_corebase::CCast;
 
-use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::lent::Spare;
 use swoole_rs_corebase::log;
 
@@ -45,7 +45,7 @@ fn header_only_mask(flags: FrameFlags) -> bool {
 /// `encode`/`pack_close_frame`'s tail: reserve `size` bytes past the buffer's
 /// length, and append what `write` writes there: whether it wrote `size`.
 fn append_frame(
-    buffer: &mut CppString,
+    buffer: &mut StringBuffer,
     size: usize,
     write: impl FnOnce(&mut Spare<'_>) -> Result<usize, EncodeError>,
 ) -> bool {
@@ -109,7 +109,7 @@ pub fn decode_frame(data: &mut [u8]) -> Result<DecodedFrame, (DecodedFrame, bool
 
 /// `bool encode(String *buffer, const char *data, size_t length, uint8_t opcode, uint8_t flags)`
 /// over the payload's bytes. A header-only frame takes their count and writes none.
-pub fn encode(buffer: &mut CppString, data: &[u8], opcode: u8, flags: u8) -> bool {
+pub fn encode(buffer: &mut StringBuffer, data: &[u8], opcode: u8, flags: u8) -> bool {
     let length = data.len();
     let opcode = Opcode::from_code(opcode);
     let flags = FrameFlags::from_bits(flags);
@@ -166,7 +166,7 @@ pub fn decode(frame: &mut Frame, data: &mut [u8]) -> bool {
 }
 
 /// `bool pack_close_frame(String *buffer, int code, const char *reason, size_t length, uint8_t flags)`.
-pub fn pack_close_frame(buffer: &mut CppString, code: c_int, reason: &[u8], flags: u8) -> bool {
+pub fn pack_close_frame(buffer: &mut StringBuffer, code: c_int, reason: &[u8], flags: u8) -> bool {
     let origin = c"websocket::pack_close_frame";
     let flags = FrameFlags::from_bits(flags);
     let length = reason.len();
@@ -221,8 +221,8 @@ pub fn print_frame(header: [u8; 2], payload: &[u8]) {
 mod tests {
     use super::*;
 
-    fn string() -> CppString {
-        CppString::EMPTY
+    fn string() -> StringBuffer {
+        StringBuffer::EMPTY
     }
 
     /// A masked text frame decodes to its payload, header bits and mask key.

@@ -18,7 +18,7 @@ use core::ptr::NonNull;
 use std::ffi::{CStr, CString};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
-use swoole_rs_corebase::buffer::string::{CppString, OwnedString};
+use swoole_rs_corebase::buffer::string::{OwnedString, StringBuffer};
 use swoole_rs_corebase::constants::{
     FdType, ResultCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE,
     SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
@@ -186,7 +186,7 @@ const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int =
 
 /// One of `Protocol::recv_with_length_protocol` and `recv_with_eof_protocol` over a
 /// live client's protocol, socket and input buffer ([`Handle::with_framed`]).
-pub type Framed = fn(&ClientFraming, Socket<'_>, &mut CppString) -> c_int;
+pub type Framed = fn(&ClientFraming, Socket<'_>, &mut StringBuffer) -> c_int;
 
 /// The framed receives crates/ports defines; ports depends on this crate, so
 /// `swoole_init` (crates/ffi) registers them with [`set_framing`]. Only a
@@ -254,7 +254,7 @@ pub struct Client {
 /// The input and protocol settings a framed receive keeps through callbacks.
 pub struct ClientFraming {
     record: Cell<ClientRecord>,
-    input: Cell<CppString>,
+    input: Cell<StringBuffer>,
     length_owner: Cell<Option<Rc<dyn std::any::Any>>>,
 }
 
@@ -507,7 +507,7 @@ impl Handle<'_> {
     }
 
     /// The input buffer (`cli->buffer`), null until an async connect makes it.
-    fn input(self) -> *mut CppString {
+    fn input(self) -> *mut StringBuffer {
         self.record().buffer.cast()
     }
 
@@ -515,14 +515,14 @@ impl Handle<'_> {
     /// Each edit finishes before a callback can reenter the client.
     fn edit_input<R>(
         self,
-        edit: impl FnOnce(&mut CppString, Socket<'static>, &SocketOps) -> R,
+        edit: impl FnOnce(&mut StringBuffer, Socket<'static>, &SocketOps) -> R,
     ) -> R {
         let socket = self.socket();
         let ops = self.get().socket_ops;
         if self.input().is_null() {
             swoole_rs_corebase::fatal("client input buffer is not available");
         }
-        let mut buffer = self.get().framing.input.replace(CppString::EMPTY);
+        let mut buffer = self.get().framing.input.replace(StringBuffer::EMPTY);
         let result = edit(&mut buffer, socket, ops);
         self.get().framing.input.set(buffer);
         result
@@ -531,7 +531,7 @@ impl Handle<'_> {
     /// `new String(SW_CLIENT_BUFFER_SIZE)`, once.
     fn input_init(self) {
         if self.input().is_null() {
-            let mut buffer = CppString::EMPTY;
+            let mut buffer = StringBuffer::EMPTY;
             buffer.alloc(CLIENT_BUFFER_SIZE, None);
             self.get().framing.input.set(buffer);
             let input = self.get().framing.input.as_ptr().cast();
@@ -544,7 +544,11 @@ impl Handle<'_> {
         if !self.input().is_null() {
             self.get()
                 .edit_record(|record| record.buffer = core::ptr::null_mut());
-            self.get().framing.input.replace(CppString::EMPTY).dispose();
+            self.get()
+                .framing
+                .input
+                .replace(StringBuffer::EMPTY)
+                .dispose();
         }
     }
 
@@ -585,7 +589,7 @@ impl Handle<'_> {
 
     /// A result from the scratch buffer, without holding a client borrow across
     /// the loan or letting the buffer escape it.
-    fn with_buffer<R>(self, mut f: impl FnMut(&mut CppString) -> R) -> R {
+    fn with_buffer<R>(self, mut f: impl FnMut(&mut StringBuffer) -> R) -> R {
         let mut result = None;
         (self.get().socket_ops.with_buffer)(&mut |buffer| {
             result = Some(f(buffer));
@@ -596,7 +600,7 @@ impl Handle<'_> {
 
     /// The HTTP proxy's CONNECT request, packed into `shared`.
     /// The host is the TLS host name when set, else the proxy's target.
-    fn http_pack(self, shared: &mut CppString) -> &[u8] {
+    fn http_pack(self, shared: &mut StringBuffer) -> &[u8] {
         let tls = self.get().tls.get().is_some();
         let name = tls.then(|| self.tls_host_name());
         let packed = self.with_proxy(Proxy::Http, |proxy| {
@@ -751,7 +755,7 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
         socket,
         socket_ops,
         framing: Rc::new(ClientFraming {
-            input: Cell::new(CppString::EMPTY),
+            input: Cell::new(StringBuffer::EMPTY),
             length_owner: Cell::new(None),
             record: Cell::new(ClientRecord {
                 http2: false,
@@ -884,10 +888,10 @@ impl<'a> Handle<'a> {
     /// leaves the pending bytes to the loop that already owns them.
     fn with_framed(
         self,
-        receive: impl FnOnce(&ClientFraming, Socket<'_>, &mut CppString) -> bool,
+        receive: impl FnOnce(&ClientFraming, Socket<'_>, &mut StringBuffer) -> bool,
     ) -> bool {
         let framing = self.get().framing.clone();
-        let mut buffer = framing.input.replace(CppString::EMPTY);
+        let mut buffer = framing.input.replace(StringBuffer::EMPTY);
         if buffer.size() == 0 {
             return !self.input().is_null();
         }
@@ -1566,7 +1570,7 @@ fn bind_unix(this: Handle<'_>) -> bool {
     bound_ok
 }
 
-type BufferLoan = fn(&mut dyn FnMut(&mut CppString));
+type BufferLoan = fn(&mut dyn FnMut(&mut StringBuffer));
 
 /// Host effects selected at construction; callbacks copy the function pointer
 /// before an effect can release the client.
@@ -1574,7 +1578,7 @@ struct SocketOps {
     dispatch_dns: fn(Lookup, &crate::resolver::Request) -> bool,
     /// Lends the scratch buffer to the callback exactly once, synchronously.
     with_buffer: BufferLoan,
-    recv_append: fn(Socket<'_>, &mut CppString) -> Option<usize>,
+    recv_append: fn(Socket<'_>, &mut StringBuffer) -> Option<usize>,
     recv_sync: fn(Socket<'_>, &mut Spare<'_>, c_int) -> Option<usize>,
     recvfrom_sync: fn(Socket<'_>, &mut Spare<'_>, c_int, &mut SocketAddress) -> Option<usize>,
     send_sync: fn(Socket<'_>, &[u8], c_int) -> Option<usize>,

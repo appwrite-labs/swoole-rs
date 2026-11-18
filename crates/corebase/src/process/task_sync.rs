@@ -10,7 +10,7 @@ use std::ffi::{CStr, c_int};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::buffer::string::CppString;
+use crate::buffer::string::StringBuffer;
 use crate::log::{self, set_last_error};
 use crate::ossupport::file_get_contents;
 use crate::task_tmpfile;
@@ -421,7 +421,7 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
         indexes.dedup_by_key(|&mut (task_id, _)| task_id);
 
         tasks.host.lock(true);
-        let mut content = CppString::EMPTY;
+        let mut content = StringBuffer::EMPTY;
         let read = file_get_contents(path, &mut content);
         tasks.host.lock(false);
         let unpacked = if read {
@@ -440,7 +440,7 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
 fn unpack_all(
     multi: &mut impl MultiTask,
     indexes: &[(Option<i64>, u16)],
-    content: &CppString,
+    content: &StringBuffer,
 ) -> Result<(), Bailed> {
     let mut bytes = content.view();
     while let Some((record, rest)) = Packed::split(bytes) {
