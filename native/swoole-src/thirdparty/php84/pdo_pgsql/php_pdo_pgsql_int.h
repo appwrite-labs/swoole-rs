@@ -62,17 +62,10 @@ typedef struct {
     char *cursor_name;
     char *stmt_name;
     zend_string *query;
-    char **param_values;
-    int *param_lengths;
-    int *param_formats;
-    Oid *param_types;
+    pdo_pgsql_parameter_arrays params;
     int current_row;
     bool is_prepared;
 } pdo_pgsql_stmt;
-
-typedef struct {
-    Oid oid;
-} pdo_pgsql_bound_param;
 
 extern const pdo_driver_t pdo_pgsql_driver;
 

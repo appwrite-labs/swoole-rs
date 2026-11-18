@@ -355,3 +355,40 @@ extern "C" fn pdo_pgsql_emulated_parameter(kind: &Cell<pdo_param_type>, slot: &S
     true
 }
 }
+
+/// Parallel libpq parameter arrays. Each slot also has stable storage for a
+/// large object's network-order OID until libpq copies the bound parameters.
+struct ParameterStorage {
+    values: Vec<*const std::ffi::c_char>,
+    lengths: Vec<c_int>,
+    formats: Vec<c_int>,
+    types: Vec<Oid>,
+    lob_oids: Vec<Oid>,
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_allocate_parameters(
+    count: usize,
+    values: &mut *mut *const std::ffi::c_char,
+    lengths: &mut *mut c_int,
+    formats: &mut *mut c_int,
+    types: &mut *mut Oid,
+    lob_oids: &mut *mut Oid,
+) -> Box<ParameterStorage> {
+    let mut owner = Box::new(ParameterStorage {
+        values: vec![std::ptr::null(); count],
+        lengths: vec![0; count],
+        formats: vec![0; count],
+        types: vec![0; count],
+        lob_oids: vec![0; count],
+    });
+    *values = owner.values.as_mut_ptr();
+    *lengths = owner.lengths.as_mut_ptr();
+    *formats = owner.formats.as_mut_ptr();
+    *types = owner.types.as_mut_ptr();
+    *lob_oids = owner.lob_oids.as_mut_ptr();
+    owner
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_free_parameters(_owner: Option<Box<ParameterStorage>>) {}

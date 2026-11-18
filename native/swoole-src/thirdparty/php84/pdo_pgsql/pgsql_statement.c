@@ -61,22 +61,7 @@ static int pgsql_stmt_dtor(pdo_stmt_t *stmt) {
         efree(S->stmt_name);
         S->stmt_name = NULL;
     }
-    if (S->param_lengths) {
-        efree(S->param_lengths);
-        S->param_lengths = NULL;
-    }
-    if (S->param_values) {
-        efree(S->param_values);
-        S->param_values = NULL;
-    }
-    if (S->param_formats) {
-        efree(S->param_formats);
-        S->param_formats = NULL;
-    }
-    if (S->param_types) {
-        efree(S->param_types);
-        S->param_types = NULL;
-    }
+    pdo_pgsql_free_parameters(S->params.owner);
     if (S->query) {
         zend_string_release(S->query);
         S->query = NULL;
@@ -123,7 +108,7 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt) {
         if (!S->is_prepared) {
             int count = stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0;
             if (!pdo_pgsql_prepare_statement(stmt->dbh, stmt, &S->result, S->stmt_name,
-                    ZSTR_VAL(S->query), count, S->param_types)) {
+                    ZSTR_VAL(S->query), count, S->params.types)) {
                 return 0;
             }
             S->is_prepared = true;
@@ -131,19 +116,19 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt) {
         S->result = PQexecPrepared(pdo_pgsql_server(H),
                                    S->stmt_name,
                                    stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0,
-                                   (const char **) S->param_values,
-                                   S->param_lengths,
-                                   S->param_formats,
+                                   S->params.values,
+                                   S->params.lengths,
+                                   S->params.formats,
                                    0);
     } else if (stmt->supports_placeholders == PDO_PLACEHOLDER_NAMED) {
         /* execute query with parameters */
         S->result = PQexecParams(pdo_pgsql_server(H),
                                  ZSTR_VAL(S->query),
                                  stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0,
-                                 S->param_types,
-                                 (const char **) S->param_values,
-                                 S->param_lengths,
-                                 S->param_formats,
+                                 S->params.types,
+                                 S->params.values,
+                                 S->params.lengths,
+                                 S->params.formats,
                                  0);
     } else {
         /* execute plain query (with embedded parameters) */
@@ -170,16 +155,11 @@ static int pgsql_stmt_param_hook(pdo_stmt_t *stmt,
 
     if (stmt->supports_placeholders == PDO_PLACEHOLDER_NAMED && param->is_param) {
         switch (event_type) {
-        case PDO_PARAM_EVT_FREE:
-            if (param->driver_data) {
-                efree(param->driver_data);
-            }
-            break;
-
         case PDO_PARAM_EVT_NORMALIZE:
             return pdo_pgsql_normalize_parameter(stmt->dbh, stmt, param->name, &param->paramno);
         case PDO_PARAM_EVT_ALLOC:
             return pdo_pgsql_check_parameter(stmt->dbh, stmt, stmt->bound_param_map, param->paramno);
+        case PDO_PARAM_EVT_FREE:
         case PDO_PARAM_EVT_EXEC_POST:
         case PDO_PARAM_EVT_FETCH_PRE:
         case PDO_PARAM_EVT_FETCH_POST:
@@ -190,22 +170,16 @@ static int pgsql_stmt_param_hook(pdo_stmt_t *stmt,
             if (!stmt->bound_param_map) {
                 return 1;
             }
-            if (!S->param_values) {
-                S->param_values = ecalloc(zend_hash_num_elements(stmt->bound_param_map), sizeof(char *));
-                S->param_lengths = ecalloc(zend_hash_num_elements(stmt->bound_param_map), sizeof(int));
-                S->param_formats = ecalloc(zend_hash_num_elements(stmt->bound_param_map), sizeof(int));
-                S->param_types = ecalloc(zend_hash_num_elements(stmt->bound_param_map), sizeof(Oid));
+            if (!S->params.owner) {
+                pdo_pgsql_init_parameters(&S->params, zend_hash_num_elements(stmt->bound_param_map));
             }
             if (param->paramno >= 0) {
                 zval *parameter;
 
-                /*
-                if (param->paramno >= zend_hash_num_elements(stmt->bound_params)) {
-                        pdo_raise_impl_error(stmt->dbh, stmt, "HY093", "parameter was not defined");
-                        return 0;
+                if ((size_t) param->paramno >= S->params.count) {
+                    pdo_pgsql_error_stmt_msg(stmt, 0, "HY093", "parameter was not defined");
+                    return 0;
                 }
-                */
-
                 if (Z_ISREF(param->parameter)) {
                     parameter = Z_REFVAL(param->parameter);
                 } else {
@@ -218,17 +192,12 @@ static int pgsql_stmt_param_hook(pdo_stmt_t *stmt,
                     if (stm) {
                         if (php_stream_is(stm, &pdo_pgsql_lob_stream_ops)) {
                             struct pdo_pgsql_lob_self *self = (struct pdo_pgsql_lob_self *) stm->abstract;
-                            pdo_pgsql_bound_param *P = param->driver_data;
-
-                            if (P == NULL) {
-                                P = ecalloc(1, sizeof(*P));
-                                param->driver_data = P;
-                            }
-                            P->oid = htonl(self->oid);
-                            S->param_values[param->paramno] = (char *) &P->oid;
-                            S->param_lengths[param->paramno] = sizeof(P->oid);
-                            S->param_formats[param->paramno] = 1;
-                            S->param_types[param->paramno] = OIDOID;
+                            Oid *bound = &S->params.lob_oids[param->paramno];
+                            *bound = htonl(self->oid);
+                            S->params.values[param->paramno] = (const char *) bound;
+                            S->params.lengths[param->paramno] = sizeof(*bound);
+                            S->params.formats[param->paramno] = 1;
+                            S->params.types[param->paramno] = OIDOID;
                             return 1;
                         } else {
                             zend_string *str = php_stream_copy_to_mem(stm, PHP_STREAM_COPY_ALL, 0);
@@ -246,24 +215,24 @@ static int pgsql_stmt_param_hook(pdo_stmt_t *stmt,
                 }
 
                 if (PDO_PARAM_TYPE(param->param_type) == PDO_PARAM_NULL || Z_TYPE_P(parameter) == IS_NULL) {
-                    S->param_values[param->paramno] = NULL;
-                    S->param_lengths[param->paramno] = 0;
+                    S->params.values[param->paramno] = NULL;
+                    S->params.lengths[param->paramno] = 0;
                 } else if (Z_TYPE_P(parameter) == IS_FALSE || Z_TYPE_P(parameter) == IS_TRUE) {
-                    S->param_values[param->paramno] = Z_TYPE_P(parameter) == IS_TRUE ? "t" : "f";
-                    S->param_lengths[param->paramno] = 1;
-                    S->param_formats[param->paramno] = 0;
+                    S->params.values[param->paramno] = Z_TYPE_P(parameter) == IS_TRUE ? "t" : "f";
+                    S->params.lengths[param->paramno] = 1;
+                    S->params.formats[param->paramno] = 0;
                 } else {
                     convert_to_string(parameter);
-                    S->param_values[param->paramno] = Z_STRVAL_P(parameter);
-                    S->param_lengths[param->paramno] = Z_STRLEN_P(parameter);
-                    S->param_formats[param->paramno] = 0;
+                    S->params.values[param->paramno] = Z_STRVAL_P(parameter);
+                    S->params.lengths[param->paramno] = Z_STRLEN_P(parameter);
+                    S->params.formats[param->paramno] = 0;
                 }
 
                 if (PDO_PARAM_TYPE(param->param_type) == PDO_PARAM_LOB) {
-                    S->param_types[param->paramno] = 0;
-                    S->param_formats[param->paramno] = 1;
+                    S->params.types[param->paramno] = 0;
+                    S->params.formats[param->paramno] = 1;
                 } else {
-                    S->param_types[param->paramno] = 0;
+                    S->params.types[param->paramno] = 0;
                 }
             }
             break;
