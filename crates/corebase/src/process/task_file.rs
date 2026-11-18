@@ -87,23 +87,16 @@ impl PacketTask {
         }
     }
 
-    /// Copies the descriptor from the start of a task payload.
-    fn read(from: &[u8]) -> Result<Self, TaskFileError> {
+    /// Reads the payload length and borrows the path from one complete descriptor.
+    fn read(from: &[u8]) -> Result<(usize, &CStr), &'static str> {
         let (length, name) = from
             .split_first_chunk()
-            .ok_or(TaskFileError::Short { read: from.len() })?;
-        let tmpfile = *name
-            .first_chunk::<TASK_TMP_PATH_SIZE>()
-            .ok_or(TaskFileError::Short { read: from.len() })?;
-        Ok(Self {
-            length: usize::from_ne_bytes(*length),
-            tmpfile,
-        })
-    }
-
-    /// The temporary file's path.
-    fn path(&self) -> &CStr {
-        CStr::from_bytes_until_nul(&self.tmpfile).unwrap_or_default()
+            .ok_or("invalid task packet length")?;
+        let name: &[u8; TASK_TMP_PATH_SIZE] =
+            name.try_into().map_err(|_| "invalid task packet length")?;
+        let path =
+            CStr::from_bytes_until_nul(name).map_err(|_| "unterminated task tmpfile path")?;
+        Ok((usize::from_ne_bytes(*length), path))
     }
 }
 
@@ -315,12 +308,13 @@ impl EventData {
         let text = CStr::from_bytes_until_nul(&buf).unwrap_or_default();
         crate::sys::print(text.to_bytes());
         if TaskFlag::from_bits(self.head.ext_flags).contains(TaskFlag::SW_TASK_TMPFILE)
-            && let Ok(pkg) = PacketTask::read(&self.data)
+            && let Some(payload) = self.data.get(..self.head.len as usize)
+            && let Ok((length, path)) = PacketTask::read(payload)
         {
             // Upstream prints the payload's length in bytes of the file's name; a
             // negative `(int)` precision prints all of it.
-            let name = pkg.path().to_bytes();
-            let precision = pkg.length.c_cast::<c_int>();
+            let name = path.to_bytes();
+            let precision = length.c_cast::<c_int>();
             let shown = usize::try_from(precision).map_or(name.len(), |n| n.min(name.len()));
             let name = name.get(..shown).unwrap_or(name);
             let line = [b"Task[tmpfile]=", name, b"\n"].concat();
@@ -401,26 +395,26 @@ impl<'a> Packed<'a> {
             );
             None
         };
-        if payload.len() > IPC_PAYLOAD || (spilled && payload.len() != size_of::<PacketTask>()) {
+        if payload.len() > IPC_PAYLOAD {
             return malformed("invalid task packet length");
         }
         if !spilled {
             return Some((payload, flags));
         }
-        let pkg = PacketTask::read(payload).ok()?;
-        let Ok(path) = CStr::from_bytes_until_nul(&pkg.tmpfile) else {
-            return malformed("unterminated task tmpfile path");
+        let (length, path) = match PacketTask::read(payload) {
+            Ok(fields) => fields,
+            Err(message) => return malformed(message),
         };
-        if buffer.size() < pkg.length {
-            buffer.extend(pkg.length);
+        if buffer.size() < length {
+            buffer.extend(length);
         }
         let str = buffer.as_mut_ptr();
         // Zeroed first: past the String's content, its allocation is uninitialized. It
-        // holds `pkg.length` bytes by now, which become the content once read; a
+        // holds `length` bytes by now, which become the content once read; a
         // failed read keeps the content's length.
         let kept = buffer.len();
         let mut read = Ok(());
-        buffer.read_zeroed(pkg.length, |target| {
+        buffer.read_zeroed(length, |target| {
             read = read_file(
                 path,
                 target,
@@ -441,7 +435,7 @@ impl<'a> Packed<'a> {
                 crate::sys::set_errno(error);
                 log::sys_warning(
                     c"Server::task_unpack",
-                    format_args!("pread({fd}, {str:p}, {}, {read}) failed", pkg.length - read),
+                    format_args!("pread({fd}, {str:p}, {}, {read}) failed", length - read),
                 );
                 return None;
             }
@@ -458,6 +452,28 @@ mod tests {
     };
     use crate::process::methods::tests::{install, logged};
     use std::ffi::CString;
+
+    #[test]
+    fn descriptor_requires_exact_size_and_a_terminated_name() {
+        let mut bytes = [0; size_of::<PacketTask>() + 1];
+        let size = size_of::<PacketTask>();
+        for length in [size - 1, size + 1] {
+            assert_eq!(
+                PacketTask::read(&bytes[..length]),
+                Err("invalid task packet length")
+            );
+        }
+        let descriptor = &mut bytes[..size];
+        descriptor[size_of::<usize>()..].fill(b'x');
+        assert_eq!(
+            PacketTask::read(descriptor),
+            Err("unterminated task tmpfile path")
+        );
+        descriptor[size - 1] = 0;
+        let (length, path) = PacketTask::read(descriptor).unwrap();
+        assert_eq!(length, 0);
+        assert_eq!(path.to_bytes_with_nul(), &descriptor[size_of::<usize>()..]);
+    }
 
     fn read(path: &CString, length: usize, peek: bool) -> (Result<(), TaskFileError>, Vec<u8>) {
         let mut buffer = vec![0; length];
@@ -711,8 +727,8 @@ mod tests {
                 (head.len as usize, head.ext_flags),
                 (size_of::<PacketTask>(), TaskFlag::SW_TASK_TMPFILE.bits())
             );
-            let pkg = PacketTask::read(unsafe { &(*event).data }).unwrap();
-            let path = pkg.path().to_str().unwrap().to_owned();
+            let (_, path) = PacketTask::read(packed(event).payload()).unwrap();
+            let path = path.to_str().unwrap().to_owned();
             assert!(path.starts_with("/tmp/swoole.task."));
             let mut string = crate::buffer::string::OwnedString::default();
             let (read, _) = packed(event).unpack(&mut string).unwrap();
