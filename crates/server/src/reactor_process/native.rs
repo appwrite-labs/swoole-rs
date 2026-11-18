@@ -80,10 +80,10 @@ pub(crate) fn set_pipe_handler() {
 }
 
 /// `ReactorProcess_onPipeRead`: a message from another worker or a task worker.
-fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> bool {
     let reactor = Reactor::running(reactor);
     let Some(serv) = reactor.server() else {
-        return -1;
+        return false;
     };
     let bus = serv.state().message_bus();
     if event
@@ -93,7 +93,7 @@ fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     {
         bus.pop();
     }
-    0
+    true
 }
 
 /// The message the bus just read, by its kind; false, leaving it on the bus, when

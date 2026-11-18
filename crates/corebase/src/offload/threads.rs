@@ -310,15 +310,15 @@ fn complete(token: usize) {
 
 /// Upstream's `AsyncThreads::callback`, the pipe's reactor handler: completes every event
 /// waiting on the pipe.
-pub fn callback(_: Running<'_>, event: &mut Event) -> c_int {
+pub fn callback(_: Running<'_>, event: &mut Event) -> bool {
     if pool_complete(event.fd(), complete).is_none() {
         log::sys_warning(
             c"AsyncThreads::callback",
             format_args!("read() aio events failed"),
         );
-        return -1;
+        return false;
     }
-    0
+    true
 }
 
 /// `Co::stats()`'s AIO counts for this thread: events in flight, the pool's

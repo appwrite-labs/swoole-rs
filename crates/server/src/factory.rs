@@ -150,22 +150,22 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
 fn accept_command_result(
     reactor: swoole_rs_corebase::reactor::Running<'_>,
     event: &mut swoole_rs_corebase::reactor::Event,
-) -> c_int {
+) -> bool {
     let Some(serv) = crate::reactor_handle::Reactor::running(reactor).server() else {
-        return 0;
+        return true;
     };
     let state = serv.state();
     let bus = state.message_bus();
     let Some(sock) = event.socket() else {
-        return 0;
+        return true;
     };
     if bus.read(*sock) <= Some(0) {
-        return 0;
+        return true;
     }
     let request_id = bus.head().fd;
     bus.with_packet(|message| crate::commands::command_result(state, request_id, message));
     bus.pop();
-    0
+    true
 }
 use crate::Mode;
 

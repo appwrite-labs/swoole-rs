@@ -192,13 +192,10 @@ impl FlushEffects for Flush<'_> {
 }
 
 /// `int Reactor::_writable_callback(Reactor *reactor, Event *ev)`: a reactor handler.
-pub extern "C-unwind" fn reactor_writable_callback(
-    reactor: Running<'_>,
-    event: &mut Event,
-) -> c_int {
+pub fn reactor_writable_callback(reactor: Running<'_>, event: &mut Event) -> bool {
     let lent = Cell::new(*event);
     let Some(socket) = event.socket() else {
-        return -1;
+        return false;
     };
     let flush = Flush {
         reactor,
@@ -207,7 +204,7 @@ pub extern "C-unwind" fn reactor_writable_callback(
     };
     let flushed = crate::reactor::swr_v1_reactor_flush(*socket, &flush);
     *event = lent.get();
-    if flushed { 0 } else { -1 }
+    flushed
 }
 
 /// `void Reactor::drain_write_buffer(Socket *socket)`. The event names `record` as

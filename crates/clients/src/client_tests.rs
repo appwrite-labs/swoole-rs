@@ -218,12 +218,12 @@ pub(super) fn event_write(_: swoole_rs_corebase::reactor::Heap<'_>, data: &[u8])
     (log::last_error() != ERROR_OUTPUT_BUFFER_OVERFLOW).then_some(length)
 }
 /// `corebase::tls`'s `Reactor::_writable_callback`.
-pub(super) extern "C-unwind" fn writable_callback(
+pub(super) fn writable_callback(
     _: swoole_rs_corebase::reactor::Running<'_>,
     _: &mut swoole_rs_corebase::reactor::Event,
-) -> c_int {
+) -> bool {
     log("writable");
-    OK
+    true
 }
 /// The framed receives, as crates/ports registers them.
 const FRAMING: Framing = Framing {
@@ -390,6 +390,9 @@ fn flag(client: *mut Client, name: Flag) -> bool {
     // SAFETY: a live state.
     unsafe { &*client }.flag(name)
 }
+
+const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 
 fn connect(client: *mut Client, host: &CStr, timeout: f64, flags: c_int) -> c_int {
     if super::connect(Handle::raw(client), host, 80, timeout, flags) {
@@ -896,11 +899,11 @@ fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
     let socket = Handle::raw(client).socket();
     let mut data = swoole_rs_corebase::buffer::string::boxed_string(b"data");
     let package = Package::of(&mut data, 0, 4);
-    assert_eq!(on_package(core::ptr::null(), socket, package), OK);
+    assert!(on_package(core::ptr::null(), socket, package));
     assert_eq!(taken(), ["call Receive 4"]);
     sock().output.close_wait = true;
     let package = Package::of(&mut data, 0, 4);
-    assert_eq!(on_package(core::ptr::null(), socket, package), ERR);
+    assert!(!on_package(core::ptr::null(), socket, package));
     data.dispose();
     free(client);
 }

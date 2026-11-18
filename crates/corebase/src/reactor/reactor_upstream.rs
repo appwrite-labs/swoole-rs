@@ -15,7 +15,7 @@ pub fn trigger_close_event(
     // The lookup's borrow ends before the handler runs.
     reactor
         .handlers(|handlers| handlers.fallback(1))
-        .is_some_and(|handler| handler(reactor, event) >= 0)
+        .is_some_and(|handler| handler(reactor, event))
 }
 
 /// `Reactor::add` or `set` of a heap socket: whether it worked.

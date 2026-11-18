@@ -13,7 +13,9 @@ use core::ptr::null_mut;
 use std::rc::Rc;
 use swoole_rs_corebase::reactor::Events;
 
-use swoole_rs_clients::owned_proxy::{Socks5Proxy, admit, pack_negotiate_request, socks5_step};
+use swoole_rs_clients::owned_proxy::{
+    Socks5Proxy, SocksConfig, admit, pack_negotiate_request, socks5_step,
+};
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::lent::lend_spare;
 use swoole_rs_corebase::net_types::SocketAddress;
@@ -553,11 +555,12 @@ impl Co {
             )))
         } else {
             match admit(user.len(), password.len()) {
-                0 => None,
+                SocksConfig::Refused => None,
                 config => {
                     let owner = ProxyState::new(true);
+                    let credentials = config == SocksConfig::Credentials;
                     // An allocation failure leaves the strings it didn't reach empty.
-                    _ = owner.configure([host, user, password], port, config == 2, self.kind());
+                    _ = owner.configure([host, user, password], port, credentials, self.kind());
                     Some(Rc::from(owner))
                 }
             }

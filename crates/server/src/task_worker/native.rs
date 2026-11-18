@@ -230,13 +230,13 @@ fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
 }
 
 /// `TaskWorker_onPipeReceive`: a task from a worker, in the coroutine loop.
-fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> bool {
     let Some(serv) = Reactor::running(reactor).server() else {
-        return ERR;
+        return false;
     };
     let id = u16::try_from(swoole_get_worker_id()).unwrap_or(u16::MAX);
     let Some(worker) = serv.worker_record(id) else {
-        return ERR;
+        return false;
     };
     let fd = event.socket().map_or(-1, |socket| socket.fd());
     let mut buf = EventData([0; EVENT_DATA_SIZE]);
@@ -246,14 +246,14 @@ fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
     let Some(task) = task else {
         let m = format_args!("read({fd}, {EVENT_DATA_SIZE}) failed");
         log::sys_warning(c"TaskWorker_onPipeReceive", m);
-        return ERR;
+        return false;
     };
     let ret = run_task(serv, worker, task);
     // The maximum number of requests: the worker exits.
     if worker.exceeded_max_request() {
         stop_async_worker(serv, worker);
     }
-    ret
+    ret >= OK
 }
 
 /// `Server::finish(data, data_len, flags, current_task)`: the task's result to the

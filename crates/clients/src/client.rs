@@ -10,6 +10,7 @@
 //! reference to the state lives across one: operations work on a raw [`Handle`]
 //! and borrow the state only between effects. A PHP bailout in a callback
 //! longjmps out, so nothing that needs dropping is held across one.
+use crate::owned_proxy::SocksConfig;
 use crate::protocol::{Package, Protocol};
 use core::cell::{Cell, OnceCell};
 use core::ffi::{c_char, c_int, c_void};
@@ -20,8 +21,8 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use swoole_rs_corebase::buffer::string::{OwnedString, StringBuffer};
 use swoole_rs_corebase::constants::{
-    FdType, ResultCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE,
-    SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
+    FdType, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE, SW_SSL_BUFFER_SIZE,
+    SocketFlag, SocketType,
 };
 use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
@@ -150,8 +151,6 @@ enum EventOp {
 }
 
 /// Swoole's constants this file uses.
-const OK: c_int = ResultCode::SW_OK as c_int;
-const ERR: c_int = ResultCode::SW_ERR as c_int;
 const SOCK_UNIX_DGRAM: c_int = SocketType::SW_SOCK_UNIX_DGRAM as c_int;
 const FD_STREAM_CLIENT: c_int = FdType::SW_FD_STREAM_CLIENT as c_int;
 const FD_DGRAM_CLIENT: c_int = FdType::SW_FD_DGRAM_CLIENT as c_int;
@@ -644,17 +643,13 @@ impl Handle<'_> {
 /// holds it, and a client's framed receive calls it with that client's socket, whose
 /// free is deferred past the call: as for the reactor handlers below, the socket's
 /// kind is what makes its object a client.
-fn on_package(_: *const Protocol, socket: Socket<'_>, mut package: Package<'_>) -> c_int {
+fn on_package(_: *const Protocol, socket: Socket<'_>, mut package: Package<'_>) -> bool {
     let client = Handle::raw(socket.read(|socket| socket.object).cast());
     if let Some(listener) = client.listener(ClientEvent::Receive) {
         let payload = listener.payload(package.bytes());
         (listener.notify)(Notification::Receive(payload));
     }
-    if socket.read(|socket| socket.output.close_wait) {
-        ERR
-    } else {
-        OK
-    }
+    !socket.read(|socket| socket.output.close_wait)
 }
 
 /// The client of the reactor event's socket, None without a socket.
@@ -663,25 +658,20 @@ fn event_client(event: &Event) -> Option<Handle<'static>> {
     Some(Handle::raw(socket.read(|socket| socket.object).cast()))
 }
 
-/// A handler's success as the reactor's `SW_OK`/`SW_ERR`.
-const fn status(ok: bool) -> c_int {
-    if ok { OK } else { ERR }
+fn on_stream_read(_: Running<'_>, event: &mut Event) -> bool {
+    event_client(event).is_some_and(on_read)
 }
 
-fn on_stream_read(_: Running<'_>, event: &mut Event) -> c_int {
-    status(event_client(event).is_some_and(on_read))
+fn on_dgram_read(_: Running<'_>, event: &mut Event) -> bool {
+    event_client(event).is_some_and(on_datagram)
 }
 
-fn on_dgram_read(_: Running<'_>, event: &mut Event) -> c_int {
-    status(event_client(event).is_some_and(on_datagram))
+fn on_writable(reactor: Running<'_>, event: &mut Event) -> bool {
+    event_client(event).is_some_and(|this| on_write(this, reactor, event))
 }
 
-fn on_writable(reactor: Running<'_>, event: &mut Event) -> c_int {
-    status(event_client(event).is_some_and(|this| on_write(this, reactor, event)))
-}
-
-fn on_failure(reactor: Running<'_>, event: &mut Event) -> c_int {
-    status(event_client(event).is_some_and(|this| on_error(this, reactor, event)))
+fn on_failure(reactor: Running<'_>, event: &mut Event) -> bool {
+    event_client(event).is_some_and(|this| on_error(this, reactor, event))
 }
 
 /// `Client::init_reactor`: the client sockets' handlers.
@@ -1125,12 +1115,13 @@ pub fn set_proxy(
         Some(swoole_rs_http::http_proxy(host, port, user, password))
     } else {
         match crate::owned_proxy::admit(user.len(), password.len()) {
-            0 => None,
+            SocksConfig::Refused => None,
             config => {
                 let owner = ProxyState::new(true);
                 let texts = [host, user, password];
                 // An allocation failure leaves the strings it didn't reach empty.
-                _ = owner.configure(texts, port, config == 2, this.socket_type());
+                let credentials = config == SocksConfig::Credentials;
+                _ = owner.configure(texts, port, credentials, this.socket_type());
                 Some(owner)
             }
         }
@@ -1587,7 +1578,7 @@ struct SocketOps {
     free_socket: fn(Option<OwnedSocket>),
     close_tls: fn(Socket<'_>),
     write: fn(swoole_rs_corebase::reactor::Heap<'_>, &[u8]) -> Option<usize>,
-    writable: extern "C-unwind" fn(Running<'_>, &mut Event) -> c_int,
+    writable: swoole_rs_corebase::reactor::Handler,
     make_socket: fn(c_int, c_int, c_int) -> Option<OwnedSocket>,
     kernel_timeout: fn(Handle<'_>, f64),
     assign: fn(Handle<'_>, &CStr, c_int, bool) -> bool,
@@ -2000,7 +1991,7 @@ fn on_write(this: Handle<'_>, reactor: Running<'_>, event: &mut Event) -> bool {
             }
             return true;
         }
-        if (this.get().socket_ops.writable)(reactor, event) < 0 {
+        if !(this.get().socket_ops.writable)(reactor, event) {
             return false;
         }
         if this.has(ClientEvent::BufferEmpty)

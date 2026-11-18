@@ -110,7 +110,6 @@ impl Session<'_> {
 }
 
 pub mod exports {
-    use std::ffi::c_int;
     use std::mem::MaybeUninit;
     use swoole_rs_corebase::CCast;
 
@@ -337,7 +336,7 @@ pub mod exports {
         _: *const Protocol,
         socket: Socket<'_>,
         package: Package<'_>,
-    ) -> c_int {
+    ) -> bool {
         let handled = view::Server::with_reactor(|server| {
             let Some(conn) = server.at(socket.fd()) else {
                 return false;
@@ -354,7 +353,7 @@ pub mod exports {
             };
             H::handle(s, package, info)
         });
-        if handled == Some(true) { 0 } else { -1 }
+        handled == Some(true)
     }
 
     /// A session's packages, all [`Session::task`]'s: an EOF or length port's, whose

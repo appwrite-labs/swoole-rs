@@ -324,18 +324,18 @@ fn send_close_force(serv: view::Server<'_>, conn: Connection<'_>, session: c_lon
 }
 
 /// `ReactorThread_onPipeRead`: a worker's message.
-fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> bool {
     let reactor = Reactor::running(reactor);
     // The handler is registered only on reactors that hold a server.
     let Some(serv) = reactor.server() else {
-        return -1;
+        return false;
     };
     let mut ctx = ReactorContext::new(serv, Some(reactor));
     ctx.thread = serv
         .state()
         .tables_ref()
         .reactor_thread(usize::from(reactor.handle().id()));
-    pipe_read(&ctx, event).unwrap_or(-1)
+    pipe_read(&ctx, event).is_some_and(|status| status >= 0)
 }
 
 /// `ReactorThread_onPipeRead`: the messages workers send their reactor thread,

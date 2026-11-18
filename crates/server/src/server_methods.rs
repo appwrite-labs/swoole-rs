@@ -150,13 +150,13 @@ pub(crate) fn connection_incoming(
 pub(crate) fn accept_connection(
     reactor: swoole_rs_corebase::reactor::Running<'_>,
     event: &mut swoole_rs_corebase::reactor::Event,
-) -> c_int {
+) -> bool {
     let reactor = crate::reactor_handle::Reactor::running(reactor);
     let Some(serv) = reactor.server() else {
-        return -1;
+        return false;
     };
     crate::connection::accept(serv, reactor, event);
-    swoole_rs_corebase::constants::ResultCode::SW_OK as c_int
+    true
 }
 
 /// `Server::get_startup_error_message()`.

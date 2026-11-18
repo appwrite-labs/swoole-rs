@@ -369,9 +369,9 @@ mod tests {
     fn record_error(
         _: swoole_rs_corebase::reactor::Running<'_>,
         event: &mut swoole_rs_corebase::reactor::Event,
-    ) -> c_int {
+    ) -> bool {
         HANDLED.with_borrow_mut(|h| h.push(("told", event.fd())));
-        0
+        true
     }
 
     fn session(live: &crate::fixture::LiveServer) -> Connection<'_> {
