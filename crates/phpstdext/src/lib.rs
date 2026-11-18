@@ -125,7 +125,7 @@ impl<'a> Op<'a> {
         if matches!(u32::from(self.op1_type), IS_VAR | IS_CV)
             && let Some(target) = slot.indirect()
         {
-            // SAFETY: the live slot it points to.
+            // SAFETY: the indirect zval points to a live variable slot for this opcode.
             slot = unsafe { Value::from_ptr(target) }?;
         }
         // The variable's own slot, or its reference's, which the opcode

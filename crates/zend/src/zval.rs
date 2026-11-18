@@ -1335,7 +1335,7 @@ impl ZStr {
     #[inline]
     fn val<const NUL: bool>(&self) -> &[u8] {
         let length = self.len.get() + usize::from(NUL);
-        // SAFETY: a live string holds `len` bytes at `val` and a NUL after
+        // SAFETY: a live zend_string holds `len` bytes at `val` and a NUL after
         // them, which it keeps while borrowed.
         unsafe { std::slice::from_raw_parts(crate::string::val(self.as_ptr()), length) }
     }

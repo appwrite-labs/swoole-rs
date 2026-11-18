@@ -55,7 +55,7 @@ const _: () = assert!(
 impl<'a> Executing<'a> {
     /// The frame's [`Head`].
     fn head(self) -> &'a Head {
-        // SAFETY: a live frame for `'a`, per the type, which starts with these
+        // SAFETY: a live zend_execute_data for `'a`, per the type, which starts with these
         // words (asserted above); each is a `Cell` or a `Value`, as Zend writes
         // them through pointers on this thread.
         unsafe { &*self.0.cast::<Head>() }
@@ -133,7 +133,7 @@ impl<'a> Frame<'a> {
         if first.is_null() {
             return None;
         }
-        // SAFETY: the frame's function's op array, `last` instructions from `first`,
+        // SAFETY: the frame's zend_op_array, `last` instructions from `first`,
         // which Zend leaves unwritten while it runs (the JIT, which rewrites
         // handlers, turns itself off under user opcode handlers).
         let code = unsafe { std::slice::from_raw_parts(first, usize::try_from(last).ok()?) };

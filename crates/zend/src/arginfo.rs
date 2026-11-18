@@ -450,15 +450,18 @@ mod tests {
 
     #[test]
     fn classes_are_literal_names() {
-        let slot = arg_class_mask(c"ctx", 1, false, c"Foo\\Bar", MAY_BE_FALSE, Some(c"null"));
+        let class = c"Foo\\Bar";
+        let slot = arg_class_mask(c"ctx", 1, false, class, MAY_BE_FALSE, Some(c"null"));
         assert_eq!(
             slot.0.type_.type_mask,
             _ZEND_TYPE_LITERAL_NAME_BIT | MAY_BE_FALSE | (1 << _ZEND_SEND_MODE_SHIFT),
             "by reference, class or false"
         );
-        // SAFETY: the static literal passed above.
-        let class = unsafe { CStr::from_ptr(slot.0.type_.ptr.cast()) };
-        assert_eq!(class, c"Foo\\Bar", "class name");
+        assert_eq!(
+            slot.0.type_.ptr.cast_const(),
+            class.as_ptr().cast(),
+            "class literal"
+        );
     }
 
     #[test]

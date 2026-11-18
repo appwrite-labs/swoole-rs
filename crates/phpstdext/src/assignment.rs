@@ -93,7 +93,7 @@ impl Data<'_> {
         if u32::from(self.op.op1_type) & (z::IS_TMP_VAR | z::IS_VAR) != 0
             && let Some(value) = self.op.op1()
         {
-            // SAFETY: the operand's temporary slot, which this owned and gives
+            // SAFETY: the operand's temporary zval, which this owned and gives
             // up here; its destructor is trapped below Rust.
             leaf(unsafe { z::swr_zend_try_stdext_nogc_dtor(value.as_ptr()) })?;
         }
@@ -146,7 +146,7 @@ fn assign(op: Op, data: Data, own: Typed, container: &Value, key: &Value) -> Res
     let value = data.value();
     let ht = own.table();
     let slot = if key.kind() == z::IS_NULL {
-        // SAFETY: a live table, which takes the original operand reference on
+        // SAFETY: a live Zend HashTable, which takes the original operand reference on
         // successful insertion.
         let slot = unsafe { next_index_insert(ht, value.as_ptr()) };
         if slot.is_none() {
@@ -169,7 +169,8 @@ fn assign(op: Op, data: Data, own: Typed, container: &Value, key: &Value) -> Res
         };
         let strict = strict(op.frame);
         let mut slot = None;
-        // SAFETY: Zend performs its original assignment/refcount effect below a trap.
+        // SAFETY: the dimension lookup lent the writable zval and data holds the operand
+        // through the assignment. The native trap catches destructor bailouts.
         leaf(unsafe {
             swr_phpstdext_assign(
                 variable.as_ptr(),
