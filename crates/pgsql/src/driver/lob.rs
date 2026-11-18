@@ -7,11 +7,7 @@ use swoole_rs_corebase::{
     CellExt,
     lent::{Count, In, Out, Wrote},
 };
-use swoole_rs_zend::{
-    Owned, Value, bailout, contain_with,
-    pdo::{Dbh, Slot},
-    sys::zend_long,
-};
+use swoole_rs_zend::{Owned, Value, bailout, contain_with, pdo::Dbh, sys::zend_long};
 
 pub(crate) struct LargeObject {
     database: Owned,
@@ -20,37 +16,27 @@ pub(crate) struct LargeObject {
     pub(crate) oid: Oid,
 }
 
-#[expect(
-    improper_ctypes,
-    reason = "Zend stores an opaque Rust owner in the stream and returns it on close or failed allocation"
-)]
 unsafe extern "C" {
-    safe fn pdo_pgsql_alloc_lob(
-        lob: Box<LargeObject>,
-        handle: &Handle,
-        output: &Slot,
-    ) -> Option<Box<LargeObject>>;
     safe fn pdo_pgsql_lob_dbh(database: &Value) -> &Dbh;
 }
 
+#[expect(
+    clippy::unnecessary_box_returns,
+    reason = "the Zend stream takes this owner until its close callback"
+)]
 #[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_open_lob(
-    dbh: &Dbh,
+extern "C" fn pdo_pgsql_lob_owner(
+    handle: &Handle,
     database: &Value,
     fd: c_int,
     oid: Oid,
-    output: &Slot,
-) -> bool {
-    let Some(handle) = handle(dbh) else {
-        return false;
-    };
-    let lob = Box::new(LargeObject {
+) -> Box<LargeObject> {
+    Box::new(LargeObject {
         database: database.copy(),
         conn: handle.server,
         fd,
         oid,
-    });
-    pdo_pgsql_alloc_lob(lob, handle, output).is_none()
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -100,10 +86,11 @@ extern "C" fn pdo_pgsql_lob_seek(
 swoole_rs_zend::exports! {
     preserve_pending:
     #[unsafe(no_mangle)]
-    extern "C" fn pdo_pgsql_lob_close(lob: Box<LargeObject>, close: bool, id: zend_long) {
+    extern "C" fn pdo_pgsql_lob_close(lob: Option<Box<LargeObject>>, close: bool, id: zend_long) {
         unsafe extern "C" {
             safe fn lo_close(conn: Conn, fd: c_int) -> c_int;
         }
+        let Some(lob) = lob else { return };
         if close {
             bailout::defer(contain_with(|| { lo_close(lob.conn, lob.fd); }));
         }

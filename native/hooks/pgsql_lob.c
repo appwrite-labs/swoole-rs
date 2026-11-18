@@ -70,27 +70,24 @@ const php_stream_ops pdo_pgsql_lob_stream_ops = {
     NULL
 };
 
-/* On success the stream owns lob. On failure its caller takes the owner back. */
-void *pdo_pgsql_alloc_lob(void *lob, pdo_pgsql_db_handle *handle, zval *output) {
-    php_stream *stream = php_stream_alloc(&pdo_pgsql_lob_stream_ops, lob, 0, "r+b");
-    if (!stream) {
-        return lob;
-    }
-    pdo_pgsql_register_lob(handle, php_stream_get_resource_id(stream), stream->res);
-    php_stream_to_zval(stream, output);
-    return NULL;
-}
-
 pdo_dbh_t *pdo_pgsql_lob_dbh(zval *database) {
     return Z_PDO_DBH_P(database);
 }
 
-extern bool pdo_pgsql_open_lob(pdo_dbh_t *, zval *, int, Oid, zval *);
+extern void *pdo_pgsql_lob_owner(pdo_pgsql_db_handle *, zval *, int, Oid);
 
 static bool lob_resource(zend_object *dbh, int fd, Oid oid, zval *output) {
+    php_stream *stream = php_stream_alloc(&pdo_pgsql_lob_stream_ops, NULL, 0, "r+b");
+    if (!stream) {
+        return false;
+    }
     zval database;
     ZVAL_OBJ(&database, dbh);
-    return pdo_pgsql_open_lob(php_pdo_dbh_fetch_inner(dbh), &database, fd, oid, output);
+    pdo_pgsql_db_handle *handle = php_pdo_dbh_fetch_inner(dbh)->driver_data;
+    stream->abstract = pdo_pgsql_lob_owner(handle, &database, fd, oid);
+    pdo_pgsql_register_lob(handle, php_stream_get_resource_id(stream), stream->res);
+    php_stream_to_zval(stream, output);
+    return true;
 }
 
 void pdo_pgsql_close_resource(zend_resource *resource)
