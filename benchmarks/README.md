@@ -150,6 +150,11 @@ registers its own PDO pgsql driver. Building the main pair that way would shift 
 other workload's record, so the merge tier runs them on a second pair, as a fourth
 `callgrind` shard whose result the ratchet reads with the other three.
 
+`file` (#5145) shares that server and shard: one request stats a 16 KiB file, reads it
+in 4 KiB chunks and again with `file_get_contents`, writes a small file and walks the
+directory, all through the hooked plain-file stream wrapper. Its record starts at a
+provisional 1.10; the ratchet lowers it once two merge runs beat it.
+
 Two run only on a build variant (#2683), against `benchmarks/variants`. `uring-file`
 reads a file with `Coroutine\System::readFile`, which the `--enable-iouring` build
 does through io_uring, and `thread` starts and joins a `Swoole\Thread`, which needs
