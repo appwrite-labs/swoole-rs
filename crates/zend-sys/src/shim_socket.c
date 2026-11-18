@@ -21,15 +21,6 @@ int swr_zend_stream_socketd(zval *zstream, php_stream **stream, int *fd) {
     return result;
 }
 
-/* bailout: invoked inside the caller's trap because setting a wrapper option can run PHP. */
-void swr_zend_stream_unbuffer(zval *zstream) {
-    php_stream *stream;
-    php_stream_from_zval_no_verify(stream, zstream);
-    if (stream) {
-        php_stream_set_option(stream, PHP_STREAM_OPTION_READ_BUFFER, PHP_STREAM_BUFFER_NONE, NULL);
-    }
-}
-
 /* budget: PHP returns a raw hostent with a pointer array; copy its first IPv4 address while valid. */
 int swr_zend_gethostbyname4(const char *host, struct in_addr *address) {
     struct hostent *entry = php_network_gethostbyname(host);

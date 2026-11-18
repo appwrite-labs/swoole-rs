@@ -10,6 +10,7 @@
 
 #include <unistd.h>
 
+/* budget: the property-info table stores untyped pointers to Zend records. */
 uint32_t swr_zend_http_property_offset(zend_class_entry *ce, const char *name) {
     zend_property_info *info = zend_hash_str_find_ptr(&ce->properties_info, name, strlen(name));
     if (!info || (info->flags & ZEND_ACC_STATIC) || ZEND_TYPE_IS_SET(info->type)) {
@@ -18,15 +19,17 @@ uint32_t swr_zend_http_property_offset(zend_class_entry *ce, const char *name) {
     return info->offset;
 }
 
+/* allocator: array_init_size selects Zend's debug allocation entry point. */
 void swr_zend_array_init_size(zval *target, uint32_t size) {
     array_init_size(target, size);
 }
 
-
+/* globals: read the active PHP thread's PG setting. */
 zend_long swr_zend_http_max_input_vars(void) {
     return PG(max_input_vars);
 }
 
+/* globals: register the temporary path in the request's SG upload table. */
 void swr_zend_http_upload(zval *tmpfiles, struct iovec file) {
     zend_string *path = zend_string_init(file.iov_base, file.iov_len, 0);
     add_next_index_str(tmpfiles, zend_string_copy(path));
@@ -36,6 +39,7 @@ void swr_zend_http_upload(zval *tmpfiles, struct iovec file) {
     zend_string_release(path);
 }
 
+/* bailout: either zval destructor can jump back to the surrounding native trap. */
 void swr_zend_http_release_objects(void *arg) {
     swr_zend_http_release *release = arg;
     if (release->begun >= 2) {
@@ -49,10 +53,12 @@ void swr_zend_http_release_objects(void *arg) {
     zval_ptr_dtor(release->response);
 }
 
+/* bailout: protect both destructor calls with the native jump target. */
 int swr_zend_http_try_release_objects(swr_zend_http_release *release) {
     return swr_zend_try(swr_zend_http_release_objects, release);
 }
 
+/* version: the query separator in PG changes representation in PHP 8.5. */
 bool swr_zend_http_treat_data(int arg, char *str, zval *dest) {
     zval array;
     char *var, *val, *separator = NULL;
@@ -120,6 +126,7 @@ bool swr_zend_http_treat_data(int arg, char *str, zval *dest) {
     return within;
 }
 
+/* globals: unlink each path and remove it from the SG upload table. */
 void swr_zend_http_uploads_release(zval *tmpfiles) {
     zval *path;
     ZVAL_DEREF(tmpfiles);
@@ -138,6 +145,7 @@ void swr_zend_http_uploads_release(zval *tmpfiles) {
     ZEND_HASH_FOREACH_END();
 }
 
+/* globals: initialize the current request's SG upload table. */
 void swr_zend_http_uploads_rinit(void) {
     if (!SG(rfc1867_uploaded_files)) {
         ALLOC_HASHTABLE(SG(rfc1867_uploaded_files));
@@ -145,6 +153,7 @@ void swr_zend_http_uploads_rinit(void) {
     }
 }
 
+/* globals: destroy and clear the current request's SG upload table. */
 void swr_zend_http_uploads_rshutdown(void) {
     if (SG(rfc1867_uploaded_files)) {
         destroy_uploaded_files_hash();

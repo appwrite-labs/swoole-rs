@@ -31,7 +31,7 @@ use swoole_rs_zend::{
     contain_with, message, string,
     sys::{
         PHP_STREAM_FLAG_AVOID_BLOCKING, php_stream, php_stream_xport_crypto_param,
-        php_stream_xport_param, sockaddr, timeval, zend_long, zend_string,
+        php_stream_xport_param, sockaddr, timeval, zend_long, zend_result, zend_string,
     },
     value::empty_string,
 };
@@ -55,16 +55,6 @@ unsafe extern "C" {
     safe fn swr_zend_stream_to_zval(stream: Fresh, value: &Owned);
     /// `fdopen(3)`: a `FILE` over `fd` opened with `mode`, or null.
     safe fn fdopen(fd: c_int, mode: Text<'_>) -> *mut libc::FILE;
-    /// `php_stream_context_get_option`: the option `name` that the stream's
-    /// context holds for `wrapper`; null (`None`) without a context, without
-    /// options for `wrapper`, or where either level is no array. The option
-    /// lives until PHP code changes the context, which none does while the
-    /// stream is borrowed.
-    safe fn swr_zend_stream_option<'a>(
-        stream: &'a php_stream,
-        wrapper: Text<'_>,
-        name: Text<'_>,
-    ) -> Option<&'a Value>;
     /// `client->ctx = server->ctx`, with a reference of its own when there is
     /// one. What `client` named before is not released.
     safe fn swr_zend_stream_share_context(client: &mut php_stream, server: &php_stream);
@@ -286,9 +276,13 @@ fn seconds(time: &timeval) -> f64 {
 /// A copy of the stream's context option, if set.
 fn context_option(stream: Stream<'_>, wrapper: &CStr, name: &CStr) -> Option<Owned> {
     // The context's live option is copied before any PHP runs.
-    stream.fields(|stream| {
-        swr_zend_stream_option(stream, wrapper.into(), name.into()).map(Value::copy)
-    })
+    stream
+        .context()?
+        .options()?
+        .find(wrapper.to_bytes())?
+        .array()?
+        .find(name.to_bytes())
+        .map(Value::copy)
 }
 
 /// `zval_is_true` of a context option, false when unset.
@@ -435,9 +429,9 @@ fn read(stream: Stream<'_>, out: &mut [MaybeUninit<u8>]) -> Result<isize, Bailou
 
 swoole_rs_zend::exports! {
 /// The stream's `close`: the socket closes now and is freed once no
-/// operation holds it. Whether it closed.
+/// operation holds it. PHP expects SUCCESS or FAILURE.
 #[unsafe(no_mangle)]
-extern "C" fn swr_v1_phpruntime_socket_close(stream: Stream<'_>) -> bool {
+extern "C" fn swr_v1_phpruntime_socket_close(stream: Stream<'_>, _close_handle: c_int) -> zend_result {
     // Detach first, so reentrant PHP cannot reach this stream owner again.
     let net: *mut NetStream = stream
         .fields(|stream| mem::replace(&mut stream.abstract_, ptr::null_mut()))
@@ -451,8 +445,14 @@ extern "C" fn swr_v1_phpruntime_socket_close(stream: Stream<'_>) -> bool {
         result.map_err(Bailout::defer).is_ok()
     };
     // This is a native callback boundary: the Box/Rc owners have already dropped.
-    closed
+    status(closed)
 }
+}
+
+/// Coroutine sockets have no write buffer to flush.
+#[unsafe(no_mangle)]
+extern "C" fn swr_v1_phpruntime_socket_flush(_stream: Stream<'_>) -> zend_result {
+    SUCCESS
 }
 
 /// The stream's `cast`, whose slot C gives by `castas`: for `PHP_STREAM_AS_STDIO`
@@ -491,15 +491,20 @@ extern "C" fn swr_v1_phpruntime_socket_cast(
     }
 }
 
-/// The stream's `stat`: `fstat` of the fd into `sb`; whether it could.
+/// PHP passes a `php_stream_statbuf` whose first field is its native stat output.
 #[unsafe(no_mangle)]
-extern "C" fn swr_v1_phpruntime_socket_stat(stream: Stream<'_>, sb: &mut libc::stat) -> bool {
-    let Some(net) = stream.net() else {
-        return false;
+extern "C" fn swr_v1_phpruntime_socket_stat(
+    stream: Stream<'_>,
+    out: &mut MaybeUninit<libc::stat>,
+) -> zend_result {
+    let Some(stat) = stream
+        .net()
+        .and_then(|net| swoole_rs_corebase::sys::fstat(net.socket.fd()))
+    else {
+        return FAILURE;
     };
-    swoole_rs_corebase::sys::fstat(net.socket.fd())
-        .map(|stat| *sb = stat)
-        .is_some()
+    out.write(stat);
+    SUCCESS
 }
 
 /// `PHP_STREAM_OPTION_XPORT_API`'s parameter with the inputs it points to, as

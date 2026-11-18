@@ -1,7 +1,7 @@
 /* The coroutine VM switch. Stays C (docs/zend.md, What stays C): globals (the EG,
  * OG, BG and SG state each coroutine saves and restores), bailout (zend_first_try
  * around a coroutine, autoloaders, backtraces), version (ZEND_EXIT before PHP
- * 8.4, ZEND_CHECK_STACK_LIMIT) and private (ZEND_CLOSURE_OBJECT). */
+ * 8.4, ZEND_CHECK_STACK_LIMIT), allocator, budget and variadic (printf). */
 #include "shim.h"
 #include "shim_coroutine.h"
 
@@ -11,11 +11,11 @@
 #include "main/php_output.h"
 #include "SAPI.h"
 #include <stdio.h>
-#include "zend_closures.h"
 
 #define SWR_COROUTINE_PAGE_SIZE 8192
 #define SWR_INVALID_PTR ((void *) -1)
 
+/* globals: snapshot EG, including stack-limit fields present in checked builds. */
 static void save_vm_stack(swr_zend_coroutine_vm *vm) {
     vm->bailout = EG(bailout);
     vm->vm_stack_top = EG(vm_stack_top);
@@ -38,6 +38,7 @@ static void save_vm_stack(swr_zend_coroutine_vm *vm) {
 #endif
 }
 
+/* globals: restore the executor slots for this PHP thread. */
 static void restore_vm_stack(swr_zend_coroutine_vm *vm) {
     EG(bailout) = vm->bailout;
     EG(vm_stack_top) = vm->vm_stack_top;
@@ -61,6 +62,7 @@ static void restore_vm_stack(swr_zend_coroutine_vm *vm) {
 
 #define SWOG ((zend_output_globals *) &OG(handlers))
 
+/* globals: suspend OG output and BG serialization state alongside EG. */
 void swr_zend_coroutine_save(swr_zend_coroutine_vm *vm) {
     save_vm_stack(vm);
     if (OG(handlers).elements) {
@@ -81,6 +83,7 @@ void swr_zend_coroutine_save(swr_zend_coroutine_vm *vm) {
     }
 }
 
+/* globals: reinstall OG and BG state and release the saved output allocation. */
 void swr_zend_coroutine_restore(swr_zend_coroutine_vm *vm) {
     restore_vm_stack(vm);
     if (vm->output_ptr) {
@@ -102,14 +105,10 @@ void swr_zend_coroutine_restore(swr_zend_coroutine_vm *vm) {
     }
 }
 
-void swr_zend_coroutine_switch(swr_zend_coroutine_vm *from, swr_zend_coroutine_vm *to) {
-    swr_zend_coroutine_save(from);
-    swr_zend_coroutine_restore(to);
-}
-
 /* The function of each coroutine's first frame (swoole_coroutine_internal_function). */
 static zend_function frame_function = {ZEND_INTERNAL_FUNCTION};
 
+/* globals: install a new EG stack and first frame with this build's stack bounds. */
 void swr_zend_coroutine_start(swr_zend_coroutine_vm *from, swr_zend_coroutine_vm *vm, void *stack,
                               size_t stack_size) {
     swr_zend_coroutine_save(from);
@@ -152,6 +151,7 @@ void swr_zend_coroutine_start(swr_zend_coroutine_vm *from, swr_zend_coroutine_vm
     save_vm_stack(vm);
 }
 
+/* bailout: output handlers run PHP under a native jump target. */
 static int reset_output_handlers(void) {
     volatile int bailed = 0;
     zend_bool no_headers = SG(request_info).no_headers;
@@ -170,10 +170,12 @@ static int reset_output_handlers(void) {
     return bailed;
 }
 
+/* globals: inspect OG before installing the output reset trap. */
 int swr_zend_coroutine_output_reset(void) {
     return OG(handlers).elements ? reset_output_handlers() : 0;
 }
 
+/* globals: destroy the active EG stack before restoring the origin. */
 void swr_zend_coroutine_finish(swr_zend_coroutine_vm *finished, swr_zend_coroutine_vm *origin) {
     zend_vm_stack_destroy();
     finished->vm_stack = NULL;
@@ -181,12 +183,14 @@ void swr_zend_coroutine_finish(swr_zend_coroutine_vm *finished, swr_zend_corouti
     swr_zend_coroutine_restore(origin);
 }
 
+/* globals: return this executor's main fiber after saving its state. */
 zend_fiber_context *swr_zend_coroutine_main(swr_zend_coroutine_vm *vm) {
     EG(opline_before_exception) = NULL;
     swr_zend_coroutine_save(vm);
     return EG(main_fiber_context);
 }
 
+/* globals: report the current EG exception from inside the native trap. */
 static int coroutine_catch(void) {
     if (UNEXPECTED(EG(exception))) {
         zend_exception_error(EG(exception), E_ERROR);
@@ -195,6 +199,7 @@ static int coroutine_catch(void) {
     return 0;
 }
 
+/* bailout: the entry, callable and deferred handlers share zend_first_try. */
 int swr_zend_coroutine_run(swr_zend_callable *(*enter)(void *context), void (*defers)(void *context),
                            void *context) {
     volatile int caught = 0;
@@ -214,6 +219,7 @@ int swr_zend_coroutine_run(swr_zend_callable *(*enter)(void *context), void (*de
     return caught;
 }
 
+/* globals: the running coroutine's stack starts at EG(vm_stack). */
 size_t swr_zend_coroutine_stack_usage(const swr_zend_coroutine_vm *vm) {
     zend_vm_stack stack = vm ? vm->vm_stack : EG(vm_stack);
     size_t usage = 0;
@@ -224,36 +230,38 @@ size_t swr_zend_coroutine_stack_usage(const swr_zend_coroutine_vm *vm) {
     return usage;
 }
 
+/* globals: read EG(error_reporting) for this PHP thread. */
 int swr_zend_error_reporting(void) {
     return EG(error_reporting);
 }
 
+/* budget: replacing Zend's writable function pointer in Rust requires unsafe. */
 swr_zend_interrupt_handler swr_zend_coroutine_set_interrupt(swr_zend_interrupt_handler handler) {
     swr_zend_interrupt_handler previous = zend_interrupt_function;
     zend_interrupt_function = handler;
     return previous;
 }
 
+/* globals: take the current thread's EG interrupt flag. */
 zend_atomic_bool *swr_zend_vm_interrupt(void) {
     return &EG(vm_interrupt);
 }
 
-void swr_zend_vm_interrupt_raise(zend_atomic_bool *flag) {
-    zend_atomic_bool_store(flag, 1);
-}
-
+/* budget: exchanging the writable zend_autoload hook requires unsafe in Rust. */
 swr_zend_autoload_handler swr_zend_coroutine_set_autoload(swr_zend_autoload_handler handler) {
     swr_zend_autoload_handler previous = zend_autoload;
     zend_autoload = handler;
     return previous;
 }
 
+/* globals: remove this name from the current executor's autoload table. */
 void swr_zend_autoload_forget(zend_string *lc_name) {
     if (EG(in_autoload)) {
         zend_hash_del(EG(in_autoload), lc_name);
     }
 }
 
+/* bailout: a user autoloader can leave through zend_bailout. */
 int swr_zend_autoload_try(swr_zend_autoload_handler handler, zend_string *name, zend_string *lc_name,
                           zend_class_entry **result) {
     volatile int bailed = 0;
@@ -267,6 +275,7 @@ int swr_zend_autoload_try(swr_zend_autoload_handler handler, zend_string *name, 
     return bailed;
 }
 
+/* version: ZEND_EXIT has an opcode handler only before PHP 8.4. */
 void swr_zend_coroutine_opcodes(user_opcode_handler_t exit_handler, user_opcode_handler_t begin_silence,
                                 user_opcode_handler_t end_silence) {
 #if PHP_VERSION_ID < 80400
@@ -279,6 +288,7 @@ void swr_zend_coroutine_opcodes(user_opcode_handler_t exit_handler, user_opcode_
     zend_set_user_opcode_handler(ZEND_END_SILENCE, end_silence);
 }
 
+/* budget: the opcode selects a raw literal or frame slot before ZVAL_DUP. */
 void swr_zend_exit_status(zend_execute_data *execute_data, zval *status) {
     const zend_op *opline = EX(opline);
     if (opline->op1_type != IS_UNUSED) {
@@ -297,6 +307,7 @@ void swr_zend_exit_status(zend_execute_data *execute_data, zval *status) {
     }
 }
 
+/* bailout: slow argument conversion can invoke PHP. */
 int swr_zend_try_parse_str_or_long(zval *arg, zend_string **string, zend_long *number_out, uint32_t number,
                                    bool *parsed) {
     volatile int bailed = 0;
@@ -311,18 +322,21 @@ int swr_zend_try_parse_str_or_long(zval *arg, zend_string **string, zend_long *n
     return bailed;
 }
 
+/* globals: swap EG(current_execute_data) on the running thread. */
 zend_execute_data *swr_zend_coroutine_set_frame(zend_execute_data *frame) {
     zend_execute_data *previous = EG(current_execute_data);
     EG(current_execute_data) = frame;
     return previous;
 }
 
+/* globals: expose a suspended frame through EG(current_execute_data). */
 zend_execute_data *swr_zend_coroutine_show(swr_zend_coroutine_vm *vm) {
     zend_execute_data *previous = EG(current_execute_data);
     EG(current_execute_data) = vm->execute_data;
     return previous;
 }
 
+/* globals: traverse the caller of EG(current_execute_data). */
 bool swr_zend_coroutine_called_by_destructor(void) {
     const zend_execute_data *frame = EG(current_execute_data);
     const zend_execute_data *caller = frame ? frame->prev_execute_data : NULL;
@@ -331,11 +345,7 @@ bool swr_zend_coroutine_called_by_destructor(void) {
            zend_string_equals_literal(func->common.function_name, "__destruct");
 }
 
-bool swr_zend_coroutine_library_loaded(void) {
-    zval *library = zend_get_constant_str(ZEND_STRL("SWOOLE_LIBRARY"));
-    return library && zend_is_true(library);
-}
-
+/* bailout: output handlers run PHP while writing the trace. */
 int swr_zend_coroutine_print_trace(zval *backtrace) {
     volatile int bailed = 0;
     SWR_ZEND_TRY {
@@ -350,16 +360,19 @@ int swr_zend_coroutine_print_trace(zval *backtrace) {
     return bailed;
 }
 
+/* budget: Fiber holds a shared raw context pointer across observer calls. */
 void swr_zend_coroutine_fiber_status(zend_fiber_context *fiber, zend_fiber_status status) {
     fiber->status = status;
 }
 
+/* allocator: Zend allocates the new object and its property storage. */
 zend_object *swr_zend_coroutine_exception(zend_class_entry *ce) {
     zend_object *exception = zend_objects_new(ce);
     object_properties_init(exception, ce);
     return exception;
 }
 
+/* budget: the exception handle is opaque to Rust; the update needs its class pointer. */
 void swr_zend_coroutine_locate(zend_object *exception) {
     zend_string *filename = zend_get_executed_filename_ex();
     if (filename) {
@@ -371,6 +384,7 @@ void swr_zend_coroutine_locate(zend_object *exception) {
     }
 }
 
+/* globals: redirect the saved frame to EG(exception_op). */
 void swr_zend_coroutine_redirect(swr_zend_coroutine_vm *vm) {
     zend_execute_data *frame = vm->execute_data;
     if (frame && frame->func && ZEND_USER_CODE(frame->func->type) && frame->opline->opcode != ZEND_HANDLE_EXCEPTION) {
@@ -379,6 +393,7 @@ void swr_zend_coroutine_redirect(swr_zend_coroutine_vm *vm) {
     }
 }
 
+/* variadic: print the count through libc's buffered printf. */
 void swr_zend_coroutine_deadlock_report(unsigned long count) {
     printf("\n ===================================================================\n"
            "  [FATAL ERROR]: all coroutines (count: %lu) are asleep - deadlock! \n"

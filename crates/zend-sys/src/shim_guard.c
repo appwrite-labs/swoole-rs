@@ -55,9 +55,11 @@ void *swr_zend_guard_target(void) {
     return NULL;
 }
 
-/* globals: pending, mark and clear share the ZEND_TLS exit flag. */
+/* globals: read the ZEND_TLS exit flag. */
 int swr_zend_guard_pending(void) { return thread_exit; }
+/* globals: mark the thread-local exit. */
 void swr_zend_guard_mark(void) { thread_exit = 2; }
+/* globals: clear this thread's exit flag. */
 void swr_zend_guard_clear(void) { thread_exit = 0; }
 
 /* bailout: select the native jump target and re-raise the exit. */

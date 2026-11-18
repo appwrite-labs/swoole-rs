@@ -55,9 +55,10 @@ unsafe extern "C" {
     /// (`save_context`) and returns `EG(main_fiber_context)`, which lives for
     /// the request. It follows no pointer `vm` holds and runs no PHP code.
     safe fn swr_zend_coroutine_main(vm: &mut swr_zend_coroutine_vm) -> Option<Fiber>;
-    /// `save_context(from)` then `restore_context(to)`: the executor's state
-    /// becomes `to`'s, and `from`'s is saved for its next switch in.
-    safe fn swr_zend_coroutine_switch(from: Running, to: Suspended);
+    /// Save the current executor, output and serializer globals into `from`.
+    safe fn swr_zend_coroutine_save(from: Running);
+    /// Restore the globals of the suspended coroutine.
+    safe fn swr_zend_coroutine_restore(to: Suspended);
     /// `save_context(from)`, then a fresh VM stack for the new coroutine,
     /// bounded by its C stack (`stack`, `size`, only compared with the stack
     /// pointer; null: none), saved into `vm` too, which it writes without
@@ -553,7 +554,8 @@ pub(crate) extern "C" fn on_yield(task: CoroutineTask) {
     let ctx = Ctx::of_task(task);
     let origin = origin(ctx);
     fiber_switch_try_notify(ctx, origin);
-    swr_zend_coroutine_switch(ctx.running(), origin.switched_out());
+    swr_zend_coroutine_save(ctx.running());
+    swr_zend_coroutine_restore(origin.switched_out());
     count_switch(ctx);
 }
 
@@ -563,7 +565,8 @@ pub(crate) extern "C" fn on_resume(task: CoroutineTask) {
     let ctx = Ctx::of_task(task);
     let current = current();
     fiber_switch_try_notify(current, ctx);
-    swr_zend_coroutine_switch(current.running(), ctx.switched_out());
+    swr_zend_coroutine_save(current.running());
+    swr_zend_coroutine_restore(ctx.switched_out());
     record_last_msec(ctx);
     count_switch(ctx);
 }

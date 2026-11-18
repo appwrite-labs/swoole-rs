@@ -14,8 +14,7 @@ void swr_zend_callable_hold(swr_zend_callable *callable) {
     }
 }
 
-/* What OBJ_RELEASE does without freeing it or making it a possible root. */
-/* budget: the GC predicates inspect a raw zend_object from the fcall cache. */
+/* budget: check the raw cache object can lose a reference without freeing it or buffering a root. */
 static bool swr_quiet_release(zend_object *object) {
     return GC_REFCOUNT(object) > 1 && !GC_MAY_LEAK((zend_refcounted *) object);
 }

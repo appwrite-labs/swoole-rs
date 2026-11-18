@@ -53,8 +53,7 @@ struct Lent<'a>(NonNull<php_stream>, PhantomData<&'a mut Opened>);
 // The prologue's stdio streams (`Stdio`).
 unsafe extern "C" {
     /// `php_stream_close`.
-    #[link_name = "swr_zend_stream_close"]
-    safe fn stdio_close(stream: Stdio<'_>);
+    safe fn _php_stream_free(stream: Stdio<'_>, options: c_int) -> c_int;
     /// `php_stream_cast(stream, PHP_STREAM_AS_FD, fd, 0) == SUCCESS`.
     #[link_name = "swr_zend_stream_fd"]
     safe fn stdio_fd(stream: Lent<'_>, fd: &mut c_int) -> bool;
@@ -148,10 +147,9 @@ impl<'a> Prologue<'a> {
         .map(|(path, mode)| opening.open(path, mode));
         drop(opening);
         let [Some(stdin), Some(stdout), Some(stderr)] = streams else {
-            streams
-                .into_iter()
-                .flatten()
-                .for_each(|stream| stdio_close(stream));
+            streams.into_iter().flatten().for_each(|stream| {
+                _php_stream_free(stream, crate::sys::PHP_STREAM_FREE_CLOSE.cast_signed());
+            });
             return None;
         };
         Some([stdin, stdout, stderr])

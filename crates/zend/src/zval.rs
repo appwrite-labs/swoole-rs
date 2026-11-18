@@ -32,7 +32,7 @@ unsafe extern "C" {
     /// which lives as the table's others do, while the table is borrowed.
     safe fn zend_hash_index_find(table: &Array, index: zend_ulong) -> Option<&Value>;
     /// `zend_hash_str_find`: as [`zend_hash_index_find`], under the lent
-    /// bytes (an `IoSlice` is an iovec), which it reads only.
+    /// bytes, which it reads only.
     safe fn zend_hash_str_find<'a, 'b>(
         table: &'a Array,
         key: In<'b, u8>,

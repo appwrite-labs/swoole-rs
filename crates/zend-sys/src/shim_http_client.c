@@ -35,7 +35,7 @@ void swr_lent_array_add_or_merge(zval *array, struct iovec name, zval *element) 
     }
 }
 
-bool swr_zval_is_true(const zval *value) {
+bool swr_zval_is_true(zval *value) {
     return zend_is_true(value);
 }
 

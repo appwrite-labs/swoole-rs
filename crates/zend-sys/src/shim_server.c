@@ -60,7 +60,7 @@ int swr_zend_try_array_merge(zval *dest, zval *src) {
     return bailed;
 }
 
-/* globals, version: unlimit and restore access EG stack bounds when this PHP guards them. */
+/* globals, version: clear EG stack bounds when this PHP guards them. */
 void swr_zend_stack_unlimit(void **saved) {
 #ifdef ZEND_CHECK_STACK_LIMIT
     saved[0] = EG(stack_limit);
@@ -72,6 +72,7 @@ void swr_zend_stack_unlimit(void **saved) {
 #endif
 }
 
+/* globals, version: reinstall the saved bounds on builds with the EG stack guard. */
 void swr_zend_stack_restore(void *const *saved) {
 #ifdef ZEND_CHECK_STACK_LIMIT
     EG(stack_limit) = saved[0];

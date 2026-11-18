@@ -17,10 +17,17 @@ unsafe extern "C" {
         fd: &mut c_int,
     ) -> c_int;
 
-    /// `php_stream_from_zval_no_verify`: the stream a resource zval names, or
-    /// null for any other value or resource. It reads the zval, the resource's
-    /// type and the two stream type numbers PHP registers at startup.
-    safe fn swr_zend_stream_from_zval(value: &Value) -> *mut crate::sys::php_stream;
+    /// PHP's registered normal and persistent stream resource types.
+    safe fn php_file_le_stream() -> c_int;
+    safe fn php_file_le_pstream() -> c_int;
+    /// With the registered stream types the returned payload is a `php_stream`
+    /// kept alive by its PHP resource.
+    safe fn zend_fetch_resource2_ex(
+        value: &Value,
+        name: CText<'_>,
+        normal: c_int,
+        persistent: c_int,
+    ) -> *mut crate::sys::php_stream;
     /// `php_stream_read` into `page` from the stream a resource zval names, inside
     /// `zend_try`: the bytes read, 0 at the end, -1 for no stream, -2 for a bailout.
     /// It writes at most `size` bytes, which the caller passes as the page's length.
@@ -151,10 +158,22 @@ impl Value {
     pub fn unbuffer_stream(&self) -> Result<(), Bailout> {
         contain_with(|| {
             unsafe extern "C" {
-                // Only called inside contain_with, which traps the wrapper's bailout.
-                safe fn swr_zend_stream_unbuffer(value: &Value);
+                // The read-buffer option takes no pointer argument and may run a wrapper.
+                safe fn _php_stream_set_option(
+                    stream: NonNull<crate::sys::php_stream>,
+                    option: c_int,
+                    value: c_int,
+                    data: Option<NonNull<c_void>>,
+                ) -> c_int;
             }
-            swr_zend_stream_unbuffer(self);
+            if let Some(stream) = NonNull::new(self.stream()) {
+                _php_stream_set_option(
+                    stream,
+                    crate::sys::PHP_STREAM_OPTION_READ_BUFFER.cast_signed(),
+                    crate::sys::PHP_STREAM_BUFFER_NONE.cast_signed(),
+                    None,
+                );
+            }
         })
     }
 
@@ -173,7 +192,12 @@ impl Value {
     /// resource, not this borrow, keeps the stream.
     #[must_use]
     pub fn stream(&self) -> *mut crate::sys::php_stream {
-        swr_zend_stream_from_zval(self)
+        zend_fetch_resource2_ex(
+            self,
+            c"stream".into(),
+            php_file_le_stream(),
+            php_file_le_pstream(),
+        )
     }
 
     /// `php_stream_read` of the stream a resource this holds names, on the request's
