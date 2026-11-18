@@ -5,7 +5,7 @@ Cargo builds `swoole.so` from the crates (`crates/ext`, through
 and in the module contracts is what the C left in the build calls: the
 third-party C that swoole-src bundles (`native/swoole-src/thirdparty`), the
 first-party glue (`native/corebase/switches.cc`, `native/phphelpers/host.c`,
-`crates/ffi/src/fatal.c`, `crates/corebase/src/format.c`), and the native gates,
+`crates/corebase/src/fatal.c`, `crates/corebase/src/format.c`), and the native gates,
 which link `libswoole_rs_ffi.a` into fixtures outside PHP.
 
 ## Base contract (`native/include/swoole_rs.h`)

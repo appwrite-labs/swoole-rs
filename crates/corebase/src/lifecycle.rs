@@ -110,6 +110,15 @@ pub fn set_thread_async_threads(threads: *mut c_void) {
     with(|thread| thread.async_threads.set(threads));
 }
 
+/// Initialize the runtime with the upstream variadic fatal handler.
+#[cfg(feature = "upstream-symbols")]
+pub fn init_with_default_fatal_handler() {
+    unsafe extern "C" {
+        fn swr_v1_ffi_fatal_error(code: core::ffi::c_int, format: *const core::ffi::c_char, ...);
+    }
+    swr_v1_core_swoole_init(Some(swr_v1_ffi_fatal_error));
+}
+
 /// `void swoole_init()`'s body, including its streams, logger, memory pool,
 /// signalfd, bug report and main thread. Later calls are no-ops until cleanup.
 /// The archive supplies the C variadic fatal handler; Rust callers may omit it.
