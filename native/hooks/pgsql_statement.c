@@ -13,6 +13,23 @@ int pdo_pgsql_stmt_fetch(pdo_stmt_t *stmt, enum pdo_fetch_orientation ori, zend_
     return pdo_pgsql_fetch_row(stmt->dbh, stmt, &S->result, S->cursor_name, ori, offset, &S->current_row, running);
 }
 
+int pdo_pgsql_stmt_describe(pdo_stmt_t *stmt, int colno) {
+    pdo_pgsql_stmt *S = stmt->driver_data;
+    return S->result && pdo_pgsql_describe_column(S->result, colno, &stmt->columns[colno]);
+}
+
+int pdo_pgsql_stmt_get_column_meta(pdo_stmt_t *stmt, zend_long colno, zval *output) {
+    pdo_pgsql_stmt *S = stmt->driver_data;
+    if (!S->result || colno < 0 || colno >= stmt->column_count) {
+        return FAILURE;
+    }
+    return pdo_pgsql_column_meta(S->H, S->result, (int)colno, output);
+}
+
+int pdo_pgsql_stmt_cursor_closer(pdo_stmt_t *stmt) {
+    return 1;
+}
+
 /* PDO stores zend_string pointers under the original parameter names. */
 const zend_string *pdo_pgsql_rewritten_name(pdo_stmt_t *stmt, zend_string *name) {
     return stmt->bound_param_map ? zend_hash_find_ptr(stmt->bound_param_map, name) : NULL;

@@ -32,14 +32,8 @@
 #endif
 
 /* from postgresql/src/include/catalog/pg_type.h */
-#define BOOLOID     16
 #define BYTEAOID    17
-#define INT2OID     21
-#define INT4OID     23
-#define INT8OID     20
 #define OIDOID      26
-
-
 
 static int pgsql_stmt_dtor(pdo_stmt_t *stmt)
 {
@@ -194,15 +188,6 @@ static int pgsql_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *
 	return 1;
 }
 
-static int pgsql_stmt_describe(pdo_stmt_t *stmt, int colno)
-{
-    pdo_pgsql_stmt *S = (pdo_pgsql_stmt *) stmt->driver_data;
-    if (!S->result) {
-        return 0;
-    }
-    return pdo_pgsql_describe_column(S->result, colno, &stmt->columns[colno]);
-}
-
 static int pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type)
 {
 	pdo_pgsql_stmt *S = (pdo_pgsql_stmt*)stmt->driver_data;
@@ -265,30 +250,16 @@ static int pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pd
 	return 1;
 }
 
-static int pgsql_stmt_get_column_meta(pdo_stmt_t *stmt, zend_long colno, zval *return_value)
-{
-    pdo_pgsql_stmt *S = (pdo_pgsql_stmt *) stmt->driver_data;
-    if (!S->result || colno < 0 || colno >= stmt->column_count) {
-        return FAILURE;
-    }
-    return pdo_pgsql_column_meta(S->H, S->result, colno, return_value);
-}
-
-static int pdo_pgsql_stmt_cursor_closer(pdo_stmt_t *stmt)
-{
-	return 1;
-}
-
 const struct pdo_stmt_methods swoole_pgsql_stmt_methods = {
 	pgsql_stmt_dtor,
 	pgsql_stmt_execute,
 	pdo_pgsql_stmt_fetch,
-	pgsql_stmt_describe,
+	pdo_pgsql_stmt_describe,
 	pgsql_stmt_get_col,
 	pgsql_stmt_param_hook,
 	NULL, /* set_attr */
 	NULL, /* get_attr */
-	pgsql_stmt_get_column_meta,
+	pdo_pgsql_stmt_get_column_meta,
 	NULL,  /* next_rowset */
 	pdo_pgsql_stmt_cursor_closer
 };
