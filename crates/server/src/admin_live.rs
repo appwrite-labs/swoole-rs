@@ -183,15 +183,15 @@ impl Facts for Live<'_> {
 
     fn connections(&mut self) -> u64 {
         self.connections.clear();
-        let gs = self.serv.counters();
+        let bounds = self.serv.fd_bounds();
         let mode = self.config.mode_;
         let reactor_id = i64::from(swoole_rs_corebase::thread_id());
         // This process's worker's id, if it runs one.
         let worker =
             swoole_rs_corebase::process::worker_globals::with_current(|worker| worker.id());
         // Server::foreach_connection: each valid connection, max_fd read afresh.
-        let mut fd = gs.min_fd();
-        while fd <= gs.max_fd() {
+        let mut fd = bounds.min_fd();
+        while fd <= bounds.max_fd() {
             let conn = self.serv.at(fd);
             fd += 1;
             let Some((conn, socket)) = conn

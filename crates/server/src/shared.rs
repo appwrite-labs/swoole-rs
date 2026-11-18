@@ -17,7 +17,14 @@ pub struct PortCounters {
     pub total_recv_bytes: AtomicU64,
     pub total_send_bytes: AtomicU64,
 }
-impl ServerCounters {
+/// Descriptor range for scans of the corresponding connection table.
+#[derive(Default)]
+pub struct FdBounds {
+    pub(crate) max_fd: AtomicI32,
+    pub(crate) min_fd: AtomicI32,
+}
+
+impl FdBounds {
     #[must_use]
     pub fn max_fd(&self) -> c_int {
         self.max_fd.load(Relaxed)
@@ -39,8 +46,7 @@ pub struct ServerCounters {
     pub start: AtomicBool,
     pub shutdown: AtomicBool,
     /// The connection fd range; written under the server lock, read by every thread.
-    pub max_fd: AtomicI32,
-    pub min_fd: AtomicI32,
+    pub(crate) bounds: FdBounds,
     pub onstart_called: AtomicBool,
     /// `time_t`.
     pub start_time: AtomicI64,
@@ -198,6 +204,22 @@ mod tests {
     use core::sync::atomic::Ordering;
 
     #[test]
+    fn only_base_servers_keep_their_connection_bounds_private() {
+        let mut live = crate::fixture::LiveServer::new();
+        for mode in [crate::Mode::Base, crate::Mode::Process, crate::Mode::Thread] {
+            live.config_mut().mode_ = mode;
+            let server = live.server();
+            let fd = mode as c_int;
+            server.fd_bounds().max_fd.store(fd, Relaxed);
+            assert_eq!(server.fd_bounds().max_fd(), fd);
+            assert_eq!(
+                server.counters().bounds.max_fd(),
+                if mode == crate::Mode::Base { 0 } else { fd }
+            );
+        }
+    }
+
+    #[test]
     fn a_send_counts_on_the_server_and_its_sessions_port() {
         use crate::records::{ConnectionRecord, SessionRecord};
         // A `ListenPort` is its settings.
@@ -262,14 +284,14 @@ mod tests {
                 // Only lock-free atomics/plain loaned cells and _exit run after
                 // fork; no Rust allocation, callback, destructor or test assertion.
                 counters.concurrency.fetch_sub(2, Ordering::SeqCst);
-                counters.min_fd.store(123, Relaxed);
+                counters.bounds.min_fd.store(123, Relaxed);
                 libc::_exit(0);
             }
             let mut status = 0;
             assert_eq!(libc::waitpid(pid, &raw mut status, 0), pid);
             assert_eq!(status, 0);
             assert_eq!(counters.concurrency.load(Relaxed), 5);
-            assert_eq!(counters.min_fd(), 123);
+            assert_eq!(counters.bounds.min_fd(), 123);
             let mut gs = gs;
             gs.free();
         }

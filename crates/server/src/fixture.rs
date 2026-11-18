@@ -243,7 +243,11 @@ mod tests {
         assert_eq!(gs.session_round.load(Relaxed), 1, "the round moved on");
         assert_eq!(gs.accept_count.load(Relaxed), 1, "one accept");
         assert_eq!(gs.connection_num.load(Relaxed), 1, "one connection");
-        assert_eq!(gs.max_fd.load(Relaxed), accepted, "the fd range grew");
+        assert_eq!(
+            live.server().fd_bounds().max_fd(),
+            accepted,
+            "the fd range grew"
+        );
         let port = live.port_counters();
         assert_eq!(
             (

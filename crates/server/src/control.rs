@@ -338,7 +338,7 @@ pub(crate) fn init_signals(serv: Server<'_>) {
     h.step(serv, Handle(libc::SIGRTMIN()));
     let signal_fd = swoole_rs_corebase::swr_v1_core_signal_fd();
     if signal_fd > 0 {
-        serv.counters().min_fd.store(signal_fd, Relaxed);
+        serv.fd_bounds().min_fd.store(signal_fd, Relaxed);
     }
 }
 

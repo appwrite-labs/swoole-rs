@@ -130,14 +130,15 @@ fn receive_packets(serv: view::Server<'_>, reactor: Reactor, fd: c_int, buffer: 
     }
 }
 
-/// `Server::foreach_connection`: each valid connection from the shared lowest fd to
+/// `Server::foreach_connection`: each valid connection from the lowest fd to
 /// the highest, read afresh each step.
 pub(crate) fn each_connection(state: &ServerState, mut each: impl FnMut(Connection<'_>)) {
     let Some(gs) = crate::shared::server_counters(state) else {
         return;
     };
-    let mut fd = gs.min_fd();
-    while fd <= gs.max_fd() {
+    let bounds = state.fd_bounds(gs);
+    let mut fd = bounds.min_fd();
+    while fd <= bounds.max_fd() {
         let conn = state.connection(c_long::from(fd), Lookup::ByFd);
         if let Some(conn) = conn.filter(|_| crate::reactor_ops::valid(conn)) {
             each(conn);
