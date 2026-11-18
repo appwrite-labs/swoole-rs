@@ -126,27 +126,34 @@ impl<'a> Frame<'a> {
         self.executing().opline()
     }
 
-    /// `EX(opline)`'s instruction, which the handler was called for: part of
-    /// the function's op array, which Zend leaves unwritten while it runs (the
-    /// JIT, which rewrites handlers, turns itself off under user opcode handlers).
+    /// The function's instructions, which the handler's frame runs, and the index
+    /// of `EX(opline)` among them; None for a function without any.
+    fn code(self) -> Option<(&'a [zend_op], usize)> {
+        let (first, last) = self.function().instructions()?;
+        if first.is_null() {
+            return None;
+        }
+        // SAFETY: the frame's function's op array, `last` instructions from `first`,
+        // which Zend leaves unwritten while it runs (the JIT, which rewrites
+        // handlers, turns itself off under user opcode handlers).
+        let code = unsafe { std::slice::from_raw_parts(first, usize::try_from(last).ok()?) };
+        let index = self.opline().addr().wrapping_sub(first.addr()) / size_of::<zend_op>();
+        Some((code, index))
+    }
+
+    /// `EX(opline)`'s instruction, which the handler was called for.
     #[must_use]
     #[inline]
-    pub fn instruction(self) -> &'a zend_op {
-        // SAFETY: a frame at a user opcode handler is at a live instruction.
-        unsafe { &*self.opline() }
+    pub fn instruction(self) -> Option<&'a zend_op> {
+        let (code, index) = self.code()?;
+        code.get(index)
     }
 
     /// `OP_DATA`: the instruction after this one, if the function has one.
     #[must_use]
     pub fn next_instruction(self) -> Option<&'a zend_op> {
-        let (first, last) = self.function().instructions()?;
-        let next = self.opline().wrapping_add(1);
-        let index = next.addr().wrapping_sub(first.addr()) / size_of::<zend_op>();
-        if index >= usize::try_from(last).unwrap_or(0) {
-            return None;
-        }
-        // SAFETY: an instruction of the frame's function, as for `instruction`.
-        Some(unsafe { &*next })
+        let (code, index) = self.code()?;
+        code.get(index.checked_add(1)?)
     }
 
     /// `EX(opline) += count`, as a handler that consumed `count` instructions
@@ -154,18 +161,16 @@ impl<'a> Frame<'a> {
     /// function's instructions: one past them leaves the frame where it is (never
     /// so for what Zend compiles, whose op arrays end in a RETURN).
     pub fn skip(self, count: usize) {
-        let Some((first, last)) = self.function().instructions() else {
+        let Some((code, index)) = self.code() else {
             return;
         };
-        let at = self.opline();
-        let index = at.addr().wrapping_sub(first.addr()) / size_of::<zend_op>();
         if index
             .checked_add(count)
-            .is_none_or(|next| next >= usize::try_from(last).unwrap_or(0))
+            .is_some_and(|next| next < code.len())
         {
-            return;
+            self.executing()
+                .set_opline(self.opline().wrapping_add(count));
         }
-        self.executing().set_opline(at.wrapping_add(count));
     }
 }
 

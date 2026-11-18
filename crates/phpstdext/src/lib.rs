@@ -68,8 +68,8 @@ struct Op<'a> {
 
 impl<'a> Op<'a> {
     /// `frame`'s current instruction.
-    fn current(frame: Frame<'a>) -> Self {
-        Self::at(frame, frame.instruction())
+    fn current(frame: Frame<'a>) -> Option<Self> {
+        Some(Self::at(frame, frame.instruction()?))
     }
 
     /// `op`, an instruction of `frame`'s function.

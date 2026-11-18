@@ -37,7 +37,7 @@ pub use putenv::*;
 pub use socket::{Report, check_reactor, co, convert_to_fd, coroutine_check, report, strerror};
 pub use stream::*;
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::hook::EnableHook;
+use swoole_rs_corebase::hook::{Hook, call as call_hook};
 
 use std::{
     ffi::{CStr, c_int},
@@ -317,7 +317,7 @@ pub fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
         );
         return Ok(false);
     }
-    EnableHook::BEFORE.call(&mut requested);
+    call_hook(Hook::BeforeEnable(&mut requested));
     let mut unavailable = 0;
     if !swoole_rs_zend::module_loaded(c"sockets") {
         unavailable |= flags::SOCKETS;
@@ -333,7 +333,7 @@ pub fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
     functions::hook_all(requested, installed)?;
     mongodb(requested, installed)?;
 
-    EnableHook::AFTER.call(&mut requested);
+    call_hook(Hook::AfterEnable(&mut requested));
     HOOKED.store(requested, Ordering::Relaxed);
     Ok(true)
 }

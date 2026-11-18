@@ -536,7 +536,7 @@ impl Handler for Unset {
     const OPCODE: u32 = swoole_rs_zend::sys::ZEND_UNSET_DIM;
     fn run(frame: Frame<'_>) -> Next {
         // `get_array_on_opline`: op1's slot.
-        let Some(array) = Op::current(frame).op1_container() else {
+        let Some(array) = Op::current(frame).and_then(Op::op1_container) else {
             return Next::Dispatch;
         };
         match Typed::of(array) {
@@ -556,7 +556,9 @@ pub(crate) struct ForeachBegin;
 impl Handler for ForeachBegin {
     const OPCODE: u32 = swoole_rs_zend::sys::ZEND_FE_RESET_RW;
     fn run(frame: Frame<'_>) -> Next {
-        let op = Op::current(frame);
+        let Some(op) = Op::current(frame) else {
+            return Next::Dispatch;
+        };
         if op.op1_container().and_then(Typed::of).is_none() {
             return Next::Dispatch;
         }
