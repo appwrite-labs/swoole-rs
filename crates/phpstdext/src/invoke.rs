@@ -150,9 +150,8 @@ fn arguments(prefix: &[&Value], frame: &Call) -> Vec<Owned> {
 /// handler pushed with its `CallInfo`.
 fn call_method(receiver: Receiver, frame: &Call) {
     let allocation = frame.take_run_time_cache().cast::<CallInfo>();
-    // SAFETY: the handler's initialized allocation: only its frames run a
-    // dispatcher (`install`). The frame's `run_time_cache` alone pointed to it,
-    // until the take above, and it is freed below.
+    // SAFETY: the dispatcher's zend_execute_data owns the CallInfo allocated with Emalloc
+    // in the opcode handler. Taking run_time_cache transfers that Box back exactly once.
     let mut info = unsafe { Box::from_raw_in(allocation, Emalloc::default()) };
     // op2 of INIT_METHOD_CALL is the method name, a string literal.
     let name = info.func.str();

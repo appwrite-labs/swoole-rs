@@ -41,14 +41,15 @@ extern "C" fn calloc(nmemb: usize, size: usize) -> *mut c_void {
 /// # Safety
 /// `address` came from this allocator.
 unsafe extern "C" fn realloc(address: *mut c_void, size: usize) -> *mut c_void {
-    // SAFETY: per the caller, the value of a live, unshared string.
+    // SAFETY: address is the value pointer of the uniquely owned zend_string from this allocator.
     val(unsafe { string::realloc(from_val(address.cast()), size) }).cast()
 }
 
 /// # Safety
 /// `address` came from this allocator.
 unsafe extern "C" fn free(address: *mut c_void) {
-    // SAFETY: per the caller.
+    // SAFETY: from_val recovers the zend_string header from this allocator's value pointer.
+    // The caller transfers its reference to free.
     unsafe { swr_zend_string_release(from_val(address.cast())) };
 }
 

@@ -611,7 +611,8 @@ pub(crate) fn coro_hook(stop: bool, ctx: Ctx) -> Result<(), bailout::Bailout> {
 fn run_hooks(hooks: &[swoole_rs_corebase::hook::HookFn], ctx: Ctx) -> Result<(), bailout::Bailout> {
     for hook in hooks {
         swoole_rs_zend::contain_with(|| {
-            // SAFETY: each start or stop hook accepts this live coroutine context.
+            // SAFETY: the start and stop C hooks take a pointer to the current PHP coroutine Context,
+            // which stays live for the callback.
             unsafe { hook(ctx.ptr().cast()) };
         })?;
     }
