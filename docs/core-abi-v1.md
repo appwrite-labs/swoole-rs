@@ -26,8 +26,7 @@ slices. The crate forbids `unsafe_code`.
 IEEE CRC32: reflected polynomial `0xedb88320`, initial value and final XOR
 `0xffffffff`; the safe `crc32(&[u8])`, in a crate that forbids `unsafe_code`.
 The table is a compile-time constant (upstream lazily fills a mutable table,
-which races). `crates/corebase/src/utilities` defines `swoole_crc32` under its upstream symbol for
-C++ callers; null or empty input returns 0.
+which races).
 
 ## M11 error messages (`native/include/swoole_rs_error.h`, crate `swoole-rs-error`)
 

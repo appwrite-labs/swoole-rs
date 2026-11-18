@@ -4,7 +4,6 @@
 //! root check, daemonizing, user/group/chroot isolation, parent-death signal, CPU
 //! affinity, native thread id and thread names. Logs name the function as
 //! upstream's `__SW_FUNC__` did.
-use crate::lent::{Count, Out};
 use crate::log;
 use crate::sys::Text;
 use libc::{c_int, c_long};
@@ -322,14 +321,6 @@ fn pthread_ok(rc: c_int) -> bool {
         crate::log::set_last_error(rc);
     }
     rc == 0
-}
-
-/// `size_t swoole_random_bytes(char *buf, size_t size)`, over corebase's: fills
-/// the `size` bytes lent at `buf`.
-#[unsafe(export_name = "_Z19swoole_random_bytesPcm")]
-#[must_use]
-pub extern "C" fn swoole_random_bytes<'id>(buf: Out<'id, u8>, size: Count<'id>) -> usize {
-    crate::random_bytes(buf.fill(size).slots())
 }
 
 #[cfg(test)]

@@ -136,9 +136,7 @@ declarations are gone. Their `extern "C"` functions retain abort-on-panic behavi
 `swoole_itoa` is a Rust function over a slice.
 Both `swoole_rand` overloads and `swoole_type_size` are plain Rust functions;
 their native declarations and exports are gone. Rust fixtures call those and
-`swoole_random_int` directly, preserving ranges and draw timing. The hash-originals
-PHP test extension still calls `swoole_random_int`, so its native declaration and
-export remain.
+`swoole_random_int` directly, preserving ranges and draw timing.
 
 Upstream installs `include/swoole_api.h` for extension consumers. It declares
 the three version functions above, which `src/core/base.cc` marks `SW_API`.

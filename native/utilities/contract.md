@@ -1,11 +1,7 @@
 # Utilities ABI
 
-Feature bit 512 (`utilities`). This directory's `swoole_log.h`, `swoole_hash.h`
-and `swoole_version.h` replace upstream's and keep what C++ and the utilities gates use; nothing built includes upstream's
-`swoole_util.h`. `swoole_log.h` keeps the levels, the fatal-error forwarder and the
-compiled-off trace macro: no C++ left logs through `swoole::Logger` or the other log macros. The C++ hash-originals fixture imports all four functions in `swoole_hash.h`
-because it compiles the pinned hash GoogleTests together. Its runtime filter selects
-`hash.php` and `hash.jenkins`. Rust callers use the spinlock and futex operations directly.
+Feature bit 512 (`utilities`). The native headers retain the logging macros and version declarations.
+Rust callers use the hashes, spinlock and futex operations directly.
 
 ## General rules
 
@@ -22,7 +18,7 @@ because it compiles the pinned hash GoogleTests together. Its runtime filter sel
 
 ## Hashing
 
-- `swoole_hash_php`/`_jenkins`/`_austin` (`crates/corebase/src/utilities/misc.rs`): 64-bit
+- `swoole_hash` (`crates/corebase/src/utilities/mod.rs`): 64-bit
   wrapping DJBX33A, Jenkins (original u32/u32/u64 mix and truncated block counter),
   Austin (64-bit state, signed-int promotions), promoting the host `char`. Austin has
   undefined negative left shifts on high bytes upstream; only ASCII Austin input is

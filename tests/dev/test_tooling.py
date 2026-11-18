@@ -599,11 +599,6 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('core_check', ' '.join(commands['error-native']))
         # An -ffi crate's tests run with its module's (#2996 moved error's there).
         self.assertIn('swoole-rs-error-ffi', commands['error-unit'])
-        command = commands['utilities-hash-originals']
-        self.assertIn('--archive', command)
-        self.assertIn('cargo=' + str(ROOT / 'target/ext/swoole.so'), command)
-        self.assertTrue(command[command.index('--build-manifest') + 1].endswith('target/ext/build-manifest.json'))
-        self.assertEqual(command.count('--engine'), 2)
         self.assertIn('--require-same-api', commands['api-surface'])
         self.assertEqual(commands['api-surface'].count('--engine'), 2)
         self.assertLess(list(commands).index('cargo-build'), list(commands).index('api-surface'))
