@@ -451,6 +451,80 @@ impl OwnerCell {
     }
 }
 
+/// A heap record its holder owns on one thread and lends counted: a loan goes only to
+/// a closure, and a record released while a loan is out is freed when the last loan
+/// ends. A loan a Zend bailout skips leaves the count up, so the record leaks rather
+/// than being freed early; a loan held across a coroutine yield delays the free.
+#[derive(Default)]
+pub struct SocketLoans {
+    socket: Cell<Option<Heap<'static>>>,
+    loans: Cell<u32>,
+    /// Records released while lent, with how each is freed.
+    retired: Cell<Vec<Retired>>,
+}
+
+/// A record released while lent, and how it is freed once the loans end.
+type Retired = (OwnedSocket, fn(OwnedSocket));
+
+impl SocketLoans {
+    /// Owns `owner` from here; the record it held is released with `free`.
+    pub fn put(&self, owner: OwnedSocket, free: fn(OwnedSocket)) {
+        if let Some(old) = self.socket.replace(Some(owner.leak())) {
+            self.retire(OwnedSocket(old), free);
+        }
+    }
+
+    /// Releases the record it holds with `free`, now or when the last loan ends:
+    /// whether it held one.
+    pub fn release(&self, free: fn(OwnedSocket)) -> bool {
+        self.socket
+            .take()
+            .map(|old| self.retire(OwnedSocket(old), free))
+            .is_some()
+    }
+
+    /// `f` over the record it holds, which stays live until `f` returns, even if `f`
+    /// releases it; `None` without one.
+    pub fn lend<T>(&self, f: impl FnOnce(Heap<'_>) -> T) -> Option<T> {
+        struct Loan<'a>(&'a SocketLoans);
+        impl Drop for Loan<'_> {
+            fn drop(&mut self) {
+                let loans = &self.0.loans;
+                loans.set(loans.get() - 1);
+                if loans.get() == 0 {
+                    for (owner, free) in self.0.retired.take() {
+                        free(owner);
+                    }
+                }
+            }
+        }
+        let socket = self.socket.get()?;
+        let count = self.loans.get().checked_add(1);
+        self.loans
+            .set(count.unwrap_or_else(|| crate::fatal("socket loans overflowed")));
+        let _loan = Loan(self);
+        Some(f(socket))
+    }
+
+    /// The address of the record it holds, for native code; null without one.
+    #[must_use]
+    pub fn as_ptr(&self) -> *mut SocketRecord {
+        self.socket
+            .get()
+            .map_or(std::ptr::null_mut(), |socket| socket.as_ptr())
+    }
+
+    fn retire(&self, owner: OwnedSocket, free: fn(OwnedSocket)) {
+        if self.loans.get() == 0 {
+            free(owner);
+        } else {
+            let mut retired = self.retired.take();
+            retired.push((owner, free));
+            self.retired.set(retired);
+        }
+    }
+}
+
 /// Deletes `socket` from the thread's reactor, whose serial is `mark`, as it is freed:
 /// from the kernel too while its descriptor is still the one registered, quietly, since
 /// it may be closed already; then from the registry wherever it names the record.

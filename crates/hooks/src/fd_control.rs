@@ -63,20 +63,20 @@ pub(crate) fn fd_wait(socket: Co, event: Events, timeout: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::co_socket::CoSocket;
-    use swoole_rs_corebase::reactor::SocketRecord;
+    use crate::co_socket::{CoSocket, init};
+    use core::mem::MaybeUninit;
+    use swoole_rs_corebase::reactor::{OwnedSocket, SocketRecord};
 
-    /// A zeroed record over a fresh network socket. Tests reach the network socket
+    /// A fresh record over a fresh network socket. Tests reach the network socket
     /// through the record's pointer, as the code does, so no second owner aliases it.
     struct Records(Box<CoSocket>);
 
     impl Records {
         fn new() -> Self {
-            // Every field is a scalar, raw pointer or Protocol of those; zero is valid.
-            let socket = Box::new(unsafe { core::mem::zeroed::<CoSocket>() });
-            socket
-                .socket
-                .set(Some(Box::new(SocketRecord::new()).into_socket()));
+            let mut storage = Box::new(MaybeUninit::<CoSocket>::uninit());
+            unsafe { init(storage.as_mut_ptr()) };
+            let socket = unsafe { Box::from_raw(Box::into_raw(storage).cast::<CoSocket>()) };
+            socket.put_socket(OwnedSocket::new(Box::new(SocketRecord::new())));
             Self(socket)
         }
 
@@ -91,7 +91,9 @@ mod tests {
 
     impl Drop for Records {
         fn drop(&mut self) {
-            drop(unsafe { Box::from_raw(self.0.socket_ptr()) });
+            // Its descriptor (0) isn't the test's to close.
+            self.0.release_socket(OwnedSocket::free);
+            self.0.fini();
         }
     }
 

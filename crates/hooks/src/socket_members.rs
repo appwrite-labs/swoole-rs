@@ -731,9 +731,9 @@ mod tests {
             unsafe { init(&raw mut (*native).record) };
             let mut object = Self(native);
             let record = object.record();
-            record
-                .socket
-                .set(Some(Box::new(SocketRecord::with_fd(-1, 6)).into_socket()));
+            record.put_socket(swoole_rs_corebase::reactor::OwnedSocket::new(Box::new(
+                SocketRecord::with_fd(-1, 6),
+            )));
             record.set_test_fd(100);
             let co = object.co();
             object.record().socket_mut().set_owner(Some(co));
@@ -759,9 +759,8 @@ mod tests {
     impl Drop for Object {
         fn drop(&mut self) {
             unsafe {
-                if let Some(s) = Socket::from_ptr(self.record().socket_ptr()) {
-                    swoole_rs_corebase::reactor::OwnedSocket::from_socket(s).free();
-                }
+                self.record()
+                    .release_socket(swoole_rs_corebase::reactor::OwnedSocket::free);
                 (*self.0).record.fini();
                 drop(Box::from_raw(self.0));
             }

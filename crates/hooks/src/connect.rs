@@ -377,11 +377,11 @@ impl Connecting for Live<'_> {
     }
 
     fn reinit(&mut self, kind: SocketType) -> bool {
-        // The old network::Socket goes as the statement ends.
-        let Some(_old) = reinit(self.socket, kind.raw()) else {
+        // The old network::Socket goes once no loan of it is out.
+        if !reinit(self.socket, kind.raw()) {
             log::set_last_error(errno());
             return false;
-        };
+        }
         true
     }
 
