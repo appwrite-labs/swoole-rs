@@ -16,13 +16,11 @@ use std::{
 };
 use swoole_rs_corebase::net_types::AddressStorage;
 use swoole_rs_corebase::resolve_addresses;
-use swoole_rs_corebase::sys::{Ifreq, InterfaceRequest, Text, interface_ioctl, setsockopt, zeroed};
+use swoole_rs_corebase::sys::{Ifreq, InterfaceRequest, interface_ioctl, setsockopt, zeroed};
 use swoole_rs_zend::{Array, Call, E_WARNING, Value, bailout, report, sys::IS_LONG};
 
 /// An option's result: `None` leaves it to the caller, else whether it succeeded.
 pub(crate) type Handled = Result<Option<bool>, Stop>;
-/// `MAXFQDNLEN`.
-const MAXFQDNLEN: usize = 255;
 
 /// The membership options `php_do_mcast_opt` takes, and whether each names a
 /// source.
@@ -40,12 +38,6 @@ const MEMBERSHIP: &[(c_int, bool)] = &[
     (libc::IP_ADD_MEMBERSHIP, false),
     (libc::IP_DROP_MEMBERSHIP, false),
 ];
-
-unsafe extern "C" {
-    /// `php_network_gethostbyname(host)`: 0 with the first address of an
-    /// `AF_INET` entry written, 1 for an entry of another family, -1 for none.
-    safe fn swr_zend_gethostbyname4(host: Text<'_>, address: &mut in_addr) -> c_int;
-}
 
 /// The socket a helper works on.
 #[derive(Clone, Copy)]
@@ -156,21 +148,17 @@ fn inet4(s: Sock, host: &[u8]) -> Result<Option<in_addr>, Stop> {
             s_addr: u32::from_ne_bytes(address.octets()),
         }));
     }
-    let mut address = in_addr { s_addr: 0 };
-    let found = if host.count_bytes() > MAXFQDNLEN {
-        -1
-    } else {
-        swr_zend_gethostbyname4(Text::from(host.as_c_str()), &mut address)
-    };
-    if found < 0 {
-        socket_error(s.socket, "Host lookup failed", host_error())?;
-        return Ok(None);
+    match swoole_rs_zend::lookup_ipv4(&host) {
+        Ok(s_addr) => Ok(Some(in_addr { s_addr })),
+        Err(status) if status < 0 => {
+            socket_error(s.socket, "Host lookup failed", host_error())?;
+            Ok(None)
+        }
+        Err(_) => {
+            warn(b"Host lookup failed: Non AF_INET domain returned on AF_INET socket")?;
+            Ok(None)
+        }
     }
-    if found > 0 {
-        warn(b"Host lookup failed: Non AF_INET domain returned on AF_INET socket")?;
-        return Ok(None);
-    }
-    Ok(Some(address))
 }
 
 /// `php_set_inet6_addr`: the address, then any `%scope`.
