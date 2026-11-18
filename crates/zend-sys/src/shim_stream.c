@@ -223,10 +223,6 @@ int swr_zend_try_socket_stream_alloc(const char *persistent, bool unix_stream, p
     return bailed;
 }
 
-void swr_zend_stream_populate_name(const struct sockaddr *peer, socklen_t size,
-    zend_string **textaddr, struct sockaddr **addr, socklen_t *addrlen) {
-    php_network_populate_name_from_sockaddr((struct sockaddr *) peer, size, textaddr, addr, addrlen);
-}
 int swr_zend_try_stream_close(php_stream *stream) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { php_stream_close(stream); }

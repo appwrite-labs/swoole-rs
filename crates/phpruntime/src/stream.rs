@@ -96,7 +96,7 @@ unsafe extern "C" {
     /// `php_network_populate_name_from_sockaddr` of the first `size` bytes of
     /// `peer`, which holds them, into the slots given, as
     /// [`php_network_get_sock_name`] writes them.
-    safe fn swr_zend_stream_populate_name(
+    safe fn php_network_populate_name_from_sockaddr(
         peer: &AddressStorage,
         size: socklen_t,
         textaddr: Option<&mut *mut zend_string>,
@@ -890,7 +890,7 @@ fn populate_name(param: &mut php_stream_xport_param, peer: &AddressStorage, size
     let mut unwanted = 0;
     let (textaddr, addr, addrlen) = name_slots(param, &mut unwanted);
     let size = size.min(SocketAddress::CAPACITY);
-    swr_zend_stream_populate_name(peer, size, textaddr, addr, addrlen);
+    php_network_populate_name_from_sockaddr(peer, size, textaddr, addr, addrlen);
 }
 
 /// `socket_recvfrom` into `buffer`, the receive buffer Zend lends with `param`.

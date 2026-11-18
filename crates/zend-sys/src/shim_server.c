@@ -8,6 +8,7 @@
 #include "ext/standard/php_var.h"
 #include "zend_smart_str.h"
 
+/* bailout: serialization can invoke __serialize. */
 zend_string *swr_zend_serialize(zval *value, bool *bailed) {
     smart_str buffer = {0};
     SWR_ZEND_TRY {
@@ -25,6 +26,7 @@ zend_string *swr_zend_serialize(zval *value, bool *bailed) {
     return buffer.s;
 }
 
+/* bailout: restoration can invoke __unserialize. */
 bool swr_zend_unserialize(zval *out, struct iovec bytes, size_t *offset, bool *bailed) {
     const char *data = bytes.iov_base;
     size_t length = bytes.iov_len;
@@ -42,6 +44,7 @@ bool swr_zend_unserialize(zval *out, struct iovec bytes, size_t *offset, bool *b
     return done;
 }
 
+/* bailout: replacing array elements can invoke destructors. */
 int swr_zend_try_array_merge(zval *dest, zval *src) {
     volatile int bailed = 0;
     if (Z_TYPE_P(dest) != IS_ARRAY || Z_TYPE_P(src) != IS_ARRAY) {
@@ -56,6 +59,7 @@ int swr_zend_try_array_merge(zval *dest, zval *src) {
     return bailed;
 }
 
+/* globals, version: unlimit and restore access EG stack bounds when this PHP guards them. */
 void swr_zend_stack_unlimit(void **saved) {
 #ifdef ZEND_CHECK_STACK_LIMIT
     saved[0] = EG(stack_limit);
@@ -76,6 +80,7 @@ void swr_zend_stack_restore(void *const *saved) {
 #endif
 }
 
+/* bailout: a stream wrapper or error handler can execute PHP. */
 int swr_zend_try_mkdir_recursive(const char *path, bool *made) {
     volatile int bailed = 0;
     *made = false;
@@ -84,6 +89,7 @@ int swr_zend_try_mkdir_recursive(const char *path, bool *made) {
     return bailed;
 }
 
+/* globals: return the message, file and line held by PG. */
 bool swr_zend_last_fatal_error(const char **message, const char **file, int *line) {
     if (!PG(last_error_message) || !(PG(last_error_type) & E_FATAL_ERRORS)) {
         return false;
