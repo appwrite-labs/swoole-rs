@@ -25,9 +25,6 @@
 
 #include "ext/standard/file.h"
 
-zend_string *pdo_pgsql_copy_query(const char *table, const char *fields, unsigned char delimiter,
-                                  const char *null_marker, ExecStatusType direction);
-
 bool pdo_pgsql_read_copy_row(pdo_dbh_t *dbh, char **row, size_t *length);
 
 static bool receive_copy_rows(pdo_dbh_t *dbh, php_stream *stream, zval *rows)
@@ -53,15 +50,6 @@ static bool receive_copy_rows(pdo_dbh_t *dbh, php_stream *stream, zval *rows)
             PQfreemem(row);
         }
     }
-}
-
-static bool start_copy(pdo_dbh_t *dbh, const char *table, const char *fields, unsigned char delimiter,
-                       const char *null_marker, ExecStatusType direction)
-{
-    zend_string *sql = pdo_pgsql_copy_query(table, fields, delimiter, null_marker, direction);
-    bool started = pdo_pgsql_start_copy(dbh, ZSTR_VAL(sql), direction);
-    zend_string_release(sql);
-    return started;
 }
 
 void pdo_pgsql_abort_copy_in(pdo_pgsql_db_handle *handle);
@@ -140,8 +128,7 @@ void pgsqlCopyFromArray_internal(INTERNAL_FUNCTION_PARAMETERS)
 
     H = (pdo_pgsql_db_handle *)dbh->driver_data;
 
-    pdo_pgsql_drain_copy_results(H);
-    bool started = start_copy(dbh, table_name, pg_fields, pg_delim_len ? *pg_delim : '\t',
+    bool started = pdo_pgsql_start_copy(dbh, table_name, pg_fields, pg_delim_len ? *pg_delim : '\t',
                               pg_null_as_len ? pg_null_as : NULL, PGRES_COPY_IN);
 
     if (started && !send_rows(H, pg_rows)) {
@@ -193,8 +180,7 @@ void pgsqlCopyFromFile_internal(INTERNAL_FUNCTION_PARAMETERS)
 
     H = (pdo_pgsql_db_handle *)dbh->driver_data;
 
-    pdo_pgsql_drain_copy_results(H);
-    bool started = start_copy(dbh, table_name, pg_fields, pg_delim_len ? *pg_delim : '\t',
+    bool started = pdo_pgsql_start_copy(dbh, table_name, pg_fields, pg_delim_len ? *pg_delim : '\t',
                               pg_null_as_len ? pg_null_as : NULL, PGRES_COPY_IN);
 
     bool sent = started;
@@ -256,9 +242,7 @@ void pgsqlCopyToFile_internal(INTERNAL_FUNCTION_PARAMETERS)
         RETURN_FALSE;
     }
 
-    pdo_pgsql_drain_copy_results(H);
-
-    bool started = start_copy(dbh, table_name, pg_fields, pg_delim_len ? *pg_delim : '\t',
+    bool started = pdo_pgsql_start_copy(dbh, table_name, pg_fields, pg_delim_len ? *pg_delim : '\t',
                               pg_null_as_len ? pg_null_as : NULL, PGRES_COPY_OUT);
 
     bool complete = started && receive_copy_rows(dbh, stream, NULL);
@@ -296,9 +280,7 @@ void pgsqlCopyToArray_internal(INTERNAL_FUNCTION_PARAMETERS)
 
     H = (pdo_pgsql_db_handle *)dbh->driver_data;
 
-    pdo_pgsql_drain_copy_results(H);
-
-    bool started = start_copy(dbh, table_name, pg_fields, pg_delim_len ? *pg_delim : '\t',
+    bool started = pdo_pgsql_start_copy(dbh, table_name, pg_fields, pg_delim_len ? *pg_delim : '\t',
                               pg_null_as_len ? pg_null_as : NULL, PGRES_COPY_OUT);
 
     if (started) {

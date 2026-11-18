@@ -827,14 +827,13 @@ pub extern "C" fn pdo_pgsql_drain_copy_results(handle: &Handle) {
 
 /// Build the legacy COPY command accepted by the supported PostgreSQL versions.
 /// Fields and identifiers arrive as SQL fragments, exactly as PDO received them.
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_copy_query(
+fn copy_query(
     table: Text<'_>,
     fields: Option<Text<'_>>,
     delimiter: u8,
     null_marker: Option<Text<'_>>,
     direction: ExecStatusType,
-) -> *mut zend_string {
+) -> ZString {
     let parts: &[&[u8]] = &[
         b"COPY ",
         table.get().to_bytes(),
@@ -857,21 +856,30 @@ pub extern "C" fn pdo_pgsql_copy_query(
     for part in parts {
         sql.extend_from_slice(part);
     }
-    sql.into_zstring().into_raw()
+    sql.into_zstring()
 }
 
-/// Begin the requested COPY direction and record its SQLSTATE on failure.
+swoole_rs_zend::exports! {
+/// Drain earlier replies and begin COPY with the driver's SQL and option defaults.
 #[unsafe(no_mangle)]
 pub extern "C" fn pdo_pgsql_start_copy(
     dbh: &Dbh,
-    query: Text<'_>,
-    expected: ExecStatusType,
+    table: Text<'_>,
+    fields: Option<Text<'_>>,
+    delimiter: u8,
+    null_marker: Option<Text<'_>>,
+    direction: ExecStatusType,
 ) -> bool {
-    let Some(handle) = handle(dbh) else {
+    let Some(handle) = handle(dbh) else { return false };
+    pdo_pgsql_drain_copy_results(handle);
+    let query = copy_query(table, fields, delimiter, null_marker, direction);
+    let mut result = None;
+    if let Err(bailout) = contain_with(|| result = handle.exec(query.c_str())) {
+        bailout.defer();
         return false;
-    };
-    let result = handle.exec(query.get());
-    let started = status(result.as_ref()) == expected;
+    }
+    drop(query);
+    let started = status(result.as_ref()) == direction;
     if !started {
         pgsql_fatal_error(dbh, sqlstate(result.as_ref()));
     }
@@ -879,6 +887,7 @@ pub extern "C" fn pdo_pgsql_start_copy(
         PQclear(result);
     }
     started
+}
 }
 
 /// Return the next libpq-owned COPY row to the Zend stream or array adapter.
@@ -1037,10 +1046,70 @@ pub extern "C" fn pdo_pgsql_lob_streams(handle: &Handle) -> *mut *mut c_void {
     handle.lob_streams.as_ptr()
 }
 
-/// Backend process id for PDO's connection.
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_backend_pid(handle: &Handle, output: &Slot) {
-    output.set(Owned::long(PQbackendPID(handle.server).into()));
+// Both the PDO subclass and the older dynamically registered methods enter
+// through the same Rust handlers.
+swoole_rs_zend::handlers! {
+    pgsqlGetPid_internal => get_pid;
+    zim_PDO_PGSql_Ext_pgsqlGetPid => get_pid;
+    pgsql_escape_identifier => escape_identifier;
+}
+
+unsafe extern "C" {
+    safe fn pdo_pgsql_method_dbh<'a>(
+        frame: swoole_rs_zend::CallFrame<'a>,
+        out: &mut Option<&'a Dbh>,
+    );
+    safe fn pdo_pgsql_clear_method_error(dbh: &Dbh);
+    safe fn pdo_pgsql_handle_method_error(dbh: &Dbh);
+    safe fn PQescapeIdentifier(conn: Conn, bytes: In<'_, u8>, length: Count<'_>)
+    -> Option<Escaped>;
+}
+
+/// Only PDO's methods call this. The frame owns the database object while the
+/// borrowed handle is in use.
+fn method_dbh<'a>(call: &'a swoole_rs_zend::Call<'_>, clear: bool) -> Option<&'a Dbh> {
+    let mut dbh = None;
+    let checked = contain_with(|| {
+        pdo_pgsql_method_dbh(call.call_frame(), &mut dbh);
+        if clear && let Some(dbh) = dbh {
+            pdo_pgsql_clear_method_error(dbh);
+        }
+    });
+    if let Err(bailout) = checked {
+        bailout.defer();
+        return None;
+    }
+    dbh
+}
+
+fn get_pid(call: &swoole_rs_zend::Call<'_>) {
+    if call.arity(0, 0).is_ok()
+        && let Some(conn) = method_dbh(call, false).and_then(server)
+    {
+        call.set_long(PQbackendPID(conn).into());
+    }
+}
+
+fn escape_identifier(call: &swoole_rs_zend::Call<'_>) {
+    if call.arity(1, 1).is_err() {
+        return;
+    }
+    let Ok(Some(input)) = call.zstr(1) else {
+        return;
+    };
+    let Some(dbh) = method_dbh(call, true) else {
+        return;
+    };
+    let Some(conn) = server(dbh) else { return };
+    if let Some(quoted) = lend_in(input.bytes(), |bytes, length| {
+        PQescapeIdentifier(conn, bytes, length)
+    }) {
+        call.set_bytes(quoted.text().to_bytes());
+        PQfreemem(quoted);
+    } else {
+        pgsql_fatal_error(dbh, None);
+        swoole_rs_zend::bailout::defer(contain_with(|| pdo_pgsql_handle_method_error(dbh)));
+    }
 }
 
 /// Read a pending notification, optionally waiting once. PHP owns a non-null
@@ -1053,7 +1122,6 @@ pub extern "C" fn pdo_pgsql_read_notify(
 ) -> bool {
     unsafe extern "C" {
         safe fn PQnotifies(conn: Conn) -> *mut pq_sys::PGnotify;
-        safe fn pdo_pgsql_wait_notify(fd: c_int, timeout: c_int);
     }
     let conn = handle.server;
     if !conn.consume_input() {
@@ -1061,7 +1129,12 @@ pub extern "C" fn pdo_pgsql_read_notify(
     }
     *result = PQnotifies(conn);
     if timeout > 0 && result.is_null() {
-        pdo_pgsql_wait_notify(conn.socket(), timeout);
+        let mut socket = libc::pollfd {
+            fd: conn.socket(),
+            events: libc::POLLIN | libc::POLLERR | libc::POLLHUP,
+            revents: 0,
+        };
+        let _readiness = swoole_rs_corebase::sys::poll(std::slice::from_mut(&mut socket), timeout);
         if !conn.consume_input() {
             return false;
         }

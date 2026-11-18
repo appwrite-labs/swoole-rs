@@ -23,15 +23,26 @@
 #include "php_pdo_pgsql_int.h"
 #include "ext/pdo/php_pdo_error.h"
 
-#include "main/php_network.h"
-
-void pdo_pgsql_wait_notify(int fd, int timeout)
+bool pdo_pgsql_read_notify(pdo_pgsql_db_handle *handle, int timeout, PGnotify **result);
+/* PDO_CONSTRUCT_CHECK uses the active frame for the version-specific error.
+ * RETURN_THROWS references the return slot but never writes it. */
+void pdo_pgsql_method_dbh(zend_execute_data *execute_data, pdo_dbh_t **out)
 {
-    php_pollfd_for_ms(fd, PHP_POLLREADABLE, timeout);
+    zval *return_value = NULL;
+    pdo_dbh_t *dbh = Z_PDO_DBH_P(ZEND_THIS);
+    PDO_CONSTRUCT_CHECK;
+    *out = dbh;
 }
 
-bool pdo_pgsql_read_notify(pdo_pgsql_db_handle *handle, int timeout, PGnotify **result);
-void pdo_pgsql_backend_pid(pdo_pgsql_db_handle *handle, zval *output);
+void pdo_pgsql_clear_method_error(pdo_dbh_t *dbh)
+{
+    PDO_DBH_CLEAR_ERR();
+}
+
+void pdo_pgsql_handle_method_error(pdo_dbh_t *dbh)
+{
+    PDO_HANDLE_DBH_ERR();
+}
 
 void pgsqlGetNotify_internal(INTERNAL_FUNCTION_PARAMETERS)
 {
@@ -106,28 +117,6 @@ PHP_METHOD(PDO_PGSql_Ext, pgsqlGetNotify)
 }
 /* }}} */
 
-void pgsqlGetPid_internal(INTERNAL_FUNCTION_PARAMETERS)
-{
-	pdo_dbh_t *dbh;
-	pdo_pgsql_db_handle *H;
-
-	ZEND_PARSE_PARAMETERS_NONE();
-
-	dbh = Z_PDO_DBH_P(ZEND_THIS);
-	PDO_CONSTRUCT_CHECK;
-
-	H = (pdo_pgsql_db_handle *)dbh->driver_data;
-
-	pdo_pgsql_backend_pid(H, return_value);
-}
-
-/* {{{ Get backend(server) pid */
-PHP_METHOD(PDO_PGSql_Ext, pgsqlGetPid)
-{
-	pgsqlGetPid_internal(INTERNAL_FUNCTION_PARAM_PASSTHRU);
-}
-/* }}} */
-
 #if PHP_VERSION_ID >= 80400
 #include "zend_attributes.h"
 
@@ -145,25 +134,7 @@ PHP_METHOD(PDO_PGSql_Ext, pgsqlGetPid)
 #define zim_Pdo_Pgsql_setNoticeCallback zim_PDO_PGSql_Ext_pgsqlSetNoticeCallback
 #include "pdo_pgsql_arginfo.h"
 
-void pgsql_escape_identifier(INTERNAL_FUNCTION_PARAMETERS)
-{
-    zend_string *input;
-    ZEND_PARSE_PARAMETERS_START(1, 1)
-        Z_PARAM_STR(input)
-    ZEND_PARSE_PARAMETERS_END();
 
-    pdo_dbh_t *dbh = Z_PDO_DBH_P(ZEND_THIS);
-    PDO_CONSTRUCT_CHECK;
-    PDO_DBH_CLEAR_ERR();
-    char *quoted = PQescapeIdentifier(pdo_pgsql_server(dbh->driver_data), ZSTR_VAL(input), ZSTR_LEN(input));
-    if (!quoted) {
-        pdo_pgsql_error(dbh, PGRES_FATAL_ERROR, NULL);
-        PDO_HANDLE_DBH_ERR();
-        RETURN_THROWS();
-    }
-    RETVAL_STRING(quoted);
-    PQfreemem(quoted);
-}
 #endif
 
 void pdo_pgsql_bind_subclass(void)
