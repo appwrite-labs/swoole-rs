@@ -3,6 +3,7 @@
 //! replacements its bundled `pdo_pgsql` driver calls. Each sends the request,
 //! flushes and waits for the result on the connection's socket: with `poll(2)`
 //! while blocking, otherwise by parking the coroutine (`System::wait_event`).
+//! The upstream `poll_error.phpt` calls connectdb, exec and finish through PHP FFI.
 //! With `php`, MINIT ([`minit`]) registers the driver with PDO.
 #![cfg_attr(
     not(test),
@@ -478,6 +479,7 @@ pub extern "C" fn swoole_pgsql_close_prepared(conn: Conn, stmt_name: Text<'_>) -
 /// `swoole_pgsql_connectdb`: `PQconnectStart`, then poll the handshake to its
 /// end or its `connect_timeout`. `PQconnectdb`'s whole contract is the string the
 /// type carries.
+#[unsafe(no_mangle)]
 pub extern "C" fn swoole_pgsql_connectdb(conninfo: Text<'_>) -> *mut PGconn {
     let started = PQconnectStart(conninfo);
     if started.is_null() {
@@ -494,6 +496,7 @@ pub extern "C" fn swoole_pgsql_connectdb(conninfo: Text<'_>) -> *mut PGconn {
 }
 
 /// `swoole_pgsql_finish`: forget the connection's interrupted I/O, then `PQfinish`.
+#[unsafe(no_mangle)]
 pub extern "C" fn swoole_pgsql_finish(conn: OwnedConn) {
     let finished = conn.conn();
     with_io_errors(|errors| errors.retain(|(c, _, _)| *c != finished));
@@ -503,6 +506,7 @@ pub extern "C" fn swoole_pgsql_finish(conn: OwnedConn) {
 /// `swoole_pgsql_exec`: `PQsendQuery`, then its result. `PQexec`'s whole contract is
 /// the live connection and the query's string, which the types carry.
 #[must_use]
+#[unsafe(no_mangle)]
 pub extern "C" fn swoole_pgsql_exec(conn: Conn, query: Text<'_>) -> *mut PGresult {
     finish(conn, PQsendQuery(conn, query))
 }
