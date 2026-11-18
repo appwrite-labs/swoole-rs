@@ -725,7 +725,15 @@ fn connect(call: &Call) {
         }
     }
     let host_text = native::c_text(host);
-    let connect = |h| state::connect(h, &host_text, int(port), timeout, int(flags));
+    let connect = |h| {
+        state::connect(
+            h,
+            &host_text,
+            port.c_cast::<c_int>(),
+            timeout,
+            flags.c_cast::<c_int>(),
+        )
+    };
     let Some(connected) = bailed(conn.cli().run(connect)) else {
         return call.set_bool(false);
     };
@@ -768,7 +776,9 @@ fn send(call: &Call) {
         return call.set_bool(false);
     };
     set_last_error(0);
-    let Some(sent) = bailed(io(conn.cli(), |h| state::send(h, data, int(flags)))) else {
+    let Some(sent) = bailed(io(conn.cli(), |h| {
+        state::send(h, data, flags.c_cast::<c_int>())
+    })) else {
         return call.set_bool(false);
     };
     let Some(sent) = sent else {
@@ -805,7 +815,9 @@ fn sendto(call: &Call) {
         return call.set_bool(false);
     };
     let host = native::c_text(host);
-    let Some(sent) = bailed(io(conn.cli(), |h| state::sendto(h, &host, int(port), data))) else {
+    let Some(sent) = bailed(io(conn.cli(), |h| {
+        state::sendto(h, &host, port.c_cast::<c_int>(), data)
+    })) else {
         return call.set_bool(false);
     };
     if !sent {
@@ -863,13 +875,9 @@ fn io<'a, T: Default>(cli: Cli<'a>, op: impl FnOnce(Handle<'a>) -> T) -> Result<
 /// `cli->recv(buffer, length, flags)`: the count read, or -1 (`SW_ERR`).
 fn receive(cli: Cli<'_>, buffer: &mut [u8], flags: i64) -> Result<i64, Bailout> {
     io(cli, |h| {
-        state::recv(h, buffer, int(flags)).map_or(-1, |n| i64::try_from(n).unwrap_or(i64::MAX))
+        state::recv(h, buffer, flags.c_cast::<c_int>())
+            .map_or(-1, |n| i64::try_from(n).unwrap_or(i64::MAX))
     })
-}
-
-/// C++'s implicit conversion of a PHP int to an `int` argument.
-pub(crate) fn int(value: i64) -> c_int {
-    value.c_cast::<c_int>()
 }
 
 /// [`receive`] of at most `length` bytes into `buffer`'s room, counting what it
@@ -877,7 +885,7 @@ pub(crate) fn int(value: i64) -> c_int {
 fn receive_into(conn: &Conn, buffer: &mut ZBuf, length: usize, flags: i64) -> Result<i64, Bailout> {
     buffer.fill_within(length, |out| {
         io(conn.cli(), |h| {
-            state::recv_spare(h, out, int(flags))
+            state::recv_spare(h, out, flags.c_cast::<c_int>())
                 .map_or(-1, |n| i64::try_from(n).unwrap_or(i64::MAX))
         })
     })
@@ -1308,7 +1316,9 @@ fn shutdown(call: &Call) {
     let Ok(how) = call.arity(1, 1).and_then(|()| call.long(1, 0)) else {
         return call.set_bool(false);
     };
-    let shutdown = conn.cli().run(|h| state::shutdown(h, int(how)));
+    let shutdown = conn
+        .cli()
+        .run(|h| state::shutdown(h, how.c_cast::<c_int>()));
     call.set_bool(bailed(shutdown) == Some(true));
 }
 
