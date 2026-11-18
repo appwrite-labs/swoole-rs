@@ -803,10 +803,11 @@ pub extern "C" fn pdo_pgsql_raise(
 /// Close the stream resources before the callback and connection they can use.
 fn close_handle(dbh: &Dbh) {
     let Some(handle) = handle(dbh) else { return };
-    if let Err(bailout) = close_lob_streams(dbh).and_then(|()| replace_notice(handle, None)) {
+    if let Err(bailout) = close_lob_streams(dbh) {
         bailout.defer();
         return;
     }
+    swoole_rs_zend::bailout::defer(replace_notice(handle, None));
     drop(pdo_pgsql_take_handle(dbh));
 }
 
