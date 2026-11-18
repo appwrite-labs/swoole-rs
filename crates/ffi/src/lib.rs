@@ -1,13 +1,7 @@
 //! Every module crate, and `swoole_init` (src/init.rs): crates/ext links this into
 //! `swoole.so`, and its Zend-free staticlib is what the native gates link.
 //! The C ABI queries are crates/error-ffi's.
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
+#![forbid(unsafe_code)]
 
 mod init;
 pub use init::swoole_init;

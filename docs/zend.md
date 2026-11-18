@@ -268,7 +268,7 @@ header names its reasons from this list:
   anonymous union whose bindgen name changes (`ce->create_object`,
   `ce->parent`); the same holds for library versions (`ARES_VERSION`).
 - **variadic**: a C variadic or `va_list` function, which stable Rust can't
-  define (`crates/corebase/src/format.c`, `crates/ffi/src/fatal.c`,
+  define (`crates/corebase/src/format.c`, `crates/corebase/src/fatal.c`,
   `shim_errors.c`, `shim_host.c`).
 - **private**: the layout is private to a source file or library release:
   `zend_closure` behind `ZEND_CLOSURE_OBJECT`, `zend_execute.c`'s static helpers

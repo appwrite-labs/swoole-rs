@@ -14,8 +14,10 @@ fn main() {
     #[cfg(feature = "upstream-symbols")]
     {
         println!("cargo::rerun-if-changed=src/format.c");
+        println!("cargo::rerun-if-changed=src/fatal.c");
         cc::Build::new()
             .file("src/format.c")
+            .file("src/fatal.c")
             .compile("swoole_rs_corebase_format");
     }
 }

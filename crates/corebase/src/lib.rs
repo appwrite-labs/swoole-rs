@@ -89,6 +89,8 @@ pub use host::{
     swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec, swoole_system_random,
     swr_v1_core_format_result,
 };
+#[cfg(feature = "upstream-symbols")]
+pub use lifecycle::init_with_default_fatal_handler;
 pub use lifecycle::{
     SharedThread, adopt_shared_thread, lend_thread_buffer, shared_thread, thread_buffer,
 };
