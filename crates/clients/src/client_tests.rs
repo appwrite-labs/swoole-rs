@@ -18,6 +18,7 @@ struct Mock {
     /// The record `make_socket` allocated; the client releases it.
     socket: Option<core::ptr::NonNull<SocketRecord>>,
     fail_socket: bool,
+    fail_framed_read: bool,
     /// The last lookup `async_dispatch` took.
     lookup: Option<Lookup>,
     /// The records `free_socket` released, which tests still read: freed with the test.
@@ -229,7 +230,7 @@ pub(super) extern "C-unwind" fn writable_callback(
 const FRAMING: Framing = Framing {
     length: |_, _, _| {
         log("framed false");
-        true
+        mock(|m| !m.fail_framed_read)
     },
     eof: |_, _, _| {
         log("framed true");
@@ -822,6 +823,21 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
         assert!(on_read(Handle::raw(client)));
         assert!(taken().contains(&"framed true".to_owned()));
     }
+    free(client);
+}
+
+#[test]
+fn failed_framed_read_closes_the_live_client() {
+    let client = client(1, true, true);
+    let handle = Handle::raw(client);
+    handle.input_init();
+    handle
+        .client()
+        .edit_record(|record| record.open_length_check = true);
+    mock(|m| m.fail_framed_read = true);
+    assert!(!handle.flag(Flag::Closed));
+    assert!(on_read(handle));
+    assert!(handle.flag(Flag::Closed));
     free(client);
 }
 
