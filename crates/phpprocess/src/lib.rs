@@ -1,9 +1,6 @@
-//! PHP `Swoole\Process`: class registration, constants, objects and every
-//! method, over `corebase::process`'s `Worker` record and `corebase::tls`'s `UnixSocket`
-//! pipe. What is still C++ (the server, callables, the reactor and signals) the
-//! methods reach through the [`Host`] table C++ passes at MINIT.
-//! `Swoole\Process\Pool` and its event callbacks run over `corebase::process`'s
-//! `ProcessPool` directly.
+//! PHP classes `Swoole\Process` and `Swoole\Process\Pool` wrap the corebase worker
+//! and process pool. The host module connects their methods to the server,
+//! Zend callables, the reactor and signal handlers.
 //! See docs/zend.md.
 //!
 //! Without the `php` feature the crate is empty.

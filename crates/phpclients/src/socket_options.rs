@@ -11,18 +11,15 @@ use crate::{
     socket::open,
 };
 use libc::{c_char, c_int};
-use std::{
-    ffi::{CStr, CString},
-    ptr,
-};
+use std::ffi::{CStr, CString};
 use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
 use swoole_rs_corebase::tls::{self as tls, Text};
 use swoole_rs_phpswoole::{SocketSettings as Settings, Switch, built_with};
 use swoole_rs_zend::{
-    Array, Call, HeldArray, OwnedArray, Value, bailout, report,
-    sys::{E_ERROR, E_WARNING, php_stream},
+    Array, Call, HeldArray, OwnedArray, StreamSocket, Value, bailout, report,
+    sys::{E_ERROR, E_WARNING},
 };
 
 use swoole_rs_corebase::reactor::TimeoutKind;
@@ -748,36 +745,17 @@ fn socketpair(call: &Call) {
     call.set_owned(sockets.into_owned());
 }
 
-unsafe extern "C" {
-    /// `php_stream_from_zval` then `php_stream_cast(.., PHP_STREAM_AS_SOCKETD, ..)`
-    /// of any value inside `zend_try`: 0 with the stream and its descriptor
-    /// written, 2 for a bailout, else 1 (a null stream when it was none, which
-    /// Zend reported).
-    safe fn swr_zend_stream_socketd(
-        zstream: &Value,
-        stream: &mut *mut php_stream,
-        fd: &mut c_int,
-    ) -> c_int;
-    /// The stream `zstream` holds, if any, set unbuffered for reads; nothing
-    /// for any other value. A user stream wrapper's `stream_set_option` runs
-    /// PHP, which may bail out.
-    safe fn swr_zend_stream_unbuffer(zstream: &Value);
-}
-
 /// `static import($stream): Socket|false`.
 fn import(call: &Call) {
     let Ok(stream_value) = call.arity(1, 1).and_then(|()| call.resource(1)) else {
         return;
     };
-    let mut stream: *mut php_stream = ptr::null_mut();
-    let mut fd: c_int = -1;
-    match swr_zend_stream_socketd(stream_value, &mut stream, &mut fd) {
-        0 => {}
-        2 => return bailout::defer(Err(bailout::Bailout)),
-        // Not a stream: Zend has thrown, and nothing is returned.
-        _ if stream.is_null() => return,
-        _ => return call.set_bool(false),
-    }
+    let fd = match stream_value.stream_socket() {
+        Ok(StreamSocket::Descriptor(fd)) => fd,
+        Ok(StreamSocket::InvalidResource) => return,
+        Ok(StreamSocket::CastFailed) => return call.set_bool(false),
+        Err(error) => return error.defer(),
+    };
     let Some(domain) = domain(fd) else {
         warn_sys("getsockname() failed", errno());
         return call.set_bool(false);
@@ -803,9 +781,7 @@ fn import(call: &Call) {
             Ok(None) => return call.set_bool(false),
             Err(error) => return error.defer(),
         };
-    bailout::defer(swoole_rs_zend::contain_with(|| {
-        swr_zend_stream_unbuffer(stream_value);
-    }));
+    bailout::defer(stream_value.unbuffer_stream());
     call.set_owned(object);
 }
 

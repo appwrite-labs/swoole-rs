@@ -1,6 +1,4 @@
-//! `Swoole\Process`: registration, objects and methods. Each method mirrors
-//! upstream's ZPP block and checks, then works on the object's `Worker` through
-//! the host table.
+//! Registration, object state and method handlers for `Swoole\Process`.
 use crate::{
     host::{self, Callable},
     report::{INVALID_PARAMS, cli, errno, fatal, notice, set_errno, set_last_error, sys},
@@ -65,8 +63,7 @@ static ROUND_ID: AtomicU32 = AtomicU32::new(0);
 /// the pool frees. Only `queue` is ever freed here, by dropping it.
 #[derive(Default)]
 struct Process {
-    /// Set by the first `exportSocket` that makes one. Dropped first, as the
-    /// C++ object's free releases it before the worker.
+    /// Caches the first successful `exportSocket` result and drops before the worker.
     socket: OnceCell<Owned>,
     worker: WorkerSlot,
     /// Whether its pipe type is `PIPE_TYPE_STREAM`, all `exportSocket` asks of it.
@@ -837,11 +834,10 @@ fn daemon(call: &Call) {
     };
     if let Some(pipes) = pipes {
         for ((_, value), fd) in pipes.entries().zip(0..=2) {
-            if value.kind() != IS_NULL {
-                // C++ resolves a stream, socket or int to its fd.
-                if let Some(from) = host::convert_to_fd(value) {
-                    worker::dup(from, fd);
-                }
+            if value.kind() != IS_NULL
+                && let Some(from) = host::convert_to_fd(value)
+            {
+                worker::dup(from, fd);
             }
         }
     }
