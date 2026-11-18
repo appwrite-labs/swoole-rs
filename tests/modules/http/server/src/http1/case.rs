@@ -29,14 +29,8 @@ pub(super) const KEY_FILE: u32 = 5;
 pub(super) const CLIENT_CERT_FILE: u32 = 7;
 const CAFILE: u32 = 9;
 
-/// The typed TLS configuration; the original layout witness still checks its fields.
+/// The typed TLS configuration.
 pub(super) type TlsFields = swoole_rs_corebase::tls::OwnedTlsFields;
-const _: () = assert!(
-    size_of::<TlsFields>() == 32
-        && offset_of!(TlsFields, allow_self_signed) == 11
-        && offset_of!(TlsFields, protocols) == 12
-        && offset_of!(TlsFields, context) == 24
-);
 
 /// The head of `network::Socket`, through `object` (native/reactor/swoole_rs_socket.h); `info`
 /// is at [`SOCKET_INFO`].

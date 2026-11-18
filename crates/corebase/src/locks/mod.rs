@@ -15,10 +15,7 @@ use crate::sys;
     )
 )]
 use libc::*;
-use std::{
-    mem::offset_of,
-    sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering},
-};
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 pub mod coroutine;
 
@@ -34,21 +31,8 @@ const MUTEX_ATTR: usize = words::<pthread_mutexattr_t>();
 const RW_LOCK: usize = words::<pthread_rwlock_t>();
 const RW_ATTR: usize = words::<pthread_rwlockattr_t>();
 
-/// A mutex and its attribute as C sees them; [`SharedMutex`] is the same bytes.
-#[repr(C)]
-struct Mutex {
-    lock: pthread_mutex_t,
-    attr: pthread_mutexattr_t,
-}
-/// A rwlock and its attribute as C sees them; [`RwLock`] is the same bytes.
-#[repr(C)]
-struct RwLockLayout {
-    lock: pthread_rwlock_t,
-    attr: pthread_rwlockattr_t,
-}
 /// A rwlock and the attribute it was made from.
 #[derive(Debug)]
-#[repr(C)]
 struct RwLock {
     lock: Words<RW_LOCK>,
     attr: Words<RW_ATTR>,
@@ -57,20 +41,15 @@ struct RwLock {
 #[cfg(target_os = "linux")]
 type Spin = AtomicU64;
 
-const _: () = {
-    assert!(
-        size_of::<SharedMutex>() == size_of::<Mutex>()
-            && align_of::<SharedMutex>() == align_of::<Mutex>()
-            && offset_of!(SharedMutex, attr) == offset_of!(Mutex, attr),
-        "the words are C's mutex and attribute"
-    );
-    assert!(
-        size_of::<RwLock>() == size_of::<RwLockLayout>()
-            && align_of::<RwLock>() == align_of::<RwLockLayout>()
-            && offset_of!(RwLock, attr) == offset_of!(RwLockLayout, attr),
-        "the words are C's rwlock and attribute"
-    );
-};
+// pthread takes each lock and attribute by its own field, so only each field's size
+// (`words`) and alignment matter, not where the fields sit.
+const _: () = assert!(
+    align_of::<AtomicU64>() >= align_of::<pthread_mutex_t>()
+        && align_of::<AtomicU64>() >= align_of::<pthread_mutexattr_t>()
+        && align_of::<AtomicU64>() >= align_of::<pthread_rwlock_t>()
+        && align_of::<AtomicU64>() >= align_of::<pthread_rwlockattr_t>(),
+    "a word is aligned for each pthread type"
+);
 #[cfg(target_os = "linux")]
 const _: () = assert!(
     size_of::<Spin>() >= size_of::<pthread_spinlock_t>()
@@ -608,7 +587,6 @@ impl Drop for Lock {
 /// [`destroy`](Self::destroy). On these platforms pthread reports locking
 /// zeroed or destroyed storage, and misuse of an initialized mutex, as an error code.
 #[derive(Debug)]
-#[repr(C)]
 pub struct SharedMutex {
     lock: Words<MUTEX_LOCK>,
     attr: Words<MUTEX_ATTR>,
@@ -700,6 +678,7 @@ atomic_api!(swr_v1_locks_atomic64, AtomicI64, i64);
 /// `Sync` storage that pthread alone reads and writes. Its owner starts with a zeroed one
 /// ([`Barrier::new`], or zeroed memory), as C++'s `Barrier barrier = {}`, so one is
 /// zeroed, made by [`barrier_init`] or destroyed.
+// `repr(C)`: `pthread_barrier_init` takes the record's address as its barrier.
 #[repr(C)]
 pub struct Barrier {
     #[cfg(target_os = "linux")]

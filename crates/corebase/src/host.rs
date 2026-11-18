@@ -228,6 +228,7 @@ pub extern "C" fn microtime() -> f64 {
 }
 
 /// `DataHead`'s layout (include/swoole.h), checked by a native static assertion.
+// `repr(C)`: the pipe and task code read an event's head as bytes at fixed offsets (`EVENT_TYPE`, `TaskBuffer`).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct DataHead {

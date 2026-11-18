@@ -196,6 +196,7 @@ pub struct EventData {
 /// An `EventData` to pack a task into. Its payload starts uninitialized, as a
 /// stack `swoole::EventData` does, and only [`Self::pack`] sets the head's `len`,
 /// so the bytes it counts are always written.
+// `repr(C)`: sent and received as its head followed by its payload bytes.
 #[repr(C)]
 pub struct TaskBuffer {
     head: DataHead,

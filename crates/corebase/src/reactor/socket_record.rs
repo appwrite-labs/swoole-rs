@@ -65,6 +65,7 @@ impl Drop for SocketSsl {
 ///   [`crate::reactor::OwnedSocket::into_box`] deletes the record from that reactor before it
 ///   goes, so no registry outlives its socket. It sits in what was the record's tail
 ///   padding, so native code's layout is unchanged.
+// `repr(C)`: the bundled ssh2 hook reads `fd` through `native/hooks/swoole_rs_coroutine_socket.h`.
 #[repr(C)]
 pub struct SocketRecord {
     pub fields: SocketFields,
@@ -90,6 +91,7 @@ impl DerefMut for SocketRecord {
 
 /// `network::Socket`'s fields. Pointers to native objects (`Buffer`, `TimerNode`,
 /// `String`, the owner) are opaque here; the `SSL` is a [`SocketSsl`].
+// `repr(C)`: the bundled ssh2 hook reads `fd` through `native/hooks/swoole_rs_coroutine_socket.h`.
 #[repr(C)]
 pub struct SocketFields {
     pub fd: c_int,
