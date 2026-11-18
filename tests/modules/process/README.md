@@ -45,3 +45,11 @@ checks that a thread's record copy retains those native resources, explicit clos
 does not close a reused descriptor at drop, and a plain record copy does not adopt
 borrowed allocations. The existing PHP Process queue tests retain their inputs
 and assertions through the shared native owner.
+
+The task packet and temporary-file GoogleTests from v6.2.6 run as Rust tests in
+`task_packets.rs`. Each keeps the upstream test name.
+
+| Upstream suite | Rust tests |
+| --- | --- |
+| `server/task_packet.cpp` | `inline_lengths_must_fit_storage`, `file_header_lengths_must_match`, `file_paths_must_have_a_terminator`, `valid_file_packets_can_be_peeked_then_consumed` |
+| `server/task_tmpfile.cpp` | `failed_writes_leave_no_files`, `successful_inline_and_file_packets_preserve_bytes`, `creation_failure_preserves_the_error_and_leaves_no_files` |

@@ -10,7 +10,7 @@ use crate::dispatch::{handler_error, invoke, set_last_error, used};
 use crate::lifecycle::Props;
 use crate::server::{DATA, TASK, fatal, running};
 use std::{
-    cell::{Cell, OnceCell},
+    cell::Cell,
     collections::HashMap,
     ffi::{CStr, c_int},
     mem::ManuallyDrop,
@@ -153,7 +153,7 @@ fn wait_state(serv: view::Server<'_>) -> Option<Waiting<'_, Host<'_>>> {
 /// `taskWaitMulti`'s `Server::MultiTask`: the array of tasks, and the array of
 /// results by their index.
 struct Multi<'a> {
-    tasks: Option<&'a Array>,
+    tasks: Vec<&'a Value>,
     out: &'a mut ArrayMut,
     count: u16,
 }
@@ -164,7 +164,7 @@ impl MultiTask for Multi<'_> {
     }
 
     fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<Option<i64>, Bailed> {
-        let Some(data) = self.tasks.and_then(|tasks| tasks.index(u64::from(index))) else {
+        let Some(data) = self.tasks.get(usize::from(index)) else {
             return Ok(None);
         };
         encode(data, event).map_err(|Bailout| Bailed)
@@ -182,7 +182,7 @@ impl MultiTask for Multi<'_> {
     }
 }
 
-/// Upstream's `TaskCo`: a coroutine waiting in `taskwait` (`list` empty) or
+/// Upstream's `TaskCo`: a coroutine waiting in `taskwait` or
 /// `taskCo`/`taskWaitMulti` for results written into `result`, which becomes
 /// the call's return value. The waiting call owns it; the pending table refers to it.
 struct TaskCo {
@@ -191,9 +191,8 @@ struct TaskCo {
     /// Taken out and put back with nothing in between that yields or runs PHP
     /// code.
     result: Cell<Owned>,
-    /// Set once every task is sent, as upstream; unset is `taskwait`'s empty list.
-    list: OnceCell<Vec<Option<i64>>>,
-    count: Cell<u32>,
+    /// Number of positional results, including failed dispatches.
+    count: u32,
 }
 
 /// One server's pending tasks, held on its object beside its `Property`, as
@@ -203,7 +202,7 @@ pub(crate) struct Pending {
     /// Never freed with the table: a thread exits after Zend shut down.
     callbacks: HashMap<i64, ManuallyDrop<Callable>>,
     /// The waiting call owns each.
-    coroutines: HashMap<i64, Weak<TaskCo>>,
+    coroutines: HashMap<i64, (Weak<TaskCo>, Option<u64>)>,
 }
 
 fn facts(server: view::Server<'_>) -> Facts {
@@ -472,13 +471,12 @@ fn taskwait(call: &Call) {
     let task_co = Rc::new(TaskCo {
         waiter: Waiter::default(),
         result: Cell::default(),
-        list: OnceCell::new(),
-        count: Cell::new(1),
+        count: 1,
     });
     if !dispatch(serv, &mut buf, dst) {
         return call.set_bool(false);
     }
-    crate::lifecycle::with_tasks(|p| p.coroutines.insert(id, Rc::downgrade(&task_co)));
+    crate::lifecycle::with_tasks(|p| p.coroutines.insert(id, (Rc::downgrade(&task_co), None)));
     // onFinish resumes it.
     let done = task_co.waiter.wait_for(timeout);
     crate::lifecycle::with_tasks(|p| p.coroutines.remove(&id));
@@ -489,6 +487,13 @@ fn taskwait(call: &Call) {
     }
 }
 
+/// Hold the array across serialization, which can run PHP and replace the caller's array.
+fn task_arguments(call: &Call) -> Option<(Owned, f64)> {
+    call.arity(1, 2).ok()?;
+    let array = call.array(1).ok()?.copy();
+    Some((array, call.double(2, TASKWAIT_TIMEOUT).ok()?))
+}
+
 fn task_wait_multi(call: &Call) {
     if swoole_rs_phpcoroutines::in_coroutine() {
         return task_co(call, false);
@@ -496,24 +501,33 @@ fn task_wait_multi(call: &Call) {
     let Some((serv, facts)) = worker(call, c"taskWaitMulti") else {
         return;
     };
-    let (Ok(()), Ok(timeout)) = (call.arity(1, 2), call.double(2, TASKWAIT_TIMEOUT)) else {
+    let Some((snapshot, timeout)) = task_arguments(call) else {
         return call.set_bool(false);
     };
     if !check(&facts, -1) {
         return call.set_bool(false);
     }
-    let tasks = call.value(1).and_then(Value::array);
-    let n_task = tasks.map_or(0, Array::count);
+    let Some(tasks) = snapshot.array() else {
+        return call.set_bool(false);
+    };
+    let n_task = tasks.count();
     if n_task >= MAX_CONCURRENT_TASK {
-        // As upstream, whose `array_init(return_value)` precedes this return.
-        call.set_array();
         fatal(E_WARNING, c"too many concurrent tasks");
         return call.set_bool(false);
     }
+    if n_task == 0 {
+        set_last_error(SW_ERROR_TASK_DISPATCH_FAIL);
+        return call.set_bool(false);
+    }
+    // Complete numeric keys dispatch in key order, even when inserted out of order.
+    let values = (0..n_task)
+        .map(|i| tasks.index(u64::from(i)))
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_else(|| tasks.entries().map(|(_, value)| value).collect());
     // The results, which become the return value only once every wait is over.
     let mut out = OwnedArray::default();
     let mut multi = Multi {
-        tasks,
+        tasks: values,
         out: &mut out,
         count: u16::try_from(n_task).unwrap_or_default(),
     };
@@ -543,16 +557,22 @@ fn task_co(call: &Call, fill_false: bool) {
     let Some((serv, facts)) = worker(call, c"taskCo") else {
         return;
     };
-    let (Ok(()), Ok(timeout)) = (call.arity(1, 2), call.double(2, TASKWAIT_TIMEOUT)) else {
+    let Some((snapshot, timeout)) = task_arguments(call) else {
         return call.set_bool(false);
     };
-    let tasks = call.value(1).and_then(Value::array);
-    let mut n_task = tasks.map_or(0, Array::count);
+    let Some(tasks) = snapshot.array() else {
+        return call.set_bool(false);
+    };
+    let n_task = tasks.count();
     if n_task >= MAX_CONCURRENT_TASK {
         fatal(E_WARNING, c"too many concurrent tasks");
         return call.set_bool(false);
     }
     if !check(&facts, -1) {
+        return call.set_bool(false);
+    }
+    if n_task == 0 {
+        set_last_error(SW_ERROR_TASK_DISPATCH_FAIL);
         return call.set_bool(false);
     }
     if let Err(bailout) = swoole_rs_phpruntime::coroutine_check() {
@@ -564,11 +584,10 @@ fn task_co(call: &Call, fill_false: bool) {
     let task_co = Rc::new(TaskCo {
         waiter: Waiter::default(),
         result: Cell::new(OwnedArray::default().into_owned()),
-        list: OnceCell::new(),
-        count: Cell::new(0),
+        count: n_task,
     });
     let mut list = Vec::with_capacity(n_task as usize);
-    for (_, ztask) in tasks.into_iter().flat_map(Array::entries) {
+    for (_, ztask) in tasks.entries() {
         let index = list.len() as u64;
         let mut buf = TaskBuffer::default();
         // The task's id once it is dispatched.
@@ -580,35 +599,38 @@ fn task_co(call: &Call, fill_false: bool) {
             None
         };
         if let Some(id) = id {
-            crate::lifecycle::with_tasks(|p| p.coroutines.insert(id, Rc::downgrade(&task_co)));
+            crate::lifecycle::with_tasks(|p| {
+                p.coroutines
+                    .insert(id, (Rc::downgrade(&task_co), Some(index)))
+            });
         } else {
             task_co.result.with_taken(|result| {
                 if let Some(array) = result.array_mut() {
                     array.update_index(index, Owned::bool(false));
                 }
             });
-            n_task -= 1;
         }
         list.push(id);
     }
-    if n_task == 0 {
+    if list.iter().all(Option::is_none) {
         set_last_error(SW_ERROR_TASK_DISPATCH_FAIL);
         return call.set_bool(false);
     }
-    let list = task_co.list.get_or_init(|| list);
-    task_co.count.set(n_task);
     // onFinish resumes it.
-    if !task_co.waiter.wait_for(timeout) {
+    let complete = task_co
+        .result
+        .with_taken(|result| result.array().is_some_and(|array| array.count() == n_task));
+    if !complete && !task_co.waiter.wait_for(timeout) {
         task_co.result.with_taken(|result| {
             let Some(array) = result.array_mut() else {
                 return;
             };
-            for j in 0..n_task as usize {
+            for (j, id) in list.into_iter().enumerate() {
                 if array.array().and_then(|a| a.index(j as u64)).is_none() {
                     if fill_false {
                         array.update_index(j as u64, Owned::bool(false));
                     }
-                    if let Some(&Some(id)) = list.get(j) {
+                    if let Some(id) = id {
                         crate::lifecycle::with_tasks(|p| p.coroutines.remove(&id));
                     }
                 }
@@ -775,9 +797,10 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<bo
 /// A coroutine task's result: into `taskwait`'s return value, or at its index
 /// in `taskCo`'s array; the waiting coroutine resumes once all arrived.
 fn resume(id: i64, data: Owned) -> Result<(), Bailout> {
-    let Some(task_co) =
-        crate::lifecycle::with_tasks(|p| p.coroutines.get(&id).and_then(Weak::upgrade))
-    else {
+    let Some((task_co, index)) = crate::lifecycle::with_tasks(|p| {
+        let (task, index) = p.coroutines.remove(&id)?;
+        Some((task.upgrade()?, index))
+    }) else {
         log::error_log(
             SW_LOG_WARNING,
             SW_ERROR_TASK_TIMEOUT,
@@ -786,32 +809,24 @@ fn resume(id: i64, data: Owned) -> Result<(), Bailout> {
         );
         return Ok(());
     };
-    let list = task_co.list.get().map_or(&[][..], Vec::as_slice);
-    let (index, single) = (list.iter().position(|&t| t == Some(id)), list.is_empty());
-    if single {
-        // ZVAL_COPY_VALUE: the result takes the value.
-        drop(task_co.result.replace(data));
-    } else {
-        let Some(index) = index else {
-            let text = message!("task[{id}] is invalid");
-            return event_warning(text.as_cstr());
-        };
-        // Each id arrives once (its pending entry goes below), so its index
+    if let Some(index) = index {
+        // Removing the pending entry lets each id arrive once, so its index
         // is empty; a result that has no array keeps `data` for the caller.
         let (arrived, unplaced) = task_co
             .result
             .with_taken(|result| match result.array_mut() {
                 Some(array) => {
-                    array.update_index(index as u64, data);
+                    array.update_index(index, data);
                     (array.array().map_or(0, Array::count), None)
                 }
                 None => (0, Some(data)),
             });
         drop(unplaced);
-        crate::lifecycle::with_tasks(|p| p.coroutines.remove(&id));
-        if arrived != task_co.count.get() {
+        if arrived != task_co.count {
             return Ok(());
         }
+    } else {
+        drop(task_co.result.replace(data));
     }
     task_co.waiter.wake()
 }

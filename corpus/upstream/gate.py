@@ -65,12 +65,6 @@ STATUSES = ['passed', 'failed', 'skipped', 'excluded']
 # (#1905 moved the pin to v6.2.5 ahead of the ports). The gate lists them instead of
 # failing on them, and lists those cargo already passes so their entries go.
 PENDING_PORTS = {
-    4928: [
-        'swoole_server/task/task_array_input_snapshot.phpt',
-        'swoole_server/task/task_co_partial_pack_failure.phpt',
-        'swoole_server/task/task_wait_multi_string_keys.phpt',
-        'swoole_server/task/unpack_unterminated_tmpfile_path.phpt',
-    ],
     4931: [
         'swoole_runtime/stream_socket_server_close.phpt',
         'swoole_socket_coro/close_listener.phpt',

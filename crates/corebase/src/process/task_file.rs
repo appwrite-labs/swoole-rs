@@ -131,13 +131,17 @@ pub(crate) fn make_tmpfile(
 
 /// Writes the payload to the temp file as `File::write_all` does (warning on an
 /// IO error), then warns `write to tmpfile failed` on a short write.
-fn spill(fd: c_int, data: &[u8]) -> bool {
-    let wrote = fd_write_all(fd, false, data) == data.len();
+fn spill(file: std::os::fd::OwnedFd, path: &CStr, data: &[u8]) -> bool {
+    let wrote = fd_write_all(file.as_raw_fd(), false, data) == data.len();
     if !wrote {
+        let error = errno();
+        drop(file);
+        _ = crate::sys::unlink(path);
         log::warning(
             c"Server::task_pack",
             format_args!("write to tmpfile failed"),
         );
+        crate::sys::set_errno(error);
     }
     wrote
 }
@@ -167,9 +171,8 @@ fn pack_payload<T: AsRef<CStr>>(
     let Some(file) = make_tmpfile(template().as_ref(), &mut pkg.tmpfile) else {
         return TaskPack::default();
     };
-    let wrote = spill(file.as_raw_fd(), data);
-    drop(file);
-    if !wrote {
+    let path = CStr::from_bytes_until_nul(&pkg.tmpfile).unwrap_or_default();
+    if !spill(file, path, data) {
         return TaskPack::default();
     }
     pkg.write(dest);
@@ -453,28 +456,6 @@ mod tests {
     use crate::process::methods::tests::{install, logged};
     use std::ffi::CString;
 
-    #[test]
-    fn descriptor_requires_exact_size_and_a_terminated_name() {
-        let mut bytes = [0; size_of::<PacketTask>() + 1];
-        let size = size_of::<PacketTask>();
-        for length in [size - 1, size + 1] {
-            assert_eq!(
-                PacketTask::read(&bytes[..length]),
-                Err("invalid task packet length")
-            );
-        }
-        let descriptor = &mut bytes[..size];
-        descriptor[size_of::<usize>()..].fill(b'x');
-        assert_eq!(
-            PacketTask::read(descriptor),
-            Err("unterminated task tmpfile path")
-        );
-        descriptor[size - 1] = 0;
-        let (length, path) = PacketTask::read(descriptor).unwrap();
-        assert_eq!(length, 0);
-        assert_eq!(path.to_bytes_with_nul(), &descriptor[size_of::<usize>()..]);
-    }
-
     fn read(path: &CString, length: usize, peek: bool) -> (Result<(), TaskFileError>, Vec<u8>) {
         let mut buffer = vec![0; length];
         let outcome = read_file(path, &mut buffer, peek);
@@ -653,11 +634,17 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no mkostemp")]
     fn a_failed_write_warns_pwrite_then_the_task() {
+        use std::os::fd::AsRawFd;
         install();
-        let fd = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY) };
+        let mut name = [0; super::TASK_TMP_PATH_SIZE];
+        drop(super::make_tmpfile(c"/tmp/swr-task-XXXXXX", &mut name).unwrap());
+        let path = std::ffi::CStr::from_bytes_until_nul(&name).unwrap();
+        let file = std::fs::File::open(path.to_str().unwrap()).unwrap();
+        let fd = file.as_raw_fd();
         let data = [1u8; 4];
-        assert!(!spill(fd, &data));
+        assert!(!spill(file.into(), path, &data));
         let warned = logged("File::write_all");
         assert_eq!(warned.len(), 1);
         assert_eq!((warned[0].0, warned[0].2), (0, libc::EBADF));
@@ -669,7 +656,11 @@ mod tests {
             logged("Server::task_pack"),
             [(1, 0, 0, "write to tmpfile failed".into())]
         );
-        unsafe { libc::close(fd) };
+        assert!(
+            !std::path::Path::new(path.to_str().unwrap())
+                .try_exists()
+                .unwrap()
+        );
     }
 
     mod methods {
@@ -742,3 +733,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/modules/process/task_packets.rs"]
+mod originals;
