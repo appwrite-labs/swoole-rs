@@ -485,12 +485,14 @@ unsafe extern "C" {
 
 /// `$request->tmpfiles[] = path`, and the upload `is_uploaded_file` knows;
 /// nothing without the array.
-fn add_upload(state: &mut State, path: &[u8]) {
+fn add_upload(state: &mut State, path: &[u8]) -> bool {
     edit(&mut state.request, Property::TmpFiles, |array| {
-        if let Some(array) = array.separate() {
-            swr_zend_http_upload(array, IoSlice::new(path));
-        }
-    });
+        array
+            .separate()
+            .map(|array| swr_zend_http_upload(array, IoSlice::new(path)))
+    })
+    .flatten()
+    .is_some()
 }
 
 /// `swoole_llhttp_parser_init(&ctx->parser, HTTP_REQUEST, ctx)`.
@@ -1143,15 +1145,17 @@ fn part_headers_complete(state: &mut State, upload: &mut Option<Upload>) {
     path.extend_from_slice(b"/swoole.upfile.XXXXXX");
     path.truncate(UPLOAD_TMPDIR_SIZE - 1);
     path.push(0);
-    let fd = swoole_rs_corebase::ossupport::create_tmpfile(&mut path);
-    path.pop();
-    let Some(fd) = fd else {
+    let Some(file) = swoole_rs_corebase::ossupport::TempFile::create(&mut path) else {
         upload_long(state, b"error", UPLOAD_NO_TMP_DIR);
         return;
     };
-    *upload = Some(BufWriter::new(File::from(fd)));
-    upload_bytes(state, b"tmp_name", &path);
-    add_upload(state, &path);
+    let name = file.path().to_bytes();
+    if !add_upload(state, name) {
+        upload_long(state, b"error", UPLOAD_CANT_WRITE);
+        return;
+    }
+    upload_bytes(state, b"tmp_name", name);
+    *upload = Some(BufWriter::new(file.persist().1));
 }
 
 fn part_data_end(state: &mut State, upload: &mut Option<Upload>) {

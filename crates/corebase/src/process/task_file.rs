@@ -117,7 +117,7 @@ pub struct TaskPack {
 pub(crate) fn make_tmpfile(
     template: &CStr,
     path: &mut [u8; TASK_TMP_PATH_SIZE],
-) -> Option<std::os::fd::OwnedFd> {
+) -> Option<crate::ossupport::TempFile> {
     *path = [0; TASK_TMP_PATH_SIZE];
     for (byte, &pattern) in path
         .iter_mut()
@@ -126,17 +126,15 @@ pub(crate) fn make_tmpfile(
     {
         *byte = pattern;
     }
-    crate::ossupport::create_tmpfile(path)
+    crate::ossupport::TempFile::create(path)
 }
 
 /// Writes the payload to the temp file as `File::write_all` does (warning on an
 /// IO error), then warns `write to tmpfile failed` on a short write.
-fn spill(file: std::os::fd::OwnedFd, path: &CStr, data: &[u8]) -> bool {
+fn spill(file: &std::fs::File, data: &[u8]) -> bool {
     let wrote = fd_write_all(file.as_raw_fd(), false, data) == data.len();
     if !wrote {
         let error = errno();
-        drop(file);
-        _ = crate::sys::unlink(path);
         log::warning(
             c"Server::task_pack",
             format_args!("write to tmpfile failed"),
@@ -171,11 +169,11 @@ fn pack_payload<T: AsRef<CStr>>(
     let Some(file) = make_tmpfile(template().as_ref(), &mut pkg.tmpfile) else {
         return TaskPack::default();
     };
-    let path = CStr::from_bytes_until_nul(&pkg.tmpfile).unwrap_or_default();
-    if !spill(file, path, data) {
+    if !spill(&file.file, data) {
         return TaskPack::default();
     }
     pkg.write(dest);
+    drop(file.persist());
     TaskPack {
         ok: true,
         tmpfile: true,
@@ -639,12 +637,15 @@ mod tests {
         use std::os::fd::AsRawFd;
         install();
         let mut name = [0; super::TASK_TMP_PATH_SIZE];
-        drop(super::make_tmpfile(c"/tmp/swr-task-XXXXXX", &mut name).unwrap());
+        let guard = super::make_tmpfile(c"/tmp/swr-task-XXXXXX", &mut name).unwrap();
         let path = std::ffi::CStr::from_bytes_until_nul(&name).unwrap();
         let file = std::fs::File::open(path.to_str().unwrap()).unwrap();
         let fd = file.as_raw_fd();
         let data = [1u8; 4];
-        assert!(!spill(file.into(), path, &data));
+        let guard = guard.map_file(|_| file);
+        assert!(!spill(&guard.file, &data));
+        drop(guard);
+        assert_eq!(crate::sys::errno(), libc::EBADF);
         let warned = logged("File::write_all");
         assert_eq!(warned.len(), 1);
         assert_eq!((warned[0].0, warned[0].2), (0, libc::EBADF));

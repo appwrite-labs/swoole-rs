@@ -47,7 +47,7 @@ so the native `swoole_sys_warning` sees its errno.
   repeats), `arc4random_buf` elsewhere.
 
 - `file_api.rs` is the rest of upstream's `src/os/file.cc`:
-  `swoole_tmpfile` (`create_tmpfile`), `file_get_contents` and
+  `swoole_tmpfile` (`TempFile::create`), `file_get_contents` and
   `file_put_contents` (Rust's only callers are the server and process). Logs name
   the function as upstream's `__SW_FUNC__` does.
 

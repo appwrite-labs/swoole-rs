@@ -9,13 +9,11 @@ use crate::{
     case_equal,
 };
 use core::ffi::c_int;
-use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::os::unix::ffi::OsStrExt;
 use swoole_rs_corebase::buffer::string::{CppString, boxed_sized_string};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as NOTICE, SW_LOG_WARNING as WARNING};
-use swoole_rs_corebase::ossupport::create_tmpfile;
+use swoole_rs_corebase::ossupport::TempFile;
 use swoole_rs_corebase::{log, set_errno};
 
 /// `SW_LOG_NOTICE`, `SW_LOG_WARNING` and `SW_ERROR_SERVER_INVALID_REQUEST`.
@@ -49,13 +47,13 @@ pub struct HttpForm {
     parser: Option<MultipartParser>,
     /// The current upload's file, buffered as the `FILE` upstream wrote was; none
     /// between uploads.
-    fp: Option<BufWriter<File>>,
+    fp: Option<TempFile<BufWriter<File>>>,
+    /// Completed parts stay owned until their rewritten request reaches a worker.
+    uploads: Vec<TempFile<()>>,
     /// The body's own buffer, which receives go into and the parser reads from
     /// `init_multipart_parser` until `destroy_multipart_parser`, while the body is
     /// rewritten into the receive buffer.
     body: Option<Box<CppString>>,
-    /// The current upload's file name, NUL-terminated.
-    upload: Vec<u8>,
     /// `upload_tmp_dir + "/swoole.upfile.XXXXXX"`.
     template: Vec<u8>,
     /// The part header's name, copied: it may arrive split across reads.
@@ -225,8 +223,8 @@ impl HttpRequest {
                 },
                 parser: None,
                 fp: None,
+                uploads: Vec::new(),
                 body: None,
-                upload: Vec::new(),
                 template: Vec::new(),
                 header_name: Vec::new(),
                 upload_size: 0,
@@ -334,28 +332,22 @@ impl HttpRequest {
         buffer.truncate(header);
         form.body = Some(body);
         let mut template = tmp_dir.to_vec();
-        template.extend_from_slice(b"/swoole.upfile.XXXXXX");
+        template.extend_from_slice(b"/swoole.upfile.XXXXXX\0");
         form.template = template;
         form.upload_max = upload_max;
         true
     }
 
-    /// `Request::destroy_multipart_parser`: the body buffer freed, an unfinished upload
-    /// closed and unlinked, the parser and form gone.
-    pub fn destroy_multipart_parser(&mut self) {
+    /// Free the parser and unfinished upload. The caller owns the completed files
+    /// until the rewritten request has been dispatched.
+    pub fn destroy_multipart_parser(&mut self) -> Vec<TempFile<()>> {
         let Some(form) = self.form.take() else {
-            return;
+            return Vec::new();
         };
-        // A form `init_multipart_parser` never ran on has no body buffer.
-        let Some(mut body) = form.body else {
-            return;
-        };
-        body.dispose();
-        if let Some(fp) = form.fp {
-            drop(fp);
-            let name = form.upload.split(|&byte| byte == 0).next();
-            _ = std::fs::remove_file(OsStr::from_bytes(name.unwrap_or_default()));
+        if let Some(mut body) = form.body {
+            body.dispose();
         }
+        form.uploads
     }
 
     /// `Request::parse_multipart_data(buffer_)`: feeds the body received since
@@ -474,15 +466,14 @@ impl Parts<'_> for Rewrite<'_> {
             return Flow::Go;
         }
         let form = form_of(self.request);
-        form.upload.clone_from(&form.template);
-        form.upload.push(0);
+        let mut template = form.template.clone();
         form.upload_size = 0;
         // `swoole_tmpfile` fills in the template's `XXXXXX`.
-        let Some(fd) = create_tmpfile(&mut form.upload) else {
+        let Some(fd) = TempFile::create(&mut template) else {
             self.request.excepted = true;
             return Flow::Go;
         };
-        form.fp = Some(BufWriter::new(File::from(fd)));
+        form.fp = Some(fd.map_file(BufWriter::new));
         Flow::Go
     }
 
@@ -504,7 +495,7 @@ impl Parts<'_> for Rewrite<'_> {
             (r.excepted, r.too_large) = (true, true);
             return Flow::Pause;
         }
-        if fp.write_all(data).is_err() {
+        if fp.file.write_all(data).is_err() {
             form.fp = None;
             (r.excepted, r.unavailable) = (true, true);
             log::sys_warning(
@@ -519,11 +510,10 @@ impl Parts<'_> for Rewrite<'_> {
     fn on_headers_complete(&mut self) -> Flow {
         let form = form_of(self.request);
         form.header_name.clear();
-        if form.fp.is_some() {
+        if let Some(upload) = &form.fp {
             self.saved.append(b"Swoole-Upload-File: ");
             // The name up to its NUL: `swoole_tmpfile` wrote no other.
-            let name = form.upload.split(|&byte| byte == 0).next();
-            self.saved.append(name.unwrap_or_default());
+            self.saved.append(upload.path().to_bytes());
         }
         self.request.multipart_header_parsed = true;
         self.saved.append(b"\r\n");
@@ -533,7 +523,12 @@ impl Parts<'_> for Rewrite<'_> {
     fn on_part_data_end(&mut self) -> Flow {
         self.request.multipart_header_parsed = false;
         // Dropping the file writes what is buffered and closes it.
-        if form_of(self.request).fp.take().is_some() {
+        if let Some(mut upload) = form_of(self.request).fp.take() {
+            if upload.file.flush().is_err() {
+                (self.request.excepted, self.request.unavailable) = (true, true);
+                return Flow::Pause;
+            }
+            form_of(self.request).uploads.push(upload.map_file(drop));
             self.saved.append(b"\r\nSwoole-Upload-File");
         }
         self.saved.append(b"\r\n");
@@ -580,6 +575,8 @@ pub fn request_free(request: Option<Box<HttpRequest>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
 
     const SW_OK: i32 = swoole_rs_corebase::constants::ResultCode::SW_OK as i32;
     const SW_ERR: i32 = swoole_rs_corebase::constants::ResultCode::SW_ERR as i32;
@@ -1031,20 +1028,21 @@ mod tests {
         let dir = std::env::temp_dir();
         assert!(r.init_multipart_parser(i.get_mut(), dir.as_os_str().as_bytes(), 100));
         let body = r.body().expect("the body has its own buffer");
-        body.append(b"--b\r\nContent-Disposition: form-data; name=\"f\"; filename=\"x\"\r\n\r\nfi");
+        body.append(b"--b\r\nContent-Disposition: form-data; name=\"done\"; filename=\"first\"\r\n\r\ndone\r\n--b\r\nContent-Disposition: form-data; name=\"f\"; filename=\"x\"\r\n\r\nfi");
         assert!(r.parse_multipart_data(i.get_mut()), "parsed");
         assert!(
             r.body().is_some_and(|body| body.is_empty()),
             "the body buffer is cleared"
         );
-        let upload = r.form.as_deref().unwrap().upload.clone();
-        let name = OsStr::from_bytes(upload.split(|&b| b == 0).next().unwrap());
-        assert!(std::fs::exists(name).unwrap(), "the upload is open");
+        let form = r.form.as_deref().unwrap();
+        let names = [form.uploads[0].path(), form.fp.as_ref().unwrap().path()]
+            .map(|name| OsStr::from_bytes(name.to_bytes()).to_owned());
+        assert!(names.iter().all(|name| std::fs::exists(name).unwrap()));
         r.destroy_multipart_parser();
         assert!(r.body().is_none(), "the body buffer is gone");
         assert!(
-            !std::fs::exists(name).unwrap(),
-            "the unfinished upload is gone"
+            names.iter().all(|name| !std::fs::exists(name).unwrap()),
+            "both completed and unfinished uploads are gone"
         );
     }
 
@@ -1068,8 +1066,8 @@ mod tests {
         );
         (r.excepted, r.unavailable) = (false, false);
         if let Some(form) = r.form.as_deref_mut() {
-            let null = std::fs::OpenOptions::new().write(true).open("/dev/null");
-            form.fp = Some(BufWriter::new(null.unwrap()));
+            let file = TempFile::create(&mut b"/tmp/swr-http-XXXXXX\0".to_owned()).unwrap();
+            form.fp = Some(file.map_file(BufWriter::new));
         }
         assert_eq!(on_part_data(&mut r, b"abcd"), Flow::Pause, "rejected");
         assert!(
@@ -1101,8 +1099,8 @@ mod tests {
                 },
                 parser: None,
                 fp: None,
+                uploads: Vec::new(),
                 body: None,
-                upload: Vec::new(),
                 template: Vec::new(),
                 header_name: Vec::new(),
                 upload_size: 0,

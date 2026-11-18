@@ -21,6 +21,7 @@ rise by what others fall, and a fold or a new crate moves what it holds.
            or a PHP callback is re-entered, and the process aborts. Make the state a
            plain field of the handle that owns it, borrowed `&mut`, or a `Cell` taken and
            put back (#3565). A `RefCell::new` whose type is inferred isn't counted
+  rawtemp mkstemp/mkostemp outside the temporary file guard
   php_args registered PHP argument reads accepting types beyond the generated stub signature
   statuses integer-returning bodies (`i32`, `c_int`, `i64`, `isize`), including extern
            wrappers; foreign declarations and callback types have no body to migrate
@@ -143,6 +144,7 @@ WIRE_DEFAULT = {'kind': 'call_expression', 'any': [
 # Each count's ast-grep rule (https://ast-grep.github.io/reference/rule.html), or a fn of the tree.
 KINDS = {
     'shortreads': WIRE_DEFAULT,
+    'rawtemp': named('mkstemp', 'mkostemp'),
     'unsafe': {'any': [{'kind': 'unsafe_block'}, {**FN, **UNSAFE}, {'kind': 'impl_item', 'regex': r'^unsafe\b'},
                        tokens('unsafe', BRACES), tokens('unsafe', 'fn|impl'),
                        tokens('unsafe', 'extern', {'kind': 'string_literal'}, 'fn')]},
@@ -211,7 +213,8 @@ def count_file(path, test_files):
             test_files.add((base / name / 'mod.rs').resolve())
     return {kind: sum(not any(node.range().start.index in span for span in skipped)
                       for node in (rule(root) if callable(rule) else root.find_all(**rule)))
-            if kind != 'shortreads' or WIRE_PATH.search(path.as_posix()) else 0
+            if (kind != 'shortreads' or WIRE_PATH.search(path.as_posix()))
+            and (kind != 'rawtemp' or not path.match('crates/corebase/src/ossupport/temp_file.rs')) else 0
             for kind, rule in KINDS.items()}
 
 

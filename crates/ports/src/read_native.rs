@@ -446,10 +446,6 @@ impl Connection for Read<'_> {
         self.parse(|r, b| r.init_multipart_parser(b, dir.as_bytes(), max))
     }
 
-    fn finish_multipart(&mut self) {
-        self.request().destroy_multipart_parser();
-    }
-
     fn client(&mut self) -> (i64, String, i64) {
         let session = self.conn.session_id();
         (

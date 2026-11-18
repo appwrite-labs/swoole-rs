@@ -92,10 +92,19 @@ class Budget(unittest.TestCase):
                 # STATE and queue; the import and the constructors name no type.
                 'cells': {'one': 2},
                 'statuses': {'one': 0}, 'reprs': {'one': 0}, 'derefs': {'one': 0},
-                'externs': {'one': 0}, 'shortreads': {'one': 0},
+                'externs': {'one': 0}, 'shortreads': {'one': 0}, 'rawtemp': {'one': 0},
                 # shim.c's three and shim.h's one; tests/ isn't src/.
                 'clines': {'one': 4}, 'php_args': {},
             })
+
+    def test_raw_temp_file_calls_belong_to_the_guard(self):
+        with tempfile.TemporaryDirectory() as root:
+            for name, expected in [('crates/corebase/src/ossupport/temp_file.rs', 0),
+                                   ('crates/http/src/request.rs', 2)]:
+                path = Path(root) / name
+                path.parent.mkdir(parents=True)
+                path.write_text('fn open(p: *mut i8) { unsafe { libc::mkstemp(p); mkostemp(p, 0); } }')
+                self.assertEqual(budget.count_file(path, set())['rawtemp'], expected)
 
     def test_short_reads_only_count_in_wire_readers(self):
         with tempfile.TemporaryDirectory() as directory:

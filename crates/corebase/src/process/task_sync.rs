@@ -335,15 +335,13 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
         self.result.clear();
         let mut path = [0; TASK_TMP_PATH_SIZE];
         // Upstream keeps only the path, so the file closes at once.
-        if make_tmpfile(&task_tmpfile(), &mut path).is_none() {
+        let Some(file) = make_tmpfile(&task_tmpfile(), &mut path) else {
             set_last_error(errno());
             return Ok(false);
-        }
-        let Ok(path) = CStr::from_bytes_until_nul(&path) else {
-            return Ok(false);
         };
-        self.name_result_file(path);
-        let Some(done) = self.sync_many(multi, timeout, path)? else {
+        let file = file.map_file(drop);
+        self.name_result_file(file.path());
+        let Some(done) = self.sync_many(multi, timeout, file.path())? else {
             set_last_error(ERROR_TASK_DISPATCH_FAIL);
             return Ok(false);
         };
@@ -375,9 +373,6 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
         path: &CStr,
     ) -> Result<Option<bool>, Bailed> {
         let (tasks, result) = (&mut self.tasks, self.result);
-        let _result_file = core::mem::DropGuard::new(path, |path| {
-            _ = crate::sys::unlink(path);
-        });
         tasks.pipe_clean()?;
 
         let count = multi.count();
@@ -601,9 +596,11 @@ mod tests {
         let mut file = record(11, b"ab");
         file.extend(record(99, b""));
         file.extend(record(12, b"c"));
-        let path = std::env::temp_dir().join(format!("swr-task-sync-{}", std::process::id()));
-        std::fs::write(&path, file).unwrap();
-        let path = std::ffi::CString::new(path.into_os_string().into_encoded_bytes()).unwrap();
+        let guard =
+            crate::ossupport::TempFile::create(&mut b"/tmp/swr-task-sync-XXXXXX\0".to_owned())
+                .unwrap();
+        let path = guard.path().to_owned();
+        std::io::Write::write_all(&mut &*guard.file, &file).unwrap();
         // The finish count (the result's data) already says both finished.
         let mut result = vec![0u64; EVENT_SIZE / 8];
         result[HEAD / 8] = 2;
@@ -617,7 +614,7 @@ mod tests {
             packs: vec![11, 12, 13, -1],
             ..Multi::default()
         };
-        let done = tasks.sync_many(&mut multi, -1.0, &path);
+        let done = tasks.sync_many(&mut multi, -1.0, guard.map_file(drop).path());
         assert_eq!(done.ok(), Some(Some(true)));
         assert_eq!(multi.unpacked, vec![(0, 11), (1, 12)]);
         assert_eq!(multi.failed, vec![2, 3]);
@@ -659,11 +656,12 @@ mod tests {
             packs: vec![-1],
             ..Multi::default()
         };
-        let path = std::env::temp_dir().join(format!("swr-task-empty-{}", std::process::id()));
-        std::fs::File::create_new(&path).unwrap();
-        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
-        let done = tasks.sync_many(&mut multi, -1.0, &name);
-        assert!(!path.try_exists().unwrap());
+        let guard =
+            crate::ossupport::TempFile::create(&mut b"/tmp/swr-task-empty-XXXXXX\0".to_owned())
+                .unwrap();
+        let path = guard.path().to_owned();
+        let done = tasks.sync_many(&mut multi, -1.0, guard.map_file(drop).path());
+        assert!(!std::fs::exists(path.to_str().unwrap()).unwrap());
         assert_eq!(done.ok(), Some(None));
         assert_eq!(multi.failed, vec![0]);
     }
