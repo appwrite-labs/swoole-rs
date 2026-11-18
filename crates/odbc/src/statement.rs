@@ -103,10 +103,10 @@ unsafe extern "C" {
 use crate::driver::Attribute;
 use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
-    Owned, Value, ZString,
+    Owned, STREAM_PAGE, Value, ZString,
     pdo::Slot,
     sys::{
-        pdo_attribute_type_PDO_ATTR_CURSOR_NAME as CURSOR_NAME,
+        IS_RESOURCE, pdo_attribute_type_PDO_ATTR_CURSOR_NAME as CURSOR_NAME,
         pdo_attribute_type_PDO_ATTR_DRIVER_SPECIFIC as DRIVER_SPECIFIC, zend_long,
     },
 };
@@ -201,28 +201,111 @@ extern "C" fn swr_odbc_stmt_get_attr(
     }
 }
 
+/// A parameter PDO bound: the token `swr_odbc_bind_parameter` gives `SQLBindParameter`
+/// for an input parameter, which `SQLParamData` hands back when the parameter wants its
+/// data. PDO keeps the record while the statement lives. Rust never makes one.
+#[repr(transparent)]
+struct Param(std::cell::Cell<swoole_rs_zend::sys::pdo_bound_param_data>);
+
 unsafe extern "C" {
-    /// Streams data-at-execution parameters on the request thread (#5128).
-    safe fn swr_odbc_supply_data(stmt: &Stmt, status: &mut SQLRETURN) -> bool;
+    /// `SQLParamData`: with `SQL_NEED_DATA`, `token` is the pointer the parameter that
+    /// wants data was bound with. Only input parameters are bound for data at execution
+    /// (`odbc_stmt_param_hook`), each with its PDO record.
+    #[link_name = "SQLParamData"]
+    safe fn param_data(statement: Statement, token: &mut Option<&Param>) -> SQLRETURN;
+    /// What the parameter holds now, through its reference if it is one.
+    safe fn swr_odbc_parameter_value(param: &Param) -> &Value;
     safe fn swr_odbc_has_columns(stmt: &Stmt) -> bool;
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn swr_odbc_execute(
+/// `SQL_NEED_DATA`.
+const NEED_DATA: SQLRETURN = 99;
+
+/// The parameter `statement` wants data for next, borrowed for as long as its
+/// statement is.
+fn wanted(_stmt: &Stmt, statement: Statement) -> (SQLRETURN, Option<&Param>) {
+    let mut token = None;
+    (param_data(statement, &mut token), token)
+}
+
+/// `pdo_odbc`'s data-at-execution loop: each parameter `SQLParamData` asks for is sent
+/// with `SQLPutData`, a string whole and a stream a page at a time. Every `SQLPutData`
+/// is offloaded on its own; the stream is read here, on the request's thread. The
+/// execution's final status, or `None` once the cursor is closed after an input that
+/// is no stream (reported at `line`) or a stream wrapper's bailout (deferred).
+fn supply_data(
     dbh: &Dbh,
     stmt: &Stmt,
-    executed: bool,
+    statement: Statement,
     file: Text<'static>,
-    info_line: i32,
-    error_line: i32,
-) -> bool {
+    line: i32,
+) -> Option<SQLRETURN> {
+    let put = |bytes: &[u8]| {
+        crate::swoole_odbc_SQLPutData(
+            statement,
+            crate::Data(bytes.as_ptr().cast_mut().cast()),
+            bytes.len().c_cast(),
+        )
+    };
+    let mut page = Box::new([0; STREAM_PAGE]);
+    let mut status = NEED_DATA;
+    while status == NEED_DATA {
+        let (next, param) = wanted(stmt, statement);
+        status = next;
+        let Some(param) = param.filter(|_| next == NEED_DATA) else {
+            break;
+        };
+        let value = swr_odbc_parameter_value(param);
+        if value.kind() != IS_RESOURCE {
+            let text = value.string();
+            if swoole_rs_zend::bailout::pending() {
+                close_cursor(statement);
+                return None;
+            }
+            let rc = put(text.bytes());
+            if !matches!(rc, 0 | 1) {
+                status = rc;
+            }
+            continue;
+        }
+        // A failed chunk decides the status, and the rest of the stream is still read.
+        loop {
+            let rc = match value.read_stream(&mut page) {
+                Ok(Some([])) => break,
+                Ok(Some(chunk)) => put(chunk),
+                Ok(None) => {
+                    let what = c"input LOB is no longer a stream".into();
+                    pdo_odbc_error(dbh, Some(stmt), statement, what, file, line);
+                    close_cursor(statement);
+                    return None;
+                }
+                Err(bailout) => {
+                    bailout.defer();
+                    close_cursor(statement);
+                    return None;
+                }
+            };
+            if !matches!(rc, 0 | 1) {
+                status = rc;
+            }
+        }
+    }
+    Some(status)
+}
+
+swoole_rs_zend::exports! {
+#[unsafe(no_mangle)]
+extern "C" fn swr_odbc_execute(dbh: &Dbh, stmt: &Stmt, executed: bool, file: Text<'static>, lines: &[i32; 3]) -> bool {
     let statement = swr_odbc_statement(stmt);
     if executed {
         close_cursor(statement);
     }
     let mut status = crate::swoole_odbc_SQLExecute(statement);
-    if status == 99 && !swr_odbc_supply_data(stmt, &mut status) {
-        return false;
+    if status == NEED_DATA {
+        let Some(supplied) = supply_data(dbh, stmt, statement, file, lines[2]) else {
+            return false;
+        };
+        status = supplied;
     }
     if status != 0 {
         let completed = matches!(status, 1 | 100);
@@ -232,7 +315,7 @@ extern "C" fn swr_odbc_execute(
             statement,
             c"SQLExecute".into(),
             file,
-            if completed { info_line } else { error_line },
+            if completed { lines[0] } else { lines[1] },
         );
         if !completed {
             return false;
@@ -247,6 +330,7 @@ extern "C" fn swr_odbc_execute(
         swr_odbc_replace_columns(stmt, count);
     }
     true
+}
 }
 
 fn read_chunk(

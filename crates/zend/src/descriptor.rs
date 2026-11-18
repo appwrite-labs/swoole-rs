@@ -21,6 +21,14 @@ unsafe extern "C" {
     /// null for any other value or resource. It reads the zval, the resource's
     /// type and the two stream type numbers PHP registers at startup.
     safe fn swr_zend_stream_from_zval(value: &Value) -> *mut crate::sys::php_stream;
+    /// `php_stream_read` into `page` from the stream a resource zval names, inside
+    /// `zend_try`: the bytes read, 0 at the end, -1 for no stream, -2 for a bailout.
+    /// It writes at most `size` bytes, which the caller passes as the page's length.
+    safe fn swr_zend_try_stream_zval_read(
+        value: &Value,
+        page: &mut [u8; STREAM_PAGE],
+        size: usize,
+    ) -> zend_long;
     /// `zend_read_property_ex` of an object zval under its own class, inside
     /// `zend_try` (nonzero for a bailout): `found` set and `out` written when
     /// the property holds an int; nothing for any other value.
@@ -86,6 +94,9 @@ impl crate::Owned {
         Ok(true)
     }
 }
+
+/// The bytes [`Value::read_stream`] asks a stream for at a time: PHP's own chunk size.
+pub const STREAM_PAGE: usize = 8192;
 
 /// A `php_stream_context` that lives for `'a`. Rust never makes one: it is a
 /// parameter, or a return value, of this type on the C boundary, where Zend's
@@ -163,6 +174,23 @@ impl Value {
     #[must_use]
     pub fn stream(&self) -> *mut crate::sys::php_stream {
         swr_zend_stream_from_zval(self)
+    }
+
+    /// `php_stream_read` of the stream a resource this holds names, on the request's
+    /// thread: the bytes now at the front of `page`, empty at the end of the stream or
+    /// after a read error; `None` for any other value or resource.
+    /// # Errors
+    /// The stream's wrapper bailed out.
+    pub fn read_stream<'a>(
+        &self,
+        page: &'a mut [u8; STREAM_PAGE],
+    ) -> Result<Option<&'a [u8]>, Bailout> {
+        let count = swr_zend_try_stream_zval_read(self, page, STREAM_PAGE);
+        match usize::try_from(count) {
+            Ok(count) => Ok(Some(page.split_at(count.min(STREAM_PAGE)).0)),
+            Err(_) if count == -1 => Ok(None),
+            Err(_) => Err(Bailout),
+        }
     }
 
     /// A stream resource's descriptor (`php_stream_cast` for select), if it
