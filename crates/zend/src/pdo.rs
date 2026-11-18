@@ -14,13 +14,10 @@ use std::{
     marker::PhantomData,
 };
 
-/// A `pdo_driver_t`, opaque. A driver crate declares its own as a `safe static`
-/// of this type in an `unsafe extern` block, which is what vouches for it:
-/// nothing else makes one.
-#[repr(C)]
-pub struct Driver {
-    _opaque: [u8; 0],
-}
+/// A native `pdo_driver_t` registered with PDO. The driver supplies its
+/// immutable descriptor, including the factory pointer and header API version.
+#[repr(transparent)]
+pub struct Driver(crate::sys::pdo_driver_t);
 
 unsafe extern "C" {
     /// Whether PDO has registered its class: it reads one pointer PDO's MINIT
@@ -152,6 +149,35 @@ impl Dbh {
         self.update(|dbh| copy_state(&mut dbh.error_code, sqlstate));
     }
 
+    /// Whether PDO requested autocommit on this connection.
+    #[must_use]
+    pub fn auto_commit(&self) -> bool {
+        #[cfg(php85)]
+        {
+            self.0.get().auto_commit()
+        }
+        #[cfg(not(php85))]
+        {
+            self.0.get().auto_commit() != 0
+        }
+    }
+
+    /// Set PDO's autocommit flag before the driver applies the change.
+    pub fn set_auto_commit(&self, on: bool) {
+        self.update(|dbh| {
+            #[cfg(php85)]
+            dbh.set_auto_commit(on);
+            #[cfg(not(php85))]
+            dbh.set_auto_commit(on.into());
+        });
+    }
+
+    /// Whether PDO is tracking an active transaction.
+    #[must_use]
+    pub fn in_txn(&self) -> bool {
+        self.0.get().in_txn()
+    }
+
     /// `dbh->in_txn = in_txn`.
     pub fn set_in_txn(&self, in_txn: bool) {
         self.update(|dbh| dbh.set_in_txn(in_txn));
@@ -242,10 +268,15 @@ impl Slot {
         self.0.lend_slot(|held| *held = value);
     }
 
+    /// Append driver-specific fields to the error information array lent by PDO.
+    pub fn edit_array(&self, edit: impl FnOnce(&mut crate::ArrayMut)) {
+        self.0.edit_array_slot(edit);
+    }
+
     /// `add_next_index_long` of `code`, or `add_next_index_null`, then
     /// `add_next_index_string` of `message` if any: a driver's `errorInfo` fields.
     pub fn push_error_info(&self, code: Option<u32>, message: Option<&[u8]>) {
-        self.0.edit_array_slot(|info| {
+        self.edit_array(|info| {
             match code {
                 Some(code) => info.push_long(code.into()),
                 None => info.push_null(),
