@@ -1,12 +1,10 @@
 # Rust bridge ABI v1
 
-Cargo builds `swoole.so` from the crates (`crates/ext`, through
-`tools/build_ext.py`); no upstream source is compiled. The C ABI described here
-and in the module contracts is what the C left in the build calls: the
-third-party C that swoole-src bundles (`native/swoole-src/thirdparty`), the
-first-party glue (`native/corebase/switches.cc`, `native/phphelpers/host.c`,
-`crates/corebase/src/fatal.c`, `crates/corebase/src/format.c`), and the native gates,
-which link `libswoole_rs_ffi.a` into fixtures outside PHP.
+Cargo builds `swoole.so` through `tools/build_ext.py`. The extension links the
+Rust module crates through `crates/ffi`. Its [build script](../crates/ext/build.rs)
+compiles the native glue and selects bundled C and C++ sources from
+`native/swoole-src/thirdparty` for the enabled features and PHP version.
+Native test fixtures link the Zend-free `libswoole_rs_ffi.a`.
 
 ## Base contract (`native/include/swoole_rs.h`)
 
@@ -20,8 +18,7 @@ or throw. Module startup (crates/phpswoole) publishes them as the
 
 ## Rules for all module contracts
 
-- No Zend values, Rust references, exceptions or panics cross the ABI. The native header checks the size
-  and field offsets of `swoole::Global` against the Rust layout.
+- No Zend values, Rust references, exceptions or panics cross the ABI. The [corebase header](../native/corebase/swoole.h) checks the layout of `swoole::Global`.
 - Buffers are released by the side that allocated them. Borrowed pointers are
   valid only for the call. Writable ranges must not alias each other or Rust
   state unless a contract says otherwise.
@@ -29,9 +26,9 @@ or throw. Module startup (crates/phpswoole) publishes them as the
   pointer-size limits (`isize::MAX` for slices).
 - An owned handle needs an explicit release function, thread affinity, fork
   behavior and cancellation rules.
-- Native callbacks, allocation through native allocators, Zend calls and C++
-  exceptions run only after the Rust call returns. No Rust borrow or frame spans
-  them.
+- Follow each module contract for callback timing and ownership. PHP-facing
+  code uses the [Zend boundary](zend.md) for calls that may execute user code
+  or trigger a bailout.
 
 Target platforms are 64-bit Linux and macOS; both sides are compiled for the
 same target.
