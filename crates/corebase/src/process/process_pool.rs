@@ -1072,7 +1072,7 @@ pub const SW_MESSAGE_BOX_SIZE: u64 = 65536;
 pub const SW_INPUT_BUFFER_SIZE: u32 = 2 * 1024 * 1024;
 pub const SW_WORKER_MAX_WAIT_TIME: u32 = 3;
 /// `SW_MSGMAX`: a `SysV` message's fixed receive limit.
-pub const SW_MSGMAX: u32 = 65536;
+pub use crate::constants::SW_MSGMAX;
 
 /// `set_max_packet_size`'s value: a `SysV` message queue keeps its fixed receive
 /// limit and ignores `max_package_size`.
