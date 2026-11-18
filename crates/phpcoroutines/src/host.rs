@@ -581,8 +581,8 @@ fn set_callbacks(callbacks: [swoole_rs_corebase::coroutine::SwapCallback; 3]) {
 }
 
 /// The reactor's destroy callback.
-fn deactivate_on_free(_: swoole_rs_corebase::reactor::Running<'_>) {
-    bailout::defer(crate::runtime::deactivate());
+fn deactivate_on_free(reactor: swoole_rs_corebase::reactor::Running<'_>) {
+    bailout::defer(crate::runtime::deactivate(reactor.bailed_out()));
 }
 
 pub(crate) fn deactivate() {

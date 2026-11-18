@@ -85,6 +85,24 @@ CASES = {
         Swoole\Event::defer($callback); unset($callback);
         Swoole\Event::wait(); echo "done\n";
     ''', 'called\ndestroyed\ndone\n'),
+    # A destructor run as Event::wait() frees the reactor defers onto no reactor, as it
+    # did onto the dying one: disposed, not run by a reactor made in the delete (#4938).
+    'destructor_defer_during_free': (r'''
+        class Late {
+            public function __destruct() {
+                echo "destructed\n";
+                var_dump(Swoole\Event::defer(function() { echo "deferred ran\n"; }));
+            }
+        }
+        $late = new Late;
+        Swoole\Event::cycle(function() use ($late) {});
+        unset($late);
+        Swoole\Event::defer(function() {});
+        Swoole\Event::wait();
+        $ran = false;
+        Swoole\Coroutine\run(function() use (&$ran) { $ran = true; });
+        if (!$ran) { exit(1); }
+    ''', 'destructed\nbool(true)\n'),
 }
 
 SOCKET_CASE = (r"""

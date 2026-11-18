@@ -392,6 +392,9 @@ mod tests {
 
     thread_local! {
         static TRACE: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+        /// A socket registered with the reactor, which a [`Dropped`] task frees.
+        static REGISTERED: std::cell::Cell<Option<crate::reactor::OwnedSocket>> =
+            const { std::cell::Cell::new(None) };
     }
 
     fn push(entry: &str) {
@@ -471,20 +474,43 @@ mod tests {
 
     impl Drop for Dropped {
         fn drop(&mut self) {
-            push(self.0);
+            // Dropped as `swoole_event_free` deletes the reactor: the thread names
+            // none, and none is made meanwhile.
+            let refused = crate::thread_reactor().is_null()
+                && crate::reactor::swoole_event_deleting()
+                && crate::reactor::swoole_event_init(0) == -1;
+            push(if refused { self.0 } else { "reached" });
+            // A socket still registered with the reactor being deleted leaves its
+            // registry as it is freed, rather than ending the process.
+            if let Some(socket) = REGISTERED.take() {
+                let record = socket.into_box();
+                push(if record.removed {
+                    "deregistered"
+                } else {
+                    "kept"
+                });
+                unsafe { libc::close(record.fd) };
+            }
         }
     }
 
     #[test]
     fn freeing_the_reactor_drops_its_cycle_tasks() {
-        let state = crate::reactor::reactor_state::tests::state(3, 1);
-        crate::set_thread_reactor(state.owner.cast());
+        assert_eq!(crate::reactor::swoole_event_init(0), 0);
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let socket = crate::reactor::OwnedSocket::new(Box::new(
+            crate::reactor::SocketRecord::with_fd(fds[0], 0),
+        ));
+        assert!(event_add(socket.heap(), crate::reactor::Events::READ));
+        REGISTERED.set(Some(socket));
         swoole_event_cycle(false, Some(Rc::new(Dropped("idle"))));
         swoole_event_cycle(true, Some(Rc::new(Dropped("future"))));
         assert_eq!(take(), Vec::<String>::new());
-        crate::set_thread_reactor(std::ptr::null_mut());
-        unsafe { crate::reactor::reactor_state::tests::free(state.owner) };
-        assert_eq!(take(), ["idle", "future"]);
+        assert!(crate::reactor::swoole_event_free());
+        assert_eq!(take(), ["idle", "deregistered", "future"]);
+        assert!(!crate::reactor::swoole_event_deleting());
+        unsafe { libc::close(fds[1]) };
     }
 
     /// A cycle task that gives its reference up, then leaves the loop without

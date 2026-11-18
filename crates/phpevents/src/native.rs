@@ -45,6 +45,11 @@ pub(crate) fn bailed() -> bool {
     event_api::swoole_event_bailed_out()
 }
 
+/// Whether the thread's reactor is being deleted, when no other may be made.
+pub(crate) fn deleting() -> bool {
+    swoole_rs_corebase::reactor::swoole_event_deleting()
+}
+
 /// `swoole_event_init(SW_EVENTLOOP_WAIT_EXIT)`, then the shutdown function that
 /// waits and `Co::set`'s exit condition: whether it made the reactor.
 pub(crate) fn create() -> bool {
