@@ -7,6 +7,7 @@ use core::ffi::c_int;
 use swoole_rs_corebase::buffer::string::CppString as Buffer;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_TRACE as TRACE, SW_LOG_WARNING as WARNING};
+use swoole_rs_corebase::ossupport::TempFile;
 use swoole_rs_corebase::reactor::Caught;
 use swoole_rs_error::ErrorCode;
 use swoole_rs_http::HttpRequest as Request;
@@ -120,8 +121,6 @@ pub(crate) trait Connection {
     fn parse<R>(&mut self, parse: impl FnOnce(&mut Request, &mut Buffer) -> R) -> R;
     /// `init_multipart_parser(serv)`, then its body buffer becomes current. Whether it succeeded.
     fn init_multipart(&mut self) -> bool;
-    /// `destroy_multipart_parser()`, then the receive buffer becomes current.
-    fn finish_multipart(&mut self);
     /// The client a log names: `conn->session_id`, `port->host`, `port->port`.
     fn client(&mut self) -> (i64, String, i64);
 }
@@ -335,17 +334,19 @@ fn parse(n: &mut impl Connection) -> Step {
         return step;
     }
     // A form here is a multipart upload streamed to disk.
-    let upload = n.request().form.is_some();
-    if upload {
+    if n.request().form.is_some() {
         if let Some(step) = form(n) {
             return step;
         }
-    } else if !n.request().tried_to_dispatch
+        let uploads = n.request().destroy_multipart_parser();
+        return body(n, Some(uploads));
+    }
+    if !n.request().tried_to_dispatch
         && let Some(step) = bodyless(n)
     {
         return step;
     }
-    body(n, upload)
+    body(n, None)
 }
 
 /// The request line, an HTTP/2 preface, the header block and form setup.
@@ -437,7 +438,6 @@ fn form(n: &mut impl Connection) -> Option<Step> {
     if !request.tried_to_dispatch {
         return Some(Step::Done);
     }
-    n.finish_multipart();
     None
 }
 
@@ -479,7 +479,7 @@ fn continues(n: &mut impl Connection) -> bool {
 
 /// A request with a body: wait for all of it, then dispatch (an `upload` the
 /// reactor rewrote flagged so); pipelined requests behind it are parsed next.
-fn body(n: &mut impl Connection, upload: bool) -> Step {
+fn body(n: &mut impl Connection, uploads: Option<Vec<TempFile<()>>>) -> Step {
     let max = n.max_length();
     let request_length;
     if n.request().chunked {
@@ -527,13 +527,18 @@ fn body(n: &mut impl Connection, upload: bool) -> Step {
         }
     }
     set_offset(n, request_length);
-    let dispatch = if upload {
+    let dispatch = if uploads.is_some() {
         Dispatch::Upload
     } else {
         Dispatch::Request
     };
     if !n.dispatch(dispatch, request_length) {
         return Step::Close;
+    }
+    if let Some(uploads) = uploads {
+        for upload in uploads {
+            drop(upload.persist());
+        }
     }
     if n.active() {
         if n.buffer().len() as u64 > request_length {
@@ -583,6 +588,7 @@ pub(crate) mod tests {
         uploads: u64,
         http2: bool,
         dispatched: Vec<Vec<u8>>,
+        on_dispatch: fn(&[u8]) -> bool,
         /// Each dispatched request's URL.
         urls: Vec<Vec<u8>>,
         effects: Vec<Effect>,
@@ -605,6 +611,7 @@ pub(crate) mod tests {
             uploads: 0,
             http2: false,
             dispatched: Vec::new(),
+            on_dispatch: |_| true,
             urls: Vec::new(),
             effects: Vec::new(),
             sent: Vec::new(),
@@ -665,7 +672,7 @@ pub(crate) mod tests {
             let url = self.req.url_offset as usize;
             self.urls
                 .push(bytes[url..url + self.req.url_length as usize].to_vec());
-            true
+            (self.on_dispatch)(&bytes[..at])
         }
         fn active(&mut self) -> bool {
             true
@@ -729,9 +736,6 @@ pub(crate) mod tests {
             let upload_max = usize::try_from(self.uploads).unwrap();
             self.req
                 .init_multipart_parser(&mut self.buf, b"/tmp", upload_max)
-        }
-        fn finish_multipart(&mut self) {
-            self.req.destroy_multipart_parser();
         }
         fn client(&mut self) -> (i64, String, i64) {
             (7, "127.0.0.1".to_owned(), 9501)
@@ -810,6 +814,8 @@ pub(crate) mod tests {
             "large buffers released after dispatch"
         );
     }
+
+    include!("../../../tests/modules/ports/upload_dispatch.rs");
 
     /// A multipart body over `package_max_length` is rewritten by the reactor and
     /// dispatched flagged as preprocessed; a client's own `Swoole-Upload-File` part

@@ -3,12 +3,9 @@
 //! function returns right after the failing call with its errno intact.
 use crate::CCast;
 use crate::sys::{self, ReadSlot, errno};
-use libc::{c_char, c_int, off_t};
+use libc::{c_int, off_t};
 use std::ffi::CStr;
 use std::io;
-use std::marker::PhantomData;
-use std::os::fd::OwnedFd;
-use std::ptr::NonNull;
 
 /// Bytes moved by a `File::read_all`/`write_all` loop, and whether it stopped on
 /// an error native must warn about (errno is still the failing call's).
@@ -65,45 +62,6 @@ pub fn file_open(fd: c_int, path: &CStr, flags: c_int, mode: c_int) -> io::Resul
 )]
 pub fn file_close(fd: c_int) -> bool {
     fd != -1 && sys::close(fd).is_ok()
-}
-
-/// A writable file name template, NUL-terminated within the bytes it borrows: what
-/// `mkstemp` reads up to the NUL and rewrites (its `XXXXXX`) in place.
-#[repr(transparent)]
-struct Template<'a>(NonNull<c_char>, PhantomData<&'a mut [u8]>);
-
-impl<'a> Template<'a> {
-    /// `None` when `bytes` holds no NUL.
-    fn new(bytes: &'a mut [u8]) -> Option<Self> {
-        bytes
-            .contains(&0)
-            .then(|| Self(NonNull::from(bytes).cast(), PhantomData))
-    }
-}
-
-// libc's, over a template they write only before its NUL; a template without the
-// `XXXXXX` suffix is an error they return. The descriptor they return is a new one
-// the caller owns, or -1 (`None`: `OwnedFd` never holds -1).
-unsafe extern "C" {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    safe fn mkostemp(template: Template<'_>, flags: c_int) -> Option<OwnedFd>;
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    safe fn mkstemp(template: Template<'_>) -> Option<OwnedFd>;
-}
-
-/// `swoole_tmpfile`: `mkostemp(O_WRONLY | O_CREAT)` on Linux, `mkstemp` elsewhere, over
-/// the `XXXXXX` template up to the first NUL in `template`: the new descriptor, or
-/// none (errno `EINVAL` when there is no NUL).
-pub(crate) fn tmpfile(template: &mut [u8]) -> Option<OwnedFd> {
-    let Some(template) = Template::new(template) else {
-        sys::set_errno(libc::EINVAL);
-        return None;
-    };
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    let fd = mkostemp(template, libc::O_WRONLY | libc::O_CREAT);
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    let fd = mkstemp(template);
-    fd
 }
 
 /// `File::write_all`: `write` in append mode, otherwise `pwrite` at the progress.
@@ -379,7 +337,11 @@ mod tests {
     fn open_close_and_tmpfile_follow_upstream() {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let mut template = *b"/tmp/swr-ossupport-XXXXXX\0";
-        let fd = tmpfile(&mut template).map_or(-1, std::os::fd::IntoRawFd::into_raw_fd);
+        let fd = super::super::TempFile::create(&mut template)
+            .unwrap()
+            .persist()
+            .1;
+        let fd = std::os::fd::IntoRawFd::into_raw_fd(fd);
         assert!(fd >= 0, "a temporary file");
         let path = std::ffi::CStr::from_bytes_until_nul(&template).unwrap_or_default();
         let reopened = file_open(fd, path, libc::O_RDONLY, 0).unwrap_or(-1);

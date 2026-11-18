@@ -5,12 +5,11 @@
 //! `file_put_contents`. Logs name the function as upstream's `__SW_FUNC__` did.
 use crate::buffer::string::CppString;
 use crate::log::LogLevel::{SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING};
-use crate::ossupport::file::{FileIo, file_open, file_size, tmpfile, write_all};
+use crate::ossupport::file::{FileIo, file_open, file_size, write_all};
 use crate::ossupport::file_record::FileRecord;
 use crate::{log, sys};
 use libc::c_int;
 use std::ffi::CStr;
-use std::os::fd::OwnedFd;
 
 /// `SW_LOG_TRACE`, `SW_LOG_WARNING`, `SW_ERROR_FILE_TOO_LARGE` and `SW_ERROR_FILE_EMPTY`.
 const FILE_TOO_LARGE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_FILE_TOO_LARGE as c_int;
@@ -55,19 +54,6 @@ fn size_of_fd(fd: c_int) -> Option<usize> {
             None
         }
     }
-}
-
-/// `swoole_tmpfile`: creates the file named by the `XXXXXX` template in `template`
-/// (NUL-terminated within it), writing the name in place; the descriptor, or `None`
-/// after the warning.
-pub fn create_tmpfile(template: &mut [u8]) -> Option<OwnedFd> {
-    let fd = tmpfile(template);
-    if fd.is_none() {
-        let name = CStr::from_bytes_until_nul(template).unwrap_or_default();
-        let name = name.to_string_lossy();
-        log::sys_warning(c"swoole_tmpfile", format_args!("mkstemp('{name}') failed"));
-    }
-    fd
 }
 
 /// `file_get_contents`: true with the file's bytes, NUL-terminated, in `content`
