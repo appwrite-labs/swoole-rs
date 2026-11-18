@@ -546,6 +546,23 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn receive_distinguishes_an_empty_slot_from_a_failed_handler() {
+        let server = crate::TestServer::new();
+        let serv = server.serv();
+        let callbacks = &serv.state().callbacks;
+        let mut packet = RecvData::within(DataHead::default(), b"data");
+        assert_eq!(
+            callbacks.receive(ReceiveSlot::Receive, serv, &mut packet),
+            Err(CallbackError::Missing)
+        );
+        callbacks.set(Callback::Receive(|_, _| Err(CallbackError::Failed)));
+        assert_eq!(
+            callbacks.receive(ReceiveSlot::Receive, serv, &mut packet),
+            Err(CallbackError::Failed)
+        );
+    }
+
+    #[test]
     fn clearing_a_slot_empties_it_alone() {
         let state = crate::ServerState::new();
         on(state.callbacks.slot(CallbackKind::Connect));
