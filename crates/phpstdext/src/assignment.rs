@@ -71,7 +71,8 @@ fn leaf(code: impl Into<c_int>) -> Result<(), Bailout> {
 
 /// An assignment's `OP_DATA` instruction with the value it read, whose operand
 /// this still owns: [`Data::free`] (or `abandon`, or `publish`) consumes it to
-/// release the operand, once, and nothing reads the value after that.
+/// release the operand, once, and nothing reads the value after that. An
+/// assignment that stored the value drops this instead: the element owns it.
 struct Data<'a> {
     op: Op<'a>,
     value: Cow<'a, Value>,
@@ -146,8 +147,8 @@ fn assign(op: Op, data: Data, own: Typed, container: &Value, key: &Value) -> Res
     let value = data.value();
     let ht = own.table();
     let slot = if key.kind() == z::IS_NULL {
-        // SAFETY: a live Zend HashTable, which takes the original operand reference on
-        // successful insertion.
+        // SAFETY: a live Zend HashTable, which copies the operand's zval into the new
+        // element without counting a reference.
         let slot = unsafe { next_index_insert(ht, value.as_ptr()) };
         if slot.is_none() {
             // Zend's exact occupied-next-index error; this handler's frame is
@@ -157,6 +158,11 @@ fn assign(op: Op, data: Data, own: Typed, container: &Value, key: &Value) -> Res
             );
             // This assignment failed before publishing its result.
             return data.abandon(op);
+        }
+        if u32::from(data.kind()) & (z::IS_CONST | z::IS_CV) != 0 {
+            // A constant or CV keeps its value, so the element holds one more
+            // reference; a temporary or variable moved in with the one it had.
+            value.add_ref();
         }
         slot
     } else {
@@ -170,7 +176,8 @@ fn assign(op: Op, data: Data, own: Typed, container: &Value, key: &Value) -> Res
         let strict = strict(op.frame);
         let mut slot = None;
         // SAFETY: the dimension lookup lent the writable zval and data holds the operand
-        // through the assignment. The native trap catches destructor bailouts.
+        // through the assignment, which counts a constant's or CV's reference and takes
+        // a temporary's or variable's. The native trap catches destructor bailouts.
         leaf(unsafe {
             swr_phpstdext_assign(
                 variable.as_ptr(),
@@ -190,12 +197,8 @@ fn assign(op: Op, data: Data, own: Typed, container: &Value, key: &Value) -> Res
         // Zend's copy retains the inserted/assigned payload for the result.
         copy_into(result, slot);
     }
-    if u32::from(data.kind()) == z::IS_VAR {
-        // Retain the variable value before the original FREE_OP decrements it.
-        value.add_ref();
-    }
-    // The assignment's original OP_DATA temporary/variable.
-    data.free()
+    // The element owns the operand's reference now: nothing is left to free.
+    Ok(())
 }
 
 /// `ASSIGN_DIM_OP` on `own`, the typed table `container` holds unshared.
