@@ -194,58 +194,6 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt)
 	return 1;
 }
 
-static int pgsql_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *param,
-		enum pdo_param_event event_type)
-{
-	pdo_pgsql_stmt *S = (pdo_pgsql_stmt*)stmt->driver_data;
-
-	if (stmt->supports_placeholders == PDO_PLACEHOLDER_NAMED && param->is_param) {
-		switch (event_type) {
-			case PDO_PARAM_EVT_NORMALIZE:
-				return pdo_pgsql_normalize_parameter(stmt->dbh, stmt, param->name, &param->paramno);
-			case PDO_PARAM_EVT_ALLOC:
-				return pdo_pgsql_check_parameter(stmt->dbh, stmt, stmt->bound_param_map, param->paramno);
-			case PDO_PARAM_EVT_FREE:
-			case PDO_PARAM_EVT_EXEC_POST:
-			case PDO_PARAM_EVT_FETCH_PRE:
-			case PDO_PARAM_EVT_FETCH_POST:
-				/* work is handled by EVT_NORMALIZE */
-				return 1;
-
-			case PDO_PARAM_EVT_EXEC_PRE:
-				if (!stmt->bound_param_map) {
-					return 1;
-				}
-				if (!S->params.owner) {
-					pdo_pgsql_init_parameters(&S->params, zend_hash_num_elements(stmt->bound_param_map));
-				}
-				if (param->paramno >= 0) {
-					zval *parameter;
-
-					if ((size_t) param->paramno >= S->params.count) {
-						pdo_pgsql_error_stmt_msg(stmt, 0, "HY093", "parameter was not defined");
-						return 0;
-					}
-					if (Z_ISREF(param->parameter)) {
-						parameter = Z_REFVAL(param->parameter);
-					} else {
-						parameter = &param->parameter;
-					}
-
-					if (PDO_PARAM_TYPE(param->param_type) == PDO_PARAM_LOB &&
-							Z_TYPE_P(parameter) == IS_RESOURCE) {
-						return pdo_pgsql_bind_stream(stmt->dbh, stmt, S->params.owner, param->paramno, parameter);
-					}
-					return pdo_pgsql_bind_value(S->params.owner, param->paramno, PDO_PARAM_TYPE(param->param_type), parameter);
-				}
-				break;
-		}
-	} else if (param->is_param && event_type == PDO_PARAM_EVT_NORMALIZE) {
-		return pdo_pgsql_emulated_parameter(&param->param_type, &param->parameter);
-	}
-	return 1;
-}
-
 static int pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type)
 {
 	pdo_pgsql_stmt *S = (pdo_pgsql_stmt*)stmt->driver_data;
@@ -341,7 +289,7 @@ const struct pdo_stmt_methods swoole_pgsql_stmt_methods = {
 	pdo_pgsql_stmt_fetch,
 	pdo_pgsql_stmt_describe,
 	pgsql_stmt_get_col,
-	pgsql_stmt_param_hook,
+	pdo_pgsql_stmt_param_hook,
 	NULL, /* set_attr */
 	pgsql_stmt_get_attr,
 	pdo_pgsql_stmt_get_column_meta,

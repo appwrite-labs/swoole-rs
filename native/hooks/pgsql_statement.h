@@ -68,6 +68,6 @@ void pdo_pgsql_scalar_column(Oid oid, struct iovec bytes, zval *output);
 struct pdo_column_data;
 bool pdo_pgsql_describe_column(PGresult *result, int colno, struct pdo_column_data *column);
 int pdo_pgsql_column_meta(pdo_pgsql_db_handle *H, PGresult *result, int colno, zval *output);
-bool pdo_pgsql_bind_stream(pdo_dbh_t *dbh, pdo_stmt_t *stmt, void *params, size_t index, zval *value);
+int pdo_pgsql_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *param, enum pdo_param_event event);
 void pdo_pgsql_raise(pdo_dbh_t *dbh, pdo_stmt_t *stmt, int errcode, const char *sqlstate, const char *msg);
 #endif
