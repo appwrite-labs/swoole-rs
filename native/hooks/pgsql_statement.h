@@ -19,6 +19,7 @@
 #ifndef SWOOLE_PGSQL_STATEMENT_H
 #define SWOOLE_PGSQL_STATEMENT_H
 #include "php_swoole.h"
+#ifdef SW_USE_PGSQL
 #include <libpq-fe.h>
 #include "ext/pdo/php_pdo_driver.h"
 #include <sys/uio.h>
@@ -45,4 +46,5 @@ int pdo_pgsql_column_meta(pdo_pgsql_db_handle *H, PGresult *result, int colno, z
 PGresult *pdo_pgsql_statement_result(void *state);
 const char *pdo_pgsql_statement_name(void *state);
 void pdo_pgsql_raise(pdo_dbh_t *dbh, pdo_stmt_t *stmt, int errcode, const char *sqlstate, const char *msg);
+#endif /* SW_USE_PGSQL */
 #endif

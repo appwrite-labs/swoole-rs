@@ -22,7 +22,7 @@
 #define PHP_PDO_PGSQL_INT_H
 
 #include "pgsql_statement.h"
-#include <php.h>
+#ifdef SW_USE_PGSQL
 
 void pdo_pgsql_register_lob(pdo_pgsql_db_handle *H, zend_long id, zend_resource *resource);
 void pdo_pgsql_replace_notice_callback(pdo_pgsql_db_handle *H, zend_fcall_info_cache *next);
@@ -76,4 +76,5 @@ void pgsqlLOBUnlink_internal(INTERNAL_FUNCTION_PARAMETERS);
 void pgsqlGetNotify_internal(INTERNAL_FUNCTION_PARAMETERS);
 void pgsqlGetPid_internal(INTERNAL_FUNCTION_PARAMETERS);
 
+#endif /* SW_USE_PGSQL */
 #endif /* PHP_PDO_PGSQL_INT_H */
