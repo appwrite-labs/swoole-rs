@@ -119,7 +119,7 @@ unsafe extern "C" {
     safe fn PQfreemem(escaped: Escaped);
 }
 
-// What is left of the C driver (`thirdparty/php8*/pdo_pgsql/pgsql_driver.c`).
+// PDO and Zend glue in `native/hooks/pgsql_driver.c`.
 unsafe extern "C" {
     /// The methods table PDO calls, whose entries are the exports below and the C
     /// statement preparer, driver methods and scanner.
@@ -1037,10 +1037,53 @@ pub extern "C" fn pdo_pgsql_lob_streams(handle: &Handle) -> *mut *mut c_void {
     handle.lob_streams.as_ptr()
 }
 
-/// `&H->notice_callback`: the callback the C notice code keeps (PHP 8.4+).
+/// Backend process id for PDO's connection.
 #[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_notice_callback(handle: &Handle) -> *mut *mut c_void {
-    handle.notice_callback.as_ptr()
+pub extern "C" fn pdo_pgsql_backend_pid(handle: &Handle, output: &Slot) {
+    output.set(Owned::long(PQbackendPID(handle.server).into()));
+}
+
+/// Read a pending notification, optionally waiting once. PHP owns a non-null
+/// result and releases it with `PQfreemem` after copying the fields.
+#[unsafe(no_mangle)]
+pub extern "C" fn pdo_pgsql_read_notify(
+    handle: &Handle,
+    timeout: c_int,
+    result: &mut *mut pq_sys::PGnotify,
+) -> bool {
+    unsafe extern "C" {
+        safe fn PQnotifies(conn: Conn) -> *mut pq_sys::PGnotify;
+        safe fn pdo_pgsql_wait_notify(fd: c_int, timeout: c_int);
+    }
+    let conn = handle.server;
+    if !conn.consume_input() {
+        return false;
+    }
+    *result = PQnotifies(conn);
+    if timeout > 0 && result.is_null() {
+        pdo_pgsql_wait_notify(conn.socket(), timeout);
+        if !conn.consume_input() {
+            return false;
+        }
+        *result = PQnotifies(conn);
+    }
+    true
+}
+
+/// Callback Zend invokes for a PostgreSQL notice (PHP 8.4+).
+#[unsafe(no_mangle)]
+pub extern "C" fn pdo_pgsql_notice_callback(handle: &Handle) -> *mut c_void {
+    handle.notice_callback.get()
+}
+
+/// Transfer the previous callback back to Zend for destruction. Install its
+/// replacement first because releasing a callable may run a PHP destructor.
+#[unsafe(no_mangle)]
+pub extern "C" fn pdo_pgsql_replace_notice_callback(
+    handle: &Handle,
+    next: *mut c_void,
+) -> *mut c_void {
+    handle.notice_callback.replace(next)
 }
 
 /// `&H->running_stmt`: the C statement code's running unbuffered statement (PHP 8.5).

@@ -158,9 +158,6 @@ mod php {
             if pkg_major_version("libpq").is_some_and(|major| major >= 17) {
                 p.define(&["HAVE_PQCLOSEPREPARED"]);
             }
-            let dir = bundled.join("pdo_pgsql");
-            p.c.push(dir.join("pgsql_driver.c"));
-            p.includes.push(dir);
             p.includes.extend(pkg_includes("libpq"));
             p.libs.push("pq");
         }

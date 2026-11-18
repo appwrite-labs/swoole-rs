@@ -21,6 +21,7 @@
 
 #ifdef SW_USE_PGSQL
 #include "php_pdo_pgsql_int.h"
+#include <libpq/libpq-fs.h>
 #include "main/php_memory_streams.h"
 static bool pdo_pgsql_dispatch(pdo_stmt_t *stmt, pdo_pgsql_stmt *S, bool unbuffered) {
     bool named = stmt->supports_placeholders == PDO_PLACEHOLDER_NAMED;

@@ -16,46 +16,40 @@
   +----------------------------------------------------------------------+
 */
 
-#include "php_swoole_pgsql.h"
-
-#if PHP_VERSION_ID >= 80500
+#include "config.h"
 #include "php.h"
-#include "php_ini.h"
-#include "main/php_network.h"
-#include "ext/pdo/php_pdo.h"
-#include "ext/pdo/php_pdo_driver.h"
-#include "ext/pdo/php_pdo_error.h"
-#include "ext/standard/file.h"
-#include "php_pdo_pgsql.h"
+#ifdef SW_USE_PGSQL
 #include "php_pdo_pgsql_int.h"
-#include "zend_exceptions.h"
-#include "zend_interfaces.h"
-#include "zend_smart_str.h"
+#include "ext/pdo/php_pdo_error.h"
 #include "pgsql_driver_arginfo.h"
 
 void pdo_pgsql_notice(void *context, const char *message) /* {{{ */
 {
+#if PHP_VERSION_ID >= 80400
 	pdo_dbh_t * dbh = (pdo_dbh_t *)context;
-	zend_fcall_info_cache *fc = *pdo_pgsql_notice_callback(dbh->driver_data);
+	zend_fcall_info_cache *fc = pdo_pgsql_notice_callback(dbh->driver_data);
 	if (fc) {
 		zval zarg;
 		ZVAL_STRING(&zarg, message);
 		zend_call_known_fcc(fc, NULL, 1, &zarg, NULL);
 		zval_ptr_dtor_str(&zarg);
 	}
+#endif
 }
 /* }}} */
 
-void pdo_pgsql_cleanup_notice_callback(pdo_pgsql_db_handle *H) /* {{{ */
+#if PHP_VERSION_ID >= 80400
+static void replace_notice_callback(pdo_pgsql_db_handle *handle, zend_fcall_info_cache *next)
 {
-	zend_fcall_info_cache **callback = pdo_pgsql_notice_callback(H);
-	if (*callback) {
-		zend_fcc_dtor(*callback);
-		efree(*callback);
-		*callback = NULL;
-	}
+    zend_fcall_info_cache *previous = pdo_pgsql_replace_notice_callback(handle, next);
+    if (previous) {
+        zend_fcc_dtor(previous);
+        efree(previous);
+    }
 }
 /* }}} */
+
+#endif
 
 /* The handle's close: C's state (the LOB streams and their table, and the notice
  * callback), then the handle and its connection (pdo_pgsql_free). */
@@ -69,7 +63,9 @@ void pdo_pgsql_handle_closer(pdo_dbh_t *dbh) {
 			pefree(*streams, dbh->is_persistent);
 			*streams = NULL;
 		}
-		pdo_pgsql_cleanup_notice_callback(H);
+#if PHP_VERSION_ID >= 80400
+		replace_notice_callback(H, NULL);
+#endif
 		dbh->driver_data = NULL;
 		pdo_pgsql_free(H);
 	}
@@ -84,8 +80,6 @@ static bool pgsql_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *
 	zend_string *nsql = NULL;
 	int emulate = 0;
 	int execute_only = 0;
-	zval *val;
-	zend_long lval;
 
 	S->H = H;
 	stmt->driver_data = S;
@@ -112,6 +106,11 @@ static bool pgsql_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *
 		execute_only = pdo_pgsql_disable_prepares(H);
 	}
 
+#if PHP_VERSION_ID < 80400
+    if (PQprotocolVersion(pdo_pgsql_server(H)) <= 2) {
+        emulate = 1;
+    }
+#endif
 	if (emulate) {
 		stmt->supports_placeholders = PDO_PLACEHOLDER_NONE;
 	} else {
@@ -119,6 +118,9 @@ static bool pgsql_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *
 		stmt->named_rewrite_template = "$%d";
 	}
 
+#if PHP_VERSION_ID >= 80500
+	zval *val;
+	zend_long lval;
 	S->is_unbuffered =
 		driver_options
 		&& (val = zend_hash_index_find(Z_ARRVAL_P(driver_options), PDO_ATTR_PREFETCH))
@@ -127,6 +129,7 @@ static bool pgsql_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *
 		: pdo_pgsql_lazy_fetch(H)
 	;
 
+#endif
 	ret = pdo_parse_params(stmt, sql, &nsql);
 
 	if (ret == -1) {
@@ -149,113 +152,7 @@ static bool pgsql_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *
 	return true;
 }
 
-void pgsqlGetNotify_internal(INTERNAL_FUNCTION_PARAMETERS)
-{
-	pdo_dbh_t *dbh;
-	pdo_pgsql_db_handle *H;
-	zend_long result_type = PDO_FETCH_USE_DEFAULT;
-	zend_long ms_timeout = 0;
-	PGnotify *pgsql_notify;
-
-	if (FAILURE == zend_parse_parameters(ZEND_NUM_ARGS(), "|ll",
-				&result_type, &ms_timeout)) {
-		RETURN_THROWS();
-	}
-
-	dbh = Z_PDO_DBH_P(ZEND_THIS);
-	PDO_CONSTRUCT_CHECK;
-
-	if (result_type == PDO_FETCH_USE_DEFAULT) {
-		result_type = dbh->default_fetch_type;
-	}
-
-	if (result_type != PDO_FETCH_BOTH && result_type != PDO_FETCH_ASSOC && result_type != PDO_FETCH_NUM) {
-		zend_argument_value_error(1, "must be one of PDO::FETCH_BOTH, PDO::FETCH_ASSOC, or PDO::FETCH_NUM");
-		RETURN_THROWS();
-	}
-
-	if (ms_timeout < 0) {
-		zend_argument_value_error(2, "must be greater than or equal to 0");
-		RETURN_THROWS();
-#ifdef ZEND_ENABLE_ZVAL_LONG64
-	} else if (ms_timeout > INT_MAX) {
-		php_error_docref(NULL, E_WARNING, "Timeout was shrunk to %d", INT_MAX);
-		ms_timeout = INT_MAX;
-#endif
-	}
-
-	H = (pdo_pgsql_db_handle *)dbh->driver_data;
-
-	if (!PQconsumeInput(pdo_pgsql_server(H))) {
-		pdo_pgsql_error(dbh, PGRES_FATAL_ERROR, NULL);
-		PDO_HANDLE_DBH_ERR();
-		RETURN_FALSE;
-	}
-	pgsql_notify = PQnotifies(pdo_pgsql_server(H));
-
-	if (ms_timeout && !pgsql_notify) {
-		php_pollfd_for_ms(PQsocket(pdo_pgsql_server(H)), PHP_POLLREADABLE, (int)ms_timeout);
-
-		if (!PQconsumeInput(pdo_pgsql_server(H))) {
-			pdo_pgsql_error(dbh, PGRES_FATAL_ERROR, NULL);
-			PDO_HANDLE_DBH_ERR();
-			RETURN_FALSE;
-		}
-		pgsql_notify = PQnotifies(pdo_pgsql_server(H));
-	}
-
-	if (!pgsql_notify) {
-		RETURN_FALSE;
-	}
-
-	array_init(return_value);
-	if (result_type == PDO_FETCH_NUM || result_type == PDO_FETCH_BOTH) {
-		add_index_string(return_value, 0, pgsql_notify->relname);
-		add_index_long(return_value, 1, pgsql_notify->be_pid);
-		if (pgsql_notify->extra && pgsql_notify->extra[0]) {
-			add_index_string(return_value, 2, pgsql_notify->extra);
-		}
-	}
-	if (result_type == PDO_FETCH_ASSOC || result_type == PDO_FETCH_BOTH) {
-		add_assoc_string(return_value, "message", pgsql_notify->relname);
-		add_assoc_long(return_value, "pid", pgsql_notify->be_pid);
-		if (pgsql_notify->extra && pgsql_notify->extra[0]) {
-			add_assoc_string(return_value, "payload", pgsql_notify->extra);
-		}
-	}
-
-	PQfreemem(pgsql_notify);
-}
-
-/* {{{ Get asynchronous notification */
-PHP_METHOD(PDO_PGSql_Ext, pgsqlGetNotify)
-{
-	pgsqlGetNotify_internal(INTERNAL_FUNCTION_PARAM_PASSTHRU);
-}
-/* }}} */
-
-void pgsqlGetPid_internal(INTERNAL_FUNCTION_PARAMETERS)
-{
-	pdo_dbh_t *dbh;
-	pdo_pgsql_db_handle *H;
-
-	ZEND_PARSE_PARAMETERS_NONE();
-
-	dbh = Z_PDO_DBH_P(ZEND_THIS);
-	PDO_CONSTRUCT_CHECK;
-
-	H = (pdo_pgsql_db_handle *)dbh->driver_data;
-
-	RETURN_LONG(PQbackendPID(pdo_pgsql_server(H)));
-}
-
-/* {{{ Get backend(server) pid */
-PHP_METHOD(PDO_PGSql_Ext, pgsqlGetPid)
-{
-	pgsqlGetPid_internal(INTERNAL_FUNCTION_PARAM_PASSTHRU);
-}
-/* }}} */
-
+#if PHP_VERSION_ID >= 80400
 /* {{{ Sets a callback to receive DB notices (after client_min_messages has been set) */
 PHP_METHOD(PDO_PGSql_Ext, pgsqlSetNoticeCallback)
 {
@@ -270,12 +167,12 @@ PHP_METHOD(PDO_PGSql_Ext, pgsqlSetNoticeCallback)
 
 	pdo_pgsql_db_handle *H = (pdo_pgsql_db_handle *)dbh->driver_data;
 
-	pdo_pgsql_cleanup_notice_callback(H);
-
-	if (ZEND_FCC_INITIALIZED(fcc)) {
-		*pdo_pgsql_notice_callback(H) = emalloc(sizeof(zend_fcall_info_cache));
-		zend_fcc_dup(*pdo_pgsql_notice_callback(H), &fcc);
-	}
+    zend_fcall_info_cache *next = NULL;
+    if (ZEND_FCC_INITIALIZED(fcc)) {
+        next = emalloc(sizeof(*next));
+        zend_fcc_dup(next, &fcc);
+    }
+    replace_notice_callback(H, next);
 
 	return;
 
@@ -286,6 +183,8 @@ cleanup:
 	RETURN_THROWS();
 }
 /* }}} */
+
+#endif
 
 static const zend_function_entry *pdo_pgsql_get_driver_methods(pdo_dbh_t *dbh, int kind)
 {
@@ -314,7 +213,9 @@ const struct pdo_dbh_methods swoole_pdo_pgsql_methods = {
 	NULL,
 	pdo_pgsql_handle_in_transaction,
 	NULL, /* get_gc */
+#if PHP_VERSION_ID >= 80400
 	pdo_pgsql_scanner
+#endif
 };
 
 static int pdo_pgsql_handle_factory(pdo_dbh_t *dbh, zval *driver_options) {
