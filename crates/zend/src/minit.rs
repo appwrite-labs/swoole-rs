@@ -524,13 +524,13 @@ impl Minit {
         if named.is_null() {
             return named;
         }
-        // SAFETY: a registered function, which nothing writes during MINIT. Zend
-        // allocates an internal one as a `zend_internal_function`, shorter than
-        // the union, and a user one is longer: this much of either is there.
-        let internal_function = unsafe { named.cast::<zend_internal_function>().read() };
-        if internal_function.type_ != Function::INTERNAL {
+        if Function(named, PhantomData).kind() != Function::INTERNAL {
             return std::ptr::null_mut();
         }
+        // SAFETY: a registered internal function, per its kind, which Zend
+        // allocates as a `zend_internal_function` (shorter than the union) and
+        // nothing writes during MINIT.
+        let internal_function = unsafe { named.cast::<zend_internal_function>().read() };
         Box::into_raw(Box::new(zend_function { internal_function }))
     }
 
