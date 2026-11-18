@@ -118,13 +118,11 @@ impl Call<'_> {
 }
 
 /// `E_WARNING`.
-#[expect(clippy::cast_possible_wrap, reason = "error levels are small")]
-pub const E_WARNING: i32 = crate::sys::E_WARNING as i32;
+pub const E_WARNING: i32 = crate::sys::E_WARNING.cast_signed();
 /// `E_NOTICE`.
 pub const E_NOTICE: i32 = crate::sys::E_NOTICE.cast_signed();
 /// `E_ERROR`: Zend bails out after reporting it.
-#[expect(clippy::cast_possible_wrap, reason = "error levels are small")]
-pub const E_ERROR: i32 = crate::sys::E_ERROR as i32;
+pub const E_ERROR: i32 = crate::sys::E_ERROR.cast_signed();
 
 /// A message formatted on the stack (truncated at 1023 bytes). It owns nothing,
 /// so a Zend error that longjmps past it skips no drop.

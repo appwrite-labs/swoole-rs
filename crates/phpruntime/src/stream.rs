@@ -159,8 +159,7 @@ const AS_SOCKETD: c_int = 2;
 const AS_FD_FOR_SELECT: c_int = 3;
 
 /// `E_NOTICE`.
-#[expect(clippy::cast_possible_wrap, reason = "error levels are small")]
-const E_NOTICE: i32 = swoole_rs_zend::sys::E_NOTICE as i32;
+const E_NOTICE: i32 = swoole_rs_zend::sys::E_NOTICE.cast_signed();
 
 /// A stream's `abstract`: the socket, shared with an operation in flight so a
 /// close while it waits only drops this reference.

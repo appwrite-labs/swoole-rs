@@ -6,6 +6,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::MetadataExt;
+use swoole_rs_corebase::CCast;
 
 /// `PATH_MAX`: the longest path upstream's handler copies before an effect.
 const PATH_MAX: usize = libc::PATH_MAX as usize;
@@ -17,11 +18,8 @@ pub trait StaticEffects {
     fn stat(&self, path: &[u8]) -> Option<HttpStaticObservation> {
         let meta = fs::symlink_metadata(OsStr::from_bytes(path)).ok()?;
         let kind = meta.file_type();
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "Preserve native off_t to size_t conversion on narrow targets"
-        )]
-        let filesize = meta.size() as usize;
+        // The native `off_t` to `size_t` conversion, on narrow targets too.
+        let filesize = meta.size().c_cast::<usize>();
         Some(HttpStaticObservation {
             filesize,
             mtime: meta.mtime(),

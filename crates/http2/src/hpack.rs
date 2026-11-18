@@ -162,10 +162,6 @@ fn huffman_length(text: &[u8]) -> usize {
     bits.div_ceil(8)
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "each byte pushed is the low eight bits of the shifted code"
-)]
 fn huffman_encode(text: &[u8], out: &mut Vec<u8>) {
     let (mut bits, mut pending) = (0_u64, 0_u32);
     for &byte in text {
@@ -175,12 +171,13 @@ fn huffman_encode(text: &[u8], out: &mut Vec<u8>) {
         pending += length;
         while pending >= 8 {
             pending -= 8;
-            out.push((bits >> pending) as u8);
+            // The low eight bits of the shifted code.
+            out.push((bits >> pending).to_le_bytes()[0]);
         }
     }
     if pending > 0 {
         // EOS's prefix: ones.
-        out.push((bits << (8 - pending)) as u8 | (0xff >> pending));
+        out.push((bits << (8 - pending)).to_le_bytes()[0] | (0xff >> pending));
     }
 }
 
@@ -328,23 +325,21 @@ fn continue_integer(value: u32, shift: u32, byte: u8) -> Result<u32, Error> {
     value.checked_add(add << shift).ok_or(Error)
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "each byte pushed holds at most eight bits of `value`"
-)]
 fn encode_integer(out: &mut Vec<u8>, bits: u8, prefix: u32, value: usize) {
+    // Each byte pushed holds at most eight bits of `value`: its low byte.
+    let low = |value: usize| value.to_le_bytes()[0];
     let limit = (1_usize << prefix) - 1;
     if value < limit {
-        out.push(bits | value as u8);
+        out.push(bits | low(value));
         return;
     }
-    out.push(bits | limit as u8);
+    out.push(bits | low(limit));
     let mut rest = value - limit;
     while rest >= 128 {
-        out.push(0x80 | (rest & 0x7f) as u8);
+        out.push(0x80 | low(rest & 0x7f));
         rest >>= 7;
     }
-    out.push(rest as u8);
+    out.push(low(rest));
 }
 
 /// Huffman-coded when that is shorter.

@@ -11,7 +11,7 @@ use swoole_rs_corebase::process::methods::{
     send_pipe_message, set_worker_type, swoole_get_worker_id, swoole_set_worker_id,
     worker_set_max_request,
 };
-use swoole_rs_corebase::process::process_pool::{Hooks, PoolRef, SW_IPC_MAX_SIZE};
+use swoole_rs_corebase::process::process_pool::{Hooks, PoolRef};
 use swoole_rs_corebase::process::task_file::{Packed, TaskBuffer};
 use swoole_rs_corebase::process::task_sync::ResultSlot;
 use swoole_rs_corebase::process::worker_record::{
@@ -40,11 +40,7 @@ const FD_PIPE: c_int = 3;
 const POLL_TIMEOUT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SOCKET_POLL_TIMEOUT as c_int;
 const SEND_TO_WORKER_TIMEOUT: c_int = 9014;
 /// `sizeof(EventData)`.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "SW_IPC_MAX_SIZE is 8192 or 2048"
-)]
-const EVENT_DATA_SIZE: usize = SW_IPC_MAX_SIZE as usize;
+const EVENT_DATA_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize;
 
 /// `swoole::EventData`, aligned for its head, to read a task into.
 #[repr(align(8))]
