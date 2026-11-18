@@ -218,19 +218,27 @@ pub fn swoole_timer_get(timer_id: c_long) -> Option<Held> {
     Held::new(timer.generation(), timer_id)
 }
 
-/// `void swoole_timer_free()`: clear the thread slot before destroying its timer.
-pub fn swoole_timer_free() {
+/// Unpublishes this thread's timer and hands it over. `Owner::destroy` takes the
+/// timer by value, so a timer is destroyed only once nothing can reach it here.
+fn take() -> Option<Box<Timer>> {
     let timer = timer();
-    let Some(live) = current() else {
+    if timer.is_null() {
+        return None;
+    }
+    publish(std::ptr::null_mut());
+    // SAFETY: this thread's timer, `Owner::create`'s allocation, which
+    // swoole_timer_create published; unpublished above, so owned once.
+    Some(unsafe { Box::from_raw(timer) })
+}
+
+/// `void swoole_timer_free()`: take the thread's timer out of its slot, then destroy it.
+pub fn swoole_timer_free() {
+    let Some(timer) = take() else {
         swoole_print_backtrace();
         log::warning(c"swoole_timer_free", format_args!("timer is not available"));
         return;
     };
-    publish(std::ptr::null_mut());
-    live.destroy();
-    // SAFETY: this thread's timer, `Owner::create`'s allocation, which
-    // swoole_timer_create published; destroyed above, borrowed no more and freed once.
-    drop(unsafe { Box::from_raw(timer) });
+    timer.destroy();
 }
 
 /// `void swoole_timer_select()`: runs due timers, if there is a timer; also the
