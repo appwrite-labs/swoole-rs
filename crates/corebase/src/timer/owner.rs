@@ -12,6 +12,7 @@ use crate::timer::{
 use crate::{log, swr_v1_core_set_signal_alarm, thread_reactor};
 use std::cell::Cell;
 use std::ffi::{CStr, c_int, c_long, c_void};
+use std::rc::Rc;
 
 /// `SW_LOG_WARNING` and `SW_ERROR_INVALID_PARAMS`.
 const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
@@ -128,7 +129,7 @@ static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 impl Owner {
     /// `new Timer(manually_trigger)`.
     pub(crate) fn create(manually_trigger: bool) -> *mut Owner {
-        let timer = Box::new(Owner {
+        let timer = Rc::new(Owner {
             reactor: Cell::new(std::ptr::null_mut()),
             queue: Cell::new(Some(Box::default())),
             owner_pid: std::process::id().cast_signed(),
@@ -139,7 +140,7 @@ impl Owner {
             generation: next_generation(),
         });
         timer.init(manually_trigger);
-        Box::into_raw(timer)
+        Rc::into_raw(timer).cast_mut()
     }
 
     pub(crate) fn relative_msec(&self) -> i64 {
@@ -440,11 +441,8 @@ impl Owner {
     /// Zend bailout will never resume an active selection, so it is closed here;
     /// same-process deletion during a live callback aborts. Takes the timer by
     /// value: a published timer is first taken out of its slot (`wrapper::take`).
-    #[expect(
-        clippy::boxed_local,
-        reason = "the timer stays at its address while released callbacks run"
-    )]
-    pub(crate) fn destroy(self: Box<Self>) {
+    /// Released callbacks can retain shared references to the timer during the drain.
+    pub(crate) fn destroy(self: Rc<Self>) {
         self.lend(Queue::close);
         self.set(-1);
         if self.abandoned.get() || std::process::id().cast_signed() != self.owner_pid {
@@ -552,12 +550,11 @@ pub fn owner_reinit(timer: &Owner, manually_trigger: bool) {
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use std::rc::Rc;
 
     /// `delete timer`, as `swoole_timer_free` does of the thread's: these timers are
     /// never published.
     unsafe fn free(timer: *mut Owner) {
-        unsafe { Box::from_raw(timer) }.destroy();
+        unsafe { Rc::from_raw(timer) }.destroy();
     }
 
     type Call = Box<dyn FnMut(&Owner, c_long)>;

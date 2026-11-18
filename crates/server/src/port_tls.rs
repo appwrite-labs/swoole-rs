@@ -206,6 +206,7 @@ mod tests {
     use swoole_rs_corebase::utilities::sni_wildcard_matches;
 
     #[test]
+    #[cfg_attr(miri, ignore = "freezing a TLS configuration calls OpenSSL")]
     fn the_tls_state_lives_in_the_port_until_freed() {
         let builder = swoole_rs_corebase::tls::TlsContext::new();
         let settings = builder.borrow_configuration().freeze(None).unwrap();
