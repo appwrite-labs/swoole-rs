@@ -133,7 +133,7 @@ mod tests {
     fn recv_packet_with_partially_filled_buffer() {
         let (mut peer, reader) = UnixStream::pair().unwrap();
         assert_eq!(peer.write(b"*").unwrap(), 1);
-        drop(peer);
+        peer.shutdown(std::net::Shutdown::Write).unwrap();
 
         let mut socket = SocketRecord::new();
         socket.fd = reader.as_raw_fd();
