@@ -149,99 +149,10 @@ static int odbc_stmt_dtor(pdo_stmt_t *stmt) {
     return 1;
 }
 
-bool swr_odbc_supply_data(pdo_stmt_t *stmt, SQLRETURN *status) {
-    pdo_odbc_stmt *S = (pdo_odbc_stmt *) stmt->driver_data;
-    SQLRETURN rc = *status, rc1;
-    char *buf = NULL;
-#line 164
-    while (rc == SQL_NEED_DATA) {
-        struct pdo_bound_param_data *param;
-
-        rc = SQLParamData(S->stmt, (SQLPOINTER *) &param);
-        if (rc == SQL_NEED_DATA) {
-            php_stream *stm;
-            int len;
-            pdo_odbc_param *P;
-            zval *parameter;
-
-            P = (pdo_odbc_param *) param->driver_data;
-            if (Z_ISREF(param->parameter)) {
-                parameter = Z_REFVAL(param->parameter);
-            } else {
-                parameter = &param->parameter;
-            }
-            if (Z_TYPE_P(parameter) != IS_RESOURCE) {
-                /* they passed in a string */
-                zend_ulong ulen;
-                convert_to_string(parameter);
-
-                switch (pdo_odbc_utf82ucs2(stmt, P->is_unicode, Z_STRVAL_P(parameter), Z_STRLEN_P(parameter), &ulen)) {
-                case PDO_ODBC_CONV_NOT_REQUIRED:
-                    rc1 = SQLPutData(S->stmt, Z_STRVAL_P(parameter), Z_STRLEN_P(parameter));
-                    if (rc1 != SQL_SUCCESS && rc1 != SQL_SUCCESS_WITH_INFO) {
-                        rc = rc1;
-                    }
-                    break;
-                case PDO_ODBC_CONV_OK:
-                    rc1 = SQLPutData(S->stmt, S->convbuf, ulen);
-                    if (rc1 != SQL_SUCCESS && rc1 != SQL_SUCCESS_WITH_INFO) {
-                        rc = rc1;
-                    }
-                    break;
-                case PDO_ODBC_CONV_FAIL:
-                    pdo_odbc_stmt_error("error converting input string");
-                    SQLCloseCursor(S->stmt);
-                    if (buf) {
-                        efree(buf);
-                    }
-                    return 0;
-                }
-                continue;
-            }
-
-            /* we assume that LOBs are binary and don't need charset
-             * conversion */
-
-            php_stream_from_zval_no_verify(stm, parameter);
-            if (!stm) {
-                /* shouldn't happen either */
-                pdo_odbc_stmt_error("input LOB is no longer a stream");
-                SQLCloseCursor(S->stmt);
-                if (buf) {
-                    efree(buf);
-                }
-                return 0;
-            }
-
-            /* now suck data from the stream and stick it into the database */
-            if (buf == NULL) {
-                buf = emalloc(8192);
-            }
-
-            do {
-                len = php_stream_read(stm, buf, 8192);
-                if (len == 0) {
-                    break;
-                }
-                rc1 = SQLPutData(S->stmt, buf, len);
-                if (rc1 != SQL_SUCCESS && rc1 != SQL_SUCCESS_WITH_INFO) {
-                    rc = rc1;
-                }
-            } while (1);
-        }
-    }
-
-    if (buf) {
-        efree(buf);
-    }
-    *status = rc;
-    return true;
-}
-
 static const int bind_lines[] = {373, 391};
 static const char stmt_file[] = __FILE__;
 #define ODBC_CONVERT_RESULT(s, u, z) pdo_odbc_ucs22utf8(s, u, z)
-static const int execute_lines[] = {250, 254};
+static const int execute_lines[] = {250, 254, 216};
 static const int fetch_lines[] = {543, 552};
 static const int describe_lines[] = {591, 600, 626};
 static const int attr_lines[] = {774, 802};

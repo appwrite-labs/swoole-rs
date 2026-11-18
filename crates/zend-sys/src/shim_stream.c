@@ -103,6 +103,21 @@ int swr_zend_try_stream_free(php_stream *stream) {
     return bailed;
 }
 
+zend_long swr_zend_try_stream_zval_read(zval *value, char *buffer, size_t size) {
+    php_stream *stream;
+    php_stream_from_zval_no_verify(stream, value);
+    if (!stream) {
+        return -1;
+    }
+    volatile zend_long count = -2;
+    SWR_ZEND_TRY {
+        ssize_t got = php_stream_read(stream, buffer, size);
+        count = got > 0 ? got : 0;
+    }
+    SWR_ZEND_CATCH {} SWR_ZEND_END_TRY();
+    return count;
+}
+
 /* Set at MINIT, before any PHP thread starts. */
 static swr_zend_stream_factory_body factory_body;
 

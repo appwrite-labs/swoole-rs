@@ -141,9 +141,16 @@ bool swr_odbc_has_columns(pdo_stmt_t *stmt) {
     return ((pdo_odbc_stmt *) stmt->driver_data)->cols != NULL;
 }
 
-extern bool swr_odbc_execute(pdo_dbh_t *, pdo_stmt_t *, bool, const char *, int, int);
+/* What a bound parameter holds now, through its reference if it is one. */
+zval *swr_odbc_parameter_value(struct pdo_bound_param_data *param) {
+    zval *value = &param->parameter;
+    ZVAL_DEREF(value);
+    return value;
+}
+
+extern bool swr_odbc_execute(pdo_dbh_t *, pdo_stmt_t *, bool, const char *, const int (*)[3]);
 static int odbc_stmt_execute(pdo_stmt_t *stmt) {
-    return swr_odbc_execute(stmt->dbh, stmt, stmt->executed, stmt_file, execute_lines[0], execute_lines[1]);
+    return swr_odbc_execute(stmt->dbh, stmt, stmt->executed, stmt_file, &execute_lines);
 }
 
 
