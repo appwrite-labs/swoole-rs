@@ -129,8 +129,13 @@ fn fetch_unbuffered(
     if let Some(previous) = result.take() {
         crate::PQclear(previous);
     }
-    let Some(rows) = crate::driver::statement_result(dbh, stmt, result, crate::PQgetResult(conn))
-    else {
+    // An empty query can deliver its terminal result during execute.
+    let Some(next) = crate::PQgetResult(conn) else {
+        running.set(false);
+        stmt.set_row_count(0);
+        return true;
+    };
+    let Some(rows) = crate::driver::statement_result(dbh, stmt, result, Some(next)) else {
         return false;
     };
     stmt.set_row_count(i64::from(rows));
