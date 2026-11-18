@@ -23,6 +23,15 @@ int swr_zend_try_zend_error(int level, const char *message) {
     SWR_TRAP(zend_error(level, "%s", message));
 }
 
+int swr_zend_try_error1(const char *param, int level, const char *message) {
+    SWR_TRAP(php_error_docref1(NULL, param, level, "%s", message));
+}
+
+int swr_zend_try_open_basedir(const char *path, int warn, bool *refused) {
+    *refused = true;
+    SWR_TRAP(*refused = php_check_open_basedir_ex(path, warn) != 0);
+}
+
 void swr_v1_core_set_last_error(int code);
 
 void swr_zend_callable_warning(const char *message) {

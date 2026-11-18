@@ -1177,64 +1177,6 @@ static php_stream *php_plain_files_stream_opener(php_stream_wrapper *wrapper,
     return sw_php_stream_fopen_rel(path, mode, opened_path, options);
 }
 
-static int php_plain_files_url_stater(
-    php_stream_wrapper *wrapper, const char *url, int flags, php_stream_statbuf *ssb, php_stream_context *context) {
-#if PHP_VERSION_ID >= 80100
-    if (!(flags & PHP_STREAM_URL_STAT_IGNORE_OPEN_BASEDIR)) {
-#endif
-        if (strncasecmp(url, "file://", sizeof("file://") - 1) == 0) {
-            url += sizeof("file://") - 1;
-        }
-
-        if (php_check_open_basedir_ex(url, (flags & PHP_STREAM_URL_STAT_QUIET) ? 0 : 1)) {
-            return -1;
-        }
-#if PHP_VERSION_ID >= 80100
-    }
-#endif
-
-#ifdef PHP_WIN32
-    if (flags & PHP_STREAM_URL_STAT_LINK) {
-        return lstat(url, &ssb->sb);
-    }
-#else
-#ifdef HAVE_SYMLINK
-    if (flags & PHP_STREAM_URL_STAT_LINK) {
-        return lstat(url, &ssb->sb);
-    } else
-#endif
-#endif
-    return stat(url, &ssb->sb);
-}
-
-static int php_plain_files_unlink(php_stream_wrapper *wrapper,
-                                  const char *url,
-                                  int options,
-                                  php_stream_context *context) {
-    int ret;
-
-    if (strncasecmp(url, "file://", sizeof("file://") - 1) == 0) {
-        url += sizeof("file://") - 1;
-    }
-
-    if (php_check_open_basedir(url)) {
-        return 0;
-    }
-
-    ret = unlink(url);
-    if (ret == -1) {
-        if (options & REPORT_ERRORS) {
-            php_error_docref1(NULL, url, E_WARNING, "%s", strerror(errno));
-        }
-        return 0;
-    }
-
-    /* Clear stat cache (and realpath cache) */
-    php_clear_stat_cache(1, NULL, 0);
-
-    return 1;
-}
-
 static int php_plain_files_rename(
     php_stream_wrapper *wrapper, const char *url_from, const char *url_to, int options, php_stream_context *context) {
     int ret;
@@ -1427,36 +1369,6 @@ static int php_plain_files_mkdir(
     }
 }
 
-static int php_plain_files_rmdir(php_stream_wrapper *wrapper,
-                                 const char *url,
-                                 int options,
-                                 php_stream_context *context) {
-    if (strncasecmp(url, "file://", sizeof("file://") - 1) == 0) {
-        url += sizeof("file://") - 1;
-    }
-
-    if (php_check_open_basedir(url)) {
-        return 0;
-    }
-
-#ifdef PHP_WIN32
-    if (!php_win32_check_trailing_space(url, (int) strlen(url))) {
-        php_error_docref1(NULL, url, E_WARNING, "%s", strerror(ENOENT));
-        return 0;
-    }
-#endif
-
-    if (rmdir(url) < 0) {
-        php_error_docref1(NULL, url, E_WARNING, "%s", strerror(errno));
-        return 0;
-    }
-
-    /* Clear stat cache (and realpath cache) */
-    php_clear_stat_cache(1, NULL, 0);
-
-    return 1;
-}
-
 static int php_plain_files_metadata(
     php_stream_wrapper *wrapper, const char *url, int option, void *value, php_stream_context *context) {
     struct utimbuf *newtime;
@@ -1542,13 +1454,13 @@ static php_stream_wrapper_ops sw_php_plain_files_wrapper_ops = {
     php_plain_files_stream_opener,
     NULL,
     NULL,
-    php_plain_files_url_stater,
+    swr_v1_phpruntime_plain_url_stat,
     php_plain_files_dir_opener,
     "plainfile/coroutine",
-    php_plain_files_unlink,
+    swr_v1_phpruntime_plain_unlink,
     php_plain_files_rename,
     php_plain_files_mkdir,
-    php_plain_files_rmdir,
+    swr_v1_phpruntime_plain_rmdir,
     php_plain_files_metadata
 };
 

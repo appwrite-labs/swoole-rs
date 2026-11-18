@@ -32,6 +32,18 @@ enum {
 struct _php_stream;
 struct _php_stream *swr_v1_phpruntime_stream_from_socket(int fd, int domain, int kind, int protocol);
 
+/* The coroutine plain-files wrapper's url_stat, unlink and rmdir (crates/phpruntime's
+ * plain_files), which plain_wrapper.c's wrapper table names. */
+struct _php_stream_wrapper;
+struct _php_stream_statbuf;
+struct _php_stream_context;
+int swr_v1_phpruntime_plain_url_stat(struct _php_stream_wrapper *wrapper, const char *url, int flags,
+                                     struct _php_stream_statbuf *ssb, struct _php_stream_context *context);
+int swr_v1_phpruntime_plain_unlink(struct _php_stream_wrapper *wrapper, const char *url, int options,
+                                   struct _php_stream_context *context);
+int swr_v1_phpruntime_plain_rmdir(struct _php_stream_wrapper *wrapper, const char *url, int options,
+                                  struct _php_stream_context *context);
+
 /* Defined by thirdparty/php/streams/plain_wrapper.c, which keeps PHP's originals:
  * RINIT, and the stream_ops entry. */
 void php_swoole_runtime_rinit(void);

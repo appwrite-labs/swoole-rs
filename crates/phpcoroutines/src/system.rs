@@ -78,11 +78,6 @@ fn saturated(value: c_long) -> c_int {
     c_int::try_from(value).unwrap_or(c_int::MAX)
 }
 
-/// C's implicit `long` to `int` conversion, as upstream's calls make it.
-fn int(value: c_long) -> c_int {
-    value.c_cast::<c_int>()
-}
-
 swoole_rs_zend::handlers! {
     zim_swoole_coroutine_system_sleep => sleep;
     zim_swoole_coroutine_system_readFile => read_file;
@@ -351,7 +346,7 @@ fn wait_for(call: &Call, pid: c_long, timeout: f64) {
     let pid = c_long::from(if pid < 0 {
         system_wait(&mut status, timeout)
     } else {
-        system_waitpid(int(pid), &mut status, 0, timeout)
+        system_waitpid(pid.c_cast::<c_int>(), &mut status, 0, timeout)
     });
     if pid <= 0 {
         call.set_bool(false);
@@ -449,7 +444,11 @@ fn wait_event(call: &Call) {
         call.set_bool(false);
         return;
     };
-    match swoole_rs_hooks::wait_event::wait_event(fd, Events::from_bits(int(events)), timeout) {
+    match swoole_rs_hooks::wait_event::wait_event(
+        fd,
+        Events::from_bits(events.c_cast::<c_int>()),
+        timeout,
+    ) {
         Ok(fired) => call.set_long(fired.bits().into()),
         Err(_) => call.set_bool(false),
     }
