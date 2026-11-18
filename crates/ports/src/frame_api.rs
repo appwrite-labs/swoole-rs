@@ -28,6 +28,7 @@ const CLOSE_REASON_MAX_LEN: usize = 125;
 
 /// `websocket::Frame`. `header` holds `Header`'s bitfields: OPCODE:4, RSV3, RSV2,
 /// RSV1, FIN in the first byte (low bit first), LENGTH:7 and MASK in the second.
+#[derive(Default)]
 pub struct Frame {
     pub header: [u8; 2],
     pub mask_key: [u8; 4],
@@ -230,15 +231,15 @@ mod tests {
         let mut buffer = string();
         let text = b"hello world";
         assert!(encode(&mut buffer, text, 1, FIN | MASK));
-        let mut frame: Frame = unsafe { std::mem::zeroed() };
+        let mut frame = Frame::default();
         let mut wire = buffer.view().to_vec();
         assert!(decode(&mut frame, &mut wire));
         assert_eq!(frame.header[0], 0x81, "FIN and OPCODE_TEXT");
         assert_eq!(frame.header[1] >> 7, 1, "MASK");
         assert_eq!(frame.header_length, 6);
         assert_eq!(frame.payload_length, text.len());
-        let payload =
-            unsafe { std::slice::from_raw_parts(frame.payload.cast::<u8>(), frame.payload_length) };
+        let payload = &wire[usize::from(frame.header_length)..][..frame.payload_length];
+        assert_eq!(frame.payload.cast_const().cast::<u8>(), payload.as_ptr());
         assert_eq!(payload, text);
         assert_eq!(&frame.mask_key, b"258E");
         buffer.dispose();
@@ -273,7 +274,7 @@ mod tests {
     /// control frame fails with its lengths filled in.
     #[test]
     fn rejected_frames_fill_what_upstream_fills() {
-        let mut frame: Frame = unsafe { std::mem::zeroed() };
+        let mut frame = Frame::default();
         let mut short = *b"\x81\x05he";
         assert!(!decode(&mut frame, &mut short));
         assert_eq!(
@@ -303,7 +304,7 @@ mod tests {
         let mut buffer = string();
         let packet = b"hello world\n";
         assert!(encode(&mut buffer, packet, 1, FIN | MASK));
-        let mut ws: Frame = unsafe { std::mem::zeroed() };
+        let mut ws = Frame::default();
         let mut wire = buffer.view().to_vec();
         assert!(decode(&mut ws, &mut wire));
 
@@ -336,7 +337,7 @@ mod tests {
         /// `FLAG_RSV1`; `OPCODE_TEXT`, `OPCODE_PING`, `OPCODE_PONG`.
         const RSV1: u8 = 4;
         let mut buffer = string();
-        let mut frame: Frame = unsafe { std::mem::zeroed() };
+        let mut frame = Frame::default();
         for opcode in [Opcode::Close.code(), 9, 10] {
             buffer.clear();
             assert!(encode(&mut buffer, b"", opcode, FIN | RSV1));

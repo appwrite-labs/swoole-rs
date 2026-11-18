@@ -570,21 +570,12 @@ fn recv(cli: &mut TcpStream) -> Option<Vec<u8>> {
     };
     data[..header_len].copy_from_slice(&buf[..header_len]);
     cli.read_exact(&mut data[header_len..packet_len]).ok()?;
-    let mut frame = Frame {
-        header: [0; 2],
-        mask_key: [0; 4],
-        header_length: 0,
-        payload_length: 0,
-        payload: std::ptr::null_mut(),
-    };
+    let mut frame = Frame::default();
     if !ws_decode(&mut frame, &mut data[..packet_len]) {
         return None;
     }
-    // SAFETY: the decoded payload inside `data`.
-    Some(
-        unsafe { std::slice::from_raw_parts(frame.payload.cast::<u8>(), frame.payload_length) }
-            .to_vec(),
-    )
+    let payload = &data[usize::from(frame.header_length)..packet_len][..frame.payload_length];
+    Some(payload.to_vec())
 }
 
 fn websocket_test(server_port: c_int, data: &[u8], mask: bool) {
