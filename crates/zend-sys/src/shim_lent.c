@@ -1,7 +1,8 @@
 /* Stays C (docs/zend.md, What stays C): bailout (property hooks, methods run PHP)
- * and budget (OBJ_PROP). */
+ * and globals (the executor's uninitialized property sentinel), allocator (Zend strings). */
 #include "shim_lent.h"
 
+/* allocator, bailout: allocate the persistent string and trap the intern handler. */
 int swr_lent_intern(struct iovec bytes, zend_string **out) {
     zend_string *string = zend_string_init(bytes.iov_base, bytes.iov_len, 1);
     volatile int bailed = 0;
@@ -10,6 +11,7 @@ int swr_lent_intern(struct iovec bytes, zend_string **out) {
     return bailed;
 }
 
+/* bailout: the class registration and interning steps can escape. */
 int swr_lent_class_alias(struct iovec alias, zend_class_entry *ce, bool *registered) {
     zend_string *interned = NULL;
     if (swr_lent_intern(alias, &interned)) {
@@ -23,10 +25,7 @@ int swr_lent_class_alias(struct iovec alias, zend_class_entry *ce, bool *registe
     return bailed;
 }
 
-zval *swr_lent_hash_find(const HashTable *table, struct iovec key) {
-    return zend_hash_str_find(table, key.iov_base, key.iov_len);
-}
-
+/* globals: compare the declared property's slot with EG(uninitialized_zval). */
 zval *swr_lent_property_slot(zend_object *object, struct iovec name) {
     zend_property_info *info = zend_hash_str_find_ptr(&object->ce->properties_info, name.iov_base, name.iov_len);
     if (UNEXPECTED(info == NULL || (info->flags & ZEND_ACC_STATIC))) {
@@ -39,6 +38,7 @@ zval *swr_lent_property_slot(zend_object *object, struct iovec name) {
     return property;
 }
 
+/* bailout: a property read can invoke a user hook. */
 int swr_lent_read_property(zend_class_entry *scope, zend_object *object, struct iovec name, bool silent,
                            zval *rv) {
     volatile int bailed = 0;
@@ -52,6 +52,7 @@ int swr_lent_read_property(zend_class_entry *scope, zend_object *object, struct 
     return bailed;
 }
 
+/* bailout: a write can invoke a hook or destroy the previous value. */
 int swr_lent_update_property(zend_class_entry *scope, zend_object *object, struct iovec name, zval *value) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { zend_update_property(scope, object, name.iov_base, name.iov_len, value); }
@@ -59,6 +60,7 @@ int swr_lent_update_property(zend_class_entry *scope, zend_object *object, struc
     return bailed;
 }
 
+/* bailout: the called PHP method may exit. */
 int swr_lent_call_method(zend_object *object, zend_class_entry *scope, struct iovec name, zval *retval,
                          zval *arg1, zval *arg2) {
     if (scope && !instanceof_function(object->ce, scope)) {
@@ -71,12 +73,8 @@ int swr_lent_call_method(zend_object *object, zend_class_entry *scope, struct io
     return bailed;
 }
 
-zend_string *swr_lent_format_date(struct iovec format, zend_long timestamp, bool local) {
-    return php_format_date(format.iov_base, format.iov_len, timestamp, local);
-}
-
 void swr_lent_push_bytes(zval *array, struct iovec bytes) {
-    /* add_next_index_stringl's body, so the push stays one call. */
+    /* allocator: ZVAL_STRINGL creates the Zend-owned element. */
     zval string;
     ZVAL_STRINGL(&string, bytes.iov_base, bytes.iov_len);
     zend_hash_next_index_insert(Z_ARRVAL_P(array), &string);

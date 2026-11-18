@@ -12,16 +12,10 @@
 #include "shim.h"
 #include <sys/uio.h>
 
-/* zend_hash_func: the hash a zend_string of these bytes caches. */
-zend_ulong swr_bytes_hash(struct iovec key);
-
 /* is_numeric_string(text, len, lval, dval, false) over a NUL-terminated copy of the
  * bytes: IS_LONG, IS_DOUBLE or 0, with `*lval` or `*dval` filled; errors off, so
  * nothing is raised. */
 uint8_t swr_bytes_numeric(struct iovec text, zend_long *lval, double *dval);
-
-/* php_url_encode: a new string, as urlencode() encodes the bytes. */
-zend_string *swr_bytes_url_encode(struct iovec bytes);
 
 /* php_url_decode of a new string's copy of the bytes: them as urldecode() decodes
  * them. */

@@ -3,7 +3,6 @@
  * request, stream casts), allocator and budget (hash iteration). */
 #include "shim.h"
 #include "shim_thread.h"
-#include "shim_stream.h"
 #include "SAPI.h"
 #include "php_main.h"
 
@@ -48,7 +47,8 @@ php_stream *swr_zend_stream_open(const char *path, const char *mode) {
 }
 
 int swr_zend_stream_select_fd(zval *value, int *fd) {
-    php_stream *stream = swr_zend_stream_from_zval(value);
+    php_stream *stream;
+    php_stream_from_zval_no_verify(stream, value);
     if (!stream) {
         return 1;
     }

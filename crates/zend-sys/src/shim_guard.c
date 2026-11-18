@@ -9,11 +9,13 @@ static void (*resume_exit)(void);
 ZEND_TLS volatile swr_zend_guard *guards;
 ZEND_TLS int thread_exit;
 
+/* bailout: install the coroutine context and resume callbacks used by the native jump targets. */
 void swr_zend_guard_register(void *(*context)(void), void (*resume)(void)) {
     current_context = context;
     resume_exit = resume;
 }
 
+/* globals: link this target into the ZEND_TLS list for the current thread. */
 void swr_zend_guard_enter(volatile swr_zend_guard *guard, void *target) {
     guard->context = current_context ? current_context() : NULL;
     guard->target = target;
@@ -21,6 +23,7 @@ void swr_zend_guard_enter(volatile swr_zend_guard *guard, void *target) {
     guards = guard;
 }
 
+/* globals: unlink the volatile native guard from the thread-local list. */
 void swr_zend_guard_leave(volatile swr_zend_guard *guard) {
     volatile swr_zend_guard *entry = guards;
     volatile swr_zend_guard *previous = NULL;
@@ -35,6 +38,7 @@ void swr_zend_guard_leave(volatile swr_zend_guard *guard) {
     guard->target = NULL;
 }
 
+/* bailout: restore the enclosing EG(bailout) only while this guard still owns it. */
 void swr_zend_guard_scope_cleanup(volatile swr_zend_guard *guard) {
     void *target = guard->target;
     if (!target) return;
@@ -42,6 +46,7 @@ void swr_zend_guard_scope_cleanup(volatile swr_zend_guard *guard) {
     if ((void *) EG(bailout) == target) EG(bailout) = guard->original_bailout;
 }
 
+/* globals: walk the current thread's guards for this coroutine. */
 void *swr_zend_guard_target(void) {
     void *context = current_context ? current_context() : NULL;
     for (volatile swr_zend_guard *guard = guards; guard; guard = guard->previous) {
@@ -50,10 +55,14 @@ void *swr_zend_guard_target(void) {
     return NULL;
 }
 
+/* globals: read the ZEND_TLS exit flag. */
 int swr_zend_guard_pending(void) { return thread_exit; }
+/* globals: mark the thread-local exit. */
 void swr_zend_guard_mark(void) { thread_exit = 2; }
+/* globals: clear this thread's exit flag. */
 void swr_zend_guard_clear(void) { thread_exit = 0; }
 
+/* bailout: select the native jump target and re-raise the exit. */
 void swr_zend_guard_resume(void) {
     if (thread_exit && resume_exit) {
         void *target = swr_zend_guard_target();

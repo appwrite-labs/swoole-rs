@@ -1,22 +1,21 @@
 //! Non-persistent `zend_string`s: allocated here, handed to Zend by a return
 //! value or an array, or freed.
 use crate::sys::{swr_zend_string_alloc, zend_string, zend_ulong};
-use std::{
-    io::IoSlice,
-    mem::{MaybeUninit, offset_of},
+use std::mem::{MaybeUninit, offset_of};
+use swoole_rs_corebase::lent::{
+    Count, In, Spare, SpareVectors, lend_in, lend_spare, lend_spare_vectors,
 };
-use swoole_rs_corebase::lent::{Spare, SpareVectors, lend_spare, lend_spare_vectors};
 
 unsafe extern "C" {
-    /// `zend_hash_func`: it reads the lent bytes (an `IoSlice` is an iovec) only.
-    safe fn swr_bytes_hash(key: IoSlice<'_>) -> zend_ulong;
+    /// `zend_hash_func`: it reads only the lent bytes.
+    safe fn zend_hash_func<'a>(key: In<'a, u8>, len: Count<'a>) -> zend_ulong;
 }
 
 /// `zend_hash_func`: the hash a `zend_string` of these bytes caches
 /// (`zend_string_hash_val`), whatever length of it the caller compares.
 #[must_use]
 pub fn hash(key: &[u8], _compared: usize) -> u64 {
-    swr_bytes_hash(IoSlice::new(key))
+    lend_in(key, |bytes, len| zend_hash_func(bytes, len))
 }
 
 /// `ZSTR_LEN`'s offset in a string.

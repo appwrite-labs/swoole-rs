@@ -49,9 +49,6 @@ typedef struct swr_zend_coroutine_vm {
 void swr_zend_coroutine_save(swr_zend_coroutine_vm *vm);
 /* restore_context. */
 void swr_zend_coroutine_restore(swr_zend_coroutine_vm *vm);
-/* save_context(from) then restore_context(to): one coroutine switch. */
-void swr_zend_coroutine_switch(swr_zend_coroutine_vm *from, swr_zend_coroutine_vm *to);
-
 /* save_context(from), the creator's, then create_context's executor setup on a
  * new coroutine: a fresh VM stack whose first frame is an empty internal
  * function, cleared exception state, the C stack bounds of `stack` (null:
@@ -86,9 +83,6 @@ typedef void (*swr_zend_interrupt_handler)(zend_execute_data *execute_data);
 swr_zend_interrupt_handler swr_zend_coroutine_set_interrupt(swr_zend_interrupt_handler handler);
 /* &EG(vm_interrupt), for the interrupt thread. */
 zend_atomic_bool *swr_zend_vm_interrupt(void);
-/* zend_atomic_bool_store(flag, 1), from any thread. */
-void swr_zend_vm_interrupt_raise(zend_atomic_bool *flag);
-
 typedef zend_class_entry *(*swr_zend_autoload_handler)(zend_string *name, zend_string *lc_name);
 /* zend_autoload = handler; returns the previous one. */
 swr_zend_autoload_handler swr_zend_coroutine_set_autoload(swr_zend_autoload_handler handler);
@@ -120,9 +114,6 @@ zend_execute_data *swr_zend_coroutine_show(swr_zend_coroutine_vm *vm);
  * "__destruct" (go() during shutdown functions); false without a current
  * frame, a caller's frame or a function in it. */
 bool swr_zend_coroutine_called_by_destructor(void);
-/* Whether the constant SWOOLE_LIBRARY is defined and true (zend_is_true). */
-bool swr_zend_coroutine_library_loaded(void);
-
 /* sw_php_print_backtrace_impl's output: the fetched trace array as text, inside
  * zend_try (output handlers may run): 1 if it bailed out. */
 int swr_zend_coroutine_print_trace(zval *backtrace);
@@ -130,9 +121,6 @@ int swr_zend_coroutine_print_trace(zval *backtrace);
 /* fiber->status = status, as the fiber observers read it. */
 void swr_zend_coroutine_fiber_status(zend_fiber_context *fiber, zend_fiber_status status);
 
-/* A new object of the exception class `ce`, its properties initialised and no
- * constructor run (zend_objects_new, object_properties_init). */
-zend_object *swr_zend_coroutine_exception(zend_class_entry *ce);
 /* Set an exception's file and line from the current frame, as
  * zend::object_set(ZSTR_KNOWN(ZEND_STR_FILE/LINE)) does. */
 void swr_zend_coroutine_locate(zend_object *exception);

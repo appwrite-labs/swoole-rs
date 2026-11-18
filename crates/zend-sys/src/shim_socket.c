@@ -1,12 +1,11 @@
-/* Stays C (docs/zend.md, What stays C): bailout (stream casts), version
- * (zend_zval_value_name from 8.3) and budget (Z_OBJPROP_P, convert_to_array,
- * php_stream_set_option). */
+/* Stays C: bailout and budget, as detailed below. */
 #include "shim.h"
 #include "shim_socket.h"
 #include "ext/standard/file.h"
 #include "php_network.h"
 #include <netdb.h>
 
+/* bailout: stream casting and its error path can call PHP. */
 int swr_zend_stream_socketd(zval *zstream, php_stream **stream, int *fd) {
     volatile int result = 1;
     SWR_ZEND_TRY {
@@ -22,14 +21,7 @@ int swr_zend_stream_socketd(zval *zstream, php_stream **stream, int *fd) {
     return result;
 }
 
-void swr_zend_stream_unbuffer(zval *zstream) {
-    php_stream *stream;
-    php_stream_from_zval_no_verify(stream, zstream);
-    if (stream) {
-        php_stream_set_option(stream, PHP_STREAM_OPTION_READ_BUFFER, PHP_STREAM_BUFFER_NONE, NULL);
-    }
-}
-
+/* budget: PHP returns a raw hostent with a pointer array; copy its first IPv4 address while valid. */
 int swr_zend_gethostbyname4(const char *host, struct in_addr *address) {
     struct hostent *entry = php_network_gethostbyname(host);
     if (!entry) {
@@ -42,6 +34,7 @@ int swr_zend_gethostbyname4(const char *host, struct in_addr *address) {
     return 0;
 }
 
+/* bailout: get_properties may initialize a lazy object. */
 int swr_zend_try_object_properties(zend_object *object, zval *out) {
     HashTable *volatile table = NULL;
     volatile int bailed = 0;
@@ -57,34 +50,10 @@ int swr_zend_try_object_properties(zend_object *object, zval *out) {
     return bailed;
 }
 
+/* bailout: object conversion may execute a handler. */
 int swr_zend_try_convert_to_array(zval *value) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { convert_to_array(value); }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
-}
-
-/* Whether `value` is a PHP value or a reference to one: a slot the engine keeps for
- * itself (IS_INDIRECT, IS_PTR, ...) has no type name. */
-static bool swr_zval_named(const zval *value) {
-    uint8_t kind = Z_TYPE_P(value);
-    if (kind == IS_REFERENCE) {
-        kind = Z_TYPE_P(Z_REFVAL_P(value));
-    }
-    return kind <= IS_RESOURCE;
-}
-
-const char *swr_zend_zval_value_name(const zval *value) {
-    if (!swr_zval_named(value)) {
-        return "mixed";
-    }
-#if PHP_VERSION_ID >= 80300
-    return zend_zval_value_name(value);
-#else
-    return zend_zval_type_name(value);
-#endif
-}
-
-const char *swr_zend_zval_type_name(const zval *value) {
-    return swr_zval_named(value) ? zend_zval_type_name(value) : "mixed";
 }

@@ -4,6 +4,7 @@
 #include "callable.h"
 #include "shim.h"
 
+/* private: retaining a closure requires the object enclosing its function. */
 void swr_zend_callable_hold(swr_zend_callable *callable) {
     if (callable->fcc.object) {
         GC_ADDREF(callable->fcc.object);
@@ -13,11 +14,12 @@ void swr_zend_callable_hold(swr_zend_callable *callable) {
     }
 }
 
-/* What OBJ_RELEASE does without freeing it or making it a possible root. */
+/* budget: check the raw cache object can lose a reference without freeing it or buffering a root. */
 static bool swr_quiet_release(zend_object *object) {
     return GC_REFCOUNT(object) > 1 && !GC_MAY_LEAK((zend_refcounted *) object);
 }
 
+/* private: compare the cache object with the enclosing closure before decrementing either. */
 int swr_zend_callable_release_quiet(swr_zend_callable *callable) {
     zend_object *object = callable->fcc.object;
     zend_object *closure = callable->fcc.function_handler->op_array.fn_flags & ZEND_ACC_CLOSURE
@@ -36,6 +38,7 @@ int swr_zend_callable_release_quiet(swr_zend_callable *callable) {
     return 1;
 }
 
+/* allocator, private: destroy arguments and release the cache and closure references. */
 static void swr_zend_callable_release(void *arg) {
     swr_zend_callable *callable = arg;
     if (callable->fci.param_count > 0) {
@@ -52,10 +55,12 @@ static void swr_zend_callable_release(void *arg) {
     }
 }
 
+/* bailout: the releases can run user destructors. */
 int swr_zend_try_callable_release(swr_zend_callable *callable) {
     return swr_zend_try(swr_zend_callable_release, callable);
 }
 
+/* bailout: native trap body for zval destruction. */
 void swr_zend_zval_release(void *value) {
     zval_ptr_dtor(value);
 }

@@ -2,17 +2,17 @@
 //! runs: each function takes a [`Php`], so only a thread that runs PHP reaches
 //! the shim behind it, and the declarations stay private to this module.
 use std::ffi::c_int;
-use swoole_rs_zend::{Owned, Php, bailout::Bailout};
+use swoole_rs_corebase::lent::{Count, In, lend_in};
+use swoole_rs_zend::{Owned, Php, Value, bailout::Bailout};
 
 unsafe extern "C" {
     /// Whether the frame below the executor's current one runs a function named
     /// `__destruct`; false without a current frame, a frame below it or a
     /// function there. It reads this thread's executor and runs no PHP code.
     safe fn swr_zend_coroutine_called_by_destructor() -> bool;
-    /// Whether the constant `SWOOLE_LIBRARY` is defined and true, as
-    /// `zend_is_true` reads it: the constant table and one value, with no PHP
-    /// code run.
-    safe fn swr_zend_coroutine_library_loaded() -> bool;
+    /// Look up the fixed library marker on the PHP thread. The value is read
+    /// inside the lookup closure, before anything can change the constant table.
+    safe fn zend_get_constant_str<'a>(name: In<'a, u8>, len: Count<'a>) -> Option<&'a Value>;
     /// `sw_php_print_backtrace_impl`'s output inside `zend_try`: the fetched
     /// trace array, written through PHP's output layer, whose handlers may run
     /// PHP code; nonzero if that bailed out. The trap keeps a bailout from
@@ -28,7 +28,9 @@ pub(crate) fn called_by_destructor(_php: Php<'_>) -> bool {
 
 /// Whether the PHP library is loaded: `SWOOLE_LIBRARY` is defined and true.
 pub(crate) fn library_loaded(_php: Php<'_>) -> bool {
-    swr_zend_coroutine_library_loaded()
+    lend_in(b"SWOOLE_LIBRARY", |name, len| {
+        zend_get_constant_str(name, len).is_some_and(Value::truthy)
+    })
 }
 
 /// Print `trace`, a fetched backtrace. Output handlers may run PHP code, and

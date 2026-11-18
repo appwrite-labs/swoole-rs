@@ -11,7 +11,7 @@
 void swr_lent_array_add_or_merge(zval *array, struct iovec key, zval *element);
 
 /* zend_is_true, whose fast path is inline. */
-bool swr_zval_is_true(const zval *value);
+bool swr_zval_is_true(zval *value);
 
 /* php_swoole_http_build_query: http_build_query($data) as RFC 1738, or NULL. */
 zend_string *swr_zend_http_build_query(zval *data);
