@@ -126,105 +126,18 @@ void pdo_pgsql_close_lob_streams(pdo_dbh_t *dbh)
     }
 }
 
-Oid pdo_pgsql_create_lob(pdo_dbh_t *dbh);
-bool pdo_pgsql_open_lob(pdo_dbh_t *dbh, Oid oid, const char *mode, int *fd);
-bool pdo_pgsql_unlink_lob(pdo_dbh_t *dbh, Oid oid);
-
-static bool parse_oid(const char *text, Oid *oid)
+/* php_stream_to_zval consumes the stream resource. */
+bool pdo_pgsql_lob_resource(zend_execute_data *execute_data, int fd, Oid oid, zval *output)
 {
-    *oid = (Oid)strtoul(text, NULL, 10);
-    return *oid != 0 || (errno != ERANGE && errno != EINVAL);
-}
-
-#if PHP_VERSION_ID >= 80400
-void pgsqlLOBCreate_internal(INTERNAL_FUNCTION_PARAMETERS)
-#else
-PHP_METHOD(PDO_PGSql_Ext, pgsqlLOBCreate)
-#endif
-{
-    ZEND_PARSE_PARAMETERS_NONE();
-    pdo_dbh_t *dbh = Z_PDO_DBH_P(ZEND_THIS);
-    PDO_CONSTRUCT_CHECK;
-    PDO_DBH_CLEAR_ERR();
-    Oid oid = pdo_pgsql_create_lob(dbh);
-    if (oid != InvalidOid) {
-        RETURN_STR(zend_ulong_to_str(oid));
-    }
-    PDO_HANDLE_DBH_ERR();
-    RETURN_FALSE;
-}
-
-#if PHP_VERSION_ID >= 80400
-void pgsqlLOBOpen_internal(INTERNAL_FUNCTION_PARAMETERS)
-#else
-PHP_METHOD(PDO_PGSql_Ext, pgsqlLOBOpen)
-#endif
-{
-    char *text, *mode = "rb";
-    size_t length, mode_length;
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "s|s", &text, &length, &mode, &mode_length) == FAILURE) {
-        RETURN_THROWS();
-    }
-    Oid oid;
-    if (!parse_oid(text, &oid)) {
-        RETURN_FALSE;
-    }
-    pdo_dbh_t *dbh = Z_PDO_DBH_P(ZEND_THIS);
-    PDO_CONSTRUCT_CHECK;
-    PDO_DBH_CLEAR_ERR();
-    int fd = -1;
-    if (pdo_pgsql_open_lob(dbh, oid, mode, &fd)) {
 #if PHP_VERSION_ID >= 80500
-        php_stream *stream = pdo_pgsql_create_lob_stream(Z_OBJ_P(ZEND_THIS), fd, oid);
+    php_stream *stream = pdo_pgsql_create_lob_stream(Z_OBJ_P(ZEND_THIS), fd, oid);
 #else
-        php_stream *stream = pdo_pgsql_create_lob_stream(ZEND_THIS, fd, oid);
+    php_stream *stream = pdo_pgsql_create_lob_stream(ZEND_THIS, fd, oid);
 #endif
-        if (stream) {
-            php_stream_to_zval(stream, return_value);
-            return;
-        }
+    if (!stream) {
+        return false;
     }
-    PDO_HANDLE_DBH_ERR();
-    RETURN_FALSE;
+    php_stream_to_zval(stream, output);
+    return true;
 }
-
-#if PHP_VERSION_ID >= 80400
-void pgsqlLOBUnlink_internal(INTERNAL_FUNCTION_PARAMETERS)
-#else
-PHP_METHOD(PDO_PGSql_Ext, pgsqlLOBUnlink)
-#endif
-{
-    char *text;
-    size_t length;
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &text, &length) == FAILURE) {
-        RETURN_THROWS();
-    }
-    Oid oid;
-    if (!parse_oid(text, &oid)) {
-        RETURN_FALSE;
-    }
-    pdo_dbh_t *dbh = Z_PDO_DBH_P(ZEND_THIS);
-    PDO_CONSTRUCT_CHECK;
-    PDO_DBH_CLEAR_ERR();
-    if (pdo_pgsql_unlink_lob(dbh, oid)) {
-        RETURN_TRUE;
-    }
-    PDO_HANDLE_DBH_ERR();
-    RETURN_FALSE;
-}
-
-#if PHP_VERSION_ID >= 80400
-PHP_METHOD(PDO_PGSql_Ext, pgsqlLOBCreate)
-{
-    pgsqlLOBCreate_internal(INTERNAL_FUNCTION_PARAM_PASSTHRU);
-}
-PHP_METHOD(PDO_PGSql_Ext, pgsqlLOBOpen)
-{
-    pgsqlLOBOpen_internal(INTERNAL_FUNCTION_PARAM_PASSTHRU);
-}
-PHP_METHOD(PDO_PGSql_Ext, pgsqlLOBUnlink)
-{
-    pgsqlLOBUnlink_internal(INTERNAL_FUNCTION_PARAM_PASSTHRU);
-}
-#endif
 #endif

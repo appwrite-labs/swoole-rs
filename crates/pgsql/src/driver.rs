@@ -956,56 +956,106 @@ fn pgsql_fatal_error(dbh: &Dbh, state: Option<&CStr>) {
     );
 }
 
-/// Create a large object on the PDO connection and record libpq's error on failure.
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_create_lob(dbh: &Dbh) -> pq_sys::Oid {
-    let Some(handle) = handle(dbh) else { return 0 };
-    let oid = lo_creat(handle.server, INV_READ | INV_WRITE);
-    if oid == 0 {
-        pgsql_fatal_error(dbh, None);
-    }
-    oid
+/// Retain PDO's `strtoul` conversion, including unsigned OID truncation.
+fn lob_oid(text: &ZStr) -> Option<pq_sys::Oid> {
+    use swoole_rs_corebase::{CCast, sys};
+    let oid: pq_sys::Oid = sys::strtoul(text.c_str(), 10).0.c_cast();
+    (oid != 0 || !matches!(sys::errno(), libc::ERANGE | libc::EINVAL)).then_some(oid)
 }
 
-/// Open the object for reading, adding write access for PDO's writable modes.
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_open_lob(
-    dbh: &Dbh,
-    oid: pq_sys::Oid,
-    mode: Text<'_>,
-    fd: &mut c_int,
-) -> bool {
-    let Some(handle) = handle(dbh) else {
-        return false;
+fn lob_error(call: &swoole_rs_zend::Call<'_>, dbh: &Dbh) {
+    pgsql_fatal_error(dbh, None);
+    swoole_rs_zend::bailout::defer(contain_with(|| pdo_pgsql_handle_method_error(dbh)));
+    call.set_bool(false);
+}
+
+fn lob_create(call: &swoole_rs_zend::Call<'_>) {
+    if call.arity(0, 0).is_err() {
+        return;
+    }
+    let Some(dbh) = method_dbh(call, true) else {
+        return;
     };
-    let flags = if mode
-        .get()
-        .to_bytes()
-        .iter()
-        .any(|b| matches!(b, b'+' | b'w'))
-    {
+    let Some(conn) = server(dbh) else { return };
+    let mut oid = 0;
+    if let Err(bailout) = contain_with(|| oid = lo_creat(conn, INV_READ | INV_WRITE)) {
+        bailout.defer();
+    } else if oid == 0 {
+        lob_error(call, dbh);
+    } else {
+        call.set_bytes(oid.to_string().as_bytes());
+    }
+}
+
+fn lob_open(call: &swoole_rs_zend::Call<'_>) {
+    if call.arity(1, 2).is_err() {
+        return;
+    }
+    let Ok(Some(text)) = call.zstr(1) else { return };
+    let Ok(mode) = call.zstr(2) else { return };
+    let Some(oid) = lob_oid(text) else {
+        call.set_bool(false);
+        return;
+    };
+    let Some(dbh) = method_dbh(call, true) else {
+        return;
+    };
+    let Some(conn) = server(dbh) else { return };
+    let writable = mode.is_some_and(|s| {
+        s.c_str()
+            .to_bytes()
+            .iter()
+            .any(|b| matches!(b, b'+' | b'w'))
+    });
+    let flags = if writable {
         INV_READ | INV_WRITE
     } else {
         INV_READ
     };
-    *fd = lo_open(handle.server, oid, flags);
-    if *fd < 0 {
-        pgsql_fatal_error(dbh, None);
+    let mut fd = -1;
+    if let Err(bailout) = contain_with(|| fd = lo_open(conn, oid, flags)) {
+        bailout.defer();
+        return;
     }
-    *fd >= 0
+    if fd < 0 {
+        lob_error(call, dbh);
+        return;
+    }
+    let mut stream = Owned::default();
+    let mut opened = false;
+    if let Err(bailout) =
+        contain_with(|| opened = pdo_pgsql_lob_resource(call.call_frame(), fd, oid, &mut stream))
+    {
+        bailout.defer();
+    } else if opened {
+        call.set_owned(stream);
+    } else {
+        swoole_rs_zend::bailout::defer(contain_with(|| pdo_pgsql_handle_method_error(dbh)));
+        call.set_bool(false);
+    }
 }
 
-/// Unlink an object in the connection's current transaction.
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_unlink_lob(dbh: &Dbh, oid: pq_sys::Oid) -> bool {
-    let Some(handle) = handle(dbh) else {
-        return false;
-    };
-    let removed = lo_unlink(handle.server, oid) == 1;
-    if !removed {
-        pgsql_fatal_error(dbh, None);
+fn lob_unlink(call: &swoole_rs_zend::Call<'_>) {
+    if call.arity(1, 1).is_err() {
+        return;
     }
-    removed
+    let Ok(Some(text)) = call.zstr(1) else { return };
+    let Some(oid) = lob_oid(text) else {
+        call.set_bool(false);
+        return;
+    };
+    let Some(dbh) = method_dbh(call, true) else {
+        return;
+    };
+    let Some(conn) = server(dbh) else { return };
+    let mut removed = false;
+    if let Err(bailout) = contain_with(|| removed = lo_unlink(conn, oid) == 1) {
+        bailout.defer();
+    } else if removed {
+        call.set_bool(true);
+    } else {
+        lob_error(call, dbh);
+    }
 }
 
 /// `H->server`.
@@ -1049,6 +1099,14 @@ pub extern "C" fn pdo_pgsql_lob_streams(handle: &Handle) -> *mut *mut c_void {
 // Both the PDO subclass and the older dynamically registered methods enter
 // through the same Rust handlers.
 swoole_rs_zend::handlers! {
+    pgsqlLOBCreate_internal => lob_create;
+    zim_PDO_PGSql_Ext_pgsqlLOBCreate => lob_create;
+    pgsqlLOBOpen_internal => lob_open;
+    zim_PDO_PGSql_Ext_pgsqlLOBOpen => lob_open;
+    pgsqlLOBUnlink_internal => lob_unlink;
+    zim_PDO_PGSql_Ext_pgsqlLOBUnlink => lob_unlink;
+    pgsqlGetNotify_internal => get_notify;
+    zim_PDO_PGSql_Ext_pgsqlGetNotify => get_notify;
     pgsqlGetPid_internal => get_pid;
     zim_PDO_PGSql_Ext_pgsqlGetPid => get_pid;
     pgsql_escape_identifier => escape_identifier;
@@ -1059,6 +1117,12 @@ unsafe extern "C" {
         frame: swoole_rs_zend::CallFrame<'a>,
         out: &mut Option<&'a Dbh>,
     );
+    safe fn pdo_pgsql_lob_resource(
+        frame: swoole_rs_zend::CallFrame<'_>,
+        fd: c_int,
+        oid: pq_sys::Oid,
+        stream: &mut Owned,
+    ) -> bool;
     safe fn pdo_pgsql_clear_method_error(dbh: &Dbh);
     safe fn pdo_pgsql_handle_method_error(dbh: &Dbh);
     safe fn PQescapeIdentifier(conn: Conn, bytes: In<'_, u8>, length: Count<'_>)
@@ -1112,35 +1176,117 @@ fn escape_identifier(call: &swoole_rs_zend::Call<'_>) {
     }
 }
 
-/// Read a pending notification, optionally waiting once. PHP owns a non-null
-/// result and releases it with `PQfreemem` after copying the fields.
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_read_notify(
-    handle: &Handle,
-    timeout: c_int,
-    result: &mut *mut pq_sys::PGnotify,
-) -> bool {
-    unsafe extern "C" {
-        safe fn PQnotifies(conn: Conn) -> *mut pq_sys::PGnotify;
-    }
-    let conn = handle.server;
-    if !conn.consume_input() {
-        return false;
-    }
-    *result = PQnotifies(conn);
-    if timeout > 0 && result.is_null() {
-        let mut socket = libc::pollfd {
-            fd: conn.socket(),
-            events: libc::POLLIN | libc::POLLERR | libc::POLLHUP,
-            revents: 0,
-        };
-        let _readiness = swoole_rs_corebase::sys::poll(std::slice::from_mut(&mut socket), timeout);
-        if !conn.consume_input() {
-            return false;
+#[derive(Default)]
+struct Notification {
+    channel: Owned,
+    pid: c_int,
+    payload: Owned,
+}
+
+impl Notification {
+    fn take(&mut self, conn: Conn) -> bool {
+        unsafe extern "C" {
+            safe fn pdo_pgsql_take_notify(
+                conn: Conn,
+                channel: &mut Owned,
+                pid: &mut c_int,
+                payload: &mut Owned,
+            ) -> bool;
         }
-        *result = PQnotifies(conn);
+        pdo_pgsql_take_notify(conn, &mut self.channel, &mut self.pid, &mut self.payload)
     }
-    true
+
+    fn into_array(self, numeric: bool, named: bool) -> Owned {
+        let mut array = swoole_rs_zend::OwnedArray::default();
+        if numeric {
+            array.push(self.channel.copy());
+            array.push_long(self.pid.into());
+            if self.payload.bytes().is_some() {
+                array.push(self.payload.copy());
+            }
+        }
+        if named {
+            array.insert(b"message", self.channel);
+            array.insert_long(b"pid", self.pid.into());
+            if self.payload.bytes().is_some() {
+                array.insert(b"payload", self.payload);
+            }
+        }
+        array.into_owned()
+    }
+}
+
+fn get_notify(call: &swoole_rs_zend::Call<'_>) {
+    use swoole_rs_zend::sys::{
+        pdo_fetch_type_PDO_FETCH_ASSOC as ASSOC, pdo_fetch_type_PDO_FETCH_BOTH as BOTH,
+        pdo_fetch_type_PDO_FETCH_NUM as NUM, pdo_fetch_type_PDO_FETCH_USE_DEFAULT as DEFAULT,
+    };
+    if call.arity(0, 2).is_err() {
+        return;
+    }
+    let Ok(mut mode) = call.long(1, i64::from(DEFAULT)) else {
+        return;
+    };
+    let Ok(timeout) = call.long(2, 0) else { return };
+    let Some(dbh) = method_dbh(call, false) else {
+        return;
+    };
+    if mode == i64::from(DEFAULT) {
+        mode = i64::from(dbh.default_fetch_type());
+    }
+    let numeric = mode == i64::from(NUM) || mode == i64::from(BOTH);
+    let named = mode == i64::from(ASSOC) || mode == i64::from(BOTH);
+    if !numeric && !named {
+        call.argument_value_error(
+            1,
+            c"must be one of PDO::FETCH_BOTH, PDO::FETCH_ASSOC, or PDO::FETCH_NUM",
+        );
+        return;
+    }
+    if timeout < 0 {
+        call.argument_value_error(2, c"must be greater than or equal to 0");
+        return;
+    }
+    let timeout = c_int::try_from(timeout).unwrap_or_else(|_| {
+        swoole_rs_zend::bailout::defer(swoole_rs_zend::report(
+            swoole_rs_zend::E_WARNING,
+            c"Timeout was shrunk to 2147483647",
+        ));
+        c_int::MAX
+    });
+    if swoole_rs_zend::bailout::pending() {
+        return;
+    }
+    let Some(conn) = server(dbh) else { return };
+    let mut note = Notification::default();
+    let mut received = None;
+    let read = contain_with(|| {
+        let mut next = || conn.consume_input().then(|| note.take(conn));
+        received = next();
+        if received == Some(false) && timeout > 0 {
+            let mut socket = libc::pollfd {
+                fd: conn.socket(),
+                events: libc::POLLIN | libc::POLLERR | libc::POLLHUP,
+                revents: 0,
+            };
+            let _readiness =
+                swoole_rs_corebase::sys::poll(std::slice::from_mut(&mut socket), timeout);
+            received = next();
+        }
+    });
+    if let Err(bailout) = read {
+        bailout.defer();
+        return;
+    }
+    if received == Some(true) {
+        call.set_owned(note.into_array(numeric, named));
+    } else {
+        if received.is_none() {
+            pgsql_fatal_error(dbh, None);
+            swoole_rs_zend::bailout::defer(contain_with(|| pdo_pgsql_handle_method_error(dbh)));
+        }
+        call.set_bool(false);
+    }
 }
 
 /// Callback Zend invokes for a PostgreSQL notice (PHP 8.4+).

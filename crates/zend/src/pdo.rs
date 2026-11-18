@@ -128,6 +128,19 @@ impl Dbh {
         !self.0.get().methods.is_null()
     }
 
+    /// PDO's configured fetch mode for methods called with `PDO::FETCH_DEFAULT`.
+    #[must_use]
+    pub fn default_fetch_type(&self) -> crate::sys::pdo_fetch_type {
+        #[cfg(php85)]
+        {
+            self.0.get().default_fetch_type.into()
+        }
+        #[cfg(not(php85))]
+        {
+            self.0.get().default_fetch_type
+        }
+    }
+
     /// `dbh->methods = methods`.
     pub fn set_methods(&self, methods: &'static pdo_dbh_methods) {
         self.update(|dbh| dbh.methods = methods);
