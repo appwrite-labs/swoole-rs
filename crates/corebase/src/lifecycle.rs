@@ -378,7 +378,7 @@ mod tests {
 
     fn reactor() {
         assert_eq!(crate::reactor::swoole_event_init(0), 0);
-        crate::reactor::event_api::on_destroy(|| {
+        crate::reactor::event_api::on_destroy(|_| {
             std::thread::sleep(std::time::Duration::from_millis(200));
             change(libc::SIG_UNBLOCK, libc::SIGUSR1);
         });

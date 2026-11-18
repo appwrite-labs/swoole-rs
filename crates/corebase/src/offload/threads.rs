@@ -7,7 +7,7 @@
 //! request record. The ossupport patch deletes `src/os/async_thread.cc`.
 use crate::offload::AsyncEvent;
 use crate::ossupport::{Pool, PoolHooks, pool_complete};
-use crate::reactor::event_api::{event_del, on_destroy, swr_v1_event_current};
+use crate::reactor::event_api::{on_destroy, swr_v1_event_current};
 use crate::reactor::{Event, Running, Socket};
 use crate::tls::socket_pair::{SocketPair, close, drop, unix_socket};
 use crate::tls::upstream::write_sync;
@@ -186,15 +186,16 @@ static HOOKS: PoolHooks = PoolHooks {
     spawn_failed,
 };
 
-/// The reactor's destroy callback: unregisters the pipe and frees the handle.
-fn destroyed() {
+/// The reactor's destroy callback: unregisters the pipe from `reactor` and frees
+/// the handle.
+fn destroyed(reactor: Running<'_>) {
     let Some(mut threads) = THREADS.take() else {
         return;
     };
     set_thread_async_threads(ptr::null_mut());
     // Its read end, registered on the closing reactor.
     if let Some(read) = threads.pipe.worker_end() {
-        _ = event_del(*read);
+        _ = crate::reactor::reactor_upstream::reactor_del(reactor, *read);
     }
     // The last reference this thread holds.
     if let Some(pool) = threads.pool {

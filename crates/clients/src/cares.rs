@@ -167,7 +167,7 @@ fn process(event: &Event, write: bool) -> bool {
     true
 }
 /// Reactor destruction: no query still uses the library after its channel was destroyed.
-fn cleanup() {
+fn cleanup(_: swoole_rs_corebase::reactor::Running<'_>) {
     // SAFETY: the reactor runs this once, after its c-ares handlers retire. It takes
     // nothing, and c-ares counts its initialisations: a call without one does nothing.
     unsafe { sdk::ares_library_cleanup() };
