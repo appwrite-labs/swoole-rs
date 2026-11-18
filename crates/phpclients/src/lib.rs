@@ -4,13 +4,7 @@
 //!
 //! Without the `php` feature the crate is empty.
 #![cfg(feature = "php")]
-#![cfg_attr(
-    not(test),
-    deny(
-        clippy::undocumented_unsafe_blocks,
-        clippy::multiple_unsafe_ops_per_block
-    )
-)]
+#![forbid(unsafe_code)]
 
 mod async_net;
 mod client;
