@@ -97,3 +97,4 @@ pub static arginfo_class_Swoole_Coroutine_setTimeLimit: a::ArgInfo<2> = a::ArgIn
 pub use self::arginfo_class_Swoole_Coroutine_getCid as arginfo_class_Swoole_ExitException_getFlags;
 pub static arginfo_class_Swoole_ExitException_getStatus: a::ArgInfo<1> =
     a::ArgInfo::new([a::begin_type(0, 0, z::IS_MIXED, false)]);
+pub use crate::required_array as parse_class_swoole_coroutine_set;

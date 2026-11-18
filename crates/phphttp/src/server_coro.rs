@@ -718,7 +718,7 @@ fn handle(call: &Call) {
 }
 
 fn set(call: &Call) {
-    let Ok(settings) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
+    let Ok(settings) = http_server_coro::parse_class_swoole_coroutine_http_server_set(call) else {
         call.set_bool(false);
         return;
     };

@@ -135,3 +135,4 @@ pub static arginfo_swoole_array_replace_str: a::ArgInfo<4> = a::ArgInfo::new([
     ),
 ]);
 pub use self::arginfo_swoole_array_replace_str as arginfo_swoole_array_ireplace_str;
+pub use crate::required_array as parse_swoole_array_is_empty;

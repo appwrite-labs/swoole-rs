@@ -24,3 +24,4 @@ pub static arginfo_class_Swoole_Server_Port_getCallback: a::ArgInfo<2> = a::ArgI
 ]);
 pub static arginfo_class_Swoole_Server_Port_getSocket: a::ArgInfo<1> =
     a::ArgInfo::new([a::begin_class_mask(0, 0, c"Socket", z::MAY_BE_FALSE)]);
+pub use crate::required_array as parse_class_swoole_server_port_set;

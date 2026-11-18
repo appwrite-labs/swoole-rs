@@ -300,7 +300,7 @@ pub(crate) fn free_options() {
 
 /// `Co::set(array $options)`/`Scheduler::set()`.
 fn set(call: &Call) {
-    let Ok(array) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
+    let Ok(array) = coroutine_scheduler::parse_class_swoole_coroutine_scheduler_set(call) else {
         call.set_bool(false);
         return;
     };

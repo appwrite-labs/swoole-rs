@@ -147,7 +147,7 @@ fn async_set(call: &Call) {
         );
         return;
     }
-    let Ok(options) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
+    let Ok(options) = swoole_rs_phpstubs::swoole::parse_swoole_async_set(call) else {
         call.set_bool(false);
         return;
     };
