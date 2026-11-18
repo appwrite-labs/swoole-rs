@@ -18,6 +18,6 @@ extern const size_t swr_case_process_layout[] = {sizeof(ProcessPool),
                                                  offsetof(ProcessPool, ptr),
                                                  sizeof(Worker),
                                                  offsetof(Worker, start_time),
-                                                 sizeof(EventData)};
+                                                 SW_IPC_MAX_SIZE};
 #pragma GCC diagnostic pop
 }
