@@ -160,9 +160,6 @@ mod php {
             }
             let dir = bundled.join("pdo_pgsql");
             p.c.extend(["pgsql_driver.c", "pgsql_statement.c"].map(|f| dir.join(f)));
-            if php >= 84 {
-                p.c.push(dir.join("pgsql_sql_parser.c"));
-            }
             p.includes.extend(pkg_includes("libpq"));
             p.libs.push("pq");
         }
