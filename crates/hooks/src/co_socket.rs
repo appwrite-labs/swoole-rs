@@ -538,7 +538,7 @@ impl Co {
     /// [`edit`](Socket::edit), so a nested borrow of the same record panics.
     #[track_caller]
     pub fn net<T>(self, f: impl FnOnce(&mut SocketFields) -> T) -> Option<T> {
-        self.with_network(|network| network.edit(f))
+        self.record().state.as_deref()?.network.edit(f)
     }
 
     /// `f` over the `network::Socket`'s handle, or `None` before the socket opens. The
@@ -609,14 +609,16 @@ impl Co {
 
 impl CoSocket {
     pub(crate) fn descriptor(&self) -> Descriptor {
-        self.with_socket(|network| {
-            network.read(|record| match record.fd {
-                -1 => Descriptor::Closed,
-                fd if record.output.close_wait => Descriptor::Closing(fd),
-                fd => Descriptor::Open(fd),
+        let network = self.state.as_deref().map(|bound| &bound.network);
+        network
+            .and_then(|network| {
+                network.read(|record| match record.fd {
+                    -1 => Descriptor::Closed,
+                    fd if record.output.close_wait => Descriptor::Closing(fd),
+                    fd => Descriptor::Open(fd),
+                })
             })
-        })
-        .unwrap_or(Descriptor::Closed)
+            .unwrap_or(Descriptor::Closed)
     }
 
     /// `f` with `part` lent out of the record's [`Bound`], live until `fini`; the

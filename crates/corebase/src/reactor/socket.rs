@@ -397,6 +397,11 @@ impl OwnedSocket {
     #[must_use]
     pub fn into_box(self) -> Box<SocketRecord> {
         let socket = self.socket();
+        // A `read` or `edit` closure of the record's freed it: it would use the fields
+        // after the free.
+        if socket.borrows().load(Ordering::Relaxed) != 0 {
+            crate::fatal("a socket was freed inside a read or edit of it");
+        }
         let mark = socket.mark().load(Ordering::Relaxed);
         if mark != 0 {
             deregister(socket, mark);
@@ -458,6 +463,8 @@ impl OwnerCell {
 #[derive(Default)]
 pub struct SocketLoans {
     socket: Cell<Option<Heap<'static>>>,
+    /// The loans out, with [`PENDING`] set while `retired` holds any: the last loan's
+    /// end compares this one word.
     loans: Cell<u32>,
     /// Records released while lent, with how each is freed.
     retired: Cell<Vec<Retired>>,
@@ -465,6 +472,10 @@ pub struct SocketLoans {
 
 /// A record released while lent, and how it is freed once the loans end.
 type Retired = (OwnedSocket, fn(OwnedSocket));
+
+/// [`SocketLoans::loans`]' flag for released records waiting on the loans. Each loan is
+/// a frame on this thread's stack, so the count never reaches it.
+const PENDING: u32 = 1 << 31;
 
 impl SocketLoans {
     /// Owns `owner` from here; the record it held is released with `free`.
@@ -485,25 +496,38 @@ impl SocketLoans {
 
     /// `f` over the record it holds, which stays live until `f` returns, even if `f`
     /// releases it; `None` without one.
+    #[inline]
     pub fn lend<T>(&self, f: impl FnOnce(Heap<'_>) -> T) -> Option<T> {
         struct Loan<'a>(&'a SocketLoans);
         impl Drop for Loan<'_> {
+            #[inline]
             fn drop(&mut self) {
-                let loans = &self.0.loans;
-                loans.set(loans.get() - 1);
-                if loans.get() == 0 {
-                    for (owner, free) in self.0.retired.take() {
-                        free(owner);
-                    }
+                let loans = self.0.loans.get() - 1;
+                self.0.loans.set(loans);
+                if loans == PENDING {
+                    self.0.free_retired();
                 }
             }
         }
         let socket = self.socket.get()?;
-        let count = self.loans.get().checked_add(1);
-        self.loans
-            .set(count.unwrap_or_else(|| crate::fatal("socket loans overflowed")));
+        self.loans.set(self.loans.get() + 1);
         let _loan = Loan(self);
         Some(f(socket))
+    }
+
+    /// [`Socket::read`] of the record it holds; `None` without one. Not a counted loan:
+    /// the read's own borrow keeps the record, which is not freed while it runs.
+    #[inline]
+    pub fn read<T>(&self, read: impl FnOnce(&SocketFields) -> T) -> Option<T> {
+        Some(self.socket.get()?.read(read))
+    }
+
+    /// [`Socket::edit`] of the record it holds; `None` without one. Not counted, as
+    /// [`Self::read`].
+    #[inline]
+    #[track_caller]
+    pub fn edit<T>(&self, edit: impl FnOnce(&mut SocketFields) -> T) -> Option<T> {
+        Some(self.socket.get()?.edit(edit))
     }
 
     /// The address of the record it holds, for native code; null without one.
@@ -515,12 +539,24 @@ impl SocketLoans {
     }
 
     fn retire(&self, owner: OwnedSocket, free: fn(OwnedSocket)) {
-        if self.loans.get() == 0 {
+        let loans = self.loans.get();
+        if loans == 0 {
             free(owner);
         } else {
             let mut retired = self.retired.take();
             retired.push((owner, free));
             self.retired.set(retired);
+            self.loans.set(loans | PENDING);
+        }
+    }
+
+    /// The last loan ended with records released meanwhile: free them.
+    #[cold]
+    #[inline(never)]
+    fn free_retired(&self) {
+        self.loans.set(0);
+        for (owner, free) in self.retired.take() {
+            free(owner);
         }
     }
 }
