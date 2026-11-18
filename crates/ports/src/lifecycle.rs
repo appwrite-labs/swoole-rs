@@ -2,12 +2,13 @@
 use core::ffi::{CStr, c_int};
 use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
+use swoole_rs_corebase::reactor::event_api::{Deferred, swoole_event_defer_value};
 use swoole_rs_corebase::reactor::{OwnedSocket, SocketRecord, socket_type};
 use swoole_rs_corebase::{log, sys};
 use swoole_rs_server::port_config::PortConfig;
 pub use swoole_rs_server::port_tls::{context_dup, sni_add, ssl_init};
 
-use crate::methods::{FD_DGRAM_SERVER, FD_STREAM_SERVER, socket_free};
+use crate::methods::{FD_DGRAM_SERVER, FD_STREAM_SERVER};
 
 /// `getsockopt(fd, SOL_SOCKET, option)`: the value, or `None` (errno set).
 fn get_option(fd: c_int, option: c_int) -> Option<c_int> {
@@ -61,20 +62,45 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
     true
 }
 
-/// `ListenPort::close()`: drops the TLS context, frees the socket
-/// and unlinks a Unix socket's path.
+/// `ListenPort::close()`: drops the TLS context, closes the socket (`socket->free()`)
+/// and unlinks a Unix socket's path. The port keeps the record.
 pub(crate) fn close(config: &PortConfig) {
     if config.ssl {
         drop(config.ssl_context.replace(None));
         drop(config.tls.settings.replace(None));
     }
-    // Taken first, so nothing finds the record once it is freed.
-    socket_free(config.take_socket());
+    // Retired first, so nothing finds the record once its descriptor closes.
+    if let Some(socket) = config.retire_socket() {
+        let fd = socket.edit(|record| core::mem::replace(&mut record.fd, -1));
+        // `socket_free_defer`'s close: after the reactor's pass while one runs.
+        if let Err(close) = swoole_event_defer_value(CloseLater(fd)) {
+            close.run();
+        }
+    }
     if matches!(config.r#type, 5 | 6) {
         let mut path = config.host_bytes().to_vec();
         path.push(0);
         if let Ok(path) = CStr::from_bytes_until_nul(&path) {
             _ = sys::unlink(path);
         }
+    }
+}
+
+/// A retired listening socket's descriptor, closed once the reactor's pass ends.
+struct CloseLater(c_int);
+
+impl Deferred for CloseLater {
+    fn run(self) {
+        if self.0 != -1 && sys::close(self.0).is_err() {
+            log::sys_warning(
+                c"socket_free_defer",
+                format_args!("close({}) failed", self.0),
+            );
+        }
+    }
+
+    /// A reactor freed before the pass ends closes it all the same.
+    fn dispose(self) {
+        self.run();
     }
 }
