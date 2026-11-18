@@ -31,6 +31,7 @@ from corpus.run import WebSocket
 
 HERE = Path(__file__).resolve().parent
 MIB = 1024 * 1024
+POOL_WORKERS = 2
 
 
 def children():
@@ -72,6 +73,17 @@ def growth(points):
     spread = sum((t - mean_t) ** 2 for t, _ in points)
     slope = sum((t - mean_t) * (v - mean_v) for t, v in points) / spread
     return slope * (points[-1][0] - points[0][0])
+
+
+def leftover_growth(samples, metric):
+    """Compare low-water marks in the first and final thirds of the measured window."""
+    if metric == 'live_processes':
+        # A normal pool worker can be between exit and respawn at either endpoint.
+        values = [s[metric] + max(0, POOL_WORKERS - s['pool_workers']) for s in samples]
+    else:
+        values = [s[metric] for s in samples]
+    window = max(1, len(samples) // 3)
+    return min(values[-window:]) - min(values[:window])
 
 
 class Load:
@@ -154,7 +166,7 @@ def stats(port):
 
 def soak(engine, args, tmpdir):
     env = {'TMPDIR': tmpdir, 'SOAK_LEAK': '1' if args.leak else '0', 'SOAK_REDIS': args.redis or '', 'SOAK_MYSQL': args.mysql or ''}
-    pool = subprocess.Popen(engine.command(HERE / 'pool.php'), stdout=subprocess.DEVNULL, start_new_session=True,
+    pool = subprocess.Popen(engine.command(HERE / 'pool.php', str(POOL_WORKERS)), stdout=subprocess.DEVNULL, start_new_session=True,
                             env={**os.environ, **env})
     samples, failures = [], []
     started = time.monotonic()
@@ -178,8 +190,10 @@ def soak(engine, args, tmpdir):
                     if process.poll() is not None:
                         raise AssertionError(f'{name} exited {process.returncode} after {now:.0f}s')
                 tree = children()
-                pool_children.update(tree.get(pool.pid, []))
+                workers = tree.get(pool.pid, [])
+                pool_children.update(workers)
                 sample = {'t': round(now, 1), 'processes': {}, 'temp_files': temp_file_count(tmpdir),
+                          'pool_workers': len(workers),
                           'live_processes': len(descendants(proc.pid, tree)) + len(descendants(pool.pid, tree))}
                 for root, name in [(proc.pid, 'server'), (pool.pid, 'pool')]:
                     for pid in descendants(root, tree):
@@ -226,11 +240,8 @@ def soak(engine, args, tmpdir):
                 if value > limit:
                     failures.append(f'{metric} {key} grew {value:.0f} after warm-up (limit {limit})')
     if len(measured) >= 3:
-        # Compare low-water marks so a worker respawn or an in-flight task file
-        # at one sampling instant does not look like a lasting resource.
-        window = max(1, len(measured) // 3)
         for metric in ('temp_files', 'live_processes'):
-            change = min(s[metric] for s in measured[-window:]) - min(s[metric] for s in measured[:window])
+            change = leftover_growth(measured, metric)
             growths[metric] = change
             limit = max(0, control['growth'].get(metric, 0)) if args.control else 0
             if change > limit:
