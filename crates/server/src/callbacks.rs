@@ -44,16 +44,7 @@ pub enum CallbackKind {
 pub type ServerFn = fn(Server<'_>);
 /// `void (Server *, DataInfo *)`.
 pub type EventFn = fn(Server<'_>, &DataHead);
-/// A receive, packet, task or finish callback could not handle its event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CallbackError {
-    /// The server has no callback installed for the event.
-    Missing,
-    /// The installed handler declined or failed to process the event.
-    Failed,
-}
-
-pub type CallbackResult = Result<(), CallbackError>;
+pub use swoole_rs_corebase::process::process_pool::{CallbackError, CallbackResult};
 
 /// The receive or packet handler.
 pub type ReceiveFn = fn(Server<'_>, &mut RecvData<'_>) -> CallbackResult;

@@ -452,7 +452,7 @@ fn task_worker() {
         // SAFETY: the created server's task pool, its first worker and its main loop.
         unsafe {
             (*pool).running.set(true);
-            PoolRef::new(pool)
+            let _ = PoolRef::new(pool)
                 .call_main_loop(Worker::from(&*((*pool).workers())))
                 .unwrap();
         }
