@@ -67,7 +67,9 @@ STATUSES = ['passed', 'failed', 'skipped', 'excluded']
 PENDING_PORTS = {
     4928: [
         'swoole_server/task/task_array_input_snapshot.phpt',
+        'swoole_server/task/task_co_partial_pack_failure.phpt',
         'swoole_server/task/task_wait_multi_string_keys.phpt',
+        'swoole_server/task/unpack_unterminated_tmpfile_path.phpt',
     ],
     4929: [
         'swoole_server/base/connection_bounds_after_other_worker_close.phpt',
