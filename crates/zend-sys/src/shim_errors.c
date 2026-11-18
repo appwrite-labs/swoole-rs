@@ -111,7 +111,7 @@ int swr_zend_try_hash_clean(zval *array) {
 int swr_lent_symtable_update(zval *array, struct iovec name, zval *value) {
     /* add_assoc_zval_ex; as above, only a key already there needs the trap.
      * ZEND_HANDLE_NUMERIC_STR reads a first byte even of an empty key. */
-    const char *key = name.iov_len ? name.iov_base : "";
+    const char *volatile key = name.iov_len ? name.iov_base : "";
     size_t length = name.iov_len;
     zend_ulong index;
     HashTable *table = Z_ARRVAL_P(array);

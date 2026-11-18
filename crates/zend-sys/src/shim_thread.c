@@ -15,23 +15,13 @@ bool swr_zend_array_is_list(const zend_array *array) {
  * after *position, which then points past it. */
 zval *swr_zend_hash_next(const HashTable *table, HashPosition *position, zend_string **key, zend_ulong *index) {
     for (uint32_t at = *position; at < table->nNumUsed; at++) {
-        if (HT_IS_PACKED(table)) {
-            zval *value = table->arPacked + at;
-            if (Z_TYPE_P(value) != IS_UNDEF) {
-                *key = NULL;
-                *index = at;
-                *position = at + 1;
-                return value;
-            }
-        } else {
-            Bucket *bucket = table->arData + at;
-            if (Z_TYPE(bucket->val) != IS_UNDEF) {
-                *key = bucket->key;
-                *index = bucket->h;
-                *position = at + 1;
-                return &bucket->val;
-            }
-        }
+        bool packed = HT_IS_PACKED(table);
+        zval *value = packed ? &table->arPacked[at] : &table->arData[at].val;
+        if (Z_TYPE_P(value) == IS_UNDEF) continue;
+        *key = packed ? NULL : table->arData[at].key;
+        *index = packed ? at : table->arData[at].h;
+        *position = at + 1;
+        return value;
     }
     *position = table->nNumUsed;
     return NULL;
@@ -131,6 +121,12 @@ int swr_zend_thread_request(const char *file, const char *path_translated, int a
     php_request_shutdown(NULL);
     return EG(exit_status);
 #else
+    (void) file;
+    (void) path_translated;
+    (void) argc;
+    (void) prologue;
+    (void) epilogue;
+    (void) context;
     return 1;
 #endif
 }
