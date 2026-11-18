@@ -20,8 +20,19 @@ use swoole_rs_zend::{
 };
 
 unsafe extern "C" {
-    /// `stat(2)` and `lstat(2)`, which upstream's wrapper leaves blocking.
+    /// `stat(2)` and `lstat(2)`, which upstream's wrapper leaves blocking, under the
+    /// names of the 64-bit-inode and 64-bit-time versions where libc has two.
+    #[cfg_attr(
+        all(target_os = "macos", target_arch = "x86_64"),
+        link_name = "stat$INODE64"
+    )]
+    #[cfg_attr(target_os = "netbsd", link_name = "__stat50")]
     safe fn stat(path: Text<'_>, status: &mut libc::stat) -> c_int;
+    #[cfg_attr(
+        all(target_os = "macos", target_arch = "x86_64"),
+        link_name = "lstat$INODE64"
+    )]
+    #[cfg_attr(target_os = "netbsd", link_name = "__lstat50")]
     safe fn lstat(path: Text<'_>, status: &mut libc::stat) -> c_int;
     /// `chown(2)`, `chmod(2)` and `umask(2)`.
     safe fn chown(path: Text<'_>, owner: uid_t, group: gid_t) -> c_int;
