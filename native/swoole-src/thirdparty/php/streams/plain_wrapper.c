@@ -61,11 +61,6 @@ static php_stream_ops ori_php_stream_stdio_ops;
 #define sw_php_stream_fopen_rel(path, mode, opened_path, options)                                                       \
     _sw_php_stream_fopen(path, mode, opened_path, options STREAMS_REL_CC)
 
-#ifndef PHP_WIN32
-extern int php_get_uid_by_name(const char *name, uid_t *uid);
-extern int php_get_gid_by_name(const char *name, gid_t *gid);
-#endif
-
 #if defined(PHP_WIN32)
 #define PLAIN_WRAP_BUF_SIZE(st) (((st) > UINT_MAX) ? UINT_MAX : (unsigned int) (st))
 
@@ -1176,85 +1171,19 @@ static php_stream *php_plain_files_stream_opener(php_stream_wrapper *wrapper,
     return sw_php_stream_fopen_rel(path, mode, opened_path, options);
 }
 
+/* `value` is what the option says: the touch's times, an owner's or group's name, or an id
+ * or mode. crates/phpruntime's plain_files does the rest. */
 static int php_plain_files_metadata(
     php_stream_wrapper *wrapper, const char *url, int option, void *value, php_stream_context *context) {
-    struct utimbuf *newtime;
-#ifndef PHP_WIN32
-    uid_t uid;
-    gid_t gid;
-#endif
-    mode_t mode;
-    int ret = 0;
-
-#ifdef PHP_WIN32
-    if (!php_win32_check_trailing_space(url, strlen(url))) {
-        php_error_docref1(NULL, url, E_WARNING, "%s", strerror(ENOENT));
-        return 0;
+    bool named = option == PHP_STREAM_META_OWNER_NAME || option == PHP_STREAM_META_GROUP_NAME;
+    long number = 0;
+    if (option == PHP_STREAM_META_OWNER || option == PHP_STREAM_META_GROUP) {
+        number = *(long *) value;
+    } else if (option == PHP_STREAM_META_ACCESS) {
+        number = (long) *(zend_long *) value;
     }
-#endif
-
-    if (strncasecmp(url, "file://", sizeof("file://") - 1) == 0) {
-        url += sizeof("file://") - 1;
-    }
-
-    if (php_check_open_basedir(url)) {
-        return 0;
-    }
-
-    switch (option) {
-    case PHP_STREAM_META_TOUCH:
-        newtime = (struct utimbuf *) value;
-        if (access(url, F_OK) != 0) {
-            int file = open(url, O_CREAT | O_WRONLY | O_TRUNC, 0666);
-            if (file == -1) {
-                php_error_docref1(NULL, url, E_WARNING, "Unable to create file %s because %s", url, strerror(errno));
-                return 0;
-            }
-            close(file);
-        }
-
-        ret = utime(url, newtime);
-        break;
-#ifndef PHP_WIN32
-    case PHP_STREAM_META_OWNER_NAME:
-    case PHP_STREAM_META_OWNER:
-        if (option == PHP_STREAM_META_OWNER_NAME) {
-            if (php_get_uid_by_name((char *) value, &uid) != SUCCESS) {
-                php_error_docref1(NULL, url, E_WARNING, "Unable to find uid for %s", (char *) value);
-                return 0;
-            }
-        } else {
-            uid = (uid_t) * (long *) value;
-        }
-        ret = chown(url, uid, -1);
-        break;
-    case PHP_STREAM_META_GROUP:
-    case PHP_STREAM_META_GROUP_NAME:
-        if (option == PHP_STREAM_META_GROUP_NAME) {
-            if (php_get_gid_by_name((char *) value, &gid) != SUCCESS) {
-                php_error_docref1(NULL, url, E_WARNING, "Unable to find gid for %s", (char *) value);
-                return 0;
-            }
-        } else {
-            gid = (gid_t) * (long *) value;
-        }
-        ret = chown(url, -1, gid);
-        break;
-#endif
-    case PHP_STREAM_META_ACCESS:
-        mode = (mode_t) * (zend_long *) value;
-        ret = chmod(url, mode);
-        break;
-    default:
-        zend_value_error("Unknown option %d for stream_metadata", option);
-        return 0;
-    }
-    if (ret == -1) {
-        php_error_docref1(NULL, url, E_WARNING, "Operation failed: %s", strerror(errno));
-        return 0;
-    }
-    php_clear_stat_cache(0, NULL, 0);
-    return 1;
+    return swr_v1_phpruntime_plain_metadata(url, option, option == PHP_STREAM_META_TOUCH ? value : NULL,
+                                            named ? value : NULL, number);
 }
 
 static php_stream_wrapper_ops sw_php_plain_files_wrapper_ops = {

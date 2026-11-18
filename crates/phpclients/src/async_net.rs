@@ -378,7 +378,15 @@ fn connect(call: &Call) {
     hold(object);
 
     let host_text = native::c_text(host);
-    let connect = |h| state::connect(h, &host_text, net::int(port), timeout, net::int(flags));
+    let connect = |h| {
+        state::connect(
+            h,
+            &host_text,
+            port.c_cast::<c_int>(),
+            timeout,
+            flags.c_cast::<c_int>(),
+        )
+    };
     let Some(connected) = bailed(fresh.cli().run(connect)) else {
         return call.set_bool(false);
     };
