@@ -1,11 +1,12 @@
-//! PostgreSQL statement fetching and column metadata.
+//! PostgreSQL statement lifecycle, parameter binding, fetching and column metadata.
 use crate::{Res, driver::Handle};
 use pq_sys::Oid;
 use std::{
-    cell::Cell,
+    cell::{Cell, OnceCell},
     ffi::{CStr, CString, c_int},
+    rc::Rc,
 };
-use swoole_rs_corebase::{CCast, sys::Text};
+use swoole_rs_corebase::{CCast, CellExt, sys::Text};
 use swoole_rs_zend::sys::{
     PHP_VERSION_ID, pdo_param_type, pdo_param_type_PDO_PARAM_BOOL as BOOL,
     pdo_param_type_PDO_PARAM_INT as INT, pdo_param_type_PDO_PARAM_LOB as LOB,
@@ -17,6 +18,194 @@ use swoole_rs_zend::{
     pdo::{Dbh, Slot, Stmt},
 };
 use swoole_rs_zend::{ZString, sys::pdo_column_data};
+
+/// The server-side portion of a PDO statement. The connection can upgrade its
+/// weak reference to finish a displaced single-row result during another execute.
+#[derive(Default)]
+pub(super) struct Execution {
+    pub(super) cursor: OnceCell<CString>,
+    pub(super) name: OnceCell<CString>,
+    pub(super) unbuffered: Cell<bool>,
+    prepared: Cell<bool>,
+    running: Cell<bool>,
+    row: Cell<c_int>,
+    result: Cell<Option<crate::PgResult>>,
+}
+
+#[derive(Default)]
+pub(super) struct Statement {
+    pub(super) execution: Rc<Execution>,
+    params: OnceCell<ParameterStorage>,
+    named: Cell<bool>,
+    query: OnceCell<ZString>,
+}
+
+pub(super) fn install(stmt: &Stmt) -> &Statement {
+    #[expect(
+        improper_ctypes,
+        reason = "PDO retains the opaque Rust statement until its destructor"
+    )]
+    unsafe extern "C" {
+        safe fn pdo_pgsql_init_statement(stmt: &Stmt, state: Box<Statement>) -> &Statement;
+    }
+    pdo_pgsql_init_statement(stmt, Box::default())
+}
+
+impl Statement {
+    pub(super) fn parse(&self, stmt: &Stmt, sql: &swoole_rs_zend::ZStr, emulate: bool) -> bool {
+        unsafe extern "C" {
+            safe fn pdo_pgsql_parse_statement(
+                stmt: &Stmt,
+                sql: &swoole_rs_zend::ZStr,
+                emulate: bool,
+                query: &mut swoole_rs_zend::Owned,
+            ) -> bool;
+        }
+        self.named.set(!emulate);
+        let mut query = swoole_rs_zend::Owned::default();
+        let mut parsed = false;
+        if let Err(error) = swoole_rs_zend::contain_with(|| {
+            parsed = pdo_pgsql_parse_statement(stmt, sql, emulate, &mut query);
+        }) {
+            error.defer();
+            return false;
+        }
+        parsed
+            && query
+                .str()
+                .is_some_and(|text| self.query.set(text.to_owned()).is_ok())
+    }
+}
+
+impl Execution {
+    fn finish(&self, handle: Option<&Handle>, close: bool, abort: bool) {
+        let active = handle
+            .filter(|_| self.running.get())
+            .and_then(|handle| std::ptr::NonNull::new(crate::driver::pdo_pgsql_server(handle).0));
+        self.running.set(false);
+        finish_result(active, &self.result, abort);
+        if let Some(handle) = handle.filter(|_| close) {
+            if let Some(name) = self.name.get().filter(|_| self.prepared.replace(false)) {
+                close_statement(handle, name.as_c_str().into());
+            }
+            if handle
+                .running_stmt
+                .with_taken(|weak| std::ptr::eq(weak.as_ptr(), self))
+            {
+                handle.running_stmt.set(std::rc::Weak::new());
+            }
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_statement_result(state: &Statement) -> *mut pq_sys::PGresult {
+    state
+        .execution
+        .result
+        .with_taken(|slot| slot.as_ref().map_or(std::ptr::null_mut(), |r| r.0.as_ptr()))
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_statement_name(state: &Statement) -> Option<Text<'_>> {
+    state
+        .execution
+        .name
+        .get()
+        .map(|name| name.as_c_str().into())
+}
+
+swoole_rs_zend::exports! {
+    preserve_pending:
+    #[unsafe(no_mangle)]
+    extern "C" fn pdo_pgsql_destroy_statement(state: Option<Box<Statement>>, handle: Option<&Handle>) {
+        let Some(state) = state else { return };
+        let execution = &state.execution;
+        let result = swoole_rs_zend::contain_with(|| {
+            execution.finish(handle, handle.is_some(), handle.is_some());
+            if let (Some(handle), Some(cursor)) = (handle, execution.cursor.get()) {
+                close_cursor(handle, cursor.as_c_str().into());
+            }
+        });
+        swoole_rs_zend::bailout::defer(result);
+    }
+}
+
+swoole_rs_zend::exports! {
+    #[unsafe(no_mangle)]
+    extern "C" fn pdo_pgsql_execute(dbh: &Dbh, stmt: &Stmt, state: &Statement,
+        active: Option<&swoole_rs_zend::ZStr>, count: u32) -> bool {
+        state.execute(dbh, stmt, active, count)
+    }
+}
+
+impl Statement {
+    fn execute(
+        &self,
+        dbh: &Dbh,
+        stmt: &Stmt,
+        active: Option<&swoole_rs_zend::ZStr>,
+        count: u32,
+    ) -> bool {
+        unsafe extern "C" {
+            safe fn PQsetSingleRowMode(conn: crate::Conn) -> c_int;
+        }
+        let Some(handle) = crate::driver::handle(dbh) else {
+            return false;
+        };
+        let in_transaction = handle.in_transaction();
+        let exec = &self.execution;
+        let unbuffered = exec.unbuffered.get();
+        if let Some(previous) = handle.running_stmt.with_taken(|weak| weak.upgrade())
+            && (unbuffered || previous.running.get())
+            && let Err(error) =
+                swoole_rs_zend::contain_with(|| previous.finish(Some(handle), true, false))
+        {
+            error.defer();
+            return false;
+        }
+        exec.finish(Some(handle), false, false);
+        exec.row.set(0);
+        let sent = if let Some(cursor) = exec.cursor.get() {
+            active.is_some_and(|sql| {
+                open_cursor(
+                    dbh,
+                    stmt,
+                    &exec.result,
+                    cursor.as_c_str().into(),
+                    &exec.prepared,
+                    sql.c_str().into(),
+                )
+            })
+        } else {
+            let query = if self.named.get() || exec.name.get().is_some() {
+                self.query.get().map(std::ops::Deref::deref)
+            } else {
+                active
+            };
+            query.is_some_and(|sql| send_statement(dbh, stmt, self, sql.c_str().into(), count))
+        };
+        if !sent {
+            return false;
+        }
+        if unbuffered {
+            handle.running_stmt.set(Rc::downgrade(exec));
+            exec.running.set(true);
+            let conn = crate::driver::pdo_pgsql_server(handle);
+            PQsetSingleRowMode(conn);
+            exec.result.set(crate::PQgetResult(conn));
+        }
+        if !exec.result.with_taken(|slot| {
+            crate::driver::execution_result(dbh, stmt, slot.as_ref().map(crate::PgResult::get))
+        }) {
+            return false;
+        }
+        if in_transaction && !handle.in_transaction() {
+            swoole_rs_zend::bailout::defer(crate::driver::close_lob_streams(dbh));
+        }
+        true
+    }
+}
 
 /// PostgreSQL's built-in OIDs with a known native label. The statement looks up
 /// other labels in `pg_type`. PHP 8.2 and 8.3 also look up the floating-point types.
@@ -70,11 +259,41 @@ unsafe extern "C" {
     safe fn PQftype(result: Res<'_>, column: c_int) -> Oid;
 }
 
-/// Decode PostgreSQL's text-format result. PHP 8.2 and 8.3 return floats as strings.
+swoole_rs_zend::exports! {
+/// Decode a text-format result or return the Zend stream requested for a LOB.
 #[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_scalar_column(oid: Oid, bytes: std::io::IoSlice<'_>, output: &Slot) {
-    use swoole_rs_zend::Owned;
+extern "C" fn pdo_pgsql_read_column(
+    stmt: &Stmt, handle: &Handle, state: &Statement, result: Option<Res<'_>>, column: c_int,
+    bound: Option<&pdo_param_type>, output: &Slot,
+) -> bool {
+    use crate::driver::{INV_READ, PQgetisnull, PQgetvalue, lo_open, pdo_pgsql_server};
+    use swoole_rs_zend::{Owned, contain_with};
+    unsafe extern "C" {
+        safe fn pdo_pgsql_column_bytes<'a>(result: Res<'a>, row: c_int, column: c_int) -> std::io::IoSlice<'a>;
+        safe fn pdo_pgsql_bytea_stream(text: Text<'_>, output: &Slot) -> bool;
+        safe fn pdo_pgsql_stmt_lob_stream(stmt: &Stmt, fd: c_int, oid: Oid, output: &Slot) -> bool;
+    }
+    let Some(result) = result else { return false };
+    let row = state.execution.row.get() - 1;
+    if PQgetisnull(result, row, column) != 0 {
+        output.set(Owned::null());
+        return true;
+    }
+    let oid = PQftype(result, column);
+    if oid == 17 {
+        return PQgetvalue(result, row, column).is_some_and(|text| pdo_pgsql_bytea_stream(text, output));
+    }
+    let bytes = pdo_pgsql_column_bytes(result, row, column);
     let text = || std::str::from_utf8(&bytes).unwrap_or_default();
+    if oid == 26 && bound == Some(&LOB) {
+        let oid = text().parse().unwrap_or_default();
+        let mut fd = -1;
+        if let Err(bailout) = contain_with(|| fd = lo_open(pdo_pgsql_server(handle), oid, INV_READ)) {
+            bailout.defer();
+            return false;
+        }
+        return fd >= 0 && pdo_pgsql_stmt_lob_stream(stmt, fd, oid, output);
+    }
     let value = match oid {
         16 => Owned::bool(bytes.first() == Some(&b't')),
         20 | 21 | 23 | 26 => Owned::long(text().parse().unwrap_or_default()),
@@ -82,12 +301,14 @@ extern "C" fn pdo_pgsql_scalar_column(oid: Oid, bytes: std::io::IoSlice<'_>, out
         _ => Owned::string(ZString::new(&bytes)),
     };
     output.set(value);
+    true
+}
 }
 
 /// Fill PDO's column description.
 #[unsafe(no_mangle)]
 extern "C" fn pdo_pgsql_describe_column(
-    result: Res<'_>,
+    result: Option<Res<'_>>,
     column: c_int,
     desc: &mut pdo_column_data,
 ) -> bool {
@@ -95,6 +316,7 @@ extern "C" fn pdo_pgsql_describe_column(
         // The result owns the name, copied before this function returns.
         safe fn PQfname(result: Res<'_>, column: c_int) -> Option<Text<'_>>;
     }
+    let Some(result) = result else { return false };
     let Some(name) = PQfname(result, column) else {
         return false;
     };
@@ -107,7 +329,8 @@ extern "C" fn pdo_pgsql_describe_column(
 swoole_rs_zend::exports! {
 /// The metadata for a live statement column, returned to PDO.
 #[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_column_meta(handle: &Handle, result: Res<'_>, column: c_int, output: &Slot) -> std::ffi::c_int {
+extern "C" fn pdo_pgsql_column_meta(handle: &Handle, result: Option<Res<'_>>, column: c_int, output: &Slot) -> std::ffi::c_int {
+    let Some(result) = result else { return -1 };
     match column_meta(handle, PQftype(result, column), PQftable(result, column)) {
         Ok(meta) => { output.set(meta.into_owned()); 1 }
         Err(error) => { error.defer(); -1 }
@@ -140,7 +363,7 @@ fn fetch_unbuffered(
     };
     stmt.set_row_count(i64::from(rows));
     if rows == 0 {
-        pdo_pgsql_finish_result(std::ptr::NonNull::new(conn.0), result, false);
+        finish_result(std::ptr::NonNull::new(conn.0), result, false);
         running.set(false);
     }
     true
@@ -151,12 +374,9 @@ fn fetch_unbuffered(
 extern "C" fn pdo_pgsql_fetch_row(
     dbh: &Dbh,
     stmt: &Stmt,
-    result: &Cell<Option<crate::PgResult>>,
-    cursor: Option<Text<'_>>,
+    state: &Statement,
     orientation: swoole_rs_zend::sys::pdo_fetch_orientation,
     offset: swoole_rs_zend::sys::zend_long,
-    row: &Cell<c_int>,
-    running: Option<&Cell<bool>>,
 ) -> bool {
     use swoole_rs_zend::sys::{
         pdo_fetch_orientation_PDO_FETCH_ORI_ABS as ABS,
@@ -166,11 +386,14 @@ extern "C" fn pdo_pgsql_fetch_row(
         pdo_fetch_orientation_PDO_FETCH_ORI_PRIOR as PRIOR,
         pdo_fetch_orientation_PDO_FETCH_ORI_REL as REL,
     };
-    let Some(cursor) = cursor else {
+    let result = &state.execution.result;
+    let row = &state.execution.row;
+    let running = &state.execution.running;
+    let Some(cursor) = state.execution.cursor.get() else {
         if i64::from(row.get()) >= stmt.row_count() {
-            let Some(running) = running.filter(|running| running.get()) else {
+            if !running.get() {
                 return false;
-            };
+            }
             if !fetch_unbuffered(dbh, stmt, result, running) {
                 return false;
             }
@@ -202,7 +425,7 @@ extern "C" fn pdo_pgsql_fetch_row(
     } else {
         swoole_rs_zend::message!("FETCH {direction} FROM ")
     };
-    query.push(cursor.get().to_bytes());
+    query.push(cursor.as_bytes());
     if let Some(previous) = result.take() {
         crate::PQclear(previous);
     }
@@ -215,8 +438,7 @@ extern "C" fn pdo_pgsql_fetch_row(
 }
 
 /// Close the driver-generated server cursor, discarding its command result.
-#[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_close_cursor(handle: &Handle, cursor: Text<'_>) {
+fn close_cursor(handle: &Handle, cursor: Text<'_>) {
     let mut query = swoole_rs_zend::message!("CLOSE ");
     query.push(cursor.get().to_bytes());
     if let Some(result) = handle.exec(query.as_cstr()) {
@@ -224,10 +446,8 @@ extern "C" fn pdo_pgsql_close_cursor(handle: &Handle, cursor: Text<'_>) {
     }
 }
 
-swoole_rs_zend::exports! {
 /// Declare the cursor and fetch its column descriptions without advancing it.
-#[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_open_cursor(
+fn open_cursor(
     dbh: &Dbh,
     stmt: &Stmt,
     result: &Cell<Option<crate::PgResult>>,
@@ -239,7 +459,7 @@ extern "C" fn pdo_pgsql_open_cursor(
         return false;
     };
     if prepared.get() {
-        pdo_pgsql_close_cursor(handle, cursor);
+        close_cursor(handle, cursor);
     }
     let mut declared = None;
     {
@@ -269,12 +489,10 @@ extern "C" fn pdo_pgsql_open_cursor(
     result.set(handle.exec(fetch.as_cstr()));
     true
 }
-}
 
 /// Release PHP 8.5's active result. A displaced single-row query must be drained
 /// before another send, including after the destructor requests cancellation.
-#[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_finish_result(
+fn finish_result(
     active: Option<std::ptr::NonNull<pq_sys::PGconn>>,
     result: &Cell<Option<crate::PgResult>>,
     abort_query: bool,
@@ -310,8 +528,7 @@ extern "C" fn pdo_pgsql_finish_result(
 
 /// Release a generated statement name. PHP 8.4+ uses the close-prepared
 /// protocol when the linked libpq implements it.
-#[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_close_statement(handle: &Handle, name: Text<'_>) {
+fn close_statement(handle: &Handle, name: Text<'_>) {
     let result = if PHP_VERSION_ID >= 80400 && crate::lib_version() >= 170_000 {
         std::ptr::NonNull::new(crate::swoole_pgsql_close_prepared(
             crate::driver::pdo_pgsql_server(handle),
@@ -357,7 +574,7 @@ fn prepare_statement(
         if let Some(old) = result.take() {
             crate::PQclear(old);
         }
-        pdo_pgsql_close_statement(handle, name);
+        close_statement(handle, name);
         result = prepare();
     }
     if crate::driver::statement_result(dbh, stmt, slot, result).is_none() {
@@ -371,20 +588,18 @@ fn prepare_statement(
 
 /// Queue the statement in libpq. Buffered statements use the coroutine-aware
 /// flush and receive path; PHP 8.5 enables single-row mode just after the send.
-#[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_send_statement(
-    dbh: &Dbh,
-    stmt: &Stmt,
-    result: &Cell<Option<crate::PgResult>>,
-    name: Option<Text<'_>>,
-    query: Text<'_>,
-    params: Option<&ParameterStorage>,
-    count: u32,
-    prepared: &Cell<bool>,
-    named: bool,
-    unbuffered: bool,
-) -> bool {
+fn send_statement(dbh: &Dbh, stmt: &Stmt, state: &Statement, query: Text<'_>, count: u32) -> bool {
     use crate::Params;
+    let result = &state.execution.result;
+    let name = state
+        .execution
+        .name
+        .get()
+        .map(|text| text.as_c_str().into());
+    let params = state.params.get();
+    let prepared = &state.execution.prepared;
+    let named = state.named.get();
+    let unbuffered = state.execution.unbuffered.get();
     let Some(handle) = crate::driver::handle(dbh) else {
         return false;
     };
@@ -503,8 +718,38 @@ extern "C" fn pdo_pgsql_emulated_parameter(kind: &Cell<pdo_param_type>, slot: &S
         return false;
     }
     kind.set(STR);
-    slot.set(swoole_rs_zend::Owned::string(ZString::new(if truth { b"t" } else { b"f" })));
+    slot.set(swoole_rs_zend::Owned::string(ZString::new(if truth {
+        b"t"
+    } else {
+        b"f"
+    })));
     true
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_bind_parameter(dbh: &Dbh, stmt: &Stmt, state: &Statement, map: Option<&swoole_rs_zend::Array>,
+    index: i64, kind: pdo_param_type, value: &Slot) -> bool {
+    #[expect(improper_ctypes, reason = "C retains the opaque Rust parameter storage until statement destruction")]
+    unsafe extern "C" {
+        safe fn pdo_pgsql_bind_stream(dbh: &Dbh, stmt: &Stmt, params: &ParameterStorage, index: usize, slot: &Slot) -> bool;
+    }
+    let Some(map) = map else { return true };
+    let params = state.params.get_or_init(|| ParameterStorage::new(map.elements() as usize));
+    let Ok(index) = usize::try_from(index) else { return true };
+    if index >= params.owned.len() {
+        crate::driver::pdo_pgsql_raise(dbh, Some(stmt), 0, Some(c"HY093".into()), Some(c"parameter was not defined".into()));
+        return false;
+    }
+    if kind == LOB && value.value().kind() == swoole_rs_zend::sys::IS_RESOURCE {
+        let mut bound = false;
+        if let Err(bailout) = swoole_rs_zend::contain_with(|| bound = pdo_pgsql_bind_stream(dbh, stmt, params, index, value)) {
+            bailout.defer();
+            return false;
+        }
+        bound
+    } else {
+        bind_value(params, index, kind, value)
+    }
 }
 }
 
@@ -524,22 +769,17 @@ struct BoundValue {
     lob_oid: Cell<Oid>,
 }
 
-#[expect(
-    clippy::unnecessary_box_returns,
-    reason = "the C statement owns this opaque pointer until its destructor"
-)]
-#[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_allocate_parameters(count: usize) -> Box<ParameterStorage> {
-    Box::new(ParameterStorage {
-        values: vec![Cell::new(std::ptr::null()); count],
-        lengths: vec![Cell::new(0); count],
-        formats: vec![Cell::new(0); count],
-        types: vec![Cell::new(0); count],
-        owned: (0..count).map(|_| BoundValue::default()).collect(),
-    })
-}
-
 impl ParameterStorage {
+    fn new(count: usize) -> Self {
+        Self {
+            values: vec![Cell::new(std::ptr::null()); count],
+            lengths: vec![Cell::new(0); count],
+            formats: vec![Cell::new(0); count],
+            types: vec![Cell::new(0); count],
+            owned: (0..count).map(|_| BoundValue::default()).collect(),
+        }
+    }
+
     fn bind(
         &self,
         index: usize,
@@ -565,12 +805,16 @@ impl ParameterStorage {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_bind_oid(params: &ParameterStorage, index: usize, oid: Oid) -> bool {
+extern "C" fn pdo_pgsql_bind_oid(
+    params: &ParameterStorage,
+    index: usize,
+    lob: &crate::driver::lob::LargeObject,
+) -> bool {
     let Some(owned) = params.owned.get(index) else {
         return false;
     };
     owned.string.set(None);
-    owned.lob_oid.set(oid.to_be());
+    owned.lob_oid.set(lob.oid.to_be());
     params.bind(index, owned.lob_oid.as_ptr().cast(), 4, true, 26)
 }
 
@@ -579,8 +823,15 @@ swoole_rs_zend::exports! {
 /// of a later parameter invokes PHP and changes an earlier bound reference.
 #[unsafe(no_mangle)]
 extern "C" fn pdo_pgsql_bind_value(params: &ParameterStorage, index: usize, kind: pdo_param_type, slot: &Slot) -> bool {
-    use swoole_rs_zend::sys::{IS_TRUE, IS_FALSE, pdo_param_type_PDO_PARAM_NULL as NULL};
-    let Some(owned) = params.owned.get(index) else { return false; };
+    bind_value(params, index, kind, slot)
+}
+}
+
+fn bind_value(params: &ParameterStorage, index: usize, kind: pdo_param_type, slot: &Slot) -> bool {
+    use swoole_rs_zend::sys::{IS_FALSE, IS_TRUE, pdo_param_type_PDO_PARAM_NULL as NULL};
+    let Some(owned) = params.owned.get(index) else {
+        return false;
+    };
     let value = slot.value();
     let (bytes, len, string) = if kind == NULL || value.is_null() {
         (std::ptr::null(), 0, None)
@@ -589,18 +840,20 @@ extern "C" fn pdo_pgsql_bind_value(params: &ParameterStorage, index: usize, kind
         (literal.as_ptr(), 1, None)
     } else {
         if value.str().is_none() {
-            let Some(text) = value.applied_string() else { return false; };
+            let Some(text) = value.applied_string() else {
+                return false;
+            };
             slot.set(swoole_rs_zend::Owned::string(text));
         }
-        let Some(text) = slot.value().str() else { return false; };
+        let Some(text) = slot.value().str() else {
+            return false;
+        };
         let bytes = text.bytes();
-        let Ok(len) = c_int::try_from(bytes.len()) else { return false; };
+        let Ok(len) = c_int::try_from(bytes.len()) else {
+            return false;
+        };
         (bytes.as_ptr().cast(), len, Some(text.to_owned()))
     };
     owned.string.set(string);
     params.bind(index, bytes, len, kind == LOB, 0)
 }
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_free_parameters(_owner: Option<Box<ParameterStorage>>) {}

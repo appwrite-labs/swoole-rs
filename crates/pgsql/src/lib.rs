@@ -151,10 +151,6 @@ unsafe extern "C" {
 }
 
 impl Conn {
-    fn socket(self) -> c_int {
-        PQsocket(self)
-    }
-
     fn status(self) -> ConnStatusType {
         PQstatus(self)
     }
@@ -270,7 +266,7 @@ pub fn version() -> String {
 /// failed coroutine wait (cancelled, or refused by the reactor) is recorded against
 /// the connection.
 fn socket_poll(conn: Conn, event: Events) -> Option<bool> {
-    let fd = conn.socket();
+    let fd = PQsocket(conn);
     if blocking() {
         let mut poll = libc::pollfd {
             fd,
@@ -487,7 +483,7 @@ pub extern "C" fn swoole_pgsql_connectdb(conninfo: Text<'_>) -> *mut PGconn {
     }
     // Live until the driver's `PQfinish`.
     let conn = Conn(started);
-    if conn.socket() < 0 {
+    if PQsocket(conn) < 0 {
         return started;
     }
     conn.set_nonblocking(!blocking() && !swoole_rs_corebase::coroutine::current().is_null());

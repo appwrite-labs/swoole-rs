@@ -128,6 +128,19 @@ impl Dbh {
         !self.0.get().methods.is_null()
     }
 
+    /// PDO's configured fetch mode for methods called with `PDO::FETCH_DEFAULT`.
+    #[must_use]
+    pub fn default_fetch_type(&self) -> crate::sys::pdo_fetch_type {
+        #[cfg(php85)]
+        {
+            self.0.get().default_fetch_type.into()
+        }
+        #[cfg(not(php85))]
+        {
+            self.0.get().default_fetch_type
+        }
+    }
+
     /// `dbh->methods = methods`.
     pub fn set_methods(&self, methods: &'static pdo_dbh_methods) {
         self.update(|dbh| dbh.methods = methods);
@@ -296,6 +309,16 @@ pub fn attr_long(options: Option<&Value>, attribute: u32, default: zend_long) ->
         .and_then(Value::array)
         .and_then(|options| options.index(attribute.into()))
         .map_or(default, Value::long)
+}
+
+/// PDO's integer option parser, including its type error for an invalid value.
+#[must_use]
+pub fn long_param(value: &Value) -> Option<zend_long> {
+    unsafe extern "C" {
+        safe fn pdo_get_long_param(output: &mut zend_long, value: &Value) -> bool;
+    }
+    let mut output = 0;
+    pdo_get_long_param(&mut output, value).then_some(output)
 }
 
 /// `pdo_get_bool_param`: the value as an attribute's bool, or none with a

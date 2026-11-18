@@ -23,134 +23,57 @@
 #include "ext/pdo/php_pdo_error.h"
 #include "pgsql_driver_arginfo.h"
 
-void pdo_pgsql_notice(void *context, const char *message) /* {{{ */
+/* Zend owns the callable cache and its version-specific trampoline. */
+void pdo_pgsql_call_notice(void *callback, const char *message)
 {
 #if PHP_VERSION_ID >= 80400
-	pdo_dbh_t * dbh = (pdo_dbh_t *)context;
-	zend_fcall_info_cache *fc = pdo_pgsql_notice_callback(dbh->driver_data);
-	if (fc) {
-		zval zarg;
-		ZVAL_STRING(&zarg, message);
-		zend_call_known_fcc(fc, NULL, 1, &zarg, NULL);
-		zval_ptr_dtor_str(&zarg);
-	}
+    zval argument;
+    ZVAL_STRING(&argument, message);
+    zend_call_known_fcc(callback, NULL, 1, &argument, NULL);
+    zval_ptr_dtor_str(&argument);
 #endif
 }
-/* }}} */
 
-#if PHP_VERSION_ID >= 80400
-static void replace_notice_callback(pdo_pgsql_db_handle *handle, zend_fcall_info_cache *next)
+void pdo_pgsql_release_notice(void *callback)
 {
-    zend_fcall_info_cache *previous = pdo_pgsql_replace_notice_callback(handle, next);
-    if (previous) {
-        zend_fcc_dtor(previous);
-        efree(previous);
+#if PHP_VERSION_ID >= 80400
+    zend_fcall_info_cache *cache = callback;
+    zend_fcc_dtor(cache);
+    efree(cache);
+#endif
+}
+
+pdo_pgsql_db_handle *pdo_pgsql_take_handle(pdo_dbh_t *dbh) {
+    pdo_pgsql_db_handle *handle = dbh->driver_data;
+    dbh->driver_data = NULL;
+    return handle;
+}
+
+/* PDO calls the methods through its version-specific table. */
+void *pdo_pgsql_init_statement(pdo_stmt_t *stmt, void *state)
+{
+    stmt->driver_data = state;
+    stmt->methods = &swoole_pgsql_stmt_methods;
+    return state;
+}
+
+bool pdo_pgsql_parse_statement(pdo_stmt_t *stmt, zend_string *sql, bool emulate, zval *query)
+{
+    stmt->supports_placeholders = emulate ? PDO_PLACEHOLDER_NONE : PDO_PLACEHOLDER_NAMED;
+    if (!emulate) {
+        stmt->named_rewrite_template = "$%d";
     }
-}
-/* }}} */
-
-#endif
-
-/* The handle's close: C's state (the LOB streams and their table, and the notice
- * callback), then the handle and its connection (pdo_pgsql_free). */
-void pdo_pgsql_handle_closer(pdo_dbh_t *dbh) {
-	pdo_pgsql_db_handle *H = (pdo_pgsql_db_handle *) dbh->driver_data;
-	if (H) {
-		HashTable **streams = pdo_pgsql_lob_streams(H);
-		if (*streams) {
-			pdo_pgsql_close_lob_streams(dbh);
-			zend_hash_destroy(*streams);
-			pefree(*streams, dbh->is_persistent);
-			*streams = NULL;
-		}
-#if PHP_VERSION_ID >= 80400
-		replace_notice_callback(H, NULL);
-#endif
-		dbh->driver_data = NULL;
-		pdo_pgsql_free(H);
-	}
-}
-
-static bool pgsql_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *stmt, zval *driver_options)
-{
-	pdo_pgsql_db_handle *H = (pdo_pgsql_db_handle *)dbh->driver_data;
-	pdo_pgsql_stmt *S = ecalloc(1, sizeof(pdo_pgsql_stmt));
-	int scrollable;
-	int ret;
-	zend_string *nsql = NULL;
-	int emulate = 0;
-	int execute_only = 0;
-
-	S->H = H;
-	stmt->driver_data = S;
-	stmt->methods = &swoole_pgsql_stmt_methods;
-
-	scrollable = pdo_attr_lval(driver_options, PDO_ATTR_CURSOR,
-		PDO_CURSOR_FWDONLY) == PDO_CURSOR_SCROLL;
-
-	if (scrollable) {
-		if (S->cursor_name) {
-			efree(S->cursor_name);
-		}
-		spprintf(&S->cursor_name, 0, "pdo_crsr_%08x", pdo_pgsql_next_stmt_id(H));
-		emulate = 1;
-	} else if (driver_options) {
-		if (pdo_attr_lval(driver_options, PDO_ATTR_EMULATE_PREPARES, pdo_pgsql_emulate_prepares(H)) == 1) {
-			emulate = 1;
-		}
-		if (pdo_attr_lval(driver_options, PDO_PGSQL_ATTR_DISABLE_PREPARES, pdo_pgsql_disable_prepares(H)) == 1) {
-			execute_only = 1;
-		}
-	} else {
-		emulate = pdo_pgsql_emulate_prepares(H);
-		execute_only = pdo_pgsql_disable_prepares(H);
-	}
-
-#if PHP_VERSION_ID < 80400
-    if (PQprotocolVersion(pdo_pgsql_server(H)) <= 2) {
-        emulate = 1;
+    zend_string *rewritten = NULL;
+    int parsed = pdo_parse_params(stmt, sql, &rewritten);
+    if (parsed == -1) {
+        memcpy(stmt->dbh->error_code, stmt->error_code, sizeof(stmt->error_code));
+        return false;
     }
-#endif
-	if (emulate) {
-		stmt->supports_placeholders = PDO_PLACEHOLDER_NONE;
-	} else {
-		stmt->supports_placeholders = PDO_PLACEHOLDER_NAMED;
-		stmt->named_rewrite_template = "$%d";
-	}
-
-#if PHP_VERSION_ID >= 80500
-	zval *val;
-	zend_long lval;
-	S->is_unbuffered =
-		driver_options
-		&& (val = zend_hash_index_find(Z_ARRVAL_P(driver_options), PDO_ATTR_PREFETCH))
-		&& pdo_get_long_param(&lval, val)
-		? !lval
-		: pdo_pgsql_lazy_fetch(H)
-	;
-
-#endif
-	ret = pdo_parse_params(stmt, sql, &nsql);
-
-	if (ret == -1) {
-		/* couldn't grok it */
-		strcpy(dbh->error_code, stmt->error_code);
-		return false;
-	} else if (ret == 1) {
-		/* query was re-written */
-		S->query = nsql;
-	} else {
-		S->query = zend_string_copy(sql);
-	}
-
-	if (!emulate && !execute_only) {
-		/* prepared query: set the query name and defer the
-		   actual prepare until the first execute call */
-		spprintf(&S->stmt_name, 0, "pdo_stmt_%08x", pdo_pgsql_next_stmt_id(H));
-	}
-
-	return true;
+    ZVAL_STR(query, parsed == 1 ? rewritten : zend_string_copy(sql));
+    return true;
 }
+
+extern bool pgsql_handle_preparer(pdo_dbh_t *, zend_string *, pdo_stmt_t *, zval *);
 
 #if PHP_VERSION_ID >= 80400
 /* {{{ Sets a callback to receive DB notices (after client_min_messages has been set) */
@@ -172,7 +95,7 @@ PHP_METHOD(PDO_PGSql_Ext, pgsqlSetNoticeCallback)
         next = emalloc(sizeof(*next));
         zend_fcc_dup(next, &fcc);
     }
-    replace_notice_callback(H, next);
+    pdo_pgsql_replace_notice_callback(H, next);
 
 	return;
 
