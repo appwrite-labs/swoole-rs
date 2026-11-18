@@ -434,9 +434,16 @@ def rust_module(stub, path):
                  + ''.join(f'    {slot},\n' for slot in slots) + ']);\n')
     for function in stub.all():
         params = function['parameters']
-        if len(params) == 1 and params[0][1:] == (['array'], 0, False, None):
-            name = function['arginfo'].removeprefix('arginfo_').lower()
+        name = function['arginfo'].removeprefix('arginfo_').lower()
+        signature = [param[1:] for param in params]
+        if signature == [(['array'], 0, False, None)]:
             body += f'pub use crate::required_array as parse_{name};\n'
+        elif signature == [(['string'], 0, False, None), (['string', 'null'], 0, False, 'null')]:
+            body += (
+                '/// # Errors\n/// Zend rejected the argument count or type.\n#[inline]\n'
+                f"pub fn parse_{name}<'a>(call: &'a swoole_rs_zend::Call<'_>) "
+                "-> Result<(&'a [u8], Option<&'a [u8]>), swoole_rs_zend::Invalid> {\n"
+                '    call.arity(1, 2)?;\n    Ok((call.string(1, b"")?, call.string_or_null(2)?))\n}\n')
     if 'z::' in body:
         code += 'use swoole_rs_zend::sys as z;\n'
     return code + '\n' + body

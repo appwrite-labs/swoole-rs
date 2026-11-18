@@ -483,16 +483,7 @@ fn set_bytes(call: &Call, bytes: &[u8]) {
 /// `get(string $key, ?string $field = null): mixed`.
 fn get(call: &Call) {
     let Some(table) = created(call) else { return };
-    let parsed = call.arity(1, 2).and_then(|()| {
-        let key = call.string(1, b"")?;
-        let field = if call.value(2).is_none_or(Value::is_null) {
-            None
-        } else {
-            call.zstr(2)?
-        };
-        Ok((key, field))
-    });
-    let Ok((key, field)) = parsed else {
+    let Ok((key, field)) = table::parse_class_swoole_table_get(call) else {
         call.set_bool(false);
         return;
     };
@@ -501,7 +492,7 @@ fn get(call: &Call) {
         return;
     };
     if let Some(field) = field {
-        match table.column(field.bytes()) {
+        match table.column(field) {
             None => call.set_bool(false),
             Some(column) => match read(&row, column) {
                 Field::Long(value) => call.set_long(value),

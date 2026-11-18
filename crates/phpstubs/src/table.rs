@@ -72,3 +72,12 @@ pub static arginfo_class_Swoole_Table_current: a::ArgInfo<1> =
     a::ArgInfo::new([a::begin_type(0, 0, z::IS_MIXED, false)]);
 pub use self::arginfo_class_Swoole_Table_create as arginfo_class_Swoole_Table_valid;
 pub use self::arginfo_class_Swoole_Table_current as arginfo_class_Swoole_Table_key;
+/// # Errors
+/// Zend rejected the argument count or type.
+#[inline]
+pub fn parse_class_swoole_table_get<'a>(
+    call: &'a swoole_rs_zend::Call<'_>,
+) -> Result<(&'a [u8], Option<&'a [u8]>), swoole_rs_zend::Invalid> {
+    call.arity(1, 2)?;
+    Ok((call.string(1, b"")?, call.string_or_null(2)?))
+}
