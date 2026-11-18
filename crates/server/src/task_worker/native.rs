@@ -91,11 +91,17 @@ pub(crate) fn init(serv: view::Server<'_>) -> bool {
 
 /// `TaskWorker_onTask`: the pool's task callback.
 fn on_task(pool: PoolRef<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_int {
-    crate::shared::pool_server(pool).map_or(ERR, |serv| run_task(serv, worker, task))
+    crate::shared::pool_server(pool)
+        .and_then(|serv| run_task(serv, worker, task).ok())
+        .map_or(ERR, |()| OK)
 }
 
 /// `TaskWorker_onTask`: one task, pipe message, shutdown or command.
-fn run_task(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_int {
+fn run_task(
+    serv: view::Server<'_>,
+    worker: Worker<'_>,
+    task: Packed<'_>,
+) -> crate::callbacks::CallbackResult {
     let head = task.head();
     LATEST_TASK.set(Some(head));
     worker.set_status(WorkerStatus::busy(true));
@@ -103,16 +109,18 @@ fn run_task(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_i
     let ret = match head.event() {
         Some(ServerEvent::PipeMessage) => {
             callbacks.pipe_message(serv, task);
-            OK
+            Ok(())
         }
         Some(ServerEvent::Shutdown) => {
             swr_v1_worker_shutdown(worker);
             if swoole_rs_corebase::reactor::event_api::swoole_event_is_available() {
                 stop_async_worker(serv, worker);
             }
-            return OK;
+            return Ok(());
         }
-        Some(ServerEvent::CommandRequest) => crate::conn_io::status(command(serv, worker, task)),
+        Some(ServerEvent::CommandRequest) => command(serv, worker, task)
+            .then_some(())
+            .ok_or(crate::callbacks::CallbackError::Failed),
         _ => {
             let ret = callbacks.task(TaskSlot::Task, serv, task);
             if swoole_rs_corebase::process::pool::bailout_pending() {
@@ -253,7 +261,7 @@ fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
     if worker.exceeded_max_request() {
         stop_async_worker(serv, worker);
     }
-    ret
+    ret.map_or(ERR, |()| OK)
 }
 
 /// `Server::finish(data, data_len, flags, current_task)`: the task's result to the

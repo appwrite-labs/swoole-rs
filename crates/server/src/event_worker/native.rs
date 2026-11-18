@@ -221,7 +221,7 @@ fn run_task(
     if swoole_rs_corebase::process::pool::bailout_pending() {
         return;
     }
-    if result == 0 {
+    if result.is_ok() {
         worker.add_request_count();
         serv.counters().request_count.fetch_add(1, Relaxed);
     }

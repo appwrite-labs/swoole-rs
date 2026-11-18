@@ -44,10 +44,21 @@ pub enum CallbackKind {
 pub type ServerFn = fn(Server<'_>);
 /// `void (Server *, DataInfo *)`.
 pub type EventFn = fn(Server<'_>, &DataHead);
-/// `int (Server *, RecvData *)`.
-pub type ReceiveFn = fn(Server<'_>, &mut RecvData<'_>) -> c_int;
+/// A receive, packet, task or finish callback could not handle its event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallbackError {
+    /// The server has no callback installed for the event.
+    Missing,
+    /// The installed handler declined or failed to process the event.
+    Failed,
+}
+
+pub type CallbackResult = Result<(), CallbackError>;
+
+/// The receive or packet handler.
+pub type ReceiveFn = fn(Server<'_>, &mut RecvData<'_>) -> CallbackResult;
 /// `int (Server *, EventData *)`.
-pub type TaskFn = fn(Server<'_>, Packed<'_>) -> c_int;
+pub type TaskFn = fn(Server<'_>, Packed<'_>) -> CallbackResult;
 /// `void (Server *, EventData *)`.
 pub type MessageFn = fn(Server<'_>, Packed<'_>);
 /// `void (Server *, Worker *)`, of a worker this thread or process runs.
@@ -57,8 +68,11 @@ pub type WorkerErrorFn = fn(Server<'_>, Worker<'_>, &ExitStatus);
 /// `void (Server *, Worker *)`, of a user worker about to start.
 pub type UserWorkerFn = fn(Server<'_>, Worker<'_>);
 /// `int (Server *, Connection *, SendData *)`.
-pub type DispatchFn =
-    fn(Server<'_>, Option<crate::Connection<'_>>, Option<&crate::base_factory::SendData>) -> c_int;
+pub type DispatchFn = fn(
+    Server<'_>,
+    Option<crate::Connection<'_>>,
+    Option<&crate::base_factory::SendData>,
+) -> Result<u32, c_int>;
 
 /// A Rust fn for one of a server's slots, of that slot's own signature
 /// ([`Server::set_callback`]). The server calls it with the objects of the event,
@@ -348,10 +362,10 @@ impl ServerCallbacks {
         serv: Server<'_>,
         conn: Option<crate::Connection<'_>>,
         send: Option<&crate::base_factory::SendData>,
-    ) -> c_int {
+    ) -> Result<u32, c_int> {
         self.dispatch_func
             .get()
-            .map_or(0, |invoke| invoke(serv, conn, send))
+            .map_or(Ok(0), |invoke| invoke(serv, conn, send))
     }
 
     /// `serv->onX(serv)` for a `(Server *)` slot; nothing when it is empty.
@@ -416,7 +430,7 @@ impl ServerCallbacks {
         }
     }
 
-    /// `serv->onReceive(serv, data)` or `onPacket(serv, data)`; -1 when the slot is
+    /// `serv->onReceive(serv, data)` or `onPacket(serv, data)`; reports Missing when the slot is
     /// empty. Inlined, as [`ServerCallbacks::event`] is: every request calls it.
     #[inline(always)]
     pub(crate) fn receive(
@@ -424,12 +438,12 @@ impl ServerCallbacks {
         slot: ReceiveSlot,
         serv: Server<'_>,
         data: &mut RecvData<'_>,
-    ) -> c_int {
+    ) -> CallbackResult {
         let slot = match slot {
             ReceiveSlot::Receive => &self.receive,
             ReceiveSlot::Packet => &self.packet,
         };
-        slot.get().map_or(-1, |invoke| invoke(serv, data))
+        slot.get().ok_or(CallbackError::Missing)?(serv, data)
     }
 }
 
@@ -452,15 +466,18 @@ pub(crate) enum WorkerSlot {
 /// The typed calls. Each names its slots by a type that admits no other, and every
 /// argument is a live handle or a reference its caller lends for the call.
 impl ServerCallbacks {
-    /// `serv->onTask(serv, task)` or `onFinish(serv, task)`; -1 when the slot is
-    /// empty. A caller that discards the result (onFinish) still calls through the
-    /// int type the slot holds.
-    pub(crate) fn task(&self, slot: TaskSlot, serv: Server<'_>, task: Packed<'_>) -> c_int {
+    /// `serv->onTask(serv, task)` or `onFinish(serv, task)`; reports Missing when the slot is empty.
+    pub(crate) fn task(
+        &self,
+        slot: TaskSlot,
+        serv: Server<'_>,
+        task: Packed<'_>,
+    ) -> CallbackResult {
         let slot = match slot {
             TaskSlot::Task => &self.task,
             TaskSlot::Finish => &self.finish,
         };
-        slot.get().map_or(-1, |invoke| invoke(serv, task))
+        slot.get().ok_or(CallbackError::Missing)?(serv, task)
     }
 
     /// `serv->onPipeMessage(serv, message)`; nothing when the slot is empty.

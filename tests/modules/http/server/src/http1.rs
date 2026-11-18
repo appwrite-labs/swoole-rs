@@ -38,6 +38,17 @@ use swoole_rs_server::{
 
 use crate::client::{Client, USER_AGENT};
 
+/// Adapt the original case's integer result to the Rust callback slot.
+macro_rules! status_callback {
+    ($handler:path) => {
+        |server, data| {
+            ($handler(server, data) == 0)
+                .then_some(())
+                .ok_or(swoole_rs_server::callbacks::CallbackError::Failed)
+        }
+    };
+}
+
 pub(super) mod case;
 /// lifecycle.rs: `core-tests/src/server/server.cpp`'s reload, kill and restart TESTs.
 pub(super) mod lifecycle;
@@ -506,7 +517,7 @@ fn test_base_server(test: fn(Server)) {
 
     serv.set_callback(Callback::WorkerStart(base_on_worker_start));
     serv.set_callback(Callback::Close(on_close));
-    serv.set_callback(Callback::Receive(base_on_receive));
+    serv.set_callback(Callback::Receive(status_callback!(base_on_receive)));
 
     serv.start();
     join_client();
@@ -591,7 +602,7 @@ fn test_http_server(dispatch_mode: DispatchMode, worker_num: u32, mode: c_int) -
     server.set_callback(Callback::Start(ignore_server));
     server.set_callback(Callback::Close(on_close));
     server.set_callback(Callback::Connect(ignore_event));
-    server.set_callback(Callback::Receive(http_on_receive));
+    server.set_callback(Callback::Receive(status_callback!(http_on_receive)));
 
     server
 }
@@ -650,7 +661,7 @@ fn test_proxy_server() -> Server {
 
     server.create();
 
-    server.set_callback(Callback::Receive(proxy_on_receive));
+    server.set_callback(Callback::Receive(status_callback!(proxy_on_receive)));
 
     server
 }
@@ -1124,7 +1135,9 @@ fn dispatch_error(
 
 fn dispatch_func_return_error_worker_id() {
     let server = default_http_server();
-    server.set_callback(Callback::DispatchFunc(dispatch_error));
+    server.set_callback(Callback::DispatchFunc(|s, c, d| {
+        Err(dispatch_error(s, c, d))
+    }));
     fork_with(|| {
         server.start();
     });
