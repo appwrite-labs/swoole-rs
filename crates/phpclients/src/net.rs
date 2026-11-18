@@ -17,6 +17,7 @@ use swoole_rs_clients::{
     pool::Pool,
     valid_port,
 };
+use swoole_rs_corebase::buffer::string::find_delimiter;
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::reactor::{Socket as Net, SocketFields};
@@ -935,7 +936,7 @@ fn recv_eof(call: &Call, conn: &Conn, frame: &mut Frame, framing: &Protocol) {
             }
         }
         find = false;
-        if let Some(at) = position(&frame.buffer, eof) {
+        if let Some(at) = find_delimiter(&frame.buffer, eof) {
             let end = at + eof.len();
             let package = ZString::new(frame.buffer.get(..end).unwrap_or_default());
             if frame.buffer.len() > end {
@@ -955,16 +956,6 @@ fn recv_eof(call: &Call, conn: &Conn, frame: &mut Frame, framing: &Protocol) {
             frame.size = (frame.size * 2).min(max);
         }
     }
-}
-
-/// `swoole_strnpos`: the first `needle` in `haystack`.
-fn position(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
 }
 
 /// `recv` under `open_length_check`: the header, then the rest of the package.
@@ -1351,14 +1342,6 @@ swoole_rs_zend::handlers! {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn eof_search_finds_the_first_match() {
-        assert_eq!(position(b"ab\r\ncd\r\n", b"\r\n"), Some(2), "first");
-        assert_eq!(position(b"abc", b"\r\n"), None, "absent");
-        assert_eq!(position(b"\r", b"\r\n"), None, "shorter than the EOF");
-        assert_eq!(position(b"abc", b""), None, "no EOF");
-    }
 
     #[test]
     fn socket_type_drops_the_client_flags() {

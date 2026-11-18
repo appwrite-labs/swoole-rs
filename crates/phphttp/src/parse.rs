@@ -10,6 +10,7 @@ use std::fs::File;
 use std::io::{BufWriter, IoSlice, Write};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::buffer::string::find_delimiter;
 use swoole_rs_corebase::lent::{Count, In, lend_in};
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_corebase::{WebSocketStatus, log};
@@ -958,13 +959,6 @@ fn c_copy(bytes: &[u8]) -> Box<[u8]> {
     copy.into_boxed_slice()
 }
 
-/// `swoole_strnpos`.
-fn position(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
 fn part_header_value<'i>(parts: &mut Parts<'_, 'i>, value_: &'i [u8]) -> bool {
     let (state, name) = (&mut *parts.state, parts.name);
     let func = c"multipart_body_on_header_value";
@@ -979,9 +973,9 @@ fn part_header_value<'i>(parts: &mut Parts<'_, 'i>, value_: &'i [u8]) -> bool {
     state.parse.input_var_num = state.parse.input_var_num.wrapping_add(1);
 
     if name.eq_ignore_ascii_case(b"content-disposition") {
-        let offset = if position(value_, b"form-data;").is_some() {
+        let offset = if find_delimiter(value_, b"form-data;").is_some() {
             b"form-data;".len()
-        } else if position(value_, b"attachment;").is_some() {
+        } else if find_delimiter(value_, b"attachment;").is_some() {
             b"attachment;".len()
         } else {
             let mut message = b"Unsupported Content-Disposition [".to_vec();
@@ -1257,12 +1251,6 @@ mod tests {
         assert_eq!(&*trimmed(b"plain", 5), b"plain");
         // A name with a NUL: strlcpy stops there, the length stays Z_STRLEN.
         assert_eq!(&*trimmed(b"ab", 3), b"ab\0");
-    }
-
-    #[test]
-    fn strnpos_finds_the_needle_anywhere() {
-        assert_eq!(position(b"x; form-data; name=a", b"form-data;"), Some(3));
-        assert_eq!(position(b"inline", b"attachment;"), None);
     }
 
     #[test]
