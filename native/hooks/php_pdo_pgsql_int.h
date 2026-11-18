@@ -22,8 +22,6 @@
 #define PHP_PDO_PGSQL_INT_H
 
 #include "pgsql_statement.h"
-#include <libpq-fe.h>
-#include <libpq/libpq-fs.h>
 #include <php.h>
 
 #define PHP_PDO_PGSQL_CONNECTION_FAILURE_SQLSTATE "08006"
