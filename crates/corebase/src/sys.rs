@@ -137,6 +137,11 @@ mod c {
         pub(crate) safe fn strncasecmp(left: Text<'_>, right: Text<'_>, count: usize) -> c_int;
         pub(crate) safe fn strtoul(text: Text<'_>, end: &mut *mut c_char, base: c_int) -> c_ulong;
         pub(crate) safe fn if_nametoindex(name: Text<'_>) -> c_uint;
+        #[cfg(not(target_os = "linux"))]
+        pub(crate) safe fn if_indextoname(
+            index: c_uint,
+            name: &mut [u8; libc::IF_NAMESIZE],
+        ) -> *mut c_char;
         pub(crate) safe fn sysconf(name: c_int) -> c_long;
         pub(crate) safe fn kill(pid: pid_t, signo: c_int) -> c_int;
         pub(crate) safe fn getpriority(which: Which, who: libc::id_t) -> c_int;
@@ -985,12 +990,23 @@ impl Ifreq {
         self.0.get(libc::IFNAMSIZ..).unwrap_or_default()
     }
 
-    /// Sets `ifru_ifindex`, the interface `SIOCGIFNAME` names.
-    pub fn set_index(&mut self, index: c_int) {
-        let value = self.0.get_mut(libc::IFNAMSIZ..).unwrap_or_default();
-        if let Some(slot) = value.first_chunk_mut() {
-            *slot = index.to_ne_bytes();
-        }
+    /// Looks up an interface by index with `SIOCGIFNAME` on the supplied socket.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn from_index(fd: c_int, index: libc::c_uint) -> Option<Self> {
+        let mut request = Self::default();
+        let slot = request.0.get_mut(libc::IFNAMSIZ..)?.first_chunk_mut()?;
+        *slot = c_int::try_from(index).unwrap_or(-1).to_ne_bytes();
+        interface_ioctl(fd, InterfaceRequest::Name, &mut request).ok()?;
+        Some(request)
+    }
+
+    /// Looks up an interface by index with `if_indextoname`.
+    #[cfg(not(target_os = "linux"))]
+    #[must_use]
+    pub fn from_index(_fd: c_int, index: libc::c_uint) -> Option<Self> {
+        let mut name = [0; libc::IF_NAMESIZE];
+        (!c::if_indextoname(index, &mut name).is_null()).then(|| Self::named(&name))
     }
 
     /// `((struct sockaddr_in *) &ifru_addr)->sin_addr`, as `SIOCGIFADDR`
