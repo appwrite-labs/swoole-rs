@@ -4,7 +4,7 @@ Feature bit 8192 (`corebase`). Header: `swoole_rs_corebase.h`. `src/core/base.cc
 and `src/core/misc.cc` are gone, and no C++ source of theirs is left. What stable
 Rust can't express of them stays where it has to: the compile-time build strings
 are on the generated switch table (`switches.cc`, `swr_cpp_bug_report`), the
-variadic fatal-error hook and libc's `stdout` are crates/ffi's `src/fatal.c`. No
+variadic fatal-error hook lives in `crates/corebase/src/fatal.c`. No
 C++ called the throwing `swoole_get_env` (`std::stoi`), so it left `swoole.h`; Rust reads the
 environment itself (`get_env`, which aborts where `std::stoi` would throw an
 exception nothing catches). Rust owns `SwooleG` and `SwooleTG`; `swoole::Global`
