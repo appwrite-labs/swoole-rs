@@ -1,9 +1,4 @@
-//! `Coroutine\Socket`'s option surface: `getOption`, `setOption`, `import` and
-//! `swoole_coroutine_socketpair()`, and
-//! the settings arrays every coroutine client applies to its socket
-//! (`php_swoole_socket_set`, `_set_protocol` and `_set_ssl`). Each reads its
-//! arguments in upstream's order and stops where upstream's fatal error would;
-//! the coroutine socket's fields stay C++, reached through `native`.
+//! Coroutine socket options, stream imports, socket pairs and client socket settings.
 use crate::{
     multicast,
     native::{self, Co, ErrorKind},
@@ -140,7 +135,7 @@ pub fn socket_set(socket: swoole_rs_hooks::co_socket::Co, settings: &Array) -> b
     applied && !bailout::pending()
 }
 
-/// [`apply`] for crates/phpruntime (through crates/phpswoole's families) and the
+/// `apply` for crates/phpruntime (through crates/phpswoole's families) and the
 /// coroutine HTTP server. Settings that are no array apply nothing.
 /// # Errors
 /// A setting's warning bailed out: the bailout stays pending, for the caller's

@@ -1,7 +1,5 @@
-//! What `Coroutine\Http\Client` needs from the coroutine socket (methods on
-//! the typed [`Co`] handle: its proxy, buffers and timeouts), files and
-//! callables. WebSocket framing is crates/phphttp's, which registers it here
-//! ([`WebSocket`]); the name resolver's context is still C++.
+//! Coroutine HTTP client access to socket operations, files and callables.
+//! The phphttp crate registers the [`WebSocket`] implementation at MINIT.
 use crate::{native::Co, socket::Sock};
 use libc::c_int;
 use std::{ffi::CStr, sync::OnceLock};
