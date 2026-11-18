@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::process::process_pool::PoolNative;
 
 /// `SW_MSGMAX`: the most a queue receive asks for under the stream protocol.
-const MSGMAX: usize = 65536;
+const MSGMAX: usize = crate::constants::SW_MSGMAX as usize;
 /// `SW_BUFFER_SIZE_STD`: the response buffer's first capacity.
 const RESPONSE_CAPACITY: usize = 8192;
 /// `sizeof(swoole::DataHead)`; `info.len` is its `u32` at offset 16, `info.fd`

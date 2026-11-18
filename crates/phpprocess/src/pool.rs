@@ -21,11 +21,11 @@ use std::{
     rc::Rc,
     sync::atomic::{AtomicPtr, Ordering},
 };
-use swoole_rs_corebase::process;
 use swoole_rs_corebase::reactor::Heap;
 use swoole_rs_corebase::reactor::signal_upstream::Handler as SignalHandler;
 use swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_corebase::{CCast, CellExt};
+use swoole_rs_corebase::{ossupport::QueueRecord, process};
 use swoole_rs_phpstubs::process_pool;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, handlers,
@@ -535,7 +535,7 @@ fn construct(call: &Call) {
     if worker_num <= 0 {
         return fail(c"the parameter $worker_num must be greater than 0");
     }
-    if ipc_type == IpcMode::MsgQueue.code().into() && !crate::process::key_is_valid(key) {
+    if ipc_type == IpcMode::MsgQueue.code().into() && !QueueRecord::key_is_valid(key) {
         return fail(c"the parameter $msgqueue_key is out of range");
     }
     if coroutine && ipc_type > 0 && ipc_type != IpcMode::UnixSock.code().into() {

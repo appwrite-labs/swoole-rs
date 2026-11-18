@@ -2,6 +2,7 @@
 //! open, blocking flag, push, pop, stat, capacity and removal over a `SysV` message
 //! queue, with upstream's warnings. Rust allocates and frees the queue; native code
 //! holds only its pointer.
+use crate::constants::SW_MSGMAX;
 use crate::lent::{Count, HeadedIn, HeadedOut, lend_headed_in, lend_headed_out};
 use crate::{log, sys::Pod};
 use libc::{IPC_CREAT, IPC_NOWAIT, c_int, c_long};
@@ -71,6 +72,21 @@ pub struct QueueRecord {
 }
 
 impl QueueRecord {
+    /// PHP accepts both signed keys and unsigned 32-bit key bit patterns.
+    #[must_use]
+    pub fn key_is_valid(key: i64) -> bool {
+        (i64::from(i32::MIN)..=i64::from(u32::MAX)).contains(&key)
+    }
+
+    /// Payload capacity of `Process::pop`. An out-of-range request uses the maximum.
+    #[must_use]
+    pub fn receive_size(requested: i64) -> usize {
+        usize::try_from(requested)
+            .ok()
+            .filter(|size| (1..=SW_MSGMAX as usize).contains(size))
+            .unwrap_or(SW_MSGMAX as usize)
+    }
+
     /// `MsgQueue(key, blocking, perms)`: `msgget(key, IPC_CREAT | perms)`, warning
     /// when it fails.
     #[must_use]
@@ -319,6 +335,31 @@ fn queue_stat(id: c_int) -> Option<MsqidDs> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queue_keys_cover_signed_and_unsigned_key_t() {
+        let min = i64::from(i32::MIN);
+        let max = i64::from(u32::MAX);
+        for (key, valid) in [(min - 1, false), (min, true), (max, true), (max + 1, false)] {
+            assert_eq!(QueueRecord::key_is_valid(key), valid, "key {key}");
+        }
+    }
+
+    #[test]
+    fn process_receive_size_defaults_outside_the_payload_range() {
+        let max = i64::from(SW_MSGMAX);
+        for (size, expected) in [
+            (-1, max),
+            (0, max),
+            (1, 1),
+            (max - 1, max - 1),
+            (max, max),
+            (max + 1, max),
+        ] {
+            let actual = QueueRecord::receive_size(size);
+            assert_eq!(i64::try_from(actual), Ok(expected), "request {size}");
+        }
+    }
 
     #[test]
     fn permissions_and_flags_match_the_native_expressions() {

@@ -10,9 +10,9 @@ use std::{
     ffi::{CStr, c_int, c_long},
     sync::atomic::{AtomicU32, Ordering},
 };
-use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::ossupport::QueueRecord;
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerRecord};
+use swoole_rs_corebase::{CCast, constants::SW_MSGMAX};
 use swoole_rs_phpstubs::process;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, bailout,
@@ -46,9 +46,6 @@ const PIPE_TYPE_STREAM: i64 = 1;
 const PIPE_TYPE_DGRAM: i64 = 2;
 const PIPE_CLOSE_READ: i64 = 3;
 const PIPE_CLOSE_WRITE: i64 = 4;
-/// `SW_MSGMAX`.
-const MSGMAX: usize = 65536;
-const MSGMAX_LONG: i64 = 65536;
 
 static PROCESS: CustomClass<Process> = CustomClass::new();
 
@@ -451,15 +448,6 @@ fn wait(call: &Call) {
     call.add_assoc_long(c"signal", i64::from(libc::WTERMSIG(status)));
 }
 
-/// `php_swoole_msgqueue_key_is_valid` for a signed 32-bit `key_t`.
-pub(crate) fn key_is_valid(key: i64) -> bool {
-    if key < 0 {
-        key >= i64::from(i32::MIN)
-    } else {
-        key <= i64::from(u32::MAX)
-    }
-}
-
 fn use_queue(call: &Call) {
     let parsed = call.arity(0, 3).and_then(|()| {
         Ok((
@@ -476,7 +464,7 @@ fn use_queue(call: &Call) {
     let Some(worker) = checked(process) else {
         return;
     };
-    if key > 0 && !key_is_valid(key) {
+    if key > 0 && !QueueRecord::key_is_valid(key) {
         fatal(
             E_WARNING,
             &message!("message queue key is out of range [{key}]"),
@@ -730,7 +718,7 @@ fn push(call: &Call) {
         call.set_bool(false);
         return;
     }
-    if data.len() >= MSGMAX {
+    if data.len() >= SW_MSGMAX as usize {
         fatal(E_WARNING, &message!("the data to push is too big"));
         call.set_bool(false);
         return;
@@ -750,14 +738,14 @@ fn push(call: &Call) {
 }
 
 fn pop(call: &Call) {
-    let Ok(size) = call.arity(0, 1).and_then(|()| call.long(1, MSGMAX_LONG)) else {
+    let Ok(size) = call
+        .arity(0, 1)
+        .and_then(|()| call.long(1, i64::from(SW_MSGMAX)))
+    else {
         call.set_bool(false);
         return;
     };
-    let size = usize::try_from(size)
-        .ok()
-        .filter(|size| (1..=MSGMAX).contains(size))
-        .unwrap_or(MSGMAX);
+    let size = QueueRecord::receive_size(size);
     let Some(worker) = checked(this(call)) else {
         return;
     };
@@ -1105,14 +1093,6 @@ mod tests {
         );
         assert!(slot.free_queue(), "destroyed");
         assert!(queue_of(worker).is_null(), "and detached");
-    }
-
-    #[test]
-    fn queue_keys_cover_signed_and_unsigned_key_t() {
-        assert!(key_is_valid(i64::from(i32::MIN)), "the signed minimum");
-        assert!(!key_is_valid(i64::from(i32::MIN) - 1), "below it");
-        assert!(key_is_valid(i64::from(u32::MAX)), "the unsigned maximum");
-        assert!(!key_is_valid(i64::from(u32::MAX) + 1), "above it");
     }
 
     #[test]
