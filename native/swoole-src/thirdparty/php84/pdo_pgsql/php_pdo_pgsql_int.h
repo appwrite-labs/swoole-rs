@@ -25,29 +25,17 @@
 
 #define PHP_PDO_PGSQL_CONNECTION_FAILURE_SQLSTATE "08006"
 
-typedef struct {
-    const char *file;
-    int line;
-    unsigned int errcode;
-    char *errmsg;
-} pdo_pgsql_error_info;
+/* The database handle is Rust's (crates/pgsql/src/driver.rs), which also implements
+ * the handle's methods: the statement, COPY, LOB and notice code reach its state only
+ * through these accessors. */
+typedef struct pdo_pgsql_db_handle pdo_pgsql_db_handle;
 
-/* stuff we use in a pgsql database handle */
-typedef struct {
-    PGconn *server;
-    unsigned attached : 1;
-    unsigned _reserved : 31;
-    pdo_pgsql_error_info einfo;
-    Oid pgoid;
-    unsigned int stmt_counter;
-    /* The following two variables have the same purpose. Unfortunately we need
-       to keep track of two different attributes having the same effect. */
-    bool emulate_prepares;
-    bool disable_native_prepares; /* deprecated since 5.6 */
-    bool disable_prepares;
-    HashTable *lob_streams;
-    zend_fcall_info_cache *notice_callback;
-} pdo_pgsql_db_handle;
+PGconn *pdo_pgsql_server(pdo_pgsql_db_handle *H);
+unsigned int pdo_pgsql_next_stmt_id(pdo_pgsql_db_handle *H);
+bool pdo_pgsql_emulate_prepares(pdo_pgsql_db_handle *H);
+bool pdo_pgsql_disable_prepares(pdo_pgsql_db_handle *H);
+HashTable **pdo_pgsql_lob_streams(pdo_pgsql_db_handle *H);
+zend_fcall_info_cache **pdo_pgsql_notice_callback(pdo_pgsql_db_handle *H);
 
 typedef struct {
     Oid pgsql_type;
@@ -76,13 +64,31 @@ extern const pdo_driver_t pdo_pgsql_driver;
 
 extern int pdo_pgsql_scanner(pdo_scanner_t *s);
 
-extern int _pdo_pgsql_error(
-    pdo_dbh_t *dbh, pdo_stmt_t *stmt, int errcode, const char *sqlstate, const char *msg, const char *file, int line);
-#define pdo_pgsql_error(d, e, z) _pdo_pgsql_error(d, NULL, e, z, NULL, __FILE__, __LINE__)
-#define pdo_pgsql_error_msg(d, e, m) _pdo_pgsql_error(d, NULL, e, NULL, m, __FILE__, __LINE__)
-#define pdo_pgsql_error_stmt(s, e, z) _pdo_pgsql_error(s->dbh, s, e, z, NULL, __FILE__, __LINE__)
-#define pdo_pgsql_error_stmt_msg(stmt, e, sqlstate, msg)                                                               \
-    _pdo_pgsql_error(stmt->dbh, stmt, e, sqlstate, msg, __FILE__, __LINE__)
+int pdo_pgsql_connect(pdo_dbh_t *dbh, const char *data_source, const char *username, const char *password,
+                      zval *driver_options);
+void pdo_pgsql_free(pdo_pgsql_db_handle *H);
+zend_long pdo_pgsql_handle_doer(pdo_dbh_t *dbh, const zend_string *sql);
+zend_string *pdo_pgsql_handle_quoter(pdo_dbh_t *dbh, const zend_string *unquoted, enum pdo_param_type paramtype);
+bool pdo_pgsql_handle_begin(pdo_dbh_t *dbh);
+bool pdo_pgsql_handle_commit(pdo_dbh_t *dbh);
+bool pdo_pgsql_handle_rollback(pdo_dbh_t *dbh);
+bool pdo_pgsql_set_attr(pdo_dbh_t *dbh, zend_long attr, zval *val);
+zend_string *pdo_pgsql_last_insert_id(pdo_dbh_t *dbh, const zend_string *name);
+void pdo_pgsql_fetch_error_func(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zval *info);
+int pdo_pgsql_get_attribute(pdo_dbh_t *dbh, zend_long attr, zval *return_value);
+zend_result pdo_pgsql_check_liveness(pdo_dbh_t *dbh);
+bool pdo_pgsql_handle_in_transaction(pdo_dbh_t *dbh);
+extern const struct pdo_dbh_methods swoole_pdo_pgsql_methods;
+
+/* Called by Rust: the notice processor, and the close on a failed connect. */
+void pdo_pgsql_notice(void *context, const char *message);
+void pdo_pgsql_handle_closer(pdo_dbh_t *dbh);
+
+void pdo_pgsql_raise(pdo_dbh_t *dbh, pdo_stmt_t *stmt, int errcode, const char *sqlstate, const char *msg);
+#define pdo_pgsql_error(d, e, z) pdo_pgsql_raise(d, NULL, e, z, NULL)
+#define pdo_pgsql_error_msg(d, e, m) pdo_pgsql_raise(d, NULL, e, NULL, m)
+#define pdo_pgsql_error_stmt(s, e, z) pdo_pgsql_raise(s->dbh, s, e, z, NULL)
+#define pdo_pgsql_error_stmt_msg(stmt, e, sqlstate, msg) pdo_pgsql_raise(stmt->dbh, stmt, e, sqlstate, msg)
 
 extern const struct pdo_stmt_methods swoole_pgsql_stmt_methods;
 
@@ -113,7 +119,6 @@ extern const php_stream_ops pdo_pgsql_lob_stream_ops;
 
 void pdo_pgsql_cleanup_notice_callback(pdo_pgsql_db_handle *H);
 
-void pdo_libpq_version(char *buf, size_t len);
 void pdo_pgsql_close_lob_streams(pdo_dbh_t *dbh);
 
 void pgsqlCopyFromArray_internal(INTERNAL_FUNCTION_PARAMETERS);

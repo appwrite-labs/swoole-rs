@@ -2,6 +2,7 @@
 #ifndef SWOOLE_RS_ZEND_SHIM_PDO_H
 #define SWOOLE_RS_ZEND_SHIM_PDO_H
 #include "php.h"
+#include "ext/pdo/php_pdo_driver.h"
 
 /* Whether PDO's MINIT has registered the PDO class. */
 bool swr_zend_pdo_loaded(void);

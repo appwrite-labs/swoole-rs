@@ -16,6 +16,8 @@
 )]
 
 #[cfg(feature = "php")]
+pub mod driver;
+#[cfg(feature = "php")]
 pub mod minit;
 #[cfg(feature = "php")]
 pub mod pdo;
@@ -49,8 +51,9 @@ pub struct Conn(*mut PGconn);
 
 /// The connection the driver gives up to `PQfinish`: null, or live and used by nothing
 /// after the call. Only [`swoole_pgsql_finish`]'s parameter makes one, where the C
-/// caller's contract stands for the constructor; it is not `Copy`, so it is finished
-/// once.
+/// caller's contract stands for the constructor, and the dropped driver handle
+/// (`driver::Handle`), which owns the connection it opened; it is not `Copy`, so it is
+/// finished once.
 #[repr(transparent)]
 pub struct OwnedConn(*mut PGconn);
 

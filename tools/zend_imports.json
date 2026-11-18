@@ -1,5 +1,5 @@
 {
-  "crates/pgsql/src/pdo.rs:swr_zend_pdo_driver_data": "shim_pdo.c: reads pdo_dbh_t.driver_data; no callbacks.",
+  "crates/pgsql/src/driver.rs:swr_zend_pdo_driver_data": "shim_pdo.c: reads pdo_dbh_t.driver_data; no callbacks.",
   "crates/pgsql/src/pdo.rs:swr_zend_pdo_forget_persistent": "shim_pdo.c: nulls the resource pointer before deleting its persistent-list entry, so PDO cannot close the handle again.",
   "crates/phpcoroutines/src/classes.rs:swr_zend_autoload_forget": "shim_coroutine.c: deletes the recursion-guard marker from EG(in_autoload), not a user value.",
   "crates/phpcoroutines/src/classes.rs:swr_zend_autoload_try": "shim_coroutine.c: SWR_ZEND_TRY encloses the autoload handler.",

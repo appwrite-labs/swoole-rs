@@ -1,8 +1,16 @@
-//! PDO's side of a bundled driver's MINIT: the `PDO` class's constants and the
-//! driver table, behind [`Minit::pdo`], which checks PDO's own MINIT has run.
-use crate::{Minit, Mshutdown, bailout::Bailout, helpers::CText, sys::zend_long};
+//! PDO's side of a bundled driver: at MINIT the `PDO` class's constants and the
+//! driver table, behind [`Minit::pdo`], which checks PDO's own MINIT has run; at
+//! run time the database handle ([`Dbh`]), statement ([`Stmt`]) and value slots
+//! ([`Slot`]) PDO lends the driver's methods.
+use crate::{
+    Minit, Mshutdown, Owned, Value,
+    bailout::Bailout,
+    helpers::CText,
+    sys::{pdo_dbh_methods, pdo_dbh_t, pdo_error_type, pdo_stmt_t, zend_long},
+};
 use std::{
-    ffi::{CStr, c_int},
+    cell::Cell,
+    ffi::{CStr, c_char, c_int, c_void},
     marker::PhantomData,
 };
 
@@ -32,6 +40,13 @@ unsafe extern "C" {
     /// PDO's `php_pdo_unregister_driver`: nothing once PDO has shut down, or
     /// when it is not loaded. It raises no error.
     safe fn php_pdo_unregister_driver(driver: &'static Driver);
+    /// PDO's `pdo_throw_exception`: a `PDOException` with `sqlstate`, `code` and
+    /// `message`, which PDO reads and copies. It creates the exception object and
+    /// sets its properties, which runs no PHP code.
+    safe fn pdo_throw_exception(code: u32, message: CText<'_>, sqlstate: &pdo_error_type);
+    /// PDO's `pdo_get_bool_param`: the value as an attribute's bool, or false with a
+    /// `TypeError` thrown, which runs no PHP code.
+    safe fn pdo_get_bool_param(bval: &mut bool, value: &Value) -> bool;
     /// Whether the `PDO` class declares constant `name`; false when PDO has not
     /// registered the class.
     safe fn swr_zend_pdo_declared(name: CText<'_>) -> bool;
@@ -90,4 +105,146 @@ impl Pdo<'_> {
             php_pdo_register_driver(driver);
         })
     }
+}
+
+/// A database handle PDO lends a driver's factory or method: its live `pdo_dbh_t`,
+/// whose driver data is the driver's. PHP code a method runs (a notice callback, an
+/// error handler) may reach the same handle, so fields are copied in and out, never
+/// borrowed. Only a driver export's parameter makes one (`&Dbh`): PDO's call stands
+/// for the constructor.
+#[repr(transparent)]
+pub struct Dbh(Cell<pdo_dbh_t>);
+
+impl Dbh {
+    /// `f` of a copy of the fields, then stored back: `f` runs no PHP code.
+    fn update<R>(&self, f: impl FnOnce(&mut pdo_dbh_t) -> R) -> R {
+        let mut dbh = self.0.get();
+        let result = f(&mut dbh);
+        self.0.set(dbh);
+        result
+    }
+
+    /// Whether the driver has installed its methods: PDO's constructor is done
+    /// with the factory.
+    #[must_use]
+    pub fn has_methods(&self) -> bool {
+        !self.0.get().methods.is_null()
+    }
+
+    /// `dbh->methods = methods`.
+    pub fn set_methods(&self, methods: &'static pdo_dbh_methods) {
+        self.update(|dbh| dbh.methods = methods);
+    }
+
+    /// `dbh->driver_data = data`.
+    pub fn set_driver_data(&self, data: *mut c_void) {
+        self.update(|dbh| dbh.driver_data = data);
+    }
+
+    /// `dbh->error_code`: the handle's SQLSTATE.
+    #[must_use]
+    pub fn error_code(&self) -> pdo_error_type {
+        self.0.get().error_code
+    }
+
+    /// `strcpy(dbh->error_code, sqlstate)`.
+    pub fn set_error_code(&self, sqlstate: &CStr) {
+        self.update(|dbh| copy_state(&mut dbh.error_code, sqlstate));
+    }
+
+    /// `dbh->in_txn = in_txn`.
+    pub fn set_in_txn(&self, in_txn: bool) {
+        self.update(|dbh| dbh.set_in_txn(in_txn));
+    }
+
+    /// The flags a factory sets: the parameter events PDO need not dispatch, that
+    /// the driver allocates its own column names, and how long one character's
+    /// quoted form can grow.
+    pub fn set_driver_flags(&self, skip_param_evt: u8, max_escaped_char_length: u8) {
+        self.update(|dbh| {
+            #[cfg(php85)]
+            {
+                dbh.set_alloc_own_columns(true);
+                dbh.skip_param_evt = skip_param_evt;
+                dbh.max_escaped_char_length = max_escaped_char_length;
+            }
+            #[cfg(not(php85))]
+            {
+                dbh.set_alloc_own_columns(1);
+                dbh.set_skip_param_evt(skip_param_evt.into());
+                dbh.set_max_escaped_char_length(max_escaped_char_length.into());
+            }
+        });
+    }
+
+    /// `pdo_throw_exception(code, message, &dbh->error_code)`.
+    pub fn throw(&self, code: u32, message: &CStr) {
+        pdo_throw_exception(code, message.into(), &self.error_code());
+    }
+}
+
+/// A statement PDO lends a driver, as [`Dbh`] is lent: only a driver export's
+/// parameter makes one.
+#[repr(transparent)]
+pub struct Stmt(Cell<pdo_stmt_t>);
+
+impl Stmt {
+    /// `strcpy(stmt->error_code, sqlstate)`.
+    pub fn set_error_code(&self, sqlstate: &CStr) {
+        let mut stmt = self.0.get();
+        copy_state(&mut stmt.error_code, sqlstate);
+        self.0.set(stmt);
+    }
+}
+
+/// `strcpy` of `sqlstate`, at most five characters, into an error code.
+fn copy_state(code: &mut pdo_error_type, sqlstate: &CStr) {
+    *code = [0; 6];
+    for (to, &from) in code.iter_mut().zip(sqlstate.to_bytes().iter().take(5)) {
+        *to = c_char::from_ne_bytes([from]);
+    }
+}
+
+/// A value PDO lends a driver method to fill: `getAttribute`'s return value, or
+/// `errorInfo`'s array. Only a driver export's parameter makes one (`&Slot`).
+#[repr(transparent)]
+pub struct Slot(Value);
+
+impl Slot {
+    /// The slot holds `value`, releasing what it held.
+    pub fn set(&self, value: Owned) {
+        self.0.lend_slot(|held| *held = value);
+    }
+
+    /// `add_next_index_long` of `code`, or `add_next_index_null`, then
+    /// `add_next_index_string` of `message` if any: a driver's `errorInfo` fields.
+    pub fn push_error_info(&self, code: Option<u32>, message: Option<&[u8]>) {
+        self.0.edit_array_slot(|info| {
+            match code {
+                Some(code) => info.push_long(code.into()),
+                None => info.push_null(),
+            }
+            if let Some(message) = message {
+                info.push_bytes(message);
+            }
+        });
+    }
+}
+
+/// `pdo_attr_lval(options, attribute, default)`: the driver option `attribute` as
+/// an integer, converted as PHP does, or `default`.
+#[must_use]
+pub fn attr_long(options: Option<&Value>, attribute: u32, default: zend_long) -> zend_long {
+    options
+        .and_then(Value::array)
+        .and_then(|options| options.index(attribute.into()))
+        .map_or(default, Value::long)
+}
+
+/// `pdo_get_bool_param`: the value as an attribute's bool, or none with a
+/// `TypeError` thrown.
+#[must_use]
+pub fn bool_param(value: &Value) -> Option<bool> {
+    let mut bval = false;
+    pdo_get_bool_param(&mut bval, value).then_some(bval)
 }

@@ -1,9 +1,7 @@
-/* Stays C (docs/zend.md, What stays C): private (pdo_dbh_t, from ext/pdo headers
- * bindgen does not read), version (REGISTER_PDO_CLASS_CONST_LONG_DEPRECATED_85) and
- * globals (EG(persistent_list)). */
+/* Stays C (docs/zend.md, What stays C): version (REGISTER_PDO_CLASS_CONST_LONG_DEPRECATED_85),
+ * globals (EG(persistent_list)) and budget (a dbh's driver_data, as the reference its
+ * driver's declaration types it). */
 #include "shim_pdo.h"
-#include "ext/pdo/php_pdo.h"
-#include "ext/pdo/php_pdo_driver.h"
 
 bool swr_zend_pdo_loaded(void) {
     return php_pdo_get_dbh_ce() != NULL;
