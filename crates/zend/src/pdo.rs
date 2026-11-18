@@ -194,6 +194,13 @@ impl Stmt {
         self.0.get().row_count
     }
 
+    /// Update the row count for a new batch of the current result.
+    pub fn set_row_count(&self, rows: zend_long) {
+        let mut stmt = self.0.get();
+        stmt.row_count = rows;
+        self.0.set(stmt);
+    }
+
     /// Publish the dimensions of the newly executed statement to PDO.
     pub fn set_result_counts(&self, columns: i32, rows: zend_long) {
         let mut stmt = self.0.get();

@@ -115,6 +115,32 @@ extern "C" fn pdo_pgsql_column_meta(handle: &Handle, result: Res<'_>, column: c_
 }
 }
 
+/// Fetch the next batch of a PHP 8.5 single-row result.
+fn fetch_unbuffered(
+    dbh: &Dbh,
+    stmt: &Stmt,
+    result: &Cell<Option<crate::PgResult>>,
+    running: &Cell<bool>,
+) -> bool {
+    let Some(handle) = crate::driver::handle(dbh) else {
+        return false;
+    };
+    let conn = crate::driver::pdo_pgsql_server(handle);
+    if let Some(previous) = result.take() {
+        crate::PQclear(previous);
+    }
+    let Some(rows) = crate::driver::statement_result(dbh, stmt, result, crate::PQgetResult(conn))
+    else {
+        return false;
+    };
+    stmt.set_row_count(i64::from(rows));
+    if rows == 0 {
+        pdo_pgsql_finish_result(std::ptr::NonNull::new(conn.0), result, false);
+        running.set(false);
+    }
+    true
+}
+
 /// Advance in the buffered result or issue FETCH for a scrollable cursor.
 #[unsafe(no_mangle)]
 extern "C" fn pdo_pgsql_fetch_row(
@@ -125,6 +151,7 @@ extern "C" fn pdo_pgsql_fetch_row(
     orientation: swoole_rs_zend::sys::pdo_fetch_orientation,
     offset: swoole_rs_zend::sys::zend_long,
     row: &Cell<c_int>,
+    running: Option<&Cell<bool>>,
 ) -> bool {
     use swoole_rs_zend::sys::{
         pdo_fetch_orientation_PDO_FETCH_ORI_ABS as ABS,
@@ -136,7 +163,16 @@ extern "C" fn pdo_pgsql_fetch_row(
     };
     let Some(cursor) = cursor else {
         if i64::from(row.get()) >= stmt.row_count() {
-            return false;
+            let Some(running) = running.filter(|running| running.get()) else {
+                return false;
+            };
+            if !fetch_unbuffered(dbh, stmt, result, running) {
+                return false;
+            }
+            row.set(0);
+            if !running.get() {
+                return false;
+            }
         }
         let Some(next) = row.get().checked_add(1) else {
             return false;

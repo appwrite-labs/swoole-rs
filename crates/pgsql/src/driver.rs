@@ -324,7 +324,9 @@ pub(crate) fn statement_result(
     let code = status(result.as_ref());
     if matches!(
         code,
-        ExecStatusType::PGRES_COMMAND_OK | ExecStatusType::PGRES_TUPLES_OK
+        ExecStatusType::PGRES_COMMAND_OK
+            | ExecStatusType::PGRES_TUPLES_OK
+            | ExecStatusType::PGRES_SINGLE_TUPLE
     ) {
         let rows = result.as_ref().map(|result| PQntuples(result.get()));
         slot.set(result);

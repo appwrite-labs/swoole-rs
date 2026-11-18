@@ -192,12 +192,6 @@ static int pgsql_stmt_param_hook(pdo_stmt_t *stmt,
     return 1;
 }
 
-static int pgsql_stmt_fetch(pdo_stmt_t *stmt, enum pdo_fetch_orientation ori, zend_long offset)
-{
-    pdo_pgsql_stmt *S = stmt->driver_data;
-    return pdo_pgsql_fetch_row(stmt->dbh, stmt, &S->result, S->cursor_name, ori, offset, &S->current_row);
-}
-
 static int pgsql_stmt_describe(pdo_stmt_t *stmt, int colno)
 {
     pdo_pgsql_stmt *S = (pdo_pgsql_stmt *) stmt->driver_data;
@@ -309,7 +303,7 @@ static int pgsql_stmt_get_attr(pdo_stmt_t *stmt, zend_long attr, zval *val) {
 
 const struct pdo_stmt_methods swoole_pgsql_stmt_methods = {pgsql_stmt_dtor,
                                                            pgsql_stmt_execute,
-                                                           pgsql_stmt_fetch,
+                                                           pdo_pgsql_stmt_fetch,
                                                            pgsql_stmt_describe,
                                                            pgsql_stmt_get_col,
                                                            pgsql_stmt_param_hook,

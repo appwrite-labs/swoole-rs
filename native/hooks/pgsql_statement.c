@@ -3,6 +3,16 @@
 
 #ifdef SW_USE_PGSQL
 #include "pgsql_statement.h"
+int pdo_pgsql_stmt_fetch(pdo_stmt_t *stmt, enum pdo_fetch_orientation ori, zend_long offset) {
+    pdo_pgsql_stmt *S = stmt->driver_data;
+#if PHP_VERSION_ID >= 80500
+    bool *running = &S->is_running_unbuffered;
+#else
+    bool *running = NULL;
+#endif
+    return pdo_pgsql_fetch_row(stmt->dbh, stmt, &S->result, S->cursor_name, ori, offset, &S->current_row, running);
+}
+
 /* PDO stores zend_string pointers under the original parameter names. */
 const zend_string *pdo_pgsql_rewritten_name(pdo_stmt_t *stmt, zend_string *name) {
     return stmt->bound_param_map ? zend_hash_find_ptr(stmt->bound_param_map, name) : NULL;
