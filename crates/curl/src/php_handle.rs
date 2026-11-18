@@ -9,7 +9,7 @@ use swoole_rs_zend::{Call, ObjectRef, sys::PHP_VERSION_ID};
 
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-struct PhpHandle<'a>(NonNull<std::ffi::c_void>, PhantomData<ObjectRef<'a>>);
+pub(super) struct PhpHandle<'a>(NonNull<std::ffi::c_void>, PhantomData<ObjectRef<'a>>);
 
 /// A libcurl allocation transferred as a POSIX iovec; consumed by `swoole_curl_free_bytes`.
 #[repr(transparent)]
@@ -139,7 +139,7 @@ fn init(call: &Call<'_>) {
     }
 }
 
-fn argument<'a>(call: &'a Call<'_>, count: u32) -> Option<PhpHandle<'a>> {
+pub(super) fn argument<'a>(call: &'a Call<'_>, count: u32) -> Option<PhpHandle<'a>> {
     call.arity(count, count).ok()?;
     let arg = call.value(1)?.referred();
     let Some(handle) = arg

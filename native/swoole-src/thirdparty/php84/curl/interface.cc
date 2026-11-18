@@ -1219,10 +1219,11 @@ static bool php_curl_set_callable_handler(zend_fcall_info_cache *const handler_f
         break;                                                                                                         \
     }
 
-static zend_result _php_curl_setopt(php_curl *ch, zend_long option, zval *zvalue, bool is_array_config) /* {{{ */
-{
+/* The options crates/curl/src/setopt.rs leaves to C++: callables, file handles, lists, post
+ * fields, share, private, CURLINFO_HEADER_OUT and CURLOPT_RETURNTRANSFER, and the error for an
+ * unknown option. */
+extern "C" zend_result swoole_curl_setopt_native(php_curl *ch, zend_long option, zval *zvalue, bool is_array_config) {
     CURLcode error = CURLE_OK;
-    zend_long lval;
 
     switch (option) {
         /* Callable options */
@@ -1241,333 +1242,11 @@ static zend_result _php_curl_setopt(php_curl *ch, zend_long option, zval *zvalue
         HANDLE_CURL_OPTION_CALLABLE(ch, CURLOPT_SSH_HOSTKEY, handlers.sshhostkey, fn_ssh_hostkeyfunction);
 #endif
 
-    /* Long options */
-    case CURLOPT_SSL_VERIFYHOST:
-        lval = zval_get_long(zvalue);
-        if (lval == 1) {
-            php_error_docref(
-                NULL, E_NOTICE, "CURLOPT_SSL_VERIFYHOST no longer accepts the value 1, value 2 will be used instead");
-            error = curl_easy_setopt(ch->cp, (CURLoption) option, 2L);
-            break;
-        }
-        ZEND_FALLTHROUGH;
-    case CURLOPT_AUTOREFERER:
-    case CURLOPT_BUFFERSIZE:
-    case CURLOPT_CONNECTTIMEOUT:
-    case CURLOPT_COOKIESESSION:
-    case CURLOPT_CRLF:
-    case CURLOPT_DNS_CACHE_TIMEOUT:
-    case CURLOPT_FAILONERROR:
-    case CURLOPT_FILETIME:
-    case CURLOPT_FORBID_REUSE:
-    case CURLOPT_FRESH_CONNECT:
-    case CURLOPT_FTP_USE_EPRT:
-    case CURLOPT_FTP_USE_EPSV:
-    case CURLOPT_HEADER:
-    case CURLOPT_HTTPGET:
-    case CURLOPT_HTTPPROXYTUNNEL:
-    case CURLOPT_HTTP_VERSION:
-    case CURLOPT_INFILESIZE:
-    case CURLOPT_LOW_SPEED_LIMIT:
-    case CURLOPT_LOW_SPEED_TIME:
-    case CURLOPT_MAXCONNECTS:
-    case CURLOPT_MAXREDIRS:
-    case CURLOPT_NETRC:
-    case CURLOPT_NOBODY:
-    case CURLOPT_NOPROGRESS:
-    case CURLOPT_NOSIGNAL:
-    case CURLOPT_PORT:
-    case CURLOPT_POST:
-    case CURLOPT_PROXYPORT:
-    case CURLOPT_PROXYTYPE:
-    case CURLOPT_PUT:
-    case CURLOPT_RESUME_FROM:
-    case CURLOPT_SSLVERSION:
-    case CURLOPT_SSL_VERIFYPEER:
-    case CURLOPT_TIMECONDITION:
-    case CURLOPT_TIMEOUT:
-    case CURLOPT_TIMEVALUE:
-    case CURLOPT_TRANSFERTEXT:
-    case CURLOPT_UNRESTRICTED_AUTH:
-    case CURLOPT_UPLOAD:
-    case CURLOPT_VERBOSE:
-    case CURLOPT_HTTPAUTH:
-    case CURLOPT_FTP_CREATE_MISSING_DIRS:
-    case CURLOPT_PROXYAUTH:
-    case CURLOPT_SERVER_RESPONSE_TIMEOUT:
-    case CURLOPT_IPRESOLVE:
-    case CURLOPT_MAXFILESIZE:
-    case CURLOPT_TCP_NODELAY:
-    case CURLOPT_FTPSSLAUTH:
-    case CURLOPT_IGNORE_CONTENT_LENGTH:
-    case CURLOPT_FTP_SKIP_PASV_IP:
-    case CURLOPT_FTP_FILEMETHOD:
-    case CURLOPT_CONNECT_ONLY:
-    case CURLOPT_LOCALPORT:
-    case CURLOPT_LOCALPORTRANGE:
-    case CURLOPT_SSL_SESSIONID_CACHE:
-    case CURLOPT_FTP_SSL_CCC:
-    case CURLOPT_SSH_AUTH_TYPES:
-    case CURLOPT_CONNECTTIMEOUT_MS:
-    case CURLOPT_HTTP_CONTENT_DECODING:
-    case CURLOPT_HTTP_TRANSFER_DECODING:
-    case CURLOPT_TIMEOUT_MS:
-    case CURLOPT_NEW_DIRECTORY_PERMS:
-    case CURLOPT_NEW_FILE_PERMS:
-    case CURLOPT_USE_SSL:
-    case CURLOPT_APPEND:
-    case CURLOPT_DIRLISTONLY:
-    case CURLOPT_PROXY_TRANSFER_MODE:
-    case CURLOPT_ADDRESS_SCOPE:
-    case CURLOPT_CERTINFO:
-    case CURLOPT_PROTOCOLS:
-    case CURLOPT_REDIR_PROTOCOLS:
-    case CURLOPT_SOCKS5_GSSAPI_NEC:
-    case CURLOPT_TFTP_BLKSIZE:
-    case CURLOPT_FTP_USE_PRET:
-    case CURLOPT_RTSP_CLIENT_CSEQ:
-    case CURLOPT_RTSP_REQUEST:
-    case CURLOPT_RTSP_SERVER_CSEQ:
-    case CURLOPT_WILDCARDMATCH:
-    case CURLOPT_GSSAPI_DELEGATION:
-    case CURLOPT_ACCEPTTIMEOUT_MS:
-    case CURLOPT_SSL_OPTIONS:
-    case CURLOPT_TCP_KEEPALIVE:
-    case CURLOPT_TCP_KEEPIDLE:
-    case CURLOPT_TCP_KEEPINTVL:
-    case CURLOPT_SASL_IR:
-    case CURLOPT_EXPECT_100_TIMEOUT_MS:
-    case CURLOPT_SSL_ENABLE_ALPN:
-    case CURLOPT_SSL_ENABLE_NPN:
-    case CURLOPT_HEADEROPT:
-    case CURLOPT_SSL_VERIFYSTATUS:
-    case CURLOPT_PATH_AS_IS:
-    case CURLOPT_SSL_FALSESTART:
-    case CURLOPT_PIPEWAIT:
-    case CURLOPT_STREAM_WEIGHT:
-    case CURLOPT_TFTP_NO_OPTIONS:
-    case CURLOPT_TCP_FASTOPEN:
-    case CURLOPT_KEEP_SENDING_ON_ERROR:
-    case CURLOPT_PROXY_SSL_OPTIONS:
-    case CURLOPT_PROXY_SSL_VERIFYHOST:
-    case CURLOPT_PROXY_SSL_VERIFYPEER:
-    case CURLOPT_PROXY_SSLVERSION:
-    case CURLOPT_SUPPRESS_CONNECT_HEADERS:
-    case CURLOPT_SOCKS5_AUTH:
-    case CURLOPT_SSH_COMPRESSION:
-    case CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS:
-    case CURLOPT_DNS_SHUFFLE_ADDRESSES:
-    case CURLOPT_HAPROXYPROTOCOL:
-    case CURLOPT_DISALLOW_USERNAME_IN_URL:
-#if LIBCURL_VERSION_NUM >= 0x073E00 /* Available since 7.62.0 */
-    case CURLOPT_UPKEEP_INTERVAL_MS:
-    case CURLOPT_UPLOAD_BUFFERSIZE:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x074000 /* Available since 7.64.0 */
-    case CURLOPT_HTTP09_ALLOWED:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x074001 /* Available since 7.64.1 */
-    case CURLOPT_ALTSVC_CTRL:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x074100 /* Available since 7.65.0 */
-    case CURLOPT_MAXAGE_CONN:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x074500 /* Available since 7.69.0 */
-    case CURLOPT_MAIL_RCPT_ALLLOWFAILS:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x074a00 /* Available since 7.74.0 */
-    case CURLOPT_HSTS_CTRL:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x074c00 /* Available since 7.76.0 */
-    case CURLOPT_DOH_SSL_VERIFYHOST:
-    case CURLOPT_DOH_SSL_VERIFYPEER:
-    case CURLOPT_DOH_SSL_VERIFYSTATUS:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x075000 /* Available since 7.80.0 */
-    case CURLOPT_MAXLIFETIME_CONN:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x075100 /* Available since 7.81.0 */
-    case CURLOPT_MIME_OPTIONS:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x075600 /* Available since 7.86.0 */
-    case CURLOPT_WS_OPTIONS:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x075700 /* Available since 7.87.0 */
-    case CURLOPT_CA_CACHE_TIMEOUT:
-    case CURLOPT_QUICK_EXIT:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x080900 /* Available since 8.9.0 */
-    case CURLOPT_TCP_KEEPCNT:
-#endif
-#if PHP_VERSION_ID >= 80500
-    case CURLOPT_FOLLOWLOCATION:
-#endif
-        lval = zval_get_long(zvalue);
-        if ((option == CURLOPT_PROTOCOLS || option == CURLOPT_REDIR_PROTOCOLS) &&
-            (PG(open_basedir) && *PG(open_basedir)) && (lval & CURLPROTO_FILE)) {
-            php_error_docref(NULL, E_WARNING, "CURLPROTO_FILE cannot be activated when an open_basedir is set");
-            return FAILURE;
-        }
-        error = curl_easy_setopt(ch->cp, (CURLoption) option, lval);
-        break;
-    case CURLOPT_SAFE_UPLOAD:
-        if (!zend_is_true(zvalue)) {
-            zend_value_error("%s(): Disabling safe uploads is no longer supported", get_active_function_name());
-            return FAILURE;
-        }
-        break;
-
-    /* String options */
-    case CURLOPT_CAINFO:
-    case CURLOPT_CAPATH:
-    case CURLOPT_COOKIE:
-    case CURLOPT_EGDSOCKET:
-    case CURLOPT_INTERFACE:
-    case CURLOPT_PROXY:
-    case CURLOPT_PROXYUSERPWD:
-    case CURLOPT_REFERER:
-    case CURLOPT_SSLCERTTYPE:
-    case CURLOPT_SSLENGINE:
-    case CURLOPT_SSLENGINE_DEFAULT:
-    case CURLOPT_SSLKEY:
-    case CURLOPT_SSLKEYPASSWD:
-    case CURLOPT_SSLKEYTYPE:
-    case CURLOPT_SSL_CIPHER_LIST:
-    case CURLOPT_USERAGENT:
-    case CURLOPT_COOKIELIST:
-    case CURLOPT_FTP_ALTERNATIVE_TO_USER:
-    case CURLOPT_SSH_HOST_PUBLIC_KEY_MD5:
-    case CURLOPT_PROXYPASSWORD:
-    case CURLOPT_PROXYUSERNAME:
-    case CURLOPT_NOPROXY:
-    case CURLOPT_SOCKS5_GSSAPI_SERVICE:
-    case CURLOPT_MAIL_FROM:
-    case CURLOPT_RTSP_STREAM_URI:
-    case CURLOPT_RTSP_TRANSPORT:
-    case CURLOPT_TLSAUTH_TYPE:
-    case CURLOPT_TLSAUTH_PASSWORD:
-    case CURLOPT_TLSAUTH_USERNAME:
-    case CURLOPT_TRANSFER_ENCODING:
-    case CURLOPT_DNS_SERVERS:
-    case CURLOPT_MAIL_AUTH:
-    case CURLOPT_LOGIN_OPTIONS:
-    case CURLOPT_PINNEDPUBLICKEY:
-    case CURLOPT_PROXY_SERVICE_NAME:
-    case CURLOPT_SERVICE_NAME:
-    case CURLOPT_DEFAULT_PROTOCOL:
-    case CURLOPT_PRE_PROXY:
-    case CURLOPT_PROXY_CAINFO:
-    case CURLOPT_PROXY_CAPATH:
-    case CURLOPT_PROXY_CRLFILE:
-    case CURLOPT_PROXY_KEYPASSWD:
-    case CURLOPT_PROXY_PINNEDPUBLICKEY:
-    case CURLOPT_PROXY_SSL_CIPHER_LIST:
-    case CURLOPT_PROXY_SSLCERT:
-    case CURLOPT_PROXY_SSLCERTTYPE:
-    case CURLOPT_PROXY_SSLKEY:
-    case CURLOPT_PROXY_SSLKEYTYPE:
-    case CURLOPT_PROXY_TLSAUTH_PASSWORD:
-    case CURLOPT_PROXY_TLSAUTH_TYPE:
-    case CURLOPT_PROXY_TLSAUTH_USERNAME:
-    case CURLOPT_ABSTRACT_UNIX_SOCKET:
-    case CURLOPT_REQUEST_TARGET:
-    case CURLOPT_PROXY_TLS13_CIPHERS:
-    case CURLOPT_TLS13_CIPHERS:
-#if LIBCURL_VERSION_NUM >= 0x074001 /* Available since 7.64.1 */
-    case CURLOPT_ALTSVC:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x074200 /* Available since 7.66.0 */
-    case CURLOPT_SASL_AUTHZID:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x074700 /* Available since 7.71.0 */
-    case CURLOPT_PROXY_ISSUERCERT:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x074900 /* Available since 7.73.0 */
-    case CURLOPT_SSL_EC_CURVES:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x074b00 /* Available since 7.75.0 */
-    case CURLOPT_AWS_SIGV4:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x075000 /* Available since 7.80.0 */
-    case CURLOPT_SSH_HOST_PUBLIC_KEY_SHA256:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x075500 /* Available since 7.85.0 */
-    case CURLOPT_PROTOCOLS_STR:
-    case CURLOPT_REDIR_PROTOCOLS_STR:
-#endif
-    {
-        zend_string *tmp_str;
-        zend_string *str = zval_get_tmp_string(zvalue, &tmp_str);
-#if LIBCURL_VERSION_NUM >= 0x075500 /* Available since 7.85.0 */
-        if ((option == CURLOPT_PROTOCOLS_STR || option == CURLOPT_REDIR_PROTOCOLS_STR) &&
-            (PG(open_basedir) && *PG(open_basedir)) &&
-            (php_memnistr(ZSTR_VAL(str), "file", sizeof("file") - 1, ZSTR_VAL(str) + ZSTR_LEN(str)) != NULL ||
-             php_memnistr(ZSTR_VAL(str), "all", sizeof("all") - 1, ZSTR_VAL(str) + ZSTR_LEN(str)) != NULL)) {
-            zend_tmp_string_release(tmp_str);
-            php_error_docref(NULL, E_WARNING, "The FILE protocol cannot be activated when an open_basedir is set");
-            return FAILURE;
-        }
-#endif
-        zend_result ret = php_curl_option_str(ch, option, ZSTR_VAL(str), ZSTR_LEN(str));
-        zend_tmp_string_release(tmp_str);
-        return ret;
-    }
-
-    /* Curl nullable string options */
-    case CURLOPT_CUSTOMREQUEST:
-    case CURLOPT_FTPPORT:
-    case CURLOPT_RANGE:
-    case CURLOPT_FTP_ACCOUNT:
-    case CURLOPT_RTSP_SESSION_ID:
-    case CURLOPT_ACCEPT_ENCODING:
-    case CURLOPT_DNS_INTERFACE:
-    case CURLOPT_DNS_LOCAL_IP4:
-    case CURLOPT_DNS_LOCAL_IP6:
-    case CURLOPT_XOAUTH2_BEARER:
-    case CURLOPT_UNIX_SOCKET_PATH:
-#if LIBCURL_VERSION_NUM >= 0x073E00 /* Available since 7.62.0 */
-    case CURLOPT_DOH_URL:
-#endif
-#if LIBCURL_VERSION_NUM >= 0x074a00 /* Available since 7.74.0 */
-    case CURLOPT_HSTS:
-#endif
-    case CURLOPT_KRBLEVEL:
-    // Authorization header would be implictly set
-    // with an empty string thus we explictly set the option
-    // to null to avoid this unwarranted side effect
-    case CURLOPT_USERPWD:
-    case CURLOPT_USERNAME:
-    case CURLOPT_PASSWORD:
-#if LIBCURL_VERSION_NUM >= 0x080e00 && PHP_VERSION_ID >= 80500 /* Available since 8.14.0 */
-    case CURLOPT_SSL_SIGNATURE_ALGORITHMS:
-#endif
-    {
-        if (Z_ISNULL_P(zvalue)) {
-            error = curl_easy_setopt(ch->cp, (CURLoption) option, NULL);
-        } else {
-            zend_string *tmp_str;
-            zend_string *str = zval_get_tmp_string(zvalue, &tmp_str);
-            zend_result ret = php_curl_option_str(ch, option, ZSTR_VAL(str), ZSTR_LEN(str));
-            zend_tmp_string_release(tmp_str);
-            return ret;
-        }
-        break;
-    }
-
     /* Curl private option */
     case CURLOPT_PRIVATE: {
         zval previous = swoole_curl_replace_private(&ch->private_data, zvalue);
         zval_ptr_dtor(&previous);
         return SUCCESS;
-    }
-
-    /* Curl url option */
-    case CURLOPT_URL: {
-        zend_string *tmp_str;
-        zend_string *str = zval_get_tmp_string(zvalue, &tmp_str);
-        zend_result ret = php_curl_option_url(ch, str);
-        zend_tmp_string_release(tmp_str);
-        return ret;
     }
 
     /* Curl file handle options */
@@ -1759,18 +1438,6 @@ static zend_result _php_curl_setopt(php_curl *ch, zend_long option, zval *zvalue
         break;
     }
 
-    case CURLOPT_BINARYTRANSFER:
-    case CURLOPT_DNS_USE_GLOBAL_CACHE:
-        /* Do nothing, just backward compatibility */
-        break;
-
-#if PHP_VERSION_ID < 80500
-    case CURLOPT_FOLLOWLOCATION:
-        lval = zend_is_true(zvalue);
-        error = curl_easy_setopt(ch->cp, (CURLoption) option, (long) lval);
-        break;
-#endif
-
     case CURLOPT_POSTFIELDS:
         if (Z_TYPE_P(zvalue) == IS_ARRAY) {
             if (zend_hash_num_elements(Z_ARRVAL_P(zvalue)) == 0) {
@@ -1798,50 +1465,6 @@ static zend_result _php_curl_setopt(php_curl *ch, zend_long option, zval *zvalue
             ch->handlers.write->method = PHP_CURL_STDOUT;
         }
         break;
-
-    /* Curl off_t options */
-#if PHP_VERSION_ID >= 80500
-    case CURLOPT_INFILESIZE_LARGE:
-#endif
-    case CURLOPT_MAX_RECV_SPEED_LARGE:
-    case CURLOPT_MAX_SEND_SPEED_LARGE:
-    case CURLOPT_MAXFILESIZE_LARGE:
-    case CURLOPT_TIMEVALUE_LARGE:
-        lval = zval_get_long(zvalue);
-        error = curl_easy_setopt(ch->cp, (CURLoption) option, (curl_off_t) lval);
-        break;
-
-    case CURLOPT_POSTREDIR:
-        lval = zval_get_long(zvalue);
-        error = curl_easy_setopt(ch->cp, CURLOPT_POSTREDIR, (long) (lval & CURL_REDIR_POST_ALL));
-        break;
-
-    /* the following options deal with files, therefore the open_basedir check
-     * is required.
-     */
-    case CURLOPT_COOKIEFILE:
-    case CURLOPT_COOKIEJAR:
-    case CURLOPT_RANDOM_FILE:
-    case CURLOPT_SSLCERT:
-    case CURLOPT_NETRC_FILE:
-    case CURLOPT_SSH_PRIVATE_KEYFILE:
-    case CURLOPT_SSH_PUBLIC_KEYFILE:
-    case CURLOPT_CRLFILE:
-    case CURLOPT_ISSUERCERT:
-    case CURLOPT_SSH_KNOWNHOSTS: {
-        zend_string *tmp_str;
-        zend_string *str = zval_get_tmp_string(zvalue, &tmp_str);
-        zend_result ret;
-
-        if (ZSTR_LEN(str) && php_check_open_basedir(ZSTR_VAL(str))) {
-            zend_tmp_string_release(tmp_str);
-            return FAILURE;
-        }
-
-        ret = php_curl_option_str(ch, option, ZSTR_VAL(str), ZSTR_LEN(str));
-        zend_tmp_string_release(tmp_str);
-        return ret;
-    }
 
     case CURLINFO_HEADER_OUT:
         if (ZEND_FCC_INITIALIZED(ch->handlers.debug)) {
@@ -1884,32 +1507,6 @@ static zend_result _php_curl_setopt(php_curl *ch, zend_long option, zval *zvalue
 #endif
     } break;
 
-    /* Curl blob options */
-#if LIBCURL_VERSION_NUM >= 0x074700 /* Available since 7.71.0 */
-    case CURLOPT_ISSUERCERT_BLOB:
-    case CURLOPT_PROXY_ISSUERCERT_BLOB:
-    case CURLOPT_PROXY_SSLCERT_BLOB:
-    case CURLOPT_PROXY_SSLKEY_BLOB:
-    case CURLOPT_SSLCERT_BLOB:
-    case CURLOPT_SSLKEY_BLOB:
-#if LIBCURL_VERSION_NUM >= 0x074d00 /* Available since 7.77.0 */
-    case CURLOPT_CAINFO_BLOB:
-    case CURLOPT_PROXY_CAINFO_BLOB:
-#endif
-    {
-        zend_string *tmp_str;
-        zend_string *str = zval_get_tmp_string(zvalue, &tmp_str);
-
-        struct curl_blob stblob;
-        stblob.data = ZSTR_VAL(str);
-        stblob.len = ZSTR_LEN(str);
-        stblob.flags = CURL_BLOB_COPY;
-        error = curl_easy_setopt(ch->cp, (CURLoption) option, &stblob);
-
-        zend_tmp_string_release(tmp_str);
-    } break;
-#endif
-
     default:
         if (is_array_config) {
             zend_argument_value_error(2, "must contain only valid cURL options");
@@ -1926,63 +1523,6 @@ static zend_result _php_curl_setopt(php_curl *ch, zend_long option, zval *zvalue
     } else {
         return SUCCESS;
     }
-}
-/* }}} */
-
-/* {{{ Set an option for a cURL transfer */
-PHP_FUNCTION(swoole_native_curl_setopt) {
-    zval *zid, *zvalue;
-    zend_long options;
-    php_curl *ch;
-
-    ZEND_PARSE_PARAMETERS_START(3, 3)
-    Z_PARAM_OBJECT_OF_CLASS(zid, curl_ce)
-    Z_PARAM_LONG(options)
-    Z_PARAM_ZVAL(zvalue)
-    ZEND_PARSE_PARAMETERS_END();
-
-    if ((ch = swoole_curl_get_handle(zid, false)) == NULL) {
-        RETURN_FALSE;
-    }
-
-    if (_php_curl_setopt(ch, options, zvalue, 0) == SUCCESS) {
-        RETURN_TRUE;
-    } else {
-        RETURN_FALSE;
-    }
-}
-/* }}} */
-
-/* {{{ Set an array of option for a cURL transfer */
-PHP_FUNCTION(swoole_native_curl_setopt_array) {
-    zval *zid, *arr, *entry;
-    php_curl *ch;
-    zend_ulong option;
-    zend_string *string_key;
-
-    ZEND_PARSE_PARAMETERS_START(2, 2)
-    Z_PARAM_OBJECT_OF_CLASS(zid, swoole_coroutine_curl_handle_ce)
-    Z_PARAM_ARRAY(arr)
-    ZEND_PARSE_PARAMETERS_END();
-
-    if ((ch = swoole_curl_get_handle(zid, false)) == NULL) {
-        RETURN_FALSE;
-    }
-
-    ZEND_HASH_FOREACH_KEY_VAL(Z_ARRVAL_P(arr), option, string_key, entry) {
-        if (UNEXPECTED(string_key)) {
-            zend_argument_value_error(2, "contains an invalid cURL option");
-            RETURN_THROWS();
-        }
-
-        ZVAL_DEREF(entry);
-        if (_php_curl_setopt(ch, (zend_long) option, entry, 1) == FAILURE) {
-            RETURN_FALSE;
-        }
-    }
-    ZEND_HASH_FOREACH_END();
-
-    RETURN_TRUE;
 }
 /* }}} */
 
