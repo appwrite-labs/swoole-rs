@@ -1,11 +1,11 @@
 # Unsafe code by crate
 
-`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `3b45e8b`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
+`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `549ecad`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
 
 | crate | unsafe | forbids |
 | --- | ---: | :---: |
 | `corebase` | 125 |  |
-| `zend` | 48 |  |
+| `zend` | 49 |  |
 | `server` | 24 |  |
 | `hooks` | 13 |  |
 | `curl` | 12 |  |
@@ -25,7 +25,6 @@
 | `oci` | 1 |  |
 | `odbc` | 1 |  |
 | `pgsql` | 1 |  |
-| `phpclients` | 1 |  |
 | `sqlite` | 1 |  |
 | `base64` | 0 | ✅ |
 | `brotli` | 0 |  |
@@ -44,6 +43,7 @@
 | `locale` | 0 |  |
 | `odbc-sys` | 0 |  |
 | `oracle` | 0 |  |
+| `phpclients` | 0 |  |
 | `phpcollections` | 0 | ✅ |
 | `phpevents` | 0 | ✅ |
 | `phphttp2` | 0 | ✅ |
