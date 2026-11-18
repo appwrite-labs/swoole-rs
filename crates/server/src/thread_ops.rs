@@ -188,7 +188,7 @@ fn heartbeat_main(server: view::Server<'_>) {
 pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> bool {
     let state = serv.state();
     let config = state.config_ref();
-    if swoole_rs_corebase::reactor::swoole_event_init(0) < 0 {
+    if swoole_rs_corebase::reactor::swoole_event_init(0).is_err() {
         return false;
     }
     let reactor = Reactor::thread();
@@ -253,7 +253,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, id: u16) {
     };
     record.id.set(c_int::from(id));
     crate::objects::set_thread_bus(Some(crate::objects::ThreadBus::Reactor(usize::from(id))));
-    if swoole_rs_corebase::reactor::swoole_event_init(0) < 0 {
+    if swoole_rs_corebase::reactor::swoole_event_init(0).is_err() {
         return;
     }
     ctx.reactor = Some(Reactor::thread());

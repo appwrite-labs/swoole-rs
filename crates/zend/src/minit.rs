@@ -10,8 +10,8 @@ use crate::{
     registration::{SUCCESS, leaf},
     sys::{
         IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, zend_class_entry, zend_function, zend_function_entry,
-        zend_internal_arg_info, zend_long, zend_module_entry, zend_object_handlers, zend_string,
-        zif_handler,
+        zend_internal_arg_info, zend_internal_function, zend_long, zend_module_entry,
+        zend_object_handlers, zend_string, zif_handler,
     },
 };
 use std::{
@@ -515,17 +515,23 @@ impl Minit {
         swr_zend_compiled_function_find(name.into())
     }
 
-    /// A copy of the compiled function `name` (lower case) that no function table
-    /// names, so only a frame its owner pushes runs it; null when there is no
-    /// such function. It lives for the process.
+    /// A copy of the compiled internal function `name` (lower case) that no
+    /// function table names, so only a frame its owner pushes runs it; null when
+    /// there is no such internal function. It lives for the process.
     #[must_use]
     pub fn unnamed_copy(&self, name: &CStr) -> *mut zend_function {
         let named = self.compiled_function(name);
         if named.is_null() {
             return named;
         }
-        // SAFETY: a registered zend_function, which nothing writes during MINIT.
-        Box::into_raw(Box::new(unsafe { named.read() }))
+        if Function(named, PhantomData).kind() != Function::INTERNAL {
+            return std::ptr::null_mut();
+        }
+        // SAFETY: a registered internal function, per its kind, which Zend
+        // allocates as a `zend_internal_function` (shorter than the union) and
+        // nothing writes during MINIT.
+        let internal_function = unsafe { named.cast::<zend_internal_function>().read() };
+        Box::into_raw(Box::new(zend_function { internal_function }))
     }
 
     /// The compiled internal function `name` (lower case) runs `handler` from

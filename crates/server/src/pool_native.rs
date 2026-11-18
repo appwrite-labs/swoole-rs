@@ -464,7 +464,7 @@ impl PoolNative for Native {
 
     fn event_init(&self, c: &PoolCall) -> bool {
         // This thread has no event loop yet.
-        if swoole_rs_corebase::reactor::swoole_event_init(EVENTLOOP_WAIT_EXIT) < 0 {
+        if swoole_rs_corebase::reactor::swoole_event_init(EVENTLOOP_WAIT_EXIT).is_err() {
             return false;
         }
         let pool = c.pool();
@@ -483,7 +483,7 @@ impl PoolNative for Native {
     }
 
     fn event_wait(&self) -> bool {
-        swoole_rs_corebase::reactor::event_api::swoole_event_wait() >= 0
+        swoole_rs_corebase::reactor::event_api::swoole_event_wait().is_ok()
     }
 
     fn waitpid(&self, pid: c_int) -> bool {

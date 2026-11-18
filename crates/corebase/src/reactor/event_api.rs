@@ -357,19 +357,20 @@ pub fn swoole_event_defer_value<T: Deferred>(value: T) -> Result<(), T> {
 }
 
 /// `int swoole_event_wait()`: run the loop unless it may already exit, then free it.
-#[must_use]
-pub fn swoole_event_wait() -> c_int {
+/// # Errors
+/// Returns the loop failure or a deferred bailout.
+pub fn swoole_event_wait() -> Result<(), crate::reactor::LoopError> {
     // `if_exit` runs only under wait_exit, as upstream's `or`.
     let wait_exit = field(|fields| fields.wait_exit).unwrap_or(false);
     let ran = (wait_exit && swoole_event_if_exit()) || swoole_event_run();
     // A deferred escape leaves the reactor for request teardown, just as a
     // native bailout did. Server shutdown still needs its live connections.
     if field(|fields| fields.bailout).unwrap_or(false) {
-        return -1;
+        return Err(crate::reactor::LoopError::Bailout);
     }
     // The thread's reactor, which nothing here borrows any more.
     crate::reactor::swoole_event_free();
-    if ran { 0 } else { -1 }
+    ran.then_some(()).ok_or(crate::reactor::LoopError::Failed)
 }
 
 #[cfg(test)]
@@ -456,7 +457,7 @@ mod tests {
         let state = crate::reactor::reactor_state::tests::state(3, 1);
         crate::set_thread_reactor(state.owner.cast());
         swoole_event_cycle(true, Some(Rc::new(Stops)));
-        assert_eq!(swoole_event_wait(), -1);
+        assert_eq!(swoole_event_wait(), Err(crate::reactor::LoopError::Bailout));
         assert_eq!(crate::thread_reactor(), state.owner.cast());
         assert!(unsafe { (*state.fields).bailout });
         crate::set_thread_reactor(std::ptr::null_mut());
@@ -478,7 +479,7 @@ mod tests {
             // none, and none is made meanwhile.
             let refused = crate::thread_reactor().is_null()
                 && crate::reactor::swoole_event_deleting()
-                && crate::reactor::swoole_event_init(0) == -1;
+                && crate::reactor::swoole_event_init(0) == Err(crate::reactor::InitError::Deleting);
             push(if refused { self.0 } else { "reached" });
             // A socket still registered with the reactor being deleted leaves its
             // registry as it is freed, rather than ending the process.
@@ -496,7 +497,7 @@ mod tests {
 
     #[test]
     fn freeing_the_reactor_drops_its_cycle_tasks() {
-        assert_eq!(crate::reactor::swoole_event_init(0), 0);
+        assert_eq!(crate::reactor::swoole_event_init(0), Ok(()));
         let mut fds = [0; 2];
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         let socket = crate::reactor::OwnedSocket::new(Box::new(

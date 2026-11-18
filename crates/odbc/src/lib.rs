@@ -23,6 +23,8 @@ mod diagnostics;
 mod driver;
 #[cfg(feature = "php")]
 pub mod minit;
+#[cfg(feature = "php")]
+mod statement;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use swoole_rs_odbc_sys::{

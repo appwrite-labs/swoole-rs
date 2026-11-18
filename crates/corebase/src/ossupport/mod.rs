@@ -20,11 +20,11 @@ pub use file_api::*;
 pub use file_record::*;
 pub use temp_file::TempFile;
 mod system;
-pub use system::swoole_daemon;
 pub use system::{
     CurrentThread, pthread_self, set_isolation, swr_v1_os_is_root_user,
     swr_v1_os_set_process_death_signal, swr_v1_os_thread_native_id, thread_set_name,
 };
+pub use system::{DaemonError, swoole_daemon};
 mod msg_queue;
 pub use msg_queue::QueueRecord;
 mod pool;

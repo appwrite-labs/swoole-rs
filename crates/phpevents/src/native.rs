@@ -54,7 +54,7 @@ pub(crate) fn deleting() -> bool {
 /// waits and `Co::set`'s exit condition: whether it made the reactor.
 pub(crate) fn create() -> bool {
     let flags = swoole_rs_corebase::constants::EventInitFlag::SW_EVENTLOOP_WAIT_EXIT as c_int;
-    if swoole_rs_corebase::reactor::swoole_event_init(flags) < 0 {
+    if swoole_rs_corebase::reactor::swoole_event_init(flags).is_err() {
         return false;
     }
     swoole_rs_phpswoole::php_swoole_register_shutdown_function(c"swoole_event_rshutdown");

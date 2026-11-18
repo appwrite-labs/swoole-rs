@@ -282,11 +282,21 @@ pub fn swr_v1_event_remove_exit_condition(id: ExitCondition) {
     }
 }
 
+/// Failure returned by the reactor loop.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum LoopError {
+    /// The loop could not run to completion.
+    Failed,
+    /// A deferred task requested a bailout.
+    Bailout,
+}
+
 /// `int Reactor::wait()`: the loop over the state's backend, the future task before
 /// each kernel wait and the end callbacks after it.
-#[must_use]
-pub fn reactor_wait(reactor: Running<'_>) -> c_int {
-    if wait(reactor) { 0 } else { -1 }
+/// # Errors
+/// Returns an error when the backend wait fails.
+pub fn reactor_wait(reactor: Running<'_>) -> Result<(), LoopError> {
+    wait(reactor).then_some(()).ok_or(LoopError::Failed)
 }
 
 /// `Reactor::wait()` of the reactor `reactor` names.

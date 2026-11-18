@@ -10,11 +10,23 @@ use swoole_rs_zend::{E_WARNING, bailout};
 const PHP_FATAL_ERROR: i32 = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as i32;
 
 swoole_rs_zend::exports! {
+/// Replace the private zval owned by php_curl. The caller releases the previous
+/// reference after this borrow ends, as a destructor can call back into curl.
+#[unsafe(no_mangle)]
+pub extern "C" fn swoole_curl_replace_private(slot: &mut swoole_rs_zend::Owned, value: &swoole_rs_zend::Value) -> swoole_rs_zend::sys::zval {
+    std::mem::replace(slot, value.copy()).into_zval()
+}
+
 /// Whether the current coroutine may use the `php_curl` whose easy handle is
 /// `cp`: false after the warning of a missing coroutine handle or the fatal
 /// error of a multi another coroutine waits on.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_curl_check_handle(cp: Easy<'_>, exclusive: bool, required: bool) -> bool {
+    check_handle(cp, exclusive, required)
+}
+}
+
+pub(super) fn check_handle(cp: Easy<'_>, exclusive: bool, required: bool) -> bool {
     let shut_down = swoole_rs_phpswoole::globals().req_status.get()
         == swoole_rs_phpswoole::ReqStatus::RshutdownEnd;
     if !exclusive || shut_down || host::current().is_null() {
@@ -44,5 +56,4 @@ pub extern "C" fn swr_v1_curl_check_handle(cp: Easy<'_>, exclusive: bool, requir
     // nothing that needs a drop: the multi's reference is dropped above.
     unsafe { swoole_rs_corebase::fatal_error(code, message) };
     false
-}
 }

@@ -23,7 +23,7 @@ struct ErrorInfo {
 unsafe extern "C" {
     safe fn swr_odbc_error_record<'a>(dbh: &'a Dbh, stmt: Option<&'a Stmt>) -> &'a Cell<ErrorInfo>;
     safe fn swr_odbc_environment(dbh: &Dbh) -> Handle;
-    safe fn swr_odbc_statement(stmt: &Stmt) -> Statement;
+    pub(crate) safe fn swr_odbc_statement(stmt: &Stmt) -> Statement;
     safe fn swr_odbc_connect_exception(dbh: &Dbh);
 
     #[link_name = "SQLGetDiagRec"]
@@ -121,15 +121,15 @@ pub(crate) extern "C" fn pdo_odbc_error(
     }
 }
 
-pub(crate) fn unknown_attribute(dbh: &Dbh) {
-    let slot = swr_odbc_error_record(dbh, None);
+pub(crate) fn unknown_attribute(dbh: &Dbh, stmt: Option<&Stmt>, operation: Text<'static>) {
+    let slot = swr_odbc_error_record(dbh, stmt);
     let mut info = slot.get();
     let message = c"Unknown Attribute".to_bytes_with_nul();
     info.message
         .split_at_mut(message.len())
         .0
         .copy_from_slice(message);
-    info.what = Some(c"setAttribute".into());
+    info.what = Some(operation);
     info.state = *b"IM001\0";
     slot.set(info);
 }

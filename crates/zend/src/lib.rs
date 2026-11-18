@@ -47,8 +47,8 @@ pub use descriptor::{
     memory_usage, pause_shutdown, restore_shutdown, with_unlimited_stack,
 };
 pub use error::{
-    E_ERROR, E_WARNING, Message, report, throw_error, throw_trapped, type_error, type_name,
-    value_error, zend_error,
+    E_ERROR, E_NOTICE, E_WARNING, Message, report, throw_error, throw_trapped, type_error,
+    type_name, value_error, zend_error,
 };
 pub use function::{Fcc, Function};
 pub use helpers::{
@@ -59,6 +59,9 @@ pub use local::{EnvLock, Fatal, Php};
 pub use minit::{Lifecycle, Minfo, Minit, Mshutdown, Parent, Request, Shutdown, Startup};
 pub use object::{Custom, CustomClass, FreeProperties, Object, ObjectRef, Props, Weak, new_object};
 pub use swoole_rs_zend_sys as sys;
+
+/// Whether PHP is thread-safe (ZTS).
+pub const ZTS: bool = cfg!(zts);
 pub use sys::add_next_index_long;
 pub use zval::{
     Array, ArrayMut, Entries, HeldArray, Insertions, Interned, Kept, Key, Owned, OwnedArray,

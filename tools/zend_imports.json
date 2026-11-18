@@ -1,4 +1,10 @@
 {
+  "crates/curl/src/php_handle.rs:swr_zend_object_new": "shim.c initializes standard object storage and declared properties without invoking a PHP constructor. Allocator contract: docs/zend.md#memory_limit.",
+  "crates/curl/src/php_handle.rs:zend_clear_exception": "copy_handle contains exception destruction in a Zend bailout scope.",
+  "crates/curl/src/php_handle.rs:zend_get_gc_buffer_create": "Obtains Zend's scratch buffer during get_gc without invoking PHP. Allocator contract: docs/zend.md#memory_limit.",
+  "crates/curl/src/php_handle.rs:zend_object_std_dtor": "free_obj contains property and guard destruction in a Zend bailout scope.",
+  "crates/curl/src/php_handle.rs:zend_std_cast_object_tostring": "CurlHandle and CurlMultiHandle are final internal classes without __toString; the standard cast has no user method to invoke.",
+  "crates/curl/src/php_handle.rs:zend_std_get_properties": "Reads or materializes the final internal CurlHandle object's standard property table without invoking property handlers. Allocator contract: docs/zend.md#memory_limit.",
   "crates/odbc/src/driver.rs:php_odbc_connstr_estimate_quote_length": "php_odbc_utils.c: counts bytes needed for escaping a NUL-terminated credential.",
   "crates/odbc/src/driver.rs:php_odbc_connstr_is_quoted": "php_odbc_utils.c: inspects the credential delimiters and escape sequences.",
   "crates/odbc/src/driver.rs:php_odbc_connstr_quote": "php_odbc_utils.c: writes escaped bytes into the caller-owned buffer of the supplied capacity.",

@@ -96,7 +96,7 @@ enum Liveness {
 }
 
 #[repr(i32)]
-enum Attribute {
+pub(crate) enum Attribute {
     Error = -1,
     Unsupported = 0,
     Set = 1,
@@ -176,16 +176,19 @@ extern "C" fn swr_odbc_get_attr(
 }
 
 impl Statement {
-    const NULL: Self = Self(std::ptr::null_mut());
+    pub(crate) const NULL: Self = Self(std::ptr::null_mut());
 }
 
 unsafe extern "C" {
     #[link_name = "SQLAllocHandle"]
-    safe fn alloc_handle(kind: i16, parent: Handle, result: &mut Handle) -> SQLRETURN;
+    pub(crate) safe fn alloc_handle(kind: i16, parent: Handle, result: &mut Handle) -> SQLRETURN;
     #[link_name = "SQLRowCount"]
-    safe fn row_count(statement: Statement, count: &mut swoole_rs_odbc_sys::SQLLEN) -> SQLRETURN;
+    pub(crate) safe fn row_count(
+        statement: Statement,
+        count: &mut swoole_rs_odbc_sys::SQLLEN,
+    ) -> SQLRETURN;
     #[link_name = "SQLFreeHandle"]
-    safe fn free_handle(kind: i16, handle: Handle) -> SQLRETURN;
+    pub(crate) safe fn free_handle(kind: i16, handle: Handle) -> SQLRETURN;
 }
 
 /// `PDO::exec` allocates a statement for this call, including when it affects no rows.
@@ -288,7 +291,7 @@ extern "C" fn swr_odbc_set_attr(
             autocommit(dbh, on, file, line)
         }
         _ => {
-            crate::diagnostics::unknown_attribute(dbh);
+            crate::diagnostics::unknown_attribute(dbh, None, c"setAttribute".into());
             false
         }
     }

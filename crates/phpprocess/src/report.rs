@@ -9,7 +9,7 @@ pub(crate) const PHP_RUNTIME_NOTICE: i32 =
     swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as i32;
 
 /// `errno`, and setting it (to 0 before a call whose -1 result is ambiguous).
-pub(crate) use swoole_rs_corebase::sys::{errno, set_errno};
+pub(crate) use swoole_rs_corebase::sys::errno;
 
 pub(crate) use swoole_rs_corebase::log::set_last_error;
 

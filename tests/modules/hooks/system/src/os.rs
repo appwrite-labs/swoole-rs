@@ -295,7 +295,7 @@ fn daemon() {
             assert_eq!(sid, getsid(getpid()));
             assert!(isatty(STDIN_FILENO) != 0);
 
-            assert_eq!(swoole_rs_corebase::ossupport::swoole_daemon(0, 0), 0);
+            assert_eq!(swoole_rs_corebase::ossupport::swoole_daemon(0, 0), Ok(()));
             assert_ne!(sid, getsid(getpid()));
 
             assert!(isatty(STDIN_FILENO) == 0);

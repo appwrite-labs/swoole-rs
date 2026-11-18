@@ -91,19 +91,32 @@ const FORK_DAEMON: c_int = 4;
 #[cfg(not(target_vendor = "apple"))]
 const FORK_PRECHECK: c_int = 8;
 
+/// The operation that prevented the process from becoming a daemon.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DaemonError {
+    /// Detaching from the working directory or standard streams failed.
+    Detach,
+    /// The fork precheck or fork failed.
+    Fork,
+    /// The child could not create a new session.
+    #[cfg(target_vendor = "apple")]
+    Session,
+}
+
 /// `int swoole_daemon(int nochdir, int noclose)`. Darwin's `daemon(3)` is
 /// deprecated, so it detaches, forks and calls `setsid` itself.
 #[cfg(target_vendor = "apple")]
-#[must_use]
-pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
+/// # Errors
+/// Returns the step that prevented daemonization.
+pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> Result<(), DaemonError> {
     if !daemon_detach(nochdir != 0, noclose != 0) {
-        return -1;
+        return Err(DaemonError::Detach);
     }
     // Upstream's fork; it rejects a coroutine or async-thread caller itself.
     let pid = crate::swoole_fork(FORK_DAEMON);
     if pid < 0 {
         log::sys_warning(c"swoole_daemon", format_args!("fork() failed"));
-        return -1;
+        return Err(DaemonError::Fork);
     }
     if pid > 0 {
         // The parent leaves without running exit handlers, as upstream.
@@ -111,26 +124,27 @@ pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
     }
     if setsid() < 0 {
         log::sys_warning(c"swoole_daemon", format_args!("setsid() failed"));
-        return -1;
+        return Err(DaemonError::Session);
     }
-    0
+    Ok(())
 }
 
 /// `int swoole_daemon(int nochdir, int noclose)`: `daemon(3)`, then the
 /// after-fork hooks, since the pid changed (PHP 8.5 refreshes its memory
 /// manager after a fork, and `daemon(3)` forks behind its back).
 #[cfg(not(target_vendor = "apple"))]
-#[must_use]
-pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
+/// # Errors
+/// Returns the step that prevented daemonization.
+pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> Result<(), DaemonError> {
     // Upstream's fork precheck; it forks nothing (-1 before `swoole_init`).
     if crate::swoole_fork(FORK_PRECHECK) < 0 {
-        return -1;
+        return Err(DaemonError::Fork);
     }
-    let rv = daemon(nochdir, noclose);
-    if rv == 0 {
-        crate::hook::call(crate::hook::Hook::AfterFork);
+    if daemon(nochdir, noclose) != 0 {
+        return Err(DaemonError::Detach);
     }
-    rv
+    crate::hook::call(crate::hook::Hook::AfterFork);
+    Ok(())
 }
 
 /// A step of `swoole_set_isolation` that failed.
