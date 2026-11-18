@@ -84,7 +84,7 @@ jobs:
       - name: Run PHPTs
         if: steps.manifest.outputs.tests != '0'
         run: >
-          python3 corpus/upstream/run.py --manifest target/phpt/manifest.json --timeout 30 --external-network
+          python3 corpus/upstream/run.py --manifest target/phpt/manifest.json --measure-leftovers --timeout 30 --external-network
           ${{ steps.extensions.outputs.args }}
           --engine ${{ matrix.engine }}=target/phpt/${{ matrix.engine }}.so
           --output target/phpt/${{ matrix.engine }}-${{ matrix.index }}.json || [ $? -eq 1 ]

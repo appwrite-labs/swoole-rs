@@ -206,3 +206,7 @@ pub fn boundary(input: &[u8], mut offset: usize) -> Result<Option<HttpSpan>, i32
         length: count,
     }))
 }
+
+#[cfg(kani)]
+#[path = "../../../tests/modules/http/kani.rs"]
+mod proofs;

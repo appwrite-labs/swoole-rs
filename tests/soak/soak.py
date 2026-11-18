@@ -21,11 +21,12 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tools.harness import parse_engines, server, stop_process_group, write_report
+from tools.harness import parse_engines, server, stop_process_group, temp_file_count, write_report
 from corpus.run import WebSocket
 
 HERE = Path(__file__).resolve().parent
@@ -151,9 +152,10 @@ def stats(port):
         connection.close()
 
 
-def soak(engine, args):
-    env = {'SOAK_LEAK': '1' if args.leak else '0', 'SOAK_REDIS': args.redis or '', 'SOAK_MYSQL': args.mysql or ''}
-    pool = subprocess.Popen(engine.command(HERE / 'pool.php'), stdout=subprocess.DEVNULL, start_new_session=True)
+def soak(engine, args, tmpdir):
+    env = {'TMPDIR': tmpdir, 'SOAK_LEAK': '1' if args.leak else '0', 'SOAK_REDIS': args.redis or '', 'SOAK_MYSQL': args.mysql or ''}
+    pool = subprocess.Popen(engine.command(HERE / 'pool.php'), stdout=subprocess.DEVNULL, start_new_session=True,
+                            env={**os.environ, **env})
     samples, failures = [], []
     started = time.monotonic()
     try:
@@ -177,7 +179,8 @@ def soak(engine, args):
                         raise AssertionError(f'{name} exited {process.returncode} after {now:.0f}s')
                 tree = children()
                 pool_children.update(tree.get(pool.pid, []))
-                sample = {'t': round(now, 1), 'processes': {}}
+                sample = {'t': round(now, 1), 'processes': {}, 'temp_files': temp_file_count(tmpdir),
+                          'live_processes': len(descendants(proc.pid, tree)) + len(descendants(pool.pid, tree))}
                 for root, name in [(proc.pid, 'server'), (pool.pid, 'pool')]:
                     for pid in descendants(root, tree):
                         if (measured := resources(pid)) is not None:
@@ -222,6 +225,16 @@ def soak(engine, args):
                 growths[f'{metric} {key}'] = value = growth(points)
                 if value > limit:
                     failures.append(f'{metric} {key} grew {value:.0f} after warm-up (limit {limit})')
+    if len(measured) >= 3:
+        # Compare low-water marks so a worker respawn or an in-flight task file
+        # at one sampling instant does not look like a lasting resource.
+        window = max(1, len(measured) // 3)
+        for metric in ('temp_files', 'live_processes'):
+            change = min(s[metric] for s in measured[-window:]) - min(s[metric] for s in measured[:window])
+            growths[metric] = change
+            limit = max(0, control['growth'].get(metric, 0)) if args.control else 0
+            if change > limit:
+                failures.append(f'{metric} grew {change} after warm-up (limit {limit})')
     if len(measured) < 3:
         failures.append(f'only {len(measured)} samples after warm-up')
     return {'engine': engine.metadata(), 'duration': args.duration, 'warmup': args.warmup,
@@ -250,7 +263,8 @@ def main():
     args = parser.parse_args()
     args.warmup = args.duration * .2 if args.warmup is None else args.warmup
     [engine] = parse_engines([args.engine], args.php, args.php_extension)
-    report = soak(engine, args)
+    with tempfile.TemporaryDirectory(prefix='swoole-soak-') as tmpdir:
+        report = soak(engine, args, tmpdir)
     write_report(args.output, report)
     for failure in report['failures']:
         print(f'FAIL {failure}')

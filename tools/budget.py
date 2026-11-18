@@ -21,6 +21,7 @@ rise by what others fall, and a fold or a new crate moves what it holds.
            or a PHP callback is re-entered, and the process aborts. Make the state a
            plain field of the handle that owns it, borrowed `&mut`, or a `Cell` taken and
            put back (#3565). A `RefCell::new` whose type is inferred isn't counted
+  php_args registered PHP argument reads accepting types beyond the generated stub signature
   statuses integer-returning bodies (`i32`, `c_int`, `i64`, `isize`), including extern
            wrappers; foreign declarations and callback types have no body to migrate
   reprs    `#[repr(C)]` layouts, including C combined with other representation hints
@@ -61,6 +62,7 @@ runs of tokens, `maps`, `lists` and `casts` match a name wherever it is, and `mi
 `fakes` and `derefs` don't see in.
 """
 import argparse
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 import os
 from pathlib import Path
@@ -76,6 +78,9 @@ except ImportError:
     sys.exit('tools/budget.py needs the ast-grep-py package: see docs/development.md, Linux environment')
 
 ROOT = Path(__file__).resolve().parents[1]
+
+sys.path.insert(0, str(ROOT))
+from tools.audit_php_args import audit
 
 
 def named(*names):
@@ -230,7 +235,10 @@ def counts(root=ROOT):
     crates = sorted(p for p in (root / 'crates').iterdir() if (p / 'Cargo.toml').exists())
     with ProcessPoolExecutor() as pool:
         counted = dict(zip(crates, pool.map(count_crate, crates)))
-    return {kind: {crate.name: n[kind] for crate, n in counted.items()} for kind in [*KINDS, 'clines', 'unforbidden']}
+    results = {kind: {crate.name: n[kind] for crate, n in counted.items()} for kind in [*KINDS, 'clines', 'unforbidden']}
+    _, _, mismatches = audit(root)
+    results['php_args'] = dict(Counter(path.parts[1] for *_, path, _ in mismatches))
+    return results
 
 
 def counts_at(ref, root=ROOT):

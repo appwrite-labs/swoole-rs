@@ -139,3 +139,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(kani)]
+#[path = "../../../tests/modules/framing/kani.rs"]
+mod proofs;
