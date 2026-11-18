@@ -104,6 +104,9 @@ pub(crate) fn send_data<'a>(
 pub(crate) trait Packages {
     /// The fixed length header size, or `None` to ask the protocol's callbacks.
     const HEAD: Option<u32>;
+    fn dynamic_header(&self, _: &Protocol) -> Option<u8> {
+        None
+    }
     /// `get_package_length` over the buffered `bytes`: `None` for malformed bytes,
     /// `Some(0)` while the header is incomplete. The protocol's, `None` without one.
     #[inline(always)]
@@ -113,7 +116,7 @@ pub(crate) trait Packages {
         let protocol = r.protocol();
         let get = protocol.get_package_length?;
         let owner = r.owner.get();
-        let length = get(&protocol, Some(r.socket), owner, &mut pl);
+        let length = get(&protocol, self.dynamic_header(&protocol), owner, &mut pl);
         usize::try_from(length).ok()
     }
     /// `onPackage` over a whole package; whether it succeeded. No reference to the
@@ -440,7 +443,7 @@ pub(crate) fn receive<'a, K: Packages>(
     } else if mode == Mode::Length {
         let p = r.0.protocol();
         let size = p.get_package_length_size;
-        head = u32::from(size.map_or(p.package_length_size, |size| size(socket)));
+        head = u32::from(r.2.dynamic_header(&p).unwrap_or(p.package_length_size));
         flags |=
             (if skip { FLAG_SKIP } else { 0 }) | (if size.is_some() { FLAG_DYNAMIC } else { 0 });
     }
@@ -467,14 +470,11 @@ pub const FRAMING: Framing = Framing::new(client_recv::<true>, client_recv::<fal
 /// `static ssize_t Protocol::default_length_func(const Protocol *, Socket *, PacketLength *)`.
 pub fn default_length_func(
     p: &Protocol,
-    socket: Option<Socket<'_>>,
+    header: Option<u8>,
     _owner: Option<std::rc::Rc<dyn core::any::Any>>,
     pl: &mut PacketLength,
 ) -> isize {
-    let size = match (p.get_package_length_size, socket) {
-        (Some(size), Some(socket)) => size(socket),
-        _ => p.package_length_size,
-    };
+    let size = header.unwrap_or(p.package_length_size);
     let bytes = pl.bytes();
     match default_length(
         p.package_length_type,
@@ -524,6 +524,9 @@ pub const fn swoole_ntoh64(value: u64) -> u64 {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::net::UnixStream;
     use swoole_rs_corebase::CCast;
     use swoole_rs_corebase::reactor::SocketRecord;
 
@@ -559,25 +562,13 @@ mod tests {
         ) as c_int
     }
 
-    /// The handle a client's read passes for its live socket.
-    fn handle(socket: &mut SocketRecord) -> Socket<'_> {
-        unsafe { Socket::from_ptr(socket) }.expect("a socket")
-    }
-
     /// A connected socket with `sent` waiting, the protocol and an 8-byte buffer.
-    fn stream(sent: &[u8]) -> (SocketRecord, c_int, Protocol, CppString) {
-        let mut pair = [0; 2];
-        assert_eq!(
-            unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, pair.as_mut_ptr()) },
-            0
-        );
-        assert_eq!(
-            unsafe { libc::send(pair[0], sent.as_ptr().cast(), sent.len(), 0) },
-            sent.len().cast_signed()
-        );
-        unsafe { libc::fcntl(pair[1], libc::F_SETFL, libc::O_NONBLOCK) };
+    fn stream(sent: &[u8]) -> (SocketRecord, UnixStream, UnixStream, Protocol, CppString) {
+        let (mut peer, reader) = UnixStream::pair().unwrap();
+        assert_eq!(peer.write(sent).unwrap(), sent.len());
+        reader.set_nonblocking(true).unwrap();
         let mut socket = SocketRecord::new();
-        socket.fd = pair[1];
+        socket.fd = reader.as_raw_fd();
         socket.socket_type = 5; // SW_SOCK_UNIX_STREAM
         let mut protocol = Protocol::EMPTY;
         protocol.package_max_length = 1024;
@@ -585,7 +576,7 @@ mod tests {
         let mut buffer = CppString::EMPTY;
         buffer.alloc(8, None);
         PACKAGES.with_borrow_mut(Vec::clear);
-        (socket, pair[0], protocol, buffer)
+        (socket, peer, reader, protocol, buffer)
     }
 
     #[test]
@@ -594,7 +585,7 @@ mod tests {
         let mut socket = SocketRecord::new();
         let recv = Recv {
             mode: Mode::Length,
-            socket: handle(&mut socket),
+            socket: Socket::new(&mut socket),
             owner: Owner::Plain(&protocol),
         };
         let original = recv.protocol_address();
@@ -606,16 +597,16 @@ mod tests {
 
     #[test]
     fn length_protocol_with_the_default_length() {
-        let (mut socket, peer, mut protocol, mut buffer) =
+        let (mut socket, peer, reader, mut protocol, mut buffer) =
             stream(b"\x00\x03abc\x00\x0chello world!");
         protocol.package_length_type = b'n';
         protocol.package_length_size = 2;
         protocol.package_body_offset = 2;
         protocol.get_package_length = Some(default_length_func);
         let protocol = Shared::new(protocol);
-        let status = client_recv::<true>(&protocol, handle(&mut socket), &mut buffer);
+        let status = client_recv::<true>(&protocol, Socket::new(&mut socket), &mut buffer);
         assert_eq!(status, 0);
-        let status = client_recv::<true>(&protocol, handle(&mut socket), &mut buffer);
+        let status = client_recv::<true>(&protocol, Socket::new(&mut socket), &mut buffer);
         assert_eq!(status, 0);
         PACKAGES.with_borrow(|p| {
             assert_eq!(
@@ -623,29 +614,29 @@ mod tests {
                 [b"\x00\x03abc".to_vec(), b"\x00\x0chello world!".to_vec()]
             );
         });
-        unsafe { libc::close(peer) };
+        drop(peer);
         // The peer's close ends the next receive.
-        let status = client_recv::<true>(&protocol, handle(&mut socket), &mut buffer);
+        let status = client_recv::<true>(&protocol, Socket::new(&mut socket), &mut buffer);
         assert_eq!(status, -1);
         buffer.dispose();
-        unsafe { libc::close(socket.fd) };
+        drop(reader);
     }
 
     #[test]
     fn eof_protocol_splits_and_keeps_the_rest() {
-        let (mut socket, peer, mut protocol, mut buffer) = stream(b"ab\r\ncd\r\ne");
+        let (mut socket, peer, reader, mut protocol, mut buffer) = stream(b"ab\r\ncd\r\ne");
         protocol.package_eof[..2].copy_from_slice(b"\r\n");
         protocol.package_eof_len = 2;
         protocol.split_by_eof = true;
         let protocol = Shared::new(protocol);
         buffer.extend(64);
-        let status = client_recv::<false>(&protocol, handle(&mut socket), &mut buffer);
+        let status = client_recv::<false>(&protocol, Socket::new(&mut socket), &mut buffer);
         assert_eq!(status, 0);
         PACKAGES.with_borrow(|p| assert_eq!(*p, [b"ab\r\n".to_vec(), b"cd\r\n".to_vec()]));
         assert_eq!(buffer.len(), 1);
         buffer.dispose();
-        unsafe { libc::close(peer) };
-        unsafe { libc::close(socket.fd) };
+        drop(peer);
+        drop(reader);
     }
 
     // core-tests/src/protocol/base.cpp's protocol.swap_byte_order, protocol.unpack and

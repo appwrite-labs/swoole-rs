@@ -65,9 +65,6 @@ STATUSES = ['passed', 'failed', 'skipped', 'excluded']
 # (#1905 moved the pin to v6.2.5 ahead of the ports). The gate lists them instead of
 # failing on them, and lists those cargo already passes so their entries go.
 PENDING_PORTS = {
-    4929: [
-        'swoole_server/base/connection_bounds_after_other_worker_close.phpt',
-    ],
     4930: [
         'swoole_http2_client_coro/flow_control_connection_window.phpt',
         'swoole_http2_client_coro/goaway_frame_length.phpt',

@@ -121,6 +121,9 @@ pub(crate) fn recv_packet<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::net::UnixStream;
     use swoole_rs_clients::protocol::Protocol;
     use swoole_rs_corebase::reactor::SocketRecord;
     use swoole_rs_server::ConnectionRecord;
@@ -128,23 +131,16 @@ mod tests {
     /// `core-tests/src/protocol/redis.cpp`, `TEST(redis, recv_packet_with_partially_filled_buffer)`.
     #[test]
     fn recv_packet_with_partially_filled_buffer() {
-        let mut pairs = [0; 2];
-        assert_eq!(
-            unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, pairs.as_mut_ptr()) },
-            0
-        );
-        assert_eq!(
-            unsafe { libc::send(pairs[0], b"*".as_ptr().cast(), 1, 0) },
-            1
-        );
-        unsafe { libc::close(pairs[0]) };
+        let (mut peer, reader) = UnixStream::pair().unwrap();
+        assert_eq!(peer.write(b"*").unwrap(), 1);
+        drop(peer);
 
         let mut socket = SocketRecord::new();
-        socket.fd = pairs[1];
+        socket.fd = reader.as_raw_fd();
         socket.socket_type = 5; // SW_SOCK_UNIX_STREAM
         let mut conn: ConnectionRecord = unsafe { core::mem::zeroed() };
-        conn.fd.set(pairs[1]);
-        let handle = unsafe { Socket::from_ptr(&raw mut socket) }.unwrap();
+        conn.fd.set(reader.as_raw_fd());
+        let handle = Socket::new(&mut socket);
         let mut protocol = Protocol::EMPTY;
         protocol.package_max_length = 65536 * 2;
         let mut buffer = CppString::EMPTY;
@@ -164,11 +160,10 @@ mod tests {
         assert_eq!(buffer.size(), buffer_size);
 
         // The session's state stays for its next read.
-        let slot = usize::try_from(pairs[1]).unwrap();
+        let slot = usize::try_from(reader.as_raw_fd()).unwrap();
         assert!(requests(|all| all
             .get(slot)
             .is_some_and(|&(owner, _)| owner == 0)));
         buffer.dispose();
-        unsafe { libc::close(pairs[1]) };
     }
 }

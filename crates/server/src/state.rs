@@ -36,6 +36,7 @@ pub struct ServerState {
     texts: [std::sync::Mutex<std::sync::Arc<[u8]>>; 5],
     /// `Server::lock_`, the connection list's fd range lock.
     pub(crate) locked: FdLock,
+    local_bounds: crate::shared::FdBounds,
     /// The reactor threads and the heartbeat thread, by `start_thread`'s `arg`.
     #[cfg(any(test, feature = "upstream-symbols"))]
     threads: std::sync::Mutex<Vec<(u64, std::thread::JoinHandle<()>)>>,
@@ -277,6 +278,7 @@ impl ServerState {
             upload_tmp_dir: std::sync::Mutex::new(None),
             texts: Default::default(),
             locked: FdLock::default(),
+            local_bounds: crate::shared::FdBounds::default(),
             #[cfg(any(test, feature = "upstream-symbols"))]
             threads: std::sync::Mutex::new(Vec::new()),
             local_addrs: std::sync::OnceLock::new(),
@@ -462,6 +464,18 @@ impl ServerState {
     /// starts or under the server's own synchronization.
     pub(crate) fn config_ref(&self) -> &crate::config::ServerConfig {
         &self.config
+    }
+
+    /// BASE workers inherit a private connection table and bounds at fork.
+    pub(crate) fn fd_bounds<'a>(
+        &'a self,
+        shared: &'a crate::ServerCounters,
+    ) -> &'a crate::shared::FdBounds {
+        if self.config_ref().mode_ == crate::Mode::Base {
+            &self.local_bounds
+        } else {
+            &shared.bounds
+        }
     }
 
     /// The table view, written as `config_ref` says.
