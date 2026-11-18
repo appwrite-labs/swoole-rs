@@ -1081,6 +1081,15 @@ PHP_FUNCTION(swoole_native_curl_exec) {
 }
 /* }}} */
 
+#if PHP_VERSION_ID >= 80300
+static void _php_curl_free_callback(php_curl_callback *callback) {
+    if (callback) {
+        zval_ptr_dtor(&callback->func_name);
+        efree(callback);
+    }
+}
+#endif
+
 extern "C" bool swoole_curl_prepare_free(php_curl *ch) {
     swoole_curl_verify_handlers(ch, false);
     curl_easy_setopt(ch->cp, CURLOPT_HEADERFUNCTION, fn_write_nothing);
