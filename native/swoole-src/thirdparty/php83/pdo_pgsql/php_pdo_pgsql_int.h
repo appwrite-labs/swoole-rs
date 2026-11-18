@@ -31,6 +31,7 @@
  * through these accessors. */
 typedef struct pdo_pgsql_db_handle pdo_pgsql_db_handle;
 
+bool pdo_pgsql_emulated_parameter(enum pdo_param_type *kind, zval *value);
 bool pdo_pgsql_normalize_parameter(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zend_string *name, zend_long *index);
 bool pdo_pgsql_check_parameter(pdo_dbh_t *dbh, pdo_stmt_t *stmt, HashTable *map, zend_long index);
 bool pdo_pgsql_execution_result(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult *result);

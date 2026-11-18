@@ -219,6 +219,12 @@ fn copy_state(code: &mut pdo_error_type, sqlstate: &CStr) {
 pub struct Slot(Value);
 
 impl Slot {
+    /// The current value of this PDO slot.
+    #[must_use]
+    pub fn value(&self) -> &Value {
+        &self.0
+    }
+
     /// The slot holds `value`, releasing what it held.
     pub fn set(&self, value: Owned) {
         self.0.lend_slot(|held| *held = value);

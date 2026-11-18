@@ -269,14 +269,7 @@ static int pgsql_stmt_param_hook(pdo_stmt_t *stmt,
             break;
         }
     } else if (param->is_param && event_type == PDO_PARAM_EVT_NORMALIZE) {
-        /* We need to manually convert to a pg native boolean value */
-        if (PDO_PARAM_TYPE(param->param_type) == PDO_PARAM_BOOL &&
-            ((param->param_type & PDO_PARAM_INPUT_OUTPUT) != PDO_PARAM_INPUT_OUTPUT)) {
-            const char *s = zend_is_true(&param->parameter) ? "t" : "f";
-            param->param_type = PDO_PARAM_STR;
-            zval_ptr_dtor(&param->parameter);
-            ZVAL_STRINGL(&param->parameter, s, 1);
-        }
+        return pdo_pgsql_emulated_parameter(&param->param_type, &param->parameter);
     }
     return 1;
 }

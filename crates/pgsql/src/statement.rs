@@ -335,3 +335,23 @@ extern "C" fn pdo_pgsql_check_parameter(
     );
     false
 }
+
+swoole_rs_zend::exports! {
+/// With emulated placeholders, bind input booleans as PostgreSQL truth literals.
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_emulated_parameter(kind: &Cell<pdo_param_type>, slot: &Slot) -> bool {
+    use swoole_rs_zend::sys::pdo_param_type_PDO_PARAM_INPUT_OUTPUT as INPUT_OUTPUT;
+    // PDO_PARAM_TYPE strips the upper 16 flag bits.
+    if kind.get() & 0xffff != BOOL || kind.get() & INPUT_OUTPUT != 0 {
+        return true;
+    }
+    let mut truth = false;
+    if let Err(error) = swoole_rs_zend::contain_with(|| truth = slot.value().truthy()) {
+        error.defer();
+        return false;
+    }
+    kind.set(STR);
+    slot.set(swoole_rs_zend::Owned::string(ZString::new(if truth { b"t" } else { b"f" })));
+    true
+}
+}
