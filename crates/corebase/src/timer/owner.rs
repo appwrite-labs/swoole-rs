@@ -751,22 +751,25 @@ mod tests {
     }
 
     #[test]
-    fn self_remove() {
-        let p = Probe::new();
-        let log = Rc::clone(&p.log);
-        p.add(
-            'A',
-            true,
-            Box::new(move |t, id| {
-                let mut log = log.borrow_mut();
-                log.events.push('A');
-                log.events.push(if t.remove(id) { 'Y' } else { 'N' });
-                log.events.push(if t.remove(id) { 'Y' } else { 'N' });
-                let viewed = t.info(id).is_some_and(|(info, _)| info.removed);
-                log.events.push(if viewed { 'V' } else { 'X' });
-            }),
-        );
-        expect(&finish(&p, 0, 0, false), "AYNVa", "AYNVa", 0, 1, false);
+    fn callback_self_removal_preserves_deferred_release() {
+        for persistent in [false, true] {
+            let p = Probe::new();
+            let log = Rc::clone(&p.log);
+            p.add(
+                'A',
+                persistent,
+                Box::new(move |t, id| {
+                    let mut log = log.borrow_mut();
+                    assert_eq!(log.destructors, 0);
+                    log.events.push('A');
+                    log.events.push(if t.remove(id) { 'Y' } else { 'N' });
+                    log.events.push(if t.remove(id) { 'Y' } else { 'N' });
+                    let viewed = t.info(id).is_some_and(|(info, _)| info.removed);
+                    log.events.push(if viewed { 'V' } else { 'X' });
+                }),
+            );
+            expect(&finish(&p, 0, 0, false), "AYNVa", "AYNVa", 0, 1, false);
+        }
     }
 
     fn remove_other(in_destructor: bool) -> (String, String, usize, u32, bool, bool) {
@@ -979,6 +982,19 @@ mod tests {
             1,
             "dropped when the timer is freed"
         );
+    }
+
+    #[test]
+    fn timer_is_unpublished_when_callbacks_are_released() {
+        use crate::timer::wrapper::{current, publish, swoole_timer_free, timer};
+        let previous = timer();
+        let p = Probe::new();
+        publish(p.timer);
+        let node = p.add('A', false, p.record('A'));
+        p.on_destroy(&node, 'a', || assert!(current().is_none()));
+        swoole_timer_free();
+        publish(previous);
+        assert_eq!(p.destructors(), 1);
     }
 
     #[test]
