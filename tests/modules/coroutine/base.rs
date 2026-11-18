@@ -29,16 +29,14 @@ use std::ffi::{c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::AtomicI32;
 use swoole_rs_corebase::coroutine::{
-    coroutine_count as swoole_coroutine_count, coroutine_get as swoole_coroutine_get, counters,
-    current_cid as get_current_cid, print_list, swoole_coroutine_iterator_each,
-    swoole_coroutine_iterator_reset,
+    Coroutine, Resume, coroutine_count as swoole_coroutine_count,
+    coroutine_get as swoole_coroutine_get, counters, current_cid as get_current_cid, print_list,
+    swoole_coroutine_iterator_each, swoole_coroutine_iterator_reset,
 };
 use swoole_rs_ffi::swoole_event_init;
 
 const SW_ERROR_CO_CANNOT_CANCEL: c_int = 10015;
 const SW_FORK_PRECHECK: c_int = 8;
-const RC_TIMEDOUT: i32 = -1;
-const RC_CANCELED: i32 = -2;
 const SWR_CO_ON_YIELD: u32 = 0;
 const SWR_CO_ON_RESUME: u32 = 1;
 const SWR_CO_ON_CLOSE: u32 = 2;
@@ -50,24 +48,6 @@ const SEEK_SET: c_int = 0;
 const SEEK_CUR: c_int = 1;
 
 type SwapCallback = swoole_rs_corebase::coroutine::SwapCallback;
-
-/// `swr_v1_coroutine`.
-#[repr(C)]
-struct Co {
-    native: *mut c_void,
-    cid: c_long,
-    state: i32,
-    resume_code: i32,
-    task: *mut c_void,
-    cancel: [*mut c_void; 3],
-    origin: *mut Co,
-    first_child: *mut Co,
-    prev_sibling: *mut Co,
-    next_sibling: *mut Co,
-    init_msec: c_long,
-    switch_usec: c_long,
-    execute_usec: c_long,
-}
 
 unsafe extern "C" {
     fn clock_gettime(clock: c_int, ts: *mut [i64; 2]) -> c_int;
@@ -95,8 +75,8 @@ fn co_run<'a>(body: impl FnOnce() + 'a) -> bool {
 }
 
 /// `Coroutine::get_current()`.
-fn get_current() -> *mut Co {
-    swoole_rs_corebase::coroutine::current_native().cast()
+fn get_current() -> *mut Coroutine {
+    swoole_rs_corebase::coroutine::current()
 }
 
 /// `Coroutine::get_current_task()`.
@@ -108,7 +88,7 @@ fn get_current_task() -> *mut c_void {
 }
 
 /// `Coroutine::get_by_cid(cid)`.
-fn get_by_cid(cid: c_long) -> *mut Co {
+fn get_by_cid(cid: c_long) -> *mut Coroutine {
     swoole_rs_corebase::coroutine::coroutine_get(cid).cast()
 }
 
@@ -130,7 +110,7 @@ fn set_callback(slot: u32, function: SwapCallback) {
 }
 
 /// A live coroutine's facade, read and driven as its C++ members do.
-struct View(*mut Co);
+struct View(*mut Coroutine);
 
 impl View {
     fn current() -> Self {
@@ -141,7 +121,7 @@ impl View {
     fn by_cid(cid: c_long) -> Self {
         Self(get_by_cid(cid))
     }
-    fn co(&self) -> &Co {
+    fn co(&self) -> &Coroutine {
         // SAFETY: the coroutine is live while the case holds its view.
         unsafe { &*self.0 }
     }
@@ -152,18 +132,21 @@ impl View {
         self.co().init_msec
     }
     fn get_task(&self) -> *mut c_void {
-        self.co().task
+        self.co()
+            .task
+            .map_or(std::ptr::null_mut(), |task| task.as_ptr().as_ptr())
     }
     fn set_task(&self, task: *mut c_void) {
-        // SAFETY: the live record, which the case holds.
-        unsafe { (*self.0).task = task };
+        assert_eq!(self.0, get_current());
+        let task = std::ptr::NonNull::new(task).unwrap();
+        // SAFETY: each case supplies its running coroutine's task for its callbacks.
+        unsafe { swoole_rs_corebase::coroutine::set_current_task(task) };
     }
-    fn get_origin(&self) -> *mut Co {
-        // SAFETY: a non-null origin is live.
-        unsafe { self.co().origin.as_ref() }.map_or(std::ptr::null_mut(), |co| co.native.cast())
+    fn get_origin(&self) -> *mut Coroutine {
+        self.co().origin
     }
     fn get_origin_cid(&self) -> c_long {
-        // SAFETY: as above.
+        // SAFETY: a non-null origin is live.
         unsafe { self.co().origin.as_ref() }.map_or(-1, |co| co.cid)
     }
     fn is_end(&self) -> bool {
@@ -177,10 +160,10 @@ impl View {
         .ended()
     }
     fn is_canceled(&self) -> bool {
-        self.co().resume_code == RC_CANCELED
+        self.co().resume_code == Resume::Canceled
     }
     fn is_timedout(&self) -> bool {
-        self.co().resume_code == RC_TIMEDOUT
+        self.co().resume_code == Resume::TimedOut
     }
     fn yield_(&self) {
         swoole_rs_corebase::coroutine::suspend(self.0.cast());
