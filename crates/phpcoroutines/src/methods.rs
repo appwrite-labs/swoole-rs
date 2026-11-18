@@ -483,7 +483,7 @@ fn get_elapsed(call: &Call) {
         return;
     };
     let elapsed = if runtime::activated() {
-        host::elapsed(cid)
+        swoole_rs_corebase::coroutine::elapsed(cid)
     } else {
         -1
     };
@@ -603,7 +603,7 @@ fn list(call: &Call) {
 /// `Co::getExecuteTime()` (`SW_CORO_TIME` builds).
 fn get_execute_time(call: &Call) {
     let time = if runtime::activated() {
-        host::execute_time(0)
+        swoole_rs_corebase::coroutine::current_execute_time()
     } else {
         -1
     };

@@ -49,7 +49,8 @@ fn build() -> u32 {
 }
 
 /// `std::chrono::steady_clock`, in microseconds (`time<seconds_type>(true)`).
-fn steady_usec() -> c_long {
+#[must_use]
+pub fn steady_usec() -> c_long {
     #[cfg(target_vendor = "apple")]
     let clock = libc::CLOCK_UPTIME_RAW;
     #[cfg(not(target_vendor = "apple"))]
