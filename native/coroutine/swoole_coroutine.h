@@ -8,7 +8,6 @@
 
 #include "swoole_string.h"
 #include "swoole_socket.h"
-#include "swoole_async.h"
 
 #include "swoole_rs_coroutine.h"
 
