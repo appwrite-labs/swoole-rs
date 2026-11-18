@@ -21,7 +21,7 @@ use std::{
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::reactor::Events;
-use swoole_rs_http::llhttp::{self, Callbacks, Flow, Parser};
+use swoole_rs_http::llhttp::{self, Callbacks, EndOfInput, Flow, Parser};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_websocket::Opcode;
@@ -170,7 +170,6 @@ struct Client {
     compression_error: Cell<bool>,
     decoder: Cell<Option<Decoder>>,
     connection_close: Cell<bool>,
-    completed: Cell<bool>,
     event_stream: Cell<bool>,
     in_callback: Cell<bool>,
     /// The response parser; whoever takes it out owns the socket's receive.
@@ -239,11 +238,6 @@ impl<'a> Hooks<'a> {
             hooks: self,
             field: &[],
         }
-    }
-
-    /// `llhttp_finish`.
-    fn finish(&mut self) {
-        let _finished = llhttp::finish(&mut self.spans());
     }
 
     /// `swoole_llhttp_parser_execute`: how many bytes parsed; a pause resumes.
@@ -454,7 +448,6 @@ impl Client {
             compression_error: Cell::new(false),
             decoder: Cell::default(),
             connection_close: Cell::new(false),
-            completed: Cell::new(false),
             event_stream: Cell::new(false),
             in_callback: Cell::new(false),
             parser: Cell::new(Some(Parser::new(llhttp::Kind::Response))),
@@ -998,7 +991,6 @@ impl Client {
         let Some(socket) = self.co() else {
             return false;
         };
-        let mut total = 0_usize;
         let mut header_completed = false;
         let mut header_offset = 0_usize;
         parser.reset();
@@ -1013,22 +1005,21 @@ impl Client {
             timeout
         };
         let mut controller = socket.read_timeout(timeout);
-        let mut success = false;
-        loop {
+        let success = loop {
             if controller.timed_out(swoole_rs_corebase::reactor::TimeoutKind::READ) {
-                break;
+                break false;
             }
             let received = socket.recv_input(input);
             let (length, size) = (input.len(), input.size());
             let Some(mut count) = received.filter(|&n| n > 0) else {
                 if received == Some(0) {
                     socket.set_err(libc::ECONNRESET);
-                    if total > 0 && hooks.parser.needs_eof() {
-                        hooks.finish();
-                        success = self.completed.get();
-                    }
+                    break match hooks.spans().end_of_input() {
+                        EndOfInput::Complete | EndOfInput::CompleteAtEof => true,
+                        EndOfInput::Truncated => false,
+                    };
                 }
-                break;
+                break false;
             };
             if !header_completed {
                 let unparsed = input.view().get(header_offset..).unwrap_or_default();
@@ -1036,7 +1027,7 @@ impl Client {
                 if !ended {
                     if length == size {
                         socket.set_err(INVALID_PROTOCOL);
-                        break;
+                        break false;
                     }
                     header_offset = length.saturating_sub(4);
                     continue;
@@ -1045,7 +1036,6 @@ impl Client {
                 header_offset = 0;
                 count = length;
             }
-            total += count;
             let parsed = hooks.parse(input.view());
             self.status.set(hooks.parser.status_code);
             if self.bailout.get() {
@@ -1055,16 +1045,21 @@ impl Client {
                 .with_net(|net| net.read(|record| record.output.close_wait))
                 .unwrap_or(false)
             {
-                break;
+                break false;
             }
             if hooks.parser.error != llhttp::HPE_OK {
                 socket.set_err(INVALID_PROTOCOL);
-                break;
+                break false;
             }
-            if self.event_stream.get() && hooks.parser.needs_eof() {
-                hooks.finish();
-            }
-            if self.completed.get() {
+            let complete = if self.event_stream.get() && hooks.parser.needs_eof() {
+                match hooks.spans().end_of_input() {
+                    EndOfInput::Complete | EndOfInput::CompleteAtEof => true,
+                    EndOfInput::Truncated => false,
+                }
+            } else {
+                hooks.parser.message_complete()
+            };
+            if complete {
                 if hooks.parser.upgrade && count > parsed + WEBSOCKET_HEADER {
                     // Keep the bytes past the handshake (`reduce`).
                     let parsed = i64::try_from(parsed).unwrap_or(i64::MAX);
@@ -1074,11 +1069,10 @@ impl Client {
                         buffer.append(input.view());
                     });
                 }
-                success = true;
-                break;
+                break true;
             }
             input.clear();
-        }
+        };
         drop(controller);
         if !success {
             let code = socket_error_properties(self.props(), socket);
@@ -1257,7 +1251,6 @@ impl Client {
 
     fn reset(&self) {
         self.wait_response.set(false);
-        self.completed.set(false);
         self.event_stream.set(false);
         self.compress.set(Compress::None);
         self.compression_error.set(false);
@@ -1580,7 +1573,6 @@ fn write_download(client: &Client, body: &[u8]) -> bool {
 
 fn on_message_complete(hooks: &mut Hooks) -> Flow {
     let client = hooks.client;
-    client.completed.set(true);
     if hooks.parser.upgrade && !client.websocket.get() {
         hooks.parser.upgrade = false;
         return Flow::Pause;
