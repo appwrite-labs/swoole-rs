@@ -121,9 +121,6 @@ int swr_zend_coroutine_print_trace(zval *backtrace);
 /* fiber->status = status, as the fiber observers read it. */
 void swr_zend_coroutine_fiber_status(zend_fiber_context *fiber, zend_fiber_status status);
 
-/* A new object of the exception class `ce`, its properties initialised and no
- * constructor run (zend_objects_new, object_properties_init). */
-zend_object *swr_zend_coroutine_exception(zend_class_entry *ce);
 /* Set an exception's file and line from the current frame, as
  * zend::object_set(ZSTR_KNOWN(ZEND_STR_FILE/LINE)) does. */
 void swr_zend_coroutine_locate(zend_object *exception);

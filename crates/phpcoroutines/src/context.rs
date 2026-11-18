@@ -84,9 +84,11 @@ unsafe extern "C" {
     /// The VM stack bytes in use down the suspended context's saved stack
     /// chain, or the running one's for none.
     safe fn swr_zend_coroutine_stack_usage(vm: Option<Suspended>) -> usize;
-    /// A new object of `class`, its properties initialised and no constructor
+    /// A new object of `class`, with no constructor
     /// (nor `create_object`) run: Zend's allocator never returns null.
-    safe fn swr_zend_coroutine_exception(class: ExceptionClass) -> Exception;
+    safe fn zend_objects_new(class: ExceptionClass) -> Exception;
+    /// Populate a fresh object of this class with its declared property defaults.
+    safe fn object_properties_init(object: Lent<'_>, class: ExceptionClass);
     /// The exception's file and line, from the frame Zend runs.
     safe fn swr_zend_coroutine_locate(exception: Lent<'_>);
     /// Hands `exception` to Zend as the running frame's pending exception.
@@ -154,7 +156,9 @@ struct Lent<'a>(
 impl Exception {
     /// A new object of `class`, with no constructor run.
     pub(crate) fn new(class: ExceptionClass) -> Self {
-        swr_zend_coroutine_exception(class)
+        let exception = zend_objects_new(class);
+        object_properties_init(exception.lend(), class);
+        exception
     }
 
     /// The object, whose reference passes to what keeps the pointer.
