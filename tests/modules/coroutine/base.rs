@@ -432,16 +432,29 @@ fn get_peak_num() {
 }
 
 fn get_elapsed() {
-    let elapsed_time = Cell::new(0);
-    create(|| {
+    use swoole_rs_corebase::coroutine::{current_execute_time, elapsed, steady_usec};
+
+    assert_eq!(elapsed(0), -1);
+    assert_eq!(current_execute_time(), -1);
+    let cid = create(|| {
         let co = View::current();
+        let start = co.get_init_msec();
         // SAFETY: usleep(3).
         unsafe { usleep(2000) };
-        // Coroutine::get_elapsed(cid).
-        let co = View::by_cid(co.get_cid());
-        elapsed_time.set(absolute_msec() - co.get_init_msec());
+        for cid in [0, co.get_cid()] {
+            let earliest = absolute_msec() - start;
+            let measured = elapsed(cid);
+            let latest = absolute_msec() - start;
+            assert!((earliest..=latest).contains(&measured));
+            assert!(measured >= 2);
+        }
+        assert_eq!(elapsed(c_long::MAX), -1);
+        let earliest = co.co().execute_usec(steady_usec());
+        let measured = current_execute_time();
+        let latest = co.co().execute_usec(steady_usec());
+        assert!((earliest..=latest).contains(&measured));
     });
-    assert!(elapsed_time.get() >= 2);
+    assert_eq!(elapsed(cid), -1);
 }
 
 fn run() {
