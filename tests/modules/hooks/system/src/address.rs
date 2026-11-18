@@ -34,7 +34,6 @@ const TEST_HOST: &str = "127.0.0.1";
 const TEST_LOG_FILE: &str = "/tmp/swoole.log";
 
 unsafe extern "C-unwind" {
-    fn swr_v1_clients_address_verify(family: c_int, host: *const c_char) -> bool;
     fn swr_v1_core_set_last_error(code: c_int);
 }
 
@@ -133,11 +132,6 @@ impl Address {
         // SAFETY: the record is crates/corebase's `SocketAddress`.
         address::is_empty(unsafe { &*std::ptr::from_ref(self).cast() })
     }
-}
-
-fn verify_ip(family: c_int, host: &CStr) -> bool {
-    // SAFETY: a NUL-terminated host.
-    unsafe { swr_v1_clients_address_verify(family, host.as_ptr()) }
 }
 
 /// `CStr` view of a returned address string.
@@ -295,7 +289,10 @@ fn record() {
     assert_eq!(text(scratch), c"127.0.0.1");
     assert_eq!(v6.get_addr(), scratch);
     assert_eq!(text(scratch), c"::1");
-    assert!(verify_ip(AF_INET, c"127.0.0.1"));
+    assert!(address::swr_v1_clients_address_verify(
+        AF_INET,
+        c"127.0.0.1".into()
+    ));
     // SAFETY: the scratch holds at least the four address bytes verify_ip wrote.
     assert_eq!(
         unsafe { std::slice::from_raw_parts(scratch.cast::<u8>(), 4) },
@@ -306,7 +303,10 @@ fn record() {
     let v6_copy = v6.clone();
     std::thread::spawn(move || {
         assert_ne!(v6_copy.get_addr() as usize, other);
-        assert!(verify_ip(AF_INET6, c"fe80::1"));
+        assert!(address::swr_v1_clients_address_verify(
+            AF_INET6,
+            c"fe80::1".into()
+        ));
     })
     .join()
     .unwrap();
