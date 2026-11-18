@@ -1,5 +1,5 @@
 //! PostgreSQL statement fetching and column metadata.
-use crate::driver::{Handle, Res};
+use crate::{Res, driver::Handle};
 use pq_sys::Oid;
 use std::{
     cell::Cell,

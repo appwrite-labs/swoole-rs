@@ -12,13 +12,13 @@
 //! down to PHP's. So no frame here holds a value with a destructor across a call
 //! that reads them (the `swoole_pgsql_*` calls and `PQconsumeInput`).
 use crate::{
-    Conn, OwnedConn, PQclear, PQstatus, Params, PgResult, Value as Param, swoole_pgsql_finish,
+    Conn, OwnedConn, PQclear, PQresultStatus, PQstatus, Params, PgResult, Res, Value as Param,
+    swoole_pgsql_finish,
 };
-use pq_sys::{ConnStatusType, ExecStatusType, PGTransactionStatusType, PGresult};
+use pq_sys::{ConnStatusType, ExecStatusType, PGTransactionStatusType};
 use std::{
     cell::Cell,
     ffi::{CStr, CString, c_int, c_void},
-    marker::PhantomData,
     ptr::{self, NonNull},
 };
 use swoole_rs_corebase::{
@@ -77,17 +77,6 @@ impl Drop for Handle {
     }
 }
 
-/// A result libpq returned, borrowed from its owner.
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub(crate) struct Res<'a>(NonNull<PGresult>, PhantomData<&'a PgResult>);
-
-impl PgResult {
-    fn get(&self) -> Res<'_> {
-        Res(self.0, PhantomData)
-    }
-}
-
 /// A buffer libpq allocated, NUL-terminated, until `PQfreemem` takes it.
 #[repr(transparent)]
 struct Escaped(Text<'static>);
@@ -104,7 +93,6 @@ unsafe extern "C" {
     safe fn PQnfields(res: Res<'_>) -> c_int;
     safe fn PQntuples(res: Res<'_>) -> c_int;
     safe fn PQgetisnull(res: Res<'_>, row: c_int, column: c_int) -> c_int;
-    safe fn PQresultStatus(res: Res<'_>) -> ExecStatusType;
     /// A field of an error result, live as long as the result.
     safe fn PQresultErrorField<'a>(res: Res<'a>, field: c_int) -> Option<Text<'a>>;
     safe fn PQcmdTuples<'a>(res: Res<'a>) -> Text<'a>;
