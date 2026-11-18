@@ -11,6 +11,8 @@
 //! whenever it reads the server's messages; a bailout there jumps over every frame
 //! down to PHP's. So no frame here holds a value with a destructor across a call
 //! that reads them (the `swoole_pgsql_*` calls and `PQconsumeInput`).
+mod copy;
+
 use crate::{
     Conn, OwnedConn, PQclear, PQresultStatus, PQstatus, Params, PgResult, Res, Value as Param,
     swoole_pgsql_finish,
@@ -99,7 +101,6 @@ unsafe extern "C" {
     /// A text value, live as long as the result; none out of range.
     safe fn PQgetvalue<'a>(res: Res<'a>, row: c_int, column: c_int) -> Option<Text<'a>>;
     safe fn PQtransactionStatus(conn: Conn) -> PGTransactionStatusType;
-    safe fn PQgetCopyData(conn: Conn, buffer: &mut Option<Escaped>, asynchronous: c_int) -> c_int;
     safe fn PQputCopyData(conn: Conn, data: In<'_, u8>, length: Count<'_, c_int>) -> c_int;
     safe fn PQputCopyEnd(conn: Conn, error: Option<Text<'_>>) -> c_int;
     safe fn lo_creat(conn: Conn, mode: c_int) -> pq_sys::Oid;
@@ -818,8 +819,7 @@ pub extern "C" fn pdo_pgsql_send_copy_data(
 }
 
 /// Clear pending results before COPY starts or after COPY TO has sent its last row.
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_drain_copy_results(handle: &Handle) {
+fn drain_copy_results(handle: &Handle) {
     while let Some(result) = crate::PQgetResult(handle.server) {
         PQclear(result);
     }
@@ -859,10 +859,7 @@ fn copy_query(
     sql.into_zstring()
 }
 
-swoole_rs_zend::exports! {
-/// Drain earlier replies and begin COPY with the driver's SQL and option defaults.
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_start_copy(
+fn start_copy(
     dbh: &Dbh,
     table: Text<'_>,
     fields: Option<Text<'_>>,
@@ -870,8 +867,13 @@ pub extern "C" fn pdo_pgsql_start_copy(
     null_marker: Option<Text<'_>>,
     direction: ExecStatusType,
 ) -> bool {
-    let Some(handle) = handle(dbh) else { return false };
-    pdo_pgsql_drain_copy_results(handle);
+    let Some(handle) = handle(dbh) else {
+        return false;
+    };
+    if let Err(bailout) = contain_with(|| drain_copy_results(handle)) {
+        bailout.defer();
+        return false;
+    }
     let query = copy_query(table, fields, delimiter, null_marker, direction);
     let mut result = None;
     if let Err(bailout) = contain_with(|| result = handle.exec(query.c_str())) {
@@ -888,42 +890,16 @@ pub extern "C" fn pdo_pgsql_start_copy(
     }
     started
 }
-}
-
-/// Return the next libpq-owned COPY row to the Zend stream or array adapter.
-/// A successful read with no row marks the end of the COPY stream.
-#[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_read_copy_row(
-    dbh: &Dbh,
-    row: &mut Option<Escaped>,
-    length: &mut usize,
-) -> bool {
-    let Some(handle) = handle(dbh) else {
-        return false;
-    };
-    let count = PQgetCopyData(handle.server, row, 0);
-    if count > 0 {
-        *length = count.cast_unsigned() as usize;
-        return true;
-    }
-    if count == -1 {
-        return true;
-    }
-    pgsql_fatal_error(dbh, None);
-    false
-}
 
 /// Roll back an incomplete COPY when a PHP row producer stops with an error.
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_abort_copy_in(handle: &Handle) {
+fn abort_copy_in(handle: &Handle) {
     if PQputCopyEnd(handle.server, Some(c"client aborted COPY".into())) == 1 {
-        pdo_pgsql_drain_copy_results(handle);
+        drain_copy_results(handle);
     }
 }
 
 /// Finish COPY FROM, consuming every final result and preserving server SQLSTATEs.
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_end_copy_in(dbh: &Dbh) -> bool {
+fn end_copy_in(dbh: &Dbh) -> bool {
     let Some(handle) = handle(dbh) else {
         return false;
     };

@@ -22,14 +22,9 @@
 #include "ext/pdo/php_pdo_driver.h"
 #include <sys/uio.h>
 
-bool pdo_pgsql_end_copy_in(pdo_dbh_t *dbh);
-
 typedef struct pdo_pgsql_db_handle pdo_pgsql_db_handle;
 
 bool pdo_pgsql_send_copy_data(pdo_pgsql_db_handle *handle, struct iovec bytes, bool array_row);
-void pdo_pgsql_drain_copy_results(pdo_pgsql_db_handle *handle);
-bool pdo_pgsql_start_copy(pdo_dbh_t *dbh, const char *table, const char *fields, unsigned char delimiter,
-                          const char *null_marker, ExecStatusType direction);
 
 typedef struct pdo_pgsql_stmt {
     pdo_pgsql_db_handle *H;
