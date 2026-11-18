@@ -129,7 +129,6 @@ thread_local! {
 
 /// `swoole_sqlite_set_blocking`: the runtime hook flag. Turning blocking off
 /// needs a library built thread-safe; otherwise it warns and stays blocking.
-#[unsafe(no_mangle)]
 pub extern "C" fn swoole_sqlite_set_blocking(blocking: bool) {
     if !blocking && sqlite3_threadsafe() == 0 {
         swoole_rs_corebase::log::warning(

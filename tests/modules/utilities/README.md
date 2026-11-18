@@ -84,16 +84,19 @@ destinations) and `log.open_fail` (no assertion) are unqualified.
 `swoole::BitMap` had no user in the hybrid, so it left `swoole_util.h` with its
 Rust storage and there is no bitmap left to test.
 
-## Loaded PHP consumers
+## Hash GoogleTests
 
-`hash_originals.py` (`utilities-hash-originals`) builds upstream's unchanged
-`hash.php` and `hash.jenkins` GoogleTests into a private PHP extension once per
-engine, each against its own SDK (the pin's `include/` with the upstream build's
-`config.h`, or the Cargo build's), and runs them with real GoogleTest and strict
-XML/status/exit checks. It takes `--source`, `--engine native=DSO --engine
-selected=DSO`, `--build-manifest` (`target/ext/build-manifest.json`, which must
-name the selected DSO) and `--archive` (whose tree supplies the selected SDK
-headers).
+Cargo runs the four cases from `core-tests/src/core/hash.cpp` in
+`tests/modules/utilities/hash.rs` against the Rust functions.
+
+| Upstream case | Rust test |
+| --- | --- |
+| `hash.php` | `php` |
+| `hash.jenkins` | `jenkins` |
+| `hash.austin` | `austin` |
+| `hash.crc32` | `crc32` |
+
+## Loaded PHP consumers
 
 `php_logger.py --engine ... [--build-manifest target/ext/build-manifest.json]`
 (`utilities-php-logger`): PHP Logger thresholds, rotation/reopen, date

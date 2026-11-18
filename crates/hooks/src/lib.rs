@@ -28,6 +28,7 @@ pub mod hooked;
 pub mod iouring;
 pub mod lifecycle;
 pub mod packet;
+pub mod putenv;
 pub use swoole_rs_corebase::reactor::socket_poll as poll;
 pub mod reactor_handlers;
 pub mod resolve;

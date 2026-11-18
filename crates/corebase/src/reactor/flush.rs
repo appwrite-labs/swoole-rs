@@ -89,7 +89,7 @@ pub fn swr_v1_reactor_drain(socket: Socket<'_>, ops: &impl FlushEffects) {
 mod tests {
     use super::*;
     use crate::buffer::cpp::{
-        CppBuffer, new_buffer, swr_cpp_buffer_pop, swr_cpp_buffer_typed_close,
+        OutputQueue, new_buffer, swr_cpp_buffer_pop, swr_cpp_buffer_typed_close,
     };
     use crate::reactor::{SocketOutput, SocketRecord};
     use std::cell::RefCell;
@@ -97,7 +97,7 @@ mod tests {
 
     /// One entry of each kind queued on `buffer`: a byte of data, an empty sendfile
     /// request or a close marker.
-    fn queue(buffer: &CppBuffer, kinds: &[EntryKind]) {
+    fn queue(buffer: &OutputQueue, kinds: &[EntryKind]) {
         for &kind in kinds {
             match kind {
                 EntryKind::Close => swr_cpp_buffer_typed_close(buffer),

@@ -20,7 +20,7 @@ use std::ptr;
 /// that `allocator` (then set) made, whose first `length` are initialized.
 /// `offset` holds anything (a cursor, or a caller's flags), so a
 /// method that indexes by it bounds it first.
-pub struct CppString {
+pub struct StringBuffer {
     length: usize,
     size: usize,
     offset: i64,
@@ -30,7 +30,7 @@ pub struct CppString {
 }
 
 /// A Rust-owned string allocation, disposed when it leaves scope.
-pub struct OwnedString(CppString);
+pub struct OwnedString(StringBuffer);
 
 impl OwnedString {
     /// Copy a payload into an exactly sized allocation from the receiver's allocator.
@@ -51,11 +51,11 @@ impl OwnedString {
     pub fn try_alloc_exact(size: usize, allocator: TrustedAllocator) -> Option<Self> {
         let data = allocator.allocate(size);
         (!data.is_null()).then(|| {
-            Self(CppString {
+            Self(StringBuffer {
                 str: data.cast(),
                 size,
                 allocator: Some(allocator),
-                ..CppString::EMPTY
+                ..StringBuffer::EMPTY
             })
         })
     }
@@ -63,19 +63,19 @@ impl OwnedString {
 
 impl Default for OwnedString {
     fn default() -> Self {
-        Self(CppString::EMPTY)
+        Self(StringBuffer::EMPTY)
     }
 }
 
 impl core::ops::Deref for OwnedString {
-    type Target = CppString;
-    fn deref(&self) -> &CppString {
+    type Target = StringBuffer;
+    fn deref(&self) -> &StringBuffer {
         &self.0
     }
 }
 
 impl core::ops::DerefMut for OwnedString {
-    fn deref_mut(&mut self) -> &mut CppString {
+    fn deref_mut(&mut self) -> &mut StringBuffer {
         &mut self.0
     }
 }
@@ -149,7 +149,7 @@ fn checked(pointer: *mut c_void) -> *mut u8 {
     pointer.cast()
 }
 
-impl CppString {
+impl StringBuffer {
     pub const EMPTY: Self = Self {
         length: 0,
         size: 0,
@@ -628,36 +628,39 @@ fn pointer(at: *const u8) -> String {
 
 /// `String(size_t, const Allocator *)`.
 pub fn swr_string_new(
-    this: &mut MaybeUninit<CppString>,
+    this: &mut MaybeUninit<StringBuffer>,
     size: usize,
     with: Option<TrustedAllocator>,
-) -> *mut CppString {
-    let string = this.write(CppString::EMPTY);
+) -> *mut StringBuffer {
+    let string = this.write(StringBuffer::EMPTY);
     string.alloc(size, with);
     string
 }
 
 /// `String(const String &)`.
-pub fn swr_string_copy(this: &mut MaybeUninit<CppString>, source: &CppString) -> *mut CppString {
-    let string = this.write(CppString::EMPTY);
+pub fn swr_string_copy(
+    this: &mut MaybeUninit<StringBuffer>,
+    source: &StringBuffer,
+) -> *mut StringBuffer {
+    let string = this.write(StringBuffer::EMPTY);
     string.copy_from(source);
     string
 }
 
 /// `String(String &&)`.
 pub fn swr_string_move(
-    this: &mut MaybeUninit<CppString>,
-    source: &mut CppString,
-) -> *mut CppString {
-    let string = this.write(CppString::EMPTY);
+    this: &mut MaybeUninit<StringBuffer>,
+    source: &mut StringBuffer,
+) -> *mut StringBuffer {
+    let string = this.write(StringBuffer::EMPTY);
     string.move_from(source);
     string
 }
 
 /// A copied substring, or an empty string when the range is outside the input.
 #[must_use]
-pub fn swr_string_substr(this: &CppString, offset: usize, length: usize) -> CppString {
-    let mut result = CppString::EMPTY;
+pub fn swr_string_substr(this: &StringBuffer, offset: usize, length: usize) -> StringBuffer {
+    let mut result = StringBuffer::EMPTY;
     // Checked: upstream's `offset + len > length` wraps, and this fn is safe.
     if let Some(end) = offset.checked_add(length).filter(|&end| end <= this.length) {
         result.alloc(length, None);
@@ -667,27 +670,27 @@ pub fn swr_string_substr(this: &CppString, offset: usize, length: usize) -> CppS
 }
 
 /// `append(int)`: its decimal text.
-pub fn swr_string_append_int(this: &mut CppString, value: c_int) {
+pub fn swr_string_append_int(this: &mut StringBuffer, value: c_int) {
     let mut buffer = itoa::Buffer::new();
     this.append(buffer.format(value).as_bytes());
 }
 
-pub fn swr_string_write_string(this: &mut CppString, offset: i64, source: &CppString) {
+pub fn swr_string_write_string(this: &mut StringBuffer, offset: i64, source: &StringBuffer) {
     this.write(offset, source.view());
 }
 
-/// `new String(data.data(), data.size())`, owned: [`CppString::dispose`] frees its bytes.
+/// `new String(data.data(), data.size())`, owned: [`StringBuffer::dispose`] frees its bytes.
 #[must_use]
-pub fn boxed_string(data: &[u8]) -> Box<CppString> {
+pub fn boxed_string(data: &[u8]) -> Box<StringBuffer> {
     // `EMPTY` is all zeros, and LLVM turns a fresh allocation stored with zeros into
     // `calloc`, which costs more per string than `malloc`; opaque, it stays `malloc`.
-    let mut string = Box::new(core::hint::black_box(CppString::EMPTY));
+    let mut string = Box::new(core::hint::black_box(StringBuffer::EMPTY));
     fill(&mut string, data);
     string
 }
 
 /// An empty `string`'s NUL-terminated copy of `data`.
-fn fill<'a>(string: &'a mut CppString, data: &[u8]) -> &'a mut CppString {
+fn fill<'a>(string: &'a mut StringBuffer, data: &[u8]) -> &'a mut StringBuffer {
     let length = data.len();
     string.alloc(length.wrapping_add(1), None);
     // The allocation holds `length + 1` bytes.
@@ -703,12 +706,12 @@ fn fill<'a>(string: &'a mut CppString, data: &[u8]) -> &'a mut CppString {
     string
 }
 
-/// `new String(size, with)`, owned: [`CppString::dispose`] frees its bytes.
+/// `new String(size, with)`, owned: [`StringBuffer::dispose`] frees its bytes.
 #[must_use]
-pub fn boxed_sized_string(size: usize, with: Option<TrustedAllocator>) -> Box<CppString> {
+pub fn boxed_sized_string(size: usize, with: Option<TrustedAllocator>) -> Box<StringBuffer> {
     // `EMPTY` is all zeros, and LLVM turns a fresh allocation stored with zeros into
     // `calloc`, which costs more per string than `malloc`; opaque, it stays `malloc`.
-    let mut string = Box::new(core::hint::black_box(CppString::EMPTY));
+    let mut string = Box::new(core::hint::black_box(StringBuffer::EMPTY));
     string.alloc(size, with);
     string
 }
@@ -716,17 +719,17 @@ pub fn boxed_sized_string(size: usize, with: Option<TrustedAllocator>) -> Box<Cp
 /// `f` over this thread's String (`sw_tg_buffer()`), lent to `f` alone. A thread
 /// `swoole_thread_init` didn't set up has none, which aborts.
 #[inline]
-pub fn with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
+pub fn with_thread_buffer<R>(f: impl FnOnce(&mut StringBuffer) -> R) -> R {
     try_with_thread_buffer(f).unwrap_or_else(|| crate::fatal("a thread without its buffer"))
 }
 
 /// [`with_thread_buffer`], or `None` on a thread without a buffer.
 #[inline]
-pub fn try_with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> Option<R> {
+pub fn try_with_thread_buffer<R>(f: impl FnOnce(&mut StringBuffer) -> R) -> Option<R> {
     crate::lend_thread_buffer(|| {
         // SAFETY: null, or the calling thread's live buffer, which
         // `swoole_thread_init` set up, lent to `f` alone.
-        unsafe { crate::thread_buffer().cast::<CppString>().as_mut() }.map(f)
+        unsafe { crate::thread_buffer().cast::<StringBuffer>().as_mut() }.map(f)
     })
 }
 
@@ -734,9 +737,9 @@ pub fn try_with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> Option<
 mod tests {
     use super::*;
 
-    pub(super) fn new(text: &[u8]) -> CppString {
+    pub(super) fn new(text: &[u8]) -> StringBuffer {
         let mut s = MaybeUninit::uninit();
-        fill(s.write(CppString::EMPTY), text);
+        fill(s.write(StringBuffer::EMPTY), text);
         unsafe { s.assume_init() }
     }
 
@@ -827,7 +830,7 @@ mod tests {
     /// `reserve` keeps the content and `dispose` frees it.
     #[test]
     fn pop_on_an_empty_string_records_its_allocator() {
-        let mut s = CppString::EMPTY;
+        let mut s = StringBuffer::EMPTY;
         assert!(s.pop(8).is_null(), "no old buffer to hand back");
         s.append(b"123");
         s.reserve(64);
@@ -846,10 +849,10 @@ mod tests {
             swr_string_substr(&s, usize::MAX, 2).str.is_null(),
             "no wrap past the end"
         );
-        let mut moved = CppString::EMPTY;
+        let mut moved = StringBuffer::EMPTY;
         moved.move_from(&mut sub);
         assert!(sub.str.is_null() && moved.view() == b"world");
-        let mut copied = CppString::EMPTY;
+        let mut copied = StringBuffer::EMPTY;
         copied.copy_from(&moved);
         assert!(strnstr(copied.view(), b"orl").is_some());
         assert!(copied.view().ends_with(b"ld"));
@@ -860,7 +863,7 @@ mod tests {
 
     #[test]
     fn view_mut_writes_the_content_alone() {
-        let mut empty = CppString::EMPTY;
+        let mut empty = StringBuffer::EMPTY;
         assert_eq!(empty.view_mut(), b"");
         let mut s = boxed_string(b"abc");
         s.view_mut().make_ascii_uppercase();

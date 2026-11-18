@@ -56,7 +56,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use swoole_rs_corebase::WebSocketStatus;
-use swoole_rs_corebase::buffer::string::{CppString, OwnedString};
+use swoole_rs_corebase::buffer::string::{OwnedString, StringBuffer};
 use swoole_rs_ffi::swoole_init;
 use swoole_rs_ports::frame_api::Frame;
 use swoole_rs_ports::http_routes::exports as http;
@@ -130,7 +130,7 @@ const HTTP2_SETTING_FRAME: [u8; 45] = [
 ///
 /// # Safety
 /// `buffer` is a live String, exclusively borrowed for this call.
-unsafe fn ws_encode(buffer: *mut CppString, data: &[u8], opcode: u8, flags: u8) -> bool {
+unsafe fn ws_encode(buffer: *mut StringBuffer, data: &[u8], opcode: u8, flags: u8) -> bool {
     // SAFETY: per the caller.
     swoole_rs_ports::frame_api::encode(unsafe { &mut *buffer }, data, opcode, flags)
 }
@@ -331,7 +331,7 @@ fn websocket_accept(key: &str) -> String {
 }
 
 /// `sw_tg_buffer()`, cleared.
-fn tg_buffer() -> *mut CppString {
+fn tg_buffer() -> *mut StringBuffer {
     let buffer = swr_case_tg_buffer();
     // SAFETY: as String::clear.
     unsafe { (*buffer).clear() };
@@ -592,7 +592,7 @@ fn string(size: usize) -> OwnedString {
     string
 }
 
-fn value(string: &CppString) -> &[u8] {
+fn value(string: &StringBuffer) -> &[u8] {
     string.view()
 }
 

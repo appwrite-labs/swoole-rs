@@ -129,9 +129,6 @@ typedef unsigned char uchar;
 extern "C" char *swr_v1_error_buffer(void);
 #define sw_error (swr_v1_error_buffer())
 
-// tests/modules/utilities/hash_originals.py declares these from here for the pinned hash tests.
-uint64_t swoole_random_int();
-size_t swoole_random_bytes(char *buf, size_t size);
 
 pid_t swoole_fork(int flags);
 

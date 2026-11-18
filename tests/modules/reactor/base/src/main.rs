@@ -78,7 +78,7 @@ type Sock = *mut SocketRecord;
 
 /// `swoole::String`.
 #[repr(C)]
-struct CppString {
+struct StringBuffer {
     length: usize,
     size: usize,
     offset: i64,
@@ -583,7 +583,7 @@ unsafe fn writev() {
 fn read_2m(reactor: Running<'_>, event: &mut Event) -> c_int {
     // SAFETY: the event's socket and the thread buffer, live during dispatch.
     unsafe {
-        let tg_buf = swoole_rs_ffi::thread_buffer().cast::<CppString>();
+        let tg_buf = swoole_rs_ffi::thread_buffer().cast::<StringBuffer>();
         let socket = ev_socket(event);
         let n = read(
             (*socket).fields.fd,
@@ -596,10 +596,10 @@ fn read_2m(reactor: Running<'_>, event: &mut Event) -> c_int {
         // `String::grow`: count the bytes read, doubling a buffer they fill.
         (*tg_buf).length += n as usize;
         if (*tg_buf).length == (*tg_buf).size {
-            (*tg_buf.cast::<swoole_rs_ffi::string::CppString>()).reserve((*tg_buf).size * 2);
+            (*tg_buf.cast::<swoole_rs_ffi::string::StringBuffer>()).reserve((*tg_buf).size * 2);
         }
         if (*tg_buf).length == DATA_SIZE {
-            (*tg_buf.cast::<swoole_rs_ffi::string::CppString>()).append(b"\0");
+            (*tg_buf.cast::<swoole_rs_ffi::string::StringBuffer>()).append(b"\0");
             del(reactor, socket);
         }
     }
@@ -626,7 +626,7 @@ unsafe fn write_2m() {
 
         let data = random_data();
 
-        let tg_buf = swoole_rs_ffi::thread_buffer().cast::<CppString>();
+        let tg_buf = swoole_rs_ffi::thread_buffer().cast::<StringBuffer>();
         (*tg_buf).length = 0;
         (*tg_buf).offset = 0;
 
@@ -661,7 +661,7 @@ unsafe fn write_2m() {
         assert!(!event_api::swoole_event_is_available());
         // ASSERT_STREQ: the two as C strings.
         assert_eq!(
-            CStr::from_ptr((*swoole_rs_ffi::thread_buffer().cast::<CppString>()).str),
+            CStr::from_ptr((*swoole_rs_ffi::thread_buffer().cast::<StringBuffer>()).str),
             CStr::from_bytes_until_nul(&data).unwrap()
         );
         pair_delete(p);

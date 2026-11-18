@@ -69,7 +69,6 @@
  "timer-bailout": 6,
  "timer-fork-active": 1,
  "tls-constants": 2,
- "utilities-hash-originals": 6,
  "utilities-php-logger": 8,
  "websocket-close": 1,
  "websocket-differential": 1,

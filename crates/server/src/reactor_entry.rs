@@ -200,7 +200,7 @@ pub fn dispatch_buffer(
     server: view::Server<'_>,
     conn: crate::Connection<'_>,
     mut head: swoole_rs_corebase::DataHead,
-    buffer: &mut swoole_rs_corebase::buffer::string::CppString,
+    buffer: &mut swoole_rs_corebase::buffer::string::StringBuffer,
 ) -> bool {
     if server.config().mode_ != crate::Mode::Base {
         return dispatch_data(server, conn, SendData::new(head, buffer.view()), None);
@@ -213,7 +213,7 @@ fn dispatch_input(
     server: view::Server<'_>,
     conn: crate::Connection<'_>,
     data: SendData<'_>,
-    buffer: Option<&mut swoole_rs_corebase::buffer::string::CppString>,
+    buffer: Option<&mut swoole_rs_corebase::buffer::string::StringBuffer>,
     port: Option<&crate::port_config::PortConfig>,
 ) -> bool {
     use core::sync::atomic::Ordering::SeqCst;

@@ -15,7 +15,7 @@ use swoole_rs_clients::{
     client::{self, Client, Owner},
 };
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::buffer::string::CppString;
+use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::reactor::Socket as Net;
 use swoole_rs_hooks::{co_socket::Co as Handle, socket_extra};
@@ -107,7 +107,7 @@ pub(crate) fn check_reactor() -> Result<(), Bailout> {
 /// buffer starting a new allocation. None, the buffer untouched, unless the
 /// Zend string allocator made it and it holds `length` bytes; none too when the
 /// new allocation fails.
-pub fn pop_string(buffer: &mut CppString, init_size: usize, length: usize) -> Option<ZString> {
+pub fn pop_string(buffer: &mut StringBuffer, init_size: usize, length: usize) -> Option<ZString> {
     let zend = swoole_rs_phpswoole::zend_string_allocator().get();
     let ours = buffer
         .allocator()
@@ -317,8 +317,10 @@ impl Co {
     pub(crate) fn recv_packet(self, timeout: f64, clear_empty: bool) -> Option<usize> {
         let retval = swoole_rs_hooks::packet::recv_packet(self.0, timeout);
         if retval == Some(0) && clear_empty && self.0.has_read_buffer() {
-            self.0
-                .with_buffer(false, swoole_rs_corebase::buffer::string::CppString::clear);
+            self.0.with_buffer(
+                false,
+                swoole_rs_corebase::buffer::string::StringBuffer::clear,
+            );
         }
         retval
     }

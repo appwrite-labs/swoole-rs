@@ -670,13 +670,7 @@ impl Default for SharedMutex {
 macro_rules! atomic_api {
     ($name:ident, $atomic:ty, $word:ty) => {
         /// `storage` is null or a live, aligned word that is only accessed atomically.
-        #[unsafe(no_mangle)]
-        pub extern "C" fn $name(
-            storage: Option<&$atomic>,
-            op: u32,
-            value: $word,
-            expected: $word,
-        ) -> $word {
+        pub fn $name(storage: Option<&$atomic>, op: u32, value: $word, expected: $word) -> $word {
             let Some(a) = storage else {
                 return 0;
             };

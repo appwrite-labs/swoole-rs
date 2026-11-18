@@ -91,9 +91,7 @@ the header; overflowing sizes return NULL.
 ## Upstream members
 
 `crates/corebase/src/memory/members.rs` holds upstream's memory members.
-`sw_shm_malloc` and `sw_shm_calloc` are under
-their upstream C++ symbols (`sw_shm_protect` is `Shm::protect`: nothing native called
-it). Upstream's `swoole_memory.h`
+`sw_shm_malloc` and `sw_shm_calloc` are Rust functions over shared mappings. Upstream's `swoole_memory.h`
 is deleted and no C++ is left over `GlobalMemory`: `members::GlobalMemory` is a Rust
 owner whose constructor returns upstream's throws as errors (-1
 `Exception(SW_ERROR_INVALID_PARAMS)`, -2 `std::bad_alloc`).

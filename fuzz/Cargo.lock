@@ -158,15 +158,10 @@ dependencies = [
  "memchr",
  "openssl-sys",
  "swoole-rs-base64",
- "swoole-rs-crc32",
  "swoole-rs-error",
  "swoole-rs-error-ffi",
  "swoole-rs-framing",
 ]
-
-[[package]]
-name = "swoole-rs-crc32"
-version = "0.1.0"
 
 [[package]]
 name = "swoole-rs-deflate"

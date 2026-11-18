@@ -16,7 +16,6 @@ halfclose = []
 [dependencies]
 memchr = "2.8.3"
 swoole-rs-base64 = { path = "../base64" }
-swoole-rs-crc32 = { path = "../crc32" }
 swoole-rs-error = { path = "../error" }
 swoole-rs-error-ffi = { path = "../error-ffi" }
 itoa = "1.0.18"
@@ -53,7 +52,12 @@ path = "../../tests/modules/locks/gate.rs"
 name = "locks_constructor"
 path = "../../tests/modules/locks/constructor.rs"
 
+[[test]]
+name = "hash_originals"
+path = "../../tests/modules/utilities/hash.rs"
+
 [dev-dependencies]
+swoole-rs-crc32 = { path = "../crc32" }
 swoole-rs-oracle = { path = "../oracle" }
 
 # The identifiers no C header exports, for tests/modules/corebase/constants.py.

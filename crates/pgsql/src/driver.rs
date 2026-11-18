@@ -128,10 +128,6 @@ unsafe extern "C" {
     /// `pgsqlSetNoticeCallback` set (PHP 8.4+; before, it does nothing). Only libpq
     /// calls it.
     fn pdo_pgsql_notice(dbh: &Dbh, message: Text<'_>);
-    /// `pgsql_handle_closer`: free the LOB streams' table and the notice callback,
-    /// then hand the handle to [`pdo_pgsql_free`]. It closes the streams first, which a
-    /// connection that failed has none of.
-    safe fn pdo_pgsql_handle_closer(dbh: &Dbh);
 }
 
 #[expect(
@@ -526,6 +522,13 @@ extern "C" fn pdo_pgsql_connect(
     }
     dbh.set_methods(&swoole_pdo_pgsql_methods);
     if !connected {
+        unsafe extern "C" {
+            /// `pgsql_handle_closer`: free the LOB streams' table and the notice
+            /// callback, then hand the handle to [`pdo_pgsql_free`], which frees what
+            /// [`handle`] lends. Declared here, its one caller, which holds no lent
+            /// handle; a connection that failed has no LOB streams to close.
+            safe fn pdo_pgsql_handle_closer(dbh: &Dbh);
+        }
         pdo_pgsql_handle_closer(dbh);
         return Connected::Failed;
     }

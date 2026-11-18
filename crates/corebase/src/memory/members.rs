@@ -393,19 +393,17 @@ fn map(size: usize, sharing: c_int) -> *mut c_void {
     memory.wrapping_byte_add(8)
 }
 
-upstream! {
-    "_Z13sw_shm_mallocm", "_Z13sw_shm_mallocm" =>
-    /// `void *sw_shm_malloc(size_t size)`: an anonymous shared mapping whose size heads it.
-    #[must_use]
-    pub extern "C" fn sw_shm_malloc(size: usize) -> *mut c_void {
-        map(size, libc::MAP_SHARED)
-    }
-    "_Z13sw_shm_callocmm", "_Z13sw_shm_callocmm" =>
-    /// `void *sw_shm_calloc(size_t num, size_t size)`: mappings start zeroed.
-    #[must_use]
-    pub extern "C" fn sw_shm_calloc(count: usize, size: usize) -> *mut c_void {
-        count.checked_mul(size).map_or(ptr::null_mut(), |size| sw_shm_malloc(size))
-    }
+/// `void *sw_shm_malloc(size_t size)`: an anonymous shared mapping whose size heads it.
+#[must_use]
+pub fn sw_shm_malloc(size: usize) -> *mut c_void {
+    map(size, libc::MAP_SHARED)
+}
+/// `void *sw_shm_calloc(size_t num, size_t size)`: mappings start zeroed.
+#[must_use]
+pub fn sw_shm_calloc(count: usize, size: usize) -> *mut c_void {
+    count
+        .checked_mul(size)
+        .map_or(ptr::null_mut(), sw_shm_malloc)
 }
 
 // ---------------------------------------------------------------- Table
