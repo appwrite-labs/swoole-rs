@@ -64,6 +64,29 @@ unsafe extern "C" {
     safe fn swr_zend_stream_context_options<'a>(context: StreamContext<'a>) -> Option<&'a Array>;
 }
 
+impl crate::Owned {
+    /// Close a socket's imported stream, leaving the resource in its slot on bailout.
+    /// An empty slot means the caller still owns the descriptor.
+    /// # Errors
+    /// The stream wrapper bailed out during close.
+    pub fn close_imported_stream(slot: &std::cell::Cell<Self>) -> Result<bool, Bailout> {
+        use swoole_rs_corebase::CellExt;
+        let Some(stream) =
+            slot.with_taken(|held| (held.kind() == IS_RESOURCE).then(|| held.stream()))
+        else {
+            return Ok(false);
+        };
+        // SAFETY: the restored slot owns the resource. No PHP runs between lookup
+        // and close, and the shim traps any bailout from closing the stream.
+        if !stream.is_null() && unsafe { crate::sys::swr_zend_try_stream_free(stream) } != 0 {
+            return Err(Bailout);
+        }
+        // The close invalidated this resource. Discard its slot without a destructor.
+        let _closed_resource = slot.take().into_zval();
+        Ok(true)
+    }
+}
+
 /// A `php_stream_context` that lives for `'a`. Rust never makes one: it is a
 /// parameter, or a return value, of this type on the C boundary, where Zend's
 /// non-null `php_stream_context *` (a factory's argument, a stream's context)

@@ -11,7 +11,7 @@ description = "PHP coroutines: each coroutine's PHP context and VM swap, activat
 php = ["dep:swoole-rs-error", "dep:libc", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php",
        "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php",
        "swoole-rs-corebase/upstream-symbols", "dep:swoole-rs-corebase", "dep:swoole-rs-hooks", "swoole-rs-hooks/upstream-symbols",
-       "dep:swoole-rs-server", "swoole-rs-server/upstream-symbols", "swoole-rs-corebase/upstream-symbols"]
+       "dep:swoole-rs-server", "swoole-rs-server/upstream-symbols"]
 # Co::stats() reports the io_uring engine (upstream's SW_USE_IOURING); crates/ffi's iouring.
 iouring = ["swoole-rs-hooks?/iouring", "swoole-rs-hooks?/upstream-symbols"]
 

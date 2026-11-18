@@ -1,8 +1,5 @@
-//! `Swoole\Coroutine\Socket` and its exception: registration, the socket
-//! constants, the object and its methods (`getOption`, `setOption` and `import`
-//! are in `socket_options`).
-//! Each method parses as upstream's ZPP block does, then makes one call into the
-//! C++ socket (`crate::native`).
+//! Registration and method handlers for `Swoole\Coroutine\Socket` and its exception.
+//! The `socket_options` module handles `getOption`, `setOption` and `import`.
 use crate::{
     constants,
     native::{self, Co, NewSocket, Transfer},
@@ -78,12 +75,6 @@ impl Data {
         self.socket.get().map(NewSocket::co)
     }
 
-    /// The imported stream (`php_stream_from_zval_no_verify`), or null when
-    /// the slot holds no stream resource.
-    fn stream(&self) -> *mut swoole_rs_zend::sys::php_stream {
-        self.stream.with_taken(|held| held.stream())
-    }
-
     /// Whether the object holds an imported stream.
     fn has_stream(&self) -> bool {
         self.stream.with_taken(|stream| stream.kind() != IS_UNDEF)
@@ -139,12 +130,6 @@ impl<'a> Sock<'a> {
     /// The slot takes `stream`, which it held none of.
     fn hold_stream(self, stream: Owned) {
         self.0.stream.set(stream);
-    }
-
-    /// The slot forgets its stream, which closed without releasing it.
-    fn forget_stream(self) {
-        #[expect(clippy::mem_forget, reason = "the stream closed without releasing it")]
-        std::mem::forget(self.0.stream.take());
     }
 }
 

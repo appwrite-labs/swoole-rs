@@ -7,7 +7,7 @@
 //! (`ResolverRequest`) as `network::gethostbyname`/`getaddrinfo` do; the
 //! lookup itself is crates/hooks' `resolve::name_resolver_lookup`.
 
-use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::ffi::{CStr, CString, c_int, c_void};
 use std::fs;
 
 use swoole_rs_clients::dns;
@@ -34,15 +34,10 @@ fn context_of(kind: c_int) -> Context {
     }
 }
 
-unsafe extern "C-unwind" {
-    fn swr_v1_clients_address_verify(family: c_int, host: *const c_char) -> bool;
-}
-
 /// `network::Address::verify_ip`.
 pub(super) fn verify_ip(family: c_int, ip: &str) -> bool {
     let ip = CString::new(ip).unwrap();
-    // SAFETY: a NUL-terminated address.
-    unsafe { swr_v1_clients_address_verify(family, ip.as_ptr()) }
+    swoole_rs_clients::address::swr_v1_clients_address_verify(family, ip.as_c_str().into())
 }
 
 fn lookup(domain: &CStr, family: c_int, timeout: f64) -> Vec<String> {

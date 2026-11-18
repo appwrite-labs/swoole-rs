@@ -100,6 +100,13 @@ impl Running<'_> {
         self.raw
     }
 
+    /// Whether this reactor stopped on a bailout, including during its destroy callbacks.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn bailed_out(self) -> bool {
+        self.with(|state| state.fields.bailout)
+    }
+
     /// The reactor's state: live while the handle is, and borrowed by no reference.
     #[cfg(unix)]
     pub(crate) fn state(self) -> *mut crate::reactor::ReactorState {

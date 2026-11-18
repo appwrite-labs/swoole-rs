@@ -396,7 +396,13 @@ impl OwnedSocket {
     /// while a reactor it can't reach still names it ends the process.
     #[must_use]
     pub fn into_box(self) -> Box<SocketRecord> {
-        leave_reactor(self.socket());
+        let socket = self.socket();
+        // A `read` or `edit` closure of the record's freed it: it would use the fields
+        // after the free.
+        if socket.borrows().load(Ordering::Relaxed) != 0 {
+            crate::fatal("a socket was freed inside a read or edit of it");
+        }
+        leave_reactor(socket);
         // SAFETY: the box `new` leaked, or the heap record `from_socket` took back; this
         // owner is its only one and goes here.
         unsafe { Box::from_raw(self.0.as_ptr()) }
@@ -444,6 +450,111 @@ impl OwnerCell {
     #[must_use]
     pub unsafe fn take(&self) -> Option<OwnedSocket> {
         self.0.take().map(OwnedSocket)
+    }
+}
+
+/// A heap record its holder owns on one thread and lends counted: a loan goes only to
+/// a closure, and a record released while a loan is out is freed when the last loan
+/// ends. A loan a Zend bailout skips leaves the count up, so the record leaks rather
+/// than being freed early; a loan held across a coroutine yield delays the free.
+#[derive(Default)]
+pub struct SocketLoans {
+    socket: Cell<Option<Heap<'static>>>,
+    /// The loans out, with [`PENDING`] set while `retired` holds any: the last loan's
+    /// end compares this one word.
+    loans: Cell<u32>,
+    /// Records released while lent, with how each is freed.
+    retired: Cell<Vec<Retired>>,
+}
+
+/// A record released while lent, and how it is freed once the loans end.
+type Retired = (OwnedSocket, fn(OwnedSocket));
+
+/// [`SocketLoans::loans`]' flag for released records waiting on the loans. Each loan is
+/// a frame on this thread's stack, so the count never reaches it.
+const PENDING: u32 = 1 << 31;
+
+impl SocketLoans {
+    /// Owns `owner` from here; the record it held is released with `free`.
+    pub fn put(&self, owner: OwnedSocket, free: fn(OwnedSocket)) {
+        if let Some(old) = self.socket.replace(Some(owner.leak())) {
+            self.retire(OwnedSocket(old), free);
+        }
+    }
+
+    /// Releases the record it holds with `free`, now or when the last loan ends:
+    /// whether it held one.
+    pub fn release(&self, free: fn(OwnedSocket)) -> bool {
+        self.socket
+            .take()
+            .map(|old| self.retire(OwnedSocket(old), free))
+            .is_some()
+    }
+
+    /// `f` over the record it holds, which stays live until `f` returns, even if `f`
+    /// releases it; `None` without one.
+    #[inline]
+    pub fn lend<T>(&self, f: impl FnOnce(Heap<'_>) -> T) -> Option<T> {
+        struct Loan<'a>(&'a SocketLoans);
+        impl Drop for Loan<'_> {
+            #[inline]
+            fn drop(&mut self) {
+                let loans = self.0.loans.get() - 1;
+                self.0.loans.set(loans);
+                if loans == PENDING {
+                    self.0.free_retired();
+                }
+            }
+        }
+        let socket = self.socket.get()?;
+        self.loans.set(self.loans.get() + 1);
+        let _loan = Loan(self);
+        Some(f(socket))
+    }
+
+    /// [`Socket::read`] of the record it holds; `None` without one. Not a counted loan:
+    /// the read's own borrow keeps the record, which is not freed while it runs.
+    #[inline]
+    pub fn read<T>(&self, read: impl FnOnce(&SocketFields) -> T) -> Option<T> {
+        Some(self.socket.get()?.read(read))
+    }
+
+    /// [`Socket::edit`] of the record it holds; `None` without one. Not counted, as
+    /// [`Self::read`].
+    #[inline]
+    #[track_caller]
+    pub fn edit<T>(&self, edit: impl FnOnce(&mut SocketFields) -> T) -> Option<T> {
+        Some(self.socket.get()?.edit(edit))
+    }
+
+    /// The address of the record it holds, for native code; null without one.
+    #[must_use]
+    pub fn as_ptr(&self) -> *mut SocketRecord {
+        self.socket
+            .get()
+            .map_or(std::ptr::null_mut(), |socket| socket.as_ptr())
+    }
+
+    fn retire(&self, owner: OwnedSocket, free: fn(OwnedSocket)) {
+        let loans = self.loans.get();
+        if loans == 0 {
+            free(owner);
+        } else {
+            let mut retired = self.retired.take();
+            retired.push((owner, free));
+            self.retired.set(retired);
+            self.loans.set(loans | PENDING);
+        }
+    }
+
+    /// The last loan ended with records released meanwhile: free them.
+    #[cold]
+    #[inline(never)]
+    fn free_retired(&self) {
+        self.loans.set(0);
+        for (owner, free) in self.retired.take() {
+            free(owner);
+        }
     }
 }
 
@@ -502,13 +613,13 @@ fn leave_reactor(socket: Socket<'_>) {
     }
 }
 
-/// Deletes `socket` from the thread's reactor, whose serial is `mark`, as it is freed:
+/// Deletes `socket` from the thread's reactor (or the one `swoole_event_free` is
+/// deleting, which the thread no longer names), whose serial is `mark`, as it is freed:
 /// from the kernel too while its descriptor is still the one registered, quietly, since
 /// it may be closed already; then from the registry wherever it names the record.
 fn deregister(socket: Socket<'_>, mark: u32) {
-    let Some(reactor) =
-        crate::reactor::event_api::running().filter(|reactor| reactor.serial() == mark)
-    else {
+    let reactor = crate::reactor::event_api::running().or_else(crate::reactor::deleting);
+    let Some(reactor) = reactor.filter(|reactor| reactor.serial() == mark) else {
         crate::fatal("a socket was freed while registered with a reactor other than this thread's");
     };
     let (fd, removed) = socket.read(|record| (record.fd, record.removed));

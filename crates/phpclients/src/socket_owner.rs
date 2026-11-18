@@ -2,7 +2,7 @@
 use super::{Data, Sock};
 use crate::native::{self, Co, NewSocket};
 use swoole_rs_corebase::CCast;
-use swoole_rs_zend::{Owned, Value, bailout::Bailout, new_object, sys as z};
+use swoole_rs_zend::{Owned, Value, bailout::Bailout, new_object};
 
 /// Free the length callback, then the owned core socket after releasing any
 /// imported stream reference (whose destructor's bailout is deferred). Upstream's
@@ -26,18 +26,9 @@ pub(super) fn release(data: &mut Data) -> Result<(), Bailout> {
 /// Free the length callback, then close an imported stream or the owned core socket.
 pub(super) fn close(sock: Sock, socket: Co) -> Result<(), Bailout> {
     socket.free_length_callable()?;
-    if !sock.data().has_stream() {
+    if !Owned::close_imported_stream(&sock.data().stream)? {
         return socket.close_trapped();
     }
-    // The original no-verify lookup of the imported stream's zval.
-    let stream = sock.data().stream();
-    // SAFETY: the live stream PHP owns; its resource slot stays while it
-    // closes inside zend_try.
-    if !stream.is_null() && unsafe { z::swr_zend_try_stream_free(stream) } != 0 {
-        return Err(Bailout);
-    }
-    // The original close discards this now-invalid resource slot without another dtor.
-    sock.forget_stream();
     // The imported stream closed the fd; the core socket must no longer own it.
     socket.move_fd();
     Ok(())

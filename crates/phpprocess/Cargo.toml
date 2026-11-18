@@ -12,7 +12,7 @@ php = ["dep:swoole-rs-error", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:l
        "swoole-rs-corebase/upstream-symbols", "dep:swoole-rs-corebase",
        "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php",
        "dep:swoole-rs-server",
-       "dep:swoole-rs-phpclients", "swoole-rs-phpclients/php", "swoole-rs-corebase/upstream-symbols"]
+       "dep:swoole-rs-phpclients", "swoole-rs-phpclients/php"]
 
 [dependencies]
 swoole-rs-error = { path = "../error", optional = true }

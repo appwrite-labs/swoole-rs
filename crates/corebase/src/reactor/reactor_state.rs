@@ -400,11 +400,15 @@ pub fn swr_v1_reactor_delete(OwnedReactor(handle): OwnedReactor) {
 
 /// `int swoole_event_init(int flags)`: the thread's `Reactor` with
 /// `SW_REACTOR_MAXEVENTS` events, waiting to exit under `SW_EVENTLOOP_WAIT_EXIT`, and the
-/// coroutine system's and client's handlers set; `SW_ERR` when no backend opens.
+/// coroutine system's and client's handlers set; `SW_ERR` when no backend opens, or
+/// while [`swoole_event_free`] deletes the thread's reactor ([`swoole_event_deleting`]).
 #[must_use]
 pub fn swoole_event_init(flags: c_int) -> c_int {
     const SW_REACTOR_MAXEVENTS: c_int = 4096;
     const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
+    if swoole_event_deleting() {
+        return -1;
+    }
     let reactor = swr_v1_reactor_new(SW_REACTOR_MAXEVENTS, 0);
     let handle = reactor.running();
     if !handle.with(|state| state.fields.ready) {
@@ -426,25 +430,60 @@ thread_local! {
     static EVENT_REACTOR: std::cell::Cell<Option<OwnedReactor>> = const {
         std::cell::Cell::new(None)
     };
+    /// The reactor `swoole_event_free` is deleting, which the thread no longer names.
+    static DELETING: std::cell::Cell<Option<crate::reactor::Running<'static>>> = const {
+        std::cell::Cell::new(None)
+    };
 }
 
-/// `swoole_event_free()`: deletes the thread's `Reactor`, then clears it; false
-/// without one. Only `swoole_event_init` sets a thread's reactor, so it is the one that
-/// call made here; a reactor another thread made and shares (a coroutine thread's) is
-/// cleared but left to the thread that owns it.
-#[expect(
-    clippy::must_use_candidate,
-    reason = "callers, `swoole_event_wait` among them, ignore it as upstream's do"
-)]
+/// Whether `swoole_event_free` is deleting this thread's reactor: code its delete runs
+/// (destroy callbacks, PHP destructors of what it frees) finds no reactor, and may not
+/// make one.
+#[must_use]
+pub fn swoole_event_deleting() -> bool {
+    DELETING.get().is_some()
+}
+
+/// The reactor `swoole_event_free` is deleting, for one thing only: a socket freed
+/// meanwhile leaves its registry, as it would leave the thread's.
+pub(crate) fn deleting<'a>() -> Option<crate::reactor::Running<'a>> {
+    DELETING.get()
+}
+
+/// [`DELETING`] for a delete's span: a bailout out of a disposer clears it too.
+struct Deleting;
+
+impl Deleting {
+    fn enter(reactor: &OwnedReactor) -> Self {
+        DELETING.set(Some(reactor.0));
+        Self
+    }
+}
+
+impl Drop for Deleting {
+    fn drop(&mut self) {
+        DELETING.set(None);
+    }
+}
+
+/// `swoole_event_free()`: clears the thread's `Reactor`, then deletes it; false
+/// without one. Cleared first, so nothing the delete runs reaches it through the thread;
+/// destroy callbacks get it as a handle. Only `swoole_event_init` sets a thread's
+/// reactor, so it is the one that call made here; a reactor another thread made and
+/// shares (a coroutine thread's) is cleared but left to the thread that owns it.
 pub fn swoole_event_free() -> bool {
-    let Some(reactor) = crate::reactor::event_api::running() else {
+    let Some(reactor) = crate::reactor::event_api::running().map(crate::reactor::Running::as_ptr)
+    else {
         return false;
     };
+    crate::set_thread_reactor(ptr::null_mut());
     match EVENT_REACTOR.take() {
-        Some(owned) if owned.as_ptr() == reactor.as_ptr() => swr_v1_reactor_delete(owned),
+        Some(owned) if owned.as_ptr() == reactor => {
+            let _deleting = Deleting::enter(&owned);
+            swr_v1_reactor_delete(owned);
+        }
         other => EVENT_REACTOR.set(other),
     }
-    crate::set_thread_reactor(ptr::null_mut());
     true
 }
 impl ReactorState {

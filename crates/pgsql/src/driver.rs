@@ -159,6 +159,23 @@ pub(crate) fn server(dbh: &Dbh) -> Option<Conn> {
     handle(dbh).map(|handle| handle.server)
 }
 
+/// Install the callback on the connection owned by this database handle.
+fn install_notice_processor(dbh: &Dbh) {
+    type NoticeProcessor = unsafe extern "C" fn(&Dbh, Text<'_>);
+    unsafe extern "C" {
+        // libpq keeps the context until the connection is closed. The handle
+        // owns that connection and finishes it before PDO frees the context.
+        safe fn PQsetNoticeProcessor(
+            conn: Conn,
+            processor: NoticeProcessor,
+            context: &Dbh,
+        ) -> Option<NoticeProcessor>;
+    }
+    if let Some(conn) = server(dbh) {
+        PQsetNoticeProcessor(conn, pdo_pgsql_notice, dbh);
+    }
+}
+
 /// `PQerrorMessage`, copied.
 fn error_message(conn: Conn) -> CString {
     unsafe extern "C" {
@@ -419,18 +436,7 @@ extern "C" fn pdo_pgsql_connect(
     dbh.set_driver_data(Box::into_raw(Box::new(Handle::new(server))).cast());
     let connected = PQstatus(server) == ConnStatusType::CONNECTION_OK;
     if connected {
-        unsafe extern "C" {
-            /// Set the processor libpq hands notices to, and the context it passes it.
-            /// libpq keeps `context` while the connection lives. Declared here, its one
-            /// caller: `dbh` owns the handle that owns `server`, and the handle's drop
-            /// finishes `server` before PDO frees `dbh`.
-            safe fn PQsetNoticeProcessor(
-                conn: Conn,
-                processor: unsafe extern "C" fn(&Dbh, Text<'_>),
-                context: &Dbh,
-            ) -> Option<unsafe extern "C" fn(&Dbh, Text<'_>)>;
-        }
-        PQsetNoticeProcessor(server, pdo_pgsql_notice, dbh);
+        install_notice_processor(dbh);
     } else {
         raise(
             dbh,

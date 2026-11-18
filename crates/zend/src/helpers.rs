@@ -8,6 +8,11 @@ use std::{ffi::CStr, io::IoSlice};
 pub(crate) use swoole_rs_corebase::sys::Text as CText;
 
 unsafe extern "C" {
+    /// The PHP resolver reads the terminated host and copies one IPv4 address on success.
+    safe fn swr_zend_gethostbyname4(
+        host: CText<'_>,
+        address: &mut crate::sys::in_addr,
+    ) -> std::ffi::c_int;
     /// Zend's table of loaded extensions, keyed by lowercase name: filled at
     /// startup (and by `dl()`, on the thread running PHP) and only read here.
     safe static module_registry: crate::Array;
@@ -24,6 +29,21 @@ unsafe extern "C" {
     /// into `made`, inside `zend_try` (nonzero for a bailout): it reads the string
     /// and keeps none of it.
     safe fn swr_zend_try_mkdir_recursive(path: CText<'_>, made: &mut bool) -> std::ffi::c_int;
+}
+
+/// Resolve an IPv4 host through PHP. The address is in network byte order.
+/// # Errors
+/// Returns -1 for a failed lookup or overlong name and 1 for a non-IPv4 entry.
+pub fn lookup_ipv4(host: &CStr) -> Result<u32, std::ffi::c_int> {
+    // MAXFQDNLEN in PHP's sockets extension.
+    if host.count_bytes() > 255 {
+        return Err(-1);
+    }
+    let mut address = crate::sys::in_addr { s_addr: 0 };
+    match swr_zend_gethostbyname4(CText::from(host), &mut address) {
+        0 => Ok(address.s_addr),
+        status => Err(status),
+    }
 }
 
 mod sealed {
