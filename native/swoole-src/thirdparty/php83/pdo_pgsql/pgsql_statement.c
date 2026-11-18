@@ -407,23 +407,11 @@ static int pgsql_stmt_fetch(pdo_stmt_t *stmt,
 	pdo_pgsql_stmt *S = (pdo_pgsql_stmt*)stmt->driver_data;
 
 	if (S->cursor_name) {
-		ExecStatusType status;
-		if (!pdo_pgsql_fetch_cursor(S->H, &S->result, S->cursor_name, ori, offset)) {
+		if (!pdo_pgsql_fetch_cursor(stmt->dbh, stmt, &S->result, S->cursor_name, ori, offset)) {
 			return 0;
 		}
-		status = PQresultStatus(S->result);
-
-		if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK) {
-			pdo_pgsql_error_stmt(stmt, status, pdo_pgsql_sqlstate(S->result));
-			return 0;
-		}
-
-		if (PQntuples(S->result)) {
-			S->current_row = 1;
-			return 1;
-		} else {
-			return 0;
-		}
+		S->current_row = 1;
+		return 1;
 	} else {
 		if (S->current_row < stmt->row_count) {
 			S->current_row++;

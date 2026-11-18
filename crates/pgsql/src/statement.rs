@@ -98,7 +98,8 @@ extern "C" fn pdo_pgsql_column_meta(handle: &Handle, oid: Oid, table: Oid, outpu
 /// Issue FETCH for a scrollable cursor. The driver names every cursor `pdo_crsr_%08x`.
 #[unsafe(no_mangle)]
 extern "C" fn pdo_pgsql_fetch_cursor(
-    handle: &Handle,
+    dbh: &swoole_rs_zend::pdo::Dbh,
+    stmt: &swoole_rs_zend::pdo::Stmt,
     result: &std::cell::Cell<Option<crate::PgResult>>,
     cursor: Text<'_>,
     orientation: swoole_rs_zend::sys::pdo_fetch_orientation,
@@ -111,6 +112,9 @@ extern "C" fn pdo_pgsql_fetch_cursor(
         pdo_fetch_orientation_PDO_FETCH_ORI_NEXT as NEXT,
         pdo_fetch_orientation_PDO_FETCH_ORI_PRIOR as PRIOR,
         pdo_fetch_orientation_PDO_FETCH_ORI_REL as REL,
+    };
+    let Some(handle) = crate::driver::handle(dbh) else {
+        return false;
     };
     let direction = match orientation {
         NEXT => "NEXT",
@@ -130,6 +134,5 @@ extern "C" fn pdo_pgsql_fetch_cursor(
     if let Some(previous) = result.take() {
         crate::PQclear(previous);
     }
-    result.set(handle.exec(query.as_cstr()));
-    true
+    crate::driver::cursor_result(dbh, stmt, result, handle.exec(query.as_cstr()))
 }

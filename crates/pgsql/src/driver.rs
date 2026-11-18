@@ -152,7 +152,7 @@ unsafe extern "C" {
 }
 
 /// The handle the factory made for `dbh`, if it is still open.
-fn handle(dbh: &Dbh) -> Option<&Handle> {
+pub(crate) fn handle(dbh: &Dbh) -> Option<&Handle> {
     swr_zend_pdo_driver_data(dbh)
 }
 
@@ -274,6 +274,30 @@ fn status(result: Option<&PgResult>) -> ExecStatusType {
     result.map_or(ExecStatusType::PGRES_FATAL_ERROR, |result| {
         PQresultStatus(result.get())
     })
+}
+
+/// Install the cursor result before reporting a PDO error, as the statement owns it.
+pub(crate) fn cursor_result(
+    dbh: &Dbh,
+    stmt: &Stmt,
+    slot: &Cell<Option<PgResult>>,
+    result: Option<PgResult>,
+) -> bool {
+    let code = status(result.as_ref());
+    if matches!(
+        code,
+        ExecStatusType::PGRES_COMMAND_OK | ExecStatusType::PGRES_TUPLES_OK
+    ) {
+        let found = result
+            .as_ref()
+            .is_some_and(|result| PQntuples(result.get()) > 0);
+        slot.set(result);
+        return found;
+    }
+    let state = sqlstate(result.as_ref()).map(CStr::to_owned);
+    slot.set(result);
+    raise(dbh, Some(stmt), code as c_int, state.as_deref(), None);
+    false
 }
 
 /// `_pdo_pgsql_trim_message`: libpq's message without its trailing line breaks,
