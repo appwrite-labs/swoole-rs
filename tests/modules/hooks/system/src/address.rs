@@ -33,10 +33,6 @@ const TEST_HTTP_DOMAIN: &str = "www.gov.cn";
 const TEST_HOST: &str = "127.0.0.1";
 const TEST_LOG_FILE: &str = "/tmp/swoole.log";
 
-unsafe extern "C-unwind" {
-    fn swr_v1_core_set_last_error(code: c_int);
-}
-
 unsafe extern "C" {
     fn __errno_location() -> *mut c_int;
 }
@@ -74,8 +70,7 @@ impl Address {
         let host = host.as_bytes_with_nul();
         let assigned = address::assign(storage, &mut self.len, kind, host, port, resolve_name);
         if let Err(error) = assigned {
-            // SAFETY: sets this thread's last error.
-            unsafe { swr_v1_core_set_last_error(error) };
+            swoole_rs_corebase::log::set_last_error(error);
             return false;
         }
         true
@@ -87,8 +82,7 @@ impl Address {
         assert_ne!(plan, Err(URL_PORT_RANGE), "std::out_of_range(\"stoi\")");
         let Ok((kind, host, port)) = plan else {
             // swoole_error_log(SW_LOG_NOTICE, SW_ERROR_BAD_HOST_ADDR, ...): the notice is below the log level.
-            // SAFETY: sets this thread's last error.
-            unsafe { swr_v1_core_set_last_error(SW_ERROR_BAD_HOST_ADDR) };
+            swoole_rs_corebase::log::set_last_error(SW_ERROR_BAD_HOST_ADDR);
             return false;
         };
         self.assign(kind.raw(), &url[host], port, true)

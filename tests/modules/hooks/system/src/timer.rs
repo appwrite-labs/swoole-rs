@@ -19,10 +19,6 @@ const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
 const SW_ERROR_INVALID_PARAMS: c_int = 505;
 const SW_NUM_MILLION: i64 = 1_000_000;
 
-unsafe extern "C-unwind" {
-    fn swr_v1_core_set_last_error(code: c_int);
-}
-
 /// Owned callback captures; the timer's last callback hold runs the destructor.
 struct Hooks {
     call: RefCell<Box<dyn FnMut(Held)>>,
@@ -118,13 +114,11 @@ fn sys() {
     let first = Rc::clone(&counter);
     assert!(add(20, false, false, move |_| _ = incr(&first[0])).is_some());
 
-    // SAFETY: this thread's last error.
-    unsafe { swr_v1_core_set_last_error(0) };
+    swoole_rs_corebase::log::set_last_error(0);
     assert!(add(-1, false, false, |_| {}).is_none());
     assert_eq!(last_error(), SW_ERROR_INVALID_PARAMS);
 
-    // SAFETY: as above.
-    unsafe { swr_v1_core_set_last_error(0) };
+    swoole_rs_corebase::log::set_last_error(0);
     assert!(add(0, false, false, |_| {}).is_none());
     assert_eq!(last_error(), SW_ERROR_INVALID_PARAMS);
 

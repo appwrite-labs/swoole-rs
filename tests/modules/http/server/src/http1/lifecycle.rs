@@ -53,10 +53,6 @@ unsafe extern "C" {
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
 }
 
-unsafe extern "C-unwind" {
-    fn swr_v1_core_set_last_error(code: c_int);
-}
-
 static COUNTERS: AtomicPtr<AtomicI32> = AtomicPtr::new(ptr::null_mut());
 
 /// `test::counter_ptr()`: main's `sw_mem_pool()->alloc(sizeof(int) * TEST_COUNTER_NUM)`,
@@ -1233,8 +1229,7 @@ const PID_FILE: &str = "/tmp/swoole-core-tests.pid";
 
 /// `swoole_clear_last_error()`.
 fn clear_last_error() {
-    // SAFETY: sets this thread's last error.
-    unsafe { swr_v1_core_set_last_error(0) };
+    swoole_rs_corebase::log::set_last_error(0);
 }
 
 /// `packet`, answered with `Server: ` before it.
