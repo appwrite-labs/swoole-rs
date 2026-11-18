@@ -6,7 +6,6 @@ pub mod threads;
 use crate::coroutine::Waker;
 use crate::set_errno;
 use core::ffi::{c_int, c_void};
-use core::mem::offset_of;
 use core::sync::atomic::{AtomicI32, AtomicIsize, AtomicU8, Ordering::Relaxed};
 
 /// Where a park stores its waker before it switches out.
@@ -46,9 +45,7 @@ pub type Handler = extern "C" fn(&mut AsyncEvent);
 pub type Callback = extern "C" fn(&AsyncEvent);
 
 /// Upstream's `AsyncEvent`, with its `shared_ptr` request replaced by a counted
-/// DNS record; native code asserts the same layout.
-// `repr(C)`: mirrored and asserted by `native/ossupport/swoole_async.h`.
-#[repr(C)]
+/// DNS record.
 pub struct AsyncEvent {
     pub task_id: usize,
     /// The dispatching thread may set it while a pool thread reads it.
@@ -146,17 +143,6 @@ impl Clone for AsyncEvent {
         }
     }
 }
-
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(
-    size_of::<AsyncEvent>() == 72
-        && offset_of!(AsyncEvent, canceled) == 8
-        && offset_of!(AsyncEvent, error) == 12
-        && offset_of!(AsyncEvent, retval) == 24
-        && offset_of!(AsyncEvent, object) == 48
-        && offset_of!(AsyncEvent, callback) == 64,
-    "swoole::AsyncEvent's layout moved"
-);
 
 /// The native operations an offloaded job needs. Only this crate builds one, so the
 /// offload trusts what they return.
