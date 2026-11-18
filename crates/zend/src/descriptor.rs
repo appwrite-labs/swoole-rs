@@ -60,6 +60,8 @@ unsafe extern "C" {
 impl crate::Owned {
     /// Close a socket's imported stream, leaving the resource in its slot on bailout.
     /// An empty slot means the caller still owns the descriptor.
+    /// # Errors
+    /// The stream wrapper bailed out during close.
     pub fn close_imported_stream(slot: &std::cell::Cell<Self>) -> Result<bool, Bailout> {
         use swoole_rs_corebase::CellExt;
         let Some(stream) =
@@ -73,7 +75,7 @@ impl crate::Owned {
             return Err(Bailout);
         }
         // The close invalidated this resource. Discard its slot without a destructor.
-        let _ = slot.take().into_zval();
+        let _closed_resource = slot.take().into_zval();
         Ok(true)
     }
 }
