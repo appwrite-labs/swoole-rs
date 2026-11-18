@@ -490,7 +490,10 @@ pub fn default_length_func(
         }
         DefaultLength::Total(total) => {
             pl.header_len = u32::from(p.package_length_size);
-            usize::try_from(total).ok()
+            // A total past `ssize_t` is upstream's negative length.
+            isize::try_from(total)
+                .ok()
+                .and_then(|total| usize::try_from(total).ok())
         }
         DefaultLength::Format => {
             invalid_format(p.package_length_type);
