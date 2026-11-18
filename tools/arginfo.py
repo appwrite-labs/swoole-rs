@@ -463,7 +463,7 @@ def rust_files(source):
         '/// Parse a stub declaring exactly one required array passed by value.\n'
         '/// # Errors\n/// Zend rejected the argument count or type.\n'
         '#[inline]\n'
-        'pub fn required_array(call: &swoole_rs_zend::Call) -> Result<&swoole_rs_zend::Array, swoole_rs_zend::Invalid> {\n'
+        "pub fn required_array<'a>(call: &'a swoole_rs_zend::Call<'_>) -> Result<&'a swoole_rs_zend::Array, swoole_rs_zend::Invalid> {\n"
         '    call.arity(1, 1)?;\n    call.array_ref(1)\n}\n\n'
         + ''.join(f'pub mod {module_name(path)};\n' for path in stubs))
     return {name: rustfmt(text) for name, text in files.items()}

@@ -10,9 +10,9 @@
 /// # Errors
 /// Zend rejected the argument count or type.
 #[inline]
-pub fn required_array(
-    call: &swoole_rs_zend::Call,
-) -> Result<&swoole_rs_zend::Array, swoole_rs_zend::Invalid> {
+pub fn required_array<'a>(
+    call: &'a swoole_rs_zend::Call<'_>,
+) -> Result<&'a swoole_rs_zend::Array, swoole_rs_zend::Invalid> {
     call.arity(1, 1)?;
     call.array_ref(1)
 }
