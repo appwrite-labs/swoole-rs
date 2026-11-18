@@ -196,15 +196,10 @@ static int socket_set_option(php_stream *stream, int option, int value, void *pt
     return done ? PHP_STREAM_OPTION_RETURN_OK : PHP_STREAM_OPTION_RETURN_ERR;
 }
 
-const php_stream_ops swoole_runtime_socket_ops = {
-    socket_write, socket_read, socket_close, socket_flush, "socket/coroutine", NULL,
-    socket_cast, socket_stat, socket_set_option,
-};
-
-static const php_stream_ops unix_socket_ops = {
-    socket_write, socket_read, socket_close, socket_flush, "unix_socket", NULL,
-    socket_cast, socket_stat, socket_set_option,
-};
+#define SOCKET_OPS(label) {socket_write, socket_read, socket_close, socket_flush, label, NULL, \
+                           socket_cast, socket_stat, socket_set_option}
+const php_stream_ops swoole_runtime_socket_ops = SOCKET_OPS("socket/coroutine");
+static const php_stream_ops unix_socket_ops = SOCKET_OPS("unix_socket");
 
 int swr_zend_try_socket_stream_alloc(const char *persistent, bool unix_stream, php_stream **stream) {
     volatile int bailed = 0;
