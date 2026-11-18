@@ -424,6 +424,9 @@ def group_leftovers(group):
         os.killpg(group, 0)
     except ProcessLookupError:
         return {'processes': 0, 'descriptors': 0}
+    # A helper server can still be closing the client's socket after the PHPT
+    # exits. Observe after its close, before sending any cleanup signal (#4953).
+    time.sleep(0.1)
     processes = descriptors = 0
     for entry in Path('/proc').iterdir():
         if not entry.name.isdecimal():
