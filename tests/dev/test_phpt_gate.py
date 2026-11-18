@@ -132,6 +132,22 @@ class PhptGate(unittest.TestCase):
         self.assertIn('1 passed, 1 failed, 1 skipped', markdown(results))
         self.assertIn('| a | 1 | 0 | 1 |', markdown(results))
 
+    def test_resource_regression_fails_independently_of_phpt_reruns(self):
+        from corpus.upstream.gate import main
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / 'report.json'
+            recheck_report = Path(directory) / 'recheck.json'
+            recheck_report.write_text('{"results":[]}')
+            results = [dict(test='a.phpt', module='m', engine=engine, status='passed',
+                            leftovers={'processes': 0, 'descriptors': 0, 'temp_files': files})
+                       for engine, files in [('upstream', 1), ('cargo', 2)]]
+            for files, expected in [(2, 1), (1, 0), (0, 0)]:
+                results[1]['leftovers']['temp_files'] = files
+                report.write_text(json.dumps({'results': results}))
+                for extra in [[], ['--recheck', str(recheck_report)]]:
+                    with mock.patch.object(sys, 'argv', ['gate', str(report), *extra]), mock.patch('builtins.print'):
+                        self.assertEqual(main(), expected)
+
     def test_only_upstream_passes_gate_cargo(self):
         def row(test, engine, status):
             return {'test': test, 'family': 'a', 'engine': engine, 'status': status, 'category': 'other'}

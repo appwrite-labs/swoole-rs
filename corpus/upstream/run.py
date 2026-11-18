@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run pinned original Swoole PHPT cases with PHP's official test runner."""
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 import fcntl
 import functools
@@ -24,7 +24,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.build_upstream import COMMIT, VERSION
-from tools.harness import ROOT, parse_engines, run_isolated, write_report
+from tools.harness import ROOT, parse_engines, run_isolated, temp_file_count, write_report
 from tools.phpt_expectations import select
 
 # Only local upstream test helpers are autoloaded. Curated cases must not need
@@ -418,7 +418,34 @@ def prepare(source, destination, cases, support_files=()):
         (vendor / 'autoload.php').write_text(AUTOLOAD)
 
 
-def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True, runner_ini=(), match_child_php=False, php=None):
+def group_leftovers(group):
+    """Live members of the test group and their open descriptors before cleanup (Linux)."""
+    try:
+        os.killpg(group, 0)
+    except ProcessLookupError:
+        return {'processes': 0, 'descriptors': 0}
+    processes = descriptors = 0
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            if os.getpgid(int(entry.name)) != group:
+                continue
+            state, _, pgid, *_ = (entry / 'stat').read_bytes().rsplit(b')', 1)[1].split()
+            if int(pgid) != group or state in (b'Z', b'X'):
+                continue
+            processes += 1
+            if descriptors is not None:
+                try:
+                    descriptors += len(os.listdir(entry / 'fd'))
+                except PermissionError:
+                    descriptors = None
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+    return {'processes': processes, 'descriptors': descriptors}
+
+
+def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True, runner_ini=(), match_child_php=False, php=None, measure_leftovers=False):
     sandbox = sandbox.resolve()
     if php:
         # Upstream's tests/run-tests keeps a case's --EXPECT*_85-- section on PHP >= 8.5 and
@@ -488,18 +515,23 @@ def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True,
         child_selector = {'path': str(wrapper), 'sha256': hashlib.sha256(wrapper.read_bytes()).hexdigest(),
                           'fallback_exec_argv': argv, 'argument_policy': 'Use official TEST_PHP_EXTRA_ARGS when present, parsed as argv without shell evaluation; otherwise engine defaults', 'scope': 'Explicit bare php children only; absolute PHP paths are unchanged'}
     started = time.monotonic()
-    try:
-        with ipc_isolated(command) as (isolated, ipc_mode):
-            result = run_isolated(isolated, cwd=sandbox, env=env,
-                                  timeout=((len(cases) + jobs - 1) // jobs) * (timeout + 5) + 15)
-        output = result.stdout + result.stderr
-        exit_code = result.returncode
-    except subprocess.TimeoutExpired as error:
-        output = error.stdout or ''
-        if isinstance(output, bytes):
-            output = output.decode(errors='replace')
-        output += '\nOfficial runner exceeded its isolated group deadline'
-        exit_code = 124
+    leftovers, observer = {}, {}
+    with tempfile.TemporaryDirectory(dir=sandbox, prefix='t') if measure_leftovers else nullcontext() as tmp:
+        if measure_leftovers:
+            env['TMPDIR'] = tmp
+            observer['before_cleanup'] = lambda pid: leftovers.update(group_leftovers(pid), temp_files=temp_file_count(tmp))
+        try:
+            with ipc_isolated(command) as (isolated, ipc_mode):
+                result = run_isolated(isolated, cwd=sandbox, env=env, **observer,
+                                      timeout=((len(cases) + jobs - 1) // jobs) * (timeout + 5) + 15)
+            output = result.stdout + result.stderr
+            exit_code = result.returncode
+        except subprocess.TimeoutExpired as error:
+            output = error.stdout or ''
+            if isinstance(output, bytes):
+                output = output.decode(errors='replace')
+            output += '\nOfficial runner exceeded its isolated group deadline'
+            exit_code = 124
     runner_seconds = round(time.monotonic() - started, 4)
     receipts_started = time.monotonic()
     (artifacts / 'runner.log').write_text(output)
@@ -540,6 +572,8 @@ def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True,
                'timing_basis': 'isolated_wall_clock' if len(cases) == 1 else 'official_runner_test_execution',
                'official_runner_test_seconds': times.get(path),
                'isolated_runner_seconds': runner_seconds if len(cases) == 1 else None}
+        if measure_leftovers:
+            row['leftovers'] = leftovers
         if status != 'passed':
             diff = artifact / Path(path).with_suffix('.diff').name
             row['detail'] = ('Invalid/duplicate result ledger\n' if invalid else '') + (diff.read_text(errors='replace') if diff.exists() else output)[-6000:]
@@ -580,6 +614,7 @@ def main():
     parser.add_argument('--module', action='append', help='Only select this migration subsystem; repeat as needed')
     parser.add_argument('--case', action='append', help='Exact registered PHPT path; repeatable')
     parser.add_argument('--jobs', type=int, default=1, help='Official runner workers for explicitly audited independent cases')
+    parser.add_argument('--measure-leftovers', action='store_true', help='Measure each test in its own TMPDIR and process group (Linux)')
     parser.add_argument('--isolate-cases', action='store_true', help='Original one-runner/process-group-per-case mode')
     parser.add_argument('--require-all', action='store_true', help='Also fail on unsupported or upstream-skipped cases (except RACY ones)')
     parser.add_argument('--external-network', action='store_true', help='Include cases marked network (DNS/routes) and run every case online')
@@ -587,6 +622,8 @@ def main():
     parser.add_argument('--timeout', type=int, default=15)
     parser.add_argument('--output', type=Path, default=ROOT / 'target/reports/upstream-phpt.json')
     args = parser.parse_args()
+    if args.measure_leftovers and not Path('/proc/self/fd').is_dir():
+        parser.error('--measure-leftovers requires Linux procfs')
     if args.timeout < 1 or args.jobs < 1:
         parser.error('--timeout and --jobs must be positive')
     manifest_bytes = args.manifest.read_bytes()
@@ -646,7 +683,7 @@ def main():
                         else:
                             runnable.append(case)
                 save_report(args.output, report)
-                for group in batches(runnable, args.isolate_cases):
+                for group in batches(runnable, args.isolate_cases or args.measure_leftovers):
                     if len(group) == 1 and group[0]['path'] in FIXED_PORTS:
                         try:
                             require_free_port(FIXED_PORTS[group[0]['path']])
@@ -658,6 +695,7 @@ def main():
                     with timed_phase(engine_timing, 'cases'):
                         results, timing = run_cases(engine, group, sandbox, artifact, args.timeout, args.jobs, php=metadata.get('php'),
                                                     offline=not (args.external_network or any(case.get('network') for case in group)),
+                                                    **({'measure_leftovers': True} if args.measure_leftovers else {}),
                                                     **({'match_child_php': True} if args.match_child_php else {}))
                     report['batches'].append({'engine': engine.name, **timing})
                     for case in group:
