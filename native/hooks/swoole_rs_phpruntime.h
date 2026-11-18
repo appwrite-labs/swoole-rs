@@ -45,6 +45,10 @@ int swr_v1_phpruntime_plain_rename(struct _php_stream_wrapper *wrapper, const ch
                                    struct _php_stream_context *context);
 int swr_v1_phpruntime_plain_mkdir(struct _php_stream_wrapper *wrapper, const char *dir, int mode, int options,
                                   struct _php_stream_context *context);
+/* php_stream_parse_fopen_modes and php_stream_mode_sanitize_fdopen_fopencookie: an fopen mode's
+ * open(2) flags (false for no mode), and a stream's mode as fdopen takes it, in fixed[5]. */
+bool swr_v1_phpruntime_plain_open_flags(const char *mode, int *flags);
+void swr_v1_phpruntime_plain_fdopen_mode(const char *mode, uint8_t *fixed);
 struct utimbuf;
 int swr_v1_phpruntime_plain_metadata(const char *url, int option, const struct utimbuf *times, const char *name,
                                      long number);

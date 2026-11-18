@@ -450,6 +450,58 @@ fn metadata(
     Ok(1)
 }
 
+/// `php_stream_parse_fopen_modes`: the `open(2)` flags of an `fopen` mode, `None` for
+/// one that starts with none of `r`, `w`, `a`, `x` and `c`.
+fn open_flags(mode: &[u8]) -> Option<c_int> {
+    let create = match mode.first()? {
+        b'r' => 0,
+        b'w' => libc::O_TRUNC | libc::O_CREAT,
+        b'a' => libc::O_CREAT | libc::O_APPEND,
+        b'x' => libc::O_CREAT | libc::O_EXCL,
+        b'c' => libc::O_CREAT,
+        _ => return None,
+    };
+    let access = if mode.contains(&b'+') {
+        libc::O_RDWR
+    } else if create != 0 {
+        libc::O_WRONLY
+    } else {
+        libc::O_RDONLY
+    };
+    let close_on_exec = if mode.contains(&b'e') {
+        libc::O_CLOEXEC
+    } else {
+        0
+    };
+    let nonblocking = if mode.contains(&b'n') {
+        libc::O_NONBLOCK
+    } else {
+        0
+    };
+    Some(create | access | close_on_exec | nonblocking)
+}
+
+/// `php_stream_mode_sanitize_fdopen_fopencookie`: a stream's mode as `fdopen` takes
+/// it. `c` and `x` become `w`, which `fdopen` doesn't truncate for, and of the next
+/// three characters only `b` and `+` are kept, in that order.
+fn fdopen_mode(mode: &[u8]) -> [u8; 5] {
+    let first = match mode.first() {
+        Some(&first @ (b'r' | b'w' | b'a')) => first,
+        _ => b'w',
+    };
+    let rest = mode.get(1..mode.len().min(4)).unwrap_or_default();
+    let mut fixed = [0; 5];
+    let kept = [
+        Some(first),
+        rest.contains(&b'b').then_some(b'b'),
+        rest.contains(&b'+').then_some(b'+'),
+    ];
+    for (slot, byte) in fixed.iter_mut().zip(kept.into_iter().flatten()) {
+        *slot = byte;
+    }
+    fixed
+}
+
 swoole_rs_zend::exports! {
 /// The wrapper's `url_stat`: `ssb` is a `php_stream_statbuf`, whose one member is the
 /// `zend_stat_t` (`struct stat`) written here.
@@ -514,6 +566,20 @@ extern "C" fn swr_v1_phpruntime_plain_metadata(
     )
 }
 
+/// `php_stream_parse_fopen_modes(mode, flags)`: whether `mode` is one, with its
+/// `open(2)` flags in `flags`.
+#[unsafe(no_mangle)]
+extern "C" fn swr_v1_phpruntime_plain_open_flags(mode: Text<'_>, flags: &mut c_int) -> bool {
+    open_flags(mode.get().to_bytes()).map(|parsed| *flags = parsed).is_some()
+}
+
+/// `php_stream_mode_sanitize_fdopen_fopencookie`: `fixed` is the stream's `mode` as
+/// `fdopen` takes it, NUL-terminated.
+#[unsafe(no_mangle)]
+extern "C" fn swr_v1_phpruntime_plain_fdopen_mode(mode: Text<'_>, fixed: &mut [u8; 5]) {
+    *fixed = fdopen_mode(mode.get().to_bytes());
+}
+
 /// The wrapper's `rmdir`.
 #[unsafe(no_mangle)]
 extern "C" fn swr_v1_phpruntime_plain_rmdir(
@@ -537,6 +603,46 @@ mod tests {
         assert_eq!(local(c"file://"), c"");
         assert_eq!(local(c"/tmp/file://a"), c"/tmp/file://a");
         assert_eq!(local(c"file:/"), c"file:/");
+    }
+
+    #[test]
+    fn fopen_modes_give_upstreams_flags() {
+        use super::open_flags;
+        use libc::{
+            O_APPEND, O_CLOEXEC, O_CREAT, O_EXCL, O_NONBLOCK, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY,
+        };
+        assert_eq!(open_flags(b"r"), Some(O_RDONLY));
+        assert_eq!(open_flags(b"rb"), Some(O_RDONLY));
+        assert_eq!(open_flags(b"r+"), Some(O_RDWR));
+        assert_eq!(open_flags(b"w"), Some(O_TRUNC | O_CREAT | O_WRONLY));
+        assert_eq!(open_flags(b"wb+"), Some(O_TRUNC | O_CREAT | O_RDWR));
+        assert_eq!(open_flags(b"a"), Some(O_CREAT | O_APPEND | O_WRONLY));
+        assert_eq!(open_flags(b"x+"), Some(O_CREAT | O_EXCL | O_RDWR));
+        assert_eq!(open_flags(b"c"), Some(O_CREAT | O_WRONLY));
+        assert_eq!(open_flags(b"re"), Some(O_RDONLY | O_CLOEXEC));
+        assert_eq!(
+            open_flags(b"wn"),
+            Some(O_TRUNC | O_CREAT | O_WRONLY | O_NONBLOCK)
+        );
+        assert_eq!(open_flags(b""), None);
+        assert_eq!(open_flags(b"z"), None);
+        assert_eq!(open_flags(b"+r"), None);
+    }
+
+    #[test]
+    fn fdopen_modes_keep_only_what_fdopen_takes() {
+        use super::fdopen_mode;
+        assert_eq!(&fdopen_mode(b"r"), b"r\0\0\0\0");
+        assert_eq!(&fdopen_mode(b"rb"), b"rb\0\0\0");
+        assert_eq!(&fdopen_mode(b"w+b"), b"wb+\0\0");
+        assert_eq!(&fdopen_mode(b"a+"), b"a+\0\0\0");
+        // `c` and `x` open without truncating, as `w` does for `fdopen`.
+        assert_eq!(&fdopen_mode(b"c+"), b"w+\0\0\0");
+        assert_eq!(&fdopen_mode(b"xb"), b"wb\0\0\0");
+        // `n`, `t` and `e` go, and only the first four characters are read.
+        assert_eq!(&fdopen_mode(b"wbn+"), b"wb+\0\0");
+        assert_eq!(&fdopen_mode(b"rnte+"), b"r\0\0\0\0");
+        assert_eq!(&fdopen_mode(b""), b"w\0\0\0\0");
     }
 
     #[test]
