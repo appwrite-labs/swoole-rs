@@ -25,7 +25,6 @@
 #include <php.h>
 
 void pdo_pgsql_register_lob(pdo_pgsql_db_handle *H, zend_long id, zend_resource *resource);
-void pdo_pgsql_unregister_lob(pdo_pgsql_db_handle *H, zend_long id);
 void pdo_pgsql_replace_notice_callback(pdo_pgsql_db_handle *H, zend_fcall_info_cache *next);
 
 #if PHP_VERSION_ID >= 80400

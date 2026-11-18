@@ -23,48 +23,39 @@
 #include "php_pdo_pgsql_int.h"
 #include "ext/pdo/php_pdo_error.h"
 
-static ssize_t pgsql_lob_write(php_stream *stream, const char *buf, size_t count)
-{
-    struct pdo_pgsql_lob_self *self = stream->abstract;
-    return lo_write(self->conn, self->lfd, buf, count);
+/* php_stream_ops supplies the buffer bounds, stream payload and resource ID. */
+extern ssize_t pdo_pgsql_lob_write(void *, const char *, size_t);
+extern int pdo_pgsql_lob_read(void *, char *, size_t);
+extern void pdo_pgsql_lob_close(void *, bool, zend_long);
+extern bool pdo_pgsql_lob_seek(void *, zend_off_t, int, zend_off_t *);
+
+static ssize_t pgsql_lob_write(php_stream *stream, const char *buf, size_t count) {
+    return pdo_pgsql_lob_write(stream->abstract, buf, count);
 }
 
-static ssize_t pgsql_lob_read(php_stream *stream, char *buf, size_t count)
-{
-    struct pdo_pgsql_lob_self *self = stream->abstract;
-    return lo_read(self->conn, self->lfd, buf, count);
+static ssize_t pgsql_lob_read(php_stream *stream, char *buf, size_t count) {
+    return pdo_pgsql_lob_read(stream->abstract, buf, count);
 }
 
-static int pgsql_lob_close(php_stream *stream, int close_handle)
-{
-    struct pdo_pgsql_lob_self *self = stream->abstract;
-    pdo_pgsql_db_handle *H = (pdo_pgsql_db_handle *)(Z_PDO_DBH_P(&self->dbh))->driver_data;
-
-    if (close_handle) {
-        lo_close(self->conn, self->lfd);
-    }
-    pdo_pgsql_unregister_lob(H, php_stream_get_resource_id(stream));
-    zval_ptr_dtor(&self->dbh);
-    efree(self);
+static int pgsql_lob_close(php_stream *stream, int close_handle) {
+    pdo_pgsql_lob_close(stream->abstract, close_handle != 0, php_stream_get_resource_id(stream));
     return 0;
 }
 
-static int pgsql_lob_flush(php_stream *stream)
-{
+static int pgsql_lob_flush(php_stream *stream) {
     return 0;
 }
 
-static int pgsql_lob_seek(php_stream *stream, zend_off_t offset, int whence,
-        zend_off_t *newoffset)
-{
-    struct pdo_pgsql_lob_self *self = stream->abstract;
+zend_off_t pdo_pgsql_seek_descriptor(PGconn *conn, int fd, zend_off_t offset, int whence) {
 #if defined(ZEND_ENABLE_ZVAL_LONG64) && (PHP_VERSION_ID >= 80400 || defined(HAVE_PG_LO64))
-    zend_off_t pos = lo_lseek64(self->conn, self->lfd, offset, whence);
+    return lo_lseek64(conn, fd, offset, whence);
 #else
-    zend_off_t pos = lo_lseek(self->conn, self->lfd, offset, whence);
+    return lo_lseek(conn, fd, offset, whence);
 #endif
-    *newoffset = pos;
-    return pos >= 0 ? 0 : -1;
+}
+
+static int pgsql_lob_seek(php_stream *stream, zend_off_t offset, int whence, zend_off_t *position) {
+    return pdo_pgsql_lob_seek(stream->abstract, offset, whence, position) ? 0 : -1;
 }
 
 const php_stream_ops pdo_pgsql_lob_stream_ops = {
@@ -79,27 +70,27 @@ const php_stream_ops pdo_pgsql_lob_stream_ops = {
     NULL
 };
 
-static bool lob_resource(zend_object *dbh, int lfd, Oid oid, zval *output)
-{
-    struct pdo_pgsql_lob_self *self = ecalloc(1, sizeof(*self));
-    pdo_pgsql_db_handle *H = (pdo_pgsql_db_handle *)(php_pdo_dbh_fetch_inner(dbh))->driver_data;
-
-    ZVAL_OBJ(&self->dbh, dbh);
-    self->lfd = lfd;
-    self->oid = oid;
-    self->conn = pdo_pgsql_server(H);
-
-    php_stream *stm = php_stream_alloc(&pdo_pgsql_lob_stream_ops, self, 0, "r+b");
-
-    if (stm) {
-        GC_ADDREF(dbh);
-        pdo_pgsql_register_lob(H, php_stream_get_resource_id(stm), stm->res);
-        php_stream_to_zval(stm, output);
-        return true;
+/* On success the stream owns lob. On failure its caller takes the owner back. */
+void *pdo_pgsql_alloc_lob(void *lob, pdo_pgsql_db_handle *handle, zval *output) {
+    php_stream *stream = php_stream_alloc(&pdo_pgsql_lob_stream_ops, lob, 0, "r+b");
+    if (!stream) {
+        return lob;
     }
+    pdo_pgsql_register_lob(handle, php_stream_get_resource_id(stream), stream->res);
+    php_stream_to_zval(stream, output);
+    return NULL;
+}
 
-    efree(self);
-    return false;
+pdo_dbh_t *pdo_pgsql_lob_dbh(zval *database) {
+    return Z_PDO_DBH_P(database);
+}
+
+extern bool pdo_pgsql_open_lob(pdo_dbh_t *, zval *, int, Oid, zval *);
+
+static bool lob_resource(zend_object *dbh, int fd, Oid oid, zval *output) {
+    zval database;
+    ZVAL_OBJ(&database, dbh);
+    return pdo_pgsql_open_lob(php_pdo_dbh_fetch_inner(dbh), &database, fd, oid, output);
 }
 
 void pdo_pgsql_close_resource(zend_resource *resource)

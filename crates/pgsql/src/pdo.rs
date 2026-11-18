@@ -41,7 +41,7 @@ unsafe extern "C" {
 pub(crate) fn io_error(dbh: &Dbh, conn: Conn) -> Option<Cow<'static, CStr>> {
     let (code, first) = take_io_error(conn)?;
     if first {
-        let fd = conn.socket();
+        let fd = crate::PQsocket(conn);
         if fd >= 0 {
             _ = swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_RDWR);
             conn.consume_input();
@@ -70,7 +70,7 @@ fn liveness(conn: Conn) -> Liveness {
     }
     if !conn.consume_input() || conn.status() == ConnStatusType::CONNECTION_BAD {
         if !blocking() {
-            if !conn.reset_start() || conn.socket() < 0 {
+            if !conn.reset_start() || crate::PQsocket(conn) < 0 {
                 return Liveness::Dead;
             }
             conn.set_nonblocking(true);

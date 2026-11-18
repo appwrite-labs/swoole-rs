@@ -81,8 +81,7 @@ bool pdo_pgsql_bind_stream(pdo_dbh_t *dbh, pdo_stmt_t *stmt, void *params, size_
         return false;
     }
     if (php_stream_is(stream, &pdo_pgsql_lob_stream_ops)) {
-        struct pdo_pgsql_lob_self *lob = stream->abstract;
-        return pdo_pgsql_bind_oid(params, index, lob->oid);
+        return pdo_pgsql_bind_oid(params, index, stream->abstract);
     }
     zend_string *bytes = php_stream_copy_to_mem(stream, PHP_STREAM_COPY_ALL, 0);
     if (bytes) {

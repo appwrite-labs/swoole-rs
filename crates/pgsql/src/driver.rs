@@ -12,6 +12,7 @@
 //! down to PHP's. So no frame here holds a value with a destructor across a call
 //! that reads them (the `swoole_pgsql_*` calls and `PQconsumeInput`).
 mod copy;
+pub(super) mod lob;
 
 use crate::{
     Conn, OwnedConn, PQclear, PQresultStatus, PQstatus, Params, PgResult, Res, Value as Param,
@@ -1050,8 +1051,7 @@ fn lob_unlink(call: &swoole_rs_zend::Call<'_>) {
 }
 
 /// `H->server`.
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_server(handle: &Handle) -> Conn {
+pub(super) fn pdo_pgsql_server(handle: &Handle) -> Conn {
     handle.server
 }
 
@@ -1097,23 +1097,6 @@ pub extern "C" fn pgsql_handle_preparer(dbh: &Dbh, sql: &ZStr, stmt: &Stmt, opti
     }
     parsed
 }
-}
-
-/// Called only after allocating a Zend stream, and before releasing its database object.
-#[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_register_lob(handle: &Handle, id: zend_long, resource: NonNull<c_void>) {
-    handle
-        .lob_streams
-        .with_taken(|streams| streams.push((id, resource)));
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_unregister_lob(handle: &Handle, id: zend_long) {
-    handle.lob_streams.with_taken(|streams| {
-        if let Ok(index) = streams.binary_search_by_key(&id, |&(key, _)| key) {
-            streams.remove(index);
-        }
-    });
 }
 
 // Both the PDO subclass and the older dynamically registered methods enter
@@ -1285,7 +1268,7 @@ fn get_notify(call: &swoole_rs_zend::Call<'_>) {
         received = next();
         if received == Some(false) && timeout > 0 {
             let mut socket = libc::pollfd {
-                fd: conn.socket(),
+                fd: crate::PQsocket(conn),
                 events: libc::POLLIN | libc::POLLERR | libc::POLLHUP,
                 revents: 0,
             };

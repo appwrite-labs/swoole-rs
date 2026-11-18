@@ -805,12 +805,16 @@ impl ParameterStorage {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_bind_oid(params: &ParameterStorage, index: usize, oid: Oid) -> bool {
+extern "C" fn pdo_pgsql_bind_oid(
+    params: &ParameterStorage,
+    index: usize,
+    lob: &crate::driver::lob::LargeObject,
+) -> bool {
     let Some(owned) = params.owned.get(index) else {
         return false;
     };
     owned.string.set(None);
-    owned.lob_oid.set(oid.to_be());
+    owned.lob_oid.set(lob.oid.to_be());
     params.bind(index, owned.lob_oid.as_ptr().cast(), 4, true, 26)
 }
 

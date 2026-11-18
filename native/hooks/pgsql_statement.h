@@ -27,17 +27,9 @@ typedef struct pdo_pgsql_db_handle pdo_pgsql_db_handle;
 
 bool pdo_pgsql_send_copy_data(pdo_pgsql_db_handle *handle, struct iovec bytes, bool array_row);
 
-struct pdo_pgsql_lob_self {
-    zval dbh;
-    PGconn *conn;
-    int lfd;
-    Oid oid;
-};
-
-PGconn *pdo_pgsql_server(pdo_pgsql_db_handle *H);
 extern const php_stream_ops pdo_pgsql_lob_stream_ops;
 
-bool pdo_pgsql_bind_oid(void *params, size_t index, Oid oid);
+bool pdo_pgsql_bind_oid(void *params, size_t index, const void *lob);
 bool pdo_pgsql_bind_value(void *params, size_t index, enum pdo_param_type kind, zval *value);
 bool pdo_pgsql_emulated_parameter(enum pdo_param_type *kind, zval *value);
 bool pdo_pgsql_normalize_parameter(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zend_string *name, zend_long *index);
