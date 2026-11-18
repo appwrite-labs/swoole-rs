@@ -14,6 +14,7 @@
 //! caller defers the bailout with [`defer_bailout`]. The outer native boundary
 //! raises it after Rust cleanup has finished.
 use crate::CCast;
+use crate::host::DataHead;
 use crate::process::process_pool::{IpcMode, Protocol};
 use crate::process::worker_record::Worker as Record;
 use crate::sys::set_errno;
@@ -36,8 +37,10 @@ const RESPONSE_CAPACITY: usize = 8192;
 /// (the task id) its `i64` at 0, `info.server_fd` its `u16` at 24 and
 /// `info.ext_flags` its `u16` at 26.
 const HEAD: usize = 40;
+#[cfg(test)]
 const HEAD_LEN: usize = 16;
 const HEAD_SERVER_FD: usize = 24;
+#[cfg(test)]
 const HEAD_EXT_FLAGS: usize = 26;
 /// `SW_TASK_TMPFILE`: the task's data is a `PacketTask` naming a temporary file.
 const TASK_TMPFILE: u16 = crate::constants::TaskFlag::SW_TASK_TMPFILE.bits();
@@ -63,11 +66,6 @@ pub enum Warning {
     Send { size: i64, worker: i64 },
 }
 
-/// The `N` bytes at `at` into the `EventData` after `out`'s mtype; zeros past its end.
-fn head_bytes<const N: usize>(out: &[u8], at: usize) -> [u8; N] {
-    core::array::from_fn(|i| out.get(MTYPE + at + i).copied().unwrap_or(0))
-}
-
 /// The `EventData` after `out`'s mtype.
 fn payload(out: &mut [u8]) -> &mut [u8] {
     out.get_mut(MTYPE..).unwrap_or_default()
@@ -83,10 +81,22 @@ fn put(out: &mut [u8], at: usize, bytes: &[u8]) {
 
 /// Whether the `n` bytes received into `out` are the whole `EventData` its head counts,
 /// and a temporary file's task names its file.
-fn whole_task(out: &[u8], n: isize) -> bool {
-    let length = u32::from_ne_bytes(head_bytes(out, HEAD_LEN));
-    let tmpfile = u16::from_ne_bytes(head_bytes(out, HEAD_EXT_FLAGS)) & TASK_TMPFILE != 0;
-    n.c_cast::<u64>() == HEAD as u64 + u64::from(length) && !(tmpfile && length != PACKET_TASK)
+fn whole_task(out: &[u8], n: isize) -> Result<(&[u8], i64), i64> {
+    let event = out.get(MTYPE..).ok_or(HEAD.c_cast::<i64>())?;
+    let header = event
+        .first_chunk()
+        .map(DataHead::from_bytes)
+        .ok_or(HEAD.c_cast::<i64>())?;
+    // Upstream reports the length from the worker's reusable buffer on a short read.
+    let size = HEAD.c_cast::<i64>() + i64::from(header.len);
+    let bytes = usize::try_from(n)
+        .ok()
+        .and_then(|n| event.get(..n))
+        .ok_or(size)?;
+    if n as i64 != size || (header.ext_flags & TASK_TMPFILE != 0 && header.len != PACKET_TASK) {
+        return Err(size);
+    }
+    Ok((bytes, header.fd))
 }
 
 /// A stream socket's native owner, which this crate keeps and hands back to the
@@ -406,12 +416,11 @@ impl<'a> Worker<'a> {
     }
 
     /// The task hook over the `EventData` after `out`'s mtype.
-    fn task(&self, out: &[u8]) {
+    fn task(&self, (bytes, fd): (&[u8], i64)) {
         let mut call = self.call();
-        call.buffer = Buffer::Lent(out.get(MTYPE..).unwrap_or_default());
+        call.buffer = Buffer::Lent(bytes);
         self.native.task(&mut call);
         if call.result < 0 {
-            let fd = i64::from_ne_bytes(head_bytes(out, 0));
             self.warn(Warning::TaskFailed(fd), 0);
         }
     }
@@ -479,12 +488,12 @@ impl<'a> Worker<'a> {
                         read.buffer = Buffer::Fill(payload(&mut out));
                         self.native.pipe_read(&mut read);
                         let (result, error) = (read.result, read.error);
-                        let ran = result >= 0 && whole_task(&out, result) && !self.connected();
-                        if ran {
-                            self.task(&out);
+                        let task = whole_task(&out, result).ok().filter(|_| !self.connected());
+                        if let Some(task) = task {
+                            self.task(task);
                             self.native.end();
                         }
-                        (ran, result, error)
+                        (task.is_some(), result, error)
                     })?;
                     if ran {
                         continue;
@@ -498,29 +507,27 @@ impl<'a> Worker<'a> {
             };
             if n >= 0 {
                 let alone = !self.connected();
-                if whole_task(&out, n) {
-                    // Without a connection to answer, nothing comes between the task
-                    // and the iteration's end, so one trap covers both.
-                    trapped(|| {
-                        self.task(&out);
+                match whole_task(&out, n) {
+                    Ok(task) => {
+                        // Without a connection to answer, nothing comes between the task
+                        // and the iteration's end, so one trap covers both.
+                        trapped(|| {
+                            self.task(task);
+                            if alone {
+                                self.native.end();
+                            }
+                        })?;
                         if alone {
-                            self.native.end();
+                            continue;
                         }
-                    })?;
-                    if alone {
-                        continue;
                     }
-                } else {
-                    let length = u32::from_ne_bytes(head_bytes(&out, HEAD_LEN));
-                    let size = HEAD as u64 + u64::from(length);
-                    // No task runs; a connection is still answered.
-                    self.warn(
+                    Err(length) => self.warn(
                         Warning::BadPacket {
                             received: n as i64,
-                            length: size.cast_signed(),
+                            length,
                         },
                         0,
-                    );
+                    ),
                 }
                 if let Some(socket) = self.take_connection() {
                     self.send(&socket, &0i32.to_ne_bytes())?;
@@ -598,9 +605,9 @@ impl<'a> Worker<'a> {
                     (0, call.result)
                 }
             };
-            if n >= 0 {
-                let length = n.c_cast::<u32>() as usize;
-                let data = packet.get(at..at + length).unwrap_or_default();
+            if let Ok(length) = usize::try_from(n)
+                && let Some(data) = packet.get(at..).and_then(|rest| rest.get(..length))
+            {
                 self.io(
                     |native, call| native.message(call),
                     None,

@@ -712,7 +712,7 @@ fn unpack(call: &Call) {
 }
 
 /// `php_swoole_server_get_and_check_server(ZEND_THIS)` and the running check.
-fn server(call: &Call) -> Option<view::Server<'_>> {
+fn server<'c>(call: &'c Call<'_>) -> Option<view::Server<'c>> {
     let server = server_of(call.this_value()?)?;
     if !server.is_started() {
         host::fatal("server is not running");

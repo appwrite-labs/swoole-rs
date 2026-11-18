@@ -205,7 +205,7 @@ fn ignore_error(call: &Call) {
 
 /// `Z_PARAM_STR` of each of the first `N` arguments, all required, as
 /// upstream passes them on: up to the first NUL.
-fn strings<const N: usize>(call: &Call) -> Option<[&CStr; N]> {
+fn strings<'c, const N: usize>(call: &'c Call<'_>) -> Option<[&'c CStr; N]> {
     let mut out = [c""; N];
     let count = u32::try_from(N).unwrap_or(u32::MAX);
     let parsed = call.arity(count, count).and_then(|()| {

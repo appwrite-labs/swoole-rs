@@ -91,7 +91,7 @@ pub fn process_class() -> &'static Class {
 }
 
 /// `$this`, which every instance method runs on.
-fn this(call: &Call) -> Option<&Process> {
+fn this<'c>(call: &'c Call<'_>) -> Option<&'c Process> {
     call.custom()
 }
 

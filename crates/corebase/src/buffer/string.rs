@@ -661,11 +661,6 @@ pub fn swr_string_write_string(this: &mut CppString, offset: i64, source: &CppSt
     this.write(offset, source.view());
 }
 
-/// `String(data.data(), data.size())` in `this`: a NUL-terminated copy.
-fn from_bytes<'a>(this: &'a mut MaybeUninit<CppString>, data: &[u8]) -> &'a mut CppString {
-    fill(this.write(CppString::EMPTY), data)
-}
-
 /// `new String(data.data(), data.size())`, owned: [`CppString::dispose`] frees its bytes.
 #[must_use]
 pub fn boxed_string(data: &[u8]) -> Box<CppString> {
@@ -693,12 +688,6 @@ fn fill<'a>(string: &'a mut CppString, data: &[u8]) -> &'a mut CppString {
     string
 }
 
-/// `new String(data.data(), data.size())`, in boxed storage [`delete_string`] frees.
-#[must_use]
-pub fn new_string(data: &[u8]) -> *mut CppString {
-    from_bytes(Box::leak(Box::new_uninit()), data)
-}
-
 /// `new String(size, with)`, owned: [`CppString::dispose`] frees its bytes.
 #[must_use]
 pub fn boxed_sized_string(size: usize, with: Option<TrustedAllocator>) -> Box<CppString> {
@@ -707,21 +696,6 @@ pub fn boxed_sized_string(size: usize, with: Option<TrustedAllocator>) -> Box<Cp
     let mut string = Box::new(core::hint::black_box(CppString::EMPTY));
     string.alloc(size, with);
     string
-}
-
-/// `new String(size, with)`, in boxed storage [`delete_string`] frees.
-#[must_use]
-pub fn new_sized_string(size: usize, with: Option<TrustedAllocator>) -> *mut CppString {
-    swr_string_new(Box::leak(Box::new_uninit()), size, with)
-}
-
-/// `delete string`.
-///
-/// # Safety
-/// `string` came from [`new_string`] or [`new_sized_string`] and is not used again.
-pub unsafe fn delete_string(string: *mut CppString) {
-    // SAFETY: as the caller promises.
-    unsafe { Box::from_raw(string) }.dispose();
 }
 
 /// `f` over this thread's String (`sw_tg_buffer()`), lent to `f` alone. A thread
@@ -747,7 +721,7 @@ mod tests {
 
     pub(super) fn new(text: &[u8]) -> CppString {
         let mut s = MaybeUninit::uninit();
-        from_bytes(&mut s, text);
+        fill(s.write(CppString::EMPTY), text);
         unsafe { s.assume_init() }
     }
 
@@ -839,16 +813,6 @@ mod tests {
         unsafe { libc::free(moved.release().cast()) };
         copied.dispose();
         s.dispose();
-    }
-
-    #[test]
-    fn new_and_delete_string() {
-        let s = new_string(b"abc");
-        assert_eq!(unsafe { &*s }.view(), b"abc");
-        unsafe { delete_string(s) };
-        let s = new_sized_string(16, None);
-        assert_eq!(unsafe { ((*s).length, (*s).size) }, (0, 16));
-        unsafe { delete_string(s) };
     }
 
     #[test]

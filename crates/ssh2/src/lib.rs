@@ -44,8 +44,9 @@ pub const WRITE: c_int = 1 << 10;
 
 /// `swr_v1_ssh2_ops`: what `swr_v1_ssh2_bound` lends, in a coroutine, for the session
 /// it was asked about. Only an export's parameter lends one (its field is private),
-/// with that session as the export's [`Session`].
-#[repr(C)]
+/// with that session as the export's [`Session`]. One function pointer, so the C
+/// struct's layout.
+#[repr(transparent)]
 pub struct Ops {
     /// Park the coroutine until `event` on the session's socket: false if
     /// the wait failed (`Socket::poll`). The lender's function, whose contract

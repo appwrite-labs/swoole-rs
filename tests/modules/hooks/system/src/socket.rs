@@ -621,8 +621,8 @@ fn delete(conn: ManuallyDrop<Sock>) {
 
 /// `delete string`.
 fn delete_string(string: *mut CppString) {
-    // SAFETY: a String the caller owns, made by `new_sized_string`.
-    unsafe { swoole_rs_corebase::buffer::string::delete_string(string) };
+    // SAFETY: a boxed String the caller owns, which the record gave up.
+    unsafe { Box::from_raw(string) }.dispose();
 }
 
 fn socket_pair() -> [c_int; 2] {

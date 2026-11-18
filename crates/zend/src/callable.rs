@@ -121,16 +121,17 @@ impl Callable {
     #[must_use]
     #[inline]
     pub fn call_parts(&self) -> (crate::host::Callee<'_>, crate::Zvals<'_>) {
-        let (_, argc, argv, _) = self.parts();
+        let (fcc, argc, argv, _) = self.parts();
         // The record's cache, without a borrow: Zend may write a cache it calls.
         let cache = self
             .0
             .wrapping_byte_add(std::mem::offset_of!(swr_zend_callable, fcc))
             .cast();
-        (
-            crate::host::Callee(cache, std::marker::PhantomData),
-            crate::Zvals::counted(argv, argc),
-        )
+        let callee = crate::host::Callee {
+            cache: crate::host::CalleePtr(cache, std::marker::PhantomData),
+            resolved: fcc.function().is_some(),
+        };
+        (callee, crate::Zvals::counted(argv, argc))
     }
 
     /// Drop the arguments, object and closure `keep` held, then free the

@@ -44,8 +44,9 @@ impl Session<'_> {
     }
 }
 
-/// `swr_v1_ssh2_ops`, as crates/ssh2 takes it.
-#[repr(C)]
+/// `swr_v1_ssh2_ops`, as crates/ssh2 takes it: one function pointer, so the C
+/// struct's layout, which C reaches only through a pointer to the table.
+#[repr(transparent)]
 pub struct Ops {
     wait: extern "C" fn(session: Session<'_>, event: c_int) -> bool,
 }

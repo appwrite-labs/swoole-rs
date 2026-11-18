@@ -87,7 +87,7 @@ pub fn type_name(kind: u32) -> Option<&'static CStr> {
     swr_zend_type_name(kind).map(CText::get)
 }
 
-impl Call {
+impl Call<'_> {
     /// `zend_throw_error(NULL, "%s", message)`: an `Error`, from this handler.
     pub fn throw_error(&self, message: &CStr) {
         throw_error(message);

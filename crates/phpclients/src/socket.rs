@@ -611,7 +611,7 @@ fn type_name(item: &Value) -> String {
 }
 
 /// `(array $io_vector, float $timeout = 0)`.
-fn vector_arguments(call: &Call) -> Result<(&Array, f64), Invalid> {
+fn vector_arguments<'c>(call: &'c Call<'_>) -> Result<(&'c Array, f64), Invalid> {
     call.arity(1, 2)?;
     Ok((call.array_ref(1)?, call.double(2, 0.0)?))
 }

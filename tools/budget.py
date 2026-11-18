@@ -14,6 +14,7 @@ rise by what others fall, and a fold or a new crate moves what it holds.
   fakes    `cfg(...not(test)...)`: code tests and Miri don't run, usually because a
            test build swaps in a stand-in. Pass the dependency in (an ops table, a
            closure, a trait) so tests run the shipped body (#3556)
+  shortreads  wire readers that default a missing field or zero-pad a partial field
   casts    cast lints a `#[expect]` names: convert with `c_cast::<T>()` (corebase) where
            upstream's C converts, or keep the value in the type it is used as (#3564)
   cells    `RefCell` types (fields, statics, thread-locals): a borrow held across a yield
@@ -123,8 +124,20 @@ def derefs(root):
     return found
 
 
+# Limit fallbacks to readers: encoders also take bounded slices of scratch buffers.
+WIRE_PATH = re.compile(r'(?:^|/)crates/(?:(?:phphttp2|http2|websocket|framing|protocols)/src/|corebase/src/process/)')
+WIRE_READER = {'inside': {'stopBy': 'end', 'kind': 'function_item', 'has': {
+    'field': 'name', 'regex': r'(?:read|decode|unpack|parse|whole_task|head_bytes|default_length)'}}}
+WIRE_DEFAULT = {'kind': 'call_expression', 'any': [
+    {**WIRE_READER, 'regex': r'(?s)^(?:[\w.]+\s*\.\s*(?:get|split_at_checked|first_chunk)\b|[\w:]*decode_frame\().*\.\s*unwrap_or(?:_default)?\('},
+    {**WIRE_READER, 'pattern': '$OUT.iter_mut().zip($INPUT)'},
+    {'regex': r'(?s)^(?:[\w:]+::)?from_(?:ne|be|le)_bytes\(.*\.unwrap_or(?:_default)?\('},
+    {'regex': r'(?s)^(?:[\w:]+::)?from_fn\(.*\.get\(.*\.unwrap_or\(0\)'},
+]}
+
 # Each count's ast-grep rule (https://ast-grep.github.io/reference/rule.html), or a fn of the tree.
 KINDS = {
+    'shortreads': WIRE_DEFAULT,
     'unsafe': {'any': [{'kind': 'unsafe_block'}, {**FN, **UNSAFE}, {'kind': 'impl_item', 'regex': r'^unsafe\b'},
                        tokens('unsafe', BRACES), tokens('unsafe', 'fn|impl'),
                        tokens('unsafe', 'extern', {'kind': 'string_literal'}, 'fn')]},
@@ -193,6 +206,7 @@ def count_file(path, test_files):
             test_files.add((base / name / 'mod.rs').resolve())
     return {kind: sum(not any(node.range().start.index in span for span in skipped)
                       for node in (rule(root) if callable(rule) else root.find_all(**rule)))
+            if kind != 'shortreads' or WIRE_PATH.search(path.as_posix()) else 0
             for kind, rule in KINDS.items()}
 
 

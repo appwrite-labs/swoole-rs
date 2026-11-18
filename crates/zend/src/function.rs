@@ -168,7 +168,7 @@ impl<'a> Fcc<'a> {
     }
 }
 
-impl Call {
+impl Call<'_> {
     /// `Z_PARAM_FUNC` of passed argument `n` (1-based) into `fci` and `fcc`, as
     /// [`Call::callable`]: the resolved cache, lent while the argument keeps
     /// its function.

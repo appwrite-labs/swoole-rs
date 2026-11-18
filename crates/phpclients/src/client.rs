@@ -130,7 +130,7 @@ pub fn client_coro_minit(minit: &Minit) -> Result<(), Bailout> {
 }
 
 /// The client data of `$this`; None in a static call.
-fn this(call: &Call) -> Option<&Data> {
+fn this<'c>(call: &'c Call<'_>) -> Option<&'c Data> {
     call.custom()
 }
 
@@ -147,7 +147,7 @@ fn report(call: &Call, code: c_int, message: &CStr) {
 
 /// Property writes on `$this`, a client method's object, under the client
 /// class; None in a static call.
-fn props(call: &Call) -> Option<Props<'_>> {
+fn props<'c>(call: &'c Call<'_>) -> Option<Props<'c>> {
     call.props(Some(&CLIENT))
 }
 

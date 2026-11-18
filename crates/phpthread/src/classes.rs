@@ -192,13 +192,13 @@ pub(crate) fn queue_object(queue: &Arc<Queue>) -> Owned {
 
 /// The object's reference cell: the methods are non-static and the classes
 /// final, so `$this` is one of `T`'s objects.
-fn cell<T: Shared>(call: &Call) -> Option<&OnceCell<Arc<T::Target>>> {
+fn cell<'c, T: Shared>(call: &'c Call<'_>) -> Option<&'c OnceCell<Arc<T::Target>>> {
     call.custom::<T>().map(Shared::cell)
 }
 
 /// The object's table or queue, or the fatal error upstream raises
 /// (`*_fetch_object_check`); nothing is held when it bails out.
-fn constructed<T: Shared>(call: &Call, list: bool) -> Option<&T::Target> {
+fn constructed<'c, T: Shared>(call: &'c Call<'_>, list: bool) -> Option<&'c T::Target> {
     let shared = cell::<T>(call)?.get();
     if shared.is_none() {
         // The fatal error; this frame owns nothing.
@@ -273,7 +273,7 @@ fn map_key(call: &Call, key: &swoole_rs_zend::Value) -> Option<Key> {
 }
 
 /// Parse `(mixed $key[, ...])`, check the object, and resolve the key.
-fn map_call(call: &Call, min: u32, max: u32) -> Option<(&Array, Key)> {
+fn map_call<'c>(call: &'c Call<'_>, min: u32, max: u32) -> Option<(&'c Array, Key)> {
     call.arity(min, max).ok()?;
     let map = constructed::<Map>(call, false)?;
     let key = map_key(call, call.value(1)?)?;
@@ -422,7 +422,7 @@ fn out_of_range(call: &Call) {
 }
 
 /// Parse `(int $index)` and check the object.
-fn list_long(call: &Call) -> Option<(&Array, i64)> {
+fn list_long<'c>(call: &'c Call<'_>) -> Option<(&'c Array, i64)> {
     let index = call.arity(1, 1).and_then(|()| call.long(1, 0)).ok()?;
     Some((constructed::<List>(call, true)?, index))
 }

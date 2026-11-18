@@ -199,7 +199,7 @@ impl Drop for PoolObject {
 }
 
 /// `$this`, which every instance method runs on.
-fn this(call: &Call) -> Option<&PoolObject> {
+fn this<'c>(call: &'c Call<'_>) -> Option<&'c PoolObject> {
     call.custom()
 }
 

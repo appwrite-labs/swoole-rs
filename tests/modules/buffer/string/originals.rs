@@ -210,8 +210,8 @@ fn explode_2() {
 
 #[test]
 fn pop_1() {
-    let s = new_sized_string(INIT_SIZE, None);
-    let str = unsafe { &mut *s };
+    let mut s = boxed_sized_string(INIT_SIZE, None);
+    let str = &mut *s;
 
     let str_1 = str.str;
 
@@ -226,13 +226,13 @@ fn pop_1() {
     assert_eq!(INIT_SIZE, str.size);
 
     unsafe { str.allocator.unwrap().get().free.unwrap()(str_1.cast()) };
-    unsafe { delete_string(s) };
+    str.dispose();
 }
 
 #[test]
 fn pop_2() {
-    let s = new_sized_string(INIT_SIZE, None);
-    let str = unsafe { &mut *s };
+    let mut s = boxed_sized_string(INIT_SIZE, None);
+    let str = &mut *s;
 
     let str_1 = str.str;
 
@@ -247,13 +247,13 @@ fn pop_2() {
     assert_eq!(INIT_SIZE, str.size);
 
     unsafe { str.allocator.unwrap().get().free.unwrap()(str_1.cast()) };
-    unsafe { delete_string(s) };
+    str.dispose();
 }
 
 #[test]
 fn reduce_1() {
-    let s = new_sized_string(INIT_SIZE, None);
-    let str = unsafe { &mut *s };
+    let mut s = boxed_sized_string(INIT_SIZE, None);
+    let str = &mut *s;
 
     str.append(TEST_DATA);
     str.offset = 11;
@@ -261,13 +261,13 @@ fn reduce_1() {
     str.reduce(str.offset);
 
     assert_eq!(b",swoole,php,last", str.view());
-    unsafe { delete_string(s) };
+    str.dispose();
 }
 
 #[test]
 fn reduce_2() {
-    let s = new_sized_string(INIT_SIZE, None);
-    let str = unsafe { &mut *s };
+    let mut s = boxed_sized_string(INIT_SIZE, None);
+    let str = &mut *s;
 
     str.append(TEST_DATA);
     str.offset = signed(str.length);
@@ -275,13 +275,13 @@ fn reduce_2() {
     str.reduce(str.offset);
 
     assert_eq!(str.length, 0);
-    unsafe { delete_string(s) };
+    str.dispose();
 }
 
 #[test]
 fn reduce_3() {
-    let s = new_sized_string(INIT_SIZE, None);
-    let str = unsafe { &mut *s };
+    let mut s = boxed_sized_string(INIT_SIZE, None);
+    let str = &mut *s;
 
     str.append(TEST_DATA);
     str.offset = 0;
@@ -289,15 +289,15 @@ fn reduce_3() {
     str.reduce(str.offset);
 
     assert_eq!(str.length, TEST_DATA.len());
-    unsafe { delete_string(s) };
+    str.dispose();
 }
 
 #[test]
 #[cfg_attr(miri, ignore = "Miri has no printf, which `print` calls")]
 fn append_number() {
     let data = b"hello";
-    let s = new_sized_string(data.len() + 32, None);
-    let str = unsafe { &mut *s };
+    let mut s = boxed_sized_string(data.len() + 32, None);
+    let str = &mut *s;
     str.append(data);
     swr_string_append_int(str, 123);
     str.set_null_terminated();
@@ -306,7 +306,7 @@ fn append_number() {
     str.print(true);
     str.print(false);
 
-    unsafe { delete_string(s) };
+    str.dispose();
 }
 
 /// `compatibility.cc`: ordinary default-allocator operations, with its count of checks.

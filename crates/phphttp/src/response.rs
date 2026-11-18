@@ -57,7 +57,7 @@ impl Drop for Data {
 }
 
 /// The method's `$this` context.
-fn this(call: &Call) -> Option<Ctx<'_>> {
+fn this<'c>(call: &'c Call<'_>) -> Option<Ctx<'c>> {
     call.custom::<Data>()?.0.get().map(Hold::ctx)
 }
 
@@ -131,7 +131,7 @@ pub fn response_minit(args: &MinitArgs) {
 }
 
 /// `http_response_get_and_check_context`: a context that can still respond.
-fn checked(call: &Call) -> Option<Ctx<'_>> {
+fn checked<'c>(call: &'c Call<'_>) -> Option<Ctx<'c>> {
     let ctx = this(call).filter(|ctx| ctx.flags() & (END | DETACHED) == 0);
     if ctx.is_none() {
         host::set_last_error(HTTP_CONTEXT_UNAVAILABLE);
@@ -141,7 +141,7 @@ fn checked(call: &Call) -> Option<Ctx<'_>> {
 
 /// `php_swoole_http_response_get_context`, setting `SW_ERROR_SESSION_CLOSED`
 /// when there is none.
-fn open(call: &Call) -> Option<Ctx<'_>> {
+fn open<'c>(call: &'c Call<'_>) -> Option<Ctx<'c>> {
     let ctx = this(call);
     if ctx.is_none() {
         host::set_last_error(SESSION_CLOSED);
@@ -150,7 +150,7 @@ fn open(call: &Call) -> Option<Ctx<'_>> {
 }
 
 /// The coroutine WebSocket checks `push`, `recv` and `disconnect` share.
-fn websocket(call: &Call) -> Option<Ctx<'_>> {
+fn websocket<'c>(call: &'c Call<'_>) -> Option<Ctx<'c>> {
     let ctx = open(call)?;
     let flags = ctx.flags();
     if flags & CO_SOCKET == 0 || flags & UPGRADE == 0 {
