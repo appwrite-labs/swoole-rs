@@ -1,13 +1,6 @@
 //! `BaseFactory` (`src/server/base.cc`): base and thread mode hand events to the worker
 //! in this process, send replies, and close connections. The message bus and the
 //! worker's event loop are the hybrid's ([`crate::hybrid`]).
-#![cfg_attr(
-    not(any(test, feature = "upstream-symbols")),
-    expect(
-        dead_code,
-        reason = "only the hybrid's factory runs a base-mode server"
-    )
-)]
 use crate::callbacks::{CallbackKind, EventSlot, ReceiveSlot};
 use crate::hybrid::hybrid;
 use crate::reactor_handle::Reactor;
@@ -109,7 +102,6 @@ impl<'a> SendData<'a> {
     }
 
     /// The payload under the head `info`, whose `len` stays the payload's.
-    #[cfg(feature = "upstream-symbols")]
     #[must_use]
     pub(crate) fn rehead(self, info: DataHead) -> Self {
         let len = self.info.len;
@@ -125,10 +117,6 @@ impl<'a> SendData<'a> {
     }
 
     /// [`swoole_rs_bus::Bus::send`] of the head and payload to `pipe`.
-    #[cfg_attr(
-        not(feature = "upstream-symbols"),
-        expect(dead_code, reason = "only the hybrid's factories write to a pipe")
-    )]
     pub(crate) fn send(
         &mut self,
         bus: &swoole_rs_bus::Bus,
@@ -181,10 +169,6 @@ fn close_event(c: crate::Connection<'_>, fd: c_long) -> DataHead {
 /// while the connection `conn` gives is marked closing. onClose reaches the same
 /// record by session (`exist()`, `getClientInfo()`, `close()`), so `conn` is asked
 /// again after it rather than a reference held across it.
-#[cfg_attr(
-    not(any(test, feature = "upstream-symbols")),
-    expect(dead_code, reason = "only process mode's factory ops call it")
-)]
 pub(crate) fn on_close<'a>(
     conn: impl Fn() -> Option<crate::Connection<'a>>,
     fd: c_long,
@@ -681,7 +665,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "upstream-symbols")]
     #[test]
     fn base_receive_buffer_transfers_inline_and_lends_to_the_bus() {
         use swoole_rs_corebase::buffer::string::OwnedString;

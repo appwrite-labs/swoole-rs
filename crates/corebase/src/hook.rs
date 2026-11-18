@@ -100,7 +100,7 @@ pub fn callbacks(kind: HookType) -> &'static [HookFn] {
 }
 
 /// `void swoole_add_hook(swGlobalHookType, swHookFunc, int push_back)`.
-#[cfg_attr(feature = "upstream-symbols", unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub extern "C" fn swoole_add_hook(kind: HookType, func: HookFn, push_back: c_int) {
     let Some(slot) = slot(kind) else {
         return;
@@ -127,7 +127,7 @@ pub extern "C" fn swoole_add_hook(kind: HookType, func: HookFn, push_back: c_int
 ///
 /// # Safety
 /// The callbacks accept `arg`.
-#[cfg_attr(feature = "upstream-symbols", unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swoole_call_hook(kind: HookType, arg: *mut c_void) {
     for func in callbacks(kind) {
         // SAFETY: the caller's contract.
@@ -136,7 +136,7 @@ pub unsafe extern "C" fn swoole_call_hook(kind: HookType, arg: *mut c_void) {
 }
 
 /// `bool swoole_isset_hook(swGlobalHookType)`.
-#[cfg_attr(feature = "upstream-symbols", unsafe(no_mangle))]
+#[unsafe(no_mangle)]
 #[must_use]
 pub extern "C" fn swoole_isset_hook(kind: HookType) -> bool {
     !callbacks(kind).is_empty()

@@ -21,7 +21,6 @@ impl Json {
 
     /// Text from native code; nlohmann refused to dump invalid UTF-8. Only the live admin
     /// facts use it.
-    #[cfg(feature = "upstream-symbols")]
     pub(crate) fn utf8(bytes: &[u8]) -> String {
         match core::str::from_utf8(bytes) {
             Ok(text) => text.to_owned(),

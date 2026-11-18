@@ -1313,7 +1313,6 @@ impl PoolHost for Native<'_> {
             log(kind, arg);
             return;
         }
-        #[cfg(feature = "upstream-symbols")]
         if effect(op, arg) {
             return;
         }
@@ -1339,16 +1338,12 @@ impl PoolHost for Native<'_> {
     }
 
     fn is_master(&mut self) -> bool {
-        cfg!(feature = "upstream-symbols")
-            && crate::process::methods::worker_type() == Some(WorkerType::Master)
+        crate::process::methods::worker_type() == Some(WorkerType::Master)
     }
 
     /// crates/corebase's fork, with its process bookkeeping.
     fn fork(&mut self, _: *mut WorkerRecord) -> Option<c_int> {
-        #[cfg(feature = "upstream-symbols")]
         let pid = crate::swoole_fork(0);
-        #[cfg(not(feature = "upstream-symbols"))]
-        let pid = 0;
         (pid >= 0).then_some(pid)
     }
 
@@ -1462,7 +1457,6 @@ fn new_message_box(size: usize, maxlen: usize) -> SharedChannel {
 /// The `OP_*` effects that are calls into the process-wide worker and signal state:
 /// `None` for the remaining effects supplied by the pool's caller, including its
 /// timer, event-loop and wait operations.
-#[cfg(feature = "upstream-symbols")]
 fn effect(op: Op, arg: u64) -> bool {
     match op {
         Op::WorkerType => crate::process::methods::swoole_set_worker_type(arg.c_cast::<c_int>()),

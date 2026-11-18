@@ -9,7 +9,7 @@ pub const SOCKET: [Handler; 3] = [
     socket_members::error_event_callback,
 ];
 
-#[cfg(all(feature = "upstream-symbols", feature = "iouring"))]
+#[cfg(feature = "iouring")]
 pub const IOURING: Option<Handler> = Some(|_, _| if crate::iouring::ready() { 0 } else { -1 });
-#[cfg(not(all(feature = "upstream-symbols", feature = "iouring")))]
+#[cfg(not(feature = "iouring"))]
 pub const IOURING: Option<Handler> = None;

@@ -1,7 +1,6 @@
 //! `coroutine::async`: hand a job to the `AsyncThreads` pool and park the current
 //! coroutine until the pool's completion resumes it. [`AsyncOps`] holds the pool's
 //! `async::dispatch` and the coroutine operations.
-#[cfg(feature = "upstream-symbols")]
 pub mod threads;
 
 use crate::coroutine::Waker;
@@ -14,7 +13,6 @@ use core::sync::atomic::{AtomicI32, AtomicIsize, AtomicU8, Ordering::Relaxed};
 pub type WakerSlot = core::cell::Cell<Option<Waker>>;
 
 /// `co->yield()` of the current coroutine (fatal outside one), its waker in `waker`.
-#[cfg(feature = "upstream-symbols")]
 pub fn park(waker: &WakerSlot) {
     crate::coroutine::park(crate::coroutine::current_safe().cast(), |park| {
         waker.set(Some(park));
@@ -23,7 +21,6 @@ pub fn park(waker: &WakerSlot) {
 
 /// `co->yield_ex(timeout)` of the current coroutine (fatal outside one), its waker
 /// in `waker`.
-#[cfg(feature = "upstream-symbols")]
 pub fn park_for_armed(timeout: f64, waker: &WakerSlot) -> bool {
     let arm = |park| waker.set(Some(park));
     let code =
@@ -32,7 +29,6 @@ pub fn park_for_armed(timeout: f64, waker: &WakerSlot) -> bool {
 }
 
 /// `coroutine::async`'s coroutine and pool operations.
-#[cfg(feature = "upstream-symbols")]
 pub static COROUTINE_ASYNC: AsyncOps = AsyncOps {
     current: crate::coroutine::current_safe,
     dispatch: threads::dispatch,
@@ -115,7 +111,6 @@ impl AsyncEvent {
     }
 
     /// `retval` and `error`, stored through a shared copy: the pool's result.
-    #[cfg(feature = "upstream-symbols")]
     fn publish(&self, (retval, error): (isize, c_int)) {
         self.retval.store(retval, Relaxed);
         self.error.store(error, Relaxed);
@@ -283,7 +278,6 @@ pub fn swr_v1_hook_async(
 /// `coroutine::async_job`: [`swr_v1_hook_async_job`] over the coroutine's own
 /// operations; the hooked functions' and `System::read_file`'s offload. Outside a
 /// coroutine it raises upstream's fatal error.
-#[cfg(feature = "upstream-symbols")]
 pub fn async_job(job: &mut (dyn FnMut() + Send)) -> bool {
     swr_v1_hook_async_job(job, &COROUTINE_ASYNC)
 }

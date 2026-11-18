@@ -4,7 +4,6 @@
 //! hands a baton from one thread to the next, so exactly one runs at a time.
 //! Upstream hands off with `std::mutex`es unlocked by threads that didn't lock
 //! them; a baton is a binary semaphore, which any thread may post.
-#[cfg(any(test, feature = "upstream-symbols"))]
 use crate::small_fn::Small;
 use crate::small_fn::SmallFn;
 use crate::{CellExt, SharedThread, adopt_shared_thread, shared_thread};
@@ -111,10 +110,8 @@ const ENTRY_WORDS: usize = 10;
 
 /// An entry's closure, run in place (through a reference, so its captures are
 /// read where they lie) or consumed.
-#[cfg(any(test, feature = "upstream-symbols"))]
 struct Once<F>(F);
 
-#[cfg(any(test, feature = "upstream-symbols"))]
 impl<F: Fn() + Copy + 'static> Small<()> for Once<F> {
     fn run(&self) {
         (self.0)();
@@ -144,7 +141,6 @@ impl Entry {
     }
 
     /// The entry that runs `entry`.
-    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn of<F: Fn() + Copy + 'static>(entry: F) -> Self {
         let slot = SmallFn::empty();
         slot.put(Once(entry));

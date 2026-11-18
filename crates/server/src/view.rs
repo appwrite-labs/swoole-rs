@@ -29,10 +29,6 @@ pub(crate) struct Fields {
 /// It owns the state it names, which it frees when it drops, so a borrowed object
 /// is a live server ([`Server::of_object`]).
 #[repr(C)]
-#[cfg_attr(
-    not(feature = "upstream-symbols"),
-    expect(dead_code, reason = "only `SharedServer` makes a server object")
-)]
 pub(crate) struct ServerObject {
     head: Fields,
     tables: *mut crate::ServerTables,
@@ -40,10 +36,6 @@ pub(crate) struct ServerObject {
     state: Arc<ServerState>,
 }
 
-#[cfg_attr(
-    not(feature = "upstream-symbols"),
-    expect(dead_code, reason = "only `SharedServer` makes a server object")
-)]
 impl ServerObject {
     /// The object over `state`, which it owns from now on.
     pub(crate) fn new(state: Box<ServerState>) -> Self {
@@ -145,10 +137,6 @@ impl<'a> Server<'a> {
     }
 
     /// The server `object` is, live as long as the borrow.
-    #[cfg_attr(
-        not(feature = "upstream-symbols"),
-        expect(dead_code, reason = "only `SharedServer` makes a server object")
-    )]
     pub(crate) fn of_object(object: &'a ServerObject) -> Self {
         Self {
             raw: core::ptr::from_ref(object).cast_mut().cast(),
@@ -203,7 +191,6 @@ impl<'a> Server<'a> {
     /// `set_allocator(allocator)` on the server's own `MessageBus`, or with
     /// `worker` on `get_worker_message_bus()`: the bus allocates its packets with
     /// `allocator` from now on.
-    #[cfg(feature = "upstream-symbols")]
     pub fn set_bus_allocator(self, worker: bool, allocator: swoole_rs_corebase::TrustedAllocator) {
         let state = self.state();
         if worker {
@@ -771,10 +758,6 @@ pub(crate) fn worker_pipe(worker: Worker<'_>, master: bool) -> Option<Heap<'_>> 
 #[derive(Clone, Copy)]
 pub(crate) struct PipeSocket<'a>(Heap<'a>);
 
-#[cfg_attr(
-    not(feature = "upstream-symbols"),
-    expect(dead_code, reason = "only the hybrid's factories write to a pipe")
-)]
 impl<'a> PipeSocket<'a> {
     /// The master end (`master`) or the worker end of `worker`'s pipe.
     #[inline]

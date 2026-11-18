@@ -137,11 +137,11 @@ pub fn swr_v1_hooks_sleep_until(
 /// return.
 #[must_use]
 pub fn system_sleep(sec: f64) -> bool {
-    #[cfg(all(feature = "iouring", feature = "upstream-symbols"))]
+    #[cfg(feature = "iouring")]
     {
         crate::uring::sleep(&crate::iouring::HOST, sec).is_ok()
     }
-    #[cfg(not(all(feature = "iouring", feature = "upstream-symbols")))]
+    #[cfg(not(feature = "iouring"))]
     {
         /// `SW_ERROR_CO_CANCELED`: what `yield_ex` sets when the coroutine was canceled.
         const CANCELED: i32 = 10017;

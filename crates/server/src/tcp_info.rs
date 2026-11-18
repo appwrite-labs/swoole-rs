@@ -5,12 +5,10 @@ use core::ffi::CStr;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub(crate) type TcpInfo = libc::tcp_info;
 #[cfg(any(target_os = "linux", target_os = "android"))]
-#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) const TCP_INFO: core::ffi::c_int = libc::TCP_INFO;
 #[cfg(target_vendor = "apple")]
 pub(crate) type TcpInfo = libc::tcp_connection_info;
 #[cfg(target_vendor = "apple")]
-#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) const TCP_INFO: core::ffi::c_int = libc::TCP_CONNECTION_INFO;
 
 /// The fields upstream's `sw_socket_parse_tcp_info` reports, in its order.

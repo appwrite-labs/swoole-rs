@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/os/base.cc (Swoole contributors).
-//! Upstream `src/os/base.cc`, under its C++ symbols with `upstream-symbols`: the
+//! Upstream `src/os/base.cc`, under its C++ symbols: the
 //! root check, daemonizing, user/group/chroot isolation, parent-death signal, CPU
 //! affinity, native thread id and thread names. Logs name the function as
 //! upstream's `__SW_FUNC__` did.
@@ -14,13 +14,13 @@ use std::ffi::CStr;
 // caller memory: the caller's ids and session are the kernel's to check.
 unsafe extern "C" {
     safe fn geteuid() -> libc::uid_t;
-    #[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
+    #[cfg(target_vendor = "apple")]
     safe fn setsid() -> libc::pid_t;
     /// Leaves the process at once, running no exit handler and no destructor.
-    #[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
+    #[cfg(target_vendor = "apple")]
     safe fn _exit(status: c_int) -> !;
     /// Forks and leaves the parent, as `daemon(3)`.
-    #[cfg(all(feature = "upstream-symbols", not(target_vendor = "apple")))]
+    #[cfg(not(target_vendor = "apple"))]
     safe fn daemon(nochdir: c_int, noclose: c_int) -> c_int;
     safe fn setgid(gid: libc::gid_t) -> c_int;
     safe fn setuid(uid: libc::uid_t) -> c_int;
@@ -63,7 +63,7 @@ pub fn swr_v1_os_is_root_user() -> bool {
 
 /// `swoole_daemon`'s Darwin steps before the fork: `chdir("/")` unless `nochdir`,
 /// then stdin/stdout/stderr onto `/dev/null` unless `noclose`. Logs the failed step.
-#[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
+#[cfg(target_vendor = "apple")]
 fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
     use crate::sys;
     if !nochdir && sys::chdir(c"/").is_err() {
@@ -87,14 +87,14 @@ fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
 }
 
 /// `SW_FORK_DAEMON` and `SW_FORK_PRECHECK`.
-#[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
+#[cfg(target_vendor = "apple")]
 const FORK_DAEMON: c_int = 4;
-#[cfg(all(feature = "upstream-symbols", not(target_vendor = "apple")))]
+#[cfg(not(target_vendor = "apple"))]
 const FORK_PRECHECK: c_int = 8;
 
 /// `int swoole_daemon(int nochdir, int noclose)`. Darwin's `daemon(3)` is
 /// deprecated, so it detaches, forks and calls `setsid` itself.
-#[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
+#[cfg(target_vendor = "apple")]
 #[must_use]
 pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
     if !daemon_detach(nochdir != 0, noclose != 0) {
@@ -120,7 +120,7 @@ pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
 /// `int swoole_daemon(int nochdir, int noclose)`: `daemon(3)`, then the
 /// after-fork hooks, since the pid changed (PHP 8.5 refreshes its memory
 /// manager after a fork, and `daemon(3)` forks behind its back).
-#[cfg(all(feature = "upstream-symbols", not(target_vendor = "apple")))]
+#[cfg(not(target_vendor = "apple"))]
 #[must_use]
 pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
     // Upstream's fork precheck; it forks nothing (-1 before `swoole_init`).
@@ -326,10 +326,7 @@ fn pthread_ok(rc: c_int) -> bool {
 
 /// `size_t swoole_random_bytes(char *buf, size_t size)`, over corebase's: fills
 /// the `size` bytes lent at `buf`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z19swoole_random_bytesPcm")
-)]
+#[unsafe(export_name = "_Z19swoole_random_bytesPcm")]
 #[must_use]
 pub extern "C" fn swoole_random_bytes<'id>(buf: Out<'id, u8>, size: Count<'id>) -> usize {
     crate::random_bytes(buf.fill(size).slots())

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/reactor/base.cc (Swoole contributors).
 //! `Reactor` members of base.cc that are whole Rust operations. Each receives the
-//! `Reactor`, which begins with its prepared Rust state. With `upstream-symbols`
-//! they are defined under their upstream (Itanium) symbols.
+//! `Reactor`, which begins with its prepared Rust state.
 use crate::reactor::handlers::Handler;
 use crate::reactor::socket_upstream::swr_v1_reactor_log;
 use std::ffi::c_int;

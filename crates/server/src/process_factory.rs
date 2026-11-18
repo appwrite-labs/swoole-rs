@@ -2,10 +2,6 @@
 //! dispatch to a worker, and a worker's sends and closes back through the reactor
 //! threads. The pipe writes are the hybrid's [`Pipe`] sends; forking, setup and
 //! teardown are in `native`.
-#![cfg_attr(
-    not(any(test, feature = "upstream-symbols")),
-    expect(dead_code, reason = "only the hybrid runs process mode")
-)]
 use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::ServerEvent;
@@ -23,7 +19,6 @@ use swoole_rs_corebase::log::LogLevel::{
     SW_LOG_NOTICE as NOTICE, SW_LOG_TRACE as TRACE, SW_LOG_WARNING as WARNING,
 };
 
-#[cfg(feature = "upstream-symbols")]
 pub(crate) mod native;
 
 /// Where process mode writes a message.

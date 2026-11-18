@@ -2,13 +2,8 @@
 //! about its signals, the data it receives and how long it waits to exit. The event
 //! switch, the start and stop callbacks, the async stop and the process-mode main loop
 //! are in `native`.
-#![cfg_attr(
-    not(any(test, feature = "upstream-symbols")),
-    expect(dead_code, reason = "only the hybrid runs event workers")
-)]
 use core::ffi::c_int;
 
-#[cfg(feature = "upstream-symbols")]
 pub mod native;
 
 /// `signal_init`'s handlers.

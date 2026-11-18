@@ -11,6 +11,15 @@ parse_deps = true
 include = ["swoole-rs-error"]
 [export]
 include = ["ErrorCode"]
+# C++ compatibility symbols have their own declarations outside the C ABI.
+exclude = [
+    "_Z15swoole_strerrori",
+    "_Z25swoole_get_last_error_msgv",
+    "_Z27swoole_clear_last_error_msgv",
+    "_Z18swoole_throw_errori",
+    "_Z19swoole_ignore_errori",
+    "_Z23swoole_is_ignored_errori",
+]
 [export.rename]
 "ErrorCode" = "swErrorCode"
 [enum]

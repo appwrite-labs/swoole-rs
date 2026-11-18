@@ -124,10 +124,8 @@ static RUNTIME: OnceLock<&'static Ops> = OnceLock::new();
 pub fn swr_v1_hook_install() {
     use swoole_rs_corebase::{Switch, built_with};
     static BUILT: OnceLock<Host> = OnceLock::new();
-    #[cfg(all(feature = "iouring", feature = "upstream-symbols"))]
+    #[cfg(feature = "iouring")]
     let uring = Some(&crate::iouring::HOST);
-    #[cfg(all(feature = "iouring", not(feature = "upstream-symbols")))]
-    let uring = None;
     let host = BUILT.get_or_init(|| Host {
         #[cfg(feature = "iouring")]
         uring,
@@ -137,7 +135,7 @@ pub fn swr_v1_hook_install() {
         uring_socket: built_with(Switch::UringSocket),
     });
     set_host(host, &NATIVE);
-    #[cfg(all(feature = "iouring", feature = "upstream-symbols"))]
+    #[cfg(feature = "iouring")]
     swoole_rs_corebase::reactor::register_uring(&crate::iouring::REACTOR);
     crate::co_io::install_native();
 }

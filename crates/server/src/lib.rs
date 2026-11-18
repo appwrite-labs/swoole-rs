@@ -19,7 +19,6 @@ pub use server_methods::{
     swr_v1_server_add_command, swr_v1_server_command, swr_v1_server_command_result,
 };
 
-#[cfg(any(test, feature = "upstream-symbols"))]
 mod admin;
 mod base_factory;
 pub mod callbacks;
@@ -29,25 +28,19 @@ mod conn_io;
 mod connection;
 mod control;
 mod dispatch;
-#[cfg(feature = "upstream-symbols")]
 mod dtls;
 pub mod event_worker;
-#[cfg(feature = "upstream-symbols")]
 pub mod factory;
 #[cfg(test)]
 mod fixture;
 mod hybrid;
-#[cfg(any(test, feature = "upstream-symbols"))]
 mod json;
 pub mod local_addr;
 pub mod manager;
 mod master_ops;
-#[cfg(feature = "upstream-symbols")]
 mod objects;
-#[cfg(feature = "upstream-symbols")]
 mod pool_native;
 pub mod process_worker;
-#[cfg(feature = "upstream-symbols")]
 pub use pool_native::process_pool_native;
 pub mod port_config;
 pub mod port_tls;
@@ -61,7 +54,6 @@ mod reactor_thread;
 mod records;
 mod send;
 pub mod server_methods;
-#[cfg(feature = "upstream-symbols")]
 mod server_object;
 mod shared;
 mod startup;
@@ -73,7 +65,6 @@ mod table;
 pub mod task_worker;
 mod tcp_info;
 pub mod thread_mode;
-#[cfg(feature = "upstream-symbols")]
 mod thread_ops;
 pub mod view;
 pub mod worker_methods;
@@ -85,8 +76,7 @@ pub use shared::{PortCounters, ServerCounters, swr_v1_server_shared_init};
 
 pub use config::{DispatchMode, Mode, ServerConfig, Shared, TaskIpcMode};
 
-/// `SW_THREAD`: whether this build has thread mode, as the extension's MINIT says. Outside
-/// `thread_mode::native`, which needs `upstream-symbols`, since crates/phpserver sets and reads it.
+/// `SW_THREAD`: whether this build has thread mode, as the extension's MINIT says.
 pub static THREAD_SUPPORTED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
@@ -94,9 +84,7 @@ pub static THREAD_SUPPORTED: core::sync::atomic::AtomicBool =
 pub(crate) use state::TestServer;
 pub use state::{Ports, PortsIter, ServerState, ServerText};
 
-#[cfg(feature = "upstream-symbols")]
 pub use admin::admin_register;
-#[cfg(feature = "upstream-symbols")]
 pub use server_object::SharedServer;
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 pub use tcp_info::tcp_fields;

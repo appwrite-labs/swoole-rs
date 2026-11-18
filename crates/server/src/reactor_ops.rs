@@ -16,10 +16,6 @@ const FD_SESSION: c_int = 0;
 /// The objects a reactor-thread op acts on: a live server, the reactor the op runs
 /// under, and its thread record. The entry points (`reactor_entry`) build it;
 /// messages stay in the thread's bus.
-#[cfg_attr(
-    not(feature = "upstream-symbols"),
-    expect(dead_code, reason = "only the reactor threads' shutdown reads it")
-)]
 pub(crate) struct ReactorContext<'a> {
     pub(crate) serv: view::Server<'a>,
     pub(crate) reactor: Option<Reactor>,
@@ -28,13 +24,6 @@ pub(crate) struct ReactorContext<'a> {
 
 impl<'a> ReactorContext<'a> {
     /// A context over `serv` and `reactor` with nothing else set.
-    #[cfg_attr(
-        not(feature = "upstream-symbols"),
-        expect(
-            dead_code,
-            reason = "only the reactor threads' setup and shutdown make one"
-        )
-    )]
     pub(crate) fn new(serv: view::Server<'a>, reactor: Option<Reactor>) -> Self {
         Self {
             serv,
@@ -44,16 +33,11 @@ impl<'a> ReactorContext<'a> {
     }
 
     /// The context's reactor thread, once an op has set it.
-    #[cfg_attr(
-        not(feature = "upstream-symbols"),
-        expect(dead_code, reason = "only the reactor threads' ops call it")
-    )]
     pub(crate) fn thread_record(&self) -> Option<&'a ThreadRecord> {
         self.thread
     }
 }
 
-#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) use swoole_rs_corebase::ossupport::pthread_self;
 
 /// A socket's output buffer, or `None` without one.
@@ -84,10 +68,6 @@ pub(crate) struct ThreadRecord {
 }
 
 /// `SwooleG.std_allocator`: libc's.
-#[cfg_attr(
-    not(any(test, feature = "upstream-symbols")),
-    expect(dead_code, reason = "only the hybrid makes servers and message buses")
-)]
 pub(crate) const STD: TrustedAllocator = TrustedAllocator::STD;
 
 /// A `MessageBus` record: the Rust bus, then the allocator its transferable packets
@@ -100,10 +80,6 @@ pub(crate) struct PoolBus {
     allocator: Cell<TrustedAllocator>,
 }
 
-#[cfg_attr(
-    not(feature = "upstream-symbols"),
-    expect(dead_code, reason = "only the hybrid makes and reads message buses")
-)]
 impl PoolBus {
     /// A record of `bus` over `SwooleG.std_allocator`.
     pub(crate) fn std(bus: Box<swoole_rs_bus::MessageBus>) -> Self {
@@ -142,7 +118,6 @@ pub fn pool_bus_set_allocator(
     PoolBus::with_pool(pool, |bus| bus.set_allocator(allocator));
 }
 
-#[cfg(feature = "upstream-symbols")]
 impl ThreadRecord {
     /// `message_bus`.
     pub(crate) fn message_bus(&self) -> crate::objects::Bus<'_> {
@@ -150,7 +125,6 @@ impl ThreadRecord {
     }
 }
 
-#[cfg(feature = "upstream-symbols")]
 impl ThreadRecord {
     /// `new ReactorThread[count]()`: each with a fresh bus over the allocator of `like`.
     pub(crate) fn new_array(count: u16, like: crate::objects::Bus<'_>) -> Box<[Self]> {

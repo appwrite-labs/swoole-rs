@@ -1,10 +1,6 @@
 //! Task workers (upstream's `src/server/task_worker.cc`): the choices
 //! `Server::init_task_workers` and `Server::finish` make. The pool's callbacks, the
 //! task loop and the sends that answer a task are in `native`.
-#![cfg_attr(
-    not(any(test, feature = "upstream-symbols")),
-    expect(dead_code, reason = "only the hybrid runs task workers")
-)]
 use crate::TaskIpcMode;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::ServerEvent;
@@ -13,7 +9,6 @@ use swoole_rs_corebase::log;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING;
 use swoole_rs_corebase::process::task_sync::ResultSlot;
 
-#[cfg(feature = "upstream-symbols")]
 pub mod native;
 
 /// `serv->task_results[worker_id]`: the event worker's result slot, which task

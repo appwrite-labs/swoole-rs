@@ -46,7 +46,6 @@ impl ShutdownMask {
     }
 
     /// The forked manager has installed its own handler and must receive SIGTERM.
-    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn unblock_manager() {
         let error = swoole_rs_corebase::sys::pthread_sigmask(
             libc::SIG_UNBLOCK,
@@ -285,7 +284,6 @@ pub(crate) fn clear_timer(serv: Server<'_>) {
 
 /// `Server::timer_callback`: rate-limited scheduler warnings, then stopping once the
 /// server no longer runs.
-#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) fn master_timer(serv: Server<'_>) {
     let now = swoole_rs_corebase::time_now();
     let config = serv.config();
@@ -317,7 +315,6 @@ pub(crate) fn master_timer(serv: Server<'_>) {
 }
 
 /// `Server::init_signal_handler`.
-#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) fn init_signals(serv: Server<'_>) {
     use crate::hybrid::Step::{Handle, Ignore};
     let h = hybrid();

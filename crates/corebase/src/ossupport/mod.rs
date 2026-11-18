@@ -20,7 +20,6 @@ pub use file_api::*;
 pub use file_record::*;
 pub use temp_file::TempFile;
 mod system;
-#[cfg(feature = "upstream-symbols")]
 pub use system::swoole_daemon;
 pub use system::{
     CurrentThread, pthread_self, set_isolation, swoole_random_bytes, swr_v1_os_is_root_user,

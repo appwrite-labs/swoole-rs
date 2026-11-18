@@ -239,7 +239,6 @@ pub struct ServerConfig {
     pub private_data_4: *mut c_void,
     pub factory_: Shared<*mut c_void>,
     /// The manager's state, live while it runs in this process.
-    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) manager: crate::manager::Manager,
     pub task_worker_num: Setting<u32>,
     pub task_ipc_mode: Setting<u8>,
@@ -407,7 +406,6 @@ impl Default for ServerConfig {
             private_data_3: Published::default(),
             private_data_4: core::ptr::null_mut(),
             factory_: Shared::new(core::ptr::null_mut()),
-            #[cfg(any(test, feature = "upstream-symbols"))]
             manager: crate::manager::Manager::default(),
             task_worker_num: Setting::new(0),
             task_ipc_mode: Setting::new(TaskIpcMode::UnixSock as u8),
@@ -428,7 +426,6 @@ impl Default for ServerConfig {
 
 impl ServerConfig {
     /// `serv->ipc_max_size`.
-    #[cfg(feature = "upstream-symbols")]
     pub(crate) fn ipc_max_size(&self) -> u32 {
         self.ipc_max_size.load(Relaxed)
     }
@@ -471,7 +468,6 @@ impl CommandPipe {
     }
 }
 
-#[cfg(any(test, feature = "upstream-symbols"))]
 impl ServerConfig {
     /// The platform/runtime-dependent defaults a new server starts with.
     pub(crate) fn init_defaults(

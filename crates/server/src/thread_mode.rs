@@ -3,10 +3,6 @@
 //! worker at a time. The manager's state ([`ThreadManager`]: its threads, wait queue
 //! and reload) and the hook a thread's body runs inside are here; the threads'
 //! bodies, the factory and the server's thread-mode methods are in `native`.
-#![cfg_attr(
-    not(any(test, feature = "upstream-symbols")),
-    expect(dead_code, reason = "only the hybrid runs thread mode")
-)]
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -14,7 +10,6 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 use swoole_rs_corebase::Thread;
 
-#[cfg(feature = "upstream-symbols")]
 pub mod native;
 
 /// What the manager thread waits for.

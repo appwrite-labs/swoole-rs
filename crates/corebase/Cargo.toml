@@ -6,10 +6,6 @@ publish = false
 license.workspace = true
 
 [features]
-# Define base.cc's and misc.cc's helpers, and base.cc's log-level functions, under their
-# C++ symbols. Only crates/ffi, whose builds apply the corebase patches that delete the C++
-# definitions, turns it on; another crate linking this one would otherwise duplicate them.
-upstream-symbols = ["dep:cc"]
 # `log::capture`, which other crates' tests read Rust logs through.
 log-capture = []
 # Worker globals are per thread for SW_THREAD builds without thread-safe PHP.
@@ -31,7 +27,7 @@ swoole-rs-framing = { path = "../framing" }
 openssl-sys = "=0.9.118"
 
 [build-dependencies]
-cc = { version = "=1.11.1", optional = true }
+cc = "=1.11.1"
 
 [lib]
 name = "swoole_rs_corebase"

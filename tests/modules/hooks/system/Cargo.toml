@@ -17,7 +17,7 @@ test = false
 [dependencies]
 libc = "=0.2.191"
 swoole-rs-clients = { path = "../../../../crates/clients" }
-swoole-rs-corebase = { path = "../../../../crates/corebase", features = ["upstream-symbols"] }
+swoole-rs-corebase = { path = "../../../../crates/corebase" }
 swoole-rs-ffi = { path = "../../../../crates/ffi" }
 swoole-rs-hooks = { path = "../../../../crates/hooks" }
 # The original pool cases now pass the real server effects explicitly.

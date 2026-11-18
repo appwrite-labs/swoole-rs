@@ -416,7 +416,6 @@ pub fn swoole_event_init(flags: c_int) -> c_int {
         return -1;
     }
     handle.with(|state| state.fields.wait_exit = flags & SW_EVENTLOOP_WAIT_EXIT != 0);
-    #[cfg(feature = "upstream-symbols")]
     crate::reactor::readiness::init_reactor(handle);
     crate::set_thread_reactor(handle.as_ptr());
     // A reactor this replaces stays allocated, as upstream's overwritten pointer did.

@@ -37,15 +37,15 @@ sockets = ["swoole-rs-phpswoole?/sockets"]
 [dependencies]
 swoole-rs-websocket = { path = "../websocket" }
 swoole-rs-error = { path = "../error" }
-swoole-rs-error-ffi = { path = "../error-ffi", features = ["upstream-symbols"] }
+swoole-rs-error-ffi = { path = "../error-ffi" }
 swoole-rs-http = { path = "../http" }
 swoole-rs-phplocks = { path = "../phplocks", optional = true }
 swoole-rs-phptimer = { path = "../phptimer", optional = true }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-phpredis = { path = "../phpredis", optional = true }
-swoole-rs-server = { path = "../server", features = ["upstream-symbols"] }
-swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
-swoole-rs-hooks = { path = "../hooks", features = ["upstream-symbols"] }
+swoole-rs-server = { path = "../server" }
+swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-hooks = { path = "../hooks" }
 swoole-rs-phpruntime = { path = "../phpruntime" }
 swoole-rs-phpprocess = { path = "../phpprocess", optional = true }
 swoole-rs-phpthread = { path = "../phpthread", optional = true }

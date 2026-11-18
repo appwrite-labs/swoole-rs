@@ -84,7 +84,6 @@ fn discard(state: &ServerState, message: &[u8]) -> bool {
 }
 
 /// Whether reactor thread `id` of `reactors` owns `n`, a port's fd or a worker id.
-#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) fn owns(n: i64, reactors: u16, id: u16) -> bool {
     reactors != 0 && n.rem_euclid(i64::from(reactors)) == i64::from(id)
 }

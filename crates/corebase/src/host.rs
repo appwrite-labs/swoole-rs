@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/core/base.cc (Swoole contributors).
-//! Whole host operations from base.cc, under their C++ symbols with
-//! `upstream-symbols`. Logs name the function as upstream's `__SW_FUNC__` did.
+//! Whole host operations from base.cc, under their C++ symbols. Logs name the function as upstream's `__SW_FUNC__` did.
 
 use crate::CCast;
 use std::cell::Cell;
@@ -498,10 +497,7 @@ fn next() -> u64 {
 
 /// `uint64_t swoole_random_int()`: a uniform 64-bit value.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z17swoole_random_intv")
-)]
+#[unsafe(export_name = "_Z17swoole_random_intv")]
 pub extern "C" fn swoole_random_int() -> u64 {
     next()
 }
@@ -627,7 +623,7 @@ thread_local! {
 /// `void swoole_exit(int status)`. Concurrent exits from several threads can
 /// crash, so callers queue on a lock that the exiting thread keeps; an exit
 /// handler on that thread that exits again goes straight through.
-#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "swr_v1_ffi_exit"))]
+#[unsafe(export_name = "swr_v1_ffi_exit")]
 pub extern "C" fn swoole_exit(status: c_int) -> ! {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     if !EXITING.replace(true) {

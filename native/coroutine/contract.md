@@ -57,8 +57,7 @@ wake that was not the timeout.
 `src/coroutine/base.cc` is gone. `crates/corebase/src/coroutine/scheduler.rs` keeps the
 scheduler, `swr_v1_coroutine_{scheduler_get,bail}` and the operations Rust calls by
 path (`current`, `resume`, `yield_with_cancel`), which need no timer or event loop,
-so they build in every configuration. `crates/corebase/src/coroutine/facade.rs`, which only
-the extension builds (`upstream-symbols`), defines timed yield, `cancel`,
+so they build in every configuration. `crates/corebase/src/coroutine/facade.rs` defines timed yield, `cancel`,
 `activate`, `deactivate`, `print_list` and `print_socket_bound_error` by Rust path,
 plus `swr_v1_coroutine_create` and the
 `swoole_coroutine_*` C API. The configure switches it reads (`SW_USE_THREAD_CONTEXT`,
