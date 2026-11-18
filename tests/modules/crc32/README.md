@@ -6,9 +6,6 @@ from `DgramPacket::sender` in `crates/server/src/reactor_entry.rs`. For non-IPv4
 datagrams it hashes the sender's host text using the socket address length
 (28 bytes for IPv6) to select the worker.
 
-The C++ hash-originals fixture imports the `swoole_crc32` wrapper from corebase.
-See the [utilities contract](../../../native/utilities/contract.md).
-
 ## Differential
 
 ```sh

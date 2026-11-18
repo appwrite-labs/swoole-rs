@@ -330,8 +330,6 @@ def plan(args, reports):
                '--exclude', 'redis.get=needs a Redis server on 127.0.0.1:6379', '--exclude', 'mqtt.echo=needs Node.js and its mqtt and pino packages',
                *report('http-server-rust'))
     if 'utilities' in modules and integrate:
-        script('utilities-hash-originals', 'tests/modules/utilities/hash_originals.py', '--source', ROOT / 'target/upstream/src',
-               *php_for('curl'), *engines, '--build-manifest', built, '--archive', archive, *report('utilities-hash-originals'))
         script('utilities-php-logger', 'tests/modules/utilities/php_logger.py', *php, *engines,
                '--build-manifest', built, *report('utilities-php-logger'))
     if 'memory' in modules:

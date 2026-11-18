@@ -3,10 +3,8 @@
 //! replacements its bundled `pdo_pgsql` driver calls. Each sends the request,
 //! flushes and waits for the result on the connection's socket: with `poll(2)`
 //! while blocking, otherwise by parking the coroutine (`System::wait_event`).
+//! The upstream `poll_error.phpt` calls connectdb, exec and finish through PHP FFI.
 //! With `php`, MINIT ([`minit`]) registers the driver with PDO.
-//!
-//! The exports keep upstream's names: `native/hooks/php_swoole_pgsql.h` declares them and
-//! the driver's macros call them.
 #![cfg_attr(
     not(test),
     deny(
@@ -243,7 +241,6 @@ fn has_io_error(conn: Conn) -> bool {
 }
 
 /// `swoole_pgsql_set_blocking`: the runtime hook flag.
-#[unsafe(no_mangle)]
 pub extern "C" fn swoole_pgsql_set_blocking(blocking: bool) {
     BLOCKING.store(blocking, Ordering::Relaxed);
 }
@@ -451,7 +448,6 @@ fn wait_connect(conn: Conn, poll_connection: fn(Conn) -> PostgresPollingStatusTy
 /// still loads.
 /// `PQclosePrepared`'s whole contract is the live connection and the name's string,
 /// which the types carry.
-#[unsafe(no_mangle)]
 pub extern "C" fn swoole_pgsql_close_prepared(conn: Conn, stmt_name: Text<'_>) -> *mut PGresult {
     /// `RTLD_DEFAULT`, a handle `dlsym` always takes.
     #[repr(transparent)]
@@ -509,6 +505,7 @@ pub extern "C" fn swoole_pgsql_finish(conn: OwnedConn) {
 
 /// `swoole_pgsql_exec`: `PQsendQuery`, then its result. `PQexec`'s whole contract is
 /// the live connection and the query's string, which the types carry.
+#[must_use]
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_pgsql_exec(conn: Conn, query: Text<'_>) -> *mut PGresult {
     finish(conn, PQsendQuery(conn, query))
@@ -538,6 +535,7 @@ unsafe extern "C" {
         n_params: c_int,
         param_types: Params<Oid>,
     ) -> c_int;
+    #[cfg(feature = "php")]
     safe fn PQsendQueryPrepared(
         conn: Conn,
         stmt_name: Option<Text<'_>>,
@@ -565,7 +563,6 @@ unsafe extern "C" {
 macro_rules! sent {
     ($($name:ident => $send:ident, like $blocking:literal ($($arg:ident: $ty:ty),*);)*) => {$(
         #[doc = concat!("`", stringify!($name), "`: `", stringify!($send), "`, then its result, as `", $blocking, "`.")]
-        #[unsafe(no_mangle)]
         pub extern "C" fn $name(conn: Conn, $($arg: $ty),*) -> *mut PGresult {
             finish(conn, $send(conn, $($arg),*))
         }
@@ -576,9 +573,6 @@ sent! {
     swoole_pgsql_prepare => PQsendPrepare, like "PQprepare" (
         stmt_name: Option<Text<'_>>, query: Option<Text<'_>>, n_params: c_int,
         param_types: Params<Oid>);
-    swoole_pgsql_exec_prepared => PQsendQueryPrepared, like "PQexecPrepared" (
-        stmt_name: Option<Text<'_>>, n_params: c_int, param_values: Params<Value>,
-        param_lengths: Params<c_int>, param_formats: Params<c_int>, result_format: c_int);
     swoole_pgsql_exec_params => PQsendQueryParams, like "PQexecParams" (
         command: Option<Text<'_>>, n_params: c_int, param_types: Params<Oid>,
         param_values: Params<Value>, param_lengths: Params<c_int>,

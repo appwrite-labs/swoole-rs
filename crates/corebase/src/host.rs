@@ -497,8 +497,7 @@ fn next() -> u64 {
 
 /// `uint64_t swoole_random_int()`: a uniform 64-bit value.
 #[must_use]
-#[unsafe(export_name = "_Z17swoole_random_intv")]
-pub extern "C" fn swoole_random_int() -> u64 {
+pub fn swoole_random_int() -> u64 {
     next()
 }
 

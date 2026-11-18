@@ -151,7 +151,6 @@ const SQL_ERROR: SQLRETURN = -1;
 static BLOCKING: AtomicBool = AtomicBool::new(true);
 
 /// `swoole_odbc_set_blocking`: the runtime hook flag.
-#[unsafe(no_mangle)]
 pub extern "C" fn swoole_odbc_set_blocking(blocking: bool) {
     BLOCKING.store(blocking, Ordering::Relaxed);
 }

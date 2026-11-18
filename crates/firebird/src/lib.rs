@@ -38,7 +38,6 @@ thread_local! {
 }
 
 /// `swoole_firebird_set_blocking`: the runtime hook flag.
-#[unsafe(no_mangle)]
 pub extern "C" fn swoole_firebird_set_blocking(blocking: bool) {
     BLOCKING.set(blocking);
 }
