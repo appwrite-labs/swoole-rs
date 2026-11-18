@@ -1,7 +1,7 @@
 //! Upstream's `core-tests/src/os/process_pool.cpp`, one function per TEST with the same inputs
 //! and expected values, over the Rust ProcessPool and Worker (`corebase::process`) under their
-//! upstream symbols. `ProcessPool pool{}` and `Worker worker{}` are zeroed mirrors of the
-//! records Rust owns, checked against the fixture's sizes. The callbacks are fns of
+//! upstream symbols. `ProcessPool pool{}` and `Worker worker{}` are the Rust-owned pool
+//! and worker records. The callbacks are fns of
 //! `corebase::process`'s hook types, as upstream's are captureless lambdas, set with
 //! `PoolRef::install`; a failed assertion inside one aborts the process it runs in (the
 //! build's panics abort). `SwooleWG` is `corebase::process`'s `worker_globals`;
@@ -16,19 +16,19 @@ use std::os::unix::net::UnixStream;
 use std::ptr::{self, null_mut};
 use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering::SeqCst};
 use std::time::{SystemTime, UNIX_EPOCH};
-use swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
+use swoole_rs_corebase::constants::{SW_IPC_BUFFER_SIZE, SW_IPC_MAX_SIZE};
 use swoole_rs_corebase::memory::members::pool as mem_pool;
 use swoole_rs_corebase::process::methods as pm;
 use swoole_rs_corebase::process::methods::{
     ExitStatus, swoole_get_worker_symbol, swoole_set_worker_type,
 };
 use swoole_rs_corebase::process::process_pool::{
-    CallbackError, ErrorFn, EventFn, Hooks, MainLoopFn, MessageFn, NotFoundFn, PoolFn, PoolRef,
-    Protocol, RecvData, TaskFn, WorkerFn,
+    CallbackError, Hooks, PoolObjectKey, PoolRecord as Pool, PoolRef, Protocol, RecvData, TaskFn,
 };
 use swoole_rs_corebase::process::task_file::Packed;
 use swoole_rs_corebase::process::worker_record::{
-    Worker as WorkerHandle, swr_v1_worker_init, swr_v1_worker_shutdown,
+    Worker as WorkerHandle, WorkerRecord as Worker, WorkerStatus, swr_v1_worker_init,
+    swr_v1_worker_shutdown,
 };
 use swoole_rs_corebase::reactor::signal_upstream::{self as signal, Handler as SignalHandler};
 use swoole_rs_corebase::signal_block_all;
@@ -62,10 +62,7 @@ const SW_TASK_WORKER: c_int = 4;
 const SW_USER_WORKER: c_int = 5;
 const SW_WORKER_BUSY: u8 = 1;
 const SW_WORKER_IDLE: u8 = 2;
-const SW_WORKER_EXIT: u8 = 3;
 const SW_WORKER_MESSAGE_STOP: u8 = 1;
-/// Linux's SW_IPC_MAX_SIZE (8192) less the DataHead.
-const SW_IPC_BUFFER_SIZE: usize = 8192 - 40;
 const TEST_HOST: &CStr = c"127.0.0.1";
 const TEST_PORT: c_int = 9501;
 const TEST_SOCK_FILE: &CStr = c"/tmp/swoole-core-tests.sock";
@@ -105,6 +102,8 @@ struct EventData {
     info: DataHead,
     data: [u8; SW_IPC_BUFFER_SIZE],
 }
+
+const _: () = assert!(size_of::<EventData>() == SW_IPC_MAX_SIZE as usize);
 
 impl EventData {
     /// `EventData msg{}`.
@@ -148,93 +147,9 @@ fn payload(task: Packed<'_>) -> &[u8] {
 type Message = [u8; SW_IPC_MAX_SIZE as usize];
 type Handler = extern "C" fn(c_int);
 
-/// `swoole::ProcessPool`'s fields (`corebase::process`'s PoolRecord).
-#[repr(C)]
-struct Pool {
-    running: bool,
-    reload_init: bool,
-    read_message: bool,
-    started: bool,
-    schedule_by_sysvmsg: bool,
-    is_async: bool,
-    ipc_mode: u8,
-    protocol_type: c_int,
-    master_pid: c_int,
-    max_wait_time: u32,
-    reload_count: u64,
-    reload_last_time: i64,
-    kind: u8,
-    start_id: u16,
-    use_msgqueue: u8,
-    use_socket: u8,
-    max_packet_size: u32,
-    msgqueue_key: c_int,
-    worker_num: u32,
-    max_request: u32,
-    max_request_grace: u32,
-    scheduler_warning: u8,
-    warning_time: i64,
-    on_start: Option<PoolFn>,
-    on_shutdown: Option<PoolFn>,
-    on_before_reload: Option<PoolFn>,
-    on_after_reload: Option<PoolFn>,
-    on_task: Option<TaskFn>,
-    on_worker_start: Option<WorkerFn>,
-    on_message: Option<MessageFn>,
-    on_worker_exit: Option<WorkerFn>,
-    on_worker_stop: Option<WorkerFn>,
-    on_worker_error: Option<ErrorFn>,
-    on_worker_message: Option<EventFn>,
-    on_worker_not_found: Option<NotFoundFn>,
-    main_loop: Option<MainLoopFn>,
-    round_id: u32,
-    workers: *mut Worker,
-    pipes: *mut c_void,
-    registry: *mut c_void,
-    queue: *mut c_void,
-    ipc: *mut c_void,
-    message_box: *mut c_void,
-    message_bus: *mut c_void,
-    reload_task: *mut c_void,
-    ptr: *mut c_void,
-    /// `kill_timer`, an `Option<ArmedTimer>`: its timer generation, id and delete function.
-    kill_timer: [usize; 3],
-    /// `ptr_key`, the key `ptr` is held under.
-    ptr_key: *const c_void,
-}
-
-/// `swoole::Worker`'s fields (`corebase::process`'s WorkerRecord).
-#[repr(C)]
-struct Worker {
-    pid: c_int,
-    id: u32,
-    pool: *mut c_void,
-    queue: *mut c_void,
-    shared: bool,
-    redirect_stdout: bool,
-    redirect_stdin: bool,
-    redirect_stderr: bool,
-    status: u8,
-    kind: u8,
-    msgqueue_mode: u8,
-    child_process: u8,
-    concurrency: u32,
-    start_time: i64,
-    dispatch_count: i64,
-    request_count: i64,
-    response_count: i64,
-    coroutine_num: usize,
-    lock: *mut c_void,
-    pipe_object: *mut c_void,
-    pipe_master: *mut c_void,
-    pipe_worker: *mut c_void,
-    pipe_current: *mut c_void,
-    ptr: *mut c_void,
-}
+static CASE_DATA: PoolObjectKey = PoolObjectKey::new();
 
 unsafe extern "C" {
-    static swr_case_process_layout: [usize; 6];
-
     fn fork() -> c_int;
     fn kill(pid: c_int, sig: c_int) -> c_int;
     fn getpid() -> c_int;
@@ -250,14 +165,13 @@ unsafe extern "C" {
     fn __libc_current_sigrtmin() -> c_int;
 }
 
-// The `ProcessPool` and `Worker` methods: `corebase::process`'s Rust functions over the mirrors,
-// whose layout the fixture checks against the records'.
+// The ported ProcessPool and Worker cases call the Rust record methods directly.
 unsafe fn pool_create(pool: *mut Pool, worker_num: c_uint, key: c_int, ipc_mode: c_int) -> c_int {
     // SAFETY: as the caller guarantees.
     let created = unsafe {
         pm::create(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
+            PoolRef::new(pool),
             worker_num,
             key,
             ipc_mode,
@@ -275,7 +189,7 @@ unsafe fn pool_listen_host(
     // SAFETY: as the caller guarantees; 1 is SW_SOCK_TCP.
     let listened = unsafe {
         pm::listen_socket(
-            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast_mut().cast()),
+            PoolRef::new(pool.cast_mut()),
             1,
             std::ffi::CStr::from_ptr(host),
             port,
@@ -289,7 +203,7 @@ unsafe fn pool_listen_file(pool: *const Pool, file: *const c_char, backlog: c_in
     // SAFETY: as the caller guarantees.
     let listened = unsafe {
         pm::listen_unix(
-            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast_mut().cast()),
+            PoolRef::new(pool.cast_mut()),
             std::ffi::CStr::from_ptr(file),
             backlog,
         )
@@ -302,7 +216,7 @@ unsafe fn pool_set_protocol(pool: *mut Pool, protocol: Protocol) {
     unsafe {
         pm::set_protocol(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
+            PoolRef::new(pool),
             protocol,
         )
     }
@@ -322,7 +236,7 @@ unsafe fn pool_dispatch_sync(
     let sent = unsafe {
         pm::dispatch(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
+            PoolRef::new(pool),
             task,
             u32::try_from(*worker_id).ok(),
             true,
@@ -333,74 +247,39 @@ unsafe fn pool_dispatch_sync(
 
 unsafe fn pool_start(pool: *mut Pool) -> c_int {
     // SAFETY: as the caller guarantees.
-    let started = unsafe {
-        pm::start(
-            swoole_rs_server::process_pool_native(),
-            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
-        )
-    };
+    let started = unsafe { pm::start(swoole_rs_server::process_pool_native(), PoolRef::new(pool)) };
     if started { SW_OK } else { SW_ERR }
 }
 
 unsafe fn pool_wait(pool: *mut Pool) -> c_int {
     // SAFETY: as the caller guarantees.
-    unsafe {
-        pm::wait(
-            swoole_rs_server::process_pool_native(),
-            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
-        )
-    };
+    unsafe { pm::wait(swoole_rs_server::process_pool_native(), PoolRef::new(pool)) };
     SW_OK
 }
 
 unsafe fn pool_destroy(pool: *mut Pool) {
     // SAFETY: as the caller guarantees.
-    unsafe {
-        pm::destroy(
-            swoole_rs_server::process_pool_native(),
-            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
-        )
-    }
+    unsafe { pm::destroy(swoole_rs_server::process_pool_native(), PoolRef::new(pool)) }
 }
 
 unsafe fn pool_shutdown(pool: *mut Pool) -> bool {
     // SAFETY: as the caller guarantees.
-    unsafe {
-        pm::shutdown(
-            swoole_rs_server::process_pool_native(),
-            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
-        )
-    }
+    unsafe { pm::shutdown(swoole_rs_server::process_pool_native(), PoolRef::new(pool)) }
 }
 
 unsafe fn pool_reload(pool: *mut Pool) -> bool {
     // SAFETY: as the caller guarantees.
-    unsafe {
-        pm::reload(
-            swoole_rs_server::process_pool_native(),
-            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
-        )
-    }
+    unsafe { pm::reload(swoole_rs_server::process_pool_native(), PoolRef::new(pool)) }
 }
 
 unsafe fn pool_detach(pool: *mut Pool) -> bool {
     // SAFETY: as the caller guarantees.
-    unsafe {
-        pm::detach(
-            swoole_rs_server::process_pool_native(),
-            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
-        )
-    }
+    unsafe { pm::detach(swoole_rs_server::process_pool_native(), PoolRef::new(pool)) }
 }
 
 unsafe fn pool_reopen_logger(pool: *mut Pool) {
     // SAFETY: as the caller guarantees.
-    unsafe {
-        pm::reopen_logger(
-            swoole_rs_server::process_pool_native(),
-            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
-        )
-    }
+    unsafe { pm::reopen_logger(swoole_rs_server::process_pool_native(), PoolRef::new(pool)) }
 }
 
 unsafe fn pool_stop(pool: *mut Pool, worker: *mut Worker) {
@@ -408,7 +287,7 @@ unsafe fn pool_stop(pool: *mut Pool, worker: *mut Worker) {
     unsafe {
         pm::stop(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
+            PoolRef::new(pool),
             worker.cast(),
         )
     }
@@ -417,10 +296,7 @@ unsafe fn pool_stop(pool: *mut Pool, worker: *mut Worker) {
 unsafe fn pool_create_message_bus(pool: *mut Pool) -> c_int {
     // SAFETY: as the caller guarantees.
     let created = unsafe {
-        pm::create_message_bus(
-            swoole_rs_server::process_pool_native(),
-            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast()),
-        )
+        pm::create_message_bus(swoole_rs_server::process_pool_native(), PoolRef::new(pool))
     };
     if created { SW_OK } else { SW_ERR }
 }
@@ -435,7 +311,7 @@ unsafe fn pool_push_message(
     let pushed = unsafe {
         pm::push_message(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast_mut().cast()),
+            PoolRef::new(pool.cast_mut()),
             kind,
             std::slice::from_raw_parts(data.cast(), length),
         )
@@ -453,7 +329,7 @@ unsafe fn pool_send_message(
     unsafe {
         pm::send_message(
             swoole_rs_server::process_pool_native(),
-            swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast_mut().cast()),
+            PoolRef::new(pool.cast_mut()),
             worker_id,
             std::slice::from_raw_parts(message.cast(), len),
         )
@@ -468,24 +344,21 @@ unsafe fn pool_response(pool: *const Pool, data: *const c_char, length: u32) -> 
         unsafe { std::slice::from_raw_parts(data.cast(), length as usize) }
     };
     // SAFETY: as the caller guarantees.
-    let written = pm::response(
-        unsafe { swoole_rs_corebase::process::process_pool::PoolRef::new(pool.cast_mut().cast()) },
-        data,
-    );
+    let written = pm::response(unsafe { PoolRef::new(pool.cast_mut()) }, data);
     if written { SW_OK } else { SW_ERR }
 }
 
 unsafe fn pool_add_worker(pool: *const Pool, worker: *mut Worker) {
     // SAFETY: as the caller guarantees: a live pool and worker.
     pm::add_worker(unsafe { &*pool.cast() }, unsafe {
-        WorkerHandle::from(&*(worker.cast()))
+        WorkerHandle::from(&*worker)
     });
 }
 
 unsafe fn pool_del_worker(pool: *const Pool, worker: *const Worker) -> bool {
     // SAFETY: as the caller guarantees: a live pool and worker.
     pm::del_worker(unsafe { &*pool.cast() }, unsafe {
-        WorkerHandle::from(&*(worker.cast()))
+        WorkerHandle::from(&*worker)
     })
 }
 
@@ -496,7 +369,7 @@ unsafe fn pool_get_worker_by_pid(pool: *const Pool, pid: c_int) -> *mut Worker {
 
 unsafe fn worker_init(worker: *mut Worker) {
     // SAFETY: as the caller guarantees: a live worker.
-    swr_v1_worker_init(unsafe { WorkerHandle::from(&*(worker.cast())) });
+    swr_v1_worker_init(unsafe { WorkerHandle::from(&*worker) });
 }
 
 unsafe fn worker_send_pipe_message(
@@ -508,7 +381,7 @@ unsafe fn worker_send_pipe_message(
     // SAFETY: as the caller guarantees: a live worker and `n` bytes at `data`.
     let (worker, data) = unsafe {
         (
-            WorkerHandle::from(&*(worker.cast())),
+            WorkerHandle::from(&*worker),
             std::slice::from_raw_parts(data, n),
         )
     };
@@ -517,7 +390,7 @@ unsafe fn worker_send_pipe_message(
 
 unsafe fn worker_shutdown(worker: *mut Worker) {
     // SAFETY: as the caller guarantees: a live worker.
-    swr_v1_worker_shutdown(unsafe { WorkerHandle::from(&*(worker.cast())) });
+    swr_v1_worker_shutdown(unsafe { WorkerHandle::from(&*worker) });
 }
 
 static CURRENT_POOL: AtomicPtr<Pool> = AtomicPtr::new(null_mut());
@@ -537,35 +410,41 @@ fn current_pool() -> *mut Pool {
 
 /// `ProcessPool pool{}`.
 fn new_pool() -> *mut Pool {
-    // SAFETY: integers, bools, raw pointers and nullable function pointers, for which
-    // all-zero is valid. Leaked: workers and timers keep the pointer.
-    Box::into_raw(Box::new(unsafe { std::mem::zeroed::<Pool>() }))
+    Box::into_raw(Box::new(Pool::empty()))
 }
 
-/// `Worker worker{}`.
 fn new_worker() -> Box<Worker> {
-    // SAFETY: as in `new_pool`.
-    Box::new(unsafe { std::mem::zeroed() })
+    Worker::boxed()
 }
 
 fn get_worker(pool: *mut Pool, id: u32) -> *mut Worker {
     // SAFETY: `get_worker`: an index into the created pool's workers.
     unsafe {
         (*pool)
-            .workers
-            .add((id - u32::from((*pool).start_id)) as usize)
+            .workers()
+            .add((id - u32::from((*pool).start_id.get())) as usize)
     }
 }
 
 /// The `String` the case keeps in `pool->ptr`.
 fn pool_data<'a>(pool: *mut Pool) -> &'a [u8] {
     // SAFETY: the case stored a live Vec<u8> there.
-    unsafe { &*(*pool).ptr.cast::<Vec<u8>>() }
+    unsafe {
+        &*PoolRef::new(pool)
+            .object_of(&CASE_DATA)
+            .unwrap()
+            .cast::<Vec<u8>>()
+    }
 }
 
 fn messages<'a>(pool: *mut Pool) -> &'a mut Vec<Vec<u8>> {
     // SAFETY: the case stored a live Vec<Vec<u8>> there.
-    unsafe { &mut *(*pool).ptr.cast::<Vec<Vec<u8>>>() }
+    unsafe {
+        &mut *PoolRef::new(pool)
+            .object_of(&CASE_DATA)
+            .unwrap()
+            .cast::<Vec<Vec<u8>>>()
+    }
 }
 
 fn create(pool: *mut Pool, worker_num: c_uint, key: c_int, ipc_mode: c_int) -> c_int {
@@ -621,19 +500,14 @@ fn response(pool: *mut Pool, data: *const u8, length: u32) -> c_int {
 
 fn main_loop(pool: *mut Pool, worker: *mut Worker) -> c_int {
     // SAFETY: a created pool, which set the loop, and one of its workers.
-    let (pool, worker) = unsafe {
-        (
-            PoolRef::new(pool.cast()),
-            WorkerHandle::from(&*(worker.cast())),
-        )
-    };
+    let (pool, worker) = unsafe { (PoolRef::new(pool), WorkerHandle::from(&*worker)) };
     pool.call_main_loop(worker).unwrap().map_or(-1, |()| 0)
 }
 
 /// `pool.onX = fn` for each hook `hooks` names.
 fn install(pool: *mut Pool, hooks: Hooks) {
     // SAFETY: the case's pool.
-    unsafe { PoolRef::new(pool.cast()) }.install(&hooks);
+    unsafe { PoolRef::new(pool) }.install(&hooks);
 }
 
 fn sysv(signo: c_int, handler: usize) {
@@ -742,19 +616,18 @@ fn test_func(pool: *mut Pool) {
     // SAFETY: the case's pool; `rmem` outlives the loop.
     unsafe {
         worker_init(get_worker(pool, 0));
-        (*pool).running = true;
-        (*pool).ptr = (&raw mut rmem).cast();
-        PoolRef::new(pool.cast())
-            .call_on_worker_start(WorkerHandle::from(&*(get_worker(pool, 0).cast())));
+        (*pool).running.set(true);
+        PoolRef::new(pool).hold(&CASE_DATA, (&raw mut rmem).cast());
+        PoolRef::new(pool).call_on_worker_start(WorkerHandle::from(&*get_worker(pool, 0)));
     }
     main_loop(pool, get_worker(pool, 0));
     destroy(pool);
 }
 
 const TASK_PROTOCOL_ON_TASK: TaskFn = |pool, _, task| {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     // SAFETY: the running pool.
-    unsafe { (*pool).running = false };
+    unsafe { (*pool).running.set(false) };
     ms_sleep(10000);
     assert_eq!(pool_data(pool), payload(task));
     Ok(())
@@ -774,9 +647,9 @@ fn test_func_task_protocol(pool: *mut Pool) {
 }
 
 fn message_protocol_on_message(pool: PoolRef<'_>, rdata: &mut RecvData<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     // SAFETY: the running pool.
-    unsafe { (*pool).running = false };
+    unsafe { (*pool).running.set(false) };
     ms_sleep(10000);
     // SAFETY: the pool's message.
     assert_eq!(pool_data(pool), rdata.payload());
@@ -796,9 +669,9 @@ fn test_func_message_protocol(pool: *mut Pool) {
 }
 
 fn stream_protocol_on_message(pool: PoolRef<'_>, rdata: &mut RecvData<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     // SAFETY: the running pool.
-    unsafe { (*pool).running = false };
+    unsafe { (*pool).running.set(false) };
     // SAFETY: the message is an EventData's bytes, which it lends for the call.
     let msg = unsafe {
         rdata
@@ -847,9 +720,9 @@ fn unix_sock() {
 }
 
 fn tcp_raw_on_message(pool: PoolRef<'_>, rdata: &mut RecvData<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     // SAFETY: the running pool.
-    unsafe { (*pool).running = false };
+    unsafe { (*pool).running.set(false) };
     let data = pool_data(pool);
     assert_eq!(rdata.info().len as usize, data.len());
     assert_eq!(data, rdata.payload());
@@ -866,9 +739,9 @@ fn tcp_raw() {
     set_protocol(pool, Protocol::Stream);
     // SAFETY: the case's pool; `data` outlives the loop.
     unsafe {
-        (*pool).max_packet_size = SIZE;
-        (*pool).running = true;
-        (*pool).ptr = (&raw mut data).cast();
+        (*pool).max_packet_size.set(SIZE);
+        (*pool).running.set(true);
+        PoolRef::new(pool).hold(&CASE_DATA, (&raw mut data).cast());
         install(
             pool,
             Hooks {
@@ -880,7 +753,7 @@ fn tcp_raw() {
 
     // The sender must run alongside the receive loop because the frame may exceed the
     // available socket buffers.
-    let ipc = unsafe { (*pool).ipc } as usize;
+    let ipc = unsafe { (*pool).ipc() } as usize;
     let (bytes, length) = (data.as_ptr() as usize, data.len() as u32);
     let sender = std::thread::spawn(move || {
         // SAFETY: a thread of this process; the pool's IPC and `data` outlive the join.
@@ -915,7 +788,7 @@ fn tcp_raw() {
 
     assert_eq!(dispatch_result, SW_OK);
     // SAFETY: the case's pool.
-    assert!(!unsafe { (*pool).running });
+    assert!(!unsafe { (*pool).running.get() });
     destroy(pool);
 }
 
@@ -954,11 +827,11 @@ fn message_protocol() {
 
 extern "C" fn stop_current_pool(_: c_int) {
     // SAFETY: the case set the pool before the signal could arrive.
-    unsafe { (*current_pool()).running = false };
+    unsafe { (*current_pool()).running.set(false) };
 }
 
 fn with_timer_on_worker_start(pool: PoolRef<'_>, _: WorkerHandle<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     CURRENT_POOL.store(pool, SeqCst);
     after(50, |_| {
         // SAFETY: kill(2) on this process.
@@ -967,7 +840,7 @@ fn with_timer_on_worker_start(pool: PoolRef<'_>, _: WorkerHandle<'_>) {
 }
 
 fn with_timer_on_message(pool: PoolRef<'_>, rdata: &mut RecvData<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     ms_sleep(10000);
     // SAFETY: the pool's message.
     assert_eq!(pool_data(pool), rdata.payload());
@@ -1008,22 +881,27 @@ fn stream_protocol_with_msgq() {
 }
 
 fn shutdown_on_worker_start(pool: PoolRef<'_>, _: WorkerHandle<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     // SAFETY: the case's shared int.
-    unsafe { *(*pool).ptr.cast::<c_int>() = MAGIC_NUMBER };
+    unsafe {
+        *PoolRef::new(pool)
+            .object_of(&CASE_DATA)
+            .unwrap()
+            .cast::<c_int>() = MAGIC_NUMBER
+    };
     ms_sleep(1);
 }
 
 const SHUTDOWN_ON_TASK: TaskFn = |pool, _, _| {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     ms_sleep(1000);
     // SAFETY: kill(2) on the master.
-    unsafe { kill((*pool).master_pid, SIGTERM) };
+    unsafe { kill((*pool).master_pid.get(), SIGTERM) };
     Ok(())
 };
 
 fn dispatch_random_128(pool: PoolRef<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     let mut msg = EventData::new();
     msg.info.len = 128;
     // `swoole_random_string(msg.data, msg.info.len)`: 128 characters and a NUL.
@@ -1040,8 +918,8 @@ fn shutdown_() {
     set_protocol(pool, Protocol::Task);
     // SAFETY: the case's pool.
     unsafe {
-        (*pool).max_packet_size = 8192;
-        (*pool).ptr = shm_value.cast();
+        (*pool).max_packet_size.set(8192);
+        PoolRef::new(pool).hold(&CASE_DATA, shm_value.cast());
         install(
             pool,
             Hooks {
@@ -1073,7 +951,7 @@ extern "C" fn reopen_current_logger(_: c_int) {
 }
 
 fn reload_on_worker_start(pool: PoolRef<'_>, _: WorkerHandle<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     counter_incr(0);
     CURRENT_POOL.store(pool, SeqCst);
 
@@ -1092,12 +970,12 @@ fn reload_on_worker_start(pool: PoolRef<'_>, _: WorkerHandle<'_>) {
 }
 
 fn reload_on_start(pool: PoolRef<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     // SAFETY: the started pool.
     unsafe { pool_reopen_logger(pool) };
     after(50, move |_| {
         // SAFETY: kill(2) on worker 0; the C library's SIGRTMIN.
-        unsafe { kill((*get_worker(pool, 0)).pid, __libc_current_sigrtmin()) };
+        unsafe { kill((*get_worker(pool, 0)).pid(), __libc_current_sigrtmin()) };
     });
     after(100, move |_| {
         // SAFETY: the started pool.
@@ -1108,7 +986,7 @@ fn reload_on_start(pool: PoolRef<'_>) {
 fn reload_on_before_reload(_: PoolRef<'_>) {}
 
 fn reload_on_after_reload(pool: PoolRef<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     after(100, move |_| {
         // SAFETY: the started pool.
         unsafe { pool_shutdown(pool) };
@@ -1128,7 +1006,7 @@ fn reload_on_worker_message(_: PoolRef<'_>, msg: &Message) {
 }
 
 fn reload_on_worker_not_found(pool: PoolRef<'_>, exit_status: &ExitStatus) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     assert_eq!(exit_status.pid(), counter_get(20));
     assert_eq!(exit_code(exit_status), 123);
     // SAFETY: TEST_STR's bytes.
@@ -1145,7 +1023,7 @@ fn reload_on_worker_not_found(pool: PoolRef<'_>, exit_status: &ExitStatus) {
 
 extern "C" fn read_current_message(_: c_int) {
     // SAFETY: the case set the pool first.
-    unsafe { (*current_pool()).read_message = true };
+    unsafe { (*current_pool()).read_message.set(true) };
 }
 
 fn reload() {
@@ -1155,8 +1033,8 @@ fn reload() {
 
     // SAFETY: the case's pool.
     unsafe {
-        (*pool).max_packet_size = 8192;
-        (*pool).max_wait_time = 1;
+        (*pool).max_packet_size.set(8192);
+        (*pool).max_wait_time.set(1);
         install(
             pool,
             Hooks {
@@ -1207,14 +1085,14 @@ extern "C" fn async_stop_current_worker(_: c_int) {
 }
 
 fn async_on_start(pool: PoolRef<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     CURRENT_POOL.store(pool, SeqCst);
     sysv(SIGTERM, handler(stop_current_pool));
 }
 
 fn async_on_worker_start(pool: PoolRef<'_>, worker: WorkerHandle<'_>) {
-    let pool = pool.raw().cast::<Pool>();
-    let worker = worker.raw().cast::<Worker>();
+    let pool = pool.raw();
+    let worker = worker.raw();
     counter_set(0, MAGIC_NUMBER);
     CURRENT_WORKER.store(worker, SeqCst);
     CURRENT_POOL.store(pool, SeqCst);
@@ -1230,10 +1108,10 @@ fn async_on_worker_start(pool: PoolRef<'_>, worker: WorkerHandle<'_>) {
 }
 
 fn async_on_message(pool: PoolRef<'_>, _: &mut RecvData<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     counter_incr(0);
     // SAFETY: kill(2) on the master.
-    unsafe { kill((*pool).master_pid, SIGTERM) };
+    unsafe { kill((*pool).master_pid.get(), SIGTERM) };
 }
 
 fn async_() {
@@ -1245,8 +1123,8 @@ fn async_() {
     counter_init();
     // SAFETY: the case's pool.
     unsafe {
-        (*pool).max_packet_size = 8192;
-        (*pool).is_async = true;
+        (*pool).max_packet_size.set(8192);
+        (*pool).is_async.set(true);
         install(
             pool,
             Hooks {
@@ -1288,8 +1166,8 @@ extern "C" fn async_mb_stop_worker(_: c_int) {
 }
 
 fn async_mb_on_worker_start(pool: PoolRef<'_>, worker: WorkerHandle<'_>) {
-    let pool = pool.raw().cast::<Pool>();
-    let worker = worker.raw().cast::<Worker>();
+    let pool = pool.raw();
+    let worker = worker.raw();
     CURRENT_WORKER.store(worker, SeqCst);
     CURRENT_POOL.store(pool, SeqCst);
 
@@ -1301,8 +1179,8 @@ fn async_mb_on_worker_start(pool: PoolRef<'_>, worker: WorkerHandle<'_>) {
 }
 
 fn async_mb_on_worker_stop(pool: PoolRef<'_>, worker: WorkerHandle<'_>) {
-    let pool = pool.raw().cast::<Pool>();
-    let worker = worker.raw().cast::<Worker>();
+    let pool = pool.raw();
+    let worker = worker.raw();
     CURRENT_WORKER.store(worker, SeqCst);
     CURRENT_POOL.store(pool, SeqCst);
 
@@ -1319,7 +1197,7 @@ fn send_message(pool: *mut Pool, message: &[u8]) {
 }
 
 fn async_mb_on_start(pool: PoolRef<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     CURRENT_POOL.store(pool, SeqCst);
     _ = signal::set(SIGTERM, SignalHandler::new(stop_current_pool), false);
     _ = signal::set(SIGIO, SignalHandler::new(read_current_message), false);
@@ -1338,7 +1216,7 @@ fn async_mb_on_shutdown(_: PoolRef<'_>) {
 }
 
 fn async_mb_on_message(pool: PoolRef<'_>, msg: &mut RecvData<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     // SAFETY: the pool's message.
     let req = msg.payload();
 
@@ -1368,8 +1246,8 @@ fn async_mb() {
     counter_init();
     // SAFETY: the case's pool.
     unsafe {
-        (*pool).max_packet_size = 8192;
-        (*pool).is_async = true;
+        (*pool).max_packet_size.set(8192);
+        (*pool).is_async.set(true);
         install(
             pool,
             Hooks {
@@ -1425,7 +1303,7 @@ fn socket() {
 }
 
 fn listen_on_message(pool: PoolRef<'_>, _: &mut RecvData<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     let wmem = pool_data(pool);
     assert_eq!(response(pool, wmem.as_ptr(), wmem.len() as u32), SW_OK);
     assert_eq!(response(pool, ptr::null(), 999), SW_ERR);
@@ -1462,7 +1340,7 @@ fn listen() {
 
     // SAFETY: the case's pool; `wmem` outlives it.
     unsafe {
-        (*pool).ptr = (&raw mut wmem).cast();
+        PoolRef::new(pool).hold(&CASE_DATA, (&raw mut wmem).cast());
         install(
             pool,
             Hooks {
@@ -1507,13 +1385,13 @@ fn listen() {
 }
 
 fn truncated_stream_on_message(pool: PoolRef<'_>, msg: &mut RecvData<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     let messages = messages(pool);
     // SAFETY: the pool's message.
     messages.push(msg.payload().to_vec());
     if messages.last().unwrap() == b"sentinel" {
         // SAFETY: the running pool.
-        unsafe { (*pool).running = false };
+        unsafe { (*pool).running.set(false) };
     }
 }
 
@@ -1537,7 +1415,7 @@ fn run_worker_zero(pool: *mut Pool) {
     // SAFETY: the created pool's worker.
     unsafe {
         worker_init(worker);
-        (*pool).running = true;
+        (*pool).running.set(true);
     }
     main_loop(pool, worker);
     destroy(pool);
@@ -1554,8 +1432,8 @@ fn listen_rejects_truncated_stream_packet() {
     let mut messages: Vec<Vec<u8>> = Vec::new();
     // SAFETY: the case's pool; `messages` outlives it.
     unsafe {
-        (*pool).max_packet_size = 64;
-        (*pool).ptr = (&raw mut messages).cast();
+        (*pool).max_packet_size.set(64);
+        PoolRef::new(pool).hold(&CASE_DATA, (&raw mut messages).cast());
         install(
             pool,
             Hooks {
@@ -1586,12 +1464,12 @@ fn listen_rejects_truncated_stream_packet() {
 }
 
 const TRUNCATED_TASK_ON_TASK: TaskFn = |pool, _, task| {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     let messages = messages(pool);
     messages.push(payload(task).to_vec());
     if messages.last().unwrap() == b"sentinel" {
         // SAFETY: the running pool.
-        unsafe { (*pool).running = false };
+        unsafe { (*pool).running.set(false) };
     }
     Ok(())
 };
@@ -1606,7 +1484,7 @@ fn listen_rejects_truncated_task_packet() {
     let mut messages: Vec<Vec<u8>> = Vec::new();
     // SAFETY: the case's pool; `messages` outlives it.
     unsafe {
-        (*pool).ptr = (&raw mut messages).cast();
+        PoolRef::new(pool).hold(&CASE_DATA, (&raw mut messages).cast());
         install(
             pool,
             Hooks {
@@ -1648,12 +1526,17 @@ fn listen_rejects_truncated_task_packet() {
 }
 
 const MALFORMED_ON_TASK: TaskFn = |pool, _, task| {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     // SAFETY: the case's counter.
-    unsafe { *(*pool).ptr.cast::<usize>() += 1 };
+    unsafe {
+        *PoolRef::new(pool)
+            .object_of(&CASE_DATA)
+            .unwrap()
+            .cast::<usize>() += 1
+    };
     if payload(task) == b"x" {
         // SAFETY: the running pool.
-        unsafe { (*pool).running = false };
+        unsafe { (*pool).running.set(false) };
     }
     Ok(())
 };
@@ -1679,8 +1562,8 @@ fn task_protocol_rejects_malformed_packets() {
     // SAFETY: the case's pool and worker; `dispatched` outlives the loop.
     unsafe {
         worker_init(get_worker(pool, 0));
-        (*pool).running = true;
-        (*pool).ptr = (&raw mut dispatched).cast();
+        (*pool).running.set(true);
+        PoolRef::new(pool).hold(&CASE_DATA, (&raw mut dispatched).cast());
         install(
             pool,
             Hooks {
@@ -1731,8 +1614,8 @@ fn task_protocol_rejects_malformed_socket_packet() {
     // SAFETY: the case's pool and worker; `dispatched` outlives the loop.
     unsafe {
         worker_init(get_worker(pool, 0));
-        (*pool).running = true;
-        (*pool).ptr = (&raw mut dispatched).cast();
+        (*pool).running.set(true);
+        PoolRef::new(pool).hold(&CASE_DATA, (&raw mut dispatched).cast());
         install(
             pool,
             Hooks {
@@ -1778,9 +1661,7 @@ fn task_protocol_rejects_malformed_socket_packet() {
             // SAFETY: the pool's stream listener, which outlives the join.
             unsafe {
                 let listener = swoole_rs_corebase::process::pool::swr_v1_process_pool_ipc_listener(
-                    &*(*pool)
-                        .ipc
-                        .cast::<swoole_rs_corebase::process::pool::PoolIpc>(),
+                    &*(*pool).ipc(),
                 );
                 shutdown(listener_fd(listener), SHUT_RDWR);
             }
@@ -1803,20 +1684,21 @@ fn task_protocol_rejects_malformed_socket_packet() {
 fn set_max_packet_size(pool: *mut Pool, size: u32) {
     // SAFETY: a created pool.
     unsafe {
-        (*pool).max_packet_size = if (*pool).use_msgqueue != 0 {
-            SW_MSGMAX
-        } else {
-            size
-        }
+        (*pool)
+            .max_packet_size
+            .set(swoole_rs_corebase::process::process_pool::packet_limit(
+                (*pool).use_msgqueue.get(),
+                size,
+            ));
     };
 }
 
 fn small_packet_on_message(pool: PoolRef<'_>, rdata: &mut RecvData<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     assert_eq!(rdata.info().len, 1);
     assert_eq!(rdata.payload()[0], b'x');
     // SAFETY: the running pool.
-    unsafe { (*pool).running = false };
+    unsafe { (*pool).running.set(false) };
 }
 
 fn stream_protocol_small_packet() {
@@ -1828,7 +1710,7 @@ fn stream_protocol_small_packet() {
     // SAFETY: the case's pool and worker.
     unsafe {
         worker_init(get_worker(pool, 0));
-        (*pool).running = true;
+        (*pool).running.set(true);
         install(
             pool,
             Hooks {
@@ -1844,16 +1726,16 @@ fn stream_protocol_small_packet() {
     assert_eq!(sent, Some(1));
     main_loop(pool, get_worker(pool, 0));
     // SAFETY: the case's pool.
-    assert!(!unsafe { (*pool).running });
+    assert!(!unsafe { (*pool).running.get() });
     destroy(pool);
 }
 
 fn msgqueue_package_size_on_message(pool: PoolRef<'_>, rdata: &mut RecvData<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     messages(pool).push(rdata.payload().to_vec());
     if rdata.info().len == 0 {
         // SAFETY: the running pool.
-        unsafe { (*pool).running = false };
+        unsafe { (*pool).running.set(false) };
     }
 }
 
@@ -1877,8 +1759,8 @@ fn stream_protocol_msgqueue_ignores_package_size() {
         // SAFETY: the case's pool and worker; `received` outlives the loop.
         unsafe {
             worker_init(get_worker(pool, 0));
-            (*pool).running = true;
-            (*pool).ptr = (&raw mut received).cast();
+            (*pool).running.set(true);
+            PoolRef::new(pool).hold(&CASE_DATA, (&raw mut received).cast());
             install(
                 pool,
                 Hooks {
@@ -1898,7 +1780,7 @@ fn stream_protocol_msgqueue_ignores_package_size() {
             // SAFETY: the pool's queue, which `create` opened.
             let queue = unsafe {
                 &*(*pool)
-                    .queue
+                    .queue()
                     .cast::<swoole_rs_corebase::ossupport::QueueRecord>()
             };
             let pushed = queue.push(&message[..size_of::<c_long>() + data.len()]);
@@ -1914,7 +1796,7 @@ fn stream_protocol_msgqueue_ignores_package_size() {
 const TEST_SOCK: &CStr = c"/tmp/swoole_process_pool.sock";
 
 fn listen_unixsock_on_message(pool: PoolRef<'_>, _: &mut RecvData<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     let wmem = pool_data(pool);
     response(pool, wmem.as_ptr(), wmem.len() as u32);
 }
@@ -1931,7 +1813,7 @@ fn listen_unixsock() {
 
     // SAFETY: the case's pool; `wmem` outlives it.
     unsafe {
-        (*pool).ptr = (&raw mut wmem).cast();
+        PoolRef::new(pool).hold(&CASE_DATA, (&raw mut wmem).cast());
         install(
             pool,
             Hooks {
@@ -1968,7 +1850,7 @@ fn listen_unixsock() {
 }
 
 fn worker_status(worker: &Worker) -> u8 {
-    worker.status
+    WorkerHandle::from(worker).status().unwrap() as u8
 }
 
 fn set_worker_type(kind: c_int) -> u8 {
@@ -1982,7 +1864,7 @@ fn worker() {
     unsafe { worker_init(&raw mut *worker) };
 
     assert!(pm::worker_is_running());
-    assert!(worker.start_time > 0);
+    assert!(WorkerHandle::from(&*worker).start_time() > 0);
     pm::worker_set_max_request(1000, 200);
 
     let max_request = swoole_rs_corebase::process::worker_globals::with_globals(|globals| {
@@ -2003,15 +1885,15 @@ fn worker() {
     assert_eq!(set_worker_type(SW_MASTER), b'#');
     assert_eq!(set_worker_type(SW_MANAGER), b'$');
 
-    worker.status = SW_WORKER_IDLE;
+    worker.set_status(WorkerStatus::Idle);
     assert_eq!(worker_status(&worker), SW_WORKER_IDLE);
     assert_ne!(worker_status(&worker), SW_WORKER_BUSY);
 
-    worker.status = SW_WORKER_BUSY;
+    worker.set_status(WorkerStatus::Busy);
     assert_ne!(worker_status(&worker), SW_WORKER_IDLE);
     assert_eq!(worker_status(&worker), SW_WORKER_BUSY);
 
-    worker.status = SW_WORKER_EXIT;
+    worker.set_status(WorkerStatus::Exit);
     assert_ne!(worker_status(&worker), SW_WORKER_IDLE);
     assert_ne!(worker_status(&worker), SW_WORKER_BUSY);
 }
@@ -2019,7 +1901,7 @@ fn worker() {
 fn add_worker() {
     let mut worker = new_worker();
     // SAFETY: getpid(2).
-    worker.pid = unsafe { getpid() };
+    worker.set_pid(unsafe { getpid() });
 
     let pool = new_pool();
     assert_eq!(create(pool, 1, 0, SW_IPC_UNIXSOCK), SW_OK);
@@ -2041,17 +1923,17 @@ extern "C" fn shutdown_current_worker(_: c_int) {
 }
 
 fn child_exit_on_worker_start(_: PoolRef<'_>, worker: WorkerHandle<'_>) {
-    let worker = worker.raw().cast::<Worker>();
+    let worker = worker.raw();
     _ = signal::set(SIGTERM, SignalHandler::new(shutdown_current_worker), false);
     // SAFETY: the worker's record.
-    counter_incr(unsafe { (*worker).id } as usize);
+    counter_incr(unsafe { (*worker).id() } as usize);
     while !pm::worker_is_shutdown() {
         ms_sleep(1000);
     }
 }
 
 fn child_exit_on_worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     // SAFETY: the started pool.
     if status.pid() != counter_get(6) || counter_incr(27) != 1 || !unsafe { pool_reload(pool) } {
         counter_incr(26);
@@ -2063,9 +1945,9 @@ fn child_exit_on_before_reload(_: PoolRef<'_>) {
 }
 
 fn child_exit_on_after_reload(pool: PoolRef<'_>) {
-    let pool = pool.raw().cast::<Pool>();
+    let pool = pool.raw();
     // SAFETY: the started pool's worker 1.
-    if unsafe { (*get_worker(pool, 1)).pid } == counter_get(5) {
+    if unsafe { (*get_worker(pool, 1)).pid() } == counter_get(5) {
         counter_incr(26);
     }
     counter_incr(25);
@@ -2083,7 +1965,7 @@ fn failed_main_loop_sets_worker_exit_status() {
     );
     assert_eq!(start(pool), SW_OK);
     // SAFETY: start spawned the only worker and stored its pid in the live pool.
-    let pid = unsafe { (*get_worker(pool, 0)).pid };
+    let pid = unsafe { (*get_worker(pool, 0)).pid() };
     assert!(pid > 0);
     let mut status = 0;
     // SAFETY: pid is our child and status is writable for the call.
@@ -2098,9 +1980,9 @@ fn reload_from_child_exit_callback() {
     counter_init();
     assert_eq!(create(pool, 2, 0, SW_IPC_NONE), SW_OK);
     // SAFETY: the case's pool.
-    unsafe { (*pool).max_wait_time = 1 };
+    unsafe { (*pool).max_wait_time.set(1) };
     // SAFETY: the case's pool.
-    unsafe { PoolRef::new(pool.cast()) }.clear_main_loop();
+    unsafe { PoolRef::new(pool) }.clear_main_loop();
     install(
         pool,
         Hooks {
@@ -2114,18 +1996,18 @@ fn reload_from_child_exit_callback() {
     let watchdog = after(5000, move |_| {
         counter_set(31, 1);
         // SAFETY: the case's pool.
-        unsafe { (*pool).running = false };
+        unsafe { (*pool).running.set(false) };
     });
     let completion = tick(10, move |tnode| {
         if counter_get(25) == 1 && counter_get(0) == 2 && counter_get(1) == 2 {
             swoole_rs_corebase::timer::del_id(tnode);
             // SAFETY: the case's pool.
-            unsafe { (*pool).running = false };
+            unsafe { (*pool).running.set(false) };
         }
     });
     assert_eq!(start(pool), SW_OK);
     // SAFETY: the started pool's worker 1.
-    counter_set(5, unsafe { (*get_worker(pool, 1)).pid });
+    counter_set(5, unsafe { (*get_worker(pool, 1)).pid() });
     let deadline = microtime() + 3.0;
     while (counter_get(0) != 1 || counter_get(1) != 1) && microtime() < deadline {
         ms_sleep(1000);
@@ -2158,25 +2040,9 @@ fn reload_from_child_exit_callback() {
     swoole_signal_clear();
 }
 
-/// `SwooleWG.worker`, as the mirror.
+/// `SwooleWG.worker`, as its record.
 fn current_worker() -> *mut Worker {
     swoole_rs_corebase::process::worker_globals::current_worker().cast()
-}
-
-/// The mirrors' layout, checked against the fixture before any case runs.
-pub(super) fn check_layout() {
-    let mirrored = [
-        size_of::<Pool>(),
-        std::mem::offset_of!(Pool, main_loop),
-        std::mem::offset_of!(Pool, ptr),
-        size_of::<Worker>(),
-        std::mem::offset_of!(Worker, start_time),
-        size_of::<EventData>(),
-    ];
-    // SAFETY: a constant table in the fixture.
-    assert_eq!(mirrored, unsafe {
-        ptr::read(&raw const swr_case_process_layout)
-    });
 }
 
 pub(super) const CASES: super::Cases = &[

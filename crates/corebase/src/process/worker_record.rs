@@ -1,9 +1,4 @@
-//! The server's `Worker` record, whose layout Rust owns (`#[repr(C)]`) so the
-//! `sw_shm`-backed worker array every process maps is defined here. The C++
-//! `swoole::Worker` the native test fixtures compile takes its fields from this
-//! struct: `tools/process_records.py` writes them into
-//! `native/process/swoole_rs_process_views.h`, and `tools/headers.sh --check`
-//! fails when that header is stale. See #629.
+//! The server's shared-memory worker record.
 
 use crate::locks::SharedMutex;
 use crate::process::process_pool::IpcMode;
@@ -125,8 +120,6 @@ pub enum PipeEnd {
 /// over it trust them. The records are shared memory, and each process owns its
 /// own sockets at these addresses: a process that frees its pipes leaves the fields
 /// to the others, and sends through the record no more.
-// `repr(C)`: `native/process/swoole_rs_process_views.h` mirrors it for the system fixture.
-#[repr(C)]
 pub struct WorkerRecord {
     pub(crate) pid: AtomicI32,
     id: Cell<u32>,
@@ -770,9 +763,6 @@ mod tests {
         unsafe { pipe.as_non_null().cast::<c_int>().read() }
     }
 
-    // The C++ view takes its fields from this struct (tools/process_records.py). Here
-    // just sanity-check the Rust record's alignment and that the accessors read/write
-    // the right field.
     #[test]
     fn a_pool_process_copies_the_worker_without_the_pipes_it_may_not_close() {
         let mut fds: [c_int; 2] = [7, 9];
@@ -925,11 +915,6 @@ mod tests {
     }
 
     #[test]
-    fn record_is_pointer_aligned() {
-        assert_eq!(align_of::<WorkerRecord>(), 8);
-    }
-
-    #[test]
     fn status_accessors_round_trip() {
         let record: WorkerRecord = unsafe { std::mem::zeroed() };
         {
@@ -1031,14 +1016,14 @@ mod public_pid_array_tests {
 
     #[test]
     fn public_pid_writes_and_duplicates_keep_first_array_match_including_zero() {
-        let mut workers: [WorkerRecord; 3] = unsafe { core::mem::zeroed() };
+        let mut workers: [_; 3] = std::array::from_fn(|_| WorkerRecord::empty());
         let first = workers.as_mut_ptr();
         unsafe {
             assert_eq!(swr_v1_worker_array_lookup(first, 3, 0), first);
-            first.cast::<c_int>().write(9);
-            first.add(1).cast::<c_int>().write(9);
+            (*first).set_pid(9);
+            (*first.add(1)).set_pid(9);
             assert_eq!(swr_v1_worker_array_lookup(first, 3, 9), first);
-            first.cast::<c_int>().write(4);
+            (*first).set_pid(4);
             assert_eq!(swr_v1_worker_array_lookup(first, 3, 9), first.add(1));
             assert_eq!(swr_v1_worker_array_lookup(first, 3, 0), first.add(2));
             assert!(swr_v1_worker_array_lookup(first, 3, 77).is_null());

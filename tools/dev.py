@@ -303,7 +303,6 @@ def plan(args, reports):
         # witnesses in its fixture.
         script('hooks-system-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--archive', archive,
-               '--fixture', ROOT / 'tests/modules/hooks/system/fixture.cc',
                '--build-root', ROOT / 'target/native-originals/hooks-system', '--jobs', args.jobs,
                '--exclude', 'coroutine_system.getaddrinfo=' + NETWORK, '--exclude', 'coroutine_system.getaddrinfo_timeout=' + UNCACHED,
                '--exclude', 'coroutine_hook.sendmsg_and_recvmsg=flaky: its outcome depends on which close completes first '
