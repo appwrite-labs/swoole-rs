@@ -103,7 +103,7 @@ mod recording {
 
 /// An easy handle for `url`, with its Swoole handle.
 fn easy(url: &str) -> *mut CURL {
-    let cp = unsafe { curl_easy_init() };
+    let cp = curl_easy_init();
     let url = CString::new(url).unwrap();
     unsafe { curl_easy_setopt(cp, CURLOPT_URL, url.as_ptr()) };
     swr_v1_curl_create_handle(Easy(cp, PhantomData));

@@ -113,7 +113,8 @@ impl CURLMsg {
 
 #[link(name = "curl")]
 unsafe extern "C" {
-    pub fn curl_easy_init() -> *mut CURL;
+    /// Allocates a new easy handle without borrowing any caller state.
+    pub safe fn curl_easy_init() -> *mut CURL;
     pub fn curl_easy_cleanup(curl: *mut CURL);
     pub fn curl_easy_setopt(curl: *mut CURL, option: CURLoption, ...) -> CURLcode;
     pub fn curl_easy_getinfo(curl: *mut CURL, info: CURLINFO, ...) -> CURLcode;

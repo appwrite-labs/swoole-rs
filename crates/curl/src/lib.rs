@@ -908,6 +908,8 @@ pub use host::{swoole_curl_check_bound_co, swoole_curl_easy_perform, swoole_curl
 #[cfg(feature = "php")]
 mod php;
 #[cfg(feature = "php")]
+mod php_handle;
+#[cfg(feature = "php")]
 pub use php::swr_v1_curl_check_handle;
 #[cfg(test)]
 #[path = "../../../tests/modules/hooks/curl.rs"]
