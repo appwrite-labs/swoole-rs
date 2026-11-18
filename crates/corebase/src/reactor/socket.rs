@@ -288,7 +288,7 @@ impl<'a> Socket<'a> {
     #[must_use]
     pub fn wait_event(self, timeout_ms: c_int, events: crate::reactor::Events) -> bool {
         let (fd, dont_restart) = self.read(|record| (record.fd, record.dont_restart));
-        crate::reactor::socket_upstream::wait_event(fd, dont_restart, timeout_ms, events)
+        crate::reactor::socket_upstream::wait_event(fd, dont_restart, timeout_ms, events).is_ok()
     }
 }
 

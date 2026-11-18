@@ -729,7 +729,8 @@ fn random_c_string() -> Vec<u8> {
 fn test_func(pool: *mut Pool) {
     let mut data = EventData::new();
     let size =
-        swoole_rs_corebase::swoole_system_random(1024, 4096.min(SW_IPC_BUFFER_SIZE as c_int));
+        swoole_rs_corebase::swoole_system_random(1024, 4096.min(SW_IPC_BUFFER_SIZE as c_int))
+            .unwrap();
     let size = usize::try_from(size).unwrap();
     let mut rmem = random_string(size);
 

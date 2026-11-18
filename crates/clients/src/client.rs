@@ -1690,7 +1690,7 @@ mod ops {
         let socket = this.socket();
         let address = &this.record().server_addr;
         match mode {
-            ConnectMode::Sync => socket_upstream::connect_sync(socket, address) >= 0,
+            ConnectMode::Sync => socket_upstream::connect_sync(socket, address).is_ok(),
             ConnectMode::Raw => address.connect(socket.fd()),
         }
     }
