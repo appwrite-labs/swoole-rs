@@ -748,6 +748,7 @@ dependencies = [
  "swoole-rs-framing",
  "swoole-rs-hooks",
  "swoole-rs-http2",
+ "swoole-rs-httpbindings",
  "swoole-rs-inflate",
  "swoole-rs-phpclients",
  "swoole-rs-phpcoroutines",

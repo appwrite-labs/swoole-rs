@@ -12,7 +12,8 @@ use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_deflate::{DEFLATE, Failure, GZIP, bound, compress as deflate};
 use swoole_rs_httpbindings::{
     CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, Compression, DATE, SERVER,
-    TRANSFER_ENCODING, codec, codec_level, encoding, response_header,
+    TRANSFER_ENCODING, codec, codec_level, encoding, header_warning, response_header,
+    trim_header_end,
 };
 use swoole_rs_inflate::brotli::{self, MAX_QUALITY, MIN_QUALITY};
 use swoole_rs_inflate::zstd;
@@ -173,15 +174,9 @@ pub extern "C" fn response_rshutdown() {
 
 /// `swoole_http_has_crlf`, warning as upstream does.
 pub(crate) fn has_crlf(bytes: &[u8]) -> bool {
-    for &byte in bytes {
-        if byte == b'\n' || byte == b'\r' {
-            host::notice("Header may not contain more than a single header, new line detected");
-            return true;
-        }
-        if byte == 0 {
-            host::notice("Header may not contain NUL bytes");
-            return true;
-        }
+    if let Some(message) = header_warning(bytes) {
+        host::notice(message);
+        return true;
     }
     false
 }
@@ -197,12 +192,7 @@ fn add_custom_header(
         return Ok(());
     }
     let text = to_string(value_)?;
-    let bytes = text.bytes();
-    let end = bytes
-        .iter()
-        .rposition(|&byte| !is_c_space(byte))
-        .map_or(0, |last| last + 1);
-    let bytes = bytes.get(..end).unwrap_or_default();
+    let bytes = trim_header_end(text.bytes());
     if !has_crlf(bytes) {
         out.extend_from_slice(key);
         out.extend_from_slice(b": ");
@@ -210,11 +200,6 @@ fn add_custom_header(
         out.extend_from_slice(b"\r\n");
     }
     Ok(())
-}
-
-/// C's `isspace` in the "C" locale.
-fn is_c_space(byte: u8) -> bool {
-    matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
 }
 
 fn log_conflict(message: &str) {
@@ -581,11 +566,5 @@ mod tests {
         let idle = OUT.take();
         assert!(idle.capacity() <= TRAILER_LINE);
         OUT.set(idle);
-    }
-
-    #[test]
-    fn c_isspace_is_the_c_locale_set() {
-        let spaces: Vec<u8> = (0..=255u8).filter(|&byte| is_c_space(byte)).collect();
-        assert_eq!(spaces, b"\t\n\x0b\x0c\r ", "isspace in the C locale");
     }
 }
