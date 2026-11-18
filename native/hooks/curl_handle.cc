@@ -216,4 +216,48 @@ extern "C" bool swoole_curl_url_bytes(php_curl *ch, const zend_string *input, bo
 extern "C" void swoole_curl_free_bytes(iovec buffer) {
     curl_free(buffer.iov_base);
 }
+
+/* curl_setopt's options of a number, a string or a blob (crates/curl/src/setopt.rs). Each sets the
+ * option as the bundled copies did and saves the error, SAVE_CURL_ERROR: curl_easy_setopt is
+ * variadic. The header's libcurl version gates the options the copies compiled in. */
+extern "C" const unsigned swoole_curl_header_version = LIBCURL_VERSION_NUM;
+
+extern "C" int swoole_curl_setopt_long(php_curl *ch, int option, long value) {
+    return ch->err.no = curl_easy_setopt(ch->cp, (CURLoption) option, value);
+}
+
+extern "C" int swoole_curl_setopt_off_t(php_curl *ch, int option, curl_off_t value) {
+    return ch->err.no = curl_easy_setopt(ch->cp, (CURLoption) option, value);
+}
+
+/* libcurl copies the string; null unsets the option. */
+extern "C" int swoole_curl_setopt_string(php_curl *ch, int option, const zend_string *value) {
+    return ch->err.no = curl_easy_setopt(ch->cp, (CURLoption) option, value ? ZSTR_VAL(value) : NULL);
+}
+
+extern "C" int swoole_curl_setopt_blob(php_curl *ch, int option, const zend_string *value) {
+#if LIBCURL_VERSION_NUM >= 0x074700 /* Available since 7.71.0 */
+    struct curl_blob blob;
+    blob.data = (void *) ZSTR_VAL(value);
+    blob.len = ZSTR_LEN(value);
+    blob.flags = CURL_BLOB_COPY;
+    return ch->err.no = curl_easy_setopt(ch->cp, (CURLoption) option, &blob);
+#else
+    return ch->err.no = CURLE_UNKNOWN_OPTION;
+#endif
+}
+
+extern "C" void swoole_curl_save_error(php_curl *ch, int error) {
+    ch->err.no = error;
+}
+
+/* PG(open_basedir) is set and not empty. */
+extern "C" bool swoole_curl_open_basedir() {
+    return PG(open_basedir) && *PG(open_basedir);
+}
+
+/* php_check_open_basedir, which warns about a path outside it. */
+extern "C" bool swoole_curl_allowed_path(const zend_string *path) {
+    return php_check_open_basedir(ZSTR_VAL(path)) == 0;
+}
 #endif

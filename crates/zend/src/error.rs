@@ -120,6 +120,8 @@ impl Call<'_> {
 /// `E_WARNING`.
 #[expect(clippy::cast_possible_wrap, reason = "error levels are small")]
 pub const E_WARNING: i32 = crate::sys::E_WARNING as i32;
+/// `E_NOTICE`.
+pub const E_NOTICE: i32 = crate::sys::E_NOTICE.cast_signed();
 /// `E_ERROR`: Zend bails out after reporting it.
 #[expect(clippy::cast_possible_wrap, reason = "error levels are small")]
 pub const E_ERROR: i32 = crate::sys::E_ERROR as i32;
