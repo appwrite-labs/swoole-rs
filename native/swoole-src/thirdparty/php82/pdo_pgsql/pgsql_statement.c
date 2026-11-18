@@ -75,10 +75,6 @@ static int pgsql_stmt_dtor(pdo_stmt_t *stmt)
 		S->cursor_name = NULL;
 	}
 
-	if(S->cols) {
-		efree(S->cols);
-		S->cols = NULL;
-	}
 	efree(S);
 	stmt->driver_data = NULL;
 	return 1;
@@ -137,9 +133,6 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt)
 	}
 	if (!pdo_pgsql_execution_result(stmt->dbh, stmt, S->result)) {
 		return 0;
-	}
-	if (S->cols == NULL) {
-		S->cols = ecalloc(stmt->column_count, sizeof(pdo_pgsql_column));
 	}
 
 	if (in_trans && !stmt->dbh->methods->in_transaction(stmt->dbh)) {
@@ -228,7 +221,7 @@ static int pgsql_stmt_describe(pdo_stmt_t *stmt, int colno)
     if (!S->result) {
         return 0;
     }
-    return pdo_pgsql_describe_column(S->result, colno, &stmt->columns[colno], &S->cols[colno].pgsql_type);
+    return pdo_pgsql_describe_column(S->result, colno, &stmt->columns[colno]);
 }
 
 static int pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type)
@@ -245,7 +238,8 @@ static int pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pd
 		char *ptr = PQgetvalue(S->result, S->current_row - 1, colno);
 		size_t len = PQgetlength(S->result, S->current_row - 1, colno);
 
-		switch (S->cols[colno].pgsql_type) {
+		Oid oid_type = PQftype(S->result, colno);
+		switch (oid_type) {
 			case OIDOID: {
 				char *end_ptr;
 				Oid oid = (Oid)strtoul(ptr, &end_ptr, 10);
@@ -284,7 +278,7 @@ static int pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pd
 			}
 
 			default:
-				pdo_pgsql_scalar_column(S->cols[colno].pgsql_type, (struct iovec){ptr, len}, result);
+				pdo_pgsql_scalar_column(oid_type, (struct iovec){ptr, len}, result);
 				break;
 		}
 	}
@@ -298,7 +292,7 @@ static int pgsql_stmt_get_column_meta(pdo_stmt_t *stmt, zend_long colno, zval *r
     if (!S->result || colno < 0 || colno >= stmt->column_count) {
         return FAILURE;
     }
-    return pdo_pgsql_column_meta(S->H, S->cols[colno].pgsql_type, PQftable(S->result, colno), return_value);
+    return pdo_pgsql_column_meta(S->H, S->result, colno, return_value);
 }
 
 static int pdo_pgsql_stmt_cursor_closer(pdo_stmt_t *stmt)

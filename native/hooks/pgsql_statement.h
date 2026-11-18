@@ -23,14 +23,10 @@
 #include <sys/uio.h>
 
 typedef struct pdo_pgsql_db_handle pdo_pgsql_db_handle;
-typedef struct {
-    Oid pgsql_type;
-} pdo_pgsql_column;
 
 typedef struct pdo_pgsql_stmt {
     pdo_pgsql_db_handle *H;
     PGresult *result;
-    pdo_pgsql_column *cols;
     char *cursor_name;
     char *stmt_name;
     zend_string *query;
@@ -65,8 +61,8 @@ bool pdo_pgsql_open_cursor(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, 
 bool pdo_pgsql_fetch_cursor(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *cursor, unsigned int orientation, zend_long offset);
 void pdo_pgsql_scalar_column(Oid oid, struct iovec bytes, zval *output);
 struct pdo_column_data;
-bool pdo_pgsql_describe_column(PGresult *result, int colno, struct pdo_column_data *column, Oid *oid);
-int pdo_pgsql_column_meta(pdo_pgsql_db_handle *H, Oid oid, Oid table, zval *output);
+bool pdo_pgsql_describe_column(PGresult *result, int colno, struct pdo_column_data *column);
+int pdo_pgsql_column_meta(pdo_pgsql_db_handle *H, PGresult *result, int colno, zval *output);
 bool pdo_pgsql_bind_stream(pdo_dbh_t *dbh, pdo_stmt_t *stmt, void *params, size_t index, zval *value);
 void pdo_pgsql_raise(pdo_dbh_t *dbh, pdo_stmt_t *stmt, int errcode, const char *sqlstate, const char *msg);
 #endif

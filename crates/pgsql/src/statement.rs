@@ -66,6 +66,7 @@ fn column_meta(handle: &Handle, oid: Oid, table: Oid) -> Result<OwnedArray, Bail
 unsafe extern "C" {
     safe fn PQfsize(result: Res<'_>, column: c_int) -> c_int;
     safe fn PQfmod(result: Res<'_>, column: c_int) -> c_int;
+    safe fn PQftable(result: Res<'_>, column: c_int) -> Oid;
     safe fn PQftype(result: Res<'_>, column: c_int) -> Oid;
 }
 
@@ -83,13 +84,12 @@ extern "C" fn pdo_pgsql_scalar_column(oid: Oid, bytes: std::io::IoSlice<'_>, out
     output.set(value);
 }
 
-/// Fill PDO's column description and retain its PostgreSQL type for `getColumnMeta`.
+/// Fill PDO's column description.
 #[unsafe(no_mangle)]
 extern "C" fn pdo_pgsql_describe_column(
     result: Res<'_>,
     column: c_int,
     desc: &mut pdo_column_data,
-    oid: &mut Oid,
 ) -> bool {
     unsafe extern "C" {
         // The result owns the name, copied before this function returns.
@@ -101,15 +101,14 @@ extern "C" fn pdo_pgsql_describe_column(
     desc.name = ZString::new(name.get().to_bytes()).into_raw();
     desc.maxlen = PQfsize(result, column).c_cast();
     desc.precision = PQfmod(result, column).c_cast();
-    *oid = PQftype(result, column);
     true
 }
 
 swoole_rs_zend::exports! {
 /// The metadata for a live statement column, returned to PDO.
 #[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_column_meta(handle: &Handle, oid: Oid, table: Oid, output: &Slot) -> std::ffi::c_int {
-    match column_meta(handle, oid, table) {
+extern "C" fn pdo_pgsql_column_meta(handle: &Handle, result: Res<'_>, column: c_int, output: &Slot) -> std::ffi::c_int {
+    match column_meta(handle, PQftype(result, column), PQftable(result, column)) {
         Ok(meta) => { output.set(meta.into_owned()); 1 }
         Err(error) => { error.defer(); -1 }
     }
