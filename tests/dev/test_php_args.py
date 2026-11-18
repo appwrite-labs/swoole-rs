@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from tools import budget
 from tools.audit_php_args import audit
 
 
@@ -43,3 +44,13 @@ fn check(frame: &Call, n: u32) {
                              [('arginfo_alias', 'value().and_then(Value::array)')])
             self.assertEqual({f[4] for f in audit(root, raw=True)[2]},
                              {'value', 'value().and_then(Value::array)'})
+
+            (handlers.parent / 'Cargo.toml').touch()
+            current = budget.counts(root)
+            self.assertEqual(current['php_args'], {'phpdemo': 1})
+            source = handlers / 'lib.rs'
+            source.write_text(source.read_text().replace('value(n).and_then(Value::array)', 'array_ref(n)'))
+            base = budget.counts(root)
+            self.assertEqual(base['php_args'], {})
+            self.assertEqual(set(budget.failures(current, base, root=root)), {'php_args'})
+            self.assertFalse(budget.failures(base, current, root=root))
