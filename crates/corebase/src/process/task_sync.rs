@@ -537,6 +537,15 @@ mod tests {
         record
     }
 
+    fn result_file(name: &str, contents: &[u8]) -> crate::ossupport::TempFile {
+        let path = std::env::temp_dir().join(format!("swr-task-{name}-{}", std::process::id()));
+        let file = std::fs::File::create_new(&path).unwrap();
+        let path = std::ffi::CString::new(path.into_os_string().into_encoded_bytes()).unwrap();
+        let guard = crate::ossupport::TempFile::from_parts(path, file);
+        std::io::Write::write_all(&mut &*guard.file, contents).unwrap();
+        guard
+    }
+
     fn tasks(script: Script, counters: &(AtomicU32, AtomicU64)) -> Tasks<'_, Script> {
         Tasks {
             host: script,
@@ -596,11 +605,8 @@ mod tests {
         let mut file = record(11, b"ab");
         file.extend(record(99, b""));
         file.extend(record(12, b"c"));
-        let guard =
-            crate::ossupport::TempFile::create(&mut b"/tmp/swr-task-sync-XXXXXX\0".to_owned())
-                .unwrap();
+        let guard = result_file("sync", &file);
         let path = guard.path().to_owned();
-        std::io::Write::write_all(&mut &*guard.file, &file).unwrap();
         // The finish count (the result's data) already says both finished.
         let mut result = vec![0u64; EVENT_SIZE / 8];
         result[HEAD / 8] = 2;
@@ -656,9 +662,7 @@ mod tests {
             packs: vec![-1],
             ..Multi::default()
         };
-        let guard =
-            crate::ossupport::TempFile::create(&mut b"/tmp/swr-task-empty-XXXXXX\0".to_owned())
-                .unwrap();
+        let guard = result_file("empty", &[]);
         let path = guard.path().to_owned();
         let done = tasks.sync_many(&mut multi, -1.0, guard.map_file(drop).path());
         assert!(!std::fs::exists(path.to_str().unwrap()).unwrap());
