@@ -122,12 +122,13 @@ fn refused(path: &CStr, warn: bool) -> Result<bool, Bailout> {
 
 /// `php_error_docref1(NULL, path, E_WARNING, "%s", strerror(code))`.
 fn warn(path: &CStr, code: c_int) -> Result<(), Bailout> {
-    warn_text(path, strerror(code))
+    warn_text(path, &[strerror(code).as_bytes()])
 }
 
-/// `php_error_docref1(NULL, path, E_WARNING, "%s", message)`.
-fn warn_text(path: &CStr, message: String) -> Result<(), Bailout> {
-    let message = CString::new(message).unwrap_or_default();
+/// `php_error_docref1(NULL, path, E_WARNING, "%s", message)`, the message being
+/// `parts` end to end: a path or a name goes in as its bytes, as C's `%s` prints it.
+fn warn_text(path: &CStr, parts: &[&[u8]]) -> Result<(), Bailout> {
+    let message = CString::new(parts.concat()).unwrap_or_default();
     bailout::trapped(swr_zend_try_error1(
         path.into(),
         E_WARNING,
@@ -401,10 +402,15 @@ fn metadata(
                 let flags = libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC;
                 let file = swoole_coroutine_open(path.into(), flags, 0o666);
                 if file == -1 {
-                    let (path_text, reason) = (path.to_string_lossy(), strerror(errno()));
+                    let reason = strerror(errno());
                     warn_text(
                         path,
-                        format!("Unable to create file {path_text} because {reason}"),
+                        &[
+                            b"Unable to create file ",
+                            path.to_bytes(),
+                            b" because ",
+                            reason.as_bytes(),
+                        ],
                     )?;
                     return Ok(0);
                 }
@@ -415,8 +421,7 @@ fn metadata(
         META_OWNER_NAME | META_OWNER => {
             let mut uid = number.c_cast::<uid_t>();
             if option == META_OWNER_NAME && php_get_uid_by_name(name.into(), &mut uid) != 0 {
-                let name = name.to_string_lossy();
-                warn_text(path, format!("Unable to find uid for {name}"))?;
+                warn_text(path, &[b"Unable to find uid for ", name.to_bytes()])?;
                 return Ok(0);
             }
             // `(gid_t) -1`: the group stays.
@@ -425,8 +430,7 @@ fn metadata(
         META_GROUP_NAME | META_GROUP => {
             let mut gid = number.c_cast::<gid_t>();
             if option == META_GROUP_NAME && php_get_gid_by_name(name.into(), &mut gid) != 0 {
-                let name = name.to_string_lossy();
-                warn_text(path, format!("Unable to find gid for {name}"))?;
+                warn_text(path, &[b"Unable to find gid for ", name.to_bytes()])?;
                 return Ok(0);
             }
             chown(path.into(), uid_t::MAX, gid)
@@ -439,7 +443,7 @@ fn metadata(
         }
     };
     if status == -1 {
-        warn_text(path, format!("Operation failed: {}", strerror(errno())))?;
+        warn_text(path, &[b"Operation failed: ", strerror(errno()).as_bytes()])?;
         return Ok(0);
     }
     php_clear_stat_cache(false, None, 0);
