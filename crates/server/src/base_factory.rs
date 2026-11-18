@@ -22,12 +22,10 @@ use swoole_rs_corebase::{CCast, log};
 /// `swoole::SendData`, and the `swoole::RecvData` a receive callback reads (the same
 /// two fields): an event's head and the payload it lends for `'a`, or none.
 ///
-/// It starts as C's does, `{ info, data }`, which native callbacks read; the slice
-/// after them is what Rust reads. The fields are private to this module, so only the
+/// The fields are private to this module, so only the
 /// constructors set the payload, `data` (its start, or null) and `info.len`, which
 /// [`SendData::payload`] bounds by the payload; the setters change the rest of the
 /// head, and only the bus's writes ([`SendData::send`]) lower `len`.
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SendData<'a> {
     info: DataHead,

@@ -31,6 +31,7 @@ pub use swoole_rs_clients::protocol::Protocol;
 /// opaque here. The pointers are crate-private: other crates read them through [`Co`]
 /// and set them only through its `unsafe` setters, so what `Co`'s safe methods
 /// dereference stays live.
+// `repr(C)`: C's `swr_v1_co_socket` (`native/hooks/swoole_rs_co_socket.h`), which the bundled ssh2 hook reads.
 #[repr(C)]
 pub struct CoSocket {
     pub err_code: Cell<c_int>,

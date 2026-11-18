@@ -267,7 +267,8 @@ mod tests {
     #[test]
     fn datagram_headers_preserve_unknown_socket_codes() {
         let mut head = [0; crate::reactor_entry::DGRAM_HEAD];
-        head[..size_of::<c_int>()].copy_from_slice(&(-1_i32).to_ne_bytes());
+        let at = std::mem::offset_of!(DgramPacket, socket_type);
+        head[at..at + size_of::<c_int>()].copy_from_slice(&(-1_i32).to_ne_bytes());
         let packet = DgramPacket::from_bytes(&head);
         assert_eq!(packet.socket_type.known(), None);
         assert_eq!(packet.to_bytes(), head);

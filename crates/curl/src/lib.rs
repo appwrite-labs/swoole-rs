@@ -108,6 +108,7 @@ impl Private {
 
 /// `struct swr_v1_curl_handle`: the easy handle's multi while it is in one,
 /// and the multi `curl_exec` runs it in. C++ only asks whether `multi` is set.
+// `repr(C)`: C's `swr_v1_curl_handle` (`native/hooks/swoole_rs_curl.h`), which the bundled cURL code reads.
 #[repr(C)]
 pub struct Handle {
     cp: *mut CURL,

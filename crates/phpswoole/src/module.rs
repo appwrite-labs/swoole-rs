@@ -47,6 +47,7 @@ unsafe extern "C" {
 /// `zend_swoole_globals` (`php_swoole.h`'s layout, which Zend's ini handlers
 /// write by offset). Each field is a cell: this thread reads and writes them
 /// through shared references, and Zend through the offsets.
+// `repr(C)`: the module globals C declares (`native/swoole-src/php_swoole.h`), which the bundled cURL code reads.
 #[repr(C)]
 pub struct Globals {
     pub(crate) display_errors: Cell<bool>,
