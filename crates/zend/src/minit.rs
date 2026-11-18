@@ -2,10 +2,10 @@
 //! constants, classes and their function aliases.
 use crate::{
     Class, ClassEntry, Function, Owned, Value,
-    arginfo::{ArgInfo, Handler, Table},
+    arginfo::{ArgInfo, Handler, Methods, Table},
     bailout::Bailout,
     class::Layout,
-    function::{arg_info, deny},
+    function::deny,
     helpers::CText,
     registration::{SUCCESS, leaf},
     sys::{
@@ -338,15 +338,15 @@ impl Minit {
     /// Stops at a contained allocation or registration bailout.
     /// # Panics
     /// `class` is not registered.
-    pub fn function_aliases(
+    pub fn function_aliases<const N: usize>(
         &self,
         class: &Class,
-        methods: Table,
+        methods: &'static Methods<N>,
         aliases: &[(&CStr, &CStr)],
     ) -> Result<(), Bailout> {
         let entry = registered(class);
         for (method, alias) in aliases {
-            let info = arg_info(methods, method).map_or(Info::NONE, Info::row);
+            let info = methods.find(method).map_or(Info::NONE, Info::row);
             // Lookup lowercases the method's ASCII bytes.
             let lower = CString::new(method.to_bytes().to_ascii_lowercase()).unwrap_or_default();
             let found = swr_zend_minit_method_find(entry, lower.as_c_str().into());

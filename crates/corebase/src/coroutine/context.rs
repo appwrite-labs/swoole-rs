@@ -330,6 +330,10 @@ pub(crate) fn swap_out(co: Co) {
             thread.swap_out();
             return None;
         }
+        // A terminal switch releases ASan's fake stack. Copy the jump arguments
+        // before announcing it so neither is read from the closure's captures afterwards.
+        let target = ctx.swap_fctx.get();
+        let data = co;
         if let Some((start, _)) = asan {
             // A finished context never resumes, so ASan may free its fake stack now.
             let save = (!ctx.end.get()).then_some(&mut fake_stack);
@@ -342,7 +346,7 @@ pub(crate) fn swap_out(co: Co) {
             caller.switch();
         }
         // SAFETY: the suspended caller of `swap_in`.
-        Some(unsafe { jump_fcontext(ctx.swap_fctx.get(), co) })
+        Some(unsafe { jump_fcontext(target, data) })
     });
     let Some(transfer) = transfer else {
         return;

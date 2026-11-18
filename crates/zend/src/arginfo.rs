@@ -95,23 +95,29 @@ impl<const N: usize> Methods<N> {
     /// The table, for registration.
     #[must_use]
     pub const fn table(&'static self) -> Table {
-        Table {
-            rows: &self.rows,
-            names: &self.names,
-        }
+        Table(&self.rows)
+    }
+
+    /// The row named `method`, with its arginfo.
+    pub(crate) fn find(&'static self, method: &CStr) -> Option<&'static zend_function_entry> {
+        let at = self.names.iter().position(|name| *name == Some(method))?;
+        self.rows.get(at)
     }
 
     /// The table without the rows named in `skip`, leaked for the process: for
     /// an upstream `#ifdef` only C++ can test, decided once at MINIT.
     #[must_use]
     pub fn without(&'static self, skip: &[&CStr]) -> Table {
-        let (rows, names) = self
+        let rows = self
             .rows
             .iter()
             .zip(self.names)
-            .filter(|(_, name)| name.is_none_or(|name| !skip.contains(&name)))
-            .unzip();
-        Table::leak(rows, names)
+            .filter_map(|(row, name)| {
+                name.is_none_or(|name| !skip.contains(&name))
+                    .then_some(*row)
+            })
+            .collect();
+        Table::leak(rows)
     }
 }
 
@@ -120,64 +126,44 @@ impl<const N: usize> Methods<N> {
 #[repr(transparent)]
 pub(crate) struct Rows(*const zend_function_entry);
 
-/// A method table as Zend registers it: a [`Methods`]' rows (or some of them,
-/// or several joined), `PHP_FE_END` last, or none, beside each row's name.
+/// The rows Zend registers, `PHP_FE_END` last, or empty for none.
 #[derive(Clone, Copy)]
-pub struct Table {
-    rows: &'static [zend_function_entry],
-    names: &'static [Option<&'static CStr>],
-}
+pub struct Table(&'static [zend_function_entry]);
 
 impl Table {
     /// No methods.
-    pub const NONE: Self = Self {
-        rows: &[],
-        names: &[],
-    };
+    pub const NONE: Self = Self(&[]);
 
-    /// `rows` and their `names`, leaked for the process.
-    fn leak(rows: Vec<zend_function_entry>, names: Vec<Option<&'static CStr>>) -> Self {
-        Self {
-            rows: Box::leak(rows.into_boxed_slice()),
-            names: Box::leak(names.into_boxed_slice()),
-        }
+    fn leak(rows: Vec<zend_function_entry>) -> Self {
+        Self(Box::leak(rows.into_boxed_slice()))
     }
 
-    /// Each table's rows in turn, then one `PHP_FE_END`, leaked for the process.
+    /// Each table's rows in turn, then one `PHP_FE_END`, retained by Zend.
     #[must_use]
     pub fn join(tables: &[Self]) -> Self {
-        let (mut rows, mut names): (Vec<_>, Vec<_>) = tables
+        let mut rows: Vec<_> = tables
             .iter()
-            .flat_map(|table| {
-                let ends = table.rows.len().saturating_sub(1);
-                table.rows.iter().zip(table.names).take(ends)
-            })
-            .unzip();
+            .flat_map(|table| table.0.split_last().map_or(&[][..], |(_, rows)| rows))
+            .copied()
+            .collect();
         rows.push(END.0);
-        names.push(END.1);
-        Self::leak(rows, names)
+        Self::leak(rows)
     }
 
     /// The table, as `INIT_CLASS_ENTRY` and `zend_register_functions` take it:
     /// null for none.
     #[must_use]
     pub const fn as_ptr(self) -> *const zend_function_entry {
-        if self.rows.is_empty() {
+        if self.0.is_empty() {
             ptr::null()
         } else {
-            self.rows.as_ptr()
+            self.0.as_ptr()
         }
     }
 
     /// The table lent to C, as [`Table::as_ptr`].
     pub(crate) const fn rows(self) -> Rows {
         Rows(self.as_ptr())
-    }
-
-    /// The row named `method`, with its arginfo.
-    pub(crate) fn find(self, method: &CStr) -> Option<&'static zend_function_entry> {
-        let at = self.names.iter().position(|name| *name == Some(method))?;
-        self.rows.get(at)
     }
 }
 

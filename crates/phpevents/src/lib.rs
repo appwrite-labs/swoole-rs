@@ -132,7 +132,7 @@ method_table! {
 /// A registration bailed out.
 pub fn minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_static(&EVENT, c"Swoole\\Event", METHODS.table());
-    minit.function_aliases(&EVENT, METHODS.table(), &ALIASES)
+    minit.function_aliases(&EVENT, &METHODS, &ALIASES)
 }
 
 fn fatal_warning(message: &CStr) {
