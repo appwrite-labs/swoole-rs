@@ -138,3 +138,7 @@ mod tests {
         assert_eq!(socket.0.protocol.get_mut().package_max_length, 117);
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/modules/hooks/timeout_guards.rs"]
+mod timeout_guards;

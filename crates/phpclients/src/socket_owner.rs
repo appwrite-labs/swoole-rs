@@ -27,7 +27,7 @@ pub(super) fn release(data: &mut Data) -> Result<(), Bailout> {
 pub(super) fn close(sock: Sock, socket: Co) -> Result<(), Bailout> {
     socket.free_length_callable()?;
     if !sock.data().has_stream() {
-        return socket.close_trapped().map(drop);
+        return socket.close_trapped();
     }
     // The original no-verify lookup of the imported stream's zval.
     let stream = sock.data().stream();

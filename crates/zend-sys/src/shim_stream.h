@@ -57,7 +57,7 @@ php_stream *swr_zend_stream_factory(const char *proto, size_t protolen, const ch
 extern const php_stream_ops swoole_runtime_socket_ops;
 /* php_stream_alloc of those operations, with no abstract yet, inside zend_try:
  * 1 if it bailed out. */
-int swr_zend_try_socket_stream_alloc(const char *persistent, php_stream **stream);
+int swr_zend_try_socket_stream_alloc(const char *persistent, bool unix_stream, php_stream **stream);
 int swr_zend_try_stream_close(php_stream *);
 /* php_network_populate_name_from_sockaddr of the first `size` bytes of `peer`,
  * which holds them. */

@@ -189,8 +189,17 @@ impl Co {
     /// `close()` inside `zend_try`.
     /// # Errors
     /// A close hook bailed out.
-    pub(crate) fn close_trapped(self) -> Result<bool, Bailout> {
-        co::close_trapped(self.0)
+    pub(crate) fn close_trapped(self) -> Result<(), Bailout> {
+        if !co::close_trapped(self.0)?
+            && !self.is_closed()
+            && !self.0.has_bound(Events::READ | Events::WRITE)
+        {
+            co::close_trapped(self.0)?;
+        }
+        if self.is_closed() {
+            self.0.close_fd();
+        }
+        Ok(())
     }
 
     /// `close()`; the socket may be gone after it returns true.

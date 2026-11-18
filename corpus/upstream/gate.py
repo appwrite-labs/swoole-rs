@@ -64,14 +64,7 @@ STATUSES = ['passed', 'failed', 'skipped', 'excluded']
 # Pinned tests of upstream fixes to code that is Rust now, by the open issue porting them
 # (#1905 moved the pin to v6.2.5 ahead of the ports). The gate lists them instead of
 # failing on them, and lists those cargo already passes so their entries go.
-PENDING_PORTS = {
-    4931: [
-        'swoole_runtime/stream_socket_server_close.phpt',
-        'swoole_socket_coro/close_listener.phpt',
-        'swoole_socket_coro/close_unix_socket.phpt',
-        'swoole_socket_coro/import_4.phpt',
-    ],
-}
+PENDING_PORTS = {}
 PENDING = {f'tests/{test}': issue for issue, tests in PENDING_PORTS.items() for test in tests}
 
 

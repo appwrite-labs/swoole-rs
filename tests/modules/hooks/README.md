@@ -120,9 +120,11 @@ ipv6.sjtu.edu.cn, www.gov.cn), so `hooks-system-rust` excludes them as it does `
 `std::string` and the hybrid exports no symbol for it (it is crates/hooks `resolve.rs`'s
 `gethostbyname_with_async`, which `System::gethostbyname` runs on a cache miss without c-ares).
 
-`core-tests/src/coroutine/socket.cpp` is Rust: `system/src/socket.rs` holds its 54
+`core-tests/src/coroutine/socket.cpp` is Rust: `system/src/socket.rs` holds 54
 TESTs, one function each (`coroutine_socket.<name>`, upstream's names, inputs, ports
-and expected values), run by `hooks-system-rust`. A `Socket` is the hooks crate's
+and expected values), run by `hooks-system-rust`. The remaining cases,
+`timeout_guards_restore_all_masks_after_exception` and `nested_timeout_guards_restore_outer_values`,
+run in the unwind-enabled hooks unit test harness from `timeout_guards.rs`. A `Socket` is the hooks crate's
 `Co`, whose methods the cases call: made by `co_socket::make_quiet` and deleted
 by dropping its `OwnedCo`, the vectored members over an `IOVector` owner
 `swoole_rs_corebase::reactor::ReactorIov::new` makes, and its fields

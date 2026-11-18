@@ -349,8 +349,8 @@ impl SocketRecord {
     /// base.cc's `socket_free_defer`: [`SocketFields::release`], warning when close(2)
     /// failed, then the record goes.
     pub fn close_and_free(mut self: Box<Self>) {
+        let fd = self.fd;
         if !self.release() {
-            let fd = self.fd;
             crate::log::sys_warning(c"socket_free_defer", format_args!("close({fd}) failed"));
         }
     }
@@ -539,6 +539,9 @@ impl SocketFields {
     /// (from getsockname(2), as upstream), then the descriptor closed. False when
     /// close(2) failed, with errno set.
     pub fn release(&mut self) -> bool {
+        if self.fd == -1 {
+            return true;
+        }
         if self.is_local() && self.bound && self.get_name() {
             let path = self.info.addr.unix().sun_path;
             // c_char is i8 or u8 by target; its one byte either way.
@@ -549,7 +552,7 @@ impl SocketFields {
                 _ = sys::unlink(path);
             }
         }
-        self.fd == -1 || sys::close(self.fd).is_ok()
+        sys::close(std::mem::replace(&mut self.fd, -1)).is_ok()
     }
 
     /// `Socket::dup`: a copy of every field but the buffers and the SSL, which stay this
@@ -637,7 +640,7 @@ mod tests {
         socket.bound = true;
         assert!(socket.release());
         assert!(!path.exists(), "the path is unlinked");
-        socket.fd = -1;
+        assert_eq!(socket.fd, -1);
         assert!(socket.release());
         socket.fd = i32::MAX;
         assert!(!socket.release());
