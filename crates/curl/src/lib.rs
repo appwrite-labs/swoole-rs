@@ -910,6 +910,8 @@ mod php;
 #[cfg(feature = "php")]
 mod php_handle;
 #[cfg(feature = "php")]
+mod postfields;
+#[cfg(feature = "php")]
 mod setopt;
 #[cfg(feature = "php")]
 pub use php::swr_v1_curl_check_handle;

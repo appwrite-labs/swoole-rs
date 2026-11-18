@@ -363,6 +363,170 @@ extern "C" void swoole_curl_set_share(php_curl *ch, zval *value) {
     ch->share = sh;
 }
 
+/* A CURLFile upload's state for libcurl's read, seek and free callbacks: the file opens on the
+ * first read when it couldn't be opened up front. */
+struct mime_data_cb_arg {
+    zend_string *filename;
+    php_stream *stream;
+};
+
+extern "C" void swoole_curl_free_cb_arg(void **cb_arg_p) {
+    struct mime_data_cb_arg *cb_arg = (struct mime_data_cb_arg *) *cb_arg_p;
+
+    ZEND_ASSERT(cb_arg->stream == NULL);
+    zend_string_release(cb_arg->filename);
+    efree(cb_arg);
+}
+
+static size_t read_cb(char *buffer, size_t size, size_t nitems, void *arg) {
+    struct mime_data_cb_arg *cb_arg = (struct mime_data_cb_arg *) arg;
+    ssize_t numread;
+
+    if (cb_arg->stream == NULL) {
+        if (!(cb_arg->stream = php_stream_open_wrapper(ZSTR_VAL(cb_arg->filename), "rb", IGNORE_PATH, NULL))) {
+            return CURL_READFUNC_ABORT;
+        }
+    }
+    numread = php_stream_read(cb_arg->stream, buffer, nitems * size);
+    if (numread < 0) {
+        php_stream_close(cb_arg->stream);
+        cb_arg->stream = NULL;
+        return CURL_READFUNC_ABORT;
+    }
+    return numread;
+}
+
+static int seek_cb(void *arg, curl_off_t offset, int origin) {
+    struct mime_data_cb_arg *cb_arg = (struct mime_data_cb_arg *) arg;
+
+    if (cb_arg->stream == NULL) {
+        return CURL_SEEKFUNC_CANTSEEK;
+    }
+    return php_stream_seek(cb_arg->stream, offset, origin) == SUCCESS ? CURL_SEEKFUNC_OK : CURL_SEEKFUNC_CANTSEEK;
+}
+
+static void free_cb(void *arg) {
+    struct mime_data_cb_arg *cb_arg = (struct mime_data_cb_arg *) arg;
+
+    if (cb_arg->stream != NULL) {
+        php_stream_close(cb_arg->stream);
+        cb_arg->stream = NULL;
+    }
+}
+
+/* CURLOPT_POSTFIELDS (crates/curl/src/postfields.rs): PHP's CURLFile classes, the multipart
+ * parts and the handle's copy of the fields a file upload needs again on curl_copy_handle. */
+extern "C" zend_class_entry *swoole_curl_file_class() {
+    return curl_CURLFile_class;
+}
+
+extern "C" zend_class_entry *swoole_curl_string_file_class() {
+    return curl_CURLStringFile_class;
+}
+
+extern "C" curl_mime *swoole_curl_mime_new(php_curl *ch) {
+    return curl_mime_init(ch->cp);
+}
+
+extern "C" void swoole_curl_mime_free(curl_mime *mime) {
+    curl_mime_free(mime);
+}
+
+/* Each part's builder returns its CURLcode, or -1 when libcurl gave no part. */
+extern "C" int swoole_curl_mime_field(curl_mime *mime, const zend_string *name, const zend_string *data) {
+    curl_mimepart *part = curl_mime_addpart(mime);
+    if (part == NULL) {
+        return CURLE_OUT_OF_MEMORY;
+    }
+    CURLcode error = curl_mime_name(part, ZSTR_VAL(name));
+    return error != CURLE_OK ? error : curl_mime_data(part, ZSTR_VAL(data), ZSTR_LEN(data));
+}
+
+extern "C" int swoole_curl_mime_string_file(curl_mime *mime,
+                                            const zend_string *name,
+                                            const zend_string *data,
+                                            const zend_string *filename,
+                                            const zend_string *type) {
+    curl_mimepart *part = curl_mime_addpart(mime);
+    if (part == NULL) {
+        return -1;
+    }
+    CURLcode error = curl_mime_name(part, ZSTR_VAL(name));
+    if (error == CURLE_OK) {
+        error = curl_mime_data(part, ZSTR_VAL(data), ZSTR_LEN(data));
+    }
+    if (error == CURLE_OK) {
+        error = curl_mime_filename(part, ZSTR_VAL(filename));
+    }
+    if (error == CURLE_OK) {
+        error = curl_mime_type(part, ZSTR_VAL(type));
+    }
+    return error;
+}
+
+/* A CURLFile part: libcurl reads the file through the callbacks above, from a stream opened now
+ * when it can be (and sized when it has no read filter), or on the first read. */
+extern "C" int swoole_curl_mime_file(php_curl *ch,
+                                     curl_mime *mime,
+                                     const zend_string *name,
+                                     zend_string *path,
+                                     const zend_string *filename,
+                                     const zend_string *type) {
+    php_stream_statbuf ssb;
+    size_t filesize = -1;
+    curl_seek_callback seekfunc = seek_cb;
+    php_stream *stream = php_stream_open_wrapper(ZSTR_VAL(path), "rb", STREAM_MUST_SEEK, NULL);
+    if (stream) {
+        if (!stream->readfilters.head && !php_stream_stat(stream, &ssb)) {
+            filesize = ssb.sb.st_size;
+        }
+    } else {
+        seekfunc = NULL;
+    }
+    curl_mimepart *part = curl_mime_addpart(mime);
+    if (part == NULL) {
+        if (stream) {
+            php_stream_close(stream);
+        }
+        return -1;
+    }
+    struct mime_data_cb_arg *cb_arg = (struct mime_data_cb_arg *) emalloc(sizeof *cb_arg);
+    cb_arg->filename = zend_string_copy(path);
+    cb_arg->stream = stream;
+    CURLcode error = curl_mime_name(part, ZSTR_VAL(name));
+    if (error == CURLE_OK) {
+        error = curl_mime_data_cb(part, filesize, read_cb, seekfunc, free_cb, cb_arg);
+    }
+    if (error == CURLE_OK) {
+        error = curl_mime_filename(part, ZSTR_VAL(filename ? filename : path));
+    }
+    if (error == CURLE_OK) {
+        error = curl_mime_type(part, type ? ZSTR_VAL(type) : "application/octet-stream");
+    }
+    zend_llist_add_element(&ch->to_free->stream, &cb_arg);
+    return error;
+}
+
+/* Sets the multipart body; the handle frees it, and a handle with no clone frees the one before. */
+extern "C" int swoole_curl_setopt_mime(php_curl *ch, curl_mime *mime) {
+    if (*ch->clone == 1) {
+        zend_llist_clean(&ch->to_free->post);
+    }
+    zend_llist_add_element(&ch->to_free->post, &mime);
+    return ch->err.no = curl_easy_setopt(ch->cp, CURLOPT_MIMEPOST, mime);
+}
+
+/* An empty array: no multipart body (libcurl mishandles an empty one, curl/curl#6455). */
+extern "C" int swoole_curl_set_empty_post(php_curl *ch) {
+    curl_easy_setopt(ch->cp, CURLOPT_POSTFIELDS, "");
+    return ch->err.no = curl_easy_setopt(ch->cp, CURLOPT_POSTFIELDSIZE, 0L);
+}
+
+/* The fields a CURLFile upload keeps, which curl_copy_handle builds again for the copy. */
+extern "C" zval *swoole_curl_postfields(php_curl *ch) {
+    return &ch->postfields;
+}
+
 /* PG(open_basedir) is set and not empty. */
 extern "C" bool swoole_curl_open_basedir() {
     return PG(open_basedir) && *PG(open_basedir);
