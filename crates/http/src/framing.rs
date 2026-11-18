@@ -112,24 +112,20 @@ fn request_line(input: &[u8], frame: &mut HttpFrame) -> bool {
     // was found. Keep partial state but reject that out-of-allocation pointer.
     false
 }
+/// Offset of the first CRLFCRLF that separates HTTP headers from the body.
+#[must_use]
+pub fn header_delimiter(input: &[u8]) -> Option<usize> {
+    swoole_rs_corebase::buffer::string::find_bytes(input, b"\r\n\r\n")
+}
+
 fn header_end(input: &[u8], frame: &mut HttpFrame) -> bool {
-    // Jump to each '\r' and test the four bytes there. Upstream's get_header_length
-    // compares at every position; both find the first "\r\n\r\n".
     let Some(rest) = input.get(frame.offset..) else {
         return false;
     };
-    let mut from = 0;
-    while let Some(found) = rest
-        .get(from..)
-        .and_then(|tail| memchr::memchr(b'\r', tail))
-    {
-        let at = from + found;
-        if rest.get(at..at + 4) == Some(b"\r\n\r\n") {
-            frame.offset += at + 4;
-            frame.header_length = field(frame.offset);
-            return true;
-        }
-        from = at + 1;
+    if let Some(at) = header_delimiter(rest) {
+        frame.offset += at + 4;
+        frame.header_length = field(frame.offset);
+        return true;
     }
     frame.offset = frame.offset.max(input.len().saturating_sub(3));
     false

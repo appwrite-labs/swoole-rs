@@ -19,7 +19,7 @@ mod directory;
 use directory::HttpDirectory;
 mod dispatch;
 mod framing;
-pub use framing::{HttpFrame, expect as has_expect_header, header_value};
+pub use framing::{HttpFrame, expect as has_expect_header, header_delimiter, header_value};
 mod headers;
 mod index_page;
 pub use headers::{HttpCookie, HttpHeaderInfo, MalformedHead, cookie_next, header_info};
