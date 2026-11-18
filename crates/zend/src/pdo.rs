@@ -189,6 +189,11 @@ impl Dbh {
 pub struct Stmt(Cell<pdo_stmt_t>);
 
 impl Stmt {
+    /// Number of rows PDO exposes for the current result.
+    pub fn row_count(&self) -> zend_long {
+        self.0.get().row_count
+    }
+
     /// Publish the dimensions of the newly executed statement to PDO.
     pub fn set_result_counts(&self, columns: i32, rows: zend_long) {
         let mut stmt = self.0.get();

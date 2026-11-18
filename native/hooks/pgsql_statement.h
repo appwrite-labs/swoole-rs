@@ -58,7 +58,7 @@ void pdo_pgsql_close_statement(pdo_pgsql_db_handle *H, const char *name);
 bool pdo_pgsql_prepare_statement(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *name, const char *sql, int count, const Oid *types);
 void pdo_pgsql_close_cursor(pdo_pgsql_db_handle *H, const char *cursor);
 bool pdo_pgsql_open_cursor(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *cursor, bool *prepared, const char *sql);
-bool pdo_pgsql_fetch_cursor(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *cursor, unsigned int orientation, zend_long offset);
+bool pdo_pgsql_fetch_row(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *cursor, unsigned int orientation, zend_long offset, int *row);
 void pdo_pgsql_scalar_column(Oid oid, struct iovec bytes, zval *output);
 struct pdo_column_data;
 bool pdo_pgsql_describe_column(PGresult *result, int colno, struct pdo_column_data *column);

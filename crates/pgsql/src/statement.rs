@@ -115,15 +115,16 @@ extern "C" fn pdo_pgsql_column_meta(handle: &Handle, result: Res<'_>, column: c_
 }
 }
 
-/// Issue FETCH for a scrollable cursor. The driver names every cursor `pdo_crsr_%08x`.
+/// Advance in the buffered result or issue FETCH for a scrollable cursor.
 #[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_fetch_cursor(
+extern "C" fn pdo_pgsql_fetch_row(
     dbh: &Dbh,
     stmt: &Stmt,
     result: &Cell<Option<crate::PgResult>>,
-    cursor: Text<'_>,
+    cursor: Option<Text<'_>>,
     orientation: swoole_rs_zend::sys::pdo_fetch_orientation,
     offset: swoole_rs_zend::sys::zend_long,
+    row: &Cell<c_int>,
 ) -> bool {
     use swoole_rs_zend::sys::{
         pdo_fetch_orientation_PDO_FETCH_ORI_ABS as ABS,
@@ -132,6 +133,16 @@ extern "C" fn pdo_pgsql_fetch_cursor(
         pdo_fetch_orientation_PDO_FETCH_ORI_NEXT as NEXT,
         pdo_fetch_orientation_PDO_FETCH_ORI_PRIOR as PRIOR,
         pdo_fetch_orientation_PDO_FETCH_ORI_REL as REL,
+    };
+    let Some(cursor) = cursor else {
+        if i64::from(row.get()) >= stmt.row_count() {
+            return false;
+        }
+        let Some(next) = row.get().checked_add(1) else {
+            return false;
+        };
+        row.set(next);
+        return true;
     };
     let Some(handle) = crate::driver::handle(dbh) else {
         return false;
@@ -154,8 +165,12 @@ extern "C" fn pdo_pgsql_fetch_cursor(
     if let Some(previous) = result.take() {
         crate::PQclear(previous);
     }
-    crate::driver::statement_result(dbh, stmt, result, handle.exec(query.as_cstr()))
-        .is_some_and(|rows| rows > 0)
+    let fetched = crate::driver::statement_result(dbh, stmt, result, handle.exec(query.as_cstr()))
+        .is_some_and(|rows| rows > 0);
+    if fetched {
+        row.set(1);
+    }
+    fetched
 }
 
 /// Close the driver-generated server cursor, discarding its command result.

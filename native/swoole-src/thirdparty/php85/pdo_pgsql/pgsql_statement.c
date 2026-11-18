@@ -282,53 +282,38 @@ static int pgsql_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *
 	return 1;
 }
 
-static int pgsql_stmt_fetch(pdo_stmt_t *stmt,
-	enum pdo_fetch_orientation ori, zend_long offset)
+static int pgsql_stmt_fetch(pdo_stmt_t *stmt, enum pdo_fetch_orientation ori, zend_long offset)
 {
-	pdo_pgsql_stmt *S = (pdo_pgsql_stmt*)stmt->driver_data;
+    pdo_pgsql_stmt *S = stmt->driver_data;
+	if (!S->cursor_name && S->is_running_unbuffered && S->current_row >= stmt->row_count) {
+		ExecStatusType status;
 
-	if (S->cursor_name) {
-		if (!pdo_pgsql_fetch_cursor(stmt->dbh, stmt, &S->result, S->cursor_name, ori, offset)) {
+		/* @todo in unbuffered mode, PQ allows multiple queries to be passed:
+		 *       column_count should be recomputed on each iteration */
+
+		if(S->result) {
+			PQclear(S->result);
+			S->result = NULL;
+		}
+
+		S->result = PQgetResult(pdo_pgsql_server(S->H));
+		status = PQresultStatus(S->result);
+
+		if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK && status != PGRES_SINGLE_TUPLE) {
+			pdo_pgsql_error_stmt(stmt, status, pdo_pgsql_sqlstate(S->result));
 			return 0;
 		}
-		S->current_row = 1;
-		return 1;
-	} else {
-		if (S->is_running_unbuffered && S->current_row >= stmt->row_count) {
-			ExecStatusType status;
 
-			/* @todo in unbuffered mode, PQ allows multiple queries to be passed:
-			 *       column_count should be recomputed on each iteration */
+		stmt->row_count = (zend_long)PQntuples(S->result);
+		S->current_row = 0;
 
-			if(S->result) {
-				PQclear(S->result);
-				S->result = NULL;
-			}
-
-			S->result = PQgetResult(pdo_pgsql_server(S->H));
-			status = PQresultStatus(S->result);
-
-			if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK && status != PGRES_SINGLE_TUPLE) {
-				pdo_pgsql_error_stmt(stmt, status, pdo_pgsql_sqlstate(S->result));
-				return 0;
-			}
-
-			stmt->row_count = (zend_long)PQntuples(S->result);
-			S->current_row = 0;
-
-			if (!stmt->row_count) {
-				S->is_running_unbuffered = false;
-				/* libpq requires looping until getResult returns null */
-				pgsql_stmt_finish(S, 0);
-			}
-		}
-		if (S->current_row < stmt->row_count) {
-			S->current_row++;
-			return 1;
-		} else {
-			return 0;
+		if (!stmt->row_count) {
+			S->is_running_unbuffered = false;
+			/* libpq requires looping until getResult returns null */
+			pgsql_stmt_finish(S, 0);
 		}
 	}
+    return pdo_pgsql_fetch_row(stmt->dbh, stmt, &S->result, S->cursor_name, ori, offset, &S->current_row);
 }
 
 static int pgsql_stmt_describe(pdo_stmt_t *stmt, int colno)
