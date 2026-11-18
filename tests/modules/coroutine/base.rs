@@ -27,8 +27,9 @@ use std::ffi::{c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::AtomicI32;
 use swoole_rs_corebase::coroutine::{
-    coroutine_count as swoole_coroutine_count, coroutine_get as swoole_coroutine_get, print_list,
-    swoole_coroutine_iterator_each, swoole_coroutine_iterator_reset,
+    coroutine_count as swoole_coroutine_count, coroutine_get as swoole_coroutine_get, counters,
+    current_cid as get_current_cid, print_list, swoole_coroutine_iterator_each,
+    swoole_coroutine_iterator_reset,
 };
 use swoole_rs_ffi::swoole_event_init;
 
@@ -66,17 +67,7 @@ struct Co {
     execute_usec: c_long,
 }
 
-/// `swr_v1_coroutine_scheduler`, up to the fields the cases read.
-#[repr(C)]
-struct Scheduler {
-    current: *mut Co,
-    last_cid: c_long,
-    socket_bound_cid: c_long,
-    peak_num: u64,
-}
-
 unsafe extern "C-unwind" {
-    fn swr_v1_coroutine_scheduler_get() -> *mut Scheduler;
     #[link_name = "_Z11swoole_forki"]
     fn swoole_fork(flags: c_int) -> c_int;
 
@@ -86,11 +77,6 @@ unsafe extern "C" {
     fn clock_gettime(clock: c_int, ts: *mut [i64; 2]) -> c_int;
     fn usleep(usec: u32) -> c_int;
     fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
-}
-
-fn scheduler() -> *mut Scheduler {
-    // SAFETY: this thread's scheduler.
-    unsafe { swr_v1_coroutine_scheduler_get() }
 }
 
 /// `Coroutine::create(fn)`: runs `body` in a new coroutine until it first yields
@@ -114,20 +100,15 @@ fn co_run<'a>(body: impl FnOnce() + 'a) -> bool {
 
 /// `Coroutine::get_current()`.
 fn get_current() -> *mut Co {
-    // SAFETY: this thread's scheduler; the current record is live.
-    unsafe { (*scheduler()).current.as_ref() }.map_or(std::ptr::null_mut(), |co| co.native.cast())
-}
-
-/// `Coroutine::get_current_cid()`.
-fn get_current_cid() -> c_long {
-    // SAFETY: as above.
-    unsafe { (*scheduler()).current.as_ref() }.map_or(-1, |co| co.cid)
+    swoole_rs_corebase::coroutine::current_native().cast()
 }
 
 /// `Coroutine::get_current_task()`.
 fn get_current_task() -> *mut c_void {
-    // SAFETY: as above.
-    unsafe { (*scheduler()).current.as_ref() }.map_or(std::ptr::null_mut(), |co| co.task)
+    // SAFETY: the running coroutine is live throughout this field read.
+    unsafe { swoole_rs_corebase::coroutine::current().as_ref() }
+        .and_then(|co| co.task)
+        .map_or(std::ptr::null_mut(), |task| task.as_ptr().as_ptr())
 }
 
 /// `Coroutine::get_by_cid(cid)`.
@@ -452,8 +433,7 @@ fn get_last_cid() {
     create(|| {});
     let cid = create(|| {});
 
-    // SAFETY: this thread's scheduler.
-    assert_eq!(unsafe { (*scheduler()).last_cid }, cid);
+    assert_eq!(counters().last_cid, cid);
 }
 
 fn count_() {
@@ -467,8 +447,7 @@ fn count_() {
 fn get_peak_num() {
     create(|| {
         create(|| {
-            // SAFETY: this thread's scheduler.
-            assert!(unsafe { (*scheduler()).peak_num } >= 2);
+            assert!(counters().peak_num >= 2);
         });
     });
 }
