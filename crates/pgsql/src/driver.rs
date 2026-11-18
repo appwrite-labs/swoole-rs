@@ -104,6 +104,7 @@ impl Escaped {
 // libpq's own declarations, each argument typed as what libpq requires of it. None
 // parses input, so none runs the notice processor.
 unsafe extern "C" {
+    safe fn PQnfields(res: Res<'_>) -> c_int;
     safe fn PQntuples(res: Res<'_>) -> c_int;
     safe fn PQgetisnull(res: Res<'_>, row: c_int, column: c_int) -> c_int;
     safe fn PQresultStatus(res: Res<'_>) -> ExecStatusType;
@@ -274,6 +275,43 @@ fn status(result: Option<&PgResult>) -> ExecStatusType {
     result.map_or(ExecStatusType::PGRES_FATAL_ERROR, |result| {
         PQresultStatus(result.get())
     })
+}
+
+fn affected_rows(result: Res<'_>) -> zend_long {
+    swoole_rs_corebase::strtol(PQcmdTuples(result).get().to_bytes()).0
+}
+
+/// Publish the shape of a successful execute, or preserve the server's SQLSTATE.
+#[unsafe(no_mangle)]
+extern "C" fn pdo_pgsql_execution_result(dbh: &Dbh, stmt: &Stmt, result: Option<Res<'_>>) -> bool {
+    let Some(res) = result else {
+        raise(
+            dbh,
+            Some(stmt),
+            ExecStatusType::PGRES_FATAL_ERROR as c_int,
+            None,
+            None,
+        );
+        return false;
+    };
+    let code = PQresultStatus(res);
+    let rows = match code {
+        ExecStatusType::PGRES_COMMAND_OK => affected_rows(res),
+        ExecStatusType::PGRES_TUPLES_OK => i64::from(PQntuples(res)),
+        ExecStatusType::PGRES_SINGLE_TUPLE if PHP_VERSION_ID >= 80500 => i64::from(PQntuples(res)),
+        _ => {
+            raise(
+                dbh,
+                Some(stmt),
+                code as c_int,
+                PQresultErrorField(res, DIAG_SQLSTATE).map(Text::get),
+                None,
+            );
+            return false;
+        }
+    };
+    stmt.set_result_counts(PQnfields(res), rows);
+    true
 }
 
 /// Install the statement result before reporting a PDO error, as the statement owns it.
@@ -519,7 +557,7 @@ extern "C" fn pdo_pgsql_handle_doer(dbh: &Dbh, sql: &ZStr) -> zend_long {
         return -1;
     }
     let changed = if status == ExecStatusType::PGRES_COMMAND_OK {
-        swoole_rs_corebase::strtol(PQcmdTuples(result.get()).get().to_bytes()).0
+        affected_rows(result.get())
     } else {
         0
     };

@@ -103,7 +103,6 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt)
 {
 	pdo_pgsql_stmt *S = (pdo_pgsql_stmt*)stmt->driver_data;
 	pdo_pgsql_db_handle *H = S->H;
-	ExecStatusType status;
 
 	bool in_trans = stmt->dbh->methods->in_transaction(stmt->dbh);
 
@@ -151,22 +150,11 @@ static int pgsql_stmt_execute(pdo_stmt_t *stmt)
 		/* execute plain query (with embedded parameters) */
 		S->result = PQexec(pdo_pgsql_server(H), ZSTR_VAL(stmt->active_query_string));
 	}
-	status = PQresultStatus(S->result);
-
-	if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK) {
-		pdo_pgsql_error_stmt(stmt, status, pdo_pgsql_sqlstate(S->result));
+	if (!pdo_pgsql_execution_result(stmt->dbh, stmt, S->result)) {
 		return 0;
 	}
-
-	stmt->column_count = (int) PQnfields(S->result);
 	if (S->cols == NULL) {
 		S->cols = ecalloc(stmt->column_count, sizeof(pdo_pgsql_column));
-	}
-
-	if (status == PGRES_COMMAND_OK) {
-		stmt->row_count = ZEND_ATOL(PQcmdTuples(S->result));
-	} else {
-		stmt->row_count = (zend_long)PQntuples(S->result);
 	}
 
 	if (in_trans && !stmt->dbh->methods->in_transaction(stmt->dbh)) {

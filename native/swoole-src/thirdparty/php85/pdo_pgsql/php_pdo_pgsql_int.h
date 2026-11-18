@@ -35,6 +35,7 @@ typedef struct pdo_pgsql_stmt pdo_pgsql_stmt;
  * through these accessors. */
 typedef struct pdo_pgsql_db_handle pdo_pgsql_db_handle;
 
+bool pdo_pgsql_execution_result(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult *result);
 void pdo_pgsql_close_statement(pdo_pgsql_db_handle *H, const char *name);
 bool pdo_pgsql_prepare_statement(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *name, const char *sql, int count, const Oid *types);
 void pdo_pgsql_close_cursor(pdo_pgsql_db_handle *H, const char *cursor);

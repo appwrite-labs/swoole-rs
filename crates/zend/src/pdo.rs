@@ -189,6 +189,14 @@ impl Dbh {
 pub struct Stmt(Cell<pdo_stmt_t>);
 
 impl Stmt {
+    /// Publish the dimensions of the newly executed statement to PDO.
+    pub fn set_result_counts(&self, columns: i32, rows: zend_long) {
+        let mut stmt = self.0.get();
+        stmt.column_count = columns;
+        stmt.row_count = rows;
+        self.0.set(stmt);
+    }
+
     /// `strcpy(stmt->error_code, sqlstate)`.
     pub fn set_error_code(&self, sqlstate: &CStr) {
         let mut stmt = self.0.get();
