@@ -368,7 +368,11 @@ mod tests {
             Some(WorkerType::Event)
         );
         let fd = live.listener_fd;
-        assert_eq!(live.counters().max_fd(), fd, "listen sockets stored");
+        assert_eq!(
+            live.server().fd_bounds().max_fd(),
+            fd,
+            "listen sockets stored"
+        );
         live.reactor().del(*live.port_socket());
 
         fail(Some(MasterTimer));

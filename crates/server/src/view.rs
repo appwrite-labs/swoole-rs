@@ -288,6 +288,12 @@ impl<'a> Server<'a> {
         &crate::shared::ServerShared::of(self).counters
     }
 
+    /// The scan bounds of this server's connection table.
+    #[must_use]
+    pub fn fd_bounds(self) -> &'a crate::shared::FdBounds {
+        self.state().fd_bounds(self.counters())
+    }
+
     /// `Server::is_started()`.
     #[must_use]
     pub fn is_started(self) -> bool {

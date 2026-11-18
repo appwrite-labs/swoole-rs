@@ -190,14 +190,16 @@ pub(crate) fn store_pipe_fd(
     if pipe.is_null() {
         return;
     }
-    let gs = serv.counters();
+    let bounds = serv.fd_bounds();
     for master in [true, false] {
         let fd = view::worker_pipe(worker, master).map_or(-1, |end| end.fd());
         if let Some(conn) = serv.state().tables_ref().connection_at(fd) {
             conn.set_pipe(pipe);
         }
-        if fd > gs.max_fd() {
-            gs.max_fd.store(fd, core::sync::atomic::Ordering::Relaxed);
+        if fd > bounds.max_fd() {
+            bounds
+                .max_fd
+                .store(fd, core::sync::atomic::Ordering::Relaxed);
         }
     }
 }
@@ -506,7 +508,7 @@ mod tests {
         use swoole_rs_corebase::process::worker_record::{Worker, WorkerRecord};
         use swoole_rs_corebase::reactor::SocketRecord;
         let live = crate::fixture::LiveServer::new();
-        live.counters().max_fd.store(7, Relaxed);
+        live.server().fd_bounds().max_fd.store(7, Relaxed);
         // SAFETY: plain records, for which zero is valid.
         let (mut master, mut end, record): (SocketRecord, SocketRecord, WorkerRecord) =
             unsafe { core::mem::zeroed() };
@@ -514,11 +516,7 @@ mod tests {
         end.fd = 9;
         let worker = Worker::from(&record);
         store_pipe_fd(live.server(), worker);
-        assert_eq!(
-            live.counters().max_fd.load(Relaxed),
-            7,
-            "no pipe, no change"
-        );
+        assert_eq!(live.server().fd_bounds().max_fd(), 7, "no pipe, no change");
 
         // A pipe is a heap object, at least 2-aligned.
         let mut pipe = 0_u64;
@@ -533,6 +531,6 @@ mod tests {
                 Some(pipe)
             );
         }
-        assert_eq!(live.counters().max_fd.load(Relaxed), 9, "the highest end");
+        assert_eq!(live.server().fd_bounds().max_fd(), 9, "the highest end");
     }
 }
