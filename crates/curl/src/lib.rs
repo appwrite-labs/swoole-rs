@@ -907,6 +907,8 @@ pub extern "C" fn swoole_curl_easy_reset(cp: Idle<'_>) {
 mod host;
 pub use host::{swoole_curl_check_bound_co, swoole_curl_easy_perform, swoole_curl_multi_new};
 #[cfg(feature = "php")]
+mod getinfo;
+#[cfg(feature = "php")]
 mod php;
 #[cfg(feature = "php")]
 mod php_handle;

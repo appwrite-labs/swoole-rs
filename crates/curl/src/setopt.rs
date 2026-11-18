@@ -54,7 +54,9 @@ unsafe extern "C" {
     // `CURLOPT_SHARE`: sets and keeps a `CurlShareHandle`, and ignores any other value.
     safe fn swoole_curl_set_share(handle: PhpHandle<'_>, value: &Value);
     // The handle's `private_data`, for `CURLINFO_PRIVATE`.
-    safe fn swoole_curl_private<'a>(handle: PhpHandle<'a>) -> &'a mut swoole_rs_zend::Owned;
+    pub(super) safe fn swoole_curl_private<'a>(
+        handle: PhpHandle<'a>,
+    ) -> &'a mut swoole_rs_zend::Owned;
     safe fn swoole_curl_open_basedir() -> bool;
     // Warns about a path outside open_basedir, which a user error handler can bail out of.
     pub(super) safe fn swoole_curl_allowed_path(path: &ZStr) -> bool;
@@ -383,7 +385,7 @@ enum Kind {
 }
 
 /// Whether the libcurl headers the extension was built against are this version or newer.
-fn libcurl(major: u32, minor: u32, patch: u32) -> bool {
+pub(super) fn libcurl(major: u32, minor: u32, patch: u32) -> bool {
     swoole_curl_header_version >= ((major << 16) | (minor << 8) | patch)
 }
 
@@ -921,9 +923,10 @@ fn set_file(call: &Call<'_>, handle: PhpHandle<'_>, option: zend_long, value: &V
     set
 }
 
-/// A `curl_slist` being built, freed unless [`swoole_curl_setopt_list`] takes it.
+/// A `curl_slist` this side owns: one being built, freed unless [`swoole_curl_setopt_list`]
+/// takes it, or one `curl_easy_getinfo` allocated.
 #[repr(transparent)]
-struct List(Option<std::ptr::NonNull<std::ffi::c_void>>);
+pub(super) struct List(pub(super) Option<std::ptr::NonNull<std::ffi::c_void>>);
 
 impl Drop for List {
     fn drop(&mut self) {
