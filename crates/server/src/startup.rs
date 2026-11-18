@@ -527,10 +527,13 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
     free_server(serv);
 }
 
-/// The tables (the server's mappings but its shared record and its ports' counts and
-/// counters, and the reactor threads, which every mode's factory destroy left) and
-/// factory, then `SwooleG.server`.
+/// `SwooleG.server`, then the tables (the server's mappings but its shared record and
+/// its ports' counts and counters, and the reactor threads, which every mode's factory
+/// destroy left) and factory. The server leaves the slot first, so a signal handler
+/// (`server_methods::on_signal`) that runs meanwhile finds no server, not one whose
+/// tables are going.
 fn free_server(serv: view::Server<'_>) {
+    swoole_rs_corebase::swr_v1_core_set_server(core::ptr::null_mut());
     let state = serv.state();
     // SAFETY: the master's teardown, once the workers, reactor threads and shutdown
     // callbacks are done: nothing borrows the tables, or anything lent out of them,
@@ -543,7 +546,6 @@ fn free_server(serv: view::Server<'_>) {
         hybrid().step(serv, Step::DeleteFactory);
         config.factory_.set(core::ptr::null_mut());
     }
-    swoole_rs_corebase::swr_v1_core_set_server(core::ptr::null_mut());
 }
 
 /// What `Server::destroy` frees of a base-mode server whose single worker bailed out
@@ -562,7 +564,7 @@ pub(crate) fn release_abandoned_base(serv: view::Server<'_>) {
 mod tests {
     use super::*;
     use crate::fixture::LiveServer;
-    use crate::hybrid::tests::{Call, calls, fail};
+    use crate::hybrid::tests::{Call, calls, fail, on_step};
     use Step::*;
 
     fn steps(steps: &[Step]) -> Vec<Call> {
@@ -1011,8 +1013,17 @@ mod tests {
                 live.state().tables_ref().map_connections(list);
             }
             live.counters().start.store(true, SeqCst);
+            // Published, as `SharedServer::new` leaves it: by the time the factory
+            // goes, `on_signal` no longer reaches this server.
+            swoole_rs_corebase::swr_v1_core_set_server(live.server().raw());
+            on_step(Some(Box::new(|serv, step| {
+                if step == DeleteFactory {
+                    assert_ne!(swoole_rs_corebase::swr_v1_core_server(), serv.raw());
+                }
+            })));
             calls();
             destroy(live.server());
+            on_step(None);
             let mut expected = Vec::new();
             if mode == Mode::Process {
                 expected.push(JoinReactorThreads);

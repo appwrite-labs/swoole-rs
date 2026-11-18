@@ -346,6 +346,15 @@ pub(crate) mod tests {
         pub(crate) static BASE_PAYLOAD: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
         static CALLS: RefCell<Vec<Call>> = const { RefCell::new(Vec::new()) };
         static FAILING: core::cell::Cell<Option<Step>> = const { core::cell::Cell::new(None) };
+        static ON_STEP: RefCell<Option<StepCheck>> = const { RefCell::new(None) };
+    }
+
+    /// A check a test runs on the server as each step is made.
+    pub(crate) type StepCheck = Box<dyn Fn(Server<'_>, Step)>;
+
+    /// What this thread's tests run as each step is made, until the next call.
+    pub(crate) fn on_step(check: Option<StepCheck>) {
+        ON_STEP.set(check);
     }
 
     /// The step this thread's tests make fail, until the next call.
@@ -496,7 +505,8 @@ pub(crate) mod tests {
             hear(Call::Process(to, send.info().fd, send.info().kind))
         }
 
-        fn step(&self, _: Server<'_>, step: Step) -> bool {
+        fn step(&self, serv: Server<'_>, step: Step) -> bool {
+            ON_STEP.with_borrow(|check| check.as_ref().map(|check| check(serv, step)));
             hear(Call::Step(step));
             FAILING.get() != Some(step)
         }
