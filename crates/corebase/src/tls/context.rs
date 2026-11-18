@@ -944,8 +944,10 @@ static CONNECTION_INDEX: AtomicI32 = AtomicI32::new(0);
 static PORT_INDEX: AtomicI32 = AtomicI32::new(0);
 
 /// `SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL)`.
-fn new_ssl_index() -> c_int {
-    CRYPTO_get_ex_new_index(openssl_sys::CRYPTO_EX_INDEX_SSL, 0, None, None, None, None)
+fn new_ssl_index() -> Result<c_int, TlsInitError> {
+    let index =
+        CRYPTO_get_ex_new_index(openssl_sys::CRYPTO_EX_INDEX_SSL, 0, None, None, None, None);
+    (index >= 0).then_some(index).ok_or(TlsInitError::Index)
 }
 
 /// `void swoole_ssl_init()`: once until `swoole_ssl_destroy`. A failure logs at
@@ -978,16 +980,8 @@ pub fn swr_v1_tls_init() -> Result<(), TlsInitError> {
     if OPENSSL_init_ssl(INIT_OPTIONS, None) == 0 {
         return Err(TlsInitError::Init);
     }
-    let connection = new_ssl_index();
-    if connection < 0 {
-        return Err(TlsInitError::Index);
-    }
-    CONNECTION_INDEX.store(connection, Ordering::Release);
-    let port = new_ssl_index();
-    if port < 0 {
-        return Err(TlsInitError::Index);
-    }
-    PORT_INDEX.store(port, Ordering::Release);
+    CONNECTION_INDEX.store(new_ssl_index()?, Ordering::Release);
+    PORT_INDEX.store(new_ssl_index()?, Ordering::Release);
     INITIALIZED.store(true, Ordering::Release);
     Ok(())
 }

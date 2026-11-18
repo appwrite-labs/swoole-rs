@@ -281,18 +281,14 @@ pub fn swr_v1_socket_ssl_peek_reason() -> c_int {
 
 /// `SSL_shutdown` and `SSL_get_error`, which tests replace to inject failures.
 trait ShutdownCalls {
-    fn shutdown(&mut self, ssl: Ssl) -> c_int;
-    fn error(&mut self, ssl: Ssl, result: c_int) -> c_int;
+    fn shutdown(&mut self, ssl: Ssl, repaired: bool) -> Result<(), SslFailure>;
 }
 
 struct OpenSsl;
 
 impl ShutdownCalls for OpenSsl {
-    fn shutdown(&mut self, ssl: Ssl) -> c_int {
-        ssl.shutdown()
-    }
-    fn error(&mut self, ssl: Ssl, result: c_int) -> c_int {
-        ssl.error(result)
+    fn shutdown(&mut self, ssl: Ssl, repaired: bool) -> Result<(), SslFailure> {
+        ssl.shutdown(repaired)
     }
 }
 
@@ -325,33 +321,31 @@ fn shutdown(
     if quiet {
         ssl.set_quiet_shutdown();
     }
-    let result = if repaired {
+    if repaired {
         clear_errors();
         want(tls, false, false);
-        let n = calls.shutdown(ssl);
-        let error = if n < 0 { calls.error(ssl, n) } else { 0 };
+    } else {
+        ssl.set_shutdown_mode(ssl.shutdown_mode() | SSL_RECEIVED_SHUTDOWN | SSL_SENT_SHUTDOWN);
+    }
+    let result = calls.shutdown(ssl, repaired);
+    if repaired {
+        let code = result.err().map(|failure| failure.code);
         want(
             tls,
-            error == SSL_ERROR_WANT_READ,
-            error == SSL_ERROR_WANT_WRITE,
+            code == Some(SSL_ERROR_WANT_READ),
+            code == Some(SSL_ERROR_WANT_WRITE),
         );
         *closed = !tls.want_read && !tls.want_write;
-        (n, error)
     } else {
-        // Upstream marks both directions shut first, so OpenSSL writes no alert.
-        ssl.set_shutdown_mode(ssl.shutdown_mode() | SSL_RECEIVED_SHUTDOWN | SSL_SENT_SHUTDOWN);
-        let n = calls.shutdown(ssl);
         *closed = true;
-        let error = if n != 1 && peek_error() != 0 {
-            calls.error(ssl, n)
-        } else {
-            0
-        };
-        (n, error)
-    };
+    }
     match result {
-        (1, _) | (_, 0 | SSL_ERROR_ZERO_RETURN) => Ok(true),
-        _ => Err(ShutdownError(pop_error())),
+        Ok(())
+        | Err(SslFailure {
+            code: 0 | SSL_ERROR_ZERO_RETURN,
+            ..
+        }) => Ok(true),
+        Err(_) => Err(ShutdownError(pop_error())),
     }
 }
 
@@ -844,7 +838,7 @@ mod shutdown_tests {
     }
 
     impl ShutdownCalls for Observed {
-        fn shutdown(&mut self, ssl: Ssl) -> c_int {
+        fn shutdown(&mut self, ssl: Ssl, repaired: bool) -> Result<(), SslFailure> {
             self.shutdown_calls += 1;
             let result = if self.injected == 0 {
                 unsafe { SSL_shutdown(ssl.as_ptr()) }
@@ -852,16 +846,15 @@ mod shutdown_tests {
                 -1
             };
             self.last_shutdown_errno = errno();
-            result
-        }
-        fn error(&mut self, ssl: Ssl, result: c_int) -> c_int {
-            self.last_error_class = if self.injected == 0 {
-                unsafe { SSL_get_error(ssl.as_ptr(), result) }
-            } else {
-                self.injected
-            };
-            self.last_error_queue = crate::tls::peek_error();
-            self.last_error_class
+            crate::tls::handle::shutdown_result(result, repaired, || {
+                self.last_error_class = if self.injected == 0 {
+                    unsafe { SSL_get_error(ssl.as_ptr(), result) }
+                } else {
+                    self.injected
+                };
+                self.last_error_queue = crate::tls::peek_error();
+                self.last_error_class
+            })
         }
     }
 
