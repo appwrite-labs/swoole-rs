@@ -22,10 +22,11 @@ pub mod minit;
 #[cfg(feature = "php")]
 pub mod pdo;
 
-use pq_sys::{ConnStatusType, Oid, PGconn, PGresult, PostgresPollingStatusType};
+use pq_sys::{ConnStatusType, ExecStatusType, Oid, PGconn, PGresult, PostgresPollingStatusType};
 use std::{
     cell::Cell,
     ffi::{c_char, c_int, c_void},
+    marker::PhantomData,
     ptr::{self, NonNull},
     sync::atomic::{AtomicBool, Ordering},
     time::Instant,
@@ -90,7 +91,16 @@ const _: () = assert!(
 #[repr(transparent)]
 struct PgResult(NonNull<PGresult>);
 
+/// A result libpq returned, borrowed from its owner.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Res<'a>(NonNull<PGresult>, PhantomData<&'a PgResult>);
+
 impl PgResult {
+    fn get(&self) -> Res<'_> {
+        Res(self.0, PhantomData)
+    }
+
     /// The driver's `PGresult *`, which it clears.
     fn into_raw(result: Option<Self>) -> *mut PGresult {
         result.map_or(ptr::null_mut(), |result| result.0.as_ptr())
@@ -115,6 +125,7 @@ unsafe extern "C" {
     safe fn PQflush(conn: Conn) -> c_int;
     /// The next result, which the caller owns, or none when the request is done.
     safe fn PQgetResult(conn: Conn) -> Option<PgResult>;
+    safe fn PQresultStatus(res: Res<'_>) -> ExecStatusType;
     /// Free the result: it takes the owner.
     safe fn PQclear(result: PgResult);
     /// A new options array, or none when libpq can't allocate one.
@@ -324,8 +335,18 @@ fn get_result(conn: Conn) -> *mut PGresult {
         let Some(result) = PQgetResult(conn) else {
             return PgResult::into_raw(last);
         };
+        let status = PQresultStatus(result.get());
         if let Some(previous) = last.replace(result) {
             PQclear(previous);
+        }
+        // COPY must exchange its data before the server can send the final result.
+        if matches!(
+            status,
+            ExecStatusType::PGRES_COPY_IN
+                | ExecStatusType::PGRES_COPY_OUT
+                | ExecStatusType::PGRES_COPY_BOTH
+        ) {
+            return PgResult::into_raw(last);
         }
     }
     if let Some(previous) = last {
