@@ -200,7 +200,7 @@ fn add_custom_header(
     let bytes = text.bytes();
     let end = bytes
         .iter()
-        .rposition(|byte| !byte.is_ascii_whitespace_c())
+        .rposition(|&byte| !is_c_space(byte))
         .map_or(0, |last| last + 1);
     let bytes = bytes.get(..end).unwrap_or_default();
     if !has_crlf(bytes) {
@@ -213,13 +213,8 @@ fn add_custom_header(
 }
 
 /// C's `isspace` in the "C" locale.
-trait CSpace {
-    fn is_ascii_whitespace_c(&self) -> bool;
-}
-impl CSpace for u8 {
-    fn is_ascii_whitespace_c(&self) -> bool {
-        matches!(self, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
-    }
+fn is_c_space(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
 }
 
 fn log_conflict(message: &str) {
@@ -590,7 +585,7 @@ mod tests {
 
     #[test]
     fn c_isspace_is_the_c_locale_set() {
-        let spaces: Vec<u8> = (0..=255u8).filter(CSpace::is_ascii_whitespace_c).collect();
+        let spaces: Vec<u8> = (0..=255u8).filter(|&byte| is_c_space(byte)).collect();
         assert_eq!(spaces, b"\t\n\x0b\x0c\r ", "isspace in the C locale");
     }
 }

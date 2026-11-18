@@ -736,7 +736,7 @@ mod tests {
             )));
             record.set_test_fd(100);
             let co = object.co();
-            object.record().socket_mut().set_owner(Some(co));
+            socket_mut(object.record()).set_owner(Some(co));
             object
         }
         fn record(&mut self) -> &mut CoSocket {
@@ -767,13 +767,8 @@ mod tests {
         }
     }
 
-    trait SocketMut {
-        fn socket_mut(&mut self) -> &mut SocketFields;
-    }
-    impl SocketMut for CoSocket {
-        fn socket_mut(&mut self) -> &mut SocketFields {
-            unsafe { &mut *self.socket_ptr() }
-        }
+    fn socket_mut(socket: &mut CoSocket) -> &mut SocketFields {
+        unsafe { &mut *socket.socket_ptr() }
     }
 
     #[test]
@@ -811,7 +806,7 @@ mod tests {
         let (mut reader, mut writer): (c_long, c_long) = (1, 2);
         object.bind(Events::READ, &raw mut reader);
         object.bind(Events::WRITE, &raw mut writer);
-        object.record().socket_mut().removed = false;
+        socket_mut(object.record()).removed = false;
         let mut event = object.event();
         error_event_callback(unsafe { Running::new(core::ptr::null_mut()) }, &mut event);
         assert_eq!(
@@ -881,14 +876,14 @@ mod tests {
     fn options_go_to_the_network_sockets_descriptor() {
         let mut object = Object::new();
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
-        object.record().socket_mut().fd = fd;
+        socket_mut(object.record()).fd = fd;
         let socket = object.co();
         assert!(socket.set_int_option(libc::SOL_SOCKET, libc::SO_REUSEADDR, 1));
         let mut value = 0;
         assert!(socket.get_int_option(libc::SOL_SOCKET, libc::SO_REUSEADDR, &mut value));
         assert_ne!(value, 0);
         unsafe { libc::close(fd) };
-        object.record().socket_mut().fd = -1;
+        socket_mut(object.record()).fd = -1;
         assert!(!socket.set_int_option(libc::SOL_SOCKET, libc::SO_REUSEADDR, 1));
         assert!(!socket.get_int_option(libc::SOL_SOCKET, libc::SO_REUSEADDR, &mut value));
     }
