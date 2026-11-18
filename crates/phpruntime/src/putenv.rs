@@ -53,54 +53,34 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::c_char;
-
-    unsafe extern "C" {
-        static environ: *const *const c_char;
-    }
-
-    /// How many entries of the process environment are for `name`.
-    fn entries(name: &[u8]) -> usize {
-        let (mut count, mut at) = (0, unsafe { environ });
-        while let Some(entry) = unsafe { at.as_ref() }.filter(|entry| !entry.is_null()) {
-            let entry = unsafe { CStr::from_ptr(*entry) }.to_bytes();
-            let rest = entry.strip_prefix(name);
-            count += usize::from(rest.is_some_and(|rest| rest.first() == Some(&b'=')));
-            at = at.wrapping_add(1);
-        }
-        count
-    }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no putenv")]
     fn a_name_set_again_keeps_one_entry_then_unsets() {
-        let name = b"SWR_PUTENV_TEST";
+        let name = "SWR_PUTENV_TEST";
+        let entries = || std::env::vars_os().filter(|(key, _)| key == name).count();
         let mut map = Table::new();
         for value in [
             "a-first-value-too-long-for-the-second-to-reuse-0123456789",
             "second",
             "third",
         ] {
-            let text = format!("SWR_PUTENV_TEST={value}");
+            let text = format!("{name}={value}");
             assert!(
                 Assignment::parse(text.as_bytes())
                     .unwrap()
                     .store(&mut map, update_environment),
                 "putenv {value}"
             );
-            assert_eq!(entries(name), 1, "after {value}");
-            assert_eq!(
-                std::env::var("SWR_PUTENV_TEST").as_deref(),
-                Ok(value),
-                "reads {value}"
-            );
+            assert_eq!(entries(), 1, "after {value}");
+            assert_eq!(std::env::var(name).as_deref(), Ok(value), "reads {value}");
         }
         assert!(
-            Assignment::parse(name)
+            Assignment::parse(name.as_bytes())
                 .unwrap()
                 .store(&mut map, update_environment),
             "unset"
         );
-        assert_eq!(entries(name), 0, "after the unset");
+        assert_eq!(entries(), 0, "after the unset");
     }
 }
