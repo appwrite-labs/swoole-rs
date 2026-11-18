@@ -3,11 +3,10 @@
 use core::cell::Cell;
 use core::ffi::{c_int, c_long};
 use swoole_rs_clients::resp_recv::{Dispatched, ORIGIN, Received, RespConnection, RespRequest};
+use swoole_rs_corebase::buffer::string::CppString;
 use swoole_rs_corebase::reactor::{Caught, Socket};
 use swoole_rs_corebase::{CellExt, DataHead, log};
 use swoole_rs_server::SendData;
-
-use crate::framing_recv::Lent;
 
 thread_local! {
     /// Each fd's request state on this reactor thread (upstream's `conn->object`),
@@ -22,10 +21,10 @@ fn requests<R>(f: impl FnOnce(&mut Vec<(c_long, RespRequest)>) -> R) -> R {
 }
 
 /// The connection's socket, receive buffer and request state, and where a whole
-/// command goes. The buffer stays lent: the dispatch may free it.
+/// command goes. The read owns the buffer throughout dispatch.
 struct Connection<'a, D> {
     socket: Socket<'a>,
-    buffer: Lent<'a>,
+    buffer: &'a mut CppString,
     request: RespRequest,
     fd: c_int,
     dispatch: D,
@@ -34,8 +33,8 @@ struct Connection<'a, D> {
 impl<D: FnMut(SendData<'_>) -> bool> RespConnection for Connection<'_, D> {
     fn recv(&mut self) -> Received {
         let socket = self.socket;
-        let buffer = self.buffer.get();
-        if let Some(received) = swoole_rs_corebase::tls::upstream::recv_append(socket, buffer) {
+        if let Some(received) = swoole_rs_corebase::tls::upstream::recv_append(socket, self.buffer)
+        {
             return Received::Bytes(received);
         }
         let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
@@ -50,21 +49,19 @@ impl<D: FnMut(SendData<'_>) -> bool> RespConnection for Connection<'_, D> {
     }
 
     fn view(&mut self) -> (&[u8], usize, &mut RespRequest) {
-        let buffer = &*self.buffer.get();
-        (buffer.view(), buffer.size(), &mut self.request)
+        (self.buffer.view(), self.buffer.size(), &mut self.request)
     }
 
     fn set_offset(&mut self, offset: i64) {
-        self.buffer.get().set_offset(offset);
+        self.buffer.set_offset(offset);
     }
 
     fn extend(&mut self, size: usize) {
-        self.buffer.get().extend(size);
+        self.buffer.extend(size);
     }
 
     fn dispatch(&mut self) -> Dispatched {
-        let buffer = self.buffer.get();
-        if !(self.dispatch)(SendData::new(DataHead::default(), buffer.view())) {
+        if !(self.dispatch)(SendData::new(DataHead::default(), self.buffer.view())) {
             return Dispatched::Failed;
         }
         if self.socket.read(|s| s.removed) {
@@ -75,7 +72,7 @@ impl<D: FnMut(SendData<'_>) -> bool> RespConnection for Connection<'_, D> {
     }
 
     fn clear(&mut self) {
-        self.buffer.get().clear();
+        self.buffer.clear();
     }
 }
 
@@ -88,7 +85,7 @@ pub(crate) fn recv_packet<'a>(
     max_length: u32,
     conn: swoole_rs_server::Connection<'a>,
     socket: Socket<'a>,
-    buffer: Lent<'a>,
+    buffer: &'a mut CppString,
     dispatch: impl FnMut(SendData<'_>) -> bool,
 ) -> bool {
     let (fd, session) = (conn.fd(), conn.session_id());
@@ -125,7 +122,6 @@ pub(crate) fn recv_packet<'a>(
 mod tests {
     use super::*;
     use swoole_rs_clients::protocol::Protocol;
-    use swoole_rs_corebase::buffer::string::CppString;
     use swoole_rs_corebase::reactor::SocketRecord;
     use swoole_rs_server::ConnectionRecord;
 
@@ -161,7 +157,7 @@ mod tests {
             max_length,
             (&mut conn).into(),
             handle,
-            Lent::new(&mut buffer),
+            &mut buffer,
             dispatch,
         ));
         assert_eq!(buffer.len(), 1);
