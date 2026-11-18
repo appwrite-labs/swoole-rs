@@ -111,7 +111,6 @@ pub fn set_thread_async_threads(threads: *mut c_void) {
 }
 
 /// Initialize the runtime with the upstream variadic fatal handler.
-#[cfg(feature = "upstream-symbols")]
 pub fn init_with_default_fatal_handler() {
     unsafe extern "C" {
         fn swr_v1_ffi_fatal_error(code: core::ffi::c_int, format: *const core::ffi::c_char, ...);
@@ -214,7 +213,7 @@ pub fn swoole_clean() {
 /// parent's handlers. Delivered earlier, a signal would run the parent's handler,
 /// which takes it as the parent's or ignores it (the manager's ignores a SIGTERM
 /// to another pid), and a worker the manager is stopping would never stop.
-#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z11swoole_forki"))]
+#[unsafe(export_name = "_Z11swoole_forki")]
 #[must_use]
 pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     if !crate::swr_v1_core_initialized() {

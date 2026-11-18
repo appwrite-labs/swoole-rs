@@ -81,7 +81,7 @@ const _: () = assert!(
 );
 
 /// Upstream's `SwooleG = {}`.
-#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "SwooleG"))]
+#[unsafe(export_name = "SwooleG")]
 static SWOOLE_G: Global = Global {
     max_sockets: AtomicU32::new(0),
     dns_cache_refresh_time: AtomicU64::new(0),

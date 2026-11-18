@@ -182,39 +182,27 @@ fn unknown_system_message(message: std::ffi::CString) -> *const c_char {
 }
 
 /// `const char *swoole_strerror(int)`: system messages below 500, as upstream.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z15swoole_strerrori")
-)]
+#[unsafe(export_name = "_Z15swoole_strerrori")]
 #[must_use]
 pub extern "C" fn swoole_strerror(code: i32) -> *const c_char {
     swoole_rs_error::strerror_with(code, Some(system_error))
 }
 
 /// `const char *swoole_get_last_error_msg()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z25swoole_get_last_error_msgv")
-)]
+#[unsafe(export_name = "_Z25swoole_get_last_error_msgv")]
 #[must_use]
 pub extern "C" fn export_get_last_error_msg() -> *const c_char {
     swoole_rs_error::swoole_get_last_error_msg()
 }
 
 /// `void swoole_clear_last_error_msg()`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z27swoole_clear_last_error_msgv")
-)]
+#[unsafe(export_name = "_Z27swoole_clear_last_error_msgv")]
 pub extern "C" fn export_clear_last_error_msg() {
     swoole_rs_error::swoole_clear_last_error_msg();
 }
 
 /// `void swoole_throw_error(int)`: reports the code and aborts.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z18swoole_throw_errori")
-)]
+#[unsafe(export_name = "_Z18swoole_throw_errori")]
 pub extern "C" fn export_throw_error(code: i32) -> ! {
     swoole_rs_error::swoole_throw_error(code)
 }
@@ -254,10 +242,7 @@ impl Ignored {
 
 /// `void swoole_ignore_error(int)`. Upstream threw `std::bad_alloc` when the set could not
 /// grow, which nothing in the extension catches, so it terminated; this aborts.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z19swoole_ignore_errori")
-)]
+#[unsafe(export_name = "_Z19swoole_ignore_errori")]
 pub extern "C" fn swoole_ignore_error(code: i32) {
     if IGNORED.insert(code).is_err() {
         #[expect(
@@ -278,10 +263,7 @@ pub extern "C" fn swoole_ignore_error(code: i32) {
 }
 
 /// `bool swoole_is_ignored_error(int)`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z23swoole_is_ignored_errori")
-)]
+#[unsafe(export_name = "_Z23swoole_is_ignored_errori")]
 #[must_use]
 pub extern "C" fn swoole_is_ignored_error(code: i32) -> bool {
     IGNORED.contains(code)

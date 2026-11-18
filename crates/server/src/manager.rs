@@ -2,16 +2,11 @@
 //! reaps and restarts them, runs reloads and stops them all on shutdown. The
 //! manager's state and the reload it starts are here; forking, reaping and the
 //! signals are in `native`.
-#![cfg_attr(
-    not(any(test, feature = "upstream-symbols")),
-    expect(dead_code, reason = "only the hybrid runs the manager")
-)]
 use core::cell::Cell;
 use core::ffi::c_int;
 use core::ops::Range;
 use swoole_rs_corebase::CellExt;
 
-#[cfg(feature = "upstream-symbols")]
 pub mod native;
 
 /// What upstream's `struct Manager` held: the requested reloads, and the pids

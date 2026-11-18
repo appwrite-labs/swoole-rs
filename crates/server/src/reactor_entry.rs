@@ -1,6 +1,6 @@
 //! The reactor-thread entry points that were master.cc's: the reactor handlers
 //! (`ReactorThread_on*`) and the `Server` and `ReactorThread` methods that build a
-//! context and run one operation over it. With `upstream-symbols`, `dispatch_task`
+//! context and run one operation over it. `dispatch_task`
 //! is the `onPackage` crates/ports' protocols hold. Every op they make is Rust's.
 use core::ffi::{c_int, c_long};
 
@@ -175,7 +175,6 @@ pub extern "C-unwind" fn close_connection(
 
 /// `void ReactorThread::shutdown(Reactor *)`, over `serv`'s reactor thread `id` and
 /// its reactor.
-#[cfg(feature = "upstream-symbols")]
 pub(crate) fn thread_shutdown(serv: view::Server<'_>, reactor: Reactor, id: usize) {
     let mut ctx = crate::reactor_ops::ReactorContext::new(serv, Some(reactor));
     ctx.thread = serv.state().tables_ref().reactor_thread(id);
@@ -185,7 +184,6 @@ pub(crate) fn thread_shutdown(serv: view::Server<'_>, reactor: Reactor, id: usiz
 /// `static int Server::dispatch_task(const Protocol *, Socket *, const RecvData *)` over
 /// the port's server and the session's connection: `data` to the workers, with the
 /// caller's `len`, `ext_flags` and (in base mode) `flags`. Whether it was dispatched.
-#[cfg(feature = "upstream-symbols")]
 #[must_use]
 pub fn dispatch_data(
     server: view::Server<'_>,
@@ -197,7 +195,6 @@ pub fn dispatch_data(
 }
 
 /// Dispatch a complete receive buffer that a base worker can take without copying.
-#[cfg(feature = "upstream-symbols")]
 #[must_use]
 pub fn dispatch_buffer(
     server: view::Server<'_>,
@@ -212,7 +209,6 @@ pub fn dispatch_buffer(
     dispatch_input(server, conn, SendData::empty(head), Some(buffer), None)
 }
 
-#[cfg(feature = "upstream-symbols")]
 fn dispatch_input(
     server: view::Server<'_>,
     conn: crate::Connection<'_>,

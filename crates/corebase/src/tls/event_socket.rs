@@ -105,7 +105,6 @@ impl EventSocket {
     /// it at once. Outside the hybrid there are no timers, buffers or loop.
     pub fn release(self) {
         let owned = self.0;
-        #[cfg(feature = "upstream-symbols")]
         let owned = {
             let record = owned.socket();
             // The buffers leave the record here and go below, after the timers and

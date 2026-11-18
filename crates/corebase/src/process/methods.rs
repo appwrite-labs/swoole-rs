@@ -6,7 +6,6 @@ use crate::CCast;
 use crate::process::process_pool::Protocol;
 use crate::process::task_file::Packed;
 use crate::process::worker_record::{Worker, WorkerType};
-#[cfg(any(feature = "upstream-symbols", test))]
 use std::ffi::CStr;
 use std::ffi::{c_int, c_void};
 use std::ptr;
@@ -15,7 +14,6 @@ use crate::process::pool::Bailed;
 use crate::process::pool::{
     defer_bailout, swr_v1_process_pool_ipc_respond, swr_v1_process_worker_send,
 };
-#[cfg(any(feature = "upstream-symbols", test))]
 use crate::process::pool::{swr_v1_process_pool_ipc_address, swr_v1_process_pool_ipc_set_listener};
 use crate::process::process_pool::{
     PoolNative, PoolRecord, PoolRef, swr_v1_process_pool_create,
@@ -193,7 +191,6 @@ pub fn send_pipe_message(
 }
 
 /// `ProcessPool::listen(socket_file, backlog)`: a unix stream listener.
-#[cfg(feature = "upstream-symbols")]
 #[must_use]
 pub fn listen_unix(pool: PoolRef<'_>, file: &CStr, backlog: c_int) -> bool {
     // 5 is SW_SOCK_UNIX_STREAM.
@@ -203,7 +200,6 @@ pub fn listen_unix(pool: PoolRef<'_>, file: &CStr, backlog: c_int) -> bool {
 /// `ProcessPool::listen(host, port, backlog)` on a socket of `kind` (`SW_SOCK_*`),
 /// made by `make_server_socket`. False when the pool is not an `SW_IPC_SOCKET` pool
 /// or the listener cannot be made.
-#[cfg(feature = "upstream-symbols")]
 #[must_use]
 pub fn listen_socket(
     pool: PoolRef<'_>,
@@ -221,7 +217,6 @@ pub fn listen_socket(
 /// Both `listen`s, over `make`, which makes the listener (which the pool then owns
 /// and frees, or `None`): only an `SW_IPC_SOCKET` pool has a stream listener, which
 /// it records with its address.
-#[cfg(any(feature = "upstream-symbols", test))]
 fn listen(
     pool: &PoolRecord,
     host: &CStr,
@@ -269,7 +264,6 @@ pub fn response(pool: PoolRef<'_>, data: &[u8]) -> bool {
 /// master pipe, through the message bus when the pool has one.
 ///
 /// False for a `worker_id` the pool has no worker for, or a pool without pipes.
-#[cfg(feature = "upstream-symbols")]
 #[must_use]
 pub fn send_message(
     native: &dyn PoolNative,

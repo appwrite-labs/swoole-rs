@@ -2,8 +2,7 @@
 // Compatibility derived from Swoole v6.2.4 src/coroutine/base.cc (Swoole contributors).
 //! This thread's scheduler (`Coroutine::scheduler_`) over [`Native`] records, and
 //! the operations Rust callers run on it by path: the current coroutine, resume,
-//! the cancelable yield and bailout. They need no timer or event loop, so they
-//! build without `upstream-symbols`; facade.rs builds the rest on them.
+//! the cancelable yield and bailout. The facade builds the timed operations on these primitives.
 use crate::coroutine::context::{self, Native};
 use crate::coroutine::state::{self as ops, Co, Sched};
 use crate::coroutine::{Bailout, Coroutine, CoroutineTask, Hooks, Scheduler};

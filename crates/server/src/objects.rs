@@ -4,7 +4,6 @@
 use crate::Mode;
 use core::ffi::{c_int, c_void};
 
-#[cfg(feature = "upstream-symbols")]
 use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::reactor::{Heap, Socket};
 use swoole_rs_corebase::{DataHead, TrustedAllocator};
@@ -33,7 +32,6 @@ pub(crate) fn in_worker_bus<R>(
 }
 
 // Only the upstream-symbol operations use these.
-#[cfg(feature = "upstream-symbols")]
 impl crate::ServerState {
     /// The server's own `MessageBus` record.
     pub(crate) fn message_bus_record(&self) -> &PoolBus {
@@ -73,17 +71,9 @@ impl crate::ServerState {
 #[derive(Clone)]
 pub(crate) enum ThreadBus {
     /// A reactor thread's record's, by the thread's id.
-    #[cfg_attr(
-        not(feature = "upstream-symbols"),
-        expect(dead_code, reason = "only the hybrid runs reactor threads")
-    )]
     Reactor(usize),
     /// The one a task or user worker thread made, shared with the thread's body,
     /// which drops it as the thread ends.
-    #[cfg_attr(
-        not(feature = "upstream-symbols"),
-        expect(dead_code, reason = "only the hybrid runs worker threads")
-    )]
     Own(std::rc::Rc<PoolBus>),
 }
 
@@ -93,10 +83,6 @@ thread_local! {
 }
 
 /// This thread's bus from now on (`SwooleTG.message_bus = bus`), or none.
-#[cfg_attr(
-    not(feature = "upstream-symbols"),
-    expect(dead_code, reason = "only the hybrid runs server threads")
-)]
 pub(crate) fn set_thread_bus(bus: Option<ThreadBus>) {
     THREAD_BUS.set(bus);
 }
@@ -146,13 +132,6 @@ impl<'a> Bus<'a> {
     /// packed it: an `EventData`, its head and the payload the head counts. `None`,
     /// without calling `f`, while the bus holds its message elsewhere (chunked into a
     /// packet, or passed by pointer).
-    #[cfg_attr(
-        not(feature = "upstream-symbols"),
-        expect(
-            dead_code,
-            reason = "only the hybrid's workers and reactors read events"
-        )
-    )]
     pub(crate) fn with_event<R>(
         self,
         f: impl FnOnce(swoole_rs_corebase::process::task_file::Packed<'_>) -> R,

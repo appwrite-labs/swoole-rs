@@ -9,9 +9,6 @@ license.workspace = true
 crate-type = ["rlib", "staticlib"]
 
 [features]
-# Define the upstream C++ symbols of the coroutine::Socket members `src/socket_members.rs`
-# holds; only the hybrid, which deletes their C++ definitions, enables it.
-upstream-symbols = []
 # The io_uring engine (upstream's --enable-iouring), over the io-uring crate.
 iouring = ["dep:io-uring", "dep:openssl-sys"]
 # The bundled ext/ssh2's session socket (--with-swoole-ssh2).
@@ -21,7 +18,7 @@ ssh2 = ["dep:swoole-rs-ssh2-sys"]
 io-uring = { version = "=0.7.16", optional = true }
 libc = "=0.2.191"
 swoole-rs-clients = { path = "../clients" }
-swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
+swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-error = { path = "../error" }
 swoole-rs-error-ffi = { path = "../error-ffi" }
 swoole-rs-http = { path = "../http" }

@@ -13,8 +13,6 @@ crate-type = ["rlib"]
 workspace = true
 
 [features]
-# Build the server factories and worker runtime used by the extension.
-upstream-symbols = ["swoole-rs-corebase/upstream-symbols"]
 # `--fix-halfclose` (M15, native/halfclose): drain queued output before close and keep a
 # synchronous worker's response after a clean FIN.
 halfclose = []
@@ -31,4 +29,4 @@ swoole-rs-bus = { path = "../bus" }
 
 [dev-dependencies]
 swoole-rs-oracle = { path = "../oracle" }
-swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
+swoole-rs-corebase = { path = "../corebase" }

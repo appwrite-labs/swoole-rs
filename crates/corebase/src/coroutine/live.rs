@@ -50,7 +50,6 @@ impl Scheduler {
         self.live.as_deref()
     }
 
-    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn insert(&mut self, cid: c_long, co: Co) {
         let live = self.live.get_or_insert_default();
         let at = live.at(cid);
@@ -86,7 +85,6 @@ impl Scheduler {
     }
 
     /// Frees the registry once no coroutine is live (on deactivation).
-    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn release_live(&mut self) {
         if self.count() == 0 {
             self.live = None;

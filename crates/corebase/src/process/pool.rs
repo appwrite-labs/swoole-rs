@@ -19,7 +19,6 @@ use crate::process::process_pool::{IpcMode, Protocol};
 use crate::process::worker_record::Worker as Record;
 use crate::sys::set_errno;
 use std::any::Any;
-#[cfg(any(feature = "upstream-symbols", test))]
 use std::ffi::CStr;
 use std::ffi::{CString, c_int, c_long, c_void};
 use std::ptr;
@@ -760,7 +759,6 @@ pub fn pool_ipc_free(ipc: PoolIpc, close: impl FnOnce(Connection)) {
 
 /// Record a stream listener's address before it is created: false when the pool
 /// has no stream socket.
-#[cfg(any(feature = "upstream-symbols", test))]
 pub(crate) fn swr_v1_process_pool_ipc_address(ipc: &mut PoolIpc, host: &CStr, port: c_int) -> bool {
     let Some(stream) = ipc.stream.as_mut() else {
         return false;
@@ -828,7 +826,6 @@ pub fn swr_v1_process_pool_ipc_send_sync(ipc: Option<&PoolIpc>, data: &[u8]) -> 
 }
 
 /// Keep the listener the native side created.
-#[cfg(any(feature = "upstream-symbols", test))]
 pub(crate) fn swr_v1_process_pool_ipc_set_listener(ipc: &mut PoolIpc, listener: Connection) {
     if let Some(stream) = ipc.stream.as_mut() {
         stream.listener = Some(listener);

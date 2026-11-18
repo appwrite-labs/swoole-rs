@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/os/file.cc (Swoole contributors).
 //! The bodies of `src/os/file.cc` that Rust still calls: `swoole_tmpfile` (under its
-//! upstream symbol with `upstream-symbols`), `file_get_contents` and
+//! upstream symbol), `file_get_contents` and
 //! `file_put_contents`. Logs name the function as upstream's `__SW_FUNC__` did.
 use crate::buffer::string::CppString;
 use crate::log::LogLevel::{SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING};

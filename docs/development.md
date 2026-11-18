@@ -142,7 +142,7 @@ Docker's default seccomp profile answers `io_uring_setup` with EPERM, so in a de
 of an unsupported run. To run them against a real ring, opt in:
 
 ```sh
-python3 tools/dev.py docker --iouring -- cargo test --locked -p swoole-rs-hooks --features iouring,upstream-symbols uring
+python3 tools/dev.py docker --iouring -- cargo test --locked -p swoole-rs-hooks --features iouring uring
 ```
 
 `--iouring` adds exactly `--security-opt seccomp=tools/docker-seccomp-iouring.json` and

@@ -1,7 +1,7 @@
 //! `cfg(zts)` when the PHP being built for is thread-safe, so per-thread state
 //! is thread-local there and plain process state otherwise, as Swoole's
 //! `SW_THREAD_LOCAL` is. Shared by the crates that keep such state (their
-//! `build` key points here), under their `php` or `upstream-symbols` feature.
+//! `build` key points here), under their `php` feature or when building corebase.
 //! A crate's `thread` feature is upstream's `SW_THREAD` build without PHP.
 //! `cfg(php85)` when it is PHP 8.5 or later, whose `pdo_dbh_t` holds its flags in
 //! bytes rather than bit-fields.
@@ -15,7 +15,7 @@ pub(crate) fn main() {
     }
     println!("cargo::rerun-if-env-changed=PHP_CONFIG");
     if std::env::var_os("CARGO_FEATURE_PHP").is_none()
-        && std::env::var_os("CARGO_FEATURE_UPSTREAM_SYMBOLS").is_none()
+        && std::env::var("CARGO_PKG_NAME").as_deref() != Ok("swoole-rs-corebase")
     {
         return;
     }

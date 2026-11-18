@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/network/socket.cc (Swoole contributors).
 //! The TLS methods of `network::Socket` that are whole Rust operations, last
-//! error, errno and logs included. With `upstream-symbols` (the hybrid's reactor
-//! build) they are defined under their upstream (Itanium) symbols and
-//! `socket.cc` no longer defines them.
+//! error, errno and logs included.
 use crate::CCast;
 use crate::buffer::string::CppString;
 use crate::constants::SocketFlag;

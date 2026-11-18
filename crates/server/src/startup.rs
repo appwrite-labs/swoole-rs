@@ -1,7 +1,6 @@
 //! Creating, checking, starting and destroying a server.
 use crate::callbacks::{CallbackKind, ServerSlot};
 use crate::hybrid::{Step, hybrid};
-#[cfg(any(test, feature = "upstream-symbols"))]
 use crate::reactor_handle::Reactor;
 use crate::records::SessionRecord;
 use crate::shared::PortCounters;
@@ -15,9 +14,7 @@ use swoole_rs_corebase::constants::SocketTypeCode;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_WARNING};
 use swoole_rs_corebase::process::process_pool::IpcMode;
 use swoole_rs_corebase::process::worker_record::WorkerRecord;
-#[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_corebase::process::worker_record::WorkerType;
-#[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_corebase::reactor::{ErrorHandler::ConnectionDefault, Events};
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode;
@@ -386,7 +383,6 @@ fn check_port(
 
 /// `Server::start_master_thread`: the master's reactor, signals and timer, then the
 /// event loop.
-#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> bool {
     /// `THREAD_MASTER`, `SW_FD_STREAM_SERVER` and `SW_EVENT_READ`.
     const THREAD_MASTER: u8 = 1;

@@ -1,7 +1,4 @@
-//! The server's calls into what only the hybrid links (the factories, the event and
-//! thread-mode workers), behind one seam. Callers build in every configuration, and
-//! only [`hybrid`] says which side answers: the hybrid's ([`crate::factory::Linked`]),
-//! the unit tests' recorder, or, in a build that links none of it, the defaults below.
+//! Server operations implemented by the runtime and recorded by unit tests.
 use core::ffi::{c_int, c_long};
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::process::command::CommandRoute;
@@ -12,8 +9,7 @@ use swoole_rs_corebase::reactor::Socket;
 use crate::port_config::PortConfig;
 use crate::view::Server;
 
-/// A step of the server's start, master thread or destroy that runs what only the
-/// hybrid links.
+/// A step in server startup, the master thread, or teardown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Step {
     /// The logger's output, or stdout, redirected, then `swoole_daemon(0, 1)`.
@@ -27,26 +23,20 @@ pub(crate) enum Step {
     /// `swoole_timer_reinit()` when the timer is detached.
     TimerReinit,
     /// `swoole_signal_set(signo, nullptr)`.
-    #[cfg(any(test, feature = "upstream-symbols"))]
     Ignore(c_int),
     /// `swoole_signal_set(signo, master_signal_handler)`.
-    #[cfg(any(test, feature = "upstream-symbols"))]
     Handle(c_int),
     /// The master reactor's `SW_FD_PIPE` reads are command results.
-    #[cfg(any(test, feature = "upstream-symbols"))]
     CommandHandler,
     /// The master's timer: fails when it can't be added.
     MasterTimer,
     /// `swoole_event_free()`.
     EventFree,
     /// `swoole_event_wait()`.
-    #[cfg(any(test, feature = "upstream-symbols"))]
     EventWait,
     /// `reactor_thread_barrier.wait()`.
-    #[cfg(any(test, feature = "upstream-symbols"))]
     ReactorBarrier,
     /// `gs->manager_barrier.wait()`.
-    #[cfg(any(test, feature = "upstream-symbols"))]
     ManagerBarrier,
     /// `join_reactor_thread()`.
     JoinReactorThreads,
@@ -94,194 +84,121 @@ pub(crate) enum Step {
     ReactorWait,
 }
 
-/// What the hybrid links. Each default is a build without it: the reactor threads
-/// take a new connection, and the rest is fatal, as no such server can start.
+/// The factory and worker operations a server delegates to its runtime.
 pub(crate) trait Hybrid: Sync {
     /// `factory_->end(session_id, flags)`.
-    fn factory_end(&self, _serv: Server<'_>, _session_id: c_long, _flags: c_int) -> bool {
-        missing()
-    }
+    fn factory_end(&self, serv: Server<'_>, session_id: c_long, flags: c_int) -> bool;
 
     /// `factory_->notify(head)`.
-    fn factory_notify(&self, _serv: Server<'_>, _head: &mut DataHead) -> bool {
-        missing()
-    }
+    fn factory_notify(&self, serv: Server<'_>, head: &mut DataHead) -> bool;
 
     /// `worker->send_pipe_message(message, EventData::size(), SW_PIPE_MASTER |
     /// SW_PIPE_NONBLOCK)` to worker `worker_id`.
-    fn pipe_to_worker(&self, _serv: Server<'_>, _worker_id: u32, _message: &TaskBuffer) -> bool {
-        missing()
-    }
+    fn pipe_to_worker(&self, serv: Server<'_>, worker_id: u32, message: &TaskBuffer) -> bool;
 
     /// `Server::create_thread_factory`: the factory, null when it failed.
-    fn create_thread_factory(&self, _serv: Server<'_>) -> *mut core::ffi::c_void {
-        missing()
-    }
+    fn create_thread_factory(&self, serv: Server<'_>) -> *mut core::ffi::c_void;
 
     /// `Server::start_worker_threads`: whether the master thread's loop ran.
-    fn start_worker_threads(&self, _serv: Server<'_>) -> bool {
-        missing()
-    }
+    fn start_worker_threads(&self, serv: Server<'_>) -> bool;
 
     /// `Server::stop_worker_threads`.
-    fn stop_worker_threads(&self, _serv: Server<'_>) {
-        missing()
-    }
+    fn stop_worker_threads(&self, serv: Server<'_>);
 
     /// `serv->stop_async_worker(sw_worker())` over base mode's single worker.
-    fn stop_single_worker(&self, _serv: Server<'_>) {
-        missing()
-    }
+    fn stop_single_worker(&self, serv: Server<'_>);
 
     /// A worker's `SW_SERVER_EVENT_SHUTDOWN_SIGNAL` to the master, through the first
     /// reactor pipe: whether it went.
-    fn send_shutdown(&self, _serv: Server<'_>) -> bool {
-        missing()
-    }
+    fn send_shutdown(&self, serv: Server<'_>) -> bool;
 
     /// `ReactorThread::shutdown` of the server's first reactor thread, over this
     /// thread's reactor.
-    fn thread0_shutdown(&self, _serv: Server<'_>) {
-        missing()
-    }
+    fn thread0_shutdown(&self, serv: Server<'_>);
 
     /// `SW_GLOBAL_HOOK_BEFORE_SERVER_SHUTDOWN`, then `onBeforeShutdown`, each when set.
-    fn before_shutdown(&self, _serv: Server<'_>) {
-        missing()
-    }
+    fn before_shutdown(&self, serv: Server<'_>);
 
     /// `Server::reload(reload_all_workers)`.
-    fn reload(&self, _serv: Server<'_>, _all_workers: bool) -> bool {
-        missing()
-    }
+    fn reload(&self, serv: Server<'_>, all_workers: bool) -> bool;
 
     /// `Server::command`'s request to another process: whether it went.
     fn command_send(
         &self,
-        _serv: Server<'_>,
-        _route: CommandRoute,
-        _command_id: i32,
-        _request_id: i64,
-        _message: &[u8],
-    ) -> bool {
-        missing()
-    }
+        serv: Server<'_>,
+        route: CommandRoute,
+        command_id: i32,
+        request_id: i64,
+        message: &[u8],
+    ) -> bool;
 
     /// `factory_->finish(send)`.
-    fn factory_finish(&self, _serv: Server<'_>, _send: &mut crate::base_factory::SendData) -> bool {
-        missing()
-    }
+    fn factory_finish(&self, serv: Server<'_>, send: &mut crate::base_factory::SendData) -> bool;
 
     /// `factory_->dispatch(send)`.
-    fn factory_dispatch(
-        &self,
-        _serv: Server<'_>,
-        _send: &mut crate::base_factory::SendData,
-    ) -> bool {
-        missing()
-    }
+    fn factory_dispatch(&self, serv: Server<'_>, send: &mut crate::base_factory::SendData) -> bool;
 
     /// A DTLS port's read: `sock`'s next datagram to the session on `fd`; whether its
     /// pending handshake failed.
-    fn dtls_read(&self, _port: &PortConfig, _sock: Socket<'_>, _fd: c_int) -> bool {
-        missing()
-    }
+    fn dtls_read(&self, port: &PortConfig, sock: Socket<'_>, fd: c_int) -> bool;
 
     /// Base mode's message bus takes `send`, then this worker accepts the event.
-    fn base_pass(&self, _serv: Server<'_>, _send: &crate::base_factory::SendData) {
-        missing()
-    }
+    fn base_pass(&self, serv: Server<'_>, send: &crate::base_factory::SendData);
 
     /// `worker_accept_event(head)` in this process.
-    fn accept_event(&self, _serv: Server<'_>, _head: &mut DataHead) {
-        missing()
-    }
+    fn accept_event(&self, serv: Server<'_>, head: &mut DataHead);
 
     /// The message bus writes `send` to the pipe of the worker that owns its session:
     /// whether it went.
-    fn forward(&self, _serv: Server<'_>, _send: &crate::base_factory::SendData) -> bool {
-        missing()
-    }
+    fn forward(&self, serv: Server<'_>, send: &crate::base_factory::SendData) -> bool;
 
     /// `Server::accept_dtls_connection` of the datagram `data` from `peer` that
     /// arrived on the DTLS port `port` of `reactor`, then its handshake.
     fn dtls_accept(
         &self,
-        _serv: Server<'_>,
-        _reactor: crate::reactor_handle::Reactor,
-        _port: crate::view::Port<'_>,
-        _peer: &swoole_rs_corebase::net_types::SocketAddress,
-        _data: &[u8],
-    ) -> bool {
-        missing()
-    }
+        serv: Server<'_>,
+        reactor: crate::reactor_handle::Reactor,
+        port: crate::view::Port<'_>,
+        peer: &swoole_rs_corebase::net_types::SocketAddress,
+        data: &[u8],
+    ) -> bool;
 
     /// `new ProcessFactory(serv)`, or null.
-    fn process_factory(&self, _serv: Server<'_>) -> *mut core::ffi::c_void {
-        missing()
-    }
+    fn process_factory(&self, serv: Server<'_>) -> *mut core::ffi::c_void;
 
     /// `new BaseFactory(serv)` over the tables `create_base_factory` allocated.
-    fn factory_new(&self, _serv: Server<'_>) -> *mut core::ffi::c_void {
-        missing()
-    }
+    fn factory_new(&self, serv: Server<'_>) -> *mut core::ffi::c_void;
 
     /// The task pool of `task_worker_num` workers over `ipc`, its requests and worker
     /// ids set, listening on `socket` when given: whether it was made.
     fn task_pool(
         &self,
-        _serv: Server<'_>,
-        _ipc: swoole_rs_corebase::process::process_pool::IpcMode,
-        _socket: Option<&core::ffi::CStr>,
-    ) -> bool {
-        missing()
-    }
+        serv: Server<'_>,
+        ipc: swoole_rs_corebase::process::process_pool::IpcMode,
+        socket: Option<&core::ffi::CStr>,
+    ) -> bool;
 
     /// Each event worker's task notify pipe, then `init_task_workers`: whether all
     /// were made.
-    fn task_workers(&self, _serv: Server<'_>) -> bool {
-        missing()
-    }
+    fn task_workers(&self, serv: Server<'_>) -> bool;
 
     /// Process mode's write of `send` to `to`: whether it went.
     fn process_send(
         &self,
-        _serv: Server<'_>,
-        _to: crate::process_factory::Pipe,
-        _send: &mut crate::base_factory::SendData,
-    ) -> bool {
-        missing()
-    }
+        serv: Server<'_>,
+        to: crate::process_factory::Pipe,
+        send: &mut crate::base_factory::SendData,
+    ) -> bool;
 
     /// Runs `step`: whether it succeeded.
-    fn step(&self, _serv: Server<'_>, _step: Step) -> bool {
-        missing()
-    }
+    fn step(&self, serv: Server<'_>, step: Step) -> bool;
 
-    /// `serv->send_to_reactor_thread(head)`: nothing sent, the reactor threads keeping
-    /// it, without the event workers.
-    fn to_reactor_thread(&self, _serv: Server<'_>, _head: &DataHead) -> Option<usize> {
-        Some(0)
-    }
+    /// `serv->send_to_reactor_thread(head)`: send to the reactor thread that owns the session.
+    fn to_reactor_thread(&self, serv: Server<'_>, head: &DataHead) -> Option<usize>;
 }
-
-fn missing() -> ! {
-    swoole_rs_corebase::fatal("no native server ops without upstream-symbols")
-}
-
-/// A build that links none of the hybrid.
-#[cfg(not(feature = "upstream-symbols"))]
-struct Unlinked;
-
-#[cfg(not(feature = "upstream-symbols"))]
-impl Hybrid for Unlinked {}
-
 /// The side this build links.
 pub(crate) fn hybrid() -> &'static dyn Hybrid {
-    #[cfg(feature = "upstream-symbols")]
     let linked: &'static dyn Hybrid = &crate::factory::Linked;
-    #[cfg(not(feature = "upstream-symbols"))]
-    let linked: &'static dyn Hybrid = &Unlinked;
     #[cfg(test)]
     let linked = tests::recorder(linked);
     linked

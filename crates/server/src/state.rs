@@ -38,16 +38,11 @@ pub struct ServerState {
     pub(crate) locked: FdLock,
     local_bounds: crate::shared::FdBounds,
     /// The reactor threads and the heartbeat thread, by `start_thread`'s `arg`.
-    #[cfg(any(test, feature = "upstream-symbols"))]
     threads: std::sync::Mutex<Vec<(u64, std::thread::JoinHandle<()>)>>,
     /// The interface addresses `Server::create` first read (`local_addr`); none before.
     pub(crate) local_addrs: std::sync::OnceLock<crate::local_addr::LocalAddrs>,
     /// `gs->pipe_packet_msg_id`, which numbers every bus's messages: the shared
     /// counter `swr_v1_server_shared_init` returned, mapped as long as the buses use it.
-    #[cfg_attr(
-        not(feature = "upstream-symbols"),
-        expect(dead_code, reason = "only the hybrid's threads number their buses")
-    )]
     pub(crate) msg_ids: std::sync::OnceLock<&'static core::sync::atomic::AtomicU64>,
     /// `Server::task_notify_pipes`: a blocking `Pipe` per event worker, which
     /// `task_sync` waits on. Set once, so a pipe lent out stays put; the state's drop
@@ -55,26 +50,14 @@ pub struct ServerState {
     task_pipes: OnceLock<Box<[SocketPair]>>,
     /// `Server::worker_pipes`: each event worker's `UnixSocket`, which
     /// the state's drop closes, as `~Server` did.
-    #[cfg_attr(
-        not(feature = "upstream-symbols"),
-        expect(dead_code, reason = "only the hybrid makes pipes")
-    )]
     #[expect(clippy::vec_box, reason = "a worker holds its pair's address")]
     worker_pipes: std::sync::Mutex<Vec<Box<SocketPair>>>,
     /// A worker thread asked to shut down: the thread manager respawns no worker.
     pub(crate) stopping: AtomicBool,
     /// Thread mode's factory's manager, from its factory's creation to its deletion.
-    #[cfg_attr(
-        not(feature = "upstream-symbols"),
-        expect(dead_code, reason = "only the hybrid makes factories")
-    )]
     pub(crate) thread_manager:
         std::sync::Mutex<Option<std::sync::Arc<crate::thread_mode::ThreadManager>>>,
     /// `Server::reactor_thread_barrier`.
-    #[cfg_attr(
-        not(feature = "upstream-symbols"),
-        expect(dead_code, reason = "only the hybrid's reactor threads wait on it")
-    )]
     pub(crate) reactor_thread_barrier: swoole_rs_corebase::locks::Barrier,
 }
 
@@ -279,7 +262,6 @@ impl ServerState {
             texts: Default::default(),
             locked: FdLock::default(),
             local_bounds: crate::shared::FdBounds::default(),
-            #[cfg(any(test, feature = "upstream-symbols"))]
             threads: std::sync::Mutex::new(Vec::new()),
             local_addrs: std::sync::OnceLock::new(),
             msg_ids: std::sync::OnceLock::new(),
@@ -293,7 +275,6 @@ impl ServerState {
 
     /// `new UnixSocket(true, SOCK_DGRAM)` for `worker`'s pipes: false, closing it,
     /// when the pair isn't ready.
-    #[cfg(feature = "upstream-symbols")]
     pub(crate) fn push_worker_pipe(
         &self,
         worker: swoole_rs_corebase::process::worker_record::Worker<'_>,
@@ -401,7 +382,6 @@ impl ServerState {
 
     /// `swoole_set_isolation(group_, user_, chroot_)`: a worker drops to the
     /// configured group and user, then chroots.
-    #[cfg(feature = "upstream-symbols")]
     pub(crate) fn set_isolation(&self) {
         let text = |kind| CString::new(&*self.text(kind)).unwrap_or_default();
         let root = text(ServerText::Chroot);
@@ -412,7 +392,6 @@ impl ServerState {
     /// Starts a thread of `serv`, whose state this is, running `body`, which owns
     /// what it reads of the server (a share); `take_thread(arg)` hands it back. A
     /// thread that can't start aborts, as `std::thread`'s uncaught `system_error` does.
-    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn start_thread(
         serv: crate::view::Server<'_>,
         arg: u64,
@@ -430,7 +409,6 @@ impl ServerState {
     }
 
     /// The running thread `start_thread` started with `arg`, if any.
-    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn take_thread(&self, arg: u64) -> Option<std::thread::JoinHandle<()>> {
         let mut threads = self
             .threads
@@ -539,7 +517,6 @@ fn c_path(text: &[u8]) -> CString {
 
 /// A new server's records, before a state owns them: the defaults and an empty
 /// worker registry.
-#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) fn fresh_records() -> (crate::config::ServerConfig, crate::records::ServerTables) {
     let config = crate::config::ServerConfig {
         worker_registry: Some(Box::default()),
@@ -549,7 +526,6 @@ pub(crate) fn fresh_records() -> (crate::config::ServerConfig, crate::records::S
 }
 
 /// The state of a server with these records.
-#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) fn boxed(
     config: crate::config::ServerConfig,
     tables: crate::records::ServerTables,
@@ -569,7 +545,6 @@ fn lock<T>(list: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 impl Drop for ServerState {
     fn drop(&mut self) {
         // `~Server` closes `task_notify_pipes` and `worker_pipes`.
-        #[cfg(feature = "upstream-symbols")]
         {
             let worker = self.worker_pipes.get_mut();
             let worker = worker.unwrap_or_else(std::sync::PoisonError::into_inner);

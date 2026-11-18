@@ -7,10 +7,8 @@ use crate::tcp_info::{TCP_INFO, TcpInfo, tcp_fields};
 use core::ffi::c_int;
 
 // The live facts read through `port_config::methods`.
-#[cfg(feature = "upstream-symbols")]
 #[path = "admin_live.rs"]
 mod live;
-#[cfg(feature = "upstream-symbols")]
 pub use live::admin_register;
 
 #[derive(Default)]

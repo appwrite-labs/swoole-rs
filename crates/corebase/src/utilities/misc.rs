@@ -40,7 +40,7 @@ macro_rules! hashes {
         #[doc = concat!("`", stringify!($name), "(const char *key, size_t len)`: the `len`")]
         /// bytes C lends at `key` (none for null).
         #[must_use]
-        #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
+        #[unsafe(export_name = $symbol)]
         pub extern "C" fn $name<'id>(key: In<'id, u8>, len: Count<'id>) -> $ret {
             let $key = key.drain(len).bytes();
             $hash

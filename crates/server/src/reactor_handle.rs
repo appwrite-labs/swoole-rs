@@ -1,11 +1,4 @@
 //! A live `Reactor` handle the server ops act on.
-#![cfg_attr(
-    not(feature = "upstream-symbols"),
-    expect(
-        dead_code,
-        reason = "the worker ops that use the rest link upstream symbols"
-    )
-)]
 use core::ffi::{c_int, c_void};
 
 use swoole_rs_corebase::reactor::reactor_upstream::{

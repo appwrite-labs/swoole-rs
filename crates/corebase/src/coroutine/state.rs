@@ -186,7 +186,6 @@ impl Scheduler {
     /// Takes the next id, seeds `co` (a fresh, idle record that `native` embeds) and
     /// makes it live.
     /// Returns whether the scheduler needs activating.
-    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn register(
         &mut self,
         co: Co,
@@ -227,7 +226,6 @@ impl Scheduler {
 
     /// Activation also clears the bailout mark; deactivation sets it (the
     /// caller sets the callback to match) and frees the live map if it is empty.
-    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn set_active(&mut self, active: bool) {
         self.activated = active;
         self.bailout = !active;
@@ -249,7 +247,6 @@ pub(crate) struct Co(NonNull<Coroutine>);
 impl Co {
     /// The coroutine a record handed over for good starts with: live until the
     /// scheduler's `destroy` frees the record, once it registered and ended.
-    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn leak(native: Box<crate::coroutine::context::Native>) -> Self {
         Self(NonNull::from(Box::leak(native)).cast())
     }
@@ -569,7 +566,6 @@ fn start(s: Sched, co: Co, resuming: bool) {
 
 /// `Coroutine::run`: the current coroutine becomes `co`'s origin and `co`
 /// runs until it first yields or ends. Returns its id.
-#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) fn run(s: Sched, co: Co) -> c_long {
     let cid = co.with(|co| co.cid);
     start(s, co, false);

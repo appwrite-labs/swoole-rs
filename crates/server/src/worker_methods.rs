@@ -99,7 +99,6 @@ pub fn destroy_worker(worker: Worker<'_>) {
 }
 
 /// `Server::create_event_workers()`, once the server has its worker arrays.
-#[cfg(feature = "upstream-symbols")]
 #[must_use]
 pub fn create_event_workers(serv: view::Server<'_>) -> bool {
     let count = serv.config().worker_num.get();
@@ -116,7 +115,6 @@ pub fn create_event_workers(serv: view::Server<'_>) -> bool {
 /// `Server::create_user_workers()`: copy the added user workers into shared
 /// memory (no process is forked), store them and give each its lock. False,
 /// after a warning, when they couldn't be mapped.
-#[cfg(feature = "upstream-symbols")]
 #[must_use]
 pub fn create_user_workers(serv: view::Server<'_>) -> bool {
     let size = size_of::<WorkerRecord>();

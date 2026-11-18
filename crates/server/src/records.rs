@@ -488,7 +488,6 @@ pub struct ServerTables {
     reactor_threads: core::cell::OnceCell<Box<[ThreadRecord]>>,
     /// `&Server::message_bus`, whose `MessageBus` starts with its Rust bus: the
     /// one `swr_v1_server_new` made, which the tables own.
-    #[cfg(feature = "upstream-symbols")]
     pub(crate) message_bus: Option<Box<crate::reactor_ops::PoolBus>>,
 }
 
@@ -533,10 +532,6 @@ impl ServerTables {
     }
 
     /// `session_list`'s `SharedMemory::protect(flags)`.
-    #[cfg_attr(
-        not(feature = "upstream-symbols"),
-        expect(dead_code, reason = "only the hybrid's event workers protect it")
-    )]
     pub(crate) fn protect_sessions(&self, flags: c_int) -> std::io::Result<()> {
         self.session_list.protect(flags)
     }
@@ -579,10 +574,6 @@ impl ServerTables {
     }
 }
 
-#[cfg_attr(
-    not(feature = "upstream-symbols"),
-    expect(dead_code, reason = "only the hybrid's factories make reactor threads")
-)]
 impl ServerTables {
     /// `reactor_threads = threads`: the tables keep the array until
     /// [`Self::take_reactor_threads`]. A factory makes one per create, which its
@@ -622,7 +613,6 @@ impl Default for ServerTables {
             enable_accept_timer: swoole_rs_corebase::timer_key::AtomicHeld::new(),
             reactor_pipe_num: Cell::new(0),
             reactor_threads: core::cell::OnceCell::new(),
-            #[cfg(feature = "upstream-symbols")]
             message_bus: None,
         }
     }

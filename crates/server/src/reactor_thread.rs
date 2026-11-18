@@ -1,17 +1,14 @@
 //! Reactor threads: the datagram path and dispatch to workers, the worker pipe
 //! protocol, heartbeats and the threads' lifecycle.
 use core::ffi::{c_int, c_long};
-#[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_corebase::ServerEvent;
 #[cfg(test)]
 use swoole_rs_corebase::constants::SocketTypeCode;
 use swoole_rs_corebase::reactor::ErrorHandler::ConnectionDefault;
 
 use swoole_rs_corebase::reactor::Event;
-#[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_corebase::reactor::Heap;
 use swoole_rs_corebase::{CellExt, DataHead, log, microtime};
-#[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_error::ErrorCode;
 
 use crate::base_factory::SendData;
@@ -20,7 +17,6 @@ use crate::reactor_entry::DgramPacket;
 use crate::reactor_handle::Reactor;
 use crate::records::{Connection, Lookup};
 use crate::{Mode, ServerState, view};
-#[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE;
 
 /// `SW_LOG_TRACE`, `SW_FD_SESSION`, `SW_FD_DGRAM_SERVER`, `SW_EVENT_READ` and
@@ -29,7 +25,6 @@ const FD_SESSION: c_int = 0;
 const FD_DGRAM_SERVER: c_int = 2;
 
 /// The heartbeat thread's `ServerState::start_thread` key; reactor threads use their ids.
-#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) const HEARTBEAT: u64 = u64::MAX;
 
 thread_local! {
@@ -149,7 +144,6 @@ pub(crate) fn each_connection(state: &ServerState, mut each: impl FnMut(Connecti
 
 /// `ReactorThread::close_connection`: close `session` now when nobody is told,
 /// else notify the worker through the close event.
-#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, session: c_long) {
     let Some(conn) = serv.state().connection(session, Lookup::Verified) else {
         let m = format_args!("force close connection failed, session#{session} does not exist");
@@ -169,7 +163,6 @@ pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, session: c_long) {
 
 /// `Server::heartbeat_check`: close `reactor`'s connections idle past their port's
 /// heartbeat time.
-#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) fn heartbeat_check(serv: view::Server<'_>, reactor: Reactor) {
     let (now, id) = (microtime(), reactor.handle().id());
     each_connection(serv.state(), |conn| {
@@ -182,13 +175,6 @@ pub(crate) fn heartbeat_check(serv: view::Server<'_>, reactor: Reactor) {
 
 /// The destroy callback `ReactorThread::shutdown` adds: close each connection
 /// `reactor` owns.
-#[cfg_attr(
-    not(feature = "upstream-symbols"),
-    expect(
-        dead_code,
-        reason = "its caller is the reactor threads' destroy callback"
-    )
-)]
 pub(crate) fn close_reactor_connections(serv: view::Server<'_>, reactor: Reactor) {
     let id = reactor.handle().id();
     each_connection(serv.state(), |conn| {
@@ -218,7 +204,6 @@ pub(crate) fn init_reactor(serv: view::Server<'_>, reactor: Reactor) {
 
 /// `Server::join_reactor_thread`: tell each running reactor thread to shut down,
 /// and join it.
-#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) fn join_reactor_threads(serv: view::Server<'_>) {
     let state = serv.state();
     let config = state.config_ref();
@@ -247,7 +232,6 @@ pub(crate) fn join_reactor_threads(serv: view::Server<'_>) {
 }
 
 /// `socket->send_sync(&head, sizeof(head))` of a bare event.
-#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) fn send_event(sock: Option<Heap<'_>>, fd: c_long, kind: ServerEvent) {
     let head = DataHead {
         fd,

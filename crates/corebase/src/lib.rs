@@ -89,7 +89,6 @@ pub use host::{
     swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec, swoole_system_random,
     swr_v1_core_format_result,
 };
-#[cfg(feature = "upstream-symbols")]
 pub use lifecycle::init_with_default_fatal_handler;
 pub use lifecycle::{
     SharedThread, adopt_shared_thread, lend_thread_buffer, shared_thread, thread_buffer,
@@ -125,27 +124,21 @@ const API_VERSION_ID: c_int = 0x0202_208a;
 
 /// `const char *swoole_version(void)`.
 #[must_use]
-#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "swoole_version"))]
+#[unsafe(export_name = "swoole_version")]
 pub extern "C" fn swoole_version() -> *const c_char {
     VERSION.as_ptr()
 }
 
 /// `int swoole_version_id(void)`.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "swoole_version_id")
-)]
+#[unsafe(export_name = "swoole_version_id")]
 pub extern "C" fn swoole_version_id() -> c_int {
     VERSION_ID
 }
 
 /// `int swoole_api_version_id(void)`.
 #[must_use]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "swoole_api_version_id")
-)]
+#[unsafe(export_name = "swoole_api_version_id")]
 pub extern "C" fn swoole_api_version_id() -> c_int {
     API_VERSION_ID
 }
@@ -279,13 +272,11 @@ pub extern "C" fn swoole_dec2hex(value: c_ulong, base: c_int) -> *mut c_char {
 /// the C body, which keeps its variadic arguments in place.
 macro_rules! format_exports {
     ($($export:ident => $definition:ident),* $(,)?) => {
-        #[cfg(feature = "upstream-symbols")]
         unsafe extern "C" {
             $(fn $definition();)*
         }
         $(
             #[doc = concat!("`", stringify!($export), "`, exported.")]
-            #[cfg(feature = "upstream-symbols")]
             #[unsafe(naked)]
             #[unsafe(no_mangle)]
             pub extern "C" fn $export() {
