@@ -24,14 +24,9 @@
 #include "pgsql_statement.h"
 #include <php.h>
 
-#define PHP_PDO_PGSQL_CONNECTION_FAILURE_SQLSTATE "08006"
-
 void pdo_pgsql_register_lob(pdo_pgsql_db_handle *H, zend_long id, zend_resource *resource);
 void pdo_pgsql_unregister_lob(pdo_pgsql_db_handle *H, zend_long id);
 void pdo_pgsql_replace_notice_callback(pdo_pgsql_db_handle *H, zend_fcall_info_cache *next);
-pdo_pgsql_stmt **pdo_pgsql_running_stmt(pdo_pgsql_db_handle *H);
-
-extern const pdo_driver_t pdo_pgsql_driver;
 
 #if PHP_VERSION_ID >= 80400
 extern int pdo_pgsql_scanner(pdo_scanner_t *s);
@@ -54,14 +49,9 @@ extern const struct pdo_dbh_methods swoole_pdo_pgsql_methods;
 
 void pdo_pgsql_handle_closer(pdo_dbh_t *dbh);
 
-#define pdo_pgsql_error(d, e, z) pdo_pgsql_raise(d, NULL, e, z, NULL)
-#define pdo_pgsql_error_msg(d, e, m) pdo_pgsql_raise(d, NULL, e, NULL, m)
-#define pdo_pgsql_error_stmt(s, e, z) pdo_pgsql_raise(s->dbh, s, e, z, NULL)
 #define pdo_pgsql_error_stmt_msg(stmt, e, sqlstate, msg) pdo_pgsql_raise(stmt->dbh, stmt, e, sqlstate, msg)
 
 extern const struct pdo_stmt_methods swoole_pgsql_stmt_methods;
-
-#define pdo_pgsql_sqlstate(r) PQresultErrorField(r, PG_DIAG_SQLSTATE)
 
 enum {
 	PDO_PGSQL_ATTR_DISABLE_PREPARES = PDO_ATTR_DRIVER_SPECIFIC,
@@ -76,9 +66,6 @@ enum pdo_pgsql_specific_constants {
 	PGSQL_TRANSACTION_UNKNOWN = PQTRANS_UNKNOWN
 };
 
-
-
-void pdo_pgsql_close_lob_streams(pdo_dbh_t *dbh);
 
 void pgsqlCopyFromArray_internal(INTERNAL_FUNCTION_PARAMETERS);
 void pgsqlCopyFromFile_internal(INTERNAL_FUNCTION_PARAMETERS);

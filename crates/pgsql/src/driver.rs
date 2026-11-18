@@ -53,8 +53,7 @@ const CONNECTION_FAILURE: &CStr = c"08006";
 const DIAG_SQLSTATE: c_int = b'C' as c_int;
 
 /// `pdo_pgsql_db_handle`: what the driver keeps per connection. The statement,
-/// COPY, LOB and notice code (C) reach it only through the accessors below, which is
-/// why the fields are cells.
+/// COPY, LOB and notice callbacks share this handle on the connection thread.
 pub struct Handle {
     /// The connection, open until the handle drops.
     server: Conn,
@@ -70,7 +69,7 @@ pub struct Handle {
     /// Zend allocates resource IDs in creation order. Each stream unregisters on close.
     lob_streams: Cell<Vec<(zend_long, NonNull<c_void>)>>,
     notice_callback: Cell<Option<NonNull<c_void>>>,
-    running_stmt: Cell<*mut c_void>,
+    pub(super) running_stmt: Cell<std::rc::Weak<crate::statement::Execution>>,
 }
 
 impl Drop for Handle {
@@ -214,7 +213,7 @@ impl Handle {
             lazy_fetch: Cell::new(false),
             lob_streams: Cell::default(),
             notice_callback: Cell::new(None),
-            running_stmt: Cell::new(ptr::null_mut()),
+            running_stmt: Cell::default(),
         }
     }
 
@@ -247,7 +246,7 @@ impl Handle {
     }
 
     /// `pgsql_handle_in_transaction`.
-    fn in_transaction(&self) -> bool {
+    pub(super) fn in_transaction(&self) -> bool {
         PQtransactionStatus(self.server) != PGTransactionStatusType::PQTRANS_IDLE
     }
 }
@@ -269,8 +268,7 @@ fn affected_rows(result: Res<'_>) -> zend_long {
 }
 
 /// Publish the shape of a successful execute, or preserve the server's SQLSTATE.
-#[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_execution_result(dbh: &Dbh, stmt: &Stmt, result: Option<Res<'_>>) -> bool {
+pub(super) fn execution_result(dbh: &Dbh, stmt: &Stmt, result: Option<Res<'_>>) -> bool {
     let Some(res) = result else {
         raise(
             dbh,
@@ -383,7 +381,7 @@ fn raise(
 
 /// Close the handle's LOB streams, which may run PHP code: a bailout is deferred to
 /// the export's boundary.
-fn close_lob_streams(dbh: &Dbh) -> Result<(), swoole_rs_zend::bailout::Bailout> {
+pub(super) fn close_lob_streams(dbh: &Dbh) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     unsafe extern "C" {
         safe fn pdo_pgsql_close_resource(resource: NonNull<c_void>);
     }
@@ -1064,17 +1062,6 @@ fn next_stmt_id(handle: &Handle) -> u32 {
     id
 }
 
-unsafe extern "C" {
-    safe fn pdo_pgsql_init_statement(stmt: &Stmt);
-    safe fn pdo_pgsql_name_statement(stmt: &Stmt, name: Text<'_>, cursor: bool);
-    safe fn pdo_pgsql_parse_statement(
-        stmt: &Stmt,
-        sql: &ZStr,
-        emulate: bool,
-        unbuffered: bool,
-    ) -> bool;
-}
-
 swoole_rs_zend::exports! {
 /// Install the statement and select cursor, emulated or native preparation
 /// before PDO rewrites its placeholders.
@@ -1085,13 +1072,13 @@ pub extern "C" fn pgsql_handle_preparer(dbh: &Dbh, sql: &ZStr, stmt: &Stmt, opti
         pdo_cursor_type_PDO_CURSOR_SCROLL as SCROLL,
     };
     let Some(handle) = handle(dbh) else {return false};
-    pdo_pgsql_init_statement(stmt);
+    let state = crate::statement::install(stmt);
     let cursor = pdo::attr_long(options, CURSOR, FORWARD.into()) == i64::from(SCROLL);
     let mut emulate = cursor;
     let mut direct = false;
     if cursor {
         let name = swoole_rs_zend::message!("pdo_crsr_{:08x}", next_stmt_id(handle));
-        pdo_pgsql_name_statement(stmt, name.as_cstr().into(), true);
+        state.execution.cursor.get_or_init(|| name.as_cstr().to_owned());
     } else {
         emulate = pdo::attr_long(options, ATTR_EMULATE_PREPARES, handle.emulate_prepares.get().into()) == 1;
         direct = pdo::attr_long(options, ATTR_DISABLE_PREPARES, handle.disable_prepares.get().into()) == 1;
@@ -1102,14 +1089,11 @@ pub extern "C" fn pgsql_handle_preparer(dbh: &Dbh, sql: &ZStr, stmt: &Stmt, opti
         .and_then(pdo::long_param)
         .map_or_else(|| handle.lazy_fetch.get(), |value| value == 0);
     if swoole_rs_zend::bailout::pending() { return false; }
-    let mut parsed = false;
-    if let Err(failure) = contain_with(||parsed=pdo_pgsql_parse_statement(stmt, sql, emulate, unbuffered)) {
-        failure.defer();
-        return false;
-    }
+    state.execution.unbuffered.set(unbuffered && !cursor);
+    let parsed = state.parse(stmt, sql, emulate);
     if parsed && !emulate && !direct {
         let name = swoole_rs_zend::message!("pdo_stmt_{:08x}", next_stmt_id(handle));
-        pdo_pgsql_name_statement(stmt, name.as_cstr().into(), false);
+        state.execution.name.get_or_init(|| name.as_cstr().to_owned());
     }
     parsed
 }
@@ -1130,14 +1114,6 @@ extern "C" fn pdo_pgsql_unregister_lob(handle: &Handle, id: zend_long) {
             streams.remove(index);
         }
     });
-}
-
-swoole_rs_zend::exports! {
-    preserve_pending:
-    #[unsafe(no_mangle)]
-    extern "C" fn pdo_pgsql_close_lob_streams(dbh: &Dbh) {
-        swoole_rs_zend::bailout::defer(close_lob_streams(dbh));
-    }
 }
 
 // Both the PDO subclass and the older dynamically registered methods enter
@@ -1359,12 +1335,6 @@ swoole_rs_zend::exports! {
     extern "C" fn pdo_pgsql_replace_notice_callback(handle: &Handle, next: Option<NonNull<c_void>>) {
         swoole_rs_zend::bailout::defer(replace_notice(handle, next));
     }
-}
-
-/// `&H->running_stmt`: the C statement code's running unbuffered statement (PHP 8.5).
-#[unsafe(no_mangle)]
-pub extern "C" fn pdo_pgsql_running_stmt(handle: &Handle) -> *mut *mut c_void {
-    handle.running_stmt.as_ptr()
 }
 
 #[cfg(test)]

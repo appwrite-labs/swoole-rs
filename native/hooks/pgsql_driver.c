@@ -49,42 +49,27 @@ pdo_pgsql_db_handle *pdo_pgsql_take_handle(pdo_dbh_t *dbh) {
     return handle;
 }
 
-/* PDO's statement layout and the driver's PHP-version-specific storage. */
-void pdo_pgsql_init_statement(pdo_stmt_t *stmt)
+/* PDO calls the methods through its version-specific table. */
+void *pdo_pgsql_init_statement(pdo_stmt_t *stmt, void *state)
 {
-    pdo_pgsql_stmt *state = ecalloc(1, sizeof(*state));
-    state->H = stmt->dbh->driver_data;
     stmt->driver_data = state;
     stmt->methods = &swoole_pgsql_stmt_methods;
+    return state;
 }
 
-void pdo_pgsql_name_statement(pdo_stmt_t *stmt, const char *name, bool cursor)
+bool pdo_pgsql_parse_statement(pdo_stmt_t *stmt, zend_string *sql, bool emulate, zval *query)
 {
-    pdo_pgsql_stmt *state = stmt->driver_data;
-    if (cursor) {
-        state->cursor_name = estrdup(name);
-    } else {
-        state->stmt_name = estrdup(name);
-    }
-}
-
-bool pdo_pgsql_parse_statement(pdo_stmt_t *stmt, zend_string *sql, bool emulate, bool unbuffered)
-{
-    pdo_pgsql_stmt *state = stmt->driver_data;
     stmt->supports_placeholders = emulate ? PDO_PLACEHOLDER_NONE : PDO_PLACEHOLDER_NAMED;
     if (!emulate) {
         stmt->named_rewrite_template = "$%d";
     }
-#if PHP_VERSION_ID >= 80500
-    state->is_unbuffered = unbuffered;
-#endif
     zend_string *rewritten = NULL;
     int parsed = pdo_parse_params(stmt, sql, &rewritten);
     if (parsed == -1) {
         memcpy(stmt->dbh->error_code, stmt->error_code, sizeof(stmt->error_code));
         return false;
     }
-    state->query = parsed == 1 ? rewritten : zend_string_copy(sql);
+    ZVAL_STR(query, parsed == 1 ? rewritten : zend_string_copy(sql));
     return true;
 }
 

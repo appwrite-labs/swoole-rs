@@ -18,28 +18,14 @@
 
 #ifndef SWOOLE_PGSQL_STATEMENT_H
 #define SWOOLE_PGSQL_STATEMENT_H
-#include "php_swoole_pgsql.h"
+#include "php_swoole.h"
+#include <libpq-fe.h>
 #include "ext/pdo/php_pdo_driver.h"
 #include <sys/uio.h>
 
 typedef struct pdo_pgsql_db_handle pdo_pgsql_db_handle;
 
 bool pdo_pgsql_send_copy_data(pdo_pgsql_db_handle *handle, struct iovec bytes, bool array_row);
-
-typedef struct pdo_pgsql_stmt {
-    pdo_pgsql_db_handle *H;
-    PGresult *result;
-    char *cursor_name;
-    char *stmt_name;
-    zend_string *query;
-    void *params;
-    int current_row;
-    bool is_prepared;
-#if PHP_VERSION_ID >= 80500
-    bool is_unbuffered;
-    bool is_running_unbuffered;
-#endif
-} pdo_pgsql_stmt;
 
 struct pdo_pgsql_lob_self {
     zval dbh;
@@ -56,19 +42,15 @@ bool pdo_pgsql_bind_value(void *params, size_t index, enum pdo_param_type kind, 
 bool pdo_pgsql_emulated_parameter(enum pdo_param_type *kind, zval *value);
 bool pdo_pgsql_normalize_parameter(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zend_string *name, zend_long *index);
 bool pdo_pgsql_check_parameter(pdo_dbh_t *dbh, pdo_stmt_t *stmt, HashTable *map, zend_long index);
-bool pdo_pgsql_bind_parameter(pdo_dbh_t *dbh, pdo_stmt_t *stmt, HashTable *map, zend_long index, enum pdo_param_type kind, zval *value);
-bool pdo_pgsql_execution_result(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult *result);
-void pdo_pgsql_finish_result(PGconn *active, PGresult **result, bool abort_query);
-void pdo_pgsql_close_statement(pdo_pgsql_db_handle *H, const char *name);
-bool pdo_pgsql_send_statement(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *name,
-                              const char *query, const void *params, unsigned int count, bool *prepared,
-                              bool named, bool unbuffered);
-void pdo_pgsql_close_cursor(pdo_pgsql_db_handle *H, const char *cursor);
-bool pdo_pgsql_open_cursor(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *cursor, bool *prepared, const char *sql);
-bool pdo_pgsql_fetch_row(pdo_dbh_t *dbh, pdo_stmt_t *stmt, PGresult **result, const char *cursor, unsigned int orientation, zend_long offset, int *row, bool *running);
-bool pdo_pgsql_read_column(pdo_stmt_t *stmt, pdo_pgsql_db_handle *H, PGresult *result, int row, int column, enum pdo_param_type *type, zval *output);
+bool pdo_pgsql_bind_parameter(pdo_dbh_t *dbh, pdo_stmt_t *stmt, void *state, HashTable *map, zend_long index, enum pdo_param_type kind, zval *value);
+bool pdo_pgsql_execute(pdo_dbh_t *dbh, pdo_stmt_t *stmt, void *state, zend_string *active, unsigned int count);
+void pdo_pgsql_destroy_statement(void *state, pdo_pgsql_db_handle *live);
+bool pdo_pgsql_fetch_row(pdo_dbh_t *dbh, pdo_stmt_t *stmt, void *state, unsigned int orientation, zend_long offset);
+bool pdo_pgsql_read_column(pdo_stmt_t *stmt, pdo_pgsql_db_handle *H, void *state, PGresult *result, int column, enum pdo_param_type *type, zval *output);
 struct pdo_column_data;
 bool pdo_pgsql_describe_column(PGresult *result, int colno, struct pdo_column_data *column);
 int pdo_pgsql_column_meta(pdo_pgsql_db_handle *H, PGresult *result, int colno, zval *output);
+PGresult *pdo_pgsql_statement_result(void *state);
+const char *pdo_pgsql_statement_name(void *state);
 void pdo_pgsql_raise(pdo_dbh_t *dbh, pdo_stmt_t *stmt, int errcode, const char *sqlstate, const char *msg);
 #endif
