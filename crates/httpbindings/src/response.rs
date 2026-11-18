@@ -28,6 +28,27 @@ pub fn response_header(name: &[u8]) -> i32 {
         .map_or(0, |&(_, flag)| flag)
 }
 
+/// Trim the six C-locale whitespace bytes from the end of a response header value.
+#[must_use]
+pub fn trim_header_end(value: &[u8]) -> &[u8] {
+    let end = value
+        .iter()
+        .rposition(|&b| !matches!(b, b' ' | b'\t'..=b'\r'));
+    end.and_then(|i| value.get(..=i)).unwrap_or_default()
+}
+
+/// Swoole reports the first invalid header byte in input order.
+#[must_use]
+pub fn header_warning(value: &[u8]) -> Option<&'static str> {
+    value.iter().find_map(|byte| match byte {
+        b'\r' | b'\n' => {
+            Some("Header may not contain more than a single header, new line detected")
+        }
+        0 => Some("Header may not contain NUL bytes"),
+        _ => None,
+    })
+}
+
 /// Native codec selection before any allocation/backend call. Capabilities are
 /// zlib/Brotli/Zstd bits. `None` skips compression before consulting the method.
 ///
@@ -92,6 +113,33 @@ pub fn codec_level(method: Compression, level: i32, minimum: i32, maximum: i32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_header_trims_only_trailing_c_whitespace() {
+        let spaces: Vec<_> = (0..=255)
+            .filter(|&b| trim_header_end(&[b]).is_empty())
+            .collect();
+        assert_eq!(spaces, b"\t\n\x0b\x0c\r ", "C locale");
+        assert_eq!(
+            trim_header_end(b" a b \t\r\n"),
+            b" a b",
+            "keep leading space"
+        );
+        assert!(trim_header_end(b"  ").is_empty(), "all whitespace");
+    }
+
+    #[test]
+    fn response_header_reports_the_first_invalid_byte() {
+        let newline = Some("Header may not contain more than a single header, new line detected");
+        assert_eq!(header_warning(b"a\r\0"), newline, "CR first");
+        assert_eq!(header_warning(b"a\n\0"), newline, "LF first");
+        assert_eq!(
+            header_warning(b"a\0\n"),
+            Some("Header may not contain NUL bytes"),
+            "NUL first"
+        );
+        assert_eq!(header_warning(b"a\xff"), None, "opaque bytes");
+    }
 
     #[test]
     fn selection_skips_before_checking_availability() {

@@ -12,6 +12,7 @@ php = [
     "dep:libc",
     "dep:swoole-rs-inflate",
     "dep:swoole-rs-http2",
+    "dep:swoole-rs-httpbindings",
     "dep:swoole-rs-hooks",
     "dep:swoole-rs-zend",
     "swoole-rs-zend/php",
@@ -40,6 +41,7 @@ php = [
 [dependencies]
 libc = { version = "=0.2.191", optional = true }
 swoole-rs-inflate = { path = "../inflate", optional = true }
+swoole-rs-httpbindings = { path = "../httpbindings", optional = true }
 swoole-rs-http2 = { path = "../http2", optional = true }
 swoole-rs-hooks = { path = "../hooks", optional = true }
 swoole-rs-zend = { path = "../zend", optional = true }

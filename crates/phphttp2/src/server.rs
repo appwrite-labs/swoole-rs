@@ -50,6 +50,7 @@ const STREAM_NOT_FOUND: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_HTTP2_STREAM_NOT_FOUND as c_int;
 const STREAM_IGNORE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_HTTP2_STREAM_IGNORE as c_int;
 
+use swoole_rs_httpbindings::{header_warning, trim_header_end};
 use swoole_rs_phphttp::decimal;
 use swoole_rs_phphttp::http2::Field;
 
@@ -331,34 +332,6 @@ fn string_of(value: &Zval) -> Option<ZString> {
     (!bailout::pending()).then_some(text)
 }
 
-/// `swoole::rtrim`: trailing `isspace` bytes off.
-fn rtrim(value: &[u8]) -> &[u8] {
-    let end = value
-        .iter()
-        .rposition(|&byte| !matches!(byte, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r'))
-        .map_or(0, |last| last + 1);
-    value.get(..end).unwrap_or(value)
-}
-
-/// `swoole_http_has_crlf`, with its warnings.
-fn has_crlf(value: &[u8]) -> bool {
-    for &byte in value {
-        if byte == b'\n' || byte == b'\r' {
-            report(
-                510,
-                false,
-                b"Header may not contain more than a single header, new line detected",
-            );
-            return true;
-        }
-        if byte == 0 {
-            report(510, false, b"Header may not contain NUL bytes");
-            return true;
-        }
-    }
-    false
-}
-
 /// `http2_server_build_trailer`, as an unsealed frame (an empty block
 /// without a trailer): `None` on an error.
 fn build_trailer(ctx: Ctx, session: &Session) -> Option<Headers> {
@@ -411,8 +384,9 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<H
                 return Some(());
             }
             let owned = string_of(value)?;
-            let text = rtrim(owned.bytes());
-            if has_crlf(text) {
+            let text = trim_header_end(owned.bytes());
+            if let Some(message) = header_warning(text) {
+                report(510, false, message.as_bytes());
                 return Some(());
             }
             let plan = header_plan(HeaderRole::Server, key, can_capture);
@@ -1345,12 +1319,6 @@ mod tests {
         assert_eq!(strtol(b"abc"), (0, false));
         assert_eq!(strtol(b""), (0, true));
         assert_eq!(strtol(b"99999999999999999999999"), (i64::MAX, true));
-    }
-
-    #[test]
-    fn rtrim_drops_trailing_space_only() {
-        assert_eq!(rtrim(b" a b \t\r\n"), b" a b");
-        assert_eq!(rtrim(b"  "), b"");
     }
 
     #[test]
