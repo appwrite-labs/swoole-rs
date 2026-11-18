@@ -948,7 +948,6 @@ fn get_process(call: &Call) {
         match existing.filter(|found| !found.is_null()) {
             None => {
                 let object = class.create_object();
-                // A worker C++ allocates, as the Process object frees it.
                 let mut copy = WorkerRecord::empty();
                 let index = usize::try_from(id).unwrap_or(usize::MAX);
                 let pipe = worker_record::copy_for_process(view, index, &mut copy);
