@@ -1400,110 +1400,12 @@ static inline zend_result build_mime_structure_from_hash(php_curl *ch, zval *zpo
 /* }}} */
 #endif
 
-/* The options crates/curl/src/setopt.rs leaves to C++: callables, file handles, post fields,
- * share and CURLINFO_HEADER_OUT, and the error for an unknown option. */
+/* The options crates/curl/src/setopt.rs leaves to C++: callables, post fields and
+ * CURLINFO_HEADER_OUT, and the error for an unknown option. */
 extern "C" zend_result swoole_curl_setopt_native(php_curl *ch, zend_long option, zval *zvalue, bool is_array_config) {
     CURLcode error = CURLE_OK;
 
     switch (option) {
-
-    /* Curl file handle options */
-    case CURLOPT_FILE:
-    case CURLOPT_INFILE:
-    case CURLOPT_STDERR:
-    case CURLOPT_WRITEHEADER: {
-        FILE *fp = NULL;
-        php_stream *what = NULL;
-
-        if (Z_TYPE_P(zvalue) != IS_NULL) {
-            what = (php_stream *) zend_fetch_resource2_ex(
-                zvalue, "File-Handle", php_file_le_stream(), php_file_le_pstream());
-            if (!what) {
-                return FAILURE;
-            }
-
-            if (FAILURE == php_stream_cast(what, PHP_STREAM_AS_STDIO, (void **) &fp, REPORT_ERRORS)) {
-                return FAILURE;
-            }
-
-            if (!fp) {
-                return FAILURE;
-            }
-        }
-
-        error = CURLE_OK;
-        switch (option) {
-        case CURLOPT_FILE:
-            if (!what) {
-                if (!Z_ISUNDEF(ch->handlers.write->stream)) {
-                    zval_ptr_dtor(&ch->handlers.write->stream);
-                    ZVAL_UNDEF(&ch->handlers.write->stream);
-                }
-                ch->handlers.write->fp = NULL;
-                ch->handlers.write->method = PHP_CURL_STDOUT;
-            } else if (what->mode[0] != 'r' || what->mode[1] == '+') {
-                zval_ptr_dtor(&ch->handlers.write->stream);
-                ch->handlers.write->fp = fp;
-                ch->handlers.write->method = PHP_CURL_FILE;
-                ZVAL_COPY(&ch->handlers.write->stream, zvalue);
-            } else {
-                zend_value_error("%s(): The provided file handle must be writable", get_active_function_name());
-                return FAILURE;
-            }
-            break;
-        case CURLOPT_WRITEHEADER:
-            if (!what) {
-                if (!Z_ISUNDEF(ch->handlers.write_header->stream)) {
-                    zval_ptr_dtor(&ch->handlers.write_header->stream);
-                    ZVAL_UNDEF(&ch->handlers.write_header->stream);
-                }
-                ch->handlers.write_header->fp = NULL;
-                ch->handlers.write_header->method = PHP_CURL_IGNORE;
-            } else if (what->mode[0] != 'r' || what->mode[1] == '+') {
-                zval_ptr_dtor(&ch->handlers.write_header->stream);
-                ch->handlers.write_header->fp = fp;
-                ch->handlers.write_header->method = PHP_CURL_FILE;
-                ZVAL_COPY(&ch->handlers.write_header->stream, zvalue);
-            } else {
-                zend_value_error("%s(): The provided file handle must be writable", get_active_function_name());
-                return FAILURE;
-            }
-            break;
-        case CURLOPT_INFILE:
-            if (!what) {
-                if (!Z_ISUNDEF(ch->handlers.read->stream)) {
-                    zval_ptr_dtor(&ch->handlers.read->stream);
-                    ZVAL_UNDEF(&ch->handlers.read->stream);
-                }
-                ch->handlers.read->fp = NULL;
-                ch->handlers.read->res = NULL;
-            } else {
-                zval_ptr_dtor(&ch->handlers.read->stream);
-                ch->handlers.read->fp = fp;
-                ch->handlers.read->res = Z_RES_P(zvalue);
-                ZVAL_COPY(&ch->handlers.read->stream, zvalue);
-            }
-            break;
-        case CURLOPT_STDERR:
-            if (!what) {
-                if (!Z_ISUNDEF(ch->handlers.std_err)) {
-                    zval_ptr_dtor(&ch->handlers.std_err);
-                    ZVAL_UNDEF(&ch->handlers.std_err);
-                }
-            } else if (what->mode[0] != 'r' || what->mode[1] == '+') {
-                zval_ptr_dtor(&ch->handlers.std_err);
-                ZVAL_COPY(&ch->handlers.std_err, zvalue);
-            } else {
-                zend_value_error("%s(): The provided file handle must be writable", get_active_function_name());
-                return FAILURE;
-            }
-            ZEND_FALLTHROUGH;
-        default:
-            error = curl_easy_setopt(ch->cp, (CURLoption) option, fp);
-            break;
-        }
-        break;
-    }
 
     case CURLOPT_HEADERFUNCTION:
         if (!Z_ISUNDEF(ch->handlers.write_header->func_name)) {
@@ -1603,19 +1505,6 @@ extern "C" zend_result swoole_curl_setopt_native(php_curl *ch, zend_long option,
             curl_easy_setopt(ch->cp, CURLOPT_VERBOSE, 0L);
         }
         break;
-
-    case CURLOPT_SHARE: {
-        if (Z_TYPE_P(zvalue) == IS_OBJECT && Z_OBJCE_P(zvalue) == curl_share_ce) {
-            php_curlsh *sh = Z_CURL_SHARE_P(zvalue);
-            curl_easy_setopt(ch->cp, CURLOPT_SHARE, sh->share);
-
-            if (ch->share) {
-                OBJ_RELEASE(&ch->share->std);
-            }
-            GC_ADDREF(&sh->std);
-            ch->share = sh;
-        }
-    } break;
 
     case CURLOPT_FNMATCH_FUNCTION:
         curl_easy_setopt(ch->cp, CURLOPT_FNMATCH_FUNCTION, fn_fnmatch);

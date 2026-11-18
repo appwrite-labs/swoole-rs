@@ -1,10 +1,10 @@
 //! `curl_setopt` and `curl_setopt_array` (#5131). The options that take a number,
 //! a string or a blob are set here, through the typed accessors in
 //! `native/hooks/curl_handle.cc` (`curl_easy_setopt` is variadic), as are the
-//! list options, `CURLOPT_RETURNTRANSFER` and `CURLOPT_PRIVATE`; the rest
-//! (callables, file handles, post fields, share and `CURLINFO_HEADER_OUT`)
-//! still go to the bundled copies' `swoole_curl_setopt_native`, which also
-//! rejects an unknown option.
+//! list options, `CURLOPT_RETURNTRANSFER`, `CURLOPT_PRIVATE`, the file-handle
+//! options and `CURLOPT_SHARE`; the rest (callables, post fields and
+//! `CURLINFO_HEADER_OUT`) still go to the bundled copies'
+//! `swoole_curl_setopt_native`, which also rejects an unknown option.
 //!
 //! Each option is gated as the copies' `#if`s gated its `case`: by the libcurl
 //! headers the extension was built against and by the PHP version, so one the
@@ -33,6 +33,22 @@ unsafe extern "C" {
     // Sets a list option and gives the list to the handle's clone family, which frees it.
     safe fn swoole_curl_setopt_list(handle: PhpHandle<'_>, option: c_int, list: List) -> c_int;
     safe fn swoole_curl_set_write_method(handle: PhpHandle<'_>, method: c_int);
+    // The stream resource's `FILE *` (and whether it was opened for writing), or
+    // None after the error.
+    safe fn swoole_curl_stream_file(value: &Value, writable: &mut bool) -> Option<StdioFile>;
+    // The stream a file-handle option keeps.
+    safe fn swoole_curl_file_stream<'a>(
+        handle: PhpHandle<'a>,
+        option: c_int,
+    ) -> &'a mut swoole_rs_zend::Owned;
+    // Points the option's handler at the file, or back at its default without one.
+    safe fn swoole_curl_set_file(
+        handle: PhpHandle<'_>,
+        option: c_int,
+        file: Option<StdioFile>,
+    ) -> c_int;
+    // `CURLOPT_SHARE`: sets and keeps a `CurlShareHandle`, and ignores any other value.
+    safe fn swoole_curl_set_share(handle: PhpHandle<'_>, value: &Value);
     // The handle's `private_data`, for `CURLINFO_PRIVATE`.
     safe fn swoole_curl_private<'a>(handle: PhpHandle<'a>) -> &'a mut swoole_rs_zend::Owned;
     safe fn swoole_curl_open_basedir() -> bool;
@@ -110,6 +126,7 @@ const CURLOPT_DOH_URL: zend_long = 10279;
 const CURLOPT_EGDSOCKET: zend_long = 10077;
 const CURLOPT_EXPECT_100_TIMEOUT_MS: zend_long = 227;
 const CURLOPT_FAILONERROR: zend_long = 45;
+const CURLOPT_FILE: zend_long = 10001;
 const CURLOPT_FILETIME: zend_long = 69;
 const CURLOPT_FOLLOWLOCATION: zend_long = 52;
 const CURLOPT_FORBID_REUSE: zend_long = 75;
@@ -142,6 +159,7 @@ const CURLOPT_HTTP_CONTENT_DECODING: zend_long = 158;
 const CURLOPT_HTTP_TRANSFER_DECODING: zend_long = 157;
 const CURLOPT_HTTP_VERSION: zend_long = 84;
 const CURLOPT_IGNORE_CONTENT_LENGTH: zend_long = 136;
+const CURLOPT_INFILE: zend_long = 10009;
 const CURLOPT_INFILESIZE: zend_long = 14;
 const CURLOPT_INFILESIZE_LARGE: zend_long = 30115;
 const CURLOPT_INTERFACE: zend_long = 10062;
@@ -243,6 +261,7 @@ const CURLOPT_SASL_AUTHZID: zend_long = 10289;
 const CURLOPT_SASL_IR: zend_long = 218;
 const CURLOPT_SERVER_RESPONSE_TIMEOUT: zend_long = 112;
 const CURLOPT_SERVICE_NAME: zend_long = 10236;
+const CURLOPT_SHARE: zend_long = 10100;
 const CURLOPT_SOCKS5_AUTH: zend_long = 267;
 const CURLOPT_SOCKS5_GSSAPI_NEC: zend_long = 180;
 const CURLOPT_SOCKS5_GSSAPI_SERVICE: zend_long = 10179;
@@ -274,6 +293,7 @@ const CURLOPT_SSL_SIGNATURE_ALGORITHMS: zend_long = 10328;
 const CURLOPT_SSL_VERIFYHOST: zend_long = 81;
 const CURLOPT_SSL_VERIFYPEER: zend_long = 64;
 const CURLOPT_SSL_VERIFYSTATUS: zend_long = 232;
+const CURLOPT_STDERR: zend_long = 10037;
 const CURLOPT_STREAM_WEIGHT: zend_long = 239;
 const CURLOPT_SUPPRESS_CONNECT_HEADERS: zend_long = 265;
 const CURLOPT_TCP_FASTOPEN: zend_long = 244;
@@ -308,6 +328,7 @@ const CURLOPT_USERPWD: zend_long = 10005;
 const CURLOPT_USE_SSL: zend_long = 119;
 const CURLOPT_VERBOSE: zend_long = 41;
 const CURLOPT_WILDCARDMATCH: zend_long = 197;
+const CURLOPT_WRITEHEADER: zend_long = 10029;
 const CURLOPT_WS_OPTIONS: zend_long = 320;
 const CURLOPT_XOAUTH2_BEARER: zend_long = 10220;
 
@@ -344,6 +365,12 @@ enum Kind {
     ReturnTransfer,
     /// Any value, kept for `CURLINFO_PRIVATE`.
     Private,
+    /// A stream resource, or null to go back to the default: the body
+    /// (`CURLOPT_FILE`), the headers, the upload or libcurl's stderr. All but the
+    /// upload must be writable.
+    File,
+    /// A `CurlShareHandle`; anything else is ignored.
+    Share,
     /// Kept for compatibility; nothing is set.
     Ignored,
 }
@@ -376,6 +403,8 @@ fn kind(option: zend_long) -> Option<Kind> {
         CURLOPT_BINARYTRANSFER => Some(Kind::Ignored),
         CURLOPT_RETURNTRANSFER => Some(Kind::ReturnTransfer),
         CURLOPT_PRIVATE => Some(Kind::Private),
+        CURLOPT_FILE | CURLOPT_INFILE | CURLOPT_STDERR | CURLOPT_WRITEHEADER => Some(Kind::File),
+        CURLOPT_SHARE => Some(Kind::Share),
         CURLOPT_HTTP200ALIASES => Some(Kind::List(c"CURLOPT_HTTP200ALIASES")),
         CURLOPT_HTTPHEADER => Some(Kind::List(c"CURLOPT_HTTPHEADER")),
         CURLOPT_POSTQUOTE => Some(Kind::List(c"CURLOPT_POSTQUOTE")),
@@ -833,11 +862,54 @@ fn set(
             drop(previous);
             true
         }
+        Kind::File => set_file(call, handle, option, value),
+        Kind::Share => {
+            swoole_curl_set_share(handle, value);
+            swoole_curl_save_error(handle, 0);
+            true
+        }
         Kind::Ignored => {
             swoole_curl_save_error(handle, 0);
             true
         }
     }
+}
+
+/// A stream's `FILE *`, which the stream owns.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct StdioFile(std::ptr::NonNull<std::ffi::c_void>);
+
+/// The file-handle options. The handle keeps a reference to the stream it writes
+/// to or reads from.
+fn set_file(call: &Call<'_>, handle: PhpHandle<'_>, option: zend_long, value: &Value) -> bool {
+    let id = c_int::try_from(option).unwrap_or_default();
+    let file = if value.is_null() {
+        None
+    } else {
+        let (mut file, mut writable) = (None, false);
+        // Fetching the resource throws for anything but a stream, and the cast can warn.
+        bailout::defer(swoole_rs_zend::contain_with(|| {
+            file = swoole_curl_stream_file(value, &mut writable);
+        }));
+        let Some(file) = file else { return false };
+        if option != CURLOPT_INFILE && !writable {
+            value_error(call, "The provided file handle must be writable");
+            return false;
+        }
+        Some(file)
+    };
+    let kept = if file.is_some() {
+        value.copy()
+    } else {
+        swoole_rs_zend::Owned::default()
+    };
+    // The stream the handle kept before is released once the slot is no longer
+    // borrowed and the handle no longer uses its file.
+    let previous = std::mem::replace(swoole_curl_file_stream(handle, id), kept);
+    let set = swoole_curl_set_file(handle, id, file) == 0;
+    drop(previous);
+    set
 }
 
 /// A `curl_slist` being built, freed unless [`swoole_curl_setopt_list`] takes it.

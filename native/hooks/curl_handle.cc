@@ -292,6 +292,77 @@ extern "C" zval *swoole_curl_private(php_curl *ch) {
     return &ch->private_data;
 }
 
+/* The stream resource's FILE * and whether it was opened for writing, or null after the error. */
+extern "C" FILE *swoole_curl_stream_file(zval *value, bool *writable) {
+    php_stream *what =
+        (php_stream *) zend_fetch_resource2_ex(value, "File-Handle", php_file_le_stream(), php_file_le_pstream());
+    FILE *fp = NULL;
+    if (!what || php_stream_cast(what, PHP_STREAM_AS_STDIO, (void **) &fp, REPORT_ERRORS) == FAILURE) {
+        return NULL;
+    }
+    *writable = what->mode[0] != 'r' || what->mode[1] == '+';
+    return fp;
+}
+
+/* The stream a file-handle option keeps. */
+extern "C" zval *swoole_curl_file_stream(php_curl *ch, int option) {
+    switch (option) {
+    case CURLOPT_FILE:
+        return &ch->handlers.write->stream;
+    case CURLOPT_WRITEHEADER:
+        return &ch->handlers.write_header->stream;
+    case CURLOPT_INFILE:
+        return &ch->handlers.read->stream;
+    default:
+        return &ch->handlers.std_err;
+    }
+}
+
+/* Points the option's handler at fp, or back at its default when fp is null. Only CURLOPT_STDERR
+ * is a libcurl option; the others are read by the write, header and read callbacks. */
+extern "C" int swoole_curl_set_file(php_curl *ch, int option, FILE *fp) {
+    switch (option) {
+    case CURLOPT_FILE:
+        ch->handlers.write->fp = fp;
+        ch->handlers.write->method = fp ? PHP_CURL_FILE : PHP_CURL_STDOUT;
+        return ch->err.no = CURLE_OK;
+    case CURLOPT_WRITEHEADER:
+        ch->handlers.write_header->fp = fp;
+        ch->handlers.write_header->method = fp ? PHP_CURL_FILE : PHP_CURL_IGNORE;
+        return ch->err.no = CURLE_OK;
+    case CURLOPT_INFILE:
+        ch->handlers.read->fp = fp;
+        ch->handlers.read->res = fp ? Z_RES(ch->handlers.read->stream) : NULL;
+        return ch->err.no = CURLE_OK;
+    default:
+        return ch->err.no = curl_easy_setopt(ch->cp, CURLOPT_STDERR, fp);
+    }
+}
+
+/* CURLOPT_SHARE: sets and keeps a CurlShareHandle (or, on 8.5, a persistent one); any other
+ * value is ignored. */
+extern "C" void swoole_curl_set_share(php_curl *ch, zval *value) {
+    if (Z_TYPE_P(value) != IS_OBJECT) {
+        return;
+    }
+#if PHP_VERSION_ID >= 80500
+    if (Z_OBJCE_P(value) != curl_share_ce && Z_OBJCE_P(value) != curl_share_persistent_ce) {
+        return;
+    }
+#else
+    if (Z_OBJCE_P(value) != curl_share_ce) {
+        return;
+    }
+#endif
+    php_curlsh *sh = Z_CURL_SHARE_P(value);
+    curl_easy_setopt(ch->cp, CURLOPT_SHARE, sh->share);
+    if (ch->share) {
+        OBJ_RELEASE(&ch->share->std);
+    }
+    GC_ADDREF(&sh->std);
+    ch->share = sh;
+}
+
 /* PG(open_basedir) is set and not empty. */
 extern "C" bool swoole_curl_open_basedir() {
     return PG(open_basedir) && *PG(open_basedir);
