@@ -72,6 +72,8 @@
   "crates/phpruntime/src/lib.rs:zend_register_class_alias_ex": "phpruntime lib.rs mongodb: registers MongoDB\\Client only after checking that the alias is absent and the target class is already resolved; no autoload.",
   "crates/phpruntime/src/plain_files.rs:php_clear_stat_cache": "PHP's file-stat helper: frees this thread's cached stat and realpath entries; no callback.",
   "crates/phpruntime/src/plain_files.rs:swr_zend_try_error1": "shim_errors.c: SWR_ZEND_TRY encloses php_error_docref1, whose error handler may run PHP code.",
+  "crates/phpruntime/src/plain_files.rs:swr_zend_try_error2": "shim_errors.c: SWR_ZEND_TRY encloses php_error_docref2, whose error handler may run PHP code.",
+  "crates/phpruntime/src/plain_files.rs:swr_zend_try_copy_file": "shim_errors.c: SWR_ZEND_TRY encloses php_copy_file, whose stream wrappers and warnings may run PHP code.",
   "crates/phpruntime/src/plain_files.rs:swr_zend_try_open_basedir": "shim_errors.c: SWR_ZEND_TRY encloses php_check_open_basedir_ex, whose warning may run PHP code.",
   "crates/phpruntime/src/select.rs:swr_zend_runtime_select_args": "select.rs stream_select: contain_with encloses Zend parameter parsing and array separation.",
   "crates/phpruntime/src/select.rs:swr_zend_stream_zval_buffered": "shim_stream.c: obtains a stream without verification warnings and compares its buffer positions.",

@@ -103,7 +103,6 @@ static php_stream *_sw_php_stream_fopen_from_fd(int fd, const char *mode, const 
 #else
 static php_stream *_sw_php_stream_fopen_from_fd(int fd, const char *mode, const char *persistent_id STREAMS_DC);
 #endif
-static int sw_php_mkdir(const char *dir, zend_long mode);
 
 static int sw_php_stream_parse_fopen_modes(const char *mode, int *open_flags) {
     int flags;
@@ -1177,198 +1176,6 @@ static php_stream *php_plain_files_stream_opener(php_stream_wrapper *wrapper,
     return sw_php_stream_fopen_rel(path, mode, opened_path, options);
 }
 
-static int php_plain_files_rename(
-    php_stream_wrapper *wrapper, const char *url_from, const char *url_to, int options, php_stream_context *context) {
-    int ret;
-
-    if (!url_from || !url_to) {
-        return 0;
-    }
-
-#ifdef PHP_WIN32
-    if (!php_win32_check_trailing_space(url_from, (int) strlen(url_from))) {
-        php_win32_docref2_from_error(ERROR_INVALID_NAME, url_from, url_to);
-        return 0;
-    }
-    if (!php_win32_check_trailing_space(url_to, (int) strlen(url_to))) {
-        php_win32_docref2_from_error(ERROR_INVALID_NAME, url_from, url_to);
-        return 0;
-    }
-#endif
-
-    if (strncasecmp(url_from, "file://", sizeof("file://") - 1) == 0) {
-        url_from += sizeof("file://") - 1;
-    }
-
-    if (strncasecmp(url_to, "file://", sizeof("file://") - 1) == 0) {
-        url_to += sizeof("file://") - 1;
-    }
-
-    if (php_check_open_basedir(url_from) || php_check_open_basedir(url_to)) {
-        return 0;
-    }
-
-    ret = rename(url_from, url_to);
-
-    if (ret == -1) {
-#ifndef PHP_WIN32
-#ifdef EXDEV
-        if (errno == EXDEV) {
-            zend_stat_t sb;
-#if !defined(ZTS) && !defined(TSRM_WIN32)
-            /* not sure what to do in ZTS case, umask is not thread-safe */
-            int oldmask = umask(077);
-#endif
-            int success = 0;
-            if (php_copy_file(url_from, url_to) == SUCCESS) {
-                if (stat(url_from, &sb) == 0) {
-                    success = 1;
-#ifndef TSRM_WIN32
-                    /*
-                     * Try to set user and permission info on the target.
-                     * If we're not root, then some of these may fail.
-                     * We try chown first, to set proper group info, relying
-                     * on the system environment to have proper umask to not allow
-                     * access to the file in the meantime.
-                     */
-                    if (chown(url_to, sb.st_uid, sb.st_gid)) {
-                        php_error_docref2(NULL, url_from, url_to, E_WARNING, "%s", strerror(errno));
-                        if (errno != EPERM) {
-                            success = 0;
-                        }
-                    }
-
-                    if (success) {
-                        if (chmod(url_to, sb.st_mode)) {
-                            php_error_docref2(NULL, url_from, url_to, E_WARNING, "%s", strerror(errno));
-                            if (errno != EPERM) {
-                                success = 0;
-                            }
-                        }
-                    }
-#endif
-                    if (success) {
-                        unlink(url_from);
-                    }
-                } else {
-                    php_error_docref2(NULL, url_from, url_to, E_WARNING, "%s", strerror(errno));
-                }
-            } else {
-                php_error_docref2(NULL, url_from, url_to, E_WARNING, "%s", strerror(errno));
-            }
-#if !defined(ZTS) && !defined(TSRM_WIN32)
-            umask(oldmask);
-#endif
-            return success;
-        }
-#endif
-#endif
-
-#ifdef PHP_WIN32
-        php_win32_docref2_from_error(GetLastError(), url_from, url_to);
-#else
-        php_error_docref2(NULL, url_from, url_to, E_WARNING, "%s", strerror(errno));
-#endif
-        return 0;
-    }
-
-    /* Clear stat cache (and realpath cache) */
-    php_clear_stat_cache(1, NULL, 0);
-
-    return 1;
-}
-
-static int php_plain_files_mkdir(
-    php_stream_wrapper *wrapper, const char *dir, int mode, int options, php_stream_context *context) {
-    if (strncasecmp(dir, "file://", sizeof("file://") - 1) == 0) {
-        dir += sizeof("file://") - 1;
-    }
-
-    if (!(options & PHP_STREAM_MKDIR_RECURSIVE)) {
-        return sw_php_mkdir(dir, mode) == 0;
-    }
-
-    char buf[MAXPATHLEN];
-    if (!expand_filepath_with_mode(dir, buf, NULL, 0, CWD_EXPAND)) {
-        php_error_docref(NULL, E_WARNING, "Invalid path");
-        return 0;
-    }
-
-    if (php_check_open_basedir(buf)) {
-        return 0;
-    }
-
-    /* we look for directory separator from the end of string, thus hopefully reducing our work load */
-    char *p;
-    zend_stat_t sb;
-    size_t dir_len = strlen(dir), offset = 0;
-    char *e = buf + strlen(buf);
-
-    if ((p = (char *) memchr(buf, DEFAULT_SLASH, dir_len))) {
-        offset = p - buf + 1;
-    }
-
-    if (p && dir_len == 1) {
-        /* buf == "DEFAULT_SLASH" */
-    } else {
-        /* find a top level directory we need to create */
-        while ((p = strrchr(buf + offset, DEFAULT_SLASH)) || (offset != 1 && (p = strrchr(buf, DEFAULT_SLASH)))) {
-            int n = 0;
-
-            *p = '\0';
-            while (p > buf && *(p - 1) == DEFAULT_SLASH) {
-                ++n;
-                --p;
-                *p = '\0';
-            }
-            if (stat(buf, &sb) == 0) {
-                while (1) {
-                    *p = DEFAULT_SLASH;
-                    if (!n) break;
-                    --n;
-                    ++p;
-                }
-                break;
-            }
-        }
-    }
-
-    if (!p) {
-        p = buf;
-    }
-    while (true) {
-        int ret = mkdir(buf, (mode_t) mode);
-        if (ret < 0 && errno != EEXIST) {
-            if (options & REPORT_ERRORS) {
-                php_error_docref(NULL, E_WARNING, "%s", strerror(errno));
-            }
-            return 0;
-        }
-
-        bool replaced_slash = false;
-        while (++p != e) {
-            if (*p == '\0') {
-                replaced_slash = true;
-                *p = DEFAULT_SLASH;
-                if (*(p + 1) != '\0') {
-                    break;
-                }
-            }
-        }
-        if (p == e || !replaced_slash) {
-            /* No more directories to create */
-            /* issue a warning to client when the last directory was created failed */
-            if (ret < 0) {
-                if (options & REPORT_ERRORS) {
-                    php_error_docref(NULL, E_WARNING, "%s", strerror(errno));
-                }
-                return 0;
-            }
-            return 1;
-        }
-    }
-}
-
 static int php_plain_files_metadata(
     php_stream_wrapper *wrapper, const char *url, int option, void *value, php_stream_context *context) {
     struct utimbuf *newtime;
@@ -1458,8 +1265,8 @@ static php_stream_wrapper_ops sw_php_plain_files_wrapper_ops = {
     php_plain_files_dir_opener,
     "plainfile/coroutine",
     swr_v1_phpruntime_plain_unlink,
-    php_plain_files_rename,
-    php_plain_files_mkdir,
+    swr_v1_phpruntime_plain_rename,
+    swr_v1_phpruntime_plain_mkdir,
     swr_v1_phpruntime_plain_rmdir,
     php_plain_files_metadata
 };
@@ -1504,20 +1311,6 @@ static void php_stream_mode_sanitize_fdopen_fopencookie(php_stream *stream, char
         result[res_curs++] = '+';
     }
     result[res_curs] = '\0';
-}
-
-static int sw_php_mkdir(const char *dir, zend_long mode) {
-    int ret;
-
-    if (php_check_open_basedir(dir)) {
-        return -1;
-    }
-
-    if ((ret = mkdir(dir, (mode_t) mode)) < 0) {
-        php_error_docref(NULL, E_WARNING, "%s", strerror(errno));
-    }
-
-    return ret;
 }
 
 void php_swoole_runtime_rinit(void) {

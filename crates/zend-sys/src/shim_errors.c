@@ -2,6 +2,7 @@
  * handler) and variadic (php_error_docref and zend_error). */
 #include "shim.h"
 #include "shim_errors.h"
+#include "ext/standard/file.h"
 
 /* Run `statement` inside SWR_ZEND_TRY; 1 if it bailed out. */
 #define SWR_TRAP(statement)                                                                \
@@ -25,6 +26,15 @@ int swr_zend_try_zend_error(int level, const char *message) {
 
 int swr_zend_try_error1(const char *param, int level, const char *message) {
     SWR_TRAP(php_error_docref1(NULL, param, level, "%s", message));
+}
+
+int swr_zend_try_error2(const char *param1, const char *param2, int level, const char *message) {
+    SWR_TRAP(php_error_docref2(NULL, param1, param2, level, "%s", message));
+}
+
+int swr_zend_try_copy_file(const char *source, const char *target, bool *copied) {
+    *copied = false;
+    SWR_TRAP(*copied = php_copy_file(source, target) == SUCCESS);
 }
 
 int swr_zend_try_open_basedir(const char *path, int warn, bool *refused) {

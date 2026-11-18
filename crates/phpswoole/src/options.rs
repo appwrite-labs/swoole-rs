@@ -121,11 +121,6 @@ fn text_option(options: &Array, key: &CStr, set: impl FnOnce(&ZStr)) {
     }
 }
 
-/// C's implicit `zend_long` to `int` conversion.
-fn int(value: i64) -> c_int {
-    value.c_cast::<c_int>()
-}
-
 /// `SW_ERROR_OPERATION_NOT_SUPPORT`.
 const OPERATION_NOT_SUPPORT: i64 =
     swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as i64;
@@ -159,7 +154,9 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
     // [Logger]: the process logger, live from MINIT on.
     number(c"trace_flags", &|flags| swr_v1_core_set_trace_flags(flags));
     text_option(options, c"log_file", |file| set_log_file(file.c_str()));
-    number(c"log_level", &|level| swoole_set_log_level(int(level)));
+    number(c"log_level", &|level| {
+        swoole_set_log_level(level.c_cast::<c_int>());
+    });
     text_option(options, c"log_date_format", |format| {
         if let Some(logger) = process_logger() {
             logger.set_date_format(format.c_str());
@@ -172,7 +169,7 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
     });
     number(c"log_rotation", &|rotation| {
         if let Some(logger) = process_logger() {
-            logger.set_rotation(int(rotation));
+            logger.set_rotation(rotation.c_cast::<c_int>());
         }
     });
     if let Some(value) = get(options, c"display_errors") {

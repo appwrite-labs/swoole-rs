@@ -1,22 +1,53 @@
 //! The coroutine plain-files wrapper's path operations: `php_plain_files_url_stater`,
-//! `php_plain_files_unlink` and `php_plain_files_rmdir` of upstream's copy of PHP's
+//! `php_plain_files_unlink`, `php_plain_files_rename`, `php_plain_files_mkdir` and
+//! `php_plain_files_rmdir` of upstream's copy of PHP's
 //! plain-files wrapper (`thirdparty/php/streams/plain_wrapper.c`), whose wrapper
 //! table names them. A warning runs the user error handler, so each traps a bailout
 //! and raises it last.
 use crate::stream::raise;
-use libc::c_int;
+use libc::{c_char, c_int, gid_t, mode_t, uid_t};
 use std::ffi::{CStr, CString, c_void};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::{Text, errno, strerror};
-use swoole_rs_hooks::stdio::{swoole_coroutine_rmdir, swoole_coroutine_unlink};
+use swoole_rs_hooks::stdio::{
+    swoole_coroutine_mkdir, swoole_coroutine_rename, swoole_coroutine_rmdir,
+    swoole_coroutine_unlink,
+};
 use swoole_rs_zend::{
-    E_WARNING,
+    E_WARNING, ZTS,
     bailout::{self, Bailout},
+    report,
 };
 
 unsafe extern "C" {
     /// `stat(2)` and `lstat(2)`, which upstream's wrapper leaves blocking.
     safe fn stat(path: Text<'_>, status: &mut libc::stat) -> c_int;
     safe fn lstat(path: Text<'_>, status: &mut libc::stat) -> c_int;
+    /// `chown(2)`, `chmod(2)` and `umask(2)`.
+    safe fn chown(path: Text<'_>, owner: uid_t, group: gid_t) -> c_int;
+    safe fn chmod(path: Text<'_>, mode: mode_t) -> c_int;
+    safe fn umask(mask: mode_t) -> mode_t;
+    /// `expand_filepath_with_mode(path, real_path, NULL, 0, use_realpath)`: the
+    /// absolute form of `path` in `real_path`, a `MAXPATHLEN` buffer, or null. It
+    /// reads this thread's working directory and runs no PHP code.
+    safe fn expand_filepath_with_mode(
+        path: Text<'_>,
+        real_path: &mut [u8; MAXPATHLEN],
+        relative_to: Option<Text<'_>>,
+        relative_to_len: usize,
+        use_realpath: c_int,
+    ) -> *mut c_char;
+    /// `php_error_docref2(NULL, param1, param2, level, "%s", message)` inside
+    /// `zend_try`. 1 if it bailed out.
+    safe fn swr_zend_try_error2(
+        param1: Text<'_>,
+        param2: Text<'_>,
+        level: c_int,
+        message: Text<'_>,
+    ) -> c_int;
+    /// `php_copy_file(source, target)` into `copied`, inside `zend_try`: it opens
+    /// both through their stream wrappers, which may warn. 1 if it bailed out.
+    safe fn swr_zend_try_copy_file(source: Text<'_>, target: Text<'_>, copied: &mut bool) -> c_int;
     /// `php_clear_stat_cache`: this PHP thread's stat cache, and with
     /// `clear_realpath_cache` its realpath cache. It runs no PHP code.
     safe fn php_clear_stat_cache(
@@ -37,6 +68,10 @@ const STAT_LINK: c_int = 1;
 const STAT_QUIET: c_int = 2;
 const STAT_IGNORE_OPEN_BASEDIR: c_int = 4;
 const REPORT_ERRORS: c_int = 8;
+/// `PHP_STREAM_MKDIR_RECURSIVE`, `CWD_EXPAND` and `MAXPATHLEN`.
+const MKDIR_RECURSIVE: c_int = 1;
+const CWD_EXPAND: c_int = 0;
+const MAXPATHLEN: usize = libc::PATH_MAX.unsigned_abs() as usize;
 
 /// `url` past a leading `file://`, which upstream finds with `strncasecmp`.
 fn local(url: &CStr) -> &CStr {
@@ -117,6 +152,203 @@ fn rmdir(url: &CStr) -> Result<c_int, Bailout> {
     Ok(1)
 }
 
+/// `php_error_docref2(NULL, from, to, E_WARNING, "%s", strerror(code))`.
+fn warn2(from: &CStr, to: &CStr, code: c_int) -> Result<(), Bailout> {
+    let reason = CString::new(strerror(code)).unwrap_or_default();
+    bailout::trapped(swr_zend_try_error2(
+        from.into(),
+        to.into(),
+        E_WARNING,
+        reason.as_c_str().into(),
+    ))
+}
+
+/// `php_error_docref(NULL, E_WARNING, "%s", strerror(code))`.
+fn warn_code(code: c_int) -> Result<(), Bailout> {
+    report(E_WARNING, &CString::new(strerror(code)).unwrap_or_default())
+}
+
+/// `php_plain_files_rename`: 1 once `to` names what `from` did, else 0.
+fn rename(from: Option<&CStr>, to: Option<&CStr>) -> Result<c_int, Bailout> {
+    let (Some(from), Some(to)) = (from, to) else {
+        return Ok(0);
+    };
+    let (from, to) = (local(from), local(to));
+    if refused(from, true)? || refused(to, true)? {
+        return Ok(0);
+    }
+    if swoole_coroutine_rename(from.into(), to.into()) == -1 {
+        let code = errno();
+        if code == libc::EXDEV {
+            // The umask is the process's: upstream leaves it alone under ZTS.
+            let mask = (!ZTS).then(|| umask(0o077));
+            let moved = copy_across(from, to);
+            if let Some(mask) = mask {
+                umask(mask);
+            }
+            return moved;
+        }
+        warn2(from, to, code)?;
+        return Ok(0);
+    }
+    php_clear_stat_cache(true, None, 0);
+    Ok(1)
+}
+
+/// A rename across filesystems: copy, give the copy the source's owner and mode
+/// (which may fail with `EPERM` for anyone but root), then unlink the source.
+fn copy_across(from: &CStr, to: &CStr) -> Result<c_int, Bailout> {
+    let mut copied = false;
+    bailout::trapped(swr_zend_try_copy_file(from.into(), to.into(), &mut copied))?;
+    let Some(source) = copied
+        .then(|| swoole_rs_corebase::sys::stat(from))
+        .flatten()
+    else {
+        warn2(from, to, errno())?;
+        return Ok(0);
+    };
+    // The group first, so the environment's umask covers the file meanwhile.
+    let mut moved = true;
+    if chown(to.into(), source.st_uid, source.st_gid) != 0 {
+        let code = errno();
+        warn2(from, to, code)?;
+        moved = code == libc::EPERM;
+    }
+    if moved && chmod(to.into(), source.st_mode) != 0 {
+        let code = errno();
+        warn2(from, to, code)?;
+        moved = code == libc::EPERM;
+    }
+    if moved {
+        swoole_coroutine_unlink(from.into());
+    }
+    Ok(moved.into())
+}
+
+/// The C string `bytes` holds: up to its first NUL.
+fn text(bytes: &[u8]) -> CString {
+    let end = bytes.iter().position(|&byte| byte == 0);
+    CString::new(bytes.get(..end.unwrap_or(bytes.len())).unwrap_or_default()).unwrap_or_default()
+}
+
+/// `strrchr(path + from, '/')`: the last slash of the C string that starts at `from`.
+fn last_slash(path: &[u8], from: usize) -> Option<usize> {
+    let rest = path.get(from..)?;
+    let end = rest
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(rest.len());
+    let at = rest.get(..end)?.iter().rposition(|&byte| byte == b'/')?;
+    Some(from + at)
+}
+
+/// The byte at `at`, or the NUL that ends the path.
+fn byte(path: &[u8], at: usize) -> u8 {
+    path.get(at).copied().unwrap_or(0)
+}
+
+/// Writes `value` at `at`, which is inside the path.
+fn put(path: &mut [u8], at: usize, value: u8) {
+    if let Some(slot) = path.get_mut(at) {
+        *slot = value;
+    }
+}
+
+/// `php_plain_files_mkdir`: 1 once the directory exists, else 0.
+fn mkdir(dir: &CStr, mode: c_int, options: c_int) -> Result<c_int, Bailout> {
+    let dir = local(dir);
+    let mode = mode.c_cast::<mode_t>();
+    if options & MKDIR_RECURSIVE == 0 {
+        // `php_mkdir`: it warns whatever the options.
+        if refused(dir, true)? {
+            return Ok(0);
+        }
+        if swoole_coroutine_mkdir(dir.into(), mode) < 0 {
+            warn_code(errno())?;
+            return Ok(0);
+        }
+        return Ok(1);
+    }
+    let mut expanded = [0; MAXPATHLEN];
+    if expand_filepath_with_mode(dir.into(), &mut expanded, None, 0, CWD_EXPAND).is_null() {
+        report(E_WARNING, c"Invalid path")?;
+        return Ok(0);
+    }
+    // The path's bytes; a NUL written into them below ends the prefix being tried.
+    let mut path = text(&expanded).into_bytes();
+    if refused(&text(&path), true)? {
+        return Ok(0);
+    }
+    let (dir_len, end) = (dir.to_bytes().len(), path.len());
+    // Upstream looks for the directory separator from the end, to save work.
+    let mut at = path.iter().take(dir_len).position(|&byte| byte == b'/');
+    let offset = at.map_or(0, |slash| slash + 1);
+    if !(at.is_some() && dir_len == 1) {
+        // Find the top-level directory to create: cut the path at each slash from
+        // the end until what is left exists.
+        loop {
+            at = last_slash(&path, offset)
+                .or_else(|| (offset != 1).then(|| last_slash(&path, 0)).flatten());
+            let Some(mut slash) = at else { break };
+            let mut extra = 0;
+            put(&mut path, slash, 0);
+            while slash > 0 && byte(&path, slash - 1) == b'/' {
+                extra += 1;
+                slash -= 1;
+                put(&mut path, slash, 0);
+            }
+            if swoole_rs_corebase::sys::stat(&text(&path)).is_some() {
+                loop {
+                    put(&mut path, slash, b'/');
+                    if extra == 0 {
+                        break;
+                    }
+                    extra -= 1;
+                    slash += 1;
+                }
+                at = Some(slash);
+                break;
+            }
+        }
+    }
+    let mut at = at.unwrap_or(0);
+    loop {
+        let made = swoole_coroutine_mkdir(text(&path).as_c_str().into(), mode) >= 0;
+        let code = errno();
+        if !made && code != libc::EEXIST {
+            if options & REPORT_ERRORS != 0 {
+                warn_code(code)?;
+            }
+            return Ok(0);
+        }
+        // Put back the next slash that was cut, and with it the next directory.
+        let mut restored = false;
+        loop {
+            at += 1;
+            if at >= end {
+                break;
+            }
+            if byte(&path, at) == 0 {
+                restored = true;
+                put(&mut path, at, b'/');
+                if byte(&path, at + 1) != 0 {
+                    break;
+                }
+            }
+        }
+        if at >= end || !restored {
+            // No directory is left; the last one existing already is the failure.
+            if !made {
+                if options & REPORT_ERRORS != 0 {
+                    warn_code(code)?;
+                }
+                return Ok(0);
+            }
+            return Ok(1);
+        }
+    }
+}
+
 swoole_rs_zend::exports! {
 /// The wrapper's `url_stat`: `ssb` is a `php_stream_statbuf`, whose one member is the
 /// `zend_stat_t` (`struct stat`) written here.
@@ -142,6 +374,30 @@ extern "C" fn swr_v1_phpruntime_plain_unlink(
     raise(unlink(url.get(), options), 0)
 }
 
+/// The wrapper's `rename`.
+#[unsafe(no_mangle)]
+extern "C" fn swr_v1_phpruntime_plain_rename(
+    _wrapper: *mut c_void,
+    from: Option<Text<'_>>,
+    to: Option<Text<'_>>,
+    _options: c_int,
+    _context: *mut c_void,
+) -> c_int {
+    raise(rename(from.map(Text::get), to.map(Text::get)), 0)
+}
+
+/// The wrapper's `mkdir`.
+#[unsafe(no_mangle)]
+extern "C" fn swr_v1_phpruntime_plain_mkdir(
+    _wrapper: *mut c_void,
+    dir: Text<'_>,
+    mode: c_int,
+    options: c_int,
+    _context: *mut c_void,
+) -> c_int {
+    raise(mkdir(dir.get(), mode, options), 0)
+}
+
 /// The wrapper's `rmdir`.
 #[unsafe(no_mangle)]
 extern "C" fn swr_v1_phpruntime_plain_rmdir(
@@ -165,5 +421,21 @@ mod tests {
         assert_eq!(local(c"file://"), c"");
         assert_eq!(local(c"/tmp/file://a"), c"/tmp/file://a");
         assert_eq!(local(c"file:/"), c"file:/");
+    }
+
+    #[test]
+    fn a_cut_path_reads_as_c_does() {
+        use super::{last_slash, text};
+        let mut path = b"/a/b//c".to_vec();
+        assert_eq!(last_slash(&path, 1), Some(5));
+        path[5] = 0;
+        path[4] = 0;
+        assert_eq!(text(&path).as_bytes(), b"/a/b");
+        assert_eq!(last_slash(&path, 1), Some(2));
+        // From past the cut, the string is what follows it.
+        assert_eq!(last_slash(&path, 6), None);
+        assert_eq!(last_slash(b"/a", 1), None);
+        assert_eq!(last_slash(b"/a", 0), Some(0));
+        assert_eq!(last_slash(b"", 1), None);
     }
 }
