@@ -40,11 +40,10 @@ What is done:
   of shims under `crates/`, nearly all in `crates/zend-sys` over the parts of PHP's C API
   that Rust can't call ([what stays C](docs/zend.md#what-stays-c)), and 225 lines in
   `native/`. TLS is OpenSSL, as it is upstream.
-- **The v6.2.6 test inventory contains 1,897 original PHPTs.** CI runs the same
-  assertions against both builds. The remaining compatibility fixes are tracked in
-  [the v6.2.6 migration](https://github.com/appwrite-labs/swoole-rs/issues/4926).
-  The last v6.2.5 comparison is shown [below](#compared-with-upstream-swoole).
-- **On v6.2.5, the Rust build used fewer instructions on all 34 benchmark workloads.**
+- **The v6.2.6 inventory contains 1,897 original PHPTs.** Across the merge-tier
+  configurations, 1,775 of 1,842 applicable tests passed on the Rust build and
+  1,771 passed on upstream. [CI run and artifacts](https://github.com/appwrite-labs/swoole-rs/actions/runs/44227178353).
+- **On v6.2.6, the Rust build used fewer instructions on all 34 benchmark workloads.**
   See [the comparison](#compared-with-upstream-swoole).
 
 What is not:
@@ -146,17 +145,15 @@ Optional parts are build switches. Each of upstream's `configure` switches goes 
 | Language | C and C++ | Rust, plus the 42,000 lines of C and C++ that upstream bundles |
 | Build | `phpize`, `configure`, `make` | Cargo, through `tools/build_ext.py` |
 | PHP API | the reference | the same, generated from upstream's stubs (`tools/arginfo.py`) |
-| v6.2.5 PHPTs passing, of 1,811 | 1,742 | 1,746 |
-| Instructions per request (v6.2.5) | 1.00× | 0.85× geometric mean over 34 workloads |
+| v6.2.6 PHPTs passing, of 1,842 applicable | 1,771 | 1,775 |
+| Instructions per request (v6.2.6) | 1.00× | 0.85× geometric mean over 34 workloads |
 | Releases and packages | yes | prebuilt Linux binaries, as pre-releases; no packages |
 | Production use | years | none |
 
 **Speed.** The merge tier counts instructions per request under Callgrind on 34 workloads
 and fails a change that raises one more than 2% above its record
 ([results](https://github.com/appwrite-labs/swoole-rs/blob/badges/speed.md)). The largest
-gains are uploads (0.31×), EOF-framed TCP (0.50×) and 64 KiB WebSocket frames (0.56×). Plain
-HTTP is 0.90×. The closest are gzip, compressed WebSocket and DNS at 0.98×, and HTTPS at
-0.97×: they spend their time in zlib, the resolver and OpenSSL, which both builds share.
+gains are uploads (0.31×), EOF-framed TCP (0.51×) and 64 KiB WebSocket frames (0.56×). DNS, compressed WebSocket and gzip were closest to upstream at 0.99×.
 These are instruction counts, not requests per second. The one wall-clock comparison so
 far, Appwrite's endpoints in October on an earlier build, was within 1% of upstream.
 
@@ -184,8 +181,8 @@ PHP 8.2 to 8.5 on Linux, named
   images have them.
 
 ```sh
-file=swoole-rs-v0.1.1-php8.3-nts-linux-gnu-x86_64.so
-url=https://github.com/appwrite-labs/swoole-rs/releases/download/v0.1.1
+file=swoole-rs-v0.1.2-php8.3-nts-linux-gnu-x86_64.so
+url=https://github.com/appwrite-labs/swoole-rs/releases/download/v0.1.2
 curl -fsSL -O "$url/$file" -O "$url/SHA256SUMS"
 grep " $file\$" SHA256SUMS | sha256sum -c -
 cp "$file" "$(php -r 'echo ini_get("extension_dir");')/swoole.so"
@@ -193,8 +190,8 @@ echo extension=swoole > "$(php --ini | sed -n 's/^Scan for additional .ini files
 php --ri swoole
 ```
 
-For the v0.1.1 binary above, the last command prints `Version => 6.2.5`, the upstream version it stands in
-for, and `swoole-rs => 0.1.1 (<commit>)`. `gh attestation verify "$file" --repo
+For the v0.1.2 binary above, the last command prints `Version => 6.2.6`, the upstream version it stands in
+for, and `swoole-rs => 0.1.2 (<commit>)`. `gh attestation verify "$file" --repo
 appwrite-labs/swoole-rs` checks that the file was built by this repository's release
 workflow.
 
