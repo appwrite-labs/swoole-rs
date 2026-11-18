@@ -9,8 +9,7 @@
 //! crates: the Rust `System` operations under their upstream
 //! symbols, and `swr_v1_system_*` and `swr_v1_hook_socket_poll` where upstream's
 //! signature carries C++ library types. The binary also runs coroutine/base.cpp
-//! and file.cpp (tests/modules/coroutine/base.rs); ../fixture.cc gives the C++ record
-//! layouts process_pool.rs checks its mirrors against.
+//! and file.cpp (tests/modules/coroutine/base.rs).
 //!
 //! `main --list` prints the cases; `main NAME` runs one, in this process, as
 //! core-tests' main does (`swoole_init`, the case, `swoole_clean`). It exits 0 when
@@ -868,9 +867,6 @@ fn main() {
     swoole_init();
     if suite == "coroutine_hook" {
         hook::prepare();
-    }
-    if suite == "process_pool" {
-        process_pool::check_layout();
     }
     body();
     swoole_rs_corebase::swoole_clean();

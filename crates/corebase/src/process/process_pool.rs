@@ -1,7 +1,7 @@
 //! `ProcessPool`'s lifecycle (once `src/os/process_pool.cc`): create, start, spawn,
 //! stop, detach, reload, the manager's wait and shutdown, destroy and the
 //! worker-side entry into the loops of [`crate::process::pool`]. Rust reads and writes
-//! the pool's fields through [`PoolRecord`] (the C++ layout mirror follows it).
+//! the pool's fields through [`PoolRecord`].
 //! The pool owns its registry, IPC, reload, pipes and message bus; the native
 //! owners are type-erased to avoid a dependency cycle. `crates/server/src/pool_native.rs`
 //! constructs them and supplies the effects and callbacks through [`PoolNative`].
@@ -38,13 +38,10 @@ type Pipes = Vec<Box<dyn std::any::Any>>;
 /// to one operation at a time by taking it out ([`BoxCellExt::with_box`]).
 type Owner<T> = core::cell::Cell<Option<Box<T>>>;
 
-/// `swoole::ProcessPool`'s fields, in order. Rust owns this layout; the C++ view
-/// takes its fields from here (`SWR_POOL_RECORD_FIELDS`, `tools/process_records.py`).
+/// The process pool's shared state.
 /// Every field but the three owners the record lends in place (`registry`, `queue`
 /// and `message_box`) is a cell or an atomic, so a handle writes it through
 /// `&PoolRecord` while other loans of the record are live.
-// `repr(C)`: `native/process/swoole_rs_process_views.h` mirrors it for the system fixture.
-#[repr(C)]
 pub struct PoolRecord {
     pub running: Cell<bool>,
     pub reload_init: Cell<bool>,
@@ -2526,7 +2523,6 @@ mod owner_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::mem::offset_of;
 
     #[test]
     fn worker_can_take_the_receive_allocation_once() {
@@ -2568,23 +2564,6 @@ mod tests {
     fn a_message_queue_ignores_the_packet_size() {
         assert_eq!(packet_limit(true, 1), SW_MSGMAX);
         assert_eq!(packet_limit(false, 1), 1);
-    }
-
-    #[test]
-    fn the_record_has_process_pools_layout() {
-        assert_eq!(offset_of!(PoolRecord, protocol_type), 8);
-        assert_eq!(offset_of!(PoolRecord, reload_count), 24);
-        assert_eq!(offset_of!(PoolRecord, kind), 40);
-        assert_eq!(offset_of!(PoolRecord, start_id), 42);
-        assert_eq!(offset_of!(PoolRecord, max_packet_size), 48);
-        assert_eq!(offset_of!(PoolRecord, warning_time), 72);
-        assert_eq!(offset_of!(PoolRecord, on_start), 80);
-        assert_eq!(offset_of!(PoolRecord, round_id), 184);
-        assert_eq!(offset_of!(PoolRecord, workers), 192);
-        assert_eq!(offset_of!(PoolRecord, ptr), 256);
-        assert_eq!(offset_of!(PoolRecord, kill_timer), 264);
-        assert_eq!(offset_of!(PoolRecord, ptr_key), 288);
-        assert_eq!(size_of::<PoolRecord>(), 296);
     }
 
     /// A scripted op's pointer answer.
