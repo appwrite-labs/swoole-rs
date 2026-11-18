@@ -210,6 +210,18 @@ pub fn current_cid() -> c_long {
     Co::current(Sched::this()).map_or(-1, |co| co.with(|co| co.cid))
 }
 
+/// Milliseconds since creation, or -1 when the requested coroutine is absent.
+#[must_use]
+pub fn elapsed(cid: c_long) -> c_long {
+    with_scheduler(|s| s.started_msec(cid)).map_or(-1, |start| super::steady_usec() / 1000 - start)
+}
+
+/// Execution time in microseconds, or -1 outside a coroutine.
+#[must_use]
+pub fn current_execute_time() -> c_long {
+    Co::current(Sched::this()).map_or(-1, |co| co.with(|co| co.execute_usec(super::steady_usec())))
+}
+
 /// How the running coroutine's last yield ended,
 /// which its last yield returned with; `None` outside a coroutine.
 #[must_use]

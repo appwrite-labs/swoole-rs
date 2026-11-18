@@ -204,23 +204,6 @@ pub(crate) fn task_by_cid(cid: c_long) -> Option<Ctx> {
     by_cid(cid)?.task()
 }
 
-/// The coroutine `cid`, or the running one for 0.
-fn running_or(cid: c_long) -> Option<Co> {
-    if cid == 0 { current() } else { by_cid(cid) }
-}
-
-/// `Coroutine::get_elapsed`.
-pub(crate) fn elapsed(cid: c_long) -> c_long {
-    running_or(cid).map_or(-1, |co| {
-        absolute_msec() - co.read(|native| native.co.init_msec)
-    })
-}
-
-/// `Coroutine::get_execute_time`.
-pub(crate) fn execute_time(cid: c_long) -> c_long {
-    running_or(cid).map_or(-1, |co| co.read(|native| native.co.execute_usec(now_us())))
-}
-
 /// The live coroutines' ids, newest first, up to `cids.len()`; how many.
 pub(crate) fn list(cids: &mut [c_long]) -> usize {
     let mut before = c_long::MAX;
@@ -635,20 +618,7 @@ fn run_hooks(hooks: &[swoole_rs_corebase::hook::HookFn], ctx: Ctx) -> Result<(),
     Ok(())
 }
 
-/// `swoole::time<std::chrono::microseconds>(true)`: the steady clock.
-pub(crate) fn now_us() -> c_long {
-    #[cfg(target_vendor = "apple")]
-    let clock = libc::CLOCK_UPTIME_RAW;
-    #[cfg(not(target_vendor = "apple"))]
-    let clock = libc::CLOCK_MONOTONIC;
-    swoole_rs_corebase::sys::clock_gettime(clock)
-        .map_or(0, |now| now.tv_sec * 1_000_000 + now.tv_nsec / 1000)
-}
-
-/// `Timer::get_absolute_msec()`.
-pub(crate) fn absolute_msec() -> c_long {
-    now_us() / 1000
-}
+pub(crate) use swoole_rs_corebase::{coroutine::steady_usec as now_us, timer::absolute_msec};
 
 /// `swoole_event_defer` of `value`.
 pub(crate) fn defer(value: impl swoole_rs_corebase::reactor::event_api::Deferred) {

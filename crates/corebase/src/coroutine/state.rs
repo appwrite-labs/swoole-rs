@@ -183,6 +183,16 @@ pub const ON_RESUME: u32 = 1;
 pub const ON_CLOSE: u32 = 2;
 
 impl Scheduler {
+    /// Start time of the requested coroutine, or the current one for id zero.
+    pub(crate) fn started_msec(&self, cid: c_long) -> Option<c_long> {
+        let co = if cid == 0 {
+            Co::link(self.current)
+        } else {
+            self.live_co(cid)
+        }?;
+        Some(co.with(|co| co.init_msec))
+    }
+
     /// Takes the next id, seeds `co` (a fresh, idle record that `native` embeds) and
     /// makes it live.
     /// Returns whether the scheduler needs activating.
@@ -786,6 +796,12 @@ pub(crate) mod tests {
                 ((*b).cid, (*b).state, (*b).init_msec, (*b).switch_usec),
                 (2, State::Init, 5, 9)
             );
+            assert_eq!(s.started_msec(2), Some(5), "registered id");
+            assert_eq!(s.started_msec(3), None, "absent id");
+            assert_eq!(s.started_msec(0), None, "outside a coroutine");
+            s.current = b;
+            assert_eq!(s.started_msec(0), Some(5), "running coroutine");
+            s.current = ptr::null_mut();
             s.remove(1);
             s.remove(2);
             assert!(!s.register(co(c), ptr::null_mut(), 0, 0));
