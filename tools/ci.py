@@ -555,18 +555,32 @@ PULLS_QUERY = '''query($owner: String!, $repo: String!) { repository(owner: $own
 PR_WORKFLOW = 'PR'
 
 
+def check_nodes(connection):
+    """A null connection is unknown; an empty nodes list is known to be empty."""
+    if connection is None or connection['nodes'] is None:
+        return [None]
+    return connection['nodes']
+
+
 def blocked(pull):
-    """What keeps an auto-merge PR from merging by itself: conflicts with main, a failed required
-    check on its head, a review requesting changes, or a finished PR-tier run that never created one."""
-    suites = [suite for commit in pull['commits']['nodes'] for suite in commit['commit']['checkSuites']['nodes']]
-    required = [run['conclusion'] for suite in suites for run in suite['checkRuns']['nodes']]
+    """Known blockers, or a passed PR nobody has queued."""
+    suites = [suite for node in check_nodes(pull['commits'])
+              for suite in check_nodes(((node or {}).get('commit') or {}).get('checkSuites'))]
+    required = [(run or {}).get('conclusion') for suite in suites
+                for run in check_nodes((suite or {}).get('checkRuns'))]
+    failed = any(c in ('FAILURE', 'TIMED_OUT', 'CANCELLED') for c in required)
+    if not pull['autoMergeRequest']:
+        if (not pull['isDraft'] and not pull['isInMergeQueue'] and pull['mergeable'] != 'CONFLICTING'
+                and 'SUCCESS' in required and None not in required and not failed):
+            return ['passed, not on auto-merge']
+        return []
     blocking = (['conflicts'] if pull['mergeable'] == 'CONFLICTING' else []) + (
-        [REQUIRED] if any(conclusion in ('FAILURE', 'TIMED_OUT', 'CANCELLED') for conclusion in required) else []) + (
+        [REQUIRED] if failed else []) + (
         ['changes requested'] if pull.get('reviewDecision') == 'CHANGES_REQUESTED' else [])
     # A PR-tier run GitHub abandoned finishes without creating its jobs, `required` among them,
     # so nothing fails and the PR waits forever; re-running it is the fix.
     pr_tier = [suite['status'] for suite in suites
-               if ((suite['workflowRun'] or {}).get('workflow') or {}).get('name') == PR_WORKFLOW]
+               if suite and ((suite['workflowRun'] or {}).get('workflow') or {}).get('name') == PR_WORKFLOW]
     if not blocking and not required and pr_tier and all(status == 'COMPLETED' for status in pr_tier):
         blocking = ['no required check']
     return blocking
@@ -579,30 +593,16 @@ def dequeued(pull):
             and [event['__typename'] for event in pull['timelineItems']['nodes']] == ['RemovedFromMergeQueueEvent'])
 
 
-def passed(pull):
-    """Whether a ready PR's `required` check passed but nothing will merge it: its author never ran
-    `gh pr merge --auto --squash`. A draft is how a PR is held back on purpose."""
-    required = [run['conclusion'] for commit in pull['commits']['nodes']
-                for suite in commit['commit']['checkSuites']['nodes'] for run in suite['checkRuns']['nodes']]
-    return (not (pull['isDraft'] or pull['isInMergeQueue'] or pull['autoMergeRequest'])
-            and pull['mergeable'] != 'CONFLICTING' and 'SUCCESS' in required
-            and not any(conclusion in ('FAILURE', 'TIMED_OUT', 'CANCELLED') for conclusion in required))
-
-
 def stuck():
     """Open PRs that won't merge by themselves: auto-merge ones that are blocked, and those the
     merge queue dropped, with the reason GitHub gives and their group's merge-tier run. Oldest
     first, each with what blocks it."""
     rows = []
     for pull in graphql(PULLS_QUERY)[0]['pullRequests']['nodes']:
-        if pull['autoMergeRequest']:
-            blocking = blocked(pull)
-        elif dequeued(pull):
+        if dequeued(pull):
             blocking = ['left the merge queue: ' + (pull['timelineItems']['nodes'][0].get('reason') or 'no reason given')]
-        elif passed(pull):
-            blocking = ['passed, not on auto-merge']
         else:
-            continue
+            blocking = blocked(pull)
         if blocking:
             rows.append({'number': pull['number'], 'title': pull['title'], 'created': pull['createdAt'],
                          'blocking': blocking, 'dequeued': dequeued(pull)})

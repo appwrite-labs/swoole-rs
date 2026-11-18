@@ -314,11 +314,15 @@ class Ci(unittest.TestCase):
                  pull(5, '2026-10-02T00:00:00Z', 'MERGEABLE', [suite('IN_PROGRESS', required=[None])]),
                  # 6's PR-tier run finished without creating `required` (GitHub abandoned its jobs); 7's is still starting.
                  pull(6, '2026-11-04T00:00:00Z', 'MERGEABLE', [suite('COMPLETED'), suite('QUEUED', None)]),
-                 pull(7, '2026-11-05T00:00:00Z', 'UNKNOWN', [suite('QUEUED')])]
+                 pull(7, '2026-11-05T00:00:00Z', 'UNKNOWN', [suite('QUEUED')]),
+                 pull(10, '2026-11-05', 'MERGEABLE', [None, suite('COMPLETED')]),
+                 pull(11, '2026-11-06', 'MERGEABLE', [None, suite('COMPLETED', required=['SUCCESS'])], auto=False),
+                 pull(12, '2026-11-07', 'MERGEABLE', [dict(suite('COMPLETED'), checkRuns={'nodes': [None, {'conclusion': 'FAILURE'}]})]),
+                 dict(pull(13, '2026-11-08', 'UNKNOWN', [], auto=False), commits={'nodes': [{'commit': None}]})]
         code, result, _ = self.ci('stuck', runs={}, flags=('--json',), queue=queue)
         self.assertEqual((code, [(row['number'], row['blocking']) for row in result]),
                          (0, [(8, ['passed, not on auto-merge']), (2, ['required']), (1, ['conflicts']),
-                              (6, ['no required check'])]))
+                              (6, ['no required check']), (12, ['required'])]))
         # The PRs in one GraphQL query, and main's merge-tier runs for a stalled one.
         self.assertEqual([call.split(' -F')[0].split(' --')[0] for call in self.gh_calls if call.startswith(('api', 'run'))],
                          ['api -i graphql', 'run list', 'run list', 'run list'])
