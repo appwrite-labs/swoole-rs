@@ -9,6 +9,7 @@ use crate::timer::owner::{Owner as Timer, TimerNode};
 pub use crate::timer_key::Held;
 use crate::{log, swoole_print_backtrace};
 use std::ffi::{CStr, c_long, c_void};
+use std::rc::Rc;
 
 /// `SW_TIMER_MIN_SEC`.
 const MIN_SEC: f64 = 0.001;
@@ -220,7 +221,7 @@ pub fn swoole_timer_get(timer_id: c_long) -> Option<Held> {
 
 /// Unpublishes this thread's timer and hands it over. `Owner::destroy` takes the
 /// timer by value, so a timer is destroyed only once nothing can reach it here.
-fn take() -> Option<Box<Timer>> {
+fn take() -> Option<Rc<Timer>> {
     let timer = timer();
     if timer.is_null() {
         return None;
@@ -228,7 +229,7 @@ fn take() -> Option<Box<Timer>> {
     publish(std::ptr::null_mut());
     // SAFETY: this thread's timer, `Owner::create`'s allocation, which
     // swoole_timer_create published; unpublished above, so owned once.
-    Some(unsafe { Box::from_raw(timer) })
+    Some(unsafe { Rc::from_raw(timer) })
 }
 
 /// `void swoole_timer_free()`: take the thread's timer out of its slot, then destroy it.
