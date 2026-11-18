@@ -1729,7 +1729,7 @@ fn set(call: &Call) {
     let Some(client) = client(call) else {
         return;
     };
-    let Ok(array) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
+    let Ok(array) = http_client_coro::parse_class_swoole_coroutine_http_client_set(call) else {
         return call.set_bool(false);
     };
     let Some(settings) = call.value(1).filter(|_| array.count() > 0) else {

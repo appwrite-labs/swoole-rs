@@ -432,6 +432,11 @@ def rust_module(stub, path):
         slots = [rust_return(function)] + [rust_parameter(*parameter) for parameter in function['parameters']]
         body += (f'pub static {function["arginfo"]}: a::ArgInfo<{len(slots)}> = a::ArgInfo::new([\n'
                  + ''.join(f'    {slot},\n' for slot in slots) + ']);\n')
+    for function in stub.all():
+        params = function['parameters']
+        if len(params) == 1 and params[0][1:] == (['array'], 0, False, None):
+            name = function['arginfo'].removeprefix('arginfo_').lower()
+            body += f'pub use crate::required_array as parse_{name};\n'
     if 'z::' in body:
         code += 'use swoole_rs_zend::sys as z;\n'
     return code + '\n' + body
@@ -455,6 +460,11 @@ def rust_files(source):
         '//! Without the `php` feature the crate is empty.\n'
         '#![cfg(feature = "php")]\n'
         '#![forbid(unsafe_code)]\n\n'
+        '/// Parse a stub declaring exactly one required array passed by value.\n'
+        '/// # Errors\n/// Zend rejected the argument count or type.\n'
+        '#[inline]\n'
+        "pub fn required_array<'a>(call: &'a swoole_rs_zend::Call<'_>) -> Result<&'a swoole_rs_zend::Array, swoole_rs_zend::Invalid> {\n"
+        '    call.arity(1, 1)?;\n    call.array_ref(1)\n}\n\n'
         + ''.join(f'pub mod {module_name(path)};\n' for path in stubs))
     return {name: rustfmt(text) for name, text in files.items()}
 

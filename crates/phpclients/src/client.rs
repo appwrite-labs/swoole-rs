@@ -327,7 +327,7 @@ fn destruct(_call: &Call) {}
 
 /// `set(array $settings): bool`.
 fn set(call: &Call) {
-    let Ok(array) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
+    let Ok(array) = client_coro::parse_class_swoole_coroutine_client_set(call) else {
         return call.set_bool(false);
     };
     if array.count() == 0 {

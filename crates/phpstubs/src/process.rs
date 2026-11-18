@@ -148,3 +148,5 @@ pub static arginfo_class_Swoole_Process_name: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"process_name", 0, false, z::IS_STRING, false, None),
 ]);
+pub use crate::required_array as parse_class_swoole_process_setaffinity;
+pub use crate::required_array as parse_class_swoole_process_set;

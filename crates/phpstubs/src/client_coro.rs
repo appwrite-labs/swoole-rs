@@ -81,3 +81,4 @@ pub static arginfo_class_Swoole_Coroutine_Client_getsockname: a::ArgInfo<1> =
     a::ArgInfo::new([a::begin_mask(0, 0, z::MAY_BE_ARRAY | z::MAY_BE_FALSE)]);
 pub use self::arginfo_class_Swoole_Coroutine_Client_enableSSL as arginfo_class_Swoole_Coroutine_Client_close;
 pub use self::arginfo_class_Swoole_Coroutine_Client_getsockname as arginfo_class_Swoole_Coroutine_Client_getpeername;
+pub use crate::required_array as parse_class_swoole_coroutine_client_set;

@@ -51,7 +51,8 @@ pub fn cpu_set_to_array(set: &CpuSet) -> Owned {
 }
 
 fn set_affinity(call: &Call) {
-    let Ok(array) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
+    let Ok(array) = swoole_rs_phpstubs::process::parse_class_swoole_process_setaffinity(call)
+    else {
         return;
     };
     let Some(set) = cpu_set_from_array(array) else {

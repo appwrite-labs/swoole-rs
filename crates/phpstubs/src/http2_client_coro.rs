@@ -59,3 +59,4 @@ pub static arginfo_class_Swoole_Coroutine_Http2_Client_goaway: a::ArgInfo<3> = a
     a::arg_type(c"debug_data", 0, false, z::IS_STRING, false, Some(c"''")),
 ]);
 pub use self::arginfo_class_Swoole_Coroutine_Http2_Client_connect as arginfo_class_Swoole_Coroutine_Http2_Client_close;
+pub use crate::required_array as parse_class_swoole_coroutine_http2_client_set;

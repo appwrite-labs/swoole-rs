@@ -860,7 +860,7 @@ fn cancel(call: &Call) {
 /// `setProtocol(array $settings): bool`; the socket is checked first.
 fn set_protocol(call: &Call) {
     let Some(socket) = open(call) else { return };
-    let Ok(settings) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
+    let Ok(settings) = socket_coro::parse_class_swoole_coroutine_socket_setprotocol(call) else {
         return call.set_bool(false);
     };
     if settings.count() == 0 {
