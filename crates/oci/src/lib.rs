@@ -158,7 +158,6 @@ pub static swoole_pdo_oci_Env: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut(
 static BLOCKING: AtomicBool = AtomicBool::new(true);
 
 /// `swoole_oracle_set_blocking`: the runtime hook flag.
-#[unsafe(no_mangle)]
 pub extern "C" fn swoole_oracle_set_blocking(blocking: bool) {
     BLOCKING.store(blocking, Ordering::Relaxed);
 }
