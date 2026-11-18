@@ -123,14 +123,6 @@ unsafe extern "C" {
     ) -> Option<Escaped>;
     /// Free what libpq allocated: it takes the owner.
     safe fn PQfreemem(escaped: Escaped);
-    /// Set the processor libpq hands notices to, and the context it passes it.
-    /// libpq keeps `context` while the connection lives, which the handle's drop
-    /// ends before PDO frees the database handle.
-    safe fn PQsetNoticeProcessor(
-        conn: Conn,
-        processor: unsafe extern "C" fn(&Dbh, Text<'_>),
-        context: &Dbh,
-    ) -> Option<unsafe extern "C" fn(&Dbh, Text<'_>)>;
 }
 
 // What is left of the C driver (`thirdparty/php8*/pdo_pgsql/pgsql_driver.c`).
@@ -142,10 +134,6 @@ unsafe extern "C" {
     /// `pgsqlSetNoticeCallback` set (PHP 8.4+; before, it does nothing). Only libpq
     /// calls it.
     fn pdo_pgsql_notice(dbh: &Dbh, message: Text<'_>);
-    /// `pdo_pgsql_close_lob_streams`: close the handle's open LOB streams. Closing a
-    /// stream may run PHP code (a user filter), so only [`close_lob_streams`] calls
-    /// it, inside `zend_try`.
-    safe fn pdo_pgsql_close_lob_streams(dbh: &Dbh);
     /// `pgsql_handle_closer`: free the LOB streams' table and the notice callback,
     /// then hand the handle to [`pdo_pgsql_free`]. It closes the streams first, which a
     /// connection that failed has none of.
@@ -305,6 +293,12 @@ fn raise(
 /// Close the handle's LOB streams, which may run PHP code: a bailout is deferred to
 /// the export's boundary.
 fn close_lob_streams(dbh: &Dbh) {
+    unsafe extern "C" {
+        /// Close the handle's open LOB streams. Closing a stream may run PHP code (a
+        /// user filter), so it is declared here, where the one call is inside
+        /// `zend_try`.
+        safe fn pdo_pgsql_close_lob_streams(dbh: &Dbh);
+    }
     swoole_rs_zend::bailout::defer(contain_with(|| pdo_pgsql_close_lob_streams(dbh)));
 }
 
@@ -425,6 +419,17 @@ extern "C" fn pdo_pgsql_connect(
     dbh.set_driver_data(Box::into_raw(Box::new(Handle::new(server))).cast());
     let connected = PQstatus(server) == ConnStatusType::CONNECTION_OK;
     if connected {
+        unsafe extern "C" {
+            /// Set the processor libpq hands notices to, and the context it passes it.
+            /// libpq keeps `context` while the connection lives. Declared here, its one
+            /// caller: `dbh` owns the handle that owns `server`, and the handle's drop
+            /// finishes `server` before PDO frees `dbh`.
+            safe fn PQsetNoticeProcessor(
+                conn: Conn,
+                processor: unsafe extern "C" fn(&Dbh, Text<'_>),
+                context: &Dbh,
+            ) -> Option<unsafe extern "C" fn(&Dbh, Text<'_>)>;
+        }
         PQsetNoticeProcessor(server, pdo_pgsql_notice, dbh);
     } else {
         raise(
