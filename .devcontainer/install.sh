@@ -1,22 +1,45 @@
-#!/bin/sh
+#!/bin/bash
 # System packages for building and testing swoole-rs and the upstream oracle. The devcontainer image and
 # CI both run this, so local and CI environments cannot drift. Extra packages a job
 # needs go as arguments; --runtime loads prebuilt PHPT engines without compiling them.
 # APT_CACHE (set by .github/actions/install) keeps the
 # package files and indexes between CI runs, so most runs never touch the mirror.
-set -e
+set -eo pipefail
 [ "$(id -u)" = 0 ] || exec sudo env APT_CACHE="${APT_CACHE:-}" "$0" "$@"
+# Only the CI runners use mirror lists. Keep their one fallback around the whole
+# installer, including the cache refresh it would run on either mirror.
+if [ "${1:-}" = --runner-mirrors ]; then
+    shift
+    mirrors=/etc/apt/apt-mirrors.txt
+    [ ! -f "$mirrors" ] || sed -i /azure/d "$mirrors"
+    "$0" "$@" && exit 0
+    echo "::warning::Retrying package installation against archive.ubuntu.com after the runner mirror failed"
+    [ ! -f "$mirrors" ] || echo http://archive.ubuntu.com/ubuntu/ > "$mirrors"
+    sed -Ei 's#https?://[a-z0-9.-]*archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#g' \
+        /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || :
+    exec "$0" "$@"
+fi
 build=true
 if [ "${1:-}" = --runtime ]; then build=false; shift; fi
 export DEBIAN_FRONTEND=noninteractive
-# The CI mirror sometimes throttles one connection for minutes; give up on a
-# stalled download quickly and retry instead of waiting out apt's long default.
-APT='-o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::Retries=5'
 # In apt.conf.d, so a job's later bare apt-get (variant.yml's valgrind) reads these indexes too (#2958).
 if [ -n "$APT_CACHE" ]; then
     mkdir -p "$APT_CACHE/archives/partial" "$APT_CACHE/lists/partial"
     printf 'Dir::Cache::Archives "%s/archives";\nDir::State::Lists "%s/lists";\n' "$APT_CACHE" "$APT_CACHE" > /etc/apt/apt.conf.d/50apt-cache
 fi
+# The CI mirror sometimes throttles one connection for minutes; give up on a
+# stalled download quickly and retry instead of waiting out apt's long default.
+# apt reports a transient fetch as Ign, but also ignores optional indexes.
+# A second progress line for the same item distinguishes an actual retry.
+apt_run() {
+    LC_ALL=C apt-get -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::Retries=5 "$@" | awk -v op="$1" '
+        /^(Ign|Get|Hit|Err):[0-9]+ / {
+            id = $1; sub(/^[^:]+:/, "", id)
+            if (ignored[id]) print "::warning::Retrying apt " op " download for item " id " (" $2 ")"
+            ignored[id] = ($1 ~ /^Ign:/)
+        }
+        {print; fflush()}'
+}
 install() {
     if $build; then
         set -- php-dev libclang-dev python3-pytest python3-pip libpcre2-dev libssl-dev libc-ares-dev zlib1g-dev \
@@ -28,7 +51,7 @@ install() {
         set -- php-cli gcc libstdc++6 libpcre2-8-0 libssl3t64 libc-ares2 zlib1g libnghttp2-14 \
             libpq5 libcurl4t64 libssh2-1t64 libbrotli1 libzstd1 libodbc2 libsqlite3-0 libffi8 "$@"
     fi
-    apt-get $APT install -yq --no-install-recommends \
+    apt_run install -yq --no-install-recommends \
         php-sqlite3 php-curl php-xml php-mbstring python3 composer git ca-certificates curl locales procps strace "$@"
 }
 # Cached indexes (refreshed weekly by the cache key) are enough when every package
@@ -36,9 +59,13 @@ install() {
 # A refresh can fail on one repository mid-sync while the others are fine, so only
 # the install decides: as the last command of each branch, its failure stops sh.
 if [ -n "$APT_CACHE" ] && ls "$APT_CACHE"/lists/*_Packages >/dev/null 2>&1; then
-    install "$@" || { apt-get $APT update -q || :; install "$@"; }
+    install "$@" || {
+        echo "::warning::Retrying package installation after refreshing cached apt indexes"
+        apt_run update -q || :
+        install "$@"
+    }
 else
-    apt-get $APT update -q || :
+    apt_run update -q || :
     install "$@"
 fi
 [ -z "$APT_CACHE" ] || chmod -R a+rX "$APT_CACHE"
