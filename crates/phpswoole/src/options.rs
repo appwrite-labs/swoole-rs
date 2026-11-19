@@ -20,13 +20,7 @@ use swoole_rs_zend::{
     Array, E_ERROR, Value, ZStr, ZString, bailout, report, sys::ZEND_ACC_NOT_SERIALIZABLE,
 };
 
-/// `swHttp2SettingId`.
-const HTTP2_HEADER_TABLE_SIZE: u32 = 1;
-const HTTP2_ENABLE_PUSH: u32 = 2;
-const HTTP2_MAX_CONCURRENT_STREAMS: u32 = 3;
-const HTTP2_INIT_WINDOW_SIZE: u32 = 4;
-const HTTP2_MAX_FRAME_SIZE: u32 = 5;
-const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 6;
+use swoole_rs_http2::setting_id;
 
 // crates/clients' resolver address (`dns_server`).
 use swoole_rs_clients::dns::set_dns_server;
@@ -220,19 +214,27 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
         defaults.write.set(both);
     }
     // [HTTP2]: (key, setting, parsed as a size).
-    let http2: [(&CStr, u32, bool); 6] = [
-        (c"http2_header_table_size", HTTP2_HEADER_TABLE_SIZE, true),
-        (c"http2_enable_push", HTTP2_ENABLE_PUSH, false),
+    let http2 = [
+        (
+            c"http2_header_table_size",
+            setting_id::HEADER_TABLE_SIZE,
+            true,
+        ),
+        (c"http2_enable_push", setting_id::ENABLE_PUSH, false),
         (
             c"http2_max_concurrent_streams",
-            HTTP2_MAX_CONCURRENT_STREAMS,
+            setting_id::MAX_CONCURRENT_STREAMS,
             false,
         ),
-        (c"http2_init_window_size", HTTP2_INIT_WINDOW_SIZE, true),
-        (c"http2_max_frame_size", HTTP2_MAX_FRAME_SIZE, true),
+        (
+            c"http2_init_window_size",
+            setting_id::INIT_WINDOW_SIZE,
+            true,
+        ),
+        (c"http2_max_frame_size", setting_id::MAX_FRAME_SIZE, true),
         (
             c"http2_max_header_list_size",
-            HTTP2_MAX_HEADER_LIST_SIZE,
+            setting_id::MAX_HEADER_LIST_SIZE,
             true,
         ),
     ];
@@ -242,7 +244,7 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
             if bailout::pending() {
                 return Ok(());
             }
-            swoole_rs_http2::put_default_setting(id, setting.c_cast::<u32>());
+            swoole_rs_http2::put_default_setting(u32::from(id), setting.c_cast::<u32>());
         }
     }
     Ok(())

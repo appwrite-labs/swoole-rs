@@ -45,9 +45,7 @@ const FLAG_END_STREAM: u32 = 1;
 const FLAG_PRIORITY: u32 = 0x20;
 /// `SW_HTTP2_STREAM_PIPELINE_REQUEST`.
 const STREAM_PIPELINE_REQUEST: u32 = 2;
-/// `SW_HTTP2_SETTING_HEADER_TABLE_SIZE` and `..._MAX_HEADER_LIST_SIZE`.
-const SETTING_HEADER_TABLE_SIZE: u16 = 1;
-const SETTING_MAX_HEADER_LIST_SIZE: u16 = 6;
+use swoole_rs_http2::setting_id;
 /// The `:authority` slot (`HTTP2_CLIENT_HOST_HEADER_INDEX`).
 const AUTHORITY: usize = 3;
 /// `SW_ERROR_*` and `HTTP_ESTATUS_SERVER_RESET`.
@@ -988,8 +986,8 @@ impl Client {
     fn apply_remote_setting(&self, key: u16, number: u32) {
         let mut remote = self.remote.get();
         let old = match key {
-            SETTING_HEADER_TABLE_SIZE => remote.header_table_size,
-            SETTING_MAX_HEADER_LIST_SIZE => remote.max_header_list_size,
+            setting_id::HEADER_TABLE_SIZE => remote.header_table_size,
+            setting_id::MAX_HEADER_LIST_SIZE => remote.max_header_list_size,
             _ => 0,
         };
         let plan = sw_rs_http2_setting_plan(u32::from(key), number, old, false, false);
