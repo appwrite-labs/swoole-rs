@@ -128,6 +128,12 @@ static ZEND_ATTRIBUTE_UNUSED unsigned long curl_ssl_thread_id() {
 #endif
 
 extern "C" bool swoole_curl_startup(const zend_function_entry *entries) {
+#if PHP_VERSION_ID >= 80300
+    if (curl_ce->default_object_handlers->offset != XtOffsetOf(php_curl, std)) {
+        php_error_docref(nullptr, E_WARNING, "CurlHandle layout differs from the installed ext/curl");
+        return false;
+    }
+#endif
 #if PHP_VERSION_ID < 80500 && defined(ZTS) && defined(HAVE_CURL_OLD_OPENSSL) && defined(HAVE_OPENSSL_CRYPTO_H)
     if (!CRYPTO_get_id_callback()) {
         int count = CRYPTO_num_locks();

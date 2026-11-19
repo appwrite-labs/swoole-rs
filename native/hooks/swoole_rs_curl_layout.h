@@ -23,6 +23,10 @@
 #include "ext/curl/php_curl.h"
 #include "zend_smart_str.h"
 
+#if PHP_VERSION_ID < 80200 || PHP_VERSION_ID >= 80600
+#error "Verify the private ext/curl layouts before enabling this PHP version"
+#endif
+
 #define PHP_CURL_STDOUT 0
 #define PHP_CURL_FILE 1
 #define PHP_CURL_DIRECT 3
