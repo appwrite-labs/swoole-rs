@@ -266,11 +266,12 @@ pub extern "C" fn swoole_oci_ping(svc: Live<Svc>, err: Live<Error>, mode: Ub4) -
     offload(|| OCIPing(svc, err, mode))
 }
 
-/// `php_swoole_oracle_rinit`: the shared environment, once per process. OCI
-/// fills a local first, so concurrent requests at worst each create one, as
-/// upstream's unlocked check let them.
+/// `php_swoole_oracle_rinit`: the shared environment, created once per process.
+/// Upstream's unlocked check let concurrent first requests each create one and
+/// keep the last; here one does, and a failed create (null) is retried by the
+/// next request, as upstream's was.
 pub extern "C" fn php_swoole_oracle_rinit() {
-    if swoole_pdo_oci_Env.load(Ordering::Relaxed).is_null() {
+    shared_env(|| {
         let mut env = ptr::null_mut();
         OCIEnvCreate(
             &mut env,
@@ -282,13 +283,57 @@ pub extern "C" fn php_swoole_oracle_rinit() {
             0,
             None,
         );
-        swoole_pdo_oci_Env.store(env, Ordering::Release);
+        env
+    });
+}
+
+/// Sets [`swoole_pdo_oci_Env`] from `create` unless one is set: the check, the create
+/// and the store under one lock, so concurrent callers make one between them.
+fn shared_env(create: impl FnOnce() -> Handle) {
+    static CREATING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    if !swoole_pdo_oci_Env.load(Ordering::Acquire).is_null() {
+        return;
+    }
+    // A panic can't leave the guarded state half-written: it is the atomic, set last.
+    let _creating = CREATING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if swoole_pdo_oci_Env.load(Ordering::Acquire).is_null() {
+        swoole_pdo_oci_Env.store(create(), Ordering::Release);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_first_requests_create_one_environment() {
+        use std::sync::atomic::AtomicUsize;
+        static CREATED: AtomicUsize = AtomicUsize::new(0);
+        swoole_pdo_oci_Env.store(ptr::null_mut(), Ordering::Release);
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    barrier.wait();
+                    shared_env(|| {
+                        CREATED.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        ptr::without_provenance_mut(0x1000)
+                    });
+                });
+            }
+        });
+        assert_eq!(CREATED.load(Ordering::SeqCst), 1);
+        assert_eq!(swoole_pdo_oci_Env.load(Ordering::Acquire).addr(), 0x1000);
+        // A failed create leaves it null, and the next request tries again.
+        swoole_pdo_oci_Env.store(ptr::null_mut(), Ordering::Release);
+        shared_env(ptr::null_mut);
+        shared_env(|| ptr::without_provenance_mut(0x2000));
+        assert_eq!(swoole_pdo_oci_Env.load(Ordering::Acquire).addr(), 0x2000);
+        swoole_pdo_oci_Env.store(ptr::null_mut(), Ordering::Release);
+    }
 
     #[test]
     fn offload_calls_through_without_host() {
