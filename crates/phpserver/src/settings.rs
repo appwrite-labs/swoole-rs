@@ -756,7 +756,15 @@ fn rewrite_rules(s: &Settings) -> Step {
         };
         // An integer key has no pattern: an empty one.
         let pattern = key.unwrap_or_default();
-        s.server().add_rewrite_rule(pattern, replacement);
+        if s.server().add_rewrite_rule(pattern, replacement).is_err() {
+            // Upstream would run this rule; here it never matches, so say so once, at set().
+            let text = message!(
+                "url_rewrite_rules: the pattern '{}' uses a backreference or lookahead, which is not supported; the rule never matches",
+                String::from_utf8_lossy(pattern)
+            );
+            bailout::defer(report(E_WARNING, text.as_cstr()));
+            checked()?;
+        }
     }
     Ok(())
 }

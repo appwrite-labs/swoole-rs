@@ -4,15 +4,20 @@
 //! the URL wins. A regex replaces every match the way libstdc++'s `std::regex_replace` does:
 //! the same steps past empty matches and the same `$` format. Patterns are compiled once,
 //! on `add`, where upstream compiled one per request; one that doesn't compile never matches,
-//! as upstream skipped a rule whose `std::regex` threw.
+//! as upstream skipped a rule whose `std::regex` threw. One `std::regex` accepts but this
+//! dialect can't run (a backreference or lookahead) never matches either, and `add` says so.
 mod regex;
 
-use regex::{Captures, Regex};
+use regex::{Captures, Regex, Rejected};
 
 enum Pattern {
     Prefix(Vec<u8>),
     Regex(Option<Regex>),
 }
+
+/// A rule `add` kept, though it never matches where upstream's would.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Unsupported;
 
 struct Rule {
     pattern: Pattern,
@@ -24,15 +29,26 @@ struct Rule {
 pub struct RewriteRules(Vec<Rule>);
 
 impl RewriteRules {
-    pub fn add(&mut self, pattern: &[u8], replacement: &[u8]) {
-        let pattern = match pattern {
-            [b'~', inner @ .., b'~'] => Pattern::Regex(Regex::new(inner)),
-            _ => Pattern::Prefix(pattern.to_vec()),
+    /// Adds the rule.
+    ///
+    /// # Errors
+    ///
+    /// [`Unsupported`] for a regex `std::regex` accepts but this dialect can't run (a
+    /// backreference or lookahead): it is added, and never matches.
+    pub fn add(&mut self, pattern: &[u8], replacement: &[u8]) -> Result<(), Unsupported> {
+        let (pattern, result) = match pattern {
+            [b'~', inner @ .., b'~'] => match Regex::new(inner) {
+                Ok(regex) => (Pattern::Regex(Some(regex)), Ok(())),
+                Err(Rejected::Invalid) => (Pattern::Regex(None), Ok(())),
+                Err(Rejected::Unsupported) => (Pattern::Regex(None), Err(Unsupported)),
+            },
+            _ => (Pattern::Prefix(pattern.to_vec()), Ok(())),
         };
         self.0.push(Rule {
             pattern,
             replacement: replacement.to_vec(),
         });
+        result
     }
 
     /// The rewritten URL, or `None` when no rule applies. A prefix rule applies whenever it
@@ -125,7 +141,7 @@ mod tests {
     fn apply(rules: &[(&[u8], &[u8])], url: &[u8]) -> Option<Vec<u8>> {
         let mut owner = RewriteRules::default();
         for (pattern, replacement) in rules {
-            owner.add(pattern, replacement);
+            let _added = owner.add(pattern, replacement);
         }
         owner.apply(url)
     }
@@ -272,11 +288,26 @@ mod tests {
             "[[.1.]]",
             "[[.a]]",
             "[a-[.b.]]",
-            "(a)\\1",
-            "a(?=b)",
             "(?i)a",
+            // A backreference to a group not yet opened, or still open; a quantified or
+            // unclosed lookahead.
+            "\\1(a)",
+            "(a\\1)",
+            "(?=a)*",
+            "(?=a",
+            // A lookahead's body counts toward the state limit (libstdc++'s error_space).
+            "(?=a{100000})",
+            "a(?!(?:a{1000}){1000})",
+            "(a)\\1",
+            "(a)(b)\\2+",
+            "a(?=b)",
+            "a(?!b)",
         ] {
             assert_eq!(rewrite(&format!("~{pattern}~"), b"ab"), None, "{pattern}");
+            // Only what std::regex accepts is reported.
+            let unsupported = ["(a)\\1", "(a)(b)\\2+", "a(?=b)", "a(?!b)"].contains(&pattern);
+            let added = RewriteRules::default().add(format!("~{pattern}~").as_bytes(), b"x");
+            assert_eq!(added.is_err(), unsupported, "{pattern}");
         }
         assert_eq!(
             rewrite(&format!("~{}a{}~", "(".repeat(300), ")".repeat(300)), b"a"),

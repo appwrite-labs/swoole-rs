@@ -372,11 +372,12 @@ impl Server {
                 pattern.to_vec()
             };
             // SAFETY: the live state.
-            crate::static_config::add_rewrite_rule(
+            let added = crate::static_config::add_rewrite_rule(
                 &unsafe { &*self.0.state }.static_config,
                 &pattern,
                 replacement,
             );
+            assert!(added.is_ok(), "a rule this server can't run");
         }
     }
     fn handler(&self, url: &[u8]) -> StaticHandler<'_, Scripted> {

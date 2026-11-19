@@ -1,6 +1,7 @@
 //! The ECMAScript regex dialect `url_rewrite_rules` patterns are written in, over bytes:
-//! what `std::regex` accepts, less backreferences and lookahead (a pattern with either
-//! doesn't compile, so its rule never matches). Matching is leftmost-first, the order a
+//! what `std::regex` accepts, less backreferences and lookahead. A pattern with either is
+//! still checked as `std::regex` would check it, so [`Rejected`] tells it from one
+//! `std::regex` throws on. Matching is leftmost-first, the order a
 //! backtracking engine tries alternatives in, on a Pike VM: time linear in the URL, and no
 //! recursion while matching.
 
@@ -105,6 +106,9 @@ enum Node {
     Alt(Vec<Node>),
     /// The node, its minimum and maximum count, and whether it is greedy.
     Repeat(Box<Node>, u32, Option<u32>, bool),
+    /// A backreference (`None`) or a lookahead and its body, which the pattern can't run;
+    /// compiled only so its states count toward [`LIMIT`] as libstdc++'s would.
+    Unsupported(Option<Box<Node>>),
 }
 
 impl Node {
@@ -117,6 +121,7 @@ impl Node {
             Self::Concat(nodes) => nodes.iter().all(Self::empty),
             Self::Alt(nodes) => nodes.iter().any(Self::empty),
             Self::Repeat(node, min, ..) => *min == 0 || node.empty(),
+            Self::Unsupported(_) => true,
         }
     }
 }
@@ -125,7 +130,11 @@ impl Node {
 struct Parser<'a> {
     rest: &'a [u8],
     groups: usize,
+    /// The capturing groups not closed yet, which a backreference can't name.
+    open: Vec<usize>,
     depth: usize,
+    /// A backreference or lookahead was read.
+    unsupported: bool,
 }
 
 impl Parser<'_> {
@@ -168,7 +177,11 @@ impl Parser<'_> {
             b'$' => return Some(Node::Look(Look::End)),
             b'\\' if self.eat(b'b') => return Some(Node::Look(Look::Boundary)),
             b'\\' if self.eat(b'B') => return Some(Node::Look(Look::NotBoundary)),
+            b'\\' if matches!(self.rest.first(), Some(b'1'..=b'9')) => self.backreference()?,
             b'\\' => Node::Set(self.escape()?),
+            b'(' if self.rest.starts_with(b"?=") || self.rest.starts_with(b"?!") => {
+                return self.lookahead();
+            }
             b'.' => Node::Set(Set::default().byte(b'\n').byte(b'\r').not()),
             b'[' => Node::Set(self.class()?),
             b'(' => self.group()?,
@@ -216,7 +229,7 @@ impl Parser<'_> {
             return None;
         }
         let node = if self.eat(b'?') {
-            // `(?:`; lookahead is not supported.
+            // `(?:`; `term` has read a lookahead already.
             if !self.eat(b':') {
                 return None;
             }
@@ -224,10 +237,37 @@ impl Parser<'_> {
         } else {
             self.groups += 1;
             let index = self.groups;
-            Node::Group(index, Box::new(self.alternation()?))
+            self.open.push(index);
+            let body = self.alternation()?;
+            self.open.pop();
+            Node::Group(index, Box::new(body))
         };
         self.depth -= 1;
         self.eat(b')').then_some(node)
+    }
+    /// `\\N`, as libstdc++'s `_M_insert_backref` takes it: a group already opened and
+    /// closed. The pattern is [`Rejected::Unsupported`].
+    fn backreference(&mut self) -> Option<Node> {
+        let index = usize::try_from(self.number()?).ok()?;
+        if index > self.groups || self.open.contains(&index) {
+            return None;
+        }
+        self.unsupported = true;
+        Some(Node::Unsupported(None))
+    }
+    /// `(?=` or `(?!`, after the `(`: an assertion, so no quantifier follows. Its body is
+    /// read and compiled as any group's, and the pattern is [`Rejected::Unsupported`].
+    fn lookahead(&mut self) -> Option<Node> {
+        self.rest = self.rest.get(2..)?;
+        self.depth += 1;
+        if self.depth > NESTING {
+            return None;
+        }
+        let body = self.alternation()?;
+        self.depth -= 1;
+        self.unsupported = true;
+        self.eat(b')')
+            .then(|| Node::Unsupported(Some(Box::new(body))))
     }
     fn number(&mut self) -> Option<u32> {
         let digits = self.rest.iter().take_while(|b| b.is_ascii_digit()).count();
@@ -236,8 +276,8 @@ impl Parser<'_> {
         std::str::from_utf8(number).ok()?.parse().ok()
     }
     /// The escape after a `\`, as libstdc++'s `_M_eat_escape_ecma` reads it: a class
-    /// escape, a control, or else the byte itself. `\1`-`\9` would be backreferences,
-    /// which are not supported. Outside a class `term` has read `\b` and `\B` already;
+    /// escape, a control, or else the byte itself. Outside a class `term` has read a
+    /// backreference already; inside one, `\1`-`\9` is an error. Outside a class `term` has read `\b` and `\B` already;
     /// inside one, `\b` is a backspace and `\B` an error.
     fn escape(&mut self) -> Option<Set> {
         let set = |byte| Some(Set::default().byte(byte));
@@ -372,6 +412,15 @@ enum Inst {
     Match,
 }
 
+/// Why a pattern has no [`Regex`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Rejected {
+    /// `std::regex` throws on it too.
+    Invalid,
+    /// `std::regex` accepts it, but it has a backreference or lookahead.
+    Unsupported,
+}
+
 /// A compiled pattern.
 pub(super) struct Regex {
     program: Vec<Inst>,
@@ -392,24 +441,29 @@ impl Captures {
 type Slots = Vec<Option<usize>>;
 
 impl Regex {
-    /// `None` where `std::regex` throws, and for a backreference or lookahead.
-    pub(super) fn new(pattern: &[u8]) -> Option<Self> {
+    /// The pattern compiled, or why it can't be.
+    pub(super) fn new(pattern: &[u8]) -> Result<Self, Rejected> {
         let mut parser = Parser {
             rest: pattern,
             groups: 0,
+            open: Vec::new(),
             depth: 0,
+            unsupported: false,
         };
-        let node = parser.alternation()?;
+        let node = parser.alternation().ok_or(Rejected::Invalid)?;
         if !parser.rest.is_empty() {
-            return None; // an unmatched `)`
+            return Err(Rejected::Invalid); // an unmatched `)`
         }
         let mut regex = Self {
             program: vec![Inst::Save(0)],
             slots: 2 * parser.groups + 2,
         };
-        regex.emit(&node)?;
+        regex.emit(&node).ok_or(Rejected::Invalid)?;
+        if parser.unsupported {
+            return Err(Rejected::Unsupported);
+        }
         regex.program.extend([Inst::Save(1), Inst::Match]);
-        Some(regex)
+        Ok(regex)
     }
 
     fn patch(&mut self, at: usize, inst: Inst) {
@@ -438,6 +492,15 @@ impl Regex {
                 self.push(Inst::Save(2 * index + 1))?;
             }
             Node::Concat(nodes) => nodes.iter().try_for_each(|node| self.emit(node))?,
+            // libstdc++'s backref state; or its lookahead state, the body, and the body's
+            // accept state. Never run: the pattern doesn't compile.
+            Node::Unsupported(body) => {
+                self.push(Inst::Match)?;
+                if let Some(body) = body {
+                    self.emit(body)?;
+                    self.push(Inst::Match)?;
+                }
+            }
             Node::Alt(nodes) => {
                 let (last, init) = nodes.split_last()?;
                 let mut jumps = Vec::new();
