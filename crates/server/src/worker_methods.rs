@@ -113,7 +113,7 @@ pub fn create_event_workers(serv: view::Server<'_>) -> bool {
 }
 
 /// `Server::create_user_workers()`: copy the added user workers into shared
-/// memory (no process is forked), store them and give each its lock. False,
+/// memory (no process is forked), store them and register their pipes. False,
 /// after a warning, when they couldn't be mapped.
 #[must_use]
 pub fn create_user_workers(serv: view::Server<'_>) -> bool {
@@ -136,7 +136,7 @@ pub fn create_user_workers(serv: view::Server<'_>) -> bool {
         if let Some(copy) = copies.user(index) {
             copy.copy_from(worker);
         }
-        create_worker(serv, worker);
+        crate::server_methods::store_pipe_fd(serv, worker);
         worker.set_kind(WorkerType::User);
     }
     true
