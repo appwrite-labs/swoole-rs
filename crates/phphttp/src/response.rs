@@ -13,6 +13,7 @@ use std::{
     sync::atomic::Ordering::Relaxed,
 };
 use swoole_rs_corebase::{CCast, HookType, swoole_isset_hook};
+use swoole_rs_http::status::INTERNAL_SERVER_ERROR;
 use swoole_rs_httpbindings::{RangeError, canonical_case, file_range};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_phpswoole::MinitArgs;
@@ -30,8 +31,6 @@ const CLOSE_NORMAL: i64 = 1000;
 /// `SW_ERROR_WEBSOCKET_PACK_FAILED`.
 const WEBSOCKET_PACK_FAILED: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_PACK_FAILED as c_int;
-/// `SW_HTTP_INTERNAL_SERVER_ERROR`.
-const INTERNAL_SERVER_ERROR: c_int = 500;
 
 /// A response object's context.
 pub(crate) struct Data(pub(crate) Holder);
