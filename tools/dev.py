@@ -313,7 +313,8 @@ def plan(args, reports):
                '--exclude', 'coroutine_system.getaddrinfo=' + NETWORK, '--exclude', 'coroutine_system.getaddrinfo_timeout=' + UNCACHED,
                '--exclude', 'coroutine_hook.sendmsg_and_recvmsg=flaky: its outcome depends on which close completes first '
                             '(~15% of runs fail)',
-               '--exclude', 'coroutine_socket.tcp6=needs IPv6',
+               *([] if getattr(args, 'core_test_services', False) else
+                 ['--exclude', 'coroutine_socket.tcp6=needs a listener on IPv6 loopback port 80']),
                '--exclude', 'coroutine_async.gethostbyname=' + NETWORK,
                *[arg for name, reason in [('lookup1', NETWORK), ('lookup_ipv6', NETWORK), ('bad_family', NETWORK), ('cancel', UNCACHED)]
                  for arg in ['--exclude', f'dns.{name}={reason}']],
@@ -776,7 +777,7 @@ def main():
     parser.add_argument('--stdext', action='store_true', help='Build and compare genuine enabled experimental stdext profiles')
     parser.add_argument('--php-sockets', action='store_true', help='Build matching Native/Rust PHP sockets-integration profiles')
     parser.add_argument('--core-test-services', action='store_true',
-                        help="Run Redis and Node.js interop cases with Redis on 127.0.0.1:6379 and the pin's core-tests/js dependencies installed")
+                        help="Run TCP6, Redis and Node.js cases with [::1]:80, Redis on 127.0.0.1:6379 and the pin's core-tests/js dependencies installed")
     parser.add_argument('--external-network', action='store_true',
                         help='Also run original PHPTs that need internet access; without it they stay unmeasured')
     parser.add_argument('--fix-halfclose', action='store_true', help='Select the separate native queued-close drain repair')

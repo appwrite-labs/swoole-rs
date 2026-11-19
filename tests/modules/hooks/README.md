@@ -135,8 +135,8 @@ through the record layout (`swoole_rs_co_socket.h`). `enable_ssl_encrypt` and th
 witness, whose `TimeoutSetter` left the hybrid header, is a Rust case there too); `pop_read_buffer`/`pop_write_buffer`
 take the record's buffer fields. The `Server` fixture `recv_success` and
 `recv_fail` fork is a std echo (or close-on-receive) server: those cases assert only
-on the client. Excluded as before: `tcp6` (IPv6) and the four proxy cases (a local
-HTTP or SOCKS5 proxy).
+on the client. In merge CI, `tcp6` connects to the PHPT httpbin service on
+`[::1]:80`. The four proxy cases still need local HTTP and SOCKS5 services.
 
 `core-tests/src/network/dns.cpp` and `network/address.cpp` are Rust too:
 `system/src/dns.rs` holds dns.cpp's 15 TESTs and `system/src/address.rs`
