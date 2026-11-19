@@ -21,10 +21,6 @@ pub struct Socket<'a> {
     _live: PhantomData<(&'a mut SocketRecord, *mut ())>,
 }
 
-thread_local! {
-    // The address of this aligned, non-zero-sized TLS object identifies a live thread.
-    static THREAD: u32 = const { 0 };
-}
 const EDIT: usize = 1;
 const SHARED: usize = 2;
 
@@ -48,7 +44,7 @@ impl SocketMarks {
     #[inline(always)]
     #[track_caller]
     fn take<const MODE: usize>(&self) -> Borrow<'_, MODE> {
-        let thread = THREAD.with(|id| std::ptr::from_ref(id).addr());
+        let thread = crate::sys::thread_token();
         let token = thread | MODE;
         let secondary = self
             .owner
@@ -130,7 +126,7 @@ impl SocketMarks {
 
     #[cold]
     fn release_shared(&self) {
-        let token = THREAD.with(|id| std::ptr::from_ref(id).addr());
+        let token = crate::sys::thread_token();
         let mut readers = self.readers();
         let Some(index) = readers.iter().rposition(|&reader| reader == token) else {
             unreachable!("a shared socket reader is registered")
