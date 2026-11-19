@@ -26,7 +26,7 @@ pub(crate) const CAPABILITIES: u32 = if cfg!(target_os = "linux") { 3 } else { 0
 const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 static LOCK: CustomClass<Held> = CustomClass::new();
 
-/// `struct LockObject { Lock *lock; zend_object std; }`: unset until `__construct`.
+/// The lock is unset until `__construct`.
 pub(crate) struct Held(OnceCell<Lock>);
 
 impl Custom for Held {

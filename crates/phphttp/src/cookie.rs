@@ -12,8 +12,7 @@ const COOKIE_UNAVAILABLE: std::ffi::c_int = 7107;
 
 static COOKIE: CustomClass<Held> = CustomClass::new();
 
-/// `struct HttpCookieObject { Cookie *cookie; zend_object std; }`: no cookie
-/// until `__construct` runs. The cookie is taken out and put back with nothing
+/// Holds the cookie after `__construct`. The cookie is taken out and put back with nothing
 /// in between that runs PHP code, and what it replaces is released after.
 struct Held(Cell<Option<Cookie>>);
 

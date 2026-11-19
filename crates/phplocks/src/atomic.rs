@@ -12,9 +12,9 @@ const MALLOC_FAIL: i64 = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as i64
 static ATOMIC: CustomClass<Atomic> = CustomClass::new();
 static LONG: CustomClass<Long> = CustomClass::new();
 
-/// `struct AtomicObject { sw_atomic_t *ptr; zend_object std; }`.
+/// The shared 32-bit word allocated by the constructor.
 pub(crate) struct Atomic(Option<&'static AtomicU32>);
-/// `struct AtomicLongObject { sw_atomic_long_t *ptr; zend_object std; }`.
+/// The shared 64-bit word allocated by the constructor.
 pub(crate) struct Long(Option<&'static AtomicI64>);
 
 /// The pool's word, or Swoole's exception when it has none.

@@ -53,12 +53,9 @@ static PROCESS: CustomClass<Process> = CustomClass::new();
 /// `round_process_id`: the id of the next process made outside a server worker.
 static ROUND_ID: AtomicU32 = AtomicU32::new(0);
 
-/// `struct ProcessObject`: the worker it owns (null before its constructor
-/// ran), the queue it owns, its exported socket, pipe type and flags.
-///
-/// The worker record's queue pointer never owns: it points into `queue` after
-/// `useQueue`, or at the pool's queue on a worker from `Pool::getProcess`, which
-/// the pool frees. Only `queue` is ever freed here, by dropping it.
+/// The PHP process object's worker, exported socket, and configuration.
+/// Its worker slot retains the worker record. A process from `Pool::getProcess`
+/// also keeps the pool alive while it borrows the pool's queue or pipe.
 #[derive(Default)]
 struct Process {
     /// Caches the first successful `exportSocket` result and drops before the worker.

@@ -139,7 +139,8 @@ impl<'a> ObjectRef<'a> {
 }
 
 /// `data` followed by the object Zend sees; `std` must stay last, since Zend
-/// allocates the class's property slots after it.
+/// allocates the class's property slots after it. Zend finds the allocation
+/// from `std` using the offset registered for this particular `T`.
 // `repr(C)`: Zend allocates the object's property slots after `std`, which must stay last (`zend_object_alloc`).
 #[repr(C)]
 pub struct Object<T> {

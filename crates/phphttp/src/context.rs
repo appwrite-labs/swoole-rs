@@ -1,4 +1,4 @@
-//! Both classes' objects: `struct { swoole::http::Context *ctx; zend_object std; }`.
+//! The HTTP context shared by the request and response objects.
 use crate::{
     host::Context,
     parse::{self, Property},
@@ -21,13 +21,11 @@ use swoole_rs_zend::{
     Call, Declared, Owned, Value, ZStr,
     bailout::{self, Bailout},
     host::Then,
-    sys::{swr_zend_http_release_objects, zval},
+    sys::{swr_zend_http_release, swr_zend_http_release_objects},
 };
 
-/// What a `Swoole\Http\Request` or `Swoole\Http\Response` object embeds
-/// (`struct { swoole::http::Context *ctx; zend_object std; }`): its hold on
-/// its context, set once when the context makes the object and let go when
-/// the object is freed, so a method's `$this` lends it for the call.
+/// A request or response holds its context from object creation until free.
+/// A method borrows that context from `$this` for the call.
 pub(crate) type Holder = std::cell::OnceCell<Hold>;
 
 /// A hold on a `swoole::http::Context`: its request and response objects, an
@@ -424,30 +422,24 @@ unsafe extern "C" {
 /// [`Release::finish`]'s. The response is released even after the request's
 /// bailout, so the context is freed, and the bailout is deferred first, so the
 /// response's free hooks call no PHP code.
-// `repr(C)`: C's `swr_zend_http_release` (`crates/zend-sys/src/shim_http_ctx.h`), which the shim reads.
-#[repr(C)]
-pub(crate) struct Release {
-    request: *mut zval,
-    response: *mut zval,
-    /// How many of the two releases have begun.
-    begun: u8,
-}
+#[repr(transparent)]
+pub(crate) struct Release(swr_zend_http_release);
 
 impl Release {
     /// Both slots are read now: the request's free handler frees the context
     /// only once the response's has cleared its slot.
     pub(crate) fn new(mut ctx: Ctx) -> Self {
         let state = ctx.state();
-        Self {
+        Self(swr_zend_http_release {
             request: state.request.zobject.as_ptr(),
             response: state.response.zobject.as_ptr(),
             begun: 0,
-        }
+        })
     }
 
     /// Whether a release has begun.
     pub(crate) const fn begun(&self) -> bool {
-        self.begun != 0
+        self.0.begun != 0
     }
 
     /// The releases, as a coroutine call's [`Then`], for as long as `self`
@@ -470,7 +462,7 @@ impl Release {
     /// A destructor bailed out, or a bailout is pending.
     pub(crate) fn finish(mut self) -> Result<(), Bailout> {
         // Twice at most: a bailout in the request's release leaves the response's.
-        while self.begun < 2 {
+        while self.0.begun < 2 {
             bailout::defer(bailout::trapped(try_release_objects(&mut self)));
         }
         bailout::outcome(())
