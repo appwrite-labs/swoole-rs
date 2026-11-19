@@ -13,8 +13,10 @@ use swoole_rs_corebase::reactor::socket_upstream::make_typed;
 use swoole_rs_corebase::reactor::{OwnedSocket, Running, SocketRecord};
 
 /// `SW_FD_STREAM_SERVER` and `SW_FD_DGRAM_SERVER`.
-pub(crate) const FD_STREAM_SERVER: c_int = 1;
-pub(crate) const FD_DGRAM_SERVER: c_int = 2;
+pub(crate) const FD_STREAM_SERVER: c_int =
+    swoole_rs_corebase::constants::FdType::SW_FD_STREAM_SERVER as c_int;
+pub(crate) const FD_DGRAM_SERVER: c_int =
+    swoole_rs_corebase::constants::FdType::SW_FD_DGRAM_SERVER as c_int;
 use swoole_rs_server::port_config::{PortConfig, ReadEvent, Reader};
 use swoole_rs_server::view;
 
