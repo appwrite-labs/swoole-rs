@@ -24,6 +24,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.build_upstream import COMMIT, VERSION
+from tools.annotations import annotate
 from tools.harness import ROOT, parse_engines, run_isolated, temp_file_count, write_report
 from tools.phpt_expectations import select
 
@@ -316,6 +317,7 @@ def ipc_namespace():
             if subprocess.run([unshare, *flags, 'true'], capture_output=True, timeout=10).returncode == 0:
                 return [unshare, *flags]
         except (OSError, subprocess.TimeoutExpired):
+            # Expected where the host forbids these namespaces: try the next, then run without.
             pass
     return None
 
@@ -447,6 +449,7 @@ def group_leftovers(group, members):
             try:
                 member['wait_channel'] = (entry / 'wchan').read_text().strip()
             except OSError:
+                # Expected: the process exited, or the kernel hides wchan; the entry stays.
                 pass
             if descriptors is not None:
                 try:
@@ -454,6 +457,7 @@ def group_leftovers(group, members):
                 except PermissionError:
                     descriptors = None
         except (FileNotFoundError, ProcessLookupError):
+            # Expected: the process exited between listing /proc and reading it.
             continue
     return {'processes': processes, 'descriptors': descriptors}
 
@@ -562,8 +566,9 @@ def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True,
         try:
             times = {node.attrib['name'].split(' (', 1)[0]: float(node.attrib['time'])
                      for node in ET.parse(junit).iter('testcase')}
-        except (ET.ParseError, KeyError, ValueError):
-            pass
+        except (ET.ParseError, KeyError, ValueError) as error:
+            # The cases keep their statuses; only their timings are lost.
+            annotate('warning', 'PHPT timings unreadable', f'{junit}: {error}')
     rows = {}
     for case in cases:
         path = case['path']

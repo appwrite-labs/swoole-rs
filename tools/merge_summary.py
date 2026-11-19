@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.check_migration import MODULES
+from tools.annotations import annotate
 from tools.harness import ROOT
 
 ALIASES = {'string': 'buffer'}
@@ -32,9 +33,13 @@ def summarize(loop):
     cases = defaultdict(Counter)
     for report in loop.parent.glob('*.json'):
         try:
-            results = json.loads(report.read_text()).get('results')
-        except (ValueError, AttributeError):
+            data = json.loads(report.read_text())
+        except ValueError as error:
+            # Its cases are left out of the counts: say so.
+            annotate('warning', 'Unreadable report', f'{report.name}: {error}')
             continue
+        # A JSON list (a gate's --output) is another kind of report, with no cases here.
+        results = data.get('results') if isinstance(data, dict) else None
         for row in results if isinstance(results, list) else []:
             if not isinstance(row, dict) or 'status' not in row or row.get('engine') == 'upstream':
                 continue
@@ -44,7 +49,8 @@ def summarize(loop):
     for report in loop.parent.glob('*.xml'):
         try:
             testcases = list(ET.parse(report).iter('testcase'))
-        except ET.ParseError:
+        except ET.ParseError as error:
+            annotate('warning', 'Unreadable report', f'{report.name}: {error}')
             continue
         for case in testcases:
             if 'upstream' in re.split(r'[][-]', case.get('name', '')):

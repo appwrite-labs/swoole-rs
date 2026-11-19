@@ -57,6 +57,7 @@ def tls_alerts_plaintext():
         try:
             tls.do_handshake()
         except ssl.SSLError:
+            # Expected: the plaintext isn't a ClientHello. The probe is what the server sends.
             pass
         client.setblocking(False)
         try:
@@ -917,8 +918,8 @@ def main():
             try:
                 lines = Path(row['log']).read_text(errors='replace').splitlines()
                 row['log_tail'] = [line for line in lines if line.strip()][-LOG_TAIL:]
-            except OSError:
-                pass
+            except OSError as error:
+                annotate('warning', f'{name} log unreadable', f'{row["log"]}: {error}')
         report['phases'].append(row)
         report['phases'].sort(key=lambda r: order[r['phase']])
         write_report(reports / 'loop.json', report)

@@ -151,6 +151,7 @@ def run(engine):
                         if request(PORT, '/')[0] == 200:
                             break
                     except OSError:
+                        # Expected while it starts: refused until it listens, bounded by the deadline.
                         pass
                     if time.monotonic() > deadline:
                         raise TimeoutError('Hyperf did not become healthy in 30 seconds')
