@@ -27,10 +27,10 @@ const SW_ERROR_PACKAGE_LENGTH_TOO_LARGE: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE as c_int;
 
 /// One write: the reactor, the heap socket and the payload.
-struct Write<'a> {
+struct Write<'a, F> {
     reactor: Running<'a>,
     socket: Heap<'a>,
-    payload: WritePayload<'a>,
+    send: F,
 }
 
 /// One flush or drain: the reactor, the registered socket and its event, which the
@@ -41,19 +41,14 @@ struct Flush<'a> {
     event: &'a Cell<Event>,
 }
 
-impl WriteEffects for Write<'_> {
+impl<F: Fn() -> Option<usize>> WriteEffects for Write<'_, F> {
     fn set_nonblock(&self) {
         self.socket
             .edit(|record| socket_set_fd_option(record, 1, -1));
     }
 
     fn send(&self) -> Option<usize> {
-        match self.payload {
-            // `socket->send(buf, n, 0)`.
-            WritePayload::Bytes(data) => send_drain(*self.socket, data, 0),
-            // `socket->writev(iov, iovcnt)`.
-            WritePayload::Vectors(vectors) => writev(self.socket.fd(), vectors),
-        }
+        (self.send)()
     }
 
     fn create_buffer(&self) {
@@ -82,11 +77,16 @@ impl WriteEffects for Write<'_> {
 
 /// `Reactor::write_func`: the bytes written or queued, or `None` once the failure is
 /// logged or set as the last error.
-fn write(reactor: Running<'_>, socket: Heap<'_>, payload: WritePayload<'_>) -> Option<usize> {
+fn write(
+    reactor: Running<'_>,
+    socket: Heap<'_>,
+    payload: WritePayload<'_>,
+    send: impl Fn() -> Option<usize>,
+) -> Option<usize> {
     let ops = Write {
         reactor,
         socket,
-        payload,
+        send,
     };
     let default_size = SOCKET_DEFAULTS.buffer_size();
     let result = crate::reactor::swr_v1_reactor_write(*socket, default_size, payload, &ops);
@@ -118,7 +118,10 @@ fn write(reactor: Running<'_>, socket: Heap<'_>, payload: WritePayload<'_>) -> O
 /// `ssize_t Reactor::_write(Reactor *, Socket *, const void *buf, size_t n)`.
 #[must_use]
 pub fn reactor_write(reactor: Running<'_>, socket: Heap<'_>, data: &[u8]) -> Option<usize> {
-    write(reactor, socket, WritePayload::Bytes(Drain::new(data)))
+    let data = Drain::new(data);
+    write(reactor, socket, WritePayload::Bytes(data), || {
+        send_drain(*socket, data, 0)
+    })
 }
 
 /// `ssize_t Reactor::_writev(Reactor *, Socket *, const iovec *iov, size_t iovcnt)`:
@@ -129,7 +132,7 @@ pub fn reactor_writev(
     socket: Heap<'_>,
     vectors: &[IoSlice<'_>],
 ) -> Option<usize> {
-    if !socket.read(crate::reactor::SocketFields::ssl).is_null() {
+    let Some(fd) = socket.read(|s| s.ssl().is_null().then_some(s.fd)) else {
         log::error_log(
             log::LogLevel::SW_LOG_WARNING,
             SW_ERROR_OPERATION_NOT_SUPPORT,
@@ -137,8 +140,10 @@ pub fn reactor_writev(
             format_args!("does not support SSL"),
         );
         return None;
-    }
-    write(reactor, socket, WritePayload::Vectors(vectors))
+    };
+    write(reactor, socket, WritePayload::Vectors(vectors), || {
+        writev(fd, vectors)
+    })
 }
 
 impl FlushEffects for Flush<'_> {
