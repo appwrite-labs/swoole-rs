@@ -182,10 +182,13 @@ fn exec(call: &Call<'_>) {
         swoole_curl_buffer_free(handle);
         return;
     }
-    let returned = swoole_curl_method(handle, Stream::Write as c_int) == RETURN;
-    let mut body = Owned::default();
+    // A flushed stream's wrapper can set the handle's options, so each step reads the
+    // write method afresh.
+    let returns = || swoole_curl_method(handle, Stream::Write as c_int) == RETURN;
+    let (mut returned, mut body) = (false, Owned::default());
     bailout::defer(contain_with(|| {
         swoole_curl_stream_flush(swoole_curl_file_stream(handle, CURLOPT_STDERR));
+        returned = returns();
         if returned && swoole_curl_buffer_result(handle, &mut body) {
             return;
         }
@@ -196,6 +199,7 @@ fn exec(call: &Call<'_>) {
                 fflush(file);
             }
         }
+        returned = returns();
     }));
     if !returned {
         call.set_bool(true);
