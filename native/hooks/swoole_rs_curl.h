@@ -45,6 +45,16 @@ static inline php_curl *swoole_curl_get_handle(zval *zid, bool exclusive = true,
     php_curl *ch = Z_CURL_P(zid);
     return swr_v1_curl_check_handle(ch->cp, exclusive, required) ? ch : nullptr;
 }
+/* libcurl's callbacks, Rust's (crates/curl/src/callbacks.rs): each has the php_curl as its data. */
+size_t swoole_curl_on_write(char *data, size_t size, size_t nmemb, void *ctx);
+size_t swoole_curl_on_header(char *data, size_t size, size_t nmemb, void *ctx);
+size_t swoole_curl_on_read(char *data, size_t size, size_t nmemb, void *ctx);
+int swoole_curl_on_progress(void *ctx, double dltotal, double dlnow, double ultotal, double ulnow);
+int swoole_curl_on_xferinfo(void *ctx, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow);
+int swoole_curl_on_fnmatch(void *ctx, const char *pattern, const char *string);
+int swoole_curl_on_debug(CURL *cp, curl_infotype type, char *data, size_t size, void *ctx);
+int swoole_curl_on_prereq(void *ctx, char *primary_ip, char *local_ip, int primary_port, int local_port);
+int swoole_curl_on_ssh_hostkey(void *ctx, int keytype, const char *key, size_t keylen);
 #endif
 struct swr_v1_curl_multi;
 /* Rust's: the easy handle's multi while it is in one, and the multi curl_exec

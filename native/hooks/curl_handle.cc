@@ -182,6 +182,10 @@ extern "C" bool swoole_curl_in_callback(php_curl *ch) {
     return ch->in_callback;
 }
 
+extern "C" void swoole_curl_set_in_callback(php_curl *ch, bool running) {
+    ch->in_callback = running;
+}
+
 extern "C" void swoole_curl_take_private(php_curl *ch, zval *previous) {
     ZVAL_COPY_VALUE(previous, &ch->private_data);
     ZVAL_UNDEF(&ch->private_data);
@@ -394,6 +398,335 @@ extern "C" int swoole_curl_set_file(php_curl *ch, int option, FILE *fp) {
     default:
         return ch->err.no = curl_easy_setopt(ch->cp, CURLOPT_STDERR, fp);
     }
+}
+
+/* What the libcurl callbacks in crates/curl/src/callbacks.rs read and write of php_curl, whose
+ * layout is ext/curl's own. */
+
+/* Whether the value is a stream resource that has been closed under the handle. */
+extern "C" bool swoole_curl_stream_gone(zval *value) {
+    return !Z_ISUNDEF_P(value) && !zend_fetch_resource2_ex(value, NULL, php_file_le_stream(), php_file_le_pstream());
+}
+
+/* Back to the default once the option's stream is gone. */
+extern "C" void swoole_curl_stream_reset(php_curl *ch, int option) {
+    switch (option) {
+    case CURLOPT_FILE:
+        ch->handlers.write->fp = NULL;
+        ch->handlers.write->method = PHP_CURL_STDOUT;
+        break;
+    case CURLOPT_WRITEHEADER:
+        ch->handlers.write_header->fp = NULL;
+        ch->handlers.write_header->method = PHP_CURL_IGNORE;
+        break;
+    case CURLOPT_INFILE:
+        ch->handlers.read->res = NULL;
+        ch->handlers.read->fp = NULL;
+        break;
+    default:
+        curl_easy_setopt(ch->cp, CURLOPT_STDERR, stderr);
+    }
+}
+
+/* The write, header or read slot of a callable option. */
+extern "C" int swoole_curl_method(php_curl *ch, int option) {
+    switch (option) {
+    case CURLOPT_WRITEFUNCTION:
+        return ch->handlers.write->method;
+    case CURLOPT_HEADERFUNCTION:
+        return ch->handlers.write_header->method;
+    default:
+        return ch->handlers.read->method;
+    }
+}
+
+extern "C" void swoole_curl_set_method(php_curl *ch, int option, int method) {
+    switch (option) {
+    case CURLOPT_WRITEFUNCTION:
+        ch->handlers.write->method = method;
+        break;
+    case CURLOPT_HEADERFUNCTION:
+        ch->handlers.write_header->method = method;
+        break;
+    default:
+        ch->handlers.read->method = method;
+    }
+}
+
+extern "C" FILE *swoole_curl_file(php_curl *ch, int option) {
+    switch (option) {
+    case CURLOPT_WRITEFUNCTION:
+        return ch->handlers.write->fp;
+    case CURLOPT_HEADERFUNCTION:
+        return ch->handlers.write_header->fp;
+    default:
+        return ch->handlers.read->fp;
+    }
+}
+
+/* CURLOPT_INFILE's stream, as the read callable's second argument, or null. */
+extern "C" void swoole_curl_read_stream(php_curl *ch, zval *value) {
+    zend_resource *res = ch->handlers.read->res;
+    if (res) {
+        GC_ADDREF(res);
+        ZVAL_RES(value, res);
+    } else {
+        ZVAL_NULL(value);
+    }
+}
+
+extern "C" void swoole_curl_buffer_append(php_curl *ch, const char *data, size_t length) {
+    smart_str_appendl(&ch->handlers.write->buf, data, (int) length);
+}
+
+/* The request header, for CURLINFO_HEADER_OUT. */
+extern "C" void swoole_curl_record_header(php_curl *ch, const char *data, size_t length) {
+    if (ch->header.str) {
+        zend_string_release_ex(ch->header.str, 0);
+    }
+    ch->header.str = zend_string_init(data, length, 0);
+}
+
+/* The CurlHandle object, as a callable's first argument. */
+extern "C" void swoole_curl_handle_value(php_curl *ch, zval *value) {
+    ZVAL_OBJ_COPY(value, &ch->std);
+}
+
+extern "C" void swoole_curl_print(const char *data, size_t length) {
+    PHPWRITE(data, length);
+}
+
+extern "C" size_t swoole_curl_fwrite(const char *data, size_t size, size_t nmemb, FILE *fp) {
+    return fwrite(data, size, nmemb, fp);
+}
+
+extern "C" size_t swoole_curl_fread(char *data, size_t size, size_t nmemb, FILE *fp) {
+    return fread(data, size, nmemb, fp);
+}
+
+extern "C" void swoole_curl_data_string(zval *value, const char *data, size_t length) {
+    ZVAL_STRINGL(value, data, length);
+}
+
+/* The first length bytes of a read callable's string, into libcurl's buffer. */
+extern "C" void swoole_curl_data_fill(char *data, const zend_string *from, size_t length) {
+    memcpy(data, ZSTR_VAL(from), length);
+}
+
+/* A callable option's storage. From PHP 8.4 it is a cache resolved when the option is set,
+ * which holds what it calls; before, the value as given beside the cache its first call
+ * fills, in a record of its own for the options libcurl has a callback for. */
+#if PHP_VERSION_ID >= 80400
+static zend_fcall_info_cache *callable_slot(php_curl *ch, int option) {
+    switch (option) {
+    case CURLOPT_WRITEFUNCTION:
+        return &ch->handlers.write->fcc;
+    case CURLOPT_HEADERFUNCTION:
+        return &ch->handlers.write_header->fcc;
+    case CURLOPT_READFUNCTION:
+        return &ch->handlers.read->fcc;
+    case CURLOPT_PROGRESSFUNCTION:
+        return &ch->handlers.progress;
+    case CURLOPT_XFERINFOFUNCTION:
+        return &ch->handlers.xferinfo;
+    case CURLOPT_FNMATCH_FUNCTION:
+        return &ch->handlers.fnmatch;
+    case CURLOPT_DEBUGFUNCTION:
+        return &ch->handlers.debug;
+#if LIBCURL_VERSION_NUM >= 0x075000 /* Available since 7.80.0 */
+    case CURLOPT_PREREQFUNCTION:
+        return &ch->handlers.prereq;
+#endif
+#if LIBCURL_VERSION_NUM >= 0x075400 /* Available since 7.84.0 */
+    case CURLOPT_SSH_HOSTKEYFUNCTION:
+        return &ch->handlers.sshhostkey;
+#endif
+    default:
+        return NULL;
+    }
+}
+#else
+/* The option's value and cache: false for an option libcurl has a callback for that was
+ * never set, unless create. */
+static bool callable_slot(php_curl *ch, int option, bool create, zval **name, zend_fcall_info_cache **cache) {
+    php_curl_callback **record;
+    switch (option) {
+    case CURLOPT_WRITEFUNCTION:
+        *name = &ch->handlers.write->func_name;
+        *cache = &ch->handlers.write->fci_cache;
+        return true;
+    case CURLOPT_HEADERFUNCTION:
+        *name = &ch->handlers.write_header->func_name;
+        *cache = &ch->handlers.write_header->fci_cache;
+        return true;
+    case CURLOPT_READFUNCTION:
+        *name = &ch->handlers.read->func_name;
+        *cache = &ch->handlers.read->fci_cache;
+        return true;
+    case CURLOPT_PROGRESSFUNCTION:
+        record = &ch->handlers.progress;
+        break;
+    case CURLOPT_XFERINFOFUNCTION:
+        record = &ch->handlers.xferinfo;
+        break;
+    case CURLOPT_FNMATCH_FUNCTION:
+        record = &ch->handlers.fnmatch;
+        break;
+#if LIBCURL_VERSION_NUM >= 0x075400 && PHP_VERSION_ID >= 80300
+    case CURLOPT_SSH_HOSTKEYFUNCTION:
+        record = &ch->handlers.sshhostkey;
+        break;
+#endif
+    default:
+        return false;
+    }
+    if (!*record) {
+        if (!create) {
+            return false;
+        }
+        *record = (php_curl_callback *) ecalloc(1, sizeof(php_curl_callback));
+    }
+    *name = &(*record)->func_name;
+    *cache = &(*record)->fci_cache;
+    return true;
+}
+#endif
+
+extern "C" bool swoole_curl_has_callable(php_curl *ch, int option) {
+#if PHP_VERSION_ID >= 80400
+    zend_fcall_info_cache *fcc = callable_slot(ch, option);
+    return fcc && ZEND_FCC_INITIALIZED(*fcc);
+#else
+    zval *name;
+    zend_fcall_info_cache *cache;
+    return callable_slot(ch, option, false, &name, &cache) && !Z_ISUNDEF_P(name);
+#endif
+}
+
+/* Releases the option's callable, then keeps value as it. From PHP 8.4 null keeps none, and
+ * a value that is not callable keeps none and is false, with the reason in error. */
+extern "C" bool swoole_curl_set_callable(php_curl *ch, int option, zval *value, zval *error) {
+#if PHP_VERSION_ID >= 80400
+    zend_fcall_info_cache *fcc = callable_slot(ch, option);
+    if (!fcc) {
+        return false;
+    }
+    if (ZEND_FCC_INITIALIZED(*fcc)) {
+        zend_fcc_dtor(fcc);
+    }
+    if (Z_TYPE_P(value) == IS_NULL) {
+        return true;
+    }
+    char *reason = NULL;
+    if (!zend_is_callable_ex(value, NULL, 0, NULL, fcc, &reason)) {
+        if (reason) {
+            ZVAL_STRING(error, reason);
+            efree(reason);
+        }
+        *fcc = empty_fcall_info_cache;
+        return false;
+    }
+    zend_fcc_addref(fcc);
+    return true;
+#else
+    zval *name, previous;
+    zend_fcall_info_cache *cache;
+    if (!callable_slot(ch, option, true, &name, &cache)) {
+        return false;
+    }
+    ZVAL_COPY_VALUE(&previous, name);
+    ZVAL_COPY(name, value);
+    *cache = empty_fcall_info_cache;
+    zval_ptr_dtor(&previous);
+    return true;
+#endif
+}
+
+/* The arguments of a call, as Rust lends them (swoole_rs_zend::Zvals). */
+struct callable_args {
+    zval *argv;
+    uint32_t argc;
+};
+
+/* Calls the option's callable, which swoole_curl_has_callable saw, into retval (undefined
+ * when it throws): false when PHP could not call it. The call holds what it calls, so the
+ * PHP code it runs may set the option again. */
+extern "C" bool swoole_curl_call(php_curl *ch, int option, struct callable_args args, zval *retval) {
+#if PHP_VERSION_ID >= 80400
+    zend_fcall_info_cache fcc = *callable_slot(ch, option);
+    zend_object *object = fcc.object, *closure = fcc.closure;
+    if (object) {
+        GC_ADDREF(object);
+    }
+    if (closure) {
+        GC_ADDREF(closure);
+    }
+    zend_call_known_fcc(&fcc, retval, args.argc, args.argv, NULL);
+    if (object) {
+        OBJ_RELEASE(object);
+    }
+    if (closure) {
+        OBJ_RELEASE(closure);
+    }
+    return true;
+#else
+    zval *name;
+    zend_fcall_info_cache *cache;
+    zend_fcall_info fci;
+    callable_slot(ch, option, false, &name, &cache);
+    fci.size = sizeof(fci);
+    ZVAL_COPY(&fci.function_name, name);
+    fci.object = NULL;
+    fci.retval = retval;
+    fci.param_count = args.argc;
+    fci.params = args.argv;
+    fci.named_params = NULL;
+    bool called = zend_call_function(&fci, cache) != FAILURE;
+    zval_ptr_dtor(&fci.function_name);
+    return called;
+#endif
+}
+
+/* libcurl's callback for a callable option it has one for, with the handle as its data; with
+ * `installed` false, libcurl's own default for the option. */
+extern "C" void swoole_curl_install_callback(php_curl *ch, int option, bool installed) {
+    switch (option) {
+    case CURLOPT_PROGRESSFUNCTION:
+        curl_easy_setopt(ch->cp, CURLOPT_PROGRESSFUNCTION, installed ? swoole_curl_on_progress : nullptr);
+        curl_easy_setopt(ch->cp, CURLOPT_PROGRESSDATA, ch);
+        break;
+    case CURLOPT_XFERINFOFUNCTION:
+        curl_easy_setopt(ch->cp, CURLOPT_XFERINFOFUNCTION, installed ? swoole_curl_on_xferinfo : nullptr);
+        curl_easy_setopt(ch->cp, CURLOPT_XFERINFODATA, ch);
+        break;
+    case CURLOPT_FNMATCH_FUNCTION:
+        curl_easy_setopt(ch->cp, CURLOPT_FNMATCH_FUNCTION, installed ? swoole_curl_on_fnmatch : nullptr);
+        curl_easy_setopt(ch->cp, CURLOPT_FNMATCH_DATA, ch);
+        break;
+    case CURLOPT_DEBUGFUNCTION:
+        curl_easy_setopt(ch->cp, CURLOPT_DEBUGFUNCTION, installed ? swoole_curl_on_debug : nullptr);
+        curl_easy_setopt(ch->cp, CURLOPT_DEBUGDATA, ch);
+        break;
+#if LIBCURL_VERSION_NUM >= 0x075000 /* Available since 7.80.0 */
+    case CURLOPT_PREREQFUNCTION:
+        curl_easy_setopt(ch->cp, CURLOPT_PREREQFUNCTION, installed ? swoole_curl_on_prereq : nullptr);
+        curl_easy_setopt(ch->cp, CURLOPT_PREREQDATA, ch);
+        break;
+#endif
+#if LIBCURL_VERSION_NUM >= 0x075400 /* Available since 7.84.0 */
+    case CURLOPT_SSH_HOSTKEYFUNCTION:
+        curl_easy_setopt(ch->cp, CURLOPT_SSH_HOSTKEYFUNCTION, installed ? swoole_curl_on_ssh_hostkey : nullptr);
+        curl_easy_setopt(ch->cp, CURLOPT_SSH_HOSTKEYDATA, ch);
+        break;
+#endif
+    }
+}
+
+/* CURLINFO_HEADER_OUT as an option: libcurl's debug callback records the request header. */
+extern "C" void swoole_curl_set_header_out(php_curl *ch, bool record) {
+    curl_easy_setopt(ch->cp, CURLOPT_DEBUGFUNCTION, record ? swoole_curl_on_debug : NULL);
+    curl_easy_setopt(ch->cp, CURLOPT_DEBUGDATA, record ? ch : NULL);
+    curl_easy_setopt(ch->cp, CURLOPT_VERBOSE, record ? 1L : 0L);
 }
 
 /* CURLOPT_SHARE: sets and keeps a CurlShareHandle (or, on 8.5, a persistent one); any other
