@@ -90,11 +90,7 @@ fn now() -> (sys::UnixSeconds, i64) {
 
 /// `std::strftime(out, format, std::localtime(&time))`, through the reentrant
 /// `localtime_r`: the same calendar, without libc's shared record.
-/// Under Miri, which can't call strftime(3), it renders nothing: lines go out undated.
 fn strftime(out: &mut [u8], format: &CStr, time: sys::UnixSeconds) -> usize {
-    if cfg!(miri) {
-        return 0;
-    }
     sys::localtime_r(time).map_or(0, |tm| sys::strftime(out, format, &tm))
 }
 

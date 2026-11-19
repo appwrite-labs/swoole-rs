@@ -7,6 +7,8 @@ compile_error!("Rust locks require validated macOS or Linux platform contracts")
 #[cfg(target_os = "linux")]
 use crate::CCast;
 use crate::sys;
+#[cfg(miri)]
+use crate::sys::miri::set_mutex_process_shared;
 #[cfg_attr(
     not(test),
     expect(
@@ -92,6 +94,7 @@ struct SpinRef<'a>(&'a Spin);
 // return, and the deadline is read during the call.
 unsafe extern "C" {
     safe fn pthread_mutexattr_init(attr: &mut Words<MUTEX_ATTR>) -> c_int;
+    #[cfg(not(miri))]
     safe fn pthread_mutexattr_setpshared(attr: &mut Words<MUTEX_ATTR>, shared: c_int) -> c_int;
     safe fn pthread_mutexattr_destroy(attr: &Words<MUTEX_ATTR>) -> c_int;
     safe fn pthread_mutex_init(lock: &mut Words<MUTEX_LOCK>, attr: &Words<MUTEX_ATTR>) -> c_int;
@@ -131,15 +134,17 @@ unsafe extern "C" {
 }
 
 // Failed lock initialization owns an initialized attribute, but not a live lock.
-fn init_result(result: c_int, destroy_attr: impl FnOnce()) -> Result<(), c_int> {
-    if result == 0 {
-        return Ok(());
-    }
-    // The failed init's errno, which destroying the attribute must not replace.
-    let saved = sys::errno();
-    destroy_attr();
-    sys::set_errno(saved);
-    Err(result)
+fn init_result(result: Result<(), c_int>, destroy_attr: impl FnOnce()) -> Result<(), c_int> {
+    result.inspect_err(|_| {
+        let saved = sys::errno();
+        destroy_attr();
+        sys::set_errno(saved);
+    })
+}
+
+#[cfg(not(miri))]
+fn set_mutex_process_shared(attr: &mut Words<MUTEX_ATTR>) -> Result<(), c_int> {
+    pthread_result(pthread_mutexattr_setpshared(attr, PTHREAD_PROCESS_SHARED))
 }
 /// Makes `lock` a mutex from `attr`, which it initializes, or the first error,
 /// which leaves neither made.
@@ -148,22 +153,13 @@ fn init_mutex(
     attr: &mut Words<MUTEX_ATTR>,
     shared: bool,
 ) -> Result<(), c_int> {
-    let result = pthread_mutexattr_init(attr);
-    if result != 0 {
-        return Err(result);
-    }
-    // Miri has no pthread_mutexattr_setpshared, and with no fork a process-shared
-    // mutex is no different.
-    let attributes = if shared && !cfg!(miri) {
-        pthread_mutexattr_setpshared(attr, PTHREAD_PROCESS_SHARED)
+    pthread_result(pthread_mutexattr_init(attr))?;
+    let attributes = if shared {
+        set_mutex_process_shared(attr)
     } else {
-        0
+        Ok(())
     };
-    let result = if attributes != 0 {
-        attributes
-    } else {
-        pthread_mutex_init(lock, attr)
-    };
+    let result = attributes.and_then(|()| pthread_result(pthread_mutex_init(lock, attr)));
     init_result(result, || {
         pthread_mutexattr_destroy(attr);
     })
@@ -174,20 +170,13 @@ fn init_rwlock(
     attr: &mut Words<RW_ATTR>,
     shared: bool,
 ) -> Result<(), c_int> {
-    let result = pthread_rwlockattr_init(attr);
-    if result != 0 {
-        return Err(result);
-    }
+    pthread_result(pthread_rwlockattr_init(attr))?;
     let attributes = if shared {
-        pthread_rwlockattr_setpshared(attr, PTHREAD_PROCESS_SHARED)
+        pthread_result(pthread_rwlockattr_setpshared(attr, PTHREAD_PROCESS_SHARED))
     } else {
-        0
+        Ok(())
     };
-    let result = if attributes != 0 {
-        attributes
-    } else {
-        pthread_rwlock_init(lock, attr)
-    };
+    let result = attributes.and_then(|()| pthread_result(pthread_rwlock_init(lock, attr)));
     init_result(result, || {
         pthread_rwlockattr_destroy(attr);
     })
