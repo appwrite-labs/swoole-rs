@@ -16,6 +16,7 @@ use swoole_rs_clients::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::buffer::string::StringBuffer;
+use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::reactor::Socket as Net;
 use swoole_rs_hooks::{co_socket::Co as Handle, socket_extra};
@@ -38,12 +39,6 @@ use swoole_rs_corebase::reactor::{Events, TimeoutKind};
 const SOCK_UDP6: c_int = 4;
 /// `SW_ERROR_WRONG_OPERATION`.
 const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
-/// `SW_IPC_BUFFER_SIZE`: `SW_IPC_MAX_SIZE - sizeof(DataHead)`.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "a constant, where try_from can't run: at most 8152, for a u16 field"
-)]
-const IPC_BUFFER_SIZE: u16 = (swoole_rs_corebase::constants::SW_IPC_MAX_SIZE - 40) as u16;
 
 /// `php_swoole_error(level, "%s", message)`, or with `fatal`
 /// `php_swoole_fatal_error`; a bailout of the error handler is deferred. Nothing is
@@ -558,7 +553,7 @@ pub(crate) fn length_callable(socket: Co, value: &Value) {
     socket.0.edit_protocol(|protocol| {
         protocol.package_length_size = 0;
         protocol.package_length_type = 0;
-        protocol.package_length_offset = IPC_BUFFER_SIZE;
+        protocol.package_length_offset = SW_IPC_BUFFER_SIZE.c_cast::<u16>();
     });
 }
 

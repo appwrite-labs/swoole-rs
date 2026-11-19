@@ -7,6 +7,7 @@ use libc::c_int;
 use std::mem::ManuallyDrop;
 use swoole_rs_clients::client::ClientRecord;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 use swoole_rs_corebase::tls::{self as tls, Text, Value};
 use swoole_rs_phpswoole::length::Named;
 use swoole_rs_ports::framing_recv::default_length_func;
@@ -17,9 +18,6 @@ use swoole_rs_zend::{Array, E_ERROR, Owned, Value as Zval, ZString, bailout};
 const EOF_MAX: usize = 8;
 /// `SW_INPUT_BUFFER_SIZE`.
 const INPUT_BUFFER_SIZE: i64 = 2 * 1024 * 1024;
-
-/// `SW_IPC_BUFFER_SIZE`: the length offset a length function's protocol keeps.
-const IPC_BUFFER_SIZE: u16 = 8192;
 
 /// `php_swoole_length_func`: the packet length a client's `package_length_func`
 /// returns for the bytes so far.
@@ -309,7 +307,7 @@ fn length_option(cli: Cli<'_>) {
         protocol.get_package_length = Some(swoole_rs_phpswoole::length::length::<Length>);
         protocol.package_length_size = 0;
         protocol.package_length_type = 0;
-        protocol.package_length_offset = IPC_BUFFER_SIZE;
+        protocol.package_length_offset = SW_IPC_BUFFER_SIZE.c_cast::<u16>();
     });
 }
 
