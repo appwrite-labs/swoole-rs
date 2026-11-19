@@ -5,6 +5,9 @@ Feature bit 65536 (`hooks`). ABI:
 and io_uring sources have left the build, and so has the module's last native source:
 `coroutine::Socket` and `SocketImpl` are `swoole_rs_coroutine_socket.h`; `swoole_socket_hook.h` and
 `swoole_file_hook.h` keep only what upstream's bundled C uses (`hiredis.c`/`net.c`, `plain_wrapper.c`).
+Of `plain_wrapper.c`, the wrapper's path operations (`url_stat`, `unlink`, `rename`, `mkdir`, `rmdir`,
+`metadata`) and the `fopen` mode helpers are Rust (`crates/phpruntime/src/plain_files.rs`); its stdio and
+directory streams stay C, because they act on PHP's private `php_stdio_stream_data` (the file's header says why).
 
 ## The coroutine socket
 
