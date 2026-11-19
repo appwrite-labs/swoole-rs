@@ -24,7 +24,7 @@ output leave the output untouched. `encoding_errors_leave_output_untouched`
 checks those errors directly, including declared/supplied payload mismatches. `mask`'s null-pointer and oversized-length
 refusals went with its export, and their test (`tests/mask.rs`'s
 `invalid_mask_pointers_and_lengths_do_not_write`) with them: a slice and a key by value
-cannot carry those arguments. The PHP side is `crates/phphttp/src/websocket.rs`.
+cannot carry those arguments. The PHP frame classes and client state live in `crates/phpclients/src/websocket.rs`. The server dispatches frames in `crates/phphttp/src/websocket.rs`.
 
 ## Codec
 

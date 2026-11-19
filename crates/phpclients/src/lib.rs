@@ -20,11 +20,12 @@ mod select;
 mod settings;
 mod socket;
 mod socket_options;
+pub mod websocket;
 
 pub use async_net::*;
 pub use client::*;
 pub use http_client::*;
-pub use http_native::{PushError, WebSocket, register_websocket, websocket_protocol};
+pub use http_native::websocket_protocol;
 pub use native::{Co, NewSocket, make as new_socket, pop_string};
 pub use net::*;
 pub use resolver::*;

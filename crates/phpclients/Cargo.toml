@@ -8,9 +8,10 @@ description = "PHP client classes (Swoole\\Coroutine\\Socket, Swoole\\Coroutine\
 
 [features]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
-php = ["dep:libc", "dep:swoole-rs-error", "dep:swoole-rs-clients", "dep:swoole-rs-hooks", "dep:swoole-rs-corebase", "dep:swoole-rs-inflate", "dep:swoole-rs-base64", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php", "dep:swoole-rs-http", "dep:swoole-rs-ports", "dep:swoole-rs-server", "dep:swoole-rs-websocket"]
+php = ["dep:libc", "dep:swoole-rs-error", "dep:swoole-rs-clients", "dep:swoole-rs-hooks", "dep:swoole-rs-corebase", "dep:swoole-rs-inflate", "dep:swoole-rs-deflate", "dep:swoole-rs-base64", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php", "dep:swoole-rs-http", "dep:swoole-rs-ports", "dep:swoole-rs-server", "dep:swoole-rs-websocket"]
 
 [dependencies]
+swoole-rs-deflate = { path = "../deflate", optional = true }
 libc = { version = "=0.2.191", optional = true }
 swoole-rs-error = { path = "../error", optional = true }
 swoole-rs-clients = { path = "../clients", optional = true }

@@ -1,8 +1,7 @@
 //! Coroutine HTTP client access to socket operations, files and callables.
-//! The phphttp crate registers the [`WebSocket`] implementation at MINIT.
 use crate::{native::Co, socket::Sock};
 use libc::c_int;
-use std::{ffi::CStr, sync::OnceLock};
+use std::ffi::CStr;
 use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::{ProxyState, log};
 use swoole_rs_hooks::hooked::{swoole_coroutine_close, write};
@@ -12,56 +11,7 @@ use swoole_rs_hooks::stdio::{
 };
 use swoole_rs_phpruntime::co;
 use swoole_rs_websocket::HEADER_LEN as WEBSOCKET_HEADER_LEN;
-use swoole_rs_zend::{Array, Owned, Value};
-
-/// `Coroutine\Http\Client`'s WebSocket state: its `WebSocketSettings` and
-/// the message it is assembling. Framing is crates/phphttp's, which depends
-/// on this crate, so it registers the state's constructor at MINIT
-/// ([`register_websocket`]). Methods take `&self`: a `recv` yields, and other
-/// coroutines use the client meanwhile.
-pub trait WebSocket {
-    /// `WebSocket::apply_setting(settings, vht, false)`.
-    fn apply(&self, settings: &Array);
-    /// Whether the client offers `permessage-deflate`.
-    fn compression(&self) -> bool;
-    /// Pack a frame of `data` and send it on `socket`.
-    /// # Errors
-    /// Which step failed; a failed pack may leave a bailout pending, for the
-    /// handler to raise.
-    fn push(
-        &self,
-        socket: Co,
-        data: &Value,
-        opcode: i64,
-        flags: c_int,
-        code: i64,
-        compress: bool,
-    ) -> Result<(), PushError>;
-    /// `websocket::recv_frame` on `socket`: the frame for the call's return
-    /// slot; a bailout it defers is the handler's to raise.
-    fn recv(&self, socket: Co, timeout: f64) -> Owned;
-}
-
-/// Where [`WebSocket::push`] failed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PushError {
-    Pack,
-    Send,
-}
-
-static WEBSOCKET: OnceLock<fn() -> Box<dyn WebSocket>> = OnceLock::new();
-
-/// crates/phphttp's [`WebSocket`] constructor, registered at MINIT; the first
-/// registration stands.
-pub fn register_websocket(new: fn() -> Box<dyn WebSocket>) {
-    WEBSOCKET.get_or_init(|| new);
-}
-
-/// A new client's WebSocket state (`WebSocketSettings`' defaults), once
-/// crates/phphttp has registered it.
-pub(crate) fn websocket() -> Option<Box<dyn WebSocket>> {
-    WEBSOCKET.get().map(|new| new())
-}
+use swoole_rs_zend::{Owned, Value};
 
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::reactor::{Events, TimeoutKind};

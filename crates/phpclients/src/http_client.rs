@@ -1,11 +1,11 @@
 //! Registration and state for `Swoole\Coroutine\Http\Client`, including connection reuse,
 //! multipart requests, response parsing, decompression, downloads and WebSocket upgrades.
-//! The phphttp crate supplies the framing used for WebSocket push and receive.
 use crate::{
-    http_native::{self as native, PushError, WebSocket},
+    http_native as native,
     http_request::{self as request, Compress},
     native::{Co, swoole_rs_php_error},
     socket::Sock,
+    websocket::{CLOSE_NORMAL, ClientWebSocket, FLAG_FIN, FLAGS_ALL, PushError},
 };
 use libc::c_int;
 use std::{
@@ -75,10 +75,6 @@ const WEBSOCKET_HEADER: usize = swoole_rs_websocket::HEADER_LEN as usize;
 /// `SW_WEBSOCKET_EXTENSION_DEFLATE`.
 const DEFLATE_EXTENSION: &CStr =
     c"permessage-deflate; client_no_context_takeover; server_no_context_takeover";
-/// WebSocket flags and close code.
-const FLAG_FIN: i64 = 1;
-const FLAGS_ALL: i64 = 63;
-const CLOSE_NORMAL: i64 = 1000;
 /// `SW_HTTP_RESPONSE_INIT_SIZE`.
 const BODY_SIZE: usize = swoole_rs_corebase::constants::SW_HTTP_RESPONSE_INIT_SIZE as usize;
 
@@ -138,7 +134,7 @@ struct Client {
     body_decompression: Cell<bool>,
     websocket: Cell<bool>,
     accept_websocket_compression: Cell<bool>,
-    ws: Option<Box<dyn WebSocket>>,
+    ws: ClientWebSocket,
     /// Cloned out before each call, so `set()` from the callback can replace it.
     write_func: Cell<Option<Rc<Callable>>>,
     basic_auth: Cell<Vec<u8>>,
@@ -420,7 +416,7 @@ impl Client {
             body_decompression: Cell::new(true),
             websocket: Cell::new(false),
             accept_websocket_compression: Cell::new(false),
-            ws: native::websocket(),
+            ws: ClientWebSocket::default(),
             write_func: Cell::default(),
             basic_auth: Cell::default(),
             head: Cell::new(false),
@@ -536,9 +532,7 @@ impl Client {
                     return;
                 }
             }
-            if let Some(ws) = &self.ws {
-                ws.apply(array);
-            }
+            self.ws.apply(array);
         }
         if let Some(socket) = self.co() {
             crate::socket_options::apply(socket, array, swoole_rs_phpswoole::SocketSettings::All);
@@ -1125,10 +1119,7 @@ impl Client {
         let Some(socket) = self.co() else {
             return call.set_bool(false);
         };
-        let Some(ws) = &self.ws else {
-            return call.set_bool(false);
-        };
-        let frame = ws.recv(socket, timeout);
+        let frame = self.ws.recv(socket, timeout);
         let kind = frame.kind();
         let empty = frame.bytes().is_some_and(<[u8]>::is_empty);
         call.set_owned(frame);
@@ -1166,7 +1157,7 @@ impl Client {
                 b"Sec-WebSocket-Key",
                 Some(key.get(..written).unwrap_or(&key)),
             );
-            if features() & 1 != 0 && self.ws.as_ref().is_some_and(|ws| ws.compression()) {
+            if features() & 1 != 0 && self.ws.compression() {
                 headers.insert_bytes(
                     b"Sec-Websocket-Extensions",
                     Some(DEFLATE_EXTENSION.to_bytes()),
@@ -1203,17 +1194,14 @@ impl Client {
         let Some(socket) = self.co() else {
             return false;
         };
-        let flags = c_int::from(flags.to_le_bytes()[0]);
-        let result = self.ws.as_ref().map_or(Err(PushError::Pack), |ws| {
-            ws.push(
-                socket,
-                data,
-                opcode,
-                flags,
-                code,
-                self.accept_websocket_compression.get(),
-            )
-        });
+        let result = self.ws.push(
+            socket,
+            data,
+            opcode,
+            flags,
+            code,
+            self.accept_websocket_compression.get(),
+        );
         match result {
             Ok(()) => true,
             Err(PushError::Pack) if bailout::pending() => false,
@@ -1451,7 +1439,7 @@ fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> Flow {
         }
     } else if features() & 1 != 0
         && client.websocket.get()
-        && client.ws.as_ref().is_some_and(|ws| ws.compression())
+        && client.ws.compression()
         && name == b"sec-websocket-extensions"
     {
         if request::contains_ignore_case(data, b"permessage-deflate") {
@@ -2073,7 +2061,7 @@ fn push(call: &Call) {
     let flags = call
         .value(3)
         .filter(|flags| !flags.is_null())
-        .map_or(FLAG_FIN, Value::long);
+        .map_or(i64::from(FLAG_FIN), Value::long);
     let Some(data) = call.value(1) else {
         return call.set_bool(false);
     };
@@ -2216,7 +2204,7 @@ fn ping(call: &Call) {
     let result = client.push(
         &payload(data),
         i64::from(Opcode::Ping.code()),
-        FLAG_FIN,
+        i64::from(FLAG_FIN),
         CLOSE_NORMAL,
     );
     call.set_bool(result);
@@ -2240,7 +2228,7 @@ fn disconnect(call: &Call) {
     let result = client.push(
         &payload(reason),
         i64::from(Opcode::Close.code()),
-        FLAG_FIN,
+        i64::from(FLAG_FIN),
         code,
     );
     call.set_bool(result);
