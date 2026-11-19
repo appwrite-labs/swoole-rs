@@ -777,12 +777,6 @@ pub extern "C" fn swr_v1_curl_multi_free(multi: Option<Released>) {
     release(unsafe { Rc::from_raw(multi.as_ptr()) });
 }
 
-/// `Multi::get_multi_handle`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_curl_multi_handle(multi: &Multi) -> *mut CURLM {
-    multi.raw()
-}
-
 /// `Multi::exec`; [`EXEC_NEEDS_COROUTINE`] when it must wait outside a
 /// coroutine or while another one waits.
 pub fn swr_v1_curl_multi_exec(multi: &Multi, handle: &Handle) -> CURLcode {
