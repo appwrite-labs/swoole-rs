@@ -11,8 +11,8 @@ use std::time::Duration;
 use libc::{EBUSY, ETIMEDOUT, LOCK_EX, LOCK_NB, LOCK_SH};
 use swoole_rs_corebase::locks::coroutine::{CoroutineHost, CoroutineLock};
 use swoole_rs_corebase::locks::{
-    Barrier, Kind, Lock, SharedMutex, barrier_destroy, barrier_init, barrier_wait,
-    coroutine_backoff, swr_v1_locks_atomic32, swr_v1_locks_atomic64,
+    Barrier, Kind, Lock, SharedMutex, TIMED_LOCK_CAPABILITIES, barrier_destroy, barrier_init,
+    barrier_wait, coroutine_backoff, swr_v1_locks_atomic32, swr_v1_locks_atomic64,
 };
 use swoole_rs_error::ErrorCode;
 use swoole_rs_oracle::locks as reference;
@@ -21,10 +21,6 @@ const RW_LOCK: i32 = 1;
 const MUTEX: i32 = 3;
 #[cfg(target_os = "linux")]
 const SPIN_LOCK: i32 = 5;
-// What configure finds, as the oracle is built: Linux has pthread_mutex_timedlock (1)
-// and pthread_rwlock_timed{rd,wr}lock (2).
-const CAPABILITIES: u32 = if cfg!(target_os = "linux") { 3 } else { 0 };
-
 /// A zeroed page shared across fork, as `sw_mem_pool`'s are.
 fn page<T>() -> *mut T {
     // SAFETY: an anonymous mapping, which borrows nothing.
@@ -80,7 +76,7 @@ impl RustLock {
     }
     fn lock(&self, operation: i32, timeout: i32) -> i32 {
         self.0
-            .lock(operation, timeout, CAPABILITIES)
+            .lock(operation, timeout, TIMED_LOCK_CAPABILITIES)
             .err()
             .unwrap_or(0)
     }

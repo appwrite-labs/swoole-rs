@@ -20,6 +20,10 @@ use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 pub mod coroutine;
 
+/// Timed pthread waits available to `Lock::lock`, as in the native config.h.
+pub const TIMED_LOCK_CAPABILITIES: u32 =
+    cfg!(HAVE_MUTEX_TIMEDLOCK) as u32 | ((cfg!(HAVE_RWLOCK_TIMEDRDLOCK) as u32) << 1);
+
 /// The words pthread keeps a lock or its attribute in: 8-aligned, `Sync` storage that
 /// pthread alone reads and writes.
 type Words<const N: usize> = [AtomicU64; N];
@@ -962,7 +966,7 @@ mod tests {
     #[test]
     fn safe_locks_lock_and_refuse_what_they_cannot_hold() {
         let lock = super::Lock::private(MUTEX).expect("a mutex");
-        assert_eq!(lock.lock(LOCK_EX, -1, CAPABILITIES), Ok(()));
+        assert_eq!(lock.lock(LOCK_EX, -1, TIMED_LOCK_CAPABILITIES), Ok(()));
         assert_eq!(lock.unlock(), Ok(()));
         assert_eq!(super::Kind::from_code(42), None, "no such kind");
         // Taken back after the refusal, which keeps no reference, so Miri sees no leak.
@@ -974,8 +978,6 @@ mod tests {
         drop(unsafe { Box::from_raw(short) });
     }
 
-    // What configure finds: Linux has pthread_mutex_timedlock and pthread_rwlock_timed*.
-    const CAPABILITIES: u32 = if cfg!(target_os = "linux") { 3 } else { 0 };
     const RW_LOCK: super::Kind = super::Kind::RwLock;
     const MUTEX: super::Kind = super::Kind::Mutex;
     #[cfg(target_os = "linux")]
@@ -998,7 +1000,7 @@ mod tests {
         }
         fn lock(&self, operation: i32, timeout: i32) -> i32 {
             self.0
-                .lock(operation, timeout, CAPABILITIES)
+                .lock(operation, timeout, TIMED_LOCK_CAPABILITIES)
                 .err()
                 .unwrap_or(0)
         }

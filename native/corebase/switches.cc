@@ -157,6 +157,12 @@ extern "C" const uint64_t swr_cpp_switches = 0
 #if defined(SW_CORO_TIME)
     | UINT64_C(1) << 50 /* CoroTime */
 #endif
+#if defined(HAVE_REUSEPORT)
+    | UINT64_C(1) << 51 /* ReusePort */
+#endif
+#if defined(HAVE_MSGQUEUE)
+    | UINT64_C(1) << 52 /* MsgQueue */
+#endif
     ;
 
 // The bug report's compile-time lines (swoole_rs_corebase::bug_report_init).

@@ -22,10 +22,9 @@ pub(crate) const THREAD: u32 = 1 << 12;
 /// The flags of the build's switches; MINIT adds [`SHORTNAME`] from the ini.
 pub(crate) fn flags() -> u32 {
     use swoole_rs_corebase::{Switch as S, built_with};
-    let compression = [S::Zlib, S::Brotli, S::Zstd].into_iter().any(built_with);
     [
         (built_with(S::Debug), DEBUG),
-        (compression, COMPRESSION),
+        (crate::codecs() != 0, COMPRESSION),
         (built_with(S::Zlib), ZLIB),
         (built_with(S::Brotli), BROTLI),
         (built_with(S::Tls1_1), TLS1_1),

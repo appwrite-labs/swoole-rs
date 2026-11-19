@@ -57,6 +57,8 @@ pub enum Switch {
     ContextProtectStackPage,
     ContextDetectStackUsage,
     CoroTime,
+    ReusePort,
+    MsgQueue,
 }
 
 /// Each switch, its `#if` and its `phpinfo()` row label (empty when the row
@@ -161,4 +163,6 @@ pub const SWITCHES: &[(Switch, &str, &std::ffi::CStr)] = &[
         c"",
     ),
     (Switch::CoroTime, "defined(SW_CORO_TIME)", c""),
+    (Switch::ReusePort, "defined(HAVE_REUSEPORT)", c""),
+    (Switch::MsgQueue, "defined(HAVE_MSGQUEUE)", c""),
 ];
