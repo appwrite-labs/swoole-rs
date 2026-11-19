@@ -108,6 +108,7 @@ fn invoke_argv(
 ) -> Result<bool, Bailout> {
     let called = swoole_rs_phpcoroutines::call_args(cb, argv, retval, coroutine);
     called.map_err(|bailout| {
+        // The Err returned below carries the bailout after relay_to_c consumes the pending flag.
         let _relayed = bailout::relay_to_c(Err(bailout));
         Bailout
     })
@@ -188,6 +189,7 @@ fn prepare_worker(server: view::Server<'_>) {
         && !config.task_enable_coroutine.get()
         && config.mode_ != Mode::Thread
     {
+        // Worker startup continues after disabling hooks, as in php_swoole_server_onWorkerStart.
         let _unhooked = swoole_rs_phpruntime::php_coroutine_enable_hook(0);
     }
     server.set_bus_allocator(true, swoole_rs_phpswoole::zend_string_allocator());

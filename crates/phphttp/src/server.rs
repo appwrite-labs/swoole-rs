@@ -363,6 +363,7 @@ pub(crate) fn call_handler(
         then,
     );
     called.map_err(|bailout| {
+        // The Err returned below carries the bailout after relay_to_c consumes the pending flag.
         let _relayed = bailout::relay_to_c(Err(bailout));
         bailout::Bailout
     })

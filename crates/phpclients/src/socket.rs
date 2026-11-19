@@ -120,10 +120,14 @@ impl<'a> Sock<'a> {
         }
     }
 
-    /// The object takes `socket`, then publishes it. It keeps a socket it held
-    /// before, and `socket` leaks.
+    /// Publish the socket the object owns, freeing a second socket if construction re-entered.
     fn adopt(self, socket: NewSocket) {
-        let _first_kept = self.0.socket.set(socket);
+        if let Err(unused) = self.0.socket.set(socket)
+            && let Err(bailout) = unused.free()
+        {
+            bailout.defer();
+            return;
+        }
         self.publish();
     }
 

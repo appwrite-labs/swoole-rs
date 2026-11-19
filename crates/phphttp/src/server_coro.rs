@@ -433,6 +433,7 @@ fn construct(call: &Call) {
             });
         }
         if ssl {
+            // The upstream coroutine HTTP constructor proceeds to listen after requesting TLS.
             let _enabled = socket.enable_ssl();
         }
         if !socket.listen(0) {
@@ -823,6 +824,7 @@ fn on_accept(call: &Call) {
     server.clients(|clients| clients.insert_index(cid.cast_unsigned(), zconn.copy()));
     let (remote_addr, remote_port) = address(socket);
     // The network socket's address becomes the local one.
+    // Upstream reads the socket address after get_name even if the lookup failed.
     let _named = socket.getsockname();
     let (server_addr, _) = address(socket);
     let peer = Peer {
@@ -937,6 +939,7 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             let state = context.state();
             if !state.completed && state.request.version == 101 && expects_continue(context) {
                 drop(buffer);
+                // Upstream keeps reading the request body regardless of the interim response write.
                 let _sent = conn.socket.send_all(SW_HTTP_100_CONTINUE_PACKET.as_bytes());
                 buffer = conn.socket.own_read_buffer();
             }

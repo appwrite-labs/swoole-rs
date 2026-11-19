@@ -56,6 +56,13 @@ mod linked;
 use std::cell::RefCell;
 thread_local! { static STATE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) }; }
 struct Owner { queue: std::cell::RefCell<Vec<u8>> }
+fn discarded() {
+    let _status = close();
+    // The destructor checks the final status.
+    let _sent = send();
+    let _guard = lock();
+    let _guard_mask = mask();
+}
 fn owner() -> Owner { Owner { queue: RefCell::default() } }
 '''
 
@@ -92,7 +99,7 @@ class Budget(unittest.TestCase):
                 # STATE and queue; the import and the constructors name no type.
                 'cells': {'one': 2},
                 'statuses': {'one': 0}, 'reprs': {'one': 0}, 'derefs': {'one': 0},
-                'externs': {'one': 0}, 'shortreads': {'one': 0}, 'rawtemp': {'one': 0},
+                'externs': {'one': 0}, 'shortreads': {'one': 0}, 'rawtemp': {'one': 0}, 'unreasoned': {'one': 1},
                 # shim.c's three and shim.h's one; tests/ isn't src/.
                 'clines': {'one': 4}, 'php_args': {},
             })
