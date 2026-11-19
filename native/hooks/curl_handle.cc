@@ -391,6 +391,58 @@ extern "C" void swoole_curl_publish_roots(zend_get_gc_buffer *gc, zval **table, 
     zend_get_gc_buffer_use(gc, table, n);
 }
 
+extern "C" php_curl *swoole_curl_new_handle(zval *result) {
+    object_init_ex(result, swoole_coroutine_curl_handle_ce);
+    return Z_CURL_P(result);
+}
+
+/* zend_object_alloc zeroes all php_curl fields before std, including the
+ * callback slots, error buffer and undefined postfields zval. */
+extern "C" void swoole_curl_alloc_handlers(php_curl *ch) {
+    ch->handlers.write = (php_curl_write *) ecalloc(1, sizeof(php_curl_write));
+    ch->handlers.write_header = (php_curl_write *) ecalloc(1, sizeof(php_curl_write));
+    ch->handlers.read = (php_curl_read *) ecalloc(1, sizeof(php_curl_read));
+}
+
+/* A CURLFile upload's state for libcurl's read, seek and free callbacks: the file opens on the
+ * first read when it couldn't be opened up front. */
+struct mime_data_cb_arg {
+    zend_string *filename;
+    php_stream *stream;
+};
+
+static void free_upload(void *slot) {
+    auto *cb_arg = static_cast<mime_data_cb_arg *>(*static_cast<void **>(slot));
+
+    ZEND_ASSERT(cb_arg->stream == NULL);
+    zend_string_release(cb_arg->filename);
+    efree(cb_arg);
+}
+
+extern "C" void swoole_curl_alloc_lists(php_curl *ch) {
+    ch->to_free = (_php_curl_free *) ecalloc(1, sizeof(_php_curl_free));
+    zend_llist_init(&ch->to_free->post, sizeof(curl_mime *), [](void *slot) {
+        curl_mime_free(*static_cast<curl_mime **>(slot));
+    }, 0);
+    zend_llist_init(&ch->to_free->stream, sizeof(void *), free_upload, 0);
+#if PHP_VERSION_ID >= 80500
+    HashTable *lists = &ch->to_free->slist;
+#else
+    HashTable *lists = ch->to_free->slist = (HashTable *) emalloc(sizeof(HashTable));
+#endif
+    zend_hash_init(lists, 4, nullptr, [](zval *entry) {
+        curl_slist_free_all(static_cast<curl_slist *>(Z_PTR_P(entry)));
+    }, 0);
+    ch->clone = (uint32_t *) emalloc(sizeof(uint32_t));
+    *ch->clone = 1;
+}
+
+extern "C" void swoole_curl_share_lists(php_curl *ch, php_curl *source) {
+    ch->to_free = source->to_free;
+    ch->clone = source->clone;
+    ++*ch->clone;
+}
+
 extern "C" bool swoole_curl_release_clone(php_curl *ch) {
     return --*ch->clone == 0;
 }
@@ -1105,21 +1157,6 @@ extern "C" void swoole_curl_set_share(php_curl *ch, zval *value) {
     }
     GC_ADDREF(&sh->std);
     ch->share = sh;
-}
-
-/* A CURLFile upload's state for libcurl's read, seek and free callbacks: the file opens on the
- * first read when it couldn't be opened up front. */
-struct mime_data_cb_arg {
-    zend_string *filename;
-    php_stream *stream;
-};
-
-extern "C" void swoole_curl_free_cb_arg(void **cb_arg_p) {
-    struct mime_data_cb_arg *cb_arg = (struct mime_data_cb_arg *) *cb_arg_p;
-
-    ZEND_ASSERT(cb_arg->stream == NULL);
-    zend_string_release(cb_arg->filename);
-    efree(cb_arg);
 }
 
 static size_t read_cb(char *buffer, size_t size, size_t nitems, void *arg) {

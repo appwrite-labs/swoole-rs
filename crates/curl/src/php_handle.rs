@@ -55,7 +55,7 @@ unsafe extern "C" {
     pub(super) safe fn zend_std_get_properties(object: ObjectRef<'_>) -> *mut std::ffi::c_void;
     // The native accessor checks the object's class before recovering php_curl.
     pub(super) safe fn swoole_curl_object_handle(object: ObjectRef<'_>) -> Option<PhpHandle<'_>>;
-    safe fn swoole_curl_init_handle_into_zval(slot: &mut swoole_rs_zend::Owned) -> PhpHandle<'_>;
+    safe fn swoole_curl_new_handle(slot: &mut swoole_rs_zend::Owned) -> PhpHandle<'_>;
     safe fn swoole_curl_bind_easy(handle: PhpHandle<'_>, easy: Easy<'_>);
     pub(super) safe fn swoole_curl_easy(handle: PhpHandle<'_>) -> Easy<'_>;
     safe fn swoole_curl_easy_upkeep(handle: PhpHandle<'_>) -> c_int;
@@ -75,7 +75,9 @@ unsafe extern "C" {
 
     safe fn swoole_curl_new_clone(slot: &mut swoole_rs_zend::Owned) -> PhpHandle<'_>;
     safe fn zend_clear_exception();
-    safe fn swoole_curl_init_handle(handle: PhpHandle<'_>);
+    safe fn swoole_curl_alloc_handlers(handle: PhpHandle<'_>);
+    safe fn swoole_curl_alloc_lists(handle: PhpHandle<'_>);
+    safe fn swoole_curl_share_lists(handle: PhpHandle<'_>, source: PhpHandle<'_>);
     pub(super) safe fn swoole_curl_set_easy(handle: PhpHandle<'_>, easy: Easy<'_>);
     safe fn curl_easy_duphandle(source: Easy<'_>) -> *mut swoole_rs_curl_sys::CURL;
     safe fn swoole_setup_easy_copy_handlers(clone: PhpHandle<'_>, source: PhpHandle<'_>);
@@ -115,7 +117,9 @@ fn init(call: &Call<'_>) {
     }
     let easy = Easy(raw, PhantomData);
     let mut object = swoole_rs_zend::Owned::default();
-    let handle = swoole_curl_init_handle_into_zval(&mut object);
+    let handle = swoole_curl_new_handle(&mut object);
+    swoole_curl_alloc_handlers(handle);
+    swoole_curl_alloc_lists(handle);
     swoole_curl_bind_easy(handle, easy);
     crate::setopt::defaults(handle);
     crate::swr_v1_curl_create_handle(easy);
@@ -293,15 +297,21 @@ fn error(call: &Call<'_>) {
     call.set_bytes(message.to_bytes());
 }
 
+fn init_copy(copy: PhpHandle<'_>, source: PhpHandle<'_>, easy: Easy<'_>) {
+    swoole_curl_alloc_handlers(copy);
+    swoole_curl_share_lists(copy, source);
+    swoole_curl_set_easy(copy, easy);
+    swoole_setup_easy_copy_handlers(copy, source);
+}
+
 pub(super) fn pushed_object(
     easy: Easy<'_>,
     parent: PhpHandle<'_>,
 ) -> Option<swoole_rs_zend::Owned> {
     let owner = swoole_curl_easy(parent).handle()?;
     let mut object = swoole_rs_zend::Owned::default();
-    let child = swoole_curl_init_handle_into_zval(&mut object);
-    swoole_curl_set_easy(child, easy);
-    swoole_setup_easy_copy_handlers(child, parent);
+    let child = swoole_curl_new_handle(&mut object);
+    init_copy(child, parent, easy);
     crate::Handle::create(easy, owner.multi_ref());
     Some(object)
 }
@@ -309,17 +319,10 @@ pub(super) fn pushed_object(
 fn clone_object(source: PhpHandle<'_>) -> swoole_rs_zend::Owned {
     let mut object = swoole_rs_zend::Owned::default();
     let clone = swoole_curl_new_clone(&mut object);
-    if PHP_VERSION_ID >= 80400 {
-        swoole_curl_init_handle(clone);
-    }
     let raw = curl_easy_duphandle(swoole_curl_easy(source));
     let copied = !raw.is_null() && {
         let easy = Easy(raw, PhantomData);
-        if PHP_VERSION_ID < 80400 {
-            swoole_curl_init_handle(clone);
-        }
-        swoole_curl_set_easy(clone, easy);
-        swoole_setup_easy_copy_handlers(clone, source);
+        init_copy(clone, source, easy);
         crate::swr_v1_curl_create_handle(easy);
         let mut ok = false;
         let result = swoole_rs_zend::contain_with(|| {

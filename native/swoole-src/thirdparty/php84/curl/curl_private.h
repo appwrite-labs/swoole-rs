@@ -142,8 +142,6 @@ typedef struct _php_curlsh {
     zend_object std;
 } php_curlsh;
 
-php_curl *swoole_curl_init_handle_into_zval(zval *curl);
-void swoole_curl_init_handle(php_curl *ch);
 void swoole_curl_cleanup_handle(php_curl *);
 void swoole_curl_verify_handlers(php_curl *ch, bool reporterror);
 void swoole_setup_easy_copy_handlers(php_curl *ch, php_curl *source);
