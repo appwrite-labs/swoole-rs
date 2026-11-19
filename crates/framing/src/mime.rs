@@ -81,7 +81,7 @@ pub fn each(mut f: impl FnMut(&CStr)) {
     }
 }
 
-// Copied byte-for-byte from the pinned reference.
+// tools/check_mime_catalog.py compares every pair with the pinned mime_type.cc initializer.
 static CATALOG: &[(&[u8], &[u8])] = &[
     (b"ez", b"application/andrew-inset"),
     (b"aw", b"application/applixware"),

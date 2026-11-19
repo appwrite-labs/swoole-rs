@@ -77,7 +77,8 @@ unsafe extern "C" {
     safe fn zend_argument_value_error(n: u32, format: CText<'_>, ...);
 }
 
-/// Zend's `zend_expected_type`: what a parameter takes, for its error.
+/// Each discriminant comes from bindgen over the installed Zend headers (zend-sys/build.rs).
+/// Zend reads its own type-name table in `zend_wrong_parameter_type_error`.
 #[derive(Clone, Copy)]
 #[repr(u32)]
 pub(crate) enum Expected {

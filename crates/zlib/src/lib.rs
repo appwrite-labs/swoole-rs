@@ -229,8 +229,8 @@ impl Drop for Stream {
     }
 }
 
-/// zlib's message for a status (`zError`): its `z_errmsg` table, indexed from
-/// `Z_NEED_DICT` (2) down to `Z_VERSION_ERROR` (-6); empty for any other number.
+/// zlib's message for a status, or empty outside the range accepted by `zError`.
+/// `error_matches_linked_zlib` compares each supported status with the linked library.
 #[must_use]
 pub fn error(status: c_int) -> &'static CStr {
     const MESSAGES: [&CStr; 9] = [
@@ -249,4 +249,24 @@ pub fn error(status: c_int) -> &'static CStr {
         .and_then(|index| MESSAGES.get(index))
         .copied()
         .unwrap_or(c"")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_matches_linked_zlib() {
+        unsafe extern "C" {
+            fn zError(status: c_int) -> *const c_char;
+        }
+        for status in libz_sys::Z_VERSION_ERROR..=libz_sys::Z_NEED_DICT {
+            // SAFETY: zError indexes its static NUL-terminated messages with this valid status.
+            let expected = unsafe { CStr::from_ptr(zError(status)) };
+            assert_eq!(error(status), expected, "zlib status {status}");
+        }
+        for status in [c_int::MIN, -7, 3, c_int::MAX] {
+            assert_eq!(error(status), c"", "unknown zlib status {status}");
+        }
+    }
 }

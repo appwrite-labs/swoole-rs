@@ -124,6 +124,7 @@ fn lower_alike(left: u8, right: u8) -> bool {
     lower(left) == lower(right)
 }
 /// glibc's portable `strncasecmp` loop, for operands [`alike`] does not settle.
+/// `case_comparison_matches_libc_in_each_locale` checks both paths against libc.
 #[cold]
 #[inline(never)]
 fn bytewise(left: &[u8], right: &[u8]) -> bool {
