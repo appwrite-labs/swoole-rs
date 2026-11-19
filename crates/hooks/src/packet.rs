@@ -1,8 +1,7 @@
 //! Coroutine packet framing directly over the socket's record and installed host.
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG;
 use swoole_rs_corebase::reactor::Events;
-/// `SW_BUFFER_SIZE_BIG`: the most one EOF-protocol `recv` asks for.
-const BIG: usize = 65536;
 
 /// A view of the native read String, refreshed after every resize.
 #[derive(Clone, Copy)]
@@ -184,7 +183,10 @@ impl Packet {
                 let buffer = self.buffer();
                 let received = self.recv(
                     buffer.length,
-                    buffer.size.wrapping_sub(buffer.length).min(BIG),
+                    buffer
+                        .size
+                        .wrapping_sub(buffer.length)
+                        .min(SW_BUFFER_SIZE_BIG as usize),
                 );
                 let Some(received @ 1..) = received else {
                     self.clear();

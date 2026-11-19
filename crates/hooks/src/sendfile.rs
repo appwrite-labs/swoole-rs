@@ -47,7 +47,7 @@ pub(crate) fn send_range(
 }
 
 /// `SW_BUFFER_SIZE_BIG`, `UringSocket::ssl_sendfile`'s stack buffer.
-pub const TLS_CHUNK: usize = 65536;
+pub const TLS_CHUNK: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as usize;
 /// The operation whose failure stopped [`tls_sendfile`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TlsWarning {

@@ -38,7 +38,7 @@ pub(crate) struct SocketOps {
 }
 
 /// `SW_SOCK_RAW`.
-const SOCK_RAW: c_int = 7;
+const SOCK_RAW: c_int = swoole_rs_corebase::constants::SocketType::SW_SOCK_RAW as c_int;
 
 /// The sockets the hooks make.
 const SOCKETS: SocketOps = SocketOps {

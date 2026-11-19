@@ -277,13 +277,16 @@ impl Co {
     /// socket's TLS is the server side.
     #[must_use]
     pub fn listen(self, backlog: c_int) -> bool {
-        /// `SW_BACKLOG`.
-        const BACKLOG: c_int = 512;
+        use swoole_rs_corebase::constants::SW_BACKLOG;
         // `SW_EVENT_NULL` skips the bound check.
         if !available(self, Events::NONE) {
             return false;
         }
-        let backlog = if backlog <= 0 { BACKLOG } else { backlog };
+        let backlog = if backlog <= 0 {
+            SW_BACKLOG.cast_signed()
+        } else {
+            backlog
+        };
         self.set_backlog(backlog);
         if !self.net(|record| record.listen(backlog)).unwrap_or(false) {
             set_err(self, errno());
