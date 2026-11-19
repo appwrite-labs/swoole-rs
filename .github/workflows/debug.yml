@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: ./.github/actions/install
         with:
-          packages: libgmp-dev firebird-dev libaio1t64
+          packages: libgmp-dev firebird-dev libaio1t64 libsqliteodbc
       - uses: ./.github/actions/instantclient
       # Main's release cache, for its downloaded crates: the release-checked profile builds
       # every crate, against this PHP (PHP_CONFIG). Build trees must start clean.
@@ -68,6 +68,8 @@ jobs:
           cp target/ext/swoole.so target/phpt/cargo.so
           "$php/php" -v | grep DEBUG
           for engine in upstream cargo; do "$php/php" -n -d "extension=$PWD/target/phpt/$engine.so" --ri swoole | grep -E '^Version '; done
+      - name: Check ODBC LOB stream errors and statement reuse
+        run: target/php-debug/bin/php -n -d "extension=$PWD/target/phpt/cargo.so" tests/modules/hooks/odbc_lob.php
       # phpt-env downloads it under this name.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
