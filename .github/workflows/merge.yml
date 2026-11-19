@@ -92,6 +92,9 @@ jobs:
         run: |
           gates=(integrate --all-modules --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi --external-network --php-sockets --core-test-services --shard ${{ matrix.shard }}/3)
           python3 tools/dev.py "${gates[@]}" --plan > "$RUNNER_TEMP/gate-plan.json"
+          if jq -e 'any(.[]; .phase == "hooks-system-rust")' "$RUNNER_TEMP/gate-plan.json" >/dev/null; then
+            docker compose -f corpus/upstream/services.yml run -d --publish '[::1]:80:80' httpbin
+          fi
           if jq -e 'any(.[]; .phase == "http-server-rust")' "$RUNNER_TEMP/gate-plan.json" >/dev/null; then
             docker compose -f corpus/upstream/services.yml up -d --wait redis
             if ! command -v npm >/dev/null; then sudo apt-get install -y nodejs npm; fi
