@@ -45,6 +45,7 @@ static inline php_curl *swoole_curl_get_handle(zval *zid, bool exclusive = true,
     php_curl *ch = Z_CURL_P(zid);
     return swr_v1_curl_check_handle(ch->cp, exclusive, required) ? ch : nullptr;
 }
+zval *swoole_curl_multi_find_easy(php_curlm *mh, CURL *easy);
 /* libcurl's callbacks, Rust's (crates/curl/src/callbacks.rs): each has the php_curl as its data. */
 size_t swoole_curl_on_write(char *data, size_t size, size_t nmemb, void *ctx);
 size_t swoole_curl_on_header(char *data, size_t size, size_t nmemb, void *ctx);

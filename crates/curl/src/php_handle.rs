@@ -53,7 +53,7 @@ unsafe extern "C" {
     );
     pub(super) safe fn zend_std_get_properties(object: ObjectRef<'_>) -> *mut std::ffi::c_void;
     // The native accessor checks the object's class before recovering php_curl.
-    safe fn swoole_curl_object_handle(object: ObjectRef<'_>) -> Option<PhpHandle<'_>>;
+    pub(super) safe fn swoole_curl_object_handle(object: ObjectRef<'_>) -> Option<PhpHandle<'_>>;
     safe fn swoole_curl_init_handle_into_zval(slot: &mut swoole_rs_zend::Owned) -> PhpHandle<'_>;
     safe fn swoole_curl_bind_easy(handle: PhpHandle<'_>, easy: Easy<'_>);
     safe fn swoole_curl_default_options(handle: PhpHandle<'_>);

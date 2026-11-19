@@ -505,20 +505,23 @@ impl Multi {
         }
     }
 
+    /// Copy the completion fields before another libcurl operation can invalidate the message.
+    fn next_message(&self, pending: &mut c_int) -> Option<(c_int, *mut CURL, CURLcode)> {
+        let message = curl_multi_info_read(self.live(), pending);
+        // SAFETY: libcurl returns null or a live message until the next multi operation.
+        let message = unsafe { message.as_ref() }?;
+        Some((message.msg, message.easy_handle, message.result()))
+    }
+
     /// `Multi::read_info`: the first finished transfer's result.
     fn read_info(&self) -> CURLcode {
-        let mut pending = 0;
-        loop {
-            let message = curl_multi_info_read(self.live(), &mut pending);
-            // SAFETY: null or a message curl keeps until the next call.
-            let Some(message) = (unsafe { message.as_ref() }) else {
-                return CURLE_OK;
-            };
-            if message.msg == CURLMSG_DONE {
-                return message.result();
+        while let Some((kind, _, result)) = self.next_message(&mut 0) {
+            if kind == CURLMSG_DONE {
+                return result;
             }
             log::warning(c"Multi::read_info", format_args!("CURLMSG default"));
         }
+        CURLE_OK
     }
 
     /// `Multi::selector_poll`: what the sockets have ready now, without

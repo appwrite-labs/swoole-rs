@@ -95,25 +95,6 @@ static int curl_compare_objects(zval *z1, zval *z2) /* {{{ */
 }
 /* }}} */
 
-/* Used to find the php_curl resource for a given curl easy handle */
-static zval *_php_curl_multi_find_easy_handle(php_curlm *mh, CURL *easy) /* {{{ */
-{
-    php_curl *tmp_ch;
-    zend_llist_position pos;
-    zval *pz_ch_temp;
-
-    for (pz_ch_temp = (zval *) zend_llist_get_first_ex(&mh->easyh, &pos); pz_ch_temp;
-         pz_ch_temp = (zval *) zend_llist_get_next_ex(&mh->easyh, &pos)) {
-        tmp_ch = swoole_curl_get_handle(pz_ch_temp, false, false);
-        if (tmp_ch && tmp_ch->cp == easy) {
-            return pz_ch_temp;
-        }
-    }
-
-    return NULL;
-}
-/* }}} */
-
 /* {{{ Remove a multi handle from a set of cURL handles */
 PHP_FUNCTION(swoole_native_curl_multi_remove_handle) {
     zval *z_mh;
@@ -151,57 +132,6 @@ PHP_FUNCTION(swoole_native_curl_multi_remove_handle) {
     zend_llist_del_element(&mh->easyh, z_ch, (int (*)(void *, void *)) curl_compare_objects);
 #endif
     RETVAL_LONG((zend_long) error);
-}
-/* }}} */
-
-/* {{{ Get information about the current transfers */
-PHP_FUNCTION(swoole_native_curl_multi_info_read) {
-    zval *z_mh;
-    php_curlm *mh;
-    CURLMsg *tmp_msg;
-    int queued_msgs;
-    zval *zmsgs_in_queue = NULL;
-    php_curl *ch;
-
-    ZEND_PARSE_PARAMETERS_START(1, 2)
-    Z_PARAM_OBJECT_OF_CLASS(z_mh, swoole_coroutine_curl_multi_handle_ce)
-    Z_PARAM_OPTIONAL
-    Z_PARAM_ZVAL(zmsgs_in_queue)
-    ZEND_PARSE_PARAMETERS_END();
-
-    mh = Z_CURL_MULTI_P(z_mh);
-    if (!(swoole_curl_multi_is_in_coroutine(mh))) {
-        swoole_fatal_error(SW_ERROR_WRONG_OPERATION,
-                           "The given object is not a valid coroutine CurlMultiHandle object");
-        RETURN_FALSE;
-    }
-
-    tmp_msg = curl_multi_info_read((CURLM *) swr_v1_curl_multi_handle(mh->multi), &queued_msgs);
-    if (tmp_msg == NULL) {
-        RETURN_FALSE;
-    }
-
-    if (zmsgs_in_queue) {
-        ZEND_TRY_ASSIGN_REF_LONG(zmsgs_in_queue, queued_msgs);
-    }
-
-    array_init(return_value);
-    add_assoc_long(return_value, "msg", tmp_msg->msg);
-    add_assoc_long(return_value, "result", tmp_msg->data.result);
-
-    /* find the original easy curl handle */
-    {
-        zval *pz_ch = _php_curl_multi_find_easy_handle(mh, tmp_msg->easy_handle);
-        if (pz_ch != NULL) {
-            /* we must save result to be able to read error message */
-            ch = swoole_curl_get_handle(pz_ch, false, false);
-            if (ch) {
-                SAVE_CURL_ERROR(ch, tmp_msg->data.result);
-            }
-            Z_ADDREF_P(pz_ch);
-            add_assoc_zval(return_value, "handle", pz_ch);
-        }
-    }
 }
 /* }}} */
 
@@ -256,7 +186,7 @@ static int _php_server_push_callback(
 
     zend_fcall_info fci = empty_fcall_info;
 
-    pz_parent_ch = _php_curl_multi_find_easy_handle(mh, parent_ch);
+    pz_parent_ch = swoole_curl_multi_find_easy(mh, parent_ch);
     if (pz_parent_ch == NULL) {
         return rval;
     }

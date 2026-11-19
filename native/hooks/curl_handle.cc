@@ -138,6 +138,16 @@ extern "C" swr_v1_curl_multi *swoole_curl_multi_engine(php_curlm *mh) {
     return mh->easyh.dtor == release_multi_easy && swoole_curl_multi_is_in_coroutine(mh) ? mh->multi : nullptr;
 }
 
+extern "C" zval *swoole_curl_multi_find_easy(php_curlm *mh, CURL *easy) {
+    for (zend_llist_element *item = mh->easyh.head; item; item = item->next) {
+        auto *value = reinterpret_cast<zval *>(item->data);
+        if (Z_TYPE_P(value) == IS_OBJECT && Z_CURL_P(value)->cp == easy) {
+            return value;
+        }
+    }
+    return nullptr;
+}
+
 extern "C" bool swoole_curl_multi_empty(php_curlm *mh) {
     return zend_llist_count(&mh->easyh) == 0;
 }
