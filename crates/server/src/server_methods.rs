@@ -427,18 +427,14 @@ mod tests {
             *conn.socket().unwrap()
         }
 
-        // SAFETY: plain records, for which zero is valid.
-        let (mut sock, mut pipe): (SocketRecord, SocketRecord) =
-            unsafe { (core::mem::zeroed(), core::mem::zeroed()) };
-        sock.fd = -1;
+        let (mut sock, mut pipe) = (SocketRecord::with_fd(-1, 0), SocketRecord::new());
         sock.kernel_nobufs = true;
         pipe.kernel_nobufs = true;
         let mut connections: [ConnectionRecord; 4] = Default::default();
         let owned = swoole_rs_corebase::reactor::OwnedSocket::new(Box::new(sock));
         crate::Connection::from(&connections[3]).hold_socket(owned);
         connections[3].reactor_id.set(1);
-        // SAFETY: as above.
-        let mut workers: [WorkerRecord; 4] = unsafe { core::mem::zeroed() };
+        let mut workers: [WorkerRecord; 4] = std::array::from_fn(|_| WorkerRecord::empty());
         // Session 3 on reactor 1 of 2, over 2 pipes: worker 1 + (3 % 2) * 2.
         // SAFETY: a live record, and a pipe socket that outlives every send below.
         unsafe {
@@ -492,9 +488,8 @@ mod tests {
         use swoole_rs_corebase::reactor::SocketRecord;
         let live = crate::fixture::LiveServer::new();
         live.server().fd_bounds().max_fd.store(7, Relaxed);
-        // SAFETY: plain records, for which zero is valid.
-        let (mut master, mut end, record): (SocketRecord, SocketRecord, WorkerRecord) =
-            unsafe { core::mem::zeroed() };
+        let (mut master, mut end) = (SocketRecord::new(), SocketRecord::new());
+        let record = WorkerRecord::empty();
         master.fd = 5;
         end.fd = 9;
         let worker = Worker::from(&record);

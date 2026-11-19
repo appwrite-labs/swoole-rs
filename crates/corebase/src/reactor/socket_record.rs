@@ -5,6 +5,7 @@ use crate::constants::{
     SW_SOCKET_DEFAULT_READ_TIMEOUT, SW_SOCKET_DEFAULT_WRITE_TIMEOUT,
 };
 use crate::reactor::SocketOutput;
+use crate::reactor::socket::SocketMarks;
 use crate::reactor::socket_timeouts::SocketTimeouts;
 use crate::sys;
 use std::ffi::{c_int, c_void};
@@ -51,24 +52,14 @@ impl Drop for SocketSsl {
     }
 }
 
-/// `network::Socket`: its fields, then two marks kept outside them, so reaching one
-/// never touches bytes a closure's reference to the fields covers. They are atomic
-/// because threads share some records (a pool's pipe socket).
-/// - `[BORROWS]`: the borrow count [`crate::reactor::Socket`]'s `read` and `edit` hold while a
-///   closure has the fields.
-/// - `[REACTOR]`: the serial of the reactor whose registry names the record, or 0.
-///   [`crate::reactor::OwnedSocket::into_box`] deletes the record from that reactor before it
-///   goes, so no registry outlives its socket.
+/// The socket fields followed by the borrow state and the reactor's registration
+/// serial. Access to these marks never aliases a closure's borrow of the fields.
 // `repr(C)`: the bundled ssh2 hook reads `fd` through `native/hooks/swoole_rs_coroutine_socket.h`.
 #[repr(C)]
 pub struct SocketRecord {
     pub fields: SocketFields,
-    pub(crate) marks: [AtomicU32; 2],
+    pub(super) marks: SocketMarks,
 }
-
-/// [`SocketRecord`]'s borrow count, and its reactor's serial, in `marks`.
-pub(crate) const BORROWS: usize = 0;
-pub(crate) const REACTOR: usize = 1;
 
 impl Deref for SocketRecord {
     type Target = SocketFields;
@@ -265,7 +256,7 @@ impl SocketRecord {
                 owner: None,
                 shared_owner: None,
             },
-            marks: [AtomicU32::new(0), AtomicU32::new(0)],
+            marks: SocketMarks::default(),
         }
     }
 
@@ -520,7 +511,7 @@ impl SocketFields {
                 shared_owner: None,
                 ..*self
             },
-            marks: [AtomicU32::new(0), AtomicU32::new(0)],
+            marks: SocketMarks::default(),
         };
         copy.fd = sys::dup(copy.fd).unwrap_or(-1);
         copy.into_raw()

@@ -1,7 +1,6 @@
 //! PHP registration and handlers for `Swoole\Coroutine\Http2\Client`,
 //! `Swoole\Http2\Request` and `Swoole\Http2\Response`. The client uses the
 //! hooks crate's coroutine socket and the http2 crate's HPACK codecs.
-//! The server handles frames and responses using per-connection sessions and streams.
 //!
 //! Without the `php` feature the crate is empty.
 #![cfg_attr(
@@ -15,9 +14,6 @@
 #![forbid(unsafe_code)]
 
 mod client;
-mod files;
-mod server;
-mod session;
 
 pub use client::*;
-pub use server::*;
+pub use swoole_rs_phphttp::http2::server_on_close;

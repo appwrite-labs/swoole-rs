@@ -3,16 +3,15 @@
 //! without `unsafe`.
 use crate::reactor::{SocketFields, SocketRecord};
 use std::cell::Cell;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::{ffi::c_int, marker::PhantomData, ptr::NonNull};
 
 /// A live `network::Socket` for `'a`. It is `Copy` and holds no Rust reference
 /// between calls, so native code and other handles may touch the same record in
 /// between; [`read`](Self::read) and [`edit`](Self::edit) borrow its fields only for
 /// their closure. Reads share a record, from any thread; an edit has it alone. A read
-/// or edit that would overlap another thread's waits for it to end; one that overlaps
-/// a borrow still held after a second, as a nested one on its own thread is, panics.
+/// or edit that conflicts with another thread waits. A conflict on this thread panics.
 /// Transparent over the record's address, so an export can take one for a C++
 /// `Socket *` (`this` included) that is live for the call.
 #[derive(Clone, Copy)]
@@ -22,114 +21,133 @@ pub struct Socket<'a> {
     _live: PhantomData<(&'a mut SocketRecord, *mut ())>,
 }
 
-/// The borrow count's edit bit; below it, the reads holding the record.
-const EDIT: u32 = 1 << 31;
+const EDIT: usize = 1;
+const SHARED: usize = 2;
 
-/// How long a borrow waits for an overlapping one to end. Another thread's closure
-/// ends within it; a borrow nested on the waiting thread never does, and panics.
-/// (Under Miri, whose threads run slowly in real time, a test's wait is longer.)
-const PATIENCE: Duration = if cfg!(miri) {
-    Duration::from_secs(1)
-} else if cfg!(test) {
-    Duration::from_millis(10)
-} else {
-    Duration::from_secs(1)
-};
-
-/// A record's borrow, released when the closure returns or unwinds.
-struct Borrow<'a> {
-    borrows: &'a AtomicU32,
-    taken: u32,
+/// The reactor registration and active borrows, outside the borrowed socket fields.
+#[derive(Default, Debug)]
+pub(super) struct SocketMarks {
+    pub(super) reactor: AtomicU32,
+    // Primary thread address, tagged with EDIT for an exclusive borrow. SHARED
+    // keeps the record occupied as long as any secondary reader remains.
+    owner: AtomicUsize,
+    readers: Mutex<Vec<usize>>,
 }
 
-impl<'a> Borrow<'a> {
-    /// One locked add: a read counts itself first, and backs out and waits if an edit
-    /// holds the record. (An edit only ever starts from zero, so the brief count blocks none
-    /// that wasn't already conflicting.) Inlined: every record access takes one.
+struct Borrow<'a, const MODE: usize> {
+    state: &'a SocketMarks,
+    secondary: bool,
+    _thread: PhantomData<*mut ()>,
+}
+
+impl SocketMarks {
     #[inline(always)]
     #[track_caller]
-    fn read(borrows: &'a AtomicU32) -> Self {
-        if borrows.fetch_add(1, Ordering::Acquire) & EDIT != 0 {
-            Self::read_contended(borrows);
-        }
-        Self { borrows, taken: 1 }
-    }
-
-    /// `read` once its first add met an edit: backs out, waits and counts itself again.
-    #[cold]
-    #[inline(never)]
-    #[track_caller]
-    fn read_contended(borrows: &AtomicU32) {
-        let mut since = None;
-        loop {
-            borrows.fetch_sub(1, Ordering::Relaxed);
-            Self::wait(
-                borrows,
-                EDIT,
-                &mut since,
-                "a socket's read overlaps an edit of the same record",
-            );
-            if borrows.fetch_add(1, Ordering::Acquire) & EDIT == 0 {
-                return;
-            }
-        }
-    }
-
-    #[inline(always)]
-    #[track_caller]
-    fn edit(borrows: &'a AtomicU32) -> Self {
-        if borrows
-            .compare_exchange(0, EDIT, Ordering::Acquire, Ordering::Relaxed)
+    fn take<const MODE: usize>(&self) -> Borrow<'_, MODE> {
+        let thread = crate::sys::thread_token();
+        let token = thread | MODE;
+        let secondary = self
+            .owner
+            .compare_exchange(0, token, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
-        {
-            Self::edit_contended(borrows);
-        }
-        Self {
-            borrows,
-            taken: EDIT,
-        }
-    }
-
-    /// `edit` once the record was held: waits until it is free and takes it.
-    #[cold]
-    #[inline(never)]
-    #[track_caller]
-    fn edit_contended(borrows: &AtomicU32) {
-        let mut since = None;
-        loop {
-            Self::wait(
-                borrows,
-                u32::MAX,
-                &mut since,
-                "a socket's edit overlaps a read or edit of the same record",
-            );
-            if borrows
-                .compare_exchange(0, EDIT, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-            {
-                return;
-            }
+            && self.contended(token);
+        Borrow {
+            state: self,
+            secondary,
+            _thread: PhantomData,
         }
     }
 
-    /// Waits until no bit of `held` is set in the count; panics with `overlap` once it has
-    /// waited [`PATIENCE`] since the first wait of this borrow.
+    fn readers(&self) -> std::sync::MutexGuard<'_, Vec<usize>> {
+        self.readers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Take an idle record or join its primary reader. Only secondary readers
+    /// register in the list, where nested reads have one entry per borrow.
     #[cold]
     #[track_caller]
-    fn wait(borrows: &AtomicU32, held: u32, since: &mut Option<Instant>, overlap: &str) {
+    fn contended(&self, token: usize) -> bool {
         #[cfg(test)]
-        let _waiting = Waiting::enter(borrows);
-        let since = *since.get_or_insert_with(Instant::now);
-        while borrows.load(Ordering::Relaxed) & held != 0 {
-            assert!(since.elapsed() < PATIENCE, "{overlap}");
+        let _waiting = Waiting::enter(self);
+        let thread = token & !EDIT;
+        loop {
+            let owner = self.owner.load(Ordering::Acquire);
+            if owner == 0 {
+                if self
+                    .owner
+                    .compare_exchange(0, token, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    return false;
+                }
+                continue;
+            }
+            if owner & EDIT != 0 {
+                assert!(
+                    owner & !EDIT != thread,
+                    "a socket borrow overlaps an edit of the same record"
+                );
+            } else {
+                let mut readers = self.readers();
+                if self.owner.load(Ordering::Acquire) != owner {
+                    continue;
+                }
+                if token & EDIT == 0 {
+                    // The primary can leave without the mutex. Pin the record
+                    // before sharing it with the first secondary reader.
+                    if owner & SHARED == 0
+                        && self
+                            .owner
+                            .compare_exchange(
+                                owner,
+                                owner | SHARED,
+                                Ordering::AcqRel,
+                                Ordering::Relaxed,
+                            )
+                            .is_err()
+                    {
+                        continue;
+                    }
+                    readers.push(thread);
+                    return true;
+                }
+                let overlaps = owner & !SHARED == thread || readers.contains(&thread);
+                drop(readers);
+                assert!(
+                    !overlaps,
+                    "a socket's edit overlaps a read of the same record"
+                );
+            }
             std::thread::yield_now();
         }
     }
+
+    #[cold]
+    fn release_shared(&self) {
+        let token = crate::sys::thread_token();
+        let mut readers = self.readers();
+        let Some(index) = readers.iter().rposition(|&reader| reader == token) else {
+            unreachable!("a shared socket reader is registered")
+        };
+        readers.swap_remove(index);
+        if readers.is_empty() {
+            self.owner.fetch_sub(SHARED, Ordering::Release);
+        }
+    }
 }
 
-impl Drop for Borrow<'_> {
+impl<const MODE: usize> Drop for Borrow<'_, MODE> {
+    #[inline(always)]
     fn drop(&mut self) {
-        self.borrows.fetch_sub(self.taken, Ordering::Release);
+        if MODE == EDIT {
+            self.state.owner.store(0, Ordering::Release);
+        } else if self.secondary {
+            self.state.release_shared();
+        } else {
+            self.state.owner.fetch_and(SHARED, Ordering::Release);
+        }
     }
 }
 
@@ -150,13 +168,13 @@ impl Waiting {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn enter(borrows: &AtomicU32) -> Self {
+    fn enter(borrows: &SocketMarks) -> Self {
         let at = std::ptr::from_ref(borrows).addr();
         Self::waiting().push(at);
         Self(at)
     }
 
-    fn on(borrows: &AtomicU32) -> bool {
+    fn on(borrows: &SocketMarks) -> bool {
         Self::waiting().contains(&std::ptr::from_ref(borrows).addr())
     }
 }
@@ -196,20 +214,15 @@ impl<'a> Socket<'a> {
     }
 
     /// The record's marks, which no closure's reference covers.
-    fn marks(self) -> &'a [AtomicU32; 2] {
+    fn marks(self) -> &'a SocketMarks {
         // SAFETY: live for 'a (from_ptr); the reference covers only the marks, which
         // `read` and `edit` never hand out, and atomics may be shared.
         unsafe { &(*self.record.as_ptr()).marks }
     }
 
-    /// The record's borrow count.
-    fn borrows(self) -> &'a AtomicU32 {
-        &self.marks()[crate::reactor::socket_record::BORROWS]
-    }
-
     /// The serial of the reactor whose registry names the record, or 0.
     pub(crate) fn mark(self) -> &'a AtomicU32 {
-        &self.marks()[crate::reactor::socket_record::REACTOR]
+        &self.marks().reactor
     }
 
     /// The record's address, for native calls.
@@ -220,24 +233,24 @@ impl<'a> Socket<'a> {
 
     /// `read`'s result over the record.
     /// # Panics
-    /// Inside an `edit` closure over the same record, after waiting a second for it to end.
+    /// Inside an `edit` closure over the same record on this thread.
     #[inline(always)]
     #[track_caller]
     pub fn read<R>(self, read: impl FnOnce(&SocketFields) -> R) -> R {
-        let _borrow = Borrow::read(self.borrows());
+        let _borrow = self.marks().take::<0>();
         // SAFETY: live for the handle's lifetime (from_ptr), and no mutable Rust reference to
-        // its fields exists: handles form one only in `edit`, which the count excludes.
+        // its fields exists: handles form one only in `edit`, which the read guard excludes.
         read(unsafe { &(*self.record.as_ptr()).fields })
     }
 
     /// `edit`'s result over the record, which it may change.
     /// # Panics
-    /// Inside a `read` or `edit` closure over the same record, after waiting a second for it to end.
+    /// Inside a `read` or `edit` closure over the same record on this thread.
     #[inline(always)]
     #[track_caller]
     pub fn edit<R>(self, edit: impl FnOnce(&mut SocketFields) -> R) -> R {
-        let _borrow = Borrow::edit(self.borrows());
-        // SAFETY: as in `read`; the count makes this the only reference to the fields.
+        let _borrow = self.marks().take::<EDIT>();
+        // SAFETY: as in `read`; the edit guard makes this the only reference to the fields.
         edit(unsafe { &mut (*self.record.as_ptr()).fields })
     }
 
@@ -399,7 +412,7 @@ impl OwnedSocket {
         let socket = self.socket();
         // A `read` or `edit` closure of the record's freed it: it would use the fields
         // after the free.
-        if socket.borrows().load(Ordering::Relaxed) != 0 {
+        if socket.marks().owner.load(Ordering::Relaxed) != 0 {
             crate::fatal("a socket was freed inside a read or edit of it");
         }
         leave_reactor(socket);
@@ -637,6 +650,7 @@ fn deregister(socket: Socket<'_>, mark: u32) {
 mod tests {
     use super::*;
     use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::time::Duration;
 
     #[test]
     fn a_nested_read_inside_edit_panics_and_the_edit_goes_on() {
@@ -671,6 +685,21 @@ mod tests {
         assert_eq!(fd, 0, "reads of one record nest");
         socket.edit(|fields| fields.fd = 2);
         assert_eq!(socket.fd(), 2, "the count cleared after the reads");
+    }
+
+    #[test]
+    fn an_inner_records_borrow_is_tracked_through_unwind() {
+        let (mut first, mut second) = (SocketRecord::new(), SocketRecord::new());
+        let (a, b) = (Socket::new(&mut first), Socket::new(&mut second));
+        a.read(|_| {
+            let nested = catch_unwind(AssertUnwindSafe(|| b.edit(|_| b.fd())));
+            assert!(
+                nested.is_err(),
+                "the inner edit excludes a read of its record"
+            );
+            b.edit(|fields| fields.fd = 9);
+            assert_eq!(b.fd(), 9, "unwinding released the inner edit");
+        });
     }
 
     #[test]
@@ -712,7 +741,9 @@ mod tests {
                         let socket = unsafe { Socket::from_ptr(record) }.unwrap();
                         socket.read(|fields| {
                             both_reading.wait();
-                            let readers = socket.borrows().load(Ordering::Relaxed);
+                            let borrows = socket.marks();
+                            let readers = borrows.readers().len()
+                                + usize::from(borrows.owner.load(Ordering::Relaxed) & !SHARED != 0);
                             // Neither leaves its read until both have counted.
                             both_reading.wait();
                             assert_eq!(readers, 2, "the two reads hold the record at once");
@@ -732,6 +763,30 @@ mod tests {
     }
 
     #[test]
+    fn a_secondary_reader_keeps_its_borrow_after_the_primary_leaves() {
+        let marks = SocketMarks::default();
+        let primary = marks.take::<0>();
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let secondary = marks.take::<0>();
+                barrier.wait();
+                barrier.wait();
+                let edit = catch_unwind(|| marks.take::<EDIT>());
+                assert!(
+                    edit.is_err(),
+                    "the remaining reader cannot upgrade to an edit"
+                );
+                drop(secondary);
+            });
+            barrier.wait();
+            drop(primary);
+            barrier.wait();
+            let _edit = marks.take::<EDIT>();
+        });
+    }
+
+    #[test]
     fn a_read_from_another_thread_waits_for_an_edit() {
         let mut record = SocketRecord::new();
         let record = (&raw mut record).expose_provenance();
@@ -745,10 +800,12 @@ mod tests {
                     // Hold the edit until B's read is provably waiting on it; under the
                     // old immediate panic B would never wait, and this would time out.
                     let began = std::time::Instant::now();
-                    while !Waiting::on(socket.borrows()) {
+                    while !Waiting::on(socket.marks()) {
                         assert!(began.elapsed() < Duration::from_secs(10), "B never waited");
                         std::thread::yield_now();
                     }
+                    // Hold past the former test deadline while the reader waits.
+                    std::thread::sleep(Duration::from_millis(25));
                     fields.fd = 4;
                 });
             });
@@ -762,7 +819,7 @@ mod tests {
         });
         assert_eq!(read, 4, "the read ran after the edit, and saw its write");
         assert_eq!(
-            handle().unwrap().borrows().load(Ordering::Relaxed),
+            handle().unwrap().marks().owner.load(Ordering::Relaxed),
             0,
             "nothing left counted"
         );

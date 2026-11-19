@@ -1532,7 +1532,7 @@ mod tests {
     /// `net` borrows through the reactor's count, so a nested borrow of one record
     /// panics instead of aliasing it.
     #[test]
-    #[should_panic(expected = "overlaps a read or edit of the same record")]
+    #[should_panic(expected = "a socket borrow overlaps an edit of the same record")]
     fn a_nested_net_of_one_record_panics() {
         let mut socket = TestSocket::new();
         let co = socket.co();

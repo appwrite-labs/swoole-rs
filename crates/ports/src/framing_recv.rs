@@ -173,13 +173,9 @@ impl<K: Packages> With<'_, K> {
 
     /// Runs `f` between applying `flags`' wait and refreshing them.
     #[inline(always)]
-    fn around<T>(
-        &mut self,
-        flags: &mut u32,
-        f: impl FnOnce(Recv<'_>, &mut StringBuffer) -> T,
-    ) -> T {
+    fn around<T>(&mut self, flags: &mut u32, f: impl FnOnce(&mut Self) -> T) -> T {
         self.apply_wait(*flags);
-        let result = f(self.0, self.3);
+        let result = f(self);
         self.refresh(flags);
         result
     }
@@ -231,7 +227,7 @@ fn proto_error(socket: Socket<'_>, code: ErrorCode, origin: &CStr, message: &str
 impl<K: Packages> Effects for With<'_, K> {
     #[inline(always)]
     fn effect(&mut self, op: Op, arg: usize, flags: &mut u32) {
-        self.around(flags, |r, b| rare(r, b, op, arg));
+        self.around(flags, |r| rare(r.0, r.3, op, arg));
     }
     /// A read leaves the socket as it was; only a failed one refreshes `flags`.
     #[inline(always)]
@@ -274,12 +270,12 @@ impl<K: Packages> Effects for With<'_, K> {
         self.around(flags, split)
     }
     fn ssl_pending(&mut self, flags: &mut u32) -> bool {
-        self.around(flags, |r, _| {
-            swoole_rs_corebase::tls::Ssl::of(r.socket).is_some_and(|ssl| ssl.get().pending() > 0)
+        self.around(flags, |r| {
+            swoole_rs_corebase::tls::Ssl::of(r.0.socket).is_some_and(|ssl| ssl.get().pending() > 0)
         })
     }
     fn page(&mut self, flags: &mut u32) -> usize {
-        self.around(flags, |_, _| swr_v1_core_pagesize() as usize)
+        self.around(flags, |_| swr_v1_core_pagesize() as usize)
     }
     #[inline(always)]
     fn buffer(&mut self) -> Buffer {
@@ -352,8 +348,8 @@ fn failed_recv(r: &Recv<'_>, size: usize) -> Received {
 /// `buffer->split` on the EOF, each part to `onPackage` while the socket stays.
 #[cold]
 #[inline(never)]
-fn split(r: Recv<'_>, b: &mut StringBuffer) -> Option<usize> {
-    let s = r.socket;
+fn split<K: Packages>(with: &mut With<'_, K>) -> Option<usize> {
+    let With(r, _, packages, buffer) = with;
     // A copy: `onPackage` may run PHP whose `set()` rewrites the protocol.
     let (eof, eof_len) = {
         let p = r.protocol();
@@ -361,8 +357,8 @@ fn split(r: Recv<'_>, b: &mut StringBuffer) -> Option<usize> {
     };
     // The protocol's settings bound the length by the array.
     let eof = eof.get(..usize::from(eof_len))?;
-    b.split_with(eof, |b, start, length| {
-        protocol_dispatch(&r, Package::of(b, start, length)) && !s.read(|s| s.removed)
+    buffer.split_with(eof, |b, start, length| {
+        packages.dispatch(r, Package::of(b, start, length)) && !r.socket.read(|s| s.removed)
     })
 }
 

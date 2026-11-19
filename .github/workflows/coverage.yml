@@ -121,22 +121,26 @@ jobs:
         run: sudo phpdismod -v ALL -s ALL xdebug
       - name: Prepare hyperf
         run: python3 corpus/thirdparty/hyperf.py --prepare
-      - name: Run corpus apps
-        run: >
-          python3 corpus/run.py --php-extension pdo --php-extension pdo_sqlite --php-extension curl
-          $(for p in 01-hello 02-router 03-notes 04-job-service 05-coroutines 06-websocket 07-tcp-framing 08-timers 09-shared-table 10-task-workers 12-hyperf-skeleton; do echo --project $p; done)
-          --engine cargo=target/phpt/cargo.so --output target/coverage/corpus.json || true
-      # The differential suite as integrate's api-fuzz runs it (#2255): seed 0's programs and the cases.
-      # The Cargo build links symbols of curl, sockets and others, so every installed extension
-      # loads first, as for the PHPTs.
+      # The Cargo build links symbols of curl, sockets, mysqlnd and others, so every installed
+      # extension loads first, as for the PHPTs.
       - name: List PHP extensions
         id: extensions
         run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+      # Failed cases still count toward coverage; a run that wrote no report is a broken harness.
+      - name: Run corpus apps
+        run: >
+          python3 corpus/run.py ${{ steps.extensions.outputs.args }}
+          $(for p in 01-hello 02-router 03-notes 04-job-service 05-coroutines 06-websocket 07-tcp-framing 08-timers 09-shared-table 10-task-workers 12-hyperf-skeleton; do echo --project $p; done)
+          --engine cargo=target/phpt/cargo.so --output target/coverage/corpus.json
+          || { rc=$?; test -s target/coverage/corpus.json || exit $rc;
+          echo "::warning title=Coverage corpus::exit $rc: some apps failed; their coverage still counts"; }
+      # The differential suite as integrate's api-fuzz runs it (#2255): seed 0's programs and the cases.
       - name: Run differential suite
         run: >
           python3 tests/differential/fuzz.py ${{ steps.extensions.outputs.args }}
           --engine upstream=target/upstream/src/modules/swoole.so
-          --engine cargo=target/phpt/cargo.so --seed 0 --programs 500 --cases tests/differential/cases || true
+          --engine cargo=target/phpt/cargo.so --seed 0 --programs 500 --cases tests/differential/cases
+          || echo "::warning title=Coverage differential::exit $?: divergences or a failed run; coverage counts what ran"
       - name: Prepare swoole/library
         run: python3 corpus/library/run.py --prepare
       - name: Start library services
@@ -144,7 +148,10 @@ jobs:
           echo '127.0.0.1 consul local.httpbin.org mongodb mysql nacos oracle pgsql php-fpm redis' | sudo tee -a /etc/hosts
           python3 corpus/library/run.py --services
       - name: Run swoole/library suite
-        run: python3 corpus/library/run.py --engine cargo=target/phpt/cargo.so --output target/coverage/library.json || true
+        run: >
+          python3 corpus/library/run.py --engine cargo=target/phpt/cargo.so --output target/coverage/library.json
+          || { rc=$?; test -s target/coverage/library.json/library.json || exit $rc;
+          echo "::warning title=Coverage library::exit $rc: some tests failed; their coverage still counts"; }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:

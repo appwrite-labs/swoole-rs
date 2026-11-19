@@ -180,12 +180,7 @@ impl Statement {
                 )
             })
         } else {
-            let query = if self.named.get() || exec.name.get().is_some() {
-                self.query.get().map(std::ops::Deref::deref)
-            } else {
-                active
-            };
-            query.is_some_and(|sql| send_statement(dbh, stmt, self, sql.c_str().into(), count))
+            send_statement(dbh, stmt, self, handle, active, count)
         };
         if !sent {
             return false;
@@ -591,7 +586,14 @@ fn prepare_statement(
 
 /// Queue the statement in libpq. Buffered statements use the coroutine-aware
 /// flush and receive path; PHP 8.5 enables single-row mode just after the send.
-fn send_statement(dbh: &Dbh, stmt: &Stmt, state: &Statement, query: Text<'_>, count: u32) -> bool {
+fn send_statement(
+    dbh: &Dbh,
+    stmt: &Stmt,
+    state: &Statement,
+    handle: &Handle,
+    active: Option<&swoole_rs_zend::ZStr>,
+    count: u32,
+) -> bool {
     use crate::Params;
     let result = &state.execution.result;
     let name = state
@@ -603,11 +605,19 @@ fn send_statement(dbh: &Dbh, stmt: &Stmt, state: &Statement, query: Text<'_>, co
     let prepared = &state.execution.prepared;
     let named = state.named.get();
     let unbuffered = state.execution.unbuffered.get();
-    let Some(handle) = crate::driver::handle(dbh) else {
+    let stored_query = named || name.is_some();
+    let query = if stored_query {
+        state.query.get().map(std::ops::Deref::deref)
+    } else {
+        active
+    };
+    let Some(query) = query else {
         return false;
     };
+    // Executing an already prepared statement sends only its name.
+    let sql = || query.c_str().into();
     let conn = crate::driver::pdo_pgsql_server(handle);
-    if (named || name.is_some()) && count as usize > params.map_or(0, |p| p.owned.len()) {
+    if stored_query && count as usize > params.map_or(0, |p| p.owned.len()) {
         crate::driver::pdo_pgsql_raise(
             dbh,
             Some(stmt),
@@ -626,16 +636,16 @@ fn send_statement(dbh: &Dbh, stmt: &Stmt, state: &Statement, query: Text<'_>, co
     let formats = Params(params.map_or(std::ptr::null(), |p| p.formats.as_ptr().cast()));
     let sent = if let Some(name) = name {
         if !prepared.get() {
-            if !prepare_statement(dbh, stmt, result, name, query, count, types) {
+            if !prepare_statement(dbh, stmt, result, name, sql(), count, types) {
                 return false;
             }
             prepared.set(true);
         }
         crate::PQsendQueryPrepared(conn, Some(name), count, values, lengths, formats, 0)
     } else if named {
-        crate::PQsendQueryParams(conn, Some(query), count, types, values, lengths, formats, 0)
+        crate::PQsendQueryParams(conn, Some(sql()), count, types, values, lengths, formats, 0)
     } else {
-        crate::PQsendQuery(conn, query)
+        crate::PQsendQuery(conn, sql())
     };
     if unbuffered {
         if sent == 0 {
@@ -889,20 +899,20 @@ fn bind_value(params: &ParameterStorage, index: usize, kind: pdo_param_type, slo
         let literal = if value.kind() == IS_TRUE { c"t" } else { c"f" };
         (literal.as_ptr(), 1, None)
     } else {
-        if value.str().is_none() {
+        let text = if let Some(text) = value.str() {
+            text.to_owned()
+        } else {
             let Some(text) = value.applied_string() else {
                 return false;
             };
-            slot.set(swoole_rs_zend::Owned::string(text));
-        }
-        let Some(text) = slot.value().str() else {
-            return false;
+            slot.set(swoole_rs_zend::Owned::string(text.clone()));
+            text
         };
         let bytes = text.bytes();
         let Ok(len) = c_int::try_from(bytes.len()) else {
             return false;
         };
-        (bytes.as_ptr().cast(), len, Some(text.to_owned()))
+        (bytes.as_ptr().cast(), len, Some(text))
     };
     owned.string.set(string);
     params.bind(index, bytes, len, kind == LOB, 0)

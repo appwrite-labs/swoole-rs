@@ -82,27 +82,40 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     };
     // The slot found above is `fd`'s, so its listener names the port.
     let port = serv.port_by_server_fd(conn.server_fd());
-    if let Some(config) = port.map(view::Port::config)
-        && sock.read(|s| SocketType::from_raw(s.socket_type).is_some_and(SocketType::is_dgram))
-        && hybrid().dtls_read(config, *sock, fd)
-    {
-        crate::connection::abort(serv, reactor, port, sock);
-        return true;
-    }
-    match verify_ssl(serv, reactor, port, *sock) {
-        Handshake::Error => {
+    // A plain stream goes straight to its port reader. Only a datagram handler
+    // or a TLS handshake can run before it and change the receive count.
+    let (datagram, secure, received) = sock.read(|s| {
+        (
+            SocketType::from_raw(s.socket_type).is_some_and(SocketType::is_dgram),
+            !s.ssl().is_null(),
+            s.total_recv_bytes,
+        )
+    });
+    let last_recv_bytes = if datagram || secure {
+        if let Some(config) = port.map(view::Port::config)
+            && datagram
+            && hybrid().dtls_read(config, *sock, fd)
+        {
             crate::connection::abort(serv, reactor, port, sock);
             return true;
         }
-        Handshake::Ready if sock.read(|s| s.dtls) => return true,
-        Handshake::Wait => return true,
-        Handshake::Ready | Handshake::Continue => {}
-    }
+        match verify_ssl(serv, reactor, port, *sock) {
+            Handshake::Error => {
+                crate::connection::abort(serv, reactor, port, sock);
+                return true;
+            }
+            Handshake::Ready if sock.read(|s| s.dtls) => return true,
+            Handshake::Wait => return true,
+            Handshake::Ready | Handshake::Continue => {}
+        }
+        sock.read(|s| s.total_recv_bytes)
+    } else {
+        received
+    };
     let Some(port) = port else {
         return false;
     };
     conn.set_last_recv_time(microtime());
-    let last_recv_bytes = sock.read(|s| s.total_recv_bytes);
     let Some(on_read) = port.config().on_read.get() else {
         return false;
     };

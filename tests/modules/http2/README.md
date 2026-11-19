@@ -1,7 +1,7 @@
 # HTTP/2 tests
 
 `crates/http2` holds the settings and frame codecs and the HTTP/2 policy;
-`crates/phphttp2` holds the server (`server.rs`) and
+`crates/phphttp/src/http2` holds the server and `crates/phphttp2` holds
 `Swoole\Coroutine\Http2\Client`. The HTTP/2 PHPTs in the PHPT gate cover both.
 
 `cargo test -p swoole-rs-http2` runs the unit tests and upstream's

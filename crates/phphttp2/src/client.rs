@@ -1,7 +1,5 @@
 //! The HTTP/2 coroutine client: upstream's `swoole::coroutine::http2::Client`
 //! and its PHP classes.
-use crate::server::entries;
-use crate::session::IdMap;
 use libc::c_int;
 use request::{Field, Held, Request};
 use std::{
@@ -31,6 +29,7 @@ use swoole_rs_http2::{
     sw_rs_http2_write_allowed,
 };
 use swoole_rs_inflate::Inflate;
+use swoole_rs_phphttp::http2::{IdMap, entries};
 use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_zend::{
     ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, Weak,
@@ -1313,8 +1312,6 @@ method_table! {
 
 /// MINIT, as `php_swoole_http2_client_coro_minit` did.
 pub fn client_minit(args: &swoole_rs_phpswoole::MinitArgs) {
-    // phphttp2's one MINIT entry also hands its server to phphttp.
-    swoole_rs_phphttp::http2::register(&crate::server::HOOKS);
     let minit = args.minit;
     if let Err(error) = register(minit, args.shortname) {
         error.defer();
@@ -1510,7 +1507,7 @@ mod request {
 
         /// `headers` or `cookies` with a reference of its own: converting a
         /// value may replace or unset the property while
-        /// [`crate::server::entries`] walks it.
+        /// [`entries`] walks it.
         pub(super) fn array(self, which: Held) -> Option<HeldArray> {
             self.slot(match which {
                 Held::Headers => c"headers",

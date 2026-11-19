@@ -90,14 +90,11 @@ impl EventSocket {
     /// `socket->free()`, which closes the fd unless `keep_fd` (`socket->fd = -1`
     /// first, once the reactor no longer holds it).
     pub fn free(self, keep_fd: bool) {
-        if keep_fd {
-            if !self.removed() {
-                // The upstream io_uring destructor detaches the fd and frees the socket even when del fails.
-                let _deleted = self.del();
-            }
-            self.socket().edit(|record| record.fd = -1);
+        if keep_fd && !self.removed() {
+            // The upstream io_uring destructor detaches the fd and frees the socket even when del fails.
+            let _deleted = self.del();
         }
-        self.release();
+        self.release_record(keep_fd);
     }
 
     /// `void Socket::free()` of the record as it is: deletes the timers and buffers,
@@ -105,12 +102,20 @@ impl EventSocket {
     /// and defers the close to it; otherwise closes its fd (`-1` for none) and frees
     /// it at once. Outside the hybrid there are no timers, buffers or loop.
     pub fn release(self) {
+        self.release_record(false);
+    }
+
+    /// Release after deregistration when the descriptor stays with its caller.
+    pub(crate) fn release_record(self, keep_fd: bool) {
         let owned = self.0;
         let owned = {
             let record = owned.socket();
             // The buffers leave the record here and go below, after the timers and
             // outside the record's borrow: an entry's disposer runs as its buffer goes.
             let (timers, buffers) = record.edit(|record| {
+                if keep_fd {
+                    record.fd = -1;
+                }
                 (
                     [record.recv_timer, record.output.send_timer],
                     [record.in_buffer.take(), record.output.out_buffer.take()],
@@ -121,7 +126,7 @@ impl EventSocket {
             }
             // `delete in_buffer; delete out_buffer`.
             drop(buffers);
-            if socket_upstream::event_reactor().is_some() {
+            if event_api::swoole_event_is_available() {
                 if record.read(|record| record.fd != -1 && !record.removed) {
                     // `swoole_event_del(this)` on the thread's reactor, which logs a
                     // failure.

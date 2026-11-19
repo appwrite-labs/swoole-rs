@@ -1,10 +1,18 @@
-//! What the HTTP/2 server (crates/phphttp2) reads and does to its streams'
-//! contexts.
+//! HTTP/2 server sessions, stream contexts, files and responses.
+#![forbid(unsafe_code)]
+mod files;
+mod server;
+mod session;
+
 use crate::{context, header, parse};
-use std::{cell::Cell, ffi::CStr, sync::OnceLock};
+pub(crate) use files::{send_file, static_file};
+pub use server::{entries, server_on_close};
+pub(crate) use server::{goaway, on_receive, ping, reset, respond, session_receive, write};
+pub use session::IdMap;
+pub(crate) use session::{session_free, session_new};
+use std::{cell::Cell, ffi::CStr};
 use swoole_rs_corebase::CCast;
-use swoole_rs_phpserver::RecvData;
-use swoole_rs_server::{Connection, view};
+use swoole_rs_server::view;
 use swoole_rs_zend::{
     ArrayMut, HeldArray, Owned, ZString,
     bailout::{self, Bailout},
@@ -52,53 +60,9 @@ pub enum ResponseArray {
     Trailer = 2,
 }
 
-/// The HTTP/2 server's entry points that this crate's HTTP/1 code calls.
-/// crates/phphttp2 depends on this crate, so it registers them at MINIT. A
-/// bailout in one waits for the caller.
-pub struct Server {
-    /// `swoole_http2_server_onReceive`: an async server's data on an HTTP/2
-    /// connection, with the session's connection.
-    pub on_receive: fn(view::Server<'_>, Connection<'_>, &mut RecvData<'_>) -> bool,
-    /// The static file handler for the live server: true once it answered,
-    /// or the bailout its work left pending.
-    pub static_file: fn(view::Server<'_>, Ctx) -> Result<bool, Bailout>,
-    /// `Response::end`: the stream's last frames.
-    pub respond: fn(Ctx, &[u8]) -> bool,
-    /// `Response::write`: a DATA frame.
-    pub write: fn(Ctx, &[u8]) -> bool,
-    /// `Response::ping`.
-    pub ping: fn(Ctx) -> bool,
-    /// `Response::sendfile` of a path, from `offset` for `length` bytes.
-    pub send_file: fn(Ctx, &[u8], i64, usize) -> bool,
-    /// `Response::goaway` with its code and debug data.
-    pub goaway: fn(Ctx, i64, &[u8]) -> bool,
-    /// `RST_STREAM` with the stream id and error code.
-    pub reset: fn(Ctx, u32, u32),
-    /// A coroutine server connection's session (fd, default context, max
-    /// body size, and the handler of each finished request).
-    pub session_new: fn(i64, Hold, u32, Handler),
-    /// One whole frame, at the start of the bytes, for the session of an fd;
-    /// false on failure.
-    pub session_receive: fn(i64, &[u8]) -> bool,
-    /// The session of an fd goes.
-    pub session_free: fn(i64),
-}
-
 /// A session's `onRequest` for a finished request: the stream's context and
 /// the session's default one. A bailout in it returns as `Err`.
 pub type Handler = Box<dyn Fn(Ctx, Ctx) -> Result<(), Bailout>>;
-
-static SERVER: OnceLock<&'static Server> = OnceLock::new();
-
-/// crates/phphttp2's MINIT: its entry points, kept for the process.
-pub fn register(server: &'static Server) {
-    SERVER.get_or_init(|| server);
-}
-
-/// The registered HTTP/2 server; None before its MINIT.
-pub(crate) fn server() -> Option<&'static Server> {
-    SERVER.get().copied()
-}
 
 /// An HTTP/2 stream's hold on its context ([`Ctx::stream_context`]), let go
 /// when this drops (`~Stream`): the context is complete by then, and goes once
