@@ -2,6 +2,7 @@
 //! in this process, send replies, and close connections. The message bus and the
 //! worker's event loop are the hybrid's ([`crate::hybrid`]).
 use crate::callbacks::{CallbackKind, EventSlot, ReceiveSlot};
+use crate::factory::{CLOSE_ACTIVELY, CLOSE_RESET};
 use crate::hybrid::hybrid;
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::out_buffer;
@@ -131,9 +132,6 @@ const DATA_PTR: u8 = EventDataFlag::SW_EVENT_DATA_PTR.bits();
 /// `SW_EVENT_DATA_POP_PTR`: the payload is the whole receive buffer, which the worker
 /// may take.
 pub(crate) const POP_PTR: u8 = EventDataFlag::SW_EVENT_DATA_POP_PTR.bits();
-/// `Server::CLOSE_RESET`, `CLOSE_ACTIVELY`.
-const CLOSE_RESET: c_int = 1 << 1;
-const CLOSE_ACTIVELY: c_int = 1 << 2;
 /// `swLog_level`'s `SW_LOG_TRACE`, `SW_LOG_NOTICE`; the `SW_ERROR_SESSION_*` codes.
 const SESSION_CLOSING: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSING as c_int;
 const SESSION_CLOSED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSED as c_int;

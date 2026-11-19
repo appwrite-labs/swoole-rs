@@ -4,6 +4,7 @@
 //! it in Rust.
 
 use crate::Mode;
+use crate::factory::{CLOSE_ACTIVELY, CLOSE_RESET};
 use crate::records::Lookup;
 use core::ffi::{c_int, c_long};
 use std::ffi::CString;
@@ -280,10 +281,6 @@ pub fn package_max_length(serv: view::Server<'_>, fd: c_int) -> u32 {
     serv.port_of_fd(fd)
         .map_or(0, |port| port.protocol.get().package_max_length)
 }
-
-/// `Server::CLOSE_RESET`, `Server::CLOSE_ACTIVELY`.
-const CLOSE_RESET: c_int = 1 << 1;
-const CLOSE_ACTIVELY: c_int = 1 << 2;
 
 /// `Server::close(session_id, reset)`: the factory ends the session, actively.
 #[expect(

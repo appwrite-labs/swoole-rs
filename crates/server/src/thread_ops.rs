@@ -4,6 +4,7 @@
 //! is crates/bus', the methods are this crate's and `corebase::process`' and
 //! crates/ports', reached under their upstream symbols.
 use crate::Mode;
+use crate::factory::CLOSE_ACTIVELY;
 use crate::reactor_thread::{HEARTBEAT, each_connection, send_event};
 use crate::records::{Connection, Lookup};
 use core::ffi::{c_int, c_long};
@@ -27,8 +28,6 @@ use crate::reactor_ops::ReactorContext;
 use crate::{ServerState, SharedServer, factory, server_methods as methods, view};
 
 const FD_PIPE: c_int = swoole_rs_corebase::constants::FdType::SW_FD_PIPE as c_int;
-/// `Server::CLOSE_ACTIVELY`.
-const CLOSE_ACTIVELY: c_int = 1 << 2;
 
 /// `thread->message_bus.get_pipe_socket(sock)`.
 fn pipe_socket<'b>(
