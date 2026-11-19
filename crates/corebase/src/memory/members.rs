@@ -531,8 +531,8 @@ pub mod pool {
         }
     }
 
-    /// A block of `size` bytes from [`alloc`], for the process's life, or null. The pool
-    /// counts a user that never leaves, so [`delete`] keeps the pages it sits in mapped.
+    /// A block from [`alloc`], or null. Success adds one user. A [`PooledWord`]
+    /// releases that pin on drop; callers with process-lifetime references keep it.
     fn pinned(size: u32) -> *mut c_void {
         POOL.users.fetch_add(1, SeqCst);
         let block = alloc(size);
