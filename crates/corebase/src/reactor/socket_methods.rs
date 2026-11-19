@@ -115,7 +115,9 @@ impl SocketFields {
     }
 }
 
-/// The record's fd, its blocking flags and whether it holds an `SSL`.
+/// The record's fd, its blocking flags and whether it holds an `SSL`. Inlining lets each
+/// I/O operation load only the fields it uses under the single socket borrow.
+#[inline(always)]
 fn io_of(socket: Socket<'_>) -> (c_int, bool, bool, bool) {
     socket.read(|record| {
         (
