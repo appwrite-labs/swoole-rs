@@ -32,10 +32,10 @@ extern const php_stream_ops pdo_pgsql_lob_stream_ops;
 
 bool pdo_pgsql_bind_oid(void *params, size_t index, const void *lob);
 bool pdo_pgsql_bind_value(void *params, size_t index, enum pdo_param_type kind, zval *value);
-bool pdo_pgsql_emulated_parameter(enum pdo_param_type *kind, zval *value);
-bool pdo_pgsql_normalize_parameter(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zend_string *name, zend_long *index);
-bool pdo_pgsql_check_parameter(pdo_dbh_t *dbh, pdo_stmt_t *stmt, HashTable *map, zend_long index);
-bool pdo_pgsql_bind_parameter(pdo_dbh_t *dbh, pdo_stmt_t *stmt, void *state, HashTable *map, zend_long index, enum pdo_param_type kind, zval *value);
+/* PDO's param_hook: value is parameter's referent. */
+bool pdo_pgsql_param_event(pdo_dbh_t *dbh, pdo_stmt_t *stmt, void *state, HashTable *map, enum pdo_param_event event,
+                           bool is_param, zend_string *name, zend_long *index, enum pdo_param_type *kind,
+                           zval *parameter, zval *value);
 bool pdo_pgsql_execute(pdo_dbh_t *dbh, pdo_stmt_t *stmt, void *state, zend_string *active, unsigned int count);
 void pdo_pgsql_destroy_statement(void *state, pdo_pgsql_db_handle *live);
 bool pdo_pgsql_fetch_row(pdo_dbh_t *dbh, pdo_stmt_t *stmt, void *state, unsigned int orientation, zend_long offset);

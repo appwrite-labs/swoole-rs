@@ -29,23 +29,28 @@ extern int pdo_pgsql_lob_read(void *, char *, size_t);
 extern void pdo_pgsql_lob_close(void *, bool, zend_long);
 extern bool pdo_pgsql_lob_seek(void *, zend_off_t, int, zend_off_t *);
 
+/* Stays C (budget): php_stream_ops entries over the raw stream. */
 static ssize_t pgsql_lob_write(php_stream *stream, const char *buf, size_t count) {
     return pdo_pgsql_lob_write(stream->abstract, buf, count);
 }
 
+/* Stays C (budget): php_stream_ops entries over the raw stream. */
 static ssize_t pgsql_lob_read(php_stream *stream, char *buf, size_t count) {
     return pdo_pgsql_lob_read(stream->abstract, buf, count);
 }
 
+/* Stays C (budget): php_stream_get_resource_id over the raw stream. */
 static int pgsql_lob_close(php_stream *stream, int close_handle) {
     pdo_pgsql_lob_close(stream->abstract, close_handle != 0, php_stream_get_resource_id(stream));
     return 0;
 }
 
+/* Stays C (budget): php_stream_ops entries over the raw stream. */
 static int pgsql_lob_flush(php_stream *stream) {
     return 0;
 }
 
+/* Stays C (version): lo_lseek64 needs 64-bit zend_long and libpq's HAVE_PG_LO64. */
 zend_off_t pdo_pgsql_seek_descriptor(PGconn *conn, int fd, zend_off_t offset, int whence) {
 #if defined(ZEND_ENABLE_ZVAL_LONG64) && (PHP_VERSION_ID >= 80400 || defined(HAVE_PG_LO64))
     return lo_lseek64(conn, fd, offset, whence);
@@ -54,10 +59,12 @@ zend_off_t pdo_pgsql_seek_descriptor(PGconn *conn, int fd, zend_off_t offset, in
 #endif
 }
 
+/* Stays C (budget): php_stream_ops entries over the raw stream. */
 static int pgsql_lob_seek(php_stream *stream, zend_off_t offset, int whence, zend_off_t *position) {
     return pdo_pgsql_lob_seek(stream->abstract, offset, whence, position) ? 0 : -1;
 }
 
+/* Stays C (budget): the ops table PHP's stream layer calls. */
 const php_stream_ops pdo_pgsql_lob_stream_ops = {
     pgsql_lob_write,
     pgsql_lob_read,
@@ -70,12 +77,14 @@ const php_stream_ops pdo_pgsql_lob_stream_ops = {
     NULL
 };
 
+/* Stays C (budget): Z_PDO_DBH_P. */
 pdo_dbh_t *pdo_pgsql_lob_dbh(zval *database) {
     return Z_PDO_DBH_P(database);
 }
 
 extern void *pdo_pgsql_lob_owner(pdo_pgsql_db_handle *, zval *, int, Oid);
 
+/* Stays C (allocator): php_stream_alloc and php_stream_to_zval. */
 static bool lob_resource(zend_object *dbh, int fd, Oid oid, zval *output) {
     php_stream *stream = php_stream_alloc(&pdo_pgsql_lob_stream_ops, NULL, 0, "r+b");
     if (!stream) {
@@ -90,6 +99,7 @@ static bool lob_resource(zend_object *dbh, int fd, Oid oid, zval *output) {
     return true;
 }
 
+/* Stays C (budget): the raw resource's type, then zend_list_close. */
 void pdo_pgsql_close_resource(zend_resource *resource)
 {
     if (resource->type >= 0) {
@@ -97,12 +107,14 @@ void pdo_pgsql_close_resource(zend_resource *resource)
     }
 }
 
+/* Stays C (budget): ZEND_THIS. */
 /* php_stream_to_zval consumes the stream resource. */
 bool pdo_pgsql_lob_resource(zend_execute_data *execute_data, int fd, Oid oid, zval *output)
 {
     return lob_resource(Z_OBJ_P(ZEND_THIS), fd, oid, output);
 }
 
+/* Stays C (version): database_object_handle is a zend_object pointer from 8.5. */
 bool pdo_pgsql_stmt_lob_stream(pdo_stmt_t *stmt, int fd, Oid oid, zval *output)
 {
 #if PHP_VERSION_ID >= 80500

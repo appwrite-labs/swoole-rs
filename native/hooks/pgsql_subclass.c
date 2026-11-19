@@ -23,6 +23,7 @@
 #include "php_pdo_pgsql_int.h"
 #include "ext/pdo/php_pdo_error.h"
 
+/* Stays C (version): PDO_CONSTRUCT_CHECK raises the version's error. */
 /* PDO_CONSTRUCT_CHECK uses the active frame for the version-specific error.
  * RETURN_THROWS references the return slot but never writes it. */
 void pdo_pgsql_method_dbh(zend_execute_data *execute_data, pdo_dbh_t **out)
@@ -33,16 +34,19 @@ void pdo_pgsql_method_dbh(zend_execute_data *execute_data, pdo_dbh_t **out)
     *out = dbh;
 }
 
+/* Stays C (version): PDO_DBH_CLEAR_ERR. */
 void pdo_pgsql_clear_method_error(pdo_dbh_t *dbh)
 {
     PDO_DBH_CLEAR_ERR();
 }
 
+/* Stays C (version): PDO_HANDLE_DBH_ERR. */
 void pdo_pgsql_handle_method_error(pdo_dbh_t *dbh)
 {
     PDO_HANDLE_DBH_ERR();
 }
 
+/* Stays C (allocator): ZVAL_STRING of libpq's strings before PQfreemem. */
 /* Copy the libpq-owned strings before releasing the notification. */
 bool pdo_pgsql_take_notify(PGconn *conn, zval *channel, int *pid, zval *payload)
 {
@@ -79,6 +83,7 @@ bool pdo_pgsql_take_notify(PGconn *conn, zval *channel, int *pid, zval *payload)
 
 #endif
 
+/* Stays C (version, globals, allocator): 8.4's Pdo\Pgsql, CG(class_table) and zend_string_init. */
 void pdo_pgsql_bind_subclass(void)
 {
 #if PHP_VERSION_ID >= 80400
