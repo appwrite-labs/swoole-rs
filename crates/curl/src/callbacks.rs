@@ -181,11 +181,9 @@ fn exec(call: &Call<'_>) {
     if !checked(handle, true) {
         return;
     }
-    verify(handle, true);
-    if bailout::pending() {
+    if !prepare_transfer(handle) {
         return;
     }
-    swoole_curl_cleanup_handle(handle);
     let mut error = 0;
     // A callback's bailout leaves libcurl through here.
     let transfer = contain_with(|| {
@@ -226,6 +224,16 @@ fn exec(call: &Call<'_>) {
     } else {
         call.set_owned(body);
     }
+}
+
+/// Validate streams and reset the buffers and error state for a new transfer.
+pub(super) fn prepare_transfer(handle: PhpHandle<'_>) -> bool {
+    verify(handle, true);
+    if bailout::pending() {
+        return false;
+    }
+    swoole_curl_cleanup_handle(handle);
+    true
 }
 
 /// `_php_curl_verify_handlers`: a stream closed under the handle is dropped, after a

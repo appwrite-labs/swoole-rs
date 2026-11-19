@@ -66,6 +66,8 @@ pub const CURLE_OK: CURLcode = 0;
 pub const CURLE_FAILED_INIT: CURLcode = 2;
 pub const CURLE_ABORTED_BY_CALLBACK: CURLcode = 42;
 pub const CURLM_OK: CURLMcode = 0;
+pub const CURLM_BAD_HANDLE: CURLMcode = 1;
+pub const CURLM_BAD_EASY_HANDLE: CURLMcode = 2;
 pub const CURLM_INTERNAL_ERROR: CURLMcode = 4;
 
 /// `CURLOPTTYPE_OBJECTPOINT + 103`.

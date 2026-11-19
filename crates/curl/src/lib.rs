@@ -783,12 +783,6 @@ pub extern "C" fn swr_v1_curl_multi_handle(multi: &Multi) -> *mut CURLM {
     multi.raw()
 }
 
-/// `Multi::add_handle`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_curl_multi_add_handle(multi: &Multi, handle: &mut Handle) -> CURLMcode {
-    multi.add_handle(handle)
-}
-
 /// `Multi::remove_handle`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_curl_multi_remove_handle(multi: &Multi, handle: &mut Handle) -> CURLMcode {
