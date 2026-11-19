@@ -299,11 +299,11 @@ fn sleep(seconds: f64) {
 }
 
 /// Waits for `what` where upstream sleeps `upstream` (`Duration::ZERO`: upstream doesn't
-/// wait): checks `done` every `interval`, calling `retry` after each miss, for up to
-/// `deadline`. Prints how long it took when it had to wait longer than upstream's sleep,
-/// and names `what` when the deadline passes; returns whether `done` held, for upstream's
-/// assertion after it. It doesn't panic: a client thread that did would leave its server
-/// running (README.md).
+/// wait): checks `done` every `interval` for up to `deadline`, calling `retry` after each
+/// miss but the first, so every retry comes an interval after the previous step. Prints how
+/// long it took when it had to wait longer than upstream's sleep, and names `what` when the
+/// deadline passes; returns whether `done` held, for upstream's assertion after it. It
+/// doesn't panic: a client thread that did would leave its server running (README.md).
 fn wait_for(
     what: &str,
     upstream: Duration,
@@ -328,7 +328,10 @@ fn wait_for(
             );
             return false;
         }
-        retry();
+        // Each retry follows an interval: none right after the first check.
+        if waited {
+            retry();
+        }
         std::thread::sleep(interval);
         waited = true;
     }
