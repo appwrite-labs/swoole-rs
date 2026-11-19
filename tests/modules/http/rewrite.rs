@@ -53,7 +53,9 @@ fn compare(url: &[u8], rules: &[Rule]) -> Result<(), String> {
     };
     let mut candidate = RewriteRules::default();
     for (pattern, replacement) in rules {
-        candidate.add(pattern, replacement);
+        candidate
+            .add(pattern, replacement)
+            .map_err(|_| "a rule upstream runs and Rust can't")?;
     }
     let mut context = HttpStaticContext::new(url, 4096).ok_or("no static context")?;
     let now = context.rewrite(&candidate);

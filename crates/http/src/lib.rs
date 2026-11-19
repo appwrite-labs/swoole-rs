@@ -40,7 +40,7 @@ pub use proxy::{
 mod range;
 mod range_response;
 mod rewrite;
-pub use rewrite::RewriteRules;
+pub use rewrite::{RewriteRules, Unsupported};
 mod static_context;
 pub use static_context::*;
 mod tasks;

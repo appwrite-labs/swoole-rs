@@ -294,8 +294,8 @@ mod tests {
         let original = b"/a\0tail";
         let mut owner = HttpStaticContext::new(original, 128).unwrap();
         let mut rules = crate::RewriteRules::default();
-        rules.add(b"/a\0", b"/b\0");
-        rules.add(b"/b\0tail", b"");
+        assert!(rules.add(b"/a\0", b"/b\0").is_ok());
+        assert!(rules.add(b"/b\0tail", b"").is_ok());
         assert!(owner.rewrite(&rules));
         assert_eq!(owner.text(Url), b"/b\0tail");
         assert!(owner.rewrite(&rules));

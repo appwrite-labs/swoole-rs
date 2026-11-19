@@ -221,8 +221,17 @@ impl<'a> Server<'a> {
     }
 
     /// `url_rewrite_rules`: add one rule.
-    pub fn add_rewrite_rule(self, pattern: &[u8], replacement: &[u8]) {
-        crate::static_config::add_rewrite_rule(&self.state().static_config, pattern, replacement);
+    ///
+    /// # Errors
+    ///
+    /// [`swoole_rs_http::Unsupported`] for a regex upstream would run and this server
+    /// can't (a backreference or lookahead), which is added and never matches.
+    pub fn add_rewrite_rule(
+        self,
+        pattern: &[u8],
+        replacement: &[u8],
+    ) -> Result<(), swoole_rs_http::Unsupported> {
+        crate::static_config::add_rewrite_rule(&self.state().static_config, pattern, replacement)
     }
 
     /// `f` over a static handler collection: whether it is set, and its values.

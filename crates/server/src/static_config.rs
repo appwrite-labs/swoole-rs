@@ -123,9 +123,14 @@ pub(crate) fn config(configs: &Configs, collection: Collection, operation: Op<'_
     }
 }
 
-/// `url_rewrite_rules`: add one rule (upstream's `Server::add_rewrite_rule`).
-pub(crate) fn add_rewrite_rule(configs: &Configs, pattern: &[u8], replacement: &[u8]) {
-    owner(configs).rewrite_rules.add(pattern, replacement);
+/// `url_rewrite_rules`: add one rule (upstream's `Server::add_rewrite_rule`); `Err` for a
+/// regex upstream would run and this server can't.
+pub(crate) fn add_rewrite_rule(
+    configs: &Configs,
+    pattern: &[u8],
+    replacement: &[u8],
+) -> Result<(), swoole_rs_http::Unsupported> {
+    owner(configs).rewrite_rules.add(pattern, replacement)
 }
 /// Upstream's `Server::apply_rewrite_rules` over the server's rules.
 pub(crate) fn apply_rewrite_rules(configs: &Configs, context: &mut HttpStaticContext) -> bool {
@@ -208,8 +213,8 @@ mod tests {
         let state = Configs::new();
         let mut context = HttpStaticContext::new(b"/view/post/3", 128).unwrap();
         assert!(!apply_rewrite_rules(&state, &mut context));
-        add_rewrite_rule(&state, b"~^/view/post/(\\d+)$~", b"/static/$1.html");
-        add_rewrite_rule(&state, b"/article/", b"/static/article/");
+        assert!(add_rewrite_rule(&state, b"~^/view/post/(\\d+)$~", b"/static/$1.html").is_ok());
+        assert!(add_rewrite_rule(&state, b"/article/", b"/static/article/").is_ok());
         assert!(apply_rewrite_rules(&state, &mut context));
         assert!(
             !apply_rewrite_rules(&state, &mut context),
