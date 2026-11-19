@@ -16,7 +16,7 @@ use std::mem::MaybeUninit;
 use std::ptr;
 
 /// `SW_FD_PIPE`.
-const FD_PIPE: c_int = 3;
+const FD_PIPE: c_int = crate::constants::FdType::SW_FD_PIPE as c_int;
 /// `SW_PIPE_CLOSE_MASTER` and `SW_PIPE_CLOSE_WORKER`.
 pub const CLOSE_MASTER: c_int = 1;
 pub const CLOSE_WORKER: c_int = 2;

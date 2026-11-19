@@ -20,9 +20,9 @@ thread_local! {
 }
 
 /// `SW_FORK_EXEC`, `SW_FORK_DAEMON` and `SW_FORK_PRECHECK`.
-const FORK_EXEC: c_int = 2;
-const FORK_DAEMON: c_int = 4;
-const FORK_PRECHECK: c_int = 8;
+const FORK_EXEC: c_int = crate::constants::ForkType::SW_FORK_EXEC as c_int;
+const FORK_DAEMON: c_int = crate::constants::ForkType::SW_FORK_DAEMON as c_int;
+const FORK_PRECHECK: c_int = crate::constants::ForkType::SW_FORK_PRECHECK as c_int;
 /// `SW_ERROR_OPERATION_NOT_SUPPORT`.
 const OPERATION_NOT_SUPPORT: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;

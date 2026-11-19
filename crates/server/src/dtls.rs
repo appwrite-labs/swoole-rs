@@ -18,7 +18,7 @@ use swoole_rs_corebase::{DataHead, log};
 use crate::reactor_entry::DgramPacket;
 
 /// `SW_FD_SESSION`.
-const FD_SESSION: c_int = 0;
+const FD_SESSION: c_int = swoole_rs_corebase::constants::FdType::SW_FD_SESSION as c_int;
 
 /// `setsockopt(fd, level, option, value)` for an int option.
 fn set_option(fd: c_int, level: c_int, option: c_int, value: c_int) {

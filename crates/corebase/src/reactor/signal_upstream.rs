@@ -15,7 +15,7 @@ use std::ffi::c_int;
 
 /// `SW_FD_SIGNAL` and `SW_ERROR_UNREGISTERED_SIGNAL`.
 #[cfg(target_os = "linux")]
-const FD_SIGNAL: c_int = 9;
+const FD_SIGNAL: c_int = crate::constants::FdType::SW_FD_SIGNAL as c_int;
 const UNREGISTERED_SIGNAL: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_UNREGISTERED_SIGNAL as c_int;
 

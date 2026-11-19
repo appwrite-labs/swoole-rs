@@ -87,9 +87,9 @@ fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
 
 /// `SW_FORK_DAEMON` and `SW_FORK_PRECHECK`.
 #[cfg(target_vendor = "apple")]
-const FORK_DAEMON: c_int = 4;
+const FORK_DAEMON: c_int = crate::constants::ForkType::SW_FORK_DAEMON as c_int;
 #[cfg(not(target_vendor = "apple"))]
-const FORK_PRECHECK: c_int = 8;
+const FORK_PRECHECK: c_int = crate::constants::ForkType::SW_FORK_PRECHECK as c_int;
 
 /// The operation that prevented the process from becoming a daemon.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

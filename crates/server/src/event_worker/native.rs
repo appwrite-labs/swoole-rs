@@ -27,7 +27,7 @@ use crate::view;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as WARNING;
 
 /// `SW_FD_PIPE`, `SW_PIPE_MASTER`.
-const FD_PIPE: c_int = 3;
+const FD_PIPE: c_int = swoole_rs_corebase::constants::FdType::SW_FD_PIPE as c_int;
 const PIPE_MASTER: c_int = 1;
 /// `SW_LOG_WARNING` and the `SW_ERROR_*` the worker logs.
 const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;

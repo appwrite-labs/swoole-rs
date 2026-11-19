@@ -102,7 +102,7 @@ mod tests {
     use swoole_rs_corebase::reactor::SocketRecord;
 
     use swoole_rs_corebase::ServerEvent::{RecvDgram, SendData};
-    const FD_PIPE: c_int = 3;
+    const FD_PIPE: c_int = swoole_rs_corebase::constants::FdType::SW_FD_PIPE as c_int;
 
     #[test]
     fn owns_splits_ports_and_workers_across_threads() {

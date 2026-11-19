@@ -20,7 +20,7 @@ use swoole_rs_corebase::reactor::{SocketFields, SocketRecord};
 static PHP_MEMORY: OnceLock<extern "C" fn() -> usize> = OnceLock::new();
 
 /// `SW_FD_SESSION`.
-const FD_SESSION: c_int = 0;
+const FD_SESSION: c_int = swoole_rs_corebase::constants::FdType::SW_FD_SESSION as c_int;
 /// `Server::THREAD_REACTOR`.
 const THREAD_REACTOR: u8 = 2;
 

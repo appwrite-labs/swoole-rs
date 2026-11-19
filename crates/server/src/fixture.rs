@@ -24,7 +24,7 @@ pub(crate) const CONNECTIONS: usize = if cfg!(miri) { 256 } else { 4096 };
 const SESSIONS: usize = if cfg!(miri) { CONNECTIONS + 1 } else { 1 << 20 };
 /// `SW_SOCK_TCP` and `SW_FD_STREAM_SERVER`.
 const SOCK_TCP: c_int = swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP.raw();
-const FD_STREAM_SERVER: c_int = 1;
+const FD_STREAM_SERVER: c_int = swoole_rs_corebase::constants::FdType::SW_FD_STREAM_SERVER as c_int;
 
 /// A process-mode server with one reactor thread, its tables, shared counters and
 /// pools, one TCP port listening on 127.0.0.1, and this thread's reactor.
