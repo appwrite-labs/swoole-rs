@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-// `repr(C)`: C's `swoole::Allocator`, a member of `SwooleG` (`native/corebase/swoole.h`).
+// Native coroutine sockets expose a pointer to this table as `const swoole::Allocator *`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct CoreAllocator {
@@ -266,14 +266,21 @@ mod tests {
     fn storage_init_task_directory_and_reset() {
         init_allocator();
         init();
-        let allocator = unsafe {
-            std::ptr::from_ref(&SWOOLE_G.std_allocator)
-                .cast::<CoreAllocator>()
-                .read()
-        };
-        let allocation = (allocator.malloc.unwrap())(19);
+        assert_eq!(
+            SWOOLE_G
+                .std_allocator
+                .each_ref()
+                .map(|slot| slot.load(Relaxed)),
+            [
+                libc::malloc as *mut c_void,
+                libc::calloc as *mut c_void,
+                libc::realloc as *mut c_void,
+                libc::free as *mut c_void
+            ]
+        );
+        let allocation = unsafe { libc::malloc(19) };
         assert!(!allocation.is_null());
-        unsafe { (allocator.free.unwrap())(allocation) };
+        unsafe { libc::free(allocation) };
         assert!(max_sockets() >= 1);
         assert_eq!(path(), b"/tmp/swoole.task.XXXXXX");
 
@@ -330,12 +337,12 @@ mod tests {
         reset();
         assert_eq!(max_sockets(), 0);
         assert_eq!(SWOOLE_G.dns_cache_refresh_time.load(Relaxed), 0);
-        let allocator = unsafe {
-            std::ptr::from_ref(&SWOOLE_G.std_allocator)
-                .cast::<CoreAllocator>()
-                .read()
-        };
-        assert!(allocator.malloc.is_none());
+        assert!(
+            SWOOLE_G
+                .std_allocator
+                .iter()
+                .all(|slot| slot.load(Relaxed).is_null())
+        );
         assert_eq!(path(), b"");
     }
 }
