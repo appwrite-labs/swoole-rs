@@ -219,6 +219,17 @@ the same pipeline size (recorded in the JSON); batching changes latency and serv
 per read. `client_cpu` records load-generator CPU seconds per wall second, so a client near
 one core (two for wrk) can bound the measured throughput even when server CPU is lower.
 
+`workers-base` and `workers-process` are plaintext on four workers against `benchmarks/workers`,
+under `SWOOLE_BASE` and under `SWOOLE_PROCESS` with two reactor threads. Run them with a load
+generator that can keep up, for example `--connections 128 --wrk-threads 4`, on a machine with
+about ten cores; the nightly doesn't run them. On a 10-CPU arm64 Linux VM the two engines used
+the same CPU per request (ratios 1.02 and 1.02), and both showed the same two limits. In base
+mode the workers share connections unevenly: four workers served 2.2 times one worker's
+requests/s, with each worker 37% to 63% busy on the Cargo build, and upstream in one run left
+two workers idle and one saturated. In process mode a request costs 2.2 times the CPU it does
+in base mode (7.2 µs against 3.3 µs), and the master's two reactor threads were saturated while
+the four workers were 41% busy, so the master's hop sets the throughput.
+
 ### Instrumented release profiles
 
 Linux arm64 glibc releases train on the target PHP and rebuild with the resulting

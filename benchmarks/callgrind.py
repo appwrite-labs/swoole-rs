@@ -107,6 +107,10 @@ WORKLOADS = {
     # its cost is spinning on the row lock across processes.
     'table-contended': ('benchmarks/table', 'GET', '/', None, b'64\n'),
     'process-mode': ('benchmarks/process', 'GET', '/', None, b'Hello, Swoole!\n'),
+    # plaintext on four workers, SWOOLE_BASE and SWOOLE_PROCESS, for wall.py: scaling across
+    # cores shows in requests/s and CPU time, not in one request's instructions.
+    'workers-base': ('benchmarks/workers', 'GET', '/', None, b'Hello, Swoole!\n'),
+    'workers-process': ('benchmarks/workers/process', 'GET', '/', None, b'Hello, Swoole!\n'),
     # Larger and concurrent traffic (#2652), against benchmarks/traffic.
     'http2-concurrent': ('benchmarks/traffic', 'H2C', '/echo', H2BODY, H2BODY),
     'websocket-64k': ('benchmarks/traffic', 'WS', '/', PAYLOAD, PAYLOAD),
