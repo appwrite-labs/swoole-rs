@@ -9,9 +9,9 @@ use swoole_rs_server::port_config::PortConfig;
 
 pub use swoole_rs_clients::framing_recv::{default_length_func, swoole_hton64, swoole_ntoh64};
 
-/// Whether this port has a PHP length callable, sampled once per receive.
+/// The port whose current protocol and optional PHP callable measure each packet.
 #[derive(Clone, Copy)]
-pub(crate) struct PortSource<'a>(pub(crate) &'a PortConfig, pub(crate) bool);
+pub(crate) struct PortSource<'a>(pub(crate) &'a PortConfig);
 
 impl Source for PortSource<'_> {
     fn protocol(self) -> Protocol {
@@ -21,7 +21,7 @@ impl Source for PortSource<'_> {
         self.0.protocol.as_ptr()
     }
     fn length_owner(self) -> Option<std::rc::Rc<dyn core::any::Any>> {
-        if self.1 { self.0.length_owner() } else { None }
+        self.0.length_owner()
     }
 }
 

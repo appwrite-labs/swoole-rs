@@ -166,8 +166,7 @@ impl<'a> Read<'a> {
     #[inline(always)]
     fn framed(&mut self, mode: Mode, packages: impl Packages) -> bool {
         let socket = self.socket;
-        // Asked once per receive, not per measure: most ports have no PHP length callable.
-        let owner = crate::framing_recv::PortSource(self.port, self.port.has_length_owner());
+        let owner = crate::framing_recv::PortSource(self.port);
         let initial = self.framing_flags.take();
         let buffer = self.buffer();
         framing_recv::receive(socket, owner, buffer, mode, packages, initial) != Status::Err
