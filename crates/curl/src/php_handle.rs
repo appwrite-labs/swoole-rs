@@ -58,7 +58,7 @@ unsafe extern "C" {
     safe fn swoole_curl_bind_easy(handle: PhpHandle<'_>, easy: Easy<'_>);
     safe fn swoole_curl_default_options(handle: PhpHandle<'_>);
     safe fn swoole_curl_set_url(handle: PhpHandle<'_>, url: &swoole_rs_zend::ZStr) -> bool;
-    safe fn swoole_curl_easy(handle: PhpHandle<'_>) -> Easy<'_>;
+    pub(super) safe fn swoole_curl_easy(handle: PhpHandle<'_>) -> Easy<'_>;
     safe fn swoole_curl_easy_upkeep(handle: PhpHandle<'_>) -> c_int;
     safe fn swoole_curl_take_private(handle: PhpHandle<'_>, previous: &mut swoole_rs_zend::Owned);
     safe fn swoole_curl_reset_options(handle: PhpHandle<'_>);
@@ -167,7 +167,7 @@ fn object_argument<'a>(call: &'a Call<'_>) -> Option<PhpHandle<'a>> {
     Some(handle)
 }
 
-fn checked(handle: PhpHandle<'_>, exclusive: bool) -> bool {
+pub(super) fn checked(handle: PhpHandle<'_>, exclusive: bool) -> bool {
     super::php::check_handle(swoole_curl_easy(handle), exclusive, true)
 }
 

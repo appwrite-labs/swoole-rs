@@ -479,6 +479,40 @@ extern "C" void swoole_curl_buffer_append(php_curl *ch, const char *data, size_t
     smart_str_appendl(&ch->handlers.write->buf, data, (int) length);
 }
 
+/* curl_exec's result: the collected response, which the handle keeps until its next transfer. */
+extern "C" bool swoole_curl_buffer_result(php_curl *ch, zval *result) {
+    smart_str *buf = &ch->handlers.write->buf;
+    if (!buf->s) {
+        return false;
+    }
+    smart_str_0(buf);
+    ZVAL_STR_COPY(result, buf->s);
+    return true;
+}
+
+extern "C" void swoole_curl_buffer_free(php_curl *ch) {
+    smart_str_free(&ch->handlers.write->buf);
+}
+
+/* _php_curl_cleanup_handle: the last transfer's response, request header and error. */
+extern "C" void swoole_curl_cleanup_handle(php_curl *ch) {
+    smart_str_free(&ch->handlers.write->buf);
+    if (ch->header.str) {
+        zend_string_release_ex(ch->header.str, 0);
+        ch->header.str = NULL;
+    }
+    memset(ch->err.str, 0, CURL_ERROR_SIZE + 1);
+    ch->err.no = 0;
+}
+
+extern "C" void swoole_curl_stream_flush(zval *value) {
+    php_stream *stream = Z_ISUNDEF_P(value) ? NULL
+        : (php_stream *) zend_fetch_resource2_ex(value, NULL, php_file_le_stream(), php_file_le_pstream());
+    if (stream) {
+        php_stream_flush(stream);
+    }
+}
+
 /* The request header, for CURLINFO_HEADER_OUT. */
 extern "C" void swoole_curl_record_header(php_curl *ch, const char *data, size_t length) {
     if (ch->header.str) {
