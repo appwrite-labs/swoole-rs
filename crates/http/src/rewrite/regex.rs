@@ -106,6 +106,9 @@ enum Node {
     Alt(Vec<Node>),
     /// The node, its minimum and maximum count, and whether it is greedy.
     Repeat(Box<Node>, u32, Option<u32>, bool),
+    /// A backreference (`None`) or a lookahead and its body, which the pattern can't run;
+    /// compiled only so its states count toward [`LIMIT`] as libstdc++'s would.
+    Unsupported(Option<Box<Node>>),
 }
 
 impl Node {
@@ -118,6 +121,7 @@ impl Node {
             Self::Concat(nodes) => nodes.iter().all(Self::empty),
             Self::Alt(nodes) => nodes.iter().any(Self::empty),
             Self::Repeat(node, min, ..) => *min == 0 || node.empty(),
+            Self::Unsupported(_) => true,
         }
     }
 }
@@ -242,27 +246,28 @@ impl Parser<'_> {
         self.eat(b')').then_some(node)
     }
     /// `\\N`, as libstdc++'s `_M_insert_backref` takes it: a group already opened and
-    /// closed. It matches nothing here; the pattern is [`Rejected::Unsupported`].
+    /// closed. The pattern is [`Rejected::Unsupported`].
     fn backreference(&mut self) -> Option<Node> {
         let index = usize::try_from(self.number()?).ok()?;
         if index > self.groups || self.open.contains(&index) {
             return None;
         }
         self.unsupported = true;
-        Some(Node::Concat(Vec::new()))
+        Some(Node::Unsupported(None))
     }
     /// `(?=` or `(?!`, after the `(`: an assertion, so no quantifier follows. Its body is
-    /// read as any group's, and the pattern is [`Rejected::Unsupported`].
+    /// read and compiled as any group's, and the pattern is [`Rejected::Unsupported`].
     fn lookahead(&mut self) -> Option<Node> {
         self.rest = self.rest.get(2..)?;
         self.depth += 1;
         if self.depth > NESTING {
             return None;
         }
-        self.alternation()?;
+        let body = self.alternation()?;
         self.depth -= 1;
         self.unsupported = true;
-        self.eat(b')').then(|| Node::Concat(Vec::new()))
+        self.eat(b')')
+            .then(|| Node::Unsupported(Some(Box::new(body))))
     }
     fn number(&mut self) -> Option<u32> {
         let digits = self.rest.iter().take_while(|b| b.is_ascii_digit()).count();
@@ -487,6 +492,15 @@ impl Regex {
                 self.push(Inst::Save(2 * index + 1))?;
             }
             Node::Concat(nodes) => nodes.iter().try_for_each(|node| self.emit(node))?,
+            // libstdc++'s backref state; or its lookahead state, the body, and the body's
+            // accept state. Never run: the pattern doesn't compile.
+            Node::Unsupported(body) => {
+                self.push(Inst::Match)?;
+                if let Some(body) = body {
+                    self.emit(body)?;
+                    self.push(Inst::Match)?;
+                }
+            }
             Node::Alt(nodes) => {
                 let (last, init) = nodes.split_last()?;
                 let mut jumps = Vec::new();

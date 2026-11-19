@@ -295,6 +295,9 @@ mod tests {
             "(a\\1)",
             "(?=a)*",
             "(?=a",
+            // A lookahead's body counts toward the state limit (libstdc++'s error_space).
+            "(?=a{100000})",
+            "a(?!(?:a{1000}){1000})",
             "(a)\\1",
             "(a)(b)\\2+",
             "a(?=b)",

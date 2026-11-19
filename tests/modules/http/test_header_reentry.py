@@ -94,3 +94,32 @@ def test_request_method_strings_separate_on_write(engine, method, protocol):
     result = subprocess.run(engine.command('-r', code, method, protocol), capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout) == [method, '!' + method[1:], method, method]
+
+
+def test_url_rewrite_rules_warn_only_for_patterns_upstream_runs_and_this_server_cannot(engine):
+    # A backreference or lookahead (#5277) warns at set(), naming the pattern; a pattern
+    # std::regex rejects, a supported one, and a prefix stay silent, as upstream is.
+    code = r'''
+    $warnings = [];
+    set_error_handler(static function (int $level, string $message) use (&$warnings) {
+        $warnings[] = [$level, $message];
+        return true;
+    });
+    $server = new Swoole\Http\Server('127.0.0.1', 0, SWOOLE_BASE);
+    foreach (['~(a)\1~', '~a(?=b)~', '~^/user/(\d+)$~', '~[~', '~(?=a{100000})~', '/prefix/'] as $pattern) {
+        $warnings = [];
+        $server->set(['url_rewrite_rules' => [$pattern => '/x']]);
+        echo json_encode([$pattern, $warnings]), "\n";
+    }
+    '''
+    result = subprocess.run(engine.command('-r', code), capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    rows = dict(json.loads(line) for line in result.stdout.splitlines())
+    warned = {
+        pattern: [
+            [2, f"Swoole\\Server::set(): url_rewrite_rules: the pattern '{pattern}' uses a backreference "
+                'or lookahead, which is not supported; the rule never matches']
+        ]
+        for pattern in ('~(a)\\1~', '~a(?=b)~')
+    }
+    assert rows == {**{pattern: [] for pattern in rows}, **warned}
