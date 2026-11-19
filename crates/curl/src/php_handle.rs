@@ -1,4 +1,4 @@
-//! PHP entry points from both bundled `thirdparty/php*/curl/interface.cc` copies.
+//! PHP entry points and object handlers for native cURL easy handles.
 //! The argument zval keeps its `php_curl` object alive. Native accessors supply
 //! the version-specific field offsets for callbacks, streams and option storage.
 use crate::Easy;
@@ -40,7 +40,6 @@ unsafe extern "C" {
     safe fn swoole_curl_has_clone_storage(handle: PhpHandle<'_>) -> bool;
     safe fn swoole_curl_release_clone(handle: PhpHandle<'_>) -> bool;
     safe fn swoole_curl_free_lists(handle: PhpHandle<'_>);
-    safe fn swoole_curl_free_callbacks(handle: PhpHandle<'_>);
     safe fn swoole_curl_release_values(handle: PhpHandle<'_>);
     pub(super) safe fn zend_object_std_dtor(object: ObjectRef<'_>);
     safe fn curl_easy_cleanup(easy: crate::Retired<'_>);
@@ -444,7 +443,7 @@ pub extern "C" fn swoole_curl_free_obj(object: ObjectRef<'_>) {
                     crate::swr_v1_curl_destroy_handle(crate::Retired(easy));
                     curl_easy_cleanup(crate::Retired(easy));
                 }
-                swoole_curl_free_callbacks(handle);
+                super::callbacks::free_callbacks(handle);
                 swoole_curl_release_values(handle);
             }
         }

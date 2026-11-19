@@ -1,4 +1,4 @@
-//! `curl_getinfo` (both bundled `interface.cc` copies): every field as an array, or one
+//! `curl_getinfo`: every field as an array, or one
 //! `CURLINFO_*` value. libcurl's `curl_easy_getinfo` is variadic, so each result type has a
 //! shim in `native/hooks/curl_handle.cc`.
 use super::php_handle::{PhpHandle, handle_argument};
