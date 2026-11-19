@@ -415,7 +415,8 @@ extern "C" fn swoole_curl_on_debug(
     }
     if swoole_curl_has_callable(handle, Plain::Debug as c_int) {
         let args = [object(handle), Owned::long(kind.into()), string(data, size)];
-        drop(call(handle, Plain::Debug as c_int, &args));
+        // The debug callback's return value is ignored.
+        _ = call(handle, Plain::Debug as c_int, &args, false);
     }
     Debugged::Done
 }
@@ -536,12 +537,17 @@ enum Called {
 }
 
 /// Runs the option's callable: None when PHP could not call it, else what it returned,
-/// undefined when it threw or bailed out (which is deferred).
-fn call(handle: PhpHandle<'_>, option: c_int, args: &[Owned]) -> Option<Owned> {
+/// undefined when it threw or bailed out (which is deferred). Without `keep` the return
+/// value is released while the handle is still marked in-callback, so a destructor it runs
+/// can't close or reset the handle; what comes back is then undefined.
+fn call(handle: PhpHandle<'_>, option: c_int, args: &[Owned], keep: bool) -> Option<Owned> {
     let (mut called, mut retval) = (true, Owned::default());
     swoole_curl_set_in_callback(handle, true);
     bailout::defer(contain_with(|| {
         called = swoole_curl_call(handle, option, Zvals::owned(args), &mut retval);
+        if !keep {
+            drop(std::mem::take(&mut retval));
+        }
         // A fatal bailout skips this reset: shutdown handlers still see the active callback.
         swoole_curl_set_in_callback(handle, false);
     }));
@@ -554,7 +560,7 @@ fn invoke(handle: PhpHandle<'_>, option: c_int, args: &[Owned]) -> Called {
     if !swoole_curl_has_callable(handle, option) {
         return Called::Nothing;
     }
-    match call(handle, option, args) {
+    match call(handle, option, args, true) {
         None => Called::Failed,
         Some(retval) if retval.kind() == IS_UNDEF => Called::Nothing,
         Some(retval) => {
