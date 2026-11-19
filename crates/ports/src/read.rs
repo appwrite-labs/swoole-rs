@@ -40,6 +40,9 @@ pub enum Framing {
     Redis,
 }
 
+/// Reactor dispatch flag for a request whose upload body has been preprocessed.
+pub const UPLOAD_PREPROCESSED: u16 = 1 << 0;
+
 /// What [`Connection::dispatch`] hands on: `Server::dispatch_task`,
 /// `http_server::dispatch_request`, or a request flagged
 /// `SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED` (the reactor rewrote the body, so its
