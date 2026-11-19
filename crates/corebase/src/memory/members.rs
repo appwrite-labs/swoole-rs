@@ -421,6 +421,11 @@ pub mod pool {
 
     static POOL: GlobalMemory = GlobalMemory::empty();
 
+    #[cfg(test)]
+    pub(super) fn users() -> usize {
+        POOL.users.load(SeqCst)
+    }
+
     /// `SwooleG.memory_pool = new GlobalMemory(SW_GLOBAL_MEMORY_PAGESIZE, true)`,
     /// `swoole_init`'s pool. Where upstream's constructor throws, the process aborts. A
     /// pool that is already there stays.
@@ -478,8 +483,47 @@ pub mod pool {
         impl<T> Sealed for std::mem::MaybeUninit<T> {}
     }
 
-    /// A block of `size` bytes from [`alloc`], for the process's life, or null. The pool
-    /// counts a user that never leaves, so [`delete`] keeps the pages it sits in mapped.
+    /// One pool allocation whose owner only lends the word for a borrow of itself.
+    /// The pool counts the pin until the owner drops. A fork copies the count and
+    /// the owner into the child while both processes share the word.
+    pub struct PooledWord<W: 'static> {
+        word: &'static W,
+        _pin: PoolPin,
+    }
+
+    // Drops after the word reference. A pool deleted with users still present
+    // already keeps its mapping, so this also works after a pool replacement.
+    struct PoolPin;
+
+    impl Drop for PoolPin {
+        fn drop(&mut self) {
+            POOL.users.fetch_sub(1, SeqCst);
+        }
+    }
+
+    impl<W: Word> PooledWord<W> {
+        /// Allocate one zeroed word, holding the pin taken by `words`.
+        #[must_use]
+        pub fn allocate() -> Option<Self> {
+            let words = words(1)?;
+            let pin = PoolPin;
+            Some(Self {
+                word: words.first()?,
+                _pin: pin,
+            })
+        }
+    }
+
+    impl<W> std::ops::Deref for PooledWord<W> {
+        type Target = W;
+
+        fn deref(&self) -> &W {
+            self.word
+        }
+    }
+
+    /// A block from [`alloc`], or null. Success adds one user. A [`PooledWord`]
+    /// releases that pin on drop; callers with process-lifetime references keep it.
     fn pinned(size: u32) -> *mut c_void {
         POOL.users.fetch_add(1, SeqCst);
         let block = alloc(size);
