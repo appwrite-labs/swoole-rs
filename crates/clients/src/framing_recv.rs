@@ -51,8 +51,12 @@ pub trait Packages {
         // A copy: the callback may run PHP that rewrites the protocol.
         let protocol = r.owner.protocol();
         let get = protocol.get_package_length?;
-        let owner = r.owner.length_owner();
-        get(&protocol, self.dynamic_header(&protocol), owner, &mut pl)
+        let header = self.dynamic_header(&protocol);
+        let default: crate::protocol::GetPackageLength = default_length_func;
+        if std::ptr::fn_addr_eq(get, default) {
+            return default_length_func(&protocol, header, None, &mut pl);
+        }
+        get(&protocol, header, r.owner.length_owner(), &mut pl)
     }
     /// `onPackage` over a whole package; whether it succeeded. No reference to the
     /// protocol is held across it: the callback may run PHP that rewrites it.
