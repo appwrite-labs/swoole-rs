@@ -28,7 +28,7 @@ use swoole_rs_zend::{method_table, sys as z};
 /// `SW_BUFFER_SIZE_BIG`.
 const BUFFER_SIZE_BIG: i64 = swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as i64;
 /// `SW_BACKLOG`.
-const BACKLOG: i64 = 512;
+const BACKLOG: i64 = swoole_rs_corebase::constants::SW_BACKLOG as i64;
 #[path = "socket_owner.rs"]
 pub(crate) mod owner;
 

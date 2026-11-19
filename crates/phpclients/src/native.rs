@@ -35,7 +35,7 @@ pub(crate) type Socket = *mut libc::c_void;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_corebase::reactor::{Events, TimeoutKind};
 /// `SW_SOCK_UDP6`.
-const SOCK_UDP6: c_int = 4;
+const SOCK_UDP6: c_int = swoole_rs_corebase::constants::SocketType::SW_SOCK_UDP6.raw();
 /// `SW_ERROR_WRONG_OPERATION`.
 const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 /// `SW_IPC_BUFFER_SIZE`: `SW_IPC_MAX_SIZE - sizeof(DataHead)`.

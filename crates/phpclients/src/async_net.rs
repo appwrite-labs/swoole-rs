@@ -282,8 +282,7 @@ fn connection(object: Obj, port: i64) -> Option<Rc<Conn>> {
     };
     let conn = Conn::new(cli);
     object.props().long(c"sock", i64::from(conn.fd()));
-    // `SW_SOCK_SSL`.
-    if kind & (1 << 9) != 0 {
+    if kind & crate::net::SOCK_SSL != 0 {
         let _context = conn.cli().handle().enable_ssl();
     }
     Some(Rc::new(conn))
