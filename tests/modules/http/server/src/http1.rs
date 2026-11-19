@@ -298,6 +298,45 @@ fn sleep(seconds: f64) {
     std::thread::sleep(Duration::from_secs_f64(seconds));
 }
 
+/// Waits for `what` where upstream sleeps `upstream` (`Duration::ZERO`: upstream doesn't
+/// wait): checks `done` every `interval` for up to `deadline`, calling `retry` after each
+/// miss but the first, so every retry comes an interval after the previous step. Prints how
+/// long it took when it had to wait longer than upstream's sleep, and names `what` when the
+/// deadline passes; returns whether `done` held, for upstream's assertion after it. It
+/// doesn't panic: a client thread that did would leave its server running (README.md).
+fn wait_for(
+    what: &str,
+    upstream: Duration,
+    interval: Duration,
+    deadline: Duration,
+    mut done: impl FnMut() -> bool,
+    mut retry: impl FnMut(),
+) -> bool {
+    let start = std::time::Instant::now();
+    let mut waited = false;
+    loop {
+        if done() {
+            let took = start.elapsed();
+            if waited && took > upstream {
+                eprintln!("waited {took:?} for {what} (upstream sleeps {upstream:?})");
+            }
+            return true;
+        }
+        if start.elapsed() >= deadline {
+            eprintln!(
+                "gave up after {deadline:?} waiting for {what} (upstream sleeps {upstream:?})"
+            );
+            return false;
+        }
+        // Each retry follows an interval: none right after the first check.
+        if waited {
+            retry();
+        }
+        std::thread::sleep(interval);
+        waited = true;
+    }
+}
+
 fn kill_pid(pid: c_int) {
     // SAFETY: signals that process.
     unsafe { kill(pid, SIGTERM) };
