@@ -47,6 +47,14 @@ mod tasks;
 pub use tasks::HttpStaticTask;
 use tasks::HttpTasks;
 mod static_meta;
+/// Status codes shared by the PHP HTTP client and server (`swoole_http.h`).
+pub mod status {
+    pub const SWITCHING_PROTOCOLS: i32 = 101;
+    pub const NO_CONTENT: i32 = 204;
+    pub const INTERNAL_SERVER_ERROR: i32 = 500;
+    pub const BAD_GATEWAY: i32 = 502;
+    pub const SERVICE_UNAVAILABLE: i32 = 503;
+}
 mod status_buffer;
 pub use status_buffer::{STATUS_CODES, status_message};
 mod static_headers;

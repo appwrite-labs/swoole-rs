@@ -681,6 +681,10 @@ def main(argv=None):
     past.add_argument('--workflow', action='append', required=True, help='workflow filename; repeatable')
     past.add_argument('--limit', type=int, default=30, help='newest runs per workflow, 1–1000 (includes active runs)')
     past.add_argument('--since', help='only runs created at or after this UTC time')
+    trend = commands.add_parser('phpt-trends', help='PHPTs cleared by reruns across scheduled main merge tiers')
+    trend.add_argument('--count', type=int, default=10, help='number of completed scheduled main runs')
+    trend.add_argument('--share', type=float, default=0.1, help='report clearance fractions strictly above this value')
+    trend.add_argument('--file-issues', action='store_true', help='file untracked cargo-only failures with a complete window')
     timing = commands.add_parser('timings')
     timing.add_argument('--count', type=int, default=20, help='qualifying runs to collect')
     timing.add_argument('--scan', type=int, default=100, help='maximum successful PR runs to inspect')
@@ -695,6 +699,18 @@ def main(argv=None):
     if args.command in ('status', 'wait') and args.event and not args.latest:
         parser.error('--event requires --latest')
     global RETRY_DEADLINE, RETRY_BASE
+    if args.command == 'phpt-trends':
+        from tools.phpt_trends import file_issues, trends
+        if not 0 < args.count <= 1000 or not 0 <= args.share <= 1:
+            parser.error('phpt-trends requires 1 <= --count <= 1000 and 0 <= --share <= 1')
+        try:
+            result = trends(gh, args.count, args.share)
+            if args.file_issues:
+                file_issues(gh, result)
+        except subprocess.CalledProcessError as failure:
+            sys.exit(f"gh {failure.cmd[1]}: {failure.stderr.strip()}")
+        print(json.dumps(result, indent=1))
+        return 0 if result['measured'] else 2
     if args.command == 'history':
         if not 1 <= args.limit <= 1000:
             parser.error('history requires 1 <= --limit <= 1000')

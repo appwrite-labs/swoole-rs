@@ -1,5 +1,6 @@
 //! Bounded equivalents of Swoole's permissive first-party HTTP framing.
 use super::{HttpSpan, maps::METHODS};
+use swoole_rs_corebase::constants::HTTP2_PREFACE;
 #[derive(Default, Clone, Copy)]
 pub struct HttpFrame {
     pub offset: usize,
@@ -58,8 +59,8 @@ fn request_line(input: &[u8], frame: &mut HttpFrame) -> bool {
         method.to_bytes().len()
     } else if input.starts_with(b"PRI") {
         frame.method = u32::from(crate::METHOD_PRI);
-        if input.starts_with(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n") {
-            frame.offset = 24;
+        if input.starts_with(HTTP2_PREFACE) {
+            frame.offset = HTTP2_PREFACE.len();
             return true;
         }
         frame.excepted = 1;
