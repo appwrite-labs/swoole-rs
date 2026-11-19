@@ -40,11 +40,7 @@ fn direction(event: Events) -> Option<crate::reactor::Interest> {
 /// The thread's `Reactor` while `swoole_event_is_available()`, else null.
 #[must_use]
 pub fn swr_v1_event_reactor() -> *mut c_void {
-    if swoole_event_is_available() {
-        current()
-    } else {
-        std::ptr::null_mut()
-    }
+    available().map_or(std::ptr::null_mut(), crate::reactor::Running::as_ptr)
 }
 
 /// The thread's `Reactor`, available or not (`sw_reactor()`).
@@ -53,10 +49,15 @@ pub fn swr_v1_event_current() -> *mut c_void {
     current()
 }
 
+/// The thread's live reactor for the current operation.
+pub(crate) fn available<'a>() -> Option<crate::reactor::Running<'a>> {
+    running().filter(|reactor| reactor.with(|state| !state.fields.destroyed))
+}
+
 /// `bool swoole_event_is_available()`.
 #[must_use]
 pub fn swoole_event_is_available() -> bool {
-    field(|fields| !fields.destroyed).unwrap_or(false)
+    available().is_some()
 }
 
 /// `bool swoole_event_is_running()`.
