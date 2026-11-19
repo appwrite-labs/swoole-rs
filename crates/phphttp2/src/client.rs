@@ -14,6 +14,9 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_close_hook};
+use swoole_rs_http2::frame_flag::{
+    ACK as FLAG_ACK, END_STREAM as FLAG_END_STREAM, PRIORITY as FLAG_PRIORITY,
+};
 use swoole_rs_http2::{
     FrameAction, FrameType, HeaderKind, HeaderRole, Http2FrameFacts, Http2Settings,
     Http2WindowPlan, Media, QueueAction, decode_packet,
@@ -39,12 +42,6 @@ const PING_PAYLOAD: usize = 8;
 const GOAWAY_SIZE: usize = 8;
 const WINDOW_UPDATE_SIZE: usize = 4;
 const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
-/// Frame types and flags.
-const FLAG_ACK: u32 = 1;
-const FLAG_END_STREAM: u32 = 1;
-const FLAG_PRIORITY: u32 = 0x20;
-/// `SW_HTTP2_STREAM_PIPELINE_REQUEST`.
-const STREAM_PIPELINE_REQUEST: u32 = 2;
 use swoole_rs_http2::setting_id;
 /// The `:authority` slot (`HTTP2_CLIENT_HOST_HEADER_INDEX`).
 const AUTHORITY: usize = 3;
@@ -709,7 +706,7 @@ impl Client {
         if let Some(head) = frame.first_chunk_mut::<FRAME_HEADER>() {
             *head = header;
         }
-        let flag = if flags & STREAM_PIPELINE_REQUEST != 0 {
+        let flag = if flags & swoole_rs_http2::stream_flag::PIPELINE_REQUEST != 0 {
             0
         } else {
             FLAG_END_STREAM

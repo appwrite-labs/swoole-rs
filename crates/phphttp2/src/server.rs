@@ -8,6 +8,10 @@ use crate::session::{Session, SessionState, Stream};
 use libc::c_int;
 use std::ffi::{CStr, CString};
 use swoole_rs_corebase::CCast;
+use swoole_rs_http2::frame_flag::{
+    ACK as FLAG_ACK, END_HEADERS as FLAG_END_HEADERS, END_STREAM as FLAG_END_STREAM,
+    PADDED as FLAG_PADDED, PRIORITY as FLAG_PRIORITY,
+};
 use swoole_rs_http2::{
     FileCompletion, FrameAction, FrameType, HeaderKind, HeaderRole, Http2HeaderPlan,
     Http2RespondFacts, Http2WindowPlan, Media, Respond, WindowAction, decode_packet,
@@ -27,11 +31,6 @@ use swoole_rs_zend::{Array, HeldArray, Value as Zval, ZString, bailout};
 const FRAME_HEADER: usize = swoole_rs_http2::FRAME_HEADER_SIZE as usize;
 const PING_PAYLOAD: usize = 8;
 const GOAWAY_SIZE: usize = 8;
-const FLAG_ACK: u32 = 0x1;
-const FLAG_END_STREAM: u32 = 0x1;
-const FLAG_END_HEADERS: u32 = 0x4;
-const FLAG_PADDED: u32 = 0x8;
-const FLAG_PRIORITY: u32 = 0x20;
 /// `HTTP_HEADER_SERVER`, `_DATE` and `_CONTENT_TYPE`.
 const MISSING_SERVER: u32 = 2;
 const MISSING_DATE: u32 = 16;
