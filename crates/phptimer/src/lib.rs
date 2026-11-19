@@ -259,6 +259,7 @@ pub fn clear_all_timers() -> bool {
     }
     let ids = std::mem::ManuallyDrop::new(php::ids());
     for &id in ids.iter().rev() {
+        // A destructor can already have removed another ID from the snapshot.
         let _cleared = php::clear(id);
     }
     drop(std::mem::ManuallyDrop::into_inner(ids));
@@ -267,6 +268,7 @@ pub fn clear_all_timers() -> bool {
 
 /// RSHUTDOWN: remove every PHP timer.
 pub extern "C" fn rshutdown() {
+    // Request shutdown has no return value. Having no active timer needs no cleanup.
     let _cleared = clear_all_timers();
 }
 

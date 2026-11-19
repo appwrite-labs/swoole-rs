@@ -448,12 +448,13 @@ pub struct CommandPipe(
 impl CommandPipe {
     /// `serv->pipe_command = pipe`: the server keeps it, unless it kept one already,
     /// whose place it doesn't take: then it closes.
-    pub(crate) fn keep(&self, mut pipe: Box<swoole_rs_corebase::tls::socket_pair::SocketPair>) {
-        if self.0.get().is_some() {
+    pub(crate) fn keep(&self, pipe: Box<swoole_rs_corebase::tls::socket_pair::SocketPair>) {
+        // The rejected Arc was never shared.
+        if let Err(rejected) = self.0.set(std::sync::Arc::from(pipe))
+            && let Some(mut pipe) = std::sync::Arc::into_inner(rejected)
+        {
             swoole_rs_corebase::tls::socket_pair::drop(&mut pipe);
-            return;
         }
-        let _kept = self.0.set(std::sync::Arc::from(pipe));
     }
 
     /// The pipe's address, or null.

@@ -746,6 +746,7 @@ pub fn sleep(host: &Host, seconds: f64) -> io::Result<()> {
 
 /// Upstream's `sleep(tv_sec, tv_nsec)`, which `sleep(seconds)` converts to.
 fn sleep_timespec(host: &Host, ts: libc::timespec) -> io::Result<()> {
+    // Iouring::sleep decides by errno after the timeout request.
     let _expired = timer(host, &kernel_timespec(ts));
     if errno() == libc::ETIME {
         Ok(())
@@ -772,6 +773,7 @@ pub fn sendfile(
         return Ok(0);
     }
     let [read_end, write_end] = os::pipe().ok_or_else(io::Error::last_os_error)?;
+    // The next F_GETPIPE_SZ reads the effective capacity even when the resize failed.
     let _resized = os::fcntl(write_end, libc::F_SETPIPE_SZ, 1024 * 1024);
     let pipe_size = os::fcntl(read_end, libc::F_GETPIPE_SZ, 0).unwrap_or(-1);
     let pipe_size = usize::try_from(pipe_size).unwrap_or(65536);
@@ -976,7 +978,17 @@ pub(crate) mod testing {
         let engine = instance().expect("a test engine");
         engine.submit_queued();
         while engine.task_num() > 0 {
-            let _waited = engine.ring.with_box(|ring| ring.submit_and_wait(1));
+            if let Err(error) = engine
+                .ring
+                .with_box(|ring| ring.submit_and_wait(1))
+                .expect("live test ring")
+            {
+                assert_eq!(
+                    error.kind(),
+                    io::ErrorKind::Interrupted,
+                    "wait for a test completion: {error}"
+                );
+            }
             wakeup(&engine);
         }
     }

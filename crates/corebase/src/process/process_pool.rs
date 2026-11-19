@@ -2092,6 +2092,7 @@ impl<H: PoolHost> Pool<'_, H> {
     /// `ProcessPool::run_async`: false when the event loop failed.
     fn run_async(&mut self, worker: *mut WorkerRecord) -> bool {
         if self.ipc_mode() == IpcMode::UnixSock && self.on_message().is_some() {
+            // ProcessPool::run_async returns the event wait status even when adding the pipe failed.
             let _registered = self.h.add_pipe(worker);
             if self.p.has_message_bus() {
                 self.op(Op::PipeHandler, 1);

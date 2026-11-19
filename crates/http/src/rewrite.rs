@@ -141,6 +141,7 @@ mod tests {
     fn apply(rules: &[(&[u8], &[u8])], url: &[u8]) -> Option<Vec<u8>> {
         let mut owner = RewriteRules::default();
         for (pattern, replacement) in rules {
+            // Unsupported regexes are installed as nonmatches; this helper tests the resulting URL.
             let _added = owner.add(pattern, replacement);
         }
         owner.apply(url)

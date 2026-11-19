@@ -92,6 +92,7 @@ impl EventSocket {
     pub fn free(self, keep_fd: bool) {
         if keep_fd {
             if !self.removed() {
+                // The upstream io_uring destructor detaches the fd and frees the socket even when del fails.
                 let _deleted = self.del();
             }
             self.socket().edit(|record| record.fd = -1);

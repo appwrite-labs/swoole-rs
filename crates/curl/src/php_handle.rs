@@ -403,6 +403,7 @@ pub extern "C" fn swoole_curl_clone_obj(object: ObjectRef<'_>) -> *mut swoole_rs
     let Some(source) = swoole_curl_object_handle(object) else { return std::ptr::null_mut() };
     let clone = clone_object(source);
     let result = clone.object().unwrap_or(std::ptr::null_mut());
+    // The clone handler returns the object pointer with its reference transferred to Zend.
     let _transferred = clone.into_zval();
     result
 }
