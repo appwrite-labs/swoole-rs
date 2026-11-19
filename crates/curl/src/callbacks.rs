@@ -151,6 +151,24 @@ impl Plain {
 
 swoole_rs_zend::handlers! {
     zif_swoole_native_curl_exec => exec;
+    zif_swoole_native_curl_multi_getcontent => getcontent;
+}
+
+/// Read the easy handle's return-transfer buffer without consuming it.
+fn getcontent(call: &Call<'_>) {
+    let Some(handle) = argument(call, 1) else {
+        return;
+    };
+    if swoole_curl_method(handle, Stream::Write as c_int) != RETURN {
+        call.set_null();
+        return;
+    }
+    let mut body = Owned::default();
+    if swoole_curl_buffer_result(handle, &mut body) {
+        call.set_owned(body);
+    } else {
+        call.set_empty_string();
+    }
 }
 
 /// `curl_exec`: runs the transfer in the handle's own multi. The response with

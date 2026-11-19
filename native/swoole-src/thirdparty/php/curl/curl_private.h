@@ -142,7 +142,6 @@ typedef struct _php_curlsh {
 php_curl *swoole_curl_init_handle_into_zval(zval *curl);
 void swoole_curl_init_handle(php_curl *ch);
 void swoole_curl_cleanup_handle(php_curl *);
-void swoole_curl_multi_cleanup_list(void *data);
 void swoole_curl_verify_handlers(php_curl *ch, bool reporterror);
 void swoole_setup_easy_copy_handlers(php_curl *ch, php_curl *source);
 
@@ -166,7 +165,7 @@ static inline php_curlsh *curl_share_from_obj(zend_object *obj) {
 }
 
 #define Z_CURL_SHARE_P(zv) curl_share_from_obj(Z_OBJ_P(zv))
-void curl_multi_register_class(const zend_function_entry *method_entries);
+void curl_multi_register_class(void);
 
 #if PHP_VERSION_ID >= 80200
 zend_result swoole_curl_cast_object(zend_object *obj, zval *result, int type);

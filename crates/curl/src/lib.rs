@@ -33,13 +33,16 @@ use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::log::{self, set_last_error};
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_curl_sys::{
-    CURL, CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURL_POLL_IN, CURL_POLL_INOUT,
-    CURL_POLL_OUT, CURL_POLL_REMOVE, CURL_SOCKET_TIMEOUT, CURLE_ABORTED_BY_CALLBACK,
-    CURLE_FAILED_INIT, CURLE_OK, CURLINFO_PRIVATE, CURLM, CURLM_INTERNAL_ERROR, CURLM_OK,
+    CURL, CURL_POLL_IN, CURL_POLL_INOUT, CURL_POLL_OUT, CURL_POLL_REMOVE, CURL_SOCKET_TIMEOUT,
+    CURLE_ABORTED_BY_CALLBACK, CURLE_FAILED_INIT, CURLE_OK, CURLINFO_PRIVATE, CURLM, CURLM_OK,
     CURLMOPT_SOCKETDATA, CURLMOPT_SOCKETFUNCTION, CURLMOPT_TIMERDATA, CURLMOPT_TIMERFUNCTION,
     CURLMSG_DONE, CURLMcode, CURLOPT_PRIVATE, CURLcode, LiveMulti, MultiHandle, curl_easy_getinfo,
     curl_easy_setopt, curl_multi_cleanup, curl_multi_info_read, curl_multi_init, curl_multi_setopt,
     curl_multi_timeout, curl_socket_t,
+};
+#[cfg(any(feature = "php", test))]
+use swoole_rs_curl_sys::{
+    CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLM_INTERNAL_ERROR,
 };
 
 /// `SW_OK` and `SW_ERR`.
@@ -192,7 +195,7 @@ struct Socket {
 /// `struct swr_v1_curl_multi`. Every field is a cell: curl calls back into the
 /// same multi from inside its own calls, and other coroutines do while this
 /// one waits, so nothing is taken out across either. C++ holds one reference
-/// ([`swoole_curl_multi_new`]) and a queued wake-up another; the socket and
+/// (in `curl_multi_init`) and a queued wake-up another; the socket and
 /// timer callbacks reach it through [`Multi::this`].
 pub struct Multi {
     /// This multi, for what reaches it later: its sockets, timer and wake-up.
@@ -233,6 +236,7 @@ fn events(action: c_int) -> Events {
 }
 
 /// `translate_events_to_poll`.
+#[cfg(any(feature = "php", test))]
 fn poll_events(events: Events) -> i16 {
     let mut poll = 0;
     if events.intersects(Events::READ) {
@@ -245,6 +249,7 @@ fn poll_events(events: Events) -> i16 {
 }
 
 /// The `CURL_CSELECT_*` bits of a `poll` result.
+#[cfg(any(feature = "php", test))]
 fn select_bits(revents: i16) -> c_int {
     let mut bitmask = 0;
     if revents & (libc::POLLIN | libc::POLLHUP) != 0 {
@@ -518,6 +523,7 @@ impl Multi {
 
     /// `Multi::selector_poll`: what the sockets have ready now, without
     /// waiting, for callers that don't `curl_multi_select`.
+    #[cfg(any(feature = "php", test))]
     fn selector_poll(&self) -> CURLMcode {
         let mut fds: Vec<libc::pollfd> = self.sockets.with_taken(|sockets| {
             sockets
@@ -555,6 +561,7 @@ impl Multi {
     }
 
     /// `Multi::perform` (`curl_multi_exec`), once C++ checked the coroutine.
+    #[cfg(any(feature = "php", test))]
     fn perform(&self) -> CURLMcode {
         let (result, timeout_ms) = self.timeout(-1);
         if result != CURLM_OK {
@@ -612,6 +619,7 @@ impl Multi {
 
     /// `Multi::select` (`curl_multi_select`) in coroutine `co`: how many
     /// sockets have events.
+    #[cfg(feature = "php")]
     fn select(&self, co: *mut c_void, timeout: f64) -> c_long {
         if self.has_active() || self.timer_callback.get() {
             return self.ready();
@@ -637,6 +645,7 @@ impl Multi {
     }
 
     /// How many sockets have events.
+    #[cfg(any(feature = "php", test))]
     fn ready(&self) -> c_long {
         let ready = self.active.with_taken(|active| active.len());
         c_long::try_from(ready).unwrap_or(c_long::MAX)
@@ -750,20 +759,18 @@ fn release(multi: Rc<Multi>) {
     drop(multi);
 }
 
-/// The reference [`swoole_curl_multi_new`] gave C++, which C++ gives back to
-/// [`swr_v1_curl_multi_free`] and uses no more. Only that export's parameter makes
-/// one, where the C caller's contract stands for the constructor; it is not `Copy`,
-/// so it is released once.
+/// One strong reference transferred from Rust to a PHP multi handle at creation
+/// and returned to [`swr_v1_curl_multi_free`] at destruction.
 #[repr(transparent)]
 pub struct Released(ptr::NonNull<Multi>);
 
-/// `Multi::release` of the multi `swoole_curl_multi_new` gave C++; nothing for null.
+/// `Multi::release` of the multi the PHP object owns; nothing for null.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_curl_multi_free(multi: Option<Released>) {
     let Some(Released(multi)) = multi else {
         return;
     };
-    // SAFETY: the reference `swoole_curl_multi_new` gave up, as the type carries.
+    // SAFETY: the reference attached during curl_multi_init, as the type carries.
     release(unsafe { Rc::from_raw(multi.as_ptr()) });
 }
 
@@ -771,12 +778,6 @@ pub extern "C" fn swr_v1_curl_multi_free(multi: Option<Released>) {
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_curl_multi_handle(multi: &Multi) -> *mut CURLM {
     multi.raw()
-}
-
-/// `Multi::get_running_handles`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_curl_multi_running(multi: &Multi) -> c_int {
-    multi.running.get()
 }
 
 /// `Multi::add_handle`.
@@ -789,19 +790,6 @@ pub extern "C" fn swr_v1_curl_multi_add_handle(multi: &Multi, handle: &mut Handl
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_curl_multi_remove_handle(multi: &Multi, handle: &mut Handle) -> CURLMcode {
     multi.remove_handle(handle)
-}
-
-/// `Multi::perform`, after `swoole_curl_check_bound_co`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_curl_multi_perform(multi: &Multi) -> CURLMcode {
-    multi.perform()
-}
-
-/// `Multi::select` in the coroutine `swoole_curl_check_bound_co` returned: the
-/// running one, which the yield checks (it aborts otherwise) before anything uses `co`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_curl_multi_select(multi: &Multi, co: *mut c_void, timeout: f64) -> c_long {
-    multi.select(co, timeout)
 }
 
 /// `Multi::exec`; [`EXEC_NEEDS_COROUTINE`] when it must wait outside a
@@ -905,7 +893,7 @@ pub extern "C" fn swoole_curl_easy_reset(cp: Idle<'_>) {
 }
 
 mod host;
-pub use host::{swoole_curl_check_bound_co, swoole_curl_easy_perform, swoole_curl_multi_new};
+pub use host::{swoole_curl_check_bound_co, swoole_curl_easy_perform};
 #[cfg(feature = "php")]
 mod callbacks;
 #[cfg(feature = "php")]
@@ -914,6 +902,8 @@ mod getinfo;
 mod php;
 #[cfg(feature = "php")]
 mod php_handle;
+#[cfg(feature = "php")]
+mod php_multi;
 #[cfg(feature = "php")]
 mod postfields;
 #[cfg(feature = "php")]

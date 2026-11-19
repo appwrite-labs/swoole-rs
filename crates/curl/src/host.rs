@@ -245,13 +245,6 @@ pub(crate) fn defer(multi: &Multi) {
     }
 }
 
-/// `swoole_curl_multi_new`: a multi for `curl_multi_init`, whose reference C++
-/// holds until `swr_v1_curl_multi_free`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swoole_curl_multi_new() -> *mut Multi {
-    Rc::into_raw(Multi::create()).cast_mut()
-}
-
 /// The fatal error a coroutine may not operate a multi with: its code and message.
 pub(crate) type Unbound<'b> = (c_int, &'b CStr);
 

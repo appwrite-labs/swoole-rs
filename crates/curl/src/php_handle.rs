@@ -18,14 +18,14 @@ struct CurlBytes(std::io::IoSlice<'static>);
 /// Zend owns the request-local GC scratch buffer throughout one `get_gc` call.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-struct GcBuffer(NonNull<std::ffi::c_void>);
+pub(super) struct GcBuffer(NonNull<std::ffi::c_void>);
 
 unsafe extern "C" {
     safe static swoole_curl_object_size: usize;
     safe static swoole_curl_object_offset: usize;
     // Written once at module startup, before Zend can construct an object.
     safe static swoole_coroutine_curl_handle_handlers: zend_object_handlers;
-    safe fn swr_zend_object_new(
+    pub(super) safe fn swr_zend_object_new(
         size: usize,
         offset: usize,
         ce: swoole_rs_zend::ClassEntry<'_>,
@@ -43,15 +43,15 @@ unsafe extern "C" {
     safe fn swoole_curl_release_values(handle: PhpHandle<'_>);
     safe fn zend_object_std_dtor(object: ObjectRef<'_>);
     safe fn curl_easy_cleanup(easy: crate::Retired<'_>);
-    safe fn zend_get_gc_buffer_create() -> GcBuffer;
+    pub(super) safe fn zend_get_gc_buffer_create() -> GcBuffer;
     safe fn swoole_curl_trace_callbacks(gc: GcBuffer, handle: PhpHandle<'_>);
     safe fn swoole_curl_trace_values(gc: GcBuffer, handle: PhpHandle<'_>);
-    safe fn swoole_curl_publish_roots(
+    pub(super) safe fn swoole_curl_publish_roots(
         gc: GcBuffer,
         table: &mut std::mem::MaybeUninit<*mut swoole_rs_zend::sys::zval>,
         count: &mut std::mem::MaybeUninit<c_int>,
     );
-    safe fn zend_std_get_properties(object: ObjectRef<'_>) -> *mut std::ffi::c_void;
+    pub(super) safe fn zend_std_get_properties(object: ObjectRef<'_>) -> *mut std::ffi::c_void;
     // The native accessor checks the object's class before recovering php_curl.
     safe fn swoole_curl_object_handle(object: ObjectRef<'_>) -> Option<PhpHandle<'_>>;
     safe fn swoole_curl_init_handle_into_zval(slot: &mut swoole_rs_zend::Owned) -> PhpHandle<'_>;

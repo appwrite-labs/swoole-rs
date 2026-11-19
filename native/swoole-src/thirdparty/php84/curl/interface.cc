@@ -169,7 +169,7 @@ void swoole_native_curl_minit(int module_number) {
 #endif
 
     swoole_curl_register_handle();
-    curl_multi_register_class(nullptr);
+    curl_multi_register_class();
 
     zend_unregister_functions(swoole_native_curl_functions, -1, CG(function_table));
     zend_register_functions(NULL, swoole_native_curl_functions, NULL, MODULE_PERSISTENT);
