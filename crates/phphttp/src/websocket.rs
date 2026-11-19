@@ -18,6 +18,7 @@ use std::{
 use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING};
 use swoole_rs_corebase::{CCast, CellExt, WebSocketStatus};
+use swoole_rs_http::status::SWITCHING_PROTOCOLS;
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpserver::PortCallback;
 use swoole_rs_phpserver::{RecvData, php_swoole_get_recv_data, php_swoole_server_of, zserv};
@@ -1038,7 +1039,7 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
         swoole_rs_phpclients::websocket_protocol(&context.state().zsocket);
     }
     let state = context.state();
-    state.response.status = 101;
+    state.response.status = SWITCHING_PROTOCOLS;
     state.upgrade = true;
     send::end(context, None)
 }
@@ -1180,7 +1181,7 @@ pub(crate) fn handshaked(mut context: Ctx) {
         return;
     }
     let state = context.state();
-    let status = if state.response.status == 101 {
+    let status = if state.response.status == SWITCHING_PROTOCOLS {
         WebSocketStatus::Active
     } else {
         state.keepalive = false;
