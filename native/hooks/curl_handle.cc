@@ -135,7 +135,7 @@ extern "C" bool swoole_curl_multi_is_in_coroutine(php_curlm *mh) {
 
 extern "C" swr_v1_curl_multi *swoole_curl_multi_engine(php_curlm *mh) {
     // Only our attach routine pairs this list destructor with a Rust engine.
-    return mh->easyh.dtor == release_multi_easy && swoole_curl_multi_is_in_coroutine(mh) ? mh->multi : nullptr;
+    return mh->easyh.dtor == release_multi_easy ? mh->multi : nullptr;
 }
 
 extern "C" zval *swoole_curl_multi_find_easy(php_curlm *mh, CURL *easy) {
@@ -168,6 +168,52 @@ extern "C" void swoole_curl_multi_membership(php_curlm *mh, php_curl *ch, int er
             return Z_OBJ_P(static_cast<zval *>(left)) == Z_OBJ_P(static_cast<zval *>(right));
         });
     }
+}
+
+extern "C" void swoole_curl_multi_take_easy(php_curlm *mh, zval *handles, bool destroying) {
+    if (!mh->easyh.head) {
+        return;
+    }
+    array_init_size(handles, zend_llist_count(&mh->easyh));
+    for (auto *item = mh->easyh.head; item; item = item->next) {
+        auto *value = reinterpret_cast<zval *>(item->data);
+        if (destroying && (OBJ_FLAGS(Z_OBJ_P(value)) & IS_OBJ_FREE_CALLED)) {
+            continue;
+        }
+        Z_TRY_ADDREF_P(value);
+        add_next_index_zval(handles, value);
+    }
+    zend_llist_clean(&mh->easyh);
+}
+
+extern "C" void swoole_curl_multi_detach_native(php_curlm *mh, php_curl *ch) {
+    if (mh->easyh.dtor != release_multi_easy && mh->multi) {
+        curl_multi_remove_handle(reinterpret_cast<CURLM *>(mh->multi), ch->cp);
+    }
+}
+
+extern "C" void swoole_curl_multi_release_engine(php_curlm *mh) {
+    auto *engine = mh->multi;
+    mh->multi = nullptr;
+    if (mh->easyh.dtor == release_multi_easy) {
+        swr_v1_curl_multi_free(engine);
+    } else if (engine) {
+        curl_multi_cleanup(reinterpret_cast<CURLM *>(engine));
+    }
+}
+
+extern "C" void swoole_curl_multi_release_push(php_curlm *mh) {
+    auto &push = mh->handlers.server_push;
+#if PHP_VERSION_ID >= 80400
+    if (ZEND_FCC_INITIALIZED(push)) {
+        zend_fcc_dtor(&push);
+    }
+#else
+    if (push) {
+        zval_ptr_dtor(&push->func_name);
+        efree(push);
+    }
+#endif
 }
 
 extern "C" bool swoole_curl_multi_empty(php_curlm *mh) {

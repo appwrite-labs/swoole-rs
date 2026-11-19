@@ -42,6 +42,18 @@ unsafe extern "C" {
         error: c_int,
         add: bool,
     );
+    safe fn swoole_curl_multi_take_easy(
+        handle: PhpMulti<'_>,
+        handles: &mut swoole_rs_zend::Owned,
+        destroying: bool,
+    );
+    safe fn swoole_curl_multi_detach_native(
+        handle: PhpMulti<'_>,
+        easy: crate::php_handle::PhpHandle<'_>,
+    );
+    safe fn swoole_curl_multi_is_in_coroutine(handle: PhpMulti<'_>) -> bool;
+    safe fn swoole_curl_multi_release_engine(handle: PhpMulti<'_>);
+    safe fn swoole_curl_multi_release_push(handle: PhpMulti<'_>);
     safe fn swoole_curl_multi_empty(handle: PhpMulti<'_>) -> bool;
     safe fn swoole_curl_multi_verify(handle: PhpMulti<'_>);
     safe fn swoole_curl_assign_long(slot: &swoole_rs_zend::Value, number: i64);
@@ -61,6 +73,7 @@ fn argument<'a>(call: &'a Call<'_>) -> Option<PhpMulti<'a>> {
 }
 
 swoole_rs_zend::handlers! {
+    zif_swoole_native_curl_multi_close => close;
     zif_swoole_native_curl_multi_init => init;
     zif_swoole_native_curl_multi_info_read => info_read;
     zif_swoole_native_curl_multi_add_handle => add;
@@ -93,6 +106,45 @@ fn init(call: &Call<'_>) {
     call.set_owned(object);
 }
 
+fn close(call: &Call<'_>) {
+    if call.arity(1, 1).is_err() {
+        return;
+    }
+    let Some(handle) = argument(call) else { return };
+    let mut handles = swoole_rs_zend::Owned::default();
+    bailout::defer(contain_with(|| detach(handle, &mut handles, false)));
+}
+
+// Keep the easy objects alive until every transfer is detached, including while
+// destruction releases the multi engine. Dropping a handle can reenter PHP.
+fn detach(handle: PhpMulti<'_>, handles: &mut swoole_rs_zend::Owned, destroying: bool) {
+    swoole_curl_multi_take_easy(handle, handles, destroying);
+    let Some(table) = handles.array() else { return };
+    let multi = swoole_curl_multi_engine(handle);
+    for (_, value) in table.entries() {
+        let Some(easy) = value
+            .object_ref()
+            .and_then(|object| swoole_curl_object_handle(object))
+        else {
+            continue;
+        };
+        let cp = crate::php_handle::swoole_curl_easy(easy);
+        if destroying && multi.is_some() && !crate::php::check_handle(cp, true, false) {
+            continue;
+        }
+        crate::callbacks::verify(easy, false);
+        if let Some(multi) = multi {
+            if let Some(transfer) = cp.handle() {
+                multi.remove_handle(transfer);
+            } else {
+                crate::curl_multi_remove_handle(multi.live(), cp);
+            }
+        } else {
+            swoole_curl_multi_detach_native(handle, easy);
+        }
+    }
+}
+
 fn wrong_operation(message: &std::ffi::CStr) {
     bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
         swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int,
@@ -101,7 +153,8 @@ fn wrong_operation(message: &std::ffi::CStr) {
 }
 
 fn engine(handle: PhpMulti<'_>) -> Option<&Multi> {
-    let multi = swoole_curl_multi_engine(handle);
+    let multi =
+        swoole_curl_multi_engine(handle).filter(|_| swoole_curl_multi_is_in_coroutine(handle));
     if multi.is_none() {
         wrong_operation(c"The given object is not a valid coroutine CurlMultiHandle object");
     }
@@ -286,5 +339,21 @@ pub extern "C" fn swoole_curl_multi_get_gc(object: ObjectRef<'_>, table: &mut Ma
     } else {
         zend_std_get_properties(object)
     }
+}
+}
+
+swoole_rs_zend::exports! {
+    preserve_pending:
+/// Zend is releasing the multi object, including its last references to the easy handles.
+#[unsafe(no_mangle)]
+pub extern "C" fn swoole_curl_multi_free_obj(object: ObjectRef<'_>) {
+    if let Some(handle) = swoole_curl_multi_object(object) {
+        let mut handles = swoole_rs_zend::Owned::default();
+        bailout::defer(contain_with(|| detach(handle, &mut handles, true)));
+        bailout::defer(contain_with(|| swoole_curl_multi_release_engine(handle)));
+        drop(handles);
+        bailout::defer(contain_with(|| swoole_curl_multi_release_push(handle)));
+    }
+    bailout::defer(contain_with(|| crate::php_handle::zend_object_std_dtor(object)));
 }
 }

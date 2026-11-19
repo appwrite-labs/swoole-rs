@@ -783,12 +783,6 @@ pub extern "C" fn swr_v1_curl_multi_handle(multi: &Multi) -> *mut CURLM {
     multi.raw()
 }
 
-/// `Multi::remove_handle`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_curl_multi_remove_handle(multi: &Multi, handle: &mut Handle) -> CURLMcode {
-    multi.remove_handle(handle)
-}
-
 /// `Multi::exec`; [`EXEC_NEEDS_COROUTINE`] when it must wait outside a
 /// coroutine or while another one waits.
 pub fn swr_v1_curl_multi_exec(multi: &Multi, handle: &Handle) -> CURLcode {

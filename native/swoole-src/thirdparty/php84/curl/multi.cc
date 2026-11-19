@@ -42,42 +42,7 @@ static inline php_curlm *curl_multi_from_obj(zend_object *obj) {
 
 #define Z_CURL_MULTI_P(zv) curl_multi_from_obj(Z_OBJ_P(zv))
 
-static void _php_curl_multi_free(php_curlm *mh);
-
 SW_EXTERN_C_END
-
-/* {{{ Close a set of cURL handles */
-PHP_FUNCTION(swoole_native_curl_multi_close) {
-    php_curlm *mh;
-    zval *z_mh;
-
-    zend_llist_position pos;
-    zval *pz_ch;
-
-    ZEND_PARSE_PARAMETERS_START(1, 1)
-    Z_PARAM_OBJECT_OF_CLASS(z_mh, swoole_coroutine_curl_multi_handle_ce)
-    ZEND_PARSE_PARAMETERS_END();
-
-    mh = Z_CURL_MULTI_P(z_mh);
-
-    for (pz_ch = (zval *) zend_llist_get_first_ex(&mh->easyh, &pos); pz_ch;
-         pz_ch = (zval *) zend_llist_get_next_ex(&mh->easyh, &pos)) {
-        php_curl *ch = Z_CURL_P(pz_ch);
-        if (!ch) {
-            continue;
-        }
-        swoole_curl_verify_handlers(ch, 0);
-        auto handle = swr_v1_curl_get_handle(ch->cp);
-        if (handle) {
-            swr_v1_curl_multi_remove_handle(mh->multi, handle);
-        } else {
-            curl_multi_remove_handle(mh->multi, ch->cp);
-        }
-    }
-    zend_llist_clean(&mh->easyh);
-}
-/* }}} */
-
 
 static int _php_server_push_callback(
     CURL *parent_ch, CURL *easy, size_t num_headers, struct curl_pushheaders *push_headers, void *userp) /* {{{ */
@@ -232,53 +197,5 @@ PHP_FUNCTION(swoole_native_curl_multi_setopt) {
     }
 }
 /* }}} */
-
-/* CurlMultiHandle class */
-
-extern "C" void swoole_curl_multi_free_obj(zend_object *object) {
-    php_curlm *mh = curl_multi_from_obj(object);
-
-    if (!mh->multi) {
-        /* Can happen if constructor throws. */
-        zend_object_std_dtor(&mh->std);
-        return;
-    }
-
-    _php_curl_multi_free(mh);
-    zend_object_std_dtor(&mh->std);
-}
-
-static void _php_curl_multi_free(php_curlm *mh) {
-    bool is_in_coroutine = swoole_curl_multi_is_in_coroutine(mh);
-    for (zend_llist_element *element = mh->easyh.head; element; element = element->next) {
-        zval *z_ch = (zval *) element->data;
-        php_curl *ch;
-        if (OBJ_FLAGS(Z_OBJ_P(z_ch)) & IS_OBJ_FREE_CALLED) {
-            continue;
-        }
-        if ((ch = swoole_curl_get_handle(z_ch, true, false))) {
-            swoole_curl_verify_handlers(ch, 0);
-            auto handle = swr_v1_curl_get_handle(ch->cp);
-            if (is_in_coroutine && handle) {
-                swr_v1_curl_multi_remove_handle(mh->multi, handle);
-            } else {
-                curl_multi_remove_handle(mh->multi, ch->cp);
-            }
-        }
-    }
-    if (mh->multi) {
-        if (is_in_coroutine) {
-            swr_v1_curl_multi_free(mh->multi);
-        } else {
-            curl_multi_cleanup(mh->multi);
-        }
-        mh->multi = nullptr;
-    }
-    zend_llist_clean(&mh->easyh);
-
-    if (ZEND_FCC_INITIALIZED(mh->handlers.server_push)) {
-        zend_fcc_dtor(&mh->handlers.server_push);
-    }
-}
 
 #endif
