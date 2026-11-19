@@ -385,8 +385,7 @@ impl crate::hybrid::Hybrid for Linked {
         worker_id: u32,
         message: &process::task_file::TaskBuffer,
     ) -> bool {
-        /// `SW_PIPE_MASTER | SW_PIPE_NONBLOCK`.
-        const PIPE_MASTER_NONBLOCK: c_int = 1 | 2;
+        use swoole_rs_corebase::process::pool::{PIPE_MASTER, PIPE_NONBLOCK};
         let Some(worker) = serv.worker_record(u16::try_from(worker_id).unwrap_or(u16::MAX)) else {
             return false;
         };
@@ -394,7 +393,7 @@ impl crate::hybrid::Hybrid for Linked {
             crate::process_pool_native(),
             worker,
             message.bytes(),
-            PIPE_MASTER_NONBLOCK,
+            PIPE_MASTER | PIPE_NONBLOCK,
         );
         sent.is_some_and(|sent| sent > 0)
     }

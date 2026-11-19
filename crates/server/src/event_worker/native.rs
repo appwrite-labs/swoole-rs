@@ -6,6 +6,7 @@ use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::process;
+use swoole_rs_corebase::process::pool::PIPE_MASTER;
 use swoole_rs_corebase::reactor::ErrorHandler::ConnectionDefault;
 use swoole_rs_corebase::reactor::Events;
 
@@ -26,9 +27,8 @@ use crate::records::Lookup;
 use crate::view;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as WARNING;
 
-/// `SW_FD_PIPE`, `SW_PIPE_MASTER`.
+/// `SW_FD_PIPE`.
 const FD_PIPE: c_int = swoole_rs_corebase::constants::FdType::SW_FD_PIPE as c_int;
-const PIPE_MASTER: c_int = 1;
 /// `SW_LOG_WARNING` and the `SW_ERROR_*` the worker logs.
 const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
