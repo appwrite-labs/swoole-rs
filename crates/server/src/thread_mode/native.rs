@@ -24,9 +24,6 @@ use crate::worker_methods::{create_event_workers, create_user_workers};
 use crate::{SharedServer, factory, pool_native, server_methods, view};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as ERROR, SW_LOG_WARNING as WARNING};
 
-/// `SW_EVENT_READ` and `Server::THREAD_WORKER`.
-const THREAD_WORKER: u8 = 4;
-
 /// The server's thread factory's manager; thread mode's server has one.
 fn manager(serv: view::Server<'_>) -> std::sync::Arc<ThreadManager> {
     let manager = (serv.config().mode_ == Mode::Thread)
@@ -178,7 +175,7 @@ fn body(share: &SharedServer, id: u32, kind: WorkerType, fresh: swoole_rs_coreba
     let serv = share.view();
     let slot = u16::try_from(id).unwrap_or(u16::MAX);
     swoole_rs_corebase::swoole_thread_init(false);
-    swoole_rs_corebase::set_thread(THREAD_WORKER, slot);
+    swoole_rs_corebase::set_thread(crate::THREAD_WORKER, slot);
     let pid = swoole_rs_corebase::ossupport::swr_v1_os_thread_native_id().c_cast::<i32>();
     set_worker_type(kind);
     swoole_set_worker_id(id);

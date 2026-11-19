@@ -323,9 +323,8 @@ impl<'a> Server<'a> {
     /// `Server::is_worker_thread()`: thread mode, on a worker thread.
     #[must_use]
     pub fn is_worker_thread(self) -> bool {
-        /// `THREAD_WORKER`.
-        const THREAD_WORKER: u8 = 4;
-        self.config().mode_ == Mode::Thread && swoole_rs_corebase::thread_kind() == THREAD_WORKER
+        self.config().mode_ == Mode::Thread
+            && swoole_rs_corebase::thread_kind() == crate::THREAD_WORKER
     }
 
     /// `Server::get_connection_num()`: the per-worker cells when there are any.

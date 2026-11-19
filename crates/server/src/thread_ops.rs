@@ -26,8 +26,6 @@ use crate::reactor_entry as entry;
 use crate::reactor_ops::ReactorContext;
 use crate::{ServerState, SharedServer, factory, server_methods as methods, view};
 
-/// `SW_EVENT_READ`, `Server::THREAD_REACTOR`, `SW_EVENT_WRITE` and `SW_FD_PIPE`.
-const THREAD_REACTOR: u8 = 2;
 const FD_PIPE: c_int = swoole_rs_corebase::constants::FdType::SW_FD_PIPE as c_int;
 /// `Server::CLOSE_ACTIVELY`.
 const CLOSE_ACTIVELY: c_int = 1 << 2;
@@ -268,7 +266,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, id: u16) {
             return;
         }
     } else {
-        swoole_rs_corebase::set_thread(THREAD_REACTOR, id);
+        swoole_rs_corebase::set_thread(crate::THREAD_REACTOR, id);
     }
     if init_thread(&mut ctx, state, id).unwrap_or(-1) < 0 {
         return;
