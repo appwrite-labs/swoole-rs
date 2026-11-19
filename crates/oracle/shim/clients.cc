@@ -21,21 +21,10 @@
 #include <vector>
 
 namespace upstream_clients {
-// As upstream swoole_socket.h (values are this shim's own).
-enum SocketType {
-    SW_SOCK_TCP = 1,
-    SW_SOCK_UDP = 2,
-    SW_SOCK_TCP6 = 3,
-    SW_SOCK_UDP6 = 4,
-    SW_SOCK_UNIX_STREAM = 5,
-    SW_SOCK_UNIX_DGRAM = 6,
-};
-// As upstream swoole_error.h.
-#define SW_ERROR_NAME_TOO_LONG 504
-#define SW_ERROR_DNSLOOKUP_RESOLVE_FAILED 711
-#define SW_ERROR_BAD_HOST_ADDR 722
-#define SW_ERROR_BAD_PORT 723
-#define SW_ERROR_BAD_SOCKET_TYPE 724
+// swSocketType and swErrorCode as the pinned headers define them (build.rs copies them
+// from upstream/include); the hosts path is the fixture's own.
+#include "clients_pinned.inc"
+typedef swSocketType SocketType;  // as swoole.h
 #define SW_PATH_HOSTS "/nonexistent-oracle-hosts"
 
 // Effect doubles: the error log and last error are counted, and gethostbyname
@@ -268,32 +257,10 @@ void swr_oracle_clients_domain_decode(char *str) {
 // answers the query it was sent with one record of the fixture's type.
 namespace upstream_dns {
 using uchar = unsigned char;
-#define SW_OK 0
-#define SW_ERR -1
-#define SW_BUFFER_SIZE_STD 8192
-#define SW_ERROR_DNSLOOKUP_NO_SERVER 714
-#define SW_ERROR_CO_CANCELED 10017
-#define sw_memset_zero(p, n) std::memset(p, 0, n)
-#define sw_unlikely(x) __builtin_expect(!!(x), 0)
-// As upstream src/core/base.cc.
-static size_t sw_snprintf(char *buf, size_t size, const char *format, ...) {
-    va_list args;
-    va_start(args, format);
-    int retval = vsnprintf(buf, size, format, args);
-    va_end(args);
-    if (size == 0) {
-        return retval;
-    } else if (sw_unlikely(retval < 0)) {
-        retval = 0;
-        buf[0] = '\0';
-    } else if (sw_unlikely(retval >= (int) size)) {
-        retval = size - 1;
-        buf[retval] = '\0';
-    }
-    return retval;
-}
+// The result, socket-type and error enums, the macros and helpers the bodies use and
+// base.cc's sw_snprintf, as the pinned sources define them (build.rs copies them).
+#include "clients_dns_pinned.inc"
 #define swoole_warning(...) ((void) 0)
-static constexpr int SW_SOCK_UDP = 2;
 struct Fixture {
     int record_type, receive_mode;
     bool send_success, canceled, bad_id;

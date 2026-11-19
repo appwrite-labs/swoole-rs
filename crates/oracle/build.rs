@@ -444,6 +444,27 @@ fn protocols() {
 /// codec, the socket DNS lookup and the request formats with `sw_snprintf` from the
 /// pinned sources, copied unchanged for shim/clients.cc.
 fn clients() {
+    fs::write(
+        out("clients_pinned.inc"),
+        pinned_enums(&["swSocketType", "swErrorCode"]),
+    )
+    .unwrap();
+    fs::write(
+        out("clients_dns_pinned.inc"),
+        pinned_enums(&["swResultCode", "swSocketType", "swErrorCode"])
+            + &pinned_macros(&["SW_BUFFER_SIZE_STD", "sw_unlikely"])
+            + &definition(
+                &fs::read_to_string("upstream/include/swoole.h").expect("vendored swoole.h"),
+                "static inline void sw_memset_zero(",
+            )
+            + "\n"
+            + &definition(
+                &fs::read_to_string("upstream/src/core/base.cc").expect("vendored base.cc"),
+                "size_t sw_snprintf(",
+            )
+            + "\n",
+    )
+    .unwrap();
     let config =
         fs::read_to_string("upstream/include/swoole_config.h").expect("vendored swoole_config.h");
     let base = fs::read_to_string("upstream/src/core/base.cc").expect("vendored base.cc");
