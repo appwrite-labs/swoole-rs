@@ -467,15 +467,17 @@ thread_local! {
     static GENERATOR: Cell<Option<[u64; 4]>> = const { Cell::new(None) };
 }
 
+/// `std::random_device`'s seed: upstream's constructor throws when the OS has no
+/// entropy to give, and nothing catches it, so the process ends rather than seed
+/// predictably.
 fn seed() -> [u64; 4] {
     let mut state = [0u64; 4];
     let mut entropy = [0u8; 32];
-    if crate::random_bytes(&mut entropy) == entropy.len() {
-        for (word, bytes) in state.iter_mut().zip(entropy.as_chunks::<8>().0) {
-            *word = u64::from_ne_bytes(*bytes);
-        }
-    } else {
-        state[0] = microtime().to_bits();
+    if crate::random_bytes(&mut entropy) != entropy.len() {
+        crate::fatal("std::random_device: the OS gave no entropy");
+    }
+    for (word, bytes) in state.iter_mut().zip(entropy.as_chunks::<8>().0) {
+        *word = u64::from_ne_bytes(*bytes);
     }
     if state == [0; 4] {
         state[0] = 0x9e37_79b9_7f4a_7c15;
