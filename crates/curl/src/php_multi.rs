@@ -1,7 +1,7 @@
 //! PHP's multi-handle functions over the coroutine cURL engine.
 use crate::php_handle::{
-    GcBuffer, swoole_curl_publish_roots, swr_zend_object_new, zend_get_gc_buffer_create,
-    zend_std_get_properties,
+    GcBuffer, swoole_curl_object_handle, swoole_curl_publish_roots, swr_zend_object_new,
+    zend_get_gc_buffer_create, zend_std_get_properties,
 };
 use crate::{Multi, Released};
 use std::mem::MaybeUninit;
@@ -32,6 +32,10 @@ unsafe extern "C" {
         reason = "the object retains the opaque Rust engine for the call"
     )]
     safe fn swoole_curl_multi_engine(handle: PhpMulti<'_>) -> Option<&Multi>;
+    safe fn swoole_curl_multi_find_easy(
+        handle: PhpMulti<'_>,
+        easy: NonNull<swoole_rs_curl_sys::CURL>,
+    ) -> Option<&swoole_rs_zend::Value>;
     safe fn swoole_curl_multi_empty(handle: PhpMulti<'_>) -> bool;
     safe fn swoole_curl_multi_verify(handle: PhpMulti<'_>);
     safe fn swoole_curl_assign_long(slot: &swoole_rs_zend::Value, number: i64);
@@ -52,6 +56,7 @@ fn argument<'a>(call: &'a Call<'_>) -> Option<PhpMulti<'a>> {
 
 swoole_rs_zend::handlers! {
     zif_swoole_native_curl_multi_init => init;
+    zif_swoole_native_curl_multi_info_read => info_read;
     zif_swoole_native_curl_multi_exec => exec;
     zif_swoole_native_curl_multi_select => select;
     zif_swoole_native_curl_multi_errno => errno;
@@ -156,6 +161,42 @@ fn select(call: &Call<'_>) {
     if let Some(co) = current(multi) {
         call.set_long(multi.select(co, timeout));
     }
+}
+
+fn info_read(call: &Call<'_>) {
+    if call.arity(1, 2).is_err() {
+        return;
+    }
+    let Some(handle) = argument(call) else { return };
+    let Some(multi) = engine(handle) else { return };
+    let mut pending = 0;
+    let Some((kind, easy, result)) = multi.next_message(&mut pending) else {
+        call.set_bool(false);
+        return;
+    };
+    // Assigning to the queue-count reference may run a PHP destructor.
+    let completed = NonNull::new(easy)
+        .and_then(|easy| swoole_curl_multi_find_easy(handle, easy))
+        .map(swoole_rs_zend::Value::copy);
+    if let Some(slot) = call.value(2)
+        && let Err(bailout) = contain_with(|| swoole_curl_assign_long(slot, i64::from(pending)))
+    {
+        bailout.defer();
+        return;
+    }
+    let mut message = swoole_rs_zend::OwnedArray::default();
+    message.insert_long(b"msg", i64::from(kind));
+    message.insert_long(b"result", i64::from(result));
+    if let Some(completed) = completed {
+        if let Some(handle) = completed
+            .object_ref()
+            .and_then(|obj| swoole_curl_object_handle(obj))
+        {
+            crate::setopt::swoole_curl_save_error(handle, result);
+        }
+        message.insert(b"handle", completed);
+    }
+    call.set_owned(message.into_owned());
 }
 
 fn errno(call: &Call<'_>) {
