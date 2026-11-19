@@ -5,7 +5,10 @@ target builds, as a static libswoole.a, what C and C++ is left (the pin's thirdp
 Zend-free sources, against the Cargo build SDK's headers, with --fixture compiled in); the case
 package links it whole beside the crates (swoole-rs-ffi), built with the SDK archive's features
 and profile, so there is one copy of the Rust code. Runs each case in its own process group.
---exclude NAME=REASON reports a case `excluded` with its reason; it never counts as passed."""
+--exclude NAME=REASON reports a case `excluded` with its reason; it never counts as passed.
+--redraw NAME=REASON runs a failed case once more, for a case whose random input can fail by
+construction; the report keeps the first attempt's output and the reason, and both must fail
+for the case to fail."""
 import argparse
 import hashlib
 import io
@@ -52,7 +55,17 @@ def stage(source, destination):
         offset = end + 2 + size
 
 
-def run_cases(binary, tree, excluded, timeout, output, report, logs):
+def run_case(binary, name, tree, timeout, log):
+    try:
+        result = run_isolated([binary, name], timeout=timeout, cwd=tree)
+    except subprocess.TimeoutExpired as error:
+        result = subprocess.CompletedProcess(name, 124, '', f'Timed out: {error}')
+    log.write_text(f'{result.stdout}{result.stderr}\nexit {result.returncode}\n')
+    return 'failed' if result.returncode else 'passed'
+
+
+def run_cases(binary, tree, excluded, timeout, output, report, logs, redraw=None):
+    redraw = redraw or {}
     # A rebuild must not change the program halfway through a suite or erase a failure.
     snapshot = logs / 'case-binary'
     shutil.copy2(binary, snapshot)
@@ -61,18 +74,19 @@ def run_cases(binary, tree, excluded, timeout, output, report, logs):
     binary = str(snapshot)
     write_report(output, report)
     inventory = subprocess.check_output([binary, '--list'], text=True).split()
-    if not inventory or len(set(inventory)) != len(inventory) or set(excluded) - set(inventory):
-        raise ValueError('Empty or duplicate inventory, or an exclusion names no case')
+    if not inventory or len(set(inventory)) != len(inventory) or (set(excluded) | set(redraw)) - set(inventory):
+        raise ValueError('Empty or duplicate inventory, or an exclusion or redraw names no case')
     for name in inventory:
-        status = 'excluded'
+        row = {'name': name, 'status': 'excluded'}
         if name not in excluded:
-            try:
-                result = run_isolated([binary, name], timeout=timeout, cwd=tree)
-            except subprocess.TimeoutExpired as error:
-                result = subprocess.CompletedProcess(name, 124, '', f'Timed out: {error}')
-            (logs / (name + '.log')).write_text(f'{result.stdout}{result.stderr}\nexit {result.returncode}\n')
-            status = 'failed' if result.returncode else 'passed'
-        report['results'].append({'name': name, 'status': status})
+            row['status'] = run_case(binary, name, tree, timeout, logs / (name + '.log'))
+            if row['status'] == 'failed' and name in redraw:
+                # The first attempt's log stays beside the second's and is named in the report.
+                first = logs / (name + '.first.log')
+                (logs / (name + '.log')).replace(first)
+                row.update(first_attempt={'status': 'failed', 'log': str(first), 'redraw': redraw[name]})
+                row['status'] = run_case(binary, name, tree, timeout, logs / (name + '.log'))
+        report['results'].append(row)
         write_report(output, report)
     report['passed'] = all(row['status'] in ('passed', 'excluded') for row in report['results'])
     if report['passed']:
@@ -89,6 +103,7 @@ def main():
     parser.add_argument('--package', type=Path, default=PACKAGE, help='The case package (Cargo.toml and a --list binary)')
     parser.add_argument('--fixture', type=Path, help="An owned C++ fixture compiled into lib-swoole for the cases")
     parser.add_argument('--exclude', action='append', default=[], metavar='SUITE.NAME=REASON')
+    parser.add_argument('--redraw', action='append', default=[], metavar='SUITE.NAME=REASON')
     parser.add_argument('--jobs', type=int, default=2)
     parser.add_argument('--timeout', type=int, default=90, help='Seconds per case')
     parser.add_argument('--output', type=Path, required=True)
@@ -96,7 +111,8 @@ def main():
     if sys.platform != 'linux':
         parser.error('the cases are Linux core-tests')
     excluded = dict(entry.split('=', 1) for entry in args.exclude)
-    report = {'scope': __doc__, 'excluded': excluded, 'results': [], 'passed': False}
+    redraw = dict(entry.split('=', 1) for entry in args.redraw)
+    report = {'scope': __doc__, 'excluded': excluded, 'redraw': redraw, 'results': [], 'passed': False}
     logs = args.output.resolve().with_name(args.output.stem + '-artifacts')
     logs.mkdir(parents=True, exist_ok=True)
     try:
@@ -142,18 +158,26 @@ def main():
                 raise RuntimeError(f'{step} failed: {logs / (step + ".log")}\n{tail}')
         binary, = {message['executable'] for line in result.stdout.splitlines() if line.startswith('{')
                    for message in [json.loads(line)] if message.get('executable')}
-        run_cases(binary, tree, excluded, args.timeout, args.output, report, logs)
+        run_cases(binary, tree, excluded, args.timeout, args.output, report, logs, redraw)
     except Exception as error:
         report['passed'] = False
         report['error'] = str(error)
     write_report(args.output, report)
     failed = [row['name'] for row in report['results'] if row['status'] not in ('passed', 'excluded')]
+    # A redrawn case's first failure is printed whatever the second attempt did, so it is never silent.
+    for row in report['results']:
+        if 'first_attempt' in row:
+            lines = [line for line in Path(row['first_attempt']['log']).read_text(errors='replace').splitlines() if line.strip()]
+            print(f"--- {row['name']} (first attempt; redrawn: {row['first_attempt']['redraw']}; second attempt {row['status']})",
+                  *lines[-8:], sep='\n')
     # A failed case's own output (its assertion, its exit), which the phase's log tail keeps;
     # a sanitizer writes its reports to its log_path instead (tools/asan.py).
     for name in failed:
         lines = [line for line in (logs / (name + '.log')).read_text(errors='replace').splitlines() if line.strip()]
         print(f'--- {name}', *lines[-8:], sep='\n')
-    print(json.dumps({'passed': report['passed'], 'cases': len(report['results']), 'failed': failed, 'error': report.get('error')}))
+    redrawn = [row['name'] for row in report['results'] if 'first_attempt' in row]
+    print(json.dumps({'passed': report['passed'], 'cases': len(report['results']), 'failed': failed, 'redrawn': redrawn,
+                      'error': report.get('error')}))
     return int(not report['passed'])
 
 

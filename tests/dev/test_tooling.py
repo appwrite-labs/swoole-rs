@@ -20,6 +20,9 @@ from tools.harness import Engine
 spec = importlib.util.spec_from_file_location('phpt_runner', ROOT / 'corpus/upstream/run.py')
 phpt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(phpt)
+spec = importlib.util.spec_from_file_location('core_tests', ROOT / 'tests/modules/hooks/system.py')
+core_tests = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(core_tests)
 
 
 class Exclusive(unittest.TestCase):
@@ -379,6 +382,34 @@ Path(sys.argv[1]).write_text('PASSED ' + sys.argv[2] + '\n')
                              {'pass.phpt': 'passed', 'fail.phpt': 'failed', 'skip.phpt': 'skipped', 'xfail.phpt': 'failed'})
             self.assertNotEqual(timing['exit_code'], 0)
             self.assertTrue((Path(rows['fail.phpt']['artifacts']) / 'fail.diff').exists())
+
+
+class CoreTests(unittest.TestCase):
+    def test_redraw_reruns_only_named_failures_once_and_keeps_the_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / 'cases'
+            # `drawn` fails its first run and passes its second; `broken` always fails.
+            binary.write_text('#!/bin/sh\n[ "$1" = --list ] && { echo drawn broken flaky; exit 0; }\n'
+                              '[ "$1" = broken ] && { echo bad; exit 1; }\n'
+                              '[ -e "$1.ran" ] && exit 0\ntouch "$1.ran"; echo "unlucky $1"; exit 1\n')
+            binary.chmod(0o755)
+            logs = root / 'logs'
+            logs.mkdir()
+            report = {'results': []}
+            redraw = {'drawn': 'random input', 'broken': 'random input'}
+            core_tests.run_cases(binary, root, {}, 10, root / 'report.json', report, logs, redraw)
+            rows = {row['name']: row for row in report['results']}
+            self.assertEqual(rows['drawn']['status'], 'passed')
+            self.assertEqual(rows['drawn']['first_attempt']['redraw'], 'random input')
+            self.assertIn('unlucky drawn', Path(rows['drawn']['first_attempt']['log']).read_text())
+            # A case that fails both attempts fails; one not named is never re-run.
+            self.assertEqual(rows['broken']['status'], 'failed')
+            self.assertEqual(rows['flaky']['status'], 'failed')
+            self.assertNotIn('first_attempt', rows['flaky'])
+            self.assertFalse(report['passed'])
+            with self.assertRaisesRegex(ValueError, 'redraw names no case'):
+                core_tests.run_cases(binary, root, {}, 10, root / 'report.json', {'results': []}, logs, {'gone': 'x'})
 
 
 class Cleanup(unittest.TestCase):
