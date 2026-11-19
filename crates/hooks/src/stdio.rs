@@ -100,6 +100,7 @@ mod native {
 /// configure's `io_uring` switches. Native's `swoole_init` installs it
 /// ([`swr_v1_hook_install`]) before any hook can run.
 pub struct Host {
+    runtime: &'static Ops,
     /// The `io_uring` engine's host, when the build has one: then the file calls go
     /// to the ring.
     #[cfg(feature = "iouring")]
@@ -114,66 +115,49 @@ pub struct Host {
     pub uring_socket: bool,
 }
 
-static HOST: OnceLock<&'static Host> = OnceLock::new();
-
-/// [`NATIVE`] once native installs the [`Host`]: [`offload`] reads it here, so a crate
-/// that links hooks without the runtime (the PDO drivers' tests) never links it.
-static RUNTIME: OnceLock<&'static Ops> = OnceLock::new();
+static HOST: OnceLock<Host> = OnceLock::new();
 
 /// Install the build's [`Host`] and the runtime: native's `swoole_init` calls it.
 pub fn swr_v1_hook_install() {
     use swoole_rs_corebase::{Switch, built_with};
-    static BUILT: OnceLock<Host> = OnceLock::new();
-    #[cfg(feature = "iouring")]
-    let uring = Some(&crate::iouring::HOST);
-    let host = BUILT.get_or_init(|| Host {
+    HOST.get_or_init(|| Host {
+        runtime: &NATIVE,
         #[cfg(feature = "iouring")]
-        uring,
+        uring: Some(&crate::iouring::HOST),
         uring_statx: built_with(Switch::IouringStatx),
         uring_ftruncate: built_with(Switch::IouringFtruncate),
         uring_futex: built_with(Switch::IouringFutex),
         uring_socket: built_with(Switch::UringSocket),
     });
-    set_host(host, &NATIVE);
-    #[cfg(feature = "iouring")]
-    swoole_rs_corebase::reactor::register_uring(&crate::iouring::REACTOR);
     crate::co_io::install_native();
-}
-
-/// Installs `host` and the runtime `ops` the hooked functions use from now on.
-fn set_host(host: &'static Host, ops: &'static Ops) {
-    HOST.get_or_init(|| host);
-    RUNTIME.get_or_init(|| ops);
 }
 
 /// The installed runtime, or the coroutine runtime's before native installs one.
 pub(crate) fn runtime() -> &'static Ops {
-    RUNTIME.get().copied().unwrap_or(&NATIVE)
+    host().map_or(&NATIVE, |host| host.runtime)
 }
 
 pub(crate) fn host() -> Option<&'static Host> {
-    HOST.get().copied()
+    HOST.get()
 }
 
 /// The host inside a coroutine (hook.cc's `!is_no_coro()`), else none.
 pub(crate) fn coroutine() -> Option<&'static Host> {
-    host().filter(|_| (runtime().in_coroutine)())
+    host().filter(|host| (host.runtime.in_coroutine)())
 }
 
 /// `async_job` inside a coroutine, else none: the call runs here.
 #[must_use]
 pub fn offload() -> Option<Offload> {
-    RUNTIME
-        .get()
-        .filter(|ops| (ops.in_coroutine)())
-        .map(|ops| ops.offload)
+    coroutine().map(|host| host.runtime.offload)
 }
 
 /// The ring's host inside a coroutine when `io_uring` takes this call (`gate`).
 #[cfg(feature = "iouring")]
 fn ring(gate: fn(&Host) -> bool) -> Option<&'static crate::uring::Host> {
-    let uring = host().filter(|host| gate(host))?.uring?;
-    (runtime().in_coroutine)().then_some(uring)
+    let host = host().filter(|host| gate(host))?;
+    let uring = host.uring?;
+    (host.runtime.in_coroutine)().then_some(uring)
 }
 
 /// A hooked call's argument as it crosses to the pool thread: a string as the `&CStr`
@@ -708,7 +692,8 @@ pub(crate) mod tests {
         sleep,
         set_last_error,
     };
-    static TEST_HOST: Host = Host {
+    const TEST_HOST: Host = Host {
+        runtime: &OPS,
         #[cfg(feature = "iouring")]
         uring: None,
         uring_statx: false,
@@ -722,7 +707,7 @@ pub(crate) mod tests {
 
     /// `call` under the test host in `mode`.
     pub(crate) fn with<T>(mode: Mode, call: impl FnOnce() -> T) -> T {
-        set_host(&TEST_HOST, &OPS);
+        HOST.get_or_init(|| TEST_HOST);
         MODE.set(mode);
         let result = call();
         MODE.set(Mode::Here);

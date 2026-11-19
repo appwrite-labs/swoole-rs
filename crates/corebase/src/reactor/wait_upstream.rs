@@ -119,7 +119,7 @@ pub fn iouring_waitpid(
     options: c_int,
     timeout: f64,
 ) -> Option<libc::pid_t> {
-    let uring = crate::reactor::wait_loop::uring()?;
+    let uring = crate::reactor::readiness::uring()?;
     let result = (uring.waitpid)(pid, status, options, timeout);
     if result < 0 {
         log::set_last_error(errno());

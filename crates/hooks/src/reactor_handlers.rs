@@ -1,6 +1,6 @@
 //! Readiness callbacks supplied by the hooks crate.
 use crate::socket_members;
-use swoole_rs_corebase::reactor::Handler;
+use swoole_rs_corebase::reactor::{Handler, UringOps};
 
 /// Coroutine socket callbacks in read, write and error order.
 pub const SOCKET: [Handler; 3] = [
@@ -10,6 +10,6 @@ pub const SOCKET: [Handler; 3] = [
 ];
 
 #[cfg(feature = "iouring")]
-pub const IOURING: Option<Handler> = Some(|_, _| crate::iouring::ready());
+pub const IOURING: Option<&UringOps> = Some(&crate::iouring::REACTOR);
 #[cfg(not(feature = "iouring"))]
-pub const IOURING: Option<Handler> = None;
+pub const IOURING: Option<&UringOps> = None;
