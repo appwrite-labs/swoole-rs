@@ -22,7 +22,7 @@ use swoole_rs_http::llhttp::{self, Callbacks, EndOfInput, Flow, Parser};
 use swoole_rs_http::status::{BAD_GATEWAY, NO_CONTENT, SERVICE_UNAVAILABLE, SWITCHING_PROTOCOLS};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
-use swoole_rs_websocket::Opcode;
+use swoole_rs_websocket::{ENCODED_KEY_LEN, KEY_LEN, Opcode};
 use swoole_rs_zend::{
     Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value,
     Weak, ZStr, ZString,
@@ -70,9 +70,8 @@ const INVALID_PROTOCOL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_HTTP_INVALI
 const HANDSHAKE_FAILED: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_HANDSHAKE_FAILED as c_int;
 const PACK_FAILED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_PACK_FAILED as c_int;
-/// `SW_WEBSOCKET_HEADER_LEN`, `SW_WEBSOCKET_KEY_LENGTH`.
+/// `SW_WEBSOCKET_HEADER_LEN`.
 const WEBSOCKET_HEADER: usize = swoole_rs_websocket::HEADER_LEN as usize;
-const WEBSOCKET_KEY: usize = swoole_rs_corebase::constants::SW_WEBSOCKET_KEY_LENGTH as usize;
 /// `SW_WEBSOCKET_EXTENSION_DEFLATE`.
 const DEFLATE_EXTENSION: &CStr =
     c"permessage-deflate; client_no_context_takeover; server_no_context_takeover";
@@ -1156,8 +1155,8 @@ impl Client {
     fn upgrade(&self, path: &[u8]) -> bool {
         self.defer.set(false);
         self.props().bytes(c"requestMethod", b"GET");
-        let token = request::token::<WEBSOCKET_KEY>();
-        let mut key = vec![0_u8; WEBSOCKET_KEY.div_ceil(3) * 4 + 1];
+        let token = request::token::<KEY_LEN>();
+        let mut key = [0_u8; ENCODED_KEY_LEN + 1];
         let written = swoole_rs_base64::encode(&token, &mut key);
         self.props().edit_array(c"requestHeaders", |headers| {
             headers.insert_bytes(b"Connection", Some(b"Upgrade"));

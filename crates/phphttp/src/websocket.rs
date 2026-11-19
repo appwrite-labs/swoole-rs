@@ -25,10 +25,10 @@ use swoole_rs_phpserver::{RecvData, php_swoole_get_recv_data, php_swoole_server_
 use swoole_rs_phpstubs::websocket as stubs;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_server::{server_methods, view};
-use swoole_rs_websocket::CLOSE_REASON_MAX_LEN as CLOSE_REASON_MAX;
 use swoole_rs_websocket::{
-    DecodeErrorKind, DecodedFrame, Delivery, EncodeError, FrameFlags, FrameMetadata, Opcode,
-    control_invalid, encode_close, encode_frame, encoded_size, header, message_policy, pack_policy,
+    CLOSE_CODE_LEN, CLOSE_REASON_MAX_LEN, DecodeErrorKind, DecodedFrame, Delivery, ENCODED_KEY_LEN,
+    EncodeError, FrameFlags, FrameMetadata, Opcode, control_invalid, encode_close, encode_frame,
+    encoded_size, header, message_policy, pack_policy,
 };
 use swoole_rs_zend::{
     Array, Call, Class, Declared, Minit, Owned, Value, ZStr, ZString, bailout, handlers,
@@ -80,8 +80,6 @@ const CLOSE_REASONS: [(&CStr, i64); 15] = [
     (c"BAD_GATEWAY", 1014),
     (c"TLS", 1015),
 ];
-/// `SW_WEBSOCKET_SEC_KEY_LEN` base64-encoded.
-const SEC_KEY_LENGTH: usize = 24;
 
 /// Swoole error codes and log levels (`include/swoole_error.h`, `swoole_log.h`).
 const PROTOCOL_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PROTOCOL_ERROR as c_int;
@@ -520,25 +518,22 @@ pub(crate) fn encode(data: &[u8], opcode: u8, flags: u8) -> Option<Frame> {
 fn close_frame(code: i32, reason: &[u8], flags: u8) -> Option<Frame> {
     let flags = FrameFlags::from_bits(flags);
     let func = c"websocket::pack_close_frame";
-    if reason.len() > CLOSE_REASON_MAX {
-        warning(func, "the max length of close reason is 125");
-        return None;
-    }
-    if control_invalid(
-        Opcode::Close,
-        FrameFlags::from_bits(FLAG_FIN),
-        reason.len() + 2,
-    ) {
+    if reason.len() > CLOSE_REASON_MAX_LEN {
         warning(
             func,
-            &format!(
-                "invalid websocket control frame: opcode=8, fin=1, payload_length={}",
-                reason.len() + 2
-            ),
+            &format!("the max length of close reason is {CLOSE_REASON_MAX_LEN}"),
         );
         return None;
     }
-    let size = encoded_size(reason.len() + 2, flags.with_final()).ok()?;
+    let length = reason.len() + CLOSE_CODE_LEN;
+    if control_invalid(Opcode::Close, FrameFlags::from_bits(FLAG_FIN), length) {
+        warning(
+            func,
+            &format!("invalid websocket control frame: opcode=8, fin=1, payload_length={length}"),
+        );
+        return None;
+    }
+    let size = encoded_size(length, flags.with_final()).ok()?;
     let frame = encoded(size, |out| encode_close(code, reason, flags, out))?;
     (!header_only_mask(flags)).then_some(frame)
 }
@@ -994,7 +989,7 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
     if key.is_some() && bailout::pending() {
         return Err(bailout::Bailout);
     }
-    let key = key.filter(|key| key.bytes().len() == SEC_KEY_LENGTH);
+    let key = key.filter(|key| key.bytes().len() == ENCODED_KEY_LEN);
     let Some(key) = key else {
         context.state().response.status = BAD_REQUEST;
         send::end(context, None)?;
