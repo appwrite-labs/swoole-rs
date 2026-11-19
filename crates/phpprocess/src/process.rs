@@ -8,6 +8,7 @@ use crate::{
 use std::{
     cell::{Cell, OnceCell},
     ffi::{CStr, c_int, c_long},
+    rc::Rc,
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_corebase::ossupport::QueueRecord;
@@ -67,6 +68,8 @@ struct Process {
     stream_pipe: Cell<bool>,
     enable_coroutine: Cell<bool>,
     blocking: Cell<bool>,
+    /// The pool whose queue or pipe the worker borrows, dropped after the worker.
+    pool: OnceCell<Rc<crate::pool::Pool>>,
 }
 
 impl Custom for Process {
@@ -119,6 +122,13 @@ pub(crate) fn set_worker_of(
     }
 }
 
+/// A Process from `Pool::getProcess` keeps `pool`, whose queue or pipe its worker borrows.
+pub(crate) fn keep_pool(object: &Value, pool: Rc<crate::pool::Pool>) {
+    if let Some(process) = object.custom::<Process>() {
+        _ = process.pool.set(pool);
+    }
+}
+
 /// A live worker's queue, or null.
 fn queue_of(worker: Worker<'_>) -> *mut QueueRecord {
     worker.queue().cast()
@@ -126,8 +136,9 @@ fn queue_of(worker: Worker<'_>) -> *mut QueueRecord {
 
 /// `f` over a live worker's queue, or `None` when it has none.
 fn with_queue<R>(worker: Worker<'_>, f: impl FnOnce(&QueueRecord) -> R) -> Option<R> {
-    // SAFETY: null, or a queue its Process object or the pool owns, which lives until
-    // `freeQueue` or its owner's drop, neither of which runs during `f`.
+    // SAFETY: null, or a queue its Process object owns or its pool does, which the
+    // Process keeps: it lives until `freeQueue` or the Process's drop, neither of
+    // which runs during `f`.
     unsafe { queue_of(worker).as_ref() }.map(f)
 }
 

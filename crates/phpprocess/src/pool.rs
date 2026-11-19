@@ -60,7 +60,7 @@ thread_local! {
 
 /// The pool a Pool object owns, reached in place: the pool's workers keep the
 /// record's address.
-struct Pool {
+pub(crate) struct Pool {
     record: UnsafeCell<PoolRecord>,
     /// `create` succeeded, so dropping this destroys the pool.
     created: Cell<bool>,
@@ -936,6 +936,10 @@ fn get_process(call: &Call) {
     let Some(props) = call.props(Some(&POOL)) else {
         return;
     };
+    // A Process copy borrows this pool's queue or pipe, so it keeps the pool.
+    let pool = this(call)
+        .and_then(|object| object.pool.get())
+        .filter(|pool| ptr::eq(pool.record.get(), CURRENT.load(Ordering::Acquire)));
     // The property reads null meanwhile; creating a Process object runs no PHP code.
     props.edit_array(c"workers", |workers| {
         // Separated: a new worker is added in place.
@@ -965,6 +969,9 @@ fn get_process(call: &Call) {
                 // type, so an async pool's pipe reads as a stream. The Process object takes
                 // the copy.
                 set_worker_of(&object, copy, true, view.is_async());
+                if let Some(pool) = pool {
+                    crate::process::keep_pool(&object, Rc::clone(pool));
+                }
                 // The table takes the new object's reference.
                 workers.update_index(key, object);
             }
