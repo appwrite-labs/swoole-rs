@@ -54,6 +54,16 @@ unsafe extern "C" {
     safe fn swoole_curl_multi_is_in_coroutine(handle: PhpMulti<'_>) -> bool;
     safe fn swoole_curl_multi_release_engine(handle: PhpMulti<'_>);
     safe fn swoole_curl_multi_release_push(handle: PhpMulti<'_>);
+    safe fn swoole_curl_multi_set_number(
+        multi: Option<swoole_rs_curl_sys::LiveMulti<'_>>,
+        option: c_int,
+        value: i64,
+    ) -> c_int;
+    safe fn swoole_curl_multi_set_push(
+        handle: PhpMulti<'_>,
+        multi: Option<swoole_rs_curl_sys::LiveMulti<'_>>,
+        value: &swoole_rs_zend::Value,
+    ) -> bool;
     safe fn swoole_curl_multi_empty(handle: PhpMulti<'_>) -> bool;
     safe fn swoole_curl_multi_verify(handle: PhpMulti<'_>);
     safe fn swoole_curl_assign_long(slot: &swoole_rs_zend::Value, number: i64);
@@ -79,6 +89,7 @@ swoole_rs_zend::handlers! {
     zif_swoole_native_curl_multi_add_handle => add;
     zif_swoole_native_curl_multi_remove_handle => remove;
     zif_swoole_native_curl_multi_exec => exec;
+    zif_swoole_native_curl_multi_setopt => setopt;
     zif_swoole_native_curl_multi_select => select;
     zif_swoole_native_curl_multi_errno => errno;
 }
@@ -239,6 +250,77 @@ fn exec(call: &Call<'_>) {
     }
     swoole_curl_multi_set_error(handle, result);
     call.set_long(i64::from(result));
+}
+
+fn setopt(call: &Call<'_>) {
+    use crate::setopt::{libcurl, warn};
+    use swoole_rs_curl_sys::{
+        CURLM_OK, CURLM_UNKNOWN_OPTION, CURLMOPT_CHUNK_LENGTH_PENALTY_SIZE,
+        CURLMOPT_CONTENT_LENGTH_PENALTY_SIZE, CURLMOPT_MAX_CONCURRENT_STREAMS,
+        CURLMOPT_MAX_HOST_CONNECTIONS, CURLMOPT_MAX_PIPELINE_LENGTH,
+        CURLMOPT_MAX_TOTAL_CONNECTIONS, CURLMOPT_MAXCONNECTS, CURLMOPT_PIPELINING,
+        CURLMOPT_PUSHFUNCTION,
+    };
+
+    if call.arity(3, 3).is_err() {
+        return;
+    }
+    let Some(handle) = argument(call) else { return };
+    let Ok(option) = call.long(2, 0) else { return };
+    let Some(value) = call.value(3) else { return };
+    let Some(multi) = engine(handle) else { return };
+    // PHP casts the zend_long to libcurl's 32-bit CURLMoption before dispatch.
+    let option = c_int::try_from(option & i64::from(u32::MAX)).unwrap_or(-1);
+    let result = match option {
+        CURLMOPT_PUSHFUNCTION => {
+            bailout::defer(contain_with(|| {
+                call.set_bool(swoole_curl_multi_set_push(
+                    handle,
+                    multi.live(),
+                    value.referred(),
+                ));
+            }));
+            return;
+        }
+        CURLMOPT_PIPELINING
+        | CURLMOPT_MAXCONNECTS
+        | CURLMOPT_MAX_HOST_CONNECTIONS
+        | CURLMOPT_MAX_PIPELINE_LENGTH
+        | CURLMOPT_CONTENT_LENGTH_PENALTY_SIZE
+        | CURLMOPT_CHUNK_LENGTH_PENALTY_SIZE
+        | CURLMOPT_MAX_TOTAL_CONNECTIONS
+        | CURLMOPT_MAX_CONCURRENT_STREAMS
+            if option != CURLMOPT_MAX_CONCURRENT_STREAMS
+                || (PHP_VERSION_ID >= 80200 && libcurl(7, 67, 0)) =>
+        {
+            let Some(number) = value.referred().applied_long() else {
+                return;
+            };
+            if option == CURLMOPT_PIPELINING && number & 1 != 0 {
+                let (level, message) = if libcurl(7, 62, 0) {
+                    (
+                        swoole_rs_zend::E_WARNING,
+                        c"CURLPIPE_HTTP1 is no longer supported",
+                    )
+                } else {
+                    (
+                        swoole_rs_zend::sys::E_DEPRECATED.cast_signed(),
+                        c"CURLPIPE_HTTP1 is deprecated",
+                    )
+                };
+                if !warn(level, message) {
+                    return;
+                }
+            }
+            swoole_curl_multi_set_number(multi.live(), option, number)
+        }
+        _ => {
+            call.argument_value_error(2, c"is not a valid cURL multi option");
+            CURLM_UNKNOWN_OPTION
+        }
+    };
+    swoole_curl_multi_set_error(handle, result);
+    call.set_bool(result == CURLM_OK);
 }
 
 fn select(call: &Call<'_>) {

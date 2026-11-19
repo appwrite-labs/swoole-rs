@@ -68,7 +68,6 @@ struct swr_v1_curl_handle {
 /* A multi the caller gives up (or null), freed by swr_v1_curl_multi_free. */
 typedef struct swr_v1_curl_multi *swr_v1_curl_released;
 void swr_v1_curl_multi_free(swr_v1_curl_released multi);
-void *swr_v1_curl_multi_handle(const struct swr_v1_curl_multi *multi);
 struct swr_v1_curl_handle *swr_v1_curl_get_handle(swr_v1_curl_easy cp);
 struct swr_v1_curl_handle *swr_v1_curl_create_handle(swr_v1_curl_easy cp);
 /* A pushed stream's handle for cp, in the multi of its parent's handle, when parent has one. */

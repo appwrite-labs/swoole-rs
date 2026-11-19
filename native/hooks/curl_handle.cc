@@ -216,6 +216,47 @@ extern "C" void swoole_curl_multi_release_push(php_curlm *mh) {
 #endif
 }
 
+extern "C" int swoole_curl_multi_set_number(CURLM *multi, int option, zend_long value) {
+    auto id = static_cast<CURLMoption>(option);
+    if (id == CURLMOPT_CONTENT_LENGTH_PENALTY_SIZE || id == CURLMOPT_CHUNK_LENGTH_PENALTY_SIZE) {
+        return curl_multi_setopt(multi, id, static_cast<curl_off_t>(value));
+    }
+    return curl_multi_setopt(multi, id, static_cast<long>(value));
+}
+
+extern "C" int swoole_curl_multi_on_push(CURL *, CURL *, size_t, struct curl_pushheaders *, void *);
+
+extern "C" bool swoole_curl_multi_set_push(php_curlm *mh, CURLM *multi, zval *value) {
+    auto &push = mh->handlers.server_push;
+#if PHP_VERSION_ID >= 80400
+    if (ZEND_FCC_INITIALIZED(push)) {
+        zend_fcc_dtor(&push);
+    }
+    char *reason = nullptr;
+    if (!zend_is_callable_ex(value, nullptr, 0, nullptr, &push, &reason)) {
+        if (!EG(exception)) {
+            zend_argument_type_error(2, "must be a valid callback for option CURLMOPT_PUSHFUNCTION, %s", reason);
+        }
+        efree(reason);
+        return false;
+    }
+    zend_fcc_addref(&push);
+#else
+    if (!push) {
+        push = static_cast<php_curl_callback *>(ecalloc(1, sizeof(*push)));
+    } else if (!Z_ISUNDEF(push->func_name)) {
+        zval_ptr_dtor(&push->func_name);
+        push->fci_cache = empty_fcall_info_cache;
+    }
+    ZVAL_COPY(&push->func_name, value);
+#endif
+    if (curl_multi_setopt(multi, CURLMOPT_PUSHFUNCTION, swoole_curl_multi_on_push) != CURLM_OK) {
+        return false;
+    }
+    mh->err.no = curl_multi_setopt(multi, CURLMOPT_PUSHDATA, mh);
+    return mh->err.no == CURLM_OK;
+}
+
 extern "C" bool swoole_curl_multi_empty(php_curlm *mh) {
     return zend_llist_count(&mh->easyh) == 0;
 }
