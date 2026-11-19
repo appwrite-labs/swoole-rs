@@ -27,3 +27,9 @@ swoole-rs-phpstubs = { path = "../phpstubs", optional = true }
 
 [lints]
 workspace = true
+
+[[example]]
+name = "fresh_socket"
+crate-type = ["cdylib"]
+path = "../../tests/modules/clients/fresh_socket.rs"
+required-features = ["php"]
