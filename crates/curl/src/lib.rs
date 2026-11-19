@@ -248,6 +248,8 @@ fn poll_events(events: Events) -> i16 {
     poll
 }
 
+struct ReactorUnavailable;
+
 /// The `CURL_CSELECT_*` bits of a `poll` result.
 #[cfg(any(feature = "php", test))]
 fn select_bits(revents: i16) -> c_int {
@@ -357,13 +359,13 @@ impl Multi {
     }
 
     fn set_timer(&self) {
-        self.on_timeout(self.timeout(0).1);
+        self.on_timeout(self.timeout(0).1).unwrap_or(());
     }
 
     /// `Multi::handle_timeout`.
-    fn on_timeout(&self, timeout_ms: c_long) -> c_int {
+    fn on_timeout(&self, timeout_ms: c_long) -> Result<(), ReactorUnavailable> {
         if !(self.host.event_available)() {
-            return -1;
+            return Err(ReactorUnavailable);
         }
         if timeout_ms < 0 {
             if self.timer.get().is_none() {
@@ -375,7 +377,7 @@ impl Multi {
             // 0 means "call socket_action now": do it in a moment.
             self.add_timer(timeout_ms.max(1));
         }
-        0
+        Ok(())
     }
 
     /// `Multi::set_event`: whether the socket is in the reactor for `action`.
@@ -729,7 +731,7 @@ extern "C" fn handle_socket(
 
 /// `Multi::handle_timeout`, curl's timer callback.
 extern "C" fn handle_timeout(_multi: *mut CURLM, timeout_ms: c_long, multi: &Multi) -> c_int {
-    multi.on_timeout(timeout_ms)
+    multi.on_timeout(timeout_ms).map_or(ERR, |()| OK)
 }
 
 impl Multi {

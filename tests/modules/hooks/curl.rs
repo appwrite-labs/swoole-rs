@@ -303,7 +303,7 @@ fn a_waiterless_socket_event_leaves_the_reactor() {
 fn a_multi_freed_with_a_queued_wake_up_is_freed_by_the_wake_up() {
     LOOP.with(|on| on.set(true));
     let multi = new_multi();
-    assert_eq!(multi.on_timeout(0), 0, "a timer");
+    assert_eq!(handle_timeout(ptr::null_mut(), 0, multi), 0, "a timer");
     multi
         .co
         .set(Waiter::running(ptr::dangling_mut::<u8>().cast(), -1));
@@ -330,16 +330,20 @@ fn timeouts_without_an_event_loop_fail() {
     LOOP.with(|on| on.set(false));
     take();
     let multi = new_multi();
-    assert_eq!(multi.on_timeout(0), -1, "no loop");
+    assert_eq!(handle_timeout(ptr::null_mut(), 0, multi), -1, "no loop");
     LOOP.with(|on| on.set(true));
-    assert_eq!(multi.on_timeout(0), 0, "a loop");
-    assert_eq!(multi.on_timeout(-1), 0, "cancel");
+    assert_eq!(handle_timeout(ptr::null_mut(), 0, multi), 0, "a loop");
+    assert_eq!(handle_timeout(ptr::null_mut(), -1, multi), 0, "cancel");
     assert_eq!(
         take(),
         ["timer 1", "timer del"],
         "zero waits 1 ms; -1 deletes it"
     );
-    assert_eq!(multi.on_timeout(-1), 0, "nothing to cancel");
+    assert_eq!(
+        handle_timeout(ptr::null_mut(), -1, multi),
+        0,
+        "nothing to cancel"
+    );
     assert_eq!(
         take(),
         ["timer 1000"],
