@@ -1077,11 +1077,10 @@ impl Protocol {
 const MAIN_ASYNC: u64 = 4;
 
 /// `swoole_config.h`; native asserts each.
-pub const SW_MESSAGE_BOX_SIZE: u64 = 65536;
-pub const SW_INPUT_BUFFER_SIZE: u32 = 2 * 1024 * 1024;
-pub const SW_WORKER_MAX_WAIT_TIME: u32 = 3;
+pub const SW_MESSAGE_BOX_SIZE: u64 = crate::constants::SW_MESSAGE_BOX_SIZE as u64;
 /// `SW_MSGMAX`: a `SysV` message's fixed receive limit.
 pub use crate::constants::SW_MSGMAX;
+pub use crate::constants::{SW_INPUT_BUFFER_SIZE, SW_WORKER_MAX_WAIT_TIME};
 
 /// `set_max_packet_size`'s value: a `SysV` message queue keeps its fixed receive
 /// limit and ignores `max_package_size`.

@@ -5,7 +5,9 @@ use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::reactor::Events;
 
 use swoole_rs_corebase::constants::{
-    SW_ACCEPT_RETRY_TIME, SW_SEND_BUFFER_SIZE, SocketType, SocketTypeCode,
+    SW_ACCEPT_MAX_COUNT as ACCEPT_MAX_COUNT, SW_ACCEPT_RETRY_TIME,
+    SW_MAX_CONNECTION as MAX_CONNECTION, SW_SEND_BUFFER_SIZE,
+    SW_SESSION_LIST_SIZE as SESSION_LIST_SIZE, SocketType, SocketTypeCode,
 };
 use swoole_rs_corebase::reactor::{Event, Heap, OwnedSocket};
 use swoole_rs_corebase::{CCast, log};
@@ -15,11 +17,6 @@ use crate::reactor_handle::Reactor;
 use crate::records::Lookup;
 use crate::{Connection, Mode, view};
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
-
-/// `SW_ACCEPT_MAX_COUNT`, `SW_MAX_CONNECTION`, `SW_SESSION_LIST_SIZE`; native asserts each.
-const ACCEPT_MAX_COUNT: u32 = 64;
-const MAX_CONNECTION: u32 = 100_000;
-const SESSION_LIST_SIZE: u32 = 1024 * 1024;
 
 use swoole_rs_corebase::sys::errno;
 

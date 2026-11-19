@@ -9,6 +9,7 @@ use swoole_rs_corebase::process::methods::{
     ExitStatus, kill_all_workers, set_worker_type, swoole_set_worker_id, swoole_set_worker_pid,
     worker_report_error,
 };
+use swoole_rs_corebase::process::pool::PIPE_MASTER;
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerType};
 use swoole_rs_corebase::reactor::wait_upstream::swoole_waitpid;
 
@@ -21,8 +22,6 @@ use crate::view::{self, PipeSocket};
 /// `SWR_WORKER_EVENT`, `SWR_WORKER_USER`: the registry's categories.
 const REGISTRY_EVENT: c_int = 1;
 const REGISTRY_USER: c_int = 2;
-/// `SW_PIPE_MASTER`.
-const PIPE_MASTER: c_int = 1;
 
 /// `new ReactorThread[count]()`, each bus over the allocator of the server's.
 pub(crate) fn new_reactor_threads(state: &crate::ServerState, count: u16) -> Box<[ThreadRecord]> {

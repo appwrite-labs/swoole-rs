@@ -11,6 +11,7 @@ use swoole_rs_corebase::process::methods::{
     send_pipe_message, set_worker_type, swoole_get_worker_id, swoole_set_worker_id,
     worker_set_max_request,
 };
+use swoole_rs_corebase::process::pool::PIPE_MASTER;
 use swoole_rs_corebase::process::process_pool::{Hooks, PoolRef};
 use swoole_rs_corebase::process::task_file::{Packed, TaskBuffer};
 use swoole_rs_corebase::process::task_sync::ResultSlot;
@@ -32,8 +33,7 @@ use crate::objects::{Reactor, in_worker_bus, set_nonblock, worker_pipe};
 use crate::view;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_WARNING};
 
-/// `SW_PIPE_MASTER`, `SW_FD_PIPE` and `SW_EVENT_WRITE`.
-const PIPE_MASTER: c_int = 1;
+/// `SW_FD_PIPE` and `SW_EVENT_WRITE`.
 const FD_PIPE: c_int = swoole_rs_corebase::constants::FdType::SW_FD_PIPE as c_int;
 /// `SW_LOG_WARNING`, `SW_LOG_ERROR`, `SW_ERROR_SOCKET_POLL_TIMEOUT` and
 /// `SW_ERROR_SERVER_SEND_TO_WOKER_TIMEOUT`.
