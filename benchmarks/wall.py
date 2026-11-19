@@ -45,8 +45,8 @@ def session_pids(sid):
     return pids
 
 
-def wrk(port, path, connections, seconds):
-    out = subprocess.run(['wrk', '--latency', '-t2', f'-c{connections}', f'-d{seconds}s',
+def wrk(port, path, connections, seconds, threads=2):
+    out = subprocess.run(['wrk', '--latency', f'-t{threads}', f'-c{connections}', f'-d{seconds}s',
                           f'http://127.0.0.1:{port}{path}'], check=True, capture_output=True, text=True).stdout
     if 'Non-2xx' in out or 'Socket errors' in out:
         raise RuntimeError(out)
@@ -99,7 +99,7 @@ def percentile(sorted_values, p):
     return sorted_values[min(len(sorted_values) - 1, len(sorted_values) * p // 100)]
 
 
-def run(engine, workload, connections, seconds, warmup, websocket_pipeline=32):
+def run(engine, workload, connections, seconds, warmup, websocket_pipeline=32, wrk_threads=2):
     directory, method, path, payload = WORKLOADS[workload][:4]
     with socket.socket() as reservation:
         reservation.bind(('127.0.0.1', 0))
@@ -120,7 +120,7 @@ def run(engine, workload, connections, seconds, warmup, websocket_pipeline=32):
             elif method == 'H2':
                 requests, p50, p99 = h2load(port, path, connections, seconds)
             elif method == 'GET':
-                requests, p50, p99 = wrk(port, path, connections, seconds)
+                requests, p50, p99 = wrk(port, path, connections, seconds, wrk_threads)
             else:
                 raise ValueError(f'{workload}: no load generator for {method}')
             elapsed, client = time.monotonic() - start, client_seconds() - client
@@ -170,6 +170,8 @@ def main():
     parser.add_argument('--connections', type=int, default=32)
     parser.add_argument('--websocket-pipeline', type=int, default=32,
                         help='Messages per batch on the single WebSocket connection; 1 restores serial round trips')
+    parser.add_argument('--wrk-threads', type=int, default=2,
+                        help='wrk threads; raise it with --connections for the multi-worker workloads')
     parser.add_argument('--warmup', type=int, default=200)
     parser.add_argument('--php', default='php')
     parser.add_argument('--php-extension', action='append', default=[])
@@ -191,7 +193,7 @@ def main():
         for _ in range(args.repetitions):
             for engine in engines:
                 rows[engine.name].append(run(engine, workload, args.connections, args.seconds, args.warmup,
-                                            args.websocket_pipeline))
+                                            args.websocket_pipeline, args.wrk_threads))
         results[workload] = {name: {'runs': runs, 'summary': summary(runs)} for name, runs in rows.items()}
         for name, result in results[workload].items():
             print(f'{name:10} {workload:15} ' + '  '.join(
@@ -217,7 +219,7 @@ def main():
                                  f'unavailable at {branch_sampling["failed"]}'))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps({'seconds': args.seconds, 'connections': args.connections,
-                                       'websocket_pipeline': args.websocket_pipeline,
+                                       'websocket_pipeline': args.websocket_pipeline, 'wrk_threads': args.wrk_threads,
                                        'counter': args.counter, 'max_ratio': args.max_ratio,
                                        'workloads': results, 'branch_sampling': branch_sampling}, indent=2) + '\n')
     print('results: ' + str(args.output))
