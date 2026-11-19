@@ -78,7 +78,7 @@ pub(crate) fn init(serv: view::Server<'_>) -> bool {
     }
     for index in 0..config.task_worker_num.get() as usize {
         if let Some(worker) = pool.worker(index) {
-            crate::worker_methods::create_worker(serv, worker);
+            crate::server_methods::store_pipe_fd(serv, worker);
         }
     }
     true
