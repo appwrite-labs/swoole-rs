@@ -3,12 +3,12 @@
 //! `native/hooks/curl_handle.cc` (`curl_easy_setopt` is variadic), as are the
 //! list options, `CURLOPT_RETURNTRANSFER`, `CURLOPT_PRIVATE`, the file-handle
 //! options, `CURLOPT_SHARE` and `CURLOPT_POSTFIELDS` (`postfields.rs`); the
-//! callables and `CURLINFO_HEADER_OUT` still go to the bundled copies'
-//! `swoole_curl_setopt_native`, which also rejects an unknown option.
+//! callables and `CURLINFO_HEADER_OUT` are set in `callbacks.rs`.
 //!
 //! Each option is gated as the copies' `#if`s gated its `case`: by the libcurl
 //! headers the extension was built against and by the PHP version, so one the
 //! build lacks is unknown here too.
+use super::callbacks::{self, Plain, Stream};
 use super::php_handle::{PhpHandle, argument};
 use std::ffi::{CString, c_int, c_long};
 use swoole_rs_zend::sys::{PHP_VERSION_ID, zend_long};
@@ -41,7 +41,7 @@ unsafe extern "C" {
     // None after the error.
     safe fn swoole_curl_stream_file(value: &Value, writable: &mut bool) -> Option<StdioFile>;
     // The stream a file-handle option keeps.
-    safe fn swoole_curl_file_stream<'a>(
+    pub(super) safe fn swoole_curl_file_stream<'a>(
         handle: PhpHandle<'a>,
         option: c_int,
     ) -> &'a mut swoole_rs_zend::Owned;
@@ -62,13 +62,6 @@ unsafe extern "C" {
     pub(super) safe fn swoole_curl_allowed_path(path: &ZStr) -> bool;
     // The URL as `curl_init` sets it: file:// is turned off under open_basedir.
     safe fn swoole_curl_set_url(handle: PhpHandle<'_>, url: &ZStr) -> bool;
-    // The bundled copies' `_php_curl_setopt`, for every option not set here.
-    safe fn swoole_curl_setopt_native(
-        handle: PhpHandle<'_>,
-        option: zend_long,
-        value: &Value,
-        array: bool,
-    ) -> c_int;
 }
 
 swoole_rs_zend::handlers! {
@@ -83,6 +76,10 @@ const CURLOPT_SAFE_UPLOAD: zend_long = -1;
 /// `PHP_CURL_STDOUT` and `PHP_CURL_RETURN`: where the write handler sends the body.
 const PHP_CURL_STDOUT: c_int = 0;
 const PHP_CURL_RETURN: c_int = 4;
+/// PHP's own `CURLINFO_HEADER_OUT`, as an option.
+const CURLINFO_HEADER_OUT: zend_long = 2;
+/// `CURLE_UNKNOWN_OPTION`.
+const UNKNOWN_OPTION: c_int = 48;
 /// `CURLPROTO_FILE` and `CURL_REDIR_POST_ALL`.
 const CURLPROTO_FILE: zend_long = 1 << 10;
 const CURL_REDIR_POST_ALL: zend_long = 7;
@@ -380,6 +377,12 @@ enum Kind {
     Share,
     /// The body: a string, or an array of multipart fields.
     PostFields,
+    /// A callable for the body, the headers or the upload.
+    Io(Stream),
+    /// A callable libcurl has a callback for.
+    Callback(Plain),
+    /// `CURLINFO_HEADER_OUT`: whether the request header is recorded.
+    HeaderOut,
     /// Kept for compatibility; nothing is set.
     Ignored,
 }
@@ -389,9 +392,10 @@ pub(super) fn libcurl(major: u32, minor: u32, patch: u32) -> bool {
     swoole_curl_header_version >= ((major << 16) | (minor << 8) | patch)
 }
 
-/// The kind of an option set here, or None for one the bundled copies set.
+/// The kind of an option, or None for one this build does not know.
 fn kind(option: zend_long) -> Option<Kind> {
     match option {
+        CURLINFO_HEADER_OUT => Some(Kind::HeaderOut),
         CURLOPT_SSL_VERIFYHOST => Some(Kind::VerifyHost),
         CURLOPT_PROTOCOLS | CURLOPT_REDIR_PROTOCOLS => Some(Kind::Protocols),
         // A no-op since PHP 8.4; before, a long that a thread-safe PHP refuses to turn on.
@@ -428,7 +432,9 @@ fn kind(option: zend_long) -> Option<Kind> {
         _ => long(option)
             .or_else(|| text(option))
             .or_else(|| newer_long(option))
-            .or_else(|| newer(option)),
+            .or_else(|| newer(option))
+            .or_else(|| Stream::of(option).map(Kind::Io))
+            .or_else(|| Plain::of(option).map(Kind::Callback)),
     }
 }
 
@@ -744,11 +750,16 @@ fn set(
     array: bool,
 ) -> bool {
     let Some(kind) = kind(option) else {
-        let mut set = false;
-        bailout::defer(swoole_rs_zend::contain_with(|| {
-            set = swoole_curl_setopt_native(handle, option, value, array) == 0;
-        }));
-        return set;
+        call.argument_value_error(
+            2,
+            if array {
+                c"must contain only valid cURL options"
+            } else {
+                c"is not a valid cURL option"
+            },
+        );
+        swoole_curl_save_error(handle, UNKNOWN_OPTION);
+        return false;
     };
     // Every option here is a curl.h value, which fits a C int.
     let id = c_int::try_from(option).unwrap_or_default();
@@ -874,6 +885,9 @@ fn set(
         }
         Kind::File => set_file(call, handle, option, value),
         Kind::PostFields => super::postfields::set(handle, value),
+        Kind::Io(stream) => callbacks::set_io(call, handle, stream, value, array),
+        Kind::Callback(which) => callbacks::set_plain(call, handle, which, value, array),
+        Kind::HeaderOut => callbacks::set_header_out(handle, value.truthy()),
         Kind::Share => {
             swoole_curl_set_share(handle, value);
             swoole_curl_save_error(handle, 0);
@@ -889,7 +903,7 @@ fn set(
 /// A stream's `FILE *`, which the stream owns.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-struct StdioFile(std::ptr::NonNull<std::ffi::c_void>);
+pub(super) struct StdioFile(std::ptr::NonNull<std::ffi::c_void>);
 
 /// The file-handle options. The handle keeps a reference to the stream it writes
 /// to or reads from.
