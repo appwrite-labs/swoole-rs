@@ -2,6 +2,7 @@
 #[cfg(unix)]
 mod wait_loop;
 #[cfg(unix)]
+pub use readiness::UringOps;
 pub use wait_loop::*;
 #[cfg(unix)]
 mod poll;

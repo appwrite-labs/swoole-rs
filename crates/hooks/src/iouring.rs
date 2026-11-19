@@ -202,27 +202,22 @@ fn destroyed(reactor: Running<'_>) {
 
 /// `Iouring::callback`: the ring fd is readable. The thread's instance owns the ring
 /// fd's record, so the event's object isn't needed.
-pub(crate) fn ready() -> bool {
+fn ready(_: Running<'_>, _: &mut swoole_rs_corebase::reactor::Event) -> bool {
     current().is_some_and(|engine| uring::wakeup(&engine))
 }
 
-/// The engine's operations `corebase::reactor` calls; it sits below this crate, so
-/// `swoole_init` registers them (`stdio::swr_v1_hook_install`).
+/// The ring backend installed with the other reactor handlers at `swoole_init`.
 pub(crate) static REACTOR: UringOps = UringOps {
-    interrupted,
+    ready,
     interrupt,
     waitpid,
 };
 
-/// The epoll wait was interrupted (EINTR) on a thread with an instance.
-fn interrupted() -> bool {
-    let eintr = std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR);
-    eintr && current().is_some()
-}
-
 /// `reactor->iouring_interrupt_handler`: harvest the completions.
 fn interrupt() {
-    if let Some(engine) = current() {
+    if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
+        && let Some(engine) = current()
+    {
         uring::wakeup(&engine);
     }
 }

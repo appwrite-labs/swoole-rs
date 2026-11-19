@@ -2,13 +2,13 @@
 //! and `ReactorPoll::wait` over the Rust reactor state (#336, #391). Rust owns the loop, the
 //! kernel wait, the readiness order and the warnings; native code supplies the effects
 //! upstream reaches through `Reactor`'s callbacks.
+use super::readiness::uring;
 use crate::CCast;
 use crate::log;
 use crate::reactor::Socket;
 use crate::reactor::handlers::{self, Table};
 use crate::reactor::reactor_state::{before_wait, kernel_wait};
 use std::ffi::c_int;
-use std::sync::OnceLock;
 
 /// Which kernel wait a reactor's backend runs.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -16,29 +16,6 @@ pub(crate) enum BackendKind {
     Poll,
     Epoll,
     Kqueue,
-}
-
-/// The `io_uring` engine's operations this crate calls. crates/hooks, which sits
-/// above it, registers them with [`register_uring`] when the build has the engine.
-pub struct UringOps {
-    /// The epoll wait failed with EINTR on a thread whose engine is running.
-    pub interrupted: fn() -> bool,
-    /// Harvest the engine's completions after that interruption.
-    pub interrupt: fn(),
-    /// `Iouring::waitpid`.
-    pub waitpid: fn(libc::pid_t, Option<&mut c_int>, c_int, f64) -> libc::pid_t,
-}
-
-static URING: OnceLock<&'static UringOps> = OnceLock::new();
-
-/// Make `ops` the engine this crate calls: `swoole_init` registers it once.
-pub fn register_uring(ops: &'static UringOps) {
-    URING.get_or_init(|| ops);
-}
-
-/// The registered `io_uring` engine, if the build has one.
-pub(crate) fn uring() -> Option<&'static UringOps> {
-    URING.get().copied()
 }
 
 /// Upstream's `swoole::Event`: what a handler is called with. Its socket is a heap
@@ -157,7 +134,6 @@ pub(crate) fn wait<'a>(
                 }
                 if run.backend == BackendKind::Epoll
                     && let Some(uring) = uring()
-                    && (uring.interrupted)()
                 {
                     (uring.interrupt)();
                 }

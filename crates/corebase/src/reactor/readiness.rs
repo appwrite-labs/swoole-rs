@@ -10,16 +10,35 @@ use core::ffi::{c_int, c_void};
 
 use std::sync::OnceLock;
 
+/// The optional Linux ring backend. Corebase also runs on its own or with poll,
+/// epoll or kqueue; the hooks crate links the ring implementation when enabled.
+pub struct UringOps {
+    /// The ring fd has completions ready to harvest.
+    pub ready: Handler,
+    /// Harvest completions from this thread's engine after epoll returns EINTR.
+    pub interrupt: fn(),
+    /// `Iouring::waitpid`.
+    pub waitpid: fn(libc::pid_t, Option<&mut c_int>, c_int, f64) -> libc::pid_t,
+}
+
+pub(crate) fn uring() -> Option<&'static UringOps> {
+    INIT_REACTOR.get()?.uring
+}
+
 /// Handlers supplied by the hooks and clients crates at process initialization.
 struct Init {
     socket: [Handler; 3],
-    uring: Option<Handler>,
+    uring: Option<&'static UringOps>,
     client: fn(Running<'_>),
 }
 static INIT_REACTOR: OnceLock<Init> = OnceLock::new();
 
 /// Install the external handlers once, before creating reactors.
-pub fn set_init_reactor(socket: [Handler; 3], uring: Option<Handler>, client: fn(Running<'_>)) {
+pub fn set_init_reactor(
+    socket: [Handler; 3],
+    uring: Option<&'static UringOps>,
+    client: fn(Running<'_>),
+) {
     INIT_REACTOR.get_or_init(|| Init {
         socket,
         uring,
@@ -47,11 +66,11 @@ pub(crate) fn init_reactor(reactor: Running<'_>) {
         None,
         ErrorHandler::ConnectionDefault,
     );
-    if let Some(handler) = init.uring {
+    if let Some(engine) = init.uring {
         set_handlers(
             reactor,
             FdType::SW_FD_IOURING as i32,
-            Some(handler),
+            Some(engine.ready),
             None,
             ErrorHandler::ConnectionDefault,
         );
