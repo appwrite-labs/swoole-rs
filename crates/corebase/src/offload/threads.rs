@@ -23,7 +23,7 @@ use std::ptr;
 use std::sync::atomic::Ordering::Relaxed;
 
 /// `SW_FD_AIO`.
-const FD_AIO: c_int = 5;
+const FD_AIO: c_int = crate::constants::FdType::SW_FD_AIO as c_int;
 /// `SW_ERROR_SYSTEM_CALL_FAIL`, `SW_ERROR_WRONG_OPERATION`, `SW_ERROR_AIO_BAD_REQUEST`
 /// and `SW_ERROR_AIO_CANCELED`.
 const SYSTEM_CALL_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SYSTEM_CALL_FAIL as c_int;

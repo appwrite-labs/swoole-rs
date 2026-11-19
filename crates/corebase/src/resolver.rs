@@ -3,7 +3,7 @@ use crate::sys::Text;
 use std::ffi::{CStr, c_char, c_int};
 
 /// `SW_DNS_LOOKUP_RANDOM`, masked out of `gethostbyname`'s flags.
-const LOOKUP_RANDOM: c_int = 1 << 11;
+const LOOKUP_RANDOM: c_int = crate::constants::DNSLookupFlag::SW_DNS_LOOKUP_RANDOM as c_int;
 
 #[cfg(not(target_os = "linux"))]
 unsafe extern "C" {

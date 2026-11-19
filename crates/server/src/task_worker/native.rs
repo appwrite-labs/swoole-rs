@@ -34,7 +34,7 @@ use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_WARNING};
 
 /// `SW_PIPE_MASTER`, `SW_FD_PIPE` and `SW_EVENT_WRITE`.
 const PIPE_MASTER: c_int = 1;
-const FD_PIPE: c_int = 3;
+const FD_PIPE: c_int = swoole_rs_corebase::constants::FdType::SW_FD_PIPE as c_int;
 /// `SW_LOG_WARNING`, `SW_LOG_ERROR`, `SW_ERROR_SOCKET_POLL_TIMEOUT` and
 /// `SW_ERROR_SERVER_SEND_TO_WOKER_TIMEOUT`.
 const POLL_TIMEOUT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SOCKET_POLL_TIMEOUT as c_int;

@@ -12,7 +12,7 @@ use crate::records::Connection;
 use crate::view;
 
 /// `SW_FD_SESSION`.
-const FD_SESSION: c_int = 0;
+const FD_SESSION: c_int = swoole_rs_corebase::constants::FdType::SW_FD_SESSION as c_int;
 /// The objects a reactor-thread op acts on: a live server, the reactor the op runs
 /// under, and its thread record. The entry points (`reactor_entry`) build it;
 /// messages stay in the thread's bus.

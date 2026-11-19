@@ -50,7 +50,7 @@ use swoole_rs_corebase::tls::upstream::{self, socket_free};
 
 /// `swoole::ProtocolType`, `SW_FD_PIPE`, `SW_EVENT_READ`,
 /// `SW_EVENTLOOP_WAIT_EXIT` and the `Channel` flags.
-const FD_PIPE: c_int = 3;
+const FD_PIPE: c_int = swoole_rs_corebase::constants::FdType::SW_FD_PIPE as c_int;
 const EVENTLOOP_WAIT_EXIT: c_int = 1;
 /// `sizeof(EventData)`.
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;

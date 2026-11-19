@@ -386,7 +386,8 @@ fn check_port(
 pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> bool {
     /// `THREAD_MASTER`, `SW_FD_STREAM_SERVER` and `SW_EVENT_READ`.
     const THREAD_MASTER: u8 = 1;
-    const FD_STREAM_SERVER: c_int = 1;
+    const FD_STREAM_SERVER: c_int =
+        swoole_rs_corebase::constants::FdType::SW_FD_STREAM_SERVER as c_int;
     let state = serv.state();
     let config = state.config_ref();
     let single = config.single_thread.get();

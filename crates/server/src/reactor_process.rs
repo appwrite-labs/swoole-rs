@@ -17,8 +17,8 @@ use crate::view;
 pub(crate) mod native;
 
 /// `SW_FD_SESSION`, `SW_FD_STREAM_SERVER` and `SW_SSL_STATE_READY`.
-const FD_SESSION: c_int = 0;
-const FD_STREAM_SERVER: c_int = 1;
+const FD_SESSION: c_int = swoole_rs_corebase::constants::FdType::SW_FD_SESSION as c_int;
+const FD_STREAM_SERVER: c_int = swoole_rs_corebase::constants::FdType::SW_FD_STREAM_SERVER as c_int;
 use swoole_rs_corebase::tls::SslState::SW_SSL_STATE_READY as SSL_READY;
 
 /// `Socket::is_stream(type)`.

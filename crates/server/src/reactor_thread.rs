@@ -21,8 +21,8 @@ use swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE;
 
 /// `SW_LOG_TRACE`, `SW_FD_SESSION`, `SW_FD_DGRAM_SERVER`, `SW_EVENT_READ` and
 /// `SW_EVENT_WRITE`.
-const FD_SESSION: c_int = 0;
-const FD_DGRAM_SERVER: c_int = 2;
+const FD_SESSION: c_int = swoole_rs_corebase::constants::FdType::SW_FD_SESSION as c_int;
+const FD_DGRAM_SERVER: c_int = swoole_rs_corebase::constants::FdType::SW_FD_DGRAM_SERVER as c_int;
 
 /// The heartbeat thread's `ServerState::start_thread` key; reactor threads use their ids.
 pub(crate) const HEARTBEAT: u64 = u64::MAX;

@@ -43,7 +43,7 @@ const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAM
 /// `SW_SOCKET_CORK_MIN_SIZE`.
 const CORK_MIN_SIZE: usize = crate::constants::SW_SOCKET_CORK_MIN_SIZE as usize;
 /// `SW_FD_STREAM_SERVER`.
-const FD_STREAM_SERVER: c_int = 1;
+const FD_STREAM_SERVER: c_int = crate::constants::FdType::SW_FD_STREAM_SERVER as c_int;
 const VERIFY_FAILED: c_int = ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int;
 const BAD_PROTOCOL: c_int = ErrorCode::SW_ERROR_SSL_BAD_PROTOCOL as c_int;
 
