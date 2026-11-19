@@ -50,6 +50,7 @@ unsafe extern "C" {
     safe fn swoole_curl_stream_gone(value: &Owned) -> bool;
     // The stream's option goes back to its default: no file, and the method it started with.
     safe fn swoole_curl_stream_reset(handle: PhpHandle<'_>, option: c_int);
+    safe fn swoole_curl_reset_callback(handle: PhpHandle<'_>, option: c_int);
     // The write, header or read slot's method and file, by its callable option.
     safe fn swoole_curl_method(handle: PhpHandle<'_>, stream: c_int) -> c_int;
     safe fn swoole_curl_set_method(handle: PhpHandle<'_>, stream: c_int, method: c_int);
@@ -269,6 +270,39 @@ pub(super) fn verify(handle: PhpHandle<'_>, report: bool) {
         swoole_curl_stream_reset(handle, option);
         drop(stream);
     }
+}
+
+/// Restore the default stream methods and release the plain option callbacks.
+pub(super) fn reset_options(handle: PhpHandle<'_>) {
+    for option in [
+        CURLOPT_FILE,
+        CURLOPT_WRITEHEADER,
+        CURLOPT_INFILE,
+        CURLOPT_STDERR,
+    ] {
+        let stream = std::mem::take(swoole_curl_file_stream(handle, option));
+        if option != CURLOPT_STDERR {
+            swoole_curl_stream_reset(handle, option);
+        }
+        if option == CURLOPT_INFILE {
+            swoole_curl_set_method(handle, Stream::Read as c_int, DIRECT);
+        }
+        drop(stream);
+        if bailout::pending() {
+            return;
+        }
+    }
+    for callback in [
+        Plain::Progress,
+        Plain::Xferinfo,
+        Plain::Fnmatch,
+        Plain::Debug,
+        Plain::Prereq,
+        Plain::SshHostKey,
+    ] {
+        swoole_curl_reset_callback(handle, callback as c_int);
+    }
+    super::setopt::defaults(handle);
 }
 
 /// `php_curl_set_callable_handler`: the option's callable is released, then `value` kept as

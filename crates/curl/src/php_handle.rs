@@ -60,7 +60,6 @@ unsafe extern "C" {
     pub(super) safe fn swoole_curl_easy(handle: PhpHandle<'_>) -> Easy<'_>;
     safe fn swoole_curl_easy_upkeep(handle: PhpHandle<'_>) -> c_int;
     safe fn swoole_curl_take_private(handle: PhpHandle<'_>, previous: &mut swoole_rs_zend::Owned);
-    safe fn swoole_curl_reset_handlers(handle: PhpHandle<'_>);
     safe fn curl_easy_pause(easy: Easy<'_>, mask: c_int) -> c_int;
     safe fn swoole_curl_in_callback(handle: PhpHandle<'_>) -> bool;
     // libcurl returns an allocated pointer, with the binary length as a separate
@@ -211,8 +210,7 @@ fn reset(call: &Call<'_>) {
         swoole_curl_take_private(handle, &mut previous);
     }
     swoole_rs_zend::bailout::defer(swoole_rs_zend::contain_with(|| {
-        swoole_curl_reset_handlers(handle);
-        crate::setopt::defaults(handle);
+        super::callbacks::reset_options(handle);
     }));
     drop(previous);
 }
