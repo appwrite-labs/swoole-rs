@@ -287,11 +287,12 @@ fn corpus_type() {
     assert_eq!(cases, 128);
 }
 
-/// `gcd`: the pin subtracts, so pairs that would take over 100,000 steps are left out.
+/// `gcd`: Rust against the test's own `gcd` for every pair; the pin subtracts, so it is
+/// compared only on pairs that take it at most 100,000 steps.
 #[test]
 fn corpus_gcd() {
     let _guard = exclusive();
-    let mut cases = 0;
+    let (mut cases, mut pinned) = (0, 0);
     for (u, v) in PAIRS
         .into_iter()
         .chain([(2_147_483_648, 1_073_741_824), (196_605, 131_070)])
@@ -301,24 +302,25 @@ fn corpus_gcd() {
             steps += a / b;
             (a, b) = (b, a % b);
         }
+        let rust = observed(0, || (RUST.common_divisor)(u, v));
+        assert_eq!(u64::from(rust.0), gcd(u.into(), v.into()), "{u} {v}");
+        cases += 1;
         if steps > 100_000 {
             continue;
         }
-        let rust = observed(0, || (RUST.common_divisor)(u, v));
         let pin = observed(0, || (PINNED.common_divisor)(u, v));
         assert_eq!(rust, pin, "{u} {v}");
-        assert_eq!(u64::from(rust.0), gcd(u.into(), v.into()), "{u} {v}");
-        cases += 1;
+        pinned += 1;
     }
-    assert_eq!(cases, 9);
+    assert_eq!((cases, pinned), (11, 9));
 }
 
-/// `lcm`: the pin's remainder is an `int`, so a remainder above `INT_MAX` is left out;
-/// the `uint32_t` product wraps before the division.
+/// `lcm`: Rust against the wrapped `uint32_t` product over the test's own `gcd` for every
+/// pair; the pin's remainder is an `int`, so it is compared only below `INT_MAX`.
 #[test]
 fn corpus_lcm() {
     let _guard = exclusive();
-    let mut cases = 0;
+    let (mut cases, mut pinned) = (0, 0);
     for (u, v) in PAIRS.into_iter().chain([
         (65536, 65536),
         (65536, 131_072),
@@ -336,18 +338,19 @@ fn corpus_lcm() {
             }
             (a, b) = (b, remainder);
         }
-        if !valid {
-            continue;
-        }
         let rust = observed(0, || (RUST.common_multiple)(u, v));
-        let pin = observed(0, || (PINNED.common_multiple)(u, v));
-        assert_eq!(rust, pin, "{u} {v}");
         let product = (u64::from(u) * u64::from(v)) & 0xffff_ffff;
         let want = product / gcd(u.into(), v.into());
         assert_eq!(u64::from(rust.0), want, "{u} {v}");
         cases += 1;
+        if !valid {
+            continue;
+        }
+        let pin = observed(0, || (PINNED.common_multiple)(u, v));
+        assert_eq!(rust, pin, "{u} {v}");
+        pinned += 1;
     }
-    assert_eq!(cases, 15);
+    assert_eq!((cases, pinned), (15, 15));
 }
 
 /// `radix`: `swoole_dec2hex` in every base, with errno read before the digits are freed.
@@ -394,11 +397,13 @@ fn corpus_radix() {
     assert_eq!(cases, 348);
 }
 
-/// `decimal`: `swoole_itoa`, without `LONG_MIN`, whose negation overflows in the pin.
+/// `decimal`: `swoole_itoa` against `to_string` for every value, and against the pin for
+/// all but `LONG_MIN`, whose negation overflows in the pin.
 #[test]
 fn corpus_decimal() {
     let _guard = exclusive();
     let mut values = vec![
+        c_long::MIN,
         0,
         1,
         -1,
@@ -415,13 +420,15 @@ fn corpus_decimal() {
     }
     values.sort_unstable();
     values.dedup();
-    assert_eq!(values.len(), 115);
+    assert_eq!(values.len(), 116);
     for value in values {
         let rust = observed(0, || (RUST.itoa)(value));
-        assert_eq!(rust, observed(0, || (PINNED.itoa)(value)), "{value}");
         let want = value.to_string().into_bytes();
         let length = c_int::try_from(want.len()).unwrap();
         assert_eq!(rust.0, (length, want, 0), "{value}");
+        if value != c_long::MIN {
+            assert_eq!(rust, observed(0, || (PINNED.itoa)(value)), "{value}");
+        }
     }
 }
 

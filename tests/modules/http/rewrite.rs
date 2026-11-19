@@ -241,7 +241,9 @@ fn random_prefix_rules() {
 
 /// Random patterns from `std::regex`'s ECMAScript grammar, one rule each, over short URLs
 /// of the same bytes; every mismatch is listed. No atom starts with a digit, `=` or `!`,
-/// so none forms a backreference or lookahead, which the Rust dialect leaves out.
+/// so none forms a backreference or lookahead, which the Rust dialect can't run: what it
+/// does with them (adds the rule, which never matches, and `set()` warns) is pinned by
+/// crates/http's rewrite tests and `test_header_reentry.py`'s `set()` warning test (#5277).
 #[test]
 fn regex_sweep() {
     const ATOMS: &[&[u8]] = &[
