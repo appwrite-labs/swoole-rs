@@ -295,6 +295,34 @@ fn words_stay_mapped_after_the_pool_is_deleted() {
 }
 
 #[test]
+#[cfg(not(miri))] // The process-wide pool needs its own test process.
+fn pooled_words_balance_their_pins_across_pool_replacement() {
+    use std::sync::atomic::AtomicU32;
+
+    if crate::utilities::isolated_process::run_in_child(
+        "memory::members::tests::pooled_words_balance_their_pins_across_pool_replacement",
+    ) {
+        return;
+    }
+    assert!(crate::swr_v1_core_init());
+    pool::init();
+    let old = pool::PooledWord::<AtomicU32>::allocate().unwrap();
+    old.store(7, Ordering::SeqCst);
+    assert_eq!(pool::users(), 1);
+    pool::delete();
+    pool::init();
+    let fresh = pool::PooledWord::<AtomicU32>::allocate().unwrap();
+    assert_eq!(pool::users(), 2);
+    assert_eq!(old.load(Ordering::SeqCst), 7);
+    drop(old);
+    assert_eq!(pool::users(), 1);
+    assert_eq!(fresh.load(Ordering::SeqCst), 0);
+    drop(fresh);
+    assert_eq!(pool::users(), 0);
+    pool::delete();
+}
+
+#[test]
 fn global_memory_bump_allocates_zeroed_blocks_within_a_page() {
     crate::swr_v1_core_set_pagesize(4096);
     let pool = GlobalMemory::new(4096, false).unwrap();

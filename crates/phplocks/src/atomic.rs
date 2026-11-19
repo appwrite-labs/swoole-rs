@@ -2,7 +2,7 @@
 //! pool, so processes forked after construction share it.
 use crate::word::{self, Holder};
 use std::sync::atomic::{AtomicI64, AtomicU32};
-use swoole_rs_corebase::memory::members::pool;
+use swoole_rs_corebase::memory::members::pool::{PooledWord, Word};
 use swoole_rs_phpstubs::atomic;
 use swoole_rs_zend::{Call, Custom, CustomClass, Minit, method_table, sys::ZEND_ACC_PUBLIC};
 
@@ -13,12 +13,13 @@ static ATOMIC: CustomClass<Atomic> = CustomClass::new();
 static LONG: CustomClass<Long> = CustomClass::new();
 
 /// The shared 32-bit word allocated by the constructor.
-pub(crate) struct Atomic(Option<&'static AtomicU32>);
+pub(crate) struct Atomic(Option<PooledWord<AtomicU32>>);
 /// The shared 64-bit word allocated by the constructor.
-pub(crate) struct Long(Option<&'static AtomicI64>);
+pub(crate) struct Long(Option<PooledWord<AtomicI64>>);
 
 /// The pool's word, or Swoole's exception when it has none.
-fn alloc<W>(word: Option<&'static W>) -> Option<&'static W> {
+fn alloc<W: Word>() -> Option<PooledWord<W>> {
+    let word = PooledWord::allocate();
     if word.is_none() {
         swoole_rs_phpswoole::exception().throw(c"global memory allocation failure", MALLOC_FAIL);
     }
@@ -30,7 +31,7 @@ impl Custom for Atomic {
         &ATOMIC
     }
     fn new() -> Self {
-        Self(alloc(pool::words(1).and_then(|words| words.first())))
+        Self(alloc())
     }
 }
 
@@ -39,21 +40,21 @@ impl Custom for Long {
         &LONG
     }
     fn new() -> Self {
-        Self(alloc(pool::words(1).and_then(|words| words.first())))
+        Self(alloc())
     }
 }
 
 impl Holder for Atomic {
     type Word = AtomicU32;
     fn word(&self) -> Option<&AtomicU32> {
-        self.0
+        self.0.as_deref()
     }
 }
 
 impl Holder for Long {
     type Word = AtomicI64;
     fn word(&self) -> Option<&AtomicI64> {
-        self.0
+        self.0.as_deref()
     }
 }
 
