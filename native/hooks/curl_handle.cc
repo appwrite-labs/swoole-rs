@@ -148,6 +148,12 @@ extern "C" zval *swoole_curl_multi_find_easy(php_curlm *mh, CURL *easy) {
     return nullptr;
 }
 
+extern "C" void swoole_curl_multi_keep(php_curlm *mh, php_curl *ch) {
+    zval value;
+    ZVAL_OBJ_COPY(&value, &ch->std);
+    zend_llist_add_element(&mh->easyh, &value);
+}
+
 extern "C" void swoole_curl_multi_membership(php_curlm *mh, php_curl *ch, int error, bool add) {
     swoole_trace_log(SW_TRACE_CO_CURL, "multi=%p, cp=%p, handle=%p, error=%d",
                      mh->multi, ch->cp, swr_v1_curl_get_handle(ch->cp), error);
@@ -158,9 +164,7 @@ extern "C" void swoole_curl_multi_membership(php_curlm *mh, php_curl *ch, int er
     }
 #endif
     if (add) {
-        zval value;
-        ZVAL_OBJ_COPY(&value, &ch->std);
-        zend_llist_add_element(&mh->easyh, &value);
+        swoole_curl_multi_keep(mh, ch);
     } else {
         zval needle;
         ZVAL_OBJ(&needle, &ch->std);
@@ -894,12 +898,8 @@ struct callable_args {
     uint32_t argc;
 };
 
-/* Calls the option's callable, which swoole_curl_has_callable saw, into retval (undefined
- * when it throws): false when PHP could not call it. The call holds what it calls, so the
- * PHP code it runs may set the option again. */
-extern "C" bool swoole_curl_call(php_curl *ch, int option, struct callable_args args, zval *retval) {
 #if PHP_VERSION_ID >= 80400
-    zend_fcall_info_cache fcc = *callable_slot(ch, option);
+static bool call_cache(zend_fcall_info_cache fcc, callable_args args, zval *retval) {
     zend_object *object = fcc.object, *closure = fcc.closure;
     if (object) {
         GC_ADDREF(object);
@@ -915,6 +915,16 @@ extern "C" bool swoole_curl_call(php_curl *ch, int option, struct callable_args 
         OBJ_RELEASE(closure);
     }
     return true;
+}
+#endif
+
+/* Calls the option's callable, which swoole_curl_has_callable saw, into retval (undefined
+ * when it throws): false when PHP could not call it. The call holds what it calls, so the
+ * PHP code it runs may set the option again. */
+extern "C" bool swoole_curl_call(php_curl *ch, int option, struct callable_args args, zval *retval) {
+#if PHP_VERSION_ID >= 80400
+    zend_fcall_info_cache fcc = *callable_slot(ch, option);
+    return call_cache(fcc, args, retval);
 #else
     zval *name;
     zend_fcall_info_cache *cache;
@@ -931,6 +941,29 @@ extern "C" bool swoole_curl_call(php_curl *ch, int option, struct callable_args 
     zval_ptr_dtor(&fci.function_name);
     return called;
 #endif
+}
+
+extern "C" bool swoole_curl_call_push(php_curlm *mh, callable_args args, zval *retval) {
+#if PHP_VERSION_ID >= 80400
+    return call_cache(mh->handlers.server_push, args, retval);
+#else
+    zend_fcall_info fci;
+    zend_fcall_info_cache cache;
+    if (zend_fcall_info_init(&mh->handlers.server_push->func_name, 0, &fci, &cache, nullptr, nullptr) == FAILURE) {
+        return false;
+    }
+    Z_TRY_ADDREF(fci.function_name);
+    fci.params = args.argv;
+    fci.param_count = args.argc;
+    fci.retval = retval;
+    bool called = zend_call_function(&fci, &cache) == SUCCESS;
+    zval_ptr_dtor(&fci.function_name);
+    return called;
+#endif
+}
+
+extern "C" bool swoole_curl_has_clone_storage(php_curl *ch) {
+    return ch->clone != nullptr;
 }
 
 /* libcurl's callback for a callable option it has one for, with the handle as its data; with

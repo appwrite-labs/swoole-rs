@@ -382,18 +382,6 @@ void swoole_setup_easy_copy_handlers(php_curl *ch, php_curl *source) {
 }
 
 #if PHP_VERSION_ID >= 80300
-zend_long swoole_curl_get_long(zval *zv) {
-    if (EXPECTED(Z_TYPE_P(zv) == IS_LONG)) {
-        return Z_LVAL_P(zv);
-    } else {
-        zend_long ret = zval_get_long(zv);
-        zval_ptr_dtor(zv);
-        return ret;
-    }
-}
-#endif
-
-#if PHP_VERSION_ID >= 80300
 static void _php_curl_free_callback(php_curl_callback *callback) {
     if (callback) {
         zval_ptr_dtor(&callback->func_name);

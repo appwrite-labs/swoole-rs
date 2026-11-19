@@ -45,7 +45,6 @@ static inline php_curl *swoole_curl_get_handle(zval *zid, bool exclusive = true,
     php_curl *ch = Z_CURL_P(zid);
     return swr_v1_curl_check_handle(ch->cp, exclusive, required) ? ch : nullptr;
 }
-zval *swoole_curl_multi_find_easy(php_curlm *mh, CURL *easy);
 /* libcurl's callbacks, Rust's (crates/curl/src/callbacks.rs): each has the php_curl as its data. */
 size_t swoole_curl_on_write(char *data, size_t size, size_t nmemb, void *ctx);
 size_t swoole_curl_on_header(char *data, size_t size, size_t nmemb, void *ctx);
@@ -70,8 +69,6 @@ typedef struct swr_v1_curl_multi *swr_v1_curl_released;
 void swr_v1_curl_multi_free(swr_v1_curl_released multi);
 struct swr_v1_curl_handle *swr_v1_curl_get_handle(swr_v1_curl_easy cp);
 struct swr_v1_curl_handle *swr_v1_curl_create_handle(swr_v1_curl_easy cp);
-/* A pushed stream's handle for cp, in the multi of its parent's handle, when parent has one. */
-void swr_v1_curl_push_handle(swr_v1_curl_easy cp, swr_v1_curl_easy parent);
 /* The handle leaves the multi it is in, while that multi lives. */
 void swr_v1_curl_handle_leave_multi(struct swr_v1_curl_handle *handle);
 /* No transfer of cp runs, and nothing uses its handle afterwards. */

@@ -37,6 +37,7 @@ unsafe extern "C" {
         kind: u32,
     ) -> zend_result;
     safe fn swoole_curl_prepare_free(handle: PhpHandle<'_>) -> bool;
+    safe fn swoole_curl_has_clone_storage(handle: PhpHandle<'_>) -> bool;
     safe fn swoole_curl_release_clone(handle: PhpHandle<'_>) -> bool;
     safe fn swoole_curl_free_lists(handle: PhpHandle<'_>);
     safe fn swoole_curl_free_callbacks(handle: PhpHandle<'_>);
@@ -77,7 +78,7 @@ unsafe extern "C" {
     safe fn swoole_curl_new_clone(slot: &mut swoole_rs_zend::Owned) -> PhpHandle<'_>;
     safe fn zend_clear_exception();
     safe fn swoole_curl_init_handle(handle: PhpHandle<'_>);
-    safe fn swoole_curl_set_easy(handle: PhpHandle<'_>, easy: Easy<'_>);
+    pub(super) safe fn swoole_curl_set_easy(handle: PhpHandle<'_>, easy: Easy<'_>);
     safe fn curl_easy_duphandle(source: Easy<'_>) -> *mut swoole_rs_curl_sys::CURL;
     safe fn swoole_setup_easy_copy_handlers(clone: PhpHandle<'_>, source: PhpHandle<'_>);
     safe fn swoole_curl_error_number(handle: PhpHandle<'_>) -> c_int;
@@ -303,6 +304,19 @@ fn error(call: &Call<'_>) {
     call.set_bytes(message.to_bytes());
 }
 
+pub(super) fn pushed_object(
+    easy: Easy<'_>,
+    parent: PhpHandle<'_>,
+) -> Option<swoole_rs_zend::Owned> {
+    let owner = swoole_curl_easy(parent).handle()?;
+    let mut object = swoole_rs_zend::Owned::default();
+    let child = swoole_curl_init_handle_into_zval(&mut object);
+    swoole_curl_set_easy(child, easy);
+    swoole_setup_easy_copy_handlers(child, parent);
+    crate::Handle::create(easy, owner.multi_ref());
+    Some(object)
+}
+
 fn clone_object(source: PhpHandle<'_>) -> swoole_rs_zend::Owned {
     let mut object = swoole_rs_zend::Owned::default();
     let clone = swoole_curl_new_clone(&mut object);
@@ -429,13 +443,17 @@ pub extern "C" fn swoole_curl_free_obj(object: ObjectRef<'_>) {
                 {
                     multi.remove_handle(owner);
                 }
+            }
+            // A denied push returns its easy handle to libcurl but keeps its PHP storage
+            // until the last reference to the PHP object is released.
+            if swoole_curl_has_clone_storage(handle) {
                 if swoole_curl_release_clone(handle) {
                     swoole_curl_free_lists(handle);
                 }
-                // Each duplicate has its own easy and coroutine handle. Only
-                // the option lists are shared by the clone family.
-                crate::swr_v1_curl_destroy_handle(crate::Retired(easy));
-                curl_easy_cleanup(crate::Retired(easy));
+                if !easy.0.is_null() {
+                    crate::swr_v1_curl_destroy_handle(crate::Retired(easy));
+                    curl_easy_cleanup(crate::Retired(easy));
+                }
                 swoole_curl_free_callbacks(handle);
                 swoole_curl_release_values(handle);
             }

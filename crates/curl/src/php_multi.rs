@@ -15,7 +15,30 @@ use swoole_rs_zend::{Call, ClassEntry, ObjectRef, bailout, contain_with};
 #[derive(Clone, Copy)]
 struct PhpMulti<'a>(NonNull<std::ffi::c_void>, PhantomData<ObjectRef<'a>>);
 
+/// Borrowed libcurl push headers, valid during the offer.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct PushHeaders<'a>(NonNull<std::ffi::c_void>, PhantomData<&'a std::ffi::CStr>);
+
+/// libcurl's `CURL_PUSH_OK` and `CURL_PUSH_DENY` decisions.
+#[repr(i32)]
+#[derive(Clone, Copy)]
+enum Push {
+    Accept = 0,
+    Deny = 1,
+}
+
 unsafe extern "C" {
+    safe fn curl_pushheader_bynum(
+        headers: PushHeaders<'_>,
+        index: usize,
+    ) -> Option<swoole_rs_corebase::sys::Text<'_>>;
+    safe fn swoole_curl_call_push(
+        handle: PhpMulti<'_>,
+        args: swoole_rs_zend::Zvals<'_>,
+        result: &mut swoole_rs_zend::Owned,
+    ) -> bool;
+    safe fn swoole_curl_multi_keep(handle: PhpMulti<'_>, child: crate::php_handle::PhpHandle<'_>);
     safe static swoole_curl_multi_size: usize;
     safe static swoole_curl_multi_offset: usize;
     safe fn swoole_curl_multi_handlers(ce: ClassEntry<'_>) -> &'static zend_object_handlers;
@@ -393,6 +416,70 @@ fn errno(call: &Call<'_>) {
     {
         call.set_long(i64::from(swoole_curl_multi_error(handle)));
     }
+}
+
+swoole_rs_zend::exports! {
+/// Deliver libcurl's offered transfer to PHP. A denied easy handle remains libcurl's.
+#[unsafe(no_mangle)]
+extern "C" fn swoole_curl_multi_on_push(
+    parent: NonNull<swoole_rs_curl_sys::CURL>,
+    easy: crate::Easy<'_>,
+    count: usize,
+    headers: PushHeaders<'_>,
+    multi: PhpMulti<'_>,
+) -> Push {
+    let Some(parent) = swoole_curl_multi_find_easy(multi, parent).map(swoole_rs_zend::Value::copy)
+    else {
+        return Push::Deny;
+    };
+    let Some(source) = parent
+        .object_ref()
+        .and_then(|obj| swoole_curl_object_handle(obj))
+    else {
+        return Push::Deny;
+    };
+    let mut lines = swoole_rs_zend::OwnedArray::default();
+    for i in 0..count {
+        let Some(line) = curl_pushheader_bynum(headers, i) else {
+            return Push::Deny;
+        };
+        lines.push_bytes(line.get().to_bytes());
+    }
+    let Some(child) = crate::php_handle::pushed_object(easy, source) else {
+        return Push::Deny;
+    };
+    let args = [parent, child, lines.into_owned()];
+    let Some(handle) = args[1]
+        .object_ref()
+        .and_then(|obj| swoole_curl_object_handle(obj))
+    else {
+        return Push::Deny;
+    };
+    let mut result = swoole_rs_zend::Owned::default();
+    let mut called = false;
+    bailout::defer(contain_with(|| {
+        called = swoole_curl_call_push(multi, swoole_rs_zend::Zvals::owned(&args), &mut result);
+    }));
+    if !called && !bailout::pending() {
+        crate::setopt::warn(
+            swoole_rs_zend::E_WARNING,
+            c"Cannot call the CURLMOPT_PUSHFUNCTION",
+        );
+    }
+    if called
+        && !bailout::pending()
+        && result.kind() != swoole_rs_zend::sys::IS_UNDEF
+        && result
+            .applied_long()
+            .is_some_and(|code| code != Push::Deny as i64)
+    {
+        swoole_curl_multi_keep(multi, handle);
+        return Push::Accept;
+    }
+    crate::swr_v1_curl_destroy_handle(crate::Retired(easy));
+    crate::php_handle::swoole_curl_set_easy(handle, crate::Easy(std::ptr::null_mut(), PhantomData));
+    Push::Deny
+}
 }
 
 swoole_rs_zend::exports! {
