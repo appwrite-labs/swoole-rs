@@ -38,8 +38,7 @@ static SERVER: CustomClass<Data> = CustomClass::new();
 /// `SW_HAVE_COMPRESSION`.
 static COMPRESSION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// `struct HttpServerObject { HttpServer *server; zend_object std; }`: the
-/// server `__construct` makes, dropped with the object.
+/// The server created by `__construct` and dropped with the PHP object.
 struct Data(OnceCell<HttpServer>);
 
 impl Custom for Data {
