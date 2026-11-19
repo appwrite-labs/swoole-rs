@@ -4,13 +4,12 @@
 //! family's hook is C (`php_swoole_private.h` declares them `extern "C"`) and
 //! runs inside `zend_try`: a bailout stops the phase there, as it did
 //! upstream, and is raised once this frame is the only Rust one left.
-use crate::{Switch, optional};
+use crate::{Switch, families, optional};
 use std::{
     cell::Cell,
     ffi::{CStr, c_int, c_long, c_void},
     mem::offset_of,
     ptr,
-    sync::OnceLock,
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::Text;
@@ -329,19 +328,6 @@ pub struct Http {
     /// `Swoole\Http\Server` and `Swoole\WebSocket\Server`, registered at MINIT.
     pub server_class: fn() -> &'static swoole_rs_zend::Class,
     pub websocket_class: fn() -> &'static swoole_rs_zend::Class,
-}
-
-static FAMILIES: OnceLock<&'static Families> = OnceLock::new();
-
-/// Keep `families` for the phases; the first registration stands.
-pub(crate) fn register(families: &'static Families) {
-    FAMILIES.get_or_init(|| families);
-}
-
-/// The registered families: always some once Zend holds the module entry.
-#[must_use]
-pub fn families() -> Option<&'static Families> {
-    FAMILIES.get().copied()
 }
 
 // Phase bodies, private so only the phase lists below hold them: each runs at

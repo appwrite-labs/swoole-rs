@@ -29,4 +29,4 @@ swoole-rs-bus = { path = "../bus" }
 
 [dev-dependencies]
 swoole-rs-oracle = { path = "../oracle" }
-swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-corebase = { path = "../corebase", features = ["test-records"] }

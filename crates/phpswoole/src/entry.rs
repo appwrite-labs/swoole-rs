@@ -6,7 +6,10 @@ use std::{
     ffi::{CStr, c_int},
     io::Write,
     ptr,
-    sync::atomic::{AtomicPtr, Ordering},
+    sync::{
+        OnceLock,
+        atomic::{AtomicPtr, Ordering},
+    },
 };
 use swoole_rs_corebase::{Switch as C, built_with};
 use swoole_rs_zend::{
@@ -26,7 +29,21 @@ const CONFLICTS: u8 = 2;
 /// `SW_ERROR_CO_HAS_BEEN_BOUND`.
 const CO_HAS_BEEN_BOUND: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CO_HAS_BEEN_BOUND as c_int;
 
-static ENTRY: AtomicPtr<zend_module_entry> = AtomicPtr::new(ptr::null_mut());
+/// Zend retains the entry and invokes its callbacks without a Rust context.
+/// The extension links the feature-specific family crates, which depend on this
+/// crate for their lifecycle services. Publish their hooks with the entry Zend uses.
+struct Module {
+    entry: AtomicPtr<zend_module_entry>,
+    families: &'static module::Families,
+}
+
+static MODULE: OnceLock<Module> = OnceLock::new();
+
+/// The family hooks, available from the first completed `get_module()` onward.
+#[must_use]
+pub fn families() -> Option<&'static module::Families> {
+    MODULE.get().map(|module| module.families)
+}
 
 fn dep(name: &'static CStr, kind: u8) -> zend_module_dep {
     zend_module_dep {
@@ -72,11 +89,16 @@ fn deps() -> Vec<zend_module_dep> {
 
 /// `get_module()`: the module entry, built once, whose phases run `families`.
 pub fn module_entry(families: &'static module::Families) -> *mut zend_module_entry {
-    module::register(families);
-    let current = ENTRY.load(Ordering::Acquire);
-    if !current.is_null() {
-        return current;
-    }
+    MODULE
+        .get_or_init(|| Module {
+            entry: AtomicPtr::new(build_entry()),
+            families,
+        })
+        .entry
+        .load(Ordering::Relaxed)
+}
+
+fn build_entry() -> *mut zend_module_entry {
     let mut entry: zend_module_entry = swoole_rs_zend::zeroed();
     swr_zend_module_template(&mut entry);
     entry.deps = Box::leak(deps().into_boxed_slice()).as_ptr();
@@ -91,9 +113,7 @@ pub fn module_entry(families: &'static module::Families) -> *mut zend_module_ent
     }
     .install(&mut entry);
     entry.version = constants::VERSION.as_ptr();
-    let entry = Box::into_raw(Box::new(entry));
-    ENTRY.store(entry, Ordering::Release);
-    entry
+    Box::into_raw(Box::new(entry))
 }
 
 swoole_rs_zend::exports! {
@@ -113,7 +133,7 @@ pub extern "C" fn swr_v1_phpswoole_fatal_exit(error: Fatal<'_>) {
         )
         .unwrap_or_default();
         // The coroutine's backtrace, printed; a bailout is trapped.
-        if let Some(families) = module::families()
+        if let Some(families) = families()
             && let Err(bailed) = (families.print_backtrace)(error.php(), cid)
         {
             bailout::defer(Err(bailed));

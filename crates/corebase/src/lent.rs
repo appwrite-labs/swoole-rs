@@ -321,6 +321,7 @@ unsafe extern "C" {
         length: Count<'id, libc::socklen_t>,
     ) -> c_int;
     /// Writes at most `max` bytes of `out`; reads `format` up to its NUL and `tm`.
+    #[cfg(not(miri))]
     pub(crate) safe fn strftime<'id>(
         out: Out<'id, c_char>,
         max: Count<'id>,
