@@ -356,7 +356,7 @@ impl Default for ServerConfig {
             scheduler_warning: AtomicBool::new(false),
             max_request: Setting::new(0),
             max_request_grace: Setting::new(0),
-            max_wait_time: Setting::new(3),
+            max_wait_time: Setting::new(swoole_rs_corebase::constants::SW_WORKER_MAX_WAIT_TIME),
             worker_max_concurrency: Setting::new(u32::MAX),
             daemonize: Setting::new(false),
             have_dgram_sock: Setting::new(false),
