@@ -7,7 +7,8 @@ shift 2
 for attempt in 1 2 3 4 5; do
     rm -rf "$directory"
     gh run download "$run" "$@" -D "$directory" && exit 0
-    echo "::warning::downloading run $run's artifacts failed (attempt $attempt of 5)"
-    [ "$attempt" = 5 ] || sleep "${DOWNLOAD_BACKOFF:-$((attempt * 20))}"
+    [ "$attempt" != 5 ] || break
+    echo "::warning::Retrying artifact download for run $run (attempt $((attempt + 1)) of 5)"
+    sleep "${DOWNLOAD_BACKOFF:-$((attempt * 20))}"
 done
 exit 1

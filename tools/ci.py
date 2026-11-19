@@ -58,6 +58,9 @@ import tempfile
 import time
 import urllib.parse
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tools.annotations import annotate
+
 EXIT = {'passed': 0, 'failed': 1, 'none': 2, 'running': 2, 'cancelled': 3, 'conflicts': 4}
 GATE_JOB = 'phpt / gate'
 # gate.py's annotation title for each regressed test, whose message starts with the test.
@@ -90,7 +93,7 @@ def gh(*args):
             wait = int(reset) - time.time() + 1 if reset.isdigit() else None
             at = f'{datetime.fromtimestamp(int(reset)):%H:%M:%S}' if wait is not None else 'an unknown time'
             if wait is not None and time.monotonic() + wait <= RETRY_DEADLINE:
-                say(f'gh {args[0]}: API rate limit exceeded; waiting until {at}')
+                retry(args, f'gh {args[0]}: API rate limit exceeded; waiting until {at}')
                 time.sleep(max(wait, 0))
                 continue
             raise subprocess.CalledProcessError(result.returncode, ['gh', *args], result.stdout,
@@ -100,9 +103,15 @@ def gh(*args):
                      and any(text.lower() in result.stderr.lower() for text in TRANSIENT))
         if not transient or time.monotonic() + delay > RETRY_DEADLINE:
             raise subprocess.CalledProcessError(result.returncode, ['gh', *args], result.stdout, result.stderr)
-        say(f"gh {args[0]} {args[1] if len(args) > 1 else ''}: {result.stderr.strip()[:80]}; retrying in {delay:g}s")
+        retry(args, f"gh {args[0]} {args[1] if len(args) > 1 else ''}: {result.stderr.strip()[:80]}; retrying in {delay:g}s")
         time.sleep(delay)
         delay = min(delay * 2, RETRY_CAP)
+
+
+def retry(args, message):
+    say(message)
+    operation = 'api graphql' if 'graphql' in args else ' '.join(args[:2])
+    annotate('warning', 'GitHub CLI retry', f'Retrying gh {operation}')
 
 
 def say(message):

@@ -450,7 +450,9 @@ class Ci(unittest.TestCase):
             self.assertEqual((code, self.out), (2, ''))
 
     def test_transient_gh_failures_are_retried(self):
-        code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, flaky={'api -i graphql': 3})
+        with unittest.mock.patch.dict(os.environ, GITHUB_ACTIONS='true'):
+            code, result, stderr = self.ci('wait', runs={'c' * 40: ['success']}, flaky={'api -i graphql': 3})
+        self.assertEqual(stderr.count('::warning title=GitHub CLI retry::Retrying gh api graphql'), 3)
         self.assertEqual((code, result['state']), (0, 'passed'))
         self.assertEqual(stderr.count('HTTP 502: Bad Gateway; retrying'), 3)
 

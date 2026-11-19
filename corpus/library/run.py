@@ -32,6 +32,9 @@ import xml.etree.ElementTree as ET
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.annotations import annotate
+
 HEADER = ROOT / 'target/upstream/src/ext-src/php_swoole_library.h'
 SOURCE = ROOT / 'target/library/src'
 REPOSITORY = 'https://github.com/swoole/library.git'
@@ -240,7 +243,9 @@ def start_services(evidence, attempts=120, interval=5):
                     'ORA-27302: failure occurred at: sxecheck2')):
                 keep_evidence(evidence / 'oracle-first-start')
                 recovered = True
-                print('Recreating Oracle once after its first-start process-scan failure')
+                message = 'Recreating Oracle once after its first-start process-scan failure'
+                print(message)
+                annotate('warning', 'Oracle startup retry', message)
                 if compose('up', '-d', '--no-deps', '--force-recreate',
                            '--renew-anon-volumes', 'oracle').returncode == 0:
                     continue
