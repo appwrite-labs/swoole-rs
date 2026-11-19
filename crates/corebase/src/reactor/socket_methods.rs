@@ -207,7 +207,7 @@ pub fn record_send(
             data.send(fd, flags)
         }
     };
-    counted(socket, dont_restart, write, now)
+    count_write(socket, dont_restart, write, now)
 }
 
 /// [`record_send`]'s retries and counts around any `write` to the record's fd.
@@ -217,13 +217,13 @@ pub fn record_write(
     now: SteadyMs,
 ) -> Option<usize> {
     let (fd, _, dont_restart, _) = io_of(socket);
-    counted(socket, dont_restart, || write(fd), now)
+    count_write(socket, dont_restart, || write(fd), now)
 }
 
 /// `write`, retried on EINTR unless `dont_restart`, counted into `total_send_bytes`
 /// and, with a send timer, `last_sent_time`.
 #[inline(always)]
-fn counted(
+pub fn count_write(
     socket: Socket<'_>,
     dont_restart: bool,
     write: impl Fn() -> Option<usize>,
