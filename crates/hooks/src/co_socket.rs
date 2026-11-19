@@ -484,7 +484,7 @@ impl Co {
     /// Inside a `with_buffer` over the same buffer.
     #[track_caller]
     #[must_use]
-    pub(crate) fn take_buffer(self, write: bool) -> Option<Box<StringBuffer>> {
+    pub fn take_buffer(self, write: bool) -> Option<Box<StringBuffer>> {
         self.record().take_buffer(write)
     }
 
@@ -505,8 +505,7 @@ impl Co {
         }
     }
 
-    /// [`Co::take_buffer`] of the write buffer. The read buffer is not given up
-    /// outside this crate: [`Co::own_read_buffer`] hands it back.
+    /// [`Co::take_buffer`] of the write buffer.
     /// # Panics
     /// Inside a `with_buffer` over the write buffer.
     #[track_caller]

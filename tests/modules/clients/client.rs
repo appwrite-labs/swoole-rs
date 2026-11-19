@@ -11,10 +11,10 @@
 //! Rust closure through `corebase::timer`'s `add_fn`.
 
 use super::socket::{
-    EADDRNOTAVAIL, ECONNREFUSED, IoVec, SHUT_RD, SHUT_RDWR, SHUT_WR, SIGTERM, SW_SOCK_TCP,
-    SW_SOCK_TCP6, SW_SOCK_UDP, SW_SOCK_UDP6, SW_SOCK_UNIX_DGRAM, TEST_HOST, TEST_HTTP_EXPECT,
-    TEST_HTTPS_EXPECT, TEST_PORT, TEST_REQUEST_BAIDU, TLS_HOST_NAME, contains, get_random_port,
-    http_get_request, is_github_ci, string_set, tls_owner_new,
+    EADDRNOTAVAIL, ECONNREFUSED, SHUT_RD, SHUT_RDWR, SHUT_WR, SIGTERM, SW_SOCK_TCP, SW_SOCK_TCP6,
+    SW_SOCK_UDP, SW_SOCK_UDP6, SW_SOCK_UNIX_DGRAM, TEST_HOST, TEST_HTTP_EXPECT, TEST_HTTPS_EXPECT,
+    TEST_PORT, TEST_REQUEST_BAIDU, TLS_HOST_NAME, contains, get_random_port, http_get_request,
+    is_github_ci, string_set, tls_owner_new,
 };
 use super::{
     _exit, AF_INET, EINVAL, ENOENT, ETIMEDOUT, SW_ERR, TEST_HTTP_DOMAIN, TEST_STR, c_str, errno,
@@ -22,6 +22,7 @@ use super::{
 };
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, CString, c_int, c_long, c_void};
+use std::io::IoSlice;
 use std::io::{Read, Write};
 use swoole_rs_clients::client::{
     self as native, ClientEvent, Flag, Handle, Listener, Notification, Owner,
@@ -30,6 +31,7 @@ use swoole_rs_corebase::buffer::string::OwnedString;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_ffi::event_api::swoole_event_wait;
 use swoole_rs_ffi::swoole_event_init;
+use swoole_rs_hooks::vector::{ReadVec, Vectors};
 
 const GREETER: &[u8] = b"Hello Swoole\0";
 const GREETER_SIZE: usize = GREETER.len();
@@ -1335,18 +1337,9 @@ fn cpp_string(size: usize) -> OwnedString {
     string
 }
 
-/// `ssl_readv` or `ssl_writev` (when `write`) on `sock` over `IOVector(iov, count)`,
-/// destroyed after: crates/hooks' vector, which is both.
-fn ssl_vector(sock: *mut c_void, iov: &[IoVec], write: bool) -> isize {
-    use swoole_rs_hooks::vector::{IoVector, Vectored, Vectors};
-    let (at, count) = (iov.as_ptr(), iov.len());
-    // SAFETY: `IoVec` is `struct iovec` and so an `IoSlice`, and `iov` a live array of
-    // them over buffers nothing else touches meanwhile.
-    let vectors = if write {
-        Vectors::Write(unsafe { std::slice::from_raw_parts(at.cast(), count) })
-    } else {
-        Vectors::Read(unsafe { std::slice::from_raw_parts_mut(at.cast_mut().cast(), count) })
-    };
+/// Transfer a read or write vector over the connected TLS socket.
+fn ssl_vector(sock: *mut c_void, vectors: Vectors<'_, '_>) -> isize {
+    use swoole_rs_hooks::vector::{IoVector, Vectored};
     // SAFETY: the connected socket.
     let sock = unsafe { swoole_rs_corebase::reactor::Socket::from_ptr(sock.cast()) }.unwrap();
     let vector = IoVector::new(vectors);
@@ -1394,37 +1387,21 @@ fn ssl() {
     assert!(!ls.is_empty());
     assert_eq!(client.ssl_verify(false), SW_OK);
 
-    let mut req = http_get_request(TEST_HTTP_DOMAIN, "/");
-
-    let offset1 = TEST_WRITEV_OFFSET;
-    let (head, tail) = req.split_at_mut(offset1);
-    let wr_iov = [
-        IoVec {
-            base: head.as_mut_ptr().cast(),
-            len: head.len(),
-        },
-        IoVec {
-            base: tail.as_mut_ptr().cast(),
-            len: tail.len(),
-        },
-    ];
-    let written = ssl_vector(sock, &wr_iov, true);
+    let req = http_get_request(TEST_HTTP_DOMAIN, "/");
+    let (head, tail) = req.split_at(TEST_WRITEV_OFFSET);
+    let written = ssl_vector(
+        sock,
+        Vectors::Write(&[IoSlice::new(head), IoSlice::new(tail)]),
+    );
     assert_eq!(written, req.len() as isize);
 
     let mut buf = vec![0_u8; 1024 * 1024];
     let offset2 = TEST_READV_OFFSET;
     let (head, tail) = buf.split_at_mut(offset2);
-    let rd_iov = [
-        IoVec {
-            base: head.as_mut_ptr().cast(),
-            len: head.len(),
-        },
-        IoVec {
-            base: tail.as_mut_ptr().cast(),
-            len: tail.len(),
-        },
-    ];
-    let rv = ssl_vector(sock, &rd_iov, false);
+    let rv = ssl_vector(
+        sock,
+        Vectors::Read(&mut [ReadVec::new(head), ReadVec::new(tail)]),
+    );
     assert!(rv > 1024);
 
     assert!(contains(&buf[..rv as usize], TEST_HTTPS_EXPECT));
