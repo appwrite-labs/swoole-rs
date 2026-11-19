@@ -633,6 +633,9 @@ impl<'a> Ssl<'a> {
     }
 }
 
+/// OpenSSL's source/sink BIO type bit, shared by memory and datagram BIOs.
+pub(super) const BIO_TYPE_SOURCE_SINK: c_int = 0x0400;
+
 /// A live BIO for `'a`, borrowed from the SSL or [`OwnedBio`] that owns it: an SSL's
 /// lives until the SSL is freed or the BIO replaced, which only unsafe calls do.
 #[repr(transparent)]
@@ -654,8 +657,7 @@ impl Bio<'_> {
     /// Whether it is a memory BIO (`BIO_TYPE_MEM`), as [`OwnedBio::memory`] makes.
     #[must_use]
     pub fn is_memory(self) -> bool {
-        /// OpenSSL's `BIO_TYPE_MEM`: `BIO_TYPE_SOURCE_SINK` (0x0400) with index 1.
-        const BIO_TYPE_MEM: c_int = 0x0401;
+        const BIO_TYPE_MEM: c_int = BIO_TYPE_SOURCE_SINK | 1;
         BIO_method_type(self) == BIO_TYPE_MEM
     }
 
