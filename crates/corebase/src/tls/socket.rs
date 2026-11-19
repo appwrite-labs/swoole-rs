@@ -6,9 +6,9 @@ use crate::constants::ReturnCode;
 use crate::lent::{Spare, lend_spare};
 use crate::log;
 use crate::sys::ReadSlot;
-use crate::tls::SslState;
 use crate::tls::handle::{Ssl, SslFailure};
 use crate::tls::handle::{clear_errors, peek_error, pop_error, reason_string};
+use crate::tls::{SslCreateFlag, SslState};
 use openssl_sys::{
     SSL_ERROR_SSL, SSL_ERROR_SYSCALL, SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE,
     SSL_ERROR_ZERO_RETURN, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER, SSL_RECEIVED_SHUTDOWN,
@@ -19,8 +19,8 @@ use std::os::raw::{c_int, c_long, c_ulong};
 use swoole_rs_error::ErrorCode;
 
 /// `SW_SSL_SERVER` and `SW_SSL_CLIENT`.
-const SERVER: c_int = 1;
-const CLIENT: c_int = 2;
+const SERVER: c_int = SslCreateFlag::SW_SSL_SERVER as c_int;
+const CLIENT: c_int = SslCreateFlag::SW_SSL_CLIENT as c_int;
 
 const BAD_CLIENT: c_int = ErrorCode::SW_ERROR_SSL_BAD_CLIENT as c_int;
 const RESET: c_int = ErrorCode::SW_ERROR_SSL_RESET as c_int;

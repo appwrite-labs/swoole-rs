@@ -106,8 +106,7 @@ pub fn ssl_sendfile(
     send: impl FnOnce(&[u8]) -> Option<usize>,
     kernel_nobufs: &mut bool,
 ) -> SslSendfileResult {
-    const CHUNK: usize = 65536;
-    let mut buffer = vec![0_u8; size.min(CHUNK)];
+    let mut buffer = vec![0_u8; size.min(crate::constants::SW_BUFFER_SIZE_BIG as usize)];
     let at = *offset;
     let Some(n @ 1..) = crate::sys::pread(file_fd, &mut buffer, at) else {
         return SslSendfileResult {
