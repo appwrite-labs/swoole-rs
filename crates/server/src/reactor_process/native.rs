@@ -9,13 +9,12 @@ use swoole_rs_corebase::reactor::ErrorHandler::ConnectionDefault;
 use swoole_rs_corebase::reactor::{Event, Running};
 
 use crate::callbacks::{CallbackError, CallbackResult, TaskSlot};
+use crate::factory::CLOSE_ACTIVELY;
 use crate::objects::Bus;
 use crate::reactor_handle::Reactor;
 use crate::view;
 
-/// `SW_FD_PIPE`, `Server::CLOSE_ACTIVELY`.
 const FD_PIPE: c_int = swoole_rs_corebase::constants::FdType::SW_FD_PIPE as c_int;
-const CLOSE_ACTIVELY: c_int = 1 << 2;
 
 /// The event worker pool over the server's workers.
 pub(crate) fn create_pool(serv: view::Server<'_>) -> bool {

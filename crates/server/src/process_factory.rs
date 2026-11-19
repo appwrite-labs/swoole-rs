@@ -12,6 +12,7 @@ use swoole_rs_corebase::{DataHead, log};
 use crate::base_factory::{SendData, low16};
 use crate::callbacks::{CallbackKind, EventSlot};
 use crate::dispatch::schedule_worker;
+use crate::factory::{CLOSE_ACTIVELY, CLOSE_RESET};
 use crate::hybrid::hybrid;
 use crate::records::Lookup;
 use crate::view;
@@ -35,9 +36,6 @@ pub(crate) enum Pipe {
 /// `Server::DISPATCH_RESULT_*`.
 const DISPATCH_DISCARD_PACKET: c_int = -1;
 const DISPATCH_CLOSE_CONNECTION: c_int = -2;
-/// `Server::CLOSE_RESET`, `Server::CLOSE_ACTIVELY`.
-const CLOSE_RESET: c_int = 1 << 1;
-const CLOSE_ACTIVELY: c_int = 1 << 2;
 /// `SW_ERROR_*`.
 const SESSION_CLOSING: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSING as c_int;
 const SESSION_CLOSED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSED as c_int;

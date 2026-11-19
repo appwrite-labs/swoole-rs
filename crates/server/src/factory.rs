@@ -14,6 +14,10 @@ use swoole_rs_corebase::DataHead;
 
 use crate::state::ServerState;
 
+/// Flags passed to the server factory's close operation (`Server::CloseFlag`).
+pub(crate) const CLOSE_RESET: c_int = 1 << 1;
+pub(crate) const CLOSE_ACTIVELY: c_int = 1 << 2;
+
 /// [`crate::hybrid::Step`] over `serv`, in the master.
 fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> bool {
     use crate::hybrid::Step;
