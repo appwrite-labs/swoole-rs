@@ -34,6 +34,8 @@ jobs:
           tool: cbindgen@0.29.4,cargo-deny@0.18.9
       - name: Check licence headers
         run: tools/headers.sh --check
+      - name: Check libcurl and libssh2 constants
+        run: python3 tools/check_hook_constants.py
       # Each hand-written extern "C" fn's arity and argument widths, against PHP's,
       # zend-sys's, OpenSSL's and glibc's headers (installed above).
       - name: Check extern declarations
