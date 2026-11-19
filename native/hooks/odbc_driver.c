@@ -34,17 +34,17 @@
 
 #if PHP_VERSION_ID >= 80500
 static const char driver_file[] = "thirdparty/php85/pdo_odbc/odbc_driver.c";
-static const int doer_lines[] = {229, 244, 250};
-static const int begin_line = 279;
-static const int commit_lines[] = {294, 305};
-static const int rollback_lines[] = {320, 330};
-static const int setup_lines[] = {484, 491, 499, 507, 514, 522};
-static const int connect_line = 610;
-static const int prepare_lines[] = {176, 186, 203};
+static const int doer_lines[] = {230, 245, 251};
+static const int begin_line = 280;
+static const int commit_lines[] = {295, 306};
+static const int rollback_lines[] = {321, 331};
+static const int setup_lines[] = {485, 492, 500, 508, 515, 523};
+static const int connect_line = 611;
+static const int prepare_lines[] = {177, 187, 204};
 /* The line the original's multiline macro call reports, on both GCC and Clang. */
 static int attribute_line(void) {
 #define SWR_ODBC_LINE() __LINE__
-#line 367
+#line 368
     return SWR_ODBC_LINE(
 
     );
@@ -52,51 +52,51 @@ static int attribute_line(void) {
 }
 #elif PHP_VERSION_ID >= 80400
 static const char driver_file[] = "thirdparty/php84/pdo_odbc/odbc_driver.c";
-static const int doer_lines[] = {229, 244, 250};
-static const int begin_line = 279;
-static const int commit_lines[] = {293, 304};
-static const int rollback_lines[] = {318, 328};
-static const int setup_lines[] = {476, 483, 491, 499, 508, 516};
-static const int connect_line = 619;
-static const int prepare_lines[] = {177, 187, 204};
+static const int doer_lines[] = {230, 245, 251};
+static const int begin_line = 280;
+static const int commit_lines[] = {294, 305};
+static const int rollback_lines[] = {319, 329};
+static const int setup_lines[] = {477, 484, 492, 500, 509, 517};
+static const int connect_line = 620;
+static const int prepare_lines[] = {178, 188, 205};
 /* The line the original's multiline macro call reports, on both GCC and Clang. */
 static int attribute_line(void) {
 #define SWR_ODBC_LINE() __LINE__
-#line 364
+#line 365
     return SWR_ODBC_LINE(
     );
 #undef SWR_ODBC_LINE
 }
 #elif PHP_VERSION_ID >= 80300
 static const char driver_file[] = "thirdparty/php83/pdo_odbc/odbc_driver.c";
-static const int doer_lines[] = {231, 246, 252};
-static const int begin_line = 281;
-static const int commit_lines[] = {295, 306};
-static const int rollback_lines[] = {320, 330};
-static const int setup_lines[] = {477, 484, 492, 500, 509, 517};
-static const int connect_line = 586;
-static const int prepare_lines[] = {179, 189, 206};
+static const int doer_lines[] = {232, 247, 253};
+static const int begin_line = 282;
+static const int commit_lines[] = {296, 307};
+static const int rollback_lines[] = {321, 331};
+static const int setup_lines[] = {478, 485, 493, 501, 510, 518};
+static const int connect_line = 587;
+static const int prepare_lines[] = {180, 190, 207};
 /* The line the original's multiline macro call reports, on both GCC and Clang. */
 static int attribute_line(void) {
 #define SWR_ODBC_LINE() __LINE__
-#line 366
+#line 367
     return SWR_ODBC_LINE(
     );
 #undef SWR_ODBC_LINE
 }
 #else
 static const char driver_file[] = "thirdparty/php82/pdo_odbc/odbc_driver.c";
-static const int doer_lines[] = {231, 246, 252};
-static const int begin_line = 281;
-static const int commit_lines[] = {295, 306};
-static const int rollback_lines[] = {320, 330};
-static const int setup_lines[] = {477, 484, 492, 500, 509, 517};
-static const int connect_line = 586;
-static const int prepare_lines[] = {179, 189, 206};
+static const int doer_lines[] = {232, 247, 253};
+static const int begin_line = 282;
+static const int commit_lines[] = {296, 307};
+static const int rollback_lines[] = {321, 331};
+static const int setup_lines[] = {478, 485, 493, 501, 510, 518};
+static const int connect_line = 587;
+static const int prepare_lines[] = {180, 190, 207};
 /* The line the original's multiline macro call reports, on both GCC and Clang. */
 static int attribute_line(void) {
 #define SWR_ODBC_LINE() __LINE__
-#line 366
+#line 367
     return SWR_ODBC_LINE(
     );
 #undef SWR_ODBC_LINE
