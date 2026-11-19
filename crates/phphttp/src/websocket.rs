@@ -545,7 +545,12 @@ fn close_frame(code: i32, reason: &[u8], flags: u8) -> Option<Frame> {
 
 /// `FrameObject::uncompress`: the inflated payload, as a string.
 fn uncompress(data: &[u8]) -> Option<Owned> {
-    use swoole_rs_inflate::{MessageFailure, error, message};
+    use swoole_rs_inflate::{MESSAGE_HEADROOM, MessageFailure, error, message};
+
+    const _: () = assert!(
+        MESSAGE_HEADROOM == swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize / 2,
+        "WebSocket inflate headroom must match half the standard buffer size"
+    );
     if !ZLIB.load(Relaxed) {
         warning(
             c"FrameObject::uncompress",
