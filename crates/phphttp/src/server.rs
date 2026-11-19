@@ -28,6 +28,7 @@ use swoole_rs_corebase::process::worker_record::WorkerType;
 use swoole_rs_corebase::{CCast, HookType, swoole_isset_hook};
 use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_http::llhttp::HPE_OK;
+use swoole_rs_http::status::SERVICE_UNAVAILABLE as SERVICE_UNAVAILABLE_STATUS;
 use swoole_rs_phpserver::PortCallback;
 use swoole_rs_phpserver::{
     RecvData, php_swoole_get_recv_data, php_swoole_server_get_callback,
@@ -571,9 +572,8 @@ fn http2_connection(
     Some((conn, facts))
 }
 
-/// `SW_HTTP_VERSION_2` and `SW_HTTP_SERVICE_UNAVAILABLE`.
+/// `SW_HTTP_VERSION_2`.
 const HTTP_VERSION_2: c_int = 3;
-const SERVICE_UNAVAILABLE_STATUS: c_int = 503;
 
 /// `http2_server_onRequest`: a finished HTTP/2 request on a server's
 /// connection (the session's handler), answered by the static handler or the

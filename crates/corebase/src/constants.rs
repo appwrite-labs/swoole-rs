@@ -283,6 +283,10 @@ pub enum EventInitFlag {
 pub const SW_MAX_FDTYPE: u32 = 32;
 pub const SW_MAX_HOOK_TYPE: u32 = 32;
 pub const SW_ERROR_MSG_SIZE: u32 = 16384;
+const _: () = assert!(
+    SW_ERROR_MSG_SIZE as usize == swoole_rs_error::ERROR_MSG_SIZE,
+    "native error writers must use the Rust buffer capacity"
+);
 pub const SW_MAX_FILE_CONTENT: u32 = 67_108_864;
 pub const SW_MAX_LISTEN_PORT: u32 = 60000;
 pub const SW_MAX_CONNECTION: u32 = 100_000;
@@ -378,6 +382,8 @@ pub const SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET: &str =
     "HTTP/1.1 413 Request Entity Too Large\r\n\r\n";
 pub const SW_HTTP_SERVICE_UNAVAILABLE_PACKET: &str = "HTTP/1.1 503 Service Unavailable\r\n\r\n";
 pub const SW_HTTP_POWER_BY: &str = "<footer><i>Powered by Swoole</i></footer>";
+/// The client connection preface from `SW_HTTP2_PRI_STRING`.
+pub const HTTP2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 pub const SW_HTTP2_DATA_BUFFER_SIZE: u32 = 8192;
 pub const SW_HTTP2_DEFAULT_HEADER_TABLE_SIZE: u32 = 4096;
 pub const SW_HTTP2_DEFAULT_MAX_CONCURRENT_STREAMS: u32 = 4_294_967_295_u32;

@@ -5,6 +5,7 @@
 //! request's own operations are `swoole_rs_http`'s.
 use core::ffi::c_int;
 use swoole_rs_corebase::buffer::string::StringBuffer as Buffer;
+use swoole_rs_corebase::constants::HTTP2_PREFACE;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_TRACE as TRACE, SW_LOG_WARNING as WARNING};
 use swoole_rs_corebase::ossupport::TempFile;
@@ -145,7 +146,6 @@ enum Log {
 /// `SW_BUFFER_SIZE_BIG`.
 const HTTP_PRI: u8 = 27;
 const HEADER_MAX_SIZE: u64 = swoole_rs_corebase::constants::SW_HTTP_HEADER_MAX_SIZE as u64;
-const HTTP2_PREFACE: u64 = 24;
 const BUFFER_SIZE_BIG: u64 = swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as u64;
 
 /// `buffer->clear()`.
@@ -411,7 +411,7 @@ fn preface(n: &mut impl Connection) -> Step {
         return bad(n, Log::NoHttp2);
     }
     n.start_http2();
-    if n.buffer().len() as u64 == HTTP2_PREFACE {
+    if n.buffer().len() == HTTP2_PREFACE.len() {
         n.destroy_request();
         clear(n);
         return Step::Done;
