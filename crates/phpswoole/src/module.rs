@@ -8,6 +8,7 @@ use crate::{Switch, optional};
 use std::{
     cell::Cell,
     ffi::{CStr, c_int, c_long, c_void},
+    mem::offset_of,
     ptr,
     sync::OnceLock,
 };
@@ -47,7 +48,7 @@ unsafe extern "C" {
 /// `zend_swoole_globals` (`php_swoole.h`'s layout, which Zend's ini handlers
 /// write by offset). Each field is a cell: this thread reads and writes them
 /// through shared references, and Zend through the offsets.
-// `repr(C)`: the module globals C declares (`native/swoole-src/php_swoole.h`), which the bundled cURL code reads.
+// `repr(C)`: Zend shares this storage through SWOOLE_G.
 #[repr(C)]
 pub struct Globals {
     pub(crate) display_errors: Cell<bool>,
@@ -65,17 +66,37 @@ pub struct Globals {
     in_autoload: Cell<*mut HashTable>,
 }
 
+// Paired with the zend_swoole_globals assertions in native/phphelpers/host.c.
+const _: () = assert!(
+    size_of::<Globals>() == 48
+        && align_of::<Globals>() == 8
+        && offset_of!(Globals, display_errors) == 0
+        && offset_of!(Globals, cli) == 1
+        && offset_of!(Globals, use_shortname) == 2
+        && offset_of!(Globals, enable_preemptive_scheduler) == 3
+        && offset_of!(Globals, enable_library) == 4
+        && offset_of!(Globals, enable_fiber_mock) == 5
+        && offset_of!(Globals, blocking_detection) == 6
+        && offset_of!(Globals, blocking_threshold) == 8
+        && offset_of!(Globals, profile) == 16
+        && offset_of!(Globals, leak_detection) == 17
+        && offset_of!(Globals, socket_buffer_size) == 24
+        && offset_of!(Globals, req_status) == 32
+        && offset_of!(Globals, in_autoload) == 40,
+    "Globals must match zend_swoole_globals (native/phphelpers/host.c)"
+);
+
 pub(crate) const INI_OFFSETS: [usize; 10] = [
-    std::mem::offset_of!(Globals, enable_library),
-    std::mem::offset_of!(Globals, enable_fiber_mock),
-    std::mem::offset_of!(Globals, enable_preemptive_scheduler),
-    std::mem::offset_of!(Globals, display_errors),
-    std::mem::offset_of!(Globals, use_shortname),
-    std::mem::offset_of!(Globals, socket_buffer_size),
-    std::mem::offset_of!(Globals, blocking_detection),
-    std::mem::offset_of!(Globals, blocking_threshold),
-    std::mem::offset_of!(Globals, profile),
-    std::mem::offset_of!(Globals, leak_detection),
+    offset_of!(Globals, enable_library),
+    offset_of!(Globals, enable_fiber_mock),
+    offset_of!(Globals, enable_preemptive_scheduler),
+    offset_of!(Globals, display_errors),
+    offset_of!(Globals, use_shortname),
+    offset_of!(Globals, socket_buffer_size),
+    offset_of!(Globals, blocking_detection),
+    offset_of!(Globals, blocking_threshold),
+    offset_of!(Globals, profile),
+    offset_of!(Globals, leak_detection),
 ];
 
 /// `php_swoole_req_status`, which C reads as an `int` through `SWOOLE_G`.
@@ -741,17 +762,10 @@ fn set_process_name(call: &Call) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Globals, ReqStatus};
-    use std::mem::offset_of;
+    use super::ReqStatus;
 
     #[test]
-    fn globals_match_zend_swoole_globals() {
-        // php_swoole.h's zend_swoole_globals, which C++ reads through SWOOLE_G.
-        assert_eq!(offset_of!(Globals, blocking_threshold), 8);
-        assert_eq!(offset_of!(Globals, socket_buffer_size), 24);
-        assert_eq!(offset_of!(Globals, req_status), 32);
-        assert_eq!(offset_of!(Globals, in_autoload), 40);
-        assert_eq!(size_of::<Globals>(), 48);
+    fn request_status_matches_php() {
         assert_eq!(
             (
                 ReqStatus::RinitEnd as i32,

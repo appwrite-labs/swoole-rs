@@ -5,6 +5,7 @@
 #include "php_swoole_library.h"
 #include "ext/pcre/php_pcre.h"
 #include <openssl/opensslv.h>
+#include <stddef.h>
 #ifdef SW_USE_CURL
 #include <curl/curl.h>
 #endif
@@ -43,6 +44,25 @@ void swr_phpswoole_versions(struct swr_phpswoole_versions *info) {
     info->zstd = "enabled";
 #endif
 }
+
+// Rust stores Zend's module globals in phpswoole::module::Globals.
+_Static_assert(sizeof(zend_swoole_globals) == 48, "Globals size");
+_Static_assert(_Alignof(zend_swoole_globals) == 8, "Globals alignment");
+#define CHECK_OFFSET(field, offset) _Static_assert(offsetof(zend_swoole_globals, field) == offset, #field)
+CHECK_OFFSET(display_errors, 0);
+CHECK_OFFSET(cli, 1);
+CHECK_OFFSET(use_shortname, 2);
+CHECK_OFFSET(enable_preemptive_scheduler, 3);
+CHECK_OFFSET(enable_library, 4);
+CHECK_OFFSET(enable_fiber_mock, 5);
+CHECK_OFFSET(blocking_detection, 6);
+CHECK_OFFSET(blocking_threshold, 8);
+CHECK_OFFSET(profile, 16);
+CHECK_OFFSET(leak_detection, 17);
+CHECK_OFFSET(socket_buffer_size, 24);
+CHECK_OFFSET(req_status, 32);
+CHECK_OFFSET(in_autoload, 40);
+#undef CHECK_OFFSET
 
 // SWOOLE_G's storage: this thread's module globals.
 zend_swoole_globals *swr_phpswoole_globals(void) {
