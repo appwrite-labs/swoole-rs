@@ -20,6 +20,7 @@ use super::{
     _exit, AF_INET, EINVAL, ENOENT, ETIMEDOUT, SW_ERR, TEST_HTTP_DOMAIN, TEST_STR, c_str, errno,
     fork, kill, last_error, random_bytes,
 };
+use libc::{EACCES, EINPROGRESS, EPIPE, ESOCKTNOSUPPORT, SIG_IGN, SIGIO, SIGPIPE};
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, CString, c_int, c_long, c_void};
 use std::io::{Read, Write};
@@ -62,14 +63,6 @@ const SW_ERROR_SSL_HANDSHAKE_FAILED: c_int = 1018;
 const SW_ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int = 7101;
 const SW_DNS_RESOLV_CONF: &CStr = c"/etc/resolv.conf";
 
-// glibc's values (the core-tests build is Linux).
-const EACCES: c_int = 13;
-const EPIPE: c_int = 32;
-const ESOCKTNOSUPPORT: c_int = 94;
-const EINPROGRESS: c_int = 115;
-const SIGIO: c_int = 29;
-const SIGPIPE: c_int = 13;
-
 unsafe extern "C" {
     fn signal(signo: c_int, handler: usize) -> usize;
     fn getpid() -> c_int;
@@ -77,8 +70,6 @@ unsafe extern "C" {
     fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
     fn listen(fd: c_int, backlog: c_int) -> c_int;
 }
-
-const SIG_IGN: usize = 1;
 
 fn cstring(text: &str) -> CString {
     CString::new(text).unwrap()

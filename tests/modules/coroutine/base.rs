@@ -24,6 +24,7 @@ use super::{
     swoole_coroutine_create, swoole_coroutine_get_id, swoole_coroutine_open, swoole_coroutine_read,
     swoole_coroutine_write, trampoline,
 };
+use libc::{CLOCK_MONOTONIC, O_CREAT, O_RDWR, SEEK_CUR, SEEK_SET};
 use std::cell::Cell;
 use std::ffi::{c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -40,12 +41,6 @@ const SW_FORK_PRECHECK: c_int = 8;
 const SWR_CO_ON_YIELD: u32 = 0;
 const SWR_CO_ON_RESUME: u32 = 1;
 const SWR_CO_ON_CLOSE: u32 = 2;
-const CLOCK_MONOTONIC: c_int = 1;
-// glibc's values (the case binary is Linux).
-const O_RDWR: c_int = 2;
-const O_CREAT: c_int = 0o100;
-const SEEK_SET: c_int = 0;
-const SEEK_CUR: c_int = 1;
 
 type SwapCallback = swoole_rs_corebase::coroutine::SwapCallback;
 

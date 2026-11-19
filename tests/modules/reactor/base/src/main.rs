@@ -21,6 +21,7 @@
     reason = "existing uses from before this port inherited [workspace.lints] (#4377); count them down"
 )]
 
+use libc::{EBADF, EEXIST, EINTR, EINVAL, EMFILE, RLIMIT_NOFILE, SIGIO, SOCK_DGRAM, SOCK_STREAM};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::io::IoSlice;
 use std::ptr::{self, null_mut};
@@ -58,16 +59,6 @@ const TYPE_AUTO: c_int = 0;
 const TYPE_EPOLL: c_int = 1;
 const TYPE_POLL: c_int = 3;
 const PRIORITY_DEFER_TASK: c_int = 1;
-// glibc's values (the core-tests build is Linux).
-const EINTR: c_int = 4;
-const EBADF: c_int = 9;
-const EEXIST: c_int = 17;
-const EINVAL: c_int = 22;
-const EMFILE: c_int = 24;
-const SIGIO: c_int = 29;
-const SOCK_STREAM: c_int = 1;
-const SOCK_DGRAM: c_int = 2;
-const RLIMIT_NOFILE: c_int = 7;
 
 const DATA_SIZE: usize = 2 * 1_000_000;
 const PKT: &[u8] = b"hello world\r\n";
@@ -96,8 +87,8 @@ unsafe extern "C" {
     fn kill(pid: c_int, sig: c_int) -> c_int;
     fn getpid() -> c_int;
     fn usleep(usec: u32) -> c_int;
-    fn getrlimit(resource: c_int, limit: *mut [u64; 2]) -> c_int;
-    fn setrlimit(resource: c_int, limit: *const [u64; 2]) -> c_int;
+    fn getrlimit(resource: libc::__rlimit_resource_t, limit: *mut [u64; 2]) -> c_int;
+    fn setrlimit(resource: libc::__rlimit_resource_t, limit: *const [u64; 2]) -> c_int;
     fn __errno_location() -> *mut c_int;
 }
 

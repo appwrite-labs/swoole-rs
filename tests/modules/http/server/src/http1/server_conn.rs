@@ -12,6 +12,7 @@
 use super::case::after_once as timer_after;
 use super::*;
 use crate::{TEST_LOG_FILE, TEST_STR};
+use libc::{EAGAIN, R_OK, SIGKILL, SIGWINCH, SO_RCVBUF, SO_SNDBUF, SOL_SOCKET};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use swoole_rs_corebase::process::task_file::TaskBuffer;
@@ -26,14 +27,8 @@ const SW_ERROR_OUTPUT_SEND_YIELD: c_int = 1010;
 /// `SW_IPC_MAX_SIZE` (Linux): an `EventData`.
 const SW_IPC_MAX_SIZE: usize = 8192;
 const TEST_COUNTER_NUM: usize = 32;
-// glibc's values.
-const PROT_READ_WRITE: c_int = 3;
-const MAP_SHARED_ANONYMOUS: c_int = 0x21;
-const SOL_SOCKET: c_int = 1;
-const SO_SNDBUF: c_int = 7;
-const SO_RCVBUF: c_int = 8;
-const SIGWINCH: c_int = 28;
-const R_OK: c_int = 4;
+const PROT_READ_WRITE: c_int = libc::PROT_READ | libc::PROT_WRITE;
+const MAP_SHARED_ANONYMOUS: c_int = libc::MAP_SHARED | libc::MAP_ANONYMOUS;
 
 /// `EventData`: its head and payload.
 #[repr(C)]
@@ -1133,8 +1128,6 @@ const SW_EVENT_DATA_CHUNK: u8 = 1 << 2;
 const SW_EVENT_DATA_BEGIN: u8 = 1 << 3;
 const SW_EVENT_DATA_OBJ_PTR: u8 = 1 << 5;
 const SW_SESSION_LIST_SIZE: c_long = 1 << 20;
-const SIGKILL: c_int = 9;
-const EAGAIN: c_int = 11;
 
 unsafe extern "C" {
     fn __errno_location() -> *mut c_int;
