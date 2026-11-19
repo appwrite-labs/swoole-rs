@@ -466,13 +466,15 @@ extern "C" fn swoole_curl_multi_on_push(
             c"Cannot call the CURLMOPT_PUSHFUNCTION",
         );
     }
-    if called
+    let accept = called
         && !bailout::pending()
         && result.kind() != swoole_rs_zend::sys::IS_UNDEF
         && result
             .applied_long()
-            .is_some_and(|code| code != Push::Deny as i64)
-    {
+            .is_some_and(|code| code != Push::Deny as i64);
+    // The return value can run a PHP destructor before the offer is accepted.
+    drop(result);
+    if accept && !bailout::pending() {
         swoole_curl_multi_keep(multi, handle);
         return Push::Accept;
     }
