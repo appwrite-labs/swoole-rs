@@ -459,7 +459,7 @@ dependencies = [
 
 [[package]]
 name = "swoole-rs-ext"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "cc",
  "openssl-sys",
@@ -858,7 +858,7 @@ dependencies = [
 
 [[package]]
 name = "swoole-rs-phpswoole"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "libc",
  "swoole-rs-brotli",
