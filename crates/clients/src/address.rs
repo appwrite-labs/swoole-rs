@@ -14,6 +14,14 @@ use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_corebase::ntop;
 use swoole_rs_corebase::sys::Text;
 
+/// The host and port of an address that holds its socket type's member, as
+/// upstream's warnings print them.
+#[must_use]
+pub fn host_port(address: &SocketAddress) -> (String, c_int) {
+    let host = with_host(address, |host| host.to_string_lossy().into_owned());
+    (host, address_port(address).into())
+}
+
 /// `clients_parse_ip`: the host as an IP literal of `family` into `destination`,
 /// which holds any family's address.
 fn parse_ip(family: c_int, host: &CStr, destination: &mut [u8; 16]) -> bool {

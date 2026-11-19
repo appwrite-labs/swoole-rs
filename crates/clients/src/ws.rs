@@ -3,7 +3,37 @@
 //! token checks stay native; Rust owns computing the expected accept token and
 //! the comparison.
 
+use crate::protocol::Protocol;
+use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::net_types::PacketLength;
 use swoole_rs_websocket::sha1;
+
+/// `websocket::get_package_length` as a protocol's length callback: it reads only `pl`.
+pub fn websocket_length(
+    _proto: &Protocol,
+    _: Option<u8>,
+    _owner: Option<std::rc::Rc<dyn core::any::Any>>,
+    pl: &mut PacketLength,
+) -> Option<usize> {
+    let (length, header) = match swoole_rs_websocket::frame_length(pl.bytes()) {
+        // A total past `ssize_t` is upstream's negative length.
+        Ok(frame) => (
+            Some(frame.total).filter(|&total| isize::try_from(total).is_ok()),
+            Some(frame.header_length),
+        ),
+        Err(error) => (
+            match error {
+                swoole_rs_websocket::LengthError::IncompleteHeader { .. } => Some(0),
+                swoole_rs_websocket::LengthError::Overflow { .. } => None,
+            },
+            error.header_length(),
+        ),
+    };
+    if let Some(header) = header {
+        pl.header_len = header.c_cast::<u32>();
+    }
+    length
+}
 
 /// RFC 6455 handshake GUID, appended to the client key before hashing.
 const GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";

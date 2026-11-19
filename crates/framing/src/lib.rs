@@ -34,6 +34,7 @@ pub enum UnpackError {
 /// `swoole_unpack`: the value of `format` at the start of `data`.
 /// # Errors
 /// An unknown format, or fewer bytes than its width.
+#[inline]
 pub fn unpack(format: u8, data: &[u8]) -> Result<i64, UnpackError> {
     fn field<const N: usize>(data: &[u8]) -> Result<[u8; N], UnpackError> {
         data.first_chunk().copied().ok_or(UnpackError::Short)
@@ -72,6 +73,7 @@ pub enum DefaultLength {
 /// `Protocol::default_length_func` over the received `data`: the length field of
 /// type `format` and `size` bytes at `offset`, plus `body_offset`.
 #[must_use]
+#[inline]
 pub fn default_length(
     format: u8,
     data: &[u8],

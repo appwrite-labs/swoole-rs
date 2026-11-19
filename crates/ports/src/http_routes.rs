@@ -7,11 +7,9 @@ use std::ffi::c_int;
 use swoole_rs_http2::FRAME_HEADER_SIZE as HTTP2_FRAME_HEADER_SIZE;
 use swoole_rs_websocket::MAX_HEADER_LEN as WEBSOCKET_FRAME_HEADER_SIZE;
 
-use swoole_rs_clients::protocol::Protocol;
-use swoole_rs_corebase::CCast;
+use swoole_rs_clients::address::host_port;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
-use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_server::Connection;
 
@@ -44,40 +42,7 @@ fn warn_protocol_status(conn: Connection<'_>) {
     );
 }
 
-/// The host and port of an address that holds its socket type's member, as
-/// upstream's warnings print them.
-pub(crate) fn host_port(address: &SocketAddress) -> (String, c_int) {
-    use swoole_rs_clients::address::{address_port, with_host};
-    let host = with_host(address, |host| host.to_string_lossy().into_owned());
-    (host, address_port(address).into())
-}
-
-/// `websocket::get_package_length` as a protocol's length callback: it reads only `pl`.
-pub fn websocket_length(
-    _proto: &Protocol,
-    _: Option<u8>,
-    _owner: Option<std::rc::Rc<dyn core::any::Any>>,
-    pl: &mut PacketLength,
-) -> Option<usize> {
-    let (length, header) = match swoole_rs_websocket::frame_length(pl.bytes()) {
-        // A total past `ssize_t` is upstream's negative length.
-        Ok(frame) => (
-            Some(frame.total).filter(|&total| isize::try_from(total).is_ok()),
-            Some(frame.header_length),
-        ),
-        Err(error) => (
-            match error {
-                swoole_rs_websocket::LengthError::IncompleteHeader { .. } => Some(0),
-                swoole_rs_websocket::LengthError::Overflow { .. } => None,
-            },
-            error.header_length(),
-        ),
-    };
-    if let Some(header) = header {
-        pl.header_len = header.c_cast::<u32>();
-    }
-    length
-}
+pub use swoole_rs_clients::ws::websocket_length;
 
 /// `get_package_length_size`'s result for `conn`.
 pub fn length_size(
@@ -128,7 +93,8 @@ pub mod exports {
     };
 
     use super::{Session, WEBSOCKET_FRAME_HEADER_SIZE, length_size, route};
-    use crate::framing_recv::{Packages, Recv, paused, send_data};
+    use crate::framing_recv::{paused, send_data};
+    use swoole_rs_clients::framing_recv::{Packages, Recv, Source};
     use swoole_rs_clients::protocol::Package;
 
     /// `swoole::http2::get_frame_length(const Protocol *, Socket *, PacketLength *)`:
@@ -366,7 +332,7 @@ pub mod exports {
     impl Packages for Tasks<'_> {
         const HEAD: Option<u32> = None;
         #[inline(always)]
-        fn dispatch(&self, _: &Recv<'_>, mut package: Package<'_>) -> bool {
+        fn dispatch(&self, _: &Recv<'_, impl Source>, mut package: Package<'_>) -> bool {
             self.0.task(send_data(&mut package, DataHead::default()))
         }
         fn paused(&self) -> bool {
@@ -409,7 +375,7 @@ pub mod exports {
                 .map(|size| length_size(self.0.conn, size))
         }
         #[inline(always)]
-        fn dispatch(&self, _: &Recv<'_>, package: Package<'_>) -> bool {
+        fn dispatch(&self, _: &Recv<'_, impl Source>, package: Package<'_>) -> bool {
             let info = DataHead {
                 len: u32::try_from(package.len()).unwrap_or(u32::MAX),
                 ..DataHead::default()
@@ -434,7 +400,7 @@ pub mod exports {
     impl Packages for Frames<'_> {
         const HEAD: Option<u32> = Some(WEBSOCKET_FRAME_HEADER_SIZE as u32);
         #[inline(always)]
-        fn length(&self, _: &Recv<'_>, bytes: &[u8]) -> Option<usize> {
+        fn length(&self, _: &Recv<'_, impl Source>, bytes: &[u8]) -> Option<usize> {
             match swoole_rs_websocket::frame_length(bytes) {
                 // A frame longer than `ssize_t` holds is malformed.
                 Ok(frame) => isize::try_from(frame.total).ok().map(isize::cast_unsigned),
@@ -443,7 +409,7 @@ pub mod exports {
             }
         }
         #[inline(always)]
-        fn dispatch(&self, _: &Recv<'_>, package: Package<'_>) -> bool {
+        fn dispatch(&self, _: &Recv<'_, impl Source>, package: Package<'_>) -> bool {
             websocket_frame(self.0, package)
         }
         fn paused(&self) -> bool {

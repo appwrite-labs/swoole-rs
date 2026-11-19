@@ -21,10 +21,10 @@ use swoole_rs_server::port_config::{PortConfig, ReadEvent};
 use swoole_rs_server::static_select::static_select;
 use swoole_rs_server::{Connection as Slot, ServerConfig, view};
 
-use crate::framing_recv::{self, Packages};
 use crate::http_routes::Session;
 use crate::http_routes::exports::{Frames, Port, Route, Tasks};
 use crate::read::{Connection, Dispatch, Framing, Readable, Reply, Upgrade, readable};
+use swoole_rs_clients::framing_recv::{self, Packages};
 
 /// One readable event on a live connection, which only this reactor thread touches.
 struct Read<'a> {
@@ -70,7 +70,7 @@ pub(crate) fn on_read(
     let (recv, framing_flags) = socket.edit(|s| {
         let flags = matches!(kind, Readable::Length | Readable::Eof).then(|| {
             (
-                framing_recv::socket_flags(s, || framing_recv::paused(conn)),
+                framing_recv::socket_flags(s, || crate::framing_recv::paused(conn)),
                 s.skip_recv,
             )
         });
@@ -166,12 +166,7 @@ impl<'a> Read<'a> {
     #[inline(always)]
     fn framed(&mut self, mode: Mode, packages: impl Packages) -> bool {
         let socket = self.socket;
-        // Asked once per receive, not per measure: most ports have no PHP length callable.
-        let owner = if self.port.has_length_owner() {
-            framing_recv::Owner::Port(self.port)
-        } else {
-            framing_recv::Owner::Plain(&self.port.protocol)
-        };
+        let owner = crate::framing_recv::PortSource(self.port);
         let initial = self.framing_flags.take();
         let buffer = self.buffer();
         framing_recv::receive(socket, owner, buffer, mode, packages, initial) != Status::Err

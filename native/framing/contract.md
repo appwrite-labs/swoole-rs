@@ -15,8 +15,8 @@ The two length callbacks and the package callback are fields of that record.
   extend/reduce/clear/split, `SSL_pending`, logs) goes through its generic
   `Effects::effect`, which refreshes the socket's removed/recv_wait/ssl flags after it.
 - The production adapter supplies the socket, buffer and callbacks to the Rust receive
-  loop. During initialization, the extension registers the adapter’s length and EOF
-  readers with the client crate. [Socket adapter](../../crates/ports/src/framing_recv.rs) · [Registration](../../crates/ffi/src/init.rs)
+  loop. Client and port reads call the same adapter with their own protocol settings.
+  [Socket adapter](../../crates/clients/src/framing_recv.rs)
 - The framing fuzz target exposes `swr_v1_framing_recv` to the oracle’s C++ candidate.
   Its callback reports each effect, and `THROWN` stops further effects.
   [Oracle header](../../crates/oracle/shim/swoole_rs_framing.h) · [Candidate caller](../../crates/oracle/candidate/src/protocol/base.cc) · [Fuzz adapter](../../fuzz/src/framing_native.rs)

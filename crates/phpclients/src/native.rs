@@ -465,7 +465,8 @@ impl Co {
     /// `Protocol::default_length_func`.
     pub(crate) fn length_protocol(self) {
         self.0.edit_protocol(|protocol| {
-            protocol.get_package_length = Some(swoole_rs_ports::framing_recv::default_length_func);
+            protocol.get_package_length =
+                Some(swoole_rs_clients::framing_recv::default_length_func);
         });
     }
 

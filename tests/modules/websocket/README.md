@@ -3,7 +3,7 @@
 The frame codec is `crates/websocket`, which forbids `unsafe`. `crates/ports`'
 `frame_api`, its only caller with upstream's records, is `websocket.cc`'s entry points
 over `swoole::String` and `websocket::Frame`, as safe functions over slices;
-`websocket::get_package_length` is its sibling `http_routes::websocket_length`. They had C++
+`websocket::get_package_length` is shared by clients and ports in `swoole_rs_clients::ws::websocket_length`. They had C++
 symbols, which only Rust linked; Rust calls them by path now. The safe decoder returns `Result<DecodedFrame,
 DecodeError>`; its error preserves the partial header and distinguishes incomplete
 input, length overflow, and compressed control frames. `DecodedFrame`, `Context`
