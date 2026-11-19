@@ -63,6 +63,28 @@ class OodaTiming(unittest.TestCase):
                 self.assertEqual(timing['jobs'], 1)
                 self.assertEqual(timing['timings_seconds']['runner'], 0.25)
 
+    def test_unreadable_junit_keeps_statuses_and_warns(self):
+        import io, os
+        from contextlib import redirect_stderr
+        with tempfile.TemporaryDirectory() as directory:
+            sandbox = Path(directory).resolve()
+            engine = SimpleNamespace(php='fixture-php', extension=Path('/fixture.so'), php_extensions=(),
+                                     command=lambda *args: ['fixture-php', *map(str, args)])
+            case = {'path': 'tests/fixture.phpt'}
+            artifacts = sandbox/'artifacts'
+            def execute(command, **kwargs):
+                (artifacts/'status.txt').write_text(f'PASSED {sandbox/case["path"]}\n')
+                (artifacts/'junit.xml').write_text('<testsuite><testcase name="tests/fixture.phpt"')
+                return SimpleNamespace(stdout='', stderr='', returncode=0)
+            stderr = io.StringIO()
+            with patch.object(phpt, 'run_isolated', side_effect=execute), patch.object(phpt.time, 'monotonic', Clock()), \
+                 patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}), redirect_stderr(stderr):
+                rows, _ = phpt.run_cases(engine, [case], sandbox, artifacts, 2, 4)
+        row = rows[case['path']]
+        self.assertEqual(row['status'], 'passed')
+        self.assertIsNone(row['official_runner_test_seconds'])
+        self.assertIn('::warning title=PHPT timings unreadable::', stderr.getvalue())
+
     def test_phpt_timeout_has_wall_time_without_inventing_junit_time(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
