@@ -105,7 +105,7 @@ jobs:
           name: engines-${{ matrix.php }}
           path: target/phpt
       # Exit 1 means some tests failed, which the gate judges. Re-runs as phpt-gate does,
-      # unless more than 20 are flagged: that is a broad breakage, not flakiness.
+      # when gate.py --should-recheck says so (too many flagged is a broad breakage, not flakiness).
       - name: Run and gate PHPTs
         run: |
           python3 corpus/upstream/inventory.py --shard ${{ matrix.shard }}/4 --output target/phpt/manifest.json
@@ -115,8 +115,7 @@ jobs:
             python3 corpus/upstream/run.py $options --engine $engine=target/phpt/$engine.so \
               --output target/phpt/results/$engine.json || [ $? -eq 1 ]
           done
-          count=$(python3 corpus/upstream/gate.py target/phpt/results/*.json --print-regressions | grep -c . || true)
-          if [ "$count" -le 20 ]; then
+          if [ "$(python3 corpus/upstream/gate.py target/phpt/results/*.json --should-recheck)" = true ]; then
             corpus/upstream/recheck.sh target/phpt/results target/phpt target/phpt/recheck $options
           fi
           set -- target/phpt/results/*.json

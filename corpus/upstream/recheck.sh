@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
-# Re-run the PHPT gate's flagged tests up to three times per engine, upstream first. Upstream
-# stops at a test's first failed re-run; cargo then re-runs every flagged test until its
-# verdict is settled (a pass, and also a failure unless upstream failed), once only when its
-# first failure timed out (unless upstream timed out too), up to nine times when upstream
-# failed one or until cargo passes one (gate.py --print-pending).
-# An inconclusive re-run (the #200 runner abort) is replaced, up to twice the budget in all.
-# A test cargo both passed and failed then gets more upstream re-runs (up to 48 in all),
-# so a test racy on both engines isn't counted as a cargo regression; so does one whose
-# re-runs both engines failed (up to 9).
+# Re-run the PHPT gate's flagged tests, upstream first, as gate.py --print-pending asks: the
+# budgets are gate.py's RERUNS, EXTENDED_RERUNS and MIXED_RERUNS, and its docstring says
+# which test gets which. An inconclusive re-run (the #200 runner abort) is replaced, up to
+# twice the budget in all. Whether to re-run at all is gate.py --should-recheck.
 #   recheck.sh RESULTS_DIR ENGINES_DIR RECHECK_DIR [run.py arguments...]
 # ENGINES_DIR holds upstream.so and each other engine as <engine>.so; RECHECK_DIR receives <engine>-<attempt>.json.
 set -eo pipefail

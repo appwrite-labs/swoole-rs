@@ -60,6 +60,8 @@ RERUNS = 3
 # 24 clean passes still happen 8% of the time, 48 under 1%: array_method/method.phpt).
 EXTENDED_RERUNS = 9
 MIXED_RERUNS = 48
+# More flagged tests than this is a broad breakage, not flakiness: they aren't re-run.
+RECHECK_LIMIT = 20
 STATUSES = ['passed', 'failed', 'skipped', 'excluded']
 # Pinned tests of upstream fixes to code that is Rust now, by the open issue porting them
 # (#1905 moved the pin to v6.2.5 ahead of the ports). The gate lists them instead of
@@ -297,12 +299,17 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--recheck', type=Path, nargs='+', help='Reports of re-runs of the flagged tests')
     parser.add_argument('--print-regressions', action='store_true', help='Print flagged test paths and exit')
+    parser.add_argument('--should-recheck', action='store_true',
+                        help=f'Print true when 1 to {RECHECK_LIMIT} tests are flagged (worth re-running), else false, and exit')
     parser.add_argument('--print-pending', metavar='ENGINE',
                         help='Print flagged tests still worth re-running on ENGINE (with --recheck), and exit')
     args = parser.parse_args()
     results = sorted(rows(args.reports), key=lambda row: (row['test'], row['engine']))
     if args.print_regressions:
         print('\n'.join(flagged(results)))
+        return 0
+    if args.should_recheck:
+        print(str(0 < len(flagged(results)) <= RECHECK_LIMIT).lower())
         return 0
     rechecked = list(rows(args.recheck)) if args.recheck else None
     if args.print_pending:

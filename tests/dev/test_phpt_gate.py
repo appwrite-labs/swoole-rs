@@ -393,6 +393,23 @@ class PhptGate(unittest.TestCase):
         # It is reported, not gated.
         self.assertEqual((installed.returncode, stubbed.returncode), (0, 0))
 
+    def test_should_recheck_holds_the_one_flagged_limit(self):
+        import subprocess
+        from corpus.upstream.gate import RECHECK_LIMIT
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as temp:
+            def should(flagged):
+                results = [{'test': f'tests/t/{n}.phpt', 'module': 't', 'engine': engine, 'status': status}
+                           for n in range(RECHECK_LIMIT + 1)
+                           for engine, status in [('upstream', 'passed'), ('cargo', 'failed' if n < flagged else 'passed')]]
+                report = Path(temp) / 'r.json'
+                report.write_text(json.dumps({'results': results}))
+                return subprocess.run([sys.executable, root / 'corpus/upstream/gate.py', report, '--should-recheck'],
+                                      capture_output=True, text=True, check=True).stdout
+            # Nothing flagged needs no re-run; more than the limit is a broad breakage.
+            self.assertEqual([should(n) for n in (0, 1, RECHECK_LIMIT, RECHECK_LIMIT + 1)],
+                             ['false\n', 'true\n', 'true\n', 'false\n'])
+
     def test_annotation_properties_escape_their_separators(self):
         from tools.annotations import escape
         self.assertEqual(escape('a: b, 100%\nc', separators=True), 'a%3A b%2C 100%25%0Ac')
