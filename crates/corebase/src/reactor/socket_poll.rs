@@ -227,6 +227,7 @@ pub fn socket_poll<S>(fds: &mut [PollFd], timeout: f64, ops: &PollOps<S>) -> Res
 
 /// The bucket counts a libstdc++ `std::unordered_map<int, _>` grows through: the
 /// first insert takes the first, and each later one past the current count the next.
+/// `poll_order_matches_live_libstdcxx` checks the growth sequence and iteration order.
 const UNORDERED_BUCKETS: [u64; 18] = [
     13, 29, 59, 127, 257, 541, 1_109, 2_357, 5_087, 10_273, 20_753, 42_043, 85_229, 172_933,
     351_061, 712_697, 1_447_153, 2_938_679,
@@ -677,6 +678,52 @@ mod tests {
                 592, 51, 683, 142, 774, 233, 621, 80, 712, 171, 559, 18, 650, 109, 741, 200, 588,
                 47, 679, 138, 770, 229, 617, 76, 708, 167, 555, 14, 646, 105, 737, 196
             ]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore = "runs the libstdc++ reference compiler and executable")]
+    #[test]
+    fn poll_order_matches_live_libstdcxx() {
+        let keys: Vec<i32> = [0, -1, i32::MIN, i32::MAX, -1]
+            .into_iter()
+            .chain((0..900).map(|n| (n * 7919 + 13) % 601 - 300))
+            .collect();
+        let output = std::process::Command::new("sh")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/modules/reactor/poll_order.sh"
+            ))
+            .args(keys.iter().map(i32::to_string))
+            .output()
+            .expect("run libstdc++ reference");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).expect("numeric output");
+        let (order, growth) = stdout
+            .trim_end()
+            .split_once('\n')
+            .expect("two result lines");
+        let order: Vec<i32> = order
+            .split_whitespace()
+            .map(|v| v.parse().expect("fd"))
+            .collect();
+        let growth: Vec<u64> = growth
+            .split_whitespace()
+            .map(|v| v.parse().expect("bucket count"))
+            .collect();
+        assert_eq!(
+            unordered_map_order(keys),
+            order,
+            "libstdc++ iteration order"
+        );
+        assert_eq!(
+            UNORDERED_BUCKETS.as_slice(),
+            growth,
+            "libstdc++ growth policy"
         );
     }
 

@@ -209,7 +209,8 @@ impl<V> Table<V> {
 /// Zend's `zend_sort` (libc++'s introsort without the heap fallback: insertion
 /// sort up to 16 items, else a median-of-3 or of-5 quicksort step), with `gt` as
 /// its `cmp(a, b) > 0`. `gt` need not be a total order, and items it doesn't
-/// order land where Zend's would.
+/// order land where Zend's would. `order_matches_running_zend` compares both kinds of
+/// comparator with the running PHP engine.
 #[expect(
     clippy::indexing_slicing,
     reason = "Zend's index steps, kept as written; its bounds checks (`i == j`, `j == 0`) hold whatever `gt` answers"
@@ -493,6 +494,56 @@ mod tests {
                 39, 12, 21, 25, 29, 30, 17, 16, 15, 14, 11, 32, 8, 7, 5, 36, 37, 38, 22, 24, 31,
                 33, 35, 20, 18, 19, 10, 6, 2, 23, 1, 26, 27, 28, 13, 9, 34, 4, 3, 0
             ]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore = "runs the installed PHP engine")]
+    #[test]
+    fn order_matches_running_zend() {
+        let mut reference = std::process::Command::new("sh");
+        reference.arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/modules/locks/thread/sort.sh"
+        ));
+        let mut expected = Vec::new();
+        for n in [1, 3, 5, 12, 16, 17, 40, 1023, 1024, 1025] {
+            let keys: Vec<usize> = (0..n).map(|i| (i * 7919 + 13) % (n / 3 + 1)).collect();
+            reference.arg(
+                keys.iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+            for cyclic in [false, true] {
+                let mut items: Vec<_> = keys.iter().copied().enumerate().collect();
+                zend_sort(&mut items, &|a, b| {
+                    if cyclic {
+                        (a.1 + 3 - b.1 % 3) % 3 == 1
+                    } else {
+                        a.1 > b.1
+                    }
+                });
+                expected.push(
+                    items
+                        .into_iter()
+                        .map(|(id, _)| id.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                );
+            }
+        }
+        let output = reference.output().expect("run PHP zend_sort");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).expect("numeric output");
+        assert_eq!(
+            expected,
+            stdout.lines().collect::<Vec<_>>(),
+            "Zend sort permutations"
         );
     }
 
