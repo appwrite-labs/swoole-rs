@@ -131,8 +131,9 @@ jobs:
             | "\(.Image) \(.Service)"')
           echo "Failed to start: ${bad:-unknown}"
           if [ -z "$bad" ] || echo "$bad" | grep -q '^appwrite-dev '; then exit 1; fi
-          # shellcheck disable=SC2046 # one service name per word
-          docker compose rm --force --stop --volumes $(echo "$bad" | cut -d' ' -f2)
+          mapfile -t helpers < <(cut -d' ' -f2 <<< "$bad")
+          echo "::warning::Retrying Appwrite stack startup after recreating helpers: ${helpers[*]}"
+          docker compose rm --force --stop --volumes "${helpers[@]}"
           docker compose up -d --quiet-pull --wait
       - name: Wait for Open Runtimes
         timeout-minutes: 3

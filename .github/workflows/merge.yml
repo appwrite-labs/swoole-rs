@@ -270,6 +270,21 @@ jobs:
       engines: ${{ needs.phpt-build.outputs.baseline && '["cargo"]' || '["upstream", "cargo"]' }}
       baseline: ${{ needs.phpt-build.outputs.baseline }}
 
+  phpt-trends:
+    # File recurring cargo-only failures weekly. The hourly PHPT artifact records every clearance.
+    if: github.ref == 'refs/heads/main' && github.event.schedule == '17 5 * * 0'
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/ci.py phpt-trends --file-issues | tee -a "$GITHUB_STEP_SUMMARY"
+
   # The PHPTs that skip unless run as root (SO_BINDTODEVICE, raw ICMP, a server dropping to
   # www-data, a chroot), as root on every engine, with their own re-runs and gate (#1998).
   # sudo drops GITHUB_ACTIONS, so getaddrinfo_timeout's skip_if_in_ci() doesn't skip it either:

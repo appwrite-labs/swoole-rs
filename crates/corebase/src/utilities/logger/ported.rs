@@ -11,14 +11,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
 use std::sync::LazyLock;
 
-const SW_LOG_DEBUG: c_int = 0;
-const SW_LOG_TRACE: c_int = 1;
-const SW_LOG_NONE: c_int = 6;
-// `SW_LOG_ROTATION_*`, upstream's `swoole_log.h`.
-const SW_LOG_ROTATION_MONTHLY: c_int = 1;
-const SW_LOG_ROTATION_DAILY: c_int = 2;
-const SW_LOG_ROTATION_HOURLY: c_int = 3;
-const SW_LOG_ROTATION_EVERY_MINUTE: c_int = 4;
+use crate::utilities::{SW_LOG_DEBUG, SW_LOG_TRACE};
 /// `const char *file` and `TEST_LOG_FILE`: upstream's names, in a directory of this
 /// test process's own, so no other run's or user's /tmp file is appended to or unlinked.
 static PATHS: LazyLock<(CString, CString)> = LazyLock::new(|| {
@@ -222,10 +215,10 @@ fn rotation() {
     let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
     let logger = &sw_logger();
     let types = [
-        SW_LOG_ROTATION_DAILY,
-        SW_LOG_ROTATION_EVERY_MINUTE,
-        SW_LOG_ROTATION_HOURLY,
-        SW_LOG_ROTATION_MONTHLY,
+        rotation::DAILY,
+        rotation::EVERY_MINUTE,
+        rotation::HOURLY,
+        rotation::MONTHLY,
     ];
     for rotation in types {
         logger.reset();

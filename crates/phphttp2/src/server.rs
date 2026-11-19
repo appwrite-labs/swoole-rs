@@ -8,9 +8,13 @@ use crate::session::{Session, SessionState, Stream};
 use libc::c_int;
 use std::ffi::{CStr, CString};
 use swoole_rs_corebase::CCast;
+use swoole_rs_http2::frame_flag::{
+    ACK as FLAG_ACK, END_HEADERS as FLAG_END_HEADERS, END_STREAM as FLAG_END_STREAM,
+    PADDED as FLAG_PADDED, PRIORITY as FLAG_PRIORITY,
+};
 use swoole_rs_http2::{
-    FileCompletion, FrameAction, FrameType, HeaderKind, HeaderRole, Http2HeaderPlan,
-    Http2RespondFacts, Http2WindowPlan, Media, Respond, WindowAction, decode_packet,
+    FileCompletion, FrameAction, FrameType, GOAWAY_SIZE, HeaderKind, HeaderRole, Http2HeaderPlan,
+    Http2RespondFacts, Http2WindowPlan, Media, PING_PAYLOAD, Respond, WindowAction, decode_packet,
     hpack::{Encoder, Error},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_content_length_rejected,
     sw_rs_http2_data_rejected, sw_rs_http2_file_complete, sw_rs_http2_header_defaults,
@@ -25,13 +29,6 @@ use swoole_rs_zend::{Array, HeldArray, Value as Zval, ZString, bailout};
 
 /// Frame sizes, types and flags (`swoole_http2.h`).
 const FRAME_HEADER: usize = swoole_rs_http2::FRAME_HEADER_SIZE as usize;
-const PING_PAYLOAD: usize = 8;
-const GOAWAY_SIZE: usize = 8;
-const FLAG_ACK: u32 = 0x1;
-const FLAG_END_STREAM: u32 = 0x1;
-const FLAG_END_HEADERS: u32 = 0x4;
-const FLAG_PADDED: u32 = 0x8;
-const FLAG_PRIORITY: u32 = 0x20;
 /// `HTTP_HEADER_SERVER`, `_DATE` and `_CONTENT_TYPE`.
 const MISSING_SERVER: u32 = 2;
 const MISSING_DATE: u32 = 16;
@@ -131,27 +128,21 @@ pub(crate) fn current(session: &Session, stream: &Stream) -> bool {
 
 // --- small frames ---
 
-fn send_u32_frame(
-    ctx: Ctx,
-    kind: FrameType,
-    length: usize,
-    flags: u32,
-    stream_id: u32,
-    value: u32,
-) -> bool {
-    let mut frame = [0; FRAME_HEADER + 4];
-    frame[..FRAME_HEADER].copy_from_slice(&frame_header(kind, length, flags, stream_id));
-    frame[FRAME_HEADER..].copy_from_slice(&value.to_be_bytes());
+fn send_u32_frame(ctx: Ctx, kind: FrameType, stream_id: u32, value: u32) -> bool {
+    let payload = value.to_be_bytes();
+    let mut frame = [0; FRAME_HEADER + size_of::<u32>()];
+    frame[..FRAME_HEADER].copy_from_slice(&frame_header(kind, payload.len(), 0, stream_id));
+    frame[FRAME_HEADER..].copy_from_slice(&payload);
     send(ctx, &frame)
 }
 
 fn window_update(ctx: Ctx, stream_id: u32, size: u32) {
-    send_u32_frame(ctx, FrameType::WindowUpdate, 4, 0, stream_id, size);
+    send_u32_frame(ctx, FrameType::WindowUpdate, stream_id, size);
 }
 
 /// `Stream::reset`.
 pub(crate) fn reset(ctx: Ctx, stream_id: u32, code: u32) {
-    send_u32_frame(ctx, FrameType::RstStream, 4, 0, stream_id, code);
+    send_u32_frame(ctx, FrameType::RstStream, stream_id, code);
 }
 
 /// `swoole_http2_server_ping`.

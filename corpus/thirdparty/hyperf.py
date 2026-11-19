@@ -17,6 +17,7 @@ import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from tools.annotations import annotate
 from tools.harness import ROOT, parse_engines, request, run_isolated, stop_process_group, write_report
 
 HERE = Path(__file__).resolve().parent
@@ -80,6 +81,7 @@ def prepare(composer):
             break
         if attempt == 2:
             raise SystemExit('composer install failed 3 times')
+        annotate('warning', 'Composer install retry', f'Retrying Hyperf dependencies (attempt {attempt + 2} of 3)')
         time.sleep(10 * (attempt + 1))
     archive()
 

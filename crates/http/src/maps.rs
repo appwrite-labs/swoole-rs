@@ -1,5 +1,7 @@
 use std::ffi::CStr;
-pub(super) static METHODS: [&CStr; 27] = [
+/// Upstream method number of PRI, the final method in the table.
+pub const METHOD_PRI: u8 = 27;
+pub(super) static METHODS: [&CStr; METHOD_PRI as usize] = [
     c"DELETE",
     c"GET",
     c"HEAD",
@@ -29,16 +31,16 @@ pub(super) static METHODS: [&CStr; 27] = [
     c"PRI",
 ];
 /// The legacy status line for `code`, or None for an unknown code.
-pub(crate) fn status(code: i32) -> Option<&'static CStr> {
+pub(crate) const fn status(code: i32) -> Option<&'static CStr> {
     Some(match code {
         100 => c"100 Continue",
-        101 => c"101 Switching Protocols",
+        crate::status::SWITCHING_PROTOCOLS => c"101 Switching Protocols",
         102 => c"102 Processing",
         103 => c"103 Early Hints",
         201 => c"201 Created",
         202 => c"202 Accepted",
         203 => c"203 Non-Authoritative Information",
-        204 => c"204 No Content",
+        crate::status::NO_CONTENT => c"204 No Content",
         205 => c"205 Reset Content",
         206 => c"206 Partial Content",
         207 => c"207 Multi-Status",
@@ -82,10 +84,10 @@ pub(crate) fn status(code: i32) -> Option<&'static CStr> {
         429 => c"429 Too Many Requests",
         431 => c"431 Request Header Fields Too Large",
         451 => c"451 Unavailable For Legal Reasons",
-        500 => c"500 Internal Server Error",
+        crate::status::INTERNAL_SERVER_ERROR => c"500 Internal Server Error",
         501 => c"501 Not Implemented",
-        502 => c"502 Bad Gateway",
-        503 => c"503 Service Unavailable",
+        crate::status::BAD_GATEWAY => c"502 Bad Gateway",
+        crate::status::SERVICE_UNAVAILABLE => c"503 Service Unavailable",
         504 => c"504 Gateway Timeout",
         505 => c"505 HTTP Version Not Supported",
         506 => c"506 Variant Also Negotiates",

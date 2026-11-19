@@ -330,8 +330,13 @@ pub mod http_frame {
         pub header_info: unsafe extern "C" fn(*mut c_char, usize, u32, u32, *mut HeaderInfo),
     }
 
-    /// The request after `parse_header_info`. Flags: `known_length` 1, `keep_alive`
-    /// 2, `chunked` 4, `header_parsed` 16, `excepted` 32. Without
+    /// The bits of [`HeaderInfo::flags`], one per upstream `Request` bitfield, as
+    /// `shim/http_frame.cc` packs them (build.rs's `HTTP_FRAME_FLAGS`).
+    pub mod flags {
+        include!(concat!(env!("OUT_DIR"), "/http_frame_flags.rs"));
+    }
+
+    /// The request after `parse_header_info`; `flags` holds [`flags`]' bits. Without
     /// a multipart Content-Type, `boundary_offset` is -1.
     #[repr(C)]
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

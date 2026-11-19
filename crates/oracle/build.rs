@@ -65,6 +65,41 @@ fn pinned_macros(names: &[&str]) -> String {
     out
 }
 
+/// The pinned `enum`s named `names` from the vendored headers, each copied unchanged
+/// through its closing `};`, for a shim to use upstream's values (#5250).
+fn pinned_enums(names: &[&str]) -> String {
+    let mut headers: Vec<_> = fs::read_dir("upstream/include")
+        .expect("vendored headers")
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    headers.sort();
+    let texts: Vec<String> = headers
+        .iter()
+        .map(|path| fs::read_to_string(path).unwrap())
+        .collect();
+    names
+        .iter()
+        .map(|name| {
+            let start = format!("enum {name} {{");
+            let text = texts
+                .iter()
+                .find(|text| text.contains(&start))
+                .unwrap_or_else(|| panic!("no pinned enum {name}"));
+            slice(text, &start, "\n};") + "\n};\n"
+        })
+        .collect()
+}
+
+/// The bits `shim/http_frame.cc` packs upstream's `Request` bitfields into, written once
+/// here for the shim (`http_frame_flags.inc`) and `HeaderInfo` (`http_frame_flags.rs`).
+const HTTP_FRAME_FLAGS: [(&str, u32); 5] = [
+    ("KNOWN_LENGTH", 1),
+    ("KEEP_ALIVE", 2),
+    ("CHUNKED", 4),
+    ("HEADER_PARSED", 16),
+    ("EXCEPTED", 32),
+];
+
 /// The pinned HTTP cookie parser and URL decode/encode, copied unchanged for
 /// shim/http.cc to compile.
 fn http() {
@@ -160,6 +195,35 @@ fn http_frame() {
         slice(&header, "enum ChunkSizeResult {", "\n};") + "\n};\n",
     ];
     fs::write(out("http_frame_enums.inc"), enums.concat()).unwrap();
+    fs::write(
+        out("http_frame_pinned.inc"),
+        pinned_enums(&["swResultCode"])
+            + &pinned_macros(&[
+                "SW_LOOP_N",
+                "SW_STRL",
+                "SW_STR_ISTARTS_WITH",
+                "SW_STRCASEEQ",
+                "SW_HTTP_CHUNK_EOF",
+                "SW_HTTP2_PRI_STRING",
+            ]),
+    )
+    .unwrap();
+    let flags = |format: fn(&str, u32) -> String| -> String {
+        HTTP_FRAME_FLAGS
+            .iter()
+            .map(|(name, bit)| format(name, *bit))
+            .collect()
+    };
+    fs::write(
+        out("http_frame_flags.inc"),
+        flags(|name, bit| format!("#define SWR_HTTP_FLAG_{name} {bit}u\n")),
+    )
+    .unwrap();
+    fs::write(
+        out("http_frame_flags.rs"),
+        flags(|name, bit| format!("pub const {name}: u32 = {bit};\n")),
+    )
+    .unwrap();
 }
 
 /// `StaticHandler::parse_range` from the pinned `static_handler.cc`, copied unchanged
@@ -380,6 +444,27 @@ fn protocols() {
 /// codec, the socket DNS lookup and the request formats with `sw_snprintf` from the
 /// pinned sources, copied unchanged for shim/clients.cc.
 fn clients() {
+    fs::write(
+        out("clients_pinned.inc"),
+        pinned_enums(&["swSocketType", "swErrorCode"]),
+    )
+    .unwrap();
+    fs::write(
+        out("clients_dns_pinned.inc"),
+        pinned_enums(&["swResultCode", "swSocketType", "swErrorCode"])
+            + &pinned_macros(&["SW_BUFFER_SIZE_STD", "sw_unlikely"])
+            + &definition(
+                &fs::read_to_string("upstream/include/swoole.h").expect("vendored swoole.h"),
+                "static inline void sw_memset_zero(",
+            )
+            + "\n"
+            + &definition(
+                &fs::read_to_string("upstream/src/core/base.cc").expect("vendored base.cc"),
+                "size_t sw_snprintf(",
+            )
+            + "\n",
+    )
+    .unwrap();
     let config =
         fs::read_to_string("upstream/include/swoole_config.h").expect("vendored swoole_config.h");
     let base = fs::read_to_string("upstream/src/core/base.cc").expect("vendored base.cc");
@@ -690,6 +775,12 @@ fn cpp() -> cc::Build {
 /// (the Rust receive with its native effects), with String's split and reduce from the pinned string.cc, copied
 /// unchanged for `shim/framing_stream.cc`.
 fn framing_stream() {
+    fs::write(
+        out("framing_stream_pinned.inc"),
+        pinned_enums(&["swResultCode", "swReturnCode", "swErrorCode", "swLogLevel"])
+            + &pinned_macros(&["SW_BUFFER_SIZE_STD"]),
+    )
+    .unwrap();
     let upstream = fs::read_to_string("upstream/src/protocol/base.cc").expect("vendored base.cc");
     let candidate =
         fs::read_to_string("candidate/src/protocol/base.cc").expect("candidate base.cc");

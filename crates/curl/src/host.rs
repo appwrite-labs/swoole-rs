@@ -62,7 +62,7 @@ fn socket_new(fd: c_int) -> EventSocket {
 }
 
 /// Upstream's `PHP_SWOOLE_FD_CO_CURL`: `SW_FD_STREAM_CLIENT + 10`.
-const FD_CO_CURL: c_int = 17 + 10;
+const FD_CO_CURL: c_int = swoole_rs_corebase::constants::FdType::SW_FD_STREAM_CLIENT as c_int + 10;
 /// `SW_ERROR_CO_OUT_OF_COROUTINE` and `SW_ERROR_CO_HAS_BEEN_BOUND`.
 const CO_OUT_OF_COROUTINE: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as c_int;

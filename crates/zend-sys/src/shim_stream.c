@@ -5,7 +5,6 @@
  * the STREAMS_DC debug ABI, timeval's field widths) and allocator
  * (php_stream_alloc: on a debug PHP its _rel form needs the caller's STREAMS_DC). */
 #include "shim_stream.h"
-#include "ext/standard/file.h"
 
 /* version: has_buffered_data first appeared in PHP 8.3. */
 bool swr_zend_stream_buffered(const php_stream *stream) {

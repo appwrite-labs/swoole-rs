@@ -110,7 +110,7 @@ unsafe extern "C" {
     safe fn pthread_rwlock_wrlock(lock: RwLockRef<'_>) -> c_int;
     safe fn pthread_rwlock_tryrdlock(lock: RwLockRef<'_>) -> c_int;
     safe fn pthread_rwlock_trywrlock(lock: RwLockRef<'_>) -> c_int;
-    // libc 0.2.191 omits these two Linux declarations.
+    // libc omits these two Linux declarations (0.2.191, the latest 0.2, and 1.0.0-alpha.5).
     #[cfg(target_os = "linux")]
     safe fn pthread_rwlock_timedrdlock(lock: RwLockRef<'_>, deadline: &timespec) -> c_int;
     #[cfg(target_os = "linux")]

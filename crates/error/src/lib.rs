@@ -200,7 +200,7 @@ pub fn swr_v1_error_resolve(
 }
 
 /// `SW_ERROR_MSG_SIZE`: the bytes of each thread's last-error message.
-const ERROR_MSG_SIZE: usize = 16384;
+pub const ERROR_MSG_SIZE: usize = 16384;
 
 thread_local! {
     // Cells: C++ writes through the pointer while the thread can still reach the array.

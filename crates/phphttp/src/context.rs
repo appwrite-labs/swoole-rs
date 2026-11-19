@@ -9,7 +9,6 @@ use std::{
     cell::UnsafeCell,
     collections::HashSet,
     ffi::{CStr, CString, c_int},
-    mem::MaybeUninit,
     ptr,
     rc::Rc,
     sync::atomic::Ordering::Relaxed,
@@ -191,12 +190,11 @@ pub(crate) fn context_new(fd: i64) -> Hold {
 /// hold.
 #[must_use]
 pub(crate) fn alloc() -> Hold {
-    // Not `Rc::new_zeroed`: glibc's `calloc` skips the thread cache and cost
-    // 500 instructions a request where `malloc` and a memset cost about 100
-    // (#2129). `black_box` keeps LLVM from folding them back into `calloc`.
-    let mut fresh = std::hint::black_box(Rc::<UnsafeCell<State>>::new_uninit());
+    // Not `Rc::new_zeroed`, which is `calloc`: zeroed apart, it stays `malloc`
+    // (corebase's `memory::apart`).
+    let mut fresh = Rc::<UnsafeCell<State>>::new_uninit();
     if let Some(state) = Rc::get_mut(&mut fresh) {
-        *state = MaybeUninit::zeroed();
+        swoole_rs_corebase::memory::apart::zero(state);
     }
     // SAFETY: a fresh `Rc` is unique, so `get_mut` zeroed it, and all zeroes
     // is a valid `State` (null pointers, `None`s and `IS_UNDEF` zvals, as
@@ -211,7 +209,7 @@ pub(crate) fn init(state: &mut State, server: view::Server<'_>) {
     state.parse_cookie = config.http_parse_cookie.get();
     state.parse_body = config.http_parse_post.get();
     state.parse_files = config.http_parse_files.get();
-    if parse::CAPABILITIES.load(Relaxed) & 8 != 0 {
+    if parse::enabled_codecs() != 0 {
         state.enable_compression = config.http_compression.get();
         state.compression_level = i8::from_ne_bytes([config.http_compression_level.get()]);
         state.compression_min_length = config.compression_min_length.get();

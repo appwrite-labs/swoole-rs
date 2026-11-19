@@ -2,10 +2,9 @@
 use crate::{
     context::{self, Ctx, Hold, Holder},
     host::{self, COMPLETED, HTTP_CONTEXT_UNAVAILABLE, HTTP2},
-    parse::{self, CAPABILITIES, Property, body, method_name},
+    parse::{self, Property, body, method_name},
     state::State,
 };
-use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::SW_Z_BEST_SPEED;
 use swoole_rs_httpbindings::{RequestOption, request_option};
@@ -135,8 +134,7 @@ fn create_request(call: &Call) {
     state.parse_cookie = true;
     state.parse_body = true;
     state.parse_files = true;
-    let compression = CAPABILITIES.load(Relaxed) & 8 != 0;
-    if compression {
+    if parse::enabled_codecs() != 0 {
         state.enable_compression = true;
         state.compression_level = SW_Z_BEST_SPEED.c_cast::<i8>();
     }
@@ -153,8 +151,8 @@ fn create_request(call: &Call) {
 
 /// One of `Request::create`'s options (a bailout in a conversion is deferred).
 fn option(state: &mut State, name: &[u8], value: &Value) {
-    let capabilities = CAPABILITIES.load(Relaxed);
-    let wanted = u32::from(capabilities & 8 != 0) | (u32::from(capabilities & 1 != 0) << 1);
+    let codecs = parse::enabled_codecs();
+    let wanted = u32::from(codecs != 0) | (u32::from(codecs & 1 != 0) << 1);
     let option = request_option(name, wanted);
     let truth = || value.truthy();
     match option {

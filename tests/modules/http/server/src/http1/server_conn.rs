@@ -708,13 +708,16 @@ fn no_idle_worker_client(serv: Server) {
     for _ in 0..1024 {
         let _ = c.write_all(PACKET);
     }
-    for _ in 0..10_000 {
-        if read_text(TEST_LOG_FILE).is_some_and(|log| log.contains("No idle worker is available")) {
-            break;
-        }
-        let _ = c.write_all(PACKET);
-        micro_sleep(1000);
-    }
+    wait_for(
+        "the master's \"No idle worker is available\" warning",
+        Duration::from_secs(3),
+        Duration::from_millis(1),
+        Duration::from_secs(10),
+        || read_text(TEST_LOG_FILE).is_some_and(|log| log.contains("No idle worker is available")),
+        || {
+            let _ = c.write_all(PACKET);
+        },
+    );
     drop(c);
     kill_pid(serv.get_master_pid());
 }
@@ -1702,12 +1705,14 @@ fn abort_worker() {
         assert_eq!(rn, 0);
 
         drop(c1);
-        for _ in 0..10_000 {
-            if counter_get(0) > 2 {
-                break;
-            }
-            micro_sleep(1000);
-        }
+        wait_for(
+            "the third worker start",
+            Duration::ZERO,
+            Duration::from_millis(1),
+            Duration::from_secs(10),
+            || counter_get(0) > 2,
+            || {},
+        );
 
         let mut c2 = TcpStream::connect((TEST_HOST, port)).unwrap();
         c2.write_all(b"info").unwrap();

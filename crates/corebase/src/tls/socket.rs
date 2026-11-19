@@ -6,9 +6,9 @@ use crate::constants::ReturnCode;
 use crate::lent::{Spare, lend_spare};
 use crate::log;
 use crate::sys::ReadSlot;
-use crate::tls::SslState;
 use crate::tls::handle::{Ssl, SslFailure};
 use crate::tls::handle::{clear_errors, peek_error, pop_error, reason_string};
+use crate::tls::{SslCreateFlag, SslState};
 use openssl_sys::{
     SSL_ERROR_SSL, SSL_ERROR_SYSCALL, SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE,
     SSL_ERROR_ZERO_RETURN, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER, SSL_RECEIVED_SHUTDOWN,
@@ -19,8 +19,8 @@ use std::os::raw::{c_int, c_long, c_ulong};
 use swoole_rs_error::ErrorCode;
 
 /// `SW_SSL_SERVER` and `SW_SSL_CLIENT`.
-const SERVER: c_int = 1;
-const CLIENT: c_int = 2;
+const SERVER: c_int = SslCreateFlag::SW_SSL_SERVER as c_int;
+const CLIENT: c_int = SslCreateFlag::SW_SSL_CLIENT as c_int;
 
 const BAD_CLIENT: c_int = ErrorCode::SW_ERROR_SSL_BAD_CLIENT as c_int;
 const RESET: c_int = ErrorCode::SW_ERROR_SSL_RESET as c_int;
@@ -254,7 +254,7 @@ pub fn swr_v1_socket_ssl_verify(ssl: Ssl, allow_self_signed: bool) -> c_long {
 }
 
 /// OpenSSL 3's `ERR_GET_REASON`: a system error's reason is its errno.
-/// openssl-sys's port returns `ERR_LIB_SYS` (2) for those instead.
+/// openssl-sys's port (0.9.118, the latest) returns `ERR_LIB_SYS` (2) for those instead.
 #[must_use]
 pub fn error_reason(error: c_ulong) -> c_int {
     const SYSTEM_FLAG: c_ulong = 1 << 31;
@@ -590,7 +590,7 @@ mod tests {
     }
 
     unsafe extern "C" {
-        /// Not bound by openssl-sys; sets what a handshake would have verified.
+        /// Not bound by openssl-sys (0.9.118, the latest); sets what a handshake would have verified.
         fn SSL_set_verify_result(ssl: *mut SSL, result: c_long);
     }
 
@@ -810,7 +810,7 @@ mod shutdown_tests {
     use std::os::raw::c_int;
     use std::ptr;
 
-    // libssl/libcrypto's own declarations; openssl-sys binds none of them.
+    // libssl/libcrypto's own declarations; openssl-sys (0.9.118, the latest) binds none of them.
     unsafe extern "C" {
         fn BIO_new_bio_pair(
             left: *mut *mut BIO,

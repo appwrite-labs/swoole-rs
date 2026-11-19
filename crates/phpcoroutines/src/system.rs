@@ -31,8 +31,6 @@ unsafe extern "C" {
 
 /// `SW_FILE_LOCK`, the `FILE_LOCK` constant.
 const FILE_LOCK: c_long = libc::LOCK_EX as c_long;
-/// `SW_FILE_APPEND`: PHP's `FILE_APPEND`.
-const FILE_APPEND: c_long = 1 << 3;
 /// `SW_ERROR_OPERATION_NOT_SUPPORT`.
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
@@ -150,7 +148,7 @@ fn write_file(call: &Call) {
         value_error(call, c"Filename cannot be empty");
         return;
     }
-    let mode = if flags & FILE_APPEND != 0 {
+    let mode = if flags & c_long::from(z::PHP_FILE_APPEND) != 0 {
         libc::O_APPEND
     } else {
         libc::O_TRUNC

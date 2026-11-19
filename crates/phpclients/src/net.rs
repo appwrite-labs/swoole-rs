@@ -599,6 +599,7 @@ fn connection(object: Obj, host: &[u8], port: i64) -> Option<Rc<Conn>> {
         connection.keep = true;
     }
     if kind & SOCK_SSL != 0 {
+        // The synchronous client factory requests TLS here and returns the client regardless of the result.
         let _context = connection.cli().handle().enable_ssl();
     }
     Some(Rc::new(connection))

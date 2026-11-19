@@ -1273,6 +1273,7 @@ fn get_notify(call: &swoole_rs_zend::Call<'_>) {
                 events: libc::POLLIN | libc::POLLERR | libc::POLLHUP,
                 revents: 0,
             };
+            // PDO waits for readability, then uses PQconsumeInput to decide success even after a poll error.
             let _readiness =
                 swoole_rs_corebase::sys::poll(std::slice::from_mut(&mut socket), timeout);
             received = next();

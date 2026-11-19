@@ -253,6 +253,26 @@ schedstat, to a shared log (`server/src/http1/timeline.rs`) and prints the log w
 worker-start count fails. Under CPU contention, a process in the replacement chain can sit
 runnable past that window. That happens in upstream's build as well as this one (#4046).
 
+Where upstream sleeps a fixed time for another thread or process, a case instead waits for
+the condition through `wait_for` (`server/src/http1.rs`). It checks the condition every interval
+until a deadline, and prints the wait to the case's log when it outlasts upstream's sleep. On the
+deadline it names the condition and returns false. It doesn't panic, since a client thread that
+did would leave its server running until the case timeout. Upstream's assertion after it
+then fails, unchanged:
+
+| Case (upstream TEST) | Upstream | Here |
+| --- | --- | --- |
+| `no_idle_worker` | sends 1024 packets, sleeps 3 s | also a packet a millisecond until the master logs "No idle worker is available", up to 10 s: the reactor can take the burst in too few reads (arm64 Docker always does) |
+| `no_idle_task_worker` | sends one packet, sleeps 3 s | also a packet a second until the master logs "No idle task worker is available", up to 10 s: the event worker can queue every task before a task worker is busy |
+| `abort_worker` | c2 connects as soon as c1 reads EOF | c2 waits for the third worker start, up to 10 s: the manager retires the dead worker's sessions only before starting its replacement |
+| `thread` | asserts `read_message` 1 ms after SIGIO, then shuts down | waits for `read_message` and for both pipe messages, up to 3 s each: the master's reactor and a starting worker can be scheduled later under load |
+| `reload_all_workers`, `reload_all_workers2` | worker 1 signals `master_pid` at once | worker 1 waits for the pid, up to 10 s: before the master publishes it, `kill(0, ...)` would signal the whole group. Without it, worker 1 returns and the watchdog stops the case |
+
+`reload_all_from_worker_error`'s and `reload_tasks_from_worker_error`'s waits, worker 0's wait for
+`onManagerStart` and `onBeforeReload`'s three-second wait for the handlers, are upstream's own
+loops and stay as upstream has them. So do the five-second reload watchdog and
+`task_worker_3`'s manager timer, which are reactor timers, not waits.
+
 `core-tests/src/server/server.cpp`'s task-worker TESTs are `server/src/http1/task.rs`, suite
 `server`, in the same binary and phase, one function per TEST under its own name with the
 same Servers, inputs and expected values: `task_worker`, `task_worker2`, `task_worker_3`,

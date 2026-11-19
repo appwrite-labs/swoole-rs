@@ -49,6 +49,12 @@ pub struct Http2ResponsePlan {
 
 /// Size of the fixed HTTP/2 frame header, including its three-byte length.
 pub const FRAME_HEADER_SIZE: u8 = 9;
+/// Opaque payload of a PING or its acknowledgement.
+pub const PING_PAYLOAD: usize = 8;
+/// Last stream ID and error code preceding optional GOAWAY debug data.
+pub const GOAWAY_SIZE: usize = 2 * std::mem::size_of::<u32>();
+/// A `WINDOW_UPDATE` frame carries one network-order increment.
+pub const WINDOW_UPDATE_SIZE: usize = std::mem::size_of::<u32>();
 const HEADER_BYTES: usize = FRAME_HEADER_SIZE as usize;
 pub const SETTING_BYTES: usize = size_of::<u16>() + size_of::<u32>();
 /// Wire identifiers from `swHttp2SettingId`.
@@ -163,6 +169,13 @@ pub fn sw_rs_http2_data_rejected(
     current.wrapping_add(additional) > maximum as usize || ended
 }
 
+/// HTTP/2 error codes used by both the wire handlers and PHP registration.
+pub mod error_code {
+    pub const NO_ERROR: u32 = 0;
+    pub const INTERNAL_ERROR: u32 = 2;
+    pub const FRAME_SIZE_ERROR: u32 = 6;
+}
+
 /// The frame types this side sends (`SW_HTTP2_TYPE_*`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -174,6 +187,23 @@ pub enum FrameType {
     Ping = 6,
     Goaway = 7,
     WindowUpdate = 8,
+}
+
+/// Wire flags from `swHttp2FrameFlag`. The frame type determines the meaning of bit zero.
+pub mod frame_flag {
+    pub const ACK: u32 = 0x01;
+    pub const END_STREAM: u32 = 0x01;
+    pub const END_HEADERS: u32 = 0x04;
+    pub const PADDED: u32 = 0x08;
+    pub const PRIORITY: u32 = 0x20;
+}
+
+/// Local HTTP/2 stream state from `swHttp2StreamFlag`.
+pub mod stream_flag {
+    pub const REQUEST_END: u32 = 1 << 0;
+    pub const PIPELINE_REQUEST: u32 = 1 << 1;
+    pub const PIPELINE_RESPONSE: u32 = 1 << 2;
+    pub const USE_PIPELINE_READ: u32 = 1 << 3;
 }
 
 /// What a received frame asks of its session.
@@ -195,7 +225,7 @@ pub enum FrameAction {
 }
 
 fn frame_action(client: bool, kind: u32, flags: u32) -> FrameAction {
-    let ack = flags & 1 != 0;
+    let ack = flags & frame_flag::ACK != 0;
     match kind {
         4 if ack => FrameAction::SettingsAck,
         4 => FrameAction::Settings,
@@ -518,7 +548,7 @@ pub fn sw_rs_http2_decode_frame(
 ///
 /// # Errors
 /// RFC 9113 requires exactly eight bytes.
-pub fn ping_payload(bytes: &[u8]) -> Result<[u8; 8], std::array::TryFromSliceError> {
+pub fn ping_payload(bytes: &[u8]) -> Result<[u8; PING_PAYLOAD], std::array::TryFromSliceError> {
     bytes.try_into()
 }
 
@@ -641,7 +671,15 @@ pub fn sw_rs_http2_window_action(length: usize, window: u32, may_suspend: bool) 
 
 #[must_use]
 pub fn sw_rs_http2_stream_flags(pipeline: bool, pipeline_read: bool) -> u32 {
-    (if pipeline { 2 } else { 0 }) | (if pipeline_read { 8 } else { 0 })
+    (if pipeline {
+        stream_flag::PIPELINE_REQUEST
+    } else {
+        0
+    }) | (if pipeline_read {
+        stream_flag::USE_PIPELINE_READ
+    } else {
+        0
+    })
 }
 
 pub struct Http2InflateStep {
@@ -665,7 +703,12 @@ pub fn sw_rs_http2_inflate_step(
 
 #[must_use]
 pub fn sw_rs_http2_headers_flags(empty: bool, end_stream: bool, stream_flags: u32) -> u32 {
-    4 | u32::from(empty && end_stream && stream_flags & 2 == 0)
+    frame_flag::END_HEADERS
+        | if empty && end_stream && stream_flags & stream_flag::PIPELINE_REQUEST == 0 {
+            frame_flag::END_STREAM
+        } else {
+            0
+        }
 }
 
 /// Apply a copied stream flag transition. Callers publish into the sole native stream.
@@ -673,15 +716,19 @@ pub fn sw_rs_http2_headers_flags(empty: bool, end_stream: bool, stream_flags: u3
 pub fn sw_rs_http2_stream_update(flags: u32, end: bool, receiving: bool) -> u32 {
     flags
         | if receiving && !end {
-            4
+            stream_flag::PIPELINE_RESPONSE
+        } else if !receiving && end {
+            stream_flag::REQUEST_END
         } else {
-            u32::from(!receiving && end)
+            0
         }
 }
 
 #[must_use]
 pub fn sw_rs_http2_write_allowed(exists: bool, stream_flags: u32) -> bool {
-    exists && stream_flags & 2 != 0 && stream_flags & 1 == 0
+    exists
+        && stream_flags & stream_flag::PIPELINE_REQUEST != 0
+        && stream_flags & stream_flag::REQUEST_END == 0
 }
 
 /// Whether a received frame ends the response and makes it ready.
@@ -692,8 +739,10 @@ pub fn sw_rs_http2_response(
     stream_flags: u32,
     pipeline_read: bool,
 ) -> Http2ResponsePlan {
-    let end = flags & 1 != 0 || matches!(action, FrameAction::Reset | FrameAction::Goaway);
-    let pipeline = (pipeline_read || stream_flags & 8 != 0) && stream_flags & 4 != 0;
+    let end = flags & frame_flag::END_STREAM != 0
+        || matches!(action, FrameAction::Reset | FrameAction::Goaway);
+    let pipeline = (pipeline_read || stream_flags & stream_flag::USE_PIPELINE_READ != 0)
+        && stream_flags & stream_flag::PIPELINE_RESPONSE != 0;
     Http2ResponsePlan {
         end,
         ready: end || pipeline,

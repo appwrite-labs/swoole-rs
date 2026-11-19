@@ -19,11 +19,16 @@ use std::{
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
 use swoole_rs_corebase::CellExt;
+use swoole_rs_corebase::constants::{
+    SW_HTTP_BAD_REQUEST_PACKET, SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
+};
 use swoole_rs_corebase::memory::flat::Table;
 use swoole_rs_corebase::process::worker_globals::with_current;
 use swoole_rs_corebase::process::worker_record::WorkerType;
 use swoole_rs_corebase::{CCast, HookType, swoole_isset_hook};
 use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
+use swoole_rs_http::llhttp::HPE_OK;
+use swoole_rs_http::status::SERVICE_UNAVAILABLE as SERVICE_UNAVAILABLE_STATUS;
 use swoole_rs_phpserver::PortCallback;
 use swoole_rs_phpserver::{
     RecvData, php_swoole_get_recv_data, php_swoole_server_get_callback,
@@ -69,17 +74,8 @@ pub fn server_minit(args: &MinitArgs) {
     );
 }
 
-/// `SW_HTTP_SERVICE_UNAVAILABLE_PACKET`.
-const SERVICE_UNAVAILABLE: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\r\n";
-/// `SW_HTTP_BAD_REQUEST_PACKET`.
-const BAD_REQUEST: &[u8] = b"HTTP/1.1 400 Bad Request\r\n\r\n";
-/// llhttp's `HPE_OK`.
-const HPE_OK: i32 = 0;
 /// `SW_ERROR_SESSION_NOT_EXIST` and `SW_LOG_TRACE`.
 const SESSION_NOT_EXIST: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_NOT_EXIST as c_int;
-
-/// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
-const UPLOAD_PREPROCESSED: u16 = 1;
 
 /// Where `onReceive` sends the data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -305,7 +301,7 @@ fn receive(
     context::init(ctx.state(), server);
     let state = ctx.state();
     state.before_request = true;
-    state.upload_preprocessed = ext_flags & UPLOAD_PREPROCESSED != 0;
+    state.upload_preprocessed = ext_flags & swoole_rs_ports::read::UPLOAD_PREPROCESSED != 0;
     // The data moves into the request's own zval.
     state.request.zdata = php_swoole_get_recv_data(server, request);
     crate::parse::init_request_parser(ctx);
@@ -367,6 +363,7 @@ pub(crate) fn call_handler(
         then,
     );
     called.map_err(|bailout| {
+        // The Err returned below carries the bailout after relay_to_c consumes the pending flag.
         let _relayed = bailout::relay_to_c(Err(bailout));
         bailout::Bailout
     })
@@ -412,7 +409,7 @@ fn call(mut ctx: Ctx, coroutine: bool) -> Result<(), bailout::Bailout> {
         Err(bailout) => bailout.defer(),
         Ok(false) => {
             host::notice("Swoole\\Http\\Server->onRequest handler error");
-            context::send(ctx, SERVICE_UNAVAILABLE);
+            context::send(ctx, SW_HTTP_SERVICE_UNAVAILABLE_PACKET.as_bytes());
             context::close(ctx);
         }
         Ok(true) => {}
@@ -467,7 +464,7 @@ fn handle(
     // The parser `receive` initialised.
     let parsed = parse_request(ctx.state(), data);
     if ctx.state().parser.error != HPE_OK || !ctx.state().completed {
-        context::send(ctx, BAD_REQUEST);
+        context::send(ctx, SW_HTTP_BAD_REQUEST_PACKET.as_bytes());
         context::close(ctx);
         let parser = &ctx.state().parser;
         if parser.error == HPE_OK {
@@ -576,11 +573,8 @@ fn http2_connection(
     Some((conn, facts))
 }
 
-/// `SW_HTTP_VERSION_2`, `SW_HTTP_SERVICE_UNAVAILABLE` and
-/// `SW_HTTP2_ERROR_INTERNAL_ERROR`.
+/// `SW_HTTP_VERSION_2`.
 const HTTP_VERSION_2: c_int = 3;
-const SERVICE_UNAVAILABLE_STATUS: c_int = 503;
-const HTTP2_INTERNAL_ERROR: u32 = 2;
 
 /// `http2_server_onRequest`: a finished HTTP/2 request on a server's
 /// connection (the session's handler), answered by the static handler or the
@@ -657,7 +651,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         Err(bailout) => bailout.defer(),
         Ok(false) => {
             let stream_id = ctx.state().stream_id;
-            (http2.reset)(ctx, stream_id, HTTP2_INTERNAL_ERROR);
+            (http2.reset)(ctx, stream_id, swoole_rs_http2::error_code::INTERNAL_ERROR);
             host::notice("Swoole\\Http\\Server->onRequest[v2] handler error");
         }
         Ok(true) => {}
@@ -741,7 +735,7 @@ pub(crate) fn release_request(server: view::Server<'_>) {
     if worker.shutdown {
         while let Some(hold) = dequeue() {
             let ctx = hold.ctx();
-            context::send(ctx, SERVICE_UNAVAILABLE);
+            context::send(ctx, SW_HTTP_SERVICE_UNAVAILABLE_PACKET.as_bytes());
             context::close(ctx);
             abandon(ctx);
         }

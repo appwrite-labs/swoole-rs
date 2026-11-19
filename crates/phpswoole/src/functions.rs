@@ -54,9 +54,10 @@ handlers! {
 }
 
 /// `SW_STRERROR_*`: which table `swoole_strerror()` reads.
-const STRERROR_GAI: i64 = 1;
-const STRERROR_DNS: i64 = 2;
-const STRERROR_SWOOLE: i64 = 9;
+pub(super) const STRERROR_SYSTEM: i64 = 0;
+pub(super) const STRERROR_GAI: i64 = 1;
+pub(super) const STRERROR_DNS: i64 = 2;
+pub(super) const STRERROR_SWOOLE: i64 = 9;
 /// `SW_ERROR_BEGIN` and `SW_ERROR_END`.
 const ERROR_BEGIN: i64 = swoole_rs_error::ErrorCode::SW_ERROR_BEGIN as i64;
 const ERROR_END: i64 = swoole_rs_error::ErrorCode::SW_ERROR_END as i64;
@@ -67,7 +68,8 @@ const JSON_DEFAULT_DEPTH: i64 = 512;
 const JSON_OBJECT_AS_ARRAY: i64 = 1;
 
 unsafe extern "C" {
-    /// `<netdb.h>`; not in the libc crate. Any code names a static message.
+    /// `<netdb.h>`. Declared here, not taken from the libc crate, for its safe signature:
+    /// any code names a static message.
     safe fn hstrerror(error: c_int) -> Text<'static>;
     /// `<netdb.h>`, likewise.
     safe fn gai_strerror(error: c_int) -> Text<'static>;
@@ -103,7 +105,7 @@ fn errno(call: &Call) {
 fn strerror(call: &Call) {
     let parsed = call
         .arity(1, 2)
-        .and_then(|()| Ok((call.long(1, 0)?, call.long(2, 0)?)));
+        .and_then(|()| Ok((call.long(1, 0)?, call.long(2, STRERROR_SYSTEM)?)));
     let Some((code, kind)) = or_false(call, parsed) else {
         return;
     };

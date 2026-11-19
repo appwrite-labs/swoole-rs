@@ -26,9 +26,6 @@ use crate::http_routes::Session;
 use crate::http_routes::exports::{Frames, Port, Route, Tasks};
 use crate::read::{Connection, Dispatch, Framing, Readable, Reply, Upgrade, readable};
 
-/// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
-const UPLOAD_PREPROCESSED: u16 = 1;
-
 /// One readable event on a live connection, which only this reactor thread touches.
 struct Read<'a> {
     /// The socket's receive buffer, initialized before reading.
@@ -282,7 +279,7 @@ impl Connection for Read<'_> {
                 0
             },
             ext_flags: if dispatch == Dispatch::Upload {
-                UPLOAD_PREPROCESSED
+                crate::read::UPLOAD_PREPROCESSED
             } else {
                 0
             },

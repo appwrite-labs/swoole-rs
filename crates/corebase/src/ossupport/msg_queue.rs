@@ -8,7 +8,7 @@ use crate::{log, sys::Pod};
 use libc::{IPC_CREAT, IPC_NOWAIT, c_int, c_long};
 
 // the XSI message queue calls, declared here because libc omits them on
-// Darwin, with their C signatures; `msgget` takes no pointer. `msgctl` takes none or
+// Darwin (0.2.191, the latest 0.2, and 1.0.0-alpha.5), with their C signatures; `msgget` takes no pointer. `msgctl` takes none or
 // a live, writable `msqid_ds`, the largest record a command reads or fills
 // (`IPC_STAT` fills it, `IPC_SET` reads it, `IPC_RMID` takes none); the kernel
 // rejects a command that needs the one it wasn't given.
@@ -271,7 +271,7 @@ fn node_parts(node: &[u8]) -> Option<(c_long, usize)> {
     Some((c_long::from_ne_bytes(*kind), payload.len()))
 }
 
-/// `struct msqid_ds`, which libc omits on Darwin.
+/// `struct msqid_ds`, which libc omits on Darwin (0.2.191 and 1.0.0-alpha.5).
 #[cfg(target_os = "linux")]
 use libc::msqid_ds as MsqidDs;
 #[cfg(target_os = "macos")]

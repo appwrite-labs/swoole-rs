@@ -1075,15 +1075,6 @@ fn event_pool_read_message(serv: Server) -> bool {
     unsafe { ptr::read_volatile((&raw const (*pool).read_message).cast::<bool>()) }
 }
 
-/// Polls `done` every millisecond for up to 3 s, where upstream sleeps a fixed time for
-/// another thread that a loaded host can outlast.
-fn wait_for(done: impl Fn() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while !done() && std::time::Instant::now() < deadline {
-        sleep_us(1000);
-    }
-}
-
 /// `onStart` of `thread` and `task_thread`: unlocks the client thread's `lock`.
 fn unlock_on_start(_: view::Server<'_>) {
     shared().unlocked.store(true, Ordering::SeqCst);
@@ -1170,12 +1161,26 @@ fn thread() {
             sleep_us(1000);
             // Upstream asserts after that 1 ms, but the master's reactor runs the handler
             // when it is next scheduled, which can be later under load.
-            wait_for(|| event_pool_read_message(serv));
+            wait_for(
+                "the master's SIGIO handler",
+                Duration::from_millis(1),
+                Duration::from_millis(1),
+                Duration::from_secs(3),
+                || event_pool_read_message(serv),
+                || {},
+            );
             assert!(event_pool_read_message(serv));
 
             // Upstream shuts down here and counts the pipe messages after `start`; under
             // load a worker can still be starting, so its message would never arrive.
-            wait_for(|| counter_get(4) == 2);
+            wait_for(
+                "both pipe messages",
+                Duration::ZERO,
+                Duration::from_millis(1),
+                Duration::from_secs(3),
+                || counter_get(4) == 2,
+                || {},
+            );
             serv.shutdown();
         },
     );
@@ -1304,15 +1309,17 @@ fn no_idle_on_start(serv: view::Server<'_>) {
         // The event worker can queue all 1024 tasks before a task worker has marked itself
         // busy, so where upstream sleeps 3 s this sends another packet each second until the
         // master's once-a-second timer has logged the warning, for up to 10 s.
-        for _ in 0..10 {
-            sleep(1.0);
-            if read_text(TEST_LOG_FILE)
-                .is_some_and(|log| log.contains("No idle task worker is available"))
-            {
-                break;
-            }
-            std::io::Write::write_all(&mut c, PACKET).unwrap();
-        }
+        wait_for(
+            "the master's \"No idle task worker is available\" warning",
+            Duration::from_secs(3),
+            Duration::from_secs(1),
+            Duration::from_secs(10),
+            || {
+                read_text(TEST_LOG_FILE)
+                    .is_some_and(|log| log.contains("No idle task worker is available"))
+            },
+            || std::io::Write::write_all(&mut c, PACKET).unwrap(),
+        );
         drop(c);
 
         kill_pid(serv.get_master_pid());

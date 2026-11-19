@@ -2,6 +2,7 @@
 /* Compatibility derived from Swoole v6.2.4 src/core/base.cc (Swoole contributors). */
 /* base.cc's fatal_error, SwooleG.fatal_error until PHP's replaces it, and libc's
  * stdout: a C variadic and a macro, which stable Rust can't define or name. */
+#include "swoole_rs_corebase_constants.h"
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -13,15 +14,14 @@ void *swr_v1_core_logger(void);
 void swr_v1_logger_put(const void *logger, int level, const char *content, size_t length);
 void swr_v1_ffi_exit(int status);
 
-#define ERROR_MSG_SIZE 16384 /* SW_ERROR_MSG_SIZE */
-#define LOG_ERROR 5          /* SW_LOG_ERROR */
+#define LOG_ERROR 5 /* SW_LOG_ERROR */
 
 void swr_v1_ffi_fatal_error(int code, const char *format, ...) {
     char *error = swr_v1_error_buffer();
     va_list args;
-    size_t length = sw_snprintf(error, ERROR_MSG_SIZE, "(ERROR %d): ", code);
+    size_t length = sw_snprintf(error, SW_ERROR_MSG_SIZE, "(ERROR %d): ", code);
     va_start(args, format);
-    length += sw_vsnprintf(error + length, ERROR_MSG_SIZE - length, format, args);
+    length += sw_vsnprintf(error + length, SW_ERROR_MSG_SIZE - length, format, args);
     va_end(args);
     /* SwooleG.logger, a swoole::Logger, whose one member is crates/corebase/src/utilities' Logger. */
     void *const *logger = swr_v1_core_logger();

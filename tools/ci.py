@@ -58,6 +58,9 @@ import tempfile
 import time
 import urllib.parse
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tools.annotations import annotate
+
 EXIT = {'passed': 0, 'failed': 1, 'none': 2, 'running': 2, 'cancelled': 3, 'conflicts': 4}
 GATE_JOB = 'phpt / gate'
 # gate.py's annotation title for each regressed test, whose message starts with the test.
@@ -90,7 +93,7 @@ def gh(*args):
             wait = int(reset) - time.time() + 1 if reset.isdigit() else None
             at = f'{datetime.fromtimestamp(int(reset)):%H:%M:%S}' if wait is not None else 'an unknown time'
             if wait is not None and time.monotonic() + wait <= RETRY_DEADLINE:
-                say(f'gh {args[0]}: API rate limit exceeded; waiting until {at}')
+                retry(args, f'gh {args[0]}: API rate limit exceeded; waiting until {at}')
                 time.sleep(max(wait, 0))
                 continue
             raise subprocess.CalledProcessError(result.returncode, ['gh', *args], result.stdout,
@@ -100,9 +103,15 @@ def gh(*args):
                      and any(text.lower() in result.stderr.lower() for text in TRANSIENT))
         if not transient or time.monotonic() + delay > RETRY_DEADLINE:
             raise subprocess.CalledProcessError(result.returncode, ['gh', *args], result.stdout, result.stderr)
-        say(f"gh {args[0]} {args[1] if len(args) > 1 else ''}: {result.stderr.strip()[:80]}; retrying in {delay:g}s")
+        retry(args, f"gh {args[0]} {args[1] if len(args) > 1 else ''}: {result.stderr.strip()[:80]}; retrying in {delay:g}s")
         time.sleep(delay)
         delay = min(delay * 2, RETRY_CAP)
+
+
+def retry(args, message):
+    say(message)
+    operation = 'api graphql' if 'graphql' in args else ' '.join(args[:2])
+    annotate('warning', 'GitHub CLI retry', f'Retrying gh {operation}')
 
 
 def say(message):
@@ -672,6 +681,10 @@ def main(argv=None):
     past.add_argument('--workflow', action='append', required=True, help='workflow filename; repeatable')
     past.add_argument('--limit', type=int, default=30, help='newest runs per workflow, 1–1000 (includes active runs)')
     past.add_argument('--since', help='only runs created at or after this UTC time')
+    trend = commands.add_parser('phpt-trends', help='PHPTs cleared by reruns across scheduled main merge tiers')
+    trend.add_argument('--count', type=int, default=10, help='number of completed scheduled main runs')
+    trend.add_argument('--share', type=float, default=0.1, help='report clearance fractions strictly above this value')
+    trend.add_argument('--file-issues', action='store_true', help='file untracked cargo-only failures with a complete window')
     timing = commands.add_parser('timings')
     timing.add_argument('--count', type=int, default=20, help='qualifying runs to collect')
     timing.add_argument('--scan', type=int, default=100, help='maximum successful PR runs to inspect')
@@ -686,6 +699,18 @@ def main(argv=None):
     if args.command in ('status', 'wait') and args.event and not args.latest:
         parser.error('--event requires --latest')
     global RETRY_DEADLINE, RETRY_BASE
+    if args.command == 'phpt-trends':
+        from tools.phpt_trends import file_issues, trends
+        if not 0 < args.count <= 1000 or not 0 <= args.share <= 1:
+            parser.error('phpt-trends requires 1 <= --count <= 1000 and 0 <= --share <= 1')
+        try:
+            result = trends(gh, args.count, args.share)
+            if args.file_issues:
+                file_issues(gh, result)
+        except subprocess.CalledProcessError as failure:
+            sys.exit(f"gh {failure.cmd[1]}: {failure.stderr.strip()}")
+        print(json.dumps(result, indent=1))
+        return 0 if result['measured'] else 2
     if args.command == 'history':
         if not 1 <= args.limit <= 1000:
             parser.error('history requires 1 <= --limit <= 1000')

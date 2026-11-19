@@ -18,10 +18,13 @@ use std::{
 };
 use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::buffer::string::StringBuffer as Buffer;
-use swoole_rs_corebase::constants::{SW_COMPRESSION_MIN_LENGTH_DEFAULT, SW_Z_BEST_SPEED};
+use swoole_rs_corebase::constants::{
+    HTTP2_PREFACE, SW_COMPRESSION_MIN_LENGTH_DEFAULT, SW_HTTP_100_CONTINUE_PACKET, SW_Z_BEST_SPEED,
+};
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_members::Receive};
+use swoole_rs_http::llhttp::{HPE_OK, HPE_PAUSED_H2_UPGRADE};
 use swoole_rs_http2::FRAME_HEADER_SIZE as HTTP2_FRAME_HEADER_SIZE;
 use swoole_rs_httpbindings::Setting;
 use swoole_rs_phpclients::{NewSocket, get_socket, is_socket_closed, socket_settings};
@@ -37,8 +40,6 @@ use swoole_rs_zend::{
 };
 
 static SERVER: CustomClass<Data> = CustomClass::new();
-/// `SW_HAVE_COMPRESSION`.
-static COMPRESSION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The server created by `__construct` and dropped with the PHP object.
 struct Data(OnceCell<HttpServer>);
@@ -200,7 +201,7 @@ impl HttpServer {
         state.parse_body = self.parse_post.get();
         state.parse_cookie = self.parse_cookie.get();
         state.parse_files = self.parse_files.get();
-        if COMPRESSION.load(Relaxed) {
+        if crate::parse::enabled_codecs() != 0 {
             state.enable_compression = self.compression.get();
             state.compression_level = self.compression_level.get();
             state.compression_min_length = self.compression_min_length.get();
@@ -243,18 +244,12 @@ fn text_setting(server: &HttpServer, kind: Setting, text: Option<&[u8]>) {
     }
 }
 
-/// HTTP statuses the loop answers with, and llhttp's codes it checks.
+/// HTTP statuses the loop answers with.
 const BAD_REQUEST: c_int = 400;
 const NOT_FOUND: c_int = 404;
-/// `SW_HTTP2_ERROR_INTERNAL_ERROR`.
-const HTTP2_INTERNAL_ERROR: u32 = 2;
 const ENTITY_TOO_LARGE: c_int = 413;
-const HPE_OK: i32 = 0;
-const HPE_PAUSED_H2_UPGRADE: i32 = 23;
 /// `SW_BUFFER_SIZE_BIG`.
 const BUFFER_SIZE_BIG: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as usize;
-/// `SW_HTTP2_PRI_STRING`.
-const HTTP2_PRI: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 /// `EINVAL`.
 const EINVAL: zend_long = 22;
 
@@ -329,13 +324,12 @@ method_table! {
 /// MINIT: the class, as `php_swoole_http_server_coro_minit` registered it.
 pub fn server_coro_minit(args: &MinitArgs) {
     let minit = args.minit;
-    if let Err(error) = register(minit, args.shortname, args.compression) {
+    if let Err(error) = register(minit, args.shortname) {
         error.defer();
     }
 }
 
-fn register(minit: &Minit, short_name: bool, compression: bool) -> Result<(), bailout::Bailout> {
-    COMPRESSION.store(compression, Relaxed);
+fn register(minit: &Minit, short_name: bool) -> Result<(), bailout::Bailout> {
     // What releasing the handlers or the socket defers is raised as the
     // object is freed.
     minit.register_object::<Data>(
@@ -436,6 +430,7 @@ fn construct(call: &Call) {
             });
         }
         if ssl {
+            // The upstream coroutine HTTP constructor proceeds to listen after requesting TLS.
             let _enabled = socket.enable_ssl();
         }
         if !socket.listen(0) {
@@ -456,8 +451,6 @@ fn construct(call: &Call) {
 
 /// `SW_ERROR_SSL_BAD_CLIENT` (crates/ffi checks it).
 pub const SSL_BAD_CLIENT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SSL_BAD_CLIENT as c_int;
-/// `SW_ACCEPT_RETRY_TIME`.
-const ACCEPT_RETRY_TIME: c_int = 1;
 
 /// `sw_zend_is_callable_at_frame("onAccept")` on `$this` at `start`'s frame;
 /// an `E_CORE_ERROR` when it is not.
@@ -508,7 +501,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let Some(table) = settings.array() else {
         return Ok(None);
     };
-    for (kind, keys) in swoole_rs_httpbindings::settings(COMPRESSION.load(Relaxed)) {
+    for (kind, keys) in swoole_rs_httpbindings::settings(crate::parse::enabled_codecs() != 0) {
         if kind == Setting::Websocket {
             server.apply_websocket(table);
             continue;
@@ -556,7 +549,7 @@ fn setting(
         let message = CString::new(message).unwrap_or_default();
         swoole_rs_zend::report(swoole_rs_zend::E_ERROR, &message)
     };
-    let compression = COMPRESSION.load(Relaxed);
+    let compression = crate::parse::enabled_codecs() != 0;
     let result = match kind {
         Setting::Cookie | Setting::Post | Setting::Files | Setting::Compression => {
             Some(i64::from(value.truthy()))
@@ -658,7 +651,9 @@ impl swoole_rs_httpbindings::AcceptHost for Start<'_> {
 
     fn sleep(&mut self) {
         // A coroutine runs `start`.
-        swoole_rs_hooks::stdio::swoole_coroutine_sleep(ACCEPT_RETRY_TIME);
+        _ = swoole_rs_hooks::sleep::system_sleep(
+            swoole_rs_corebase::constants::SW_ACCEPT_RETRY_TIME,
+        );
     }
 
     fn set_error(&mut self) {
@@ -826,6 +821,7 @@ fn on_accept(call: &Call) {
     server.clients(|clients| clients.insert_index(cid.cast_unsigned(), zconn.copy()));
     let (remote_addr, remote_port) = address(socket);
     // The network socket's address becomes the local one.
+    // Upstream reads the socket address after get_name even if the lookup failed.
     let _named = socket.getsockname();
     let (server_addr, _) = address(socket);
     let peer = Peer {
@@ -939,9 +935,9 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             // Once per request, so the interim response is not repeated.
             let state = context.state();
             if !state.completed && state.request.version == 101 && expects_continue(context) {
-                const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
                 drop(buffer);
-                let _sent = conn.socket.send_all(CONTINUE);
+                // Upstream keeps reading the request body regardless of the interim response write.
+                let _sent = conn.socket.send_all(SW_HTTP_100_CONTINUE_PACKET.as_bytes());
                 buffer = conn.socket.own_read_buffer();
             }
         }
@@ -983,10 +979,10 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         }
         add_peer(context, peer);
         if context.state().parser.error == HPE_PAUSED_H2_UPGRADE
-            && buffer.len() >= HTTP2_PRI.len()
-            && data(&buffer, 0, HTTP2_PRI.len()) == HTTP2_PRI
+            && buffer.len() >= HTTP2_PREFACE.len()
+            && data(&buffer, 0, HTTP2_PREFACE.len()) == HTTP2_PREFACE
         {
-            buffer.set_offset(i64::try_from(HTTP2_PRI.len()).unwrap_or(0));
+            buffer.set_offset(i64::try_from(HTTP2_PREFACE.len()).unwrap_or(0));
             drop(buffer);
             return http2(conn, context);
         }
@@ -1113,7 +1109,11 @@ fn http2_request(
             Ok(false) => {
                 let stream_id = context.state().stream_id;
                 if let Some(server) = crate::http2::server() {
-                    (server.reset)(context, stream_id, HTTP2_INTERNAL_ERROR);
+                    (server.reset)(
+                        context,
+                        stream_id,
+                        swoole_rs_http2::error_code::INTERNAL_ERROR,
+                    );
                 }
                 host::notice("Swoole\\Http\\Server->onRequest[v2] handler error");
             }

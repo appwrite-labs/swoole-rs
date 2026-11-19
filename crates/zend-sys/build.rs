@@ -55,10 +55,10 @@ mod php {
             .allowlist_function("(OnUpdateBool|OnUpdateLong|_?zend_|object_properties_init|object_init_ex|php_error_docref|php_url_encode|php_format_date|php_time|swr_zend_|swr_zval_|zval_|get_active_|add_assoc_|add_next_index_|add_index_).*")
             .allowlist_type("(_?zend_|_?zval|_?php_stream_xport_|_?pdo_).*")
             .allowlist_var(
-                "(PHP_VERSION_ID|std_object_handlers|module_registry|zend_ce_.*|zend_empty_(array|string)|ZEND_ACC_.*|IS_.*|_IS_BOOL|E_.*|ZPP_ERROR_.*|CONST_.*|MAY_BE_.*|_ZEND_(TYPE|IS|SEND)_.*|PHP_STREAM_((FREE|FLAG)_.*|OPTION_READ_BUFFER|BUFFER_NONE)|ZEND_(ASSIGN_DIM|ASSIGN_DIM_OP|INIT_METHOD_CALL|UNSET_DIM|FE_RESET_RW|CONCAT|BEGIN_SILENCE|END_SILENCE))",
+                "(PHP_VERSION_ID|PHP_FILE_APPEND|std_object_handlers|module_registry|zend_ce_.*|zend_empty_(array|string)|ZEND_ACC_.*|IS_.*|_IS_BOOL|E_.*|ZPP_ERROR_.*|CONST_.*|MAY_BE_.*|_ZEND_(TYPE|IS|SEND)_.*|PHP_STREAM_((FREE|FLAG)_.*|OPTION_READ_BUFFER|BUFFER_NONE)|ZEND_(ASSIGN_DIM|ASSIGN_DIM_OP|INIT_METHOD_CALL|UNSET_DIM|FE_RESET_RW|CONCAT|BEGIN_SILENCE|END_SILENCE))",
             )
             // PHP 8.5's tail-call VM types opcode handlers preserve_none, which
-            // bindgen cannot express; every VM kind but SWITCH stores a pointer,
+            // bindgen (0.73.2, the latest) cannot express; every VM kind but SWITCH stores a pointer,
             // and the generated layout assertions catch a SWITCH build.
             .blocklist_type("zend_vm_opcode_handler_t")
             .raw_line("pub type zend_vm_opcode_handler_t = *const ::std::ffi::c_void;")
