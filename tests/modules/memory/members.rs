@@ -447,3 +447,26 @@ fn global_memory_alloc() {
         assert_eq!(unsafe { std::ffi::CStr::from_ptr(block.cast()) }, text);
     }
 }
+
+#[test]
+#[cfg(not(miri))] // Isolate the process-wide pool and native pthread primitives.
+fn pooled_lock_releases_its_pin_after_using_the_shared_storage() {
+    use crate::locks::{Kind, LOCK_EX, LOCK_NB};
+
+    if crate::utilities::isolated_process::run_in_child(
+        "memory::members::tests::pooled_lock_releases_its_pin_after_using_the_shared_storage",
+    ) {
+        return;
+    }
+    assert!(crate::swr_v1_core_init());
+    for &kind in Kind::ALL {
+        pool::init();
+        let lock = pool::PooledLock::new(kind).unwrap();
+        assert_eq!(pool::users(), 1);
+        pool::delete();
+        lock.lock(LOCK_EX | LOCK_NB, 0, 0).unwrap();
+        lock.unlock().unwrap();
+        drop(lock);
+        assert_eq!(pool::users(), 0);
+    }
+}

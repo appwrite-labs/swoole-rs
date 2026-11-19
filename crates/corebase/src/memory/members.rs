@@ -541,6 +541,44 @@ pub mod pool {
         with_zero_words(count, Storage::Pool, |words| words)
     }
 
+    /// A process-shared pthread lock whose PHP object owns the pool pin. Forked
+    /// processes keep their own copy of the pin over the same shared storage.
+    pub struct PooledLock {
+        lock: crate::locks::Lock,
+        _pin: LockPin,
+    }
+
+    // The lock's storage views drop first. Shared lock destruction leaves the
+    // pthread primitive available to other processes that inherited the mapping.
+    struct LockPin;
+
+    impl Drop for LockPin {
+        fn drop(&mut self) {
+            POOL.users.fetch_sub(1, SeqCst);
+        }
+    }
+
+    impl PooledLock {
+        /// Allocate storage for the lock and keep its pin until the object drops.
+        #[must_use]
+        pub fn new(kind: crate::locks::Kind) -> Option<Self> {
+            let storage = words(crate::locks::Lock::words(kind))?;
+            let pin = LockPin;
+            Some(Self {
+                lock: crate::locks::Lock::shared(kind, storage)?,
+                _pin: pin,
+            })
+        }
+    }
+
+    impl std::ops::Deref for PooledLock {
+        type Target = crate::locks::Lock;
+
+        fn deref(&self) -> &Self::Target {
+            &self.lock
+        }
+    }
+
     /// The permanent shared mapping for the atomic wait registry.
     pub(crate) fn wait_registry_words(count: usize) -> Option<&'static [AtomicU64]> {
         with_zero_words(count, Storage::WaitRegistry, |words| &*words)
