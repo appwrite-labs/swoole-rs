@@ -202,18 +202,13 @@ const NETWORK_TYPES: core::ops::RangeInclusive<i64> = 1..=6;
 /// not a socket, or is one whose domain and type read back (refreshing its name).
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn other_socket_listed<F: Facts>(f: &mut F, index: u64, fd: c_int) -> bool {
-    // `SO_DOMAIN` on Linux's generic socket ABI; the `libc` crate only binds it for Android.
-    #[cfg(not(any(target_arch = "mips", target_arch = "mips64", target_arch = "sparc64")))]
-    const SO_DOMAIN: c_int = 39;
-    #[cfg(any(target_arch = "mips", target_arch = "mips64", target_arch = "sparc64"))]
-    const SO_DOMAIN: c_int = 0x1029;
     let Some(stat) = swoole_rs_corebase::sys::fstat(fd) else {
         return false;
     };
     if stat.st_mode & libc::S_IFMT != libc::S_IFSOCK {
         return true;
     }
-    for option in [SO_DOMAIN, libc::SO_TYPE] {
+    for option in [libc::SO_DOMAIN, libc::SO_TYPE] {
         let mut value: c_int = 0;
         let read = swoole_rs_corebase::sys::getsockopt(fd, libc::SOL_SOCKET, option, &mut value);
         if read.is_err() {
