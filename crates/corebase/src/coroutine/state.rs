@@ -9,7 +9,7 @@
 //! swap callbacks and the [`Hooks`]: the context switch, the release of an ended
 //! coroutine and the bailout callback. No `&mut` into the scheduler or a
 //! coroutine is held across one of those calls, since they change both.
-use crate::small_fn::{Small, SmallFn};
+use crate::small_fn::CopyFn;
 use core::ffi::{c_long, c_void};
 use core::ptr::{self, NonNull};
 
@@ -79,7 +79,7 @@ pub struct Coroutine {
     pub resume_code: Resume,
     pub task: Option<CoroutineTask>,
     /// The waiting yield's canceler, empty when it can't be canceled.
-    pub(crate) cancel: SmallFn<bool>,
+    pub(crate) cancel: CopyFn<bool>,
     /// The coroutine that last ran this one; cleared when it closes first.
     pub origin: *mut Coroutine,
     /// Live coroutines whose origin is this one, linked through their siblings.
@@ -104,7 +104,7 @@ impl Coroutine {
             state: State::Init,
             resume_code: Resume::Ok,
             task: None,
-            cancel: SmallFn::empty(),
+            cancel: CopyFn::empty(),
             origin: ptr::null_mut(),
             first_child: ptr::null_mut(),
             prev_sibling: ptr::null_mut(),
@@ -608,13 +608,13 @@ pub(crate) fn resume(s: Sched, co: Co) {
 pub(crate) fn yield_cancelable(
     s: Sched,
     co: Co,
-    cancel: impl Small<bool>,
+    cancel: impl Fn() -> bool + Copy + 'static,
     arm: impl FnOnce(Waker),
 ) {
     co.with(|co| co.cancel.put(cancel));
     yield_armed(s, co, arm);
     // Live again once resumed; a cancel that ran took it already.
-    _ = co.with(|co| co.cancel.take());
+    co.with(|co| co.cancel.clear());
 }
 
 /// `Coroutine::bailout`, once the callback is set: marks the scheduler, and
@@ -665,26 +665,9 @@ pub(crate) mod tests {
     unsafe fn swr_v1_coroutine_run(s: *mut Scheduler, co: *mut Coroutine) -> c_long {
         unsafe { run(Sched::of(s).unwrap(), Co::of(co).unwrap()) }
     }
-    /// A canceler that only answers.
-    struct Answer(bool);
-
-    impl Small<bool> for Answer {
-        fn run(&self) -> bool {
-            self.0
-        }
-        fn consume(self) -> bool {
-            self.0
-        }
-    }
-
     unsafe fn swr_v1_coroutine_yield_cancelable(s: *mut Scheduler, co: *mut Coroutine) {
         unsafe {
-            yield_cancelable(
-                Sched::of(s).unwrap(),
-                Co::of(co).unwrap(),
-                Answer(true),
-                |_| (),
-            );
+            yield_cancelable(Sched::of(s).unwrap(), Co::of(co).unwrap(), || true, |_| ());
         }
     }
     unsafe fn swr_v1_coroutine_bailout(s: *mut Scheduler) {
@@ -1065,7 +1048,7 @@ pub(crate) mod tests {
         let co = &raw mut co;
         // SAFETY: live on this frame.
         unsafe {
-            (*co).cancel.put(Answer(true));
+            (*co).cancel.put(|| true);
             let cancel = (*co).cancel.take().unwrap();
             (*co).mark_canceled();
             assert_eq!(

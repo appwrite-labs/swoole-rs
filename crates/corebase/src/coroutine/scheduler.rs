@@ -7,7 +7,6 @@ use crate::coroutine::context::{self, Native};
 use crate::coroutine::state::{self as ops, Co, Sched};
 use crate::coroutine::{Bailout, Coroutine, CoroutineTask, Hooks, Scheduler};
 use crate::log;
-use crate::small_fn::Small;
 use core::cell::UnsafeCell;
 use core::ffi::{c_long, c_void};
 use core::ptr::{self, NonNull};
@@ -297,18 +296,6 @@ pub fn yield_with_cancel<F: Fn() -> bool + Copy + 'static>(co: *mut c_void, canc
     yield_with_cancel_armed(co, cancel, |_| ());
 }
 
-/// A cancelable yield's canceler, which a cancel takes out of the coroutine and runs.
-struct Cancel<F>(F);
-
-impl<F: Fn() -> bool + Copy + 'static> Small<bool> for Cancel<F> {
-    fn run(&self) -> bool {
-        (self.0)()
-    }
-    fn consume(self) -> bool {
-        (self.0)()
-    }
-}
-
 /// [`yield_with_cancel`], handing `arm` the [`Waker`](crate::coroutine::Waker) that ends this
 /// park before `co` switches out.
 #[inline]
@@ -318,7 +305,7 @@ pub fn yield_with_cancel_armed<F: Fn() -> bool + Copy + 'static>(
     arm: impl FnOnce(crate::coroutine::Waker),
 ) {
     let s = Sched::this();
-    ops::yield_cancelable(s, Co::running(s, co.cast()), Cancel(cancel), arm);
+    ops::yield_cancelable(s, Co::running(s, co.cast()), cancel, arm);
 }
 
 /// `static void Coroutine::bailout(callback)`: inside a coroutine the

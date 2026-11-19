@@ -3,7 +3,7 @@
 //! no allocation.
 use core::cell::Cell;
 use core::marker::PhantomData;
-use core::mem::MaybeUninit;
+use core::mem::{ManuallyDrop, MaybeUninit};
 
 type Bytes<const N: usize> = MaybeUninit<[usize; N]>;
 
@@ -16,6 +16,7 @@ pub(crate) trait Small<R>: 'static {
 struct Ops<R: 'static, const N: usize> {
     run: fn(&SmallFn<R, N>) -> R,
     consume: fn(Bytes<N>) -> R,
+    discard: Option<fn(Bytes<N>)>,
 }
 
 /// An empty slot or one [`Small`] value. `ops` is set exactly while `value` holds the
@@ -29,11 +30,53 @@ pub(crate) struct SmallFn<R: 'static, const N: usize = 2> {
     thread: PhantomData<*const ()>,
 }
 
-/// A value [`SmallFn::take`] moved out; dropping it unconsumed leaks it.
+/// Coroutine entries and cancelers capture only Copy values. Only `put` can
+/// populate this slot, so discarding it never requires an erased destructor.
+#[derive(Debug)]
+pub(crate) struct CopyFn<R: 'static, const N: usize = 2>(ManuallyDrop<SmallFn<R, N>>);
+
+impl<R, const N: usize> CopyFn<R, N> {
+    pub(crate) const fn empty() -> Self {
+        Self(ManuallyDrop::new(SmallFn::empty()))
+    }
+
+    pub(crate) fn put(&self, callback: impl Fn() -> R + Copy + 'static) {
+        self.0.put(callback);
+    }
+
+    pub(crate) fn run(&self) -> Option<R> {
+        self.0.run()
+    }
+
+    pub(crate) fn take(&mut self) -> Option<Taken<R, N>> {
+        self.0.take()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_full(&self) -> bool {
+        self.0.is_full()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.0.ops.set(None);
+    }
+}
+
+impl<R, F: Fn() -> R + Copy + 'static> Small<R> for F {
+    fn run(&self) -> R {
+        self()
+    }
+
+    fn consume(self) -> R {
+        self()
+    }
+}
+
+/// A value [`SmallFn::take`] moved out, owned until invoked or dropped.
 #[must_use]
 pub(crate) struct Taken<R: 'static, const N: usize = 2> {
     value: Bytes<N>,
-    consume: fn(Bytes<N>) -> R,
+    ops: &'static Ops<R, N>,
     thread: PhantomData<*const ()>,
 }
 
@@ -58,11 +101,11 @@ impl<R, const N: usize> SmallFn<R, N> {
             let value = unsafe { &*slot.value.as_ptr().cast::<C>() };
             value.run()
         }
-        fn consume<C: Small<R>, R, const N: usize>(bytes: Bytes<N>) -> R {
-            // SAFETY: only `take` makes a `Taken`, of the `C` `put` wrote and `take`
-            // moved out with these ops; `Taken::consume` takes it, so it is read once.
-            let value = unsafe { bytes.as_ptr().cast::<C>().read() };
-            value.consume()
+        fn finish<C, T, const N: usize>(bytes: Bytes<N>, action: fn(C) -> T) -> T {
+            // SAFETY: the ops installed below are paired with the bytes holding C.
+            // Taking the slot transfers ownership, and consuming or dropping it
+            // calls exactly one of those ops.
+            action(unsafe { bytes.as_ptr().cast::<C>().read() })
         }
         const {
             assert!(
@@ -82,7 +125,12 @@ impl<R, const N: usize> SmallFn<R, N> {
             const {
                 &Ops {
                     run: run::<C, R, N>,
-                    consume: consume::<C, R, N>,
+                    consume: |bytes| finish(bytes, C::consume),
+                    discard: if core::mem::needs_drop::<C>() {
+                        Some(|bytes| finish(bytes, drop::<C>))
+                    } else {
+                        None
+                    },
                 }
             },
         ));
@@ -100,7 +148,7 @@ impl<R, const N: usize> SmallFn<R, N> {
         let ops = self.ops.take()?;
         Some(Taken {
             value: self.value.get(),
-            consume: ops.consume,
+            ops,
             thread: PhantomData,
         })
     }
@@ -108,7 +156,24 @@ impl<R, const N: usize> SmallFn<R, N> {
 
 impl<R, const N: usize> Taken<R, N> {
     pub(crate) fn consume(self) -> R {
-        (self.consume)(self.value)
+        let owned = ManuallyDrop::new(self);
+        (owned.ops.consume)(owned.value)
+    }
+}
+
+impl<R, const N: usize> Drop for SmallFn<R, N> {
+    fn drop(&mut self) {
+        if let Some(discard) = self.ops.take().and_then(|ops| ops.discard) {
+            discard(self.value.get());
+        }
+    }
+}
+
+impl<R, const N: usize> Drop for Taken<R, N> {
+    fn drop(&mut self) {
+        if let Some(discard) = self.ops.discard {
+            discard(self.value);
+        }
     }
 }
 
@@ -134,7 +199,8 @@ mod tests {
             self.0.get()
         }
         fn consume(self) -> u32 {
-            self.0.get() + 100
+            self.0.set(self.0.get() + 100);
+            self.0.get()
         }
     }
 
@@ -151,6 +217,19 @@ mod tests {
         assert_eq!(taken.consume(), 102);
         // `consume` dropped the moved-out value.
         assert_eq!(Rc::strong_count(&runs), 1);
+    }
+
+    #[test]
+    fn discarding_a_slot_or_taken_callback_releases_its_capture() {
+        let runs = Rc::new(Cell::new(0));
+        let mut slot: SmallFn<u32> = SmallFn::empty();
+        slot.put(Count(Rc::clone(&runs)));
+        drop(slot.take());
+        assert_eq!(Rc::strong_count(&runs), 1);
+        slot.put(Count(Rc::clone(&runs)));
+        drop(slot);
+        assert_eq!(Rc::strong_count(&runs), 1);
+        assert_eq!(runs.get(), 0);
     }
 
     struct Pair(u32, u32);
