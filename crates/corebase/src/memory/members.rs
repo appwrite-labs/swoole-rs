@@ -493,7 +493,7 @@ pub mod pool {
 
     // Drops after the word reference. A pool deleted with users still present
     // already keeps its mapping, so this also works after a pool replacement.
-    struct PoolPin;
+    pub(super) struct PoolPin(());
 
     impl Drop for PoolPin {
         fn drop(&mut self) {
@@ -506,7 +506,7 @@ pub mod pool {
         #[must_use]
         pub fn allocate() -> Option<Self> {
             let words = words(1)?;
-            let pin = PoolPin;
+            let pin = PoolPin(());
             Some(Self {
                 word: words.first()?,
                 _pin: pin,
@@ -545,17 +545,7 @@ pub mod pool {
     /// processes keep their own copy of the pin over the same shared storage.
     pub struct PooledLock {
         lock: crate::locks::Lock,
-        _pin: LockPin,
-    }
-
-    // The lock's storage views drop first. Shared lock destruction leaves the
-    // pthread primitive available to other processes that inherited the mapping.
-    struct LockPin;
-
-    impl Drop for LockPin {
-        fn drop(&mut self) {
-            POOL.users.fetch_sub(1, SeqCst);
-        }
+        _pin: PoolPin,
     }
 
     impl PooledLock {
@@ -563,7 +553,7 @@ pub mod pool {
         #[must_use]
         pub fn new(kind: crate::locks::Kind) -> Option<Self> {
             let storage = words(crate::locks::Lock::words(kind))?;
-            let pin = LockPin;
+            let pin = PoolPin(());
             Some(Self {
                 lock: crate::locks::Lock::shared(kind, storage)?,
                 _pin: pin,
