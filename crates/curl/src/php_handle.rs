@@ -41,7 +41,7 @@ unsafe extern "C" {
     safe fn swoole_curl_free_lists(handle: PhpHandle<'_>);
     safe fn swoole_curl_free_callbacks(handle: PhpHandle<'_>);
     safe fn swoole_curl_release_values(handle: PhpHandle<'_>);
-    safe fn zend_object_std_dtor(object: ObjectRef<'_>);
+    pub(super) safe fn zend_object_std_dtor(object: ObjectRef<'_>);
     safe fn curl_easy_cleanup(easy: crate::Retired<'_>);
     pub(super) safe fn zend_get_gc_buffer_create() -> GcBuffer;
     safe fn swoole_curl_trace_callbacks(gc: GcBuffer, handle: PhpHandle<'_>);

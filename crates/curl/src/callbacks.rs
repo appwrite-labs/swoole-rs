@@ -238,7 +238,7 @@ pub(super) fn prepare_transfer(handle: PhpHandle<'_>) -> bool {
 
 /// `_php_curl_verify_handlers`: a stream closed under the handle is dropped, after a
 /// warning when `report`, and its option goes back to the default.
-fn verify(handle: PhpHandle<'_>, report: bool) {
+pub(super) fn verify(handle: PhpHandle<'_>, report: bool) {
     let streams = [
         (
             CURLOPT_STDERR,
