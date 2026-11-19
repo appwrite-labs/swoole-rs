@@ -77,17 +77,20 @@ pub struct RespSpan {
     pub kind: RespKind,
 }
 
+/// Capacity of the Redis command buffer, including its terminating NUL.
+pub const REDIS_MAX_COMMAND_SIZE: usize = 64;
+
 /// Render the native PHP handler property key: ASCII lowercase `_handler_`,
 /// stopping at the command's first NUL and truncating to 63 bytes. The native
 /// caller keeps raw command-length validation and Zend registry ownership.
 /// Returns the key, zero-filled past its length.
 #[must_use]
-pub fn resp_handler_key(bytes: &[u8]) -> ([u8; 64], usize) {
-    let mut key = [0u8; 64];
+pub fn resp_handler_key(bytes: &[u8]) -> ([u8; REDIS_MAX_COMMAND_SIZE], usize) {
+    let mut key = [0u8; REDIS_MAX_COMMAND_SIZE];
     let prefix = b"_handler_";
     let name = bytes
         .iter()
-        .take(63 - prefix.len())
+        .take(key.len() - prefix.len() - 1)
         .take_while(|&&byte| byte != 0)
         .map(u8::to_ascii_lowercase);
     let mut length = 0;
