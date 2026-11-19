@@ -493,7 +493,7 @@ pub mod pool {
 
     // Drops after the word reference. A pool deleted with users still present
     // already keeps its mapping, so this also works after a pool replacement.
-    struct PoolPin;
+    pub(super) struct PoolPin(());
 
     impl Drop for PoolPin {
         fn drop(&mut self) {
@@ -501,12 +501,30 @@ pub mod pool {
         }
     }
 
+    pub(super) fn table_header(
+        rows: u32,
+        conflict: f32,
+        hash: crate::memory::table::Hash,
+    ) -> Option<(super::Handle, PoolPin)> {
+        let slots = words::<MaybeUninit<super::Table>>(1)?;
+        let pin = PoolPin(());
+        let table = super::Table::init(
+            slots.first_mut()?,
+            rows,
+            conflict,
+            hash,
+            super::table_warning,
+            super::table_error,
+        )?;
+        Some((super::Handle::new(table), pin))
+    }
+
     impl<W: Word> PooledWord<W> {
         /// Allocate one zeroed word, holding the pin taken by `words`.
         #[must_use]
         pub fn allocate() -> Option<Self> {
             let words = words(1)?;
-            let pin = PoolPin;
+            let pin = PoolPin(());
             Some(Self {
                 word: words.first()?,
                 _pin: pin,
@@ -587,13 +605,6 @@ fn table_warning(message: &[u8]) {
     log::warning(&origin, format_args!("{rest}"));
 }
 
-/// `swoole_hash_php` of the bytes a row compares: a made table's hash.
-fn php_hash(key: &[u8], compared: usize) -> u64 {
-    let key = key.get(..compared).unwrap_or(key);
-    // `char`'s signedness, which the hash promotes, as `swoole_hash_php` passes it.
-    crate::utilities::swoole_hash(key, 0, std::ffi::c_char::MIN != 0)
-}
-
 /// `Table::create()`: lays the table out in a fresh shared arena.
 #[must_use]
 pub fn swr_table_create(table: &mut Handle) -> bool {
@@ -612,29 +623,24 @@ pub fn swr_table_create(table: &mut Handle) -> bool {
     true
 }
 
-/// A table [`SharedTable::make`] made, owned by this process: its header lives for the
-/// process's life, and its arena until [`SharedTable::destroy`] has freed it.
-/// Dropping it leaves the table to the processes that share it (forked workers
-/// may still use it), as upstream's objects do.
+/// A process-local owner of the shared table header. Its arena is released on the
+/// final drop after an explicit destroy. Forked workers retain their own mapping.
 pub struct SharedTable {
     table: Handle,
     destroyed: std::cell::Cell<bool>,
+    // Release this process's pin after the handle and its header views.
+    _pin: pool::PoolPin,
 }
 
 impl SharedTable {
-    /// `Table::make(rows_size, conflict_proportion)`, keys hashed with `hash`: the
-    /// header comes from the global memory pool, which keeps it for the process's life,
-    /// so forked workers share it.
+    /// `Table::make(rows_size, conflict_proportion)` with the caller's row hash.
     #[must_use]
     pub fn make(rows: u32, conflict: f32, hash: crate::memory::table::Hash) -> Option<Self> {
-        let [slot] = pool::words::<std::mem::MaybeUninit<Table>>(1)? else {
-            return None;
-        };
-        let table = Table::init(slot, rows, conflict, php_hash, table_warning, table_error)?;
-        table.set_hash(hash);
+        let (table, pin) = pool::table_header(rows, conflict, hash)?;
         Some(Self {
-            table: Handle::new(table),
+            table,
             destroyed: std::cell::Cell::new(false),
+            _pin: pin,
         })
     }
 
