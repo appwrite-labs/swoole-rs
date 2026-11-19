@@ -61,7 +61,7 @@ const STRERROR_SWOOLE: i64 = 9;
 const ERROR_BEGIN: i64 = swoole_rs_error::ErrorCode::SW_ERROR_BEGIN as i64;
 const ERROR_END: i64 = swoole_rs_error::ErrorCode::SW_ERROR_END as i64;
 /// `SW_ERROR_MSG_SIZE`: `swoole_error_log` formats into a buffer this big.
-const ERROR_MSG_SIZE: usize = 16384;
+const ERROR_MSG_SIZE: usize = swoole_rs_corebase::constants::SW_ERROR_MSG_SIZE as usize;
 /// `PHP_JSON_PARSER_DEFAULT_DEPTH` and `PHP_JSON_OBJECT_AS_ARRAY`.
 const JSON_DEFAULT_DEPTH: i64 = 512;
 const JSON_OBJECT_AS_ARRAY: i64 = 1;
@@ -169,10 +169,12 @@ fn error_log(call: &Call) {
 /// `swoole_error_log(level, error, "%.*s", msg)` from `zif_swoole_error_log_ex`:
 /// `"<function>() (ERRNO <error>): <msg up to a NUL>"`, cut to the buffer.
 fn error_log_message(error: i32, message: &[u8]) -> Vec<u8> {
-    let text = message.split(|&byte| byte == 0).next().unwrap_or_default();
     let mut out = format!("zif_swoole_error_log_ex() (ERRNO {error}): ").into_bytes();
+    let message = message
+        .get(..ERROR_MSG_SIZE - 1 - out.len())
+        .unwrap_or(message);
+    let text = message.split(|&byte| byte == 0).next().unwrap_or_default();
     out.extend_from_slice(text);
-    out.truncate(ERROR_MSG_SIZE - 1);
     out
 }
 
