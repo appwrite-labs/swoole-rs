@@ -18,8 +18,6 @@ enum { SW_OK = 0, SW_ERR = -1 };
 #define SW_CRLF "\r\n"
 #define SW_CRLF_LEN 2
 #define SW_STRL(s) s, sizeof(s) - 1
-#define SW_MQTT_MIN_LENGTH_SIZE 1
-#define SW_MQTT_MAX_LENGTH_SIZE 4
 #define swoole_error_log(level, error, str, ...)
 #include "protocols_states.inc"
 struct Protocol;

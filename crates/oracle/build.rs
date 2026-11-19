@@ -424,7 +424,8 @@ fn protocols() {
         fs::read_to_string("upstream/include/swoole_redis.h").expect("vendored swoole_redis.h");
     fs::write(
         out("protocols_states.inc"),
-        slice(&header, "enum State {", "const char *get_number"),
+        pinned_macros(&["SW_MQTT_MIN_LENGTH_SIZE", "SW_MQTT_MAX_LENGTH_SIZE"])
+            + &slice(&header, "enum State {", "const char *get_number"),
     )
     .unwrap();
     let server = fs::read_to_string("upstream/ext-src/swoole_redis_server.cc")
