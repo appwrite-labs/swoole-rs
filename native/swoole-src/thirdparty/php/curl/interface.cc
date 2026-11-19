@@ -235,44 +235,6 @@ void swoole_curl_init_handle(php_curl *ch) {
 }
 /* }}} */
 
-/* {{{ _php_curl_set_default_options()
-   Set default options for a handle */
-static void _php_curl_set_default_options(php_curl *ch) {
-    const char *cainfo;
-
-    curl_easy_setopt(ch->cp, CURLOPT_NOPROGRESS, 1L);
-    curl_easy_setopt(ch->cp, CURLOPT_VERBOSE, 0L);
-    curl_easy_setopt(ch->cp, CURLOPT_ERRORBUFFER, ch->err.str);
-    curl_easy_setopt(ch->cp, CURLOPT_WRITEFUNCTION, swoole_curl_on_write);
-    curl_easy_setopt(ch->cp, CURLOPT_FILE, (void *) ch);
-    curl_easy_setopt(ch->cp, CURLOPT_READFUNCTION, swoole_curl_on_read);
-    curl_easy_setopt(ch->cp, CURLOPT_INFILE, (void *) ch);
-    curl_easy_setopt(ch->cp, CURLOPT_HEADERFUNCTION, swoole_curl_on_header);
-    curl_easy_setopt(ch->cp, CURLOPT_WRITEHEADER, (void *) ch);
-#ifndef ZTS
-    curl_easy_setopt(ch->cp, CURLOPT_DNS_USE_GLOBAL_CACHE, 1L);
-#endif
-    curl_easy_setopt(ch->cp, CURLOPT_DNS_CACHE_TIMEOUT, 120L);
-    curl_easy_setopt(ch->cp, CURLOPT_MAXREDIRS, 20L); /* prevent infinite redirects */
-
-    cainfo = INI_STR("openssl.cafile");
-    if (!(cainfo && cainfo[0] != '\0')) {
-        cainfo = INI_STR("curl.cainfo");
-    }
-    if (cainfo && cainfo[0] != '\0') {
-        curl_easy_setopt(ch->cp, CURLOPT_CAINFO, cainfo);
-    }
-
-#ifdef ZTS
-    curl_easy_setopt(ch->cp, CURLOPT_NOSIGNAL, 1L);
-#endif
-}
-/* }}} */
-
-extern "C" void swoole_curl_default_options(php_curl *ch) {
-    _php_curl_set_default_options(ch);
-}
-
 extern "C" bool swoole_curl_set_url(php_curl *ch, const zend_string *url) {
 #if PHP_VERSION_ID >= 80300
     return php_curl_option_url(ch, url) == SUCCESS;
@@ -451,7 +413,7 @@ extern "C" void swoole_curl_free_callbacks(php_curl *ch) {
 
 /* {{{ _php_curl_reset_handlers()
    Reset all handlers of a given php_curl */
-static void _php_curl_reset_handlers(php_curl *ch) {
+extern "C" void swoole_curl_reset_handlers(php_curl *ch) {
     if (!Z_ISUNDEF(ch->handlers.write->stream)) {
         zval_ptr_dtor(&ch->handlers.write->stream);
         ZVAL_UNDEF(&ch->handlers.write->stream);
@@ -509,10 +471,5 @@ static void _php_curl_reset_handlers(php_curl *ch) {
 #endif
 }
 /* }}} */
-
-extern "C" void swoole_curl_reset_options(php_curl *ch) {
-    _php_curl_reset_handlers(ch);
-    _php_curl_set_default_options(ch);
-}
 
 #endif

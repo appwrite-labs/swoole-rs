@@ -17,6 +17,16 @@ use swoole_rs_zend::{Call, E_NOTICE, E_WARNING, Key, Value, ZStr, bailout};
 unsafe extern "C" {
     // `LIBCURL_VERSION_NUM`, from the headers the extension was built against.
     safe static swoole_curl_header_version: u32;
+    safe fn swoole_curl_easy_setopt_long(
+        easy: crate::Easy<'_>,
+        option: zend_long,
+        value: c_long,
+    ) -> c_int;
+    safe fn swoole_curl_bind_io(handle: PhpHandle<'_>);
+    safe fn swoole_curl_use_cafile(
+        handle: PhpHandle<'_>,
+        directive: swoole_rs_corebase::sys::Text<'_>,
+    ) -> bool;
     // Each returns the option's `CURLcode` and saves it as the handle's error.
     pub(super) safe fn swoole_curl_setopt_long(
         handle: PhpHandle<'_>,
@@ -989,6 +999,26 @@ fn set_list(
         }
     }
     swoole_curl_setopt_list(handle, id, list) == 0
+}
+
+/// Initialization and reset install defaults without changing the last cURL error.
+pub(super) fn defaults(handle: PhpHandle<'_>) {
+    let easy = crate::php_handle::swoole_curl_easy(handle);
+    let set = |option, value| swoole_curl_easy_setopt_long(easy, option, value);
+    set(CURLOPT_NOPROGRESS, 1);
+    set(CURLOPT_VERBOSE, 0);
+    swoole_curl_bind_io(handle);
+    if PHP_VERSION_ID < 80400 && !swoole_rs_zend::ZTS {
+        set(CURLOPT_DNS_USE_GLOBAL_CACHE, 1);
+    }
+    set(CURLOPT_DNS_CACHE_TIMEOUT, 120);
+    set(CURLOPT_MAXREDIRS, 20);
+    if !swoole_curl_use_cafile(handle, c"openssl.cafile".into()) {
+        swoole_curl_use_cafile(handle, c"curl.cainfo".into());
+    }
+    if swoole_rs_zend::ZTS {
+        set(CURLOPT_NOSIGNAL, 1);
+    }
 }
 
 fn set_long(handle: PhpHandle<'_>, id: c_int, long: zend_long) -> bool {
