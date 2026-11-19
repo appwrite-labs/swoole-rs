@@ -5,7 +5,7 @@ name: Scheduled failures
 on:
   workflow_run:
     workflows: [API fuzz nightly, Sanitizers, Appwrite e2e, Coverage, ClusterFuzzLite batch, Bench, Debug PHP,
-                WebSocket RFC conformance, Kani, Miri, PHP versions, Soak, ThreadSanitizer]
+                Release, WebSocket RFC conformance, Kani, Miri, PHP versions, Soak, ThreadSanitizer]
     types: [completed]
 permissions:
   actions: read

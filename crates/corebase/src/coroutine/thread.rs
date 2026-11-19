@@ -4,8 +4,7 @@
 //! hands a baton from one thread to the next, so exactly one runs at a time.
 //! Upstream hands off with `std::mutex`es unlocked by threads that didn't lock
 //! them; a baton is a binary semaphore, which any thread may post.
-use crate::small_fn::Small;
-use crate::small_fn::SmallFn;
+use crate::small_fn::CopyFn;
 use crate::{CellExt, SharedThread, adopt_shared_thread, shared_thread};
 use core::cell::Cell;
 use core::ffi::c_int;
@@ -103,23 +102,10 @@ pub const THREAD: u32 = 4;
 /// closure the context it is handed to runs once, on its own stack or thread. It is
 /// held inline: the largest closure a coroutine starts with, `phpcoroutines`'
 /// (a call's callable, arguments and their count), fits.
-pub struct Entry(SmallFn<(), ENTRY_WORDS>);
+pub struct Entry(CopyFn<(), ENTRY_WORDS>);
 
 /// The words an [`Entry`] holds.
 const ENTRY_WORDS: usize = 10;
-
-/// An entry's closure, run in place (through a reference, so its captures are
-/// read where they lie) or consumed.
-struct Once<F>(F);
-
-impl<F: Fn() + Copy + 'static> Small<()> for Once<F> {
-    fn run(&self) {
-        (self.0)();
-    }
-    fn consume(self) {
-        (self.0)();
-    }
-}
 
 #[expect(
     clippy::non_send_fields_in_send_ty,
@@ -137,14 +123,14 @@ unsafe impl Send for Entry {}
 impl Entry {
     /// No entry: a [`THREAD`] context's, whose thread holds it.
     pub(crate) const fn empty() -> Self {
-        Self(SmallFn::empty())
+        Self(CopyFn::empty())
     }
 
     /// The entry that runs `entry`.
     pub(crate) fn of<F: Fn() + Copy + 'static>(entry: F) -> Self {
-        let slot = SmallFn::empty();
-        slot.put(Once(entry));
-        Self(slot)
+        let entry_slot = Self::empty();
+        entry_slot.0.put(entry);
+        entry_slot
     }
 
     /// Runs the held entry in place, where it stays: a stack context's, whose
@@ -155,10 +141,7 @@ impl Entry {
 
     /// Runs the entry; this takes it, so it runs once.
     pub(crate) fn run(self) {
-        let Self(mut slot) = self;
-        if let Some(entry) = slot.take() {
-            entry.consume();
-        }
+        self.run_held();
     }
 }
 
