@@ -1070,14 +1070,19 @@ fn on_open(server: view::Server<'_>, mut context: Ctx) -> Result<(), bailout::Ba
 
 /// `swoole_websocket_onRequest`, the default `onRequest`: 400 and close.
 pub(crate) fn request(mut context: Ctx) {
-    const BAD_REQUEST: &[u8] = b"HTTP/1.1 400 Bad Request\r\n\
+    static RESPONSE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        format!(
+            "HTTP/1.1 400 Bad Request\r\n\
         Connection: close\r\n\
         Content-Type: text/html; charset=UTF-8\r\n\
         Cache-Control: must-revalidate,no-cache,no-store\r\n\
         Content-Length: 83\r\n\
-        Server: swoole-http-server\r\n\r\n\
-        <html><body><h2>HTTP 400 Bad Request</h2><hr><i>Powered by Swoole</i></body></html>";
-    context::send(context, BAD_REQUEST);
+        Server: {}\r\n\r\n\
+        <html><body><h2>HTTP 400 Bad Request</h2><hr><i>Powered by Swoole</i></body></html>",
+            swoole_rs_corebase::constants::SW_HTTP_SERVER_SOFTWARE
+        )
+    });
+    context::send(context, RESPONSE.as_bytes());
     context.state().end = true;
     context::close(context);
 }
