@@ -21,8 +21,8 @@ void swr_zend_execute_ex_restore(void *hook);
 /* SIGG(check) = false, where ZEND_SIGNALS is built. */
 void swr_zend_signals_uncheck(void);
 /* Under LeakSanitizer (tools/asan.py), its check, at MSHUTDOWN rather than at exit:
- * a worker or child exits without shutting PHP down. Nothing in other builds, or in
- * a process forked from the one that loaded the extension, where the check hangs (#2345). */
+ * only the loader checks here. Forked PHP shutdown hung in #2345. The sanitizer
+ * lane checks a forked server worker separately in its workerStop callback. */
 void swr_zend_leak_check(void);
 /* Register the global function `name` as a user shutdown function. */
 void swr_zend_register_shutdown_function(const char *name);

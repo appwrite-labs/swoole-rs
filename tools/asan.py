@@ -18,9 +18,10 @@ points to stays, and the gates' executables would need all the extension's libra
 theirs. PHP has FFI built in for the timer and ports gates. A report from code this repository
 builds fails the run whatever the tests say; upstream's reference build is counted apart. Reports stay in target/asan/reports/ and are only counted on stdout: a
 report may locate an upstream bug, which goes to the private security repository (AGENTS.md), so a public CI log
-never shows one. Rerun locally to read them. LeakSanitizer runs at the extension's
-MSHUTDOWN, not at exit, and only in the process that loaded the extension: a worker exits
-without shutting PHP down, and a forked child's check hangs (#2345). tools/lsan.supp names PHP's own allocations that
+never shows one. Rerun locally to read them. The loader runs LeakSanitizer at MSHUTDOWN.
+A process-mode worker checks separately at worker stop after serving a request.
+Workers exit without shutting PHP down. Forked PHP processes that reach MSHUTDOWN
+skip the check there because that shutdown path hung in #2345. tools/lsan.supp names PHP's own allocations that
 look lost there. USE_TRACKED_ALLOC hands the request heap to malloc, as PHP's CI runs
 it. PCRE's JIT is off, its SIMD scans read past the subject.
 
@@ -35,7 +36,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tools.harness import ROOT, run_isolated
 OUT = ROOT / 'target/asan'
 # vptr checks need the C++ UBSan runtime, which a C program like PHP doesn't link.
 SANITIZE = '-fsanitize=address,undefined -fno-sanitize=vptr -fno-omit-frame-pointer'
@@ -107,12 +109,15 @@ def main():
     if (phases or not args.case) and subprocess.run([*gates, *phases, '--with-prerequisites', '--jobs', str(args.jobs),
                        '--phase-timeout', '2400'], cwd=ROOT, env=run).returncode:
         failed.append('gates')
-    if (cases or not args.gate) and (
-            subprocess.run([sys.executable, 'tools/build_ext.py', '--php-config', php / 'bin/php-config'], cwd=ROOT, env=run).returncode
-            or subprocess.run([sys.executable, 'corpus/upstream/run.py', '--timeout', str(args.timeout), '--php', php / 'bin/php',
-                               '--engine', f"cargo={ROOT / 'target/ext/swoole.so'}", '--output', OUT / 'phpt.json', *cases],
-                              cwd=ROOT, env=run).returncode):
-        failed.append('phpt')
+    if cases or not args.gate:
+        if subprocess.run([sys.executable, 'tools/build_ext.py', '--php-config', php / 'bin/php-config'], cwd=ROOT, env=run).returncode:
+            failed.append('extension build')
+        else:
+            if not worker_leak_check(php / 'bin/php', run, args.timeout):
+                failed.append('worker leak check')
+            if subprocess.run([sys.executable, 'corpus/upstream/run.py', '--timeout', str(args.timeout), '--php', php / 'bin/php',
+                               '--engine', f"cargo={ROOT / 'target/ext/swoole.so'}", '--output', OUT / 'phpt.json', *cases], cwd=ROOT, env=run).returncode:
+                failed.append('phpt')
     kinds = [origin(path.read_text(errors='replace')) for path in sorted(reports.iterdir())]
     if found := kinds.count('ours'):
         failed.append(f'{found} sanitizer reports in {reports}')
@@ -120,6 +125,17 @@ def main():
         print(f"{upstream} reports from upstream's reference build in {reports}: triage them privately")
     print('sanitizer run: ' + (', '.join(failed) + ' failed' if failed else 'clean'))
     return int(bool(failed))
+
+
+def worker_leak_check(php, env, timeout):
+    # A worker exits independently of the master. Require its own success marker.
+    try:
+        result = run_isolated([php, '-n', '-d', 'ffi.enable=1', '-d', 'swoole.enable_library=0',
+                               '-d', f'extension={ROOT}/target/ext/swoole.so',
+                               ROOT / 'tests/modules/integration/worker_leaks.php'], env=env, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False
+    return result.returncode == 0 and result.stdout.splitlines() == ['worker leak check passed']
 
 
 def origin(report):
