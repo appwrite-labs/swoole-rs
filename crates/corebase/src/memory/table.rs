@@ -16,6 +16,7 @@
 //! Row locks are upstream's spin locks, with its recovery from a dead owner
 //! (`kill(pid, 0)` fails with `ESRCH`) and from an owner that holds a lock for
 //! more than two seconds.
+use crate::constants::SW_TABLE_CONFLICT_PROPORTION;
 use crate::locks::SharedMutex;
 use crate::memory::fixed::{self, Fixed, HEADER, Layout, Slice};
 use crate::memory::members::Shm;
@@ -58,11 +59,10 @@ impl ColumnType {
 pub const NEW_ROW: i32 = 1;
 pub const CONFLICT: i32 = 2;
 /// `SW_TABLE_KEY_SIZE`: keys keep at most 63 bytes and a NUL.
-pub const KEY_SIZE: usize = 64;
+pub const KEY_SIZE: usize = crate::constants::SW_TABLE_KEY_SIZE as usize;
 const MAX_ROWS: u32 = 0x8000_0000;
-const CONFLICT_PROPORTION: f32 = 0.2;
 const FORCE_UNLOCK_MS: u128 = 2000;
-const SPINLOCK_LOOP_N: u32 = 1024;
+const SPINLOCK_LOOP_N: u32 = crate::constants::SW_SPINLOCK_LOOP_N;
 const SW_ERROR_MALLOC_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as c_int;
 
 /// The host's hash of a key as the caller passed it, whose row compares its
@@ -378,8 +378,8 @@ impl Table {
         };
         let conflict = if conflict > 1.0 {
             1.0
-        } else if f64::from(conflict) < 0.2 {
-            CONFLICT_PROPORTION
+        } else if f64::from(conflict) < SW_TABLE_CONFLICT_PROPORTION {
+            SW_TABLE_CONFLICT_PROPORTION.c_cast::<f32>()
         } else {
             conflict
         };

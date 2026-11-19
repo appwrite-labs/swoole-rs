@@ -12,7 +12,7 @@ use swoole_rs_corebase::offload::WakerSlot;
 use swoole_rs_corebase::reactor::signal_upstream::Handler;
 
 /// `SW_SIGNO_MAX`.
-const SIGNO_MAX: i32 = 128;
+const SIGNO_MAX: i32 = swoole_rs_corebase::constants::SW_SIGNO_MAX.cast_signed();
 /// `SW_ERROR_WRONG_OPERATION`: no event loop to register the handler on.
 const WRONG_OPERATION: i32 = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as i32;
 

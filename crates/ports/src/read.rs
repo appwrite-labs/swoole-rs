@@ -143,7 +143,7 @@ enum Log {
 const HTTP_PRI: u8 = 27;
 const HEADER_MAX_SIZE: u64 = 65536;
 const HTTP2_PREFACE: u64 = 24;
-const BUFFER_SIZE_BIG: u64 = 65536;
+const BUFFER_SIZE_BIG: u64 = swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as u64;
 
 /// `buffer->clear()`.
 fn clear(n: &mut impl Connection) {

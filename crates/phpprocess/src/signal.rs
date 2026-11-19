@@ -20,7 +20,7 @@ fn listeners(delta: i32) {
 }
 
 /// `SW_SIGNO_MAX`.
-const SLOTS: usize = 128;
+const SLOTS: usize = swoole_rs_corebase::constants::SW_SIGNO_MAX as usize;
 /// `(zend_long) SIG_IGN`.
 pub(crate) const SIG_IGN: i64 = 1;
 

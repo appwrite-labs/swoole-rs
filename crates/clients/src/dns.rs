@@ -17,7 +17,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode;
 
 /// `SW_BUFFER_SIZE_STD`.
-const PACKET: usize = 8192;
+const PACKET: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize;
 /// `sizeof(RecordHeader)`.
 const HEADER: usize = 12;
 /// The fixed part of a resource record after its (compressed) name.
@@ -91,7 +91,7 @@ fn c_len(bytes: &[u8]) -> usize {
 }
 
 /// `SW_DNS_SERVER_PORT`.
-const DNS_PORT: c_int = 53;
+const DNS_PORT: c_int = swoole_rs_corebase::constants::SW_DNS_SERVER_PORT.cast_signed();
 /// `SW_PATH_HOSTS`.
 const HOSTS: &[u8] = b"/etc/hosts";
 /// `SW_DNS_RESOLV_CONF`, which upstream's `SwooleG.dns_resolvconf_path` always held.

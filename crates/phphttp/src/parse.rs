@@ -72,10 +72,11 @@ const SERVER_INVALID_REQUEST: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_SERVER_INVALID_REQUEST as c_int;
 /// `SW_STACK_BUFFER_SIZE` (also `sw_tg_buffer()`'s size), `SW_BUFFER_SIZE_STD`,
 /// `SW_HTTP_FORM_KEYLEN`, `SW_HTTP_UPLOAD_TMPDIR_SIZE`, `HT_MIN_SIZE`.
-const STACK_BUFFER_SIZE: usize = 65536;
-const BUFFER_SIZE_STD: usize = 8192;
-const FORM_KEYLEN: usize = 512;
-const UPLOAD_TMPDIR_SIZE: usize = 256;
+const STACK_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize;
+const BUFFER_SIZE_STD: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize;
+const FORM_KEYLEN: usize = swoole_rs_corebase::constants::SW_HTTP_FORM_KEYLEN as usize;
+const UPLOAD_TMPDIR_SIZE: usize =
+    swoole_rs_corebase::constants::SW_HTTP_UPLOAD_TMPDIR_SIZE as usize;
 const HT_MIN_SIZE: u32 = 8;
 /// `http_upload_errno`.
 const UPLOAD_OK: i64 = 0;

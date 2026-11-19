@@ -14,7 +14,7 @@ use std::net::SocketAddrV4;
 use std::os::fd::{AsRawFd, OwnedFd};
 
 /// `SW_INPUT_BUFFER_SIZE`: the client's default `package_max_length`.
-const MAX_LENGTH: u32 = 2 * 1024 * 1024;
+const MAX_LENGTH: u32 = crate::constants::SW_INPUT_BUFFER_SIZE;
 /// `SW_ERROR_SERVER_CONNECT_FAIL`.
 const SERVER_CONNECT_FAIL: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_SERVER_CONNECT_FAIL as c_int;

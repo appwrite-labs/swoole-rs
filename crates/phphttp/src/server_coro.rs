@@ -255,7 +255,7 @@ const ENTITY_TOO_LARGE: c_int = 413;
 const HPE_OK: i32 = 0;
 const HPE_PAUSED_H2_UPGRADE: i32 = 23;
 /// `SW_BUFFER_SIZE_BIG`.
-const BUFFER_SIZE_BIG: usize = 65536;
+const BUFFER_SIZE_BIG: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as usize;
 /// `SW_HTTP2_PRI_STRING`.
 const HTTP2_PRI: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 /// `EINVAL`.
