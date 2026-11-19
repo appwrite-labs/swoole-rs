@@ -347,6 +347,10 @@ def plan(args, reports):
                '--package', ROOT / 'tests/modules/http/server',
                '--exclude', 'http_server.node_websocket_client_1=' + NODE_WS, '--exclude', 'http_server.node_websocket_client_2=' + NODE_WS,
                '--exclude', 'redis.get=needs a Redis server on 127.0.0.1:6379', '--exclude', 'mqtt.echo=needs Node.js and its mqtt and pino packages',
+               # Upstream's starting loads, swoole_rand(32, 512) per worker, can leave the balance check
+               # unreachable for any scheduler, about 0.085% of draws each (#3281, #5278): a fresh draw.
+               *[arg for name in ('server.schedule_9', 'server.schedule_10')
+                 for arg in ('--redraw', name + '=its random starting loads can make the balance check unreachable (#3281)')],
                # The case's second client sends the plain packet to the TLS port and expects EOF.
                *(['--exclude', "server.ssl=expects EOF after a plain packet to the TLS port; this OpenSSL sends an alert first"]
                  if tls_alerts_plaintext() else []),
