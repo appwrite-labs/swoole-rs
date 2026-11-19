@@ -21,7 +21,7 @@ use swoole_rs_zend::{
 };
 
 /// `SW_HTTP_MAX_APPEND_DATA`: a larger body is sent on its own, uncopied.
-const MAX_APPEND_DATA: usize = 16384;
+const MAX_APPEND_DATA: usize = swoole_rs_corebase::constants::SW_HTTP_MAX_APPEND_DATA as usize;
 
 /// An HTTP/2 server operation and its arguments.
 #[derive(Clone, Copy)]

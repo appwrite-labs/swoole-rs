@@ -3,14 +3,20 @@
 //! random tokens and response header semantics.
 use swoole_rs_clients::http_format::{Format, http_format};
 
+use swoole_rs_corebase::constants::{
+    SW_HTTP_CLIENT_BOUNDARY_PREKEY, SW_HTTP_CLIENT_BOUNDARY_TOTAL_SIZE, SW_HTTP_FORM_FILE_DATA_FMT,
+    SW_HTTP_FORM_FILE_DATA_FMT_LEN, SW_HTTP_FORM_RAW_DATA_FMT, SW_HTTP_FORM_RAW_DATA_FMT_LEN,
+};
+
 /// `SW_HTTP_CLIENT_BOUNDARY_PREKEY` and `SW_HTTP_CLIENT_BOUNDARY_TOTAL_SIZE`.
-const BOUNDARY_PREFIX: &[u8] = b"----SwooleBoundary";
-pub(crate) const BOUNDARY_SIZE: usize = 39;
+const BOUNDARY_PREFIX: &[u8] = SW_HTTP_CLIENT_BOUNDARY_PREKEY.as_bytes();
+pub(crate) const BOUNDARY_SIZE: usize = SW_HTTP_CLIENT_BOUNDARY_TOTAL_SIZE as usize;
 /// `SW_HTTP_FORM_RAW_DATA_FMT` and `SW_HTTP_FORM_FILE_DATA_FMT` without their
 /// `%.*s` directives (`sizeof(fmt) - FMT_LEN - 1`).
 const FIELD_OVERHEAD: usize =
-    b"--%.*s\r\nContent-Disposition: form-data; name=\"%.*s\"\r\n\r\n".len() - 8;
-const FILE_OVERHEAD: usize = b"--%.*s\r\nContent-Disposition: form-data; name=\"%.*s\"; filename=\"%.*s\"\r\nContent-Type: %.*s\r\n\r\n".len() - 16;
+    SW_HTTP_FORM_RAW_DATA_FMT.len() - SW_HTTP_FORM_RAW_DATA_FMT_LEN as usize;
+const FILE_OVERHEAD: usize =
+    SW_HTTP_FORM_FILE_DATA_FMT.len() - SW_HTTP_FORM_FILE_DATA_FMT_LEN as usize;
 /// `header_buf[2048]` and `content_length_str[64]`.
 const PART_BUFFER: usize = 2048;
 const LENGTH_BUFFER: usize = 64;

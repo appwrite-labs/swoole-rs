@@ -21,6 +21,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::constants::TaskFlag;
+use swoole_rs_corebase::constants::{SW_MAX_CONCURRENT_TASK, SW_TASKWAIT_TIMEOUT};
 use swoole_rs_corebase::locks::SharedMutex;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING;
 use swoole_rs_corebase::process::{
@@ -48,9 +49,6 @@ const NONBLOCK: TaskFlag = TaskFlag::SW_TASK_NONBLOCK;
 const CALLBACK: TaskFlag = TaskFlag::SW_TASK_CALLBACK;
 const COROUTINE: TaskFlag = TaskFlag::SW_TASK_COROUTINE;
 const NOREPLY: TaskFlag = TaskFlag::SW_TASK_NOREPLY;
-/// `SW_MAX_CONCURRENT_TASK`, `SW_TASKWAIT_TIMEOUT`.
-const MAX_CONCURRENT_TASK: u32 = 1024;
-const TASKWAIT_TIMEOUT: f64 = 0.5;
 /// `SW_ERROR_PHP_FATAL_ERROR`, `SW_ERROR_TASK_DISPATCH_FAIL`.
 const SW_ERROR_PHP_FATAL_ERROR: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as c_int;
@@ -436,7 +434,7 @@ fn taskwait(call: &Call) {
     };
     let (Ok(()), Ok(timeout), Ok(dst)) = (
         call.arity(1, 3),
-        call.double(2, TASKWAIT_TIMEOUT),
+        call.double(2, SW_TASKWAIT_TIMEOUT),
         call.long(3, -1),
     ) else {
         return call.set_bool(false);
@@ -494,7 +492,7 @@ fn taskwait(call: &Call) {
 fn task_arguments(call: &Call) -> Option<(Owned, f64)> {
     call.arity(1, 2).ok()?;
     let array = call.array(1).ok()?.copy();
-    Some((array, call.double(2, TASKWAIT_TIMEOUT).ok()?))
+    Some((array, call.double(2, SW_TASKWAIT_TIMEOUT).ok()?))
 }
 
 fn task_wait_multi(call: &Call) {
@@ -514,7 +512,7 @@ fn task_wait_multi(call: &Call) {
         return call.set_bool(false);
     };
     let n_task = tasks.count();
-    if n_task >= MAX_CONCURRENT_TASK {
+    if n_task >= SW_MAX_CONCURRENT_TASK {
         fatal(E_WARNING, c"too many concurrent tasks");
         return call.set_bool(false);
     }
@@ -567,7 +565,7 @@ fn task_co(call: &Call, fill_false: bool) {
         return call.set_bool(false);
     };
     let n_task = tasks.count();
-    if n_task >= MAX_CONCURRENT_TASK {
+    if n_task >= SW_MAX_CONCURRENT_TASK {
         fatal(E_WARNING, c"too many concurrent tasks");
         return call.set_bool(false);
     }

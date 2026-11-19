@@ -11,6 +11,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::reactor::socket_upstream::make_typed;
 use swoole_rs_corebase::reactor::{OwnedSocket, Running, SocketRecord};
+use swoole_rs_http2::FRAME_HEADER_SIZE as HTTP2_FRAME_HEADER_SIZE;
 use swoole_rs_websocket::MAX_HEADER_LEN as WEBSOCKET_FRAME_HEADER_SIZE;
 
 /// `SW_FD_STREAM_SERVER` and `SW_FD_DGRAM_SERVER`.
@@ -366,9 +367,6 @@ fn init_protocol_callbacks(
         readable_callback_raw
     }
 }
-
-/// `SW_HTTP2_FRAME_HEADER_SIZE`.
-const HTTP2_FRAME_HEADER_SIZE: u8 = 9;
 
 /// `ListenPort::init_protocol()`, over the port's settings.
 pub fn init_protocol(config: &PortConfig) {

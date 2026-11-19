@@ -17,7 +17,7 @@ const SW_ERROR_PHP_RUNTIME_NOTICE: c_int =
 const SW_ERROR_SERVER_UNRELATED_THREAD: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_SERVER_UNRELATED_THREAD as c_int;
 /// `SW_WORKER_MIN_REQUEST`.
-const WORKER_MIN_REQUEST: i64 = 10;
+const WORKER_MIN_REQUEST: i64 = swoole_rs_corebase::constants::SW_WORKER_MIN_REQUEST as i64;
 
 /// Server fields by id (`SWR_PHPSERVER_SET_*`).
 mod field {

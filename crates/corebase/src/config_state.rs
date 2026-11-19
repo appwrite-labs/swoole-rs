@@ -105,6 +105,11 @@ pub fn max_sockets() -> u32 {
     SWOOLE_G.max_sockets.load(Relaxed)
 }
 
+/// Replace the socket limit and return the previous value for restoration.
+pub fn replace_max_sockets(limit: u32) -> u32 {
+    SWOOLE_G.max_sockets.swap(limit, Relaxed)
+}
+
 /// A task file path; the paths built here hold no NUL.
 fn task_path(path: Vec<u8>) -> Option<Arc<CStr>> {
     CString::new(path).ok().map(Arc::from)

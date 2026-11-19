@@ -28,8 +28,6 @@ use crate::read::{Connection, Dispatch, Framing, Readable, Reply, Upgrade, reada
 
 /// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
 const UPLOAD_PREPROCESSED: u16 = 1;
-/// `SW_HTTP2_SETTING_FRAME_SIZE`: a frame header and six settings.
-const SETTING_FRAME_SIZE: usize = 9 + 6 * 6;
 
 /// One readable event on a live connection, which only this reactor thread touches.
 struct Read<'a> {
@@ -359,7 +357,7 @@ impl Connection for Read<'_> {
         self.conn.set_http2_stream(true);
         // `http2::send_setting_frame`: the server's default settings.
         let settings = swoole_rs_http2::sw_rs_http2_default_settings();
-        let mut frame = [0u8; SETTING_FRAME_SIZE];
+        let mut frame = [0u8; swoole_rs_http2::SETTINGS_FRAME_SIZE];
         let length = swoole_rs_http2::sw_rs_http2_pack_settings(&mut frame, &settings, true);
         self.send_bytes(frame.get(..length).unwrap_or_default());
     }

@@ -4,6 +4,7 @@
 //! dispatch from `src/protocol/websocket.cc` live here too.
 
 use std::ffi::c_int;
+use swoole_rs_http2::FRAME_HEADER_SIZE as HTTP2_FRAME_HEADER_SIZE;
 use swoole_rs_websocket::MAX_HEADER_LEN as WEBSOCKET_FRAME_HEADER_SIZE;
 
 use swoole_rs_clients::protocol::Protocol;
@@ -13,9 +14,6 @@ use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_server::Connection;
-
-/// `SW_HTTP2_FRAME_HEADER_SIZE`.
-const HTTP2_FRAME_HEADER_SIZE: u8 = 9;
 
 /// `conn`'s branch: `websocket` past the handshake, else `http2` for an HTTP/2
 /// stream, else upstream's `protocol_status_error` warning and `error`.

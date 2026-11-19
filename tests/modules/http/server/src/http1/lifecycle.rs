@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::TEST_STR;
+use libc::{SHUT_RDWR, SIGUSR1, SIGUSR2};
 use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU16, AtomicU64};
 use swoole_rs_clients::client::{
     self as native, ClientEvent, Handle, Listener, Notification, listen,
@@ -19,12 +20,8 @@ const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
 const SW_ERROR_WRONG_OPERATION: c_int = 509;
 const TASK_IPC_MSGQUEUE: u8 = 2;
 const SW_TASK_WORKER: c_int = 4;
-// glibc's values (the core-tests build is Linux).
-const SIGUSR1: c_int = 10;
-const SIGUSR2: c_int = 12;
-const SHUT_RDWR: c_int = 2;
-const PROT_READ_WRITE: c_int = 3;
-const MAP_SHARED_ANONYMOUS: c_int = 0x21;
+const PROT_READ_WRITE: c_int = libc::PROT_READ | libc::PROT_WRITE;
+const MAP_SHARED_ANONYMOUS: c_int = libc::MAP_SHARED | libc::MAP_ANONYMOUS;
 const TEST_COUNTER_NUM: usize = 32;
 /// The shared slot after the counters: expectations that failed in any process.
 const FAILURES: usize = TEST_COUNTER_NUM;

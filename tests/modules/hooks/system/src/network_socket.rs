@@ -25,6 +25,10 @@ use super::{
     AF_INET, AF_INET6, EBADF, EINVAL, ENOENT, ETIMEDOUT, SOCK_DGRAM, SOCK_STREAM, SW_ERR,
     TEST_HTTP_DOMAIN, TEST_STR, c_str, errno, last_error,
 };
+use libc::{
+    AF_LOCAL, EAGAIN, EMSGSIZE, ENOBUFS, EPROTONOSUPPORT, ESOCKTNOSUPPORT, MSG_DONTWAIT,
+    MSG_WAITALL, SIG_IGN, SIGPIPE, SOCK_RAW, SOCK_RDM,
+};
 
 const TEST_DATA: &[u8] = b"hello swoole, hello world, php is best\0";
 const TEST_DOMAIN_BAIDU: &str = "www.baidu.com";
@@ -46,19 +50,6 @@ const SW_STACK_BUFFER_SIZE: usize = 65536;
 const SW_ERROR_INVALID_PARAMS: c_int = 505;
 const SW_ERROR_FILE_EMPTY: c_int = 702;
 const SW_ERROR_SSL_RESET: c_int = 1017;
-// glibc's values (the core-tests build is Linux).
-const AF_LOCAL: c_int = 1;
-const SOCK_RAW: c_int = 3;
-const SOCK_RDM: c_int = 4;
-const EPROTONOSUPPORT: c_int = 93;
-const ESOCKTNOSUPPORT: c_int = 94;
-const ENOBUFS: c_int = 105;
-const EMSGSIZE: c_int = 90;
-const EAGAIN: c_int = 11;
-const MSG_DONTWAIT: c_int = 0x40;
-const MSG_WAITALL: c_int = 0x100;
-const SIGPIPE: c_int = 13;
-const SIG_IGN: usize = 1;
 // OpenSSL's codes (the SSL_F_* and BIO_F_* function codes are 0 in OpenSSL 3).
 const ERR_LIB_SSL: c_int = 20;
 const ERR_LIB_BIO: c_int = 32;

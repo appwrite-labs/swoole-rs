@@ -11,6 +11,7 @@ use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use swoole_rs_clients::address::assign;
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::constants::SocketTypeCode;
+use swoole_rs_corebase::constants::{SW_BUFFER_MIN_SIZE, SW_MAX_THREAD_NCPU, SW_MAX_WORKER_NCPU};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_WARNING};
 use swoole_rs_corebase::process::process_pool::IpcMode;
 use swoole_rs_corebase::process::worker_record::WorkerRecord;
@@ -19,12 +20,6 @@ use swoole_rs_corebase::reactor::{ErrorHandler::ConnectionDefault, Events};
 use swoole_rs_corebase::timer::MIN_SEC as TIMER_MIN_SEC;
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode;
-
-/// `SW_MAX_THREAD_NCPU`, `SW_MAX_WORKER_NCPU`, `SW_TIMER_MIN_SEC`, `SW_BUFFER_MIN_SIZE`;
-/// native asserts each.
-const MAX_THREAD_NCPU: u32 = 4;
-const MAX_WORKER_NCPU: u32 = 1000;
-const BUFFER_MIN_SIZE: u32 = 65536;
 
 /// `Server::start`: checks, the daemon, the factory and the mode's workers, then
 /// the master's loop until shutdown, and `destroy`.
@@ -211,7 +206,7 @@ fn max_connection(state: &crate::ServerState, max_sockets: u32) -> Option<u32> {
 
 /// Reactor and worker counts within what `cpu` cores can run.
 fn bound_workers(config: &crate::ServerConfig, cpu: u32) {
-    let max_reactors = cpu.saturating_mul(MAX_THREAD_NCPU);
+    let max_reactors = cpu.saturating_mul(SW_MAX_THREAD_NCPU);
     let reactors = u32::from(config.reactor_num.get());
     if reactors > max_reactors {
         let m = format_args!(
@@ -225,7 +220,7 @@ fn bound_workers(config: &crate::ServerConfig, cpu: u32) {
     if config.single_thread.get() {
         config.reactor_num.set(1);
     }
-    let max_workers = cpu.saturating_mul(MAX_WORKER_NCPU);
+    let max_workers = cpu.saturating_mul(SW_MAX_WORKER_NCPU);
     let workers = config.worker_num.get();
     if workers > max_workers {
         let m = format_args!(
@@ -356,8 +351,8 @@ fn check_port(
     has: impl Fn(CallbackKind) -> bool,
 ) -> bool {
     let settings = port.config();
-    if settings.protocol.get().package_max_length < BUFFER_MIN_SIZE {
-        port.set_package_max_length(BUFFER_MIN_SIZE);
+    if settings.protocol.get().package_max_length < SW_BUFFER_MIN_SIZE {
+        port.set_package_max_length(SW_BUFFER_MIN_SIZE);
     }
     let dgram = matches!(settings.r#type, 2 | 4 | 6);
     let stream = matches!(settings.r#type, 1 | 3 | 5);
@@ -870,7 +865,7 @@ mod tests {
         );
         assert_eq!(
             port.protocol.get().package_max_length,
-            BUFFER_MIN_SIZE,
+            SW_BUFFER_MIN_SIZE,
             "raised"
         );
         assert_eq!(

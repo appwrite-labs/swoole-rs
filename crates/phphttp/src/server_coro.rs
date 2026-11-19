@@ -18,9 +18,11 @@ use std::{
 };
 use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::buffer::string::StringBuffer as Buffer;
+use swoole_rs_corebase::constants::{SW_COMPRESSION_MIN_LENGTH_DEFAULT, SW_Z_BEST_SPEED};
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_members::Receive};
+use swoole_rs_http2::FRAME_HEADER_SIZE as HTTP2_FRAME_HEADER_SIZE;
 use swoole_rs_httpbindings::Setting;
 use swoole_rs_phpclients::{NewSocket, get_socket, is_socket_closed, socket_settings};
 use swoole_rs_phpstubs::http_server_coro;
@@ -83,10 +85,6 @@ struct HttpServer {
     upload_tmp_dir: Cell<Rc<CString>>,
 }
 
-/// `SW_Z_BEST_SPEED` and `SW_COMPRESSION_MIN_LENGTH_DEFAULT`.
-const Z_BEST_SPEED: i8 = 1;
-const COMPRESSION_MIN_LENGTH_DEFAULT: u32 = 20;
-
 impl HttpServer {
     fn new(listener: NewSocket) -> Self {
         Self {
@@ -100,8 +98,8 @@ impl HttpServer {
             parse_post: Cell::new(true),
             parse_files: Cell::new(false),
             compression: Cell::new(true),
-            compression_level: Cell::new(Z_BEST_SPEED),
-            compression_min_length: Cell::new(COMPRESSION_MIN_LENGTH_DEFAULT),
+            compression_level: Cell::new(SW_Z_BEST_SPEED.c_cast::<i8>()),
+            compression_min_length: Cell::new(SW_COMPRESSION_MIN_LENGTH_DEFAULT),
             compression_types: Cell::default(),
             websocket_settings: Cell::new(websocket::IN_SERVER),
             upload_tmp_dir: Cell::new(Rc::new(c"/tmp".to_owned())),
@@ -285,9 +283,6 @@ fn address(socket: Co) -> (ZString, c_int) {
     });
     address.unwrap_or_else(|| (ZString::new(b""), 0))
 }
-
-/// `SW_HTTP2_FRAME_HEADER_SIZE`.
-const HTTP2_FRAME_HEADER_SIZE: u8 = 9;
 
 /// `zend::assign_zend_string_by_val(&request.zdata, buffer->pop(SW_BUFFER_SIZE_BIG), length)`:
 /// the request's `length` bytes, in a zend string the buffer allocated,

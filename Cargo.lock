@@ -568,6 +568,7 @@ dependencies = [
 name = "swoole-rs-http-server-tests"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-ffi",
@@ -934,6 +935,7 @@ version = "0.1.0"
 name = "swoole-rs-reactor-base-tests"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "swoole-rs-ffi",
 ]
 

@@ -76,7 +76,7 @@ const BAD_GATEWAY: u16 = 502;
 const SERVICE_UNAVAILABLE: u16 = 503;
 /// `SW_WEBSOCKET_HEADER_LEN`, `SW_WEBSOCKET_KEY_LENGTH`.
 const WEBSOCKET_HEADER: usize = swoole_rs_websocket::HEADER_LEN as usize;
-const WEBSOCKET_KEY: usize = 16;
+const WEBSOCKET_KEY: usize = swoole_rs_corebase::constants::SW_WEBSOCKET_KEY_LENGTH as usize;
 /// `SW_WEBSOCKET_EXTENSION_DEFLATE`.
 const DEFLATE_EXTENSION: &CStr =
     c"permessage-deflate; client_no_context_takeover; server_no_context_takeover";
