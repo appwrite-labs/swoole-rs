@@ -1424,6 +1424,21 @@ fn process_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int {
 }
 
 fn process_on_start(serv: view::Server<'_>) {
+    // What upstream's `call_command_handler_in_master(9999, ...)` asserted, through the
+    // path left: `Server::command` refuses a name it doesn't know, in the running master.
+    clear_last_error();
+    let sent = swoole_rs_server::swr_v1_server_command(
+        serv,
+        0,
+        1,
+        b"swoole-rs-unknown-command",
+        b"",
+        std::sync::Arc::new(|_: &[u8]| {}),
+    );
+    check(
+        !sent && last_error() == SW_ERROR_SERVER_INVALID_COMMAND,
+        "Server::command(unknown) is SW_ERROR_SERVER_INVALID_COMMAND",
+    );
     let serv = Server(serv.raw());
     let t1 = std::thread::spawn(move || {
         block_all_signals();
@@ -1477,7 +1492,8 @@ fn on_shutdown(_: view::Server<'_>) {
 /// `Server::HOOK_MANAGER_TIMER` hook, which counted `counter[2]`, left the build with the
 /// other Server hooks (#1535), so nothing counts the manager timer.
 /// `call_command_handler_in_master(9999, ...)` has no entry point left: its body is part
-/// of `Server::command`, which looks the command up before it can be reached.
+/// of `Server::command`, which looks the command up first, so `process_on_start` asserts
+/// that an unknown name is refused with the same error.
 fn test_process(single_thread: bool) {
     let serv = Server::new(MODE_PROCESS);
     serv.config().worker_num.set(1);
