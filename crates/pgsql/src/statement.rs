@@ -611,9 +611,11 @@ fn send_statement(
     } else {
         active
     };
-    let Some(query) = query.map(|sql| sql.c_str().into()) else {
+    let Some(query) = query else {
         return false;
     };
+    // Executing an already prepared statement sends only its name.
+    let sql = || query.c_str().into();
     let conn = crate::driver::pdo_pgsql_server(handle);
     if stored_query && count as usize > params.map_or(0, |p| p.owned.len()) {
         crate::driver::pdo_pgsql_raise(
@@ -634,16 +636,16 @@ fn send_statement(
     let formats = Params(params.map_or(std::ptr::null(), |p| p.formats.as_ptr().cast()));
     let sent = if let Some(name) = name {
         if !prepared.get() {
-            if !prepare_statement(dbh, stmt, result, name, query, count, types) {
+            if !prepare_statement(dbh, stmt, result, name, sql(), count, types) {
                 return false;
             }
             prepared.set(true);
         }
         crate::PQsendQueryPrepared(conn, Some(name), count, values, lengths, formats, 0)
     } else if named {
-        crate::PQsendQueryParams(conn, Some(query), count, types, values, lengths, formats, 0)
+        crate::PQsendQueryParams(conn, Some(sql()), count, types, values, lengths, formats, 0)
     } else {
-        crate::PQsendQuery(conn, query)
+        crate::PQsendQuery(conn, sql())
     };
     if unbuffered {
         if sent == 0 {
