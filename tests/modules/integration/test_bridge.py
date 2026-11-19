@@ -100,6 +100,19 @@ int main(void) {
                     if line.split() and line.split()[-1].startswith('_R')]
         self.assertFalse(exported, 'Rust internal symbols exported: ' + ', '.join(exported[:10]))
 
+    def test_registered_error_constants(self):
+        def errors(extension):
+            result = self.php(extension, '-r',
+                              '$errors = array_filter(get_defined_constants(), '
+                              'fn($k) => str_starts_with($k, "SWOOLE_ERROR_"), ARRAY_FILTER_USE_KEY); '
+                              'echo json_encode($errors, JSON_THROW_ON_ERROR);')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return list(json.loads(result.stdout).items())
+
+        reference = errors(ARGS.reference)
+        self.assertTrue(reference)
+        self.assertEqual(errors(ARGS.extension), reference)
+
     def test_reference_has_no_bridge_marker(self):
         result = self.php(ARGS.reference, '-r', 'echo extension_loaded("swoole") ? "loaded\\n" : "missing\\n"; '
                           'echo defined("SWOOLE_RS_ABI_VERSION") || defined("SWOOLE_RS_FEATURE_BITS") ? "bridge\\n" : "upstream\\n";')
@@ -143,6 +156,7 @@ if __name__ == '__main__':
         if not path.is_file():
             parser.error(f'Missing built artifact: {path}; build reference and extension first')
     tests = ['BridgeTests.test_reference_has_no_bridge_marker', 'BridgeTests.test_extension_markers_and_phpinfo',
-             'BridgeTests.test_selected_abi_exports', 'BridgeTests.test_module_information_exports_follow_profile',
+             'BridgeTests.test_registered_error_constants', 'BridgeTests.test_selected_abi_exports',
+             'BridgeTests.test_module_information_exports_follow_profile',
              'BridgeTests.test_rust_internal_symbols_are_hidden'] if ARGS.startup_only else []
     unittest.main(argv=[sys.argv[0], *tests], verbosity=2)
