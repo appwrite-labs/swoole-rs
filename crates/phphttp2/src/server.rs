@@ -38,8 +38,7 @@ const MISSING_DATE: u32 = 16;
 const MISSING_CONTENT_TYPE: u32 = 32;
 /// `SW_HTTP_REQUEST_ENTITY_TOO_LARGE`.
 const ENTITY_TOO_LARGE: u32 = 413;
-/// `SW_HTTP2_SETTING_HEADER_TABLE_SIZE`.
-const SETTING_HEADER_TABLE_SIZE: u16 = 1;
+use swoole_rs_http2::setting_id;
 /// `swoole::http2::Settings` field indexes.
 const INIT_WINDOW_SIZE: usize = 3;
 const MAX_FRAME_SIZE: usize = 4;
@@ -1092,12 +1091,12 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
     for entry in entries {
         let (id, value) = swoole_rs_http2::sw_rs_http2_unpack_setting(entry);
         session.with_deflater(|deflater| {
-            let old = if id == SETTING_HEADER_TABLE_SIZE {
+            let old = if id == setting_id::HEADER_TABLE_SIZE {
                 session.remote[0].get()
             } else {
                 0
             };
-            let change = id == SETTING_HEADER_TABLE_SIZE && value != old && deflater.is_some();
+            let change = id == setting_id::HEADER_TABLE_SIZE && value != old && deflater.is_some();
             let plan = sw_rs_http2_setting_plan(u32::from(id), value, old, change, true);
             if plan.set_value
                 && let Ok(field) = usize::try_from(plan.field)

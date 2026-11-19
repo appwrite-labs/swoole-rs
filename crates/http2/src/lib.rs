@@ -51,7 +51,16 @@ pub struct Http2ResponsePlan {
 pub const FRAME_HEADER_SIZE: u8 = 9;
 const HEADER_BYTES: usize = FRAME_HEADER_SIZE as usize;
 pub const SETTING_BYTES: usize = size_of::<u16>() + size_of::<u32>();
-const SETTING_COUNT: usize = 6;
+/// Wire identifiers from `swHttp2SettingId`.
+pub mod setting_id {
+    pub const HEADER_TABLE_SIZE: u16 = 1;
+    pub const ENABLE_PUSH: u16 = 2;
+    pub const MAX_CONCURRENT_STREAMS: u16 = 3;
+    pub const INIT_WINDOW_SIZE: u16 = 4;
+    pub const MAX_FRAME_SIZE: u16 = 5;
+    pub const MAX_HEADER_LIST_SIZE: u16 = 6;
+}
+const SETTING_COUNT: usize = setting_id::MAX_HEADER_LIST_SIZE as usize;
 pub const SETTINGS_FRAME_SIZE: usize = HEADER_BYTES + SETTING_COUNT * SETTING_BYTES;
 
 /// RFC 7540 connection window before any `WINDOW_UPDATE`.
@@ -94,14 +103,14 @@ pub fn get_default_setting(id: u32) -> u32 {
 /// All defaults, for the server's SETTINGS frame.
 #[must_use]
 pub fn sw_rs_http2_default_settings() -> Http2Settings {
-    let get = get_default_setting;
+    let get = |id: u16| get_default_setting(u32::from(id));
     Http2Settings {
-        header_table_size: get(1),
-        enable_push: get(2),
-        max_concurrent_streams: get(3),
-        init_window_size: get(4),
-        max_frame_size: get(5),
-        max_header_list_size: get(6),
+        header_table_size: get(setting_id::HEADER_TABLE_SIZE),
+        enable_push: get(setting_id::ENABLE_PUSH),
+        max_concurrent_streams: get(setting_id::MAX_CONCURRENT_STREAMS),
+        init_window_size: get(setting_id::INIT_WINDOW_SIZE),
+        max_frame_size: get(setting_id::MAX_FRAME_SIZE),
+        max_header_list_size: get(setting_id::MAX_HEADER_LIST_SIZE),
     }
 }
 
@@ -450,12 +459,12 @@ pub fn sw_rs_http2_pack_settings(out: &mut [u8], s: &Http2Settings, server: bool
         return 0;
     };
     let values = [
-        s.header_table_size,
-        s.enable_push,
-        s.max_concurrent_streams,
-        s.init_window_size,
-        s.max_frame_size,
-        s.max_header_list_size,
+        (setting_id::HEADER_TABLE_SIZE, s.header_table_size),
+        (setting_id::ENABLE_PUSH, s.enable_push),
+        (setting_id::MAX_CONCURRENT_STREAMS, s.max_concurrent_streams),
+        (setting_id::INIT_WINDOW_SIZE, s.init_window_size),
+        (setting_id::MAX_FRAME_SIZE, s.max_frame_size),
+        (setting_id::MAX_HEADER_LIST_SIZE, s.max_header_list_size),
     ];
     let (head, entries) = out.split_at_mut(HEADER_BYTES);
     head.copy_from_slice(&header(
@@ -465,12 +474,11 @@ pub fn sw_rs_http2_pack_settings(out: &mut [u8], s: &Http2Settings, server: bool
         0,
     ));
     let sent = values
-        .iter()
-        .enumerate()
-        .filter(|&(index, _)| !server || index != 1);
-    for ((index, value), entry) in sent.zip(entries.as_chunks_mut::<SETTING_BYTES>().0) {
+        .into_iter()
+        .filter(|&(id, _)| !server || id != setting_id::ENABLE_PUSH);
+    for ((key, value), entry) in sent.zip(entries.as_chunks_mut::<SETTING_BYTES>().0) {
         let (id, value_bytes) = entry.split_at_mut(2);
-        id.copy_from_slice(&u16::try_from(index + 1).unwrap_or(0).to_be_bytes());
+        id.copy_from_slice(&key.to_be_bytes());
         value_bytes.copy_from_slice(&value.to_be_bytes());
     }
     size
@@ -562,15 +570,25 @@ pub fn sw_rs_http2_setting_plan(
     deflater_present: bool,
     server: bool,
 ) -> Http2SettingPlan {
+    let id = u16::try_from(id).unwrap_or(0);
     let field = match id {
-        1 | 3 | 4 | 5 | 6 => (id - 1).cast_signed(),
+        setting_id::HEADER_TABLE_SIZE
+        | setting_id::MAX_CONCURRENT_STREAMS
+        | setting_id::INIT_WINDOW_SIZE
+        | setting_id::MAX_FRAME_SIZE
+        | setting_id::MAX_HEADER_LIST_SIZE => i32::from(id) - 1,
         _ => -1,
     };
     Http2SettingPlan {
         field,
-        set_value: field >= 0 && (id != 1 && (server || id != 6) || value != old_value),
-        set_window: id == 4,
-        change_deflater: id == 1 && value != old_value && (!server || deflater_present),
+        set_value: field >= 0
+            && (id != setting_id::HEADER_TABLE_SIZE
+                && (server || id != setting_id::MAX_HEADER_LIST_SIZE)
+                || value != old_value),
+        set_window: id == setting_id::INIT_WINDOW_SIZE,
+        change_deflater: id == setting_id::HEADER_TABLE_SIZE
+            && value != old_value
+            && (!server || deflater_present),
     }
 }
 
@@ -943,7 +961,7 @@ mod tests {
     }
     #[test]
     fn role_specific_setting_effects() {
-        for id in 0..=7 {
+        for id in (0..=7).chain([0x10001, u32::MAX]) {
             for server in [false, true] {
                 for has_deflater in [false, true] {
                     let p = sw_rs_http2_setting_plan(id, 2, 1, has_deflater, server);
