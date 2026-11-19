@@ -33,11 +33,7 @@ SW_EXTERN_C_BEGIN
 
 #define SAVE_CURLM_ERROR(__handle, __err) (__handle)->err.no = (int) __err;
 
-bool swoole_curl_multi_is_in_coroutine(php_curlm *mh) {
-    zval rv;
-    zval *zv = zend_read_property_ex(nullptr, &mh->std, SW_ZSTR_KNOWN(SW_ZEND_STR_IN_COROUTINE), 1, &rv);
-    return zval_is_true(zv);
-}
+extern "C" bool swoole_curl_multi_is_in_coroutine(php_curlm *mh);
 
 /* CurlMultiHandle class */
 static inline php_curlm *curl_multi_from_obj(zend_object *obj) {
@@ -153,87 +149,6 @@ PHP_FUNCTION(swoole_native_curl_multi_remove_handle) {
     RETVAL_LONG((zend_long) error);
 }
 /* }}} */
-
-/* {{{ Get all the sockets associated with the cURL extension, which can then be "selected" */
-PHP_FUNCTION(swoole_native_curl_multi_select) {
-    zval *z_mh;
-    php_curlm *mh;
-    double timeout = 1.0;
-
-    ZEND_PARSE_PARAMETERS_START(1, 2)
-    Z_PARAM_OBJECT_OF_CLASS(z_mh, swoole_coroutine_curl_multi_handle_ce)
-    Z_PARAM_OPTIONAL
-    Z_PARAM_DOUBLE(timeout)
-    ZEND_PARSE_PARAMETERS_END();
-
-    mh = Z_CURL_MULTI_P(z_mh);
-    if (!(swoole_curl_multi_is_in_coroutine(mh))) {
-        swoole_fatal_error(SW_ERROR_WRONG_OPERATION,
-                           "The given object is not a valid coroutine CurlMultiHandle object");
-        RETURN_FALSE;
-    }
-
-#if PHP_VERSION_ID >= 80500
-    if (!(timeout >= 0.0 && timeout <= (INT_MAX / 1000.0))) {
-        zend_argument_value_error(2, "must be between 0 and %f", INT_MAX / 1000.0);
-        RETURN_THROWS();
-    }
-#else
-    if (!(timeout >= 0.0 && timeout <= ((double) INT_MAX / 1000.0))) {
-        zend_argument_value_error(2, "must be between 0 and %d", (int) ceilf((double) INT_MAX / 1000));
-        RETURN_THROWS();
-    }
-#endif
-
-    if (zend_llist_count(&mh->easyh) == 0) {
-        RETURN_LONG(0);
-    }
-    RETURN_LONG(swr_v1_curl_multi_select(mh->multi, swoole_curl_check_bound_co(mh->multi), timeout));
-}
-/* }}} */
-
-/* {{{ Run the sub-connections of the current cURL handle */
-PHP_FUNCTION(swoole_native_curl_multi_exec) {
-    zval *z_mh;
-    zval *z_still_running;
-    php_curlm *mh;
-    int still_running;
-    CURLMcode error = CURLM_OK;
-
-    ZEND_PARSE_PARAMETERS_START(2, 2)
-    Z_PARAM_OBJECT_OF_CLASS(z_mh, swoole_coroutine_curl_multi_handle_ce)
-    Z_PARAM_ZVAL(z_still_running)
-    ZEND_PARSE_PARAMETERS_END();
-
-    mh = Z_CURL_MULTI_P(z_mh);
-    if (!(swoole_curl_multi_is_in_coroutine(mh))) {
-        swoole_fatal_error(SW_ERROR_WRONG_OPERATION,
-                           "The given object is not a valid coroutine CurlMultiHandle object");
-        RETURN_FALSE;
-    }
-
-    {
-        zend_llist_position pos;
-        php_curl *ch;
-        zval *pz_ch;
-
-        for (pz_ch = (zval *) zend_llist_get_first_ex(&mh->easyh, &pos); pz_ch;
-             pz_ch = (zval *) zend_llist_get_next_ex(&mh->easyh, &pos)) {
-            ch = Z_CURL_P(pz_ch);
-            swoole_curl_verify_handlers(ch, /* reporterror */ true);
-        }
-    }
-
-    swoole_curl_check_bound_co(mh->multi);
-    error = (CURLMcode) swr_v1_curl_multi_perform(mh->multi);
-    still_running = swr_v1_curl_multi_running(mh->multi);
-    ZEND_TRY_ASSIGN_REF_LONG(z_still_running, still_running);
-
-    SAVE_CURLM_ERROR(mh, error);
-    RETURN_LONG((zend_long) error);
-}
-/* }}} */
-
 
 /* {{{ Get information about the current transfers */
 PHP_FUNCTION(swoole_native_curl_multi_info_read) {

@@ -221,7 +221,7 @@ fn transfer() -> Transfer {
         std::thread::sleep(std::time::Duration::from_millis(5));
         multi.timer_callback.set(true);
     }
-    assert_eq!(swr_v1_curl_multi_running(multi), 1, "running");
+    assert_eq!(multi.running.get(), 1, "running");
     assert_eq!(
         multi.sockets.with_taken(|sockets| sockets.len()),
         1,

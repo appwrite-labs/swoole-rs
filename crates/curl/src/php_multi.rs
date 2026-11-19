@@ -27,6 +27,15 @@ unsafe extern "C" {
     )]
     safe fn swoole_curl_multi_attach(handle: PhpMulti<'_>, engine: Released);
     safe fn swoole_curl_multi_object(object: ObjectRef<'_>) -> Option<PhpMulti<'_>>;
+    #[expect(
+        improper_ctypes,
+        reason = "the object retains the opaque Rust engine for the call"
+    )]
+    safe fn swoole_curl_multi_engine(handle: PhpMulti<'_>) -> Option<&Multi>;
+    safe fn swoole_curl_multi_empty(handle: PhpMulti<'_>) -> bool;
+    safe fn swoole_curl_multi_verify(handle: PhpMulti<'_>);
+    safe fn swoole_curl_assign_long(slot: &swoole_rs_zend::Value, number: i64);
+    safe fn swoole_curl_multi_set_error(handle: PhpMulti<'_>, code: c_int);
     safe fn swoole_curl_multi_error(handle: PhpMulti<'_>) -> c_int;
 }
 
@@ -43,6 +52,8 @@ fn argument<'a>(call: &'a Call<'_>) -> Option<PhpMulti<'a>> {
 
 swoole_rs_zend::handlers! {
     zif_swoole_native_curl_multi_init => init;
+    zif_swoole_native_curl_multi_exec => exec;
+    zif_swoole_native_curl_multi_select => select;
     zif_swoole_native_curl_multi_errno => errno;
 }
 
@@ -67,6 +78,84 @@ fn init(call: &Call<'_>) {
         swoole_curl_multi_attach(handle, Released(engine));
     }));
     call.set_owned(object);
+}
+
+fn wrong_operation(message: &std::ffi::CStr) {
+    bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
+        swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int,
+        message,
+    ));
+}
+
+fn engine(handle: PhpMulti<'_>) -> Option<&Multi> {
+    let multi = swoole_curl_multi_engine(handle);
+    if multi.is_none() {
+        wrong_operation(c"The given object is not a valid coroutine CurlMultiHandle object");
+    }
+    multi
+}
+
+fn current(multi: &Multi) -> Option<*mut std::ffi::c_void> {
+    match crate::host::bound_co(multi, &mut [0; 128]) {
+        Ok(co) => Some(co),
+        Err((code, message)) => {
+            bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(code, message));
+            None
+        }
+    }
+}
+
+fn exec(call: &Call<'_>) {
+    if call.arity(2, 2).is_err() {
+        return;
+    }
+    let Some(handle) = argument(call) else { return };
+    let Some(running) = call.value(2) else { return };
+    let Some(multi) = engine(handle) else { return };
+    if let Err(bailout) = contain_with(|| swoole_curl_multi_verify(handle)) {
+        bailout.defer();
+        return;
+    }
+    if current(multi).is_none() {
+        return;
+    }
+    let result = multi.perform();
+    if let Err(bailout) =
+        contain_with(|| swoole_curl_assign_long(running, i64::from(multi.running.get())))
+    {
+        bailout.defer();
+        return;
+    }
+    swoole_curl_multi_set_error(handle, result);
+    call.set_long(i64::from(result));
+}
+
+fn select(call: &Call<'_>) {
+    if call.arity(1, 2).is_err() {
+        return;
+    }
+    let Some(handle) = argument(call) else { return };
+    let Ok(timeout) = call.double(2, 1.0) else {
+        return;
+    };
+    let Some(multi) = engine(handle) else { return };
+    if PHP_VERSION_ID >= 80200 && !(0.0..=f64::from(c_int::MAX) / 1000.0).contains(&timeout) {
+        if PHP_VERSION_ID >= 80500 {
+            call.argument_value_error(2, c"must be between 0 and 2147483.647000");
+        } else if PHP_VERSION_ID >= 80400 {
+            call.argument_value_error(2, c"must be between 0 and 2147484");
+        } else {
+            wrong_operation(c"timeout must be between 0 and 2147484");
+        }
+        return;
+    }
+    if swoole_curl_multi_empty(handle) {
+        call.set_long(0);
+        return;
+    }
+    if let Some(co) = current(multi) {
+        call.set_long(multi.select(co, timeout));
+    }
 }
 
 fn errno(call: &Call<'_>) {

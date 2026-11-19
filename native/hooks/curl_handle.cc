@@ -127,6 +127,36 @@ extern "C" void swoole_curl_multi_attach(php_curlm *mh, swr_v1_curl_multi *engin
     zend_update_property_bool(nullptr, &mh->std, ZEND_STRL("in_coroutine"), true);
 }
 
+extern "C" bool swoole_curl_multi_is_in_coroutine(php_curlm *mh) {
+    zval rv;
+    zval *zv = zend_read_property_ex(nullptr, &mh->std, SW_ZSTR_KNOWN(SW_ZEND_STR_IN_COROUTINE), 1, &rv);
+    return zval_is_true(zv);
+}
+
+extern "C" swr_v1_curl_multi *swoole_curl_multi_engine(php_curlm *mh) {
+    // Only our attach routine pairs this list destructor with a Rust engine.
+    return mh->easyh.dtor == release_multi_easy && swoole_curl_multi_is_in_coroutine(mh) ? mh->multi : nullptr;
+}
+
+extern "C" bool swoole_curl_multi_empty(php_curlm *mh) {
+    return zend_llist_count(&mh->easyh) == 0;
+}
+
+extern "C" void swoole_curl_multi_verify(php_curlm *mh) {
+    zend_llist_position pos;
+    for (auto *item = zend_llist_get_first_ex(&mh->easyh, &pos); item; item = zend_llist_get_next_ex(&mh->easyh, &pos)) {
+        swoole_curl_verify_handlers(Z_CURL_P(static_cast<zval *>(item)), true);
+    }
+}
+
+extern "C" void swoole_curl_assign_long(zval *slot, zend_long number) {
+    ZEND_TRY_ASSIGN_LONG(slot, number);
+}
+
+extern "C" void swoole_curl_multi_set_error(php_curlm *mh, int code) {
+    mh->err.no = code;
+}
+
 extern "C" int swoole_curl_multi_error(php_curlm *mh) {
     return mh->err.no;
 }
