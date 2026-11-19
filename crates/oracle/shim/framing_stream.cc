@@ -39,6 +39,7 @@ extern "C" struct SwrOracleStream {
 #define SWR_CAT(a, b) SWR_CAT2(a, b)
 
 namespace SWR_STREAM_ENGINE {
+namespace framing_stream {
 // The result, return, error and log-level enums and SW_BUFFER_SIZE_STD, as the pinned
 // headers define them (build.rs copies them from upstream/include); logging is off.
 #include "framing_stream_pinned.inc"
@@ -196,11 +197,12 @@ static int on_package(const Protocol *, network::Socket *, const RecvData *data)
     events->append(data->data, data->info.len);
     return 0;
 }
+}  // namespace framing_stream
 }  // namespace SWR_STREAM_ENGINE
 
 extern "C" size_t SWR_CAT(swr_oracle_framing_stream, SWR_STREAM_ENGINE)(const SwrOracleStream *stream, char *out,
                                                                       size_t capacity) {
-    using namespace SWR_STREAM_ENGINE;
+    using namespace SWR_STREAM_ENGINE::framing_stream;
     std::string log;
     events = &log;
     Protocol protocol{};
@@ -227,19 +229,12 @@ extern "C" size_t SWR_CAT(swr_oracle_framing_stream, SWR_STREAM_ENGINE)(const Sw
         bool drained = socket.chunks.empty();
         int result = stream->mode == 0 ? protocol.recv_with_length_protocol(&socket, &buffer)
                                        : protocol.recv_with_eof_protocol(&socket, &buffer);
-        // The length loop reads greedily in the candidate, so how many calls a packet
-        // takes and what is left buffered differ from upstream: compare the packets
-        // and whether the stream ends in an error. The EOF loops compare every call.
-        if (stream->mode != 0 || result == SW_ERR) {
-            log += "R" + std::to_string(result) + ";";
-        }
+        log += "R" + std::to_string(result) + ";";
         if (result == SW_ERR || drained) {
             break;
         }
     }
-    if (stream->mode != 0) {
-        log += "L" + std::to_string(buffer.length) + "O" + std::to_string(buffer.offset);
-    }
+    log += "L" + std::to_string(buffer.length) + "O" + std::to_string(buffer.offset);
     free(buffer.str);
     size_t n = log.size() < capacity ? log.size() : capacity;
     memcpy(out, log.data(), n);

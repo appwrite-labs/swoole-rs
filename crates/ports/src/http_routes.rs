@@ -128,7 +128,7 @@ pub mod exports {
     };
 
     use super::{Session, WEBSOCKET_FRAME_HEADER_SIZE, length_size, route};
-    use crate::framing_recv::{Packages, Recv, paused, send_data};
+    use crate::framing_recv::{Packages, Recv, send_data};
     use swoole_rs_clients::protocol::Package;
 
     /// `swoole::http2::get_frame_length(const Protocol *, Socket *, PacketLength *)`:
@@ -369,9 +369,6 @@ pub mod exports {
         fn dispatch(&self, _: &Recv<'_>, mut package: Package<'_>) -> bool {
             self.0.task(send_data(&mut package, DataHead::default()))
         }
-        fn paused(&self) -> bool {
-            paused(self.0.conn)
-        }
     }
 
     /// The handler an HTTP port protocol's `onPackage` is (`init_protocol`): `Frame`
@@ -421,9 +418,6 @@ pub mod exports {
                 Route::None => false,
             }
         }
-        fn paused(&self) -> bool {
-            paused(self.0.conn)
-        }
     }
 
     /// A WebSocket connection's frames, measured by `frame_length` and handed to
@@ -445,9 +439,6 @@ pub mod exports {
         #[inline(always)]
         fn dispatch(&self, _: &Recv<'_>, package: Package<'_>) -> bool {
             websocket_frame(self.0, package)
-        }
-        fn paused(&self) -> bool {
-            paused(self.0.conn)
         }
     }
 

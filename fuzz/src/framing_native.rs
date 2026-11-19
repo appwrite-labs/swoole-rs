@@ -42,25 +42,22 @@ pub struct SwrFramingIo {
 /// One native effect on the socket, buffer or protocol in `context`.
 pub type FramingCall = unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64) -> i64;
 
-/// `SWR_FRAMING_OP_*`: the effects with a result, then `op`'s code. The native
-/// effect tables predate the reset, which only changes how the connection closes:
-/// it has none.
+/// Native operation identifiers for the receive effects.
 const RECV: u32 = 1;
 const GET_LENGTH: u32 = 2;
 const DISPATCH: u32 = 4;
 const SPLIT: u32 = 7;
 const SSL_PENDING: u32 = 8;
 const PAGE: u32 = 10;
-fn code(op: Op) -> Option<u32> {
-    Some(match op {
+fn code(op: Op) -> u32 {
+    match op {
         Op::Extend => 3,
         Op::Reduce => 5,
         Op::ClearSkip => 9,
         Op::LogMalformed => 11,
         Op::LogNoLength => 12,
         Op::LogTooLarge => 13,
-        Op::Reset => return None,
-    })
+    }
 }
 
 /// `SWR_FRAMING_OP_RECV`: the read ends with `SW_OK`. Any other negative result
@@ -109,9 +106,7 @@ impl NativeEffects {
 
 impl Effects for NativeEffects {
     fn effect(&mut self, op: Op, arg: usize, flags: &mut u32) {
-        if let Some(op) = code(op) {
-            _ = self.call(op, arg, flags);
-        }
+        _ = self.call(code(op), arg, flags);
     }
     /// Native code reads into the buffer's tail; the bytes count once they fit.
     fn recv(&mut self, size: usize, flags: &mut u32) -> Received {
@@ -131,11 +126,11 @@ impl Effects for NativeEffects {
         b.length += n;
         Received::Bytes(n)
     }
-    fn length(&mut self, from: usize, flags: &mut u32) -> Option<usize> {
-        self.count(GET_LENGTH, from, flags)
+    fn length(&mut self, flags: &mut u32) -> Option<usize> {
+        self.count(GET_LENGTH, 0, flags)
     }
-    fn dispatch(&mut self, from: usize, flags: &mut u32) -> bool {
-        self.call(DISPATCH, from, flags).is_some_and(|n| n >= 0)
+    fn dispatch(&mut self, flags: &mut u32) -> bool {
+        self.call(DISPATCH, 0, flags).is_some_and(|n| n >= 0)
     }
     fn split(&mut self, flags: &mut u32) -> Option<usize> {
         self.count(SPLIT, 0, flags)

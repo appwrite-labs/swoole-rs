@@ -6,7 +6,7 @@ use crate::CCast;
 use std::os::raw::c_int;
 
 /// `setsockopt(fd, level, name, &value, sizeof(value)) == 0`, for the plain option
-/// values (`int`, `timeval`, `linger`).
+/// values (`int`, `timeval`).
 fn set<T: crate::sys::Pod>(fd: c_int, level: c_int, name: c_int, value: T) -> bool {
     crate::sys::setsockopt(fd, level, name, &value).is_ok()
 }
@@ -15,17 +15,6 @@ fn set<T: crate::sys::Pod>(fd: c_int, level: c_int, name: c_int, value: T) -> bo
 #[must_use]
 pub fn swr_v1_socket_set_int(fd: c_int, level: c_int, name: c_int, value: c_int) -> bool {
     set(fd, level, name, value)
-}
-
-/// `SO_LINGER {1, 0}`: closing the socket now sends RST, as closing one with unread
-/// bytes in the kernel does.
-#[must_use]
-pub fn swr_v1_socket_reset_on_close(fd: c_int) -> bool {
-    let linger = libc::linger {
-        l_onoff: 1,
-        l_linger: 0,
-    };
-    set(fd, libc::SOL_SOCKET, libc::SO_LINGER, linger)
 }
 
 /// `fcntl(fd, command[, argument])`, retried on `EINTR`.
@@ -307,7 +296,6 @@ mod tests {
         assert!(swr_v1_socket_kernel_timeout(fd, true, 1.5));
         assert!(swr_v1_socket_kernel_timeout(fd, false, 0.25));
         assert!(swr_v1_socket_tcp_nodelay(fd, 1));
-        assert!(swr_v1_socket_reset_on_close(fd));
         close(fd);
         assert!(set_socket_buffer_size(-1, false, true, 1).is_err());
     }

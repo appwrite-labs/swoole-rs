@@ -1035,9 +1035,8 @@ fn stream_log<S>(
 
 /// The stream receive loops (`recv_with_length_protocol`, `recv_with_eof_protocol`
 /// and `recv_split_by_eof`) from upstream and from the candidate (a step loop over
-/// the Rust framing state machine), over the same stream in the same chunks. The EOF
-/// loops must match every call's result, every packet and the final buffer; the
-/// length loop, which reads greedily, every packet and whether the stream errors.
+/// the Rust framing state machine), over the same stream in the same chunks. Every call’s result,
+/// every packet, and the final buffer length and offset must match.
 pub fn framing_stream(bytes: &[u8]) {
     let Some((
         &[
@@ -1087,11 +1086,7 @@ pub fn framing_stream(bytes: &[u8]) {
     std::hint::black_box(framing_native::swr_v1_framing_recv as unsafe extern "C" fn(_, _, _) -> _);
     let want = stream_log(framing_stream::UPSTREAM, &stream);
     let got = stream_log(framing_stream::CANDIDATE, &stream);
-    assert_eq!(
-        String::from_utf8_lossy(&want),
-        String::from_utf8_lossy(&got),
-        "mode {mode} for {bytes:?}"
-    );
+    assert_eq!(want, got, "mode {mode} for {bytes:?}");
 }
 
 /// `redis::recv_packet` from upstream and Rust's `recv_packet` (the loop over the RESP

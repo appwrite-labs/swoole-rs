@@ -118,13 +118,13 @@ int64_t call(void *context, uint32_t op, uint64_t arg) noexcept {
             break;
         }
         case SWR_FRAMING_OP_GET_LENGTH: {
-            PacketLength pl{}; pl.buf = buffer->str + arg; pl.buf_size = buffer->length - arg;
+            PacketLength pl{}; pl.buf = buffer->str; pl.buf_size = buffer->length;
             result = p->get_package_length(p, socket, &pl);
             break;
         }
         case SWR_FRAMING_OP_EXTEND: buffer->extend(arg); break;
         case SWR_FRAMING_OP_DISPATCH: {
-            RecvData data{}; data.info.len = buffer->offset; data.data = buffer->str + arg;
+            RecvData data{}; data.info.len = buffer->offset; data.data = buffer->str;
             result = p->onPackage(p, socket, &data);
             break;
         }
