@@ -12,7 +12,8 @@ use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::timer_key::Held;
 
 /// `SW_ERROR_CO_SOCKET_CLOSE_WAIT`.
-pub(crate) const CLOSE_WAIT_ERROR: c_int = 10019;
+pub(crate) const CLOSE_WAIT_ERROR: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_CO_SOCKET_CLOSE_WAIT as c_int;
 
 /// A synchronous loan of initialized socket bytes.
 pub type ReadBytes = fn(Co, &mut dyn FnMut(&[u8]));

@@ -48,9 +48,7 @@ pub extern "C" fn system_waitpid_safe(
     status: Option<&mut c_int>,
     options: c_int,
 ) -> libc::pid_t {
-    /// `SW_FILE_LOCK_DEFAULT_SECOND` and `SW_FILE_LOCK_MAX_SECOND`.
-    const LOCK_DEFAULT_SECOND: f64 = 0.001;
-    const LOCK_MAX_SECOND: f64 = 0.1;
+    use swoole_rs_corebase::constants::{SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND};
     let mut status = status;
     let outside =
         reactor::event_api::swr_v1_event_current().is_null() || coroutine::current().is_null();
@@ -62,7 +60,7 @@ pub extern "C" fn system_waitpid_safe(
     {
         return result;
     }
-    let mut second = LOCK_DEFAULT_SECOND;
+    let mut second = SW_FILE_LOCK_DEFAULT_SECOND;
     loop {
         match sys::waitpid(pid, status.as_deref_mut(), libc::WNOHANG) {
             Ok(Some(child)) => return child,
@@ -72,6 +70,6 @@ pub extern "C" fn system_waitpid_safe(
             Ok(None) if !crate::sleep::system_sleep(second) => return 0,
             Ok(None) => {}
         }
-        second = reactor::backoff(second, LOCK_DEFAULT_SECOND, LOCK_MAX_SECOND);
+        second = reactor::backoff(second, SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND);
     }
 }

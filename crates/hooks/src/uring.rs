@@ -28,10 +28,9 @@ use swoole_rs_corebase::set_errno;
 use swoole_rs_corebase::sys::{self as os, ReadSlot};
 use swoole_rs_corebase::{BoxCellExt, CCast, CellExt};
 
-/// `SW_IOURING_QUEUE_SIZE`: default ring size and completion batch.
-const QUEUE_SIZE: u32 = 8192;
-/// `SW_IOURING_SQE_BATCH_SIZE`: submissions deferred to the end of the loop below it.
-const SQE_BATCH_SIZE: usize = 16;
+use swoole_rs_corebase::constants::{
+    SW_IOURING_QUEUE_SIZE as QUEUE_SIZE, SW_IOURING_SQE_BATCH_SIZE,
+};
 /// User data of a linked timeout's own completion, which is ignored.
 const TIMEOUT_EVENT: u64 = u64::MAX;
 /// `IORING_SETUP_SQPOLL`, the one `SwooleG.iouring_flag` the engine honours.
@@ -428,7 +427,7 @@ impl Submitter for &Uring {
 
 /// Submit queued requests; below the batch size, only at the end of the loop.
 fn submit(ring: &mut impl Submitter, immediately: bool) {
-    if !immediately && ring.event_running() && ring.sq_used() < SQE_BATCH_SIZE {
+    if !immediately && ring.event_running() && ring.sq_used() < SW_IOURING_SQE_BATCH_SIZE as usize {
         return;
     }
     loop {

@@ -3,13 +3,11 @@
 //! Native `Socket` calls these inline (`swoole_socket.h`); a TLS socket passes its
 //! OpenSSL call, which runs only when the record holds an `SSL`.
 use crate::CCast;
+use crate::constants::SW_BACKLOG;
 use crate::lent::Spare;
 use crate::reactor::socket_rw::interrupted;
 use crate::reactor::{Drain, Socket, SocketAddress, SocketFields};
 use std::ffi::c_int;
-
-/// `SW_OK`, `SW_ERR` and `SW_BACKLOG`.
-const BACKLOG: c_int = 512;
 
 /// `time<std::chrono::milliseconds>(true)`, from native code so the clock is the
 /// one its timers read.
@@ -55,7 +53,11 @@ impl SocketFields {
     /// `Socket::listen`: a backlog of 0 or less takes `SW_BACKLOG`; marks the socket
     /// listening.
     pub fn listen(&mut self, backlog: c_int) -> bool {
-        let backlog = if backlog <= 0 { BACKLOG } else { backlog };
+        let backlog = if backlog <= 0 {
+            SW_BACKLOG.cast_signed()
+        } else {
+            backlog
+        };
         if crate::sys::listen(self.fd, backlog).is_err() {
             return false;
         }
