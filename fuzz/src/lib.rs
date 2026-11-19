@@ -6,9 +6,7 @@ use std::ffi::{CStr, c_char, c_int};
 use swoole_rs_clients::{cookie, domain_decode};
 use swoole_rs_corebase::log;
 use swoole_rs_framing::{DefaultLength, default_length, unpack, width};
-use swoole_rs_http::{
-    BOUNDARY_SIZE, HttpStaticContext, HttpStaticObservation, StaticEffects,
-};
+use swoole_rs_http::{BOUNDARY_SIZE, HttpStaticContext, HttpStaticObservation, StaticEffects};
 use swoole_rs_oracle::{
     base64 as upstream, clients, framing as upstream_framing, framing_stream,
     http as upstream_http,
@@ -141,13 +139,14 @@ mod request {
                 let boundary = form.boundary();
                 (boundary.offset as i64, boundary.length as i64)
             });
+            let bit = |set: bool, flag: u32| if set { flag } else { 0 };
             http_frame::HeaderInfo {
                 content_length: r.content_length,
-                flags: u32::from(r.known_length)
-                    | u32::from(r.keep_alive) << 1
-                    | u32::from(r.chunked) << 2
-                    | u32::from(r.header_parsed) << 4
-                    | u32::from(r.excepted) << 5,
+                flags: bit(r.known_length, http_frame::flags::KNOWN_LENGTH)
+                    | bit(r.keep_alive, http_frame::flags::KEEP_ALIVE)
+                    | bit(r.chunked, http_frame::flags::CHUNKED)
+                    | bit(r.header_parsed, http_frame::flags::HEADER_PARSED)
+                    | bit(r.excepted, http_frame::flags::EXCEPTED),
                 error: errno().cast_unsigned(),
                 boundary_offset: offset,
                 boundary_length: boundary,
@@ -312,8 +311,15 @@ pub fn http_url_encode(bytes: &[u8]) {
     let mut ours = vec![std::mem::MaybeUninit::new(0xa5); capacity];
     let written = swoole_rs_http::url_encode(bytes, &mut ours).unwrap();
     // SAFETY: every slot started initialized.
-    let ours: Vec<u8> = ours.iter().map(|slot| unsafe { slot.assume_init() }).collect();
-    assert_eq!((written, capacity), (want, want + 1), "length for {bytes:?}");
+    let ours: Vec<u8> = ours
+        .iter()
+        .map(|slot| unsafe { slot.assume_init() })
+        .collect();
+    assert_eq!(
+        (written, capacity),
+        (want, want + 1),
+        "length for {bytes:?}"
+    );
     assert_eq!(ours, theirs[..=want], "encoding for {bytes:?}");
 }
 
@@ -538,7 +544,9 @@ pub fn mqtt_length(bytes: &[u8]) {
     let data: Vec<c_char> = bytes.iter().map(|&byte| byte as c_char).collect();
     let size = data.len().min(u32::MAX as usize) as u32;
     let got = swoole_rs_protocols::mqtt_frame_length(&bytes[..size as usize])
-        .map_or(-1, |length| length.map_or(0, |n| i64::try_from(n).unwrap_or(-1)));
+        .map_or(-1, |length| {
+            length.map_or(0, |n| i64::try_from(n).unwrap_or(-1))
+        });
     if size == 0 {
         return;
     }
@@ -834,7 +842,8 @@ pub fn http_header_info(bytes: &[u8]) {
     let got = info(&CANDIDATE);
     // Outside the compared domain the candidate rejects the request.
     if multipart_nul(bytes, line + 2, end) {
-        assert_eq!(got.flags & 32, 32, "excepted for {bytes:?}");
+        let excepted = http_frame::flags::EXCEPTED;
+        assert_eq!(got.flags & excepted, excepted, "excepted for {bytes:?}");
         return;
     }
     assert_eq!(got, info(&UPSTREAM), "header info for {bytes:?}");
