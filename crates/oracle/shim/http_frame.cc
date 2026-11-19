@@ -83,6 +83,9 @@ struct Request {
 extern "C" {
 using SWR_FRAME_ENGINE::Request;
 using SWR_FRAME_ENGINE::String;
+extern const uint8_t swr_oracle_http_versions[] = {
+    SWR_FRAME_ENGINE::SW_HTTP_VERSION_10, SWR_FRAME_ENGINE::SW_HTTP_VERSION_11, SWR_FRAME_ENGINE::SW_HTTP_VERSION_2,
+};
 
 // See swoole_rs_oracle::http_frame::State.
 struct swr_oracle_http_request {

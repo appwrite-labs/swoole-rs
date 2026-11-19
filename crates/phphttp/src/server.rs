@@ -573,9 +573,6 @@ fn http2_connection(
     Some((conn, facts))
 }
 
-/// `SW_HTTP_VERSION_2`.
-const HTTP_VERSION_2: c_int = 3;
-
 /// `http2_server_onRequest`: a finished HTTP/2 request on a server's
 /// connection (the session's handler), answered by the static handler or the
 /// port's `onRequest`.
@@ -586,7 +583,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
     let Some((conn, facts)) = http2_connection(server, fd) else {
         return context::release_objects(ctx);
     };
-    ctx.state().request.version = HTTP_VERSION_2;
+    ctx.state().request.version = swoole_rs_http::HttpVersion::Http2 as c_int;
     let Some(http2) = crate::http2::server() else {
         return context::release_objects(ctx);
     };

@@ -15,6 +15,8 @@
 #include <vector>
 #include <sys/types.h>
 
+#include "http_part_header.inc"
+
 extern "C" {
 struct swr_oracle_static_text {
     const char *data;
@@ -23,7 +25,7 @@ struct swr_oracle_static_text {
 struct swr_oracle_static_task {
     int64_t offset;
     size_t length;
-    char part_header[256];
+    char part_header[SW_HTTP_SERVER_PART_HEADER];
 };
 struct swr_oracle_static_scenario {
     int serve, modified, index_ok, index, autoindex, directory, status;
@@ -124,7 +126,7 @@ struct Request {
 struct Task {
     off_t offset;
     size_t length;
-    char part_header[256];
+    char part_header[SW_HTTP_SERVER_PART_HEADER];
 };
 struct StaticHandler {
     const swr_oracle_static_scenario *s;

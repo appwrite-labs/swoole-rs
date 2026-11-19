@@ -61,6 +61,14 @@ pub mod status {
     pub const BAD_GATEWAY: i32 = 502;
     pub const SERVICE_UNAVAILABLE: i32 = 503;
 }
+/// Upstream's `swHttpVersion` values used in request framing and PHP requests.
+#[repr(u8)]
+pub enum HttpVersion {
+    Http10 = 1,
+    Http11,
+    Http2,
+}
+
 mod status_buffer;
 pub use status_buffer::{STATUS_CODES, status_message};
 mod static_headers;

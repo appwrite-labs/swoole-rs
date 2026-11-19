@@ -229,6 +229,10 @@ fn http_frame() {
 /// `StaticHandler::parse_range` from the pinned `static_handler.cc`, copied unchanged
 /// for `shim/http_range.cc`.
 fn http_range() {
+    let header = pinned_macros(&["SW_HTTP_SERVER_PART_HEADER"]);
+    fs::write(out("http_part_header.inc"), &header).unwrap();
+    let width: usize = header.split_whitespace().last().unwrap().parse().unwrap();
+    fs::write(out("http_part_header.rs"), width.to_string()).unwrap();
     let upstream = fs::read_to_string("upstream/src/server/static_handler.cc")
         .expect("vendored static_handler.cc");
     fs::write(

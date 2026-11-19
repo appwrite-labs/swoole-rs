@@ -42,7 +42,7 @@ pub(crate) struct LiveServer {
     pub address: SocketAddr,
     // The tables the state names; only reached through it once it is built.
     _sessions: Vec<SessionRecord>,
-    _connections: Vec<ConnectionRecord>,
+    connections: Vec<ConnectionRecord>,
 }
 
 /// `count` zeroed records: a table of free slots, zeroed in one allocation.
@@ -107,7 +107,7 @@ impl LiveServer {
             listener_fd: fd,
             address,
             _sessions: sessions,
-            _connections: connections,
+            connections,
         }
     }
 
@@ -208,6 +208,14 @@ impl Drop for LiveServer {
         if let Some(reactor) = self.reactor.take() {
             swoole_rs_corebase::reactor::swr_v1_reactor_delete(reactor);
         }
+        // Normal closes already took their owners from these slots. The reactor has now
+        // released its registrations, so the remaining owners can close immediately.
+        for record in &self.connections {
+            let conn = crate::Connection::from(record);
+            if conn.socket().is_some() {
+                conn.free_socket(|| {});
+            }
+        }
         // SAFETY: the listener this fixture opened; its record goes with its port.
         unsafe { libc::close(self.listener_fd) };
         // The configuration's `gs` names the fixture's own record, which the state's drop
@@ -258,12 +266,11 @@ mod tests {
             "the port counts it too"
         );
         // The peer's local address is the accepted socket's remote one.
-        // SAFETY: the accepted fd, which the test closes once.
+        // SAFETY: the fixture owns the accepted descriptor until teardown.
         let peer = unsafe {
             let mut addr: libc::sockaddr_in = core::mem::zeroed();
             let mut len = libc::socklen_t::try_from(size_of::<libc::sockaddr_in>()).unwrap();
             libc::getpeername(accepted, (&raw mut addr).cast(), &raw mut len);
-            libc::close(accepted);
             u16::from_be(addr.sin_port)
         };
         assert_eq!(

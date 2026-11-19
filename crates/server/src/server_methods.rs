@@ -427,7 +427,7 @@ mod tests {
             *conn.socket().unwrap()
         }
 
-        let (mut sock, mut pipe) = (SocketRecord::new(), SocketRecord::new());
+        let (mut sock, mut pipe) = (SocketRecord::with_fd(-1, 0), SocketRecord::new());
         sock.kernel_nobufs = true;
         pipe.kernel_nobufs = true;
         let mut connections: [ConnectionRecord; 4] = Default::default();
@@ -476,8 +476,7 @@ mod tests {
             "process mode leaves the socket"
         );
         let conn = serv.state().connection(3, Lookup::ByFd).unwrap();
-        // The record leaks, as the fixture's sockets do: freeing it would touch fd 0.
-        conn.forget_socket();
+        conn.free_socket(|| {});
 
         server.config_mut().gs.free();
     }

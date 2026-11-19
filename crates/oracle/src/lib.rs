@@ -350,6 +350,10 @@ pub mod http_frame {
     }
 
     unsafe extern "C" {
+        /// HTTP/1.0, HTTP/1.1 and HTTP/2 identifiers from the pinned `swHttpVersion`.
+        #[link_name = "swr_oracle_http_versions"]
+        pub safe static VERSIONS: [u8; 3];
+
         fn swr_oracle_http_frame_upstream(
             operation: u32,
             data: *mut c_char,
@@ -592,9 +596,12 @@ pub mod socks5 {
 pub mod http_range {
     use std::ffi::c_char;
 
+    /// `SW_HTTP_SERVER_PART_HEADER` from the pinned `swoole_config.h`.
+    pub const PART_HEADER: usize = include!(concat!(env!("OUT_DIR"), "/http_part_header.rs"));
+
     /// Bytes per task in `parse_range`'s task output: offset and length (u64 each),
     /// then the part header, NUL-padded to `SW_HTTP_SERVER_PART_HEADER`.
-    pub const TASK_SIZE: usize = 16 + 256;
+    pub const TASK_SIZE: usize = 2 * size_of::<u64>() + PART_HEADER;
 
     /// The handler after `parse_range`.
     #[repr(C)]
@@ -669,7 +676,7 @@ pub mod http_static_select {
     pub struct Task {
         pub offset: i64,
         pub length: usize,
-        pub part_header: [u8; 256],
+        pub part_header: [u8; super::http_range::PART_HEADER],
     }
 
     /// The facade's answers: the handler's facts, the request's and what each

@@ -1,5 +1,5 @@
 //! Bounded equivalents of Swoole's permissive first-party HTTP framing.
-use super::{HttpSpan, maps::METHODS};
+use super::{HttpSpan, HttpVersion, maps::METHODS};
 use swoole_rs_corebase::constants::HTTP2_PREFACE;
 #[derive(Default, Clone, Copy)]
 pub struct HttpFrame {
@@ -93,8 +93,8 @@ fn request_line(input: &[u8], frame: &mut HttpFrame) -> bool {
                 if byte != b' ' {
                     frame.version = match input.get(at..at + 8) {
                         None => return false,
-                        Some(b"HTTP/1.1") => 2,
-                        Some(b"HTTP/1.0") => 1,
+                        Some(b"HTTP/1.1") => HttpVersion::Http11 as u32,
+                        Some(b"HTTP/1.0") => HttpVersion::Http10 as u32,
                         Some(_) => {
                             frame.excepted = 1;
                             return false;
@@ -221,6 +221,15 @@ mod tests {
         }
         0
     }
+    #[test]
+    fn version_ids_match_the_pinned_http_enum() {
+        assert_eq!(
+            [HttpVersion::Http10, HttpVersion::Http11, HttpVersion::Http2].map(|v| v as u8),
+            swoole_rs_oracle::http_frame::VERSIONS,
+            "swHttpVersion"
+        );
+    }
+
     #[test]
     fn expect_scan_matches_the_native_loop() {
         // Every string over the bytes the loop branches on, up to six long.

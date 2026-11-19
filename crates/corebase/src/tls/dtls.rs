@@ -5,12 +5,13 @@ use crate::lent::{Count, In, Out, lend_spare};
 use crate::log;
 use crate::reactor::{AddressStorage, Socket};
 use crate::sys::Text;
-use crate::tls::handle::{BioMethod, SslFailure};
+use crate::tls::handle::{BIO_TYPE_SOURCE_SINK, BioMethod, SslFailure};
 use crate::{CCast, CellExt};
 use core::cell::Cell;
 use core::ffi::{c_int, c_long, c_void};
 use core::marker::{PhantomData, PhantomPinned};
 use core::mem::MaybeUninit;
+use openssl_sys::{BIO_FLAGS_READ, BIO_FLAGS_RWS, BIO_FLAGS_SHOULD_RETRY};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Mutex, PoisonError};
@@ -241,12 +242,6 @@ unsafe extern "C" {
 #[repr(transparent)]
 struct FreshBio<'a>(crate::tls::Bio<'a>);
 
-/// OpenSSL 3's `BIO_TYPE_SOURCE_SINK`, `BIO_FLAGS_READ`, `BIO_FLAGS_RWS` and
-/// `BIO_FLAGS_SHOULD_RETRY`, and `SW_ERROR_SSL_CREATE_SESSION_FAILED`.
-const BIO_TYPE_SOURCE_SINK: c_int = 0x0400;
-const BIO_FLAGS_READ: c_int = 0x01;
-const BIO_FLAGS_RWS: c_int = 0x07;
-const BIO_FLAGS_SHOULD_RETRY: c_int = 0x08;
 const SSL_CREATE_SESSION_FAILED: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_SSL_CREATE_SESSION_FAILED as c_int;
 
@@ -279,13 +274,13 @@ impl Command {
     /// `command`'s control, or `None` for one the BIO does not know.
     const fn of(command: c_int) -> Option<Self> {
         Some(match command {
-            2 => Self::Eof,
+            openssl_sys::BIO_CTRL_EOF => Self::Eof,
             8 => Self::GetClose,
             10 => Self::Pending,
             9 => Self::SetClose,
-            11 | 32 | 44 => Self::Accept,
+            openssl_sys::BIO_CTRL_FLUSH | 32 | 44 => Self::Accept,
             46 => Self::GetPeer,
-            40 | 47 => Self::Mtu,
+            openssl_sys::BIO_CTRL_DGRAM_QUERY_MTU | 47 => Self::Mtu,
             49 => Self::MtuOverhead,
             71 => Self::SetPeek,
             6 | 7 | 13 | 45 | 73 | 76 => Self::Ignore,

@@ -824,9 +824,6 @@ mod shutdown_tests {
     /// `BIO_CTRL_PENDING`, behind the `BIO_pending` macro.
     const BIO_CTRL_PENDING: c_int = 10;
 
-    /// `BIO_FLAGS_SHOULD_RETRY`, behind the `BIO_should_retry` macro.
-    const BIO_FLAGS_SHOULD_RETRY: c_int = 0x08;
-
     /// Counts and records the real calls, or fails them with `injected`.
     #[derive(Default)]
     struct Observed {

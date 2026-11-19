@@ -164,6 +164,8 @@ def server(engine, script, env=None):
 
 
 def stop_process_group(proc):
+    # A group already gone (ProcessLookupError) or still exiting (TimeoutExpired) is expected;
+    # proc.wait() below is what has to succeed.
     try:
         os.killpg(proc.pid, signal.SIGTERM)
     except ProcessLookupError:

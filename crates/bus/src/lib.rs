@@ -23,7 +23,7 @@ use std::io::IoSlice;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use swoole_rs_corebase::buffer::string::OwnedString;
-use swoole_rs_corebase::constants::{EventDataFlag, SW_WORKER_MAX_RECV_CHUNK_COUNT};
+use swoole_rs_corebase::constants::{EventDataFlag, FdType, SW_WORKER_MAX_RECV_CHUNK_COUNT};
 use swoole_rs_corebase::process::process_pool::RecvData;
 use swoole_rs_corebase::reactor::{Caught, Heap, OwnedSocket, Socket, SocketRecord};
 use swoole_rs_corebase::sys::{self, errno};
@@ -43,8 +43,8 @@ const HEAD: usize = size_of::<BusHead>();
 /// `SW_IPC_MSG_MIN`.
 const IPC_MSG_MIN: usize = 2048 - HEAD;
 const _: () = assert!(HEAD == 40, "sizeof(DataHead)");
-/// The legacy minimum allocation: a header and room for a `PacketPtr` (16 bytes).
-const BUFFER_MIN: usize = HEAD + 16;
+/// Size of the legacy `PacketPtr` (length and data pointer) in a bus message.
+const PACKET_PTR_SIZE: u32 = 16;
 
 /// `BusRead::event`: what the caller does after `Bus::receive` returns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -366,7 +366,7 @@ impl Bus {
             let mut head = *info;
             if info.len > 0 {
                 head.flags = PTR;
-                head.len = 16; // sizeof(PacketPtr)
+                head.len = PACKET_PTR_SIZE;
             }
             self.set_head(&head);
         }
@@ -729,7 +729,7 @@ impl Bus {
     /// from `allocator`, initialized once for safe reads. False, leaving no buffer,
     /// on failure.
     pub fn alloc_buffer(&self, size: usize, allocator: TrustedAllocator) -> bool {
-        let block = size.max(BUFFER_MIN);
+        let block = size.max(HEAD + PACKET_PTR_SIZE as usize);
         let mut buffer = OwnedString::try_alloc_exact(block, allocator);
         if let Some(buffer) = buffer.as_mut() {
             buffer.read_zeroed(block, |bytes| bytes.len());
@@ -865,7 +865,7 @@ impl Bus {
     pub fn init_pipe_sockets(&self, fds: impl IntoIterator<Item = c_int>) {
         // `make_socket`: a new record, which the bus frees on drop.
         let make = |fd| {
-            let mut socket = SocketRecord::with_fd(fd, /* SW_FD_PIPE */ 3);
+            let mut socket = SocketRecord::with_fd(fd, FdType::SW_FD_PIPE as c_int);
             socket.output.buffer_size = u32::MAX;
             if !socket.output.nonblock {
                 swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option(
@@ -970,7 +970,7 @@ mod tests {
         pipe.bus.count_ids(&COUNTER);
         let socket = OwnedSocket::new(Box::new(SocketRecord::with_fd(
             pipe.fds[0],
-            /* SW_FD_PIPE */ 3,
+            FdType::SW_FD_PIPE as c_int,
         )));
         for (expected, payload) in [(1, b"one".as_slice()), (2, b"two".as_slice())] {
             let mut head = BusHead {

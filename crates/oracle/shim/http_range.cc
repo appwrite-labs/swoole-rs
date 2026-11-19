@@ -19,7 +19,7 @@ namespace SWR_RANGE_ENGINE {
 // As upstream include/swoole.h, swoole_config.h and swoole_http.h, and src/core/base.cc's sw_snprintf.
 #define SW_STRL(s) s, sizeof(s) - 1
 #define SW_STR_ISTARTS_WITH(str, len, const_sub_str) swoole_str_istarts_with(str, len, SW_STRL(const_sub_str))
-#define SW_HTTP_SERVER_PART_HEADER 256
+#include "http_part_header.inc"
 #define sw_unlikely(x) __builtin_expect(!!(x), 0)
 enum { SW_HTTP_OK = 200, SW_HTTP_PARTIAL_CONTENT = 206, SW_HTTP_RANGE_NOT_SATISFIABLE = 416 };
 __attribute__((unused)) static inline unsigned int swoole_str_istarts_with(const char *pstr, size_t plen, const char *sstr, size_t slen) {
