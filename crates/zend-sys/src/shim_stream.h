@@ -31,8 +31,8 @@ zend_long swr_zend_stream_default_timeout(void);
  * persistent stream) inside zend_try: 1 if it bailed out. */
 int swr_zend_try_stream_free(php_stream *stream);
 /* php_stream_read of up to `size` bytes from the stream `value` names
- * (php_stream_from_zval_no_verify) inside zend_try: the bytes read, 0 at the end
- * or after a read error, -1 for no stream, -2 if a wrapper bailed out. */
+ * (php_stream_from_zval_no_verify) inside zend_try: the bytes read, 0 at the end,
+ * -1 if absent or unreadable, -2 if a wrapper bailed out. */
 zend_long swr_zend_try_stream_zval_read(zval *value, char *buffer, size_t size);
 /* The coroutine transport factory (crates/phpruntime) as a php_stream_transport_factory
  * with its native debug ABI: the body set once at MINIT, then the bailout it trapped, then

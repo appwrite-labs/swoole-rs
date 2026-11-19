@@ -276,21 +276,11 @@ fn supply_data(
         // the sequence completes.
         let mut sent = false;
         loop {
-            let rc = match value.read_stream(&mut page) {
+            let chunk = match value.read_stream(&mut page) {
                 Ok(Some([])) if sent => break,
-                Ok(Some(chunk)) => {
-                    sent = true;
-                    let rc = put(chunk);
-                    if chunk.is_empty() {
-                        if !matches!(rc, 0 | 1) {
-                            status = rc;
-                        }
-                        break;
-                    }
-                    rc
-                }
+                Ok(Some(chunk)) => chunk,
                 Ok(None) => {
-                    let what = c"input LOB is no longer a stream".into();
+                    let what = c"could not read input LOB stream".into();
                     pdo_odbc_error(dbh, Some(stmt), statement, what, file, line);
                     cancel(statement);
                     return None;
@@ -301,9 +291,14 @@ fn supply_data(
                     return None;
                 }
             };
+            let rc = put(chunk);
             if !matches!(rc, 0 | 1) {
                 status = rc;
             }
+            if chunk.is_empty() {
+                break;
+            }
+            sent = true;
         }
     }
     Some(status)

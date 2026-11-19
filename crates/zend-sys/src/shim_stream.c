@@ -91,7 +91,7 @@ zend_long swr_zend_try_stream_zval_read(zval *value, char *buffer, size_t size) 
     volatile zend_long count = -2;
     SWR_ZEND_TRY {
         ssize_t got = php_stream_read(stream, buffer, size);
-        count = got > 0 ? got : 0;
+        count = got < 0 ? -1 : got;
     }
     SWR_ZEND_CATCH {} SWR_ZEND_END_TRY();
     return count;

@@ -29,7 +29,7 @@ unsafe extern "C" {
         persistent: c_int,
     ) -> *mut crate::sys::php_stream;
     /// `php_stream_read` into `page` from the stream a resource zval names, inside
-    /// `zend_try`: the bytes read, 0 at the end, -1 for no stream, -2 for a bailout.
+    /// `zend_try`: the bytes read, 0 at the end, -1 for an absent or unreadable stream, -2 for a bailout.
     /// It writes at most `size` bytes, which the caller passes as the page's length.
     safe fn swr_zend_try_stream_zval_read(
         value: &Value,
@@ -201,8 +201,8 @@ impl Value {
     }
 
     /// `php_stream_read` of the stream a resource this holds names, on the request's
-    /// thread: the bytes now at the front of `page`, empty at the end of the stream or
-    /// after a read error; `None` for any other value or resource.
+    /// thread: the bytes now at the front of `page`, empty at the end of the stream.
+    /// Returns `None` if the value is not a stream or the read failed.
     /// # Errors
     /// The stream's wrapper bailed out.
     pub fn read_stream<'a>(
