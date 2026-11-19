@@ -7,6 +7,7 @@ use crate::{
 };
 use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::constants::SW_Z_BEST_SPEED;
 use swoole_rs_httpbindings::{RequestOption, request_option};
 use swoole_rs_phpstubs::http_request;
 use swoole_rs_phpswoole::MinitArgs;
@@ -115,9 +116,6 @@ fn get_data(call: &Call) {
     call.set_empty_string();
 }
 
-/// `SW_Z_BEST_SPEED`.
-const BEST_SPEED: i8 = 1;
-
 /// `Request::create(array $options = [])`: a request parsed by hand.
 fn create_request(call: &Call) {
     let options = call.arity(0, 1).and_then(|()| {
@@ -140,7 +138,7 @@ fn create_request(call: &Call) {
     let compression = CAPABILITIES.load(Relaxed) & 8 != 0;
     if compression {
         state.enable_compression = true;
-        state.compression_level = BEST_SPEED;
+        state.compression_level = SW_Z_BEST_SPEED.c_cast::<i8>();
     }
     if let Some(options) = options {
         options.for_each(|key, value| {
