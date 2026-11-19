@@ -2,7 +2,6 @@
 //! same inputs and expected values, over the hooks crate's coroutine socket.
 //!
 //! A `Socket` is the hooks crate's `Co`, whose methods the cases call (`Sock::co`).
-//! Fields are read through the record layout (native/hooks/swoole_rs_co_socket.h).
 //! The TLS setters write the socket's `SSLContext` owner (crates/corebase/src/tls/owned.rs) as
 //! `enable_ssl_encrypt` and the `set_ssl_*` members did; `TimeoutSetter` and
 //! `TimeoutController` are the crate's `TimeoutScope` and its `timed_out`.
@@ -18,7 +17,7 @@ pub(super) use libc::{EADDRNOTAVAIL, ECONNREFUSED, SHUT_RD, SHUT_RDWR, SHUT_WR, 
 use libc::{ECANCELED, ENOTCONN};
 use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int, c_void};
-use std::io::{Read, Write};
+use std::io::{IoSlice, Read, Write};
 use std::mem::ManuallyDrop;
 use std::ptr;
 use swoole_rs_corebase::buffer::string::StringBuffer;
@@ -26,7 +25,7 @@ use swoole_rs_corebase::lent::lend_spare;
 use swoole_rs_corebase::reactor::{Events, TimeoutKind};
 use swoole_rs_corebase::{swoole_rand, swoole_random_int, swoole_type_size};
 use swoole_rs_hooks::co_socket::{self, Co, OwnedCo};
-use swoole_rs_hooks::vector::{IoVector, RecvMessage, SendMessage, Vectors};
+use swoole_rs_hooks::vector::{IoVector, ReadVec, RecvMessage, SendMessage, Vectors};
 use swoole_rs_hooks::{TimeoutScope, co_io, packet};
 
 pub(super) const SW_SOCK_TCP: c_int = 1;
@@ -69,58 +68,6 @@ Connection: close\r\n\
 User-Agent: Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) \
 Chrome/51.0.2704.106 Safari/537.36\r\n\r\n";
 
-/// `swoole::Protocol`.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Protocol {
-    split_by_eof: bool,
-    package_eof: [u8; 8],
-    package_eof_len: u8,
-    package_length_type: u8,
-    package_length_size: u8,
-    package_length_offset: u16,
-    package_body_offset: u16,
-    package_max_length: u32,
-    private_data_1: *mut c_void,
-    private_data_2: *mut c_void,
-    on_package: *mut c_void,
-    get_package_length: *const c_void,
-    get_package_length_size: *mut c_void,
-}
-
-/// `swr_v1_co_socket` (native/hooks/swoole_rs_co_socket.h), which a `Socket` is.
-#[repr(C)]
-struct Record {
-    err_code: c_int,
-    err_msg: *const c_char,
-    open_length_check: bool,
-    open_eof_check: bool,
-    http2: bool,
-    protocol: Protocol,
-    kind: c_int,
-    socket: *mut swoole_rs_corebase::reactor::SocketRecord,
-    sock_domain: c_int,
-    sock_type: c_int,
-    sock_protocol: c_int,
-    connect_port: c_int,
-    backlog: c_int,
-    buffer_allocator: *const c_void,
-    buffer_init_size: usize,
-    read_buffer: *mut StringBuffer,
-    write_buffer: *mut StringBuffer,
-    ssl_is_server: bool,
-    ssl_handshaked: bool,
-    zero_copy: bool,
-    resolve_context: *mut c_void,
-    state: *mut c_void,
-    extra: *mut c_void,
-}
-
-const _: () = assert!(
-    size_of::<Record>() == 192,
-    "swr_v1_co_socket's layout moved"
-);
-
 /// `RustStringView::operator=`: copies `value` into a TLS owner's string slot `index`.
 ///
 /// # Safety
@@ -156,12 +103,6 @@ const TLS_ECDH_CURVE: usize = 1;
 const TLS_DHPARAM: usize = 3;
 pub(super) const TLS_HOST_NAME: usize = 8;
 const TLS_CAFILE: usize = 9;
-
-#[repr(C)]
-pub(super) struct IoVec {
-    pub(super) base: *mut c_void,
-    pub(super) len: usize,
-}
 
 unsafe extern "C" {
     fn wait(status: *mut c_int) -> c_int;
@@ -253,27 +194,17 @@ impl Sock {
         Self::make(fd, domain, kind, protocol, true)
     }
 
-    fn rec(&self) -> *mut Record {
-        self.ptr.cast()
-    }
-
     /// The crate's handle on this socket.
     fn co(&self) -> Co {
         self.owner.as_ref().expect("a socket").co()
     }
 
-    fn record(&self) -> &mut Record {
-        // SAFETY: the live socket's record; no other Rust reference to it is held
-        // across a call.
-        unsafe { &mut *self.rec() }
-    }
-
     fn err_code(&self) -> c_int {
-        self.record().err_code
+        self.co().err_code()
     }
 
     fn set_err_code(&self, code: c_int) {
-        self.record().err_code = code;
+        self.co().set_err_code(code);
     }
 
     fn connect(&self, host: &str, port: c_int, flags: c_int) -> bool {
@@ -336,27 +267,16 @@ impl Sock {
         packet::recv_packet(self.co(), timeout).map_or(-1, usize::cast_signed)
     }
 
-    /// `get_read_buffer()`: made on first use, then read through the record's field.
-    fn read_buffer(&self) -> &mut StringBuffer {
-        self.co().with_buffer(false, |_| ());
-        // SAFETY: the live socket's read buffer, which it keeps.
-        unsafe { &mut *self.record().read_buffer }
-    }
-
-    fn write_buffer(&self) -> *mut StringBuffer {
-        self.co().with_buffer(true, |_| ());
-        self.record().write_buffer
-    }
-
-    /// `pop_packet()`: the packet's buffer, which the caller now owns, or null.
+    /// `pop_packet()`: the packet's bytes, which the caller now owns, or null.
     fn pop_packet(&self) -> *mut u8 {
-        let record = self.record();
-        // SAFETY: the record's read buffer, set once a packet was received.
-        let buffer = unsafe { &mut *record.read_buffer };
-        if buffer.offset() == 0 {
-            return ptr::null_mut();
-        }
-        buffer.pop(record.buffer_init_size)
+        let socket = self.co();
+        socket.with_buffer(false, |buffer| {
+            if buffer.offset() == 0 {
+                ptr::null_mut()
+            } else {
+                buffer.pop(socket.buffer_init_size())
+            }
+        })
     }
 
     fn shutdown(&self, how: c_int) -> bool {
@@ -407,25 +327,25 @@ impl Sock {
 
     /// `set_eof_protocol`: the record's `open_eof_check` and EOF.
     fn set_eof_protocol(&self) {
-        let record = self.record();
-        record.protocol.package_eof[..2].copy_from_slice(CRLF);
-        record.protocol.package_eof_len = 2;
-        record.open_eof_check = true;
+        self.co().edit_protocol(|protocol| {
+            protocol.package_eof[..2].copy_from_slice(CRLF);
+            protocol.package_eof_len = 2;
+        });
+        self.co().set_open_eof_check(true);
     }
 
     /// `socket_set_length_protocol_1/2`.
     fn set_length_protocol(&self, kind: u8, body_offset: u16, max_length: u32) {
-        let record = self.record();
-        // SAFETY: every field is an integer, a bool, a byte array or a raw pointer.
-        record.protocol = unsafe { std::mem::zeroed() };
-        record.protocol.package_length_type = kind;
-        record.protocol.package_length_size =
-            u8::try_from(swoole_type_size(c_char::from_ne_bytes([kind]))).unwrap();
-        record.protocol.package_body_offset = body_offset;
-        record.protocol.get_package_length =
-            swoole_rs_ffi::ports::framing_recv::default_length_func as *const c_void;
-        record.protocol.package_max_length = max_length;
-        record.open_length_check = true;
+        self.co().set_protocol(co_socket::Protocol {
+            package_length_type: kind,
+            package_length_size: u8::try_from(swoole_type_size(c_char::from_ne_bytes([kind])))
+                .unwrap(),
+            package_body_offset: body_offset,
+            get_package_length: Some(swoole_rs_ffi::ports::framing_recv::default_length_func),
+            package_max_length: max_length,
+            ..co_socket::Protocol::EMPTY
+        });
+        self.co().set_open_length_check(true);
     }
 
     fn set_socks5_proxy(&self, host: &str, port: c_int, user: &str, pwd: &str) {
@@ -480,18 +400,10 @@ impl Sock {
     }
 
     /// The member over an `IOVector` of `iov`, as crates/phpruntime calls it.
-    fn vector(&self, op: c_int, iov: &[IoVec]) -> isize {
-        let (at, count) = (iov.as_ptr(), iov.len());
-        // SAFETY: `iov`'s live vectors, an iovec's layout and so an `IoSlice`'s, over
-        // buffers nothing else touches meanwhile.
-        let vectors = if matches!(op, WRITEV | WRITEV_ALL) {
-            Vectors::Write(unsafe { std::slice::from_raw_parts(at.cast(), count) })
-        } else {
-            Vectors::Read(unsafe { std::slice::from_raw_parts_mut(at.cast_mut().cast(), count) })
-        };
+    fn vector(&self, vectors: Vectors<'_, '_>, all: bool) -> isize {
         let mut vector = IoVector::new(vectors).unwrap();
         self.co()
-            .vector(&mut vector, matches!(op, READV_ALL | WRITEV_ALL))
+            .vector(&mut vector, all)
             .map_or(-1, usize::cast_signed)
     }
 }
@@ -596,12 +508,6 @@ impl TimeoutSetter {
 /// `delete conn`.
 fn delete(conn: ManuallyDrop<Sock>) {
     drop(ManuallyDrop::into_inner(conn));
-}
-
-/// `delete string`.
-fn delete_string(string: *mut StringBuffer) {
-    // SAFETY: a boxed String the caller owns, which the record gave up.
-    unsafe { Box::from_raw(string) }.dispose();
 }
 
 fn socket_pair() -> [c_int; 2] {
@@ -930,14 +836,10 @@ fn eof_1() {
         let sock = start_client(port);
         let l = sock.recv_packet(RECV_TIMEOUT);
         let eof_packet_len = EOF_PACKET.len();
-        let buf = sock.read_buffer();
+        let buf = sock.co().own_read_buffer();
 
         assert_eq!(size(l), eof_packet_len);
-        // SAFETY: the buffer holds the packet.
-        assert_eq!(
-            unsafe { std::slice::from_raw_parts(buf.as_mut_ptr(), size(l)) },
-            EOF_PACKET
-        );
+        assert_eq!(&buf.view()[..size(l)], EOF_PACKET);
         assert_eq!(buf.len(), eof_packet_len);
         assert_eq!(buf.offset(), i64::try_from(eof_packet_len).unwrap());
     });
@@ -957,14 +859,10 @@ fn eof_2() {
         {
             let l = sock.recv_packet(RECV_TIMEOUT);
             let eof_packet_len = EOF_PACKET.len();
-            let buf = sock.read_buffer();
+            let buf = sock.co().own_read_buffer();
 
             assert_eq!(size(l), eof_packet_len);
-            // SAFETY: the buffer holds the packet.
-            assert_eq!(
-                unsafe { std::slice::from_raw_parts(buf.as_mut_ptr(), size(l)) },
-                EOF_PACKET
-            );
+            assert_eq!(&buf.view()[..size(l)], EOF_PACKET);
             assert_eq!(buf.len(), EOF_PACKET.len() + EOF_PACKET_2.len());
             assert_eq!(buf.offset(), i64::try_from(eof_packet_len).unwrap());
         }
@@ -972,14 +870,10 @@ fn eof_2() {
         {
             let l = sock.recv_packet(RECV_TIMEOUT);
             let eof_packet_len = EOF_PACKET_2.len();
-            let buf = sock.read_buffer();
+            let buf = sock.co().own_read_buffer();
 
             assert_eq!(size(l), eof_packet_len);
-            // SAFETY: the buffer holds the packet.
-            assert_eq!(
-                unsafe { std::slice::from_raw_parts(buf.as_mut_ptr(), size(l)) },
-                EOF_PACKET_2
-            );
+            assert_eq!(&buf.view()[..size(l)], EOF_PACKET_2);
             assert_eq!(buf.len(), EOF_PACKET_2.len());
             assert_eq!(buf.offset(), i64::try_from(eof_packet_len).unwrap());
         }
@@ -1015,7 +909,7 @@ fn eof_4() {
         let l = sock.recv_packet(RECV_TIMEOUT);
         assert_eq!(l, 0);
 
-        let buf = sock.read_buffer();
+        let mut buf = sock.co().own_read_buffer();
         // SAFETY: the buffer holds the partial packet.
         assert_eq!(
             unsafe { std::slice::from_raw_parts(buf.as_mut_ptr(), 10) },
@@ -1058,7 +952,8 @@ fn eof_6() {
         });
 
         let sock = start_client(port);
-        sock.record().protocol.package_max_length = 1024 * 64;
+        sock.co()
+            .edit_protocol(|protocol| protocol.package_max_length = 1024 * 64);
 
         let l = sock.recv_packet(RECV_TIMEOUT);
         assert_eq!(l, -1);
@@ -1098,7 +993,7 @@ fn length_1() {
         set_length_protocol_1(&sock);
 
         let l = sock.recv_packet(RECV_TIMEOUT);
-        let buf = sock.read_buffer();
+        let buf = sock.co().own_read_buffer();
 
         assert_eq!(l, 1024);
         assert_eq!(buf.len(), size(l));
@@ -1120,7 +1015,7 @@ fn length_2() {
         set_length_protocol_1(&sock);
 
         let l = sock.recv_packet(RECV_TIMEOUT);
-        let buf = sock.read_buffer();
+        let buf = sock.co().own_read_buffer();
 
         assert_eq!(l, 2);
         assert_eq!(buf.len(), 2);
@@ -1141,7 +1036,8 @@ fn length_3() {
 
         let sock = connected(port);
         set_length_protocol_1(&sock);
-        sock.record().protocol.package_max_length = 4096;
+        sock.co()
+            .edit_protocol(|protocol| protocol.package_max_length = 4096);
 
         let l = sock.recv_packet(RECV_TIMEOUT);
         assert_eq!(l, -1);
@@ -1179,9 +1075,8 @@ fn length_4() {
         for pkt in pkts {
             let l = sock.recv_packet(RECV_TIMEOUT);
             bytes += size(l);
-            let buf = sock.read_buffer();
-            // SAFETY: the buffer holds the packet.
-            let data = unsafe { std::slice::from_raw_parts(buf.as_mut_ptr(), buf.len()) };
+            let buf = sock.co().own_read_buffer();
+            let data = buf.view();
             let unpack_len = u32::from_be_bytes(data[..4].try_into().unwrap());
 
             let expected = pkt.take();
@@ -1241,7 +1136,7 @@ fn length_7() {
         set_length_protocol_2(&sock);
 
         let l = sock.recv_packet(RECV_TIMEOUT);
-        let buf = sock.read_buffer();
+        let buf = sock.co().own_read_buffer();
 
         assert_eq!(l, 4);
         assert_eq!(buf.len(), 4);
@@ -1263,8 +1158,9 @@ fn event_hup() {
         });
 
         let sock = connected(port);
-        let buf = sock.read_buffer();
-        let (at, n) = (buf.as_mut_ptr(), buf.size());
+        let (at, n) = sock
+            .co()
+            .with_buffer(false, |buf| (buf.as_mut_ptr(), buf.size()));
         let shared = &sock;
         go(move || {
             co_sleep(0.01);
@@ -1296,7 +1192,7 @@ fn recv_line() {
         });
 
         let sock = connected(port);
-        let at = sock.read_buffer().as_mut_ptr();
+        let at = sock.co().with_buffer(false, StringBuffer::as_mut_ptr);
         // SAFETY: the read buffer, at least 128 bytes.
         let line = |n: isize| unsafe { std::slice::from_raw_parts(at, size(n)) };
 
@@ -1336,24 +1232,20 @@ fn getsockname() {
 
 fn buffer() {
     let sock = Sock::new(SW_SOCK_TCP);
-    let rbuf = ptr::from_mut(sock.read_buffer());
-    let wbuf = sock.write_buffer();
+    let socket = sock.co();
+    let rbuf = socket.with_buffer(false, ptr::from_mut);
+    let wbuf = socket.with_buffer(true, ptr::from_mut);
+    let mut rbuf_pop = socket.take_buffer(false).unwrap();
+    let mut wbuf_pop = socket.take_buffer(true).unwrap();
 
-    // `pop_read_buffer` and `pop_write_buffer`: the record lets go of each buffer.
-    let rbuf_pop = std::mem::replace(&mut sock.record().read_buffer, ptr::null_mut());
-    let wbuf_pop = std::mem::replace(&mut sock.record().write_buffer, ptr::null_mut());
+    assert_eq!(rbuf, ptr::from_mut(&mut *rbuf_pop));
+    assert_eq!(wbuf, ptr::from_mut(&mut *wbuf_pop));
 
-    assert_eq!(rbuf, rbuf_pop);
-    assert_eq!(wbuf, wbuf_pop);
+    assert_ne!(socket.with_buffer(false, ptr::from_mut), rbuf);
+    assert_ne!(socket.with_buffer(true, ptr::from_mut), wbuf);
 
-    let rbuf2 = ptr::from_mut(sock.read_buffer());
-    let wbuf2 = sock.write_buffer();
-
-    assert_ne!(rbuf2, rbuf);
-    assert_ne!(wbuf2, wbuf);
-
-    delete_string(rbuf_pop);
-    delete_string(wbuf_pop);
+    rbuf_pop.dispose();
+    wbuf_pop.dispose();
 }
 
 fn check_liveness() {
@@ -1404,48 +1296,26 @@ fn write_and_read_2() {
 }
 
 /// `Sock::vector`'s operations.
-const READV: c_int = 0;
-const READV_ALL: c_int = 1;
-const WRITEV: c_int = 2;
-const WRITEV_ALL: c_int = 3;
-
-fn iovecs(buffers: &mut [&mut [u8]]) -> Vec<IoVec> {
-    buffers
-        .iter_mut()
-        .map(|buf| IoVec {
-            base: buf.as_mut_ptr().cast(),
-            len: buf.len(),
-        })
-        .collect()
-}
-
 fn writev_and_readv() {
     run(|| {
-        let iovcnt = 3;
+        const IOVCNT: usize = 3;
         let length = HELLO.len();
         let pairs = socket_pair();
 
         go(move || {
-            let mut text = HELLO.to_vec();
-            let iov: Vec<IoVec> = (0..iovcnt)
-                .map(|_| IoVec {
-                    base: text.as_mut_ptr().cast(),
-                    len: length,
-                })
-                .collect();
+            let iov = [IoSlice::new(HELLO); IOVCNT];
 
             let sock = Sock::with_fd(pairs[0], SW_SOCK_UNIX_STREAM);
-            let result = sock.vector(WRITEV, &iov);
+            let result = sock.vector(Vectors::Write(&iov), false);
             sock.close();
             assert_eq!(size(result), length * 3);
         });
 
         let mut results = [[0_u8; 16]; 3];
-        let mut buffers: Vec<&mut [u8]> = results.iter_mut().map(|r| &mut r[..length]).collect();
-        let iov = iovecs(&mut buffers);
+        let mut iov = results.each_mut().map(|r| ReadVec::new(&mut r[..length]));
 
         let sock = Sock::with_fd(pairs[1], SW_SOCK_UNIX_STREAM);
-        let result = sock.vector(READV, &iov);
+        let result = sock.vector(Vectors::Read(&mut iov), false);
         sock.close();
         assert_eq!(size(result), length * 3);
 
@@ -1486,7 +1356,7 @@ fn send_and_recv_all() {
 
 fn writevall_and_readvall() {
     run(|| {
-        let write_iovcnt = 4;
+        const WRITE_IOVCNT: usize = 4;
         let pairs = socket_pair();
 
         let mut buf = [0_u8; 65536];
@@ -1495,34 +1365,34 @@ fn writevall_and_readvall() {
         let length = buf.len();
 
         go(move || {
-            let iov: Vec<IoVec> = (0..write_iovcnt)
-                .map(|_| IoVec {
-                    base: buf.as_ptr().cast_mut().cast(),
-                    len: length,
-                })
-                .collect();
+            let iov = [IoSlice::new(buf); WRITE_IOVCNT];
 
             let sock = Sock::with_fd(pairs[0], SW_SOCK_UNIX_STREAM);
             sock.set_send_buffer_size(u32::try_from(length).unwrap());
 
-            assert_eq!(size(sock.vector(WRITEV_ALL, &iov)), write_iovcnt * length);
+            assert_eq!(
+                size(sock.vector(Vectors::Write(&iov), true)),
+                WRITE_IOVCNT * length
+            );
 
             co_sleep(0.01);
 
-            assert_eq!(size(sock.vector(WRITEV_ALL, &iov)), write_iovcnt * length);
+            assert_eq!(
+                size(sock.vector(Vectors::Write(&iov), true)),
+                WRITE_IOVCNT * length
+            );
 
             sock.close();
         });
 
         let read_iovcnt = 8;
         let mut storage = vec![vec![0_u8; length]; read_iovcnt];
-        let mut buffers: Vec<&mut [u8]> = storage.iter_mut().map(Vec::as_mut_slice).collect();
-        let iov = iovecs(&mut buffers);
+        let mut iov: Vec<_> = storage.iter_mut().map(|buf| ReadVec::new(buf)).collect();
 
         let sock = Sock::with_fd(pairs[1], SW_SOCK_UNIX_STREAM);
         sock.set_recv_buffer_size(u32::try_from(length).unwrap());
 
-        let result = sock.vector(READV_ALL, &iov);
+        let result = sock.vector(Vectors::Read(&mut iov), true);
         sock.close();
         assert_eq!(size(result), length * read_iovcnt);
 
@@ -1998,9 +1868,8 @@ fn recv_packet() {
         assert!(sock.check_liveness());
         let n = sock.recv_packet(0.0);
         assert!(n > 0);
-        let buf = sock.read_buffer();
-        // SAFETY: the buffer's received bytes.
-        let data = unsafe { std::slice::from_raw_parts(buf.as_mut_ptr(), buf.len()) };
+        let buf = sock.co().own_read_buffer();
+        let data = buf.view();
         assert!(contains(data, TEST_HTTP_EXPECT));
     });
 }
@@ -2010,20 +1879,16 @@ fn set_error() {
     assert!(sock.co().set_error(1000, TEST_STR));
 
     assert_eq!(sock.err_code(), 1000);
-    // SAFETY: the record's error text, NUL-terminated.
-    assert_eq!(
-        unsafe { CStr::from_ptr(sock.record().err_msg) }.to_bytes(),
-        TEST_STR
-    );
+    assert_eq!(sock.co().err_message().unwrap().as_bytes(), TEST_STR);
 }
 
 fn reinit() {
     run(|| {
         let sock = Sock::new(SW_SOCK_TCP6);
-        assert_eq!(sock.record().sock_domain, AF_INET6);
+        assert_eq!(sock.co().sock_domain(), AF_INET6);
         proxy_set_socks5_proxy(&sock, TEST_SOCKS5_PROXY_PORT, true);
         sock.connect("::1", 80, 0);
-        assert_eq!(sock.record().sock_domain, AF_INET);
+        assert_eq!(sock.co().sock_domain(), AF_INET);
     });
 }
 
