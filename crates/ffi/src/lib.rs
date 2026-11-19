@@ -238,7 +238,7 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
                     minit,
                     #[cfg(feature = "curl")]
                     swoole_rs_curl::minit,
-                )
+                );
             },
             rshutdown: swoole_rs_phpruntime::rshutdown,
         },
