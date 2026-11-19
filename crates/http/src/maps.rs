@@ -1,5 +1,7 @@
 use std::ffi::CStr;
-pub(super) static METHODS: [&CStr; 27] = [
+/// Upstream method number of PRI, the final method in the table.
+pub const METHOD_PRI: u8 = 27;
+pub(super) static METHODS: [&CStr; METHOD_PRI as usize] = [
     c"DELETE",
     c"GET",
     c"HEAD",

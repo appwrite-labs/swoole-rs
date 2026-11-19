@@ -20,8 +20,8 @@ use swoole_rs_http2::frame_flag::{
     ACK as FLAG_ACK, END_STREAM as FLAG_END_STREAM, PRIORITY as FLAG_PRIORITY,
 };
 use swoole_rs_http2::{
-    FrameAction, FrameType, HeaderKind, HeaderRole, Http2FrameFacts, Http2Settings,
-    Http2WindowPlan, Media, QueueAction, decode_packet,
+    FrameAction, FrameType, GOAWAY_SIZE, HeaderKind, HeaderRole, Http2FrameFacts, Http2Settings,
+    Http2WindowPlan, Media, PING_PAYLOAD, QueueAction, WINDOW_UPDATE_SIZE, decode_packet,
     hpack::{self, Decoder, Encoder, Error},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_default_settings, sw_rs_http2_header_plan,
     sw_rs_http2_headers_flags, sw_rs_http2_inflate_step, sw_rs_http2_media_kind,
@@ -40,9 +40,6 @@ use swoole_rs_zend::{method_table, sys as z};
 
 /// `SW_HTTP2_*` frame sizes.
 const FRAME_HEADER: usize = swoole_rs_http2::FRAME_HEADER_SIZE as usize;
-const PING_PAYLOAD: usize = 8;
-const GOAWAY_SIZE: usize = 8;
-const WINDOW_UPDATE_SIZE: usize = 4;
 use swoole_rs_http2::setting_id;
 /// The `:authority` slot (`HTTP2_CLIENT_HOST_HEADER_INDEX`).
 const AUTHORITY: usize = 3;
