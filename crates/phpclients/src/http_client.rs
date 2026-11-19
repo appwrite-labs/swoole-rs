@@ -19,6 +19,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_http::llhttp::{self, Callbacks, EndOfInput, Flow, Parser};
+use swoole_rs_http::status::{BAD_GATEWAY, NO_CONTENT, SERVICE_UNAVAILABLE, SWITCHING_PROTOCOLS};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_websocket::Opcode;
@@ -69,11 +70,6 @@ const INVALID_PROTOCOL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_HTTP_INVALI
 const HANDSHAKE_FAILED: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_HANDSHAKE_FAILED as c_int;
 const PACK_FAILED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_PACK_FAILED as c_int;
-/// `SW_HTTP_SWITCHING_PROTOCOLS`, `NO_CONTENT`, `BAD_GATEWAY`, `SERVICE_UNAVAILABLE`.
-const SWITCHING_PROTOCOLS: u16 = 101;
-const NO_CONTENT: u16 = 204;
-const BAD_GATEWAY: u16 = 502;
-const SERVICE_UNAVAILABLE: u16 = 503;
 /// `SW_WEBSOCKET_HEADER_LEN`, `SW_WEBSOCKET_KEY_LENGTH`.
 const WEBSOCKET_HEADER: usize = swoole_rs_websocket::HEADER_LEN as usize;
 const WEBSOCKET_KEY: usize = swoole_rs_corebase::constants::SW_WEBSOCKET_KEY_LENGTH as usize;
@@ -204,7 +200,7 @@ impl<'i> Callbacks<'i> for Spans<'_, '_, 'i> {
 
     fn on_headers_complete(&mut self) -> Flow {
         let hooks = &self.hooks;
-        if hooks.client.head.get() || hooks.parser.status_code == NO_CONTENT {
+        if hooks.client.head.get() || i32::from(hooks.parser.status_code) == NO_CONTENT {
             Flow::SkipBody
         } else {
             Flow::Go
@@ -923,7 +919,8 @@ impl Client {
                     return false;
                 }
                 let status = self.status.get();
-                if self.max_retries.get() > 0 && matches!(status, BAD_GATEWAY | SERVICE_UNAVAILABLE)
+                if self.max_retries.get() > 0
+                    && matches!(i32::from(status), BAD_GATEWAY | SERVICE_UNAVAILABLE)
                 {
                     self.close(true);
                     attempt += 1;
@@ -1181,7 +1178,7 @@ impl Client {
             return false;
         }
         let status = self.status.get();
-        if status != SWITCHING_PROTOCOLS || !self.websocket.get() {
+        if i32::from(status) != SWITCHING_PROTOCOLS || !self.websocket.get() {
             self.set_error(
                 HANDSHAKE_FAILED,
                 c"websocket handshake failed: expected HTTP 101 with valid WebSocket upgrade headers",
@@ -1449,7 +1446,7 @@ fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> Flow {
         headers.merge(name, Owned::from(ZString::new(data)));
     });
     let status = hooks.parser.status_code;
-    if status == SWITCHING_PROTOCOLS && name == b"upgrade" {
+    if i32::from(status) == SWITCHING_PROTOCOLS && name == b"upgrade" {
         if request::token_list_contains(data, b"websocket") {
             client.websocket.set(true);
         }

@@ -2,14 +2,21 @@
 use std::borrow::Cow;
 
 /// Upstream's `list_of_status_code`: every code with a message, then -1.
-pub const STATUS_CODES: [i32; 128] = [
-    100, 101, 102, 103, 200, 201, 202, 203, 204, 205, 206, 207, 208, 226, 300, 301, 302, 303, 304,
-    305, 306, 307, 308, 400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414,
-    415, 416, 417, 418, 421, 422, 423, 424, 425, 426, 428, 429, 431, 451, 500, 501, 502, 503, 504,
-    505, 506, 507, 508, 510, 511, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-];
+pub const STATUS_CODES: [i32; 128] = {
+    let mut codes = [0; 128];
+    let mut remaining = codes.as_mut_slice();
+    let mut code = 100;
+    while code < 600 {
+        if crate::maps::status(code).is_some() {
+            let (next, tail) = remaining.split_first_mut().expect("status list fits");
+            *next = code;
+            remaining = tail;
+        }
+        code += 1;
+    }
+    *remaining.first_mut().expect("space for the sentinel") = -1;
+    codes
+};
 
 /// The status line for `code` without its NUL: a known message, else
 /// `"<code> Unknown Status"`.
