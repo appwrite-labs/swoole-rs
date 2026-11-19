@@ -444,16 +444,7 @@ pub mod pool {
         POOL.delete();
     }
 
-    /// Without futex, waiters register in a Rust registry in shared memory, from the
-    /// pool `swoole_init` just made: a fatal error when it can't be had.
-    pub fn wait_registry_init() {
-        let count = crate::utilities::swr_v1_utils_wait_registry_size().div_ceil(8);
-        let adopted = words::<AtomicU64>(count)
-            .is_some_and(crate::utilities::swr_v1_utils_wait_registry_init);
-        if !adopted {
-            crate::fatal("failed to allocate atomic wait registry");
-        }
-    }
+    pub use crate::utilities::wait_registry_init;
 
     /// `sw_mem_pool()->alloc(size)`: a zeroed block, or null with upstream's warning.
     /// Where upstream throws (no pool, or a forked process's fresh pool can't be had),
@@ -502,17 +493,40 @@ pub mod pool {
     /// and `Swoole\Lock`'s, or a shared table's header, which forked workers reach at
     /// the same address.
     #[must_use]
-    pub fn words<W: Word>(count: usize) -> Option<&'static mut [W]> {
+    pub fn words<W: Word + 'static>(count: usize) -> Option<&'static mut [W]> {
+        with_zero_words(count, Storage::Pool, |words| words)
+    }
+
+    /// The permanent shared mapping for the atomic wait registry.
+    pub(crate) fn wait_registry_words(count: usize) -> Option<&'static [AtomicU64]> {
+        with_zero_words(count, Storage::WaitRegistry, |words| &*words)
+    }
+
+    #[derive(Clone, Copy)]
+    enum Storage {
+        Pool,
+        WaitRegistry,
+    }
+
+    fn with_zero_words<W: Word + 'static, T>(
+        count: usize,
+        storage: Storage,
+        init: impl FnOnce(&'static mut [W]) -> T,
+    ) -> Option<T> {
         const { assert!(align_of::<W>() <= 8, "the pool's blocks are 8-aligned") };
         let size = u32::try_from(count.checked_mul(size_of::<W>())?).ok()?;
-        let block = pinned(size).cast::<W>();
+        let block = match storage {
+            Storage::Pool => pinned(size),
+            Storage::WaitRegistry => super::sw_shm_malloc(size as usize),
+        }
+        .cast::<W>();
         if block.is_null() {
             return None;
         }
         // SAFETY: `count` zeroed (so valid) words, 8-aligned (enough for each `Word`,
-        // asserted above), which the pool gives no one else and keeps for the process's
+        // asserted above), which the allocator gives no one else and keeps for the process's
         // life.
-        Some(unsafe { slice::from_raw_parts_mut(block, count) })
+        Some(init(unsafe { slice::from_raw_parts_mut(block, count) }))
     }
 }
 

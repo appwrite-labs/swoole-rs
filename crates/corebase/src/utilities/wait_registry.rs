@@ -182,7 +182,18 @@ impl Registry {
     }
 }
 
-/// Bytes `sw_atomic_wait_init` allocates from the shared memory pool: the lock word
+/// Install one anonymous shared mapping before workers fork. Its words stay with the
+/// process-wide registry across pool teardown and reinitialization.
+pub fn wait_registry_init() {
+    REGISTRY.get_or_init(|| {
+        let words = swr_v1_utils_wait_registry_size() / size_of::<AtomicU64>();
+        crate::memory::members::pool::wait_registry_words(words)
+            .and_then(Registry::of)
+            .unwrap_or_else(|| crate::fatal("no shared memory for the atomic wait registry"))
+    });
+}
+
+/// Bytes `sw_atomic_wait_init` needs in shared memory: the lock word
 /// and the entries.
 #[must_use]
 pub fn swr_v1_utils_wait_registry_size() -> usize {
@@ -245,15 +256,6 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    fn registry() {
-        static INIT: std::sync::Once = std::sync::Once::new();
-        INIT.call_once(|| {
-            let words = swr_v1_utils_wait_registry_size().div_ceil(8);
-            let memory = Vec::from_iter((0..words).map(|_| AtomicU64::new(1))).leak();
-            assert!(swr_v1_utils_wait_registry_init(memory));
-        });
-    }
-
     fn wait(word: &AtomicU32, timeout: f64) -> (c_int, c_int) {
         match with(word, |registry, word| registry.wait(word, timeout)) {
             Ok(()) => (0, 0),
@@ -269,8 +271,41 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))] // Miri cannot fork.
+    fn registry_is_shared_after_pool_reinitialization() {
+        use crate::memory::members::pool;
+
+        if crate::utilities::isolated_process::run_in_child(
+            "utilities::wait_registry::tests::registry_is_shared_after_pool_reinitialization",
+        ) {
+            return;
+        }
+        assert!(crate::swr_v1_core_init());
+        pool::init();
+        wait_registry_init();
+        let address = &REGISTRY.get().unwrap().entries[0][ADDRESS];
+        pool::delete();
+        pool::init();
+        wait_registry_init();
+        pool::delete();
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            address.store(42, R);
+            unsafe { libc::_exit(0) };
+        }
+        let mut status = 0;
+        assert_eq!(
+            crate::sys::waitpid(child, Some(&mut status), 0).unwrap(),
+            Some(child)
+        );
+        assert_eq!(status, 0);
+        assert_eq!(REGISTRY.get().unwrap().entries[0][ADDRESS].load(R), 42);
+    }
+
+    #[test]
     fn a_ready_token_is_taken_without_waiting() {
-        registry();
+        wait_registry_init();
         let word = AtomicU32::new(1);
         assert_eq!(wait(&word, 0.01), (0, 0));
         assert_eq!(word.load(Ordering::SeqCst), 0);
@@ -278,7 +313,7 @@ mod tests {
 
     #[test]
     fn a_wait_without_wakeup_times_out() {
-        registry();
+        wait_registry_init();
         let word = AtomicU32::new(0);
         let begun = Instant::now();
         assert_eq!(wait(&word, 0.02), (-1, libc::ETIMEDOUT));
@@ -290,7 +325,7 @@ mod tests {
 
     #[test]
     fn wakeup_rejects_a_count_below_one_and_needs_a_free_token() {
-        registry();
+        wait_registry_init();
         let word = AtomicU32::new(0);
         assert_eq!(wakeup(&word, 0), (-1, libc::EINVAL));
         assert_eq!(wakeup(&word, 1), (0, 0), "token set, nobody registered");
@@ -300,7 +335,7 @@ mod tests {
 
     #[test]
     fn wakeup_notifies_a_registered_waiter() {
-        registry();
+        wait_registry_init();
         let word = Arc::new(AtomicU32::new(0));
         let waiter = {
             let word = Arc::clone(&word);
