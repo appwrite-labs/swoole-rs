@@ -494,9 +494,7 @@ pub(crate) fn callback(kind: ServerCallback) -> Option<Callable> {
 /// server the master configured and frees, so only the master empties those slots:
 /// a worker thread never writes them while others read them.
 pub(crate) fn owns_shared() -> bool {
-    /// `THREAD_WORKER`, which only thread mode's worker threads are entered as.
-    const THREAD_WORKER: u8 = 4;
-    swoole_rs_corebase::thread_kind() != THREAD_WORKER
+    swoole_rs_corebase::thread_kind() != swoole_rs_server::THREAD_WORKER
 }
 
 impl ServerData {

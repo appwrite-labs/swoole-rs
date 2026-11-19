@@ -21,8 +21,6 @@ static PHP_MEMORY: OnceLock<extern "C" fn() -> usize> = OnceLock::new();
 
 /// `SW_FD_SESSION`.
 const FD_SESSION: c_int = swoole_rs_corebase::constants::FdType::SW_FD_SESSION as c_int;
-/// `Server::THREAD_REACTOR`.
-const THREAD_REACTOR: u8 = 2;
 
 /// `register_admin_server_commands(serv)`: adds upstream's admin commands, whose
 /// `get_memory_info` reports `php_memory()`.
@@ -275,7 +273,7 @@ impl Facts for Live<'_> {
 
     fn memory(&mut self) -> Vec<(&'static str, u64)> {
         let config = self.config;
-        let is_thread = swoole_rs_corebase::thread_kind() == THREAD_REACTOR;
+        let is_thread = swoole_rs_corebase::thread_kind() == crate::THREAD_REACTOR;
         let bus = if is_thread {
             self.thread_record().message_bus()
         } else {

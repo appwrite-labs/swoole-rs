@@ -90,15 +90,13 @@ fn warn(code: E, origin: &CStr, message: core::fmt::Arguments<'_>) {
     reason = "callers ignore the result where upstream's do"
 )]
 pub fn shutdown(serv: Server<'_>) -> bool {
-    /// `THREAD_MASTER`.
-    const THREAD_MASTER: u8 = 1;
     if !serv.is_started() {
         log::set_last_error(E::SW_ERROR_WRONG_OPERATION as c_int);
         return false;
     }
     let mode = mode(serv);
     // A worker thread masks signals; the master thread stops itself.
-    if mode == Mode::Thread && swoole_rs_corebase::thread_kind() == THREAD_MASTER {
+    if mode == Mode::Thread && swoole_rs_corebase::thread_kind() == crate::THREAD_MASTER {
         stop_master_thread(serv);
         return true;
     }

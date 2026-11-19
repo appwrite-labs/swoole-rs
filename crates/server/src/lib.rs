@@ -19,6 +19,12 @@ pub use server_methods::{
     swr_v1_server_add_command, swr_v1_server_command, swr_v1_server_command_result,
 };
 
+// Thread-local role values from Server::ThreadType.
+const THREAD_MASTER: u8 = 1;
+const THREAD_REACTOR: u8 = 2;
+/// The role of a server worker thread.
+pub const THREAD_WORKER: u8 = 4;
+
 mod admin;
 mod base_factory;
 pub mod callbacks;
