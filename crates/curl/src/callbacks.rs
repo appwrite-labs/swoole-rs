@@ -547,6 +547,10 @@ fn call(handle: PhpHandle<'_>, option: c_int, args: &[Owned], keep: bool) -> Opt
         called = swoole_curl_call(handle, option, Zvals::owned(args), &mut retval);
         if !keep {
             drop(std::mem::take(&mut retval));
+            // A destructor that bailed out is deferred: keep the handle marked, as below.
+            if bailout::pending() {
+                return;
+            }
         }
         // A fatal bailout skips this reset: shutdown handlers still see the active callback.
         swoole_curl_set_in_callback(handle, false);
