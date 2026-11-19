@@ -501,6 +501,7 @@ extern "C" void swoole_curl_free_bytes(iovec buffer) {
 /* curl_setopt's options of a number, a string or a blob (crates/curl/src/setopt.rs). Each sets the
  * option as the bundled copies did and saves the error, SAVE_CURL_ERROR: curl_easy_setopt is
  * variadic. The header's libcurl version gates the options the copies compiled in. */
+extern "C" const long swoole_curl_protocols_without_file = (long) (CURLPROTO_ALL & ~CURLPROTO_FILE);
 extern "C" const unsigned swoole_curl_header_version = LIBCURL_VERSION_NUM;
 
 extern "C" int swoole_curl_easy_setopt_long(CURL *easy, zend_long option, long value) {
@@ -517,6 +518,15 @@ extern "C" int swoole_curl_setopt_off_t(php_curl *ch, int option, curl_off_t val
 
 /* libcurl copies the string; null unsets the option. */
 extern "C" int swoole_curl_setopt_string(php_curl *ch, int option, const zend_string *value) {
+#if defined(PHP_WIN32) && PHP_VERSION_ID >= 80400
+    constexpr size_t prefix_length = sizeof("file://") - 1;
+    if (option == CURLOPT_URL && value && zend_string_starts_with_literal_ci(value, "file://") &&
+        ZSTR_VAL(value)[prefix_length] != '/' && ZSTR_LEN(value) < MAXPATHLEN - 2) {
+        char path[MAXPATHLEN] = "file:///";
+        memcpy(path + prefix_length + 1, ZSTR_VAL(value) + prefix_length, ZSTR_LEN(value) - prefix_length);
+        return ch->err.no = curl_easy_setopt(ch->cp, CURLOPT_URL, path);
+    }
+#endif
     return ch->err.no = curl_easy_setopt(ch->cp, (CURLoption) option, value ? ZSTR_VAL(value) : NULL);
 }
 
