@@ -4,11 +4,15 @@ name: Release
 # Each binary is built by tools/release.sh inside the official php image it targets (Debian
 # 12, the oldest glibc those images still ship, and Alpine) and must then load in a clean
 # copy of that image, reporting the pinned upstream version and this commit's swoole-rs
-# version. Run by hand, or by a PR that changes this workflow or release.sh, it is a dry
-# run: everything is built, checked and uploaded as workflow artifacts; nothing is published.
+# version. Run by hand, by a PR that changes this workflow or release.sh, or nightly on main,
+# it is a dry run: everything is built, checked and uploaded as workflow artifacts; nothing is
+# published. The nightly run is how a change that breaks one target shows before a tag does:
+# a failure files an issue through scheduled-failures.yml (#5293).
 on:
   push:
     tags: ['v*']
+  schedule:
+    - cron: '23 5 * * *'
   workflow_dispatch:
   pull_request:
     paths: [.github/workflows/release.yml, tools/release.sh]
@@ -60,7 +64,7 @@ jobs:
           done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          retention-days: ${{ github.event_name == 'pull_request' && 1 || 0 }}
+          retention-days: ${{ (github.event_name == 'pull_request' || github.event_name == 'schedule') && 1 || 0 }}
           name: swoole-${{ matrix.php }}-${{ matrix.threads }}-${{ matrix.distro }}-${{ matrix.arch }}
           path: dist/
           if-no-files-found: error
@@ -93,7 +97,7 @@ jobs:
           cat SHA256SUMS
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          retention-days: ${{ github.event_name == 'pull_request' && 1 || 0 }}
+          retention-days: ${{ (github.event_name == 'pull_request' || github.event_name == 'schedule') && 1 || 0 }}
           name: release
           path: dist/
       - if: github.ref_type == 'tag'
