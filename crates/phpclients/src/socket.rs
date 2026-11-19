@@ -382,7 +382,7 @@ fn construct(call: &Call) {
 /// object that owns `socket`, as upstream's coroutine HTTP server makes for
 /// each connection.
 /// # Errors
-/// Making the object bailed out, and `socket` leaked.
+/// The new object could not publish its socket.
 pub fn init_socket_object(socket: NewSocket) -> Result<Owned, Bailout> {
     owner::make_object(socket)
 }
