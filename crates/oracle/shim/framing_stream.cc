@@ -39,6 +39,7 @@ extern "C" struct SwrOracleStream {
 #define SWR_CAT(a, b) SWR_CAT2(a, b)
 
 namespace SWR_STREAM_ENGINE {
+namespace framing_stream {
 // The result, return, error and log-level enums and SW_BUFFER_SIZE_STD, as the pinned
 // headers define them (build.rs copies them from upstream/include); logging is off.
 #include "framing_stream_pinned.inc"
@@ -196,11 +197,12 @@ static int on_package(const Protocol *, network::Socket *, const RecvData *data)
     events->append(data->data, data->info.len);
     return 0;
 }
+}  // namespace framing_stream
 }  // namespace SWR_STREAM_ENGINE
 
 extern "C" size_t SWR_CAT(swr_oracle_framing_stream, SWR_STREAM_ENGINE)(const SwrOracleStream *stream, char *out,
                                                                       size_t capacity) {
-    using namespace SWR_STREAM_ENGINE;
+    using namespace SWR_STREAM_ENGINE::framing_stream;
     std::string log;
     events = &log;
     Protocol protocol{};

@@ -12,6 +12,15 @@ Packet framing and the MIME table (`crates/framing`); the ABI is in
   (`fuzz/`) compare against the pinned base.cc.
 - Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the Cargo build. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 
+The Linux `framing-length-peer` integration phase sends the same frames to both
+engines. For a four-byte length callback that rejects a five-byte message,
+read-ahead exposes five bytes to the callback and pinned Swoole exposes four.
+Both peers see a reset. An over-limit header alone closes with FIN on both
+engines, and adding body bytes produces a reset on both. When the application
+closes after the first of two coalesced packets, both deliver only the first
+packet. Read-ahead consumes the second packet, so the peer sees FIN. Pinned
+Swoole leaves it unread and the peer sees a reset.
+
 ## Ported GoogleTests
 
 `core-tests/src/protocol/mime_type.cpp` no longer builds. Its TESTs are Rust
