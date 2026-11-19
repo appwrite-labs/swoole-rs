@@ -24,7 +24,7 @@ use swoole_rs_server::{Connection, view};
 use swoole_rs_zend::{Array, HeldArray, Value as Zval, ZString, bailout};
 
 /// Frame sizes, types and flags (`swoole_http2.h`).
-const FRAME_HEADER: usize = 9;
+const FRAME_HEADER: usize = swoole_rs_http2::FRAME_HEADER_SIZE as usize;
 const PING_PAYLOAD: usize = 8;
 const GOAWAY_SIZE: usize = 8;
 const FLAG_ACK: u32 = 0x1;
@@ -1086,7 +1086,7 @@ fn credit(current: u32, amount: u32) -> u32 {
 /// A SETTINGS frame: apply each, then acknowledge.
 fn settings(session: &Session, payload: &[u8]) -> bool {
     // RFC 9113 6.5: six bytes a setting; any other length is a FRAME_SIZE_ERROR.
-    let (entries, &[]) = payload.as_chunks::<6>() else {
+    let (entries, &[]) = payload.as_chunks::<{ swoole_rs_http2::SETTING_BYTES }>() else {
         return false;
     };
     for entry in entries {
