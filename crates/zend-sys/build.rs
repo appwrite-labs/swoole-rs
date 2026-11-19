@@ -58,7 +58,7 @@ mod php {
                 "(PHP_VERSION_ID|std_object_handlers|module_registry|zend_ce_.*|zend_empty_(array|string)|ZEND_ACC_.*|IS_.*|_IS_BOOL|E_.*|ZPP_ERROR_.*|CONST_.*|MAY_BE_.*|_ZEND_(TYPE|IS|SEND)_.*|PHP_STREAM_((FREE|FLAG)_.*|OPTION_READ_BUFFER|BUFFER_NONE)|ZEND_(ASSIGN_DIM|ASSIGN_DIM_OP|INIT_METHOD_CALL|UNSET_DIM|FE_RESET_RW|CONCAT|BEGIN_SILENCE|END_SILENCE))",
             )
             // PHP 8.5's tail-call VM types opcode handlers preserve_none, which
-            // bindgen cannot express; every VM kind but SWITCH stores a pointer,
+            // bindgen (0.73.2, the latest) cannot express; every VM kind but SWITCH stores a pointer,
             // and the generated layout assertions catch a SWITCH build.
             .blocklist_type("zend_vm_opcode_handler_t")
             .raw_line("pub type zend_vm_opcode_handler_t = *const ::std::ffi::c_void;")

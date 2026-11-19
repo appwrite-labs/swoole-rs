@@ -24,6 +24,7 @@ use swoole_rs_corebase::constants::{
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_members::Receive};
+use swoole_rs_http::llhttp::{HPE_OK, HPE_PAUSED_H2_UPGRADE};
 use swoole_rs_http::status::{BAD_REQUEST, NOT_FOUND, REQUEST_ENTITY_TOO_LARGE};
 use swoole_rs_http2::FRAME_HEADER_SIZE as HTTP2_FRAME_HEADER_SIZE;
 use swoole_rs_httpbindings::Setting;
@@ -40,8 +41,6 @@ use swoole_rs_zend::{
 };
 
 static SERVER: CustomClass<Data> = CustomClass::new();
-/// `SW_HAVE_COMPRESSION`.
-static COMPRESSION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The server created by `__construct` and dropped with the PHP object.
 struct Data(OnceCell<HttpServer>);
@@ -203,7 +202,7 @@ impl HttpServer {
         state.parse_body = self.parse_post.get();
         state.parse_cookie = self.parse_cookie.get();
         state.parse_files = self.parse_files.get();
-        if COMPRESSION.load(Relaxed) {
+        if crate::parse::enabled_codecs() != 0 {
             state.enable_compression = self.compression.get();
             state.compression_level = self.compression_level.get();
             state.compression_min_length = self.compression_min_length.get();
@@ -246,8 +245,6 @@ fn text_setting(server: &HttpServer, kind: Setting, text: Option<&[u8]>) {
     }
 }
 
-const HPE_OK: i32 = 0;
-const HPE_PAUSED_H2_UPGRADE: i32 = 23;
 /// `SW_BUFFER_SIZE_BIG`.
 const BUFFER_SIZE_BIG: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as usize;
 /// `EINVAL`.
@@ -324,13 +321,12 @@ method_table! {
 /// MINIT: the class, as `php_swoole_http_server_coro_minit` registered it.
 pub fn server_coro_minit(args: &MinitArgs) {
     let minit = args.minit;
-    if let Err(error) = register(minit, args.shortname, args.compression) {
+    if let Err(error) = register(minit, args.shortname) {
         error.defer();
     }
 }
 
-fn register(minit: &Minit, short_name: bool, compression: bool) -> Result<(), bailout::Bailout> {
-    COMPRESSION.store(compression, Relaxed);
+fn register(minit: &Minit, short_name: bool) -> Result<(), bailout::Bailout> {
     // What releasing the handlers or the socket defers is raised as the
     // object is freed.
     minit.register_object::<Data>(
@@ -431,6 +427,7 @@ fn construct(call: &Call) {
             });
         }
         if ssl {
+            // The upstream coroutine HTTP constructor proceeds to listen after requesting TLS.
             let _enabled = socket.enable_ssl();
         }
         if !socket.listen(0) {
@@ -503,7 +500,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let Some(table) = settings.array() else {
         return Ok(None);
     };
-    for (kind, keys) in swoole_rs_httpbindings::settings(COMPRESSION.load(Relaxed)) {
+    for (kind, keys) in swoole_rs_httpbindings::settings(crate::parse::enabled_codecs() != 0) {
         if kind == Setting::Websocket {
             server.apply_websocket(table);
             continue;
@@ -551,7 +548,7 @@ fn setting(
         let message = CString::new(message).unwrap_or_default();
         swoole_rs_zend::report(swoole_rs_zend::E_ERROR, &message)
     };
-    let compression = COMPRESSION.load(Relaxed);
+    let compression = crate::parse::enabled_codecs() != 0;
     let result = match kind {
         Setting::Cookie | Setting::Post | Setting::Files | Setting::Compression => {
             Some(i64::from(value.truthy()))
@@ -821,6 +818,7 @@ fn on_accept(call: &Call) {
     server.clients(|clients| clients.insert_index(cid.cast_unsigned(), zconn.copy()));
     let (remote_addr, remote_port) = address(socket);
     // The network socket's address becomes the local one.
+    // Upstream reads the socket address after get_name even if the lookup failed.
     let _named = socket.getsockname();
     let (server_addr, _) = address(socket);
     let peer = Peer {
@@ -935,6 +933,7 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             let state = context.state();
             if !state.completed && state.request.version == 101 && expects_continue(context) {
                 drop(buffer);
+                // Upstream keeps reading the request body regardless of the interim response write.
                 let _sent = conn.socket.send_all(SW_HTTP_100_CONTINUE_PACKET.as_bytes());
                 buffer = conn.socket.own_read_buffer();
             }

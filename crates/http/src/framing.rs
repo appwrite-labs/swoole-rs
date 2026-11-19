@@ -58,7 +58,7 @@ fn request_line(input: &[u8], frame: &mut HttpFrame) -> bool {
         frame.method = u32::try_from(index + 1).unwrap_or(0);
         method.to_bytes().len()
     } else if input.starts_with(b"PRI") {
-        frame.method = u32::try_from(METHODS.len()).unwrap_or(0);
+        frame.method = u32::from(crate::METHOD_PRI);
         if input.starts_with(HTTP2_PREFACE) {
             frame.offset = HTTP2_PREFACE.len();
             return true;

@@ -49,6 +49,12 @@ pub struct Http2ResponsePlan {
 
 /// Size of the fixed HTTP/2 frame header, including its three-byte length.
 pub const FRAME_HEADER_SIZE: u8 = 9;
+/// Opaque payload of a PING or its acknowledgement.
+pub const PING_PAYLOAD: usize = 8;
+/// Last stream ID and error code preceding optional GOAWAY debug data.
+pub const GOAWAY_SIZE: usize = 2 * std::mem::size_of::<u32>();
+/// A `WINDOW_UPDATE` frame carries one network-order increment.
+pub const WINDOW_UPDATE_SIZE: usize = std::mem::size_of::<u32>();
 const HEADER_BYTES: usize = FRAME_HEADER_SIZE as usize;
 pub const SETTING_BYTES: usize = size_of::<u16>() + size_of::<u32>();
 /// Wire identifiers from `swHttp2SettingId`.
@@ -542,7 +548,7 @@ pub fn sw_rs_http2_decode_frame(
 ///
 /// # Errors
 /// RFC 9113 requires exactly eight bytes.
-pub fn ping_payload(bytes: &[u8]) -> Result<[u8; 8], std::array::TryFromSliceError> {
+pub fn ping_payload(bytes: &[u8]) -> Result<[u8; PING_PAYLOAD], std::array::TryFromSliceError> {
     bytes.try_into()
 }
 

@@ -209,7 +209,7 @@ pub(crate) fn init(state: &mut State, server: view::Server<'_>) {
     state.parse_cookie = config.http_parse_cookie.get();
     state.parse_body = config.http_parse_post.get();
     state.parse_files = config.http_parse_files.get();
-    if parse::CAPABILITIES.load(Relaxed) & 8 != 0 {
+    if parse::enabled_codecs() != 0 {
         state.enable_compression = config.http_compression.get();
         state.compression_level = i8::from_ne_bytes([config.http_compression_level.get()]);
         state.compression_min_length = config.compression_min_length.get();

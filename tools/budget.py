@@ -21,6 +21,8 @@ rise by what others fall, and a fold or a new crate moves what it holds.
            or a PHP callback is re-entered, and the process aborts. Make the state a
            plain field of the handle that owns it, borrowed `&mut`, or a `Cell` taken and
            put back (#3565). A `RefCell::new` whose type is inferred isn't counted
+  unreasoned  named underscore call bindings without a preceding comment. Syntax cannot tell
+           a status from an RAII guard; an explicit `_guard` or `_guard_*` name describes the latter
   rawtemp mkstemp/mkostemp outside the temporary file guard
   php_args registered PHP argument reads accepting types beyond the generated stub signature
   statuses integer-returning bodies (`i32`, `c_int`, `i64`, `isize`), including extern
@@ -143,6 +145,12 @@ WIRE_DEFAULT = {'kind': 'call_expression', 'any': [
 
 # Each count's ast-grep rule (https://ast-grep.github.io/reference/rule.html), or a fn of the tree.
 KINDS = {
+    'unreasoned': {'kind': 'let_declaration', 'all': [
+        {'has': {'field': 'pattern', 'kind': 'identifier', 'regex': '^_[a-zA-Z0-9_]+$',
+                 'not': {'regex': '^_guard(?:_|$)'}}},
+        {'has': {'field': 'value', 'any': [{'kind': 'call_expression'}, {'kind': 'macro_invocation'}]}},
+        {'not': {'follows': {'any': [{'kind': 'line_comment'}, {'kind': 'block_comment'}]}}},
+    ]},
     'shortreads': WIRE_DEFAULT,
     'rawtemp': named('mkstemp', 'mkostemp'),
     'unsafe': {'any': [{'kind': 'unsafe_block'}, {**FN, **UNSAFE}, {'kind': 'impl_item', 'regex': r'^unsafe\b'},

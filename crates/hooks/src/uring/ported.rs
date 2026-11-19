@@ -20,6 +20,16 @@ fn status(result: std::io::Result<()>) -> c_int {
     result.map_or(-1, |()| 0)
 }
 
+// These GoogleTests close the fd after their assertions without checking close's result.
+fn close_after_test(fd: c_int) {
+    let _closed = uring::close_fd(&HOST, fd);
+}
+
+// The original tests use these sleeps to pace operations. The sleep tests assert their own results.
+fn pause(seconds: f64) {
+    let _slept = uring::sleep(&HOST, seconds);
+}
+
 const TEST_TMP_FILE: &CStr = c"/tmp/swoole_core_test_file";
 const TEST_STR: &str = "hello world, hello swoole\n";
 const TEST_HTTP_DOMAIN: &str = "www.gov.cn";
@@ -271,7 +281,7 @@ fn ftruncate() {
         assert_eq!(write_length, length.cast_signed(), "write");
 
         assert_eq!(status(uring::ftruncate(&HOST, fd, 0)), 0, "ftruncate");
-        let _closed = status(uring::close_fd(&HOST, fd));
+        close_after_test(fd);
     });
 }
 
@@ -289,7 +299,8 @@ fn http_get(socket_calls: bool) {
             len: socklen::<libc::sockaddr_in>(),
             kind: 0,
         };
-        let _connected = uring::connect(&HOST, fd, &peer, -1.0).map_or(-1, |()| 0);
+        // Both upstream tests overwrite the connect result and assert the subsequent transfer.
+        let _connected = uring::connect(&HOST, fd, &peer, -1.0);
 
         let req = http_get_request(TEST_HTTP_DOMAIN, "/");
         let rv = if socket_calls {
@@ -310,7 +321,7 @@ fn http_get(socket_calls: bool) {
         let response = String::from_utf8_lossy(&buf[..rv.unsigned_abs()]);
         assert!(response.contains(TEST_HTTP_EXPECT), "{response}");
 
-        let _closed = status(uring::close_fd(&HOST, fd));
+        close_after_test(fd);
     });
 }
 
@@ -365,7 +376,7 @@ fn sendfile() {
     with_engine(|| {
         let mut data = vec![0_u8; 250_000];
         let result = uring::read(&HOST, pairs[1], &mut data, -1.0).map_or(-1, usize::cast_signed);
-        let _closed = status(uring::close_fd(&HOST, pairs[1]));
+        close_after_test(pairs[1]);
         assert_eq!(result, TEST_JPG_SIZE.cast_signed(), "read");
     });
     drop(file);
@@ -388,7 +399,7 @@ fn accept() {
         let client = thread::spawn(move || {
             with_engine(|| {
                 // Give the server time to start listening
-                let _slept = uring::sleep(&HOST, 0.01);
+                pause(0.01);
 
                 let client_sock = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
                 assert!(client_sock > 0, "socket");
@@ -408,7 +419,7 @@ fn accept() {
                     .map_or(-1, usize::cast_signed);
                 assert_eq!(sent_bytes, test_message.len().cast_signed(), "send");
 
-                let _closed = status(uring::close_fd(&HOST, client_sock));
+                close_after_test(client_sock);
             });
         });
 
@@ -426,8 +437,8 @@ fn accept() {
             "received"
         );
 
-        let _closed = status(uring::close_fd(&HOST, client_sock));
-        let _closed = status(uring::close_fd(&HOST, server_sock));
+        close_after_test(client_sock);
+        close_after_test(server_sock);
         client.join().unwrap();
     });
 }
@@ -517,7 +528,7 @@ fn waitpid() {
         assert_eq!(uring::errno(), libc::ETIMEDOUT, "ETIMEDOUT");
 
         libc::kill(pid, libc::SIGKILL);
-        let _slept = uring::sleep(&HOST, 0.3);
+        pause(0.3);
         assert_eq!(
             uring::waitpid(&HOST, pid, Some(&mut status), 0, 0.1).unwrap_or(-1),
             pid,
@@ -581,7 +592,7 @@ fn poll() {
             with_engine(|| {
                 let result = uring::write(&HOST, fd0, &buffer, -1.0).map_or(-1, usize::cast_signed);
                 assert!(result > 0, "write");
-                let _slept = uring::sleep(&HOST, 0.1);
+                pause(0.1);
                 let result = uring::write(&HOST, fd1, &buffer[..16 * 1024], -1.0)
                     .map_or(-1, usize::cast_signed);
                 assert!(result > 0, "write back");
@@ -604,7 +615,7 @@ fn poll() {
 
         // `poll(fds, 2, 1000)`: the engine's poll takes one pollfd (README).
 
-        let _slept = uring::sleep(&HOST, 0.02);
+        pause(0.02);
 
         fds[0] = mem::zeroed();
         fds[0].fd = fd0;
@@ -636,6 +647,6 @@ fn accept_timeout() {
         let client_sock = uring::accept(&HOST, server_sock, &mut client_addr, 0, 0.1).unwrap_or(-1);
         assert_eq!(client_sock, -1, "timed out");
 
-        let _closed = status(uring::close_fd(&HOST, server_sock));
+        close_after_test(server_sock);
     });
 }

@@ -174,6 +174,7 @@ fn file_and_line() -> Option<Vec<u8>> {
         return None;
     }
     let mut at = file.to_vec();
+    // Writing a formatted integer into Vec<u8> cannot return an I/O error.
     let _infallible = write!(at, ":{line}");
     Some(at)
 }

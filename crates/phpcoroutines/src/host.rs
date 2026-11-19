@@ -258,6 +258,7 @@ fn iouring_stats(stats: &mut Stats) {
 
 /// `swoole_test_kernel_coroutine`'s coroutine: sleeps `count` times.
 pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
+    // swoole_test_kernel_coroutine starts the coroutine without returning its ID to PHP.
     let _cid = swoole_rs_corebase::coroutine::spawn(move || {
         for _ in 0..count {
             #[expect(
@@ -412,6 +413,7 @@ impl Waiter {
     /// As [`Waiter::wake`].
     pub fn cancel(&self) -> Result<(), bailout::Bailout> {
         self.end(|co| {
+            // The waiter requests cancellation; its caller only receives a bailout from the resumed coroutine.
             let _canceled = cancel(co);
         })
     }
@@ -579,12 +581,14 @@ pub(crate) fn deactivate() {
 /// The runtime hooks (when `flags`) and the unsafe functions disabled.
 pub(crate) fn hook(flags: u32) {
     if flags != 0 {
+        // PHPCoroutine::activate proceeds to disable unsafe functions regardless of enable_hook’s result.
         let _hooked = swoole_rs_phpruntime::php_coroutine_enable_hook(flags);
     }
     swoole_rs_phpruntime::disable_unsafe_function();
 }
 
 pub(crate) fn unhook() {
+    // PHPCoroutine::deactivate restores unsafe functions regardless of disable_hook’s result.
     let _unhooked = swoole_rs_phpruntime::php_coroutine_disable_hook();
     swoole_rs_phpruntime::enable_unsafe_function();
 }

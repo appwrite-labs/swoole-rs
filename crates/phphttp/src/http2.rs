@@ -1,14 +1,7 @@
 //! What the HTTP/2 server (crates/phphttp2) reads and does to its streams'
 //! contexts.
-use crate::{
-    context, header,
-    parse::{self, CAPABILITIES},
-};
-use std::{
-    cell::Cell,
-    ffi::CStr,
-    sync::{OnceLock, atomic::Ordering::Relaxed},
-};
+use crate::{context, header, parse};
+use std::{cell::Cell, ffi::CStr, sync::OnceLock};
 use swoole_rs_corebase::CCast;
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{Connection, view};
@@ -151,7 +144,7 @@ const DATA_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_HTTP2_DATA_BUF
 
 /// Built with `SW_HAVE_COMPRESSION`.
 fn compression() -> bool {
-    CAPABILITIES.load(Relaxed) & 8 != 0
+    parse::enabled_codecs() != 0
 }
 
 impl Ctx<'_> {

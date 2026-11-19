@@ -1,4 +1,4 @@
-// Kani 0.68's compiler predates stabilization of these Rust 1.100 features.
+// Kani 0.68's compiler (0.68.0 is the latest release) predates stabilization of these Rust 1.100 features.
 #![cfg_attr(
     kani,
     feature(never_type, drop_guard, unsafe_cell_access, trim_prefix_suffix)
