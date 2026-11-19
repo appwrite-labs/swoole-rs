@@ -537,8 +537,11 @@ mod tests {
                 [b"\x00\x03abc".to_vec(), b"\x00\x0chello world!".to_vec()]
             );
         });
-        peer.shutdown(std::net::Shutdown::Write).unwrap();
-        // The shutdown ends the next receive even if a spawning child inherited the fd.
+        // A parallel fork can inherit the peer. Miri models close but not socketpair shutdown.
+        if !cfg!(miri) {
+            peer.shutdown(std::net::Shutdown::Write).unwrap();
+        }
+        drop(peer);
         let status = client_recv::<true>(&protocol, Socket::new(&mut socket), &mut buffer);
         assert_eq!(status, -1);
         buffer.dispose();

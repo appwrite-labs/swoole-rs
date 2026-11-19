@@ -837,7 +837,11 @@ fn failed_framed_read_closes_the_live_client() {
         .edit_record(|record| record.open_length_check = true);
     let (peer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
     sock().fd = reader.into_raw_fd();
-    peer.shutdown(std::net::Shutdown::Write).unwrap();
+    // A parallel fork can inherit the peer. Miri models close but not socketpair shutdown.
+    if !cfg!(miri) {
+        peer.shutdown(std::net::Shutdown::Write).unwrap();
+    }
+    drop(peer);
     assert!(!handle.flag(Flag::Closed));
     assert!(on_read(handle));
     assert!(handle.flag(Flag::Closed));
