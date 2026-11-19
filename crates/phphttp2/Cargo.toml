@@ -13,7 +13,6 @@ php = [
     "dep:swoole-rs-inflate",
     "dep:swoole-rs-http",
     "dep:swoole-rs-http2",
-    "dep:swoole-rs-httpbindings",
     "dep:swoole-rs-hooks",
     "dep:swoole-rs-zend",
     "swoole-rs-zend/php",
@@ -27,13 +26,6 @@ php = [
     "swoole-rs-phpruntime/php",
     "dep:swoole-rs-corebase",
     "dep:swoole-rs-error",
-    "dep:swoole-rs-framing",
-    "dep:swoole-rs-phpcoroutines",
-    "swoole-rs-phpcoroutines/php",
-    "dep:swoole-rs-phpserver",
-    "swoole-rs-phpserver/php",
-    "swoole-rs-phpserver/server",
-    "dep:swoole-rs-server",
     "dep:swoole-rs-ports",
     "dep:swoole-rs-phpswoole",
     "swoole-rs-phpswoole/php",
@@ -42,7 +34,6 @@ php = [
 [dependencies]
 libc = { version = "=0.2.191", optional = true }
 swoole-rs-inflate = { path = "../inflate", optional = true }
-swoole-rs-httpbindings = { path = "../httpbindings", optional = true }
 swoole-rs-http = { path = "../http", optional = true }
 swoole-rs-http2 = { path = "../http2", optional = true }
 swoole-rs-hooks = { path = "../hooks", optional = true }
@@ -52,10 +43,6 @@ swoole-rs-phphttp = { path = "../phphttp", optional = true }
 swoole-rs-phpruntime = { path = "../phpruntime", optional = true }
 swoole-rs-corebase = { path = "../corebase", optional = true }
 swoole-rs-error = { path = "../error", optional = true }
-swoole-rs-framing = { path = "../framing", optional = true }
-swoole-rs-phpcoroutines = { path = "../phpcoroutines", optional = true }
-swoole-rs-phpserver = { path = "../phpserver", optional = true }
-swoole-rs-server = { path = "../server", optional = true }
 swoole-rs-ports = { path = "../ports", optional = true }
 swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
 swoole-rs-phpclients = { path = "../phpclients", optional = true }

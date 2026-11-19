@@ -232,11 +232,10 @@ pub fn http_server_on_receive(server: view::Server<'_>, request: &mut RecvData<'
         Route::WebSocket => websocket::on_message(server, session, request),
         Route::Http2 => {
             // `receive` verified the session.
-            let (Some(conn), Some(http2)) = (server.verified(session), crate::http2::server())
-            else {
+            let Some(conn) = server.verified(session) else {
                 return false;
             };
-            (http2.on_receive)(server, conn, request)
+            crate::http2::on_receive(server, conn, request)
         }
         Route::Request | Route::Done => true,
     }
@@ -584,10 +583,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         return context::release_objects(ctx);
     };
     ctx.state().request.version = swoole_rs_http::HttpVersion::Http2 as c_int;
-    let Some(http2) = crate::http2::server() else {
-        return context::release_objects(ctx);
-    };
-    if facts.static_handler && (http2.static_file)(server, ctx)? {
+    if facts.static_handler && crate::http2::static_file(server, ctx)? {
         return context::release_objects(ctx);
     }
     let state = ctx.state();
@@ -622,7 +618,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
     if state.before_request {
         if facts.unavailable {
             state.response.status = SERVICE_UNAVAILABLE_STATUS;
-            (http2.respond)(ctx, &[]);
+            crate::http2::respond(ctx, &[]);
             return context::release_objects(ctx);
         }
         if !context::before_request(ctx) {
@@ -648,7 +644,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         Err(bailout) => bailout.defer(),
         Ok(false) => {
             let stream_id = ctx.state().stream_id;
-            (http2.reset)(ctx, stream_id, swoole_rs_http2::error_code::INTERNAL_ERROR);
+            crate::http2::reset(ctx, stream_id, swoole_rs_http2::error_code::INTERNAL_ERROR);
             host::notice("Swoole\\Http\\Server->onRequest[v2] handler error");
         }
         Ok(true) => {}

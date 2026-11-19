@@ -2,13 +2,13 @@
 //! `http2_server_is_static_file` and `http2_server_send_range_file`) and
 //! `Response::sendfile`'s (`http2_server_send_file`), over crates/server's
 //! `StaticHandler`.
-use crate::server::{Value, begin_file, current, finish_file, of, respond, send_body, set};
+use super::server::{Value, begin_file, current, finish_file, of, respond, send_body, set};
+use crate::http2::{Ctx, Field};
 use std::ffi::CString;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::offload::async_job;
 use swoole_rs_http::status::{NOT_FOUND, NOT_MODIFIED, PARTIAL_CONTENT};
 use swoole_rs_http2::{FileMode, sw_rs_http2_file_length, sw_rs_http2_file_mode};
-use swoole_rs_phphttp::http2::{Ctx, Field};
 use swoole_rs_server::static_handler::{StaticHandler, page_404};
 use swoole_rs_server::view;
 use swoole_rs_zend::bailout;

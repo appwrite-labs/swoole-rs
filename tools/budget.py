@@ -133,7 +133,7 @@ def derefs(root):
 
 
 # Limit fallbacks to readers: encoders also take bounded slices of scratch buffers.
-WIRE_PATH = re.compile(r'(?:^|/)crates/(?:(?:phphttp2|http2|websocket|framing|protocols)/src/|corebase/src/process/)')
+WIRE_PATH = re.compile(r'(?:^|/)crates/(?:(?:phphttp2|http2|websocket|framing|protocols)/src/|phphttp/src/http2/|corebase/src/process/)')
 WIRE_READER = {'inside': {'stopBy': 'end', 'kind': 'function_item', 'has': {
     'field': 'name', 'regex': r'(?:read|decode|unpack|parse|whole_task|head_bytes|default_length)'}}}
 WIRE_DEFAULT = {'kind': 'call_expression', 'any': [

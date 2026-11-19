@@ -3,6 +3,7 @@
 //! windows and HPACK codecs. Each stream owns its request's
 //! `swoole::http::Context`, a copy of the session's settings context, released
 //! with the stream.
+use crate::http2::{Ctx, Handler, Hold, StreamCtx};
 use std::{
     cell::Cell,
     collections::HashMap,
@@ -14,7 +15,6 @@ use swoole_rs_http2::{
     hpack::{Decoder, Encoder, Field},
     sw_rs_http2_default_settings,
 };
-use swoole_rs_phphttp::http2::{Ctx, Handler, Hold, StreamCtx};
 use swoole_rs_zend::bailout;
 
 pub(crate) type Session = Rc<SessionState>;
@@ -22,7 +22,7 @@ pub(crate) type Session = Rc<SessionState>;
 /// Session fds and stream ids are small native counters, never peer-chosen
 /// hash keys: hash them by a multiply instead of `SipHash`.
 #[derive(Default)]
-pub(crate) struct IdHasher(u64);
+pub struct IdHasher(u64);
 
 impl Hasher for IdHasher {
     fn finish(&self) -> u64 {
@@ -44,7 +44,7 @@ impl Hasher for IdHasher {
     }
 }
 
-pub(crate) type IdMap<K, V> = HashMap<K, V, BuildHasherDefault<IdHasher>>;
+pub type IdMap<K, V> = HashMap<K, V, BuildHasherDefault<IdHasher>>;
 pub(crate) type Stream = Rc<StreamState>;
 type Streams = IdMap<u32, Stream>;
 type Sessions = IdMap<i64, Session>;

@@ -484,8 +484,7 @@ fn goaway(call: &Call) {
             .and_then(|()| Ok((call.long(1, 0)?, call.zstr_or_null(2)?)));
         let (code, debug) = parsed.ok()?;
         let debug = debug.map_or(&[][..], ZStr::bytes);
-        let server = crate::http2::server();
-        call.set_bool(server.is_some_and(|server| (server.goaway)(ctx, code, debug)));
+        call.set_bool(crate::http2::goaway(ctx, code, debug));
         Some(())
     };
     or_false(call, run());

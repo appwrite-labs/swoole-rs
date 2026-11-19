@@ -4,7 +4,7 @@
 //! the sessions and streams of `session`, and an async server's
 //! `onReceive` and `onClose` for its HTTP/2 connections. The HTTP contexts are
 //! crates/phphttp's.
-use crate::session::{Session, SessionState, Stream};
+use super::session::{Session, SessionState, Stream};
 use libc::c_int;
 use std::ffi::{CStr, CString};
 use swoole_rs_corebase::CCast;
@@ -45,12 +45,12 @@ const STREAM_NOT_FOUND: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_HTTP2_STREAM_NOT_FOUND as c_int;
 const STREAM_IGNORE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_HTTP2_STREAM_IGNORE as c_int;
 
+use crate::decimal;
+use crate::http2::Field;
 use swoole_rs_httpbindings::{header_warning, trim_header_end};
-use swoole_rs_phphttp::decimal;
-use swoole_rs_phphttp::http2::Field;
 
+pub(crate) use crate::http2::{Ctx, ResponseArray, Value};
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
-pub(crate) use swoole_rs_phphttp::http2::{Ctx, ResponseArray, Value};
 
 pub(crate) fn get(ctx: Ctx, field: Field) -> u32 {
     ctx.get(field)
@@ -145,14 +145,14 @@ pub(crate) fn reset(ctx: Ctx, stream_id: u32, code: u32) {
 }
 
 /// `swoole_http2_server_ping`.
-fn ping(ctx: Ctx) -> bool {
+pub(crate) fn ping(ctx: Ctx) -> bool {
     let mut frame = [0; FRAME_HEADER + PING_PAYLOAD];
     frame[..FRAME_HEADER].copy_from_slice(&frame_header(FrameType::Ping, PING_PAYLOAD, 0, 0));
     send(ctx, &frame)
 }
 
 /// `swoole_http2_server_goaway`.
-fn goaway(ctx: Ctx, code: i64, data: &[u8]) -> bool {
+pub(crate) fn goaway(ctx: Ctx, code: i64, data: &[u8]) -> bool {
     let Some(session) = SessionState::of(ctx) else {
         return false;
     };
@@ -308,7 +308,7 @@ fn length_safe(array: Option<&HeldArray>) -> usize {
 /// Each element of a held array, with its string key (None for an integer key).
 /// The server's and the client's header walks go through here, so the table
 /// they walk is one a [`HeldArray`] keeps live.
-pub(crate) fn entries(array: Option<&HeldArray>) -> impl Iterator<Item = (Option<&[u8]>, &Zval)> {
+pub fn entries(array: Option<&HeldArray>) -> impl Iterator<Item = (Option<&[u8]>, &Zval)> {
     array
         .and_then(|array| array.array())
         .into_iter()
@@ -415,7 +415,7 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<H
         headers.add(b"server", b"swoole-http-server");
     }
     if missing & MISSING_DATE != 0 {
-        swoole_rs_phphttp::http2::date(|date| headers.add(b"date", date));
+        crate::http2::date(|date| headers.add(b"date", date));
     }
     if missing & MISSING_CONTENT_TYPE != 0 {
         headers.add(b"content-type", b"text/html");
@@ -740,7 +740,7 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
 }
 
 /// `swoole_http2_server_write`: a chunk, the header first.
-fn write(ctx: Ctx, chunk: &[u8]) -> bool {
+pub(crate) fn write(ctx: Ctx, chunk: &[u8]) -> bool {
     if chunk.is_empty() {
         report(NO_PAYLOAD, false, b"the data sent must not be empty");
         return false;
@@ -809,16 +809,20 @@ pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool) -> bool {
 
 /// `swoole_http2_server_onReceive`: an async server's data on an HTTP/2
 /// connection, whose session (and settings context) the first data makes.
-fn on_receive(view: view::Server<'_>, conn: Connection<'_>, request: &mut RecvData<'_>) -> bool {
+pub(crate) fn on_receive(
+    view: view::Server<'_>,
+    conn: Connection<'_>,
+    request: &mut RecvData<'_>,
+) -> bool {
     let session_id = request.info().fd;
     let session = SessionState::find(session_id).or_else(|| {
         let default_ctx = Ctx::server_context(view, session_id);
         let max_body_size = swoole_rs_server::server_methods::package_max_length(view, conn.fd());
-        crate::session::session_own(
+        super::session::session_own(
             session_id,
             default_ctx,
             max_body_size,
-            Box::new(|ctx: Ctx<'_>, _: Ctx<'_>| swoole_rs_phphttp::http2_request(ctx)),
+            Box::new(|ctx: Ctx<'_>, _: Ctx<'_>| crate::http2_request(ctx)),
         );
         SessionState::find(session_id)
     });
@@ -836,30 +840,15 @@ fn on_receive(view: view::Server<'_>, conn: Connection<'_>, request: &mut RecvDa
 
 /// `php_swoole_http2_server_onClose`: the connection's session goes.
 pub fn server_on_close(session_id: i64) {
-    crate::session::session_free(session_id);
+    super::session::session_free(session_id);
 }
 
 /// `swoole_http2_server_parse` for the coroutine server's connection loop: one
 /// frame from the peer of connection `fd`, which `frame` starts with; a bailout
 /// stays pending for the caller's `finish`.
-fn session_receive(fd: i64, frame: &[u8]) -> bool {
+pub(crate) fn session_receive(fd: i64, frame: &[u8]) -> bool {
     SessionState::find(fd).is_some_and(|session| parse(&session, frame))
 }
-
-/// The entry points crates/phphttp's HTTP/1 code calls.
-pub(crate) static HOOKS: swoole_rs_phphttp::http2::Server = swoole_rs_phphttp::http2::Server {
-    on_receive,
-    static_file: crate::files::static_file,
-    respond,
-    write,
-    ping,
-    send_file: crate::files::send_file,
-    goaway,
-    reset,
-    session_new: crate::session::session_new,
-    session_receive,
-    session_free: crate::session::session_free,
-};
 
 /// One frame, which `frame` starts with: false for one shorter than its header
 /// says, or one the session refuses.

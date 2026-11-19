@@ -36,13 +36,12 @@ pub(crate) use context::{close, send};
 
 /// The HTTP/2 server's `op`.
 pub(crate) fn http2(ctx: Ctx, op: Http2<'_>) -> Result<bool, Bailout> {
-    let server = crate::http2::server();
-    let done = server.is_some_and(|server| match op {
-        Http2::End(body) => (server.respond)(ctx, body),
-        Http2::Write(body) => (server.write)(ctx, body),
-        Http2::SendFile(file, offset, length) => (server.send_file)(ctx, file, offset, length),
-        Http2::Ping => (server.ping)(ctx),
-    });
+    let done = match op {
+        Http2::End(body) => crate::http2::respond(ctx, body),
+        Http2::Write(body) => crate::http2::write(ctx, body),
+        Http2::SendFile(file, offset, length) => crate::http2::send_file(ctx, file, offset, length),
+        Http2::Ping => crate::http2::ping(ctx),
+    };
     if bailout::pending() {
         return Err(Bailout);
     }
