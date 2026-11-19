@@ -3,7 +3,7 @@
 //! no allocation.
 use core::cell::Cell;
 use core::marker::PhantomData;
-use core::mem::MaybeUninit;
+use core::mem::{ManuallyDrop, MaybeUninit};
 
 type Bytes<const N: usize> = MaybeUninit<[usize; N]>;
 
@@ -16,6 +16,7 @@ pub(crate) trait Small<R>: 'static {
 struct Ops<R: 'static, const N: usize> {
     run: fn(&SmallFn<R, N>) -> R,
     consume: fn(Bytes<N>) -> R,
+    discard: fn(Bytes<N>),
 }
 
 /// An empty slot or one [`Small`] value. `ops` is set exactly while `value` holds the
@@ -29,11 +30,11 @@ pub(crate) struct SmallFn<R: 'static, const N: usize = 2> {
     thread: PhantomData<*const ()>,
 }
 
-/// A value [`SmallFn::take`] moved out; dropping it unconsumed leaks it.
+/// A value [`SmallFn::take`] moved out, owned until invoked or dropped.
 #[must_use]
 pub(crate) struct Taken<R: 'static, const N: usize = 2> {
     value: Bytes<N>,
-    consume: fn(Bytes<N>) -> R,
+    ops: &'static Ops<R, N>,
     thread: PhantomData<*const ()>,
 }
 
@@ -58,11 +59,11 @@ impl<R, const N: usize> SmallFn<R, N> {
             let value = unsafe { &*slot.value.as_ptr().cast::<C>() };
             value.run()
         }
-        fn consume<C: Small<R>, R, const N: usize>(bytes: Bytes<N>) -> R {
-            // SAFETY: only `take` makes a `Taken`, of the `C` `put` wrote and `take`
-            // moved out with these ops; `Taken::consume` takes it, so it is read once.
-            let value = unsafe { bytes.as_ptr().cast::<C>().read() };
-            value.consume()
+        fn finish<C, T, const N: usize>(bytes: Bytes<N>, action: fn(C) -> T) -> T {
+            // SAFETY: the ops installed below are paired with the bytes holding C.
+            // Taking the slot transfers ownership, and consuming or dropping it
+            // calls exactly one of those ops.
+            action(unsafe { bytes.as_ptr().cast::<C>().read() })
         }
         const {
             assert!(
@@ -82,7 +83,8 @@ impl<R, const N: usize> SmallFn<R, N> {
             const {
                 &Ops {
                     run: run::<C, R, N>,
-                    consume: consume::<C, R, N>,
+                    consume: |bytes| finish(bytes, C::consume),
+                    discard: |bytes| finish(bytes, drop::<C>),
                 }
             },
         ));
@@ -100,7 +102,7 @@ impl<R, const N: usize> SmallFn<R, N> {
         let ops = self.ops.take()?;
         Some(Taken {
             value: self.value.get(),
-            consume: ops.consume,
+            ops,
             thread: PhantomData,
         })
     }
@@ -108,7 +110,20 @@ impl<R, const N: usize> SmallFn<R, N> {
 
 impl<R, const N: usize> Taken<R, N> {
     pub(crate) fn consume(self) -> R {
-        (self.consume)(self.value)
+        let owned = ManuallyDrop::new(self);
+        (owned.ops.consume)(owned.value)
+    }
+}
+
+impl<R, const N: usize> Drop for SmallFn<R, N> {
+    fn drop(&mut self) {
+        drop(self.take());
+    }
+}
+
+impl<R, const N: usize> Drop for Taken<R, N> {
+    fn drop(&mut self) {
+        (self.ops.discard)(self.value);
     }
 }
 
@@ -134,7 +149,8 @@ mod tests {
             self.0.get()
         }
         fn consume(self) -> u32 {
-            self.0.get() + 100
+            self.0.set(self.0.get() + 100);
+            self.0.get()
         }
     }
 
@@ -151,6 +167,19 @@ mod tests {
         assert_eq!(taken.consume(), 102);
         // `consume` dropped the moved-out value.
         assert_eq!(Rc::strong_count(&runs), 1);
+    }
+
+    #[test]
+    fn discarding_a_slot_or_taken_callback_releases_its_capture() {
+        let runs = Rc::new(Cell::new(0));
+        let mut slot: SmallFn<u32> = SmallFn::empty();
+        slot.put(Count(Rc::clone(&runs)));
+        drop(slot.take());
+        assert_eq!(Rc::strong_count(&runs), 1);
+        slot.put(Count(Rc::clone(&runs)));
+        drop(slot);
+        assert_eq!(Rc::strong_count(&runs), 1);
+        assert_eq!(runs.get(), 0);
     }
 
     struct Pair(u32, u32);
