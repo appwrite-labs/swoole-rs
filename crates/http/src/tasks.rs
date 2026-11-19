@@ -2,18 +2,25 @@
 //! send snapshot and executes RNG/MIME/date/allocation/IO effects after return.
 use crate::range_response::{HttpRangeFormat, range_format};
 
+const PART_HEADER: usize = 256;
+#[cfg(test)]
+const _: () = assert!(
+    PART_HEADER == swoole_rs_oracle::http_range::PART_HEADER,
+    "static range task must match SW_HTTP_SERVER_PART_HEADER"
+);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HttpStaticTask {
     pub offset: i64,
     pub length: usize,
-    pub part_header: [u8; 256],
+    pub part_header: [u8; PART_HEADER],
 }
 impl Default for HttpStaticTask {
     fn default() -> Self {
         Self {
             offset: 0,
             length: 0,
-            part_header: [0; 256],
+            part_header: [0; PART_HEADER],
         }
     }
 }
