@@ -13,6 +13,7 @@ use core::ptr::null_mut;
 use std::rc::Rc;
 use swoole_rs_corebase::reactor::Events;
 
+use swoole_rs_clients::client::{SOCKS5_HANDSHAKE, SOCKS5_READY};
 use swoole_rs_clients::owned_proxy::{
     Socks5Proxy, SocksConfig, admit, pack_negotiate_request, socks5_step,
 };
@@ -52,10 +53,6 @@ pub enum Proxy {
 }
 /// `set_err(-1)` is the argument-less `set_err()`: the last error, else errno.
 const LAST_ERROR: c_int = -1;
-/// `SW_SOCKS5_STATE_HANDSHAKE` and `SW_SOCKS5_STATE_READY`, crates/clients's (a test
-/// compares them).
-const SOCKS5_HANDSHAKE: u8 = 1;
-const SOCKS5_READY: u8 = 4;
 /// The extra record's string slots: the connect host and the TLS host name.
 const CONNECT_HOST: usize = 1;
 const SSL_HOST_NAME: usize = 2;
@@ -675,13 +672,6 @@ pub fn ssl_handshake(ops: &mut impl Handshaking) -> bool {
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use swoole_rs_clients::client;
-
-    #[test]
-    fn socks5_states_are_the_clients() {
-        assert_eq!(SOCKS5_HANDSHAKE, client::SOCKS5_HANDSHAKE, "handshake");
-        assert_eq!(SOCKS5_READY, client::SOCKS5_READY, "ready");
-    }
 
     thread_local! {
         static LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };

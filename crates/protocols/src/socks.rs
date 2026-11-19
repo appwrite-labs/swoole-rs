@@ -1,3 +1,9 @@
+pub const SOCKS5_WAIT: u8 = 0;
+pub const SOCKS5_HANDSHAKE: u8 = 1;
+const SOCKS5_AUTH: u8 = 2;
+const SOCKS5_CONNECT: u8 = 3;
+pub const SOCKS5_READY: u8 = 4;
+
 /// The request a handshake step sends next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SocksSend {
@@ -38,16 +44,16 @@ pub fn socks_transition(
         return Err(SocksError::Short);
     };
     match state {
-        1 if version != 5 => Err(SocksError::Version),
-        1 if method != reply => Err(SocksError::Method),
-        1 if method == 2 => Ok((2, Some(SocksSend::Auth))),
-        1 => Ok((3, Some(SocksSend::Connect))),
-        2 if version != 1 => Err(SocksError::Version),
-        2 if reply != 0 => Err(SocksError::Auth),
-        2 => Ok((3, Some(SocksSend::Connect))),
-        3 if version != 5 => Err(SocksError::Version),
-        3 if reply != 0 => Err(SocksError::Server(reply)),
-        3 => Ok((4, None)),
+        SOCKS5_HANDSHAKE if version != 5 => Err(SocksError::Version),
+        SOCKS5_HANDSHAKE if method != reply => Err(SocksError::Method),
+        SOCKS5_HANDSHAKE if method == 2 => Ok((SOCKS5_AUTH, Some(SocksSend::Auth))),
+        SOCKS5_HANDSHAKE => Ok((SOCKS5_CONNECT, Some(SocksSend::Connect))),
+        SOCKS5_AUTH if version != 1 => Err(SocksError::Version),
+        SOCKS5_AUTH if reply != 0 => Err(SocksError::Auth),
+        SOCKS5_AUTH => Ok((SOCKS5_CONNECT, Some(SocksSend::Connect))),
+        SOCKS5_CONNECT if version != 5 => Err(SocksError::Version),
+        SOCKS5_CONNECT if reply != 0 => Err(SocksError::Server(reply)),
+        SOCKS5_CONNECT => Ok((SOCKS5_READY, None)),
         _ => Ok((state, None)),
     }
 }

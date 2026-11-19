@@ -166,9 +166,7 @@ pub use SslState::{
 pub const SSL_CLIENT: c_int = SslCreateFlag::SW_SSL_CLIENT as c_int;
 pub const SSL_DTLS: u32 = SslVersion::SW_SSL_DTLS.bits();
 /// The proxy states of upstream's `include/swoole_proxy.h`.
-pub const SOCKS5_WAIT: u8 = 0;
-pub const SOCKS5_HANDSHAKE: u8 = 1;
-pub const SOCKS5_READY: u8 = 4;
+pub use swoole_rs_protocols::{SOCKS5_HANDSHAKE, SOCKS5_READY, SOCKS5_WAIT};
 pub const HTTP_PROXY_WAIT: u8 = 0;
 pub const HTTP_PROXY_READY: u8 = 2;
 const ERROR_OPERATION_NOT_SUPPORT: c_int = ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
