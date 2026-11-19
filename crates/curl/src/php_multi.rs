@@ -36,6 +36,12 @@ unsafe extern "C" {
         handle: PhpMulti<'_>,
         easy: NonNull<swoole_rs_curl_sys::CURL>,
     ) -> Option<&swoole_rs_zend::Value>;
+    safe fn swoole_curl_multi_membership(
+        handle: PhpMulti<'_>,
+        easy: crate::php_handle::PhpHandle<'_>,
+        error: c_int,
+        add: bool,
+    );
     safe fn swoole_curl_multi_empty(handle: PhpMulti<'_>) -> bool;
     safe fn swoole_curl_multi_verify(handle: PhpMulti<'_>);
     safe fn swoole_curl_assign_long(slot: &swoole_rs_zend::Value, number: i64);
@@ -57,6 +63,8 @@ fn argument<'a>(call: &'a Call<'_>) -> Option<PhpMulti<'a>> {
 swoole_rs_zend::handlers! {
     zif_swoole_native_curl_multi_init => init;
     zif_swoole_native_curl_multi_info_read => info_read;
+    zif_swoole_native_curl_multi_add_handle => add;
+    zif_swoole_native_curl_multi_remove_handle => remove;
     zif_swoole_native_curl_multi_exec => exec;
     zif_swoole_native_curl_multi_select => select;
     zif_swoole_native_curl_multi_errno => errno;
@@ -108,6 +116,51 @@ fn current(multi: &Multi) -> Option<*mut std::ffi::c_void> {
             None
         }
     }
+}
+
+fn add(call: &Call<'_>) {
+    membership(call, true);
+}
+
+fn remove(call: &Call<'_>) {
+    membership(call, false);
+}
+
+fn membership(call: &Call<'_>, add: bool) {
+    use crate::php_handle::{checked, object_argument, swoole_curl_easy};
+    use swoole_rs_corebase::CellExt;
+    use swoole_rs_curl_sys::{CURLM_BAD_EASY_HANDLE, CURLM_BAD_HANDLE};
+
+    if call.arity(2, 2).is_err() {
+        return;
+    }
+    let Some(handle) = argument(call) else { return };
+    let Some(easy) = object_argument(call, 2) else {
+        return;
+    };
+    if add && !checked(easy, true) {
+        call.set_bool(false);
+        return;
+    }
+    let Some(multi) = engine(handle) else { return };
+    let result = if add {
+        if !crate::callbacks::prepare_transfer(easy) {
+            return;
+        }
+        swoole_curl_easy(easy)
+            .handle()
+            .map_or(CURLM_BAD_EASY_HANDLE, |h| multi.add_handle(h))
+    } else {
+        // A handle outside a multi returns CURLM_BAD_HANDLE, including a second removal.
+        swoole_curl_easy(easy)
+            .handle()
+            .filter(|h| h.multi.with_taken(|owner| owner.is_some()))
+            .map_or(CURLM_BAD_HANDLE, |h| multi.remove_handle(h))
+    };
+    bailout::defer(contain_with(|| {
+        swoole_curl_multi_membership(handle, easy, result, add);
+    }));
+    call.set_long(i64::from(result));
 }
 
 fn exec(call: &Call<'_>) {

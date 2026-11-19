@@ -148,6 +148,28 @@ extern "C" zval *swoole_curl_multi_find_easy(php_curlm *mh, CURL *easy) {
     return nullptr;
 }
 
+extern "C" void swoole_curl_multi_membership(php_curlm *mh, php_curl *ch, int error, bool add) {
+    swoole_trace_log(SW_TRACE_CO_CURL, "multi=%p, cp=%p, handle=%p, error=%d",
+                     mh->multi, ch->cp, swr_v1_curl_get_handle(ch->cp), error);
+    mh->err.no = error;
+#if PHP_VERSION_ID >= 80200
+    if (error != CURLM_OK) {
+        return;
+    }
+#endif
+    if (add) {
+        zval value;
+        ZVAL_OBJ_COPY(&value, &ch->std);
+        zend_llist_add_element(&mh->easyh, &value);
+    } else {
+        zval needle;
+        ZVAL_OBJ(&needle, &ch->std);
+        zend_llist_del_element(&mh->easyh, &needle, [](void *left, void *right) -> int {
+            return Z_OBJ_P(static_cast<zval *>(left)) == Z_OBJ_P(static_cast<zval *>(right));
+        });
+    }
+}
+
 extern "C" bool swoole_curl_multi_empty(php_curlm *mh) {
     return zend_llist_count(&mh->easyh) == 0;
 }

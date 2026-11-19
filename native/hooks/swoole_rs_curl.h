@@ -69,7 +69,6 @@ struct swr_v1_curl_handle {
 typedef struct swr_v1_curl_multi *swr_v1_curl_released;
 void swr_v1_curl_multi_free(swr_v1_curl_released multi);
 void *swr_v1_curl_multi_handle(const struct swr_v1_curl_multi *multi);
-int swr_v1_curl_multi_add_handle(const struct swr_v1_curl_multi *multi, struct swr_v1_curl_handle *handle);
 int swr_v1_curl_multi_remove_handle(const struct swr_v1_curl_multi *multi, struct swr_v1_curl_handle *handle);
 struct swr_v1_curl_handle *swr_v1_curl_get_handle(swr_v1_curl_easy cp);
 struct swr_v1_curl_handle *swr_v1_curl_create_handle(swr_v1_curl_easy cp);

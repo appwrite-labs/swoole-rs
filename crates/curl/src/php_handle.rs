@@ -140,13 +140,13 @@ fn init(call: &Call<'_>) {
 
 pub(super) fn argument<'a>(call: &'a Call<'_>, count: u32) -> Option<PhpHandle<'a>> {
     call.arity(count, count).ok()?;
-    object_argument(call)
+    object_argument(call, 1)
 }
 
 /// The first argument's handle, usable as `swoole_curl_get_handle` requires for a read, or
 /// none with false returned. The caller has checked the argument count.
 pub(super) fn handle_argument<'a>(call: &'a Call<'_>) -> Option<PhpHandle<'a>> {
-    let handle = object_argument(call)?;
+    let handle = object_argument(call, 1)?;
     if checked(handle, PHP_VERSION_ID >= 80400) {
         Some(handle)
     } else {
@@ -155,13 +155,13 @@ pub(super) fn handle_argument<'a>(call: &'a Call<'_>) -> Option<PhpHandle<'a>> {
     }
 }
 
-fn object_argument<'a>(call: &'a Call<'_>) -> Option<PhpHandle<'a>> {
-    let arg = call.value(1)?.referred();
+pub(super) fn object_argument<'a>(call: &'a Call<'_>, index: u32) -> Option<PhpHandle<'a>> {
+    let arg = call.value(index)?.referred();
     let Some(handle) = arg
         .object_ref()
         .and_then(|object| swoole_curl_object_handle(object))
     else {
-        call.wrong_class(1, c"CurlHandle", arg);
+        call.wrong_class(index, c"CurlHandle", arg);
         return None;
     };
     Some(handle)
