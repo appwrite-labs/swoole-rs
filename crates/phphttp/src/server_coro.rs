@@ -1025,36 +1025,34 @@ fn http2(conn: &mut Connection, mut context: Ctx) -> Result<(), bailout::Bailout
     http2_begin(conn.socket);
     let fd = context.state().fd;
     let max_body_size = conn.package_max_length().c_cast::<u32>();
-    if let Some(server) = crate::http2::server() {
-        // The session holds the context, and its handler the server object.
-        let this = conn.this.copy();
-        (server.session_new)(
-            fd,
-            context.hold(),
-            max_body_size,
-            Box::new(move |ctx: Ctx<'_>, http1: Ctx<'_>| {
-                let Some(server) = this.custom::<Data>().and_then(|data| data.0.get()) else {
-                    return Ok(());
-                };
-                http2_request(ctx, http1, server)
-            }),
-        );
-        loop {
-            // The frame stays in the read buffer.
-            if recv_packet(conn.socket, 0.0) <= Some(0) {
-                break;
-            }
-            // Owned, not lent: handling the frame may send, or call PHP that bails out.
-            let frame = conn.socket.own_read_buffer();
-            if !(server.session_receive)(fd, frame.view()) {
-                break;
-            }
-            if bailout::pending() {
-                break;
-            }
+    // The session holds the context, and its handler the server object.
+    let this = conn.this.copy();
+    crate::http2::session_new(
+        fd,
+        context.hold(),
+        max_body_size,
+        Box::new(move |ctx: Ctx<'_>, http1: Ctx<'_>| {
+            let Some(server) = this.custom::<Data>().and_then(|data| data.0.get()) else {
+                return Ok(());
+            };
+            http2_request(ctx, http1, server)
+        }),
+    );
+    loop {
+        // The frame stays in the read buffer.
+        if recv_packet(conn.socket, 0.0) <= Some(0) {
+            break;
         }
-        (server.session_free)(fd);
+        // Owned, not lent: handling the frame may send, or call PHP that bails out.
+        let frame = conn.socket.own_read_buffer();
+        if !crate::http2::session_receive(fd, frame.view()) {
+            break;
+        }
+        if bailout::pending() {
+            break;
+        }
     }
+    crate::http2::session_free(fd);
     context.state().detached = true;
     context::release_objects(context)
 }
@@ -1105,13 +1103,11 @@ fn http2_request(
             Err(bailout) => result = Err(bailout),
             Ok(false) => {
                 let stream_id = context.state().stream_id;
-                if let Some(server) = crate::http2::server() {
-                    (server.reset)(
-                        context,
-                        stream_id,
-                        swoole_rs_http2::error_code::INTERNAL_ERROR,
-                    );
-                }
+                crate::http2::reset(
+                    context,
+                    stream_id,
+                    swoole_rs_http2::error_code::INTERNAL_ERROR,
+                );
                 host::notice("Swoole\\Http\\Server->onRequest[v2] handler error");
             }
             Ok(true) => {}

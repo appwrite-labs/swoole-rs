@@ -540,6 +540,7 @@
       "owned_paths": [
         "crates/http2/",
         "crates/phphttp2/",
+        "crates/phphttp/src/http2/",
         "tests/modules/http2/"
       ],
       "phpt_families": [
