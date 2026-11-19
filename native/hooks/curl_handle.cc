@@ -75,11 +75,56 @@ extern "C" php_curl *swoole_curl_object_handle(zend_object *object) {
     return object->ce == swoole_coroutine_curl_handle_ce ? curl_from_obj(object) : nullptr;
 }
 
+extern "C" {
+zend_class_entry *swoole_coroutine_curl_multi_handle_ce;
+static zend_object_handlers swoole_coroutine_curl_multi_handle_handlers;
+extern const size_t swoole_curl_multi_size = sizeof(php_curlm);
+extern const size_t swoole_curl_multi_offset = XtOffsetOf(php_curlm, std);
+zend_object *swoole_curl_multi_create_object(zend_class_entry *ce);
+zend_function *swoole_curl_multi_get_constructor(zend_object *object);
+void swoole_curl_multi_free_obj(zend_object *object);
+HashTable *swoole_curl_multi_get_gc(zend_object *object, zval **table, int *n);
+}
+
+extern "C" const zend_object_handlers *swoole_curl_multi_handlers(zend_class_entry *ce) {
+#if PHP_VERSION_ID >= 80300 && PHP_VERSION_ID < 80400
+    return ce->default_object_handlers;
+#else
+    return &swoole_coroutine_curl_multi_handle_handlers;
+#endif
+}
+
+void curl_multi_register_class(void) {
+    swoole_coroutine_curl_multi_handle_ce = curl_multi_ce;
+    swoole_coroutine_curl_multi_handle_ce->create_object = swoole_curl_multi_create_object;
+
+    memcpy(&swoole_coroutine_curl_multi_handle_handlers, &std_object_handlers, sizeof(zend_object_handlers));
+    swoole_coroutine_curl_multi_handle_handlers.offset = XtOffsetOf(php_curlm, std);
+    swoole_coroutine_curl_multi_handle_handlers.free_obj = swoole_curl_multi_free_obj;
+    swoole_coroutine_curl_multi_handle_handlers.get_gc = swoole_curl_multi_get_gc;
+    swoole_coroutine_curl_multi_handle_handlers.get_constructor = swoole_curl_multi_get_constructor;
+    swoole_coroutine_curl_multi_handle_handlers.clone_obj = NULL;
+    swoole_coroutine_curl_multi_handle_handlers.cast_object = swoole_curl_cast_object;
+    swoole_coroutine_curl_multi_handle_handlers.compare = [](zval *o1, zval *o2) { return ZEND_UNCOMPARABLE; };
+
+    zend_declare_property_bool(swoole_coroutine_curl_multi_handle_ce, ZEND_STRL("in_coroutine"), 0, ZEND_ACC_PUBLIC);
+}
+
 extern "C" php_curlm *swoole_curl_multi_object(zend_object *object) {
     if (object->ce != swoole_coroutine_curl_multi_handle_ce) {
         return nullptr;
     }
     return reinterpret_cast<php_curlm *>(reinterpret_cast<char *>(object) - XtOffsetOf(php_curlm, std));
+}
+
+static void release_multi_easy(void *value) {
+    zval_ptr_dtor(static_cast<zval *>(value));
+}
+
+extern "C" void swoole_curl_multi_attach(php_curlm *mh, swr_v1_curl_multi *engine) {
+    mh->multi = engine;
+    zend_llist_init(&mh->easyh, sizeof(zval), release_multi_easy, 0);
+    zend_update_property_bool(nullptr, &mh->std, ZEND_STRL("in_coroutine"), true);
 }
 
 extern "C" int swoole_curl_multi_error(php_curlm *mh) {
@@ -138,6 +183,13 @@ extern "C" void swoole_curl_trace_values(zend_get_gc_buffer *gc, php_curl *ch) {
     zend_get_gc_buffer_add_zval(gc, &ch->postfields);
     zend_get_gc_buffer_add_zval(gc, &ch->handlers.std_err);
     zend_get_gc_buffer_add_zval(gc, &ch->private_data);
+}
+
+extern "C" void swoole_curl_multi_trace(zend_get_gc_buffer *gc, php_curlm *mh) {
+    trace_callback(gc, mh->handlers.server_push);
+    for (zend_llist_element *item = mh->easyh.head; item; item = item->next) {
+        zend_get_gc_buffer_add_zval(gc, reinterpret_cast<zval *>(item->data));
+    }
 }
 
 extern "C" void swoole_curl_publish_roots(zend_get_gc_buffer *gc, zval **table, int *n) {

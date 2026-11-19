@@ -31,10 +31,6 @@ SW_EXTERN_C_BEGIN
 
 #define SAVE_CURLM_ERROR(__handle, __err) (__handle)->err.no = (int) __err;
 
-void swoole_curl_multi_set_in_coroutine(php_curlm *mh, bool value) {
-    zend_update_property_bool(nullptr, &mh->std, ZEND_STRL("in_coroutine"), value);
-}
-
 bool swoole_curl_multi_is_in_coroutine(php_curlm *mh) {
     zval rv;
     zval *zv = zend_read_property_ex(nullptr, &mh->std, SW_ZSTR_KNOWN(SW_ZEND_STR_IN_COROUTINE), 1, &rv);
@@ -42,8 +38,6 @@ bool swoole_curl_multi_is_in_coroutine(php_curlm *mh) {
 }
 
 /* CurlMultiHandle class */
-
-zend_class_entry *swoole_coroutine_curl_multi_handle_ce;
 
 static inline php_curlm *curl_multi_from_obj(zend_object *obj) {
     return (php_curlm *) ((char *) (obj) -XtOffsetOf(php_curlm, std));
@@ -53,21 +47,6 @@ static inline php_curlm *curl_multi_from_obj(zend_object *obj) {
 static void _php_curl_multi_free(php_curlm *mh);
 
 SW_EXTERN_C_END
-
-/* {{{ Returns a new cURL multi handle */
-PHP_FUNCTION(swoole_native_curl_multi_init) {
-    php_curlm *mh;
-
-    ZEND_PARSE_PARAMETERS_NONE();
-
-    object_init_ex(return_value, swoole_coroutine_curl_multi_handle_ce);
-    mh = Z_CURL_MULTI_P(return_value);
-    mh->multi = swoole_curl_multi_new();
-
-    swoole_curl_multi_set_in_coroutine(mh, true);
-    zend_llist_init(&mh->easyh, sizeof(zval), swoole_curl_multi_cleanup_list, 0);
-}
-/* }}} */
 
 /* {{{ Add a normal cURL handle to a cURL multi handle */
 PHP_FUNCTION(swoole_native_curl_multi_add_handle) {
@@ -110,14 +89,6 @@ PHP_FUNCTION(swoole_native_curl_multi_add_handle) {
 
     swoole_trace_log(SW_TRACE_CO_CURL, "multi=%p, cp=%p, handle=%p, error=%d", mh->multi, ch->cp, handle, error);
     RETURN_LONG((zend_long) error);
-}
-/* }}} */
-
-void swoole_curl_multi_cleanup_list(void *data) /* {{{ */
-{
-    zval *z_ch = (zval *) data;
-
-    zval_ptr_dtor(z_ch);
 }
 /* }}} */
 
@@ -522,26 +493,7 @@ PHP_FUNCTION(swoole_native_curl_multi_setopt) {
 
 /* CurlMultiHandle class */
 
-static zend_object_handlers swoole_coroutine_curl_multi_handle_handlers;
-
-static zend_object *swoole_curl_multi_create_object(zend_class_entry *class_type) {
-    php_curlm *intern = (php_curlm *) zend_object_alloc(sizeof(php_curlm), class_type);
-
-    zend_object_std_init(&intern->std, class_type);
-    object_properties_init(&intern->std, class_type);
-#if PHP_VERSION_ID < 80300
-    intern->std.handlers = &swoole_coroutine_curl_multi_handle_handlers;
-#endif
-
-    return &intern->std;
-}
-
-static zend_function *swoole_curl_multi_get_constructor(zend_object *object) {
-    zend_throw_error(NULL, "Cannot directly construct CurlMultiHandle, use curl_multi_init() instead");
-    return NULL;
-}
-
-static void swoole_curl_multi_free_obj(zend_object *object) {
+extern "C" void swoole_curl_multi_free_obj(zend_object *object) {
     php_curlm *mh = (php_curlm *) curl_multi_from_obj(object);
     if (!mh->multi) {
         /* Can happen if constructor throws. */
@@ -550,42 +502,6 @@ static void swoole_curl_multi_free_obj(zend_object *object) {
     }
     _php_curl_multi_free(mh);
     zend_object_std_dtor(&mh->std);
-}
-
-static HashTable *swoole_curl_multi_get_gc(zend_object *object, zval **table, int *n) {
-    php_curlm *curl_multi = curl_multi_from_obj(object);
-
-    zend_get_gc_buffer *gc_buffer = zend_get_gc_buffer_create();
-
-    if (curl_multi->handlers.server_push) {
-        zend_get_gc_buffer_add_zval(gc_buffer, &curl_multi->handlers.server_push->func_name);
-    }
-
-    zend_llist_position pos;
-    for (zval *pz_ch = (zval *) zend_llist_get_first_ex(&curl_multi->easyh, &pos); pz_ch;
-         pz_ch = (zval *) zend_llist_get_next_ex(&curl_multi->easyh, &pos)) {
-        zend_get_gc_buffer_add_zval(gc_buffer, pz_ch);
-    }
-
-    zend_get_gc_buffer_use(gc_buffer, table, n);
-
-    return zend_std_get_properties(object);
-}
-
-void curl_multi_register_class(const zend_function_entry *method_entries) {
-    swoole_coroutine_curl_multi_handle_ce = curl_multi_ce;
-    swoole_coroutine_curl_multi_handle_ce->create_object = swoole_curl_multi_create_object;
-
-    memcpy(&swoole_coroutine_curl_multi_handle_handlers, &std_object_handlers, sizeof(zend_object_handlers));
-    swoole_coroutine_curl_multi_handle_handlers.offset = XtOffsetOf(php_curlm, std);
-    swoole_coroutine_curl_multi_handle_handlers.free_obj = swoole_curl_multi_free_obj;
-    swoole_coroutine_curl_multi_handle_handlers.get_gc = swoole_curl_multi_get_gc;
-    swoole_coroutine_curl_multi_handle_handlers.get_constructor = swoole_curl_multi_get_constructor;
-    swoole_coroutine_curl_multi_handle_handlers.clone_obj = NULL;
-    swoole_coroutine_curl_multi_handle_handlers.cast_object = swoole_curl_cast_object;
-    swoole_coroutine_curl_multi_handle_handlers.compare = [](zval *o1, zval *o2) { return ZEND_UNCOMPARABLE; };
-
-    zend_declare_property_bool(swoole_coroutine_curl_multi_handle_ce, ZEND_STRL("in_coroutine"), 0, ZEND_ACC_PUBLIC);
 }
 
 static void _php_curl_multi_free(php_curlm *mh) {

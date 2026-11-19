@@ -192,7 +192,7 @@ struct Socket {
 /// `struct swr_v1_curl_multi`. Every field is a cell: curl calls back into the
 /// same multi from inside its own calls, and other coroutines do while this
 /// one waits, so nothing is taken out across either. C++ holds one reference
-/// ([`swoole_curl_multi_new`]) and a queued wake-up another; the socket and
+/// (in `curl_multi_init`) and a queued wake-up another; the socket and
 /// timer callbacks reach it through [`Multi::this`].
 pub struct Multi {
     /// This multi, for what reaches it later: its sockets, timer and wake-up.
@@ -750,20 +750,18 @@ fn release(multi: Rc<Multi>) {
     drop(multi);
 }
 
-/// The reference [`swoole_curl_multi_new`] gave C++, which C++ gives back to
-/// [`swr_v1_curl_multi_free`] and uses no more. Only that export's parameter makes
-/// one, where the C caller's contract stands for the constructor; it is not `Copy`,
-/// so it is released once.
+/// One strong reference transferred from Rust to a PHP multi handle at creation
+/// and returned to [`swr_v1_curl_multi_free`] at destruction.
 #[repr(transparent)]
 pub struct Released(ptr::NonNull<Multi>);
 
-/// `Multi::release` of the multi `swoole_curl_multi_new` gave C++; nothing for null.
+/// `Multi::release` of the multi the PHP object owns; nothing for null.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_curl_multi_free(multi: Option<Released>) {
     let Some(Released(multi)) = multi else {
         return;
     };
-    // SAFETY: the reference `swoole_curl_multi_new` gave up, as the type carries.
+    // SAFETY: the reference attached during curl_multi_init, as the type carries.
     release(unsafe { Rc::from_raw(multi.as_ptr()) });
 }
 
@@ -905,7 +903,7 @@ pub extern "C" fn swoole_curl_easy_reset(cp: Idle<'_>) {
 }
 
 mod host;
-pub use host::{swoole_curl_check_bound_co, swoole_curl_easy_perform, swoole_curl_multi_new};
+pub use host::{swoole_curl_check_bound_co, swoole_curl_easy_perform};
 #[cfg(feature = "php")]
 mod callbacks;
 #[cfg(feature = "php")]

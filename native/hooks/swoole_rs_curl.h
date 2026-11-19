@@ -86,7 +86,6 @@ void swr_v1_curl_destroy_handle(swr_v1_curl_easy cp);
 void swoole_curl_easy_reset(CURL *curl);
 #define curl_easy_reset swoole_curl_easy_reset
 
-struct swr_v1_curl_multi *swoole_curl_multi_new(void);
 /* The current coroutine, or null after the fatal error of a multi another
  * coroutine waits on. */
 void *swoole_curl_check_bound_co(const struct swr_v1_curl_multi *multi);
