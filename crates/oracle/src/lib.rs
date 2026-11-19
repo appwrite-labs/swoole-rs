@@ -350,6 +350,10 @@ pub mod http_frame {
     }
 
     unsafe extern "C" {
+        /// HTTP/1.0, HTTP/1.1 and HTTP/2 identifiers from the pinned `swHttpVersion`.
+        #[link_name = "swr_oracle_http_versions"]
+        pub safe static VERSIONS: [u8; 3];
+
         fn swr_oracle_http_frame_upstream(
             operation: u32,
             data: *mut c_char,
