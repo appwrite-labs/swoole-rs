@@ -78,49 +78,31 @@ pub(crate) fn socket_type(host: &mut Vec<u8>) -> i64 {
     if host.contains(&b':') { 3 } else { 1 }
 }
 
-/// A multipart boundary: the prefix and 21 random alphanumerics.
+/// A multipart boundary: the prefix, then `swoole_random_string`'s 21 alphanumerics.
 pub(crate) fn boundary() -> [u8; BOUNDARY_SIZE] {
-    const CHARACTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let mut random = [0_u8; BOUNDARY_SIZE];
-    fill_random(&mut random);
-    let mut characters = random.iter().map(|&byte| pick(CHARACTERS, byte));
     let mut out = [0_u8; BOUNDARY_SIZE];
-    for (index, slot) in out.iter_mut().enumerate() {
-        *slot = match BOUNDARY_PREFIX.get(index) {
-            Some(&prefix) => prefix,
-            None => characters.next().unwrap_or(b'0'),
-        };
-    }
+    let (prefix, random) = out.split_at_mut(BOUNDARY_PREFIX.len());
+    prefix.copy_from_slice(BOUNDARY_PREFIX);
+    // `swoole_random_string` ends its characters with a NUL, which the boundary drops.
+    let mut characters = [0_u8; BOUNDARY_SIZE - BOUNDARY_PREFIX.len() + 1];
+    swoole_rs_corebase::swoole_random_string(&mut characters);
+    random.copy_from_slice(characters.get(..random.len()).unwrap_or_default());
     out
 }
 
-/// `create_token`: `length` bytes from upstream's table (whose `§` is two bytes).
+/// `create_token`: `length` bytes from upstream's table (whose `§` is two bytes),
+/// each `characters[swoole_random_int() % (sizeof(characters) - 1)]`.
 pub(crate) fn token<const N: usize>() -> [u8; N] {
     const CHARACTERS: &[u8] =
         b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"\xc2\xa7$%&/()=[]{}";
-    let mut random = [0_u8; N];
-    fill_random(&mut random);
-    random.map(|byte| pick(CHARACTERS, byte))
-}
-
-/// `characters[byte % characters.len()]`.
-fn pick(characters: &[u8], byte: u8) -> u8 {
-    let index = usize::from(byte) % characters.len();
-    characters.get(index).copied().unwrap_or_default()
-}
-
-/// `out` from the system CSPRNG; any part it leaves unfilled comes from the
-/// clock rather than stay a predictable zero token.
-fn fill_random(out: &mut [u8]) {
-    let filled = swoole_rs_corebase::random_bytes(out);
-    let seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |time| time.as_nanos())
-        .to_le_bytes();
-    let rest = out.iter_mut().enumerate().skip(filled);
-    for ((index, byte), seed) in rest.zip(seed.iter().cycle()) {
-        *byte = seed ^ u8::try_from(index & 0xff).unwrap_or(0);
-    }
+    std::array::from_fn(|_| {
+        let size = u64::try_from(CHARACTERS.len()).unwrap_or(1);
+        let index = swoole_rs_corebase::swoole_random_int() % size;
+        CHARACTERS
+            .get(usize::try_from(index).unwrap_or_default())
+            .copied()
+            .unwrap_or_default()
+    })
 }
 
 /// `Content-Type: multipart/form-data; boundary=...\r\n`.
@@ -374,7 +356,11 @@ mod tests {
                 .all(u8::is_ascii_alphanumeric),
             "boundary is alphanumeric"
         );
-        assert_eq!(token::<16>().len(), 16, "token length");
+        let table = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"\xc2\xa7$%&/()=[]{}";
+        assert!(
+            token::<16>().iter().all(|byte| table.contains(byte)),
+            "token bytes come from create_token's table"
+        );
     }
 
     #[test]
