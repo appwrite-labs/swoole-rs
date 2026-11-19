@@ -37,6 +37,10 @@ use swoole_rs_corebase::{swoole_thread_clean, swoole_thread_init};
 
 use super::timer::{after, tick};
 use super::{SIGKILL, TEST_STR, last_error, random_bytes};
+use libc::{
+    EACCES, ECHILD, IPC_CREAT, IPC_PRIVATE, SHUT_RDWR, SIG_DFL, SIG_IGN, SIGIO, SIGPIPE, SIGTERM,
+    SIGWINCH,
+};
 use swoole_rs_corebase::reactor::signal_upstream::swoole_signal_clear;
 use swoole_rs_corebase::timer::{swoole_timer_clear, swoole_timer_free, swoole_timer_is_available};
 
@@ -49,7 +53,6 @@ const SW_ERROR_PROTOCOL_ERROR: c_int = 508;
 const SW_PIPE_MASTER: c_int = 1;
 const SW_TASK_TMPFILE: u16 = 1;
 const SW_MSGMAX: u32 = 65536;
-const IPC_PRIVATE: c_int = 0;
 // swIPCMode, ProtocolType, swWorkerType, swWorkerStatus.
 const SW_IPC_NONE: c_int = 0;
 const SW_IPC_UNIXSOCK: c_int = 1;
@@ -68,17 +71,6 @@ const TEST_PORT: c_int = 9501;
 const TEST_SOCK_FILE: &CStr = c"/tmp/swoole-core-tests.sock";
 const TEST_COUNTER_NUM: usize = 32;
 const MAGIC_NUMBER: c_int = 99_900_011;
-// glibc's values (the core-tests build is Linux).
-const EACCES: c_int = 13;
-const ECHILD: c_int = 10;
-const SIGIO: c_int = 29;
-const SIGPIPE: c_int = 13;
-const SIGTERM: c_int = 15;
-const SIGWINCH: c_int = 28;
-const SIG_DFL: usize = 0;
-const SIG_IGN: usize = 1;
-const IPC_CREAT: c_int = 0o1000;
-const SHUT_RDWR: c_int = 2;
 
 /// `swoole::DataHead`.
 #[repr(C)]

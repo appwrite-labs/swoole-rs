@@ -26,6 +26,7 @@ use swoole_rs_corebase::utilities::set_log_file;
 use swoole_rs_corebase::{swoole_random_string, swr_v1_core_set_current_task_id};
 
 use case::after_once as after;
+use libc::SIGIO;
 
 const PACKET: &[u8] = b"hello world\n";
 const TEST_STR: &[u8] = b"hello world, hello swoole\n";
@@ -42,8 +43,6 @@ const TASK_NOREPLY: u16 = 1 << 7;
 const PIPE_MASTER: c_int = 1;
 const PIPE_NONBLOCK: c_int = 2;
 const SW_SERVER_EVENT_SHUTDOWN: u8 = 16;
-/// glibc's value (the case binary is Linux's).
-const SIGIO: c_int = 29;
 const TEST_LOG_FILE: &str = "/tmp/swoole.log";
 const TEST_COUNTER_NUM: usize = 32;
 const IPC_MAX_SIZE: usize = SW_IPC_MAX_SIZE as usize;
@@ -189,10 +188,7 @@ unsafe extern "C" {
     fn __libc_current_sigrtmin() -> c_int;
 }
 
-#[cfg(target_os = "linux")]
-const MAP_SHARED_ANONYMOUS: c_int = 0x01 | 0x20;
-#[cfg(not(target_os = "linux"))]
-const MAP_SHARED_ANONYMOUS: c_int = 0x01 | 0x1000;
+const MAP_SHARED_ANONYMOUS: c_int = libc::MAP_SHARED | libc::MAP_ANONYMOUS;
 
 /// What the forked processes share: core-tests' counters, whether an expectation
 /// failed, and the gate `no_idle_task_worker`'s mutex was.

@@ -14,6 +14,8 @@ use super::{
     SOL_SOCKET, SW_EVENT_READ, SW_EVENT_WRITE, TEST_HTTP_DOMAIN, TEST_STR, co_sleep, fork, go,
     kill, last_error, random_bytes, run, setsockopt, sleep, socketpair,
 };
+pub(super) use libc::{EADDRNOTAVAIL, ECONNREFUSED, SHUT_RD, SHUT_RDWR, SHUT_WR, SIGTERM};
+use libc::{ECANCELED, ENOTCONN};
 use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::io::{Read, Write};
@@ -26,16 +28,6 @@ use swoole_rs_corebase::{swoole_rand, swoole_random_int, swoole_type_size};
 use swoole_rs_hooks::co_socket::{self, Co, OwnedCo};
 use swoole_rs_hooks::vector::{IoVector, RecvMessage, SendMessage, Vectors};
 use swoole_rs_hooks::{TimeoutScope, co_io, packet};
-
-// glibc's values (the core-tests build is Linux).
-pub(super) const ECONNREFUSED: c_int = 111;
-pub(super) const EADDRNOTAVAIL: c_int = 99;
-const ENOTCONN: c_int = 107;
-const ECANCELED: c_int = 125;
-pub(super) const SIGTERM: c_int = 15;
-pub(super) const SHUT_RD: c_int = 0;
-pub(super) const SHUT_WR: c_int = 1;
-pub(super) const SHUT_RDWR: c_int = 2;
 
 pub(super) const SW_SOCK_TCP: c_int = 1;
 pub(super) const SW_SOCK_UDP: c_int = 2;
