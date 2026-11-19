@@ -423,6 +423,25 @@ extern "C" void swoole_curl_bind_easy(php_curl *ch, CURL *easy) {
     ch->handlers.write_header->method = PHP_CURL_IGNORE;
 }
 
+extern "C" void swoole_curl_bind_io(php_curl *ch) {
+    curl_easy_setopt(ch->cp, CURLOPT_ERRORBUFFER, ch->err.str);
+    curl_easy_setopt(ch->cp, CURLOPT_WRITEFUNCTION, swoole_curl_on_write);
+    curl_easy_setopt(ch->cp, CURLOPT_WRITEDATA, ch);
+    curl_easy_setopt(ch->cp, CURLOPT_READFUNCTION, swoole_curl_on_read);
+    curl_easy_setopt(ch->cp, CURLOPT_READDATA, ch);
+    curl_easy_setopt(ch->cp, CURLOPT_HEADERFUNCTION, swoole_curl_on_header);
+    curl_easy_setopt(ch->cp, CURLOPT_HEADERDATA, ch);
+}
+
+extern "C" bool swoole_curl_use_cafile(php_curl *ch, const char *directive) {
+    const char *path = INI_STR(directive);
+    if (!path || !*path) {
+        return false;
+    }
+    curl_easy_setopt(ch->cp, CURLOPT_CAINFO, path);
+    return true;
+}
+
 extern "C" CURL *swoole_curl_easy(php_curl *ch) {
     return ch->cp;
 }
@@ -484,8 +503,12 @@ extern "C" void swoole_curl_free_bytes(iovec buffer) {
  * variadic. The header's libcurl version gates the options the copies compiled in. */
 extern "C" const unsigned swoole_curl_header_version = LIBCURL_VERSION_NUM;
 
+extern "C" int swoole_curl_easy_setopt_long(CURL *easy, zend_long option, long value) {
+    return curl_easy_setopt(easy, (CURLoption) option, value);
+}
+
 extern "C" int swoole_curl_setopt_long(php_curl *ch, int option, long value) {
-    return ch->err.no = curl_easy_setopt(ch->cp, (CURLoption) option, value);
+    return ch->err.no = swoole_curl_easy_setopt_long(ch->cp, option, value);
 }
 
 extern "C" int swoole_curl_setopt_off_t(php_curl *ch, int option, curl_off_t value) {
