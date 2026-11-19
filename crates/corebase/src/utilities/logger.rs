@@ -4,8 +4,9 @@
 //! through `LoggerHost` (`corebase::process`'s). Both run after the lock is released, so a
 //! diagnostic can log through this logger again. The log macros a Rust log runs
 //! (`swr_v1_utils_log`) are here too.
+use super::{SW_LOG_ERROR, SW_LOG_INFO, SW_LOG_NONE, SW_LOG_NOTICE, SW_LOG_WARNING as LOG_WARNING};
 use crate::lent::{Count, In};
-use crate::log;
+use crate::log::{self, rotation};
 use crate::sys::{self, errno};
 use crate::utilities::{log_level, log_line, log_micros, log_rotation};
 use crate::{CCast, Stream};
@@ -15,15 +16,11 @@ use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const SW_LOG_INFO: c_int = 2;
-const SW_LOG_NOTICE: c_int = crate::log::LogLevel::SW_LOG_NOTICE as c_int;
-const SW_LOG_ERROR: c_int = 5;
 const SW_LOG_DATE_STRLEN: usize = 128;
-const SW_LOG_BUFFER_SIZE: usize = 16384 + 256;
+const SW_LOG_BUFFER_SIZE: usize = crate::constants::SW_ERROR_MSG_SIZE as usize + 256;
 const SW_LOG_DEFAULT_DATE_FORMAT: &CStr = c"%F %T";
 
-/// `SW_LOG_WARNING`, `SW_ERROR_SYSTEM_CALL_FAIL` and `SW_ERROR_INVALID_PARAMS`.
-const LOG_WARNING: c_int = 4;
+/// `SW_ERROR_SYSTEM_CALL_FAIL` and `SW_ERROR_INVALID_PARAMS`.
 const SYSTEM_CALL_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SYSTEM_CALL_FAIL as c_int;
 const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 const REDIRECT_ORIGIN: &CStr = c"Logger::redirect_stdout_and_stderr";
@@ -137,7 +134,7 @@ impl State {
 
     fn open(&mut self, file: CString, effects: &mut Vec<Effect>) -> bool {
         self.close();
-        self.real_file = if self.rotation == 0 {
+        self.real_file = if self.rotation == rotation::SINGLE {
             file.clone()
         } else {
             real_file(self.rotation, &file)
@@ -224,7 +221,9 @@ impl State {
         let (seconds, micros) = now();
         let mut date = [0u8; SW_LOG_DATE_STRLEN];
         let mut length_date = strftime(&mut date, &self.date_format, seconds);
-        if self.rotation != 0 && real_file(self.rotation, &self.file) != self.real_file {
+        if self.rotation != rotation::SINGLE
+            && real_file(self.rotation, &self.file) != self.real_file
+        {
             self.reopen(effects);
         }
         if self.microseconds {
@@ -313,7 +312,7 @@ impl Logger {
                 file_fd: None,
                 redirected: false,
                 microseconds: false,
-                rotation: 0,
+                rotation: rotation::SINGLE,
                 stdout_fd: -1,
                 stderr_fd: -1,
                 stream: stdout_stream,
@@ -367,7 +366,7 @@ impl Logger {
         let mut state = self.lock();
         state.date_format = SW_LOG_DEFAULT_DATE_FORMAT.into();
         state.microseconds = false;
-        state.rotation = 0;
+        state.rotation = rotation::SINGLE;
         self.level.store(SW_LOG_INFO, Relaxed);
     }
 
@@ -460,7 +459,6 @@ pub fn swoole_set_log_level(level: c_int) {
 /// `int swoole_get_log_level()`: `SW_LOG_NONE` without a logger.
 #[must_use]
 pub fn swoole_get_log_level() -> c_int {
-    const SW_LOG_NONE: c_int = 6;
     process_logger().map_or(SW_LOG_NONE, Logger::level)
 }
 
