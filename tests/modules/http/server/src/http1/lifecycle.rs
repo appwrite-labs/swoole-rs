@@ -314,8 +314,16 @@ fn reload_on_worker_start(
     }
     if std::fs::File::open(filename).is_err() {
         std::fs::write(filename, pid().to_string()).unwrap();
-        while master_pid(serv) == 0 {
-            sleep(0.001);
+        // Without the pid, kill(0, ...) would signal the whole process group.
+        if !wait_for(
+            "the master's pid",
+            Duration::ZERO,
+            Duration::from_millis(1),
+            Duration::from_secs(10),
+            || master_pid(serv) != 0,
+            || {},
+        ) {
+            return;
         }
         signal(target(serv), SIGUSR2);
         sleep(1.0);
