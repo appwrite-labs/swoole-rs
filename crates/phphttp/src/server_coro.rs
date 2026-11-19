@@ -19,7 +19,7 @@ use std::{
 use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::buffer::string::StringBuffer as Buffer;
 use swoole_rs_corebase::constants::{
-    SW_COMPRESSION_MIN_LENGTH_DEFAULT, SW_HTTP_100_CONTINUE_PACKET, SW_Z_BEST_SPEED,
+    HTTP2_PREFACE, SW_COMPRESSION_MIN_LENGTH_DEFAULT, SW_HTTP_100_CONTINUE_PACKET, SW_Z_BEST_SPEED,
 };
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::{CCast, CellExt};
@@ -253,8 +253,6 @@ const HPE_OK: i32 = 0;
 const HPE_PAUSED_H2_UPGRADE: i32 = 23;
 /// `SW_BUFFER_SIZE_BIG`.
 const BUFFER_SIZE_BIG: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as usize;
-/// `SW_HTTP2_PRI_STRING`.
-const HTTP2_PRI: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 /// `EINVAL`.
 const EINVAL: zend_long = 22;
 
@@ -982,10 +980,10 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         }
         add_peer(context, peer);
         if context.state().parser.error == HPE_PAUSED_H2_UPGRADE
-            && buffer.len() >= HTTP2_PRI.len()
-            && data(&buffer, 0, HTTP2_PRI.len()) == HTTP2_PRI
+            && buffer.len() >= HTTP2_PREFACE.len()
+            && data(&buffer, 0, HTTP2_PREFACE.len()) == HTTP2_PREFACE
         {
-            buffer.set_offset(i64::try_from(HTTP2_PRI.len()).unwrap_or(0));
+            buffer.set_offset(i64::try_from(HTTP2_PREFACE.len()).unwrap_or(0));
             drop(buffer);
             return http2(conn, context);
         }

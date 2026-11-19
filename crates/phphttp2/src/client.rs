@@ -12,6 +12,7 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::CellExt;
+use swoole_rs_corebase::constants::HTTP2_PREFACE;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_close_hook};
 use swoole_rs_http2::error_code;
@@ -37,12 +38,11 @@ use swoole_rs_zend::{
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-/// `SW_HTTP2_*` frame sizes and the client preface.
+/// `SW_HTTP2_*` frame sizes.
 const FRAME_HEADER: usize = swoole_rs_http2::FRAME_HEADER_SIZE as usize;
 const PING_PAYLOAD: usize = 8;
 const GOAWAY_SIZE: usize = 8;
 const WINDOW_UPDATE_SIZE: usize = 4;
-const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 use swoole_rs_http2::setting_id;
 /// The `:authority` slot (`HTTP2_CLIENT_HOST_HEADER_INDEX`).
 const AUTHORITY: usize = 3;
@@ -462,7 +462,7 @@ impl Client {
             hpack::Field::default(),
             Encoder::new(self.local.header_table_size),
         )));
-        if !self.send(PREFACE) || !self.send_setting() {
+        if !self.send(HTTP2_PREFACE) || !self.send_setting() {
             self.close();
             return false;
         }
