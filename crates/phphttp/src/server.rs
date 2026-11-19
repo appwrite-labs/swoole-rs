@@ -19,6 +19,9 @@ use std::{
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
 use swoole_rs_corebase::CellExt;
+use swoole_rs_corebase::constants::{
+    SW_HTTP_BAD_REQUEST_PACKET, SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
+};
 use swoole_rs_corebase::memory::flat::Table;
 use swoole_rs_corebase::process::worker_globals::with_current;
 use swoole_rs_corebase::process::worker_record::WorkerType;
@@ -69,10 +72,6 @@ pub fn server_minit(args: &MinitArgs) {
     );
 }
 
-/// `SW_HTTP_SERVICE_UNAVAILABLE_PACKET`.
-const SERVICE_UNAVAILABLE: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\r\n";
-/// `SW_HTTP_BAD_REQUEST_PACKET`.
-const BAD_REQUEST: &[u8] = b"HTTP/1.1 400 Bad Request\r\n\r\n";
 /// llhttp's `HPE_OK`.
 const HPE_OK: i32 = 0;
 /// `SW_ERROR_SESSION_NOT_EXIST` and `SW_LOG_TRACE`.
@@ -409,7 +408,7 @@ fn call(mut ctx: Ctx, coroutine: bool) -> Result<(), bailout::Bailout> {
         Err(bailout) => bailout.defer(),
         Ok(false) => {
             host::notice("Swoole\\Http\\Server->onRequest handler error");
-            context::send(ctx, SERVICE_UNAVAILABLE);
+            context::send(ctx, SW_HTTP_SERVICE_UNAVAILABLE_PACKET.as_bytes());
             context::close(ctx);
         }
         Ok(true) => {}
@@ -464,7 +463,7 @@ fn handle(
     // The parser `receive` initialised.
     let parsed = parse_request(ctx.state(), data);
     if ctx.state().parser.error != HPE_OK || !ctx.state().completed {
-        context::send(ctx, BAD_REQUEST);
+        context::send(ctx, SW_HTTP_BAD_REQUEST_PACKET.as_bytes());
         context::close(ctx);
         let parser = &ctx.state().parser;
         if parser.error == HPE_OK {
@@ -736,7 +735,7 @@ pub(crate) fn release_request(server: view::Server<'_>) {
     if worker.shutdown {
         while let Some(hold) = dequeue() {
             let ctx = hold.ctx();
-            context::send(ctx, SERVICE_UNAVAILABLE);
+            context::send(ctx, SW_HTTP_SERVICE_UNAVAILABLE_PACKET.as_bytes());
             context::close(ctx);
             abandon(ctx);
         }
