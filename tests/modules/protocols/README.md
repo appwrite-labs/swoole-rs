@@ -177,9 +177,10 @@ expected values:
 
 `server.rs` is built into the http server case binary (`tests/modules/http/server`,
 the merge tier's `http-server-rust` phase), whose `src/http1/case.rs` builds the
-redis and mqtt Servers. That phase excludes `redis.get`, which needs a Redis server on
-127.0.0.1:6379, and `mqtt.echo`, which needs Node with the mqtt and pino packages
-(`core-tests/js/mqtt.js`).
+redis and mqtt Servers. With `--core-test-services`, the merge tier runs
+`redis.get` against the PHPT Redis service on 127.0.0.1:6379 and `mqtt.echo`
+with the pinned tree's `core-tests/js/mqtt.js` and its npm dependencies. Other
+runs report those service-dependent cases as excluded.
 
 MQTT length parsing returns `Result<Option<usize>, RemainingLengthTooLong>`:
 a missing length header is incomplete, and a fourth continuation bit is malformed.

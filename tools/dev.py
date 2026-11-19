@@ -42,7 +42,7 @@ UNCACHED = 'needs a DNS lookup that misses the resolver cache'
 CLIENT_PROXY = ['https_get_async_with_http_proxy', 'https_get_async_with_socks5_proxy', 'https_get_sync_with_http_proxy',
                 'https_get_sync_with_socks5_proxy', 'http_get_sync_with_socks5_proxy_no_dns_tunnel', 'http_get_async_with_http_proxy',
                 'http_get_async_with_socks5_proxy', 'http_get_sync_with_http_proxy', 'http_get_sync_with_socks5_proxy']
-NODE_WS = 'needs Node.js and its ws package'
+NODE_WS = 'needs Node.js with ws and pino'
 
 
 def tls_alerts_plaintext():
@@ -351,8 +351,12 @@ def plan(args, reports):
                '--archive', archive,
                '--build-root', ROOT / 'target/native-originals/http-server', '--jobs', args.jobs,
                '--package', ROOT / 'tests/modules/http/server',
-               '--exclude', 'http_server.node_websocket_client_1=' + NODE_WS, '--exclude', 'http_server.node_websocket_client_2=' + NODE_WS,
-               '--exclude', 'redis.get=needs a Redis server on 127.0.0.1:6379', '--exclude', 'mqtt.echo=needs Node.js and its mqtt and pino packages',
+               *([] if getattr(args, 'core_test_services', False) else
+                 [arg for name, reason in [('http_server.node_websocket_client_1', NODE_WS),
+                                           ('http_server.node_websocket_client_2', NODE_WS),
+                                           ('redis.get', 'needs a Redis server on 127.0.0.1:6379'),
+                                           ('mqtt.echo', 'needs Node.js with mqtt and pino')]
+                  for arg in ('--exclude', f'{name}={reason}')]),
                # Upstream's starting loads, swoole_rand(32, 512) per worker, can leave the balance check
                # unreachable for any scheduler, about 0.085% of draws each (#3281, #5278): a fresh draw.
                *[arg for name in ('server.schedule_9', 'server.schedule_10')
@@ -771,6 +775,8 @@ def main():
     selection.add_argument('--changed-since', metavar='REF', help='Run the gates of the modules a diff from REF touches (all for shared build inputs)')
     parser.add_argument('--stdext', action='store_true', help='Build and compare genuine enabled experimental stdext profiles')
     parser.add_argument('--php-sockets', action='store_true', help='Build matching Native/Rust PHP sockets-integration profiles')
+    parser.add_argument('--core-test-services', action='store_true',
+                        help="Run Redis and Node.js interop cases with Redis on 127.0.0.1:6379 and the pin's core-tests/js dependencies installed")
     parser.add_argument('--external-network', action='store_true',
                         help='Also run original PHPTs that need internet access; without it they stay unmeasured')
     parser.add_argument('--fix-halfclose', action='store_true', help='Select the separate native queued-close drain repair')
