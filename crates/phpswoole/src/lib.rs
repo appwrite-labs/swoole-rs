@@ -39,7 +39,7 @@ mod table;
 mod vm;
 
 pub use asynchronous::php_swoole_set_aio_option;
-pub use entry::{module_entry, swr_v1_phpswoole_fatal_exit};
+pub use entry::{families, module_entry, swr_v1_phpswoole_fatal_exit};
 pub use functions::{mime_type, zif_swoole_last_error};
 pub use implicit::exit_status;
 pub use info::swr_v1_phpswoole_minfo;
@@ -47,8 +47,8 @@ pub use interfaces::sys_warning;
 pub use memory::{received_string, zend_string_allocator};
 pub use module::{
     EventSteps, Families, Globals, Hook, Http, HttpMinit, Minit, MinitArgs, ProcessSteps,
-    ReqStatus, RuntimeSteps, SocketSettings, codecs, display_errors, enable_library, families,
-    globals, load_library, php_swoole_register_shutdown_function, zif_swoole_set_process_name,
+    ReqStatus, RuntimeSteps, SocketSettings, codecs, display_errors, enable_library, globals,
+    load_library, php_swoole_register_shutdown_function, zif_swoole_set_process_name,
 };
 pub use optional::{set_blocking, socket_cast, socket_create};
 pub use options::{php_swoole_parse_to_size, set_global, sw_zval_is_serializable};
