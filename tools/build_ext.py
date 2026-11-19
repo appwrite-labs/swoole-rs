@@ -30,15 +30,22 @@ from tools.build_upstream import COMMIT, VERSION
 from tools.check_migration import MODULES
 from tools.harness import ROOT
 
-# crates/ext's features that are swoole-rs-ffi's too: the Zend-free archive's build profile.
-FFI_FEATURES = {'sockets', 'stdext', 'halfclose', 'iouring', 'cares', 'pgsql', 'odbc', 'firebird', 'sqlite', 'oci', 'curl', 'ssh2'}
-
-# The ffi features that replace upstream's optional hooks, by the configure switch
-# that builds each: the Rust code links what that switch makes the extension link.
-HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql', 'odbc': '--with-swoole-odbc',
-                  'firebird': '--with-swoole-firebird', 'sqlite': '--enable-swoole-sqlite',
-                  'oci': '--with-swoole-oracle', 'curl': '--enable-swoole-curl',
-                  'ssh2': '--with-swoole-ssh2'}
+def ffi_features(features):
+    """Follow the extension's Cargo features into its Zend-free FFI dependency."""
+    forwarding = tomllib.loads((ROOT / 'crates/ext/Cargo.toml').read_text())['features']
+    pending = list(features)
+    visited, native = set(), set()
+    while pending:
+        feature = pending.pop()
+        if feature in visited or feature == 'php':
+            continue
+        visited.add(feature)
+        for target in forwarding[feature]:
+            if target.startswith('swoole-rs-ffi/'):
+                native.add(target.split('/', 1)[1])
+            elif target in forwarding:
+                pending.append(target)
+    return sorted(native)
 
 
 def headers_for(modules):
@@ -181,14 +188,12 @@ def main():
     except OSError:
         source_ref = 'unknown'
     env['SWOOLE_RS_COMMIT'] = source_ref[:12]
-    switches = {**HOOK_SWITCHES, 'mysqlnd': '--enable-mysqlnd', 'uring-socket': '--enable-uring-socket',
-                'cares': '--enable-cares', 'thread-context': '--enable-thread-context',
-                'thread': '--enable-swoole-thread', 'stdext': '--enable-swoole-stdext'}
+    switches = tomllib.loads((ROOT / 'crates/ext/Cargo.toml').read_text())['package']['metadata']['configure']
     features = ['php', *(['sockets'] if args.php_sockets else []), *(['stdext'] if args.stdext else []),
                 *(['halfclose'] if args.fix_halfclose else [])]
     for flag in args.configure:
         name, _, value = flag.partition('=')
-        feature = next((f for f, switch in switches.items() if switch == name), None)
+        feature = switches.get(name)
         if not feature:
             raise SystemExit(f'build_ext.py: no crates/ext feature for {flag}')
         features.append(feature)
@@ -212,7 +217,7 @@ def main():
                          and m['package_id'].split('#')[0].endswith('/ext')))
     shutil.copy2(built_by / 'config.h', out / 'config.h')
     if args.native:
-        sdk(built_by, [f for f in features if f in FFI_FEATURES], args.profile, env)
+        sdk(built_by, ffi_features(features), args.profile, env)
     extension = out / 'swoole.so'
     shutil.copy2(extension_path(messages), extension)
     version = subprocess.run([str(php), '-n', *[a for name in load for a in ('-d', f'extension={name}')],

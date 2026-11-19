@@ -51,6 +51,12 @@ class ReservedPort(unittest.TestCase):
                     pass
 
 
+class ExtensionFeatures(unittest.TestCase):
+    def test_sdk_follows_indirect_features_without_linking_zend(self):
+        self.assertEqual(build_ext.ffi_features(['php', 'uring-socket', 'mysqlnd', 'pgsql', 'iouring']),
+                         ['iouring', 'pgsql'])
+
+
 class Overlays(unittest.TestCase):
     def test_only_selected_contracts_are_staged_and_collisions_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
