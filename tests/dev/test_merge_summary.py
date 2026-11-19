@@ -35,5 +35,25 @@ class MergeSummary(unittest.TestCase):
         self.assertIn('| timers | 1 | 1 | 1 | 0 |', markdown(phases, cases))
 
 
+    def test_unreadable_reports_are_annotated_and_lists_skipped(self):
+        import os
+        from unittest import mock
+        from contextlib import redirect_stderr
+        import io
+        with tempfile.TemporaryDirectory() as temp:
+            loop = Path(temp) / 'loop.json'
+            loop.write_text(json.dumps({'phases': []}))
+            (Path(temp) / 'broken.json').write_text('{"results": [')
+            (Path(temp) / 'gate.json').write_text(json.dumps([{'test': 'x', 'status': 'failed'}]))
+            (Path(temp) / 'broken.xml').write_text('<testsuites>')
+            stderr = io.StringIO()
+            with mock.patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}), redirect_stderr(stderr):
+                _, cases = summarize(loop)
+        self.assertEqual(dict(cases), {})
+        warnings = [line for line in stderr.getvalue().splitlines() if line.startswith('::warning')]
+        self.assertEqual(len(warnings), 2, warnings)
+        self.assertTrue(any('broken.json' in line for line in warnings))
+        self.assertTrue(any('broken.xml' in line for line in warnings))
+
 if __name__ == '__main__':
     unittest.main()
