@@ -17,7 +17,7 @@ use swoole_rs_zend::{
 };
 
 /// `LOCK_EX` from `<sys/file.h>` (Linux and macOS).
-pub(crate) const LOCK_EX: i64 = 2;
+pub(crate) const LOCK_EX: i64 = swoole_rs_corebase::locks::LOCK_EX as i64;
 
 /// The timed-lock capabilities `Lock::lock` takes: `HAVE_MUTEX_TIMEDLOCK` (1)
 /// and `HAVE_RWLOCK_TIMEDRDLOCK` (2), which Linux has and macOS lacks.

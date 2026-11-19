@@ -15,6 +15,7 @@ use crate::sys;
     )
 )]
 use libc::*;
+pub use libc::{LOCK_EX, LOCK_NB};
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 pub mod coroutine;
