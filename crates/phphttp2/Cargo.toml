@@ -11,6 +11,7 @@ description = "PHP HTTP/2 client classes (Swoole\\Coroutine\\Http2\\Client, Swoo
 php = [
     "dep:libc",
     "dep:swoole-rs-inflate",
+    "dep:swoole-rs-http",
     "dep:swoole-rs-http2",
     "dep:swoole-rs-httpbindings",
     "dep:swoole-rs-hooks",
@@ -42,6 +43,7 @@ php = [
 libc = { version = "=0.2.191", optional = true }
 swoole-rs-inflate = { path = "../inflate", optional = true }
 swoole-rs-httpbindings = { path = "../httpbindings", optional = true }
+swoole-rs-http = { path = "../http", optional = true }
 swoole-rs-http2 = { path = "../http2", optional = true }
 swoole-rs-hooks = { path = "../hooks", optional = true }
 swoole-rs-zend = { path = "../zend", optional = true }

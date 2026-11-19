@@ -161,7 +161,7 @@ impl HttpStaticContext {
             }
             Stage::Finish if self.tasks.count() == 1 => {
                 self.facts.content_length = self.range.last_length;
-                self.facts.status = 206;
+                self.facts.status = crate::status::PARTIAL_CONTENT;
                 self.check_range_date()
             }
             Stage::Finish => {
@@ -171,7 +171,7 @@ impl HttpStaticContext {
             Stage::AfterFull => self.check_range_date(),
             Stage::CommitEnd => {
                 self.facts.content_length = self.facts.content_length.wrapping_add(self.end.len());
-                self.facts.status = 206;
+                self.facts.status = crate::status::PARTIAL_CONTENT;
                 self.check_range_date()
             }
             Stage::CheckedDate(true) => {
@@ -211,7 +211,7 @@ impl HttpStaticContext {
             match self.range.stage {
                 Stage::Parsing => match self.range.cursor.step(input, self.facts.filesize) {
                     Err(()) => {
-                        self.facts.status = 416;
+                        self.facts.status = crate::status::RANGE_NOT_SATISFIABLE;
                         self.range.stage = Stage::Done;
                         return Ok(Effect::Done);
                     }

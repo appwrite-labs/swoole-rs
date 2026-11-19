@@ -7,6 +7,8 @@
 //! callback, as llhttp does, and the next call continues it. Only the callbacks Swoole
 //! uses are hooks here; llhttp's others did nothing that a caller could observe.
 
+use crate::status::{NO_CONTENT, NOT_MODIFIED, SWITCHING_PROTOCOLS};
+
 /// `HPE_*` codes a caller checks.
 pub const HPE_OK: i32 = 0;
 pub const HPE_INVALID_HEADER_TOKEN: i32 = 10;
@@ -476,8 +478,7 @@ impl Parser {
             return false;
         }
         if self.status_code / 100 == 1
-            || self.status_code == 204
-            || self.status_code == 304
+            || matches!(i32::from(self.status_code), NO_CONTENT | NOT_MODIFIED)
             || self.flags & F_SKIPBODY != 0
         {
             return false;
@@ -504,7 +505,7 @@ impl Parser {
     /// `llhttp__before_headers_complete`.
     fn before_headers_complete(&mut self) {
         self.upgrade = if self.flags & F_UPGRADE != 0 && self.flags & F_CONNECTION_UPGRADE != 0 {
-            self.kind == Kind::Request || self.status_code == 101
+            self.kind == Kind::Request || i32::from(self.status_code) == SWITCHING_PROTOCOLS
         } else {
             self.method == CONNECT
         };
@@ -515,7 +516,7 @@ impl Parser {
         let has_body = self.flags & F_CHUNKED != 0 || self.content_length > 0;
         let response = self.kind == Kind::Response;
         if (self.upgrade && (self.method == CONNECT || self.flags & F_SKIPBODY != 0 || !has_body))
-            || (response && self.status_code == 101)
+            || (response && i32::from(self.status_code) == SWITCHING_PROTOCOLS)
         {
             return 1;
         }
@@ -523,7 +524,11 @@ impl Parser {
             return 0;
         }
         if self.flags & F_SKIPBODY != 0
-            || (response && matches!(self.status_code, 102 | 103 | 204 | 304))
+            || (response
+                && matches!(
+                    i32::from(self.status_code),
+                    102 | 103 | NO_CONTENT | NOT_MODIFIED
+                ))
         {
             0
         } else if self.flags & F_CHUNKED != 0 {
