@@ -16,7 +16,7 @@ use crate::process::pool::{
 };
 use crate::process::pool::{swr_v1_process_pool_ipc_address, swr_v1_process_pool_ipc_set_listener};
 use crate::process::process_pool::{
-    PoolNative, PoolRecord, PoolRef, swr_v1_process_pool_create,
+    PoolNative, PoolRecord, PoolRef, WORKER_MESSAGE_STOP, swr_v1_process_pool_create,
     swr_v1_process_pool_dispatch_event, swr_v1_process_pool_push, swr_v1_process_pool_push_event,
     swr_v1_worker_symbol, with,
 };
@@ -122,8 +122,6 @@ pub fn push_message(native: &dyn PoolNative, pool: PoolRef<'_>, kind: u8, data: 
 /// the C layout's 4-byte pid, 2-byte id and 2 bytes of padding.
 #[must_use]
 pub fn push_stop(native: &dyn PoolNative, pool: PoolRef<'_>, pid: c_int, worker_id: u16) -> bool {
-    /// `SW_WORKER_MESSAGE_STOP`.
-    const WORKER_MESSAGE_STOP: u8 = 1;
     let ([a, b, c, d], [e, f]) = (pid.to_ne_bytes(), worker_id.to_ne_bytes());
     push_message(native, pool, WORKER_MESSAGE_STOP, &[a, b, c, d, e, f, 0, 0])
 }

@@ -13,6 +13,7 @@ use core::sync::atomic::Ordering;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::buffer::cpp::{swr_cpp_buffer_empty, swr_cpp_buffer_typed_close};
+use swoole_rs_corebase::constants::EventDataFlag;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRACE as LOG_TRACE};
 use swoole_rs_corebase::process::methods::swoole_get_worker_id;
 use swoole_rs_corebase::process::worker_globals::{with_current, with_globals};
@@ -126,10 +127,10 @@ impl<'a> SendData<'a> {
 }
 
 /// `SW_EVENT_DATA_PTR`: `MessageBus::pass`'s flags for a payload it points at.
-const DATA_PTR: u8 = 1 << 1;
+const DATA_PTR: u8 = EventDataFlag::SW_EVENT_DATA_PTR.bits();
 /// `SW_EVENT_DATA_POP_PTR`: the payload is the whole receive buffer, which the worker
 /// may take.
-pub(crate) const POP_PTR: u8 = 1 << 6;
+pub(crate) const POP_PTR: u8 = EventDataFlag::SW_EVENT_DATA_POP_PTR.bits();
 /// `Server::CLOSE_RESET`, `CLOSE_ACTIVELY`.
 const CLOSE_RESET: c_int = 1 << 1;
 const CLOSE_ACTIVELY: c_int = 1 << 2;
