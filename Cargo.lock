@@ -750,6 +750,7 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-framing",
  "swoole-rs-hooks",
+ "swoole-rs-http",
  "swoole-rs-http2",
  "swoole-rs-httpbindings",
  "swoole-rs-inflate",

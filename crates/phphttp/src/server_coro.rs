@@ -24,6 +24,7 @@ use swoole_rs_corebase::constants::{
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_members::Receive};
+use swoole_rs_http::status::{BAD_REQUEST, NOT_FOUND, REQUEST_ENTITY_TOO_LARGE};
 use swoole_rs_http2::FRAME_HEADER_SIZE as HTTP2_FRAME_HEADER_SIZE;
 use swoole_rs_httpbindings::Setting;
 use swoole_rs_phpclients::{NewSocket, get_socket, is_socket_closed, socket_settings};
@@ -245,10 +246,6 @@ fn text_setting(server: &HttpServer, kind: Setting, text: Option<&[u8]>) {
     }
 }
 
-/// HTTP statuses the loop answers with, and llhttp's codes it checks.
-const BAD_REQUEST: c_int = 400;
-const NOT_FOUND: c_int = 404;
-const ENTITY_TOO_LARGE: c_int = 413;
 const HPE_OK: i32 = 0;
 const HPE_PAUSED_H2_UPGRADE: i32 = 23;
 /// `SW_BUFFER_SIZE_BIG`.
@@ -903,7 +900,7 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             let found = swoole_rs_http::header_delimiter(data(&buffer, crlf_offset, length));
             let Some(pos) = found else {
                 if length == buffer.size() {
-                    context.state().response.status = ENTITY_TOO_LARGE;
+                    context.state().response.status = REQUEST_ENTITY_TOO_LARGE;
                     break;
                 }
                 crlf_offset = length.saturating_sub(4);
@@ -914,7 +911,7 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             crlf_offset = 0;
             // The header first, so `max - header_length` cannot underflow.
             if header_length > max {
-                context.state().response.status = ENTITY_TOO_LARGE;
+                context.state().response.status = REQUEST_ENTITY_TOO_LARGE;
                 break;
             }
             // The parser `context` initialised.
@@ -927,7 +924,7 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             buffer.set_offset(next);
             let content_length = context.state().parser.content_length;
             if content_length > (max - header_length) as u64 {
-                context.state().response.status = ENTITY_TOO_LARGE;
+                context.state().response.status = REQUEST_ENTITY_TOO_LARGE;
                 break;
             }
             total = header_length + usize::try_from(content_length).unwrap_or(usize::MAX);
@@ -965,7 +962,7 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             if chunked {
                 if !context.state().completed {
                     if buffer.len() >= max {
-                        context.state().response.status = ENTITY_TOO_LARGE;
+                        context.state().response.status = REQUEST_ENTITY_TOO_LARGE;
                         break;
                     }
                     if buffer.len() == buffer.size() {

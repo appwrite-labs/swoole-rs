@@ -8,6 +8,7 @@ use crate::session::{Session, SessionState, Stream};
 use libc::c_int;
 use std::ffi::{CStr, CString};
 use swoole_rs_corebase::CCast;
+use swoole_rs_http::status::REQUEST_ENTITY_TOO_LARGE;
 use swoole_rs_http2::frame_flag::{
     ACK as FLAG_ACK, END_HEADERS as FLAG_END_HEADERS, END_STREAM as FLAG_END_STREAM,
     PADDED as FLAG_PADDED, PRIORITY as FLAG_PRIORITY,
@@ -35,8 +36,6 @@ const GOAWAY_SIZE: usize = 8;
 const MISSING_SERVER: u32 = 2;
 const MISSING_DATE: u32 = 16;
 const MISSING_CONTENT_TYPE: u32 = 32;
-/// `SW_HTTP_REQUEST_ENTITY_TOO_LARGE`.
-const ENTITY_TOO_LARGE: u32 = 413;
 use swoole_rs_http2::setting_id;
 /// `swoole::http2::Settings` field indexes.
 const INIT_WINDOW_SIZE: usize = 3;
@@ -1020,7 +1019,7 @@ fn content_length_valid(session: &Session, value: &[u8]) -> bool {
 fn headers_complete(stream: &Stream) -> bool {
     let ctx = stream.ctx();
     if stream.bad_length.get() {
-        send_status_code(ctx, ENTITY_TOO_LARGE);
+        send_status_code(ctx, REQUEST_ENTITY_TOO_LARGE.cast_unsigned());
         return false;
     }
     if !stream.negotiates.get() {
