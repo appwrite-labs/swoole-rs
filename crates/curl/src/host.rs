@@ -64,8 +64,9 @@ fn socket_new(fd: c_int) -> EventSocket {
 /// Upstream's `PHP_SWOOLE_FD_CO_CURL`: `SW_FD_STREAM_CLIENT + 10`.
 const FD_CO_CURL: c_int = 17 + 10;
 /// `SW_ERROR_CO_OUT_OF_COROUTINE` and `SW_ERROR_CO_HAS_BEEN_BOUND`.
-const CO_OUT_OF_COROUTINE: c_int = 10001;
-const CO_HAS_BEEN_BOUND: c_int = 10002;
+const CO_OUT_OF_COROUTINE: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as c_int;
+const CO_HAS_BEEN_BOUND: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CO_HAS_BEEN_BOUND as c_int;
 
 /// The reactor's handler for the cURL fd type: `BITMASK` happened on the
 /// socket a [`crate::Socket`] owns, which nothing reaches once the multi dropped it.

@@ -144,7 +144,7 @@ pub fn system_sleep(sec: f64) -> bool {
     #[cfg(not(feature = "iouring"))]
     {
         /// `SW_ERROR_CO_CANCELED`: what `yield_ex` sets when the coroutine was canceled.
-        const CANCELED: i32 = 10017;
+        const CANCELED: i32 = swoole_rs_error::ErrorCode::SW_ERROR_CO_CANCELED as i32;
         // `co->yield_ex(timeout)` of the current coroutine (fatal outside one).
         let co = swoole_rs_corebase::coroutine::current_safe();
         let code = swoole_rs_corebase::coroutine::yield_timed(

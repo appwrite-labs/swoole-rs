@@ -237,7 +237,8 @@ pub fn in_coroutine() -> bool {
 /// The fatal error's bailout.
 pub fn coroutine_check() -> Result<(), swoole_rs_zend::bailout::Bailout> {
     /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
-    const OUT_OF_COROUTINE: c_int = 10001;
+    const OUT_OF_COROUTINE: c_int =
+        swoole_rs_error::ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as c_int;
     if in_coroutine() {
         return Ok(());
     }

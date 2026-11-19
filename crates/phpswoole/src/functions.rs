@@ -59,7 +59,7 @@ const STRERROR_DNS: i64 = 2;
 const STRERROR_SWOOLE: i64 = 9;
 /// `SW_ERROR_BEGIN` and `SW_ERROR_END`.
 const ERROR_BEGIN: i64 = swoole_rs_error::ErrorCode::SW_ERROR_BEGIN as i64;
-const ERROR_END: i64 = 10020;
+const ERROR_END: i64 = swoole_rs_error::ErrorCode::SW_ERROR_END as i64;
 /// `SW_ERROR_MSG_SIZE`: `swoole_error_log` formats into a buffer this big.
 const ERROR_MSG_SIZE: usize = 16384;
 /// `PHP_JSON_PARSER_DEFAULT_DEPTH` and `PHP_JSON_OBJECT_AS_ARRAY`.

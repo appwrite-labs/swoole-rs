@@ -8,7 +8,8 @@ use swoole_rs_zend::{Call, Custom, CustomClass, Owned, OwnedArray, Value, ZStr, 
 use swoole_rs_zend::{method_table, sys as z};
 
 /// `SW_ERROR_HTTP_COOKIE_UNAVAILABLE`.
-const COOKIE_UNAVAILABLE: std::ffi::c_int = 7107;
+const COOKIE_UNAVAILABLE: std::ffi::c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_HTTP_COOKIE_UNAVAILABLE as std::ffi::c_int;
 
 static COOKIE: CustomClass<Held> = CustomClass::new();
 

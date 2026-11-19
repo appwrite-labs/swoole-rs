@@ -24,7 +24,7 @@ unsafe extern "C" {
 const REQUIRED: u8 = 1;
 const CONFLICTS: u8 = 2;
 /// `SW_ERROR_CO_HAS_BEEN_BOUND`.
-const CO_HAS_BEEN_BOUND: c_int = 10002;
+const CO_HAS_BEEN_BOUND: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CO_HAS_BEEN_BOUND as c_int;
 
 static ENTRY: AtomicPtr<zend_module_entry> = AtomicPtr::new(ptr::null_mut());
 

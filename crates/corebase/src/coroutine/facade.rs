@@ -24,11 +24,13 @@ use core::ptr;
 use std::ffi::{CStr, CString};
 use std::io;
 
-const SW_ERROR_MALLOC_FAIL: c_int = 501;
-const SW_ERROR_CO_HAS_BEEN_BOUND: c_int = 10002;
-const SW_ERROR_CO_CANNOT_CANCEL: c_int = 10015;
-const SW_ERROR_CO_CANCELED: c_int = 10017;
-const SW_ERROR_CO_TIMEDOUT: c_int = 10018;
+const SW_ERROR_MALLOC_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as c_int;
+const SW_ERROR_CO_HAS_BEEN_BOUND: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_CO_HAS_BEEN_BOUND as c_int;
+const SW_ERROR_CO_CANNOT_CANCEL: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_CO_CANNOT_CANCEL as c_int;
+const SW_ERROR_CO_CANCELED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CO_CANCELED as c_int;
+const SW_ERROR_CO_TIMEDOUT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CO_TIMEDOUT as c_int;
 const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
 /// [`build`]'s `SW_CORO_TIME` bit, beside the context's flags.
 const CORO_TIME: u32 = 8;
