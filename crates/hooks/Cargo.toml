@@ -26,6 +26,7 @@ openssl-sys = { version = "=0.9.118", optional = true }
 swoole-rs-ssh2-sys = { path = "../ssh2-sys", optional = true }
 
 [dev-dependencies]
+swoole-rs-corebase = { path = "../corebase", features = ["test-records"] }
 swoole-rs-oracle = { path = "../oracle" }
 [lints]
 workspace = true

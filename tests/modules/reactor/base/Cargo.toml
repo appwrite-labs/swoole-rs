@@ -16,6 +16,7 @@ test = false
 
 [dependencies]
 libc = "=0.2.191"
+swoole-rs-corebase = { path = "../../../../crates/corebase", features = ["test-records"] }
 swoole-rs-ffi = { path = "../../../../crates/ffi" }
 
 [lints]
