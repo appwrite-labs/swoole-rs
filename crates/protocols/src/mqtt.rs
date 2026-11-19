@@ -1,3 +1,6 @@
+/// Maximum width of MQTT's remaining length (`SW_MQTT_MAX_LENGTH_SIZE`).
+pub const MQTT_MAX_LENGTH_SIZE: u8 = 4;
+
 /// MQTT's remaining length continues beyond its four-byte limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemainingLengthTooLong;
@@ -10,12 +13,12 @@ pub struct RemainingLengthTooLong;
 /// [`RemainingLengthTooLong`] when the fourth length byte still has its continuation bit set.
 pub fn mqtt_frame_length(bytes: &[u8]) -> Result<Option<usize>, RemainingLengthTooLong> {
     let mut length = 0;
-    for (position, byte) in (0usize..).zip(bytes.iter().skip(1).take(4)) {
+    for (position, byte) in bytes.iter().skip(1).enumerate() {
         length += usize::from(byte & 127) << (7 * position);
         if byte & 128 == 0 {
             return Ok(Some(length + position + 2));
         }
-        if position == 3 {
+        if position + 1 == usize::from(MQTT_MAX_LENGTH_SIZE) {
             return Err(RemainingLengthTooLong);
         }
     }

@@ -1,10 +1,8 @@
 //! `swoole::mqtt`'s entries, over [`mqtt_frame_length`].
 use crate::protocol::Protocol;
 use swoole_rs_corebase::net_types::PacketLength;
-use swoole_rs_protocols::mqtt_frame_length;
-
-/// `SW_MQTT_MAX_LENGTH_SIZE`.
-const MAX_LENGTH_SIZE: u8 = 4;
+use swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE;
+use swoole_rs_protocols::{MQTT_MAX_LENGTH_SIZE as MAX_LENGTH_SIZE, mqtt_frame_length};
 
 /// `swoole::mqtt::set_protocol(protocol)`.
 pub fn set_protocol(protocol: &mut Protocol) {
@@ -28,7 +26,7 @@ pub fn get_package_length(
     } else {
         swoole_rs_corebase::log::error_log(
             swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
-            /* SW_ERROR_PACKAGE_LENGTH_TOO_LARGE */ 1201,
+            SW_ERROR_PACKAGE_LENGTH_TOO_LARGE as i32,
             c"mqtt::get_package_length",
             format_args!("bad request, the variable header size is larger than {MAX_LENGTH_SIZE}"),
         );
