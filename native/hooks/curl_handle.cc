@@ -485,6 +485,25 @@ extern "C" void swoole_curl_bind_io(php_curl *ch) {
     curl_easy_setopt(ch->cp, CURLOPT_HEADERDATA, ch);
 }
 
+template <typename Stream>
+static void copy_stream(Stream *copy, const Stream *source) {
+    ZVAL_COPY(&copy->stream, &source->stream);
+    copy->method = source->method;
+    copy->fp = source->fp;
+}
+
+extern "C" void swoole_curl_copy_streams(php_curl *ch, php_curl *source) {
+    copy_stream(ch->handlers.write, source->handlers.write);
+    copy_stream(ch->handlers.read, source->handlers.read);
+    copy_stream(ch->handlers.write_header, source->handlers.write_header);
+    ch->handlers.read->res = source->handlers.read->res;
+    curl_easy_setopt(ch->cp, CURLOPT_ERRORBUFFER, ch->err.str);
+    curl_easy_setopt(ch->cp, CURLOPT_WRITEDATA, ch);
+    curl_easy_setopt(ch->cp, CURLOPT_READDATA, ch);
+    curl_easy_setopt(ch->cp, CURLOPT_HEADERDATA, ch);
+    curl_easy_setopt(ch->cp, CURLOPT_DEBUGDATA, ch);
+}
+
 extern "C" bool swoole_curl_use_cafile(php_curl *ch, const char *directive) {
     const char *path = INI_STR(directive);
     if (!path || !*path) {
@@ -968,6 +987,29 @@ static bool callable_slot(php_curl *ch, int option, bool create, zval **name, ze
     return true;
 }
 #endif
+
+/* Stream userdata is bound unconditionally above. Other callbacks bind their
+ * userdata only when the source has a callback slot to copy. */
+extern "C" void swoole_curl_copy_callback(php_curl *ch, php_curl *source, int option, int data_option) {
+#if PHP_VERSION_ID >= 80400
+    auto *from = callable_slot(source, option);
+    if (!from || !ZEND_FCC_INITIALIZED(*from)) {
+        return;
+    }
+    zend_fcc_dup(callable_slot(ch, option), from);
+#else
+    zval *from, *to;
+    zend_fcall_info_cache *cache;
+    if (!callable_slot(source, option, false, &from, &cache)) {
+        return;
+    }
+    callable_slot(ch, option, true, &to, &cache);
+    ZVAL_COPY(to, from);
+#endif
+    if (data_option) {
+        curl_easy_setopt(ch->cp, (CURLoption) data_option, ch);
+    }
+}
 
 extern "C" bool swoole_curl_has_callable(php_curl *ch, int option) {
 #if PHP_VERSION_ID >= 80400

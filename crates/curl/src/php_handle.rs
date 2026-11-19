@@ -80,7 +80,6 @@ unsafe extern "C" {
     safe fn swoole_curl_share_lists(handle: PhpHandle<'_>, source: PhpHandle<'_>);
     pub(super) safe fn swoole_curl_set_easy(handle: PhpHandle<'_>, easy: Easy<'_>);
     safe fn curl_easy_duphandle(source: Easy<'_>) -> *mut swoole_rs_curl_sys::CURL;
-    safe fn swoole_setup_easy_copy_handlers(clone: PhpHandle<'_>, source: PhpHandle<'_>);
     safe fn swoole_curl_error_number(handle: PhpHandle<'_>) -> c_int;
     safe fn swoole_curl_error_buffer(handle: PhpHandle<'_>) -> Text<'_>;
     safe fn curl_easy_strerror(code: c_int) -> Text<'static>;
@@ -301,7 +300,8 @@ fn init_copy(copy: PhpHandle<'_>, source: PhpHandle<'_>, easy: Easy<'_>) {
     swoole_curl_alloc_handlers(copy);
     swoole_curl_share_lists(copy, source);
     swoole_curl_set_easy(copy, easy);
-    swoole_setup_easy_copy_handlers(copy, source);
+    super::callbacks::copy_handlers(copy, source);
+    *super::setopt::swoole_curl_private(copy) = super::setopt::swoole_curl_private(source).copy();
 }
 
 pub(super) fn pushed_object(
