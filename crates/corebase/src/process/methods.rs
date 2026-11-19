@@ -177,11 +177,9 @@ pub fn send_pipe_message(
     data: &[u8],
     flags: c_int,
 ) -> Option<usize> {
-    /// `SW_PIPE_MASTER`.
-    const PIPE_MASTER: c_int = 1;
     let pool = worker.pool_ref()?;
     let id = worker.id();
-    let pipe = if flags & PIPE_MASTER != 0 {
+    let pipe = if flags & crate::process::pool::PIPE_MASTER != 0 {
         worker.pipe_master()
     } else {
         worker.pipe_worker()

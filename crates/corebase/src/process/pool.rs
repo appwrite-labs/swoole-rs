@@ -47,7 +47,7 @@ const PACKET_TASK: usize = size_of::<super::task_file::PacketTask>();
 const MTYPE: usize = size_of::<c_long>();
 
 /// `SW_PIPE_MASTER` and `SW_PIPE_NONBLOCK`.
-const PIPE_MASTER: c_int = PipeType::SW_PIPE_MASTER as c_int;
+pub(crate) const PIPE_MASTER: c_int = PipeType::SW_PIPE_MASTER as c_int;
 pub(crate) const PIPE_NONBLOCK: c_int = PipeType::SW_PIPE_NONBLOCK as c_int;
 
 /// A warning native code formats (`PoolNative::warn`); `errno` is the failed
