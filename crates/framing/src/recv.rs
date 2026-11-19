@@ -410,7 +410,8 @@ impl<E: Effects> Recv<'_, E> {
                     let double = size.wrapping_mul(2);
                     #[expect(
                         clippy::cast_possible_truncation,
-                        reason = "upstream's uint32_t extend_size"
+                        reason = "upstream's uint32_t extend_size keeps the low 32 bits; this \
+                                  crate is below corebase, so it has no c_cast"
                     )]
                     let extend = double.wrapping_add(page - double % page) as u32;
                     self.op(Op::Extend, extend.min(max) as usize);
