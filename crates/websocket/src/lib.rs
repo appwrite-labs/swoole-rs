@@ -65,6 +65,10 @@ impl Opcode {
     }
 }
 
+/// Raw and base64-encoded lengths of the handshake nonce.
+pub const KEY_LEN: usize = swoole_rs_corebase::constants::SW_WEBSOCKET_KEY_LENGTH as usize;
+pub const ENCODED_KEY_LEN: usize = KEY_LEN.div_ceil(3) * 4;
+
 /// RFC 6455's handshake GUID (`SW_WEBSOCKET_GUID`).
 const GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
