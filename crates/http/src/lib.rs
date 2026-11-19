@@ -79,7 +79,7 @@ pub use static_path::{HttpStaticPath, StaticPhase, location_match};
 
 /// `input` up to its first NUL, or all of it.
 fn c_text(input: &[u8]) -> &[u8] {
-    input.split(|&b| b == 0).next().unwrap_or_default()
+    std::ffi::CStr::from_bytes_until_nul(input).map_or(input, std::ffi::CStr::to_bytes)
 }
 /// `input[at..]`, or empty past the end.
 fn tail(input: &[u8], at: usize) -> &[u8] {

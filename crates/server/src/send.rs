@@ -22,9 +22,7 @@ use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::log::LogLevel::{
     SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING,
 };
-use swoole_rs_corebase::reactor::{
-    ChangeOp, Drain, Interest, Socket, record_send, record_write, steady_ms,
-};
+use swoole_rs_corebase::reactor::{ChangeOp, Drain, Interest, Socket, count_write, steady_ms};
 use swoole_rs_corebase::reactor::{Events, SocketFields};
 use swoole_rs_corebase::{CCast, DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
@@ -85,7 +83,7 @@ fn sends_here(state: &ServerState, session_id: core::ffi::c_long) -> bool {
 
 /// [`send`] of `head` then `body` as one `writev(2)`, so a large body is not copied
 /// behind its head. `None`, with nothing sent, unless this worker writes straight to the
-/// session's socket ([`writes_now`]): the caller joins the two for [`send`]. What the
+/// session's socket ([`write_now`]): the caller joins the two for [`send`]. What the
 /// socket does not take is queued, as [`send`] queues it.
 #[must_use]
 pub fn send_parts(
@@ -98,11 +96,11 @@ pub fn send_parts(
     if serv.config().mode_ == Mode::Process || !sends_here(state, session_id) {
         return None;
     }
-    let (conn, socket) = writes_now(state, session_id)?;
     let parts = [IoSlice::new(head), IoSlice::new(body)];
     let write = |fd| swoole_rs_corebase::tls::upstream::writev(fd, &parts);
     // A failed write sent nothing: all of it is queued, where the reactor meets the error.
-    let sent = record_write(socket, write, steady_ms).unwrap_or(0);
+    let (conn, sent) = write_now(state, session_id, write)?;
+    let sent = sent.unwrap_or(0);
     let total = head.len() + body.len();
     let done = if sent == total {
         conn.set_last_send_time(microtime());
@@ -129,25 +127,28 @@ pub fn send_parts(
     Some(done)
 }
 
-/// The session's verified connection and socket when a send can be written to the
-/// socket here and now: no overflow, and a socket that sends directly, without TLS and
-/// with no output buffer yet. Inlined into each send: out of line it costs the
-/// callgrind `socket` workload about 20 instructions a request (#3908).
+/// A direct plaintext write on this worker's session. Read the descriptor and retry
+/// policy together with the direct-send checks, then release the borrow before I/O.
 #[inline(always)]
-fn writes_now(
+fn write_now(
     state: &ServerState,
     session_id: core::ffi::c_long,
-) -> Option<(Connection<'_>, Socket<'_>)> {
+    write: impl Fn(c_int) -> Option<usize>,
+) -> Option<(Connection<'_>, Option<usize>)> {
     let conn = state.connection(session_id, Lookup::VerifiedTls)?;
+    if conn.overflow() {
+        return None;
+    }
     let socket = conn.socket()?;
-    let queues = conn.overflow()
-        || socket.read(|record| {
-            !record.direct_send || !record.ssl().is_null() || record.output.out_buffer.is_some()
-        });
-    (!queues).then_some((conn, *socket))
+    let (fd, dont_restart) = socket.read(|s| {
+        (s.direct_send && s.ssl().is_null() && s.output.out_buffer.is_none())
+            .then_some((s.fd, s.dont_restart))
+    })?;
+    let sent = count_write(*socket, dont_restart, || write(fd), steady_ms);
+    Some((conn, sent))
 }
 
-/// [`send`]'s direct write, made here when it needs nothing else ([`writes_now`]).
+/// [`send`]'s direct write, made here when it needs nothing else ([`write_now`]).
 /// `None` leaves the whole send to [`to_connection`]; otherwise `Socket::send`'s result
 /// after EINTR retries, and the session's connection, whose `last_send_time` a complete
 /// send has set.
@@ -156,11 +157,10 @@ fn send_now<'a>(
     session_id: core::ffi::c_long,
     data: &[u8],
 ) -> Option<(i64, Connection<'a>)> {
-    let (conn, socket) = writes_now(state, session_id)?;
-    let sent = loop {
-        let sent = record_send(socket, Drain::new(data), 0, |_, _| None, steady_ms);
+    let (conn, sent) = loop {
+        let (conn, sent) = write_now(state, session_id, |fd| Drain::new(data).send(fd, 0))?;
         if sent.is_some() || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-            break sent;
+            break (conn, sent);
         }
     };
     if sent == Some(data.len()) {
@@ -243,24 +243,25 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         return true;
     }
     let halfclose = cfg!(feature = "halfclose");
-    let (removed, notified, events) = sock.read(|s| (s.removed, s.close_notified, s.events));
-    let (reading, writing) = (
-        events.intersects(Events::READ),
-        events.intersects(Events::WRITE),
-    );
-    if kind == Some(ServerEvent::PauseRecv) {
-        if removed || !reading {
-            return true;
+    if matches!(kind, Some(ServerEvent::PauseRecv | ServerEvent::ResumeRecv)) {
+        let (removed, notified, events) = sock.read(|s| (s.removed, s.close_notified, s.events));
+        let (reading, writing) = (
+            events.intersects(Events::READ),
+            events.intersects(Events::WRITE),
+        );
+        if kind == Some(ServerEvent::PauseRecv) {
+            if removed || !reading {
+                return true;
+            }
+            return if halfclose {
+                reactor.interest(sock, Interest::RemoveRead)
+            } else if writing {
+                reactor.change(sock, ChangeOp::Set, Events::WRITE)
+            } else {
+                reactor.del(*sock)
+            };
         }
-        return if halfclose {
-            reactor.interest(sock, Interest::RemoveRead)
-        } else if writing {
-            reactor.change(sock, ChangeOp::Set, Events::WRITE)
-        } else {
-            reactor.del(*sock)
-        };
-    }
-    if kind == Some(ServerEvent::ResumeRecv) {
+
         let skip = if halfclose {
             let closing = conn.closed().load(core::sync::atomic::Ordering::Relaxed) != 0;
             closing || conn.peer_closed() || conn.close_queued() || notified || reading

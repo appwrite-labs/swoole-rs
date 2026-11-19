@@ -653,11 +653,8 @@ impl crate::ServerState {
     }
 
     /// The connection slot `kind` finds for `key`.
+    #[inline(always)]
     pub(crate) fn connection(&self, key: libc::c_long, kind: Lookup) -> Option<Connection<'_>> {
-        self.lookup(key, kind)
-    }
-
-    fn lookup(&self, key: libc::c_long, kind: Lookup) -> Option<Connection<'_>> {
         let tables = self.tables_ref();
         let mut session_id = 0;
         let fd = if matches!(

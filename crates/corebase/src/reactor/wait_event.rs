@@ -160,7 +160,7 @@ pub fn wait_event(fd: i32, events: Events, timeout: f64) -> Result<Events, WaitE
 pub(crate) mod native {
     use crate::constants::FdType;
     use crate::log;
-    use crate::reactor::event_api::swoole_event_is_available;
+    use crate::reactor::{ChangeOp, event_api, reactor_upstream};
     use crate::reactor::{Events, SocketRecord};
     use crate::tls::event_socket::EventSocket;
     use core::ffi::c_int;
@@ -195,9 +195,7 @@ pub(crate) mod native {
         /// # Errors
         /// The last error, when there is no reactor or it refuses the socket.
         pub(crate) fn add(fd: i32, events: Events, object: Object) -> Result<Self, i32> {
-            if !swoole_event_is_available() {
-                return Err(WRONG_OPERATION);
-            }
+            let reactor = event_api::available().ok_or(WRONG_OPERATION)?;
             let (fd_type, object) = match object {
                 Object::Poll(task) => (FdType::SW_FD_CO_POLL, task.as_ptr()),
                 Object::Waiter(waiter) => (FdType::SW_FD_CO_EVENT, waiter.as_ptr()),
@@ -206,19 +204,13 @@ pub(crate) mod native {
             record.object = object;
             // The record is this watch's until it drops, off the reactor by then.
             let socket = EventSocket::adopt(Box::new(record));
-            if !socket.add(events) {
+            if !reactor_upstream::change(reactor, socket.heap(), ChangeOp::Add, events) {
                 let error = log::last_error();
-                release(socket);
+                socket.release_record(true);
                 return Err(error);
             }
             Ok(Self(Some(socket)))
         }
-    }
-
-    /// Frees the record, off the reactor, without closing the fd it borrows.
-    fn release(socket: EventSocket) {
-        socket.socket().edit(|record| record.fd = -1);
-        socket.free(false);
     }
 
     impl Drop for Watch {
@@ -226,10 +218,10 @@ pub(crate) mod native {
             let Some(socket) = self.0.take() else {
                 return;
             };
-            if swoole_event_is_available() {
-                _ = socket.del();
+            if let Some(reactor) = event_api::available() {
+                _ = reactor_upstream::reactor_del(reactor, socket.socket());
             }
-            release(socket);
+            socket.release_record(true);
         }
     }
 

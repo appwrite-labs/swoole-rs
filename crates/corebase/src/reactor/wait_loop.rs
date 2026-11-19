@@ -280,7 +280,7 @@ fn ready(ops: &Loop<'_>, socket: crate::reactor::Heap<'static>, fd: c_int, mask:
             handler_failed(ops, &event, Table::Error);
         }
     }
-    oneshot(ops, *socket, live);
+    oneshot(ops, *socket);
 }
 
 /// kqueue: one socket entry per filter, or a signal, as upstream's `ReactorKqueue::wait`.
@@ -316,7 +316,7 @@ fn kqueue(ops: &Loop<'_>, event: &libc::kevent) {
         if !handled {
             handler_failed(ops, &event, kind);
         }
-        oneshot(ops, *socket, live);
+        oneshot(ops, *socket);
     } else if filter == c_int::from(libc::EVFILT_SIGNAL) {
         // A signal entry's ident is its signal number, whose table slot is its udata.
         dispatch_signal(c_int::try_from(event.ident).unwrap_or(0));
@@ -496,11 +496,9 @@ fn registered(socket: Socket<'_>) -> bool {
     socket.read(|record| !record.removed)
 }
 
-fn oneshot(ops: &Loop<'_>, socket: Socket<'_>, live: impl Fn() -> bool) {
-    if live()
-        && socket
-            .read(|record| record.events)
-            .intersects(crate::reactor::Events::ONCE)
+fn oneshot(ops: &Loop<'_>, socket: Socket<'_>) {
+    if socket
+        .read(|record| !record.removed && record.events.intersects(crate::reactor::Events::ONCE))
     {
         if ops.backend == BackendKind::Epoll {
             // epoll's oneshot entry is already disarmed, so only the registry forgets it.

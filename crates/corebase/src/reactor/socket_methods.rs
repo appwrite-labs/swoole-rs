@@ -115,7 +115,9 @@ impl SocketFields {
     }
 }
 
-/// The record's fd, its blocking flags and whether it holds an `SSL`.
+/// The record's fd, its blocking flags and whether it holds an `SSL`. Inlining lets each
+/// I/O operation load only the fields it uses under the single socket borrow.
+#[inline(always)]
 fn io_of(socket: Socket<'_>) -> (c_int, bool, bool, bool) {
     socket.read(|record| {
         (
@@ -132,6 +134,7 @@ fn io_of(socket: Socket<'_>) -> (c_int, bool, bool, bool) {
 /// into `total_recv_bytes` and, with a receive timer, `last_received_time`. A read that
 /// would block after `POLLHUP` reads as end of stream. `tls` runs only for a record
 /// that holds an `SSL`.
+#[inline(always)]
 pub fn record_recv(
     socket: Socket<'_>,
     buffer: &mut Spare<'_>,
@@ -163,28 +166,27 @@ pub fn record_recv(
         } else {
             buffer.recv(fd, flags)
         };
-        if !(total.is_none() && interrupted() && !dont_restart) {
-            break total;
+        if let Some(received) = total {
+            break received;
         }
+        let error = crate::sys::errno();
+        if error == libc::EINTR && !dont_restart {
+            continue;
+        }
+        return (socket.catch_error(error) == crate::reactor::Caught::Wait
+            && socket.read(|record| record.event_hup))
+        .then_some(0);
     };
-    if let Some(received @ 1..) = total
+    if total != 0
         && socket.edit(|record| {
-            record.total_recv_bytes += received;
+            record.total_recv_bytes += total;
             record.recv_timer.is_some()
         })
     {
         let time = now();
         socket.edit(|record| record.last_received_time = time);
-    } else if total.is_none() {
-        // Nothing since the call has touched errno.
-        let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        if socket.catch_error(error) == crate::reactor::Caught::Wait
-            && socket.read(|record| record.event_hup)
-        {
-            return Some(0);
-        }
     }
-    total
+    Some(total)
 }
 
 /// `Socket::send`: send(2) or one `tls` write, retried on EINTR unless `dont_restart`,
@@ -205,7 +207,7 @@ pub fn record_send(
             data.send(fd, flags)
         }
     };
-    counted(socket, dont_restart, write, now)
+    count_write(socket, dont_restart, write, now)
 }
 
 /// [`record_send`]'s retries and counts around any `write` to the record's fd.
@@ -215,13 +217,13 @@ pub fn record_write(
     now: SteadyMs,
 ) -> Option<usize> {
     let (fd, _, dont_restart, _) = io_of(socket);
-    counted(socket, dont_restart, || write(fd), now)
+    count_write(socket, dont_restart, || write(fd), now)
 }
 
 /// `write`, retried on EINTR unless `dont_restart`, counted into `total_send_bytes`
 /// and, with a send timer, `last_sent_time`.
 #[inline(always)]
-fn counted(
+pub fn count_write(
     socket: Socket<'_>,
     dont_restart: bool,
     write: impl Fn() -> Option<usize>,
@@ -294,7 +296,7 @@ mod tests {
 
     #[test]
     fn native_event_want_preserves_write_priority_and_default() {
-        let mut socket: SocketRecord = unsafe { std::mem::zeroed() };
+        let mut socket = SocketRecord::new();
         for ssl in [false, true] {
             socket.set_ssl(ssl.then(crate::reactor::SocketSsl::stub));
             for read in [false, true] {

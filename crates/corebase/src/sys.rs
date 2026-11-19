@@ -430,6 +430,17 @@ pub const fn socklen<T>() -> libc::socklen_t {
     }
 }
 
+/// The address of a live thread's aligned libc errno slot identifies its socket borrows.
+pub(crate) fn thread_token() -> usize {
+    const {
+        assert!(
+            align_of::<c_int>() >= 4,
+            "socket borrow tags need two free address bits"
+        );
+    }
+    c::errno_location().as_ptr().addr()
+}
+
 /// This thread's errno.
 #[must_use]
 pub fn errno() -> c_int {
