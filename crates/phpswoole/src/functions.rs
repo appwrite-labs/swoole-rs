@@ -68,7 +68,8 @@ const JSON_DEFAULT_DEPTH: i64 = 512;
 const JSON_OBJECT_AS_ARRAY: i64 = 1;
 
 unsafe extern "C" {
-    /// `<netdb.h>`; not in the libc crate. Any code names a static message.
+    /// `<netdb.h>`. Declared here, not taken from the libc crate, for its safe signature:
+    /// any code names a static message.
     safe fn hstrerror(error: c_int) -> Text<'static>;
     /// `<netdb.h>`, likewise.
     safe fn gai_strerror(error: c_int) -> Text<'static>;
