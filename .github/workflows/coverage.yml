@@ -121,21 +121,20 @@ jobs:
         run: sudo phpdismod -v ALL -s ALL xdebug
       - name: Prepare hyperf
         run: python3 corpus/thirdparty/hyperf.py --prepare
+      # The Cargo build links symbols of curl, sockets, mysqlnd and others, so every installed
+      # extension loads first, as for the PHPTs.
+      - name: List PHP extensions
+        id: extensions
+        run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
       # Failed cases still count toward coverage; a run that wrote no report is a broken harness.
-      # The Cargo build links ext/sockets' socket_ce, so sockets loads before it.
       - name: Run corpus apps
         run: >
-          python3 corpus/run.py --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets
+          python3 corpus/run.py ${{ steps.extensions.outputs.args }}
           $(for p in 01-hello 02-router 03-notes 04-job-service 05-coroutines 06-websocket 07-tcp-framing 08-timers 09-shared-table 10-task-workers 12-hyperf-skeleton; do echo --project $p; done)
           --engine cargo=target/phpt/cargo.so --output target/coverage/corpus.json
           || { rc=$?; test -s target/coverage/corpus.json || exit $rc;
           echo "::warning title=Coverage corpus::exit $rc: some apps failed; their coverage still counts"; }
       # The differential suite as integrate's api-fuzz runs it (#2255): seed 0's programs and the cases.
-      # The Cargo build links symbols of curl, sockets and others, so every installed extension
-      # loads first, as for the PHPTs.
-      - name: List PHP extensions
-        id: extensions
-        run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
       - name: Run differential suite
         run: >
           python3 tests/differential/fuzz.py ${{ steps.extensions.outputs.args }}
