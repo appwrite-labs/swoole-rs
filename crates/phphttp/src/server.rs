@@ -576,11 +576,9 @@ fn http2_connection(
     Some((conn, facts))
 }
 
-/// `SW_HTTP_VERSION_2`, `SW_HTTP_SERVICE_UNAVAILABLE` and
-/// `SW_HTTP2_ERROR_INTERNAL_ERROR`.
+/// `SW_HTTP_VERSION_2` and `SW_HTTP_SERVICE_UNAVAILABLE`.
 const HTTP_VERSION_2: c_int = 3;
 const SERVICE_UNAVAILABLE_STATUS: c_int = 503;
-const HTTP2_INTERNAL_ERROR: u32 = 2;
 
 /// `http2_server_onRequest`: a finished HTTP/2 request on a server's
 /// connection (the session's handler), answered by the static handler or the
@@ -657,7 +655,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         Err(bailout) => bailout.defer(),
         Ok(false) => {
             let stream_id = ctx.state().stream_id;
-            (http2.reset)(ctx, stream_id, HTTP2_INTERNAL_ERROR);
+            (http2.reset)(ctx, stream_id, swoole_rs_http2::error_code::INTERNAL_ERROR);
             host::notice("Swoole\\Http\\Server->onRequest[v2] handler error");
         }
         Ok(true) => {}

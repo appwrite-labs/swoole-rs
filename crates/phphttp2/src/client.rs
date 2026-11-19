@@ -14,6 +14,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_close_hook};
+use swoole_rs_http2::error_code;
 use swoole_rs_http2::frame_flag::{
     ACK as FLAG_ACK, END_STREAM as FLAG_END_STREAM, PRIORITY as FLAG_PRIORITY,
 };
@@ -867,7 +868,10 @@ impl Client {
             Err(error) => {
                 if matches!(error, FrameReadError::Goaway) {
                     self.close();
-                    self.update_error(6, b"invalid GOAWAY frame length");
+                    self.update_error(
+                        error_code::FRAME_SIZE_ERROR.cast_signed(),
+                        b"invalid GOAWAY frame length",
+                    );
                 }
                 return Frame::Fail;
             }
@@ -1270,13 +1274,19 @@ const CONSTANTS: [(&CStr, i64); 24] = [
     (c"SWOOLE_HTTP2_TYPE_GOAWAY", 7),
     (c"SWOOLE_HTTP2_TYPE_WINDOW_UPDATE", 8),
     (c"SWOOLE_HTTP2_TYPE_CONTINUATION", 9),
-    (c"SWOOLE_HTTP2_ERROR_NO_ERROR", 0),
+    (c"SWOOLE_HTTP2_ERROR_NO_ERROR", error_code::NO_ERROR as i64),
     (c"SWOOLE_HTTP2_ERROR_PROTOCOL_ERROR", 1),
-    (c"SWOOLE_HTTP2_ERROR_INTERNAL_ERROR", 2),
+    (
+        c"SWOOLE_HTTP2_ERROR_INTERNAL_ERROR",
+        error_code::INTERNAL_ERROR as i64,
+    ),
     (c"SWOOLE_HTTP2_ERROR_FLOW_CONTROL_ERROR", 3),
     (c"SWOOLE_HTTP2_ERROR_SETTINGS_TIMEOUT", 4),
     (c"SWOOLE_HTTP2_ERROR_STREAM_CLOSED", 5),
-    (c"SWOOLE_HTTP2_ERROR_FRAME_SIZE_ERROR", 6),
+    (
+        c"SWOOLE_HTTP2_ERROR_FRAME_SIZE_ERROR",
+        error_code::FRAME_SIZE_ERROR as i64,
+    ),
     (c"SWOOLE_HTTP2_ERROR_REFUSED_STREAM", 7),
     (c"SWOOLE_HTTP2_ERROR_CANCEL", 8),
     (c"SWOOLE_HTTP2_ERROR_COMPRESSION_ERROR", 9),
@@ -1594,9 +1604,12 @@ fn goaway(call: &Call) {
     if !client.is_available() {
         return call.set_bool(false);
     }
-    let parsed = call
-        .arity(0, 2)
-        .and_then(|()| Ok((call.long(1, 0)?, call.string(2, b"")?)));
+    let parsed = call.arity(0, 2).and_then(|()| {
+        Ok((
+            call.long(1, i64::from(error_code::NO_ERROR))?,
+            call.string(2, b"")?,
+        ))
+    });
     let Ok((code, debug)) = parsed else {
         return call.set_bool(false);
     };

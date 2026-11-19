@@ -163,6 +163,13 @@ pub fn sw_rs_http2_data_rejected(
     current.wrapping_add(additional) > maximum as usize || ended
 }
 
+/// HTTP/2 error codes used by both the wire handlers and PHP registration.
+pub mod error_code {
+    pub const NO_ERROR: u32 = 0;
+    pub const INTERNAL_ERROR: u32 = 2;
+    pub const FRAME_SIZE_ERROR: u32 = 6;
+}
+
 /// The frame types this side sends (`SW_HTTP2_TYPE_*`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
