@@ -11,8 +11,9 @@ description = "PHP Swoole\\Server family classes over the zend crates"
 [features]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
 php = ["swoole-rs-zend?/php", "swoole-rs-phpstubs?/php", "swoole-rs-phpswoole?/php"]
-# Swoole\\Server, Server\\Port and their data classes.
-server = ["dep:swoole-rs-zend", "dep:swoole-rs-phpstubs", "dep:swoole-rs-ports", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php", "dep:swoole-rs-server", "dep:swoole-rs-clients", "dep:swoole-rs-hooks", "dep:libc", "dep:swoole-rs-corebase", "dep:swoole-rs-phpswoole", "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php", "dep:swoole-rs-phpthread", "swoole-rs-phpthread/php", "dep:swoole-rs-phpprocess", "swoole-rs-phpprocess/php", "dep:swoole-rs-error"]
+# Swoole\\Server, Server\\Port and their data classes. They are PHP classes, so `server`
+# turns `php` on: a server build without PHP has nothing to compile (#5352).
+server = ["php", "dep:swoole-rs-zend", "dep:swoole-rs-phpstubs", "dep:swoole-rs-ports", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php", "dep:swoole-rs-server", "dep:swoole-rs-clients", "dep:swoole-rs-hooks", "dep:libc", "dep:swoole-rs-corebase", "dep:swoole-rs-phpswoole", "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php", "dep:swoole-rs-phpthread", "swoole-rs-phpthread/php", "dep:swoole-rs-phpprocess", "swoole-rs-phpprocess/php", "dep:swoole-rs-error"]
 
 [dependencies]
 swoole-rs-ports = { path = "../ports", optional = true }
