@@ -246,8 +246,6 @@ fn text_setting(server: &HttpServer, kind: Setting, text: Option<&[u8]>) {
 /// HTTP statuses the loop answers with, and llhttp's codes it checks.
 const BAD_REQUEST: c_int = 400;
 const NOT_FOUND: c_int = 404;
-/// `SW_HTTP2_ERROR_INTERNAL_ERROR`.
-const HTTP2_INTERNAL_ERROR: u32 = 2;
 const ENTITY_TOO_LARGE: c_int = 413;
 const HPE_OK: i32 = 0;
 const HPE_PAUSED_H2_UPGRADE: i32 = 23;
@@ -1113,7 +1111,11 @@ fn http2_request(
             Ok(false) => {
                 let stream_id = context.state().stream_id;
                 if let Some(server) = crate::http2::server() {
-                    (server.reset)(context, stream_id, HTTP2_INTERNAL_ERROR);
+                    (server.reset)(
+                        context,
+                        stream_id,
+                        swoole_rs_http2::error_code::INTERNAL_ERROR,
+                    );
                 }
                 host::notice("Swoole\\Http\\Server->onRequest[v2] handler error");
             }
