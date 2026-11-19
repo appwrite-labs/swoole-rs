@@ -1,8 +1,10 @@
 //! The global constants `PHP_MINIT_FUNCTION(swoole)` registered, in its order
 //! (`get_defined_constants()` and reflection list them so). Values are the
 //! pinned headers' enums and macros; `flags` stands for the `#ifdef`s.
+use crate::functions;
 use std::ffi::CStr;
 use swoole_rs_corebase::constants::SocketType;
+use swoole_rs_corebase::log::{LogLevel, rotation};
 use swoole_rs_corebase::tls::{SslMethod, SslVersion};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_zend::Minit;
@@ -147,10 +149,10 @@ static CONSTANTS: [Constant; 251] = [
     always(c"SWOOLE_SSL_SSLv2", Long(SslVersion::SW_SSL_SSLv2.bits() as i64)),
     always(c"SWOOLE_EVENT_READ", Long(512)),
     always(c"SWOOLE_EVENT_WRITE", Long(1024)),
-    always(c"SWOOLE_STRERROR_SYSTEM", Long(0)),
-    always(c"SWOOLE_STRERROR_GAI", Long(1)),
-    always(c"SWOOLE_STRERROR_DNS", Long(2)),
-    always(c"SWOOLE_STRERROR_SWOOLE", Long(9)),
+    always(c"SWOOLE_STRERROR_SYSTEM", Long(functions::STRERROR_SYSTEM)),
+    always(c"SWOOLE_STRERROR_GAI", Long(functions::STRERROR_GAI)),
+    always(c"SWOOLE_STRERROR_DNS", Long(functions::STRERROR_DNS)),
+    always(c"SWOOLE_STRERROR_SWOOLE", Long(functions::STRERROR_SWOOLE)),
     error(c"SWOOLE_ERROR_MALLOC_FAIL", ErrorCode::SW_ERROR_MALLOC_FAIL),
     error(c"SWOOLE_ERROR_SYSTEM_CALL_FAIL", ErrorCode::SW_ERROR_SYSTEM_CALL_FAIL),
     error(c"SWOOLE_ERROR_PHP_FATAL_ERROR", ErrorCode::SW_ERROR_PHP_FATAL_ERROR),
@@ -320,18 +322,18 @@ static CONSTANTS: [Constant; 251] = [
     always(c"SWOOLE_TRACE_CO_SSH2", Long(137_438_953_472)),
     always(c"SWOOLE_TRACE_THREAD", Long(1_099_511_627_776)),
     always(c"SWOOLE_TRACE_ALL", Long(9_223_372_036_854_775_807)),
-    always(c"SWOOLE_LOG_DEBUG", Long(0)),
-    always(c"SWOOLE_LOG_TRACE", Long(1)),
-    always(c"SWOOLE_LOG_INFO", Long(2)),
-    always(c"SWOOLE_LOG_NOTICE", Long(3)),
-    always(c"SWOOLE_LOG_WARNING", Long(4)),
-    always(c"SWOOLE_LOG_ERROR", Long(5)),
-    always(c"SWOOLE_LOG_NONE", Long(6)),
-    always(c"SWOOLE_LOG_ROTATION_SINGLE", Long(0)),
-    always(c"SWOOLE_LOG_ROTATION_MONTHLY", Long(1)),
-    always(c"SWOOLE_LOG_ROTATION_DAILY", Long(2)),
-    always(c"SWOOLE_LOG_ROTATION_HOURLY", Long(3)),
-    always(c"SWOOLE_LOG_ROTATION_EVERY_MINUTE", Long(4)),
+    always(c"SWOOLE_LOG_DEBUG", Long(LogLevel::SW_LOG_DEBUG as i64)),
+    always(c"SWOOLE_LOG_TRACE", Long(LogLevel::SW_LOG_TRACE as i64)),
+    always(c"SWOOLE_LOG_INFO", Long(LogLevel::SW_LOG_INFO as i64)),
+    always(c"SWOOLE_LOG_NOTICE", Long(LogLevel::SW_LOG_NOTICE as i64)),
+    always(c"SWOOLE_LOG_WARNING", Long(LogLevel::SW_LOG_WARNING as i64)),
+    always(c"SWOOLE_LOG_ERROR", Long(LogLevel::SW_LOG_ERROR as i64)),
+    always(c"SWOOLE_LOG_NONE", Long(LogLevel::SW_LOG_NONE as i64)),
+    always(c"SWOOLE_LOG_ROTATION_SINGLE", Long(rotation::SINGLE as i64)),
+    always(c"SWOOLE_LOG_ROTATION_MONTHLY", Long(rotation::MONTHLY as i64)),
+    always(c"SWOOLE_LOG_ROTATION_DAILY", Long(rotation::DAILY as i64)),
+    always(c"SWOOLE_LOG_ROTATION_HOURLY", Long(rotation::HOURLY as i64)),
+    always(c"SWOOLE_LOG_ROTATION_EVERY_MINUTE", Long(rotation::EVERY_MINUTE as i64)),
     always(c"SWOOLE_IPC_NONE", Long(0)),
     always(c"SWOOLE_IPC_UNIXSOCK", Long(1)),
     always(c"SWOOLE_IPC_SOCKET", Long(3)),

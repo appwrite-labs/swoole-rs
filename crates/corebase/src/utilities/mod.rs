@@ -174,28 +174,37 @@ pub fn swr_v1_utils_spinlock(lock: Option<&AtomicU32>, cpus: u32, backoff_limit:
     }
 }
 
+const SW_LOG_DEBUG: i32 = crate::log::LogLevel::SW_LOG_DEBUG as i32;
+const SW_LOG_TRACE: i32 = crate::log::LogLevel::SW_LOG_TRACE as i32;
+const SW_LOG_INFO: i32 = crate::log::LogLevel::SW_LOG_INFO as i32;
+const SW_LOG_NOTICE: i32 = crate::log::LogLevel::SW_LOG_NOTICE as i32;
+const SW_LOG_WARNING: i32 = crate::log::LogLevel::SW_LOG_WARNING as i32;
+const SW_LOG_ERROR: i32 = crate::log::LogLevel::SW_LOG_ERROR as i32;
+const SW_LOG_NONE: i32 = crate::log::LogLevel::SW_LOG_NONE as i32;
+
 /// Clamp the configured native logging threshold to its defined enum range.
 pub(crate) fn log_level(level: i32) -> i32 {
-    level.clamp(0, 6)
+    level.clamp(SW_LOG_DEBUG, SW_LOG_NONE)
 }
 
 fn log_label(level: i32) -> &'static std::ffi::CStr {
     match level {
-        0 => c"DEBUG",
-        1 => c"TRACE",
-        3 => c"NOTICE",
-        4 => c"WARNING",
-        5 => c"ERROR",
+        SW_LOG_DEBUG => c"DEBUG",
+        SW_LOG_TRACE => c"TRACE",
+        SW_LOG_NOTICE => c"NOTICE",
+        SW_LOG_WARNING => c"WARNING",
+        SW_LOG_ERROR => c"ERROR",
         _ => c"INFO",
     }
 }
 
 /// The rotation date format; unknown modes preserve the native daily fallback.
 fn log_rotation(rotation: i32) -> &'static std::ffi::CStr {
+    use crate::log::rotation;
     match rotation {
-        1 => c"%Y%m",
-        3 => c"%Y%m%d%H",
-        4 => c"%Y%m%d%H%M",
+        rotation::MONTHLY => c"%Y%m",
+        rotation::HOURLY => c"%Y%m%d%H",
+        rotation::EVERY_MINUTE => c"%Y%m%d%H%M",
         _ => c"%Y%m%d",
     }
 }

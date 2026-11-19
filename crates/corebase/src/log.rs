@@ -44,6 +44,15 @@ pub enum LogLevel {
     SW_LOG_NONE = 6,
 }
 
+/// Rotation modes from `swoole_log.h`.
+pub mod rotation {
+    pub const SINGLE: i32 = 0;
+    pub const MONTHLY: i32 = 1;
+    pub const DAILY: i32 = 2;
+    pub const HOURLY: i32 = 3;
+    pub const EVERY_MINUTE: i32 = 4;
+}
+
 /// The logging operation, distinct from its severity level and error code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogKind {
