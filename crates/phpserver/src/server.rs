@@ -723,10 +723,12 @@ fn bind(call: &Call) {
         return call.set_bool(false);
     };
     if uid > i64::from(u32::MAX) || uid < i64::from(i32::MIN) {
-        fatal(
-            E_WARNING,
-            c"uid can not be greater than 4294967295 or less than -2147483648",
+        let warning = swoole_rs_zend::message!(
+            "uid can not be greater than {} or less than {}",
+            u32::MAX,
+            i32::MIN
         );
+        fatal(E_WARNING, warning.as_cstr());
         return call.set_bool(false);
     }
     let uid = uid.c_cast::<u32>();
@@ -822,7 +824,9 @@ fn get_client_list(call: &Call) {
         return call.set_bool(false);
     };
     if find_count > MAX_FIND_COUNT {
-        fatal(E_WARNING, c"swoole connection list max_find_count=100");
+        let warning =
+            swoole_rs_zend::message!("swoole connection list max_find_count={MAX_FIND_COUNT}");
+        fatal(E_WARNING, warning.as_cstr());
         return call.set_bool(false);
     }
     let bounds = serv.fd_bounds();
