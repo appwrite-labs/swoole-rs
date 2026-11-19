@@ -26,13 +26,19 @@ class MergeSummary(unittest.TestCase):
                 '<testcase name="test_original[stats-cargo]"><failure/></testcase>'
                 '<testcase name="test_original[stats-upstream]"><failure/></testcase>'
                 '<testcase name="test_original[bug-cargo]"><skipped/></testcase></testsuite></testsuites>')
-            phases, cases = summarize(loop)
+            (Path(temp) / 'hooks-system-rust.json').write_text(json.dumps({
+                'excluded': {'first': 'needs a proxy', 'second': 'needs a proxy'},
+                'results': [{'name': name, 'status': 'excluded'} for name in ('first', 'second')]}))
+            phases, cases, excluded = summarize(loop)
         self.assertEqual(phases['buffer'], {'passed': 1, 'failed': 1})
         self.assertEqual(phases['shared'], {'passed': 1})
         self.assertEqual(cases['timers'], {'passed': 1, 'unsupported': 1, 'failed': 1})
         self.assertEqual(cases['corpus'], {'passed': 1})
         self.assertEqual(cases['timer'], {'passed': 1, 'failed': 1, 'skipped': 1})
-        self.assertIn('| timers | 1 | 1 | 1 | 0 |', markdown(phases, cases))
+        self.assertEqual(cases['hooks'], {'excluded': 2})
+        summary = markdown(phases, cases, excluded)
+        self.assertIn('| timers | 1 | 1 | 1 | 0 | 0 |', summary)
+        self.assertIn('| needs a proxy | 2 |', summary)
 
 
     def test_unreadable_reports_are_annotated_and_lists_skipped(self):
@@ -48,7 +54,7 @@ class MergeSummary(unittest.TestCase):
             (Path(temp) / 'broken.xml').write_text('<testsuites>')
             stderr = io.StringIO()
             with mock.patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}), redirect_stderr(stderr):
-                _, cases = summarize(loop)
+                _, cases, _ = summarize(loop)
         self.assertEqual(dict(cases), {})
         warnings = [line for line in stderr.getvalue().splitlines() if line.startswith('::warning')]
         self.assertEqual(len(warnings), 2, warnings)
