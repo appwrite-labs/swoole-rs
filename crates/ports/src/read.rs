@@ -10,7 +10,7 @@ use swoole_rs_corebase::log::LogLevel::{SW_LOG_TRACE as TRACE, SW_LOG_WARNING as
 use swoole_rs_corebase::ossupport::TempFile;
 use swoole_rs_corebase::reactor::Caught;
 use swoole_rs_error::ErrorCode;
-use swoole_rs_http::HttpRequest as Request;
+use swoole_rs_http::{HttpRequest as Request, METHOD_PRI};
 
 /// Which readable callback runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,7 +143,6 @@ enum Log {
 
 /// `SW_HTTP_PRI`, `SW_HTTP_HEADER_MAX_SIZE`, `sizeof(SW_HTTP2_PRI_STRING) - 1`,
 /// `SW_BUFFER_SIZE_BIG`.
-const HTTP_PRI: u8 = 27;
 const HEADER_MAX_SIZE: u64 = swoole_rs_corebase::constants::SW_HTTP_HEADER_MAX_SIZE as u64;
 const HTTP2_PREFACE: u64 = 24;
 const BUFFER_SIZE_BIG: u64 = swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as u64;
@@ -361,10 +360,10 @@ fn head(n: &mut impl Connection) -> Option<Step> {
         return Some(bad(n, Log::UnknownProtocol));
     }
     let method = n.request().method;
-    if method > HTTP_PRI {
+    if method > METHOD_PRI {
         return Some(bad(n, Log::UnknownMethod));
     }
-    if method == HTTP_PRI {
+    if method == METHOD_PRI {
         return Some(preface(n));
     }
     if n.request().header_length == 0 && !n.parse(Request::get_header_length) {
