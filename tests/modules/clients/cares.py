@@ -45,6 +45,7 @@ def peer(mode):
                         response += b'\xc0\x0c' + struct.pack('!HHIH', kind, 1, 30, len(ip)) + ip
                     server.sendto(response, address)
                 except socket.timeout:
+                    # Expected: no query this interval; the loop checks whether to stop.
                     pass
                 except Exception as error:
                     errors.append(str(error))

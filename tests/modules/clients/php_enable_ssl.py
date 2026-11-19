@@ -28,6 +28,7 @@ def echo(connection,context):
     try:
         with context.wrap_socket(connection,server_side=True) as tls:
             while data:=tls.recv(4096):tls.sendall(data)
+    # Expected: the client under test may drop or refuse the session; the client's result is checked.
     except (OSError,ssl.SSLError):pass
     finally:connection.close()
 

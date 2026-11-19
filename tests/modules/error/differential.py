@@ -49,6 +49,7 @@ def main():
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
+                # Expected: the group already exited.
                 pass
             stdout, stderr = process.communicate()
             report['commands'].append({'argv': [str(x) for x in command],
