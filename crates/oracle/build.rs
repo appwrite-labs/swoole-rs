@@ -10,6 +10,9 @@
 )]
 use std::{env, fs, path::PathBuf};
 
+#[path = "../corebase/platform.rs"]
+mod platform;
+
 fn out(name: &str) -> PathBuf {
     PathBuf::from(env::var("OUT_DIR").unwrap()).join(name)
 }
@@ -572,17 +575,8 @@ fn locks() {
     }
     fs::write(out("locks_upstream.inc"), text).unwrap();
     let mut build = cpp();
-    build.define("HAVE_RWLOCK", None);
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
-        for found in [
-            "HAVE_SPINLOCK",
-            "HAVE_FUTEX",
-            "HAVE_PTHREAD_BARRIER",
-            "HAVE_MUTEX_TIMEDLOCK",
-            "HAVE_RWLOCK_TIMEDRDLOCK",
-        ] {
-            build.define(found, None);
-        }
+    for found in platform::defines(&env::var("CARGO_CFG_TARGET_OS").unwrap()) {
+        build.define(found, None);
     }
     build
         .flag_if_supported("-Wno-unused-parameter")

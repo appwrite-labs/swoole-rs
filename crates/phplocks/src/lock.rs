@@ -6,7 +6,7 @@ use std::{
     ffi::{CStr, c_int},
 };
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::locks::{Kind, Lock};
+use swoole_rs_corebase::locks::{Kind, Lock, TIMED_LOCK_CAPABILITIES};
 use swoole_rs_corebase::memory::members::pool;
 use swoole_rs_phpstubs::lock;
 use swoole_rs_zend::{
@@ -19,9 +19,6 @@ use swoole_rs_zend::{
 /// `LOCK_EX` from `<sys/file.h>` (Linux and macOS).
 pub(crate) const LOCK_EX: i64 = swoole_rs_corebase::locks::LOCK_EX as i64;
 
-/// The timed-lock capabilities `Lock::lock` takes: `HAVE_MUTEX_TIMEDLOCK` (1)
-/// and `HAVE_RWLOCK_TIMEDRDLOCK` (2), which Linux has and macOS lacks.
-pub(crate) const CAPABILITIES: u32 = if cfg!(target_os = "linux") { 3 } else { 0 };
 /// `SW_ERROR_WRONG_OPERATION`.
 const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 static LOCK: CustomClass<Held> = CustomClass::new();
@@ -177,7 +174,11 @@ pub(crate) fn lock_with(call: &Call, lock: impl for<'c> FnOnce(&'c Call<'_>) -> 
     if let Some(lock) = lock(call) {
         checked(
             call,
-            lock.lock(operation.c_cast::<i32>(), timeout_ms, CAPABILITIES),
+            lock.lock(
+                operation.c_cast::<i32>(),
+                timeout_ms,
+                TIMED_LOCK_CAPABILITIES,
+            ),
         );
     }
 }

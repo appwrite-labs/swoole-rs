@@ -2,6 +2,10 @@
 //! thirdparty sources config.m4 lists) and link it into `swoole.so`, in place of
 //! phpize and configure. The thirdparty sources are native/swoole-src's.
 
+#[cfg(feature = "php")]
+#[path = "../corebase/platform.rs"]
+mod platform;
+
 fn main() {
     println!("cargo::rerun-if-env-changed=PHP_CONFIG");
     // Zend's symbols resolve against the PHP that loads the extension.
@@ -24,35 +28,6 @@ mod php {
         process::Command,
     };
 
-    /// What configure's checks define in config.h that native/ reads, by target
-    /// OS.
-    const LINUX: &[&str] = &[
-        "HAVE_AI_ALL",
-        "HAVE_AI_V4MAPPED",
-        "HAVE_CPU_AFFINITY",
-        "HAVE_EPOLL",
-        "HAVE_EVENTFD",
-        "HAVE_EXECINFO",
-        "HAVE_FUTEX",
-        "HAVE_MALLOC_TRIM",
-        "HAVE_MSGQUEUE",
-        "HAVE_MUTEX_TIMEDLOCK",
-        "HAVE_PTHREAD_BARRIER",
-        "HAVE_REUSEPORT",
-        "HAVE_RWLOCK",
-        "HAVE_RWLOCK_TIMEDRDLOCK",
-        "HAVE_SIGNALFD",
-        "HAVE_SPINLOCK",
-    ];
-    const MACOS: &[&str] = &[
-        "HAVE_AI_ALL",
-        "HAVE_AI_V4MAPPED",
-        "HAVE_EXECINFO",
-        "HAVE_KQUEUE",
-        "HAVE_MSGQUEUE",
-        "HAVE_REUSEPORT",
-        "HAVE_RWLOCK",
-    ];
     /// Every build's: the switches config.m4 sets unconditionally. Not
     /// `COMPILE_DL_SWOOLE`: lib.rs exports `get_module()`.
     const COMMON: &[&str] = &[
@@ -313,7 +288,6 @@ mod php {
         let native = root.join("native");
         let out = PathBuf::from(env::var("OUT_DIR").expect("ext: OUT_DIR"));
         let os = env::var("CARGO_CFG_TARGET_OS").expect("ext: target OS");
-        let platform = if os == "macos" { MACOS } else { LINUX };
         let owned = native.join("swoole-src");
         let vendored = owned.join("thirdparty");
         let profile = profile(&vendored, php_version_id(&php_config));
@@ -321,8 +295,9 @@ mod php {
         let asm_context = !feature("thread_context");
         let config: String = COMMON
             .iter()
-            .chain(platform)
-            .chain(asm_context.then_some(&"SW_USE_ASM_CONTEXT"))
+            .copied()
+            .chain(crate::platform::defines(&os))
+            .chain(asm_context.then_some("SW_USE_ASM_CONTEXT"))
             .map(|name| format!("#define {name} 1\n"))
             .chain(
                 profile

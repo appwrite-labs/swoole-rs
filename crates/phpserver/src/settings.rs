@@ -87,6 +87,7 @@ pub(crate) fn set_reload_async(serv: view::Server<'_>) {
 /// The Server field `id` (`field::*`), read as C++ reads it.
 fn fact(serv: view::Server<'_>, id: u32) -> i64 {
     use field as f;
+    use swoole_rs_corebase::{Switch, built_with};
     let config = serv.config();
     match id {
         f::STARTED => i64::from(serv.is_started()),
@@ -104,17 +105,12 @@ fn fact(serv: view::Server<'_>, id: u32) -> i64 {
         f::CPU_NUM => i64::from(swoole_rs_corebase::swr_v1_core_cpu_num()),
         f::GLOBAL_ENABLE_COROUTINE => i64::from(swoole_rs_corebase::swr_v1_core_enable_coroutine()),
         f::PATH_MAX => i64::from(libc::PATH_MAX),
-        f::HAVE_CPU_AFFINITY => i64::from(cfg!(any(
-            target_os = "linux",
-            target_os = "android",
-            target_os = "freebsd"
-        ))),
-        // configure's probes, as crates/ext/build.rs lists them per target OS;
-        // `set()` only reads `HAVE_REUSEPORT` on Linux.
-        f::HAVE_REUSE_PORT => i64::from(cfg!(target_os = "linux")),
-        f::HAVE_MSGQUEUE => i64::from(cfg!(any(target_os = "linux", target_os = "macos"))),
-        // config.m4 links zlib into every build.
-        f::HAVE_COMPRESSION | f::HAVE_ZLIB => 1,
+        f::HAVE_CPU_AFFINITY => i64::from(built_with(Switch::Affinity)),
+        // Upstream only exposes enable_reuse_port on Linux.
+        f::HAVE_REUSE_PORT => i64::from(cfg!(target_os = "linux") && built_with(Switch::ReusePort)),
+        f::HAVE_MSGQUEUE => i64::from(built_with(Switch::MsgQueue)),
+        f::HAVE_COMPRESSION => i64::from(swoole_rs_phpswoole::codecs() != 0),
+        f::HAVE_ZLIB => i64::from(built_with(Switch::Zlib)),
         f::THREAD => i64::from(crate::server::THREAD.load(Ordering::Relaxed)),
         _ => 0,
     }
