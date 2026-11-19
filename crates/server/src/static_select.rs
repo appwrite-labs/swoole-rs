@@ -92,8 +92,6 @@ pub trait Exchange {
     fn send(&self, kind: ServerEvent, data: &[u8]);
 }
 
-/// `SW_HTTP_HEAD`.
-const HTTP_HEAD: u8 = 3;
 /// The text up to its first NUL, as a C string reads it.
 fn c_text(text: &[u8]) -> &[u8] {
     text.split(|&byte| byte == 0).next().unwrap_or_default()
@@ -262,7 +260,7 @@ impl Exchange for Wire<'_> {
         self.request.keep_alive
     }
     fn head(&self) -> bool {
-        self.request.method == HTTP_HEAD
+        self.request.method == swoole_rs_http::METHOD_HEAD
     }
     fn cork(&self) {
         // An `extern "C"` fn is no closure.

@@ -40,6 +40,7 @@ def run(engine, repeat, coroutines, workers, keep_alive, max_queued_bytes, unord
                                             try:
                                                 require(sock.recv(1) == b'', 'forced close sent response bytes')
                                             except ConnectionResetError:
+                                                # A reset is a close too: no response bytes came.
                                                 pass
                                         else:
                                             reply.begin()

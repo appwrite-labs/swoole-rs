@@ -53,5 +53,6 @@ def test_a_body_the_multipart_parser_rejects_is_never_handled(engine):
                     if head[3] == 6:
                         break
             except (EOFError, ConnectionResetError, socket.timeout):
+                # Expected: the server ends the connection; the frames read so far are asserted.
                 pass
     assert (1, 1) not in kinds, kinds

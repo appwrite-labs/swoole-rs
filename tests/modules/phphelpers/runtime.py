@@ -70,7 +70,8 @@ def main():
                         row['summary']=summary
                         row['passed']=(result.returncode==0 and summary==expected and lines[:-1]==markers and diagnostic
                                        and row['extension_sha256_after']==identity['sha256'])
-                    except (ValueError,IndexError): pass
+                    # Output that doesn't parse leaves the row failed; keep why.
+                    except (ValueError,IndexError) as error: row['parse_error']=repr(error)
         if not all(row['passed'] for row in report['bailout_results']):
             raise ValueError('Isolated native Zend callback/bailout witness failed; all first outputs retained')
         # exit() from a PCRE/JSON warning handler or a VM destructor inside a stdext call.
