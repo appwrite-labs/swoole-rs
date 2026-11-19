@@ -61,11 +61,11 @@ install() {
 if [ -n "$APT_CACHE" ] && ls "$APT_CACHE"/lists/*_Packages >/dev/null 2>&1; then
     install "$@" || {
         echo "::warning::Retrying package installation after refreshing cached apt indexes"
-        apt_run update -q || :
+        apt_run update -q || echo "apt-get update failed; installing from the indexes there are" >&2
         install "$@"
     }
 else
-    apt_run update -q || :
+    apt_run update -q || echo "apt-get update failed; installing from the indexes there are" >&2
     install "$@"
 fi
 [ -z "$APT_CACHE" ] || chmod -R a+rX "$APT_CACHE"
