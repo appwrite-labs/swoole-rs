@@ -27,6 +27,7 @@
 #include "php_swoole_odbc.h"
 
 #ifdef SW_USE_ODBC
+#include <stddef.h>
 #include "php.h"
 #include "ext/pdo/php_pdo.h"
 #include "ext/pdo/php_pdo_driver.h"
@@ -107,7 +108,12 @@ extern void swr_odbc_fetch_error(pdo_dbh_t *, pdo_stmt_t *, zval *);
 
 /* The native statement still owns its record. Rust reads the same error
  * layout for connection and statement diagnostics. */
-_Static_assert(SQL_MAX_MESSAGE_LENGTH == 512, "ODBC diagnostic buffer layout");
+_Static_assert(SQL_MAX_MESSAGE_LENGTH == 512 && sizeof(SQLINTEGER) == 4 &&
+               offsetof(pdo_odbc_errinfo, last_state) == 0 && offsetof(pdo_odbc_errinfo, last_err_msg) == 6 &&
+               offsetof(pdo_odbc_errinfo, last_error) == 520 && offsetof(pdo_odbc_errinfo, file) == 528 &&
+               offsetof(pdo_odbc_errinfo, what) == 536 && offsetof(pdo_odbc_errinfo, line) == 544 &&
+               sizeof(pdo_odbc_errinfo) == 552 && _Alignof(pdo_odbc_errinfo) == 8,
+               "odbc::diagnostics::ErrorInfo layout");
 pdo_odbc_errinfo *swr_odbc_error_record(pdo_dbh_t *dbh, pdo_stmt_t *stmt) {
     if (stmt) {
         return &((pdo_odbc_stmt *) stmt->driver_data)->einfo;

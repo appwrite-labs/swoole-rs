@@ -32,9 +32,8 @@ unsafe extern "C" {
     safe fn free_released(callable: Callable);
 }
 
-/// An emalloc'd `swr_zend_callable`, laid out as Swoole's `zend::Function`, so
-/// C++ can call it as one, that holds its arguments, object and closure
-/// ([`Parsed::keep`]).
+/// An emalloc'd callable that holds its arguments, object and closure ([`Parsed::keep`]).
+/// zend-sys generates `swr_zend_callable` and its layout checks from `src/callable.h`.
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct Callable(*mut swr_zend_callable);
