@@ -102,16 +102,16 @@ fn bus_deliver(pool: Pool<'_>) {
 
 /// The pool's new bus, owned, or None when its counter can't be allocated.
 fn new_message_bus() -> Option<Box<dyn core::any::Any>> {
-    let [msg_id] = mem_pool::words::<AtomicU64>(1)? else {
-        return None;
-    };
-    *msg_id.get_mut() = 1;
-    Some(Box::new(new_bus(msg_id)))
+    let bus = MessageBus::create(BUS_BUFFER_SIZE);
+    bus.count_pool_ids()?;
+    Some(Box::new(PoolBus::std(bus)))
 }
+
+const BUS_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize;
 
 /// `new MessageBus()` numbering its messages from `counter`.
 pub(crate) fn new_bus(counter: &'static AtomicU64) -> PoolBus {
-    let bus = MessageBus::create(swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize);
+    let bus = MessageBus::create(BUS_BUFFER_SIZE);
     bus.count_ids(counter);
     PoolBus::std(bus)
 }

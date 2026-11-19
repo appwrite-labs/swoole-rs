@@ -24,6 +24,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use swoole_rs_corebase::buffer::string::OwnedString;
 use swoole_rs_corebase::constants::{EventDataFlag, FdType, SW_WORKER_MAX_RECV_CHUNK_COUNT};
+use swoole_rs_corebase::memory::members::pool::PooledWord;
 use swoole_rs_corebase::process::process_pool::RecvData;
 use swoole_rs_corebase::reactor::{Caught, Heap, OwnedSocket, Socket, SocketRecord};
 use swoole_rs_corebase::sys::{self, errno};
@@ -173,7 +174,22 @@ pub struct Bus {
     /// `init_pipe_sockets` made and only the bus's drop frees.
     pipe_sockets: OnceCell<PipeSockets>,
     /// `id_generator_`: the counter that numbers each written message.
-    next_id: Cell<Option<&'static AtomicU64>>,
+    next_id: Cell<Option<Counter>>,
+}
+
+enum Counter {
+    Shared(&'static AtomicU64),
+    Pooled(PooledWord<AtomicU64>),
+}
+
+impl Counter {
+    fn next(&self) -> u64 {
+        let word = match self {
+            Self::Shared(word) => *word,
+            Self::Pooled(word) => word,
+        };
+        word.fetch_add(1, Ordering::SeqCst)
+    }
 }
 
 impl Drop for Bus {
@@ -831,7 +847,17 @@ impl Bus {
     /// `MessageBus::count_ids`: numbers each message written from `counter`, an
     /// atomic `sw_atomic_long_t` that buses in other processes may share.
     pub fn count_ids(&self, counter: &'static AtomicU64) {
-        self.next_id.set(Some(counter));
+        self.next_id.set(Some(Counter::Shared(counter)));
+    }
+
+    /// Start numbering from one with a counter shared by processes forked from
+    /// this bus. Dropping or replacing the counter releases this process's pin.
+    #[must_use]
+    pub fn count_pool_ids(&self) -> Option<()> {
+        let counter = PooledWord::<AtomicU64>::allocate()?;
+        counter.store(1, Ordering::Relaxed);
+        self.next_id.set(Some(Counter::Pooled(counter)));
+        Some(())
     }
 
     /// `MessageBus::write` of a message its caller holds as a `SendData`: a head and,
@@ -853,8 +879,11 @@ impl Bus {
             let error = errno();
             socket.catch_pipe_error(error) == Caught::ReduceSize
         };
-        if let Some(counter) = self.next_id.get() {
-            head.msg_id = counter.fetch_add(1, Ordering::SeqCst);
+        if let Some(id) = self
+            .next_id
+            .with_taken(|counter| counter.as_ref().map(Counter::next))
+        {
+            head.msg_id = id;
         }
         self.write(head, data, send, reduce)
     }
@@ -965,14 +994,22 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no socket options on a socketpair")]
     fn send_numbers_each_message_from_the_shared_counter() {
-        static COUNTER: AtomicU64 = AtomicU64::new(1);
+        use swoole_rs_corebase::memory::members::pool;
+
+        static COUNTER: AtomicU64 = AtomicU64::new(10);
+        swoole_rs_corebase::swr_v1_core_set_pagesize(4096);
+        pool::init();
         let mut pipe = Pipe::new(libc::SOCK_STREAM, 64, false);
-        pipe.bus.count_ids(&COUNTER);
+        pipe.bus.count_pool_ids().unwrap();
         let socket = OwnedSocket::new(Box::new(SocketRecord::with_fd(
             pipe.fds[0],
             FdType::SW_FD_PIPE as c_int,
         )));
-        for (expected, payload) in [(1, b"one".as_slice()), (2, b"two".as_slice())] {
+        for (expected, payload) in [(1, &b"one"[..]), (2, &b"two"[..]), (10, &b"ten"[..])] {
+            if expected == 10 {
+                pipe.bus.count_ids(&COUNTER);
+                pool::delete();
+            }
             let mut head = BusHead {
                 msg_id: 99,
                 len: u32::try_from(payload.len()).unwrap(),
@@ -983,7 +1020,7 @@ mod tests {
             assert_eq!(head.msg_id, expected);
             assert_eq!(pipe.read(false).as_deref(), Some(payload));
         }
-        assert_eq!(COUNTER.load(Ordering::Relaxed), 3);
+        assert_eq!(COUNTER.load(Ordering::Relaxed), 11);
         socket.free();
     }
 
