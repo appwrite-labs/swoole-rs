@@ -1,6 +1,7 @@
 //! Inline static handler policy; native owns strings, RNG and MIME references.
 use crate::c_text;
-pub(crate) const BOUNDARY: &[u8] = b"SwooleBoundary\0";
+pub(crate) const BOUNDARY: &[u8] =
+    swoole_rs_corebase::constants::SW_HTTP_SERVER_BOUNDARY_PREKEY.as_bytes();
 const CONTENT_TYPE: &[u8] = b"multipart/byteranges; boundary=\0";
 const ALLOCATION: i32 = -3;
 
@@ -8,7 +9,7 @@ const ALLOCATION: i32 = -3;
 /// (`length == 0`), else `None`.
 #[must_use]
 pub(crate) fn static_boundary(length: usize) -> Option<usize> {
-    (length == 0).then_some(39 - BOUNDARY.len())
+    (length == 0).then_some(crate::static_context::BOUNDARY_SIZE - BOUNDARY.len() - 1)
 }
 /// Whether the response is multipart: more than one task.
 #[must_use]
