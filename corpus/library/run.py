@@ -15,7 +15,7 @@ When one stops
 or they don't answer in time, it keeps every container's state and log under
 <output>/services/ and exits 1.
 
-The first engine is the control. A test that passes on it and doesn't on another
+The first engine is the control; if it passes nothing, the run exits 3. A test that passes on it and doesn't on another
 engine is a regression and exits 1; tests failing on every engine are listed.
 """
 import argparse
@@ -272,6 +272,10 @@ def main():
     args = parser.parse_args()
     if args.prepare:
         prepare(args.composer)
+    # Each test runs with SOURCE as its directory and reads its ini from under --output
+    # (PHP_INI_SCAN_DIR), so a relative --output named no directory there: the engine never
+    # loaded, and every file failed in its bootstrap (#5432).
+    args.output = args.output.resolve()
     if args.services and not start_services(args.output / 'services'):
         sys.exit(1)
     if not args.engine:
@@ -290,7 +294,9 @@ def main():
     summary(results, regressions, everywhere, commit)
     control = next(iter(results.values()))['tests'].values()
     if not any(status == 'passed' for status, _ in control):
-        sys.exit('The control passed nothing, so the gate means nothing')
+        # Its own exit code: a caller that accepts failed tests (coverage.yml) must not accept this.
+        print('The control passed nothing, so the gate means nothing', file=sys.stderr)
+        sys.exit(3)
     sys.exit(1 if any(regressions.values()) else 0)
 
 
