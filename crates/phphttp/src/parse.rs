@@ -84,9 +84,6 @@ const UPLOAD_NO_FILE: i64 = 4;
 const UPLOAD_NO_TMP_DIR: i64 = 6;
 const UPLOAD_CANT_WRITE: i64 = 7;
 const UPLOAD_FILE_READY: i64 = 8;
-/// MINIT's codec bits: zlib, brotli, zstd, and `SW_HAVE_COMPRESSION`.
-const CODECS: u32 = 7;
-const COMPRESSION: u32 = 8;
 
 /// The server's llhttp callbacks, over a context's state, with the current
 /// header's name, a span of the call's input, and the input, which holds the
@@ -275,7 +272,12 @@ static METHODS: [Interned; llhttp::METHODS.len()] =
 static PROPERTIES: [Declared; 7] = [const { Declared::new() }; 7];
 /// `Swoole\Http\Request`'s declared `fd` slot.
 pub(crate) static REQUEST_FD: Declared = Declared::new();
-pub(crate) static CAPABILITIES: AtomicU32 = AtomicU32::new(0);
+static CODECS: AtomicU32 = AtomicU32::new(0);
+
+/// Codecs available in this build, as reported by MINIT.
+pub(crate) fn enabled_codecs() -> u32 {
+    CODECS.load(Relaxed)
+}
 
 /// The interned key, None before MINIT.
 pub(crate) fn key(key: Key) -> Option<&'static ZStr> {
@@ -297,7 +299,7 @@ pub(crate) enum Property {
 /// MINIT: intern the keys and find the array properties' slots.
 /// Called once at MINIT, after `Swoole\Http\Request` is registered.
 pub(crate) fn minit(minit: &Minit, codecs: u32) {
-    CAPABILITIES.store(codecs, Relaxed);
+    CODECS.store(codecs, Relaxed);
     for (slot, name) in KEYS.iter().zip(KEY_NAMES) {
         minit.intern(slot, name);
     }
@@ -708,7 +710,7 @@ fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> Step {
             }
         }
         RequestHeader::Compression => {
-            if state.enable_compression && CAPABILITIES.load(Relaxed) & COMPRESSION != 0 {
+            if state.enable_compression && enabled_codecs() != 0 {
                 compression_method(state, value_);
             }
         }
@@ -927,7 +929,7 @@ pub(crate) fn multipart_parse(state: &mut State, data: &[u8]) -> bool {
 /// `Context::set_compression_method`.
 pub(crate) fn compression_method(state: &mut State, value: &[u8]) {
     let length = value.len().c_cast::<u32>() as usize;
-    let codecs = CAPABILITIES.load(Relaxed) & CODECS;
+    let codecs = enabled_codecs();
     let method = compression(value.get(..length).unwrap_or(value), codecs);
     state.accept_compression = method != swoole_rs_httpbindings::Compression::None;
     if state.accept_compression {

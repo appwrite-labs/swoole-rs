@@ -2,12 +2,11 @@
 //! `swoole::http::Context::build_header`, `build_trailer` and `compress` did
 //! them. Each send leases reusable storage until its IO completes.
 use crate::host::{self, Property};
-use crate::parse::CAPABILITIES;
+use crate::parse::enabled_codecs;
 use crate::state::{Slot, State};
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::ffi::{CStr, c_int};
-use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_deflate::{DEFLATE, Failure, GZIP, bound, compress as deflate};
 use swoole_rs_httpbindings::{
@@ -25,9 +24,6 @@ use swoole_rs_zend::{
 const HEAD: u8 = 2;
 /// `SW_LOG_WARNING`, `SW_ERROR_HTTP_CONFLICT_HEADER`.
 const CONFLICT_HEADER: c_int = swoole_rs_error::ErrorCode::SW_ERROR_HTTP_CONFLICT_HEADER as c_int;
-/// MINIT's codec bits (`parse.rs`): zlib, Brotli and zstd, and any codec built.
-const CODECS: u32 = 7;
-const COMPRESSION: u32 = 8;
 /// `sw_tg_buffer()`'s size, which bounds one trailer line.
 const TRAILER_LINE: usize = 65536;
 
@@ -255,7 +251,7 @@ fn build(
     mut length: usize,
     out: &mut Vec<u8>,
 ) -> Result<(), bailout::Bailout> {
-    let compression = CAPABILITIES.load(Relaxed) & COMPRESSION != 0;
+    let compression = enabled_codecs() != 0;
     let state = ctx.state();
     // http status line
     out.extend_from_slice(b"HTTP/1.1 ");
@@ -373,7 +369,7 @@ fn build(
     } else if length > 0 || state.parser.method != HEAD {
         if compression && compress(state, body) {
             length = compressed(state).len();
-            let codecs = CAPABILITIES.load(Relaxed) & CODECS;
+            let codecs = enabled_codecs();
             let label = encoding(state.compression_method, codecs);
             out.extend_from_slice(b"Content-Encoding: ");
             out.extend_from_slice(label.map_or(b"".as_slice(), CStr::to_bytes));
@@ -455,10 +451,9 @@ fn compress_warning(message: &str) {
 
 /// `Context::compress`.
 fn compress(state: &mut State, input: &[u8]) -> bool {
-    let capabilities = CAPABILITIES.load(Relaxed);
     let method = match codec(
         state.compression_method,
-        capabilities & CODECS,
+        enabled_codecs(),
         state.accept_compression,
         input.len(),
         state.compression_min_length,
@@ -536,7 +531,7 @@ pub(crate) fn compress_body<'a>(
     if !compress(state, data) {
         return None;
     }
-    let codecs = CAPABILITIES.load(Relaxed) & CODECS;
+    let codecs = enabled_codecs();
     let label = encoding(state.compression_method, codecs).unwrap_or_default();
     Some((label, compressed(state)))
 }

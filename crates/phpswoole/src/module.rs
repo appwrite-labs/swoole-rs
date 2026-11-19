@@ -176,12 +176,11 @@ pub type HttpMinit = fn(&MinitArgs<'_>);
 
 /// What the HTTP MINIT steps read of Swoole's own: the module's MINIT,
 /// `swoole.use_shortname`, the codecs (1 zlib, 2 brotli, 4 zstd) and
-/// the build's compression, zlib and thread switches.
+/// the build's zlib and thread switches.
 pub struct MinitArgs<'a> {
     pub minit: &'a swoole_rs_zend::Minit,
     pub shortname: bool,
     pub codecs: u32,
-    pub compression: bool,
     pub zlib: bool,
     pub thread: bool,
 }
@@ -492,7 +491,6 @@ fn http_minit<const N: usize>(minit: &swoole_rs_zend::Minit) {
         minit,
         shortname: globals().use_shortname.get(),
         codecs: codecs(),
-        compression: flags & crate::constants::COMPRESSION != 0,
         zlib: flags & crate::constants::ZLIB != 0,
         thread: flags & crate::constants::THREAD != 0,
     };

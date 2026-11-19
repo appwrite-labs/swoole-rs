@@ -39,8 +39,6 @@ use swoole_rs_zend::{
 };
 
 static SERVER: CustomClass<Data> = CustomClass::new();
-/// `SW_HAVE_COMPRESSION`.
-static COMPRESSION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The server created by `__construct` and dropped with the PHP object.
 struct Data(OnceCell<HttpServer>);
@@ -202,7 +200,7 @@ impl HttpServer {
         state.parse_body = self.parse_post.get();
         state.parse_cookie = self.parse_cookie.get();
         state.parse_files = self.parse_files.get();
-        if COMPRESSION.load(Relaxed) {
+        if crate::parse::enabled_codecs() != 0 {
             state.enable_compression = self.compression.get();
             state.compression_level = self.compression_level.get();
             state.compression_min_length = self.compression_min_length.get();
@@ -327,13 +325,12 @@ method_table! {
 /// MINIT: the class, as `php_swoole_http_server_coro_minit` registered it.
 pub fn server_coro_minit(args: &MinitArgs) {
     let minit = args.minit;
-    if let Err(error) = register(minit, args.shortname, args.compression) {
+    if let Err(error) = register(minit, args.shortname) {
         error.defer();
     }
 }
 
-fn register(minit: &Minit, short_name: bool, compression: bool) -> Result<(), bailout::Bailout> {
-    COMPRESSION.store(compression, Relaxed);
+fn register(minit: &Minit, short_name: bool) -> Result<(), bailout::Bailout> {
     // What releasing the handlers or the socket defers is raised as the
     // object is freed.
     minit.register_object::<Data>(
@@ -506,7 +503,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let Some(table) = settings.array() else {
         return Ok(None);
     };
-    for (kind, keys) in swoole_rs_httpbindings::settings(COMPRESSION.load(Relaxed)) {
+    for (kind, keys) in swoole_rs_httpbindings::settings(crate::parse::enabled_codecs() != 0) {
         if kind == Setting::Websocket {
             server.apply_websocket(table);
             continue;
@@ -554,7 +551,7 @@ fn setting(
         let message = CString::new(message).unwrap_or_default();
         swoole_rs_zend::report(swoole_rs_zend::E_ERROR, &message)
     };
-    let compression = COMPRESSION.load(Relaxed);
+    let compression = crate::parse::enabled_codecs() != 0;
     let result = match kind {
         Setting::Cookie | Setting::Post | Setting::Files | Setting::Compression => {
             Some(i64::from(value.truthy()))
