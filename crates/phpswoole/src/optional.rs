@@ -3,7 +3,10 @@
 //! ext/sockets' `Socket` (the cargo features of the same names, which the
 //! hybrid turns on with their configure switches) and `Swoole\Thread`
 //! (`SW_THREAD`, [`built_with`]).
-use crate::module::{Families, Step, families};
+use crate::{
+    families,
+    module::{Families, Step},
+};
 use std::ffi::c_int;
 use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_zend::{Owned, Value};
