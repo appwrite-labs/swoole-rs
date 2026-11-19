@@ -20,7 +20,6 @@ use super::{
 use libc::{
     AI_PASSIVE, EAFNOSUPPORT, EAI_NONAME, EAI_SYSTEM, ECANCELED, ENOTSOCK, EWOULDBLOCK, F_GETFL,
     F_OK, F_SETFL, O_RDWR, O_TRUNC, POLLIN, POLLOUT, R_OK, SEEK_SET, SO_RCVTIMEO, SO_SNDTIMEO,
-    SOCK_CLOEXEC,
 };
 use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int, c_void};
@@ -1187,6 +1186,11 @@ fn get_socket_fail() {
 }
 
 fn create_socket_fail() {
+    #[cfg(not(target_vendor = "apple"))]
+    use libc::SOCK_CLOEXEC;
+    // Darwin lacks this socket flag. Preserve the Linux core-test input.
+    #[cfg(target_vendor = "apple")]
+    const SOCK_CLOEXEC: c_int = 0o2000000;
     run(|| {
         // SAFETY: socket(2) with an unknown family.
         let fd = unsafe { swoole_coroutine_socket(AF_INET + 99, SOCK_CLOEXEC, 0) };
