@@ -15,9 +15,9 @@ use swoole_rs_zend::host::callable::Callable;
 use swoole_rs_zend::{Array, E_ERROR, Owned, Value as Zval, ZString, bailout};
 
 /// `SW_DATA_EOF_MAXLEN`.
-const EOF_MAX: usize = 8;
+const EOF_MAX: usize = swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN as usize;
 /// `SW_INPUT_BUFFER_SIZE`.
-const INPUT_BUFFER_SIZE: i64 = 2 * 1024 * 1024;
+const INPUT_BUFFER_SIZE: i64 = swoole_rs_corebase::constants::SW_INPUT_BUFFER_SIZE as i64;
 
 /// `php_swoole_length_func`: the packet length a client's `package_length_func`
 /// returns for the bytes so far.

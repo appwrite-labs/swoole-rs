@@ -111,7 +111,7 @@ static CONSTANTS: [Constant; 251] = [
     always(c"SWOOLE_RAW6", Long(8)),
     always(c"SWOOLE_SOCK_SYNC", Bool(false)),
     always(c"SWOOLE_SOCK_ASYNC", Bool(true)),
-    always(c"SWOOLE_SSL", Long(512)),
+    always(c"SWOOLE_SSL", Long(swoole_rs_corebase::constants::SocketFlag::SW_SOCK_SSL.bits() as i64)),
     always(c"SWOOLE_SSLv3_METHOD", Long(1)),
     always(c"SWOOLE_SSLv3_SERVER_METHOD", Long(2)),
     always(c"SWOOLE_SSLv3_CLIENT_METHOD", Long(3)),

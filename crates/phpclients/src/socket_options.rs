@@ -19,7 +19,7 @@ use swoole_rs_zend::{
 
 use swoole_rs_corebase::reactor::TimeoutKind;
 /// `SW_DATA_EOF_MAXLEN`.
-const EOF_MAXLEN: usize = 8;
+const EOF_MAXLEN: usize = swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN as usize;
 /// `SW_ERROR_OPERATION_NOT_SUPPORT`.
 const OPERATION_NOT_SUPPORT: i64 =
     swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as i64;

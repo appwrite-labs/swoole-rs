@@ -85,7 +85,7 @@ const FLAG_FIN: i64 = 1;
 const FLAGS_ALL: i64 = 63;
 const CLOSE_NORMAL: i64 = 1000;
 /// `SW_HTTP_RESPONSE_INIT_SIZE`.
-const BODY_SIZE: usize = 65536;
+const BODY_SIZE: usize = swoole_rs_corebase::constants::SW_HTTP_RESPONSE_INIT_SIZE as usize;
 
 /// Which compression Swoole was built with (1 zlib, 2 brotli, 4 zstd).
 static FEATURES: AtomicU32 = AtomicU32::new(0);

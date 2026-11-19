@@ -39,9 +39,10 @@ use swoole_rs_zend::{method_table, sys as z};
 const FLAG_ASYNC: i64 = 1 << 10;
 const FLAG_SYNC: i64 = 1 << 11;
 const FLAG_KEEP: i64 = 1 << 12;
-pub(crate) const SOCK_SSL: i64 = 1 << 9;
+pub(crate) const SOCK_SSL: i64 =
+    swoole_rs_corebase::constants::SocketFlag::SW_SOCK_SSL.bits() as i64;
 /// `SW_PHP_CLIENT_BUFFER_SIZE`, `SW_BUFFER_SIZE_STD` and `SW_BUFFER_SIZE_BIG`.
-const PHP_BUFFER_SIZE: i64 = 65535;
+pub(crate) const PHP_BUFFER_SIZE: i64 = 65535;
 const BUFFER_SIZE_STD: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize;
 const BUFFER_SIZE_BIG: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as usize;
 /// `SW_CLIENT_CONNECT_TIMEOUT`.

@@ -5,7 +5,7 @@
 //! (`crate::native`).
 use crate::{
     native::{Co, Transfer},
-    net::{SOCK_SSL, check_type, socket_type, type_code},
+    net::{PHP_BUFFER_SIZE, SOCK_SSL, check_type, socket_type, type_code},
     socket::{Sock, strerror, warn},
 };
 use libc::c_int;
@@ -22,8 +22,6 @@ use swoole_rs_zend::{
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-/// `SW_PHP_CLIENT_BUFFER_SIZE`.
-const BUFFER_SIZE: i64 = 65535;
 /// `SW_ERROR_CLIENT_NO_CONNECTION`.
 const NO_CONNECTION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CLIENT_NO_CONNECTION as c_int;
 
@@ -506,7 +504,7 @@ fn recv(call: &Call) {
             _ => (received, None),
         }
     } else {
-        let length = usize::try_from(BUFFER_SIZE).unwrap_or(0) - size_of::<zend_string>();
+        let length = usize::try_from(PHP_BUFFER_SIZE).unwrap_or(0) - size_of::<zend_string>();
         let mut buffer = ZBuf::with_capacity(length);
         let received = socket.receive(Transfer::Recv, &mut buffer, timeout);
         (
@@ -526,7 +524,10 @@ fn recv(call: &Call) {
 
 /// `peek(int $length = 65535): string|false`.
 fn peek(call: &Call) {
-    let Ok(length) = call.arity(0, 1).and_then(|()| call.long(1, BUFFER_SIZE)) else {
+    let Ok(length) = call
+        .arity(0, 1)
+        .and_then(|()| call.long(1, PHP_BUFFER_SIZE))
+    else {
         return call.set_bool(false);
     };
     let Some((socket, _hold)) = connected(call) else {
