@@ -548,9 +548,8 @@ fn bounded_failures_leave_output() {
 
 /// `native.cc`'s `seeded_resp_trace`: 10,000 generated wires, each through the pinned
 /// `redis::parse` and PHP request loop and through Rust's spans and PHP events, from
-/// errno `EDOM`; strings, parameters and errno must match. The grammar keeps every
-/// native bulk copy in bounds: malformed numeric delimiters and negative non-null
-/// bulk sizes are excluded, because the pinned parsers read outside the input there.
+/// errno `EDOM`; strings, parameters and errno must match. The grammar generates
+/// well-delimited numbers and bulk sizes of -1 or 0 to 64.
 #[test]
 fn seeded_requests() {
     let mut fingerprint = 14_695_981_039_346_656_037_u64;
