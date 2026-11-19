@@ -107,45 +107,11 @@ void curl_multi_register_class(void) {
     zend_declare_property_bool(swoole_coroutine_curl_multi_handle_ce, ZEND_STRL("in_coroutine"), 0, ZEND_ACC_PUBLIC);
 }
 
-// Compatibility with libcurl builds that still require OpenSSL's pre-1.1 ZTS locks.
-#if PHP_VERSION_ID < 80500 && defined(ZTS) && defined(HAVE_CURL_OLD_OPENSSL)
-#ifdef HAVE_OPENSSL_CRYPTO_H
-#include <openssl/crypto.h>
-static MUTEX_T *curl_locks;
-static ZEND_ATTRIBUTE_UNUSED void curl_ssl_lock(int mode, int index, const char *, int) {
-    if (mode & CRYPTO_LOCK) {
-        tsrm_mutex_lock(curl_locks[index]);
-    } else {
-        tsrm_mutex_unlock(curl_locks[index]);
-    }
-}
-static ZEND_ATTRIBUTE_UNUSED unsigned long curl_ssl_thread_id() {
-    return (unsigned long) tsrm_thread_id();
-}
-#else
-#warning "libcurl uses old OpenSSL but openssl/crypto.h is unavailable for ZTS locking"
-#endif
-#endif
-
 extern "C" bool swoole_curl_startup(const zend_function_entry *entries) {
 #if PHP_VERSION_ID >= 80300
     if (curl_ce->default_object_handlers->offset != XtOffsetOf(php_curl, std)) {
         php_error_docref(nullptr, E_WARNING, "CurlHandle layout differs from the installed ext/curl");
         return false;
-    }
-#endif
-#if PHP_VERSION_ID < 80500 && defined(ZTS) && defined(HAVE_CURL_OLD_OPENSSL) && defined(HAVE_OPENSSL_CRYPTO_H)
-    if (!CRYPTO_get_id_callback()) {
-        int count = CRYPTO_num_locks();
-        curl_locks = static_cast<MUTEX_T *>(malloc(count * sizeof(*curl_locks)));
-        if (!curl_locks) {
-            return false;
-        }
-        for (int i = 0; i < count; ++i) {
-            curl_locks[i] = tsrm_mutex_alloc();
-        }
-        CRYPTO_set_id_callback(curl_ssl_thread_id);
-        CRYPTO_set_locking_callback(curl_ssl_lock);
     }
 #endif
     swoole_curl_register_handle();
