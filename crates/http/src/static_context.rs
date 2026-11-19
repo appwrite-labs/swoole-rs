@@ -31,7 +31,8 @@ pub enum StaticText {
 }
 use StaticText::{Boundary, Content, Directory, End, Filename, Index, Original, Url};
 /// `SW_HTTP_SERVER_BOUNDARY_TOTAL_SIZE`: the boundary and its NUL.
-pub const BOUNDARY_SIZE: usize = 39;
+pub const BOUNDARY_SIZE: usize =
+    swoole_rs_corebase::constants::SW_HTTP_SERVER_BOUNDARY_TOTAL_SIZE as usize;
 
 /// The mutually exclusive file kinds returned by `lstat`, as path-policy bits.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -232,14 +233,14 @@ impl HttpStaticContext {
             return Ok(());
         }
         let prefix = crate::static_meta::BOUNDARY;
-        if random.len() != BOUNDARY_SIZE - prefix.len() {
+        if crate::static_meta::static_boundary(self.boundary.len()) != Some(random.len()) {
             return Err(INVALID);
         }
         let mut boundary = Vec::new();
         boundary
-            .try_reserve_exact(prefix.len() - 1 + random.len())
+            .try_reserve_exact(prefix.len() + random.len())
             .map_err(|_| ALLOCATION)?;
-        boundary.extend_from_slice(crate::c_text(prefix));
+        boundary.extend_from_slice(prefix);
         boundary.extend_from_slice(random);
         self.boundary = boundary;
         Ok(())

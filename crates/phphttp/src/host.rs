@@ -39,7 +39,8 @@ pub(crate) const SERVER_IS_NOT_REGULAR_FILE: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_SERVER_IS_NOT_REGULAR_FILE as c_int;
 
 /// `SW_HTTP_HEADER_KEY_SIZE`.
-pub(crate) const HEADER_KEY_SIZE: usize = 128;
+pub(crate) const HEADER_KEY_SIZE: usize =
+    swoole_rs_corebase::constants::SW_HTTP_HEADER_KEY_SIZE as usize;
 
 /// Re-raise a bailout a host call trapped. Host calls that can run user code
 /// (a header value's `__toString`, `exit()` in it) trap a bailout in C and

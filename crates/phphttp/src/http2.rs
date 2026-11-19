@@ -147,7 +147,7 @@ pub fn date<R>(f: impl FnOnce(&[u8]) -> R) -> R {
 }
 
 /// `SW_HTTP2_DATA_BUFFER_SIZE`.
-const DATA_BUFFER_SIZE: usize = 8192;
+const DATA_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_HTTP2_DATA_BUFFER_SIZE as usize;
 
 /// Built with `SW_HAVE_COMPRESSION`.
 fn compression() -> bool {
