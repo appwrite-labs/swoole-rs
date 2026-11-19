@@ -78,10 +78,10 @@ impl Request {
 
 /// The handler's retval: 0, or -1 when the name did not resolve. Anything else is
 /// a refused allocation, which upstream throws as `bad_alloc`.
-fn checked(result: Result<(), ResolveError>) -> isize {
+fn completion(result: Result<(), ResolveError>, error: c_int) -> (isize, c_int) {
     match result {
-        Ok(()) => 0,
-        Err(ResolveError::Failed) => -1,
+        Ok(()) => (0, 0),
+        Err(ResolveError::Failed) => (-1, error),
         Err(ResolveError::Alloc | ResolveError::Unknown) => {
             std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>())
         }
@@ -97,8 +97,8 @@ pub fn address(owner: &ResolverRequest) -> Vec<u8> {
 /// Resolve the retained request on the pool thread and record its status.
 pub extern "C" fn handler_gethostbyname(event: &mut swoole_rs_corebase::offload::AsyncEvent) {
     if let Some(request) = event.record() {
-        let status = checked(request.host());
-        event.set_result(status, if status < 0 { RESOLVE_FAILED } else { 0 });
+        let (retval, error) = completion(request.host(), RESOLVE_FAILED);
+        event.set_result(retval, error);
     }
 }
 
@@ -113,8 +113,7 @@ fn unknown_family(family: c_int) -> bool {
 /// `async::handler_getaddrinfo`'s body, on a pool thread: its `(retval, error)`.
 #[must_use]
 pub fn lookup(owner: &ResolverRequest) -> (isize, c_int) {
-    let status = checked(owner.lookup(unknown_family));
-    (status, owner.fields().error)
+    completion(owner.lookup(unknown_family), owner.fields().error)
 }
 
 /// `name` as `std::string::c_str()` reads it: up to its first NUL.
