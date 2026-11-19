@@ -34,11 +34,10 @@ use swoole_rs_zend::{
 use swoole_rs_zend::{method_table, sys as z};
 
 /// `SW_HTTP2_*` frame sizes and the client preface.
-const FRAME_HEADER: usize = 9;
+const FRAME_HEADER: usize = swoole_rs_http2::FRAME_HEADER_SIZE as usize;
 const PING_PAYLOAD: usize = 8;
 const GOAWAY_SIZE: usize = 8;
 const WINDOW_UPDATE_SIZE: usize = 4;
-const SETTING_FRAME: usize = FRAME_HEADER + 6 * 6;
 const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 /// Frame types and flags.
 const FLAG_ACK: u32 = 1;
@@ -439,8 +438,7 @@ impl Client {
         socket.set_http2(true);
         socket.set_open_length_check(true);
         let mut protocol = socket.protocol();
-        // SW_HTTP2_FRAME_HEADER_SIZE.
-        protocol.package_length_size = 9;
+        protocol.package_length_size = swoole_rs_http2::FRAME_HEADER_SIZE;
         protocol.package_length_offset = 0;
         protocol.package_body_offset = 0;
         protocol.get_package_length = Some(swoole_rs_ports::http_routes::exports::http2_length);
@@ -556,7 +554,7 @@ impl Client {
     }
 
     fn send_setting(&self) -> bool {
-        let mut frame = [0_u8; SETTING_FRAME];
+        let mut frame = [0_u8; swoole_rs_http2::SETTINGS_FRAME_SIZE];
         let length = sw_rs_http2_pack_settings(&mut frame, &self.local, false);
         self.send(frame.get(..length).unwrap_or(&frame))
     }
@@ -802,7 +800,8 @@ impl Client {
         let known = || self.streams.with_taken(|streams| streams.contains_key(&id));
         let read = match facts.action {
             FrameAction::Settings => {
-                let (entries, &[]) = payload.as_chunks::<6>() else {
+                let (entries, &[]) = payload.as_chunks::<{ swoole_rs_http2::SETTING_BYTES }>()
+                else {
                     return Err(FrameReadError::Short);
                 };
                 for entry in entries {

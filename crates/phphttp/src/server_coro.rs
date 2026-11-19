@@ -21,6 +21,7 @@ use swoole_rs_corebase::buffer::string::StringBuffer as Buffer;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_members::Receive};
+use swoole_rs_http2::FRAME_HEADER_SIZE as HTTP2_FRAME_HEADER_SIZE;
 use swoole_rs_httpbindings::Setting;
 use swoole_rs_phpclients::{NewSocket, get_socket, is_socket_closed, socket_settings};
 use swoole_rs_phpstubs::http_server_coro;
@@ -285,9 +286,6 @@ fn address(socket: Co) -> (ZString, c_int) {
     });
     address.unwrap_or_else(|| (ZString::new(b""), 0))
 }
-
-/// `SW_HTTP2_FRAME_HEADER_SIZE`.
-const HTTP2_FRAME_HEADER_SIZE: u8 = 9;
 
 /// `zend::assign_zend_string_by_val(&request.zdata, buffer->pop(SW_BUFFER_SIZE_BIG), length)`:
 /// the request's `length` bytes, in a zend string the buffer allocated,

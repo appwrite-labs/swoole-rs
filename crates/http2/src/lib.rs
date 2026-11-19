@@ -47,12 +47,19 @@ pub struct Http2ResponsePlan {
     pub ready: bool,
 }
 
+/// Size of the fixed HTTP/2 frame header, including its three-byte length.
+pub const FRAME_HEADER_SIZE: u8 = 9;
+const HEADER_BYTES: usize = FRAME_HEADER_SIZE as usize;
+pub const SETTING_BYTES: usize = size_of::<u16>() + size_of::<u32>();
+const SETTING_COUNT: usize = 6;
+pub const SETTINGS_FRAME_SIZE: usize = HEADER_BYTES + SETTING_COUNT * SETTING_BYTES;
+
 /// RFC 7540 connection window before any `WINDOW_UPDATE`.
 pub const INITIAL_CONNECTION_WINDOW: u32 = 65_535;
 
 /// The process-wide defaults (`SW_HTTP2_DEFAULT_*`), indexed by setting id - 1:
 /// header table, push, concurrent streams, initial window, frame size, header list.
-static DEFAULT_SETTINGS: [AtomicU32; 6] = [
+static DEFAULT_SETTINGS: [AtomicU32; SETTING_COUNT] = [
     AtomicU32::new(1 << 12),
     AtomicU32::new(0),
     AtomicU32::new(u32::MAX),
@@ -98,7 +105,7 @@ pub fn sw_rs_http2_default_settings() -> Http2Settings {
     }
 }
 
-fn header(kind: u8, length: u32, flags: u8, stream_id: u32) -> [u8; 9] {
+fn header(kind: u8, length: u32, flags: u8, stream_id: u32) -> [u8; HEADER_BYTES] {
     let id = stream_id.to_be_bytes();
     let [_, high, middle, low] = length.to_be_bytes();
     [high, middle, low, kind, flags, id[0], id[1], id[2], id[3]]
@@ -429,7 +436,7 @@ pub fn sw_rs_http2_pack_frame_header(
     length: u32,
     flags: u32,
     stream_id: u32,
-) -> [u8; 9] {
+) -> [u8; HEADER_BYTES] {
     let [flags, ..] = flags.to_le_bytes();
     header(kind as u8, length, flags, stream_id)
 }
@@ -437,8 +444,8 @@ pub fn sw_rs_http2_pack_frame_header(
 /// `swoole::http2::pack_setting_frame` into the front of `out`: the frame's size, or 0
 /// when `out` is shorter than the frame (45 bytes, 39 for a server).
 pub fn sw_rs_http2_pack_settings(out: &mut [u8], s: &Http2Settings, server: bool) -> usize {
-    let count = if server { 5 } else { 6 };
-    let size = 9 + count * 6;
+    let count = SETTING_COUNT - usize::from(server);
+    let size = HEADER_BYTES + count * SETTING_BYTES;
     let Some(out) = out.get_mut(..size) else {
         return 0;
     };
@@ -450,10 +457,10 @@ pub fn sw_rs_http2_pack_settings(out: &mut [u8], s: &Http2Settings, server: bool
         s.max_frame_size,
         s.max_header_list_size,
     ];
-    let (head, entries) = out.split_at_mut(9);
+    let (head, entries) = out.split_at_mut(HEADER_BYTES);
     head.copy_from_slice(&header(
         FrameType::Settings as u8,
-        u32::try_from(count * 6).unwrap_or(0),
+        u32::try_from(count * SETTING_BYTES).unwrap_or(0),
         0,
         0,
     ));
@@ -461,7 +468,7 @@ pub fn sw_rs_http2_pack_settings(out: &mut [u8], s: &Http2Settings, server: bool
         .iter()
         .enumerate()
         .filter(|&(index, _)| !server || index != 1);
-    for ((index, value), entry) in sent.zip(entries.as_chunks_mut::<6>().0) {
+    for ((index, value), entry) in sent.zip(entries.as_chunks_mut::<SETTING_BYTES>().0) {
         let (id, value_bytes) = entry.split_at_mut(2);
         id.copy_from_slice(&u16::try_from(index + 1).unwrap_or(0).to_be_bytes());
         value_bytes.copy_from_slice(&value.to_be_bytes());
@@ -472,7 +479,7 @@ pub fn sw_rs_http2_pack_settings(out: &mut [u8], s: &Http2Settings, server: bool
 /// Decode one setting: its id and value. Native code invokes the callback before
 /// decoding another.
 #[must_use]
-pub fn sw_rs_http2_unpack_setting(b: &[u8; 6]) -> (u16, u32) {
+pub fn sw_rs_http2_unpack_setting(b: &[u8; SETTING_BYTES]) -> (u16, u32) {
     (
         u16::from_be_bytes([b[0], b[1]]),
         u32::from_be_bytes([b[2], b[3], b[4], b[5]]),
@@ -528,7 +535,7 @@ pub fn decode_packet(
     previous_last_id: u32,
     client: bool,
 ) -> Result<(Http2FrameFacts, &[u8]), ShortFrame> {
-    let (header, body) = bytes.split_at_checked(9).ok_or(ShortFrame)?;
+    let (header, body) = bytes.split_at_checked(HEADER_BYTES).ok_or(ShortFrame)?;
     let facts = sw_rs_http2_decode_frame(header, previous_last_id, client).ok_or(ShortFrame)?;
     let payload = body.get(..facts.length as usize).ok_or(ShortFrame)?;
     Ok((facts, payload))
@@ -539,9 +546,9 @@ pub fn decode_packet(
 #[must_use]
 pub fn frame_length(buffered: &[u8]) -> Option<usize> {
     match buffered {
-        &[b0, b1, b2, _, _, _, _, _, _, ..] => {
-            Some(((usize::from(b0) << 16) | (usize::from(b1) << 8) | usize::from(b2)) + 9)
-        }
+        &[b0, b1, b2, _, _, _, _, _, _, ..] => Some(
+            ((usize::from(b0) << 16) | (usize::from(b1) << 8) | usize::from(b2)) + HEADER_BYTES,
+        ),
         _ => None,
     }
 }
