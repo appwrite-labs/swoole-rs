@@ -348,6 +348,18 @@ fn shared_table_keeps_its_pin_until_the_last_handle_drops() {
 }
 
 #[test]
+fn unwinding_a_pool_read_releases_its_count() {
+    let pool = GlobalMemory::new(4096, false).unwrap();
+    let result = std::panic::catch_unwind(|| {
+        pool.with(|_| {
+            panic!("interrupt the read");
+        })
+    });
+    assert!(result.is_err());
+    assert_eq!(pool.users.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn global_memory_bump_allocates_zeroed_blocks_within_a_page() {
     crate::swr_v1_core_set_pagesize(4096);
     let pool = GlobalMemory::new(4096, false).unwrap();

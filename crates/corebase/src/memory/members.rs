@@ -82,6 +82,14 @@ pub struct GlobalMemory {
     users: AtomicUsize,
 }
 
+struct PoolReader<'a>(&'a AtomicUsize);
+
+impl Drop for PoolReader<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 impl GlobalMemory {
     /// A memory with no pool yet, `SwooleG.memory_pool` before `swoole_init`.
     const fn empty() -> Self {
@@ -122,9 +130,9 @@ impl GlobalMemory {
     /// fork, and keeps it.
     fn with<R>(&self, read: impl FnOnce(&GlobalImpl) -> R) -> Result<R, i32> {
         self.users.fetch_add(1, Ordering::SeqCst);
-        let result = self.current().map(read);
-        self.users.fetch_sub(1, Ordering::SeqCst);
-        result
+        // Keep the pool counted through the callback, including unwinding its frame.
+        let _reader = PoolReader(&self.users);
+        self.current().map(read)
     }
 
     /// The pool, for `with`, which counts the caller as a user.
@@ -543,12 +551,14 @@ pub mod pool {
     /// A block from [`alloc`], or null. Success adds one user. A [`PooledWord`]
     /// releases that pin on drop; callers with process-lifetime references keep it.
     fn pinned(size: u32) -> *mut c_void {
-        POOL.users.fetch_add(1, SeqCst);
-        let block = alloc(size);
-        if block.is_null() {
-            POOL.users.fetch_sub(1, SeqCst);
-        }
-        block
+        POOL.with(|pool| {
+            let block = super::alloc(&mut pool.pages(), size);
+            if !block.is_null() {
+                POOL.users.fetch_add(1, SeqCst);
+            }
+            block
+        })
+        .unwrap_or_else(|_| crate::fatal("no memory pool to allocate from"))
     }
 
     /// `count` zero words from [`alloc`], for the process's life: `Swoole\Atomic`'s
