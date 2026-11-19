@@ -78,6 +78,16 @@ def category(reason):
     return next((name for name, pattern in CATEGORIES if re.search(pattern, lowered)), 'other')
 
 
+def without_libraries(reports):
+    """The reports whose sandbox had run.py's stub autoloader, not the composer libraries."""
+    return [str(report) for report in reports
+            if json.loads(Path(report).read_text()).get('upstream', {}).get('libraries') is False]
+
+
+LIBRARIES = ('Composer libraries missing: the guzzle, symfony and httpbin cases ran against '
+             "run.py's stub autoloader, not their libraries")
+
+
 def rows(reports):
     for report in reports:
         data = json.loads(Path(report).read_text())
@@ -240,12 +250,12 @@ def listing(title, tests):
     return [f'<details><summary>{len(tests)} {title}</summary>', '', *[f'- `{test}`' for test in tests], '', '</details>', '']
 
 
-def markdown(results, rechecked=None):
+def markdown(results, rechecked=None, stubbed=()):
     engines = sorted({row['engine'] for row in results}, key=lambda engine: (engine != 'upstream', engine))
     families = defaultdict(Counter)
     for row in results:
         families[row['family']][row['engine'], row['status']] += 1
-    lines = []
+    lines = [f'**{LIBRARIES}** ({len(stubbed)} report(s)).', ''] if stubbed else []
     for engine in engines:
         statuses = Counter(row['status'] for row in results if row['engine'] == engine)
         skips = Counter(row['category'] for row in results if row['engine'] == engine and row['status'] == 'skipped')
@@ -302,7 +312,10 @@ def main():
         if rechecked is not None:
             mark_reruns(results, rechecked)
         args.output.write_text(json.dumps(results, indent=1) + '\n')
-    print(markdown(results, rechecked))
+    stubbed = without_libraries(args.reports)
+    print(markdown(results, rechecked, stubbed))
+    if stubbed:
+        annotate('warning', 'PHPT libraries', f'{LIBRARIES}: {", ".join(stubbed)}')
     resources = resource_regressions(results)
     for regression in resources:
         annotate('error', 'PHPT regression', regression)

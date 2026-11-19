@@ -361,6 +361,7 @@ def batches(cases, isolate=False):
 
 
 def prepare(source, destination, cases, support_files=()):
+    """Stage the cases into `destination`; whether the composer libraries were there."""
     actual = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
     if actual != COMMIT:
         raise ValueError(f'Upstream source is {actual}; expected {COMMIT}')
@@ -413,9 +414,10 @@ def prepare(source, destination, cases, support_files=()):
     source_vendor = source / 'tests/include/lib/vendor'
     if source_vendor.is_dir():
         shutil.copytree(source_vendor, vendor)
-    else:
-        vendor.mkdir(parents=True)
-        (vendor / 'autoload.php').write_text(AUTOLOAD)
+        return True
+    vendor.mkdir(parents=True)
+    (vendor / 'autoload.php').write_text(AUTOLOAD)
+    return False
 
 
 def group_leftovers(group, members):
@@ -665,7 +667,8 @@ def main():
         with tempfile.TemporaryDirectory(prefix='swoole-phpt-') as temporary:
             sandbox = Path(temporary)
             with timed_phase(report, 'prepare'):
-                prepare(args.source, sandbox, cases, support_files=support_files)
+                # The composer libraries, or run.py's stub autoloader without them.
+                report['upstream']['libraries'] = prepare(args.source, sandbox, cases, support_files=support_files)
                 (sandbox / 'home').mkdir()
                 (sandbox / 'tmp').mkdir()
                 report['upstream']['support_tree'] = subprocess.check_output(['git', '-C', str(args.source), 'rev-parse', f'{COMMIT}:tests/include'], text=True).strip()
