@@ -23,6 +23,10 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      # --all-features always pairs phpserver's `php` and `server`; its standalone server
+      # build is the one the extension's dependents use (#5352).
+      - name: Clippy phpserver's server build
+        run: cargo clippy --locked -p swoole-rs-phpserver --all-targets --features server -- -D warnings
       - name: Test workspace
         run: cargo test --locked --workspace --all-features
       # fuzz/ is its own workspace, so the steps above don't build it, and ClusterFuzzLite PR

@@ -1,8 +1,8 @@
 //! PHP `Swoole\Server` family classes in Rust: registration, objects and
 //! method bodies over crates/server's Server and `ListenPort`. See docs/zend.md.
 //!
-//! Registration requires both the `php` and `server` features.
-#![cfg(all(feature = "php", feature = "server"))]
+//! Registration requires the `server` feature, which turns `php` on.
+#![cfg(feature = "server")]
 #![expect(
     clippy::disallowed_types,
     reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
