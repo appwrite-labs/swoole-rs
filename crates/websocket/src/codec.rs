@@ -4,7 +4,9 @@ use std::mem::MaybeUninit;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::lent::{Spare, lend_spare};
 
-use crate::{LengthError, Opcode, frame_length, header, mask};
+use crate::{
+    CLOSE_CODE_LEN, CLOSE_REASON_MAX_LEN, LengthError, Opcode, frame_length, header, mask,
+};
 
 const FIN: u8 = 1;
 const RSV1: u8 = 4;
@@ -279,9 +281,9 @@ pub fn encode_close(
     flags: FrameFlags,
     out: &mut Spare<'_>,
 ) -> Result<usize, EncodeError> {
-    let mut payload = [0u8; 127];
+    let mut payload = [0u8; CLOSE_CODE_LEN + CLOSE_REASON_MAX_LEN];
     let Some((code_bytes, reason_bytes)) = payload
-        .get_mut(..reason.len() + 2)
+        .get_mut(..reason.len() + CLOSE_CODE_LEN)
         .and_then(<[u8]>::split_first_chunk_mut)
     else {
         return Err(EncodeError::InvalidControl);
@@ -289,7 +291,9 @@ pub fn encode_close(
     // Upstream packs the close code as `uint16_t`.
     *code_bytes = code.c_cast::<u16>().to_be_bytes();
     reason_bytes.copy_from_slice(reason);
-    let payload = payload.get(..reason.len() + 2).unwrap_or_default();
+    let payload = payload
+        .get(..reason.len() + CLOSE_CODE_LEN)
+        .unwrap_or_default();
     encode_frame(
         payload.len(),
         payload,
