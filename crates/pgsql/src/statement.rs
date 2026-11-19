@@ -547,8 +547,9 @@ fn close_statement(handle: &Handle, name: Text<'_>) {
     }
 }
 
-/// Prepare once parameter types are known. A pooled connection may still have
-/// this generated name from its previous client; remove it and retry once.
+/// Upstream PDO PgSQL (`pgsql_stmt_execute`) deallocates on SQLSTATE 42P05:
+/// a pool can retain a prepared statement if PHP exits before request shutdown.
+/// A new PDO handle can generate the same name. Retry once after closing it.
 fn prepare_statement(
     dbh: &Dbh,
     stmt: &Stmt,
