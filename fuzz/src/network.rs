@@ -341,7 +341,8 @@ pub fn http_rewrite(bytes: &[u8]) {
         return;
     }
     let mut rules = swoole_rs_http::RewriteRules::default();
-    rules.add(&[b"~", pattern, b"~"].concat(), replacement);
+    // A backreference or lookahead is added unsupported and never matches (#5277).
+    let added = rules.add(&[b"~", pattern, b"~"].concat(), replacement);
     let rewritten = rules.apply(url);
     let literal = pattern
         .iter()
@@ -349,6 +350,7 @@ pub fn http_rewrite(bytes: &[u8]) {
     if pattern.is_empty() || !literal || replacement.contains(&b'$') {
         return;
     }
+    assert!(added.is_ok(), "a literal pattern is supported");
     let (mut expected, mut rest) = (Vec::new(), url);
     while let Some(at) = rest.windows(pattern.len()).position(|w| w == pattern) {
         expected.extend_from_slice(&rest[..at]);
