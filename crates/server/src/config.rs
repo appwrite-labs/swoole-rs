@@ -8,6 +8,8 @@ use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize,
     Ordering::Relaxed,
 };
+use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::constants::{SW_COMPRESSION_MIN_LENGTH_DEFAULT, SW_Z_BEST_SPEED};
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
 
 /// A value a [`Setting`] holds, and the atomic of its layout that holds it.
@@ -354,7 +356,7 @@ impl Default for ServerConfig {
             scheduler_warning: AtomicBool::new(false),
             max_request: Setting::new(0),
             max_request_grace: Setting::new(0),
-            max_wait_time: Setting::new(3),
+            max_wait_time: Setting::new(swoole_rs_corebase::constants::SW_WORKER_MAX_WAIT_TIME),
             worker_max_concurrency: Setting::new(u32::MAX),
             daemonize: Setting::new(false),
             have_dgram_sock: Setting::new(false),
@@ -410,7 +412,7 @@ impl Default for ServerConfig {
             gs: crate::table::Table::empty(),
             upload_max_filesize: Setting::new(0),
             http_compression_level: Setting::new(0),
-            compression_min_length: Setting::new(20),
+            compression_min_length: Setting::new(SW_COMPRESSION_MIN_LENGTH_DEFAULT),
             recv_buffer_allocator: Shared::new(None),
             recv_buffer_size: 65_536,
             message_queue_key: Setting::new(0),
@@ -476,8 +478,10 @@ impl ServerConfig {
         self.worker_num.set(cpu_num);
         self.timezone_ = timezone;
         self.http_compression.set(true);
-        self.http_compression_level.set(1);
-        self.compression_min_length.set(20);
+        self.http_compression_level
+            .set(SW_Z_BEST_SPEED.c_cast::<u8>());
+        self.compression_min_length
+            .set(SW_COMPRESSION_MIN_LENGTH_DEFAULT);
         self.recv_buffer_allocator.set(allocator);
     }
 }

@@ -17,6 +17,10 @@ use super::{
     TEST_STR, co_sleep, errno, go, last_error, random_bytes, run, swoole_coroutine_close,
     swoole_coroutine_flock, swoole_coroutine_open, swoole_coroutine_read, swoole_coroutine_write,
 };
+use libc::{
+    AI_PASSIVE, EAFNOSUPPORT, EAI_NONAME, EAI_SYSTEM, ECANCELED, ENOTSOCK, EWOULDBLOCK, F_GETFL,
+    F_OK, F_SETFL, O_RDWR, O_TRUNC, POLLIN, POLLOUT, R_OK, SEEK_SET, SO_RCVTIMEO, SO_SNDTIMEO,
+};
 use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::time::Instant;
@@ -27,34 +31,14 @@ use swoole_rs_hooks::hooked::{
 };
 use swoole_rs_hooks::stdio::{AddrInfoError, resolve_addrinfo, swoole_coroutine_gethostbyname};
 
-// glibc's values (the core-tests build is Linux).
-const O_RDWR: c_int = 2;
-const O_TRUNC: c_int = 0o1000;
-const SEEK_SET: c_int = 0;
-const R_OK: c_int = 4;
-const F_OK: c_int = 0;
-const F_GETFL: c_int = 3;
-const F_SETFL: c_int = 4;
-const SO_SNDTIMEO: c_int = 21;
-const SO_RCVTIMEO: c_int = 20;
-const POLLIN: i16 = 1;
-const POLLOUT: i16 = 4;
-const AI_PASSIVE: c_int = 1;
-const EAI_NONAME: c_int = -2;
-const EAI_SYSTEM: c_int = -11;
 const HOST_NOT_FOUND: c_int = 1;
-const ENOTSOCK: c_int = 88;
-const EWOULDBLOCK: c_int = 11;
-const ECANCELED: c_int = 125;
-const EAFNOSUPPORT: c_int = 97;
-const SOCK_CLOEXEC: c_int = 0o2000000;
 const SW_OK: c_int = 0;
 const SW_ERROR_INVALID_PARAMS: c_int = 505;
 const SW_ERROR_CO_SOCKET_CLOSE_WAIT: c_int = 10019;
-/// `struct stat`'s `st_size` offset, in 8-byte words, on x86_64 and aarch64 Linux.
-pub(super) const ST_SIZE: usize = 6;
-/// `struct dirent`'s `d_name` offset on Linux.
-const D_NAME: usize = 19;
+/// `struct stat`'s `st_size` offset, in 8-byte words.
+pub(super) const ST_SIZE: usize = std::mem::offset_of!(libc::stat, st_size) / 8;
+/// `struct dirent`'s `d_name` offset.
+const D_NAME: usize = std::mem::offset_of!(libc::dirent, d_name);
 
 const HOST_1: &CStr = c"www.baidu.com";
 const HOST_2: &CStr = c"www.xxxxxxxxxxxxxxxxxxxxx00000xxxxxxxxx----not_found.com";
@@ -1202,6 +1186,11 @@ fn get_socket_fail() {
 }
 
 fn create_socket_fail() {
+    #[cfg(not(target_vendor = "apple"))]
+    use libc::SOCK_CLOEXEC;
+    // Darwin lacks this socket flag. Preserve the Linux core-test input.
+    #[cfg(target_vendor = "apple")]
+    const SOCK_CLOEXEC: c_int = 0o2000000;
     run(|| {
         // SAFETY: socket(2) with an unknown family.
         let fd = unsafe { swoole_coroutine_socket(AF_INET + 99, SOCK_CLOEXEC, 0) };

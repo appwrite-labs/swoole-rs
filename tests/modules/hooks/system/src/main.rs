@@ -42,6 +42,12 @@
     reason = "the records' views lend what the native pointer they wrap owns, as the C++ cases' pointers do"
 )]
 
+use libc::{
+    AF_INET, AF_INET6, AF_UNIX, EAGAIN, EAI_NONAME, EBADF, EBUSY, EINVAL, ENOENT, ETIMEDOUT,
+    F_GETFL, F_SETFL, LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN, O_CREAT, O_NONBLOCK, O_RDONLY, O_WRONLY,
+    RLIMIT_NOFILE, SIGKILL, SIGUSR1, SIGUSR2, SO_RCVBUF, SO_SNDBUF, SOCK_DGRAM, SOCK_STREAM,
+    SOL_SOCKET, WNOHANG,
+};
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use swoole_rs_corebase::log::last_error;
@@ -85,37 +91,6 @@ const SW_ERR: c_int = -1;
 const SW_STACK_BUFFER_SIZE: usize = 65536;
 const SW_SOCKET_BUFFER_SIZE: u32 = 8_388_608;
 const SW_NUM_MILLION: usize = 1_000_000;
-// glibc's values (the core-tests build is Linux).
-const EAI_NONAME: c_int = -2;
-const ENOENT: c_int = 2;
-const EBADF: c_int = 9;
-const EBUSY: c_int = 16;
-const EINVAL: c_int = 22;
-const EAGAIN: c_int = 11;
-const ETIMEDOUT: c_int = 110;
-const SIGKILL: c_int = 9;
-const SIGUSR1: c_int = 10;
-const SIGUSR2: c_int = 12;
-const WNOHANG: c_int = 1;
-const LOCK_SH: c_int = 1;
-const LOCK_EX: c_int = 2;
-const LOCK_NB: c_int = 4;
-const LOCK_UN: c_int = 8;
-const O_RDONLY: c_int = 0;
-const O_WRONLY: c_int = 1;
-const O_CREAT: c_int = 0o100;
-const O_NONBLOCK: c_int = 0o4000;
-const F_GETFL: c_int = 3;
-const F_SETFL: c_int = 4;
-const AF_UNIX: c_int = 1;
-const AF_INET: c_int = 2;
-const AF_INET6: c_int = 10;
-const SOCK_STREAM: c_int = 1;
-const SOCK_DGRAM: c_int = 2;
-const SOL_SOCKET: c_int = 1;
-const SO_SNDBUF: c_int = 7;
-const SO_RCVBUF: c_int = 8;
-const RLIMIT_NOFILE: c_int = 7;
 
 const TEST_FILE: &CStr = c"/tmp/swoole-core-test";
 const DATA_SIZE: usize = 8 * 1024 * 1024;
@@ -152,7 +127,6 @@ unsafe extern "C" {
     fn fork() -> c_int;
     fn sleep(seconds: u32) -> u32;
     fn _exit(status: c_int) -> !;
-    fn setrlimit(resource: c_int, limit: *const [u64; 2]) -> c_int;
 }
 
 fn errno() -> c_int {
@@ -863,7 +837,15 @@ fn main() {
     // core-tests' main sets SwooleG.max_sockets = 20000 after swoole_init; swoole_init
     // takes it from the soft descriptor limit.
     // SAFETY: setrlimit(2) with a readable limit.
-    unsafe { setrlimit(RLIMIT_NOFILE, &[20000, 20000]) };
+    unsafe {
+        libc::setrlimit(
+            RLIMIT_NOFILE,
+            &libc::rlimit {
+                rlim_cur: 20000,
+                rlim_max: 20000,
+            },
+        )
+    };
     swoole_init();
     if suite == "coroutine_hook" {
         hook::prepare();

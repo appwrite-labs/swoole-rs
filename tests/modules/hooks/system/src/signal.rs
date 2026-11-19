@@ -21,10 +21,8 @@ use swoole_rs_corebase::reactor::signal_upstream::{
 };
 
 use super::{SIGUSR1, SIGUSR2, SW_SIGNO_MAX, getpid, kill, last_error, spawn_exec};
+use libc::{SIGIO, SIGTERM};
 
-// glibc's values (the core-tests build is Linux).
-const SIGTERM: c_int = 15;
-const SIGIO: c_int = 29;
 const SW_ERROR_UNREGISTERED_SIGNAL: c_int = 721;
 
 /// glibc's `sigset_t`.

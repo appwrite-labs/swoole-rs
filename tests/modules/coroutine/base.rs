@@ -24,6 +24,7 @@ use super::{
     swoole_coroutine_create, swoole_coroutine_get_id, swoole_coroutine_open, swoole_coroutine_read,
     swoole_coroutine_write, trampoline,
 };
+use libc::{CLOCK_MONOTONIC, O_CREAT, O_RDWR, SEEK_CUR, SEEK_SET};
 use std::cell::Cell;
 use std::ffi::{c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -40,17 +41,10 @@ const SW_FORK_PRECHECK: c_int = 8;
 const SWR_CO_ON_YIELD: u32 = 0;
 const SWR_CO_ON_RESUME: u32 = 1;
 const SWR_CO_ON_CLOSE: u32 = 2;
-const CLOCK_MONOTONIC: c_int = 1;
-// glibc's values (the case binary is Linux).
-const O_RDWR: c_int = 2;
-const O_CREAT: c_int = 0o100;
-const SEEK_SET: c_int = 0;
-const SEEK_CUR: c_int = 1;
 
 type SwapCallback = swoole_rs_corebase::coroutine::SwapCallback;
 
 unsafe extern "C" {
-    fn clock_gettime(clock: c_int, ts: *mut [i64; 2]) -> c_int;
     fn usleep(usec: u32) -> c_int;
     fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
 }
@@ -99,10 +93,13 @@ fn count() -> usize {
 
 /// `Timer::get_absolute_msec()`: the steady clock in milliseconds.
 fn absolute_msec() -> c_long {
-    let mut ts = [0i64; 2];
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     // SAFETY: a writable timespec.
-    unsafe { clock_gettime(CLOCK_MONOTONIC, &mut ts) };
-    ts[0] * 1000 + ts[1] / 1_000_000
+    unsafe { libc::clock_gettime(CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec * 1000 + ts.tv_nsec / 1_000_000
 }
 
 fn set_callback(slot: u32, function: SwapCallback) {

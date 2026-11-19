@@ -21,6 +21,7 @@
     reason = "existing uses from before this port inherited [workspace.lints] (#4377); count them down"
 )]
 
+use libc::{EBADF, EEXIST, EINTR, EINVAL, EMFILE, RLIMIT_NOFILE, SIGIO, SOCK_DGRAM, SOCK_STREAM};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::io::IoSlice;
 use std::ptr::{self, null_mut};
@@ -58,16 +59,6 @@ const TYPE_AUTO: c_int = 0;
 const TYPE_EPOLL: c_int = 1;
 const TYPE_POLL: c_int = 3;
 const PRIORITY_DEFER_TASK: c_int = 1;
-// glibc's values (the core-tests build is Linux).
-const EINTR: c_int = 4;
-const EBADF: c_int = 9;
-const EEXIST: c_int = 17;
-const EINVAL: c_int = 22;
-const EMFILE: c_int = 24;
-const SIGIO: c_int = 29;
-const SOCK_STREAM: c_int = 1;
-const SOCK_DGRAM: c_int = 2;
-const RLIMIT_NOFILE: c_int = 7;
 
 const DATA_SIZE: usize = 2 * 1_000_000;
 const PKT: &[u8] = b"hello world\r\n";
@@ -96,8 +87,6 @@ unsafe extern "C" {
     fn kill(pid: c_int, sig: c_int) -> c_int;
     fn getpid() -> c_int;
     fn usleep(usec: u32) -> c_int;
-    fn getrlimit(resource: c_int, limit: *mut [u64; 2]) -> c_int;
-    fn setrlimit(resource: c_int, limit: *const [u64; 2]) -> c_int;
     fn __errno_location() -> *mut c_int;
 }
 
@@ -348,12 +337,12 @@ extern "C" fn count_destroy(_: *mut c_void) {
 }
 
 /// ON_SCOPE_EXIT { setrlimit(RLIMIT_NOFILE, &original_limit); }
-struct RestoreLimit([u64; 2]);
+struct RestoreLimit(libc::rlimit);
 
 impl Drop for RestoreLimit {
     fn drop(&mut self) {
         // SAFETY: setrlimit(2) with a readable limit.
-        unsafe { setrlimit(RLIMIT_NOFILE, &self.0) };
+        unsafe { libc::setrlimit(RLIMIT_NOFILE, &self.0) };
     }
 }
 
@@ -363,16 +352,22 @@ unsafe fn create_failure() {
         REACTOR_DESTROY_COUNT.store(0, Relaxed);
         add_hook(swoole_rs_ffi::HookType::ON_REACTOR_DESTROY, count_destroy);
 
-        let mut original_limit = [0u64; 2];
-        assert_eq!(getrlimit(RLIMIT_NOFILE, &mut original_limit), 0);
-        let limit = [0, original_limit[1]];
-        assert_eq!(setrlimit(RLIMIT_NOFILE, &limit), 0);
+        let mut original_limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(libc::getrlimit(RLIMIT_NOFILE, &mut original_limit), 0);
+        let limit = libc::rlimit {
+            rlim_cur: 0,
+            ..original_limit
+        };
+        assert_eq!(libc::setrlimit(RLIMIT_NOFILE, &limit), 0);
         let _restore = RestoreLimit(original_limit);
 
         swoole_rs_ffi::log::set_last_error(0);
         let retval = swoole_rs_ffi::swoole_event_init(0);
         let error = last_error();
-        let restore_result = setrlimit(RLIMIT_NOFILE, &original_limit);
+        let restore_result = libc::setrlimit(RLIMIT_NOFILE, &original_limit);
 
         assert_eq!(restore_result, 0);
         assert_eq!(retval, Err(swoole_rs_ffi::InitError::Open));
@@ -1394,7 +1389,15 @@ fn main() {
     // core-tests' main sets SwooleG.max_sockets = 20000 after swoole_init; swoole_init takes
     // it from the soft descriptor limit.
     // SAFETY: setrlimit(2) with a readable limit.
-    unsafe { setrlimit(RLIMIT_NOFILE, &[20000, 20000]) };
+    unsafe {
+        libc::setrlimit(
+            RLIMIT_NOFILE,
+            &libc::rlimit {
+                rlim_cur: 20000,
+                rlim_max: 20000,
+            },
+        )
+    };
     swoole_rs_ffi::swoole_init();
     // SAFETY: the selected case runs after process initialization and before cleanup.
     unsafe { body() };

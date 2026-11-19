@@ -31,12 +31,6 @@ const CAFILE: u32 = 9;
 /// The typed TLS configuration.
 pub(super) type TlsFields = swoole_rs_corebase::tls::OwnedTlsFields;
 
-unsafe extern "C-unwind" {
-    /// `SwooleG`, whose first member is `max_sockets`.
-    #[link_name = "SwooleG"]
-    static mut SWOOLE_G_MAX_SOCKETS: u32;
-}
-
 unsafe extern "C" {
     fn getsockname(fd: c_int, addr: *mut c_void, len: *mut u32) -> c_int;
 }
@@ -373,18 +367,14 @@ pub(crate) unsafe fn swr_case_ssl_server(
 /// and a TCP port (ports[0], ports[1]; not created when either is null).
 pub(crate) unsafe fn swr_case_abort_server(
     max_sockets: u32,
-    saved: *mut u32,
+    saved: &mut u32,
     ports: *mut [*mut c_void; 2],
     on_start: Hook,
     on_receive: Receive,
 ) -> *mut c_void {
     let serv = Server::new(MODE_PROCESS);
     serv.config().worker_num.set(2);
-    // SAFETY: SwooleG, which only this thread uses here; writable out-parameters.
-    unsafe {
-        *saved = SWOOLE_G_MAX_SOCKETS;
-        SWOOLE_G_MAX_SOCKETS = max_sockets;
-    }
+    *saved = swoole_rs_corebase::replace_max_sockets(max_sockets);
     server_methods::set_max_connection(serv.view(), 1);
     log_level(SW_LOG_WARNING);
     // SAFETY: a writable out-parameter.
@@ -402,11 +392,6 @@ pub(crate) unsafe fn swr_case_abort_server(
     serv.on_start(on_start);
     serv.on_receive(on_receive);
     serv.0
-}
-
-pub(crate) unsafe fn swr_case_set_max_sockets(value: u32) {
-    // SAFETY: SwooleG, which only this thread uses here.
-    unsafe { SWOOLE_G_MAX_SOCKETS = value };
 }
 
 /// get_package_length's port: one worker in base mode, the TCP port speaking HTTP and HTTP/2;

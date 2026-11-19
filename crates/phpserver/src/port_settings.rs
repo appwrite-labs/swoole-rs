@@ -16,7 +16,7 @@ use swoole_rs_server::view;
 use swoole_rs_zend::{E_ERROR, E_WARNING, Message};
 
 /// `SW_SSL_DTLS`.
-const SSL_DTLS: i64 = 1 << 7;
+const SSL_DTLS: i64 = tls::SslVersion::SW_SSL_DTLS.bits() as i64;
 
 /// What `set()` reads from its settings array, each value converted as
 /// upstream converts it; `None` is a key that is missing or null.

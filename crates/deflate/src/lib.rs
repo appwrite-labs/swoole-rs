@@ -8,12 +8,12 @@ use std::cell::Cell;
 use std::ffi::c_int;
 
 use swoole_rs_zlib::{
-    CHUNK, Stream, Z_BUF_ERROR, Z_FINISH, Z_NO_FLUSH, Z_OK, Z_STREAM_END, Z_SYNC_FLUSH,
+    CHUNK, ENCODING_RAW, Stream, Z_BEST_COMPRESSION, Z_BUF_ERROR, Z_DEFAULT_COMPRESSION, Z_FINISH,
+    Z_NO_COMPRESSION, Z_NO_FLUSH, Z_OK, Z_STREAM_END, Z_SYNC_FLUSH,
 };
 
 /// `deflateInit2`'s window bits for gzip and zlib (`SW_ZLIB_ENCODING_*`).
-pub const GZIP: c_int = 0x1f;
-pub const DEFLATE: c_int = 0x0f;
+pub use swoole_rs_zlib::{ENCODING_DEFLATE as DEFLATE, ENCODING_GZIP as GZIP};
 
 /// `SW_ZLIB_DEF_MEM_LEVEL` (zlib's `MAX_MEM_LEVEL` is 9).
 const MEM_LEVEL: c_int = 8;
@@ -111,13 +111,11 @@ pub enum MessageFailure {
 /// `deflateInit2` failed, or deflate did not end in `Z_BUF_ERROR` with at
 /// least the 4-byte tail written.
 pub fn message(mut data: &[u8], level: c_int) -> Result<Vec<u8>, MessageFailure> {
-    /// `SW_ZLIB_ENCODING_RAW`.
-    const RAW: c_int = -0xf;
     let level = match level {
-        0 => -1,
-        level => level.min(9),
+        Z_NO_COMPRESSION => Z_DEFAULT_COMPRESSION,
+        level => level.min(Z_BEST_COMPRESSION),
     };
-    let mut stream = stream(level, RAW).map_err(MessageFailure::Init)?;
+    let mut stream = stream(level, ENCODING_RAW).map_err(MessageFailure::Init)?;
     let mut max = stream.deflate_bound(data.len());
     let mut out = Vec::new();
     let result = loop {
@@ -140,7 +138,7 @@ pub fn message(mut data: &[u8], level: c_int) -> Result<Vec<u8>, MessageFailure>
     if result != Z_BUF_ERROR || out.len() < 4 {
         return Err(MessageFailure::Deflate);
     }
-    keep(level, RAW, stream);
+    keep(level, ENCODING_RAW, stream);
     out.truncate(out.len() - 4);
     Ok(out)
 }

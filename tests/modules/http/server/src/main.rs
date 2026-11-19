@@ -70,10 +70,11 @@ use http1::case::{
     swr_case_healthy, swr_case_http_server, swr_case_idle_worker_num, swr_case_info,
     swr_case_init_protocol, swr_case_length_port, swr_case_master_pid, swr_case_mqtt_server,
     swr_case_port, swr_case_protocol_server, swr_case_redis_server, swr_case_send,
-    swr_case_sendfile, swr_case_set_max_sockets, swr_case_shutdown, swr_case_ssl_client_ca,
-    swr_case_ssl_files, swr_case_ssl_init, swr_case_ssl_protocols, swr_case_ssl_server,
-    swr_case_ssl_sni, swr_case_start, swr_case_tg_buffer, swr_case_tick, swr_case_worker_num,
+    swr_case_sendfile, swr_case_shutdown, swr_case_ssl_client_ca, swr_case_ssl_files,
+    swr_case_ssl_init, swr_case_ssl_protocols, swr_case_ssl_server, swr_case_ssl_sni,
+    swr_case_start, swr_case_tg_buffer, swr_case_tick, swr_case_worker_num,
 };
+use libc::{RLIMIT_NOFILE, SIG_BLOCK, SIGTERM};
 
 type Server = c_void;
 type Receive = extern "C" fn(*mut Server, *const c_void) -> c_int;
@@ -99,10 +100,6 @@ const USER_AGENT: &str = "cpp-httplib/0.7";
 const TEST_PORT: c_int = 9501;
 const TEST_STR: &str = "hello world, hello swoole\n";
 const TEST_LOG_FILE: &str = "/tmp/swoole.log";
-// glibc's values (the core-tests build is Linux).
-const SIGTERM: c_int = 15;
-const SIG_BLOCK: c_int = 0;
-const RLIMIT_NOFILE: c_int = 7;
 
 /// `swoole::PacketLength`.
 #[repr(C)]
@@ -191,7 +188,6 @@ unsafe extern "C" {
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
     fn sigfillset(set: *mut [u64; 16]) -> c_int;
     fn pthread_sigmask(how: c_int, set: *const [u64; 16], old: *mut [u64; 16]) -> c_int;
-    fn setrlimit(resource: c_int, limit: *const [u64; 2]) -> c_int;
 }
 
 /// A Server pointer a client thread borrows; the Server outlives the thread.
@@ -902,8 +898,7 @@ fn abort_connection() {
     });
     // SAFETY: the created server.
     unsafe { swr_case_start(serv) };
-    // SAFETY: restores the value the Server builder saved.
-    unsafe { swr_case_set_max_sockets(max_sockets) };
+    swoole_rs_corebase::replace_max_sockets(max_sockets);
     if let Err(panic) = thread.join() {
         resume_unwind(panic);
     }
@@ -1038,7 +1033,15 @@ fn main() {
     // core-tests' main sets SwooleG.max_sockets = 20000 after swoole_init; swoole_init
     // takes it from the soft descriptor limit.
     // SAFETY: setrlimit(2) with a readable limit.
-    unsafe { setrlimit(RLIMIT_NOFILE, &[20000, 20000]) };
+    unsafe {
+        libc::setrlimit(
+            RLIMIT_NOFILE,
+            &libc::rlimit {
+                rlim_cur: 20000,
+                rlim_max: 20000,
+            },
+        )
+    };
     swoole_init();
     // core-tests build with `enable_thread` (SW_THREAD), as this binary does (`corebase::process`'s
     // `thread` feature); the extension's MINIT says so under ZTS, and this binary has none.

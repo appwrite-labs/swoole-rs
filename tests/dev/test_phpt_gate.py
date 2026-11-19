@@ -374,6 +374,25 @@ class PhptGate(unittest.TestCase):
         self.assertEqual(len(lines), 10)
         self.assertEqual(lines[-1], '::error title=3 more errors::3 more past the first 9; the log lists them all')
 
+    def test_a_run_without_the_composer_libraries_is_named_in_the_summary(self):
+        import subprocess
+        root = Path(__file__).resolve().parents[2]
+        results = [{'test': 'tests/t/a.phpt', 'module': 't', 'engine': engine, 'status': 'passed'}
+                   for engine in ('upstream', 'cargo')]
+        with tempfile.TemporaryDirectory() as temp:
+            def gate(libraries):
+                report = Path(temp) / 'r.json'
+                report.write_text(json.dumps({'upstream': {'libraries': libraries}, 'results': results}))
+                environment = {key: value for key, value in os.environ.items() if key != 'GITHUB_ACTIONS'}
+                return subprocess.run([sys.executable, root / 'corpus/upstream/gate.py', report],
+                                      env={**environment, 'GITHUB_ACTIONS': 'true'}, capture_output=True, text=True)
+            installed, stubbed = gate(True), gate(False)
+        self.assertNotIn('Composer libraries missing', installed.stdout + installed.stderr)
+        self.assertTrue(stubbed.stdout.startswith('**Composer libraries missing'), stubbed.stdout)
+        self.assertIn('::warning title=PHPT libraries::Composer libraries missing', stubbed.stderr)
+        # It is reported, not gated.
+        self.assertEqual((installed.returncode, stubbed.returncode), (0, 0))
+
     def test_annotation_properties_escape_their_separators(self):
         from tools.annotations import escape
         self.assertEqual(escape('a: b, 100%\nc', separators=True), 'a%3A b%2C 100%25%0Ac')

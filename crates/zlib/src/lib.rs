@@ -15,9 +15,15 @@ use std::mem::MaybeUninit;
 use std::ptr::null_mut;
 
 pub use libz_sys::{
-    Z_BUF_ERROR, Z_DATA_ERROR, Z_FINISH, Z_NO_FLUSH, Z_OK, Z_STREAM_END, Z_SYNC_FLUSH,
+    Z_BEST_COMPRESSION, Z_BUF_ERROR, Z_DATA_ERROR, Z_DEFAULT_COMPRESSION, Z_FINISH,
+    Z_NO_COMPRESSION, Z_NO_FLUSH, Z_OK, Z_STREAM_END, Z_SYNC_FLUSH,
 };
 use libz_sys::{Z_DEFAULT_STRATEGY, Z_DEFLATED, uInt, uLong, z_stream};
+
+/// Window bits for the Swoole gzip, zlib-wrapped and raw deflate streams.
+pub const ENCODING_DEFLATE: c_int = 15;
+pub const ENCODING_GZIP: c_int = 16 + ENCODING_DEFLATE;
+pub const ENCODING_RAW: c_int = -ENCODING_DEFLATE;
 
 /// The most input or output one [`Stream::run_into`] hands zlib (its `uInt`).
 pub const CHUNK: usize = uInt::MAX as usize;

@@ -12,12 +12,10 @@ pub use swoole_rs_brotli as brotli;
 use std::ffi::c_int;
 
 pub use swoole_rs_zlib::error;
-use swoole_rs_zlib::{Stream, Z_DATA_ERROR, Z_OK, Z_STREAM_END, Z_SYNC_FLUSH};
-
-// swoole's SW_ZLIB_ENCODING_* window-bits (ext-src/php_swoole_http.h).
-const ENCODING_GZIP: c_int = 0x1f;
-const ENCODING_DEFLATE: c_int = 0x0f;
-const ENCODING_RAW: c_int = -0xf;
+use swoole_rs_zlib::{
+    ENCODING_DEFLATE, ENCODING_GZIP, ENCODING_RAW, Stream, Z_DATA_ERROR, Z_OK, Z_STREAM_END,
+    Z_SYNC_FLUSH,
+};
 
 const OUT_GROW: usize = 16384;
 
