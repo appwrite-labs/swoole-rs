@@ -23,7 +23,7 @@ import tarfile
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from tools.build_ext import FFI_FEATURES, native_flags  # noqa: E402
+from tools.build_ext import ffi_features, native_flags  # noqa: E402
 from tools.build_ext import zend_free_native_sources  # noqa: E402
 from tools.build_upstream import COMMIT as PIN  # noqa: E402
 from tools.harness import ROOT, run_isolated, write_report  # noqa: E402
@@ -140,7 +140,7 @@ def main():
         write_changed(tree / 'CMakeLists.txt', f'{cmake}\n{native_cmake}{fixture}'.encode())
         # The archive's build (tools/build_ext.py's manifest): the crates build as it did, and reuse its objects.
         manifest = json.loads((args.archive.resolve().parents[2] / 'build-manifest.json').read_text())
-        features = [f'swoole-rs-ffi/{name}' for name in manifest['features'] if name in FFI_FEATURES]
+        features = [f'swoole-rs-ffi/{name}' for name in ffi_features(manifest['features'])]
         env = {**os.environ, 'SWOOLE_LIB_DIR': str(tree / 'lib'), 'PHP_CONFIG': os.environ.get('PHP_CONFIG', 'php-config')}
         package = re.search(r'^name = "(.+)"$', (args.package / 'Cargo.toml').read_text(), re.M).group(1)
         for step, command in [('configure', ['cmake', '-S', str(tree), '-B', str(tree / 'build'), '-Dphp_dir=/usr', '-DCMAKE_BUILD_TYPE=Release',
