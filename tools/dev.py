@@ -245,6 +245,8 @@ def plan(args, reports):
         script('clients-php-enable-ssl', 'tests/modules/clients/php_enable_ssl.py', *php_for('curl', 'sockets'),
                '--engine', f'cargo={cargo}', *report('clients-php-enable-ssl'))
         if integrate:
+            if sys.platform.startswith('linux'):
+                script('clients-fresh-socket', 'tests/modules/clients/fresh_socket.py', args.php)
             for family, runner in [('http', 'tests/modules/clients/php_http.py'), ('dns', 'tests/modules/clients/php_dns.py'),
                                    ('lifecycle', 'tests/modules/clients/php_lifecycle.py'),
                                    ('socket-custody', 'tests/modules/clients/socket_custody.py'),
