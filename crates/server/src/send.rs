@@ -243,24 +243,25 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         return true;
     }
     let halfclose = cfg!(feature = "halfclose");
-    let (removed, notified, events) = sock.read(|s| (s.removed, s.close_notified, s.events));
-    let (reading, writing) = (
-        events.intersects(Events::READ),
-        events.intersects(Events::WRITE),
-    );
-    if kind == Some(ServerEvent::PauseRecv) {
-        if removed || !reading {
-            return true;
+    if matches!(kind, Some(ServerEvent::PauseRecv | ServerEvent::ResumeRecv)) {
+        let (removed, notified, events) = sock.read(|s| (s.removed, s.close_notified, s.events));
+        let (reading, writing) = (
+            events.intersects(Events::READ),
+            events.intersects(Events::WRITE),
+        );
+        if kind == Some(ServerEvent::PauseRecv) {
+            if removed || !reading {
+                return true;
+            }
+            return if halfclose {
+                reactor.interest(sock, Interest::RemoveRead)
+            } else if writing {
+                reactor.change(sock, ChangeOp::Set, Events::WRITE)
+            } else {
+                reactor.del(*sock)
+            };
         }
-        return if halfclose {
-            reactor.interest(sock, Interest::RemoveRead)
-        } else if writing {
-            reactor.change(sock, ChangeOp::Set, Events::WRITE)
-        } else {
-            reactor.del(*sock)
-        };
-    }
-    if kind == Some(ServerEvent::ResumeRecv) {
+
         let skip = if halfclose {
             let closing = conn.closed().load(core::sync::atomic::Ordering::Relaxed) != 0;
             closing || conn.peer_closed() || conn.close_queued() || notified || reading

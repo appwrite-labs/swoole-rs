@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn native_event_want_preserves_write_priority_and_default() {
-        let mut socket: SocketRecord = unsafe { std::mem::zeroed() };
+        let mut socket = SocketRecord::new();
         for ssl in [false, true] {
             socket.set_ssl(ssl.then(crate::reactor::SocketSsl::stub));
             for read in [false, true] {
