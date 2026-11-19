@@ -11,6 +11,7 @@ use swoole_rs_hooks::stdio::{
     swoole_coroutine_ftruncate, swoole_coroutine_lseek, swoole_coroutine_open,
 };
 use swoole_rs_phpruntime::co;
+use swoole_rs_websocket::HEADER_LEN as WEBSOCKET_HEADER_LEN;
 use swoole_rs_zend::{Array, Owned, Value};
 
 /// `Coroutine\Http\Client`'s WebSocket state: its `WebSocketSettings` and
@@ -64,8 +65,6 @@ pub(crate) fn websocket() -> Option<Box<dyn WebSocket>> {
 
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::reactor::{Events, TimeoutKind};
-/// `SW_WEBSOCKET_HEADER_LEN`.
-const WEBSOCKET_HEADER_LEN: u8 = 2;
 
 /// `php_swoole_check_reactor()`, then a `Coroutine\Socket` of `kind`, or
 /// `errno`.

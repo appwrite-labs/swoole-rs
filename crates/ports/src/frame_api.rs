@@ -5,6 +5,7 @@
 //! is [`crate::http_routes::websocket_length`].
 use std::ffi::{CStr, c_char, c_int};
 use swoole_rs_corebase::CCast;
+use swoole_rs_websocket::{CLOSE_CODE_LEN, CLOSE_REASON_MAX_LEN};
 
 use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::lent::Spare;
@@ -22,9 +23,6 @@ const INCOMPLETE_PACKET: c_int =
 /// `FLAG_FIN` and `FLAG_MASK`.
 const FIN: u8 = 1;
 const MASK: u8 = 32;
-/// `SW_WEBSOCKET_CLOSE_CODE_LEN`, `SW_WEBSOCKET_CLOSE_REASON_MAX_LEN`.
-const CLOSE_CODE_LEN: usize = 2;
-const CLOSE_REASON_MAX_LEN: usize = 125;
 
 /// `websocket::Frame`. `header` holds `Header`'s bitfields: OPCODE:4, RSV3, RSV2,
 /// RSV1, FIN in the first byte (low bit first), LENGTH:7 and MASK in the second.

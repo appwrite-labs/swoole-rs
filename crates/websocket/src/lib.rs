@@ -9,6 +9,13 @@ mod codec;
 pub mod sha1;
 pub use codec::*;
 
+/// Fixed header and largest header (including an extended length and a mask).
+pub const HEADER_LEN: u8 = 2;
+const MASK_LEN: u8 = 4;
+pub const MAX_HEADER_LEN: u8 = HEADER_LEN + MASK_LEN + 8;
+pub const CLOSE_CODE_LEN: usize = size_of::<u16>();
+pub const CLOSE_REASON_MAX_LEN: usize = 125;
+
 /// A frame opcode, including reserved values carried through native boundaries.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Opcode {
@@ -117,7 +124,7 @@ pub fn frame_length(bytes: &[u8]) -> Result<FrameLength, LengthError> {
     let (mut header, mut payload) = match second & 0x7f {
         126 => (4, 0),
         127 => (10, 0),
-        short => (2, u64::from(short)),
+        short => (usize::from(HEADER_LEN), u64::from(short)),
     };
     if header == 4
         && let Some(&extended) = extended.first_chunk()
@@ -129,7 +136,7 @@ pub fn frame_length(bytes: &[u8]) -> Result<FrameLength, LengthError> {
         payload = u64::from_be_bytes(extended);
     }
     if bytes.len() >= header && second & 0x80 != 0 {
-        header += 4;
+        header += usize::from(MASK_LEN);
     }
     if bytes.len() < header {
         return Err(LengthError::IncompleteHeader {
@@ -161,7 +168,7 @@ pub fn header(payload_length: u64, opcode: Opcode, flags: FrameFlags) -> ([u8; 1
         && short < 126
     {
         header[1] |= short;
-        2
+        usize::from(HEADER_LEN)
     } else if let Ok(short) = u16::try_from(payload_length) {
         header[1] |= 126;
         header[2..4].copy_from_slice(&short.to_be_bytes());

@@ -24,6 +24,7 @@ use swoole_rs_phpserver::{RecvData, php_swoole_get_recv_data, php_swoole_server_
 use swoole_rs_phpstubs::websocket as stubs;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_server::{server_methods, view};
+use swoole_rs_websocket::CLOSE_REASON_MAX_LEN as CLOSE_REASON_MAX;
 use swoole_rs_websocket::{
     DecodeErrorKind, DecodedFrame, Delivery, EncodeError, FrameFlags, FrameMetadata, Opcode,
     control_invalid, encode_close, encode_frame, encoded_size, header, message_policy, pack_policy,
@@ -78,8 +79,6 @@ const CLOSE_REASONS: [(&CStr, i64); 15] = [
     (c"BAD_GATEWAY", 1014),
     (c"TLS", 1015),
 ];
-/// `SW_WEBSOCKET_CLOSE_REASON_MAX_LEN`.
-const CLOSE_REASON_MAX: usize = 125;
 /// `SW_WEBSOCKET_SEC_KEY_LEN` base64-encoded.
 const SEC_KEY_LENGTH: usize = 24;
 

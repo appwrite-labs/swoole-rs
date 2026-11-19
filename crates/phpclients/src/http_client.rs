@@ -75,7 +75,7 @@ const NO_CONTENT: u16 = 204;
 const BAD_GATEWAY: u16 = 502;
 const SERVICE_UNAVAILABLE: u16 = 503;
 /// `SW_WEBSOCKET_HEADER_LEN`, `SW_WEBSOCKET_KEY_LENGTH`.
-const WEBSOCKET_HEADER: usize = 2;
+const WEBSOCKET_HEADER: usize = swoole_rs_websocket::HEADER_LEN as usize;
 const WEBSOCKET_KEY: usize = 16;
 /// `SW_WEBSOCKET_EXTENSION_DEFLATE`.
 const DEFLATE_EXTENSION: &CStr =
