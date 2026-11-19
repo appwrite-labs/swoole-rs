@@ -427,45 +427,6 @@ impl OwnedSocket {
     }
 }
 
-/// A cell owning at most one heap socket: it lends the record as a [`Heap`] for a
-/// borrow of itself, and the unsafe [`Self::take`] gives the owner back. Its field is a
-/// cell, so a record that threads share under their own synchronization (a server's
-/// connection slot) may hold one. Lending and taking both go through `&self`, so the
-/// types can't tell when the last lent handle is gone: only `take`'s caller can.
-/// Dropping it, [`Self::forget`] or a second [`Self::put`] leaks the record, as dropping
-/// an [`OwnedSocket`] does; all zero bytes are an empty cell.
-#[derive(Default)]
-#[repr(transparent)]
-pub struct OwnerCell(Cell<Option<Heap<'static>>>);
-
-impl OwnerCell {
-    /// The record it owns, if any.
-    #[must_use]
-    #[inline]
-    pub fn get(&self) -> Option<Heap<'_>> {
-        self.0.get()
-    }
-
-    /// Owns `owner` from here. A record it held before leaks: handles it lent may live.
-    pub fn put(&self, owner: OwnedSocket) {
-        self.0.set(Some(owner.leak()));
-    }
-
-    /// Names no record from here; one it held leaks, as in [`Self::put`].
-    pub fn forget(&self) {
-        self.0.set(None);
-    }
-
-    /// The owner it held, which it no longer names.
-    /// # Safety
-    /// No [`Heap`] or [`Socket`] that [`Self::get`] lent (or a copy of one) is used
-    /// once the returned owner frees the record.
-    #[must_use]
-    pub unsafe fn take(&self) -> Option<OwnedSocket> {
-        self.0.take().map(OwnedSocket)
-    }
-}
-
 /// A heap record its holder owns on one thread and lends counted: a loan goes only to
 /// a closure, and a record released while a loan is out is freed when the last loan
 /// ends. A loan a Zend bailout skips leaves the count up, so the record leaks rather

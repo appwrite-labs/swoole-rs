@@ -8,6 +8,7 @@ use core::sync::atomic::{
 use swoole_rs_corebase::constants::SocketTypeCode;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::process::worker_record::WorkerRecord;
+use swoole_rs_corebase::reactor::{Heap, OwnedSocket};
 use swoole_rs_corebase::{CellExt, WebSocketStatus};
 
 use crate::reactor_ops::ThreadRecord;
@@ -64,7 +65,7 @@ pub struct ConnectionRecord {
     /// The session socket, which the connection owns from `add` until its close takes
     /// it out and frees it: empty before and after, and on a listening slot. Only the
     /// process that accepted it (the master, or a base worker) reads or takes it.
-    socket: swoole_rs_corebase::reactor::OwnerCell,
+    socket: Cell<Option<Heap<'static>>>,
     pub connect_time: Cell<f64>,
     pub last_recv_time: Cell<f64>,
     pub last_send_time: Cell<f64>,
@@ -80,6 +81,15 @@ pub struct ConnectionRecord {
     pub server_fd: Cell<c_int>,
 }
 
+impl Drop for ConnectionRecord {
+    fn drop(&mut self) {
+        debug_assert!(
+            self.socket.get_mut().is_none(),
+            "a session socket outlived its connection"
+        );
+    }
+}
+
 impl ConnectionRecord {
     /// Whether the slot holds a connection (`active`), whose fields `add` published.
     #[must_use]
@@ -90,6 +100,10 @@ impl ConnectionRecord {
     /// Upstream's `memset` of the slot from `socket_type` up to `closed`: every field
     /// but `active`, `closed` and `server_fd` back to its zero value.
     fn clear(&self) {
+        debug_assert!(
+            self.socket.get().is_none(),
+            "only an empty socket slot can be reset"
+        );
         self.socket_type.set(SocketTypeCode::default());
         self.fd.set(0);
         self.worker_id.set(0);
@@ -123,7 +137,7 @@ impl ConnectionRecord {
         self.timer.set(None);
         self.info.set(SocketAddress::default());
         self.object.set(core::ptr::null_mut());
-        self.socket.forget();
+
         for time in [
             &self.connect_time,
             &self.last_recv_time,
@@ -274,13 +288,16 @@ impl<'a> Connection<'a> {
     /// The connection's socket, if it holds one.
     #[must_use]
     #[inline]
-    pub fn socket(self) -> Option<swoole_rs_corebase::reactor::Heap<'a>> {
+    pub fn socket(self) -> Option<Heap<'a>> {
         self.record.socket.get()
     }
 
-    /// The connection owns `socket` from here (a socket it held leaks).
-    pub(crate) fn hold_socket(self, socket: swoole_rs_corebase::reactor::OwnedSocket) {
-        self.record.socket.put(socket);
+    /// The empty connection slot takes ownership of the accepted socket.
+    pub(crate) fn hold_socket(self, socket: OwnedSocket) {
+        if self.record.socket.get().is_some() {
+            swoole_rs_corebase::fatal("a connection already owns its socket");
+        }
+        self.record.socket.set(Some(socket.leak()));
     }
 
     /// `delete conn->socket`: the connection's socket, which it no longer holds, freed.
@@ -290,20 +307,22 @@ impl<'a> Connection<'a> {
     /// socket and before its fd is closed, which may hand the fd, and so the slot, to
     /// another thread's accept.
     pub(crate) fn free_socket(self, emptied: impl FnOnce()) {
-        // SAFETY: what still holds a handle the slot lent, and why none is used after:
-        // - the slot: from here it names nothing, so `socket()` lends no more;
-        // - the reactor's registry: the free deletes the record from it first
-        //   (`OwnedSocket::into_box`), and ends the process if another reactor names it;
-        // - the handler running the close (its `Event::socket` and the handle it passed
-        //   to `close_connection`): every caller returns, or moves to another fd, once
-        //   the close returns, and the reactor's flush close is under its own contract;
-        // - timers: a connection's idle and resume timers keep its fd, not its socket,
-        //   and the close deletes the one the slot holds;
-        // - other threads: only the connection's reactor (or base worker) closes it.
-        //   Other reactor threads, the heartbeat thread and admin listings read a
-        //   socket after checking `is_active`, which the close clears first; this is
-        //   upstream's unsynchronized `conn->socket` read, which the types don't cover.
-        let socket = unsafe { self.record.socket.take() };
+        let socket = self.record.socket.take().map(|socket| {
+            // SAFETY: what still holds a handle the slot lent, and why none is used after:
+            // - the slot: from here it names nothing, so `socket()` lends no more;
+            // - the reactor's registry: the free deletes the record from it first
+            //   (`OwnedSocket::into_box`), and ends the process if another reactor names it;
+            // - the handler running the close (its `Event::socket` and the handle it passed
+            //   to `close_connection`): every caller returns, or moves to another fd, once
+            //   the close returns, and the reactor's flush close is under its own contract;
+            // - timers: a connection's idle and resume timers keep its fd, not its socket,
+            //   and the close deletes the one the slot holds;
+            // - other threads: only the connection's reactor (or base worker) closes it.
+            //   Other reactor threads, the heartbeat thread and admin listings read a
+            //   socket after checking `is_active`, which the close clears first; this is
+            //   upstream's unsynchronized `conn->socket` read, which the types don't cover.
+            unsafe { OwnedSocket::from_socket(*socket) }
+        });
         emptied();
         swoole_rs_corebase::tls::upstream::socket_free(socket);
     }
@@ -740,7 +759,10 @@ pub(crate) mod tests {
         conn.hold_http_request(swoole_rs_http::request_new());
         assert!(conn.take_http_request().is_some(), "the later one");
         assert!(conn.take_http_request().is_none(), "taken once");
-        conn.free_socket(|| {});
+        conn.free_socket(|| {
+            assert!(conn.socket().is_none());
+            conn.clear();
+        });
     }
 
     #[test]
