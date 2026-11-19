@@ -1,5 +1,6 @@
 //! Swoole's memory pools and collections: fixed and global pools, the channel,
 //! shared mappings and the shared-memory table.
+pub mod apart;
 pub mod channel;
 pub mod fixed;
 pub mod flat;
