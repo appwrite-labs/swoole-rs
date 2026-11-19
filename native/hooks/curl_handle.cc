@@ -28,9 +28,6 @@ extern const size_t swoole_curl_object_offset = XtOffsetOf(php_curl, std);
 
 #if PHP_VERSION_ID >= 80400
 static const zend_object_handlers *original_handlers;
-extern "C" void swoole_curl_free_original(zend_object *object) {
-    original_handlers->free_obj(object);
-}
 #endif
 
 /* Install the Rust object handlers in the system curl class at module startup.
@@ -69,7 +66,7 @@ extern "C" void swoole_curl_set_easy(php_curl *ch, CURL *easy) {
     ch->cp = easy;
 }
 
-/* The two bundled php_curl layouts share these fields. Only a CurlHandle
+/* The supported php_curl layouts share these fields. Only a CurlHandle
  * object can be projected to php_curl (the class is final). */
 extern "C" php_curl *swoole_curl_object_handle(zend_object *object) {
     return object->ce == swoole_coroutine_curl_handle_ce ? curl_from_obj(object) : nullptr;
@@ -458,6 +455,35 @@ extern "C" void swoole_curl_free_lists(php_curl *ch) {
 #endif
     efree(ch->to_free);
     efree(ch->clone);
+}
+
+extern "C" bool swoole_curl_prepare_free(php_curl *ch) {
+    swoole_curl_verify_handlers(ch, false);
+#if PHP_VERSION_ID >= 80400
+    if (!swr_v1_curl_get_handle(ch->cp)) {
+        original_handlers->free_obj(&ch->std);
+        return false;
+    }
+#else
+    // Ignore any final writes libcurl makes while retiring this easy handle.
+    auto discard = +[](char *, size_t size, size_t count, void *) { return size * count; };
+    curl_easy_setopt(ch->cp, CURLOPT_HEADERFUNCTION, discard);
+    curl_easy_setopt(ch->cp, CURLOPT_WRITEFUNCTION, discard);
+#endif
+    return true;
+}
+
+extern "C" void swoole_curl_free_streams(php_curl *ch) {
+    zval_ptr_dtor(&ch->handlers.std_err);
+    if (ch->header.str) {
+        zend_string_release_ex(ch->header.str, 0);
+    }
+    zval_ptr_dtor(&ch->handlers.write_header->stream);
+    zval_ptr_dtor(&ch->handlers.write->stream);
+    zval_ptr_dtor(&ch->handlers.read->stream);
+    efree(ch->handlers.write);
+    efree(ch->handlers.write_header);
+    efree(ch->handlers.read);
 }
 
 extern "C" void swoole_curl_release_values(php_curl *ch) {
@@ -1038,12 +1064,16 @@ extern "C" void swoole_curl_reset_callback(php_curl *ch, int option) {
         zend_fcc_dtor(&previous);
     }
 #else
-    auto **slot = plain_callback_slot(ch, option);
-    if (slot && *slot) {
+    zval *name;
+    zend_fcall_info_cache *cache;
+    if (callable_slot(ch, option, false, &name, &cache)) {
         zval previous;
-        ZVAL_COPY_VALUE(&previous, &(*slot)->func_name);
-        efree(*slot);
-        *slot = nullptr;
+        ZVAL_COPY_VALUE(&previous, name);
+        ZVAL_UNDEF(name);
+        if (auto **slot = plain_callback_slot(ch, option)) {
+            efree(*slot);
+            *slot = nullptr;
+        }
         zval_ptr_dtor(&previous);
     }
 #endif

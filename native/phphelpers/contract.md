@@ -23,7 +23,7 @@ handler tables (cargo features `ssh2`, `ftp` and `stdext`), ext/sockets' helpers
 (`sockets`), and the DNS cache refresh time.
 
 The remaining `swoole_rs_phphost.h` exposes Zend class-registration macros to
-bundled curl/SSH2 and declares Rust's reactor check for bundled `proc_open`.
+the cURL adapter and bundled SSH2 and declares Rust's reactor check for bundled `proc_open`.
 Request shutdown and lazy reactor initialization are shared with Rust callers in
 `crates/phpswoole::check_reactor`; the header no longer duplicates that policy.
 `swoole_rs_phphelpers.h` declares the class-alias function the registration macro calls.

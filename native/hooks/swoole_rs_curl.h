@@ -1,7 +1,6 @@
 #ifndef SWOOLE_RS_CURL_H
 #define SWOOLE_RS_CURL_H
-/* The coroutine cURL multi engine (Rust, crates/curl, --enable-swoole-curl),
- * which the bundled php_curl (thirdparty/php{,84}/curl) calls directly. */
+/* Native ABI for the Rust coroutine cURL engine. */
 
 #ifdef SW_USE_CURL
 #include <stdbool.h>
@@ -12,19 +11,14 @@
 #endif
 #ifdef __cplusplus
 extern "C" {
-#if PHP_VERSION_ID >= 80400
-#include "thirdparty/php84/curl/curl_private.h"
-#else
-#include "thirdparty/php/curl/curl_private.h"
-#endif
+#include "swoole_rs_curl_layout.h"
 #endif
 /* A live easy handle (a CURL *), as Rust's Easy takes it. */
 typedef void *swr_v1_curl_easy;
 #ifdef __cplusplus
 void swoole_curl_register_handle(void);
-#if PHP_VERSION_ID >= 80400
-void swoole_curl_free_original(zend_object *object);
-#endif
+void swoole_curl_verify_handlers(php_curl *ch, bool reporterror);
+zend_result swoole_curl_cast_object(zend_object *obj, zval *result, int type);
 zend_object *swoole_curl_create_object(zend_class_entry *ce);
 void swoole_curl_free_obj(zend_object *object);
 HashTable *swoole_curl_get_gc(zend_object *object, zval **table, int *n);
@@ -34,15 +28,6 @@ zend_function *swoole_curl_get_constructor(zend_object *object);
  * false after the error of a missing coroutine handle or of a multi bound to
  * another coroutine. */
 bool swr_v1_curl_check_handle(swr_v1_curl_easy cp, bool exclusive, bool required);
-/* The handle ch of zid, a CurlHandle, on behalf of the current coroutine, or null
- * after that check's error. */
-static inline php_curl *swoole_curl_get_handle(zval *zid, bool exclusive = true, bool required = true) {
-    if (!zid || Z_TYPE_P(zid) != IS_OBJECT) {
-        return nullptr;
-    }
-    php_curl *ch = Z_CURL_P(zid);
-    return swr_v1_curl_check_handle(ch->cp, exclusive, required) ? ch : nullptr;
-}
 /* libcurl's callbacks, Rust's (crates/curl/src/callbacks.rs): each has the php_curl as its data. */
 size_t swoole_curl_on_write(char *data, size_t size, size_t nmemb, void *ctx);
 size_t swoole_curl_on_header(char *data, size_t size, size_t nmemb, void *ctx);

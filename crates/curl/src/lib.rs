@@ -1,11 +1,10 @@
 //! Swoole's coroutine cURL (upstream's `swoole_curl.cc`, built with
 //! `--enable-swoole-curl`): the multi engine behind the native `curl_exec` and
-//! `curl_multi_*` functions of its bundled `ext/curl`. A [`Multi`] drives a
+//! `curl_multi_*` functions. A [`Multi`] drives a
 //! libcurl multi handle through its socket and timer callbacks: each socket
 //! curl watches joins the reactor, each timeout becomes a timer, and the
 //! coroutine waiting on the transfer is resumed when either fires.
 //!
-//! The bundled `ext/curl` calls these exports directly (`swoole_rs_curl.h`).
 //! Each multi carries its reactor, timer and coroutine operations; tests inject
 //! recording callbacks into the same engine. `swr_v1_curl_check_handle` reads
 //! the request state and reports PHP errors (the `php` feature).
@@ -54,7 +53,7 @@ const CO_CANCELED: c_int = 10017;
 /// coroutine to wait in (or one already bound): C++ raises the fatal error.
 pub const EXEC_NEEDS_COROUTINE: CURLcode = -1;
 
-/// A live easy handle for `'a`, as the bundled `ext/curl` hands over its `ch->cp`.
+/// A live easy handle for `'a`, borrowed from a PHP cURL object's `ch->cp`.
 /// Only an export's parameter makes one, where the C caller's contract stands for the constructor, as it does for a `&T`
 /// parameter there. A `CURL *`'s layout, and neither `Send` nor `Sync`.
 #[repr(transparent)]
@@ -111,7 +110,7 @@ impl Private {
 
 /// `struct swr_v1_curl_handle`: the easy handle's multi while it is in one,
 /// and the multi `curl_exec` runs it in. C++ only asks whether `multi` is set.
-// `repr(C)`: C's `swr_v1_curl_handle` (`native/hooks/swoole_rs_curl.h`), which the bundled cURL code reads.
+// `repr(C)`: C's `swr_v1_curl_handle` (`native/hooks/swoole_rs_curl.h`), used by the native cURL adapter.
 #[repr(C)]
 pub struct Handle {
     cp: *mut CURL,

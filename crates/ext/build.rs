@@ -145,8 +145,6 @@ mod php {
         }
         if feature("curl") {
             p.define(&["SW_USE_CURL"]);
-            let dir = third.join(if php >= 84 { "php84/curl" } else { "php/curl" });
-            p.cxx.push(dir.join("interface.cc"));
             p.includes.extend(pkg_includes("libcurl"));
             p.libs.push("curl");
         }

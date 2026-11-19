@@ -2,7 +2,7 @@
 //! callable options of `curl_setopt`, `CURLINFO_HEADER_OUT`, and the check for streams
 //! closed under a handle.
 //!
-//! What a handle keeps stays in the bundled `php_curl`, whose layout is ext/curl's own (PHP's
+//! What a handle keeps stays in the PHP `php_curl`, whose layout is ext/curl's own (PHP's
 //! unhooked functions read the same objects), behind the accessors in
 //! `native/hooks/curl_handle.cc`. PHP code runs in every callable, and can set an option of
 //! the handle it runs for, copy it or yield the coroutine, so nothing read from the handle
@@ -58,6 +58,7 @@ unsafe extern "C" {
     safe fn swoole_curl_stream_gone(value: &Owned) -> bool;
     // The stream's option goes back to its default: no file, and the method it started with.
     safe fn swoole_curl_stream_reset(handle: PhpHandle<'_>, option: c_int);
+    safe fn swoole_curl_free_streams(handle: PhpHandle<'_>);
     safe fn swoole_curl_reset_callback(handle: PhpHandle<'_>, option: c_int);
     // The write, header or read slot's method and file, by its callable option.
     safe fn swoole_curl_method(handle: PhpHandle<'_>, stream: c_int) -> c_int;
@@ -322,6 +323,25 @@ pub(super) fn reset_options(handle: PhpHandle<'_>) {
             return;
         }
     }
+    release_plain_callbacks(handle);
+    super::setopt::defaults(handle);
+}
+
+pub(super) fn free_callbacks(handle: PhpHandle<'_>) {
+    swoole_curl_buffer_free(handle);
+    let streams = if PHP_VERSION_ID >= 80400 {
+        [Stream::Write, Stream::Header, Stream::Read]
+    } else {
+        [Stream::Write, Stream::Read, Stream::Header]
+    };
+    for stream in streams {
+        swoole_curl_reset_callback(handle, stream as c_int);
+    }
+    swoole_curl_free_streams(handle);
+    release_plain_callbacks(handle);
+}
+
+fn release_plain_callbacks(handle: PhpHandle<'_>) {
     for callback in [
         Plain::Progress,
         Plain::Xferinfo,
@@ -332,7 +352,6 @@ pub(super) fn reset_options(handle: PhpHandle<'_>) {
     ] {
         swoole_curl_reset_callback(handle, callback as c_int);
     }
-    super::setopt::defaults(handle);
 }
 
 /// `php_curl_set_callable_handler`: the option's callable is released, then `value` kept as
