@@ -241,3 +241,13 @@ runtime it is recorded as `excluded`. The ZTS workflow runs the repository-owned
 companion `tests/modules/integration/server_exit.py` instead, which keeps the
 original's exit, restart and output assertions; its report does not claim the
 original passed.
+
+
+### PHPT rerun trends
+
+`python3 tools/ci.py phpt-trends --count 10 --share 0.1` lists tests cleared in
+more than 10% of the measured scheduled main runs. Each test lists its runs by
+whether upstream also failed the recheck. An upstream failure elsewhere in the
+window also rules out a Cargo-only issue. Missing PHPT reports are listed and
+excluded from the denominator. The weekly main run passes `--file-issues` to
+file untracked Cargo-only failures when the whole window is available.

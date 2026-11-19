@@ -249,7 +249,7 @@ jobs:
         run: |
           set -- shards/*.json
           if [ -d recheck ]; then set -- "$@" --recheck recheck/*.json; fi
-          python3 corpus/upstream/gate.py "$@" --output phpt.json | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 corpus/upstream/gate.py "$@" --clearances clearances.json --output phpt.json | tee -a "$GITHUB_STEP_SUMMARY"
       # A shard that crashed, or that GitHub never started (an Actions outage drops jobs
       # without a trace in the run), leaves no report; a shard with no tests leaves none either.
       # A gate over some of the shards measured part of the corpus, so its phpt.json is
@@ -263,7 +263,7 @@ jobs:
           for engine in $(jq -r '.[]' <<< "$ENGINES"); do for index in $(jq -r '.[]' <<< "$SHARDS"); do
             [ -f "shards/$engine-$index.json" ] || missing="$missing $engine-$index"
           done; done
-          rm -f phpt.json
+          rm -f phpt.json clearances.json
           echo "A PHPT shard didn't succeed (\`phpt\`: ${{ needs.phpt.result }}); reports missing from the gate:${missing:- none}"
           exit 1
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -275,3 +275,4 @@ jobs:
             phpt.json
             flagged.txt
             recheck/
+            clearances.json

@@ -239,6 +239,14 @@ def flaky_listing(tests, rechecked):
     return lines + ['', '</details>', '']
 
 
+def clearance_evidence(results, rechecked):
+    """One count per cleared PHPT, plus observed upstream failures for cross-run triage."""
+    _, shared, cargo_only, _ = recheck(flagged(results), rechecked)
+    upstream_failed = {row['test'] for row in [*results, *rechecked] if row['engine'] == 'upstream'
+                       and row['status'] == 'failed' and not row.get('inconclusive')}
+    return {'cargo_only': cargo_only, 'also_upstream': shared, 'upstream_failed': sorted(upstream_failed)}
+
+
 def mark_reruns(results, rechecked):
     """Mark `rerun: passed` on each non-upstream row whose engine passed a re-run of an ungated test."""
     confirmed, _, _, inconclusive = recheck(flagged(results), rechecked)
@@ -297,6 +305,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('reports', nargs='+', type=Path)
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--clearances', type=Path, help='Write the per-run PHPT clearance evidence')
     parser.add_argument('--recheck', type=Path, nargs='+', help='Reports of re-runs of the flagged tests')
     parser.add_argument('--print-regressions', action='store_true', help='Print flagged test paths and exit')
     parser.add_argument('--should-recheck', action='store_true',
@@ -315,6 +324,8 @@ def main():
     if args.print_pending:
         print('\n'.join(pending(flagged(results), rechecked or [], args.print_pending, results)))
         return 0
+    if args.clearances:
+        args.clearances.write_text(json.dumps(clearance_evidence(results, rechecked or [])) + '\n')
     if args.output:
         if rechecked is not None:
             mark_reruns(results, rechecked)
