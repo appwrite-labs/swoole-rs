@@ -10,6 +10,7 @@ use std::ffi::{CStr, c_int};
 use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_deflate::{DEFLATE, Failure, GZIP, bound, compress as deflate};
+use swoole_rs_http::llhttp::HEAD;
 use swoole_rs_httpbindings::{
     CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, Compression, DATE, SERVER,
     TRANSFER_ENCODING, codec, codec_level, encoding, header_warning, response_header,
@@ -21,8 +22,6 @@ use swoole_rs_zend::{
     Array, ArrayMut, Class, Declared, HeldArray, Key, Value, ZStr, ZString, bailout,
 };
 
-/// llhttp's `HTTP_HEAD`.
-const HEAD: u8 = 2;
 /// `SW_LOG_WARNING`, `SW_ERROR_HTTP_CONFLICT_HEADER`.
 const CONFLICT_HEADER: c_int = swoole_rs_error::ErrorCode::SW_ERROR_HTTP_CONFLICT_HEADER as c_int;
 /// MINIT's codec bits (`parse.rs`): zlib, Brotli and zstd, and any codec built.

@@ -24,6 +24,7 @@ use swoole_rs_corebase::constants::{
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_members::Receive};
+use swoole_rs_http::llhttp::{HPE_OK, HPE_PAUSED_H2_UPGRADE};
 use swoole_rs_http2::FRAME_HEADER_SIZE as HTTP2_FRAME_HEADER_SIZE;
 use swoole_rs_httpbindings::Setting;
 use swoole_rs_phpclients::{NewSocket, get_socket, is_socket_closed, socket_settings};
@@ -245,12 +246,10 @@ fn text_setting(server: &HttpServer, kind: Setting, text: Option<&[u8]>) {
     }
 }
 
-/// HTTP statuses the loop answers with, and llhttp's codes it checks.
+/// HTTP statuses the loop answers with.
 const BAD_REQUEST: c_int = 400;
 const NOT_FOUND: c_int = 404;
 const ENTITY_TOO_LARGE: c_int = 413;
-const HPE_OK: i32 = 0;
-const HPE_PAUSED_H2_UPGRADE: i32 = 23;
 /// `SW_BUFFER_SIZE_BIG`.
 const BUFFER_SIZE_BIG: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as usize;
 /// `EINVAL`.

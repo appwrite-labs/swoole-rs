@@ -27,6 +27,7 @@ use swoole_rs_corebase::process::worker_globals::with_current;
 use swoole_rs_corebase::process::worker_record::WorkerType;
 use swoole_rs_corebase::{CCast, HookType, swoole_isset_hook};
 use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
+use swoole_rs_http::llhttp::HPE_OK;
 use swoole_rs_http::status::SERVICE_UNAVAILABLE as SERVICE_UNAVAILABLE_STATUS;
 use swoole_rs_phpserver::PortCallback;
 use swoole_rs_phpserver::{
@@ -73,8 +74,6 @@ pub fn server_minit(args: &MinitArgs) {
     );
 }
 
-/// llhttp's `HPE_OK`.
-const HPE_OK: i32 = 0;
 /// `SW_ERROR_SESSION_NOT_EXIST` and `SW_LOG_TRACE`.
 const SESSION_NOT_EXIST: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_NOT_EXIST as c_int;
 
