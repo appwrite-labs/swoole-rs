@@ -530,19 +530,19 @@ impl SocketFields {
     /// [`Self::accept`]'s record, still its maker's own; none (errno set) where that
     /// is null.
     pub fn accepted(&mut self) -> Option<Box<SocketRecord>> {
-        let mut socket = SocketRecord::new();
-        socket.removed = true;
-        socket.socket_type = self.socket_type;
-        let listener_cloexec;
-        (socket.fd, listener_cloexec) =
-            crate::reactor::fd_accept(self.fd, &mut socket.info, self.output.nonblock);
+        let mut address = sys::zeroed();
+        let (fd, listener_cloexec) =
+            crate::reactor::fd_accept(self.fd, &mut address, self.output.nonblock);
         if listener_cloexec {
             self.cloexec = true;
         }
-        if socket.fd < 0 {
+        if fd < 0 {
             return None;
         }
-        socket.info.kind = self.socket_type;
+        let mut socket = SocketRecord::with_fd(fd, 0);
+        socket.socket_type = self.socket_type;
+        address.kind = self.socket_type;
+        socket.info = address;
         socket.output.nonblock = self.output.nonblock;
         socket.cloexec = true;
         Some(Box::new(socket))
