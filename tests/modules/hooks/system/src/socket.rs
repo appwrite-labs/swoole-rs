@@ -106,7 +106,7 @@ struct Record {
     http2: bool,
     protocol: Protocol,
     kind: c_int,
-    socket: *mut NetHead,
+    socket: *mut swoole_rs_corebase::reactor::SocketRecord,
     sock_domain: c_int,
     sock_type: c_int,
     sock_protocol: c_int,
@@ -128,17 +128,6 @@ const _: () = assert!(
     size_of::<Record>() == 192,
     "swr_v1_co_socket's layout moved"
 );
-
-/// The head of `network::Socket` (`corebase::reactor`'s `SocketRecord`) up to `event_hup`.
-#[repr(C)]
-struct NetHead {
-    fd: c_int,
-    fd_type: c_int,
-    socket_type: c_int,
-    events: c_int,
-    flags: [u8; 17],
-    event_hup: u8,
-}
 
 /// `RustStringView::operator=`: copies `value` into a TLS owner's string slot `index`.
 ///
@@ -406,11 +395,6 @@ impl Sock {
         self.co().timeout(TimeoutKind::from_bits(kind))
     }
 
-    fn network(&self) -> &mut NetHead {
-        // SAFETY: the open socket's network::Socket.
-        unsafe { &mut *self.record().socket }
-    }
-
     fn fd(&self) -> c_int {
         self.co().sock_fd()
     }
@@ -493,13 +477,12 @@ impl Sock {
     /// `ssl_get_peer_cert()`: the peer certificate's PEM, or empty.
     fn ssl_get_peer_cert(&self) -> Vec<u8> {
         let mut pem = vec![0_u8; SW_STACK_BUFFER_SIZE];
-        // SAFETY: the open socket's network::Socket.
-        let socket =
-            unsafe { swoole_rs_corebase::reactor::Socket::from_ptr(self.record().socket.cast()) };
-        let length = swoole_rs_corebase::tls::upstream::socket_ssl_peer_certificate_pem(
-            socket.unwrap(),
-            &mut pem,
-        );
+        let length = self
+            .co()
+            .with_network(|socket| {
+                swoole_rs_corebase::tls::upstream::socket_ssl_peer_certificate_pem(socket, &mut pem)
+            })
+            .expect("open socket");
         pem.truncate(length.unwrap_or(0));
         pem
     }
@@ -1296,7 +1279,11 @@ fn event_hup() {
             shared.shutdown(SHUT_RDWR);
         });
         let n = sock.recv_all(at, n);
-        assert_eq!(sock.network().event_hup, 1);
+        assert_eq!(
+            sock.co()
+                .with_network(|network| network.read(|fields| fields.event_hup)),
+            Some(true)
+        );
         assert_eq!(n, 0);
     });
 }
