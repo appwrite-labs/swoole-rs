@@ -142,9 +142,8 @@ the case's function, the slot's fn reads it from a static the case set. The call
 the curl runs and every assertion are in `server/src/main.rs`, one function per TEST
 under its own name: `websocket_small`, `websocket_medium`, `websocket_big`,
 `websocket_mask`, `node_websocket_client_1`, `node_websocket_client_2`, `sni`,
-`client_ca`, `ssl`, `abort_connection`, `get_package_length`. The two node TESTs stay
-excluded for the reason they had in the GoogleTest lane (they need Node.js and its ws
-package). Each curl runs to completion before its log is read, where upstream slept a
+`client_ca`, `ssl`, `abort_connection`, `get_package_length`. The merge tier runs both Node.js clients with the pinned tree’s
+`core-tests/js/package.json` dependencies. Each curl runs to completion before its log is read, where upstream slept a
 second after starting it.
 
 The HTTP and included framing fixtures use `OwnedString` for local buffers and

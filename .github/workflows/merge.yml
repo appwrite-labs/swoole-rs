@@ -89,7 +89,18 @@ jobs:
         run: python3 tests/modules/buffer/baseline.py --sanitize
       # Unit, native, ABI, model and PHP gates, every application and original PHPT, upstream as control.
       - name: Run gates
-        run: python3 tools/dev.py integrate --all-modules --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi --external-network --php-sockets --shard ${{ matrix.shard }}/3
+        run: |
+          gates=(integrate --all-modules --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi --external-network --php-sockets --core-test-services --shard ${{ matrix.shard }}/3)
+          python3 tools/dev.py "${gates[@]}" --plan > "$RUNNER_TEMP/gate-plan.json"
+          if jq -e 'any(.[]; .phase == "http-server-rust")' "$RUNNER_TEMP/gate-plan.json" >/dev/null; then
+            docker compose -f corpus/upstream/services.yml up -d --wait redis
+            if ! command -v npm >/dev/null; then sudo apt-get install -y nodejs npm; fi
+            mkdir -p "$RUNNER_TEMP/core-tests-js"
+            cp target/upstream/src/core-tests/js/package.json "$RUNNER_TEMP/core-tests-js/"
+            npm install --prefix "$RUNNER_TEMP/core-tests-js" --ignore-scripts --no-audit --no-fund
+            export NODE_PATH="$RUNNER_TEMP/core-tests-js/node_modules"
+          fi
+          python3 tools/dev.py "${gates[@]}"
       - name: Summarize phases
         if: always()
         run: python3 tools/merge_summary.py >> "$GITHUB_STEP_SUMMARY"
