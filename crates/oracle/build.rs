@@ -23,6 +23,48 @@ fn slice(text: &str, start: &str, end: &str) -> String {
     text[from..from + text[from..].find(end).expect(end)].to_string()
 }
 
+/// The pinned `#define`s of `names` from the vendored headers, copied unchanged with their
+/// continuation lines, in the order given, so a shim uses upstream's values rather than its
+/// own (#5250).
+fn pinned_macros(names: &[&str]) -> String {
+    let mut headers: Vec<_> = fs::read_dir("upstream/include")
+        .expect("vendored headers")
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    headers.sort();
+    let texts: Vec<String> = headers
+        .iter()
+        .map(|path| fs::read_to_string(path).unwrap())
+        .collect();
+    let mut out = String::new();
+    for name in names {
+        let defines = |line: &&str| {
+            line.strip_prefix("#define ")
+                .and_then(|rest| rest.strip_prefix(name))
+                .is_some_and(|rest| rest.starts_with([' ', '(']))
+        };
+        let mut lines = texts
+            .iter()
+            .flat_map(|text| text.lines())
+            .skip_while(|line| !defines(line));
+        let first = lines
+            .next()
+            .unwrap_or_else(|| panic!("no pinned #define {name}"));
+        out += first;
+        out += "\n";
+        let mut continued = first.ends_with('\\');
+        while continued {
+            let line = lines
+                .next()
+                .unwrap_or_else(|| panic!("unterminated #define {name}"));
+            out += line;
+            out += "\n";
+            continued = line.ends_with('\\');
+        }
+    }
+    out
+}
+
 /// The pinned HTTP cookie parser and URL decode/encode, copied unchanged for
 /// shim/http.cc to compile.
 fn http() {
@@ -53,6 +95,16 @@ fn http_proxy() {
         "namespace http_server {",
     );
     fs::write(out("http_proxy.inc"), text).unwrap();
+    fs::write(
+        out("http_proxy_pinned.inc"),
+        pinned_macros(&[
+            "SWOOLE_VERSION",
+            "SW_STRL",
+            "SW_STR_ISTARTS_WITH",
+            "sw_unlikely",
+        ]),
+    )
+    .unwrap();
 }
 
 /// The definition starting at `signature`, through its matching brace.
@@ -135,6 +187,17 @@ fn http_static_select() {
     )
     .unwrap();
     fs::write(
+        out("http_static_select_pinned.inc"),
+        pinned_macros(&[
+            "SW_HTTP_SERVER_SOFTWARE",
+            "SW_HTTP_PAGE_CSS",
+            "SW_HTTP_POWER_BY",
+            "SW_HTTP_PAGE_404",
+            "sw_unlikely",
+        ]),
+    )
+    .unwrap();
+    fs::write(
         out("http_static_select_status.inc"),
         slice(&http, "static thread_local char http_status_message[", "\n")
             + "\n"
@@ -150,6 +213,27 @@ fn http_static_select() {
 fn http_static_context() {
     let header = fs::read_to_string("upstream/include/swoole_static_handler.h")
         .expect("vendored swoole_static_handler.h");
+    fs::write(
+        out("http_static_context_pinned.inc"),
+        pinned_macros(&[
+            "SW_STRL",
+            "SW_STR_ISTARTS_WITH",
+            "SW_DEFAULT_ALIGNMENT",
+            "SW_MEM_ALIGNED_SIZE_EX",
+            "SW_MEM_ALIGNED_SIZE",
+            "SW_HTTP_SERVER_BOUNDARY_PREKEY",
+            "SW_HTTP_SERVER_BOUNDARY_TOTAL_SIZE",
+            "SW_HTTP_SERVER_PART_HEADER",
+            "SW_HTTP_RFC1123_DATE_GMT",
+            "SW_HTTP_RFC1123_DATE_UTC",
+            "SW_HTTP_RFC850_DATE",
+            "SW_HTTP_ASCTIME_DATE",
+            "SW_HTTP_PAGE_CSS",
+            "SW_HTTP_POWER_BY",
+            "sw_unlikely",
+        ]),
+    )
+    .unwrap();
     fs::write(
         out("http_static_context_class.inc"),
         slice(

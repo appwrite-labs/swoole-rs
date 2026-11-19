@@ -90,28 +90,10 @@ void *swr_oracle_calendar_gmt(int64_t time) {
 
 namespace upstream_static_context {
 namespace http_server = ::upstream_static_context;
-// As upstream include/swoole.h, swoole_config.h, swoole_http.h, swoole_util.h and
-// swoole_string.h, and src/core/base.cc's sw_snprintf and intersection.
-#define SW_STRL(s) s, sizeof(s) - 1
-#define SW_STR_ISTARTS_WITH(str, len, const_sub_str) swoole_str_istarts_with(str, len, SW_STRL(const_sub_str))
-#define SW_MEM_ALIGNED_SIZE(size) (((size) + (sizeof(unsigned long) - 1LL)) & ~(sizeof(unsigned long) - 1LL))
-#define SW_HTTP_SERVER_BOUNDARY_PREKEY "SwooleBoundary"
-#define SW_HTTP_SERVER_BOUNDARY_TOTAL_SIZE 39
-#define SW_HTTP_SERVER_PART_HEADER 256
-#define SW_HTTP_RFC1123_DATE_GMT "%a, %d %b %Y %T GMT"
-#define SW_HTTP_RFC1123_DATE_UTC "%a, %d %b %Y %T UTC"
-#define SW_HTTP_RFC850_DATE "%A, %d-%b-%y %T GMT"
-#define SW_HTTP_ASCTIME_DATE "%a %b %e %T %Y"
-#define SW_HTTP_PAGE_CSS                                                                                               \
-    "<style> \
-body { padding: 0.5em; line-height: 2; } \
-h1 { font-size: 1.5em; padding-bottom: 0.3em; border-bottom: 1px solid #ccc; } \
-ul { list-style-type: disc; } \
-footer { border-top: 1px solid #ccc; } \
-a { color: #0969da; } \
-</style>"
-#define SW_HTTP_POWER_BY "<footer><i>Powered by Swoole</i></footer>"
-#define sw_unlikely(x) __builtin_expect(!!(x), 0)
+// The pinned macros it uses (build.rs copies them from upstream/include); the enum and helpers
+// below are as upstream's swoole_http.h, swoole_util.h and swoole_string.h, and src/core/base.cc's
+// sw_snprintf and intersection.
+#include "http_static_context_pinned.inc"
 enum { SW_HTTP_OK = 200, SW_HTTP_PARTIAL_CONTENT = 206, SW_HTTP_NOT_FOUND = 404, SW_HTTP_RANGE_NOT_SATISFIABLE = 416 };
 static inline unsigned int swoole_str_starts_with(const char *pstr, size_t plen, const char *sstr, size_t slen) {
     return (plen >= slen) && (strncmp(pstr, sstr, slen) == 0);

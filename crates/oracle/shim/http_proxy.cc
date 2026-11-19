@@ -13,10 +13,8 @@
 #include <sys/types.h>
 #include "swoole_proxy.h"
 
-#define SWOOLE_VERSION "6.2.6"
-#define SW_STRL(s) s, sizeof(s) - 1
-#define SW_STR_ISTARTS_WITH(str, len, const_sub_str) swoole_str_istarts_with(str, len, SW_STRL(const_sub_str))
-#define sw_unlikely(x) __builtin_expect(!!(x), 0)
+// SWOOLE_VERSION, SW_STRL, SW_STR_ISTARTS_WITH and sw_unlikely, as the pinned headers define them.
+#include "http_proxy_pinned.inc"
 
 namespace oracle {
 size_t base64_encode(const unsigned char *in, size_t inlen, char *out);
