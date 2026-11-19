@@ -256,13 +256,14 @@ fn http_static_select() {
     .unwrap();
     fs::write(
         out("http_static_select_pinned.inc"),
-        pinned_macros(&[
-            "SW_HTTP_SERVER_SOFTWARE",
-            "SW_HTTP_PAGE_CSS",
-            "SW_HTTP_POWER_BY",
-            "SW_HTTP_PAGE_404",
-            "sw_unlikely",
-        ]),
+        pinned_enums(&["swHttpMethod", "swHttpStatusCode"])
+            + &pinned_macros(&[
+                "SW_HTTP_SERVER_SOFTWARE",
+                "SW_HTTP_PAGE_CSS",
+                "SW_HTTP_POWER_BY",
+                "SW_HTTP_PAGE_404",
+                "sw_unlikely",
+            ]),
     )
     .unwrap();
     fs::write(
