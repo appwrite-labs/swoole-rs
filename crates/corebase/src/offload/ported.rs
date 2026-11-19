@@ -223,7 +223,7 @@ fn async_event(
 /// `System::sleep` as the hybrid's system.cc composes it.
 fn sleep(seconds: f64) -> c_int {
     current();
-    let seconds = sleep_timeout(seconds, 0.001);
+    let seconds = sleep_timeout(seconds, crate::timer::MIN_SEC);
     park_for(seconds, &WakerSlot::new(None));
     if is_canceled() { -1 } else { 0 }
 }

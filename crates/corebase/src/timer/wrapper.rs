@@ -4,15 +4,13 @@
 //! patch deletes): this thread's `SwooleTG.timer`, its lazy creation, unit
 //! conversion and warnings, over the Rust-owned timer (`owner.rs`). Timer
 //! callbacks own their captures and operations use issued timer IDs.
+use super::MIN_SEC;
 use crate::CCast;
 use crate::timer::owner::{Owner as Timer, TimerNode};
 pub use crate::timer_key::Held;
 use crate::{log, swoole_print_backtrace};
 use std::ffi::{CStr, c_long, c_void};
 use std::rc::Rc;
-
-/// `SW_TIMER_MIN_SEC`.
-const MIN_SEC: f64 = 0.001;
 
 pub(crate) fn timer() -> *mut Timer {
     crate::thread_timer().cast()

@@ -16,6 +16,7 @@ use swoole_rs_corebase::process::process_pool::IpcMode;
 use swoole_rs_corebase::process::worker_record::WorkerRecord;
 use swoole_rs_corebase::process::worker_record::WorkerType;
 use swoole_rs_corebase::reactor::{ErrorHandler::ConnectionDefault, Events};
+use swoole_rs_corebase::timer::MIN_SEC as TIMER_MIN_SEC;
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode;
 
@@ -23,7 +24,6 @@ use swoole_rs_error::ErrorCode;
 /// native asserts each.
 const MAX_THREAD_NCPU: u32 = 4;
 const MAX_WORKER_NCPU: u32 = 1000;
-const TIMER_MIN_SEC: f64 = 0.001;
 const BUFFER_MIN_SIZE: u32 = 65536;
 
 /// `Server::start`: checks, the daemon, the factory and the mode's workers, then

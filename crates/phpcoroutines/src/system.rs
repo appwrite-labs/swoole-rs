@@ -8,6 +8,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::last_error;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::reactor::wait_upstream::{system_wait, system_waitpid};
+use swoole_rs_corebase::timer::MIN_SEC as TIMER_MIN_SEC;
 use swoole_rs_hooks::exec::exec as exec_into;
 use swoole_rs_phpstubs::coroutine_system;
 use swoole_rs_zend::{Call, Class, E_WARNING, Minit, Owned, OwnedArray, ZString, bailout::Bailout};
@@ -92,9 +93,6 @@ swoole_rs_zend::handlers! {
     zim_swoole_coroutine_system_waitSignal => wait_signal;
     zim_swoole_coroutine_system_waitEvent => wait_event;
 }
-
-/// `SW_TIMER_MIN_SEC`.
-const TIMER_MIN_SEC: f64 = 0.001;
 
 /// `sleep(float $seconds)`.
 fn sleep(call: &Call) {
