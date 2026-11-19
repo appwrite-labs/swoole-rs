@@ -70,8 +70,7 @@ unsafe extern "C" {
     safe fn swoole_curl_open_basedir() -> bool;
     // Warns about a path outside open_basedir, which a user error handler can bail out of.
     pub(super) safe fn swoole_curl_allowed_path(path: &ZStr) -> bool;
-    // The URL as `curl_init` sets it: file:// is turned off under open_basedir.
-    safe fn swoole_curl_set_url(handle: PhpHandle<'_>, url: &ZStr) -> bool;
+    safe static swoole_curl_protocols_without_file: c_long;
 }
 
 swoole_rs_zend::handlers! {
@@ -849,13 +848,7 @@ fn set(
                     );
                     false
                 }
-                Kind::Url => {
-                    let mut set = false;
-                    bailout::defer(swoole_rs_zend::contain_with(|| {
-                        set = swoole_curl_set_url(handle, &text);
-                    }));
-                    set
-                }
+                Kind::Url => set_url(call, handle, &text),
                 Kind::Blob => swoole_curl_setopt_blob(handle, id, &text) == 0,
                 _ => {
                     if kind == Kind::Path && !text.bytes().is_empty() {
@@ -867,11 +860,7 @@ fn set(
                             return false;
                         }
                     }
-                    if text.bytes().contains(&0) {
-                        value_error(call, "cURL option must not contain any null bytes");
-                        return false;
-                    }
-                    swoole_curl_setopt_string(handle, id, Some(&text)) == 0
+                    set_text(call, handle, id, &text)
                 }
             }
         }
@@ -999,6 +988,25 @@ fn set_list(
         }
     }
     swoole_curl_setopt_list(handle, id, list) == 0
+}
+
+pub(super) fn set_url(call: &Call<'_>, handle: PhpHandle<'_>, url: &ZStr) -> bool {
+    if swoole_curl_open_basedir() {
+        swoole_curl_easy_setopt_long(
+            crate::php_handle::swoole_curl_easy(handle),
+            CURLOPT_PROTOCOLS,
+            swoole_curl_protocols_without_file,
+        );
+    }
+    set_text(call, handle, swoole_rs_curl_sys::CURLOPT_URL, url)
+}
+
+fn set_text(call: &Call<'_>, handle: PhpHandle<'_>, id: c_int, text: &ZStr) -> bool {
+    if text.bytes().contains(&0) {
+        value_error(call, "cURL option must not contain any null bytes");
+        return false;
+    }
+    swoole_curl_setopt_string(handle, id, Some(text)) == 0
 }
 
 /// Initialization and reset install defaults without changing the last cURL error.

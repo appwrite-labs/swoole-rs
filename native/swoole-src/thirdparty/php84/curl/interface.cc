@@ -47,45 +47,6 @@ SW_EXTERN_C_BEGIN
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
 
-static zend_result php_curl_option_str(php_curl *ch, zend_long option, const char *str, const size_t len) {
-    if (zend_char_has_nul_byte(str, len)) {
-        zend_value_error("%s(): cURL option must not contain any null bytes", get_active_function_name());
-        return FAILURE;
-    }
-
-    CURLcode error = curl_easy_setopt(ch->cp, (CURLoption) option, str);
-    SAVE_CURL_ERROR(ch, error);
-
-    return error == CURLE_OK ? SUCCESS : FAILURE;
-}
-
-static zend_result php_curl_option_url(php_curl *ch, const zend_string *url) /* {{{ */
-{
-    /* Disable file:// if open_basedir are used */
-    if (PG(open_basedir) && *PG(open_basedir)) {
-        curl_easy_setopt(ch->cp, CURLOPT_PROTOCOLS, CURLPROTO_ALL & ~CURLPROTO_FILE);
-    }
-
-#ifdef PHP_WIN32
-    if (zend_string_starts_with_literal_ci(url, "file://") && '/' != ZSTR_VAL(url)[sizeof("file://") - 1] &&
-        ZSTR_LEN(url) < MAXPATHLEN - 2) {
-        char _tmp[MAXPATHLEN] = {0};
-
-        memmove(_tmp, "file:///", sizeof("file:///") - 1);
-        memmove(_tmp + sizeof("file:///") - 1,
-                ZSTR_VAL(url) + sizeof("file://") - 1,
-                ZSTR_LEN(url) - sizeof("file://") + 1);
-
-        return php_curl_option_str(ch, CURLOPT_URL, _tmp, ZSTR_LEN(url) + 1);
-    }
-#endif
-
-    return php_curl_option_str(ch, CURLOPT_URL, ZSTR_VAL(url), ZSTR_LEN(url));
-}
-/* }}} */
-
-/* CurlHandle class */
-
 SW_EXTERN_C_END
 
 
@@ -145,9 +106,6 @@ void swoole_curl_init_handle(php_curl *ch) {
 
 /* }}} */
 
-extern "C" bool swoole_curl_set_url(php_curl *ch, const zend_string *url) {
-    return php_curl_option_url(ch, url) == SUCCESS;
-}
 
 static void php_curl_copy_fcc_with_option(php_curl *ch,
                                           CURLoption option,

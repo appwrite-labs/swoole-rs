@@ -43,44 +43,6 @@ SW_EXTERN_C_BEGIN
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif
 
-static zend_result php_curl_option_str(php_curl *ch, zend_long option, const char *str, const size_t len) {
-#if PHP_VERSION_ID >= 80300
-    if (zend_char_has_nul_byte(str, len)) {
-#else
-    if (strlen(str) != len) {
-#endif
-        zend_value_error("%s(): cURL option must not contain any null bytes", get_active_function_name());
-        return FAILURE;
-    }
-
-    CURLcode error = curl_easy_setopt(ch->cp, (CURLoption) option, str);
-    SAVE_CURL_ERROR(ch, error);
-
-    return error == CURLE_OK ? SUCCESS : FAILURE;
-}
-#if PHP_VERSION_ID >= 80300
-static zend_result php_curl_option_url(php_curl *ch, const zend_string *url) /* {{{ */
-#else
-static zend_result php_curl_option_url(php_curl *ch, const char *url, const size_t len) /* {{{ */
-#endif
-{
-    /* Disable file:// if open_basedir are used */
-    if (PG(open_basedir) && *PG(open_basedir)) {
-        curl_easy_setopt(ch->cp, CURLOPT_PROTOCOLS, CURLPROTO_ALL & ~CURLPROTO_FILE);
-    }
-
-#if PHP_VERSION_ID >= 80300
-    return php_curl_option_str(ch, CURLOPT_URL, ZSTR_VAL(url), ZSTR_LEN(url));
-#else
-    return php_curl_option_str(ch, CURLOPT_URL, url, len);
-#endif
-}
-/* }}} */
-
-/* CurlHandle class */
-
-php_curl *swoole_curl_init_handle_into_zval(zval *curl);
-
 SW_EXTERN_C_END
 
 
@@ -146,13 +108,6 @@ void swoole_curl_init_handle(php_curl *ch) {
 }
 /* }}} */
 
-extern "C" bool swoole_curl_set_url(php_curl *ch, const zend_string *url) {
-#if PHP_VERSION_ID >= 80300
-    return php_curl_option_url(ch, url) == SUCCESS;
-#else
-    return php_curl_option_url(ch, ZSTR_VAL(url), ZSTR_LEN(url)) == SUCCESS;
-#endif
-}
 
 #if PHP_VERSION_ID >= 80300
 static void _php_copy_callback(php_curl *ch,
