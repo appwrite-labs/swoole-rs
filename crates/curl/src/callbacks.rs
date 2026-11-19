@@ -47,6 +47,14 @@ struct Data<'a>(*const c_void, PhantomData<&'a [u8]>);
 struct Fill<'a>(*mut c_void, PhantomData<&'a mut [u8]>);
 
 unsafe extern "C" {
+    safe fn swoole_curl_copy_streams(copy: PhpHandle<'_>, source: PhpHandle<'_>);
+    safe fn swoole_curl_copy_callback(
+        copy: PhpHandle<'_>,
+        source: PhpHandle<'_>,
+        option: c_int,
+        data_option: c_int,
+    );
+
     safe fn swoole_curl_stream_gone(value: &Owned) -> bool;
     // The stream's option goes back to its default: no file, and the method it started with.
     safe fn swoole_curl_stream_reset(handle: PhpHandle<'_>, option: c_int);
@@ -146,6 +154,28 @@ impl Plain {
             20316 if PHP_VERSION_ID >= 80300 && libcurl(7, 84, 0) => Some(Self::SshHostKey),
             _ => None,
         }
+    }
+}
+
+/// A duplicated easy handle inherits libcurl's callback functions, but each
+/// installed function must receive the copy as its userdata.
+pub(super) fn copy_handlers(copy: PhpHandle<'_>, source: PhpHandle<'_>) {
+    swoole_curl_copy_streams(copy, source);
+    for stream in [Stream::Read, Stream::Write, Stream::Header] {
+        swoole_curl_copy_callback(copy, source, stream as c_int, 0);
+    }
+    // Each pair is a CURLOPT_*FUNCTION and its corresponding CURLOPT_*DATA.
+    // PROGRESSDATA is an alias for XFERINFODATA. The native slot lookup skips
+    // callbacks absent from this PHP or libcurl build.
+    for (callback, data) in [
+        (Plain::Progress, 10057),
+        (Plain::Xferinfo, 10057),
+        (Plain::Fnmatch, 10202),
+        (Plain::Debug, 10095),
+        (Plain::Prereq, 10313),
+        (Plain::SshHostKey, 10317),
+    ] {
+        swoole_curl_copy_callback(copy, source, callback as c_int, data);
     }
 }
 

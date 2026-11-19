@@ -141,7 +141,6 @@ typedef struct _php_curlsh {
 
 void swoole_curl_cleanup_handle(php_curl *);
 void swoole_curl_verify_handlers(php_curl *ch, bool reporterror);
-void swoole_setup_easy_copy_handlers(php_curl *ch, php_curl *source);
 
 static inline php_curl_handlers *curl_handlers(php_curl *ch) {
     return &ch->handlers;
