@@ -23,6 +23,7 @@ use std::io::IoSlice;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use swoole_rs_corebase::buffer::string::OwnedString;
+use swoole_rs_corebase::constants::{EventDataFlag, SW_WORKER_MAX_RECV_CHUNK_COUNT};
 use swoole_rs_corebase::process::process_pool::RecvData;
 use swoole_rs_corebase::reactor::{Caught, Heap, OwnedSocket, Socket, SocketRecord};
 use swoole_rs_corebase::sys::{self, errno};
@@ -33,16 +34,14 @@ use swoole_rs_corebase::{DataHead as BusHead, TrustedAllocator, log};
 pub use Bus as MessageBus;
 
 /// `SW_EVENT_DATA_*`.
-const PTR: u8 = 1 << 1;
-const CHUNK: u8 = 1 << 2;
-const BEGIN: u8 = 1 << 3;
-const END: u8 = 1 << 4;
-const OBJ_PTR: u8 = 1 << 5;
-/// `SW_WORKER_MAX_RECV_CHUNK_COUNT`.
-const MAX_RECV_CHUNKS: u16 = 32;
+const PTR: u8 = EventDataFlag::SW_EVENT_DATA_PTR.bits();
+const CHUNK: u8 = EventDataFlag::SW_EVENT_DATA_CHUNK.bits();
+const BEGIN: u8 = EventDataFlag::SW_EVENT_DATA_BEGIN.bits();
+const END: u8 = EventDataFlag::SW_EVENT_DATA_END.bits();
+const OBJ_PTR: u8 = EventDataFlag::SW_EVENT_DATA_OBJ_PTR.bits();
 const HEAD: usize = size_of::<BusHead>();
 /// `SW_IPC_MSG_MIN`.
-const IPC_MSG_MIN: u32 = 2048 - 40;
+const IPC_MSG_MIN: usize = 2048 - HEAD;
 const _: () = assert!(HEAD == 40, "sizeof(DataHead)");
 /// The legacy minimum allocation: a header and room for a `PacketPtr` (16 bytes).
 const BUFFER_MIN: usize = HEAD + 16;
@@ -535,7 +534,7 @@ impl Bus {
                 self.set_flags(buffer, flags | OBJ_PTR);
                 return n;
             }
-            if state.chunks >= MAX_RECV_CHUNKS {
+            if u32::from(state.chunks) >= SW_WORKER_MAX_RECV_CHUNK_COUNT {
                 return Some(0);
             }
         }
@@ -566,7 +565,7 @@ impl Bus {
         let Some(mut writer) = BusWriter::new(
             head.len,
             maximum,
-            IPC_MSG_MIN,
+            u32::try_from(IPC_MSG_MIN).unwrap_or(u32::MAX),
             data.is_some(),
             self.always_chunked.get(),
         ) else {

@@ -8,7 +8,7 @@ use swoole_rs_corebase::process;
 
 use process::methods::{self, ExitStatus};
 use process::os::kill;
-use process::process_pool::{Hooks, PoolRef};
+use process::process_pool::{Hooks, PoolRef, WORKER_MESSAGE_STOP};
 use process::reaper::{self, Reap, ReloadStart, Waited};
 use process::reload_task::{ReloadTask, Warn};
 use process::worker_record::{Worker, WorkerType};
@@ -29,8 +29,6 @@ use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as ERROR, SW_LOG_WARNING as
 const REGISTRY_EVENT: c_int = 1;
 const REGISTRY_USER: c_int = 2;
 const MESSAGE_BOX_SIZE: usize = swoole_rs_corebase::constants::SW_MESSAGE_BOX_SIZE as usize;
-/// `swoole::WorkerMessageType::SW_WORKER_MESSAGE_STOP`.
-const WORKER_MESSAGE_STOP: u8 = 1;
 /// `sizeof(EventData)`.
 const EVENT_DATA_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize;
 

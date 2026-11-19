@@ -1109,8 +1109,8 @@ pub const SW_IPC_MAX_SIZE: u64 = crate::constants::SW_IPC_MAX_SIZE as u64;
 #[cfg(target_os = "linux")]
 pub const SW_IPC_BUFFER_MAX_SIZE: i64 = crate::constants::SW_IPC_BUFFER_MAX_SIZE as i64;
 
-/// `SW_WORKER_MESSAGE_STOP`, and where an `EventData` keeps its type and data.
-const WORKER_MESSAGE_STOP: u8 = 1;
+/// The process pool stop message from `WorkerMessageType`.
+pub const WORKER_MESSAGE_STOP: u8 = 1;
 const EVENT_LEN: usize = std::mem::offset_of!(DataHead, len);
 const EVENT_TYPE: usize = std::mem::offset_of!(DataHead, kind);
 const EVENT_DATA: usize = size_of::<DataHead>();
