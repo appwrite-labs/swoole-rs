@@ -103,7 +103,8 @@ pub const THREAD: u32 = 4;
 /// closure the context it is handed to runs once, on its own stack or thread. It is
 /// held inline: the largest closure a coroutine starts with, `phpcoroutines`'
 /// (a call's callable, arguments and their count), fits.
-pub struct Entry(SmallFn<(), ENTRY_WORDS>);
+// Entry::of accepts only Copy closures. None has a destructor.
+pub struct Entry(core::mem::ManuallyDrop<SmallFn<(), ENTRY_WORDS>>);
 
 /// The words an [`Entry`] holds.
 const ENTRY_WORDS: usize = 10;
@@ -137,14 +138,14 @@ unsafe impl Send for Entry {}
 impl Entry {
     /// No entry: a [`THREAD`] context's, whose thread holds it.
     pub(crate) const fn empty() -> Self {
-        Self(SmallFn::empty())
+        Self(core::mem::ManuallyDrop::new(SmallFn::empty()))
     }
 
     /// The entry that runs `entry`.
     pub(crate) fn of<F: Fn() + Copy + 'static>(entry: F) -> Self {
         let slot = SmallFn::empty();
         slot.put(Once(entry));
-        Self(slot)
+        Self(core::mem::ManuallyDrop::new(slot))
     }
 
     /// Runs the held entry in place, where it stays: a stack context's, whose
@@ -155,10 +156,7 @@ impl Entry {
 
     /// Runs the entry; this takes it, so it runs once.
     pub(crate) fn run(self) {
-        let Self(mut slot) = self;
-        if let Some(entry) = slot.take() {
-            entry.consume();
-        }
+        self.run_held();
     }
 }
 

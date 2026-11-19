@@ -16,7 +16,7 @@ pub(crate) trait Small<R>: 'static {
 struct Ops<R: 'static, const N: usize> {
     run: fn(&SmallFn<R, N>) -> R,
     consume: fn(Bytes<N>) -> R,
-    discard: fn(Bytes<N>),
+    discard: Option<fn(Bytes<N>)>,
 }
 
 /// An empty slot or one [`Small`] value. `ops` is set exactly while `value` holds the
@@ -84,7 +84,11 @@ impl<R, const N: usize> SmallFn<R, N> {
                 &Ops {
                     run: run::<C, R, N>,
                     consume: |bytes| finish(bytes, C::consume),
-                    discard: |bytes| finish(bytes, drop::<C>),
+                    discard: if core::mem::needs_drop::<C>() {
+                        Some(|bytes| finish(bytes, drop::<C>))
+                    } else {
+                        None
+                    },
                 }
             },
         ));
@@ -117,13 +121,17 @@ impl<R, const N: usize> Taken<R, N> {
 
 impl<R, const N: usize> Drop for SmallFn<R, N> {
     fn drop(&mut self) {
-        drop(self.take());
+        if let Some(discard) = self.ops.take().and_then(|ops| ops.discard) {
+            discard(self.value.get());
+        }
     }
 }
 
 impl<R, const N: usize> Drop for Taken<R, N> {
     fn drop(&mut self) {
-        (self.ops.discard)(self.value);
+        if let Some(discard) = self.ops.discard {
+            discard(self.value);
+        }
     }
 }
 
