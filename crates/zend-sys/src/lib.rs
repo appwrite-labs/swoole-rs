@@ -12,8 +12,9 @@
     )
 )]
 
-// An `allow`, as AGENTS.md permits for bindgen's output: which lints fire on it
-// differs per PHP version, so an expectation would go unfulfilled on some.
+// One of the repository's two `allow`s (crates/odbc-sys has the other): bindgen's
+// output, and so which lints fire on it, differs per PHP version, so an
+// expectation would go unfulfilled on some.
 mod bindings {
     #![allow(
         non_camel_case_types,
