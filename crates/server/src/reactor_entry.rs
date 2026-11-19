@@ -185,6 +185,7 @@ pub(crate) fn thread_shutdown(serv: view::Server<'_>, reactor: Reactor, id: usiz
 /// the port's server and the session's connection: `data` to the workers, with the
 /// caller's `len`, `ext_flags` and (in base mode) `flags`. Whether it was dispatched.
 #[must_use]
+#[inline]
 pub fn dispatch_data(
     server: view::Server<'_>,
     conn: crate::Connection<'_>,
@@ -209,6 +210,7 @@ pub fn dispatch_buffer(
     dispatch_input(server, conn, SendData::empty(head), Some(buffer), None)
 }
 
+#[inline(always)]
 fn dispatch_input(
     server: view::Server<'_>,
     conn: crate::Connection<'_>,

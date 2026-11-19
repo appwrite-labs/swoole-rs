@@ -118,6 +118,7 @@ fn strnstr(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// Byte offset of the first whole needle. An empty needle matches at zero.
 #[must_use]
+#[inline(always)]
 pub fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     match needle {
         // A port's EOF, at most `SW_DATA_EOF_MAXLEN` bytes: a scan for its first byte
