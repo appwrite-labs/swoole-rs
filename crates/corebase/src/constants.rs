@@ -404,6 +404,10 @@ pub const SW_IPC_MAX_SIZE: u32 = 2048;
 pub const SW_IPC_MAX_SIZE: u32 = 8192;
 /// `SW_IPC_MAX_SIZE - sizeof(DataHead)`: an `EventData`'s payload.
 pub const SW_IPC_BUFFER_SIZE: usize = SW_IPC_MAX_SIZE as usize - 40;
+const _: () = assert!(
+    SW_IPC_BUFFER_SIZE + size_of::<crate::DataHead>() == SW_IPC_MAX_SIZE as usize,
+    "the exported IPC payload and DataHead must fill one EventData"
+);
 
 #[cfg(test)]
 mod tests {

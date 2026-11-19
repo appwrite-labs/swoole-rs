@@ -26,31 +26,29 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use crate::constants::PipeType;
 use crate::process::process_pool::PoolNative;
 
 /// `SW_MSGMAX`: the most a queue receive asks for under the stream protocol.
 const MSGMAX: usize = crate::constants::SW_MSGMAX as usize;
 /// `SW_BUFFER_SIZE_STD`: the response buffer's first capacity.
-const RESPONSE_CAPACITY: usize = 8192;
-/// `sizeof(swoole::DataHead)`; `info.len` is its `u32` at offset 16, `info.fd`
-/// (the task id) its `i64` at 0, `info.server_fd` its `u16` at 24 and
-/// `info.ext_flags` its `u16` at 26.
-const HEAD: usize = 40;
+const RESPONSE_CAPACITY: usize = crate::constants::SW_BUFFER_SIZE_STD as usize;
+const HEAD: usize = size_of::<DataHead>();
 #[cfg(test)]
-const HEAD_LEN: usize = 16;
-const HEAD_SERVER_FD: usize = 24;
+const HEAD_LEN: usize = std::mem::offset_of!(DataHead, len);
+const HEAD_SERVER_FD: usize = std::mem::offset_of!(DataHead, server_fd);
 #[cfg(test)]
-const HEAD_EXT_FLAGS: usize = 26;
+const HEAD_EXT_FLAGS: usize = std::mem::offset_of!(DataHead, ext_flags);
 /// `SW_TASK_TMPFILE`: the task's data is a `PacketTask` naming a temporary file.
 const TASK_TMPFILE: u16 = crate::constants::TaskFlag::SW_TASK_TMPFILE.bits();
 /// `sizeof(PacketTask)`: its `size_t` length and `SW_TASK_TMP_PATH_SIZE` path.
-const PACKET_TASK: u32 = 8 + 256;
+const PACKET_TASK: usize = size_of::<super::task_file::PacketTask>();
 /// `sizeof(long)`, `QueueNode::mtype`.
 const MTYPE: usize = size_of::<c_long>();
 
 /// `SW_PIPE_MASTER` and `SW_PIPE_NONBLOCK`.
-const PIPE_MASTER: c_int = 1;
-pub(crate) const PIPE_NONBLOCK: c_int = 2;
+pub(crate) const PIPE_MASTER: c_int = PipeType::SW_PIPE_MASTER as c_int;
+pub(crate) const PIPE_NONBLOCK: c_int = PipeType::SW_PIPE_NONBLOCK as c_int;
 
 /// A warning native code formats (`PoolNative::warn`); `errno` is the failed
 /// call's where the message is a system warning.
@@ -92,7 +90,9 @@ fn whole_task(out: &[u8], n: isize) -> Result<(&[u8], i64), i64> {
         .ok()
         .and_then(|n| event.get(..n))
         .ok_or(size)?;
-    if n as i64 != size || (header.ext_flags & TASK_TMPFILE != 0 && header.len != PACKET_TASK) {
+    if n as i64 != size
+        || (header.ext_flags & TASK_TMPFILE != 0 && header.len as usize != PACKET_TASK)
+    {
         return Err(size);
     }
     Ok((bytes, header.fd))
