@@ -556,17 +556,11 @@ impl Parts<'_> for Rewrite<'_> {
     }
 }
 
-/// A request with no host, which is all zero bytes. Not inlined: built in place it
-/// lets the compiler ask the allocator for zeroed memory, and glibc's `calloc`
-/// skips its per-thread cache, at several hundred instructions a request.
-#[inline(never)]
-fn blank() -> HttpRequest {
-    HttpRequest::default()
-}
-
+/// A request with no host, which is all zero bytes: written apart, its allocation stays
+/// `malloc`, not `calloc` (corebase's `memory::apart`).
 #[must_use]
 pub fn request_new() -> Box<HttpRequest> {
-    Box::new(blank())
+    swoole_rs_corebase::memory::apart::boxed(HttpRequest::default)
 }
 
 /// `delete request` of one [`request_new`] made, if any: the destructor, then the memory.

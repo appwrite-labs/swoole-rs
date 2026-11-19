@@ -18,8 +18,9 @@ use std::{
 };
 use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::buffer::string::StringBuffer as Buffer;
-use swoole_rs_corebase::constants::HTTP2_PREFACE;
-use swoole_rs_corebase::constants::{SW_COMPRESSION_MIN_LENGTH_DEFAULT, SW_Z_BEST_SPEED};
+use swoole_rs_corebase::constants::{
+    HTTP2_PREFACE, SW_COMPRESSION_MIN_LENGTH_DEFAULT, SW_HTTP_100_CONTINUE_PACKET, SW_Z_BEST_SPEED,
+};
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_members::Receive};
@@ -936,9 +937,8 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             // Once per request, so the interim response is not repeated.
             let state = context.state();
             if !state.completed && state.request.version == 101 && expects_continue(context) {
-                const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
                 drop(buffer);
-                let _sent = conn.socket.send_all(CONTINUE);
+                let _sent = conn.socket.send_all(SW_HTTP_100_CONTINUE_PACKET.as_bytes());
                 buffer = conn.socket.own_read_buffer();
             }
         }
