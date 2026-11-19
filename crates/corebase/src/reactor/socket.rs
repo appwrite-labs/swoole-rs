@@ -478,8 +478,8 @@ impl OwnerCell {
 /// a closure, and a record released while a loan is out is freed when the last loan
 /// ends. A loan a Zend bailout skips leaves the count up, so the record leaks rather
 /// than being freed early; a loan held across a coroutine yield delays the free.
-#[derive(Default)]
 pub struct SocketLoans {
+    on_drop: fn(OwnedSocket),
     socket: Cell<Option<Heap<'static>>>,
     /// The loans out, with [`PENDING`] set while `retired` holds any: the last loan's
     /// end compares this one word.
@@ -495,7 +495,26 @@ type Retired = (Heap<'static>, fn(OwnedSocket));
 /// a frame on this thread's stack, so the count never reaches it.
 const PENDING: u32 = 1 << 31;
 
+impl Drop for SocketLoans {
+    fn drop(&mut self) {
+        if self.loans.get() == 0 {
+            self.release(self.on_drop);
+        }
+    }
+}
+
 impl SocketLoans {
+    /// An empty holder. On drop, release its current record when every loan has returned.
+    #[must_use]
+    pub const fn new(on_drop: fn(OwnedSocket)) -> Self {
+        Self {
+            on_drop,
+            socket: Cell::new(None),
+            loans: Cell::new(0),
+            retired: Cell::new(Vec::new()),
+        }
+    }
+
     /// Owns `owner` from here; the record it held is released with `free`.
     pub fn put(&self, owner: OwnedSocket, free: fn(OwnedSocket)) {
         if let Some(old) = self.socket.replace(Some(owner.leak())) {
@@ -726,6 +745,27 @@ mod tests {
         let mut byte = [0];
         reader.read_exact(&mut byte).unwrap();
         assert_eq!(byte, *b"x");
+    }
+
+    #[test]
+    fn a_loan_holder_releases_its_current_record_once() {
+        use std::rc::Rc;
+        let held = Rc::new(());
+        let mut record = SocketRecord::new();
+        record.set_owner(Some(Rc::clone(&held)));
+        let holder = SocketLoans::new(|socket| {
+            assert!(
+                socket
+                    .socket()
+                    .edit(SocketFields::take_owner::<Rc<()>>)
+                    .is_some()
+            );
+            socket.free();
+        });
+        holder.put(OwnedSocket::new(Box::new(record)), |_| unreachable!());
+        assert_eq!(Rc::strong_count(&held), 2);
+        drop(holder);
+        assert_eq!(Rc::strong_count(&held), 1);
     }
 
     #[test]
