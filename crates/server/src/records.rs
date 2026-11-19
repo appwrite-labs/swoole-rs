@@ -283,12 +283,6 @@ impl<'a> Connection<'a> {
         self.record.socket.put(socket);
     }
 
-    /// The connection forgets its socket, which leaks.
-    #[cfg(test)]
-    pub(crate) fn forget_socket(self) {
-        self.record.socket.forget();
-    }
-
     /// `delete conn->socket`: the connection's socket, which it no longer holds, freed.
     /// The one free of a connection's socket: [`crate::conn_io::close_connection`], on
     /// the thread whose reactor runs the connection, and the DTLS accept that failed
@@ -743,14 +737,13 @@ pub(crate) mod tests {
         let conn = Connection::from(&record);
         conn.hold_http_request(swoole_rs_http::request_new());
         assert!(conn.take_http_request().is_none(), "no socket: freed");
-        let socket = Box::new(swoole_rs_corebase::reactor::SocketRecord::new());
+        let socket = Box::new(swoole_rs_corebase::reactor::SocketRecord::with_fd(-1, 0));
         conn.hold_socket(swoole_rs_corebase::reactor::OwnedSocket::new(socket));
         conn.hold_http_request(swoole_rs_http::request_new());
         conn.hold_http_request(swoole_rs_http::request_new());
         assert!(conn.take_http_request().is_some(), "the later one");
         assert!(conn.take_http_request().is_none(), "taken once");
-        // Freeing it would close fd 0.
-        conn.forget_socket();
+        conn.free_socket(|| {});
     }
 
     #[test]

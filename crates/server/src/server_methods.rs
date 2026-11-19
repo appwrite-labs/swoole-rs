@@ -430,6 +430,7 @@ mod tests {
         // SAFETY: plain records, for which zero is valid.
         let (mut sock, mut pipe): (SocketRecord, SocketRecord) =
             unsafe { (core::mem::zeroed(), core::mem::zeroed()) };
+        sock.fd = -1;
         sock.kernel_nobufs = true;
         pipe.kernel_nobufs = true;
         let mut connections: [ConnectionRecord; 4] = Default::default();
@@ -479,8 +480,7 @@ mod tests {
             "process mode leaves the socket"
         );
         let conn = serv.state().connection(3, Lookup::ByFd).unwrap();
-        // The record leaks, as the fixture's sockets do: freeing it would touch fd 0.
-        conn.forget_socket();
+        conn.free_socket(|| {});
 
         server.config_mut().gs.free();
     }
