@@ -11,7 +11,7 @@ use std::{
     any::Any,
     ffi::{CStr, c_int},
     mem::ManuallyDrop,
-    sync::{Arc, OnceLock},
+    sync::Arc,
 };
 use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::constants::{SW_IPC_BUFFER_SIZE, SocketType};
@@ -632,35 +632,6 @@ pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &mut Recv
     relay(bailed);
 }
 
-/// crates/phphttp's `Swoole\Http\Server` hooks, which crates/ffi registers.
-pub struct HttpHooks {
-    /// `php_swoole_http_server_onReceive`: whether it succeeded.
-    pub on_receive: fn(view::Server<'_>, &mut RecvData<'_>) -> bool,
-    /// `php_swoole_http_server_onClose`.
-    pub on_close: fn(view::Server<'_>, &DataHead),
-    /// `swoole_http_server_can_cache_session_addr`.
-    pub can_cache_session_addr: fn(view::Server<'_>) -> bool,
-}
-
-static HTTP: OnceLock<&'static HttpHooks> = OnceLock::new();
-
-/// Keep crates/phphttp's hooks; the first registration stands.
-pub fn register_http(hooks: &'static HttpHooks) {
-    HTTP.get_or_init(|| hooks);
-}
-
-/// The registered HTTP hooks.
-pub(crate) fn http() -> Option<&'static HttpHooks> {
-    HTTP.get().copied()
-}
-
-fn on_http_receive(server: view::Server<'_>, request: &mut RecvData<'_>) -> CallbackResult {
-    http()
-        .is_none_or(|http| (http.on_receive)(server, request))
-        .then_some(())
-        .ok_or(CallbackError::Failed)
-}
-
 /// `php_swoole_redis_server_onReceive`: Redis ports parse the request in
 /// crates/phpredis, others take the plain `onReceive`.
 fn on_redis_receive(server: view::Server<'_>, request: &mut RecvData<'_>) -> CallbackResult {
@@ -816,12 +787,6 @@ fn on_close(server: view::Server<'_>, info: &DataHead) {
     close(server, info);
 }
 
-fn on_http_close(server: view::Server<'_>, info: &DataHead) {
-    if let Some(http) = http() {
-        (http.on_close)(server, info);
-    }
-}
-
 fn on_buffer_full(server: view::Server<'_>, info: &DataHead) {
     relay(on_buffer(
         server,
@@ -928,12 +893,10 @@ pub(crate) fn install(server: view::Server<'_>, which: Install) {
         Install::PipeMessage => &[Callback::PipeMessage(on_pipe_message_slot)],
         Install::BufferEmpty => &[Callback::BufferEmpty(on_buffer_empty)],
         Install::Close => &[Callback::Close(on_close)],
-        Install::HttpClose => &[Callback::Close(on_http_close)],
         Install::Receive => &[Callback::Receive(|server, request| {
             php_swoole_server_on_receive(server, request);
             Ok(())
         })],
-        Install::HttpReceive => &[Callback::Receive(on_http_receive)],
         Install::RedisReceive => &[Callback::Receive(on_redis_receive)],
         Install::UserWorkerStart if server.has_callback(CallbackKind::UserWorkerStart) => &[],
         Install::UserWorkerStart => &[Callback::UserWorkerStart(on_user_worker_start)],

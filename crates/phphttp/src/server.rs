@@ -216,6 +216,23 @@ fn cached(
     inserted.ok().map(|_| copies)
 }
 
+/// Install HTTP event handlers in the server's own callback slots. Its effective
+/// dispatch mode determines whether closing a session must evict cached addresses.
+pub fn install_http_callbacks(object: &swoole_rs_zend::Value, ports_configured: bool) {
+    use swoole_rs_server::callbacks::{Callback, CallbackError};
+    let Some(server) = swoole_rs_phpserver::php_swoole_server_of(object) else {
+        return;
+    };
+    server.set_callback(Callback::Receive(|server, request| {
+        http_server_on_receive(server, request)
+            .then_some(())
+            .ok_or(CallbackError::Failed)
+    }));
+    if ports_configured && can_cache_session_addr(server) {
+        server.set_callback(Callback::Close(http_server_on_close));
+    }
+}
+
 /// `php_swoole_http_server_onReceive`: route the data to another protocol's
 /// `onReceive`, or parse it into a new context and run its handler. A
 /// bailout (a handshake's `onOpen`, the handler's `exit()`) is raised last.
