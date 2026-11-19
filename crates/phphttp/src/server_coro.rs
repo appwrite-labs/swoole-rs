@@ -14,7 +14,6 @@ use std::{
     cell::{Cell, OnceCell},
     ffi::{CString, c_int},
     rc::Rc,
-    sync::atomic::Ordering::Relaxed,
 };
 use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::buffer::string::StringBuffer as Buffer;
@@ -121,7 +120,7 @@ impl HttpServer {
                 }
             }
         };
-        if websocket::ZLIB.load(Relaxed) {
+        if websocket::has_zlib() {
             flag(b"websocket_compression", websocket::SETTING_COMPRESSION);
         }
         flag(b"open_websocket_close_frame", websocket::OPEN_CLOSE_FRAME);

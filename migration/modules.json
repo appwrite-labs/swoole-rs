@@ -55,6 +55,7 @@
       ],
       "owned_paths": [
         "crates/websocket/",
+        "crates/phpclients/src/websocket.rs",
         "native/websocket/",
         "tests/modules/websocket/"
       ],

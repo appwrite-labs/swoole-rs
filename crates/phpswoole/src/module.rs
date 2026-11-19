@@ -181,7 +181,6 @@ pub struct MinitArgs<'a> {
     pub minit: &'a swoole_rs_zend::Minit,
     pub shortname: bool,
     pub codecs: u32,
-    pub zlib: bool,
     pub thread: bool,
 }
 
@@ -491,7 +490,6 @@ fn http_minit<const N: usize>(minit: &swoole_rs_zend::Minit) {
         minit,
         shortname: globals().use_shortname.get(),
         codecs: codecs(),
-        zlib: flags & crate::constants::ZLIB != 0,
         thread: flags & crate::constants::THREAD != 0,
     };
     step(&args);
