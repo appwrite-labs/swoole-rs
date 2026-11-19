@@ -1,6 +1,7 @@
 #ifndef SWOOLE_RS_SSH2_H
 #define SWOOLE_RS_SSH2_H
 #include <stdbool.h>
+#include <stddef.h>
 #include <libssh2.h>
 #include <libssh2_sftp.h>
 #ifdef __cplusplus
@@ -113,5 +114,12 @@ struct php_ssh2_session_data {
     zval *disconnect_cb;
     SocketImpl *socket;
 };
+static_assert(offsetof(php_ssh2_session_data, ignore_cb) == 0 &&
+              offsetof(php_ssh2_session_data, debug_cb) == sizeof(void *) &&
+              offsetof(php_ssh2_session_data, macerror_cb) == 2 * sizeof(void *) &&
+              offsetof(php_ssh2_session_data, disconnect_cb) == 3 * sizeof(void *) &&
+              offsetof(php_ssh2_session_data, socket) == 4 * sizeof(void *) &&
+              sizeof(php_ssh2_session_data) == 5 * sizeof(void *) &&
+              alignof(php_ssh2_session_data) == alignof(void *), "hooks::ssh2::SessionData layout");
 #endif
 #endif

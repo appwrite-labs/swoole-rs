@@ -5,7 +5,7 @@
 #include "php.h"
 #include "zend_closures.h"
 
-/* Swoole's zend::Function, whose layout it shares. */
+/* bindgen uses this declaration for Rust's swr_zend_callable. */
 typedef struct {
     zend_fcall_info fci;
     zend_fcall_info_cache fcc;

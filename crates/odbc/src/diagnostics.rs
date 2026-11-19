@@ -1,5 +1,5 @@
 //! Error records shared with the bundled statement driver.
-use std::{cell::Cell, ffi::CStr};
+use std::{cell::Cell, ffi::CStr, mem::offset_of};
 
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_odbc_sys::SQLRETURN;
@@ -20,6 +20,19 @@ struct ErrorInfo {
     what: Option<Text<'static>>,
     line: i32,
 }
+
+// The matching native assertions are beside swr_odbc_error_record in odbc_driver.c.
+const _: () = assert!(
+    offset_of!(ErrorInfo, state) == 0
+        && offset_of!(ErrorInfo, message) == 6
+        && offset_of!(ErrorInfo, code) == 520
+        && offset_of!(ErrorInfo, file) == 528
+        && offset_of!(ErrorInfo, what) == 536
+        && offset_of!(ErrorInfo, line) == 544
+        && size_of::<ErrorInfo>() == 552
+        && align_of::<ErrorInfo>() == 8,
+    "pdo_odbc_errinfo layout"
+);
 
 unsafe extern "C" {
     safe fn swr_odbc_error_record<'a>(dbh: &'a Dbh, stmt: Option<&'a Stmt>) -> &'a Cell<ErrorInfo>;
