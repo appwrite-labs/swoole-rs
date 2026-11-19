@@ -17,7 +17,7 @@ from tools.annotations import annotate
 from tools.harness import ROOT
 
 ALIASES = {'string': 'buffer'}
-STATUSES = ['passed', 'failed', 'unsupported', 'skipped']
+STATUSES = ['passed', 'failed', 'unsupported', 'skipped', 'excluded']
 
 
 def module_of(phase):
@@ -31,6 +31,7 @@ def summarize(loop):
     for row in json.loads(loop.read_text())['phases']:
         phases[module_of(row['phase'])]['passed' if row.get('returncode') == 0 else 'failed'] += 1
     cases = defaultdict(Counter)
+    excluded = Counter()
     for report in loop.parent.glob('*.json'):
         try:
             data = json.loads(report.read_text())
@@ -44,6 +45,10 @@ def summarize(loop):
             if not isinstance(row, dict) or 'status' not in row or row.get('engine') == 'upstream':
                 continue
             module = row.get('module') or ('corpus' if 'project' in row else module_of(report.stem))
+            if row['status'] == 'excluded' and isinstance(data.get('excluded'), dict):
+                reason = data['excluded'].get(row.get('name'))
+                if reason:
+                    excluded[reason] += 1
             cases[module][row['status'] if row['status'] in STATUSES else 'failed'] += 1
     # pytest JUnit reports: the engine is one of the test id's parameters.
     for report in loop.parent.glob('*.xml'):
@@ -58,15 +63,18 @@ def summarize(loop):
             status = 'failed' if case.find('failure') is not None or case.find('error') is not None else \
                 'skipped' if case.find('skipped') is not None else 'passed'
             cases[module_of(report.stem)][status] += 1
-    return phases, cases
+    return phases, cases, excluded
 
 
-def markdown(phases, cases):
+def markdown(phases, cases, excluded):
     lines = ['### Phases by module', '', '| Module | Passed | Failed |', '| --- | --- | --- |']
     lines += [f'| {module} | {phases[module]["passed"]} | {phases[module]["failed"]} |' for module in sorted(phases)]
     lines += ['', '### Cargo cases by group (original PHPT selection group, or corpus)', '',
               '| Group | ' + ' | '.join(s.capitalize() for s in STATUSES) + ' |', '| --- ' * (1 + len(STATUSES)) + '|']
     lines += [f'| {group} | ' + ' | '.join(str(cases[group][s]) for s in STATUSES) + ' |' for group in sorted(cases)]
+    if excluded:
+        lines += ['', '### Ported core-test exclusions', '', '| Reason | Cases |', '| --- | ---: |']
+        lines += [f'| {reason} | {count} |' for reason, count in sorted(excluded.items())]
     return '\n'.join(lines) + '\n\nUpstream is the control and is not counted.\n'
 
 

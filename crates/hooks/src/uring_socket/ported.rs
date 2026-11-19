@@ -674,7 +674,6 @@ fn sendto_recvfrom_udp() {
 
 /// `sendto_recvfrom_udp`'s second call, `SW_SOCK_UDP6`.
 #[test]
-#[ignore = "needs IPv6, which the test containers lack (as coroutine_socket.tcp6)"]
 fn sendto_recvfrom_udp6() {
     test_sendto_recvfrom(true);
 }
