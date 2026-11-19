@@ -315,12 +315,8 @@ def plan(args, reports):
                             '(~15% of runs fail)',
                *([] if getattr(args, 'core_test_services', False) else
                  ['--exclude', 'coroutine_socket.tcp6=needs a listener on IPv6 loopback port 80']),
-               '--exclude', 'coroutine_async.gethostbyname=' + NETWORK,
                *[arg for name, reason in [('lookup1', NETWORK), ('lookup_ipv6', NETWORK), ('bad_family', NETWORK), ('cancel', UNCACHED)]
                  for arg in ['--exclude', f'dns.{name}={reason}']],
-               # core-tests/src/coroutine/gethostbyname.cpp (system/src/gethostbyname.rs) resolves public names.
-               *[arg for name in ['resolve_cache', 'resolve_cache_inet4_and_inet6', 'dns_expire']
-                 for arg in ['--exclude', f'coroutine_gethostbyname.{name}={NETWORK}']],
                *[arg for name in ['https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy',
                                   'https_get_with_http_proxy'] for arg in ['--exclude', f'coroutine_socket.{name}={PROXY}']],
                # core-tests/src/network/client.cpp (tests/modules/clients/client.rs).

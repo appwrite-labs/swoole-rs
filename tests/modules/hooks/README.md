@@ -110,13 +110,14 @@ invalid operations, captured I/O errors and cancellation distinct until its C
 export maps them to the original statuses. Duration conversions are unchanged.
 
 `core-tests/src/coroutine/gethostbyname.cpp` is `system/src/gethostbyname.rs`
-(`coroutine_gethostbyname.<name>`, upstream's names, inputs and expected values):
+(`coroutine_gethostbyname.<name>`, upstream's case names and expected values):
 `System::gethostbyname` is `resolve::system_gethostbyname` and the DNS cache calls
 (`set_dns_cache_capacity`, `_expire`, `clear_dns_cache`, `get_dns_cache_hit_ratio`) are
 crates/hooks' `dns_cache.rs` (`swr_v1_hook_dns_cache_*`). `resolve_cache`,
-`resolve_cache_inet4_and_inet6` and `dns_expire` look up public names (www.baidu.com,
-ipv6.sjtu.edu.cn, www.gov.cn), so `hooks-system-rust` excludes them as it does `dns.lookup1`
-(external DNS and network). `impl_async` has no case: `gethostbyname_impl_with_async` returns a
+`resolve_cache_inet4_and_inet6` and `dns_expire` resolve `localhost` in place
+of `www.baidu.com`, `ipv6.sjtu.edu.cn` and `www.gov.cn`, respectively. The cache
+hit ratios, expiry delay, address-family checks and timing bound are upstream's.
+`impl_async` has no case: `gethostbyname_impl_with_async` returns a
 `std::string` and the hybrid exports no symbol for it (it is crates/hooks `resolve.rs`'s
 `gethostbyname_with_async`, which `System::gethostbyname` runs on a cache miss without c-ares).
 
@@ -402,15 +403,15 @@ this fixture's `rust_worker_retirement.abort_and_reset`) is crates/server's
 `hooks-system-rust`. `coroutine::async(handler, event, timeout)` and `async(fn)` are
 crates/hooks's `swr_v1_hook_async` and `swr_v1_hook_async_job` over `COROUTINE_ASYNC`,
 the operations the hooked functions use, and the package calls them through its
-`swoole-rs-hooks` dependency. `coroutine_async.gethostbyname` resolves www.baidu.com, so
-it is excluded as external network. It checks upstream's
+`swoole-rs-hooks` dependency. `coroutine_async.gethostbyname` resolves `localhost` in
+place of `www.baidu.com` on its worker. It checks upstream's
 `(\d{1,3}).(\d{1,3}).(\d{1,3}).(\d{1,3})` match as an IPv4 parse, which accepts
 inet_ntop's output exactly when that output is a dotted quad.
 
 | Upstream TEST | Rust case |
 | --- | --- |
 | `coroutine_async.usleep` | `coroutine_async.usleep` |
-| `coroutine_async.gethostbyname` | `coroutine_async.gethostbyname` (excluded: external network) |
+| `coroutine_async.gethostbyname` | `coroutine_async.gethostbyname` |
 | `coroutine_async.error` | `coroutine_async.error` |
 | `coroutine_async.cancel` | `coroutine_async.cancel` |
 | `coroutine_async.timeout` | `coroutine_async.timeout` |

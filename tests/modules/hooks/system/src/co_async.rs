@@ -58,7 +58,7 @@ fn usleep_() {
 
 fn gethostbyname() {
     run(|| {
-        let domain = c"www.baidu.com";
+        let domain = c"localhost";
         let mut ip = String::new();
 
         let retval = co_async_fn(|| {
