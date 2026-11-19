@@ -417,7 +417,10 @@ pub(crate) fn idle_timeout(serv: view::Server<'_>, reactor: Reactor, conn: Conne
 /// `Server::disable_accept`: stop accepting on stream ports until the retry timer.
 pub(crate) fn disable_accept(serv: view::Server<'_>) {
     /// `SW_ACCEPT_RETRY_TIME`, in milliseconds.
-    #[expect(clippy::cast_possible_truncation, reason = "1000.0")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a constant, where c_cast can't run: 1.0 second is 1000"
+    )]
     const RETRY_MSEC: c_long = (SW_ACCEPT_RETRY_TIME * 1000.0) as c_long;
     let timer = swoole_rs_corebase::timer::add_fn(RETRY_MSEC, false, || {
         // The server of the reactor that armed the timer: this thread's.

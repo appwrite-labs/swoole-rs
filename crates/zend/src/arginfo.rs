@@ -213,7 +213,7 @@ pub const fn definition<const N: usize>(
     entry.arg_info = arginfo.0.as_ptr();
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "arginfo has a handful of slots"
+        reason = "a const fn, where try_from can't run: N counts a function's parameters"
     )]
     {
         entry.num_args = (N - 1) as u32;

@@ -121,7 +121,8 @@ pub fn sw_rs_http2_window_plan(
 ) -> Http2WindowPlan {
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "native uint32_t window arithmetic"
+        reason = "upstream adds a size_t to a uint32_t window, which keeps the low 32 bits; \
+                  this crate is below corebase, so it has no c_cast"
     )]
     let value = if credit {
         current.wrapping_add(amount as u32)
@@ -429,8 +430,8 @@ pub fn sw_rs_http2_pack_frame_header(
     flags: u32,
     stream_id: u32,
 ) -> [u8; 9] {
-    #[expect(clippy::cast_possible_truncation, reason = "the native uint8_t flags")]
-    header(kind as u8, length, flags as u8, stream_id)
+    let [flags, ..] = flags.to_le_bytes();
+    header(kind as u8, length, flags, stream_id)
 }
 
 /// `swoole::http2::pack_setting_frame` into the front of `out`: the frame's size, or 0

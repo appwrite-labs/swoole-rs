@@ -47,7 +47,8 @@ fn number(bytes: &[u8], range: &mut bool) -> Option<Number> {
     };
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "C's int ret = strtol(..) narrows the long"
+        reason = "C's int ret = strtol(..) narrows the long; this crate is below corebase, \
+                  so it has no c_cast"
     )]
     let value = signed as i32;
     Some(Number {

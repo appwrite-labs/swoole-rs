@@ -39,7 +39,10 @@ const SOCK_UDP6: c_int = 4;
 /// `SW_ERROR_WRONG_OPERATION`.
 const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 /// `SW_IPC_BUFFER_SIZE`: `SW_IPC_MAX_SIZE - sizeof(DataHead)`.
-#[expect(clippy::cast_possible_truncation, reason = "a u16 field's value")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a constant, where try_from can't run: at most 8152, for a u16 field"
+)]
 const IPC_BUFFER_SIZE: u16 = (swoole_rs_corebase::constants::SW_IPC_MAX_SIZE - 40) as u16;
 
 /// `php_swoole_error(level, "%s", message)`, or with `fatal`
