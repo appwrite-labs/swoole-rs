@@ -1106,23 +1106,15 @@ pub const fn max_package_size(value: i64) -> u32 {
         value as u32
     }
 }
-#[cfg(target_os = "macos")]
-pub const SW_IPC_MAX_SIZE: u64 = 2048;
-#[cfg(not(target_os = "macos"))]
-pub const SW_IPC_MAX_SIZE: u64 = 8192;
+pub const SW_IPC_MAX_SIZE: u64 = crate::constants::SW_IPC_MAX_SIZE as u64;
 #[cfg(target_os = "linux")]
-pub const SW_IPC_BUFFER_MAX_SIZE: i64 = 64 * 1024;
+pub const SW_IPC_BUFFER_MAX_SIZE: i64 = crate::constants::SW_IPC_BUFFER_MAX_SIZE as i64;
 
 /// `SW_WORKER_MESSAGE_STOP`, and where an `EventData` keeps its type and data.
 const WORKER_MESSAGE_STOP: u8 = 1;
-const EVENT_LEN: usize = 16;
-const EVENT_TYPE: usize = 22;
-const EVENT_DATA: usize = 40;
-const HEAD_SIZE: u32 = 40;
-const _: () = assert!(
-    size_of::<DataHead>() == EVENT_DATA,
-    "DataHead heads an EventData"
-);
+const EVENT_LEN: usize = std::mem::offset_of!(DataHead, len);
+const EVENT_TYPE: usize = std::mem::offset_of!(DataHead, kind);
+const EVENT_DATA: usize = size_of::<DataHead>();
 
 /// `head`'s bytes, in its C layout: each field's native bytes at its offset.
 #[must_use]
@@ -1443,9 +1435,7 @@ impl PoolHost for Native<'_> {
 /// shared memory, or none.
 fn new_message_box(size: usize, maxlen: usize) -> SharedChannel {
     use crate::log;
-    /// `SW_CHAN_LOCK`.
-    const LOCK: c_int = 2;
-    match SharedChannel::make(size, maxlen, LOCK) {
+    match SharedChannel::make(size, maxlen, crate::memory::channel::LOCK) {
         Ok(channel) => return channel,
         Err(ChannelInitError::NoMemory) => {
             log::warning(c"Channel::make", format_args!("alloc({size}) failed"));
@@ -2257,8 +2247,8 @@ impl<H: PoolHost> Pool<'_, H> {
         let Some(&len) = event.get(EVENT_LEN..).and_then(<[u8]>::first_chunk) else {
             return false;
         };
-        let size = u32::from_ne_bytes(len).saturating_add(HEAD_SIZE);
-        let Some(event) = event.get(..size as usize) else {
+        let size = (u32::from_ne_bytes(len) as usize).saturating_add(EVENT_DATA);
+        let Some(event) = event.get(..size) else {
             return false;
         };
         if self.use_socket() {
@@ -3113,7 +3103,7 @@ mod tests {
         record(&mut pool).ipc.set(ipc);
         let mut event = [0u8; 64];
         event[EVENT_LEN] = 3;
-        event[HEAD_SIZE as usize..][..3].copy_from_slice(b"abc");
+        event[EVENT_DATA..][..3].copy_from_slice(b"abc");
         // Blocking, then over a stream (upstream's async dispatch).
         for blocking in [true, false] {
             assert!(pool.dispatch(&event, None, blocking));

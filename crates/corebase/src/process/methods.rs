@@ -193,8 +193,13 @@ pub fn send_pipe_message(
 /// `ProcessPool::listen(socket_file, backlog)`: a unix stream listener.
 #[must_use]
 pub fn listen_unix(pool: PoolRef<'_>, file: &CStr, backlog: c_int) -> bool {
-    // 5 is SW_SOCK_UNIX_STREAM.
-    listen_socket(pool, 5, file, 0, backlog)
+    listen_socket(
+        pool,
+        crate::constants::SocketType::SW_SOCK_UNIX_STREAM as c_int,
+        file,
+        0,
+        backlog,
+    )
 }
 
 /// `ProcessPool::listen(host, port, backlog)` on a socket of `kind` (`SW_SOCK_*`),
@@ -586,8 +591,7 @@ pub(crate) mod tests {
         let mut out = [0u8; 16];
         let none = pop_message(PoolRef::from(&mut pool), &mut out);
         assert_eq!(none, None, "no box");
-        // 2 is SW_CHAN_LOCK.
-        let channel = crate::memory::SharedChannel::make(256, 16, 2);
+        let channel = crate::memory::SharedChannel::make(256, 16, crate::memory::channel::LOCK);
         pool.message_box = channel.expect("a box");
         for message in [&b"first"[..], b"second"] {
             let pushed = pool

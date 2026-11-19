@@ -195,7 +195,7 @@ pub fn swr_v1_memory_channel_out(
     }
     Some(size)
 }
-const LOCK: i32 = 2;
+pub(crate) const LOCK: i32 = 2;
 const NOTIFY: i32 = 4;
 
 /// `swoole::Channel`: the queue state, its process-shared mutex and its notification

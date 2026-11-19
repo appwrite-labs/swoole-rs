@@ -19,7 +19,7 @@ use crate::{
 use crate::buffer::string::StringBuffer;
 use crate::ossupport::fd_write_all;
 
-use crate::constants::SW_IPC_MAX_SIZE;
+use crate::constants::SW_IPC_BUFFER_SIZE as IPC_PAYLOAD;
 use crate::process::methods::swoole_get_worker_id;
 
 /// Why reading a task's temporary file failed.
@@ -68,11 +68,11 @@ fn read_file(path: &CStr, buffer: &mut [u8], peek: bool) -> Result<(), TaskFileE
 }
 
 /// `SW_TASK_TMP_PATH_SIZE`.
-pub(crate) const TASK_TMP_PATH_SIZE: usize = 256;
+pub(crate) const TASK_TMP_PATH_SIZE: usize = crate::constants::SW_TASK_TMP_PATH_SIZE as usize;
 
 /// The payload descriptor written into `EventData::data` when a task spills to a
 /// temp file (upstream's `swoole::PacketTask`).
-struct PacketTask {
+pub(super) struct PacketTask {
     length: usize,
     tmpfile: [u8; TASK_TMP_PATH_SIZE],
 }
@@ -183,8 +183,6 @@ fn pack_payload<T: AsRef<CStr>>(
 
 /// `swoole::EventData`'s header (`DataHead`), which native asserts is 40 bytes.
 pub use crate::DataHead as EventHead;
-
-const IPC_PAYLOAD: usize = SW_IPC_MAX_SIZE as usize - size_of::<DataHead>();
 
 /// An `EventData` to pack a task into. Its payload starts uninitialized, as a
 /// stack `swoole::EventData` does, and only [`Self::pack`] sets the head's `len`,
