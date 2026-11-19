@@ -547,7 +547,7 @@ fn close_statement(handle: &Handle, name: Text<'_>) {
     }
 }
 
-/// Upstream PDO PgSQL (`pgsql_stmt_execute`) deallocates on SQLSTATE 42P05:
+/// Upstream PDO `PgSQL` (`pgsql_stmt_execute`) deallocates on SQLSTATE 42P05:
 /// a pool can retain a prepared statement if PHP exits before request shutdown.
 /// A new PDO handle can generate the same name. Retry once after closing it.
 fn prepare_statement(
