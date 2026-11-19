@@ -147,7 +147,8 @@ impl Handle {
             .with_taken(|multi| multi.as_ref().and_then(Weak::upgrade))
     }
 
-    /// A reference to the multi the easy handle is in, for another handle.
+    /// A pushed handle inherits its parent's multi.
+    #[cfg(feature = "php")]
     fn multi_ref(&self) -> Option<Weak<Multi>> {
         self.multi.with_taken(|multi| multi.clone())
     }
@@ -814,15 +815,6 @@ pub extern "C" fn swr_v1_curl_get_handle(cp: Easy<'_>) -> *mut Handle {
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_curl_create_handle(cp: Easy<'_>) -> *mut Handle {
     Handle::create(cp, None)
-}
-
-/// A pushed stream's easy handle `cp` takes the multi of its parent's handle, when
-/// the parent has one (`create_handle`, then `handle->multi = parent->multi`).
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_curl_push_handle(cp: Easy<'_>, parent: Easy<'_>) {
-    if let Some(parent) = parent.handle() {
-        Handle::create(cp, parent.multi_ref());
-    }
 }
 
 /// `if (handle->multi) multi->remove_handle(handle)`: the handle leaves the multi

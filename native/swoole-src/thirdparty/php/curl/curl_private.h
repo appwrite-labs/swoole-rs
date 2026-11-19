@@ -149,11 +149,6 @@ static inline php_curl_handlers *curl_handlers(php_curl *ch) {
     return &ch->handlers;
 }
 
-#if PHP_VERSION_ID >= 80300
-/* Consumes `zv` */
-zend_long swoole_curl_get_long(zval *zv);
-#endif
-
 static inline php_curl *curl_from_obj(zend_object *obj) {
     return (php_curl *) ((char *) (obj) -XtOffsetOf(php_curl, std));
 }

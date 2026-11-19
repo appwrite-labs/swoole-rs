@@ -354,17 +354,6 @@ void swoole_setup_easy_copy_handlers(php_curl *ch, php_curl *source) {
     (*source->clone)++;
 }
 
-zend_long swoole_curl_get_long(zval *zv)
-{
-    if (EXPECTED(Z_TYPE_P(zv) == IS_LONG)) {
-        return Z_LVAL_P(zv);
-    } else {
-        zend_long ret = zval_get_long(zv);
-        zval_ptr_dtor(zv);
-        return ret;
-    }
-}
-
 extern "C" bool swoole_curl_prepare_free(php_curl *ch) {
     swoole_curl_verify_handlers(ch, false);
     if (!swr_v1_curl_get_handle(ch->cp)) {
