@@ -958,6 +958,11 @@ mod tests {
 
     use std::ffi::c_void;
 
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/support/run_in_child.rs"
+    ));
+
     #[test]
     fn a_bus_without_a_buffer_reads_nothing_and_has_no_packet() {
         let bus = Bus::new(64);
@@ -997,6 +1002,9 @@ mod tests {
         use swoole_rs_corebase::memory::members::pool;
 
         static COUNTER: AtomicU64 = AtomicU64::new(10);
+        if run_in_child("tests::send_numbers_each_message_from_the_shared_counter") {
+            return;
+        }
         swoole_rs_corebase::swr_v1_core_set_pagesize(4096);
         pool::init();
         let mut pipe = Pipe::new(libc::SOCK_STREAM, 64, false);
@@ -1005,7 +1013,24 @@ mod tests {
             pipe.fds[0],
             FdType::SW_FD_PIPE as c_int,
         )));
-        for (expected, payload) in [(1, &b"one"[..]), (2, &b"two"[..]), (10, &b"ten"[..])] {
+        let pid = swoole_rs_corebase::fork_exec::<()>(|| {
+            let mut head = BusHead {
+                len: 3,
+                fd: 7,
+                ..BusHead::default()
+            };
+            if !pipe.bus.send(socket.heap(), &mut head, Some(b"one")) || head.msg_id != 1 {
+                std::process::exit(1);
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert!(pid > 0);
+        let mut status = 0;
+        assert_eq!(sys::waitpid(pid, Some(&mut status), 0).unwrap(), Some(pid));
+        assert_eq!(status, 0);
+        assert_eq!(pipe.read(false).as_deref(), Some(&b"one"[..]));
+        for (expected, payload) in [(2, &b"two"[..]), (10, &b"ten"[..])] {
             if expected == 10 {
                 pipe.bus.count_ids(&COUNTER);
                 pool::delete();
