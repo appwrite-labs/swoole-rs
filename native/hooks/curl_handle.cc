@@ -942,10 +942,26 @@ static zend_fcall_info_cache *callable_slot(php_curl *ch, int option) {
     }
 }
 #else
+static php_curl_callback **plain_callback_slot(php_curl *ch, int option) {
+    switch (option) {
+    case CURLOPT_PROGRESSFUNCTION:
+        return &ch->handlers.progress;
+    case CURLOPT_XFERINFOFUNCTION:
+        return &ch->handlers.xferinfo;
+    case CURLOPT_FNMATCH_FUNCTION:
+        return &ch->handlers.fnmatch;
+#if LIBCURL_VERSION_NUM >= 0x075400 && PHP_VERSION_ID >= 80300
+    case CURLOPT_SSH_HOSTKEYFUNCTION:
+        return &ch->handlers.sshhostkey;
+#endif
+    default:
+        return nullptr;
+    }
+}
+
 /* The option's value and cache: false for an option libcurl has a callback for that was
  * never set, unless create. */
 static bool callable_slot(php_curl *ch, int option, bool create, zval **name, zend_fcall_info_cache **cache) {
-    php_curl_callback **record;
     switch (option) {
     case CURLOPT_WRITEFUNCTION:
         *name = &ch->handlers.write->func_name;
@@ -959,21 +975,11 @@ static bool callable_slot(php_curl *ch, int option, bool create, zval **name, ze
         *name = &ch->handlers.read->func_name;
         *cache = &ch->handlers.read->fci_cache;
         return true;
-    case CURLOPT_PROGRESSFUNCTION:
-        record = &ch->handlers.progress;
-        break;
-    case CURLOPT_XFERINFOFUNCTION:
-        record = &ch->handlers.xferinfo;
-        break;
-    case CURLOPT_FNMATCH_FUNCTION:
-        record = &ch->handlers.fnmatch;
-        break;
-#if LIBCURL_VERSION_NUM >= 0x075400 && PHP_VERSION_ID >= 80300
-    case CURLOPT_SSH_HOSTKEYFUNCTION:
-        record = &ch->handlers.sshhostkey;
-        break;
-#endif
     default:
+        break;
+    }
+    auto **record = plain_callback_slot(ch, option);
+    if (!record) {
         return false;
     }
     if (!*record) {
@@ -1019,6 +1025,27 @@ extern "C" bool swoole_curl_has_callable(php_curl *ch, int option) {
     zval *name;
     zend_fcall_info_cache *cache;
     return callable_slot(ch, option, false, &name, &cache) && !Z_ISUNDEF_P(name);
+#endif
+}
+
+/* Detach the callable before its last reference can run PHP code. */
+extern "C" void swoole_curl_reset_callback(php_curl *ch, int option) {
+#if PHP_VERSION_ID >= 80400
+    auto *slot = callable_slot(ch, option);
+    if (slot && ZEND_FCC_INITIALIZED(*slot)) {
+        auto previous = *slot;
+        *slot = empty_fcall_info_cache;
+        zend_fcc_dtor(&previous);
+    }
+#else
+    auto **slot = plain_callback_slot(ch, option);
+    if (slot && *slot) {
+        zval previous;
+        ZVAL_COPY_VALUE(&previous, &(*slot)->func_name);
+        efree(*slot);
+        *slot = nullptr;
+        zval_ptr_dtor(&previous);
+    }
 #endif
 }
 
