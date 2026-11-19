@@ -360,8 +360,8 @@ impl<'a> std::ops::Deref for Heap<'a> {
 /// A heap record and the one right to free it (`delete socket`): neither `Copy` nor
 /// `Clone`, so a record is freed once, and it lends [`Socket`] only for a borrow of
 /// itself. Transparent over the record's address, so a C++ `Socket *` whose owner
-/// gives it up (`Socket::free`, `Reactor::close`) passes as one. Dropping one leaks the
-/// record, as a C++ pointer never deleted does.
+/// gives it up (`Socket::free`, `Reactor::close`) passes as one. Dropping it deletes the
+/// record. Its descriptor has a separate owner.
 #[repr(transparent)]
 pub struct OwnedSocket(Heap<'static>);
 
@@ -401,8 +401,8 @@ impl OwnedSocket {
     /// The record, which nothing frees from here but an owner taken back with
     /// [`Self::from_socket`].
     #[must_use]
-    pub const fn leak(self) -> Heap<'static> {
-        self.0
+    pub fn leak(self) -> Heap<'static> {
+        core::mem::ManuallyDrop::new(self).0
     }
 
     /// The record's box, deleted first from the reactor whose registry names it: no
@@ -410,7 +410,8 @@ impl OwnedSocket {
     /// while a reactor it can't reach still names it ends the process.
     #[must_use]
     pub fn into_box(self) -> Box<SocketRecord> {
-        let socket = self.socket();
+        let heap = self.leak();
+        let socket = heap.socket();
         // A `read` or `edit` closure of the record's freed it: it would use the fields
         // after the free.
         if socket.marks().owner.load(Ordering::Relaxed) != 0 {
@@ -419,7 +420,7 @@ impl OwnedSocket {
         leave_reactor(socket);
         // SAFETY: the box `new` leaked, or the heap record `from_socket` took back; this
         // owner is its only one and goes here.
-        unsafe { Box::from_raw(self.0.as_ptr()) }
+        unsafe { Box::from_raw(heap.as_ptr()) }
     }
 
     /// `Socket::operator delete`: the record goes, its descriptor stays open.
@@ -428,12 +429,19 @@ impl OwnedSocket {
     }
 }
 
+impl Drop for OwnedSocket {
+    fn drop(&mut self) {
+        // Transfer this final owner's reclamation right to into_box.
+        drop(Self(self.0).into_box());
+    }
+}
+
 /// A heap record its holder owns on one thread and lends counted: a loan goes only to
 /// a closure, and a record released while a loan is out is freed when the last loan
 /// ends. A loan a Zend bailout skips leaves the count up, so the record leaks rather
 /// than being freed early; a loan held across a coroutine yield delays the free.
-#[derive(Default)]
 pub struct SocketLoans {
+    on_drop: fn(OwnedSocket),
     socket: Cell<Option<Heap<'static>>>,
     /// The loans out, with [`PENDING`] set while `retired` holds any: the last loan's
     /// end compares this one word.
@@ -443,13 +451,32 @@ pub struct SocketLoans {
 }
 
 /// A record released while lent, and how it is freed once the loans end.
-type Retired = (OwnedSocket, fn(OwnedSocket));
+type Retired = (Heap<'static>, fn(OwnedSocket));
 
 /// [`SocketLoans::loans`]' flag for released records waiting on the loans. Each loan is
 /// a frame on this thread's stack, so the count never reaches it.
 const PENDING: u32 = 1 << 31;
 
+impl Drop for SocketLoans {
+    fn drop(&mut self) {
+        if self.loans.get() == 0 {
+            self.release(self.on_drop);
+        }
+    }
+}
+
 impl SocketLoans {
+    /// An empty holder. On drop, release its current record when every loan has returned.
+    #[must_use]
+    pub const fn new(on_drop: fn(OwnedSocket)) -> Self {
+        Self {
+            on_drop,
+            socket: Cell::new(None),
+            loans: Cell::new(0),
+            retired: Cell::new(Vec::new()),
+        }
+    }
+
     /// Owns `owner` from here; the record it held is released with `free`.
     pub fn put(&self, owner: OwnedSocket, free: fn(OwnedSocket)) {
         if let Some(old) = self.socket.replace(Some(owner.leak())) {
@@ -516,7 +543,9 @@ impl SocketLoans {
             free(owner);
         } else {
             let mut retired = self.retired.take();
-            retired.push((owner, free));
+            // Only the last loan may reclaim this record. A skipped loan
+            // leaves the handle here even if the holder itself is discarded.
+            retired.push((owner.leak(), free));
             self.retired.set(retired);
             self.loans.set(loans | PENDING);
         }
@@ -527,8 +556,8 @@ impl SocketLoans {
     #[inline(never)]
     fn free_retired(&self) {
         self.loans.set(0);
-        for (owner, free) in self.retired.take() {
-            free(owner);
+        for (heap, free) in self.retired.take() {
+            free(OwnedSocket(heap));
         }
     }
 }
@@ -537,8 +566,7 @@ impl SocketLoans {
 /// for a borrow of itself, and [`Self::retire`] takes that one off its reactor for its
 /// descriptor to close but keeps the record. Nothing frees a record through `&self`, so
 /// no handle it lent outlives its record; the owners leave only through
-/// [`Self::take_all`], which needs the holder alone. Dropping it leaks the records, as
-/// dropping an [`OwnedSocket`] does.
+/// [`Self::take_all`], which needs the holder alone. Its owners otherwise drop with it.
 #[derive(Default)]
 pub struct KeptSockets {
     current: Cell<Option<Heap<'static>>>,
@@ -662,6 +690,44 @@ mod tests {
             b.edit(|fields| fields.fd = 9);
             assert_eq!(b.fd(), 9, "unwinding released the inner edit");
         });
+    }
+
+    #[test]
+    fn dropping_a_socket_releases_the_record_and_preserves_the_descriptor() {
+        use std::io::{Read, Write};
+        use std::os::fd::AsRawFd;
+        use std::rc::Rc;
+        let (mut reader, mut writer) = std::io::pipe().unwrap();
+        let mut record = SocketRecord::with_fd(writer.as_raw_fd(), 0);
+        let held = Rc::new(());
+        record.set_owner(Some(Rc::clone(&held)));
+        drop(OwnedSocket::new(Box::new(record)));
+        assert_eq!(Rc::strong_count(&held), 1);
+        writer.write_all(b"x").unwrap();
+        let mut byte = [0];
+        reader.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, *b"x");
+    }
+
+    #[test]
+    fn a_loan_holder_releases_its_current_record_once() {
+        use std::rc::Rc;
+        let held = Rc::new(());
+        let mut record = SocketRecord::new();
+        record.set_owner(Some(Rc::clone(&held)));
+        let holder = SocketLoans::new(|socket| {
+            assert!(
+                socket
+                    .socket()
+                    .edit(SocketFields::take_owner::<Rc<()>>)
+                    .is_some()
+            );
+            socket.free();
+        });
+        holder.put(OwnedSocket::new(Box::new(record)), |_| unreachable!());
+        assert_eq!(Rc::strong_count(&held), 2);
+        drop(holder);
+        assert_eq!(Rc::strong_count(&held), 1);
     }
 
     #[test]

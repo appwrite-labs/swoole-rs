@@ -181,7 +181,7 @@ impl Bound {
         Self {
             state: SocketState::new(),
             lent: Cell::new(0),
-            network: SocketLoans::default(),
+            network: SocketLoans::new(close_network),
             #[cfg(any(test, feature = "iouring"))]
             tls_buffers: [const { Cell::new(None) }; 2],
         }

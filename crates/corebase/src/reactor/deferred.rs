@@ -162,7 +162,7 @@ pub(crate) fn defer_destroy_call(fields: &mut ReactorFields, call: fn(Running<'_
 
 /// The `PRIORITY_DEFER_TASK` end callback over `Reactor::defer_tasks`: the queue is
 /// detached first, so tasks it defers run on the next pass, then run and freed. While it
-/// runs, the reactor's `running_defer` holds it. A callback escape stops the pass,
+/// runs, the reactor's `running_defer` holds any remaining tasks. A callback escape stops the pass,
 /// leaving the rest of the queue for the reactor's drop.
 pub(crate) fn run_defer(reactor: Running<'_>) {
     if reactor.with(|state| state.fields.defer_tasks.is_some()) {
@@ -173,15 +173,19 @@ pub(crate) fn run_defer(reactor: Running<'_>) {
 // Keep the queue's stack frame off empty passes through the end callback.
 #[inline(never)]
 fn run_queue(reactor: Running<'_>) {
-    let index = reactor.with(|state| {
-        let queue = state.fields.defer_tasks.take()?;
-        let index = state.running_defer.len();
-        state.running_defer.push(queue);
-        Some(index)
-    });
-    let Some(index) = index else {
+    let Some(queue) = reactor.with(|state| state.fields.defer_tasks.take()) else {
         return;
     };
+    // A single close has no remaining task to preserve across a bailout.
+    if let Queue::One(task) = queue.0 {
+        task.run(reactor);
+        return;
+    }
+    let index = reactor.with(|state| {
+        let index = state.running_defer.len();
+        state.running_defer.push(queue);
+        index
+    });
     // Reborrow after each call: a nested pass can move the vector's storage.
     while let Some(task) = reactor.with(|state| state.running_defer.get_mut(index)?.pop()) {
         task.run(reactor);

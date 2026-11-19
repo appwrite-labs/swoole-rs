@@ -23,19 +23,7 @@ struct Mock {
     /// The last lookup `async_dispatch` took.
     lookup: Option<Lookup>,
     /// The records `free_socket` released, which tests still read: freed with the test.
-    freed: Freed,
-}
-
-#[derive(Default)]
-struct Freed(Vec<swoole_rs_corebase::reactor::OwnedSocket>);
-
-impl Drop for Freed {
-    fn drop(&mut self) {
-        // `make_socket`'s records, which the client released once.
-        self.0
-            .drain(..)
-            .for_each(swoole_rs_corebase::reactor::OwnedSocket::free);
-    }
+    freed: Vec<swoole_rs_corebase::reactor::OwnedSocket>,
 }
 
 thread_local! {
@@ -142,7 +130,7 @@ pub(super) fn with_thread_buffer(f: &mut dyn FnMut(&mut StringBuffer)) {
 // `corebase::tls`'s socket operations.
 fn free_socket(socket: Option<swoole_rs_corebase::reactor::OwnedSocket>) {
     log("free");
-    mock(|m| m.freed.0.extend(socket));
+    mock(|m| m.freed.extend(socket));
 }
 /// `corebase::tls`'s slice-taking transfers.
 pub(super) mod net {
