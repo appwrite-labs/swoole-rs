@@ -682,9 +682,8 @@ pub fn swr_string_write_string(this: &mut StringBuffer, offset: i64, source: &St
 /// `new String(data.data(), data.size())`, owned: [`StringBuffer::dispose`] frees its bytes.
 #[must_use]
 pub fn boxed_string(data: &[u8]) -> Box<StringBuffer> {
-    // `EMPTY` is all zeros, and LLVM turns a fresh allocation stored with zeros into
-    // `calloc`, which costs more per string than `malloc`; opaque, it stays `malloc`.
-    let mut string = Box::new(core::hint::black_box(StringBuffer::EMPTY));
+    // `EMPTY` is all zeros: written apart, the allocation stays `malloc`, not `calloc`.
+    let mut string = crate::memory::apart::boxed(|| StringBuffer::EMPTY);
     fill(&mut string, data);
     string
 }
@@ -709,9 +708,8 @@ fn fill<'a>(string: &'a mut StringBuffer, data: &[u8]) -> &'a mut StringBuffer {
 /// `new String(size, with)`, owned: [`StringBuffer::dispose`] frees its bytes.
 #[must_use]
 pub fn boxed_sized_string(size: usize, with: Option<TrustedAllocator>) -> Box<StringBuffer> {
-    // `EMPTY` is all zeros, and LLVM turns a fresh allocation stored with zeros into
-    // `calloc`, which costs more per string than `malloc`; opaque, it stays `malloc`.
-    let mut string = Box::new(core::hint::black_box(StringBuffer::EMPTY));
+    // `EMPTY` is all zeros: written apart, the allocation stays `malloc`, not `calloc`.
+    let mut string = crate::memory::apart::boxed(|| StringBuffer::EMPTY);
     string.alloc(size, with);
     string
 }
