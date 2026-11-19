@@ -816,7 +816,7 @@ impl Bus {
             ),
             Some(Event::Abnormal) => log::error_log(
                 swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
-                /* SW_ERROR_SERVER_WORKER_ABNORMAL_PIPE_DATA */ 9102,
+                swoole_rs_error::ErrorCode::SW_ERROR_SERVER_WORKER_ABNORMAL_PIPE_DATA as c_int,
                 origin,
                 format_args!(
                     "abnormal pipeline data, msg_id={}, pipe_fd={fd}, reactor_id={}",

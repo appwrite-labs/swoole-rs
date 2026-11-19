@@ -123,8 +123,7 @@ fn lock(call: &Call) {
     let Some(owner) = constructed(call) else {
         return;
     };
-    // LOCK_NB is 4 on both supported platforms; checking the zend_long avoids truncation.
-    let blocking = operation & 4 == 0;
+    let blocking = operation & i64::from(swoole_rs_corebase::locks::LOCK_NB) == 0;
     super::lock::check(call, owner.acquire(blocking));
 }
 fn unlock(call: &Call) {

@@ -269,9 +269,11 @@ fn lock_construct(call: &Call) {
     // Upstream throws a C++ exception, which terminates the process, when a
     // lock cannot be made.
     // A mutex any thread may unlock, as a thread lock's users do.
-    let lock = match lock_kind(requested) {
-        Kind::Mutex => Lock::unowned_mutex(),
-        kind => Lock::private(kind),
+    let kind = lock_kind(requested);
+    let lock = if kind == Kind::Mutex {
+        Lock::unowned_mutex()
+    } else {
+        Lock::private(kind)
     }
     .unwrap_or_else(|| swoole_rs_corebase::fatal("a thread lock can't be made"));
     this.0.get_or_init(|| Arc::new(Resource::Lock(lock)));

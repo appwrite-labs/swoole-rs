@@ -38,7 +38,8 @@ const FD_PIPE: c_int = 3;
 /// `SW_LOG_WARNING`, `SW_LOG_ERROR`, `SW_ERROR_SOCKET_POLL_TIMEOUT` and
 /// `SW_ERROR_SERVER_SEND_TO_WOKER_TIMEOUT`.
 const POLL_TIMEOUT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SOCKET_POLL_TIMEOUT as c_int;
-const SEND_TO_WORKER_TIMEOUT: c_int = 9014;
+const SEND_TO_WORKER_TIMEOUT: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SERVER_SEND_TO_WOKER_TIMEOUT as c_int;
 /// `sizeof(EventData)`.
 const EVENT_DATA_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize;
 
