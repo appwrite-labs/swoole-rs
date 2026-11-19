@@ -127,7 +127,6 @@ unsafe extern "C" {
     fn fork() -> c_int;
     fn sleep(seconds: u32) -> u32;
     fn _exit(status: c_int) -> !;
-    fn setrlimit(resource: libc::__rlimit_resource_t, limit: *const [u64; 2]) -> c_int;
 }
 
 fn errno() -> c_int {
@@ -838,7 +837,15 @@ fn main() {
     // core-tests' main sets SwooleG.max_sockets = 20000 after swoole_init; swoole_init
     // takes it from the soft descriptor limit.
     // SAFETY: setrlimit(2) with a readable limit.
-    unsafe { setrlimit(RLIMIT_NOFILE, &[20000, 20000]) };
+    unsafe {
+        libc::setrlimit(
+            RLIMIT_NOFILE,
+            &libc::rlimit {
+                rlim_cur: 20000,
+                rlim_max: 20000,
+            },
+        )
+    };
     swoole_init();
     if suite == "coroutine_hook" {
         hook::prepare();

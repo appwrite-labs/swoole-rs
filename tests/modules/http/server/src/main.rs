@@ -188,7 +188,6 @@ unsafe extern "C" {
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
     fn sigfillset(set: *mut [u64; 16]) -> c_int;
     fn pthread_sigmask(how: c_int, set: *const [u64; 16], old: *mut [u64; 16]) -> c_int;
-    fn setrlimit(resource: libc::__rlimit_resource_t, limit: *const [u64; 2]) -> c_int;
 }
 
 /// A Server pointer a client thread borrows; the Server outlives the thread.
@@ -1034,7 +1033,15 @@ fn main() {
     // core-tests' main sets SwooleG.max_sockets = 20000 after swoole_init; swoole_init
     // takes it from the soft descriptor limit.
     // SAFETY: setrlimit(2) with a readable limit.
-    unsafe { setrlimit(RLIMIT_NOFILE, &[20000, 20000]) };
+    unsafe {
+        libc::setrlimit(
+            RLIMIT_NOFILE,
+            &libc::rlimit {
+                rlim_cur: 20000,
+                rlim_max: 20000,
+            },
+        )
+    };
     swoole_init();
     // core-tests build with `enable_thread` (SW_THREAD), as this binary does (`corebase::process`'s
     // `thread` feature); the extension's MINIT says so under ZTS, and this binary has none.
