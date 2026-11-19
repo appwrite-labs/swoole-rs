@@ -109,8 +109,7 @@ pub enum PipeEnd {
     Current,
 }
 
-/// `swoole::Worker`'s fields, in upstream's order (`SWR_WORKER_RECORD_FIELDS`). The
-/// pointer and atomic fields are opaque storage here.
+/// The Rust-owned shared-memory record for a worker.
 ///
 /// `pool` and the pipe ends are private: `pool` is null or a live pool, and
 /// `pipe_master`, `pipe_worker` and `pipe_current` are each null or a live native

@@ -5,7 +5,7 @@
 
 use std::ffi::{CStr, CString, c_char, c_int};
 use swoole_rs_clients::{URL_PORT_RANGE, address};
-use swoole_rs_corebase::net_types::AddressStorage;
+use swoole_rs_corebase::net_types::SocketAddress;
 
 use super::network_socket::make_socket;
 use super::{AF_INET6, ENOENT, errno, last_error};
@@ -37,21 +37,16 @@ unsafe extern "C" {
     fn __errno_location() -> *mut c_int;
 }
 
-/// `swoole::network::Address`: the sockaddr union, its length and the socket type.
-#[repr(C)]
+/// Upstream's address operations on the runtime's socket address.
 #[derive(Clone)]
 pub(super) struct Address {
-    pub(super) addr: [u32; 28],
-    pub(super) len: u32,
-    pub(super) kind: c_int,
+    pub(super) record: SocketAddress,
 }
 
 impl Address {
     pub(super) fn new() -> Self {
         Self {
-            addr: [0; 28],
-            len: 0,
-            kind: 0,
+            record: SocketAddress::default(),
         }
     }
 
@@ -63,12 +58,16 @@ impl Address {
         port: c_int,
         resolve_name: bool,
     ) -> bool {
-        self.kind = kind;
+        self.record.kind = kind;
         let host = CString::new(host).unwrap();
-        // SAFETY: the record's union, which is `AddressStorage`'s size and alignment.
-        let storage = unsafe { &mut *self.addr.as_mut_ptr().cast::<AddressStorage>() };
-        let host = host.as_bytes_with_nul();
-        let assigned = address::assign(storage, &mut self.len, kind, host, port, resolve_name);
+        let assigned = address::assign(
+            &mut self.record.addr,
+            &mut self.record.len,
+            kind,
+            host.as_bytes_with_nul(),
+            port,
+            resolve_name,
+        );
         if let Err(error) = assigned {
             swoole_rs_corebase::log::set_last_error(error);
             return false;
@@ -88,43 +87,24 @@ impl Address {
         self.assign(kind.raw(), &url[host], port, true)
     }
 
-    /// The record as crates/corebase's `SocketAddress`, which it is.
-    pub(super) fn record(&self) -> &swoole_rs_corebase::net_types::SocketAddress {
-        // SAFETY: the record is crates/corebase's `SocketAddress`.
-        unsafe { &*std::ptr::from_ref(self).cast() }
-    }
-
-    pub(super) fn record_mut(&mut self) -> &mut swoole_rs_corebase::net_types::SocketAddress {
-        // SAFETY: the record is crates/corebase's SocketAddress.
-        unsafe { &mut *std::ptr::from_mut(self).cast() }
-    }
-
     pub(super) fn get_port(&self) -> c_int {
-        address::address_port(self.record()).into()
+        address::address_port(&self.record).into()
     }
 
     fn set_port(&mut self, port: c_int) {
-        // SAFETY: the record is crates/corebase's `SocketAddress`.
-        address::set_port(unsafe { &mut *std::ptr::from_mut(self).cast() }, port);
+        address::set_port(&mut self.record, port);
     }
 
     fn is_loopback_addr(&self) -> bool {
-        address::is_loopback(self.record())
+        address::is_loopback(&self.record)
     }
 
     pub(super) fn get_addr(&self) -> *const c_char {
-        address::host_in_scratch(self.record())
-    }
-
-    /// `addr.un.sun_path`, after the two-byte `sun_family`.
-    fn sun_path(&mut self) -> *mut c_char {
-        // SAFETY: the union is 112 bytes; sun_path starts at byte 2.
-        unsafe { self.addr.as_mut_ptr().cast::<c_char>().add(2) }
+        address::host_in_scratch(&self.record)
     }
 
     fn empty(&self) -> bool {
-        // SAFETY: the record is crates/corebase's `SocketAddress`.
-        address::is_empty(unsafe { &*std::ptr::from_ref(self).cast() })
+        address::is_empty(&self.record)
     }
 }
 
@@ -305,10 +285,12 @@ fn record() {
     .join()
     .unwrap();
     assert_eq!(text(scratch), c"127.0.0.1");
-    assert_eq!(local.get_addr(), local.sun_path().cast_const());
+    assert_eq!(local.get_addr(), local.record.addr.unix().sun_path.as_ptr());
     let mut copy = local.clone();
-    // SAFETY: byte 1 of sun_path is inside the union.
-    unsafe { *local.sun_path().add(1) = c_char::from_ne_bytes(*b"X") };
+    local
+        .record
+        .addr
+        .edit_unix(|un| un.sun_path[1] = c_char::from_ne_bytes(*b"X"));
     assert_eq!(text(copy.get_addr()), c"/tmp/address-record");
     assert!(v4.is_loopback_addr() && v6.is_loopback_addr());
     assert!(v4.assign(SW_SOCK_TCP, "127.0.0.2", 0, false));
@@ -323,17 +305,16 @@ fn record() {
     assert_eq!(copy.get_port(), 0);
     assert_eq!(text(copy.get_addr()), c"/tmp/address-record");
     let mut unknown = Address::new();
-    unknown.kind = 99;
+    unknown.record.kind = 99;
     assert!(!unknown.empty() && unknown.get_port() == 0);
     assert_eq!(text(unknown.get_addr()), c"unknown");
     assert_eq!(type_str(SW_SOCK_RAW), c"IPv4");
     assert_eq!(type_str(SW_SOCK_RAW6), c"IPv6");
     assert_eq!(type_str(SW_SOCK_UNIX_STREAM), c"UnixSocket");
-    assert_eq!(type_str(unknown.kind), c"Unknown");
+    assert_eq!(type_str(unknown.record.kind), c"Unknown");
     // SAFETY: sets errno for the check below.
     unsafe { *__errno_location() = 0 };
-    let sockaddr: Vec<u8> = v4.addr.iter().flat_map(|word| word.to_ne_bytes()).collect();
-    assert!(address::address_string(AF_UNIX, &sockaddr).is_null());
+    assert!(address::address_string(AF_UNIX, v4.record.addr.as_bytes()).is_null());
     assert_eq!(errno(), EAFNOSUPPORT);
 }
 
