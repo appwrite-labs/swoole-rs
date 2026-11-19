@@ -285,11 +285,9 @@ pub struct ProcessSteps {
     pub rshutdown: Hook,
 }
 
-/// crates/phpruntime's phase steps: `php_swoole_runtime_minit`, `_mshutdown` and
-/// `_rshutdown`.
+/// crates/phpruntime's module startup and request shutdown.
 pub struct RuntimeSteps {
     pub minit: fn(&swoole_rs_zend::Minit),
-    pub mshutdown: Hook,
     pub rshutdown: Hook,
 }
 
@@ -612,7 +610,6 @@ swoole_rs_zend::exports! {
 /// `PHP_MSHUTDOWN_FUNCTION(swoole)`.
 pub(crate) extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, shutdown: Shutdown<'_>) -> c_int {
     let mut steps = vec![Step::Hook(swoole_rs_zend::host::known_free)];
-    steps.extend(families().map(|families| Step::Hook(families.runtime.mshutdown)));
     steps.extend(optional::mshutdown());
     steps.extend(optional::client_mshutdown());
     steps.extend(families().map(|families| Step::Hook(families.server_mshutdown)));

@@ -884,6 +884,10 @@ mod php_multi;
 #[cfg(feature = "php")]
 mod postfields;
 #[cfg(feature = "php")]
+mod registration;
+#[cfg(feature = "php")]
+pub use registration::minit;
+#[cfg(feature = "php")]
 mod setopt;
 #[cfg(feature = "php")]
 pub use php::swr_v1_curl_check_handle;

@@ -179,27 +179,6 @@ mod registration {
         safe fn swr_zend_stream_factory_set(body: crate::stream::FactoryBody);
     }
 
-    #[cfg(feature = "curl")]
-    unsafe extern "C" {
-        /// crates/curl's native curl (`swoole_rs_curl.h`): its classes, constants
-        /// and handlers, registered under the module's number.
-        safe fn swoole_native_curl_minit(module_number: c_int);
-        /// Native curl's MSHUTDOWN, which has nothing to release.
-        safe fn swoole_native_curl_mshutdown();
-    }
-
-    /// Native curl.
-    #[cfg(feature = "curl")]
-    pub(super) fn curl(minit: &Minit) {
-        swoole_native_curl_minit(minit.module());
-    }
-
-    /// Native curl's MSHUTDOWN.
-    #[cfg(feature = "curl")]
-    pub(super) fn curl_shutdown() {
-        swoole_native_curl_mshutdown();
-    }
-
     /// The coroutine transport factory's body, [`crate::stream::transport_factory_body`].
     pub(super) fn transport_factory(_minit: &Minit) {
         swr_zend_stream_factory_set(crate::stream::transport_factory_body);
@@ -219,7 +198,7 @@ mod registration {
 /// `php_swoole_runtime_minit`: `Swoole\Runtime` (not instantiable), the
 /// `SWOOLE_HOOK_*` constants, native curl, `proc_open`'s resource and the
 /// `async.file` wrapper.
-pub fn php_swoole_runtime_minit(minit: &Minit) {
+pub fn php_swoole_runtime_minit(minit: &Minit, #[cfg(feature = "curl")] init_curl: fn(&Minit)) {
     minit.register_static(&RUNTIME, c"Swoole\\Runtime", METHODS.table());
     let features = features();
     let all = flags::all(features & flags::NATIVE_CURL != 0);
@@ -232,15 +211,9 @@ pub fn php_swoole_runtime_minit(minit: &Minit) {
     registration::transport_factory(minit);
     transport::register_async();
     #[cfg(feature = "curl")]
-    registration::curl(minit);
+    init_curl(minit);
     registration::proc_open(minit);
     registration::async_file(minit);
-}
-
-/// `php_swoole_runtime_mshutdown`: native curl's.
-pub extern "C" fn php_swoole_runtime_mshutdown() {
-    #[cfg(feature = "curl")]
-    registration::curl_shutdown();
 }
 
 swoole_rs_zend::handlers! {
