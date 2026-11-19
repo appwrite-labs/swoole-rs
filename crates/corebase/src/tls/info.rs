@@ -2,7 +2,7 @@
 //! renegotiation `swoole_debug` exists only in `SW_DEBUG` builds, which the hybrid isn't.
 use crate::tls::{Ssl, SslCtx};
 use std::ffi::c_int;
-// OpenSSL's declaration; openssl-sys does not bind this entry point. It
+// OpenSSL's declaration; openssl-sys (0.9.118, the latest) does not bind this entry point. It
 // stores the callback in the live context, and calls it with the live, non-null SSL
 // whose state changed, which is what a callback of this type takes.
 unsafe extern "C" {

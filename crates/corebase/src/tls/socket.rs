@@ -254,7 +254,7 @@ pub fn swr_v1_socket_ssl_verify(ssl: Ssl, allow_self_signed: bool) -> c_long {
 }
 
 /// OpenSSL 3's `ERR_GET_REASON`: a system error's reason is its errno.
-/// openssl-sys's port returns `ERR_LIB_SYS` (2) for those instead.
+/// openssl-sys's port (0.9.118, the latest) returns `ERR_LIB_SYS` (2) for those instead.
 #[must_use]
 pub fn error_reason(error: c_ulong) -> c_int {
     const SYSTEM_FLAG: c_ulong = 1 << 31;
@@ -590,7 +590,7 @@ mod tests {
     }
 
     unsafe extern "C" {
-        /// Not bound by openssl-sys; sets what a handshake would have verified.
+        /// Not bound by openssl-sys (0.9.118, the latest); sets what a handshake would have verified.
         fn SSL_set_verify_result(ssl: *mut SSL, result: c_long);
     }
 
@@ -810,7 +810,7 @@ mod shutdown_tests {
     use std::os::raw::c_int;
     use std::ptr;
 
-    // libssl/libcrypto's own declarations; openssl-sys binds none of them.
+    // libssl/libcrypto's own declarations; openssl-sys (0.9.118, the latest) binds none of them.
     unsafe extern "C" {
         fn BIO_new_bio_pair(
             left: *mut *mut BIO,
