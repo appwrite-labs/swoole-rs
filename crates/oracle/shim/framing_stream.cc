@@ -39,12 +39,9 @@ extern "C" struct SwrOracleStream {
 #define SWR_CAT(a, b) SWR_CAT2(a, b)
 
 namespace SWR_STREAM_ENGINE {
-// As upstream include/swoole.h, swoole_config.h, swoole_error.h and swoole_log.h (logging off).
-enum { SW_OK = 0, SW_ERR = -1 };
-enum { SW_CONTINUE = 1, SW_WAIT = 2, SW_CLOSE = 3, SW_ERROR = 4 };
-enum { SW_ERROR_PACKAGE_LENGTH_TOO_LARGE = 1203, SW_ERROR_PACKAGE_LENGTH_NOT_FOUND = 1204,
-       SW_ERROR_PACKAGE_MALFORMED_DATA = 1205, SW_LOG_WARNING = 4 };
-#define SW_BUFFER_SIZE_STD 8192
+// The result, return, error and log-level enums and SW_BUFFER_SIZE_STD, as the pinned
+// headers define them (build.rs copies them from upstream/include); logging is off.
+#include "framing_stream_pinned.inc"
 #define sw_unlikely(x) (x)
 #define sw_likely(x) (x)
 #define swoole_sys_warning(...) ((void) 0)

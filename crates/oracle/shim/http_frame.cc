@@ -10,21 +10,17 @@
 #include <strings.h>
 #include <sys/types.h>
 #include <vector>
+#include "http_frame_flags.inc"
 
 #define SWR_CAT2(a, b) a##_##b
 #define SWR_CAT(a, b) SWR_CAT2(a, b)
 
 namespace SWR_FRAME_ENGINE {
 using uchar = unsigned char;
-// As upstream include/swoole.h, swoole_log.h (tracing off), swoole_config.h and swoole_http2.h.
-enum { SW_OK = 0, SW_ERR = -1 };
-#define SW_LOOP_N(n) for (decltype(n) i = 0; i < n; i++)
-#define SW_STRL(s) s, sizeof(s) - 1
-#define SW_STR_ISTARTS_WITH(str, len, const_sub_str) swoole_str_istarts_with(str, len, SW_STRL(const_sub_str))
-#define SW_STRCASEEQ(str, len, const_str) swoole_strcaseeq(str, len, SW_STRL(const_str))
+// swResultCode and the macros it uses, as the pinned headers define them (build.rs copies
+// them from upstream/include); tracing is off.
+#include "http_frame_pinned.inc"
 #define swoole_trace_log(what, str, ...)
-#define SW_HTTP_CHUNK_EOF "0\r\n\r\n"
-#define SW_HTTP2_PRI_STRING "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 __attribute__((unused)) static inline unsigned int swoole_str_istarts_with(const char *pstr, size_t plen, const char *sstr, size_t slen) {
     return (plen >= slen) && (strncasecmp(pstr, sstr, slen) == 0);
 }
@@ -138,8 +134,8 @@ struct swr_oracle_http_header_info {
 };
 
 // parse_header_info over length bytes and a NUL, with this request line and header
-// length, from errno 0. flags: known_length 1, keep_alive 2, chunked 4, header_parsed
-// 16, excepted 32. The boundary offset is -1 without multipart.
+// length, from errno 0. flags: build.rs's HTTP_FRAME_FLAGS. The boundary offset is -1
+// without multipart.
 void SWR_CAT(swr_oracle_http_header_info, SWR_FRAME_ENGINE)(char *data, size_t length, uint32_t line_length,
                                                            uint32_t header_length, swr_oracle_http_header_info *out) {
     String buffer{data, length, 0};
@@ -151,8 +147,10 @@ void SWR_CAT(swr_oracle_http_header_info, SWR_FRAME_ENGINE)(char *data, size_t l
     request.parse_header_info();
     out->error = errno;
     out->content_length = request.content_length_;
-    out->flags = request.known_length | request.keep_alive << 1 | request.chunked << 2 |
-                 request.header_parsed << 4 | request.excepted << 5;
+    out->flags = (request.known_length ? SWR_HTTP_FLAG_KNOWN_LENGTH : 0) |
+                 (request.keep_alive ? SWR_HTTP_FLAG_KEEP_ALIVE : 0) | (request.chunked ? SWR_HTTP_FLAG_CHUNKED : 0) |
+                 (request.header_parsed ? SWR_HTTP_FLAG_HEADER_PARSED : 0) |
+                 (request.excepted ? SWR_HTTP_FLAG_EXCEPTED : 0);
     out->boundary_offset = request.form_data_ ? request.form_data_->multipart_boundary_buf - data : -1;
     out->boundary_length = request.form_data_ ? request.form_data_->multipart_boundary_len : 0;
     SWR_FRAME_ENGINE::FormData::release();
