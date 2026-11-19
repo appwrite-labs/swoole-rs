@@ -82,37 +82,6 @@ void swoole_curl_easy_reset(CURL *curl);
 void *swoole_curl_check_bound_co(const struct swr_v1_curl_multi *multi);
 CURLcode swoole_curl_easy_perform(CURL *cp);
 
-/* The bundled php_curl's. */
-void swoole_native_curl_minit(int module_number);
-void swoole_native_curl_mshutdown(void);
-#ifdef PHP_FUNCTION
-PHP_FUNCTION(swoole_native_curl_close);
-PHP_FUNCTION(swoole_native_curl_copy_handle);
-PHP_FUNCTION(swoole_native_curl_errno);
-PHP_FUNCTION(swoole_native_curl_error);
-PHP_FUNCTION(swoole_native_curl_exec);
-PHP_FUNCTION(swoole_native_curl_getinfo);
-PHP_FUNCTION(swoole_native_curl_init);
-PHP_FUNCTION(swoole_native_curl_setopt);
-PHP_FUNCTION(swoole_native_curl_setopt_array);
-PHP_FUNCTION(swoole_native_curl_reset);
-PHP_FUNCTION(swoole_native_curl_escape);
-PHP_FUNCTION(swoole_native_curl_unescape);
-PHP_FUNCTION(swoole_native_curl_pause);
-PHP_FUNCTION(swoole_native_curl_multi_add_handle);
-PHP_FUNCTION(swoole_native_curl_multi_close);
-PHP_FUNCTION(swoole_native_curl_multi_errno);
-PHP_FUNCTION(swoole_native_curl_multi_exec);
-PHP_FUNCTION(swoole_native_curl_multi_select);
-PHP_FUNCTION(swoole_native_curl_multi_remove_handle);
-PHP_FUNCTION(swoole_native_curl_multi_setopt);
-PHP_FUNCTION(swoole_native_curl_multi_getcontent);
-PHP_FUNCTION(swoole_native_curl_multi_info_read);
-PHP_FUNCTION(swoole_native_curl_multi_init);
-#if LIBCURL_VERSION_NUM >= 0x073E00
-PHP_FUNCTION(swoole_native_curl_upkeep);
-#endif
-#endif
 #ifdef __cplusplus
 }
 #endif

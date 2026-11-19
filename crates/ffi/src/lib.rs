@@ -233,8 +233,13 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
             rshutdown: swoole_rs_phpprocess::php_swoole_process_rshutdown,
         },
         runtime: swoole_rs_phpswoole::RuntimeSteps {
-            minit: swoole_rs_phpruntime::php_swoole_runtime_minit,
-            mshutdown: swoole_rs_phpruntime::php_swoole_runtime_mshutdown,
+            minit: |minit| {
+                swoole_rs_phpruntime::php_swoole_runtime_minit(
+                    minit,
+                    #[cfg(feature = "curl")]
+                    swoole_rs_curl::minit,
+                );
+            },
             rshutdown: swoole_rs_phpruntime::rshutdown,
         },
         events: swoole_rs_phpswoole::EventSteps {

@@ -23,31 +23,13 @@
 using namespace swoole;
 
 SW_EXTERN_C_BEGIN
-#include "curl_arginfo.h"
+
 
 #include <stdio.h>
 #include <string.h>
 
 #include <curl/curl.h>
 #include <curl/easy.h>
-
-/* As of curl 7.11.1 this is no longer defined inside curl.h */
-#ifndef HttpPost
-#define HttpPost curl_httppost
-#endif
-
-/* {{{ cruft for thread safe SSL crypto locks */
-#if defined(ZTS) && defined(HAVE_CURL_OLD_OPENSSL)
-#if defined(HAVE_OPENSSL_CRYPTO_H)
-#define PHP_CURL_NEED_OPENSSL_TSL
-#include <openssl/crypto.h>
-#else
-#warning "libcurl was compiled with OpenSSL support, but configure could not find " \
-    "openssl/crypto.h; thus no SSL crypto locking callbacks will be set, which may " \
-    "cause random crashes on SSL requests"
-#endif
-#endif /* ZTS && HAVE_CURL_OLD_OPENSSL */
-/* }}} */
 
 #include "zend_smart_str.h"
 #include "ext/standard/info.h"
@@ -59,38 +41,6 @@ SW_EXTERN_C_BEGIN
 /* don't complain about deprecated CURLOPT_* we're exposing to PHP; we
    need to keep using those to avoid breaking PHP API compatibiltiy */
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
-
-#ifdef PHP_CURL_NEED_OPENSSL_TSL /* {{{ */
-static MUTEX_T *php_curl_openssl_tsl = NULL;
-
-/* Locking callbacks are no longer used since OpenSSL 1.1. Mark the functions as unused to
- * avoid warnings due to this. */
-static ZEND_ATTRIBUTE_UNUSED void php_curl_ssl_lock(int mode, int n, const char *file, int line) {
-    if (mode & CRYPTO_LOCK) {
-        tsrm_mutex_lock(php_curl_openssl_tsl[n]);
-    } else {
-        tsrm_mutex_unlock(php_curl_openssl_tsl[n]);
-    }
-}
-
-static ZEND_ATTRIBUTE_UNUSED unsigned long php_curl_ssl_id(void) {
-    return (unsigned long) tsrm_thread_id();
-}
-#endif
-
-static zend_class_entry *swoole_native_curl_exception_ce;
-static zend_object_handlers swoole_native_curl_exception_handlers;
-
-
-#if defined(PHP_WIN32) || defined(__GNUC__)
-#define php_curl_ret(__ret)                                                                                            \
-    RETVAL_FALSE;                                                                                                      \
-    return __ret;
-#else
-#define php_curl_ret(__ret)                                                                                            \
-    RETVAL_FALSE;                                                                                                      \
-    return;
 #endif
 
 static zend_result php_curl_option_str(php_curl *ch, zend_long option, const char *str, const size_t len) {
@@ -133,45 +83,6 @@ php_curl *swoole_curl_init_handle_into_zval(zval *curl);
 
 SW_EXTERN_C_END
 
-void swoole_native_curl_minit(int module_number) {
-    if (!SWOOLE_G(cli)) {
-        return;
-    }
-
-#ifdef PHP_CURL_NEED_OPENSSL_TSL
-    if (CRYPTO_get_id_callback() == nullptr) {
-        int i, c = CRYPTO_num_locks();
-
-        php_curl_openssl_tsl = (MUTEX_T *) malloc(c * sizeof(MUTEX_T));
-        if (!php_curl_openssl_tsl) {
-            return;
-        }
-
-        for (i = 0; i < c; ++i) {
-            php_curl_openssl_tsl[i] = tsrm_mutex_alloc();
-        }
-
-        CRYPTO_set_id_callback(php_curl_ssl_id);
-        CRYPTO_set_locking_callback(php_curl_ssl_lock);
-    }
-#endif
-
-    swoole_curl_register_handle();
-    curl_multi_register_class();
-
-    zend_unregister_functions(swoole_native_curl_functions, -1, CG(function_table));
-    zend_register_functions(NULL, swoole_native_curl_functions, NULL, MODULE_PERSISTENT);
-
-    SW_INIT_CLASS_ENTRY_EX(swoole_native_curl_exception,
-                           "Swoole\\Coroutine\\Curl\\Exception",
-                           "Co\\Coroutine\\Curl\\Exception",
-                           nullptr,
-                           swoole_exception);
-}
-
-/* CurlHandle class */
-
-void swoole_native_curl_mshutdown() {}
 
 /* {{{ curl_write_nothing
  * Used as a work around. See _php_curl_close_ex
@@ -226,7 +137,7 @@ void swoole_curl_init_handle(php_curl *ch) {
 
     memset(&ch->err, 0, sizeof(struct _php_curl_error));
 
-    zend_llist_init(&ch->to_free->post, sizeof(struct HttpPost *), (llist_dtor_func_t) curl_free_post, 0);
+    zend_llist_init(&ch->to_free->post, sizeof(curl_mime *), (llist_dtor_func_t) curl_free_post, 0);
     zend_llist_init(&ch->to_free->stream, sizeof(void *), (llist_dtor_func_t) swoole_curl_free_cb_arg, 0);
 
     ch->to_free->slist = (HashTable *) emalloc(sizeof(HashTable));
