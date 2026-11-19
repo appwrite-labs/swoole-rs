@@ -15,6 +15,12 @@ name codec, the DNS address text and the socket DNS lookup
 `network/dns.cpp` and `address.cpp` are Rust cases in `hooks-system-rust` (see
 [the hooks README](../hooks/README.md)).
 
+## Fresh socket ownership during bailout
+
+Run `python3 tools/dev.py docker -- tests/modules/clients/fresh_socket.py` to check
+that an early return with a pending bailout closes a fresh socket exactly once.
+The Linux fixture uses PHP FFI to call the Rust owner inside a live Zend executor.
+
 ## Native socket-control unit coverage
 
 `socket_ops.rs` runs the production client's socket-control table in the Rust
