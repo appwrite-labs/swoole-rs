@@ -129,7 +129,7 @@ pub fn websocket_minit(args: &MinitArgs) {
             }
         },
     );
-    register_frames(minit, args.zlib);
+    register_frames(minit);
 }
 
 /// A value holding `string`, or the empty string for none.

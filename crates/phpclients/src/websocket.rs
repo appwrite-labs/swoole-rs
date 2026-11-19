@@ -3,7 +3,6 @@ use std::{
     borrow::Cow,
     cell::Cell,
     ffi::{CStr, c_int},
-    sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
 use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::{CCast, CellExt, WebSocketStatus, log};
@@ -31,13 +30,10 @@ const OPCODE: usize = 2;
 const FLAGS: usize = 3;
 const FINISH: usize = 4;
 
-/// `SW_HAVE_ZLIB`.
-static ZLIB: AtomicBool = AtomicBool::new(false);
-
 /// Whether the loaded extension has zlib support.
 #[must_use]
 pub fn has_zlib() -> bool {
-    ZLIB.load(Relaxed)
+    swoole_rs_corebase::built_with(swoole_rs_corebase::Switch::Zlib)
 }
 
 /// `swoole::websocket::Flag`.
@@ -88,8 +84,7 @@ method_table! {
 }
 
 /// Register the frame classes and their constants after the WebSocket server class.
-pub fn register_frames(minit: &Minit, zlib: bool) {
-    ZLIB.store(zlib, Relaxed);
+pub fn register_frames(minit: &Minit) {
     minit.register(
         &FRAME,
         c"Swoole\\WebSocket\\Frame",
@@ -327,7 +322,7 @@ fn packed<T>(frame: &FrameObject, emit: impl FnOnce(&[u8], u8) -> Option<T>) -> 
     if bailout::pending() {
         return None;
     }
-    if !ZLIB.load(Relaxed) {
+    if !has_zlib() {
         warning(
             c"FrameObject::pack",
             "Unable to compress websocket data frame, the `zlib` supports is required",
@@ -467,6 +462,7 @@ pub fn close_frame(code: i32, reason: &[u8], flags: u8) -> Option<Frame> {
 }
 
 /// `FrameObject::uncompress`: the inflated payload, as a string.
+#[must_use]
 pub fn uncompress(data: &[u8]) -> Option<Owned> {
     use swoole_rs_inflate::{MESSAGE_HEADROOM, MessageFailure, error, message};
 
@@ -474,7 +470,7 @@ pub fn uncompress(data: &[u8]) -> Option<Owned> {
         MESSAGE_HEADROOM == swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize / 2,
         "WebSocket inflate headroom must match half the standard buffer size"
     );
-    if !ZLIB.load(Relaxed) {
+    if !has_zlib() {
         warning(
             c"FrameObject::uncompress",
             "The compressed websocket data frame is received, the `zlib` supports is required",
@@ -674,7 +670,7 @@ impl ClientWebSocket {
     pub(crate) fn apply(&self, table: &Array) {
         self.mask
             .set(setting(table, b"websocket_mask").unwrap_or(true));
-        if ZLIB.load(Relaxed)
+        if has_zlib()
             && let Some(on) = setting(table, b"websocket_compression")
         {
             self.compression.set(on);
@@ -818,6 +814,8 @@ enum Next {
 
 /// One packet of [`recv`], `packet`, unmasked in place.
 fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8]) -> Next {
+    let deliver =
+        |opcode, payload, flags| deliver(zend_long::from(socket.sock_fd()), opcode, payload, flags);
     let func = c"websocket::recv_frame";
     if packet.len() < 2 {
         return Next::Done(protocol_error());
@@ -843,12 +841,7 @@ fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8])
     };
     if respond {
         let payload = Owned::string(ZString::new(payload));
-        return Next::Done(deliver(
-            zend_long::from(socket.sock_fd()),
-            opcode.code(),
-            payload,
-            FLAG_FIN,
-        ));
+        return Next::Done(deliver(opcode.code(), payload, FLAG_FIN));
     }
     if opcode == Opcode::Continuation {
         let Some(message) = slot.as_mut() else {
@@ -872,12 +865,7 @@ fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8])
             return Next::Done(protocol_error());
         };
         let flags = complete.flags.with_final().bits();
-        return Next::Done(deliver(
-            zend_long::from(socket.sock_fd()),
-            complete.opcode.code(),
-            payload,
-            flags,
-        ));
+        return Next::Done(deliver(complete.opcode.code(), payload, flags));
     }
     if slot.is_some() {
         warning(
@@ -891,12 +879,7 @@ fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8])
         let Some(payload) = payload_string(payload, frame.flags.is_compressed()) else {
             return Next::Done(protocol_error());
         };
-        return Next::Done(deliver(
-            zend_long::from(socket.sock_fd()),
-            opcode.code(),
-            payload,
-            frame.flags.bits(),
-        ));
+        return Next::Done(deliver(opcode.code(), payload, frame.flags.bits()));
     }
     let size = if payload.is_empty() {
         DEFAULT_BUFFER
