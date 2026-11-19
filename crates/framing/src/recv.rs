@@ -218,10 +218,11 @@ impl<E: Effects> Recv<'_, E> {
                     } else {
                         self.header(head)
                     };
-                    if requested > buffer.size.saturating_sub(buffer.length) {
+                    let available = buffer.size.saturating_sub(buffer.length);
+                    if available == 0 && requested != 0 {
                         return Status::Err;
                     }
-                    if let Err(status) = self.read(requested) {
+                    if let Err(status) = self.read(requested.min(available)) {
                         return status;
                     }
                     if !self.flag(FLAG_WAIT) {
@@ -513,6 +514,9 @@ mod tests {
         fn length(&mut self, flags: &mut u32) -> Option<usize> {
             self.sync(flags, |n| {
                 n.events.push(format!("length:{}", n.buffer.length));
+                if n.buffer.length < n.head as usize {
+                    return Some(0);
+                }
                 Some(n.data().first().map_or(0, |&b| usize::from(b) + 1))
             })
         }
@@ -593,6 +597,17 @@ mod tests {
         assert_eq!(native.events, ["recv:1", "length:1", "recv:1"]);
         assert!(native.wait);
         assert_eq!(native.buffer.offset, 2);
+    }
+
+    #[test]
+    fn split_header_fits_in_a_header_sized_buffer() {
+        let mut native = Native::new(Mode::Length, 2, vec![b"\x01", b"x"]);
+        native.head = 2;
+        assert_eq!(run(&mut native), Status::Ok);
+        assert_eq!(native.events, ["recv:2", "length:1"]);
+        native.events.clear();
+        assert_eq!(run(&mut native), Status::Ok);
+        assert_eq!(native.events, ["recv:1", "length:2", "package:\x01x"]);
     }
 
     #[test]
