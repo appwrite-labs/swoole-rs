@@ -26,7 +26,7 @@ pub enum FileError {
 /// `SW_AIO_WRITE_FSYNC`, tested against the open flags as upstream does.
 const WRITE_FSYNC: c_int = 1 << 1;
 /// `SW_BUFFER_SIZE_STD`: `File::read_content`'s first buffer.
-const READ_CONTENT_SIZE: usize = 8192;
+const READ_CONTENT_SIZE: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize;
 
 /// Logs a warning: errno, origin, message.
 type Warn = fn(c_int, &CStr, &str);

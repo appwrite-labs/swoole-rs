@@ -38,7 +38,7 @@ fn no_digits_errno() -> c_int {
 /// `SW_HTTP_UPLOAD_FILE`.
 const UPLOAD_FILE: &[u8] = b"Swoole-Upload-File";
 /// `SW_BUFFER_SIZE_BIG`.
-const BUFFER_SIZE_BIG: usize = 65536;
+const BUFFER_SIZE_BIG: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as usize;
 
 /// A multipart body being streamed: upstream's `FormData`.
 pub struct HttpForm {

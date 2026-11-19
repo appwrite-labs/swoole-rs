@@ -12,7 +12,7 @@ use std::{
 };
 use swoole_rs_corebase::memory::{
     members::SharedTable,
-    table::{Column, ColumnType, Current, Locked, TYPE_FLOAT, TYPE_INT, TYPE_STRING},
+    table::{Column, ColumnType, Current, KEY_SIZE, Locked, TYPE_FLOAT, TYPE_INT, TYPE_STRING},
 };
 use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_phpstubs::table;
@@ -25,8 +25,7 @@ use swoole_rs_zend::{
 };
 
 /// `SW_TABLE_KEY_SIZE`, `SW_TABLE_CONFLICT_PROPORTION`.
-const KEY_SIZE: usize = 64;
-const CONFLICT_PROPORTION: f64 = 0.2;
+const CONFLICT_PROPORTION: f64 = swoole_rs_corebase::constants::SW_TABLE_CONFLICT_PROPORTION;
 /// `SW_ERROR_MALLOC_FAIL`, `SW_ERROR_PHP_FATAL_ERROR`, `SW_ERROR_WRONG_OPERATION`,
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`.
 const MALLOC_FAIL: i64 = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as i64;

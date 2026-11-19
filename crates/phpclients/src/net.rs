@@ -42,10 +42,10 @@ const FLAG_KEEP: i64 = 1 << 12;
 pub(crate) const SOCK_SSL: i64 = 1 << 9;
 /// `SW_PHP_CLIENT_BUFFER_SIZE`, `SW_BUFFER_SIZE_STD` and `SW_BUFFER_SIZE_BIG`.
 const PHP_BUFFER_SIZE: i64 = 65535;
-const BUFFER_SIZE_STD: usize = 8192;
-const BUFFER_SIZE_BIG: usize = 65536;
+const BUFFER_SIZE_STD: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize;
+const BUFFER_SIZE_BIG: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as usize;
 /// `SW_CLIENT_CONNECT_TIMEOUT`.
-pub(crate) const CONNECT_TIMEOUT: f64 = 0.5;
+pub(crate) const CONNECT_TIMEOUT: f64 = swoole_rs_corebase::constants::SW_CLIENT_CONNECT_TIMEOUT;
 /// `SW_ERROR_CLIENT_NO_CONNECTION` and `SW_ERROR_INVALID_PARAMS`.
 const NO_CONNECTION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CLIENT_NO_CONNECTION as c_int;
 pub(crate) const INVALID_PARAMS: c_int =

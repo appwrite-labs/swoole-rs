@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 /// `SW_SIGNO_MAX`.
-const SIGNO_MAX: usize = 128;
+const SIGNO_MAX: usize = crate::constants::SW_SIGNO_MAX as usize;
 const SIG_DFL: usize = 0;
 const SIG_IGN: usize = 1;
 

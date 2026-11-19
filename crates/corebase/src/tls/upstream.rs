@@ -41,7 +41,7 @@ unsafe extern "C" {
 const FILE_EMPTY: c_int = swoole_rs_error::ErrorCode::SW_ERROR_FILE_EMPTY as c_int;
 const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 /// `SW_SOCKET_CORK_MIN_SIZE`.
-const CORK_MIN_SIZE: usize = 65536;
+const CORK_MIN_SIZE: usize = crate::constants::SW_SOCKET_CORK_MIN_SIZE as usize;
 /// `SW_FD_STREAM_SERVER`.
 const FD_STREAM_SERVER: c_int = 1;
 const VERIFY_FAILED: c_int = ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int;
