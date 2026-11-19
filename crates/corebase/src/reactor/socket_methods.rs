@@ -134,6 +134,7 @@ fn io_of(socket: Socket<'_>) -> (c_int, bool, bool, bool) {
 /// into `total_recv_bytes` and, with a receive timer, `last_received_time`. A read that
 /// would block after `POLLHUP` reads as end of stream. `tls` runs only for a record
 /// that holds an `SSL`.
+#[inline(always)]
 pub fn record_recv(
     socket: Socket<'_>,
     buffer: &mut Spare<'_>,
@@ -165,28 +166,27 @@ pub fn record_recv(
         } else {
             buffer.recv(fd, flags)
         };
-        if !(total.is_none() && interrupted() && !dont_restart) {
-            break total;
+        if let Some(received) = total {
+            break received;
         }
+        let error = crate::sys::errno();
+        if error == libc::EINTR && !dont_restart {
+            continue;
+        }
+        return (socket.catch_error(error) == crate::reactor::Caught::Wait
+            && socket.read(|record| record.event_hup))
+        .then_some(0);
     };
-    if let Some(received @ 1..) = total
+    if total != 0
         && socket.edit(|record| {
-            record.total_recv_bytes += received;
+            record.total_recv_bytes += total;
             record.recv_timer.is_some()
         })
     {
         let time = now();
         socket.edit(|record| record.last_received_time = time);
-    } else if total.is_none() {
-        // Nothing since the call has touched errno.
-        let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        if socket.catch_error(error) == crate::reactor::Caught::Wait
-            && socket.read(|record| record.event_hup)
-        {
-            return Some(0);
-        }
     }
-    total
+    Some(total)
 }
 
 /// `Socket::send`: send(2) or one `tls` write, retried on EINTR unless `dont_restart`,
