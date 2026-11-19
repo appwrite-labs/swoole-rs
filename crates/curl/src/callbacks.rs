@@ -542,8 +542,9 @@ fn call(handle: PhpHandle<'_>, option: c_int, args: &[Owned]) -> Option<Owned> {
     swoole_curl_set_in_callback(handle, true);
     bailout::defer(contain_with(|| {
         called = swoole_curl_call(handle, option, Zvals::owned(args), &mut retval);
+        // A fatal bailout skips this reset: shutdown handlers still see the active callback.
+        swoole_curl_set_in_callback(handle, false);
     }));
-    swoole_curl_set_in_callback(handle, false);
     called.then_some(retval)
 }
 
