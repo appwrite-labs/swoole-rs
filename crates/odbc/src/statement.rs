@@ -26,6 +26,9 @@ unsafe extern "C" {
     safe fn result_cols(statement: Statement, count: &mut i16) -> SQLRETURN;
     #[link_name = "SQLCloseCursor"]
     safe fn close_cursor(statement: Statement) -> SQLRETURN;
+    /// Ends a data-at-execution sequence, discarding the data already sent.
+    #[link_name = "SQLCancel"]
+    safe fn cancel(statement: Statement) -> SQLRETURN;
     safe fn swr_odbc_replace_columns(stmt: &Stmt, count: i16);
 }
 
@@ -259,7 +262,7 @@ fn supply_data(
         if value.kind() != IS_RESOURCE {
             let text = value.string();
             if swoole_rs_zend::bailout::pending() {
-                close_cursor(statement);
+                cancel(statement);
                 return None;
             }
             let rc = put(text.bytes());
@@ -269,19 +272,32 @@ fn supply_data(
             continue;
         }
         // A failed chunk decides the status, and the rest of the stream is still read.
+        // An empty stream is sent as one empty chunk, so the parameter has a value and
+        // the sequence completes.
+        let mut sent = false;
         loop {
             let rc = match value.read_stream(&mut page) {
-                Ok(Some([])) => break,
-                Ok(Some(chunk)) => put(chunk),
+                Ok(Some([])) if sent => break,
+                Ok(Some(chunk)) => {
+                    sent = true;
+                    let rc = put(chunk);
+                    if chunk.is_empty() {
+                        if !matches!(rc, 0 | 1) {
+                            status = rc;
+                        }
+                        break;
+                    }
+                    rc
+                }
                 Ok(None) => {
                     let what = c"input LOB is no longer a stream".into();
                     pdo_odbc_error(dbh, Some(stmt), statement, what, file, line);
-                    close_cursor(statement);
+                    cancel(statement);
                     return None;
                 }
                 Err(bailout) => {
                     bailout.defer();
-                    close_cursor(statement);
+                    cancel(statement);
                     return None;
                 }
             };
@@ -301,7 +317,8 @@ extern "C" fn swr_odbc_execute(dbh: &Dbh, stmt: &Stmt, executed: bool, file: Tex
         close_cursor(statement);
     }
     let mut status = crate::swoole_odbc_SQLExecute(statement);
-    if status == NEED_DATA {
+    let supplying = status == NEED_DATA;
+    if supplying {
         let Some(supplied) = supply_data(dbh, stmt, statement, file, lines[2]) else {
             return false;
         };
@@ -318,6 +335,10 @@ extern "C" fn swr_odbc_execute(dbh: &Dbh, stmt: &Stmt, executed: bool, file: Tex
             if completed { lines[0] } else { lines[1] },
         );
         if !completed {
+            if supplying {
+                // The sequence ended early: the statement leaves its need-data state.
+                cancel(statement);
+            }
             return false;
         }
     }
