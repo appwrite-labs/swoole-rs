@@ -45,6 +45,7 @@ def serve(server, answers, delay):
         try:
             _, name, _ = question(packet)
         except (IndexError, struct.error):
+            # Expected: not a query this resolver answers; the resolver under test retries.
             continue
         response = reply(packet, name in answers)
         threading.Timer(0 if name in answers else delay, server.sendto, (response, peer)).start()

@@ -53,6 +53,7 @@ def probe(engine, mode, coroutines, scenario):
                     if healthy:
                         break
                 except OSError:
+                    # Expected until the server listens; the loop is bounded.
                     pass
                 time.sleep(.02)
             row['master_exit'] = proc.poll()
