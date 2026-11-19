@@ -8,6 +8,9 @@ license.workspace = true
 [features]
 # `log::capture`, which other crates' tests read Rust logs through.
 log-capture = []
+# `Heap::from_static` and `SocketRecord::into_socket`: test fixtures' records with no owner,
+# which other crates' tests make (#5276). No production build enables it.
+test-records = []
 # Worker globals are per thread for SW_THREAD builds without thread-safe PHP.
 thread = []
 # `--fix-halfclose`: TLS close_notify and interrupted-sendfile repairs.

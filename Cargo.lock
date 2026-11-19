@@ -391,6 +391,7 @@ dependencies = [
  "swoole-rs-cares-sys",
  "swoole-rs-corebase",
  "swoole-rs-error",
+ "swoole-rs-framing",
  "swoole-rs-http",
  "swoole-rs-oracle",
  "swoole-rs-protocols",
@@ -669,7 +670,6 @@ dependencies = [
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",
- "swoole-rs-ports",
  "swoole-rs-server",
  "swoole-rs-websocket",
  "swoole-rs-zend",
@@ -934,6 +934,7 @@ name = "swoole-rs-reactor-base-tests"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "swoole-rs-corebase",
  "swoole-rs-ffi",
 ]
 

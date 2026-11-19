@@ -12,6 +12,15 @@ Packet framing and the MIME table (`crates/framing`); the ABI is in
   (`fuzz/`) compare against the pinned base.cc.
 - Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the Cargo build. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 
+The Linux `framing-length-peer` integration phase sends the same frames to both
+engines. For a four-byte length callback that rejects a five-byte message,
+read-ahead exposes five bytes to the callback and pinned Swoole exposes four.
+Both peers see a reset. An over-limit header alone closes with FIN on both
+engines, and adding body bytes produces a reset on both. When the application
+closes after the first of two coalesced packets, both deliver only the first
+packet. Read-ahead consumes the second packet, so the peer sees FIN. Pinned
+Swoole leaves it unread and the peer sees a reset.
+
 ## Ported GoogleTests
 
 `core-tests/src/protocol/mime_type.cpp` no longer builds. Its TESTs are Rust
@@ -40,9 +49,9 @@ cases in [protocol.rs](protocol.rs), built into the http server case binary
 | `protocol.eof` | `protocol.eof` (http-server-rust) |
 | `protocol.socks5_strerror` | `swoole-rs-clients` `owned_proxy::tests::socks5_strerror` |
 | `protocol.socks5_dns_tunnel_target_host_max_length` | `swoole-rs-clients` `owned_proxy::tests::socks5_dns_tunnel_target_host_max_length` |
-| `protocol.swap_byte_order` | `swoole-rs-ports` `framing_recv::tests::swap_byte_order` |
-| `protocol.unpack` | `swoole-rs-ports` `framing_recv::tests::unpack_formats` |
-| `protocol.hton64` | `swoole-rs-ports` `framing_recv::tests::hton64` |
+| `protocol.swap_byte_order` | `swoole-rs-clients` `framing_recv::tests::swap_byte_order` |
+| `protocol.unpack` | `swoole-rs-clients` `framing_recv::tests::unpack_formats` |
+| `protocol.hton64` | `swoole-rs-clients` `framing_recv::tests::hton64` |
 
 ## Known failures
 

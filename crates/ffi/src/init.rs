@@ -8,7 +8,6 @@ pub fn swoole_init() {
         swoole_rs_hooks::reactor_handlers::IOURING,
         swoole_rs_clients::client::init_reactor,
     );
-    swoole_rs_clients::client::set_framing(swoole_rs_ports::framing_recv::FRAMING);
     swoole_rs_ports::register_methods();
     swoole_rs_hooks::stdio::swr_v1_hook_install();
     swoole_rs_corebase::init_with_default_fatal_handler();

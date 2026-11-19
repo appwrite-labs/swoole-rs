@@ -16,6 +16,7 @@ pub mod address;
 mod cares;
 pub mod client;
 pub mod dns;
+pub mod framing_recv;
 pub mod http_format;
 pub mod ip;
 pub mod mqtt;

@@ -74,8 +74,7 @@ pub fn make(
     Ok(NewSocket(co::make(fd, domain, kind, protocol, family)?))
 }
 
-/// A coroutine socket that nothing else holds: its holder frees it or gives it
-/// to an object. Dropped, it leaks.
+/// An owned coroutine socket. Dropping it releases it inside Zend's bailout trap.
 #[must_use]
 pub struct NewSocket(co::Fresh);
 
@@ -466,7 +465,8 @@ impl Co {
     /// `Protocol::default_length_func`.
     pub(crate) fn length_protocol(self) {
         self.0.edit_protocol(|protocol| {
-            protocol.get_package_length = Some(swoole_rs_ports::framing_recv::default_length_func);
+            protocol.get_package_length =
+                Some(swoole_rs_clients::framing_recv::default_length_func);
         });
     }
 

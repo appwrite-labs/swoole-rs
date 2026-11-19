@@ -2,7 +2,8 @@
 //! `recv_split_by_eof`, each one call. The length loop reads greedily: one `recv` of
 //! the buffer's free space, then every whole package in it, where upstream reads the
 //! length header and then exactly the rest of the package, a `recv` each. The caller
-//! holds the receive buffer (`swoole::String`) and the protocol: the loop reads and
+//! and its peer see the differences pinned by `tests/modules/framing/length_peer.py`.
+//! The caller holds the receive buffer (`swoole::String`) and the protocol: the loop reads and
 //! sets them through [`Effects`], which performs each socket, callback, allocation or
 //! log effect through its methods.
 

@@ -276,8 +276,10 @@ impl SocketRecord {
         Box::into_raw(Box::new(self))
     }
 
-    /// A new heap record as the socket its maker holds: live until an owner taken
-    /// back with the unsafe [`crate::reactor::OwnedSocket::from_socket`] frees it.
+    /// A new heap record as the socket a test holds: live until an owner taken back
+    /// with the unsafe [`crate::reactor::OwnedSocket::from_socket`] frees it. Production
+    /// code makes an [`crate::reactor::OwnedSocket`] instead (feature `test-records`).
+    #[cfg(any(test, feature = "test-records"))]
     #[must_use]
     pub fn into_socket(self: Box<Self>) -> crate::reactor::Heap<'static> {
         crate::reactor::Heap::from_static(crate::reactor::Socket::new(Box::leak(self)))

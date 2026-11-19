@@ -1,6 +1,8 @@
 //! The operations against a recording double of the C++ client.
 use super::*;
 use std::cell::RefCell;
+use std::io::Write;
+use std::os::fd::{AsRawFd, IntoRawFd};
 use swoole_rs_corebase::reactor::{SocketFields, SocketRecord};
 
 #[derive(Default)]
@@ -18,7 +20,6 @@ struct Mock {
     /// The record `make_socket` allocated; the client releases it.
     socket: Option<core::ptr::NonNull<SocketRecord>>,
     fail_socket: bool,
-    fail_framed_read: bool,
     /// The last lookup `async_dispatch` took.
     lookup: Option<Lookup>,
     /// The records `free_socket` released, which tests still read: freed with the test.
@@ -214,18 +215,6 @@ pub(super) fn writable_callback(
     log("writable");
     true
 }
-/// The framed receives, as crates/ports registers them.
-const FRAMING: Framing = Framing {
-    length: |_, _, _| {
-        log("framed false");
-        mock(|m| !m.fail_framed_read)
-    },
-    eof: |_, _, _| {
-        log("framed true");
-        true
-    },
-};
-
 /// A socket IO double: logs, then returns the queued result or the whole length.
 fn io(name: &str, length: usize) -> isize {
     log(format!("{name} {length}"));
@@ -342,7 +331,6 @@ fn new_client(kind: c_int, is_async: bool) -> *mut Client {
 /// with `callbacks`.
 fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
     mock(|m| *m = Mock::default());
-    set_framing(FRAMING);
     log::set_last_error(0);
     let client = new_client(kind, is_async);
     if callbacks {
@@ -808,12 +796,21 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
         assert_eq!(Some(Handle::raw(client).socket().as_ptr()), made);
         assert!((*fields).object.is_null() && (*fields).buffer.is_null());
         Handle::raw(client).input_init();
+        let (mut peer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+        reader.set_nonblocking(true).unwrap();
+        sock().fd = reader.as_raw_fd();
+        (*fields).protocol.get_package_length = Some(crate::framing_recv::default_length_func);
         (*fields).open_length_check = true;
+        peer.write_all(&4u32.to_be_bytes()).unwrap();
         assert!(on_read(Handle::raw(client)));
-        assert!(taken().contains(&"framed false".to_owned()));
+        assert!(taken().contains(&"call Receive 4".to_owned()));
         (*fields).open_eof_check = true;
+        (*fields).protocol.package_eof[0] = b'\n';
+        (*fields).protocol.package_eof_len = 1;
+        peer.write_all(b"ok\n").unwrap();
         assert!(on_read(Handle::raw(client)));
-        assert!(taken().contains(&"framed true".to_owned()));
+        assert!(taken().contains(&"call Receive 3".to_owned()));
+        sock().fd = -1;
     }
     free(client);
 }
@@ -826,7 +823,13 @@ fn failed_framed_read_closes_the_live_client() {
     handle
         .client()
         .edit_record(|record| record.open_length_check = true);
-    mock(|m| m.fail_framed_read = true);
+    let (peer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+    sock().fd = reader.into_raw_fd();
+    // A parallel fork can inherit the peer. Miri models close but not socketpair shutdown.
+    if !cfg!(miri) {
+        peer.shutdown(std::net::Shutdown::Write).unwrap();
+    }
+    drop(peer);
     assert!(!handle.flag(Flag::Closed));
     assert!(on_read(handle));
     assert!(handle.flag(Flag::Closed));

@@ -308,9 +308,9 @@ impl<'a> Socket<'a> {
 /// A [`Socket`] a reactor may register: a heap record whose one free is
 /// [`OwnedSocket`]'s, which first deletes it from the reactor that registered it, or a
 /// record never freed. So a registry may name it past `'a`: no entry outlives its
-/// record. Only an owner ([`OwnedSocket::heap`], [`SocketRecord::into_socket`]), a
-/// worker's pipe ([`Heap::lent`]), the registry and C++, whose records `delete` frees
-/// through an owner, make one; a record on a frame ([`Socket::new`]) has none.
+/// record. Only an owner ([`OwnedSocket::heap`]), a worker's pipe ([`Heap::lent`]), the
+/// registry and C++, whose records `delete` frees through an owner, make one, and tests'
+/// fixtures (feature `test-records`); a record on a frame ([`Socket::new`]) has none.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct Heap<'a>(Socket<'a>);
@@ -326,9 +326,10 @@ impl<'a> Heap<'a> {
         })
     }
 
-    /// The boundary for holders that still keep a `Socket<'static>` alias rather than
-    /// their owner (#4577): a record that stays live until an unsafe free, which goes
-    /// through [`OwnedSocket::from_socket`] and so deregisters it, as `'static` states.
+    /// A test fixture's record with no owner: live until the test frees it, through
+    /// [`OwnedSocket::from_socket`] if a reactor registered it. Every production holder
+    /// owns its [`OwnedSocket`] (#4577), so only tests (feature `test-records`) make one.
+    #[cfg(any(test, feature = "test-records"))]
     #[must_use]
     pub const fn from_static(socket: Socket<'static>) -> Heap<'static> {
         Heap(socket)
@@ -368,7 +369,7 @@ impl OwnedSocket {
     /// `record`, which this owns from here.
     #[must_use]
     pub fn new(record: Box<SocketRecord>) -> Self {
-        Self(record.into_socket())
+        Self(Heap(Socket::new(Box::leak(record))))
     }
 
     /// The owner of `socket`'s record, which its handles give up.
@@ -432,45 +433,6 @@ impl Drop for OwnedSocket {
     fn drop(&mut self) {
         // Transfer this final owner's reclamation right to into_box.
         drop(Self(self.0).into_box());
-    }
-}
-
-/// A cell owning at most one heap socket: it lends the record as a [`Heap`] for a
-/// borrow of itself, and the unsafe [`Self::take`] gives the owner back. Its field is a
-/// cell, so a record that threads share under their own synchronization (a server's
-/// connection slot) may hold one. Lending and taking both go through `&self`, so the
-/// types can't tell when the last lent handle is gone: only `take`'s caller can.
-/// Taking the owner is explicit because the record may be shared across processes.
-/// All zero bytes are an empty cell.
-#[derive(Default)]
-#[repr(transparent)]
-pub struct OwnerCell(Cell<Option<Heap<'static>>>);
-
-impl OwnerCell {
-    /// The record it owns, if any.
-    #[must_use]
-    #[inline]
-    pub fn get(&self) -> Option<Heap<'_>> {
-        self.0.get()
-    }
-
-    /// Owns `owner` from here. A record it held before leaks: handles it lent may live.
-    pub fn put(&self, owner: OwnedSocket) {
-        self.0.set(Some(owner.leak()));
-    }
-
-    /// Names no record from here; one it held leaks, as in [`Self::put`].
-    pub fn forget(&self) {
-        self.0.set(None);
-    }
-
-    /// The owner it held, which it no longer names.
-    /// # Safety
-    /// No [`Heap`] or [`Socket`] that [`Self::get`] lent (or a copy of one) is used
-    /// once the returned owner frees the record.
-    #[must_use]
-    pub unsafe fn take(&self) -> Option<OwnedSocket> {
-        self.0.take().map(OwnedSocket)
     }
 }
 

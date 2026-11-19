@@ -225,6 +225,9 @@ def plan(args, reports):
         pytest('http-smuggling', 'tests/modules/http/test_smuggling.py', *php,
                '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
         pytest('http-header-reentry', 'tests/modules/http/test_header_reentry.py', *php, '--engine', f'cargo={cargo}')
+    if 'framing' in modules and integrate and sys.platform.startswith('linux'):
+        script('framing-length-peer', 'tests/modules/framing/length_peer.py',
+               *php_for('sockets', 'posix'), *engines)
     if 'locks' in modules and integrate:
         script('locks-state', 'tests/modules/locks/state.py', *php_for('curl'), *engines, *report('locks-state'))
     if integrate and 'phpcoroutines' in modules:
