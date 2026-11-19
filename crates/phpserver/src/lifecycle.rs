@@ -39,7 +39,6 @@ enum Fact {
     HasOnClose,
     UnsafeEvents,
     HashDispatch,
-    CacheSessionAddr,
 }
 
 /// The callback groups [`put`] installs on a server.
@@ -50,9 +49,7 @@ pub(crate) enum Install {
     PipeMessage,
     BufferEmpty,
     Close,
-    HttpClose,
     Receive,
-    HttpReceive,
     RedisReceive,
     UserWorkerStart,
     Allocators,
@@ -277,9 +274,12 @@ fn fact(serv: view::Server<'_>, id: Fact) -> bool {
         Fact::UnsafeEvents => c.dispatch_mode.get().is_hash() || c.enable_unsafe_event.get(),
         Fact::HashDispatch => c.dispatch_mode.get().is_hash(),
         Fact::Reactor => !swoole_rs_corebase::thread_reactor().is_null(),
-        Fact::CacheSessionAddr => {
-            crate::dispatch::http().is_some_and(|http| (http.can_cache_session_addr)(serv))
-        }
+    }
+}
+
+fn install_http(object: ServerObject<'_>, ports_configured: bool) {
+    if let Some(families) = swoole_rs_phpswoole::families() {
+        (families.http.install_callbacks)(object.value(), ports_configured);
     }
 }
 
@@ -1222,7 +1222,7 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
                 }
                 protocols(primary.port, on, true);
                 find_http_port = true;
-                put(serv, Install::HttpReceive);
+                install_http(object, false);
             } else {
                 if primary.dgram && !primary.ssl && !isset(serv, primary.port, PortCallback::Packet)
                 {
@@ -1314,10 +1314,7 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
         }
     }
     if find_http_port {
-        put(serv, Install::HttpReceive);
-        if fact(serv, Fact::CacheSessionAddr) {
-            put(serv, Install::HttpClose);
-        }
+        install_http(object, true);
     }
     if crate::server::THREAD.load(Ordering::Relaxed)
         && fact(serv, Fact::ThreadMode)

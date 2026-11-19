@@ -318,6 +318,9 @@ pub struct Http {
     /// `Coroutine\Http2\Client` (with `Http2\Request` and `Response`), which
     /// runs with the clients.
     pub minit: [HttpMinit; 7],
+    /// The base server asks the linked HTTP family to install its receive callback.
+    /// After configuring all ports, it can also install the address-cache close callback.
+    pub install_callbacks: fn(&swoole_rs_zend::Value, bool),
     pub server_rinit: Hook,
     pub server_rshutdown: Hook,
     pub response_rshutdown: Hook,

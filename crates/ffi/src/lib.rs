@@ -133,16 +133,8 @@ const _: () = assert!(
 #[cfg(feature = "php")]
 #[must_use]
 pub fn phpswoole_module() -> *mut std::ffi::c_void {
-    swoole_rs_phpserver::register_http(&HTTP_HOOKS);
     swoole_rs_phpswoole::module_entry(&FAMILIES).cast()
 }
-
-#[cfg(feature = "php")]
-static HTTP_HOOKS: swoole_rs_phpserver::HttpHooks = swoole_rs_phpserver::HttpHooks {
-    on_receive: swoole_rs_phphttp::http_server_on_receive,
-    on_close: swoole_rs_phphttp::http_server_on_close,
-    can_cache_session_addr: swoole_rs_phphttp::can_cache_session_addr,
-};
 
 #[cfg(feature = "php")]
 static FAMILIES: swoole_rs_phpswoole::Families = {
@@ -220,6 +212,7 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
                 http::websocket_minit,
                 swoole_rs_phphttp2::client_minit,
             ],
+            install_callbacks: http::install_http_callbacks,
             server_rinit: http::server_rinit,
             server_rshutdown: http::server_rshutdown,
             response_rshutdown: http::response_rshutdown,
