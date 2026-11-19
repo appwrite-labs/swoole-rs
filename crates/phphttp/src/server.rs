@@ -78,9 +78,6 @@ const HPE_OK: i32 = 0;
 /// `SW_ERROR_SESSION_NOT_EXIST` and `SW_LOG_TRACE`.
 const SESSION_NOT_EXIST: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_NOT_EXIST as c_int;
 
-/// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
-const UPLOAD_PREPROCESSED: u16 = 1;
-
 /// Where `onReceive` sends the data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Route {
@@ -305,7 +302,7 @@ fn receive(
     context::init(ctx.state(), server);
     let state = ctx.state();
     state.before_request = true;
-    state.upload_preprocessed = ext_flags & UPLOAD_PREPROCESSED != 0;
+    state.upload_preprocessed = ext_flags & swoole_rs_ports::read::UPLOAD_PREPROCESSED != 0;
     // The data moves into the request's own zval.
     state.request.zdata = php_swoole_get_recv_data(server, request);
     crate::parse::init_request_parser(ctx);
