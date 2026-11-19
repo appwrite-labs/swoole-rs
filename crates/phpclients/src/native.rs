@@ -74,8 +74,7 @@ pub fn make(
     Ok(NewSocket(co::make(fd, domain, kind, protocol, family)?))
 }
 
-/// A coroutine socket that nothing else holds: its holder frees it or gives it
-/// to an object. Dropped, it leaks.
+/// An owned coroutine socket. Dropping it releases it inside Zend's bailout trap.
 #[must_use]
 pub struct NewSocket(co::Fresh);
 
