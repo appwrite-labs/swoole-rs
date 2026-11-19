@@ -160,6 +160,7 @@ jobs:
       # hourly limit is shared by every job, and an artifact download that hits it fails the gate
       # (#2496). Saving is best effort: on a miss the gate downloads the artifacts as before.
       - if: github.ref == 'refs/heads/main' && inputs.baseline == '' && needs.phpt.result == 'success'
+        id: cache-engines
         continue-on-error: true
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -167,11 +168,13 @@ jobs:
           path: phpt-engines
       - if: github.ref == 'refs/heads/main' && inputs.baseline == '' && needs.phpt.result == 'success'
         name: Stage baseline cache
+        id: cache-stage
         continue-on-error: true
         run: |
           mkdir baseline-cache && cp shards/upstream-*.json phpt-engines/upstream.so baseline-cache/
           echo '{"run": "${{ github.run_id }}", "sha": "${{ github.sha }}"}' > baseline-cache/meta.json
       - if: github.ref == 'refs/heads/main' && inputs.baseline == '' && needs.phpt.result == 'success'
+        id: cache-save
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
@@ -206,11 +209,21 @@ jobs:
       # A main run that reuses a baseline saved before its cache existed (or whose save failed)
       # saves it on that baseline's key, so PR gates stop missing until the baseline changes.
       - if: github.ref == 'refs/heads/main' && inputs.baseline != '' && steps.baseline.outputs.cache-hit != 'true'
+        id: cache-resave
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: baseline-cache
           key: phpt-baseline-${{ inputs.baseline }}
+      # The saves above are best effort; one that failed says so here.
+      - name: Report a failed baseline cache save
+        if: >
+          steps.cache-engines.outcome == 'failure' || steps.cache-stage.outcome == 'failure'
+          || steps.cache-save.outcome == 'failure' || steps.cache-resave.outcome == 'failure'
+        run: >
+          echo "::warning title=PHPT baseline cache::not saved (engines ${{ steps.cache-engines.outcome }},
+          stage ${{ steps.cache-stage.outcome }}, save ${{ steps.cache-save.outcome }},
+          resave ${{ steps.cache-resave.outcome }}); PR gates download the artifacts instead"
       # Tests that pass on upstream but not on the Cargo build are re-run (corpus/upstream/recheck.sh),
       # unless gate.py --should-recheck finds too many flagged: a broad breakage, not flakiness.
       - name: Flag regressions
