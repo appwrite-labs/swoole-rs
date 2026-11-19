@@ -63,16 +63,10 @@ void swr_zend_mm_observe(const swr_zend_mm_observer *next) {
 }
 
 void swr_zend_mm_unobserve(void) {
-    zend_mm_heap *heap = zend_mm_get_heap();
-    if (ori_malloc || ori_free || ori_realloc) {
-        zend_mm_set_custom_handlers(heap, ori_malloc, ori_free, ori_realloc);
-        ori_malloc = NULL;
-        ori_free = NULL;
-        ori_realloc = NULL;
-    } else {
-        /* heap->use_custom_heap, the heap's first member. */
-        *((int *) heap) = 0;
-    }
+    zend_mm_set_custom_handlers(zend_mm_get_heap(), ori_malloc, ori_free, ori_realloc);
+    ori_malloc = NULL;
+    ori_free = NULL;
+    ori_realloc = NULL;
 }
 
 uint32_t swr_zend_tracer_lineno(void) {
