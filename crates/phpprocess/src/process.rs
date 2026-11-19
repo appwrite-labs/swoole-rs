@@ -13,6 +13,7 @@ use std::{
 };
 use swoole_rs_corebase::ossupport::QueueRecord;
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerRecord};
+use swoole_rs_corebase::tls::socket_pair::{CLOSE_MASTER, CLOSE_WORKER};
 use swoole_rs_corebase::{CCast, constants::SW_MSGMAX};
 use swoole_rs_phpstubs::process;
 use swoole_rs_zend::{
@@ -42,11 +43,9 @@ mod leased {
 /// `Swoole\Process::IPC_NOWAIT` (`MSGQUEUE_NOWAIT`).
 const IPC_NOWAIT: i64 = 1 << 8;
 const MSGQUEUE_ORIENT: i64 = 1;
-const MSGQUEUE_BALANCE: i64 = 2;
+const MSGQUEUE_BALANCE: i64 = swoole_rs_corebase::process::worker_record::MSGQUEUE_BALANCE as i64;
 const PIPE_TYPE_STREAM: i64 = 1;
 const PIPE_TYPE_DGRAM: i64 = 2;
-const PIPE_CLOSE_READ: i64 = 3;
-const PIPE_CLOSE_WRITE: i64 = 4;
 
 static PROCESS: CustomClass<Process> = CustomClass::new();
 
@@ -186,10 +185,10 @@ pub fn php_swoole_process_minit(minit: &Minit) {
     minit.register_object::<Process>(c"Swoole\\Process", METHODS.table(), 0);
     for (name, value) in [
         (c"IPC_NOWAIT", IPC_NOWAIT),
-        (c"PIPE_MASTER", 1),
-        (c"PIPE_WORKER", 2),
-        (c"PIPE_READ", PIPE_CLOSE_READ),
-        (c"PIPE_WRITE", PIPE_CLOSE_WRITE),
+        (c"PIPE_MASTER", i64::from(CLOSE_MASTER)),
+        (c"PIPE_WORKER", i64::from(CLOSE_WORKER)),
+        (c"PIPE_READ", worker::CLOSE_READ),
+        (c"PIPE_WRITE", worker::CLOSE_WRITE),
         (c"PIPE_TYPE_NONE", 0),
         (c"PIPE_TYPE_STREAM", PIPE_TYPE_STREAM),
         (c"PIPE_TYPE_DGRAM", PIPE_TYPE_DGRAM),

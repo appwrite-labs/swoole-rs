@@ -17,8 +17,8 @@ use swoole_rs_corebase::tls::upstream::{read_sync, send_sync};
 use swoole_rs_server::view;
 
 /// `SW_PIPE_CLOSE_READ` and `SW_PIPE_CLOSE_WRITE`.
-const CLOSE_READ: i64 = 3;
-const CLOSE_WRITE: i64 = 4;
+pub(super) const CLOSE_READ: i64 = 3;
+pub(super) const CLOSE_WRITE: i64 = 4;
 
 /// What the methods read of a `Worker`.
 #[derive(Clone, Copy, Debug)]

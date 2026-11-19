@@ -98,6 +98,9 @@ impl NativeSocket<'_> {
     }
 }
 
+/// Balanced System V message queue mode (`SW_MSGQUEUE_BALANCE`).
+pub const MSGQUEUE_BALANCE: u8 = 2;
+
 /// An end of a worker's pipe.
 #[derive(Clone, Copy)]
 pub enum PipeEnd {
@@ -712,7 +715,6 @@ pub fn copy_for_process<'a>(
     id: usize,
     copy: &mut WorkerRecord,
 ) -> Option<NativeSocket<'a>> {
-    const MSGQUEUE_BALANCE: u8 = 2;
     let pool = pool.record();
     // Copied by value, as upstream's `new Worker(...)` does.
     let from = pool.worker(id)?;
