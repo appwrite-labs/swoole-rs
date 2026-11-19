@@ -22,10 +22,12 @@
 #ifdef SW_USE_PGSQL
 #include "php_pdo_pgsql_int.h"
 #include "main/php_memory_streams.h"
+/* Stays C (budget): PDO's method signature over the raw stmt. */
 static int pdo_pgsql_stmt_fetch(pdo_stmt_t *stmt, enum pdo_fetch_orientation ori, zend_long offset) {
     return pdo_pgsql_fetch_row(stmt->dbh, stmt, stmt->driver_data, ori, offset);
 }
 
+/* Stays C (allocator): zend_string_init, php_stream_memory_open and php_stream_to_zval. */
 /* libpq owns the decoded bytes; Zend's memory stream retains the copied string. */
 bool pdo_pgsql_bytea_stream(const char *text, zval *output) {
     size_t len;
@@ -44,18 +46,22 @@ bool pdo_pgsql_bytea_stream(const char *text, zval *output) {
     return true;
 }
 
+/* Stays C (budget): PDO's method signature over the raw stmt. */
 static int pdo_pgsql_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *output, enum pdo_param_type *type) {
     return pdo_pgsql_read_column(stmt, stmt->dbh->driver_data, stmt->driver_data, pdo_pgsql_statement_result(stmt->driver_data), colno, type, output);
 }
 
+/* Stays C (budget): libpq returns a raw pointer into its result. */
 struct iovec pdo_pgsql_column_bytes(PGresult *result, int row, int column) {
     return (struct iovec){PQgetvalue(result, row, column), PQgetlength(result, row, column)};
 }
 
+/* Stays C (budget): PDO's method signature over the raw stmt. */
 static int pdo_pgsql_stmt_describe(pdo_stmt_t *stmt, int colno) {
     return pdo_pgsql_describe_column(pdo_pgsql_statement_result(stmt->driver_data), colno, &stmt->columns[colno]);
 }
 
+/* Stays C (budget): PDO's method signature over the raw stmt. */
 static int pdo_pgsql_stmt_get_column_meta(pdo_stmt_t *stmt, zend_long colno, zval *output) {
     if (colno < 0 || colno >= stmt->column_count) {
         return FAILURE;
@@ -63,15 +69,18 @@ static int pdo_pgsql_stmt_get_column_meta(pdo_stmt_t *stmt, zend_long colno, zva
     return pdo_pgsql_column_meta(stmt->dbh->driver_data, pdo_pgsql_statement_result(stmt->driver_data), (int)colno, output);
 }
 
+/* Stays C (version): an entry of the version's method table. */
 static int pdo_pgsql_stmt_cursor_closer(pdo_stmt_t *stmt) {
     return 1;
 }
 
+/* Stays C (budget): zend_hash_find_ptr over the raw rewrite map. */
 /* PDO stores zend_string pointers under the original parameter names. */
 const zend_string *pdo_pgsql_rewritten_name(pdo_stmt_t *stmt, zend_string *name) {
     return stmt->bound_param_map ? zend_hash_find_ptr(stmt->bound_param_map, name) : NULL;
 }
 
+/* Stays C (allocator, budget): php_stream_from_zval_no_verify, php_stream_copy_to_mem and ZVAL_STR. */
 /* Zend exposes PostgreSQL's large-object handle through a stream's private data. */
 bool pdo_pgsql_bind_stream(pdo_dbh_t *dbh, pdo_stmt_t *stmt, void *params, size_t index, zval *value) {
     php_stream *stream;
@@ -92,31 +101,16 @@ bool pdo_pgsql_bind_stream(pdo_dbh_t *dbh, pdo_stmt_t *stmt, void *params, size_
     return pdo_pgsql_bind_value(params, index, PDO_PARAM_LOB, value);
 }
 
-/* Zend owns the bound record. The normalized value may be a PHP reference. */
+/* Stays C (budget): PDO's bound record is reached through raw pointers, and the value it binds may
+ * be a PHP reference (ZVAL_DEREF). crates/pgsql decides what each event does. */
 static int pdo_pgsql_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *param, enum pdo_param_event event) {
-    if (!param->is_param) {
-        return 1;
-    }
-    if (event == PDO_PARAM_EVT_NORMALIZE) {
-        return stmt->supports_placeholders == PDO_PLACEHOLDER_NAMED
-            ? pdo_pgsql_normalize_parameter(stmt->dbh, stmt, param->name, &param->paramno)
-            : pdo_pgsql_emulated_parameter(&param->param_type, &param->parameter);
-    }
-    if (stmt->supports_placeholders != PDO_PLACEHOLDER_NAMED) {
-        return 1;
-    }
-    if (event == PDO_PARAM_EVT_ALLOC) {
-        return pdo_pgsql_check_parameter(stmt->dbh, stmt, stmt->bound_param_map, param->paramno);
-    }
-    if (event != PDO_PARAM_EVT_EXEC_PRE) {
-        return 1;
-    }
     zval *value = &param->parameter;
     ZVAL_DEREF(value);
-    return pdo_pgsql_bind_parameter(stmt->dbh, stmt, stmt->driver_data, stmt->bound_param_map,
-                                    param->paramno, PDO_PARAM_TYPE(param->param_type), value);
+    return pdo_pgsql_param_event(stmt->dbh, stmt, stmt->driver_data, stmt->bound_param_map, event, param->is_param,
+                                 param->name, &param->paramno, &param->param_type, &param->parameter, value);
 }
 
+/* Stays C (version, globals): the database object check reads EG(objects_store) before 8.5. */
 static int pgsql_stmt_dtor(pdo_stmt_t *stmt) {
 #if PHP_VERSION_ID >= 80500
     bool live = php_pdo_stmt_valid_db_obj_handle(stmt);
@@ -131,12 +125,14 @@ static int pgsql_stmt_dtor(pdo_stmt_t *stmt) {
     return 1;
 }
 
+/* Stays C (budget): PDO's method signature over the raw stmt. */
 static int pgsql_stmt_execute(pdo_stmt_t *stmt) {
     return pdo_pgsql_execute(stmt->dbh, stmt, stmt->driver_data, stmt->active_query_string,
                              stmt->bound_params ? zend_hash_num_elements(stmt->bound_params) : 0);
 }
 
 #if PHP_VERSION_ID >= 80400
+/* Stays C (version, allocator): an 8.4 method, spprintf. */
 static int pgsql_stmt_get_attr(pdo_stmt_t *stmt, zend_long attr, zval *value) {
 #ifdef HAVE_PG_RESULT_MEMORY_SIZE
     if (attr == PDO_PGSQL_ATTR_RESULT_MEMORY_SIZE) {
@@ -156,6 +152,7 @@ static int pgsql_stmt_get_attr(pdo_stmt_t *stmt, zend_long attr, zval *value) {
 }
 #endif
 
+/* Stays C (version): get_attribute exists from 8.4. */
 const struct pdo_stmt_methods swoole_pgsql_stmt_methods = {
     .dtor = pgsql_stmt_dtor,
     .executer = pgsql_stmt_execute,
@@ -175,6 +172,7 @@ const struct pdo_stmt_methods swoole_pgsql_stmt_methods = {
 
 extern int pdo_pgsql_scan_token(struct iovec, size_t *);
 
+/* Stays C (version, budget): 8.4's scanner advances PDO's raw cursor. */
 /* PDO includes the terminal NUL in end. Rust receives only the query bytes. */
 int pdo_pgsql_scanner(pdo_scanner_t *s) {
     size_t consumed;

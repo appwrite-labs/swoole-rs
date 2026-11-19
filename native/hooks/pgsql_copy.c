@@ -25,6 +25,7 @@
 
 #include "ext/standard/file.h"
 
+/* Stays C (allocator): ZVAL_STRINGL. */
 /* Transfer counted COPY bytes to a Zend string before freeing libpq's buffer. */
 int pdo_pgsql_copy_row(PGconn *conn, zval *row)
 {
@@ -37,22 +38,26 @@ int pdo_pgsql_copy_row(PGconn *conn, zval *row)
     return count;
 }
 
+/* Stays C (globals): FG(default_context). */
 php_stream *pdo_pgsql_copy_open(const char *path, bool writing)
 {
     return php_stream_open_wrapper_ex(path, writing ? "wb" : "rb", 0, NULL, FG(default_context));
 }
 
+/* Stays C (budget): php_stream_write over the raw stream. */
 bool pdo_pgsql_copy_write(php_stream *stream, zend_string *row)
 {
     ssize_t size = php_stream_write(stream, ZSTR_VAL(row), ZSTR_LEN(row));
     return size >= 0 && (size_t)size == ZSTR_LEN(row);
 }
 
+/* Stays C (allocator): php_stream_close frees with the caller's file and line. */
 void pdo_pgsql_copy_close(php_stream *stream)
 {
     php_stream_close(stream);
 }
 
+/* Stays C (allocator): php_stream_get_line allocates; ZVAL_STRINGL and efree. */
 bool pdo_pgsql_copy_line(php_stream *stream, zval *row)
 {
     size_t length;
@@ -65,6 +70,7 @@ bool pdo_pgsql_copy_line(php_stream *stream, zval *row)
     return true;
 }
 
+/* Stays C (version): 8.5 accepts any iterable. */
 bool pdo_pgsql_check_rows(zval *rows)
 {
 #if PHP_VERSION_ID >= 80500
@@ -76,12 +82,14 @@ bool pdo_pgsql_check_rows(zval *rows)
     return true;
 }
 
+/* Stays C (budget): try_convert_to_string over the raw row. */
 static bool send_row(pdo_pgsql_db_handle *handle, zval *row)
 {
     return row && try_convert_to_string(row)
         && pdo_pgsql_send_copy_data(handle, (struct iovec){Z_STRVAL_P(row), Z_STRLEN_P(row)}, true);
 }
 
+/* Stays C (version, globals, budget): 8.5's iterator, EG(exception) and ZEND_HASH_FOREACH. */
 bool pdo_pgsql_send_rows(pdo_pgsql_db_handle *handle, zval *rows)
 {
     zval *row;

@@ -8,9 +8,11 @@ use std::{
 };
 use swoole_rs_corebase::{CCast, CellExt, sys::Text};
 use swoole_rs_zend::sys::{
-    PHP_VERSION_ID, pdo_param_type, pdo_param_type_PDO_PARAM_BOOL as BOOL,
-    pdo_param_type_PDO_PARAM_INT as INT, pdo_param_type_PDO_PARAM_LOB as LOB,
-    pdo_param_type_PDO_PARAM_STR as STR,
+    PHP_VERSION_ID, pdo_param_event, pdo_param_event_PDO_PARAM_EVT_ALLOC as EVT_ALLOC,
+    pdo_param_event_PDO_PARAM_EVT_EXEC_PRE as EVT_EXEC_PRE,
+    pdo_param_event_PDO_PARAM_EVT_NORMALIZE as EVT_NORMALIZE, pdo_param_type,
+    pdo_param_type_PDO_PARAM_BOOL as BOOL, pdo_param_type_PDO_PARAM_INT as INT,
+    pdo_param_type_PDO_PARAM_LOB as LOB, pdo_param_type_PDO_PARAM_STR as STR,
 };
 use swoole_rs_zend::{
     OwnedArray,
@@ -647,8 +649,7 @@ fn send_statement(dbh: &Dbh, stmt: &Stmt, state: &Statement, query: Text<'_>, co
 
 /// Resolve a PDO parameter to the index expected by the bundled statement.
 /// Direct dollar names keep their parsed index; map entries are one-based.
-#[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_normalize_parameter(
+fn normalize_parameter(
     dbh: &Dbh,
     stmt: &Stmt,
     name: Option<&swoole_rs_zend::ZStr>,
@@ -683,8 +684,7 @@ extern "C" fn pdo_pgsql_normalize_parameter(
     false
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_check_parameter(
+fn check_parameter(
     dbh: &Dbh,
     stmt: &Stmt,
     map: Option<&swoole_rs_zend::Array>,
@@ -704,9 +704,32 @@ extern "C" fn pdo_pgsql_check_parameter(
 }
 
 swoole_rs_zend::exports! {
-/// With emulated placeholders, bind input booleans as PostgreSQL truth literals.
+/// PDO's `param_hook` for a bound parameter (`is_param`; a bound column needs
+/// nothing). With named placeholders a name is resolved, checked against the
+/// rewrite map when the parameter is allocated and bound before each execute;
+/// with emulated ones, only booleans are normalized. `value` is `slot`'s referent.
+#[expect(clippy::too_many_arguments, reason = "PDO's bound-parameter record, field by field")]
 #[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_emulated_parameter(kind: &Cell<pdo_param_type>, slot: &Slot) -> bool {
+extern "C" fn pdo_pgsql_param_event(dbh: &Dbh, stmt: &Stmt, state: &Statement, map: Option<&swoole_rs_zend::Array>,
+    event: pdo_param_event, is_param: bool, name: Option<&swoole_rs_zend::ZStr>, index: &Cell<i64>,
+    kind: &Cell<pdo_param_type>, slot: &Slot, value: &Slot) -> bool {
+    if !is_param {
+        return true;
+    }
+    let named = state.named.get();
+    match event {
+        EVT_NORMALIZE if named => normalize_parameter(dbh, stmt, name, index),
+        EVT_NORMALIZE => emulated_parameter(kind, slot),
+        EVT_ALLOC if named => check_parameter(dbh, stmt, map, index.get()),
+        // PDO_PARAM_TYPE strips the upper 16 flag bits.
+        EVT_EXEC_PRE if named => bind_parameter(dbh, stmt, state, map, index.get(), kind.get() & 0xffff, value),
+        _ => true,
+    }
+}
+}
+
+/// With emulated placeholders, bind input booleans as PostgreSQL truth literals.
+fn emulated_parameter(kind: &Cell<pdo_param_type>, slot: &Slot) -> bool {
     use swoole_rs_zend::sys::pdo_param_type_PDO_PARAM_INPUT_OUTPUT as INPUT_OUTPUT;
     // PDO_PARAM_TYPE strips the upper 16 flag bits.
     if kind.get() & 0xffff != BOOL || kind.get() & INPUT_OUTPUT != 0 {
@@ -726,23 +749,50 @@ extern "C" fn pdo_pgsql_emulated_parameter(kind: &Cell<pdo_param_type>, slot: &S
     true
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn pdo_pgsql_bind_parameter(dbh: &Dbh, stmt: &Stmt, state: &Statement, map: Option<&swoole_rs_zend::Array>,
-    index: i64, kind: pdo_param_type, value: &Slot) -> bool {
-    #[expect(improper_ctypes, reason = "C retains the opaque Rust parameter storage until statement destruction")]
+fn bind_parameter(
+    dbh: &Dbh,
+    stmt: &Stmt,
+    state: &Statement,
+    map: Option<&swoole_rs_zend::Array>,
+    index: i64,
+    kind: pdo_param_type,
+    value: &Slot,
+) -> bool {
+    #[expect(
+        improper_ctypes,
+        reason = "C retains the opaque Rust parameter storage until statement destruction"
+    )]
     unsafe extern "C" {
-        safe fn pdo_pgsql_bind_stream(dbh: &Dbh, stmt: &Stmt, params: &ParameterStorage, index: usize, slot: &Slot) -> bool;
+        safe fn pdo_pgsql_bind_stream(
+            dbh: &Dbh,
+            stmt: &Stmt,
+            params: &ParameterStorage,
+            index: usize,
+            slot: &Slot,
+        ) -> bool;
     }
     let Some(map) = map else { return true };
-    let params = state.params.get_or_init(|| ParameterStorage::new(map.elements() as usize));
-    let Ok(index) = usize::try_from(index) else { return true };
+    let params = state
+        .params
+        .get_or_init(|| ParameterStorage::new(map.elements() as usize));
+    let Ok(index) = usize::try_from(index) else {
+        return true;
+    };
     if index >= params.owned.len() {
-        crate::driver::pdo_pgsql_raise(dbh, Some(stmt), 0, Some(c"HY093".into()), Some(c"parameter was not defined".into()));
+        crate::driver::pdo_pgsql_raise(
+            dbh,
+            Some(stmt),
+            0,
+            Some(c"HY093".into()),
+            Some(c"parameter was not defined".into()),
+        );
         return false;
     }
     if kind == LOB && value.value().kind() == swoole_rs_zend::sys::IS_RESOURCE {
         let mut bound = false;
-        if let Err(bailout) = swoole_rs_zend::contain_with(|| bound = pdo_pgsql_bind_stream(dbh, stmt, params, index, value)) {
+        if let Err(bailout) = swoole_rs_zend::contain_with(|| {
+            bound = pdo_pgsql_bind_stream(dbh, stmt, params, index, value);
+        }) {
             bailout.defer();
             return false;
         }
@@ -750,7 +800,6 @@ extern "C" fn pdo_pgsql_bind_parameter(dbh: &Dbh, stmt: &Stmt, state: &Statement
     } else {
         bind_value(params, index, kind, value)
     }
-}
 }
 
 /// Parallel libpq parameter arrays. Each slot also has stable storage for a

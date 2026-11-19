@@ -23,6 +23,7 @@
 #include "ext/pdo/php_pdo_error.h"
 #include "pgsql_driver_arginfo.h"
 
+/* Stays C (version, allocator): zend_call_known_fcc exists from 8.4; ZVAL_STRING allocates. */
 /* Zend owns the callable cache and its version-specific trampoline. */
 void pdo_pgsql_call_notice(void *callback, const char *message)
 {
@@ -34,6 +35,7 @@ void pdo_pgsql_call_notice(void *callback, const char *message)
 #endif
 }
 
+/* Stays C (version, allocator): the 8.4 cache, freed with zend_fcc_dtor and efree. */
 void pdo_pgsql_release_notice(void *callback)
 {
 #if PHP_VERSION_ID >= 80400
@@ -43,12 +45,14 @@ void pdo_pgsql_release_notice(void *callback)
 #endif
 }
 
+/* Stays C (budget): a field write through PDO's raw dbh. */
 pdo_pgsql_db_handle *pdo_pgsql_take_handle(pdo_dbh_t *dbh) {
     pdo_pgsql_db_handle *handle = dbh->driver_data;
     dbh->driver_data = NULL;
     return handle;
 }
 
+/* Stays C (version, budget): the version's method table, written through the raw stmt. */
 /* PDO calls the methods through its version-specific table. */
 void *pdo_pgsql_init_statement(pdo_stmt_t *stmt, void *state)
 {
@@ -57,6 +61,7 @@ void *pdo_pgsql_init_statement(pdo_stmt_t *stmt, void *state)
     return state;
 }
 
+/* Stays C (version, allocator): supports_placeholders is a bitfield laid out per version; ZVAL_STR and zend_string_copy. */
 bool pdo_pgsql_parse_statement(pdo_stmt_t *stmt, zend_string *sql, bool emulate, zval *query)
 {
     stmt->supports_placeholders = emulate ? PDO_PLACEHOLDER_NONE : PDO_PLACEHOLDER_NAMED;
@@ -76,6 +81,7 @@ bool pdo_pgsql_parse_statement(pdo_stmt_t *stmt, zend_string *sql, bool emulate,
 extern bool pgsql_handle_preparer(pdo_dbh_t *, zend_string *, pdo_stmt_t *, zval *);
 
 #if PHP_VERSION_ID >= 80400
+/* Stays C (version, allocator): an 8.4 method, PDO_CONSTRUCT_CHECK_WITH_CLEANUP and zend_fcc_dup into emalloc. */
 /* {{{ Sets a callback to receive DB notices (after client_min_messages has been set) */
 PHP_METHOD(PDO_PGSql_Ext, pgsqlSetNoticeCallback)
 {
@@ -109,6 +115,7 @@ cleanup:
 
 #endif
 
+/* Stays C (version): the version's generated method table. */
 static const zend_function_entry *pdo_pgsql_get_driver_methods(pdo_dbh_t *dbh, int kind)
 {
 	switch (kind) {
@@ -119,6 +126,7 @@ static const zend_function_entry *pdo_pgsql_get_driver_methods(pdo_dbh_t *dbh, i
 	}
 }
 
+/* Stays C (version): pdo_dbh_methods gains the scanner in 8.4. */
 const struct pdo_dbh_methods swoole_pdo_pgsql_methods = {
 	pdo_pgsql_handle_closer,
 	pgsql_handle_preparer,
@@ -141,10 +149,12 @@ const struct pdo_dbh_methods swoole_pdo_pgsql_methods = {
 #endif
 };
 
+/* Stays C (budget): the connection fields of PDO's raw dbh. */
 static int pdo_pgsql_handle_factory(pdo_dbh_t *dbh, zval *driver_options) {
 	return pdo_pgsql_connect(dbh, dbh->data_source, dbh->username, dbh->password, driver_options);
 }
 
+/* Stays C (version): PDO_DRIVER_HEADER. */
 const pdo_driver_t swoole_pdo_pgsql_driver = {
 	PDO_DRIVER_HEADER(pgsql),
 	pdo_pgsql_handle_factory
