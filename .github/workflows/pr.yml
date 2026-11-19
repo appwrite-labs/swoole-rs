@@ -127,7 +127,13 @@ jobs:
                                             'corpus/upstream/', *UPSTREAM_KEY, *BASELINES['phpt'][4]], text=True)
           print('all' if runner or modules == sorted(MODULES) else ' '.join(phpt_families(modules)))")
           echo "families=$families" >> "$GITHUB_OUTPUT"
-          read -r run _ <<< "$(python3 tools/ci.py phpt-baseline --saved baseline-cache || true)"
+          # phpt-baseline exits 2 when no baseline stands; any other failure is a failed lookup.
+          run=
+          if found=$(python3 tools/ci.py phpt-baseline --saved baseline-cache); then
+            read -r run _ <<< "$found"
+          elif [ $? -ne 2 ]; then
+            exit 1
+          fi
           if [ -n "$run" ]; then
             echo "baseline=$run" >> "$GITHUB_OUTPUT"
             echo 'engines=["cargo"]' >> "$GITHUB_OUTPUT"

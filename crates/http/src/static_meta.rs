@@ -32,7 +32,7 @@ pub(crate) fn static_catch(last: bool, status: &mut i32) -> bool {
     if !last {
         return false;
     }
-    *status = 404;
+    *status = crate::status::NOT_FOUND;
     true
 }
 

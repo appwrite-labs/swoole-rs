@@ -24,7 +24,7 @@ use swoole_rs_zend::{
 /// `SW_LOG_WARNING`, `SW_ERROR_HTTP_CONFLICT_HEADER`.
 const CONFLICT_HEADER: c_int = swoole_rs_error::ErrorCode::SW_ERROR_HTTP_CONFLICT_HEADER as c_int;
 /// `sw_tg_buffer()`'s size, which bounds one trailer line.
-const TRAILER_LINE: usize = 65536;
+const TRAILER_LINE: usize = swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize;
 
 /// `Swoole\Http\Response`'s `header`, `cookie` and `trailer` slots.
 static PROPERTIES: [Declared; 3] = [const { Declared::new() }; 3];

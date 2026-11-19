@@ -150,7 +150,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          read -r run _ <<< "$(python3 tools/ci.py phpt-baseline --saved baseline-cache --php "$(php -r 'echo PHP_VERSION;')" || true)"
+          # phpt-baseline exits 2 when no baseline stands; any other failure is a failed lookup.
+          run=
+          if found=$(python3 tools/ci.py phpt-baseline --saved baseline-cache --php "$(php -r 'echo PHP_VERSION;')"); then
+            read -r run _ <<< "$found"
+          elif [ $? -ne 2 ]; then
+            exit 1
+          fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
 
   # Instruction counts against benchmarks/callgrind_limits (callgrind.yml).

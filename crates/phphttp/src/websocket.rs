@@ -18,7 +18,7 @@ use std::{
 use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING};
 use swoole_rs_corebase::{CCast, CellExt, WebSocketStatus};
-use swoole_rs_http::status::SWITCHING_PROTOCOLS;
+use swoole_rs_http::status::{BAD_REQUEST, SWITCHING_PROTOCOLS};
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpserver::PortCallback;
 use swoole_rs_phpserver::{RecvData, php_swoole_get_recv_data, php_swoole_server_of, zserv};
@@ -545,7 +545,12 @@ fn close_frame(code: i32, reason: &[u8], flags: u8) -> Option<Frame> {
 
 /// `FrameObject::uncompress`: the inflated payload, as a string.
 fn uncompress(data: &[u8]) -> Option<Owned> {
-    use swoole_rs_inflate::{MessageFailure, error, message};
+    use swoole_rs_inflate::{MESSAGE_HEADROOM, MessageFailure, error, message};
+
+    const _: () = assert!(
+        MESSAGE_HEADROOM == swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize / 2,
+        "WebSocket inflate headroom must match half the standard buffer size"
+    );
     if !ZLIB.load(Relaxed) {
         warning(
             c"FrameObject::uncompress",
@@ -991,7 +996,7 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
     }
     let key = key.filter(|key| key.bytes().len() == SEC_KEY_LENGTH);
     let Some(key) = key else {
-        context.state().response.status = 400;
+        context.state().response.status = BAD_REQUEST;
         send::end(context, None)?;
         return Ok(false);
     };

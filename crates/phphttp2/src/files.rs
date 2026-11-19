@@ -6,16 +6,12 @@ use crate::server::{Value, begin_file, current, finish_file, of, respond, send_b
 use std::ffi::CString;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::offload::async_job;
+use swoole_rs_http::status::{NOT_FOUND, NOT_MODIFIED, PARTIAL_CONTENT};
 use swoole_rs_http2::{FileMode, sw_rs_http2_file_length, sw_rs_http2_file_mode};
 use swoole_rs_phphttp::http2::{Ctx, Field};
 use swoole_rs_server::static_handler::{StaticHandler, page_404};
 use swoole_rs_server::view;
 use swoole_rs_zend::bailout;
-
-/// `SW_HTTP_NOT_FOUND`, `SW_HTTP_NOT_MODIFIED` and `SW_HTTP_PARTIAL_CONTENT`.
-const NOT_FOUND: i32 = 404;
-const NOT_MODIFIED: u32 = 304;
-const PARTIAL_CONTENT: i32 = 206;
 
 /// A file opened read-only, closed on drop.
 struct File(libc::c_int);
@@ -90,7 +86,7 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
         return false;
     }
     if handler.status() == NOT_FOUND {
-        set(ctx, Field::Status, 404);
+        set(ctx, Field::Status, NOT_FOUND.cast_unsigned());
         respond(ctx, &page_404());
         return true;
     }
@@ -108,7 +104,7 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
         && !since.is_empty()
         && handler.is_modified(&since)
     {
-        set(ctx, Field::Status, NOT_MODIFIED);
+        set(ctx, Field::Status, NOT_MODIFIED.cast_unsigned());
         return true;
     }
     let (range, if_range) = (

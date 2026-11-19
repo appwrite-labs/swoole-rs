@@ -3,6 +3,7 @@
 //! listing or the file's ranges, sent to the connection.
 use crate::static_handler::{Effects, StaticHandler, page_404};
 use swoole_rs_corebase::{CCast, ServerEvent};
+use swoole_rs_http::status::{NOT_FOUND, PARTIAL_CONTENT};
 use swoole_rs_http::{HttpStaticHeaders, HttpStaticTask, StaticHead, StaticRange};
 
 /// What [`select`] asks of a static handler, in upstream `select_static_handler`'s order.
@@ -91,9 +92,6 @@ pub trait Exchange {
     fn send(&self, kind: ServerEvent, data: &[u8]);
 }
 
-/// `SW_HTTP_NOT_FOUND`, `SW_HTTP_PARTIAL_CONTENT`.
-const NOT_FOUND: i32 = 404;
-const PARTIAL_CONTENT: i32 = 206;
 /// `SW_HTTP_HEAD`.
 const HTTP_HEAD: u8 = 3;
 /// `SW_HTTP_SERVER_SOFTWARE`.

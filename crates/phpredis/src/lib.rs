@@ -26,7 +26,9 @@ use std::{
 use swoole_rs_corebase::{CellExt, log::set_last_error, sys::set_errno};
 use swoole_rs_phpserver::REDIS_SERVER as SERVER;
 use swoole_rs_phpstubs::redis_server as stubs;
-use swoole_rs_protocols::{RespKind, RespPhpState, resp_handler_key, resp_php_next};
+use swoole_rs_protocols::{
+    REDIS_MAX_COMMAND_SIZE, RespKind, RespPhpState, resp_handler_key, resp_php_next,
+};
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::host::callable::Callable;
 use swoole_rs_zend::{
@@ -34,8 +36,6 @@ use swoole_rs_zend::{
     sys::{ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, zend_long},
 };
 
-/// `SW_REDIS_MAX_COMMAND_SIZE`.
-const MAX_COMMAND_SIZE: usize = 64;
 /// `swoole::redis::ReplyType`, as the class constants name them.
 const REPLY_TYPES: [(&std::ffi::CStr, zend_long); 7] = [
     (c"NIL", format::NIL),
@@ -138,7 +138,7 @@ fn set_handler(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if command.is_empty() || command.len() >= MAX_COMMAND_SIZE {
+    if command.is_empty() || command.len() >= REDIS_MAX_COMMAND_SIZE {
         bailout::defer(report(true, E_ERROR, b"invalid command"));
         call.set_bool(false);
         return;
@@ -204,7 +204,7 @@ fn receive(
         server_methods::close(serv, fd, false);
         return Ok(true);
     }
-    if command.len() >= MAX_COMMAND_SIZE {
+    if command.len() >= REDIS_MAX_COMMAND_SIZE {
         let head = command.get(..8).unwrap_or(command);
         let mut message = b"command [".to_vec();
         message.extend_from_slice(until_nul(head));

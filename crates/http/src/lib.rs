@@ -51,6 +51,12 @@ mod static_meta;
 pub mod status {
     pub const SWITCHING_PROTOCOLS: i32 = 101;
     pub const NO_CONTENT: i32 = 204;
+    pub const PARTIAL_CONTENT: i32 = 206;
+    pub const NOT_MODIFIED: i32 = 304;
+    pub const BAD_REQUEST: i32 = 400;
+    pub const NOT_FOUND: i32 = 404;
+    pub const REQUEST_ENTITY_TOO_LARGE: i32 = 413;
+    pub const RANGE_NOT_SATISFIABLE: i32 = 416;
     pub const INTERNAL_SERVER_ERROR: i32 = 500;
     pub const BAD_GATEWAY: i32 = 502;
     pub const SERVICE_UNAVAILABLE: i32 = 503;
