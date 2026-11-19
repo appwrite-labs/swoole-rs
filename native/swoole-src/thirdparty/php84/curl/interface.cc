@@ -798,13 +798,13 @@ void swoole_setup_easy_copy_handlers(php_curl *ch, php_curl *source) {
     ch->handlers.read->res = source->handlers.read->res;
 
     if (ZEND_FCC_INITIALIZED(source->handlers.read->fcc)) {
-        zend_fcc_dup(&source->handlers.read->fcc, &source->handlers.read->fcc);
+        zend_fcc_dup(&ch->handlers.read->fcc, &source->handlers.read->fcc);
     }
     if (ZEND_FCC_INITIALIZED(source->handlers.write->fcc)) {
-        zend_fcc_dup(&source->handlers.write->fcc, &source->handlers.write->fcc);
+        zend_fcc_dup(&ch->handlers.write->fcc, &source->handlers.write->fcc);
     }
     if (ZEND_FCC_INITIALIZED(source->handlers.write_header->fcc)) {
-        zend_fcc_dup(&source->handlers.write_header->fcc, &source->handlers.write_header->fcc);
+        zend_fcc_dup(&ch->handlers.write_header->fcc, &source->handlers.write_header->fcc);
     }
 
     curl_easy_setopt(ch->cp, CURLOPT_ERRORBUFFER, ch->err.str);
@@ -902,7 +902,12 @@ static bool php_curl_set_callable_handler(zend_fcall_info_cache *const handler_f
         if (!result) {                                                                                                 \
             return FAILURE;                                                                                            \
         }                                                                                                              \
-        curl_easy_setopt(curl_ptr->cp, constant_no_function##FUNCTION, (c_callback));                                  \
+        /* No callable: libcurl keeps its default. */                                                                  \
+        if (ZEND_FCC_INITIALIZED(curl_ptr->handler_fcc)) {                                                             \
+            curl_easy_setopt(curl_ptr->cp, constant_no_function##FUNCTION, (c_callback));                              \
+        } else {                                                                                                       \
+            curl_easy_setopt(curl_ptr->cp, constant_no_function##FUNCTION, NULL);                                      \
+        }                                                                                                              \
         curl_easy_setopt(curl_ptr->cp, constant_no_function##DATA, curl_ptr);                                          \
         break;                                                                                                         \
     }
