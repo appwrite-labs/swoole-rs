@@ -5,17 +5,18 @@
 //! the buffer and the protocol's callbacks; `default_length_func`; and `swoole_hton64`/`swoole_ntoh64`. Logs name the
 //! upstream function that wrote them.
 use core::ffi::{CStr, c_int};
+use core::sync::atomic::Ordering;
 use swoole_rs_clients::client::{ClientFraming, Framing};
 use swoole_rs_clients::protocol::{Package, Protocol};
 use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_WARNING as LOG_WARNING};
 use swoole_rs_corebase::net_types::PacketLength;
-use swoole_rs_corebase::reactor::{Caught, Socket, SocketFields};
+use swoole_rs_corebase::reactor::{Caught, Socket, SocketFields, swr_v1_socket_reset_on_close};
 use swoole_rs_corebase::{DataHead, log, swr_v1_core_pagesize};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_framing::recv::{self, Buffer, Effects, Received, Status, recv};
 use swoole_rs_framing::recv::{
-    FLAG_DYNAMIC, FLAG_REMOVED, FLAG_SKIP, FLAG_TLS, FLAG_WAIT, Mode, Op,
+    FLAG_DYNAMIC, FLAG_PAUSED, FLAG_REMOVED, FLAG_SKIP, FLAG_TLS, FLAG_WAIT, Mode, Op,
 };
 use swoole_rs_framing::{DefaultLength, default_length};
 use swoole_rs_server::Shared;
@@ -118,6 +119,8 @@ pub(crate) trait Packages {
     /// `onPackage` over a whole package; whether it succeeded. No reference to the
     /// protocol is held across it: the callback may run PHP that rewrites it.
     fn dispatch(&self, r: &Recv<'_>, package: Package<'_>) -> bool;
+    /// Whether the socket, which is out of the reactor, was paused rather than closed.
+    fn paused(&self) -> bool;
 }
 
 /// The protocol's `onPackage` over `package`; false without one.
@@ -138,6 +141,9 @@ impl Packages for Callbacks {
     #[inline(always)]
     fn dispatch(&self, r: &Recv<'_>, package: Package<'_>) -> bool {
         protocol_dispatch(r, package)
+    }
+    fn paused(&self) -> bool {
+        false
     }
 }
 
@@ -161,7 +167,7 @@ impl<K: Packages> With<'_, K> {
     /// closed it.
     #[inline(always)]
     fn refresh(&mut self, flags: &mut u32) {
-        *flags = self.0.socket.read(socket_flags);
+        *flags = self.0.socket.read(|s| socket_flags(s, || self.2.paused()));
         self.1 = *flags & FLAG_WAIT != 0;
     }
 
@@ -175,10 +181,28 @@ impl<K: Packages> With<'_, K> {
     }
 }
 
-pub(crate) fn socket_flags(socket: &SocketFields) -> u32 {
+pub(crate) fn socket_flags(socket: &SocketFields, paused: impl FnOnce() -> bool) -> u32 {
     (if socket.removed { FLAG_REMOVED } else { 0 })
         | (if socket.recv_wait { FLAG_WAIT } else { 0 })
         | (if socket.ssl().is_null() { 0 } else { FLAG_TLS })
+        | (if socket.removed && paused() {
+            FLAG_PAUSED
+        } else {
+            0
+        })
+}
+
+/// A session out of the reactor whose connection no one is closing: `pause` took its
+/// socket out to stop reading.
+pub(crate) fn paused(conn: swoole_rs_server::Connection<'_>) -> bool {
+    conn.is_active()
+        && conn.closed().load(Ordering::Relaxed) == 0
+        && !(conn.closing()
+            || conn.close_actively()
+            || conn.close_queued()
+            || conn.close_reset()
+            || conn.close_force()
+            || conn.peer_closed())
 }
 
 /// `proto_error`: the warning, with the peer's address (or the socket's own when
@@ -223,20 +247,22 @@ impl<K: Packages> Effects for With<'_, K> {
     }
     /// A length leaves the socket as it was; only a failed one refreshes `flags`.
     #[inline(always)]
-    fn length(&mut self, flags: &mut u32) -> Option<usize> {
+    fn length(&mut self, from: usize, flags: &mut u32) -> Option<usize> {
         self.apply_wait(*flags);
-        let length = self.2.length(&self.0, self.3.view());
+        let length = self
+            .2
+            .length(&self.0, self.3.view().get(from..).unwrap_or_default());
         if length.is_none() {
             self.refresh(flags);
         }
         length
     }
     #[inline(always)]
-    fn dispatch(&mut self, flags: &mut u32) -> bool {
+    fn dispatch(&mut self, from: usize, flags: &mut u32) -> bool {
         self.apply_wait(*flags);
         let b = &mut *self.3;
         let length = usize::try_from(b.offset().unsigned_abs()).unwrap_or(usize::MAX);
-        let handled = self.2.dispatch(&self.0, Package::of(b, 0, length));
+        let handled = self.2.dispatch(&self.0, Package::of(b, from, length));
         self.refresh(flags);
         handled
     }
@@ -380,6 +406,7 @@ fn rare(r: Recv<'_>, b: &mut StringBuffer, op: Op, arg: usize) {
                 &message,
             );
         }
+        Op::Reset => _ = swr_v1_socket_reset_on_close(s.fd()),
     }
 }
 
@@ -404,7 +431,7 @@ pub(crate) fn receive<'a, K: Packages>(
         buffer,
     );
     let (mut flags, skip) =
-        initial.unwrap_or_else(|| socket.read(|s| (socket_flags(s), s.skip_recv)));
+        initial.unwrap_or_else(|| socket.read(|s| (socket_flags(s, || r.2.paused()), s.skip_recv)));
     r.1 = flags & FLAG_WAIT != 0;
     let mut head = 0;
     if let Some(fixed) = K::HEAD {

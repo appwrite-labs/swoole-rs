@@ -68,8 +68,12 @@ pub(crate) fn on_read(
     };
     let port = port.config();
     let (recv, framing_flags) = socket.edit(|s| {
-        let flags = matches!(kind, Readable::Length | Readable::Eof)
-            .then(|| (framing_recv::socket_flags(s), s.skip_recv));
+        let flags = matches!(kind, Readable::Length | Readable::Eof).then(|| {
+            (
+                framing_recv::socket_flags(s, || framing_recv::paused(conn)),
+                s.skip_recv,
+            )
+        });
         (s.recv_buffer.take(), flags)
     });
     let recv = recv.unwrap_or_else(|| {
