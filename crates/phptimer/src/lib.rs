@@ -7,7 +7,7 @@
 
 use std::ffi::{CStr, c_int};
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::timer::php;
+use swoole_rs_corebase::timer::{MIN_MS, MIN_SEC, php};
 use swoole_rs_corebase::{log::set_last_error, thread_reactor};
 use swoole_rs_phpstubs::timer;
 use swoole_rs_zend::{
@@ -18,7 +18,6 @@ use swoole_rs_zend::{
 use swoole_rs_zend::{method_table, sys as z};
 
 /// `SW_TIMER_MIN_MS`, `SW_TIMER_MAX_MS` (`LONG_MAX`) and their seconds.
-const MIN_MS: i64 = 1;
 const MAX_MS: i64 = i64::MAX;
 /// `SW_ERROR_PHP_FATAL_ERROR` and `SW_ERROR_PHP_RUNTIME_NOTICE`.
 const PHP_FATAL_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as c_int;
@@ -67,8 +66,8 @@ pub fn minit(minit: &Minit) -> Result<(), Bailout> {
         parent,
         |_, _| {},
     );
-    minit.long_constant(c"SWOOLE_TIMER_MIN_MS", MIN_MS);
-    minit.double_constant(c"SWOOLE_TIMER_MIN_SEC", 0.001);
+    minit.long_constant(c"SWOOLE_TIMER_MIN_MS", i64::from(MIN_MS));
+    minit.double_constant(c"SWOOLE_TIMER_MIN_SEC", MIN_SEC);
     minit.long_constant(c"SWOOLE_TIMER_MAX_MS", MAX_MS);
     let max_sec = MAX_MS.c_cast::<f64>() / 1000.0;
     minit.double_constant(c"SWOOLE_TIMER_MAX_SEC", max_sec);
@@ -138,7 +137,7 @@ fn add(call: &Call, persistent: bool) {
         call.set_bool(false);
         return;
     };
-    if ms < MIN_MS {
+    if ms < i64::from(MIN_MS) {
         fatal_warning(c"Timer must be greater than or equal to 1");
         callable.discard();
         call.set_bool(false);

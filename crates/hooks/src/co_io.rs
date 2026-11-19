@@ -456,8 +456,6 @@ pub fn timed_out(
     now: f64,
     kind: swoole_rs_corebase::reactor::TimeoutKind,
 ) -> bool {
-    /// `SW_TIMER_MIN_SEC`.
-    const MIN_SEC: f64 = 0.001;
     if timeout <= 0.0 || timeout.is_nan() {
         return false;
     }
@@ -466,7 +464,7 @@ pub fn timed_out(
         return false;
     }
     let left = timeout - (now - *startup);
-    if left < MIN_SEC {
+    if left < swoole_rs_corebase::timer::MIN_SEC {
         set_err(socket, libc::ETIMEDOUT);
         return true;
     }

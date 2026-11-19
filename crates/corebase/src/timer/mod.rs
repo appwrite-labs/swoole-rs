@@ -21,6 +21,10 @@ pub use wrapper::{
 };
 pub use wrapper::{swoole_timer_exists, swoole_timer_get};
 
+/// Smallest interval accepted by Swoole's millisecond timers.
+pub const MIN_MS: i32 = 1;
+pub const MIN_SEC: f64 = MIN_MS as f64 / 1000.0;
+
 /// What a queue operation did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {

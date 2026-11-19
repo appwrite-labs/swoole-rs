@@ -8,14 +8,13 @@ use swoole_rs_clients::protocol::{GetPackageLength, Protocol};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::{SW_IPC_BUFFER_SIZE, SocketType};
 use swoole_rs_corebase::swoole_type_size;
+use swoole_rs_corebase::timer::MIN_SEC as TIMER_MIN_SEC;
 use swoole_rs_corebase::tls::{self as tls, OwnedTlsContext, Text, Value};
 use swoole_rs_ports::lifecycle::{context_dup, sni_add};
 use swoole_rs_server::port_config::{LengthOwner, PortConfig};
 use swoole_rs_server::view;
 use swoole_rs_zend::{E_ERROR, E_WARNING, Message};
 
-/// `SW_TIMER_MIN_SEC`.
-const TIMER_MIN_SEC: f64 = 0.001;
 /// `SW_SSL_DTLS`.
 const SSL_DTLS: i64 = 1 << 7;
 

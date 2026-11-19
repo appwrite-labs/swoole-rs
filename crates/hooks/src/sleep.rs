@@ -149,7 +149,7 @@ pub fn system_sleep(sec: f64) -> bool {
         let co = swoole_rs_corebase::coroutine::current_safe();
         let code = swoole_rs_corebase::coroutine::yield_timed(
             co,
-            swoole_rs_corebase::offload::sleep_timeout(sec, 0.001),
+            swoole_rs_corebase::offload::sleep_timeout(sec, swoole_rs_corebase::timer::MIN_SEC),
         );
         let resumed = swoole_rs_corebase::coroutine::yield_resumed(code);
         resumed || swoole_rs_corebase::log::last_error() != CANCELED
