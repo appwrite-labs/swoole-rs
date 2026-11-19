@@ -39,19 +39,9 @@ typedef void (*swr_oracle_static_line)(void *out, const char *line, size_t lengt
 }
 
 namespace upstream_static_select {
-// As upstream include/swoole_config.h, swoole_http.h and swoole.h, and src/core/base.cc's sw_snprintf.
-#define SW_HTTP_SERVER_SOFTWARE "swoole-http-server"
-#define SW_HTTP_PAGE_CSS                                                                                               \
-    "<style> \
-body { padding: 0.5em; line-height: 2; } \
-h1 { font-size: 1.5em; padding-bottom: 0.3em; border-bottom: 1px solid #ccc; } \
-ul { list-style-type: disc; } \
-footer { border-top: 1px solid #ccc; } \
-a { color: #0969da; } \
-</style>"
-#define SW_HTTP_POWER_BY "<footer><i>Powered by Swoole</i></footer>"
-#define SW_HTTP_PAGE_404 "<html><body>" SW_HTTP_PAGE_CSS "<h1>HTTP 404 Not Found</h1>" SW_HTTP_POWER_BY "</body></html>"
-#define sw_unlikely(x) __builtin_expect(!!(x), 0)
+// The pinned macros it uses (build.rs copies them from upstream/include); the enums below are
+// as upstream's swoole_http.h and swoole.h, and sw_snprintf as src/core/base.cc's.
+#include "http_static_select_pinned.inc"
 enum { SW_HTTP_GET = 2, SW_HTTP_HEAD = 3 };
 enum { SW_HTTP_PARTIAL_CONTENT = 206, SW_HTTP_NOT_FOUND = 404 };
 enum ServerEventType { SW_SERVER_EVENT_SEND_DATA = 2, SW_SERVER_EVENT_SEND_FILE = 3, SW_SERVER_EVENT_CLOSE = 4 };
