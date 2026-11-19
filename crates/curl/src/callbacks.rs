@@ -1,4 +1,4 @@
-//! libcurl's callbacks for a `CurlHandle` and the options that set them (#5132): the
+//! `curl_exec`, libcurl's callbacks for a `CurlHandle` and the options that set them (#5132): the
 //! callable options of `curl_setopt`, `CURLINFO_HEADER_OUT`, and the check for streams
 //! closed under a handle.
 //!
@@ -7,7 +7,7 @@
 //! `native/hooks/curl_handle.cc`. PHP code runs in every callable, and can set an option of
 //! the handle it runs for, copy it or yield the coroutine, so nothing read from the handle
 //! is kept across a call into PHP, and each call is contained.
-use super::php_handle::PhpHandle;
+use super::php_handle::{PhpHandle, argument, checked, swoole_curl_easy};
 use super::setopt::{StdioFile, libcurl, swoole_curl_file_stream, swoole_curl_save_error, warn};
 use crate::Easy;
 use std::ffi::{CStr, CString, c_int, c_void};
@@ -58,6 +58,15 @@ unsafe extern "C" {
     safe fn swoole_curl_read_stream(handle: PhpHandle<'_>, value: &mut Owned);
     // The response `CURLOPT_RETURNTRANSFER` collects. Bails out past the memory limit.
     safe fn swoole_curl_buffer_append(handle: PhpHandle<'_>, data: Data<'_>, length: usize);
+    // The collected response as `curl_exec` returns it, which the handle keeps until its
+    // next transfer; false with none collected.
+    safe fn swoole_curl_buffer_result(handle: PhpHandle<'_>, result: &mut Owned) -> bool;
+    safe fn swoole_curl_buffer_free(handle: PhpHandle<'_>);
+    // `_php_curl_cleanup_handle`: the last transfer's response, request header and error.
+    safe fn swoole_curl_cleanup_handle(handle: PhpHandle<'_>);
+    // Flushes the stream, when the value still is one. A wrapper's PHP code can run.
+    safe fn swoole_curl_stream_flush(value: &Owned);
+    safe fn fflush(file: StdioFile) -> c_int;
     safe fn swoole_curl_record_header(handle: PhpHandle<'_>, data: Data<'_>, length: usize);
     safe fn swoole_curl_handle_value(handle: PhpHandle<'_>, value: &mut Owned);
     safe fn swoole_curl_set_in_callback(handle: PhpHandle<'_>, running: bool);
@@ -137,6 +146,67 @@ impl Plain {
             20316 if PHP_VERSION_ID >= 80300 && libcurl(7, 84, 0) => Some(Self::SshHostKey),
             _ => None,
         }
+    }
+}
+
+swoole_rs_zend::handlers! {
+    zif_swoole_native_curl_exec => exec;
+}
+
+/// `curl_exec`: runs the transfer in the handle's own multi. The response with
+/// `CURLOPT_RETURNTRANSFER`, true without it, false when the transfer failed.
+fn exec(call: &Call<'_>) {
+    let Some(handle) = argument(call, 1) else {
+        return;
+    };
+    call.set_bool(false);
+    if !checked(handle, true) {
+        return;
+    }
+    verify(handle, true);
+    if bailout::pending() {
+        return;
+    }
+    swoole_curl_cleanup_handle(handle);
+    let mut error = 0;
+    // A callback's bailout leaves libcurl through here.
+    let transfer = contain_with(|| {
+        error = crate::swoole_curl_easy_perform(crate::Idle(swoole_curl_easy(handle)));
+    });
+    if transfer.is_err() {
+        bailout::defer(transfer);
+        return;
+    }
+    swoole_curl_save_error(handle, error);
+    if error != 0 {
+        swoole_curl_buffer_free(handle);
+        return;
+    }
+    // A flushed stream's wrapper can set the handle's options, so each step reads the
+    // write method afresh.
+    let returns = || swoole_curl_method(handle, Stream::Write as c_int) == RETURN;
+    let (mut returned, mut body) = (false, Owned::default());
+    bailout::defer(contain_with(|| {
+        swoole_curl_stream_flush(swoole_curl_file_stream(handle, CURLOPT_STDERR));
+        returned = returns();
+        if returned && swoole_curl_buffer_result(handle, &mut body) {
+            return;
+        }
+        // What the transfer wrote to a file reaches the disk.
+        for stream in [Stream::Write, Stream::Header] {
+            let file = swoole_curl_file(handle, stream as c_int);
+            if let (FILE, Some(file)) = (swoole_curl_method(handle, stream as c_int), file) {
+                fflush(file);
+            }
+        }
+        returned = returns();
+    }));
+    if !returned {
+        call.set_bool(true);
+    } else if body.kind() == IS_UNDEF {
+        call.set_empty_string();
+    } else {
+        call.set_owned(body);
     }
 }
 
