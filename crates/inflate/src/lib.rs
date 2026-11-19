@@ -108,14 +108,15 @@ pub enum MessageFailure {
     Inflate(c_int),
 }
 
+/// Free space threshold for growing a permessage-deflate output buffer.
+pub const MESSAGE_HEADROOM: usize = 4096;
+
 /// `swoole::websocket::message_uncompress`: a permessage-deflate payload (RFC
 /// 7692, raw deflate) inflated with sync flushes into a buffer that starts at
-/// `input.len() + 1024` bytes and doubles whenever less than 4096 are free.
+/// `input.len() + 1024` bytes and doubles when at most [`MESSAGE_HEADROOM`] bytes are free.
 /// # Errors
 /// `inflateInit2` or `inflate` failed; the status says which.
 pub fn message(mut input: &[u8]) -> Result<Vec<u8>, MessageFailure> {
-    /// `SW_BUFFER_SIZE_STD / 2`.
-    const HEADROOM: usize = 4096;
     let mut stream = Stream::inflate(ENCODING_RAW).map_err(MessageFailure::Init)?;
     let mut out = Vec::with_capacity(input.len() + 1024);
     loop {
@@ -126,7 +127,7 @@ pub fn message(mut input: &[u8]) -> Result<Vec<u8>, MessageFailure> {
         if step.status != Z_OK {
             return Err(MessageFailure::Inflate(step.status));
         }
-        if out.len() + HEADROOM >= out.capacity() {
+        if out.len() + MESSAGE_HEADROOM >= out.capacity() {
             out.reserve_exact(2 * out.capacity() - out.len());
         }
     }
