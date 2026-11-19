@@ -42,7 +42,6 @@ const SW_EVENT_READ: c_int = 1 << 9;
 const SW_EVENT_ONCE: c_int = 1 << 12;
 const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
 const SW_BACKLOG: c_int = 512;
-const SW_SOCKET_RETRY_COUNT: u32 = 10;
 const SW_STACK_BUFFER_SIZE: usize = 65536;
 const SW_ERROR_INVALID_PARAMS: c_int = 505;
 const SW_ERROR_FILE_EMPTY: c_int = 702;
@@ -91,15 +90,6 @@ unsafe extern "C" {
     fn geteuid() -> u32;
     fn usleep(usec: u32) -> c_int;
     fn signal(signo: c_int, handler: usize) -> usize;
-    fn connect(fd: c_int, address: *const c_void, length: u32) -> c_int;
-    fn sendto(
-        fd: c_int,
-        buf: *const c_void,
-        n: usize,
-        flags: c_int,
-        address: *const c_void,
-        length: u32,
-    ) -> isize;
     fn shutdown(fd: c_int, how: c_int) -> c_int;
     fn write(fd: c_int, buf: *const c_void, n: usize) -> isize;
     fn read(fd: c_int, buf: *mut c_void, n: usize) -> isize;
@@ -252,12 +242,11 @@ impl Socket {
     }
 
     fn connect_sync(&self, address: &Address) -> c_int {
-        socket_upstream::connect_sync(self.handle(), address.record()).map_or(SW_ERR, |()| SW_OK)
+        socket_upstream::connect_sync(self.handle(), &address.record).map_or(SW_ERR, |()| SW_OK)
     }
 
     pub(super) fn connect_address(&self, address: &Address) -> c_int {
-        // SAFETY: the socket's fd and the assigned sockaddr.
-        unsafe { connect(self.get_fd(), address.addr.as_ptr().cast(), address.len) }
+        status(address.record.connect(self.get_fd()))
     }
 
     /// `connect(host, port)`: assigns with the socket's type, then connect(2).
@@ -274,7 +263,7 @@ impl Socket {
     fn get_peer_name(&self, address: &mut Address) -> c_int {
         status(
             self.handle()
-                .read(|record| record.get_peer_name(address.record_mut())),
+                .read(|record| record.get_peer_name(&mut address.record)),
         )
     }
 
@@ -284,7 +273,7 @@ impl Socket {
         if !address.assign(self.record().socket_type, host, port, false) {
             return SW_ERR;
         }
-        status(self.handle().edit(|record| record.bind(address.record())))
+        status(self.handle().edit(|record| record.bind(&address.record)))
     }
 
     fn listen(&self, backlog: c_int) -> c_int {
@@ -347,54 +336,27 @@ impl Socket {
     }
 
     fn sendto_address(&self, address: &Address, data: &[u8]) -> isize {
-        // SAFETY: `data` and the assigned sockaddr.
-        unsafe {
-            sendto(
-                self.get_fd(),
-                data.as_ptr().cast(),
-                data.len(),
-                0,
-                address.addr.as_ptr().cast(),
-                address.len,
-            )
-        }
+        address
+            .record
+            .sendto(self.get_fd(), data, 0)
+            .map_or(-1, usize::cast_signed)
     }
 
     fn sendto_sync(&self, address: &Address, data: &[u8]) -> isize {
-        // SAFETY: `Address` mirrors crates/corebase's record.
-        let address = unsafe { &*std::ptr::from_ref(address).cast() };
-        swoole_rs_corebase::tls::upstream::sendto_sync(self.handle(), address, data, 0)
+        swoole_rs_corebase::tls::upstream::sendto_sync(self.handle(), &address.record, data, 0)
             .map_or(-1, usize::cast_signed)
     }
 
     /// `recvfrom(buf, len, flags, &sa)`: recvfrom(2), retried on `EINTR` up to
     /// `SW_SOCKET_RETRY_COUNT` times.
     fn recvfrom(&self, buf: &mut [u8], address: &mut Address) -> isize {
-        address.len = u32::try_from(size_of_val(&address.addr)).unwrap();
-        let mut received = -1;
-        for _ in 0..SW_SOCKET_RETRY_COUNT {
-            // SAFETY: `buf` and the address are writable.
-            received = unsafe {
-                recvfrom(
-                    self.get_fd(),
-                    buf.as_mut_ptr().cast(),
-                    buf.len(),
-                    0,
-                    address.addr.as_mut_ptr().cast(),
-                    &mut address.len,
-                )
-            };
-            if received >= 0 || errno() != EINTR {
-                break;
-            }
-        }
-        received
+        swoole_rs_corebase::lent::Fill::new(buf)
+            .recvfrom(self.get_fd(), 0, &mut address.record)
+            .map_or(-1, usize::cast_signed)
     }
 
     fn recvfrom_sync(&self, buf: &mut [u8], address: &mut Address) -> isize {
-        // SAFETY: `Address` mirrors crates/corebase's record.
-        let address = unsafe { &mut *std::ptr::from_mut(address).cast() };
-        swoole_rs_corebase::tls::upstream::recvfrom_sync(self.handle(), buf, 0, address)
+        swoole_rs_corebase::tls::upstream::recvfrom_sync(self.handle(), buf, 0, &mut address.record)
             .map_or(-1, usize::cast_signed)
     }
 
@@ -570,18 +532,7 @@ fn ssl_fail() {
 unsafe extern "C" {
     #[link_name = "__errno_location"]
     fn errno_location() -> *mut c_int;
-    fn recvfrom(
-        fd: c_int,
-        buf: *mut c_void,
-        n: usize,
-        flags: c_int,
-        address: *mut c_void,
-        length: *mut u32,
-    ) -> isize;
 }
-
-/// Linux's `EINTR`.
-const EINTR: c_int = 4;
 
 fn unix_dgram_pair() -> (Socket, Socket) {
     unlink_path(c"/tmp/udp_unix1.sock");
@@ -614,7 +565,7 @@ fn sendto_unix() {
 
     let mut buf = [0_u8; 1024];
     let mut sa = Address::new();
-    sa.kind = SW_SOCK_UNIX_DGRAM;
+    sa.record.kind = SW_SOCK_UNIX_DGRAM;
     assert!(sock2.recvfrom(&mut buf, &mut sa) > 0);
     assert_eq!(test_data(), c_str(&buf));
     // SAFETY: the address's per-thread text.
@@ -645,7 +596,7 @@ fn test_sendto(sock_type: c_int) {
 
     let mut buf = [0_u8; 1024];
     let mut sa = Address::new();
-    sa.kind = sock_type;
+    sa.record.kind = sock_type;
     assert!(sock2.recvfrom(&mut buf, &mut sa) > 0);
 
     assert_eq!(test_data(), c_str(&buf));

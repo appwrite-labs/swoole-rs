@@ -41,7 +41,8 @@ struct Socket {
     Socket() = delete;
     int fd;
 };
-static_assert(offsetof(Socket, fd) == 0, "SocketRecord starts with the descriptor");
+static_assert(sizeof(Socket) == sizeof(int) && offsetof(Socket, fd) == 0,
+              "corebase::reactor::SocketRecord exposes one c_int at offset zero");
 
 }  // namespace network
 }  // namespace swoole

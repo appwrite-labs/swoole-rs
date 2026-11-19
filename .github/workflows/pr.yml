@@ -370,6 +370,8 @@ jobs:
           echo "shards=$(python3 corpus/upstream/inventory.py --plan "${modules[@]}")" >> "$GITHUB_OUTPUT"
       - name: Compare the MIME catalog with the pinned source
         run: python3 tools/check_mime_catalog.py
+      - name: Check PDO ODBC diagnostic locations against the pin
+        run: python3 tools/check_odbc_lines.py
 
   phpt:
     needs: [changes, phpt-build]
