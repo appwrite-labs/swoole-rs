@@ -14,6 +14,9 @@ use std::ptr::NonNull;
 
 use crate::lent::{self, Drain, Fill};
 
+#[cfg(miri)]
+pub(crate) mod miri;
+
 /// A NUL-terminated string that stays live and unchanged for `'a`, as thin as the
 /// `const char *` it is, so a C function's string parameter can be declared as one on
 /// either side of the boundary.
@@ -151,6 +154,7 @@ mod c {
         pub(crate) safe fn uname(name: &mut libc::utsname) -> c_int;
         pub(crate) safe fn getrlimit(resource: Resource, limit: &mut libc::rlimit) -> c_int;
         /// Stores the head of a new list, none for an empty one, when it returns 0.
+        #[cfg(not(miri))]
         pub(super) safe fn getifaddrs(list: &mut Option<super::InterfaceList>) -> c_int;
         /// Frees a list `getifaddrs` stored, which the handle's move hands over.
         pub(super) safe fn freeifaddrs(list: super::InterfaceList);
@@ -757,8 +761,6 @@ pub fn nanosleep(request: &libc::timespec, remaining: &mut libc::timespec) -> st
 #[must_use]
 pub fn map_anonymous(len: usize, shared: bool, stack: bool) -> *mut libc::c_void {
     use anonymous::Flags;
-    // Miri maps only private memory, and with no fork a shared mapping is no different.
-    let shared = shared && !cfg!(miri);
     #[cfg(target_os = "openbsd")]
     let flags = match (shared, stack) {
         (true, false) => Flags::SHARED,
@@ -804,15 +806,19 @@ mod anonymous {
     #[repr(transparent)]
     pub(super) struct Flags(libc::c_int);
 
+    #[cfg(miri)]
+    use super::miri::MAP_SHARED;
+    #[cfg(not(miri))]
+    use libc::MAP_SHARED;
+
     impl Flags {
         pub(super) const PRIVATE: Self = Self(libc::MAP_PRIVATE | libc::MAP_ANON);
-        pub(super) const SHARED: Self = Self(libc::MAP_SHARED | libc::MAP_ANON);
+        pub(super) const SHARED: Self = Self(MAP_SHARED | libc::MAP_ANON);
         #[cfg(target_os = "openbsd")]
         pub(super) const PRIVATE_STACK: Self =
             Self(libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_STACK);
         #[cfg(target_os = "openbsd")]
-        pub(super) const SHARED_STACK: Self =
-            Self(libc::MAP_SHARED | libc::MAP_ANON | libc::MAP_STACK);
+        pub(super) const SHARED_STACK: Self = Self(MAP_SHARED | libc::MAP_ANON | libc::MAP_STACK);
     }
 
     /// The descriptor an anonymous mapping takes: none.
@@ -1116,12 +1122,9 @@ pub struct Interface<'a>(&'a Entry<'a>);
 
 impl Interfaces {
     /// The list, or `None` with errno set.
+    #[cfg(not(miri))]
     #[must_use]
     pub fn new() -> Option<Self> {
-        // Miri has no getifaddrs: an empty list, as a host with no interface reads.
-        if cfg!(miri) {
-            return Some(Self(None));
-        }
         let mut list = None;
         (c::getifaddrs(&mut list) == 0).then_some(Self(list))
     }
@@ -1389,11 +1392,15 @@ pub fn localtime_r(time: UnixSeconds) -> Option<libc::tm> {
 }
 
 /// `strftime(3)` of `tm` into `out`: the bytes written, 0 when they don't fit.
+#[cfg(not(miri))]
 pub fn strftime(out: &mut [u8], format: &CStr, tm: &libc::tm) -> usize {
     lent::lend_out(out, |at, max| {
         lent::strftime(at.chars(), max, format.into(), tm)
     })
 }
+
+#[cfg(miri)]
+pub use miri::strftime;
 
 /// `waitpid(2)`, storing the status in `status` when given. `None` means
 /// `WNOHANG` found no child ready to reap.
