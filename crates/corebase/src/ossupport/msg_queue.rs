@@ -484,9 +484,7 @@ mod tests {
     fn a_private_queue_round_trips_reports_empty_quietly_and_is_removed_on_drop() {
         let queue = QueueRecord::new(libc::IPC_PRIVATE, false, 0);
         assert_eq!(permissions(0), 0o666, "default permissions");
-        if !queue.ready() {
-            return; // SysV IPC unavailable in this sandbox.
-        }
+        assert!(queue.ready(), "msgget(IPC_PRIVATE)");
         let mut sent = QueueNode {
             mtype: 3,
             mdata: [0; 8192],
