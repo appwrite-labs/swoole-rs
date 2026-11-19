@@ -443,6 +443,7 @@ fn status_code_array_matches_the_pin() {
 
 #[test]
 fn methods_match_the_pin() {
+    assert_eq!(i32::from(swoole_rs_http::METHOD_HEAD), pin::method(b"HEAD"));
     let method = swoole_rs_http::method;
     for id in -10..40 {
         let expected = pin::method_string(id);

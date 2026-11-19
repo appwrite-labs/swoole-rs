@@ -73,7 +73,7 @@ mod status_buffer;
 pub use status_buffer::{STATUS_CODES, status_message};
 mod static_headers;
 mod static_path;
-pub use maps::{METHOD_PRI, method, method_string};
+pub use maps::{METHOD_HEAD, METHOD_PRI, method, method_string};
 pub use static_headers::{HttpStaticHeaders, StaticHead, StaticRange, static_headers};
 pub use static_path::{HttpStaticPath, StaticPhase, location_match};
 

@@ -92,8 +92,6 @@ pub trait Exchange {
     fn send(&self, kind: ServerEvent, data: &[u8]);
 }
 
-/// `SW_HTTP_HEAD`.
-const HTTP_HEAD: u8 = 3;
 /// `SW_HTTP_SERVER_SOFTWARE`.
 const SOFTWARE: &[u8] = b"swoole-http-server";
 
@@ -265,7 +263,7 @@ impl Exchange for Wire<'_> {
         self.request.keep_alive
     }
     fn head(&self) -> bool {
-        self.request.method == HTTP_HEAD
+        self.request.method == swoole_rs_http::METHOD_HEAD
     }
     fn cork(&self) {
         // An `extern "C"` fn is no closure.

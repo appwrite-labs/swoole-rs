@@ -41,11 +41,7 @@ typedef void (*swr_oracle_static_line)(void *out, const char *line, size_t lengt
 }
 
 namespace upstream_static_select {
-// The pinned macros it uses (build.rs copies them from upstream/include); the enums below are
-// as upstream's swoole_http.h and swoole.h, and sw_snprintf as src/core/base.cc's.
 #include "http_static_select_pinned.inc"
-enum { SW_HTTP_GET = 2, SW_HTTP_HEAD = 3 };
-enum { SW_HTTP_PARTIAL_CONTENT = 206, SW_HTTP_NOT_FOUND = 404 };
 enum ServerEventType { SW_SERVER_EVENT_SEND_DATA = 2, SW_SERVER_EVENT_SEND_FILE = 3, SW_SERVER_EVENT_CLOSE = 4 };
 __attribute__((unused)) static size_t sw_snprintf(char *buf, size_t size, const char *format, ...) {
     va_list args;
