@@ -1,47 +1,47 @@
 # Coverage of crates/
 
-Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus apps and swoole/library's suite, measured on `4f22d1e` (`tools/coverage.py`, nightly `.github/workflows/coverage.yml`). A process that exits by a signal or `_exit` records nothing.
+Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus apps and swoole/library's suite, measured on `ad39ab6` (`tools/coverage.py`, nightly `.github/workflows/coverage.yml`). A process that exits by a signal or `_exit` records nothing.
 
 | crate | lines | covered | entry points not reached |
 | --- | ---: | ---: | ---: |
 | phpthread | 1,647 | 0.0% | 52 |
 | base64 | 84 | 35.7% | 0 |
-| crc32 | 40 | 47.5% | 0 |
+| odbc | 1,034 | 39.7% | 0 |
+| pgsql | 2,149 | 42.4% | 9 |
+| crc32 | 41 | 46.3% | 0 |
 | error-ffi | 115 | 55.7% | 6 |
 | phplocks | 438 | 58.7% | 17 |
 | error | 120 | 62.5% | 0 |
-| odbc | 185 | 64.9% | 0 |
 | phpredis | 195 | 66.7% | 0 |
 | protocols | 399 | 67.4% | 0 |
-| phpevents | 729 | 67.5% | 0 |
-| ports | 1,844 | 71.8% | 0 |
-| phpprocess | 2,014 | 72.9% | 2 |
-| server | 10,872 | 73.3% | 0 |
-| clients | 2,518 | 73.3% | 0 |
-| phpcoroutines | 2,866 | 74.2% | 2 |
-| corebase | 20,988 | 75.1% | 4 |
-| http | 4,154 | 75.9% | 0 |
-| zend | 3,474 | 76.9% | 0 |
-| phpruntime | 1,869 | 77.5% | 1 |
-| phpswoole | 1,614 | 79.1% | 0 |
-| hooks | 4,314 | 79.3% | 1 |
-| phpclients | 6,545 | 81.7% | 0 |
-| phpserver | 4,607 | 82.5% | 1 |
+| phpevents | 737 | 67.7% | 0 |
+| ports | 1,869 | 71.7% | 0 |
+| curl | 2,021 | 72.2% | 5 |
+| phpprocess | 2,011 | 72.9% | 2 |
+| clients | 2,506 | 73.3% | 0 |
+| server | 10,794 | 73.7% | 0 |
+| phpruntime | 2,199 | 73.8% | 1 |
+| phpcoroutines | 2,847 | 74.3% | 2 |
+| corebase | 21,202 | 74.9% | 2 |
+| http | 4,170 | 75.9% | 0 |
+| zend | 3,659 | 76.6% | 3 |
+| hooks | 4,414 | 79.1% | 1 |
+| phpswoole | 1,606 | 79.2% | 0 |
+| phpclients | 6,514 | 81.8% | 0 |
+| phpserver | 4,612 | 82.5% | 1 |
 | bus | 553 | 84.1% | 0 |
-| pgsql | 312 | 84.6% | 0 |
 | sqlite | 80 | 85.0% | 0 |
 | phpcollections | 557 | 85.1% | 0 |
 | phptimer | 165 | 85.5% | 0 |
-| websocket | 402 | 85.6% | 0 |
+| websocket | 401 | 85.5% | 0 |
 | inflate | 96 | 86.5% | 0 |
-| phphttp2 | 2,416 | 86.5% | 0 |
-| phphttp | 5,151 | 87.0% | 0 |
+| phphttp2 | 2,393 | 86.7% | 0 |
+| phphttp | 5,130 | 86.9% | 0 |
 | framing | 349 | 88.8% | 0 |
 | brotli | 75 | 89.3% | 0 |
-| httpbindings | 224 | 90.2% | 0 |
-| http2 | 740 | 91.2% | 0 |
-| deflate | 58 | 91.4% | 0 |
-| curl | 698 | 92.6% | 1 |
+| httpbindings | 239 | 90.0% | 0 |
+| deflate | 57 | 91.2% | 0 |
+| http2 | 741 | 91.2% | 0 |
 | ssh2 | 85 | 92.9% | 0 |
 | zlib | 95 | 93.7% | 0 |
 | oci | 125 | 94.4% | 0 |
@@ -51,7 +51,7 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 | ext | 3 | 100.0% | 0 |
 | ffi | 15 | 100.0% | 0 |
 | phpstubs | 12 | 100.0% | 0 |
-| **crates/** | 84,018 | 76.1% | 87 |
+| **crates/** | 88,730 | 74.5% | 101 |
 
 # Entry points no run reached
 
@@ -60,13 +60,15 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 ## corebase
 
 - `swr_v1_core_format_result`
-- `swr_v1_locks_atomic32`
-- `swr_v1_locks_atomic64`
 - `swr_v1_logger_put`
 
 ## curl
 
+- `swr_v1_curl_handle_leave_multi`
 - `swr_v1_curl_multi_free`
+- `zif_swoole_native_curl_escape`
+- `zif_swoole_native_curl_unescape`
+- `zif_swoole_native_curl_upkeep`
 
 ## error-ffi
 
@@ -80,6 +82,18 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 ## hooks
 
 - `swr_v1_hook_co_socket_uring`
+
+## pgsql
+
+- `zim_PDO_PGSql_Ext_pgsqlCopyFromArray`
+- `zim_PDO_PGSql_Ext_pgsqlCopyFromFile`
+- `zim_PDO_PGSql_Ext_pgsqlCopyToArray`
+- `zim_PDO_PGSql_Ext_pgsqlCopyToFile`
+- `zim_PDO_PGSql_Ext_pgsqlGetNotify`
+- `zim_PDO_PGSql_Ext_pgsqlGetPid`
+- `zim_PDO_PGSql_Ext_pgsqlLOBCreate`
+- `zim_PDO_PGSql_Ext_pgsqlLOBOpen`
+- `zim_PDO_PGSql_Ext_pgsqlLOBUnlink`
 
 ## phpcoroutines
 
@@ -173,3 +187,9 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 - `zim_swoole_thread_setName`
 - `zim_swoole_thread_setPriority`
 - `zim_swoole_thread_yield`
+
+## zend
+
+- `swr_v1_phpruntime_plain_fdopen_mode`
+- `swr_v1_phpruntime_plain_metadata`
+- `swr_v1_phpruntime_plain_rename`
