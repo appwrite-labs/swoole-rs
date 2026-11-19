@@ -54,60 +54,6 @@ static size_t fn_write_nothing(char *data, size_t size, size_t nmemb, void *ctx)
 }
 /* }}} */
 
-/* {{{ curl_free_post
- */
-static void curl_free_post(void **post) {
-    curl_mime_free((curl_mime *) *post);
-}
-/* }}} */
-
-/* {{{ curl_free_slist
- */
-static void curl_free_slist(zval *el) {
-    curl_slist_free_all(((struct curl_slist *) Z_PTR_P(el)));
-}
-/* }}} */
-
-php_curl *swoole_curl_init_handle_into_zval(zval *curl) {
-    php_curl *ch;
-
-    object_init_ex(curl, swoole_coroutine_curl_handle_ce);
-    ch = Z_CURL_P(curl);
-
-    swoole_curl_init_handle(ch);
-
-    return ch;
-}
-
-/* {{{ alloc_curl_handle
- */
-void swoole_curl_init_handle(php_curl *ch) {
-    ch->to_free = (struct _php_curl_free *) ecalloc(1, sizeof(struct _php_curl_free));
-    ch->handlers.write = (php_curl_write *) ecalloc(1, sizeof(php_curl_write));
-    ch->handlers.write_header = (php_curl_write *) ecalloc(1, sizeof(php_curl_write));
-    ch->handlers.read = (php_curl_read *) ecalloc(1, sizeof(php_curl_read));
-    ch->handlers.progress = NULL;
-#if PHP_VERSION_ID >= 80200
-    ch->handlers.xferinfo = NULL;
-#endif
-    ch->handlers.fnmatch = NULL;
-#if LIBCURL_VERSION_NUM >= 0x075400 && PHP_VERSION_ID >= 80300
-    ch->handlers.sshhostkey = NULL;
-#endif
-    ch->clone = (uint32_t *) emalloc(sizeof(uint32_t));
-    *ch->clone = 1;
-
-    memset(&ch->err, 0, sizeof(struct _php_curl_error));
-
-    zend_llist_init(&ch->to_free->post, sizeof(curl_mime *), (llist_dtor_func_t) curl_free_post, 0);
-    zend_llist_init(&ch->to_free->stream, sizeof(void *), (llist_dtor_func_t) swoole_curl_free_cb_arg, 0);
-
-    ch->to_free->slist = (HashTable *) emalloc(sizeof(HashTable));
-    zend_hash_init(ch->to_free->slist, 4, NULL, curl_free_slist, 0);
-    ZVAL_UNDEF(&ch->postfields);
-}
-/* }}} */
-
 
 #if PHP_VERSION_ID >= 80300
 static void _php_copy_callback(php_curl *ch,
@@ -198,15 +144,6 @@ void swoole_setup_easy_copy_handlers(php_curl *ch, php_curl *source) {
 #endif
 
     ZVAL_COPY(&ch->private_data, &source->private_data);
-
-    efree(ch->to_free->slist);
-    efree(ch->to_free);
-    ch->to_free = source->to_free;
-    efree(ch->clone);
-    ch->clone = source->clone;
-
-    /* Keep track of cloned copies to avoid invoking curl destructors for every clone */
-    (*source->clone)++;
 }
 
 #if PHP_VERSION_ID >= 80300

@@ -50,62 +50,6 @@ SW_EXTERN_C_BEGIN
 SW_EXTERN_C_END
 
 
-/* {{{ curl_free_post */
-static void curl_free_post(void **post) {
-    curl_mime_free((curl_mime *) *post);
-}
-/* }}} */
-
-/* {{{ curl_free_slist */
-static void curl_free_slist(zval *el) {
-    curl_slist_free_all(((struct curl_slist *) Z_PTR_P(el)));
-}
-/* }}} */
-
-php_curl *swoole_curl_init_handle_into_zval(zval *curl) {
-    php_curl *ch;
-
-    object_init_ex(curl, swoole_coroutine_curl_handle_ce);
-    ch = Z_CURL_P(curl);
-
-    swoole_curl_init_handle(ch);
-
-    return ch;
-}
-
-void swoole_curl_init_handle(php_curl *ch) {
-    ch->to_free = (struct _php_curl_free *) ecalloc(1, sizeof(struct _php_curl_free));
-    ch->handlers.write = (php_curl_write *) ecalloc(1, sizeof(php_curl_write));
-    ch->handlers.write_header = (php_curl_write *) ecalloc(1, sizeof(php_curl_write));
-    ch->handlers.read = (php_curl_read *) ecalloc(1, sizeof(php_curl_read));
-    ch->handlers.progress = empty_fcall_info_cache;
-    ch->handlers.xferinfo = empty_fcall_info_cache;
-    ch->handlers.fnmatch = empty_fcall_info_cache;
-    ch->handlers.debug = empty_fcall_info_cache;
-#if LIBCURL_VERSION_NUM >= 0x075000 /* Available since 7.80.0 */
-    ch->handlers.prereq = empty_fcall_info_cache;
-#endif
-#if LIBCURL_VERSION_NUM >= 0x075400 /* Available since 7.84.0 */
-    ch->handlers.sshhostkey = empty_fcall_info_cache;
-#endif
-    ch->clone = (uint32_t *) emalloc(sizeof(uint32_t));
-    *ch->clone = 1;
-
-    memset(&ch->err, 0, sizeof(struct _php_curl_error));
-
-    zend_llist_init(&ch->to_free->post, sizeof(curl_mime *), (llist_dtor_func_t) curl_free_post, 0);
-    zend_llist_init(&ch->to_free->stream, sizeof(void *), (llist_dtor_func_t) swoole_curl_free_cb_arg, 0);
-#if PHP_VERSION_ID >= 80500
-    zend_hash_init(&ch->to_free->slist, 4, NULL, curl_free_slist, 0);
-#else
-    ch->to_free->slist = (HashTable *) emalloc(sizeof(HashTable));
-    zend_hash_init(ch->to_free->slist, 4, NULL, curl_free_slist, 0);
-#endif
-    ZVAL_UNDEF(&ch->postfields);
-}
-
-/* }}} */
-
 
 static void php_curl_copy_fcc_with_option(php_curl *ch,
                                           CURLoption option,
@@ -167,17 +111,6 @@ void swoole_setup_easy_copy_handlers(php_curl *ch, php_curl *source) {
 #endif
 
     ZVAL_COPY(&ch->private_data, &source->private_data);
-
-#if PHP_VERSION_ID < 80500
-    efree(ch->to_free->slist);
-#endif
-    efree(ch->to_free);
-    ch->to_free = source->to_free;
-    efree(ch->clone);
-    ch->clone = source->clone;
-
-    /* Keep track of cloned copies to avoid invoking curl destructors for every clone */
-    (*source->clone)++;
 }
 
 extern "C" bool swoole_curl_prepare_free(php_curl *ch) {
