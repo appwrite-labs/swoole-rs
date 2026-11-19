@@ -75,6 +75,17 @@ extern "C" php_curl *swoole_curl_object_handle(zend_object *object) {
     return object->ce == swoole_coroutine_curl_handle_ce ? curl_from_obj(object) : nullptr;
 }
 
+extern "C" php_curlm *swoole_curl_multi_object(zend_object *object) {
+    if (object->ce != swoole_coroutine_curl_multi_handle_ce) {
+        return nullptr;
+    }
+    return reinterpret_cast<php_curlm *>(reinterpret_cast<char *>(object) - XtOffsetOf(php_curlm, std));
+}
+
+extern "C" int swoole_curl_multi_error(php_curlm *mh) {
+    return mh->err.no;
+}
+
 /* Callable caches replaced callback zvals in PHP 8.4. Keep their layout
  * here with the stream records until the callback port. */
 #if PHP_VERSION_ID >= 80400

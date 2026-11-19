@@ -915,6 +915,8 @@ mod php;
 #[cfg(feature = "php")]
 mod php_handle;
 #[cfg(feature = "php")]
+mod php_multi;
+#[cfg(feature = "php")]
 mod postfields;
 #[cfg(feature = "php")]
 mod setopt;

@@ -263,28 +263,6 @@ PHP_FUNCTION(swoole_native_curl_multi_exec) {
 }
 /* }}} */
 
-/* {{{ Return the content of a cURL handle if CURLOPT_RETURNTRANSFER is set */
-PHP_FUNCTION(swoole_native_curl_multi_getcontent) {
-    zval *z_ch;
-    php_curl *ch;
-
-    ZEND_PARSE_PARAMETERS_START(1, 1)
-    Z_PARAM_OBJECT_OF_CLASS(z_ch, swoole_coroutine_curl_handle_ce)
-    ZEND_PARSE_PARAMETERS_END();
-
-    ch = Z_CURL_P(z_ch);
-
-    if (ch->handlers.write->method == PHP_CURL_RETURN) {
-        if (!ch->handlers.write->buf.s) {
-            RETURN_EMPTY_STRING();
-        }
-        smart_str_0(&ch->handlers.write->buf);
-        RETURN_STR_COPY(ch->handlers.write->buf.s);
-    }
-
-    RETURN_NULL();
-}
-/* }}} */
 
 /* {{{ Get information about the current transfers */
 PHP_FUNCTION(swoole_native_curl_multi_info_read) {
@@ -368,20 +346,6 @@ PHP_FUNCTION(swoole_native_curl_multi_close) {
 }
 /* }}} */
 
-/* {{{ Return an integer containing the last multi curl error number */
-PHP_FUNCTION(swoole_native_curl_multi_errno) {
-    zval *z_mh;
-    php_curlm *mh;
-
-    ZEND_PARSE_PARAMETERS_START(1, 1)
-    Z_PARAM_OBJECT_OF_CLASS(z_mh, swoole_coroutine_curl_multi_handle_ce)
-    ZEND_PARSE_PARAMETERS_END();
-
-    mh = Z_CURL_MULTI_P(z_mh);
-
-    RETURN_LONG(mh->err.no);
-}
-/* }}} */
 
 static int _php_server_push_callback(
     CURL *parent_ch, CURL *easy, size_t num_headers, struct curl_pushheaders *push_headers, void *userp) /* {{{ */
