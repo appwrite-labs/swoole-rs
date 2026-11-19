@@ -91,10 +91,13 @@ runs:
         path: ~/.cache/composer
         key: composer-${{ runner.os }}-${{ hashFiles('corpus/upstream/lib-composer.lock') }}
     # A resolve/platform failure drops any partial vendor, so run.py falls back to its
-    # stub and the lib-free cases still run, exactly as before this install existed.
+    # stub and the lib-free cases still run. It says so here, and gate.py's summary says
+    # the library cases ran without their libraries (#5263).
     - shell: bash
       run: |
         cp corpus/upstream/lib-composer.lock target/upstream/src/tests/include/lib/composer.lock
-        composer install --no-interaction --no-progress \
-          --working-dir=target/upstream/src/tests/include/lib \
-          || rm -rf target/upstream/src/tests/include/lib/vendor
+        if ! composer install --no-interaction --no-progress \
+            --working-dir=target/upstream/src/tests/include/lib; then
+          rm -rf target/upstream/src/tests/include/lib/vendor
+          echo "::warning title=PHPT libraries::composer install failed; any guzzle, symfony or httpbin case selected runs without its libraries"
+        fi
