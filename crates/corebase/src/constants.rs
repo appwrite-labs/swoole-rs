@@ -283,6 +283,10 @@ pub enum EventInitFlag {
 pub const SW_MAX_FDTYPE: u32 = 32;
 pub const SW_MAX_HOOK_TYPE: u32 = 32;
 pub const SW_ERROR_MSG_SIZE: u32 = 16384;
+const _: () = assert!(
+    SW_ERROR_MSG_SIZE as usize == swoole_rs_error::ERROR_MSG_SIZE,
+    "native error writers must use the Rust buffer capacity"
+);
 pub const SW_MAX_FILE_CONTENT: u32 = 67_108_864;
 pub const SW_MAX_LISTEN_PORT: u32 = 60000;
 pub const SW_MAX_CONNECTION: u32 = 100_000;
