@@ -8,10 +8,7 @@ use crate::{
     },
     send, websocket,
 };
-use std::{
-    ffi::{CString, c_int},
-    sync::atomic::Ordering::Relaxed,
-};
+use std::ffi::{CString, c_int};
 use swoole_rs_corebase::{CCast, HookType, swoole_isset_hook};
 use swoole_rs_http::status::INTERNAL_SERVER_ERROR;
 use swoole_rs_httpbindings::{RangeError, canonical_case, file_range};
@@ -114,10 +111,8 @@ method_table! {
 }
 
 /// MINIT: register the class as `php_swoole_http_response_minit` did, after
-/// `Swoole\Http\Request`'s; the parser learns the codecs built in (`codecs`:
-/// 1 zlib, 8 `SW_HAVE_COMPRESSION`).
+/// `Swoole\Http\Request`'s; the parser learns the codecs built in.
 pub fn response_minit(args: &MinitArgs) {
-    let codecs = args.codecs | (u32::from(args.compression) << 3);
     let minit = args.minit;
     minit.register_object::<Data>(c"Swoole\\Http\\Response", METHODS.table(), 0);
     minit.property_long(&RESPONSE, c"fd", 0, ZEND_ACC_PUBLIC);
@@ -126,7 +121,7 @@ pub fn response_minit(args: &MinitArgs) {
     }
     crate::header::minit(&RESPONSE);
     context::response_minit();
-    crate::parse::minit(minit, codecs);
+    crate::parse::minit(minit, args.codecs);
 }
 
 /// `http_response_get_and_check_context`: a context that can still respond.
@@ -711,7 +706,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
             state.parse_cookie = true;
             state.parse_body = true;
             state.parse_files = true;
-            if crate::parse::CAPABILITIES.load(Relaxed) & 8 != 0 {
+            if crate::parse::enabled_codecs() != 0 {
                 state.enable_compression = true;
                 state.compression_level = 1;
             }
