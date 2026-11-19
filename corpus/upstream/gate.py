@@ -84,8 +84,8 @@ def without_libraries(reports):
             if json.loads(Path(report).read_text()).get('upstream', {}).get('libraries') is False]
 
 
-LIBRARIES = ('Composer libraries missing: the guzzle, symfony and httpbin cases ran against '
-             "run.py's stub autoloader, not their libraries")
+LIBRARIES = ("Composer libraries missing: run.py's stub autoloader stood in for them, so any "
+             'guzzle, symfony or httpbin case in these reports ran without its libraries')
 
 
 def rows(reports):

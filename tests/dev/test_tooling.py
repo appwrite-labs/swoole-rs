@@ -154,7 +154,15 @@ Path(sys.argv[1]).write_text('PASSED ' + sys.argv[2] + '\n')
             assets = [{'path': name, 'sha256': hashlib.sha256(files[name]).hexdigest()}
                       for name in ['examples/binary.bin', 'examples/empty.txt']]
             with patch.object(phpt, 'COMMIT', pin):
-                phpt.prepare(source, tree / 'valid', cases, support_files=assets)
+                # Without the composer libraries the stub autoloader stands in, and run.py
+                # records that from the return value (#5263).
+                self.assertFalse(phpt.prepare(source, tree / 'valid', cases, support_files=assets))
+                self.assertIn('SwooleTest', (tree / 'valid/tests/include/lib/vendor/autoload.php').read_text())
+                vendor = source / 'tests/include/lib/vendor'
+                vendor.mkdir(parents=True)
+                (vendor / 'autoload.php').write_text('<?php // composer')
+                self.assertTrue(phpt.prepare(source, tree / 'libraries', cases, support_files=assets))
+                self.assertEqual((tree / 'libraries/tests/include/lib/vendor/autoload.php').read_text(), '<?php // composer')
                 for item in assets:
                     self.assertEqual((tree / 'valid' / item['path']).read_bytes(), files[item['path']])
                 self.assertEqual((tree / 'valid/tests/original.phpt').read_bytes(), files['tests/original.phpt'])

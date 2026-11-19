@@ -99,5 +99,5 @@ runs:
         if ! composer install --no-interaction --no-progress \
             --working-dir=target/upstream/src/tests/include/lib; then
           rm -rf target/upstream/src/tests/include/lib/vendor
-          echo "::warning title=PHPT libraries::composer install failed; the guzzle, symfony and httpbin cases run without their libraries"
+          echo "::warning title=PHPT libraries::composer install failed; any guzzle, symfony or httpbin case selected runs without its libraries"
         fi
