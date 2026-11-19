@@ -4,6 +4,7 @@
 #define SWOOLE_RS_ZEND_SHIM_STREAM_H
 #include "php.h"
 #include "php_network.h"
+#include "ext/standard/file.h"
 
 /* stream->has_buffered_data (PHP 8.3+, else false). */
 bool swr_zend_stream_buffered(const php_stream *stream);

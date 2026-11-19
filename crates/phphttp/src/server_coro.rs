@@ -451,8 +451,6 @@ fn construct(call: &Call) {
 
 /// `SW_ERROR_SSL_BAD_CLIENT` (crates/ffi checks it).
 pub const SSL_BAD_CLIENT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SSL_BAD_CLIENT as c_int;
-/// `SW_ACCEPT_RETRY_TIME`.
-const ACCEPT_RETRY_TIME: c_int = 1;
 
 /// `sw_zend_is_callable_at_frame("onAccept")` on `$this` at `start`'s frame;
 /// an `E_CORE_ERROR` when it is not.
@@ -653,7 +651,9 @@ impl swoole_rs_httpbindings::AcceptHost for Start<'_> {
 
     fn sleep(&mut self) {
         // A coroutine runs `start`.
-        swoole_rs_hooks::stdio::swoole_coroutine_sleep(ACCEPT_RETRY_TIME);
+        _ = swoole_rs_hooks::sleep::system_sleep(
+            swoole_rs_corebase::constants::SW_ACCEPT_RETRY_TIME,
+        );
     }
 
     fn set_error(&mut self) {
