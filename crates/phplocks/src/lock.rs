@@ -7,7 +7,7 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::locks::{Kind, Lock, TIMED_LOCK_CAPABILITIES};
-use swoole_rs_corebase::memory::members::pool;
+use swoole_rs_corebase::memory::members::pool::PooledLock;
 use swoole_rs_phpstubs::lock;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Minit,
@@ -24,7 +24,7 @@ const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERAT
 static LOCK: CustomClass<Held> = CustomClass::new();
 
 /// The lock is unset until `__construct`.
-pub(crate) struct Held(OnceCell<Lock>);
+pub(crate) struct Held(OnceCell<PooledLock>);
 
 impl Custom for Held {
     fn class() -> &'static CustomClass<Self> {
@@ -41,7 +41,7 @@ fn constructed<'c>(call: &'c Call<'_>) -> Option<&'c Lock> {
     if lock.is_none() {
         unconstructed();
     }
-    lock
+    lock.map(std::ops::Deref::deref)
 }
 
 #[cold]
@@ -89,9 +89,8 @@ pub fn lock_minit(minit: &Minit) -> Result<(), Bailout> {
 /// A shared lock of `kind` in the pool, as `new Mutex(true)` (and its `RWLock`
 /// and `SpinLock` twins) makes one. Upstream throws a C++ exception, which
 /// terminates the process, when the pool or the lock's init fails.
-fn new_lock(kind: Kind) -> Lock {
-    pool::words(Lock::words(kind))
-        .and_then(|storage| Lock::shared(kind, storage))
+fn new_lock(kind: Kind) -> PooledLock {
+    PooledLock::new(kind)
         .unwrap_or_else(|| swoole_rs_corebase::fatal("a shared lock can't be made"))
 }
 
