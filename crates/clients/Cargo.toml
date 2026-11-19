@@ -13,6 +13,7 @@ crate-type = ["rlib"]
 cares = ["dep:swoole-rs-cares-sys", "swoole-rs-cares-sys/libcares"]
 
 [dependencies]
+swoole-rs-framing = { path = "../framing" }
 swoole-rs-cares-sys = { path = "../cares-sys", optional = true }
 swoole-rs-error = { path = "../error" }
 swoole-rs-corebase = { path = "../corebase" }

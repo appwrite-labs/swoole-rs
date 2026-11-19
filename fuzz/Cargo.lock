@@ -143,6 +143,7 @@ dependencies = [
  "swoole-rs-base64",
  "swoole-rs-corebase",
  "swoole-rs-error",
+ "swoole-rs-framing",
  "swoole-rs-http",
  "swoole-rs-protocols",
  "swoole-rs-websocket",

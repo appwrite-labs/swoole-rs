@@ -40,9 +40,9 @@ cases in [protocol.rs](protocol.rs), built into the http server case binary
 | `protocol.eof` | `protocol.eof` (http-server-rust) |
 | `protocol.socks5_strerror` | `swoole-rs-clients` `owned_proxy::tests::socks5_strerror` |
 | `protocol.socks5_dns_tunnel_target_host_max_length` | `swoole-rs-clients` `owned_proxy::tests::socks5_dns_tunnel_target_host_max_length` |
-| `protocol.swap_byte_order` | `swoole-rs-ports` `framing_recv::tests::swap_byte_order` |
-| `protocol.unpack` | `swoole-rs-ports` `framing_recv::tests::unpack_formats` |
-| `protocol.hton64` | `swoole-rs-ports` `framing_recv::tests::hton64` |
+| `protocol.swap_byte_order` | `swoole-rs-clients` `framing_recv::tests::swap_byte_order` |
+| `protocol.unpack` | `swoole-rs-clients` `framing_recv::tests::unpack_formats` |
+| `protocol.hton64` | `swoole-rs-clients` `framing_recv::tests::hton64` |
 
 ## Known failures
 

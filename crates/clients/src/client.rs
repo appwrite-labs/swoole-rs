@@ -10,6 +10,7 @@
 //! reference to the state lives across one: operations work on a raw [`Handle`]
 //! and borrow the state only between effects. A PHP bailout in a callback
 //! longjmps out, so nothing that needs dropping is held across one.
+use crate::framing_recv::Source;
 use crate::owned_proxy::SocksConfig;
 use crate::protocol::{Package, Protocol};
 use core::cell::{Cell, OnceCell};
@@ -18,7 +19,7 @@ use core::marker::PhantomData;
 use core::ptr::NonNull;
 use std::ffi::{CStr, CString};
 use std::rc::Rc;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use swoole_rs_corebase::buffer::string::{OwnedString, StringBuffer};
 use swoole_rs_corebase::constants::{
     FdType, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE, SW_SSL_BUFFER_SIZE,
@@ -181,31 +182,6 @@ const ERROR_SOCKS5_HANDSHAKE_FAILED: c_int = ErrorCode::SW_ERROR_SOCKS5_HANDSHAK
 const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int =
     ErrorCode::SW_ERROR_HTTP_PROXY_HANDSHAKE_ERROR as c_int;
 
-/// One of `Protocol::recv_with_length_protocol` and `recv_with_eof_protocol` over a
-/// live client's protocol, socket and input buffer ([`Handle::with_framed`]).
-pub type Framed = fn(&ClientFraming, Socket<'_>, &mut StringBuffer) -> bool;
-
-/// The framed receives crates/ports defines; ports depends on this crate, so
-/// `swoole_init` (crates/ffi) registers them with [`set_framing`]. Only a
-/// client's `on_read` calls them, so the fields stay private.
-pub struct Framing {
-    length: Framed,
-    eof: Framed,
-}
-
-impl Framing {
-    pub const fn new(length: Framed, eof: Framed) -> Self {
-        Self { length, eof }
-    }
-}
-
-static FRAMED_READERS: OnceLock<Framing> = OnceLock::new();
-
-/// Register the client’s length and EOF readers at startup.
-pub fn set_framing(framing: Framing) {
-    FRAMED_READERS.get_or_init(|| framing);
-}
-
 /// The public, trivially copyable fields of `network::Client`.
 #[derive(Clone, Copy)]
 pub struct ClientRecord {
@@ -249,7 +225,7 @@ pub struct Client {
 }
 
 /// The input and protocol settings a framed receive keeps through callbacks.
-pub struct ClientFraming {
+pub(crate) struct ClientFraming {
     record: Cell<ClientRecord>,
     input: Cell<StringBuffer>,
     length_owner: Cell<Option<Rc<dyn std::any::Any>>>,
@@ -261,9 +237,8 @@ impl Drop for ClientFraming {
     }
 }
 
-impl ClientFraming {
-    #[must_use]
-    pub fn protocol(&self) -> Protocol {
+impl Source for &ClientFraming {
+    fn protocol(self) -> Protocol {
         self.record.get().protocol
     }
 
@@ -271,14 +246,12 @@ impl ClientFraming {
     /// to hand its length callback, which drops it: the callable may `set()` another
     /// or close the client, and the old one's destructor must run before the
     /// callback finishes.
-    #[must_use]
-    pub fn length_owner(&self) -> Option<Rc<dyn std::any::Any>> {
+    fn length_owner(self) -> Option<Rc<dyn std::any::Any>> {
         self.length_owner.with_taken(|owner| owner.clone())
     }
 
     /// The record's protocol, in place: its callbacks take it by address.
-    #[must_use]
-    pub fn protocol_address(&self) -> *const Protocol {
+    fn address(self) -> *const Protocol {
         let record = self.record.as_ptr();
         record
             .wrapping_byte_add(core::mem::offset_of!(ClientRecord, protocol))
@@ -1893,14 +1866,11 @@ fn on_read(this: Handle<'_>) -> bool {
     let record = this.record();
     let (eof, length) = (record.open_eof_check, record.open_length_check);
     if eof || length {
-        // `swoole_init` registered them before any client existed.
-        let framing = FRAMED_READERS
-            .get()
-            .unwrap_or_else(|| swoole_rs_corebase::fatal("client framing is not registered"));
-        let framed = if eof { framing.eof } else { framing.length };
         let socket = this.socket();
         // A package callback may destroy the client; its socket outlives this handler.
-        let received = this.with_framed(framed);
+        let received = this.with_framed(|client, socket, buffer| {
+            crate::framing_recv::client_receive(client, socket, buffer, eof)
+        });
         // A destroyed client cleared its object.
         let released = socket.read(|socket| socket.object.is_null());
         if !received && !released && !this.flag(Flag::Closed) {

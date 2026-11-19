@@ -6,11 +6,11 @@ use crate::net::{self, bailed, report, warn, warn_sys};
 use libc::c_int;
 use std::mem::ManuallyDrop;
 use swoole_rs_clients::client::ClientRecord;
+use swoole_rs_clients::framing_recv::default_length_func;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 use swoole_rs_corebase::tls::{self as tls, Text, Value};
 use swoole_rs_phpswoole::length::Named;
-use swoole_rs_ports::framing_recv::default_length_func;
 use swoole_rs_zend::host::callable::Callable;
 use swoole_rs_zend::{Array, E_ERROR, Owned, Value as Zval, ZString, bailout};
 

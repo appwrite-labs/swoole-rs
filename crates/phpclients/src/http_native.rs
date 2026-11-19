@@ -179,7 +179,7 @@ impl Co {
             protocol.package_length_size = WEBSOCKET_HEADER_LEN;
             protocol.package_length_offset = 0;
             protocol.package_body_offset = 0;
-            protocol.get_package_length = Some(swoole_rs_ports::http_routes::websocket_length);
+            protocol.get_package_length = Some(swoole_rs_clients::ws::websocket_length);
         });
     }
 
