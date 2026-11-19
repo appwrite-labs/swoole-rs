@@ -129,13 +129,12 @@ jobs:
           pattern: debug-phpt-*
           merge-multiple: true
           path: shards
-      # The merge tier's re-runs, unless more than 20 are flagged: a broad breakage.
+      # The merge tier's re-runs, unless gate.py --should-recheck finds too many flagged: a broad breakage.
       - name: Flag regressions
         id: flagged
         run: |
           python3 corpus/upstream/gate.py shards/*.json --print-regressions > flagged.txt
-          count=$(grep -c . flagged.txt || true)
-          echo "rerun=$([ "$count" -gt 0 ] && [ "$count" -le 20 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "rerun=$(python3 corpus/upstream/gate.py shards/*.json --should-recheck)" >> "$GITHUB_OUTPUT"
       - name: List rerun services
         if: steps.flagged.outputs.rerun == 'true'
         id: services
