@@ -323,6 +323,31 @@ fn pooled_words_balance_their_pins_across_pool_replacement() {
 }
 
 #[test]
+#[cfg(not(miri))] // The process-wide pool and pthread locks need an isolated process.
+fn shared_table_keeps_its_pin_until_the_last_handle_drops() {
+    use std::rc::Rc;
+
+    if crate::utilities::isolated_process::run_in_child(
+        "memory::members::tests::shared_table_keeps_its_pin_until_the_last_handle_drops",
+    ) {
+        return;
+    }
+    assert!(crate::swr_v1_core_init());
+    pool::init();
+    let mut table = SharedTable::make(64, 0.2, |_, _| 0).unwrap();
+    assert!(table.create());
+    let object = Rc::new(table);
+    let reader = Rc::clone(&object);
+    object.destroy();
+    drop(object);
+    assert_eq!(pool::users(), 1);
+    pool::delete();
+    assert_eq!(reader.size(), 64);
+    drop(reader);
+    assert_eq!(pool::users(), 0);
+}
+
+#[test]
 fn global_memory_bump_allocates_zeroed_blocks_within_a_page() {
     crate::swr_v1_core_set_pagesize(4096);
     let pool = GlobalMemory::new(4096, false).unwrap();
