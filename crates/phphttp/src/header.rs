@@ -336,7 +336,9 @@ fn build(
     }
 
     if flags & SERVER == 0 {
-        out.extend_from_slice(b"Server: swoole-http-server\r\n");
+        out.extend_from_slice(b"Server: ");
+        out.extend_from_slice(swoole_rs_corebase::constants::SW_HTTP_SERVER_SOFTWARE.as_bytes());
+        out.extend_from_slice(b"\r\n");
     }
     if flags & DATE == 0 {
         date(|date| {

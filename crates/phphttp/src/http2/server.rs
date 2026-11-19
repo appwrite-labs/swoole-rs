@@ -412,7 +412,10 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<H
 
     let missing = sw_rs_http2_header_defaults(header_flags);
     if missing & MISSING_SERVER != 0 {
-        headers.add(b"server", b"swoole-http-server");
+        headers.add(
+            b"server",
+            swoole_rs_corebase::constants::SW_HTTP_SERVER_SOFTWARE.as_bytes(),
+        );
     }
     if missing & MISSING_DATE != 0 {
         crate::http2::date(|date| headers.add(b"date", date));

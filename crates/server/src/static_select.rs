@@ -92,9 +92,6 @@ pub trait Exchange {
     fn send(&self, kind: ServerEvent, data: &[u8]);
 }
 
-/// `SW_HTTP_SERVER_SOFTWARE`.
-const SOFTWARE: &[u8] = b"swoole-http-server";
-
 /// The text up to its first NUL, as a C string reads it.
 fn c_text(text: &[u8]) -> &[u8] {
     text.split(|&byte| byte == 0).next().unwrap_or_default()
@@ -122,7 +119,7 @@ pub fn select(handler: &mut impl Handler, exchange: &impl Exchange) -> bool {
         date: &[],
         modified: &[],
         content_type: &[],
-        software: SOFTWARE,
+        software: swoole_rs_corebase::constants::SW_HTTP_SERVER_SOFTWARE.as_bytes(),
         page: &[],
         content_length: 0,
         head: StaticHead::NotFound,
