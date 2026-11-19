@@ -62,5 +62,42 @@ class LibraryServices(unittest.TestCase):
                 self.assertEqual(keep.call_args.args, (Path('target/reports/library-test/services'),))
 
 
+class LibraryGate(unittest.TestCase):
+    """main()'s exits: failed tests are 1, a control that passed nothing is 3 (#5432)."""
+    def run_main(self, control, other=None):
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'source/vendor/bin').mkdir(parents=True)
+            (root / 'source/vendor/bin/counit').write_text('')
+            engines = {'upstream': control, **({'cargo': other} if other else {})}
+            seen = []
+            def engine(name, _path, output, _php, _timeout):
+                seen.append(output)
+                (output / name).mkdir(parents=True, exist_ok=True)
+                return engines[name]
+            argv = ['run.py', '--output', 'relative-out', *[f'--engine={n}=/{n}.so' for n in engines]]
+            cwd = os.getcwd()
+            os.chdir(root)
+            try:
+                with patch.object(sys, 'argv', argv), patch.object(run, 'SOURCE', root / 'source'), \
+                        patch.object(run, 'run_engine', side_effect=engine), \
+                        patch.object(run, 'git', return_value='abc'), patch.object(run, 'summary'), \
+                        self.assertRaises(SystemExit) as exit:
+                    run.main()
+            finally:
+                os.chdir(cwd)
+        # A relative --output reaches the engine run absolute, so its ini is found from SOURCE.
+        self.assertTrue(all(output.is_absolute() for output in seen), seen)
+        return exit.exception.code
+
+    def test_control_that_passes_nothing_exits_3(self):
+        self.assertEqual(self.run_main({'t': ('failed', '')}), 3)
+
+    def test_failed_tests_exit_1_and_none_exit_0(self):
+        self.assertEqual(self.run_main({'t': ('passed', '')}, {'t': ('failed', '')}), 1)
+        self.assertEqual(self.run_main({'t': ('passed', '')}, {'t': ('passed', '')}), 0)
+
+
 if __name__ == '__main__':
     unittest.main()

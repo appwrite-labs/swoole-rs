@@ -150,7 +150,7 @@ jobs:
       - name: Run swoole/library suite
         run: >
           python3 corpus/library/run.py --engine cargo=target/phpt/cargo.so --output target/coverage/library.json
-          || { rc=$?; test -s target/coverage/library.json/library.json || exit $rc;
+          || { rc=$?; [ $rc -eq 1 ] && test -s target/coverage/library.json/library.json || exit $rc;
           echo "::warning title=Coverage library::exit $rc: some tests failed; their coverage still counts"; }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
