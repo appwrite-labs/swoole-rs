@@ -43,7 +43,7 @@ const POLL_TIMEOUT: f64 = 0.1;
 static BLOCKING: AtomicBool = AtomicBool::new(true);
 
 /// `SW_ERROR_CO_TIMEDOUT`: the last error a timed-out wait leaves.
-const CO_TIMEDOUT: c_int = 10018;
+const CO_TIMEDOUT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CO_TIMEDOUT as c_int;
 
 /// A connection the driver handed over: live, as libpq's own calls require,
 /// for as long as the value is used. The exports take it in place of

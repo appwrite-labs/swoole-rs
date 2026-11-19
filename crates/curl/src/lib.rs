@@ -48,7 +48,7 @@ use swoole_rs_curl_sys::{
 const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// `SW_ERROR_CO_CANCELED`.
-const CO_CANCELED: c_int = 10017;
+const CO_CANCELED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CO_CANCELED as c_int;
 /// What [`swr_v1_curl_multi_exec`] returns when it must wait without a
 /// coroutine to wait in (or one already bound): C++ raises the fatal error.
 pub const EXEC_NEEDS_COROUTINE: CURLcode = -1;

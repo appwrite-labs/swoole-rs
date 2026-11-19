@@ -21,7 +21,8 @@ const CONSTANTS: [(&std::ffi::CStr, i64); 4] = [
     (c"SWOOLE_CHANNEL_CANCELED", -3),
 ];
 const SW_ERROR_WRONG_OPERATION: i32 = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as i32;
-const SW_ERROR_CO_HAS_BEEN_DISCARDED: i32 = 10003;
+const SW_ERROR_CO_HAS_BEEN_DISCARDED: i32 =
+    swoole_rs_error::ErrorCode::SW_ERROR_CO_HAS_BEEN_DISCARDED as i32;
 
 static CHANNEL: CustomClass<Chan> = CustomClass::new();
 

@@ -16,7 +16,7 @@ use swoole_rs_corebase::coroutine::{
 use swoole_rs_zend::bailout;
 
 /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
-const OUT_OF_COROUTINE: c_int = 10001;
+const OUT_OF_COROUTINE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as c_int;
 
 /// A coroutine channel slot (upstream's `Channel *` of a channel object): none
 /// until [`Channel::open`].

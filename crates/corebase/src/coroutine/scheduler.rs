@@ -160,7 +160,8 @@ pub fn current() -> *mut Coroutine {
 }
 
 /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
-const OUT_OF_COROUTINE: core::ffi::c_int = 10001;
+const OUT_OF_COROUTINE: core::ffi::c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as core::ffi::c_int;
 
 /// `Coroutine::get_current_safe()`: the running coroutine; outside one, Swoole's fatal
 /// error, which exits the process or bails out over the callers' frames as upstream's

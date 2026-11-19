@@ -19,7 +19,7 @@ pub(crate) const MAP: zend_long = 6;
 /// `SW_REDIS_MAX_STRING_SIZE`.
 const MAX_STRING_SIZE: usize = 536_870_912;
 /// `SW_ERROR_INVALID_PARAMS`.
-const INVALID_PARAMS: zend_long = 505;
+const INVALID_PARAMS: zend_long = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as zend_long;
 
 fn throw(message: &CStr) {
     swoole_rs_phpswoole::exception().throw(message, INVALID_PARAMS);
