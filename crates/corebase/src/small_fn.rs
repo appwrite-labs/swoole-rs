@@ -30,6 +30,48 @@ pub(crate) struct SmallFn<R: 'static, const N: usize = 2> {
     thread: PhantomData<*const ()>,
 }
 
+/// Coroutine entries and cancelers capture only Copy values. Only `put` can
+/// populate this slot, so discarding it never requires an erased destructor.
+#[derive(Debug)]
+pub(crate) struct CopyFn<R: 'static, const N: usize = 2>(ManuallyDrop<SmallFn<R, N>>);
+
+impl<R, const N: usize> CopyFn<R, N> {
+    pub(crate) const fn empty() -> Self {
+        Self(ManuallyDrop::new(SmallFn::empty()))
+    }
+
+    pub(crate) fn put(&self, callback: impl Fn() -> R + Copy + 'static) {
+        self.0.put(callback);
+    }
+
+    pub(crate) fn run(&self) -> Option<R> {
+        self.0.run()
+    }
+
+    pub(crate) fn take(&mut self) -> Option<Taken<R, N>> {
+        self.0.take()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_full(&self) -> bool {
+        self.0.is_full()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.0.ops.set(None);
+    }
+}
+
+impl<R, F: Fn() -> R + Copy + 'static> Small<R> for F {
+    fn run(&self) -> R {
+        self()
+    }
+
+    fn consume(self) -> R {
+        self()
+    }
+}
+
 /// A value [`SmallFn::take`] moved out, owned until invoked or dropped.
 #[must_use]
 pub(crate) struct Taken<R: 'static, const N: usize = 2> {
