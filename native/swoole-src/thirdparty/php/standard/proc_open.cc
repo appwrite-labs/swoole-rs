@@ -73,7 +73,14 @@ static sw_php_process_env _php_array_to_envp(zval *environment) {
     sw_php_process_env env;
     memset(&env, 0, sizeof(env));
     if (environment) {
+#ifdef PHP_WIN32
+        /* The block alone: Win32 takes no pointer array. */
+        char **envarray = NULL;
+        swr_proc_envp(Z_ARRVAL_P(environment), &env.envp, &envarray);
+        efree(envarray);
+#else
         swr_proc_envp(Z_ARRVAL_P(environment), &env.envp, &env.envarray);
+#endif
     }
     return env;
 }
