@@ -404,21 +404,32 @@ fn connect_sync() {
     sock.free();
 
     let sock = make_socket(SW_SOCK_TCP, SW_FD_STREAM, 0).expect("socket");
-    sa.assign(SW_SOCK_TCP, "192.168.199.199", 80, true);
+    let (_peer, port) = super::client::unanswering_peer();
+    sa.assign(SW_SOCK_TCP, TEST_HOST, port, true);
     sock.set_timeout(0.3, SW_TIMEOUT_CONNECT);
     assert_eq!(sock.connect_sync(&sa), SW_ERR);
     assert_eq!(last_error(), ETIMEDOUT);
     sock.free();
 
     let sock = make_socket(SW_SOCK_TCP, SW_FD_STREAM, 0).expect("socket");
-    sa.assign(SW_SOCK_TCP, "127.0.0.1", 59999, true);
+    let refused = make_socket(SW_SOCK_TCP, SW_FD_STREAM, 0).expect("socket");
+    assert_eq!(refused.bind(TEST_HOST, 0), SW_OK);
+    assert_eq!(refused.get_name(), SW_OK);
+    sa.assign(SW_SOCK_TCP, TEST_HOST, refused.get_port(), true);
     sock.set_timeout(0.3, SW_TIMEOUT_CONNECT);
     assert_eq!(sock.connect_sync(&sa), SW_ERR);
     assert_eq!(last_error(), ECONNREFUSED);
     sock.free();
+    refused.free();
 
     let sock = make_socket(SW_SOCK_TCP, SW_FD_STREAM, 0).expect("socket");
-    sa.assign(SW_SOCK_TCP, TEST_HTTP_DOMAIN.to_str().unwrap(), 80, true);
+    let listener = std::net::TcpListener::bind((TEST_HOST, 0)).unwrap();
+    sa.assign(
+        SW_SOCK_TCP,
+        TEST_HOST,
+        listener.local_addr().unwrap().port().into(),
+        true,
+    );
     sock.set_timeout(0.3, SW_TIMEOUT_CONNECT);
     assert_eq!(sock.connect_sync(&sa), SW_OK);
     sock.free();
@@ -434,7 +445,13 @@ fn fail() {
     let sock = make_socket(SW_SOCK_TCP, SW_FD_STREAM, 0).expect("socket");
 
     let mut sa = Address::new();
-    sa.assign(SW_SOCK_TCP, TEST_HTTP_DOMAIN.to_str().unwrap(), 80, true);
+    let listener = std::net::TcpListener::bind((TEST_HOST, 0)).unwrap();
+    sa.assign(
+        SW_SOCK_TCP,
+        TEST_HOST,
+        listener.local_addr().unwrap().port().into(),
+        true,
+    );
     sock.set_timeout(0.3, SW_TIMEOUT_CONNECT);
     assert_eq!(sock.connect_sync(&sa), SW_OK);
 
