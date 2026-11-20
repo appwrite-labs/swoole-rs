@@ -141,7 +141,6 @@ fn system_message(code: i32) -> (std::ffi::CString, bool) {
 pub extern "C" fn system_error(code: i32) -> *const c_char {
     static MESSAGES: std::sync::Mutex<Vec<std::ffi::CString>> = std::sync::Mutex::new(Vec::new());
     let (message, known) = system_message(code);
-    let pointer = message.as_ptr();
     if !known {
         return unknown_system_message(message);
     }
@@ -149,8 +148,7 @@ pub extern "C" fn system_error(code: i32) -> *const c_char {
     if let Some(stored) = messages.iter().find(|stored| **stored == message) {
         return stored.as_ptr();
     }
-    messages.push(message);
-    pointer
+    messages.push_mut(message).as_ptr()
 }
 
 /// Apple's unknown-message buffer has a fixed `NL_TEXTMAX` address even when a
@@ -174,10 +172,11 @@ fn unknown_system_message(message: std::ffi::CString) -> *const c_char {
 #[cfg(not(target_vendor = "apple"))]
 fn unknown_system_message(message: std::ffi::CString) -> *const c_char {
     thread_local! {
-        static UNKNOWN: std::cell::Cell<Option<std::ffi::CString>> = const { std::cell::Cell::new(None) };
+        static UNKNOWN: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
     }
-    let pointer = message.as_ptr();
-    UNKNOWN.set(Some(message));
+    let bytes = message.into_bytes_with_nul();
+    let pointer = bytes.as_ptr().cast();
+    UNKNOWN.set(bytes);
     pointer
 }
 
@@ -441,7 +440,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no strerror")]
     fn system_messages_keep_their_bytes_across_threads_and_later_errors() {
         let known = system_error(libc::ENOENT);
         let known_text = unsafe { std::ffi::CStr::from_ptr(known) }.to_owned();
@@ -488,7 +486,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no strerror")]
     fn strerror_text_agrees_with_swoole_strerror() {
         let system = |code| {
             let text = unsafe { std::ffi::CStr::from_ptr(system_error(code)) };
