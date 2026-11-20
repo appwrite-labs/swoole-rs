@@ -3,7 +3,7 @@ name: Miri
 # code. Tests Miri can't run in reasonable time, or that call native code, carry
 # #[cfg_attr(miri, ignore = "...")]. Every four hours on main, not on PRs: there it
 # reported main's own state on each PR and gated nothing (#4704).
-# tests/dev/test_miri.py fails when a crate with unsafe code is missing from the `-p`
+# tests/dev/test_miri.py fails when a crate with unsafe code is missing from the package
 # lists below, unless it lists the crate with why Miri can't run it.
 on:
   schedule:
@@ -27,21 +27,21 @@ jobs:
         include:
           - name: leaf
             packages: >-
-              -p swoole-rs-base64 -p swoole-rs-crc32 -p swoole-rs-error -p swoole-rs-error-ffi
-              -p swoole-rs-framing -p swoole-rs-http2 -p swoole-rs-httpbindings
+              swoole-rs-base64 swoole-rs-crc32 swoole-rs-error swoole-rs-error-ffi
+              swoole-rs-framing swoole-rs-http2 swoole-rs-httpbindings
           - name: core
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: >-
-              -p swoole-rs-bus -p swoole-rs-corebase
+              swoole-rs-bus swoole-rs-corebase
           - name: clients
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
-            packages: -p swoole-rs-clients
+            packages: swoole-rs-clients
           - name: hooks
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
-            packages: -p swoole-rs-hooks
+            packages: swoole-rs-hooks
           - name: server
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
-            packages: -p swoole-rs-server
+            packages: swoole-rs-server
     env:
       TOOLCHAIN: nightly-2026-10-24
       MIRIFLAGS: ${{ matrix.flags }}
@@ -53,4 +53,18 @@ jobs:
       - name: Set up Miri
         run: cargo +$TOOLCHAIN miri setup
       - name: Miri
-        run: cargo +$TOOLCHAIN miri test --locked --lib ${{ matrix.packages }}
+        shell: bash
+        env:
+          PACKAGES: ${{ matrix.packages }}
+        run: |
+          echo '| Crate | Run | Ignored |' >> "$GITHUB_STEP_SUMMARY"
+          echo '| --- | ---: | ---: |' >> "$GITHUB_STEP_SUMMARY"
+          for package in $PACKAGES; do
+            status=0
+            cargo +"$TOOLCHAIN" miri test --locked --lib -p "$package" | tee "$RUNNER_TEMP/miri.log" || status=$?
+            awk -v package="$package" '
+              /^test result:/ { print "|", package, "|", $4 + $6, "|", $8, "|"; found = 1 }
+              END { if (!found) print "|", package, "| incomplete | — |" }
+            ' "$RUNNER_TEMP/miri.log" >> "$GITHUB_STEP_SUMMARY"
+            if ((status)); then exit "$status"; fi
+          done
