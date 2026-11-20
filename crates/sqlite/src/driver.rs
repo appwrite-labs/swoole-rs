@@ -1,5 +1,8 @@
 //! Database-handle methods for the bundled PDO SQLite driver.
-use crate::{Argument, Db, ExecCallback, Sqlite3, swoole_sqlite3_exec, swoole_sqlite3_open_v2};
+use crate::{
+    Argument, Db, ExecCallback, Sql, Sqlite3, Sqlite3Stmt, swoole_sqlite3_exec,
+    swoole_sqlite3_open_v2, swoole_sqlite3_prepare_v2,
+};
 use std::{
     ffi::{CStr, c_int},
     ptr,
@@ -11,9 +14,11 @@ use swoole_rs_zend::{
     string::ZBuf,
     sys::{
         pdo_attribute_type_PDO_ATTR_CLIENT_VERSION as CLIENT_VERSION,
+        pdo_attribute_type_PDO_ATTR_CURSOR as CURSOR,
         pdo_attribute_type_PDO_ATTR_DRIVER_SPECIFIC as DRIVER_SPECIFIC,
         pdo_attribute_type_PDO_ATTR_SERVER_VERSION as SERVER_VERSION,
-        pdo_attribute_type_PDO_ATTR_TIMEOUT as TIMEOUT, zend_long, zend_string,
+        pdo_attribute_type_PDO_ATTR_TIMEOUT as TIMEOUT,
+        pdo_cursor_type_PDO_CURSOR_FWDONLY as FORWARD, zend_long, zend_string,
     },
 };
 
@@ -154,6 +159,21 @@ fn set_timeout(db: Db, seconds: zend_long) {
 }
 
 swoole_rs_zend::exports! {
+#[unsafe(no_mangle)]
+extern "C" fn swr_pdo_sqlite_prepare(dbh: &Dbh, sql: &ZStr, options: Option<&Value>, stmt: &mut *mut Sqlite3Stmt) -> bool {
+    let cursor = pdo::attr_long(options, CURSOR, FORWARD.into());
+    if swoole_rs_zend::bailout::pending() { return false; }
+    if cursor == FORWARD.into() {
+        let sql_ptr = Sql(sql.bytes_with_nul().as_ptr().cast());
+        let result = swoole_sqlite3_prepare_v2(
+            swr_pdo_sqlite_connection(dbh), sql_ptr, sql.bytes().len().c_cast(), stmt, None,
+        );
+        if result == 0 { return true; }
+    }
+    swr_pdo_sqlite_record_error(dbh);
+    false
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn swr_pdo_sqlite_open(filename: Text<'_>, db: &mut *mut Sqlite3, options: Option<&Value>) -> bool {
     // SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, with URI filenames enabled
