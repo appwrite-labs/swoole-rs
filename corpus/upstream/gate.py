@@ -100,7 +100,7 @@ def rows(reports):
                      'status': row['status'], 'upstream_status': row.get('upstream_status')}
             if 'leftovers' in row:
                 entry['leftovers'] = row['leftovers']
-            if row['status'] == 'excluded':
+            if row['status'] in ('excluded', 'unsupported'):
                 entry['reason'] = row.get('detail', '')
             elif row['status'] == 'skipped':
                 entry['reason'] = skip_reason(row.get('detail'))
@@ -269,8 +269,12 @@ def markdown(results, rechecked=None, stubbed=()):
     for engine in engines:
         statuses = Counter(row['status'] for row in results if row['engine'] == engine)
         skips = Counter(row['category'] for row in results if row['engine'] == engine and row['status'] == 'skipped')
+        # run.py's RACY lists: recorded unsupported and never run, so nothing gates them (#5358).
+        never = sum(1 for row in results if row['engine'] == engine and row['status'] == 'unsupported'
+                    and row.get('reason', '').startswith('racy original'))
         lines += [f'**{sum(statuses.values())} PHPTs** on {engine}: ' + ', '.join(f'{statuses[s]} {s}' for s in STATUSES),
-                  '', 'Skips by reason: ' + ', '.join(f'{n} {c}' for c, n in skips.most_common()), '']
+                  '', 'Skips by reason: ' + ', '.join(f'{n} {c}' for c, n in skips.most_common())
+                  + f'; {never} never run (racy originals)', '']
     exclusions = sorted({row['test'] + ': ' + row.get('reason', '') for row in results if row['status'] == 'excluded'})
     if exclusions:
         lines += listing('named originals excluded (not passed)', exclusions)
