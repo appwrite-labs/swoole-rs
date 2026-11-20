@@ -815,12 +815,35 @@ pub fn http_proxy(bytes: &[u8]) {
 /// reports 0 and upstream isn't run.
 pub fn clients_domain_decode(bytes: &[u8]) {
     let (mut theirs, mut ours) = (bytes.to_vec(), bytes.to_vec());
-    if !domain_decode(&mut ours, c_char::MIN != 0) {
+    if domain_decode(&mut ours, c_char::MIN != 0) {
+        // SAFETY: `theirs` is a NUL-terminated name in the compared domain, decoded within its bytes.
+        unsafe { clients::domain_decode(theirs.as_mut_ptr().cast()) };
+        assert_eq!(theirs, ours, "domain {bytes:?}");
+    }
+    // A well-formed name made from the same bytes, decided here rather than by the
+    // candidate: one or more labels of 1 to 63 nonzero bytes behind their length, then a
+    // NUL, at most 255 octets in all (DNS's limit). The candidate must take it and decode
+    // it as the pin does, so declining everything fails.
+    let mut name = Vec::with_capacity(256);
+    for label in bytes.split(|&b| b == 0).flat_map(|run| run.chunks(63)) {
+        if name.len() + 1 + label.len() + 1 > 255 {
+            break;
+        }
+        name.push(u8::try_from(label.len()).unwrap_or(63));
+        name.extend_from_slice(label);
+    }
+    if name.is_empty() {
         return;
     }
-    // SAFETY: `theirs` is a NUL-terminated name in the compared domain, decoded within its bytes.
+    name.push(0);
+    let (mut theirs, mut ours) = (name.clone(), name);
+    assert!(
+        domain_decode(&mut ours, c_char::MIN != 0),
+        "well-formed {bytes:?} declined"
+    );
+    // SAFETY: `theirs` is a NUL-terminated well-formed name, which decodes within its bytes.
     unsafe { clients::domain_decode(theirs.as_mut_ptr().cast()) };
-    assert_eq!(theirs, ours, "domain {bytes:?}");
+    assert_eq!(theirs, ours, "well-formed domain {bytes:?}");
 }
 
 /// Any bytes up to the first blank line as a request head: `parse_header_info` on both
