@@ -1,7 +1,11 @@
 //! Cursor execution, fetching and result columns for the bundled PDO SQLite statement.
 use crate::{Db, Stmt, sqlite3_changes, swoole_sqlite3_step};
-use std::{cell::Cell, ffi::c_int, mem::MaybeUninit};
-use swoole_rs_corebase::sys::Text;
+use std::{
+    cell::Cell,
+    ffi::{c_char, c_int},
+    mem::MaybeUninit,
+};
+use swoole_rs_corebase::{CCast, sys::Text};
 use swoole_rs_zend::{
     Owned, OwnedArray, ZStr, ZString,
     pdo::{Slot, Stmt as PdoStmt},
@@ -170,5 +174,68 @@ extern "C" fn swr_sqlite_fetch(pdo: &PdoStmt, stmt: Stmt, cursor: &Cell<u8>) -> 
             false
         }
         code => step_error(pdo, stmt, code),
+    }
+}
+
+/// Bytes lent by the PDO bound parameter under SQLite's `SQLITE_STATIC` contract.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct BoundBytes(*const c_char);
+
+type Destructor = Option<extern "C" fn(*mut std::ffi::c_void)>;
+
+unsafe extern "C" {
+    safe fn sqlite3_bind_null(stmt: Stmt, index: c_int) -> c_int;
+    safe fn sqlite3_bind_int64(stmt: Stmt, index: c_int, value: i64) -> c_int;
+    safe fn sqlite3_bind_text(
+        stmt: Stmt,
+        index: c_int,
+        bytes: BoundBytes,
+        len: c_int,
+        destroy: Destructor,
+    ) -> c_int;
+    safe fn sqlite3_bind_blob(
+        stmt: Stmt,
+        index: c_int,
+        bytes: BoundBytes,
+        len: c_int,
+        destroy: Destructor,
+    ) -> c_int;
+}
+
+fn bind_result(pdo: &PdoStmt, rc: c_int) -> bool {
+    if rc != 0 {
+        swr_sqlite_stmt_error(pdo);
+    }
+    rc == 0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn swr_sqlite_bind_null(pdo: &PdoStmt, stmt: Stmt, index: c_int) -> bool {
+    bind_result(pdo, sqlite3_bind_null(stmt, index))
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn swr_sqlite_bind_integer(pdo: &PdoStmt, stmt: Stmt, index: c_int, value: i64) -> bool {
+    bind_result(pdo, sqlite3_bind_int64(stmt, index, value))
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn swr_sqlite_bind_bytes(
+    pdo: &PdoStmt,
+    stmt: Stmt,
+    index: c_int,
+    bytes: BoundBytes,
+    len: usize,
+    blob: bool,
+) -> bool {
+    if blob {
+        // PDO SQLite returns a failed blob bind without recording a diagnostic.
+        sqlite3_bind_blob(stmt, index, bytes, len.c_cast(), None) == 0
+    } else {
+        bind_result(
+            pdo,
+            sqlite3_bind_text(stmt, index, bytes, len.c_cast(), None),
+        )
     }
 }
