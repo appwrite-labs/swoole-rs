@@ -596,73 +596,64 @@ fn resp_in_bounds(data: &[u8], php: bool) -> bool {
     let at = |index: usize| data.get(index).copied().unwrap_or(0);
     // get_number: strtol after the type byte, then CRLF; Some((ret, next)).
     let number = |p: usize| {
-        let start = p + 1;
-        let mut q = start;
+        let mut q = p + 1;
         while matches!(at(q), b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r') {
             q += 1;
         }
-        let negative = at(q) == b'-';
-        if matches!(at(q), b'+' | b'-') {
-            q += 1;
-        }
+        let sign = at(q);
+        q += usize::from(matches!(sign, b'+' | b'-'));
         let digits = q;
         let mut value: i128 = 0;
         while at(q).is_ascii_digit() {
             value = (value * 10 + i128::from(at(q) - b'0')).min(1 << 70);
             q += 1;
         }
-        let end = if q == digits { start } else { q };
-        let value = if negative { -value } else { value };
+        let end = if q == digits { p + 1 } else { q };
+        let value = if sign == b'-' { -value } else { value };
         // strtol clamps to long; the int conversion keeps the low 32 bits.
         let value = value.clamp(i64::MIN.into(), i64::MAX.into()) as i64 as i32;
         (at(end) == b'\r' && at(end + 1) == b'\n').then_some((value, end + 2))
     };
-    // One pass is one run of upstream's switch: `case` is where it enters, and a
-    // case that doesn't break falls through to the next.
-    let (mut state, mut p, mut length) = (0, 0usize, 0i32);
-    loop {
-        let mut case = state;
-        if case == 0 {
-            if at(p) == b'*' {
-                let Some((_, next)) = number(p) else {
-                    return false;
-                };
-                (p, state) = (next, 1);
-            } else {
-                case = 1;
-            }
-        }
-        if case == 1 {
-            if at(p) == b'$' {
-                let Some((ret, next)) = number(p) else {
-                    return false;
-                };
-                p = next;
-                if ret != -1 {
-                    (length, state) = (ret, 2);
+    // Upstream's switch: one `*` count, before any string; `$` lengths, each but -1
+    // followed by a string of that length; and `:` integers. PHP reads any other
+    // prefix as a string of the length last seen.
+    let string = |p: usize, length: i32| {
+        let trailer = if php { 2 } else { 0 };
+        let end = usize::try_from(length).ok().map(|length| p + length);
+        end.filter(|&end| end + trailer <= data.len())
+            .map(|end| end + 2)
+    };
+    let (mut p, mut length, mut counted, mut pending) = (0, 0, false, false);
+    while p < data.len() {
+        let next = if std::mem::take(&mut pending) {
+            string(p, length)
+        } else {
+            match at(p) {
+                b'*' if !counted => number(p).map(|(_, next)| {
+                    counted = true;
+                    next
+                }),
+                b'$' => number(p).map(|(ret, next)| {
+                    if ret != -1 {
+                        (length, counted, pending) = (ret, true, true);
+                    }
+                    next
+                }),
+                b':' => number(p).map(|(_, next)| next),
+                _ if php => {
+                    counted = true;
+                    string(p, length)
                 }
-            } else if at(p) == b':' {
-                let Some((_, next)) = number(p) else {
-                    return false;
-                };
-                p = next;
-            } else if php {
-                case = 2;
-            } else {
-                return false;
+                _ => None,
             }
-        }
-        if case == 2 {
-            let trailer = if php { 2 } else { 0 };
-            if length < 0 || p + length as usize + trailer > data.len() {
-                return false;
-            }
-            (p, state) = (p + length as usize + 2, 1);
-        }
-        if p >= data.len() {
-            return true;
-        }
+        };
+        let Some(next) = next else {
+            return false;
+        };
+        p = next;
     }
+    // An empty input fails the switch's one run.
+    !data.is_empty()
 }
 
 type RespOracle =
