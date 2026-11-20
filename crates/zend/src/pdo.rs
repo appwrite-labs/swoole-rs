@@ -301,6 +301,14 @@ impl Slot {
     }
 }
 
+/// `get_attribute`'s answer, as PDO reads its `int`.
+#[repr(i32)]
+#[derive(Clone, Copy)]
+pub enum Attribute {
+    Unknown = 0,
+    Set = 1,
+}
+
 /// `pdo_attr_lval(options, attribute, default)`: the driver option `attribute` as
 /// an integer, converted as PHP does, or `default`.
 #[must_use]
