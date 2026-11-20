@@ -315,8 +315,6 @@ def plan(args, reports):
                             '(~15% of runs fail)',
                *([] if getattr(args, 'core_test_services', False) else
                  ['--exclude', 'coroutine_socket.tcp6=needs a listener on IPv6 loopback port 80']),
-               *[arg for name, reason in [('lookup1', NETWORK), ('lookup_ipv6', NETWORK), ('bad_family', NETWORK), ('cancel', UNCACHED)]
-                 for arg in ['--exclude', f'dns.{name}={reason}']],
                *[arg for name in ['https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy',
                                   'https_get_with_http_proxy'] for arg in ['--exclude', f'coroutine_socket.{name}={PROXY}']],
                # core-tests/src/network/client.cpp (tests/modules/clients/client.rs).
