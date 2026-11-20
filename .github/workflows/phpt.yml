@@ -80,11 +80,12 @@ jobs:
         id: extensions
         run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
       # Exit 1 means some tests failed, which the gate judges; anything else (a runner
-      # crash) fails the shard. A few families can leave a shard without tests.
+      # crash) fails the shard. A few families can leave a shard without tests. The racy
+      # originals run too, reported without gating (#5358).
       - name: Run PHPTs
         if: steps.manifest.outputs.tests != '0'
         run: >
-          python3 corpus/upstream/run.py --manifest target/phpt/manifest.json --measure-leftovers --timeout 30 --external-network
+          python3 corpus/upstream/run.py --manifest target/phpt/manifest.json --measure-leftovers --timeout 30 --external-network --run-racy
           ${{ steps.extensions.outputs.args }}
           --engine ${{ matrix.engine }}=target/phpt/${{ matrix.engine }}.so
           --output target/phpt/${{ matrix.engine }}-${{ matrix.index }}.json || [ $? -eq 1 ]
