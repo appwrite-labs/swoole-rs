@@ -186,8 +186,10 @@ Rust's record (`swr_v1_socket`). The fixture releases it through Rust's
 its null-reason, queue-order and text assertions remain the upstream assertions.
 `ERR_put_error` is OpenSSL 3's expansion (`ERR_new`, `ERR_set_debug`,
 `ERR_set_error`); `sw_tg_buffer()` reads become a 64 KiB buffer; upstream's mutex
-handoff between the two threads is a channel. Excluded as in the GoogleTest run:
-`socket.connect_sync` and `socket.fail` (external DNS and network) and
+handoff between the two threads is a channel. `socket.connect_sync` uses a full
+loopback accept queue for the 300 ms timeout and a bound, non-listening port
+for the refusal. Both it and `socket.fail` connect
+to a loopback listener in place of the public HTTP server. The runner excludes
 `socket.make_server_socket` (the runner's kernel returns `EPROTONOSUPPORT` for an
 unprivileged raw socket).
 

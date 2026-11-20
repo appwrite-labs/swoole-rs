@@ -1006,7 +1006,7 @@ fn async_udp6() {
 /// drops it (19.168.0.99, 192.168.1.199): a network that rejects the route answers
 /// ENETUNREACH instead. A listener whose accept queue is full: the kernel drops each
 /// further SYN, so a connect to it times out. Hold the result until the connect is done.
-fn unanswering_peer() -> ((std::net::TcpListener, Vec<std::net::TcpStream>), c_int) {
+pub(super) fn unanswering_peer() -> ((std::net::TcpListener, Vec<std::net::TcpStream>), c_int) {
     use std::os::fd::AsRawFd;
     let listener = std::net::TcpListener::bind((TEST_HOST, 0)).expect("bind");
     // SAFETY: listen(2) again on a listening socket only shrinks its backlog.

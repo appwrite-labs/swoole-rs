@@ -330,7 +330,6 @@ def plan(args, reports):
                # core-tests/src/network/socket.cpp (system/src/network_socket.rs).
                '--exclude', "socket.make_server_socket=expects ESOCKTNOSUPPORT for an unprivileged raw socket; the runner's "
                             'kernel returns EPROTONOSUPPORT',
-               '--exclude', 'socket.connect_sync=' + NETWORK, '--exclude', 'socket.fail=' + NETWORK,
                *report('hooks-system-rust'))
     if 'reactor' in modules and sys.platform.startswith('linux'):
         # core-tests/src/reactor/base.cpp, ported to Rust over the Cargo build's libswoole.
