@@ -43,37 +43,19 @@ static int pdo_sqlite_stmt_dtor(pdo_stmt_t *stmt)
 	return 1;
 }
 
+extern bool swr_sqlite_execute(pdo_stmt_t *, sqlite3_stmt *, sqlite3 *, uint8_t *, bool);
+extern bool swr_sqlite_fetch(pdo_stmt_t *, sqlite3_stmt *, uint8_t *);
+extern void swr_sqlite_before_bind(sqlite3_stmt *, uint8_t *, bool);
+
+void swr_sqlite_stmt_error(pdo_stmt_t *stmt)
+{
+	pdo_sqlite_error_stmt(stmt);
+}
+
 static int pdo_sqlite_stmt_execute(pdo_stmt_t *stmt)
 {
-	pdo_sqlite_stmt *S = (pdo_sqlite_stmt*)stmt->driver_data;
-
-	if (stmt->executed && !S->done) {
-		sqlite3_reset(S->stmt);
-	}
-
-	S->done = 0;
-	switch (sqlite3_step(S->stmt)) {
-		case SQLITE_ROW:
-			S->pre_fetched = 1;
-			php_pdo_stmt_set_column_count(stmt, sqlite3_data_count(S->stmt));
-			return 1;
-
-		case SQLITE_DONE:
-			php_pdo_stmt_set_column_count(stmt, sqlite3_column_count(S->stmt));
-			stmt->row_count = sqlite3_changes(S->H->db);
-			sqlite3_reset(S->stmt);
-			S->done = 1;
-			return 1;
-
-		case SQLITE_ERROR:
-			sqlite3_reset(S->stmt);
-			ZEND_FALLTHROUGH;
-		case SQLITE_MISUSE:
-		case SQLITE_BUSY:
-		default:
-			pdo_sqlite_error_stmt(stmt);
-			return 0;
-	}
+	pdo_sqlite_stmt *S = stmt->driver_data;
+	return swr_sqlite_execute(stmt, S->stmt, S->H->db, &S->cursor, stmt->executed);
 }
 
 static int pdo_sqlite_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *param,
@@ -84,10 +66,7 @@ static int pdo_sqlite_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_d
 
 	switch (event_type) {
 		case PDO_PARAM_EVT_EXEC_PRE:
-			if (stmt->executed && !S->done) {
-				sqlite3_reset(S->stmt);
-				S->done = 1;
-			}
+			swr_sqlite_before_bind(S->stmt, &S->cursor, stmt->executed);
 
 			if (param->is_param) {
 
@@ -206,35 +185,8 @@ static int pdo_sqlite_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_d
 static int pdo_sqlite_stmt_fetch(pdo_stmt_t *stmt,
 	enum pdo_fetch_orientation ori, zend_long offset)
 {
-	pdo_sqlite_stmt *S = (pdo_sqlite_stmt*)stmt->driver_data;
-	int i;
-	if (!S->stmt) {
-		return 0;
-	}
-	if (S->pre_fetched) {
-		S->pre_fetched = 0;
-		return 1;
-	}
-	if (S->done) {
-		return 0;
-	}
-	i = sqlite3_step(S->stmt);
-	switch (i) {
-		case SQLITE_ROW:
-			return 1;
-
-		case SQLITE_DONE:
-			S->done = 1;
-			sqlite3_reset(S->stmt);
-			return 0;
-
-		case SQLITE_ERROR:
-			sqlite3_reset(S->stmt);
-			ZEND_FALLTHROUGH;
-		default:
-			pdo_sqlite_error_stmt(stmt);
-			return 0;
-	}
+	pdo_sqlite_stmt *S = stmt->driver_data;
+	return swr_sqlite_fetch(stmt, S->stmt, &S->cursor);
 }
 
 static int pdo_sqlite_stmt_describe(pdo_stmt_t *stmt, int colno)
