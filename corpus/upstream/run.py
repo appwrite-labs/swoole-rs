@@ -102,13 +102,14 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         'tests/swoole_process/process_exec.phpt':
         "it execs /usr/bin/python on echo.py, which is Python 2 (raw_input, the print "
         'statement); Python 3 rejects it with a SyntaxError on every engine (#1974); companion: '
-        'tests/modules/integration/process_exec.py (#5358)',
+        'tests/modules/integration/companion.py --case process_exec (#5358)',
         'tests/swoole_runtime/exec/exec.phpt':
         "it pings www.gov.cn three times through each exec function; GitHub's hosted runners "
         'drop ICMP, so ping never answers and the case times out on every engine (#1974)',
         'tests/swoole_http2_client_coro/connect_twice.phpt':
         "it fetches https://nghttp2.org/httpbin/base64/..., and nghttp2.org's httpbin backend "
-        'answers 502 Bad Gateway (nghttpx) to every engine and to curl (#1986)',
+        'answers 502 Bad Gateway (nghttpx) to every engine and to curl (#1986); companion: '
+        'tests/modules/integration/companion.py --case connect_twice (#5358)',
         'tests/swoole_server/dispatch_mode_9.phpt':
         "it asserts the standard deviation of per-worker request counts is below 5, which the "
         "scheduler's interleaving decides: in 258 merge-tier runs on 11-11 the first run missed "
