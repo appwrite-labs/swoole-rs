@@ -83,7 +83,10 @@ def named_exclusion(case, metadata):
 
 
 def verdict_failed(row, require_all):
-    """Named exclusions stay non-passing; a real failure is never waived."""
+    """Named exclusions stay non-passing; a real failure is never waived. A racy original run
+    with --run-racy is reported, not gated: its failure fails nothing."""
+    if row.get('racy'):
+        return False
     if row['status'] == 'failed':
         return True
     return (require_all and row['status'] != 'passed' and row['test'] not in RACY | THREAD_CONTEXT_RACY | SANITIZER_RACY
@@ -286,6 +289,24 @@ SANITIZER_RACY = {'tests/swoole_websocket_server/get_large_requests.phpt':
                   '12 runs each: upstream 4, cargo 1, all on line 30; Sanitizers runs on main 2 of 4, #2992)'}
 # A capability the engine reports, and the originals racy only with it.
 CONDITIONALLY_RACY = {'thread_context': THREAD_CONTEXT_RACY, 'sanitizers': SANITIZER_RACY}
+# The RACY entries the runner's environment fails on every run, whatever the engine: a file the
+# runner rejects, Python 2, dropped ICMP, a live host's 502 or WAN latency, an orphaned server
+# holding stdout to the deadline, libssh2, PHP's own OOM fix, the resolver's reply. --run-racy
+# leaves them unrun; the rest race, so running them shows a pass rate that moves (#5358).
+ENVIRONMENT = frozenset({
+    'tests/swoole_http_server/compression_content_type_release.phpt',
+    'tests/swoole_process/process_exec.phpt',
+    'tests/swoole_runtime/exec/exec.phpt',
+    'tests/swoole_http2_client_coro/connect_twice.phpt',
+    'tests/swoole_curl/close_before_resume.phpt',
+    'tests/swoole_curl/exec_twice.phpt',
+    'tests/swoole_ssh2/ssh2_sftp_001.phpt',
+    'tests/swoole_table/force_unlock.phpt',
+    'tests/swoole_coroutine/dnslookup_ipv6.phpt',
+    'tests/swoole_curl/multi/bug4393.phpt',
+    'tests/swoole_runtime/nonblock.phpt',
+    'tests/swoole_client_async/enableSSL.phpt',
+})
 
 
 def racy(case, metadata):
@@ -637,6 +658,8 @@ def main():
     parser.add_argument('--measure-leftovers', action='store_true', help='Measure each test in its own TMPDIR and process group (Linux)')
     parser.add_argument('--isolate-cases', action='store_true', help='Original one-runner/process-group-per-case mode')
     parser.add_argument('--require-all', action='store_true', help='Also fail on unsupported or upstream-skipped cases (except RACY ones)')
+    parser.add_argument('--run-racy', action='store_true',
+                        help='Run the racy originals but ENVIRONMENT, tagging each row with its reason: reported, not gated')
     parser.add_argument('--external-network', action='store_true', help='Include cases marked network (DNS/routes) and run every case online')
     parser.add_argument('--match-child-php', action='store_true', help='Explicitly match bare php child commands to this engine; absolute PHP paths are unchanged')
     parser.add_argument('--timeout', type=int, default=15)
@@ -688,14 +711,17 @@ def main():
                     metadata = engine.metadata()
                 report['engines'].append(metadata)
                 with timed_phase(engine_timing, 'capability_selection'):
-                    runnable = []
+                    runnable, racy_reasons = [], {}
                     for case in cases:
                         missing = sorted(set(case['requires']) - set(metadata['capabilities']))
                         exclusion = named_exclusion(case, metadata)
                         if exclusion:
                             record_result(report, engine, case, {'status': 'excluded',
                                           'detail': exclusion, 'seconds': 0})
-                        elif reason := racy(case, metadata):
+                        elif (reason := racy(case, metadata)) and args.run_racy and case['path'] not in ENVIRONMENT:
+                            racy_reasons[case['path']] = reason
+                            runnable.append(case)
+                        elif reason:
                             record_result(report, engine, case, {'status': 'unsupported',
                                           'detail': f'racy original: {reason}', 'seconds': 0})
                         elif missing:
@@ -720,7 +746,10 @@ def main():
                                                     **({'match_child_php': True} if args.match_child_php else {}))
                     report['batches'].append({'engine': engine.name, **timing})
                     for case in group:
-                        record_result(report, engine, case, results[case['path']])
+                        result = results[case['path']]
+                        if case['path'] in racy_reasons:
+                            result = {**result, 'racy': racy_reasons[case['path']]}
+                        record_result(report, engine, case, result)
                     save_report(args.output, report)
         report['execution_status'] = 'complete'
     finally:
