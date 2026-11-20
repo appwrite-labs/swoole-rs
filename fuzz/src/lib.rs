@@ -1307,7 +1307,7 @@ fn sni_glob(subject: &[u8], cert: &[u8]) -> bool {
 
 /// Replays each target's seeds (`fuzz/seeds`) and fails when the share it compares with
 /// the pin, rather than leaving out, falls below a floor: today's share less ten points,
-/// rounded down to a multiple of five (#5355). `ws_frame_length` has no seeds.
+/// rounded down to a multiple of five (#5355).
 #[cfg(test)]
 mod compared_share {
     use super::TALLY;
@@ -1315,7 +1315,8 @@ mod compared_share {
     /// A target, its entry point, and the lowest compared share allowed, in percent.
     type Floor = (&'static str, fn(&[u8]), usize);
 
-    const FLOORS: [Floor; 6] = [
+    const FLOORS: [Floor; 7] = [
+        ("ws_frame_length", super::ws_frame_length, 80),
         ("framing_length", super::framing_length, 55),
         ("http_frame", super::http_frame, 85),
         ("resp_parse", super::resp_parse, 90),
