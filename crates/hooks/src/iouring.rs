@@ -9,6 +9,7 @@ use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::rc::Rc;
 use std::sync::atomic::AtomicU32;
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::FdType;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::reactor::event_api::{swoole_event_is_available, swoole_event_is_running};
@@ -72,7 +73,18 @@ fn instance() -> Option<Rc<Uring>> {
 /// `co->yield(&cancel_fn)` of the running coroutine `co`, where cancelling cancels
 /// `event`'s request.
 fn suspend(co: *mut c_void, event: u64, arm: &mut dyn FnMut(swoole_rs_corebase::coroutine::Waker)) {
+    // execute holds a Weak across this park, so a replacement engine cannot
+    // reuse its address. The scheduler clears this canceler before close_request
+    // can recycle the slot. Capture two words even on 32-bit hosts.
+    let original = current().map_or(std::ptr::null(), |engine| Rc::as_ptr(&engine));
+    let index = event.c_cast::<u32>();
     let cancel = move || {
+        let Some(event) = current()
+            .filter(|engine| Rc::as_ptr(engine) == original)
+            .and_then(|engine| engine.parked_request(index))
+        else {
+            return false;
+        };
         if swoole_rs_corebase::coroutine::current().is_null() {
             uring::cancel_nowait(&HOST, event)
         } else {

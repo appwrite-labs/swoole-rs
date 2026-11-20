@@ -105,6 +105,7 @@ struct Request {
 /// arrives, so that completion reaches no later request.
 #[derive(Default)]
 struct Slot {
+    id: u64,
     waker: Option<Waker>,
     result: Option<io::Result<isize>>,
     /// The operation resumed before the completion and no longer waits for it.
@@ -115,30 +116,53 @@ struct Slot {
 #[derive(Default)]
 struct Slots {
     slots: Vec<Slot>,
-    free: Vec<usize>,
+    free: Vec<u64>,
 }
 
 impl Slots {
-    /// A free slot's number.
-    fn open(&mut self) -> usize {
-        self.free.pop().unwrap_or_else(|| {
-            self.slots.push(Slot::default());
-            self.slots.len() - 1
-        })
+    /// Reuse the storage with a new request number. Late cancellation SQEs
+    /// match the full number in the kernel, even after this slot is recycled.
+    fn open(&mut self) -> io::Result<u64> {
+        if let Some(id) = self.free.pop() {
+            return Ok(id);
+        }
+        let index = u32::try_from(self.slots.len())
+            .ok()
+            .filter(|i| *i < u32::MAX)
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EOVERFLOW))?;
+        let id = u64::from(index);
+        self.slots.push(Slot {
+            id,
+            ..Slot::default()
+        });
+        Ok(id)
     }
 
     fn slot(&mut self, id: u64) -> Option<&mut Slot> {
-        self.slots.get_mut(usize::try_from(id).ok()?)
+        self.slots
+            .get_mut(id.c_cast::<u32>() as usize)
+            .filter(|slot| slot.id == id)
+    }
+
+    fn release(&mut self, id: u64) {
+        let Some(slot) = self.slot(id) else { return };
+        // Retire exhausted slots. TIMEOUT_EVENT has a reserved low word.
+        let next = id.checked_add(1 << 32);
+        *slot = Slot {
+            id: next.unwrap_or(TIMEOUT_EVENT),
+            ..Slot::default()
+        };
+        if let Some(next) = next {
+            self.free.push(next);
+        }
     }
 
     /// Stores the completion's `result`: the waker to resume, if one is parked. An
     /// abandoned request's number is free again instead.
     fn complete(&mut self, id: u64, result: io::Result<isize>) -> Option<Waker> {
-        let index = usize::try_from(id).ok()?;
-        let slot = self.slots.get_mut(index)?;
+        let slot = self.slot(id)?;
         if slot.abandoned {
-            *slot = Slot::default();
-            self.free.push(index);
+            self.release(id);
             return None;
         }
         slot.result = Some(result);
@@ -148,14 +172,13 @@ impl Slots {
     /// The operation's end: the completed request's result, its number free again,
     /// or none, the request abandoned, when it has not completed.
     fn close(&mut self, id: u64) -> Option<io::Result<isize>> {
-        let index = usize::try_from(id).ok()?;
-        let slot = self.slots.get_mut(index)?;
+        let slot = self.slot(id)?;
         slot.waker = None;
         let Some(result) = slot.result.take() else {
             slot.abandoned = true;
             return None;
         };
-        self.free.push(index);
+        self.release(id);
         Some(result)
     }
 }
@@ -299,7 +322,7 @@ impl Event {
         let Some(engine) = (host.instance)() else {
             return Err(io::Error::last_os_error());
         };
-        let id = engine.slots.with_taken(Slots::open) as u64;
+        let id = engine.slots.with_taken(Slots::open)?;
         // The linked timeout's entry points into this frame, which keeps the event
         // until the completion.
         engine.dispatch(Request {
@@ -312,7 +335,8 @@ impl Event {
         });
         engine.task_num.set(engine.task_num.get() + 1);
         // The park's waker goes to the slot, and the engine with it: the thread
-        // keeps the engine, and this frame holds nothing across the switch.
+        // keeps the engine. A weak reference identifies it across the switch.
+        let original = Rc::downgrade(&engine);
         let mut engine = Some(engine);
         (host.suspend)(self.coroutine, id, &mut |waker| {
             if let Some(engine) = engine.take() {
@@ -323,13 +347,40 @@ impl Event {
         });
         // The wakeup handler stored the result before resuming this coroutine.
         engine
-            .or_else(|| (host.instance)())
-            .and_then(|engine| engine.slots.with_taken(|slots| slots.close(id)))
+            .or_else(|| original.upgrade())
+            .and_then(|engine| engine.close_request(id))
             .unwrap_or(Ok(0))
     }
 }
 
 impl Uring {
+    pub(crate) fn parked_request(&self, index: u32) -> Option<u64> {
+        self.slots.with_taken(|slots| {
+            let slot = slots.slots.get(index as usize)?;
+            slot.waker.map(|_| slot.id)
+        })
+    }
+
+    fn close_request(&self, id: u64) -> Option<io::Result<isize>> {
+        let result = self.slots.with_taken(|slots| slots.close(id));
+        if result.is_none() {
+            // Only this queue is private to the engine. The kernel can already
+            // see entries in the submission ring when SQPOLL is active.
+            let removed = self.waiting.with_taken(|queue| {
+                let index = queue
+                    .iter()
+                    .position(|request| request.entry.get_user_data() == id)?;
+                queue.remove(index)
+            });
+            if removed.is_some() {
+                // Both SQEs were discarded, so no completion can arrive.
+                self.slots.with_taken(|slots| slots.release(id));
+                self.task_num.set(self.task_num.get() - 1);
+            }
+        }
+        result
+    }
+
     /// The submission queue's used slots and its size; a ring in use has no room.
     fn sq(&self) -> (usize, usize) {
         self.ring
@@ -1332,13 +1383,13 @@ mod tests {
     }
 
     /// A completion reaches its request's slot by number: it takes the parked waker
-    /// and leaves the result, which closing takes and frees the number for reuse. A
+    /// and leaves the result, which closing takes and frees the storage for reuse. A
     /// number closed before its completion stays taken until that arrives. An unknown
     /// number reaches nothing.
     #[test]
     fn slots_number_requests_until_closed() {
         let mut slots = Slots::default();
-        let (first, second) = (slots.open() as u64, slots.open() as u64);
+        let (first, second) = (slots.open().unwrap(), slots.open().unwrap());
         assert_ne!(first, second);
         if let Some(slot) = slots.slot(second) {
             slot.waker = Some(Waker::NONE);
@@ -1347,23 +1398,74 @@ mod tests {
         assert_eq!(slots.complete(first, Ok(3)), None, "nothing parked");
         assert_eq!(slots.complete(99, Ok(1)), None, "an unknown number");
         assert_eq!(slots.close(second).and_then(Result::ok), Some(7));
-        assert_eq!(slots.open() as u64, second, "a closed number is reused");
+        let recycled = slots.open().unwrap();
+        assert_ne!(
+            recycled, second,
+            "late cancellation cannot match a new request"
+        );
+        assert!(slots.slot(second).is_none());
         assert!(
-            slots.close(second).is_none(),
+            slots.close(recycled).is_none(),
             "closed before its completion"
         );
-        let third = slots.open() as u64;
+        let third = slots.open().unwrap();
         assert!(
             third != first && third != second,
             "an abandoned number stays taken"
         );
         assert_eq!(
-            slots.complete(second, Ok(9)),
+            slots.complete(recycled, Ok(9)),
             None,
             "its completion wakes nothing"
         );
-        assert_eq!(slots.open() as u64, second, "then the number is free");
+        assert_ne!(
+            slots.open().unwrap(),
+            recycled,
+            "the next use has a fresh number"
+        );
         assert_eq!(slots.close(first).and_then(Result::ok), Some(3));
+    }
+
+    #[test]
+    fn closing_a_waiting_request_discards_only_its_unpublished_entries() {
+        testing::with_engine(|| {
+            let engine = (testing::HOST.instance)().unwrap();
+            let queued = engine.slots.with_taken(Slots::open).unwrap();
+            let published = engine.slots.with_taken(Slots::open).unwrap();
+            engine.waiting.with_taken(|queue| {
+                queue.push_back(Request {
+                    entry: opcode::Nop::new().build().user_data(queued),
+                    timeout: Some(opcode::Nop::new().build().user_data(TIMEOUT_EVENT)),
+                });
+            });
+            engine.push(&[opcode::Nop::new().build().user_data(published)]);
+            engine.task_num.set(2);
+            assert!(engine.close_request(published).is_none());
+            assert_eq!(engine.waiting_num(), 1);
+            assert_eq!(engine.task_num(), 2, "a published request awaits its CQE");
+            assert!(engine.close_request(queued).is_none());
+            assert_eq!(engine.waiting_num(), 0);
+            assert_eq!(engine.task_num(), 1);
+            let reused = engine.slots.with_taken(Slots::open).unwrap();
+            assert_eq!(reused.c_cast::<u32>(), queued.c_cast::<u32>());
+            assert_ne!(reused, queued, "a pending cancel still targets the old id");
+            engine
+                .ring
+                .with_box(|ring| ring.submit_and_wait(1))
+                .unwrap()
+                .unwrap();
+            assert!(wakeup(&engine));
+            assert_eq!(
+                engine.task_num(),
+                0,
+                "only the original CQE retires the published operation"
+            );
+            assert!(
+                engine
+                    .slots
+                    .with_taken(|slots| slots.slot(published).is_none())
+            );
+        });
     }
 
     #[test]
