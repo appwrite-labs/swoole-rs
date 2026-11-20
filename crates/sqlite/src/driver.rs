@@ -1,5 +1,5 @@
 //! Database-handle methods for the bundled PDO SQLite driver.
-use crate::{Argument, Db, ExecCallback, swoole_sqlite3_exec};
+use crate::{Argument, Db, ExecCallback, Sqlite3, swoole_sqlite3_exec, swoole_sqlite3_open_v2};
 use std::{
     ffi::{CStr, c_int},
     ptr,
@@ -56,6 +56,7 @@ unsafe extern "C" {
     safe fn sqlite3_libversion() -> Text<'static>;
     safe fn sqlite3_busy_timeout(db: Db, milliseconds: c_int) -> c_int;
     safe fn sqlite3_extended_result_codes(db: Db, enabled: c_int) -> c_int;
+    safe fn swr_sqlite_open_basedir_active() -> bool;
     safe fn sqlite3_changes(db: Db) -> c_int;
     safe fn sqlite3_get_autocommit(db: Db) -> c_int;
 }
@@ -137,10 +138,7 @@ extern "C" fn swr_pdo_sqlite_set_attribute(dbh: &Dbh, attr: zend_long, value: &V
     };
     match attr {
         TIMEOUT => {
-            sqlite3_busy_timeout(
-                swr_pdo_sqlite_connection(dbh),
-                value.c_cast::<c_int>().wrapping_mul(1000),
-            );
+            set_timeout(swr_pdo_sqlite_connection(dbh), value);
         }
         EXTENDED_RESULT_CODES => {
             sqlite3_extended_result_codes(swr_pdo_sqlite_connection(dbh), value.c_cast());
@@ -149,4 +147,26 @@ extern "C" fn swr_pdo_sqlite_set_attribute(dbh: &Dbh, attr: zend_long, value: &V
         _ => return false,
     }
     true
+}
+
+fn set_timeout(db: Db, seconds: zend_long) {
+    sqlite3_busy_timeout(db, seconds.c_cast::<c_int>().wrapping_mul(1000));
+}
+
+swoole_rs_zend::exports! {
+#[unsafe(no_mangle)]
+extern "C" fn swr_pdo_sqlite_open(filename: Text<'_>, db: &mut *mut Sqlite3, options: Option<&Value>) -> bool {
+    // SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, with URI filenames enabled
+    // when PHP permits them. Conversion can invoke PHP's error handler.
+    let mut flags = pdo::attr_long(options, DRIVER_SPECIFIC, 0x02 | 0x04).c_cast::<c_int>();
+    if swoole_rs_zend::bailout::pending() { return false; }
+    if !swr_sqlite_open_basedir_active() { flags |= 0x40; }
+    swoole_sqlite3_open_v2(filename, db, flags, None) == 0
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn swr_pdo_sqlite_initial_timeout(db: Db, options: Option<&Value>) {
+    let seconds = pdo::attr_long(options, TIMEOUT, 60);
+    if !swoole_rs_zend::bailout::pending() { set_timeout(db, seconds); }
+}
 }
