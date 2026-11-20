@@ -11,7 +11,7 @@ use std::ffi::CString;
 use swoole_rs_corebase::{CCast, Switch, built_with};
 use swoole_rs_zend::{
     Array, Call, Emalloc, Key, Value, ZStr, ZString,
-    sys::{zend_string, zend_ulong},
+    sys::{IS_RESOURCE, zend_string, zend_ulong},
     value_error,
 };
 
@@ -316,6 +316,12 @@ fn setup_redirect(found: c_int, target: c_int, to: &mut c_int, nindex: c_int) ->
         warn(format!("Redirection target {target} not found"));
         return false;
     };
+    setup_dup(from, to, nindex)
+}
+
+/// `dup_proc_descriptor`: a copy of `from` into `to` (-1 when it fails). False once
+/// it warned, naming descriptor `nindex`.
+fn setup_dup(from: c_int, to: &mut c_int, nindex: c_int) -> bool {
     let Ok(fd) = swoole_rs_corebase::sys::dup(from) else {
         *to = -1;
         warn(format!(
@@ -342,6 +348,10 @@ unsafe extern "C" {
         count: c_int,
         target: c_int,
     ) -> c_int;
+    /// `set_proc_descriptor_from_resource`'s stream access: the descriptor of the
+    /// stream `resource` names (`zend_fetch_resource` of a `stream`, then
+    /// `php_stream_cast` as an fd), into `fd`. False once it threw or reported.
+    safe fn swr_proc_stream_fd(resource: &Value, fd: &mut c_int) -> bool;
     /// `set_proc_descriptor_to_file`: `path` opened in `mode` through its stream
     /// wrapper and released as a descriptor, into `fd`. False once it reported.
     safe fn swr_proc_open_file(path: &ZStr, mode: &ZStr, fd: &mut c_int) -> bool;
@@ -435,21 +445,41 @@ fn descriptor(
 }
 
 swoole_rs_zend::exports! {
-/// `set_proc_descriptor_from_array`: the descriptor item `item` (one array of
-/// `$descriptorspec`, the `ndesc`-th, for child fd `nindex`) set up into `setup`:
-/// its type, mode, parent end and child end. `pty` holds the shared
+/// One `$descriptorspec` item (`item`, the `ndesc`-th, for child fd `nindex`) set
+/// up into `setup`: its type, mode, parent end and child end. A stream resource is
+/// a copy of its descriptor (`set_proc_descriptor_from_resource`); an array is
+/// `set_proc_descriptor_from_array`, with `pty` holding the shared
 /// pseudoterminal's ends (-1 until a `pty` item opens it). False once it warned or
 /// threw, `setup` untouched.
 #[unsafe(no_mangle)]
-extern "C" fn swr_proc_descriptor_from_array(
-    item: &Array,
+extern "C" fn swr_proc_descriptor_from_item(
+    item: &Value,
     descriptors: Descriptors<'_>,
     ndesc: c_int,
     nindex: c_int,
     pty: &mut [c_int; 2],
     setup: &mut [c_int; 4],
 ) -> bool {
-    let Some(made) = descriptor(item, descriptors, ndesc, nindex, pty) else {
+    let item = item.referred();
+    let made = if item.kind() == IS_RESOURCE {
+        let mut fd = -1;
+        let mut childend = -1;
+        // Upstream names the item's position, not its fd, should the copy fail.
+        if !swr_proc_stream_fd(item, &mut fd) || !setup_dup(fd, &mut childend, ndesc) {
+            return false;
+        }
+        Setup { kind: 0, mode: 0, parentend: 0, childend }
+    } else if let Some(array) = item.array() {
+        let Some(made) = descriptor(array, descriptors, ndesc, nindex, pty) else {
+            return false;
+        };
+        made
+    } else {
+        swoole_rs_zend::bailout::defer(crate::report(
+            crate::Report::Fatal,
+            swoole_rs_zend::E_WARNING,
+            c"Descriptor item must be either an array or a File-Handle",
+        ));
         return false;
     };
     *setup = [made.kind, made.mode, made.parentend, made.childend];
