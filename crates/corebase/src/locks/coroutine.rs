@@ -11,8 +11,8 @@ use swoole_rs_error::ErrorCode;
 pub struct CoroutineHost {
     /// The running coroutine's id, `None` outside one.
     pub current: fn() -> Option<i64>,
-    /// A process-shared word, for the program's life, or None.
-    pub alloc_shared: fn() -> Option<&'static AtomicU32>,
+    /// Shared storage for this backend, or None if allocation failed.
+    pub alloc_shared: fn() -> Option<LockWord>,
     /// `System::sleep`: false when cancelled.
     pub sleep: Option<fn(f64) -> bool>,
     /// The futex wait: false with errno set on failure.
@@ -28,14 +28,18 @@ pub struct CoroutineHost {
 /// unlock can both hold the lock.
 pub struct CoroutineLock {
     host: &'static CoroutineHost,
-    word: Word,
+    word: LockWord,
     /// The owner's id, 0 for none (ids start at 1).
     cid: Cell<i64>,
 }
 
-/// A shared lock's word, which the host's storage keeps, or a private one.
-enum Word {
+/// Storage whose address stays stable while the coroutine lock is borrowed.
+pub enum LockWord {
+    /// Shared storage owned by this lock.
+    Pooled(crate::memory::members::pool::PooledWord<AtomicU32>),
+    /// Shared storage kept by the host for the process lifetime.
     Shared(&'static AtomicU32),
+    /// A process-local word.
     Private(Box<AtomicU32>),
 }
 
@@ -59,22 +63,24 @@ impl CoroutineLock {
             let Some(word) = (host.alloc_shared)() else {
                 crate::fatal("no shared memory for a coroutine lock");
             };
-            word.store(0, Ordering::Relaxed);
-            Word::Shared(word)
+            word
         } else {
-            Word::Private(Box::new(AtomicU32::new(0)))
+            LockWord::Private(Box::new(AtomicU32::new(0)))
         };
-        Box::new(Self {
+        let lock = Box::new(Self {
             host,
             word,
             cid: Cell::new(0),
-        })
+        });
+        lock.word().store(0, Ordering::Relaxed);
+        lock
     }
 
     fn word(&self) -> &AtomicU32 {
         match &self.word {
-            Word::Shared(word) => word,
-            Word::Private(word) => word,
+            LockWord::Shared(word) => word,
+            LockWord::Pooled(word) => word,
+            LockWord::Private(word) => word,
         }
     }
 
@@ -179,11 +185,13 @@ mod tests {
         })
     }
     /// A fresh word for the program's life, as the pool's are.
-    fn allocate() -> Option<&'static AtomicU32> {
+    fn allocate() -> Option<LockWord> {
         static WORDS: [AtomicU32; 16] = [const { AtomicU32::new(7) }; 16];
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         STATE.with(|state| state.borrow_mut().allocated += 1);
-        WORDS.get(NEXT.fetch_add(1, Ordering::Relaxed))
+        WORDS
+            .get(NEXT.fetch_add(1, Ordering::Relaxed))
+            .map(LockWord::Shared)
     }
     /// A sleep, or a futex wait: whether the state's result is 0.
     fn pause(second: f64) -> bool {
@@ -427,8 +435,8 @@ mod tests {
             clippy::unnecessary_wraps,
             reason = "CoroutineHost::alloc_shared's type"
         )]
-        fn shared() -> Option<&'static AtomicU32> {
-            Some(&WORD)
+        fn shared() -> Option<LockWord> {
+            Some(LockWord::Shared(&WORD))
         }
         fn sleep(_: f64) -> bool {
             std::thread::yield_now();

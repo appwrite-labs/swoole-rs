@@ -9,7 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use libc::{EBUSY, ETIMEDOUT, LOCK_EX, LOCK_NB, LOCK_SH};
-use swoole_rs_corebase::locks::coroutine::{CoroutineHost, CoroutineLock};
+use swoole_rs_corebase::locks::coroutine::{CoroutineHost, CoroutineLock, LockWord};
 use swoole_rs_corebase::locks::{
     Barrier, Kind, Lock, SharedMutex, TIMED_LOCK_CAPABILITIES, barrier_destroy, barrier_init,
     barrier_wait, coroutine_backoff, swr_v1_locks_atomic32, swr_v1_locks_atomic64,
@@ -455,8 +455,8 @@ fn coroutine_policy() {
         clippy::unnecessary_wraps,
         reason = "CoroutineHost::alloc_shared's type"
     )]
-    fn shared() -> Option<&'static AtomicU32> {
-        Some(&WORD)
+    fn shared() -> Option<LockWord> {
+        Some(LockWord::Shared(&WORD))
     }
     fn sleep(_: f64) -> bool {
         SLEEPS.set(SLEEPS.get() + 1);
