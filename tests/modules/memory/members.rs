@@ -348,6 +348,35 @@ fn shared_table_keeps_its_pin_until_the_last_handle_drops() {
 }
 
 #[test]
+#[cfg(not(miri))]
+fn sleeping_coroutine_lock_releases_its_shared_word() {
+    use crate::locks::coroutine::{CoroutineHost, CoroutineLock, LockWord};
+
+    static HOST: CoroutineHost = CoroutineHost {
+        current: || Some(1),
+        alloc_shared: || pool::PooledWord::allocate().map(LockWord::Pooled),
+        sleep: Some(|_| false),
+        wait: None,
+        wake: None,
+        warning: || {},
+    };
+    if crate::utilities::isolated_process::run_in_child(
+        "memory::members::tests::sleeping_coroutine_lock_releases_its_shared_word",
+    ) {
+        return;
+    }
+    assert!(crate::swr_v1_core_init());
+    pool::init();
+    let lock = CoroutineLock::new(true, &HOST);
+    assert_eq!(pool::users(), 1);
+    pool::delete();
+    assert_eq!(lock.acquire(true), Ok(()));
+    assert_eq!(lock.unlock(), Ok(()));
+    drop(lock);
+    assert_eq!(pool::users(), 0);
+}
+
+#[test]
 fn unwinding_a_pool_read_releases_its_count() {
     let pool = GlobalMemory::new(4096, false).unwrap();
     let result = std::panic::catch_unwind(|| {

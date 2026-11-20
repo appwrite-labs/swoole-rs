@@ -1,6 +1,6 @@
 //! `Swoole\\Coroutine\\Lock`: PHP object ownership over the Rust coroutine lock.
 use std::{cell::OnceCell, ffi::c_int};
-use swoole_rs_corebase::locks::coroutine::{CoroutineHost, CoroutineLock};
+use swoole_rs_corebase::locks::coroutine::{CoroutineHost, CoroutineLock, LockWord};
 use swoole_rs_corebase::memory::members::pool;
 use swoole_rs_phpstubs::coroutine_lock;
 use swoole_rs_zend::{
@@ -39,8 +39,12 @@ mod host {
     pub(super) fn current() -> Option<i64> {
         swoole_rs_phpcoroutines::Coroutine::current().map(swoole_rs_phpcoroutines::Coroutine::cid)
     }
-    pub(super) fn alloc_shared() -> Option<&'static std::sync::atomic::AtomicU32> {
-        super::pool::words(1)?.first()
+    pub(super) fn alloc_shared() -> Option<super::LockWord> {
+        #[cfg(not(feature = "iouring"))]
+        return super::pool::PooledWord::allocate().map(super::LockWord::Pooled);
+        // A kernel request can still hold the address after the PHP method returns.
+        #[cfg(feature = "iouring")]
+        super::pool::words(1)?.first().map(super::LockWord::Shared)
     }
     #[cfg(not(feature = "iouring"))]
     /// The lock sleeps only inside a coroutine.
