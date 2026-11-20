@@ -235,8 +235,8 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-/// `php_error_docref(NULL, E_WARNING, "<message>")`.
-fn warn(message: &str) {
+/// `php_error_docref(NULL, E_WARNING, "<message>")`, the message's bytes as given.
+fn warn(message: impl Into<Vec<u8>>) {
     let message = CString::new(message).unwrap_or_default();
     swoole_rs_zend::bailout::defer(crate::report(
         crate::Report::Docref,
@@ -264,7 +264,7 @@ fn setup_socket(parentend: &mut c_int, childend: &mut c_int) -> bool {
     let Some([parent, child]) =
         swoole_rs_corebase::sys::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0)
     else {
-        warn(&format!("Unable to create socket pair: {}", last_error()));
+        warn(format!("Unable to create socket pair: {}", last_error()));
         return false;
     };
     cloexec(parent);
@@ -275,7 +275,7 @@ fn setup_socket(parentend: &mut c_int, childend: &mut c_int) -> bool {
 /// `set_proc_descriptor_to_blackhole`: `/dev/null`, read-write. False once it warned.
 fn setup_null(childend: &mut c_int) -> bool {
     let Ok(fd) = swoole_rs_corebase::sys::open(c"/dev/null", libc::O_RDWR, 0) else {
-        warn(&format!("Failed to open /dev/null: {}", last_error()));
+        warn(format!("Failed to open /dev/null: {}", last_error()));
         return false;
     };
     *childend = fd;
@@ -292,7 +292,7 @@ fn setup_pty(
     childend: &mut c_int,
 ) -> bool {
     if *master == -1 && openpty(master, slave, None, None, None) != 0 {
-        warn(&format!(
+        warn(format!(
             "Could not open PTY (pseudoterminal): {}",
             last_error()
         ));
@@ -313,12 +313,12 @@ fn setup_redirect(found: c_int, target: c_int, to: &mut c_int, nindex: c_int) ->
     } else if (0..=2).contains(&target) {
         target
     } else {
-        warn(&format!("Redirection target {target} not found"));
+        warn(format!("Redirection target {target} not found"));
         return false;
     };
     let Ok(fd) = swoole_rs_corebase::sys::dup(from) else {
         *to = -1;
-        warn(&format!(
+        warn(format!(
             "Failed to dup() for descriptor {nindex}: {}",
             last_error()
         ));
@@ -425,12 +425,9 @@ fn descriptor(
             setup_pty(master, slave, &mut setup.parentend, &mut setup.childend)
         }
         other => {
-            // `%s` of the qualifier: up to its first NUL.
+            // `%s` of the qualifier: its bytes up to the first NUL, whatever their encoding.
             let shown = other.split(|&b| b == 0).next().unwrap_or_default();
-            warn(&format!(
-                "{} is not a valid descriptor spec/mode",
-                String::from_utf8_lossy(shown)
-            ));
+            warn([shown, b" is not a valid descriptor spec/mode"].concat());
             false
         }
     };
