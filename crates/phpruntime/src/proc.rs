@@ -221,3 +221,113 @@ extern "C" fn swr_proc_envp(
     *envarray = to_c(pointers.into_boxed_slice());
 }
 }
+
+unsafe extern "C" {
+    /// `openpty(master, slave, NULL, NULL, NULL)`.
+    safe fn openpty(
+        master: &mut c_int,
+        slave: &mut c_int,
+        name: Option<&mut c_char>,
+        termp: Option<&libc::termios>,
+        winp: Option<&libc::winsize>,
+    ) -> c_int;
+}
+
+/// `php_error_docref(NULL, E_WARNING, "<message>")`.
+fn warn(message: &str) {
+    let message = CString::new(message).unwrap_or_default();
+    swoole_rs_zend::bailout::defer(crate::report(
+        crate::Report::Docref,
+        swoole_rs_zend::E_WARNING,
+        &message,
+    ));
+}
+
+/// `strerror(errno)`.
+fn last_error() -> String {
+    crate::strerror(swoole_rs_corebase::sys::errno())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// `make_descriptor_cloexec`.
+fn cloexec(fd: c_int) {
+    // Upstream ignores whether it took.
+    let _cloexec = swoole_rs_corebase::sys::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+}
+
+swoole_rs_zend::exports! {
+/// `set_proc_descriptor_to_socket`, which `pipe` uses too: a Unix stream socket pair,
+/// the parent's end close-on-exec. False once it warned.
+#[unsafe(no_mangle)]
+extern "C" fn swr_proc_descriptor_socket(parentend: &mut c_int, childend: &mut c_int) -> bool {
+    let Some([parent, child]) =
+        swoole_rs_corebase::sys::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0)
+    else {
+        warn(&format!("Unable to create socket pair: {}", last_error()));
+        return false;
+    };
+    cloexec(parent);
+    (*parentend, *childend) = (parent, child);
+    true
+}
+}
+
+swoole_rs_zend::exports! {
+/// `set_proc_descriptor_to_blackhole`: `/dev/null`, read-write. False once it warned.
+#[unsafe(no_mangle)]
+extern "C" fn swr_proc_descriptor_null(childend: &mut c_int) -> bool {
+    let Ok(fd) = swoole_rs_corebase::sys::open(c"/dev/null", libc::O_RDWR, 0) else {
+        warn(&format!("Failed to open /dev/null: {}", last_error()));
+        return false;
+    };
+    *childend = fd;
+    true
+}
+}
+
+swoole_rs_zend::exports! {
+/// `set_proc_descriptor_to_pty`: every `pty` descriptor shares one pseudoterminal,
+/// opened by the first (`master` and `slave` start at -1); the child gets a copy of
+/// the slave end and the parent one of the master. False once it warned.
+#[unsafe(no_mangle)]
+extern "C" fn swr_proc_descriptor_pty(
+    master: &mut c_int,
+    slave: &mut c_int,
+    parentend: &mut c_int,
+    childend: &mut c_int,
+) -> bool {
+    if *master == -1 && openpty(master, slave, None, None, None) != 0 {
+        warn(&format!("Could not open PTY (pseudoterminal): {}", last_error()));
+        return false;
+    }
+    // Upstream keeps whatever dup returns, -1 included.
+    *childend = swoole_rs_corebase::sys::dup(*slave).unwrap_or(-1);
+    *parentend = swoole_rs_corebase::sys::dup(*master).unwrap_or(-1);
+    true
+}
+}
+
+swoole_rs_zend::exports! {
+/// `redirect_proc_descriptor` once C looked `target` up: `found` is the child end of
+/// the descriptor with that index, or -1 when none has it, where 0, 1 and 2 mean the
+/// parent's own. `to` gets a copy. False once it warned.
+#[unsafe(no_mangle)]
+extern "C" fn swr_proc_descriptor_redirect(found: c_int, target: c_int, to: &mut c_int, nindex: c_int) -> bool {
+    let from = if found != -1 {
+        found
+    } else if (0..=2).contains(&target) {
+        target
+    } else {
+        warn(&format!("Redirection target {target} not found"));
+        return false;
+    };
+    let Ok(fd) = swoole_rs_corebase::sys::dup(from) else {
+        *to = -1;
+        warn(&format!("Failed to dup() for descriptor {nindex}: {}", last_error()));
+        return false;
+    };
+    *to = fd;
+    true
+}
+}

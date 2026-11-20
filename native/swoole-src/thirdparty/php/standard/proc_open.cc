@@ -64,6 +64,11 @@ SW_EXTERN_C_BEGIN
  * in request memory freed here (`_php_free_envp`, `efree_argv`). */
 void swr_proc_envp(HashTable *environment, char **envp, char ***envarray);
 zend_string *swr_proc_command_from_array(HashTable *command, char ***argv);
+/* Each descriptor kind's setup (proc.rs): false once it warned. */
+bool swr_proc_descriptor_socket(int *parentend, int *childend);
+bool swr_proc_descriptor_null(int *childend);
+bool swr_proc_descriptor_pty(int *master, int *slave, int *parentend, int *childend);
+bool swr_proc_descriptor_redirect(int found, int target, int *to, int nindex);
 SW_EXTERN_C_END
 
 /* {{{ _php_array_to_envp
@@ -375,9 +380,7 @@ static zend_result set_proc_descriptor_to_blackhole(descriptorspec_item *desc) {
         return FAILURE;
     }
 #else
-    desc->childend = open("/dev/null", O_RDWR);
-    if (desc->childend < 0) {
-        php_error_docref(NULL, E_WARNING, "Failed to open /dev/null: %s", strerror(errno));
+    if (!swr_proc_descriptor_null(&desc->childend)) {
         return FAILURE;
     }
 #endif
@@ -391,16 +394,11 @@ static zend_result set_proc_descriptor_to_pty(descriptorspec_item *desc, int *ma
      * end of the same PTY.
      * If this is the first descriptorspec set to 'pty', find an available PTY and get master and
      * slave FDs. */
-    if (*master_fd == -1) {
-        if (openpty(master_fd, slave_fd, NULL, NULL, NULL)) {
-            php_error_docref(NULL, E_WARNING, "Could not open PTY (pseudoterminal): %s", strerror(errno));
-            return FAILURE;
-        }
+    if (!swr_proc_descriptor_pty(master_fd, slave_fd, &desc->parentend, &desc->childend)) {
+        return FAILURE;
     }
 
     desc->type = DESCRIPTOR_TYPE_PIPE;
-    desc->childend = dup(*slave_fd);
-    desc->parentend = dup(*master_fd);
     desc->mode_flags = O_RDWR;
     return SUCCESS;
 #else
@@ -457,6 +455,7 @@ static zend_result set_proc_descriptor_to_pipe(descriptorspec_item *desc, zend_s
 #endif
 
 static zend_result set_proc_descriptor_to_socket(descriptorspec_item *desc) {
+#ifdef PHP_WIN32
     php_socket_t sock[2];
 
     if (create_socketpair(sock)) {
@@ -466,12 +465,17 @@ static zend_result set_proc_descriptor_to_socket(descriptorspec_item *desc) {
         return FAILURE;
     }
 
-    desc->type = DESCRIPTOR_TYPE_SOCKET;
     desc->parentend = make_descriptor_cloexec((php_file_descriptor_t) sock[0]);
 
     /* Pass sock[1] to child because it will never use overlapped IO on Windows. */
     desc->childend = (php_file_descriptor_t) sock[1];
+#else
+    if (!swr_proc_descriptor_socket(&desc->parentend, &desc->childend)) {
+        return FAILURE;
+    }
+#endif
 
+    desc->type = DESCRIPTOR_TYPE_SOCKET;
     return SUCCESS;
 }
 
@@ -536,6 +540,9 @@ static zend_result redirect_proc_descriptor(
         }
     }
 
+#ifndef PHP_WIN32
+    return swr_proc_descriptor_redirect(redirect_to, target, &desc->childend, nindex) ? SUCCESS : FAILURE;
+#else
     if (redirect_to == PHP_INVALID_FD) { /* Didn't find the index we wanted */
         if (target < 0 || target > 2) {
             php_error_docref(NULL, E_WARNING, "Redirection target %d not found", target);
@@ -544,9 +551,6 @@ static zend_result redirect_proc_descriptor(
 
         /* Support referring to a stdin/stdout/stderr pipe adopted from the parent,
          * which happens whenever an explicit override is not provided. */
-#ifndef PHP_WIN32
-        redirect_to = target;
-#else
         switch (target) {
         case 0:
             redirect_to = GetStdHandle(STD_INPUT_HANDLE);
@@ -559,10 +563,10 @@ static zend_result redirect_proc_descriptor(
             break;
             EMPTY_SWITCH_DEFAULT_CASE()
         }
-#endif
     }
 
     return dup_proc_descriptor(redirect_to, &desc->childend, nindex);
+#endif
 }
 
 /* Process one item from `$descriptorspec` argument to `proc_open` */
