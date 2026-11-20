@@ -28,6 +28,28 @@ use swoole_rs_websocket::{decode_in_place, frame_length, mask};
 
 const RED_ZONE: usize = 17;
 
+#[cfg(test)]
+thread_local! {
+    /// Left-out and compared inputs per target, for the seed replay in [`compared_share`].
+    static TALLY: std::cell::RefCell<Vec<(&'static str, [usize; 2])>> =
+        std::cell::RefCell::default();
+}
+
+/// Counts an input of `target` as compared with the pin or left out of its compared
+/// domain. Only tests count; a fuzzing build does nothing here.
+fn tally(target: &'static str, compared: bool) {
+    #[cfg(test)]
+    TALLY.with_borrow_mut(|tally| {
+        let at = tally.iter().position(|&(name, _)| name == target).unwrap_or_else(|| {
+            tally.push((target, [0; 2]));
+            tally.len() - 1
+        });
+        tally[at].1[usize::from(compared)] += 1;
+    });
+    #[cfg(not(test))]
+    let _ = (target, compared);
+}
+
 /// `swoole_rs_http::Request` behind the oracle's request framing entry points.
 const CANDIDATE: Engine = Engine {
     frame: request::frame,
@@ -239,6 +261,7 @@ pub fn ws_frame_length(bytes: &[u8]) {
     };
     let got_header = u32::try_from(got_header.unwrap_or(0)).unwrap();
     // Some lengths are outside the compared domain; Rust reports -1 there.
+    tally("ws_frame_length", want as i64 == got);
     assert!(
         want as i64 == got || got == -1 && want < 0,
         "total {want} vs {got} for {bytes:?}"
@@ -404,7 +427,9 @@ pub fn framing_length(bytes: &[u8]) {
             &mut header,
         )
     };
-    match default_length(format, data, offset.into(), size.into(), body_offset.into()) {
+    let got = default_length(format, data, offset.into(), size.into(), body_offset.into());
+    tally("framing_length", got != DefaultLength::Invalid);
+    match got {
         DefaultLength::Need(got) => {
             assert_eq!((want, header as i64), (0, got), "need more for {bytes:?}");
         }
@@ -478,7 +503,9 @@ pub fn http_frame(bytes: &[u8]) {
     let got = frame(&CANDIDATE, operation, data, state);
     let want = frame(&UPSTREAM, operation, data, state);
     // Outside the compared domain the candidate must wait for more data.
-    if operation == 0 && want.0 == 0 && want.1.offset > data.len() {
+    let left_out = operation == 0 && want.0 == 0 && want.1.offset > data.len();
+    tally("http_frame", !left_out);
+    if left_out {
         assert_eq!(
             (got.0, got.1.offset),
             (-1, state.offset),
@@ -662,7 +689,9 @@ fn resp_upstream(data: &[u8], parse: RespOracle) -> (Vec<u8>, bool) {
 pub fn resp_parse(bytes: &[u8]) {
     let (items, range) = protocols_native::resp_parse(bytes);
     let got = (items, cfg!(target_os = "linux") && range);
-    if !resp_in_bounds(bytes, false) {
+    let compared = resp_in_bounds(bytes, false);
+    tally("resp_parse", compared);
+    if !compared {
         return;
     }
     assert_eq!(
@@ -725,7 +754,9 @@ fn resp_request(bytes: &[u8]) -> Option<(Vec<u8>, bool)> {
 /// match the pinned loop on every input admitted by its independent bounds model.
 pub fn resp_server(bytes: &[u8]) {
     let got = resp_request(bytes);
-    if resp_in_bounds(bytes, true) {
+    let compared = resp_in_bounds(bytes, true);
+    tally("resp_server", compared);
+    if compared {
         assert_eq!(
             got,
             Some(resp_upstream(bytes, protocols::resp_php_request)),
@@ -815,7 +846,9 @@ pub fn http_proxy(bytes: &[u8]) {
 /// reports 0 and upstream isn't run.
 pub fn clients_domain_decode(bytes: &[u8]) {
     let (mut theirs, mut ours) = (bytes.to_vec(), bytes.to_vec());
-    if domain_decode(&mut ours, c_char::MIN != 0) {
+    let compared = domain_decode(&mut ours, c_char::MIN != 0);
+    tally("clients_domain_decode", compared);
+    if compared {
         // SAFETY: `theirs` is a NUL-terminated name in the compared domain, decoded within its bytes.
         unsafe { clients::domain_decode(theirs.as_mut_ptr().cast()) };
         assert_eq!(theirs, ours, "domain {bytes:?}");
@@ -871,7 +904,9 @@ pub fn http_header_info(bytes: &[u8]) {
     let got = info(&CANDIDATE, bytes, end);
     // Outside the compared domain the candidate rejects the request at that line, with
     // what the head before it gave and its scan unfinished.
-    if let Some(at) = multipart_nul(bytes, line + 2, end) {
+    let left_out = multipart_nul(bytes, line + 2, end);
+    tally("http_header_info", left_out.is_none());
+    if let Some(at) = left_out {
         let head = [&bytes[..at], b"\r\n"].concat();
         let mut want = info(&UPSTREAM, &head, at - 2);
         let unfinished = http_frame::flags::HEADER_PARSED | http_frame::flags::CHUNKED;
@@ -1268,4 +1303,45 @@ fn sni_glob(subject: &[u8], cert: &[u8]) -> bool {
     (0..=after.len())
         .take_while(|&covered| covered == 0 || after[covered - 1] != b'.')
         .any(|covered| after[covered..] == *tail)
+}
+
+/// Replays each target's seeds (`fuzz/seeds`) and fails when the share it compares with
+/// the pin, rather than leaving out, falls below a floor: today's share less ten points,
+/// rounded down to a multiple of five (#5355).
+#[cfg(test)]
+mod compared_share {
+    use super::TALLY;
+
+    /// A target, its entry point, and the lowest compared share allowed, in percent.
+    type Floor = (&'static str, fn(&[u8]), usize);
+
+    const FLOORS: [Floor; 7] = [
+        ("ws_frame_length", super::ws_frame_length, 80),
+        ("framing_length", super::framing_length, 55),
+        ("http_frame", super::http_frame, 85),
+        ("resp_parse", super::resp_parse, 90),
+        ("resp_server", super::resp_server, 90),
+        ("clients_domain_decode", super::clients_domain_decode, 55),
+        ("http_header_info", super::http_header_info, 90),
+    ];
+
+    #[test]
+    fn seeds_stay_compared() {
+        let seeds = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("seeds");
+        for (target, run, floor) in FLOORS {
+            for entry in std::fs::read_dir(seeds.join(target)).unwrap() {
+                run(&std::fs::read(entry.unwrap().path()).unwrap());
+            }
+            let [left_out, compared] = TALLY.with_borrow_mut(|tally| {
+                let at = tally.iter().position(|&(name, _)| name == target).unwrap();
+                tally.remove(at).1
+            });
+            eprintln!("{target}: {compared} compared, {left_out} left out");
+            assert!(
+                compared * 100 >= floor * (compared + left_out),
+                "{target} compares {compared} of {} seeds, under {floor}%",
+                compared + left_out
+            );
+        }
+    }
 }
