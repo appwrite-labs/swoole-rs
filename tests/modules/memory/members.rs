@@ -278,10 +278,6 @@ fn a_fixed_pool_refuses_a_pointer_inside_a_slice() {
 }
 
 #[test]
-#[cfg_attr(
-    miri,
-    ignore = "Miri counts the pools kept for the process's life as leaks"
-)]
 fn words_stay_mapped_after_the_pool_is_deleted() {
     crate::swr_v1_core_set_pagesize(4096);
     // Twice: each kept pool stays reachable, so LeakSanitizer reports neither.
