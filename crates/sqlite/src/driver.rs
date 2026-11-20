@@ -1,6 +1,6 @@
 //! Database-handle methods for the bundled PDO SQLite driver.
 use crate::{
-    Argument, Db, ExecCallback, Sql, Sqlite3, Sqlite3Stmt, swoole_sqlite3_exec,
+    Argument, Db, ExecCallback, Sql, Sqlite3, Sqlite3Stmt, sqlite3_changes, swoole_sqlite3_exec,
     swoole_sqlite3_open_v2, swoole_sqlite3_prepare_v2,
 };
 use std::{
@@ -62,7 +62,6 @@ unsafe extern "C" {
     safe fn sqlite3_busy_timeout(db: Db, milliseconds: c_int) -> c_int;
     safe fn sqlite3_extended_result_codes(db: Db, enabled: c_int) -> c_int;
     safe fn swr_sqlite_open_basedir_active() -> bool;
-    safe fn sqlite3_changes(db: Db) -> c_int;
     safe fn sqlite3_get_autocommit(db: Db) -> c_int;
 }
 

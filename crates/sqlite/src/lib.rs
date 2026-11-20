@@ -124,6 +124,8 @@ unsafe extern "C" {
     safe fn sqlite3_close(db: OwnedDb) -> c_int;
     /// As `sqlite3_close`, deferring the close to the last statement's finalize.
     safe fn sqlite3_close_v2(db: OwnedDb) -> c_int;
+    #[cfg(feature = "php")]
+    safe fn sqlite3_changes(db: Db) -> c_int;
     safe fn sqlite3_step(stmt: Stmt) -> c_int;
 }
 

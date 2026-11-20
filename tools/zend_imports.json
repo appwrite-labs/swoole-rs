@@ -142,5 +142,6 @@
   "crates/phpswoole/src/optional.rs:php_swoole_ssh2_minfo": "optional.rs client_minfo is a swr_zend_try_hook body in info.rs; output handlers are trapped.",
   "crates/phpswoole/src/optional.rs:php_swoole_ssh2_minit": "optional.rs: native ssh2 module startup/shutdown registration, outside a PHP request; no user PHP handlers.",
   "crates/phpswoole/src/optional.rs:php_swoole_ssh2_mshutdown": "optional.rs: native ssh2 module startup/shutdown registration, outside a PHP request; no user PHP handlers.",
-  "crates/phpswoole/src/serialize.rs:swr_zend_unserialize": "shim_server.c: SWR_ZEND_TRY encloses unserialization and destruction of its temporary table."
+  "crates/phpswoole/src/serialize.rs:swr_zend_unserialize": "shim_server.c: SWR_ZEND_TRY encloses unserialization and destruction of its temporary table.",
+  "crates/sqlite/src/statement.rs:php_pdo_stmt_set_column_count": "Sets the count and, when it changes, releases only the previous column names and descriptor array. No user destructor or PHP callback runs."
 }
