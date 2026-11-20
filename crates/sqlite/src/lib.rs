@@ -22,6 +22,8 @@ mod driver;
 pub mod minit;
 #[cfg(any(feature = "php", test))]
 mod scanner;
+#[cfg(feature = "php")]
+mod statement;
 
 use std::{
     cell::Cell,
