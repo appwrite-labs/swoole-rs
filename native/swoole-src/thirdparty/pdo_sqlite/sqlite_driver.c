@@ -120,17 +120,27 @@ static bool sqlite_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t 
 	return false;
 }
 
-static zend_long sqlite_handle_doer(pdo_dbh_t *dbh, const zend_string *sql)
+/* The bundled connection record is still allocated by the C factory. */
+sqlite3 *swr_pdo_sqlite_connection(pdo_dbh_t *dbh)
 {
-	pdo_sqlite_db_handle *H = (pdo_sqlite_db_handle *)dbh->driver_data;
-
-	if (sqlite3_exec(H->db, ZSTR_VAL(sql), NULL, NULL, NULL) != SQLITE_OK) {
-		pdo_sqlite_error(dbh);
-		return -1;
-	} else {
-		return sqlite3_changes(H->db);
-	}
+	return ((pdo_sqlite_db_handle *)dbh->driver_data)->db;
 }
+
+int swr_pdo_sqlite_transaction_mode(pdo_dbh_t *dbh)
+{
+	return ((pdo_sqlite_db_handle *)dbh->driver_data)->transaction_mode;
+}
+
+void swr_pdo_sqlite_record_error(pdo_dbh_t *dbh)
+{
+	pdo_sqlite_error(dbh);
+}
+
+extern zend_long swr_pdo_sqlite_exec(pdo_dbh_t *, const zend_string *);
+extern bool swr_pdo_sqlite_begin(pdo_dbh_t *);
+extern bool swr_pdo_sqlite_commit(pdo_dbh_t *);
+extern bool swr_pdo_sqlite_rollback(pdo_dbh_t *);
+extern bool swr_pdo_sqlite_in_transaction(pdo_dbh_t *);
 
 static zend_string *pdo_sqlite_last_insert_id(pdo_dbh_t *dbh, const zend_string *name)
 {
@@ -162,52 +172,6 @@ static zend_string* sqlite_handle_quoter(pdo_dbh_t *dbh, const zend_string *unqu
 	return pdo_sqlite_quote_literal(ZSTR_VAL(unquoted));
 }
 
-static bool sqlite_handle_begin(pdo_dbh_t *dbh)
-{
-	pdo_sqlite_db_handle *H = (pdo_sqlite_db_handle *)dbh->driver_data;
-
-	const char *begin_statement = "BEGIN";
-	switch (H->transaction_mode) {
-		case PDO_SQLITE_TRANSACTION_MODE_DEFERRED:
-			begin_statement = "BEGIN DEFERRED TRANSACTION";
-			break;
-		case PDO_SQLITE_TRANSACTION_MODE_IMMEDIATE:
-			begin_statement = "BEGIN IMMEDIATE TRANSACTION";
-			break;
-		case PDO_SQLITE_TRANSACTION_MODE_EXCLUSIVE:
-			begin_statement = "BEGIN EXCLUSIVE TRANSACTION";
-			break;
-	}
-
-	if (sqlite3_exec(H->db, begin_statement, NULL, NULL, NULL) != SQLITE_OK) {
-		pdo_sqlite_error(dbh);
-		return false;
-	}
-	return true;
-}
-
-static bool sqlite_handle_commit(pdo_dbh_t *dbh)
-{
-	pdo_sqlite_db_handle *H = (pdo_sqlite_db_handle *)dbh->driver_data;
-
-	if (sqlite3_exec(H->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
-		pdo_sqlite_error(dbh);
-		return false;
-	}
-	return true;
-}
-
-static bool sqlite_handle_rollback(pdo_dbh_t *dbh)
-{
-	pdo_sqlite_db_handle *H = (pdo_sqlite_db_handle *)dbh->driver_data;
-
-	if (sqlite3_exec(H->db, "ROLLBACK", NULL, NULL, NULL) != SQLITE_OK) {
-		pdo_sqlite_error(dbh);
-		return false;
-	}
-	return true;
-}
-
 static int pdo_sqlite_get_attribute(pdo_dbh_t *dbh, zend_long attr, zval *return_value)
 {
 	pdo_sqlite_db_handle *H = (pdo_sqlite_db_handle *)dbh->driver_data;
@@ -226,15 +190,6 @@ static int pdo_sqlite_get_attribute(pdo_dbh_t *dbh, zend_long attr, zval *return
 	}
 
 	return 1;
-}
-
-static bool pdo_sqlite_in_transaction(pdo_dbh_t *dbh)
-{
-	pdo_sqlite_db_handle* H = (pdo_sqlite_db_handle*) dbh->driver_data;
-	/* It's not possible in sqlite3 to explicitly turn autocommit off other
-	 * than manually starting a transaction. Manual transactions always are
-	 * the mode of operation when autocommit is off. */
-	return H->db && sqlite3_get_autocommit(H->db) == 0;
 }
 
 static bool pdo_sqlite_set_attr(pdo_dbh_t *dbh, zend_long attr, zval *val)
@@ -295,11 +250,11 @@ static int pdo_sqlite_scanner(pdo_scanner_t *s)
 static const struct pdo_dbh_methods sqlite_methods = {
 	sqlite_handle_closer,
 	sqlite_handle_preparer,
-	sqlite_handle_doer,
+	swr_pdo_sqlite_exec,
 	sqlite_handle_quoter,
-	sqlite_handle_begin,
-	sqlite_handle_commit,
-	sqlite_handle_rollback,
+	swr_pdo_sqlite_begin,
+	swr_pdo_sqlite_commit,
+	swr_pdo_sqlite_rollback,
 	pdo_sqlite_set_attr,
 	pdo_sqlite_last_insert_id,
 	pdo_sqlite_fetch_error_func,
@@ -307,7 +262,7 @@ static const struct pdo_dbh_methods sqlite_methods = {
 	NULL,	/* check_liveness: not needed */
 	NULL,
 	pdo_sqlite_request_shutdown,
-	pdo_sqlite_in_transaction,
+	swr_pdo_sqlite_in_transaction,
 	NULL,
 #if PHP_VERSION_ID >= 80400
 	pdo_sqlite_scanner
