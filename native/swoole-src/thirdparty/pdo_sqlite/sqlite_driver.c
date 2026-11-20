@@ -306,6 +306,22 @@ static void pdo_sqlite_request_shutdown(pdo_dbh_t *dbh)
 {
 }
 
+#if PHP_VERSION_ID >= 80400
+#include <sys/uio.h>
+extern int pdo_sqlite_scan_token(struct iovec, size_t *);
+
+/* Stays C (version): PHP 8.4 added PDO's scanner cursor. Its end includes the terminal NUL. */
+static int pdo_sqlite_scanner(pdo_scanner_t *s)
+{
+    size_t consumed;
+    s->tok = s->cur;
+    size_t length = s->cur < s->end ? (size_t)(s->end - s->cur - 1) : 0;
+    int token = pdo_sqlite_scan_token((struct iovec){(void *)s->cur, length}, &consumed);
+    s->cur += consumed;
+    return token;
+}
+#endif
+
 static const struct pdo_dbh_methods sqlite_methods = {
 	sqlite_handle_closer,
 	sqlite_handle_preparer,
