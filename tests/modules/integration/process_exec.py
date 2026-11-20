@@ -11,6 +11,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 ORIGINAL = 'tests/swoole_process/process_exec.phpt'
@@ -54,12 +55,18 @@ def main():
             for engine in engines:
                 report['executed'] = True
                 command = engine.command(a.fixture)
-                observed = run_isolated(command, timeout=15)
-                stdout = observed.stdout.strip().replace('\r\n', '\n')
-                row = dict(engine=engine.name, attempt=attempt, command=list(map(str, command)),
-                           exit=observed.returncode, stdout=observed.stdout, stderr=observed.stderr,
-                           passed=observed.returncode == 0 and not observed.stderr
-                           and pattern.fullmatch(stdout) is not None)
+                row = dict(engine=engine.name, attempt=attempt, command=list(map(str, command)))
+                try:
+                    observed = run_isolated(command, timeout=15)
+                    stdout = observed.stdout.strip().replace('\r\n', '\n')
+                    row.update(exit=observed.returncode, stdout=observed.stdout, stderr=observed.stderr,
+                               passed=observed.returncode == 0 and not observed.stderr
+                               and pattern.fullmatch(stdout) is not None)
+                except subprocess.TimeoutExpired as error:
+                    def decoded(value):
+                        return value.decode(errors='replace') if isinstance(value, bytes) else value or ''
+                    row.update(exit=None, timed_out=True, stdout=decoded(error.stdout),
+                               stderr=decoded(error.stderr), passed=False)
                 report['results'].append(row)
                 write_report(a.output, report)
                 if not row['passed']:
