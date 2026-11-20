@@ -815,10 +815,13 @@ pub fn clients_domain_decode(bytes: &[u8]) {
     }
     // A well-formed name made from the same bytes, decided here rather than by the
     // candidate: one or more labels of 1 to 63 nonzero bytes behind their length, then a
-    // NUL. The candidate must take it and decode it as the pin does, so declining
-    // everything fails.
-    let mut name = Vec::with_capacity(bytes.len() + bytes.len() / 63 + 2);
+    // NUL, at most 255 octets in all (DNS's limit). The candidate must take it and decode
+    // it as the pin does, so declining everything fails.
+    let mut name = Vec::with_capacity(256);
     for label in bytes.split(|&b| b == 0).flat_map(|run| run.chunks(63)) {
+        if name.len() + 1 + label.len() + 1 > 255 {
+            break;
+        }
         name.push(u8::try_from(label.len()).unwrap_or(63));
         name.extend_from_slice(label);
     }
