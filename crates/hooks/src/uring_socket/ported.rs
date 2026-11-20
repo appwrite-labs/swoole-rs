@@ -10,7 +10,7 @@
 //! tests/modules/hooks/README.md maps each TEST.
 use super::*;
 use crate::co_socket::TestSocket;
-use crate::uring::testing::{HOST, with_engine};
+use crate::uring::testing::{HOST, HTTP_REQUEST, TEST_HTTP_DOMAIN, TEST_HTTP_EXPECT, with_engine};
 use crate::vector::{IoVector, Vectors};
 use openssl_sys as ssl;
 use std::ffi::CString;
@@ -22,8 +22,6 @@ const TEST_STR: &[u8] = b"hello world, hello swoole\n";
 const TEST_STR2: &[u8] = b"I am Rango\n";
 const EOF_PACKET: &[u8] = b"hello world\r\n";
 const EOF_PACKET_2: &[u8] = b"php&swoole, java&golang\r\n";
-const TEST_HTTP_DOMAIN: &str = "www.gov.cn";
-const TEST_HTTP_EXPECT: &str = "Location: https://www.gov.cn/";
 const TEST_HTTPS_EXPECT: &str = "中国政府网";
 const TEST_WRITEV_OFFSET: usize = 87;
 const TEST_READV_OFFSET: usize = 1949;
@@ -370,14 +368,6 @@ fn jpg_file(name: &str) -> (CString, Vec<u8>) {
     (CString::new(path).unwrap(), content)
 }
 
-/// `swoole::test::http_get_request`.
-fn http_get_request(domain: &str, path: &str) -> String {
-    format!(
-        "GET {path} HTTP/1.1\r\nHost: {domain}\r\nConnection: close\r\nUser-Agent: Mozilla/5.0 (Windows NT \
-         10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.106 Safari/537.36\r\n\r\n"
-    )
-}
-
 /// Upstream's two coroutines: `server` on this thread's ring, `client` on another's.
 fn run_pair(server: impl FnOnce(), client: impl FnOnce() + Send) {
     thread::scope(|scope| {
@@ -388,15 +378,15 @@ fn run_pair(server: impl FnOnce(), client: impl FnOnce() + Send) {
 }
 
 #[test]
-#[ignore = "needs external DNS and network (www.gov.cn), as iouring.connect"]
 fn connect() {
+    let (port, origin) = crate::uring::testing::redirect_origin();
     with_engine(|| {
         let sock = Sock::of_type(libc::AF_INET, libc::SOCK_STREAM);
-        let retval = sock.connect(&Address::resolve(TEST_HTTP_DOMAIN, 80, false));
+        let retval = sock.connect(&Address::resolve("localhost", port, false));
         assert!(retval);
         assert_eq!(sock.err_code(), 0);
 
-        let req = http_get_request(TEST_HTTP_DOMAIN, "/");
+        let req = HTTP_REQUEST;
 
         let rv = sock.send(req.as_bytes());
         assert_eq!(rv, req.len().cast_signed());
@@ -409,6 +399,7 @@ fn connect() {
         let s = String::from_utf8_lossy(&buf[..rv.unsigned_abs()]);
         assert!(s.contains(TEST_HTTP_EXPECT));
     });
+    origin.join().unwrap();
 }
 
 #[test]
@@ -435,7 +426,7 @@ fn ssl_connect() {
             assert_eq!(ssl::X509_VERIFY_PARAM_set1_host(param, host.as_ptr(), 0), 1);
         }
 
-        let req = http_get_request(TEST_HTTP_DOMAIN, "/");
+        let req = HTTP_REQUEST;
 
         let retval = sock.connect(&Address::resolve(TEST_HTTP_DOMAIN, 443, false));
         assert!(retval);
@@ -857,59 +848,77 @@ fn poll_() {
 }
 
 #[test]
-#[ignore = "needs external DNS and network (www.gov.cn:443)"]
 fn ssl_readv() {
-    with_engine(|| {
-        let mut client = Sock::of_type(libc::AF_INET, libc::SOCK_STREAM);
-        let host = CString::new(TEST_HTTP_DOMAIN).unwrap();
-        unsafe {
-            let ctx = ssl::SSL_CTX_new(ssl::TLS_client_method());
-            client.attach(ctx, false);
-            assert_eq!(
-                ssl::SSL_set_tlsext_host_name(
-                    client.ops().tls.ssl.unwrap().as_ptr(),
-                    host.as_ptr().cast_mut()
-                ),
-                1
+    let (listener, addr) = listen();
+    let req = HTTP_REQUEST;
+    run_pair(
+        || {
+            let mut peer = listener.accept().expect("accepted");
+            peer.enable_ssl(true);
+            assert!(peer.ssl_handshake());
+            let mut request = vec![0; req.len()];
+            let mut read = 0;
+            while read < request.len() {
+                let count = peer.io(RECV, &mut request[read..]);
+                assert!(count > 0);
+                read += count.unsigned_abs();
+            }
+            assert_eq!(request, req.as_bytes());
+            let response = format!(
+                "HTTP/1.0 200 OK\r\n\r\n{}{TEST_HTTPS_EXPECT}",
+                " ".repeat(TEST_READV_OFFSET)
             );
-        }
-        assert!(client.connect(&Address::resolve(TEST_HTTP_DOMAIN, 443, false)));
+            assert_eq!(peer.send(response.as_bytes()), response.len().cast_signed());
+        },
+        || {
+            let mut client = Sock::of_type(libc::AF_INET, libc::SOCK_STREAM);
+            let host = CString::new(TEST_HTTP_DOMAIN).unwrap();
+            client.enable_ssl(false);
+            unsafe {
+                assert_eq!(
+                    ssl::SSL_set_tlsext_host_name(
+                        client.ops().tls.ssl.unwrap().as_ptr(),
+                        host.as_ptr().cast_mut()
+                    ),
+                    1
+                );
+            }
+            assert!(client.connect(&addr));
 
-        let req = http_get_request(TEST_HTTP_DOMAIN, "/");
+            let offset1 = TEST_WRITEV_OFFSET;
+            let mut wr_iov = [
+                libc::iovec {
+                    iov_base: req.as_ptr().cast_mut().cast(),
+                    iov_len: offset1,
+                },
+                libc::iovec {
+                    iov_base: req.as_ptr().wrapping_add(offset1).cast_mut().cast(),
+                    iov_len: req.len() - offset1,
+                },
+            ];
+            assert_eq!(
+                client.vector(&mut wr_iov, true, false),
+                req.len().cast_signed()
+            );
 
-        let offset1 = TEST_WRITEV_OFFSET;
-        let mut wr_iov = [
-            libc::iovec {
-                iov_base: req.as_ptr().cast_mut().cast(),
-                iov_len: offset1,
-            },
-            libc::iovec {
-                iov_base: req.as_ptr().wrapping_add(offset1).cast_mut().cast(),
-                iov_len: req.len() - offset1,
-            },
-        ];
-        assert_eq!(
-            client.vector(&mut wr_iov, true, false),
-            req.len().cast_signed()
-        );
+            let mut buffer = vec![0_u8; 1024 * 1024];
+            let offset2 = TEST_READV_OFFSET;
+            let (first, second) = buffer.split_at_mut(offset2);
+            let mut rd_iov = [
+                libc::iovec {
+                    iov_base: first.as_mut_ptr().cast(),
+                    iov_len: first.len(),
+                },
+                libc::iovec {
+                    iov_base: second.as_mut_ptr().cast(),
+                    iov_len: second.len(),
+                },
+            ];
+            let rv = client.vector(&mut rd_iov, false, false);
+            assert!(rv > 1024);
+            buffer.truncate(rv.unsigned_abs());
 
-        let mut buffer = vec![0_u8; 1024 * 1024];
-        let offset2 = TEST_READV_OFFSET;
-        let (first, second) = buffer.split_at_mut(offset2);
-        let mut rd_iov = [
-            libc::iovec {
-                iov_base: first.as_mut_ptr().cast(),
-                iov_len: first.len(),
-            },
-            libc::iovec {
-                iov_base: second.as_mut_ptr().cast(),
-                iov_len: second.len(),
-            },
-        ];
-        let rv = client.vector(&mut rd_iov, false, false);
-        assert!(rv > 1024);
-        buffer.truncate(rv.unsigned_abs());
-
-        assert!(String::from_utf8_lossy(&buffer).contains(TEST_HTTPS_EXPECT));
-    });
+            assert!(String::from_utf8_lossy(&buffer).contains(TEST_HTTPS_EXPECT));
+        },
+    );
 }

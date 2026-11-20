@@ -5,7 +5,7 @@
 //! would suspend, the host drives the ring until the request completes. Upstream's
 //! second coroutine is a thread with its own ring. tests/modules/hooks/README.md maps
 //! each TEST and records the calls that are not in the build.
-use crate::uring::testing::{HOST, with_config, with_engine};
+use crate::uring::testing::{HOST, HTTP_REQUEST, TEST_HTTP_EXPECT, with_config, with_engine};
 use crate::uring::{self, Config};
 use std::ffi::{CStr, c_int, c_uint};
 use std::io::Read;
@@ -32,8 +32,6 @@ fn pause(seconds: f64) {
 
 const TEST_TMP_FILE: &CStr = c"/tmp/swoole_core_test_file";
 const TEST_STR: &str = "hello world, hello swoole\n";
-const TEST_HTTP_DOMAIN: &str = "www.gov.cn";
-const TEST_HTTP_EXPECT: &str = "Location: https://www.gov.cn/";
 /// The size of the pin's `examples/test.jpg`, which the crate's tests cannot read.
 const TEST_JPG_SIZE: usize = 218_787;
 const SW_NUM_MILLION: i64 = 1_000_000;
@@ -78,14 +76,6 @@ fn resolve(host: &str, port: u16) -> libc::sockaddr_in {
     addr.sin_port = port.to_be();
     addr.sin_addr.s_addr = u32::from_ne_bytes(ip.octets());
     addr
-}
-
-/// `swoole::test::http_get_request`.
-fn http_get_request(domain: &str, path: &str) -> String {
-    format!(
-        "GET {path} HTTP/1.1\r\nHost: {domain}\r\nConnection: close\r\nUser-Agent: Mozilla/5.0 (Windows NT \
-         10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.106 Safari/537.36\r\n\r\n"
-    )
 }
 
 /// Upstream's `uring_create_server_socket`. `Iouring::socket` is not in the build, so
@@ -288,11 +278,12 @@ fn ftruncate() {
 /// `connect` and `send_recv`: a GET to `TEST_HTTP_DOMAIN` over the ring, with the
 /// stream calls (`write`/`read`) or the socket ones (`send`/`recv`).
 fn http_get(socket_calls: bool) {
+    let (port, origin) = crate::uring::testing::redirect_origin();
     with_engine(|| unsafe {
         let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
         assert_ne!(fd, -1, "socket");
 
-        let addr = resolve(TEST_HTTP_DOMAIN, 80);
+        let addr = resolve("localhost", port);
 
         let peer = SocketAddress {
             addr: AddressStorage { inet_v4: addr },
@@ -302,7 +293,7 @@ fn http_get(socket_calls: bool) {
         // Both upstream tests overwrite the connect result and assert the subsequent transfer.
         let _connected = uring::connect(&HOST, fd, &peer, -1.0);
 
-        let req = http_get_request(TEST_HTTP_DOMAIN, "/");
+        let req = HTTP_REQUEST;
         let rv = if socket_calls {
             uring::send(&HOST, fd, req.as_bytes(), 0, -1.0).map_or(-1, usize::cast_signed)
         } else {
@@ -323,17 +314,16 @@ fn http_get(socket_calls: bool) {
 
         close_after_test(fd);
     });
+    origin.join().unwrap();
 }
 
 #[test]
-#[ignore = "external DNS and network (www.gov.cn)"]
 fn connect() {
     let _serial = serial();
     http_get(false);
 }
 
 #[test]
-#[ignore = "external DNS and network (www.gov.cn)"]
 fn send_recv() {
     let _serial = serial();
     http_get(true);

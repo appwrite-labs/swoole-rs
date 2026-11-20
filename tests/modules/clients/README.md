@@ -87,11 +87,11 @@ corebase::tls' `CertRef::pem`).
 `swoole_timer_after` takes the Rust closure through `corebase::timer`'s
 `swoole_rs_corebase::timer::add_fn`. The `Server` fixtures are std servers forked after
 binding (an echo, the 403 proxy reply, a slow reader): the cases assert only on
-the client. Excluded as before: `bind` (EACCES, not EINVAL, off a root container),
-`async_tcp_socks5_proxy_handshake_fail` (www.baidu.com:80 timing out a SOCKS5
-greeting), `async_tcp_ssl_handshake_fail` (external network: its handshake with
-www.baidu.com:80 has a 1 s timeout the round trip sometimes exceeds), and
-`sync_ssl_sendfile`: each `recv` lands at the buffer's start, and www.baidu.com's
+the client. For `async_tcp_ssl_handshake_fail`, a local HTTP server sends a plain
+400 response to the TLS ClientHello. For `async_tcp_socks5_proxy_handshake_fail`,
+a loopback listener leaves the greeting unanswered until the one-second timeout.
+These peers replace www.baidu.com:80. The remaining exclusions are `bind`
+(EACCES, not EINVAL, off a root container) and `sync_ssl_sendfile`: each `recv` lands at the buffer's start, and www.baidu.com's
 ~730 KB page fills the 64 KB buffer with reads no larger than a TLS record, so
 the bytes the assertion finds "baidu.com" in are overwritten and the rest were
 never written.

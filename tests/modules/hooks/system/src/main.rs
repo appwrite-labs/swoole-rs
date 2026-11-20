@@ -416,15 +416,10 @@ fn cancel_sleep() {
     });
 }
 
-fn test_getaddrinfo(
-    host: &CStr,
-    family: c_int,
-    kind: c_int,
-    protocol: c_int,
-    service: &CStr,
-    timeout: f64,
-) {
-    let ip_list = getaddrinfo(host, family, kind, protocol, service, timeout);
+fn test_getaddrinfo(family: c_int, loopback: &str) {
+    let listener = std::net::TcpListener::bind((loopback, 0)).unwrap();
+    let port = listener.local_addr().unwrap().port().into();
+    let ip_list = getaddrinfo(c"localhost", family, SOCK_STREAM, 0, c"http", -1.0);
     assert!(!ip_list.is_empty());
     for ip in &ip_list {
         assert!(dns::verify_ip(family, ip));
@@ -434,17 +429,14 @@ fn test_getaddrinfo(
             socket::SW_SOCK_TCP6
         };
         let c = client::Client::new(kind, false).expect("created");
-        if !socket::is_github_ci() {
-            println!("{ip}");
-            assert_eq!(c.connect(ip, 443, -1.0, 0), 0);
-        }
+        assert_eq!(c.connect(ip, port, -1.0, 0), 0);
     }
 }
 
 fn getaddrinfo_() {
     run(|| {
-        test_getaddrinfo(TEST_HTTP_DOMAIN, AF_INET, SOCK_STREAM, 0, c"http", -1.0);
-        test_getaddrinfo(TEST_HTTP_DOMAIN, AF_INET6, SOCK_STREAM, 0, c"http", -1.0);
+        test_getaddrinfo(AF_INET, "127.0.0.1");
+        test_getaddrinfo(AF_INET6, "::1");
     });
 }
 

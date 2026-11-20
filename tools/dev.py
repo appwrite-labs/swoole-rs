@@ -35,7 +35,7 @@ except ValueError:
 sys.exit(0 if ssl.HAS_TLSv1_3 else 2)"""
 
 # Why a ported core-tests case is excluded.
-NETWORK, PROXY = 'needs external DNS and network', 'needs a local HTTP or SOCKS5 proxy service'
+PROXY = 'needs a local HTTP or SOCKS5 proxy service'
 # The case's fixed missing name stays in the resolver's negative cache after any lookup of it (the
 # other engine's, an earlier run's), and the cached answer comes back before the cancel or timeout.
 UNCACHED = 'needs a DNS lookup that misses the resolver cache'
@@ -312,7 +312,7 @@ def plan(args, reports):
         script('hooks-system-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--archive', archive,
                '--build-root', ROOT / 'target/native-originals/hooks-system', '--jobs', args.jobs,
-               '--exclude', 'coroutine_system.getaddrinfo=' + NETWORK, '--exclude', 'coroutine_system.getaddrinfo_timeout=' + UNCACHED,
+               '--exclude', 'coroutine_system.getaddrinfo_timeout=' + UNCACHED,
                '--exclude', 'coroutine_hook.sendmsg_and_recvmsg=flaky: its outcome depends on which close completes first '
                             '(~15% of runs fail)',
                *([] if getattr(args, 'core_test_services', False) else
@@ -321,9 +321,6 @@ def plan(args, reports):
                # core-tests/src/network/client.cpp (tests/modules/clients/client.rs).
                '--exclude', "client.bind=expects EINVAL binding port 80 under GITHUB_ACTIONS (a root container); the runner "
                             "isn't root and gets EACCES",
-               '--exclude', 'client.async_tcp_socks5_proxy_handshake_fail=expects www.baidu.com:80 to time out a SOCKS5 greeting',
-               '--exclude', 'client.async_tcp_ssl_handshake_fail=' + NETWORK + ': its TLS handshake with www.baidu.com:80 '
-                            'has a 1 s timeout the round trip sometimes exceeds',
                '--exclude', "client.sync_ssl_sendfile=each recv lands at the buffer's start, so past the largest TLS record "
                             "it reads bytes no recv wrote; www.baidu.com's ~730 KB "
                             'page leaves "baidu.com" only in overwritten bytes',
