@@ -19,8 +19,8 @@ use core::cell::Cell;
 use core::marker::PhantomData;
 use std::ffi::{c_int, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 const INVALID: i32 = -1;
 const NO_MEMORY: i32 = -2;
@@ -37,23 +37,23 @@ pub struct GlobalImpl {
     creator: u32,
     /// The pool this one replaced in a forked process. Its pages stay mapped, since
     /// the parent's objects in them stay in use, and go with this pool.
-    inherited: *mut GlobalImpl,
+    _inherited: Option<Arc<GlobalImpl>>,
 }
 
 impl GlobalImpl {
     /// `new GlobalMemoryImpl(size, shared)`, with its first page.
-    fn new(size: u32, shared: bool, inherited: *mut Self) -> Result<*mut Self, i32> {
+    fn new(size: u32, shared: bool, inherited: Option<Arc<Self>>) -> Result<Self, i32> {
         let page = global::page_size(size, crate::swr_v1_core_pagesize()).ok_or(INVALID)?;
         let mut pages = Global::new(page, shared);
         if !pages.add_page() {
             return Err(NO_MEMORY);
         }
-        Ok(Box::into_raw(Box::new(Self {
+        Ok(Self {
             pages: Mutex::new(pages),
             page_size: page,
             creator: if shared { std::process::id() } else { 0 },
-            inherited,
-        })))
+            _inherited: inherited,
+        })
     }
 
     fn pages(&self) -> MutexGuard<'_, Global> {
@@ -61,41 +61,74 @@ impl GlobalImpl {
     }
 }
 
-impl Drop for GlobalImpl {
-    fn drop(&mut self) {
-        if !self.inherited.is_null() {
-            // SAFETY: `current` gave this pool the one it replaced, which only this frees.
-            drop(unsafe { Box::from_raw(self.inherited) });
-        }
-    }
-}
-
 /// `swoole::GlobalMemory`: pages allocated once for the program's life, whose `free` is
-/// a no-op. It holds its pool, which a forked process replaces (see `current`). Errors
+/// a no-op. It holds its pool, which a forked process replaces on first access. Errors
 /// are upstream's constructor's throws: `INVALID` for
 /// `Exception(SW_ERROR_INVALID_PARAMS)` and `NO_MEMORY` for `std::bad_alloc`.
 ///
-/// Every read of the pool counts itself in `users` first, so `delete` frees the pool only
-/// when nothing reads it; a pool a reader still holds is left mapped instead.
+/// Each reader owns a reference to the generation it observed.
 pub struct GlobalMemory {
     pool: AtomicPtr<GlobalImpl>,
-    users: AtomicUsize,
+    /// Serializes cloning or replacing the published Arc. A child can take over a
+    /// publication guard held by a vanished parent thread: the pointer itself is atomic.
+    publisher: AtomicU32,
 }
 
-struct PoolReader<'a>(&'a AtomicUsize);
+struct Publication<'a>(&'a AtomicU32);
 
-impl Drop for PoolReader<'_> {
+impl Drop for Publication<'_> {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        self.0.store(0, Ordering::Release);
     }
 }
 
 impl GlobalMemory {
-    /// A memory with no pool yet, `SwooleG.memory_pool` before `swoole_init`.
     const fn empty() -> Self {
         Self {
             pool: AtomicPtr::new(ptr::null_mut()),
-            users: AtomicUsize::new(0),
+            publisher: AtomicU32::new(0),
+        }
+    }
+
+    fn publication(&self) -> Publication<'_> {
+        let pid = std::process::id();
+        loop {
+            let owner = self.publisher.load(Ordering::Relaxed);
+            if owner != pid
+                && self
+                    .publisher
+                    .compare_exchange_weak(owner, pid, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+            {
+                return Publication(&self.publisher);
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    fn snapshot(&self) -> Option<Arc<GlobalImpl>> {
+        let _guard = self.publication();
+        let pool = std::ptr::NonNull::new(self.pool.load(Ordering::Acquire))?;
+        // SAFETY: publication holds one Arc count until replace takes this same guard.
+        unsafe { Arc::increment_strong_count(pool.as_ptr()) };
+        // SAFETY: this takes the independent strong count just acquired.
+        Some(unsafe { Arc::from_raw(pool.as_ptr()) })
+    }
+
+    fn replace(&self, expected: Option<*const GlobalImpl>, next: Option<Arc<GlobalImpl>>) {
+        let guard = self.publication();
+        let old = self.pool.load(Ordering::Acquire);
+        if expected.is_some_and(|p| p != old.cast_const()) {
+            return;
+        }
+        self.pool.store(
+            next.map_or(ptr::null_mut(), |p| Arc::into_raw(p).cast_mut()),
+            Ordering::Release,
+        );
+        drop(guard);
+        if !old.is_null() {
+            // SAFETY: this removed the slot's Arc::into_raw count under the publication guard.
+            drop(unsafe { Arc::from_raw(old) });
         }
     }
 
@@ -117,50 +150,25 @@ impl GlobalMemory {
             pagesize >= MIN_PAGE_SIZE,
             "a page of at least SW_MIN_PAGE_SIZE"
         );
-        let pool = GlobalImpl::new(pagesize, shared, ptr::null_mut())?;
+        let pool = GlobalImpl::new(pagesize, shared, None)?;
         Ok(Self {
-            pool: AtomicPtr::new(pool),
-            users: AtomicUsize::new(0),
+            pool: AtomicPtr::new(Arc::into_raw(Arc::new(pool)).cast_mut()),
+            publisher: AtomicU32::new(0),
         })
     }
 
-    /// Runs `read` over this process's pool, counted in `users` while it runs. In a
-    /// process forked from the one that made a shared pool, a fresh pool replaces it
-    /// first, without taking the inherited lock a parent thread may have held at the
-    /// fork, and keeps it.
+    /// Read a snapshot outside the publication guard. After fork, publish fresh
+    /// shared pages before touching a page mutex that a parent thread may hold.
     fn with<R>(&self, read: impl FnOnce(&GlobalImpl) -> R) -> Result<R, i32> {
-        self.users.fetch_add(1, Ordering::SeqCst);
-        // Keep the pool counted through the callback, including unwinding its frame.
-        let _reader = PoolReader(&self.users);
-        self.current().map(read)
-    }
-
-    /// The pool, for `with`, which counts the caller as a user.
-    fn current(&self) -> Result<&GlobalImpl, i32> {
-        let pool = self.pool.load(Ordering::SeqCst);
-        // SAFETY: null or a pool this memory owns. `delete` takes it out before it frees
-        // it, and frees it only when no `with` is running; `drop` has `&mut self`.
-        let Some(found) = (unsafe { pool.as_ref() }) else {
-            return Err(INVALID);
-        };
-        if found.creator == 0 || found.creator == std::process::id() {
-            return Ok(found);
+        loop {
+            let found = self.snapshot().ok_or(INVALID)?;
+            if found.creator == 0 || found.creator == std::process::id() {
+                return Ok(read(&found));
+            }
+            let expected = Arc::as_ptr(&found);
+            let fresh = GlobalImpl::new(found.page_size, true, Some(found))?;
+            self.replace(Some(expected), Some(Arc::new(fresh)));
         }
-        let fresh = GlobalImpl::new(found.page_size, true, pool)?;
-        // Publish it only over the pool it replaces: a `delete` or another thread's
-        // replacement in between wins, and the unpublished pool goes, minus the
-        // inherited one it doesn't own.
-        let published = self
-            .pool
-            .compare_exchange(pool, fresh, Ordering::SeqCst, Ordering::SeqCst);
-        if published.is_err() {
-            // SAFETY: `GlobalImpl::new`'s box, never published, so only this frame holds it.
-            let mut unpublished = unsafe { Box::from_raw(fresh) };
-            unpublished.inherited = ptr::null_mut();
-            drop(unpublished);
-        }
-        // The pool there now: the fresh one, or whatever won.
-        self.current()
     }
 
     /// `void *GlobalMemory::alloc(uint32_t size)`: a zeroed block, or null with
@@ -188,23 +196,7 @@ impl GlobalMemory {
     /// Takes the pool out and frees it, every page and then the registry, unless a
     /// reader still holds it.
     fn delete(&self) {
-        let pool = self.pool.swap(ptr::null_mut(), Ordering::SeqCst);
-        if pool.is_null() {
-            return;
-        }
-        if self.users.load(Ordering::SeqCst) == 0 {
-            // SAFETY: `GlobalImpl::new`'s box, taken out of this memory, freed once. A
-            // `with` that counted itself before this load holds it, so none does; one that
-            // counts itself after it loads null.
-            drop(unsafe { Box::from_raw(pool) });
-        } else {
-            // Still read by a transient caller: every such pool stays reachable,
-            // so a leak check doesn't report it.
-            static KEPT: Mutex<Vec<usize>> = Mutex::new(Vec::new());
-            KEPT.lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(pool.expose_provenance());
-        }
+        self.replace(None, None);
     }
 }
 
@@ -453,17 +445,13 @@ pub mod pool {
     use std::mem::MaybeUninit;
     use std::ptr;
     use std::slice;
-    use std::sync::atomic::Ordering::SeqCst;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64};
 
     static POOL: GlobalMemory = GlobalMemory::empty();
 
     #[cfg(test)]
-    pub(super) fn users() -> usize {
-        POOL.users.load(SeqCst)
-    }
-
-    #[cfg(test)]
+    #[cfg(not(miri))]
     pub(super) fn page() -> std::sync::Weak<super::Page> {
         POOL.with(|pool| std::sync::Arc::downgrade(pool.pages().last_page().unwrap()))
             .unwrap()
@@ -474,17 +462,10 @@ pub mod pool {
     /// pool that is already there stays.
     pub fn init() {
         let page = crate::constants::SW_GLOBAL_MEMORY_PAGESIZE;
-        let Ok(fresh) = GlobalMemory::new(page, true) else {
+        let Ok(fresh) = super::GlobalImpl::new(page, true, None) else {
             crate::fatal("the global memory pool can't be created");
         };
-        let pool = fresh.pool.swap(ptr::null_mut(), SeqCst);
-        let installed = POOL
-            .pool
-            .compare_exchange(ptr::null_mut(), pool, SeqCst, SeqCst);
-        if installed.is_err() {
-            // Not installed: `fresh` frees it.
-            fresh.pool.store(pool, SeqCst);
-        }
+        POOL.replace(Some(ptr::null()), Some(Arc::new(fresh)));
     }
 
     /// `delete SwooleG.memory_pool`. A thread still reading the pool keeps it mapped.

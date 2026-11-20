@@ -312,7 +312,6 @@ fn a_permanent_word_keeps_only_its_own_page() {
     assert!(!block.is_null());
     // A full-page block starts just after the mapping and bump-allocation headers.
     let base = block.wrapping_byte_sub(16);
-    assert_eq!(pool::users(), 0);
     let protect = || unsafe { libc::mprotect(base, 1, libc::PROT_READ | libc::PROT_WRITE) };
     assert_eq!(protect(), 0);
     pool::delete();
@@ -412,14 +411,18 @@ fn sleeping_coroutine_lock_releases_its_shared_word() {
 
 #[test]
 fn unwinding_a_pool_read_releases_its_count() {
+    crate::swr_v1_core_set_pagesize(4096);
     let pool = GlobalMemory::new(4096, false).unwrap();
+    let generation = Arc::downgrade(&pool.snapshot().unwrap());
     let result = std::panic::catch_unwind(|| {
         pool.with(|_| {
             panic!("interrupt the read");
         })
     });
     assert!(result.is_err());
-    assert_eq!(pool.users.load(Ordering::SeqCst), 0);
+    assert_eq!(generation.strong_count(), 1);
+    pool.delete();
+    assert_eq!(generation.strong_count(), 0);
 }
 
 #[test]
@@ -436,19 +439,99 @@ fn global_memory_bump_allocates_zeroed_blocks_within_a_page() {
 }
 
 #[test]
+fn deleting_a_generation_during_a_read_releases_it_after_the_callback() {
+    crate::swr_v1_core_set_pagesize(4096);
+    let pool = GlobalMemory::new(4096, true).unwrap();
+    let capacity = pool.capacity();
+    let old = Arc::downgrade(&pool.snapshot().unwrap());
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        let reader = scope.spawn(|| {
+            pool.with(|generation| {
+                barrier.wait();
+                barrier.wait();
+                assert_eq!(generation.pages().capacity(), capacity);
+            })
+            .unwrap();
+        });
+        barrier.wait();
+        pool.delete();
+        let detached = pool.snapshot().is_none();
+        let fresh = GlobalImpl::new(4096, true, None).unwrap();
+        pool.replace(Some(ptr::null()), Some(Arc::new(fresh)));
+        let readers = old.strong_count();
+        barrier.wait();
+        reader.join().unwrap();
+        assert!(detached);
+        assert_eq!(readers, 1);
+        assert_eq!(old.strong_count(), 0);
+        assert!(pool.capacity() >= 4096);
+    });
+}
+
+#[test]
+#[cfg(not(miri))]
+fn child_can_replace_a_shared_pool_while_a_parent_thread_holds_both_guards() {
+    if crate::utilities::isolated_process::run_in_child(
+        "memory::members::tests::child_can_replace_a_shared_pool_while_a_parent_thread_holds_both_guards",
+    ) {
+        return;
+    }
+    crate::swr_v1_core_set_pagesize(4096);
+    let pool = GlobalMemory::new(4096, true).unwrap();
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let generation = pool.snapshot().unwrap();
+            let _pages = generation.pages();
+            let _publication = pool.publication();
+            barrier.wait();
+            barrier.wait();
+        });
+        barrier.wait();
+        let pid = sys::fork();
+        if pid == 0 {
+            // Bound a regression that waits forever on either inherited guard.
+            unsafe { libc::alarm(5) };
+            let allocated = pool.alloc(8).is_ok_and(|block| !block.is_null());
+            let generation = Arc::downgrade(&pool.snapshot().unwrap());
+            pool.delete();
+            let released = generation.strong_count() == 0;
+            // libtest's other threads belong to the parent. fork_pool_pages exercises
+            // normal child shutdown separately from this multithreaded guard probe.
+            unsafe { libc::_exit(i32::from(!(allocated && released))) };
+        }
+        let mut status = 0;
+        let waited = (pid > 0).then(|| sys::waitpid(pid, Some(&mut status), 0));
+        barrier.wait();
+        assert_eq!(waited.unwrap().unwrap(), Some(pid));
+        assert_eq!(status, 0);
+    });
+    assert_eq!(pool.capacity(), 4096);
+}
+
+fn inherited_pool(shared: bool) -> GlobalMemory {
+    let mut generation = GlobalImpl::new(4096, shared, None).unwrap();
+    if shared {
+        generation.creator = std::process::id() + 1;
+    }
+    let pool = GlobalMemory::empty();
+    pool.replace(Some(ptr::null()), Some(Arc::new(generation)));
+    pool
+}
+
+#[test]
 fn a_forked_process_starts_its_own_shared_pool_and_keeps_the_inherited_one() {
     crate::swr_v1_core_set_pagesize(4096);
     for shared in [false, true] {
-        let pool = GlobalMemory::new(4096, shared).unwrap();
-        let parent = pool.pool.load(Ordering::Relaxed);
-        // As if another process made it.
-        unsafe { (*parent).creator = if shared { std::process::id() + 1 } else { 0 } };
+        let pool = inherited_pool(shared);
+        let parent = Arc::downgrade(&pool.snapshot().unwrap());
         assert_eq!(pool.capacity(), 4096);
         let child = pool.pool.load(Ordering::Relaxed);
-        assert_eq!(child == parent, !shared);
+        assert_eq!(child.cast_const() == parent.as_ptr(), !shared);
         if shared {
-            assert_eq!(unsafe { (*child).inherited }, parent);
-            assert_eq!(unsafe { (*child).creator }, std::process::id());
+            assert_eq!(parent.strong_count(), 1);
+            assert_eq!(pool.snapshot().unwrap().creator, std::process::id());
         }
         assert!(!pool.alloc(8).unwrap().is_null());
         assert_eq!(
@@ -463,10 +546,8 @@ fn a_forked_process_starts_its_own_shared_pool_and_keeps_the_inherited_one() {
 fn threads_racing_to_replace_a_forked_pool_all_get_the_one_published() {
     crate::swr_v1_core_set_pagesize(4096);
     for _ in 0..20 {
-        let pool = GlobalMemory::new(4096, true).unwrap();
-        let parent = pool.pool.load(Ordering::Relaxed);
-        // As if another process made it.
-        unsafe { (*parent).creator = std::process::id() + 1 };
+        let pool = inherited_pool(true);
+        let parent = Arc::downgrade(&pool.snapshot().unwrap());
         let start = std::sync::Barrier::new(8);
         let seen: Vec<usize> = std::thread::scope(|scope| {
             let readers: Vec<_> = (0..8)
@@ -485,7 +566,9 @@ fn threads_racing_to_replace_a_forked_pool_all_get_the_one_published() {
         });
         let published = pool.pool.load(Ordering::Relaxed);
         assert!(seen.iter().all(|&found| found == published as usize));
-        assert_eq!(unsafe { (*published).inherited }, parent);
+        assert_eq!(parent.strong_count(), 1);
+        pool.delete();
+        assert_eq!(parent.strong_count(), 0);
     }
 }
 
