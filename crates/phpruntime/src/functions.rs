@@ -30,13 +30,11 @@ use swoole_rs_zend::{
     },
 };
 
-// The replacements that live elsewhere: `proc_open`'s (thirdparty proc_open.cc),
-// and crates/phpcoroutines' `gethostbyname` and (PHP 8.4+) `exit`.
+// The replacements that live elsewhere: `proc_open` (thirdparty proc_open.cc; its
+// close, status and terminate are crate::proc's), and crates/phpcoroutines'
+// `gethostbyname` and (PHP 8.4+) `exit`.
 unsafe extern "C" {
     fn zif_swoole_proc_open(frame: *mut zend_execute_data, value: *mut zval);
-    fn zif_swoole_proc_close(frame: *mut zend_execute_data, value: *mut zval);
-    fn zif_swoole_proc_get_status(frame: *mut zend_execute_data, value: *mut zval);
-    fn zif_swoole_proc_terminate(frame: *mut zend_execute_data, value: *mut zval);
     fn zif_swoole_coroutine_gethostbyname(frame: *mut zend_execute_data, value: *mut zval);
     fn zif_swoole_exit(frame: *mut zend_execute_data, value: *mut zval);
     /// The running request's internal function `name` (`EG(function_table)`),
@@ -637,9 +635,15 @@ pub(crate) fn hook_all(mut requested: u32, installed: u32) -> Result<(), Bailout
         flags::PROC,
         &[
             (c"proc_open", Some(zif_swoole_proc_open)),
-            (c"proc_close", Some(zif_swoole_proc_close)),
-            (c"proc_get_status", Some(zif_swoole_proc_get_status)),
-            (c"proc_terminate", Some(zif_swoole_proc_terminate)),
+            (c"proc_close", raw(crate::proc::zif_swoole_proc_close)),
+            (
+                c"proc_get_status",
+                raw(crate::proc::zif_swoole_proc_get_status),
+            ),
+            (
+                c"proc_terminate",
+                raw(crate::proc::zif_swoole_proc_terminate),
+            ),
         ],
     );
     let sockets = SOCKETS.map(|name| (name, None));
