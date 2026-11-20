@@ -10,7 +10,9 @@ use core::{
 use std::ffi::CString;
 use swoole_rs_corebase::{CCast, Switch, built_with};
 use swoole_rs_zend::{
-    Array, Call, Emalloc, Key, Value, ZStr, ZString, sys::zend_string, value_error,
+    Array, Call, Emalloc, Key, Value, ZStr, ZString,
+    sys::{zend_string, zend_ulong},
+    value_error,
 };
 
 /// `proc_open.cc`'s `sw_php_process_handle` behind the resource argument `'a` borrows.
@@ -233,8 +235,8 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-/// `php_error_docref(NULL, E_WARNING, "<message>")`.
-fn warn(message: &str) {
+/// `php_error_docref(NULL, E_WARNING, "<message>")`, the message's bytes as given.
+fn warn(message: impl Into<Vec<u8>>) {
     let message = CString::new(message).unwrap_or_default();
     swoole_rs_zend::bailout::defer(crate::report(
         crate::Report::Docref,
@@ -256,49 +258,44 @@ fn cloexec(fd: c_int) {
     let _cloexec = swoole_rs_corebase::sys::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
 }
 
-swoole_rs_zend::exports! {
 /// `set_proc_descriptor_to_socket`, which `pipe` uses too: a Unix stream socket pair,
 /// the parent's end close-on-exec. False once it warned.
-#[unsafe(no_mangle)]
-extern "C" fn swr_proc_descriptor_socket(parentend: &mut c_int, childend: &mut c_int) -> bool {
+fn setup_socket(parentend: &mut c_int, childend: &mut c_int) -> bool {
     let Some([parent, child]) =
         swoole_rs_corebase::sys::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0)
     else {
-        warn(&format!("Unable to create socket pair: {}", last_error()));
+        warn(format!("Unable to create socket pair: {}", last_error()));
         return false;
     };
     cloexec(parent);
     (*parentend, *childend) = (parent, child);
     true
 }
-}
 
-swoole_rs_zend::exports! {
 /// `set_proc_descriptor_to_blackhole`: `/dev/null`, read-write. False once it warned.
-#[unsafe(no_mangle)]
-extern "C" fn swr_proc_descriptor_null(childend: &mut c_int) -> bool {
+fn setup_null(childend: &mut c_int) -> bool {
     let Ok(fd) = swoole_rs_corebase::sys::open(c"/dev/null", libc::O_RDWR, 0) else {
-        warn(&format!("Failed to open /dev/null: {}", last_error()));
+        warn(format!("Failed to open /dev/null: {}", last_error()));
         return false;
     };
     *childend = fd;
     true
 }
-}
 
-swoole_rs_zend::exports! {
 /// `set_proc_descriptor_to_pty`: every `pty` descriptor shares one pseudoterminal,
 /// opened by the first (`master` and `slave` start at -1); the child gets a copy of
 /// the slave end and the parent one of the master. False once it warned.
-#[unsafe(no_mangle)]
-extern "C" fn swr_proc_descriptor_pty(
+fn setup_pty(
     master: &mut c_int,
     slave: &mut c_int,
     parentend: &mut c_int,
     childend: &mut c_int,
 ) -> bool {
     if *master == -1 && openpty(master, slave, None, None, None) != 0 {
-        warn(&format!("Could not open PTY (pseudoterminal): {}", last_error()));
+        warn(format!(
+            "Could not open PTY (pseudoterminal): {}",
+            last_error()
+        ));
         return false;
     }
     // Upstream keeps whatever dup returns, -1 included.
@@ -306,28 +303,156 @@ extern "C" fn swr_proc_descriptor_pty(
     *parentend = swoole_rs_corebase::sys::dup(*master).unwrap_or(-1);
     true
 }
-}
 
-swoole_rs_zend::exports! {
 /// `redirect_proc_descriptor` once C looked `target` up: `found` is the child end of
 /// the descriptor with that index, or -1 when none has it, where 0, 1 and 2 mean the
 /// parent's own. `to` gets a copy. False once it warned.
-#[unsafe(no_mangle)]
-extern "C" fn swr_proc_descriptor_redirect(found: c_int, target: c_int, to: &mut c_int, nindex: c_int) -> bool {
+fn setup_redirect(found: c_int, target: c_int, to: &mut c_int, nindex: c_int) -> bool {
     let from = if found != -1 {
         found
     } else if (0..=2).contains(&target) {
         target
     } else {
-        warn(&format!("Redirection target {target} not found"));
+        warn(format!("Redirection target {target} not found"));
         return false;
     };
     let Ok(fd) = swoole_rs_corebase::sys::dup(from) else {
         *to = -1;
-        warn(&format!("Failed to dup() for descriptor {nindex}: {}", last_error()));
+        warn(format!(
+            "Failed to dup() for descriptor {nindex}: {}",
+            last_error()
+        ));
         return false;
     };
     *to = fd;
+    true
+}
+
+/// `proc_open.cc`'s `descriptorspec_item` array, read only through
+/// `swr_proc_descriptor_child_of` while the walk that owns it runs.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Descriptors<'a>(NonNull<c_void>, PhantomData<&'a ()>);
+
+unsafe extern "C" {
+    /// The child end of the first of the `count` descriptors set up so far whose
+    /// index is `target`, or -1.
+    safe fn swr_proc_descriptor_child_of(
+        descriptors: Descriptors<'_>,
+        count: c_int,
+        target: c_int,
+    ) -> c_int;
+    /// `set_proc_descriptor_to_file`: `path` opened in `mode` through its stream
+    /// wrapper and released as a descriptor, into `fd`. False once it reported.
+    safe fn swr_proc_open_file(path: &ZStr, mode: &ZStr, fd: &mut c_int) -> bool;
+}
+
+/// `descriptor_type`'s `DESCRIPTOR_TYPE_PIPE` and `DESCRIPTOR_TYPE_SOCKET`.
+const TYPE_PIPE: c_int = 1;
+const TYPE_SOCKET: c_int = 2;
+
+/// `get_string_parameter`: element `index` of a descriptor item as a string
+/// (`zval_try_get_string`), or none once a `ValueError` or the conversion threw.
+fn string_parameter(item: &Array, index: zend_ulong, name: &str) -> Option<ZString> {
+    let Some(value) = item.index(index) else {
+        value_error(&CString::new(format!("Missing {name}")).unwrap_or_default());
+        return None;
+    };
+    let string = value.string();
+    swoole_rs_zend::host::exception()
+        .is_null()
+        .then_some(string)
+}
+
+/// A descriptor the item set up: its type, mode and ends.
+struct Setup {
+    kind: c_int,
+    mode: c_int,
+    parentend: c_int,
+    childend: c_int,
+}
+
+/// `set_proc_descriptor_from_array`'s choice of kind for one item, none once it
+/// warned or threw.
+fn descriptor(
+    item: &Array,
+    descriptors: Descriptors<'_>,
+    ndesc: c_int,
+    nindex: c_int,
+    pty: &mut [c_int; 2],
+) -> Option<Setup> {
+    let kind = string_parameter(item, 0, "handle qualifier")?;
+    let mut setup = Setup {
+        kind: 0,
+        mode: 0,
+        parentend: 0,
+        childend: 0,
+    };
+    let ok = match kind.bytes() {
+        // Upstream's own pipe branch is compiled out: a pipe is a socket pair too.
+        b"socket" | b"pipe" => {
+            setup.kind = TYPE_SOCKET;
+            setup_socket(&mut setup.parentend, &mut setup.childend)
+        }
+        b"file" => {
+            let path = string_parameter(item, 1, "file name parameter for 'file'")?;
+            let mode = string_parameter(item, 2, "mode parameter for 'file'")?;
+            swr_proc_open_file(&path, &mode, &mut setup.childend)
+        }
+        b"redirect" => {
+            let Some(target) = item.index(1).map(Value::referred) else {
+                value_error(c"Missing redirection target");
+                return None;
+            };
+            let Some(target) = target.as_long() else {
+                let message = format!(
+                    "Redirection target must be of type int, {} given",
+                    target.type_name().to_string_lossy()
+                );
+                value_error(&CString::new(message).unwrap_or_default());
+                return None;
+            };
+            // `(int) Z_LVAL_P(ztarget)`.
+            let target = target.c_cast::<c_int>();
+            let found = swr_proc_descriptor_child_of(descriptors, ndesc, target);
+            setup_redirect(found, target, &mut setup.childend, nindex)
+        }
+        b"null" => setup_null(&mut setup.childend),
+        b"pty" => {
+            setup.kind = TYPE_PIPE;
+            setup.mode = libc::O_RDWR;
+            let [master, slave] = pty;
+            setup_pty(master, slave, &mut setup.parentend, &mut setup.childend)
+        }
+        other => {
+            // `%s` of the qualifier: its bytes up to the first NUL, whatever their encoding.
+            let shown = other.split(|&b| b == 0).next().unwrap_or_default();
+            warn([shown, b" is not a valid descriptor spec/mode"].concat());
+            false
+        }
+    };
+    ok.then_some(setup)
+}
+
+swoole_rs_zend::exports! {
+/// `set_proc_descriptor_from_array`: the descriptor item `item` (one array of
+/// `$descriptorspec`, the `ndesc`-th, for child fd `nindex`) set up into `setup`:
+/// its type, mode, parent end and child end. `pty` holds the shared
+/// pseudoterminal's ends (-1 until a `pty` item opens it). False once it warned or
+/// threw, `setup` untouched.
+#[unsafe(no_mangle)]
+extern "C" fn swr_proc_descriptor_from_array(
+    item: &Array,
+    descriptors: Descriptors<'_>,
+    ndesc: c_int,
+    nindex: c_int,
+    pty: &mut [c_int; 2],
+    setup: &mut [c_int; 4],
+) -> bool {
+    let Some(made) = descriptor(item, descriptors, ndesc, nindex, pty) else {
+        return false;
+    };
+    *setup = [made.kind, made.mode, made.parentend, made.childend];
     true
 }
 }
