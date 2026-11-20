@@ -1,9 +1,10 @@
 //! `GlobalMemory`'s pages: a bump allocator over anonymous mappings, shared with
 //! forked processes or (as `sw_malloc`'s memory would be) copied by a fork, unmapped
 //! with the pool.
-use crate::memory::members::Shm;
+use crate::memory::members::{Page, Shm};
 use std::ffi::c_void;
 use std::ptr;
+use std::sync::Arc;
 
 /// Page invariant: every entry of `pages` is a live mapping whose payload is 8-aligned
 /// and `page_size` bytes, which this registry made. Only pages with permanent words stay mapped on drop.
@@ -11,16 +12,10 @@ use std::ptr;
 /// mapping starts zeroed and no block is handed out twice, so the bytes at and after
 /// `offset` are zero.
 pub(crate) struct Global {
-    pages: Vec<Page>,
+    pages: Vec<Arc<Page>>,
     pub(crate) page_size: u32,
     offset: usize,
     shared: bool,
-}
-
-struct Page {
-    mapping: Shm,
-    /// A process-lifetime reference escaped from this page.
-    permanent: bool,
 }
 
 /// `requested` rounded up to whole `system` pages, as `SW_MEM_ALIGNED_SIZE_EX`.
@@ -62,10 +57,7 @@ impl Global {
         if page.is_null() {
             return false;
         }
-        self.pages.push(Page {
-            mapping: page,
-            permanent: false,
-        });
+        self.pages.push(Arc::new(Page::from(page)));
         self.offset = 0;
         true
     }
@@ -94,20 +86,13 @@ impl Global {
         // 8-aligned. The payload is zero already: the mapping's own, never handed out.
         // The header stays unwritten room: upstream's `MemoryBlock::size`, which nothing
         // reads (`free` is a no-op), so blocks and capacity stay upstream's.
-        let block = page
-            .mapping
-            .as_ptr()
-            .cast::<u8>()
-            .wrapping_add(self.offset + 8);
+        let block = page.as_ptr().cast::<u8>().wrapping_add(self.offset + 8);
         self.offset += total;
         block.cast()
     }
 
-    /// Keep the mapping containing the most recent allocation across pool destruction.
-    pub(crate) fn keep_last_page(&mut self) {
-        if let Some(page) = self.pages.last_mut() {
-            page.permanent = true;
-        }
+    pub(super) fn last_page(&self) -> Option<&Arc<Page>> {
+        self.pages.last()
     }
 
     /// `GlobalMemory::capacity()`.
@@ -118,16 +103,6 @@ impl Global {
     /// `GlobalMemory::get_memory_size()`.
     pub(crate) fn memory_size(&self) -> usize {
         self.pages.len().saturating_mul(self.page_size as usize)
-    }
-}
-
-impl Drop for Global {
-    fn drop(&mut self) {
-        for page in &mut self.pages {
-            if !page.permanent {
-                page.mapping.free();
-            }
-        }
     }
 }
 
