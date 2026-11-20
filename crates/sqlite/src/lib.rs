@@ -18,6 +18,8 @@
 
 #[cfg(feature = "php")]
 pub mod minit;
+#[cfg(any(feature = "php", test))]
+mod scanner;
 
 use std::{
     cell::Cell,
