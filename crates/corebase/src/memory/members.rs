@@ -19,7 +19,7 @@ use core::cell::Cell;
 use core::marker::PhantomData;
 use std::ffi::{c_int, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 const INVALID: i32 = -1;
@@ -198,7 +198,7 @@ impl GlobalMemory {
             // counts itself after it loads null.
             drop(unsafe { Box::from_raw(pool) });
         } else {
-            // Still read, or held by a scoped pin: every such pool stays reachable,
+            // Still read by a transient caller: every such pool stays reachable,
             // so a leak check doesn't report it.
             static KEPT: Mutex<Vec<usize>> = Mutex::new(Vec::new());
             KEPT.lock()
@@ -247,6 +247,36 @@ fn alloc(pages: &mut Global, size: u32) -> *mut c_void {
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct Shm(Cell<*mut c_void>);
+
+/// A bump page whose pool and scoped allocations share ownership. The address is
+/// immutable after construction. Only the last owner may unmap it.
+pub(super) struct Page {
+    address: AtomicPtr<c_void>,
+    permanent: AtomicBool,
+}
+
+impl From<Shm> for Page {
+    fn from(mapping: Shm) -> Self {
+        Self {
+            address: AtomicPtr::new(mapping.into_raw()),
+            permanent: AtomicBool::new(false),
+        }
+    }
+}
+
+impl Page {
+    pub(super) fn as_ptr(&self) -> *mut c_void {
+        self.address.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for Page {
+    fn drop(&mut self) {
+        if !*self.permanent.get_mut() {
+            Shm(Cell::new(*self.address.get_mut())).free();
+        }
+    }
+}
 
 impl Default for Shm {
     fn default() -> Self {
@@ -420,7 +450,6 @@ pub fn sw_shm_calloc(count: usize, size: usize) -> *mut c_void {
 /// deleted by `swoole_clean`. Its `free` is a no-op, so nothing calls it.
 pub mod pool {
     use super::GlobalMemory;
-    use std::ffi::c_void;
     use std::mem::MaybeUninit;
     use std::ptr;
     use std::slice;
@@ -432,6 +461,12 @@ pub mod pool {
     #[cfg(test)]
     pub(super) fn users() -> usize {
         POOL.users.load(SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(super) fn page() -> std::sync::Weak<super::Page> {
+        POOL.with(|pool| std::sync::Arc::downgrade(pool.pages().last_page().unwrap()))
+            .unwrap()
     }
 
     /// `SwooleG.memory_pool = new GlobalMemory(SW_GLOBAL_MEMORY_PAGESIZE, true)`,
@@ -463,7 +498,7 @@ pub mod pool {
     /// Where upstream throws (no pool, or a forked process's fresh pool can't be had),
     /// the process aborts.
     #[must_use]
-    pub fn alloc(size: u32) -> *mut c_void {
+    pub fn alloc(size: u32) -> *mut std::ffi::c_void {
         POOL.alloc(size)
             .unwrap_or_else(|_| crate::fatal("no memory pool to allocate from"))
     }
@@ -492,22 +527,14 @@ pub mod pool {
     }
 
     /// One pool allocation whose owner only lends the word for a borrow of itself.
-    /// The pool counts the pin until the owner drops. A fork copies the count and
+    /// The pin holds this word’s mapping. A fork copies the count and
     /// the owner into the child while both processes share the word.
     pub struct PooledWord<W: 'static> {
         word: &'static W,
         _pin: PoolPin,
     }
 
-    // Drops after the word reference. A pool deleted with users still present
-    // already keeps its mapping, so this also works after a pool replacement.
-    pub(super) struct PoolPin(());
-
-    impl Drop for PoolPin {
-        fn drop(&mut self) {
-            POOL.users.fetch_sub(1, SeqCst);
-        }
-    }
+    pub(super) type PoolPin = std::sync::Arc<super::Page>;
 
     pub(super) fn table_header(
         rows: u32,
@@ -547,23 +574,8 @@ pub mod pool {
     }
 
     fn scoped_words<W: Word + 'static>(count: usize) -> Option<(&'static mut [W], PoolPin)> {
-        with_zero_words(count, Storage::Scoped, |words| (words, PoolPin(())))
-    }
-
-    fn pinned(size: u32, permanent: bool) -> *mut c_void {
-        POOL.with(|pool| {
-            let mut pages = pool.pages();
-            let block = super::alloc(&mut pages, size);
-            if !block.is_null() {
-                if permanent {
-                    pages.keep_last_page();
-                } else {
-                    POOL.users.fetch_add(1, SeqCst);
-                }
-            }
-            block
-        })
-        .unwrap_or_else(|_| crate::fatal("no memory pool to allocate from"))
+        let (words, page) = zero_words(count, Storage::Pool)?;
+        Some((words, page?))
     }
 
     /// `count` zero words from [`alloc`], for the process's life: `Swoole\Atomic`'s
@@ -571,7 +583,10 @@ pub mod pool {
     /// the same address.
     #[must_use]
     pub fn words<W: Word + 'static>(count: usize) -> Option<&'static mut [W]> {
-        with_zero_words(count, Storage::Permanent, |words| words)
+        let (words, page) = scoped_words(count)?;
+        page.permanent
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        Some(words)
     }
 
     /// A process-shared pthread lock whose PHP object owns the pool pin. Forked
@@ -603,36 +618,38 @@ pub mod pool {
 
     /// The permanent shared mapping for the atomic wait registry.
     pub(crate) fn wait_registry_words(count: usize) -> Option<&'static [AtomicU64]> {
-        with_zero_words(count, Storage::WaitRegistry, |words| &*words)
+        zero_words(count, Storage::WaitRegistry).map(|(words, _)| &*words)
     }
 
     #[derive(Clone, Copy)]
     enum Storage {
-        Scoped,
-        Permanent,
+        Pool,
         WaitRegistry,
     }
 
-    fn with_zero_words<W: Word + 'static, T>(
+    fn zero_words<W: Word + 'static>(
         count: usize,
         storage: Storage,
-        init: impl FnOnce(&'static mut [W]) -> T,
-    ) -> Option<T> {
+    ) -> Option<(&'static mut [W], Option<PoolPin>)> {
         const { assert!(align_of::<W>() <= 8, "the pool's blocks are 8-aligned") };
         let size = u32::try_from(count.checked_mul(size_of::<W>())?).ok()?;
-        let block = match storage {
-            Storage::Scoped => pinned(size, false),
-            Storage::Permanent => pinned(size, true),
-            Storage::WaitRegistry => super::sw_shm_malloc(size as usize),
-        }
-        .cast::<W>();
+        let (block, page) = match storage {
+            Storage::Pool => POOL
+                .with(|pool| {
+                    let mut pages = pool.pages();
+                    (super::alloc(&mut pages, size), pages.last_page().cloned())
+                })
+                .unwrap_or_else(|_| crate::fatal("no memory pool to allocate from")),
+            Storage::WaitRegistry => (super::sw_shm_malloc(size as usize), None),
+        };
+        let block = block.cast::<W>();
         if block.is_null() {
             return None;
         }
         // SAFETY: `count` zeroed (so valid) words, 8-aligned (enough for each `Word`,
-        // asserted above), which the allocator gives no one else and keeps for the process's
-        // life.
-        Some(init(unsafe { slice::from_raw_parts_mut(block, count) }))
+        // asserted above). The registry mapping is permanent. Pool callers keep the returned
+        // page until all borrows end or mark it permanent before lending a static slice.
+        Some((unsafe { slice::from_raw_parts_mut(block, count) }, page))
     }
 }
 

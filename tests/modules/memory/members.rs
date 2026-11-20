@@ -336,18 +336,22 @@ fn pooled_words_balance_their_pins_across_pool_replacement() {
     pool::init();
     let old = pool::PooledWord::<AtomicU32>::allocate().unwrap();
     old.store(7, Ordering::SeqCst);
-    assert_eq!(pool::users(), 1);
+    let old_page = pool::page();
+    assert_eq!(old_page.strong_count(), 2);
     pool::delete();
     pool::init();
     let fresh = pool::PooledWord::<AtomicU32>::allocate().unwrap();
-    assert_eq!(pool::users(), 2);
+    let fresh_page = pool::page();
+    assert_eq!(old_page.strong_count(), 1);
+    assert_eq!(fresh_page.strong_count(), 2);
     assert_eq!(old.load(Ordering::SeqCst), 7);
     drop(old);
-    assert_eq!(pool::users(), 1);
+    assert_eq!(old_page.strong_count(), 0);
     assert_eq!(fresh.load(Ordering::SeqCst), 0);
     drop(fresh);
-    assert_eq!(pool::users(), 0);
+    assert_eq!(fresh_page.strong_count(), 1);
     pool::delete();
+    assert_eq!(fresh_page.strong_count(), 0);
 }
 
 #[test]
@@ -368,11 +372,12 @@ fn shared_table_keeps_its_pin_until_the_last_handle_drops() {
     let reader = Rc::clone(&object);
     object.destroy();
     drop(object);
-    assert_eq!(pool::users(), 1);
+    let page = pool::page();
+    assert_eq!(page.strong_count(), 2);
     pool::delete();
     assert_eq!(reader.size(), 64);
     drop(reader);
-    assert_eq!(pool::users(), 0);
+    assert_eq!(page.strong_count(), 0);
 }
 
 #[test]
@@ -396,12 +401,13 @@ fn sleeping_coroutine_lock_releases_its_shared_word() {
     assert!(crate::swr_v1_core_init());
     pool::init();
     let lock = CoroutineLock::new(true, &HOST);
-    assert_eq!(pool::users(), 1);
+    let page = pool::page();
+    assert_eq!(page.strong_count(), 2);
     pool::delete();
     assert_eq!(lock.acquire(true), Ok(()));
     assert_eq!(lock.unlock(), Ok(()));
     drop(lock);
-    assert_eq!(pool::users(), 0);
+    assert_eq!(page.strong_count(), 0);
 }
 
 #[test]
@@ -556,11 +562,12 @@ fn pooled_lock_releases_its_pin_after_using_the_shared_storage() {
     for &kind in Kind::ALL {
         pool::init();
         let lock = pool::PooledLock::new(kind).unwrap();
-        assert_eq!(pool::users(), 1);
+        let page = pool::page();
+        assert_eq!(page.strong_count(), 2);
         pool::delete();
         lock.lock(LOCK_EX | LOCK_NB, 0, 0).unwrap();
         lock.unlock().unwrap();
         drop(lock);
-        assert_eq!(pool::users(), 0);
+        assert_eq!(page.strong_count(), 0);
     }
 }
