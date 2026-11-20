@@ -136,8 +136,12 @@ through the record layout (`swoole_rs_co_socket.h`). `enable_ssl_encrypt` and th
 witness, whose `TimeoutSetter` left the hybrid header, is a Rust case there too); `pop_read_buffer`/`pop_write_buffer`
 take the record's buffer fields. The `Server` fixture `recv_success` and
 `recv_fail` fork is a std echo (or close-on-receive) server: those cases assert only
-on the client. In merge CI, `tcp6` connects to the PHPT httpbin service on
-`[::1]:80`. The four proxy cases still need local HTTP and SOCKS5 services.
+on the client. In merge CI, `tcp6` connects to the local HTTP server on
+`[::1]:80`. The four proxy cases reach the same server over HTTP and TLS
+through the PHPT Tinyproxy and SOCKS5 images. Within the proxy network,
+`www.baidu.com` names this fixture, which echoes the original Host header and
+serves the pin's test certificate. The cases exercise authenticated HTTP and
+SOCKS5 on ports 8888 and 8080 and unauthenticated SOCKS5 on port 8081.
 
 `core-tests/src/network/dns.cpp` and `network/address.cpp` are Rust too:
 `system/src/dns.rs` holds dns.cpp's 15 TESTs and `system/src/address.rs`
