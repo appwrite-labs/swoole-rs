@@ -28,6 +28,22 @@ fn pack(dir: &Path, data: &[u8]) -> Option<TaskBuffer> {
     Some(task)
 }
 
+fn file_packet(dir: &Path, data: &[u8]) -> TaskBuffer {
+    let path = dir.join("payload");
+    std::fs::write(&path, data).unwrap();
+    let name = path.as_os_str().as_bytes();
+    let mut packet = PacketTask {
+        length: data.len(),
+        tmpfile: [0; TASK_TMP_PATH_SIZE],
+    };
+    packet.tmpfile[..name.len()].copy_from_slice(name);
+    let mut task = TaskBuffer::default();
+    packet.write(&mut task.data);
+    task.head.len = size_of::<PacketTask>().try_into().unwrap();
+    task.add_flags(TaskFlag::SW_TASK_TMPFILE.bits());
+    task
+}
+
 #[test]
 fn inline_lengths_must_fit_storage() {
     let mut bytes = vec![b'v'; size_of::<DataHead>() + IPC_PAYLOAD + 1];
@@ -50,10 +66,9 @@ fn inline_lengths_must_fit_storage() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri has no mkostemp")]
 fn file_header_lengths_must_match() {
     let dir = directory("descriptor");
-    let task = pack(&dir, &vec![b'x'; LARGE]).unwrap();
+    let task = file_packet(&dir, &vec![b'x'; LARGE]);
     let mut bytes = task.packed().payload().to_vec();
     bytes.push(0);
     let size = size_of::<PacketTask>();
@@ -97,11 +112,10 @@ fn file_paths_must_have_a_terminator() {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri has no mkostemp")]
 fn valid_file_packets_can_be_peeked_then_consumed() {
     let dir = directory("peek");
     let data = vec![b'x'; LARGE];
-    let mut task = pack(&dir, &data).unwrap();
+    let mut task = file_packet(&dir, &data);
     let mut buffer = OwnedString::default();
     task.add_flags(TaskFlag::SW_TASK_PEEK.bits());
     assert_eq!(task.packed().unpack(&mut buffer).unwrap().0, data);

@@ -618,17 +618,16 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no mkostemp")]
     fn a_failed_write_warns_pwrite_then_the_task() {
         use std::os::fd::AsRawFd;
         install();
-        let mut name = [0; super::TASK_TMP_PATH_SIZE];
-        let guard = super::make_tmpfile(c"/tmp/swr-task-XXXXXX", &mut name).unwrap();
-        let path = std::ffi::CStr::from_bytes_until_nul(&name).unwrap();
-        let file = std::fs::File::open(path.to_str().unwrap()).unwrap();
-        let fd = file.as_raw_fd();
+        let path = std::env::temp_dir().join(format!("swr-spill-{}", std::process::id()));
+        let created = std::fs::File::create_new(&path).unwrap();
+        let name = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        let guard = crate::ossupport::TempFile::from_parts(name, created)
+            .map_file(|_| std::fs::File::open(&path).unwrap());
+        let fd = guard.file.as_raw_fd();
         let data = [1u8; 4];
-        let guard = guard.map_file(|_| file);
         assert!(!spill(&guard.file, &data));
         drop(guard);
         assert_eq!(crate::sys::errno(), libc::EBADF);
@@ -643,11 +642,7 @@ mod tests {
             logged("Server::task_pack"),
             [(1, 0, 0, "write to tmpfile failed".into())]
         );
-        assert!(
-            !std::path::Path::new(path.to_str().unwrap())
-                .try_exists()
-                .unwrap()
-        );
+        assert!(!path.try_exists().unwrap());
     }
 
     mod methods {
