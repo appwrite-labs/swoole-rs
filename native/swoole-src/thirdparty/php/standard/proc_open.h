@@ -21,9 +21,7 @@ void swoole_proc_open_init(int module_number);
 /* thirdparty/php/streams/plain_wrapper.c */
 php_stream *php_swoole_create_stream_from_pipe(int fd, const char *mode, const char *persistent_id STREAMS_DC);
 PHP_FUNCTION(swoole_proc_open);
-PHP_FUNCTION(swoole_proc_close);
-PHP_FUNCTION(swoole_proc_get_status);
-PHP_FUNCTION(swoole_proc_terminate);
+/* proc_terminate, proc_close and proc_get_status are crates/phpruntime's (proc.rs). */
 SW_EXTERN_C_END
 
 #ifdef PHP_WIN32

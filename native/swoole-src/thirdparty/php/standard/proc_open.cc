@@ -195,103 +195,37 @@ void swoole_proc_open_init(int module_number) {
 }
 /* }}} */
 
-/* {{{ Kill a process opened by `proc_open` */
-PHP_FUNCTION(swoole_proc_terminate) {
-    zval *zproc;
-    sw_php_process_handle *proc;
-    zend_long sig_no = SIGTERM;
-
-    ZEND_PARSE_PARAMETERS_START(1, 2)
-    Z_PARAM_RESOURCE(zproc)
-    Z_PARAM_OPTIONAL
-    Z_PARAM_LONG(sig_no)
-    ZEND_PARSE_PARAMETERS_END();
-
-    proc = (sw_php_process_handle *) zend_fetch_resource(Z_RES_P(zproc), le_proc_name, le_proc_open);
-    if (proc == NULL) {
-        RETURN_THROWS();
-    }
-
-#ifdef PHP_WIN32
-    RETURN_BOOL(TerminateProcess(proc->childHandle, 255));
-#else
-    RETURN_BOOL(kill(proc->child, sig_no) == 0);
-#endif
+/* {{{ The record behind a `proc_open` resource, for crates/phpruntime's proc_terminate,
+ * proc_close and proc_get_status (proc.rs), which hold it as a pointer and read it
+ * through a pointer to that. */
+SW_EXTERN_C_BEGIN
+/* `zproc`'s record, or NULL once zend_fetch_resource has thrown (a resource of another
+ * type). */
+sw_php_process_handle *swr_proc_fetch(zval *zproc) {
+    return (sw_php_process_handle *) zend_fetch_resource(Z_RES_P(zproc), le_proc_name, le_proc_open);
 }
-/* }}} */
 
-/* {{{ Close a process opened by `proc_open` */
-PHP_FUNCTION(swoole_proc_close) {
-    zval *zproc;
+pid_t swr_proc_child(sw_php_process_handle *const *proc) {
+    return (*proc)->child;
+}
+
+zend_string *swr_proc_command(sw_php_process_handle *const *proc) {
+    return (*proc)->command;
+}
+
+void swr_proc_set_running(sw_php_process_handle *const *proc, bool running) {
+    (*proc)->running = running;
+}
+
+/* Closes `zproc`'s resource, which frees `proc`; its destructor reaps a running child
+ * into the wait status returned. */
+int swr_proc_close(sw_php_process_handle *proc, zval *zproc) {
     int wstatus = 0;
-    sw_php_process_handle *proc;
-
-    ZEND_PARSE_PARAMETERS_START(1, 1)
-    Z_PARAM_RESOURCE(zproc)
-    ZEND_PARSE_PARAMETERS_END();
-
-    if ((proc = (sw_php_process_handle *) zend_fetch_resource(Z_RES_P(zproc), le_proc_name, le_proc_open)) == NULL) {
-        RETURN_THROWS();
-    }
     proc->wstatus = &wstatus;
     zend_list_close(Z_RES_P(zproc));
-    RETURN_LONG(wstatus);
+    return wstatus;
 }
-/* }}} */
-
-/* {{{ Get information about a process opened by `proc_open` */
-PHP_FUNCTION(swoole_proc_get_status) {
-    zval *zproc;
-    sw_php_process_handle *proc;
-    int wstatus;
-    pid_t wait_pid;
-    bool running = 1, signaled = 0, stopped = 0;
-    int exitcode = -1, termsig = 0, stopsig = 0;
-
-    ZEND_PARSE_PARAMETERS_START(1, 1)
-    Z_PARAM_RESOURCE(zproc)
-    ZEND_PARSE_PARAMETERS_END();
-
-    if ((proc = (sw_php_process_handle *) zend_fetch_resource(Z_RES_P(zproc), le_proc_name, le_proc_open)) == NULL) {
-        RETURN_THROWS();
-    }
-
-    array_init(return_value);
-    add_assoc_str(return_value, "command", zend_string_copy(proc->command));
-    add_assoc_long(return_value, "pid", (zend_long) proc->child);
-
-    errno = 0;
-    wait_pid = _co_waitpid(proc->child, &wstatus, WNOHANG | WUNTRACED);
-
-    if (wait_pid == proc->child) {
-        if (WIFEXITED(wstatus)) {
-            running = 0;
-            exitcode = WEXITSTATUS(wstatus);
-        }
-        if (WIFSIGNALED(wstatus)) {
-            running = 0;
-            signaled = 1;
-            termsig = WTERMSIG(wstatus);
-        }
-        if (WIFSTOPPED(wstatus)) {
-            stopped = 1;
-            stopsig = WSTOPSIG(wstatus);
-        }
-    } else if (wait_pid == -1) {
-        /* The only error which could occur here is ECHILD, which means that the PID we were
-         * looking for either does not exist or is not a child of this process */
-        running = 0;
-    }
-
-    proc->running = running;
-
-    add_assoc_bool(return_value, "running", running);
-    add_assoc_bool(return_value, "signaled", signaled);
-    add_assoc_bool(return_value, "stopped", stopped);
-    add_assoc_long(return_value, "exitcode", exitcode);
-    add_assoc_long(return_value, "termsig", termsig);
-    add_assoc_long(return_value, "stopsig", stopsig);
-}
+SW_EXTERN_C_END
 /* }}} */
 
 #ifdef PHP_WIN32
