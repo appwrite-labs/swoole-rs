@@ -222,13 +222,18 @@ static const struct pdo_dbh_methods sqlite_methods = {
 #endif
 };
 
+bool swr_sqlite_open_basedir_active(void)
+{
+	return PG(open_basedir) && *PG(open_basedir);
+}
+
 static char *make_filename_safe(const char *filename)
 {
 	if (!filename) {
 		return NULL;
 	}
 	if (*filename && strncasecmp(filename, "file:", 5) == 0) {
-		if (PG(open_basedir) && *PG(open_basedir)) {
+		if (swr_sqlite_open_basedir_active()) {
 			return NULL;
 		}
 		return estrdup(filename);
@@ -249,27 +254,17 @@ static char *make_filename_safe(const char *filename)
 	return estrdup(filename);
 }
 
-#define ZVAL_NULLABLE_STRING(zv, str) do { \
-	zval *zv_ = zv; \
-	const char *str_ = str; \
-	if (str_) { \
-		ZVAL_STRING(zv_, str_); \
-	} else { \
-		ZVAL_NULL(zv_); \
-	} \
-} while (0)
+extern bool swr_pdo_sqlite_open(const char *, sqlite3 **, zval *);
+extern void swr_pdo_sqlite_initial_timeout(sqlite3 *, zval *);
 
 static int pdo_sqlite_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{{ */
 {
 	pdo_sqlite_db_handle *H;
-	int i, ret = 0;
-	zend_long timeout = 60, flags;
+	int ret = 0;
 	char *filename;
 
 	H = pecalloc(1, sizeof(pdo_sqlite_db_handle), dbh->is_persistent);
 
-	H->einfo.errcode = 0;
-	H->einfo.errmsg = NULL;
 	dbh->driver_data = H;
 
 	/* skip all but this one param event */
@@ -284,25 +279,14 @@ static int pdo_sqlite_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{
 		goto cleanup;
 	}
 
-	flags = pdo_attr_lval(driver_options, PDO_SQLITE_ATTR_OPEN_FLAGS, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE);
-
-	if (!(PG(open_basedir) && *PG(open_basedir))) {
-		flags |= SQLITE_OPEN_URI;
-	}
-	i = sqlite3_open_v2(filename, &H->db, flags, NULL);
-
+	bool opened = swr_pdo_sqlite_open(filename, &H->db, driver_options);
 	efree(filename);
-
-	if (i != SQLITE_OK) {
+	if (!opened) {
 		pdo_sqlite_error(dbh);
 		goto cleanup;
 	}
 
-	if (driver_options) {
-		timeout = pdo_attr_lval(driver_options, PDO_ATTR_TIMEOUT, timeout);
-	}
-	sqlite3_busy_timeout(H->db, timeout * 1000);
-
+	swr_pdo_sqlite_initial_timeout(H->db, driver_options);
 	dbh->alloc_own_columns = 1;
 	dbh->max_escaped_char_length = 2;
 
