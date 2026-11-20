@@ -486,3 +486,83 @@ extern "C" fn swr_proc_descriptor_from_item(
     true
 }
 }
+
+/// What `proc_open.cc`'s child execs (`sw_proc_exec`: cwd, command, argv, environment),
+/// passed back to it untouched.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Exec<'a>(NonNull<c_void>, PhantomData<&'a ()>);
+
+unsafe extern "C" {
+    /// Descriptor `i`'s index, type, child end and parent end.
+    safe fn swr_proc_descriptor_at(descriptors: Descriptors<'_>, i: c_int, out: &mut [c_int; 4]);
+    /// In the child: `chdir` to the cwd if one was given, then exec the command with
+    /// its argv or under `/bin/sh -c`, in its environment if one was given. Returns
+    /// only when the exec failed, with errno set.
+    safe fn swr_proc_exec(exec: Exec<'_>);
+    /// Leaves the process at once, running no exit handler and no destructor.
+    safe fn _exit(status: c_int) -> !;
+}
+
+/// `close_parentends_of_pipes` in the child: each pipe or socket's parent end
+/// closed, and each child end moved to the descriptor the item names. False once
+/// it warned.
+fn move_descriptors(moves: &[[c_int; 4]]) -> bool {
+    for &[index, kind, childend, parentend] in moves {
+        if kind != 0 {
+            // As upstream, a parent end that won't close is left.
+            let _closed = swoole_rs_corebase::sys::close(parentend);
+        }
+        if childend != index {
+            if swoole_rs_corebase::sys::dup2(childend, index).is_err() {
+                warn(format!(
+                    "Unable to copy file descriptor {childend} (for pipe) into file descriptor {index}: {}",
+                    last_error()
+                ));
+                return false;
+            }
+            // As upstream, the moved end's close isn't checked.
+            let _closed = swoole_rs_corebase::sys::close(childend);
+        }
+    }
+    true
+}
+
+swoole_rs_zend::exports! {
+/// `proc_open`'s fork (`swoole_fork(SW_FORK_EXEC)`). The child moves its
+/// `ndesc` descriptors into place and execs `exec`, all from what was read before
+/// the fork, then exits 127 if that fails. The parent gets the child's pid, or
+/// false once it warned that the fork failed.
+#[unsafe(no_mangle)]
+extern "C" fn swr_proc_fork(
+    descriptors: Descriptors<'_>,
+    ndesc: c_int,
+    exec: Exec<'_>,
+    child: &mut libc::pid_t,
+) -> bool {
+    // Read before the fork: the child only closes, duplicates and execs.
+    let moves: Vec<[c_int; 4]> = (0..ndesc)
+        .map(|i| {
+            let mut descriptor = [0; 4];
+            swr_proc_descriptor_at(descriptors, i, &mut descriptor);
+            descriptor
+        })
+        .collect();
+    let fork_exec = swoole_rs_corebase::constants::ForkType::SW_FORK_EXEC as c_int;
+    let pid = swoole_rs_corebase::swoole_fork(fork_exec);
+    if pid == 0 {
+        if !move_descriptors(&moves) {
+            _exit(127);
+        }
+        swr_proc_exec(exec);
+        warn(format!("Exec failed: {}", last_error()));
+        _exit(127);
+    }
+    if pid < 0 {
+        warn(format!("Fork failed: {}", last_error()));
+        return false;
+    }
+    *child = pid;
+    true
+}
+}

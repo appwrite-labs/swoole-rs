@@ -736,32 +736,43 @@ static zend_result close_parentends_of_pipes(posix_spawn_file_actions_t *actions
     return SUCCESS;
 }
 #else
-static zend_result close_parentends_of_pipes(descriptorspec_item *descriptors, int ndesc) {
-    /* We are running in child process
-     * Close the 'parent end' of pipes which were opened before forking/spawning
-     * Also, dup() the child end of all pipes as necessary so they will use the FD
-     * number which the user requested */
-    for (int i = 0; i < ndesc; i++) {
-        if (descriptors[i].type != DESCRIPTOR_TYPE_STD) {
-            close(descriptors[i].parentend);
-        }
-        if (descriptors[i].childend != descriptors[i].index) {
-            if (dup2(descriptors[i].childend, descriptors[i].index) < 0) {
-                php_error_docref(NULL,
-                                 E_WARNING,
-                                 "Unable to copy file descriptor %d (for pipe) into "
-                                 "file descriptor %d: %s",
-                                 descriptors[i].childend,
-                                 descriptors[i].index,
-                                 strerror(errno));
-                return FAILURE;
-            }
-            close(descriptors[i].childend);
-        }
-    }
+SW_EXTERN_C_BEGIN
+/* What the forked child execs (proc.rs passes it back untouched). */
+typedef struct {
+    const char *cwd;
+    zend_string *command;
+    char **argv;
+    char **envarray;
+} sw_proc_exec;
 
-    return SUCCESS;
+bool swr_proc_fork(descriptorspec_item *descriptors, int ndesc, const sw_proc_exec *exec, pid_t *child);
+
+/* For proc.rs, before the fork: descriptor `i`'s index, type, child end and parent end. */
+void swr_proc_descriptor_at(const descriptorspec_item *descriptors, int i, int out[4]) {
+    out[0] = descriptors[i].index;
+    out[1] = (int) descriptors[i].type;
+    out[2] = descriptors[i].childend;
+    out[3] = descriptors[i].parentend;
 }
+
+/* For proc.rs, in the child: returns only when the exec failed. */
+void swr_proc_exec(const sw_proc_exec *exec) {
+    if (exec->cwd) {
+        php_ignore_value(chdir(exec->cwd));
+    }
+    if (exec->argv) {
+        /* execvpe() is non-portable, use environ instead. */
+        if (exec->envarray) {
+            environ = exec->envarray;
+        }
+        execvp(ZSTR_VAL(exec->command), exec->argv);
+    } else if (exec->envarray) {
+        execle("/bin/sh", "sh", "-c", ZSTR_VAL(exec->command), NULL, exec->envarray);
+    } else {
+        execl("/bin/sh", "sh", "-c", ZSTR_VAL(exec->command), NULL);
+    }
+}
+SW_EXTERN_C_END
 #endif
 #endif
 
@@ -1023,46 +1034,14 @@ PHP_FUNCTION(swoole_proc_open) {
         goto exit_fail;
     }
 #elif HAVE_FORK
-    /* the Unix way */
-    child = swoole_fork(SW_FORK_EXEC);
-
-    if (child == 0) {
-        /* This is the child process */
-
-        if (close_parentends_of_pipes(descriptors, ndesc) == FAILURE) {
-            /* We are already in child process and can't do anything to make
-             * `proc_open` return an error in the parent
-             * All we can do is exit with a non-zero (error) exit code */
-            _exit(127);
+    /* the Unix way (proc.rs) */
+    {
+        /* Its own block: the gotos to exit_fail above don't cross its initialization. */
+        sw_proc_exec exec = {cwd, command_str, argv, env.envarray};
+        if (!swr_proc_fork(descriptors, ndesc, &exec, &child)) {
+            close_all_descriptors(descriptors, ndesc);
+            goto exit_fail;
         }
-
-        if (cwd) {
-            php_ignore_value(chdir(cwd));
-        }
-
-        if (argv) {
-            /* execvpe() is non-portable, use environ instead. */
-            if (env.envarray) {
-                environ = env.envarray;
-            }
-            execvp(ZSTR_VAL(command_str), argv);
-        } else {
-            if (env.envarray) {
-                execle("/bin/sh", "sh", "-c", ZSTR_VAL(command_str), NULL, env.envarray);
-            } else {
-                execl("/bin/sh", "sh", "-c", ZSTR_VAL(command_str), NULL);
-            }
-        }
-
-        /* If execvp/execle/execl are successful, we will never reach here
-         * Display error and exit with non-zero (error) status code */
-        php_error_docref(NULL, E_WARNING, "Exec failed: %s", strerror(errno));
-        _exit(127);
-    } else if (child < 0) {
-        /* Failed to fork() */
-        close_all_descriptors(descriptors, ndesc);
-        php_error_docref(NULL, E_WARNING, "Fork failed: %s", strerror(errno));
-        goto exit_fail;
     }
 #else
 #error You lose (configure should not have let you get here)
