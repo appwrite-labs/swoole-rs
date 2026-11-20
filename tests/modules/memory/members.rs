@@ -295,6 +295,34 @@ fn words_stay_mapped_after_the_pool_is_deleted() {
 }
 
 #[test]
+#[cfg(all(not(miri), any(target_os = "linux", target_os = "macos")))]
+fn a_permanent_word_keeps_only_its_own_page() {
+    use std::sync::atomic::AtomicU32;
+
+    if crate::utilities::isolated_process::run_in_child(
+        "memory::members::tests::a_permanent_word_keeps_only_its_own_page",
+    ) {
+        return;
+    }
+    assert!(crate::swr_v1_core_init());
+    pool::init();
+    let word = &pool::words::<AtomicU32>(1).unwrap()[0];
+    let size = crate::constants::SW_GLOBAL_MEMORY_PAGESIZE - 8;
+    let block = pool::alloc(size);
+    assert!(!block.is_null());
+    // A full-page block starts just after the mapping and bump-allocation headers.
+    let base = block.wrapping_byte_sub(16);
+    assert_eq!(pool::users(), 0);
+    let protect = || unsafe { libc::mprotect(base, 1, libc::PROT_READ | libc::PROT_WRITE) };
+    assert_eq!(protect(), 0);
+    pool::delete();
+    assert_eq!(protect(), -1);
+    assert_eq!(crate::sys::errno(), libc::ENOMEM);
+    word.store(19, Ordering::SeqCst);
+    assert_eq!(word.load(Ordering::SeqCst), 19);
+}
+
+#[test]
 #[cfg(not(miri))] // The process-wide pool needs its own test process.
 fn pooled_words_balance_their_pins_across_pool_replacement() {
     use std::sync::atomic::AtomicU32;

@@ -198,7 +198,7 @@ impl GlobalMemory {
             // counts itself after it loads null.
             drop(unsafe { Box::from_raw(pool) });
         } else {
-            // Still read, or lent out by `pool::words`: every such pool stays reachable,
+            // Still read, or held by a scoped pin: every such pool stays reachable,
             // so a leak check doesn't report it.
             static KEPT: Mutex<Vec<usize>> = Mutex::new(Vec::new());
             KEPT.lock()
@@ -514,8 +514,7 @@ pub mod pool {
         conflict: f32,
         hash: crate::memory::table::Hash,
     ) -> Option<(super::Handle, PoolPin)> {
-        let slots = words::<MaybeUninit<super::Table>>(1)?;
-        let pin = PoolPin(());
+        let (slots, pin) = scoped_words::<MaybeUninit<super::Table>>(1)?;
         let table = super::Table::init(
             slots.first_mut()?,
             rows,
@@ -531,8 +530,7 @@ pub mod pool {
         /// Allocate one zeroed word, holding the pin taken by `words`.
         #[must_use]
         pub fn allocate() -> Option<Self> {
-            let words = words(1)?;
-            let pin = PoolPin(());
+            let (words, pin) = scoped_words(1)?;
             Some(Self {
                 word: words.first()?,
                 _pin: pin,
@@ -548,13 +546,20 @@ pub mod pool {
         }
     }
 
-    /// A block from [`alloc`], or null. Success adds one user. A [`PooledWord`]
-    /// releases that pin on drop; callers with process-lifetime references keep it.
-    fn pinned(size: u32) -> *mut c_void {
+    fn scoped_words<W: Word + 'static>(count: usize) -> Option<(&'static mut [W], PoolPin)> {
+        with_zero_words(count, Storage::Scoped, |words| (words, PoolPin(())))
+    }
+
+    fn pinned(size: u32, permanent: bool) -> *mut c_void {
         POOL.with(|pool| {
-            let block = super::alloc(&mut pool.pages(), size);
+            let mut pages = pool.pages();
+            let block = super::alloc(&mut pages, size);
             if !block.is_null() {
-                POOL.users.fetch_add(1, SeqCst);
+                if permanent {
+                    pages.keep_last_page();
+                } else {
+                    POOL.users.fetch_add(1, SeqCst);
+                }
             }
             block
         })
@@ -566,7 +571,7 @@ pub mod pool {
     /// the same address.
     #[must_use]
     pub fn words<W: Word + 'static>(count: usize) -> Option<&'static mut [W]> {
-        with_zero_words(count, Storage::Pool, |words| words)
+        with_zero_words(count, Storage::Permanent, |words| words)
     }
 
     /// A process-shared pthread lock whose PHP object owns the pool pin. Forked
@@ -580,8 +585,7 @@ pub mod pool {
         /// Allocate storage for the lock and keep its pin until the object drops.
         #[must_use]
         pub fn new(kind: crate::locks::Kind) -> Option<Self> {
-            let storage = words(crate::locks::Lock::words(kind))?;
-            let pin = PoolPin(());
+            let (storage, pin) = scoped_words(crate::locks::Lock::words(kind))?;
             Some(Self {
                 lock: crate::locks::Lock::shared(kind, storage)?,
                 _pin: pin,
@@ -604,7 +608,8 @@ pub mod pool {
 
     #[derive(Clone, Copy)]
     enum Storage {
-        Pool,
+        Scoped,
+        Permanent,
         WaitRegistry,
     }
 
@@ -616,7 +621,8 @@ pub mod pool {
         const { assert!(align_of::<W>() <= 8, "the pool's blocks are 8-aligned") };
         let size = u32::try_from(count.checked_mul(size_of::<W>())?).ok()?;
         let block = match storage {
-            Storage::Pool => pinned(size),
+            Storage::Scoped => pinned(size, false),
+            Storage::Permanent => pinned(size, true),
             Storage::WaitRegistry => super::sw_shm_malloc(size as usize),
         }
         .cast::<W>();
