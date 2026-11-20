@@ -13,8 +13,10 @@ use swoole_rs_zend::{
         _zend_known_string_id_ZEND_STR_DOUBLE as DOUBLE,
         _zend_known_string_id_ZEND_STR_INTEGER as INTEGER,
         _zend_known_string_id_ZEND_STR_NULL_LOWERCASE as NULL_NAME,
-        _zend_known_string_id_ZEND_STR_STRING as STRING, pdo_param_type_PDO_PARAM_INT as INT,
-        pdo_param_type_PDO_PARAM_NULL as NULL, pdo_param_type_PDO_PARAM_STR as STR, zval,
+        _zend_known_string_id_ZEND_STR_STRING as STRING,
+        pdo_attribute_type_PDO_ATTR_DRIVER_SPECIFIC as DRIVER_SPECIFIC,
+        pdo_param_type_PDO_PARAM_INT as INT, pdo_param_type_PDO_PARAM_NULL as NULL,
+        pdo_param_type_PDO_PARAM_STR as STR, zend_long, zval,
     },
 };
 
@@ -238,4 +240,45 @@ extern "C" fn swr_sqlite_bind_bytes(
             sqlite3_bind_text(stmt, index, bytes, len.c_cast(), None),
         )
     }
+}
+
+const READONLY_STATEMENT: u32 = DRIVER_SPECIFIC + 1;
+const BUSY_STATEMENT: u32 = DRIVER_SPECIFIC + 3;
+
+#[unsafe(no_mangle)]
+extern "C" fn swr_sqlite_stmt_flag(stmt: Stmt, attr: zend_long, value: &Slot) -> bool {
+    unsafe extern "C" {
+        safe fn sqlite3_stmt_readonly(stmt: Stmt) -> c_int;
+        safe fn sqlite3_stmt_busy(stmt: Stmt) -> c_int;
+    }
+    let flag = match u32::try_from(attr) {
+        Ok(READONLY_STATEMENT) => sqlite3_stmt_readonly(stmt),
+        Ok(BUSY_STATEMENT) => sqlite3_stmt_busy(stmt),
+        _ => return false,
+    };
+    value.set(Owned::bool(flag != 0));
+    true
+}
+
+swoole_rs_zend::exports! {
+#[unsafe(no_mangle)]
+extern "C" fn swr_sqlite_stmt_explain(stmt: Stmt, value: &Slot, write: bool,
+    get_mode: extern "C" fn(Stmt) -> c_int, set_mode: extern "C" fn(Stmt, c_int) -> c_int) -> bool {
+    unsafe extern "C" {
+        safe fn swr_sqlite_explain_type_error(value: &Slot);
+    }
+    if !write {
+        value.set(Owned::long(get_mode(stmt).into()));
+        return true;
+    }
+    let Some(mode) = value.value().as_long() else {
+        swr_sqlite_explain_type_error(value);
+        return false;
+    };
+    if !(0..=2).contains(&mode) {
+        swoole_rs_zend::value_error(c"explain mode must be one of the Pdo\\Sqlite::EXPLAIN_MODE_* constants");
+        return false;
+    }
+    set_mode(stmt, mode.c_cast()) == 0
+}
 }
