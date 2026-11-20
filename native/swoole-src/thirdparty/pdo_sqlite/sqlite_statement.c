@@ -58,128 +58,54 @@ static int pdo_sqlite_stmt_execute(pdo_stmt_t *stmt)
 	return swr_sqlite_execute(stmt, S->stmt, S->H->db, &S->cursor, stmt->executed);
 }
 
+extern bool swr_sqlite_bind_null(pdo_stmt_t *, sqlite3_stmt *, int);
+extern bool swr_sqlite_bind_integer(pdo_stmt_t *, sqlite3_stmt *, int, int64_t);
+extern bool swr_sqlite_bind_bytes(pdo_stmt_t *, sqlite3_stmt *, int, const char *, size_t, bool);
+
 static int pdo_sqlite_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *param,
 		enum pdo_param_event event_type)
 {
-	pdo_sqlite_stmt *S = (pdo_sqlite_stmt*)stmt->driver_data;
-	zval *parameter;
-
-	switch (event_type) {
-		case PDO_PARAM_EVT_EXEC_PRE:
-			swr_sqlite_before_bind(S->stmt, &S->cursor, stmt->executed);
-
-			if (param->is_param) {
-
-				if (param->paramno == -1) {
-					param->paramno = sqlite3_bind_parameter_index(S->stmt, ZSTR_VAL(param->name)) - 1;
-				}
-
-				switch (PDO_PARAM_TYPE(param->param_type)) {
-					case PDO_PARAM_STMT:
-						return 0;
-
-					case PDO_PARAM_NULL:
-						if (sqlite3_bind_null(S->stmt, param->paramno + 1) == SQLITE_OK) {
-							return 1;
-						}
-						pdo_sqlite_error_stmt(stmt);
-						return 0;
-
-					case PDO_PARAM_INT:
-					case PDO_PARAM_BOOL:
-						if (Z_ISREF(param->parameter)) {
-							parameter = Z_REFVAL(param->parameter);
-						} else {
-							parameter = &param->parameter;
-						}
-						if (Z_TYPE_P(parameter) == IS_NULL) {
-							if (sqlite3_bind_null(S->stmt, param->paramno + 1) == SQLITE_OK) {
-								return 1;
-							}
-						} else {
-							convert_to_long(parameter);
-#if ZEND_LONG_MAX > 2147483647
-							if (SQLITE_OK == sqlite3_bind_int64(S->stmt, param->paramno + 1, Z_LVAL_P(parameter))) {
-								return 1;
-							}
-#else
-							if (SQLITE_OK == sqlite3_bind_int(S->stmt, param->paramno + 1, Z_LVAL_P(parameter))) {
-								return 1;
-							}
-#endif
-						}
-						pdo_sqlite_error_stmt(stmt);
-						return 0;
-
-					case PDO_PARAM_LOB:
-						if (Z_ISREF(param->parameter)) {
-							parameter = Z_REFVAL(param->parameter);
-						} else {
-							parameter = &param->parameter;
-						}
-						if (Z_TYPE_P(parameter) == IS_RESOURCE) {
-							php_stream *stm = NULL;
-							php_stream_from_zval_no_verify(stm, parameter);
-							if (stm) {
-								zend_string *mem = php_stream_copy_to_mem(stm, PHP_STREAM_COPY_ALL, 0);
-								zval_ptr_dtor(parameter);
-								ZVAL_STR(parameter, mem ? mem : ZSTR_EMPTY_ALLOC());
-							} else {
-								pdo_raise_impl_error(stmt->dbh, stmt, "HY105", "Expected a stream resource");
-								return 0;
-							}
-						} else if (Z_TYPE_P(parameter) == IS_NULL) {
-							if (sqlite3_bind_null(S->stmt, param->paramno + 1) == SQLITE_OK) {
-								return 1;
-							}
-							pdo_sqlite_error_stmt(stmt);
-							return 0;
-						} else {
-							if (!try_convert_to_string(parameter)) {
-								return 0;
-							}
-						}
-
-						if (SQLITE_OK == sqlite3_bind_blob(S->stmt, param->paramno + 1,
-								Z_STRVAL_P(parameter),
-								Z_STRLEN_P(parameter),
-								SQLITE_STATIC)) {
-							return 1;
-						}
-						return 0;
-
-					case PDO_PARAM_STR:
-					default:
-						if (Z_ISREF(param->parameter)) {
-							parameter = Z_REFVAL(param->parameter);
-						} else {
-							parameter = &param->parameter;
-						}
-						if (Z_TYPE_P(parameter) == IS_NULL) {
-							if (sqlite3_bind_null(S->stmt, param->paramno + 1) == SQLITE_OK) {
-								return 1;
-							}
-						} else {
-							if (!try_convert_to_string(parameter)) {
-								return 0;
-							}
-							if (SQLITE_OK == sqlite3_bind_text(S->stmt, param->paramno + 1,
-									Z_STRVAL_P(parameter),
-									Z_STRLEN_P(parameter),
-									SQLITE_STATIC)) {
-								return 1;
-							}
-						}
-						pdo_sqlite_error_stmt(stmt);
-						return 0;
-				}
-			}
-			break;
-
-		default:
-			;
+	if (event_type != PDO_PARAM_EVT_EXEC_PRE) {
+		return 1;
 	}
-	return 1;
+	pdo_sqlite_stmt *S = stmt->driver_data;
+	swr_sqlite_before_bind(S->stmt, &S->cursor, stmt->executed);
+	if (!param->is_param) {
+		return 1;
+	}
+	if (param->paramno == -1) {
+		param->paramno = sqlite3_bind_parameter_index(S->stmt, ZSTR_VAL(param->name)) - 1;
+	}
+
+	enum pdo_param_type kind = PDO_PARAM_TYPE(param->param_type);
+	if (kind == PDO_PARAM_STMT) {
+		return 0;
+	}
+	zval *value = &param->parameter;
+	ZVAL_DEREF(value);
+	if (kind == PDO_PARAM_NULL || Z_TYPE_P(value) == IS_NULL) {
+		return swr_sqlite_bind_null(stmt, S->stmt, param->paramno + 1);
+	}
+	if (kind == PDO_PARAM_INT || kind == PDO_PARAM_BOOL) {
+		convert_to_long(value);
+		return swr_sqlite_bind_integer(stmt, S->stmt, param->paramno + 1, Z_LVAL_P(value));
+	}
+
+	bool blob = kind == PDO_PARAM_LOB;
+	if (blob && Z_TYPE_P(value) == IS_RESOURCE) {
+		php_stream *stream = NULL;
+		php_stream_from_zval_no_verify(stream, value);
+		if (!stream) {
+			pdo_raise_impl_error(stmt->dbh, stmt, "HY105", "Expected a stream resource");
+			return 0;
+		}
+		zend_string *bytes = php_stream_copy_to_mem(stream, PHP_STREAM_COPY_ALL, 0);
+		zval_ptr_dtor(value);
+		ZVAL_STR(value, bytes ? bytes : ZSTR_EMPTY_ALLOC());
+	} else if (!try_convert_to_string(value)) {
+		return 0;
+	}
+	return swr_sqlite_bind_bytes(stmt, S->stmt, param->paramno + 1, Z_STRVAL_P(value), Z_STRLEN_P(value), blob);
 }
 
 static int pdo_sqlite_stmt_fetch(pdo_stmt_t *stmt,
