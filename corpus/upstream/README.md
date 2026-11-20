@@ -242,6 +242,11 @@ companion `tests/modules/integration/server_exit.py` instead, which keeps the
 original's exit, restart and output assertions; its report does not claim the
 original passed.
 
+`swoole_process/process_exec.phpt` stays RACY and unrun: it execs its `echo.py` with
+Python, and the file is Python 2 (#1974). The merge tier's `phpt-root` job runs the
+companion `tests/modules/integration/process_exec.py` on both engines instead. It
+keeps the original's child, pipe and expected output, with `/bin/sh` echoing the line.
+
 
 ### PHPT rerun trends
 

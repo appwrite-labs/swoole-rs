@@ -101,7 +101,8 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         '--TEST--") on every engine (#1964)',
         'tests/swoole_process/process_exec.phpt':
         "it execs /usr/bin/python on echo.py, which is Python 2 (raw_input, the print "
-        'statement); Python 3 rejects it with a SyntaxError on every engine (#1974)',
+        'statement); Python 3 rejects it with a SyntaxError on every engine (#1974); companion: '
+        'tests/modules/integration/process_exec.py (#5358)',
         'tests/swoole_runtime/exec/exec.phpt':
         "it pings www.gov.cn three times through each exec function; GitHub's hosted runners "
         'drop ICMP, so ping never answers and the case times out on every engine (#1974)',

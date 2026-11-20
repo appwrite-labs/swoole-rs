@@ -352,6 +352,14 @@ jobs:
           set -- target/phpt/root/*.json
           if ls target/phpt/recheck/*.json >/dev/null 2>&1; then set -- "$@" --recheck target/phpt/recheck/*.json; fi
           python3 corpus/upstream/gate.py "$@" --output phpt-root.json | tee -a "$GITHUB_STEP_SUMMARY"
+      # Not as root: this job just has both engines and the pin. The original stays RACY
+      # and unrun; this companion covers it on both engines (#5358).
+      - name: process_exec companion
+        if: ${{ !cancelled() }}
+        run: >
+          python3 tests/modules/integration/process_exec.py --checkout "$PWD" --source target/upstream/src
+          --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so
+          --output target/phpt/companions/process-exec.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
@@ -361,6 +369,7 @@ jobs:
             phpt-root.json
             target/phpt/root/
             target/phpt/recheck/
+            target/phpt/companions/
 
   # swoole/library's own PHPUnit suite against the library each engine embeds, with the
   # services of the library's docker-compose.yml published on localhost, as its
