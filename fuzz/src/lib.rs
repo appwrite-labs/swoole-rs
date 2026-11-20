@@ -853,41 +853,44 @@ pub fn http_header_info(bytes: &[u8]) {
         return;
     };
     let line = bytes.windows(2).position(|w| w == b"\r\n").unwrap_or(0);
-    let header_length = (end + 4) as u32;
-    let info = |engine: &Engine| {
+    let info = |engine: &Engine, bytes: &[u8], end: usize| {
         let (mut buffer, mut info) = (terminated(bytes), http_frame::HeaderInfo::default());
         // SAFETY: the buffer holds bytes.len() bytes and a NUL; the head ends in a blank
-        // line before header_length; info is a local.
+        // line before end + 4; info is a local.
         unsafe {
             (engine.header_info)(
                 buffer.as_mut_ptr(),
                 bytes.len(),
                 line as u32,
-                header_length,
+                (end + 4) as u32,
                 &mut info,
             )
         };
         info
     };
-    let got = info(&CANDIDATE);
-    // Outside the compared domain the candidate rejects the request.
-    if multipart_nul(bytes, line + 2, end) {
-        let excepted = http_frame::flags::EXCEPTED;
-        assert_eq!(got.flags & excepted, excepted, "excepted for {bytes:?}");
+    let got = info(&CANDIDATE, bytes, end);
+    // Outside the compared domain the candidate rejects the request at that line, with
+    // what the head before it gave and its scan unfinished.
+    if let Some(at) = multipart_nul(bytes, line + 2, end) {
+        let head = [&bytes[..at], b"\r\n"].concat();
+        let mut want = info(&UPSTREAM, &head, at - 2);
+        let unfinished = http_frame::flags::HEADER_PARSED | http_frame::flags::CHUNKED;
+        want.flags = want.flags & !unfinished | http_frame::flags::EXCEPTED;
+        assert_eq!(got, want, "excepted header info for {bytes:?}");
         return;
     }
-    assert_eq!(got, info(&UPSTREAM), "header info for {bytes:?}");
+    assert_eq!(got, info(&UPSTREAM, bytes, end), "header info for {bytes:?}");
 }
 
-/// Whether a multipart/form-data Content-Type line in the head, as parse_header_info
-/// finds it, meets a NUL before its CR.
-fn multipart_nul(bytes: &[u8], start: usize, end: usize) -> bool {
+/// The first multipart/form-data Content-Type line in the head, as parse_header_info
+/// finds it, that meets a NUL before its CR.
+fn multipart_nul(bytes: &[u8], start: usize, end: usize) -> Option<usize> {
     let starts = |at: usize, prefix: &[u8]| {
         bytes.get(at..end).is_some_and(|rest| {
             rest.len() >= prefix.len() && rest[..prefix.len()].eq_ignore_ascii_case(prefix)
         })
     };
-    (start.max(2)..end).any(|at| {
+    (start.max(2)..end).find(|&at| {
         if &bytes[at - 2..at] != b"\r\n" || !starts(at, b"Content-Type:") {
             return false;
         }
