@@ -358,7 +358,7 @@ static descriptorspec_item *alloc_descriptor_array(HashTable *descriptorspec) {
 }
 
 #ifdef PHP_WIN32
-/* Win32's descriptor setup; POSIX's is proc.rs's (swr_proc_descriptor_from_item). */
+/* Win32's descriptor setup; POSIX's is proc.rs's (swr_proc_descriptors). */
 static zend_string *get_string_parameter(zval *array, int index, const char *param_name) {
     zval *array_item;
     if ((array_item = zend_hash_index_find(Z_ARRVAL_P(array), index)) == NULL) {
@@ -601,12 +601,17 @@ finish:
 }
 #else
 SW_EXTERN_C_BEGIN
-bool swr_proc_descriptor_from_item(zval *item,
-                                   descriptorspec_item *descriptors,
-                                   int ndesc,
-                                   int nindex,
-                                   int pty[2],
-                                   int setup[4]);
+bool swr_proc_descriptors(HashTable *spec, descriptorspec_item *descriptors, int pty[2], int *ndesc);
+
+/* For proc.rs: item `i`'s child fd and its setup (type, mode, parent end, child end). */
+void swr_proc_descriptor_set(descriptorspec_item *descriptors, int i, int index, const int setup[4]) {
+    descriptorspec_item *desc = &descriptors[i];
+    desc->index = index;
+    desc->type = (descriptor_type) setup[0];
+    desc->mode_flags = setup[1];
+    desc->parentend = setup[2];
+    desc->childend = setup[3];
+}
 
 /* For proc.rs: the child end of the first of `count` descriptors whose index is `target`,
  * or -1. */
@@ -652,25 +657,6 @@ bool swr_proc_stream_fd(zval *resource, int *fd) {
 }
 SW_EXTERN_C_END
 
-/* Process one item from `$descriptorspec` argument to `proc_open` (proc.rs) */
-static zend_result set_proc_descriptor_from_item(
-    zval *descitem, descriptorspec_item *descriptors, int ndesc, int nindex, int *pty_master_fd, int *pty_slave_fd) {
-    descriptorspec_item *desc = &descriptors[ndesc];
-    int pty[2] = {*pty_master_fd, *pty_slave_fd};
-    /* Type, mode, parent end, child end. */
-    int setup[4];
-    bool ok = swr_proc_descriptor_from_item(descitem, descriptors, ndesc, nindex, pty, setup);
-    *pty_master_fd = pty[0];
-    *pty_slave_fd = pty[1];
-    if (!ok) {
-        return FAILURE;
-    }
-    desc->type = (descriptor_type) setup[0];
-    desc->mode_flags = setup[1];
-    desc->parentend = setup[2];
-    desc->childend = setup[3];
-    return SUCCESS;
-}
 #endif
 
 
@@ -896,6 +882,18 @@ PHP_FUNCTION(swoole_proc_open) {
     descriptors = alloc_descriptor_array(descriptorspec);
 
     /* Walk the descriptor spec and set up files/pipes */
+#ifndef PHP_WIN32
+    {
+        /* Its own block: the gotos to exit_fail above don't cross its initialization. */
+        int pty[2] = {pty_master_fd, pty_slave_fd};
+        bool walked = swr_proc_descriptors(descriptorspec, descriptors, pty, &ndesc);
+        pty_master_fd = pty[0];
+        pty_slave_fd = pty[1];
+        if (!walked) {
+            goto exit_fail;
+        }
+    }
+#else
     ZEND_HASH_FOREACH_KEY_VAL(descriptorspec, nindex, str_index, descitem) {
         if (str_index) {
             zend_argument_value_error(2, "must be an integer indexed array");
@@ -904,12 +902,6 @@ PHP_FUNCTION(swoole_proc_open) {
 
         descriptors[ndesc].index = (int) nindex;
 
-#ifndef PHP_WIN32
-        if (set_proc_descriptor_from_item(
-                descitem, descriptors, ndesc, (int) nindex, &pty_master_fd, &pty_slave_fd) == FAILURE) {
-            goto exit_fail;
-        }
-#else
         ZVAL_DEREF(descitem);
         if (Z_TYPE_P(descitem) == IS_RESOURCE) {
             if (set_proc_descriptor_from_resource(descitem, &descriptors[ndesc], ndesc) == FAILURE) {
@@ -924,10 +916,10 @@ PHP_FUNCTION(swoole_proc_open) {
             php_swoole_fatal_error(E_WARNING, "Descriptor item must be either an array or a File-Handle");
             goto exit_fail;
         }
-#endif
         ndesc++;
     }
     ZEND_HASH_FOREACH_END();
+#endif
 
 #ifdef PHP_WIN32
     if (cwd == NULL) {
