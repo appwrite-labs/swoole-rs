@@ -93,7 +93,12 @@ jobs:
           gates=(integrate --all-modules --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi --external-network --php-sockets --core-test-services --shard ${{ matrix.shard }}/3)
           python3 tools/dev.py "${gates[@]}" --plan > "$RUNNER_TEMP/gate-plan.json"
           if jq -e 'any(.[]; .phase == "hooks-system-rust")' "$RUNNER_TEMP/gate-plan.json" >/dev/null; then
-            docker compose -f corpus/upstream/services.yml run -d --publish '[::1]:80:80' httpbin
+            proxies=(docker compose -f corpus/upstream/services.yml -f tests/modules/hooks/proxy-services.yml)
+            "${proxies[@]}" up -d --wait origin tinyproxy socks5 socks5-auth
+            # The no-DNS-tunnel case resolves the target before sending its IPv4 address to SOCKS5.
+            origin=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$("${proxies[@]}" ps -q origin)")
+            export SWOOLE_TEST_PROXY_RESOLVE_HOST=core-tests-origin.test
+            echo "$origin $SWOOLE_TEST_PROXY_RESOLVE_HOST" | sudo tee -a /etc/hosts
           fi
           if jq -e 'any(.[]; .phase == "http-server-rust")' "$RUNNER_TEMP/gate-plan.json" >/dev/null; then
             docker compose -f corpus/upstream/services.yml up -d --wait redis

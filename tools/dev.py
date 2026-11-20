@@ -39,9 +39,11 @@ NETWORK, PROXY = 'needs external DNS and network', 'needs a local HTTP or SOCKS5
 # The case's fixed missing name stays in the resolver's negative cache after any lookup of it (the
 # other engine's, an earlier run's), and the cached answer comes back before the cancel or timeout.
 UNCACHED = 'needs a DNS lookup that misses the resolver cache'
-CLIENT_PROXY = ['https_get_async_with_http_proxy', 'https_get_async_with_socks5_proxy', 'https_get_sync_with_http_proxy',
-                'https_get_sync_with_socks5_proxy', 'http_get_sync_with_socks5_proxy_no_dns_tunnel', 'http_get_async_with_http_proxy',
-                'http_get_async_with_socks5_proxy', 'http_get_sync_with_http_proxy', 'http_get_sync_with_socks5_proxy']
+PROXY_CASES = ([f'coroutine_socket.{scheme}_get_with_{proxy}_proxy'
+                for scheme in ('http', 'https') for proxy in ('http', 'socks5')]
+               + [f'client.{scheme}_get_{mode}_with_{proxy}_proxy'
+                  for scheme in ('http', 'https') for mode in ('sync', 'async') for proxy in ('http', 'socks5')]
+               + ['client.http_get_sync_with_socks5_proxy_no_dns_tunnel'])
 NODE_WS = 'needs Node.js with ws and pino'
 
 
@@ -314,9 +316,8 @@ def plan(args, reports):
                '--exclude', 'coroutine_hook.sendmsg_and_recvmsg=flaky: its outcome depends on which close completes first '
                             '(~15% of runs fail)',
                *([] if getattr(args, 'core_test_services', False) else
-                 ['--exclude', 'coroutine_socket.tcp6=needs a listener on IPv6 loopback port 80']),
-               *[arg for name in ['https_get_with_socks5_proxy', 'http_get_with_socks5_proxy', 'http_get_with_http_proxy',
-                                  'https_get_with_http_proxy'] for arg in ['--exclude', f'coroutine_socket.{name}={PROXY}']],
+                 ['--exclude', 'coroutine_socket.tcp6=needs a listener on IPv6 loopback port 80',
+                  *[arg for case in PROXY_CASES for arg in ('--exclude', f'{case}={PROXY}')]]),
                # core-tests/src/network/client.cpp (tests/modules/clients/client.rs).
                '--exclude', "client.bind=expects EINVAL binding port 80 under GITHUB_ACTIONS (a root container); the runner "
                             "isn't root and gets EACCES",
@@ -326,7 +327,6 @@ def plan(args, reports):
                '--exclude', "client.sync_ssl_sendfile=each recv lands at the buffer's start, so past the largest TLS record "
                             "it reads bytes no recv wrote; www.baidu.com's ~730 KB "
                             'page leaves "baidu.com" only in overwritten bytes',
-               *[arg for name in CLIENT_PROXY for arg in ['--exclude', f'client.{name}={PROXY}']],
                # core-tests/src/network/socket.cpp (system/src/network_socket.rs).
                '--exclude', "socket.make_server_socket=expects ESOCKTNOSUPPORT for an unprivileged raw socket; the runner's "
                             'kernel returns EPROTONOSUPPORT',
@@ -771,7 +771,7 @@ def main():
     parser.add_argument('--stdext', action='store_true', help='Build and compare genuine enabled experimental stdext profiles')
     parser.add_argument('--php-sockets', action='store_true', help='Build matching Native/Rust PHP sockets-integration profiles')
     parser.add_argument('--core-test-services', action='store_true',
-                        help="Run TCP6, Redis and Node.js cases with [::1]:80, Redis on 127.0.0.1:6379 and the pin's core-tests/js dependencies installed")
+                        help="Run proxy, TCP6, Redis and Node.js cases with [::1]:80, Redis on 127.0.0.1:6379 and the pin's core-tests/js dependencies installed")
     parser.add_argument('--external-network', action='store_true',
                         help='Also run original PHPTs that need internet access; without it they stay unmeasured')
     parser.add_argument('--fix-halfclose', action='store_true', help='Select the separate native queued-close drain repair')

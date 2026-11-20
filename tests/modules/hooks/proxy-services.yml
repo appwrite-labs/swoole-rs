@@ -1,0 +1,22 @@
+# Use with corpus/upstream/services.yml. Paths are relative to that first file.
+services:
+  origin:
+    image: nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
+    volumes:
+      - ../../tests/modules/hooks/proxy-origin.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../../target/upstream/src/tests/include/ssl_certs:/certs:ro
+    ports: ['[::1]:80:80']
+    networks: {default: {aliases: [www.baidu.com, core-tests-origin.test]}}
+    healthcheck: {test: ['CMD', 'nginx', '-t'], interval: 2s, retries: 10}
+  socks5:
+    ports: !override ['127.0.0.1:8081:1080']
+  socks5-auth:
+    extends: {file: services.yml, service: socks5}
+    environment:
+      REQUIRE_AUTH: 'true'
+      PROXY_USER: user
+      PROXY_PASSWORD: password
+    ports: !override ['127.0.0.1:8080:1080']
+  tinyproxy:
+    environment: {AUTH_USER: user, AUTH_PASSWORD: password}
+    ports: !override ['127.0.0.1:8888:8888']
