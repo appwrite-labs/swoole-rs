@@ -26,6 +26,9 @@
 #include "thirdparty/pdo_sqlite/php_pdo_sqlite_int.h"
 #include "zend_exceptions.h"
 
+extern void pdo_sqlite_sqlstate(int code, pdo_error_type *state);
+extern zend_string *pdo_sqlite_quote_literal(const char *value);
+
 int _pdo_sqlite_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *file, int line) /* {{{ */
 {
 	pdo_sqlite_db_handle *H = (pdo_sqlite_db_handle *)dbh->driver_data;
@@ -36,42 +39,15 @@ int _pdo_sqlite_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *file, int li
 	einfo->file = file;
 	einfo->line = line;
 
+	pdo_sqlite_sqlstate(einfo->errcode, pdo_err);
 	if (einfo->errcode != SQLITE_OK) {
 		if (einfo->errmsg) {
 			pefree(einfo->errmsg, dbh->is_persistent);
 		}
 		einfo->errmsg = pestrdup((char*)sqlite3_errmsg(H->db), dbh->is_persistent);
 	} else { /* no error */
-		strncpy(*pdo_err, PDO_ERR_NONE, sizeof(*pdo_err));
 		return 0;
 	}
-	switch (einfo->errcode) {
-		case SQLITE_NOTFOUND:
-			strncpy(*pdo_err, "42S02", sizeof(*pdo_err));
-			break;
-
-		case SQLITE_INTERRUPT:
-			strncpy(*pdo_err, "01002", sizeof(*pdo_err));
-			break;
-
-		case SQLITE_NOLFS:
-			strncpy(*pdo_err, "HYC00", sizeof(*pdo_err));
-			break;
-
-		case SQLITE_TOOBIG:
-			strncpy(*pdo_err, "22001", sizeof(*pdo_err));
-			break;
-
-		case SQLITE_CONSTRAINT:
-			strncpy(*pdo_err, "23000", sizeof(*pdo_err));
-			break;
-
-		case SQLITE_ERROR:
-		default:
-			strncpy(*pdo_err, "HY000", sizeof(*pdo_err));
-			break;
-	}
-
 	if (!dbh->methods) {
 		pdo_throw_exception(einfo->errcode, einfo->errmsg, pdo_err);
 	}
@@ -166,7 +142,6 @@ static zend_string *pdo_sqlite_last_insert_id(pdo_dbh_t *dbh, const zend_string 
 /* NB: doesn't handle binary strings... use prepared stmts for that */
 static zend_string* sqlite_handle_quoter(pdo_dbh_t *dbh, const zend_string *unquoted, enum pdo_param_type paramtype)
 {
-	char *quoted;
 	if (ZSTR_LEN(unquoted) > (INT_MAX - 3) / 2) {
 		return NULL;
 	}
@@ -184,12 +159,7 @@ static zend_string* sqlite_handle_quoter(pdo_dbh_t *dbh, const zend_string *unqu
 	}
 #endif
 
-	quoted = safe_emalloc(2, ZSTR_LEN(unquoted), 3);
-	/* TODO use %Q format? */
-	sqlite3_snprintf(2*ZSTR_LEN(unquoted) + 3, quoted, "'%q'", ZSTR_VAL(unquoted));
-	zend_string *quoted_str = zend_string_init(quoted, strlen(quoted), 0);
-	efree(quoted);
-	return quoted_str;
+	return pdo_sqlite_quote_literal(ZSTR_VAL(unquoted));
 }
 
 static bool sqlite_handle_begin(pdo_dbh_t *dbh)

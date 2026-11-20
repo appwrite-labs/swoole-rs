@@ -17,6 +17,8 @@
 )]
 
 #[cfg(feature = "php")]
+mod driver;
+#[cfg(feature = "php")]
 pub mod minit;
 #[cfg(any(feature = "php", test))]
 mod scanner;
