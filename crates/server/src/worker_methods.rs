@@ -75,8 +75,12 @@ pub fn init_event_worker(serv: view::Server<'_>, worker: Worker<'_>) {
 }
 
 /// `Server::create_worker(worker)`: the worker's process-shared mutex, from the
-/// global memory pool as upstream's `new Mutex(true)` took it, and its pipe's fds.
+/// global pool for task results when configured, and its pipe's fds.
 pub fn create_worker(serv: view::Server<'_>, worker: Worker<'_>) {
+    crate::server_methods::store_pipe_fd(serv, worker);
+    if serv.state().tables_ref().task_results.records().is_empty() {
+        return;
+    }
     // A zeroed `SharedMutex`, which the pool keeps for the program's life.
     let Some([lock]) = swoole_rs_corebase::memory::members::pool::words::<SharedMutex>(1) else {
         // Upstream's `Mutex` constructor throws, which ends the process here.
@@ -86,7 +90,6 @@ pub fn create_worker(serv: view::Server<'_>, worker: Worker<'_>) {
         swoole_rs_corebase::fatal("a worker lock can't be initialized");
     }
     worker.set_lock(Some(lock));
-    crate::server_methods::store_pipe_fd(serv, worker);
 }
 
 /// `Server::destroy_worker(worker)`: frees the lock [`create_worker`] gave it.
@@ -147,6 +150,15 @@ mod tests {
     use super::*;
     use crate::records::SessionRecord;
     use core::sync::atomic::Ordering::SeqCst;
+
+    #[test]
+    fn worker_without_task_results_needs_no_shared_mutex() {
+        let server = crate::TestServer::new();
+        let record = WorkerRecord::boxed();
+        let worker = Worker::from(&*record);
+        create_worker(server.serv(), worker);
+        assert!(worker.lock().is_none());
+    }
 
     /// The repo-owned Server witness, formerly `tests/modules/process/worker_retirement.cc` and
     /// then the hooks fixture's `rust_worker_retirement.abort_and_reset`: first-match PID lookup,
