@@ -31,7 +31,7 @@ use swoole_rs_corebase::{
 };
 use swoole_rs_zend::{
     Owned, Value, ZStr, ZString, contain_with,
-    pdo::{self, Dbh, Slot, Stmt},
+    pdo::{self, Attribute, Dbh, Slot, Stmt},
     sys::{
         PHP_VERSION_ID, pdo_attribute_type_PDO_ATTR_CLIENT_VERSION as ATTR_CLIENT_VERSION,
         pdo_attribute_type_PDO_ATTR_CONNECTION_STATUS as ATTR_CONNECTION_STATUS,
@@ -488,14 +488,6 @@ fn connection_status(status: ConnStatusType) -> &'static [u8] {
 pub enum Connected {
     Failed = 0,
     Open = 1,
-}
-
-/// `get_attribute`'s answer, as PDO reads its `int`.
-#[repr(i32)]
-#[derive(Clone, Copy)]
-pub enum Attribute {
-    Unknown = 0,
-    Set = 1,
 }
 
 swoole_rs_zend::exports! {

@@ -172,60 +172,13 @@ static zend_string* sqlite_handle_quoter(pdo_dbh_t *dbh, const zend_string *unqu
 	return pdo_sqlite_quote_literal(ZSTR_VAL(unquoted));
 }
 
-static int pdo_sqlite_get_attribute(pdo_dbh_t *dbh, zend_long attr, zval *return_value)
+void swr_pdo_sqlite_set_transaction_mode(pdo_dbh_t *dbh, int mode)
 {
-	pdo_sqlite_db_handle *H = (pdo_sqlite_db_handle *)dbh->driver_data;
-
-	switch (attr) {
-		case PDO_ATTR_CLIENT_VERSION:
-		case PDO_ATTR_SERVER_VERSION:
-			ZVAL_STRING(return_value, (char *)sqlite3_libversion());
-			break;
-		case PDO_SQLITE_ATTR_TRANSACTION_MODE:
-			ZVAL_LONG(return_value, H->transaction_mode);
-			break;
-
-		default:
-			return 0;
-	}
-
-	return 1;
+	((pdo_sqlite_db_handle *)dbh->driver_data)->transaction_mode = mode;
 }
 
-static bool pdo_sqlite_set_attr(pdo_dbh_t *dbh, zend_long attr, zval *val)
-{
-	pdo_sqlite_db_handle *H = (pdo_sqlite_db_handle *)dbh->driver_data;
-	zend_long lval;
-
-	switch (attr) {
-		case PDO_ATTR_TIMEOUT:
-			if (!pdo_get_long_param(&lval, val)) {
-				return false;
-			}
-			sqlite3_busy_timeout(H->db, lval * 1000);
-			return true;
-		case PDO_SQLITE_ATTR_EXTENDED_RESULT_CODES:
-			if (!pdo_get_long_param(&lval, val)) {
-				return false;
-			}
-			sqlite3_extended_result_codes(H->db, lval);
-			return true;
-		case PDO_SQLITE_ATTR_TRANSACTION_MODE:
-			if (!pdo_get_long_param(&lval, val)) {
-				return false;
-			}
-			switch (lval) {
-				case PDO_SQLITE_TRANSACTION_MODE_DEFERRED:
-				case PDO_SQLITE_TRANSACTION_MODE_IMMEDIATE:
-				case PDO_SQLITE_TRANSACTION_MODE_EXCLUSIVE:
-					H->transaction_mode = lval;
-					return true;
-				default:
-					return false;
-			}
-	}
-	return false;
-}
+extern int swr_pdo_sqlite_get_attribute(pdo_dbh_t *, zend_long, zval *);
+extern bool swr_pdo_sqlite_set_attribute(pdo_dbh_t *, zend_long, zval *);
 
 static void pdo_sqlite_request_shutdown(pdo_dbh_t *dbh)
 {
@@ -255,10 +208,10 @@ static const struct pdo_dbh_methods sqlite_methods = {
 	swr_pdo_sqlite_begin,
 	swr_pdo_sqlite_commit,
 	swr_pdo_sqlite_rollback,
-	pdo_sqlite_set_attr,
+	swr_pdo_sqlite_set_attribute,
 	pdo_sqlite_last_insert_id,
 	pdo_sqlite_fetch_error_func,
-	pdo_sqlite_get_attribute,
+	swr_pdo_sqlite_get_attribute,
 	NULL,	/* check_liveness: not needed */
 	NULL,
 	pdo_sqlite_request_shutdown,

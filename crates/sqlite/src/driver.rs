@@ -4,12 +4,17 @@ use std::{
     ffi::{CStr, c_int},
     ptr,
 };
-use swoole_rs_corebase::sys::Text;
+use swoole_rs_corebase::{CCast, sys::Text};
 use swoole_rs_zend::{
-    ZStr,
-    pdo::Dbh,
+    Owned, Value, ZStr, ZString,
+    pdo::{self, Attribute, Dbh, Slot},
     string::ZBuf,
-    sys::{zend_long, zend_string},
+    sys::{
+        pdo_attribute_type_PDO_ATTR_CLIENT_VERSION as CLIENT_VERSION,
+        pdo_attribute_type_PDO_ATTR_DRIVER_SPECIFIC as DRIVER_SPECIFIC,
+        pdo_attribute_type_PDO_ATTR_SERVER_VERSION as SERVER_VERSION,
+        pdo_attribute_type_PDO_ATTR_TIMEOUT as TIMEOUT, zend_long, zend_string,
+    },
 };
 
 #[unsafe(no_mangle)]
@@ -47,6 +52,10 @@ unsafe extern "C" {
     safe fn swr_pdo_sqlite_connection(dbh: &Dbh) -> Db;
     safe fn swr_pdo_sqlite_transaction_mode(dbh: &Dbh) -> c_int;
     safe fn swr_pdo_sqlite_record_error(dbh: &Dbh);
+    safe fn swr_pdo_sqlite_set_transaction_mode(dbh: &Dbh, mode: c_int);
+    safe fn sqlite3_libversion() -> Text<'static>;
+    safe fn sqlite3_busy_timeout(db: Db, milliseconds: c_int) -> c_int;
+    safe fn sqlite3_extended_result_codes(db: Db, enabled: c_int) -> c_int;
     safe fn sqlite3_changes(db: Db) -> c_int;
     safe fn sqlite3_get_autocommit(db: Db) -> c_int;
 }
@@ -99,4 +108,45 @@ extern "C" fn swr_pdo_sqlite_rollback(dbh: &Dbh) -> bool {
 extern "C" fn swr_pdo_sqlite_in_transaction(dbh: &Dbh) -> bool {
     let db = swr_pdo_sqlite_connection(dbh);
     !db.0.is_null() && sqlite3_get_autocommit(db) == 0
+}
+
+const EXTENDED_RESULT_CODES: u32 = DRIVER_SPECIFIC + 2;
+const TRANSACTION_MODE: u32 = DRIVER_SPECIFIC + 5;
+
+#[unsafe(no_mangle)]
+extern "C" fn swr_pdo_sqlite_get_attribute(dbh: &Dbh, attr: zend_long, result: &Slot) -> Attribute {
+    let value = match u32::try_from(attr) {
+        Ok(CLIENT_VERSION | SERVER_VERSION) => {
+            Owned::string(ZString::new(sqlite3_libversion().get().to_bytes()))
+        }
+        Ok(TRANSACTION_MODE) => Owned::long(swr_pdo_sqlite_transaction_mode(dbh).into()),
+        _ => return Attribute::Unknown,
+    };
+    result.set(value);
+    Attribute::Set
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn swr_pdo_sqlite_set_attribute(dbh: &Dbh, attr: zend_long, value: &Value) -> bool {
+    let Ok(attr @ (TIMEOUT | EXTENDED_RESULT_CODES | TRANSACTION_MODE)) = u32::try_from(attr)
+    else {
+        return false;
+    };
+    let Some(value) = pdo::long_param(value) else {
+        return false;
+    };
+    match attr {
+        TIMEOUT => {
+            sqlite3_busy_timeout(
+                swr_pdo_sqlite_connection(dbh),
+                value.c_cast::<c_int>().wrapping_mul(1000),
+            );
+        }
+        EXTENDED_RESULT_CODES => {
+            sqlite3_extended_result_codes(swr_pdo_sqlite_connection(dbh), value.c_cast());
+        }
+        _ if (0..=2).contains(&value) => swr_pdo_sqlite_set_transaction_mode(dbh, value.c_cast()),
+        _ => return false,
+    }
+    true
 }
