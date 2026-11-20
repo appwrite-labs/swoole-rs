@@ -196,88 +196,43 @@ static int pdo_sqlite_stmt_cursor_closer(pdo_stmt_t *stmt)
 	return 1;
 }
 
-static int pdo_sqlite_stmt_get_attribute(pdo_stmt_t *stmt, zend_long attr, zval *val)
+extern bool swr_sqlite_stmt_flag(sqlite3_stmt *, zend_long, zval *);
+extern bool swr_sqlite_stmt_explain(sqlite3_stmt *, zval *, bool,
+	int (*)(sqlite3_stmt *), int (*)(sqlite3_stmt *, int));
+
+void swr_sqlite_explain_type_error(zval *value)
 {
-	pdo_sqlite_stmt *S = (pdo_sqlite_stmt*)stmt->driver_data;
-
-	switch (attr) {
-		case PDO_SQLITE_ATTR_READONLY_STATEMENT:
-			ZVAL_FALSE(val);
-
-			if (sqlite3_stmt_readonly(S->stmt)) {
-				ZVAL_TRUE(val);
-			}
-			break;
-
-		case PDO_SQLITE_ATTR_BUSY_STATEMENT:
-			ZVAL_FALSE(val);
-
-			if (sqlite3_stmt_busy(S->stmt)) {
-				ZVAL_TRUE(val);
-			}
-			break;
-		case PDO_SQLITE_ATTR_EXPLAIN_STATEMENT:
-#if SQLITE_VERSION_NUMBER >= 3043000
-#if defined(__APPLE__)
-			if (__builtin_available(macOS 14.2, *)) {
-#endif
-				ZVAL_LONG(val, (zend_long)sqlite3_stmt_isexplain(S->stmt));
-				return 1;
-#if defined(__APPLE__)
-			} else {
-				zend_value_error("explain statement unsupported");
-				return 0;
-			}
-#endif
-#else
-			zend_value_error("explain statement unsupported");
-			return 0;
-#endif
-		default:
-			return 0;
-	}
-
-	return 1;
+	zend_type_error("explain mode must be of type int, %s given", zend_zval_value_name(value));
 }
 
-static int pdo_sqlite_stmt_set_attribute(pdo_stmt_t *stmt, zend_long attr, zval *zval)
+/* SQLite 3.43 added stmt_explain. The macOS SDK may be newer than the running OS. */
+static bool sqlite_stmt_explain(sqlite3_stmt *stmt, zval *value, bool write)
 {
-	switch (attr) {
-		case PDO_SQLITE_ATTR_EXPLAIN_STATEMENT:
 #if SQLITE_VERSION_NUMBER >= 3043000
-#if defined(__APPLE__)
-			if (__builtin_available(macOS 14.2, *)) {
+#ifdef __APPLE__
+	if (__builtin_available(macOS 14.2, *))
 #endif
-				if (Z_TYPE_P(zval) != IS_LONG) {
-					zend_type_error("explain mode must be of type int, %s given", zend_zval_value_name(zval));
-					return 0;
-				}
-				if (Z_LVAL_P(zval) < 0 || Z_LVAL_P(zval) > 2) {
-					zend_value_error("explain mode must be one of the Pdo\\Sqlite::EXPLAIN_MODE_* constants");
-					return 0;
-				}
-
-				pdo_sqlite_stmt *S = (pdo_sqlite_stmt*)stmt->driver_data;
-				if (sqlite3_stmt_explain(S->stmt, (int)Z_LVAL_P(zval)) != SQLITE_OK) {
-					return 0;
-				}
-
-				return 1;
-#if defined(__APPLE__)
-			} else {
-				zend_value_error("explain statement unsupported");
-				return 0;
-			}
-#endif
-#else
-			zend_value_error("explain statement unsupported");
-			return 0;
-#endif
-		default:
-			return 0;
+	{
+		return swr_sqlite_stmt_explain(stmt, value, write, sqlite3_stmt_isexplain, sqlite3_stmt_explain);
 	}
+#endif
+	zend_value_error("explain statement unsupported");
+	return false;
+}
 
-	return 1;
+static int pdo_sqlite_stmt_get_attribute(pdo_stmt_t *stmt, zend_long attr, zval *value)
+{
+	pdo_sqlite_stmt *S = stmt->driver_data;
+	if (attr == PDO_SQLITE_ATTR_EXPLAIN_STATEMENT) {
+		return sqlite_stmt_explain(S->stmt, value, false);
+	}
+	return swr_sqlite_stmt_flag(S->stmt, attr, value);
+}
+
+static int pdo_sqlite_stmt_set_attribute(pdo_stmt_t *stmt, zend_long attr, zval *value)
+{
+	pdo_sqlite_stmt *S = stmt->driver_data;
+	return attr == PDO_SQLITE_ATTR_EXPLAIN_STATEMENT && sqlite_stmt_explain(S->stmt, value, true);
 }
 
 const struct pdo_stmt_methods swoole_sqlite_stmt_methods = {
