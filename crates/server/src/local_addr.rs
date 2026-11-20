@@ -151,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no getifaddrs")]
+    #[cfg_attr(miri, ignore = "Miri models an empty interface list")]
     fn reads_the_interfaces_and_falls_back_to_loopback() {
         let state = ServerState::new();
         assert!(init(&state), "getifaddrs works here");

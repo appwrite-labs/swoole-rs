@@ -902,7 +902,6 @@ mod tests {
     /// visible to it once it holds the lock.
     #[test]
     #[cfg(target_os = "linux")]
-    #[cfg_attr(miri, ignore = "Miri has no futex syscall")]
     fn another_thread_unlocks_a_private_mutex() {
         let lock = super::Lock::unowned_mutex().expect("a mutex");
         let written = AtomicU32::new(0);

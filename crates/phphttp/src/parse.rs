@@ -1262,7 +1262,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "libc's strncasecmp is a foreign call")]
     fn form_bodies_follow_upstreams_methods() {
         // request_header takes llhttp's method numbers.
         for method in 0..=u8::MAX {

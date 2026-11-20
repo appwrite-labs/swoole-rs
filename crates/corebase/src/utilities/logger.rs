@@ -560,7 +560,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no fdopen")]
+    #[cfg_attr(miri, ignore = "Miri cannot spawn the private logger process")]
     fn put_writes_the_upstream_line_to_the_log_file_at_or_above_the_level() {
         let case = "utilities::logger::tests::put_writes_the_upstream_line_to_the_log_file_at_or_above_the_level";
         if crate::utilities::isolated_process::run_in_child(case) {
@@ -708,7 +708,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no fdopen")]
+    #[cfg_attr(miri, ignore = "4,000 log writes are slow to interpret")]
     fn concurrent_puts_and_reopens_keep_every_line_whole() {
         let logger = Logger::new(None, HOST_FAKE);
         let (name, file_path) = path("threads");

@@ -167,7 +167,7 @@ mod tests {
     /// `swr_v1_server_new` or `create()`, so the test lends the server its shared record, the
     /// two event workers and the session table those would have allocated.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
+    #[cfg_attr(miri, ignore = "a million sessions are slow to interpret")]
     fn abort_and_reset() {
         let mut server = crate::TestServer::new();
         let config = server.config_mut();

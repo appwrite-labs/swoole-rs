@@ -89,12 +89,6 @@ fn unlink(file: &Path) {
     }
 }
 
-/// `access(file, R_OK)`.
-fn access(file: &str) -> c_int {
-    let file = CString::new(file).unwrap();
-    unsafe { libc::access(file.as_ptr(), libc::R_OK) }
-}
-
 /// `printf` to a line-buffered stdout, as the upstream run's terminal left it: one write.
 fn printf(text: &str) {
     // SAFETY: `text` is readable for its length.
@@ -192,7 +186,7 @@ fn microsecond_line(content: &str) -> bool {
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri has no fdopen")]
+#[cfg_attr(miri, ignore = "the Miri strftime substitute returns an empty date")]
 fn date_with_microseconds() {
     let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
     let logger = &sw_logger();
@@ -206,11 +200,11 @@ fn date_with_microseconds() {
     logger.close();
     unlink(path(file()));
 
-    assert!(microsecond_line(&String::from_utf8_lossy(&content)));
+    let line = String::from_utf8_lossy(&content);
+    assert!(microsecond_line(&line), "{line:?}");
 }
 
 #[test]
-#[cfg_attr(miri, ignore = "Miri has no fdopen")]
 fn rotation() {
     let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
     let logger = &sw_logger();
@@ -232,9 +226,13 @@ fn rotation() {
         put(logger, SW_LOG_ERROR, "hello world");
         put(logger, SW_LOG_INFO, "hello world");
 
-        assert_eq!(access(&super::tests::file(logger, false)), -1);
-        assert_eq!(errno(), libc::ENOENT);
-        assert_eq!(access(&real_file(logger)), 0);
+        assert_eq!(
+            std::fs::File::open(super::tests::file(logger, false))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOENT)
+        );
+        assert!(std::fs::File::open(real_file(logger)).is_ok());
 
         logger.close();
         unlink(Path::new(&real_file(logger)));
