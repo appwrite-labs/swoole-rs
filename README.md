@@ -1,7 +1,7 @@
 # swoole-rs
 
 [![Merge tier](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fmerge.json)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/merge.yml?query=branch%3Amain)
-[![Upstream PHPTs passing](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fphpt.json)](https://github.com/appwrite-labs/swoole-rs/issues/58)
+[![Upstream PHPTs passing](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fphpt.json)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/merge.yml?query=branch%3Amain)
 [![Speed vs upstream](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fspeed.json)](https://github.com/appwrite-labs/swoole-rs/blob/badges/speed.md)
 [![Unsafe blocks](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Funsafe.json)](https://github.com/appwrite-labs/swoole-rs/blob/badges/unsafe.md)
 [![crates/ line coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fcoverage.json)](https://github.com/appwrite-labs/swoole-rs/blob/badges/coverage.md)
@@ -37,10 +37,12 @@ What is done:
 
 - **No upstream source is compiled.** Nothing from swoole-src's `src/`, `ext-src/` or
   `include/` is in the build, and the build needs no swoole-src checkout.
-- **Some C remains, on purpose.** The C and C++ that swoole-src itself bundles from
-  elsewhere (PHP's PDO drivers, curl and `proc_open`, and PECL ssh2, adapted to coroutine
-  hooks) lives in `native/swoole-src/thirdparty`. Our own C is shims, nearly all in
-  `crates/zend-sys` over the parts of PHP's C API that Rust can't call
+- **Some C remains, on purpose.** Of the C and C++ that swoole-src bundles from
+  elsewhere, what is left in `native/swoole-src/thirdparty` is PHP's PDO drivers for
+  SQLite, Firebird and Oracle, `proc_open`, the plain-files stream wrapper and PECL ssh2.
+  The cURL hook and the PostgreSQL and ODBC drivers are Rust now, with C glue in
+  `native/hooks` for the parts tied to PHP's private layouts. The rest of our own C is
+  shims in `crates/zend-sys` over the parts of PHP's C API that Rust can't call
   ([what stays C](docs/zend.md#what-stays-c)). TLS is OpenSSL, as it is upstream.
 - **Upstream's PHP tests pass wherever upstream passes them.** Every merge runs the pinned
   PHPTs on both builds with their original assertions, and fails a change that fails a
@@ -57,8 +59,8 @@ What is not:
   and impls left and the crates that forbid `unsafe`
   ([per crate](https://github.com/appwrite-labs/swoole-rs/blob/badges/unsafe.md)). That count
   says how much the compiler can't check, not that the rest is right. The evidence is the
-  second badge row: Miri, AddressSanitizer, ThreadSanitizer, two fuzzers and a soak run
-  every night. Treat a red one as an open bug. The Kani job proves, for inputs up to a
+  second badge row: Miri every four hours, and AddressSanitizer, ThreadSanitizer, two
+  fuzzers and a soak run every night. A failed run files an issue. The Kani job proves, for inputs up to a
   small bound, that the wire decoders reject incomplete input and neither panic nor
   overflow.
 - **The tests don't reach all of the Rust.** The coverage badge is line coverage of
@@ -69,8 +71,9 @@ What is not:
   ([`tools/build_upstream.py`](tools/build_upstream.py) has the commit) and reports itself
   as that version.
 - **Linux is what CI tests.** Every merge runs x86-64 Linux with glibc and musl, and a
-  thread-safe PHP. The other supported PHP versions and arm64 run nightly. The build
-  scripts handle macOS, which CI doesn't run.
+  thread-safe PHP. The other supported PHP versions and arm64 run nightly, and every
+  release target is built and loaded nightly. The build scripts handle macOS, which CI
+  doesn't run.
 - **Pre-releases only, and no packages.** [Releases](#install) are prebuilt binaries for
   Linux. There is no PECL or PIE package and no Docker image, and nothing for macOS: build
   from source there.
@@ -83,14 +86,14 @@ What is not:
 - **A drop-in replacement.** A PHP application written for the pinned Swoole version runs
   unchanged. Upstream's tests, run with their original assertions, are the definition of
   the same behaviour.
-- **Faster than upstream on every workload**
-  ([#4778](https://github.com/appwrite-labs/swoole-rs/issues/4778)), by instruction count and on
-  the wall clock.
-- **Memory-safe under load, with evidence**
-  ([#4762](https://github.com/appwrite-labs/swoole-rs/issues/4762)): clean sanitizer, fuzz, soak
-  and Miri runs, and an `unsafe` count that only falls.
-- **Differential fuzzing of every network-facing codec** against upstream
-  ([#100](https://github.com/appwrite-labs/swoole-rs/issues/100)).
+- **Faster than upstream on every workload**, by instruction count and on the wall
+  clock. The instruction counts are there; the limits keep them there.
+- **Memory-safe under load, with evidence**: clean sanitizer, fuzz, soak and Miri runs,
+  and an `unsafe` count that only falls.
+- **Differential fuzzing of every network-facing codec** against upstream (`fuzz/`).
+
+The work in progress is the
+[open goals](https://github.com/appwrite-labs/swoole-rs/issues?q=is%3Aissue+is%3Aopen+label%3Akind%3Agoal).
 
 Not goals: rewriting mature third-party libraries (TLS, compression, database clients),
 or putting an async runtime under Swoole's reactor (`deny.toml` bans them). The
@@ -136,7 +139,7 @@ Optional parts are build switches. Each of upstream's `configure` switches goes 
 | Language | C and C++ | Rust, plus the C and C++ that upstream bundles |
 | Build | `phpize`, `configure`, `make` | Cargo, through `tools/build_ext.py` |
 | PHP API | the reference | the same, generated from upstream's stubs (`tools/arginfo.py`) |
-| Upstream PHPTs | the reference | [![Upstream PHPTs passing](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fphpt.json)](https://github.com/appwrite-labs/swoole-rs/issues/58) |
+| Upstream PHPTs | the reference | [![Upstream PHPTs passing](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fphpt.json)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/merge.yml?query=branch%3Amain) |
 | Instructions per request | the reference | [![Speed vs upstream](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fspeed.json)](https://github.com/appwrite-labs/swoole-rs/blob/badges/speed.md) |
 | Releases and packages | yes | prebuilt Linux binaries, as pre-releases; no packages |
 | Production use | years | none |
@@ -157,7 +160,7 @@ still truncate ([open problem](docs/http-response-lifetime.md)).
 **How it is checked.** Every merge runs upstream's PHPTs on both builds, the
 [corpus applications](corpus/README.md) including an unchanged Hyperf skeleton, h2spec,
 Autobahn and swoole/library's suite. Nightly runs add Miri, the sanitizers, fuzzing, a
-soak run, other PHP versions, arm64 and a debug PHP. See the
+soak run, other PHP versions, arm64, a debug PHP and a dry run of the release build. See the
 [validation layers](docs/validation-suite.md).
 
 ## Install
@@ -189,9 +192,10 @@ version the build stands in for, and `swoole-rs`, its own version and commit.
 `gh attestation verify "$file" --repo appwrite-labs/swoole-rs` checks that the file was
 built by this repository's release workflow.
 
-A release binary is the default build: TLS, HTTP/2, Brotli and zstd are in, `zts` files
-add `Swoole\Thread`, and the switches in the [table above](#features) are not. Build from
-source for those.
+A release binary is the default build plus the native cURL hook: TLS, HTTP/2, Brotli and
+zstd are in, and `zts` files add `Swoole\Thread`. The other switches in the
+[table above](#features) are not; build from source for those. The arm64 glibc files are
+built with profile-guided optimisation.
 
 Versions are swoole-rs's own, separate from the upstream version it reports. A
 `0.x` release is a pre-release: the PHP API is upstream's and stays, but which targets and
@@ -243,15 +247,18 @@ runner and `dev.py docker`. `git config core.hooksPath .githooks` turns on the p
 checks.
 
 CI has three tiers: the pre-commit hook, [PR](.github/workflows/pr.yml) (the Rust tests,
-the gates and PHPTs of the modules a change touches, and instruction counts) and
-[Merge](.github/workflows/merge.yml), which runs everything in `main`'s merge queue
-before a change lands.
+and for what a change touches: its modules' gates and PHPTs, instruction counts, build
+variants, h2spec and the sanitizers) and [Merge](.github/workflows/merge.yml), which
+runs everything in `main`'s merge queue before a change lands and hourly on `main`.
 
 ## Layout
 
 - `crates/`: the Rust. `crates/ext` builds `swoole.so`, and `crates/zend` is the layer
   over PHP's C API.
-- `native/`: the bundled C and the headers the Rust exports.
+- `native/`: the bundled C, the C glue of the hooks, and the headers the Rust exports.
+- `tests/`: each module's tests, the PHP-API differential fuzzer and the tools' own tests.
+- `fuzz/`: the codec fuzz targets, compared against upstream.
+- `tools/`: the build (`build_ext.py`, `build_upstream.py`), `dev.py` and `ci.py`.
 - [`migration/modules.json`](migration/modules.json): the modules the migration was
   done in, with their paths and tests ([fields](docs/migration-modules.md)).
 - [`corpus/`](corpus/README.md): the applications and the
@@ -279,4 +286,5 @@ before a change lands.
 - **Release**: the newest release, pre-releases included.
 
 The second row is the latest completed run of each scheduled workflow on `main`. They run
-nightly, except Appwrite e2e, which runs weekly.
+nightly, except Miri, every four hours, and Appwrite e2e, weekly. A failed run opens an
+issue (`scheduled-failures.yml`).
