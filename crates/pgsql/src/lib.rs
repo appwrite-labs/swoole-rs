@@ -36,8 +36,9 @@ use std::{
 use swoole_rs_corebase::{CCast, CellExt, sys::Text};
 use swoole_rs_hooks::wait_event::{Events, to_poll, wait_event};
 
-/// How long one wait lasts before libpq is asked again: on macOS `poll` may
-/// miss readiness, so a short timeout lets the caller retry.
+/// How long one wait lasts before libpq is asked again, as upstream's
+/// `swoole_pgsql_poll_timeout`. The connect loop checks `connect_timeout` only
+/// between waits, so this also bounds how late that timeout fires.
 const POLL_TIMEOUT: f64 = 0.1;
 
 static BLOCKING: AtomicBool = AtomicBool::new(true);
