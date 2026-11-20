@@ -256,6 +256,17 @@ static int pdo_sqlite_stmt_describe(pdo_stmt_t *stmt, int colno)
 	return 1;
 }
 
+/* Copy the borrowed SQLite buffer into Zend's string, including its short-string cache. */
+zend_string *swr_sqlite_column_string(sqlite3_stmt *stmt, int colno, bool blob)
+{
+	const void *bytes = blob ? sqlite3_column_blob(stmt, colno) : sqlite3_column_text(stmt, colno);
+	zval value;
+	ZVAL_STRINGL_FAST(&value, bytes, sqlite3_column_bytes(stmt, colno));
+	return Z_STR(value);
+}
+
+extern void swr_sqlite_column_value(sqlite3_stmt *, int, zval *);
+
 static int pdo_sqlite_stmt_get_col(
 		pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type)
 {
@@ -268,39 +279,8 @@ static int pdo_sqlite_stmt_get_col(
 		pdo_sqlite_error_stmt(stmt);
 		return 0;
 	}
-	switch (sqlite3_column_type(S->stmt, colno)) {
-		case SQLITE_NULL:
-			ZVAL_NULL(result);
-			return 1;
-
-		case SQLITE_INTEGER: {
-			int64_t i = sqlite3_column_int64(S->stmt, colno);
-#if SIZEOF_ZEND_LONG < 8
-			if (i > ZEND_LONG_MAX || i < ZEND_LONG_MIN) {
-				ZVAL_STRINGL(result,
-					(char *) sqlite3_column_text(S->stmt, colno),
-					sqlite3_column_bytes(S->stmt, colno));
-				return 1;
-			}
-#endif
-			ZVAL_LONG(result, i);
-			return 1;
-		}
-
-		case SQLITE_FLOAT:
-			ZVAL_DOUBLE(result, sqlite3_column_double(S->stmt, colno));
-			return 1;
-
-		case SQLITE_BLOB:
-			ZVAL_STRINGL_FAST(result,
-				sqlite3_column_blob(S->stmt, colno), sqlite3_column_bytes(S->stmt, colno));
-			return 1;
-
-		default:
-			ZVAL_STRINGL_FAST(result,
-				(char *) sqlite3_column_text(S->stmt, colno), sqlite3_column_bytes(S->stmt, colno));
-			return 1;
-	}
+	swr_sqlite_column_value(S->stmt, colno, result);
+	return 1;
 }
 
 /* Zend owns the interned native type names for the life of the request. */
