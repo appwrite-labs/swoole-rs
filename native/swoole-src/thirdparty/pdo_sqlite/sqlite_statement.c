@@ -303,63 +303,31 @@ static int pdo_sqlite_stmt_get_col(
 	}
 }
 
+/* Zend owns the interned native type names for the life of the request. */
+const zend_string *swr_sqlite_known_type(unsigned int id)
+{
+	return ZSTR_KNOWN(id);
+}
+
+extern void swr_sqlite_column_meta(zval *, int, const char *, const char *);
+
 static int pdo_sqlite_stmt_col_meta(pdo_stmt_t *stmt, zend_long colno, zval *return_value)
 {
 	pdo_sqlite_stmt *S = (pdo_sqlite_stmt*)stmt->driver_data;
-	const char *str;
-	zval flags;
-
 	if (!S->stmt || !stmt->executed) {
 		return FAILURE;
 	}
-	if(colno >= sqlite3_column_count(S->stmt)) {
-		/* error invalid column */
+	if (colno >= sqlite3_column_count(S->stmt)) {
 		pdo_sqlite_error_stmt(stmt);
 		return FAILURE;
 	}
 
-	array_init(return_value);
-	array_init(&flags);
-
-	switch (sqlite3_column_type(S->stmt, colno)) {
-		case SQLITE_NULL:
-			add_assoc_str(return_value, "native_type", ZSTR_KNOWN(ZEND_STR_NULL_LOWERCASE));
-			add_assoc_long(return_value, "pdo_type", PDO_PARAM_NULL);
-			break;
-
-		case SQLITE_FLOAT:
-			add_assoc_str(return_value, "native_type", ZSTR_KNOWN(ZEND_STR_DOUBLE));
-			add_assoc_long(return_value, "pdo_type", PDO_PARAM_STR);
-			break;
-
-		case SQLITE_BLOB:
-			add_next_index_string(&flags, "blob");
-			ZEND_FALLTHROUGH;
-		case SQLITE_TEXT:
-			add_assoc_str(return_value, "native_type", ZSTR_KNOWN(ZEND_STR_STRING));
-			add_assoc_long(return_value, "pdo_type", PDO_PARAM_STR);
-			break;
-
-		case SQLITE_INTEGER:
-			add_assoc_str(return_value, "native_type", ZSTR_KNOWN(ZEND_STR_INTEGER));
-			add_assoc_long(return_value, "pdo_type", PDO_PARAM_INT);
-			break;
-	}
-
-	str = sqlite3_column_decltype(S->stmt, colno);
-	if (str) {
-		add_assoc_string(return_value, "sqlite:decl_type", (char *)str);
-	}
-
+	const char *table = NULL;
 #ifdef HAVE_SW_SQLITE3_COLUMN_TABLE_NAME
-	str = sqlite3_column_table_name(S->stmt, colno);
-	if (str) {
-		add_assoc_string(return_value, "table", (char *)str);
-	}
+	table = sqlite3_column_table_name(S->stmt, colno);
 #endif
-
-	add_assoc_zval(return_value, "flags", &flags);
-
+	swr_sqlite_column_meta(return_value, sqlite3_column_type(S->stmt, colno),
+		sqlite3_column_decltype(S->stmt, colno), table);
 	return SUCCESS;
 }
 
