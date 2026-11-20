@@ -33,6 +33,10 @@ jobs:
       # isn't required: a crate change that breaks the harness would fail every nightly batch.
       - name: Check fuzz harness
         run: cargo check --locked --manifest-path fuzz/Cargo.toml --all-targets
+      # Its tests, which include the seed replay that holds each target's compared share
+      # over fuzz/seeds above a floor (#5355).
+      - name: Test fuzz harness
+        run: cargo test --locked --manifest-path fuzz/Cargo.toml
       - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2
         with:
           tool: cbindgen@0.29.4,cargo-deny@0.18.9
