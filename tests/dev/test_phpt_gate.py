@@ -131,6 +131,20 @@ class PhptGate(unittest.TestCase):
         results = results[:3]
         self.assertIn('1 passed, 1 failed, 1 skipped', markdown(results))
         self.assertIn('| a | 1 | 0 | 1 |', markdown(results))
+        # Racy originals are recorded unsupported and never run; the summary counts them (#5358),
+        # from the report's detail as rows() carries it.
+        self.assertIn('0 never run (racy originals)', markdown(results))
+        with tempfile.TemporaryDirectory() as temp:
+            report = Path(temp) / 'shard.json'
+            report.write_text(json.dumps({'results': [
+                {'test': 'tests/c/1.phpt', 'module': 'c', 'status': 'unsupported',
+                 'detail': 'racy original: fails 14% on both engines'},
+                {'test': 'tests/c/2.phpt', 'module': 'c', 'status': 'unsupported',
+                 'detail': 'missing capabilities: thread_context'}]}))
+            never = list(rows([report]))
+        self.assertEqual([r['reason'] for r in never],
+                         ['racy original: fails 14% on both engines', 'missing capabilities: thread_context'])
+        self.assertIn('1 never run (racy originals)', markdown(results + never))
 
     def test_resource_regression_fails_independently_of_phpt_reruns(self):
         from corpus.upstream.gate import main
