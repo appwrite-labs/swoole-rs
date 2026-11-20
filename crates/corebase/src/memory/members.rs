@@ -108,7 +108,7 @@ impl GlobalMemory {
 
     fn snapshot(&self) -> Option<Arc<GlobalImpl>> {
         let _guard = self.publication();
-        let pool = std::ptr::NonNull::new(self.pool.load(Ordering::Relaxed))?;
+        let pool = std::ptr::NonNull::new(self.pool.load(Ordering::Acquire))?;
         // SAFETY: publication holds one Arc count until replace takes this same guard.
         unsafe { Arc::increment_strong_count(pool.as_ptr()) };
         // SAFETY: this takes the independent strong count just acquired.
@@ -117,13 +117,13 @@ impl GlobalMemory {
 
     fn replace(&self, expected: Option<*const GlobalImpl>, next: Option<Arc<GlobalImpl>>) {
         let guard = self.publication();
-        let old = self.pool.load(Ordering::Relaxed);
+        let old = self.pool.load(Ordering::Acquire);
         if expected.is_some_and(|p| p != old.cast_const()) {
             return;
         }
         self.pool.store(
             next.map_or(ptr::null_mut(), |p| Arc::into_raw(p).cast_mut()),
-            Ordering::Relaxed,
+            Ordering::Release,
         );
         drop(guard);
         if !old.is_null() {
@@ -451,6 +451,7 @@ pub mod pool {
     static POOL: GlobalMemory = GlobalMemory::empty();
 
     #[cfg(test)]
+    #[cfg(not(miri))]
     pub(super) fn page() -> std::sync::Weak<super::Page> {
         POOL.with(|pool| std::sync::Arc::downgrade(pool.pages().last_page().unwrap()))
             .unwrap()

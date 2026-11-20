@@ -446,6 +446,7 @@ fn sleeping_coroutine_lock_releases_its_shared_word() {
 
 #[test]
 fn unwinding_a_pool_read_releases_its_count() {
+    crate::swr_v1_core_set_pagesize(4096);
     let pool = GlobalMemory::new(4096, false).unwrap();
     let generation = Arc::downgrade(&pool.snapshot().unwrap());
     let result = std::panic::catch_unwind(|| {
@@ -474,6 +475,7 @@ fn global_memory_bump_allocates_zeroed_blocks_within_a_page() {
 
 #[test]
 fn deleting_a_generation_during_a_read_releases_it_after_the_callback() {
+    crate::swr_v1_core_set_pagesize(4096);
     let pool = GlobalMemory::new(4096, true).unwrap();
     let capacity = pool.capacity();
     let old = Arc::downgrade(&pool.snapshot().unwrap());
