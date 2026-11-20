@@ -59,93 +59,29 @@ static pid_t _co_waitpid(pid_t __pid, int *__stat_loc, int __options) {
 #endif
 }
 
+SW_EXTERN_C_BEGIN
+/* crates/phpruntime (proc.rs): the environment and argv `proc_open` builds before it forks,
+ * in request memory freed here (`_php_free_envp`, `efree_argv`). */
+void swr_proc_envp(HashTable *environment, char **envp, char ***envarray);
+zend_string *swr_proc_command_from_array(HashTable *command, char ***argv);
+SW_EXTERN_C_END
+
 /* {{{ _php_array_to_envp
  * Process the `environment` argument to `proc_open`
- * Convert into data structures which can be passed to underlying OS APIs like `exec` on POSIX or
- * `CreateProcessW` on Win32 */
+ * Convert into data structures which can be passed to underlying OS APIs like `exec` on POSIX */
 static sw_php_process_env _php_array_to_envp(zval *environment) {
-    zval *element;
     sw_php_process_env env;
-#ifndef PHP_WIN32
-    char **ep;
-#endif
-    char *p;
-    size_t sizeenv = 0;
-    HashTable *env_hash; /* temporary PHP array used as helper */
-
     memset(&env, 0, sizeof(env));
-
-    if (!environment) {
-        return env;
-    }
-
-    uint32_t cnt = zend_hash_num_elements(Z_ARRVAL_P(environment));
-
-    if (cnt < 1) {
-#ifndef PHP_WIN32
-        env.envarray = (char **) ecalloc(1, sizeof(char *));
+    if (environment) {
+#ifdef PHP_WIN32
+        /* The block alone: Win32 takes no pointer array. */
+        char **envarray = NULL;
+        swr_proc_envp(Z_ARRVAL_P(environment), &env.envp, &envarray);
+        efree(envarray);
+#else
+        swr_proc_envp(Z_ARRVAL_P(environment), &env.envp, &env.envarray);
 #endif
-        env.envp = (char *) ecalloc(4, 1);
-        return env;
     }
-
-    ALLOC_HASHTABLE(env_hash);
-    zend_hash_init(env_hash, cnt, NULL, NULL, 0);
-
-    void *_key, *_str;
-    zend_string *key, *str;
-    /* first, we have to get the size of all the elements in the hash */
-    ZEND_HASH_FOREACH_STR_KEY_VAL(Z_ARRVAL_P(environment), _key, element) {
-        key = (zend_string *) _key;
-        str = zval_get_string(element);
-
-        if (ZSTR_LEN(str) == 0) {
-            zend_string_release_ex(str, 0);
-            continue;
-        }
-
-        sizeenv += ZSTR_LEN(str) + 1;
-
-        if (key && ZSTR_LEN(key)) {
-            sizeenv += ZSTR_LEN(key) + 1;
-            zend_hash_add_ptr(env_hash, key, str);
-        } else {
-            zend_hash_next_index_insert_ptr(env_hash, str);
-        }
-    }
-    ZEND_HASH_FOREACH_END();
-
-#ifndef PHP_WIN32
-    ep = env.envarray = (char **) ecalloc(cnt + 1, sizeof(char *));
-#endif
-    p = env.envp = (char *) ecalloc(sizeenv + 4, 1);
-
-    ZEND_HASH_FOREACH_STR_KEY_PTR(env_hash, _key, _str) {
-        key = (zend_string *) _key;
-        str = (zend_string *) _str;
-#ifndef PHP_WIN32
-        *ep = p;
-        ++ep;
-#endif
-
-        if (key) {
-            memcpy(p, ZSTR_VAL(key), ZSTR_LEN(key));
-            p += ZSTR_LEN(key);
-            *p++ = '=';
-        }
-
-        memcpy(p, ZSTR_VAL(str), ZSTR_LEN(str));
-        p += ZSTR_LEN(str);
-        *p++ = '\0';
-        zend_string_release_ex(str, 0);
-    }
-    ZEND_HASH_FOREACH_END();
-
-    assert((uint32_t) (p - env.envp) <= sizeenv);
-
-    zend_hash_destroy(env_hash);
-    FREE_HASHTABLE(env_hash);
-
     return env;
 }
 /* }}} */
@@ -273,6 +209,8 @@ typedef struct _descriptorspec_item {
     int mode_flags;                  /* mode for opening FDs: r/o, r/w, binary (on Win32), etc */
 } descriptorspec_item;
 
+#ifdef PHP_WIN32
+/* The command array's checks for the Win32 command line; POSIX's are proc.rs's. */
 static zend_string *get_valid_arg_string(zval *zv, int elem_num) {
     zend_string *str = zval_get_string(zv);
     if (!str) {
@@ -293,6 +231,7 @@ static zend_string *get_valid_arg_string(zval *zv, int elem_num) {
 
     return str;
 }
+#endif
 
 #ifdef PHP_WIN32
 static void append_backslashes(smart_str *str, size_t num_bs) {
@@ -412,38 +351,6 @@ static zend_result convert_command_to_use_shell(wchar_t **cmdw, size_t cmdw_len)
     return SUCCESS;
 }
 #endif
-
-/* Convert command parameter array passed as first argument to `proc_open` into command string */
-static zend_string *get_command_from_array(HashTable *array, char ***argv, int num_elems) {
-    zval *arg_zv;
-    zend_string *command = NULL;
-    int i = 0;
-
-    *argv = (char **) safe_emalloc(sizeof(char *), num_elems + 1, 0);
-
-    ZEND_HASH_FOREACH_VAL(array, arg_zv) {
-        zend_string *arg_str = get_valid_arg_string(arg_zv, i + 1);
-        if (!arg_str) {
-            /* Terminate with NULL so exit_fail code knows how many entries to free */
-            (*argv)[i] = NULL;
-            if (command != NULL) {
-                zend_string_release_ex(command, false);
-            }
-            return NULL;
-        }
-
-        if (i == 0) {
-            command = zend_string_copy(arg_str);
-        }
-
-        (*argv)[i++] = (char *) estrdup(ZSTR_VAL(arg_str));
-        zend_string_release(arg_str);
-    }
-    ZEND_HASH_FOREACH_END();
-
-    (*argv)[i] = NULL;
-    return command;
-}
 
 static descriptorspec_item *alloc_descriptor_array(HashTable *descriptorspec) {
     uint32_t ndescriptors = zend_hash_num_elements(descriptorspec);
@@ -892,7 +799,7 @@ PHP_FUNCTION(swoole_proc_open) {
         bypass_shell = 1;
         command_str = create_win_command_from_args(command_ht);
 #else
-        command_str = get_command_from_array(command_ht, &argv, num_elems);
+        command_str = swr_proc_command_from_array(command_ht, &argv);
 #endif
 
         if (!command_str) {

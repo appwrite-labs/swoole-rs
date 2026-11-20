@@ -1,13 +1,17 @@
 //! `proc_terminate`, `proc_close` and `proc_get_status` for the coroutine `proc_open`
-//! (`HOOK_PROC`). The process record, its resource type and destructor stay in
-//! thirdparty `proc_open.cc`, read here through its accessors.
+//! (`HOOK_PROC`), and the argv and environment `proc_open` builds before it forks.
+//! The process record, its resource type and destructor stay in thirdparty
+//! `proc_open.cc`, read here through its accessors.
 use core::{
-    ffi::{c_int, c_void},
+    ffi::{c_char, c_int, c_void},
     marker::PhantomData,
-    ptr::NonNull,
+    ptr::{self, NonNull},
 };
+use std::ffi::CString;
 use swoole_rs_corebase::{CCast, Switch, built_with};
-use swoole_rs_zend::{Call, Value, ZStr};
+use swoole_rs_zend::{
+    Array, Call, Emalloc, Key, Value, ZStr, ZString, sys::zend_string, value_error,
+};
 
 /// `proc_open.cc`'s `sw_php_process_handle` behind the resource argument `'a` borrows.
 /// Not `Copy`: closing takes it, after which the record is freed.
@@ -109,4 +113,111 @@ fn get_status(call: &Call) {
     call.add_assoc_long(c"exitcode", exitcode.into());
     call.add_assoc_long(c"termsig", termsig.into());
     call.add_assoc_long(c"stopsig", stopsig.into());
+}
+
+/// `estrdup`: `bytes` and a NUL in request memory.
+fn emalloc_string(bytes: &[u8]) -> Box<[u8], Emalloc> {
+    let mut copy = Vec::with_capacity_in(bytes.len() + 1, Emalloc::default());
+    copy.extend_from_slice(bytes);
+    copy.push(0);
+    copy.into_boxed_slice()
+}
+
+/// A request allocation handed to C, which `efree`s it.
+fn to_c<T>(allocation: Box<[T], Emalloc>) -> *mut T {
+    Box::into_raw_with_allocator(allocation).0.cast()
+}
+
+/// `get_valid_arg_string`: element `number` (1-based) of the command array as a
+/// string, or none once a `ValueError` is thrown.
+fn arg_string(value: &Value, number: usize) -> Option<ZString> {
+    let string = value.string();
+    if number == 1 && string.bytes().is_empty() {
+        value_error(c"First element must contain a non-empty program name");
+        return None;
+    }
+    if string.bytes().contains(&0) {
+        let message = format!("Command array element {number} contains a null byte");
+        value_error(&CString::new(message).unwrap_or_default());
+        return None;
+    }
+    Some(string)
+}
+
+swoole_rs_zend::exports! {
+/// `get_command_from_array`: the program (the command array's first element) and,
+/// into `argv`, each element as a NUL-terminated string behind a null, all in
+/// request memory C frees (`efree_argv`). Null, and `argv` null, once an element
+/// threw.
+#[unsafe(no_mangle)]
+extern "C" fn swr_proc_command_from_array(
+    command: &Array,
+    argv: &mut *mut *mut c_char,
+) -> *mut zend_string {
+    *argv = ptr::null_mut();
+    let mut program = None;
+    let mut strings = Vec::with_capacity(command.count().c_cast::<usize>());
+    let mut failed = false;
+    command.for_each(|_, value| {
+        if failed {
+            return;
+        }
+        let Some(string) = arg_string(value, strings.len() + 1) else {
+            failed = true;
+            return;
+        };
+        strings.push(emalloc_string(string.bytes()));
+        program.get_or_insert(string);
+    });
+    if failed {
+        // The copies made so far are freed here rather than by C.
+        return ptr::null_mut();
+    }
+    let mut pointers = Vec::with_capacity_in(strings.len() + 1, Emalloc::default());
+    pointers.extend(strings.into_iter().map(|string| to_c(string).cast::<c_char>()));
+    pointers.push(ptr::null_mut());
+    *argv = to_c(pointers.into_boxed_slice());
+    program.map_or(ptr::null_mut(), ZString::into_raw)
+}
+}
+
+swoole_rs_zend::exports! {
+/// `_php_array_to_envp`: `environment` (an array) as `name=value` strings, NUL
+/// after each, into one request allocation (`envp`, four NULs longer) and a
+/// null-terminated array of pointers into it (`envarray`), which C frees
+/// (`_php_free_envp`). An element whose string is empty is left out; one with an
+/// integer or empty key is its value alone.
+#[unsafe(no_mangle)]
+extern "C" fn swr_proc_envp(
+    environment: &Array,
+    envp: &mut *mut c_char,
+    envarray: &mut *mut *mut c_char,
+) {
+    let count = environment.count().c_cast::<usize>();
+    let mut block = Vec::new_in(Emalloc::default());
+    let mut starts = Vec::with_capacity(count);
+    environment.for_each(|key, value| {
+        let string = value.string();
+        if string.bytes().is_empty() {
+            return;
+        }
+        starts.push(block.len());
+        if let Key::Name(name) = key
+            && !name.is_empty()
+        {
+            block.extend_from_slice(name);
+            block.push(b'=');
+        }
+        block.extend_from_slice(string.bytes());
+        block.push(0);
+    });
+    block.extend_from_slice(&[0; 4]);
+    let base = to_c(block.into_boxed_slice()).cast::<c_char>();
+    // `ecalloc(cnt + 1, ...)`: a slot per element, the unused ones null.
+    let mut pointers = Vec::with_capacity_in(count + 1, Emalloc::default());
+    pointers.extend(starts.iter().map(|&start| base.wrapping_add(start)));
+    pointers.resize(count + 1, ptr::null_mut());
+    *envp = base;
+    *envarray = to_c(pointers.into_boxed_slice());
+}
 }
