@@ -653,6 +653,10 @@ fn async_tcp_dns_fail() {
 }
 
 fn async_tcp_ssl_handshake_fail() {
+    let port = get_random_port();
+    let pid = tcp_server(TEST_HOST, port, |_| {
+        b"HTTP/1.0 400 Bad Request\r\n\r\n".to_vec()
+    });
     event_init();
 
     let success = Cell::new(true);
@@ -661,10 +665,11 @@ fn async_tcp_ssl_handshake_fail() {
 
     ac.enable_ssl_encrypt();
 
-    assert_eq!(ac.connect("www.baidu.com", 80, 1.0, 0), SW_OK);
+    assert_eq!(ac.connect(TEST_HOST, port, 1.0, 0), SW_OK);
 
     event_wait();
 
+    stop(pid);
     assert!(!success.get());
 }
 
@@ -710,17 +715,20 @@ fn async_tcp_http_proxy_handshake_fail() {
 }
 
 fn async_tcp_socks5_proxy_handshake_fail() {
+    let listener = std::net::TcpListener::bind((TEST_HOST, 0)).unwrap();
+    let port = listener.local_addr().unwrap().port().into();
     event_init();
 
     let success = Cell::new(true);
     let ac = Client::new(SW_SOCK_TCP, true).unwrap();
     listen_failing(&ac, ETIMEDOUT, &success);
 
-    ac.set_socks5_proxy("www.baidu.com", 80, "", "");
+    ac.set_socks5_proxy(TEST_HOST, port, "", "");
 
     assert_eq!(ac.connect("www.baidu.com", 80, 1.0, 0), SW_OK);
 
     event_wait();
+    assert!(!success.get());
 }
 
 fn sleep() {
