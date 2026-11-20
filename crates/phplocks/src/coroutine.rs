@@ -40,11 +40,7 @@ mod host {
         swoole_rs_phpcoroutines::Coroutine::current().map(swoole_rs_phpcoroutines::Coroutine::cid)
     }
     pub(super) fn alloc_shared() -> Option<super::LockWord> {
-        #[cfg(not(feature = "iouring"))]
-        return super::pool::PooledWord::allocate().map(super::LockWord::Pooled);
-        // A kernel request can still hold the address after the PHP method returns.
-        #[cfg(feature = "iouring")]
-        super::pool::words(1)?.first().map(super::LockWord::Shared)
+        super::pool::PooledWord::allocate().map(super::LockWord::Pooled)
     }
     #[cfg(not(feature = "iouring"))]
     /// The lock sleeps only inside a coroutine.

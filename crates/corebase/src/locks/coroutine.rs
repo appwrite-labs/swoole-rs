@@ -2,6 +2,7 @@
 use crate::constants::{SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND};
 use std::{
     cell::Cell,
+    sync::Arc,
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_error::ErrorCode;
@@ -16,9 +17,9 @@ pub struct CoroutineHost {
     /// `System::sleep`: false when cancelled.
     pub sleep: Option<fn(f64) -> bool>,
     /// The futex wait: false with errno set on failure.
-    pub wait: Option<fn(&AtomicU32) -> bool>,
+    pub wait: Option<fn(&Arc<LockWord>) -> bool>,
     /// The futex wake: false with errno set on failure.
-    pub wake: Option<fn(&AtomicU32) -> bool>,
+    pub wake: Option<fn(&Arc<LockWord>) -> bool>,
     /// Warns that the lock was used outside a coroutine.
     pub warning: fn(),
 }
@@ -28,7 +29,7 @@ pub struct CoroutineHost {
 /// unlock can both hold the lock.
 pub struct CoroutineLock {
     host: &'static CoroutineHost,
-    word: LockWord,
+    word: Arc<LockWord>,
     /// The owner's id, 0 for none (ids start at 1).
     cid: Cell<i64>,
 }
@@ -40,7 +41,19 @@ pub enum LockWord {
     /// Shared storage kept by the host for the process lifetime.
     Shared(&'static AtomicU32),
     /// A process-local word.
-    Private(Box<AtomicU32>),
+    Private(AtomicU32),
+}
+
+impl std::ops::Deref for LockWord {
+    type Target = AtomicU32;
+
+    fn deref(&self) -> &AtomicU32 {
+        match self {
+            LockWord::Shared(word) => word,
+            LockWord::Pooled(word) => word,
+            LockWord::Private(word) => word,
+        }
+    }
 }
 
 fn outside(host: &CoroutineHost) -> Result<(), i32> {
@@ -65,23 +78,15 @@ impl CoroutineLock {
             };
             word
         } else {
-            LockWord::Private(Box::new(AtomicU32::new(0)))
+            LockWord::Private(AtomicU32::new(0))
         };
         let lock = Box::new(Self {
             host,
-            word,
+            word: Arc::new(word),
             cid: Cell::new(0),
         });
-        lock.word().store(0, Ordering::Relaxed);
+        lock.word.store(0, Ordering::Relaxed);
         lock
-    }
-
-    fn word(&self) -> &AtomicU32 {
-        match &self.word {
-            LockWord::Shared(word) => word,
-            LockWord::Pooled(word) => word,
-            LockWord::Private(word) => word,
-        }
     }
 
     /// `CoroutineLock::lock_impl`: blocks (sleeping or on the futex) unless `blocking` is false.
@@ -97,7 +102,7 @@ impl CoroutineLock {
         if cid == self.cid.get() {
             return Ok(());
         }
-        let word = self.word();
+        let word = &self.word;
         let mut second = SW_FILE_LOCK_DEFAULT_SECOND;
         loop {
             if word
@@ -141,7 +146,7 @@ impl CoroutineLock {
         if (host.current)().is_none() {
             return outside(host);
         }
-        let word = self.word();
+        let word = &self.word;
         if word.load(Ordering::Relaxed) == 0 {
             return Ok(());
         }
@@ -211,10 +216,10 @@ mod tests {
         }
         result == 0
     }
-    fn wait(_: &AtomicU32) -> bool {
+    fn wait(_: &Arc<LockWord>) -> bool {
         pause(0.0)
     }
-    fn wake(_: &AtomicU32) -> bool {
+    fn wake(_: &Arc<LockWord>) -> bool {
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.wakes += 1;

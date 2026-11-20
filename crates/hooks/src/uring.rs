@@ -20,9 +20,11 @@ use std::io::{self, IoSlice};
 use std::os::fd::AsRawFd;
 use std::ptr;
 use std::rc::Rc;
-use std::sync::atomic::AtomicU32;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use swoole_rs_corebase::coroutine::Waker;
 use swoole_rs_corebase::lent::ReadVec;
+use swoole_rs_corebase::locks::coroutine::LockWord;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::set_errno;
 use swoole_rs_corebase::sys::{self as os, ReadSlot};
@@ -105,6 +107,7 @@ struct Request {
 /// arrives, so that completion reaches no later request.
 #[derive(Default)]
 struct Slot {
+    futex: Option<Arc<LockWord>>,
     id: u64,
     waker: Option<Waker>,
     result: Option<io::Result<isize>>,
@@ -165,6 +168,7 @@ impl Slots {
             self.release(id);
             return None;
         }
+        slot.futex = None;
         slot.result = Some(result);
         slot.waker.take()
     }
@@ -190,6 +194,7 @@ pub struct Uring {
     /// Taken out within one queue operation. Boxed, so a
     /// take moves a pointer.
     ring: Cell<Option<Box<IoUring>>>,
+    creator: u32,
     /// The ring's fd.
     fd: c_int,
     host: &'static Host,
@@ -200,6 +205,74 @@ pub struct Uring {
     waiting: Cell<VecDeque<Request>>,
     /// Completed requests' user data and results.
     ready: Cell<Vec<(u64, isize)>>,
+}
+
+impl Drop for Uring {
+    fn drop(&mut self) {
+        let slots = self.slots.get_mut();
+        if !slots.slots.iter().any(|slot| slot.futex.is_some()) {
+            return;
+        }
+        for request in self.waiting.get_mut().drain(..) {
+            if let Some(slot) = slots.slot(request.entry.get_user_data()) {
+                slot.futex = None;
+            }
+        }
+        // A fork inherits the parent's ring. Only its creator may consume its CQEs
+        // or cancel its operations. Do not submit pending SQEs during shutdown.
+        if self.creator == std::process::id()
+            && let Some(ring) = self.ring.get_mut()
+        {
+            let reap = |slots: &mut Slots, ring: &mut IoUring| {
+                for cqe in ring.completion() {
+                    if let Some(slot) = slots.slot(cqe.user_data()) {
+                        slot.futex = None;
+                    }
+                }
+            };
+            reap(slots, ring);
+            for slot in &slots.slots {
+                if slot.futex.is_some() {
+                    // A zero deadline bounds teardown. Only the original CQE proves
+                    // release, including when cancellation returns ENOENT or times out.
+                    _ = ring.submitter().register_sync_cancel(
+                        Some(Timespec::new()),
+                        io_uring::types::CancelBuilder::user_data(slot.id),
+                    );
+                }
+            }
+            reap(slots, ring);
+        }
+
+        let words: Vec<_> = slots
+            .slots
+            .iter_mut()
+            .filter_map(|slot| slot.futex.take())
+            .collect();
+        if !words.is_empty() {
+            retain_unconfirmed(words);
+        }
+    }
+}
+
+/// Closing the ring can release kernel resources asynchronously. With no original
+/// CQE and no reactor left to reap it, keep these addresses until process exit.
+/// Link each batch to its predecessor without taking a lock inherited at fork.
+fn retain_unconfirmed(words: Vec<Arc<LockWord>>) {
+    struct Batch {
+        _words: Vec<Arc<LockWord>>,
+        previous: *mut Batch,
+    }
+    static LAST: AtomicPtr<Batch> = AtomicPtr::new(ptr::null_mut());
+    let batch = Box::leak(Box::new(Batch {
+        _words: words,
+        previous: ptr::null_mut(),
+    }));
+    let address = ptr::from_mut(batch);
+    LAST.update(Ordering::Release, Ordering::Relaxed, |previous| {
+        batch.previous = previous;
+        address
+    });
 }
 
 use swoole_rs_corebase::sys::errno;
@@ -319,10 +392,20 @@ impl Event {
 
     /// Submit and suspend until the completion; the result as upstream's `execute`.
     fn execute(self, host: &Host) -> io::Result<isize> {
+        self.execute_owned(host, None)
+    }
+
+    fn execute_owned(self, host: &Host, futex: Option<Arc<LockWord>>) -> io::Result<isize> {
         let Some(engine) = (host.instance)() else {
             return Err(io::Error::last_os_error());
         };
-        let id = engine.slots.with_taken(Slots::open)?;
+        let id = engine.slots.with_taken(|slots| {
+            let id = slots.open()?;
+            if let Some(slot) = slots.slot(id) {
+                slot.futex = futex;
+            }
+            Ok::<_, io::Error>(id)
+        })?;
         // The linked timeout's entry points into this frame, which keeps the event
         // until the completion.
         engine.dispatch(Request {
@@ -529,6 +612,7 @@ pub fn open(config: Config, host: &'static Host) -> Opened {
             })
     });
     let engine = Uring {
+        creator: std::process::id(),
         fd: ring.as_raw_fd(),
         ring: Cell::new(Some(Box::new(ring))),
         host,
@@ -689,6 +773,28 @@ fn file_status(result: io::Result<isize>) -> io::Result<()> {
     result.map(|_| ())
 }
 
+/// Wait on the owned word. The slot keeps its address live through completion.
+/// # Errors
+/// The ring or the futex operation failed.
+pub fn futex_wait(host: &Host, word: &Arc<LockWord>) -> io::Result<c_int> {
+    let entry =
+        opcode::FutexWait::new(word.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32).build();
+    Event::new(host, entry)
+        .execute_owned(host, Some(Arc::clone(word)))
+        .map(CCast::c_cast::<c_int>)
+}
+
+/// Wake a waiter on the owned word.
+/// # Errors
+/// The ring or the futex operation failed.
+pub fn futex_wakeup(host: &Host, word: &Arc<LockWord>) -> io::Result<c_int> {
+    let entry =
+        opcode::FutexWake::new(word.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32).build();
+    Event::new(host, entry)
+        .execute_owned(host, Some(Arc::clone(word)))
+        .map(CCast::c_cast::<c_int>)
+}
+
 /// One request per operation, whose entries carry no pointer but their borrowed
 /// arguments' (a vector's include the buffers its iovecs name, in its direction).
 macro_rules! safe_operations {
@@ -722,10 +828,6 @@ safe_operations! {
         timeout timeout, opcode::Read::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), byte_count;
     pub fn write(fd: c_int, buf: &[u8], timeout: f64) -> io::Result<usize>,
         timeout timeout, opcode::Write::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), byte_count;
-    pub fn futex_wait(futex: &AtomicU32) -> io::Result<c_int>,
-        timeout -1.0, opcode::FutexWait::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), |result: io::Result<isize>| result.map(CCast::c_cast::<c_int>);
-    pub fn futex_wakeup(futex: &AtomicU32) -> io::Result<c_int>,
-        timeout -1.0, opcode::FutexWake::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), |result: io::Result<isize>| result.map(CCast::c_cast::<c_int>);
     /// `IORING_OP_TIMEOUT` for `ts`.
     fn timer(ts: &Timespec) -> io::Result<()>,
         timeout -1.0, opcode::Timeout::new(ts), file_status;
@@ -1229,7 +1331,7 @@ mod tests {
             events: libc::POLLIN,
             revents: libc::POLLOUT,
         };
-        let word = AtomicU32::new(1);
+        let word = Arc::new(LockWord::Private(std::sync::atomic::AtomicU32::new(1)));
         set_errno(libc::EPERM);
         let errors = [
             waitpid(&host, -1, Some(&mut status), 0, 1.0).unwrap_err(),
@@ -1424,6 +1526,112 @@ mod tests {
             "the next use has a fresh number"
         );
         assert_eq!(slots.close(first).and_then(Result::ok), Some(3));
+    }
+
+    #[test]
+    fn abandoned_futex_wait_keeps_its_word_until_the_original_completion() {
+        testing::with_config(
+            Config {
+                probe_futex: true,
+                ..Config::default()
+            },
+            || {
+                let engine = (testing::HOST.instance)().unwrap();
+                let early = Host {
+                    suspend: |_, _, _| {},
+                    ..testing::HOST
+                };
+                let word = Arc::new(LockWord::Private(std::sync::atomic::AtomicU32::new(1)));
+                let owner = Arc::downgrade(&word);
+                assert_eq!(futex_wait(&early, &word).unwrap(), 0);
+                drop(word);
+                let id = engine.slots.with_taken(|slots| {
+                    slots
+                        .slots
+                        .iter()
+                        .find(|slot| slot.abandoned && slot.futex.is_some())
+                        .unwrap()
+                        .id
+                });
+                assert_eq!(
+                    owner.strong_count(),
+                    1,
+                    "the original request owns the word"
+                );
+                engine.push(&[opcode::AsyncCancel::new(id)
+                    .build()
+                    .user_data(TIMEOUT_EVENT)]);
+                let results = engine
+                    .ring
+                    .with_box(|ring| {
+                        ring.submit_and_wait(2).unwrap();
+                        ring.completion()
+                            .map(|entry| (entry.user_data(), entry.result()))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap();
+                assert!(results.contains(&(id, -libc::ECANCELED)), "{results:?}");
+                assert!(
+                    results
+                        .iter()
+                        .any(|&(event, result)| event == TIMEOUT_EVENT && result >= 0),
+                    "{results:?}"
+                );
+                assert_eq!(owner.strong_count(), 1);
+                engine
+                    .slots
+                    .with_taken(|slots| slots.complete(id, complete(-(libc::ECANCELED as isize))));
+                assert_eq!(owner.strong_count(), 0, "the original CQE released it");
+            },
+        );
+    }
+
+    #[test]
+    fn forced_shutdown_drops_only_confirmed_or_unpublished_futex_owners() {
+        let word = || Arc::new(LockWord::Private(std::sync::atomic::AtomicU32::new(0)));
+        let (queued, finished, unconfirmed) = (word(), word(), word());
+        testing::with_engine(|| {
+            let engine = (testing::HOST.instance)().unwrap();
+            let slot = |word: &Arc<LockWord>| {
+                engine.slots.with_taken(|slots| {
+                    let id = slots.open().unwrap();
+                    slots.slot(id).unwrap().futex = Some(Arc::clone(word));
+                    id
+                })
+            };
+            let id = slot(&queued);
+            engine.waiting.with_taken(|queue| {
+                queue.push_back(Request {
+                    entry: opcode::Nop::new().build().user_data(id),
+                    timeout: None,
+                });
+            });
+            engine.push(&[opcode::FutexWake::new(
+                finished.as_ptr(),
+                1,
+                FUTEX_BITSET_MATCH_ANY,
+                FUTEX2_SIZE_U32,
+            )
+            .build()
+            .user_data(slot(&finished))]);
+            engine
+                .ring
+                .with_box(|ring| ring.submit_and_wait(1))
+                .unwrap()
+                .unwrap();
+            // This SQE has no CQE. Teardown must not submit it to infer completion.
+            engine.push(&[opcode::FutexWake::new(
+                unconfirmed.as_ptr(),
+                1,
+                FUTEX_BITSET_MATCH_ANY,
+                FUTEX2_SIZE_U32,
+            )
+            .build()
+            .user_data(slot(&unconfirmed))]);
+        });
+        assert_eq!(Arc::strong_count(&queued), 1);
+        assert_eq!(Arc::strong_count(&finished), 1);
+        assert_eq!(Arc::strong_count(&unconfirmed), 2);
     }
 
     #[test]
