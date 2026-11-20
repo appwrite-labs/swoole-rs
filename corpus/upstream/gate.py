@@ -100,6 +100,8 @@ def rows(reports):
                      'status': row['status'], 'upstream_status': row.get('upstream_status')}
             if 'leftovers' in row:
                 entry['leftovers'] = row['leftovers']
+            if row.get('racy'):
+                entry['racy'] = row['racy']
             if row['status'] in ('excluded', 'unsupported'):
                 entry['reason'] = row.get('detail', '')
             elif row['status'] == 'skipped':
@@ -138,8 +140,11 @@ def resource_regressions(results):
 def compare(results):
     """(regressions, failing on both): a missing result counts as not passed."""
     status = defaultdict(dict)
+    # A racy original run with --run-racy is reported (racy_listing), not gated.
+    racy = {row['test'] for row in results if row.get('racy')}
     for row in results:
-        status[row['test']][row['engine']] = row['status']
+        if row['test'] not in racy:
+            status[row['test']][row['engine']] = row['status']
     others = sorted({row['engine'] for row in results} - {'upstream'})
     regressions = sorted(f'{test} ({engine}: {engines.get(engine, "missing")})' for test, engines in status.items()
                          if engines.get('upstream') == 'passed' and test not in PENDING
@@ -256,6 +261,17 @@ def mark_reruns(results, rechecked):
             row['rerun'] = 'passed'
 
 
+def racy_listing(results):
+    """The racy originals run with --run-racy, each engine's status: reported, not gated."""
+    runs = defaultdict(dict)
+    for row in results:
+        if row.get('racy'):
+            runs[row['test']][row['engine']] = row['status']
+    return listing('racy originals run (reported, not gated)',
+                   [f'{test}: ' + ', '.join(f'{engine} {status}' for engine, status in sorted(engines.items()))
+                    for test, engines in sorted(runs.items())])
+
+
 def listing(title, tests):
     return [f'<details><summary>{len(tests)} {title}</summary>', '', *[f'- `{test}`' for test in tests], '', '</details>', '']
 
@@ -294,6 +310,7 @@ def markdown(results, rechecked=None, stubbed=()):
     elif len(engines) > 1:
         lines += listing('passing on upstream but not here (regressions)', regressions)
         lines += listing('failing on upstream too', both)
+    lines += racy_listing(results)
     lines += listing('PHPT resource regressions', resource_regressions(results))
     reported = [f'{row["test"]} ({row["engine"]}: {row["report"]})' for row in results if row.get('report')]
     if reported:

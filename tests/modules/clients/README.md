@@ -90,11 +90,16 @@ binding (an echo, the 403 proxy reply, a slow reader): the cases assert only on
 the client. Excluded as before: `bind` (EACCES, not EINVAL, off a root container),
 `async_tcp_socks5_proxy_handshake_fail` (www.baidu.com:80 timing out a SOCKS5
 greeting), `async_tcp_ssl_handshake_fail` (external network: its handshake with
-www.baidu.com:80 has a 1 s timeout the round trip sometimes exceeds), the nine proxy cases (a local HTTP or SOCKS5 proxy) and
+www.baidu.com:80 has a 1 s timeout the round trip sometimes exceeds), and
 `sync_ssl_sendfile`: each `recv` lands at the buffer's start, and www.baidu.com's
 ~730 KB page fills the 64 KB buffer with reads no larger than a TLS record, so
 the bytes the assertion finds "baidu.com" in are overwritten and the rest were
 never written.
+The merge tier runs all nine proxy cases against Tinyproxy and SOCKS5 on the
+upstream ports. The proxies resolve `www.baidu.com` to a local HTTP/TLS server
+that returns the request's Host header. In the no-DNS-tunnel case the client
+resolves `core-tests-origin.test` to that same server before sending its IPv4
+address to SOCKS5. The HTTP requests and response assertions are upstream's.
 `connect_timeout` and `async_connect_timeout` connect to a local listener whose
 accept queue is full, not to the address upstream assumes drops the SYN
 (19.168.0.99, 192.168.1.199): a network that rejects the route answers

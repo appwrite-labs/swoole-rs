@@ -1223,14 +1223,16 @@ fn proxy_sync_test(client: &Client<'_>, https: bool) {
         .socks5_dns_tunnel()
         .is_some_and(|tunnel| *tunnel == 0)
     {
-        let name = cstring(TEST_DOMAIN_BAIDU);
+        let resolve_host = std::env::var("SWOOLE_TEST_PROXY_RESOLVE_HOST")
+            .unwrap_or_else(|_| TEST_DOMAIN_BAIDU.to_owned());
+        let name = cstring(&resolve_host);
         if let Some(addr) = swoole_rs_corebase::gethostbyname(AF_INET, &name) {
             let addr = addr.map(|byte| byte.to_ne_bytes()[0]);
             host = std::net::Ipv4Addr::new(addr[0], addr[1], addr[2], addr[3]).to_string();
         } else {
             host.clear();
         }
-        eprintln!("Resolved domain {TEST_DOMAIN_BAIDU} to {host}");
+        eprintln!("Resolved domain {resolve_host} to {host}");
     }
 
     assert_eq!(

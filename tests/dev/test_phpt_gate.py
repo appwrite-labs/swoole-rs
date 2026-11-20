@@ -146,6 +146,29 @@ class PhptGate(unittest.TestCase):
                          ['racy original: fails 14% on both engines', 'missing capabilities: thread_context'])
         self.assertIn('1 never run (racy originals)', markdown(results + never))
 
+    def test_racy_originals_run_are_reported_not_gated(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('phpt_run', Path(__file__).resolve().parents[2] / 'corpus/upstream/run.py')
+        run = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(run)
+        with tempfile.TemporaryDirectory() as temp:
+            report = Path(temp) / 'shard.json'
+            report.write_text(json.dumps({'results': [
+                {'test': 'tests/r/1.phpt', 'module': 'r', 'engine': engine, 'status': status,
+                 'racy': 'the scheduler decides'}
+                for engine, status in [('upstream', 'passed'), ('cargo', 'failed')]] + [
+                {'test': 'tests/r/2.phpt', 'module': 'r', 'engine': engine, 'status': status}
+                for engine, status in [('upstream', 'passed'), ('cargo', 'failed')]]}))
+            results = list(rows([report]))
+        self.assertEqual([r.get('racy') for r in results], ['the scheduler decides'] * 2 + [None] * 2)
+        # Only the plain test is a regression; the racy one is listed with each engine's status.
+        self.assertEqual(flagged(results), ['tests/r/2.phpt'])
+        self.assertIn('- `tests/r/1.phpt: cargo failed, upstream passed`', markdown(results))
+        self.assertFalse(run.verdict_failed({'test': 'tests/r/1.phpt', 'status': 'failed', 'racy': 'x'}, True))
+        self.assertTrue(run.verdict_failed({'test': 'tests/r/2.phpt', 'status': 'failed'}, False))
+        # ENVIRONMENT names RACY entries only; --run-racy runs the rest.
+        self.assertLessEqual(run.ENVIRONMENT, set(run.RACY))
+
     def test_resource_regression_fails_independently_of_phpt_reruns(self):
         from corpus.upstream.gate import main
         with tempfile.TemporaryDirectory() as directory:
