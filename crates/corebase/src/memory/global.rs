@@ -6,15 +6,21 @@ use std::ffi::c_void;
 use std::ptr;
 
 /// Page invariant: every entry of `pages` is a live mapping whose payload is 8-aligned
-/// and `page_size` bytes, which this registry made and unmaps on drop, and
+/// and `page_size` bytes, which this registry made. Only pages with permanent words stay mapped on drop.
 /// `offset <= page_size` counts the bytes already allocated in the last page. A
 /// mapping starts zeroed and no block is handed out twice, so the bytes at and after
 /// `offset` are zero.
 pub(crate) struct Global {
-    pages: Vec<Shm>,
+    pages: Vec<Page>,
     pub(crate) page_size: u32,
     offset: usize,
     shared: bool,
+}
+
+struct Page {
+    mapping: Shm,
+    /// A process-lifetime reference escaped from this page.
+    permanent: bool,
 }
 
 /// `requested` rounded up to whole `system` pages, as `SW_MEM_ALIGNED_SIZE_EX`.
@@ -56,7 +62,10 @@ impl Global {
         if page.is_null() {
             return false;
         }
-        self.pages.push(page);
+        self.pages.push(Page {
+            mapping: page,
+            permanent: false,
+        });
         self.offset = 0;
         true
     }
@@ -85,9 +94,20 @@ impl Global {
         // 8-aligned. The payload is zero already: the mapping's own, never handed out.
         // The header stays unwritten room: upstream's `MemoryBlock::size`, which nothing
         // reads (`free` is a no-op), so blocks and capacity stay upstream's.
-        let block = page.as_ptr().cast::<u8>().wrapping_add(self.offset + 8);
+        let block = page
+            .mapping
+            .as_ptr()
+            .cast::<u8>()
+            .wrapping_add(self.offset + 8);
         self.offset += total;
         block.cast()
+    }
+
+    /// Keep the mapping containing the most recent allocation across pool destruction.
+    pub(crate) fn keep_last_page(&mut self) {
+        if let Some(page) = self.pages.last_mut() {
+            page.permanent = true;
+        }
     }
 
     /// `GlobalMemory::capacity()`.
@@ -104,7 +124,9 @@ impl Global {
 impl Drop for Global {
     fn drop(&mut self) {
         for page in &mut self.pages {
-            page.free();
+            if !page.permanent {
+                page.mapping.free();
+            }
         }
     }
 }
