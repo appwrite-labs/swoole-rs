@@ -59,6 +59,12 @@ path = "../../tests/modules/locks/constructor.rs"
 name = "hash_originals"
 path = "../../tests/modules/utilities/hash.rs"
 
+# Fork from the main thread so both processes run normal shutdown under LSan.
+[[test]]
+name = "fork_pool_pages"
+path = "../../tests/modules/memory/fork_pool_pages.rs"
+harness = false
+
 [dev-dependencies]
 swoole-rs-crc32 = { path = "../crc32" }
 swoole-rs-oracle = { path = "../oracle" }

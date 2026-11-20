@@ -354,41 +354,6 @@ fn pooled_words_balance_their_pins_across_pool_replacement() {
 }
 
 #[test]
-#[cfg(not(miri))]
-fn child_releases_its_page_pin_without_unmapping_the_parent_word() {
-    use std::sync::atomic::AtomicU32;
-
-    if crate::utilities::isolated_process::run_in_child(
-        "memory::members::tests::child_releases_its_page_pin_without_unmapping_the_parent_word",
-    ) {
-        return;
-    }
-    assert!(crate::swr_v1_core_init());
-    pool::init();
-    let mut word = Some(pool::PooledWord::<AtomicU32>::allocate().unwrap());
-    let page = pool::page();
-    let pid = crate::fork_exec::<()>(|| {
-        // Access replaces the inherited pool before the child deletes its own generation.
-        assert!(pool::memory_size() > 0);
-        pool::delete();
-        let inherited = word.take().unwrap();
-        inherited.store(73, Ordering::SeqCst);
-        drop(inherited);
-        assert_eq!(page.strong_count(), 0);
-        Ok(())
-    })
-    .unwrap();
-    assert!(pid > 0);
-    let mut status = 0;
-    assert_eq!(sys::waitpid(pid, Some(&mut status), 0).unwrap(), Some(pid));
-    assert_eq!(status, 0);
-    assert_eq!(word.as_ref().unwrap().load(Ordering::SeqCst), 73);
-    pool::delete();
-    drop(word);
-    assert_eq!(page.strong_count(), 0);
-}
-
-#[test]
 #[cfg(not(miri))] // The process-wide pool and pthread locks need an isolated process.
 fn shared_table_keeps_its_pin_until_the_last_handle_drops() {
     use std::rc::Rc;
@@ -524,14 +489,18 @@ fn child_can_replace_a_shared_pool_while_a_parent_thread_holds_both_guards() {
             barrier.wait();
         });
         barrier.wait();
-        let pid = crate::fork_exec::<()>(|| {
+        let pid = sys::fork();
+        if pid == 0 {
             // Bound a regression that waits forever on either inherited guard.
             unsafe { libc::alarm(5) };
             let allocated = pool.alloc(8).is_ok_and(|block| !block.is_null());
+            let generation = Arc::downgrade(&pool.snapshot().unwrap());
             pool.delete();
-            std::process::exit(i32::from(!allocated));
-        })
-        .unwrap();
+            let released = generation.strong_count() == 0;
+            // libtest's other threads belong to the parent. fork_pool_pages exercises
+            // normal child shutdown separately from this multithreaded guard probe.
+            unsafe { libc::_exit(i32::from(!(allocated && released))) };
+        }
         let mut status = 0;
         let waited = (pid > 0).then(|| sys::waitpid(pid, Some(&mut status), 0));
         barrier.wait();
