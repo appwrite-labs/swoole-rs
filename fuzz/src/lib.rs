@@ -409,8 +409,10 @@ pub fn framing_length(bytes: &[u8]) {
             assert_eq!((want, header as i64), (0, got), "need more for {bytes:?}");
         }
         DefaultLength::Total(got) => assert_eq!(want as i64, got, "total for {bytes:?}"),
-        // Outside the compared domain only an error must match.
-        status => assert!(want < 0, "error {status:?} vs {want} for {bytes:?}"),
+        // Outside the compared domain the pin's error must be matched by exactly `Invalid`:
+        // every format FORMATS picks is known, so `Format` is never right here.
+        DefaultLength::Invalid => assert!(want < 0, "invalid vs {want} for {bytes:?}"),
+        DefaultLength::Format => panic!("unknown format for a known one in {bytes:?}"),
     }
 }
 
