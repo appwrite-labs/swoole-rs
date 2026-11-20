@@ -152,9 +152,10 @@ user resolver); lookups go through `resolve::name_resolver_lookup`. The DNS
 requests drive the resolver record (`swr_v1_core_resolver_*`) as
 `network::gethostbyname`/`getaddrinfo` do, and `Address` is crates/clients'
 `address::assign`, `url` and `address_string` with the `swr_v1_clients_address_*`
-exports. Excluded as in the
-GoogleTest run: `dns.lookup1`, `dns.lookup_ipv6` and `dns.bad_family` (external
-DNS and network) and `dns.cancel` (a lookup that misses the resolver cache).
+exports. `dns.lookup1`, `dns.lookup_ipv6` and `dns.bad_family` send their original
+names to a local UDP resolver that returns an IPv4 or IPv6 loopback address.
+For `dns.cancel` the local resolver socket stays open without replying, so the
+original cancellation timer fires while the lookup is pending.
 `address.record` is the former repo-owned `address_record.cc` check, with the
 same assertions: the record's fields and value copies, and the per-thread scratch
 `get_addr` and `verify_ip` share.

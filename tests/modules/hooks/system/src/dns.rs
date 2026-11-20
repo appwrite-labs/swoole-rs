@@ -135,12 +135,51 @@ fn getaddrinfo(hostname: &CStr, family: c_int) -> Getaddrinfo {
     }
 }
 
+/// Each case runs in its own process with a fresh resolver configuration.
+fn local_dns() -> std::net::UdpSocket {
+    let peer = std::net::UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+    peer.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    set_dns_server(&peer.local_addr().unwrap().to_string());
+    peer
+}
+
+/// Answer the original question with a loopback address of the expected family.
+fn with_answer(kind: u8, address: &[u8], case: impl FnOnce()) {
+    let peer = local_dns();
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            let mut query = [0; 512];
+            let (len, client) = peer.recv_from(&mut query).unwrap();
+            // Skip the encoded name through its root label, then QTYPE and QCLASS.
+            let end = 12 + query[12..len].iter().position(|&b| b == 0).unwrap() + 5;
+            let question = &query[12..end];
+            let record_type = [0, kind, 0, 1]; // QTYPE and class IN
+            assert!(question.ends_with(&record_type));
+            let mut reply = query[..2].to_vec();
+            reply.extend_from_slice(&[0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0]);
+            reply.extend_from_slice(question);
+            reply.extend_from_slice(&[0xc0, 12]);
+            reply.extend_from_slice(&record_type);
+            reply.extend_from_slice(&60_u32.to_be_bytes());
+            reply.extend_from_slice(&u16::try_from(address.len()).unwrap().to_be_bytes());
+            reply.extend_from_slice(address);
+            peer.send_to(&reply, client).unwrap();
+        });
+        run(case);
+    });
+}
+
 fn lookup1() {
-    run(|| assert!(!lookup(c"www.baidu.com", AF_INET, 10.0).is_empty()));
+    with_answer(1, &std::net::Ipv4Addr::LOCALHOST.octets(), || {
+        assert!(!lookup(c"www.baidu.com", AF_INET, 10.0).is_empty())
+    });
 }
 
 fn lookup_ipv6() {
-    run(|| assert!(!lookup(c"www.google.com", AF_INET6, 2.0).is_empty()));
+    with_answer(28, &std::net::Ipv6Addr::LOCALHOST.octets(), || {
+        assert!(!lookup(c"www.google.com", AF_INET6, 2.0).is_empty())
+    });
 }
 
 fn domain_not_found() {
@@ -151,10 +190,14 @@ fn domain_not_found() {
 }
 
 fn bad_family() {
-    run(|| assert!(!lookup(c"www.google.com", 9999, 2.0).is_empty()));
+    with_answer(1, &std::net::Ipv4Addr::LOCALHOST.octets(), || {
+        assert!(!lookup(c"www.google.com", 9999, 2.0).is_empty())
+    });
 }
 
 fn cancel() {
+    // Keep the query pending until the coroutine cancels it.
+    let _peer = local_dns();
     run(|| {
         let co = current();
         go(move || {
