@@ -92,32 +92,19 @@ static void sqlite_handle_closer(pdo_dbh_t *dbh) /* {{{ */
 }
 /* }}} */
 
+extern bool swr_pdo_sqlite_prepare(pdo_dbh_t *, const zend_string *, zval *, sqlite3_stmt **);
+
 static bool sqlite_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *stmt, zval *driver_options)
 {
 	pdo_sqlite_db_handle *H = (pdo_sqlite_db_handle *)dbh->driver_data;
 	pdo_sqlite_stmt *S = ecalloc(1, sizeof(pdo_sqlite_stmt));
-	int i;
-	const char *tail;
 
 	S->H = H;
 	stmt->driver_data = S;
 	stmt->methods = &swoole_sqlite_stmt_methods;
 	stmt->supports_placeholders = PDO_PLACEHOLDER_POSITIONAL|PDO_PLACEHOLDER_NAMED;
 
-	if (PDO_CURSOR_FWDONLY != pdo_attr_lval(driver_options, PDO_ATTR_CURSOR, PDO_CURSOR_FWDONLY)) {
-		H->einfo.errcode = SQLITE_ERROR;
-		pdo_sqlite_error(dbh);
-		return false;
-	}
-
-	i = sqlite3_prepare_v2(H->db, ZSTR_VAL(sql), ZSTR_LEN(sql), &S->stmt, &tail);
-	if (i == SQLITE_OK) {
-		return true;
-	}
-
-	pdo_sqlite_error(dbh);
-
-	return false;
+	return swr_pdo_sqlite_prepare(dbh, sql, driver_options, &S->stmt);
 }
 
 /* The bundled connection record is still allocated by the C factory. */
