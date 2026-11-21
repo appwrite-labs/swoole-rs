@@ -31,18 +31,8 @@ OCIEnv *swr_oci_env(pdo_dbh_t *dbh);
 ub4 swr_oci_max_char_width(pdo_dbh_t *dbh);
 ub4 swr_oci_prefetch(pdo_dbh_t *dbh);
 
-typedef struct {
-    OCIDefine *def;
-    ub2 fetched_len;
-    ub2 retcode;
-    sb2 indicator;
-
-    char *data;
-    ub4 datalen;
-
-    ub2 dtype;
-
-} pdo_oci_column;
+/* A statement's result columns (crates/oci/src/columns.rs), null before its first execution. */
+struct swr_oci_columns;
 
 typedef struct {
     pdo_dbh_t *dbh;
@@ -51,7 +41,7 @@ typedef struct {
     sword last_err;
     ub2 stmt_type;
     ub4 exec_type;
-    pdo_oci_column *cols;
+    struct swr_oci_columns *cols;
     struct swr_oci_error *einfo;
     unsigned int have_blobs : 1;
 } pdo_oci_stmt;

@@ -65,12 +65,12 @@ const SQLT_TIMESTAMP_LTZ: u16 = 232;
 
 unsafe extern "C" {
     /// The statement's OCI handle (`S->stmt`), live while the statement is.
-    safe fn swr_oci_stmt_handle(stmt: &PdoStmt) -> Live<Stmt>;
+    pub(crate) safe fn swr_oci_stmt_handle(stmt: &PdoStmt) -> Live<Stmt>;
     /// The statement's own error handle (`S->err`), live while the statement is.
-    safe fn swr_oci_stmt_err(stmt: &PdoStmt) -> Live<Error>;
+    pub(crate) safe fn swr_oci_stmt_err(stmt: &PdoStmt) -> Live<Error>;
     /// OCI's own declaration: column `position`'s parameter descriptor, written
     /// to `param` (null when it fails).
-    safe fn OCIParamGet(
+    pub(crate) safe fn OCIParamGet(
         stmt: Live<Stmt>,
         kind: u32,
         err: Live<Error>,
@@ -81,7 +81,7 @@ unsafe extern "C" {
     /// written in native order to the start of `value` (a `u32`, aligned for
     /// each), with the size typed as the null it is here.
     #[link_name = "OCIAttrGet"]
-    safe fn OCIAttrGetParam(
+    pub(crate) safe fn OCIAttrGetParam(
         param: Live<Param>,
         kind: u32,
         value: &mut u32,
@@ -94,7 +94,7 @@ unsafe extern "C" {
 }
 
 /// A column's parameter descriptor, freed when dropped.
-struct Descriptor(Live<Param>);
+pub(crate) struct Descriptor(pub(crate) Live<Param>);
 
 impl Drop for Descriptor {
     fn drop(&mut self) {
