@@ -3,6 +3,7 @@
 // coroutine redis and mysql clients when SOAK_REDIS / SOAK_MYSQL name a host.
 // Each worker publishes memory_get_usage() to a shared table every second.
 // SOAK_LEAK=1 keeps about 60 bytes per request alive: soak.py's self-test.
+// /bail/{exit,fatal,read} end the request in a bailout (soak.py --bailout, #5283).
 $server = new Swoole\WebSocket\Server('127.0.0.1', (int) getenv('TEST_PORT'), SWOOLE_PROCESS);
 $server->set(['worker_num' => 2, 'task_worker_num' => 2, 'open_http2_protocol' => true,
     'hook_flags' => SWOOLE_HOOK_TCP, 'log_level' => SWOOLE_LOG_WARNING]);
@@ -54,6 +55,28 @@ $server->on('request', static function ($request, $response) use ($server, $memo
             // per-request leak in them would be reset before it shows.
             $body = $server->reload(true) ? 'reloading' : 'busy';
             break;
+        case '/bail/exit':
+            // exit() with other coroutines suspended.
+            for ($i = 0; $i < 3; $i++) {
+                go(static fn () => Swoole\Coroutine::sleep(100));
+            }
+            $response->end('ok');
+            exit(0);
+        case '/bail/fatal':
+            // A fatal error (memory_limit).
+            $response->end('ok');
+            ini_set('memory_limit', '8M');
+            $bytes = str_repeat('x', 64 * 1024 * 1024);
+            return;
+        case '/bail/read':
+            // A fatal error while a coroutine is parked in a hooked read: a TCP
+            // connection to this server that never sends a request.
+            $peer = stream_socket_client('tcp://127.0.0.1:' . getenv('TEST_PORT'), $errno, $error, 5);
+            go(static fn () => fread($peer, 1));
+            $response->end('ok');
+            ini_set('memory_limit', '8M');
+            $bytes = str_repeat('x', 64 * 1024 * 1024);
+            return;
         case '/stats':
             $body = json_encode(['worker_errors' => $workerErrors->get(),
                 'memory' => iterator_to_array($memory), 'stats' => $server->stats()]);

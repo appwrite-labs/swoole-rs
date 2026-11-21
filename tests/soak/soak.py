@@ -13,6 +13,14 @@ window, above the --max-* thresholds plus, with --control, the largest growth of
 metric in the control engine's report (upstream under the same load), scaled up when
 this run completed more load-driver iterations than the control. --leak runs the server with a per-request leak
 and inverts the verdict: it passes only when the growth check catches the leak.
+
+--bailout CASE instead sends --requests requests to /bail/CASE, each ending in a bailout
+(exit() with coroutines suspended, a fatal error, or a fatal error while a coroutine is
+parked in a hooked read), and fits the RSS of the processes alive throughout against the
+requests sent: a bailout ends its worker on both engines, which the manager restarts, so
+what one could leak lives on only in the master and manager (#5283). With --control it
+fails when this engine grows more per request than the control plus
+--max-rss-per-request.
 """
 import argparse
 import http.client
@@ -254,6 +262,67 @@ def soak(engine, args, tmpdir):
             'samples': samples}
 
 
+def bailout(engine, args, tmpdir):
+    """Requests to /bail/CASE: the process tree's RSS growth per request."""
+    samples, failures, workers = [], [], set()
+    path = f'/bail/{args.bailout}'
+    every = max(1, args.requests // 20)
+    try:
+        with server(engine, HERE / 'server.php', {'TMPDIR': tmpdir}) as (port, proc):
+            def send(count):
+                failed = 0
+                for _ in range(count):
+                    connection = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+                    try:
+                        connection.request('GET', path)
+                        response = connection.getresponse()
+                        if response.status != 200 or response.read() != b'ok':
+                            failed += 1
+                    except (OSError, http.client.HTTPException):
+                        failed += 1
+                    finally:
+                        connection.close()
+                return failed
+            # Warm-up: the first restarts settle the manager's and master's buffers. Its
+            # requests are left out of the fit, not of the verdict.
+            warmup = min(200, args.requests)
+            failed = send(warmup)
+            sent = 0
+            while sent < args.requests:
+                batch = min(every, args.requests - sent)
+                failed += send(batch)
+                sent += batch
+                if proc.poll() is not None:
+                    raise AssertionError(f'server exited {proc.returncode} after {sent} requests')
+                tree = children()
+                pids = descendants(proc.pid, tree)
+                workers.update(pids)
+                rss = {pid: measured[0] for pid in pids if (measured := resources(pid)) is not None}
+                samples.append({'requests': sent, 'rss': rss})
+                print(json.dumps({'requests': sent, 'processes': len(rss)}), flush=True)
+        if failed:
+            failures.append(f'{failed} of {warmup + sent} requests got no 200 ok')
+    except Exception as error:
+        failures.append(f'{type(error).__name__}: {error}')
+    per_request = None
+    # Only the processes alive at every sample, the master and manager: each bailout ends
+    # its worker, so a worker's RSS is a restart's, not a leak's.
+    lasting = set.intersection(*(set(s['rss']) for s in samples)) if samples else set()
+    if len(samples) >= 3 and lasting:
+        points = [(s['requests'], sum(s['rss'][pid] for pid in lasting)) for s in samples]
+        per_request = growth(points) / (points[-1][0] - points[0][0])
+        limit = args.max_rss_per_request
+        if args.control:
+            limit += max(0, json.loads(Path(args.control).read_text()).get('rss_per_request') or 0)
+            if per_request > limit:
+                failures.append(f'rss grew {per_request:.0f} bytes per request (limit {limit:.0f})')
+    else:
+        failures.append(f'only {len(samples)} samples, {len(lasting)} processes alive at each')
+    return {'engine': engine.metadata(), 'bailout': args.bailout, 'requests': args.requests,
+            'rss_per_request': per_request, 'lasting_processes': len(lasting), 'processes_seen': len(workers),
+            'failures': failures, 'samples': [{'requests': s['requests'], 'rss': sum(s['rss'].values())} for s in samples]}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--engine', required=True, help='NAME=/path/to/swoole.so')
@@ -270,12 +339,15 @@ def main():
     parser.add_argument('--max-zend-mib', type=float, default=1, help='per worker')
     parser.add_argument('--control', help="a control engine's report: its growth adds to the limits")
     parser.add_argument('--leak', action='store_true', help='self-test: pass only if a per-request leak is caught')
+    parser.add_argument('--bailout', choices=['exit', 'fatal', 'read'], help='requests that end in this bailout instead of the load')
+    parser.add_argument('--requests', type=int, default=5000, help='--bailout: requests to send')
+    parser.add_argument('--max-rss-per-request', type=float, default=256, help="--bailout: bytes over the control's")
     parser.add_argument('--output', default='target/reports/soak.json')
     args = parser.parse_args()
     args.warmup = args.duration * .2 if args.warmup is None else args.warmup
     [engine] = parse_engines([args.engine], args.php, args.php_extension)
     with tempfile.TemporaryDirectory(prefix='swoole-soak-') as tmpdir:
-        report = soak(engine, args, tmpdir)
+        report = bailout(engine, args, tmpdir) if args.bailout else soak(engine, args, tmpdir)
     write_report(args.output, report)
     for failure in report['failures']:
         print(f'FAIL {failure}')

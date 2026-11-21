@@ -65,6 +65,20 @@ jobs:
         run: >
           python3 tests/soak/soak.py $args --engine cargo=target/ext/swoole.so --control target/soak/upstream.json
           --duration $((minutes * 60)) --output target/soak/cargo.json
+      # Requests that end in a bailout (#5283): each ends its worker on both engines, so only
+      # the master's and manager's growth per request is fitted, and it must not exceed
+      # upstream's by more than --max-rss-per-request.
+      - name: Bailout soak against upstream
+        if: ${{ !cancelled() }}
+        run: |
+          status=0
+          for case in exit fatal read; do
+            python3 tests/soak/soak.py $args --engine upstream=target/upstream/src/modules/swoole.so --bailout $case \
+              --requests 3000 --output target/soak/bailout-$case-upstream.json || test -f target/soak/bailout-$case-upstream.json
+            python3 tests/soak/soak.py $args --engine cargo=target/ext/swoole.so --bailout $case --requests 3000 \
+              --control target/soak/bailout-$case-upstream.json --output target/soak/bailout-$case-cargo.json || status=1
+          done
+          exit $status
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:

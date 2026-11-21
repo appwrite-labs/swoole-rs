@@ -253,7 +253,11 @@ pub fn counters() -> Counters {
 /// `co->resume()` of live coroutine `cid`; nothing when none lives. As every
 /// resume, a bailout in the coroutine
 /// may longjmp over the caller's frames, leaking what they own: abandoned coroutine
-/// stacks stay allocated, but the main stack can be reused.
+/// stacks stay allocated, but the main stack can be reused. In a server that is once per
+/// bailing request only until the worker exits, which a bailout makes it do on both
+/// engines (the manager restarts it): tests/soak's `--bailout` cases measured the master
+/// and manager growing 15.9 bytes per request for `exit()` and a fatal error, and 32.1 for
+/// a fatal error during a hooked read, on both engines alike (#5283).
 ///
 /// # Safety
 /// The coroutine is parked (waiting, and switched out), and the caller owns that
