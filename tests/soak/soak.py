@@ -393,7 +393,10 @@ def threads(engine, args, tmpdir):
     if args.control:
         control = json.loads(Path(args.control).read_text())
         for metric in ('per_thread', 'per_reload'):
-            if metric in report and metric in control:
+            if metric in report and metric not in control:
+                # A control that failed to measure it gates nothing: say so.
+                failures.append(f'the control has no {metric} (its failures: {control.get("failures")})')
+            elif metric in report:
                 limit = max(0, control[metric]) + args.max_rss_per_request
                 if report[metric] > limit:
                     failures.append(f'rss grew {report[metric]:.0f} bytes {metric.replace("_", " ")} (limit {limit:.0f})')
