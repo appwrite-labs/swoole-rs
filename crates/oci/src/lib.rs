@@ -69,10 +69,19 @@ pub enum Stmt {}
 pub enum Snapshot {}
 
 /// Statement text the driver handed over: readable for the length passed beside it.
-/// As with [`Live`], only the exports' parameters make one.
+/// As with [`Live`], only the exports' parameters make one, or [`Text::of`] from
+/// bytes that outlive the call it is passed to.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct Text(*const c_uchar);
+
+impl Text {
+    /// `bytes`, readable for their length for as long as they are borrowed.
+    #[cfg(feature = "php")]
+    pub(crate) fn of(bytes: &[u8]) -> Self {
+        Self(bytes.as_ptr())
+    }
+}
 
 // OCI's own declarations of the calls that take only handles and plain values,
 // with each handle typed as the kind it is. They drive that connection alone,

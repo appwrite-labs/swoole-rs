@@ -79,6 +79,11 @@ int swr_zend_try_get_string(zval *value, zend_string **out) {
     SWR_TRAP(*out = zval_get_string(value));
 }
 
+int swr_zend_try_try_get_string(zval *value, zend_string **out) {
+    *out = NULL;
+    SWR_TRAP(*out = zval_try_get_string(value));
+}
+
 /* Whether releasing `value` runs no PHP code (no destructor, no cycle collection), so
  * it needs no trap: an uncounted value, a string, or the last reference to a plain
  * array of those. */
