@@ -1,6 +1,6 @@
 # Coverage of crates/
 
-Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus apps and swoole/library's suite, measured on `97ce799` (`tools/coverage.py`, nightly `.github/workflows/coverage.yml`). A process that exits by a signal or `_exit` records nothing.
+Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus apps and swoole/library's suite, measured on `70426a5` (`tools/coverage.py`, nightly `.github/workflows/coverage.yml`). A process that exits by a signal or `_exit` records nothing.
 
 | crate | lines | covered | entry points not reached |
 | --- | ---: | ---: | ---: |
@@ -9,35 +9,35 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 | odbc | 1,034 | 39.7% | 0 |
 | pgsql | 2,156 | 42.8% | 9 |
 | crc32 | 41 | 46.3% | 0 |
-| error-ffi | 115 | 55.7% | 6 |
+| error-ffi | 114 | 54.4% | 6 |
 | phplocks | 441 | 58.7% | 17 |
 | error | 120 | 62.5% | 0 |
 | phpredis | 195 | 66.7% | 0 |
+| ports | 1,528 | 67.0% | 0 |
 | protocols | 399 | 67.4% | 0 |
-| ports | 1,528 | 67.5% | 0 |
 | phpevents | 737 | 67.7% | 0 |
+| sqlite | 379 | 69.7% | 0 |
 | curl | 2,445 | 72.0% | 6 |
+| phpruntime | 2,592 | 72.1% | 1 |
 | phpprocess | 2,011 | 72.9% | 2 |
-| phpruntime | 2,174 | 73.6% | 1 |
-| server | 10,830 | 73.9% | 0 |
+| server | 10,830 | 73.8% | 0 |
 | phpcoroutines | 2,847 | 74.4% | 2 |
-| clients | 2,821 | 74.4% | 0 |
-| corebase | 21,325 | 75.3% | 2 |
+| clients | 2,821 | 74.5% | 0 |
+| corebase | 21,325 | 75.2% | 3 |
 | http | 4,208 | 75.5% | 0 |
-| zend | 3,659 | 76.5% | 5 |
+| zend | 3,669 | 76.6% | 5 |
+| phpswoole | 1,614 | 79.1% | 0 |
 | hooks | 4,414 | 79.3% | 1 |
-| phpswoole | 1,614 | 79.3% | 0 |
 | phpserver | 4,596 | 82.3% | 1 |
 | phpclients | 7,074 | 82.4% | 0 |
 | bus | 567 | 84.5% | 0 |
-| sqlite | 80 | 85.0% | 0 |
 | phpcollections | 557 | 85.3% | 0 |
 | phptimer | 165 | 85.5% | 0 |
 | websocket | 403 | 85.6% | 0 |
 | phphttp2 | 1,139 | 86.0% | 0 |
 | inflate | 96 | 86.5% | 0 |
 | phphttp | 5,823 | 87.3% | 0 |
-| framing | 349 | 88.8% | 0 |
+| framing | 349 | 88.5% | 0 |
 | brotli | 75 | 89.3% | 0 |
 | httpbindings | 239 | 90.4% | 0 |
 | http2 | 763 | 91.2% | 0 |
@@ -51,7 +51,7 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 | ext | 3 | 100.0% | 0 |
 | ffi | 20 | 100.0% | 0 |
 | phpstubs | 12 | 100.0% | 0 |
-| **crates/** | 89,356 | 74.6% | 104 |
+| **crates/** | 90,082 | 74.5% | 105 |
 
 # Entry points no run reached
 
@@ -60,6 +60,7 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 ## corebase
 
 - `swr_v1_core_format_result`
+- `swr_v1_coroutine_scheduler_get`
 - `swr_v1_logger_put`
 
 ## curl
