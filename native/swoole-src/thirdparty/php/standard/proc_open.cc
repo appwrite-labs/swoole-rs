@@ -63,7 +63,6 @@ SW_EXTERN_C_BEGIN
 /* crates/phpruntime (proc.rs): the environment and argv `proc_open` builds before it forks,
  * in request memory freed here (`_php_free_envp`, `efree_argv`). */
 void swr_proc_envp(HashTable *environment, char **envp, char ***envarray);
-zend_string *swr_proc_command_from_array(HashTable *command, char ***argv);
 SW_EXTERN_C_END
 
 /* {{{ _php_array_to_envp
@@ -781,6 +780,8 @@ static void efree_argv(char **argv) {
 }
 
 /* {{{ Execute a command, with specified files used for input/output */
+#ifdef PHP_WIN32
+/* Win32's proc_open; POSIX's is proc.rs's, which calls swr_proc_open_spawn below. */
 PHP_FUNCTION(swoole_proc_open) {
     zend_string *command_str;
     HashTable *command_ht;
@@ -1140,4 +1141,133 @@ PHP_FUNCTION(swoole_proc_open) {
         efree(descriptors);
     }
 }
+#else
+SW_EXTERN_C_BEGIN
+/* For proc.rs's proc_open, once it parsed its arguments, built the command, argv and
+ * environment, and ran its checks: the descriptor array, the walk over $descriptorspec,
+ * the fork, and the parent's streams into `pipes`, leaving the process resource or false
+ * in `return_value`. It takes `argv` and the environment; `command_str` and `cwd_str`
+ * stay the caller's. */
+void swr_proc_open_spawn(zend_string *command_str,
+                         char **argv,
+                         HashTable *descriptorspec,
+                         zval *pipes,
+                         zend_string *cwd_str,
+                         char *envp,
+                         char **envarray,
+                         zval *return_value) {
+    const char *cwd = cwd_str ? ZSTR_VAL(cwd_str) : NULL;
+    sw_php_process_env env;
+    int ndesc = 0;
+    descriptorspec_item *descriptors = NULL;
+    int pty_master_fd = -1, pty_slave_fd = -1;
+    php_process_id_t child;
+    sw_php_process_handle *proc;
+
+    env.envp = envp;
+    env.envarray = envarray;
+
+    descriptors = alloc_descriptor_array(descriptorspec);
+
+    /* Walk the descriptor spec and set up files/pipes */
+    {
+        /* Its own block: the gotos to exit_fail don't cross its initialization. */
+        int pty[2] = {pty_master_fd, pty_slave_fd};
+        bool walked = swr_proc_descriptors(descriptorspec, descriptors, pty, &ndesc);
+        pty_master_fd = pty[0];
+        pty_slave_fd = pty[1];
+        if (!walked) {
+            goto exit_fail;
+        }
+    }
+
+    {
+        sw_proc_exec exec = {cwd, command_str, argv, env.envarray};
+        if (!swr_proc_fork(descriptors, ndesc, &exec, &child)) {
+            close_all_descriptors(descriptors, ndesc);
+            goto exit_fail;
+        }
+    }
+
+    /* We forked/spawned and this is the parent */
+
+    pipes = zend_try_array_init(pipes);
+    if (!pipes) {
+        goto exit_fail;
+    }
+
+    proc = (sw_php_process_handle *) emalloc(sizeof(sw_php_process_handle));
+    proc->command = zend_string_copy(command_str);
+    proc->wstatus = nullptr;
+    proc->running = true;
+    proc->pipes = (zend_resource **) emalloc(sizeof(zend_resource *) * ndesc);
+    proc->npipes = ndesc;
+    proc->child = child;
+    proc->env = env;
+
+    /* Clean up all the child ends and then open streams on the parent
+     *   ends, where appropriate */
+    for (int i = 0; i < ndesc; i++) {
+        php_stream *stream = NULL;
+
+        close_descriptor(descriptors[i].childend);
+
+        if (descriptors[i].type == DESCRIPTOR_TYPE_PIPE) {
+            const char *mode_string = NULL;
+
+            switch (descriptors[i].mode_flags) {
+            case O_WRONLY:
+                mode_string = "w";
+                break;
+            case O_RDONLY:
+                mode_string = "r";
+                break;
+            case O_RDWR:
+                mode_string = "r+";
+                break;
+            }
+            stream = php_swoole_create_stream_from_pipe(descriptors[i].parentend, mode_string, NULL STREAMS_CC);
+        } else if (descriptors[i].type == DESCRIPTOR_TYPE_SOCKET) {
+            stream = swr_v1_phpruntime_stream_from_socket(descriptors[i].parentend, AF_UNIX, SOCK_STREAM, 0);
+        } else {
+            proc->pipes[i] = NULL;
+        }
+
+        if (stream) {
+            zval retfp;
+
+            /* nasty hack; don't copy it */
+            stream->flags |= PHP_STREAM_FLAG_NO_SEEK;
+
+            php_stream_to_zval(stream, &retfp);
+            add_index_zval(pipes, descriptors[i].index, &retfp);
+
+            proc->pipes[i] = Z_RES(retfp);
+            Z_ADDREF(retfp);
+        }
+    }
+
+    if (1) {
+        RETVAL_RES(zend_register_resource(proc, le_proc_open));
+    } else {
+    exit_fail:
+        _php_free_envp(env);
+        RETVAL_FALSE;
+    }
+
+    efree_argv(argv);
+#ifdef HAVE_OPENPTY
+    if (pty_master_fd != -1) {
+        close(pty_master_fd);
+    }
+    if (pty_slave_fd != -1) {
+        close(pty_slave_fd);
+    }
+#endif
+    if (descriptors) {
+        efree(descriptors);
+    }
+}
+SW_EXTERN_C_END
+#endif
 /* }}} */

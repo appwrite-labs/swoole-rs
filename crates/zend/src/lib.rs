@@ -39,7 +39,9 @@ pub mod value;
 mod zval;
 
 pub use allocator::Emalloc;
-pub use call::{Call, CallFrame, Entered, Invalid, ReturnSlot, Returned, argument_value_error};
+pub use call::{
+    ArrayOrStr, Call, CallFrame, Entered, Invalid, ReturnSlot, Returned, argument_value_error,
+};
 pub use callable::{Callable, Parsed};
 pub use class::{Class, ClassEntry, Declared, deny_unset, lookup_class};
 pub use descriptor::{

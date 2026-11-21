@@ -10,8 +10,8 @@ use core::{
 use std::ffi::CString;
 use swoole_rs_corebase::{CCast, Switch, built_with};
 use swoole_rs_zend::{
-    Array, Call, Emalloc, Key, Value, ZStr, ZString,
-    sys::{IS_RESOURCE, zend_string, zend_ulong},
+    Array, ArrayOrStr, Call, Emalloc, Key, ReturnSlot, Value, ZStr, ZString,
+    sys::{IS_RESOURCE, zend_ulong},
     value_error,
 };
 
@@ -32,6 +32,7 @@ unsafe extern "C" {
 }
 
 swoole_rs_zend::handlers! {
+    zif_swoole_proc_open => open;
     zif_swoole_proc_terminate => terminate;
     zif_swoole_proc_close => close;
     zif_swoole_proc_get_status => get_status;
@@ -146,16 +147,11 @@ fn arg_string(value: &Value, number: usize) -> Option<ZString> {
     Some(string)
 }
 
-swoole_rs_zend::exports! {
 /// `get_command_from_array`: the program (the command array's first element) and,
 /// into `argv`, each element as a NUL-terminated string behind a null, all in
-/// request memory C frees (`efree_argv`). Null, and `argv` null, once an element
+/// request memory C frees (`efree_argv`). None, and `argv` null, once an element
 /// threw.
-#[unsafe(no_mangle)]
-extern "C" fn swr_proc_command_from_array(
-    command: &Array,
-    argv: &mut *mut *mut c_char,
-) -> *mut zend_string {
+fn command_from_array(command: &Array, argv: &mut *mut *mut c_char) -> Option<ZString> {
     *argv = ptr::null_mut();
     let mut program = None;
     let mut strings = Vec::with_capacity(command.count().c_cast::<usize>());
@@ -173,28 +169,25 @@ extern "C" fn swr_proc_command_from_array(
     });
     if failed {
         // The copies made so far are freed here rather than by C.
-        return ptr::null_mut();
+        return None;
     }
     let mut pointers = Vec::with_capacity_in(strings.len() + 1, Emalloc::default());
-    pointers.extend(strings.into_iter().map(|string| to_c(string).cast::<c_char>()));
+    pointers.extend(
+        strings
+            .into_iter()
+            .map(|string| to_c(string).cast::<c_char>()),
+    );
     pointers.push(ptr::null_mut());
     *argv = to_c(pointers.into_boxed_slice());
-    program.map_or(ptr::null_mut(), ZString::into_raw)
-}
+    program
 }
 
-swoole_rs_zend::exports! {
 /// `_php_array_to_envp`: `environment` (an array) as `name=value` strings, NUL
 /// after each, into one request allocation (`envp`, four NULs longer) and a
 /// null-terminated array of pointers into it (`envarray`), which C frees
 /// (`_php_free_envp`). An element whose string is empty is left out; one with an
 /// integer or empty key is its value alone.
-#[unsafe(no_mangle)]
-extern "C" fn swr_proc_envp(
-    environment: &Array,
-    envp: &mut *mut c_char,
-    envarray: &mut *mut *mut c_char,
-) {
+fn array_to_envp(environment: &Array, envp: &mut *mut c_char, envarray: &mut *mut *mut c_char) {
     let count = environment.count().c_cast::<usize>();
     let mut block = Vec::new_in(Emalloc::default());
     let mut starts = Vec::with_capacity(count);
@@ -221,7 +214,6 @@ extern "C" fn swr_proc_envp(
     pointers.resize(count + 1, ptr::null_mut());
     *envp = base;
     *envarray = to_c(pointers.into_boxed_slice());
-}
 }
 
 unsafe extern "C" {
@@ -606,5 +598,112 @@ extern "C" fn swr_proc_descriptors(
         *ndesc += 1;
     }
     true
+}
+}
+
+unsafe extern "C" {
+    /// `php_swoole_signal_isset_handler` (crates/phpprocess).
+    safe fn php_swoole_signal_isset_handler(signo: c_int) -> bool;
+    /// The rest of `proc_open`, in `proc_open.cc`: the descriptor array, the walk
+    /// over `spec`, the fork, and the parent's streams into `pipes`, leaving the
+    /// process resource or false in `out`. It takes `argv` and the environment
+    /// (`efree_argv`, `_php_free_envp` or the record); `command` and `cwd` stay
+    /// borrowed.
+    safe fn swr_proc_open_spawn(
+        command: &ZStr,
+        argv: Option<NonNull<*mut c_char>>,
+        spec: &Array,
+        pipes: &Value,
+        cwd: Option<&ZStr>,
+        envp: Option<NonNull<c_char>>,
+        envarray: Option<NonNull<*mut c_char>>,
+        out: ReturnSlot<'_>,
+    );
+}
+
+/// `proc_open(array|string $command, array $descriptor_spec, &$pipes, ?string $cwd =
+/// null, ?array $env_vars = null, ?array $options = null)`: its arguments, the
+/// command as argv or a shell string, the checks before it forks, and the
+/// environment; the rest is `swr_proc_open_spawn`'s.
+fn open(call: &Call) {
+    // `Z_PARAM_ARRAY_OR_NULL` of an optional argument: none when not passed.
+    let optional_array = |n| {
+        if call.value(n).is_some() {
+            call.array_or_null(n)
+        } else {
+            Ok(None)
+        }
+    };
+    let parsed = call.arity(3, 6).and_then(|()| {
+        Ok((
+            call.array_or_str(1)?,
+            call.array_ref(2)?,
+            call.zstr_or_null(4)?,
+            optional_array(5)?,
+            // Win32's options only.
+            optional_array(6)?,
+        ))
+    });
+    let Ok((command, spec, cwd, environment, _options)) = parsed else {
+        return;
+    };
+    let Some(pipes) = call.value(3) else {
+        return;
+    };
+    let mut argv = ptr::null_mut();
+    let command = match command {
+        ArrayOrStr::Array(array) => {
+            if array.count() == 0 {
+                call.argument_value_error(1, c"must have at least one element");
+                return;
+            }
+            let Some(program) = command_from_array(array, &mut argv) else {
+                call.set_bool(false);
+                return;
+            };
+            program
+        }
+        ArrayOrStr::Str(string) => string.to_owned(),
+    };
+    swoole_rs_phpswoole::check_reactor();
+    if php_swoole_signal_isset_handler(libc::SIGCHLD) {
+        swoole_rs_zend::bailout::defer(crate::report(
+            crate::Report::Swoole,
+            swoole_rs_zend::E_WARNING,
+            c"The signal [SIGCHLD] is registered, cannot execute swoole_proc_open",
+        ));
+        call.set_bool(false);
+        return;
+    }
+    if let Err(bailout) = crate::coroutine_check() {
+        bailout.defer();
+        return;
+    }
+    let (mut envp, mut envarray) = (ptr::null_mut(), ptr::null_mut());
+    if let Some(environment) = environment.as_deref().and_then(Value::array) {
+        array_to_envp(environment, &mut envp, &mut envarray);
+    }
+    swr_proc_open_spawn(
+        &command,
+        NonNull::new(argv),
+        spec,
+        pipes,
+        cwd,
+        NonNull::new(envp),
+        NonNull::new(envarray),
+        call.return_slot(),
+    );
+}
+
+swoole_rs_zend::exports! {
+/// `_php_array_to_envp` for Win32's C `proc_open`, whose block it takes (POSIX's
+/// `proc_open` builds its own).
+#[unsafe(no_mangle)]
+extern "C" fn swr_proc_envp(
+    environment: &Array,
+    envp: &mut *mut c_char,
+    envarray: &mut *mut *mut c_char,
+) {
+    array_to_envp(environment, envp, envarray);
 }
 }

@@ -34,7 +34,6 @@ use swoole_rs_zend::{
 // close, status and terminate are crate::proc's), and crates/phpcoroutines'
 // `gethostbyname` and (PHP 8.4+) `exit`.
 unsafe extern "C" {
-    fn zif_swoole_proc_open(frame: *mut zend_execute_data, value: *mut zval);
     fn zif_swoole_coroutine_gethostbyname(frame: *mut zend_execute_data, value: *mut zval);
     fn zif_swoole_exit(frame: *mut zend_execute_data, value: *mut zval);
     /// The running request's internal function `name` (`EG(function_table)`),
@@ -634,7 +633,7 @@ pub(crate) fn hook_all(mut requested: u32, installed: u32) -> Result<(), Bailout
         installed,
         flags::PROC,
         &[
-            (c"proc_open", Some(zif_swoole_proc_open)),
+            (c"proc_open", raw(crate::proc::zif_swoole_proc_open)),
             (c"proc_close", raw(crate::proc::zif_swoole_proc_close)),
             (
                 c"proc_get_status",
