@@ -275,19 +275,23 @@ def bailout(engine, args, tmpdir):
                     connection = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
                     try:
                         connection.request('GET', path)
-                        if connection.getresponse().read() != b'ok':
+                        response = connection.getresponse()
+                        if response.status != 200 or response.read() != b'ok':
                             failed += 1
                     except (OSError, http.client.HTTPException):
                         failed += 1
                     finally:
                         connection.close()
                 return failed
-            # Warm-up: the first restarts settle the manager's and master's buffers.
-            send(min(200, args.requests))
-            sent = failed = 0
+            # Warm-up: the first restarts settle the manager's and master's buffers. Its
+            # requests are left out of the fit, not of the verdict.
+            warmup = min(200, args.requests)
+            failed = send(warmup)
+            sent = 0
             while sent < args.requests:
-                failed += send(every)
-                sent += every
+                batch = min(every, args.requests - sent)
+                failed += send(batch)
+                sent += batch
                 if proc.poll() is not None:
                     raise AssertionError(f'server exited {proc.returncode} after {sent} requests')
                 tree = children()
@@ -297,7 +301,7 @@ def bailout(engine, args, tmpdir):
                 samples.append({'requests': sent, 'rss': rss})
                 print(json.dumps({'requests': sent, 'processes': len(rss)}), flush=True)
         if failed:
-            failures.append(f'{failed} of {sent} requests got no ok')
+            failures.append(f'{failed} of {warmup + sent} requests got no 200 ok')
     except Exception as error:
         failures.append(f'{type(error).__name__}: {error}')
     per_request = None
