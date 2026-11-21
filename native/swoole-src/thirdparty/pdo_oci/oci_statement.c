@@ -523,56 +523,12 @@ static int oci_stmt_param_hook(pdo_stmt_t *stmt,
     return 1;
 } /* }}} */
 
+/* Rust fetches the row (crates/oci/src/statement.rs). PDO's method table takes an int. */
+extern bool swr_oci_fetch(pdo_stmt_t *stmt, pdo_dbh_t *dbh, uint32_t orientation, zend_long offset);
+
 static int oci_stmt_fetch(pdo_stmt_t *stmt, enum pdo_fetch_orientation ori, zend_long offset) /* {{{ */
 {
-#ifdef HAVE_OCISTMTFETCH2
-    ub4 ociori = OCI_FETCH_NEXT;
-#endif
-    pdo_oci_stmt *S = (pdo_oci_stmt *) stmt->driver_data;
-
-#ifdef HAVE_OCISTMTFETCH2
-    switch (ori) {
-    case PDO_FETCH_ORI_NEXT:
-        ociori = OCI_FETCH_NEXT;
-        break;
-    case PDO_FETCH_ORI_PRIOR:
-        ociori = OCI_FETCH_PRIOR;
-        break;
-    case PDO_FETCH_ORI_FIRST:
-        ociori = OCI_FETCH_FIRST;
-        break;
-    case PDO_FETCH_ORI_LAST:
-        ociori = OCI_FETCH_LAST;
-        break;
-    case PDO_FETCH_ORI_ABS:
-        ociori = OCI_FETCH_ABSOLUTE;
-        break;
-    case PDO_FETCH_ORI_REL:
-        ociori = OCI_FETCH_RELATIVE;
-        break;
-    }
-    S->last_err = OCIStmtFetch2(S->stmt, S->err, 1, ociori, (sb4) offset, OCI_DEFAULT);
-#else
-    S->last_err = OCIStmtFetch(S->stmt, S->err, 1, OCI_FETCH_NEXT, OCI_DEFAULT);
-#endif
-
-    if (S->last_err == OCI_NO_DATA) {
-        /* no (more) data */
-        return 0;
-    }
-
-    if (S->last_err == OCI_NEED_DATA) {
-        oci_stmt_error("OCI_NEED_DATA");
-        return 0;
-    }
-
-    if (S->last_err == OCI_SUCCESS_WITH_INFO || S->last_err == OCI_SUCCESS) {
-        return 1;
-    }
-
-    oci_stmt_error("OCIStmtFetch");
-
-    return 0;
+    return swr_oci_fetch(stmt, stmt->dbh, (uint32_t) ori, offset) ? 1 : 0;
 } /* }}} */
 
 /**
