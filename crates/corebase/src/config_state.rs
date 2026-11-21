@@ -188,7 +188,13 @@ fn set_task_path(
     }
     let path = [bytes, b"/", crate::constants::SW_TASK_TMP_FILE.as_bytes()].concat();
     let length = path.len();
-    *slot = task_path(path);
+    // Every thread's RINIT sets the same directory. Upstream assigns it into a
+    // std::string that keeps its buffer; replacing the Arc each time instead
+    // grew a thread-mode process by about 73 bytes a thread when TMPDIR named a
+    // longer path than /tmp (#5550).
+    if slot.as_deref().map(CStr::to_bytes) != Some(&path[..]) {
+        *slot = task_path(path);
+    }
     if length >= crate::constants::SW_TASK_TMP_PATH_SIZE as usize {
         return Err(TaskDir::TooLong);
     }
@@ -297,6 +303,11 @@ mod tests {
         assert!(nested.is_dir());
         let expected = template(&dir);
         assert_eq!(path(), expected);
+        // The same directory again keeps the published path (#5550).
+        let before = task_tmpfile();
+        assert_eq!(set_task_path(&mut task_slot(), &dir, &mut scratch), Ok(()));
+        assert!(Arc::ptr_eq(&before, &task_tmpfile()));
+        drop(before);
         assert_eq!(
             set_task_path(&mut task_slot(), c"relative", &mut scratch),
             Err(TaskDir::Relative)
