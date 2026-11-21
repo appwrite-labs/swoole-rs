@@ -17,6 +17,8 @@
 )]
 
 #[cfg(feature = "php")]
+mod columns;
+#[cfg(feature = "php")]
 mod driver;
 #[cfg(feature = "php")]
 mod error;
@@ -89,6 +91,8 @@ pub enum Snapshot {}
 pub enum Env {}
 /// A handle of the kind passed beside it.
 pub enum Any {}
+/// `OCILobLocator`.
+pub enum Lob {}
 
 /// Statement text the driver handed over: readable for the length passed beside it.
 /// As with [`Live`], only the exports' parameters make one, or [`Text::of`] from
@@ -96,6 +100,26 @@ pub enum Any {}
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct Text(*const c_uchar);
+
+/// A buffer the driver hands OCI to write into later (a fetched value, a LOB
+/// locator): only this crate makes one, from storage that stays at its address
+/// for as long as OCI may write, which the caller keeps alive.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Out(*mut c_void);
+
+#[cfg(feature = "php")]
+impl Out {
+    /// `cells`, which OCI may write through for as long as they live.
+    pub(crate) fn cells(cells: &[std::cell::Cell<u8>]) -> Self {
+        Self(cells.as_ptr().cast_mut().cast())
+    }
+
+    /// A handle OCI takes in a buffer's place (a LOB locator).
+    pub(crate) fn handle<K>(handle: Live<K>) -> Self {
+        Self(handle.0)
+    }
+}
 
 impl Text {
     /// `bytes`, readable for their length for as long as they are borrowed.

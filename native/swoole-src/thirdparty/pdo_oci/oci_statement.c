@@ -43,6 +43,25 @@
 
 static php_stream *oci_create_lob_stream(pdo_stmt_t *stmt, OCILobLocator *lob);
 
+/* The columns are Rust's (crates/oci/src/columns.rs). */
+extern void swr_oci_columns_reset(pdo_stmt_t *stmt, uint32_t count);
+extern void swr_oci_columns_free(pdo_stmt_t *stmt, pdo_dbh_t *dbh, bool usable);
+extern bool swr_oci_describe(pdo_stmt_t *stmt, pdo_dbh_t *dbh, uint32_t colno, struct pdo_column_data *desc);
+extern bool swr_oci_column_value(pdo_stmt_t *stmt, uint32_t colno, zval *result);
+
+struct swr_oci_columns **swr_oci_stmt_columns(pdo_stmt_t *stmt) {
+    return &((pdo_oci_stmt *) stmt->driver_data)->cols;
+}
+
+/* A column's name, read where OCI returns it as a pointer and length. Stays C:
+ * budget (reading those bytes from Rust is an unsafe block). */
+zend_string *swr_oci_param_name(OCIParam *param, OCIError *err, sword *status) {
+    text *name = NULL;
+    ub4 length = 0;
+    *status = OCIAttrGet(param, OCI_DTYPE_PARAM, &name, &length, OCI_ATTR_NAME, err);
+    return *status == OCI_SUCCESS && name ? zend_string_init((char *) name, length, 0) : NULL;
+}
+
 #define OCI_TEMPLOB_CLOSE(envhp, svchp, errhp, lob)                                                                    \
     do {                                                                                                               \
         boolean isTempLOB;                                                                                             \
@@ -55,8 +74,6 @@ static int oci_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
     pdo_oci_stmt *S = (pdo_oci_stmt *) stmt->driver_data;
     HashTable *BC = stmt->bound_columns;
     HashTable *BP = stmt->bound_params;
-
-    int i;
 
     if (S->stmt) {
         /* cancel server side resources for the statement if we didn't
@@ -96,25 +113,7 @@ static int oci_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
     bool server_obj_usable = php_pdo_stmt_valid_db_obj_handle(stmt);
 #endif
 
-    if (S->cols) {
-        for (i = 0; i < stmt->column_count; i++) {
-            if (S->cols[i].data) {
-                switch (S->cols[i].dtype) {
-                case SQLT_BLOB:
-                case SQLT_CLOB:
-                    if (server_obj_usable) {
-                        OCI_TEMPLOB_CLOSE(swr_oci_env(S->dbh), swr_oci_svc(S->dbh), swr_oci_err(S->dbh), (OCILobLocator *) S->cols[i].data);
-                    }
-                    OCIDescriptorFree(S->cols[i].data, OCI_DTYPE_LOB);
-                    break;
-                default:
-                    efree(S->cols[i].data);
-                }
-            }
-        }
-        efree(S->cols);
-        S->cols = NULL;
-    }
+    swr_oci_columns_free(stmt, stmt->dbh, server_obj_usable);
     efree(S);
 
     stmt->driver_data = NULL;
@@ -163,24 +162,7 @@ static int oci_stmt_execute(pdo_stmt_t *stmt) /* {{{ */
 
         stmt->column_count = (int) colcount;
 
-        if (S->cols) {
-            int i;
-            for (i = 0; i < stmt->column_count; i++) {
-                if (S->cols[i].data) {
-                    switch (S->cols[i].dtype) {
-                    case SQLT_BLOB:
-                    case SQLT_CLOB:
-                        /* do nothing */
-                        break;
-                    default:
-                        efree(S->cols[i].data);
-                    }
-                }
-            }
-            efree(S->cols);
-        }
-
-        S->cols = ecalloc(colcount, sizeof(pdo_oci_column));
+        swr_oci_columns_reset(stmt, colcount);
     }
 
     STMT_CALL_MSG(OCIAttrGet, "ATTR_ROW_COUNT", (S->stmt, OCI_HTYPE_STMT, &rowcount, 0, OCI_ATTR_ROW_COUNT, S->err));
@@ -534,120 +516,11 @@ static int oci_stmt_fetch(pdo_stmt_t *stmt, enum pdo_fetch_orientation ori, zend
 /**
  * This function is thread-safe as it does not call any ZendAPI.
  */
-static sb4 oci_define_callback(
-    dvoid *octxp, OCIDefine *define, ub4 iter, dvoid **bufpp, ub4 **alenpp, ub1 *piecep, dvoid **indpp, ub2 **rcodepp) {
-    pdo_oci_column *col = (pdo_oci_column *) octxp;
 
-    switch (col->dtype) {
-    case SQLT_BLOB:
-    case SQLT_CLOB:
-        *piecep = OCI_ONE_PIECE;
-        *bufpp = col->data;
-        *alenpp = &col->datalen;
-        *indpp = (dvoid *) &col->indicator;
-        break;
-        EMPTY_SWITCH_DEFAULT_CASE();
-    }
-
-    return OCI_CONTINUE;
-}
-
+/* PDO's method table takes an int; Rust describes and defines the column. */
 static int oci_stmt_describe(pdo_stmt_t *stmt, int colno) /* {{{ */
 {
-    pdo_oci_stmt *S = (pdo_oci_stmt *) stmt->driver_data;
-    OCIParam *param = NULL;
-    text *colname;
-    ub2 dtype, data_size, precis;
-    ub4 namelen;
-    struct pdo_column_data *col = &stmt->columns[colno];
-    bool dyn = FALSE;
-
-    /* describe the column */
-    STMT_CALL(OCIParamGet, (S->stmt, OCI_HTYPE_STMT, S->err, (dvoid *) &param, colno + 1));
-
-    /* what type ? */
-    STMT_CALL_MSG(OCIAttrGet, "OCI_ATTR_DATA_TYPE", (param, OCI_DTYPE_PARAM, &dtype, 0, OCI_ATTR_DATA_TYPE, S->err));
-
-    /* how big ? */
-    STMT_CALL_MSG(
-        OCIAttrGet, "OCI_ATTR_DATA_SIZE", (param, OCI_DTYPE_PARAM, &data_size, 0, OCI_ATTR_DATA_SIZE, S->err));
-
-    /* precision ? */
-    STMT_CALL_MSG(OCIAttrGet, "OCI_ATTR_PRECISION", (param, OCI_DTYPE_PARAM, &precis, 0, OCI_ATTR_PRECISION, S->err));
-
-    /* name ? */
-    STMT_CALL_MSG(OCIAttrGet, "OCI_ATTR_NAME", (param, OCI_DTYPE_PARAM, &colname, &namelen, OCI_ATTR_NAME, S->err));
-
-    col->precision = precis;
-    col->maxlen = data_size;
-    col->name = zend_string_init((char *) colname, namelen, 0);
-
-    S->cols[colno].dtype = dtype;
-
-    /* how much room do we need to store the field */
-    switch (dtype) {
-    case SQLT_LBI:
-    case SQLT_LNG:
-        if (dtype == SQLT_LBI) {
-            dtype = SQLT_BIN;
-        } else {
-            dtype = SQLT_CHR;
-        }
-        S->cols[colno].datalen = 512; /* XXX should be INT_MAX and fetched by pieces */
-        S->cols[colno].data = emalloc(S->cols[colno].datalen + 1);
-        break;
-
-    case SQLT_BLOB:
-    case SQLT_CLOB:
-        STMT_CALL(OCIDescriptorAlloc, (swr_oci_env(S->dbh), (dvoid **) &S->cols[colno].data, OCI_DTYPE_LOB, 0, NULL));
-        S->cols[colno].datalen = sizeof(OCILobLocator *);
-        dyn = TRUE;
-        break;
-
-    case SQLT_BIN:
-    default:
-        if (dtype == SQLT_DAT || dtype == SQLT_NUM || dtype == SQLT_RDD
-#ifdef SQLT_TIMESTAMP
-            || dtype == SQLT_TIMESTAMP
-#endif
-#ifdef SQLT_TIMESTAMP_TZ
-            || dtype == SQLT_TIMESTAMP_TZ
-#endif
-        ) {
-            /* should be big enough for most date formats and numbers */
-            S->cols[colno].datalen = 512;
-#if defined(SQLT_IBFLOAT) && defined(SQLT_IBDOUBLE)
-        } else if (dtype == SQLT_IBFLOAT || dtype == SQLT_IBDOUBLE) {
-            S->cols[colno].datalen = 1024;
-#endif
-        } else if (dtype == SQLT_BIN) {
-            S->cols[colno].datalen = (ub4) col->maxlen * 2; /* raw characters to hex digits */
-        } else {
-            S->cols[colno].datalen = (ub4) (col->maxlen * swr_oci_max_char_width(S->dbh));
-        }
-
-        S->cols[colno].data = emalloc(S->cols[colno].datalen + 1);
-        dtype = SQLT_CHR;
-    }
-
-    STMT_CALL(OCIDefineByPos,
-              (S->stmt,
-               &S->cols[colno].def,
-               S->err,
-               colno + 1,
-               S->cols[colno].data,
-               S->cols[colno].datalen,
-               dtype,
-               &S->cols[colno].indicator,
-               &S->cols[colno].fetched_len,
-               &S->cols[colno].retcode,
-               dyn ? OCI_DYNAMIC_FETCH : OCI_DEFAULT));
-
-    if (dyn) {
-        STMT_CALL(OCIDefineDynamic, (S->cols[colno].def, S->err, &S->cols[colno], oci_define_callback));
-    }
-
-    return 1;
+    return swr_oci_describe(stmt, stmt->dbh, (uint32_t) colno, &stmt->columns[colno]) ? 1 : 0;
 } /* }}} */
 
 struct _oci_lob_env {
@@ -821,37 +694,18 @@ static php_stream *oci_create_lob_stream(pdo_stmt_t *stmt, OCILobLocator *lob) {
     return NULL;
 }
 
+/* A LOB column's value (crates/oci/src/columns.rs): its stream, opened read-only. */
+void swr_oci_lob_value(pdo_stmt_t *stmt, OCILobLocator *lob, zval *result) {
+    pdo_oci_stmt *S = (pdo_oci_stmt *) stmt->driver_data;
+    php_stream *stream = oci_create_lob_stream(stmt, lob);
+    OCILobOpen(swr_oci_svc(S->dbh), S->err, lob, OCI_LOB_READONLY);
+    php_stream_to_zval(stream, result);
+}
+
+/* PDO's method table takes an int; Rust reads the fetched value. */
 static int oci_stmt_get_col(pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type) /* {{{ */
 {
-    pdo_oci_stmt *S = (pdo_oci_stmt *) stmt->driver_data;
-    pdo_oci_column *C = &S->cols[colno];
-
-    /* check the indicator to ensure that the data is intact */
-    if (C->indicator == -1) {
-        /* A NULL value */
-        ZVAL_NULL(result);
-        return 1;
-    } else if (C->indicator == 0) {
-        /* it was stored perfectly */
-
-        if (C->dtype == SQLT_BLOB || C->dtype == SQLT_CLOB) {
-            if (C->data) {
-                php_stream *stream = oci_create_lob_stream(stmt, (OCILobLocator *) C->data);
-                OCILobOpen(swr_oci_svc(S->dbh), S->err, (OCILobLocator *) C->data, OCI_LOB_READONLY);
-                php_stream_to_zval(stream, result);
-                return 1;
-            }
-            return 0;
-        }
-
-        ZVAL_STRINGL_FAST(result, C->data, C->fetched_len);
-        return 1;
-    } else {
-        /* it was truncated */
-        php_error_docref(NULL, E_WARNING, "Column %d data was too large for buffer and was truncated to fit it", colno);
-        ZVAL_STRINGL(result, C->data, C->fetched_len);
-        return 1;
-    }
+    return swr_oci_column_value(stmt, (uint32_t) colno, result) ? 1 : 0;
 } /* }}} */
 
 /* The statement's handles, which Rust reads (crates/oci/src/statement.rs). */
