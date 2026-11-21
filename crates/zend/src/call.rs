@@ -77,6 +77,12 @@ unsafe extern "C" {
     safe fn zend_argument_value_error(n: u32, format: CText<'_>, ...);
 }
 
+/// `zend_argument_value_error(n, "%s", message)` for argument `n` of the function
+/// running in C's frame, where Rust holds no [`Call`]: a `ValueError` naming it.
+pub fn argument_value_error(n: u32, message: &CStr) {
+    zend_argument_value_error(n, c"%s".into(), CText::from(message));
+}
+
 /// Each discriminant comes from bindgen over the installed Zend headers (zend-sys/build.rs).
 /// Zend reads its own type-name table in `zend_wrong_parameter_type_error`.
 #[derive(Clone, Copy)]

@@ -348,6 +348,14 @@ unsafe extern "C" {
         count: c_int,
         target: c_int,
     ) -> c_int;
+    /// Records item `i`'s child fd `index` and its setup (type, mode, parent end,
+    /// child end).
+    safe fn swr_proc_descriptor_set(
+        descriptors: Descriptors<'_>,
+        i: c_int,
+        index: c_int,
+        setup: &[c_int; 4],
+    );
     /// `set_proc_descriptor_from_resource`'s stream access: the descriptor of the
     /// stream `resource` names (`zend_fetch_resource` of a `stream`, then
     /// `php_stream_cast` as an fd), into `fd`. False once it threw or reported.
@@ -444,15 +452,13 @@ fn descriptor(
     ok.then_some(setup)
 }
 
-swoole_rs_zend::exports! {
 /// One `$descriptorspec` item (`item`, the `ndesc`-th, for child fd `nindex`) set
 /// up into `setup`: its type, mode, parent end and child end. A stream resource is
 /// a copy of its descriptor (`set_proc_descriptor_from_resource`); an array is
 /// `set_proc_descriptor_from_array`, with `pty` holding the shared
 /// pseudoterminal's ends (-1 until a `pty` item opens it). False once it warned or
 /// threw, `setup` untouched.
-#[unsafe(no_mangle)]
-extern "C" fn swr_proc_descriptor_from_item(
+fn descriptor_from_item(
     item: &Value,
     descriptors: Descriptors<'_>,
     ndesc: c_int,
@@ -468,7 +474,12 @@ extern "C" fn swr_proc_descriptor_from_item(
         if !swr_proc_stream_fd(item, &mut fd) || !setup_dup(fd, &mut childend, ndesc) {
             return false;
         }
-        Setup { kind: 0, mode: 0, parentend: 0, childend }
+        Setup {
+            kind: 0,
+            mode: 0,
+            parentend: 0,
+            childend,
+        }
     } else if let Some(array) = item.array() {
         let Some(made) = descriptor(array, descriptors, ndesc, nindex, pty) else {
             return false;
@@ -484,7 +495,6 @@ extern "C" fn swr_proc_descriptor_from_item(
     };
     *setup = [made.kind, made.mode, made.parentend, made.childend];
     true
-}
 }
 
 /// What `proc_open.cc`'s child execs (`sw_proc_exec`: cwd, command, argv, environment),
@@ -563,6 +573,38 @@ extern "C" fn swr_proc_fork(
         return false;
     }
     *child = pid;
+    true
+}
+}
+
+swoole_rs_zend::exports! {
+/// `proc_open`'s walk over `$descriptorspec` into `descriptors` (one slot per
+/// element): each item's child fd and setup, in order, with `pty` holding the
+/// shared pseudoterminal's ends. `ndesc` counts the items set up, which the
+/// caller's cleanup closes. False once a string key's `ValueError` was thrown or an
+/// item warned or threw.
+#[unsafe(no_mangle)]
+extern "C" fn swr_proc_descriptors(
+    spec: &Array,
+    descriptors: Descriptors<'_>,
+    pty: &mut [c_int; 2],
+    ndesc: &mut c_int,
+) -> bool {
+    let mut entries = spec.entries();
+    while let Some((key, item)) = entries.next_keyed() {
+        let Key::Index(index) = key else {
+            swoole_rs_zend::argument_value_error(2, c"must be an integer indexed array");
+            return false;
+        };
+        // `(int) nindex`.
+        let index = index.c_cast::<c_int>();
+        let mut setup = [0; 4];
+        if !descriptor_from_item(item, descriptors, *ndesc, index, pty, &mut setup) {
+            return false;
+        }
+        swr_proc_descriptor_set(descriptors, *ndesc, index, &setup);
+        *ndesc += 1;
+    }
     true
 }
 }
