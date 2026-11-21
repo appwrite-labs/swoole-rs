@@ -51,18 +51,12 @@ extern int openpty(int *, int *, char *, struct termios *, struct winsize *);
 static int le_proc_open;
 static const char *le_proc_name = "process/coroutine";
 
-static pid_t _co_waitpid(pid_t __pid, int *__stat_loc, int __options) {
-#ifdef SW_THREAD
-    return System::waitpid_safe(__pid, __stat_loc, __options);
-#else
-    return System::waitpid(__pid, __stat_loc, __options);
-#endif
-}
-
 SW_EXTERN_C_BEGIN
 /* crates/phpruntime (proc.rs): the environment and argv `proc_open` builds before it forks,
  * in request memory freed here (`_php_free_envp`, `efree_argv`). */
 void swr_proc_envp(HashTable *environment, char **envp, char ***envarray);
+/* proc_co_rsrc_dtor's wait (proc.rs): a still-running child reaped into `wstatus`. */
+void swr_proc_reap(bool running, pid_t child, int *wstatus);
 SW_EXTERN_C_END
 
 /* {{{ _php_array_to_envp
@@ -110,9 +104,7 @@ static void proc_co_rsrc_dtor(zend_resource *rsrc) {
         }
     }
 
-    if (proc->running) {
-        _co_waitpid(proc->child, &wstatus, 0);
-    }
+    swr_proc_reap(proc->running, proc->child, &wstatus);
     if (proc->wstatus) {
         *proc->wstatus = wstatus;
     }
@@ -732,12 +724,40 @@ typedef struct {
 
 bool swr_proc_fork(descriptorspec_item *descriptors, int ndesc, const sw_proc_exec *exec, pid_t *child);
 
-/* For proc.rs, before the fork: descriptor `i`'s index, type, child end and parent end. */
-void swr_proc_descriptor_at(const descriptorspec_item *descriptors, int i, int out[4]) {
+/* For proc.rs: descriptor `i`'s index, type, child end, parent end and mode flags. */
+void swr_proc_descriptor_at(const descriptorspec_item *descriptors, int i, int out[5]) {
     out[0] = descriptors[i].index;
     out[1] = (int) descriptors[i].type;
     out[2] = descriptors[i].childend;
     out[3] = descriptors[i].parentend;
+    out[4] = descriptors[i].mode_flags;
+}
+
+/* For proc.rs's parent side: a pipe's parent end as a stream, which takes `fd`. */
+php_stream *swr_proc_pipe_stream(int fd, const char *mode) {
+    return php_swoole_create_stream_from_pipe(fd, mode, NULL STREAMS_CC);
+}
+
+void swr_proc_parent(descriptorspec_item *descriptors, int ndesc, sw_php_process_handle *const *proc, zval *pipes);
+
+/* For proc.rs's parent side: `stream` (or none) as the record's pipe `i`, and in
+ * `pipes` under `index`. */
+void swr_proc_attach(sw_php_process_handle *const *handle, int i, php_stream *stream, zval *pipes, int index) {
+    sw_php_process_handle *proc = *handle;
+    if (!stream) {
+        proc->pipes[i] = NULL;
+        return;
+    }
+    zval retfp;
+
+    /* nasty hack; don't copy it */
+    stream->flags |= PHP_STREAM_FLAG_NO_SEEK;
+
+    php_stream_to_zval(stream, &retfp);
+    add_index_zval(pipes, index, &retfp);
+
+    proc->pipes[i] = Z_RES(retfp);
+    Z_ADDREF(retfp);
 }
 
 /* For proc.rs, in the child: returns only when the exec failed. */
@@ -1206,46 +1226,8 @@ static void proc_open_spawn(zend_string *command_str,
     proc->env = env;
 
     /* Clean up all the child ends and then open streams on the parent
-     *   ends, where appropriate */
-    for (int i = 0; i < ndesc; i++) {
-        php_stream *stream = NULL;
-
-        close_descriptor(descriptors[i].childend);
-
-        if (descriptors[i].type == DESCRIPTOR_TYPE_PIPE) {
-            const char *mode_string = NULL;
-
-            switch (descriptors[i].mode_flags) {
-            case O_WRONLY:
-                mode_string = "w";
-                break;
-            case O_RDONLY:
-                mode_string = "r";
-                break;
-            case O_RDWR:
-                mode_string = "r+";
-                break;
-            }
-            stream = php_swoole_create_stream_from_pipe(descriptors[i].parentend, mode_string, NULL STREAMS_CC);
-        } else if (descriptors[i].type == DESCRIPTOR_TYPE_SOCKET) {
-            stream = swr_v1_phpruntime_stream_from_socket(descriptors[i].parentend, AF_UNIX, SOCK_STREAM, 0);
-        } else {
-            proc->pipes[i] = NULL;
-        }
-
-        if (stream) {
-            zval retfp;
-
-            /* nasty hack; don't copy it */
-            stream->flags |= PHP_STREAM_FLAG_NO_SEEK;
-
-            php_stream_to_zval(stream, &retfp);
-            add_index_zval(pipes, descriptors[i].index, &retfp);
-
-            proc->pipes[i] = Z_RES(retfp);
-            Z_ADDREF(retfp);
-        }
-    }
+     *   ends, where appropriate (proc.rs) */
+    swr_proc_parent(descriptors, ndesc, &proc, pipes);
 
     if (1) {
         RETVAL_RES(zend_register_resource(proc, le_proc_open));

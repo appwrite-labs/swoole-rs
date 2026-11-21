@@ -1097,15 +1097,25 @@ pub extern "C" fn swr_v1_phpruntime_stream_from_socket(
     kind: c_int,
     protocol: c_int,
 ) -> *mut php_stream {
-    let result = stream_from_socket(fd, domain, kind, protocol);
-    match result {
-        Ok(stream) => stream.map_or(ptr::null_mut(), Fresh::into_ptr),
+    socket_stream(fd, domain, kind, protocol).map_or(ptr::null_mut(), NonNull::as_ptr)
+}
+}
+
+/// [`swr_v1_phpruntime_stream_from_socket`] for this crate: the stream, or none
+/// (a bailout deferred).
+pub(crate) fn socket_stream(
+    fd: c_int,
+    domain: c_int,
+    kind: c_int,
+    protocol: c_int,
+) -> Option<NonNull<php_stream>> {
+    match stream_from_socket(fd, domain, kind, protocol) {
+        Ok(stream) => stream.map(Fresh::into_ptr).and_then(NonNull::new),
         Err(error) => {
             error.defer();
-            ptr::null_mut()
+            None
         }
     }
-}
 }
 
 fn stream_from_socket(
