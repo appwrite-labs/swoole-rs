@@ -260,6 +260,40 @@ pub(crate) fn report(
     code
 }
 
+/// `STMT_CALL(name, …)` / `STMT_CALL_MSG` from Rust: [`swr_oci_error`] of the
+/// statement's error, called after every call as C did, so a success resets
+/// the statement's (and the connection's) error to `00000`. Returns the Oracle
+/// code, nonzero when the caller stops, with ORA-01013's bailout deferred and a
+/// lost connection marked closed as in [`report`].
+pub(crate) fn stmt_call(
+    dbh: &Dbh,
+    stmt: &Stmt,
+    err: Live<Error>,
+    what: &CStr,
+    status: Sword,
+    (file, line): (&'static CStr, u32),
+) -> u32 {
+    let (mut closed, mut cancelled) = (false, false);
+    let code = swr_oci_error(
+        err,
+        dbh,
+        Some(stmt),
+        what.into(),
+        status,
+        false,
+        file.into(),
+        line.cast_signed(),
+        &mut closed,
+        &mut cancelled,
+    );
+    if cancelled {
+        swoole_rs_zend::bailout::Bailout.defer();
+    } else if closed {
+        crate::handle::swr_oci_closed(dbh);
+    }
+    code
+}
+
 /// `oci_init_error(what)` from Rust: [`swr_oci_error`] of a failure before the
 /// connection's error handle exists, recorded as `HY000` and thrown.
 pub(crate) fn report_init(dbh: &Dbh, what: &CStr, (file, line): (&'static CStr, u32)) {

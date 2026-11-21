@@ -24,6 +24,8 @@ mod error;
 mod handle;
 #[cfg(feature = "php")]
 pub mod minit;
+#[cfg(feature = "php")]
+mod statement;
 
 use std::{
     ffi::{c_int, c_uchar, c_void},
