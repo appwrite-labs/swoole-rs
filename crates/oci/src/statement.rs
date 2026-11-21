@@ -134,7 +134,8 @@ extern "C" fn swr_oci_column_meta(stmt: &PdoStmt, dbh: &Dbh, colno: u32, output:
     let (handle, err) = (swr_oci_stmt_handle(stmt), swr_oci_stmt_err(stmt));
     let call = |what: &CStr, status| stmt_call(dbh, stmt, err, what, status, here!()) != 0;
     let mut raw = ptr::null_mut();
-    let status = OCIParamGet(handle, OCI_HTYPE_STMT, err, &mut raw, colno + 1);
+    // C passed `colno + 1` as a `ub4`, which wraps (PDO rejects a negative index first).
+    let status = OCIParamGet(handle, OCI_HTYPE_STMT, err, &mut raw, colno.wrapping_add(1));
     let param = Descriptor(Live(raw, PhantomData));
     let get = |attribute| {
         let mut value = 0u32;
