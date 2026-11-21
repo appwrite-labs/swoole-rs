@@ -24,27 +24,18 @@
 
 static inline ub4 pdo_oci_sanitize_prefetch(long prefetch);
 
-static void pdo_oci_fetch_error_func(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zval *info) /* {{{ */
-{
-    pdo_oci_db_handle *H = (pdo_oci_db_handle *) dbh->driver_data;
-    pdo_oci_error_info *einfo;
+/* Rust records the error (crates/oci/src/error.rs). Stays C: bailout (ORA-01013,
+ * the user cancelled the call, ends the request) and the handle's attached bit. */
+ub4 swr_oci_error(OCIError *err, pdo_dbh_t *dbh, pdo_stmt_t *stmt, char *what, sword status, bool isinit,
+                  const char *file, int line, bool *closed, bool *cancelled);
+void pdo_oci_fetch_error_func(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zval *info);
 
-    einfo = &H->einfo;
-
+struct swr_oci_error **swr_oci_einfo(pdo_dbh_t *dbh, pdo_stmt_t *stmt) {
     if (stmt) {
-        pdo_oci_stmt *S = (pdo_oci_stmt *) stmt->driver_data;
-
-        if (S->einfo.errmsg) {
-            einfo = &S->einfo;
-        }
+        return &((pdo_oci_stmt *) stmt->driver_data)->einfo;
     }
-
-    if (einfo->errcode) {
-        add_next_index_long(info, einfo->errcode);
-        add_next_index_string(info, einfo->errmsg);
-    }
+    return &((pdo_oci_db_handle *) dbh->driver_data)->einfo;
 }
-/* }}} */
 
 ub4 _oci_error(OCIError *err,
                pdo_dbh_t *dbh,
@@ -55,131 +46,17 @@ ub4 _oci_error(OCIError *err,
                const char *file,
                int line) /* {{{ */
 {
-    text errbuf[1024] = "<<Unknown>>";
-    char tmp_buf[2048];
-    pdo_oci_db_handle *H = (pdo_oci_db_handle *) dbh->driver_data;
-    pdo_oci_error_info *einfo;
-    pdo_oci_stmt *S = NULL;
-    pdo_error_type *pdo_err = &dbh->error_code;
-
-    if (stmt) {
-        S = (pdo_oci_stmt *) stmt->driver_data;
-        einfo = &S->einfo;
-        pdo_err = &stmt->error_code;
-    } else {
-        einfo = &H->einfo;
+    bool closed = false, cancelled = false;
+    ub4 code = swr_oci_error(err, dbh, stmt, what, status, isinit, file, line, &closed, &cancelled);
+    if (cancelled) {
+        zend_bailout();
     }
-
-    if (einfo->errmsg) {
-        pefree(einfo->errmsg, dbh->is_persistent);
+    if (closed) {
+        /* consider the connection closed */
+        dbh->is_closed = 1;
+        ((pdo_oci_db_handle *) dbh->driver_data)->attached = 0;
     }
-
-    einfo->errmsg = NULL;
-    einfo->errcode = 0;
-    einfo->file = file;
-    einfo->line = line;
-
-    if (isinit) { /* Initialization error */
-        strcpy(*pdo_err, "HY000");
-        slprintf(tmp_buf, sizeof(tmp_buf), "%s (%s:%d)", what, file, line);
-        einfo->errmsg = pestrdup(tmp_buf, dbh->is_persistent);
-    } else {
-        switch (status) {
-        case OCI_SUCCESS:
-            strcpy(*pdo_err, "00000");
-            break;
-        case OCI_ERROR:
-            OCIErrorGet(err, (ub4) 1, NULL, &einfo->errcode, errbuf, (ub4) sizeof(errbuf), OCI_HTYPE_ERROR);
-            slprintf(tmp_buf, sizeof(tmp_buf), "%s: %s (%s:%d)", what, errbuf, file, line);
-            einfo->errmsg = pestrdup(tmp_buf, dbh->is_persistent);
-            break;
-        case OCI_SUCCESS_WITH_INFO:
-            OCIErrorGet(err, (ub4) 1, NULL, &einfo->errcode, errbuf, (ub4) sizeof(errbuf), OCI_HTYPE_ERROR);
-            slprintf(tmp_buf, sizeof(tmp_buf), "%s: OCI_SUCCESS_WITH_INFO: %s (%s:%d)", what, errbuf, file, line);
-            einfo->errmsg = pestrdup(tmp_buf, dbh->is_persistent);
-            break;
-        case OCI_NEED_DATA:
-            slprintf(tmp_buf, sizeof(tmp_buf), "%s: OCI_NEED_DATA (%s:%d)", what, file, line);
-            einfo->errmsg = pestrdup(tmp_buf, dbh->is_persistent);
-            break;
-        case OCI_NO_DATA:
-            slprintf(tmp_buf, sizeof(tmp_buf), "%s: OCI_NO_DATA (%s:%d)", what, file, line);
-            einfo->errmsg = pestrdup(tmp_buf, dbh->is_persistent);
-            break;
-        case OCI_INVALID_HANDLE:
-            slprintf(tmp_buf, sizeof(tmp_buf), "%s: OCI_INVALID_HANDLE (%s:%d)", what, file, line);
-            einfo->errmsg = pestrdup(tmp_buf, dbh->is_persistent);
-            break;
-        case OCI_STILL_EXECUTING:
-            slprintf(tmp_buf, sizeof(tmp_buf), "%s: OCI_STILL_EXECUTING (%s:%d)", what, file, line);
-            einfo->errmsg = pestrdup(tmp_buf, dbh->is_persistent);
-            break;
-        case OCI_CONTINUE:
-            slprintf(tmp_buf, sizeof(tmp_buf), "%s: OCI_CONTINUE (%s:%d)", what, file, line);
-            einfo->errmsg = pestrdup(tmp_buf, dbh->is_persistent);
-            break;
-        }
-
-        if (einfo->errcode) {
-            switch (einfo->errcode) {
-            case 1013: /* user requested cancel of current operation */
-                zend_bailout();
-                break;
-
-            case 12154: /* ORA-12154: TNS:could not resolve service name */
-                strcpy(*pdo_err, "42S02");
-                break;
-
-            case 22: /* ORA-00022: invalid session id */
-            case 378:
-            case 602:
-            case 603:
-            case 604:
-            case 609:
-            case 1012: /* ORA-01012: */
-            case 1033:
-            case 1041:
-            case 1043:
-            case 1089:
-            case 1090:
-            case 1092:
-            case 3113: /* ORA-03133: end of file on communication channel */
-            case 3114:
-            case 3122:
-            case 3135:
-            case 12153:
-            case 27146:
-            case 28511:
-                /* consider the connection closed */
-                dbh->is_closed = 1;
-                H->attached = 0;
-                strcpy(*pdo_err, "01002"); /* FIXME */
-                break;
-
-            default:
-                strcpy(*pdo_err, "HY000");
-            }
-        }
-
-        if (stmt) {
-            /* always propagate the error code back up to the dbh,
-             * so that we can catch the error information when execute
-             * is called via query.  See Bug #33707 */
-            if (H->einfo.errmsg) {
-                pefree(H->einfo.errmsg, dbh->is_persistent);
-            }
-            H->einfo = *einfo;
-            H->einfo.errmsg = einfo->errmsg ? pestrdup(einfo->errmsg, dbh->is_persistent) : NULL;
-            strcpy(dbh->error_code, stmt->error_code);
-        }
-    }
-
-    /* little mini hack so that we can use this code from the dbh ctor */
-    if (!dbh->methods && status != OCI_SUCCESS_WITH_INFO) {
-        zend_throw_exception_ex(php_pdo_get_exception(), einfo->errcode, "SQLSTATE[%s]: %s", *pdo_err, einfo->errmsg);
-    }
-
-    return einfo->errcode;
+    return code;
 }
 /* }}} */
 
@@ -225,10 +102,7 @@ static void oci_handle_closer(pdo_dbh_t *dbh) /* {{{ */
         H->env = NULL;
     }
 
-    if (H->einfo.errmsg) {
-        pefree(H->einfo.errmsg, dbh->is_persistent);
-        H->einfo.errmsg = NULL;
-    }
+    swr_oci_einfo_free(dbh, NULL);
 
     pefree(H, dbh->is_persistent);
 }

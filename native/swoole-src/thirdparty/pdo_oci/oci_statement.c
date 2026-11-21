@@ -85,10 +85,7 @@ static int oci_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
         stmt->bound_params = NULL;
     }
 
-    if (S->einfo.errmsg) {
-        pefree(S->einfo.errmsg, stmt->dbh->is_persistent);
-        S->einfo.errmsg = NULL;
-    }
+    swr_oci_einfo_free(stmt->dbh, stmt);
 
 #if PHP_API_VERSION < 20240925
     bool server_obj_usable =

@@ -21,12 +21,8 @@
 
 #include <oci.h>
 
-typedef struct {
-    const char *file;
-    int line;
-    sb4 errcode;
-    char *errmsg;
-} pdo_oci_error_info;
+/* The last error of a handle or statement (crates/oci/src/error.rs), null until its first. */
+struct swr_oci_error;
 
 /* stuff we use in an OCI database handle */
 typedef struct {
@@ -44,7 +40,7 @@ typedef struct {
     unsigned attached : 1;
     unsigned _reserved : 31;
 
-    pdo_oci_error_info einfo;
+    struct swr_oci_error *einfo;
 } pdo_oci_db_handle;
 
 typedef struct {
@@ -68,7 +64,7 @@ typedef struct {
     ub2 stmt_type;
     ub4 exec_type;
     pdo_oci_column *cols;
-    pdo_oci_error_info einfo;
+    struct swr_oci_error *einfo;
     unsigned int have_blobs : 1;
 } pdo_oci_stmt;
 
@@ -95,6 +91,8 @@ extern OCIEnv *swoole_pdo_oci_Env;
 
 ub4 _oci_error(
     OCIError *err, pdo_dbh_t *dbh, pdo_stmt_t *stmt, char *what, sword status, int isinit, const char *file, int line);
+/* Free a handle's (stmt NULL) or statement's last error. */
+void swr_oci_einfo_free(pdo_dbh_t *dbh, pdo_stmt_t *stmt);
 #define oci_init_error(w) _oci_error(H->err, dbh, NULL, w, H->last_err, TRUE, __FILE__, __LINE__)
 #define oci_drv_error(w) _oci_error(H->err, dbh, NULL, w, H->last_err, FALSE, __FILE__, __LINE__)
 #define oci_stmt_error(w) _oci_error(S->err, stmt->dbh, stmt, w, S->last_err, FALSE, __FILE__, __LINE__)

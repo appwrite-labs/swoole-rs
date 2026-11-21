@@ -8,9 +8,10 @@ description = "Swoole's coroutine OCI calls for its bundled pdo_oci (--with-swoo
 
 [features]
 # MINIT's PDO registration, which needs PHP headers (swoole-rs-zend).
-php = ["dep:swoole-rs-zend", "swoole-rs-zend/php"]
+php = ["dep:swoole-rs-corebase", "dep:swoole-rs-zend", "swoole-rs-zend/php"]
 
 [dependencies]
+swoole-rs-corebase = { path = "../corebase", optional = true }
 swoole-rs-hooks = { path = "../hooks" }
 swoole-rs-zend = { path = "../zend", optional = true }
 
