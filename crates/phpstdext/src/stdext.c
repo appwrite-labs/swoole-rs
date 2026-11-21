@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: Apache-2.0
  * What crates/phpstdext needs from C (see README.md): Zend VM primitives whose
- * bodies are static in zend_execute.c (Swoole's copy, which upstream's
- * swoole_stdext.cc includes the same way) and PCRE's
+ * bodies are static in zend_execute.c (native/hooks/zend_execute_private.h, the
+ * part of Swoole's copy still called) and PCRE's
  * cache, each inside zend_try. build.rs compiles it with the `php` and `active`
  * features. */
 #include "php.h"
 #include "zend_exceptions.h"
 #include "ext/pcre/php_pcre.h"
 #include <sys/uio.h>
-#include "thirdparty/php/zend/zend_execute.c"
+#include "zend_execute_private.h"
 
 /* Each shim below reads what it needs of the frame's current instruction, and
  * does nothing (0) unless that instruction is an assignment to a dimension
