@@ -80,6 +80,18 @@ pub fn throw_trapped(
     bailout::trapped(swr_zend_try_facade_throw(class, message.into(), code))
 }
 
+/// `zend_throw_exception(class, message, code)` of a class another extension
+/// registered, inside `zend_try`.
+/// # Errors
+/// Zend bailed out: with no frame executing it reports the exception at once.
+pub(crate) fn throw_entry(
+    class: Option<ClassEntry<'static>>,
+    message: &CStr,
+    code: zend_long,
+) -> Result<(), Bailout> {
+    bailout::trapped(swr_zend_try_facade_throw(class, message.into(), code))
+}
+
 /// `zend_get_type_by_const(kind)`: Zend's name of a value's type (`IS_NULL` to
 /// `IS_RESOURCE`), or None for any other code.
 #[must_use]

@@ -41,6 +41,9 @@ unsafe extern "C" {
     /// `message`, which PDO reads and copies. It creates the exception object and
     /// sets its properties, which runs no PHP code.
     safe fn pdo_throw_exception(code: u32, message: CText<'_>, sqlstate: &pdo_error_type);
+    /// PDO's `php_pdo_get_exception`: the `PDOException` class, which PDO's MINIT
+    /// registered and which lives for the process.
+    safe fn php_pdo_get_exception() -> Option<crate::ClassEntry<'static>>;
     /// PDO's `pdo_get_bool_param`: the value as an attribute's bool, or false with a
     /// `TypeError` thrown, which runs no PHP code.
     safe fn pdo_get_bool_param(bval: &mut bool, value: &Value) -> bool;
@@ -220,6 +223,18 @@ impl Dbh {
     pub fn throw(&self, code: u32, message: &CStr) {
         pdo_throw_exception(code, message.into(), &self.error_code());
     }
+
+    /// `zend_throw_exception_ex(php_pdo_get_exception(), code, "%s", message)`:
+    /// a `PDOException` with only a message and code, as a driver's constructor
+    /// throws before PDO's error handling is in place. A bailout (no frame
+    /// executing) is deferred.
+    pub fn throw_exception(&self, code: zend_long, message: &CStr) {
+        crate::bailout::defer(crate::error::throw_entry(
+            php_pdo_get_exception(),
+            message,
+            code,
+        ));
+    }
 }
 
 /// A statement PDO lends a driver, as [`Dbh`] is lent: only a driver export's
@@ -246,6 +261,12 @@ impl Stmt {
         stmt.column_count = columns;
         stmt.row_count = rows;
         self.0.set(stmt);
+    }
+
+    /// `stmt->error_code`: the statement's SQLSTATE.
+    #[must_use]
+    pub fn error_code(&self) -> pdo_error_type {
+        self.0.get().error_code
     }
 
     /// `strcpy(stmt->error_code, sqlstate)`.

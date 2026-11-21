@@ -612,6 +612,7 @@ dependencies = [
 name = "swoole-rs-oci"
 version = "0.1.0"
 dependencies = [
+ "swoole-rs-corebase",
  "swoole-rs-hooks",
  "swoole-rs-zend",
 ]
