@@ -50,10 +50,12 @@ fn request_line(input: &[u8], frame: &mut HttpFrame) -> bool {
         .iter()
         .take(pri)
         .enumerate()
-        // The first byte rules most out before a comparison call.
+        // Byte by byte, the first byte ruling most out: a `bcmp` call's cost
+        // depends on where the buffer sits (glibc's page-crossing check), which
+        // moved process-mode's instruction count between runs of one build (#5554).
         .find(|(_, m)| {
             let m = m.to_bytes();
-            m.first() == input.first() && input.starts_with(m)
+            input.len() >= m.len() && m.iter().zip(input).all(|(a, b)| a == b)
         }) {
         frame.method = u32::try_from(index + 1).unwrap_or(0);
         method.to_bytes().len()
