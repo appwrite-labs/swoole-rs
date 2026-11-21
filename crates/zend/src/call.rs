@@ -98,6 +98,7 @@ pub(crate) enum Expected {
     Double = sys::_zend_expected_type_Z_EXPECTED_DOUBLE,
     Array = sys::_zend_expected_type_Z_EXPECTED_ARRAY,
     ArrayOrNull = sys::_zend_expected_type_Z_EXPECTED_ARRAY_OR_NULL,
+    ArrayOrString = sys::_zend_expected_type_Z_EXPECTED_ARRAY_OR_STRING,
     Resource = sys::_zend_expected_type_Z_EXPECTED_RESOURCE,
     Object = sys::_zend_expected_type_Z_EXPECTED_OBJECT,
 }
@@ -105,6 +106,12 @@ pub(crate) enum Expected {
 /// Zval slots `zend_execute_data` occupies before the first argument
 /// (`ZEND_CALL_FRAME_SLOT`).
 const FRAME_SLOT: usize = size_of::<zend_execute_data>().div_ceil(size_of::<zval>());
+
+/// [`Call::array_or_str`]'s argument.
+pub enum ArrayOrStr<'a> {
+    Array(&'a Array),
+    Str(&'a ZStr),
+}
 
 /// The arguments did not parse; Zend has raised the error (or a user error
 /// handler bailed out of a coercion's deprecation, which is deferred).
@@ -527,6 +534,19 @@ impl<'f> Call<'f> {
         let arg = self.arg_value(n);
         arg.array()
             .ok_or_else(|| Self::wrong(n, arg, Expected::Array))
+    }
+
+    /// `Z_PARAM_ARRAY_HT_OR_STR` of argument `n` (1-based), which must be passed:
+    /// its table, or its string (coerced under the caller's typing mode, the
+    /// argument replaced, as [`Call::zstr`]).
+    /// # Errors
+    /// It is neither; Zend has thrown.
+    pub fn array_or_str(&self, n: u32) -> Result<ArrayOrStr<'_>, Invalid> {
+        if let Some(array) = self.arg_value(n).array() {
+            return Ok(ArrayOrStr::Array(array));
+        }
+        self.parse_str(n, Expected::ArrayOrString)
+            .map(ArrayOrStr::Str)
     }
 
     /// `Z_PARAM_RESOURCE` of argument `n` (1-based), which must be passed.
