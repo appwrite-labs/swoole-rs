@@ -17,6 +17,8 @@
 )]
 
 #[cfg(feature = "php")]
+mod driver;
+#[cfg(feature = "php")]
 mod error;
 #[cfg(feature = "php")]
 pub mod minit;

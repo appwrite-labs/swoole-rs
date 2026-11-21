@@ -37,6 +37,12 @@ struct swr_oci_error **swr_oci_einfo(pdo_dbh_t *dbh, pdo_stmt_t *stmt) {
     return &((pdo_oci_db_handle *) dbh->driver_data)->einfo;
 }
 
+/* The connection is gone. */
+void swr_oci_closed(pdo_dbh_t *dbh) {
+    dbh->is_closed = 1;
+    ((pdo_oci_db_handle *) dbh->driver_data)->attached = 0;
+}
+
 ub4 _oci_error(OCIError *err,
                pdo_dbh_t *dbh,
                pdo_stmt_t *stmt,
@@ -52,9 +58,7 @@ ub4 _oci_error(OCIError *err,
         zend_bailout();
     }
     if (closed) {
-        /* consider the connection closed */
-        dbh->is_closed = 1;
-        ((pdo_oci_db_handle *) dbh->driver_data)->attached = 0;
+        swr_oci_closed(dbh);
     }
     return code;
 }
@@ -270,41 +274,6 @@ static zend_string *oci_handle_quoter(pdo_dbh_t *dbh,
     quoted_str = zend_string_init(quoted, quotedlen, 0);
     efree(quoted);
     return quoted_str;
-}
-/* }}} */
-
-static bool oci_handle_begin(pdo_dbh_t *dbh) /* {{{ */
-{
-    /* with Oracle, there is nothing special to be done */
-    return true;
-}
-/* }}} */
-
-static bool oci_handle_commit(pdo_dbh_t *dbh) /* {{{ */
-{
-    pdo_oci_db_handle *H = (pdo_oci_db_handle *) dbh->driver_data;
-
-    H->last_err = OCITransCommit(H->svc, H->err, 0);
-
-    if (H->last_err) {
-        H->last_err = oci_drv_error("OCITransCommit");
-        return false;
-    }
-    return true;
-}
-/* }}} */
-
-static bool oci_handle_rollback(pdo_dbh_t *dbh) /* {{{ */
-{
-    pdo_oci_db_handle *H = (pdo_oci_db_handle *) dbh->driver_data;
-
-    H->last_err = OCITransRollback(H->svc, H->err, 0);
-
-    if (H->last_err) {
-        H->last_err = oci_drv_error("OCITransRollback");
-        return false;
-    }
-    return true;
 }
 /* }}} */
 
@@ -533,53 +502,37 @@ static int oci_handle_get_attribute(pdo_dbh_t *dbh, zend_long attr, zval *return
 }
 /* }}} */
 
-static zend_result pdo_oci_check_liveness(pdo_dbh_t *dbh) /* {{{ */
-{
-    pdo_oci_db_handle *H = (pdo_oci_db_handle *) dbh->driver_data;
-    sb4 error_code = 0;
-#if (!((OCI_MAJOR_VERSION > 10) || ((OCI_MAJOR_VERSION == 10) && (OCI_MINOR_VERSION >= 2))))
-    char version[256];
-#endif
+/* The connection's methods in Rust (crates/oci/src/driver.rs), and what they read of the handle. */
+extern bool swr_oci_begin(pdo_dbh_t *dbh);
+extern bool swr_oci_commit(pdo_dbh_t *dbh);
+extern bool swr_oci_rollback(pdo_dbh_t *dbh);
+extern bool swr_oci_alive(pdo_dbh_t *dbh);
 
-    /* TODO move attached check to PDO level */
-    if (H->attached == 0) {
-        return FAILURE;
-    }
-    /* TODO add persistent_timeout check at PDO level */
-
-    /* Use OCIPing instead of OCIServerVersion. If OCIPing returns ORA-1010 (invalid OCI operation)
-     * such as from Pre-10.1 servers, the error is still from the server and we would have
-     * successfully performed a roundtrip and validated the connection. Use OCIServerVersion for
-     * Pre-10.2 clients
-     */
-#if ((OCI_MAJOR_VERSION > 10) ||                                                                                       \
-     ((OCI_MAJOR_VERSION == 10) && (OCI_MINOR_VERSION >= 2))) /* OCIPing available 10.2 onwards */
-    H->last_err = OCIPing(H->svc, H->err, OCI_DEFAULT);
-#else
-    /* use good old OCIServerVersion() */
-    H->last_err = OCIServerVersion(H->svc, H->err, (text *) version, sizeof(version), OCI_HTYPE_SVCCTX);
-#endif
-    if (H->last_err == OCI_SUCCESS) {
-        return SUCCESS;
-    }
-
-    OCIErrorGet(H->err, (ub4) 1, NULL, &error_code, NULL, 0, OCI_HTYPE_ERROR);
-
-    if (error_code == 1010) {
-        return SUCCESS;
-    }
-    return FAILURE;
+OCISvcCtx *swr_oci_svc(pdo_dbh_t *dbh) {
+    return ((pdo_oci_db_handle *) dbh->driver_data)->svc;
 }
-/* }}} */
+
+OCIError *swr_oci_err(pdo_dbh_t *dbh) {
+    return ((pdo_oci_db_handle *) dbh->driver_data)->err;
+}
+
+bool swr_oci_attached(pdo_dbh_t *dbh) {
+    return ((pdo_oci_db_handle *) dbh->driver_data)->attached;
+}
+
+/* PDO's method table takes a zend_result. */
+static zend_result pdo_oci_check_liveness(pdo_dbh_t *dbh) {
+    return swr_oci_alive(dbh) ? SUCCESS : FAILURE;
+}
 
 static const struct pdo_dbh_methods oci_methods = {
     oci_handle_closer,
     oci_handle_preparer,
     oci_handle_doer,
     oci_handle_quoter,
-    oci_handle_begin,
-    oci_handle_commit,
-    oci_handle_rollback,
+    swr_oci_begin,
+    swr_oci_commit,
+    swr_oci_rollback,
     oci_handle_set_attribute,
     NULL, /* last_id not supported */
     pdo_oci_fetch_error_func,

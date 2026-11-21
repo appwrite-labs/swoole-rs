@@ -30,12 +30,12 @@ const OCI_INVALID_HANDLE: Sword = -2;
 const OCI_STILL_EXECUTING: Sword = -3123;
 const OCI_CONTINUE: Sword = -24200;
 /// `OCI_HTYPE_ERROR`.
-const OCI_HTYPE_ERROR: u32 = 2;
+pub(crate) const OCI_HTYPE_ERROR: u32 = 2;
 /// `slprintf`'s `tmp_buf[2048]`: a message is cut to 2047 bytes.
 const MESSAGE_LIMIT: usize = 2047;
 
 /// What no value has: the SQLSTATE `OCIErrorGet` is never asked for.
-enum Nothing {}
+pub(crate) enum Nothing {}
 
 #[expect(
     improper_ctypes,
@@ -45,15 +45,17 @@ unsafe extern "C" {
     /// `stmt ? &S->einfo : &H->einfo`, which live as long as the handle or
     /// statement does.
     safe fn swr_oci_einfo<'a>(dbh: &'a Dbh, stmt: Option<&'a Stmt>) -> &'a Einfo;
+    /// `dbh->is_closed = 1` and the handle's `attached = 0`: the connection is gone.
+    safe fn swr_oci_closed(dbh: &Dbh);
     /// OCI's own declaration, with the SQLSTATE it can also return typed as the
-    /// null it is here: record `record`'s code and message (cut to `size`, NUL
-    /// included) from the error handle.
-    safe fn OCIErrorGet(
+    /// null it is here: record `record`'s code and, given a buffer, message (cut
+    /// to `size`, NUL included) from the error handle.
+    pub(crate) safe fn OCIErrorGet(
         err: Live<Error>,
         record: u32,
         sqlstate: Option<&'static Nothing>,
         code: &mut i32,
-        message: &mut [u8; 1024],
+        message: Option<&mut [u8; 1024]>,
         size: u32,
         kind: u32,
     ) -> Sword;
@@ -139,7 +141,7 @@ extern "C" fn swr_oci_error(
                 1,
                 None,
                 &mut record.code,
-                &mut buffer,
+                Some(&mut buffer),
                 1024,
                 OCI_HTYPE_ERROR,
             );
@@ -204,6 +206,54 @@ extern "C" fn swr_oci_error(
     }
     slot.set(Some(Box::new(record)));
     code.cast_unsigned()
+}
+
+/// Where a Rust caller of [`report`] is, as C's `__FILE__` and `__LINE__` are in
+/// the message.
+macro_rules! here {
+    () => {
+        (
+            const {
+                match ::std::ffi::CStr::from_bytes_with_nul(concat!(file!(), "\0").as_bytes()) {
+                    Ok(file) => file,
+                    Err(_) => c"",
+                }
+            },
+            line!(),
+        )
+    };
+}
+pub(crate) use here;
+
+/// `oci_drv_error(what)` from Rust: [`swr_oci_error`] of the handle's error,
+/// with ORA-01013's bailout deferred to the export's native boundary and a lost
+/// connection marked closed, as C's `_oci_error` does them.
+pub(crate) fn report(
+    dbh: &Dbh,
+    err: Live<Error>,
+    what: &CStr,
+    status: Sword,
+    (file, line): (&'static CStr, u32),
+) -> u32 {
+    let (mut closed, mut cancelled) = (false, false);
+    let code = swr_oci_error(
+        err,
+        dbh,
+        None,
+        what.into(),
+        status,
+        false,
+        file.into(),
+        line.cast_signed(),
+        &mut closed,
+        &mut cancelled,
+    );
+    if cancelled {
+        swoole_rs_zend::bailout::Bailout.defer();
+    } else if closed {
+        swr_oci_closed(dbh);
+    }
+    code
 }
 
 /// A PDO error code as the C string it holds.
