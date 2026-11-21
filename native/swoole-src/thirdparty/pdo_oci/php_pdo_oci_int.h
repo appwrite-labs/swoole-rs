@@ -24,24 +24,12 @@
 /* The last error of a handle or statement (crates/oci/src/error.rs), null until its first. */
 struct swr_oci_error;
 
-/* stuff we use in an OCI database handle */
-typedef struct {
-    OCIServer *server;
-    OCISession *session;
-    OCIEnv *env;
-    OCIError *err;
-    OCISvcCtx *svc;
-    /* OCI9; 0 == use NLS_LANG */
-    ub4 prefetch;
-    ub2 charset;
-    sword last_err;
-    sb4 max_char_width;
-
-    unsigned attached : 1;
-    unsigned _reserved : 31;
-
-    struct swr_oci_error *einfo;
-} pdo_oci_db_handle;
+/* The connection's record is Rust's (crates/oci/src/handle.rs), read through these. */
+OCISvcCtx *swr_oci_svc(pdo_dbh_t *dbh);
+OCIError *swr_oci_err(pdo_dbh_t *dbh);
+OCIEnv *swr_oci_env(pdo_dbh_t *dbh);
+ub4 swr_oci_max_char_width(pdo_dbh_t *dbh);
+ub4 swr_oci_prefetch(pdo_dbh_t *dbh);
 
 typedef struct {
     OCIDefine *def;
@@ -57,7 +45,7 @@ typedef struct {
 } pdo_oci_column;
 
 typedef struct {
-    pdo_oci_db_handle *H;
+    pdo_dbh_t *dbh;
     OCIStmt *stmt;
     OCIError *err;
     sword last_err;
@@ -91,10 +79,8 @@ extern OCIEnv *swoole_pdo_oci_Env;
 
 ub4 _oci_error(
     OCIError *err, pdo_dbh_t *dbh, pdo_stmt_t *stmt, char *what, sword status, int isinit, const char *file, int line);
-/* Free a handle's (stmt NULL) or statement's last error. */
+/* Free a statement's last error. */
 void swr_oci_einfo_free(pdo_dbh_t *dbh, pdo_stmt_t *stmt);
-#define oci_init_error(w) _oci_error(H->err, dbh, NULL, w, H->last_err, TRUE, __FILE__, __LINE__)
-#define oci_drv_error(w) _oci_error(H->err, dbh, NULL, w, H->last_err, FALSE, __FILE__, __LINE__)
 #define oci_stmt_error(w) _oci_error(S->err, stmt->dbh, stmt, w, S->last_err, FALSE, __FILE__, __LINE__)
 
 extern const struct pdo_stmt_methods swoole_oci_stmt_methods;

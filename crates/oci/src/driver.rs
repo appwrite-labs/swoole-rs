@@ -1,8 +1,13 @@
 //! The connection's methods (`oci_driver.c`): transactions, the liveness
-//! check, `getAttribute`, `setAttribute`, `exec`, `quote` and closing. The handle is still C's `pdo_oci_db_handle`, read through accessors.
+//! check, `getAttribute`, `setAttribute`, `exec`, `quote` and closing. The
+//! connection's record is [`crate::handle::Handle`], read through its accessors.
 use crate::{
-    Any, Env, Error, Live, Server, Session, Snapshot, Stmt, Svc, Sword, Text,
+    Any, Env, Error, Live, Session, Snapshot, Stmt, Svc, Sword, Text,
     error::{OCI_HTYPE_ERROR, OCIErrorGet, here, report},
+    handle::{
+        release, swr_oci_attached, swr_oci_charset, swr_oci_env, swr_oci_err, swr_oci_prefetch,
+        swr_oci_server, swr_oci_session, swr_oci_set_prefetch, swr_oci_svc,
+    },
     swoole_oci_ping, swoole_oci_server_detach, swoole_oci_stmt_execute, swoole_oci_stmt_prepare,
     swoole_oci_trans_commit, swoole_oci_trans_rollback,
 };
@@ -24,7 +29,7 @@ use swoole_rs_zend::{
 /// `OCI_SUCCESS`.
 const OCI_SUCCESS: Sword = 0;
 /// `OCI_HTYPE_SVCCTX`.
-const OCI_HTYPE_SVCCTX: u32 = 3;
+pub(crate) const OCI_HTYPE_SVCCTX: u32 = 3;
 /// `OCI_HTYPE_SVCCTX` as `OCIServerRelease`'s `ub1` takes it.
 const SVCCTX_UB1: u8 = 3;
 /// `OCI_ATTR_CALL_TIMEOUT`.
@@ -37,7 +42,7 @@ const OCI_ATTR_CLIENT_INFO: u32 = 368;
 const OCI_ATTR_CLIENT_IDENTIFIER: u32 = 278;
 /// `OCI_HTYPE_ENV`, `OCI_HTYPE_SERVER`.
 const OCI_HTYPE_ENV: u32 = 1;
-const OCI_HTYPE_SERVER: u32 = 8;
+pub(crate) const OCI_HTYPE_SERVER: u32 = 8;
 /// `OCI_HTYPE_STMT`.
 const OCI_HTYPE_STMT: u32 = 4;
 /// `OCI_ATTR_ROW_COUNT` and `OCI_ATTR_STMT_TYPE`.
@@ -52,7 +57,7 @@ const OCI_COMMIT_ON_SUCCESS: u32 = 0x20;
 /// `OCI_SUCCESS_WITH_INFO`.
 const OCI_SUCCESS_WITH_INFO: Sword = 1;
 /// `OCI_HTYPE_SESSION`.
-const OCI_HTYPE_SESSION: u32 = 9;
+pub(crate) const OCI_HTYPE_SESSION: u32 = 9;
 /// `php_pdo_oci_int.h`'s attributes, from `PDO_OCI_ATTR_ACTION`.
 const ACTION: u32 = DRIVER_SPECIFIC;
 const CLIENT_INFO: u32 = DRIVER_SPECIFIC + 1;
@@ -60,7 +65,7 @@ const CLIENT_IDENTIFIER: u32 = DRIVER_SPECIFIC + 2;
 const MODULE: u32 = DRIVER_SPECIFIC + 3;
 const CALL_TIMEOUT: u32 = DRIVER_SPECIFIC + 4;
 /// `PDO_OCI_PREFETCH_DEFAULT`, rows.
-const PREFETCH_DEFAULT: u32 = 100;
+pub(crate) const PREFETCH_DEFAULT: u32 = 100;
 /// `PDO_OCI_PREFETCH_ROWSIZE`: the row length a prefetch's memory limit assumes.
 const PREFETCH_ROWSIZE: u32 = 1024;
 /// `char verstr[15]`: a version string is cut to 14 characters.
@@ -69,34 +74,16 @@ const VERSION_LIMIT: usize = 14;
 const INVALID_OPERATION: i32 = 1010;
 
 unsafe extern "C" {
-    /// The handle's service context (`H->svc`), live while the handle is.
-    safe fn swr_oci_svc(dbh: &Dbh) -> Live<Svc>;
-    /// The handle's error handle (`H->err`), live while the handle is.
-    safe fn swr_oci_err(dbh: &Dbh) -> Live<Error>;
-    /// `H->attached`.
-    safe fn swr_oci_attached(dbh: &Dbh) -> bool;
-    /// `H->prefetch`.
-    safe fn swr_oci_prefetch(dbh: &Dbh) -> u32;
-    /// `H->prefetch = rows`.
-    safe fn swr_oci_set_prefetch(dbh: &Dbh, rows: u32);
-    /// The handle's session (`H->session`), live while the handle is.
-    safe fn swr_oci_session(dbh: &Dbh) -> Live<Session>;
-    /// The handle's environment (`H->env`), live while the handle is.
-    safe fn swr_oci_env(dbh: &Dbh) -> Live<Env>;
     /// OCI's own declaration, with the user memory it can also hand out typed
     /// as the null it is here: a new handle of `kind` under `parent`, written
     /// to `handle` (null when it fails).
-    safe fn OCIHandleAlloc(
+    pub(crate) safe fn OCIHandleAlloc(
         parent: Live<Env>,
         handle: &mut crate::Handle,
         kind: u32,
         extra: usize,
         user_memory: Option<&'static crate::error::Nothing>,
     ) -> Sword;
-    /// The handle's server (`H->server`), live while the handle is.
-    safe fn swr_oci_server(dbh: &Dbh) -> Live<Server>;
-    /// `H->charset`: nonzero when the handle created its own environment.
-    safe fn swr_oci_charset(dbh: &Dbh) -> u16;
     /// OCI's own declaration for a handle this module frees, of `kind`.
     safe fn OCIHandleFree(handle: Live<Any>, kind: u32) -> Sword;
     /// OCI's own declaration for a statement's 2- or 4-byte attribute, written
@@ -114,7 +101,7 @@ unsafe extern "C" {
     /// OCI's own declaration for a text attribute of a session: OCI copies
     /// `size` bytes of `value`.
     #[link_name = "OCIAttrSet"]
-    safe fn OCIAttrSetSession(
+    pub(crate) safe fn OCIAttrSetSession(
         session: Live<Session>,
         kind: u32,
         value: Text,
@@ -133,6 +120,21 @@ unsafe extern "C" {
         svc: Live<Svc>,
         kind: u32,
         value: &u32,
+        size: u32,
+        attribute: u32,
+        err: Live<Error>,
+    ) -> Sword;
+    /// OCI's own declaration for a service context attribute that is another
+    /// handle (`OCI_ATTR_SERVER`, `OCI_ATTR_SESSION`), which OCI keeps.
+    #[expect(
+        clashing_extern_declarations,
+        reason = "OCIAttrSet takes its handle and value as void *: each declaration types them as one use passes them"
+    )]
+    #[link_name = "OCIAttrSet"]
+    pub(crate) safe fn OCIAttrSetHandle(
+        svc: Live<Svc>,
+        kind: u32,
+        value: Live<Any>,
         size: u32,
         attribute: u32,
         err: Live<Error>,
@@ -498,6 +500,7 @@ extern "C" fn swr_oci_close(dbh: &Dbh) {
     if swr_oci_charset(dbh) != 0 {
         free(swr_oci_env(dbh).any(), OCI_HTYPE_ENV);
     }
+    release(dbh);
 }
 }
 

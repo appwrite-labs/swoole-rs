@@ -188,6 +188,16 @@ impl Dbh {
         });
     }
 
+    /// `dbh->is_closed = 1`: the driver found the connection gone.
+    pub fn set_closed(&self) {
+        self.update(|dbh| {
+            #[cfg(php85)]
+            dbh.set_is_closed(true);
+            #[cfg(not(php85))]
+            dbh.set_is_closed(1);
+        });
+    }
+
     /// Whether PDO is tracking an active transaction.
     #[must_use]
     pub fn in_txn(&self) -> bool {

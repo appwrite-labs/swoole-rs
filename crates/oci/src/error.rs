@@ -42,11 +42,8 @@ pub(crate) enum Nothing {}
     reason = "C never reads a record: it keeps the pointer in its slot and passes the slot back"
 )]
 unsafe extern "C" {
-    /// `stmt ? &S->einfo : &H->einfo`, which live as long as the handle or
-    /// statement does.
-    safe fn swr_oci_einfo<'a>(dbh: &'a Dbh, stmt: Option<&'a Stmt>) -> &'a Einfo;
-    /// `dbh->is_closed = 1` and the handle's `attached = 0`: the connection is gone.
-    safe fn swr_oci_closed(dbh: &Dbh);
+    /// `&S->einfo`, which lives as long as the statement does.
+    safe fn swr_oci_stmt_einfo(stmt: &Stmt) -> &Einfo;
     /// OCI's own declaration, with the SQLSTATE it can also return typed as the
     /// null it is here: record `record`'s code and, given a buffer, message (cut
     /// to `size`, NUL included) from the error handle.
@@ -111,6 +108,11 @@ extern "C" fn swr_oci_error(
     cancelled: &mut bool,
 ) -> u32 {
     let slot = swr_oci_einfo(dbh, stmt);
+    let keep = |record: Record| {
+        if let Some(slot) = slot {
+            slot.set(Some(Box::new(record)));
+        }
+    };
     let set_state = |sqlstate: &CStr| match stmt {
         Some(stmt) => stmt.set_error_code(sqlstate),
         None => dbh.set_error_code(sqlstate),
@@ -166,7 +168,7 @@ extern "C" fn swr_oci_error(
         match record.code {
             0 => {}
             1013 => {
-                slot.set(Some(Box::new(record)));
+                keep(record);
                 *cancelled = true;
                 return 1013;
             }
@@ -182,7 +184,9 @@ extern "C" fn swr_oci_error(
                 code: record.code,
                 message: record.message.clone(),
             };
-            swr_oci_einfo(dbh, None).set(Some(Box::new(copy)));
+            if let Some(slot) = swr_oci_einfo(dbh, None) {
+                slot.set(Some(Box::new(copy)));
+            }
             dbh.set_error_code(&error_state(stmt.error_code()));
         }
     }
@@ -204,7 +208,7 @@ extern "C" fn swr_oci_error(
             dbh.throw_exception(code.into(), &thrown);
         }
     }
-    slot.set(Some(Box::new(record)));
+    keep(record);
     code.cast_unsigned()
 }
 
@@ -251,9 +255,29 @@ pub(crate) fn report(
     if cancelled {
         swoole_rs_zend::bailout::Bailout.defer();
     } else if closed {
-        swr_oci_closed(dbh);
+        crate::handle::swr_oci_closed(dbh);
     }
     code
+}
+
+/// `oci_init_error(what)` from Rust: [`swr_oci_error`] of a failure before the
+/// connection's error handle exists, recorded as `HY000` and thrown.
+pub(crate) fn report_init(dbh: &Dbh, what: &CStr, (file, line): (&'static CStr, u32)) {
+    let (mut closed, mut cancelled) = (false, false);
+    let none = Live(std::ptr::null_mut(), std::marker::PhantomData);
+    // An init error has no Oracle code: the record and the exception are the result.
+    let _code = swr_oci_error(
+        none,
+        dbh,
+        None,
+        what.into(),
+        0,
+        true,
+        file.into(),
+        line.cast_signed(),
+        &mut closed,
+        &mut cancelled,
+    );
 }
 
 /// A PDO error code as the C string it holds.
@@ -271,10 +295,13 @@ fn error_state(code: swoole_rs_zend::sys::pdo_error_type) -> CString {
 /// else the handle's, as `errorInfo()`'s code and message when it has a code.
 #[unsafe(no_mangle)]
 extern "C" fn pdo_oci_fetch_error_func(dbh: &Dbh, stmt: Option<&Stmt>, info: &Slot) {
-    let own = stmt.map(|stmt| swr_oci_einfo(dbh, Some(stmt)));
-    let record = own
+    let own = stmt.map(|stmt| swr_oci_stmt_einfo(stmt));
+    let Some(record) = own
         .filter(|slot| peek(slot, |record| record.message.is_some()))
-        .unwrap_or_else(|| swr_oci_einfo(dbh, None));
+        .or_else(|| swr_oci_einfo(dbh, None))
+    else {
+        return;
+    };
     peek(record, |record| {
         if record.code != 0 {
             let message = record.message.as_deref().map(CStr::to_bytes);
@@ -292,8 +319,18 @@ fn peek(slot: &Einfo, f: impl FnOnce(&Record) -> bool) -> bool {
     answer
 }
 
-/// `pefree(einfo.errmsg)` of a handle's or statement's record, when it closes.
+/// `pefree(einfo.errmsg)` of a statement's record, when it is destroyed (the
+/// connection's goes with its record).
 #[unsafe(no_mangle)]
-extern "C" fn swr_oci_einfo_free(dbh: &Dbh, stmt: Option<&Stmt>) {
-    drop(swr_oci_einfo(dbh, stmt).take());
+extern "C" fn swr_oci_einfo_free(_dbh: &Dbh, stmt: &Stmt) {
+    drop(swr_oci_stmt_einfo(stmt).take());
+}
+
+/// The statement's error slot, or the connection's without one: none before
+/// the factory made the record.
+fn swr_oci_einfo<'a>(dbh: &'a Dbh, stmt: Option<&'a Stmt>) -> Option<&'a Einfo> {
+    match stmt {
+        Some(stmt) => Some(swr_oci_stmt_einfo(stmt)),
+        None => crate::handle::handle(dbh).map(|handle| &handle.einfo),
+    }
 }
