@@ -55,7 +55,7 @@ int swr_v1_phpruntime_plain_metadata(const char *url, int option, const struct u
 int swr_v1_phpruntime_plain_rmdir(struct _php_stream_wrapper *wrapper, const char *url, int options,
                                   struct _php_stream_context *context);
 
-/* Defined by thirdparty/php/streams/plain_wrapper.c, which keeps PHP's originals:
+/* Defined by native/hooks/plain_wrapper.c, which keeps PHP's originals:
  * RINIT, and the stream_ops entry. */
 void php_swoole_runtime_rinit(void);
 void php_swoole_runtime_stream_ops(uint8_t stdio, uint8_t hook);

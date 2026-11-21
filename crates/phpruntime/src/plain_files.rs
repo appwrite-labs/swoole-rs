@@ -1,7 +1,7 @@
 //! The coroutine plain-files wrapper's path operations: `php_plain_files_url_stater`,
 //! `php_plain_files_unlink`, `php_plain_files_rename`, `php_plain_files_mkdir`,
 //! `php_plain_files_rmdir` and `php_plain_files_metadata` of upstream's copy of PHP's
-//! plain-files wrapper (`thirdparty/php/streams/plain_wrapper.c`), whose wrapper
+//! plain-files wrapper (`native/hooks/plain_wrapper.c`), whose wrapper
 //! table names them. A warning runs the user error handler, so each traps a bailout
 //! and raises it last.
 use crate::stream::raise;

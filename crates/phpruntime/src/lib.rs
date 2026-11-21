@@ -164,7 +164,7 @@ mod registration {
     pub(super) struct Wrapper([u8; 0]);
 
     unsafe extern "C" {
-        /// `thirdparty/php/streams/plain_wrapper.c`'s copy of PHP's plain-files
+        /// `native/hooks/plain_wrapper.c`'s copy of PHP's plain-files
         /// wrapper, which nothing writes.
         safe static sw_php_plain_files_wrapper: Wrapper;
         /// `thirdparty/php/standard/proc_open.cc`: `proc_open`'s resource type,
@@ -437,7 +437,7 @@ impl Host for Php {
     }
 
     fn stream_ops(&mut self, stdio: u8, hook: u8) {
-        // `thirdparty/php/streams/plain_wrapper.c`'s swap, which keeps
+        // `native/hooks/plain_wrapper.c`'s swap, which keeps
         // PHP's originals; it has no preconditions.
         unsafe extern "C" {
             safe fn php_swoole_runtime_stream_ops(stdio: u8, hook: u8);
