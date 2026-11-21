@@ -1,4 +1,4 @@
-/* Coroutine file hooks for thirdparty/php/streams/plain_wrapper.c: the libc calls
+/* Coroutine file hooks for native/hooks/plain_wrapper.c: the libc calls
  * it makes become the hooked swoole_coroutine_* functions (crates/hooks), and it
  * calls flock and socket_create directly. */
 #ifndef SW_FILE_HOOK_H_

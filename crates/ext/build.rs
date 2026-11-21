@@ -353,9 +353,8 @@ mod php {
         for module in &modules {
             c.files(sources(module, "c"));
         }
-        c.file(vendored.join("php/streams/plain_wrapper.c"))
-            .files(profile.c)
-            .compile("swoole_native_c");
+        // native/hooks/plain_wrapper.c comes with the hooks module's sources above.
+        c.files(profile.c).compile("swoole_native_c");
 
         for library in profile.libs.into_iter().chain(["z", "pthread", "m"]) {
             println!("cargo::rustc-link-lib={library}");

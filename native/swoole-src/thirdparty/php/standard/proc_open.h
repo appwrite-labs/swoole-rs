@@ -18,7 +18,7 @@
 
 SW_EXTERN_C_BEGIN
 void swoole_proc_open_init(int module_number);
-/* thirdparty/php/streams/plain_wrapper.c */
+/* native/hooks/plain_wrapper.c */
 php_stream *php_swoole_create_stream_from_pipe(int fd, const char *mode, const char *persistent_id STREAMS_DC);
 PHP_FUNCTION(swoole_proc_open);
 /* proc_terminate, proc_close and proc_get_status are crates/phpruntime's (proc.rs). */

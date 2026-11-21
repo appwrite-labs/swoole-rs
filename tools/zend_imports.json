@@ -68,7 +68,7 @@
   "crates/phpruntime/src/functions.rs:swr_zend_runtime_parent": "shim_runtime.c: reads/changes the already-resolved class hierarchy; no autoload or user callbacks.",
   "crates/phpruntime/src/functions.rs:swr_zend_runtime_set_parent": "shim_runtime.c: reads/changes the already-resolved class hierarchy; no autoload or user callbacks.",
   "crates/phpruntime/src/lib.rs:php_register_url_stream_wrapper": "phpruntime lib.rs: registers the static async.file wrapper; does not open or call it.",
-  "crates/phpruntime/src/lib.rs:php_swoole_runtime_stream_ops": "thirdparty/php/streams/plain_wrapper.c: swaps native stream operation tables; no stream operation is invoked.",
+  "crates/phpruntime/src/lib.rs:php_swoole_runtime_stream_ops": "native/hooks/plain_wrapper.c: swaps native stream operation tables; no stream operation is invoked.",
   "crates/phpruntime/src/lib.rs:swr_zend_runtime_find_class": "shim_runtime.c: direct function/class table lookup; does not autoload or invoke the entry.",
   "crates/phpruntime/src/lib.rs:swr_zend_stream_factory_set": "shim_stream.c: stores the Rust factory-body pointer without invoking it.",
   "crates/phpruntime/src/lib.rs:zend_register_class_alias_ex": "phpruntime lib.rs mongodb: registers MongoDB\\Client only after checking that the alias is absent and the target class is already resolved; no autoload.",

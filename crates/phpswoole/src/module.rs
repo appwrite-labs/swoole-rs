@@ -333,7 +333,7 @@ pub struct Http {
 // Phase bodies, private so only the phase lists below hold them: each runs at
 // its phase, inside `zend_try`.
 unsafe extern "C" {
-    /// `thirdparty/php/streams/plain_wrapper.c`'s RINIT: the plain wrapper's
+    /// `native/hooks/plain_wrapper.c`'s RINIT: the plain wrapper's
     /// and stdio's original operations, saved.
     safe fn php_swoole_runtime_rinit();
     /// MSHUTDOWN's leak check: `LeakSanitizer`'s recoverable check, when it is

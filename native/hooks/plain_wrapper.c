@@ -14,6 +14,26 @@
   +----------------------------------------------------------------------+
 */
 
+/* Swoole's coroutine copy of PHP's main/streams/plain_wrapper.c: the plain-files wrapper and
+ * the STDIO stream operations it installs while HOOK_FILE/HOOK_STDIO are on. #5145 ported its
+ * open-flag, fdopen-mode, url_stat, unlink, rename, mkdir, rmdir, metadata and RINIT work to
+ * crates/phpruntime (plain_files.rs); what is left stays C (#5519), for docs/zend.md's reasons:
+ *
+ * - private: every STDIO operation (read, write, close, flush, sync, seek, cast, stat,
+ *   set_option) and do_fstat work on php_stdio_stream_data, a bitfield layout private to this
+ *   file, as PHP's own copy is to main/streams/plain_wrapper.c.
+ * - version: HAVE_FLUSHIO, HAVE_MMAP and the PHP_VERSION_ID branches (the directory entry's
+ *   d_type from 8.3, ZEND_FALLTHROUGH, the 8.4 headers).
+ * - allocator: the openers (_sw_php_stream_fopen, _sw_php_stream_fopen_from_fd[_int],
+ *   php_swoole_create_stream_from_pipe, the directory opener) take STREAMS_DC and allocate
+ *   through php_stream_alloc, spprintf, emalloc and zend_string_init.
+ * - globals: php_plain_files_stream_opener reads EG(current_execute_data) to keep includes
+ *   off async I/O.
+ * - budget: php_plain_files_metadata reads `value` as the option's type, and
+ *   php_swoole_runtime_rinit/php_swoole_runtime_stream_ops copy PHP's exported
+ *   php_plain_files_wrapper and php_stream_stdio_ops tables; in Rust each adds unsafe and
+ *   removes none. The wrapper and operation tables are C data over the functions above. */
+
 /* What is left here of swoole-src's copy of PHP's plain-files wrapper: the stdio stream (its
  * eight operations, fopen and fopen_from_fd), the directory stream and the two tables. The
  * wrapper's path operations and the fopen mode helpers are crates/phpruntime's plain_files.
@@ -198,7 +218,7 @@ static php_stream *_sw_php_stream_fopen_from_fd(int fd, const char *mode, const 
         else {
             stream->position = lseek(self->fd, 0, SEEK_CUR);
 #ifdef ESPIPE
-            /* FIXME: Is this code still needed? */
+            /* @todo (upstream PHP): is this code still needed? */
             if (stream->position == (zend_off_t)-1 && errno == ESPIPE) {
                 stream->flags |= PHP_STREAM_FLAG_NO_SEEK;
                 self->is_seekable = 0;
@@ -484,7 +504,7 @@ static int sw_php_stdiop_set_option(php_stream *stream, int option, int value, v
     size_t size;
     int fd;
 #ifdef O_NONBLOCK
-    /* FIXME: make this work for win32 */
+    /* @todo (upstream PHP): make this work for win32 */
     int flags;
     int oldval;
 #endif
