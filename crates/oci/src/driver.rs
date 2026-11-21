@@ -1,14 +1,15 @@
 //! The connection's methods (`oci_driver.c`): transactions, the liveness
-//! check, `getAttribute` and `setAttribute`. The handle is still C's `pdo_oci_db_handle`, read through accessors.
+//! check, `getAttribute`, `setAttribute`, `exec` and `quote`. The handle is still C's `pdo_oci_db_handle`, read through accessors.
 use crate::{
-    Error, Live, Session, Svc, Sword, Text,
+    Env, Error, Live, Session, Snapshot, Stmt, Svc, Sword, Text,
     error::{OCI_HTYPE_ERROR, OCIErrorGet, here, report},
-    swoole_oci_ping, swoole_oci_trans_commit, swoole_oci_trans_rollback,
+    swoole_oci_ping, swoole_oci_stmt_execute, swoole_oci_stmt_prepare, swoole_oci_trans_commit,
+    swoole_oci_trans_rollback,
 };
-use std::ffi::CStr;
+use std::{ffi::CStr, marker::PhantomData, ptr};
 use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
-    Owned, Value, ZString,
+    E_WARNING, Owned, Value, ZStr, ZString,
     pdo::{self, Attribute, Dbh, Slot},
     sys::{
         pdo_attribute_type_PDO_ATTR_AUTOCOMMIT as AUTOCOMMIT,
@@ -16,7 +17,7 @@ use swoole_rs_zend::{
         pdo_attribute_type_PDO_ATTR_DRIVER_SPECIFIC as DRIVER_SPECIFIC,
         pdo_attribute_type_PDO_ATTR_PREFETCH as PREFETCH,
         pdo_attribute_type_PDO_ATTR_SERVER_INFO as SERVER_INFO,
-        pdo_attribute_type_PDO_ATTR_SERVER_VERSION as SERVER_VERSION, zend_long,
+        pdo_attribute_type_PDO_ATTR_SERVER_VERSION as SERVER_VERSION, zend_long, zend_string,
     },
 };
 
@@ -34,6 +35,19 @@ const OCI_ATTR_MODULE: u32 = 366;
 const OCI_ATTR_ACTION: u32 = 367;
 const OCI_ATTR_CLIENT_INFO: u32 = 368;
 const OCI_ATTR_CLIENT_IDENTIFIER: u32 = 278;
+/// `OCI_HTYPE_STMT`.
+const OCI_HTYPE_STMT: u32 = 4;
+/// `OCI_ATTR_ROW_COUNT` and `OCI_ATTR_STMT_TYPE`.
+const OCI_ATTR_ROW_COUNT: u32 = 9;
+const OCI_ATTR_STMT_TYPE: u32 = 24;
+/// `OCI_STMT_SELECT`.
+const OCI_STMT_SELECT: u16 = 1;
+/// `OCI_NTV_SYNTAX`: the server's own SQL dialect.
+const OCI_NTV_SYNTAX: u32 = 1;
+/// `OCI_COMMIT_ON_SUCCESS`.
+const OCI_COMMIT_ON_SUCCESS: u32 = 0x20;
+/// `OCI_SUCCESS_WITH_INFO`.
+const OCI_SUCCESS_WITH_INFO: Sword = 1;
 /// `OCI_HTYPE_SESSION`.
 const OCI_HTYPE_SESSION: u32 = 9;
 /// `php_pdo_oci_int.h`'s attributes, from `PDO_OCI_ATTR_ACTION`.
@@ -64,6 +78,32 @@ unsafe extern "C" {
     safe fn swr_oci_set_prefetch(dbh: &Dbh, rows: u32);
     /// The handle's session (`H->session`), live while the handle is.
     safe fn swr_oci_session(dbh: &Dbh) -> Live<Session>;
+    /// The handle's environment (`H->env`), live while the handle is.
+    safe fn swr_oci_env(dbh: &Dbh) -> Live<Env>;
+    /// OCI's own declaration, with the user memory it can also hand out typed
+    /// as the null it is here: a new handle of `kind` under `parent`, written
+    /// to `handle` (null when it fails).
+    safe fn OCIHandleAlloc(
+        parent: Live<Env>,
+        handle: &mut crate::Handle,
+        kind: u32,
+        extra: usize,
+        user_memory: Option<&'static crate::error::Nothing>,
+    ) -> Sword;
+    /// OCI's own declaration for a statement handle this module allocated.
+    safe fn OCIHandleFree(stmt: Live<Stmt>, kind: u32) -> Sword;
+    /// OCI's own declaration for a statement's 2- or 4-byte attribute, written
+    /// in native order to the start of `value`, with the size typed as the null
+    /// it is here.
+    #[link_name = "OCIAttrGet"]
+    safe fn OCIAttrGetStmt(
+        stmt: Live<Stmt>,
+        kind: u32,
+        value: &mut [u8; 4],
+        size: Option<&'static crate::error::Nothing>,
+        attribute: u32,
+        err: Live<Error>,
+    ) -> Sword;
     /// OCI's own declaration for a text attribute of a session: OCI copies
     /// `size` bytes of `value`.
     #[link_name = "OCIAttrSet"]
@@ -110,6 +150,10 @@ unsafe extern "C" {
     );
     /// OCI's own declaration for a 4-byte attribute of a service context, with
     /// the size it can also return typed as the null it is here.
+    #[expect(
+        clashing_extern_declarations,
+        reason = "OCIAttrGet takes its handle and value as void *: each declaration types them as one use passes them"
+    )]
     #[link_name = "OCIAttrGet"]
     safe fn OCIAttrGetSvc(
         svc: Live<Svc>,
@@ -358,4 +402,107 @@ fn call_timeout_supported() -> bool {
     let (mut major, mut minor, mut update, mut patch, mut port) = (0, 0, 0, 0, 0);
     OCIClientVersion(&mut major, &mut minor, &mut update, &mut patch, &mut port);
     major >= 18
+}
+
+swoole_rs_zend::exports! {
+/// `oci_handle_doer`: `sql` prepared and run on a statement handle of its own,
+/// returning the rows it changed, or -1. A `SELECT` is refused with a warning.
+#[unsafe(no_mangle)]
+extern "C" fn swr_oci_exec(dbh: &Dbh, sql: &ZStr) -> zend_long {
+    let err = swr_oci_err(dbh);
+    let stmt = Statement::alloc(swr_oci_env(dbh));
+    let bytes = sql.bytes();
+    let status = swoole_oci_stmt_prepare(
+        stmt.0,
+        err,
+        Text::of(bytes),
+        bytes.len().c_cast(),
+        OCI_NTV_SYNTAX,
+        0,
+    );
+    if status != OCI_SUCCESS {
+        report(dbh, err, c"OCIStmtPrepare", status, here!());
+        return -1;
+    }
+    let mut kind = [0u8; 4];
+    // C ignores this status too: a failed read leaves the type 0, no SELECT.
+    let _status = OCIAttrGetStmt(stmt.0, OCI_HTYPE_STMT, &mut kind, None, OCI_ATTR_STMT_TYPE, err);
+    if u16::from_ne_bytes([kind[0], kind[1]]) == OCI_STMT_SELECT {
+        drop(stmt);
+        swoole_rs_zend::bailout::defer(swoole_rs_zend::report(
+            E_WARNING,
+            c"issuing a SELECT query here is invalid",
+        ));
+        return -1;
+    }
+    let mode = if dbh.auto_commit() && !dbh.in_txn() {
+        OCI_COMMIT_ON_SUCCESS
+    } else {
+        0
+    };
+    let none = Live::<Snapshot>(ptr::null_mut(), PhantomData);
+    let status = swoole_oci_stmt_execute(swr_oci_svc(dbh), stmt.0, err, 1, 0, none, none, mode);
+    if status != OCI_SUCCESS {
+        report(dbh, err, c"OCIStmtExecute", status, here!());
+    }
+    if status != OCI_SUCCESS && status != OCI_SUCCESS_WITH_INFO {
+        return -1;
+    }
+    let mut rows = [0u8; 4];
+    // C returns whatever this left in the count, as here (0 when it fails).
+    let _status = OCIAttrGetStmt(stmt.0, OCI_HTYPE_STMT, &mut rows, None, OCI_ATTR_ROW_COUNT, err);
+    u32::from_ne_bytes(rows).into()
+}
+
+/// `oci_handle_quoter`: `unquoted` in single quotes, each quote doubled.
+/// C scanned with `strchr` and copied with `strncpy`, so the bytes after a NUL
+/// come out as NULs, and only the quotes before it are doubled.
+#[unsafe(no_mangle)]
+extern "C" fn swr_oci_quote(_dbh: &Dbh, unquoted: &ZStr, _kind: u32) -> *mut zend_string {
+    ZString::new(&quote(unquoted.bytes())).into_raw()
+}
+}
+
+/// [`swr_oci_quote`]'s bytes.
+fn quote(unquoted: &[u8]) -> Vec<u8> {
+    if unquoted.is_empty() {
+        return b"''".to_vec();
+    }
+    let end = unquoted
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(unquoted.len());
+    let (text, rest) = unquoted.split_at(end);
+    let mut quoted = Vec::with_capacity(unquoted.len() + 2);
+    quoted.push(b'\'');
+    for &byte in text {
+        quoted.push(byte);
+        if byte == b'\'' {
+            quoted.push(b'\'');
+        }
+    }
+    quoted.resize(quoted.len() + rest.len(), 0);
+    quoted.push(b'\'');
+    quoted
+}
+
+/// A statement handle [`swr_oci_exec`] allocated, freed when dropped.
+struct Statement(Live<Stmt>);
+
+impl Statement {
+    /// `OCIHandleAlloc(env, OCI_HTYPE_STMT)`: as in C, a failure leaves a null
+    /// handle, which every OCI call rejects.
+    fn alloc(env: Live<Env>) -> Self {
+        let mut handle = ptr::null_mut();
+        // A failure leaves the handle null, which the calls on it report.
+        let _status = OCIHandleAlloc(env, &mut handle, OCI_HTYPE_STMT, 0, None);
+        Self(Live(handle, PhantomData))
+    }
+}
+
+impl Drop for Statement {
+    fn drop(&mut self) {
+        // Freeing a handle fails only for a null one, which needs nothing.
+        let _status = OCIHandleFree(self.0, OCI_HTYPE_STMT);
+    }
 }

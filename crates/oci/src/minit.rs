@@ -10,6 +10,10 @@ unsafe extern "C" {
     safe static swoole_pdo_oci_driver: Driver;
     /// `OCIHandleFree` of no handle, the only one this passes it (nothing makes the
     /// reference): OCI rejects a null handle without touching memory, whatever the kind.
+    #[expect(
+        clashing_extern_declarations,
+        reason = "OCIHandleFree takes any handle as void *: driver.rs types the statements it frees"
+    )]
     safe fn OCIHandleFree(handle: Option<&'static !>, kind: u32) -> c_int;
 }
 
