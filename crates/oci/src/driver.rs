@@ -1,10 +1,10 @@
 //! The connection's methods (`oci_driver.c`): transactions, the liveness
-//! check, `getAttribute`, `setAttribute`, `exec` and `quote`. The handle is still C's `pdo_oci_db_handle`, read through accessors.
+//! check, `getAttribute`, `setAttribute`, `exec`, `quote` and closing. The handle is still C's `pdo_oci_db_handle`, read through accessors.
 use crate::{
-    Env, Error, Live, Session, Snapshot, Stmt, Svc, Sword, Text,
+    Any, Env, Error, Live, Server, Session, Snapshot, Stmt, Svc, Sword, Text,
     error::{OCI_HTYPE_ERROR, OCIErrorGet, here, report},
-    swoole_oci_ping, swoole_oci_stmt_execute, swoole_oci_stmt_prepare, swoole_oci_trans_commit,
-    swoole_oci_trans_rollback,
+    swoole_oci_ping, swoole_oci_server_detach, swoole_oci_stmt_execute, swoole_oci_stmt_prepare,
+    swoole_oci_trans_commit, swoole_oci_trans_rollback,
 };
 use std::{ffi::CStr, marker::PhantomData, ptr};
 use swoole_rs_corebase::CCast;
@@ -35,6 +35,9 @@ const OCI_ATTR_MODULE: u32 = 366;
 const OCI_ATTR_ACTION: u32 = 367;
 const OCI_ATTR_CLIENT_INFO: u32 = 368;
 const OCI_ATTR_CLIENT_IDENTIFIER: u32 = 278;
+/// `OCI_HTYPE_ENV`, `OCI_HTYPE_SERVER`.
+const OCI_HTYPE_ENV: u32 = 1;
+const OCI_HTYPE_SERVER: u32 = 8;
 /// `OCI_HTYPE_STMT`.
 const OCI_HTYPE_STMT: u32 = 4;
 /// `OCI_ATTR_ROW_COUNT` and `OCI_ATTR_STMT_TYPE`.
@@ -90,8 +93,12 @@ unsafe extern "C" {
         extra: usize,
         user_memory: Option<&'static crate::error::Nothing>,
     ) -> Sword;
-    /// OCI's own declaration for a statement handle this module allocated.
-    safe fn OCIHandleFree(stmt: Live<Stmt>, kind: u32) -> Sword;
+    /// The handle's server (`H->server`), live while the handle is.
+    safe fn swr_oci_server(dbh: &Dbh) -> Live<Server>;
+    /// `H->charset`: nonzero when the handle created its own environment.
+    safe fn swr_oci_charset(dbh: &Dbh) -> u16;
+    /// OCI's own declaration for a handle this module frees, of `kind`.
+    safe fn OCIHandleFree(handle: Live<Any>, kind: u32) -> Sword;
     /// OCI's own declaration for a statement's 2- or 4-byte attribute, written
     /// in native order to the start of `value` (a `u32`, aligned for either),
     /// with the size typed as the null it is here.
@@ -458,6 +465,40 @@ extern "C" fn swr_oci_exec(dbh: &Dbh, sql: &ZStr) -> zend_long {
 extern "C" fn swr_oci_quote(_dbh: &Dbh, unquoted: &ZStr, _kind: u32) -> *mut zend_string {
     ZString::new(&quote(unquoted.bytes())).into_raw()
 }
+
+/// `oci_handle_closer` but for freeing the handle itself, which C does after
+/// this: any outstanding work rolled back, then the session, service context,
+/// server (detached first while attached), error handle and, when the handle
+/// made its own for a charset, environment freed. A factory that failed part
+/// way leaves some of them null, which are skipped.
+#[unsafe(no_mangle)]
+extern "C" fn swr_oci_close(dbh: &Dbh) {
+    let (svc, err, session, server) =
+        (swr_oci_svc(dbh), swr_oci_err(dbh), swr_oci_session(dbh), swr_oci_server(dbh));
+    let free = |handle: Live<Any>, kind| {
+        if !handle.is_null() {
+            // OCI fails to free only a null or foreign handle, which these aren't.
+            let _status = OCIHandleFree(handle, kind);
+        }
+    };
+    if !svc.is_null() {
+        // Rolling back outstanding work is best effort, as in C.
+        let _status = swoole_oci_trans_rollback(svc, err, 0);
+    }
+    free(session.any(), OCI_HTYPE_SESSION);
+    free(svc.any(), OCI_HTYPE_SVCCTX);
+    if !server.is_null() && swr_oci_attached(dbh) {
+        let status = swoole_oci_server_detach(server, err, 0);
+        if status != OCI_SUCCESS {
+            report(dbh, err, c"OCIServerDetach", status, here!());
+        }
+    }
+    free(server.any(), OCI_HTYPE_SERVER);
+    free(err.any(), OCI_HTYPE_ERROR);
+    if swr_oci_charset(dbh) != 0 {
+        free(swr_oci_env(dbh).any(), OCI_HTYPE_ENV);
+    }
+}
 }
 
 /// [`swr_oci_quote`]'s bytes.
@@ -500,6 +541,6 @@ impl Statement {
 impl Drop for Statement {
     fn drop(&mut self) {
         // Freeing a handle fails only for a null one, which needs nothing.
-        let _status = OCIHandleFree(self.0, OCI_HTYPE_STMT);
+        let _status = OCIHandleFree(self.0.any(), OCI_HTYPE_STMT);
     }
 }

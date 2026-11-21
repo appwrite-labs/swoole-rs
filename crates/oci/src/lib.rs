@@ -58,6 +58,20 @@ impl<K> Clone for Live<K> {
 
 impl<K> Copy for Live<K> {}
 
+#[cfg(feature = "php")]
+impl<K> Live<K> {
+    /// Whether this is the null handle.
+    pub(crate) fn is_null(self) -> bool {
+        self.0.is_null()
+    }
+
+    /// The same handle for a call that takes any kind (`OCIHandleFree`), with
+    /// the kind passed beside it.
+    pub(crate) fn any(self) -> Live<Any> {
+        Live(self.0, PhantomData)
+    }
+}
+
 /// The kinds: `OCISvcCtx`, `OCIError`, `OCISession`, `OCIServer`, `OCIStmt` and
 /// `OCISnapshot`. A statement's binds and defines, the buffers and the driver's
 /// callbacks over them, stay live with it.
@@ -69,6 +83,8 @@ pub enum Stmt {}
 pub enum Snapshot {}
 /// `OCIEnv`: the environment a handle allocates its children from.
 pub enum Env {}
+/// A handle of the kind passed beside it.
+pub enum Any {}
 
 /// Statement text the driver handed over: readable for the length passed beside it.
 /// As with [`Live`], only the exports' parameters make one, or [`Text::of`] from

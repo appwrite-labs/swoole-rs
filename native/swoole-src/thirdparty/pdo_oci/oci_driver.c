@@ -63,51 +63,15 @@ ub4 _oci_error(OCIError *err,
 }
 /* }}} */
 
+/* Rust closes the connection's handles (crates/oci/src/driver.rs); the record
+ * itself is C's allocation. Stays C: allocator (pefree of a persistent handle). */
+extern void swr_oci_close(pdo_dbh_t *dbh);
+
 static void oci_handle_closer(pdo_dbh_t *dbh) /* {{{ */
 {
-    pdo_oci_db_handle *H = (pdo_oci_db_handle *) dbh->driver_data;
-
-    if (H->svc) {
-        /* rollback any outstanding work */
-        OCITransRollback(H->svc, H->err, 0);
-    }
-
-    if (H->session) {
-        OCIHandleFree(H->session, OCI_HTYPE_SESSION);
-        H->session = NULL;
-    }
-
-    if (H->svc) {
-        OCIHandleFree(H->svc, OCI_HTYPE_SVCCTX);
-        H->svc = NULL;
-    }
-
-    if (H->server && H->attached) {
-        H->last_err = OCIServerDetach(H->server, H->err, OCI_DEFAULT);
-        if (H->last_err) {
-            oci_drv_error("OCIServerDetach");
-        }
-        H->attached = 0;
-    }
-
-    if (H->server) {
-        OCIHandleFree(H->server, OCI_HTYPE_SERVER);
-        H->server = NULL;
-    }
-
-    if (H->err) {
-        OCIHandleFree(H->err, OCI_HTYPE_ERROR);
-        H->err = NULL;
-    }
-
-    if (H->charset && H->env) {
-        OCIHandleFree(H->env, OCI_HTYPE_ENV);
-        H->env = NULL;
-    }
-
+    swr_oci_close(dbh);
     swr_oci_einfo_free(dbh, NULL);
-
-    pefree(H, dbh->is_persistent);
+    pefree(dbh->driver_data, dbh->is_persistent);
 }
 /* }}} */
 
@@ -209,6 +173,14 @@ ub4 swr_oci_prefetch(pdo_dbh_t *dbh) {
 
 void swr_oci_set_prefetch(pdo_dbh_t *dbh, ub4 rows) {
     ((pdo_oci_db_handle *) dbh->driver_data)->prefetch = rows;
+}
+
+OCIServer *swr_oci_server(pdo_dbh_t *dbh) {
+    return ((pdo_oci_db_handle *) dbh->driver_data)->server;
+}
+
+ub2 swr_oci_charset(pdo_dbh_t *dbh) {
+    return ((pdo_oci_db_handle *) dbh->driver_data)->charset;
 }
 
 OCIEnv *swr_oci_env(pdo_dbh_t *dbh) {
