@@ -8,10 +8,10 @@ use core::{
     ptr::{self, NonNull},
 };
 use std::ffi::CString;
-use swoole_rs_corebase::{CCast, Switch, built_with};
+use swoole_rs_corebase::{CCast, Switch, built_with, sys::Text};
 use swoole_rs_zend::{
     Array, ArrayOrStr, Call, Emalloc, Key, ReturnSlot, Value, ZStr, ZString,
-    sys::{IS_RESOURCE, zend_ulong},
+    sys::{IS_RESOURCE, php_stream, zend_ulong},
     value_error,
 };
 
@@ -501,8 +501,8 @@ fn descriptor_from_item(
 struct Exec<'a>(NonNull<c_void>, PhantomData<&'a ()>);
 
 unsafe extern "C" {
-    /// Descriptor `i`'s index, type, child end and parent end.
-    safe fn swr_proc_descriptor_at(descriptors: Descriptors<'_>, i: c_int, out: &mut [c_int; 4]);
+    /// Descriptor `i`'s index, type, child end, parent end and mode flags.
+    safe fn swr_proc_descriptor_at(descriptors: Descriptors<'_>, i: c_int, out: &mut [c_int; 5]);
     /// In the child: `chdir` to the cwd if one was given, then exec the command with
     /// its argv or under `/bin/sh -c`, in its environment if one was given. Returns
     /// only when the exec failed, with errno set.
@@ -514,8 +514,8 @@ unsafe extern "C" {
 /// `close_parentends_of_pipes` in the child: each pipe or socket's parent end
 /// closed, and each child end moved to the descriptor the item names. False once
 /// it warned.
-fn move_descriptors(moves: &[[c_int; 4]]) -> bool {
-    for &[index, kind, childend, parentend] in moves {
+fn move_descriptors(moves: &[[c_int; 5]]) -> bool {
+    for &[index, kind, childend, parentend, _] in moves {
         if kind != 0 {
             // As upstream, a parent end that won't close is left.
             let _closed = swoole_rs_corebase::sys::close(parentend);
@@ -548,9 +548,9 @@ extern "C" fn swr_proc_fork(
     child: &mut libc::pid_t,
 ) -> bool {
     // Read before the fork: the child only closes, duplicates and execs.
-    let moves: Vec<[c_int; 4]> = (0..ndesc)
+    let moves: Vec<[c_int; 5]> = (0..ndesc)
         .map(|i| {
-            let mut descriptor = [0; 4];
+            let mut descriptor = [0; 5];
             swr_proc_descriptor_at(descriptors, i, &mut descriptor);
             descriptor
         })
@@ -715,5 +715,67 @@ extern "C" fn swr_proc_envp(
     envarray: &mut *mut *mut c_char,
 ) {
     array_to_envp(environment, envp, envarray);
+}
+}
+
+unsafe extern "C" {
+    /// `php_swoole_create_stream_from_pipe(fd, mode)`: a stream that takes `fd`, or
+    /// none.
+    safe fn swr_proc_pipe_stream(fd: c_int, mode: Option<Text<'_>>) -> Option<NonNull<php_stream>>;
+    /// Records `stream` as `proc`'s pipe `i` and adds it to `pipes` under `index`
+    /// (unseekable, as upstream marks it), or records none for no stream.
+    safe fn swr_proc_attach(
+        proc: &Process<'_>,
+        i: c_int,
+        stream: Option<NonNull<php_stream>>,
+        pipes: &Value,
+        index: c_int,
+    );
+}
+
+swoole_rs_zend::exports! {
+/// `proc_open`'s parent once the child forked: each descriptor's child end closed,
+/// and a pipe's or socket's parent end opened as a stream in `pipes` and recorded in
+/// `proc`.
+#[unsafe(no_mangle)]
+extern "C" fn swr_proc_parent(
+    descriptors: Descriptors<'_>,
+    ndesc: c_int,
+    proc: &Process<'_>,
+    pipes: &Value,
+) {
+    for i in 0..ndesc {
+        let mut descriptor = [0; 5];
+        swr_proc_descriptor_at(descriptors, i, &mut descriptor);
+        let [index, kind, childend, parentend, mode] = descriptor;
+        // As upstream, a child end that won't close is left.
+        let _closed = swoole_rs_corebase::sys::close(childend);
+        let stream = match kind {
+            TYPE_PIPE => {
+                let mode = match mode {
+                    libc::O_WRONLY => Some(c"w"),
+                    libc::O_RDONLY => Some(c"r"),
+                    libc::O_RDWR => Some(c"r+"),
+                    _ => None,
+                };
+                swr_proc_pipe_stream(parentend, mode.map(Text::from))
+            }
+            TYPE_SOCKET => crate::stream::socket_stream(parentend, libc::AF_UNIX, libc::SOCK_STREAM, 0),
+            _ => None,
+        };
+        swr_proc_attach(proc, i, stream, pipes, index);
+    }
+}
+}
+
+swoole_rs_zend::exports! {
+/// `proc_co_rsrc_dtor`'s wait once the pipes are closed: a still-running child is
+/// reaped (`_co_waitpid`) into `wstatus`, 0 otherwise.
+#[unsafe(no_mangle)]
+extern "C" fn swr_proc_reap(running: bool, child: libc::pid_t, wstatus: &mut c_int) {
+    *wstatus = 0;
+    if running {
+        waitpid(child, wstatus, 0);
+    }
 }
 }
