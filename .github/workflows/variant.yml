@@ -163,6 +163,16 @@ jobs:
           --runner target/upstream/src/run-tests.php --php "$PHP"
           --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so
           --output target/phpt/zts/server-exit-companion.json
+      # What a thread leaves behind (#5285): threads started and joined, each with an event and
+      # a signal callback, and a thread-mode server's worker thread, with a port callback,
+      # restarted by reload(); cargo's growth per thread and per reload against upstream's.
+      - if: inputs.variant == 'zts'
+        name: Thread churn soak
+        run: |
+          python3 tests/soak/soak.py --php "$PHP" --engine upstream=target/phpt/upstream.so --threads 2000 \
+            --output target/phpt/zts/threads-upstream.json || test -f target/phpt/zts/threads-upstream.json
+          python3 tests/soak/soak.py --php "$PHP" --engine cargo=target/phpt/cargo.so --threads 2000 \
+            --control target/phpt/zts/threads-upstream.json --output target/phpt/zts/threads-cargo.json
       # The workload only this variant's build runs (#2683), against its record like merge.yml's
       # callgrind job: a file read through io_uring, or a Swoole\Thread start and join. A thread
       # start costs 45.6M instructions, so 30 of them measure the ratio that 1,000 took 11 minutes to.
