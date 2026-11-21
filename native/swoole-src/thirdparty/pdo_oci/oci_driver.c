@@ -181,101 +181,6 @@ static bool oci_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *st
 }
 /* }}} */
 
-static zend_long oci_handle_doer(pdo_dbh_t *dbh, const zend_string *sql) /* {{{ */
-{
-    pdo_oci_db_handle *H = (pdo_oci_db_handle *) dbh->driver_data;
-    OCIStmt *stmt;
-    ub2 stmt_type;
-    ub4 rowcount;
-    int ret = -1;
-
-    OCIHandleAlloc(H->env, (dvoid *) &stmt, OCI_HTYPE_STMT, 0, NULL);
-
-    H->last_err =
-        OCIStmtPrepare(stmt, H->err, (text *) ZSTR_VAL(sql), (ub4) ZSTR_LEN(sql), OCI_NTV_SYNTAX, OCI_DEFAULT);
-    if (H->last_err) {
-        H->last_err = oci_drv_error("OCIStmtPrepare");
-        OCIHandleFree(stmt, OCI_HTYPE_STMT);
-        return -1;
-    }
-
-    H->last_err = OCIAttrGet(stmt, OCI_HTYPE_STMT, &stmt_type, 0, OCI_ATTR_STMT_TYPE, H->err);
-
-    if (stmt_type == OCI_STMT_SELECT) {
-        /* invalid usage; cancel it */
-        OCIHandleFree(stmt, OCI_HTYPE_STMT);
-        php_error_docref(NULL, E_WARNING, "issuing a SELECT query here is invalid");
-        return -1;
-    }
-
-    /* now we are good to go */
-    H->last_err = OCIStmtExecute(H->svc,
-                                 stmt,
-                                 H->err,
-                                 1,
-                                 0,
-                                 NULL,
-                                 NULL,
-                                 (dbh->auto_commit && !dbh->in_txn) ? OCI_COMMIT_ON_SUCCESS : OCI_DEFAULT);
-
-    sword last_err = H->last_err;
-
-    if (last_err) {
-        H->last_err = oci_drv_error("OCIStmtExecute");
-    }
-
-    if (!last_err || last_err == OCI_SUCCESS_WITH_INFO) {
-        /* return the number of affected rows */
-        H->last_err = OCIAttrGet(stmt, OCI_HTYPE_STMT, &rowcount, 0, OCI_ATTR_ROW_COUNT, H->err);
-        ret = rowcount;
-    }
-
-    OCIHandleFree(stmt, OCI_HTYPE_STMT);
-
-    return ret;
-}
-/* }}} */
-
-static zend_string *oci_handle_quoter(pdo_dbh_t *dbh,
-                                      const zend_string *unquoted,
-                                      enum pdo_param_type paramtype) /* {{{ */
-{
-    int qcount = 0;
-    char const *cu, *l, *r;
-    char *c, *quoted;
-    size_t quotedlen;
-    zend_string *quoted_str;
-
-    if (ZSTR_LEN(unquoted) == 0) {
-        return ZSTR_INIT_LITERAL("''", 0);
-    }
-
-    /* count single quotes */
-    for (cu = ZSTR_VAL(unquoted); (cu = strchr(cu, '\'')); qcount++, cu++)
-        ; /* empty loop */
-
-    quotedlen = ZSTR_LEN(unquoted) + qcount + 2;
-    quoted = c = emalloc(quotedlen + 1);
-    *c++ = '\'';
-
-    /* foreach (chunk that ends in a quote) */
-    for (l = ZSTR_VAL(unquoted); (r = strchr(l, '\'')); l = r + 1) {
-        strncpy(c, l, r - l + 1);
-        c += (r - l + 1);
-        *c++ = '\''; /* add second quote */
-    }
-
-    /* Copy remainder and add enclosing quote */
-    strncpy(c, l, quotedlen - (c - quoted) - 1);
-    quoted[quotedlen - 1] = '\'';
-    quoted[quotedlen] = '\0';
-
-    quoted_str = zend_string_init(quoted, quotedlen, 0);
-    efree(quoted);
-    return quoted_str;
-}
-/* }}} */
-
 /* The connection's methods in Rust (crates/oci/src/driver.rs), and what they read of the handle. */
 extern bool swr_oci_begin(pdo_dbh_t *dbh);
 extern bool swr_oci_commit(pdo_dbh_t *dbh);
@@ -283,6 +188,8 @@ extern bool swr_oci_rollback(pdo_dbh_t *dbh);
 extern bool swr_oci_alive(pdo_dbh_t *dbh);
 extern int swr_oci_get_attribute(pdo_dbh_t *dbh, zend_long attr, zval *return_value);
 extern bool swr_oci_set_attribute(pdo_dbh_t *dbh, zend_long attr, zval *val);
+extern zend_long swr_oci_exec(pdo_dbh_t *dbh, const zend_string *sql);
+extern zend_string *swr_oci_quote(pdo_dbh_t *dbh, const zend_string *unquoted, enum pdo_param_type paramtype);
 
 OCISvcCtx *swr_oci_svc(pdo_dbh_t *dbh) {
     return ((pdo_oci_db_handle *) dbh->driver_data)->svc;
@@ -304,6 +211,10 @@ void swr_oci_set_prefetch(pdo_dbh_t *dbh, ub4 rows) {
     ((pdo_oci_db_handle *) dbh->driver_data)->prefetch = rows;
 }
 
+OCIEnv *swr_oci_env(pdo_dbh_t *dbh) {
+    return ((pdo_oci_db_handle *) dbh->driver_data)->env;
+}
+
 OCISession *swr_oci_session(pdo_dbh_t *dbh) {
     return ((pdo_oci_db_handle *) dbh->driver_data)->session;
 }
@@ -316,8 +227,8 @@ static zend_result pdo_oci_check_liveness(pdo_dbh_t *dbh) {
 static const struct pdo_dbh_methods oci_methods = {
     oci_handle_closer,
     oci_handle_preparer,
-    oci_handle_doer,
-    oci_handle_quoter,
+    swr_oci_exec,
+    swr_oci_quote,
     swr_oci_begin,
     swr_oci_commit,
     swr_oci_rollback,

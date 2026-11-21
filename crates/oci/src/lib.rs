@@ -67,6 +67,8 @@ pub enum Session {}
 pub enum Server {}
 pub enum Stmt {}
 pub enum Snapshot {}
+/// `OCIEnv`: the environment a handle allocates its children from.
+pub enum Env {}
 
 /// Statement text the driver handed over: readable for the length passed beside it.
 /// As with [`Live`], only the exports' parameters make one, or [`Text::of`] from
