@@ -90,7 +90,9 @@ php_local! {
     /// PHP, as upstream's static: a thread-context coroutine's callback runs on its
     /// own thread and must find the fds the loop's thread added. Never dropped: what
     /// a ZTS thread leaves registered is leaked, as upstream's, not released once
-    /// PHP is gone. Each access restores the map before acting on a registration.
+    /// PHP is gone; an empty table's storage is given back at the thread's request
+    /// shutdown (`rshutdown`). Each access restores the map before acting on a
+    /// registration.
     static SOCKETS: Cell<ManuallyDrop<Sockets>> = Cell::new(ManuallyDrop::new(Sockets(Table::new())));
     /// The last `Registered::id` handed out.
     static ADDED: Cell<u64> = Cell::new(0);
@@ -734,9 +736,17 @@ swoole_rs_zend::handlers! {
 }
 
 /// The shutdown function `init` registers. A Zend bailout ends it, as inside
-/// upstream's `zend_try`, and is not raised; a thread exit still is.
-fn rshutdown(_call: &Call) {
+/// upstream's `zend_try`, and is not raised; a thread exit still is. Once the loop is
+/// done, an empty `SOCKETS` gives back its storage while PHP is still here: a ZTS
+/// thread's table is never dropped otherwise, which cost about 500 bytes a thread
+/// where upstream's process-wide map costs none (#5285).
+fn rshutdown(call: &Call) {
     let _caught = bailout::relay_to_c(loop_driver::shutdown());
+    SOCKETS.with_taken(call.php(), |sockets| {
+        if sockets.0.is_empty() {
+            **sockets = Sockets::default();
+        }
+    });
 }
 
 fn wait(_call: &Call) {

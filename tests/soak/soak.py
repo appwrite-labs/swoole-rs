@@ -21,12 +21,19 @@ requests sent: a bailout ends its worker on both engines, which the manager rest
 what one could leak lives on only in the master and manager (#5283). With --control it
 fails when this engine grows more per request than the control plus
 --max-rss-per-request.
+
+--threads N (a thread-safe PHP) runs threads.php: N threads started and joined, each
+adding and deleting an event and registering a signal callback, then a thread-mode
+server whose worker thread, with a port callback on a second listener, is restarted N
+times with reload(). It reports RSS growth per thread and per reload, and with --control
+fails when either exceeds the control's plus --max-rss-per-request (#5285).
 """
 import argparse
 import http.client
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
@@ -34,7 +41,7 @@ import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tools.harness import parse_engines, server, stop_process_group, temp_file_count, write_report
+from tools.harness import parse_engines, run_isolated, server, stop_process_group, temp_file_count, write_report
 from corpus.run import WebSocket
 
 HERE = Path(__file__).resolve().parent
@@ -323,6 +330,80 @@ def bailout(engine, args, tmpdir):
             'failures': failures, 'samples': [{'requests': s['requests'], 'rss': sum(s['rss'].values())} for s in samples]}
 
 
+def threads(engine, args, tmpdir):
+    """threads.php's churn and reload cases: RSS growth per thread and per reload."""
+    failures, report = [], {'engine': engine.metadata(), 'threads': args.threads}
+    # Not under the soak's TMPDIR: a thread's RINIT reads it, which is its own case.
+    churn = run_isolated(engine.command(HERE / 'threads.php', str(args.threads)), timeout=1800,
+                         env={**os.environ, 'SOAK_THREADS': 'churn'})
+    try:
+        report['per_thread'] = json.loads(churn.stdout.strip().splitlines()[-1])['per_thread']
+    except (IndexError, ValueError, KeyError):
+        failures.append(f'churn exited {churn.returncode}: {churn.stdout[-300:]} {churn.stderr[-300:]}')
+    try:
+        # The second listener's port: fixed, as each worker thread runs the script again.
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1', 0))
+            extra = probe.getsockname()[1]
+        env = {'SOAK_THREADS': 'server', 'SOAK_EXTRA_PORT': str(extra)}
+        with server(engine, HERE / 'threads.php', env) as (port, proc):
+            def get(path):
+                connection = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+                try:
+                    connection.request('GET', path)
+                    response = connection.getresponse()
+                    return response.status, response.read()
+                finally:
+                    connection.close()
+
+            def rss():
+                for _ in range(500):
+                    try:
+                        status, body = get('/rss')
+                        if status == 200:
+                            return int(body)
+                    except (OSError, http.client.HTTPException, ValueError):
+                        pass
+                    time.sleep(.01)
+                raise AssertionError('no /rss answer')
+
+            def reload():
+                # The worker thread answering may be the one restarting: a reset is expected.
+                try:
+                    get('/reload')
+                except (OSError, http.client.HTTPException):
+                    pass
+                # The restarted worker thread answers again.
+                for _ in range(500):
+                    try:
+                        if get('/')[0] == 200:
+                            return
+                    except (OSError, http.client.HTTPException):
+                        pass
+                    time.sleep(.01)
+                raise AssertionError('the worker thread did not come back after reload()')
+            for _ in range(20):
+                reload()
+            start = rss()
+            for _ in range(args.threads):
+                reload()
+            report['per_reload'] = (rss() - start) / args.threads
+    except Exception as error:
+        failures.append(f'{type(error).__name__}: {error}')
+    if args.control:
+        control = json.loads(Path(args.control).read_text())
+        for metric in ('per_thread', 'per_reload'):
+            if metric in report and metric not in control:
+                # A control that failed to measure it gates nothing: say so.
+                failures.append(f'the control has no {metric} (its failures: {control.get("failures")})')
+            elif metric in report:
+                limit = max(0, control[metric]) + args.max_rss_per_request
+                if report[metric] > limit:
+                    failures.append(f'rss grew {report[metric]:.0f} bytes {metric.replace("_", " ")} (limit {limit:.0f})')
+    report['failures'] = failures
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--engine', required=True, help='NAME=/path/to/swoole.so')
@@ -341,13 +422,20 @@ def main():
     parser.add_argument('--leak', action='store_true', help='self-test: pass only if a per-request leak is caught')
     parser.add_argument('--bailout', choices=['exit', 'fatal', 'read'], help='requests that end in this bailout instead of the load')
     parser.add_argument('--requests', type=int, default=5000, help='--bailout: requests to send')
-    parser.add_argument('--max-rss-per-request', type=float, default=256, help="--bailout: bytes over the control's")
+    parser.add_argument('--threads', type=int, help='threads to start and join, and reloads, on a thread-safe PHP')
+    parser.add_argument('--max-rss-per-request', type=float, default=256,
+                        help="--bailout, --threads: bytes per request, thread or reload over the control's")
     parser.add_argument('--output', default='target/reports/soak.json')
     args = parser.parse_args()
     args.warmup = args.duration * .2 if args.warmup is None else args.warmup
     [engine] = parse_engines([args.engine], args.php, args.php_extension)
     with tempfile.TemporaryDirectory(prefix='swoole-soak-') as tmpdir:
-        report = bailout(engine, args, tmpdir) if args.bailout else soak(engine, args, tmpdir)
+        if args.threads:
+            report = threads(engine, args, tmpdir)
+        elif args.bailout:
+            report = bailout(engine, args, tmpdir)
+        else:
+            report = soak(engine, args, tmpdir)
     write_report(args.output, report)
     for failure in report['failures']:
         print(f'FAIL {failure}')
