@@ -13,6 +13,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
     E_WARNING, Owned, ZString,
     pdo::{Dbh, Slot, Stmt as PdoStmt},
+    string::ZBuf,
     sys::{pdo_column_data, zend_string},
 };
 
@@ -79,14 +80,24 @@ impl Column {
         matches!(self.dtype.get(), SQLT_BLOB | SQLT_CLOB)
     }
 
-    /// The first `length` bytes OCI fetched into the buffer.
-    fn bytes(&self, length: usize) -> Vec<u8> {
+    /// The first `length` bytes OCI fetched into the buffer, as a Zend string,
+    /// copied straight from the buffer as C's `ZVAL_STRINGL` did.
+    fn value(&self, length: usize) -> ZString {
         let buffer = self.buffer.take();
-        let bytes = buffer.as_deref().map_or_else(Vec::new, |cells| {
-            cells.iter().take(length).map(Cell::get).collect()
-        });
+        let mut value = ZBuf::with_capacity(0);
+        if let Some(cells) = buffer.as_deref() {
+            let cells = cells.get(..length.min(cells.len())).unwrap_or_default();
+            value = ZBuf::with_capacity(cells.len());
+            let mut chunk = [0u8; 256];
+            for part in cells.chunks(chunk.len()) {
+                for (to, from) in chunk.iter_mut().zip(part) {
+                    *to = from.get();
+                }
+                value.extend_from_slice(chunk.get(..part.len()).unwrap_or_default());
+            }
+        }
         self.buffer.set(buffer);
-        bytes
+        value.into_zstring()
     }
 }
 
@@ -381,7 +392,7 @@ extern "C" fn swr_oci_column_value(stmt: &PdoStmt, colno: u32, result: &Slot) ->
                 }
                 swr_oci_lob_value(stmt, column.lob.get(), result);
             }
-            0 => result.set(Owned::string(ZString::new(&column.bytes(length)))),
+            0 => result.set(Owned::string(column.value(length))),
             _ => {
                 let warning = format!(
                     "Column {colno} data was too large for buffer and was truncated to fit it"
@@ -390,7 +401,7 @@ extern "C" fn swr_oci_column_value(stmt: &PdoStmt, colno: u32, result: &Slot) ->
                     swoole_rs_zend::bailout::defer(swoole_rs_zend::report(E_WARNING, &warning));
                 }
                 // A LOB column has no buffer (C read the locator's bytes here).
-                result.set(Owned::string(ZString::new(&column.bytes(length))));
+                result.set(Owned::string(column.value(length)));
             }
         }
         true
