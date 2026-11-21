@@ -1143,12 +1143,12 @@ PHP_FUNCTION(swoole_proc_open) {
 }
 #else
 SW_EXTERN_C_BEGIN
-/* For proc.rs's proc_open, once it parsed its arguments, built the command, argv and
+/* The rest of proc_open once proc.rs parsed its arguments, built the command, argv and
  * environment, and ran its checks: the descriptor array, the walk over $descriptorspec,
  * the fork, and the parent's streams into `pipes`, leaving the process resource or false
  * in `return_value`. It takes `argv` and the environment; `command_str` and `cwd_str`
  * stay the caller's. */
-void swr_proc_open_spawn(zend_string *command_str,
+static void proc_open_spawn(zend_string *command_str,
                          char **argv,
                          HashTable *descriptorspec,
                          zval *pipes,
@@ -1267,6 +1267,27 @@ void swr_proc_open_spawn(zend_string *command_str,
     if (descriptors) {
         efree(descriptors);
     }
+}
+
+/* For proc.rs: proc_open_spawn inside zend_try, so a bailout (a warning's error handler)
+ * returns to Rust, which resumes it once its own values are dropped. True when it bailed. */
+bool swr_proc_open_spawn(zend_string *command_str,
+                         char **argv,
+                         HashTable *descriptorspec,
+                         zval *pipes,
+                         zend_string *cwd_str,
+                         char *envp,
+                         char **envarray,
+                         zval *return_value) {
+    volatile bool bailed = false;
+    zend_try {
+        proc_open_spawn(command_str, argv, descriptorspec, pipes, cwd_str, envp, envarray, return_value);
+    }
+    zend_catch {
+        bailed = true;
+    }
+    zend_end_try();
+    return bailed;
 }
 SW_EXTERN_C_END
 #endif
