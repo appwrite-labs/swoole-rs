@@ -173,6 +173,10 @@ extern "C" fn swr_oci_get_attribute(dbh: &Dbh, attr: zend_long, result: &Slot) -
         PREFETCH => Owned::long(swr_oci_prefetch(dbh).into()),
         CALL_TIMEOUT => {
             let err = swr_oci_err(dbh);
+            if !call_timeout_supported() {
+                report(dbh, err, c"Unsupported attribute type", OCI_SUCCESS, here!());
+                return Attribute::Unknown;
+            }
             let mut timeout = 0u32;
             let status = OCIAttrGetSvc(
                 swr_oci_svc(dbh),
@@ -193,4 +197,15 @@ extern "C" fn swr_oci_get_attribute(dbh: &Dbh, attr: zend_long, result: &Slot) -
     result.set(value);
     Attribute::Set
 }
+}
+
+/// `OCI_MAJOR_VERSION >= 18`, which `OCI_ATTR_CALL_TIMEOUT` needs. C checked the
+/// headers it was built with; this asks the client library it loaded, which
+/// ships with them. Older clients report "Unsupported attribute type" instead.
+/// C recorded that with whatever status the handle's last call left (0 after a
+/// successful one), which Rust doesn't keep; this records `OCI_SUCCESS`.
+fn call_timeout_supported() -> bool {
+    let (mut major, mut minor, mut update, mut patch, mut port) = (0, 0, 0, 0, 0);
+    OCIClientVersion(&mut major, &mut minor, &mut update, &mut patch, &mut port);
+    major >= 18
 }
