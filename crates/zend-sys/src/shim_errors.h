@@ -39,6 +39,7 @@ int swr_zend_try_parse_str(zval *arg, zend_string **out, uint32_t number, bool *
 int swr_zend_try_get_long(zval *value, zend_long *out);
 int swr_zend_try_get_double(zval *value, double *out);
 int swr_zend_try_get_string(zval *value, zend_string **out);
+int swr_zend_try_try_get_string(zval *value, zend_string **out);
 /* zval_ptr_dtor, and zend_hash_update, zend_hash_clean and add_assoc_zval_ex
  * (which release the old values): the last reference to an object runs
  * __destruct, and a possible root can start the cycle collector. The clean

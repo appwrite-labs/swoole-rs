@@ -187,6 +187,12 @@ unsafe extern "C" {
     /// `zval_get_string`, as [`swr_zend_try_get_long`]: `out` takes a new
     /// reference, even after a bailout.
     safe fn swr_zend_try_get_string(value: &Value, out: &mut *mut zend_string) -> std::ffi::c_int;
+    /// `zval_try_get_string`, as [`swr_zend_try_get_string`]: `out` takes a new
+    /// reference, or stays null when the conversion threw.
+    safe fn swr_zend_try_try_get_string(
+        value: &Value,
+        out: &mut *mut zend_string,
+    ) -> std::ffi::c_int;
     /// `zval_is_true`: it reads the value (an object's cast handler may run).
     safe fn swr_zval_is_true(value: &Value) -> bool;
     /// `http_build_query($value)`: null or a new string.
@@ -920,6 +926,21 @@ impl Value {
         let mut out = ptr::null_mut();
         bailout::defer(bailout::trapped(swr_zend_try_get_string(self, &mut out)));
         ZString(out)
+    }
+
+    /// `zval_try_get_string`: [`Value::string`], or None when the conversion
+    /// threw (an array to string conversion an error handler turned into an
+    /// exception, or `__toString` throwing) or bailed out (deferred).
+    #[must_use]
+    pub fn try_string(&self) -> Option<ZString> {
+        if let Some(string) = self.str() {
+            return Some(string.to_owned());
+        }
+        let mut out = ptr::null_mut();
+        bailout::defer(bailout::trapped(swr_zend_try_try_get_string(
+            self, &mut out,
+        )));
+        (!out.is_null()).then(|| ZString(out))
     }
 
     /// `http_build_query($value)` (RFC 1738): None for a value that is no array or

@@ -22,7 +22,6 @@
 #include "pdo/php_pdo.h"
 #include "Zend/zend_exceptions.h"
 
-static inline ub4 pdo_oci_sanitize_prefetch(long prefetch);
 
 /* Rust records the error (crates/oci/src/error.rs). Stays C: bailout (ORA-01013,
  * the user cancelled the call, ends the request) and the handle's attached bit. */
@@ -277,154 +276,13 @@ static zend_string *oci_handle_quoter(pdo_dbh_t *dbh,
 }
 /* }}} */
 
-static bool oci_handle_set_attribute(pdo_dbh_t *dbh, zend_long attr, zval *val) /* {{{ */
-{
-    zend_long lval;
-    pdo_oci_db_handle *H = (pdo_oci_db_handle *) dbh->driver_data;
-
-    switch (attr) {
-    case PDO_ATTR_AUTOCOMMIT: {
-        bool bval;
-        if (!pdo_get_bool_param(&bval, val)) {
-            return false;
-        }
-
-        if (dbh->in_txn) {
-            /* Assume they want to commit whatever is outstanding */
-            H->last_err = OCITransCommit(H->svc, H->err, 0);
-
-            if (H->last_err) {
-                H->last_err = oci_drv_error("OCITransCommit");
-                return false;
-            }
-            dbh->in_txn = false;
-        }
-
-        dbh->auto_commit = (unsigned int) bval;
-        return true;
-    }
-    case PDO_ATTR_PREFETCH: {
-        if (!pdo_get_long_param(&lval, val)) {
-            return false;
-        }
-
-        H->prefetch = pdo_oci_sanitize_prefetch(lval);
-        return true;
-    }
-    case PDO_OCI_ATTR_ACTION: {
-#if (OCI_MAJOR_VERSION >= 10)
-        zend_string *action = zval_try_get_string(val);
-        if (UNEXPECTED(!action)) {
-            return false;
-        }
-
-        H->last_err = OCIAttrSet(
-            H->session, OCI_HTYPE_SESSION, (dvoid *) ZSTR_VAL(action), (ub4) ZSTR_LEN(action), OCI_ATTR_ACTION, H->err);
-        if (H->last_err) {
-            oci_drv_error("OCIAttrSet: OCI_ATTR_ACTION");
-            return false;
-        }
-        return true;
-#else
-        oci_drv_error("Unsupported attribute type");
-        return false;
-#endif
-    }
-    case PDO_OCI_ATTR_CLIENT_INFO: {
-#if (OCI_MAJOR_VERSION >= 10)
-        zend_string *client_info = zval_try_get_string(val);
-        if (UNEXPECTED(!client_info)) {
-            return false;
-        }
-
-        H->last_err = OCIAttrSet(H->session,
-                                 OCI_HTYPE_SESSION,
-                                 (dvoid *) ZSTR_VAL(client_info),
-                                 (ub4) ZSTR_LEN(client_info),
-                                 OCI_ATTR_CLIENT_INFO,
-                                 H->err);
-        if (H->last_err) {
-            oci_drv_error("OCIAttrSet: OCI_ATTR_CLIENT_INFO");
-            return false;
-        }
-        return true;
-#else
-        oci_drv_error("Unsupported attribute type");
-        return false;
-#endif
-    }
-    case PDO_OCI_ATTR_CLIENT_IDENTIFIER: {
-#if (OCI_MAJOR_VERSION >= 10)
-        zend_string *identifier = zval_try_get_string(val);
-        if (UNEXPECTED(!identifier)) {
-            return false;
-        }
-
-        H->last_err = OCIAttrSet(H->session,
-                                 OCI_HTYPE_SESSION,
-                                 (dvoid *) ZSTR_VAL(identifier),
-                                 (ub4) ZSTR_LEN(identifier),
-                                 OCI_ATTR_CLIENT_IDENTIFIER,
-                                 H->err);
-        if (H->last_err) {
-            oci_drv_error("OCIAttrSet: OCI_ATTR_CLIENT_IDENTIFIER");
-            return false;
-        }
-        return true;
-#else
-        oci_drv_error("Unsupported attribute type");
-        return false;
-#endif
-    }
-    case PDO_OCI_ATTR_MODULE: {
-#if (OCI_MAJOR_VERSION >= 10)
-        zend_string *module = zval_try_get_string(val);
-        if (UNEXPECTED(!module)) {
-            return false;
-        }
-
-        H->last_err = OCIAttrSet(
-            H->session, OCI_HTYPE_SESSION, (dvoid *) ZSTR_VAL(module), (ub4) ZSTR_LEN(module), OCI_ATTR_MODULE, H->err);
-        if (H->last_err) {
-            oci_drv_error("OCIAttrSet: OCI_ATTR_MODULE");
-            return false;
-        }
-        return true;
-#else
-        oci_drv_error("Unsupported attribute type");
-        return false;
-#endif
-    }
-    case PDO_OCI_ATTR_CALL_TIMEOUT: {
-#if (OCI_MAJOR_VERSION >= 18)
-        if (!pdo_get_long_param(&lval, val)) {
-            return false;
-        }
-        ub4 timeout = (ub4) lval;
-
-        H->last_err = OCIAttrSet(H->svc, OCI_HTYPE_SVCCTX, (dvoid *) &timeout, (ub4) 0, OCI_ATTR_CALL_TIMEOUT, H->err);
-        if (H->last_err) {
-            oci_drv_error("OCIAttrSet: OCI_ATTR_CALL_TIMEOUT");
-            return false;
-        }
-        return true;
-#else
-        oci_drv_error("Unsupported attribute type");
-        return false;
-#endif
-    }
-    default:
-        return false;
-    }
-}
-/* }}} */
-
 /* The connection's methods in Rust (crates/oci/src/driver.rs), and what they read of the handle. */
 extern bool swr_oci_begin(pdo_dbh_t *dbh);
 extern bool swr_oci_commit(pdo_dbh_t *dbh);
 extern bool swr_oci_rollback(pdo_dbh_t *dbh);
 extern bool swr_oci_alive(pdo_dbh_t *dbh);
 extern int swr_oci_get_attribute(pdo_dbh_t *dbh, zend_long attr, zval *return_value);
+extern bool swr_oci_set_attribute(pdo_dbh_t *dbh, zend_long attr, zval *val);
 
 OCISvcCtx *swr_oci_svc(pdo_dbh_t *dbh) {
     return ((pdo_oci_db_handle *) dbh->driver_data)->svc;
@@ -442,6 +300,14 @@ ub4 swr_oci_prefetch(pdo_dbh_t *dbh) {
     return ((pdo_oci_db_handle *) dbh->driver_data)->prefetch;
 }
 
+void swr_oci_set_prefetch(pdo_dbh_t *dbh, ub4 rows) {
+    ((pdo_oci_db_handle *) dbh->driver_data)->prefetch = rows;
+}
+
+OCISession *swr_oci_session(pdo_dbh_t *dbh) {
+    return ((pdo_oci_db_handle *) dbh->driver_data)->session;
+}
+
 /* PDO's method table takes a zend_result. */
 static zend_result pdo_oci_check_liveness(pdo_dbh_t *dbh) {
     return swr_oci_alive(dbh) ? SUCCESS : FAILURE;
@@ -455,7 +321,7 @@ static const struct pdo_dbh_methods oci_methods = {
     swr_oci_begin,
     swr_oci_commit,
     swr_oci_rollback,
-    oci_handle_set_attribute,
+    swr_oci_set_attribute,
     NULL, /* last_id not supported */
     pdo_oci_fetch_error_func,
     swr_oci_get_attribute,
@@ -617,13 +483,4 @@ cleanup:
 
 const pdo_driver_t swoole_pdo_oci_driver = {PDO_DRIVER_HEADER(oci), pdo_oci_handle_factory};
 
-static inline ub4 pdo_oci_sanitize_prefetch(long prefetch) /* {{{ */
-{
-    if (prefetch < 0) {
-        prefetch = 0;
-    } else if (prefetch > UB4MAXVAL / PDO_OCI_PREFETCH_ROWSIZE) {
-        prefetch = PDO_OCI_PREFETCH_DEFAULT;
-    }
-    return ((ub4) prefetch);
-}
-/* }}} */
+
