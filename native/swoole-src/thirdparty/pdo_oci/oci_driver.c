@@ -419,94 +419,12 @@ static bool oci_handle_set_attribute(pdo_dbh_t *dbh, zend_long attr, zval *val) 
 }
 /* }}} */
 
-static int oci_handle_get_attribute(pdo_dbh_t *dbh, zend_long attr, zval *return_value) /* {{{ */
-{
-    pdo_oci_db_handle *H = (pdo_oci_db_handle *) dbh->driver_data;
-
-    switch (attr) {
-    case PDO_ATTR_SERVER_VERSION:
-    case PDO_ATTR_SERVER_INFO: {
-        text infostr[512];
-        char verstr[15];
-        ub4 vernum;
-
-        if (OCIServerRelease(H->svc, H->err, infostr, (ub4) sizeof(infostr), (ub1) OCI_HTYPE_SVCCTX, &vernum)) {
-            ZVAL_STRING(return_value, "<<Unknown>>");
-        } else {
-            if (attr == PDO_ATTR_SERVER_INFO) {
-                ZVAL_STRING(return_value, (char *) infostr);
-            } else {
-                slprintf(verstr,
-                         sizeof(verstr),
-                         "%d.%d.%d.%d.%d",
-                         (int) ((vernum >> 24) & 0xFF), /* version number */
-                         (int) ((vernum >> 20) & 0x0F), /* release number*/
-                         (int) ((vernum >> 12) & 0xFF), /* update number */
-                         (int) ((vernum >> 8) & 0x0F),  /* port release number */
-                         (int) ((vernum >> 0) & 0xFF)); /* port update number */
-
-                ZVAL_STRING(return_value, verstr);
-            }
-        }
-        return TRUE;
-    }
-
-    case PDO_ATTR_CLIENT_VERSION: {
-#if OCI_MAJOR_VERSION > 10 || (OCI_MAJOR_VERSION == 10 && OCI_MINOR_VERSION >= 2)
-        /* Run time client version */
-        sword major, minor, update, patch, port_update;
-        char verstr[15];
-
-        OCIClientVersion(&major, &minor, &update, &patch, &port_update);
-        slprintf(verstr, sizeof(verstr), "%d.%d.%d.%d.%d", major, minor, update, patch, port_update);
-        ZVAL_STRING(return_value, verstr);
-#elif defined(SWOOLE_PDO_OCI_CLIENT_VERSION)
-        /* Compile time client version */
-        ZVAL_STRING(return_value, SWOOLE_PDO_OCI_CLIENT_VERSION);
-#else
-        return FALSE;
-
-#endif /* Check for OCIClientVersion() support */
-
-        return TRUE;
-    }
-
-    case PDO_ATTR_AUTOCOMMIT:
-        ZVAL_BOOL(return_value, dbh->auto_commit);
-        return TRUE;
-
-    case PDO_ATTR_PREFETCH:
-        ZVAL_LONG(return_value, H->prefetch);
-        return TRUE;
-    case PDO_OCI_ATTR_CALL_TIMEOUT: {
-#if (OCI_MAJOR_VERSION >= 18)
-        ub4 timeout;
-
-        H->last_err = OCIAttrGet(H->svc, OCI_HTYPE_SVCCTX, (dvoid *) &timeout, NULL, OCI_ATTR_CALL_TIMEOUT, H->err);
-        if (H->last_err) {
-            oci_drv_error("OCIAttrGet: OCI_ATTR_CALL_TIMEOUT");
-            return FALSE;
-        }
-
-        ZVAL_LONG(return_value, (zend_long) timeout);
-        return TRUE;
-#else
-        oci_drv_error("Unsupported attribute type");
-        return FALSE;
-#endif
-    }
-    default:
-        return FALSE;
-    }
-    return FALSE;
-}
-/* }}} */
-
 /* The connection's methods in Rust (crates/oci/src/driver.rs), and what they read of the handle. */
 extern bool swr_oci_begin(pdo_dbh_t *dbh);
 extern bool swr_oci_commit(pdo_dbh_t *dbh);
 extern bool swr_oci_rollback(pdo_dbh_t *dbh);
 extern bool swr_oci_alive(pdo_dbh_t *dbh);
+extern int swr_oci_get_attribute(pdo_dbh_t *dbh, zend_long attr, zval *return_value);
 
 OCISvcCtx *swr_oci_svc(pdo_dbh_t *dbh) {
     return ((pdo_oci_db_handle *) dbh->driver_data)->svc;
@@ -518,6 +436,10 @@ OCIError *swr_oci_err(pdo_dbh_t *dbh) {
 
 bool swr_oci_attached(pdo_dbh_t *dbh) {
     return ((pdo_oci_db_handle *) dbh->driver_data)->attached;
+}
+
+ub4 swr_oci_prefetch(pdo_dbh_t *dbh) {
+    return ((pdo_oci_db_handle *) dbh->driver_data)->prefetch;
 }
 
 /* PDO's method table takes a zend_result. */
@@ -536,7 +458,7 @@ static const struct pdo_dbh_methods oci_methods = {
     oci_handle_set_attribute,
     NULL, /* last_id not supported */
     pdo_oci_fetch_error_func,
-    oci_handle_get_attribute,
+    swr_oci_get_attribute,
     pdo_oci_check_liveness, /* check_liveness */
     NULL,                   /* get_driver_methods */
     NULL,                   /* request_shutdown */
