@@ -93,13 +93,13 @@ unsafe extern "C" {
     /// OCI's own declaration for a statement handle this module allocated.
     safe fn OCIHandleFree(stmt: Live<Stmt>, kind: u32) -> Sword;
     /// OCI's own declaration for a statement's 2- or 4-byte attribute, written
-    /// in native order to the start of `value`, with the size typed as the null
-    /// it is here.
+    /// in native order to the start of `value` (a `u32`, aligned for either),
+    /// with the size typed as the null it is here.
     #[link_name = "OCIAttrGet"]
     safe fn OCIAttrGetStmt(
         stmt: Live<Stmt>,
         kind: u32,
-        value: &mut [u8; 4],
+        value: &mut u32,
         size: Option<&'static crate::error::Nothing>,
         attribute: u32,
         err: Live<Error>,
@@ -150,10 +150,6 @@ unsafe extern "C" {
     );
     /// OCI's own declaration for a 4-byte attribute of a service context, with
     /// the size it can also return typed as the null it is here.
-    #[expect(
-        clashing_extern_declarations,
-        reason = "OCIAttrGet takes its handle and value as void *: each declaration types them as one use passes them"
-    )]
     #[link_name = "OCIAttrGet"]
     safe fn OCIAttrGetSvc(
         svc: Live<Svc>,
@@ -424,9 +420,10 @@ extern "C" fn swr_oci_exec(dbh: &Dbh, sql: &ZStr) -> zend_long {
         report(dbh, err, c"OCIStmtPrepare", status, here!());
         return -1;
     }
-    let mut kind = [0u8; 4];
+    let mut kind = 0u32;
     // C ignores this status too: a failed read leaves the type 0, no SELECT.
     let _status = OCIAttrGetStmt(stmt.0, OCI_HTYPE_STMT, &mut kind, None, OCI_ATTR_STMT_TYPE, err);
+    let kind = kind.to_ne_bytes();
     if u16::from_ne_bytes([kind[0], kind[1]]) == OCI_STMT_SELECT {
         drop(stmt);
         swoole_rs_zend::bailout::defer(swoole_rs_zend::report(
@@ -448,10 +445,10 @@ extern "C" fn swr_oci_exec(dbh: &Dbh, sql: &ZStr) -> zend_long {
     if status != OCI_SUCCESS && status != OCI_SUCCESS_WITH_INFO {
         return -1;
     }
-    let mut rows = [0u8; 4];
+    let mut rows = 0u32;
     // C returns whatever this left in the count, as here (0 when it fails).
     let _status = OCIAttrGetStmt(stmt.0, OCI_HTYPE_STMT, &mut rows, None, OCI_ATTR_ROW_COUNT, err);
-    u32::from_ne_bytes(rows).into()
+    rows.into()
 }
 
 /// `oci_handle_quoter`: `unquoted` in single quotes, each quote doubled.
