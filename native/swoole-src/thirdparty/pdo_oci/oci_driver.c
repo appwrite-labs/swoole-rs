@@ -29,18 +29,12 @@ ub4 swr_oci_error(OCIError *err, pdo_dbh_t *dbh, pdo_stmt_t *stmt, char *what, s
                   const char *file, int line, bool *closed, bool *cancelled);
 void pdo_oci_fetch_error_func(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zval *info);
 
-struct swr_oci_error **swr_oci_einfo(pdo_dbh_t *dbh, pdo_stmt_t *stmt) {
-    if (stmt) {
-        return &((pdo_oci_stmt *) stmt->driver_data)->einfo;
-    }
-    return &((pdo_oci_db_handle *) dbh->driver_data)->einfo;
+struct swr_oci_error **swr_oci_stmt_einfo(pdo_stmt_t *stmt) {
+    return &((pdo_oci_stmt *) stmt->driver_data)->einfo;
 }
 
-/* The connection is gone. */
-void swr_oci_closed(pdo_dbh_t *dbh) {
-    dbh->is_closed = 1;
-    ((pdo_oci_db_handle *) dbh->driver_data)->attached = 0;
-}
+/* The connection is gone (crates/oci/src/handle.rs). */
+extern void swr_oci_closed(pdo_dbh_t *dbh);
 
 ub4 _oci_error(OCIError *err,
                pdo_dbh_t *dbh,
@@ -63,22 +57,25 @@ ub4 _oci_error(OCIError *err,
 }
 /* }}} */
 
-/* Rust closes the connection's handles (crates/oci/src/driver.rs); the record
- * itself is C's allocation. Stays C: allocator (pefree of a persistent handle). */
+/* Rust closes the connection's handles and frees its record (crates/oci/src/driver.rs). */
 extern void swr_oci_close(pdo_dbh_t *dbh);
+
+void *swr_oci_take_handle(pdo_dbh_t *dbh) {
+    void *handle = dbh->driver_data;
+    dbh->driver_data = NULL;
+    return handle;
+}
 
 static void oci_handle_closer(pdo_dbh_t *dbh) /* {{{ */
 {
     swr_oci_close(dbh);
-    swr_oci_einfo_free(dbh, NULL);
-    pefree(dbh->driver_data, dbh->is_persistent);
 }
 /* }}} */
 
 static bool oci_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *stmt, zval *driver_options) /* {{{ */
 {
-    pdo_oci_db_handle *H = (pdo_oci_db_handle *) dbh->driver_data;
     pdo_oci_stmt *S = ecalloc(1, sizeof(*S));
+    sword status;
     ub4 prefetch;
     zend_string *nsql = NULL;
     int ret;
@@ -91,7 +88,7 @@ static bool oci_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *st
     S->exec_type = OCI_DEFAULT;
 #endif
 
-    S->H = H;
+    S->dbh = dbh;
     stmt->supports_placeholders = PDO_PLACEHOLDER_NAMED;
     ret = pdo_parse_params(stmt, sql, &nsql);
 
@@ -106,20 +103,20 @@ static bool oci_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *st
     }
 
     /* create an OCI statement handle */
-    OCIHandleAlloc(H->env, (dvoid *) &S->stmt, OCI_HTYPE_STMT, 0, NULL);
+    OCIHandleAlloc(swr_oci_env(dbh), (dvoid *) &S->stmt, OCI_HTYPE_STMT, 0, NULL);
 
     /* and our own private error handle */
-    OCIHandleAlloc(H->env, (dvoid *) &S->err, OCI_HTYPE_ERROR, 0, NULL);
+    OCIHandleAlloc(swr_oci_env(dbh), (dvoid *) &S->err, OCI_HTYPE_ERROR, 0, NULL);
 
     if (ZSTR_LEN(sql) != 0) {
-        H->last_err =
-            OCIStmtPrepare(S->stmt, H->err, (text *) ZSTR_VAL(sql), (ub4) ZSTR_LEN(sql), OCI_NTV_SYNTAX, OCI_DEFAULT);
+        status = OCIStmtPrepare(
+            S->stmt, swr_oci_err(dbh), (text *) ZSTR_VAL(sql), (ub4) ZSTR_LEN(sql), OCI_NTV_SYNTAX, OCI_DEFAULT);
         if (nsql) {
             zend_string_release(nsql);
             nsql = NULL;
         }
-        if (H->last_err) {
-            H->last_err = oci_drv_error("OCIStmtPrepare");
+        if (status) {
+            _oci_error(swr_oci_err(dbh), dbh, NULL, "OCIStmtPrepare", status, FALSE, __FILE__, __LINE__);
             OCIHandleFree(S->stmt, OCI_HTYPE_STMT);
             OCIHandleFree(S->err, OCI_HTYPE_ERROR);
             efree(S);
@@ -127,11 +124,10 @@ static bool oci_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *st
         }
     }
 
-    prefetch = H->prefetch; /* Note 0 is allowed so in future REF CURSORs can be used & then passed with no row loss*/
-    H->last_err = OCIAttrSet(S->stmt, OCI_HTYPE_STMT, &prefetch, 0, OCI_ATTR_PREFETCH_ROWS, H->err);
-    if (!H->last_err) {
+    prefetch = swr_oci_prefetch(dbh); /* Note 0 is allowed so in future REF CURSORs can be used & then passed with no row loss*/
+    if (!OCIAttrSet(S->stmt, OCI_HTYPE_STMT, &prefetch, 0, OCI_ATTR_PREFETCH_ROWS, swr_oci_err(dbh))) {
         prefetch *= PDO_OCI_PREFETCH_ROWSIZE;
-        H->last_err = OCIAttrSet(S->stmt, OCI_HTYPE_STMT, &prefetch, 0, OCI_ATTR_PREFETCH_MEMORY, H->err);
+        OCIAttrSet(S->stmt, OCI_HTYPE_STMT, &prefetch, 0, OCI_ATTR_PREFETCH_MEMORY, swr_oci_err(dbh));
     }
 
     stmt->driver_data = S;
@@ -154,42 +150,6 @@ extern int swr_oci_get_attribute(pdo_dbh_t *dbh, zend_long attr, zval *return_va
 extern bool swr_oci_set_attribute(pdo_dbh_t *dbh, zend_long attr, zval *val);
 extern zend_long swr_oci_exec(pdo_dbh_t *dbh, const zend_string *sql);
 extern zend_string *swr_oci_quote(pdo_dbh_t *dbh, const zend_string *unquoted, enum pdo_param_type paramtype);
-
-OCISvcCtx *swr_oci_svc(pdo_dbh_t *dbh) {
-    return ((pdo_oci_db_handle *) dbh->driver_data)->svc;
-}
-
-OCIError *swr_oci_err(pdo_dbh_t *dbh) {
-    return ((pdo_oci_db_handle *) dbh->driver_data)->err;
-}
-
-bool swr_oci_attached(pdo_dbh_t *dbh) {
-    return ((pdo_oci_db_handle *) dbh->driver_data)->attached;
-}
-
-ub4 swr_oci_prefetch(pdo_dbh_t *dbh) {
-    return ((pdo_oci_db_handle *) dbh->driver_data)->prefetch;
-}
-
-void swr_oci_set_prefetch(pdo_dbh_t *dbh, ub4 rows) {
-    ((pdo_oci_db_handle *) dbh->driver_data)->prefetch = rows;
-}
-
-OCIServer *swr_oci_server(pdo_dbh_t *dbh) {
-    return ((pdo_oci_db_handle *) dbh->driver_data)->server;
-}
-
-ub2 swr_oci_charset(pdo_dbh_t *dbh) {
-    return ((pdo_oci_db_handle *) dbh->driver_data)->charset;
-}
-
-OCIEnv *swr_oci_env(pdo_dbh_t *dbh) {
-    return ((pdo_oci_db_handle *) dbh->driver_data)->env;
-}
-
-OCISession *swr_oci_session(pdo_dbh_t *dbh) {
-    return ((pdo_oci_db_handle *) dbh->driver_data)->session;
-}
 
 /* PDO's method table takes a zend_result. */
 static zend_result pdo_oci_check_liveness(pdo_dbh_t *dbh) {
@@ -215,152 +175,47 @@ static const struct pdo_dbh_methods oci_methods = {
     NULL                    /* get_gc */
 };
 
+/* Rust opens the connection (crates/oci/src/handle.rs) from the data source PDO's
+ * parser split, which C runs and frees. Stays C: private (the parser's records, whose
+ * values PDO owns), allocator (the persistent user and password copies). */
+extern bool swr_oci_connect(
+    pdo_dbh_t *dbh, const char *charset, const char *dbname, const char *user, const char *password);
+
 static int pdo_oci_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{{ */
 {
-    pdo_oci_db_handle *H;
-    int i, ret = 0;
+    int i;
+    bool connected;
     struct pdo_data_src_parser vars[] = {
         {"charset", NULL, 0}, {"dbname", "", 0}, {"user", NULL, 0}, {"password", NULL, 0}};
 
     php_pdo_parse_data_source(dbh->data_source, dbh->data_source_len, vars, 4);
 
-    H = pecalloc(1, sizeof(*H), dbh->is_persistent);
-    dbh->driver_data = H;
-
     dbh->skip_param_evt = 1 << PDO_PARAM_EVT_FETCH_PRE | 1 << PDO_PARAM_EVT_FETCH_POST | 1 << PDO_PARAM_EVT_NORMALIZE;
 
-    H->prefetch = PDO_OCI_PREFETCH_DEFAULT;
-
-    /* allocate an environment */
-#ifdef HAVE_OCIENVNLSCREATE
-    if (vars[0].optval) {
-        H->charset = OCINlsCharSetNameToId(swoole_pdo_oci_Env, (const oratext *) vars[0].optval);
-        if (!H->charset) {
-            oci_init_error("OCINlsCharSetNameToId: unknown character set name");
-            goto cleanup;
-        } else {
-            if (OCIEnvNlsCreate(&H->env, SWOOLE_PDO_OCI_INIT_MODE, 0, NULL, NULL, NULL, 0, NULL, H->charset, H->charset) !=
-                OCI_SUCCESS) {
-                oci_init_error("OCIEnvNlsCreate: Check the character set is valid and that PHP has access to Oracle "
-                               "libraries and NLS data");
-                goto cleanup;
-            }
-        }
-    }
-#endif
-    if (H->env == NULL) {
-        /* use the global environment */
-        H->env = swoole_pdo_oci_Env;
-    }
-
-    /* something to hold errors */
-    OCIHandleAlloc(H->env, (dvoid **) &H->err, OCI_HTYPE_ERROR, 0, NULL);
-
-    /* handle for the server */
-    OCIHandleAlloc(H->env, (dvoid **) &H->server, OCI_HTYPE_SERVER, 0, NULL);
-
-    H->last_err =
-        OCIServerAttach(H->server, H->err, (text *) vars[1].optval, (sb4) strlen(vars[1].optval), OCI_DEFAULT);
-
-    if (H->last_err) {
-        oci_drv_error("pdo_oci_handle_factory");
-        goto cleanup;
-    }
-
-    H->attached = 1;
-
-    /* create a service context */
-    H->last_err = OCIHandleAlloc(H->env, (dvoid **) &H->svc, OCI_HTYPE_SVCCTX, 0, NULL);
-    if (H->last_err) {
-        oci_drv_error("OCIHandleAlloc: OCI_HTYPE_SVCCTX");
-        goto cleanup;
-    }
-
-    H->last_err = OCIHandleAlloc(H->env, (dvoid **) &H->session, OCI_HTYPE_SESSION, 0, NULL);
-    if (H->last_err) {
-        oci_drv_error("OCIHandleAlloc: OCI_HTYPE_SESSION");
-        goto cleanup;
-    }
-
-    /* set server handle into service handle */
-    H->last_err = OCIAttrSet(H->svc, OCI_HTYPE_SVCCTX, H->server, 0, OCI_ATTR_SERVER, H->err);
-    if (H->last_err) {
-        oci_drv_error("OCIAttrSet: OCI_ATTR_SERVER");
-        goto cleanup;
-    }
-
-    /* username */
     if (!dbh->username && vars[2].optval) {
         dbh->username = pestrdup(vars[2].optval, dbh->is_persistent);
     }
-
-    if (dbh->username) {
-        H->last_err = OCIAttrSet(
-            H->session, OCI_HTYPE_SESSION, dbh->username, (ub4) strlen(dbh->username), OCI_ATTR_USERNAME, H->err);
-        if (H->last_err) {
-            oci_drv_error("OCIAttrSet: OCI_ATTR_USERNAME");
-            goto cleanup;
-        }
-    }
-
-    /* password */
     if (!dbh->password && vars[3].optval) {
         dbh->password = pestrdup(vars[3].optval, dbh->is_persistent);
     }
 
-    if (dbh->password) {
-        H->last_err = OCIAttrSet(
-            H->session, OCI_HTYPE_SESSION, dbh->password, (ub4) strlen(dbh->password), OCI_ATTR_PASSWORD, H->err);
-        if (H->last_err) {
-            oci_drv_error("OCIAttrSet: OCI_ATTR_PASSWORD");
-            goto cleanup;
-        }
-    }
+    connected = swr_oci_connect(dbh, vars[0].optval, vars[1].optval, dbh->username, dbh->password);
 
-    /* Now fire up the session */
-    H->last_err = OCISessionBegin(H->svc, H->err, H->session, OCI_CRED_RDBMS, OCI_DEFAULT);
-    if (H->last_err) {
-        oci_drv_error("OCISessionBegin");
-        /* OCISessionBegin returns OCI_SUCCESS_WITH_INFO when
-         * user's password has expired, but is still usable.
-         */
-        if (H->last_err != OCI_SUCCESS_WITH_INFO) {
-            goto cleanup;
-        }
-    }
-
-    /* set the server handle into service handle */
-    H->last_err = OCIAttrSet(H->svc, OCI_HTYPE_SVCCTX, H->session, 0, OCI_ATTR_SESSION, H->err);
-    if (H->last_err) {
-        oci_drv_error("OCIAttrSet: OCI_ATTR_SESSION");
-        goto cleanup;
-    }
-
-    /* Get max character width */
-    H->last_err = OCINlsNumericInfoGet(H->env, H->err, &H->max_char_width, OCI_NLS_CHARSET_MAXBYTESZ);
-    if (H->last_err) {
-        oci_drv_error("OCINlsNumericInfoGet: OCI_NLS_CHARSET_MAXBYTESZ");
-        goto cleanup;
-    }
-
-    dbh->methods = &oci_methods;
-    dbh->alloc_own_columns = 1;
-    dbh->native_case = PDO_CASE_UPPER;
-
-    ret = 1;
-
-cleanup:
     for (i = 0; i < sizeof(vars) / sizeof(vars[0]); i++) {
         if (vars[i].freeme) {
             efree(vars[i].optval);
         }
     }
 
-    if (!ret) {
+    if (!connected) {
         oci_handle_closer(dbh);
+        return 0;
     }
 
-    return ret;
+    dbh->methods = &oci_methods;
+    dbh->alloc_own_columns = 1;
+    dbh->native_case = PDO_CASE_UPPER;
+    return 1;
 }
 /* }}} */
 

@@ -21,6 +21,8 @@ mod driver;
 #[cfg(feature = "php")]
 mod error;
 #[cfg(feature = "php")]
+mod handle;
+#[cfg(feature = "php")]
 pub mod minit;
 
 use std::{
