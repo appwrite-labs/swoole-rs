@@ -1,19 +1,33 @@
-//! The statement's methods (`oci_statement.c`): so far `getColumnMeta`. The
+//! The statement's methods (`oci_statement.c`): so far `getColumnMeta` and
+//! fetching a row. The
 //! statement is still C's `pdo_oci_stmt`, read through accessors.
 use crate::{
     Any, Error, Live, Stmt, Sword,
     error::{Nothing, here, stmt_call},
+    swoole_oci_stmt_fetch2,
 };
 use std::{ffi::CStr, marker::PhantomData, ptr};
+use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
     OwnedArray,
     pdo::{Dbh, Slot, Stmt as PdoStmt},
-    sys::{pdo_param_type_PDO_PARAM_LOB as PARAM_LOB, pdo_param_type_PDO_PARAM_STR as PARAM_STR},
+    sys::{
+        pdo_param_type_PDO_PARAM_LOB as PARAM_LOB, pdo_param_type_PDO_PARAM_STR as PARAM_STR,
+        zend_long,
+    },
 };
 
 /// A column's parameter descriptor (`OCIParam`).
 pub(crate) enum Param {}
 
+/// `OCI_SUCCESS`, `OCI_SUCCESS_WITH_INFO`, `OCI_NEED_DATA` and `OCI_NO_DATA`.
+const OCI_SUCCESS: Sword = 0;
+const OCI_SUCCESS_WITH_INFO: Sword = 1;
+const OCI_NEED_DATA: Sword = 99;
+const OCI_NO_DATA: Sword = 100;
+/// Where C reported a fetch's errors: `bug44301.phpt` matches the file, so they
+/// keep upstream's `oci_statement.c` lines, as the ODBC port kept its own.
+const UPSTREAM_STATEMENT: &CStr = c"thirdparty/pdo_oci/oci_statement.c";
 /// `OCI_HTYPE_STMT` and `OCI_DTYPE_PARAM`.
 const OCI_HTYPE_STMT: u32 = 4;
 const OCI_DTYPE_PARAM: u32 = 53;
@@ -202,5 +216,43 @@ extern "C" fn swr_oci_column_meta(stmt: &PdoStmt, dbh: &Dbh, colno: u32, output:
     }
     drop(param);
     output.set(meta.into_owned());
+}
+
+/// `oci_stmt_fetch`: the next row PDO's orientation asks for (`OCIStmtFetch2`
+/// through the coroutine hook): true for a row, false at the end, or with the
+/// error recorded on the statement.
+#[unsafe(no_mangle)]
+extern "C" fn swr_oci_fetch(stmt: &PdoStmt, dbh: &Dbh, orientation: u32, offset: zend_long) -> bool {
+    // PDO_FETCH_ORI_NEXT, PRIOR, FIRST, LAST, ABS, REL; anything else is next.
+    let orientation: u16 = match orientation {
+        1 => 0x10,
+        2 => 0x04,
+        3 => 0x08,
+        4 => 0x20,
+        5 => 0x40,
+        _ => 0x02,
+    };
+    let err = swr_oci_stmt_err(stmt);
+    let status = swoole_oci_stmt_fetch2(
+        swr_oci_stmt_handle(stmt),
+        err,
+        1,
+        orientation,
+        // `(sb4) offset`, as C truncates it.
+        offset.c_cast(),
+        0,
+    );
+    match status {
+        OCI_NO_DATA => false,
+        OCI_SUCCESS | OCI_SUCCESS_WITH_INFO => true,
+        OCI_NEED_DATA => {
+            stmt_call(dbh, stmt, err, c"OCI_NEED_DATA", status, (UPSTREAM_STATEMENT, 569));
+            false
+        }
+        _ => {
+            stmt_call(dbh, stmt, err, c"OCIStmtFetch", status, (UPSTREAM_STATEMENT, 577));
+            false
+        }
+    }
 }
 }
