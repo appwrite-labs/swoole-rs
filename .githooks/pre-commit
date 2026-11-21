@@ -1,0 +1,17 @@
+#!/bin/sh
+# Quick checks (~5s warm). Enable with: git config core.hooksPath .githooks
+set -e
+# Git exports GIT_DIR and GIT_INDEX_FILE to hooks. A test that runs `git init`
+# with them set reinitialises this repository and sets core.bare = true.
+unset $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p')
+cargo fmt --all --check
+cargo clippy --locked --workspace --all-targets -q -- -D warnings
+python3 tools/check_migration.py > /dev/null
+git diff --cached --quiet -- native crates || tools/headers.sh --check
+git diff --cached --quiet -- crates || python3 tools/budget.py > /dev/null
+# Zend families add shims in parallel; a helper defined twice only fails at link
+# time in builds macOS can't run, so catch it here.
+dups=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_ *]* \*?swr_[a-z0-9_]+\(' crates/zend-sys/src/*.c | grep -oE 'swr_[a-z0-9_]+' | sort | uniq -d)
+[ -z "$dups" ] || { echo "zend-sys: defined in more than one src/*.c: $dups" >&2; exit 1; }
+tests/dev/run.sh
+echo "pre-commit passed. Push, open the PR with gh pr merge --auto --squash <pr>, and move on to the next issue." >&2

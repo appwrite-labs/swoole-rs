@@ -1,0 +1,19 @@
+{
+  "repository": "https://github.com/swoole/swoole-src",
+  "tag": "v6.2.5",
+  "commit": "76c657d88be39b7af6bf85e46bcbac0da7387760",
+  "tests": [
+    {
+      "path": "tests/swoole_server/client_close_in_writable_event.phpt",
+      "sha256": "2bb18c5a1c0f0e1ce534fc7ffb32278ce2f33ab33cea45e46ceb34d540e0b8c9",
+      "module": "halfclose-pause",
+      "requires": [
+        "upstream_test_bootstrap",
+        "processes",
+        "tcp",
+        "sync_tcp_client",
+        "php_sockets"
+      ]
+    }
+  ]
+}

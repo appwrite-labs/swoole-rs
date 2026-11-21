@@ -1,0 +1,16 @@
+[package]
+name = "swoole-rs-httpbindings"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+name = "swoole_rs_httpbindings"
+crate-type = ["rlib"]
+
+[dependencies]
+swoole-rs-locale = { path = "../locale" }
+
+[lints]
+workspace = true

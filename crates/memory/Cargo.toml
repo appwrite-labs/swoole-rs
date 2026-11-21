@@ -1,0 +1,22 @@
+[package]
+name = "swoole-rs-memory"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "swoole_rs_memory"
+crate-type = ["rlib", "staticlib"]
+
+[features]
+# The pools' and table's members under their upstream C++ symbols (crates/ffi enables it).
+upstream-symbols = []
+
+[dependencies]
+libc = "=0.2.191"
+swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-locks = { path = "../locks" }
+swoole-rs-utilities = { path = "../utilities" }
+
+[lints]
+workspace = true

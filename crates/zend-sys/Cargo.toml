@@ -1,0 +1,19 @@
+[package]
+name = "swoole-rs-zend-sys"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Raw Zend bindings, generated at build time from the headers of the PHP being built for"
+
+[features]
+# Bind the PHP that `$PHP_CONFIG` (default `php-config`) names. Without it the
+# crate is empty, so the workspace builds and tests on machines without PHP.
+php = ["dep:bindgen", "dep:cc"]
+
+[build-dependencies]
+bindgen = { version = "=0.73.2", default-features = false, features = ["runtime"], optional = true }
+cc = { version = "=1.10.0", optional = true }
+
+[lints]
+workspace = true

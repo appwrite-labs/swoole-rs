@@ -1,0 +1,16 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+too-many-lines-threshold = 150
+cognitive-complexity-threshold = 30
+# Data layout (docs/migration.md#data-layout). Crates that already use these carry a
+# crate-level `expect`; tools/budget.py fails a PR that adds uses.
+disallowed-types = [
+  { path = "std::collections::HashMap", reason = "use swoole_rs_memory::flat::Table keyed by a dense index" },
+  { path = "std::collections::HashSet", reason = "use swoole_rs_memory::flat::BitSet or a Table" },
+  { path = "std::collections::BTreeMap", reason = "use a sorted Vec or a Table" },
+  { path = "std::collections::BTreeSet", reason = "use a sorted Vec or a BitSet" },
+  { path = "std::collections::LinkedList", reason = "use a Vec or a flat::Table" },
+  { path = "std::collections::VecDeque", reason = "use a ring over a fixed array, or a flat::Table" },
+]

@@ -1,0 +1,79 @@
+name: Install system packages
+description: .devcontainer/install.sh with apt's package files and indexes cached between runs.
+inputs:
+  packages:
+    description: Extra apt packages this job needs, space separated
+    default: ''
+  php:
+    description: >-
+      'latest' upgrades PHP to the newest release; a package version installs exactly
+      that one (what an extension was built against). Empty leaves the image's PHP.
+    default: ''
+outputs:
+  php:
+    description: The installed PHP package version (php8.3-common)
+    value: ${{ steps.php.outputs.version }}
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/rustup
+    - id: week
+      shell: bash
+      run: |
+        echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+        echo "sources=$(cat /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
+    # Weekly key: packages stay current, and a stale index is refreshed by install.sh.
+    # The apt sources' hash keeps one runner image's indexes from another's mirrors.
+    # Only main saves (a PR's cache is visible to that PR alone), and any of main's caches
+    # from this week holds the base set, so a job with other extras downloads just those.
+    # Until main saves the new week's cache, last week's still holds most packages.
+    - id: apt
+      uses: actions/cache/restore@v6
+      with:
+        path: .apt-cache
+        key: apt-${{ runner.os }}-${{ steps.week.outputs.sources }}-${{ steps.week.outputs.week }}-${{ hashFiles('.devcontainer/install.sh') }}-${{ inputs.packages }}
+        restore-keys: |
+          apt-${{ runner.os }}-${{ steps.week.outputs.sources }}-${{ steps.week.outputs.week }}-${{ hashFiles('.devcontainer/install.sh') }}-
+          apt-${{ runner.os }}-${{ steps.week.outputs.sources }}-${{ steps.week.outputs.week }}-
+          apt-${{ runner.os }}-${{ steps.week.outputs.sources }}-
+    # The runner's first mirror, azure.archive.ubuntu.com, throttles some runners to ~40 kB/s
+    # for many minutes while archive.ubuntu.com serves the same runner at 25 MB/s (#1522).
+    # apt moves down its mirror list on errors, not on slow downloads, so drop Azure.
+    # The regional GCE mirror left can stop answering for hours with nothing behind it (#3181):
+    # then point every Ubuntu source at archive.ubuntu.com and try once more. Here, not in
+    # install.sh, so the cache keys (which hash install.sh and the original sources) stay put.
+    - shell: bash
+      run: |
+        [ ! -f /etc/apt/apt-mirrors.txt ] || sudo sed -i /azure/d /etc/apt/apt-mirrors.txt
+        apt_install() { APT_CACHE="$PWD/.apt-cache" .devcontainer/install.sh ${{ inputs.packages }}; }
+        apt_install || {
+          echo "::warning::apt failed on the runner's mirror; retrying against archive.ubuntu.com"
+          [ ! -f /etc/apt/apt-mirrors.txt ] || echo http://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo sed -Ei 's#https?://[a-z0-9.-]*archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#g' \
+            /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || :
+          apt_install
+        }
+    - if: github.ref == 'refs/heads/main' && steps.apt.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: .apt-cache
+        key: ${{ steps.apt.outputs.cache-primary-key }}
+    # Jobs of one run can land on different runner images while GitHub rolls one out,
+    # each with its own Ubuntu PHP release, and an extension built against one release
+    # may not load in another's php (#522). The build takes the newest release (the only
+    # one the archive keeps) and the jobs that load its extension install that release.
+    - id: php
+      shell: bash
+      env:
+        WANT: ${{ inputs.php }}
+      run: |
+        # The php8.3 source's packages only: the image's PECL ones (php8.3-redis, …) have their own versions.
+        installed() { dpkg-query -W -f='${db:Status-Abbrev}${source:Package} ${Package}\n' 'php8.3*' | sed -n 's/^ii *php8\.3 //p'; }
+        version() { dpkg-query -W -f='${Version}' php8.3-common; }
+        if [ "$WANT" = latest ]; then
+          sudo apt-get update -q && sudo apt-get install -yq --only-upgrade $(installed)
+        elif [ -n "$WANT" ] && [ "$(version)" != "$WANT" ]; then
+          sudo apt-get update -q && sudo apt-get install -yq --allow-downgrades $(installed | sed "s/\$/=$WANT/")
+        fi
+        echo "version=$(version)" >> "$GITHUB_OUTPUT"
+        echo "runner image $ImageVersion; php $(php -r 'echo PHP_VERSION;'); php8.3-common $(version)"

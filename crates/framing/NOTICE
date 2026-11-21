@@ -1,0 +1,3 @@
+The immutable MIME catalog and packet framing behavior derive from Swoole v6.2.2.
+Copyright (c) 2012-2017 The Swoole Group. Author: Tianfeng Han <rango@swoole.com>.
+Licensed under the Apache License, Version 2.0; see the repository LICENSE.

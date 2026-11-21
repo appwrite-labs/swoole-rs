@@ -1,0 +1,12 @@
+[package]
+name = "swoole-rs-error"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "swoole_rs_error"
+crate-type = ["rlib"]
+
+[lints]
+workspace = true

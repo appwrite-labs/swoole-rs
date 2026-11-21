@@ -1,0 +1,7 @@
+# LeakSanitizer suppressions for tools/asan.py. Only allocations PHP itself makes and
+# frees in its own shutdown, after the extension's MSHUTDOWN check: never a frame of
+# this repository or of upstream Swoole.
+#
+# Internal functions' arg_info, which zend_register_functions mallocs and keeps only
+# a pointer one past the return slot of, so no pointer points into the block.
+leak:zend_register_functions

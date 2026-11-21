@@ -1,0 +1,64 @@
+name: ThreadSanitizer
+# The ZTS lane, PHP, upstream and the Cargo-built swoole.so, under ThreadSanitizer, with
+# the thread, atomic and lock PHPT families and exit_guard.py (tools/tsan.py). Nightly,
+# and from the PR tier when a PR touches this run. Upstream's reports are only counted; the
+# run fails while reports outside upstream's runs exceed LIMIT in tools/tsan.py, which falls
+# as races are fixed. Rerun tools/tsan.py locally to read them and file a race in this
+# repository's code as a p0 kind:bug; an upstream one goes to the private security
+# repository. Reports are never uploaded here.
+on:
+  schedule:
+    - cron: '47 3 * * *'
+  workflow_dispatch:
+  workflow_call:
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 500M
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  tsan:
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install
+        with:
+          packages: clang libclang-rt-dev llvm
+      # TSan's shadow memory sits at fixed addresses, which the runner kernel's 32 bits of
+      # mmap randomisation can map over.
+      - name: Lower mmap randomization
+        run: sudo sysctl vm.mmap_rnd_bits=28
+      # Restored only: the pinned reference is rebuilt instrumented below, never saved.
+      - uses: actions/cache/restore@v6
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
+      - uses: actions/cache@v6
+        with:
+          path: target/tsan/php
+          key: php-tsan-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', 'tools/tsan.py') }}-${{ github.workspace }}
+      # Sanitized objects never hit the shared ccache (other flags), so this run keeps its own.
+      - uses: actions/cache/restore@v6
+        with:
+          path: .ccache
+          key: ccache-tsan-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-tsan-${{ runner.os }}-
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Run TSan lanes
+        run: python3 tools/tsan.py
+      - if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: .ccache
+          key: ccache-tsan-${{ runner.os }}-${{ github.sha }}
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: tsan
+          path: |
+            target/tsan/phpt/*.json

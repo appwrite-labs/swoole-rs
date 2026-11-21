@@ -1,0 +1,344 @@
+#ifndef SWOOLE_RS_COREBASE_CONSTANTS_H
+#define SWOOLE_RS_COREBASE_CONSTANTS_H
+
+/* Generated from crates/corebase by cbindgen (tools/headers.sh); do not edit. */
+
+#include <stdint.h>
+
+#define SW_MAX_FDTYPE 32
+
+#define SW_MAX_HOOK_TYPE 32
+
+#define SW_ERROR_MSG_SIZE 16384
+
+#define SW_MAX_FILE_CONTENT 67108864
+
+#define SW_MAX_LISTEN_PORT 60000
+
+#define SW_MAX_CONNECTION 100000
+
+#define SW_MAX_CONCURRENT_TASK 1024
+
+#define SW_STACK_BUFFER_SIZE 65536
+
+#define SW_MALLOC_TRIM_INTERVAL 60
+
+#define SW_MALLOC_TRIM_PAD 0
+
+#define SW_MAX_SOCKETS_DEFAULT 1024
+
+#define SW_SOCKET_BUFFER_SIZE 8388608
+
+#define SW_SOCKET_RETRY_COUNT 10
+
+#define SW_SOCKET_DEFAULT_DNS_TIMEOUT 60
+
+#define SW_SOCKET_DEFAULT_CONNECT_TIMEOUT 10
+
+#define SW_SOCKET_DEFAULT_READ_TIMEOUT 60
+
+#define SW_SOCKET_DEFAULT_WRITE_TIMEOUT 60
+
+#define SW_SOCKET_CORK_MIN_SIZE 65536
+
+#define SW_SYSTEMD_FDS_START 3
+
+#define SW_GLOBAL_MEMORY_PAGESIZE 2097152
+
+#define SW_MAX_THREAD_NCPU 4
+
+#define SW_MAX_WORKER_NCPU 1000
+
+#define SW_CLIENT_BUFFER_SIZE 65536
+
+#define SW_CLIENT_CONNECT_TIMEOUT 0.5
+
+#define SW_IPC_BUFFER_MAX_SIZE 65536
+
+#define SW_BUFFER_SIZE_STD 8192
+
+#define SW_BUFFER_SIZE_BIG 65536
+
+#define SW_BUFFER_SIZE_UDP 65536
+
+#define SW_SENDFILE_CHUNK_SIZE 65536
+
+#define SW_DATA_EOF_MAXLEN 8
+
+#define SW_TASKWAIT_TIMEOUT 0.5
+
+#define SW_AIO_THREAD_NUM_MULTIPLE 8
+
+#define SW_AIO_THREAD_MAX_IDLE_TIME 1.0
+
+#define SW_AIO_TASK_MAX_WAIT_TIME 0.001
+
+#define SW_AIO_EVENT_NUM 128
+
+#define SW_WORKER_MAX_WAIT_TIME 3
+
+#define SW_WORKER_MIN_REQUEST 10
+
+#define SW_WORKER_MAX_RECV_CHUNK_COUNT 32
+
+#define SW_REACTOR_MAXEVENTS 4096
+
+#define SW_SESSION_LIST_SIZE 1048576
+
+#define SW_MSGMAX 65536
+
+#define SW_MESSAGE_BOX_SIZE 65536
+
+#define SW_REACTOR_MAX_THREAD 8
+
+#define SW_INPUT_BUFFER_SIZE 2097152
+
+#define SW_BUFFER_MIN_SIZE 65536
+
+#define SW_SEND_BUFFER_SIZE 65536
+
+#define SW_BACKLOG 512
+
+#define SW_ACCEPT_MAX_COUNT 64
+
+#define SW_ACCEPT_RETRY_TIME 1.0
+
+#define SW_TCP_KEEPCOUNT 5
+
+#define SW_TCP_KEEPIDLE 3600
+
+#define SW_TCP_KEEPINTERVAL 60
+
+#define SW_TASK_TMP_PATH_SIZE 256
+
+#define SW_TABLE_CONFLICT_PROPORTION 0.2
+
+#define SW_TABLE_KEY_SIZE 64
+
+#define SW_SSL_BUFFER_SIZE 16384
+
+#define SW_SPINLOCK_LOOP_N 1024
+
+#define SW_FILE_LOCK_DEFAULT_SECOND 0.001
+
+#define SW_FILE_LOCK_MAX_SECOND 0.1
+
+#define SW_SIGNO_MAX 128
+
+#define SW_DNS_HOST_BUFFER_SIZE 16
+
+#define SW_DNS_SERVER_PORT 53
+
+#define SW_Z_BEST_SPEED 1
+
+#define SW_COMPRESSION_MIN_LENGTH_DEFAULT 20
+
+#define SW_IOURING_QUEUE_SIZE 8192
+
+#define SW_IOURING_SQE_BATCH_SIZE 16
+
+#define SW_HTTP_SERVER_BOUNDARY_TOTAL_SIZE 39
+
+#define SW_HTTP_SERVER_PART_HEADER 256
+
+#define SW_HTTP_FORM_KEYLEN 512
+
+#define SW_HTTP_RESPONSE_INIT_SIZE 65536
+
+#define SW_HTTP_HEADER_MAX_SIZE 65536
+
+#define SW_HTTP_HEADER_KEY_SIZE 128
+
+#define SW_HTTP_UPLOAD_TMPDIR_SIZE 256
+
+#define SW_HTTP_MAX_APPEND_DATA 16384
+
+#define SW_HTTP2_DATA_BUFFER_SIZE 8192
+
+#define SW_HTTP2_DEFAULT_HEADER_TABLE_SIZE 4096
+
+#define SW_HTTP2_DEFAULT_MAX_CONCURRENT_STREAMS 4294967295u
+
+#define SW_HTTP2_DEFAULT_ENABLE_PUSH 0
+
+#define SW_HTTP2_DEFAULT_MAX_FRAME_SIZE 16384u
+
+#define SW_HTTP2_DEFAULT_INIT_WINDOW_SIZE 65535
+
+#define SW_HTTP2_DEFAULT_MAX_HEADER_LIST_SIZE 4294967295u
+
+#define SW_HTTP_CLIENT_BOUNDARY_TOTAL_SIZE 39
+
+#define SW_HTTP_FORM_RAW_DATA_FMT_LEN 8
+
+#define SW_HTTP_FORM_FILE_DATA_FMT_LEN 16
+
+#define SW_WEBSOCKET_KEY_LENGTH 16
+
+#define SW_DEFAULT_C_STACK_SIZE 2097152
+
+#define SW_CORO_BAILOUT_EXIT_CODE 1
+
+#if defined(__MACH__)
+#define SW_IPC_MAX_SIZE 2048
+#endif
+
+#if !defined(__MACH__)
+#define SW_IPC_MAX_SIZE 8192
+#endif
+
+#define SW_IPC_BUFFER_SIZE ((uintptr_t)SW_IPC_MAX_SIZE - 40)
+
+typedef enum swPipeType {
+  SW_PIPE_WORKER = 0,
+  SW_PIPE_MASTER = 1,
+  SW_PIPE_NONBLOCK = 2,
+} swPipeType;
+
+typedef enum swResultCode {
+  SW_OK = 0,
+  SW_ERR = -1,
+} swResultCode;
+
+typedef enum swReturnCode {
+  SW_SUCCESS = 0,
+  SW_CONTINUE = 1,
+  SW_WAIT = 2,
+  SW_CLOSE = 3,
+  SW_ERROR = 4,
+  SW_READY = 5,
+  SW_INVALID = 6,
+  SW_REDUCE_SIZE = 7,
+} swReturnCode;
+
+typedef enum swFdType {
+  SW_FD_SESSION = 0,
+  SW_FD_STREAM_SERVER = 1,
+  SW_FD_DGRAM_SERVER = 2,
+  SW_FD_PIPE = 3,
+  SW_FD_STREAM = 4,
+  SW_FD_AIO = 5,
+  SW_FD_CO_SOCKET = 6,
+  SW_FD_CO_POLL = 7,
+  SW_FD_CO_EVENT = 8,
+  SW_FD_SIGNAL = 9,
+  SW_FD_DNS_RESOLVER = 10,
+  SW_FD_CARES = 11,
+  SW_FD_IOURING = 12,
+  SW_FD_USER = 16,
+  SW_FD_STREAM_CLIENT = 17,
+  SW_FD_DGRAM_CLIENT = 18,
+} swFdType;
+
+typedef enum swSocketFlag {
+  SW_SOCK_NONBLOCK = 4,
+  SW_SOCK_CLOEXEC = 8,
+  SW_SOCK_SSL = 512,
+} swSocketFlag;
+
+typedef enum swSocketType {
+  SW_SOCK_TCP = 1,
+  SW_SOCK_UDP = 2,
+  SW_SOCK_TCP6 = 3,
+  SW_SOCK_UDP6 = 4,
+  SW_SOCK_UNIX_STREAM = 5,
+  SW_SOCK_UNIX_DGRAM = 6,
+  SW_SOCK_RAW = 7,
+  SW_SOCK_RAW6 = 8,
+} swSocketType;
+
+typedef enum swTimeoutType {
+  SW_TIMEOUT_DNS = 1,
+  SW_TIMEOUT_CONNECT = 2,
+  SW_TIMEOUT_READ = 4,
+  SW_TIMEOUT_WRITE = 8,
+  SW_TIMEOUT_RDWR = 12,
+  SW_TIMEOUT_ALL = 15,
+} swTimeoutType;
+
+typedef enum swEventType {
+  SW_EVENT_NULL = 0,
+  SW_EVENT_DEAULT = 256,
+  SW_EVENT_READ = 512,
+  SW_EVENT_WRITE = 1024,
+  SW_EVENT_RDWR = 1536,
+  SW_EVENT_ERROR = 2048,
+  SW_EVENT_ONCE = 4096,
+} swEventType;
+
+typedef enum swForkType {
+  SW_FORK_SPAWN = 0,
+  SW_FORK_EXEC = 2,
+  SW_FORK_DAEMON = 4,
+  SW_FORK_PRECHECK = 8,
+} swForkType;
+
+typedef enum swTraverseOperation {
+  SW_TRAVERSE_KEEP = 0,
+  SW_TRAVERSE_REMOVE = 1,
+  SW_TRAVERSE_STOP = 2,
+} swTraverseOperation;
+
+typedef enum swEventDataFlag {
+  SW_EVENT_DATA_NORMAL = 0,
+  SW_EVENT_DATA_PTR = 2,
+  SW_EVENT_DATA_CHUNK = 4,
+  SW_EVENT_DATA_BEGIN = 8,
+  SW_EVENT_DATA_END = 16,
+  SW_EVENT_DATA_OBJ_PTR = 32,
+  SW_EVENT_DATA_POP_PTR = 64,
+} swEventDataFlag;
+
+typedef enum swTaskFlag {
+  SW_TASK_TMPFILE = 1,
+  SW_TASK_SERIALIZE = 2,
+  SW_TASK_NONBLOCK = 4,
+  SW_TASK_CALLBACK = 8,
+  SW_TASK_WAITALL = 16,
+  SW_TASK_COROUTINE = 32,
+  SW_TASK_PEEK = 64,
+  SW_TASK_NOREPLY = 128,
+} swTaskFlag;
+
+typedef enum swDNSLookupFlag {
+  SW_DNS_LOOKUP_RANDOM = 2048,
+} swDNSLookupFlag;
+
+typedef enum swEventInitFlag {
+  SW_EVENTLOOP_WAIT_EXIT = 1,
+} swEventInitFlag;
+
+#define SW_PIPE_READ SW_PIPE_WORKER
+
+#define SW_PIPE_WRITE SW_PIPE_MASTER
+
+#define SW_DATA_EOF "\r\n\r\n"
+#define SW_TASK_TMP_DIR "/tmp"
+#define SW_TASK_TMP_FILE "swoole.task.XXXXXX"
+#define SW_SSL_CIPHER_LIST "EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH"
+#define SW_SSL_ECDH_CURVE "auto"
+#define SW_UNREGISTERED_SIGNAL_FMT "Unable to find callback function for signal %s"
+#define SW_DNS_RESOLV_CONF "/etc/resolv.conf"
+#define SW_IOV_MAX_ERROR_MSG "The maximum of iov count is %d"
+#define SW_HTTP_SERVER_SOFTWARE "swoole-http-server"
+#define SW_HTTP_SERVER_BOUNDARY_PREKEY "SwooleBoundary"
+#define SW_HTTP_DATE_FORMAT "D, d M Y H:i:s T"
+#define SW_HTTP_RFC1123_DATE_GMT "%a, %d %b %Y %T GMT"
+#define SW_HTTP_RFC1123_DATE_UTC "%a, %d %b %Y %T UTC"
+#define SW_HTTP_RFC850_DATE "%A, %d-%b-%y %T GMT"
+#define SW_HTTP_ASCTIME_DATE "%a %b %e %T %Y"
+#define SW_HTTP_UPLOAD_FILE "Swoole-Upload-File"
+#define SW_HTTP_CHUNK_EOF "0\r\n\r\n"
+#define SW_HTTP_DEFAULT_CONTENT_TYPE "text/html"
+#define SW_HTTP_100_CONTINUE_PACKET "HTTP/1.1 100 Continue\r\n\r\n"
+#define SW_HTTP_BAD_REQUEST_PACKET "HTTP/1.1 400 Bad Request\r\n\r\n"
+#define SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET "HTTP/1.1 413 Request Entity Too Large\r\n\r\n"
+#define SW_HTTP_SERVICE_UNAVAILABLE_PACKET "HTTP/1.1 503 Service Unavailable\r\n\r\n"
+#define SW_HTTP_POWER_BY "<footer><i>Powered by Swoole</i></footer>"
+#define SW_HTTP_CLIENT_BOUNDARY_PREKEY "----SwooleBoundary"
+#define SW_HTTP_FORM_RAW_DATA_FMT "--%.*s\r\nContent-Disposition: form-data; name=\"%.*s\"\r\n\r\n"
+#define SW_HTTP_FORM_FILE_DATA_FMT "--%.*s\r\nContent-Disposition: form-data; name=\"%.*s\"; filename=\"%.*s\"\r\nContent-Type: %.*s\r\n\r\n"
+#define SW_WEBSOCKET_VERSION "13"
+#define SW_WEBSOCKET_EXTENSION_DEFLATE "permessage-deflate; client_no_context_takeover; server_no_context_takeover"
+
+#endif  /* SWOOLE_RS_COREBASE_CONSTANTS_H */

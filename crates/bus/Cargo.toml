@@ -1,0 +1,22 @@
+[package]
+name = "swoole-rs-bus"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "swoole_rs_bus"
+crate-type = ["rlib"]
+
+[features]
+# The bus's socket writes and frees over the tls crate's upstream socket.
+upstream-symbols = ["dep:swoole-rs-tls"]
+
+[lints]
+workspace = true
+
+[dependencies]
+libc = "=0.2.191"
+swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-reactor = { path = "../reactor" }
+swoole-rs-tls = { path = "../tls", optional = true }

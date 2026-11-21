@@ -1,0 +1,50 @@
+[package]
+name = "swoole-rs-ext"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "swoole.so built by Cargo: the module crates linked with native/ and the bundled C, compiled by build.rs"
+
+[lib]
+name = "swoole"
+crate-type = ["cdylib"]
+test = false
+doctest = false
+
+[features]
+# Build the extension for the PHP that `$PHP_CONFIG` names (tools/build_ext.py sets it).
+# Without both, the crate links no native code.
+php = ["swoole-rs-ffi/php", "dep:cc", "dep:openssl-sys"]
+# The merge tier's PHPT profile, one feature per configure switch (`--enable-sockets`,
+# `--enable-mysqlnd`, `--enable-swoole-pgsql`, ...): build.rs adds what config.m4 does.
+sockets = ["swoole-rs-ffi/sockets"]
+mysqlnd = []
+pgsql = ["swoole-rs-ffi/pgsql"]
+odbc = ["swoole-rs-ffi/odbc"]
+firebird = ["swoole-rs-ffi/firebird"]
+sqlite = ["swoole-rs-ffi/sqlite"]
+oci = ["swoole-rs-ffi/oci"]
+curl = ["swoole-rs-ffi/curl"]
+ssh2 = ["swoole-rs-ffi/ssh2"]
+# The merge tier's build variants, as tools/build_ext.py takes them: `--stdext`,
+# `--fix-halfclose`, `--enable-iouring` (with `--enable-uring-socket`), `--enable-cares`,
+# `--enable-thread-context` and `--enable-swoole-thread` (ZTS PHP).
+stdext = ["swoole-rs-ffi/stdext"]
+halfclose = ["swoole-rs-ffi/halfclose"]
+iouring = ["swoole-rs-ffi/iouring"]
+uring-socket = ["iouring"]
+cares = ["swoole-rs-ffi/cares"]
+thread-context = []
+thread = []
+
+[dependencies]
+swoole-rs-ffi = { path = "../ffi" }
+# Only for DEP_OPENSSL_INCLUDE: native/tls includes the OpenSSL the Rust side links.
+openssl-sys = { version = "=0.9.117", optional = true }
+
+[build-dependencies]
+cc = { version = "=1.10.0", optional = true }
+
+[lints]
+workspace = true

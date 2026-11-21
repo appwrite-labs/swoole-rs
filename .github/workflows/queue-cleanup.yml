@@ -1,0 +1,24 @@
+name: Merge queue cleanup
+# When the merge queue rebuilds its groups it deletes the old gh-readonly-queue/main/pr-*
+# branches, but merge.yml's runs on them keep going and hold runners the live groups need
+# (#3262). merge.yml's concurrency can't cancel them: each group has a branch of its own.
+# GitHub runs `delete` workflows from the default branch's copy of this file.
+on:
+  delete:
+permissions:
+  actions: write
+jobs:
+  cancel:
+    if: github.event.ref_type == 'branch' && startsWith(github.event.ref, 'gh-readonly-queue/main/')
+    # GitHub-hosted: it starts in seconds, where a gcrunner VM takes 40 to 55 while the runs it would cancel hold 30 more.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.ref }}
+        run: |
+          for run in $(gh run list -R "$GITHUB_REPOSITORY" --workflow merge.yml --branch "$BRANCH" \
+              --json databaseId,status -q '.[] | select(.status != "completed") | .databaseId'); do
+            gh run cancel -R "$GITHUB_REPOSITORY" "$run" && echo "cancelled run $run of $BRANCH"
+          done

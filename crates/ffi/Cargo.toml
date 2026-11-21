@@ -1,0 +1,91 @@
+[package]
+name = "swoole-rs-ffi"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "swoole_rs_ffi"
+crate-type = ["staticlib", "rlib"]
+
+[features]
+default = []
+# The PHP classes: Swoole\Timer and each module's php* crate. Only the extension's
+# archive has PHP; the native gates' archive leaves it off so it holds no Zend
+# references (docs/zend.md).
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpredis", "swoole-rs-phpredis/php",
+       "swoole-rs-phplocks/php", "swoole-rs-phpruntime/php", "swoole-rs-phpserver/php", "swoole-rs-phpprocess/php", "swoole-rs-phpthread/php", "swoole-rs-phpclients/php", "swoole-rs-phphttp/php", "swoole-rs-phphttp2/php", "swoole-rs-phpstdext/php", "swoole-rs-phpcollections/php", "swoole-rs-phpevents/php", "swoole-rs-phpcoroutines/php", "swoole-rs-pgsql?/php", "swoole-rs-odbc?/php", "swoole-rs-firebird?/php", "swoole-rs-sqlite?/php", "swoole-rs-oci?/php", "swoole-rs-curl?/php"]
+# Not modules: the hybrid adds each when configured with its switch (--enable-iouring,
+# --enable-cares, --enable-swoole-stdext, --enable-swoole-pgsql, --with-swoole-odbc,
+# --with-swoole-firebird, --enable-swoole-sqlite, --with-swoole-oracle, --enable-swoole-curl,
+# --with-swoole-ssh2, --enable-swoole-ftp, --enable-sockets).
+iouring = ["swoole-rs-hooks/iouring", "swoole-rs-phplocks/iouring", "swoole-rs-phpcoroutines/iouring"]
+cares = ["swoole-rs-clients/cares"]
+stdext = ["swoole-rs-phpstdext/active", "swoole-rs-phpswoole?/stdext"]
+# --fix-halfclose (M15, native/halfclose): the queued-close drain, synchronous prequeue and TLS repairs.
+halfclose = ["swoole-rs-server/halfclose", "swoole-rs-tls/halfclose"]
+pgsql = ["dep:swoole-rs-pgsql", "swoole-rs-phpswoole?/pgsql"]
+odbc = ["dep:swoole-rs-odbc", "swoole-rs-phpswoole?/odbc"]
+firebird = ["dep:swoole-rs-firebird", "swoole-rs-phpswoole?/firebird"]
+sqlite = ["dep:swoole-rs-sqlite", "swoole-rs-phpswoole?/sqlite"]
+oci = ["dep:swoole-rs-oci", "swoole-rs-phpswoole?/oci"]
+curl = ["dep:swoole-rs-curl", "swoole-rs-phpruntime/curl"]
+ssh2 = ["dep:swoole-rs-ssh2", "swoole-rs-hooks/ssh2", "swoole-rs-phpswoole?/ssh2"]
+ftp = ["swoole-rs-phpswoole?/ftp"]
+sockets = ["swoole-rs-phpswoole?/sockets"]
+
+[dependencies]
+swoole-rs-websocket = { path = "../websocket" }
+swoole-rs-websocket-ffi = { path = "../websocket-ffi", features = ["upstream-symbols"] }
+swoole-rs-buffer = { path = "../buffer", features = ["upstream-symbols"] }
+swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
+swoole-rs-error = { path = "../error" }
+swoole-rs-error-ffi = { path = "../error-ffi", features = ["upstream-symbols"] }
+swoole-rs-bus = { path = "../bus", features = ["upstream-symbols"] }
+swoole-rs-protocols-ffi = { path = "../protocols-ffi" }
+swoole-rs-memory = { path = "../memory", features = ["upstream-symbols"] }
+swoole-rs-http = { path = "../http" }
+swoole-rs-http-ffi = { path = "../http-ffi", features = ["upstream-symbols"] }
+swoole-rs-utilities = { path = "../utilities", features = ["upstream-symbols"] }
+swoole-rs-locks = { path = "../locks" }
+swoole-rs-phplocks = { path = "../phplocks" }
+swoole-rs-phptimer = { path = "../phptimer", optional = true }
+swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
+swoole-rs-zend = { path = "../zend", optional = true }
+swoole-rs-phpredis = { path = "../phpredis", optional = true }
+swoole-rs-server = { path = "../server", features = ["upstream-symbols"] }
+swoole-rs-reactor = { path = "../reactor", features = ["upstream-symbols"] }
+swoole-rs-corebase = { path = "../corebase", features = ["upstream-symbols"] }
+swoole-rs-coroutine = { path = "../coroutine", features = ["upstream-symbols"] }
+swoole-rs-hooks = { path = "../hooks", features = ["upstream-symbols"] }
+swoole-rs-phpruntime = { path = "../phpruntime", features = ["upstream-symbols"] }
+swoole-rs-ossupport = { path = "../ossupport", features = ["upstream-symbols"] }
+swoole-rs-tls = { path = "../tls", features = ["upstream-symbols"] }
+swoole-rs-process = { path = "../process", features = ["upstream-symbols"] }
+swoole-rs-phpprocess = { path = "../phpprocess" }
+swoole-rs-phpthread = { path = "../phpthread" }
+swoole-rs-clients = { path = "../clients" }
+swoole-rs-phpclients = { path = "../phpclients" }
+swoole-rs-httpbindings = { path = "../httpbindings" }
+swoole-rs-phphttp = { path = "../phphttp" }
+swoole-rs-http2 = { path = "../http2" }
+swoole-rs-phphttp2 = { path = "../phphttp2" }
+swoole-rs-ports = { path = "../ports", features = ["upstream-symbols"] }
+swoole-rs-phpserver = { path = "../phpserver", features = ["server"] }
+swoole-rs-phpstdext = { path = "../phpstdext" }
+swoole-rs-phpcollections = { path = "../phpcollections" }
+swoole-rs-phpevents = { path = "../phpevents" }
+swoole-rs-phpcoroutines = { path = "../phpcoroutines" }
+swoole-rs-pgsql = { path = "../pgsql", optional = true }
+swoole-rs-odbc = { path = "../odbc", optional = true }
+swoole-rs-firebird = { path = "../firebird", optional = true }
+swoole-rs-sqlite = { path = "../sqlite", optional = true }
+swoole-rs-oci = { path = "../oci", optional = true }
+swoole-rs-curl = { path = "../curl", optional = true }
+swoole-rs-ssh2 = { path = "../ssh2", optional = true }
+
+[build-dependencies]
+cc = "=1.10.0"
+
+[lints]
+workspace = true

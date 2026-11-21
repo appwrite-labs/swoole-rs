@@ -1,0 +1,13 @@
+[package]
+name = "swoole-rs-framing"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+name = "swoole_rs_framing"
+crate-type = ["rlib"]
+
+[lints]
+workspace = true

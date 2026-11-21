@@ -1,0 +1,38 @@
+[package]
+name = "swoole-rs-phpserver"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "PHP Swoole\\Server family classes over the zend crates"
+
+[features]
+# Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "swoole-rs-phpswoole?/php"]
+# Swoole\\Server, Server\\Port and their data classes.
+server = ["dep:swoole-rs-ports", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php", "dep:swoole-rs-tls", "dep:swoole-rs-locks", "dep:swoole-rs-server", "dep:swoole-rs-process", "dep:swoole-rs-clients", "dep:swoole-rs-hooks", "dep:swoole-rs-ossupport", "dep:libc", "dep:swoole-rs-corebase", "dep:swoole-rs-phpswoole", "dep:swoole-rs-utilities", "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php", "dep:swoole-rs-phpthread", "swoole-rs-phpthread/php", "dep:swoole-rs-phpprocess", "swoole-rs-phpprocess/php", "dep:swoole-rs-error", "dep:swoole-rs-buffer", "swoole-rs-server/upstream-symbols"]
+
+[dependencies]
+swoole-rs-ports = { path = "../ports", optional = true }
+swoole-rs-tls = { path = "../tls", optional = true }
+swoole-rs-locks = { path = "../locks", optional = true }
+swoole-rs-server = { path = "../server", optional = true }
+swoole-rs-clients = { path = "../clients", optional = true }
+swoole-rs-hooks = { path = "../hooks", optional = true }
+swoole-rs-phpcoroutines = { path = "../phpcoroutines", optional = true }
+swoole-rs-phpthread = { path = "../phpthread", optional = true }
+swoole-rs-phpruntime = { path = "../phpruntime", optional = true }
+swoole-rs-ossupport = { path = "../ossupport", optional = true }
+libc = { version = "=0.2.191", optional = true }
+swoole-rs-process = { path = "../process", optional = true }
+swoole-rs-corebase = { path = "../corebase", optional = true }
+swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
+swoole-rs-utilities = { path = "../utilities", optional = true }
+swoole-rs-zend = { path = "../zend", optional = true }
+swoole-rs-phpstubs = { path = "../phpstubs", optional = true }
+swoole-rs-phpprocess = { path = "../phpprocess", optional = true }
+swoole-rs-error = { path = "../error", optional = true }
+swoole-rs-buffer = { path = "../buffer", optional = true }
+
+[lints]
+workspace = true
