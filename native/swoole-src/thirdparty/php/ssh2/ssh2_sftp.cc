@@ -616,7 +616,8 @@ extern "C" int swr_ssh2_sftp_stat(LIBSSH2_SFTP *sftp,
                                   unsigned long *permissions,
                                   unsigned long *atime,
                                   unsigned long *mtime) {
-    LIBSSH2_SFTP_ATTRIBUTES attrs;
+    /* Zeroed: only the attributes the server sent are filled, and every one is copied out. */
+    LIBSSH2_SFTP_ATTRIBUTES attrs = {};
     int rc = libssh2_sftp_stat_ex(sftp, path, path_len, stat_type, &attrs);
     if (rc) {
         return rc;
@@ -633,7 +634,7 @@ extern "C" int swr_ssh2_sftp_stat(LIBSSH2_SFTP *sftp,
 
 extern "C" int swr_ssh2_sftp_chmod(
     LIBSSH2_SFTP *sftp, LIBSSH2_SESSION *session, const char *path, unsigned int path_len, unsigned long permissions) {
-    LIBSSH2_SFTP_ATTRIBUTES attrs;
+    LIBSSH2_SFTP_ATTRIBUTES attrs = {};
     attrs.permissions = permissions;
     attrs.flags = LIBSSH2_SFTP_ATTR_PERMISSIONS;
     return libssh2_sftp_stat_ex(sftp, path, path_len, LIBSSH2_SFTP_SETSTAT, &attrs);
