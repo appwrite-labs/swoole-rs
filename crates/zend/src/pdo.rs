@@ -342,6 +342,8 @@ impl Slot {
 #[repr(i32)]
 #[derive(Clone, Copy)]
 pub enum Attribute {
+    /// PDO's `-1`: the driver could not read the attribute, an error.
+    Failed = -1,
     Unknown = 0,
     Set = 1,
 }
