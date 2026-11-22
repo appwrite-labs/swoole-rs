@@ -3,7 +3,7 @@
 //! the column's buffer (or a LOB's locator) and its indicator, length and return
 //! code, and `get_col` reads them back. The C statement keeps them by pointer.
 use crate::{
-    Env, Error, Live, Lob, Out, Stmt, Svc, Sword,
+    Buffer, Env, Error, Live, Lob, Stmt, Svc, Sword,
     error::{Nothing, here, stmt_call},
     handle::{swr_oci_env, swr_oci_err, swr_oci_max_char_width, swr_oci_svc},
     statement::{Descriptor, OCIAttrGetParam, OCIParamGet, Param},
@@ -163,7 +163,7 @@ unsafe extern "C" {
         define: &Cell<crate::Handle>,
         err: Live<Error>,
         position: u32,
-        value: Out,
+        value: Buffer,
         size: i32,
         kind: u16,
         indicator: &Cell<i16>,
@@ -341,12 +341,12 @@ extern "C" fn swr_oci_describe(
             }
         };
         let value = if dynamic {
-            Out::handle(column.lob.get())
+            Buffer::handle(column.lob.get())
         } else {
             let length = column.datalen.get().c_cast::<usize>() + 1;
             column.buffer.set(Some((0..length).map(|_| Cell::new(0)).collect()));
             let buffer = column.buffer.take();
-            let value = buffer.as_deref().map_or(Out::handle(column.lob.get()), Out::cells);
+            let value = buffer.as_deref().map_or(Buffer::handle(column.lob.get()), Buffer::cells);
             column.buffer.set(buffer);
             value
         };
