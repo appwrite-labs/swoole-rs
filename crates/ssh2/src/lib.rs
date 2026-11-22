@@ -16,6 +16,9 @@
     )
 )]
 
+#[cfg(feature = "php")]
+mod php;
+
 use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong};
 use std::ptr;
 use swoole_rs_corebase::CCast;

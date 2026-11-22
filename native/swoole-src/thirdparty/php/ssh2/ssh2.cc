@@ -447,104 +447,11 @@ PHP_FUNCTION(ssh2_disconnect) {
 }
 /* }}} */
 
-/* {{{ proto array ssh2_methods_negotiated(resource session)
- * Return list of negotiaed methods
- */
-PHP_FUNCTION(ssh2_methods_negotiated) {
-    LIBSSH2_SESSION *session;
-    zval *zsession, endpoint;
-    char *kex, *hostkey, *crypt_cs, *crypt_sc, *mac_cs, *mac_sc, *comp_cs, *comp_sc, *lang_cs, *lang_sc;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "r", &zsession) == FAILURE) {
-        return;
-    }
-
-    if ((session = (LIBSSH2_SESSION *) zend_fetch_resource(
-             Z_RES_P(zsession), PHP_SSH2_SESSION_RES_NAME, le_ssh2_session)) == NULL) {
-        RETURN_FALSE;
-    }
-
-    kex = (char *) libssh2_session_methods(session, LIBSSH2_METHOD_KEX);
-    hostkey = (char *) libssh2_session_methods(session, LIBSSH2_METHOD_HOSTKEY);
-    crypt_cs = (char *) libssh2_session_methods(session, LIBSSH2_METHOD_CRYPT_CS);
-    crypt_sc = (char *) libssh2_session_methods(session, LIBSSH2_METHOD_CRYPT_SC);
-    mac_cs = (char *) libssh2_session_methods(session, LIBSSH2_METHOD_MAC_CS);
-    mac_sc = (char *) libssh2_session_methods(session, LIBSSH2_METHOD_MAC_SC);
-    comp_cs = (char *) libssh2_session_methods(session, LIBSSH2_METHOD_COMP_CS);
-    comp_sc = (char *) libssh2_session_methods(session, LIBSSH2_METHOD_COMP_SC);
-    lang_cs = (char *) libssh2_session_methods(session, LIBSSH2_METHOD_LANG_CS);
-    lang_sc = (char *) libssh2_session_methods(session, LIBSSH2_METHOD_LANG_SC);
-
-    array_init(return_value);
-    add_assoc_string(return_value, "kex", kex);
-    add_assoc_string(return_value, "hostkey", hostkey);
-
-    array_init(&endpoint);
-    add_assoc_string(&endpoint, "crypt", crypt_cs);
-    add_assoc_string(&endpoint, "mac", mac_cs);
-    add_assoc_string(&endpoint, "comp", comp_cs);
-    add_assoc_string(&endpoint, "lang", lang_cs);
-    add_assoc_zval(return_value, "client_to_server", &endpoint);
-
-    array_init(&endpoint);
-    add_assoc_string(&endpoint, "crypt", crypt_sc);
-    add_assoc_string(&endpoint, "mac", mac_sc);
-    add_assoc_string(&endpoint, "comp", comp_sc);
-    add_assoc_string(&endpoint, "lang", lang_sc);
-    add_assoc_zval(return_value, "server_to_client", &endpoint);
+/* ssh2_methods_negotiated and ssh2_fingerprint are Rust (crates/ssh2/src/php.rs),
+ * which reads a resource's session through this. */
+extern "C" LIBSSH2_SESSION *swr_ssh2_session(zval *zsession) {
+    return (LIBSSH2_SESSION *) zend_fetch_resource(Z_RES_P(zsession), PHP_SSH2_SESSION_RES_NAME, le_ssh2_session);
 }
-/* }}} */
-
-/* {{{ proto string ssh2_fingerprint(resource session[, int flags])
- * Returns a server hostkey hash from an active session
- * Defaults to MD5 fingerprint encoded as ASCII hex values
- */
-PHP_FUNCTION(ssh2_fingerprint) {
-    LIBSSH2_SESSION *session;
-    zval *zsession;
-    const char *fingerprint;
-    zend_long flags = 0;
-    size_t i, fingerprint_len;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "r|l", &zsession, &flags) == FAILURE) {
-        return;
-    }
-    fingerprint_len = (flags & PHP_SSH2_FINGERPRINT_SHA1) ? SHA_DIGEST_LENGTH : MD5_DIGEST_LENGTH;
-
-    if ((session = (LIBSSH2_SESSION *) zend_fetch_resource(
-             Z_RES_P(zsession), PHP_SSH2_SESSION_RES_NAME, le_ssh2_session)) == NULL) {
-        RETURN_FALSE;
-    }
-
-    fingerprint = (char *) libssh2_hostkey_hash(
-        session, (flags & PHP_SSH2_FINGERPRINT_SHA1) ? LIBSSH2_HOSTKEY_HASH_SHA1 : LIBSSH2_HOSTKEY_HASH_MD5);
-    if (!fingerprint) {
-        php_error_docref(NULL, E_WARNING, "Unable to retrieve fingerprint from specified session");
-        RETURN_FALSE;
-    }
-
-    for (i = 0; i < fingerprint_len; i++) {
-        if (fingerprint[i] != '\0') {
-            goto fingerprint_good;
-        }
-    }
-    php_error_docref(NULL, E_WARNING, "No fingerprint available using specified hash");
-    RETURN_NULL();
-fingerprint_good:
-    if (flags & PHP_SSH2_FINGERPRINT_RAW) {
-        RETURN_STRINGL(fingerprint, fingerprint_len);
-    } else {
-        char *hexchars;
-
-        hexchars = (char *) emalloc((fingerprint_len * 2) + 1);
-        for (i = 0; i < fingerprint_len; i++) {
-            snprintf(hexchars + (2 * i), 3, "%02X", (unsigned char) fingerprint[i]);
-        }
-        ZVAL_STRINGL(return_value, hexchars, 2 * fingerprint_len);
-        efree(hexchars);
-    }
-}
-/* }}} */
 
 /* {{{ proto array ssh2_auth_none(resource session, string username)
  * Attempt "none" authentication, returns a list of allowed methods on failed authentication,
