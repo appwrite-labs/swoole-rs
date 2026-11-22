@@ -72,12 +72,14 @@ static void oci_handle_closer(pdo_dbh_t *dbh) /* {{{ */
 }
 /* }}} */
 
+/* Rust allocates and prepares the statement's handles (crates/oci/src/driver.rs). */
+extern bool swr_oci_prepare(pdo_dbh_t *dbh, zend_string *sql, OCIStmt **stmt, OCIError **err);
+
 static bool oci_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *stmt, zval *driver_options) /* {{{ */
 {
     pdo_oci_stmt *S = ecalloc(1, sizeof(*S));
-    sword status;
-    ub4 prefetch;
     zend_string *nsql = NULL;
+    bool prepared;
     int ret;
 
 #ifdef HAVE_OCISTMTFETCH2
@@ -102,41 +104,17 @@ static bool oci_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, pdo_stmt_t *st
         return false;
     }
 
-    /* create an OCI statement handle */
-    OCIHandleAlloc(swr_oci_env(dbh), (dvoid *) &S->stmt, OCI_HTYPE_STMT, 0, NULL);
-
-    /* and our own private error handle */
-    OCIHandleAlloc(swr_oci_env(dbh), (dvoid *) &S->err, OCI_HTYPE_ERROR, 0, NULL);
-
-    if (ZSTR_LEN(sql) != 0) {
-        status = OCIStmtPrepare(
-            S->stmt, swr_oci_err(dbh), (text *) ZSTR_VAL(sql), (ub4) ZSTR_LEN(sql), OCI_NTV_SYNTAX, OCI_DEFAULT);
-        if (nsql) {
-            zend_string_release(nsql);
-            nsql = NULL;
-        }
-        if (status) {
-            _oci_error(swr_oci_err(dbh), dbh, NULL, "OCIStmtPrepare", status, FALSE, __FILE__, __LINE__);
-            OCIHandleFree(S->stmt, OCI_HTYPE_STMT);
-            OCIHandleFree(S->err, OCI_HTYPE_ERROR);
-            efree(S);
-            return false;
-        }
+    prepared = swr_oci_prepare(dbh, sql, &S->stmt, &S->err);
+    if (nsql) {
+        zend_string_release(nsql);
     }
-
-    prefetch = swr_oci_prefetch(dbh); /* Note 0 is allowed so in future REF CURSORs can be used & then passed with no row loss*/
-    if (!OCIAttrSet(S->stmt, OCI_HTYPE_STMT, &prefetch, 0, OCI_ATTR_PREFETCH_ROWS, swr_oci_err(dbh))) {
-        prefetch *= PDO_OCI_PREFETCH_ROWSIZE;
-        OCIAttrSet(S->stmt, OCI_HTYPE_STMT, &prefetch, 0, OCI_ATTR_PREFETCH_MEMORY, swr_oci_err(dbh));
+    if (!prepared) {
+        efree(S);
+        return false;
     }
 
     stmt->driver_data = S;
     stmt->methods = &swoole_oci_stmt_methods;
-    if (nsql) {
-        zend_string_release(nsql);
-        nsql = NULL;
-    }
-
     return true;
 }
 /* }}} */
