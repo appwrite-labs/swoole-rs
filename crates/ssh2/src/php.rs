@@ -6,7 +6,7 @@
 //! `ssh2_sftp_chmod`, `ssh2_sftp_stat`/`ssh2_sftp_lstat`, and
 //! `ssh2_send_eof`/`ssh2_shell_resize` on a channel stream, `ssh2_tunnel`,
 //! `ssh2_shell`, `ssh2_exec`, `ssh2_scp_recv`, `ssh2_scp_send` and
-//! `ssh2_fetch_stream`.
+//! `ssh2_fetch_stream`, and the `ssh2.*://` wrappers' authentication.
 //! The resources stay ext/ssh2's; their sessions, listeners and SFTP sessions
 //! are read through `swr_ssh2_session`, `swr_ssh2_listener` and `swr_ssh2_sftp`.
 use crate::{Ops, Session, Sftp, Wait};
@@ -698,7 +698,11 @@ fn auth_password(call: &Call<'_>) {
 /// `php_check_open_basedir`: whether `open_basedir` refuses `path` (warning);
 /// a bailout is deferred and counts as refused.
 fn basedir_refuses(path: &ZStr) -> bool {
-    let (path, _) = text(path);
+    basedir_refuses_text(text(path).0)
+}
+
+/// [`basedir_refuses`] of a C string.
+fn basedir_refuses_text(path: Text<'_>) -> bool {
     let mut refused = true;
     match bailout::trapped(swr_zend_try_open_basedir(path, 1, &mut refused)) {
         Ok(()) => refused,
@@ -2210,4 +2214,63 @@ fn fetch_stream(call: &Call<'_>) {
         return;
     }
     swr_ssh2_fetch_substream(parent, streamid, call.return_slot());
+}
+
+swoole_rs_zend::exports! {
+/// The `ssh2.*://` wrappers' authentication of a session they connected
+/// (`php_ssh2_fopen_wraper_parse_path`): with both key files, `open_basedir`
+/// on each (its warning) then public key authentication with the password as
+/// the passphrase; failing that, with a password, password authentication.
+/// Whether the session is authenticated.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_ssh2_wrapper_auth(
+    session: Session,
+    username: Text<'_>,
+    username_len: c_uint,
+    password: Option<Text<'_>>,
+    password_len: c_uint,
+    pubkey_file: Option<Text<'_>>,
+    privkey_file: Option<Text<'_>>,
+) -> bool {
+    wrapper_auth(session, username, username_len, password, password_len, pubkey_file, privkey_file)
+}
+}
+
+/// [`swr_ssh2_wrapper_auth`].
+fn wrapper_auth(
+    session: Session,
+    username: Text<'_>,
+    username_len: c_uint,
+    password: Option<Text<'_>>,
+    password_len: c_uint,
+    pubkey_file: Option<Text<'_>>,
+    privkey_file: Option<Text<'_>>,
+) -> bool {
+    if let (Some(public), Some(private)) = (pubkey_file, privkey_file) {
+        if basedir_refuses_text(public) || basedir_refuses_text(private) {
+            return false;
+        }
+        // libssh2_userauth_publickey_fromfile: the username up to its NUL.
+        let name_len = username.get().count_bytes().c_cast();
+        let status = hooked(session, || {
+            libssh2_userauth_publickey_fromfile_ex(
+                session, username, name_len, public, private, password,
+            )
+        });
+        if status == 0 {
+            return true;
+        }
+    }
+    password.is_some_and(|password| {
+        hooked(session, || {
+            libssh2_userauth_password_ex(
+                session,
+                username,
+                username_len,
+                password,
+                password_len,
+                None,
+            )
+        }) == 0
+    })
 }

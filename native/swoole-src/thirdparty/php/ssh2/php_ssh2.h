@@ -114,6 +114,14 @@ extern "C" LIBSSH2_SESSION *php_ssh2_session_connect(const char *host, int port,
 /* Rust (crates/ssh2/src/php.rs): ssh2_shell's channel, for the ssh2.shell:// wrapper too. */
 extern "C" LIBSSH2_CHANNEL *swr_ssh2_shell_channel(
     LIBSSH2_SESSION *session, const char *term, unsigned int term_len, zval *environment, long width, long height, long unit);
+/* Rust (crates/ssh2/src/php.rs): the ssh2.*:// wrappers' authentication. */
+extern "C" bool swr_ssh2_wrapper_auth(LIBSSH2_SESSION *session,
+                                      const char *username,
+                                      unsigned int username_len,
+                                      const char *password,
+                                      unsigned int password_len,
+                                      const char *pubkey_file,
+                                      const char *privkey_file);
 /* Rust (crates/ssh2/src/php.rs): ssh2_exec's channel, for the ssh2.exec:// wrapper too. */
 extern "C" LIBSSH2_CHANNEL *swr_ssh2_exec_channel(LIBSSH2_SESSION *session,
                                                   const char *command,
