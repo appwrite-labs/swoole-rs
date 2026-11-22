@@ -5,7 +5,8 @@
 //! change a path, `ssh2_sftp_readlink`/`ssh2_sftp_realpath`, `ssh2_sftp`,
 //! `ssh2_sftp_chmod`, `ssh2_sftp_stat`/`ssh2_sftp_lstat`, and
 //! `ssh2_send_eof`/`ssh2_shell_resize` on a channel stream, `ssh2_tunnel`,
-//! `ssh2_shell`, `ssh2_exec`, `ssh2_scp_recv` and `ssh2_scp_send`.
+//! `ssh2_shell`, `ssh2_exec`, `ssh2_scp_recv`, `ssh2_scp_send` and
+//! `ssh2_fetch_stream`.
 //! The resources stay ext/ssh2's; their sessions, listeners and SFTP sessions
 //! are read through `swr_ssh2_session`, `swr_ssh2_listener` and `swr_ssh2_sftp`.
 use crate::{Ops, Session, Sftp, Wait};
@@ -211,6 +212,12 @@ unsafe extern "C" {
     /// stream of another kind, or, when `abstract_warns`, C's warning for a
     /// channel stream with no channel data.
     safe fn swr_ssh2_stream_channel(stream: &Value, abstract_warns: bool) -> Option<StreamChannel>;
+    /// `ssh2_fetch_stream`'s substream of the channel stream `parent` for
+    /// `streamid`, which shares its channel, put in `out`: Zend's `TypeError`
+    /// for a resource that isn't a stream, or C's warning and false for a
+    /// stream of another kind, a channel with 255 streams already, or one that
+    /// can't be allocated.
+    safe fn swr_ssh2_fetch_substream(parent: &Value, streamid: i64, out: ReturnSlot<'_>);
     /// The session of the channel stream [`swr_ssh2_stream_channel`]
     /// accepted (`ssh2_get_session`): null, with Zend's `TypeError`, once the
     /// session resource has been closed.
@@ -423,6 +430,7 @@ swoole_rs_zend::handlers! {
     zif_ssh2_connect => connect;
     zif_ssh2_sftp => sftp_init;
     zif_ssh2_send_eof => send_eof;
+    zif_ssh2_fetch_stream => fetch_stream;
     zif_ssh2_tunnel => tunnel;
     zif_ssh2_shell => shell;
     zif_ssh2_exec => exec;
@@ -2181,4 +2189,25 @@ fn scp_send(call: &Call<'_>) {
     }
     free();
     call.set_bool(true);
+}
+
+/// `ssh2_fetch_stream(resource $channel, int $streamid): resource|false`: the
+/// channel's extended data stream `$streamid` (`SSH2_STREAM_STDERR` is 1), as
+/// a stream of its own; a negative id is C's warning and false.
+fn fetch_stream(call: &Call<'_>) {
+    if call.arity(2, 2).is_err() {
+        return;
+    }
+    let Ok(parent) = call.resource(1) else {
+        return;
+    };
+    let Ok(streamid) = call.long(2, 0) else {
+        return;
+    };
+    if streamid < 0 {
+        warn("Invalid stream ID requested");
+        call.set_bool(false);
+        return;
+    }
+    swr_ssh2_fetch_substream(parent, streamid, call.return_slot());
 }

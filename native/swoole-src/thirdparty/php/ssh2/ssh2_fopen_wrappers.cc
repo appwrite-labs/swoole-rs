@@ -989,23 +989,12 @@ extern "C" void swr_ssh2_session_stream(zval *zsession, LIBSSH2_CHANNEL *channel
  * Generic Helper *
  ****************** */
 
-/* {{{ proto stream ssh2_fetch_stream(stream channel, int streamid)
- * Fetch an extended data stream
- */
-PHP_FUNCTION(ssh2_fetch_stream) {
+/* ssh2_fetch_stream is Rust (crates/ssh2/src/php.rs). What it keeps C: the
+ * substream, a copy of the parent's channel data (allocator), counted in the
+ * byte the channel's streams share and built on this file's stream ops. */
+extern "C" void swr_ssh2_fetch_substream(zval *zparent, zend_long streamid, zval *return_value) {
     php_ssh2_channel_data *data, *stream_data;
     php_stream *parent, *stream;
-    zval *zparent;
-    zend_long streamid;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "rl", &zparent, &streamid) == FAILURE) {
-        return;
-    }
-
-    if (streamid < 0) {
-        php_error_docref(NULL, E_WARNING, "Invalid stream ID requested");
-        RETURN_FALSE;
-    }
 
     php_stream_from_zval(parent, zparent);
 
@@ -1042,7 +1031,6 @@ PHP_FUNCTION(ssh2_fetch_stream) {
 
     php_stream_to_zval(stream, return_value);
 }
-/* }}} */
 
 
 /*
