@@ -568,41 +568,18 @@ php_stream_wrapper php_ssh2_sftp_wrapper = {
  * Userspace API *
  ***************** */
 
-/* {{{ proto resource ssh2_sftp(resource session)
- * Request the SFTP subsystem from an already connected SSH2 server
- */
-PHP_FUNCTION(ssh2_sftp) {
-    LIBSSH2_SESSION *session;
-    LIBSSH2_SFTP *sftp;
-    php_ssh2_sftp_data *data;
-    zval *zsession;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "r", &zsession) == FAILURE) {
-        return;
-    }
-
-    if ((session = (LIBSSH2_SESSION *) zend_fetch_resource(
-             Z_RES_P(zsession), PHP_SSH2_SESSION_RES_NAME, le_ssh2_session)) == NULL) {
-        RETURN_FALSE;
-    }
-
-    sftp = libssh2_sftp_init(session);
-    if (!sftp) {
-        char *sess_err;
-        libssh2_session_last_error(session, &sess_err, NULL, 0);
-        php_error_docref(NULL, E_WARNING, "Unable to startup SFTP subsystem: %s", sess_err);
-        RETURN_FALSE;
-    }
-
-    data = (php_ssh2_sftp_data *) emalloc(sizeof(php_ssh2_sftp_data));
+/* ssh2_sftp is Rust (crates/ssh2/src/php.rs). What it keeps C: the SFTP
+ * resource's data, emalloc'd here and freed by its destructor (allocator). */
+extern "C" void swr_ssh2_sftp_open(zval *zsession, LIBSSH2_SESSION *session, LIBSSH2_SFTP *sftp, zval *return_value) {
+    php_ssh2_sftp_data *data = (php_ssh2_sftp_data *) emalloc(sizeof(php_ssh2_sftp_data));
     data->session = session;
     data->sftp = sftp;
     data->session_rsrc = Z_RES_P(zsession);
     Z_ADDREF_P(zsession);
 
-    RETURN_RES(zend_register_resource(data, le_ssh2_sftp));
+    zval_ptr_dtor(return_value);
+    ZVAL_RES(return_value, zend_register_resource(data, le_ssh2_sftp));
 }
-/* }}} */
 
 /* Much of the stuff below can be done via wrapper ops as of PHP5, but is included here for PHP 4.3 users */
 
