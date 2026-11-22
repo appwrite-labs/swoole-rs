@@ -308,32 +308,14 @@ static int pdo_firebird_stmt_fetch(pdo_stmt_t *stmt, /* {{{ */
 /* }}} */
 
 /* called by PDO to retrieve information about the fields being returned */
+/* The column description and metadata are Rust (crates/firebird/src/statement.rs). */
+void swr_firebird_describe(XSQLVAR *var, bool fetch_table_names, struct pdo_column_data *col);
+void swr_firebird_column_meta(XSQLVAR *var, zval *return_value);
+
 static int pdo_firebird_stmt_describe(pdo_stmt_t *stmt, int colno) /* {{{ */
 {
 	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
-	struct pdo_column_data *col = &stmt->columns[colno];
-	XSQLVAR *var = &S->out_sqlda.sqlvar[colno];
-	int colname_len;
-	char *cp;
-
-	if ((var->sqltype & ~1) == SQL_TEXT) {
-		var->sqltype = SQL_VARYING | (var->sqltype & 1);
-	}
-	colname_len = (S->H->fetch_table_names && var->relname_length)
-					? (var->aliasname_length + var->relname_length + 1)
-					: (var->aliasname_length);
-	col->precision = -var->sqlscale;
-	col->maxlen = var->sqllen;
-	col->name = zend_string_alloc(colname_len, 0);
-	cp = ZSTR_VAL(col->name);
-	if (colname_len > var->aliasname_length) {
-		memmove(cp, var->relname, var->relname_length);
-		cp += var->relname_length;
-		*cp++ = '.';
-	}
-	memmove(cp, var->aliasname, var->aliasname_length);
-	*(cp+var->aliasname_length) = '\0';
-
+	swr_firebird_describe(&S->out_sqlda.sqlvar[colno], S->H->fetch_table_names, &stmt->columns[colno]);
 	return 1;
 }
 /* }}} */
@@ -341,35 +323,10 @@ static int pdo_firebird_stmt_describe(pdo_stmt_t *stmt, int colno) /* {{{ */
 static int pdo_firebird_stmt_get_column_meta(pdo_stmt_t *stmt, zend_long colno, zval *return_value)
 {
 	pdo_firebird_stmt *S = (pdo_firebird_stmt *) stmt->driver_data;
-	XSQLVAR *var = &S->out_sqlda.sqlvar[colno];
-
-	enum pdo_param_type param_type;
-	if (var->sqlscale < 0) {
-		param_type = PDO_PARAM_STR;
-	} else {
-		switch (var->sqltype & ~1) {
-			case SQL_SHORT:
-			case SQL_LONG:
-#if SIZEOF_ZEND_LONG >= 8
-			case SQL_INT64:
-#endif
-				param_type = PDO_PARAM_INT;
-				break;
-			case SQL_BOOLEAN:
-				param_type = PDO_PARAM_BOOL;
-				break;
-			default:
-				param_type = PDO_PARAM_STR;
-				break;
-		}
-	}
-
-	array_init(return_value);
-	add_assoc_long(return_value, "pdo_type", param_type);
+	swr_firebird_column_meta(&S->out_sqlda.sqlvar[colno], return_value);
 	return 1;
 }
 
-/* fetch a blob into a fetch buffer */
 static int php_firebird_fetch_blob(pdo_stmt_t *stmt, int colno, zval *result, ISC_QUAD *blob_id)
 {
 	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;

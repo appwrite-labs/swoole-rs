@@ -44,7 +44,7 @@ install() {
     if $build; then
         set -- php-dev libclang-dev python3-pytest python3-pip libpcre2-dev libssl-dev libc-ares-dev zlib1g-dev \
             pkg-config cmake g++ make autoconf libgtest-dev libnghttp2-dev libpq-dev libcurl4-openssl-dev \
-            libssh2-1-dev libbrotli-dev libzstd-dev unixodbc-dev libsqlite3-dev libffi-dev "$@"
+            libssh2-1-dev libbrotli-dev libzstd-dev unixodbc-dev firebird-dev libsqlite3-dev libffi-dev "$@"
     else
         # Shards load prebuilt engines. Keep their shared libraries and PHP extensions;
         # gcc supplies Instant Client setup's multiarch path, but no engine is compiled here.

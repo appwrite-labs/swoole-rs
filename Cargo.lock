@@ -520,6 +520,9 @@ dependencies = [
 [[package]]
 name = "swoole-rs-firebird-sys"
 version = "0.1.0"
+dependencies = [
+ "bindgen",
+]
 
 [[package]]
 name = "swoole-rs-framing"

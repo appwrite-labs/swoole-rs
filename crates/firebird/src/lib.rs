@@ -23,6 +23,8 @@ pub mod connection;
 pub mod minit;
 pub mod preprocess;
 #[cfg(feature = "php")]
+pub mod statement;
+#[cfg(feature = "php")]
 pub mod transaction;
 
 use std::{

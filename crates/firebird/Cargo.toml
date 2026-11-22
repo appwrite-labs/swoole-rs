@@ -8,7 +8,7 @@ description = "Swoole's coroutine Firebird calls for its bundled pdo_firebird (-
 
 [features]
 # MINIT's PDO registration, which needs PHP headers (swoole-rs-zend).
-php = ["dep:swoole-rs-zend", "swoole-rs-zend/php"]
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "swoole-rs-firebird-sys/ibase"]
 
 [dependencies]
 swoole-rs-corebase = { path = "../corebase" }
