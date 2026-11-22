@@ -33,6 +33,7 @@ mod offset;
 pub mod opcode;
 pub mod pdo;
 pub mod registration;
+pub mod stream;
 pub mod string;
 pub mod thread;
 pub mod value;

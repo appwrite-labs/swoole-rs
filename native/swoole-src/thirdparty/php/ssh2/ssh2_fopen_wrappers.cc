@@ -848,64 +848,15 @@ static php_stream_wrapper_ops php_ssh2_scp_stream_wops = {php_ssh2_fopen_wrapper
 
 php_stream_wrapper php_ssh2_stream_wrapper_scp = {&php_ssh2_scp_stream_wops, NULL, 0};
 
-/* {{{ proto bool ssh2_scp_recv(resource session, string remote_file, string local_file)
- * Request a file via SCP
- */
-PHP_FUNCTION(ssh2_scp_recv) {
-    LIBSSH2_SESSION *session;
-    LIBSSH2_CHANNEL *remote_file;
-    struct stat sb;
-    php_stream *local_file;
-    zval *zsession;
-    char *remote_filename, *local_filename;
-    size_t remote_filename_len, local_filename_len;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(),
-                              "rss",
-                              &zsession,
-                              &remote_filename,
-                              &remote_filename_len,
-                              &local_filename,
-                              &local_filename_len) == FAILURE) {
-        return;
-    }
-
-    SSH2_FETCH_AUTHENTICATED_SESSION(session, zsession);
-
-    remote_file = libssh2_scp_recv(session, remote_filename, &sb);
-    if (!remote_file) {
-        php_error_docref(NULL, E_WARNING, "Unable to receive remote file");
-        RETURN_FALSE;
-    }
-
-    local_file = php_stream_open_wrapper(local_filename, "wb", REPORT_ERRORS, NULL);
-    if (!local_file) {
-        php_error_docref(NULL, E_WARNING, "Unable to write to local file");
-        libssh2_channel_free(remote_file);
-        RETURN_FALSE;
-    }
-
-    while (sb.st_size) {
-        char buffer[8192];
-        int bytes_read;
-
-        bytes_read = libssh2_channel_read(remote_file, buffer, sb.st_size > 8192 ? 8192 : sb.st_size);
-        if (bytes_read < 0) {
-            php_error_docref(NULL, E_WARNING, "Error reading from remote file");
-            libssh2_channel_free(remote_file);
-            php_stream_close(local_file);
-            RETURN_FALSE;
-        }
-        php_stream_write(local_file, buffer, bytes_read);
-        sb.st_size -= bytes_read;
-    }
-
-    libssh2_channel_free(remote_file);
-    php_stream_close(local_file);
-
-    RETURN_TRUE;
+/* ssh2_scp_recv is Rust (crates/ssh2/src/php.rs). What it keeps C: the file's
+ * struct stat, which libssh2_scp_recv fills and Rust would take an unsafe block
+ * to make (budget); only its size is read. */
+extern "C" LIBSSH2_CHANNEL *swr_ssh2_scp_recv(LIBSSH2_SESSION *session, const char *path, int64_t *size) {
+    struct stat sb = {};
+    LIBSSH2_CHANNEL *channel = libssh2_scp_recv(session, path, &sb);
+    *size = channel ? sb.st_size : 0;
+    return channel;
 }
-/* }}} */
 
 /* {{{ proto stream ssh2_scp_send(resource session, string local_file, string remote_file[, int create_mode = 0644])
  * Send a file via SCP

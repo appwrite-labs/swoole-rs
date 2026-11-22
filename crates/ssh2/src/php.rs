@@ -5,7 +5,7 @@
 //! change a path, `ssh2_sftp_readlink`/`ssh2_sftp_realpath`, `ssh2_sftp`,
 //! `ssh2_sftp_chmod`, `ssh2_sftp_stat`/`ssh2_sftp_lstat`, and
 //! `ssh2_send_eof`/`ssh2_shell_resize` on a channel stream, `ssh2_tunnel`,
-//! `ssh2_shell` and `ssh2_exec`.
+//! `ssh2_shell`, `ssh2_exec` and `ssh2_scp_recv`.
 //! The resources stay ext/ssh2's; their sessions, listeners and SFTP sessions
 //! are read through `swr_ssh2_session`, `swr_ssh2_listener` and `swr_ssh2_sftp`.
 use crate::{Ops, Session, Sftp, Wait};
@@ -17,6 +17,7 @@ use swoole_rs_corebase::{
     lent::{Count, In, Out, lend_in, lend_out},
 };
 use swoole_rs_ssh2_sys::{KbdintResponse, LIBSSH2_CHANNEL};
+use swoole_rs_zend::stream::{REPORT_ERRORS, Stream};
 use swoole_rs_zend::{
     Call, E_ERROR, E_NOTICE, E_WARNING, Owned, OwnedArray, ReturnSlot, Value, ZStr, ZString,
     bailout, report,
@@ -255,6 +256,17 @@ unsafe extern "C" {
         message_len: c_uint,
     ) -> c_int;
     safe fn libssh2_channel_free(channel: Opened) -> c_int;
+    /// `libssh2_scp_recv` of `path`, retried through the hook: the channel the
+    /// file arrives on, its size in `size`, or null.
+    safe fn swr_ssh2_scp_recv(session: Session, path: Text<'_>, size: &mut i64) -> Option<Opened>;
+    /// libssh2's own declaration: up to `buflen` bytes of the channel's stream
+    /// `stream_id` into the lent buffer, or a negative error.
+    safe fn libssh2_channel_read_ex<'a>(
+        channel: Opened,
+        stream_id: c_int,
+        buf: Out<'a, u8>,
+        buflen: Count<'a>,
+    ) -> isize;
     /// libssh2's own channel declarations.
     safe fn libssh2_channel_send_eof(channel: StreamChannel) -> c_int;
     safe fn libssh2_channel_request_pty_size_ex(
@@ -396,6 +408,7 @@ swoole_rs_zend::handlers! {
     zif_ssh2_tunnel => tunnel;
     zif_ssh2_shell => shell;
     zif_ssh2_exec => exec;
+    zif_ssh2_scp_recv => scp_recv;
     zif_ssh2_shell_resize => shell_resize;
     zif_ssh2_sftp_rename => sftp_rename;
     zif_ssh2_sftp_chmod => sftp_chmod;
@@ -1933,4 +1946,67 @@ fn exec_channel(
         return None;
     }
     Some(channel)
+}
+
+/// `ssh2_scp_recv(resource $session, string $remote_file, string $local_file):
+/// bool`: the remote file copied over SCP into the local one, which any
+/// stream wrapper may open.
+fn scp_recv(call: &Call<'_>) {
+    if call.arity(3, 3).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let (Ok(Some(remote)), Ok(Some(local))) = (call.zstr(2), call.zstr(3)) else {
+        return;
+    };
+    let Some(session) = session(call, resource) else {
+        return;
+    };
+    if !authenticated(session) {
+        warn("Connection not authenticated");
+        call.set_bool(false);
+        return;
+    }
+    let mut remaining = 0;
+    let Some(channel) = swr_ssh2_scp_recv(session, text(remote).0, &mut remaining) else {
+        warn("Unable to receive remote file");
+        call.set_bool(false);
+        return;
+    };
+    let free = || {
+        // The copy is over; the channel's status adds nothing to its result.
+        let _status = libssh2_channel_free(channel);
+    };
+    let Some(file) = Stream::open(text(local).0, c"wb", REPORT_ERRORS) else {
+        warn("Unable to write to local file");
+        free();
+        call.set_bool(false);
+        return;
+    };
+    let mut buffer = [0u8; 8192];
+    while remaining != 0 {
+        // C's int bytes_read of at most 8192 bytes, or the rest of the file.
+        let want = usize::try_from(remaining.clamp(0, 8192)).unwrap_or_default();
+        let slots = buffer.get_mut(..want).unwrap_or_default();
+        let read = hooked(session, || {
+            lend_out(&mut *slots, |out, count| {
+                libssh2_channel_read_ex(channel, 0, out, count)
+            })
+        });
+        let Ok(length) = usize::try_from(read) else {
+            warn("Error reading from remote file");
+            free();
+            drop(file);
+            call.set_bool(false);
+            return;
+        };
+        // C wrote what arrived and went on, whatever the stream took.
+        let _written = file.write(buffer.get(..length).unwrap_or_default());
+        remaining -= i64::from(read);
+    }
+    free();
+    drop(file);
+    call.set_bool(true);
 }

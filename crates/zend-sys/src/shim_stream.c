@@ -196,6 +196,24 @@ int swr_zend_try_socket_stream_alloc(const char *persistent, bool unix_stream, p
     return bailed;
 }
 
+/* bailout: php_stream_open_wrapper of a path and php_stream_write run a user
+ * stream wrapper's PHP code. 1 if it bailed out. */
+int swr_zend_try_stream_open(const char *path, const char *mode, int options, php_stream **out) {
+    volatile int bailed = 0;
+    *out = NULL;
+    SWR_ZEND_TRY { *out = php_stream_open_wrapper(path, mode, options, NULL); }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
+    return bailed;
+}
+
+int swr_zend_try_stream_write(php_stream *stream, const char *bytes, size_t count, ssize_t *written) {
+    volatile int bailed = 0;
+    *written = -1;
+    SWR_ZEND_TRY { *written = php_stream_write(stream, bytes, count); }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
+    return bailed;
+}
+
 /* bailout: trap user code invoked by the stream close. */
 int swr_zend_try_stream_close(php_stream *stream) {
     volatile int bailed = 0;
