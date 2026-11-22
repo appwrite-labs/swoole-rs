@@ -18,6 +18,8 @@
 #[cfg(feature = "php")]
 pub mod minit;
 pub mod preprocess;
+#[cfg(feature = "php")]
+pub mod transaction;
 
 use std::{
     cell::Cell,
