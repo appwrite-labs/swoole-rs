@@ -1,6 +1,7 @@
 //! The bundled ext/ssh2's PHP functions (`thirdparty/php/ssh2/ssh2.cc`) as
-//! they move to Rust: so far `ssh2_methods_negotiated`, `ssh2_fingerprint`,
-//! the `ssh2_auth_*` functions and `ssh2_forward_listen`/`ssh2_forward_accept`.
+//! they move to Rust: so far `ssh2_connect`, `ssh2_methods_negotiated`,
+//! `ssh2_fingerprint`, the `ssh2_auth_*` functions and
+//! `ssh2_forward_listen`/`ssh2_forward_accept`.
 //! The resources stay ext/ssh2's; their sessions and listeners are read
 //! through `swr_ssh2_session` and `swr_ssh2_listener`.
 use crate::{Ops, Session, Wait};
@@ -131,6 +132,25 @@ unsafe extern "C" {
     ) -> c_int;
     safe fn libssh2_agent_userauth(agent: Agent, username: Text<'_>, identity: Identity) -> c_int;
     safe fn libssh2_agent_disconnect(agent: Agent) -> c_int;
+    /// `ssh2.cc`'s session over a socket connected to `host` and `port`, its
+    /// allocator Zend's, its banner swoole's and its socket non-blocking; null,
+    /// with C's warning, when the socket can't connect or libssh2 can't
+    /// initialise the session.
+    safe fn swr_ssh2_session_open(host: Text<'_>, port: c_int) -> Session;
+    /// `ssh2_connect`'s `$callbacks`: each of `ignore`, `debug`, `macerror` and
+    /// `disconnect` set on the session, with C's warning for one that isn't
+    /// callable.
+    safe fn swr_ssh2_session_callbacks(session: Session, callbacks: &Value);
+    /// The socket descriptor the session's handshake runs on.
+    safe fn swr_ssh2_session_fd(session: Session) -> c_int;
+    /// A session [`swr_ssh2_session_open`] made, its socket and its data freed
+    /// when its handshake fails.
+    safe fn swr_ssh2_session_drop(session: Session);
+    /// The `SSH2 Session` resource over `session`, put in `out`.
+    safe fn swr_ssh2_session_resource(session: Session, out: ReturnSlot<'_>);
+    /// libssh2's own declarations: a method preference, and the handshake.
+    safe fn libssh2_session_method_pref(session: Session, kind: c_int, prefs: Text<'_>) -> c_int;
+    safe fn libssh2_session_handshake(session: Session, socket: c_int) -> c_int;
     /// libssh2's own declarations for remote port forwarding: the listener, or
     /// null, and a connection it accepted, or null.
     safe fn libssh2_channel_forward_listen_ex(
@@ -206,6 +226,7 @@ struct Accepted(NonNull<c_void>);
 enum Nothing {}
 
 swoole_rs_zend::handlers! {
+    zif_ssh2_connect => connect;
     zif_ssh2_methods_negotiated => methods_negotiated;
     zif_ssh2_fingerprint => fingerprint;
     zif_ssh2_auth_none => auth_none;
@@ -785,4 +806,140 @@ fn forward_accept(call: &Call<'_>) {
         return;
     };
     swr_ssh2_accepted_stream(resource, channel, call.return_slot());
+}
+
+/// `PHP_SSH2_DEFAULT_PORT`.
+const DEFAULT_PORT: i64 = 22;
+
+/// `ssh2_connect(string $host, int $port = 22, ?array $methods = null,
+/// ?array $callbacks = null): resource|false`: a session with the server,
+/// its method preferences and callbacks set before the handshake.
+fn connect(call: &Call<'_>) {
+    if call.arity(1, 4).is_err() {
+        return;
+    }
+    let Ok(Some(host)) = call.zstr(1) else {
+        return;
+    };
+    let Ok(port) = call.long(2, DEFAULT_PORT) else {
+        return;
+    };
+    let nullable_array = |n| match call.value(n) {
+        None => Ok(None),
+        Some(_) => call.array_or_null(n),
+    };
+    let Ok(methods) = nullable_array(3) else {
+        return;
+    };
+    let Ok(callbacks) = nullable_array(4) else {
+        return;
+    };
+    let (host, _) = text(host);
+    let session = session_connect(
+        host,
+        port.c_cast(),
+        methods.as_deref(),
+        callbacks.as_deref(),
+    );
+    if session.0.is_null() {
+        warn_bytes(&[b"Unable to connect to ", host.get().to_bytes()]);
+        call.set_bool(false);
+        return;
+    }
+    swr_ssh2_session_resource(session, call.return_slot());
+}
+
+swoole_rs_zend::exports! {
+/// A session with the server at `host` and `port`, its method preferences
+/// (`methods`) and callbacks (`callbacks`) set before the handshake, for
+/// `ssh2_connect` and the `ssh2.*://` wrappers; null, with C's warning, when
+/// the connection, the session or its handshake fails.
+#[unsafe(no_mangle)]
+pub extern "C" fn php_ssh2_session_connect(
+    host: Text<'_>,
+    port: c_int,
+    methods: Option<&Value>,
+    callbacks: Option<&Value>,
+) -> Session {
+    session_connect(host, port, methods, callbacks)
+}
+}
+
+/// [`php_ssh2_session_connect`].
+fn session_connect(
+    host: Text<'_>,
+    port: c_int,
+    methods: Option<&Value>,
+    callbacks: Option<&Value>,
+) -> Session {
+    let session = swr_ssh2_session_open(host, port);
+    if session.0.is_null() {
+        return session;
+    }
+    if let Some(methods) = methods.and_then(Value::array) {
+        prefer_methods(session, methods);
+    }
+    if let Some(callbacks) = callbacks {
+        swr_ssh2_session_callbacks(session, callbacks);
+    }
+    let socket = swr_ssh2_session_fd(session);
+    if hooked(session, || libssh2_session_handshake(session, socket)) != 0 {
+        let (mut message, mut length) = (None, 0);
+        let code = libssh2_session_last_error(session, &mut message, &mut length, 0);
+        warn_bytes(&[
+            format!("Error starting up SSH connection({code}): ").as_bytes(),
+            message.map_or(&[][..], |text| text.get().to_bytes()),
+        ]);
+        swr_ssh2_session_drop(session);
+        return Session(std::ptr::null_mut());
+    }
+    session
+}
+
+/// `ssh2_connect`'s `$methods`: each preference given set on the session, with
+/// C's warning for one that isn't a string or that libssh2 refuses.
+fn prefer_methods(session: Session, methods: &swoole_rs_zend::Array) {
+    let prefer = |table: &swoole_rs_zend::Array, key: &[u8], kind, what: &str| {
+        let Some(value) = table.find(key) else {
+            return;
+        };
+        let refused = value
+            .str()
+            .is_none_or(|prefs| libssh2_session_method_pref(session, kind, text(prefs).0) != 0);
+        if refused {
+            warn(&format!("Failed overriding {what} method"));
+        }
+    };
+    prefer(methods, b"kex", METHOD_KEX, "KEX");
+    prefer(methods, b"hostkey", METHOD_HOSTKEY, "HOSTKEY");
+    for (key, direction, [crypt, mac, comp, lang]) in [
+        (
+            &b"client_to_server"[..],
+            "client to server",
+            [
+                METHOD_CRYPT_CS,
+                METHOD_MAC_CS,
+                METHOD_COMP_CS,
+                METHOD_LANG_CS,
+            ],
+        ),
+        (
+            b"server_to_client",
+            "server to client",
+            [
+                METHOD_CRYPT_SC,
+                METHOD_MAC_SC,
+                METHOD_COMP_SC,
+                METHOD_LANG_SC,
+            ],
+        ),
+    ] {
+        let Some(container) = methods.find(key).and_then(Value::array) else {
+            continue;
+        };
+        prefer(container, b"crypt", crypt, &format!("{direction} CRYPT"));
+        prefer(container, b"mac", mac, &format!("{direction} MAC"));
+        prefer(container, b"comp", comp, &format!("{direction} COMP"));
+        prefer(container, b"lang", lang, &format!("{direction} LANG"));
+    }
 }
