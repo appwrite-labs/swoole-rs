@@ -1,12 +1,15 @@
 //! The bundled ext/ssh2's PHP functions (`thirdparty/php/ssh2/ssh2.cc`) as
-//! they move to Rust: so far `ssh2_methods_negotiated`, `ssh2_fingerprint`,
-//! `ssh2_auth_none` and `ssh2_auth_password`.
+//! they move to Rust: so far `ssh2_methods_negotiated`, `ssh2_fingerprint`
+//! and the `ssh2_auth_*` functions but `ssh2_auth_agent`.
 //! The resources stay ext/ssh2's; their sessions are read through
 //! `swr_ssh2_session`.
 use crate::{Ops, Session, Wait};
 use std::ffi::{CStr, CString, c_int, c_uint};
-use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::Text;
+use swoole_rs_corebase::{
+    CCast,
+    lent::{Count, In, lend_in},
+};
 use swoole_rs_ssh2_sys::KbdintResponse;
 use swoole_rs_zend::{Call, E_WARNING, Owned, OwnedArray, Value, ZStr, ZString, bailout, report};
 
@@ -69,6 +72,49 @@ unsafe extern "C" {
         responses: *mut std::ffi::c_void,
         abstract_: *mut *mut std::ffi::c_void,
     );
+    /// `php_check_open_basedir_ex(path, 1)` inside `zend_try` (nonzero for a
+    /// bailout): `refused` when `open_basedir` refuses the path, which warns.
+    safe fn swr_zend_try_open_basedir(path: Text<'_>, warn: c_int, refused: &mut bool) -> c_int;
+    /// `getpwuid(geteuid())->pw_dir`, or null: the home directory a `~/` key
+    /// path is relative to, which libssh2 doesn't expand.
+    safe fn swr_ssh2_home_dir() -> Option<Text<'static>>;
+    /// libssh2's own declaration: the session's last error message.
+    safe fn libssh2_session_last_error(
+        session: Session,
+        message: &mut Option<Text<'_>>,
+        length: &mut c_int,
+        want_buffer: c_int,
+    ) -> c_int;
+    safe fn libssh2_userauth_publickey_fromfile_ex(
+        session: Session,
+        username: Text<'_>,
+        username_len: c_uint,
+        publickey: Text<'_>,
+        privatekey: Text<'_>,
+        passphrase: Option<Text<'_>>,
+    ) -> c_int;
+    safe fn libssh2_userauth_publickey_frommemory<'public, 'private>(
+        session: Session,
+        username: Text<'_>,
+        username_len: usize,
+        publickey: In<'public, u8>,
+        publickey_len: Count<'public>,
+        privatekey: In<'private, u8>,
+        privatekey_len: Count<'private>,
+        passphrase: Option<Text<'_>>,
+    ) -> c_int;
+    safe fn libssh2_userauth_hostbased_fromfile_ex(
+        session: Session,
+        username: Text<'_>,
+        username_len: c_uint,
+        publickey: Text<'_>,
+        privatekey: Text<'_>,
+        passphrase: Option<Text<'_>>,
+        hostname: Text<'_>,
+        hostname_len: c_uint,
+        local_username: Text<'_>,
+        local_username_len: c_uint,
+    ) -> c_int;
     /// The session an `SSH2 Session` resource holds (`zend_fetch_resource`):
     /// null, with Zend's `TypeError` thrown, for a resource of another kind.
     safe fn swr_ssh2_session(resource: &Value) -> Session;
@@ -97,6 +143,9 @@ swoole_rs_zend::handlers! {
     zif_ssh2_fingerprint => fingerprint;
     zif_ssh2_auth_none => auth_none;
     zif_ssh2_auth_password => auth_password;
+    zif_ssh2_auth_pubkey_file => auth_pubkey_file;
+    zif_ssh2_auth_pubkey => auth_pubkey;
+    zif_ssh2_auth_hostbased_file => auth_hostbased_file;
 }
 
 /// A PHP string as the C string libssh2 reads, up to its NUL, and its length
@@ -326,4 +375,194 @@ fn auth_password(call: &Call<'_>) {
         return;
     }
     call.set_bool(true);
+}
+
+/// `php_check_open_basedir`: whether `open_basedir` refuses `path` (warning);
+/// a bailout is deferred and counts as refused.
+fn basedir_refuses(path: &ZStr) -> bool {
+    let (path, _) = text(path);
+    let mut refused = true;
+    match bailout::trapped(swr_zend_try_open_basedir(path, 1, &mut refused)) {
+        Ok(()) => refused,
+        Err(bailed) => {
+            bailed.defer();
+            true
+        }
+    }
+}
+
+/// The session argument 1 holds, refused with C's warning when it is already
+/// authenticated (`SSH2_FETCH_NONAUTHENTICATED_SESSION`); false returned then.
+fn unauthenticated(call: &Call<'_>, resource: &Value) -> Option<Session> {
+    let session = session(call, resource)?;
+    if authenticated(session) {
+        warn("Connection already authenticated");
+        call.set_bool(false);
+        return None;
+    }
+    Some(session)
+}
+
+/// A key path with a leading `~/` expanded to the user's home directory, as a
+/// new string (libssh2 doesn't expand it); other paths as they are, up to
+/// their NUL, as C passed them.
+fn key_path(path: &ZStr) -> Option<CString> {
+    let bytes = path.bytes();
+    let (text, _) = text(path);
+    if bytes.len() >= 2 && bytes.starts_with(b"~/") {
+        let home = swr_ssh2_home_dir()?;
+        let mut expanded = home.get().to_bytes().to_vec();
+        expanded.extend_from_slice(text.get().to_bytes().get(1..).unwrap_or_default());
+        return CString::new(expanded).ok();
+    }
+    Some(text.get().to_owned())
+}
+
+/// The session's last error message, for a failed authentication's warning.
+fn last_error(session: Session) -> String {
+    let (mut message, mut length) = (None, 0);
+    // The message is all this reads; the code is the failure already reported.
+    let _code = libssh2_session_last_error(session, &mut message, &mut length, 0);
+    message.map_or_else(String::new, |text| {
+        text.get().to_string_lossy().into_owned()
+    })
+}
+
+/// The `S`-typed arguments 2 to 4, then the optional passphrase (5), as
+/// `zend_parse_parameters("rSSS|S")` reads them.
+fn key_arguments<'a>(call: &'a Call<'_>) -> Option<(&'a Value, [&'a ZStr; 3], Option<&'a ZStr>)> {
+    if call.arity(4, 5).is_err() {
+        return None;
+    }
+    let resource = call.resource(1).ok()?;
+    let username = call.zstr(2).ok()??;
+    let public = call.zstr(3).ok()??;
+    let private = call.zstr(4).ok()??;
+    let passphrase = call.zstr(5).ok()?;
+    Some((resource, [username, public, private], passphrase))
+}
+
+/// `ssh2_auth_pubkey_file(resource $session, string $username, string $pubkeyfile,
+/// string $privkeyfile, string $passphrase = ?): bool`.
+fn auth_pubkey_file(call: &Call<'_>) {
+    let Some((resource, [username, public, private], passphrase)) = key_arguments(call) else {
+        return;
+    };
+    if basedir_refuses(public) || basedir_refuses(private) {
+        call.set_bool(false);
+        return;
+    }
+    let Some(session) = unauthenticated(call, resource) else {
+        return;
+    };
+    let (Some(public), Some(private)) = (key_path(public), key_path(private)) else {
+        call.set_bool(false);
+        return;
+    };
+    let (name, name_len) = text(username);
+    let passphrase = passphrase.map(|passphrase| text(passphrase).0);
+    let failed = hooked(session, || {
+        libssh2_userauth_publickey_fromfile_ex(
+            session,
+            name,
+            name_len,
+            public.as_c_str().into(),
+            private.as_c_str().into(),
+            passphrase,
+        )
+    }) != 0;
+    finish_key(call, session, name, failed);
+}
+
+/// `ssh2_auth_pubkey(resource $session, string $username, string $pubkey, string
+/// $privkey, string $passphrase = ?): bool`, the keys as their contents.
+fn auth_pubkey(call: &Call<'_>) {
+    let Some((resource, [username, public, private], passphrase)) = key_arguments(call) else {
+        return;
+    };
+    let Some(session) = unauthenticated(call, resource) else {
+        return;
+    };
+    let (name, _) = text(username);
+    let name_len = username.bytes().len();
+    let passphrase = passphrase.map(|passphrase| text(passphrase).0);
+    let failed = hooked(session, || {
+        lend_in(public.bytes(), |public, public_len| {
+            lend_in(private.bytes(), |private, private_len| {
+                libssh2_userauth_publickey_frommemory(
+                    session,
+                    name,
+                    name_len,
+                    public,
+                    public_len,
+                    private,
+                    private_len,
+                    passphrase,
+                )
+            })
+        })
+    }) != 0;
+    finish_key(call, session, name, failed);
+}
+
+/// The result of a key authentication: true, or C's warning with the session's
+/// last error and false.
+fn finish_key(call: &Call<'_>, session: Session, name: Text<'_>, failed: bool) {
+    if failed {
+        warn(&format!(
+            "Authentication failed for {} using public key: {}",
+            name.get().to_string_lossy(),
+            last_error(session)
+        ));
+    }
+    call.set_bool(!failed);
+}
+
+/// `ssh2_auth_hostbased_file(resource $session, string $username, string $hostname,
+/// string $pubkeyfile, string $privkeyfile, ?string $passphrase = null, ?string
+/// $local_username = null): bool`, the local user defaulting to `$username`.
+fn auth_hostbased_file(call: &Call<'_>) {
+    if call.arity(5, 7).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let strings = [2, 3, 4, 5].map(|n| call.zstr(n));
+    let [
+        Ok(Some(username)),
+        Ok(Some(hostname)),
+        Ok(Some(public)),
+        Ok(Some(private)),
+    ] = strings
+    else {
+        return;
+    };
+    let (Ok(passphrase), Ok(local)) = (call.zstr_or_null(6), call.zstr_or_null(7)) else {
+        return;
+    };
+    if basedir_refuses(public) || basedir_refuses(private) {
+        call.set_bool(false);
+        return;
+    }
+    let Some(session) = unauthenticated(call, resource) else {
+        return;
+    };
+    let (name, name_len) = text(username);
+    let (host, host_len) = text(hostname);
+    let (local, local_len) = text(local.unwrap_or(username));
+    let passphrase = passphrase.map(|passphrase| text(passphrase).0);
+    let (public, private) = (text(public).0, text(private).0);
+    let failed = hooked(session, || {
+        libssh2_userauth_hostbased_fromfile_ex(
+            session, name, name_len, public, private, passphrase, host, host_len, local, local_len,
+        )
+    }) != 0;
+    if failed {
+        warn(&format!(
+            "Authentication failed for {} using hostbased public key",
+            name.get().to_string_lossy()
+        ));
+    }
+    call.set_bool(!failed);
 }
