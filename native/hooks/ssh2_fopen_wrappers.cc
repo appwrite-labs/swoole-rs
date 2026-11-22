@@ -16,6 +16,20 @@
    +----------------------------------------------------------------------+
 */
 
+/* What stays C of ext/ssh2's ssh2_fopen_wrappers.cc (docs/zend.md, What stays
+ * C); its PHP functions, its shell and exec channels and its wrappers'
+ * authentication are crates/ssh2/src/php.rs.
+ * - the channel stream ops table and its operations, over
+ *   php_ssh2_channel_data (emalloc'd, its refcount byte shared between a
+ *   channel's streams) and php_stream's eof bitfield: allocator, budget.
+ * - the ssh2.shell, exec, tunnel and scp wrappers and their path parser, which
+ *   finds a session resource in EG(regular_list) and returns a php_url:
+ *   globals, allocator.
+ * - the channel streams ssh2_tunnel, ssh2_shell, ssh2_exec and
+ *   ssh2_fetch_stream return: allocator (php_stream_alloc of their data). */
+#include "swoole_rs_phphost.h"
+#ifdef SW_HAVE_SSH2LIB
+
 #include "php_ssh2.h"
 #include "php_swoole_ssh2_hook.h"
 
@@ -1026,3 +1040,5 @@ extern "C" void swr_ssh2_fetch_substream(zval *zparent, zend_long streamid, zval
  * vim600: noet sw=4 ts=4 fdm=marker
  * vim<600: noet sw=4 ts=4
  */
+
+#endif /* SW_HAVE_SSH2LIB */
