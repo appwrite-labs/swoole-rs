@@ -3,7 +3,8 @@
 //! `ssh2_fingerprint`, the `ssh2_auth_*` functions,
 //! `ssh2_forward_listen`/`ssh2_forward_accept`, the SFTP functions that
 //! change a path, `ssh2_sftp_readlink`/`ssh2_sftp_realpath`, `ssh2_sftp`,
-//! `ssh2_sftp_chmod` and `ssh2_sftp_stat`/`ssh2_sftp_lstat`.
+//! `ssh2_sftp_chmod`, `ssh2_sftp_stat`/`ssh2_sftp_lstat`, and
+//! `ssh2_send_eof`/`ssh2_shell_resize` on a channel stream.
 //! The resources stay ext/ssh2's; their sessions, listeners and SFTP sessions
 //! are read through `swr_ssh2_session`, `swr_ssh2_listener` and `swr_ssh2_sftp`.
 use crate::{Ops, Session, Sftp, Wait};
@@ -202,6 +203,24 @@ unsafe extern "C" {
         path_len: c_uint,
         permissions: c_ulong,
     ) -> c_int;
+    /// The channel an `SSH2 Channel` stream holds: null, with Zend's
+    /// `TypeError` for a resource that isn't a stream or C's warning for a
+    /// stream of another kind, or, when `abstract_warns`, C's warning for a
+    /// channel stream with no channel data.
+    safe fn swr_ssh2_stream_channel(stream: &Value, abstract_warns: bool) -> Option<StreamChannel>;
+    /// The session of the channel stream [`swr_ssh2_stream_channel`]
+    /// accepted (`ssh2_get_session`): null, with Zend's `TypeError`, once the
+    /// session resource has been closed.
+    safe fn swr_ssh2_stream_session(stream: &Value) -> Session;
+    /// libssh2's own channel declarations.
+    safe fn libssh2_channel_send_eof(channel: StreamChannel) -> c_int;
+    safe fn libssh2_channel_request_pty_size_ex(
+        channel: StreamChannel,
+        width: c_int,
+        height: c_int,
+        width_px: c_int,
+        height_px: c_int,
+    ) -> c_int;
     /// Whether the session of the `SSH2 SFTP` resource [`swr_ssh2_sftp`]
     /// accepted has been closed (`ssh2_disconnect`).
     safe fn swr_ssh2_sftp_session_closed(resource: &Value) -> bool;
@@ -315,6 +334,12 @@ struct Accepted(NonNull<c_void>);
 #[repr(transparent)]
 struct Started(NonNull<c_void>);
 
+/// The channel (`LIBSSH2_CHANNEL *`) an `SSH2 Channel` stream holds, live
+/// while the stream is.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct StreamChannel(NonNull<c_void>);
+
 /// What no value has: the password-change callback `ssh2_auth_password` never
 /// passes, and the bound port `ssh2_forward_listen` never asks for.
 enum Nothing {}
@@ -322,6 +347,8 @@ enum Nothing {}
 swoole_rs_zend::handlers! {
     zif_ssh2_connect => connect;
     zif_ssh2_sftp => sftp_init;
+    zif_ssh2_send_eof => send_eof;
+    zif_ssh2_shell_resize => shell_resize;
     zif_ssh2_sftp_rename => sftp_rename;
     zif_ssh2_sftp_chmod => sftp_chmod;
     zif_ssh2_sftp_stat => sftp_stat;
@@ -1387,4 +1414,60 @@ fn stat(call: &Call<'_>, stat_type: c_int) {
         add(9, b"mtime", mtime.c_cast());
     }
     call.set_owned(stat.into_owned());
+}
+
+/// `ssh2_send_eof(resource $channel): bool`: EOF sent on the stream's channel,
+/// or C's warning with libssh2's return code and false.
+fn send_eof(call: &Call<'_>) {
+    if call.arity(1, 1).is_err() {
+        return;
+    }
+    let Ok(stream) = call.resource(1) else {
+        return;
+    };
+    let Some(channel) = swr_ssh2_stream_channel(stream, true) else {
+        call.set_bool(false);
+        return;
+    };
+    let session = swr_ssh2_stream_session(stream);
+    let status = hooked(session, || libssh2_channel_send_eof(channel));
+    if status < 0 {
+        warn(&format!(
+            "Couldn't send EOF to channel (Return code {status})"
+        ));
+        call.set_bool(false);
+        return;
+    }
+    call.set_bool(true);
+}
+
+/// `ssh2_shell_resize(resource $stream, int $width, int $height,
+/// int $width_height_type = 0, int $height_px = 0): bool`: the channel's
+/// terminal resized; true whatever libssh2 answers, as in C.
+fn shell_resize(call: &Call<'_>) {
+    if call.arity(3, 5).is_err() {
+        return;
+    }
+    let Ok(stream) = call.resource(1) else {
+        return;
+    };
+    let size = |n, default| call.long(n, default).ok();
+    let (Some(width), Some(height), Some(width_px), Some(height_px)) =
+        (size(2, 0), size(3, 0), size(4, 0), size(5, 0))
+    else {
+        return;
+    };
+    let Some(channel) = swr_ssh2_stream_channel(stream, false) else {
+        call.set_bool(false);
+        return;
+    };
+    let session = swr_ssh2_stream_session(stream);
+    // C passed the longs to libssh2's ints as they were.
+    let (width, height) = (width.c_cast(), height.c_cast());
+    let (width_px, height_px) = (width_px.c_cast(), height_px.c_cast());
+    // C ignored the answer: the resize is a request the server may refuse.
+    let _status = hooked(session, || {
+        libssh2_channel_request_pty_size_ex(channel, width, height, width_px, height_px)
+    });
+    call.set_bool(true);
 }
