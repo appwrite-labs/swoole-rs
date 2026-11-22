@@ -39,6 +39,9 @@ bool firebird_handle_manually_commit(pdo_dbh_t *dbh);
 bool firebird_handle_manually_rollback(pdo_dbh_t *dbh);
 bool pdo_firebird_set_attribute(pdo_dbh_t *dbh, zend_long attr, zval *val);
 int pdo_firebird_get_attribute(pdo_dbh_t *dbh, zend_long attr, zval *val);
+zend_result pdo_firebird_check_liveness(pdo_dbh_t *dbh);
+void pdo_firebird_fetch_error_func(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zval *info);
+bool pdo_firebird_in_manually_transaction(pdo_dbh_t *dbh);
 
 /* php_firebird_preprocess and its tokenizer are Rust (crates/firebird/src/preprocess.rs),
  * which records each named parameter here. */
@@ -577,41 +580,18 @@ void swr_firebird_client_version(char *version, size_t len)
 	isc_get_client_version(version);
 }
 
-/* called by PDO to check liveness */
-static zend_result pdo_firebird_check_liveness(pdo_dbh_t *dbh) /* {{{ */
+/* pdo_firebird_check_liveness, pdo_firebird_fetch_error_func and
+ * pdo_firebird_in_manually_transaction are Rust (crates/firebird/src/connection.rs). */
+size_t swr_firebird_last_error(pdo_dbh_t *dbh, int *sqlcode, char *message, size_t len)
 {
-	pdo_firebird_db_handle *H = (pdo_firebird_db_handle *)dbh->driver_data;
-
-	/* fb_ping return 0 if the connection is alive */
-	return fb_ping(H->isc_status, &H->db) ? FAILURE : SUCCESS;
-}
-/* }}} */
-
-/* called by PDO to retrieve driver-specific information about an error that has occurred */
-static void pdo_firebird_fetch_error_func(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zval *info) /* {{{ */
-{
-	pdo_firebird_db_handle *H = (pdo_firebird_db_handle *)dbh->driver_data;
-	if (H->einfo.sqlcode != IS_NULL) {
-		add_next_index_long(info, H->einfo.sqlcode);
+	pdo_firebird_error_info *einfo = &((pdo_firebird_db_handle *)dbh->driver_data)->einfo;
+	size_t length = einfo->errmsg ? MIN(einfo->errmsg_length, len) : 0;
+	*sqlcode = einfo->sqlcode;
+	if (length) {
+		memcpy(message, einfo->errmsg, length);
 	}
-	if (H->einfo.errmsg && H->einfo.errmsg_length) {
-		add_next_index_stringl(info, H->einfo.errmsg, H->einfo.errmsg_length);
-	}
+	return length;
 }
-/* }}} */
-
-/* {{{ firebird_in_manually_transaction */
-static bool pdo_firebird_in_manually_transaction(pdo_dbh_t *dbh)
-{
-	/**
-	 * we can tell if a transaction exists now by checking H->tr,
-	 * but which will always be true in autocommit mode.
-	 * So this function checks if there is currently a "manually begun transaction".
-	 */
-	pdo_firebird_db_handle *H = (pdo_firebird_db_handle *)dbh->driver_data;
-	return H->in_manually_txn;
-}
-/* }}} */
 
 static const struct pdo_dbh_methods firebird_methods = { /* {{{ */
 	firebird_handle_closer,
