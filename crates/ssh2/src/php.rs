@@ -184,7 +184,13 @@ fn session(call: &Call<'_>, resource: &Value) -> Option<Session> {
 
 /// `php_error_docref(NULL, E_WARNING, "%s", message)`, a bailout deferred.
 fn warn(message: &str) {
-    if let Ok(message) = CString::new(message) {
+    warn_bytes(&[message.as_bytes()]);
+}
+
+/// [`warn`] of `parts` joined, as raw bytes: C's `%s` passed its strings' bytes
+/// through, whatever their encoding.
+fn warn_bytes(parts: &[&[u8]]) {
+    if let Ok(message) = CString::new(parts.concat()) {
         bailout::defer(report(E_WARNING, &message));
     }
 }
@@ -367,10 +373,11 @@ fn auth_password(call: &Call<'_>) {
         libssh2_userauth_password_ex(session, name, name_len, secret, secret_len, None)
     }) != 0
     {
-        warn(&format!(
-            "Authentication failed for {} using password",
-            name.get().to_string_lossy()
-        ));
+        warn_bytes(&[
+            b"Authentication failed for ",
+            name.get().to_bytes(),
+            b" using password",
+        ]);
         call.set_bool(false);
         return;
     }
@@ -419,13 +426,11 @@ fn key_path(path: &ZStr) -> Option<CString> {
 }
 
 /// The session's last error message, for a failed authentication's warning.
-fn last_error(session: Session) -> String {
+fn last_error<'a>(session: Session) -> &'a [u8] {
     let (mut message, mut length) = (None, 0);
     // The message is all this reads; the code is the failure already reported.
     let _code = libssh2_session_last_error(session, &mut message, &mut length, 0);
-    message.map_or_else(String::new, |text| {
-        text.get().to_string_lossy().into_owned()
-    })
+    message.map_or(&[][..], |text: Text<'a>| text.get().to_bytes())
 }
 
 /// The `S`-typed arguments 2 to 4, then the optional passphrase (5), as
@@ -509,11 +514,12 @@ fn auth_pubkey(call: &Call<'_>) {
 /// last error and false.
 fn finish_key(call: &Call<'_>, session: Session, name: Text<'_>, failed: bool) {
     if failed {
-        warn(&format!(
-            "Authentication failed for {} using public key: {}",
-            name.get().to_string_lossy(),
-            last_error(session)
-        ));
+        warn_bytes(&[
+            b"Authentication failed for ",
+            name.get().to_bytes(),
+            b" using public key: ",
+            last_error(session),
+        ]);
     }
     call.set_bool(!failed);
 }
@@ -559,10 +565,11 @@ fn auth_hostbased_file(call: &Call<'_>) {
         )
     }) != 0;
     if failed {
-        warn(&format!(
-            "Authentication failed for {} using hostbased public key",
-            name.get().to_string_lossy()
-        ));
+        warn_bytes(&[
+            b"Authentication failed for ",
+            name.get().to_bytes(),
+            b" using hostbased public key",
+        ]);
     }
     call.set_bool(!failed);
 }
