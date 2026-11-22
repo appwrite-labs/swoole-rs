@@ -79,6 +79,11 @@ int swr_zend_try_get_string(zval *value, zend_string **out) {
     SWR_TRAP(*out = zval_get_string(value));
 }
 
+/* zend_list_close of the resource `value` holds: its destructor may run PHP code. */
+int swr_zend_try_list_close(zval *value) {
+    SWR_TRAP(if (Z_TYPE_P(value) == IS_RESOURCE) zend_list_close(Z_RES_P(value)));
+}
+
 int swr_zend_try_try_get_string(zval *value, zend_string **out) {
     *out = NULL;
     SWR_TRAP(*out = zval_try_get_string(value));

@@ -6,7 +6,8 @@
 //! `ssh2_sftp_chmod`, `ssh2_sftp_stat`/`ssh2_sftp_lstat`, and
 //! `ssh2_send_eof`/`ssh2_shell_resize` on a channel stream, `ssh2_tunnel`,
 //! `ssh2_shell`, `ssh2_exec`, `ssh2_scp_recv`, `ssh2_scp_send` and
-//! `ssh2_fetch_stream`, and the `ssh2.*://` wrappers' authentication.
+//! `ssh2_fetch_stream`, `ssh2_disconnect`, and the `ssh2.*://` wrappers'
+//! authentication.
 //! The resources stay ext/ssh2's; their sessions, listeners and SFTP sessions
 //! are read through `swr_ssh2_session`, `swr_ssh2_listener` and `swr_ssh2_sftp`.
 use crate::{Ops, Session, Sftp, Wait};
@@ -428,6 +429,7 @@ enum Nothing {}
 
 swoole_rs_zend::handlers! {
     zif_ssh2_connect => connect;
+    zif_ssh2_disconnect => disconnect;
     zif_ssh2_sftp => sftp_init;
     zif_ssh2_send_eof => send_eof;
     zif_ssh2_fetch_stream => fetch_stream;
@@ -2273,4 +2275,17 @@ fn wrapper_auth(
             )
         }) == 0
     })
+}
+
+/// `ssh2_disconnect(resource $session): bool`: the resource closed, as C's
+/// `zend_list_close` did whatever its type, and true.
+fn disconnect(call: &Call<'_>) {
+    if call.arity(1, 1).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    resource.close_resource();
+    call.set_bool(true);
 }
