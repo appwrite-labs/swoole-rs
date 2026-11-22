@@ -93,21 +93,7 @@ mod php {
             .ok()
     }
 
-    /// config.m4's `SW_PHP_VERSION_ID`: 84 for PHP 8.4.x.
-    fn php_version_id(php_config: &str) -> u32 {
-        let output = Command::new(php_config)
-            .arg("--version")
-            .output()
-            .expect("ext: php-config --version ($PHP_CONFIG) failed");
-        let version = String::from_utf8_lossy(&output.stdout);
-        let mut parts = version
-            .trim()
-            .split('.')
-            .map(|part| part.parse::<u32>().unwrap_or(0));
-        parts.next().unwrap_or(0) * 10 + parts.next().unwrap_or(0)
-    }
-
-    fn profile(third: &Path, php: u32) -> Profile {
+    fn profile(third: &Path) -> Profile {
         let mut p = Profile::default();
         if feature("sockets") {
             p.define(&["SW_SOCKETS", "HAVE_SOCKETS"]);
@@ -217,9 +203,7 @@ mod php {
         }
         if feature("firebird") {
             p.define(&["SW_USE_FIREBIRD"]);
-            let dir = third
-                .join(if php >= 85 { "php85" } else { "php84" })
-                .join("pdo_firebird");
+            let dir = third.join("pdo_firebird");
             p.c.extend(["firebird_driver.c", "firebird_statement.c"].map(|f| dir.join(f)));
             p.cxx.push(dir.join("pdo_firebird_utils.cpp"));
             p.libs.push("fbclient");
@@ -283,7 +267,7 @@ mod php {
         let os = env::var("CARGO_CFG_TARGET_OS").expect("ext: target OS");
         let owned = native.join("swoole-src");
         let vendored = owned.join("thirdparty");
-        let profile = profile(&vendored, php_version_id(&php_config));
+        let profile = profile(&vendored);
         // config.m4: thread context replaces boost.context's assembly switch.
         let asm_context = !feature("thread_context");
         let config: String = COMMON

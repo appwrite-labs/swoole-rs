@@ -16,7 +16,6 @@
 
 #include "php_swoole_firebird.h"
 
-#if PHP_VERSION_ID >= 80500
 
 #include "pdo_firebird_utils.h"
 #include <firebird/Interface.h>
@@ -92,5 +91,4 @@ extern "C" ISC_STATUS fb_decode_timestamp_tz(ISC_STATUS* isc_status, const ISC_T
 	return isc_status[1];
 }
 
-#endif
 #endif
