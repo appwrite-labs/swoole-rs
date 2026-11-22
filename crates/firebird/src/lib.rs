@@ -18,6 +18,8 @@
 #[cfg(feature = "php")]
 pub mod attribute;
 #[cfg(feature = "php")]
+pub mod connection;
+#[cfg(feature = "php")]
 pub mod minit;
 pub mod preprocess;
 #[cfg(feature = "php")]
