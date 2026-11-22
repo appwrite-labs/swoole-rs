@@ -1250,21 +1250,12 @@ PHP_FUNCTION(ssh2_scp_send) {
  * Direct TCP/IP Transport *
  *************************** */
 
-/* {{{ php_ssh2_direct_tcpip
- * Make a stream from a session
+/* {{{ php_ssh2_channel_stream
+ * The stream over a channel just opened, its data holding (not referencing) rsrc
  */
-static php_stream *php_ssh2_direct_tcpip(LIBSSH2_SESSION *session, zend_resource *rsrc, char *host, int port) {
-    LIBSSH2_CHANNEL *channel;
+static php_stream *php_ssh2_channel_stream(zend_resource *rsrc, LIBSSH2_CHANNEL *channel) {
     php_ssh2_channel_data *channel_data;
-    php_stream *stream;
 
-    channel = libssh2_channel_direct_tcpip(session, host, port);
-    if (!channel) {
-        php_error_docref(NULL, E_WARNING, "Unable to request a channel from remote host");
-        return NULL;
-    }
-
-    /* Turn it into a stream */
     channel_data = (php_ssh2_channel_data *) emalloc(sizeof(php_ssh2_channel_data));
     channel_data->channel = channel;
     channel_data->streamid = 0;
@@ -1273,9 +1264,24 @@ static php_stream *php_ssh2_direct_tcpip(LIBSSH2_SESSION *session, zend_resource
     channel_data->session_rsrc = rsrc;
     channel_data->refcount = NULL;
 
-    stream = php_stream_alloc(&php_ssh2_channel_stream_ops, channel_data, 0, "r+");
+    return php_stream_alloc(&php_ssh2_channel_stream_ops, channel_data, 0, "r+");
+}
+/* }}} */
 
-    return stream;
+/* {{{ php_ssh2_direct_tcpip
+ * Make a stream from a session
+ */
+static php_stream *php_ssh2_direct_tcpip(LIBSSH2_SESSION *session, zend_resource *rsrc, char *host, int port) {
+    LIBSSH2_CHANNEL *channel;
+
+    channel = libssh2_channel_direct_tcpip(session, host, port);
+    if (!channel) {
+        php_error_docref(NULL, E_WARNING, "Unable to request a channel from remote host");
+        return NULL;
+    }
+
+    /* Turn it into a stream */
+    return php_ssh2_channel_stream(rsrc, channel);
 }
 /* }}} */
 
@@ -1349,24 +1355,12 @@ static php_stream_wrapper_ops php_ssh2_tunnel_stream_wops = {php_ssh2_fopen_wrap
 
 php_stream_wrapper php_ssh2_stream_wrapper_tunnel = {&php_ssh2_tunnel_stream_wops, NULL, 0};
 
-/* {{{ proto stream ssh2_tunnel(resource session, string host, int port)
- * Tunnel to remote TCP/IP host/port
- */
-PHP_FUNCTION(ssh2_tunnel) {
-    LIBSSH2_SESSION *session;
-    php_stream *stream;
-    zval *zsession;
-    char *host;
-    size_t host_len;
-    zend_long port;
+/* ssh2_tunnel is Rust (crates/ssh2/src/php.rs). What it keeps C: the channel
+ * stream, built on this file's stream ops. */
+extern "C" void swr_ssh2_tunnel_stream(zval *zsession, LIBSSH2_CHANNEL *channel, zval *return_value) {
+    php_stream *stream = php_ssh2_channel_stream(Z_RES_P(zsession), channel);
 
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "rsl", &zsession, &host, &host_len, &port) == FAILURE) {
-        return;
-    }
-
-    SSH2_FETCH_AUTHENTICATED_SESSION(session, zsession);
-
-    stream = php_ssh2_direct_tcpip(session, Z_RES_P(zsession), host, port);
+    zval_ptr_dtor(return_value);
     if (!stream) {
         RETURN_FALSE;
     }
@@ -1376,7 +1370,6 @@ PHP_FUNCTION(ssh2_tunnel) {
 
     php_stream_to_zval(stream, return_value);
 }
-/* }}} */
 
 /* ******************
  * Generic Helper *
