@@ -606,7 +606,7 @@ PHP_FUNCTION(ssh2_sftp) {
 
 /* Much of the stuff below can be done via wrapper ops as of PHP5, but is included here for PHP 4.3 users */
 
-/* ssh2_sftp_rename, _unlink, _mkdir, _rmdir and _symlink are Rust
+/* ssh2_sftp_rename, _unlink, _mkdir, _rmdir, _symlink, _readlink and _realpath are Rust
  * (crates/ssh2/src/php.rs); they read an SFTP resource through these. */
 extern "C" LIBSSH2_SFTP *swr_ssh2_sftp(zval *zsftp) {
     php_ssh2_sftp_data *data =
@@ -616,6 +616,10 @@ extern "C" LIBSSH2_SFTP *swr_ssh2_sftp(zval *zsftp) {
 
 extern "C" LIBSSH2_SESSION *swr_ssh2_sftp_session(zval *zsftp) {
     return ((php_ssh2_sftp_data *) Z_RES_P(zsftp)->ptr)->session;
+}
+
+extern "C" bool swr_ssh2_sftp_session_closed(zval *zsftp) {
+    return ((php_ssh2_sftp_data *) Z_RES_P(zsftp)->ptr)->session_rsrc->ptr == NULL;
 }
 
 
@@ -719,67 +723,7 @@ PHP_FUNCTION(ssh2_sftp_lstat) {
 /* }}} */
 
 
-/* {{{ proto string ssh2_sftp_readlink(resource sftp, string link)
- */
-PHP_FUNCTION(ssh2_sftp_readlink) {
-    php_ssh2_sftp_data *data;
-    zval *zsftp;
-    zend_string *link;
-    int targ_len = 0;
-    char targ[8192];
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "rS", &zsftp, &link) == FAILURE) {
-        return;
-    }
-
-    if ((data = (php_ssh2_sftp_data *) zend_fetch_resource(Z_RES_P(zsftp), PHP_SSH2_SFTP_RES_NAME, le_ssh2_sftp)) ==
-        NULL) {
-        RETURN_FALSE;
-    }
-
-    auto session = data->session;
-
-    if ((targ_len = libssh2_sftp_symlink_ex(data->sftp, link->val, link->len, targ, 8192, LIBSSH2_SFTP_READLINK)) < 0) {
-        php_error_docref(NULL, E_WARNING, "Unable to read link '%s'", ZSTR_VAL(link));
-        RETURN_FALSE;
-    }
-
-    RETURN_STRINGL(targ, targ_len);
-}
-/* }}} */
-
-/* {{{ proto string ssh2_sftp_realpath(resource sftp, string filename)
- */
-PHP_FUNCTION(ssh2_sftp_realpath) {
-    php_ssh2_sftp_data *data;
-    zval *zsftp;
-    zend_string *link;
-    int targ_len = 0;
-    char targ[8192];
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "rS", &zsftp, &link) == FAILURE) {
-        return;
-    }
-
-    if ((data = (php_ssh2_sftp_data *) zend_fetch_resource(Z_RES_P(zsftp), PHP_SSH2_SFTP_RES_NAME, le_ssh2_sftp)) ==
-        NULL) {
-        RETURN_FALSE;
-    }
-
-    if (data->session_rsrc->ptr == NULL) {
-        RETURN_FALSE;
-    }
-
-    auto session = data->session;
-
-    if ((targ_len = libssh2_sftp_symlink_ex(data->sftp, link->val, link->len, targ, 8192, LIBSSH2_SFTP_REALPATH)) < 0) {
-        php_error_docref(NULL, E_WARNING, "Unable to resolve realpath for '%s'", link->val);
-        RETURN_FALSE;
-    }
-
-    RETURN_STRINGL(targ, targ_len);
-}
-/* }}} */
+/* ssh2_sftp_readlink and ssh2_sftp_realpath are Rust (crates/ssh2/src/php.rs). */
 
 /*
  * Local variables:
