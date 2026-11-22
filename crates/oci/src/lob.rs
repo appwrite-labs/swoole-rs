@@ -157,10 +157,12 @@ extern "C" fn swr_oci_lob_close(svc: Live<Svc>, err: Live<Error>, lob: Live<Lob>
 }
 
 /// `oci_blob_seek`: PHP's 0-based `offset` as the stream's 1-based one in
-/// `*position`, or false past the largest LOB.
+/// `*position`, or false for a negative one or one past the largest LOB.
 #[unsafe(no_mangle)]
 extern "C" fn swr_oci_lob_seek(offset: i64, position: &mut u32) -> bool {
-    if offset >= LOB_MAX_SIZE {
+    // C compared the signed offset with an unsigned long, so a negative one
+    // converted to a huge value and was refused too.
+    if !(0..LOB_MAX_SIZE).contains(&offset) {
         return false;
     }
     // `(ub4) offset + 1`, as C computed it.
