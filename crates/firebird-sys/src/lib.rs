@@ -47,6 +47,14 @@ pub struct Handle(*mut FB_API_HANDLE);
 #[derive(Clone, Copy)]
 pub struct Bytes(*const ISC_SCHAR);
 
+impl Bytes {
+    /// Bytes that live for the program, which any call may read.
+    #[must_use]
+    pub const fn from_static(bytes: &'static [u8]) -> Self {
+        Self(bytes.as_ptr().cast())
+    }
+}
+
 /// Where the call writes its `T`s: writable for the capacity passed beside it, or for
 /// one `T` when none is.
 #[repr(transparent)]
