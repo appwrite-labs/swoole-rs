@@ -1,11 +1,12 @@
 //! The bundled ext/ssh2's PHP functions (`thirdparty/php/ssh2/ssh2.cc`) as
 //! they move to Rust: so far `ssh2_connect`, `ssh2_methods_negotiated`,
-//! `ssh2_fingerprint`, the `ssh2_auth_*` functions and
-//! `ssh2_forward_listen`/`ssh2_forward_accept`.
-//! The resources stay ext/ssh2's; their sessions and listeners are read
-//! through `swr_ssh2_session` and `swr_ssh2_listener`.
-use crate::{Ops, Session, Wait};
-use std::ffi::{CStr, CString, c_int, c_uint, c_void};
+//! `ssh2_fingerprint`, the `ssh2_auth_*` functions,
+//! `ssh2_forward_listen`/`ssh2_forward_accept` and the SFTP functions that
+//! change a path.
+//! The resources stay ext/ssh2's; their sessions, listeners and SFTP sessions
+//! are read through `swr_ssh2_session`, `swr_ssh2_listener` and `swr_ssh2_sftp`.
+use crate::{Ops, Session, Sftp, Wait};
+use std::ffi::{CStr, CString, c_int, c_long, c_uint, c_void};
 use std::ptr::NonNull;
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_corebase::{
@@ -132,6 +133,38 @@ unsafe extern "C" {
     ) -> c_int;
     safe fn libssh2_agent_userauth(agent: Agent, username: Text<'_>, identity: Identity) -> c_int;
     safe fn libssh2_agent_disconnect(agent: Agent) -> c_int;
+    /// The SFTP session an `SSH2 SFTP` resource holds (`zend_fetch_resource`),
+    /// or null with Zend's `TypeError` thrown.
+    safe fn swr_ssh2_sftp(resource: &Value) -> Sftp;
+    /// The session of the `SSH2 SFTP` resource [`swr_ssh2_sftp`] accepted.
+    safe fn swr_ssh2_sftp_session(resource: &Value) -> Session;
+    /// libssh2's own SFTP declarations, each path its bytes and their length.
+    safe fn libssh2_sftp_rename_ex(
+        sftp: Sftp,
+        source: Text<'_>,
+        source_len: c_uint,
+        destination: Text<'_>,
+        destination_len: c_uint,
+        flags: c_long,
+    ) -> c_int;
+    safe fn libssh2_sftp_unlink_ex(sftp: Sftp, path: Text<'_>, path_len: c_uint) -> c_int;
+    safe fn libssh2_sftp_mkdir_ex(
+        sftp: Sftp,
+        path: Text<'_>,
+        path_len: c_uint,
+        mode: c_long,
+    ) -> c_int;
+    safe fn libssh2_sftp_rmdir_ex(sftp: Sftp, path: Text<'_>, path_len: c_uint) -> c_int;
+    /// `libssh2_sftp_symlink_ex` making a link: both paths are read.
+    #[link_name = "libssh2_sftp_symlink_ex"]
+    safe fn sftp_symlink(
+        sftp: Sftp,
+        path: Text<'_>,
+        path_len: c_uint,
+        target: Text<'_>,
+        target_len: c_uint,
+        link_type: c_int,
+    ) -> c_int;
     /// `ssh2.cc`'s session over a socket connected to `host` and `port`, its
     /// allocator Zend's, its banner swoole's and its socket non-blocking; null,
     /// with C's warning, when the socket can't connect or libssh2 can't
@@ -227,6 +260,11 @@ enum Nothing {}
 
 swoole_rs_zend::handlers! {
     zif_ssh2_connect => connect;
+    zif_ssh2_sftp_rename => sftp_rename;
+    zif_ssh2_sftp_unlink => sftp_unlink;
+    zif_ssh2_sftp_mkdir => sftp_mkdir;
+    zif_ssh2_sftp_rmdir => sftp_rmdir;
+    zif_ssh2_sftp_symlink => sftp_symlink_fn;
     zif_ssh2_methods_negotiated => methods_negotiated;
     zif_ssh2_fingerprint => fingerprint;
     zif_ssh2_auth_none => auth_none;
@@ -942,4 +980,141 @@ fn prefer_methods(session: Session, methods: &swoole_rs_zend::Array) {
         prefer(container, b"comp", comp, &format!("{direction} COMP"));
         prefer(container, b"lang", lang, &format!("{direction} LANG"));
     }
+}
+
+/// `LIBSSH2_SFTP_RENAME_OVERWRITE | LIBSSH2_SFTP_RENAME_ATOMIC |
+/// LIBSSH2_SFTP_RENAME_NATIVE`, every rename's flags.
+const RENAME_FLAGS: c_long = 0x1 | 0x2 | 0x4;
+/// `LIBSSH2_SFTP_SYMLINK`.
+const SFTP_SYMLINK: c_int = 0;
+
+/// The SFTP session `resource` holds and its session, or false returned (with
+/// Zend's error raised) when it isn't an `SSH2 SFTP` resource.
+fn sftp(call: &Call<'_>, resource: &Value) -> Option<(Sftp, Session)> {
+    let sftp = swr_ssh2_sftp(resource);
+    if sftp.0.is_null() {
+        call.set_bool(false);
+        return None;
+    }
+    Some((sftp, swr_ssh2_sftp_session(resource)))
+}
+
+/// An SFTP function's resource, of `min` to `max` arguments.
+fn sftp_resource<'c>(call: &'c Call<'_>, min: u32, max: u32) -> Option<&'c Value> {
+    call.arity(min, max).ok()?;
+    call.resource(1).ok()
+}
+
+/// Path argument `n` of an SFTP function, or None with Zend's error raised.
+fn path<'c>(call: &'c Call<'_>, n: u32) -> Option<&'c ZStr> {
+    call.zstr(n).ok().flatten()
+}
+
+/// `ssh2_sftp_rename(resource $sftp, string $from, string $to): bool`,
+/// overwriting `$to`.
+fn sftp_rename(call: &Call<'_>) {
+    let Some(resource) = sftp_resource(call, 3, 3) else {
+        return;
+    };
+    let Some(from) = path(call, 2) else {
+        return;
+    };
+    let Some(to) = path(call, 3) else {
+        return;
+    };
+    let Some((sftp, session)) = sftp(call, resource) else {
+        return;
+    };
+    let ((from, from_len), (to, to_len)) = (text(from), text(to));
+    let status = hooked(session, || {
+        libssh2_sftp_rename_ex(sftp, from, from_len, to, to_len, RENAME_FLAGS)
+    });
+    call.set_bool(status == 0);
+}
+
+/// `ssh2_sftp_unlink(resource $sftp, string $filename): bool`.
+fn sftp_unlink(call: &Call<'_>) {
+    let Some(resource) = sftp_resource(call, 2, 2) else {
+        return;
+    };
+    let Some(path) = path(call, 2) else {
+        return;
+    };
+    let Some((sftp, session)) = sftp(call, resource) else {
+        return;
+    };
+    let (path, path_len) = text(path);
+    call.set_bool(hooked(session, || libssh2_sftp_unlink_ex(sftp, path, path_len)) == 0);
+}
+
+/// `ssh2_sftp_mkdir(resource $sftp, string $dirname, int $mode = 0777,
+/// bool $recursive = false): bool`. Recursively, each parent up to a `/` is
+/// made first, its failure ignored; the result is the last directory's.
+fn sftp_mkdir(call: &Call<'_>) {
+    let Some(resource) = sftp_resource(call, 2, 4) else {
+        return;
+    };
+    let Some(path) = path(call, 2) else {
+        return;
+    };
+    let Ok(mode) = call.long(3, 0o777) else {
+        return;
+    };
+    let Ok(recursive) = call.bool(4, false) else {
+        return;
+    };
+    let Some((sftp, session)) = sftp(call, resource) else {
+        return;
+    };
+    let (dir, dir_len) = text(path);
+    let mkdir = |len| hooked(session, || libssh2_sftp_mkdir_ex(sftp, dir, len, mode));
+    if recursive {
+        // C's strchr from the second byte, to the path's first NUL; a slash
+        // that ends the path is the last directory itself.
+        let slashes = dir.get().to_bytes().iter().enumerate().skip(1);
+        for (slash, _) in slashes.filter(|&(_, &byte)| byte == b'/') {
+            if slash + 1 == path.bytes().len() {
+                break;
+            }
+            // Only the last directory's result is returned.
+            let _status = mkdir(slash.c_cast());
+        }
+    }
+    call.set_bool(mkdir(dir_len) == 0);
+}
+
+/// `ssh2_sftp_rmdir(resource $sftp, string $dirname): bool`.
+fn sftp_rmdir(call: &Call<'_>) {
+    let Some(resource) = sftp_resource(call, 2, 2) else {
+        return;
+    };
+    let Some(path) = path(call, 2) else {
+        return;
+    };
+    let Some((sftp, session)) = sftp(call, resource) else {
+        return;
+    };
+    let (path, path_len) = text(path);
+    call.set_bool(hooked(session, || libssh2_sftp_rmdir_ex(sftp, path, path_len)) == 0);
+}
+
+/// `ssh2_sftp_symlink(resource $sftp, string $target, string $link): bool`.
+fn sftp_symlink_fn(call: &Call<'_>) {
+    let Some(resource) = sftp_resource(call, 3, 3) else {
+        return;
+    };
+    let Some(target) = path(call, 2) else {
+        return;
+    };
+    let Some(link) = path(call, 3) else {
+        return;
+    };
+    let Some((sftp, session)) = sftp(call, resource) else {
+        return;
+    };
+    let ((target, target_len), (link, link_len)) = (text(target), text(link));
+    let status = hooked(session, || {
+        sftp_symlink(sftp, target, target_len, link, link_len, SFTP_SYMLINK)
+    });
+    call.set_bool(status == 0);
 }
