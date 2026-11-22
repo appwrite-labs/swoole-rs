@@ -425,24 +425,9 @@ php_url *php_ssh2_fopen_wraper_parse_path(const char *path,
         return NULL;
     }
 
-    /* Authenticate */
-    if (pubkey_file && privkey_file) {
-        if (php_check_open_basedir(pubkey_file) || php_check_open_basedir(privkey_file)) {
-            php_url_free(resource);
-            return NULL;
-        }
-
-        /* Attempt pubkey authentication */
-        if (!libssh2_userauth_publickey_fromfile(session, username, pubkey_file, privkey_file, password)) {
-            goto session_authed;
-        }
-    }
-
-    if (password) {
-        /* Attempt password authentication */
-        if (libssh2_userauth_password_ex(session, username, username_len, password, password_len, NULL) == 0) {
-            goto session_authed;
-        }
+    /* Authenticate: swr_ssh2_wrapper_auth (Rust, crates/ssh2/src/php.rs) */
+    if (swr_ssh2_wrapper_auth(session, username, username_len, password, password_len, pubkey_file, privkey_file)) {
+        goto session_authed;
     }
 
     /* Auth failure */
