@@ -1,10 +1,11 @@
-//! The statement's methods (`oci_statement.c`): so far `getColumnMeta` and
-//! fetching a row. The
+//! The statement's methods (`oci_statement.c`): so far `getColumnMeta`,
+//! fetching a row, executing, and closing the statement's handles. The
 //! statement is still C's `pdo_oci_stmt`, read through accessors.
 use crate::{
     Any, Error, Live, Stmt, Sword,
+    driver::OCIAttrGetStmt,
     error::{Nothing, here, stmt_call},
-    swoole_oci_stmt_fetch2,
+    swoole_oci_stmt_execute, swoole_oci_stmt_fetch, swoole_oci_stmt_fetch2,
 };
 use std::{ffi::CStr, marker::PhantomData, ptr};
 use swoole_rs_corebase::CCast;
@@ -28,6 +29,18 @@ const OCI_NO_DATA: Sword = 100;
 /// Where C reported a fetch's errors: `bug44301.phpt` matches the file, so they
 /// keep upstream's `oci_statement.c` lines, as the ODBC port kept its own.
 const UPSTREAM_STATEMENT: &CStr = c"thirdparty/pdo_oci/oci_statement.c";
+/// `OCI_ATTR_STMT_TYPE`, `OCI_ATTR_PARAM_COUNT` and `OCI_ATTR_ROW_COUNT`.
+const OCI_ATTR_STMT_TYPE: u32 = 24;
+const OCI_ATTR_PARAM_COUNT: u32 = 18;
+const OCI_ATTR_ROW_COUNT: u32 = 9;
+/// `OCI_STMT_SELECT`.
+const OCI_STMT_SELECT: u16 = 1;
+/// `OCI_STMT_SCROLLABLE_READONLY` and `OCI_COMMIT_ON_SUCCESS`, `OCIStmtExecute`'s modes.
+const OCI_STMT_SCROLLABLE_READONLY: u32 = 0x08;
+const OCI_COMMIT_ON_SUCCESS: u32 = 0x20;
+/// `OCI_FETCH_NEXT` and `OCI_HTYPE_ERROR`.
+const OCI_FETCH_NEXT: u16 = 0x02;
+const OCI_HTYPE_ERROR: u32 = 2;
 /// `OCI_HTYPE_STMT` and `OCI_DTYPE_PARAM`.
 const OCI_HTYPE_STMT: u32 = 4;
 const OCI_DTYPE_PARAM: u32 = 53;
@@ -66,6 +79,17 @@ const SQLT_TIMESTAMP_LTZ: u16 = 232;
 unsafe extern "C" {
     /// The statement's OCI handle (`S->stmt`), live while the statement is.
     pub(crate) safe fn swr_oci_stmt_handle(stmt: &PdoStmt) -> Live<Stmt>;
+    /// `S->stmt_type`: the statement's `OCI_ATTR_STMT_TYPE`, 0 until read.
+    safe fn swr_oci_stmt_type(stmt: &PdoStmt) -> u16;
+    /// `S->stmt_type = kind`.
+    safe fn swr_oci_set_stmt_type(stmt: &PdoStmt, kind: u16);
+    /// Whether the statement runs as a scrollable cursor (`S->exec_type`).
+    safe fn swr_oci_stmt_scrollable(stmt: &PdoStmt) -> bool;
+    /// `S->have_blobs`: a LOB parameter is bound.
+    safe fn swr_oci_stmt_have_blobs(stmt: &PdoStmt) -> bool;
+    /// OCI's own declaration for the handles this frees, of `kind`.
+    #[link_name = "OCIHandleFree"]
+    safe fn OCIHandleFreeStmt(handle: Live<Any>, kind: u32) -> Sword;
     /// The statement's own error handle (`S->err`), live while the statement is.
     pub(crate) safe fn swr_oci_stmt_err(stmt: &PdoStmt) -> Live<Error>;
     /// OCI's own declaration: column `position`'s parameter descriptor, written
@@ -253,6 +277,80 @@ extern "C" fn swr_oci_fetch(stmt: &PdoStmt, dbh: &Dbh, orientation: u32, offset:
             stmt_call(dbh, stmt, err, c"OCIStmtFetch", status, (UPSTREAM_STATEMENT, 577));
             false
         }
+    }
+}
+
+/// `oci_stmt_execute`: the statement run (a scrollable cursor, a commit on
+/// success outside a transaction, or neither), its first execution setting up
+/// the columns, then the row count. A query with no LOB parameter runs no
+/// iteration, leaving its rows to fetch. False when a call recorded an Oracle
+/// error, as C's `return 0` was.
+#[unsafe(no_mangle)]
+extern "C" fn swr_oci_execute(stmt: &PdoStmt, dbh: &Dbh) -> bool {
+    let (handle, err) = (swr_oci_stmt_handle(stmt), swr_oci_stmt_err(stmt));
+    // Upstream's location, which bug44301.phpt matches (see UPSTREAM_STATEMENT).
+    let call = |what: &CStr, status, line| stmt_call(dbh, stmt, err, what, status, (UPSTREAM_STATEMENT, line)) != 0;
+    let get = |attribute| {
+        let mut value = 0u32;
+        let status = OCIAttrGetStmt(handle, OCI_HTYPE_STMT, &mut value, None, attribute, err);
+        (status, value)
+    };
+    if swr_oci_stmt_type(stmt) == 0 {
+        let (status, kind) = get(OCI_ATTR_STMT_TYPE);
+        // A ub2, in the low bytes of the u32 in native order.
+        let bytes = kind.to_ne_bytes();
+        swr_oci_set_stmt_type(stmt, u16::from_ne_bytes([bytes[0], bytes[1]]));
+        if call(c"OCIAttrGet: \"OCI_ATTR_STMT_TYPE\"", status, 136) {
+            return false;
+        }
+    }
+    if stmt.executed() {
+        // Cancel the cursor a previous fetch left open; best effort, as in C.
+        let _status = swoole_oci_stmt_fetch(handle, err, 0, OCI_FETCH_NEXT, 0);
+    }
+    let mode = if swr_oci_stmt_scrollable(stmt) {
+        OCI_STMT_SCROLLABLE_READONLY
+    } else if dbh.auto_commit() && !dbh.in_txn() {
+        OCI_COMMIT_ON_SUCCESS
+    } else {
+        0
+    };
+    // A query runs no iteration unless a LOB parameter is bound, as in C.
+    let iterations = u32::from(swr_oci_stmt_type(stmt) != OCI_STMT_SELECT || swr_oci_stmt_have_blobs(stmt));
+    let none = Live(ptr::null_mut(), PhantomData);
+    let status = swoole_oci_stmt_execute(crate::handle::swr_oci_svc(dbh), handle, err, iterations, 0, none, none, mode);
+    if call(c"OCIStmtExecute", status, 156) {
+        return false;
+    }
+    if !stmt.executed() {
+        let (status, count) = get(OCI_ATTR_PARAM_COUNT);
+        if call(c"OCIAttrGet: \"ATTR_PARAM_COUNT\"", status, 165) {
+            return false;
+        }
+        stmt.set_result_counts(count.c_cast(), stmt.row_count());
+        crate::columns::reset(stmt, count);
+    }
+    let (status, rows) = get(OCI_ATTR_ROW_COUNT);
+    if call(c"OCIAttrGet: \"ATTR_ROW_COUNT\"", status, 190) {
+        return false;
+    }
+    stmt.set_row_count(rows.into());
+    true
+}
+
+/// `oci_stmt_dtor`'s statement handles: the cursor cancelled if rows were left,
+/// then the statement and its error handle freed.
+#[unsafe(no_mangle)]
+extern "C" fn swr_oci_stmt_close(stmt: &PdoStmt) {
+    let (handle, err) = (swr_oci_stmt_handle(stmt), swr_oci_stmt_err(stmt));
+    if !handle.is_null() {
+        // Cancelling and freeing are best effort, as in C.
+        let _status = swoole_oci_stmt_fetch(handle, err, 0, OCI_FETCH_NEXT, 0);
+        let _status = OCIHandleFreeStmt(handle.any(), OCI_HTYPE_STMT);
+    }
+    if !err.is_null() {
+        // Freeing fails only for a null or foreign handle.
+        let _status = OCIHandleFreeStmt(err.any(), OCI_HTYPE_ERROR);
     }
 }
 }

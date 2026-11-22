@@ -90,7 +90,7 @@ unsafe extern "C" {
     /// in native order to the start of `value` (a `u32`, aligned for either),
     /// with the size typed as the null it is here.
     #[link_name = "OCIAttrGet"]
-    safe fn OCIAttrGetStmt(
+    pub(crate) safe fn OCIAttrGetStmt(
         stmt: Live<Stmt>,
         kind: u32,
         value: &mut u32,
