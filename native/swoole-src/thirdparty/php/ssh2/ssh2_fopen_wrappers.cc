@@ -654,7 +654,7 @@ extern "C" LIBSSH2_SESSION *swr_ssh2_stream_session(zval *zstream) {
  **************** */
 
 /* {{{ php_ssh2_exec_command
- * Make a stream from a session
+ * The ssh2.exec:// wrapper's stream: its channel from swr_ssh2_exec_channel (Rust)
  */
 static php_stream *php_ssh2_exec_command(LIBSSH2_SESSION *session,
                                          zend_resource *rsrc,
@@ -665,80 +665,14 @@ static php_stream *php_ssh2_exec_command(LIBSSH2_SESSION *session,
                                          long width,
                                          long height,
                                          long type) {
-    LIBSSH2_CHANNEL *channel;
-    php_ssh2_channel_data *channel_data;
-    php_stream *stream;
-
-    channel = libssh2_channel_open_session(session);
+    LIBSSH2_CHANNEL *channel =
+        swr_ssh2_exec_channel(session, command, term, term_len, environment, width, height, type);
     if (!channel) {
-        php_error_docref(NULL, E_WARNING, "Unable to request a channel from remote host");
-        return NULL;
-    }
-
-    if (environment) {
-        zend_string *key = NULL;
-        int key_type;
-        zend_ulong idx = 0;
-        HashPosition pos;
-
-        for (zend_hash_internal_pointer_reset_ex(HASH_OF(environment), &pos);
-             (key_type = zend_hash_get_current_key_ex(HASH_OF(environment), &key, &idx, &pos)) != HASH_KEY_NON_EXISTENT;
-             zend_hash_move_forward_ex(HASH_OF(environment), &pos)) {
-            if (key_type == HASH_KEY_IS_STRING) {
-                zval *value;
-
-                if ((value = zend_hash_get_current_data(HASH_OF(environment))) != NULL) {
-                    zval copyval = *value;
-
-                    zval_copy_ctor(&copyval);
-                    convert_to_string(&copyval);
-                    if (libssh2_channel_setenv_ex(channel, key->val, key->len, Z_STRVAL(copyval), Z_STRLEN(copyval))) {
-                        php_error_docref(
-                            NULL, E_WARNING, "Failed setting %s=%s on remote end", ZSTR_VAL(key), Z_STRVAL(copyval));
-                    }
-                    zval_dtor(&copyval);
-                }
-            } else {
-                php_error_docref(NULL, E_NOTICE, "Skipping numeric index in environment array");
-            }
-        }
-    }
-
-    if (term) {
-        if (type == PHP_SSH2_TERM_UNIT_CHARS) {
-            if (libssh2_channel_request_pty_ex(channel, term, term_len, NULL, 0, width, height, 0, 0)) {
-                php_error_docref(
-                    NULL, E_WARNING, "Failed allocating %s pty at %ldx%ld characters", term, width, height);
-                libssh2_channel_free(channel);
-                return NULL;
-            }
-        } else {
-            if (libssh2_channel_request_pty_ex(channel, term, term_len, NULL, 0, 0, 0, width, height)) {
-                php_error_docref(NULL, E_WARNING, "Failed allocating %s pty at %ldx%ld pixels", term, width, height);
-                libssh2_channel_free(channel);
-                return NULL;
-            }
-        }
-    }
-
-    if (libssh2_channel_exec(channel, command)) {
-        php_error_docref(NULL, E_WARNING, "Unable to request command execution on remote host");
-        libssh2_channel_free(channel);
         return NULL;
     }
 
     /* Turn it into a stream */
-    channel_data = (php_ssh2_channel_data *) emalloc(sizeof(php_ssh2_channel_data));
-    channel_data->channel = channel;
-    channel_data->streamid = 0;
-    channel_data->is_blocking = 0;
-    channel_data->timeout = 0;
-    channel_data->session_rsrc = rsrc;
-    channel_data->refcount = NULL;
-
-    stream = php_stream_alloc(&php_ssh2_channel_stream_ops, channel_data, 0, "r+");
-
-    return stream;
+    return php_ssh2_channel_stream(rsrc, channel);
 }
 /* }}} */
 
@@ -827,70 +761,6 @@ static php_stream_wrapper_ops php_ssh2_exec_stream_wops = {php_ssh2_fopen_wrappe
 
 php_stream_wrapper php_ssh2_stream_wrapper_exec = {&php_ssh2_exec_stream_wops, NULL, 0};
 
-/* {{{ proto stream ssh2_exec(resource session, string command[, string pty[, array env[, int width[, int height[, int
- * width_height_type]]]]]) Execute a command at the remote end and allocate a channel for it
- *
- * This function has a dirty little secret.... pty and env can be in either order.... shhhh... don't tell anyone
- */
-PHP_FUNCTION(ssh2_exec) {
-    LIBSSH2_SESSION *session;
-    php_stream *stream;
-    zval *zsession;
-    zval *environment = NULL;
-    zval *zpty = NULL;
-    char *command;
-    size_t command_len;
-    zend_long width = PHP_SSH2_DEFAULT_TERM_WIDTH;
-    zend_long height = PHP_SSH2_DEFAULT_TERM_HEIGHT;
-    zend_long type = PHP_SSH2_DEFAULT_TERM_UNIT;
-    char *term = NULL;
-    int term_len = 0;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(),
-                              "rs|z!z!lll",
-                              &zsession,
-                              &command,
-                              &command_len,
-                              &zpty,
-                              &environment,
-                              &width,
-                              &height,
-                              &type) == FAILURE) {
-        return;
-    }
-
-    if (zpty && Z_TYPE_P(zpty) == IS_ARRAY) {
-        /* Swap pty and environment -- old call style */
-        zval *tmp = zpty;
-        zpty = environment;
-        environment = tmp;
-    }
-
-    if (environment && Z_TYPE_P(environment) != IS_ARRAY) {
-        php_error_docref(NULL, E_WARNING, "ssh2_exec() expects arg 4 to be of type array");
-        RETURN_FALSE;
-    }
-
-    if (zpty) {
-        convert_to_string(zpty);
-        term = Z_STRVAL_P(zpty);
-        term_len = Z_STRLEN_P(zpty);
-    }
-
-    SSH2_FETCH_AUTHENTICATED_SESSION(session, zsession);
-
-    stream =
-        php_ssh2_exec_command(session, Z_RES_P(zsession), command, term, term_len, environment, width, height, type);
-    if (!stream) {
-        RETURN_FALSE;
-    }
-
-    /* Ensure that channels are freed BEFORE the sessions they belong to */
-    Z_ADDREF_P(zsession);
-
-    php_stream_to_zval(stream, return_value);
-}
-/* }}} */
 
 /* ***************
  * SCP Wrapper *
@@ -1255,8 +1125,8 @@ static php_stream_wrapper_ops php_ssh2_tunnel_stream_wops = {php_ssh2_fopen_wrap
 
 php_stream_wrapper php_ssh2_stream_wrapper_tunnel = {&php_ssh2_tunnel_stream_wops, NULL, 0};
 
-/* ssh2_tunnel and ssh2_shell are Rust (crates/ssh2/src/php.rs). What they keep
- * C: the channel stream, built on this file's stream ops. */
+/* ssh2_tunnel, ssh2_shell and ssh2_exec are Rust (crates/ssh2/src/php.rs). What
+ * they keep C: the channel stream, built on this file's stream ops. */
 extern "C" void swr_ssh2_session_stream(zval *zsession, LIBSSH2_CHANNEL *channel, zval *return_value) {
     php_stream *stream = php_ssh2_channel_stream(Z_RES_P(zsession), channel);
 
