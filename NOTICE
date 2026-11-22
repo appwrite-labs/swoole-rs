@@ -8,7 +8,7 @@ its behaviour and parts of its C headers and tests derive from Swoole v6.2.6.
 native/swoole-src/thirdparty holds code Swoole bundles from PHP (https://www.php.net/)
 and PECL ssh2, Copyright (c) The PHP Group, under the PHP License 3.01
 (native/swoole-src/thirdparty/LICENSE; LICENSE-PHP in a release): the PDO drivers
-(pdo_oci, pdo_sqlite, php*/pdo_firebird), ssh2's publickey subsystem (php/ssh2) and
+(pdo_oci, pdo_sqlite, pdo_firebird), ssh2's publickey subsystem (php/ssh2) and
 proc_open (php/standard).
 
 native/hooks holds what stays C of PHP's pdo_pgsql and pdo_odbc drivers (pgsql_*.c,

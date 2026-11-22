@@ -7,11 +7,7 @@
 #ifdef SW_USE_FIREBIRD
 BEGIN_EXTERN_C()
 #include "ext/pdo/php_pdo_driver.h"
-#if PHP_VERSION_ID < 80500
-#include "thirdparty/php84/pdo_firebird/php_pdo_firebird_int.h"
-#else
-#include "thirdparty/php85/pdo_firebird/php_pdo_firebird_int.h"
-#endif
+#include "thirdparty/pdo_firebird/php_pdo_firebird_int.h"
 ISC_STATUS swoole_isc_attach_database(ISC_STATUS *, short, const ISC_SCHAR *, isc_db_handle *, short, const ISC_SCHAR *);
 ISC_STATUS swoole_isc_detach_database(ISC_STATUS *, isc_db_handle *);
 ISC_STATUS swoole_isc_dsql_execute(ISC_STATUS *, isc_tr_handle *, isc_stmt_handle *, unsigned short, const XSQLDA *);
