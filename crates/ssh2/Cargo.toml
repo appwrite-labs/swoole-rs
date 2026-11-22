@@ -6,10 +6,15 @@ publish = false
 license.workspace = true
 description = "Swoole's coroutine ssh2 hook for its bundled ext/ssh2 (--with-swoole-ssh2)"
 
+[features]
+# The bundled ext/ssh2's PHP functions as they move (php.rs); needs PHP headers.
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php"]
+
 [dependencies]
 libc = "=0.2.191"
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-ssh2-sys = { path = "../ssh2-sys" }
+swoole-rs-zend = { path = "../zend", optional = true }
 
 [lints]
 workspace = true
