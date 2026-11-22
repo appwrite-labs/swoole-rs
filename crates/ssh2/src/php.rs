@@ -1,8 +1,8 @@
 //! The bundled ext/ssh2's PHP functions (`thirdparty/php/ssh2/ssh2.cc`) as
 //! they move to Rust: so far `ssh2_connect`, `ssh2_methods_negotiated`,
 //! `ssh2_fingerprint`, the `ssh2_auth_*` functions,
-//! `ssh2_forward_listen`/`ssh2_forward_accept` and the SFTP functions that
-//! change a path.
+//! `ssh2_forward_listen`/`ssh2_forward_accept`, the SFTP functions that
+//! change a path, and `ssh2_sftp_readlink`/`ssh2_sftp_realpath`.
 //! The resources stay ext/ssh2's; their sessions, listeners and SFTP sessions
 //! are read through `swr_ssh2_session`, `swr_ssh2_listener` and `swr_ssh2_sftp`.
 use crate::{Ops, Session, Sftp, Wait};
@@ -11,7 +11,7 @@ use std::ptr::NonNull;
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_corebase::{
     CCast,
-    lent::{Count, In, lend_in},
+    lent::{Count, In, Out, lend_in, lend_out},
 };
 use swoole_rs_ssh2_sys::KbdintResponse;
 use swoole_rs_zend::{
@@ -165,6 +165,25 @@ unsafe extern "C" {
         target_len: c_uint,
         link_type: c_int,
     ) -> c_int;
+    /// Whether the session of the `SSH2 SFTP` resource [`swr_ssh2_sftp`]
+    /// accepted has been closed (`ssh2_disconnect`).
+    safe fn swr_ssh2_sftp_session_closed(resource: &Value) -> bool;
+    /// `libssh2_sftp_symlink_ex` reading a link or resolving a path: the path
+    /// is read and the result written to `target`; its length, or a negative
+    /// error.
+    #[expect(
+        clashing_extern_declarations,
+        reason = "libssh2_sftp_symlink_ex's target is read or written by link type: each declaration types its use"
+    )]
+    #[link_name = "libssh2_sftp_symlink_ex"]
+    safe fn sftp_resolve<'a>(
+        sftp: Sftp,
+        path: Text<'_>,
+        path_len: c_uint,
+        target: Out<'a, u8>,
+        target_len: Count<'a, c_uint>,
+        link_type: c_int,
+    ) -> c_int;
     /// `ssh2.cc`'s session over a socket connected to `host` and `port`, its
     /// allocator Zend's, its banner swoole's and its socket non-blocking; null,
     /// with C's warning, when the socket can't connect or libssh2 can't
@@ -265,6 +284,8 @@ swoole_rs_zend::handlers! {
     zif_ssh2_sftp_mkdir => sftp_mkdir;
     zif_ssh2_sftp_rmdir => sftp_rmdir;
     zif_ssh2_sftp_symlink => sftp_symlink_fn;
+    zif_ssh2_sftp_readlink => sftp_readlink;
+    zif_ssh2_sftp_realpath => sftp_realpath;
     zif_ssh2_methods_negotiated => methods_negotiated;
     zif_ssh2_fingerprint => fingerprint;
     zif_ssh2_auth_none => auth_none;
@@ -1117,4 +1138,85 @@ fn sftp_symlink_fn(call: &Call<'_>) {
         sftp_symlink(sftp, target, target_len, link, link_len, SFTP_SYMLINK)
     });
     call.set_bool(status == 0);
+}
+
+/// `LIBSSH2_SFTP_READLINK` and `LIBSSH2_SFTP_REALPATH`.
+const SFTP_READLINK: c_int = 1;
+const SFTP_REALPATH: c_int = 2;
+/// The target buffer C read into, `char targ[8192]`.
+const TARGET_MAX: usize = 8192;
+
+/// `$path` resolved by `link_type` into C's 8192 bytes: the target, or C's
+/// warning (`what` and the path up to its first NUL) and false.
+fn resolve(
+    call: &Call<'_>,
+    sftp: Sftp,
+    session: Session,
+    path: &ZStr,
+    link_type: c_int,
+    what: &[u8],
+) {
+    let (path, path_len) = text(path);
+    let mut target = [0u8; TARGET_MAX];
+    let length = hooked(session, || {
+        lend_out(&mut target, |out, count| {
+            sftp_resolve(sftp, path, path_len, out, count, link_type)
+        })
+    });
+    let Some(target) = usize::try_from(length)
+        .ok()
+        .and_then(|length| target.get(..length))
+    else {
+        warn_bytes(&[what, b" '", path.get().to_bytes(), b"'"]);
+        call.set_bool(false);
+        return;
+    };
+    call.set_owned(Owned::string(ZString::new(target)));
+}
+
+/// `ssh2_sftp_readlink(resource $sftp, string $link): string|false`.
+fn sftp_readlink(call: &Call<'_>) {
+    let Some(resource) = sftp_resource(call, 2, 2) else {
+        return;
+    };
+    let Some(link) = path(call, 2) else {
+        return;
+    };
+    let Some((sftp, session)) = sftp(call, resource) else {
+        return;
+    };
+    resolve(
+        call,
+        sftp,
+        session,
+        link,
+        SFTP_READLINK,
+        b"Unable to read link",
+    );
+}
+
+/// `ssh2_sftp_realpath(resource $sftp, string $filename): string|false`:
+/// false, without a warning, once the session has been closed.
+fn sftp_realpath(call: &Call<'_>) {
+    let Some(resource) = sftp_resource(call, 2, 2) else {
+        return;
+    };
+    let Some(filename) = path(call, 2) else {
+        return;
+    };
+    let Some((sftp, session)) = sftp(call, resource) else {
+        return;
+    };
+    if swr_ssh2_sftp_session_closed(resource) {
+        call.set_bool(false);
+        return;
+    }
+    resolve(
+        call,
+        sftp,
+        session,
+        filename,
+        SFTP_REALPATH,
+        b"Unable to resolve realpath for",
+    );
 }
