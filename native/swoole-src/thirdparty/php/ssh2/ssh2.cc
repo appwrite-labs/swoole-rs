@@ -453,54 +453,23 @@ extern "C" LIBSSH2_SESSION *swr_ssh2_session(zval *zsession) {
     return (LIBSSH2_SESSION *) zend_fetch_resource(Z_RES_P(zsession), PHP_SSH2_SESSION_RES_NAME, le_ssh2_session);
 }
 
-/* {{{ proto array ssh2_auth_none(resource session, string username)
- * Attempt "none" authentication, returns a list of allowed methods on failed authentication,
- * false on utter failure, or true on success
- */
-PHP_FUNCTION(ssh2_auth_none) {
-    LIBSSH2_SESSION *session;
-    zval *zsession;
-    char *username, *methods, *s, *p;
-    size_t username_len;
+/* ssh2_auth_none and ssh2_auth_password are Rust (crates/ssh2/src/php.rs). Stays C:
+ * the keyboard-interactive callback, which hands libssh2 a response it frees through
+ * the session's allocator, and the password it answers with. */
+static const char *password_for_kbd_callback;
 
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "rs", &zsession, &username, &username_len) == FAILURE) {
-        return;
-    }
-
-    if ((session = (LIBSSH2_SESSION *) zend_fetch_resource(
-             Z_RES_P(zsession), PHP_SSH2_SESSION_RES_NAME, le_ssh2_session)) == NULL) {
-        RETURN_FALSE;
-    }
-
-    s = methods = libssh2_userauth_list(session, username, username_len);
-    if (!methods) {
-        /* Either bad failure, or unexpected success */
-        RETURN_BOOL(libssh2_userauth_authenticated(session));
-    }
-
-    array_init(return_value);
-    while ((p = strchr(s, ','))) {
-        if ((p - s) > 0) {
-            add_next_index_stringl(return_value, s, p - s);
-        }
-        s = p + 1;
-    }
-    if (strlen(s)) {
-        add_next_index_string(return_value, s);
-    }
+extern "C" void swr_ssh2_kbd_password(const char *password) {
+    password_for_kbd_callback = password;
 }
-/* }}} */
 
-char *password_for_kbd_callback;
-
-static void kbd_callback(const char *name,
-                         int name_len,
-                         const char *instruction,
-                         int instruction_len,
-                         int num_prompts,
-                         const LIBSSH2_USERAUTH_KBDINT_PROMPT *prompts,
-                         LIBSSH2_USERAUTH_KBDINT_RESPONSE *responses,
-                         void **abstract) {
+extern "C" void swr_ssh2_kbd_callback(const char *name,
+                                      int name_len,
+                                      const char *instruction,
+                                      int instruction_len,
+                                      int num_prompts,
+                                      const LIBSSH2_USERAUTH_KBDINT_PROMPT *prompts,
+                                      LIBSSH2_USERAUTH_KBDINT_RESPONSE *responses,
+                                      void **abstract) {
     (void) name;
     (void) name_len;
     (void) instruction;
@@ -512,42 +481,6 @@ static void kbd_callback(const char *name,
     (void) prompts;
     (void) abstract;
 }
-
-/* {{{ proto bool ssh2_auth_password(resource session, string username, string password)
- * Authenticate over SSH using a plain password
- */
-PHP_FUNCTION(ssh2_auth_password) {
-    LIBSSH2_SESSION *session;
-    zval *zsession;
-    zend_string *username, *password;
-    char *userauthlist;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "rSS", &zsession, &username, &password) == FAILURE) {
-        return;
-    }
-
-    SSH2_FETCH_NONAUTHENTICATED_SESSION(session, zsession);
-
-    userauthlist = libssh2_userauth_list(session, username->val, username->len);
-
-    if (userauthlist != NULL) {
-        password_for_kbd_callback = password->val;
-        if (strstr(userauthlist, "keyboard-interactive") != NULL) {
-            if (libssh2_userauth_keyboard_interactive(session, username->val, &kbd_callback) == 0) {
-                RETURN_TRUE;
-            }
-        }
-
-        /* TODO: Support password change callback */
-        if (libssh2_userauth_password_ex(session, username->val, username->len, password->val, password->len, NULL)) {
-            php_error_docref(NULL, E_WARNING, "Authentication failed for %s using password", username->val);
-            RETURN_FALSE;
-        }
-    }
-
-    RETURN_TRUE;
-}
-/* }}} */
 
 /* {{{ proto bool ssh2_auth_pubkey_file(resource session, string username, string pubkeyfile, string privkeyfile[,
  * string passphrase]) Authenticate using a public key

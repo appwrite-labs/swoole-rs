@@ -261,7 +261,7 @@ impl Narrow for usize {
 /// A hooked call's result, which says how the call is retried: an `int` one (narrowed
 /// as [`Narrow`]) while it is `EAGAIN`, a handle while it is null with `EAGAIN` the
 /// session's `last_errno`.
-trait Answer: Sized {
+pub(crate) trait Answer: Sized {
     type Result;
     fn retried(wait: &Wait<'_>, call: impl FnMut() -> Self) -> Self::Result;
 }
@@ -277,6 +277,24 @@ impl<T> Answer for *mut T {
     type Result = Self;
     fn retried(wait: &Wait<'_>, call: impl FnMut() -> Self) -> Self {
         wait.call_pointer(call)
+    }
+}
+
+impl Answer for Option<Text<'_>> {
+    type Result = Self;
+    /// As a handle: retried while it is null with `EAGAIN` the session's
+    /// `last_errno`, from the event the session is blocked on now.
+    fn retried(wait: &Wait<'_>, mut call: impl FnMut() -> Self) -> Self {
+        let event = wait.blocked();
+        loop {
+            let text = call();
+            if text.is_some() {
+                return text;
+            }
+            if wait.last_errno() != LIBSSH2_ERROR_EAGAIN || !wait.park(event) {
+                return None;
+            }
+        }
     }
 }
 
