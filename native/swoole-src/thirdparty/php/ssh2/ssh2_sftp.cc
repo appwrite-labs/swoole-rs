@@ -606,115 +606,18 @@ PHP_FUNCTION(ssh2_sftp) {
 
 /* Much of the stuff below can be done via wrapper ops as of PHP5, but is included here for PHP 4.3 users */
 
-/* {{{ proto bool ssh2_sftp_rename(resource sftp, string from, string to)
- */
-PHP_FUNCTION(ssh2_sftp_rename) {
-    php_ssh2_sftp_data *data;
-    zval *zsftp;
-    zend_string *src, *dst;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "rSS", &zsftp, &src, &dst) == FAILURE) {
-        return;
-    }
-
-    if ((data = (php_ssh2_sftp_data *) zend_fetch_resource(Z_RES_P(zsftp), PHP_SSH2_SFTP_RES_NAME, le_ssh2_sftp)) ==
-        NULL) {
-        RETURN_FALSE;
-    }
-
-    auto session = data->session;
-
-    RETURN_BOOL(!libssh2_sftp_rename_ex(
-        data->sftp,
-        src->val,
-        src->len,
-        dst->val,
-        dst->len,
-        LIBSSH2_SFTP_RENAME_OVERWRITE | LIBSSH2_SFTP_RENAME_ATOMIC | LIBSSH2_SFTP_RENAME_NATIVE));
+/* ssh2_sftp_rename, _unlink, _mkdir, _rmdir and _symlink are Rust
+ * (crates/ssh2/src/php.rs); they read an SFTP resource through these. */
+extern "C" LIBSSH2_SFTP *swr_ssh2_sftp(zval *zsftp) {
+    php_ssh2_sftp_data *data =
+        (php_ssh2_sftp_data *) zend_fetch_resource(Z_RES_P(zsftp), PHP_SSH2_SFTP_RES_NAME, le_ssh2_sftp);
+    return data ? data->sftp : NULL;
 }
-/* }}} */
 
-/* {{{ proto bool ssh2_sftp_unlink(resource sftp, string filename)
- */
-PHP_FUNCTION(ssh2_sftp_unlink) {
-    php_ssh2_sftp_data *data;
-    zval *zsftp;
-    zend_string *filename;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "rS", &zsftp, &filename) == FAILURE) {
-        return;
-    }
-
-    if ((data = (php_ssh2_sftp_data *) zend_fetch_resource(Z_RES_P(zsftp), PHP_SSH2_SFTP_RES_NAME, le_ssh2_sftp)) ==
-        NULL) {
-        RETURN_FALSE;
-    }
-
-    auto session = data->session;
-    RETURN_BOOL(!libssh2_sftp_unlink_ex(data->sftp, filename->val, filename->len));
+extern "C" LIBSSH2_SESSION *swr_ssh2_sftp_session(zval *zsftp) {
+    return ((php_ssh2_sftp_data *) Z_RES_P(zsftp)->ptr)->session;
 }
-/* }}} */
 
-/* {{{ proto bool ssh2_sftp_mkdir(resource sftp, string dirname[, int mode[, int recursive]])
- */
-PHP_FUNCTION(ssh2_sftp_mkdir) {
-    php_ssh2_sftp_data *data;
-    zval *zsftp;
-    zend_string *dirname;
-    zend_long mode = 0777;
-    zend_bool recursive = 0;
-    const char *p;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "rS|lb", &zsftp, &dirname, &mode, &recursive) == FAILURE) {
-        return;
-    }
-
-    if (!dirname) {
-        RETURN_FALSE;
-    }
-
-    if ((data = (php_ssh2_sftp_data *) zend_fetch_resource(Z_RES_P(zsftp), PHP_SSH2_SFTP_RES_NAME, le_ssh2_sftp)) ==
-        NULL) {
-        RETURN_FALSE;
-    }
-
-    auto session = data->session;
-
-    if (recursive) {
-        /* Just attempt to make every directory, some will fail, but we only care about the last success/failure */
-        p = dirname->val;
-        while ((p = strchr(p + 1, '/'))) {
-            if ((p - dirname->val) + 1 == (long) dirname->len) {
-                break;
-            }
-            libssh2_sftp_mkdir_ex(data->sftp, dirname->val, p - dirname->val, mode);
-        }
-    }
-
-    RETURN_BOOL(!libssh2_sftp_mkdir_ex(data->sftp, dirname->val, dirname->len, mode));
-}
-/* }}} */
-
-/* {{{ proto bool ssh2_sftp_rmdir(resource sftp, string dirname)
- */
-PHP_FUNCTION(ssh2_sftp_rmdir) {
-    php_ssh2_sftp_data *data;
-    zval *zsftp;
-    zend_string *dirname;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "rS", &zsftp, &dirname) == FAILURE) {
-        return;
-    }
-
-    if ((data = (php_ssh2_sftp_data *) zend_fetch_resource(Z_RES_P(zsftp), PHP_SSH2_SFTP_RES_NAME, le_ssh2_sftp)) ==
-        NULL) {
-        RETURN_FALSE;
-    }
-
-    auto session = data->session;
-    RETURN_BOOL(!libssh2_sftp_rmdir_ex(data->sftp, dirname->val, dirname->len));
-}
-/* }}} */
 
 /* {{{ proto bool ssh2_sftp_chmod(resource sftp, string filename, int mode)
  */
@@ -815,26 +718,6 @@ PHP_FUNCTION(ssh2_sftp_lstat) {
 }
 /* }}} */
 
-/* {{{ proto bool ssh2_sftp_symlink(resource sftp, string target, string link)
- */
-PHP_FUNCTION(ssh2_sftp_symlink) {
-    php_ssh2_sftp_data *data;
-    zval *zsftp;
-    zend_string *targ, *link;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "rSS", &zsftp, &targ, &link) == FAILURE) {
-        return;
-    }
-
-    if ((data = (php_ssh2_sftp_data *) zend_fetch_resource(Z_RES_P(zsftp), PHP_SSH2_SFTP_RES_NAME, le_ssh2_sftp)) ==
-        NULL) {
-        RETURN_FALSE;
-    }
-
-    auto session = data->session;
-    RETURN_BOOL(!libssh2_sftp_symlink_ex(data->sftp, targ->val, targ->len, link->val, link->len, LIBSSH2_SFTP_SYMLINK));
-}
-/* }}} */
 
 /* {{{ proto string ssh2_sftp_readlink(resource sftp, string link)
  */
