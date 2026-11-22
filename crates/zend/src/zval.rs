@@ -28,6 +28,12 @@ unsafe extern "C" {
     safe fn zend_array_count(table: &Array) -> u32;
     /// `zend_array_is_list`: it reads the table.
     safe fn swr_zend_array_is_list(table: &Array) -> bool;
+    /// `zend_hash_get_current_data_ex`: the element at or after `position`, or
+    /// null (`None`) past the end; it reads the table and the position only.
+    safe fn zend_hash_get_current_data_ex<'a>(
+        table: &'a Array,
+        position: &u32,
+    ) -> Option<&'a Value>;
     /// `zend_hash_index_find`: null (`None`), or the element under `index`,
     /// which lives as the table's others do, while the table is borrowed.
     safe fn zend_hash_index_find(table: &Array, index: zend_ulong) -> Option<&Value>;
@@ -1131,11 +1137,15 @@ const _: () = assert!(
 const FLAGS: usize = std::mem::offset_of!(HashTable, u) / 4;
 /// `zend_hash_num_elements`'s word in an [`Array`].
 const ELEMENTS: usize = std::mem::offset_of!(HashTable, nNumOfElements) / 4;
+/// The internal pointer's word in an [`Array`] (`nInternalPointer`), which
+/// `current()` and `next()` read and move.
+const INTERNAL_POINTER: usize = std::mem::offset_of!(HashTable, nInternalPointer) / 4;
 
 const _: () = assert!(
     std::mem::offset_of!(HashTable, u).is_multiple_of(4)
-        && std::mem::offset_of!(HashTable, nNumOfElements).is_multiple_of(4),
-    "an Array's flags and element count are words of it"
+        && std::mem::offset_of!(HashTable, nNumOfElements).is_multiple_of(4)
+        && std::mem::offset_of!(HashTable, nInternalPointer).is_multiple_of(4),
+    "an Array's flags, element count and internal pointer are words of it"
 );
 
 /// The `zend_refcounted_h` a counted value begins with: its refcount
@@ -1171,6 +1181,14 @@ impl Array {
     #[inline]
     pub fn flags(&self) -> &Cell<u32> {
         &self.0[FLAGS]
+    }
+
+    /// `zend_hash_get_current_data`: the element at the internal pointer, as
+    /// `current()` reads it, or None past the end; the pointer is not moved.
+    #[must_use]
+    #[inline]
+    pub fn current(&self) -> Option<&Value> {
+        zend_hash_get_current_data_ex(self, &self.0[INTERNAL_POINTER].get())
     }
 
     /// `zend_hash_num_elements`.
