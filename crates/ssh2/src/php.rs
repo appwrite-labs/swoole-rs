@@ -5,7 +5,7 @@
 //! change a path, `ssh2_sftp_readlink`/`ssh2_sftp_realpath`, `ssh2_sftp`,
 //! `ssh2_sftp_chmod`, `ssh2_sftp_stat`/`ssh2_sftp_lstat`, and
 //! `ssh2_send_eof`/`ssh2_shell_resize` on a channel stream, `ssh2_tunnel`,
-//! `ssh2_shell`, `ssh2_exec` and `ssh2_scp_recv`.
+//! `ssh2_shell`, `ssh2_exec`, `ssh2_scp_recv` and `ssh2_scp_send`.
 //! The resources stay ext/ssh2's; their sessions, listeners and SFTP sessions
 //! are read through `swr_ssh2_session`, `swr_ssh2_listener` and `swr_ssh2_sftp`.
 use crate::{Ops, Session, Sftp, Wait};
@@ -259,6 +259,24 @@ unsafe extern "C" {
     /// `libssh2_scp_recv` of `path`, retried through the hook: the channel the
     /// file arrives on, its size in `size`, or null.
     safe fn swr_ssh2_scp_recv(session: Session, path: Text<'_>, size: &mut i64) -> Option<Opened>;
+    /// libssh2's own declarations: the channel a file of `size` bytes is sent
+    /// to `path` on, or null; the lent bytes written to the channel's stream
+    /// `stream_id`, or a negative error; and the channel flushed.
+    safe fn libssh2_scp_send_ex(
+        session: Session,
+        path: Text<'_>,
+        mode: c_int,
+        size: usize,
+        mtime: c_long,
+        atime: c_long,
+    ) -> *mut LIBSSH2_CHANNEL;
+    safe fn libssh2_channel_write_ex<'a>(
+        channel: Opened,
+        stream_id: c_int,
+        buf: In<'a, u8>,
+        buflen: Count<'a>,
+    ) -> isize;
+    safe fn libssh2_channel_flush_ex(channel: Opened, streamid: c_int) -> c_int;
     /// libssh2's own declaration: up to `buflen` bytes of the channel's stream
     /// `stream_id` into the lent buffer, or a negative error.
     safe fn libssh2_channel_read_ex<'a>(
@@ -409,6 +427,7 @@ swoole_rs_zend::handlers! {
     zif_ssh2_shell => shell;
     zif_ssh2_exec => exec;
     zif_ssh2_scp_recv => scp_recv;
+    zif_ssh2_scp_send => scp_send;
     zif_ssh2_shell_resize => shell_resize;
     zif_ssh2_sftp_rename => sftp_rename;
     zif_ssh2_sftp_chmod => sftp_chmod;
@@ -2017,5 +2036,149 @@ fn scp_recv(call: &Call<'_>) {
     }
     free();
     drop(file);
+    call.set_bool(true);
+}
+
+/// `LIBSSH2_ERROR_*` a channel write reports, each with C's warning.
+const WRITE_ERRORS: [(c_int, &str); 5] = [
+    (-37, "Operation would block"),
+    (-6, "An internal memory allocation call failed"),
+    (-7, "Unable to send data on socket"),
+    (-26, "The channel has been closed"),
+    (-27, "The channel has been requested to be closed"),
+];
+/// `LIBSSH2_CHANNEL_FLUSH_ALL`.
+const FLUSH_ALL: c_int = -2;
+
+/// `ssh2_scp_send(resource $session, string $local_file, string $remote_file,
+/// int $mode = 0644): bool`: the local file, which any stream wrapper may
+/// open, copied over SCP to the remote one, with its own permissions unless
+/// `$mode` is given.
+fn scp_send(call: &Call<'_>) {
+    if call.arity(3, 4).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let (Ok(Some(local)), Ok(Some(remote))) = (call.zstr(2), call.zstr(3)) else {
+        return;
+    };
+    let Ok(create_mode) = call.long(4, 0o644) else {
+        return;
+    };
+    let Some(session) = session(call, resource) else {
+        return;
+    };
+    if !authenticated(session) {
+        warn("Connection not authenticated");
+        call.set_bool(false);
+        return;
+    }
+    let refuse = |message: &str| {
+        warn(message);
+        call.set_bool(false);
+    };
+    let Some(file) = Stream::open(text(local).0, c"rb", REPORT_ERRORS) else {
+        if !bailout::pending() {
+            refuse("Unable to read source file");
+        }
+        return;
+    };
+    let Some(stat) = file.stat() else {
+        if !bailout::pending() {
+            refuse("Failed statting local file");
+        }
+        return;
+    };
+    let mode = if call.num_args() < 4 {
+        i64::from(stat.mode & 0o777)
+    } else {
+        create_mode
+    };
+    // C passed the stat's atime where libssh2 takes the mtime, and its mtime
+    // for the atime; the mode and size as C's int and size_t took them.
+    let (remote, _) = text(remote);
+    let sent = hooked(session, || {
+        libssh2_scp_send_ex(
+            session,
+            remote,
+            mode.c_cast(),
+            stat.size.c_cast(),
+            stat.atime,
+            stat.mtime,
+        )
+    });
+    let Some(channel) = NonNull::new(sent.cast()).map(Opened) else {
+        let (mut message, mut length) = (None, 0);
+        let code = libssh2_session_last_error(session, &mut message, &mut length, 0);
+        warn_bytes(&[
+            b"Failure creating remote file: ",
+            message.map_or(&[][..], |text| text.get().to_bytes()),
+            format!(" ({code})").as_bytes(),
+        ]);
+        call.set_bool(false);
+        return;
+    };
+    let free = || {
+        // The copy is over; the channel's status adds nothing to its result.
+        let _status = libssh2_channel_free(channel);
+    };
+    let mut remaining = stat.size;
+    let mut buffer = [0u8; 8192];
+    while remaining != 0 {
+        let want = usize::try_from(remaining.clamp(0, 8192)).unwrap_or_default();
+        let slots = buffer.get_mut(..want).unwrap_or_default();
+        let read = file.read(slots);
+        if bailout::pending() {
+            // The wrapper bailed out: C's longjmp left here, the channel with
+            // the session and the stream with the request.
+            return;
+        }
+        let Some(chunk) = read
+            .filter(|&read| read != 0 && read <= want)
+            .and_then(|read| buffer.get(..read))
+        else {
+            refuse("Failed copying file 2");
+            drop(file);
+            if bailout::pending() {
+                // The wrapper's close bailed out: C's longjmp left before the free.
+                return;
+            }
+            free();
+            return;
+        };
+        let mut sent = 0;
+        while let Some(rest) = chunk.get(sent..).filter(|rest| !rest.is_empty()) {
+            let written = hooked(session, || {
+                lend_in(rest, |bytes, count| {
+                    libssh2_channel_write_ex(channel, 0, bytes, count)
+                })
+            });
+            let Ok(written) = usize::try_from(written) else {
+                if let Some((_, message)) = WRITE_ERRORS.iter().find(|(code, _)| *code == written) {
+                    warn(message);
+                }
+                drop(file);
+                if bailout::pending() {
+                    // As above.
+                    return;
+                }
+                free();
+                call.set_bool(false);
+                return;
+            };
+            sent += written;
+        }
+        remaining -= i64::try_from(chunk.len()).unwrap_or(remaining);
+    }
+    // C flushed without the hook, whatever it answered.
+    let _status = libssh2_channel_flush_ex(channel, FLUSH_ALL);
+    drop(file);
+    if bailout::pending() {
+        // As above.
+        return;
+    }
+    free();
     call.set_bool(true);
 }

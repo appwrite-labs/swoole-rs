@@ -848,7 +848,8 @@ static php_stream_wrapper_ops php_ssh2_scp_stream_wops = {php_ssh2_fopen_wrapper
 
 php_stream_wrapper php_ssh2_stream_wrapper_scp = {&php_ssh2_scp_stream_wops, NULL, 0};
 
-/* ssh2_scp_recv is Rust (crates/ssh2/src/php.rs). What it keeps C: the file's
+/* ssh2_scp_recv and ssh2_scp_send are Rust (crates/ssh2/src/php.rs). What
+ * ssh2_scp_recv keeps C: the file's
  * struct stat, which libssh2_scp_recv fills and Rust would take an unsafe block
  * to make (budget); only its size is read. */
 extern "C" LIBSSH2_CHANNEL *swr_ssh2_scp_recv(LIBSSH2_SESSION *session, const char *path, int64_t *size) {
@@ -858,114 +859,6 @@ extern "C" LIBSSH2_CHANNEL *swr_ssh2_scp_recv(LIBSSH2_SESSION *session, const ch
     return channel;
 }
 
-/* {{{ proto stream ssh2_scp_send(resource session, string local_file, string remote_file[, int create_mode = 0644])
- * Send a file via SCP
- */
-PHP_FUNCTION(ssh2_scp_send) {
-    LIBSSH2_SESSION *session;
-    LIBSSH2_CHANNEL *remote_file;
-    php_stream *local_file;
-    zval *zsession;
-    char *local_filename, *remote_filename;
-    size_t local_filename_len, remote_filename_len;
-    zend_long create_mode = 0644;
-    php_stream_statbuf ssb;
-    int argc = ZEND_NUM_ARGS();
-
-    if (zend_parse_parameters(argc,
-                              "rss|l",
-                              &zsession,
-                              &local_filename,
-                              &local_filename_len,
-                              &remote_filename,
-                              &remote_filename_len,
-                              &create_mode) == FAILURE) {
-        return;
-    }
-
-    SSH2_FETCH_AUTHENTICATED_SESSION(session, zsession);
-
-    local_file = php_stream_open_wrapper(local_filename, "rb", REPORT_ERRORS, NULL);
-    if (!local_file) {
-        php_error_docref(NULL, E_WARNING, "Unable to read source file");
-        RETURN_FALSE;
-    }
-
-    if (php_stream_stat(local_file, &ssb)) {
-        php_error_docref(NULL, E_WARNING, "Failed statting local file");
-        php_stream_close(local_file);
-        RETURN_FALSE;
-    }
-
-    if (argc < 4) {
-        create_mode = ssb.sb.st_mode & 0777;
-    }
-
-    remote_file =
-        libssh2_scp_send_ex(session, remote_filename, create_mode, ssb.sb.st_size, ssb.sb.st_atime, ssb.sb.st_mtime);
-    if (!remote_file) {
-        int last_error = 0;
-        char *error_msg = NULL;
-
-        last_error = libssh2_session_last_error(session, &error_msg, NULL, 0);
-        php_error_docref(NULL, E_WARNING, "Failure creating remote file: %s (%d)", error_msg, last_error);
-        php_stream_close(local_file);
-        RETURN_FALSE;
-    }
-
-    while (ssb.sb.st_size) {
-        char buffer[8192];
-        ssize_t toread = MIN(8192, ssb.sb.st_size);
-        ssize_t bytesread = php_stream_read(local_file, buffer, toread);
-        ssize_t sent = 0;
-        ssize_t justsent = 0;
-
-        if (bytesread <= 0 || bytesread > toread) {
-            php_error_docref(NULL, E_WARNING, "Failed copying file 2");
-            php_stream_close(local_file);
-            libssh2_channel_free(remote_file);
-            RETURN_FALSE;
-        }
-
-        while (bytesread - sent > 0) {
-            if ((justsent = libssh2_channel_write(remote_file, (buffer + sent), bytesread - sent)) < 0) {
-                switch (justsent) {
-                case LIBSSH2_ERROR_EAGAIN:
-                    php_error_docref(NULL, E_WARNING, "Operation would block");
-                    break;
-
-                case LIBSSH2_ERROR_ALLOC:
-                    php_error_docref(NULL, E_WARNING, "An internal memory allocation call failed");
-                    break;
-
-                case LIBSSH2_ERROR_SOCKET_SEND:
-                    php_error_docref(NULL, E_WARNING, "Unable to send data on socket");
-                    break;
-
-                case LIBSSH2_ERROR_CHANNEL_CLOSED:
-                    php_error_docref(NULL, E_WARNING, "The channel has been closed");
-                    break;
-
-                case LIBSSH2_ERROR_CHANNEL_EOF_SENT:
-                    php_error_docref(NULL, E_WARNING, "The channel has been requested to be closed");
-                    break;
-                }
-
-                php_stream_close(local_file);
-                libssh2_channel_free(remote_file);
-                RETURN_FALSE;
-            }
-            sent = sent + justsent;
-        }
-        ssb.sb.st_size -= bytesread;
-    }
-
-    libssh2_channel_flush_ex(remote_file, LIBSSH2_CHANNEL_FLUSH_ALL);
-    php_stream_close(local_file);
-    libssh2_channel_free(remote_file);
-    RETURN_TRUE;
-}
-/* }}} */
 
 /* ***************************
  * Direct TCP/IP Transport *

@@ -196,8 +196,8 @@ int swr_zend_try_socket_stream_alloc(const char *persistent, bool unix_stream, p
     return bailed;
 }
 
-/* bailout: php_stream_open_wrapper of a path and php_stream_write run a user
- * stream wrapper's PHP code. 1 if it bailed out. */
+/* bailout: php_stream_open_wrapper of a path, php_stream_write, read and stat
+ * run a user stream wrapper's PHP code. 1 if it bailed out. */
 int swr_zend_try_stream_open(const char *path, const char *mode, int options, php_stream **out) {
     volatile int bailed = 0;
     *out = NULL;
@@ -210,6 +210,33 @@ int swr_zend_try_stream_write(php_stream *stream, const char *bytes, size_t coun
     volatile int bailed = 0;
     *written = -1;
     SWR_ZEND_TRY { *written = php_stream_write(stream, bytes, count); }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
+    return bailed;
+}
+
+int swr_zend_try_stream_read(php_stream *stream, char *buffer, size_t count, ssize_t *read) {
+    volatile int bailed = 0;
+    *read = -1;
+    SWR_ZEND_TRY { *read = php_stream_read(stream, buffer, count); }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
+    return bailed;
+}
+
+/* php_stream_stat: the size, mode and times, or *failed. */
+int swr_zend_try_stream_stat(
+    php_stream *stream, bool *failed, int64_t *size, uint32_t *mode, int64_t *atime, int64_t *mtime) {
+    volatile int bailed = 0;
+    php_stream_statbuf ssb;
+    *failed = true;
+    SWR_ZEND_TRY {
+        if (php_stream_stat(stream, &ssb) == 0) {
+            *failed = false;
+            *size = ssb.sb.st_size;
+            *mode = ssb.sb.st_mode;
+            *atime = ssb.sb.st_atime;
+            *mtime = ssb.sb.st_mtime;
+        }
+    }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
