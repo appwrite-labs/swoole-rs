@@ -1,5 +1,6 @@
 //! The connection's methods (`oci_driver.c`): transactions, the liveness
-//! check, `getAttribute`, `setAttribute`, `exec`, `quote` and closing. The
+//! check, `getAttribute`, `setAttribute`, `exec`, `quote`, preparing a
+//! statement's handles and closing. The
 //! connection's record is [`crate::handle::Handle`], read through its accessors.
 use crate::{
     Any, Env, Error, Live, Session, Snapshot, Stmt, Svc, Sword, Text,
@@ -52,6 +53,9 @@ const OCI_ATTR_STMT_TYPE: u32 = 24;
 const OCI_STMT_SELECT: u16 = 1;
 /// `OCI_NTV_SYNTAX`: the server's own SQL dialect.
 const OCI_NTV_SYNTAX: u32 = 1;
+/// `OCI_ATTR_PREFETCH_ROWS` and `OCI_ATTR_PREFETCH_MEMORY`.
+const OCI_ATTR_PREFETCH_ROWS: u32 = 11;
+const OCI_ATTR_PREFETCH_MEMORY: u32 = 13;
 /// `OCI_COMMIT_ON_SUCCESS`.
 const OCI_COMMIT_ON_SUCCESS: u32 = 0x20;
 /// `OCI_SUCCESS_WITH_INFO`.
@@ -118,6 +122,20 @@ unsafe extern "C" {
     #[link_name = "OCIAttrSet"]
     safe fn OCIAttrSetSvc(
         svc: Live<Svc>,
+        kind: u32,
+        value: &u32,
+        size: u32,
+        attribute: u32,
+        err: Live<Error>,
+    ) -> Sword;
+    /// OCI's own declaration for a statement's 4-byte attribute, which OCI copies.
+    #[expect(
+        clashing_extern_declarations,
+        reason = "OCIAttrSet takes its handle and value as void *: each declaration types them as one use passes them"
+    )]
+    #[link_name = "OCIAttrSet"]
+    safe fn OCIAttrSetStmt(
+        stmt: Live<Stmt>,
         kind: u32,
         value: &u32,
         size: u32,
@@ -410,6 +428,58 @@ fn call_timeout_supported() -> bool {
 }
 
 swoole_rs_zend::exports! {
+/// `oci_handle_preparer` once C made the statement's record and PDO rewrote
+/// the placeholders: the statement and its own error handle, allocated under
+/// the connection's environment into `*stmt` and `*err`, `sql` prepared on the
+/// statement (an empty one isn't), and the connection's prefetch rows and
+/// memory set on it. False, with nothing left allocated, when the prepare
+/// fails; that error is the connection's, as in C.
+#[unsafe(no_mangle)]
+extern "C" fn swr_oci_prepare(
+    dbh: &Dbh,
+    sql: &ZStr,
+    stmt: &mut crate::Handle,
+    err: &mut crate::Handle,
+) -> bool {
+    let env = swr_oci_env(dbh);
+    // As in C, the allocations aren't checked: a null handle fails the calls.
+    let _status = OCIHandleAlloc(env, stmt, OCI_HTYPE_STMT, 0, None);
+    let _status = OCIHandleAlloc(env, err, OCI_HTYPE_ERROR, 0, None);
+    let handle = Live::<Stmt>(*stmt, PhantomData);
+    let connection_err = swr_oci_err(dbh);
+    let bytes = sql.bytes();
+    if !bytes.is_empty() {
+        let status = swoole_oci_stmt_prepare(
+            handle,
+            connection_err,
+            Text::of(bytes),
+            bytes.len().c_cast(),
+            OCI_NTV_SYNTAX,
+            0,
+        );
+        if status != OCI_SUCCESS {
+            report(dbh, connection_err, c"OCIStmtPrepare", status, here!());
+            // Freeing fails only for a null or foreign handle.
+            let _status = OCIHandleFree(handle.any(), OCI_HTYPE_STMT);
+            let _status = OCIHandleFree(Live::<Error>(*err, PhantomData).any(), OCI_HTYPE_ERROR);
+            *stmt = ptr::null_mut();
+            *err = ptr::null_mut();
+            return false;
+        }
+    }
+    // Zero prefetch rows is allowed, so a REF CURSOR can later be passed on
+    // with no rows lost. The memory limit follows only when the rows took.
+    let rows = swr_oci_prefetch(dbh);
+    if OCIAttrSetStmt(handle, OCI_HTYPE_STMT, &rows, 0, OCI_ATTR_PREFETCH_ROWS, connection_err)
+        == OCI_SUCCESS
+    {
+        let memory = rows.wrapping_mul(PREFETCH_ROWSIZE);
+        // As in C, a failed memory limit is left unreported.
+        let _status = OCIAttrSetStmt(handle, OCI_HTYPE_STMT, &memory, 0, OCI_ATTR_PREFETCH_MEMORY, connection_err);
+    }
+    true
+}
+
 /// `oci_handle_doer`: `sql` prepared and run on a statement handle of its own,
 /// returning the rows it changed, or -1. A `SELECT` is refused with a warning.
 #[unsafe(no_mangle)]
