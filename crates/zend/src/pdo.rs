@@ -273,6 +273,12 @@ impl Stmt {
         self.0.set(stmt);
     }
 
+    /// `stmt->executed`: whether the statement has run before.
+    #[must_use]
+    pub fn executed(&self) -> bool {
+        self.0.get().executed() != 0
+    }
+
     /// `stmt->error_code`: the statement's SQLSTATE.
     #[must_use]
     pub fn error_code(&self) -> pdo_error_type {

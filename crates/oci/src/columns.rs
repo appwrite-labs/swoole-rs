@@ -214,20 +214,22 @@ extern "C" fn define_callback(
     OCI_CONTINUE
 }
 
-swoole_rs_zend::exports! {
 /// `oci_stmt_execute`'s first-time column setup: `count` empty columns. As in
 /// C, a LOB locator left from an earlier execution is not freed, as a LOB stream
 /// may still read it.
-#[unsafe(no_mangle)]
-extern "C" fn swr_oci_columns_reset(stmt: &PdoStmt, count: u32) {
+pub(crate) fn reset(stmt: &PdoStmt, count: u32) {
     let slot = swr_oci_stmt_columns(stmt);
     if let Some(old) = slot.take() {
         for column in &old.0 {
             column.lob.set(Live(ptr::null_mut(), PhantomData));
         }
     }
-    slot.set(Some(Box::new(Columns((0..count).map(|_| Column::new()).collect()))));
+    slot.set(Some(Box::new(Columns(
+        (0..count).map(|_| Column::new()).collect(),
+    ))));
 }
+
+swoole_rs_zend::exports! {
 
 /// `oci_stmt_dtor`'s column cleanup: each LOB locator freed, its temporary LOB
 /// first while the connection's object is still usable.

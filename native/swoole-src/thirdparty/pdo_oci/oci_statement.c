@@ -44,10 +44,28 @@
 static php_stream *oci_create_lob_stream(pdo_stmt_t *stmt, OCILobLocator *lob);
 
 /* The columns are Rust's (crates/oci/src/columns.rs). */
-extern void swr_oci_columns_reset(pdo_stmt_t *stmt, uint32_t count);
 extern void swr_oci_columns_free(pdo_stmt_t *stmt, pdo_dbh_t *dbh, bool usable);
 extern bool swr_oci_describe(pdo_stmt_t *stmt, pdo_dbh_t *dbh, uint32_t colno, struct pdo_column_data *desc);
 extern bool swr_oci_column_value(pdo_stmt_t *stmt, uint32_t colno, zval *result);
+extern bool swr_oci_execute(pdo_stmt_t *stmt, pdo_dbh_t *dbh);
+extern void swr_oci_stmt_close(pdo_stmt_t *stmt);
+
+/* What Rust reads of the statement record (crates/oci/src/statement.rs). */
+ub2 swr_oci_stmt_type(pdo_stmt_t *stmt) {
+    return ((pdo_oci_stmt *) stmt->driver_data)->stmt_type;
+}
+
+void swr_oci_set_stmt_type(pdo_stmt_t *stmt, ub2 kind) {
+    ((pdo_oci_stmt *) stmt->driver_data)->stmt_type = kind;
+}
+
+bool swr_oci_stmt_scrollable(pdo_stmt_t *stmt) {
+    return ((pdo_oci_stmt *) stmt->driver_data)->exec_type == OCI_STMT_SCROLLABLE_READONLY;
+}
+
+bool swr_oci_stmt_have_blobs(pdo_stmt_t *stmt) {
+    return ((pdo_oci_stmt *) stmt->driver_data)->have_blobs;
+}
 
 struct swr_oci_columns **swr_oci_stmt_columns(pdo_stmt_t *stmt) {
     return &((pdo_oci_stmt *) stmt->driver_data)->cols;
@@ -75,19 +93,7 @@ static int oci_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
     HashTable *BC = stmt->bound_columns;
     HashTable *BP = stmt->bound_params;
 
-    if (S->stmt) {
-        /* cancel server side resources for the statement if we didn't
-         * fetch it all */
-        OCIStmtFetch(S->stmt, S->err, 0, OCI_FETCH_NEXT, OCI_DEFAULT);
-
-        /* free the handle */
-        OCIHandleFree(S->stmt, OCI_HTYPE_STMT);
-        S->stmt = NULL;
-    }
-    if (S->err) {
-        OCIHandleFree(S->err, OCI_HTYPE_ERROR);
-        S->err = NULL;
-    }
+    swr_oci_stmt_close(stmt);
 
     /* need to ensure these go away now */
     if (BC) {
@@ -121,54 +127,10 @@ static int oci_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
     return 1;
 } /* }}} */
 
+/* PDO's method table takes an int; Rust runs the statement. */
 static int oci_stmt_execute(pdo_stmt_t *stmt) /* {{{ */
 {
-    pdo_oci_stmt *S = (pdo_oci_stmt *) stmt->driver_data;
-    ub4 rowcount;
-    b4 mode;
-
-    if (!S->stmt_type) {
-        STMT_CALL_MSG(
-            OCIAttrGet, "OCI_ATTR_STMT_TYPE", (S->stmt, OCI_HTYPE_STMT, &S->stmt_type, 0, OCI_ATTR_STMT_TYPE, S->err));
-    }
-
-    if (stmt->executed) {
-        /* ensure that we cancel the cursor from a previous fetch */
-        OCIStmtFetch(S->stmt, S->err, 0, OCI_FETCH_NEXT, OCI_DEFAULT);
-    }
-
-#ifdef OCI_STMT_SCROLLABLE_READONLY /* needed for oci8 ? */
-    if (S->exec_type == OCI_STMT_SCROLLABLE_READONLY) {
-        mode = OCI_STMT_SCROLLABLE_READONLY;
-    } else
-#endif
-        if (stmt->dbh->auto_commit && !stmt->dbh->in_txn) {
-        mode = OCI_COMMIT_ON_SUCCESS;
-    } else {
-        mode = OCI_DEFAULT;
-    }
-
-    STMT_CALL(
-        OCIStmtExecute,
-        (swr_oci_svc(S->dbh), S->stmt, S->err, (S->stmt_type == OCI_STMT_SELECT && !S->have_blobs) ? 0 : 1, 0, NULL, NULL, mode));
-
-    if (!stmt->executed) {
-        ub4 colcount;
-        /* do first-time-only definition of bind/mapping stuff */
-
-        /* how many columns do we have ? */
-        STMT_CALL_MSG(
-            OCIAttrGet, "ATTR_PARAM_COUNT", (S->stmt, OCI_HTYPE_STMT, &colcount, 0, OCI_ATTR_PARAM_COUNT, S->err));
-
-        stmt->column_count = (int) colcount;
-
-        swr_oci_columns_reset(stmt, colcount);
-    }
-
-    STMT_CALL_MSG(OCIAttrGet, "ATTR_ROW_COUNT", (S->stmt, OCI_HTYPE_STMT, &rowcount, 0, OCI_ATTR_ROW_COUNT, S->err));
-    stmt->row_count = (long) rowcount;
-
-    return 1;
+    return swr_oci_execute(stmt, stmt->dbh) ? 1 : 0;
 } /* }}} */
 
 static sb4 oci_bind_input_cb(
