@@ -199,6 +199,10 @@ unsafe extern "C" {
         value: &Value,
         out: &mut *mut zend_string,
     ) -> std::ffi::c_int;
+    /// `zend_list_close` of the resource `value` holds, if it holds one, inside
+    /// `zend_try` (nonzero for a bailout): the resource's destructor may run PHP
+    /// code. The resource stays, closed, for its other holders.
+    safe fn swr_zend_try_list_close(value: &Value) -> std::ffi::c_int;
     /// `zval_is_true`: it reads the value (an object's cast handler may run).
     safe fn swr_zval_is_true(value: &Value) -> bool;
     /// `http_build_query($value)`: null or a new string.
@@ -932,6 +936,14 @@ impl Value {
         let mut out = ptr::null_mut();
         bailout::defer(bailout::trapped(swr_zend_try_get_string(self, &mut out)));
         ZString(out)
+    }
+
+    /// `zend_list_close`: the resource this value holds closed (its destructor
+    /// run, its bailout deferred), whatever its type; nothing for a value that
+    /// holds none.
+    #[inline]
+    pub fn close_resource(&self) {
+        bailout::defer(bailout::trapped(swr_zend_try_list_close(self)));
     }
 
     /// `zval_try_get_string`: [`Value::string`], or None when the conversion

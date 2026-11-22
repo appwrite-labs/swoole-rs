@@ -335,21 +335,7 @@ extern "C" void swr_ssh2_session_resource(LIBSSH2_SESSION *session, zval *return
     ZVAL_RES(return_value, zend_register_resource(session, le_ssh2_session));
 }
 
-/* {{{ proto resource ssh2_disconnect(resource session)
- * close a connection to a remote SSH server and return a true on success, false on error.
- */
-PHP_FUNCTION(ssh2_disconnect) {
-    zval *zsession;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "r", &zsession) == FAILURE) {
-        RETURN_FALSE;
-    }
-
-    zend_list_close(Z_RES_P(zsession));
-
-    RETURN_TRUE;
-}
-/* }}} */
+/* ssh2_disconnect is Rust (crates/ssh2/src/php.rs). */
 
 /* ssh2_methods_negotiated and ssh2_fingerprint are Rust (crates/ssh2/src/php.rs),
  * which reads a resource's session through this. */
