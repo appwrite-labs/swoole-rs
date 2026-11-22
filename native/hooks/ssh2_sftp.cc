@@ -16,6 +16,19 @@
    +----------------------------------------------------------------------+
 */
 
+/* What stays C of ext/ssh2's ssh2_sftp.cc (docs/zend.md, What stays C); its PHP
+ * functions are crates/ssh2/src/php.rs.
+ * - the SFTP file and directory stream ops tables and operations, over their
+ *   emalloc'd handle data, and the ssh2.sftp wrapper's opener, url_stat,
+ *   unlink, rename, mkdir and rmdir: allocator, globals (the wrapper's
+ *   parser).
+ * - the SFTP resource's data and destructor: allocator.
+ * - LIBSSH2_SFTP_ATTRIBUTES, which ssh2_sftp_stat, lstat and chmod read and
+ *   fill through swr_ssh2_sftp_stat and swr_ssh2_sftp_chmod: budget (its
+ *   layout would be a repr(C)). */
+#include "swoole_rs_phphost.h"
+#ifdef SW_HAVE_SSH2LIB
+
 #include "php_ssh2.h"
 
 #include "php_swoole_ssh2_hook.h"
@@ -650,3 +663,5 @@ extern "C" int swr_ssh2_sftp_chmod(
  * indent-tabs-mode: t
  * End:
  */
+
+#endif /* SW_HAVE_SSH2LIB */
