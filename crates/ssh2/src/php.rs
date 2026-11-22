@@ -1,11 +1,14 @@
 //! The bundled ext/ssh2's PHP functions (`thirdparty/php/ssh2/ssh2.cc`) as
-//! they move to Rust: so far `ssh2_methods_negotiated` and `ssh2_fingerprint`.
+//! they move to Rust: so far `ssh2_methods_negotiated`, `ssh2_fingerprint`,
+//! `ssh2_auth_none` and `ssh2_auth_password`.
 //! The resources stay ext/ssh2's; their sessions are read through
 //! `swr_ssh2_session`.
-use crate::Session;
-use std::ffi::{CString, c_int};
+use crate::{Ops, Session, Wait};
+use std::ffi::{CStr, CString, c_int, c_uint};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::Text;
-use swoole_rs_zend::{Call, E_WARNING, Owned, OwnedArray, Value, ZString, bailout, report};
+use swoole_rs_ssh2_sys::KbdintResponse;
+use swoole_rs_zend::{Call, E_WARNING, Owned, OwnedArray, Value, ZStr, ZString, bailout, report};
 
 /// `LIBSSH2_METHOD_*`, the negotiated method kinds `ssh2_methods_negotiated` reads.
 const METHOD_KEX: c_int = 0;
@@ -26,6 +29,46 @@ const FINGERPRINT_SHA1: i64 = 0x0001;
 const FINGERPRINT_RAW: i64 = 0x0002;
 
 unsafe extern "C" {
+    /// `ssh2_bound` (crates/hooks): the wait for the session's socket, once no
+    /// other coroutine is bound to it.
+    safe fn swr_v1_ssh2_bound(session: Session) -> &'static Ops;
+    /// The password `ssh2.cc`'s keyboard-interactive callback answers with,
+    /// which must stay live until the authentication returns.
+    safe fn swr_ssh2_kbd_password(password: Text<'_>);
+    /// libssh2's own declarations, with the strings typed as the C strings they
+    /// are and their lengths beside them.
+    safe fn libssh2_userauth_list<'a>(
+        session: Session,
+        username: Text<'_>,
+        length: c_uint,
+    ) -> Option<Text<'a>>;
+    safe fn libssh2_userauth_authenticated(session: Session) -> c_int;
+    safe fn libssh2_userauth_password_ex(
+        session: Session,
+        username: Text<'_>,
+        username_len: c_uint,
+        password: Text<'_>,
+        password_len: c_uint,
+        change: Option<&'static Nothing>,
+    ) -> c_int;
+    safe fn libssh2_userauth_keyboard_interactive_ex(
+        session: Session,
+        username: Text<'_>,
+        username_len: c_uint,
+        response: KbdintResponse,
+    ) -> c_int;
+    /// `ssh2.cc`'s keyboard-interactive callback, which answers the one prompt
+    /// with the password [`swr_ssh2_kbd_password`] set.
+    fn swr_ssh2_kbd_callback(
+        name: *const std::ffi::c_char,
+        name_len: c_int,
+        instruction: *const std::ffi::c_char,
+        instruction_len: c_int,
+        num_prompts: c_int,
+        prompts: *const std::ffi::c_void,
+        responses: *mut std::ffi::c_void,
+        abstract_: *mut *mut std::ffi::c_void,
+    );
     /// The session an `SSH2 Session` resource holds (`zend_fetch_resource`):
     /// null, with Zend's `TypeError` thrown, for a resource of another kind.
     safe fn swr_ssh2_session(resource: &Value) -> Session;
@@ -46,9 +89,37 @@ unsafe extern "C" {
     safe fn hostkey_sha1<'a>(session: Session, kind: c_int) -> Option<&'a [u8; 20]>;
 }
 
+/// What no value has: the password-change callback `ssh2_auth_password` never passes.
+enum Nothing {}
+
 swoole_rs_zend::handlers! {
     zif_ssh2_methods_negotiated => methods_negotiated;
     zif_ssh2_fingerprint => fingerprint;
+    zif_ssh2_auth_none => auth_none;
+    zif_ssh2_auth_password => auth_password;
+}
+
+/// A PHP string as the C string libssh2 reads, up to its NUL, and its length
+/// as the `unsigned int` libssh2 takes.
+fn text(string: &ZStr) -> (Text<'_>, c_uint) {
+    let text = CStr::from_bytes_until_nul(string.bytes_with_nul()).unwrap_or_default();
+    (text.into(), string.bytes().len().c_cast())
+}
+
+/// The hooked call's retry: `call` while libssh2 says `EAGAIN`, parking the
+/// coroutine on the session's socket, as the C call sites did through
+/// `php_swoole_ssh2_hook.h`.
+fn hooked<R: crate::Answer>(session: Session, call: impl FnMut() -> R) -> R::Result {
+    Wait {
+        ops: swr_v1_ssh2_bound(session),
+        session,
+    }
+    .run(call)
+}
+
+/// `libssh2_userauth_authenticated`, hooked.
+fn authenticated(session: Session) -> bool {
+    hooked(session, || libssh2_userauth_authenticated(session)) != 0
 }
 
 /// The session `resource` holds, or false returned (with Zend's error raised)
@@ -161,4 +232,98 @@ fn fingerprint(call: &Call<'_>) {
         ZString::new(hex.as_bytes())
     };
     call.set_owned(Owned::string(value));
+}
+
+/// `ssh2_auth_none(resource $session, string $username): array|bool`: true if
+/// "none" authentication succeeded, else the methods the server allows (false
+/// when it gave none and the session isn't authenticated).
+fn auth_none(call: &Call<'_>) {
+    if call.arity(2, 2).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let Ok(Some(username)) = call.zstr(2) else {
+        return;
+    };
+    let Some(session) = session(call, resource) else {
+        return;
+    };
+    let (name, length) = text(username);
+    let Some(methods) = hooked(session, || libssh2_userauth_list(session, name, length)) else {
+        // Either a failure, or an unexpected success.
+        call.set_bool(authenticated(session));
+        return;
+    };
+    let mut allowed = OwnedArray::default();
+    for method in methods.get().to_bytes().split(|&byte| byte == b',') {
+        if !method.is_empty() {
+            allowed.push_bytes(method);
+        }
+    }
+    call.set_owned(allowed.into_owned());
+}
+
+/// `ssh2_auth_password(resource $session, string $username, string $password): bool`:
+/// keyboard-interactive authentication with the password when the server
+/// offers it, else (or when it fails) password authentication.
+fn auth_password(call: &Call<'_>) {
+    if call.arity(3, 3).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let (Ok(Some(username)), Ok(Some(password))) = (call.zstr(2), call.zstr(3)) else {
+        return;
+    };
+    let Some(session) = session(call, resource) else {
+        return;
+    };
+    if authenticated(session) {
+        warn("Connection already authenticated");
+        call.set_bool(false);
+        return;
+    }
+    let (name, name_len) = text(username);
+    let Some(methods) = hooked(session, || libssh2_userauth_list(session, name, name_len)) else {
+        call.set_bool(true);
+        return;
+    };
+    let (secret, secret_len) = text(password);
+    swr_ssh2_kbd_password(secret);
+    // C's libssh2_userauth_keyboard_interactive measured the name with strlen,
+    // unlike the other calls, which take the PHP string's length.
+    let c_name_len: c_uint = name.get().count_bytes().c_cast();
+    let offered = methods
+        .get()
+        .to_bytes()
+        .windows(20)
+        .any(|window| window == b"keyboard-interactive");
+    if offered
+        && hooked(session, || {
+            libssh2_userauth_keyboard_interactive_ex(
+                session,
+                name,
+                c_name_len,
+                swr_ssh2_kbd_callback,
+            )
+        }) == 0
+    {
+        call.set_bool(true);
+        return;
+    }
+    if hooked(session, || {
+        libssh2_userauth_password_ex(session, name, name_len, secret, secret_len, None)
+    }) != 0
+    {
+        warn(&format!(
+            "Authentication failed for {} using password",
+            name.get().to_string_lossy()
+        ));
+        call.set_bool(false);
+        return;
+    }
+    call.set_bool(true);
 }
