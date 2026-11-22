@@ -2,7 +2,7 @@
 //! they move to Rust: so far `ssh2_connect`, `ssh2_methods_negotiated`,
 //! `ssh2_fingerprint`, the `ssh2_auth_*` functions,
 //! `ssh2_forward_listen`/`ssh2_forward_accept`, the SFTP functions that
-//! change a path, and `ssh2_sftp_readlink`/`ssh2_sftp_realpath`.
+//! change a path, `ssh2_sftp_readlink`/`ssh2_sftp_realpath` and `ssh2_sftp`.
 //! The resources stay ext/ssh2's; their sessions, listeners and SFTP sessions
 //! are read through `swr_ssh2_session`, `swr_ssh2_listener` and `swr_ssh2_sftp`.
 use crate::{Ops, Session, Sftp, Wait};
@@ -165,6 +165,16 @@ unsafe extern "C" {
         target_len: c_uint,
         link_type: c_int,
     ) -> c_int;
+    /// libssh2's own declaration: the session's SFTP subsystem, or null.
+    safe fn libssh2_sftp_init(session: Session) -> Option<Started>;
+    /// `ssh2_sftp`'s `SSH2 SFTP` resource over `sftp`, which holds a
+    /// reference to the session resource, put in `out`.
+    safe fn swr_ssh2_sftp_open(
+        session_resource: &Value,
+        session: Session,
+        sftp: Started,
+        out: ReturnSlot<'_>,
+    );
     /// Whether the session of the `SSH2 SFTP` resource [`swr_ssh2_sftp`]
     /// accepted has been closed (`ssh2_disconnect`).
     safe fn swr_ssh2_sftp_session_closed(resource: &Value) -> bool;
@@ -273,12 +283,18 @@ struct Listener(NonNull<c_void>);
 #[repr(transparent)]
 struct Accepted(NonNull<c_void>);
 
+/// An SFTP subsystem `libssh2_sftp_init` started (`LIBSSH2_SFTP *`), which the
+/// resource made over it owns.
+#[repr(transparent)]
+struct Started(NonNull<c_void>);
+
 /// What no value has: the password-change callback `ssh2_auth_password` never
 /// passes, and the bound port `ssh2_forward_listen` never asks for.
 enum Nothing {}
 
 swoole_rs_zend::handlers! {
     zif_ssh2_connect => connect;
+    zif_ssh2_sftp => sftp_init;
     zif_ssh2_sftp_rename => sftp_rename;
     zif_ssh2_sftp_unlink => sftp_unlink;
     zif_ssh2_sftp_mkdir => sftp_mkdir;
@@ -1219,4 +1235,24 @@ fn sftp_realpath(call: &Call<'_>) {
         SFTP_REALPATH,
         b"Unable to resolve realpath for",
     );
+}
+
+/// `ssh2_sftp(resource $session): resource|false`: the session's SFTP
+/// subsystem, or C's warning with the session's last error and false.
+fn sftp_init(call: &Call<'_>) {
+    if call.arity(1, 1).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let Some(session) = session(call, resource) else {
+        return;
+    };
+    let Some(sftp) = hooked(session, || libssh2_sftp_init(session)) else {
+        warn_bytes(&[b"Unable to startup SFTP subsystem: ", last_error(session)]);
+        call.set_bool(false);
+        return;
+    };
+    swr_ssh2_sftp_open(resource, session, sftp, call.return_slot());
 }
