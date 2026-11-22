@@ -293,6 +293,9 @@ fn auth_password(call: &Call<'_>) {
     };
     let (secret, secret_len) = text(password);
     swr_ssh2_kbd_password(secret);
+    // C's libssh2_userauth_keyboard_interactive measured the name with strlen,
+    // unlike the other calls, which take the PHP string's length.
+    let c_name_len: c_uint = name.get().count_bytes().c_cast();
     let offered = methods
         .get()
         .to_bytes()
@@ -300,7 +303,12 @@ fn auth_password(call: &Call<'_>) {
         .any(|window| window == b"keyboard-interactive");
     if offered
         && hooked(session, || {
-            libssh2_userauth_keyboard_interactive_ex(session, name, name_len, swr_ssh2_kbd_callback)
+            libssh2_userauth_keyboard_interactive_ex(
+                session,
+                name,
+                c_name_len,
+                swr_ssh2_kbd_callback,
+            )
         }) == 0
     {
         call.set_bool(true);
