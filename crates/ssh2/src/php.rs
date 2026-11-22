@@ -116,18 +116,18 @@ unsafe extern "C" {
         local_username: Text<'_>,
         local_username_len: c_uint,
     ) -> c_int;
-    /// libssh2's own agent declarations, over the typed [`Agent`] and borrowed
-    /// [`Identity`]s it lists.
+    /// libssh2's own agent declarations, over the typed [`Agent`] and the
+    /// [`Identity`] handles it lists.
     safe fn libssh2_agent_init(session: Session) -> Option<Agent>;
     safe fn libssh2_agent_free(agent: Agent);
     safe fn libssh2_agent_connect(agent: Agent) -> c_int;
     safe fn libssh2_agent_list_identities(agent: Agent) -> c_int;
-    safe fn libssh2_agent_get_identity<'a>(
+    safe fn libssh2_agent_get_identity(
         agent: Agent,
-        store: &mut Option<&'a Identity>,
-        previous: Option<&'a Identity>,
+        store: &mut Option<Identity>,
+        previous: Option<Identity>,
     ) -> c_int;
-    safe fn libssh2_agent_userauth(agent: Agent, username: Text<'_>, identity: &Identity) -> c_int;
+    safe fn libssh2_agent_userauth(agent: Agent, username: Text<'_>, identity: Identity) -> c_int;
     safe fn libssh2_agent_disconnect(agent: Agent) -> c_int;
     /// The session an `SSH2 Session` resource holds (`zend_fetch_resource`):
     /// null, with Zend's `TypeError` thrown, for a resource of another kind.
@@ -154,9 +154,11 @@ unsafe extern "C" {
 #[derive(Clone, Copy)]
 struct Agent(NonNull<c_void>);
 
-/// One of the identities an agent lists (`struct libssh2_agent_publickey`),
-/// which the agent keeps until it is freed.
-enum Identity {}
+/// One of the identities an agent lists (`struct libssh2_agent_publickey *`),
+/// which the agent keeps until it is freed: a handle, never dereferenced here.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Identity(NonNull<c_void>);
 
 /// What no value has: the password-change callback `ssh2_auth_password` never passes.
 enum Nothing {}
