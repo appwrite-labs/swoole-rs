@@ -2141,6 +2141,10 @@ fn scp_send(call: &Call<'_>) {
         else {
             refuse("Failed copying file 2");
             drop(file);
+            if bailout::pending() {
+                // The wrapper's close bailed out: C's longjmp left before the free.
+                return;
+            }
             free();
             return;
         };
@@ -2156,6 +2160,10 @@ fn scp_send(call: &Call<'_>) {
                     warn(message);
                 }
                 drop(file);
+                if bailout::pending() {
+                    // As above.
+                    return;
+                }
                 free();
                 call.set_bool(false);
                 return;
@@ -2167,6 +2175,10 @@ fn scp_send(call: &Call<'_>) {
     // C flushed without the hook, whatever it answered.
     let _status = libssh2_channel_flush_ex(channel, FLUSH_ALL);
     drop(file);
+    if bailout::pending() {
+        // As above.
+        return;
+    }
     free();
     call.set_bool(true);
 }
