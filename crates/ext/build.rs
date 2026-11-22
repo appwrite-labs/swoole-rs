@@ -210,9 +210,9 @@ mod php {
         }
         if feature("ssh2") {
             p.define(&["SW_HAVE_SSH2LIB", "PHP_SSH2_SESSION_TIMEOUT"]);
-            let dir = third.join("php/ssh2");
-            p.cxx
-                .extend(["ssh2.cc", "ssh2_fopen_wrappers.cc", "ssh2_sftp.cc"].map(|f| dir.join(f)));
+            // native/hooks/ssh2*.cc come with the hooks module's sources, each
+            // inside SW_HAVE_SSH2LIB.
+            p.cxx.push(third.join("php/ssh2/ssh2_publickey.cc"));
             p.includes.extend(pkg_includes("libssh2"));
             p.libs.push("ssh2");
         }

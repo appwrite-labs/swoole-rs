@@ -12,7 +12,7 @@ use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_zend::{Owned, Value};
 
 #[cfg(feature = "ssh2")]
-// the bundled ext/ssh2's module hooks (thirdparty/php/ssh2), linked with this feature.
+// the bundled ext/ssh2's module hooks (native/hooks/ssh2.cc), linked with this feature.
 unsafe extern "C" {
     /// ssh2's information table: rows of its static version strings, printed.
     safe fn php_swoole_ssh2_minfo();

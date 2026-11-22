@@ -107,7 +107,7 @@ unsafe extern "C" {
 }
 
 #[cfg(feature = "ssh2")]
-// The bundled ext/ssh2's handlers (thirdparty/php/ssh2).
+// The bundled ext/ssh2's handlers (crates/ssh2, and thirdparty/php/ssh2's publickey subsystem).
 unsafe extern "C" {
     safe fn zif_ssh2_connect(frame: Entered<'_>, value: Returned<'_>);
     safe fn zif_ssh2_disconnect(frame: Entered<'_>, value: Returned<'_>);

@@ -1,4 +1,4 @@
-//! The bundled ext/ssh2's PHP functions (`thirdparty/php/ssh2/ssh2.cc`) as
+//! The bundled ext/ssh2's PHP functions (once `thirdparty/php/ssh2/ssh2.cc`) as
 //! they move to Rust: so far `ssh2_connect`, `ssh2_methods_negotiated`,
 //! `ssh2_fingerprint`, the `ssh2_auth_*` functions,
 //! `ssh2_forward_listen`/`ssh2_forward_accept`, the SFTP functions that
