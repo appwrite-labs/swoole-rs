@@ -11,6 +11,7 @@ description = "Swoole's coroutine Firebird calls for its bundled pdo_firebird (-
 php = ["dep:swoole-rs-zend", "swoole-rs-zend/php"]
 
 [dependencies]
+swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-hooks = { path = "../hooks" }
 swoole-rs-zend = { path = "../zend", optional = true }
 swoole-rs-firebird-sys = { path = "../firebird-sys" }
