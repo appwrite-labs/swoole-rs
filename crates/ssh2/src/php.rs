@@ -2,11 +2,12 @@
 //! they move to Rust: so far `ssh2_connect`, `ssh2_methods_negotiated`,
 //! `ssh2_fingerprint`, the `ssh2_auth_*` functions,
 //! `ssh2_forward_listen`/`ssh2_forward_accept`, the SFTP functions that
-//! change a path, `ssh2_sftp_readlink`/`ssh2_sftp_realpath` and `ssh2_sftp`.
+//! change a path, `ssh2_sftp_readlink`/`ssh2_sftp_realpath`, `ssh2_sftp`,
+//! `ssh2_sftp_chmod` and `ssh2_sftp_stat`/`ssh2_sftp_lstat`.
 //! The resources stay ext/ssh2's; their sessions, listeners and SFTP sessions
 //! are read through `swr_ssh2_session`, `swr_ssh2_listener` and `swr_ssh2_sftp`.
 use crate::{Ops, Session, Sftp, Wait};
-use std::ffi::{CStr, CString, c_int, c_long, c_uint, c_void};
+use std::ffi::{CStr, CString, c_int, c_long, c_uint, c_ulong, c_void};
 use std::ptr::NonNull;
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_corebase::{
@@ -175,6 +176,32 @@ unsafe extern "C" {
         sftp: Started,
         out: ReturnSlot<'_>,
     );
+    /// `libssh2_sftp_stat_ex` of `stat_type` (`LIBSSH2_SFTP_STAT` or
+    /// `_LSTAT`), retried through the hook, each attribute stored in its out
+    /// parameter; 0, or libssh2's error with none stored.
+    safe fn swr_ssh2_sftp_stat(
+        sftp: Sftp,
+        session: Session,
+        path: Text<'_>,
+        path_len: c_uint,
+        stat_type: c_int,
+        flags: &mut c_ulong,
+        size: &mut u64,
+        uid: &mut c_ulong,
+        gid: &mut c_ulong,
+        permissions: &mut c_ulong,
+        atime: &mut c_ulong,
+        mtime: &mut c_ulong,
+    ) -> c_int;
+    /// `libssh2_sftp_stat_ex` setting only the permissions, retried through
+    /// the hook: 0, or libssh2's error.
+    safe fn swr_ssh2_sftp_chmod(
+        sftp: Sftp,
+        session: Session,
+        path: Text<'_>,
+        path_len: c_uint,
+        permissions: c_ulong,
+    ) -> c_int;
     /// Whether the session of the `SSH2 SFTP` resource [`swr_ssh2_sftp`]
     /// accepted has been closed (`ssh2_disconnect`).
     safe fn swr_ssh2_sftp_session_closed(resource: &Value) -> bool;
@@ -296,6 +323,9 @@ swoole_rs_zend::handlers! {
     zif_ssh2_connect => connect;
     zif_ssh2_sftp => sftp_init;
     zif_ssh2_sftp_rename => sftp_rename;
+    zif_ssh2_sftp_chmod => sftp_chmod;
+    zif_ssh2_sftp_stat => sftp_stat;
+    zif_ssh2_sftp_lstat => sftp_lstat;
     zif_ssh2_sftp_unlink => sftp_unlink;
     zif_ssh2_sftp_mkdir => sftp_mkdir;
     zif_ssh2_sftp_rmdir => sftp_rmdir;
@@ -1255,4 +1285,106 @@ fn sftp_init(call: &Call<'_>) {
         return;
     };
     swr_ssh2_sftp_open(resource, session, sftp, call.return_slot());
+}
+
+/// `ssh2_sftp_chmod(resource $sftp, string $filename, int $mode): bool`:
+/// false for an empty filename, before the resource is read.
+fn sftp_chmod(call: &Call<'_>) {
+    let Some(resource) = sftp_resource(call, 3, 3) else {
+        return;
+    };
+    let Some(filename) = path(call, 2) else {
+        return;
+    };
+    let Ok(mode) = call.long(3, 0) else {
+        return;
+    };
+    if filename.bytes().is_empty() {
+        call.set_bool(false);
+        return;
+    }
+    let Some((sftp, session)) = sftp(call, resource) else {
+        return;
+    };
+    let (path, path_len) = text(filename);
+    // C stored the long in the attributes' unsigned long as it was.
+    call.set_bool(swr_ssh2_sftp_chmod(sftp, session, path, path_len, mode.c_cast()) == 0);
+}
+
+/// `LIBSSH2_SFTP_STAT` and `LIBSSH2_SFTP_LSTAT`.
+const SFTP_STAT: c_int = 0;
+const SFTP_LSTAT: c_int = 1;
+/// `LIBSSH2_SFTP_ATTR_*`: which attributes the server sent.
+const ATTR_SIZE: c_ulong = 0x1;
+const ATTR_UIDGID: c_ulong = 0x2;
+const ATTR_PERMISSIONS: c_ulong = 0x4;
+const ATTR_ACMODTIME: c_ulong = 0x8;
+
+/// `ssh2_sftp_stat(resource $sftp, string $path): array|false`, following
+/// links.
+fn sftp_stat(call: &Call<'_>) {
+    stat(call, SFTP_STAT);
+}
+
+/// `ssh2_sftp_lstat(resource $sftp, string $path): array|false`, of a link
+/// itself.
+fn sftp_lstat(call: &Call<'_>) {
+    stat(call, SFTP_LSTAT);
+}
+
+/// The attributes the server sent for `$path`, each under its `stat()` index
+/// and name in C's order, or C's warning and false.
+fn stat(call: &Call<'_>, stat_type: c_int) {
+    let Some(resource) = sftp_resource(call, 2, 2) else {
+        return;
+    };
+    let Some(path) = path(call, 2) else {
+        return;
+    };
+    let Some((sftp, session)) = sftp(call, resource) else {
+        return;
+    };
+    let (path, path_len) = text(path);
+    let (mut flags, mut size, mut uid, mut gid) = (0, 0, 0, 0);
+    let (mut permissions, mut atime, mut mtime) = (0, 0, 0);
+    let status = swr_ssh2_sftp_stat(
+        sftp,
+        session,
+        path,
+        path_len,
+        stat_type,
+        &mut flags,
+        &mut size,
+        &mut uid,
+        &mut gid,
+        &mut permissions,
+        &mut atime,
+        &mut mtime,
+    );
+    if status != 0 {
+        warn("Failed to stat remote file");
+        call.set_bool(false);
+        return;
+    }
+    let mut stat = OwnedArray::default();
+    // C's add_index_long and add_assoc_long took each as a zend_long.
+    let mut add = |index, name: &[u8], value: i64| {
+        stat.insert_index(index, Owned::long(value));
+        stat.insert_long(name, value);
+    };
+    if flags & ATTR_SIZE != 0 {
+        add(7, b"size", size.c_cast());
+    }
+    if flags & ATTR_UIDGID != 0 {
+        add(4, b"uid", uid.c_cast());
+        add(5, b"gid", gid.c_cast());
+    }
+    if flags & ATTR_PERMISSIONS != 0 {
+        add(2, b"mode", permissions.c_cast());
+    }
+    if flags & ATTR_ACMODTIME != 0 {
+        add(8, b"atime", atime.c_cast());
+        add(9, b"mtime", mtime.c_cast());
+    }
+    call.set_owned(stat.into_owned());
 }

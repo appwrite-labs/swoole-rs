@@ -600,104 +600,44 @@ extern "C" bool swr_ssh2_sftp_session_closed(zval *zsftp) {
 }
 
 
-/* {{{ proto bool ssh2_sftp_chmod(resource sftp, string filename, int mode)
- */
-PHP_FUNCTION(ssh2_sftp_chmod) {
-    php_ssh2_sftp_data *data;
-    zval *zsftp;
-    zend_string *filename;
-    zend_long mode;
+/* ssh2_sftp_chmod, ssh2_sftp_stat and ssh2_sftp_lstat are Rust
+ * (crates/ssh2/src/php.rs). What they keep C: LIBSSH2_SFTP_ATTRIBUTES, which
+ * libssh2's header lays out and Rust would need a repr(C) for (budget); these
+ * fill it or read it out, each call retried through the hook. */
+extern "C" int swr_ssh2_sftp_stat(LIBSSH2_SFTP *sftp,
+                                  LIBSSH2_SESSION *session,
+                                  const char *path,
+                                  unsigned int path_len,
+                                  int stat_type,
+                                  unsigned long *flags,
+                                  libssh2_uint64_t *size,
+                                  unsigned long *uid,
+                                  unsigned long *gid,
+                                  unsigned long *permissions,
+                                  unsigned long *atime,
+                                  unsigned long *mtime) {
     LIBSSH2_SFTP_ATTRIBUTES attrs;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "rSl", &zsftp, &filename, &mode) == FAILURE) {
-        return;
+    int rc = libssh2_sftp_stat_ex(sftp, path, path_len, stat_type, &attrs);
+    if (rc) {
+        return rc;
     }
+    *flags = attrs.flags;
+    *size = attrs.filesize;
+    *uid = attrs.uid;
+    *gid = attrs.gid;
+    *permissions = attrs.permissions;
+    *atime = attrs.atime;
+    *mtime = attrs.mtime;
+    return 0;
+}
 
-    if (ZSTR_LEN(filename) < 1) {
-        RETURN_FALSE;
-    }
-
-    if ((data = (php_ssh2_sftp_data *) zend_fetch_resource(Z_RES_P(zsftp), PHP_SSH2_SFTP_RES_NAME, le_ssh2_sftp)) ==
-        NULL) {
-        RETURN_FALSE;
-    }
-
-    attrs.permissions = mode;
+extern "C" int swr_ssh2_sftp_chmod(
+    LIBSSH2_SFTP *sftp, LIBSSH2_SESSION *session, const char *path, unsigned int path_len, unsigned long permissions) {
+    LIBSSH2_SFTP_ATTRIBUTES attrs;
+    attrs.permissions = permissions;
     attrs.flags = LIBSSH2_SFTP_ATTR_PERMISSIONS;
-
-    auto session = data->session;
-
-    RETURN_BOOL(!libssh2_sftp_stat_ex(data->sftp, filename->val, filename->len, LIBSSH2_SFTP_SETSTAT, &attrs));
+    return libssh2_sftp_stat_ex(sftp, path, path_len, LIBSSH2_SFTP_SETSTAT, &attrs);
 }
-/* }}} */
-
-/* {{{ php_ssh2_sftp_stat_func
- * In PHP4.3 this is the only way to request stat into, in PHP >= 5 you can use the fopen wrapper approach
- * Both methods will return identical structures
- * (well, the other one will include other values set to 0 but they don't count)
- */
-static void php_ssh2_sftp_stat_func(INTERNAL_FUNCTION_PARAMETERS, int stat_type) {
-    php_ssh2_sftp_data *data;
-    LIBSSH2_SFTP_ATTRIBUTES attrs;
-    zval *zsftp;
-    zend_string *path;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "rS", &zsftp, &path) == FAILURE) {
-        return;
-    }
-
-    if ((data = (php_ssh2_sftp_data *) zend_fetch_resource(Z_RES_P(zsftp), PHP_SSH2_SFTP_RES_NAME, le_ssh2_sftp)) ==
-        NULL) {
-        RETURN_FALSE;
-    }
-
-    auto session = data->session;
-
-    if (libssh2_sftp_stat_ex(data->sftp, path->val, path->len, stat_type, &attrs)) {
-        php_error_docref(NULL, E_WARNING, "Failed to stat remote file");
-        RETURN_FALSE;
-    }
-
-    array_init(return_value);
-
-    if (attrs.flags & LIBSSH2_SFTP_ATTR_SIZE) {
-        add_index_long(return_value, 7, attrs.filesize);
-        add_assoc_long(return_value, "size", attrs.filesize);
-    }
-    if (attrs.flags & LIBSSH2_SFTP_ATTR_UIDGID) {
-        add_index_long(return_value, 4, attrs.uid);
-        add_assoc_long(return_value, "uid", attrs.uid);
-
-        add_index_long(return_value, 5, attrs.gid);
-        add_assoc_long(return_value, "gid", attrs.gid);
-    }
-    if (attrs.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS) {
-        add_index_long(return_value, 2, attrs.permissions);
-        add_assoc_long(return_value, "mode", attrs.permissions);
-    }
-    if (attrs.flags & LIBSSH2_SFTP_ATTR_ACMODTIME) {
-        add_index_long(return_value, 8, attrs.atime);
-        add_assoc_long(return_value, "atime", attrs.atime);
-
-        add_index_long(return_value, 9, attrs.mtime);
-        add_assoc_long(return_value, "mtime", attrs.mtime);
-    }
-}
-/* }}} */
-
-/* {{{ proto array ssh2_sftp_stat(resource sftp, string path)
- */
-PHP_FUNCTION(ssh2_sftp_stat) {
-    php_ssh2_sftp_stat_func(INTERNAL_FUNCTION_PARAM_PASSTHRU, LIBSSH2_SFTP_STAT);
-}
-/* }}} */
-
-/* {{{ proto array ssh2_sftp_lstat(resource sftp, string path)
- */
-PHP_FUNCTION(ssh2_sftp_lstat) {
-    php_ssh2_sftp_stat_func(INTERNAL_FUNCTION_PARAM_PASSTHRU, LIBSSH2_SFTP_LSTAT);
-}
-/* }}} */
 
 
 /* ssh2_sftp_readlink and ssh2_sftp_realpath are Rust (crates/ssh2/src/php.rs). */
