@@ -258,36 +258,14 @@ static int php_ssh2_set_callback(LIBSSH2_SESSION *session,
 }
 /* }}} */
 
-/* {{{ php_ssh2_set_method
- * Try to set a method if it's passed in with the hash table
- */
-static int php_ssh2_set_method(
-    LIBSSH2_SESSION *session, HashTable *ht, const char *method, int method_len, int method_type) {
-    zval *value;
-    zend_string *method_zstring;
 
-    method_zstring = zend_string_init(method, method_len, 0);
-    if ((value = zend_hash_find(ht, method_zstring)) == NULL) {
-        zend_string_release(method_zstring);
-        return 0;
-    }
-    zend_string_release(method_zstring);
-
-    if ((Z_TYPE_P(value) != IS_STRING)) {
-        return -1;
-    }
-
-    return libssh2_session_method_pref(session, method_type, Z_STRVAL_P(value));
-}
-/* }}} */
-
-/* {{{ php_ssh2_session_connect
- * Connect to an SSH server with requested methods
- */
-LIBSSH2_SESSION *php_ssh2_session_connect(const char *host, int port, zval *methods, zval *callbacks) {
+/* ssh2_connect is Rust (crates/ssh2/src/php.rs). What it keeps C: the session's
+ * socket, a C++ SocketImpl, and its data, emalloc'd with the callbacks' zvals and
+ * freed by the session's destructor (allocator); and the callbacks, which call
+ * PHP functions from inside libssh2 (bailout). */
+extern "C" LIBSSH2_SESSION *swr_ssh2_session_open(const char *host, int port) {
     LIBSSH2_SESSION *session;
     php_ssh2_session_data *data;
-    zend_string *hash_lookup_zstring;
 
     int domain = swoole::network::Address::verify_ip(AF_INET6, host) ? AF_INET6 : AF_INET;
 
@@ -311,125 +289,51 @@ LIBSSH2_SESSION *php_ssh2_session_connect(const char *host, int port, zval *meth
 
     libssh2_banner_set(session, LIBSSH2_SSH_DEFAULT_BANNER " swoole-" SWOOLE_VERSION);
     libssh2_session_set_blocking(session, 0);
-
-    /* Override method preferences */
-    if (methods) {
-        zval *container;
-
-        if (php_ssh2_set_method(session, HASH_OF(methods), "kex", sizeof("kex") - 1, LIBSSH2_METHOD_KEX)) {
-            php_error_docref(NULL, E_WARNING, "Failed overriding KEX method");
-        }
-        if (php_ssh2_set_method(session, HASH_OF(methods), "hostkey", sizeof("hostkey") - 1, LIBSSH2_METHOD_HOSTKEY)) {
-            php_error_docref(NULL, E_WARNING, "Failed overriding HOSTKEY method");
-        }
-
-        hash_lookup_zstring = zend_string_init("client_to_server", sizeof("client_to_server") - 1, 0);
-        if ((container = zend_hash_find(HASH_OF(methods), hash_lookup_zstring)) != NULL &&
-            Z_TYPE_P(container) == IS_ARRAY) {
-            if (php_ssh2_set_method(
-                    session, HASH_OF(container), "crypt", sizeof("crypt") - 1, LIBSSH2_METHOD_CRYPT_CS)) {
-                php_error_docref(NULL, E_WARNING, "Failed overriding client to server CRYPT method");
-            }
-            if (php_ssh2_set_method(session, HASH_OF(container), "mac", sizeof("mac") - 1, LIBSSH2_METHOD_MAC_CS)) {
-                php_error_docref(NULL, E_WARNING, "Failed overriding client to server MAC method");
-            }
-            if (php_ssh2_set_method(session, HASH_OF(container), "comp", sizeof("comp") - 1, LIBSSH2_METHOD_COMP_CS)) {
-                php_error_docref(NULL, E_WARNING, "Failed overriding client to server COMP method");
-            }
-            if (php_ssh2_set_method(session, HASH_OF(container), "lang", sizeof("lang") - 1, LIBSSH2_METHOD_LANG_CS)) {
-                php_error_docref(NULL, E_WARNING, "Failed overriding client to server LANG method");
-            }
-        }
-        zend_string_release(hash_lookup_zstring);
-
-        hash_lookup_zstring = zend_string_init("server_to_client", sizeof("server_to_client") - 1, 0);
-        if ((container = zend_hash_find(HASH_OF(methods), hash_lookup_zstring)) != NULL &&
-            Z_TYPE_P(container) == IS_ARRAY) {
-            if (php_ssh2_set_method(
-                    session, HASH_OF(container), "crypt", sizeof("crypt") - 1, LIBSSH2_METHOD_CRYPT_SC)) {
-                php_error_docref(NULL, E_WARNING, "Failed overriding server to client CRYPT method");
-            }
-            if (php_ssh2_set_method(session, HASH_OF(container), "mac", sizeof("mac") - 1, LIBSSH2_METHOD_MAC_SC)) {
-                php_error_docref(NULL, E_WARNING, "Failed overriding server to client MAC method");
-            }
-            if (php_ssh2_set_method(session, HASH_OF(container), "comp", sizeof("comp") - 1, LIBSSH2_METHOD_COMP_SC)) {
-                php_error_docref(NULL, E_WARNING, "Failed overriding server to client COMP method");
-            }
-            if (php_ssh2_set_method(session, HASH_OF(container), "lang", sizeof("lang") - 1, LIBSSH2_METHOD_LANG_SC)) {
-                php_error_docref(NULL, E_WARNING, "Failed overriding server to client LANG method");
-            }
-        }
-        zend_string_release(hash_lookup_zstring);
-    }
-
-    /* Register Callbacks */
-    if (callbacks) {
-        /* ignore debug disconnect macerror */
-
-        if (php_ssh2_set_callback(
-                session, HASH_OF(callbacks), "ignore", sizeof("ignore") - 1, LIBSSH2_CALLBACK_IGNORE, data)) {
-            php_error_docref(NULL, E_WARNING, "Failed setting IGNORE callback");
-        }
-
-        if (php_ssh2_set_callback(
-                session, HASH_OF(callbacks), "debug", sizeof("debug") - 1, LIBSSH2_CALLBACK_DEBUG, data)) {
-            php_error_docref(NULL, E_WARNING, "Failed setting DEBUG callback");
-        }
-
-        if (php_ssh2_set_callback(
-                session, HASH_OF(callbacks), "macerror", sizeof("macerror") - 1, LIBSSH2_CALLBACK_MACERROR, data)) {
-            php_error_docref(NULL, E_WARNING, "Failed setting MACERROR callback");
-        }
-
-        if (php_ssh2_set_callback(session,
-                                  HASH_OF(callbacks),
-                                  "disconnect",
-                                  sizeof("disconnect") - 1,
-                                  LIBSSH2_CALLBACK_DISCONNECT,
-                                  data)) {
-            php_error_docref(NULL, E_WARNING, "Failed setting DISCONNECT callback");
-        }
-    }
-
-    if (libssh2_session_handshake(session, sock->get_fd())) {
-        int last_error = 0;
-        char *error_msg = NULL;
-
-        last_error = libssh2_session_last_error(session, &error_msg, NULL, 0);
-        php_error_docref(NULL, E_WARNING, "Error starting up SSH connection(%d): %s", last_error, error_msg);
-        libssh2_session_free(session);
-        efree(data);
-        delete sock;
-        return NULL;
-    }
-
     return session;
 }
-/* }}} */
 
-/* {{{ proto resource ssh2_connect(string host[, int port[, array methods[, array callbacks]]])
- * Establish a connection to a remote SSH server and return a resource on success, false on error
- */
-PHP_FUNCTION(ssh2_connect) {
-    LIBSSH2_SESSION *session;
-    zval *methods = NULL, *callbacks = NULL;
-    char *host;
-    zend_long port = PHP_SSH2_DEFAULT_PORT;
-    size_t host_len;
+extern "C" void swr_ssh2_session_callbacks(LIBSSH2_SESSION *session, zval *callbacks) {
+    php_ssh2_session_data *data = *(php_ssh2_session_data **) libssh2_session_abstract(session);
 
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "s|la!a!", &host, &host_len, &port, &methods, &callbacks) == FAILURE) {
-        return;
+    /* ignore debug disconnect macerror */
+
+    if (php_ssh2_set_callback(
+            session, HASH_OF(callbacks), "ignore", sizeof("ignore") - 1, LIBSSH2_CALLBACK_IGNORE, data)) {
+        php_error_docref(NULL, E_WARNING, "Failed setting IGNORE callback");
     }
 
-    session = php_ssh2_session_connect(host, port, methods, callbacks);
-    if (!session) {
-        php_error_docref(NULL, E_WARNING, "Unable to connect to %s", host);
-        RETURN_FALSE;
+    if (php_ssh2_set_callback(session, HASH_OF(callbacks), "debug", sizeof("debug") - 1, LIBSSH2_CALLBACK_DEBUG, data)) {
+        php_error_docref(NULL, E_WARNING, "Failed setting DEBUG callback");
     }
 
-    RETURN_RES(zend_register_resource(session, le_ssh2_session));
+    if (php_ssh2_set_callback(
+            session, HASH_OF(callbacks), "macerror", sizeof("macerror") - 1, LIBSSH2_CALLBACK_MACERROR, data)) {
+        php_error_docref(NULL, E_WARNING, "Failed setting MACERROR callback");
+    }
+
+    if (php_ssh2_set_callback(
+            session, HASH_OF(callbacks), "disconnect", sizeof("disconnect") - 1, LIBSSH2_CALLBACK_DISCONNECT, data)) {
+        php_error_docref(NULL, E_WARNING, "Failed setting DISCONNECT callback");
+    }
 }
-/* }}} */
+
+extern "C" int swr_ssh2_session_fd(LIBSSH2_SESSION *session) {
+    return (*(php_ssh2_session_data **) libssh2_session_abstract(session))->socket->get_fd();
+}
+
+extern "C" void swr_ssh2_session_drop(LIBSSH2_SESSION *session) {
+    php_ssh2_session_data *data = *(php_ssh2_session_data **) libssh2_session_abstract(session);
+    SocketImpl *sock = data->socket;
+
+    libssh2_session_free(session);
+    efree(data);
+    delete sock;
+}
+
+extern "C" void swr_ssh2_session_resource(LIBSSH2_SESSION *session, zval *return_value) {
+    zval_ptr_dtor(return_value);
+    ZVAL_RES(return_value, zend_register_resource(session, le_ssh2_session));
+}
 
 /* {{{ proto resource ssh2_disconnect(resource session)
  * close a connection to a remote SSH server and return a true on success, false on error.
