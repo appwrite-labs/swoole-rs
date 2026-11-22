@@ -150,7 +150,7 @@ enum NoMessage {
 
 /// `libssh2_channel_open_session(session)`: a session channel with libssh2's default
 /// window and packet sizes.
-fn open_session(session: Session) -> *mut LIBSSH2_CHANNEL {
+pub(crate) fn open_session(session: Session) -> *mut LIBSSH2_CHANNEL {
     channel_open(
         session,
         b"session\0",

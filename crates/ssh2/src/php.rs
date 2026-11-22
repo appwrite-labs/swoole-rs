@@ -4,7 +4,8 @@
 //! `ssh2_forward_listen`/`ssh2_forward_accept`, the SFTP functions that
 //! change a path, `ssh2_sftp_readlink`/`ssh2_sftp_realpath`, `ssh2_sftp`,
 //! `ssh2_sftp_chmod`, `ssh2_sftp_stat`/`ssh2_sftp_lstat`, and
-//! `ssh2_send_eof`/`ssh2_shell_resize` on a channel stream, and `ssh2_tunnel`.
+//! `ssh2_send_eof`/`ssh2_shell_resize` on a channel stream, `ssh2_tunnel` and
+//! `ssh2_shell`.
 //! The resources stay ext/ssh2's; their sessions, listeners and SFTP sessions
 //! are read through `swr_ssh2_session`, `swr_ssh2_listener` and `swr_ssh2_sftp`.
 use crate::{Ops, Session, Sftp, Wait};
@@ -17,7 +18,8 @@ use swoole_rs_corebase::{
 };
 use swoole_rs_ssh2_sys::{KbdintResponse, LIBSSH2_CHANNEL};
 use swoole_rs_zend::{
-    Call, E_WARNING, Owned, OwnedArray, ReturnSlot, Value, ZStr, ZString, bailout, report,
+    Call, E_ERROR, E_NOTICE, E_WARNING, Owned, OwnedArray, ReturnSlot, Value, ZStr, ZString,
+    bailout, report,
 };
 
 /// `LIBSSH2_METHOD_*`, the negotiated method kinds `ssh2_methods_negotiated` reads.
@@ -221,10 +223,38 @@ unsafe extern "C" {
         shost: Text<'_>,
         sport: c_int,
     ) -> *mut LIBSSH2_CHANNEL;
-    /// `ssh2_tunnel`'s channel stream over `channel`, which holds a reference
-    /// to the session resource, put in `out`; false when no stream can be
-    /// allocated.
-    safe fn swr_ssh2_tunnel_stream(session_resource: &Value, channel: Opened, out: ReturnSlot<'_>);
+    /// The channel stream over `channel`, which holds a reference to the
+    /// session resource, put in `out`; false when no stream can be allocated.
+    safe fn swr_ssh2_session_stream(session_resource: &Value, channel: Opened, out: ReturnSlot<'_>);
+    /// libssh2's own declarations for a shell channel: an environment
+    /// variable, the pty, the shell itself, and freeing a channel no stream
+    /// was made over.
+    safe fn libssh2_channel_setenv_ex<'name, 'value>(
+        channel: Opened,
+        name: In<'name, u8>,
+        name_len: Count<'name, c_uint>,
+        value: In<'value, u8>,
+        value_len: Count<'value, c_uint>,
+    ) -> c_int;
+    safe fn libssh2_channel_request_pty_ex(
+        channel: Opened,
+        term: Text<'_>,
+        term_len: c_uint,
+        modes: Option<&'static Nothing>,
+        modes_len: c_uint,
+        width: c_int,
+        height: c_int,
+        width_px: c_int,
+        height_px: c_int,
+    ) -> c_int;
+    safe fn libssh2_channel_process_startup(
+        channel: Opened,
+        request: Text<'_>,
+        request_len: c_uint,
+        message: Option<&'static Nothing>,
+        message_len: c_uint,
+    ) -> c_int;
+    safe fn libssh2_channel_free(channel: Opened) -> c_int;
     /// libssh2's own channel declarations.
     safe fn libssh2_channel_send_eof(channel: StreamChannel) -> c_int;
     safe fn libssh2_channel_request_pty_size_ex(
@@ -338,9 +368,10 @@ struct Identity(NonNull<c_void>);
 struct Listener(NonNull<c_void>);
 
 /// A channel libssh2 just opened (`LIBSSH2_CHANNEL *`): a connection a
-/// listener accepted or a tunnel, which the stream made over it owns.
+/// listener accepted, a tunnel or a shell, which the stream made over it owns.
 #[repr(transparent)]
-struct Opened(NonNull<c_void>);
+#[derive(Clone, Copy)]
+pub(crate) struct Opened(NonNull<c_void>);
 
 /// An SFTP subsystem `libssh2_sftp_init` started (`LIBSSH2_SFTP *`), which the
 /// resource made over it owns.
@@ -354,7 +385,8 @@ struct Started(NonNull<c_void>);
 struct StreamChannel(NonNull<c_void>);
 
 /// What no value has: the password-change callback `ssh2_auth_password` never
-/// passes, and the bound port `ssh2_forward_listen` never asks for.
+/// passes, the bound port `ssh2_forward_listen` never asks for, and the pty
+/// modes and startup message a shell never sends.
 enum Nothing {}
 
 swoole_rs_zend::handlers! {
@@ -362,6 +394,7 @@ swoole_rs_zend::handlers! {
     zif_ssh2_sftp => sftp_init;
     zif_ssh2_send_eof => send_eof;
     zif_ssh2_tunnel => tunnel;
+    zif_ssh2_shell => shell;
     zif_ssh2_shell_resize => shell_resize;
     zif_ssh2_sftp_rename => sftp_rename;
     zif_ssh2_sftp_chmod => sftp_chmod;
@@ -1522,5 +1555,203 @@ fn tunnel(call: &Call<'_>) {
         call.set_bool(false);
         return;
     };
-    swr_ssh2_tunnel_stream(resource, channel, call.return_slot());
+    swr_ssh2_session_stream(resource, channel, call.return_slot());
+}
+
+/// `PHP_SSH2_DEFAULT_TERMINAL`, `_TERM_WIDTH`, `_TERM_HEIGHT` and
+/// `PHP_SSH2_TERM_UNIT_CHARS`, `ssh2_shell`'s defaults.
+const DEFAULT_TERMINAL: &CStr = c"vanilla";
+const DEFAULT_TERM_WIDTH: i64 = 80;
+const DEFAULT_TERM_HEIGHT: i64 = 25;
+const TERM_UNIT_CHARS: i64 = 0;
+
+/// `ssh2_shell(resource $session, string $term_type = "vanilla",
+/// ?array $env = null, int $width = 80, int $height = 25,
+/// int $width_height_type = SSH2_TERM_UNIT_CHARS): resource|false`: a shell
+/// on the server, as a stream. Five arguments are C's fatal error.
+fn shell(call: &Call<'_>) {
+    if call.num_args() == 5 {
+        bailout::defer(report(E_ERROR, c"width specified without height parameter"));
+        call.set_bool(false);
+        return;
+    }
+    if call.arity(1, 6).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let Ok(term) = call.zstr(2) else {
+        return;
+    };
+    let environment = match call.value(3) {
+        None => Ok(None),
+        Some(_) => call.array_or_null(3),
+    };
+    let Ok(environment) = environment else {
+        return;
+    };
+    let long = |n, default| call.long(n, default).ok();
+    let (Some(width), Some(height), Some(unit)) = (
+        long(4, DEFAULT_TERM_WIDTH),
+        long(5, DEFAULT_TERM_HEIGHT),
+        long(6, TERM_UNIT_CHARS),
+    ) else {
+        return;
+    };
+    let Some(session) = session(call, resource) else {
+        return;
+    };
+    if !authenticated(session) {
+        warn("Connection not authenticated");
+        call.set_bool(false);
+        return;
+    }
+    let (term, term_len) = term.map_or(
+        (
+            DEFAULT_TERMINAL.into(),
+            DEFAULT_TERMINAL.count_bytes().c_cast(),
+        ),
+        text,
+    );
+    let Some(channel) = shell_channel(
+        session,
+        term,
+        term_len,
+        environment.as_deref(),
+        width,
+        height,
+        unit,
+    ) else {
+        call.set_bool(false);
+        return;
+    };
+    swr_ssh2_session_stream(resource, channel, call.return_slot());
+}
+
+swoole_rs_zend::exports! {
+/// A session channel running a shell in a `term` pty of `width` by `height`
+/// characters or pixels (`unit`), with `environment`'s string keys set first,
+/// for `ssh2_shell` and the `ssh2.shell://` wrapper; null, with C's warning,
+/// when the channel, its pty or its shell can't be had.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_ssh2_shell_channel(
+    session: Session,
+    term: Text<'_>,
+    term_len: c_uint,
+    environment: Option<&Value>,
+    width: c_long,
+    height: c_long,
+    unit: c_long,
+) -> Option<Opened> {
+    shell_channel(session, term, term_len, environment, width, height, unit)
+}
+}
+
+/// [`swr_ssh2_shell_channel`].
+fn shell_channel(
+    session: Session,
+    term: Text<'_>,
+    term_len: c_uint,
+    environment: Option<&Value>,
+    width: i64,
+    height: i64,
+    unit: i64,
+) -> Option<Opened> {
+    let opened = hooked(session, || crate::open_session(session));
+    let Some(channel) = NonNull::new(opened.cast()).map(Opened) else {
+        warn("Unable to request a channel from remote host");
+        return None;
+    };
+    if let Some(environment) = environment.and_then(Value::array) {
+        set_environment(session, channel, environment);
+    }
+    // C passed the longs to libssh2's ints as they were.
+    let (columns, rows) = (width.c_cast(), height.c_cast());
+    let (size, units) = if unit == TERM_UNIT_CHARS {
+        ([columns, rows, 0, 0], "characters")
+    } else {
+        ([0, 0, columns, rows], "pixels")
+    };
+    let [width_chars, height_chars, width_px, height_px] = size;
+    let pty = hooked(session, || {
+        libssh2_channel_request_pty_ex(
+            channel,
+            term,
+            term_len,
+            None,
+            0,
+            width_chars,
+            height_chars,
+            width_px,
+            height_px,
+        )
+    });
+    if pty != 0 {
+        warn_bytes(&[
+            b"Failed allocating ",
+            term.get().to_bytes(),
+            format!(" pty at {width}x{height} {units}").as_bytes(),
+        ]);
+        // The channel failed; its status adds nothing to the warning.
+        let _status = libssh2_channel_free(channel);
+        return None;
+    }
+    let request = c"shell";
+    let started = hooked(session, || {
+        libssh2_channel_process_startup(
+            channel,
+            request.into(),
+            request.count_bytes().c_cast(),
+            None,
+            0,
+        )
+    });
+    if started != 0 {
+        warn("Unable to request shell from remote host");
+        // As above.
+        let _status = libssh2_channel_free(channel);
+        return None;
+    }
+    Some(channel)
+}
+
+/// Each string key of `environment` set on the channel to its value as a
+/// string, with C's warning when the server refuses one; an integer key is
+/// skipped with C's notice.
+fn set_environment(session: Session, channel: Opened, environment: &swoole_rs_zend::Array) {
+    for (name, value) in environment.entries() {
+        let Some(name) = name else {
+            bailout::defer(report(
+                E_NOTICE,
+                c"Skipping numeric index in environment array",
+            ));
+            continue;
+        };
+        let value = value.string();
+        let set = hooked(session, || {
+            lend_in(name, |name, name_len| {
+                lend_in(value.bytes(), |value, value_len| {
+                    libssh2_channel_setenv_ex(channel, name, name_len, value, value_len)
+                })
+            })
+        });
+        if set != 0 {
+            // C's %s of each, up to its first NUL.
+            let until_nul = |bytes: &[u8]| {
+                bytes
+                    .split(|&byte| byte == 0)
+                    .next()
+                    .unwrap_or_default()
+                    .to_vec()
+            };
+            warn_bytes(&[
+                b"Failed setting ",
+                &until_nul(name),
+                b"=",
+                &until_nul(value.bytes()),
+                b" on remote end",
+            ]);
+        }
+    }
 }
