@@ -111,6 +111,9 @@ typedef struct _php_ssh2_channel_data {
 
 /* Rust (crates/ssh2/src/php.rs): ssh2_connect's session, for the wrappers too. */
 extern "C" LIBSSH2_SESSION *php_ssh2_session_connect(const char *host, int port, zval *methods, zval *callbacks);
+/* Rust (crates/ssh2/src/php.rs): ssh2_shell's channel, for the ssh2.shell:// wrapper too. */
+extern "C" LIBSSH2_CHANNEL *swr_ssh2_shell_channel(
+    LIBSSH2_SESSION *session, const char *term, unsigned int term_len, zval *environment, long width, long height, long unit);
 void php_ssh2_sftp_dtor(zend_resource *rsrc);
 php_url *php_ssh2_fopen_wraper_parse_path(const char *path,
                                           const char *type,
