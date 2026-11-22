@@ -225,11 +225,7 @@ mod php {
             p.libs.push("fbclient");
         }
         if feature("ssh2") {
-            p.define(&[
-                "SW_HAVE_SSH2LIB",
-                "PHP_SSH2_AGENT_AUTH",
-                "PHP_SSH2_SESSION_TIMEOUT",
-            ]);
+            p.define(&["SW_HAVE_SSH2LIB", "PHP_SSH2_SESSION_TIMEOUT"]);
             let dir = third.join("php/ssh2");
             p.cxx
                 .extend(["ssh2.cc", "ssh2_fopen_wrappers.cc", "ssh2_sftp.cc"].map(|f| dir.join(f)));

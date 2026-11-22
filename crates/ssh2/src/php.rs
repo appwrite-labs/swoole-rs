@@ -1,10 +1,11 @@
 //! The bundled ext/ssh2's PHP functions (`thirdparty/php/ssh2/ssh2.cc`) as
 //! they move to Rust: so far `ssh2_methods_negotiated`, `ssh2_fingerprint`
-//! and the `ssh2_auth_*` functions but `ssh2_auth_agent`.
+//! and the `ssh2_auth_*` functions.
 //! The resources stay ext/ssh2's; their sessions are read through
 //! `swr_ssh2_session`.
 use crate::{Ops, Session, Wait};
-use std::ffi::{CStr, CString, c_int, c_uint};
+use std::ffi::{CStr, CString, c_int, c_uint, c_void};
+use std::ptr::NonNull;
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_corebase::{
     CCast,
@@ -115,6 +116,19 @@ unsafe extern "C" {
         local_username: Text<'_>,
         local_username_len: c_uint,
     ) -> c_int;
+    /// libssh2's own agent declarations, over the typed [`Agent`] and borrowed
+    /// [`Identity`]s it lists.
+    safe fn libssh2_agent_init(session: Session) -> Option<Agent>;
+    safe fn libssh2_agent_free(agent: Agent);
+    safe fn libssh2_agent_connect(agent: Agent) -> c_int;
+    safe fn libssh2_agent_list_identities(agent: Agent) -> c_int;
+    safe fn libssh2_agent_get_identity<'a>(
+        agent: Agent,
+        store: &mut Option<&'a Identity>,
+        previous: Option<&'a Identity>,
+    ) -> c_int;
+    safe fn libssh2_agent_userauth(agent: Agent, username: Text<'_>, identity: &Identity) -> c_int;
+    safe fn libssh2_agent_disconnect(agent: Agent) -> c_int;
     /// The session an `SSH2 Session` resource holds (`zend_fetch_resource`):
     /// null, with Zend's `TypeError` thrown, for a resource of another kind.
     safe fn swr_ssh2_session(resource: &Value) -> Session;
@@ -135,6 +149,15 @@ unsafe extern "C" {
     safe fn hostkey_sha1<'a>(session: Session, kind: c_int) -> Option<&'a [u8; 20]>;
 }
 
+/// A session's ssh-agent handle (`LIBSSH2_AGENT *`), live until freed.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Agent(NonNull<c_void>);
+
+/// One of the identities an agent lists (`struct libssh2_agent_publickey`),
+/// which the agent keeps until it is freed.
+enum Identity {}
+
 /// What no value has: the password-change callback `ssh2_auth_password` never passes.
 enum Nothing {}
 
@@ -146,6 +169,7 @@ swoole_rs_zend::handlers! {
     zif_ssh2_auth_pubkey_file => auth_pubkey_file;
     zif_ssh2_auth_pubkey => auth_pubkey;
     zif_ssh2_auth_hostbased_file => auth_hostbased_file;
+    zif_ssh2_auth_agent => auth_agent;
 }
 
 /// A PHP string as the C string libssh2 reads, up to its NUL, and its length
@@ -572,4 +596,83 @@ fn auth_hostbased_file(call: &Call<'_>) {
         ]);
     }
     call.set_bool(!failed);
+}
+
+/// `ssh2_auth_agent(resource $session, string $username): bool`: each identity
+/// the ssh-agent at `SSH_AUTH_SOCK` holds, tried in turn, unless the server
+/// doesn't offer "publickey". Every failure warns with C's message.
+fn auth_agent(call: &Call<'_>) {
+    if call.arity(2, 2).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let Ok(Some(username)) = call.zstr(2) else {
+        return;
+    };
+    let Some(session) = unauthenticated(call, resource) else {
+        return;
+    };
+    let (name, name_len) = text(username);
+    let methods = hooked(session, || libssh2_userauth_list(session, name, name_len));
+    let refuse = |message: &str| {
+        warn(message);
+        call.set_bool(false);
+    };
+    if methods.is_some_and(|methods| {
+        !methods
+            .get()
+            .to_bytes()
+            .windows(9)
+            .any(|window| window == b"publickey")
+    }) {
+        refuse("\"publickey\" authentication is not supported");
+        return;
+    }
+    let Some(agent) = libssh2_agent_init(session) else {
+        refuse("Failure initializing ssh-agent support");
+        return;
+    };
+    if hooked(session, || libssh2_agent_connect(agent)) != 0 {
+        refuse("Failure connecting to ssh-agent");
+        libssh2_agent_free(agent);
+        return;
+    }
+    let close = || {
+        // Disconnecting is best effort, as in C, before the agent is freed.
+        let _status = hooked(session, || libssh2_agent_disconnect(agent));
+        libssh2_agent_free(agent);
+    };
+    if hooked(session, || libssh2_agent_list_identities(agent)) != 0 {
+        refuse("Failure requesting identities to ssh-agent");
+        close();
+        return;
+    }
+    let mut previous = None;
+    loop {
+        let mut identity = None;
+        let status = hooked(session, || {
+            libssh2_agent_get_identity(agent, &mut identity, previous)
+        });
+        let current = match (status, identity) {
+            (1, _) => {
+                refuse("Couldn't continue authentication");
+                close();
+                return;
+            }
+            (0, Some(current)) => current,
+            _ => {
+                refuse("Failure obtaining identity from ssh-agent support");
+                close();
+                return;
+            }
+        };
+        if hooked(session, || libssh2_agent_userauth(agent, name, current)) == 0 {
+            close();
+            call.set_bool(true);
+            return;
+        }
+        previous = Some(current);
+    }
 }
