@@ -490,68 +490,38 @@ extern "C" const char *swr_ssh2_home_dir(void) {
     return pws ? pws->pw_dir : NULL;
 }
 
-/* {{{ proto resource ssh2_forward_listen(resource session, int port[, string host[, long max_connections]])
- * Bind a port on the remote server and listen for connections
- */
-PHP_FUNCTION(ssh2_forward_listen) {
-    zval *zsession;
-    LIBSSH2_SESSION *session;
-    LIBSSH2_LISTENER *listener;
-    php_ssh2_listener_data *data;
-    zend_long port;
-    char *host = NULL;
-    size_t host_len;
-    zend_long max_connections = PHP_SSH2_LISTEN_MAX_QUEUED;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "rl|sl", &zsession, &port, &host, &host_len, &max_connections) ==
-        FAILURE) {
-        return;
-    }
-
-    SSH2_FETCH_AUTHENTICATED_SESSION(session, zsession);
-
-    listener = libssh2_channel_forward_listen_ex(session, host, port, NULL, max_connections);
-
-    if (!listener) {
-        php_error_docref(NULL, E_WARNING, "Failure listening on remote port");
-        RETURN_FALSE;
-    }
-
-    data = (php_ssh2_listener_data *) emalloc(sizeof(php_ssh2_listener_data));
+/* ssh2_forward_listen and ssh2_forward_accept are Rust (crates/ssh2/src/php.rs).
+ * What they keep C: the listener resource's data, emalloc'd and freed by its
+ * destructor (allocator), and the channel stream over an accepted connection,
+ * built on this file's stream ops. */
+extern "C" void swr_ssh2_listener_open(zval *zsession,
+                                       LIBSSH2_SESSION *session,
+                                       LIBSSH2_LISTENER *listener,
+                                       zval *return_value) {
+    php_ssh2_listener_data *data = (php_ssh2_listener_data *) emalloc(sizeof(php_ssh2_listener_data));
     data->session = session;
     data->session_rsrc = Z_RES_P(zsession);
     Z_ADDREF_P(zsession);
     data->listener = listener;
 
-    RETURN_RES(zend_register_resource(data, le_ssh2_listener));
+    zval_ptr_dtor(return_value);
+    ZVAL_RES(return_value, zend_register_resource(data, le_ssh2_listener));
 }
-/* }}} */
 
-/* {{{ proto stream ssh2_forward_accept(resource listener[, string &shost[, long &sport]])
- * Accept a connection created by a listener
- */
-PHP_FUNCTION(ssh2_forward_accept) {
-    zval *zlistener;
-    php_ssh2_listener_data *data;
-    LIBSSH2_CHANNEL *channel;
+extern "C" LIBSSH2_LISTENER *swr_ssh2_listener(zval *zlistener) {
+    php_ssh2_listener_data *data = (php_ssh2_listener_data *) zend_fetch_resource(
+        Z_RES_P(zlistener), PHP_SSH2_LISTENER_RES_NAME, le_ssh2_listener);
+    return data ? data->listener : NULL;
+}
+
+extern "C" LIBSSH2_SESSION *swr_ssh2_listener_session(zval *zlistener) {
+    return ((php_ssh2_listener_data *) Z_RES_P(zlistener)->ptr)->session;
+}
+
+extern "C" void swr_ssh2_accepted_stream(zval *zlistener, LIBSSH2_CHANNEL *channel, zval *return_value) {
+    php_ssh2_listener_data *data = (php_ssh2_listener_data *) Z_RES_P(zlistener)->ptr;
     php_ssh2_channel_data *channel_data;
     php_stream *stream;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "r", &zlistener) == FAILURE) {
-        return;
-    }
-
-    if ((data = (php_ssh2_listener_data *) zend_fetch_resource(
-             Z_RES_P(zlistener), PHP_SSH2_LISTENER_RES_NAME, le_ssh2_listener)) == NULL) {
-        RETURN_FALSE;
-    }
-
-    auto session = data->session;
-    channel = libssh2_channel_forward_accept(data->listener);
-
-    if (!channel) {
-        RETURN_FALSE;
-    }
 
     channel_data = (php_ssh2_channel_data *) emalloc(sizeof(php_ssh2_channel_data));
     channel_data->channel = channel;
@@ -560,6 +530,7 @@ PHP_FUNCTION(ssh2_forward_accept) {
     channel_data->session_rsrc = data->session_rsrc;
     channel_data->refcount = NULL;
 
+    zval_ptr_dtor(return_value);
     stream = php_stream_alloc(&php_ssh2_channel_stream_ops, channel_data, 0, "r+");
     if (!stream) {
         php_error_docref(NULL, E_WARNING, "Failure allocating stream");
@@ -572,7 +543,6 @@ PHP_FUNCTION(ssh2_forward_accept) {
 
     php_stream_to_zval(stream, return_value);
 }
-/* }}} */
 
 /* ***********************
  * Publickey Subsystem *
