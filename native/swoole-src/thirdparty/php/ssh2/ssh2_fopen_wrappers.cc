@@ -723,34 +723,30 @@ PHP_FUNCTION(ssh2_shell) {
 }
 /* }}} */
 
-PHP_FUNCTION(ssh2_shell_resize) {
-    zend_long width;
-    zend_long height;
-    zend_long width_px = 0;
-    zend_long height_px = 0;
-    zval *zparent;
-    php_stream *parent;
-    php_ssh2_channel_data *data;
-
-    int argc = ZEND_NUM_ARGS();
-
-    if (zend_parse_parameters(argc, "rll|ll", &zparent, &width, &height, &width_px, &height_px) == FAILURE) {
-        return;
+/* ssh2_shell_resize and ssh2_send_eof are Rust (crates/ssh2/src/php.rs). What
+ * they keep C: the stream and its ops table, which the channel data hangs off. */
+extern "C" LIBSSH2_CHANNEL *swr_ssh2_stream_channel(zval *zstream, bool abstract_warns) {
+    php_stream *stream = (php_stream *) zend_fetch_resource2_ex(zstream, "stream", php_file_le_stream(), php_file_le_pstream());
+    if (!stream) {
+        return NULL;
     }
-
-    php_stream_from_zval(parent, zparent);
-
-    if (parent->ops != &php_ssh2_channel_stream_ops) {
+    if (stream->ops != &php_ssh2_channel_stream_ops) {
         php_error_docref(NULL, E_WARNING, "Provided stream is not of type " PHP_SSH2_CHANNEL_STREAM_NAME);
-        RETURN_FALSE;
+        return NULL;
     }
+    php_ssh2_channel_data *data = (php_ssh2_channel_data *) stream->abstract;
+    if (!data) {
+        if (abstract_warns) {
+            php_error_docref(NULL, E_WARNING, "Abstract in stream is null");
+        }
+        return NULL;
+    }
+    return data->channel;
+}
 
-    data = (php_ssh2_channel_data *) parent->abstract;
-    auto session = ssh2_get_session(data);
-
-    libssh2_channel_request_pty_size_ex(data->channel, width, height, width_px, height_px);
-
-    RETURN_TRUE;
+extern "C" LIBSSH2_SESSION *swr_ssh2_stream_session(zval *zstream) {
+    php_stream *stream = (php_stream *) Z_RES_P(zstream)->ptr;
+    return ssh2_get_session((php_ssh2_channel_data *) stream->abstract);
 }
 
 /* ****************
@@ -1441,42 +1437,6 @@ PHP_FUNCTION(ssh2_fetch_stream) {
 }
 /* }}} */
 
-/* {{{ proto stream ssh2_send_eof(stream channel)
- * Sends EOF to a stream. Primary use is to close stdin of an stdio stream.
- */
-PHP_FUNCTION(ssh2_send_eof) {
-    php_ssh2_channel_data *data;
-    php_stream *parent;
-    zval *zparent;
-    int ssh2_ret;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "r", &zparent) == FAILURE) {
-        return;
-    }
-
-    php_stream_from_zval(parent, zparent);
-    if (parent->ops != &php_ssh2_channel_stream_ops) {
-        php_error_docref(NULL, E_WARNING, "Provided stream is not of type " PHP_SSH2_CHANNEL_STREAM_NAME);
-        RETURN_FALSE;
-    }
-
-    data = (php_ssh2_channel_data *) parent->abstract;
-    if (!data) {
-        php_error_docref(NULL, E_WARNING, "Abstract in stream is null");
-        RETURN_FALSE;
-    }
-
-    auto session = ssh2_get_session(data);
-
-    ssh2_ret = libssh2_channel_send_eof(data->channel);
-    if (ssh2_ret < 0) {
-        php_error_docref(NULL, E_WARNING, "Couldn't send EOF to channel (Return code %d)", ssh2_ret);
-        RETURN_FALSE;
-    }
-
-    RETURN_TRUE;
-}
-/* }}} */
 
 /*
  * Local variables:
