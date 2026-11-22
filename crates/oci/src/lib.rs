@@ -25,6 +25,8 @@ mod error;
 #[cfg(feature = "php")]
 mod handle;
 #[cfg(feature = "php")]
+mod lob;
+#[cfg(feature = "php")]
 pub mod minit;
 #[cfg(feature = "php")]
 mod statement;
@@ -106,10 +108,10 @@ pub struct Text(*const c_uchar);
 /// for as long as OCI may write, which the caller keeps alive.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub struct Out(*mut c_void);
+pub struct Buffer(*mut c_void);
 
 #[cfg(feature = "php")]
-impl Out {
+impl Buffer {
     /// `cells`, which OCI may write through for as long as they live.
     pub(crate) fn cells(cells: &[std::cell::Cell<u8>]) -> Self {
         Self(cells.as_ptr().cast_mut().cast())
