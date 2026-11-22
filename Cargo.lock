@@ -511,6 +511,7 @@ dependencies = [
 name = "swoole-rs-firebird"
 version = "0.1.0"
 dependencies = [
+ "swoole-rs-corebase",
  "swoole-rs-firebird-sys",
  "swoole-rs-hooks",
  "swoole-rs-zend",

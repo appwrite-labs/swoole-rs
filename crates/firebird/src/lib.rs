@@ -17,6 +17,7 @@
 
 #[cfg(feature = "php")]
 pub mod minit;
+pub mod preprocess;
 
 use std::{
     cell::Cell,
