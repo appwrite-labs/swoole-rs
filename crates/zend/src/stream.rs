@@ -1,5 +1,5 @@
 //! A PHP stream a Rust function opens through its wrapper
-//! (`php_stream_open_wrapper`), writes and closes, as the C it replaces did. A
+//! (`php_stream_open_wrapper`), reads, writes, stats and closes, as the C it replaces did. A
 //! user stream wrapper runs PHP code on each call, so each is a zend-sys
 //! `swr_zend_try_stream_*` shim inside `zend_try`, its bailout deferred; a
 //! caller stops at [`bailout::pending`], where C's longjmp would have left.
@@ -8,7 +8,7 @@ use crate::sys::php_stream;
 use std::ffi::{CStr, c_int};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
-use swoole_rs_corebase::lent::{Count, In, lend_in};
+use swoole_rs_corebase::lent::{Count, In, Out, lend_in, lend_out};
 use swoole_rs_corebase::sys::Text;
 
 /// `REPORT_ERRORS`: the open warns when it fails.
@@ -17,6 +17,15 @@ pub const REPORT_ERRORS: c_int = 8;
 /// A stream [`Stream::open`] opened, which no zval holds: dropping it closes it.
 #[repr(transparent)]
 pub struct Stream(NonNull<php_stream>);
+
+/// What `php_stream_stat` says of a stream.
+#[derive(Clone, Copy, Debug)]
+pub struct Stat {
+    pub size: i64,
+    pub mode: u32,
+    pub atime: i64,
+    pub mtime: i64,
+}
 
 /// A [`Stream`] lent for one call.
 #[repr(transparent)]
@@ -39,6 +48,24 @@ unsafe extern "C" {
         bytes: In<'a, u8>,
         count: Count<'a>,
         written: &mut isize,
+    ) -> c_int;
+    /// `php_stream_read` into the lent buffer inside `zend_try`: what it read
+    /// in `read`, -1 when it failed or bailed out.
+    safe fn swr_zend_try_stream_read<'a>(
+        stream: Lent<'_>,
+        buffer: Out<'a, u8>,
+        count: Count<'a>,
+        read: &mut isize,
+    ) -> c_int;
+    /// `php_stream_stat` inside `zend_try`: the size, mode and times in
+    /// theirs, or `failed`.
+    safe fn swr_zend_try_stream_stat(
+        stream: Lent<'_>,
+        failed: &mut bool,
+        size: &mut i64,
+        mode: &mut u32,
+        atime: &mut i64,
+        mtime: &mut i64,
     ) -> c_int;
     /// `php_stream_close` inside `zend_try`, which frees the stream.
     safe fn swr_zend_try_stream_close(stream: Stream) -> c_int;
@@ -68,6 +95,41 @@ impl Stream {
             swr_zend_try_stream_write(Lent(self.0, PhantomData), bytes, count, &mut written)
         })));
         usize::try_from(written).ok()
+    }
+}
+
+impl Stream {
+    /// `php_stream_read` into `buffer`: the bytes read, or None when it failed
+    /// or bailed out (deferred).
+    #[must_use]
+    pub fn read(&self, buffer: &mut [u8]) -> Option<usize> {
+        let mut read = -1;
+        bailout::defer(bailout::trapped(lend_out(buffer, |buffer, count| {
+            swr_zend_try_stream_read(Lent(self.0, PhantomData), buffer, count, &mut read)
+        })));
+        usize::try_from(read).ok()
+    }
+
+    /// `php_stream_stat`: the size, mode and times, or None when it failed or
+    /// bailed out (deferred).
+    #[must_use]
+    pub fn stat(&self) -> Option<Stat> {
+        let mut failed = true;
+        let mut stat = Stat {
+            size: 0,
+            mode: 0,
+            atime: 0,
+            mtime: 0,
+        };
+        bailout::defer(bailout::trapped(swr_zend_try_stream_stat(
+            Lent(self.0, PhantomData),
+            &mut failed,
+            &mut stat.size,
+            &mut stat.mode,
+            &mut stat.atime,
+            &mut stat.mtime,
+        )));
+        (!failed).then_some(stat)
     }
 }
 

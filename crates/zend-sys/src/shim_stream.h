@@ -53,5 +53,7 @@ extern const php_stream_ops swoole_runtime_socket_ops;
 int swr_zend_try_socket_stream_alloc(const char *persistent, bool unix_stream, php_stream **stream);
 int swr_zend_try_stream_open(const char *, const char *, int, php_stream **);
 int swr_zend_try_stream_write(php_stream *, const char *, size_t, ssize_t *);
+int swr_zend_try_stream_read(php_stream *, char *, size_t, ssize_t *);
+int swr_zend_try_stream_stat(php_stream *, bool *, int64_t *, uint32_t *, int64_t *, int64_t *);
 int swr_zend_try_stream_close(php_stream *);
 #endif
