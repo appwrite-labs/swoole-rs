@@ -431,6 +431,7 @@ extern "C" void swr_ssh2_accepted_stream(zval *zlistener, LIBSSH2_CHANNEL *chann
     channel_data->channel = channel;
     channel_data->streamid = 0;
     channel_data->is_blocking = 0;
+    channel_data->timeout = 0;
     channel_data->session_rsrc = data->session_rsrc;
     channel_data->refcount = NULL;
 

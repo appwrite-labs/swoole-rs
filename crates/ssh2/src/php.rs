@@ -4,7 +4,7 @@
 //! `ssh2_forward_listen`/`ssh2_forward_accept`, the SFTP functions that
 //! change a path, `ssh2_sftp_readlink`/`ssh2_sftp_realpath`, `ssh2_sftp`,
 //! `ssh2_sftp_chmod`, `ssh2_sftp_stat`/`ssh2_sftp_lstat`, and
-//! `ssh2_send_eof`/`ssh2_shell_resize` on a channel stream.
+//! `ssh2_send_eof`/`ssh2_shell_resize` on a channel stream, and `ssh2_tunnel`.
 //! The resources stay ext/ssh2's; their sessions, listeners and SFTP sessions
 //! are read through `swr_ssh2_session`, `swr_ssh2_listener` and `swr_ssh2_sftp`.
 use crate::{Ops, Session, Sftp, Wait};
@@ -15,7 +15,7 @@ use swoole_rs_corebase::{
     CCast,
     lent::{Count, In, Out, lend_in, lend_out},
 };
-use swoole_rs_ssh2_sys::KbdintResponse;
+use swoole_rs_ssh2_sys::{KbdintResponse, LIBSSH2_CHANNEL};
 use swoole_rs_zend::{
     Call, E_WARNING, Owned, OwnedArray, ReturnSlot, Value, ZStr, ZString, bailout, report,
 };
@@ -212,6 +212,19 @@ unsafe extern "C" {
     /// accepted (`ssh2_get_session`): null, with Zend's `TypeError`, once the
     /// session resource has been closed.
     safe fn swr_ssh2_stream_session(stream: &Value) -> Session;
+    /// libssh2's own declaration, as `crate`'s alias declares it: a channel to
+    /// `host`:`port` through the server, or null.
+    safe fn libssh2_channel_direct_tcpip_ex(
+        session: Session,
+        host: Text<'_>,
+        port: c_int,
+        shost: Text<'_>,
+        sport: c_int,
+    ) -> *mut LIBSSH2_CHANNEL;
+    /// `ssh2_tunnel`'s channel stream over `channel`, which holds a reference
+    /// to the session resource, put in `out`; false when no stream can be
+    /// allocated.
+    safe fn swr_ssh2_tunnel_stream(session_resource: &Value, channel: Opened, out: ReturnSlot<'_>);
     /// libssh2's own channel declarations.
     safe fn libssh2_channel_send_eof(channel: StreamChannel) -> c_int;
     safe fn libssh2_channel_request_pty_size_ex(
@@ -268,7 +281,7 @@ unsafe extern "C" {
         bound_port: Option<&'static Nothing>,
         queue_maxsize: c_int,
     ) -> Option<Listener>;
-    safe fn libssh2_channel_forward_accept(listener: Listener) -> Option<Accepted>;
+    safe fn libssh2_channel_forward_accept(listener: Listener) -> Option<Opened>;
     /// `ssh2_forward_listen`'s `SSH2 Listener` resource over `listener`, which
     /// holds a reference to the session resource, put in `out`.
     safe fn swr_ssh2_listener_open(
@@ -286,7 +299,7 @@ unsafe extern "C" {
     /// The channel stream over `channel`, which holds a reference to the
     /// listener's session resource, put in `out`; false, with C's warning and
     /// the channel freed, when no stream can be allocated.
-    safe fn swr_ssh2_accepted_stream(listener: &Value, channel: Accepted, out: ReturnSlot<'_>);
+    safe fn swr_ssh2_accepted_stream(listener: &Value, channel: Opened, out: ReturnSlot<'_>);
     /// The session an `SSH2 Session` resource holds (`zend_fetch_resource`):
     /// null, with Zend's `TypeError` thrown, for a resource of another kind.
     safe fn swr_ssh2_session(resource: &Value) -> Session;
@@ -324,10 +337,10 @@ struct Identity(NonNull<c_void>);
 #[derive(Clone, Copy)]
 struct Listener(NonNull<c_void>);
 
-/// A connection a listener accepted (`LIBSSH2_CHANNEL *`), which the stream
-/// made over it owns.
+/// A channel libssh2 just opened (`LIBSSH2_CHANNEL *`): a connection a
+/// listener accepted or a tunnel, which the stream made over it owns.
 #[repr(transparent)]
-struct Accepted(NonNull<c_void>);
+struct Opened(NonNull<c_void>);
 
 /// An SFTP subsystem `libssh2_sftp_init` started (`LIBSSH2_SFTP *`), which the
 /// resource made over it owns.
@@ -348,6 +361,7 @@ swoole_rs_zend::handlers! {
     zif_ssh2_connect => connect;
     zif_ssh2_sftp => sftp_init;
     zif_ssh2_send_eof => send_eof;
+    zif_ssh2_tunnel => tunnel;
     zif_ssh2_shell_resize => shell_resize;
     zif_ssh2_sftp_rename => sftp_rename;
     zif_ssh2_sftp_chmod => sftp_chmod;
@@ -1470,4 +1484,43 @@ fn shell_resize(call: &Call<'_>) {
         libssh2_channel_request_pty_size_ex(channel, width, height, width_px, height_px)
     });
     call.set_bool(true);
+}
+
+/// `ssh2_tunnel(resource $session, string $host, int $port): resource|false`:
+/// a stream to `$host`:`$port`, opened from the server.
+fn tunnel(call: &Call<'_>) {
+    if call.arity(3, 3).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let Ok(Some(host)) = call.zstr(2) else {
+        return;
+    };
+    let Ok(port) = call.long(3, 0) else {
+        return;
+    };
+    let Some(session) = session(call, resource) else {
+        return;
+    };
+    if !authenticated(session) {
+        warn("Connection not authenticated");
+        call.set_bool(false);
+        return;
+    }
+    let (host, _) = text(host);
+    // C passed the long to the int port as it was, and libssh2_channel_direct_tcpip's
+    // source address.
+    let port = port.c_cast();
+    let source = c"127.0.0.1".into();
+    let channel = hooked(session, || {
+        libssh2_channel_direct_tcpip_ex(session, host, port, source, 22)
+    });
+    let Some(channel) = NonNull::new(channel.cast()).map(Opened) else {
+        warn("Unable to request a channel from remote host");
+        call.set_bool(false);
+        return;
+    };
+    swr_ssh2_tunnel_stream(resource, channel, call.return_slot());
 }
