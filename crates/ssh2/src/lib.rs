@@ -280,16 +280,16 @@ impl<T> Answer for *mut T {
     }
 }
 
-impl Answer for Option<Text<'_>> {
+impl<T> Answer for Option<T> {
     type Result = Self;
     /// As a handle: retried while it is null with `EAGAIN` the session's
     /// `last_errno`, from the event the session is blocked on now.
     fn retried(wait: &Wait<'_>, mut call: impl FnMut() -> Self) -> Self {
         let event = wait.blocked();
         loop {
-            let text = call();
-            if text.is_some() {
-                return text;
+            let handle = call();
+            if handle.is_some() {
+                return handle;
             }
             if wait.last_errno() != LIBSSH2_ERROR_EAGAIN || !wait.park(event) {
                 return None;

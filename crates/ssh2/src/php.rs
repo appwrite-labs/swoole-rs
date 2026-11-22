@@ -1,8 +1,8 @@
 //! The bundled ext/ssh2's PHP functions (`thirdparty/php/ssh2/ssh2.cc`) as
-//! they move to Rust: so far `ssh2_methods_negotiated`, `ssh2_fingerprint`
-//! and the `ssh2_auth_*` functions.
-//! The resources stay ext/ssh2's; their sessions are read through
-//! `swr_ssh2_session`.
+//! they move to Rust: so far `ssh2_methods_negotiated`, `ssh2_fingerprint`,
+//! the `ssh2_auth_*` functions and `ssh2_forward_listen`/`ssh2_forward_accept`.
+//! The resources stay ext/ssh2's; their sessions and listeners are read
+//! through `swr_ssh2_session` and `swr_ssh2_listener`.
 use crate::{Ops, Session, Wait};
 use std::ffi::{CStr, CString, c_int, c_uint, c_void};
 use std::ptr::NonNull;
@@ -12,7 +12,9 @@ use swoole_rs_corebase::{
     lent::{Count, In, lend_in},
 };
 use swoole_rs_ssh2_sys::KbdintResponse;
-use swoole_rs_zend::{Call, E_WARNING, Owned, OwnedArray, Value, ZStr, ZString, bailout, report};
+use swoole_rs_zend::{
+    Call, E_WARNING, Owned, OwnedArray, ReturnSlot, Value, ZStr, ZString, bailout, report,
+};
 
 /// `LIBSSH2_METHOD_*`, the negotiated method kinds `ssh2_methods_negotiated` reads.
 const METHOD_KEX: c_int = 0;
@@ -129,6 +131,34 @@ unsafe extern "C" {
     ) -> c_int;
     safe fn libssh2_agent_userauth(agent: Agent, username: Text<'_>, identity: Identity) -> c_int;
     safe fn libssh2_agent_disconnect(agent: Agent) -> c_int;
+    /// libssh2's own declarations for remote port forwarding: the listener, or
+    /// null, and a connection it accepted, or null.
+    safe fn libssh2_channel_forward_listen_ex(
+        session: Session,
+        host: Option<Text<'_>>,
+        port: c_int,
+        bound_port: Option<&'static Nothing>,
+        queue_maxsize: c_int,
+    ) -> Option<Listener>;
+    safe fn libssh2_channel_forward_accept(listener: Listener) -> Option<Accepted>;
+    /// `ssh2_forward_listen`'s `SSH2 Listener` resource over `listener`, which
+    /// holds a reference to the session resource, put in `out`.
+    safe fn swr_ssh2_listener_open(
+        session_resource: &Value,
+        session: Session,
+        listener: Listener,
+        out: ReturnSlot<'_>,
+    );
+    /// The listener an `SSH2 Listener` resource holds (`zend_fetch_resource`),
+    /// or null with Zend's `TypeError` thrown.
+    safe fn swr_ssh2_listener(resource: &Value) -> Option<Listener>;
+    /// The session of the `SSH2 Listener` resource [`swr_ssh2_listener`]
+    /// accepted.
+    safe fn swr_ssh2_listener_session(resource: &Value) -> Session;
+    /// The channel stream over `channel`, which holds a reference to the
+    /// listener's session resource, put in `out`; false, with C's warning and
+    /// the channel freed, when no stream can be allocated.
+    safe fn swr_ssh2_accepted_stream(listener: &Value, channel: Accepted, out: ReturnSlot<'_>);
     /// The session an `SSH2 Session` resource holds (`zend_fetch_resource`):
     /// null, with Zend's `TypeError` thrown, for a resource of another kind.
     safe fn swr_ssh2_session(resource: &Value) -> Session;
@@ -160,7 +190,19 @@ struct Agent(NonNull<c_void>);
 #[derive(Clone, Copy)]
 struct Identity(NonNull<c_void>);
 
-/// What no value has: the password-change callback `ssh2_auth_password` never passes.
+/// A remote port's listener (`LIBSSH2_LISTENER *`), live until its resource
+/// is destroyed.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Listener(NonNull<c_void>);
+
+/// A connection a listener accepted (`LIBSSH2_CHANNEL *`), which the stream
+/// made over it owns.
+#[repr(transparent)]
+struct Accepted(NonNull<c_void>);
+
+/// What no value has: the password-change callback `ssh2_auth_password` never
+/// passes, and the bound port `ssh2_forward_listen` never asks for.
 enum Nothing {}
 
 swoole_rs_zend::handlers! {
@@ -172,6 +214,8 @@ swoole_rs_zend::handlers! {
     zif_ssh2_auth_pubkey => auth_pubkey;
     zif_ssh2_auth_hostbased_file => auth_hostbased_file;
     zif_ssh2_auth_agent => auth_agent;
+    zif_ssh2_forward_listen => forward_listen;
+    zif_ssh2_forward_accept => forward_accept;
 }
 
 /// A PHP string as the C string libssh2 reads, up to its NUL, and its length
@@ -677,4 +721,68 @@ fn auth_agent(call: &Call<'_>) {
         }
         previous = Some(current);
     }
+}
+
+/// `PHP_SSH2_LISTEN_MAX_QUEUED`: `ssh2_forward_listen`'s default queue.
+const LISTEN_MAX_QUEUED: i64 = 128;
+
+/// `ssh2_forward_listen(resource $session, int $port, string $host = null,
+/// int $max_connections = 128): resource|false`: the remote server binds
+/// `$port` (on `$host`, else every address) and forwards what connects to it.
+fn forward_listen(call: &Call<'_>) {
+    if call.arity(2, 4).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let Ok(port) = call.long(2, 0) else {
+        return;
+    };
+    let Ok(host) = call.zstr(3) else {
+        return;
+    };
+    let Ok(queue) = call.long(4, LISTEN_MAX_QUEUED) else {
+        return;
+    };
+    let Some(session) = session(call, resource) else {
+        return;
+    };
+    if !authenticated(session) {
+        warn("Connection not authenticated");
+        call.set_bool(false);
+        return;
+    }
+    let host = host.map(|host| text(host).0);
+    // C passed the longs to libssh2's ints as they were.
+    let (port, queue) = (port.c_cast(), queue.c_cast());
+    let Some(listener) = hooked(session, || {
+        libssh2_channel_forward_listen_ex(session, host, port, None, queue)
+    }) else {
+        warn("Failure listening on remote port");
+        call.set_bool(false);
+        return;
+    };
+    swr_ssh2_listener_open(resource, session, listener, call.return_slot());
+}
+
+/// `ssh2_forward_accept(resource $listener): resource|false`: the next
+/// connection to the listener's port, as a stream; false when none comes.
+fn forward_accept(call: &Call<'_>) {
+    if call.arity(1, 1).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let Some(listener) = swr_ssh2_listener(resource) else {
+        call.set_bool(false);
+        return;
+    };
+    let session = swr_ssh2_listener_session(resource);
+    let Some(channel) = hooked(session, || libssh2_channel_forward_accept(listener)) else {
+        call.set_bool(false);
+        return;
+    };
+    swr_ssh2_accepted_stream(resource, channel, call.return_slot());
 }
