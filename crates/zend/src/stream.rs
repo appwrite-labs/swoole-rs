@@ -1,7 +1,8 @@
 //! A PHP stream a Rust function opens through its wrapper
 //! (`php_stream_open_wrapper`), writes and closes, as the C it replaces did. A
 //! user stream wrapper runs PHP code on each call, so each is a zend-sys
-//! `swr_zend_try_stream_*` shim inside `zend_try`, its bailout deferred.
+//! `swr_zend_try_stream_*` shim inside `zend_try`, its bailout deferred; a
+//! caller stops at [`bailout::pending`], where C's longjmp would have left.
 use crate::bailout;
 use crate::sys::php_stream;
 use std::ffi::{CStr, c_int};
@@ -71,8 +72,13 @@ impl Stream {
 }
 
 impl Drop for Stream {
-    /// `php_stream_close`, its bailout deferred.
+    /// `php_stream_close`, its bailout deferred. While a bailout is pending
+    /// the stream is left open, as a C caller's longjmp left it: the request's
+    /// resource list closes it at shutdown, and no more PHP code runs first.
     fn drop(&mut self) {
+        if bailout::pending() {
+            return;
+        }
         bailout::defer(bailout::trapped(swr_zend_try_stream_close(Stream(self.0))));
     }
 }

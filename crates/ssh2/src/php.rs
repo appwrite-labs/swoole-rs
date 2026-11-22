@@ -1980,6 +1980,11 @@ fn scp_recv(call: &Call<'_>) {
         let _status = libssh2_channel_free(channel);
     };
     let Some(file) = Stream::open(text(local).0, c"wb", REPORT_ERRORS) else {
+        if bailout::pending() {
+            // The wrapper bailed out: C's longjmp left here, the channel with
+            // the session.
+            return;
+        }
         warn("Unable to write to local file");
         free();
         call.set_bool(false);
@@ -2004,6 +2009,10 @@ fn scp_recv(call: &Call<'_>) {
         };
         // C wrote what arrived and went on, whatever the stream took.
         let _written = file.write(buffer.get(..length).unwrap_or_default());
+        if bailout::pending() {
+            // As at the open: the stream is left to the request's shutdown.
+            return;
+        }
         remaining -= i64::from(read);
     }
     free();
