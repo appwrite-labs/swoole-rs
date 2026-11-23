@@ -1,0 +1,12 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Merged on top of appwrite-labs' inherited config.",
+  "packageRules": [
+    {
+      "description": "PHP 8.6 is on hold until upstream supports it (#5368); keep the merge tier's php image on 8.5.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["php"],
+      "allowedVersions": "/^8\\.5(\\.|-|$)/"
+    }
+  ]
+}
