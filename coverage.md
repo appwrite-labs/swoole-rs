@@ -1,20 +1,22 @@
 # Coverage of crates/
 
-Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus apps and swoole/library's suite, measured on `49505e7` (`tools/coverage.py`, nightly `.github/workflows/coverage.yml`). A process that exits by a signal or `_exit` records nothing.
+Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus apps and swoole/library's suite, measured on `db5633d` (`tools/coverage.py`, nightly `.github/workflows/coverage.yml`). A process that exits by a signal or `_exit` records nothing.
 
 | crate | lines | covered | entry points not reached |
 | --- | ---: | ---: | ---: |
 | phpthread | 1,647 | 0.0% | 52 |
 | base64 | 84 | 35.7% | 0 |
 | odbc | 1,034 | 39.7% | 0 |
+| ssh2 | 1,470 | 41.1% | 17 |
 | pgsql | 2,156 | 42.8% | 9 |
 | crc32 | 41 | 46.3% | 0 |
+| firebird | 725 | 50.8% | 0 |
 | error-ffi | 114 | 54.4% | 6 |
 | phplocks | 441 | 58.7% | 17 |
 | error | 120 | 62.5% | 0 |
 | phpredis | 195 | 66.7% | 0 |
+| ports | 1,528 | 67.3% | 0 |
 | protocols | 399 | 67.4% | 0 |
-| ports | 1,528 | 67.5% | 0 |
 | phpevents | 743 | 68.0% | 0 |
 | sqlite | 379 | 69.7% | 0 |
 | curl | 2,445 | 72.0% | 6 |
@@ -25,10 +27,10 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 | clients | 2,821 | 74.5% | 0 |
 | corebase | 21,327 | 75.2% | 3 |
 | http | 4,209 | 75.6% | 0 |
-| zend | 3,706 | 77.0% | 6 |
+| zend | 3,768 | 77.1% | 6 |
 | phpswoole | 1,614 | 79.1% | 0 |
 | hooks | 4,414 | 79.2% | 1 |
-| phpserver | 4,596 | 82.3% | 1 |
+| phpserver | 4,596 | 82.4% | 1 |
 | phpclients | 7,074 | 82.4% | 0 |
 | oci | 1,299 | 83.5% | 0 |
 | bus | 567 | 84.5% | 0 |
@@ -43,15 +45,14 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 | httpbindings | 239 | 90.4% | 0 |
 | http2 | 763 | 91.2% | 0 |
 | deflate | 57 | 91.2% | 0 |
-| ssh2 | 85 | 92.9% | 0 |
 | zlib | 95 | 93.7% | 0 |
-| firebird | 50 | 96.0% | 0 |
 | locale | 116 | 99.1% | 0 |
 | curl-sys | 10 | 100.0% | 0 |
 | ext | 3 | 100.0% | 0 |
 | ffi | 20 | 100.0% | 0 |
+| firebird-sys | 3 | 100.0% | 0 |
 | phpstubs | 12 | 100.0% | 0 |
-| **crates/** | 91,318 | 74.7% | 106 |
+| **crates/** | 93,443 | 73.9% | 123 |
 
 # Entry points no run reached
 
@@ -189,6 +190,26 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 - `zim_swoole_thread_setName`
 - `zim_swoole_thread_setPriority`
 - `zim_swoole_thread_yield`
+
+## ssh2
+
+- `zif_ssh2_auth_agent`
+- `zif_ssh2_auth_hostbased_file`
+- `zif_ssh2_auth_none`
+- `zif_ssh2_fetch_stream`
+- `zif_ssh2_forward_accept`
+- `zif_ssh2_forward_listen`
+- `zif_ssh2_sftp_chmod`
+- `zif_ssh2_sftp_lstat`
+- `zif_ssh2_sftp_mkdir`
+- `zif_ssh2_sftp_readlink`
+- `zif_ssh2_sftp_realpath`
+- `zif_ssh2_sftp_rename`
+- `zif_ssh2_sftp_rmdir`
+- `zif_ssh2_sftp_stat`
+- `zif_ssh2_sftp_symlink`
+- `zif_ssh2_shell_resize`
+- `zif_ssh2_tunnel`
 
 ## zend
 
