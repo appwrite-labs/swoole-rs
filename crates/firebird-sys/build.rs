@@ -30,7 +30,7 @@ mod ibase {
                     .map(|dir| format!("-I{dir}")),
             )
             .allowlist_type("XSQLDA|XSQLVAR")
-            .allowlist_var("SQL_(TEXT|VARYING|SHORT|LONG|INT64|BOOLEAN)")
+            .allowlist_var("SQL_(TEXT|VARYING|SHORT|LONG|INT64|FLOAT|DOUBLE|BOOLEAN)")
             .generate()
             .expect("firebird-sys: bindgen")
             .write_to_file(out.join("ibase.rs"))

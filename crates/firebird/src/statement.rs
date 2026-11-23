@@ -5,7 +5,8 @@
 use std::ffi::{c_char, c_uint};
 use swoole_rs_corebase::lent::{Count, In};
 use swoole_rs_firebird_sys::ibase::{
-    SQL_BOOLEAN, SQL_INT64, SQL_LONG, SQL_SHORT, SQL_TEXT, SQL_VARYING, XSQLVAR,
+    SQL_BOOLEAN, SQL_DOUBLE, SQL_FLOAT, SQL_INT64, SQL_LONG, SQL_SHORT, SQL_TEXT, SQL_VARYING,
+    XSQLVAR,
 };
 use swoole_rs_zend::pdo::Slot;
 use swoole_rs_zend::sys::{
@@ -95,8 +96,8 @@ fn scaled(n: i64, scale: u32) -> Option<String> {
 }
 
 /// `pdo_firebird_stmt_get_col` for a null value, a scaled `SMALLINT`,
-/// `INTEGER` or `BIGINT`, a `VARCHAR` or `CHAR`, an unscaled integer and a
-/// `BOOLEAN`: the value in `result`, read from the lent `sqldata` bytes. False,
+/// `INTEGER`, `BIGINT` or `DOUBLE`, a `VARCHAR` or `CHAR`, an unscaled integer,
+/// a `BOOLEAN`, `FLOAT` and `DOUBLE`: the value in `result`, read from the lent `sqldata` bytes. False,
 /// setting nothing, for the types C still reads.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_firebird_value<'a>(
@@ -116,8 +117,15 @@ pub extern "C" fn swr_firebird_value<'a>(
             SQL_INT64 => integer::<8>(data).map(i64::from_ne_bytes),
             _ => None,
         };
-        let digits = n.and_then(|n| scaled(n, u32::from(var.sqlscale.unsigned_abs())));
-        digits.map(|digits| Owned::string(ZString::new(digits.as_bytes())))
+        let scale = var.sqlscale.unsigned_abs();
+        if base_type(var.sqltype) == SQL_DOUBLE {
+            // A dialect 1 NUMERIC or DECIMAL, held as a double.
+            integer::<8>(data)
+                .map(|n| Owned::string(ZString::double_fixed(f64::from_ne_bytes(n), scale.into())))
+        } else {
+            let digits = n.and_then(|n| scaled(n, u32::from(scale)));
+            digits.map(|digits| Owned::string(ZString::new(digits.as_bytes())))
+        }
     } else {
         match base_type(var.sqltype) {
             SQL_VARYING => integer::<2>(data).map(|length| {
@@ -135,6 +143,11 @@ pub extern "C" fn swr_firebird_value<'a>(
             SQL_INT64 => integer::<8>(data)
                 .map(|n| Owned::string(ZString::new(i64::from_ne_bytes(n).to_string().as_bytes()))),
             SQL_BOOLEAN => data.first().map(|&b| Owned::bool(b != 0)),
+            // Strings, as C printed them: a `FLOAT` to 8 digits, a `DOUBLE` to 16.
+            SQL_FLOAT => integer::<4>(data)
+                .map(|n| Owned::string(ZString::double_digits(f32::from_ne_bytes(n).into(), 8))),
+            SQL_DOUBLE => integer::<8>(data)
+                .map(|n| Owned::string(ZString::double_digits(f64::from_ne_bytes(n), 16))),
             _ => None,
         }
     };
