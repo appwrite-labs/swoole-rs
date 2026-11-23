@@ -27,7 +27,6 @@
 #include "zend_exceptions.h"
 
 extern void pdo_sqlite_sqlstate(int code, pdo_error_type *state);
-extern zend_string *pdo_sqlite_quote_literal(const char *value);
 
 int _pdo_sqlite_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *file, int line) /* {{{ */
 {
@@ -56,15 +55,12 @@ int _pdo_sqlite_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *file, int li
 }
 /* }}} */
 
+extern void swr_pdo_sqlite_error_info(zval *, unsigned int, const char *);
+
 static void pdo_sqlite_fetch_error_func(pdo_dbh_t *dbh, pdo_stmt_t *stmt, zval *info)
 {
-	pdo_sqlite_db_handle *H = (pdo_sqlite_db_handle *)dbh->driver_data;
-	pdo_sqlite_error_info *einfo = &H->einfo;
-
-	if (einfo->errcode) {
-		add_next_index_long(info, einfo->errcode);
-		add_next_index_string(info, einfo->errmsg);
-	}
+	pdo_sqlite_error_info *einfo = &((pdo_sqlite_db_handle *)dbh->driver_data)->einfo;
+	swr_pdo_sqlite_error_info(info, einfo->errcode, einfo->errmsg);
 }
 
 static void sqlite_handle_closer(pdo_dbh_t *dbh) /* {{{ */
@@ -129,35 +125,8 @@ extern bool swr_pdo_sqlite_commit(pdo_dbh_t *);
 extern bool swr_pdo_sqlite_rollback(pdo_dbh_t *);
 extern bool swr_pdo_sqlite_in_transaction(pdo_dbh_t *);
 
-static zend_string *pdo_sqlite_last_insert_id(pdo_dbh_t *dbh, const zend_string *name)
-{
-	pdo_sqlite_db_handle *H = (pdo_sqlite_db_handle *)dbh->driver_data;
-
-	return zend_i64_to_str(sqlite3_last_insert_rowid(H->db));
-}
-
-/* NB: doesn't handle binary strings... use prepared stmts for that */
-static zend_string* sqlite_handle_quoter(pdo_dbh_t *dbh, const zend_string *unquoted, enum pdo_param_type paramtype)
-{
-	if (ZSTR_LEN(unquoted) > (INT_MAX - 3) / 2) {
-		return NULL;
-	}
-#if PHP_VERSION_ID >= 80500
-	if (UNEXPECTED(zend_str_has_nul_byte(unquoted))) {
-		if (dbh->error_mode == PDO_ERRMODE_EXCEPTION) {
-			zend_throw_exception_ex(
-				php_pdo_get_exception(), 0,
-				"SQLite PDO::quote does not support null bytes");
-		} else if (dbh->error_mode == PDO_ERRMODE_WARNING) {
-			php_error_docref(NULL, E_WARNING,
-				"SQLite PDO::quote does not support null bytes");
-		}
-		return NULL;
-	}
-#endif
-
-	return pdo_sqlite_quote_literal(ZSTR_VAL(unquoted));
-}
+extern zend_string *swr_pdo_sqlite_last_insert_id(pdo_dbh_t *, const zend_string *);
+extern zend_string *swr_pdo_sqlite_quote(pdo_dbh_t *, const zend_string *, enum pdo_param_type);
 
 void swr_pdo_sqlite_set_transaction_mode(pdo_dbh_t *dbh, int mode)
 {
@@ -166,10 +135,6 @@ void swr_pdo_sqlite_set_transaction_mode(pdo_dbh_t *dbh, int mode)
 
 extern int swr_pdo_sqlite_get_attribute(pdo_dbh_t *, zend_long, zval *);
 extern bool swr_pdo_sqlite_set_attribute(pdo_dbh_t *, zend_long, zval *);
-
-static void pdo_sqlite_request_shutdown(pdo_dbh_t *dbh)
-{
-}
 
 #if PHP_VERSION_ID >= 80400
 #include <sys/uio.h>
@@ -191,17 +156,17 @@ static const struct pdo_dbh_methods sqlite_methods = {
 	sqlite_handle_closer,
 	sqlite_handle_preparer,
 	swr_pdo_sqlite_exec,
-	sqlite_handle_quoter,
+	swr_pdo_sqlite_quote,
 	swr_pdo_sqlite_begin,
 	swr_pdo_sqlite_commit,
 	swr_pdo_sqlite_rollback,
 	swr_pdo_sqlite_set_attribute,
-	pdo_sqlite_last_insert_id,
+	swr_pdo_sqlite_last_insert_id,
 	pdo_sqlite_fetch_error_func,
 	swr_pdo_sqlite_get_attribute,
 	NULL,	/* check_liveness: not needed */
 	NULL,
-	pdo_sqlite_request_shutdown,
+	NULL,	/* persistent_shutdown: nothing to release */
 	swr_pdo_sqlite_in_transaction,
 	NULL,
 #if PHP_VERSION_ID >= 80400
@@ -214,75 +179,17 @@ bool swr_sqlite_open_basedir_active(void)
 	return PG(open_basedir) && *PG(open_basedir);
 }
 
-static char *make_filename_safe(const char *filename)
-{
-	if (!filename) {
-		return NULL;
-	}
-	if (*filename && strncasecmp(filename, "file:", 5) == 0) {
-		if (swr_sqlite_open_basedir_active()) {
-			return NULL;
-		}
-		return estrdup(filename);
-	}
-	if (*filename && strcmp(filename, ":memory:")) {
-		char *fullpath = expand_filepath(filename, NULL);
-
-		if (!fullpath) {
-			return NULL;
-		}
-
-		if (php_check_open_basedir(fullpath)) {
-			efree(fullpath);
-			return NULL;
-		}
-		return fullpath;
-	}
-	return estrdup(filename);
-}
-
-extern bool swr_pdo_sqlite_open(const char *, sqlite3 **, zval *);
-extern void swr_pdo_sqlite_initial_timeout(sqlite3 *, zval *);
+extern bool swr_pdo_sqlite_open(pdo_dbh_t *, const char *, sqlite3 **, zval *);
 
 static int pdo_sqlite_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{{ */
 {
-	pdo_sqlite_db_handle *H;
-	int ret = 0;
-	char *filename;
-
-	H = pecalloc(1, sizeof(pdo_sqlite_db_handle), dbh->is_persistent);
+	pdo_sqlite_db_handle *H = pecalloc(1, sizeof(pdo_sqlite_db_handle), dbh->is_persistent);
 
 	dbh->driver_data = H;
-
-	/* skip all but this one param event */
-	dbh->skip_param_evt = 0x7F ^ (1 << PDO_PARAM_EVT_EXEC_PRE);
-
-	filename = make_filename_safe(dbh->data_source);
-
-	if (!filename) {
-		zend_throw_exception_ex(php_pdo_get_exception(), 0,
-			"open_basedir prohibits opening %s",
-			dbh->data_source);
-		goto cleanup;
-	}
-
-	bool opened = swr_pdo_sqlite_open(filename, &H->db, driver_options);
-	efree(filename);
-	if (!opened) {
-		pdo_sqlite_error(dbh);
-		goto cleanup;
-	}
-
-	swr_pdo_sqlite_initial_timeout(H->db, driver_options);
-	dbh->alloc_own_columns = 1;
-	dbh->max_escaped_char_length = 2;
-
-	ret = 1;
-
-cleanup:
+	bool opened = swr_pdo_sqlite_open(dbh, dbh->data_source, &H->db, driver_options);
 	dbh->methods = &sqlite_methods;
 
-	return ret;
+	return opened;
 }
 /* }}} */
 
