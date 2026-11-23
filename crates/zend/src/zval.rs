@@ -178,6 +178,13 @@ unsafe extern "C" {
     /// `php_url_encode`: it reads the lent bytes and
     /// returns a new string; no PHP code runs.
     safe fn php_url_encode<'a>(bytes: In<'a, u8>, len: Count<'a>) -> *mut zend_string;
+    /// `zend_strpprintf`'s `"%.*H"`, or with `fixed` `"%.*F"`, of `value`: a
+    /// new string; no PHP code runs.
+    safe fn swr_zend_double_text(
+        value: f64,
+        precision: std::ffi::c_int,
+        fixed: bool,
+    ) -> *mut zend_string;
     /// `php_url_decode` of a new string's copy of the lent bytes: them as
     /// `urldecode()` decodes them.
     safe fn swr_bytes_url_decode(bytes: IoSlice<'_>) -> *mut zend_string;
@@ -1502,6 +1509,19 @@ impl ZString {
     #[inline]
     pub fn bytes(&self) -> &[u8] {
         ZStr::bytes(self)
+    }
+
+    /// `value` to `digits` significant digits as `%.*H` prints it: PHP's
+    /// `precision` formatting, `1.0E+25` past the digits, without the locale.
+    #[must_use]
+    pub fn double_digits(value: f64, digits: std::ffi::c_int) -> Self {
+        Self(swr_zend_double_text(value, digits, false))
+    }
+
+    /// `value` with `decimals` decimals as `%.*F` prints it, without the locale.
+    #[must_use]
+    pub fn double_fixed(value: f64, decimals: std::ffi::c_int) -> Self {
+        Self(swr_zend_double_text(value, decimals, true))
     }
 
     /// `php_url_encode`: `bytes` as `urlencode()` encodes them.
