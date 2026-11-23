@@ -16,9 +16,8 @@
    +----------------------------------------------------------------------+
 */
 
-/* What stays C of ext/ssh2's ssh2.cc (docs/zend.md, What stays C); its PHP
- * functions are crates/ssh2/src/php.rs, the publickey subsystem's
- * thirdparty/php/ssh2/ssh2_publickey.cc.
+/* What stays C of ext/ssh2 (docs/zend.md, What stays C); its PHP functions are
+ * crates/ssh2/src/php.rs.
  * - libssh2's allocator and the session, listener and SFTP resources' data, and
  *   their destructors PHP calls: allocator (emalloc, efree, ecalloc).
  * - the debug, ignore, macerror and disconnect callbacks, which call PHP
@@ -489,6 +488,120 @@ static void php_ssh2_listener_dtor(zend_resource *rsrc) {
     libssh2_channel_forward_cancel(listener);
     zend_list_delete(data->session_rsrc);
     efree(data);
+}
+
+/* The publickey subsystem's functions are Rust (crates/ssh2/src/php/publickey.rs).
+ * Stays C: its resource, and libssh2_publickey_attribute and _list, which
+ * libssh2's header lays out and Rust would need a repr(C) for (budget). */
+extern "C" void swr_ssh2_publickey_open(zval *zsession,
+                                        LIBSSH2_SESSION *session,
+                                        LIBSSH2_PUBLICKEY *pkey,
+                                        zval *return_value) {
+    php_ssh2_pkey_subsys_data *data = (php_ssh2_pkey_subsys_data *) emalloc(sizeof(php_ssh2_pkey_subsys_data));
+    data->session = session;
+    data->session_rsrc = Z_RES_P(zsession);
+    Z_ADDREF_P(zsession);
+    data->pkey = pkey;
+
+    zval_ptr_dtor(return_value);
+    ZVAL_RES(return_value, zend_register_resource(data, le_ssh2_pkey_subsys));
+}
+
+extern "C" LIBSSH2_PUBLICKEY *swr_ssh2_publickey(zval *zpkey) {
+    php_ssh2_pkey_subsys_data *data = (php_ssh2_pkey_subsys_data *) zend_fetch_resource(
+        Z_RES_P(zpkey), PHP_SSH2_PKEY_SUBSYS_RES_NAME, le_ssh2_pkey_subsys);
+    return data ? data->pkey : NULL;
+}
+
+/* libssh2_publickey_add_ex with the attributes Rust packed: each a mandatory
+ * byte, its name's and value's lengths (size_t), then their bytes. -1, without
+ * the call, when `packed` doesn't hold whole attributes. */
+extern "C" int swr_ssh2_publickey_add(LIBSSH2_PUBLICKEY *pkey,
+                                      const unsigned char *name,
+                                      size_t name_len,
+                                      const unsigned char *blob,
+                                      size_t blob_len,
+                                      bool overwrite,
+                                      const char *packed,
+                                      size_t packed_len) {
+    const size_t head = 1 + 2 * sizeof(size_t);
+    unsigned long count = 0;
+    for (size_t at = 0; at < packed_len; count++) {
+        size_t lengths[2];
+        if (packed_len - at < head) {
+            return -1;
+        }
+        memcpy(lengths, packed + at + 1, sizeof(lengths));
+        at += head;
+        if (lengths[0] > packed_len - at || lengths[1] > packed_len - at - lengths[0]) {
+            return -1;
+        }
+        at += lengths[0] + lengths[1];
+    }
+    libssh2_publickey_attribute *attrs =
+        count ? (libssh2_publickey_attribute *) safe_emalloc(count, sizeof(libssh2_publickey_attribute), 0) : NULL;
+    for (size_t i = 0, at = 0; i < count; i++) {
+        size_t lengths[2];
+        memcpy(lengths, packed + at + 1, sizeof(lengths));
+        attrs[i].mandatory = packed[at];
+        attrs[i].name = packed + at + head;
+        attrs[i].name_len = lengths[0];
+        attrs[i].value = packed + at + head + lengths[0];
+        attrs[i].value_len = lengths[1];
+        at += head + lengths[0] + lengths[1];
+    }
+    int rc = libssh2_publickey_add_ex(pkey, name, name_len, blob, blob_len, overwrite, count, attrs);
+    if (attrs) {
+        efree(attrs);
+    }
+    return rc;
+}
+
+/* The `index`th listed key, or null past the list's end (libssh2 ends it with
+ * a null packet). */
+static const libssh2_publickey_list *swr_ssh2_listed(const libssh2_publickey_list *keys, unsigned long index) {
+    for (unsigned long i = 0; i < index; i++) {
+        if (!keys[i].packet) {
+            return NULL;
+        }
+    }
+    return keys[index].packet ? &keys[index] : NULL;
+}
+
+extern "C" bool swr_ssh2_publickey_key(const libssh2_publickey_list *keys,
+                                       unsigned long index,
+                                       bool blob,
+                                       zval *out) {
+    const libssh2_publickey_list *key = swr_ssh2_listed(keys, index);
+    if (!key) {
+        return false;
+    }
+    zval_ptr_dtor(out);
+    if (blob) {
+        ZVAL_STRINGL(out, (const char *) key->blob, key->blob_len);
+    } else {
+        ZVAL_STRINGL(out, (const char *) key->name, key->name_len);
+    }
+    return true;
+}
+
+extern "C" bool swr_ssh2_publickey_attribute(const libssh2_publickey_list *keys,
+                                             unsigned long index,
+                                             unsigned long attribute,
+                                             bool value,
+                                             zval *out) {
+    const libssh2_publickey_list *key = swr_ssh2_listed(keys, index);
+    if (!key || attribute >= key->num_attrs) {
+        return false;
+    }
+    const libssh2_publickey_attribute *attr = &key->attrs[attribute];
+    zval_ptr_dtor(out);
+    if (value) {
+        ZVAL_STRINGL(out, attr->value, attr->value_len);
+    } else {
+        ZVAL_STRINGL(out, attr->name, attr->name_len);
+    }
+    return true;
 }
 
 static void php_ssh2_pkey_subsys_dtor(zend_resource *rsrc) {
