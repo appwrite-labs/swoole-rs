@@ -33,7 +33,6 @@
 static int php_firebird_alloc_prepare_stmt(pdo_dbh_t*, const zend_string*, XSQLDA*, isc_stmt_handle*,
 	HashTable*);
 bool php_firebird_begin_transaction(pdo_dbh_t *dbh, bool is_auto_commit_txn);
-bool php_firebird_rollback_transaction(pdo_dbh_t *dbh);
 bool firebird_handle_manually_begin(pdo_dbh_t *dbh);
 bool firebird_handle_manually_commit(pdo_dbh_t *dbh);
 bool firebird_handle_manually_rollback(pdo_dbh_t *dbh);
@@ -174,42 +173,8 @@ end:
 /* }}} */
 
 /* called by PDO to close a db handle */
-static void firebird_handle_closer(pdo_dbh_t *dbh) /* {{{ */
-{
-	pdo_firebird_db_handle *H = (pdo_firebird_db_handle *)dbh->driver_data;
-
-	if (H->tr) {
-		if (dbh->auto_commit) {
-			php_firebird_commit_transaction(dbh, /* retain */ false);
-		} else {
-			php_firebird_rollback_transaction(dbh);
-		}
-	}
-	H->in_manually_txn = false;
-
-	/* isc_detach_database returns 0 on success, 1 on failure. */
-	if (H->db && isc_detach_database(H->isc_status, &H->db)) {
-		php_firebird_error(dbh);
-	}
-
-	if (H->date_format) {
-		pefree(H->date_format, dbh->is_persistent);
-	}
-	if (H->time_format) {
-		pefree(H->time_format, dbh->is_persistent);
-	}
-	if (H->timestamp_format) {
-		pefree(H->timestamp_format, dbh->is_persistent);
-	}
-
-	if (H->einfo.errmsg) {
-		pefree(H->einfo.errmsg, dbh->is_persistent);
-		H->einfo.errmsg = NULL;
-	}
-
-	pefree(H, dbh->is_persistent);
-}
-/* }}} */
+/* The closer is Rust (crates/firebird/src/connection.rs). */
+void firebird_handle_closer(pdo_dbh_t *dbh);
 
 /* called by PDO to prepare an SQL query */
 static bool firebird_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, /* {{{ */
@@ -462,6 +427,30 @@ void swr_firebird_set_manual(pdo_dbh_t *dbh, bool manual)
 void swr_firebird_error(pdo_dbh_t *dbh)
 {
 	php_firebird_error(dbh);
+}
+
+bool swr_firebird_attached(pdo_dbh_t *dbh)
+{
+	return ((pdo_firebird_db_handle *)dbh->driver_data)->db != 0;
+}
+
+void swr_firebird_free(pdo_dbh_t *dbh)
+{
+	pdo_firebird_db_handle *H = (pdo_firebird_db_handle *)dbh->driver_data;
+
+	if (H->date_format) {
+		pefree(H->date_format, dbh->is_persistent);
+	}
+	if (H->time_format) {
+		pefree(H->time_format, dbh->is_persistent);
+	}
+	if (H->timestamp_format) {
+		pefree(H->timestamp_format, dbh->is_persistent);
+	}
+	if (H->einfo.errmsg) {
+		pefree(H->einfo.errmsg, dbh->is_persistent);
+	}
+	pefree(H, dbh->is_persistent);
 }
 
 /* used by prepare and exec to allocate a statement handle and prepare the SQL */
