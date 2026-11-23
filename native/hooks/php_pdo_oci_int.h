@@ -17,6 +17,9 @@
 #ifndef PHP_PDO_OCI_INT_H
 #define PHP_PDO_OCI_INT_H
 
+/* Only with --with-swoole-oracle: oci.h comes from Instant Client's SDK. */
+#ifdef SW_USE_ORACLE
+
 #include "zend_portability.h"
 
 #include <oci.h>
@@ -46,23 +49,6 @@ typedef struct {
     unsigned int have_blobs : 1;
 } pdo_oci_stmt;
 
-typedef struct {
-    OCIBind *bind; /* allocated by OCI */
-    sb2 oci_type;
-    sb2 indicator;
-    ub2 retcode;
-
-    ub4 actual_len;
-
-    dvoid *thing; /* for LOBS, REFCURSORS etc. */
-
-    unsigned used_for_output;
-
-    /* --- NEW: preconverted buffer for async-safe binds --- */
-     char *preconv_buf;      /* pointer to a NUL-terminated C buffer (owned by param) */
-     ub4   preconv_len;      /* length of the buffer in bytes */
-} pdo_oci_bound_param;
-
 extern const ub4 SWOOLE_PDO_OCI_INIT_MODE;
 extern const pdo_driver_t swoole_pdo_oci_driver;
 extern OCIEnv *swoole_pdo_oci_Env;
@@ -91,4 +77,5 @@ enum {
     PDO_OCI_ATTR_CALL_TIMEOUT
 };
 
+#endif /* SW_USE_ORACLE */
 #endif /* PHP_PDO_OCI_INT_H */

@@ -184,7 +184,7 @@ mod php {
             ]);
             p.defines
                 .push(format!(r#"SWOOLE_PDO_OCI_CLIENT_VERSION "{version}.1""#));
-            p.c.extend(["oci_driver.c", "oci_statement.c"].map(|f| third.join("pdo_oci").join(f)));
+            // native/hooks/oci_*.c come with the hooks module's sources, each inside SW_USE_ORACLE.
             p.includes.push(dir.join("sdk/include"));
             println!("cargo::rustc-link-search=native={}", dir.display());
             p.libs.push("clntsh");
@@ -212,7 +212,6 @@ mod php {
             p.define(&["SW_HAVE_SSH2LIB", "PHP_SSH2_SESSION_TIMEOUT"]);
             // native/hooks/ssh2*.cc come with the hooks module's sources, each
             // inside SW_HAVE_SSH2LIB.
-            p.cxx.push(third.join("php/ssh2/ssh2_publickey.cc"));
             p.includes.extend(pkg_includes("libssh2"));
             p.libs.push("ssh2");
         }

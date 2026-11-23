@@ -6,7 +6,7 @@ use std::{ffi::c_int, sync::atomic::Ordering};
 use swoole_rs_zend::{Minit, Mshutdown, pdo::Driver};
 
 unsafe extern "C" {
-    /// The bundled driver (`thirdparty/pdo_oci/oci_driver.c`).
+    /// The driver's PDO glue (`native/hooks/oci_driver.c`).
     safe static swoole_pdo_oci_driver: Driver;
     /// `OCIHandleFree` of no handle, the only one this passes it (nothing makes the
     /// reference): OCI rejects a null handle without touching memory, whatever the kind.

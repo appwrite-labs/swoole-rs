@@ -113,6 +113,21 @@ unsafe extern "C" {
         attribute: u32,
         err: Live<Error>,
     ) -> Sword;
+    /// OCI's own declaration for a 4-byte attribute of a LOB locator, which OCI
+    /// copies.
+    #[expect(
+        clashing_extern_declarations,
+        reason = "OCIAttrSet takes its handle and value as void *: each declaration types them as one use passes them"
+    )]
+    #[link_name = "OCIAttrSet"]
+    pub(crate) safe fn OCIAttrSetLob(
+        lob: Live<crate::Lob>,
+        kind: u32,
+        value: &u32,
+        size: u32,
+        attribute: u32,
+        err: Live<Error>,
+    ) -> Sword;
     /// OCI's own declaration for a 4-byte attribute of a service context, which
     /// OCI copies.
     #[expect(

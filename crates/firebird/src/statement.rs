@@ -36,7 +36,7 @@ use swoole_rs_zend::sys::{
     pdo_column_data, pdo_param_type_PDO_PARAM_BOOL as PARAM_BOOL,
     pdo_param_type_PDO_PARAM_INT as PARAM_INT, pdo_param_type_PDO_PARAM_STR as PARAM_STR,
 };
-use swoole_rs_zend::{Owned, OwnedArray, Value, ZString, value_error};
+use swoole_rs_zend::{Owned, OwnedArray, Value, ZString, string::ZBuf, value_error};
 
 unsafe extern "C" {
     /// The connection's date (0), time (1) or timestamp (2) format, or its
@@ -477,6 +477,9 @@ fn blob_length(reply: &[u8; BLOB_INFO]) -> Option<u64> {
     Some(0)
 }
 
+/// Zeros to fill a BLOB's string with before its segments are read in.
+static ZEROS: [u8; 65535] = [0; 65535];
+
 /// `isc_segment` and `isc_segstr_eof`, the statuses a segment read ends a
 /// blob's reading with.
 fn segment_status(code: u32) -> ISC_STATUS {
@@ -507,27 +510,43 @@ fn read_blob(dbh: &Dbh, stmt: &Stmt, blob: Handle<'_>, result: &Slot) -> bool {
     if len == 0 {
         return true;
     }
-    // Past what a string can hold (C's ZSTR_MAX_LEN) or memory: false, nothing recorded.
-    let Ok(len) = usize::try_from(len) else {
+    // Past what a string can be allocated with (`isize::MAX`, below C's
+    // ZSTR_MAX_LEN on every target): false, nothing recorded.
+    let Some(len) = usize::try_from(len)
+        .ok()
+        .filter(|&len| isize::try_from(len).is_ok())
+    else {
         return false;
     };
-    let mut data = Vec::new();
-    if data.try_reserve_exact(len).is_err() {
-        return false;
-    }
-    data.resize(len, 0u8);
+    // One Zend string, as C's zend_string_alloc, read into in place.
+    let mut string = ZBuf::with_capacity(len);
     let (segment, eof) = (segment_status(isc_segment), segment_status(isc_segstr_eof));
-    let (mut read, mut stat) = (0usize, 0);
-    while (stat == 0 || stat == segment) && read < len {
-        let chunk = (len - read).min(usize::from(u16::MAX));
-        let mut segment_len = 0;
-        stat = lend_out(
-            data.get_mut(read..read + chunk).unwrap_or_default(),
-            |out, count| swoole_isc_get_segment(status, blob, &mut segment_len, count, out.chars()),
-        );
-        read += usize::from(segment_len);
-    }
-    result.set(Owned::string(ZString::new(&data)));
+    let mut stat = 0;
+    string.fill(|spare| {
+        // Zeroed first: what no segment fills stays zero.
+        let mut left = len;
+        while left > 0 {
+            let zeros = ZEROS.get(..left.min(ZEROS.len())).unwrap_or_default();
+            if spare.put(zeros).is_none() {
+                break;
+            }
+            left -= zeros.len();
+        }
+        let data = spare.written();
+        let mut read = 0usize;
+        while (stat == 0 || stat == segment) && read < len {
+            let chunk = (len - read).min(usize::from(u16::MAX));
+            let mut segment_len = 0;
+            stat = lend_out(
+                data.get_mut(read..read + chunk).unwrap_or_default(),
+                |out, count| {
+                    swoole_isc_get_segment(status, blob, &mut segment_len, count, out.chars())
+                },
+            );
+            read += usize::from(segment_len);
+        }
+    });
+    result.set(Owned::string(string.into_zstring()));
     let vector = crate::error::swr_firebird_status_vector(dbh);
     if vector.first() == Some(&1) && stat != 0 && stat != eof && stat != segment {
         crate::error::stmt_message(dbh, stmt, b"Error reading from BLOB");
@@ -601,10 +620,8 @@ pub extern "C" fn swr_firebird_bind_blob(stmt: &Stmt, id: &mut [u32; 2], param: 
     let data = param.string();
     let mut written = true;
     for chunk in data.bytes().chunks(usize::from(u16::MAX)) {
-        let bytes = chunk.iter().map(|&byte| c_char::from_ne_bytes([byte]));
-        let chunk: Vec<c_char> = bytes.collect();
-        if lend_in(&chunk, |buffer, length| {
-            swoole_isc_put_segment(status, blob, length, buffer)
+        if lend_in(chunk, |buffer, length| {
+            swoole_isc_put_segment(status, blob, length, buffer.chars())
         }) != 0
         {
             crate::error::status_error(dbh, Some(stmt));

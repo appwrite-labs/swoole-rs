@@ -17,6 +17,8 @@
 )]
 
 #[cfg(feature = "php")]
+mod bind;
+#[cfg(feature = "php")]
 mod columns;
 #[cfg(feature = "php")]
 mod driver;
@@ -120,6 +122,17 @@ impl Buffer {
     /// A handle OCI takes in a buffer's place (a LOB locator).
     pub(crate) fn handle<K>(handle: Live<K>) -> Self {
         Self(handle.0)
+    }
+
+    /// `cell`, which OCI may write through for as long as it lives (a bound
+    /// parameter's indicator or return code).
+    pub(crate) fn cell<T>(cell: &std::cell::Cell<T>) -> Self {
+        Self(cell.as_ptr().cast())
+    }
+
+    /// `bytes` for an input bind, which OCI only reads.
+    pub(crate) fn read(bytes: &[u8]) -> Self {
+        Self(bytes.as_ptr().cast_mut().cast())
     }
 }
 

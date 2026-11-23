@@ -24,33 +24,22 @@ PHP_FUNCTION(swoole_proc_open);
 /* proc_terminate, proc_close and proc_get_status are crates/phpruntime's (proc.rs). */
 SW_EXTERN_C_END
 
-#ifdef PHP_WIN32
-typedef HANDLE php_file_descriptor_t;
-typedef DWORD php_process_id_t;
-#define PHP_INVALID_FD INVALID_HANDLE_VALUE
-#else
 typedef int php_file_descriptor_t;
 typedef pid_t php_process_id_t;
 #define PHP_INVALID_FD (-1)
-#endif
 
 /* Environment block under Win32 is a NUL terminated sequence of NUL terminated
  *   name=value strings.
  * Under Unix, it is an argv style array. */
 typedef struct {
     char *envp;
-#ifndef PHP_WIN32
     char **envarray;
-#endif
 } sw_php_process_env;
 
 typedef struct {
     bool running;
     int *wstatus;
     php_process_id_t child;
-#ifdef PHP_WIN32
-    HANDLE childHandle;
-#endif
     int npipes;
     zend_resource **pipes;
     zend_string *command;
