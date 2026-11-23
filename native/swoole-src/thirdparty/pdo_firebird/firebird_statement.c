@@ -298,47 +298,9 @@ static int pdo_firebird_stmt_get_col(
 	return 1;
 }
 
-static int php_firebird_bind_blob(pdo_stmt_t *stmt, ISC_QUAD *blob_id, zval *param)
-{
-	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
-	pdo_firebird_db_handle *H = S->H;
-	isc_blob_handle h = PDO_FIREBIRD_HANDLE_INITIALIZER;
-	zval data;
-	zend_ulong put_cnt = 0, rem_cnt;
-	unsigned short chunk_size;
-	int result = 1;
-
-	if (isc_create_blob(H->isc_status, &H->db, &H->tr, &h, blob_id)) {
-		php_firebird_error_stmt(stmt);
-		return 0;
-	}
-
-	if (Z_TYPE_P(param) != IS_STRING) {
-		ZVAL_STR(&data, zval_get_string_func(param));
-	} else {
-		ZVAL_COPY_VALUE(&data, param);
-	}
-
-	for (rem_cnt = Z_STRLEN(data); rem_cnt > 0; rem_cnt -= chunk_size) {
-		chunk_size = rem_cnt > USHRT_MAX ? USHRT_MAX : (unsigned short)rem_cnt;
-		if (isc_put_segment(H->isc_status, &h, chunk_size, &Z_STRVAL(data)[put_cnt])) {
-			php_firebird_error_stmt(stmt);
-			result = 0;
-			break;
-		}
-		put_cnt += chunk_size;
-	}
-
-	if (Z_TYPE_P(param) != IS_STRING) {
-		zval_ptr_dtor_str(&data);
-	}
-
-	if (isc_close_blob(H->isc_status, &h)) {
-		php_firebird_error_stmt(stmt);
-		return 0;
-	}
-	return result;
-}
+/* Writing a BLOB is Rust (crates/firebird/src/statement.rs); the id it creates
+ * is written to `blob_id`. */
+bool swr_firebird_bind_blob(pdo_stmt_t *stmt, ISC_QUAD *blob_id, zval *param);
 
 static int pdo_firebird_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *param, /* {{{ */
 	enum pdo_param_event event_type)
@@ -447,7 +409,7 @@ static int pdo_firebird_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param
 						return 1;
 					}
 					ISC_QUAD quad = php_get_isc_quad_from_sqldata(var->sqldata);
-					if (php_firebird_bind_blob(stmt, &quad, parameter) != 0) {
+					if (swr_firebird_bind_blob(stmt, &quad, parameter)) {
 						memcpy(var->sqldata, &quad, sizeof(quad));
 						return 1;
 					}

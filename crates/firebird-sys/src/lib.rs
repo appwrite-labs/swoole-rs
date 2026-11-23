@@ -217,11 +217,11 @@ unsafe extern "C" {
         buffer_length: Count<'b, c_ushort>,
         buffer: Out<'b, ISC_SCHAR>,
     ) -> ISC_STATUS;
-    pub safe fn isc_put_segment(
+    pub safe fn isc_put_segment<'b>(
         status: Status,
         blob: Handle,
-        length: c_ushort,
-        buffer: Bytes,
+        length: Count<'b, c_ushort>,
+        buffer: In<'b, ISC_SCHAR>,
     ) -> ISC_STATUS;
     pub safe fn isc_create_blob(
         status: Status,

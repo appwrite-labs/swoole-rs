@@ -108,8 +108,6 @@ offloaded! {
     swoole_isc_open_blob => isc_open_blob(
         status: Status, db: Handle, tr: Handle,
         blob: Handle, id: Quad);
-    swoole_isc_put_segment => isc_put_segment(
-        status: Status, blob: Handle, length: c_ushort, buffer: Bytes);
     swoole_isc_create_blob => isc_create_blob(
         status: Status, db: Handle, tr: Handle,
         blob: Handle, id: Quad);
@@ -175,6 +173,23 @@ pub extern "C" fn swoole_isc_get_segment<'b>(
     offload(NOT_RUN, || {
         lent.take().map_or(NOT_RUN, |(buffer_length, buffer)| {
             isc_get_segment(status, blob, length, buffer_length, buffer)
+        })
+    })
+}
+
+/// `swoole_isc_put_segment`: `isc_put_segment` off the coroutine.
+#[unsafe(no_mangle)]
+pub extern "C" fn swoole_isc_put_segment<'b>(
+    status: Status,
+    blob: Handle,
+    length: Count<'b, c_ushort>,
+    buffer: In<'b, ISC_SCHAR>,
+) -> ISC_STATUS {
+    // The lent pair is not `Copy`: the one run takes it.
+    let mut lent = Some((length, buffer));
+    offload(NOT_RUN, || {
+        lent.take().map_or(NOT_RUN, |(length, buffer)| {
+            isc_put_segment(status, blob, length, buffer)
         })
     })
 }
