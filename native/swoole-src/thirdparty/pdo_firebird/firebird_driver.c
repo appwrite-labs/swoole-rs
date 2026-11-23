@@ -54,60 +54,14 @@ void swr_firebird_name_param(HashTable *named_params, const char *name, size_t n
 }
 
 #if FB_API_VER >= 40
-/* set coercing a data type */
+/* set coercing a data type: each variable's is Rust (crates/firebird/src/statement.rs) */
+void swr_firebird_coerce(XSQLVAR *var, unsigned client_major);
+
 static void set_coercing_output_data_types(XSQLDA* sqlda)
 {
-	/* Data types introduced in Firebird 4.0 are difficult to process using the Firebird Legacy API. */
-	/* These data types include DECFLOAT(16), DECFLOAT(34), INT128 (NUMERIC/DECIMAL(38, x)). */
-	/* In any case, at this data types can only be mapped to strings. */
-	/* This function allows you to ensure minimal performance of queries if they contain columns of the above types. */
-	unsigned int i;
-	short dtype;
-	short nullable;
-	XSQLVAR* var;
-	unsigned fb_client_version = fb_get_client_version();
-	unsigned fb_client_major_version = (fb_client_version >> 8) & 0xFF;
-	for (i=0, var = sqlda->sqlvar; i < sqlda->sqld; i++, var++) {
-		dtype = (var->sqltype & ~1); /* drop flag bit  */
-		nullable = (var->sqltype & 1);
-		switch(dtype) {
-			case SQL_INT128:
-				var->sqltype = SQL_VARYING + nullable;
-				var->sqllen = 46;
-				var->sqlscale = 0;
-				break;
-
-			case SQL_DEC16:
-				var->sqltype = SQL_VARYING + nullable;
-				var->sqllen = 24;
-				break;
-
-			case SQL_DEC34:
-				var->sqltype = SQL_VARYING + nullable;
-				var->sqllen = 43;
-				break;
-
-			case SQL_TIMESTAMP_TZ:
-			    if (fb_client_major_version < 4) {
-					/* If the client version is below 4.0, then it is impossible to handle time zones natively, */
-					/* so we convert these types to a string. */
-					var->sqltype = SQL_VARYING + nullable;
-					var->sqllen = 58;
-				}
-				break;
-
-			case SQL_TIME_TZ:
-				if (fb_client_major_version < 4) {
-					/* If the client version is below 4.0, then it is impossible to handle time zones natively, */
-					/* so we convert these types to a string. */
-					var->sqltype = SQL_VARYING + nullable;
-					var->sqllen = 46;
-				}
-				break;
-
-			default:
-				break;
-		}
+	unsigned fb_client_major_version = (fb_get_client_version() >> 8) & 0xFF;
+	for (int i = 0; i < sqlda->sqld; i++) {
+		swr_firebird_coerce(&sqlda->sqlvar[i], fb_client_major_version);
 	}
 }
 #endif
